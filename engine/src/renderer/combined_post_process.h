@@ -52,6 +52,10 @@ typedef struct {
 } CombinedAA;
 
 bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool combined_aa_resize(CombinedAA *caa, RHIDevice *dev, u32 w, u32 h);
 void combined_aa_shutdown(CombinedAA *caa);
 void combined_aa_apply(CombinedAA *caa, RHICmdBuffer *cmd,
                        RHITexture current_color, RHITexture depth_tex,
@@ -94,6 +98,10 @@ typedef struct {
 } CombinedColor;
 
 bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 height);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool combined_color_resize(CombinedColor *cc, RHIDevice *dev, u32 w, u32 h);
 void combined_color_shutdown(CombinedColor *cc);
 /* R271: lum_tex + auto_exposure mirror tonemap_apply so the combined path
  * applies auto-exposure identically to the separate tonemap pass. Pass the

@@ -48,6 +48,15 @@ typedef struct {
     void *native_window;
     void *native_display;
     bool hide_window_until_first_frame;
+    /* Create the window already in PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN.
+     * New fields go after this one: PlatformConfig is brace-initialised
+     * positionally by existing callers. */
+    bool start_fullscreen;
+    /* Create the windowed window without title bar and frame (see
+     * platform_set_window_decorated). */
+    bool undecorated;
+    /* Host-provided mobile content scale; zero selects 1.0. */
+    f32 native_content_scale;
 } PlatformConfig;
 
 /* Keep native window dimensions representable on every supported backend. */
@@ -122,7 +131,33 @@ void                platform_get_size(Platform *p, u32 *w, u32 *h);
 void                platform_get_logical_size(Platform *p, u32 *w, u32 *h);
 /* Physical drawable size used by GL/Vulkan framebuffers and swapchains. */
 void                platform_get_drawable_size(Platform *p, u32 *w, u32 *h);
+/* Window mode. BORDERLESS_FULLSCREEN = no title bar or frame, covering the
+ * monitor the window is on, display mode unchanged (not exclusive), so the
+ * swapchain only resizes and Alt-Tab never blanks the screen. */
+typedef enum {
+    PLATFORM_WINDOW_MODE_WINDOWED = 0,
+    PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN,
+} PlatformWindowMode;
+/* Idempotent. false for NULL, an invalid mode, or a mode the platform cannot
+ * enter (mobile / QNX Screen are always fullscreen). */
+bool                platform_set_window_mode(Platform *p, PlatformWindowMode mode);
+/* Last mode the platform confirmed; WINDOWED for NULL. */
+PlatformWindowMode  platform_get_window_mode(Platform *p);
+/* set_window_mode(toggle target of the latest request). */
 void                platform_toggle_fullscreen(Platform *p);
+/* Title bar + frame of the WINDOWED window. false = frameless window of the
+ * same client size and position (still movable through
+ * platform_window_begin_move, resizable only by the app). Fullscreen never
+ * has a title bar; a change made while fullscreen (or while a mode switch is
+ * in flight) is kept and applied when the window is windowed again.
+ * Idempotent. Returns false for NULL, or decorated=true on a platform that
+ * has no window frame (mobile, QNX Screen). */
+bool                platform_set_window_decorated(Platform *p, bool decorated);
+/* The windowed title-bar preference (false for NULL and frameless platforms). */
+bool                platform_get_window_decorated(Platform *p);
+/* A title bar is on screen now: windowed and decorated. Client-side
+ * decoration (Wayland/myui) also counts: see platform_needs_client_decoration. */
+bool                platform_window_title_bar_visible(Platform *p);
 void                platform_mouse_capture(Platform *p, bool capture);
 void                platform_mouse_set_visible(Platform *p, bool visible);
 void                platform_mouse_set_relative(Platform *p, bool relative);
@@ -156,6 +191,9 @@ bool platform_wsi_surface_query(Platform *p, PlatformWsiSurface *out);
 /* 设备级 WSI 状态对象的非拥有指针（挂到 RHIDevice 用，见 rhi_device_attach_wsi；
  * Platform 拥有存储，生命周期长于任何 RHIDevice 使用窗口）。 */
 PlatformWsiSurface *platform_wsi_surface(Platform *p);
+/* 在移动宿主线程同步到引擎线程后调用；桌面后端不接管窗口尺寸，返回 false。 */
+bool platform_mobile_resize(Platform *p, u32 logical_width, u32 logical_height,
+                            u32 drawable_width, u32 drawable_height, f32 scale);
 /* 移动宿主回调（iOS/Android 的 host-injection 入口，window_mobile.c 真实实现；
  * 桌面后端是 no-op——桌面没有 OS 级 suspend/resume/surface-lost 事件，相应语义
  * 由 resize 与 DESTROYING 覆盖）。 */

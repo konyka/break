@@ -1,4 +1,5 @@
 #include "contact_shadow.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -68,6 +69,13 @@ static RHIPipeline cs_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool contact_shadow_targets_create(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool contact_shadow_init(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s || !dev) return false;
     memset(s, 0, sizeof(*s));
@@ -109,7 +117,7 @@ bool contact_shadow_init(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
      * color (god_rays idiom), so the output must not lose scene detail.
      * Pass stays opt-in (cs_enabled default off), so no default cost. */
     u32 hw = w, hh = h;
-    s->fbo = rhi_offscreen_fbo_create_fmt(dev, hw, hh, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)contact_shadow_targets_create(s, dev, hw, hh);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -136,6 +144,15 @@ bool contact_shadow_init(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
     s->ready = true;
     LOG_INFO("ContactShadow: initialized (%ux%u)", hw, hh);
+    return true;
+}
+
+bool contact_shadow_resize(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!contact_shadow_targets_create(s, dev, w, h)) {
+        LOG_WARN("ContactShadow: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

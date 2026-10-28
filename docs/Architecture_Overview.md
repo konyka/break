@@ -421,7 +421,7 @@ gate = `test_renderer_backend_token_gate`（headless label，扫描 main.c / ren
 | **Windows** | Win32 | D3D12（原生，Agility SDK 1.616.0 + Windows SDK 10.0.26100.0） | `build-d3d12*/`（`-DENGINE_RHI_BACKEND=d3d12`） | ✅ GPU_RUNTIME + BENCHMARK_COMPARABLE（本机 RTX 4060 Laptop 真机收据；CI `windows-d3d12.yml` WARP floor；收据见 `docs/rhi_backend_evidence.md`） |
 | **macOS** | Cocoa | Metal（原生） | `build-metal/`（`-DENGINE_RHI_BACKEND=metal`） | ✅ BENCHMARK_COMPARABLE（M2 真机 2026-10-16；CI `lane-gpu-runtime-macos-metal`） |
 | **macOS** | Cocoa | Vulkan via MoltenVK | `build-macos/` | ✅ GPU_RUNTIME 并行基线（M2 本机 133/133；CI `lane-native-surface-cocoa`；不计入原生 Metal 证据） |
-| **iOS** | — | Metal | iOS toolchain | ⚠️ COMPILED（模拟器 compile only，无真机——`ios-metal-build` lane；OpenGL 删除闸门 BLOCKED 原因之一） |
+| **iOS** | UIKit / UIWindowScene + CAMetalLayer | Metal | iOS toolchain | ⚠️ COMPILED（`ios-metal-build` lane 仍 compile-only；本机 Simulator 已有 300 帧、截图与后台恢复记录，但不计 GPU_RUNTIME；无真机收据，OpenGL 删除闸门仍 BLOCKED） |
 | **Android** | — | Vulkan（需 `ENGINE_ANDROID_NATIVE_WINDOW=ON` 和 NDK `android/native_window.h`） | Android toolchain | ⚠️ COMPILED（host-injected，无 runtime 收据） |
 | **OHOS** | — | — | OHOS toolchain | ❌ UNAVAILABLE（fail-closed；`test_platform_compat_harmonyos`） |
 | **WebAssembly** | — | — | — | 📋 规划中 |

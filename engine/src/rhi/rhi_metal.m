@@ -167,6 +167,7 @@ static void metal_check_cmd_error(RHIDevice *dev, MetalBackend *mb,
     if (cmd.status != MTLCommandBufferStatusError) return;
     NSError *err = cmd.error;
     long code = err != nil ? (long)err.code : -1L;
+    (void)code;
 #if TARGET_OS_OSX
     if (code == (long)MTLCommandBufferErrorDeviceRemoved) {
         LOG_ERROR("rhi_metal: command buffer at %s failed with "
@@ -993,7 +994,12 @@ typedef struct {
 /* Storage-mode rule (Task 7 brief): shared when the host ever touches the
  * bytes (initial_data != NULL or UNIFORM usage), private only for pure-GPU
  * usages (STORAGE/INDIRECT/AS_BUILD_INPUT/DEVICE_ADDRESS) with no initial
- * data — the committed/placed decision analogue of rhi_d3d12.c. */
+ * data — the committed/placed decision analogue of rhi_d3d12.c.
+ * iOS texel views use private storage and staged uploads instead: Simulator
+ * rejects a linear texture backed by a shared buffer. */
+#ifdef ENGINE_RHI_TEST
+static bool rhi_test_private_texel;
+#endif
 static bool metal_buffer_wants_private(const RHIBufferDesc *desc) {
     const RHIBufferUsage gpu_only = (RHIBufferUsage)(
         RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT |
@@ -1001,6 +1007,13 @@ static bool metal_buffer_wants_private(const RHIBufferDesc *desc) {
     const RHIBufferUsage host_side = (RHIBufferUsage)(
         RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX |
         RHI_BUFFER_USAGE_UNIFORM | RHI_BUFFER_USAGE_TEXEL);
+    if ((desc->usage & RHI_BUFFER_USAGE_TEXEL) != 0) {
+#if TARGET_OS_IOS
+        return true;
+#elif defined(ENGINE_RHI_TEST)
+        if (rhi_test_private_texel) return true;
+#endif
+    }
     if (desc->initial_data != NULL) return false;
     return (desc->usage & gpu_only) != 0 && (desc->usage & host_side) == 0;
 }
@@ -1039,6 +1052,39 @@ static RHIResult metal_commit_wait(RHIDevice *dev, MetalBackend *mb,
     if (mb->device_lost_latch) return RHI_RESULT_DEVICE_LOST;
     [cmd waitUntilCompleted];
     return RHI_RESULT_OK;
+}
+
+static bool metal_buffer_upload_initial(RHIDevice *dev, MetalBackend *mb,
+                                        id<MTLBuffer> buffer, const void *data,
+                                        usize size, bool shared_mode) {
+    if (data == NULL) return true;
+    if (shared_mode) {
+        memcpy(buffer.contents, data, size);
+        return true;
+    }
+    @autoreleasepool {
+        id<MTLBuffer> staging = [mb->device newBufferWithBytes:data
+                                                       length:(NSUInteger)size
+                                                      options:MTLResourceStorageModeShared];
+        if (staging == nil) {
+            LOG_ERROR("rhi_metal: initial buffer staging allocation failed");
+            return false;
+        }
+        id<MTLCommandBuffer> cmd = [mb->queue commandBuffer];
+        if (cmd == nil) {
+            LOG_ERROR("rhi_metal: initial buffer upload command buffer failed");
+            return false;
+        }
+        id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+        if (blit == nil) {
+            LOG_ERROR("rhi_metal: initial buffer upload encoder failed");
+            return false;
+        }
+        [blit copyFromBuffer:staging sourceOffset:0u
+                    toBuffer:buffer destinationOffset:0u size:(NSUInteger)size];
+        [blit endEncoding];
+        return metal_commit_wait(dev, mb, cmd) == RHI_RESULT_OK;
+    }
 }
 
 /* Destroy-time in-flight safety (Task 5 retire parity): drain (bounded)
@@ -1549,21 +1595,20 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     }
     bb = (MetalBuffer *)calloc(1u, sizeof(*bb));
     if (bb == NULL) return RHI_HANDLE_NULL;
+    bb->size = desc->size;
+    bb->usage = desc->usage;
+    bb->shared_mode = !private_mode;
     /* Factory methods are autoreleased; retain to survive the pool drain. */
     @autoreleasepool {
         MTLResourceOptions opts = private_mode
             ? MTLResourceStorageModePrivate : MTLResourceStorageModeShared;
-        if (desc->initial_data != NULL && allocation_size == desc->size) {
-            /* initial_data implies shared mode by the rule above:
-             * newBufferWithBytes: uploads at create. */
-            bb->buffer = [[mb->device newBufferWithBytes:desc->initial_data
-                                                 length:(NSUInteger)desc->size
-                                                options:opts] retain];
-        } else {
-            bb->buffer = [[mb->device newBufferWithLength:(NSUInteger)allocation_size
-                                                  options:opts] retain];
-            if (desc->initial_data != NULL && bb->buffer != nil)
-                memcpy(bb->buffer.contents, desc->initial_data, desc->size);
+        bb->buffer = [[mb->device newBufferWithLength:(NSUInteger)allocation_size
+                                              options:opts] retain];
+        if (bb->buffer != nil &&
+            !metal_buffer_upload_initial(dev, mb, bb->buffer, desc->initial_data,
+                                         desc->size, bb->shared_mode)) {
+            [bb->buffer release];
+            bb->buffer = nil;
         }
         if (bb->buffer != nil && texel_count != 0u) {
             MTLTextureDescriptor *td = [MTLTextureDescriptor
@@ -1584,9 +1629,6 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
         free(bb);
         return RHI_HANDLE_NULL;
     }
-    bb->size = desc->size;
-    bb->usage = desc->usage;
-    bb->shared_mode = !private_mode;
     idx = rhi_alloc_slot(dev);
     dev->slots[idx].ptr = bb;
     dev->slots[idx].type = RHI_RES_BUFFER;
@@ -5873,6 +5915,10 @@ f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
 void rhi_test_metal_set_suspended(RHIDevice *dev, bool suspended) {
     MetalBackend *mb = dev != NULL ? (MetalBackend *)dev->backend_data : NULL;
     if (mb != NULL) mb->suspended = suspended;
+}
+
+void rhi_test_metal_set_private_texel(bool enabled) {
+    rhi_test_private_texel = enabled;
 }
 
 /* Task 10: the production shader path is manifest-only (fail closed on a

@@ -1,4 +1,5 @@
 #include "ssgi.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -72,6 +73,14 @@ static RHIPipeline ssgi_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool ssgi_targets_create(SSGISystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[2] = {
+        { &s->ssgi_fbo, post_targets_half(w), post_targets_half(h), RHI_FORMAT_R16G16B16A16_SFLOAT },
+        { &s->ssgi_blur_fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 2u);
+}
+
 bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
     if (!ssgi || !dev) return false;
     memset(ssgi, 0, sizeof(*ssgi));
@@ -132,11 +141,10 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
     if (!ssgi->bind_pipe || !ssgi->bind_blur)
         LOG_WARN("SSGI: bindings create failed; uniform locations resolve -1");
 
-    ssgi->ssgi_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)ssgi_targets_create(ssgi, dev, width, height);
     /* R550-A: the blur stage is the compositor — its output becomes the
      * frame-chain color, so it must be full-res (input GI stays half-res;
      * linear filtering upsamples the low-frequency GI). */
-    ssgi->ssgi_blur_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -171,6 +179,15 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
 
     ssgi->ready = true;
     LOG_INFO("SSGI: initialized (%ux%u, radius=%.2f, intensity=%.2f)", pw, ph, ssgi->radius, ssgi->intensity);
+    return true;
+}
+
+bool ssgi_resize(SSGISystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!ssgi_targets_create(s, dev, w, h)) {
+        LOG_WARN("SSGI: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

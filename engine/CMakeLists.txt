@@ -529,6 +529,32 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_platform_compat_qnx_vk
         COMMAND test_platform_compat_qnx_vk)
 
+    # QNX Screen window layer compiled against a fake Screen SDK
+    # (tests/fake_qnx_screen): fixed borderless-fullscreen contract on every
+    # host lane (FS4).
+    if(NOT ENGINE_PLATFORM STREQUAL "qnx")
+        add_executable(test_platform_screen_simulated
+            tests/test_platform_screen_simulated.c
+            src/platform/window_screen.c
+            src/platform/input.c
+            src/platform/platform_config.c)
+        target_include_directories(test_platform_screen_simulated PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_qnx_screen)
+        target_compile_definitions(test_platform_screen_simulated PRIVATE
+            ENGINE_PLATFORM_QNX=1 ENGINE_QNX_SCREEN=1)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            target_compile_definitions(test_platform_screen_simulated PRIVATE
+                SCREEN_TEST_WRAP_CALLOC=1)
+            target_link_options(test_platform_screen_simulated PRIVATE
+                "-Wl,--wrap=calloc")
+        endif()
+        add_test(NAME test_platform_screen_simulated
+            COMMAND test_platform_screen_simulated)
+        set_tests_properties(test_platform_screen_simulated PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
+
     # QNX Screen keymap: pure integer mapping, host-testable on every lane;
     # window_screen.c static-asserts the mirrored constants against
     # <sys/keycodes.h> on real cross builds.
@@ -536,6 +562,15 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_screen_keymap PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
     add_test(NAME test_screen_keymap COMMAND test_screen_keymap)
+
+    # Borderless-fullscreen window-mode state machine (platform/window_mode.h):
+    # pure, header-only, shared by every window backend.
+    add_executable(test_platform_window_mode tests/test_platform_window_mode.c)
+    target_include_directories(test_platform_window_mode PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_platform_window_mode COMMAND test_platform_window_mode)
+    set_tests_properties(test_platform_window_mode PROPERTIES
+        LABELS "headless;platform_contract")
 
     foreach(_wsi_name IN ITEMS X11 WAYLAND WIN32 COCOA ANDROID IOS QNX)
         string(TOLOWER "${_wsi_name}" _wsi_lower)
@@ -608,10 +643,18 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         HINTS /opt/homebrew/bin /usr/local/bin REQUIRED)
     find_program(ENGINE_METAL_XCRUN xcrun REQUIRED)
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-        set(METAL_SHADER_SDK iphoneos)
+        # Device and Simulator metallibs are incompatible. The SDK is fixed at
+        # configure time; an Xcode -destination alone cannot retarget this
+        # offline shader build.
+        if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+            set(METAL_SHADER_SDK iphonesimulator)
+        else()
+            set(METAL_SHADER_SDK iphoneos)
+        endif()
     else()
         set(METAL_SHADER_SDK macosx)
     endif()
+    message(STATUS "Metal shader SDK: ${METAL_SHADER_SDK}")
     add_executable(gen_metal_shader_manifest
         tools/gen_metal_shader_manifest.c)
     target_include_directories(gen_metal_shader_manifest PRIVATE
@@ -622,11 +665,39 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
     # Cross-compiling (iOS): host-compile a copy with the system
     # compiler at configure time and use it in the custom command.
     # Native (macOS): use the target as before.
+    # xcode-select points at CommandLineTools on this host; xcrun metal
+    # needs DEVELOPER_DIR=<Xcode>. Bake the configure-time value, falling
+    # back to the standard Xcode path.
+    if(NOT DEFINED ENGINE_METAL_DEVELOPER_DIR)
+        set(ENGINE_METAL_DEVELOPER_DIR "$ENV{DEVELOPER_DIR}")
+    endif()
+    if(ENGINE_METAL_DEVELOPER_DIR STREQUAL "")
+        set(ENGINE_METAL_DEVELOPER_DIR
+            "/Applications/Xcode.app/Contents/Developer")
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         set(METAL_SHADER_GEN
             ${CMAKE_CURRENT_BINARY_DIR}/gen_metal_shader_manifest_host)
         execute_process(
-            COMMAND cc -O1 -std=c11
+            COMMAND ${CMAKE_COMMAND} -E env
+                "DEVELOPER_DIR=${ENGINE_METAL_DEVELOPER_DIR}"
+                ${ENGINE_METAL_XCRUN} --sdk macosx --show-sdk-path
+            RESULT_VARIABLE metal_host_sdk_rc
+            OUTPUT_VARIABLE METAL_HOST_SDKROOT
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT metal_host_sdk_rc EQUAL 0 OR METAL_HOST_SDKROOT STREQUAL "")
+            message(FATAL_ERROR "macOS host SDK for shader manifest generator unavailable")
+        endif()
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E env
+                --unset=SDKROOT --unset=CFLAGS --unset=CPPFLAGS
+                --unset=CXXFLAGS --unset=LDFLAGS --unset=CPATH
+                --unset=C_INCLUDE_PATH --unset=LIBRARY_PATH
+                --unset=DYLD_LIBRARY_PATH --unset=DYLD_FRAMEWORK_PATH
+                --unset=DYLD_FALLBACK_LIBRARY_PATH
+                --unset=DYLD_FALLBACK_FRAMEWORK_PATH
+                cc -target ${CMAKE_HOST_SYSTEM_PROCESSOR}-apple-macosx
+                -isysroot ${METAL_HOST_SDKROOT} -O1 -std=c11
                 -I${CMAKE_CURRENT_SOURCE_DIR}/src
                 -I${CMAKE_CURRENT_SOURCE_DIR}/external
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_metal_shader_manifest.c
@@ -651,16 +722,6 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         ${ENGINE_METAL_GLSLC} DIRECTORY)
     get_filename_component(ENGINE_METAL_SPIRV_CROSS_DIR
         ${ENGINE_METAL_SPIRV_CROSS} DIRECTORY)
-    # xcode-select points at CommandLineTools on this host; xcrun metal
-    # needs DEVELOPER_DIR=<Xcode>. Bake the configure-time value, falling
-    # back to the standard Xcode path.
-    if(NOT DEFINED ENGINE_METAL_DEVELOPER_DIR)
-        set(ENGINE_METAL_DEVELOPER_DIR "$ENV{DEVELOPER_DIR}")
-    endif()
-    if(ENGINE_METAL_DEVELOPER_DIR STREQUAL "")
-        set(ENGINE_METAL_DEVELOPER_DIR
-            "/Applications/Xcode.app/Contents/Developer")
-    endif()
     add_custom_command(
         OUTPUT ${METAL_SHADER_OUT_DIR}/engine.metallib
                ${METAL_SHADER_OUT_DIR}/rhi_metal_shader_manifest.c
@@ -1659,6 +1720,33 @@ endif()
 add_executable(engine_demo src/main.c)
 target_link_libraries(engine_demo PRIVATE engine break_myui m)
 engine_link_rhi_backend(engine_demo)
+if(ENGINE_PLATFORM STREQUAL "ios")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/apps/ios_Info.plist")
+    file(GLOB_RECURSE ENGINE_DEMO_IOS_RESOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/*"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*")
+    foreach(_resource IN LISTS ENGINE_DEMO_IOS_RESOURCES)
+        file(RELATIVE_PATH _resource_rel "${CMAKE_CURRENT_SOURCE_DIR}" "${_resource}")
+        get_filename_component(_resource_dir "${_resource_rel}" DIRECTORY)
+        set_property(SOURCE "${_resource}" PROPERTY
+            MACOSX_PACKAGE_LOCATION "${_resource_dir}")
+    endforeach()
+    set_source_files_properties(src/main.c PROPERTIES
+        LANGUAGE OBJC COMPILE_OPTIONS "-fno-objc-arc")
+    set_source_files_properties(src/apps/ios_main.m PROPERTIES
+        COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-fno-objc-arc")
+    target_sources(engine_demo PRIVATE src/apps/ios_main.m
+        ${ENGINE_DEMO_IOS_RESOURCES})
+    set_target_properties(engine_demo PROPERTIES
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.purecengine.engine-demo"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/apps/ios_Info.plist"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.purecengine.engine-demo")
+    target_link_libraries(engine_demo PRIVATE
+        "-framework UIKit" "-framework QuartzCore" "-framework Metal"
+        "-framework Foundation" Threads::Threads)
+endif()
 # main() holds ~4.4 MB of renderer/subsystem structs as locals, sized
 # against the Linux default 8 MB stack; the MSVC-family linker default
 # reserve is 1 MB, which faults during the prologue stack probe on
@@ -2138,11 +2226,26 @@ if(ENGINE_BUILD_TESTS)
             src/platform/platform_config.c)
         target_include_directories(test_platform_mobile_layer_${_mobile_lower}
             PRIVATE ${TEST_INCLUDE_DIRS})
+        if(ENGINE_PLATFORM STREQUAL "qnx")
+            target_link_libraries(test_platform_mobile_layer_${_mobile_lower} PRIVATE m)
+        endif()
         target_compile_definitions(test_platform_mobile_layer_${_mobile_lower}
             PRIVATE ENGINE_PLATFORM_${_mobile_name}=1)
         add_test(NAME test_platform_mobile_layer_${_mobile_lower}
             COMMAND test_platform_mobile_layer_${_mobile_lower})
     endforeach()
+
+    add_executable(test_engine_mobile_host
+        tests/test_engine_mobile_host.c
+        src/engine.c
+        src/core/log.c
+        src/platform/window_mobile.c
+        src/platform/input.c
+        src/platform/platform_config.c)
+    target_include_directories(test_engine_mobile_host PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_engine_mobile_host PRIVATE ENGINE_PLATFORM_IOS=1)
+    target_link_libraries(test_engine_mobile_host PRIVATE m)
+    add_test(NAME test_engine_mobile_host COMMAND test_engine_mobile_host)
 
     add_executable(test_platform_display_media tests/test_platform_display_media.c
         src/platform/platform_display_media.c)
@@ -2257,8 +2360,14 @@ if(ENGINE_BUILD_TESTS)
 
     if(ENGINE_PLATFORM STREQUAL "macos")
         add_executable(test_platform_cocoa_runtime tests/test_platform_cocoa_runtime.c)
+        # Objective-C so the FS4 fullscreen test can inspect the NSWindow
+        # (styleMask / frame / level); same flags as window_cocoa.m.
+        set_source_files_properties(tests/test_platform_cocoa_runtime.c PROPERTIES
+            LANGUAGE OBJC
+            COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-fno-objc-arc")
         target_include_directories(test_platform_cocoa_runtime PRIVATE ${TEST_INCLUDE_DIRS})
-        target_link_libraries(test_platform_cocoa_runtime PRIVATE engine m)
+        target_link_libraries(test_platform_cocoa_runtime PRIVATE engine m
+            "-framework Cocoa")
         engine_link_rhi_backend(test_platform_cocoa_runtime)
         add_test(NAME test_platform_cocoa_runtime COMMAND test_platform_cocoa_runtime)
         set_tests_properties(test_platform_cocoa_runtime PROPERTIES LABELS platform_runtime)
@@ -2631,7 +2740,7 @@ endif()
         target_compile_options(test_rhi_capabilities PRIVATE
             -ffunction-sections -fdata-sections)
     endif()
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT (WIN32 AND (MSVC OR CMAKE_C_COMPILER_ID MATCHES "Clang")))
         # macOS ld has no --gc-sections; dead-code stripping is the default.
         target_link_options(test_rhi_capabilities PRIVATE -Wl,--gc-sections)
     endif()
@@ -2677,7 +2786,7 @@ endif()
         target_compile_options(test_rhi_fault_injection PRIVATE
             -ffunction-sections -fdata-sections)
     endif()
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT (WIN32 AND (MSVC OR CMAKE_C_COMPILER_ID MATCHES "Clang")))
         # macOS ld has no --gc-sections; dead-code stripping is the default.
         target_link_options(test_rhi_fault_injection PRIVATE -Wl,--gc-sections)
     endif()
@@ -2739,7 +2848,7 @@ endif()
         target_compile_options(test_rhi_wsi_attach PRIVATE
             -ffunction-sections -fdata-sections)
     endif()
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT (WIN32 AND (MSVC OR CMAKE_C_COMPILER_ID MATCHES "Clang")))
         target_link_options(test_rhi_wsi_attach PRIVATE -Wl,--gc-sections)
     endif()
     add_test(NAME test_rhi_wsi_attach COMMAND test_rhi_wsi_attach)
@@ -3233,6 +3342,9 @@ endif()
              -DRHI_PRESENT_HISTORY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_present_history.c
              -DRHI_RT_TRACE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/rt_trace.c
              -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DENGINE_NINJA_FILE=${CMAKE_CURRENT_BINARY_DIR}/build.ninja
+            -DENGINE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+            -DENGINE_C_COMPILER_ID=${CMAKE_C_COMPILER_ID}
             -DRHI_GL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_gl.c
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
             -DRHI_HEADLESS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_headless.c

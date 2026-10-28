@@ -24,6 +24,7 @@ typedef struct my_screen_pal_t {
   screen_event_t wake_event;
   my_pal_event_handler_t handler;
   void* handler_ctx;
+  char* clipboard;
   my_screen_window_t* windows;
 } my_screen_pal_t;
 
@@ -31,15 +32,22 @@ struct my_screen_window_t {
   my_pal_window_t base;
   my_screen_pal_t* pal;
   screen_window_t native;
+  screen_session_t pointer_session;
   struct my_screen_lcd_t* lcd;
   my_screen_window_t* next;
   int32_t width;
   int32_t height;
   char* title;
+  char* ime_surrounding;
+  int32_t ime_cursor;
+  int32_t ime_anchor;
+  int32_t ime_spot_x;
+  int32_t ime_spot_y;
   uint32_t native_depth;
   uint32_t buttons;
   int32_t pointer_x;
   int32_t pointer_y;
+  bool ime_enabled;
   bool has_pointer_position;
   bool buffer_replace_failed;
   bool destroy_requested;
@@ -478,6 +486,11 @@ static my_ret_t screen_win_replace_buffers(my_screen_window_t* w, int32_t width,
   }
   w->width = width;
   w->height = height;
+  if (w->pointer_session != NULL &&
+      screen_set_session_property_iv(w->pointer_session, SCREEN_PROPERTY_SIZE,
+                                     size) != 0) {
+    goto fail;
+  }
   if (screen_create_window_buffers(w->native, SCREEN_BUFFER_SLOT_COUNT) != 0 ||
       screen_flush_context(w->pal->context, 0) != 0) {
     goto fail;
@@ -557,10 +570,99 @@ static my_lcd_t* screen_win_get_lcd(my_pal_window_t* win) {
   return w->lcd != NULL ? &w->lcd->base : NULL;
 }
 
+static void screen_win_ime_set_enabled(my_pal_window_t* win, bool enabled) {
+  ((my_screen_window_t*)win)->ime_enabled = enabled;
+}
+
+static void screen_win_ime_set_surrounding(my_pal_window_t* win,
+                                           const char* utf8, int32_t cursor,
+                                           int32_t anchor) {
+  my_screen_window_t* w = (my_screen_window_t*)win;
+  char* copy = my_strdup(w->pal->allocator, utf8 != NULL ? utf8 : "");
+  if (copy == NULL) return;
+  my_mem_free(w->pal->allocator, w->ime_surrounding);
+  w->ime_surrounding = copy;
+  w->ime_cursor = cursor;
+  w->ime_anchor = anchor;
+}
+
+static void screen_win_ime_set_spot(my_pal_window_t* win, int32_t x,
+                                    int32_t y) {
+  my_screen_window_t* w = (my_screen_window_t*)win;
+  w->ime_spot_x = x;
+  w->ime_spot_y = y;
+}
+
+static my_ret_t screen_win_set_cursor(my_pal_window_t* win,
+                                      my_cursor_t cursor) {
+  my_screen_window_t* w = (my_screen_window_t*)win;
+  screen_window_t native = w->native;
+  bool created;
+  int shape;
+  int error;
+  int size[2] = {w->width, w->height};
+  int position[2] = {0, 0};
+  if (cursor == MY_CURSOR_ARROW) {
+    shape = SCREEN_CURSOR_SHAPE_ARROW;
+  } else if (cursor == MY_CURSOR_TEXT) {
+    shape = SCREEN_CURSOR_SHAPE_IBEAM;
+  } else if (cursor == MY_CURSOR_HAND) {
+    shape = SCREEN_CURSOR_SHAPE_HAND;
+  } else {
+    return MY_RET_INVALID_PARAMS;
+  }
+  created = w->pointer_session == NULL;
+  if (created &&
+      screen_create_session_type(&w->pointer_session, w->pal->context,
+                                 SCREEN_EVENT_POINTER) != 0) {
+    goto fail;
+  }
+  if (screen_set_session_property_pv(w->pointer_session,
+                                     SCREEN_PROPERTY_WINDOW,
+                                     (void**)&native) != 0 ||
+      screen_set_session_property_iv(w->pointer_session, SCREEN_PROPERTY_SIZE,
+                                     size) != 0 ||
+      screen_set_session_property_iv(w->pointer_session,
+                                     SCREEN_PROPERTY_POSITION, position) != 0 ||
+      screen_set_session_property_iv(w->pointer_session, SCREEN_PROPERTY_CURSOR,
+                                     &shape) != 0 ||
+      screen_flush_context(w->pal->context, 0) != 0) {
+    goto fail;
+  }
+  return MY_RET_OK;
+
+fail:
+  error = errno;
+  if (created) {
+    if (w->pointer_session != NULL) {
+      (void)screen_destroy_session(w->pointer_session);
+    }
+    w->pointer_session = NULL;
+    (void)screen_flush_context(w->pal->context, 0);
+  }
+  return error == ENOTSUP || error == ENOSYS ? MY_RET_NOT_SUPPORTED
+                                             : MY_RET_FAIL;
+}
+
+static my_ret_t screen_win_move(my_pal_window_t* win, int32_t x, int32_t y) {
+  my_screen_window_t* w = (my_screen_window_t*)win;
+  int position[2] = {x, y};
+  if (screen_set_window_property_iv(w->native, SCREEN_PROPERTY_POSITION,
+                                    position) != 0 ||
+      screen_flush_context(w->pal->context, 0) != 0) {
+    return MY_RET_FAIL;
+  }
+  return MY_RET_OK;
+}
+
 static void screen_win_free(my_screen_window_t* w) {
+  if (w->pointer_session != NULL) {
+    (void)screen_destroy_session(w->pointer_session);
+  }
   if (w->lcd != NULL) my_lcd_destroy(&w->lcd->base);
   (void)screen_destroy_window_buffers(w->native);
   (void)screen_destroy_window(w->native);
+  my_mem_free(w->pal->allocator, w->ime_surrounding);
   my_mem_free(w->pal->allocator, w->title);
   my_mem_free(w->pal->allocator, w);
 }
@@ -587,7 +689,12 @@ static const my_pal_window_vtable_t s_window_vtable = {
     .show = screen_win_show,
     .get_size = screen_win_get_size,
     .get_lcd = screen_win_get_lcd,
-    .destroy = screen_win_destroy};
+    .destroy = screen_win_destroy,
+    .ime_set_enabled = screen_win_ime_set_enabled,
+    .ime_set_surrounding = screen_win_ime_set_surrounding,
+    .ime_set_spot = screen_win_ime_set_spot,
+    .move = screen_win_move,
+    .set_cursor = screen_win_set_cursor};
 
 static my_pal_window_t* screen_pal_window_create(my_pal_t* pal, int32_t width,
                                                  int32_t height,
@@ -654,6 +761,34 @@ void* my_pal_screen_native_context(my_pal_t* pal) {
 void* my_pal_screen_native_window(my_pal_window_t* win) {
   my_screen_window_t* w = (my_screen_window_t*)win;
   return w != NULL && !w->destroy_requested ? w->native : NULL;
+}
+
+bool my_pal_screen_clipboard_is_process_local(void) {
+  return true;
+}
+
+bool my_pal_screen_has_native_ime(void) {
+  return false;
+}
+
+void* my_pal_screen_test_native_pointer_session(my_pal_window_t* win) {
+  my_screen_window_t* w = (my_screen_window_t*)win;
+  return w != NULL && !w->destroy_requested ? w->pointer_session : NULL;
+}
+
+my_ret_t my_pal_screen_test_ime_state(my_pal_window_t* win,
+                                      my_pal_screen_ime_state_t* out) {
+  my_screen_window_t* w = (my_screen_window_t*)win;
+  if (w == NULL || out == NULL || w->destroy_requested) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  out->enabled = w->ime_enabled;
+  out->surrounding = w->ime_surrounding;
+  out->cursor = w->ime_cursor;
+  out->anchor = w->ime_anchor;
+  out->spot_x = w->ime_spot_x;
+  out->spot_y = w->ime_spot_y;
+  return MY_RET_OK;
 }
 
 uint32_t my_pal_screen_test_post_count(my_pal_window_t* win) {
@@ -875,26 +1010,72 @@ static uint32_t screen_native_key_symbol(int symbol) {
   }
 }
 
+static uint8_t screen_utf8_encode(uint32_t cp, char text[5]) {
+  if (cp < 0x20u || cp > 0x10ffffu ||
+      (cp >= 0xd800u && cp <= 0xdfffu)) return 0u;
+  if (cp < 0x80u) {
+    text[0] = (char)cp;
+    text[1] = '\0';
+    return 1u;
+  }
+  if (cp < 0x800u) {
+    text[0] = (char)(0xc0u | (cp >> 6));
+    text[1] = (char)(0x80u | (cp & 0x3fu));
+    text[2] = '\0';
+    return 2u;
+  }
+  if (cp < 0x10000u) {
+    text[0] = (char)(0xe0u | (cp >> 12));
+    text[1] = (char)(0x80u | ((cp >> 6) & 0x3fu));
+    text[2] = (char)(0x80u | (cp & 0x3fu));
+    text[3] = '\0';
+    return 3u;
+  }
+  text[0] = (char)(0xf0u | (cp >> 18));
+  text[1] = (char)(0x80u | ((cp >> 12) & 0x3fu));
+  text[2] = (char)(0x80u | ((cp >> 6) & 0x3fu));
+  text[3] = (char)(0x80u | (cp & 0x3fu));
+  text[4] = '\0';
+  return 4u;
+}
+
 static void screen_native_keyboard(my_screen_loop_t* l,
                                    my_screen_window_t* w) {
   screen_event_t native = l->pal->event;
   my_event_t event;
   int symbol;
   int flags;
+  int cap = 0;
+  uint8_t modifiers;
+  char text[5] = {0, 0, 0, 0, 0};
+  bool cap_valid;
+  bool commit;
   if (screen_get_event_property_iv(native, SCREEN_PROPERTY_SYM, &symbol) != 0 ||
       screen_get_event_property_iv(native, SCREEN_PROPERTY_FLAGS, &flags) != 0 ||
       (flags & KEY_SYM_VALID) == 0 || w->destroy_requested ||
       l->destroy_requested) {
     return;
   }
+  cap_valid = (flags & KEY_CAP_VALID) != 0 &&
+              screen_get_event_property_iv(native, SCREEN_PROPERTY_KEY_CAP,
+                                           &cap) == 0 && cap >= 0 &&
+              screen_utf8_encode((uint32_t)cap, text) != 0u;
   event = my_event_init((flags & KEY_DOWN) != 0 ? MY_EVENT_KEY_DOWN
                                                 : MY_EVENT_KEY_UP);
   event.time_ms = screen_now_ms(l->pal);
   event.u.key.key = screen_native_key_symbol(symbol);
-  if (event.u.key.key == MY_KEY_UNKNOWN) return;
-  event.u.key.modifiers = screen_native_modifiers(native);
-  if (symbol == KEYCODE_BACK_TAB) event.u.key.modifiers |= MY_KEYMOD_SHIFT;
-  screen_loop_deliver(l, &w->base, &event);
+  modifiers = screen_native_modifiers(native);
+  if (symbol == KEYCODE_BACK_TAB) modifiers |= MY_KEYMOD_SHIFT;
+  event.u.key.modifiers = modifiers;
+  commit = (flags & KEY_DOWN) != 0 && cap_valid &&
+           (cap != symbol || event.u.key.key == MY_KEY_UNKNOWN);
+  if (event.u.key.key != MY_KEY_UNKNOWN) screen_loop_deliver(l, &w->base, &event);
+  if (commit && !w->destroy_requested && !l->destroy_requested) {
+    event = my_event_init(MY_EVENT_IME_COMMIT);
+    event.time_ms = screen_now_ms(l->pal);
+    event.u.ime.text = text;
+    screen_loop_deliver(l, &w->base, &event);
+  }
 }
 
 static void screen_native_pointer_event(my_screen_loop_t* l,
@@ -929,26 +1110,32 @@ static void screen_native_pointer(my_screen_loop_t* l,
   bool moved;
   uint8_t modifiers = screen_native_modifiers(native);
   (void)screen_get_event_property_iv(native, SCREEN_PROPERTY_FLAGS, &flags);
-  if ((flags & SCREEN_FLAG_SOURCE_POSITION_VALID) != 0) {
-    if (screen_get_event_property_iv(native, SCREEN_PROPERTY_SOURCE_POSITION,
-                                     position) != 0) {
+  if ((flags & SCREEN_FLAG_DISPLACEMENT_VALID) != 0) {
+    if (screen_get_event_property_iv(native, SCREEN_PROPERTY_DISPLACEMENT,
+                                     position) != 0) return;
+    x = (int64_t)w->pointer_x + position[0];
+    y = (int64_t)w->pointer_y + position[1];
+    moved = position[0] != 0 || position[1] != 0;
+  } else {
+    if ((flags & SCREEN_FLAG_SOURCE_POSITION_VALID) != 0) {
+      if (screen_get_event_property_iv(native, SCREEN_PROPERTY_SOURCE_POSITION,
+                                       position) != 0) return;
+    } else if (screen_get_event_property_iv(native, SCREEN_PROPERTY_POSITION,
+                                            position) != 0) {
       return;
     }
-  } else if (screen_get_event_property_iv(native, SCREEN_PROPERTY_POSITION,
-                                          position) != 0) {
-    return;
-  }
-  x = position[0];
-  y = position[1];
-  if ((flags & SCREEN_FLAG_SOURCE_POSITION_VALID) == 0 &&
-      (flags & SCREEN_FLAG_POSITION_VALID) != 0 &&
-      screen_get_window_property_iv(w->native, SCREEN_PROPERTY_POSITION,
-                                    origin) == 0) {
-    x -= origin[0];
-    y -= origin[1];
+    x = position[0];
+    y = position[1];
+    if ((flags & SCREEN_FLAG_SOURCE_POSITION_VALID) == 0 &&
+        (flags & SCREEN_FLAG_POSITION_VALID) != 0 &&
+        screen_get_window_property_iv(w->native, SCREEN_PROPERTY_POSITION,
+                                      origin) == 0) {
+      x -= origin[0];
+      y -= origin[1];
+    }
+    moved = !w->has_pointer_position || w->pointer_x != x || w->pointer_y != y;
   }
   if (x < INT32_MIN || x > INT32_MAX || y < INT32_MIN || y > INT32_MAX) return;
-  moved = !w->has_pointer_position || w->pointer_x != x || w->pointer_y != y;
   (void)screen_get_event_property_iv(native, SCREEN_PROPERTY_BUTTONS, &buttons);
   (void)screen_get_event_property_iv(native, SCREEN_PROPERTY_MOUSE_WHEEL, &wheel);
   changed = w->buttons ^ (uint32_t)buttons;
@@ -1164,26 +1351,45 @@ static my_ret_t screen_pal_set_handler(my_pal_t* pal,
 }
 
 static my_ret_t screen_pal_clipboard_set(my_pal_t* pal, const char* text) {
-  (void)pal;
-  (void)text;
-  return MY_RET_NOT_SUPPORTED;
+  my_screen_pal_t* p = (my_screen_pal_t*)pal;
+  char* copy = NULL;
+  if (p == NULL) return MY_RET_INVALID_PARAMS;
+  if (text != NULL) {
+    copy = my_strdup(p->allocator, text);
+    if (copy == NULL) return MY_RET_OOM;
+  }
+  my_mem_free(p->allocator, p->clipboard);
+  p->clipboard = copy;
+  return MY_RET_OK;
+}
+
+static void screen_clipboard_copy(char* buf, size_t size, const char* text) {
+  size_t length = strlen(text);
+  if (length >= size) length = size - 1u;
+  while (length > 0u &&
+         ((uint8_t)text[length] & 0xc0u) == 0x80u) length--;
+  memcpy(buf, text, length);
+  buf[length] = '\0';
 }
 
 static my_ret_t screen_pal_clipboard_get(my_pal_t* pal, char* buf,
                                          size_t size) {
-  (void)pal;
-  (void)buf;
-  (void)size;
-  return MY_RET_NOT_SUPPORTED;
+  my_screen_pal_t* p = (my_screen_pal_t*)pal;
+  if (p == NULL || buf == NULL || size == 0u) return MY_RET_INVALID_PARAMS;
+  if (p->clipboard == NULL) return MY_RET_NOT_FOUND;
+  screen_clipboard_copy(buf, size, p->clipboard);
+  return MY_RET_OK;
 }
 
 static my_ret_t screen_pal_clipboard_alloc(my_pal_t* pal,
                                            const my_allocator_t* allocator,
                                            char** out) {
-  (void)pal;
-  (void)allocator;
-  if (out != NULL) *out = NULL;
-  return MY_RET_NOT_SUPPORTED;
+  my_screen_pal_t* p = (my_screen_pal_t*)pal;
+  if (p == NULL || out == NULL) return MY_RET_INVALID_PARAMS;
+  *out = NULL;
+  if (p->clipboard == NULL) return MY_RET_NOT_FOUND;
+  *out = my_strdup(allocator, p->clipboard);
+  return *out != NULL ? MY_RET_OK : MY_RET_OOM;
 }
 
 static float screen_pal_scale(my_pal_t* pal) {
@@ -1198,6 +1404,7 @@ static void screen_pal_destroy(my_pal_t* pal) {
   if (p->event != NULL) (void)screen_destroy_event(p->event);
   if (p->wake_event != NULL) (void)screen_destroy_event(p->wake_event);
   if (p->context != NULL) (void)screen_destroy_context(p->context);
+  my_mem_free(p->allocator, p->clipboard);
   my_mem_free(p->allocator, p);
 }
 

@@ -598,6 +598,91 @@ TEST(screen_title_failures_preserve_storage)
   checked_close(&allocator);
 }
 
+TEST(screen_clipboard_oom_preserves_value)
+{
+  checked_allocator_t allocator;
+  my_allocator_t* debug = checked_open(&allocator);
+  my_pal_t* pal = my_pal_create(debug);
+  char buf[32];
+  char* out = NULL;
+  CHECK(pal != NULL);
+  if (pal == NULL) {
+    checked_close(&allocator);
+    return;
+  }
+  reset_faults();
+  CHECK(my_pal_clipboard_set_text(pal, "original") == MY_RET_OK);
+  checked_fail_next(&allocator);
+  CHECK(my_pal_clipboard_set_text(pal, "replacement") == MY_RET_OOM);
+  CHECK(my_pal_clipboard_get_text(pal, buf, sizeof(buf)) == MY_RET_OK);
+  CHECK(strcmp(buf, "original") == 0);
+  out = (char*)(uintptr_t)1u;
+  checked_fail_next(&allocator);
+  CHECK(my_pal_clipboard_get_text_alloc(pal, debug, &out) == MY_RET_OOM);
+  CHECK(out == NULL);
+  CHECK(my_pal_clipboard_get_text_alloc(pal, debug, &out) == MY_RET_OK);
+  CHECK(out != NULL && strcmp(out, "original") == 0);
+  my_mem_free(debug, out);
+  out = NULL;
+  CHECK(my_pal_clipboard_set_text(pal, "") == MY_RET_OK);
+  CHECK(my_pal_clipboard_get_text(pal, buf, sizeof(buf)) == MY_RET_OK);
+  CHECK(buf[0] == '\0');
+  CHECK(my_pal_clipboard_set_text(pal, NULL) == MY_RET_OK);
+  CHECK(my_pal_clipboard_get_text(pal, buf, sizeof(buf)) == MY_RET_NOT_FOUND);
+  CHECK(my_pal_clipboard_get_text_alloc(pal, debug, &out) == MY_RET_NOT_FOUND);
+  CHECK(out == NULL);
+  my_pal_destroy(pal);
+  check_native_balance(1, 0, 2);
+  checked_close(&allocator);
+}
+
+TEST(screen_ime_surrounding_oom_preserves_state)
+{
+  checked_allocator_t allocator;
+  my_allocator_t* debug = checked_open(&allocator);
+  my_pal_t* pal = my_pal_create(debug);
+  my_pal_window_t* window;
+  my_pal_screen_ime_state_t state;
+  size_t allocations;
+  CHECK(pal != NULL);
+  if (pal == NULL) {
+    checked_close(&allocator);
+    return;
+  }
+  reset_faults();
+  window = my_pal_window_create(pal, 64, 48, "IME OOM");
+  CHECK(window != NULL);
+  if (window == NULL) {
+    my_pal_destroy(pal);
+    checked_close(&allocator);
+    return;
+  }
+  memset(&state, 0, sizeof(state));
+  state.surrounding = "";
+  my_pal_window_ime_set_enabled(window, true);
+  my_pal_window_ime_set_surrounding(window, "before", 3, 1);
+  my_pal_window_ime_set_spot(window, 7, 9);
+  CHECK(my_pal_screen_test_ime_state(window, &state) == MY_RET_OK);
+  CHECK(state.enabled && strcmp(state.surrounding, "before") == 0);
+  CHECK(state.cursor == 3 && state.anchor == 1);
+  CHECK(state.spot_x == 7 && state.spot_y == 9);
+  allocations = my_allocator_debug_leak_count(debug);
+  checked_fail_next(&allocator);
+  my_pal_window_ime_set_surrounding(window, "after", 5, 4);
+  CHECK(my_allocator_debug_leak_count(debug) == allocations);
+  CHECK(my_pal_screen_test_ime_state(window, &state) == MY_RET_OK);
+  CHECK(strcmp(state.surrounding, "before") == 0);
+  CHECK(state.cursor == 3 && state.anchor == 1);
+  my_pal_window_ime_set_surrounding(window, "after", 5, 4);
+  CHECK(my_pal_screen_test_ime_state(window, &state) == MY_RET_OK);
+  CHECK(strcmp(state.surrounding, "after") == 0);
+  CHECK(state.cursor == 5 && state.anchor == 4);
+  my_pal_window_destroy(window);
+  my_pal_destroy(pal);
+  check_native_balance(1, 1, 2);
+  checked_close(&allocator);
+}
+
 TEST(screen_loop_oom_cleans_up)
 {
   size_t i;
@@ -974,6 +1059,8 @@ int main(int argc, char** argv)
   RUN_SCREEN_TEST(screen_window_creation_failures_clean_up);
   RUN_SCREEN_TEST(screen_window_oom_cleans_up);
   RUN_SCREEN_TEST(screen_title_failures_preserve_storage);
+  RUN_SCREEN_TEST(screen_clipboard_oom_preserves_value);
+  RUN_SCREEN_TEST(screen_ime_surrounding_oom_preserves_state);
   RUN_SCREEN_TEST(screen_loop_oom_cleans_up);
   RUN_SCREEN_TEST(screen_frame_failures_retry_without_buffer_leaks);
   RUN_SCREEN_TEST(screen_unavailable_buffer_allows_timer_progress);

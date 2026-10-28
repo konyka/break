@@ -204,14 +204,31 @@ static float chart_animated_value(const my_chart_t* chart, float value) {
   return value * chart->animation_progress;
 }
 
+static uint8_t chart_interpolate_channel(uint8_t low, uint8_t high, float t) {
+  const int delta = (int)high - (int)low;
+  return (uint8_t)((int)low + (int)(delta * t));
+}
+
 static uint32_t chart_visual_color(const my_chart_t* chart, float value,
                                    uint32_t fallback) {
+  float span;
   float t;
   uint8_t lr, lg, lb, la, hr, hg, hb, ha;
-  if (!chart->visual_map_set || chart->visual_map_max <= chart->visual_map_min)
+  if (!chart->visual_map_set || !isfinite(chart->visual_map_min) ||
+      !isfinite(chart->visual_map_max) ||
+      chart->visual_map_max <= chart->visual_map_min || !isfinite(value))
     return fallback;
-  t = (value - chart->visual_map_min) /
-      (chart->visual_map_max - chart->visual_map_min);
+  if (value <= chart->visual_map_min) return chart->visual_map_low_color;
+  if (value >= chart->visual_map_max) return chart->visual_map_high_color;
+  span = chart->visual_map_max - chart->visual_map_min;
+  if (isfinite(span)) {
+    t = (value - chart->visual_map_min) / span;
+  } else {
+    t = (float)(((long double)value - (long double)chart->visual_map_min) /
+                ((long double)chart->visual_map_max -
+                 (long double)chart->visual_map_min));
+  }
+  if (!isfinite(t)) return fallback;
   if (t < 0.0f) t = 0.0f;
   if (t > 1.0f) t = 1.0f;
   lr = (uint8_t)(chart->visual_map_low_color >> 24);
@@ -222,25 +239,33 @@ static uint32_t chart_visual_color(const my_chart_t* chart, float value,
   hg = (uint8_t)(chart->visual_map_high_color >> 16);
   hb = (uint8_t)(chart->visual_map_high_color >> 8);
   ha = (uint8_t)chart->visual_map_high_color;
-  return ((uint32_t)(lr + (uint8_t)((hr - lr) * t)) << 24) |
-         ((uint32_t)(lg + (uint8_t)((hg - lg) * t)) << 16) |
-         ((uint32_t)(lb + (uint8_t)((hb - lb) * t)) << 8) |
-         (uint32_t)(la + (uint8_t)((ha - la) * t));
+  return ((uint32_t)chart_interpolate_channel(lr, hr, t) << 24) |
+         ((uint32_t)chart_interpolate_channel(lg, hg, t) << 16) |
+         ((uint32_t)chart_interpolate_channel(lb, hb, t) << 8) |
+         (uint32_t)chart_interpolate_channel(la, ha, t);
 }
 
 static void chart_draw_visual_map(const my_chart_t* chart, my_vgcanvas_t* vg,
                                   float x, float y, float w) {
   const float map_w = 96.0f;
+  float span;
   char low[24], high[24];
   if (!chart->visual_map_set) return;
   (void)my_chart_format_tick(chart->visual_map_min, low, sizeof(low));
   (void)my_chart_format_tick(chart->visual_map_max, high, sizeof(high));
+  span = chart->visual_map_max - chart->visual_map_min;
   for (unsigned i = 0u; i < 16u; i++) {
     float t0 = (float)i / 16.0f;
     float t1 = (float)(i + 1u) / 16.0f;
-    float value = chart->visual_map_min +
-                  (chart->visual_map_max - chart->visual_map_min) *
-                      (t0 + t1) * 0.5f;
+    float value;
+    if (isfinite(span)) {
+      value = chart->visual_map_min + span * (t0 + t1) * 0.5f;
+    } else {
+      value = (float)((long double)chart->visual_map_min +
+                      ((long double)chart->visual_map_max -
+                       (long double)chart->visual_map_min) *
+                          (long double)(t0 + t1) * 0.5L);
+    }
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
         chart_visual_color(chart, value, chart->visual_map_low_color)));
     my_vgcanvas_fill_rect(vg, &(my_rectf_t){x + w - map_w + map_w * t0, y,
@@ -1144,9 +1169,9 @@ static void chart_draw_calendar(const my_chart_t* chart, my_vgcanvas_t* vg,
               bb = (uint8_t)(base >> 8);
       uint8_t lr = 0xE6, lg = 0xEA, lb = 0xF0;
       uint32_t color =
-          ((uint32_t)(lr + (uint8_t)((br - lr) * t)) << 24) |
-          ((uint32_t)(lg + (uint8_t)((bg - lg) * t)) << 16) |
-          ((uint32_t)(lb + (uint8_t)((bb - lb) * t)) << 8) | 0xFFu;
+          ((uint32_t)chart_interpolate_channel(lr, br, t) << 24) |
+          ((uint32_t)chart_interpolate_channel(lg, bg, t) << 16) |
+          ((uint32_t)chart_interpolate_channel(lb, bb, t) << 8) | 0xFFu;
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(color));
       my_vgcanvas_fill_rect(vg,
                             &(my_rectf_t){x + (float)day * cell_w + 1.0f,

@@ -3,6 +3,7 @@
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <platform/monitor_selection.h>
+#include <platform/window_mode.h>
 #include <platform/platform_display_media.h>
 #include <core/log.h>
 #include "gamepad_linux.h"
@@ -31,6 +32,10 @@ struct Platform {
     Atom        wm_state;
     Atom        wm_fullscreen;
     Atom        wm_moveresize;
+    Atom        wm_bypass_compositor;
+    Atom        motif_wm_hints;
+    Atom        net_supported;
+    Atom        net_supporting_wm_check;
     Atom        clipboard;
     Atom        targets;
     Atom        utf8_string;
@@ -40,7 +45,10 @@ struct Platform {
     u32         width;
     u32         height;
     bool        should_close;
-    bool        is_fullscreen;
+    PlatformWindowModeState window_mode;
+    bool        fullscreen_fallback; /* entered without an EWMH WM */
+    bool        saved_motif_hints_valid;
+    long        saved_motif_hints[5];
     bool        mouse_captured;
     bool        mouse_visible;
     bool        mouse_relative;
@@ -504,6 +512,7 @@ static i32 x11_key_to_index(KeySym ks) {
     if (ks == XK_KP_Decimal || ks == XK_KP_Delete) return 315; /* lensfx / CA / vig cycle */
     if (ks == XK_Shift_L || ks == XK_Shift_R) return 289;
     if (ks == XK_Control_L || ks == XK_Control_R) return 290; /* R366: anim crossfade */
+    if (ks == XK_Alt_L || ks == XK_Alt_R) return INPUT_KEY_ALT;
     if (ks == XK_minus || ks == XK_underscore)  return (i32)'-';
     if (ks == XK_plus || ks == XK_equal)         return (i32)'=';
     if (ks == XK_parenleft || ks == XK_braceleft)   return (i32)'(';
@@ -629,6 +638,226 @@ static void x11_query_monitors(Platform *p) {
 
     if (p->monitor_count > 0 && !has_primary) p->monitors[0].primary = true;
     x11_update_active_monitor(p);
+}
+
+/* ---- Borderless fullscreen (FS4) ----
+ * With an EWMH window manager the WM owns fullscreen: we ask through
+ * _NET_WM_STATE and confirm from the PropertyNotify that carries its answer
+ * (which also reports WM-initiated switches). Without one (bare Xvfb, some
+ * kiosk setups) nobody would answer, so the window drops its decorations via
+ * _MOTIF_WM_HINTS and moves itself onto the monitor, confirming at once. */
+
+#define X11_MWM_HINTS_DECORATIONS (1L << 1)
+#define X11_MWM_HINTS_ELEMENTS 5u
+
+static bool x11_atom_list_contains(Platform *p, Window window, Atom property,
+                                   long max_items, Atom wanted) {
+    Atom type = None;
+    int format = 0;
+    unsigned long count = 0;
+    unsigned long after = 0;
+    unsigned char *data = NULL;
+    bool found = false;
+    if (XGetWindowProperty(p->display, window, property, 0, max_items, False,
+                           XA_ATOM, &type, &format, &count, &after,
+                           &data) == Success &&
+        data != NULL && format == 32) {
+        /* Xlib returns format-32 items as an array of long. */
+        const long *atoms = (const long *)data;
+        for (unsigned long i = 0; i < count; i++) {
+            if ((Atom)atoms[i] == wanted) {
+                found = true;
+                break;
+            }
+        }
+    }
+    if (data != NULL) XFree(data);
+    return found;
+}
+
+static bool x11_wm_supports_fullscreen(Platform *p) {
+    Window root = DefaultRootWindow(p->display);
+    Atom type = None;
+    int format = 0;
+    unsigned long count = 0;
+    unsigned long after = 0;
+    unsigned char *data = NULL;
+    bool has_wm;
+    has_wm = XGetWindowProperty(p->display, root, p->net_supporting_wm_check, 0,
+                                1, False, XA_WINDOW, &type, &format, &count,
+                                &after, &data) == Success &&
+             data != NULL && count == 1 && format == 32;
+    if (data != NULL) XFree(data);
+    if (!has_wm) return false;
+    return x11_atom_list_contains(p, root, p->net_supported, 4096,
+                                  p->wm_fullscreen);
+}
+
+static bool x11_read_wm_state_fullscreen(Platform *p) {
+    return x11_atom_list_contains(p, p->window, p->wm_state, 64,
+                                  p->wm_fullscreen);
+}
+
+static bool x11_window_is_mapped(Platform *p) {
+    XWindowAttributes attrs;
+    if (!XGetWindowAttributes(p->display, p->window, &attrs)) return false;
+    return attrs.map_state != IsUnmapped;
+}
+
+/* Window rect in root coordinates (client area, not the WM frame). */
+static bool x11_window_rect(Platform *p, PlatformWindowRect *out) {
+    Window root;
+    Window child;
+    int x = 0;
+    int y = 0;
+    int root_x = 0;
+    int root_y = 0;
+    unsigned int width = 0;
+    unsigned int height = 0;
+    unsigned int border = 0;
+    unsigned int depth = 0;
+    if (!XGetGeometry(p->display, p->window, &root, &x, &y, &width, &height,
+                      &border, &depth))
+        return false;
+    if (!XTranslateCoordinates(p->display, p->window, root, 0, 0, &root_x,
+                               &root_y, &child))
+        return false;
+    out->x = root_x;
+    out->y = root_y;
+    out->width = width;
+    out->height = height;
+    return width > 0u && height > 0u;
+}
+
+/* Monitor holding most of the window; the root window when RandR has none. */
+static void x11_fullscreen_rect(Platform *p, PlatformWindowRect window,
+                                PlatformWindowRect *out) {
+    if (platform_window_mode_fullscreen_rect(p->monitors, p->monitor_count,
+                                             window, out))
+        return;
+    out->x = 0;
+    out->y = 0;
+    out->width = (u32)DisplayWidth(p->display, DefaultScreen(p->display));
+    out->height = (u32)DisplayHeight(p->display, DefaultScreen(p->display));
+}
+
+static void x11_set_bypass_compositor(Platform *p, bool bypass) {
+    if (bypass) {
+        long value = 1;
+        XChangeProperty(p->display, p->window, p->wm_bypass_compositor,
+                        XA_CARDINAL, 32, PropModeReplace,
+                        (unsigned char *)&value, 1);
+    } else {
+        XDeleteProperty(p->display, p->window, p->wm_bypass_compositor);
+    }
+}
+
+/* Title bar of the windowed window: _MOTIF_WM_HINTS.decorations, the hint
+ * reparenting WMs honour (flags bit 1 = decorations field valid). Decorated
+ * deletes the property so the WM default applies. */
+static void x11_write_decorations(Platform *p, bool decorated) {
+    if (decorated) {
+        XDeleteProperty(p->display, p->window, p->motif_wm_hints);
+    } else {
+        long hints[X11_MWM_HINTS_ELEMENTS] = {X11_MWM_HINTS_DECORATIONS, 0, 0, 0, 0};
+        XChangeProperty(p->display, p->window, p->motif_wm_hints, p->motif_wm_hints,
+                        32, PropModeReplace, (unsigned char *)hints,
+                        (int)X11_MWM_HINTS_ELEMENTS);
+    }
+    platform_window_mode_decoration_applied(&p->window_mode);
+}
+
+/* Every confirmed mode goes through here so the compositor hint follows the
+ * mode the window really is in, and a title-bar change made while fullscreen
+ * is applied once the window is windowed again. */
+static void x11_confirm_window_mode(Platform *p, PlatformWindowMode mode) {
+    platform_window_mode_confirm(&p->window_mode, mode);
+    x11_set_bypass_compositor(
+        p, p->window_mode.current == PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    if (platform_window_mode_decoration_stale(&p->window_mode))
+        x11_write_decorations(p, p->window_mode.decorated);
+    XFlush(p->display);
+}
+
+static void x11_fallback_save_motif_hints(Platform *p) {
+    Atom type = None;
+    int format = 0;
+    unsigned long count = 0;
+    unsigned long after = 0;
+    unsigned char *data = NULL;
+    p->saved_motif_hints_valid = false;
+    if (XGetWindowProperty(p->display, p->window, p->motif_wm_hints, 0,
+                           (long)X11_MWM_HINTS_ELEMENTS, False,
+                           p->motif_wm_hints, &type, &format, &count, &after,
+                           &data) == Success &&
+        data != NULL && format == 32 && count == X11_MWM_HINTS_ELEMENTS) {
+        const long *values = (const long *)data;
+        for (u32 i = 0; i < X11_MWM_HINTS_ELEMENTS; i++)
+            p->saved_motif_hints[i] = values[i];
+        p->saved_motif_hints_valid = true;
+    }
+    if (data != NULL) XFree(data);
+}
+
+static bool x11_fallback_enter(Platform *p, PlatformWindowRect windowed) {
+    PlatformWindowRect target;
+    long hints[X11_MWM_HINTS_ELEMENTS] = {X11_MWM_HINTS_DECORATIONS, 0, 0, 0, 0};
+    x11_fullscreen_rect(p, windowed, &target);
+    if (target.width == 0u || target.height == 0u) return false;
+    if (!p->fullscreen_fallback) x11_fallback_save_motif_hints(p);
+    XChangeProperty(p->display, p->window, p->motif_wm_hints, p->motif_wm_hints,
+                    32, PropModeReplace, (unsigned char *)hints,
+                    (int)X11_MWM_HINTS_ELEMENTS);
+    XMoveResizeWindow(p->display, p->window, target.x, target.y, target.width,
+                      target.height);
+    XRaiseWindow(p->display, p->window);
+    p->fullscreen_fallback = true;
+    return true;
+}
+
+static void x11_fallback_leave(Platform *p) {
+    PlatformWindowRect saved;
+    if (p->saved_motif_hints_valid) {
+        XChangeProperty(p->display, p->window, p->motif_wm_hints,
+                        p->motif_wm_hints, 32, PropModeReplace,
+                        (unsigned char *)p->saved_motif_hints,
+                        (int)X11_MWM_HINTS_ELEMENTS);
+    } else {
+        XDeleteProperty(p->display, p->window, p->motif_wm_hints);
+    }
+    if (platform_window_mode_restore_rect(&p->window_mode, &saved))
+        XMoveResizeWindow(p->display, p->window, saved.x, saved.y, saved.width,
+                          saved.height);
+    p->fullscreen_fallback = false;
+}
+
+/* EWMH request. A mapped window asks the WM with a client message; before
+ * the first map (or while hidden) the client edits _NET_WM_STATE itself and
+ * the WM applies it on map. */
+static void x11_send_fullscreen(Platform *p, bool fullscreen) {
+    XEvent ev;
+    if (!x11_window_is_mapped(p)) {
+        if (fullscreen) {
+            XChangeProperty(p->display, p->window, p->wm_state, XA_ATOM, 32,
+                            PropModeReplace, (unsigned char *)&p->wm_fullscreen, 1);
+        } else {
+            XDeleteProperty(p->display, p->window, p->wm_state);
+        }
+        XFlush(p->display);
+        return;
+    }
+    memset(&ev, 0, sizeof(ev));
+    ev.type = ClientMessage;
+    ev.xclient.window = p->window;
+    ev.xclient.message_type = p->wm_state;
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = fullscreen ? 1 : 0; /* _NET_WM_STATE_ADD / REMOVE */
+    ev.xclient.data.l[1] = (long)p->wm_fullscreen;
+    ev.xclient.data.l[2] = 0;
+    ev.xclient.data.l[3] = 1; /* normal application source */
+    XSendEvent(p->display, DefaultRootWindow(p->display), False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    XFlush(p->display);
 }
 
 static void x11_set_core_media_context(PlatformMediaContext *out) {
@@ -844,6 +1073,10 @@ Platform *platform_create(const PlatformConfig *cfg) {
     p->wm_state = XInternAtom(p->display, "_NET_WM_STATE", False);
     p->wm_fullscreen = XInternAtom(p->display, "_NET_WM_STATE_FULLSCREEN", False);
     p->wm_moveresize = XInternAtom(p->display, "_NET_WM_MOVERESIZE", False);
+    p->wm_bypass_compositor = XInternAtom(p->display, "_NET_WM_BYPASS_COMPOSITOR", False);
+    p->motif_wm_hints = XInternAtom(p->display, "_MOTIF_WM_HINTS", False);
+    p->net_supported = XInternAtom(p->display, "_NET_SUPPORTED", False);
+    p->net_supporting_wm_check = XInternAtom(p->display, "_NET_SUPPORTING_WM_CHECK", False);
     p->clipboard = XInternAtom(p->display, "CLIPBOARD", False);
     p->targets = XInternAtom(p->display, "TARGETS", False);
     p->utf8_string = XInternAtom(p->display, "UTF8_STRING", False);
@@ -858,7 +1091,33 @@ Platform *platform_create(const PlatformConfig *cfg) {
                  PointerMotionMask | StructureNotifyMask | FocusChangeMask |
                  PropertyChangeMask);
 
+    platform_window_mode_init(&p->window_mode, PLATFORM_WINDOW_MODE_WINDOWED);
+    x11_query_monitors(p);
+    if (cfg->undecorated) {
+        (void)platform_window_mode_set_decorated(&p->window_mode, false);
+        x11_write_decorations(p, false);
+    }
+    if (cfg->start_fullscreen) {
+        /* Before the first map: EWMH lets the client set _NET_WM_STATE
+         * itself; without a WM the fallback moves the window right away. */
+        PlatformWindowRect windowed = {0, 0, cfg->width, cfg->height};
+        (void)platform_window_mode_request(&p->window_mode,
+                                           PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+        platform_window_mode_save_windowed(&p->window_mode, windowed, false);
+        if (x11_wm_supports_fullscreen(p)) {
+            XChangeProperty(p->display, p->window, p->wm_state, XA_ATOM, 32,
+                            PropModeReplace, (unsigned char *)&p->wm_fullscreen, 1);
+            x11_confirm_window_mode(p, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+        } else if (x11_fallback_enter(p, windowed)) {
+            x11_confirm_window_mode(p, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+        } else {
+            platform_window_mode_fail(&p->window_mode);
+        }
+    }
+
     if (!cfg->hide_window_until_first_frame) {
+        /* (undecorated is applied above, before the first map, so the WM
+         * never shows the frame) */
         XMapWindow(p->display, p->window);
         XFlush(p->display);
     }
@@ -901,7 +1160,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
     input_init(&p->input);
     gamepad_init();
 
-    x11_query_monitors(p);
+    x11_update_active_monitor(p);
     x11_refresh_media_context(p);
 
     LOG_INFO("Platform initialized: %ux%u \"%s\" (DPI=%.1f scale=%d monitors=%u)",
@@ -944,6 +1203,12 @@ PlatformWsiSurface *platform_wsi_surface(Platform *p) {
 
 /* Desktop no-ops: 桌面没有 OS 级 suspend/resume/surface-lost 事件（语义说明
  * 见 platform.h）；相应语义由 resize 与 DESTROYING 覆盖。 */
+bool platform_mobile_resize(Platform *p, u32 logical_width, u32 logical_height,
+                            u32 drawable_width, u32 drawable_height, f32 scale) {
+    (void)p; (void)logical_width; (void)logical_height;
+    (void)drawable_width; (void)drawable_height; (void)scale;
+    return false;
+}
 void platform_mobile_notify_suspend(Platform *p) { (void)p; }
 void platform_mobile_notify_resume(Platform *p) { (void)p; }
 void platform_mobile_notify_surface_lost(Platform *p) { (void)p; }
@@ -1057,6 +1322,12 @@ PlatformEventResult platform_poll(Platform *p) {
 
         case PropertyNotify:
             if (ev.xproperty.window == p->window &&
+                ev.xproperty.atom == p->wm_state &&
+                !p->fullscreen_fallback) {
+                x11_confirm_window_mode(p, x11_read_wm_state_fullscreen(p)
+                                               ? PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN
+                                               : PLATFORM_WINDOW_MODE_WINDOWED);
+            } else if (ev.xproperty.window == p->window &&
                 ev.xproperty.atom == p->clipboard_property &&
                 ev.xproperty.state == PropertyNewValue) {
                 x11_clipboard_receive_incremental(p);
@@ -1426,20 +1697,85 @@ bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
     return true;
 }
 
+/* EWMH: the request is confirmed later from PropertyNotify(_NET_WM_STATE).
+ * Fallback (no EWMH WM): applied and confirmed synchronously. */
+bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
+    PlatformWindowModeAction action;
+    PlatformWindowRect windowed;
+    if (p == NULL || p->display == NULL || !platform_window_mode_valid(mode)) return false;
+    action = platform_window_mode_request(&p->window_mode, mode);
+    if (action == PLATFORM_WINDOW_MODE_ACTION_NONE) return true;
+    if (action == PLATFORM_WINDOW_MODE_ACTION_UNSUPPORTED) return false;
+    if (action == PLATFORM_WINDOW_MODE_ACTION_ENTER) {
+        if (p->window_mode.current == PLATFORM_WINDOW_MODE_WINDOWED &&
+            x11_window_rect(p, &windowed))
+            platform_window_mode_save_windowed(&p->window_mode, windowed, false);
+        if (x11_wm_supports_fullscreen(p)) {
+            x11_send_fullscreen(p, true);
+            return true;
+        }
+        if (!platform_window_mode_restore_rect(&p->window_mode, &windowed) ||
+            !x11_fallback_enter(p, windowed)) {
+            platform_window_mode_fail(&p->window_mode);
+            if (platform_window_mode_decoration_stale(&p->window_mode)) {
+                x11_write_decorations(p, p->window_mode.decorated);
+                XFlush(p->display);
+            }
+            return false;
+        }
+        x11_confirm_window_mode(p, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+        return true;
+    }
+    if (p->fullscreen_fallback) {
+        x11_fallback_leave(p);
+        x11_confirm_window_mode(p, PLATFORM_WINDOW_MODE_WINDOWED);
+        return true;
+    }
+    x11_send_fullscreen(p, false);
+    return true;
+}
+
+PlatformWindowMode platform_get_window_mode(Platform *p) {
+    return p != NULL ? p->window_mode.current : PLATFORM_WINDOW_MODE_WINDOWED;
+}
+
 void platform_toggle_fullscreen(Platform *p) {
-    XEvent ev = {0};
     if (p == NULL) return;
-    ev.type = ClientMessage;
-    ev.xclient.window = p->window;
-    ev.xclient.message_type = p->wm_state;
-    ev.xclient.format = 32;
-    ev.xclient.data.l[0] = p->is_fullscreen ? 0 : 1;
-    ev.xclient.data.l[1] = (long)p->wm_fullscreen;
-    ev.xclient.data.l[2] = 0;
-    XSendEvent(p->display, DefaultRootWindow(p->display), False,
-               SubstructureRedirectMask | SubstructureNotifyMask, &ev);
-    XFlush(p->display);
-    p->is_fullscreen = !p->is_fullscreen;
+    (void)platform_set_window_mode(p, platform_window_mode_toggle_target(&p->window_mode));
+}
+
+bool platform_set_window_decorated(Platform *p, bool decorated) {
+    if (p == NULL || p->display == NULL) return false;
+    switch (platform_window_mode_set_decorated(&p->window_mode, decorated)) {
+    case PLATFORM_DECORATION_ACTION_APPLY:
+        x11_write_decorations(p, decorated);
+        XFlush(p->display);
+        return true;
+    case PLATFORM_DECORATION_ACTION_UNSUPPORTED:
+        return false;
+    case PLATFORM_DECORATION_ACTION_DEFER:
+        /* The no-WM fallback restores the hints it saved on enter; make that
+         * restore carry the new preference too. */
+        if (p->fullscreen_fallback) {
+            p->saved_motif_hints_valid = !decorated;
+            if (!decorated) {
+                p->saved_motif_hints[0] = X11_MWM_HINTS_DECORATIONS;
+                for (u32 i = 1; i < X11_MWM_HINTS_ELEMENTS; i++) p->saved_motif_hints[i] = 0;
+            }
+        }
+        return true;
+    case PLATFORM_DECORATION_ACTION_NONE:
+    default:
+        return true;
+    }
+}
+
+bool platform_get_window_decorated(Platform *p) {
+    return p != NULL && p->window_mode.decorated;
+}
+
+bool platform_window_title_bar_visible(Platform *p) {
+    return p != NULL && platform_window_mode_title_bar_visible(&p->window_mode);
 }
 
 void platform_window_show(Platform *p) {

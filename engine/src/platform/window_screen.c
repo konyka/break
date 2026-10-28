@@ -8,8 +8,8 @@
  * separately in docs/qnx_compat.md.
  *
  * Not yet mapped (follow-up with the graphics milestone): text/IME,
- * clipboard, monitors, relative mouse mode. Those surface fail-closed
- * exactly like window_mobile.c.
+ * clipboard, relative mouse mode. Those surface fail-closed exactly like
+ * window_mobile.c.
  */
 
 #if defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
@@ -20,6 +20,7 @@
 #include <sys/keycodes.h>
 #include <stdlib.h>
 #include <string.h>
+#include <platform/window_mode.h>
 
 /* The keymap mirrors <sys/keycodes.h> as raw integers so it stays
  * host-testable (test_screen_keymap.c); pin the mirror to the real header
@@ -51,6 +52,7 @@ struct Platform {
     u64              media_generation;
     PlatformMediaContext media;
     PlatformWsiSurface   wsi;
+    PlatformWindowModeState window_mode;
 };
 
 static void screen_destroy_handles(Platform *p)
@@ -98,6 +100,8 @@ Platform *platform_create(const PlatformConfig *cfg)
     p->height = cfg->height;
     (void)platform_wsi_surface_init(&p->wsi, true, cfg->width, cfg->height,
                                     cfg->width, cfg->height);
+    platform_window_mode_init_fixed(&p->window_mode,
+                                    PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
     p->media_generation = 1u;
     p->media.screen = true;
     p->media.capabilities = PLATFORM_MEDIA_CAP_POINTER_FINE |
@@ -128,6 +132,12 @@ PlatformWsiSurface *platform_wsi_surface(Platform *p)
     return p != NULL ? &p->wsi : NULL;
 }
 
+bool platform_mobile_resize(Platform *p, u32 logical_width, u32 logical_height,
+                            u32 drawable_width, u32 drawable_height, f32 scale) {
+    (void)p; (void)logical_width; (void)logical_height;
+    (void)drawable_width; (void)drawable_height; (void)scale;
+    return false;
+}
 void platform_mobile_notify_suspend(Platform *p)   { (void)p; }
 void platform_mobile_notify_resume(Platform *p)    { (void)p; }
 void platform_mobile_notify_surface_lost(Platform *p) { (void)p; }
@@ -283,7 +293,32 @@ void platform_get_size(Platform *p, u32 *w, u32 *h)         { screen_size(p, w, 
 void platform_get_logical_size(Platform *p, u32 *w, u32 *h) { screen_size(p, w, h); }
 void platform_get_drawable_size(Platform *p, u32 *w, u32 *h){ screen_size(p, w, h); }
 
-void platform_toggle_fullscreen(Platform *p) { (void)p; }
+/* A Screen application window always covers the display. */
+bool platform_set_window_mode(Platform *p, PlatformWindowMode mode)
+{
+    if (!p || !platform_window_mode_valid(mode)) return false;
+    return platform_window_mode_request(&p->window_mode, mode) ==
+           PLATFORM_WINDOW_MODE_ACTION_NONE;
+}
+PlatformWindowMode platform_get_window_mode(Platform *p)
+{
+    return p ? p->window_mode.current : PLATFORM_WINDOW_MODE_WINDOWED;
+}
+void platform_toggle_fullscreen(Platform *p)
+{
+    if (p) (void)platform_set_window_mode(p, platform_window_mode_toggle_target(&p->window_mode));
+}
+/* No window frame exists: only "undecorated" is accepted. */
+bool platform_set_window_decorated(Platform *p, bool decorated)
+{
+    return p && platform_window_mode_set_decorated(&p->window_mode, decorated) ==
+                    PLATFORM_DECORATION_ACTION_NONE;
+}
+bool platform_get_window_decorated(Platform *p) { return p && p->window_mode.decorated; }
+bool platform_window_title_bar_visible(Platform *p)
+{
+    return p && platform_window_mode_title_bar_visible(&p->window_mode);
+}
 void platform_mouse_capture(Platform *p, bool v) { (void)p; (void)v; }
 void platform_mouse_set_visible(Platform *p, bool v) { (void)p; (void)v; }
 void platform_mouse_set_relative(Platform *p, bool v) { (void)p; (void)v; }
@@ -309,11 +344,116 @@ bool platform_get_media_context(Platform *p, PlatformMediaContext *out)
     return true;
 }
 u64 platform_get_media_generation(Platform *p) { return p ? p->media_generation : 0u; }
-u32 platform_get_monitor_count(Platform *p) { (void)p; return 0u; }
+static bool screen_monitor_displays(Platform *p, screen_display_t **out,
+                                    u32 *count)
+{
+    int native_count = 0;
+    screen_display_t *displays;
+    int i;
+    *out = NULL;
+    *count = 0u;
+    if (p == NULL ||
+        screen_get_context_property_iv(p->ctx, SCREEN_PROPERTY_DISPLAY_COUNT,
+                                       &native_count) != 0 ||
+        native_count < 0 || native_count > 64) return false;
+    if (native_count == 0) return true;
+    displays = (screen_display_t *)calloc((size_t)native_count,
+                                          sizeof(*displays));
+    if (displays == NULL) return false;
+    if (screen_get_context_property_pv(p->ctx, SCREEN_PROPERTY_DISPLAYS,
+                                       (void **)displays) != 0) {
+        free(displays);
+        return false;
+    }
+    for (i = 0; i < native_count; ++i) {
+        if (displays[i] == NULL) {
+            free(displays);
+            return false;
+        }
+    }
+    *out = displays;
+    *count = native_count > PLATFORM_MAX_MONITORS
+                 ? PLATFORM_MAX_MONITORS : (u32)native_count;
+    return true;
+}
+
+u32 platform_get_monitor_count(Platform *p)
+{
+    screen_display_t *displays;
+    u32 count;
+    if (!screen_monitor_displays(p, &displays, &count)) return 0u;
+    free(displays);
+    return count;
+}
+
 bool platform_get_monitor_info(Platform *p, u32 i, MonitorInfo *out)
 {
-    (void)p; (void)i; (void)out;
-    return false;
+    screen_display_t *displays;
+    screen_display_t current = NULL;
+    screen_display_mode_t mode;
+    int size[2] = { 0, 0 };
+    int position[2] = { 0, 0 };
+    int physical[2] = { 0, 0 };
+    int dpi[2] = { 0, 0 };
+    u32 count;
+    bool ok = false;
+    if (out != NULL) memset(out, 0, sizeof(*out));
+    if (out == NULL || !screen_monitor_displays(p, &displays, &count))
+        return false;
+    if (i >= count) {
+        free(displays);
+        return false;
+    }
+    if (screen_get_display_property_iv(displays[i], SCREEN_PROPERTY_SIZE,
+                                       size) != 0 || size[0] <= 0 ||
+        size[1] <= 0 ||
+        screen_get_display_property_iv(displays[i], SCREEN_PROPERTY_POSITION,
+                                       position) != 0) goto done;
+    out->x = position[0];
+    out->y = position[1];
+    out->width = (u32)size[0];
+    out->height = (u32)size[1];
+    out->dpi = 96.0f;
+    out->scale = 1;
+    if (screen_get_display_property_cv(displays[i], SCREEN_PROPERTY_ID_STRING,
+                                       (int)sizeof(out->name), out->name) == 0)
+        out->name[sizeof(out->name) - 1u] = '\0';
+    if (out->name[0] == '\0') {
+        memcpy(out->name, "Screen ", 7u);
+        out->name[7] = (char)('1' + i);
+        out->name[8] = '\0';
+    }
+    memset(&mode, 0, sizeof(mode));
+    if (screen_get_display_property_pv(displays[i], SCREEN_PROPERTY_MODE,
+                                       (void **)&mode) == 0 &&
+        (mode.flags & SCREEN_DISPLAY_MODE_REFRESH_VALID) != 0u)
+        out->refresh_rate = mode.refresh;
+    if (screen_get_display_property_iv(displays[i], SCREEN_PROPERTY_DPI,
+                                       dpi) == 0 && dpi[0] > 0) {
+        out->dpi = (f32)dpi[0];
+    } else if (screen_get_display_property_iv(displays[i],
+                                              SCREEN_PROPERTY_PHYSICAL_SIZE,
+                                              physical) == 0) {
+        if (physical[0] > 0)
+            out->dpi = (f32)size[0] * 25.4f / (f32)physical[0];
+        else if (physical[1] > 0)
+            out->dpi = (f32)size[1] * 25.4f / (f32)physical[1];
+    }
+    if (out->dpi >= (f32)INT32_MAX * 96.0f) {
+        out->scale = INT32_MAX;
+    } else {
+        out->scale = (i32)((out->dpi + 48.0f) / 96.0f);
+        if (out->scale < 1) out->scale = 1;
+    }
+    out->primary = i == 0u;
+    if (screen_get_window_property_pv(p->win, SCREEN_PROPERTY_DISPLAY,
+                                      (void **)&current) == 0 &&
+        current != NULL) out->primary = current == displays[i];
+    ok = true;
+done:
+    free(displays);
+    if (!ok) memset(out, 0, sizeof(*out));
+    return ok;
 }
 
 #endif /* ENGINE_PLATFORM_QNX && ENGINE_QNX_SCREEN */

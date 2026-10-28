@@ -110,8 +110,29 @@ static my_ret_t soft_grow(const my_allocator_t* alloc, void** arr, size_t* cap,
 
 /* ---------------- drawing helpers ---------------- */
 
+static int32_t soft_float_to_i32(float v) {
+  if (isnan(v)) {
+    return 0;
+  }
+  if (v >= 2147483648.0f) {
+    return INT32_MAX;
+  }
+  if (v <= -2147483648.0f) {
+    return INT32_MIN;
+  }
+  return (int32_t)v;
+}
+
+static int32_t soft_floor_i32(float v) {
+  return soft_float_to_i32(floorf(v));
+}
+
+static int32_t soft_ceil_i32(float v) {
+  return soft_float_to_i32(ceilf(v));
+}
+
 static int32_t soft_round(float v) {
-  return (int32_t)floorf(v + 0.5f);
+  return soft_floor_i32(v + 0.5f);
 }
 
 /** @brief Fill a device-space rect, clipped to the current clip; tracked dirty. */
@@ -178,8 +199,8 @@ static void span_accum(uint8_t* cov, int32_t base_x,
   }
   fxl = xl - floorf(xl);
   fxr = xr - floorf(xr);
-  lpix = (int32_t)floorf(xl);
-  rpix = (int32_t)floorf(xr);
+  lpix = soft_floor_i32(xl);
+  rpix = soft_floor_i32(xr);
   if (lpix == rpix) {
     int k, n = 0;
     for (k = 0; k < 4; k++) {
@@ -333,10 +354,13 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
       size_t k;
       qsort(xs, nxs, sizeof(float), float_cmp);
       for (k = 0; k + 1 < nxs; k += 2) {
-        int32_t xa = (int32_t)ceilf(xs[k] - 0.5f);
-        int32_t xb = (int32_t)ceilf(xs[k + 1] - 0.5f);
+        int32_t xa = soft_ceil_i32(xs[k] - 0.5f);
+        int32_t xb = soft_ceil_i32(xs[k + 1] - 0.5f);
         if (xb > xa) {
-          soft_fill_device_rect(s, my_rect_init(xa, y, xb - xa, 1), color);
+          soft_fill_device_rect(
+              s, my_rect_init(xa, y,
+                              my_rect_offset_i32(0, (int64_t)xb - xa), 1),
+              color);
         }
       }
     }
@@ -368,8 +392,8 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
           ymax = py;
         }
       }
-      row0 = (int32_t)floorf(ymin) > clip->y ? (int32_t)floorf(ymin) : clip->y;
-      row1 = (int32_t)ceilf(ymax) < clip->y + clip->h ? (int32_t)ceilf(ymax)
+      row0 = soft_floor_i32(ymin) > clip->y ? soft_floor_i32(ymin) : clip->y;
+      row1 = soft_ceil_i32(ymax) < clip->y + clip->h ? soft_ceil_i32(ymax)
                                                       : clip->y + clip->h;
       for (y = row0; y < row1; y++) {
       float row_min = 0.0f, row_max = 0.0f;
@@ -397,11 +421,11 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
       if (row_max <= row_min) {
         continue;
       }
-      bx0 = (int32_t)floorf(row_min);
+      bx0 = soft_floor_i32(row_min);
       if (bx0 < clip->x) {
         bx0 = clip->x;
       }
-      bw = (int32_t)ceilf(row_max) - bx0;
+      bw = soft_ceil_i32(row_max) - bx0;
       if (bx0 + bw > clip->x + clip->w) {
         bw = clip->x + clip->w - bx0;
       }
@@ -431,14 +455,29 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
   return MY_RET_OK;
 }
 
+static int32_t soft_rect_extent_i32(int32_t edge0, int32_t edge1) {
+  return my_rect_offset_i32(0, (int64_t)edge1 - edge0);
+}
+
 /** @brief User-space rect -> device-space rect (origin floor, size exact). */
 static my_rect_t soft_user_rect_to_device(const my_vgcanvas_soft_t* s,
                                           const my_rectf_t* r) {
-  int32_t x0 = (int32_t)floorf(SOFT_SX(s, r->x));
-  int32_t y0 = (int32_t)floorf(SOFT_SY(s, r->y));
-  int32_t x1 = (int32_t)floorf(SOFT_SX(s, r->x + r->w));
-  int32_t y1 = (int32_t)floorf(SOFT_SY(s, r->y + r->h));
-  return my_rect_init(x0, y0, x1 - x0, y1 - y0);
+  int32_t x0 = soft_floor_i32(SOFT_SX(s, r->x));
+  int32_t y0 = soft_floor_i32(SOFT_SY(s, r->y));
+  int32_t x1 = soft_floor_i32(SOFT_SX(s, r->x + r->w));
+  int32_t y1 = soft_floor_i32(SOFT_SY(s, r->y + r->h));
+  return my_rect_init(x0, y0, soft_rect_extent_i32(x0, x1),
+                      soft_rect_extent_i32(y0, y1));
+}
+
+static my_rect_t soft_user_clip_to_device(const my_vgcanvas_soft_t* s,
+                                          const my_rectf_t* r) {
+  int32_t x0 = soft_floor_i32(SOFT_SX(s, r->x));
+  int32_t y0 = soft_floor_i32(SOFT_SY(s, r->y));
+  int32_t x1 = soft_ceil_i32(SOFT_SX(s, r->x + r->w));
+  int32_t y1 = soft_ceil_i32(SOFT_SY(s, r->y + r->h));
+  return my_rect_init(x0, y0, soft_rect_extent_i32(x0, x1),
+                      soft_rect_extent_i32(y0, y1));
 }
 
 /* ---------------- vtable: frame ---------------- */
@@ -493,12 +532,7 @@ static my_ret_t soft_clip_rect(my_vgcanvas_t* vg, const my_rectf_t* rect) {
     return MY_RET_INVALID_PARAMS;
   }
   /* clip is inclusive: origin floors, far edge ceils */
-  dev = my_rect_init((int32_t)floorf(SOFT_SX(s, rect->x)),
-                     (int32_t)floorf(SOFT_SY(s, rect->y)),
-                     (int32_t)ceilf(SOFT_SX(s, rect->x + rect->w)) -
-                         (int32_t)floorf(SOFT_SX(s, rect->x)),
-                     (int32_t)ceilf(SOFT_SY(s, rect->y + rect->h)) -
-                         (int32_t)floorf(SOFT_SY(s, rect->y)));
+  dev = soft_user_clip_to_device(s, rect);
   if (my_rect_intersect(&s->state.clip, &dev, &clipped)) {
     s->state.clip = clipped;
   } else {
@@ -567,7 +601,7 @@ static void soft_fill_circle(my_vgcanvas_soft_t* s, int32_t cx, int32_t cy,
   int32_t dy;
   if (s->antialias_level <= 0) {
     for (dy = -r; dy <= r; dy++) {
-      int32_t dx = (int32_t)floorf(sqrtf((float)(r * r - dy * dy)));
+      int32_t dx = soft_floor_i32(sqrtf((float)(r * r - dy * dy)));
       soft_fill_device_rect(s, my_rect_init(cx - dx, cy + dy, 2 * dx + 1, 1),
                             color);
     }
@@ -594,8 +628,8 @@ static void soft_fill_circle(my_vgcanvas_soft_t* s, int32_t cx, int32_t cy,
     for (y = y0; y <= y1; y++) {
       int hh;
       float fx = (float)cx + 0.5f;
-      int32_t bx0 = (int32_t)floorf(fx - (float)r);
-      int32_t bw = (int32_t)ceilf(fx + (float)r) - bx0 + 1;
+      int32_t bx0 = soft_floor_i32(fx - (float)r);
+      int32_t bw = soft_ceil_i32(fx + (float)r) - bx0 + 1;
       if (bx0 < clip->x) {
         bw -= clip->x - bx0;
         bx0 = clip->x;
@@ -868,18 +902,18 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
     size_t edges = c->count > 1 ? (c->closed ? c->count : c->count - 1) : 0;
     if (c->count > 1 && !c->closed &&
         s->state.line_cap == MY_LINE_CAP_ROUND) {
-      int32_t r = (int32_t)(half * s->state.scale + 0.5f);
+      int32_t r = soft_float_to_i32(half * s->state.scale + 0.5f);
       size_t last = c->start + c->count - 1;
-      disks[nd].cx = (int32_t)floorf(SOFT_SX(s, s->points[c->start].x) +
+      disks[nd].cx = soft_floor_i32(SOFT_SX(s, s->points[c->start].x) +
                                      odd_off);
-      disks[nd].cy = (int32_t)floorf(SOFT_SY(s, s->points[c->start].y) +
+      disks[nd].cy = soft_floor_i32(SOFT_SY(s, s->points[c->start].y) +
                                      odd_off);
       disks[nd].r = r;
       nd++;
       disks[nd].cx =
-          (int32_t)floorf(SOFT_SX(s, s->points[last].x) + odd_off);
+          soft_floor_i32(SOFT_SX(s, s->points[last].x) + odd_off);
       disks[nd].cy =
-          (int32_t)floorf(SOFT_SY(s, s->points[last].y) + odd_off);
+          soft_floor_i32(SOFT_SY(s, s->points[last].y) + odd_off);
       disks[nd].r = r;
       nd++;
     }
@@ -934,11 +968,11 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
       np += 4;
       if (s->state.line_join == MY_LINE_JOIN_ROUND &&
           (c->closed || i + 1 < c->count)) {
-        disks[nd].cx = (int32_t)floorf(SOFT_SX(s, s->points[c->start + j].x) +
+        disks[nd].cx = soft_floor_i32(SOFT_SX(s, s->points[c->start + j].x) +
                                        odd_off);
-        disks[nd].cy = (int32_t)floorf(SOFT_SY(s, s->points[c->start + j].y) +
+        disks[nd].cy = soft_floor_i32(SOFT_SY(s, s->points[c->start + j].y) +
                                        odd_off);
-        disks[nd].r = (int32_t)(half * s->state.scale + 0.5f);
+        disks[nd].r = soft_float_to_i32(half * s->state.scale + 0.5f);
         nd++;
       }
     }
@@ -1019,8 +1053,8 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
       ymax = y1;
     }
   }
-  row0 = (int32_t)floorf(ymin) > clip->y ? (int32_t)floorf(ymin) : clip->y;
-  row1 = (int32_t)ceilf(ymax) < clip->y + clip->h ? (int32_t)ceilf(ymax)
+  row0 = soft_floor_i32(ymin) > clip->y ? soft_floor_i32(ymin) : clip->y;
+  row1 = soft_ceil_i32(ymax) < clip->y + clip->h ? soft_ceil_i32(ymax)
                                                   : clip->y + clip->h;
   for (y = row0; y < row1; y++) {
     int hh;
@@ -1085,7 +1119,7 @@ static my_ret_t soft_stroke(my_vgcanvas_t* vg) {
     half = 0.5f;
   }
   /* odd integer widths: shift 0.5px so thin lines land on pixel centers */
-  if (((int32_t)s->state.line_width) % 2 == 1) {
+  if (soft_float_to_i32(s->state.line_width) % 2 == 1) {
     odd_off = 0.5f;
   }
   if (s->antialias_level >= 1 && s->contour_count > 0) {
@@ -1098,14 +1132,14 @@ static my_ret_t soft_stroke(my_vgcanvas_t* vg) {
     size_t edges = c->count > 1 ? (c->closed ? c->count : c->count - 1) : 0;
     if (c->count > 1 && !c->closed && s->state.line_cap == MY_LINE_CAP_ROUND) {
       /* round caps: half-lw disks on the two endpoints (coverage-AA) */
-      int32_t r = (int32_t)(half * s->state.scale + 0.5f);
-      int32_t cx0 = (int32_t)floorf(SOFT_SX(s, s->points[c->start].x) +
+      int32_t r = soft_float_to_i32(half * s->state.scale + 0.5f);
+      int32_t cx0 = soft_floor_i32(SOFT_SX(s, s->points[c->start].x) +
                                     odd_off);
-      int32_t cy0 = (int32_t)floorf(SOFT_SY(s, s->points[c->start].y) +
+      int32_t cy0 = soft_floor_i32(SOFT_SY(s, s->points[c->start].y) +
                                     odd_off);
       size_t last = c->start + c->count - 1;
-      int32_t cx1 = (int32_t)floorf(SOFT_SX(s, s->points[last].x) + odd_off);
-      int32_t cy1 = (int32_t)floorf(SOFT_SY(s, s->points[last].y) + odd_off);
+      int32_t cx1 = soft_floor_i32(SOFT_SX(s, s->points[last].x) + odd_off);
+      int32_t cy1 = soft_floor_i32(SOFT_SY(s, s->points[last].y) + odd_off);
       if (r > 0) {
         soft_fill_circle(s, cx0, cy0, r, s->state.stroke_color);
         soft_fill_circle(s, cx1, cy1, r, s->state.stroke_color);
@@ -1163,12 +1197,12 @@ static my_ret_t soft_stroke(my_vgcanvas_t* vg) {
        * over-blend with segment ends for translucent strokes, noted) */
       if (s->state.line_join == MY_LINE_JOIN_ROUND &&
           (c->closed || i + 1 < c->count)) {
-        int32_t r = (int32_t)(half * s->state.scale + 0.5f);
+        int32_t r = soft_float_to_i32(half * s->state.scale + 0.5f);
         if (r > 0) {
           soft_fill_circle(
-              s, (int32_t)floorf(s->points[c->start + j].x + s->state.tx +
+              s, soft_floor_i32(s->points[c->start + j].x + s->state.tx +
                                  odd_off),
-              (int32_t)floorf(s->points[c->start + j].y + s->state.ty +
+              soft_floor_i32(s->points[c->start + j].y + s->state.ty +
                               odd_off),
               r, s->state.stroke_color);
         }
@@ -1252,7 +1286,8 @@ static my_ret_t soft_set_line_join(my_vgcanvas_t* vg, my_line_join_t join) {
 
 /** @brief Font size in device pixels (M12c: logical size * scale). */
 static int32_t soft_dev_font_size(const my_vgcanvas_soft_t* s) {
-  int32_t d = (int32_t)((float)s->state.font_size * s->state.scale + 0.5f);
+  int32_t d = soft_float_to_i32((float)s->state.font_size * s->state.scale +
+                                0.5f);
   return d > 0 ? d : 1;
 }
 
@@ -1489,10 +1524,10 @@ static my_ret_t soft_measure_text(my_vgcanvas_t* vg, const char* text,
   }
   if (ret == MY_RET_OK && s->state.scale != 1.0f) {
     if (w != NULL) {
-      *w = (int32_t)((float)*w / s->state.scale + 0.5f);
+      *w = soft_float_to_i32((float)*w / s->state.scale + 0.5f);
     }
     if (h != NULL) {
-      *h = (int32_t)((float)*h / s->state.scale + 0.5f);
+      *h = soft_float_to_i32((float)*h / s->state.scale + 0.5f);
     }
   }
   return ret;
@@ -1509,8 +1544,10 @@ static my_ret_t soft_measure_text(my_vgcanvas_t* vg, const char* text,
  * weights (ax == ay == 0, e.g. exact integer scales) short-circuit. */
 static void sample_bilinear(const uint8_t* rgba, int32_t w, int32_t h,
                             float gx, float gy, uint8_t out[4]) {
-  int32_t fx16 = (int32_t)(gx * 65536.0f + (gx >= 0.0f ? 0.5f : -0.5f));
-  int32_t fy16 = (int32_t)(gy * 65536.0f + (gy >= 0.0f ? 0.5f : -0.5f));
+  int32_t fx16 = soft_float_to_i32(
+      gx * 65536.0f + (gx >= 0.0f ? 0.5f : -0.5f));
+  int32_t fy16 = soft_float_to_i32(
+      gy * 65536.0f + (gy >= 0.0f ? 0.5f : -0.5f));
   int32_t x0 = fx16 >> 16, y0 = fy16 >> 16;
   uint32_t ax = (uint32_t)(fx16 & 0xFFFF);
   uint32_t ay = (uint32_t)(fy16 & 0xFFFF);
@@ -1760,10 +1797,10 @@ static my_ret_t soft_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
   if (fmt == MY_PIXEL_FORMAT_MONO) {
     int32_t y;
     uint32_t mono_stride;
-    dev = my_rect_init((int32_t)floorf(SOFT_SX(s, dst->x)),
-                       (int32_t)floorf(SOFT_SY(s, dst->y)),
-                       (int32_t)floorf(dst->w * s->state.scale),
-                       (int32_t)floorf(dst->h * s->state.scale));
+    dev = my_rect_init(soft_floor_i32(SOFT_SX(s, dst->x)),
+                       soft_floor_i32(SOFT_SY(s, dst->y)),
+                       soft_floor_i32(dst->w * s->state.scale),
+                       soft_floor_i32(dst->h * s->state.scale));
     if (!my_rect_intersect(&dev, &s->state.clip, &clipped)) {
       return MY_RET_OK;
     }
@@ -1778,9 +1815,9 @@ static my_ret_t soft_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
       int32_t x;
       memset(row, 0, mono_stride);
       for (x = clipped.x; (int64_t)x < my_rect_right_i64(&clipped); x++) {
-        int32_t sx = (int32_t)((int64_t)(x - dev.x) * w /
+        int32_t sx = (int32_t)(((int64_t)x - dev.x) * w /
                                (dev.w > 0 ? dev.w : 1));
-        int32_t sy = (int32_t)((int64_t)(y - dev.y) * h /
+        int32_t sy = (int32_t)(((int64_t)y - dev.y) * h /
                                (dev.h > 0 ? dev.h : 1));
         const uint8_t* pixel = rgba +
             ((size_t)(sy < 0 ? 0 : sy >= h ? h - 1 : sy) * (size_t)w +
@@ -1804,10 +1841,10 @@ static my_ret_t soft_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
     return MY_RET_OK;
   }
   bpp = my_pixel_format_bpp(fmt) / 8u;
-  dev = my_rect_init((int32_t)floorf(SOFT_SX(s, dst->x)),
-                     (int32_t)floorf(SOFT_SY(s, dst->y)),
-                     (int32_t)floorf(dst->w * s->state.scale),
-                     (int32_t)floorf(dst->h * s->state.scale));
+  dev = my_rect_init(soft_floor_i32(SOFT_SX(s, dst->x)),
+                     soft_floor_i32(SOFT_SY(s, dst->y)),
+                     soft_floor_i32(dst->w * s->state.scale),
+                     soft_floor_i32(dst->h * s->state.scale));
   if (!my_rect_intersect(&dev, &s->state.clip, &clipped)) {
     return MY_RET_OK;
   }
@@ -1842,7 +1879,7 @@ static my_ret_t soft_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
   }
   for (dy = clipped.y; (int64_t)dy < my_rect_bottom_i64(&clipped); dy++) {
     int32_t sy =
-        (int32_t)((int64_t)(dy - dev.y) * sh / (dev.h > 0 ? dev.h : 1));
+        (int32_t)(((int64_t)dy - dev.y) * sh / (dev.h > 0 ? dev.h : 1));
     int32_t dx;
     uint8_t* out = row;
     if (sy < 0) {
@@ -1854,17 +1891,17 @@ static my_ret_t soft_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
     for (dx = clipped.x; (int64_t)dx < my_rect_right_i64(&clipped); dx++) {
       if (s->scale_filter == MY_SCALE_FILTER_BILINEAR) {
         uint8_t px4[4];
-        float fx = ((float)(dx - dev.x) + 0.5f) * (float)sw /
+        float fx = ((float)((int64_t)dx - dev.x) + 0.5f) * (float)sw /
                        (float)(dev.w > 0 ? dev.w : 1) -
                    0.5f;
-        float fy = ((float)(dy - dev.y) + 0.5f) * (float)sh /
+        float fy = ((float)((int64_t)dy - dev.y) + 0.5f) * (float)sh /
                        (float)(dev.h > 0 ? dev.h : 1) -
                    0.5f;
         sample_bilinear(src, sw, sh, fx, fy, px4);
         pack_native(fmt, px4, bg, out);
       } else {
         int32_t sx =
-            (int32_t)((int64_t)(dx - dev.x) * sw / (dev.w > 0 ? dev.w : 1));
+            (int32_t)(((int64_t)dx - dev.x) * sw / (dev.w > 0 ? dev.w : 1));
         if (sx < 0) {
           sx = 0;
         }
@@ -1964,12 +2001,7 @@ static my_ret_t soft_reset_clip(my_vgcanvas_t* vg, const my_rectf_t* rect) {
   if (!my_vgcanvas_finite_rect(rect)) {
     return MY_RET_INVALID_PARAMS;
   }
-  dev = my_rect_init((int32_t)floorf(SOFT_SX(s, rect->x)),
-                     (int32_t)floorf(SOFT_SY(s, rect->y)),
-                     (int32_t)ceilf(SOFT_SX(s, rect->x + rect->w)) -
-                         (int32_t)floorf(SOFT_SX(s, rect->x)),
-                     (int32_t)ceilf(SOFT_SY(s, rect->y + rect->h)) -
-                         (int32_t)floorf(SOFT_SY(s, rect->y)));
+  dev = soft_user_clip_to_device(s, rect);
   s->state.clip = dev; /* replace, not intersect */
   return MY_RET_OK;
 }

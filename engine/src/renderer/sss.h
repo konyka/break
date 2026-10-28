@@ -23,6 +23,10 @@ typedef struct {
 } SSSSystem;
 
 bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool sss_resize(SSSSystem *s, RHIDevice *dev, u32 w, u32 h);
 void sss_shutdown(SSSSystem *s);
 void sss_apply(SSSSystem *s, RHICmdBuffer *cmd,
                RHITexture color_tex, RHITexture depth_tex,

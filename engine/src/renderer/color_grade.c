@@ -1,4 +1,5 @@
 #include "color_grade.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -68,6 +69,13 @@ static RHIPipeline cg_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool color_grade_targets_create(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->fbo, w, h, RHI_FORMAT_UNDEFINED },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool color_grade_init(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s || !dev) return false;
     memset(s, 0, sizeof(*s));
@@ -109,7 +117,7 @@ bool color_grade_init(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s->bind_pipe)
         LOG_WARN("ColorGrade: bindings create failed; uniform locations resolve -1");
 
-    s->fbo = rhi_offscreen_fbo_create(dev, w, h);
+    (void)color_grade_targets_create(s, dev, w, h);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -135,6 +143,15 @@ bool color_grade_init(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
     s->ready = true;
     LOG_INFO("ColorGrade: initialized (%ux%u)", w, h);
+    return true;
+}
+
+bool color_grade_resize(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!color_grade_targets_create(s, dev, w, h)) {
+        LOG_WARN("ColorGrade: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

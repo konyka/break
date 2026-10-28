@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -807,6 +808,154 @@ TEST(vgcanvas_rejects_nonfinite_geometry_values)
             MY_RET_INVALID_PARAMS);
   my_vgcanvas_destroy(canvas);
   my_lcd_destroy(lcd);
+}
+
+TEST(soft_rect_transform_saturates_extreme_coordinates)
+{
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 8, 8, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas;
+  const uint8_t* pixels;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_scale(canvas, FLT_MAX), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 0, 1, 1}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_save(canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_translate(canvas, -FLT_MAX, -FLT_MAX), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 0, 1, 1}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_stroke_rect(canvas, &(my_rectf_t){0, 0, 1, 1}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_clip_rect(canvas, &(my_rectf_t){0, 0, 1, 1}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_reset_clip(canvas, &(my_rectf_t){0, 0, 1, 1}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_restore(canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_scale(canvas, 1.0f), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_fill_rect(
+                canvas, &(my_rectf_t){-3.0e9f, -3.0e9f, 6.0e9f, 6.0e9f}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_stroke_rect(
+                canvas, &(my_rectf_t){-3.0e9f, -3.0e9f, 6.0e9f, 6.0e9f}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_save(canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_clip_rect(
+                canvas, &(my_rectf_t){-3.0e9f, -3.0e9f, 6.0e9f, 6.0e9f}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_reset_clip(
+                canvas, &(my_rectf_t){-3.0e9f, -3.0e9f, 6.0e9f, 6.0e9f}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_restore(canvas), MY_RET_OK);
+
+  /* Exercise conversion below the public API's nonfinite-input rejection. */
+  ASSERT_EQ(canvas->vtable->fill_rect(canvas, &(my_rectf_t){NAN, 0, 1, 1}),
+            MY_RET_OK);
+  ASSERT_EQ(canvas->vtable->fill_rect(
+                canvas, &(my_rectf_t){INFINITY, 0, 1, 1}),
+            MY_RET_OK);
+  ASSERT_EQ(canvas->vtable->fill_rect(
+                canvas, &(my_rectf_t){-INFINITY, 0, 1, 1}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_fill_color(canvas, my_color_rgb(255, 0, 0)),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_fill_rect(canvas, &(my_rectf_t){1, 1, 2, 2}),
+            MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  ASSERT_NOT_NULL(pixels);
+  ASSERT_EQ(pixels[(1 * 8 + 1) * 4 + 2], 255);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
+TEST(soft_path_transform_saturates_extreme_coordinates)
+{
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 8, 8, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas;
+  int level;
+  int negative;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  for (level = 0; level <= 2; level += 2) {
+    ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, level), MY_RET_OK);
+    for (negative = 0; negative < 2; negative++) {
+      ASSERT_EQ(my_vgcanvas_save(canvas), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_set_scale(canvas, negative ? 2.0f : FLT_MAX),
+                MY_RET_OK);
+      if (negative) {
+        ASSERT_EQ(my_vgcanvas_translate(canvas, -FLT_MAX, -FLT_MAX),
+                  MY_RET_OK);
+      }
+      ASSERT_EQ(my_vgcanvas_begin_path(canvas), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_move_to(canvas, 0, 0), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_line_to(canvas, 1, 0), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_line_to(canvas, 1, 1), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_line_to(canvas, 0, 1), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_close_path(canvas), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_fill(canvas), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_begin_path(canvas), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_move_to(canvas, 0, 0), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_line_to(canvas, 1, 0), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_line_to(canvas, 1, 1), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_line_to(canvas, 0, 1), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_close_path(canvas), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_stroke(canvas), MY_RET_OK);
+      ASSERT_EQ(my_vgcanvas_restore(canvas), MY_RET_OK);
+    }
+  }
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
+TEST(soft_image_transform_saturates_extreme_coordinates)
+{
+  static const uint8_t pixel[4] = {255, 255, 255, 255};
+  static const my_pixel_format_t formats[] = {MY_PIXEL_FORMAT_RGBA8888,
+                                               MY_PIXEL_FORMAT_MONO};
+  size_t i;
+
+  for (i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
+    my_lcd_t* lcd = my_lcd_mem_create(NULL, 8, 8, formats[i]);
+    my_vgcanvas_t* canvas;
+    ASSERT_NOT_NULL(lcd);
+    canvas = my_vgcanvas_soft_create(NULL, lcd);
+    ASSERT_NOT_NULL(canvas);
+    ASSERT_EQ(my_vgcanvas_set_scale(canvas, FLT_MAX), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_draw_image(canvas, pixel, 1, 1,
+                                     &(my_rectf_t){0, 0, 1, 1}, NULL),
+              MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_save(canvas), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_set_scale(canvas, 2.0f), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_translate(canvas, FLT_MAX, FLT_MAX), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_draw_image(canvas, pixel, 1, 1,
+                                     &(my_rectf_t){0, 0, 1, 1}, NULL),
+              MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_restore(canvas), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_save(canvas), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_set_scale(canvas, 2.0f), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_translate(canvas, -FLT_MAX, -FLT_MAX), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_draw_image(canvas, pixel, 1, 1,
+                                     &(my_rectf_t){0, 0, 1, 1}, NULL),
+              MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_restore(canvas), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_set_scale(canvas, 1.0f), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_draw_image(
+                  canvas, pixel, 1, 1,
+                  &(my_rectf_t){-3.0e9f, -3.0e9f, 6.0e9f, 6.0e9f}, NULL),
+              MY_RET_OK);
+    ASSERT_EQ(canvas->vtable->draw_image(
+                  canvas, pixel, 1, 1, &(my_rectf_t){NAN, NAN, 1, 1}, NULL),
+              MY_RET_OK);
+    ASSERT_EQ(canvas->vtable->draw_image(
+                  canvas, pixel, 1, 1,
+                  &(my_rectf_t){INFINITY, -INFINITY, 1, 1}, NULL),
+              MY_RET_OK);
+    my_vgcanvas_destroy(canvas);
+    my_lcd_destroy(lcd);
+  }
 }
 
 static void mock_viewport(void* ctx, int32_t w, int32_t h) {
@@ -2028,6 +2177,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(soft_text_rendering_is_antialiased);
     RUN_TEST(vgcanvas_rejects_invalid_stroke_styles);
     RUN_TEST(vgcanvas_rejects_nonfinite_geometry_values);
+    RUN_TEST(soft_rect_transform_saturates_extreme_coordinates);
+    RUN_TEST(soft_path_transform_saturates_extreme_coordinates);
+    RUN_TEST(soft_image_transform_saturates_extreme_coordinates);
     RUN_TEST(vgcanvas_set_font_rejects_invalid_size_without_state_change);
     RUN_TEST(gles2_image_vertices_apply_canvas_scale);
     RUN_TEST(gles2_image_filter_reaches_texture_backend);

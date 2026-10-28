@@ -13,9 +13,9 @@
 #include <sys/stat.h>
 #endif
 
-/* R444: fixed UDP ports collided across parallel ctest processes. The tests
- * that only exercise local state use an ephemeral kernel-selected port;
- * loopback tests that need a destination use the per-process block below. */
+/* R444: the PID-based block is for synthetic peer addresses, not bound
+ * receivers. Real receivers use init_loopback_receiver to bind and query an
+ * ephemeral port, which also avoids collisions with unrelated processes. */
 #define TEST_PORT ((u16)(23000u + ((u32)TEST_GETPID() % 2600u) * 16u))
 
 static u16 next_test_port(void) {
@@ -66,12 +66,45 @@ TEST(replicator_init_shutdown)
     net_shutdown();
 }
 
+static bool init_loopback_receiver(NetReplicator *rep, NetAddress *dst) {
+    NetAddress bound;
+    if (!net_replicator_init(rep, 0u)) return false;
+    if (!net_socket_get_local_address(rep->socket, &bound) || bound.port == 0u ||
+        !net_address_resolve("127.0.0.1", bound.port, dst)) {
+        net_replicator_shutdown(rep);
+        return false;
+    }
+    return true;
+}
+
+TEST(loopback_receiver_survives_occupied_pid_port)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *occupied = net_udp_create((u16)TEST_PORT);
+    if (!occupied) occupied = net_udp_create(0u);
+    ASSERT_NOT_NULL(occupied);
+    NetAddress occupied_addr = {0};
+    bool have_occupied_port = net_socket_get_local_address(occupied, &occupied_addr);
+
+    NetReplicator receiver = {0};
+    NetAddress dst = {0};
+    bool ok = init_loopback_receiver(&receiver, &dst);
+    net_replicator_shutdown(&receiver);
+    net_close(occupied);
+    net_shutdown();
+    ASSERT_TRUE(have_occupied_port);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(dst.port != 0u && dst.port != occupied_addr.port &&
+                dst.port != (u16)TEST_PORT);
+}
+
 TEST(transform_snapshot_loopback)
 {
     ASSERT_TRUE(net_init());
 
     NetReplicator recv_rep = {0};
-    ASSERT_TRUE(net_replicator_init(&recv_rep, (u16)TEST_PORT));
+    NetAddress dst;
+    ASSERT_TRUE(init_loopback_receiver(&recv_rep, &dst));
     /* Loopback UDP delivery is asynchronous — on some stacks (macOS) the
      * datagram is not yet queued when an immediate non-blocking recv runs.
      * Block in recvfrom with a kernel timeout: the kernel wakes us the moment
@@ -81,9 +114,6 @@ TEST(transform_snapshot_loopback)
 
     NetReplicator send_rep = {0};
     ASSERT_TRUE(net_replicator_init(&send_rep, 0));
-
-    NetAddress dst;
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)TEST_PORT, &dst));
 
     NetTransformSnapshot in[2] = {
         { .entity_id = 42u, .position = { 1.0f, 2.0f, 3.0f } },
@@ -483,13 +513,10 @@ TEST(reliable_ack_is_scoped_to_destination)
     ASSERT_TRUE(net_init());
 
     NetReplicator rep = {0}, receiver_a = {0}, receiver_b = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
-    ASSERT_TRUE(net_replicator_init(&receiver_a, (u16)(TEST_PORT + 12u)));
-    ASSERT_TRUE(net_replicator_init(&receiver_b, (u16)(TEST_PORT + 13u)));
-
     NetAddress peer_a, peer_b;
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 12u), &peer_a));
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 13u), &peer_b));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
+    ASSERT_TRUE(init_loopback_receiver(&receiver_a, &peer_a));
+    ASSERT_TRUE(init_loopback_receiver(&receiver_b, &peer_b));
 
     u8 reliable_from_a[PACKET_MAX_SIZE];
     u32 reliable_len = build_snap_wire(reliable_from_a, 1u, (u8)PACKET_RELIABLE,
@@ -531,11 +558,9 @@ TEST(reliable_ack_waits_for_contiguous_sequence)
     ASSERT_TRUE(net_init());
 
     NetReplicator rep = {0}, receiver = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
-    ASSERT_TRUE(net_replicator_init(&receiver, (u16)(TEST_PORT + 12u)));
-
     NetAddress peer_a;
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 12u), &peer_a));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
+    ASSERT_TRUE(init_loopback_receiver(&receiver, &peer_a));
 
     u8 seq1[PACKET_MAX_SIZE], seq2[PACKET_MAX_SIZE], seq3[PACKET_MAX_SIZE];
     u32 len1 = build_snap_wire(seq1, 1u, (u8)PACKET_RELIABLE,
@@ -587,11 +612,9 @@ TEST(reliable_send_sequence_survives_receive_peer_eviction)
 
     NetReplicator rep = {0}, receiver = {0};
     ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
-    ASSERT_TRUE(net_replicator_init(&receiver, (u16)(TEST_PORT + 15u)));
-    rep.reliable_retry = true;
-
     NetAddress peer_a;
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 15u), &peer_a));
+    ASSERT_TRUE(init_loopback_receiver(&receiver, &peer_a));
+    rep.reliable_retry = true;
     NetTransformSnapshot snap = { .entity_id = 4u, .position = {0} };
     ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0);
 
@@ -635,11 +658,9 @@ TEST(reliable_send_state_is_not_recycled_after_ack)
 
     NetReplicator rep = {0}, receiver = {0};
     ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
-    ASSERT_TRUE(net_replicator_init(&receiver, (u16)(TEST_PORT + 15u)));
-    rep.reliable_retry = true;
-
     NetAddress peer_a;
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 15u), &peer_a));
+    ASSERT_TRUE(init_loopback_receiver(&receiver, &peer_a));
+    rep.reliable_retry = true;
     NetTransformSnapshot snap = { .entity_id = 5u, .position = {0} };
     ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0);
     u8 sent[PACKET_MAX_SIZE];
@@ -833,12 +854,10 @@ TEST(heartbeat_roundtrip_echo)
     ASSERT_TRUE(net_init());
 
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, (u16)(TEST_PORT + 5u)));
+    NetAddress dst;
+    ASSERT_TRUE(init_loopback_receiver(&rep, &dst));
     net_set_nonblocking(rep.socket, false);
     rep.hb_echo_reply = true;
-
-    NetAddress dst;
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 5u), &dst));
 
     u32 t0 = (u32)(time_microseconds() / 1000ull);
     if (t0 > 20u) t0 -= 20u;
@@ -1049,7 +1068,9 @@ TEST(peer_save_load)
     rep.peers[0].roundtrip_ms = 9.5f;
     rep.peers[0].hb_rt_recv = 2u;
 
-    char path[64]; test_tmp(path, sizeof path, "test_netrep_peers.txt"); /* R444: per-pid path — same-tree parallel ctest shared the cwd-relative file */
+    /* R444: keep the per-PID suffix intact with the Windows TEMP path. */
+    char path[128];
+    test_tmp(path, sizeof path, "test_netrep_peers.txt");
     ASSERT_TRUE(net_replicator_peer_save(&rep, path));
 
     NetReplicator loaded = {0};
@@ -2036,6 +2057,7 @@ TEST(reliable_window_retry_per_slot)
 
 TEST_MAIN_BEGIN()
     RUN_TEST(replicator_init_shutdown);
+    RUN_TEST(loopback_receiver_survives_occupied_pid_port);
     RUN_TEST(transform_snapshot_loopback);
     RUN_TEST(parse_payload_clamps_forged_count);
     RUN_TEST(reliable_retry_pending);

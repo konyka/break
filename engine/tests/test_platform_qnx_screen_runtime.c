@@ -162,6 +162,189 @@ cleanup:
     platform_destroy(platform);
 }
 
+TEST(qnx_screen_monitor_enumeration_matches_native_displays)
+{
+    const PlatformConfig config = {
+        .width = 64, .height = 64, .title = "Break QNX Screen monitor runtime"
+    };
+    Platform *platform = platform_create(&config);
+    screen_context_t context;
+    screen_window_t window;
+    screen_display_t *displays = NULL;
+    screen_display_t current = NULL;
+    MonitorInfo invalid;
+    MonitorInfo zero;
+    int native_count = 0;
+    int current_result;
+    u32 count;
+    u32 expected_count;
+    u32 i;
+
+    if (platform == NULL) {
+        runtime_failure("platform_create failed in monitor runtime");
+        return;
+    }
+    context = (screen_context_t)platform_display_native(platform);
+    window = (screen_window_t)platform_surface_native(platform);
+    count = platform_get_monitor_count(platform);
+    if (count == 0u || count > PLATFORM_MAX_MONITORS) {
+        runtime_failure("Screen monitor count is zero or exceeds the public bound");
+        goto cleanup;
+    }
+    if (screen_get_context_property_iv(context, SCREEN_PROPERTY_DISPLAY_COUNT,
+                                       &native_count) != 0 ||
+        native_count <= 0 || native_count > 64) {
+        runtime_failure("native Screen display count is unavailable or unsafe");
+        goto cleanup;
+    }
+    expected_count = native_count > PLATFORM_MAX_MONITORS
+                         ? (u32)PLATFORM_MAX_MONITORS
+                         : (u32)native_count;
+    if (count != expected_count) {
+        runtime_failure("Platform and native Screen display counts differ");
+        goto cleanup;
+    }
+    displays = (screen_display_t *)calloc((usize)native_count, sizeof(*displays));
+    if (displays == NULL ||
+        screen_get_context_property_pv(context, SCREEN_PROPERTY_DISPLAYS,
+                                       (void **)displays) != 0) {
+        runtime_failure("native Screen display list query failed");
+        goto cleanup;
+    }
+    current_result = screen_get_window_property_pv(window, SCREEN_PROPERTY_DISPLAY,
+                                                   (void **)&current);
+
+    for (i = 0u; i < count; ++i) {
+        MonitorInfo info;
+        screen_display_mode_t mode;
+        int size[2] = {0, 0};
+        int position[2] = {0, 0};
+        int native_dpi[2] = {0, 0};
+        int physical[2] = {0, 0};
+        int native_type = 0;
+        int dpi_result;
+        int physical_result;
+        int mode_result;
+        int name_result;
+        char native_name[64] = {0};
+        const char *dpi_source;
+        f32 expected_dpi;
+        i32 expected_scale;
+        bool expected_primary;
+
+        if (displays[i] == NULL) {
+            runtime_failure("native Screen returned a NULL display handle");
+            continue;
+        }
+        memset(&info, 0, sizeof(info));
+        if (!platform_get_monitor_info(platform, i, &info)) {
+            runtime_failure("Platform monitor info query failed");
+            continue;
+        }
+        if (screen_get_display_property_iv(displays[i], SCREEN_PROPERTY_SIZE, size) != 0 ||
+            size[0] <= 0 || size[1] <= 0) {
+            runtime_failure("native Screen display SIZE is invalid");
+            continue;
+        }
+        if (screen_get_display_property_iv(displays[i], SCREEN_PROPERTY_POSITION,
+                                           position) != 0) {
+            runtime_failure("native Screen display POSITION query failed");
+            continue;
+        }
+        if (info.width != (u32)size[0] || info.height != (u32)size[1] ||
+            info.x != position[0] || info.y != position[1]) {
+            runtime_failure("Platform monitor geometry differs from native Screen");
+        }
+
+        memset(&mode, 0, sizeof(mode));
+        mode_result = screen_get_display_property_pv(displays[i], SCREEN_PROPERTY_MODE,
+                                                     (void **)&mode);
+        if (mode_result == 0 &&
+            (mode.flags & SCREEN_DISPLAY_MODE_REFRESH_VALID) != 0u &&
+            mode.refresh > 0u) {
+            if (info.refresh_rate != mode.refresh) {
+                runtime_failure("Platform refresh differs from the native display mode");
+            }
+        } else if (info.refresh_rate != 0u) {
+            runtime_failure("unsupported refresh was not degraded to zero");
+        }
+
+        dpi_result = screen_get_display_property_iv(displays[i], SCREEN_PROPERTY_DPI,
+                                                    native_dpi);
+        physical_result = screen_get_display_property_iv(
+            displays[i], SCREEN_PROPERTY_PHYSICAL_SIZE, physical);
+        if (dpi_result == 0 && native_dpi[0] > 0 && native_dpi[1] > 0) {
+            expected_dpi = (f32)native_dpi[0];
+            dpi_source = "screen-dpi";
+        } else if (physical_result == 0 && physical[0] > 0 && physical[1] > 0) {
+            expected_dpi = (f32)size[0] * 25.4f / (f32)physical[0];
+            dpi_source = "physical-size";
+        } else {
+            expected_dpi = 96.0f;
+            dpi_source = "logical-fallback";
+        }
+        expected_scale = (i32)((expected_dpi + 48.0f) / 96.0f);
+        if (expected_scale < 1) expected_scale = 1;
+        if (fabs((double)info.dpi - (double)expected_dpi) > 0.01 ||
+            info.scale != expected_scale) {
+            runtime_failure("Platform DPI/scale does not match native data or explicit fallback");
+        }
+
+        name_result = screen_get_display_property_cv(
+            displays[i], SCREEN_PROPERTY_ID_STRING, (int)sizeof(native_name), native_name);
+        native_name[sizeof(native_name) - 1u] = '\0';
+        if (name_result == 0 && native_name[0] != '\0') {
+            if (strcmp(info.name, native_name) != 0) {
+                runtime_failure("Platform monitor name differs from Screen ID_STRING");
+            }
+        } else {
+            char expected_name[64];
+            (void)snprintf(expected_name, sizeof(expected_name), "Screen %u",
+                           (unsigned)(i + 1u));
+            if (strcmp(info.name, expected_name) != 0) {
+                runtime_failure("missing monitor name did not use the explicit fallback");
+            }
+        }
+
+        expected_primary = current_result == 0 && current != NULL
+                               ? displays[i] == current
+                               : i == 0u;
+        if (info.primary != expected_primary) {
+            runtime_failure("Platform primary flag differs from the window display/default");
+        }
+        if (count == 1u && !info.primary) {
+            runtime_failure("a sole Screen display must be primary");
+        }
+
+        (void)screen_get_display_property_iv(displays[i], SCREEN_PROPERTY_TYPE,
+                                             &native_type);
+        printf("\n  Monitor %u: name=%s type=0x%x position=(%d,%d) size=%ux%u "
+               "refresh=%u dpi=%.1f source=%s scale=%d primary=%u "
+               "physical=%dx%dmm mode-format=%d\n",
+               (unsigned)i, info.name, native_type, info.x, info.y, info.width,
+               info.height, info.refresh_rate, (double)info.dpi, dpi_source,
+               info.scale, info.primary ? 1u : 0u, physical[0], physical[1],
+               mode_result == 0 ? mode.format : -1);
+        if (native_type == SCREEN_DISPLAY_TYPE_VIRTUAL &&
+            (mode_result != 0 ||
+             (mode.flags & SCREEN_DISPLAY_MODE_FORMAT_VALID) == 0u ||
+             mode.format != SCREEN_FORMAT_RGBA8888)) {
+            runtime_failure("current virtual display mode is not native RGBA8888");
+        }
+    }
+
+    memset(&invalid, 0xa5, sizeof(invalid));
+    memset(&zero, 0, sizeof(zero));
+    if (platform_get_monitor_info(platform, count, &invalid) ||
+        memcmp(&invalid, &zero, sizeof(invalid)) != 0) {
+        runtime_failure("out-of-range monitor query did not fail with a zeroed output");
+    }
+
+cleanup:
+    free(displays);
+    platform_destroy(platform);
+}
+
 int main(void)
 {
     const PlatformConfig probe = {
@@ -175,6 +358,7 @@ int main(void)
     platform_destroy(platform);
     printf("=== Running Tests ===\n");
     RUN_TEST(qnx_screen_native_window_lifecycle);
+    RUN_TEST(qnx_screen_monitor_enumeration_matches_native_displays);
     RUN_TEST(qnx_screen_initialization_failure_cleans_up);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

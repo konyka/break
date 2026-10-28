@@ -1,6 +1,13 @@
 # 蒙皮网格运行时 LOD 设计
 
-状态：实现中。R707a 已完成 3.1 纯 CPU 模块与 3.3 缓存键（`renderer/lod_skin.{c,h}`、`lod_cache_generate_ex`，未接入 `main.c`）；3.2、3.4、3.5 待做。用户已明确要求「现在就做，作为基本功能」。auto 模式下按下文推荐方案执行，偏差记录在 `docs/Implementation_Status.md`。
+状态：已实现。R707a：3.1 纯 CPU 模块与 3.3 缓存键（`renderer/lod_skin.{c,h}`）；R707b：直接绘制的 `rhi_cmd_draw_indexed_instanced_base`；R707c：3.2、3.4、3.5 接入 `main.c`（`SkinLod`、`BREAK_STRESS_LOD_SKIN`、`SKIN_LOD_STATS`），细节与验证见 `docs/Implementation_Status.md`。
+
+与下文的偏差（R707c）：
+- 姿势按片段均分配额（每个有通道的片段 ⌊8 / 片段数⌋ 个，至少 1 个），在片段时间轴 `[0, duration)` 上均匀取；绑定姿势由 `lod_generate_levels_skinned` 自己计入，不额外传入。
+- 选级用的误差是绑定空间的实测误差（`rel_error · scale`），不再乘当前姿势的关节缩放（压力场景与常见资产关节无缩放）；包围球用当前姿势。
+- 淡入淡出的 GLSL 片元：clustered 蒙皮管线与实例化变体共用同一个 `LOD_FADE` 片元对象；D3D12 clustered 蒙皮用 `pbr_clustered_lodfade_hlsl.frag`，延迟用 `gbuffer_lodfade_hlsl.frag`，只新增了三个顶点副本和 `skinned_mrt_lodfade_hlsl.frag`。
+- 压力场景每根管 4 个关节、4 个通道（根平移、基部旋转、中段平移、中段旋转；j1 与 j2 共用蒙皮矩阵，实际两个弯折点），N ≤ 16 正好用满 64 通道；场景已带骨骼时忽略该开关。
+- 蒙皮网格仍不剔除、不进阴影；`tri_count` 统计改为实际绘制的三角形（淡化时两级之和）。
 
 ## 1. 现状（已核实）
 

@@ -1,4 +1,4 @@
-# QNX 平台兼容（feat/qnx-compat，2026-10-27 更新）
+# QNX 平台兼容（feat/qnx-compat，2026-10-28 更新）
 
 当前里程碑包括：**默认 headless 兼容层、引擎 QNX Screen 原生窗口与显式
 Screen Vulkan WSI/后端编译路径、可选的 myui Screen 原生软件 PAL**。引擎核心
@@ -112,18 +112,23 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
   SIZE 事件转换为 `MY_EVENT_RESIZE`。resize 失败时旧 canvas/LCD 调用安全
   失败，不访问已释放 LCD；恢复重建保留 OOM 类别。该 myui 路径不能与 §2.6
   引擎 Platform 的 WSI resize 验收混为一谈；
-- 原生键盘、指针、滚轮和 manager close 已接入；公开的协作关闭 subtype 为
-  `MY_PAL_SCREEN_MANAGER_CLOSE=0x4d595543u`。myui E2E 通过真实 Screen
-  事件注入覆盖控件与自动重绘，不代表物理 HID 验证；
+- 原生键盘、绝对/相对指针、滚轮和 manager close 已接入；`KEY_CAP` 转换为
+  Unicode `MY_EVENT_IME_COMMIT`，与直接按键去重并拒绝非法标量。公开的协作
+  关闭 subtype 为 `MY_PAL_SCREEN_MANAGER_CLOSE=0x4d595543u`。myui E2E 通过
+  真实 Screen 事件注入覆盖控件与自动重绘，不代表物理 HID 验证；
 - command wake 会合并：仅空队列的首次投递触发唤醒，已有 pending wake 时不
   重复发送；队列真正清空才重置状态。nested command 复用同一 pending wake，
   不额外唤醒。主循环每批最多处理 64 个 queued event，随后重新调度 timer，
   避免持续投递造成 queue starvation；quit 后只对退出时已排队快照做有限
   drain，不把快照内事件直接丢弃；
-- 原生文本/IME、clipboard、显示器枚举、相对鼠标以及 GL/Vulkan
-  mount/surface 尚未实现；clipboard 明确返回 `MY_RET_NOT_SUPPORTED`。
-  `MYUI_GLES2` / `MYUI_GL_DESKTOP` / `MYUI_VULKAN` 不会因选择 Screen PAL
-  自动获得 QNX 原生挂载或 GPU 运行能力；
+- clipboard 是**每个 PAL 实例的进程内文本存储**，支持复制、定长读取和分配
+  读取，OOM 保留旧值，UTF-8 截断不拆开码点；它不是系统剪贴板。IME setter
+  保存本地状态，`KEY_CAP` 文本提交不等于操作系统预编辑、候选词或完整 IME；
+- cursor 使用真实 `screen_session_t` 和形状属性，失败时释放新建 session；
+  当前软件虚拟显示驱动在解析配置时即拒绝 `cursor`，因此运行时得到明确的
+  `MY_RET_NOT_SUPPORTED`，不能声称该 VM 已验证物理 cursor。GL/Vulkan
+  mount/surface slot 尚未实现，`MYUI_GLES2` / `MYUI_GL_DESKTOP` /
+  `MYUI_VULKAN` 不会因选择 Screen PAL 自动获得 QNX 原生挂载或 GPU 能力；
 - 不直接读取已 post 像素；现有测试在下一次 begin 后采样当前 back buffer，
   并检查非灰阶历史、post 次数/参数。当前虚拟显示器的 `screen_read_window`
   探针返回 ENOENT，没有最终显示读回证据，不据此声称物理显示内容正确。
@@ -147,6 +152,11 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
 - `platform_poll` 非阻塞处理 CLOSE、POINTER（坐标/左中右键/垂直滚轮）和
   KEYBOARD（`screen_keymap.h` 映射）。尺寸查询实时读取
   `SCREEN_PROPERTY_SIZE`；键映射常量以 `_Static_assert` 对照 QNX 真头文件；
+- 显示器通过 `SCREEN_PROPERTY_DISPLAY_COUNT/DISPLAYS` 枚举，最多向公共 API
+  暴露 `PLATFORM_MAX_MONITORS` 个；读取名称、位置、分辨率、刷新率和 DPI。
+  当前窗口的 DISPLAY 决定 primary，未关联时使用首个显示器；DPI 优先使用
+  原生值，再以物理毫米数计算，极端值不直接转 int。查询失败返回 0/false
+  并清零输出；这些显示器查询不属于 §2.5 的 myui clipboard/IME 能力；
 - WSI 使用 `PLATFORM_WSI_BACKEND_QNX`，不借用 X11 标识。
   `platform_window_native/surface_native` = `screen_window_t`，
   `platform_display_native` = `screen_context_t`，直接传给
@@ -191,6 +201,12 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
 | myui Screen 非阻塞与 pending（2026-10-27） | 故障注入发现 dequeue/post 未传 `SCREEN_DONT_BLOCK`，post 的 `EWOULDBLOCK` 未映射为 pending，见 `/tmp/qnx-screen-nonblock-red.log` | dequeue/post 显式非阻塞；pending 时 timer 继续推进，post 重试累计未显示 damage；普通及 ASan/UBSan failures 均 15/15 |
 | myui 多 dirty bounding box（2026-10-27） | 新增真实 dummy PAL + soft canvas 用例只收到首个 dirty，Linux 239 项中 1 项失败，见 `/tmp/build-linux-myui-dirty/logs/test-red.log` | `my_window_paint()` 汇总全部 dirty 的 bounding box，不改公共 API；Linux window manager 239/239 |
 | myui Screen 双缓冲与 RGBA（2026-10-27） | 交错不相交 dirty 丢失历史像素；native RGBA 和非灰阶断言在 BGRA 实现上红灯，见 `/tmp/qnx-screen-history-red2.log`、`/tmp/qnx-screen-rgba-project-red.log` | 每次 acquire 恢复完整 CPU shadow；原生/LCD 切换 RGBA，软件像素路径补齐非灰阶与混合支持；6 个 Screen 命令普通及 ASan/UBSan 各 33/33，普通 100 轮 present 均 3/3 |
+| 上游 mobile-layer QNX 链接（2026-10-27） | 合并后默认、Vulkan、Screen 和 ARM 构建均在 mobile-layer 链接处报 `__isfinitef` 未定义 | QNX 条件链接 `libm`，四个 mobile-layer 目标先验证链接，再恢复各配置全量构建；不改变其他平台依赖 |
+| 上游 fake Screen SDK（2026-10-27） | 合并后的宿主编译缺少 `SCREEN_EVENT_MANAGER`、WINDOW/SUBTYPE 和 `screen_get_event_property_pv`，见 `/tmp/linux-merged-screen-fake-red.log` | fake SDK 补齐声明和事件注入；宿主 manager 来源/subtype 过滤与上游窗口模式、mobile/null-safety 合计 10/10，见 `/tmp/linux-merged-screen-focused-green2.log` |
+| 图表与软件光栅 UB（2026-10-28） | UBSan 复现负颜色通道插值和超大 float→int32 转换；新增极端范围用例在修复前同样失败 | 有符号通道插值、极端范围安全采样和饱和坐标转换；chart 普通及 ASan/UBSan 各 59/59，QNX 软件后端普通及 ASan/UBSan 各 50/50 |
+| Screen 显示器与 DPI（2026-10-28） | 原实现无枚举，宿主新增用例出现 49 个断言失败；极端物理尺寸另复现 float→int UB | 真实显示器枚举、主屏关联、失败清零及 DPI 饱和换算；宿主普通及 ASan/UBSan 各 12/12，目标显示器 runtime 各 3/3 |
+| myui 输入能力（2026-10-28） | 剪贴板/IME/cursor 占位实现红灯；初版 keycap 文本有重复事件，虚拟驱动的 cursor flush 返回 ENOTSUP | 进程内剪贴板、非原生 IME 状态、Unicode 去重、相对位移和真实 session 路径；普通及 ASan/UBSan runtime 14/14、failures 17/17。当前驱动不支持 cursor，验证的是明确错误与资源回收，不是正向形状验收 |
+| QNX 完整部署（2026-10-28） | 新测试盘首轮 144/157，12 项缺二进制/动态库，网络压测另有一次丢包，独立复测 17/17 | 部署补齐且保留真实失败记录；QNX 默认清单 157/157、Vulkan 清单 158/158；不删除失败项或以编译替代目标执行 |
 
 ## 4. 构建
 
@@ -219,7 +235,10 @@ cmake --build /tmp/build-qnx -j
 2. 部署清单中的二进制，并保留源目录形状：`engine/src` → `<root>/src`、
    `engine/shaders` → `<root>/shaders`、`engine/tests/data` →
    `<root>/tests/data`、`engine/assets` → `<root>/assets`。仅复制
-   `tests/data` 到根目录会生成错误的 `<root>/data`；全新 VM 上不能依赖旧目录；
+   `tests/data` 到根目录会生成错误的 `<root>/data`；全新 VM 上不能依赖旧目录。
+   二进制须按清单逐项部署，不能只复制 `test_*`：demo、verify 和 fuzz 可执行
+   文件同样在清单中；默认配置也可能需要 `libscreen.so.1`，ABI/Vulkan 配置
+   还需要 `libvulkan.so.1`、`libshaderc_shared.so.1` 和 `libc++.so.2`；
 3. 将 `<根父目录>/src` 链接到 `<root>/src`（例如 `/tmp/bt` 使用 `/tmp/src`），
    满足部分测试的 `../src` 回退读取。默认/Vulkan 配置应使用不同部署根，
    避免覆盖二进制和混用 shaderc；不同源码树并发验证应使用独立 VM；
@@ -227,11 +246,15 @@ cmake --build /tmp/build-qnx -j
    `python3 engine/tools/qnx/gen_target_cmds.py <build-dir> "$PWD/engine" <root> cmds.txt`。
    它复刻 `-LE "graphics|fuzz"`，剔除宿主 CMake 脚本测试并保留 WILL_FAIL；
 5. 将清单复制为 `<root>/cmds.txt`，目标侧运行：
-   `BREAK_QNX_TARGET_ROOT=<root> sh <root>/run_target_suite.sh cmds.txt`。
+   `BREAK_QNX_TARGET_ROOT=<root> timeout 1800 sh <root>/run_target_suite.sh cmds.txt`。
    运行器设置 8 MiB 栈和正确的动态库路径，EXPECT_FAIL 的非零退出计为通过；
 6. graphics 标签测试不在清单内，必须另外部署和运行（见 §4.3/§4.4）。部署前用
    `df -h` 和 `df -g` 同时检查块与 inode；QNX6 可在有空闲块时因 inode 用尽
    返回 ENOSPC。交叉构建目录中的 QNX ELF 不能由宿主 CTest 直接执行。
+   本轮改为独立 VM 叠加系统盘和新增的 4 GiB 测试盘（65536 inode），挂载于
+   `/data/break-tests`，未改写原 VM 磁盘。基础镜像没有 `mkqnx6fs` 时，可从
+   SDP 的 `<arch>/sbin` 部署该工具；`mkqnx6fs` 和 `mount` 只允许用于明确新增
+   的空白测试盘，不得对原系统盘或已有测试盘执行格式化/强制修复。
 
 ### 4.2 宿主 QNX 平台模拟（无 SDP 时验证接线）
 
@@ -553,6 +576,44 @@ quit/fairness 修复，不能替代上述同树 33/33。
   accepted post、30 秒 soak 或交叉构建成功都不覆盖这些范围。主机 CTest
   也不能执行 QNX ELF，所有目标测试均须在目标侧运行并保留远端 timeout。
 
+### 5.4 当前候选源码回归（2026-10-28）
+
+以下是本轮实际执行的证据，后续合入新的上游提交后仍须重新执行相应门禁：
+
+- Linux 普通 **185/185**、graphics **4/4**、Clang ASan/UBSan **185/185**、
+  Clang TSan **185/185**；`test_d3d12_dependency_gate` 是 Windows-only 设计内
+  跳过。ASan/UBSan 使用 32 MiB 测试进程栈、`detect_leaks=1` 和
+  `halt_on_error=1`；Clang 消毒器构建关闭可选 IPO/LTO，未关闭消毒器或失败用例；
+- QNX x86_64 默认清单 **157/157**、完整 Vulkan 清单 **158/158**，均在实际
+  Neutrino 目标侧执行；目标 shaderc **2/2**。headless/CPU/WSI 契约和 shaderc
+  结果不构成 GPU 证据；
+- myui Screen 六个定向命令在普通与 ASan/UBSan 下各 **40/40**：runtime 14、
+  failures 17、concurrency 2、present 3、E2E 1、stability 3。引擎显示器
+  runtime 各 3/3、输入/manager 各 4/4，软件后端各 50/50；宿主 fake Screen
+  普通及 ASan/UBSan 各 12/12。没有消毒器报告；
+- 两种配置各完成 500/500 生命周期、1500 帧/posts，context 500/500、
+  events 1000/1000、windows 500/500、buffer_sets 1000/1000，
+  `live_allocation_errors=0`。30 秒长稳数据如下，不同配置不直接比较性能：
+
+| 30 秒 throttled soak | 普通 | ASan/UBSan |
+|----------------------|------|------------|
+| commands（submitted=executed=destroyed） | 422,432 | 409,504 |
+| frames=public posts=native accepted posts | 1,549 | 1,580 |
+| `run_elapsed_us` | 30,011,670 | 30,003,900 |
+| failed / FIFO errors / errors / watchdog | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+
+- aarch64le 默认、Vulkan、Screen 三种全树交叉构建成功，`file` 确认是
+  AArch64 QNX ELF；仍然没有 ARM 目标机运行证据。QNX TSan runtime 也未发现；
+- `vulkaninfo --summary` 返回 `ERROR_INITIALIZATION_FAILED`，`test_vulkan`
+  在设备创建时报告缺少 `VK_KHR_surface`，见本地临时日志
+  `build-validation/qnx-vulkan-current-gpu-probe.log`。物理 GPU/ICD、物理
+  HID/显示器、最终显示读回、完整 OS clipboard/IME 和 myui GL/Vulkan mount
+  仍未验收。软件虚拟驱动还在配置解析时拒绝 `cursor`，所以 cursor 只验证了
+  `NOT_SUPPORTED` 与资源回收，未验证正向物理形状；
+- 本节的 `build-validation` 路径均为被 `.gitignore` 覆盖的本地临时日志，
+  不是随仓库归档的收据。上述范围不能推出全部 QNX 功能、绝对最优、零泄漏或
+  零 crash，也不满足原始的全功能合入主分支门禁。
+
 ## 6. 效率验证（test_qnx_perf_smoke）
 
 以下为历史吞吐下限断言（刻意宽松，sanitizer/慢 CI 下仍成立）与当时的
@@ -744,13 +805,14 @@ FIFO 交付，不能把无限新生产理解为退出后仍持续消费。上述
    （§5.1）；最新修复和上游合并后的 Linux、QNX x86_64 默认/Vulkan 完整套件
    仍须重验。aarch64le 默认/Vulkan 交叉构建已成功，但仍只有 COMPILED，需
    目标机 runtime；
-2. Screen 分层验收：myui 同树 6 个定向命令普通及 ASan/UBSan 各 33/33，
-   引擎 input/manager 各 4/4，已包含异源/未知 manager subtype 负向过滤；
-   当前虚拟显示器的 `screen_read_window` 返回 ENOENT，物理 HID/物理显示器
-   交互和最终显示读回仍未覆盖；
-3. myui Screen 能力补齐：原生文本/IME、clipboard、显示器枚举、相对鼠标
-   尚未实现；clipboard 当前明确返回 `MY_RET_NOT_SUPPORTED`，不能把 dummy
-   的可控 clipboard 契约当成 Screen 原生实现；
+2. Screen 分层验收：myui 同树 6 个定向命令普通及 ASan/UBSan 各 40/40，
+   引擎显示器 runtime 各 3/3、input/manager 各 4/4，已包含异源/未知
+   manager subtype 负向过滤；当前虚拟显示器的 `screen_read_window` 返回
+   ENOENT，物理 HID/物理显示器交互和最终显示读回仍未覆盖；
+3. myui Screen 已有进程内 clipboard、非原生 IME 状态、keycap 文本和相对
+   位移，引擎已有显示器枚举；这些不等于完整 OS clipboard/IME。当前虚拟
+   显示驱动拒绝 cursor，后续仍需在支持该能力的驱动/硬件上验证正向形状，
+   不能把 dummy 的可控 clipboard 或不支持分支当成原生能力验收；
 4. GL/Vulkan/GPU/ICD 里程碑：Screen PAL 的 GL/Vulkan mount/surface slot
    尚未实现；显式 Vulkan canvas 可编译但无 QNX GPU 证据。安装目标侧 Vulkan
    ICD 或提供真实 GPU 后重跑 `test_vulkan`、myui 挂载与交换链/present 路径；

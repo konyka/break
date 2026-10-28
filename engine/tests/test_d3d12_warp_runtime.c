@@ -19,6 +19,15 @@
 #include <renderer/gpucull.h>
 #include <renderer/occlusion_cull.h>
 #include <renderer/ibl.h>
+#include <renderer/taa.h>
+#include <renderer/ssr.h>
+#include <renderer/dof.h>
+#include <renderer/ssgi.h>
+#include <renderer/lens_flare.h>
+#include <renderer/motion_blur.h>
+#include <renderer/contact_shadow.h>
+#include <renderer/color_grade.h>
+#include <renderer/lens_effects.h>
 #include <stdlib.h>
 #include <math/math.h>
 #include <math.h>
@@ -11654,6 +11663,332 @@ TEST(rhi_sampler_filter_and_address_mode_reach_the_shader) {
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
  * even if the pixels happen to survive it. */
+/* FS3: *_resize recreates only the size-dependent targets. Pipeline handles
+ * (index + generation) must survive unchanged -- a recompile would hand out a
+ * new generation -- and every target must report the new size. */
+static int fs3_same_handle(RHIHandle a, RHIHandle b) {
+    return a.index == b.index && a.generation == b.generation;
+}
+static int fs3_fbo_is(const RHIOffscreenFBO *f, u32 w, u32 h) {
+    u32 tw = 0u, th = 0u;
+    if (!rhi_handle_valid(f->fb) || f->width != w || f->height != h) {
+        printf("  FAIL: fbo %ux%u (valid=%d), expected %ux%u\n", f->width,
+               f->height, rhi_handle_valid(f->fb) ? 1 : 0, w, h);
+        return 0;
+    }
+    if (!rhi_texture_get_size(g_dev, f->color_tex, &tw, &th) || tw != w || th != h) {
+        printf("  FAIL: colour texture %ux%u, expected %ux%u\n", tw, th, w, h);
+        return 0;
+    }
+    return 1;
+}
+
+TEST(post_process_resize_rebuilds_only_targets_and_still_blooms) {
+    static unsigned char grey[4 * 4 * 4];
+    PostProcess pp;
+    RHIPipeline extract, blur, composite, tex;
+    RHISampler sampler;
+    RHITextureDesc td;
+    RHITexture src;
+    RHICmdBuffer *cmd;
+    u16 comp[12 * 6 * 4];
+    int i;
+    memset(grey, 128, sizeof(grey));
+    for (i = 3; i < (int)sizeof(grey); i += 4) grey[i] = 255;
+    memset(&td, 0, sizeof(td));
+    td.width = 4u; td.height = 4u;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = grey;
+    src = rhi_texture_create(g_dev, &td);
+    ASSERT_TRUE(rhi_handle_valid(src));
+
+    ASSERT_TRUE(post_process_init(&pp, g_dev, 8u, 8u));
+    extract = pp.extract_pipe; blur = pp.blur_pipe;
+    composite = pp.composite_pipe; tex = pp.tex_pipe;
+    sampler = pp.sampler;
+    ASSERT_TRUE(fs3_fbo_is(&pp.fbo_composite, 8u, 8u));
+    ASSERT_TRUE(fs3_fbo_is(&pp.fbo_ping, 4u, 4u));
+
+    ASSERT_TRUE(post_process_resize(&pp, g_dev, 12u, 6u));
+    ASSERT_TRUE(pp.ready);
+    ASSERT_TRUE(fs3_same_handle(pp.extract_pipe, extract));
+    ASSERT_TRUE(fs3_same_handle(pp.blur_pipe, blur));
+    ASSERT_TRUE(fs3_same_handle(pp.composite_pipe, composite));
+    ASSERT_TRUE(fs3_same_handle(pp.tex_pipe, tex));
+    ASSERT_TRUE(fs3_same_handle(pp.sampler, sampler));
+    ASSERT_TRUE(pp.loc_threshold >= 0);
+    ASSERT_TRUE(pp.loc_bloom_strength >= 0);
+    ASSERT_TRUE(fs3_fbo_is(&pp.fbo_composite, 12u, 6u));
+    ASSERT_TRUE(fs3_fbo_is(&pp.fbo_ping, 6u, 3u));
+    ASSERT_TRUE(fs3_fbo_is(&pp.fbo_pong, 6u, 3u));
+
+    /* The grey-in, grey-out check of post_process_initialises_and_blits_on_
+     * d3d12, now through the resized chain. */
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    post_process_apply(&pp, cmd, src, 12u, 6u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+    memset(comp, 0, sizeof(comp));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, pp.fbo_composite.color_tex,
+                                        comp, sizeof(comp)));
+    for (i = 0; i < 12 * 6 * 4; i += 4) {
+        float r = warp_half_to_float(comp[i + 0]);
+        float b = warp_half_to_float(comp[i + 2]);
+        if (!(r > 0.495f && r < 0.51f))
+            printf("  FAIL: composite texel %d r=%f\n", i / 4, (double)r);
+        ASSERT_TRUE(r > 0.495f && r < 0.51f);
+        ASSERT_TRUE(b > 0.495f && b < 0.51f);
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    post_process_shutdown(&pp);
+    rhi_texture_destroy(g_dev, src);
+}
+
+TEST(taa_resize_keeps_the_pipeline_resets_history_and_resolves) {
+    static unsigned char curr[6 * 4 * 4];
+    static float depth[6 * 4];
+    static u16 out[6 * 4 * 4];
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    TAASystem taa;
+    RHIPipeline pipe;
+    RHISampler sampler;
+    RHITextureDesc tdesc;
+    RHITexture ctex, dtex;
+    RHICmdBuffer *cmd;
+    int i;
+    for (i = 0; i < 6 * 4; ++i) {
+        unsigned char v = (i & 1) ? 200u : 40u;
+        curr[i * 4 + 0] = v; curr[i * 4 + 1] = v; curr[i * 4 + 2] = v;
+        curr[i * 4 + 3] = 255u;
+        depth[i] = 0.5f;
+    }
+    ASSERT_TRUE(taa_init(&taa, g_dev, 8u, 8u));
+    pipe = taa.resolve_pipe; sampler = taa.sampler;
+    /* Pretend frames ran: history is live and the ping-pong sits on slot 1. */
+    taa.first_frame = false;
+    taa.history_idx = 1;
+
+    ASSERT_TRUE(taa_resize(&taa, g_dev, 6u, 4u));
+    ASSERT_TRUE(taa.ready);
+    ASSERT_TRUE(fs3_same_handle(taa.resolve_pipe, pipe));
+    ASSERT_TRUE(fs3_same_handle(taa.sampler, sampler));
+    ASSERT_TRUE(taa.loc_first_frame >= 0);
+    ASSERT_TRUE(fs3_fbo_is(&taa.history_fbo[0], 6u, 4u));
+    ASSERT_TRUE(fs3_fbo_is(&taa.history_fbo[1], 6u, 4u));
+    /* The old history belongs to another size: the next resolve must not
+     * blend it. */
+    ASSERT_TRUE(taa.first_frame);
+    ASSERT_EQ(taa.history_idx, 0);
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 6u; tdesc.height = 4u; tdesc.mip_levels = 1u;
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.data = curr; ctex = rhi_texture_create(g_dev, &tdesc);
+    tdesc.format = RHI_FORMAT_R32_FLOAT;
+    tdesc.data = depth; dtex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(ctex));
+    ASSERT_TRUE(rhi_handle_valid(dtex));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    taa_resolve(&taa, cmd, ctex, dtex, RHI_HANDLE_NULL, identity, identity,
+                identity, 6u, 4u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(!taa.first_frame);
+
+    /* First frame after resize: the current colour comes through untouched
+     * into the RGBA16F history target. */
+    memset(out, 0, sizeof(out));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, taa_get_output(&taa), out,
+                                        sizeof(out)));
+    for (i = 0; i < 6 * 4; ++i) {
+        float want = (float)((i & 1) ? 200 : 40) / 255.0f;
+        float got = warp_half_to_float(out[i * 4 + 0]);
+        if (fabsf(got - want) > 0.004f)
+            printf("  FAIL: taa texel %d = %f, expected %f\n", i,
+                   (double)got, (double)want);
+        ASSERT_TRUE(fabsf(got - want) <= 0.004f);
+    }
+    taa_shutdown(&taa);
+    rhi_texture_destroy(g_dev, ctex);
+    rhi_texture_destroy(g_dev, dtex);
+}
+
+TEST(fxaa_and_combined_aa_resize_keep_pipelines_and_resize_targets) {
+    FXAASystem fx;
+    CombinedAA caa;
+    RHIPipeline fx_pipe, caa_pipe;
+    memset(&fx, 0, sizeof(fx));
+    ASSERT_TRUE(fxaa_init(&fx, g_dev, 8u, 8u));
+    fx_pipe = fx.fxaa_pipe;
+    ASSERT_TRUE(fxaa_resize(&fx, g_dev, 10u, 6u));
+    ASSERT_TRUE(fx.ready);
+    ASSERT_TRUE(fs3_same_handle(fx.fxaa_pipe, fx_pipe));
+    ASSERT_TRUE(fs3_fbo_is(&fx.fxaa_fbo, 10u, 6u));
+    fxaa_shutdown(&fx);
+
+    ASSERT_TRUE(combined_aa_init(&caa, g_dev, 8u, 8u));
+    ASSERT_TRUE(caa.use_combined);
+    caa_pipe = caa.combined_pipe;
+    caa.first_frame = false;
+    caa.history_idx = 1;
+    ASSERT_TRUE(combined_aa_resize(&caa, g_dev, 10u, 6u));
+    ASSERT_TRUE(caa.ready);
+    ASSERT_TRUE(fs3_same_handle(caa.combined_pipe, caa_pipe));
+    ASSERT_TRUE(fs3_fbo_is(&caa.history_fbo[0], 10u, 6u));
+    ASSERT_TRUE(fs3_fbo_is(&caa.history_fbo[1], 10u, 6u));
+    ASSERT_TRUE(caa.first_frame);
+    ASSERT_EQ(caa.history_idx, 0);
+    combined_aa_shutdown(&caa);
+}
+
+/* Every other migrated system: pipelines kept and targets at the new size.
+ * SSGI also checks the failure rule: for 0x0 its half-res target clamps to
+ * 1x1 and is created, then the full-res one is refused by the RHI -- the
+ * created one must be rolled back and the previous targets stay live. */
+TEST(every_post_system_resize_keeps_pipelines_and_resizes_targets) {
+    static SSAOSystem ssao; static SSRSystem ssr; static DOFSystem dof;
+    static VolumetricSystem vol; static SSGISystem ssgi;
+    static LensFlareSystem lf; static SharpenSystem sh;
+    static MotionBlurSystem mb; static ContactShadowSystem cs;
+    static SSSSystem sss; static UpscaleSystem ups;
+    static ColorGradeSystem cg; static GodRaysSystem gr;
+    static DebugVizSystem dv; static LensEffectsSystem le;
+    static CombinedColor cc;
+    RHIPipeline p0, p1;
+    RHIHandle keep;
+
+    ASSERT_TRUE(ssao_init(&ssao, g_dev, 8u, 8u));
+    p0 = ssao.ssao_pipe; p1 = ssao.blur_pipe;
+    ASSERT_TRUE(ssao_resize(&ssao, g_dev, 12u, 6u));
+    ASSERT_TRUE(ssao.ready && fs3_same_handle(ssao.ssao_pipe, p0) &&
+                fs3_same_handle(ssao.blur_pipe, p1));
+    ASSERT_TRUE(fs3_fbo_is(&ssao.ssao_fbo, 6u, 3u) && fs3_fbo_is(&ssao.blur_fbo, 6u, 3u));
+    ssao_shutdown(&ssao);
+
+    ASSERT_TRUE(ssr_init(&ssr, g_dev, 8u, 8u));
+    p0 = ssr.ssr_pipe;
+    ASSERT_TRUE(ssr_resize(&ssr, g_dev, 12u, 6u));
+    ASSERT_TRUE(ssr.ready && fs3_same_handle(ssr.ssr_pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&ssr.ssr_fbo, 12u, 6u));
+    ssr_shutdown(&ssr);
+
+    ASSERT_TRUE(dof_init(&dof, g_dev, 8u, 8u));
+    p0 = dof.dof_pipe;
+    ASSERT_TRUE(dof_resize(&dof, g_dev, 12u, 6u));
+    ASSERT_TRUE(dof.ready && fs3_same_handle(dof.dof_pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&dof.dof_fbo, 6u, 3u));
+    dof_shutdown(&dof);
+
+    ASSERT_TRUE(volumetric_init(&vol, g_dev, 8u, 8u));
+    p0 = vol.vol_pipe;
+    ASSERT_TRUE(volumetric_resize(&vol, g_dev, 12u, 6u));
+    ASSERT_TRUE(vol.ready && fs3_same_handle(vol.vol_pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&vol.vol_fbo, 12u, 6u));
+    volumetric_shutdown(&vol);
+
+    ASSERT_TRUE(ssgi_init(&ssgi, g_dev, 8u, 8u));
+    p0 = ssgi.ssgi_pipe; p1 = ssgi.ssgi_blur_pipe;
+    ASSERT_TRUE(ssgi_resize(&ssgi, g_dev, 12u, 6u));
+    ASSERT_TRUE(ssgi.ready && fs3_same_handle(ssgi.ssgi_pipe, p0) &&
+                fs3_same_handle(ssgi.ssgi_blur_pipe, p1));
+    ASSERT_TRUE(fs3_fbo_is(&ssgi.ssgi_fbo, 6u, 3u) &&
+                fs3_fbo_is(&ssgi.ssgi_blur_fbo, 12u, 6u));
+    keep = ssgi.ssgi_fbo.fb;
+    ASSERT_TRUE(!ssgi_resize(&ssgi, g_dev, 0u, 0u));
+    ASSERT_TRUE(ssgi.ready && fs3_same_handle(ssgi.ssgi_fbo.fb, keep));
+    ASSERT_TRUE(fs3_fbo_is(&ssgi.ssgi_fbo, 6u, 3u) &&
+                fs3_fbo_is(&ssgi.ssgi_blur_fbo, 12u, 6u));
+    ssgi_shutdown(&ssgi);
+
+    ASSERT_TRUE(lens_flare_init(&lf, g_dev, 8u, 8u));
+    p0 = lf.lf_pipe;
+    ASSERT_TRUE(lens_flare_resize(&lf, g_dev, 12u, 6u));
+    ASSERT_TRUE(lf.ready && fs3_same_handle(lf.lf_pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&lf.lf_fbo, 12u, 6u));
+    lens_flare_shutdown(&lf);
+
+    ASSERT_TRUE(sharpen_init(&sh, g_dev, 8u, 8u));
+    p0 = sh.pipe;
+    ASSERT_TRUE(sharpen_resize(&sh, g_dev, 12u, 6u));
+    ASSERT_TRUE(sh.ready && fs3_same_handle(sh.pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&sh.fbo, 12u, 6u));
+    sharpen_shutdown(&sh);
+
+    ASSERT_TRUE(motion_blur_init(&mb, g_dev, 8u, 8u));
+    p0 = mb.pipe;
+    ASSERT_TRUE(motion_blur_resize(&mb, g_dev, 12u, 6u));
+    ASSERT_TRUE(mb.ready && fs3_same_handle(mb.pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&mb.fbo, 12u, 6u));
+    motion_blur_shutdown(&mb);
+
+    ASSERT_TRUE(contact_shadow_init(&cs, g_dev, 8u, 8u));
+    p0 = cs.pipe;
+    ASSERT_TRUE(contact_shadow_resize(&cs, g_dev, 12u, 6u));
+    ASSERT_TRUE(cs.ready && fs3_same_handle(cs.pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&cs.fbo, 12u, 6u));
+    contact_shadow_shutdown(&cs);
+
+    ASSERT_TRUE(sss_init(&sss, g_dev, 8u, 8u));
+    p0 = sss.h_pipe; p1 = sss.v_pipe;
+    ASSERT_TRUE(sss_resize(&sss, g_dev, 12u, 6u));
+    ASSERT_TRUE(sss.ready && fs3_same_handle(sss.h_pipe, p0) &&
+                fs3_same_handle(sss.v_pipe, p1));
+    ASSERT_TRUE(fs3_fbo_is(&sss.fbo, 12u, 6u) && fs3_fbo_is(&sss.blur_fbo, 12u, 6u));
+    sss_shutdown(&sss);
+
+    ASSERT_TRUE(upscale_init(&ups, g_dev, 4u, 4u, 8u, 8u));
+    p0 = ups.pipe;
+    ups.first_frame = false; ups.history_idx = 1;
+    ASSERT_TRUE(upscale_resize(&ups, g_dev, 6u, 3u, 12u, 6u));
+    ASSERT_TRUE(ups.ready && fs3_same_handle(ups.pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&ups.history[0], 12u, 6u) &&
+                fs3_fbo_is(&ups.history[1], 12u, 6u));
+    ASSERT_TRUE(ups.first_frame);
+    ASSERT_EQ(ups.history_idx, 0);
+    upscale_shutdown(&ups);
+
+    ASSERT_TRUE(color_grade_init(&cg, g_dev, 8u, 8u));
+    p0 = cg.pipe;
+    ASSERT_TRUE(color_grade_resize(&cg, g_dev, 12u, 6u));
+    ASSERT_TRUE(cg.ready && fs3_same_handle(cg.pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&cg.fbo, 12u, 6u));
+    color_grade_shutdown(&cg);
+
+    ASSERT_TRUE(god_rays_init(&gr, g_dev, 8u, 8u));
+    p0 = gr.pipe;
+    ASSERT_TRUE(god_rays_resize(&gr, g_dev, 12u, 6u));
+    ASSERT_TRUE(gr.ready && fs3_same_handle(gr.pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&gr.fbo, 12u, 6u));
+    god_rays_shutdown(&gr);
+
+    ASSERT_TRUE(debug_viz_init(&dv, g_dev, 8u, 8u));
+    p0 = dv.pipe;
+    ASSERT_TRUE(debug_viz_resize(&dv, g_dev, 12u, 6u));
+    ASSERT_TRUE(dv.ready && fs3_same_handle(dv.pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&dv.fbo, 12u, 6u));
+    debug_viz_shutdown(&dv);
+
+    ASSERT_TRUE(lens_effects_init(&le, g_dev, 8u, 8u));
+    p0 = le.pipe;
+    ASSERT_TRUE(lens_effects_resize(&le, g_dev, 12u, 6u));
+    ASSERT_TRUE(le.ready && fs3_same_handle(le.pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&le.fbo, 12u, 6u));
+    lens_effects_shutdown(&le);
+
+    ASSERT_TRUE(combined_color_init(&cc, g_dev, 8u, 8u));
+    p0 = cc.combined_pipe;
+    ASSERT_TRUE(combined_color_resize(&cc, g_dev, 12u, 6u));
+    ASSERT_TRUE(cc.ready && fs3_same_handle(cc.combined_pipe, p0));
+    ASSERT_TRUE(fs3_fbo_is(&cc.output_fbo, 12u, 6u));
+    combined_color_shutdown(&cc);
+}
+
 TEST(debug_layer_reported_nothing_for_the_whole_suite) {
     UINT64 e = 0, w = 0, a = 0;
     int on = rhi_d3d12_debug_layer_counts(g_dev, &e, &w, &a);
@@ -11753,6 +12088,10 @@ int main(void) {
     RUN_TEST(gpu_timer_measures_the_gpu_time_of_a_recorded_region);
     RUN_TEST(no_vertex_input_pipelines_are_never_back_face_culled);
     RUN_TEST(rhi_sampler_filter_and_address_mode_reach_the_shader);
+    RUN_TEST(post_process_resize_rebuilds_only_targets_and_still_blooms);
+    RUN_TEST(taa_resize_keeps_the_pipeline_resets_history_and_resolves);
+    RUN_TEST(fxaa_and_combined_aa_resize_keep_pipelines_and_resize_targets);
+    RUN_TEST(every_post_system_resize_keeps_pipelines_and_resizes_targets);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

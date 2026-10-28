@@ -4,6 +4,7 @@
 #include <platform/platform_size.h>
 #include <platform/input.h>
 #include <platform/platform_text.h>
+#include <platform/window_mode.h>
 #include <core/log.h>
 #include "gamepad_linux.h"
 
@@ -12,6 +13,7 @@
 #include <wayland-egl.h>
 #include <xkbcommon/xkbcommon.h>
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
@@ -162,7 +164,7 @@ struct Platform {
     u32 width, height;
     bool should_close;
     bool configured;
-    bool is_fullscreen;
+    PlatformWindowModeState window_mode;
     i32 scale;
     i32 primary_scale;
     u32 content_scale_120;
@@ -800,6 +802,7 @@ static i32 wayland_keysym_to_engine(xkb_keysym_t ks) {
     if (ks == XKB_KEY_KP_Decimal || ks == XKB_KEY_KP_Delete) return 315; /* lensfx / CA / vig cycle */
     if (ks == XKB_KEY_Shift_L || ks == XKB_KEY_Shift_R) return 289;
     if (ks == XKB_KEY_Control_L || ks == XKB_KEY_Control_R) return 290; /* R366: anim crossfade */
+    if (ks == XKB_KEY_Alt_L || ks == XKB_KEY_Alt_R) return INPUT_KEY_ALT;
     if (ks == XKB_KEY_minus || ks == XKB_KEY_underscore)      return (i32)'-';
     if (ks == XKB_KEY_plus || ks == XKB_KEY_equal)            return (i32)'=';
     if (ks == XKB_KEY_parenleft || ks == XKB_KEY_braceleft)   return (i32)'(';
@@ -841,11 +844,51 @@ static const struct xdg_surface_listener xdg_surface_listener = {
 
 /* ---- XDG Toplevel ---- */
 
+static bool wayland_states_fullscreen(const struct wl_array *states) {
+    const uint32_t *state;
+    const uint32_t *end;
+    if (states == NULL || states->data == NULL) return false;
+    state = (const uint32_t *)states->data;
+    end = state + states->size / sizeof(uint32_t);
+    for (; state < end; state++) {
+        if (*state == XDG_TOPLEVEL_STATE_FULLSCREEN) return true;
+    }
+    return false;
+}
+
+/* FS4: the compositor's configure states are the only truth about
+ * fullscreen; they also report compositor-initiated switches. A configure
+ * that contradicts a pending request ends it (refused, or a stale configure:
+ * a later configure carrying the requested state is then taken as an
+ * external switch, so the mode still converges). */
+static void wayland_confirm_from_configure(Platform *p, const struct wl_array *states) {
+    PlatformWindowMode mode = wayland_states_fullscreen(states)
+                                  ? PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN
+                                  : PLATFORM_WINDOW_MODE_WINDOWED;
+    platform_window_mode_confirm(&p->window_mode, mode);
+    if (p->window_mode.pending && p->window_mode.requested != mode)
+        platform_window_mode_fail(&p->window_mode);
+}
+
 static void xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *tl,
                                           i32 w, i32 h, struct wl_array *states) {
     (void)tl;
-    (void)states;
     Platform *p = data;
+    PlatformWindowMode before = p->window_mode.current;
+    PlatformWindowRect saved;
+    if (getenv("BREAK_WAYLAND_TRACE"))
+        fprintf(stdout, "  FAILINFO configure %dx%d fullscreen_state=%d pending=%d requested=%d current=%d\n",
+                w, h, (int)wayland_states_fullscreen(states), (int)p->window_mode.pending,
+                (int)p->window_mode.requested, (int)p->window_mode.current);
+    wayland_confirm_from_configure(p, states);
+    if ((w <= 0 || h <= 0) &&
+        before == PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN &&
+        p->window_mode.current == PLATFORM_WINDOW_MODE_WINDOWED &&
+        platform_window_mode_restore_rect(&p->window_mode, &saved)) {
+        /* 0x0 lets the client choose: go back to the pre-fullscreen size. */
+        w = (i32)saved.width;
+        h = (i32)saved.height;
+    }
     if (w > 0 && h > 0) {
         p->width = (u32)w;
         p->height = (u32)h;
@@ -1827,6 +1870,20 @@ Platform *platform_create(const PlatformConfig *cfg) {
     xdg_toplevel_add_listener(p->toplevel, &xdg_toplevel_listener, p);
     xdg_toplevel_set_title(p->toplevel, cfg->title);
     xdg_toplevel_set_app_id(p->toplevel, "break-engine");
+    platform_window_mode_init(&p->window_mode, PLATFORM_WINDOW_MODE_WINDOWED);
+    if (cfg->undecorated) {
+        (void)platform_window_mode_set_decorated(&p->window_mode, false);
+        platform_window_mode_decoration_applied(&p->window_mode);
+    }
+    if (cfg->start_fullscreen) {
+        /* Set before the initial commit so the first configure is fullscreen;
+         * that configure (initial roundtrip below) confirms it. */
+        PlatformWindowRect windowed = {0, 0, cfg->width, cfg->height};
+        (void)platform_window_mode_request(&p->window_mode,
+                                           PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+        platform_window_mode_save_windowed(&p->window_mode, windowed, false);
+        xdg_toplevel_set_fullscreen(p->toplevel, NULL);
+    }
 
     /* Create EGL window (used by RHI for EGL/Vulkan surface) */
     p->egl_window = wl_egl_window_create(
@@ -1950,6 +2007,12 @@ PlatformWsiSurface *platform_wsi_surface(Platform *p) {
 
 /* Desktop no-ops: 桌面没有 OS 级 suspend/resume/surface-lost 事件（语义说明
  * 见 platform.h）；相应语义由 resize 与 DESTROYING 覆盖。 */
+bool platform_mobile_resize(Platform *p, u32 logical_width, u32 logical_height,
+                            u32 drawable_width, u32 drawable_height, f32 scale) {
+    (void)p; (void)logical_width; (void)logical_height;
+    (void)drawable_width; (void)drawable_height; (void)scale;
+    return false;
+}
 void platform_mobile_notify_suspend(Platform *p) { (void)p; }
 void platform_mobile_notify_resume(Platform *p) { (void)p; }
 void platform_mobile_notify_surface_lost(Platform *p) { (void)p; }
@@ -2163,15 +2226,44 @@ bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
     return false;
 }
 
-void platform_toggle_fullscreen(Platform *p) {
-    if (p == NULL || p->toplevel == NULL || p->surface == NULL) return;
-    if (p->is_fullscreen) {
-        xdg_toplevel_unset_fullscreen(p->toplevel);
-    } else {
-        xdg_toplevel_set_fullscreen(p->toplevel, NULL);
-    }
-    p->is_fullscreen = !p->is_fullscreen;
+/* Asks the compositor; the mode changes when a configure carrying (or
+ * dropping) XDG_TOPLEVEL_STATE_FULLSCREEN arrives in platform_poll. */
+bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
+    PlatformWindowModeAction action;
+    if (p == NULL || p->toplevel == NULL || p->surface == NULL ||
+        !platform_window_mode_valid(mode)) return false;
+    action = platform_window_mode_request(&p->window_mode, mode);
+    if (action == PLATFORM_WINDOW_MODE_ACTION_NONE) return true;
+    if (action == PLATFORM_WINDOW_MODE_ACTION_UNSUPPORTED) return false;
+    /* Apply the last acked configure before asking for the opposite state.
+     * Weston makes an acked configure the toplevel's current state only on a
+     * commit; if no frame was presented since the ack it compares the new
+     * request with the old state, finds nothing to change and never sends
+     * the configure that would confirm it (CI trace: set_fullscreen confirmed,
+     * unset_fullscreen right after got no configure). A commit with no new
+     * attach keeps the current buffer and only applies pending state. */
     wl_surface_commit(p->surface);
+    if (action == PLATFORM_WINDOW_MODE_ACTION_ENTER) {
+        if (p->window_mode.current == PLATFORM_WINDOW_MODE_WINDOWED) {
+            PlatformWindowRect windowed = {0, 0, p->width, p->height};
+            platform_window_mode_save_windowed(&p->window_mode, windowed, false);
+        }
+        xdg_toplevel_set_fullscreen(p->toplevel, NULL);
+    } else {
+        xdg_toplevel_unset_fullscreen(p->toplevel);
+    }
+    wl_surface_commit(p->surface);
+    wl_display_flush(p->display);
+    return true;
+}
+
+PlatformWindowMode platform_get_window_mode(Platform *p) {
+    return p != NULL ? p->window_mode.current : PLATFORM_WINDOW_MODE_WINDOWED;
+}
+
+void platform_toggle_fullscreen(Platform *p) {
+    if (p == NULL) return;
+    (void)platform_set_window_mode(p, platform_window_mode_toggle_target(&p->window_mode));
 }
 
 static const char *wayland_cursor_name(PlatformCursor cursor) {
@@ -2327,10 +2419,30 @@ void platform_window_show(Platform *p) {
 void platform_window_hide(Platform *p) { (void)p; }
 
 bool platform_needs_client_decoration(Platform *p) {
-    (void)p;
     /* xdg-shell has no mandatory server-decoration protocol; use myui's CSD
-     * so title bars and dragging behave consistently across compositors. */
+     * so title bars and dragging behave consistently across compositors.
+     * A fullscreen or undecorated window has no title bar. */
+    return p == NULL || platform_window_mode_title_bar_visible(&p->window_mode);
+}
+
+/* The title bar is myui's client-side decoration, read through
+ * platform_needs_client_decoration each frame: recording the preference is
+ * all there is to apply, also when it was deferred through fullscreen. */
+bool platform_set_window_decorated(Platform *p, bool decorated) {
+    if (p == NULL) return false;
+    if (platform_window_mode_set_decorated(&p->window_mode, decorated) ==
+        PLATFORM_DECORATION_ACTION_UNSUPPORTED)
+        return false;
+    platform_window_mode_decoration_applied(&p->window_mode);
     return true;
+}
+
+bool platform_get_window_decorated(Platform *p) {
+    return p != NULL && p->window_mode.decorated;
+}
+
+bool platform_window_title_bar_visible(Platform *p) {
+    return p != NULL && platform_window_mode_title_bar_visible(&p->window_mode);
 }
 
 bool platform_clipboard_set_text(Platform *p, const char *utf8) {

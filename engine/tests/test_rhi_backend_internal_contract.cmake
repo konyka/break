@@ -247,6 +247,51 @@ foreach(direct_rhi_target
     endif()
 endforeach()
 
+# Check each direct RHI target's generated Ninja rule, not a global flag count
+# that unrelated targets could satisfy while one intended target loses the flag.
+if(DEFINED ENGINE_NINJA_FILE AND DEFINED ENGINE_SYSTEM_NAME AND
+        DEFINED ENGINE_C_COMPILER_ID AND EXISTS "${ENGINE_NINJA_FILE}")
+    set(section_gc_expected TRUE)
+    set(section_gc_suffix "")
+    set(section_gc_check FALSE)
+    if(ENGINE_SYSTEM_NAME STREQUAL "Linux" AND
+            ENGINE_C_COMPILER_ID MATCHES "GNU|Clang")
+        set(section_gc_check TRUE)
+    elseif(ENGINE_SYSTEM_NAME STREQUAL "Windows")
+        set(section_gc_check TRUE)
+        set(section_gc_suffix ".exe")
+        if(ENGINE_C_COMPILER_ID MATCHES "MSVC|Clang")
+            set(section_gc_expected FALSE)
+        endif()
+    endif()
+    if(section_gc_check)
+        file(READ "${ENGINE_NINJA_FILE}" ninja_text)
+        foreach(section_gc_target
+                test_rhi_capabilities test_rhi_fault_injection test_rhi_wsi_attach)
+            string(FIND "${ninja_text}" "build ${section_gc_target}${section_gc_suffix}:"
+                target_offset)
+            if(target_offset EQUAL -1)
+                message(FATAL_ERROR "Ninja link rule is missing: ${section_gc_target}")
+            endif()
+            string(SUBSTRING "${ninja_text}" ${target_offset} -1 remaining_text)
+            string(FIND "${remaining_text}" "\nbuild " next_target_offset)
+            if(next_target_offset EQUAL -1)
+                set(target_block "${remaining_text}")
+            else()
+                string(SUBSTRING "${remaining_text}" 0 ${next_target_offset} target_block)
+            endif()
+            string(FIND "${target_block}" "--gc-sections" gc_offset)
+            if(section_gc_expected AND gc_offset EQUAL -1)
+                message(FATAL_ERROR
+                    "ELF --gc-sections is missing from ${section_gc_target}")
+            elseif(NOT section_gc_expected AND NOT gc_offset EQUAL -1)
+                message(FATAL_ERROR
+                    "ELF --gc-sections reached a Windows linker: ${section_gc_target}")
+            endif()
+        endforeach()
+    endif()
+endif()
+
 # Every executable that links engine must select exactly one backend through
 # the helper; no target link block may name two backend libraries.
 foreach(rhi_consumer_target

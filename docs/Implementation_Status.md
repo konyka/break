@@ -1,5 +1,249 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Windows 同步复核与测试基础设施修复
+
+本轮从 `a848b3c9` 开始，`git fetch` 后本地与 `origin/master` 一致，无合并冲突。使用 Windows 本机的 Clang 22.1.6 + Ninja，复核 GL、Vulkan、D3D12 Debug 与 ASan 配置；未跟踪的 `.tmp/`、`.scratch-vkprobe/` 不纳入提交。没有改动渲染或网络协议实现。
+
+### 定位与修复
+1. **Windows RHI 测试链接参数不匹配**：`test_rhi_capabilities`、`test_rhi_fault_injection`、`test_rhi_wsi_attach` 在非 Apple 平台一律传入 `-Wl,--gc-sections`，Windows Clang/lld-link 因而各报一次忽略未知参数。改为排除 Windows MSVC/Clang，保留 Linux 与 Windows GNU/MinGW 的有效配置。`test_rhi_backend_internal_contract` 逐目标检查生成的 Ninja 链接块；旧全局计数检查会放过「其他目标凑够 3 条、目标自身缺参数」的夹具，新检查能准确失败。Windows 下三目标实际重链接已无该告警。
+2. **远程会话中的剪贴板测试等待不足（部分缓解，非根治）**：在 ToDesk 运行的会话中复现 `OpenClipboard` 的 `ERROR_ACCESS_DENIED`（直接以 NULL 窗口打开也同样被拒，系统不提供持有者窗口，所以没有仅凭进程名归因；引擎读写路径逐个检查过，所有返回分支都会 `CloseClipboard`）。原来的约 500 ms 重试会失败，`test_platform_win32_runtime` 将首次打开的有限重试改为 200×25 ms（约 5 秒），真实剪贴板写入、读取和无 NUL 终止数据的边界断言全部保留。效果只到「有时够用」：ToDesk 运行时曾连续 3 次 26/26，之后系统剪贴板又持续拒绝访问，超过 5 秒仍失败；剪贴板恢复可用后复测，GL 树连续 3 次、ASan 树 1 次均为 26/26。因此该用例仍依赖本机剪贴板没有被远程工具长期占用，不是引擎缺陷；独立 window station 隔离方案试过，被系统权限拒绝，未采用。是否要把「剪贴板长期不可用」改成跳过（返回 77），属于降低覆盖的决定，这里没有自行改。`docs/Build_Guide.md` 同步说明等待边界及测试会改写系统剪贴板。
+3. **UDP 测试固定端口冲突**：`test_net_replication` 的 PID 端口块不能保证跨进程唯一。新增受控占用回归后旧绑定稳定失败；6 条真实收发路径（7 个接收 socket）改为绑定端口 0，经 `net_socket_get_local_address` 取得实际端口，协议与收发断言不变。`peer_save_load` 另有独立的并发缺陷：64 字节路径缓冲区在当前 Windows `%TEMP%` 下至少需要 70 字节，4 个进程的路径都被截成同一个 `break_test_netrep_peers.tx`，PID 后缀丢失并导致读写覆盖；扩为 128 字节后并发复验通过。网络套件新增 1 个冲突用例，现共 53 项。
+
+### 验证
+- 链接修复红—绿验证：旧配置在生成的 Ninja 规则上失败，修复后通过；非法、合法 Ninja 夹具分别按预期失败、通过。GL/Vulkan/D3D12/ASan 构建日志均无编译或链接警告。
+- 最终代码状态的全量 ctest：GL 188/188、Vulkan（含验证层）191/191、D3D12 Debug 196/196（含 WARP 与硬件适配器）。ASan（`-LE graphics`，含 5 个 fuzz 冒烟）184/185，唯一失败是上面的剪贴板用例；剪贴板可用后复测该用例通过。
+- 网络套件在四棵构建树并行运行均 53/53；没有残留临时诊断插桩。
+- `test_d3d12_warp_runtime` 的 `gpu_timer_measures_the_gpu_time_of_a_recorded_region` 在第一轮 D3D12 全量里失败过一次（GPU 计时比值，本轮未改计时代码）；默认 GBV 配置单独连跑 3 次、之后两次全量 196/196 均通过。这是既有的间歇性问题，本轮没有处理，也没有放宽阈值。
+- 三后端 demo（`BREAK_FRAMES=30`，窗口无标题栏启动，第 8、16 帧切换全屏，第 22、26 帧切换标题栏，第 29 帧截图）均正常退出：GL 重建 30.5/39.4 ms、最差帧 61.0 ms；Vulkan 29.2/24.9 ms、最差帧 43.8 ms、验证层消息 0；D3D12 76.1/59.6 ms、最差帧 135.7 ms。三个后端 `TITLE_BAR_SWITCH` 的 `ok=1`、绘制尺寸保持 1280x720，日志无 ERROR/FATAL；三张截图人工查看画面正常、HUD 文字方向正确。机器上 ToDesk 仍在运行，已知会拖慢呈现，所以这些切换耗时不作为性能基线。
+- 未验证：X11 / Wayland / Cocoa / 其他平台由 CI 覆盖；Windows MSVC 与 MinGW 工具链未在本机构建。
+
+## 本轮更新：仓库缺陷排查（ASan + 扩展模糊测试 + clang 静态分析 + 近期代码复查）
+
+### 做了哪些检查
+- **ASan**（`build-ci-asan`，GL，Debug）：全量 ctest 187/187。之前 4 个 fuzz 冒烟用例显示为 Not Run，是因为 fuzz 目标不在默认构建里，补建后都通过。
+- **扩展模糊测试**（同一 ASan 构建）：`fuzz_scene_serial`、`fuzz_net_packet`、`fuzz_decode_image`、`fuzz_vfs_pak` 各用 4 个新种子，迭代数是冒烟测试的 10–50 倍（2 万到 10 万次），16 次运行全部无崩溃、无 ASan 报告。
+- **clang 静态分析**：`clang-tidy` 跑 `clang-analyzer-core/unix/security.ArrayBound/deadcode` 和若干 `bugprone-*`，覆盖 GL 构建里 `engine/src` 下 228 个 C 文件，得到 108 条不重复的告警。逐条看了 `core.*`、`unix.*`、`ArrayBound` 类的告警；`deadcode` 和整数除法类只是风格问题，没改；`external/`（miniaudio、cgltf、lua）是第三方代码，不改。
+- **人工复查本会话改过的代码**：GL 延迟删除、glTF 骨骼祖先节点、模型查看与 BSCN 读档钩子、标题栏开关。
+
+### 修复的缺陷（都先写失败的测试，再修）
+1. **GL 延迟删除队列是全局的**（`rhi_gl.c`，FS7 引入）：队列放在全局变量里，但 GL 的纹理名属于各自设备的上下文。同时存在两个 GL 设备时，A 设备的帧开始或关闭会在 A 的上下文里删 B 的纹理名，可能删错对象，或者在关闭时漏删、泄漏。改为把队列放进每个设备的 `GLBackend`，删除时传入所属设备；没有后端时立即删除，即原来的行为。当前演示程序只建一个设备，所以平时碰不到。这一条没有加自动测试：要两个真实的 GL 上下文，现有测试设施没有。验证方式是代码审查，加上 GL Debug / ASan 下演示程序全屏切换 + BSCN 读档运行无报错。
+2. **无标题栏的最大化窗口位置偏移**（`window_win32.c`，上一轮标题栏功能引入）：窗口已最大化时再去掉标题栏，只改样式、不重新布局，窗口保持「带边框最大化」的矩形，四边各超出工作区一个边框宽度（实测 -11,-11,2571,1539，工作区 0,0,2560,1528）。改为先还原再最大化（期间关重绘），让系统按新边框重新计算最大化矩形。新测试 `title_bar_hidden_while_maximized_fits_the_work_area`：改前失败，改后通过。
+3. **菜单宽度读未初始化变量**（`myui/widgets/my_menu.c`，原有问题，静态分析发现）：`menu_box_width` 在窗口字体不能测量文字时（字体没有 measure 接口，或测量失败），`my_font_measure` 不写 `tw`，后面直接拿 `tw` 算宽度，结果是随机值。改为测量失败时回退到按码点估算。新测试 `menu_width_is_defined_when_font_measure_fails`（`test_myui_window_manager`）：改前宽度是随机值、断言失败，改后是 98。
+
+### 看过但判定为误报或无需改动的告警
+- `asset.c` 越界、`platform_text.c` 空指针、`values.c` 空指针、`ir.c` 字符串越界、`render_graph.c` 未初始化、`my_node_view.c` 未初始化：调用链上都有静态分析器看不到的前置条件。比如 `re_facts_get` 在 facts 为 NULL 时返回非 OK，后面不会继续执行；`id_for` 对空字符串传入的长度就是 0。
+- `mipmap_stream.c` 释放后使用：分析器假设 `ctx->mgr` 为 NULL，但它在上一行刚赋过值。
+- `scene_serial.c` 的 malloc 大小类型不符：`u8` 块里放两个 `u32` 数组，是有意的单次分配。
+- `scene_state.c` 的流状态告警：每次读取都检查了返回值，失败时整体回滚到备份。
+- `cgltf_node_transform_world` 遇到父节点环会死循环？不会：`cgltf_validate` 会拒绝有环的文件，而加载器一定先调用它。
+
+### 验证
+- 7 棵构建树 0 警告。
+- ctest：VK 190/190、GL 187/187、D3D12 195/195、ASan 187/187。
+- `test_platform_win32_runtime` 26/26（这次连原来失败的剪贴板用例也通过了）。
+- GCC `-Werror -pedantic` 语法检查：改动的文件中能在本机编译的都通过；`rhi_gl.c` 需要 GLX 头文件，以 CI 为准。
+
+## 本轮更新：窗口标题栏开关（跨平台，TDD）
+
+- **API**（`platform/platform.h`）：`platform_set_window_decorated(p, bool)`、`platform_get_window_decorated(p)`、`platform_window_title_bar_visible(p)`，以及 `PlatformConfig.undecorated`（加在 `start_fullscreen` 之后；位置初始化的调用点已补齐）。语义：只影响**窗口模式**下的标题栏和边框；关掉后客户区位置和大小不变（交换链不重建）；全屏本来就没有标题栏，全屏期间或模式切换未完成时改动会被记下，回到窗口模式时再生效；重复调用幂等；没有窗口边框的平台（移动端、QNX Screen）只接受「无标题栏」，`set(true)` 返回 false。
+- **状态机**（`platform/window_mode.h`）：`PlatformWindowModeState` 加 `decorated`（偏好）和 `native_decorated`（原生窗口当前实际的边框）。`platform_window_mode_set_decorated` 返回 NONE / APPLY（窗口模式且空闲，立即改）/ DEFER（全屏或请求未确认）/ UNSUPPORTED；`decoration_stale` 判断回到窗口模式后还要不要补做；`title_bar_visible` = 已确认窗口模式且偏好为有标题栏。
+- **各后端**：
+  - Win32：有标题栏 = `WS_OVERLAPPEDWINDOW`；无标题栏 = `WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX`（任务栏按钮仍能最小化/还原）。按新样式（`AdjustWindowRectExForDpi`，按窗口 DPI）重算窗口矩形，一次 `SetWindowPos` 让客户区屏幕位置保持不变。无标题栏窗口最大化时处理 `WM_GETMINMAXINFO`，只铺满工作区，不盖住任务栏。离开全屏时先恢复保存的样式，再补做全屏期间的改动。
+  - X11：写 `_MOTIF_WM_HINTS.decorations=0`，恢复时删除该属性（交给窗口管理器默认值）；`undecorated` 在第一次映射前就写好。和无 EWMH 回退全屏共用同一个属性：回退全屏期间修改偏好时，同时更新回退路径里保存的提示，退出全屏恢复的就是新偏好；状态确认路径（`x11_confirm_window_mode`）和进入失败路径都会补做。
+  - Wayland：标题栏本来就是 myui 的客户端装饰，`platform_needs_client_decoration` 改为直接读 `title_bar_visible`，记录偏好即生效。
+  - Cocoa：无标题栏的样式掩码去掉 `Titled | Closable`，保留 `Resizable | Miniaturizable`；`frameRectForContentRect` 保持内容矩形不变；离开全屏后补做。
+  - 移动端 / QNX Screen：固定无标题栏。
+- **演示程序**：`BREAK_UNDECORATED=1` 以无标题栏窗口启动；Alt+T 切换（单按 T 仍是纹理过滤）；`BREAK_TOGGLE_TITLE_BAR_AT=f1,f2,...` 在指定帧自动切换，输出 `TITLE_BAR_SWITCH frame= decorated= ok= visible= drawable=`。帮助行加 `Alt+T:TitleBar`。
+- **测试**（先写测试、确认失败，再实现）：
+  - `test_platform_window_mode` 新增 6 个用例（默认值、窗口模式立即生效且幂等、全屏期间延后、进入全屏未确认时延后并在被拒后补做、固定平台、`stale` 跟踪），14/14。
+  - `test_platform_win32_runtime` 新增 5 个真实窗口用例：去掉标题栏后无 `WS_CAPTION|WS_THICKFRAME` 且为 `WS_POPUP`、客户区屏幕矩形不变、不发 `WM_SIZE`；无标题栏窗口经全屏往返后仍无标题栏且回到原客户区；全屏期间修改两个方向都在离开时生效；`undecorated` 配置直接建出无边框窗口、再加回标题栏客户区大小不变；无标题栏窗口最大化不超出工作区。临时把 APPLY 分支改成只记录状态、不改原生窗口时，5 个用例中 4 个失败（6 条断言），说明测试覆盖到了原生实现；剩下那个（全屏期间修改）走的是离开全屏时的补做路径，不经过 APPLY。
+  - `test_platform_null_safety`、`test_platform_mobile`、`test_platform_screen_simulated` 补了新 API 的断言。
+  - `test_platform_x11_runtime`（2 个）、`test_platform_wayland_runtime`（2 个）、`test_platform_cocoa_runtime`（2 个）新增用例，在 CI 上运行。
+- **验证**：7 棵构建树（VK / GL / D3D12 的 Debug 与 Release）0 条编译警告。ctest（`-E test_platform_win32_runtime`）：VK 190/190、GL 187/187、D3D12 195/195。第一轮里 VK 的 `test_net_replication` 和 GL 的 `test_mipmap_stream` 各失败过 1 次，单独各跑 3 次、以及最终全量复跑都通过，两者不涉及窗口代码。`test_platform_win32_runtime` 25 个用例中只有既有的 `clipboard_read_bounds_unterminated_unicode_text` 失败（`OpenClipboard failed`；本机 ToDesk 又在运行，它会占用剪贴板，改动前的代码同样失败）。演示程序 VK Debug：两次标题栏切换 + 两次全屏切换，drawable 始终 1280x720 → 1920x1080 → 1280x720，0 条验证消息；读窗口样式确认：有标题栏时窗口 1038x614、客户区 1024x576、含 `WS_CAPTION`，切换后窗口与客户区都是 1024x576、不含 `WS_CAPTION`；截图中标题栏消失、画面内容不变。GL / D3D12 Release 以 `BREAK_UNDECORATED=1` 启动并切换全屏和标题栏，正常退出、无 ERROR。
+- **未验证**：X11 / Wayland / Cocoa 的运行时行为本机无法运行（没有 X11/Wayland 头文件，WSL 的磁盘镜像缺失无法启动），以 CI 为准；X11 只验证 `_MOTIF_WM_HINTS` 属性，CI 的 Xvfb 没有窗口管理器，看不到真正的标题栏。
+- **说明**：本轮测的全屏切换最差帧（GL 140–350 ms，D3D12 24–270 ms）比 FS7 记录的高很多，用改动前的 master 同样复测为 142–520 ms，原因是本机 ToDesk 重新在运行（之前已确认它会拖慢呈现），不是本改动造成的；本轮没有重测 FS7 的数字。
+
+## 本轮更新：VK GPU-assisted 验证的两类遗留报错清零
+
+FS6 跑 GPU-assisted 验证时报出 15 条与切换无关的遗留消息，两类：
+- **`firstInstance` 未启用特性**：材质数组层号（R441）和 LOD 淡入淡出值（R703b）都放在间接命令的 `firstInstance` 里，但设备从未启用 `drawIndirectFirstInstance`（VUID-VkDrawIndexedIndirectCommand-firstInstance-00554），而 `caps.indirect_first_instance_supported` 在 VK 上被无条件报告为 true。修复：设备支持时启用该特性，能力位按实际结果报告（不支持的设备会走已有的回退：关闭材质数组路径、LOD 直接切换）。
+- **`u_ssao` 视图类型不匹配**：材质数组路径的 albedo 是 2D_ARRAY 视图，`rhi_cmd_bind_material_textures(_ibl)` 却用 albedo 视图填充空槽（binding 5 `u_ssao`、阴影、BRDF LUT 等，着色器里都是 `sampler2D`），违反 VUID-vkCmdDraw-viewType-07752。修复：后端按需创建一个 1×1 RGBA8 的 2D 图像，空槽统一用它填充（布局转换走 FS6 的批量布局命令缓冲，设备销毁时释放）。
+- **验证**：GPU-assisted 验证下前向 clustered、blinn、延迟、两次全屏切换 4 种跑法均 0 条消息（改前 15 条）；VK ctest 191/191；Debug/Release 0 警告；GCC 语法检查通过；截图与改动前对比，差异在同一版本连跑两次的噪声范围内（同版本 mean 0.03–0.06，新旧 mean 0.07–0.11，>24 的像素数同量级）。
+
+
+## 本轮更新：FS7 — GL 全屏切换：纹理延迟删除
+
+- **定位**（临时计时，已移除）：GL 一次切换的重建块 40–70 ms 里，`glDeleteTextures` 占 27–39 ms（本机 NVIDIA 驱动删一张大渲染目标要 0.3–0.5 ms，一次切换要换掉约 80 个），`glTexImage2D` 只有不到 1 ms，`glCheckFramebufferStatus` 只在第一次切换时有 10 ms。
+- **改动**（只改 `rhi_gl.c`）：`rhi_texture_destroy`（含 mip 视图）、`rhi_cubemap_destroy`、`rhi_offscreen_fbo_destroy`、`rhi_mrt_fbo_destroy`、`rhi_cubemap_depth_fbo_destroy` 不再立刻删除 GL 纹理/渲染缓冲名，而是放进延迟队列；`rhi_frame_begin` 在等完帧槽 fence 后按每帧 2 ms 的预算从最老的开始删除（与 VK 回收队列同一策略），`gl_shutdown` 一次删完。纹理单元缓存与 FBO 绑定缓存仍在原调用点立即失效。GL 自身保证被删除名的存储在排队命令用完前一直有效，所以延迟只是挪开开销，不改变 GPU 读到的内容。队列扩容失败时退回同步删除。设备销毁路径（`rhi_device_destroy` 遍历槽位）仍同步删除。
+- **结果**（Release，2560x1600 ↔ 1280x720，每轮 4 次切换）：重建耗时从 40–70 ms 降到 16–31 ms（4 轮共 16 次）。最差切换帧 24–75 ms，没有稳定压到 50 ms 以下：剩下的时间不在重建块里，而在切换那一帧本身——离开全屏时 Win32 `SetWindowPlacement` 要 6–24 ms（试过给 `SetWindowPos` 加 `SWP_NOCOPYBITS`，没有改善，未保留），切换后第一帧呈现也会多出 20–40 ms（驱动侧换后缓冲尺寸）。这两部分不在引擎可控范围内，本轮不再处理。
+- **验证**：build-gl / build-rel-gl 0 条编译警告；GL Debug ctest 187/187，`test_platform_win32_runtime` 通过；GL Debug 演示两次切换后截图正常、无 GL 错误日志。`rhi_gl.c` 的 Linux（GLX）语法检查本机没有 GLX 头文件，以 CI 为准。
+- D3D12 本轮未改：重建块本来就只有 26–44 ms，最差帧同样落在切换后的呈现帧上（40–70 ms）。
+
+## 本轮更新：FS6 — VK 全屏切换去掉 GPU 空等（交换链复用、延迟销毁、批量布局转换）
+
+FS5 之后 VK 的最差切换帧仍是 107–112 ms，耗时全在 RHI 层的同步等待上。本轮只改 `rhi_vk.c`（外加 `rhi_native_vulkan.h` 的计数器声明和 `test_vulkan.c` 的新测试）。
+
+- **A. 交换链重建**（`vk_recreate_swapchain`）：去掉 `vkDeviceWaitIdle`；旧交换链作为 `oldSwapchain` 交给 `vkCreateSwapchainKHR`。旧的 framebuffer、深度图和 render pass 进延迟销毁队列，下一帧的 fence 信号后释放。交换链本身、它的 image view 和 present 等待信号量可能还被呈现引擎占着，而这一点没有 fence 能报告，所以在此基础上再多等 `VK_MAX_FRAMES` 帧。新交换链在下一次 acquire 之前就换上，已退役的图像不会再被 present。
+- **B. 延迟销毁**：新增 `VKRetired` 队列。每帧提交一个序号（`submit_serial`），每个 fence 记下自己对应的序号。一个对象入队时记为「下一次帧提交的序号」，等这个序号之前的帧全部完成后才释放。`rhi_offscreen_fbo_destroy`、`rhi_mrt_fbo_destroy`、`rhi_texture_destroy` 不再 `vkDeviceWaitIdle` / `vk_wait_frames`。在帧外调用且所有帧都已完成时立即销毁（行为与原来相同）。每帧在 `rhi_frame_begin` 回收，单帧预算 2 ms：一次切换会退役约 300 个对象，其中 `vkFreeMemory` 每次 0.1–0.3 ms，集中在一帧里释放会多出 25–44 ms。设备销毁时（已空闲）全部释放；扩容失败时退回同步销毁（帧内则泄漏，不在命令缓冲引用期间销毁）。
+- **C. 批量布局转换**：`vk_init_image_layout` 不再每张图「分配命令缓冲 + 提交 + `vkQueueWaitIdle`」，改为把屏障记进共享的 `layout_cb`。所有图形队列提交都走 `vk_queue_submit`：有待提交的批次时，把它作为同一次 `vkQueueSubmit` 的第一个 batch，所以它一定在任何使用这些图像的命令之前执行，调用方的 fence 也覆盖它。屏障的第二作用域是 `ALL_COMMANDS`。MRT 和离屏 FBO 的屏障挪到最后一个「直接销毁」失败分支之后，批次里不会引用已经销毁的图像。
+- **一次切换会不会改尺寸两次**：不会。Win32 每次切换只发 1 次 WM_SIZE；FS3 的合并逻辑让 `rhi_device_resize` 在第 N 帧执行，渲染目标在第 N+1 帧重建（`rebuild_ms` 包含 `rhi_device_resize`）。剩下的大头是驱动本身的 `vkCreateSwapchainKHR`（2560x1600 时 21–85 ms，传 `oldSwapchain` 之后仍有这么多），另外 300 多次 `vkAllocateMemory` 共 8–17 ms。
+
+| VK Release，RTX 4060，2560x1600 ↔ 1280x720，每轮 4 次切换 | 最差切换帧 | 重建耗时 |
+|---|---|---|
+| FS5 基线（本轮实测） | 111.9 ms | 70–90 ms |
+| A+B+C（每帧回收不限预算） | 75.6 ms | 23–39 ms |
+| A+B+C + 2 ms 回收预算（最终，3 轮） | 48.9 / 51.6 / 46.8 ms（中位 48.9） | 20–47 ms |
+
+GL / D3D12 本轮未改动，复测（Release，各 2 轮）：GL 73.5 / 62.7 ms，D3D12 48.5 / 62.7 ms。它们剩余的时间同样花在逐个创建渲染目标上，D3D12 已经是延迟释放。
+
+- **测试**：`test_vulkan` 新增 FS6 阶段（`tv_test_fs6_resize_sync`）：6 个 FBO 渲染后，① 在帧内销毁一个本帧刚用过的 FBO；② 连续两次 `rhi_device_resize_ex`（此时还有帧在执行）；③ 帧外替换 3 个 FBO，再新建一个从不渲染的 FBO；然后要求这期间 `device_wait_idle == 0`、`queue_wait_idle == 0`（读 `rhi_vk_sync_counters`），延迟销毁和布局批次确实被执行到，5 个目标中心像素等于各自的清屏灰度，从不渲染的那个也能读回；再渲染 8 帧后延迟队列清空。反向验证过：在 FBO 销毁里临时加回 `vkDeviceWaitIdle`，测试报 `device_wait_idle=4` 并失败。
+- **验证**：build-vk、build-rel-vk、build-gl、build-d3d12 0 条编译警告（lld `--gc-sections` 提示是既有的）。ctest：VK 191/191（含 fuzz）、GL 188/188、D3D12 196/196。`test_vulkan`（验证层开启）0 条验证消息。VK Debug 演示 4 次切换：验证层 0 条；同步验证（`BREAK_VK_SYNC_VALIDATION=1`，本项目自己的开关）0 条。`rhi_vk.c` / `test_vulkan.c` 通过 GCC `-Wall -Wextra -Werror -pedantic` 语法检查。
+- **GPU-assisted 验证**（`VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT`，4 次切换）：15 条消息，全部是既有问题，与切换无关：`vkCmdDrawIndexedIndirectCount` 的 `firstInstance != 0`（需要 `drawIndirectFirstInstance` 特性），以及 binding 5 `u_ssao` 的视图类型是 2D_ARRAY 而着色器声明的是 2D。这两类本轮没有修。
+- **未验证**：Linux lavapipe（CI）上的行为；其他 GPU 和驱动上的 `vkCreateSwapchainKHR` 耗时。最差帧只是刚好压在 50 ms 附近（3 轮里有 1 轮 51.6 ms），驱动的交换链创建耗时波动很大。
+
+
+## 本轮更新：FS5 — 无标题栏全屏：合并与整体验收
+
+FS1（`window_mode.h` 状态机）、FS2（API + Win32 + 演示接线）、FS3（尺寸变化只重建渲染目标）、FS4（X11 / Wayland / Cocoa / QNX）与 R707c（蒙皮 LOD 接入）合并，并修复了阻塞 VK 验收的设备丢失（见下一节）。
+
+- **构建与测试**：7 棵构建树 0 条编译警告（只剩既有的 lld `--gc-sections` 提示与 SheenBidi 警告）；ctest：VK 190/190、GL 187/187、D3D12 195/195（含 WARP 套件）、ASan 179/179；`test_platform_win32_runtime` 20/20（含 FS2 新增的 5 个全屏用例）。本轮改动涉及的 41 个可在 Linux 编译的 C 文件全部通过 GCC `-Wall -Wextra -Werror -pedantic` 语法检查。
+- **真实切换**（Release，2560x1600 显示器 ↔ 1280x720 窗口，第 60/120/180/240 帧自动切换，每后端 2 轮，0 次设备丢失）：
+
+| 后端 | 改前最差切换帧（FS2 基线） | 现在最差切换帧 | 现在重建耗时 |
+|---|---|---|---|
+| GL | 131.6 ms | 87.2 / 48.7 ms | 33–84 ms |
+| D3D12 | 137.3 ms | 75.3 / 48.1 ms | 20–65 ms |
+| VK | 263.7 ms（且只能关遮挡剔除，否则设备丢失） | 111.6 / 106.6 ms | 65–81 ms |
+
+  重建耗时里 post 部分仍占大头（VK 50–67 ms、GL 28–80 ms、D3D12 33–54 ms）：着色器已不再重编，剩下的是 RHI 层逐个创建/销毁 40 多个渲染目标——VK 每个纹理创建都提交一次布局转换并等 fence，每个 FBO 销毁都 `vkDeviceWaitIdle`。设计验收「切换帧 < 50 ms」在 GL/D3D12 上只有部分轮次达到，VK 未达到；下一步是 RHI 批量创建 + 延迟销毁。
+- **未在本机验证**：X11 / Wayland / Cocoa 的运行时行为（只做了 GCC 语法检查与代码审阅，以 CI 为准；CI 的 Xvfb 没有窗口管理器，只覆盖 X11 的 Motif 回退路径）；Metal。
+
+
+## 本轮更新：修复 VK 运行时改尺寸（窗口/全屏切换）后设备丢失
+
+- **现象**：VK 下任何运行时改尺寸（`G`/Alt+Enter 全屏切换、窗口拉伸）的下一帧 `VK_ERROR_DEVICE_LOST`，验证层 0 条消息；`BREAK_OCCLUSION=0` 可规避。启动时直接全屏不出现。FS2/FS3/R707c 都观察到（R707c 的 `test_vulkan` 偶发失败也是它）。
+- **定位**（逐步二分）：只重建 Hi-Z 金字塔（同一深度图、只换纹理）即可复现；不调 `occlusion_cull_generate_hi_z` 不复现；Hi-Z 的消费方（unified cull）全部关闭仍复现；只用 1 个输出 mip 不复现，2 个及以上复现；不销毁旧纹理不复现。
+- **根因**：`rhi_cmd_bind_image_texture`（VK）每个管线只在第一次 bind 时 `vkCmdBindDescriptorSets`，之后只 `vkUpdateDescriptorSets` 改同一个 set。规范允许驱动在 bind 命令记录时就读走描述符内容（C-BUF-3 已在 storage buffer 上踩过同一个坑），本机 NVIDIA 正是如此：单元 1..3 的写入对 dispatch 不可见，着色器写的是这块 set 内存里上一帧留下的视图。平时那些视图恰好还活着，只是 Hi-Z 的 mip 1..3 一直没被正确写；重建金字塔销毁旧纹理后，就成了往已释放显存写，下一帧设备丢失。
+- **修复**：storage image 与 storage buffer 一致，每次 bind 后都重新 `vkCmdBindDescriptorSets`。
+- **顺带修复**：程序化手臂（R445）的索引 `idata[i] = i` 用 144 个索引画 96 个顶点（GPU-assisted 验证报顶点越界，且只画出三分之二的面），改为每面两个三角形。
+- **测试**：`test_vulkan` TEST 9 新增运行时改尺寸阶段（金字塔先长到 640x360 再变成 330x170 继续生成并剔除，要求结果仍为 {1,0} 且设备存活）。说明：这个阶段在修复前的代码上也能通过（单进程测试里的分配没有让被释放的视图真正失效），所以它防的是改尺寸路径本身的回归，修复的直接证据是演示程序：修复前 VK 默认设置下 3 种尺寸各自 100% 设备丢失，修复后 0 次；VK Debug 4 次窗口↔全屏往返 0 设备丢失、0 条验证消息。VK ctest 189/189；GCC `-Werror -pedantic` 语法检查通过。
+
+
+## 本轮更新：FS4 — 无标题栏全屏（四）：X11 / Wayland / Cocoa 真实实现 + QNX Screen 模拟测试
+
+### 做法（设计 §3.2，计划任务 4）
+- **X11**（`window_x11.c`）：先查根窗口 `_NET_SUPPORTING_WM_CHECK` + `_NET_SUPPORTED` 是否含 `_NET_WM_STATE_FULLSCREEN`。
+  - 有 EWMH WM：进入前用 `XGetGeometry` + `XTranslateCoordinates` 保存窗口矩形；已映射窗口发 `_NET_WM_STATE` ADD/REMOVE 客户端消息（source=1），未映射窗口直接改 `_NET_WM_STATE` 属性。**不再立即确认**：`PropertyNotify(_NET_WM_STATE)` 读回属性，按是否含 FULLSCREEN 调 `confirm`（WM 快捷键等外部切换也走这里）。
+  - 无 EWMH WM（CI 的裸 Xvfb）：保存原 `_MOTIF_WM_HINTS`，写 decorations=0，`XMoveResizeWindow` 到 `window_mode_fullscreen_rect`（RandR 显示器列表；无显示器时用根窗口尺寸），同步确认；离开时恢复原 hints（原来没有就删除）并移回保存的矩形。
+  - 每次确认按模式设置/删除 `_NET_WM_BYPASS_COMPOSITOR=1`。`start_fullscreen`：EWMH 下映射前写属性；回退路径下映射前就移到显示器矩形。显示器查询提前到 `start_fullscreen` 之前。
+- **Wayland**（`window_wayland.c`）：`set/unset_fullscreen` 后只 commit + flush，不确认；`xdg_toplevel.configure` 解析 `states` 数组中的 `XDG_TOPLEVEL_STATE_FULLSCREEN` 后 `confirm`，与挂起请求相反的 configure 视为拒绝（`fail`，之后带目标状态的 configure 按外部切换收敛）。离开全屏收到 0×0 configure 时恢复进入前保存的尺寸。`platform_needs_client_decoration` 全屏时为 false。`start_fullscreen` 仍在首次 commit 前 set，由首次 configure 确认。
+- **Cocoa**（`window_cocoa.m`）：不再用 `toggleFullScreen:`。进入：保存 `frame`/`styleMask`/`level`，`NSWindowStyleMaskBorderless`，`level = NSMainMenuWindowLevel + 1`，`presentationOptions = HideDock | HideMenuBar`，`setFrame:[[window screen] frame] display:YES`；离开：presentationOptions 恢复 Default，还原 styleMask、level、frame。两边都重新 `makeFirstResponder:` 内容视图，原来是 key window 的再 `makeKeyAndOrderFront:`，再调 `cocoa_update_drawable_size`（同时 windowDidResize 也会更新），同步确认。窗口改为 `BreakWindow` 子类：无边框时 `canBecomeKeyWindow/MainWindow = YES`（否则全屏丢键盘），无标题栏时 `constrainFrameRect:` 不把窗口挤到菜单栏下面。
+- **QNX Screen / 移动端**：语义不变（固定全屏）。新增 `test_platform_screen_simulated`：真实 `window_screen.c` 在主机上对假 Screen SDK（`tests/fake_qnx_screen/`）编译，验证 get=BORDERLESS、set(WINDOWED)=false、toggle 无效、无 CSD、NULL 安全；移动端已有 `test_platform_mobile_layer_*`。
+
+### 测试（TDD，测试先写）
+- `test_platform_x11_runtime`：+2 用例。进入后有界轮询（约 3 s）到模式 = BORDERLESS 且窗口根坐标矩形 = 显示器矩形（及 `platform_get_size`）；检查 `_NET_WM_BYPASS_COMPOSITOR`、EWMH 下 `_NET_WM_STATE` / 回退下 `_MOTIF_WM_HINTS`；离开恢复（回退路径比较位置+尺寸，EWMH 只比尺寸）；重复 set 幂等；`start_fullscreen` 铺满后能恢复到配置尺寸。日志打印走的是哪条路径。
+- `test_platform_wayland_runtime`：+2 用例。轮询直到 configure 确认；合成器接受则尺寸 = 某个输出（按 scale 换算的逻辑尺寸）、无 CSD、离开恢复 320×240；合成器不接受则模式必须保持 WINDOWED（不再假装成功）。日志打印 weston headless 是否接受。
+- `test_platform_cocoa_runtime`：+2 用例；该文件在 macOS 上改为按 Objective-C 编译（CMake `LANGUAGE OBJC`，与 window_cocoa.m 同样的 flags，链接 Cocoa），按标题从 `[NSApp windows]` 找窗口，断言 styleMask == Borderless、frame == screen frame、level > Normal；逻辑尺寸 = 某块屏幕、WSI 尺寸同步；离开恢复 320×240 且不再是无边框。
+
+### 验证
+- 本机（Windows）：build-vk Debug 0 警告；全量 ctest（除 `test_platform_win32_runtime` 单独跑，也通过）190/190 连续 3 次通过（之前有一次运行有 1 个失败，没有复现，也没有记下是哪个测试）。`test_platform_screen_simulated` 用 GCC `-Werror -pedantic` 和 clang 都通过。
+- GCC 15（msys64）`-std=c11 -Wall -Wextra -Werror -pedantic -fsyntax-only`，用 Debian 12 的 libx11/xrandr/wayland/xkbcommon 头文件 + 本地编译的 wayland-scanner 生成的协议头：`window_x11.c`、`window_wayland.c`（含 FRACTIONAL_SCALE；mingw 缺的 poll/mman/fcntl 用桩补齐）、`test_platform_x11_runtime.c`、`test_platform_wayland_runtime.c` 均无告警。未检查 XInput2 变体（没有头文件）。
+- **CI 结果（合并后补记）**：macOS Cocoa、macOS 原生 Metal、iOS、Linux X11（Xvfb，无 WM，走 Motif 回退路径）首轮即通过。Linux Wayland（weston headless）首轮失败：进入全屏被确认，但紧接着的 `unset_fullscreen` 一直没有 configure 回复。加了只在失败时输出的 `FAILINFO` 诊断（`BREAK_WAYLAND_TRACE=1` 时 configure 处理函数逐条打印）后定位：weston 只在带 buffer 的 commit 上把已 ack 的 configure 变成当前状态；测试窗口从不提交 buffer、而 `platform_set_window_mode` 在 ack 后没有 commit，于是 weston 拿 unset 请求和尚未生效的旧状态比，认为无需变化。修复（`5d8e2993`）：`platform_set_window_mode` 先 `wl_surface_commit` 让已 ack 的状态生效再发请求；运行时测试每次轮询都提交一个 64×64 shm buffer（真实游戏每帧都会提交）。此后 Wayland + OpenGL / Wayland + Vulkan 均通过，三条流水线全绿。
+- **未在本机运行或编译**：X11/Wayland 运行时测试（以 CI 为准）；`window_cocoa.m` 与 Cocoa 测试（本机无法编译 Objective-C，只做了审读，以 macOS CI 为准）。weston headless 是否接受 fullscreen 未知，两种情况测试都能判定。CI 的 Xvfb 没有 WM，所以 EWMH 路径在 CI 上不会被执行。
+
+
+## 本轮更新：FS2 — 无标题栏全屏（二）：公共 API + Win32 实现 + engine_demo 测量（基线）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-borderless-fullscreen-design.md`，计划任务 2）
+- **API**（`platform.h`）：`platform_set_window_mode(p, mode)`（幂等；NULL、非法值、平台不支持返回 false）、`platform_get_window_mode(p)`（平台确认后的模式，NULL 为 WINDOWED）、`PlatformConfig.start_fullscreen`（放在结构体末尾，原有按位置初始化仍有效；`EngineConfig` 同样新增）。`platform_toggle_fullscreen` = `set(toggle_target)`。所有后端用 `window_mode.h` 状态机。
+- **Win32**：进入时保存 `GWL_STYLE` 与 `WINDOWPLACEMENT`（恢复最大化仍以它为准），去掉 `WS_OVERLAPPEDWINDOW | WS_MAXIMIZE`，**一次** `SetWindowPos(HWND_TOP, rcMonitor, SWP_FRAMECHANGED|SWP_NOOWNERZORDER)` 同时改样式与尺寸（只有 1 次 WM_SIZE，不 TOPMOST）；离开时恢复样式后 `SetWindowPlacement`（隐藏窗口保持隐藏）。旧实现保留 `WS_MAXIMIZE`，最大化窗口全屏时 `IsZoomed` 仍为真。`start_fullscreen` 在 `ShowWindow` 前进入全屏。Alt+Enter 的 `WM_SYSCHAR` 不再响提示音。
+- **X11 / Wayland / Cocoa**：仍是原来的原生调用（`_NET_WM_STATE` 消息 / `xdg_toplevel_set_fullscreen` / `toggleFullScreen:`），经状态机「请求后立即确认」；`start_fullscreen` 分别为映射前写 `_NET_WM_STATE`、首次提交前 `set_fullscreen`、创建后 set。读回确认与 Cocoa 无边框实现留给任务 4。**QNX Screen / 移动端**：`init_fixed(BORDERLESS_FULLSCREEN)`，`set(WINDOWED)` 返回 false。
+- **输入**：新增 `INPUT_KEY_ALT`（316），Win32/X11/Wayland/Cocoa 都映射。
+- **engine_demo**：`BREAK_FULLSCREEN=1`；`G` 或 Alt+Enter 切换（Alt+Enter 不再触发 Enter 选取）；`BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,...`；每次切换输出 `WINDOW_MODE_SWITCH frame= mode= drawable= rebuild_ms= max_frame_ms_next5=`（rebuild_ms = 尺寸变化重建块耗时，只在块外计时，未改结构），退出时输出 `WINDOW_MODE_STATS`。VK 交换链日志加 `extent=`，D3D12 加 `swapchain resized to WxH`。帮助行改为 `G/Alt+Enter:Fullscreen`。
+
+### 基线（改 `*_resize` 之前；Release，2560×1600 显示器 ↔ 1280×720 窗口，切换帧 60/120/180/240）
+| 后端 | rebuild_ms（4 次） | max_frame_ms_next5（4 次） | 最差帧 |
+|---|---|---|---|
+| GL | 54.8 / 78.0 / 60.0 / 61.8 | 103.9 / 131.6 / 75.3 / 85.0 | 131.6 |
+| D3D12 | 120.7 / 68.0 / 126.3 / 71.8 | 135.0 / 110.2 / 137.3 / 92.6 | 137.3 |
+| VK（`BREAK_OCCLUSION=0`） | 227.4 / 214.0 / 241.7 / 251.9 | 232.4 / 243.1 / 247.1 / 263.7 | 263.7 |
+| GL（`BREAK_OCCLUSION=0`） | 50.2 / 67.6 / 50.4 / 73.1 | 83.5 / 98.1 / 63.5 / 95.0 | 98.1 |
+| D3D12（`BREAK_OCCLUSION=0`） | 90.9 / 73.3 / 108.2 / 66.7 | 103.8 / 91.9 / 117.6 / 80.0 | 117.6 |
+
+- **既有问题（与本改动无关）**：VK 在**运行时任何尺寸变化**后下一帧 `VK_ERROR_DEVICE_LOST`（进、出全屏两个方向都会，验证层 0 条）；`BREAK_OCCLUSION=0` 时消失，怀疑 Hi-Z（`occlusion_cull_resize` 之后）。用 master 的 Win32 切换代码同样复现。`BREAK_FULLSCREEN=1` 直接以 2560×1600 启动正常。需单独修。
+
+### 验证
+- TDD：`test_platform_win32_runtime` 新增 5 个用例（样式无 `WS_CAPTION|WS_THICKFRAME`、非 TOPMOST、窗口/客户区 = `rcMonitor`、模式查询、`platform_get_size`/drawable = 显示器；离开恢复样式与 `WINDOWPLACEMENT`；`SW_MAXIMIZE` 往返后 `IsZoomed`；重复 set 不产生 WM_SIZE、进出各恰好 1 次 WM_SIZE；非法模式拒绝；`start_fullscreen` 可见与隐藏两种）。旧实现 + 桩：30 条断言失败；新实现：全部通过。`test_platform_null_safety`、`test_platform_mobile_layer_*`（固定全屏语义）先链接失败、实现后通过。
+- 演示：VK Debug（`BREAK_OCCLUSION=0`）4 次切换验证层 0 条，交换链 `extent=2560x1600` / `1280x720`；D3D12 Debug（调试层 + GBV）4 次切换 0 条消息，`swapchain resized to 2560x1600`；全屏截图 2560×1600。
+- 未验证：X11/Wayland/Cocoa/QNX 运行（只做了审读，本机无系统头文件）；屏幕实拍确认无边框（本机锁屏，桌面截图只能拿到锁屏画面；无边框由运行时测试的样式与矩形断言保证）。
+
+
+## 本轮更新：R707c — 蒙皮网格运行时 LOD（三）：接入 `main.c`（加载时多姿势生成、当前姿势选级、淡入淡出、压力场景）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-skinned-lod-design.md` 3.2 / 3.4 / 3.5）
+- **生成**：`skin_lod_setup` 在 mega/ECS LOD 之后对每个 ≥ `LOD_GEN_MIN_TRIANGLES` 的 `SkinnedMesh` 用 `rhi_buffer_read` 读回顶点/索引，`lod_skin_joint_spheres` 算每关节包围球，`lod_skin_cache_generate`（共用 `g_lod_cache`）生成 LOD1/LOD2，各级索引放进每网格一个额外索引缓冲，共享原顶点缓冲。姿势：临时 `Skeleton`（`calloc`，不建关节缓冲、不上传，不碰 `render.skeleton`）对 `scene.anim_clips` 每个有通道的片段在 `[0, duration)` 均匀取样，总数 ≤ 8。每网格一行日志（levels、三角形、rel_err、poses、ms）和一行汇总。
+- **选级**：骨骼更新并上传后，`skin_lod_select` 用 `render.skeleton.current_pose`（即本帧上传的矩阵）做 `lod_skin_bounds`，按包围球表面距离走 `lod_select_by_screen_error`（`BREAK_LOD_PIXEL_ERROR` 共用，迟滞状态按蒙皮网格下标）。误差为绑定空间实测值 `rel_error · scale`。
+- **绘制**：前向 blinn、前向 clustered、延迟 G-buffer 三处逐网格循环改调 `skin_lod_draw`：LOD0 且未淡化时就是原来的 `bind_index_buffer + rhi_cmd_draw_indexed`；其他级别用额外索引缓冲 `rhi_cmd_draw_indexed_base`；淡化时两级各画一次 `rhi_cmd_draw_indexed_instanced_base`，`first_instance = lod_fade_pack_first_instance(0, ±k)`（高 16 位 k+16）。
+- **淡入淡出**：每网格一个 `LodFade`。着色器：GLSL `skinned{,_vk}.{vert,frag}`、`pbr_clustered_skin{,_vk}.vert`、`gbuffer_skinned{,_vk}.vert`、`gbuffer_skinned_vk.frag` 加 `#ifdef LOD_FADE` 块（读 `gl_BaseInstanceARB`，4×4 Bayer `discard`，与已有 lodfade 逐字相同）；clustered 蒙皮复用实例化变体的 `LOD_FADE` 片元，GL 延迟复用 `gbuffer.frag` 已有的块。D3D12 新增 `skinned_mrt_lodfade_hlsl.{vert,frag}`、`pbr_clustered_skin_lodfade_hlsl.vert`、`gbuffer_skinned_lodfade_hlsl.vert`（`SV_StartInstanceLocation`，构建时按 SM 6.8 编译），片元分别配 `pbr_clustered_lodfade_hlsl.frag` / `gbuffer_lodfade_hlsl.frag`。只有 `caps.indirect_first_instance_supported && lod_fade_seconds() > 0` 时才建 LOD_FADE 管线并开淡化，否则建原管线、直接切换。
+- **开关**：`BREAK_LOD=0` 不生成、不建缓冲、不打印 `Skin LOD` / `SKIN_LOD_STATS`，绘制走原调用。BSCN `N` 键恢复场景时先 `skin_lod_free` 再按新场景重建。
+- **压力场景** `BREAK_STRESS_LOD_SKIN=N`（N ≤ 16，超过钳到 16；场景已带骨骼时忽略）：每根管 96×104 段、19968 三角形、3 m 高、表面多频凹凸，独立 4 关节链（根平移、基部旋转、中段平移、中段旋转，权重在 1 m 与 2 m 处平滑过渡），一个 2.4 s 片段共 4N 个通道（N=16 用满 64），每根相位、弯曲轴不同，排在默认相机前方 2.5 m 间距网格上（底部不低于水面 y=-1）。它替换演示手臂（场景有蒙皮网格时绘制循环不画手臂，手臂的混合/IK 初始化也只在没有场景骨骼时运行）。
+- **统计**：`SKIN_LOD_STATS frames select_ms_avg vis_tris_avg vis_tris_lod0_avg ratio transitions fading_avg`（关机时）与调试 UI 一行 `Skin LOD: meshes L0/L1/L2 ...`。蒙皮网格本来就不剔除，vis_tris 是全部蒙皮网格实际绘制的三角形（淡化时两级之和）。
+
+### 验证
+- 构建：build-vk / build-gl / build-d3d12（Debug）与 build-rel-vk / gl / d3d12（Release）0 个来自本改动的警告（只有既有的 SheenBidi Release 未用变量警告与 lld `--gc-sections` 提示）。三个 Debug 树 `ctest -j4 -E test_platform_win32_runtime`（先构建 5 个 fuzz 目标）：vk 188/188、gl 185/185、d3d12 193/193（含 `test_d3d12_warp_runtime`）。vk 树最终源码连跑 8 次全量，有 2 次 `test_vulkan` 在 Hi-Z 可见性检查处 VK device lost（`-j4` 并行 GPU 负载下）；单独跑 6/6 通过，该测试不链接 `main.c` / `deferred.c`，判断为既有的负载相关不稳定，未处理。GCC `-Werror -pedantic` 语法检查 `main.c`、`deferred.c` 通过；新 HLSL 由 dxc 编译通过。
+- 生成：12 根管每根 19968/9984/4992 三角形，rel_err L1 0.0027–0.0035、L2 0.0050–0.0063（scale 3.0），8 个姿势，Debug 约 0.75 s/根（共 9.2 s；`BREAK_LOD_CACHE` 可缓存）。
+- 真实运行（`BREAK_STRESS_LOD_SKIN=12 BREAK_CAM=0,2.5,0,0,-10 BREAK_CAM_DOLLY=0.3 BREAK_FRAMES=150`，Release）：九种组合 transitions 都是 24，fading_avg：VK clustered 3.61 / blinn 5.21 / 延迟 4.80，GL 0.33 / 0.21 / 0.09，D3D12 0.62 / 0.33 / 0.36（GL/D3D12 帧率低，250 ms 淡化覆盖的帧少）；ratio 0.31–0.74；无 ERROR。D3D12 blinn 前向本身约 16 fps（不开压力场景也一样，既有情况），150 帧需要超过 60 s，用 100 s 超时跑完。VK Debug 三条路径验证层 0；D3D12 Debug（调试层 + GBV）无调试层消息。
+- 截图（VK Debug，`BREAK_UI=0 BREAK_TAA=0 BREAK_MB=0 BREAK_BLOOM=0`，第 60 帧动画中段，近处弯管裁剪）：LOD2（`BREAK_LOD_PIXEL_ERROR=1000`）、LOD1 混合、LOD0（`BREAK_LOD=0`）轮廓与弯折一致，两个弯折处无撕裂、无塌陷；淡化中（`BREAK_LOD_FADE_MS=100000`，fading_avg 11.81）表面连续无空洞。
+- 不变性：默认场景（无压力场景）对比 2584a56e 构建：日志按数字/行号归一化后 `BREAK_LOD=1` 只差一行帧率日志、`BREAK_LOD=0` 完全相同（默认场景的蒙皮手臂 48 三角形不生成 LOD，`Skin LOD` 行不出现）；第 55 帧截图差 > 8 的像素占 0.68%（LOD=1）/ 0.28%（LOD=0），同一基准构建连跑两次为 0.67%。
+- 性能（VK Release，12 根管，300 帧，3 次）：LOD 开 180.7 / 212.4 / 214.0 fps，`BREAK_LOD=0` 221.3 / 196.0 / 231.6 fps，三角形比约 0.45–0.51。24 万蒙皮三角形在这台 GPU 上不是瓶颈，差别在噪声内，看不出收益。
+- **真实 glTF 蒙皮资产（补测）**：Khronos 样例 CesiumMan（19 关节、4672 三角形）、BrainStem（18 关节、59 个蒙皮图元）、RiggedFigure（256 三角形）只在本地下载使用、不入库。三后端 Release 各跑 150 帧：全部正常退出，0 设备丢失，0 条错误日志。
+  - 生成：CesiumMan 4672/2336/1168 三角形，rel_err 0.0128/0.0257，8 个姿势，约 120 ms；BrainStem 59 个图元中 34 个达到门槛、33 个生成了级别，总计 61666/27504/13930 三角形，约 2.0 s（Release，一次性加载成本）；RiggedFigure 低于 512 三角形门槛，按设计不生成。
+  - 运行：BrainStem 相机推远时 44 次换级、平均 13 个图元在淡入淡出、可见三角形降到 71%；CesiumMan 默认机位不换级，`BREAK_LOD_PIXEL_ERROR=400` 强制到 LOD2（三角形 25%）后正常绘制。VK Debug 下 BrainStem 0 条验证消息，D3D12 调试层下 0 条消息。
+  - 近距离检查（补测）：新增 `BREAK_MODEL_VIEW=s`（见下），CesiumMan / BrainStem 在 VK Debug 下 `s=0.55`、`BREAK_DOF=0 BREAK_BLOOM=0` 第 30、60 帧截图：肩、肘、髋、膝弯折处表面连续，无撕裂、无塌陷、无尖刺；GL / D3D12 Release 同机位截图一致，0 条 ERROR，VK 0 条验证消息。
+  - 近看时发现并修了一个加载器问题：glTF 关节的全局变换要包含它上面的非关节祖先节点（CesiumMan 是 `Z_UP` → `Armature` → 根关节），引擎的骨骼只沿关节父子链计算，把这些祖先丢了，所以这类模型在演示里是侧躺的（Y-up 引擎里按 Z-up 摆放）。现在 `asset_load_gltf` 把每个带非单位世界变换的非关节父节点变成一个额外的根关节（逆绑定为单位阵），用常量 T/R/S 通道复现该节点的世界变换（最多 8 个，且受 `SKELETON_MAX_JOINTS` / `SKELETON_MAX_CHANNELS` 限制，超出时打 WARN 保持原行为）；只在有动画时生效（没有动画的骨骼本来就不跑蒙皮矩阵）。两个模型修后都站立。新测试 `gltf_skin_root_keeps_non_joint_ancestor_transform` / `gltf_skin_root_identity_ancestor_adds_no_joint`（`test_asset_gltf` 52/52）。
+- **模型查看模式** `BREAK_MODEL_VIEW=s`（演示程序）：不画地形、水面，不建展示区与下落方块；相机放在模型包围盒中心 +Z 方向，距离为完整入画距离的 s 倍（s=1 整体，s<1 更近）。蒙皮网格的包围盒用第一个动画采样姿势蒙皮后的顶点算（启动时读回一次）。`BREAK_CAM` 仍可覆盖机位。
+- 测试附注（已查明并修复）：GL Debug 树一次 `ctest -j4` 里 `test_lod_cache` 偶发失败。原因是 `lod_cache_round_trip_is_identical_and_second_run_hits` 断言 `saved_ms > 0`，而 `saved_ms` = 文件里存的冷生成耗时 − 命中时的读取耗时：这个测试网格只要 4–10 ms 生成，读回刚写的文件也要 3.5–6.5 ms，并行负载下读取一慢就会变负。GCC 构建生成更快（约 4 ms），所以 R707a 记录的「GCC 下必失败」也是同一原因。代码本身没问题，改的是断言：校验 `saved_ms` 精确等于「按微秒截断的冷生成耗时 − 命中读取耗时」。验证：在读取前人为加 15 / 40 ms 延迟，旧断言失败、新断言通过；把 `saved_ms` 的累加删掉，新断言能报错；GCC 构建连跑 3 次 5/5（旧断言 3 次都失败）；GL `ctest -j8` 3 轮全过。
+- **BSCN 读档重建（补测）**：新增脚本钩子 `BREAK_BSCN_ROUNDTRIP_AT=f`，第 f 帧执行与 `B` 键相同的保存、第 f+10 帧执行与 `N` 键相同的读取（日志 `BSCN_ROUNDTRIP save/load at frame N`）。`BREAK_CAM_DOLLY=0.1 BREAK_BSCN_ROUNDTRIP_AT=40 BREAK_FRAMES=120`：VK Debug 默认场景、`BREAK_STRESS_LOD=50 BREAK_STRESS_LOD_ECS=50`（mega 51 次换级、ECS LOD 重建）、`BREAK_STRESS_LOD_SKIN=4`（读档后 `Skin LOD: on -- 4 skinned meshes` 重建，10 次换级）均正常退出、0 设备丢失、0 条验证消息；GL / D3D12 Release 跑 `BREAK_STRESS_LOD_SKIN=4` 同样重建，10 次换级，无 ERROR。测试会在 `engine/` 下生成 `scene_save.bscn` / `scene_state.bin`。
+- 未验证：Metal；Linux 运行。
+
+
+## 本轮更新：FS3 — 尺寸变化只重建渲染目标，不再重编着色器（无标题栏全屏 任务 3）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-borderless-fullscreen-design.md` 3.3）
+- **共用助手 `renderer/post_targets.h`**：每个系统用一张表（槽位、宽、高、格式）描述自己的尺寸相关 FBO；`post_targets_replace` 先全部新建，任何一个失败就销毁已建的并返回 false，旧目标原样保留（与 `main.c` R362 同一「先建后换」规则），全部成功才销毁旧的并替换。
+- **20 个系统新增 `*_resize(sys, dev, w, h)`**：post_process（bloom）、ssao、taa、ssr、dof、volumetric、fxaa、ssgi、lens_flare、sharpen、motion_blur、contact_shadow、sss、upscale（`upscale_resize(s, dev, rw, rh, dw, dh)`）、color_grade、god_rays、debug_viz、lens_effects、combined_aa、combined_color。每个系统的 init 原来直接建 FBO 的几行改为调用同一个静态 `*_targets_create`，其余（管线、反射表、采样器、uniform 位置、失败时 shutdown 的判据、日志）不变；resize 只调 `*_targets_create`。半分辨率目标统一用 `post_targets_half`（`/2` 且至少 1，与原来的钳制一致）。
+- **时间性历史**：taa、upscale、combined_aa（合并路径）resize 后 `history_idx = 0`、`first_frame = true`，下一帧不混合旧尺寸的历史；combined_aa 回退链调用内部 fxaa/taa 的 resize，combined_color 回退链调用内部 color_grade 的 resize。
+- **不迁移**：tonemap（只有 1×1 亮度目标）与 cinematic（无目标）没有尺寸相关资源，重建块不再动它们（以前每次尺寸变化都 shutdown+init，也会重编着色器、并把自动曝光的适应状态清零）。
+- **`main.c` 重建块**：scene_fbo / forward_scene（R362）、occlusion_cull_resize、deferred_resize 不变；后处理改为 `FS3_RESIZE_OR_REINIT(resize, shutdown, init)`，某个系统 resize 失败时只对它回退到完整 shutdown+init，并打印 `RESIZE_FALLBACK <名字>`。
+- **尺寸去抖**：新尺寸先记为待定，只有下一帧仍是同一尺寸才重建；期间尺寸再变就替换待定请求并打印 `RESIZE_COALESCE frame=.. drop=WxH keep=WxH`，所以同帧或相邻帧的多次变化只按最终尺寸重建一次（代价：尺寸变化后最多晚 1 帧重建，期间用旧目标渲染，画面为旧比例的拉伸）。`rhi_device_resize` 仍在窗口尺寸变化的当帧调用（交换链必须跟上窗口），并只在尺寸真正改变时调用一次。
+- **测量钩子**：`BREAK_RESIZE_AT=frame:WxH[,frame:WxH...]` 从指定帧起强制渲染尺寸 rw×rh（等价于 F1 改渲染比例，走完全相同的重建块），每次重建打印 `RESIZE_REBUILD frame=.. rw=.. rh=.. w=.. h=.. fallbacks=.. ms=.. scene_ms=.. post_ms=.. tail_ms=..`（scene = 场景 FBO，post = 后处理系统，tail = occlusion + deferred）。
+
+### 耗时（Release，1280×720 窗口，800×450 ↔ 960×540 来回 6 次 × 3 轮 = 18 次的中位数）
+
+| 后端 | 改动前 总计 / 后处理 | 改动后 总计 / 后处理 |
+|---|---|---|
+| D3D12 | 45.0 / 37.6 ms | 25.6 / 21.0 ms |
+| VK（`BREAK_OCCLUSION=0`，见下） | 130.7 / 110.8 ms | 74.8 ms（该轮二进制未带分项） |
+| GL | 64.5 / 39.6 ms | 100.6 / 31.8 ms |
+
+- 后处理部分三后端都下降（D3D12 −44%、VK −46% 总计、GL −20%）。剩余的后处理时间是每个 FBO 的创建/销毁本身：VK `rhi_offscreen_fbo_destroy` 每次 `vkDeviceWaitIdle`、D3D12 每次分配提交资源，这是 RHI 层的成本，不在本任务范围。
+- GL 总计中位数反而更高，来自 `scene_ms`（scene_fbo + forward MRT 重建，本任务未改动）的 160–720 ms 偶发尖峰，改动前后都有（改动前单次最高 588 ms），出现频率随机；测量期间其他代理同时在跑演示程序，GPU 有争用。只看后处理分项是 39.6 → 31.8 ms。
+
+### 测试（TDD，`test_d3d12_warp_runtime` 新增 4 个，先因缺少 `*_resize` 编译失败，实现后 86/86）
+- `post_process_resize_rebuilds_only_targets_and_still_blooms`：4 条管线与采样器 handle（index+generation）不变，ping/pong 6×3、composite 12×6（FBO 字段与 `rhi_texture_get_size` 双重检查），resize 后灰色输入经 bloom 链得到 0.5±0.01。
+- `taa_resize_keeps_the_pipeline_resets_history_and_resolves`：管线不变、两张历史目标 6×4、`first_frame` 重新置位且 `history_idx` 归零，resize 后的第一次 resolve 原样输出当前帧（逐像素 ±0.004）。
+- `fxaa_and_combined_aa_resize_keep_pipelines_and_resize_targets`、`every_post_system_resize_keeps_pipelines_and_resizes_targets`：其余 16 个系统逐个检查管线不变、目标尺寸正确；SSGI 请求 0×0 时半分辨率目标（钳到 1×1）先建成、全分辨率目标被 RHI 拒绝，验证回滚后旧目标 handle 与尺寸不变、系统仍 ready。
+- `debug_layer_reported_nothing_for_the_whole_suite` 仍为 0 错误 0 警告 1 个别名。
+
+### 验证
+- VK 已知问题（改动前同样存在）：Release 演示在第一次或第二次重建后 `VK: device lost`，`BREAK_OCCLUSION=0` 时消失，问题在 `occlusion_cull_resize`（先销毁 Hi-Z 纹理再新建）或 Hi-Z 相关路径，与后处理无关，未在本任务修复；VK 计时因此在 `BREAK_OCCLUSION=0` 下进行。
+- VK Debug（`BREAK_OCCLUSION=0`，含同帧去抖）：`VK validation messages this run: 0`；D3D12 Debug 树 `ENGINE_D3D12_DEBUG=1` 运行 6 次重建无调试层消息。
+- 截图（Release，UI 关，第 100 帧，两次重建在第 61/91 帧对齐；VK 加 `BREAK_OCCLUSION=0`）：改动前后逐像素平均差与改动前自己连跑的噪声同级——VK 新旧 0.38–1.61（旧旧 0.16–1.69），GL 0.46–3.27（旧旧 0.49–0.98、新新 0.69–3.14，新版第 2 次与所有图都差 ~3，是单次离群），D3D12 0.61–2.58（旧旧 1.18–2.35）。
+- D3D12 Release 一次运行出现过 `device removed 0x887a0006`（截图那次），重跑 3 次新版与 3 次旧版各 20 次连续重建均未复现；当时其他代理正在同一 GPU 上跑 D3D12 演示，未能确定原因。
+- 0 编译警告：build-vk / build-gl / build-d3d12（Debug）与 build-rel-vk / gl / d3d12（仅 lld `--gc-sections` 提示与 SheenBidi 既有警告）。`ctest -j4 -E test_platform_win32_runtime`：d3d12 194/194、gl 186/186、vk 188/189——失败的是 `test_vulkan` 的 UNIFIED GPU CULL（Hi-Z 后 device lost），单独重跑 4 次全部通过，master 构建同样通过，判断为与其他代理并发占用 GPU 时的偶发问题。
+- GCC（ucrt64）`-std=c11 -Wall -Wextra -Werror -pedantic` 语法检查全部改动 `.c` 通过。
+- 未验证：Metal（本机无）；真正的窗口尺寸变化 / 全屏切换（由任务 2 的 `BREAK_TOGGLE_FULLSCREEN_AT` 覆盖），本次只用渲染比例路径驱动同一重建块。
+
 
 ## 本轮更新：修复 windows-d3d12 自 `a323c379` 起变红（bloom 渲染目标/着色器资源别名）
 
@@ -26,7 +270,7 @@
 
 ### 验证
 - build-vk（Debug，VK）与 build-asan（Debug，`-fsanitize=address -fno-omit-frame-pointer`，GL）0 编译警告（仅 lld `--gc-sections` 提示）。`ctest -j4 -E test_platform_win32_runtime`：vk 188/188（fuzz 目标需显式构建）；ASan `-LE "graphics|fuzz"` 177/177。
-- GCC（ucrt64）`-std=c11 -Wall -Wextra -Werror -pedantic` 语法检查 `lod_skin.c`、`lod_gen.c`、`lod_cache.c`、`test_lod_skin.c` 通过；用 GCC 编译运行 `test_lod_skin` 8/8。GCC 编译的 `test_lod_cache` 有 1 个用例（`saved_ms > 0`）失败，用 master 源码同样失败，是计时相关的既有问题，与本改动无关；clang 树里通过。
+- GCC（ucrt64）`-std=c11 -Wall -Wextra -Werror -pedantic` 语法检查 `lod_skin.c`、`lod_gen.c`、`lod_cache.c`、`test_lod_skin.c` 通过；用 GCC 编译运行 `test_lod_skin` 8/8。GCC 编译的 `test_lod_cache` 有 1 个用例（`saved_ms > 0`）失败，用 master 源码同样失败，是计时相关的既有问题，与本改动无关；clang 树里通过。（后续已查明是断言依赖读写耗时，已修，见 R707c 测试附注。）
 - 未验证：Linux LeakSanitizer（测试已释放所有分配，但没在 Linux 上跑过）；真实动画资产；GPU 端与 `main.c` 接入（后续步骤）。
 
 
@@ -9199,3 +9443,58 @@ The screen_read_window probe is unsupported there (ENOENT), so no final-display
 readback is claimed. Full Linux/QNX regression, upstream integration and the
 remaining GPU, ARM-runtime, native IME/clipboard/monitor and QNX TSan boundaries
 remain explicit gates.
+## iOS UIWindowScene host and Simulator rendering (2026-10-27)
+
+`engine/src/apps/ios_main.m` now supplies the production `UIApplicationMain`
+entry for `engine_demo`. UIKit owns a scene/window/view and its CAMetalLayer on
+the main thread; the existing C demo runs on a dedicated 16 MiB-stack engine
+thread through `engine_demo_main`, with native handles, Retina sizing and a
+host poll supplied through `EngineConfig`. Scene lifecycle and primary-touch
+events are synchronized onto the engine thread. Background waits do not acquire
+a drawable, and each frame has an Objective-C autorelease pool.
+
+The app bundles assets/shaders and a simulator-targeted metallib, stages a
+writable working directory under Library/Caches, and uses private texel-buffer
+storage with staged uploads on iOS. Simulator audio explicitly uses miniaudio's
+Null backend (silent); physical-device audio and GPU behavior remain unverified.
+CI remains compile-only, now checking the scene manifest and resources as well
+as the bundle identifier and metallib. This does not change iOS's COMPILED
+evidence level or the OpenGL removal gate.
+
+Verification on an iPhone 18 Pro Simulator (iOS 27.0, Xcode 27.1): 124 offline
+shader entries, `--frames 300` with orderly shutdown, visible 3D/UI in both RHI
+frame-60 and OS screenshots, and suspend/resume with continued rendering after
+returning from Safari. No ERROR/FATAL occurred in the successful run. The
+viewport is 402x874 logical versus 1206x2622 drawable at scale 3. Narrow-screen
+HUD layout, rotation and physical-touch testing remain open; optional Hi-Z,
+indirect/culling and GPU-timer paths still degrade where unsupported.
+
+On macOS, both MoltenVK and Metal full CTest configurations pass 191/191
+(the D3D12 dependency gate skips by platform). Metal graphics is 5/5, resource
+tests 48/48 and audio tests 17/17. Both backend demos render 3D/UI with correct
+orientation in 70-frame screenshot checks; their known lighting/material/water
+differences are not claimed to be pixel-identical.
+
+## QNX native input, monitor and current target validation (2026-10-28)
+
+The QNX candidate now enumerates real Screen displays with fail-closed metadata,
+process-local clipboard storage, local (explicitly non-native) IME state, Unicode
+keycap commit events, relative pointer displacement and native pointer sessions.
+UTF-8 truncation preserves codepoint boundaries, chart/software-raster conversion
+UB is covered by new regressions, and cursor creation failure releases its session.
+
+Linux normal, ASan/UBSan and TSan each pass 185/185, with graphics 4/4. QNX x86_64
+passes the default 157/157 and Vulkan 158/158 target manifests, including target
+shaderc 2/2. Six myui Screen commands total 40/40 in normal and ASan/UBSan runs;
+engine monitor/input tests pass 3/3 and 4/4, and the software backend passes 50/50.
+Both configurations complete 500/500 lifecycles and a 30-second command/frame soak
+with balanced submission/execution/destruction and no watchdog/FIFO/error failures.
+AArch64 default, Vulkan and Screen full-tree builds produce QNX AArch64 ELF.
+
+These are bounded candidate results, not full-QNX acceptance. The VM has no usable
+Vulkan ICD, ARM runtime, QNX TSan, physical HID/display readback, complete OS
+clipboard/IME, or myui GPU mount. Its virtual display driver rejects cursor
+configuration, so only NOT_SUPPORTED and resource cleanup are exercised there;
+positive physical cursor behavior remains unverified. A separate test disk resolves
+deployment capacity without modifying the original VM disk. See docs/qnx_compat.md
+§5.4 for the evidence levels and remaining master-merge gate.

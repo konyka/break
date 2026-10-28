@@ -15,6 +15,10 @@ typedef struct {
 } SharpenSystem;
 
 bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool sharpen_resize(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h);
 void sharpen_shutdown(SharpenSystem *s);
 void sharpen_apply(SharpenSystem *s, RHICmdBuffer *cmd,
                    RHITexture input_tex, f32 strength,

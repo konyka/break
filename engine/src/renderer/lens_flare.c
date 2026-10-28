@@ -1,4 +1,5 @@
 #include "lens_flare.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -71,6 +72,13 @@ static RHIPipeline lf_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool lens_flare_targets_create(LensFlareSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->lf_fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height) {
     if (!lf || !dev) return false;
     memset(lf, 0, sizeof(*lf));
@@ -114,7 +122,7 @@ bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height)
      * Pass stays opt-in (lf_enabled default off), so no default cost. */
     u32 pw = width;
     u32 ph = height;
-    lf->lf_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)lens_flare_targets_create(lf, dev, pw, ph);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -143,6 +151,15 @@ bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height)
 
     lf->ready = true;
     LOG_INFO("LensFlare: initialized (%ux%u, intensity=%.2f)", pw, ph, lf->intensity);
+    return true;
+}
+
+bool lens_flare_resize(LensFlareSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!lens_flare_targets_create(s, dev, w, h)) {
+        LOG_WARN("LensFlare: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

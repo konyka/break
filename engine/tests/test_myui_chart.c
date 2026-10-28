@@ -583,6 +583,7 @@ TEST(chart_paints_radar_polygon_to_software_canvas) {
 }
 
 TEST(chart_visual_map_configuration) {
+  static const float nonfinite[] = {NAN, INFINITY, -INFINITY};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_SCATTER);
   ASSERT_NOT_NULL(chart);
   ASSERT_FALSE(my_chart_has_visual_map(chart));
@@ -591,8 +592,79 @@ TEST(chart_visual_map_configuration) {
   ASSERT_TRUE(my_chart_has_visual_map(chart));
   ASSERT_EQ(my_chart_set_visual_map(chart, 10.0f, 10.0f, 0u, 0u),
             MY_RET_INVALID_PARAMS);
+  for (size_t i = 0u; i < sizeof(nonfinite) / sizeof(nonfinite[0]); i++) {
+    ASSERT_EQ(my_chart_set_visual_map(chart, nonfinite[i], 100.0f, 0u, 0u),
+              MY_RET_INVALID_PARAMS);
+    ASSERT_EQ(my_chart_set_visual_map(chart, 0.0f, nonfinite[i], 0u, 0u),
+              MY_RET_INVALID_PARAMS);
+  }
+  ASSERT_TRUE(my_chart_has_visual_map(chart));
   ASSERT_EQ(my_chart_clear_visual_map(chart), MY_RET_OK);
   ASSERT_FALSE(my_chart_has_visual_map(chart));
+  my_widget_unref(chart);
+}
+
+static void chart_assert_heatmap_colors(my_widget_t* chart, my_lcd_t* lcd,
+                                        my_vgcanvas_t* canvas,
+                                        const uint32_t* expected, size_t count) {
+  const uint8_t* pixels;
+  uint32_t stride;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  stride = my_lcd_mem_get_stride(lcd);
+  for (size_t i = 0u; i < count; i++) {
+    const size_t x = 42u + ((2u * i + 1u) * 266u) / (2u * count);
+    const uint8_t* pixel = pixels + 92u * stride + x * 4u;
+    ASSERT_EQ(pixel[0], (uint8_t)(expected[i] >> 8));
+    ASSERT_EQ(pixel[1], (uint8_t)(expected[i] >> 16));
+    ASSERT_EQ(pixel[2], (uint8_t)(expected[i] >> 24));
+    ASSERT_EQ(pixel[3], (uint8_t)expected[i]);
+  }
+}
+
+TEST(chart_visual_map_color_interpolation_contract) {
+  static const float values[] = {-1.0f, 0.0f, 50.0f, 100.0f, 101.0f};
+  static const float midpoint[] = {50.0f};
+  static const float extreme_values[] = {-FLT_MAX, 0.0f, FLT_MAX};
+  static const uint32_t expected[] = {
+      0xF1E1D1FFu, 0xF1E1D1FFu, 0x818181FFu, 0x102030FFu, 0x102030FFu};
+  static const uint32_t expected_extreme[] = {
+      0xF1E1D1FFu, 0x818181FFu, 0x102030FFu};
+  const uint32_t expected_truncated = 0x000001FFu;
+  my_chart_series_t series = {"v", values, 5u, 0x3A86FFFFu, 0u, false};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_HEATMAP);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_visual_map(chart, 0.0f, 100.0f, expected[0],
+                                    expected[3]), MY_RET_OK);
+  chart_assert_heatmap_colors(chart, lcd, canvas, expected, 5u);
+
+  series.values = midpoint;
+  series.count = 1u;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_visual_map(chart, 0.0f, 100.0f, 0x000001FFu,
+                                    0x000000FFu), MY_RET_OK);
+  chart_assert_heatmap_colors(chart, lcd, canvas, &expected_truncated, 1u);
+
+  series.values = extreme_values;
+  series.count = 3u;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_range(chart, 0.0f, 1.0f), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_visual_map(chart, -FLT_MAX, FLT_MAX, expected[0],
+                                    expected[3]), MY_RET_OK);
+  chart_assert_heatmap_colors(chart, lcd, canvas, expected_extreme, 3u);
+
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
   my_widget_unref(chart);
 }
 
@@ -1777,6 +1849,7 @@ TEST(chart_treemap_graph_calendar_hover_hit) {
 }
 
 TEST_MAIN_BEGIN()
+  RUN_TEST(chart_visual_map_color_interpolation_contract);
   RUN_TEST(chart_three_axis_ranges_are_isolated);
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);

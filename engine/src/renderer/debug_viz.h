@@ -19,6 +19,10 @@ typedef struct {
 } DebugVizSystem;
 
 bool debug_viz_init(DebugVizSystem *s, RHIDevice *dev, u32 w, u32 h);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool debug_viz_resize(DebugVizSystem *s, RHIDevice *dev, u32 w, u32 h);
 void debug_viz_shutdown(DebugVizSystem *s);
 void debug_viz_apply(DebugVizSystem *s, RHICmdBuffer *cmd,
                      RHITexture input_tex, RHITexture depth_tex,

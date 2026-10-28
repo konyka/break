@@ -1,4 +1,5 @@
 #include "motion_blur.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -68,6 +69,13 @@ static RHIPipeline mb_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool motion_blur_targets_create(MotionBlurSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool motion_blur_init(MotionBlurSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s || !dev) return false;
     memset(s, 0, sizeof(*s));
@@ -105,7 +113,7 @@ bool motion_blur_init(MotionBlurSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s->bind_pipe)
         LOG_WARN("MotionBlur: bindings create failed; uniform locations resolve -1");
 
-    s->fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)motion_blur_targets_create(s, dev, w, h);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -132,6 +140,15 @@ bool motion_blur_init(MotionBlurSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
     s->ready = true;
     LOG_INFO("MotionBlur: initialized (%ux%u)", w, h);
+    return true;
+}
+
+bool motion_blur_resize(MotionBlurSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!motion_blur_targets_create(s, dev, w, h)) {
+        LOG_WARN("MotionBlur: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

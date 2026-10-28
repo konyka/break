@@ -23,6 +23,10 @@ typedef struct {
 } SSAOSystem;
 
 bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool ssao_resize(SSAOSystem *s, RHIDevice *dev, u32 w, u32 h);
 void ssao_shutdown(SSAOSystem *ssao);
 void ssao_apply(SSAOSystem *ssao, RHICmdBuffer *cmd, RHITexture depth_tex,
                 const f32 *proj, const f32 *inv_proj, u32 screen_w, u32 screen_h);

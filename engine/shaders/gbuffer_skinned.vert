@@ -1,4 +1,7 @@
 #version 430 core
+#ifdef LOD_FADE
+#extension GL_ARB_shader_draw_parameters : require
+#endif
 
 /* R560: Deferred G-Buffer write pass -- skinned vertex stage (GL).
  * Same joint texel-buffer contract as skinned.vert (binding 5, current pose
@@ -24,7 +27,14 @@ uniform mat4 u_prev_mvp;
 
 layout(binding = 5) uniform samplerBuffer u_joints;  /* R103-1: match GL rhi_cmd_bind_texel_buffers unit 5 */
 
+#ifdef LOD_FADE
+layout(location = 5) flat out float vLodFade;
+#endif
 void main() {
+#ifdef LOD_FADE
+    uint fade_code = uint(gl_BaseInstanceARB) >> 16;
+    vLodFade = fade_code == 0u ? 0.0 : float(int(fade_code) - 16);
+#endif
     mat4 skin = mat4(0.0);
     mat4 prev_skin = mat4(0.0);
     for (int i = 0; i < 4; i++) {

@@ -17,6 +17,10 @@ typedef struct {
 } GodRaysSystem;
 
 bool god_rays_init(GodRaysSystem *s, RHIDevice *dev, u32 w, u32 h);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool god_rays_resize(GodRaysSystem *s, RHIDevice *dev, u32 w, u32 h);
 void god_rays_shutdown(GodRaysSystem *s);
 void god_rays_apply(GodRaysSystem *s, RHICmdBuffer *cmd,
                     RHITexture scene_tex, RHITexture depth_tex,

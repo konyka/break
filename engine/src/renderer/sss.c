@@ -1,4 +1,5 @@
 #include "sss.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -49,6 +50,14 @@ static RHIPipeline sss_create_pipe(RHIDevice *dev, bool sidecar,
     return pipe;
 }
 
+static bool sss_targets_create(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[2] = {
+        { &s->fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+        { &s->blur_fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 2u);
+}
+
 bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s || !dev) return false;
     memset(s, 0, sizeof(*s));
@@ -81,8 +90,7 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s->bind_h || !s->bind_v)
         LOG_WARN("SSS: bindings create failed; uniform locations resolve -1");
 
-    s->fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
-    s->blur_fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)sss_targets_create(s, dev, w, h);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -113,6 +121,15 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
     s->ready = true;
     LOG_INFO("SSS: initialized (%ux%u)", w, h);
+    return true;
+}
+
+bool sss_resize(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!sss_targets_create(s, dev, w, h)) {
+        LOG_WARN("SSS: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 
