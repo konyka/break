@@ -1625,6 +1625,83 @@ TEST(offscreen_viewport_stores_ndc_minus_y_in_row_zero) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+TEST(set_viewport_on_offscreen_keeps_ndc_minus_y_in_row_zero) {
+    /* rhi_cmd_set_viewport is the RHI's +Y-up viewport and follows the
+     * target's own convention (rhi_vk.c): on an offscreen target NDC y=-1
+     * stays in memory row 0, exactly as after rhi_offscreen_fbo_bind. The
+     * myui canvas re-states its viewport this way before drawing, and
+     * BreakUI's composite (uv = ndc*0.5+0.5) undoes that convention; an
+     * unflipped override stored the whole UI upside down on Metal. */
+    RHIShader vs = make_shader(k_msl_vs_lower_ndc_half, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    const u8 *top, *bottom;
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    desc.disable_culling = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_set_viewport(cmd, 0.0f, 0.0f, 64.0f, 64.0f, 0.0f, 1.0f);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    top = px + ((usize)8u * 64u + 32u) * 4u;
+    bottom = px + ((usize)56u * 64u + 32u) * 4u;
+    ASSERT_EQ((u32)top[2], 255u);
+    ASSERT_EQ((u32)top[0], 0u);
+    ASSERT_TRUE(bottom[2] != 255u || bottom[3] != 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+TEST(editor_color_pipeline_resolves_mvp_and_color) {
+    /* editor_color_vk.vert/.frag push block: mat4 u_mvp@0, vec4 u_color@64
+     * on a position-only (12-byte stride) pipeline. Unresolved names made
+     * the editor 3D viewport fail to initialise on Metal. */
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIPipelineBindings *bindings;
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.vertex_stride = 12u;
+    desc.disable_culling = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    bindings = rhi_pipeline_bindings_create(g_dev, pipe);
+    ASSERT_NOT_NULL(bindings);
+    ASSERT_EQ(rhi_pipeline_bindings_resolve(bindings, "u_mvp"), 0);
+    ASSERT_EQ(rhi_pipeline_bindings_resolve(bindings, "u_color"), 64);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_mvp"), 0);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_color"), 64);
+    rhi_pipeline_bindings_destroy(g_dev, bindings);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(draw_indexed_indirect_executes_arg_buffer) {
     /* Indexed indirect: the 20-byte record {indexCount, instanceCount,
      * firstIndex, vertexOffset, firstInstance} matches
@@ -3427,6 +3504,8 @@ int main(void) {
     RUN_TEST(draw_indexed_indirect_executes_arg_buffer);
     RUN_TEST(draw_indexed_base_honors_first_index_and_vertex_offset);
     RUN_TEST(offscreen_viewport_stores_ndc_minus_y_in_row_zero);
+    RUN_TEST(set_viewport_on_offscreen_keeps_ndc_minus_y_in_row_zero);
+    RUN_TEST(editor_color_pipeline_resolves_mvp_and_color);
     RUN_TEST(gpu_timer_roundtrip_smoke);
     RUN_TEST(gpu_timer_destroy_with_pending_sample_is_safe);
     RUN_TEST(manifest_real_shader_resolves);

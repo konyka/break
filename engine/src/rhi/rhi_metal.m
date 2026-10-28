@@ -2948,11 +2948,17 @@ void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, b
 
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h, f32 min_depth, f32 max_depth) {
     if (cmd == NULL || cmd->render_encoder == nil) return;
-    /* No VK-style negative-height flip: Metal forbids negative viewport
-     * heights. NDC +Y maps upward; orientation parity with the GL/VK
-     * framebuffer convention is a Task 11 concern (shader-side). */
+    /* The RHI's +Y-up viewport follows the target's own convention, like
+     * rhi_vk.c: offscreen/MRT targets keep NDC y=-1 in memory row 0 (the
+     * flipped viewport metal_set_offscreen_viewport installs at bind), the
+     * drawable and the depth-only shadow targets keep Metal's default. */
     MTLViewport vp = { (double)x, (double)y, (double)w, (double)h,
                        (double)min_depth, (double)max_depth };
+    if (cmd->pass_kind == METAL_PASS_OFFSCREEN ||
+        cmd->pass_kind == METAL_PASS_MRT) {
+        vp.originY = (double)y + (double)h;
+        vp.height = -(double)h;
+    }
     [cmd->render_encoder setViewport:vp];
 }
 
@@ -3975,6 +3981,14 @@ static i32 metal_uniform_location(const RHIPipelineDesc *desc, const char *name)
     if (strcmp(name, "u_albedo") == 0)      return -1;
     if (strcmp(name, "u_inv_proj") == 0)    return 0;
     if (strcmp(name, "u_curr_vp") == 0)     return 64;
+    /* editor_color_vk.vert/.frag (position-only vec3, 12-byte stride):
+     * mat4 u_mvp@0, vec4 u_color@64. The shadow-depth u_mvp@64 case
+     * returned earlier; the stride gate keeps every other desc on the VK
+     * golden table. */
+    if (desc->vertex_stride == 12u) {
+        if (strcmp(name, "u_mvp") == 0)     return 0;
+        if (strcmp(name, "u_color") == 0)   return 64;
+    }
     return -1;
 }
 
