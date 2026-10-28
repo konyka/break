@@ -116,4 +116,5 @@
 - [ ] Security：release 配置测试；server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling
 - [ ] Update/crash：在线更新真实传输、灰度、服务端；crash 服务端符号化/聚类/回归统计、真实上传传输、GPU/RHI/网络/输入摘要捕获
 - [ ] Stage 6：各图形后端（Vulkan/D3D12/Metal/headless）缺口计划、逐后端证据（OpenGL 废弃门已取消，见 Stage 6 OpenGL policy）
+- [ ] X11 全屏在有窗口管理器的会话下不稳定：`test_platform_x11_runtime` 在 GNOME Xwayland（Mutter）上间歇失败，原因与调查记录见 `docs/Implementation_Status.md` 2026-10-28 条目；CI（Xvfb，无 WM）不受影响
 - [ ] Final independent code review

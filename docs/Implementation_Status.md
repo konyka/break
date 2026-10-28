@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：`test_platform_x11_runtime` 在 GNOME Xwayland 上不稳定——调查结论（2026-10-28，未修）
+
+- **现象**：上游新增的 X11 全屏/标题栏用例在本机（Fedora GNOME，Mutter 作为 Xwayland 的窗口管理器）每次失败 0–8 项，纯 origin/master 同样如此；CI 在无窗口管理器的 Xvfb 上运行，走 motif + 自行移动/缩放的回退路径，不受影响。
+- **证据**（在 `window_x11.c` 临时加 MapNotify/ConfigureNotify/PropertyNotify(_NET_WM_STATE) 日志，多次运行）：① `XMapWindow` 之后、Mutter 完成映射之前 `XGetWindowAttributes` 仍报 IsUnmapped，此时全屏请求走“未映射时直接改 `_NET_WM_STATE`”分支，Mutter 映射时忽略它（最终状态只有 `_NET_WM_STATE_FOCUSED`）；② Mutter 在测试快速创建/销毁窗口时会把同一窗口取消映射再映射，并出现 1×1、320×203 等中间几何；离开全屏后偶尔恢复到 1×1。
+- **尝试过的两个修复**（均已还原）：记录“已请求映射”使映射竞态期间改走 ClientMessage——失败降到 1–2 项但仍不稳定；在 MapNotify 时按请求的模式补发——效果相同。按调试流程两次未根治即停止，不再叠加修改。
+- **结论与后续**：真实问题涉及 Mutter 对未带 `WM_NORMAL_HINTS` 的窗口的映射/几何处理，需要在有窗口管理器的环境（GNOME/KDE 原生 X11 会话或 CI 增加带 WM 的 lane）单独排查；本机图形 lane 验证时按名称排除该用例。`engine_demo` 的 Alt+Enter 在本机未做人工验证。
+
 ## 本轮更新：本地 master 与 origin/master 合流（2026-10-28）
 
 - **背景**：本地 master（runtime 扩展、Stage 3–5、scene editor、shader 热加载、I18N 等，约 164 个提交）与 origin/master（Windows MSVC/MinGW lane、Metal/iOS、QNX、R639 Vulkan 视口翻转、R646 UNORM swapchain、meshoptimizer C 移植等，约 269 个提交）自 `8fbc3779` 起分叉，以普通 merge 合流，未改写任何一侧历史。
