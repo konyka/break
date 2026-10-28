@@ -665,6 +665,45 @@ static void on_row_click(void *ctx, const char *event, void *data) {
     }
 }
 
+/* Outliner row selection class ("selected" → theme selection tint). Only
+ * writes on change: set_style_class invalidates the row. */
+static void shell_row_mark_selected(BreakEditorShell *shell, my_widget_t *row,
+                                    usize index) {
+    BreakEditorEntityId id;
+    const char *unused = NULL;
+    const char *cls = my_widget_get_style_class(row);
+    bool want = break_editor_entity_id_valid(shell->selected) &&
+                break_editor_doc_entity_at(shell->doc, index, &id, &unused) &&
+                break_editor_entity_id_eq(id, shell->selected);
+    bool have = cls != NULL && strcmp(cls, "selected") == 0;
+    if (want != have) {
+        (void)my_widget_set_style_class(row, want ? "selected" : NULL);
+    }
+}
+
+/* Re-mark the live outliner rows after a selection change that does not
+ * rebind them (row click, viewport pick). */
+static void shell_outliner_mark_selection(BreakEditorShell *shell) {
+    usize i, n;
+    if (shell->outliner_list == NULL) {
+        return;
+    }
+    n = my_widget_child_count(shell->outliner_list);
+    for (i = 0u; i < n; i++) {
+        my_widget_t *row = my_widget_get_child(shell->outliner_list, i);
+        EditorRowCtx *rc;
+        if (row == NULL) {
+            continue;
+        }
+        rc = (EditorRowCtx *)my_widget_get_user_data(row);
+        if (rc >= &shell->row_ctxs[0] &&
+            rc < &shell->row_ctxs[EDITOR_ROW_CTX_POOL] && rc->row == row &&
+            rc->kind == 0u) {
+            shell_row_mark_selected(shell, row, rc->index);
+        }
+    }
+}
+
 static size_t editor_adapter_count(my_list_adapter_t *adapter) {
     EditorListAdapter *a =
         (EditorListAdapter *)((char *)adapter -
@@ -716,6 +755,7 @@ static void editor_adapter_bind_row(my_list_adapter_t *adapter,
             (void)my_button_set_text(row,
                                      break_editor_tr(BREAK_EDITOR_TR_STALE_ROW));
         }
+        shell_row_mark_selected(a->shell, row, (usize)index);
     } else {
         if (index < a->shell->palette_match_count) {
             char text[96];
@@ -1783,6 +1823,7 @@ bool break_editor_shell_select_index(BreakEditorShell *shell, usize i) {
         return false;
     }
     shell->selected = id;
+    shell_outliner_mark_selection(shell);
     shell_rebuild_inspector(shell);
     shell_refresh_status(shell);
     return true;

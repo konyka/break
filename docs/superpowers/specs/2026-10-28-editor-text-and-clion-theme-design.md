@@ -37,6 +37,10 @@ Reference values (JetBrains Int UI dark palette; approximations from the public 
 - `test_editor_shell`: the editor sheet parses with zero warnings in strict mode and the toolbar/status/console resolve the expected colours through `my_widget_style_get_color`.
 - Live: `--input-script` screenshots on Vulkan and OpenGL; sample the regions against the palette.
 
+## 4a. Selected outliner row
+
+The outliner row bound to the selected entity carries style class `selected` (set in `editor_adapter_bind_row` and re-marked on a row click, which does not rebind), styled `#editor-outliner-row.selected` = selection tint `#2E436E`, white text. Pinned by `test_editor_shell` `outliner_highlights_the_selected_row`; live (Vulkan, `--input-script`) the clicked row samples `#2E436E` and the other `#1E1F22`.
+
 ## 5. Not delivered
 
 Icons, tool-window tabs and gutters, light theme, theme switching UI, custom fonts (JetBrains Mono / Inter are not bundled; the existing font chain stays).

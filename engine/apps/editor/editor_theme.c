@@ -60,6 +60,9 @@ static const char k_css[] =
     " #editor-palette-row:hover { background-color: #2e436e; }\n"
     "#editor-outliner-row:pressed, #editor-assets-row:pressed,"
     " #editor-palette-row:pressed { background-color: #2e436e; }\n"
+    /* the selected entity's outliner row (class set by editor_panels.c) */
+    "#editor-outliner-row.selected, #editor-outliner-row.selected:hover {"
+    " background-color: #2e436e; color: #ffffff; }\n"
     /* command palette popup */
     "#editor-palette { background-color: #2b2d30; }\n";
 

@@ -1689,6 +1689,61 @@ TEST(shell_applies_the_new_ui_dark_theme)
     break_editor_shell_destroy(shell);
 }
 
+/* The outliner row of the selected entity carries the "selected" class and
+ * resolves the selection tint; other rows keep the content background.
+ * Covers both selection paths: a row click (select_index, no list refresh)
+ * and add/remove (refresh_all rebinds rows). */
+static usize outliner_selected_rows(my_widget_t *list, my_widget_t **out) {
+    usize i, n = my_widget_child_count(list), hits = 0u;
+    for (i = 0u; i < n; i++) {
+        my_widget_t *row = my_widget_get_child(list, i);
+        const char *cls = my_widget_get_style_class(row);
+        if (cls != NULL && strcmp(cls, "selected") == 0) {
+            if (out != NULL) *out = row;
+            hits++;
+        }
+    }
+    return hits;
+}
+
+TEST(outliner_highlights_the_selected_row)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *list;
+    my_widget_t *row = NULL;
+    my_widget_t *other;
+    BreakEditorEntityId id;
+    const char *name = NULL;
+    char first[BREAK_EDITOR_NAME_CAPACITY];
+    ASSERT_NOT_NULL(shell);
+    emit_click(find(shell, "editor-add-button"));
+    emit_click(find(shell, "editor-add-button"));
+    shell_paint(shell);
+    list = find(shell, "editor-outliner");
+    ASSERT_NOT_NULL(list);
+    ASSERT_TRUE(break_editor_doc_entity_at(break_editor_shell_doc(shell), 0u,
+                                           &id, &name));
+    snprintf(first, sizeof(first), "%s", name);
+    /* add selects the new entity (index 1): exactly one highlighted row */
+    ASSERT_EQ(outliner_selected_rows(list, &row), 1u);
+    ASSERT_EQ(my_widget_style_get_color(row, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_SELECTION);
+    other = list_row_by_text(list, first);
+    ASSERT_NOT_NULL(other);
+    ASSERT_TRUE(other != row);
+    ASSERT_EQ(my_widget_style_get_color(other, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_BG_CONTENT);
+    /* clicking the first row moves the highlight */
+    emit_click(other);
+    ASSERT_EQ(outliner_selected_rows(list, &row), 1u);
+    ASSERT_TRUE(row == other);
+    /* removing the selection clears every highlight */
+    emit_click(find(shell, "editor-remove-button"));
+    shell_paint(shell);
+    ASSERT_EQ(outliner_selected_rows(list, NULL), 0u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_navigation_updates_rows)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -6430,6 +6485,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(viewport_shader_initial_failure_recovers_through_explicit_reload);
     RUN_TEST(assets_panel_lists_fixture_root);
     RUN_TEST(shell_applies_the_new_ui_dark_theme);
+    RUN_TEST(outliner_highlights_the_selected_row);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
