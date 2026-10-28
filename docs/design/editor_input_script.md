@@ -30,6 +30,10 @@ The first run clicked "Add" and nothing happened, on both backends. `break_ui_pu
 
 `smoke.txt` also covers the outliner row click, two toolbar adds with undo/redo, and `W`/`E`/`R` tool switching.
 
+## Notes
+
+If the X server's vsync present path stalls (seen on this host: `glxgears` at about 1.4 FPS), the OpenGL backend waits in `glXSwapBuffers` and a script times out; run with `vblank_mode=0`.
+
 ## Not covered
 
 IME text, typing into edit fields, drag-and-drop, right/middle-button camera drags (commands exist, not scripted yet), multi-window, recording scripts from real input, Windows/macOS. The window still needs a running display; this is a developer/live tool, not a CI lane.
