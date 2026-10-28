@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Stage 4 Scene Editor — 脚本化交互验证，并修复 BreakUI 吞掉鼠标按键（2026-10-28）
+
+- **起因**：TODO 中“editor 人工交互验证”未做。本机 Xwayland + Mutter 下 XTEST 指针移动能到达 X11 窗口，按键与鼠标按钮事件到不了（探针窗口只收到 FocusIn/Enter/Motion），所以此前实机检查都靠 gdb 直接调用，从未走过输入路径。
+- **交付**：`editor_input_script`（解析器 + 播放器：每帧在 `break_ui_pump` 之前写平台 `InputState`，之后全是生产路径）与 `editor_input_driver`（`--input-script <file>`；`move_to` 按控件名或“列表@行文字”定位，`expect` 检查实体数/选中/工具/撤销深度/命令面板/预览重载数/Transform x/控制台文字，`screenshot` 写 PPM，全部通过退出 0、否则 3）。CMake 选项 `BREAK_EDITOR_INPUT_SCRIPT` 默认 OFF；`test_release_config_contract` 禁止发布 editor 含该代码（对 ON 构建确认会失败）。
+- **发现的缺陷（已修）**：首跑点击“添加”毫无反应，两后端相同。`break_ui_pump` 先跑 `pump_keys` 遍历整个 `keys` 表，它在跳过鼠标槽（300..304）之前已把边沿记进 `prev_keys`，`pump_mouse` 随后比较的总是已更新的值，从不发送 `POINTER_DOWN/UP`。自 2026-08-21 myui 集成（`023fee7c`）起，经 BreakUI 的鼠标点击在 editor 与 `dxx_break` 中都不可能生效（键盘与指针移动不受影响）；`test_editor_shell` 直接发 myui 事件，所以没发现。修复：键盘遍历先问 `break_ui_key_slot_is_keyboard`，不碰鼠标与修饰键槽；`test_break_ui_input` 新增用例（修复前红、修复后绿）。
+- **实机证据**（NVK Vulkan 与 Mesa OpenGL，均退出 0）：点工具栏“添加”→1 个实体并选中；点检查器 Transform“添加”→撤销深度 2；点视口空白→取消选中，点中心→重新拾取；`W`→平移工具；拖 gizmo X 轴→Transform x=0.748、撤销深度 3、截图视口区域随立方体与 gizmo 变化；`Ctrl+Z`→x 回 0；`Ctrl+Y`→x 恢复；`Ctrl+P`/`Escape`→命令面板开/关；点资源浏览器 `pic.png` 行→预览重载 1、控制台“image preview: loaded 48x24”、截图预览区出现红色。另一脚本覆盖大纲行点击、两次添加的撤销/重做、`W/E/R` 切换。脚本与截图：`.superpowers/sdd/2026-10-28-editor-input-script/live/`。
+- **验证**：`test_editor_input_script` 6/6（ASan 干净）、`test_break_ui_input` 9/9；全量 ctest OpenGL 223/223、Vulkan 224/224、Snowflake 227/227、多后端 224/224、Release 228/228；图形 4/5/7/7（不含 x11_runtime）；ASan/TSan `test_editor_shell` 各 3 次 111/111 零报告；满载 40/40。开启 `BREAK_EDITOR_INPUT_SCRIPT` 的验证构建按设计只有 `test_release_config_contract` 失败（它拒绝含回放代码的 editor）。
+- **边界**：IME 文字、编辑框输入、拖放、右/中键相机拖动、多窗口、录制真实输入、Windows/macOS 未覆盖；需要真实显示器，不是 CI 通道。详见 `docs/design/editor_input_script.md`。
+
 ## 本轮更新：Stage 4 Scene Editor — 资源浏览器图片预览与纹理热加载（2026-10-28）
 
 - **交付**：资源浏览器点击 `.png/.jpg/.jpeg/.bmp/.tga` 在列表下方打开预览（尺寸/状态文字 + 等比显示的图片）；外部修改该文件后自动重载。`break_editor_image`（stb_image 头部探测与 RGBA8 解码，单边 0 或超过 4096 一律拒绝）；`editor_image_preview`（资源面板持有）：Runtime Core 重载协调器（1 个 worker）+ 挂在文件所在目录的 VFS + 该文件的监视；worker 只探测头部，owner 线程在 commit 钩子里解码（Runtime Core 钩子只传原始字节，4096 上限约束解码耗时），shell tick 里先建新 `RHITexture` 成功后再销毁旧的；任何失败（读不到、探测、解码、建纹理）都保留当前纹理；每 tick 泵提交队列。同目录换文件取消在途请求并改监视，跨目录重建协调器；无设备时仍解码并报告尺寸，接上设备时上传一次。新增 i18n 键 6 个（中英）。

@@ -2,6 +2,7 @@
 
 #include "ui/myui_break_input.h"
 #include "mypal/my_event.h"
+#include "platform/input.h"
 
 TEST(ascii_identity)
 {
@@ -89,6 +90,22 @@ TEST(utf16_offsets_are_codepoint_offsets)
     ASSERT_EQ(break_utf16_units_to_cp(text, 99), 4);
 }
 
+/* The keyboard pass in break_ui_pump runs before the pointer pass over the
+ * same InputState.keys edge table; it must skip the mouse slots entirely
+ * (2026-10-28: it recorded their edges first, so no pointer press or
+ * release ever reached myui through BreakUI). */
+TEST(mouse_and_modifier_slots_are_not_keyboard_keys) {
+    u32 i;
+    for (i = INPUT_MOUSE_LEFT; i <= INPUT_MOUSE_5; i++) {
+        ASSERT_FALSE(break_ui_key_slot_is_keyboard(i));
+    }
+    ASSERT_FALSE(break_ui_key_slot_is_keyboard(289u));
+    ASSERT_FALSE(break_ui_key_slot_is_keyboard(290u));
+    ASSERT_TRUE(break_ui_key_slot_is_keyboard('w'));
+    ASSERT_TRUE(break_ui_key_slot_is_keyboard(256u));
+    ASSERT_TRUE(break_ui_key_slot_is_keyboard(INPUT_MOUSE_5 + 1u));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ascii_identity);
     RUN_TEST(named_keys);
@@ -98,4 +115,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(utf8_byte_offsets_are_codepoint_offsets);
     RUN_TEST(invalid_utf8_always_makes_progress);
     RUN_TEST(utf16_offsets_are_codepoint_offsets);
+    RUN_TEST(mouse_and_modifier_slots_are_not_keyboard_keys);
 TEST_MAIN_END()

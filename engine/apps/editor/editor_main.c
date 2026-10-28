@@ -37,6 +37,9 @@
 #include "editor_hot_reload.h"
 #include "editor_panels.h"
 #include "editor_remote.h"
+#ifdef BREAK_EDITOR_INPUT_SCRIPT
+#include "editor_input_driver.h"
+#endif
 
 #include <core/profiler.h>
 #include <editor/editor_scene.h>
@@ -65,6 +68,12 @@ int main(int argc, char **argv) {
   BreakEditorRemote *remote = NULL;
   BreakEditorHotReload *hot_reload = NULL;
   char remote_err[160];
+#ifdef BREAK_EDITOR_INPUT_SCRIPT
+  /* --input-script <file>: scripted input replay (test builds only) */
+  const char *script_path = NULL;
+  BreakEditorInputDriver *script = NULL;
+  int script_exit = 0;
+#endif
 
   /* --lang <tag> (or BREAK_LANG / LC_ALL / LC_MESSAGES / LANG) selects the
    * UI language; the option is removed before the remote/scene parser runs */
@@ -75,6 +84,23 @@ int main(int argc, char **argv) {
     return 2;
   }
   (void)break_editor_i18n_set_lang(lang);
+#ifdef BREAK_EDITOR_INPUT_SCRIPT
+  if (!break_editor_input_driver_take_cli(&argc, argv, &script_path, lang_err,
+                                          sizeof(lang_err))) {
+    fprintf(stderr, "editor: %s\n", lang_err);
+    return 2;
+  }
+  if (script_path != NULL) {
+    char script_err[160];
+    script_err[0] = '\0';
+    script = break_editor_input_driver_create(script_path, script_err,
+                                              sizeof(script_err));
+    if (script == NULL) {
+      fprintf(stderr, "editor: %s\n", script_err);
+      return 2;
+    }
+  }
+#endif
 
   /* parsed before any window exists: a bad --remote config exits non-zero
    * without ever opening a listener (fail closed) */
@@ -214,6 +240,12 @@ int main(int argc, char **argv) {
       drawable_w = nw;
       drawable_h = nh;
     }
+#ifdef BREAK_EDITOR_INPUT_SCRIPT
+    if (script != NULL && !break_editor_input_driver_frame(script, platform,
+                                                           shell)) {
+      break; /* the script finished (quit or last command) */
+    }
+#endif
     break_ui_pump(ui);
     /* Phase 2 Task 3: per-frame viewport housekeeping (per-frame damage for
      * the live 3D view + gizmo/selection reconcile) BEFORE frame_begin's
@@ -233,12 +265,20 @@ int main(int argc, char **argv) {
                                          (int)drawable_h, (int)lw, (int)lh);
       break_ui_render(ui, cmd, drawable_w, drawable_h);
       rhi_frame_end(device);
+#ifdef BREAK_EDITOR_INPUT_SCRIPT
+      break_editor_input_driver_after_frame(script, device, drawable_w,
+                                            drawable_h);
+#endif
       rhi_present(device);
     }
     profiler_pop();
     profiler_end_frame();
   }
 
+#ifdef BREAK_EDITOR_INPUT_SCRIPT
+  script_exit = break_editor_input_driver_exit_code(script);
+  break_editor_input_driver_destroy(script);
+#endif
   break_editor_remote_destroy(remote);
   break_editor_hot_reload_destroy(hot_reload);
   break_editor_shell_set_render_device(shell, NULL);
@@ -250,5 +290,9 @@ int main(int argc, char **argv) {
   break_ui_destroy(ui);
   rhi_device_destroy(device);
   platform_destroy(platform);
+#ifdef BREAK_EDITOR_INPUT_SCRIPT
+  return script_exit;
+#else
   return 0;
+#endif
 }

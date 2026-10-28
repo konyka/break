@@ -9,7 +9,8 @@
 #    crash-upload or editor-remote code at all (no remote surface, no update
 #    path of any kind, signed or not).
 # 2. No test hooks (`*_for_test`, `*test_hook*`) in shipped binaries: the
-#    allowlist below is empty and must stay so.
+#    allowlist below is empty and must stay so. The scripted input replay
+#    (BREAK_EDITOR_INPUT_SCRIPT) must not ship either.
 # 3. editor: --remote fails closed (exit 2, before any window or listener)
 #    without TLS material, and any --remote-* option without --remote is
 #    rejected. Runs headless (no DISPLAY needed: the parser exits first).
@@ -80,6 +81,17 @@ foreach(binary IN LISTS shipped)
         endif()
     endforeach()
 endforeach()
+
+# --- 2b. no scripted input replay in the shipped editor ------------------
+if(DEFINED EDITOR AND NOT "${EDITOR}" STREQUAL "" AND EXISTS "${EDITOR}")
+    release_defined_symbols("${EDITOR}" syms)
+    foreach(sym IN LISTS syms)
+        if(sym MATCHES "^break_editor_input_(script|driver)_")
+            string(APPEND errors "${EDITOR}: ships the input replay (${sym}); "
+                "it belongs to BREAK_EDITOR_INPUT_SCRIPT=ON validation builds\n")
+        endif()
+    endforeach()
+endif()
 
 # --- 3. editor --remote fails closed --------------------------------------
 if(DEFINED EDITOR AND NOT "${EDITOR}" STREQUAL "" AND EXISTS "${EDITOR}")

@@ -1,6 +1,7 @@
 #include "ui/myui_break_input.h"
 
 #include "mypal/my_event.h"
+#include "platform/input.h"
 #include "platform/platform_text.h"
 
 uint32_t break_ui_map_key(i32 key) {
@@ -52,4 +53,9 @@ i32 break_utf8_byte_to_cp(const char* s, i32 byte) {
 
 i32 break_utf16_units_to_cp(const uint16_t* s, i32 units) {
   return platform_utf16_units_to_codepoints(s, units);
+}
+
+bool break_ui_key_slot_is_keyboard(u32 i) {
+  if (i >= INPUT_MOUSE_LEFT && i <= INPUT_MOUSE_5) return false;
+  return i != 289u && i != 290u; /* Shift / Ctrl: modifiers only */
 }

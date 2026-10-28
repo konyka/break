@@ -241,10 +241,11 @@ static void pump_keys(BreakUI *ui, InputState *input) {
   for (i = 0; i < INPUT_MAX_KEYS; i++) {
     uint8_t now = input->keys[i];
     uint8_t prev = ui->prev_keys[i];
+    /* skip BEFORE recording the edge: pump_mouse owns the mouse slots'
+     * prev state, and updating it here hid every press and release */
+    if (!break_ui_key_slot_is_keyboard(i)) continue;
     if (now == prev) continue;
     ui->prev_keys[i] = now;
-    if (i >= 300 && i <= 304) continue;
-    if (i == 289 || i == 290) continue;
     if (!break_ui_should_dispatch_key((i32)i, modifiers, ime_enabled)) {
       continue;
     }
