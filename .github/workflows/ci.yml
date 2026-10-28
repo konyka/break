@@ -947,7 +947,7 @@ jobs:
 
       - name: Test X11/OpenGL runtime
         run: |
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb-gl.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb-gl.log 2>&1 &
           xvfb_pid=$!
           trap 'kill "$xvfb_pid"' EXIT
           export DISPLAY=:99
@@ -1029,7 +1029,7 @@ jobs:
           test -x "$(command -v Xvfb)"
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
           xvfb_pid=$!
           trap 'kill "$xvfb_pid"' EXIT
           export DISPLAY=:99
@@ -1274,7 +1274,7 @@ jobs:
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
           export VK_ICD_FILENAMES="$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
           trap 'kill $!' EXIT
           export DISPLAY=:99
           until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
@@ -1341,7 +1341,7 @@ jobs:
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
           export VK_ICD_FILENAMES="$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
           trap 'kill $!' EXIT
           export DISPLAY=:99
           until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
