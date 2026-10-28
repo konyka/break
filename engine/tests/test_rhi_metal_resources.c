@@ -1397,9 +1397,9 @@ TEST(fill_buffer_pattern_and_clamp_readback) {
 TEST(screenshot_clear_color_and_post_present_refused) {
     /* rhi.h:815-826 / R577: screenshot is legal from frame_begin until
      * present; here it runs post-frame_end pre-present and must carry the
-     * just-committed frame's pixels. The drawable is BGRA8, so readback
-     * byte order is B,G,R,A (native, same as VK's raw copy). Post-present
-     * calls are refused (false + log). */
+     * just-committed frame's pixels. The drawable is BGRA8 but the rhi.h
+     * contract is RGBA8 readback (VK swizzles BGRA->RGBA), so the bytes
+     * are R,G,B,A. Post-present calls are refused (false + log). */
     RHICmdBuffer *cmd;
     u8 px[64u * 64u * 4u];
     const u8 *c;
@@ -1412,9 +1412,9 @@ TEST(screenshot_clear_color_and_post_present_refused) {
     memset(px, 0, sizeof(px));
     ASSERT_TRUE(rhi_screenshot(g_dev, 0u, 0u, 64u, 64u, px, sizeof(px)));
     c = px + ((usize)32u * 64u + 32u) * 4u;
-    ASSERT_TRUE(c[0] >= 75u && c[0] <= 78u);    /* B = 0.3 */
+    ASSERT_TRUE(c[0] >= 24u && c[0] <= 27u);    /* R = 0.1 */
     ASSERT_TRUE(c[1] >= 50u && c[1] <= 52u);    /* G = 0.2 */
-    ASSERT_TRUE(c[2] >= 24u && c[2] <= 27u);    /* R = 0.1 */
+    ASSERT_TRUE(c[2] >= 75u && c[2] <= 78u);    /* B = 0.3 */
     ASSERT_EQ((u32)c[3], 255u);
     ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
     memset(px, 0, sizeof(px));
@@ -1456,10 +1456,10 @@ TEST(screenshot_rows_are_top_down) {
     ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
     top = px + 32u * 4u;
     bottom = px + ((usize)63u * 64u + 32u) * 4u;
-    ASSERT_EQ((u32)top[0], 0u);       /* B,G,R,A: red */
-    ASSERT_EQ((u32)top[2], 255u);
-    ASSERT_EQ((u32)bottom[0], 255u);  /* blue clear */
-    ASSERT_EQ((u32)bottom[2], 0u);
+    ASSERT_EQ((u32)top[0], 255u);     /* R,G,B,A: red */
+    ASSERT_EQ((u32)top[2], 0u);
+    ASSERT_EQ((u32)bottom[0], 0u);    /* blue clear */
+    ASSERT_EQ((u32)bottom[2], 255u);
     rhi_pipeline_destroy(g_dev, pipe);
     rhi_shader_destroy(g_dev, vs);
     rhi_shader_destroy(g_dev, fs);
