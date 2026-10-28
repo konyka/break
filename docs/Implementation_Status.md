@@ -8,6 +8,7 @@
 - **测试**：`test_editor_shell` 新增主题用例（工具栏/按钮各状态/主按钮/列表/控制台/状态栏/标签背景经真实级联解析到调色板，切换语言后保持）；旧的“浅色主题像素计数”冒烟用例按新调色板重新校准（判别力不变：未绘制的画布计数为 0）。实机（`--input-script` 截图）：Vulkan 与 OpenGL 各区域取色与调色板一致，无残留浅色面板。
 - **环境注记**：本次实机期间本机 X（Xwayland + Mutter）的垂直同步 present 降到约 1.4 FPS（`glxgears` 同样），OpenGL 后端在 `glXSwapBuffers` 等待；`vblank_mode=0` 下两后端完整交互脚本全部通过。这不是代码回归（当天早些时候通过的 master 构建同样卡住）。
 - **验证**：全量 ctest OpenGL 224/224、Vulkan 225/225、Snowflake 228/228、多后端 225/225、Release 229/229；图形 OpenGL 5/5、Vulkan 6/6、多后端 8/8、Release 8/8（含新 `test_myui_break_rhi_clip`，不含 x11_runtime）；ASan/TSan `test_editor_shell` 各 3 次 112/112 零报告；满载 40/40。
+- **附带修复**：`test_break_crash_target_contract` 在同一构建树反复运行约 32 次后必然失败（rc=31）。原因是持久工作目录中 `discarded/` 已达 `BREAK_CRASH_SPOOL_KEEP` 上限，断言仍期望 `disc0 + 1`。自 `a30b4a2d` 起存在，属测试缺陷；现按上限饱和期望（第 31、52 号检查）。
 - **边界**：无图标、工具窗标签页、浅色主题与主题切换界面；未内置 JetBrains Mono/Inter 字体，沿用现有字体链；Windows/macOS 未实机运行。设计：`docs/superpowers/specs/2026-10-28-editor-text-and-clion-theme-design.md`。
 
 ## 本轮更新：Stage 4 Scene Editor — 脚本化交互验证，并修复 BreakUI 吞掉鼠标按键（2026-10-28）

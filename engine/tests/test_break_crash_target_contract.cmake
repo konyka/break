@@ -289,7 +289,8 @@ int main(void) {
     /* rerun-idempotent (the work dir persists across ctest runs): pending
      * must start empty (this checker never leaves pending residue); sent
      * grows by one, or stays saturated at BREAK_CRASH_SPOOL_KEEP with the
-     * overflow landing in discarded. */
+     * overflow landing in discarded (itself capped at BREAK_CRASH_SPOOL_KEEP
+     * once enough reruns have accumulated). */
     u64 sent0 = break_crash_spool_count(s, 1);
     u64 disc0 = break_crash_spool_count(s, 2);
     if (break_crash_spool_count(s, 0) != 0ull) return 22;
@@ -308,7 +309,9 @@ int main(void) {
         if (break_crash_spool_count(s, 1) != sent0 + 1) return 29;
     } else {
         if (break_crash_spool_count(s, 1) != BREAK_CRASH_SPOOL_KEEP) return 30;
-        if (break_crash_spool_count(s, 2) != disc0 + 1) return 31;
+        if (break_crash_spool_count(s, 2) !=
+            (disc0 < BREAK_CRASH_SPOOL_KEEP ? disc0 + 1 : (u64)BREAK_CRASH_SPOOL_KEEP))
+            return 31;
     }
     break_crash_spool_destroy(s);
 
@@ -376,7 +379,9 @@ int main(void) {
         if (break_crash_spool_count(s, 1) != sent0 + 1) return 50;
     } else {
         if (break_crash_spool_count(s, 1) != BREAK_CRASH_SPOOL_KEEP) return 51;
-        if (break_crash_spool_count(s, 2) != disc0 + 1) return 52;
+        if (break_crash_spool_count(s, 2) !=
+            (disc0 < BREAK_CRASH_SPOOL_KEEP ? disc0 + 1 : (u64)BREAK_CRASH_SPOOL_KEEP))
+            return 52;
     }
     break_crash_spool_destroy(s);
     return 0;
