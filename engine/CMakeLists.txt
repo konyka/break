@@ -2892,6 +2892,14 @@ endif()
     target_link_libraries(test_myui_vggeometry PRIVATE myui_core m)
     add_test(NAME test_myui_vggeometry COMMAND test_myui_vggeometry)
 
+    add_executable(test_myui_widget_paint tests/test_myui_widget_paint.c)
+    target_include_directories(test_myui_widget_paint PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_widget_paint PRIVATE myui_core m)
+    add_test(NAME test_myui_widget_paint COMMAND test_myui_widget_paint)
+
     add_executable(test_myui_window_manager tests/test_myui_window_manager.c
         src/myui/mypal/dummy/my_pal_dummy.c)
     target_include_directories(test_myui_window_manager PRIVATE

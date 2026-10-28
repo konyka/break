@@ -150,14 +150,31 @@ static void button_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
       widget, state, MY_STYLE_BORDER_COLOR, 0x000000FFu);
   int32_t radius =
       my_widget_style_get_int(widget, state, MY_STYLE_ROUND_RADIUS, 4);
-  my_vgcanvas_set_fill_color(vg, button_state_color(b));
-  my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
-                                                 (float)widget->rect.h},
-                                (float)radius);
-  my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(border));
-  my_vgcanvas_set_line_width(vg, 1);
-  my_vgcanvas_stroke_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
-                                            (float)widget->rect.h});
+  int32_t border_w =
+      my_widget_style_get_int(widget, state, MY_STYLE_BORDER_WIDTH, 1);
+  float w = (float)widget->rect.w, h = (float)widget->rect.h;
+  if (radius < 0) radius = 0;
+  if (border_w < 0) border_w = 0;
+  if (border_w > 0 && (border & 0xFFu) != 0u) {
+    /* border = the outer rounded shape in the border colour, fill = the
+     * same shape inset by the border width (the old square stroke_rect
+     * showed its corners around a rounded fill) */
+    float inset = (float)border_w;
+    float inner_r = (float)radius > inset ? (float)radius - inset : 0.0f;
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(border));
+    my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){0, 0, w, h},
+                                  (float)radius);
+    if (w > 2.0f * inset && h > 2.0f * inset) {
+      my_vgcanvas_set_fill_color(vg, button_state_color(b));
+      my_vgcanvas_fill_rounded_rect(
+          vg, &(my_rectf_t){inset, inset, w - 2.0f * inset, h - 2.0f * inset},
+          inner_r);
+    }
+  } else {
+    my_vgcanvas_set_fill_color(vg, button_state_color(b));
+    my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){0, 0, w, h},
+                                  (float)radius);
+  }
   if (cooling_down) {
     float progress = cooldown_remaining >= b->cooldown_active_ms
                          ? 1.0f
