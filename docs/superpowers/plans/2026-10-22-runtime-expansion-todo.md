@@ -103,17 +103,17 @@
 
 ### Validation not done
 
-- [ ] 任何 **Windows 上的运行**：`editor.exe` 仅 `zig cc -target x86_64-windows-gnu` 交叉编译（Snowflake OFF 链接通过；Snowflake ON 因缺系统 `nghttp2` 链接受阻，仅对象文件编译通过），无 Windows 二进制被执行；`windows-latest` CI 通道或 Windows 机器才能关闭此项
-- [ ] **editor 协议专用 fuzzer**：现有 5 个 `fuzz_*` smoke（scene/net_packet/decode_image/vfs_pak/asset_gltf）已在 ASan+UBSan 跑过，但没有任何一个覆盖 editor 线协议 ids 4..13 的 handler 解析路径
+- [x] **Windows 上的运行**（2026-10-28 关闭测试层面）：CI 的 MSVC / MinGW / Clang / Clang ASan headless lane 构建并运行 `ctest -LE graphics`（含 `test_editor_shell`、`test_editor_i18n`、`test_editor_fonts`、`test_release_config_contract`），运行 40655375019 全部通过；维护者另在 Windows 本机跑过 Clang 四树全量（见 `docs/Implementation_Status.md` 2026-10-28 “远程 170 个提交在 Windows 上的同步验证”）。**仍未做**：窗口化 `editor.exe` 在 Windows 上的真实交互运行
+- [x] **editor 协议专用 fuzzer**：2026-10-26 交付 `fuzz_editor_remote`（ids 4..13 全部处理器，经真实 envelope 解码与会话管理器；约 96 万条消息 ASan+UBSan 零报告），见 `docs/design/editor_remote.md` 末节
 - [ ] **editor 人工交互验证**：无脚本化交互钩子；live 冒烟只覆盖启动 + 远端协议 E2E，不覆盖鼠标/键盘/gizmo/面板实际操作
-- [ ] 跨平台 native/CI 证据（macOS/Metal、Android、Wayland 等）未采集（见 Cross-cutting 第一条未勾选项）
+- [ ] 跨平台 native/CI 证据：CI 已覆盖 Linux X11/Wayland（OpenGL/Vulkan lavapipe）、macOS Metal/MoltenVK、Windows headless、iOS 编译（运行 40655375019）；**未采集**：Android、Steam Deck 真机、D3D12 真 GPU、iOS 真机
 
 ### Features not delivered (carried from earlier phases)
 
 - [ ] editor：remote load/save、remote render control、纹理 hot reload（viewport shader hot reload 已于 2026-10-27 交付；render debugger 面板与场景 hot reload 已于 2026-10-26 交付，见 `docs/design/editor_render_debugger.md`、`docs/design/editor_hot_reload.md`）
 - [ ] editor remote：生产凭证系统（provisioning/轮换/吊销）、WAN/多客户端管理、remote undo-stack 共享（服务端 transport close 与认证 deadline 已于 2026-10-26 交付，见 `docs/design/editor_remote.md` 末节）
 - [ ] Lua：LuaJIT 可选后端评估（gating：baseline 合同稳定）
-- [ ] Security：release 配置测试；server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling
+- [ ] Security：server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling
 - [ ] Update/crash：在线更新真实传输、灰度、服务端；crash 服务端符号化/聚类/回归统计、真实上传传输、GPU/RHI/网络/输入摘要捕获
 - [ ] Stage 6：各图形后端（Vulkan/D3D12/Metal/headless）缺口计划、逐后端证据（OpenGL 废弃门已取消，见 Stage 6 OpenGL policy）
 - [ ] X11 全屏在有窗口管理器的会话下不稳定：`test_platform_x11_runtime` 在 GNOME Xwayland（Mutter）上间歇失败，原因与调查记录见 `docs/Implementation_Status.md` 2026-10-28 条目；CI（Xvfb，无 WM）不受影响
