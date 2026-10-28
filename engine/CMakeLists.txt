@@ -2839,6 +2839,19 @@ if(ENGINE_BUILD_TESTS)
     engine_link_rhi_backend(test_imgui_compat)
     add_test(NAME test_imgui_compat COMMAND test_imgui_compat)
 
+    add_executable(test_myui_break_rhi_clip tests/test_myui_break_rhi_clip.c
+        src/myui/myr/my_vgcanvas_break_rhi.c)
+    target_include_directories(test_myui_break_rhi_clip PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_break_rhi_clip PRIVATE myui_core engine m)
+    engine_link_rhi_backend(test_myui_break_rhi_clip)
+    add_test(NAME test_myui_break_rhi_clip COMMAND test_myui_break_rhi_clip
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(test_myui_break_rhi_clip PROPERTIES
+        LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77 TIMEOUT 60)
+
     add_executable(test_break_ui_damage tests/test_break_ui_damage.c
         src/ui/myui_break_damage.c
         src/myui/mypal/dummy/my_pal_dummy.c)

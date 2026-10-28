@@ -224,6 +224,40 @@ static my_ret_t emit_image_triangle(my_vgcanvas_break_rhi_t *c, float x0,
   return emit_image_vertex(c, x2, y2, u2, v2);
 }
 
+/* Clips an axis-aligned device-space quad to state.clip, scaling its UVs
+ * with the cut. false = nothing left to draw. Text and images used to skip
+ * the clip entirely: the retained UI repaints each damaged rect with the
+ * whole tree under a clip, so unclipped glyphs were blended again on top of
+ * last frame's and text turned bold and doubled (test_myui_break_rhi_clip). */
+typedef struct {
+  float x0, y0, x1, y1, u0, v0, u1, v1;
+} rhi_quad_t;
+
+static bool clip_quad(const my_vgcanvas_break_rhi_t *c, rhi_quad_t *q) {
+  float cx0 = (float)c->state.clip.x, cy0 = (float)c->state.clip.y;
+  float cx1 = cx0 + (float)c->state.clip.w, cy1 = cy0 + (float)c->state.clip.h;
+  float w = q->x1 - q->x0, h = q->y1 - q->y0;
+  float du = q->u1 - q->u0, dv = q->v1 - q->v0;
+  float nx0, ny0, nx1, ny1;
+  if (w <= 0.0f || h <= 0.0f || c->state.clip.w <= 0 || c->state.clip.h <= 0) {
+    return false;
+  }
+  nx0 = q->x0 > cx0 ? q->x0 : cx0;
+  ny0 = q->y0 > cy0 ? q->y0 : cy0;
+  nx1 = q->x1 < cx1 ? q->x1 : cx1;
+  ny1 = q->y1 < cy1 ? q->y1 : cy1;
+  if (nx1 <= nx0 || ny1 <= ny0) return false;
+  q->u1 = q->u0 + du * (nx1 - q->x0) / w;
+  q->u0 = q->u0 + du * (nx0 - q->x0) / w;
+  q->v1 = q->v0 + dv * (ny1 - q->y0) / h;
+  q->v0 = q->v0 + dv * (ny0 - q->y0) / h;
+  q->x0 = nx0;
+  q->y0 = ny0;
+  q->x1 = nx1;
+  q->y1 = ny1;
+  return true;
+}
+
 static my_ret_t emit_geometry(my_vgcanvas_break_rhi_t *c, my_color_t color) {
   size_t i;
   for (i = 0; i + 2 < c->geo.vert_count / 2; i += 3) {
@@ -403,14 +437,15 @@ static void draw_glyph_bitmap(my_vgcanvas_break_rhi_t *c, my_font_t *font,
   v1 = ((float)(slot->y + slot->h) - 0.5f) /
        (float)BREAK_RHI_ATLAS_SIZE;
   {
-    float x0 = gx, y0 = gy;
-    float x1 = gx + (float)g->w, y1 = gy + (float)g->h;
-    (void)emit_solid_vertex(c, x0, y0, u0, v0, c->state.fill_color);
-    (void)emit_solid_vertex(c, x1, y0, u1, v0, c->state.fill_color);
-    (void)emit_solid_vertex(c, x0, y1, u0, v1, c->state.fill_color);
-    (void)emit_solid_vertex(c, x1, y0, u1, v0, c->state.fill_color);
-    (void)emit_solid_vertex(c, x1, y1, u1, v1, c->state.fill_color);
-    (void)emit_solid_vertex(c, x0, y1, u0, v1, c->state.fill_color);
+    rhi_quad_t q = {gx, gy, gx + (float)g->w, gy + (float)g->h, u0, v0, u1, v1};
+    if (clip_quad(c, &q)) {
+      (void)emit_solid_vertex(c, q.x0, q.y0, q.u0, q.v0, c->state.fill_color);
+      (void)emit_solid_vertex(c, q.x1, q.y0, q.u1, q.v0, c->state.fill_color);
+      (void)emit_solid_vertex(c, q.x0, q.y1, q.u0, q.v1, c->state.fill_color);
+      (void)emit_solid_vertex(c, q.x1, q.y0, q.u1, q.v0, c->state.fill_color);
+      (void)emit_solid_vertex(c, q.x1, q.y1, q.u1, q.v1, c->state.fill_color);
+      (void)emit_solid_vertex(c, q.x0, q.y1, q.u0, q.v1, c->state.fill_color);
+    }
   }
   *pen_x += advance;
 }
@@ -611,6 +646,10 @@ static RHITexture image_texture(my_vgcanvas_break_rhi_t *c, const u8 *rgba,
 static my_ret_t emit_texture_quad(my_vgcanvas_break_rhi_t *c, RHITexture tex,
                                   RHISampler image_sampler, float x0,
                                   float y0, float x1, float y1) {
+  rhi_quad_t q = {x0, y0, x1, y1, 0.0f, 0.0f, 1.0f, 1.0f};
+  if (!clip_quad(c, &q)) {
+    return MY_RET_OK; /* fully clipped: nothing to draw */
+  }
   if (c->image_batch_count == 0 ||
       c->image_batches[c->image_batch_count - 1].texture.index != tex.index ||
       c->image_batches[c->image_batch_count - 1].texture.generation !=
@@ -630,11 +669,11 @@ static my_ret_t emit_texture_quad(my_vgcanvas_break_rhi_t *c, RHITexture tex,
   }
   {
     my_ret_t ret;
-    ret = emit_image_triangle(c, x0, y0, 0.0f, 0.0f, x1, y0, 1.0f, 0.0f,
-                              x0, y1, 0.0f, 1.0f);
+    ret = emit_image_triangle(c, q.x0, q.y0, q.u0, q.v0, q.x1, q.y0, q.u1,
+                              q.v0, q.x0, q.y1, q.u0, q.v1);
     if (ret != MY_RET_OK) return ret;
-    ret = emit_image_triangle(c, x1, y0, 1.0f, 0.0f, x1, y1, 1.0f, 1.0f,
-                              x0, y1, 0.0f, 1.0f);
+    ret = emit_image_triangle(c, q.x1, q.y0, q.u1, q.v0, q.x1, q.y1, q.u1,
+                              q.v1, q.x0, q.y1, q.u0, q.v1);
     if (ret != MY_RET_OK) return ret;
   }
   c->image_batches[c->image_batch_count - 1].count += 6u;
