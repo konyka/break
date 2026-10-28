@@ -4751,6 +4751,12 @@ endif()
         else()
             set(BREAK_CONTRACT_CRT_FLAGS "/MD")
         endif()
+    elseif(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+        # A bare clang driver picks its default linker by build: LLVM 20 on the
+        # GitHub runner uses MSVC link.exe, which cannot resolve the __imp_
+        # CRT imports the tree's archives carry (LNK1120). The tree's own
+        # targets link with lld-link; do the same here.
+        set(BREAK_CONTRACT_CRT_FLAGS "-fuse-ld=lld-link")
     endif()
     set(BREAK_CONTRACT_LIBCRYPTO "")
     if(APPLE)
