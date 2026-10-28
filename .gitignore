@@ -68,3 +68,6 @@ screenshot_*.bmp
 # demo output: PROFILER_TRACE=1 / BREAK_DRAW_BENCH (main.c)
 profile_trace.json
 draw_bench.csv
+
+# ctest output when run from the repository root
+Testing/
