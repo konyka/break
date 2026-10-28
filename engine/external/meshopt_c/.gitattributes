@@ -1,0 +1,3 @@
+# Vendored pure C port; locked_dependencies.json verifies sha256 of the exact bytes,
+# so keep LF on every checkout regardless of core.autocrlf.
+* text eol=lf

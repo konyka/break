@@ -1,4 +1,7 @@
 #version 450 core
+#ifdef LOD_FADE
+#extension GL_ARB_shader_draw_parameters : require
+#endif
 
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
@@ -43,7 +46,14 @@ layout(location = 2) out vec2 vUV;
 layout(location = 3) out vec2 v_velocity;
 #endif
 
+#ifdef LOD_FADE
+layout(location = 5) flat out float vLodFade;
+#endif
 void main() {
+#ifdef LOD_FADE
+    uint fade_code = uint(gl_BaseInstanceARB) >> 16;
+    vLodFade = fade_code == 0u ? 0.0 : float(int(fade_code) - 16);
+#endif
     vec4 world_pos = pc.u_model * vec4(aPos, 1.0);
     vWorldPos = world_pos.xyz;
     vNormal = mat3(pc.u_model) * aNormal;

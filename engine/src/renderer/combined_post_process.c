@@ -1,4 +1,5 @@
 #include "combined_post_process.h"
+#include <renderer/post_targets.h>
 #include <core/log.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,20 +10,27 @@
  * Helper: read shader file
  * ======================================================================== */
 
-static RHIPipeline cpp_create_pipe(RHIDevice *dev,
+static RHIPipeline cpp_create_pipe(RHIDevice *dev, bool sidecar,
                                     const char *vert_path, const char *frag_path,
                                     bool combined_aa, bool combined_color) {
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vert_path, &vs_len);
-    char *fs_src = shader_read_file(frag_path, &fs_len);
-    if (!vs_src || !fs_src) {
+    RHIShader vs, fs;
+    if (sidecar) {
+        /* D3D12 never compiles source in-process: the GLSL path resolves to
+         * the precompiled <name>_hlsl sidecar instead. */
+        vs = rhi_shader_create_path(dev, vert_path, false);
+        fs = rhi_shader_create_path(dev, frag_path, true);
+    } else {
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vert_path, &vs_len);
+        char *fs_src = shader_read_file(frag_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            free(vs_src); free(fs_src);
+            return RHI_HANDLE_NULL;
+        }
+        vs = rhi_shader_create(dev, vs_src, vs_len, false);
+        fs = rhi_shader_create(dev, fs_src, fs_len, true);
         free(vs_src); free(fs_src);
-        return RHI_HANDLE_NULL;
     }
-
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
-    free(vs_src); free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
@@ -63,6 +71,14 @@ static RHISampler cpp_create_sampler(RHIDevice *dev) {
  * CombinedAA Implementation
  * ======================================================================== */
 
+static bool combined_aa_targets_create(CombinedAA *caa, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[2] = {
+        { &caa->history_fbo[0], w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+        { &caa->history_fbo[1], w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 2u);
+}
+
 bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
     if (!caa || !dev) return false;
     memset(caa, 0, sizeof(*caa));
@@ -77,7 +93,7 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
         !shader_variant_path("shaders/combined_taa_fxaa.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
         LOG_WARN("CombinedAA: capability query or shader variant path failed");
     } else {
-        caa->combined_pipe = cpp_create_pipe(dev, vs_path, fs_path, true, false);
+        caa->combined_pipe = cpp_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path, true, false);
     }
 
     if (rhi_handle_valid(caa->combined_pipe)) {
@@ -87,10 +103,7 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
         if (!caa->bind_combined)
             LOG_WARN("CombinedAA: bindings create failed; uniform locations resolve -1");
         caa->sampler = cpp_create_sampler(dev);
-        caa->history_fbo[0] = rhi_offscreen_fbo_create_fmt(dev, width, height,
-            RHI_FORMAT_R16G16B16A16_SFLOAT);
-        caa->history_fbo[1] = rhi_offscreen_fbo_create_fmt(dev, width, height,
-            RHI_FORMAT_R16G16B16A16_SFLOAT);
+        (void)combined_aa_targets_create(caa, dev, width, height);
         caa->history_idx = 0;
         caa->first_frame = true;
 
@@ -145,6 +158,20 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
     caa->ready = true;
     LOG_INFO("CombinedAA: fallback chain initialized (%ux%u)", width, height);
     return true;
+}
+
+bool combined_aa_resize(CombinedAA *caa, RHIDevice *dev, u32 w, u32 h) {
+    if (!caa || !dev || !caa->ready || caa->device != dev) return false;
+    if (caa->use_combined) {
+        if (!combined_aa_targets_create(caa, dev, w, h)) {
+            LOG_WARN("CombinedAA: resize to %ux%u failed; keeping previous targets", w, h);
+            return false;
+        }
+        caa->history_idx = 0;
+        caa->first_frame = true;
+        return true;
+    }
+    return fxaa_resize(&caa->fxaa, dev, w, h) && taa_resize(&caa->taa, dev, w, h);
 }
 
 void combined_aa_shutdown(CombinedAA *caa) {
@@ -252,6 +279,13 @@ RHITexture combined_aa_get_output(CombinedAA *caa) {
  * CombinedColor Implementation
  * ======================================================================== */
 
+static bool combined_color_targets_create(CombinedColor *cc, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &cc->output_fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 height) {
     if (!cc || !dev) return false;
     memset(cc, 0, sizeof(*cc));
@@ -266,7 +300,7 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
         !shader_variant_path("shaders/combined_color.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
         LOG_WARN("CombinedColor: capability query or shader variant path failed");
     } else {
-        cc->combined_pipe = cpp_create_pipe(dev, vs_path, fs_path, false, true);
+        cc->combined_pipe = cpp_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path, false, true);
     }
 
     if (rhi_handle_valid(cc->combined_pipe)) {
@@ -276,8 +310,7 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
         if (!cc->bind_combined)
             LOG_WARN("CombinedColor: bindings create failed; uniform locations resolve -1");
         cc->sampler = cpp_create_sampler(dev);
-        cc->output_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height,
-            RHI_FORMAT_R16G16B16A16_SFLOAT);
+        (void)combined_color_targets_create(cc, dev, width, height);
 
         /* Cache all uniform locations */
         cc->loc_exposure    = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_tm_exposure");
@@ -317,8 +350,7 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
     ok = cinematic_init(&cc->cinematic, dev) && ok;
 
     cc->sampler = cpp_create_sampler(dev);
-    cc->output_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height,
-        RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)combined_color_targets_create(cc, dev, width, height);
 
     if (ok && (!rhi_handle_valid(cc->output_fbo.fb) || !rhi_handle_valid(cc->sampler))) {
         LOG_WARN("CombinedColor: fallback FBO/sampler creation failed");
@@ -331,6 +363,17 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
 
     cc->ready = true;
     LOG_INFO("CombinedColor: fallback chain initialized (%ux%u)", width, height);
+    return true;
+}
+
+bool combined_color_resize(CombinedColor *cc, RHIDevice *dev, u32 w, u32 h) {
+    if (!cc || !dev || !cc->ready || cc->device != dev) return false;
+    if (!cc->use_combined && !color_grade_resize(&cc->color_grade, dev, w, h))
+        return false;
+    if (!combined_color_targets_create(cc, dev, w, h)) {
+        LOG_WARN("CombinedColor: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

@@ -31,14 +31,22 @@
 
 static RHIPipeline ibl_load_compute(RHIDevice *dev, const char *path,
                                     RHIPipelineBindings **bind_out) {
-    usize len = 0;
-    char *src = shader_read_file(path, &len);
-    if (!src) {
-        LOG_WARN("IBL: compute shader not found: %s", path);
-        return RHI_HANDLE_NULL;
+    RHICapabilities caps;
+    RHIShader cs;
+    if (!rhi_device_get_capabilities(dev, &caps)) memset(&caps, 0, sizeof(caps));
+    if (caps.shader_sidecar_paths) {
+        /* R654: D3D12 loads the precompiled <name>_hlsl.comp sidecar. */
+        cs = rhi_shader_create_compute_path(dev, path);
+    } else {
+        usize len = 0;
+        char *src = shader_read_file(path, &len);
+        if (!src) {
+            LOG_WARN("IBL: compute shader not found: %s", path);
+            return RHI_HANDLE_NULL;
+        }
+        cs = rhi_shader_create_compute(dev, src, len);
+        free(src);
     }
-    RHIShader cs = rhi_shader_create_compute(dev, src, len);
-    free(src);
     if (!rhi_handle_valid(cs)) {
         LOG_WARN("IBL: compute shader compile failed: %s", path);
         return RHI_HANDLE_NULL;

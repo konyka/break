@@ -73,7 +73,7 @@
 | 平台 × 后端 | 等级 | 依据 |
 |---|---|---|
 | macOS × 原生 Metal | COMPILED（CI lane 首跑） | CI `macos-metal` lane（macos-14，brew shaderc+spirv-cross，metallib 产物断言 + headless/契约测试）run 链接见下；**与既有 M2 GPU_RUNTIME 收据并列**（证据来源机器不同：M2 真机为 GPU_RUNTIME，macos-14 runner 仅编译+契约面） |
-| iOS × 原生 Metal | COMPILED（**模拟器证据 = compile only，不构成 GPU-runtime 证据**） | CI `ios-metal-build` lane（Xcode -G + iOS Simulator destination build-only + 产物断言 `test -s` metallib×2 / `test -d` .app，零匹配即失败）；模拟器无可信 GPU-runtime 通道；**lifecycle（simctl boot/install/launch harness）缺口归 Task 15** |
+| iOS × 原生 Metal | COMPILED（**模拟器证据 = compile only，不构成 GPU-runtime 证据**） | CI `ios-metal-build` lane（Xcode -G + iOS Simulator destination build-only + 产物硬断言，零匹配即失败）；模拟器无可信 GPU-runtime 通道。本机 simctl lifecycle 已于 2026-10-27 补齐（见下方收据），仍不构成 GPU_RUNTIME |
 
 | 日期 | 机器 | GPU / 驱动 | 命令 | 结果 |
 |---|---|---|---|---|
@@ -263,3 +263,37 @@ macOS 侧 8 提交（`3efd4df7..b8308c8e`：Metal compiled backend 接线、test
 | build-win-d3d12-vs（MSVC VS 18 2026，D3D12） | `cmake -S engine -B build-win-d3d12-vs -G "Visual Studio 18 2026" -DENGINE_RHI_BACKEND=d3d12 && cmake --build build-win-d3d12-vs --config Debug --parallel && ctest -C Debug -L headless` | configure/build 成功；headless **27/27 = 100%**；全量构建 37 行 warning/error 均**先在**（myui_core C4132/C4456/C4090 系 + `test_platform_text.c` C4310，涉事文件自 2026-09-07 未改动，与本批提交无关） |
 
 附带：计划 F §6.5 gate 正则误报修正（`rhi_gl` 命中良性 `break_rhi_glyph_t` → 收紧 `rhi_gl[.]c`，commit `2c9f1a3b`）；修正后 §6 未满足项仅剩 iOS 真机收据（§6.2）、migration notice（§6.9，Task 6 自身交付物）、负责人 signoff（§6.11）。
+| 2026-10-24 | 本机（macOS 26.7.1，Apple M2） | Apple M2 / Metal + MoltenVK | 同步 @5e320ac9 后两套构建全量 CTest + `BREAK_SCREENSHOT=60 engine_demo --frames 70`（`engine/` 目录） | CTest Metal `179/179`、MoltenVK `179/179`；修复 Metal `rhi_screenshot` 行序（仍按旧 bottom-up 约定反转，违反 ac15c54a 起的 top-down 契约），新增 `screenshot_rows_are_top_down`。**待复核**：Metal 下 `engine_demo` 仅 UI 可见、3D 场景全黑（`rhi_cmd_bind_material_textures_ibl` 等十余个入口仍为 `not implemented` 桩，同步前 b715881c 相同），而 MoltenVK 正常渲染——上方 2026-10-16「metal fps_avg = MoltenVK 101%」的 BENCHMARK_COMPARABLE 判定比较的两侧工作量不对等，等级是否保留需维护者决定，本行不改等级 |
+| 2026-10-26 | 本机（macOS 26.7.1，Apple M2） | Apple M2 / Metal + MoltenVK | 同步 @7da2498a 后两套构建全量 CTest；`BREAK_SCREENSHOT=60 engine_demo --frames 70` | 新增 `test_meshopt_c` 起初两套均失败（各 179/180）：ARM64 AppleClang 默认 FMA 融合使库和测试网格生成器偏离上游逐位参考表；对 `meshopt_c` 与 `test_meshopt_c` 固定 `-ffp-contract=off` 后测试 8/8、110 组参考用例逐位通过，两套 CTest 均 `180/180`，Metal `-L graphics` `5/5`。截图：MoltenVK 场景正常；Metal 仅 UI 的既有缺口不变，未改证据等级 |
+
+## 收据追加（macOS Metal 默认 FORWARD 修复，2026-10-26）
+
+| 日期 | 机器 | GPU / 后端 | 命令 | 结果 |
+|---|---|---|---|---|
+| 2026-10-26 | 本机（macOS 26.7.1，Apple M2） | Apple M2 / Metal + MoltenVK | @a89a92c5 加本次 Metal 修复：完整构建后两套全量 CTest、Metal `-L graphics`、直接运行 `test_rhi_metal_resources`；`engine/` 下执行 `BREAK_SCREENSHOT=60 ./build-macos-current/engine_demo --frames 70` 及对应 MoltenVK 命令 | Metal 默认 FORWARD 3D 场景与 UI 均恢复，场景朝向正确；资源测试 **47/47**，两套全量 CTest 均 **180/180**，Metal graphics **5/5**。本次日志未出现 `not implemented`、缺失 graphics pipeline 或 bindings-create 错误。**限制**：水面、光照和物体细节与 MoltenVK 仍有明显差异；DEFERRED、indirect-count 等路径未补齐，GPU timer 仍不支持。此处只登记默认 FORWARD 实测，不升级证据等级；原 BENCHMARK_COMPARABLE 是否保留仍待维护者复核 |
+| 2026-10-26 | 同上 | Apple M2 / Metal + MoltenVK | 获取远程 `@bed3f6c1` 后将本次两项提交 rebase 到其上；两套完整构建、全量 CTest、Metal graphics/资源测试及两后端 70 帧截图复验 | 远程新增 ECS LOD 分块绘制在实例 upload blit 后漏绑图形管线，被新增 consumer 日志门禁捕获；补齐重绑后两套全量 CTest 均 **186/186**（含远程新增 6 项），Metal graphics **5/5**、资源测试 **47/47**，截图仍可见正常朝向的 3D 场景与 UI。未使用 force push，远程提交均保留；渲染差异及证据等级复核状态与上一行相同 |
+| 2026-10-26 | 同上 | Apple M2 / Metal + MoltenVK | 同步 `@0e714f06`（R703/R704）并无冲突 rebase；`@83d672b7` 补齐 Metal 离线 LOD shader 变体后，两套全量 CTest、Metal graphics/资源测试及 `BREAK_SCREENSHOT=60 ... --frames 70` | 初次 Metal smoke 缺少 `blinn_phong_vk` 的 `FORWARD_MRT,LOD_FADE` manifest hash；补齐 blinn/pbr 与 G-Buffer 实际 define 链后 manifest **124** 条目。Metal **187/187**、graphics **5/5**、资源 **47/47**，MoltenVK **187/187**（D3D12 门按平台跳过）；两后端 3D/UI 均可见且朝向正确，无 manifest、管线绑定或 fatal 错误。推送前再同步 `@8eee4a58`（R705/R706）无冲突 rebase 并复验，以上结果保持。光照/材质/水面差异及证据等级复核状态不变，不宣称逐像素一致 |
+
+## 收据追加（iOS Simulator 构建与启动，2026-10-26/27）
+
+| 日期 | 机器 | GPU / 后端 | 命令 | 结果 |
+|---|---|---|---|---|
+| 2026-10-27 | 本机（macOS 26.7.1，Apple M2；Xcode 27.1） | iPhone 18 Pro 模拟器（iOS 27.0）/ Metal | `cmake -S engine -B engine/build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF`；`xcodebuild ... -destination 'generic/platform=iOS Simulator' build`；`simctl install`；`simctl launch --console-pty` | 构建成功，`engine.metallib` 和 app 产物齐全；补齐 `com.purecengine.engine-demo` 后 `Info.plist` 含有效 ID、安装成功。启动到达 `engine_init` 后以 `Failed to create platform` 退出：`window_mobile.c` 需要宿主注入 `native_window`，当前没有 UIKit/CAMetalLayer UIApplication 启动层，未产生渲染帧。**iOS 保持 COMPILED，不构成 GPU_RUNTIME 证据** |
+
+## 收据追加（macOS 最新基线复核，2026-10-27）
+
+| 日期 | 机器 | GPU / 后端 | 命令 | 结果 |
+|---|---|---|---|---|
+| 2026-10-27 | 本机（macOS 26.7.1，Apple M2） | Apple M2 / Metal + MoltenVK | 同步 `@52195e94` 后无冲突 rebase；分别执行 `cmake --build engine/build-macos-current --parallel 4 && ctest --test-dir engine/build-macos-current -j4 --output-on-failure` 与对应 `build-macos` 命令 | 两套全量 CTest 均 **190/190**，D3D12 dependency gate 按平台跳过；iOS 打包修复未造成 macOS 回归 |
+
+## 收据追加（iOS Simulator 实际渲染与 macOS 最新基线，2026-10-27）
+
+| 日期 | 机器 | GPU / 后端 | 命令 | 结果 |
+|---|---|---|---|---|
+| 2026-10-27 | 本机（macOS 26.7.1，Apple M2；Xcode 27.1） | iPhone 18 Pro Simulator（iOS 27.0）/ Metal | `cmake -S engine -B engine/build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF`；`xcodebuild ... -destination 'generic/platform=iOS Simulator' build`；`simctl install`；`SIMCTL_CHILD_BREAK_SCREENSHOT=60 simctl launch --console-pty ... --frames 300`；运行中 `simctl io ... screenshot` | UIWindowScene/CAMetalLayer 宿主实际启动；124 个 shader 条目与 assets/shaders 入包，viewport logical 402x874 / drawable 1206x2622 / scale 3。完成 `--frames 300` 并正常 shutdown；第 60 帧 RHI 截图与屏幕截图均可见 3D 场景及 UI，方向正确，日志无 ERROR/FATAL。长运行切 Safari 再返回，日志出现 `iOS host: suspended` / `resumed`，恢复后继续出帧。修复设备版 metallib 误用于 Simulator、shared linear texel storage、Core Audio 初始化超时；Simulator 音频显式使用 Null 静音后端。Xcode 自动重配置曾把宿主 manifest 工具误建成 Simulator `platform 7`；固定宿主编译环境及 macOS SDK 后复查为 `platform 1`，124 条目重新生成成功。**仅本机 Simulator 可见运行证据，iOS 保持 COMPILED，不计 GPU_RUNTIME；真机待验** |
+| 2026-10-27 | 同上 | Apple M2 / Metal + MoltenVK | 本轮从 `@65f8aae0` 同步至 `@83f5670e`（13 个远程提交，无冲突）；两套全量 CTest、Metal `-L graphics`、Metal 资源测试及两后端 `BREAK_SCREENSHOT=60 ... --frames 70` | 两套 CTest 均 **191/191**，D3D12 dependency gate 按平台跳过；Metal graphics **5/5**、资源 **48/48**、音频 **17/17**，指定 5 个 fuzz targets 均构建。两后端 3D 场景与 UI 可见、朝向正确；光照、材质、水面仍有差异，不宣称逐像素一致。证据等级与 OpenGL 删除 gate 不变 |
+| 2026-10-27 | 同上 | iPhone 18 Pro Simulator（iOS 27.0）/ Metal | 本机临时 XCTest UI Automation `BreakIOSInteractionTests/testRotationAndPrimaryTouch`；`xcodebuild test-without-building`；`simctl io ... screenshot`；系统日志核对 `iOS input` | **1/1 PASS**：窗口 402x874 → 874x402 → 402x874；横屏点击 (437, 201) 后引擎线程消费同坐标 down/up。横屏稳定期实际屏幕截图为 2622x1206，3D/UI 完整且 HUD 正立（`Render: 1311x603 -> 2622x1206`）。本机 XCTest 横屏 PNG 有物理像素方向/裁切呈现差异，以 simctl 交叉核对，不误判为渲染失败。正式 `engine_demo` 依赖链重新生成 124 项 shader，bundle metallib 与构建输出逐字节一致；重装后再完成 300 帧及正常 shutdown，日志无 ERROR/FATAL，第 60 帧 RHI 截图已查看。临时 harness 未加入 CI，iOS 保持 **COMPILED**；真机旋转、物理触摸、音频/Metal 未覆盖 |
+| 2026-10-27 | 同上 | Apple M2 / Metal + MoltenVK | `cmake --build build-macos --parallel 4 && ctest --test-dir build-macos -j4 --output-on-failure`；Metal 配置的全量构建、指定 5 个 fuzz targets、全量 CTest 与 `ctest -L graphics` | 两套全量 CTest 均 **191/191**，D3D12 dependency gate 按平台跳过；Metal graphics **5/5**，5 个 fuzz target 构建命令通过。iOS 宿主诊断日志改动未引起 macOS 回归 |
+| 2026-10-27 | 同上 | Apple M2 / Metal + MoltenVK | 从 `@094ddf35` 修复 Metal clustered 实例化/蒙皮管线的 push 偏移分类（`uses_storage && !clustered`）；新增 `clustered_storage_variant_keeps_clustered_push_table`；两套全量 CTest、Metal `-L graphics`；两后端 `BREAK_UI=0 BREAK_CAM=0,9,16,0,-25 BREAK_SCREENSHOT=30 --frames 32` 与 70 帧全屏/标题栏切换演示 | 新用例修复前 FAIL、修复后 PASS；Metal 资源 **49/49**，两套 CTest 均 **191/191**（D3D12 gate 按平台跳过），graphics **5/5**。修复前 Metal 默认 clustered FORWARD 截图品红像素 11719（640 宽缩略图），修复后两后端均为 0；切换演示每后端 2 次 rebuild、2 次 `ok=1`，ERROR/FATAL 0。光照/水面差异仍不宣称逐像素一致 |
+| 2026-10-28 | 同上 | Apple M2 / Metal + MoltenVK | `engine_demo` 默认机位贴地抬升（`main.c` 在 `camera_init` 之后、`BREAK_CAM` 之前；`BREAK_MODEL_VIEW` 不受影响）；两套全量 CTest、Metal `-L graphics`；两后端 `BREAK_UI=1 BREAK_SCREENSHOT=60 --frames 70` | 日志 `Camera: lifted above terrain to y=6.19 (ground 4.19)`，HUD `Pos: (0.0,6.2,8.0)`、`Above: 2.00`（修复前 -2.19）；两套 CTest 均 **191/191**（D3D12 gate 按平台跳过），graphics **5/5**，退出码 0。同机位下 Metal 地形/水面观感与 MoltenVK 仍有差异，另行跟进 |
+| 2026-10-28 | 同上 | Apple M2 / Metal + MoltenVK | Metal 默认画面保真：补 `draw_indexed_base` 实现、图形/计算 storage 绑定分离、texel buffer 重放、离屏/MRT 负高度视口；`BREAK_CAM=0,9,16,0,-25 BREAK_UI=0 BREAK_SCREENSHOT=60` 两后端缩略图逐像素 mad；两套全量 CTest、Metal `-L graphics`；窗口切换演示 | Metal-VK mad：默认 32.1→7.5，`BREAK_MB=0` 52→7.2，blinn 6.7；`test_rhi_metal_resources` **53/53**（4 个新用例修复前失败），两套 CTest 均 **191/191**，graphics **5/5**，切换演示每后端 2 次 `ok=1`，ERROR/FATAL 0，Metal API Validation 无报错。**延迟路径在 Metal 仍近黑**（亮度 0.9，VK 37.9），另行跟进 |

@@ -49,6 +49,7 @@ rhi_cmd_draw_indexed
 rhi_cmd_draw_indexed_base
 rhi_cmd_draw_indexed_indirect
 rhi_cmd_draw_indexed_indirect_count
+rhi_cmd_draw_indexed_instanced_base
 rhi_cmd_draw_indirect
 rhi_cmd_end_render_pass
 rhi_cmd_fill_buffer
@@ -119,6 +120,8 @@ rhi_screenshot
 rhi_set_vsync
 rhi_shader_create
 rhi_shader_create_compute
+rhi_shader_create_compute_path
+rhi_shader_create_path
 rhi_shader_destroy
 rhi_shadow_map_create
 rhi_shadow_map_destroy

@@ -141,7 +141,29 @@ typedef struct {
     bool       hiz_supported;            /* Hi-Z occlusion 金字塔路径 */
     bool       compute_supported;        /* rhi_cmd_dispatch 路径 */
     bool       indirect_draw_supported;  /* rhi_cmd_draw_*_indirect 族 */
+    /* R637：间接绘制记录的 first_instance 能否到达着色器（GLSL 的
+     * gl_BaseInstanceARB）。材质数组路径把数组层号放在这里。D3D12 取决于设备
+     * 的着色器模型：边车用 SV_StartInstanceLocation 读取它，该语义是 SM 6.8
+     * 的顶点输入（SV_InstanceID 不含 StartInstanceLocation，会让每个网格都取层 0；
+     * 见 test_d3d12_warp_runtime 的 indirect_start_instance_reaches_the_shader）。 */
+    bool       indirect_first_instance_supported;
     u32        shader_variant;           /* RHIShaderVariant */
+    /* R606：rhi_shader_create_path 不读源码，而是解析该后端自己的着色器产物。
+     * D3D12 的产物是手写 HLSL 边车（rhi_d3d12_shader_sidecar_name 派生
+     * <base>_hlsl.<ext>，后缀幂等，故 "shaders/blinn_phong_mrt.vert" 解析为
+     * blinn_phong_mrt_hlsl.vert）；GL / Vulkan 的产物就是 GLSL 文件本身。
+     *
+     * 为什么必须独立于 shader_variant：D3D12 从不设置该字段，落回
+     * RHI_SHADER_VARIANT_GLSL(0)，与桌面 GL 完全相同——caps 无法区分二者。
+     */
+    bool       shader_sidecar_paths;
+    /* R606：渲染器逐帧常量块（ForwardTemporal：相机位置 + prev_vp +
+     * prev_model）在 rhi_cmd_bind_uniform_buffer 里应绑到的 binding /
+     * CBV 寄存器号。GL / Vulkan 读 GLSL 的 layout(binding = N)，blinn 家族
+     * 声明 N=0；D3D12 读反射到的 ConstantBuffer 寄存器，而 b0 已被 32BIT_
+     * CONSTANTS 根参数保留给 push 块，同一块因此落在 b1。
+     * 缺省 0 对新后端是正确的 GLSL 约定，不是「未设置」。 */
+    u32        temporal_ubo_binding;
 } RHICapabilities;
 
 #define RHI_DEVICE_NAME_MAX 256u
@@ -484,6 +506,25 @@ bool        rhi_texture_desc_validate(const RHITextureDesc *desc);
 RHIBuffer   rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc);
 void        rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf);
 RHIShader   rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool is_fragment);
+/* Path-based sibling of rhi_shader_create. GL and Vulkan read the file at
+ * `path` and compile its GLSL exactly as the text entry point does. D3D12
+ * has no GLSL path: it maps `path` onto the hand-authored sidecar named
+ * <base>_hlsl.<stage> in engine/shaders (base = final path component with
+ * its extension stripped; stage from `is_fragment`), then loads the HLSL
+ * source plus its precompiled DXIL.
+ *
+ * The "_hlsl" suffix is idempotent, so a path that already names the sidecar
+ * resolves to itself. A D3D12 path whose own extension names a different
+ * stage than the request is refused rather than resolved, where GL and
+ * Vulkan would have failed anyway on the unreadable file.
+ *
+ * Note the remaining divergence, deliberate and not a general parity claim:
+ * GL, Vulkan and Metal read `path` and so fail when it is unreadable; D3D12
+ * and the headless backend do no path-existence I/O at all — D3D12 derives
+ * a sidecar name and lets the loader refuse a missing HLSL source or DXIL
+ * blob. So a bad D3D12 path surfaces as "sidecar not readable" rather than
+ * "path not found". */
+RHIShader   rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_fragment);
 void        rhi_shader_destroy(RHIDevice *dev, RHIShader shader);
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc);
 void        rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe);
@@ -582,6 +623,17 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count
 /* Like draw_indexed, with base index and vertex offset (mega-buffer / cmd replay). */
 void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count,
                                u32 first_index, i32 vertex_offset);
+/* R707b: draw_indexed_base plus a first_instance for DIRECT draws (the
+ * draw's firstInstance / base instance / StartInstanceLocation on each
+ * backend). Shaders see it as
+ * gl_BaseInstanceARB / SV_StartInstanceLocation, exactly like an indirect
+ * record's first_instance, so caps.indirect_first_instance_supported gates it
+ * too (R703b packs the LOD fade in the high 16 bits). first_instance = 0 is
+ * identical to rhi_cmd_draw_indexed_base. Metal: not implemented (logs, as
+ * draw_indexed_base does there). */
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count,
+                                         u32 instance_count, u32 first_index,
+                                         i32 vertex_offset, u32 first_instance);
 /* ---- Indirect drawing (GPU-driven pipeline) ---- */
 /* Non-indexed DrawIndirect (VkDrawIndirectCommand / DrawArraysIndirect). */
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
@@ -851,6 +903,9 @@ void               rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w,
 
 /* ---- Compute shader ---- */
 RHIShader   rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len);
+/* Path-based sibling of rhi_shader_create_compute; same convention as
+ * rhi_shader_create_path, with the compute sidecar stage (.comp). */
+RHIShader   rhi_shader_create_compute_path(RHIDevice *dev, const char *path);
 void        rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z);
 void        rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding);
 /* Bind one acceleration structure to a compute pipeline's dedicated ray-query

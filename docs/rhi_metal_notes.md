@@ -146,15 +146,14 @@ drawable 数量背压覆盖。
 
 ### 已知边界
 
-`suspended` 标志**没有生产 setter**：唯一的置位入口是 `ENGINE_RHI_TEST`
+`suspended` 标志**没有生产 setter**：唯一的直接置位入口是 `ENGINE_RHI_TEST`
 钩子 `rhi_test_metal_set_suspended`（`rhi_metal.m` 私有导出，测试目标经
 `engine_rhi_metal` 库级 `ENGINE_RHI_TEST=1` 编译置位，先例同
-`engine_rhi_headless`）。生产路径的 iOS 暂停语义由 window_mobile.c 的
-host-injection 模型保证：宿主在 background 期间**自律不调用**任何 frame
-API（window_mobile.c 是纯注入壳，无事件上报钩子，本计划不给它加）。后端
-的 suspended 检查只是宿主误调时的防御性兜底，不构成完整的
-pause/resume 生命周期实现；iOS 模拟器 lifecycle 证据归 Task 15（Task 14
-评审 I-2：ios lane 降级为 compile only，见文末移交清单第 9 项）。
+`engine_rhi_headless`）。生产 iOS 生命周期由 `ios_main.m` 的 scene delegate
+和宿主 poll 实现：后台在条件变量上等待、不调用 frame API，恢复时经
+`platform_mobile_notify_resume` 更新 WSI。后端的 suspended 检查仍是宿主误调时
+的防御性兜底，它自身不构成完整的 pause/resume 生命周期。CI lane 保持
+compile-only；本机 Simulator 的 lifecycle 证据不升级 GPU_RUNTIME。
 
 ## Task 8：pipeline 字段映射 + FBO/MRT/shadow bind 契约（R616-R619）
 
@@ -415,10 +414,52 @@ LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27
    UB——VK/D3D12 驱动容忍、Metal validation 拒绝——后端按 open pass 实际
    color0 重建管线态，见 f7bf5c7c）。
 7. **M4（iOS 量程）**：texture flatten 公式上界 34（set2b2）超 iOS [[texture]]
-   上限 31——iOS lane 启用渲染前需复评乘数（当前 iOS 仅 build-only 证据）。
+   上限 31。2026-10-27 本机 Simulator 的默认 FORWARD 已有真实帧与截图，但只覆盖
+   当前实际绑定组合；更大 set/binding 和真机 GPU family 的量程仍需复评，CI 仍 build-only。
 8. **M6（已处置）**：gen_metal_shader_manifest 宿主/目标分离——iOS 交叉编译
-   时宿主编译 `gen_metal_shader_manifest_host`（CMakeLists M6 注释），
-   `xcrun metal` SDK 切 `iphoneos`。
-9. **iOS lifecycle 缺口（维持登记，不修）**：ios lane 三处标注为「compile
-   only」；Task 15 评估结论维持——无 iOS harness 的裸 CMake .app 的 simctl
-   boot+install 证据价值边际，后续若要 lifecycle 收据需先做最小 iOS harness。
+   时宿主编译 `gen_metal_shader_manifest_host`（CMakeLists M6 注释）。
+   `xcrun metal` SDK 与 `CMAKE_OSX_SYSROOT` 一致：设备 `iphoneos`、Simulator
+   `iphonesimulator`；不能将设备版 metallib 直接用于 Simulator。宿主 manifest
+   工具另用 macOS 目标三元组及 SDK，并清理 Xcode 传入的目标环境；自动重配置
+   实测产物为 macOS `platform 1`，不会混入 Simulator `platform 7`。
+9. **iOS lifecycle（2026-10-27 已补本机 harness）**：`ios_main.m` 以 UIWindowScene
+   创建 Metal view，并接入 viewport、主触摸和 suspend/resume。本机已完成安装、
+   300 帧与正常 shutdown、RHI/屏幕截图及同进程后台恢复。XCTest 旋转/点击 1/1
+   通过，窗口完成竖→横→竖切换，主按钮 down/up 由引擎线程消费；横屏稳定期的
+   simctl 截图为 2622x1206，画面完整且 HUD 朝向正确。CI lane 仍 compile-only，
+   真机 GPU_RUNTIME 未覆盖。详见 Build_Guide 的 Simulator 命令和
+   `docs/rhi_backend_evidence.md` 的证据台账。
+10. **clustered 实例化品红色块（2026-10-27 已修）**：默认 FORWARD clustered 路径下，
+    ECS 实例化的 DamagedHelmet 在 Metal 渲染成大块品红，MoltenVK 正常。根因是
+    `metal_uniform_location` 先命中 `uses_storage` 短表（仅 `push.view/proj`，供粒子用），
+    而 R590/R591 的 clustered 实例化/蒙皮管线也设了 `uses_storage`（顶点 SSBO），
+    于是 `u_camera_pos`、`u_ambient`、光源计数和材质系数全部解析为 -1，片元读到
+    陈旧的 push 字节。修复后该短表只用于非 clustered 的 storage 管线，与 VK 反射结果
+    一致。`test_rhi_metal_resources` 新增
+    `clustered_storage_variant_keeps_clustered_push_table`（实例化与蒙皮两种变体），
+    该用例在修复前失败、修复后通过；截图中品红像素计数从 11719 降为 0。
+11. **默认画面发白、头盔缺失、上下镜像叠加（2026-10-28 已修，4 处）**：同一机位
+    （`BREAK_CAM=0,9,16,0,-25 BREAK_UI=0 BREAK_SCREENSHOT=60`）下，Metal 与 MoltenVK
+    的平均绝对差（mad，缩略图 0–255）从 32 降到约 7，blinn 路径 6.7，与 VK 同量级。
+    - `rhi_cmd_draw_indexed_base` / `rhi_cmd_draw_indexed_instanced_base` 之前只记
+      LOG_ERROR 不绘制。命令缓冲 replay、mega 阴影、LOD、ECS LOD 的间接外绘制全部
+      丢失。现按 `vkCmdDrawIndexed` 语义实现（`firstIndex` 折成字节偏移，
+      `vertex_offset`→`baseVertex`，`first_instance`→`baseInstance`）。
+    - storage buffer 绑定原先不分计算/图形，所有索引（0..24）在每次 storage 管线绘制时
+      重放。cluster 剔除的 `light_data`（计算）与粒子 SSBO 会覆盖 vertex buffer 索引 0
+      的网格顶点，头盔变成尖刺白块，且每帧不同。现在图形绑定单独记录
+      （`bound_gfx_storage[]`），只重放该管线自己的 `set*8..set*8+7` 范围。
+    - `rhi_cmd_bind_texel_buffers` 直接设到编码器、未记录。实例上传（blit）结束渲染
+      编码器后，clustered 光照网格纹理（16/17）丢失。现记录到 `cmd->bound_texel[2]`，
+      在 `metal_flush_push` 重放。
+    - 离屏和 MRT pass 之前用默认视口，NDC y=-1 落在纹理最后一行，与 VK/GL/D3D12
+      相反（后处理按 `uv = ndc*0.5+0.5` 采样）。运动模糊、SSS 等 pass 因此读到上下翻转的
+      输入，最终画面叠上一份镜像。现在离屏/MRT pass 使用负高度视口，屏幕 pass 不变。
+    - 另外：计算/blit 插入后保留已绑定图形管线；`rhi_cmd_bind_deferred_gbuf_textures`
+      由 stub 改为按 VK 槽位实现。
+    - 新增测试：`draw_indexed_base_honors_first_index_and_vertex_offset`、
+      `texel_buffers_replay_across_blit_interlude`、
+      `compute_storage_bind_does_not_clobber_graphics_vbo`、
+      `offscreen_viewport_stores_ndc_minus_y_in_row_zero`，修复前均失败。
+    - **未解决**：`BREAK_RENDER_PATH=deferred` 在 Metal 下仍整屏近黑（亮度 0.9，VK 为
+      37.9），日志无 ERROR。下一步查延迟光照 pass 的 push/UBO、G-Buffer 尺寸与合成。

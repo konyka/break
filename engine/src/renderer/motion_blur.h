@@ -18,6 +18,10 @@ typedef struct {
 } MotionBlurSystem;
 
 bool motion_blur_init(MotionBlurSystem *s, RHIDevice *dev, u32 w, u32 h);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool motion_blur_resize(MotionBlurSystem *s, RHIDevice *dev, u32 w, u32 h);
 void motion_blur_shutdown(MotionBlurSystem *s);
 void motion_blur_apply(MotionBlurSystem *s, RHICmdBuffer *cmd,
                        RHITexture color_tex, RHITexture depth_tex,

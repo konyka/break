@@ -129,24 +129,36 @@ inject_defines() {
 # Actual define combinations triggered by engine call sites (grep
 # shader_inject_define engine/src/main.c engine/src/renderer/*.c — the
 # contract test pins this list). Row: <file> <comma-separated defines in
-# call order>. pbr_clustered_vk.frag chains HAS_IBL -> HAS_POINT_SHADOW ->
-# FORWARD_MRT (main.c:491-498), and the texture-array path appends
-# CLUSTERED_ARR (main.c:535). The deferred renderer injects HAS_IBL into
-# every fragment stage (deferred.c defrd_inject_define — byte-identical to
-# shader_inject_define on these #version-first files).
+# call order>. The forward paths append LOD_FADE when the LOD cross-fade is
+# enabled. pbr_clustered_vk.frag chains HAS_IBL -> HAS_POINT_SHADOW ->
+# FORWARD_MRT, and the texture-array path appends CLUSTERED_ARR before the
+# optional LOD_FADE. The deferred G-Buffer static/array vertex stages use
+# LOD_FADE; their fragment stages chain HAS_IBL -> LOD_FADE. All other
+# deferred fragment stages use HAS_IBL alone.
 VARIANTS='
 blinn_phong_vk.vert FORWARD_MRT
 blinn_phong_vk.frag FORWARD_MRT
+blinn_phong_vk.vert FORWARD_MRT,LOD_FADE
+blinn_phong_vk.frag FORWARD_MRT,LOD_FADE
 blinn_phong_arr_vk.vert FORWARD_MRT
 blinn_phong_arr_vk.frag FORWARD_MRT
+blinn_phong_arr_vk.vert FORWARD_MRT,LOD_FADE
+blinn_phong_arr_vk.frag FORWARD_MRT,LOD_FADE
 pbr_clustered_vk.vert FORWARD_MRT
+pbr_clustered_vk.vert FORWARD_MRT,LOD_FADE
 pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT
 pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT,CLUSTERED_ARR
 pbr_clustered_inst_vk.vert FORWARD_MRT
+pbr_clustered_inst_vk.vert FORWARD_MRT,LOD_FADE
+pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT,LOD_FADE
+pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT,CLUSTERED_ARR,LOD_FADE
 pbr_clustered_skin_vk.vert FORWARD_MRT
 pbr_clustered_arr_vk.vert FORWARD_MRT
+pbr_clustered_arr_vk.vert FORWARD_MRT,LOD_FADE
 instanced_vk.vert FORWARD_MRT
 instanced_vk.frag FORWARD_MRT
+instanced_vk.vert FORWARD_MRT,LOD_FADE
+instanced_vk.frag FORWARD_MRT,LOD_FADE
 skinned_vk.vert FORWARD_MRT
 skinned_vk.frag FORWARD_MRT
 skybox_vk.frag FORWARD_MRT
@@ -158,8 +170,12 @@ particle.vert FORWARD_MRT
 particle.frag FORWARD_MRT
 deferred_light_vk.frag HAS_IBL
 gbuffer_vk.frag HAS_IBL
+gbuffer_vk.frag HAS_IBL,LOD_FADE
 gbuffer_arr_vk.frag HAS_IBL
+gbuffer_arr_vk.frag HAS_IBL,LOD_FADE
 gbuffer_skinned_vk.frag HAS_IBL
+gbuffer_vk.vert LOD_FADE
+gbuffer_arr_vk.vert LOD_FADE
 '
 
 process_one() {
@@ -188,10 +204,11 @@ process_one() {
 
 for src in "$SHADER_DIR"/*_vk.vert; do  [ -e "$src" ] || continue; process_one "$src" vert vertex; done
 for src in "$SHADER_DIR"/*_vk.frag; do  [ -e "$src" ] || continue; process_one "$src" frag fragment; done
-# Compute shaders are shared GLSL (no _vk infix); *_gl.comp are the GL variants.
+# Compute shaders are shared GLSL (no _vk infix); *_gl.comp are the GL variants
+# and *_hlsl.comp are D3D12 HLSL sidecars (not GLSL, glslc cannot compile them).
 for src in "$SHADER_DIR"/*.comp; do
     [ -e "$src" ] || continue
-    case "$src" in *_gl.comp) continue ;; esac
+    case "$src" in *_gl.comp|*_hlsl.comp) continue ;; esac
     process_one "$src" comp kernel
 done
 # Shared-source graphics shaders used by the Vulkan path without a _vk

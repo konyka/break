@@ -1,0 +1,72 @@
+// occlusion_cull_hlsl.comp - D3D12 sidecar of shaders/occlusion_cull.comp
+// (the GL variant). Per-object AABB occlusion test against the Hi-Z pyramid:
+// project the eight corners, reject outside the NDC cube, then compare the
+// closest window depth with the pyramid texel at the mip whose texel covers
+// the projected rect. 1 = visible, 0 = occluded or outside.
+//
+// t0 AABBs (ObjectAABB: min.xyz pad max.xyz pad, 32 bytes), u1 visibility,
+// t2 the Hi-Z pyramid (GL binding = 2). Hi-Z reads are Load() of the
+// clamped texel at the chosen mip, the exact equivalent of the engine's
+// NEAREST + CLAMP sampler (the backend's static sampler is LINEAR + WRAP).
+struct PushConsts {
+    float4x4 pc_view_proj;     //  0
+    int      pc_object_count;  // 64
+    float    pc_hi_z_width;    // 68
+    float    pc_hi_z_height;   // 72
+};                             // tail at 76
+ConstantBuffer<PushConsts> g_push : register(b0, space0);
+// rhi:uniform pc_view_proj 0
+// rhi:uniform pc_object_count 64
+// rhi:uniform pc_hi_z_width 68
+// rhi:uniform pc_hi_z_height 72
+ByteAddressBuffer   g_aabbs      : register(t0);
+RWByteAddressBuffer g_visibility : register(u1);
+Texture2D           g_hi_z       : register(t2);
+
+[numthreads(64, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint idx = id.x;
+    if (idx >= (uint)g_push.pc_object_count) return;
+    float3 mn = asfloat(g_aabbs.Load3(idx * 32u));
+    float3 mx = asfloat(g_aabbs.Load3(idx * 32u + 16u));
+
+    // R653: +-infinity seeds, see the GLSL twin (an NDC-edge seed made the
+    // x/y rejection below unreachable).
+    float2 ndc_min = float2(1e30, 1e30);
+    float2 ndc_max = float2(-1e30, -1e30);
+    float closest_z = 1.0;
+    bool crosses_near = false;
+    [unroll] for (uint i = 0u; i < 8u; i++) {
+        float3 c = float3((i & 1u) ? mx.x : mn.x,
+                          (i & 2u) ? mx.y : mn.y,
+                          (i & 4u) ? mx.z : mn.z);
+        float4 clip = mul(g_push.pc_view_proj, float4(c, 1.0));
+        if (clip.w <= 0.0) { crosses_near = true; break; }
+        float3 ndc = clip.xyz / clip.w;
+        ndc_min = min(ndc_min, ndc.xy);
+        ndc_max = max(ndc_max, ndc.xy);
+        closest_z = min(closest_z, ndc.z * 0.5 + 0.5);   // R212-A window depth
+    }
+    if (crosses_near) { g_visibility.Store(idx * 4u, 1u); return; }
+    if (ndc_max.x < -1.0 || ndc_min.x > 1.0 ||
+        ndc_max.y < -1.0 || ndc_min.y > 1.0 || closest_z > 1.0) {
+        g_visibility.Store(idx * 4u, 0u);
+        return;
+    }
+    ndc_min = clamp(ndc_min, -1.0, 1.0);
+    ndc_max = clamp(ndc_max, -1.0, 1.0);
+    float2 hz = float2(g_push.pc_hi_z_width, g_push.pc_hi_z_height);
+    float2 screen_size = (ndc_max - ndc_min) * 0.5 * hz;
+    uint w0, h0, levels;
+    g_hi_z.GetDimensions(0u, w0, h0, levels);
+    float mip_level = clamp(ceil(log2(max(screen_size.x, screen_size.y))), 0.0,
+                            float(levels - 1u));
+    uint mip = (uint)mip_level;
+    uint mw, mh, ml;
+    g_hi_z.GetDimensions(mip, mw, mh, ml);
+    float2 uv_center = (ndc_min + ndc_max) * 0.25 + 0.5;
+    int2 texel = clamp(int2(floor(uv_center * float2(mw, mh))), int2(0, 0),
+                       int2((int)mw - 1, (int)mh - 1));
+    float hi_z_depth = g_hi_z.Load(int3(texel, (int)mip)).r;
+    g_visibility.Store(idx * 4u, closest_z <= hi_z_depth ? 1u : 0u);
+}

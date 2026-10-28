@@ -1649,7 +1649,7 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   my_chart_t* chart = (my_chart_t*)widget;
   float x, y, w, h;
   int32_t local_x, local_y;
-  size_t index;
+  size_t index = CHART_HOVER_NONE;
   if (event == NULL || !chart_plot_rect(widget, &x, &y, &w, &h)) {
     return MY_RET_NOT_SUPPORTED;
   }
@@ -1910,7 +1910,6 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
       float cell_h = h / (float)weeks;
       size_t day = (size_t)(((float)local_x - x) / cell_w);
       size_t week = (size_t)(((float)local_y - y) / cell_h);
-      size_t index;
       if (day > 6u) day = 6u;
       if (week >= weeks) week = weeks - 1u;
       index = week * 7u + day;
@@ -2031,7 +2030,7 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
       chart->show_legend && local_y >= 10 && local_y <= 32) {
     float offset = (float)local_x - x;
     if (offset >= 0.0f) {
-      size_t index = (size_t)(offset / 70.0f);
+      index = (size_t)(offset / 70.0f);
       if (index < chart->series_count && offset >= index * 70.0f &&
           offset < index * 70.0f + 70.0f) {
         chart->series_visible[index] = !chart->series_visible[index];

@@ -21,10 +21,10 @@ typedef struct my_rich_label_t {
   my_darray_t* segs; /**< rich_seg_t* */
 } my_rich_label_t;
 
-static const my_widget_vtable_t s_rich_label_vtable;
+static const my_widget_vtable_t* rich_label_vtable_get(void);
 
 bool my_rich_label_is_instance(const my_widget_t* widget) {
-  return widget != NULL && widget->vtable == &s_rich_label_vtable;
+  return widget != NULL && widget->vtable == rich_label_vtable_get();
 }
 
 /** @brief 8px-cell width: one cell per non-VS codepoint — the measure
@@ -102,13 +102,15 @@ static void rich_label_destroy_chain(my_object_t* obj) {
 static const my_widget_vtable_t s_rich_label_vtable = {rich_label_on_paint,
                                                        NULL, NULL, NULL};
 
+static const my_widget_vtable_t* rich_label_vtable_get(void) { return &s_rich_label_vtable; }
+
 my_widget_t* my_rich_label_create(const my_allocator_t* allocator) {
   my_rich_label_t* rl =
       (my_rich_label_t*)my_mem_calloc(allocator, 1, sizeof(my_rich_label_t));
   if (rl == NULL) {
     return NULL;
   }
-  if (my_widget_init((my_widget_t*)rl, allocator, &s_rich_label_vtable,
+  if (my_widget_init((my_widget_t*)rl, allocator, rich_label_vtable_get(),
                      "rich_label") != MY_RET_OK) {
     my_mem_free(allocator, rl);
     return NULL;

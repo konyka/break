@@ -11,15 +11,23 @@
 
 
 static RHIPipeline id_load_compute(RHIDevice *dev, const char *path) {
-    usize src_len = 0;
-    char *src = shader_read_file(path, &src_len);
-    if (!src) {
-        LOG_WARN("IndirectDraw: shader not found: %s", path);
-        return RHI_HANDLE_NULL;
+    RHICapabilities caps;
+    RHIShader cs;
+    if (!rhi_device_get_capabilities(dev, &caps)) memset(&caps, 0, sizeof(caps));
+    if (caps.shader_sidecar_paths) {
+        /* R637: D3D12 never compiles source in-process; the path resolves to
+         * the precompiled HLSL sidecar (compact_draws_hlsl.comp). */
+        cs = rhi_shader_create_compute_path(dev, path);
+    } else {
+        usize src_len = 0;
+        char *src = shader_read_file(path, &src_len);
+        if (!src) {
+            LOG_WARN("IndirectDraw: shader not found: %s", path);
+            return RHI_HANDLE_NULL;
+        }
+        cs = rhi_shader_create_compute(dev, src, src_len);
+        free(src);
     }
-
-    RHIShader cs = rhi_shader_create_compute(dev, src, src_len);
-    free(src);
     if (!rhi_handle_valid(cs)) {
         LOG_WARN("IndirectDraw: compute shader compile failed: %s", path);
         return RHI_HANDLE_NULL;

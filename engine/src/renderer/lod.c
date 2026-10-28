@@ -1,4 +1,6 @@
 #include "lod.h"
+#include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ---- Hysteresis to prevent LOD thrashing ---- */
@@ -329,6 +331,205 @@ void lod_set_bias(LODSystem *sys, f32 bias) {
 
 void lod_set_strategy(LODSystem *sys, bool use_screen_size) {
     sys->use_screen_size = use_screen_size;
+}
+
+f32 lod_screen_proj_factor(f32 fov, f32 screen_h) {
+    f32 t = tanf(fov * 0.5f);
+    if (!(t > 1e-6f)) t = 1e-6f;
+    return screen_h / (2.0f * t);
+}
+
+u32 lod_select_by_screen_error(const f32 *errors, u32 count, f32 dist,
+                               f32 proj_factor, f32 pixel_err, u32 current_level) {
+    if (!errors || count <= 1u || !(pixel_err > 0.0f)) return 0u;
+    u32 cur = current_level < count ? current_level : count - 1u;
+    if (!(dist > LOD_SCREEN_MIN_DIST)) dist = LOD_SCREEN_MIN_DIST;
+    f32 px_per_unit = proj_factor / dist;
+    f32 hi = pixel_err * (1.0f + LOD_SCREEN_HYSTERESIS);
+    f32 lo = pixel_err * (1.0f - LOD_SCREEN_HYSTERESIS);
+
+    if (errors[cur] * px_per_unit > hi) {
+        /* Refine: coarsest level at or below cur within the plain threshold
+         * (errors are non-decreasing, so scan down from cur). */
+        u32 l = cur;
+        while (l > 0u && errors[l] * px_per_unit > pixel_err) l--;
+        return l;
+    }
+    /* Coarsen only past the lower edge of the band. */
+    u32 l = cur;
+    while (l + 1u < count && errors[l + 1u] * px_per_unit <= lo) l++;
+    return l;
+}
+
+u32 lod_select_screen_error(const f32 *errors, u32 count, Vec3 center, f32 radius,
+                            Vec3 cam_pos, f32 fov, f32 screen_h, f32 pixel_err,
+                            u32 current_level) {
+    f32 d = sqrtf(lod_distance_sq(center, cam_pos)) - (radius > 0.0f ? radius : 0.0f);
+    return lod_select_by_screen_error(errors, count, d,
+                                      lod_screen_proj_factor(fov, screen_h),
+                                      pixel_err, current_level);
+}
+
+u32 lod_bucket_instances(const u32 *inst_mesh, const u8 *inst_level, u32 count,
+                         u32 mesh_count, u32 levels, u32 *offsets, u32 *order) {
+    if (!inst_mesh || !offsets || !order || mesh_count == 0u || levels == 0u) return 0u;
+    if (mesh_count > UINT32_MAX / levels - 1u) return 0u;
+    u32 k_total = mesh_count * levels;
+    memset(offsets, 0, ((usize)k_total + 1u) * sizeof(u32));
+    for (u32 i = 0; i < count; i++) {
+        if (inst_mesh[i] >= mesh_count) continue;
+        u32 l = inst_level ? inst_level[i] : 0u;
+        if (l >= levels) l = levels - 1u;
+        offsets[inst_mesh[i] * levels + l + 1u]++;
+    }
+    for (u32 k = 1; k <= k_total; k++) offsets[k] += offsets[k - 1u];
+    for (u32 i = 0; i < count; i++) {
+        if (inst_mesh[i] >= mesh_count) continue;
+        u32 l = inst_level ? inst_level[i] : 0u;
+        if (l >= levels) l = levels - 1u;
+        order[offsets[inst_mesh[i] * levels + l]++] = i;
+    }
+    /* offsets[k] now holds the end of bucket k; shift back to starts. */
+    for (u32 k = k_total; k >= 1u; k--) offsets[k] = offsets[k - 1u];
+    offsets[0] = 0u;
+    return offsets[k_total];
+}
+
+u32 lod_instance_select(LodInstanceState *st, u32 slot, u32 tag,
+                        const f32 *errors, u32 count, f32 dist, f32 proj_factor,
+                        f32 pixel_err, bool *changed) {
+    if (changed) *changed = false;
+    bool tracked = st && st->level && st->tag && slot < st->capacity && tag != 0u;
+    u32 cur = (tracked && st->tag[slot] == tag) ? st->level[slot] : 0u;
+    u32 lvl = lod_select_by_screen_error(errors, count, dist, proj_factor, pixel_err, cur);
+    if (tracked) {
+        if (changed && st->tag[slot] == tag && lvl != cur) *changed = true;
+        st->tag[slot] = tag;
+        st->level[slot] = (u8)lvl;
+    }
+    return lvl;
+}
+
+u32 lod_instance_level(const LodInstanceState *st, u32 slot, u32 tag) {
+    if (!st || !st->level || !st->tag || slot >= st->capacity || tag == 0u) return 0u;
+    return st->tag[slot] == tag ? st->level[slot] : 0u;
+}
+
+f32 lod_fade_seconds(void) {
+    static int cached = 0;
+    static f32 v = 0.25f;
+    if (!cached) {
+        cached = 1;
+        const char *l = getenv("BREAK_LOD");
+        const char *e = getenv("BREAK_LOD_FADE_MS");
+        if (e && e[0]) { int ms = atoi(e); v = ms > 0 ? (f32)ms / 1000.0f : 0.0f; }
+        if (l && l[0] && !atoi(l)) v = 0.0f;
+    }
+    return v;
+}
+
+void lod_fade_reset(LodFade *f, u32 level) {
+    if (!f) return;
+    f->level = (u8)level;
+    f->from = (u8)level;
+    f->start = 0.0;
+}
+
+static f32 lod_fade_progress(const LodFade *f, f64 now, f32 fade_s) {
+    if (!(fade_s > 0.0f)) return 1.0f;
+    f64 t = (now - f->start) / (f64)fade_s;
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
+    return (f32)t;
+}
+
+bool lod_fade_update(LodFade *f, u32 new_level, f64 now, f32 fade_s) {
+    if (!f) return false;
+    if (!(fade_s > 0.0f)) {
+        bool ch = f->level != new_level;
+        lod_fade_reset(f, new_level);
+        return ch;
+    }
+    if (f->from != f->level && now - f->start >= (f64)fade_s) f->from = f->level;
+    if (new_level == f->level) return false;
+    if (f->from == f->level) {
+        f->level = (u8)new_level;
+        f->start = now;
+    } else {
+        f32 t = lod_fade_progress(f, now, fade_s);
+        if (new_level == f->from) {
+            /* Reverse: the outgoing level becomes the incoming one at the
+             * complementary progress, so the finer share stays put. */
+            f->from = f->level;
+            f->level = (u8)new_level;
+            f->start = now - (f64)(1.0f - t) * (f64)fade_s;
+        } else {
+            f->from = t >= 0.5f ? f->level : f->from;
+            f->level = (u8)new_level;
+            f->start = now;
+        }
+    }
+    return true;
+}
+
+u32 lod_fade_split(const LodFade *f, f64 now, f32 fade_s, u32 *finer, u32 *coarser) {
+    u32 a = f ? f->level : 0u, b = f ? f->from : 0u;
+    f32 t = (f && a != b) ? lod_fade_progress(f, now, fade_s) : 1.0f;
+    if (!f || a == b || t >= 1.0f) {
+        if (finer) *finer = a;
+        if (coarser) *coarser = a;
+        return LOD_FADE_STEPS;
+    }
+    bool incoming_finer = a < b;
+    f32 phi = incoming_finer ? t : 1.0f - t;   /* finer level's share */
+    u32 k = (u32)(phi * (f32)LOD_FADE_STEPS);
+    if (k > LOD_FADE_STEPS) k = LOD_FADE_STEPS;
+    if (finer) *finer = incoming_finer ? a : b;
+    if (coarser) *coarser = incoming_finer ? b : a;
+    return k;
+}
+
+u32 lod_bayer4(u32 x, u32 y) {
+    static const u8 m[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+    return m[(y & 3u) * 4u + (x & 3u)];
+}
+
+bool lod_fade_keep(u32 bayer, f32 value) {
+    if (value == 0.0f) return true;
+    f32 b = (f32)bayer + 0.5f;
+    return value > 0.0f ? !(b > value) : !(b < -value);
+}
+
+u32 lod_fade_write_commands(const LodFade *f, f64 now, f32 fade_s,
+                            u32 level_count, u32 *selected, i8 *dither) {
+    if (!selected || !dither || level_count == 0u) return 0u;
+    u32 fi = 0u, co = 0u;
+    u32 k = lod_fade_split(f, now, fade_s, &fi, &co);
+    if (fi >= level_count) fi = level_count - 1u;
+    if (co >= level_count) co = level_count - 1u;
+    for (u32 l = 0; l < level_count; l++) {
+        selected[l] = 0u;
+        dither[l] = 0;
+    }
+    if (fi == co || k >= LOD_FADE_STEPS) {
+        selected[fi] = 1u;
+    } else if (k == 0u) {
+        selected[co] = 1u;
+    } else {
+        selected[fi] = selected[co] = 1u;
+        dither[fi] = (i8)k;
+        dither[co] = -(i8)k;
+        return 2u;
+    }
+    return 1u;
+}
+
+u32 lod_fade_pack_first_instance(u32 first_instance, i32 dither) {
+    u32 layer = first_instance & 0xFFFFu;
+    if (dither == 0) return layer;
+    if (dither < -15) dither = -15;
+    if (dither > 15) dither = 15;
+    return layer | ((u32)(dither + 16) << 16);
 }
 
 void lod_group_set_auto_thresholds(LODGroup *group, f32 base_distance) {

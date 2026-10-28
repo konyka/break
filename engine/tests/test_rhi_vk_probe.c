@@ -78,19 +78,22 @@ TEST(present_mode_no_vsync_prefers_immediate) {
               VK_PROBE_PRESENT_MODE_FIFO);
 }
 
-TEST(surface_format_prefers_bgra_srgb_then_rgba_srgb_then_first) {
-    VkProbeSurfaceFormat formats[3] = {
-        { 37u, VK_PROBE_COLORSPACE_SRGB_NONLINEAR }, /* R8G8B8A8_UNORM */
+/* R646: UNORM first -- the engine's tonemap writes gamma-encoded values
+ * itself, so an sRGB swapchain would encode them a second time. */
+TEST(surface_format_prefers_bgra_unorm_then_rgba_unorm_then_first) {
+    VkProbeSurfaceFormat formats[4] = {
         { VK_PROBE_FORMAT_B8G8R8A8_SRGB, VK_PROBE_COLORSPACE_SRGB_NONLINEAR },
+        { VK_PROBE_FORMAT_R8G8B8A8_UNORM, VK_PROBE_COLORSPACE_SRGB_NONLINEAR },
+        { VK_PROBE_FORMAT_B8G8R8A8_UNORM, VK_PROBE_COLORSPACE_SRGB_NONLINEAR },
         { VK_PROBE_FORMAT_R8G8B8A8_SRGB, VK_PROBE_COLORSPACE_SRGB_NONLINEAR },
     };
     VkProbeSurfaceFormat picked = { 0xFFFFFFFFu, 0xFFFFFFFFu };
-    ASSERT_TRUE(vk_probe_choose_surface_format(formats, 3u, &picked));
-    ASSERT_EQ(picked.format, VK_PROBE_FORMAT_B8G8R8A8_SRGB);
-    ASSERT_TRUE(vk_probe_choose_surface_format(&formats[2], 1u, &picked));
-    ASSERT_EQ(picked.format, VK_PROBE_FORMAT_R8G8B8A8_SRGB);
-    ASSERT_TRUE(vk_probe_choose_surface_format(formats, 1u, &picked));
-    ASSERT_EQ(picked.format, 37u); /* 无 sRGB 时退回 formats[0] */
+    ASSERT_TRUE(vk_probe_choose_surface_format(formats, 4u, &picked));
+    ASSERT_EQ(picked.format, VK_PROBE_FORMAT_B8G8R8A8_UNORM);
+    ASSERT_TRUE(vk_probe_choose_surface_format(formats, 2u, &picked));
+    ASSERT_EQ(picked.format, VK_PROBE_FORMAT_R8G8B8A8_UNORM);
+    ASSERT_TRUE(vk_probe_choose_surface_format(&formats[3], 1u, &picked));
+    ASSERT_EQ(picked.format, VK_PROBE_FORMAT_R8G8B8A8_SRGB); /* 无 UNORM 时退回 formats[0] */
     ASSERT_FALSE(vk_probe_choose_surface_format(formats, 0u, &picked));
 }
 
@@ -99,7 +102,7 @@ TEST(surface_format_undefined_sentinel_means_any) {
         { VK_PROBE_FORMAT_UNDEFINED, VK_PROBE_COLORSPACE_SRGB_NONLINEAR } };
     VkProbeSurfaceFormat picked = { 0u, 0u };
     ASSERT_TRUE(vk_probe_choose_surface_format(any, 1u, &picked));
-    ASSERT_EQ(picked.format, VK_PROBE_FORMAT_B8G8R8A8_SRGB);
+    ASSERT_EQ(picked.format, VK_PROBE_FORMAT_B8G8R8A8_UNORM);
     ASSERT_EQ(picked.color_space, VK_PROBE_COLORSPACE_SRGB_NONLINEAR);
 }
 
@@ -121,7 +124,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(queue_families_split_when_no_combined);
     RUN_TEST(present_mode_vsync_prefers_mailbox_then_relaxed_then_fifo);
     RUN_TEST(present_mode_no_vsync_prefers_immediate);
-    RUN_TEST(surface_format_prefers_bgra_srgb_then_rgba_srgb_then_first);
+    RUN_TEST(surface_format_prefers_bgra_unorm_then_rgba_unorm_then_first);
     RUN_TEST(surface_format_undefined_sentinel_means_any);
     RUN_TEST(feature_bits_compose_rhi_feature_values);
 TEST_MAIN_END()

@@ -20,8 +20,6 @@ layout(push_constant) uniform PushConstants {
     float _pad1;
     vec3 u_ambient;
     float _pad2;
-    vec3 u_camera_pos;
-    float _pad3;
 } pc;
 
 layout(location = 0) out vec3 vWorldPos;
@@ -30,18 +28,33 @@ layout(location = 2) out vec2 vUV;
 layout(location = 3) flat out uint vLayer;
 #ifdef FORWARD_MRT
 layout(location = 4) out vec2 v_velocity;
+#endif
+/* R600: ForwardTemporal is UNCONDITIONAL and leads with the camera
+ * position; see blinn_phong.frag for why. */
 layout(std140, set = 1, binding = 0) uniform ForwardTemporal {
+    vec3 u_camera_pos;
+    float _cam_pad;
     mat4 u_prev_vp;
     mat4 u_prev_model;
 } temporal;
-#endif
 
+#ifdef LOD_FADE
+layout(location = 5) flat out float vLodFade;
+#endif
 void main() {
+#ifdef LOD_FADE
+    uint fade_code = uint(gl_BaseInstanceARB) >> 16;
+    vLodFade = fade_code == 0u ? 0.0 : float(int(fade_code) - 16);
+#endif
     vec4 world_pos = pc.u_model * vec4(aPos, 1.0);
     vWorldPos = world_pos.xyz;
     vNormal = mat3(pc.u_model) * aNormal;
     vUV = aUV;
+#ifdef LOD_FADE
+    vLayer = uint(gl_BaseInstanceARB) & 0xFFFFu;
+#else
     vLayer = uint(gl_BaseInstanceARB);
+#endif
     vec4 curr_clip = pc.u_proj * pc.u_view * world_pos;
 #ifdef FORWARD_MRT
     vec4 prev_clip = temporal.u_prev_vp * temporal.u_prev_model * vec4(aPos, 1.0);

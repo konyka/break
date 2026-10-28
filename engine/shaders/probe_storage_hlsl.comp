@@ -1,0 +1,16 @@
+// probe_storage_hlsl.comp - compute probe for the D3D12 storage binder.
+// One dispatch writes through both UAV view shapes the binder emits:
+// u0 is raw (R32_TYPELESS + RAW), u1 is structured (UNKNOWN + stride 16).
+// The push value proves root constants reach a compute shader too.
+struct PushConsts { uint u_seed; };
+ConstantBuffer<PushConsts> g_push : register(b0, space0);
+// rhi:uniform u_seed 0
+RWByteAddressBuffer g_raw : register(u0);
+RWStructuredBuffer<uint4> g_rows : register(u1);
+[numthreads(64, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    g_raw.Store(i * 4u, g_push.u_seed + i);
+    if (i < 16u)
+        g_rows[i] = uint4(i, i * 2u, i * 3u, g_push.u_seed);
+}

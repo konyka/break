@@ -14,6 +14,9 @@
 #define INPUT_MOUSE_4       303
 #define INPUT_MOUSE_5       304
 
+/* Either Alt / Option key (FS2: Alt+Enter toggles fullscreen). */
+#define INPUT_KEY_ALT       316
+
 /* ---- Gamepad axes (normalized -1.0 ~ 1.0) ---- */
 #define GAMEPAD_AXIS_LEFT_X    0
 #define GAMEPAD_AXIS_LEFT_Y    1

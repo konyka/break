@@ -21,6 +21,10 @@ typedef struct {
 } DOFSystem;
 
 bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool dof_resize(DOFSystem *s, RHIDevice *dev, u32 w, u32 h);
 void dof_shutdown(DOFSystem *dof);
 void dof_apply(DOFSystem *dof, RHICmdBuffer *cmd, RHITexture color_tex, RHITexture depth_tex,
                const f32 *inv_proj, u32 screen_w, u32 screen_h);

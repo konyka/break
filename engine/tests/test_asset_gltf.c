@@ -1222,6 +1222,99 @@ TEST(gltf_strided_inverse_bind_reads_strided_joints)
  * A padded byteStride 8 is legal and in-bounds, but the raw index reads the
  * wrong key — wrong clip duration and key times, not an over-read.
  * Non-compact times now read through cgltf_accessor_read_float. */
+/* glTF: a joint's global transform includes its non-joint ancestors
+ * (CesiumMan: Z_UP -> Armature -> root joint). The loader dropped them, so
+ * real rigs rendered lying on their side. They now become a synthetic root
+ * joint carrying the ancestors' world transform as constant channels. */
+TEST(gltf_skin_root_keeps_non_joint_ancestor_transform)
+{
+    char bin_path[128]; test_tmp(bin_path, sizeof bin_path, "test_skin_ancestor.bin");
+    /* [0..8) times 0,1   [8..32) 2x VEC3 translation (0,1,0),(0,2,0) */
+    u8 buf[32];
+    memset(buf, 0, sizeof(buf));
+    put_f32(buf + 4, 1.0f);
+    put_f32(buf + 12, 1.0f);
+    put_f32(buf + 24, 2.0f);
+    ASSERT_TRUE(write_bin(bin_path, buf, sizeof(buf)));
+
+    char json[1536];
+    /* node 0: +90 deg about X and translated (5,0,0); node 1: joint child. */
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],"
+             "\"nodes\":[{\"children\":[1],\"translation\":[5,0,0],"
+             "\"rotation\":[0.70710678,0,0,0.70710678]},{}],"
+             "\"skins\":[{\"joints\":[1]}],"
+             "\"animations\":[{\"channels\":[{\"sampler\":0,"
+             "\"target\":{\"node\":1,\"path\":\"translation\"}}],"
+             "\"samplers\":[{\"input\":0,\"output\":1}]}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\"},"
+             "{\"bufferView\":1,\"componentType\":5126,\"count\":2,\"type\":\"VEC3\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":8},"
+             "{\"buffer\":0,\"byteOffset\":8,\"byteLength\":24}],"
+             "\"buffers\":[{\"byteLength\":32,\"uri\":\"%s\"}]}",
+             strrchr(bin_path, '/') + 1);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.joint_count, 2u);
+    ASSERT_EQ(scene.joint_parents[0], 1u);
+    ASSERT_EQ(scene.joint_parents[1], UINT32_MAX);
+    ASSERT_FLOAT_EQ(scene.inverse_bind[1].e[0][0], 1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(scene.inverse_bind[1].e[3][3], 1.0f, 1e-6f);
+
+    Skeleton sk;
+    memset(&sk, 0, sizeof(sk));
+    sk.joint_count = scene.joint_count;
+    for (u32 i = 0; i < scene.joint_count; i++) {
+        sk.joint_parents[i] = scene.joint_parents[i];
+        sk.inverse_bind[i] = scene.inverse_bind[i];
+    }
+    AnimClip *clip = &scene.anim_clips[0];
+    clip->time = 1.0f;
+    skeleton_evaluate(&sk, clip, 0.0f);
+    /* Joint local translation (0,2,0); +90 deg about X maps +Y to +Z, then
+     * the ancestor translation adds (5,0,0). */
+    const Mat4 *m = &sk.current_pose[0];
+    ASSERT_FLOAT_EQ(m->e[3][0], 5.0f, 1e-4f);
+    ASSERT_FLOAT_EQ(m->e[3][1], 0.0f, 1e-4f);
+    ASSERT_FLOAT_EQ(m->e[3][2], 2.0f, 1e-4f);
+    /* Basis: local +Y -> world +Z. */
+    ASSERT_FLOAT_EQ(m->e[1][2], 1.0f, 1e-4f);
+
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+    remove(bin_path);
+}
+
+/* No ancestors (or identity ones): rig left exactly as authored. */
+TEST(gltf_skin_root_identity_ancestor_adds_no_joint)
+{
+    char json[512];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],"
+             "\"nodes\":[{\"children\":[1]},{}],"
+             "\"skins\":[{\"joints\":[1]}]}");
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.joint_count, 1u);
+    ASSERT_EQ(scene.joint_parents[0], UINT32_MAX);
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+}
+
 TEST(gltf_strided_anim_times_read_correctly)
 {
     char bin_path[128]; test_tmp(bin_path, sizeof bin_path, "test_strided_anim_times.bin"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
@@ -1847,6 +1940,135 @@ TEST(scene_restore_vacuous_for_bare_scene)
     asset_scene_free(&ctx, &scene);
 }
 
+static const char b64_alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static void b64_encode(const u8 *src, usize n, char *dst) {
+    usize i = 0, o = 0;
+    while (i < n) {
+        u32 a = src[i++], b = i < n ? src[i++] : 0u, c = i < n ? src[i++] : 0u;
+        u32 v = (a << 16) | (b << 8) | c;
+        dst[o++] = b64_alphabet[(v >> 18) & 63u]; dst[o++] = b64_alphabet[(v >> 12) & 63u];
+        dst[o++] = b64_alphabet[(v >> 6) & 63u]; dst[o++] = b64_alphabet[v & 63u];
+    }
+    if (n % 3u == 1u) { dst[o - 2u] = '='; dst[o - 1u] = '='; }
+    else if (n % 3u == 2u) dst[o - 1u] = '=';
+    dst[o] = '\0';
+}
+
+static void put_u32le(u8 *dst, u32 v, usize *off) {
+    dst[(*off)++] = (u8)v; dst[(*off)++] = (u8)(v >> 8);
+    dst[(*off)++] = (u8)(v >> 16); dst[(*off)++] = (u8)(v >> 24);
+}
+
+static bool write_msft_fixture(const char *path, const char *ids0, const char *ids1) {
+    const u32 dims[3] = { 16u, 8u, 4u };
+    u32 vc[3], ic[3], po[3], io[3];
+    u8 bin[32768], b64[49152];
+    usize off = 0;
+    for (u32 m = 0; m < 3u; m++) {
+        u32 d = dims[m], n = d + 1u;
+        vc[m] = n * n; ic[m] = d * d * 6u;
+        po[m] = (u32)off;
+        for (u32 y = 0; y < n; y++) for (u32 x = 0; x < n; x++) {
+            f32 pos[3] = { (f32)x / d, (f32)y / d, 0.0f };
+            const f32 scale[3] = { 0.2f, 0.1f, 0.05f }, bias[3] = { 0.0f, 0.01f, 0.02f };
+            pos[2] = scale[m] * pos[0] * pos[1] + bias[m];
+            memcpy(bin + off, pos, sizeof(pos)); off += sizeof(pos);
+        }
+        io[m] = (u32)off;
+        for (u32 y = 0; y < d; y++) for (u32 x = 0; x < d; x++) {
+            u32 a = y * n + x, b = a + n;
+            u32 tri[6] = { a, b, a + 1u, a + 1u, b, b + 1u };
+            for (u32 k = 0; k < 6u; k++) put_u32le(bin, tri[k], &off);
+        }
+    }
+    b64_encode(bin, off, (char *)b64);
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    fprintf(f, "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[");
+    fprintf(f, "{\"mesh\":0,\"extensions\":{\"MSFT_lod\":{\"ids\":[%s],\"extras\":{}}},", ids0);
+    fprintf(f, "\"extras\":{\"MSFT_screencoverage\":[0.5,0.25]}},");
+    if (ids1) fprintf(f, "{\"mesh\":1,\"extensions\":{\"MSFT_lod\":{\"ids\":[%s]}}},", ids1);
+    else fprintf(f, "{\"mesh\":1},");
+    fprintf(f, "{\"mesh\":2}],\"meshes\":[");
+    for (u32 m = 0; m < 3u; m++) {
+        fprintf(f, "%s{\"primitives\":[{\"attributes\":{\"POSITION\":%u},\"indices\":%u}]}",
+                m ? "," : "", m * 2u, m * 2u + 1u);
+    }
+    fprintf(f, "],\"accessors\":[");
+    for (u32 m = 0; m < 3u; m++) {
+        fprintf(f, "{\"bufferView\":%u,\"componentType\":5126,\"count\":%u,\"type\":\"VEC3\"},",
+                m * 2u, vc[m]);
+        fprintf(f, "{\"bufferView\":%u,\"componentType\":5125,\"count\":%u,\"type\":\"SCALAR\"}%s",
+                m * 2u + 1u, ic[m], m == 2u ? "" : ",");
+    }
+    fprintf(f, "],\"bufferViews\":[");
+    for (u32 m = 0; m < 3u; m++) {
+        fprintf(f, "{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u},",
+                po[m], vc[m] * 12u);
+        fprintf(f, "{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u}%s",
+                io[m], ic[m] * 4u, m == 2u ? "" : ",");
+    }
+    fprintf(f, "],\"buffers\":[{\"byteLength\":%u,\"uri\":\"data:application/octet-stream;base64,%s\"}]}",
+            (u32)off, b64);
+    bool ok = !ferror(f);
+    fclose(f);
+    return ok;
+}
+
+TEST(gltf_msft_lod_links_authored_levels_and_skips_standalone_alternatives) {
+    ASSERT_TRUE(write_msft_fixture(TMP_GLTF, "1,2", NULL));
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.mesh_count, 3u);
+    ASSERT_EQ(scene.node_count, 3u);
+    ASSERT_TRUE(scene.nodes[0].has_mesh);
+    ASSERT_FALSE(scene.nodes[1].has_mesh);
+    ASSERT_FALSE(scene.nodes[2].has_mesh);
+    ASSERT_EQ(scene.meshes[0].authored_lod_count, 2u);
+    ASSERT_EQ(scene.meshes[0].authored_lod[0], 1u);
+    ASSERT_EQ(scene.meshes[0].authored_lod[1], 2u);
+    ASSERT_EQ(scene.meshes[1].authored_lod_count, 0u);
+    ASSERT_EQ(scene.meshes[0].vertex_count, 289u);
+    ASSERT_EQ(scene.meshes[1].vertex_count, 81u);
+    ASSERT_EQ(scene.meshes[2].vertex_count, 25u);
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+}
+
+TEST(gltf_msft_lod_extra_levels_are_dropped) {
+    ASSERT_TRUE(write_msft_fixture(TMP_GLTF, "2,1,2,1", NULL));
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.meshes[0].authored_lod_count, 2u);
+    ASSERT_EQ(scene.meshes[0].authored_lod[0], 2u);
+    ASSERT_EQ(scene.meshes[0].authored_lod[1], 1u);
+    ASSERT_TRUE(scene.nodes[0].has_mesh);
+    ASSERT_FALSE(scene.nodes[1].has_mesh);
+    ASSERT_FALSE(scene.nodes[2].has_mesh);
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+}
+
+TEST(gltf_msft_lod_invalid_ids_fall_back_without_cycles) {
+    /* out of range, self, cycle 0<->1, non-integer, negative, huge, nested 0->1->2, empty */
+    const char *bad0[] = { "9", "0", "1", "1.5", "-1", "99999999999", "1", "" };
+    const char *bad1[] = { NULL, NULL, "0", NULL, NULL, NULL, "2", NULL };
+    for (u32 i = 0; i < 8u; i++) {
+        ASSERT_TRUE(write_msft_fixture(TMP_GLTF, bad0[i], bad1[i]));
+        AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+        Scene scene; memset(&scene, 0, sizeof(scene));
+        ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+        ASSERT_EQ(scene.meshes[0].authored_lod_count, 0u);
+        ASSERT_TRUE(scene.nodes[0].has_mesh);
+        ASSERT_TRUE(scene.nodes[1].has_mesh);
+        ASSERT_TRUE(scene.nodes[2].has_mesh);
+        asset_scene_free(&ctx, &scene);
+    }
+    remove(TMP_GLTF);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(asset_ctx_init_clears_vfs);
     RUN_TEST(rebuild_meshes_roundtrip);
@@ -1895,4 +2117,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gltf_strided_anim_output_reads_strided_keys);
     RUN_TEST(gltf_strided_inverse_bind_reads_strided_joints);
     RUN_TEST(gltf_strided_anim_times_read_correctly);
+    RUN_TEST(gltf_skin_root_keeps_non_joint_ancestor_transform);
+    RUN_TEST(gltf_skin_root_identity_ancestor_adds_no_joint);
+    RUN_TEST(gltf_msft_lod_links_authored_levels_and_skips_standalone_alternatives);
+    RUN_TEST(gltf_msft_lod_extra_levels_are_dropped);
+    RUN_TEST(gltf_msft_lod_invalid_ids_fall_back_without_cycles);
 TEST_MAIN_END()

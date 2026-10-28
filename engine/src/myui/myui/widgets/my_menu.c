@@ -348,12 +348,13 @@ static int32_t menu_box_width(my_menu_t* m) {
   int32_t w = 80;
   for (i = 0; i < n; i++) {
     menu_item_t* it = (menu_item_t*)my_darray_get(m->items, i);
-    int32_t tw;
+    int32_t tw = 0;
     int64_t tw64;
-    if (m->win != NULL && m->win->font != NULL) {
-      /* real measure at the 13px menu font */
-      my_font_measure(m->win->font, it->text, 13, &tw, NULL);
-    } else {
+    /* real measure at the 13px menu font; a font that cannot measure
+     * (no measure entry, bad text) leaves tw unwritten, so it falls back to
+     * the codepoint estimate below instead of using garbage */
+    if (m->win == NULL || m->win->font == NULL ||
+        my_font_measure(m->win->font, it->text, 13, &tw, NULL) != MY_RET_OK) {
       const char* p;
       tw = 0; /* codepoint-aware fallback (CJK != 1 byte) */
       for (p = it->text; *p != '\0';) {

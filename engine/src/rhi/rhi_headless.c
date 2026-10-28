@@ -114,6 +114,22 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source,
                                     usize len) {
     (void)dev; (void)source; (void)len; return RHI_HANDLE_NULL;
 }
+/* Path-based siblings. Headless refuses unconditionally — it refuses every
+ * shader built from text too — so a readable path is refused exactly like an
+ * unreadable one. No file I/O happens here: a backend whose contract is "no
+ * GPU, no evidence" must not touch the filesystem on a caller's behalf.
+ * R606: there is nothing to derive a sidecar name for, and headless never
+ * constructs a device (both create entry points above return NULL), so it also
+ * never populates RHICapabilities — capabilities.shader_sidecar_paths stays at
+ * its fail-closed default false and temporal_ubo_binding at 0, which is what
+ * test_rhi_capabilities.c's stub-device contract asserts. */
+RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path,
+                                 bool is_fragment) {
+    (void)dev; (void)path; (void)is_fragment; return RHI_HANDLE_NULL;
+}
+RHIShader rhi_shader_create_compute_path(RHIDevice *dev, const char *path) {
+    (void)dev; (void)path; return RHI_HANDLE_NULL;
+}
 void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
     (void)dev; (void)shader;
 }
@@ -205,6 +221,12 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count,
                                i32 vertex_offset) {
     (void)cmd; (void)index_count; (void)instance_count; (void)first_index;
     (void)vertex_offset;
+}
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count,
+                                         u32 instance_count, u32 first_index,
+                                         i32 vertex_offset, u32 first_instance) {
+    (void)cmd; (void)index_count; (void)instance_count; (void)first_index;
+    (void)vertex_offset; (void)first_instance;
 }
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
                            u32 draw_count, u32 stride) {

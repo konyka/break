@@ -26,6 +26,10 @@ typedef struct {
 } PostProcess;
 
 bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool post_process_resize(PostProcess *s, RHIDevice *dev, u32 w, u32 h);
 void post_process_shutdown(PostProcess *pp);
 void post_process_apply(PostProcess *pp, RHICmdBuffer *cmd, RHITexture scene_color, u32 screen_w, u32 screen_h);
 RHITexture post_process_get_bloom_texture(PostProcess *pp);

@@ -19,8 +19,8 @@ endforeach()
 
 file(STRINGS "${RHI_API_LIST}" api_names)
 list(LENGTH api_names api_count)
-if(NOT api_count EQUAL 132)
-    message(FATAL_ERROR "RHI backend API must contain 132 names, got ${api_count}")
+if(NOT api_count EQUAL 135)
+    message(FATAL_ERROR "RHI backend API must contain 135 names, got ${api_count}")
 endif()
 set(unique_names ${api_names})
 list(REMOVE_DUPLICATES unique_names)
@@ -84,18 +84,18 @@ foreach(name IN LISTS api_names)
     endif()
 endforeach()
 
-assert_match_count("${api_h}" "\\(\\*rhi_[A-Za-z0-9_]+\\)" 132
+assert_match_count("${api_h}" "\\(\\*rhi_[A-Za-z0-9_]+\\)" 135
     "total RHIApi entries (no extras)")
 assert_match_count("${forwarders}"
     "(^|\n)[A-Za-z_][A-Za-z0-9_ \t*]*rhi_[A-Za-z0-9_]+[ \t]*\\("
     ${forwarder_count} "total public forwarders (no extras)")
-assert_match_count("${rename_gl}" "#define[ \t]+rhi_[A-Za-z0-9_]+[ \t]+rhi_gl_" 132
+assert_match_count("${rename_gl}" "#define[ \t]+rhi_[A-Za-z0-9_]+[ \t]+rhi_gl_" 135
     "total OpenGL renames (no extras)")
-assert_match_count("${rename_vk}" "#define[ \t]+rhi_[A-Za-z0-9_]+[ \t]+rhi_vk_" 132
+assert_match_count("${rename_vk}" "#define[ \t]+rhi_[A-Za-z0-9_]+[ \t]+rhi_vk_" 135
     "total Vulkan renames (no extras)")
-assert_match_count("${bind_gl}" "\\.rhi_[A-Za-z0-9_]+[ \t]*=" 132
+assert_match_count("${bind_gl}" "\\.rhi_[A-Za-z0-9_]+[ \t]*=" 135
     "total OpenGL bindings (no extras)")
-assert_match_count("${bind_vk}" "\\.rhi_[A-Za-z0-9_]+[ \t]*=" 132
+assert_match_count("${bind_vk}" "\\.rhi_[A-Za-z0-9_]+[ \t]*=" 135
     "total Vulkan bindings (no extras)")
 
 foreach(binding IN ITEMS bind_gl bind_vk)

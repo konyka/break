@@ -369,7 +369,7 @@ static bool resolve_encodes(my_echart_json_doc_t* d) {
 }
 
 static bool parse_series(my_echart_json_doc_t* d, my_conf_node_t* n) {
-  size_t i, j, len, dl;
+  size_t i, j, len, dl = 0u;
   if (n == NULL) return true;
   if (my_conf_type(n) != MY_CONF_ARRAY) return false;
   len = my_conf_child_count(n); d->series = (my_echart_series_input_t*)alloc0(d, len, sizeof(*d->series));

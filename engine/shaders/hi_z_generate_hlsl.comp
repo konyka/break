@@ -1,0 +1,70 @@
+// hi_z_generate_hlsl.comp - D3D12 sidecar of shaders/hi_z_generate.comp (the
+// GL variant). Segmented Hi-Z pyramid: one dispatch writes up to four
+// consecutive mips, every output texel a max-depth reduction straight from
+// the chunk's input (an output texel of relative mip k covers its
+// proportional share of the input), so there is no cross-thread dependency.
+//
+// t0 is the chunk input: the scene depth for the first chunk
+// (rhi_cmd_bind_texture_compute), the previous chunk's last mip as a
+// single-mip view afterwards (rhi_cmd_bind_texture_mip). u0..u3 are
+// single-mip UAVs of the pyramid (rhi_cmd_bind_image_texture); tail slots
+// of a short chunk repeat the last mip and are never written.
+struct PushConsts {
+    float4 pc_output_size;   // xy first output mip size, z mip count
+};
+ConstantBuffer<PushConsts> g_push : register(b0, space0);
+// rhi:uniform pc_output_size 0
+Texture2D          g_input : register(t0);
+RWTexture2D<float> g_out0  : register(u0);
+RWTexture2D<float> g_out1  : register(u1);
+RWTexture2D<float> g_out2  : register(u2);
+RWTexture2D<float> g_out3  : register(u3);
+
+[numthreads(64, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    float4 params = g_push.pc_output_size;
+    int2 first_size = max(int2(params.xy), int2(1, 1));
+    int mip_count = (int)(params.z + 0.5);
+    uint iw, ih, il;
+    g_input.GetDimensions(0u, iw, ih, il);
+    int2 in_size = int2((int)iw, (int)ih);
+
+    int2 sz0 = max(first_size, int2(1, 1));
+    int2 sz1 = max(first_size >> 1, int2(1, 1));
+    int2 sz2 = max(first_size >> 2, int2(1, 1));
+    int2 sz3 = max(first_size >> 3, int2(1, 1));
+    int n0 = sz0.x * sz0.y;
+    int n1 = n0 + ((mip_count > 1) ? sz1.x * sz1.y : 0);
+    int n2 = n1 + ((mip_count > 2) ? sz2.x * sz2.y : 0);
+    int n3 = n2 + ((mip_count > 3) ? sz3.x * sz3.y : 0);
+
+    int tid = (int)id.x;
+    if (tid >= n3) return;
+    int k;
+    int2 sz;
+    int t;
+    if (tid < n0)      { k = 0; sz = sz0; t = tid; }
+    else if (tid < n1) { k = 1; sz = sz1; t = tid - n0; }
+    else if (tid < n2) { k = 2; sz = sz2; t = tid - n1; }
+    else               { k = 3; sz = sz3; t = tid - n2; }
+    int2 pos = int2(t % sz.x, t / sz.x);
+
+    // R671: proportional partition of the input (see hi_z_generate.comp):
+    // the input need not be exactly 2x the first output mip.
+    int2 base = (pos * in_size) / sz;
+    int2 hi = ((pos + int2(1, 1)) * in_size) / sz;
+    if (pos.x == sz.x - 1) hi.x = in_size.x;
+    if (pos.y == sz.y - 1) hi.y = in_size.y;
+    base = min(base, in_size - int2(1, 1));
+    hi = clamp(hi, base + int2(1, 1), in_size);
+
+    float max_depth = 0.0;
+    for (int y = base.y; y < hi.y; y++)
+        for (int x = base.x; x < hi.x; x++)
+            max_depth = max(max_depth, g_input.Load(int3(x, y, 0)).r);
+
+    if (k == 0)      g_out0[pos] = max_depth;
+    else if (k == 1) g_out1[pos] = max_depth;
+    else if (k == 2) g_out2[pos] = max_depth;
+    else             g_out3[pos] = max_depth;
+}

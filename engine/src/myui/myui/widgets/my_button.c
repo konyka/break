@@ -11,7 +11,7 @@
 
 #define BUTTON_COOLDOWN_TICK_MS 16
 
-static const my_widget_vtable_t s_button_vtable;
+static const my_widget_vtable_t* button_vtable_get(void);
 static void button_cancel_release_timer(my_button_t* b);
 static uint32_t button_cooldown_remaining_at(const my_button_t* button,
                                              uint64_t now);
@@ -31,7 +31,7 @@ static void button_on_blur(void* ctx, const char* event, void* event_data) {
 }
 
 static bool button_widget_valid(const my_widget_t* widget) {
-  return widget != NULL && widget->vtable == &s_button_vtable;
+  return widget != NULL && widget->vtable == button_vtable_get();
 }
 
 bool my_button_is_instance(const my_widget_t* widget) {
@@ -418,6 +418,8 @@ static my_ret_t button_on_event(my_widget_t* widget, const my_event_t* event) {
 static const my_widget_vtable_t s_button_vtable = {button_on_paint,
                                                    button_on_event, NULL, NULL};
 
+static const my_widget_vtable_t* button_vtable_get(void) { return &s_button_vtable; }
+
 static void button_destroy_chain(my_object_t* obj) {
   my_button_t* b = (my_button_t*)obj;
   button_cancel_release_timer(b);
@@ -432,7 +434,7 @@ my_widget_t* my_button_create(const my_allocator_t* allocator, const char* text)
   if (b == NULL) {
     return NULL;
   }
-  if (my_widget_init((my_widget_t*)b, allocator, &s_button_vtable, "button") !=
+  if (my_widget_init((my_widget_t*)b, allocator, button_vtable_get(), "button") !=
       MY_RET_OK) {
     my_mem_free(allocator, b);
     return NULL;

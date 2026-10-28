@@ -137,8 +137,43 @@ typedef struct {
     RHISampler    sampler;
     RHITexture    test_tex;
     i32 loc_model, loc_view, loc_proj;
-    i32 loc_light_dir, loc_light_color, loc_ambient, loc_camera_pos;
+    i32 loc_light_dir, loc_light_color, loc_ambient;
+    /* R600: blinn_phong's ForwardTemporal UBO — u_camera_pos left the
+     * push/loose uniform, so every blinn draw here must publish it. */
+    RHIBuffer temporal_ubo;
 } TestRenderState;
+
+/* R600: mirrors the unconditional ForwardTemporal block blinn_phong declares
+ * ({vec3 u_camera_pos; float pad; mat4 u_prev_vp; mat4 u_prev_model}) and
+ * main.c's ForwardTemporalUbo, so the three writers cannot drift. */
+typedef struct {
+    f32 cam_pos[3];
+    f32 cam_pad;
+    f32 prev_vp[16];
+    f32 prev_model[16];
+} TvForwardTemporal;
+
+/* Publishes the camera position and binds the block at binding 0. Call after
+ * binding the blinn pipeline; without it the fragment reads a zeroed camera and
+ * the view vector collapses — a silently wrong frame, not an error. */
+static void tv_bind_forward_temporal(RHICmdBuffer *cmd, const TestRenderState *rs,
+                                     f32 x, f32 y, f32 z) {
+    TvForwardTemporal t;
+    if (!rhi_handle_valid(rs->temporal_ubo)) return;
+    t.cam_pos[0] = x; t.cam_pos[1] = y; t.cam_pos[2] = z; t.cam_pad = 0.0f;
+    for (u32 m = 0u; m < 4u; ++m) {
+        t.prev_vp[m * 4u + 0u]      = (m == 0u)  ? 1.0f : 0.0f;
+        t.prev_vp[m * 4u + 1u]      = (m == 5u)  ? 1.0f : 0.0f;
+        t.prev_vp[m * 4u + 2u]      = (m == 10u) ? 1.0f : 0.0f;
+        t.prev_vp[m * 4u + 3u]      = (m == 15u) ? 1.0f : 0.0f;
+        t.prev_model[m * 4u + 0u]   = (m == 0u)  ? 1.0f : 0.0f;
+        t.prev_model[m * 4u + 1u]   = (m == 5u)  ? 1.0f : 0.0f;
+        t.prev_model[m * 4u + 2u]   = (m == 10u) ? 1.0f : 0.0f;
+        t.prev_model[m * 4u + 3u]   = (m == 15u) ? 1.0f : 0.0f;
+    }
+    rhi_buffer_update(rs->device, rs->temporal_ubo, &t, sizeof(t));
+    rhi_cmd_bind_uniform_buffer(cmd, rs->temporal_ubo, 0u);
+}
 
 static bool tv_test_msaa_offscreen(const TestRenderState *rs, RHIBuffer vbo,
                                    RHIBuffer ibo) {
@@ -175,13 +210,14 @@ static bool tv_test_msaa_offscreen(const TestRenderState *rs, RHIBuffer vbo,
     Mat4 identity = mat4_identity();
     rhi_offscreen_fbo_bind(cmd, &fbo);
     rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+    tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &identity.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &identity.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &identity.e[0][0]);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
-    rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+    tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
     rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
     rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
     rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -197,6 +233,321 @@ static bool tv_test_msaa_offscreen(const TestRenderState *rs, RHIBuffer vbo,
     return true;
 #endif
 }
+
+/* UI orientation gate: the myui route end to end. The canvas draws into an
+ * offscreen FBO under rhi_cmd_set_viewport (my_vgcanvas_break_rhi.c), then
+ * BreakUI composites that texture to the swapchain with post.vert +
+ * post_tex.frag after rhi_offscreen_fbo_unbind (myui_break.c). A quad over
+ * NDC y > 0 must come out as the TOP half of the presented image, which is
+ * what rhi_screenshot returns first (top-down rows). */
+static bool tv_test_ui_composite_orientation(const TestRenderState *rs,
+                                             u32 scr_w, u32 scr_h) {
+    static const f32 quad[6 * 3] = {
+        -1, 0, 0,  1, 0, 0,  1, 1, 0,  -1, 0, 0,  1, 1, 0,  -1, 1, 0
+    };
+    const u32 fw = 64u, fh = 64u;
+    bool ok = false;
+    char vs_path[96], fs_path[96];
+    RHICapabilities caps;
+    RHIShader cvs = RHI_HANDLE_NULL, cfs = RHI_HANDLE_NULL;
+    RHIShader pvs = RHI_HANDLE_NULL, pfs = RHI_HANDLE_NULL;
+    RHIPipeline color_pipe = RHI_HANDLE_NULL, post_pipe = RHI_HANDLE_NULL;
+    RHIPipelineBindings *bindings = NULL;
+    RHIBuffer vbo = RHI_HANDLE_NULL;
+    RHISampler sampler = RHI_HANDLE_NULL;
+    RHIOffscreenFBO fbo;
+    u8 *shot = NULL;
+    usize len = 0;
+    char *src;
+    memset(&fbo, 0, sizeof(fbo));
+    if (!rhi_device_get_capabilities(rs->device, &caps)) return false;
+#ifdef ENGINE_VULKAN
+    src = shader_read_file("shaders/editor_color_vk.vert", &len);
+    if (src) { cvs = rhi_shader_create(rs->device, src, len, false); free(src); }
+    src = shader_read_file("shaders/editor_color_vk.frag", &len);
+    if (src) { cfs = rhi_shader_create(rs->device, src, len, true); free(src); }
+#else
+    src = shader_read_file("shaders/editor_color.vert", &len);
+    if (src) { cvs = rhi_shader_create(rs->device, src, len, false); free(src); }
+    src = shader_read_file("shaders/editor_color.frag", &len);
+    if (src) { cfs = rhi_shader_create(rs->device, src, len, true); free(src); }
+#endif
+    if (shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant,
+                            vs_path, sizeof(vs_path)) &&
+        shader_variant_path("shaders/post_tex.frag", (RHIShaderVariant)caps.shader_variant,
+                            fs_path, sizeof(fs_path))) {
+        src = shader_read_file(vs_path, &len);
+        if (src) { pvs = rhi_shader_create(rs->device, src, len, false); free(src); }
+        src = shader_read_file(fs_path, &len);
+        if (src) { pfs = rhi_shader_create(rs->device, src, len, true); free(src); }
+    }
+    if (!rhi_handle_valid(cvs) || !rhi_handle_valid(cfs) ||
+        !rhi_handle_valid(pvs) || !rhi_handle_valid(pfs)) {
+        LOG_ERROR("FAIL: UI orientation shader load");
+        goto done;
+    }
+    {
+        RHIPipelineDesc d;
+        memset(&d, 0, sizeof(d));
+        d.vert = cvs; d.frag = cfs;
+        d.vertex_stride = 12u;
+        d.disable_culling = true; /* orientation only, not facing */
+        d.depth_write_disable = true;
+        color_pipe = rhi_pipeline_create(rs->device, &d);
+        memset(&d, 0, sizeof(d));
+        d.vert = pvs; d.frag = pfs;
+        d.no_vertex_input = true;
+        d.uses_textures = true;
+        d.depth_write_disable = true;
+        d.disable_culling = true;
+        post_pipe = rhi_pipeline_create(rs->device, &d);
+    }
+    {
+        RHIBufferDesc b;
+        RHISamplerDesc s;
+        RHIOffscreenFBODesc f;
+        memset(&b, 0, sizeof(b));
+        b.usage = RHI_BUFFER_USAGE_VERTEX;
+        b.size = sizeof(quad);
+        b.initial_data = quad;
+        vbo = rhi_buffer_create(rs->device, &b);
+        memset(&s, 0, sizeof(s));
+        s.min_filter = RHI_FILTER_NEAREST;
+        s.mag_filter = RHI_FILTER_NEAREST;
+        s.wrap_u = s.wrap_v = s.wrap_w = RHI_WRAP_CLAMP_TO_EDGE;
+        sampler = rhi_sampler_create(rs->device, &s);
+        memset(&f, 0, sizeof(f));
+        f.width = fw; f.height = fh;
+        f.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+        f.sample_count = 1u;
+        fbo = rhi_offscreen_fbo_create_desc(rs->device, &f);
+    }
+    if (!rhi_handle_valid(color_pipe) || !rhi_handle_valid(post_pipe) ||
+        !rhi_handle_valid(vbo) || !rhi_handle_valid(sampler) ||
+        !rhi_handle_valid(fbo.fb)) {
+        LOG_ERROR("FAIL: UI orientation resource setup");
+        goto done;
+    }
+    bindings = rhi_pipeline_bindings_create(rs->device, color_pipe);
+    {
+        i32 loc_mvp = bindings ? rhi_pipeline_bindings_resolve(bindings, "u_mvp") : -1;
+        i32 loc_color = bindings ? rhi_pipeline_bindings_resolve(bindings, "u_color") : -1;
+        Mat4 ident = mat4_identity();
+        RHICmdBuffer *cmd;
+        if (loc_mvp < 0 || loc_color < 0) {
+            LOG_ERROR("FAIL: UI orientation uniform resolve");
+            goto done;
+        }
+        cmd = rhi_frame_begin(rs->device);
+        if (!cmd) goto done;
+        rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 1.0f);
+        rhi_offscreen_fbo_set_clear_color(rs->device, &fbo, 0.0f, 0.0f, 0.0f, 1.0f);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_set_viewport(cmd, 0.0f, 0.0f, (f32)fw, (f32)fh, 0.0f, 1.0f);
+        rhi_cmd_bind_pipeline(cmd, color_pipe);
+        rhi_cmd_set_uniform_mat4(cmd, loc_mvp, &ident.e[0][0]);
+        rhi_cmd_set_uniform_vec4(cmd, loc_color, 0.0f, 1.0f, 0.0f, 1.0f);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+        rhi_cmd_draw(cmd, 6u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, scr_w, scr_h);
+        rhi_cmd_set_scissor_top_left(cmd, 0u, 0u, scr_w, scr_h);
+        rhi_cmd_bind_pipeline(cmd, post_pipe);
+        rhi_cmd_bind_texture(cmd, fbo.color_tex, sampler, 0);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_frame_end(rs->device);
+        shot = malloc((usize)scr_w * scr_h * 4u);
+        if (shot && rhi_screenshot(rs->device, 0, 0, scr_w, scr_h, shot,
+                                   (usize)scr_w * scr_h * 4u)) {
+            u32 x = scr_w / 2u;
+            u32 top_y = scr_h / 4u, bottom_y = (scr_h * 3u) / 4u;
+            u8 top_g = shot[((usize)top_y * scr_w + x) * 4u + 1u];
+            u8 bottom_g = shot[((usize)bottom_y * scr_w + x) * 4u + 1u];
+            LOG_INFO("UI orientation: top-quarter green=%u bottom-quarter green=%u",
+                     (unsigned)top_g, (unsigned)bottom_g);
+            ok = top_g > 200u && bottom_g < 50u;
+            if (!ok)
+                LOG_ERROR("FAIL: UI drawn through the offscreen canvas + "
+                          "composite is upside down (NDC +Y not on top)");
+        } else {
+            LOG_ERROR("FAIL: UI orientation screenshot");
+        }
+        rhi_present(rs->device);
+    }
+done:
+    free(shot);
+    if (bindings) rhi_pipeline_bindings_destroy(rs->device, bindings);
+    if (rhi_handle_valid(fbo.fb)) rhi_offscreen_fbo_destroy(rs->device, &fbo);
+    if (rhi_handle_valid(sampler)) rhi_sampler_destroy(rs->device, sampler);
+    if (rhi_handle_valid(vbo)) rhi_buffer_destroy(rs->device, vbo);
+    if (rhi_handle_valid(color_pipe)) rhi_pipeline_destroy(rs->device, color_pipe);
+    if (rhi_handle_valid(post_pipe)) rhi_pipeline_destroy(rs->device, post_pipe);
+    if (rhi_handle_valid(cvs)) rhi_shader_destroy(rs->device, cvs);
+    if (rhi_handle_valid(cfs)) rhi_shader_destroy(rs->device, cfs);
+    if (rhi_handle_valid(pvs)) rhi_shader_destroy(rs->device, pvs);
+    if (rhi_handle_valid(pfs)) rhi_shader_destroy(rs->device, pfs);
+    return ok;
+}
+
+/* FS6: resize-path synchronisation gate. Render-target churn and swapchain
+ * recreation (the fullscreen-switch path) must not stall the CPU on the GPU:
+ * FBO destroy goes through the fence-retired list (also when the FBO was used
+ * earlier in the frame being recorded), new targets get their initial layout
+ * from one batched submission, and rhi_device_resize hands the old swapchain
+ * to the new one. Checked: no vkDeviceWaitIdle / vkQueueWaitIdle during the
+ * churn, pixels of the surviving and the new targets, every retired object
+ * released a few frames later, and (via the suite's validation gate) no
+ * validation message for any of it. */
+#ifdef ENGINE_VULKAN
+#define TV_FS6_FBOS 6u
+#define TV_FS6_SIZE 64u
+
+static bool tv_fs6_render_targets(RHIDevice *dev, RHIOffscreenFBO *fbos,
+                                   u32 count, u32 screen_w, u32 screen_h,
+                                   i32 destroy_after_use) {
+    RHICmdBuffer *cmd = rhi_frame_begin(dev);
+    if (!cmd) return false;
+    for (u32 i = 0; i < count; i++) {
+        rhi_offscreen_fbo_bind(cmd, &fbos[i]);
+        rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+    }
+    /* The command buffer being recorded references this FBO; destroying it
+     * now must defer the release until the frame's fence has signalled. */
+    if (destroy_after_use >= 0)
+        rhi_offscreen_fbo_destroy(dev, &fbos[destroy_after_use]);
+    if (rhi_frame_end_ex(dev) != RHI_RESULT_OK) return false;
+    RHIResult pr = rhi_present_ex(dev);
+    return pr == RHI_RESULT_OK || pr == RHI_RESULT_OUT_OF_DATE;
+}
+
+
+static bool tv_fs6_check_gray(RHIDevice *dev, const RHIOffscreenFBO *fbo,
+                              u8 expect, const char *label) {
+    static u8 px[TV_FS6_SIZE * TV_FS6_SIZE * 4u];
+    if (!rhi_texture_read_pixels(dev, fbo->color_tex, px, sizeof(px))) {
+        LOG_ERROR("FAIL: FS6 %s readback failed", label);
+        return false;
+    }
+    const usize center = ((usize)(TV_FS6_SIZE / 2u) * TV_FS6_SIZE + TV_FS6_SIZE / 2u) * 4u;
+    for (u32 c = 0; c < 3u; c++) {
+        i32 d = (i32)px[center + c] - (i32)expect;
+        if (d < -2 || d > 2) {
+            LOG_ERROR("FAIL: FS6 %s pixel channel %u = %u, want %u", label, c,
+                      (unsigned)px[center + c], (unsigned)expect);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool tv_test_fs6_resize_sync(RHIDevice *dev, u32 screen_w, u32 screen_h) {
+    RHIOffscreenFBO fbos[TV_FS6_FBOS];
+    u8 gray[TV_FS6_FBOS];
+    memset(fbos, 0, sizeof(fbos));
+    bool ok = true;
+    for (u32 i = 0; i < TV_FS6_FBOS; i++) {
+        fbos[i] = rhi_offscreen_fbo_create(dev, TV_FS6_SIZE, TV_FS6_SIZE);
+        if (!rhi_handle_valid(fbos[i].fb)) {
+            LOG_ERROR("FAIL: FS6 FBO %u create", i);
+            ok = false;
+            break;
+        }
+        gray[i] = (u8)(32u + 32u * i);
+        f32 g = (f32)gray[i] / 255.0f;
+        rhi_offscreen_fbo_set_clear_color(dev, &fbos[i], g, g, g, 1.0f);
+    }
+    if (ok) ok = tv_fs6_render_targets(dev, fbos, TV_FS6_FBOS, screen_w, screen_h, -1);
+
+    RHIVkSyncCounters before = {0}, after = {0};
+    if (!rhi_vk_sync_counters(dev, &before)) {
+        LOG_ERROR("FAIL: FS6 sync counters unavailable");
+        ok = false;
+    }
+    u64 t0 = time_microseconds();
+    if (ok) {
+        /* In-frame destroy of an FBO used by the frame being recorded. */
+        ok = tv_fs6_render_targets(dev, fbos, TV_FS6_FBOS, screen_w, screen_h, 0);
+        /* Two back-to-back swapchain recreations (window managers often
+         * deliver two sizes per switch), with frames still in flight. */
+        if (ok && rhi_device_resize_ex(dev, screen_w, screen_h) != RHI_RESULT_OK) {
+            LOG_ERROR("FAIL: FS6 first swapchain recreate");
+            ok = false;
+        }
+        if (ok && rhi_device_resize_ex(dev, screen_w, screen_h) != RHI_RESULT_OK) {
+            LOG_ERROR("FAIL: FS6 second swapchain recreate");
+            ok = false;
+        }
+        /* Out-of-frame churn: replace three targets, as a resize rebuild does. */
+        for (u32 i = 1; ok && i < 4u; i++) {
+            rhi_offscreen_fbo_destroy(dev, &fbos[i]);
+            fbos[i] = rhi_offscreen_fbo_create(dev, TV_FS6_SIZE, TV_FS6_SIZE);
+            if (!rhi_handle_valid(fbos[i].fb)) {
+                LOG_ERROR("FAIL: FS6 FBO %u recreate", i);
+                ok = false;
+                break;
+            }
+            gray[i] = (u8)(200u - 16u * i);
+            f32 g = (f32)gray[i] / 255.0f;
+            rhi_offscreen_fbo_set_clear_color(dev, &fbos[i], g, g, g, 1.0f);
+        }
+        /* A never-rendered new target: its batched initial layout must land
+         * before the readback below (validation checks the layout). */
+        fbos[0] = rhi_offscreen_fbo_create(dev, TV_FS6_SIZE, TV_FS6_SIZE);
+        if (ok && !rhi_handle_valid(fbos[0].fb)) {
+            LOG_ERROR("FAIL: FS6 unrendered FBO create");
+            ok = false;
+        }
+        for (u32 f = 0; ok && f < 3u; f++)
+            ok = tv_fs6_render_targets(dev, fbos + 1, TV_FS6_FBOS - 1u,
+                                       screen_w, screen_h, -1);
+    }
+    f64 churn_ms = (f64)(time_microseconds() - t0) / 1000.0;
+    if (ok && rhi_vk_sync_counters(dev, &after)) {
+        u64 dev_idle = after.device_wait_idle - before.device_wait_idle;
+        u64 q_idle = after.queue_wait_idle - before.queue_wait_idle;
+        u64 deferred = after.deferred_destroys - before.deferred_destroys;
+        LOG_INFO("FS6: churn %.2f ms, device_wait_idle=%llu queue_wait_idle=%llu "
+                 "deferred=%llu pending=%llu layout_batches=%llu",
+                 churn_ms, (unsigned long long)dev_idle, (unsigned long long)q_idle,
+                 (unsigned long long)deferred,
+                 (unsigned long long)after.deferred_pending,
+                 (unsigned long long)(after.layout_batches - before.layout_batches));
+        if (dev_idle != 0u || q_idle != 0u) {
+            LOG_ERROR("FAIL: FS6 resize/destroy path waited for the GPU to idle");
+            ok = false;
+        }
+        if (deferred == 0u || after.layout_batches == before.layout_batches) {
+            LOG_ERROR("FAIL: FS6 deferred destroy / layout batch not exercised");
+            ok = false;
+        }
+    }
+    for (u32 i = 1; ok && i < TV_FS6_FBOS; i++) {
+        char label[32];
+        snprintf(label, sizeof(label), "fbo%u", i);
+        ok = tv_fs6_check_gray(dev, &fbos[i], gray[i], label);
+    }
+    if (ok) {
+        static u8 px[TV_FS6_SIZE * TV_FS6_SIZE * 4u];
+        if (!rhi_texture_read_pixels(dev, fbos[0].color_tex, px, sizeof(px))) {
+            LOG_ERROR("FAIL: FS6 unrendered FBO readback");
+            ok = false;
+        }
+    }
+    /* Retired objects (including the present-delayed swapchain ones) drain
+     * within a few frames. */
+    for (u32 f = 0; ok && f < 8u; f++)
+        ok = tv_fs6_render_targets(dev, fbos + 1, TV_FS6_FBOS - 1u,
+                                   screen_w, screen_h, -1);
+    if (ok && rhi_vk_sync_counters(dev, &after) && after.deferred_pending != 0u) {
+        LOG_ERROR("FAIL: FS6 %llu retired objects never released",
+                  (unsigned long long)after.deferred_pending);
+        ok = false;
+    }
+    for (u32 i = 0; i < TV_FS6_FBOS; i++)
+        if (rhi_handle_valid(fbos[i].fb)) rhi_offscreen_fbo_destroy(dev, &fbos[i]);
+    if (ok) LOG_INFO("PASS: FS6 resize-path sync (no idle waits, pixels, drain)");
+    return ok;
+}
+#endif
 
 /* Capture the presented frame, downsample, and compare against (or, with
  * GOLDEN_UPDATE=1, write) the reference PPM at `path` — implementation in
@@ -230,7 +581,7 @@ static bool tv_run_golden_regression(const TestRenderState *render, RHIBuffer vb
         rhi_cmd_set_uniform_vec3(cmd, render->loc_light_dir, 0.5f, -0.8f, 0.3f);
         rhi_cmd_set_uniform_vec3(cmd, render->loc_light_color, 1.0f, 0.95f, 0.9f);
         rhi_cmd_set_uniform_vec3(cmd, render->loc_ambient, 0.35f, 0.35f, 0.40f);
-        rhi_cmd_set_uniform_vec3(cmd, render->loc_camera_pos, 0, 0, 5);
+        tv_bind_forward_temporal(cmd, render, 0.0f, 0.0f, 5.0f);
         rhi_cmd_bind_texture(cmd, render->test_tex, render->sampler, 0);
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -294,8 +645,8 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
         rhi_cmd_set_uniform_vec3(cmd, render->loc_light_dir, 0.5f, -0.8f, 0.3f);
         rhi_cmd_set_uniform_vec3(cmd, render->loc_light_color, 1.0f, 0.95f, 0.9f);
         rhi_cmd_set_uniform_vec3(cmd, render->loc_ambient, 0.35f, 0.35f, 0.40f);
-        rhi_cmd_set_uniform_vec3(cmd, render->loc_camera_pos,
-                                 cam.position.e[0], cam.position.e[1], cam.position.e[2]);
+        tv_bind_forward_temporal(cmd, render, cam.position.e[0],
+                                 cam.position.e[1], cam.position.e[2]);
         rhi_cmd_bind_texture(cmd, render->test_tex, render->sampler, 0);
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -321,11 +672,14 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
  * 全量迁移后失去旧 API 参照（调用点清零；旧 API 由 Task 8 随退役删除）。
  * 改为 pinned 契约：VK 端逐名断言 std430 反射偏移（与 5a gate 转录表一致：
  * blinn push 块 u_model@0 u_view@64 u_proj@128 u_light_dir@192 u_light_color@208
- * u_ambient@224 u_camera_pos@240；u_albedo 采样器恒 -1）；GL 端断言活动名
+ * u_ambient@224；u_albedo 采样器恒 -1）；GL 端断言活动名
  * 可解析（!= -1）、缺席名 __nonexistent__ 恒 -1（GL location 值由驱动分配，
- * 不 pin 数值）。Pin 2 保留：用 bindings 解析出的位置渲染 golden 场景
- * （rhi_oracle_compare_frame，路径复用 GOLDEN_PATH）；oracle 结论（本机为
- * 已登记的 drift 基线，CI 为权威）只作记录，不并入断言。 */
+ * 不 pin 数值）。R600 起 u_camera_pos 离开 push/loose uniform、进入
+ * ForwardTemporal 块，因此两端都必须 resolve -1 —— 下面的 expected 表把
+ * 它 pin 在 -1，而不是放宽成「什么都行」。Pin 2 保留：用 bindings 解析出的
+ * 位置渲染 golden 场景（rhi_oracle_compare_frame，路径复用 GOLDEN_PATH）；
+ * 相机位置改由 forward temporal UBO 提供，与 main.c 的生产路径同源。
+ * oracle 结论（本机为已登记的 drift 基线，CI 为权威）只作记录，不并入断言。 */
 static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
                                     u32 w, u32 h) {
     LOG_INFO("============================================");
@@ -343,7 +697,7 @@ static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RH
         "u_ambient", "u_camera_pos", "u_albedo", "__nonexistent__",
     };
 #ifdef ENGINE_VULKAN
-    static const i32 expected[] = {0, 64, 128, 192, 208, 224, 240, -1, -1};
+    static const i32 expected[] = {0, 64, 128, 192, 208, 224, -1, -1, -1};
 #endif
     bool parity = true;
     for (usize i = 0u; i < sizeof(names) / sizeof(names[0]); ++i) {
@@ -352,9 +706,12 @@ static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RH
 #ifdef ENGINE_VULKAN
         ok = (reflected == expected[i]);
 #else
-        /* GL: 真实成员与采样器必须可解析；缺席名必须 -1（u_albedo 在
-         * GL 是活动 sampler，VK 端不是 push 成员 — 两端语义各自 pin）。 */
-        ok = (strcmp(names[i], "__nonexistent__") == 0) ? (reflected == -1)
+        /* GL: 真实成员与采样器必须可解析；u_camera_pos 与缺席名必须 -1
+         * （u_albedo 在 GL 是活动 sampler，VK 端不是 push 成员；u_camera_pos
+         * 自 R600 起是 ForwardTemporal 块成员，glGetUniformLocation 对块成员
+         * 恒返 -1 —— 两端语义各自 pin）。 */
+        ok = (strcmp(names[i], "u_camera_pos") == 0 ||
+              strcmp(names[i], "__nonexistent__") == 0) ? (reflected == -1)
                                                         : (reflected != -1);
 #endif
         if (!ok) {
@@ -377,7 +734,6 @@ static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RH
     i32 loc_light_dir  = rhi_pipeline_bindings_resolve(bind, "u_light_dir");
     i32 loc_light_color = rhi_pipeline_bindings_resolve(bind, "u_light_color");
     i32 loc_ambient    = rhi_pipeline_bindings_resolve(bind, "u_ambient");
-    i32 loc_camera_pos = rhi_pipeline_bindings_resolve(bind, "u_camera_pos");
     u8 *shot = (u8 *)malloc((usize)w * h * 4u);
     bool captured = false;
     for (u32 f = 0; f < 3; f++) {
@@ -385,13 +741,17 @@ static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RH
         if (!cmd) continue;
         rhi_cmd_clear_color(cmd, 0.10f, 0.10f, 0.15f, 1.0f);
         rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+        tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
         rhi_cmd_set_uniform_mat4(cmd, loc_model, &gid.e[0][0]);
         rhi_cmd_set_uniform_mat4(cmd, loc_view, &gid.e[0][0]);
         rhi_cmd_set_uniform_mat4(cmd, loc_proj, &gid.e[0][0]);
         rhi_cmd_set_uniform_vec3(cmd, loc_light_dir, 0.5f, -0.8f, 0.3f);
         rhi_cmd_set_uniform_vec3(cmd, loc_light_color, 1.0f, 0.95f, 0.9f);
         rhi_cmd_set_uniform_vec3(cmd, loc_ambient, 0.35f, 0.35f, 0.40f);
-        rhi_cmd_set_uniform_vec3(cmd, loc_camera_pos, 0, 0, 5);
+        /* R600: u_camera_pos has no uniform location any more — it rides the
+         * ForwardTemporal UBO, exactly as the production path publishes it.
+         * Without this the golden frame would silently render zeroed. */
+        tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
         rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -507,7 +867,6 @@ static bool test_render_init(TestRenderState *rs, Platform *platform,
     rs->loc_light_dir   = rhi_pipeline_bindings_resolve(rs->bind, "u_light_dir");
     rs->loc_light_color = rhi_pipeline_bindings_resolve(rs->bind, "u_light_color");
     rs->loc_ambient     = rhi_pipeline_bindings_resolve(rs->bind, "u_ambient");
-    rs->loc_camera_pos  = rhi_pipeline_bindings_resolve(rs->bind, "u_camera_pos");
 
     if (rs->loc_model < 0 || rs->loc_view < 0 || rs->loc_proj < 0) {
         LOG_ERROR("FAIL: uniform locations invalid (model=%d view=%d proj=%d)", rs->loc_model, rs->loc_view, rs->loc_proj);
@@ -538,6 +897,25 @@ static bool test_render_init(TestRenderState *rs, Platform *platform,
     rs->test_tex = rhi_texture_create(rs->device, &tdesc);
     if (!rhi_handle_valid(rs->test_tex)) { LOG_ERROR("FAIL: texture create"); return false; }
     LOG_INFO("PASS: Texture created + uploaded");
+
+    /* R600: u_camera_pos rides this block, not a uniform. Seeded so an early
+     * draw that forgets to publish still reads a sane camera. */
+    TvForwardTemporal seed = {0};
+    seed.cam_pos[2] = 5.0f;
+    for (u32 m = 0u; m < 4u; ++m) {
+        seed.prev_vp[m * 4u + 0u]    = (m == 0u)  ? 1.0f : 0.0f;
+        seed.prev_vp[m * 4u + 1u]    = (m == 5u)  ? 1.0f : 0.0f;
+        seed.prev_vp[m * 4u + 2u]    = (m == 10u) ? 1.0f : 0.0f;
+        seed.prev_vp[m * 4u + 3u]    = (m == 15u) ? 1.0f : 0.0f;
+        seed.prev_model[m * 4u + 0u] = (m == 0u)  ? 1.0f : 0.0f;
+        seed.prev_model[m * 4u + 1u] = (m == 5u)  ? 1.0f : 0.0f;
+        seed.prev_model[m * 4u + 2u] = (m == 10u) ? 1.0f : 0.0f;
+        seed.prev_model[m * 4u + 3u] = (m == 15u) ? 1.0f : 0.0f;
+    }
+    RHIBufferDesc tud = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                          .size = sizeof(seed), .initial_data = &seed };
+    rs->temporal_ubo = rhi_buffer_create(rs->device, &tud);
+    if (!rhi_handle_valid(rs->temporal_ubo)) { LOG_ERROR("FAIL: forward temporal UBO"); return false; }
 
     return true;
 }
@@ -824,6 +1202,7 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
 }
 
 static void test_render_shutdown(TestRenderState *rs) {
+    if (rhi_handle_valid(rs->temporal_ubo)) rhi_buffer_destroy(rs->device, rs->temporal_ubo);
     if (rhi_handle_valid(rs->test_tex))  rhi_texture_destroy(rs->device, rs->test_tex);
     if (rhi_handle_valid(rs->sampler))   rhi_sampler_destroy(rs->device, rs->sampler);
     if (rs->bind) rhi_pipeline_bindings_destroy(rs->device, rs->bind); /* T4 */
@@ -878,13 +1257,14 @@ static bool tv_test_motion_blur_rt1(const TestRenderState *rs,
     rhi_cmd_clear_color(cmd, 0.01f, 0.02f, 0.03f, 1.0f);
     rhi_cmd_clear_depth(cmd);
     rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+    tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &id.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &id.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &id.e[0][0]);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
-    rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+    tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
     rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
     rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
     rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -1187,13 +1567,14 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
             rhi_cmd_clear_color(cmd, 0.8f, 0.2f, 0.6f, 1.0f);
             rhi_cmd_clear_depth(cmd);
             rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &identity.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &identity.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &identity.e[0][0]);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -1852,13 +2233,14 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
              * pin). */
             rhi_cmd_clear_depth(cmd);
             rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &identity.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &identity.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &identity.e[0][0]);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -4008,6 +4390,7 @@ static bool tv_test_grouped_compact(const TestRenderState *rs,
         if (rhi_handle_valid(vbo) && rhi_handle_valid(ibo)) {
             Mat4 mid = mat4_identity();
             rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &mid.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &mid.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &mid.e[0][0]);
@@ -4085,8 +4468,17 @@ static bool tv_test_grouped_compact(const TestRenderState *rs,
 
 /* TEST 11 body: R441 material texture-array single-execute forward.
  * scr_w/scr_h: presentable size for the screenshot readback. */
-static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr_h) {
-    /* R441: end-to-end gate for the texture-array material-indirect path.
+static const u32 tv_matarr_layers_of_quad[4] = { 1u, 2u, 3u, 0u };
+
+static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr_h,
+                                   bool direct) {
+    /* R707b: direct = true replays the same scene with one
+     * rhi_cmd_draw_indexed_instanced_base per visible quad (first_instance =
+     * layer, quad 2 skipped on the CPU) instead of the indirect execute, so
+     * the same quadrant pixels prove a DIRECT draw's first_instance reaches
+     * gl_BaseInstanceARB.
+     *
+     * R441: end-to-end gate for the texture-array material-indirect path.
      * 4 quads (one per screen quadrant) draw through ONE indirect execute;
      * each cmd's first_instance carries the sampler2DArray layer:
      *   quad0 red 64x64 (upsampled to 128), quad1 green 128x128 native,
@@ -4188,13 +4580,12 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             /* Ungrouped bake-order upload; first_instance = array layer.
              * quad2 (blue) gets layer 3 but is culled by visibility. */
             DrawIndexedIndirectCmd acmds[4];
-            const u32 layers_of_quad[4] = { 1u, 2u, 3u, 0u };
             for (u32 k = 0; k < 4; k++) {
                 acmds[k].index_count    = 6;
                 acmds[k].instance_count = 1;
                 acmds[k].first_index    = k * 6u;
                 acmds[k].vertex_offset  = (i32)(k * 4u);
-                acmds[k].first_instance = layers_of_quad[k];
+                acmds[k].first_instance = tv_matarr_layers_of_quad[k];
             }
             ids_ok = indirect_draw_init(&ids, rs->device, 4);
             if (ids_ok) indirect_draw_upload(&ids, rs->device, acmds, 4);
@@ -4224,7 +4615,11 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
         i32 l_ldir  = rhi_pipeline_bindings_resolve(arr_bind, "u_light_dir");
         i32 l_lcol  = rhi_pipeline_bindings_resolve(arr_bind, "u_light_color");
         i32 l_amb   = rhi_pipeline_bindings_resolve(arr_bind, "u_ambient");
-        i32 l_cam   = rhi_pipeline_bindings_resolve(arr_bind, "u_camera_pos");
+        /* R600: u_camera_pos left this pipeline's push block for the
+         * ForwardTemporal block, so it resolves -1 here and the camera
+         * must be published through the UBO instead. Dropping the name
+         * rather than keeping a dead write is the point: a set_uniform
+         * against -1 is a silent no-op. */
         Mat4 idm = mat4_identity();
         const u32 vis[4] = { 1u, 1u, 0u, 1u }; /* blue quad culled */
 
@@ -4233,9 +4628,11 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
             if (!cmd) break;
             rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 1.0f);
-            indirect_draw_upload_visibility(&ids, rs->device, vis, 4);
-            indirect_draw_compact_no_barrier(&ids, rs->device, cmd);
-            rhi_cmd_memory_barrier(cmd);
+            if (!direct) {
+                indirect_draw_upload_visibility(&ids, rs->device, vis, 4);
+                indirect_draw_compact_no_barrier(&ids, rs->device, cmd);
+                rhi_cmd_memory_barrier(cmd);
+            }
             /* R234-A: rebind graphics pipeline after compact compute, and
              * only THEN set the push constants — a set before the compact
              * would be flushed (and consumed) by the compute dispatch. */
@@ -4246,14 +4643,28 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             rhi_cmd_set_uniform_vec3(cmd, l_ldir, 0.0f, 0.0f, -1.0f);
             rhi_cmd_set_uniform_vec3(cmd, l_lcol, 1.0f, 1.0f, 1.0f);
             rhi_cmd_set_uniform_vec3(cmd, l_amb, 0.35f, 0.35f, 0.35f);
-            rhi_cmd_set_uniform_vec3(cmd, l_cam, 0.0f, 0.0f, 5.0f);
+            /* R600: the camera the fragment shader reads now rides the
+             * ForwardTemporal block at binding 0, the same call every
+             * other blinn draw in this file makes. Without it the
+             * descriptor set the shader statically uses is never
+             * bound, which the VALIDATION GATE reports as VUID-08600. */
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_material_textures_ibl(cmd,
                 arr_tex, arr_tex, arr_tex, arr_tex, arr_tex, arr_tex, arr_tex,
                 rs->sampler,
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
             rhi_cmd_bind_vertex_buffer(cmd, arr_vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, arr_ibo, 0, true);
-            indirect_draw_execute(&ids, rs->device);
+            if (direct) {
+                for (u32 k = 0; k < 4; k++) {
+                    if (!vis[k]) continue;
+                    rhi_cmd_draw_indexed_instanced_base(cmd, 6u, 1u, k * 6u,
+                                                        (i32)(k * 4u),
+                                                        tv_matarr_layers_of_quad[k]);
+                }
+            } else {
+                indirect_draw_execute(&ids, rs->device);
+            }
             rhi_frame_end(rs->device);
             /* R577: capture after frame_end (image still acquired, its final
              * content submitted) and before present — the only spec-legal
@@ -4271,10 +4682,15 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
     }
 
     /* Readback: 4 quadrant samples (uv 0.25 / 0.75 per quad for the
-     * two-tone split). Non-flipped viewport on both backends. rhi_screenshot
-     * returns top-down rows on both (rhi.h), so the NDC->row mapping differs:
-     * Vulkan maps NDC +Y to the bottom row, GL to the top row, and the GL
-     * sample row is mirrored below. */
+     * two-tone split). rhi_screenshot returns top-down rows on every backend
+     * (R715 contract) and NDC +Y is the top of the presented image on every
+     * backend (R639: VK's swapchain viewport now flips, as GL's default
+     * framebuffer always did), so NDC y maps to row (1 - y) / 2 * h.
+     *
+     * The old (y + 1) / 2 * h was only right on Vulkan, and only because
+     * Vulkan's whole scene was upside down; on GL the same formula sampled
+     * the vertically opposite quadrant -- the long-standing "GL material
+     * array quadrants are vertically flipped" failure was this line. */
     bool pixels_ok = false;
     if (setup_ok && frames_ok == 3u) {
         u32 pw = scr_w, ph = scr_h;
@@ -4285,16 +4701,12 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             return false;
         }
         if (shot) {
-            /* quad k: NDC center (qcx,qcy) -> px = (x+1)/2*w, py = (y+1)/2*h */
+            /* quad k: NDC center (qcx,qcy) -> px = (x+1)/2*w, py = (1-y)/2*h */
             const f32 qcx[4] = { -0.5f, 0.5f, -0.5f, 0.5f };
             const f32 qcy[4] = {  0.5f, 0.5f, -0.5f, -0.5f };
             u8 rgb[4][2][3]; /* [quad][left/right sample][rgb] */
             for (u32 k = 0; k < 4; k++) {
-                u32 by = (u32)((qcy[k] + 1.0f) * 0.5f * (f32)ph);
-#ifndef ENGINE_VULKAN
-                if (by >= ph) by = ph - 1;
-                by = ph - 1u - by;
-#endif
+                u32 by = (u32)((1.0f - qcy[k]) * 0.5f * (f32)ph);
                 /* uv 0.25 / 0.75 within the 0.9-NDC-wide quad. */
                 u32 xl = (u32)((qcx[k] - 0.45f * 0.5f + 1.0f) * 0.5f * (f32)pw);
                 u32 xr = (u32)((qcx[k] + 0.45f * 0.5f + 1.0f) * 0.5f * (f32)pw);
@@ -4338,13 +4750,17 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
         }
     }
 
-    bool exec_ok = (frames_ok == 3u) && (exec_count == frames_ok);
+    const u32 want_exec = direct ? 0u : frames_ok;
+    bool exec_ok = (frames_ok == 3u) && (exec_count == want_exec);
     if (!exec_ok)
-        LOG_ERROR("FAIL: execute draws=%u over %u frames, want exactly 1/frame",
-                  exec_count, frames_ok);
+        LOG_ERROR("FAIL: execute draws=%u over %u frames, want %u",
+                  exec_count, frames_ok, want_exec);
 
     bool matarr_pass = setup_ok && pixels_ok && exec_ok;
-    if (matarr_pass)
+    if (matarr_pass && direct)
+        LOG_INFO("PASS: material-array DIRECT draws (first_instance = layer via "
+                 "rhi_cmd_draw_indexed_instanced_base, quadrant pixels verified)");
+    else if (matarr_pass)
         LOG_INFO("PASS: material-array single execute (4 layers incl. fallback, "
                  "1 execute/frame, quadrant pixels + two-tone upsample verified)");
 
@@ -6162,7 +6578,7 @@ int main(int argc, char **argv) {
                                      1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(startup_cmd, render.loc_ambient,
                                      0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(startup_cmd, render.loc_camera_pos,
+            tv_bind_forward_temporal(startup_cmd, &render,
                                      startup_camera.position.e[0],
                                      startup_camera.position.e[1],
                                      startup_camera.position.e[2]);
@@ -6376,9 +6792,16 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
         LOG_INFO("============================================");
         LOG_INFO("TEST 11: MATERIAL ARRAY SINGLE-EXECUTE DRAW");
         LOG_INFO("============================================");
-        bool matarr_pass = tv_test_material_array(&render, gw, gh);
+        bool matarr_pass = tv_test_material_array(&render, gw, gh, false);
         LOG_INFO("RESULT: MATERIAL ARRAY SINGLE-EXECUTE TEST %s",
                  matarr_pass ? "PASSED ✓" : "FAILED");
+
+        LOG_INFO("============================================");
+        LOG_INFO("TEST 11b: DIRECT DRAW FIRST_INSTANCE (R707b)");
+        LOG_INFO("============================================");
+        bool dfi_pass = tv_test_material_array(&render, gw, gh, true);
+        LOG_INFO("RESULT: DIRECT DRAW FIRST_INSTANCE TEST %s",
+                 dfi_pass ? "PASSED ✓" : "FAILED");
 
         LOG_INFO("============================================");
         LOG_INFO("TEST 12: DEFERRED GBUFFER ARRAY SINGLE-EXECUTE");
@@ -6415,9 +6838,17 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
         LOG_INFO("RESULT: DEFERRED GBUFFER NORMAL MAP TEST %s",
                  nmap_pass ? "PASSED ✓" : "FAILED");
 
+        LOG_INFO("============================================");
+        LOG_INFO("TEST: UI OFFSCREEN CANVAS + COMPOSITE ORIENTATION");
+        LOG_INFO("============================================");
+        u32 w = 0, h = 0;
+        platform_get_drawable_size(engine.platform, &w, &h);
+        bool ui_orient_pass = tv_test_ui_composite_orientation(&render, w, h);
+        LOG_INFO("RESULT: UI ORIENTATION TEST %s", ui_orient_pass ? "PASSED ✓" : "FAILED");
+
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass;
+        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass && ui_orient_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -6476,13 +6907,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
             Mat4 id = mat4_identity();
             rhi_offscreen_fbo_bind(cmd, &fbo);
             rhi_cmd_bind_pipeline(cmd, render.pipeline);
+            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &id.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &id.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &id.e[0][0]);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
+            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -6490,13 +6922,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
             rhi_offscreen_fbo_unbind(cmd, 800, 600);
             rhi_cmd_bind_pipeline(cmd, render.pipeline);
+            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &id.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &id.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &id.e[0][0]);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
+            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_draw_indexed(cmd, 3, 1);
@@ -6526,6 +6959,23 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     LOG_INFO("============================================");
     bool msaa_pass = tv_test_msaa_offscreen(&render, vbo, ibo);
     LOG_INFO("RESULT: VULKAN 2x MSAA TEST %s", msaa_pass ? "PASSED ✓" : "FAILED");
+
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: UI OFFSCREEN CANVAS + COMPOSITE ORIENTATION");
+    LOG_INFO("============================================");
+    platform_get_drawable_size(engine.platform, &w, &h);
+    bool ui_orient_pass = tv_test_ui_composite_orientation(&render, w, h);
+    LOG_INFO("RESULT: UI ORIENTATION TEST %s", ui_orient_pass ? "PASSED ✓" : "FAILED");
+
+    bool fs6_pass = true;
+#ifdef ENGINE_VULKAN
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: FS6 RESIZE-PATH SYNC (deferred destroy, batched layout, swapchain)");
+    LOG_INFO("============================================");
+    platform_get_drawable_size(engine.platform, &w, &h);
+    fs6_pass = tv_test_fs6_resize_sync(render.device, w, h);
+    LOG_INFO("RESULT: FS6 RESIZE-PATH SYNC TEST %s", fs6_pass ? "PASSED ✓" : "FAILED");
+#endif
 
     LOG_INFO("============================================");
     LOG_INFO("Stress test: 500 frames, texture bind, multi-draw");
@@ -6561,13 +7011,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                        (RHITexture){0,0}, NULL, 0.0f, -1.0f, 0.0f, 0.0f);
 
         rhi_cmd_bind_pipeline(cmd, render.pipeline);
+        tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
         rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &view.e[0][0]);
         rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &proj.e[0][0]);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-        rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
-                                 camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+        tv_bind_forward_temporal(cmd, &render, camera.position.e[0],
+                                 camera.position.e[1], camera.position.e[2]);
 
         Mat4 model = mat4_identity();
         rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &model.e[0][0]);
@@ -6593,13 +7044,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
             Mat4 pipeline_inv_proj = mat4_inv_perspective(proj);
             skybox_render(&skybox, cmd, &view.e[0][0], &pipeline_inv_proj.e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
             rhi_cmd_bind_pipeline(cmd, render.pipeline);
+            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &view.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &proj.e[0][0]);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
-                                     camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+            tv_bind_forward_temporal(cmd, &render, camera.position.e[0],
+                                     camera.position.e[1], camera.position.e[2]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &model.e[0][0]);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -6658,13 +7110,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
         skybox_render(&skybox, cmd, &view.e[0][0], &inv_proj.e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
 
         rhi_cmd_bind_pipeline(cmd, render.pipeline);
+        tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
         rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &view.e[0][0]);
         rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &proj.e[0][0]);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-        rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
-                                 camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+        tv_bind_forward_temporal(cmd, &render, camera.position.e[0],
+                                 camera.position.e[1], camera.position.e[2]);
 
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -6967,13 +7420,13 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                 /* Produce some HDR content in the source FBO. */
                 rhi_offscreen_fbo_bind(cmd, &src);
                 rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
                 rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &id.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &id.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &id.e[0][0]);
                 rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
                 rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
                 rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-                rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
                 rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
                 rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
                 rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -7156,6 +7609,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                 if (rhi_handle_valid(vbo) && rhi_handle_valid(ibo)) {
                     Mat4 mid = mat4_identity();
                     rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                    tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &mid.e[0][0]);
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &mid.e[0][0]);
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &mid.e[0][0]);
@@ -7228,6 +7682,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                         if (rhi_handle_valid(vbo) && rhi_handle_valid(ibo)) {
                             Mat4 mid = mat4_identity();
                             rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
                             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &mid.e[0][0]);
                             rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &mid.e[0][0]);
                             rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &mid.e[0][0]);
@@ -7242,6 +7697,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                         rhi_frame_end(render.device);
                         rhi_present(render.device);
                     }
+                    (void)rhi_device_idle_ex(render.device); /* see below */
                     if (gpucull_read_vis_flags(&uc, 2, flags))
                         fallback_ok = (flags[0] == 1u && flags[1] == 1u);
                     if (!fallback_ok)
@@ -7256,13 +7712,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                         if (!cmd) break;
                         rhi_offscreen_fbo_bind(cmd, &hz_fbo);
                         rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                        tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
                         rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &quad.e[0][0]);
                         rhi_cmd_set_uniform_mat4(cmd, render.loc_view,  &vp_id.e[0][0]);
                         rhi_cmd_set_uniform_mat4(cmd, render.loc_proj,  &vp_id.e[0][0]);
                         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
                         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
                         rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-                        rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
+                        tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
                         rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
                         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
                         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -7284,6 +7741,16 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                         rhi_frame_end(render.device);
                         rhi_present(render.device);
                     }
+                    /* R639: gpucull_read_vis_flags maps the staging slot for
+                     * rhi_frame_index, and is only race-free where the demo
+                     * calls it -- inside a frame, after rhi_frame_begin has
+                     * waited that slot's fence. Here it runs straight after
+                     * rhi_present with no frame_begin in between, so the copy
+                     * into that slot can still be in flight: the read then
+                     * sees the previous contents. That was the intermittent
+                     * "Hi-Z vis flags {0,0}" failure (4/8 runs; 0/10 with
+                     * this wait). Both phases wait the GPU out first. */
+                    (void)rhi_device_idle_ex(render.device);
                     if (gpucull_read_vis_flags(&uc, 2, flags))
                         real_ok = (flags[0] == 1u && flags[1] == 0u);
                     if (!real_ok)
@@ -7297,15 +7764,61 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                         LOG_ERROR("FAIL: Hi-Z dispatches=%u, want %u (segmented chain)",
                                   hiz_dispatches, want_dispatches);
 
-                    hiz_occ_ok = fallback_ok && real_ok && count_ok;
+                    /* Runtime resize phase (fullscreen toggle): recreate the
+                     * pyramid at another size and keep generating it. The
+                     * storage-image set used to be bound once per pipeline
+                     * and then updated, so on NVIDIA units 1..3 kept the
+                     * descriptors the same pool memory held last frame --
+                     * views of the destroyed pyramid. Writing through them
+                     * lost the device on the next frame (every demo
+                     * window/fullscreen switch). */
+                    bool resize_ok = false;
+                    /* Grow first (demo-sized pyramid, then back): the device
+                     * fault needs the destroyed pyramid's memory to really
+                     * go away, which small allocations may not do. */
+                    occlusion_cull_resize(&occ, 640u, 360u);
+                    occlusion_cull_resize(&occ, 660u, 340u);  /* -> 330x170 Hi-Z, 9 levels */
+                    if (occ.enabled && occ.hi_z_width == 330u && occ.hi_z_height == 170u) {
+                        for (u32 f = 0; f < 4; f++) {
+                            RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+                            if (!cmd) break;
+                            rhi_offscreen_fbo_bind(cmd, &hz_fbo);
+                            rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
+                            rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &quad.e[0][0]);
+                            rhi_cmd_set_uniform_mat4(cmd, render.loc_view,  &vp_id.e[0][0]);
+                            rhi_cmd_set_uniform_mat4(cmd, render.loc_proj,  &vp_id.e[0][0]);
+                            rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
+                            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+                            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+                            rhi_cmd_draw_indexed(cmd, 3, 1);
+                            rhi_offscreen_fbo_unbind(cmd, HW, HH);
+                            occlusion_cull_generate_hi_z(&occ, cmd, hz_fbo.depth_tex);
+                            gpucull_dispatch_unified(&uc, cmd, &vp_id.e[0][0], NULL,
+                                                     occ.hi_z_texture,
+                                                     occ.hi_z_width, occ.hi_z_height,
+                                                     RHI_HANDLE_NULL, true, true);
+                            rhi_frame_end(render.device);
+                            rhi_present(render.device);
+                        }
+                        if (rhi_device_idle_ex(render.device) == RHI_RESULT_OK) {
+                            flags[0] = flags[1] = 0xFFFFFFFFu;
+                            if (gpucull_read_vis_flags(&uc, 2, flags))
+                                resize_ok = (flags[0] == 1u && flags[1] == 0u);
+                        }
+                    }
+                    if (!resize_ok)
+                        LOG_ERROR("FAIL: Hi-Z after runtime resize (device lost or flags {%u,%u}, want {1,0})",
+                                  flags[0], flags[1]);
+
+                    hiz_occ_ok = fallback_ok && real_ok && count_ok && resize_ok;
                     tv_probe_device(render.device, "TEST 9 Hi-Z phases");
                 } else {
                     LOG_ERROR("FAIL: Hi-Z occlusion setup (occ=%d fbo=%d)",
                               (int)occ_ok, (int)rhi_handle_valid(hz_fbo.depth_tex));
                 }
                 if (hiz_occ_ok) {
-                    LOG_INFO("PASS: Hi-Z occlusion (fallback {1,1}, pyramid {1,0}, dispatches=%u)",
-                             count_ok ? (occ.hi_z_levels + 3u) / 4u : 0u);
+                    LOG_INFO("PASS: Hi-Z occlusion (fallback {1,1}, pyramid {1,0}, resize {1,0})");
                 }
                 rhi_offscreen_fbo_destroy(render.device, &hz_fbo);
                 if (occ_ok) occlusion_cull_shutdown(&occ);
@@ -7351,12 +7864,23 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
      * the GL build runs it in its own early-exit branch above. */
     u32 tw = 0, th = 0;
     platform_get_drawable_size(engine.platform, &tw, &th);
-    bool matarr_pass = tv_test_material_array(&render, tw, th);
+    bool matarr_pass = tv_test_material_array(&render, tw, th, false);
 
     if (matarr_pass) {
         LOG_INFO("RESULT: MATERIAL ARRAY SINGLE-EXECUTE TEST PASSED ✓");
     } else {
         LOG_ERROR("RESULT: MATERIAL ARRAY SINGLE-EXECUTE TEST FAILED");
+    }
+
+    /* ---- TEST 11b: R707b direct-draw first_instance ---- */
+    LOG_INFO("============================================");
+    LOG_INFO("TEST 11b: DIRECT DRAW FIRST_INSTANCE (R707b)");
+    LOG_INFO("============================================");
+    bool dfi_pass = tv_test_material_array(&render, tw, th, true);
+    if (dfi_pass) {
+        LOG_INFO("RESULT: DIRECT DRAW FIRST_INSTANCE TEST PASSED ✓");
+    } else {
+        LOG_ERROR("RESULT: DIRECT DRAW FIRST_INSTANCE TEST FAILED");
     }
 
     /* ---- TEST 12: R442 deferred G-buffer material-array single execute ---- */
@@ -7436,9 +7960,9 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 #endif
 
     bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
-msaa_pass &&
+msaa_pass && ui_orient_pass && fs6_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
-idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass && bindings_parity_pass &&
+idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass && bindings_parity_pass &&
 validation_pass;
 
     LOG_INFO("============================================");

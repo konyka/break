@@ -57,6 +57,7 @@ typedef struct RHIApi {
     void (*rhi_cmd_draw_indexed_base)(RHICmdBuffer *cmd, u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset);
     void (*rhi_cmd_draw_indexed_indirect)(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 draw_count, u32 stride);
     void (*rhi_cmd_draw_indexed_indirect_count)(RHIDevice *dev, RHIBuffer cmd_buf, u32 cmd_offset, RHIBuffer count_buf, u32 count_offset, u32 max_draws, u32 stride);
+    void (*rhi_cmd_draw_indexed_instanced_base)(RHICmdBuffer *cmd, u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset, u32 first_instance);
     void (*rhi_cmd_draw_indirect)(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 draw_count, u32 stride);
     void (*rhi_cmd_end_render_pass)(RHICmdBuffer *cmd);
     void (*rhi_cmd_fill_buffer)(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value);
@@ -127,6 +128,8 @@ typedef struct RHIApi {
     void (*rhi_set_vsync)(RHIDevice *dev, bool enabled);
     RHIShader (*rhi_shader_create)(RHIDevice *dev, const char *source, usize len, bool is_fragment);
     RHIShader (*rhi_shader_create_compute)(RHIDevice *dev, const char *source, usize len);
+    RHIShader (*rhi_shader_create_compute_path)(RHIDevice *dev, const char *path);
+    RHIShader (*rhi_shader_create_path)(RHIDevice *dev, const char *path, bool is_fragment);
     void (*rhi_shader_destroy)(RHIDevice *dev, RHIShader shader);
     RHIShadowMap (*rhi_shadow_map_create)(RHIDevice *dev, u32 width, u32 height);
     void (*rhi_shadow_map_destroy)(RHIDevice *dev, RHIShadowMap *sm);

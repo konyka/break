@@ -1,4 +1,5 @@
 #include "sss.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -7,20 +8,27 @@
 #include <core/shader_io.h>
 
 
-static RHIPipeline sss_create_pipe(RHIDevice *dev,
+static RHIPipeline sss_create_pipe(RHIDevice *dev, bool sidecar,
                                     const char *vert_path, const char *frag_path) {
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vert_path, &vs_len);
-    char *fs_src = shader_read_file(frag_path, &fs_len);
-    if (!vs_src || !fs_src) {
-        LOG_WARN("SSS: shaders not found (%s)", frag_path);
+    RHIShader vs, fs;
+    if (sidecar) {
+        /* D3D12 never compiles source in-process: the GLSL path resolves to
+         * the precompiled <name>_hlsl sidecar instead. */
+        vs = rhi_shader_create_path(dev, vert_path, false);
+        fs = rhi_shader_create_path(dev, frag_path, true);
+    } else {
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vert_path, &vs_len);
+        char *fs_src = shader_read_file(frag_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            LOG_WARN("SSS: shaders not found (%s)", frag_path);
+            free(vs_src); free(fs_src);
+            return RHI_HANDLE_NULL;
+        }
+        vs = rhi_shader_create(dev, vs_src, vs_len, false);
+        fs = rhi_shader_create(dev, fs_src, fs_len, true);
         free(vs_src); free(fs_src);
-        return RHI_HANDLE_NULL;
     }
-
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
-    free(vs_src); free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_WARN("SSS: shader compile failed");
@@ -42,6 +50,14 @@ static RHIPipeline sss_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool sss_targets_create(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[2] = {
+        { &s->fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+        { &s->blur_fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 2u);
+}
+
 bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s || !dev) return false;
     memset(s, 0, sizeof(*s));
@@ -57,8 +73,8 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
         LOG_WARN("SSS: capability query or shader variant path failed");
         return false;
     }
-    s->h_pipe = sss_create_pipe(dev, vs_path, h_path);
-    s->v_pipe = sss_create_pipe(dev, vs_path, v_path);
+    s->h_pipe = sss_create_pipe(dev, caps.shader_sidecar_paths, vs_path, h_path);
+    s->v_pipe = sss_create_pipe(dev, caps.shader_sidecar_paths, vs_path, v_path);
 
     if (!rhi_handle_valid(s->h_pipe) || !rhi_handle_valid(s->v_pipe)) {
         LOG_WARN("SSS: pipeline creation failed");
@@ -74,8 +90,7 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s->bind_h || !s->bind_v)
         LOG_WARN("SSS: bindings create failed; uniform locations resolve -1");
 
-    s->fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
-    s->blur_fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)sss_targets_create(s, dev, w, h);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -106,6 +121,15 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
     s->ready = true;
     LOG_INFO("SSS: initialized (%ux%u)", w, h);
+    return true;
+}
+
+bool sss_resize(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!sss_targets_create(s, dev, w, h)) {
+        LOG_WARN("SSS: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

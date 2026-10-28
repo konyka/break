@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：本地 master 与 origin/master 合流（2026-10-28）
+
+- **背景**：本地 master（runtime 扩展、Stage 3–5、scene editor、shader 热加载、I18N 等，约 164 个提交）与 origin/master（Windows MSVC/MinGW lane、Metal/iOS、QNX、R639 Vulkan 视口翻转、R646 UNORM swapchain、meshoptimizer C 移植等，约 269 个提交）自 `8fbc3779` 起分叉，以普通 merge 合流，未改写任何一侧历史。
+- **文本冲突（8 个文件）**：`README.md`、`docs/Architecture_Overview.md`、`docs/Build_Guide.md`、本文件取两侧事实并集，OpenGL 措辞按 2026-10-26 维护者决定统一为“长期保留：最后降级方案 + 渲染对比基准”，不保留 “DEPRECATED / v2.0.0 移除 / 兼容期”；`locked_dependencies.json` 与 `test_locked_dependencies.cmake` 同时保留 `snowflake` 与 `meshoptimizer-c-port`；`test_vulkan.c` TEST 11 取上游统一的 NDC→行公式（R639 后两后端同向，本地的 GL 镜像分支不再需要）；`rhi_stubs.c` 同时保留上游的 path 形式 stub 与本地 editor fake 的 `rhi_shader_destroy`。
+- **语义冲突（无文本冲突但合并后失败，已修）**：① 多后端构建（本地独有的生成式 dispatch 层）缺上游新增的 3 个公共 RHI 函数 `rhi_shader_create_path`、`rhi_shader_create_compute_path`、`rhi_cmd_draw_indexed_instanced_base`，链接时 GL/VK 重复定义；已加入 `rhi_backend_api.txt` 并用 `engine/tools/gen_rhi_dispatch.py` 重新生成。② `test_rhi_golden_parity` 原模型为 VK ≈ sRGB(vflip(GL))；上游 R639/R646 后两后端输出同向且都不做 sRGB 编码，改为直接比较（实测 MAE 0.33 / 0.64，max 1）；人为镜像 GL golden 仍使测试失败。
+- **合并暴露的上游回归（已修，TDD）**：R639 把 Vulkan 交换链视口翻转后，`rhi_cmd_set_viewport` 在离屏目标上仍用负高度，myui 画布表面（`myui_break.c` 先画到离屏 `surface_fbo` 再合成到交换链）被存成上下颠倒，以前靠未翻转的交换链视口“抵消”，R639 后 editor 与 `dxx_break` 在 Vulkan 上整屏 UI 倒置（上游 origin/master 自身同样存在，live 截图与 GL 对比：垂直翻转后差异从 30.6 万像素降到 2.5 万）。修复：`rhi_vk.c` 的 `rhi_cmd_set_viewport` 跟随目标约定——交换链负高度、离屏正高度（与 GL `glViewport`、VK/D3D12 离屏默认一致）。新增 `test_vulkan` 门 “UI OFFSCREEN CANVAS + COMPOSITE ORIENTATION”（离屏 + `rhi_cmd_set_viewport` 画 NDC y>0 的四边形，再用 `post.vert`/`post_tex.frag` 合成到交换链，截图上半必须为绿）：修复前 Vulkan 红（top=0 / bottom=255），GL 绿；修复后两后端皆绿，`test_vulkan` Vulkan 全通过（含 VALIDATION GATE）。D3D12/Metal 未改、未运行。
+- **验证**（Fedora / NVK Vulkan / Mesa OpenGL，本机亲跑）：全量非图形 ctest OpenGL 220/220、Vulkan 221/221、Snowflake 224/224、多后端 221/221（各含 1 个 Windows-only skip）；图形标签 OpenGL 4/4、Vulkan 5/5、多后端 7/7（含 `test_vulkan` 两后端全通过），`test_platform_x11_runtime` 除外——它是上游新增的全屏/窗口模式用例，在本机 GNOME Xwayland 上纯 origin/master 同样间歇失败（3 次分别 5/1/5 项失败），非合并引入，未修；ASan/TSan 下 `test_editor_shell` 各 3 次 105/105、`test_break_net_adapter`、`test_editor_i18n` 零报告；真实 editor（多后端构建，Vulkan zh-CN / OpenGL en-US，运行时切换语言）截图正立、矢量字体，两后端差异仅在动态文本区。未运行：Windows（MSVC/MinGW lane）、macOS/Metal、iOS、QNX、D3D12、CI。
+
 ## 本轮更新：Stage 4 Scene Editor — 乱码修复与 I18N（2026-10-27）
 
 - **根因**：`editor_main.c` 写死 Debian 字体路径，Fedora 等发行版找不到字体，myui 静默退回 8×8 ASCII 位图字体，所有中文与非 ASCII 字符显示为乱码；另 `engine/src/rhi/rhi.h` 约 30 行注释被 GBK 误读后存回。
@@ -305,6 +313,2800 @@
 - **真实配置与构建**：`engine/build-break-net-final/` 使用 `-DENGINE_BUILD_TESTS=ON -DBREAK_ENABLE_SNOWFLAKE=ON -DSNOWFLAKE_SOURCE_DIR=/home/timeshift/opensource/snowflake` 配置，完整 `cmake --build ... -j2` 成功；Snowflake source path 为 `/home/timeshift/opensource/snowflake`，适配器源位于 `engine/src/network/break_net_{adapter,message,protocol}.{h,c}`。
 - **测试结果**：normal、ASan、TSan 的 `test_break_net_adapter` focused CTest 均 **1/1**，测试程序内部均 **30/30**，无 sanitizer 报告；该测试使用 Snowflake `snow_tcp_client_t` loopback，覆盖 18-byte AUTH 入站、真实 message event、PING 完整 envelope 回包、client close、close notification、identity cleanup 与 bounded stop cleanup。
 - **Adapter Task 3-6 当前事实**：已通过 borrowed opaque acceptor setter 接入真实 `snow_net_thread_add_acceptor_with_handlers`，注册 parser/open/packet/send-drained/close callbacks；parser 执行 envelope decode/context 校验并消费 network buffer，malformed packet callback 会释放 recv context。outbound queue 已安全转换为 `snow_send_context_t` 并调用 `snow_net_thread_send`；identity 通过 pending send 引用和 send-drained/close 顺序保护 recv context 生命周期。adapter wire loopback 现已验证真实 AUTH 入站、message event 字段/payload、PING 出站完整 envelope、client-close notification、identity cleanup 与 stop cleanup；Session、ECS/World、Lua、editor/UI/RHI、online update 或 security 集成仍未实现。`break_net_reactor_stop` 现按 `host_exited` deadline wait 提供真实 bounded stop；超时保留 STOPPING/live resources，后续 stop 可完成，确认退出后才 join/destroy。Snowflake per-context completion/drop notification 仍较粗粒度；Windows/macOS/iOS/Android/Steam Deck 等非 Linux lane 未在本机验证。
+## 本轮更新：CI 新增 MSVC 与 MinGW 两条 headless lane
+
+- **新增**：`lane-headless-windows-msvc` 和 `lane-headless-windows-mingw`，都在 `windows-latest` 上，Debug，`-LE graphics`，先显式构建 5 个 fuzz 目标（它们是 `EXCLUDE_FROM_ALL`，不构建就是 Not Run）。和 Clang lane 一样先拉 Agility SDK、把 Windows SDK 的 `dxc` 加进 PATH（`test_rhi_backend_selection` 的 d3d12 子配置需要）。收据 artifact 为 `evidence-receipt-headless-windows-msvc` / `-mingw`，等级 HEADLESS，失败时降为 UNAVAILABLE，与其他 lane 一致。
+- **MSVC**：用 `ilammy/msvc-dev-cmd@v1` 载入 x64 环境（默认 PATH 上没有 `cl`），Configure/Build 保持默认 shell——该 action 的文档说明 `shell: bash` 会把 `/usr/bin` 放在前面，让 GNU `link` 遮住 MSVC 的 `link.exe`。测试步骤才用 bash。
+- **MinGW**：用镜像自带的 MinGW-w64 gcc。先有一步检查 `gcc -dumpmachine` 含 `mingw` 并打印路径与版本，找不到或目标不是 MinGW 就失败，而不是悄悄换成别的 gcc。
+- **本机已核对**：YAML 能解析（22 个 job，两条新 lane 各 10 个 step）；收据命令在本机原样跑通并通过 schema 校验；MSVC 树 `-LE graphics` 选中 186 项且含 fuzz 冒烟。`test_ci_lane_separation` 只检查 macOS/iOS 的 lane，不受影响。
+- **首轮 CI 结果（`21f1ef21`）**：MinGW lane 成功。镜像里的 gcc 是 `C:\mingw64\bin\gcc.exe`，`-dumpmachine` 为 `x86_64-w64-mingw32`，版本 15.2.0（MinGW-Builds），构建 0 警告，测试通过——比本机 GCC 16.2 旧但没有暴露新诊断。MSVC lane 失败在 Build 步骤：镜像上是 Visual Studio 18 Enterprise 的 MSVC 14.51.36231，`main.c:5297` 报 C4456（`ground` 遮蔽上面第 5124 行的同名局部变量）。这是 `7b4365dc`（相机抬高）刚合入的代码，Clang/GCC 不报这条，MSVC 的 `/W4 /WX` 拒绝。本机先在合并后的代码上复现（`engine_demo` 单独构建 C2220+C4456），把内层变量改名 `ground_y` 后 MSVC 全量构建 0 诊断、Clang 构建通过。也就是说新 lane 第一次运行就抓到了一个其他 lane 都看不见的回归。
+- **修复后的 CI 结果（`939a1b21`）**：两条 lane 都成功。MSVC 14.51.36231 构建 44 秒、fuzz 目标 3 秒、测试 67 秒，总计约 2.5 分钟；MinGW 构建 57 秒、测试 62 秒，总计约 2.5 分钟。MSVC 日志里的 4 条 `D9025 overriding /W4 with /w` 是第三方源码目标故意 `/w` 关警告产生的命令行提示，不是代码诊断；没有 `warning C` 或 `error C`。MinGW 日志无任何 warning。
+- **没有验证**：ctest 的输出被重定向到文件、只在失败时才打印，所以 CI 日志里看不到通过的测试数量，这里只能确认测试步骤退出码为 0，不写具体数字；是否 186 项与本机一致没有从 CI 证实。镜像是 Visual Studio 18 Enterprise（MSVC 14.51）而不是我之前根据文档推测的 VS 2022——版本说明以实际日志为准。另外 `ilammy/msvc-dev-cmd@v1` 在日志里提示 Node.js 20 将弃用（目前被强制跑在 Node 24），以后可能需要升级该 action。
+
+## 本轮更新：MSVC 与 MinGW 工具链在本机首次完整构建，修复 20 余处只在这两个编译器下出现的错误
+
+当时 CI 只有 Clang（Windows）和 GCC/Clang（Linux），没有 MSVC 和 MinGW 的 lane，所以这两个工具链上的构建错误一直没人发现。本机有 Visual Studio 2026（cl 19.51.36260）和 MSYS2 UCRT64（GCC 16.2），按 `docs/Build_Guide.md` 的命令各构建了一遍，两边都在编译阶段失败。以下都是编译器真实报出的诊断，没有为了过编译放宽 `/WX` 或 `-Werror`。
+
+### MSVC（`/W4 /WX`，10 个文件）
+- `my_widget_class.c`：C4090，`memcpy` 在 const 指针数组之间拷贝（5 处）。改成逐元素拷贝的 `class_ptrs_copy`，语义不变。
+- `my_button.c / my_node.c / my_node_view.c / my_rich_label.c / my_scroll_view.c`：C4132，`static const` vtable 先声明（无初始化）再定义。改成先声明一个返回 vtable 指针的访问函数，定义后再实现它；用上面的 `/W4 /WX` 最小样例确认旧写法失败、新写法通过。
+- `my_chart.c`：C4456，内层 `size_t index` 遮蔽外层同名变量（2 处），改为复用外层变量；外层变量因此需要初始化为 `CHART_HOVER_NONE`（MSVC 的 C4701 指出了未初始化的路径，原来被遮蔽掩盖）。
+- `my_echart_option_json.c` / `my_ui_loader.c`：C4701，局部变量 `dl`、`yaml_len` 可能未初始化，给初值 0。
+- `test_platform_text.c`：C4310，`(char)0xE4` 常量截断，改成字符串字面量的 `\x` 转义，字节完全相同。
+
+### MinGW（GCC 16.2，`-Wall -Wextra -Werror -pedantic`，11 处）
+- `GetProcAddress` / `wglGetProcAddress` 的结果直接强转成函数指针（`-Wcast-function-type`，`gamepad_win.c`、`window_win32.c` 6 处、`my_gl_desktop.c`、`rhi_gl.c` 2 处）。经 `void *` 中转会被 `-Wpedantic` 拒绝，所以新增 `platform/win_proc.h` 的 `WIN_PROC_LOAD`（memcpy），与 `platform_vk_surface.c` 对 Vulkan 加载器的做法一致。MSVC 19.51、GCC、Clang 都编过这个宏。
+- `net_loop_iocp.c:196`：`(size_t)new_cap > (size_t)-1 / sizeof(*slots)` 在 64 位下恒假（`-Wtype-limits`）。先算出上限再比较，32 位 `size_t` 下检查仍然有效。
+- `test_platform_win32_runtime.c`：`PlatformConfig` 新增字段后位置初始化缺字段（`-Wmissing-field-initializers`，26 处）。该目标本来就只对 Clang 关掉这条警告，扩到 GNU。
+- `verify_pak.c`：Windows 分支的 `snprintf` 没检查截断（`-Wformat-truncation`），POSIX 分支早就检查了，Windows 分支对齐：截断时报错并继续。
+
+### 验证
+- MSVC 19.51.36260 全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟，先显式构建这些目标）`186/186`。MinGW GCC 16.2 同样 0 警告、`186/186`。过程中 `test_no_hidden_gl_fallback` 拦住了我新加头文件里注释写的 `WGL` 字样（该契约禁止未列入白名单的文件出现 GL 相关记号），已改掉注释而不是加白名单。
+- 这些修复碰到了所有配置共用的文件（`rhi_gl.c`、`window_win32.c`、`my_widget_class.c` 等），所以在 Clang 四棵树上重新回归：GL `189/189`、Vulkan（含验证层）`192/192`、D3D12 Debug `197/197`、ASan（`-LE graphics`）`186/186`，四棵树 0 条编译与链接警告。这一轮剪贴板可用，所以 `test_platform_win32_runtime` 的剪贴板用例也通过。
+- 未覆盖：MSVC / MinGW 的图形测试（只跑了 `-LE graphics`）。随后新增了 `lane-headless-windows-msvc` 和 `lane-headless-windows-mingw`（见下一节），后续新增代码不再只能靠手动重跑发现。
+
+## 本轮更新：Windows 同步 `dba245c2`（iOS 主机 + macOS 文档）后复核，并修复 Linux 链接失败
+
+- **更正**：上一版这一节写的是「无需修复」，结论错了。`6a755113`、`dba245c2` 以及我推上去的文档提交 `094ddf35` 在 Linux CI 上都失败（10 个 job 的 Build/Configure 步骤）：`window_mobile.c` 在 iOS 主机改动里新增了 `ceil()`（算逻辑尺寸），而 4 个 `test_platform_mobile_layer_{ios,android,harmonyos,qnx}` 直接编译这个文件、没有链接 libm，glibc 的 `ceil` 在 libm 里，所以报 `undefined reference to 'ceil'`。Windows 的 CRT 自带 `ceil`，macOS 的 libSystem 也包含，所以 Windows 本机和 macOS 的全量测试都不会暴露它，我当时只看了本机结果就下了结论。
+- **修复**：`test_platform_mobile_layer_*` 补 `target_link_libraries(... m)`（`test_engine_mobile_host` 本来就链了 m）。`test_rhi_backend_internal_contract` 新增一条检查：凡是直接编译 `window_mobile.c` 的可执行文件，其 `target_link_libraries` 必须带 `m`；补库之前该检查在本机失败（指向 `test_platform_mobile_layer_${_mobile_lower}`），补完通过。这是读 CMake 文本的检查，所以在 Windows 上也能提前发现这类只有 Linux 才暴露的缺库。
+- 同步了远程 7 个提交（iOS UIKit 主机、模拟器渲染、Metal 着色器 SDK 隔离、macOS 窗口模式文档）。对 Windows 有影响的只有：`EngineConfig` 新增 `native_window` / `native_display` / `native_content_scale` / `host`，`window_win32.c` 补了桌面用的 `platform_mobile_resize` 空实现，`audio.c` 的 iOS 模拟器分支，以及全平台构建的新测试 `test_engine_mobile_host`。
+- 在合并后的代码上重新配置并构建 GL、Vulkan、D3D12 Debug、ASan 四棵树（Clang 22.1.6 + Ninja）：0 条编译与链接警告。补 `-lm` 之前的一轮全量 ctest 为 GL 189/189、Vulkan（含验证层）192/192、D3D12 Debug 197/197、ASan（`-LE graphics`）186/186，每棵比上一轮多的 1 项就是 `test_engine_mobile_host`；补 `-lm` 之后又完整重跑一轮：四棵树各只有 `test_platform_win32_runtime` 的剪贴板用例失败（GL 188/189、Vulkan 191/192、D3D12 196/197、ASan 185/186），其余全部通过。失败原因是这次本机剪贴板被占用：6 次探测都是 `ERROR_ACCESS_DENIED`，当时的剪贴板打开窗口属于 WindowsTerminal，与本次改动无关（上一轮剪贴板可用时该用例通过）。该用例的已知限制见上一节。
+- 三后端 demo（30 帧，无标题栏启动，第 8、16 帧切换全屏，第 22、26 帧切换标题栏，第 29 帧截图）均正常退出：GL 重建 39.3/31.1 ms、最差帧 58.6 ms；Vulkan 35.0/61.8 ms、最差帧 70.5 ms、验证层消息 0；D3D12 78.5/74.7 ms、最差帧 99.3 ms。`TITLE_BAR_SWITCH` 均 `ok=1`，绘制尺寸保持 1280x720，日志无 ERROR/FATAL；Vulkan 截图人工查看画面正常、HUD 方向正确。本机 ToDesk 仍在运行，切换耗时不作为性能基线。
+- 未验证：iOS / macOS / Linux 的运行时行为本机无法运行，以 CI 和对应平台的记录为准；MSVC、MinGW 工具链未在本机构建。
+
+## 本轮更新：macOS Cocoa 窗口模式本机复核（2026-10-27）
+
+- 基于 `6a755113`，本次只复核并补充文档，没有改窗口实现。无标题栏全屏和窗口模式的标题栏开关均已有 Cocoa 原生实现、`engine_demo` 入口及自动测试，不是只有公共状态机。早前记录中的 Cocoa「未在本机验证」是当时 Windows 环境的限制。
+- 在 macOS 上单独运行 `test_platform_window_mode` 与 `test_platform_cocoa_runtime`：状态机 14/14、真实 Cocoa 窗口 7/7。后者包含两个全屏用例（进出恢复、直接全屏启动）和两个标题栏用例（显隐保持内容矩形、无标题栏启动），直接检查 `NSWindow` 的 `styleMask`、屏幕矩形、窗口层级与内容矩形，不只检查引擎状态。
+- Metal 与 MoltenVK 各运行 70 帧自动演示：无标题栏启动，第 10、40 帧进出全屏，第 50、60 帧显示再隐藏标题栏，第 25 帧截图。两后端 drawable 均为 2560x1440 → 3360x2100 → 2560x1440，两次 `TITLE_BAR_SWITCH` 均为 `ok=1`，标题栏可见状态为 1 → 0，正常退出且无 ERROR/FATAL；MoltenVK 验证层消息为 0。
+- Metal 重建耗时为 2.60/5.56 ms，MoltenVK 为 2.11/4.50 ms；切换后五帧的最差帧时间分别为 82.39/27.29 ms 与 92.94/25.92 ms。这些是本轮本机短跑结果，不作为性能基线。
+- 两张全屏截图已人工查看，3D 场景与 HUD 可见、朝向正常。截图验证引擎内容；原生无边框、全屏矩形和标题栏状态由上述 Cocoa 运行时断言验证。交互按键与可复现的自动演示命令见 `docs/Build_Guide.md` 的「macOS 窗口模式与标题栏验证」。
+
+## 本轮更新：Windows 同步复核与测试基础设施修复
+
+本轮从 `a848b3c9` 开始，`git fetch` 后本地与 `origin/master` 一致，无合并冲突。使用 Windows 本机的 Clang 22.1.6 + Ninja，复核 GL、Vulkan、D3D12 Debug 与 ASan 配置；未跟踪的 `.tmp/`、`.scratch-vkprobe/` 不纳入提交。没有改动渲染或网络协议实现。
+
+### 定位与修复
+1. **Windows RHI 测试链接参数不匹配**：`test_rhi_capabilities`、`test_rhi_fault_injection`、`test_rhi_wsi_attach` 在非 Apple 平台一律传入 `-Wl,--gc-sections`，Windows Clang/lld-link 因而各报一次忽略未知参数。改为排除 Windows MSVC/Clang，保留 Linux 与 Windows GNU/MinGW 的有效配置。`test_rhi_backend_internal_contract` 逐目标检查生成的 Ninja 链接块；旧全局计数检查会放过「其他目标凑够 3 条、目标自身缺参数」的夹具，新检查能准确失败。Windows 下三目标实际重链接已无该告警。
+2. **远程会话中的剪贴板测试等待不足（部分缓解，非根治）**：在 ToDesk 运行的会话中复现 `OpenClipboard` 的 `ERROR_ACCESS_DENIED`（直接以 NULL 窗口打开也同样被拒，系统不提供持有者窗口，所以没有仅凭进程名归因；引擎读写路径逐个检查过，所有返回分支都会 `CloseClipboard`）。原来的约 500 ms 重试会失败，`test_platform_win32_runtime` 将首次打开的有限重试改为 200×25 ms（约 5 秒），真实剪贴板写入、读取和无 NUL 终止数据的边界断言全部保留。效果只到「有时够用」：ToDesk 运行时曾连续 3 次 26/26，之后系统剪贴板又持续拒绝访问，超过 5 秒仍失败；剪贴板恢复可用后复测，GL 树连续 3 次、ASan 树 1 次均为 26/26。因此该用例仍依赖本机剪贴板没有被远程工具长期占用，不是引擎缺陷；独立 window station 隔离方案试过，被系统权限拒绝，未采用。是否要把「剪贴板长期不可用」改成跳过（返回 77），属于降低覆盖的决定，这里没有自行改。`docs/Build_Guide.md` 同步说明等待边界及测试会改写系统剪贴板。
+3. **UDP 测试固定端口冲突**：`test_net_replication` 的 PID 端口块不能保证跨进程唯一。新增受控占用回归后旧绑定稳定失败；6 条真实收发路径（7 个接收 socket）改为绑定端口 0，经 `net_socket_get_local_address` 取得实际端口，协议与收发断言不变。`peer_save_load` 另有独立的并发缺陷：64 字节路径缓冲区在当前 Windows `%TEMP%` 下至少需要 70 字节，4 个进程的路径都被截成同一个 `break_test_netrep_peers.tx`，PID 后缀丢失并导致读写覆盖；扩为 128 字节后并发复验通过。网络套件新增 1 个冲突用例，现共 53 项。
+
+### 验证
+- 链接修复红—绿验证：旧配置在生成的 Ninja 规则上失败，修复后通过；非法、合法 Ninja 夹具分别按预期失败、通过。GL/Vulkan/D3D12/ASan 构建日志均无编译或链接警告。
+- 最终代码状态的全量 ctest：GL 188/188、Vulkan（含验证层）191/191、D3D12 Debug 196/196（含 WARP 与硬件适配器）。ASan（`-LE graphics`，含 5 个 fuzz 冒烟）184/185，唯一失败是上面的剪贴板用例；剪贴板可用后复测该用例通过。
+- 网络套件在四棵构建树并行运行均 53/53；没有残留临时诊断插桩。
+- `test_d3d12_warp_runtime` 的 `gpu_timer_measures_the_gpu_time_of_a_recorded_region` 在第一轮 D3D12 全量里失败过一次（GPU 计时比值，本轮未改计时代码）；默认 GBV 配置单独连跑 3 次、之后两次全量 196/196 均通过。这是既有的间歇性问题，本轮没有处理，也没有放宽阈值。
+- 三后端 demo（`BREAK_FRAMES=30`，窗口无标题栏启动，第 8、16 帧切换全屏，第 22、26 帧切换标题栏，第 29 帧截图）均正常退出：GL 重建 30.5/39.4 ms、最差帧 61.0 ms；Vulkan 29.2/24.9 ms、最差帧 43.8 ms、验证层消息 0；D3D12 76.1/59.6 ms、最差帧 135.7 ms。三个后端 `TITLE_BAR_SWITCH` 的 `ok=1`、绘制尺寸保持 1280x720，日志无 ERROR/FATAL；三张截图人工查看画面正常、HUD 文字方向正确。机器上 ToDesk 仍在运行，已知会拖慢呈现，所以这些切换耗时不作为性能基线。
+- 未验证：X11 / Wayland / Cocoa / 其他平台由 CI 覆盖；Windows MSVC 与 MinGW 工具链未在本机构建。
+
+## 本轮更新：仓库缺陷排查（ASan + 扩展模糊测试 + clang 静态分析 + 近期代码复查）
+
+### 做了哪些检查
+- **ASan**（`build-ci-asan`，GL，Debug）：全量 ctest 187/187。之前 4 个 fuzz 冒烟用例显示为 Not Run，是因为 fuzz 目标不在默认构建里，补建后都通过。
+- **扩展模糊测试**（同一 ASan 构建）：`fuzz_scene_serial`、`fuzz_net_packet`、`fuzz_decode_image`、`fuzz_vfs_pak` 各用 4 个新种子，迭代数是冒烟测试的 10–50 倍（2 万到 10 万次），16 次运行全部无崩溃、无 ASan 报告。
+- **clang 静态分析**：`clang-tidy` 跑 `clang-analyzer-core/unix/security.ArrayBound/deadcode` 和若干 `bugprone-*`，覆盖 GL 构建里 `engine/src` 下 228 个 C 文件，得到 108 条不重复的告警。逐条看了 `core.*`、`unix.*`、`ArrayBound` 类的告警；`deadcode` 和整数除法类只是风格问题，没改；`external/`（miniaudio、cgltf、lua）是第三方代码，不改。
+- **人工复查本会话改过的代码**：GL 延迟删除、glTF 骨骼祖先节点、模型查看与 BSCN 读档钩子、标题栏开关。
+
+### 修复的缺陷（都先写失败的测试，再修）
+1. **GL 延迟删除队列是全局的**（`rhi_gl.c`，FS7 引入）：队列放在全局变量里，但 GL 的纹理名属于各自设备的上下文。同时存在两个 GL 设备时，A 设备的帧开始或关闭会在 A 的上下文里删 B 的纹理名，可能删错对象，或者在关闭时漏删、泄漏。改为把队列放进每个设备的 `GLBackend`，删除时传入所属设备；没有后端时立即删除，即原来的行为。当前演示程序只建一个设备，所以平时碰不到。这一条没有加自动测试：要两个真实的 GL 上下文，现有测试设施没有。验证方式是代码审查，加上 GL Debug / ASan 下演示程序全屏切换 + BSCN 读档运行无报错。
+2. **无标题栏的最大化窗口位置偏移**（`window_win32.c`，上一轮标题栏功能引入）：窗口已最大化时再去掉标题栏，只改样式、不重新布局，窗口保持「带边框最大化」的矩形，四边各超出工作区一个边框宽度（实测 -11,-11,2571,1539，工作区 0,0,2560,1528）。改为先还原再最大化（期间关重绘），让系统按新边框重新计算最大化矩形。新测试 `title_bar_hidden_while_maximized_fits_the_work_area`：改前失败，改后通过。
+3. **菜单宽度读未初始化变量**（`myui/widgets/my_menu.c`，原有问题，静态分析发现）：`menu_box_width` 在窗口字体不能测量文字时（字体没有 measure 接口，或测量失败），`my_font_measure` 不写 `tw`，后面直接拿 `tw` 算宽度，结果是随机值。改为测量失败时回退到按码点估算。新测试 `menu_width_is_defined_when_font_measure_fails`（`test_myui_window_manager`）：改前宽度是随机值、断言失败，改后是 98。
+
+### 看过但判定为误报或无需改动的告警
+- `asset.c` 越界、`platform_text.c` 空指针、`values.c` 空指针、`ir.c` 字符串越界、`render_graph.c` 未初始化、`my_node_view.c` 未初始化：调用链上都有静态分析器看不到的前置条件。比如 `re_facts_get` 在 facts 为 NULL 时返回非 OK，后面不会继续执行；`id_for` 对空字符串传入的长度就是 0。
+- `mipmap_stream.c` 释放后使用：分析器假设 `ctx->mgr` 为 NULL，但它在上一行刚赋过值。
+- `scene_serial.c` 的 malloc 大小类型不符：`u8` 块里放两个 `u32` 数组，是有意的单次分配。
+- `scene_state.c` 的流状态告警：每次读取都检查了返回值，失败时整体回滚到备份。
+- `cgltf_node_transform_world` 遇到父节点环会死循环？不会：`cgltf_validate` 会拒绝有环的文件，而加载器一定先调用它。
+
+### 验证
+- 7 棵构建树 0 警告。
+- ctest：VK 190/190、GL 187/187、D3D12 195/195、ASan 187/187。
+- `test_platform_win32_runtime` 26/26（这次连原来失败的剪贴板用例也通过了）。
+- GCC `-Werror -pedantic` 语法检查：改动的文件中能在本机编译的都通过；`rhi_gl.c` 需要 GLX 头文件，以 CI 为准。
+
+## 本轮更新：窗口标题栏开关（跨平台，TDD）
+
+- **API**（`platform/platform.h`）：`platform_set_window_decorated(p, bool)`、`platform_get_window_decorated(p)`、`platform_window_title_bar_visible(p)`，以及 `PlatformConfig.undecorated`（加在 `start_fullscreen` 之后；位置初始化的调用点已补齐）。语义：只影响**窗口模式**下的标题栏和边框；关掉后客户区位置和大小不变（交换链不重建）；全屏本来就没有标题栏，全屏期间或模式切换未完成时改动会被记下，回到窗口模式时再生效；重复调用幂等；没有窗口边框的平台（移动端、QNX Screen）只接受「无标题栏」，`set(true)` 返回 false。
+- **状态机**（`platform/window_mode.h`）：`PlatformWindowModeState` 加 `decorated`（偏好）和 `native_decorated`（原生窗口当前实际的边框）。`platform_window_mode_set_decorated` 返回 NONE / APPLY（窗口模式且空闲，立即改）/ DEFER（全屏或请求未确认）/ UNSUPPORTED；`decoration_stale` 判断回到窗口模式后还要不要补做；`title_bar_visible` = 已确认窗口模式且偏好为有标题栏。
+- **各后端**：
+  - Win32：有标题栏 = `WS_OVERLAPPEDWINDOW`；无标题栏 = `WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX`（任务栏按钮仍能最小化/还原）。按新样式（`AdjustWindowRectExForDpi`，按窗口 DPI）重算窗口矩形，一次 `SetWindowPos` 让客户区屏幕位置保持不变。无标题栏窗口最大化时处理 `WM_GETMINMAXINFO`，只铺满工作区，不盖住任务栏。离开全屏时先恢复保存的样式，再补做全屏期间的改动。
+  - X11：写 `_MOTIF_WM_HINTS.decorations=0`，恢复时删除该属性（交给窗口管理器默认值）；`undecorated` 在第一次映射前就写好。和无 EWMH 回退全屏共用同一个属性：回退全屏期间修改偏好时，同时更新回退路径里保存的提示，退出全屏恢复的就是新偏好；状态确认路径（`x11_confirm_window_mode`）和进入失败路径都会补做。
+  - Wayland：标题栏本来就是 myui 的客户端装饰，`platform_needs_client_decoration` 改为直接读 `title_bar_visible`，记录偏好即生效。
+  - Cocoa：无标题栏的样式掩码去掉 `Titled | Closable`，保留 `Resizable | Miniaturizable`；`frameRectForContentRect` 保持内容矩形不变；离开全屏后补做。
+  - 移动端 / QNX Screen：固定无标题栏。
+- **演示程序**：`BREAK_UNDECORATED=1` 以无标题栏窗口启动；Alt+T 切换（单按 T 仍是纹理过滤）；`BREAK_TOGGLE_TITLE_BAR_AT=f1,f2,...` 在指定帧自动切换，输出 `TITLE_BAR_SWITCH frame= decorated= ok= visible= drawable=`。帮助行加 `Alt+T:TitleBar`。
+- **测试**（先写测试、确认失败，再实现）：
+  - `test_platform_window_mode` 新增 6 个用例（默认值、窗口模式立即生效且幂等、全屏期间延后、进入全屏未确认时延后并在被拒后补做、固定平台、`stale` 跟踪），14/14。
+  - `test_platform_win32_runtime` 新增 5 个真实窗口用例：去掉标题栏后无 `WS_CAPTION|WS_THICKFRAME` 且为 `WS_POPUP`、客户区屏幕矩形不变、不发 `WM_SIZE`；无标题栏窗口经全屏往返后仍无标题栏且回到原客户区；全屏期间修改两个方向都在离开时生效；`undecorated` 配置直接建出无边框窗口、再加回标题栏客户区大小不变；无标题栏窗口最大化不超出工作区。临时把 APPLY 分支改成只记录状态、不改原生窗口时，5 个用例中 4 个失败（6 条断言），说明测试覆盖到了原生实现；剩下那个（全屏期间修改）走的是离开全屏时的补做路径，不经过 APPLY。
+  - `test_platform_null_safety`、`test_platform_mobile`、`test_platform_screen_simulated` 补了新 API 的断言。
+  - `test_platform_x11_runtime`（2 个）、`test_platform_wayland_runtime`（2 个）、`test_platform_cocoa_runtime`（2 个）新增用例，在 CI 上运行。
+- **验证**：7 棵构建树（VK / GL / D3D12 的 Debug 与 Release）0 条编译警告。ctest（`-E test_platform_win32_runtime`）：VK 190/190、GL 187/187、D3D12 195/195。第一轮里 VK 的 `test_net_replication` 和 GL 的 `test_mipmap_stream` 各失败过 1 次，单独各跑 3 次、以及最终全量复跑都通过，两者不涉及窗口代码。`test_platform_win32_runtime` 25 个用例中只有既有的 `clipboard_read_bounds_unterminated_unicode_text` 失败（`OpenClipboard failed`；本机 ToDesk 又在运行，它会占用剪贴板，改动前的代码同样失败）。演示程序 VK Debug：两次标题栏切换 + 两次全屏切换，drawable 始终 1280x720 → 1920x1080 → 1280x720，0 条验证消息；读窗口样式确认：有标题栏时窗口 1038x614、客户区 1024x576、含 `WS_CAPTION`，切换后窗口与客户区都是 1024x576、不含 `WS_CAPTION`；截图中标题栏消失、画面内容不变。GL / D3D12 Release 以 `BREAK_UNDECORATED=1` 启动并切换全屏和标题栏，正常退出、无 ERROR。
+- **未验证**：X11 / Wayland / Cocoa 的运行时行为本机无法运行（没有 X11/Wayland 头文件，WSL 的磁盘镜像缺失无法启动），以 CI 为准；X11 只验证 `_MOTIF_WM_HINTS` 属性，CI 的 Xvfb 没有窗口管理器，看不到真正的标题栏。
+- **说明**：本轮测的全屏切换最差帧（GL 140–350 ms，D3D12 24–270 ms）比 FS7 记录的高很多，用改动前的 master 同样复测为 142–520 ms，原因是本机 ToDesk 重新在运行（之前已确认它会拖慢呈现），不是本改动造成的；本轮没有重测 FS7 的数字。
+
+## 本轮更新：VK GPU-assisted 验证的两类遗留报错清零
+
+FS6 跑 GPU-assisted 验证时报出 15 条与切换无关的遗留消息，两类：
+- **`firstInstance` 未启用特性**：材质数组层号（R441）和 LOD 淡入淡出值（R703b）都放在间接命令的 `firstInstance` 里，但设备从未启用 `drawIndirectFirstInstance`（VUID-VkDrawIndexedIndirectCommand-firstInstance-00554），而 `caps.indirect_first_instance_supported` 在 VK 上被无条件报告为 true。修复：设备支持时启用该特性，能力位按实际结果报告（不支持的设备会走已有的回退：关闭材质数组路径、LOD 直接切换）。
+- **`u_ssao` 视图类型不匹配**：材质数组路径的 albedo 是 2D_ARRAY 视图，`rhi_cmd_bind_material_textures(_ibl)` 却用 albedo 视图填充空槽（binding 5 `u_ssao`、阴影、BRDF LUT 等，着色器里都是 `sampler2D`），违反 VUID-vkCmdDraw-viewType-07752。修复：后端按需创建一个 1×1 RGBA8 的 2D 图像，空槽统一用它填充（布局转换走 FS6 的批量布局命令缓冲，设备销毁时释放）。
+- **验证**：GPU-assisted 验证下前向 clustered、blinn、延迟、两次全屏切换 4 种跑法均 0 条消息（改前 15 条）；VK ctest 191/191；Debug/Release 0 警告；GCC 语法检查通过；截图与改动前对比，差异在同一版本连跑两次的噪声范围内（同版本 mean 0.03–0.06，新旧 mean 0.07–0.11，>24 的像素数同量级）。
+
+
+## 本轮更新：FS7 — GL 全屏切换：纹理延迟删除
+
+- **定位**（临时计时，已移除）：GL 一次切换的重建块 40–70 ms 里，`glDeleteTextures` 占 27–39 ms（本机 NVIDIA 驱动删一张大渲染目标要 0.3–0.5 ms，一次切换要换掉约 80 个），`glTexImage2D` 只有不到 1 ms，`glCheckFramebufferStatus` 只在第一次切换时有 10 ms。
+- **改动**（只改 `rhi_gl.c`）：`rhi_texture_destroy`（含 mip 视图）、`rhi_cubemap_destroy`、`rhi_offscreen_fbo_destroy`、`rhi_mrt_fbo_destroy`、`rhi_cubemap_depth_fbo_destroy` 不再立刻删除 GL 纹理/渲染缓冲名，而是放进延迟队列；`rhi_frame_begin` 在等完帧槽 fence 后按每帧 2 ms 的预算从最老的开始删除（与 VK 回收队列同一策略），`gl_shutdown` 一次删完。纹理单元缓存与 FBO 绑定缓存仍在原调用点立即失效。GL 自身保证被删除名的存储在排队命令用完前一直有效，所以延迟只是挪开开销，不改变 GPU 读到的内容。队列扩容失败时退回同步删除。设备销毁路径（`rhi_device_destroy` 遍历槽位）仍同步删除。
+- **结果**（Release，2560x1600 ↔ 1280x720，每轮 4 次切换）：重建耗时从 40–70 ms 降到 16–31 ms（4 轮共 16 次）。最差切换帧 24–75 ms，没有稳定压到 50 ms 以下：剩下的时间不在重建块里，而在切换那一帧本身——离开全屏时 Win32 `SetWindowPlacement` 要 6–24 ms（试过给 `SetWindowPos` 加 `SWP_NOCOPYBITS`，没有改善，未保留），切换后第一帧呈现也会多出 20–40 ms（驱动侧换后缓冲尺寸）。这两部分不在引擎可控范围内，本轮不再处理。
+- **验证**：build-gl / build-rel-gl 0 条编译警告；GL Debug ctest 187/187，`test_platform_win32_runtime` 通过；GL Debug 演示两次切换后截图正常、无 GL 错误日志。`rhi_gl.c` 的 Linux（GLX）语法检查本机没有 GLX 头文件，以 CI 为准。
+- D3D12 本轮未改：重建块本来就只有 26–44 ms，最差帧同样落在切换后的呈现帧上（40–70 ms）。
+
+## 本轮更新：FS6 — VK 全屏切换去掉 GPU 空等（交换链复用、延迟销毁、批量布局转换）
+
+FS5 之后 VK 的最差切换帧仍是 107–112 ms，耗时全在 RHI 层的同步等待上。本轮只改 `rhi_vk.c`（外加 `rhi_native_vulkan.h` 的计数器声明和 `test_vulkan.c` 的新测试）。
+
+- **A. 交换链重建**（`vk_recreate_swapchain`）：去掉 `vkDeviceWaitIdle`；旧交换链作为 `oldSwapchain` 交给 `vkCreateSwapchainKHR`。旧的 framebuffer、深度图和 render pass 进延迟销毁队列，下一帧的 fence 信号后释放。交换链本身、它的 image view 和 present 等待信号量可能还被呈现引擎占着，而这一点没有 fence 能报告，所以在此基础上再多等 `VK_MAX_FRAMES` 帧。新交换链在下一次 acquire 之前就换上，已退役的图像不会再被 present。
+- **B. 延迟销毁**：新增 `VKRetired` 队列。每帧提交一个序号（`submit_serial`），每个 fence 记下自己对应的序号。一个对象入队时记为「下一次帧提交的序号」，等这个序号之前的帧全部完成后才释放。`rhi_offscreen_fbo_destroy`、`rhi_mrt_fbo_destroy`、`rhi_texture_destroy` 不再 `vkDeviceWaitIdle` / `vk_wait_frames`。在帧外调用且所有帧都已完成时立即销毁（行为与原来相同）。每帧在 `rhi_frame_begin` 回收，单帧预算 2 ms：一次切换会退役约 300 个对象，其中 `vkFreeMemory` 每次 0.1–0.3 ms，集中在一帧里释放会多出 25–44 ms。设备销毁时（已空闲）全部释放；扩容失败时退回同步销毁（帧内则泄漏，不在命令缓冲引用期间销毁）。
+- **C. 批量布局转换**：`vk_init_image_layout` 不再每张图「分配命令缓冲 + 提交 + `vkQueueWaitIdle`」，改为把屏障记进共享的 `layout_cb`。所有图形队列提交都走 `vk_queue_submit`：有待提交的批次时，把它作为同一次 `vkQueueSubmit` 的第一个 batch，所以它一定在任何使用这些图像的命令之前执行，调用方的 fence 也覆盖它。屏障的第二作用域是 `ALL_COMMANDS`。MRT 和离屏 FBO 的屏障挪到最后一个「直接销毁」失败分支之后，批次里不会引用已经销毁的图像。
+- **一次切换会不会改尺寸两次**：不会。Win32 每次切换只发 1 次 WM_SIZE；FS3 的合并逻辑让 `rhi_device_resize` 在第 N 帧执行，渲染目标在第 N+1 帧重建（`rebuild_ms` 包含 `rhi_device_resize`）。剩下的大头是驱动本身的 `vkCreateSwapchainKHR`（2560x1600 时 21–85 ms，传 `oldSwapchain` 之后仍有这么多），另外 300 多次 `vkAllocateMemory` 共 8–17 ms。
+
+| VK Release，RTX 4060，2560x1600 ↔ 1280x720，每轮 4 次切换 | 最差切换帧 | 重建耗时 |
+|---|---|---|
+| FS5 基线（本轮实测） | 111.9 ms | 70–90 ms |
+| A+B+C（每帧回收不限预算） | 75.6 ms | 23–39 ms |
+| A+B+C + 2 ms 回收预算（最终，3 轮） | 48.9 / 51.6 / 46.8 ms（中位 48.9） | 20–47 ms |
+
+GL / D3D12 本轮未改动，复测（Release，各 2 轮）：GL 73.5 / 62.7 ms，D3D12 48.5 / 62.7 ms。它们剩余的时间同样花在逐个创建渲染目标上，D3D12 已经是延迟释放。
+
+- **测试**：`test_vulkan` 新增 FS6 阶段（`tv_test_fs6_resize_sync`）：6 个 FBO 渲染后，① 在帧内销毁一个本帧刚用过的 FBO；② 连续两次 `rhi_device_resize_ex`（此时还有帧在执行）；③ 帧外替换 3 个 FBO，再新建一个从不渲染的 FBO；然后要求这期间 `device_wait_idle == 0`、`queue_wait_idle == 0`（读 `rhi_vk_sync_counters`），延迟销毁和布局批次确实被执行到，5 个目标中心像素等于各自的清屏灰度，从不渲染的那个也能读回；再渲染 8 帧后延迟队列清空。反向验证过：在 FBO 销毁里临时加回 `vkDeviceWaitIdle`，测试报 `device_wait_idle=4` 并失败。
+- **验证**：build-vk、build-rel-vk、build-gl、build-d3d12 0 条编译警告（lld `--gc-sections` 提示是既有的）。ctest：VK 191/191（含 fuzz）、GL 188/188、D3D12 196/196。`test_vulkan`（验证层开启）0 条验证消息。VK Debug 演示 4 次切换：验证层 0 条；同步验证（`BREAK_VK_SYNC_VALIDATION=1`，本项目自己的开关）0 条。`rhi_vk.c` / `test_vulkan.c` 通过 GCC `-Wall -Wextra -Werror -pedantic` 语法检查。
+- **GPU-assisted 验证**（`VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT`，4 次切换）：15 条消息，全部是既有问题，与切换无关：`vkCmdDrawIndexedIndirectCount` 的 `firstInstance != 0`（需要 `drawIndirectFirstInstance` 特性），以及 binding 5 `u_ssao` 的视图类型是 2D_ARRAY 而着色器声明的是 2D。这两类本轮没有修。
+- **未验证**：Linux lavapipe（CI）上的行为；其他 GPU 和驱动上的 `vkCreateSwapchainKHR` 耗时。最差帧只是刚好压在 50 ms 附近（3 轮里有 1 轮 51.6 ms），驱动的交换链创建耗时波动很大。
+
+
+## 本轮更新：FS5 — 无标题栏全屏：合并与整体验收
+
+FS1（`window_mode.h` 状态机）、FS2（API + Win32 + 演示接线）、FS3（尺寸变化只重建渲染目标）、FS4（X11 / Wayland / Cocoa / QNX）与 R707c（蒙皮 LOD 接入）合并，并修复了阻塞 VK 验收的设备丢失（见下一节）。
+
+- **构建与测试**：7 棵构建树 0 条编译警告（只剩既有的 lld `--gc-sections` 提示与 SheenBidi 警告）；ctest：VK 190/190、GL 187/187、D3D12 195/195（含 WARP 套件）、ASan 179/179；`test_platform_win32_runtime` 20/20（含 FS2 新增的 5 个全屏用例）。本轮改动涉及的 41 个可在 Linux 编译的 C 文件全部通过 GCC `-Wall -Wextra -Werror -pedantic` 语法检查。
+- **真实切换**（Release，2560x1600 显示器 ↔ 1280x720 窗口，第 60/120/180/240 帧自动切换，每后端 2 轮，0 次设备丢失）：
+
+| 后端 | 改前最差切换帧（FS2 基线） | 现在最差切换帧 | 现在重建耗时 |
+|---|---|---|---|
+| GL | 131.6 ms | 87.2 / 48.7 ms | 33–84 ms |
+| D3D12 | 137.3 ms | 75.3 / 48.1 ms | 20–65 ms |
+| VK | 263.7 ms（且只能关遮挡剔除，否则设备丢失） | 111.6 / 106.6 ms | 65–81 ms |
+
+  重建耗时里 post 部分仍占大头（VK 50–67 ms、GL 28–80 ms、D3D12 33–54 ms）：着色器已不再重编，剩下的是 RHI 层逐个创建/销毁 40 多个渲染目标——VK 每个纹理创建都提交一次布局转换并等 fence，每个 FBO 销毁都 `vkDeviceWaitIdle`。设计验收「切换帧 < 50 ms」在 GL/D3D12 上只有部分轮次达到，VK 未达到；下一步是 RHI 批量创建 + 延迟销毁。
+- **未在本机验证**：X11 / Wayland / Cocoa 的运行时行为（只做了 GCC 语法检查与代码审阅，以 CI 为准；CI 的 Xvfb 没有窗口管理器，只覆盖 X11 的 Motif 回退路径）；Metal。
+
+
+## 本轮更新：修复 VK 运行时改尺寸（窗口/全屏切换）后设备丢失
+
+- **现象**：VK 下任何运行时改尺寸（`G`/Alt+Enter 全屏切换、窗口拉伸）的下一帧 `VK_ERROR_DEVICE_LOST`，验证层 0 条消息；`BREAK_OCCLUSION=0` 可规避。启动时直接全屏不出现。FS2/FS3/R707c 都观察到（R707c 的 `test_vulkan` 偶发失败也是它）。
+- **定位**（逐步二分）：只重建 Hi-Z 金字塔（同一深度图、只换纹理）即可复现；不调 `occlusion_cull_generate_hi_z` 不复现；Hi-Z 的消费方（unified cull）全部关闭仍复现；只用 1 个输出 mip 不复现，2 个及以上复现；不销毁旧纹理不复现。
+- **根因**：`rhi_cmd_bind_image_texture`（VK）每个管线只在第一次 bind 时 `vkCmdBindDescriptorSets`，之后只 `vkUpdateDescriptorSets` 改同一个 set。规范允许驱动在 bind 命令记录时就读走描述符内容（C-BUF-3 已在 storage buffer 上踩过同一个坑），本机 NVIDIA 正是如此：单元 1..3 的写入对 dispatch 不可见，着色器写的是这块 set 内存里上一帧留下的视图。平时那些视图恰好还活着，只是 Hi-Z 的 mip 1..3 一直没被正确写；重建金字塔销毁旧纹理后，就成了往已释放显存写，下一帧设备丢失。
+- **修复**：storage image 与 storage buffer 一致，每次 bind 后都重新 `vkCmdBindDescriptorSets`。
+- **顺带修复**：程序化手臂（R445）的索引 `idata[i] = i` 用 144 个索引画 96 个顶点（GPU-assisted 验证报顶点越界，且只画出三分之二的面），改为每面两个三角形。
+- **测试**：`test_vulkan` TEST 9 新增运行时改尺寸阶段（金字塔先长到 640x360 再变成 330x170 继续生成并剔除，要求结果仍为 {1,0} 且设备存活）。说明：这个阶段在修复前的代码上也能通过（单进程测试里的分配没有让被释放的视图真正失效），所以它防的是改尺寸路径本身的回归，修复的直接证据是演示程序：修复前 VK 默认设置下 3 种尺寸各自 100% 设备丢失，修复后 0 次；VK Debug 4 次窗口↔全屏往返 0 设备丢失、0 条验证消息。VK ctest 189/189；GCC `-Werror -pedantic` 语法检查通过。
+
+
+## 本轮更新：FS4 — 无标题栏全屏（四）：X11 / Wayland / Cocoa 真实实现 + QNX Screen 模拟测试
+
+### 做法（设计 §3.2，计划任务 4）
+- **X11**（`window_x11.c`）：先查根窗口 `_NET_SUPPORTING_WM_CHECK` + `_NET_SUPPORTED` 是否含 `_NET_WM_STATE_FULLSCREEN`。
+  - 有 EWMH WM：进入前用 `XGetGeometry` + `XTranslateCoordinates` 保存窗口矩形；已映射窗口发 `_NET_WM_STATE` ADD/REMOVE 客户端消息（source=1），未映射窗口直接改 `_NET_WM_STATE` 属性。**不再立即确认**：`PropertyNotify(_NET_WM_STATE)` 读回属性，按是否含 FULLSCREEN 调 `confirm`（WM 快捷键等外部切换也走这里）。
+  - 无 EWMH WM（CI 的裸 Xvfb）：保存原 `_MOTIF_WM_HINTS`，写 decorations=0，`XMoveResizeWindow` 到 `window_mode_fullscreen_rect`（RandR 显示器列表；无显示器时用根窗口尺寸），同步确认；离开时恢复原 hints（原来没有就删除）并移回保存的矩形。
+  - 每次确认按模式设置/删除 `_NET_WM_BYPASS_COMPOSITOR=1`。`start_fullscreen`：EWMH 下映射前写属性；回退路径下映射前就移到显示器矩形。显示器查询提前到 `start_fullscreen` 之前。
+- **Wayland**（`window_wayland.c`）：`set/unset_fullscreen` 后只 commit + flush，不确认；`xdg_toplevel.configure` 解析 `states` 数组中的 `XDG_TOPLEVEL_STATE_FULLSCREEN` 后 `confirm`，与挂起请求相反的 configure 视为拒绝（`fail`，之后带目标状态的 configure 按外部切换收敛）。离开全屏收到 0×0 configure 时恢复进入前保存的尺寸。`platform_needs_client_decoration` 全屏时为 false。`start_fullscreen` 仍在首次 commit 前 set，由首次 configure 确认。
+- **Cocoa**（`window_cocoa.m`）：不再用 `toggleFullScreen:`。进入：保存 `frame`/`styleMask`/`level`，`NSWindowStyleMaskBorderless`，`level = NSMainMenuWindowLevel + 1`，`presentationOptions = HideDock | HideMenuBar`，`setFrame:[[window screen] frame] display:YES`；离开：presentationOptions 恢复 Default，还原 styleMask、level、frame。两边都重新 `makeFirstResponder:` 内容视图，原来是 key window 的再 `makeKeyAndOrderFront:`，再调 `cocoa_update_drawable_size`（同时 windowDidResize 也会更新），同步确认。窗口改为 `BreakWindow` 子类：无边框时 `canBecomeKeyWindow/MainWindow = YES`（否则全屏丢键盘），无标题栏时 `constrainFrameRect:` 不把窗口挤到菜单栏下面。
+- **QNX Screen / 移动端**：语义不变（固定全屏）。新增 `test_platform_screen_simulated`：真实 `window_screen.c` 在主机上对假 Screen SDK（`tests/fake_qnx_screen/`）编译，验证 get=BORDERLESS、set(WINDOWED)=false、toggle 无效、无 CSD、NULL 安全；移动端已有 `test_platform_mobile_layer_*`。
+
+### 测试（TDD，测试先写）
+- `test_platform_x11_runtime`：+2 用例。进入后有界轮询（约 3 s）到模式 = BORDERLESS 且窗口根坐标矩形 = 显示器矩形（及 `platform_get_size`）；检查 `_NET_WM_BYPASS_COMPOSITOR`、EWMH 下 `_NET_WM_STATE` / 回退下 `_MOTIF_WM_HINTS`；离开恢复（回退路径比较位置+尺寸，EWMH 只比尺寸）；重复 set 幂等；`start_fullscreen` 铺满后能恢复到配置尺寸。日志打印走的是哪条路径。
+- `test_platform_wayland_runtime`：+2 用例。轮询直到 configure 确认；合成器接受则尺寸 = 某个输出（按 scale 换算的逻辑尺寸）、无 CSD、离开恢复 320×240；合成器不接受则模式必须保持 WINDOWED（不再假装成功）。日志打印 weston headless 是否接受。
+- `test_platform_cocoa_runtime`：+2 用例；该文件在 macOS 上改为按 Objective-C 编译（CMake `LANGUAGE OBJC`，与 window_cocoa.m 同样的 flags，链接 Cocoa），按标题从 `[NSApp windows]` 找窗口，断言 styleMask == Borderless、frame == screen frame、level > Normal；逻辑尺寸 = 某块屏幕、WSI 尺寸同步；离开恢复 320×240 且不再是无边框。
+
+### 验证
+- 本机（Windows）：build-vk Debug 0 警告；全量 ctest（除 `test_platform_win32_runtime` 单独跑，也通过）190/190 连续 3 次通过（之前有一次运行有 1 个失败，没有复现，也没有记下是哪个测试）。`test_platform_screen_simulated` 用 GCC `-Werror -pedantic` 和 clang 都通过。
+- GCC 15（msys64）`-std=c11 -Wall -Wextra -Werror -pedantic -fsyntax-only`，用 Debian 12 的 libx11/xrandr/wayland/xkbcommon 头文件 + 本地编译的 wayland-scanner 生成的协议头：`window_x11.c`、`window_wayland.c`（含 FRACTIONAL_SCALE；mingw 缺的 poll/mman/fcntl 用桩补齐）、`test_platform_x11_runtime.c`、`test_platform_wayland_runtime.c` 均无告警。未检查 XInput2 变体（没有头文件）。
+- **CI 结果（合并后补记）**：macOS Cocoa、macOS 原生 Metal、iOS、Linux X11（Xvfb，无 WM，走 Motif 回退路径）首轮即通过。Linux Wayland（weston headless）首轮失败：进入全屏被确认，但紧接着的 `unset_fullscreen` 一直没有 configure 回复。加了只在失败时输出的 `FAILINFO` 诊断（`BREAK_WAYLAND_TRACE=1` 时 configure 处理函数逐条打印）后定位：weston 只在带 buffer 的 commit 上把已 ack 的 configure 变成当前状态；测试窗口从不提交 buffer、而 `platform_set_window_mode` 在 ack 后没有 commit，于是 weston 拿 unset 请求和尚未生效的旧状态比，认为无需变化。修复（`5d8e2993`）：`platform_set_window_mode` 先 `wl_surface_commit` 让已 ack 的状态生效再发请求；运行时测试每次轮询都提交一个 64×64 shm buffer（真实游戏每帧都会提交）。此后 Wayland + OpenGL / Wayland + Vulkan 均通过，三条流水线全绿。
+- **未在本机运行或编译**：X11/Wayland 运行时测试（以 CI 为准）；`window_cocoa.m` 与 Cocoa 测试（本机无法编译 Objective-C，只做了审读，以 macOS CI 为准）。weston headless 是否接受 fullscreen 未知，两种情况测试都能判定。CI 的 Xvfb 没有 WM，所以 EWMH 路径在 CI 上不会被执行。
+
+
+## 本轮更新：FS2 — 无标题栏全屏（二）：公共 API + Win32 实现 + engine_demo 测量（基线）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-borderless-fullscreen-design.md`，计划任务 2）
+- **API**（`platform.h`）：`platform_set_window_mode(p, mode)`（幂等；NULL、非法值、平台不支持返回 false）、`platform_get_window_mode(p)`（平台确认后的模式，NULL 为 WINDOWED）、`PlatformConfig.start_fullscreen`（放在结构体末尾，原有按位置初始化仍有效；`EngineConfig` 同样新增）。`platform_toggle_fullscreen` = `set(toggle_target)`。所有后端用 `window_mode.h` 状态机。
+- **Win32**：进入时保存 `GWL_STYLE` 与 `WINDOWPLACEMENT`（恢复最大化仍以它为准），去掉 `WS_OVERLAPPEDWINDOW | WS_MAXIMIZE`，**一次** `SetWindowPos(HWND_TOP, rcMonitor, SWP_FRAMECHANGED|SWP_NOOWNERZORDER)` 同时改样式与尺寸（只有 1 次 WM_SIZE，不 TOPMOST）；离开时恢复样式后 `SetWindowPlacement`（隐藏窗口保持隐藏）。旧实现保留 `WS_MAXIMIZE`，最大化窗口全屏时 `IsZoomed` 仍为真。`start_fullscreen` 在 `ShowWindow` 前进入全屏。Alt+Enter 的 `WM_SYSCHAR` 不再响提示音。
+- **X11 / Wayland / Cocoa**：仍是原来的原生调用（`_NET_WM_STATE` 消息 / `xdg_toplevel_set_fullscreen` / `toggleFullScreen:`），经状态机「请求后立即确认」；`start_fullscreen` 分别为映射前写 `_NET_WM_STATE`、首次提交前 `set_fullscreen`、创建后 set。读回确认与 Cocoa 无边框实现留给任务 4。**QNX Screen / 移动端**：`init_fixed(BORDERLESS_FULLSCREEN)`，`set(WINDOWED)` 返回 false。
+- **输入**：新增 `INPUT_KEY_ALT`（316），Win32/X11/Wayland/Cocoa 都映射。
+- **engine_demo**：`BREAK_FULLSCREEN=1`；`G` 或 Alt+Enter 切换（Alt+Enter 不再触发 Enter 选取）；`BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,...`；每次切换输出 `WINDOW_MODE_SWITCH frame= mode= drawable= rebuild_ms= max_frame_ms_next5=`（rebuild_ms = 尺寸变化重建块耗时，只在块外计时，未改结构），退出时输出 `WINDOW_MODE_STATS`。VK 交换链日志加 `extent=`，D3D12 加 `swapchain resized to WxH`。帮助行改为 `G/Alt+Enter:Fullscreen`。
+
+### 基线（改 `*_resize` 之前；Release，2560×1600 显示器 ↔ 1280×720 窗口，切换帧 60/120/180/240）
+| 后端 | rebuild_ms（4 次） | max_frame_ms_next5（4 次） | 最差帧 |
+|---|---|---|---|
+| GL | 54.8 / 78.0 / 60.0 / 61.8 | 103.9 / 131.6 / 75.3 / 85.0 | 131.6 |
+| D3D12 | 120.7 / 68.0 / 126.3 / 71.8 | 135.0 / 110.2 / 137.3 / 92.6 | 137.3 |
+| VK（`BREAK_OCCLUSION=0`） | 227.4 / 214.0 / 241.7 / 251.9 | 232.4 / 243.1 / 247.1 / 263.7 | 263.7 |
+| GL（`BREAK_OCCLUSION=0`） | 50.2 / 67.6 / 50.4 / 73.1 | 83.5 / 98.1 / 63.5 / 95.0 | 98.1 |
+| D3D12（`BREAK_OCCLUSION=0`） | 90.9 / 73.3 / 108.2 / 66.7 | 103.8 / 91.9 / 117.6 / 80.0 | 117.6 |
+
+- **既有问题（与本改动无关）**：VK 在**运行时任何尺寸变化**后下一帧 `VK_ERROR_DEVICE_LOST`（进、出全屏两个方向都会，验证层 0 条）；`BREAK_OCCLUSION=0` 时消失，怀疑 Hi-Z（`occlusion_cull_resize` 之后）。用 master 的 Win32 切换代码同样复现。`BREAK_FULLSCREEN=1` 直接以 2560×1600 启动正常。需单独修。
+
+### 验证
+- TDD：`test_platform_win32_runtime` 新增 5 个用例（样式无 `WS_CAPTION|WS_THICKFRAME`、非 TOPMOST、窗口/客户区 = `rcMonitor`、模式查询、`platform_get_size`/drawable = 显示器；离开恢复样式与 `WINDOWPLACEMENT`；`SW_MAXIMIZE` 往返后 `IsZoomed`；重复 set 不产生 WM_SIZE、进出各恰好 1 次 WM_SIZE；非法模式拒绝；`start_fullscreen` 可见与隐藏两种）。旧实现 + 桩：30 条断言失败；新实现：全部通过。`test_platform_null_safety`、`test_platform_mobile_layer_*`（固定全屏语义）先链接失败、实现后通过。
+- 演示：VK Debug（`BREAK_OCCLUSION=0`）4 次切换验证层 0 条，交换链 `extent=2560x1600` / `1280x720`；D3D12 Debug（调试层 + GBV）4 次切换 0 条消息，`swapchain resized to 2560x1600`；全屏截图 2560×1600。
+- 未验证：X11/Wayland/Cocoa/QNX 运行（只做了审读，本机无系统头文件）；屏幕实拍确认无边框（本机锁屏，桌面截图只能拿到锁屏画面；无边框由运行时测试的样式与矩形断言保证）。
+
+
+## 本轮更新：R707c — 蒙皮网格运行时 LOD（三）：接入 `main.c`（加载时多姿势生成、当前姿势选级、淡入淡出、压力场景）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-skinned-lod-design.md` 3.2 / 3.4 / 3.5）
+- **生成**：`skin_lod_setup` 在 mega/ECS LOD 之后对每个 ≥ `LOD_GEN_MIN_TRIANGLES` 的 `SkinnedMesh` 用 `rhi_buffer_read` 读回顶点/索引，`lod_skin_joint_spheres` 算每关节包围球，`lod_skin_cache_generate`（共用 `g_lod_cache`）生成 LOD1/LOD2，各级索引放进每网格一个额外索引缓冲，共享原顶点缓冲。姿势：临时 `Skeleton`（`calloc`，不建关节缓冲、不上传，不碰 `render.skeleton`）对 `scene.anim_clips` 每个有通道的片段在 `[0, duration)` 均匀取样，总数 ≤ 8。每网格一行日志（levels、三角形、rel_err、poses、ms）和一行汇总。
+- **选级**：骨骼更新并上传后，`skin_lod_select` 用 `render.skeleton.current_pose`（即本帧上传的矩阵）做 `lod_skin_bounds`，按包围球表面距离走 `lod_select_by_screen_error`（`BREAK_LOD_PIXEL_ERROR` 共用，迟滞状态按蒙皮网格下标）。误差为绑定空间实测值 `rel_error · scale`。
+- **绘制**：前向 blinn、前向 clustered、延迟 G-buffer 三处逐网格循环改调 `skin_lod_draw`：LOD0 且未淡化时就是原来的 `bind_index_buffer + rhi_cmd_draw_indexed`；其他级别用额外索引缓冲 `rhi_cmd_draw_indexed_base`；淡化时两级各画一次 `rhi_cmd_draw_indexed_instanced_base`，`first_instance = lod_fade_pack_first_instance(0, ±k)`（高 16 位 k+16）。
+- **淡入淡出**：每网格一个 `LodFade`。着色器：GLSL `skinned{,_vk}.{vert,frag}`、`pbr_clustered_skin{,_vk}.vert`、`gbuffer_skinned{,_vk}.vert`、`gbuffer_skinned_vk.frag` 加 `#ifdef LOD_FADE` 块（读 `gl_BaseInstanceARB`，4×4 Bayer `discard`，与已有 lodfade 逐字相同）；clustered 蒙皮复用实例化变体的 `LOD_FADE` 片元，GL 延迟复用 `gbuffer.frag` 已有的块。D3D12 新增 `skinned_mrt_lodfade_hlsl.{vert,frag}`、`pbr_clustered_skin_lodfade_hlsl.vert`、`gbuffer_skinned_lodfade_hlsl.vert`（`SV_StartInstanceLocation`，构建时按 SM 6.8 编译），片元分别配 `pbr_clustered_lodfade_hlsl.frag` / `gbuffer_lodfade_hlsl.frag`。只有 `caps.indirect_first_instance_supported && lod_fade_seconds() > 0` 时才建 LOD_FADE 管线并开淡化，否则建原管线、直接切换。
+- **开关**：`BREAK_LOD=0` 不生成、不建缓冲、不打印 `Skin LOD` / `SKIN_LOD_STATS`，绘制走原调用。BSCN `N` 键恢复场景时先 `skin_lod_free` 再按新场景重建。
+- **压力场景** `BREAK_STRESS_LOD_SKIN=N`（N ≤ 16，超过钳到 16；场景已带骨骼时忽略）：每根管 96×104 段、19968 三角形、3 m 高、表面多频凹凸，独立 4 关节链（根平移、基部旋转、中段平移、中段旋转，权重在 1 m 与 2 m 处平滑过渡），一个 2.4 s 片段共 4N 个通道（N=16 用满 64），每根相位、弯曲轴不同，排在默认相机前方 2.5 m 间距网格上（底部不低于水面 y=-1）。它替换演示手臂（场景有蒙皮网格时绘制循环不画手臂，手臂的混合/IK 初始化也只在没有场景骨骼时运行）。
+- **统计**：`SKIN_LOD_STATS frames select_ms_avg vis_tris_avg vis_tris_lod0_avg ratio transitions fading_avg`（关机时）与调试 UI 一行 `Skin LOD: meshes L0/L1/L2 ...`。蒙皮网格本来就不剔除，vis_tris 是全部蒙皮网格实际绘制的三角形（淡化时两级之和）。
+
+### 验证
+- 构建：build-vk / build-gl / build-d3d12（Debug）与 build-rel-vk / gl / d3d12（Release）0 个来自本改动的警告（只有既有的 SheenBidi Release 未用变量警告与 lld `--gc-sections` 提示）。三个 Debug 树 `ctest -j4 -E test_platform_win32_runtime`（先构建 5 个 fuzz 目标）：vk 188/188、gl 185/185、d3d12 193/193（含 `test_d3d12_warp_runtime`）。vk 树最终源码连跑 8 次全量，有 2 次 `test_vulkan` 在 Hi-Z 可见性检查处 VK device lost（`-j4` 并行 GPU 负载下）；单独跑 6/6 通过，该测试不链接 `main.c` / `deferred.c`，判断为既有的负载相关不稳定，未处理。GCC `-Werror -pedantic` 语法检查 `main.c`、`deferred.c` 通过；新 HLSL 由 dxc 编译通过。
+- 生成：12 根管每根 19968/9984/4992 三角形，rel_err L1 0.0027–0.0035、L2 0.0050–0.0063（scale 3.0），8 个姿势，Debug 约 0.75 s/根（共 9.2 s；`BREAK_LOD_CACHE` 可缓存）。
+- 真实运行（`BREAK_STRESS_LOD_SKIN=12 BREAK_CAM=0,2.5,0,0,-10 BREAK_CAM_DOLLY=0.3 BREAK_FRAMES=150`，Release）：九种组合 transitions 都是 24，fading_avg：VK clustered 3.61 / blinn 5.21 / 延迟 4.80，GL 0.33 / 0.21 / 0.09，D3D12 0.62 / 0.33 / 0.36（GL/D3D12 帧率低，250 ms 淡化覆盖的帧少）；ratio 0.31–0.74；无 ERROR。D3D12 blinn 前向本身约 16 fps（不开压力场景也一样，既有情况），150 帧需要超过 60 s，用 100 s 超时跑完。VK Debug 三条路径验证层 0；D3D12 Debug（调试层 + GBV）无调试层消息。
+- 截图（VK Debug，`BREAK_UI=0 BREAK_TAA=0 BREAK_MB=0 BREAK_BLOOM=0`，第 60 帧动画中段，近处弯管裁剪）：LOD2（`BREAK_LOD_PIXEL_ERROR=1000`）、LOD1 混合、LOD0（`BREAK_LOD=0`）轮廓与弯折一致，两个弯折处无撕裂、无塌陷；淡化中（`BREAK_LOD_FADE_MS=100000`，fading_avg 11.81）表面连续无空洞。
+- 不变性：默认场景（无压力场景）对比 2584a56e 构建：日志按数字/行号归一化后 `BREAK_LOD=1` 只差一行帧率日志、`BREAK_LOD=0` 完全相同（默认场景的蒙皮手臂 48 三角形不生成 LOD，`Skin LOD` 行不出现）；第 55 帧截图差 > 8 的像素占 0.68%（LOD=1）/ 0.28%（LOD=0），同一基准构建连跑两次为 0.67%。
+- 性能（VK Release，12 根管，300 帧，3 次）：LOD 开 180.7 / 212.4 / 214.0 fps，`BREAK_LOD=0` 221.3 / 196.0 / 231.6 fps，三角形比约 0.45–0.51。24 万蒙皮三角形在这台 GPU 上不是瓶颈，差别在噪声内，看不出收益。
+- **真实 glTF 蒙皮资产（补测）**：Khronos 样例 CesiumMan（19 关节、4672 三角形）、BrainStem（18 关节、59 个蒙皮图元）、RiggedFigure（256 三角形）只在本地下载使用、不入库。三后端 Release 各跑 150 帧：全部正常退出，0 设备丢失，0 条错误日志。
+  - 生成：CesiumMan 4672/2336/1168 三角形，rel_err 0.0128/0.0257，8 个姿势，约 120 ms；BrainStem 59 个图元中 34 个达到门槛、33 个生成了级别，总计 61666/27504/13930 三角形，约 2.0 s（Release，一次性加载成本）；RiggedFigure 低于 512 三角形门槛，按设计不生成。
+  - 运行：BrainStem 相机推远时 44 次换级、平均 13 个图元在淡入淡出、可见三角形降到 71%；CesiumMan 默认机位不换级，`BREAK_LOD_PIXEL_ERROR=400` 强制到 LOD2（三角形 25%）后正常绘制。VK Debug 下 BrainStem 0 条验证消息，D3D12 调试层下 0 条消息。
+  - 近距离检查（补测）：新增 `BREAK_MODEL_VIEW=s`（见下），CesiumMan / BrainStem 在 VK Debug 下 `s=0.55`、`BREAK_DOF=0 BREAK_BLOOM=0` 第 30、60 帧截图：肩、肘、髋、膝弯折处表面连续，无撕裂、无塌陷、无尖刺；GL / D3D12 Release 同机位截图一致，0 条 ERROR，VK 0 条验证消息。
+  - 近看时发现并修了一个加载器问题：glTF 关节的全局变换要包含它上面的非关节祖先节点（CesiumMan 是 `Z_UP` → `Armature` → 根关节），引擎的骨骼只沿关节父子链计算，把这些祖先丢了，所以这类模型在演示里是侧躺的（Y-up 引擎里按 Z-up 摆放）。现在 `asset_load_gltf` 把每个带非单位世界变换的非关节父节点变成一个额外的根关节（逆绑定为单位阵），用常量 T/R/S 通道复现该节点的世界变换（最多 8 个，且受 `SKELETON_MAX_JOINTS` / `SKELETON_MAX_CHANNELS` 限制，超出时打 WARN 保持原行为）；只在有动画时生效（没有动画的骨骼本来就不跑蒙皮矩阵）。两个模型修后都站立。新测试 `gltf_skin_root_keeps_non_joint_ancestor_transform` / `gltf_skin_root_identity_ancestor_adds_no_joint`（`test_asset_gltf` 52/52）。
+- **模型查看模式** `BREAK_MODEL_VIEW=s`（演示程序）：不画地形、水面，不建展示区与下落方块；相机放在模型包围盒中心 +Z 方向，距离为完整入画距离的 s 倍（s=1 整体，s<1 更近）。蒙皮网格的包围盒用第一个动画采样姿势蒙皮后的顶点算（启动时读回一次）。`BREAK_CAM` 仍可覆盖机位。
+- 测试附注（已查明并修复）：GL Debug 树一次 `ctest -j4` 里 `test_lod_cache` 偶发失败。原因是 `lod_cache_round_trip_is_identical_and_second_run_hits` 断言 `saved_ms > 0`，而 `saved_ms` = 文件里存的冷生成耗时 − 命中时的读取耗时：这个测试网格只要 4–10 ms 生成，读回刚写的文件也要 3.5–6.5 ms，并行负载下读取一慢就会变负。GCC 构建生成更快（约 4 ms），所以 R707a 记录的「GCC 下必失败」也是同一原因。代码本身没问题，改的是断言：校验 `saved_ms` 精确等于「按微秒截断的冷生成耗时 − 命中读取耗时」。验证：在读取前人为加 15 / 40 ms 延迟，旧断言失败、新断言通过；把 `saved_ms` 的累加删掉，新断言能报错；GCC 构建连跑 3 次 5/5（旧断言 3 次都失败）；GL `ctest -j8` 3 轮全过。
+- **BSCN 读档重建（补测）**：新增脚本钩子 `BREAK_BSCN_ROUNDTRIP_AT=f`，第 f 帧执行与 `B` 键相同的保存、第 f+10 帧执行与 `N` 键相同的读取（日志 `BSCN_ROUNDTRIP save/load at frame N`）。`BREAK_CAM_DOLLY=0.1 BREAK_BSCN_ROUNDTRIP_AT=40 BREAK_FRAMES=120`：VK Debug 默认场景、`BREAK_STRESS_LOD=50 BREAK_STRESS_LOD_ECS=50`（mega 51 次换级、ECS LOD 重建）、`BREAK_STRESS_LOD_SKIN=4`（读档后 `Skin LOD: on -- 4 skinned meshes` 重建，10 次换级）均正常退出、0 设备丢失、0 条验证消息；GL / D3D12 Release 跑 `BREAK_STRESS_LOD_SKIN=4` 同样重建，10 次换级，无 ERROR。测试会在 `engine/` 下生成 `scene_save.bscn` / `scene_state.bin`。
+- 未验证：Metal；Linux 运行。
+
+
+## 本轮更新：FS3 — 尺寸变化只重建渲染目标，不再重编着色器（无标题栏全屏 任务 3）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-borderless-fullscreen-design.md` 3.3）
+- **共用助手 `renderer/post_targets.h`**：每个系统用一张表（槽位、宽、高、格式）描述自己的尺寸相关 FBO；`post_targets_replace` 先全部新建，任何一个失败就销毁已建的并返回 false，旧目标原样保留（与 `main.c` R362 同一「先建后换」规则），全部成功才销毁旧的并替换。
+- **20 个系统新增 `*_resize(sys, dev, w, h)`**：post_process（bloom）、ssao、taa、ssr、dof、volumetric、fxaa、ssgi、lens_flare、sharpen、motion_blur、contact_shadow、sss、upscale（`upscale_resize(s, dev, rw, rh, dw, dh)`）、color_grade、god_rays、debug_viz、lens_effects、combined_aa、combined_color。每个系统的 init 原来直接建 FBO 的几行改为调用同一个静态 `*_targets_create`，其余（管线、反射表、采样器、uniform 位置、失败时 shutdown 的判据、日志）不变；resize 只调 `*_targets_create`。半分辨率目标统一用 `post_targets_half`（`/2` 且至少 1，与原来的钳制一致）。
+- **时间性历史**：taa、upscale、combined_aa（合并路径）resize 后 `history_idx = 0`、`first_frame = true`，下一帧不混合旧尺寸的历史；combined_aa 回退链调用内部 fxaa/taa 的 resize，combined_color 回退链调用内部 color_grade 的 resize。
+- **不迁移**：tonemap（只有 1×1 亮度目标）与 cinematic（无目标）没有尺寸相关资源，重建块不再动它们（以前每次尺寸变化都 shutdown+init，也会重编着色器、并把自动曝光的适应状态清零）。
+- **`main.c` 重建块**：scene_fbo / forward_scene（R362）、occlusion_cull_resize、deferred_resize 不变；后处理改为 `FS3_RESIZE_OR_REINIT(resize, shutdown, init)`，某个系统 resize 失败时只对它回退到完整 shutdown+init，并打印 `RESIZE_FALLBACK <名字>`。
+- **尺寸去抖**：新尺寸先记为待定，只有下一帧仍是同一尺寸才重建；期间尺寸再变就替换待定请求并打印 `RESIZE_COALESCE frame=.. drop=WxH keep=WxH`，所以同帧或相邻帧的多次变化只按最终尺寸重建一次（代价：尺寸变化后最多晚 1 帧重建，期间用旧目标渲染，画面为旧比例的拉伸）。`rhi_device_resize` 仍在窗口尺寸变化的当帧调用（交换链必须跟上窗口），并只在尺寸真正改变时调用一次。
+- **测量钩子**：`BREAK_RESIZE_AT=frame:WxH[,frame:WxH...]` 从指定帧起强制渲染尺寸 rw×rh（等价于 F1 改渲染比例，走完全相同的重建块），每次重建打印 `RESIZE_REBUILD frame=.. rw=.. rh=.. w=.. h=.. fallbacks=.. ms=.. scene_ms=.. post_ms=.. tail_ms=..`（scene = 场景 FBO，post = 后处理系统，tail = occlusion + deferred）。
+
+### 耗时（Release，1280×720 窗口，800×450 ↔ 960×540 来回 6 次 × 3 轮 = 18 次的中位数）
+
+| 后端 | 改动前 总计 / 后处理 | 改动后 总计 / 后处理 |
+|---|---|---|
+| D3D12 | 45.0 / 37.6 ms | 25.6 / 21.0 ms |
+| VK（`BREAK_OCCLUSION=0`，见下） | 130.7 / 110.8 ms | 74.8 ms（该轮二进制未带分项） |
+| GL | 64.5 / 39.6 ms | 100.6 / 31.8 ms |
+
+- 后处理部分三后端都下降（D3D12 −44%、VK −46% 总计、GL −20%）。剩余的后处理时间是每个 FBO 的创建/销毁本身：VK `rhi_offscreen_fbo_destroy` 每次 `vkDeviceWaitIdle`、D3D12 每次分配提交资源，这是 RHI 层的成本，不在本任务范围。
+- GL 总计中位数反而更高，来自 `scene_ms`（scene_fbo + forward MRT 重建，本任务未改动）的 160–720 ms 偶发尖峰，改动前后都有（改动前单次最高 588 ms），出现频率随机；测量期间其他代理同时在跑演示程序，GPU 有争用。只看后处理分项是 39.6 → 31.8 ms。
+
+### 测试（TDD，`test_d3d12_warp_runtime` 新增 4 个，先因缺少 `*_resize` 编译失败，实现后 86/86）
+- `post_process_resize_rebuilds_only_targets_and_still_blooms`：4 条管线与采样器 handle（index+generation）不变，ping/pong 6×3、composite 12×6（FBO 字段与 `rhi_texture_get_size` 双重检查），resize 后灰色输入经 bloom 链得到 0.5±0.01。
+- `taa_resize_keeps_the_pipeline_resets_history_and_resolves`：管线不变、两张历史目标 6×4、`first_frame` 重新置位且 `history_idx` 归零，resize 后的第一次 resolve 原样输出当前帧（逐像素 ±0.004）。
+- `fxaa_and_combined_aa_resize_keep_pipelines_and_resize_targets`、`every_post_system_resize_keeps_pipelines_and_resizes_targets`：其余 16 个系统逐个检查管线不变、目标尺寸正确；SSGI 请求 0×0 时半分辨率目标（钳到 1×1）先建成、全分辨率目标被 RHI 拒绝，验证回滚后旧目标 handle 与尺寸不变、系统仍 ready。
+- `debug_layer_reported_nothing_for_the_whole_suite` 仍为 0 错误 0 警告 1 个别名。
+
+### 验证
+- VK 已知问题（改动前同样存在）：Release 演示在第一次或第二次重建后 `VK: device lost`，`BREAK_OCCLUSION=0` 时消失，问题在 `occlusion_cull_resize`（先销毁 Hi-Z 纹理再新建）或 Hi-Z 相关路径，与后处理无关，未在本任务修复；VK 计时因此在 `BREAK_OCCLUSION=0` 下进行。
+- VK Debug（`BREAK_OCCLUSION=0`，含同帧去抖）：`VK validation messages this run: 0`；D3D12 Debug 树 `ENGINE_D3D12_DEBUG=1` 运行 6 次重建无调试层消息。
+- 截图（Release，UI 关，第 100 帧，两次重建在第 61/91 帧对齐；VK 加 `BREAK_OCCLUSION=0`）：改动前后逐像素平均差与改动前自己连跑的噪声同级——VK 新旧 0.38–1.61（旧旧 0.16–1.69），GL 0.46–3.27（旧旧 0.49–0.98、新新 0.69–3.14，新版第 2 次与所有图都差 ~3，是单次离群），D3D12 0.61–2.58（旧旧 1.18–2.35）。
+- D3D12 Release 一次运行出现过 `device removed 0x887a0006`（截图那次），重跑 3 次新版与 3 次旧版各 20 次连续重建均未复现；当时其他代理正在同一 GPU 上跑 D3D12 演示，未能确定原因。
+- 0 编译警告：build-vk / build-gl / build-d3d12（Debug）与 build-rel-vk / gl / d3d12（仅 lld `--gc-sections` 提示与 SheenBidi 既有警告）。`ctest -j4 -E test_platform_win32_runtime`：d3d12 194/194、gl 186/186、vk 188/189——失败的是 `test_vulkan` 的 UNIFIED GPU CULL（Hi-Z 后 device lost），单独重跑 4 次全部通过，master 构建同样通过，判断为与其他代理并发占用 GPU 时的偶发问题。
+- GCC（ucrt64）`-std=c11 -Wall -Wextra -Werror -pedantic` 语法检查全部改动 `.c` 通过。
+- 未验证：Metal（本机无）；真正的窗口尺寸变化 / 全屏切换（由任务 2 的 `BREAK_TOGGLE_FULLSCREEN_AT` 覆盖），本次只用渲染比例路径驱动同一重建块。
+
+
+## 本轮更新：修复 windows-d3d12 自 `a323c379` 起变红（bloom 渲染目标/着色器资源别名）
+
+- **现象**：`test_d3d12_warp_runtime` 的 `debug_layer_reported_nothing_for_the_whole_suite` 期望 1 次（测试故意制造的）RT/SRV 别名，实际 4 次；多出的 3 次来自 `post_process_initialises_and_blits_on_d3d12`。
+- **原因**：`a323c379`（恢复 Metal 前向渲染）把 `post_process_apply` 每个 pass 的顺序改成「先绑目标 FBO，再绑管线和源纹理」，因为 Metal 绑管线前必须有打开的 render pass。于是第 2、3、4 次模糊时，要写入的纹理正是上一 pass 刚读的源纹理，仍留在 D3D12 描述符表里，绑成渲染目标时触发 R643 别名诊断（没有实际读写冲突：下一次绑纹理前已经换了源）。
+- **修复**：这三处在绑目标之前先重新绑一次模糊管线，D3D12 换根签名会清空描述符表（`live_srv`），别名消失；Metal 上这只是在仍然打开的编码器上设一次状态，顺序约束不变；GL/VK 无影响。
+- **验证**：WARP 82/82（`1 aliases`）；三后端 Release 演示第 30 帧截图与改动前对比，差异与同一构建连跑两次的噪声同级（VK mean 0.025 vs 0.028，GL 0.011 vs 0.184，D3D12 0.030 vs 0.036）；ctest vk 188、gl 185、d3d12 193、ASan 177 全部通过；GCC `-Werror -pedantic` 语法检查通过。Metal 未在本机验证。
+
+
+## 本轮更新：R707a — 蒙皮网格运行时 LOD（一）：纯 CPU 模块 `renderer/lod_skin`（多姿势减面 + 实测蒙皮误差 + 关节包围球 + 缓存键）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-skinned-lod-design.md` 3.1 / 3.3；尚未接入 `main.c`）
+- **减面**：`lod_generate_levels_skinned` 读 64 字节 `SkinnedVertex`。属性 = 法线（0.5）+ UV（1.0）+ 每个采样姿势的蒙皮后位置（除以绑定姿势 `meshopt_simplifyScale`，权重 1.0），最多 8 个姿势（超过时均匀抽取，首尾必选），共 ≤ 29 个属性。级别比例、误差上限、停止比例、`LockBorder`、顶点缓存优化与静态网格相同：`lod_gen.c` 把这条链抽成 `lod_generate_levels_attr`（调用方给属性与 `vertex_lock`），`lod_generate_levels` 改为调用它，输出逐位不变（`test_meshopt_c` / `test_lod` 不改）。无姿势时只用绑定姿势，并把「与相邻顶点主导关节不同」的顶点 `meshopt_SimplifyVertex_Lock` 锁住。
+- **蒙皮约定**：`Σ w_k · (M[j_k] · p)`；关节号 ≥ joint_count 钳到 joint_count−1（不崩溃，与 GPU 读越界不同但有定义）；权重和 ≤ 0 或非有限时用绑定位置。
+- **误差（实测）**：对绑定姿势和每个采样姿势，计算 LOD0 与 LODn 蒙皮后表面的对称偏差：LODn 丢掉的每个 LOD0 顶点到 LODn 最近三角形，以及 LODn 每个三角形的重心与三条边中点到 LOD0 最近三角形；最近三角形用均匀网格精确搜索（不是采样上限估计，所以比 `lod_authored_error` 快且不漏点）。取最大值 / scale，逐级非递减，覆盖 meshopt 的 `result_error`。
+- **包围**：`lod_skin_joint_spheres`（每关节：权重 > 0 的绑定顶点的 AABB 中心 + 最大距离）；`lod_skin_bounds` 把每个球按 `skin_mats[j]` 变换，半径乘 3×3 部分谱范数的上界（`AᵀA` 的 Gershgorin 行和开方，正交列时等于最大列范数，对含剪切的矩阵也保守），再逐个求并。
+- **缓存**：`lod_cache.c` 新增 `lod_cache_key_ex`（额外字节参与哈希；为空时与 `lod_cache_key` 相同）和 `lod_cache_generate_ex`（生成回调）。`lod_cache_generate` 改为调用 `_ex`，静态网格的键、文件格式和统计不变。`lod_skin_cache_key` / `lod_skin_cache_generate` 额外哈希 "SKIN" 标记、版本、joint_count、pose_count 与全部姿势矩阵。
+- **非法输入**：NULL、0 计数、索引越界、joint_count 为 0 或 > 128、poses 为 NULL、顶点或姿势含 NaN/Inf、max_levels ≤ 1，都返回 level_count=1。
+
+### 测试（新 `test_lod_skin`，8 个用例）
+- 级别索引都 < 顶点数、顶点数据逐字节不变、误差非递减；3 关节弯管（64×32 环，4096 三角形）在两个弯曲姿势下的实测 L1 误差：只按绑定姿势减面为 0.0539，多姿势为 0.0054（同为 6144 索引）；`rel_error·scale` ≥ 每个采样姿势和绑定姿势下的 `lod_authored_error` 实测值；20 个姿势时首尾姿势都被覆盖；无姿势时所有主导关节边界顶点都被保留；200 组随机姿势（含任意 3×3 线性部分）下所有蒙皮顶点都在 `lod_skin_bounds` 内；非法输入 13 种；关节越界与零权重的网格照常生成；缓存键随姿势、姿势数、关节数变化且不同于静态键，冷/热往返与直接生成逐位一致。
+- 变异检查（临时改代码、看到失败、已恢复）：去掉姿势属性权重 → 用例 2 失败（多姿势误差变成 0.0539）；跳过实测误差 → 用例 2/3/4 失败；包围半径不乘矩阵范数 → 用例 5 失败；不锁顶点 → 用例 4 失败；额外键不参与哈希 → 用例 7 失败。
+- 性能（20480 三角形弯管，8 个姿势，3 级）：clang -O2 162 ms（静态 `lod_generate_levels` 13 ms）、GCC -O1 213 ms、Debug 441 ms、ASan Debug 1110 ms。最初按顶点逐三角形穷举是 1077 ms（GCC -O1），改为网格精确最近邻并跳过 LODn 保留的顶点后降下来。
+
+### 验证
+- build-vk（Debug，VK）与 build-asan（Debug，`-fsanitize=address -fno-omit-frame-pointer`，GL）0 编译警告（仅 lld `--gc-sections` 提示）。`ctest -j4 -E test_platform_win32_runtime`：vk 188/188（fuzz 目标需显式构建）；ASan `-LE "graphics|fuzz"` 177/177。
+- GCC（ucrt64）`-std=c11 -Wall -Wextra -Werror -pedantic` 语法检查 `lod_skin.c`、`lod_gen.c`、`lod_cache.c`、`test_lod_skin.c` 通过；用 GCC 编译运行 `test_lod_skin` 8/8。GCC 编译的 `test_lod_cache` 有 1 个用例（`saved_ms > 0`）失败，用 master 源码同样失败，是计时相关的既有问题，与本改动无关；clang 树里通过。（后续已查明是断言依赖读写耗时，已修，见 R707c 测试附注。）
+- 未验证：Linux LeakSanitizer（测试已释放所有分配，但没在 Linux 上跑过）；真实动画资产；GPU 端与 `main.c` 接入（后续步骤）。
+
+
+## 本轮更新：R707b — 蒙皮 LOD 前置：直接绘制带 `first_instance` 的 RHI 入口
+
+### 做法
+- 新增 `rhi_cmd_draw_indexed_instanced_base(cmd, index_count, instance_count, first_index, vertex_offset, first_instance)`（`rhi.h` 紧跟 `draw_indexed_base`）。设计文档 3.4：蒙皮网格走直接绘制，淡入淡出值按 R703b 约定放在 `first_instance` 高 16 位，着色器读 `gl_BaseInstanceARB` / `SV_StartInstanceLocation`。
+- VK：`vkCmdDrawIndexed(..., first_instance)`；`rhi_cmd_draw_indexed_base` 改为它的 `first_instance=0` 薄包装（原实现就是传 0，逐字节等价）。
+- D3D12：`DrawIndexedInstanced(..., StartInstanceLocation=first_instance)`；`draw_indexed_base` 同样改为薄包装（原实现同样只是最后一个参数传 0）。`SV_StartInstanceLocation` 对直接绘制同样生效，`caps.indirect_first_instance_supported`（按 SM 6.8 探测）对新入口口径一致，WARP 测试已证实。
+- GL：`first_instance≠0` 用 `glDrawElementsInstancedBaseVertexBaseInstance`（GL 4.2 核心；上下文按 4.5 core 创建，与 `indirect_first_instance_supported=true` 一致；函数指针为空时记一次 ERROR 并退回无 base 的绘制）。`first_instance=0` 直接走原 `rhi_cmd_draw_indexed_base`，因此 `draw_indexed_base` 本身不动（它有 `first_index==0 && vertex_offset==0` 走 `glDrawElementsInstanced` 的特殊分支）。
+- Metal：与 `draw_indexed_base` 一样是 LOG_ERROR 桩（Metal 目前连 `draw_indexed_base` 都没实现）。headless、`tests/rhi_stubs.c`：空实现；`test_rhi_capabilities` 的 headless 空句柄调用表加上新入口。
+
+### 测试
+- `test_vulkan`（VK 与 GL 两棵树共用）新增 TEST 11b：复用 TEST 11 材质数组场景，但每个可见四边形用一次 `rhi_cmd_draw_indexed_instanced_base(6, 1, k*6, k*4, 层号)` 直接绘制，不跑间接 execute（execute 计数必须为 0），象限像素断言与 TEST 11 相同。
+- `test_d3d12_warp_runtime` 新增 `direct_start_instance_reaches_the_shader`：`indirect_start_instance_reaches_the_shader` 的直接绘制版，四组 {实例数, 起始实例} → 层 0/1/2/1，四边形前面垫 3 个垃圾索引和 2 个垃圾顶点，同时覆盖 `first_index` / `vertex_offset`；RT1 原始位为 0。
+- 变异检查：三后端把 `first_instance` 换成 0，三个测试都变红（VK/GL：全部象限变成层 0 的白色；D3D12：`StartInstanceLocation=1` 画出层 0 的红色）。
+
+### 已知
+- 基线（master f794e3b5）上 `test_d3d12_warp_runtime` 本来就红：`debug_layer_reported_nothing_for_the_whole_suite` 期望 1 次 RT/SRV 别名，实际 4 次。多出的 3 次来自 `post_process_initialises_and_blits_on_d3d12`，由 a323c379（修 Metal 前向渲染）把 `post_process_apply` 里的 `rhi_offscreen_fbo_bind` 挪到 `bind_texture` 之前引起（把 `post_process.c` 还原到 a323c379^ 后 82/82 通过）。与本轮无关，本轮不修。
+
+### 验证
+- build-vk / build-gl / build-d3d12 Debug（含测试）：0 条编译警告（只有既有的 lld-link `--gc-sections` 提示）；改动的 C 文件均过 GCC `-Wall -Wextra -Werror -pedantic` 语法检查（`rhi_d3d12.c` 除外；`rhi_gl.c` 的 Linux 路径需要 GLX 头，单独抽出新函数对 glad.h 检查）。
+- Metal 未在本机构建、未验证。
+
+
+## 本轮更新：R706 — 运行时 LOD：阴影级别 +1（`BREAK_LOD_SHADOW_BIAS`）伪影排查：未发现伪影，不改选择逻辑
+
+### 结论
+- 阴影 pass 比相机粗一级（默认 bias=1）在三后端都没有可见的自阴影痤疮、漏光或 peter-panning。截图差异和同一配置连跑两次的噪声同级，没有一个像素在亮/暗之间翻转。所以保留固定 +1，不加「按阴影贴图纹素误差选级」的逻辑（加了也不会选出不同的级别，见下）。
+- 原因在数量级上：压力岩石（mesh 7，节点缩放 1）L1/L2 的世界误差是 `rel_err × scale` = 7.7 / 15.2 mm；演示 glb（mesh 0）L1/L2 是 10 / 98 mm。CSM 每级联 1024² 象限，`2·extent/1024` 得纹素大小 12.9 / 16.0 / 33.6 / 133 mm（级联 0..3，splits 0.1/6.69/14.88/32.09/100），而深度比较的常数偏移 0.002 在正交深度范围 `2·extent` 上折合 26 / 33 / 69 / 272 mm。岩石的粗一级误差在任何级联都小于 1 纹素、远小于深度偏移；glb 只有 L2（98 mm）超过级联 0/1 的纹素，但相机在 L0 时 bias=1 只给到 L1（10 mm），相机自己选 L2 时阴影也夹在 L2。按纹素误差选级会得出同样的结果。
+
+### 测量（Release，`BREAK_STRESS_LOD=200 BREAK_UI=0 BREAK_TAA=0 BREAK_MB=0 BREAK_BLOOM=0 BREAK_LOD_FADE_MS=0`，第 80 帧截图，bias 0 vs 1 vs 2）
+- 必须关淡入淡出、晚一点截图：第 30 帧还在 R703b 淡入淡出里（fading_avg≈112），同 bias 连跑两次的噪声（mean 0.55、>24 的像素 1454）就和 bias 0↔1 的差一样大。关掉后同配置连跑噪声降到 mean 0.006、max 3。
+- 新增 `BREAK_SUN=方位角,仰角`（度，可选；未设置时与之前逐像素相同）用于低太阳。
+- 指标：逐像素 max 通道差；「明暗翻转」像素 = 亮度变化 >25% 且 >12/255。（左上 FPS 文字区域不计入。）
+
+| 场景（相机 / 太阳） | 后端 | 同配置噪声 max | bias 0↔1 max / >24 像素 / 翻转 | bias 0↔2 max / >24 / 翻转 |
+|---|---|---|---|---|
+| 近岩石 `0,3,-2,0,-5`，默认太阳 | VK | 3 | 6 / 0 / 0 | 7 / 0 / 0 |
+| 同上 | GL / D3D12 | 3 / 3 | 9 / 0 / 0，9 / 0 / 0 | 10 / 0 / 0，6 / 0 / 0 |
+| 近岩石斜看 `2,1.6,-3,-20,-8`，太阳 60°/6° | VK | — | 11 / 0 / 0 | 12 / 0 / 0 |
+| 同上 | GL / D3D12 | 6 / 8 | 29 / 6 / 14，10 / 0 / 0 | 13 / 0 / 0，15 / 0 / 0 |
+| `0,2,-2,0,-10`，太阳 90°/12° 和 60°/6° | VK | — | ≤12 / 0 / 0 | ≤12 / 0 / 0 |
+| glb 节点（mesh 0，相机 L0、阴影 L1/L2）`0,2,6,0,-10` | VK | — | 39 / 30 / 1 | 28 / 10 / 0 |
+| glb 节点中距（相机 L1）`0,2,10,0,-8`，太阳 180°/25° | VK | — | 38 / 44 / 8 | 41 / 54 / 8 |
+| 同上 | GL / D3D12 | 26 / 12 | 30 / 15 / 0，7 / 0 / 0 | 32 / 10 / 1，7 / 0 / 0 |
+
+- 看过的放大裁剪：VK 低太阳近岩石（300..620×240..420，b0 / b2 / 差热图，热图全黑）；GL 低太阳那 14 个翻转像素所在的岩石队列（300..680×80..210，×3 放大）是零散单像素，位于远处岩石轮廓和 PCSS 半影边上，没有成片痤疮或亮缝；VK glb 中距（720..940×230..400）差异只在球体剪影一圈（PCF 边缘的 1 像素级偏移），受光面内部为 0。
+- 截图和脚本在工作树的 `.r706/`（未提交）。
+
+### 性能（VK Release，N=200，600 帧，`BREAK_BENCH_STATS=600`，bias 0/1 交替；GPU 与另一代理共享，噪声大）
+- 新增 `LOD_STATS ... shadow_tris_avg=`：每级联一次的 mega 阴影三角形数（全部节点在其阴影级别，未做级联视锥剔除，与调试 UI 的 Tris 同口径）。
+- 演示相机 `0,12,22,0,-25`：shadow_tris 1273334 → 1270598（−0.2%，几乎所有节点相机已在 L2）；fps 152.6/152.0/141.6 vs 128.2/150.9/154.0。
+- 远相机 `0,35,20,0,-35`：同上三角形；fps 163.0/159.6 vs 158.9/124.8。
+- 近相机 `0,3,-2,0,-5`：1337940 → 1279654（−4.4%）；fps 140.5/136.5/137.8 vs 145.0/137.8/122.6。
+- bias 在这个压力场景里只省 0.2–4.4% 阴影三角形，fps 差在噪声内（单次 120 多的低值两边都有）。省得少是因为节点到相机的距离让多数节点相机级别已经是最粗的 L2，阴影无处再降。
+
+### 验证
+- build-vk/gl/d3d12 Debug（含测试）与 Release 三棵：0 条编译警告（只有既有的 lld-link `--gc-sections` 链接提示）；`main.c` GCC `-Wall -Wextra -Werror -pedantic` 语法检查通过。
+- ctest -j4（排除 ToDesk 剪贴板用例）：vk 187/187、gl 184/184、d3d12 192/192。
+- VK Debug 压力场景 + 低太阳、演示场景：`VK validation messages this run: 0`。
+- `BREAK_LOD=0` 演示场景与改动前构建：max 16（mean 0.04，粒子/噪声级），`MegaBuffer: 15584 verts, 51180 indices, 11 draw cmds` 相同；默认压力场景改动前后 max 3–4（有一次物理刚体落在镜头前造成整帧差异，重跑两次复现不了，是物理计时差，与本改动无关）。
+
+
+## 本轮更新：R705 — 运行时 LOD（二期）：glTF `MSFT_lod` 授权级别导入
+
+### 做法
+- **导入**（`asset/asset.c`）：cgltf 不解析 `MSFT_lod`，按未处理扩展的原始 JSON 读取 `ids`（只接受非负整数数组）。被引用节点仍加载网格资源，但 `has_mesh=false`，不作为独立节点渲染。基础网格的每个图元记录最多两个备选网格（`Mesh.authored_lod[2]` / `authored_lod_count`），多出的级别记日志后丢弃。越界、自引用、环、嵌套链接（备选节点本身带 `MSFT_lod`）、非整数/负数/超大 id 使整个文件回退到原自动简化，备选节点照常渲染；图元数不匹配、空网格、AABB 超出 LOD0 的 10% 对角线时只对该节点回退。由于不接受嵌套链接，环在构造上不可能出现，不需要遍历。
+- **顶点**：授权级别使用自己的顶点。mega 烘焙把备选网格的顶点（同一节点世界变换）追加在该节点 LOD0 顶点之后，索引仍是绝对 mega 索引、`vertex_offset=0`（R687 约定），所以六条可见性路径、unified cull 与 R703b 的 `first_instance` 打包都不需要改动。新 `lod_bake_validate_ex` 按命令检查顶点范围（`BREAK_LOD_SELFTEST`）。ECS 实例路径按 (网格, 级别) 绑定备选网格的顶点缓冲，索引仍放在每网格额外索引缓冲里。
+- **误差**：采用**实测几何偏差**，不用 `MSFT_screencoverage`（它依赖作者的视角假设，和引擎的像素误差阈值不可比）。`lod_authored_error` 计算对称 Hausdorff 估计（两个方向各取采样顶点到对方最近三角形的最大距离，采样数按约 1600 万次点-三角形测试设上限），按级别保持非递减，以 AABB 对角线为 scale 存入 `rel_error`，然后进入原屏幕误差选级、迟滞和淡入淡出。授权网格不会调用简化器，也不走 R704 磁盘缓存（在缓存之前返回）。
+- **测试**：`test_lod` 45 → 47（每命令顶点范围、偏差测量与非法输入）；`test_asset_gltf` 47 → 50（链接与隐藏、多于两级的截断，以及 8 种非法 id 回退）。新增小夹具 `assets/msft_lod_test.gltf`（78 KB：1352/200/32 三角形地形三级 + 一个 648 三角形自动简化网格）。
+
+### 验证
+- build-vk / build-gl / build-d3d12（Debug）与 build-rel-vk 编译 0 警告（仅 lld `--gc-sections` 链接器提示与 Release 的第三方 SheenBidi 既有警告）；GCC `-Wall -Wextra -Werror -pedantic` 语法检查所有改动的 C 文件通过。
+- 完整 `ctest -j4 -E test_platform_win32_runtime`：三棵树除 `test_locked_dependencies` 外全部通过（该用例只因 worktree 没有被 git 忽略的 `external/VulkanSDK`，用主仓库 external 目录跑同一脚本为 OK）；D3D12 `test_d3d12_warp_runtime` 的 GPU timer 比例用例在并行 GPU 负载下偶发失败，单独重跑通过。fuzz 标签 5/5 通过（三棵树），`fuzz_asset_gltf` 额外以 MSFT 夹具为种子跑 800 次。
+- 夹具实跑（`BREAK_LOD_PIXEL_ERROR=4 BREAK_LOD_SELFTEST=1 BREAK_CAM=0,4,-6,0,-25 BREAK_CAM_DOLLY=1.0`，150 帧）：VK / GL / D3D12（debug layer + GPU-based validation）均显示 `mesh 0 uses 2 authored level(s)`、`LOD authored: rel_err=0.010217/0.049384`、`MegaBuffer: 2264 verts ... 16 draw cmds`、`LOD_SELFTEST: PASS`，`LOD_TRACE` 节点 0 依次 0→1→2，LOD_STATS transitions=4；ECS 实体（引用网格 0）transitions=10。VK 的 deferred、blinn、`BREAK_GPUCULL=1`、`BREAK_UNIFIED_FORWARD=0` 也都 PASS 且 validation=0；D3D12 无调试层消息。固定相机截图的授权 LOD1 几何完整。
+- 无扩展：以 HEAD 构建的 VK demo 对比 `test.glb` 默认与 `BREAK_LOD=0`，LOD gen / MegaBuffer / LOD 表 / SELFTEST 行逐字相同（15584 verts、89328 / 51180 indices、13 / 11 cmds），全部日志在数字与时间归一化后只差一行与时序有关的 Lua 心跳，validation 均为 0。
+
+
+## 本轮更新：R704 — 运行时 LOD（二期 2.3）：简化级别的可选磁盘缓存
+
+### 做法
+- 新纯 C11 模块 `renderer/lod_cache.{c,h}` 包装 `lod_generate_levels`，mega 与 ECS 共用既有 `mesh_lod_generate` 入口。`BREAK_LOD_CACHE=<directory>` 是唯一开关，**默认关闭**；未设置/空字符串没有缓存文件 I/O，行为与之前相同，也不会默认写当前目录。目录必须已存在；不可写时只警告一次并继续生成/加载场景。
+- 键覆盖完整顶点/索引字节、数量、stride、max_levels、最小三角形数/停止比例、缓存格式版本和 meshopt_c 1030，使用两个独立 64-bit hash。80-byte little-endian 头保存键、源数量、级别数、scale 与上次生成耗时，随后是各级 count/rel_error 和 LOD1+ 索引。读取逐项检查 magic/version/key、溢出安全的文件长度、级别和三角形计数、有限误差以及所有索引 `< vertex_count`；损坏/截断/不匹配均回退重新生成。
+- 写入使用唯一临时文件 + 原子 rename（Windows `MoveFileExA` 替换既有文件），第二个 writer 后也保持有效文件。命中结果与重新生成的 `LodMeshLevels` 逐位相同。`LOD_CACHE_STATS` 汇总 hits/misses/read/write bytes、regen/I/O ms 和 estimated_saved_ms（文件中保存的冷生成时间减去命中读取时间）。
+- 新 `test_lod_cache` 5 个用例：键覆盖、逐位 round-trip、magic/version/hash/count/截断/body-index 腐败、不可写目录、第二 writer 与关闭路径。还临时移除了索引范围 guard，确认腐败测试随后失败，再恢复 guard。
+
+### 验证
+- build-vk/gl/d3d12-debug/ASan 均 0 警告；完整 ctest：188/188、185/185、193/193；ASan 标准 `-LE 'graphics|fuzz'` 177/177。
+- VK Release `BREAK_STRESS_LOD=200`：冷缓存 2 misses / 380320 bytes written，暖缓存 2 hits / 同 bytes read、0 writes，estimated_saved_ms=28.325；LOD 表与 MegaBuffer 日志逐行相同，冷/暖首帧 BMP 逐字节相同。未设置开关与冷运行截图也相同，且没有 cache stats 或缓存文件 I/O。VK validation 均为 0。
+- 合成大网格冷/暖：80k tris 56.03 → 5.26 ms；320k tris 283.23 → 22.42 ms，均返回 3 级。临时缓存目录已清理，scratch benchmark 未纳入提交。
+
+
+## 本轮更新：R703b — 运行时 LOD（二期 2.2 后半）：MEGA 静态场景的抖动交叉淡入淡出
+
+### 做法
+- **每节点状态**：`MegaLod` 持有 R703a 的 `LodFade`，提交的级别仍是原屏幕误差 + 迟滞结果。`lod_fade_write_commands` 写节点连续命令的 `selected[]` 与 signed k：1..15 只允许细/粗两条相机命令，k=0/16 只留一条；反向与第三级变化继续由 `lod_fade_update/split` 处理。`shadow_selected[]` 和直接阴影仍按阴影偏置立即换级。
+- **命令负载**： signed k 打包在间接命令 `first_instance` 高 16 位（k+16；0 表示不抖动），低 16 位保留材质数组层。每帧只更新 grouped / material-array 两份相机命令缓冲；culling、compact 与 unified 掩码路径不变，不新增描述符、push/root 常量，也不占用运动矩阵。
+- **前向与延迟**：blinn、clustered 及其材质数组变体，以及 static / material-array G-buffer 都使用相同的 4×4 Bayer 互补 `discard`，所以延迟的所有附件共享同一几何覆盖。GLSL 以 `LOD_FADE` 注入；D3D12 使用独立 `*_lodfade_hlsl.*` sidecar 和构建期 DXIL。`BREAK_LOD_FADE_MS=0` 或 `BREAK_LOD=0` 仍创建原着色器/管线，选择掩码和命令上传走 R701 路径。
+- **统计/测试**：`LOD_STATS` 与调试 UI 增加 mega fading 计数；`test_lod` 43 → 45，只新增 mega 命令端点/双命令与材质层保持两个用例。
+
+### 验证
+- build-vk、build-gl、build-d3d12-debug 与三棵 Release 树均 0 警告；完整 `ctest -j4`：187/187、184/184、192/192（含 graphics）全部通过。
+- Release 三后端均运行 `BREAK_STRESS_LOD=200`、150 帧、`BREAK_CAM=0,3,-2,0,-5`、`BREAK_CAM_DOLLY=0.1`、`BREAK_LOD_FADE_MS=1000`：clustered / blinn / deferred 各有实际换级和 mega fading；clustered 分别 208 次换级，fading_avg VK 119.00、GL 13.72、D3D12 12.44。VK 各路径 validation=0；D3D12 debug + GPU-based validation 同压力场景 208 次换级且无调试层消息。
+- VK `BREAK_LOD_FADE_MS=3000` 在第 105 帧保存并检查淡化中的截图（`BREAK_TAA=0 BREAK_MB=0 BREAK_BLOOM=0`），岩石仍完整且 validation=0。
+
+
+## 本轮更新：R703a — 运行时 LOD（二期 2.2 前半）：ECS 实例化路径的抖动交叉淡入淡出
+
+mega 路径的淡入淡出（unified_cull 的 `selected[]` 掩码要允许一个节点同时显示两级）留给 R703b。
+
+### 做法
+- **纯逻辑**（`renderer/lod.{c,h}`）：`LodFade { level, from, start }`。`level` 是提交的级别，也就是迟滞的输入，与一期/R702 的选级完全相同；`from` 是正在淡出的级别。`lod_fade_update` 处理三种情况：空闲时换级开始淡入淡出；淡入淡出中选回 `from` 时反向（细级别占比在那一刻不变，剩余时间 = 已走过的时间，不会跳）；淡入淡出中出现第三个级别时，从当前占像素多的那一级重新开始（任何时刻最多两级）。`lod_fade_split` 给出细级别的占比 k（16 分之几）。`lod_bayer4` / `lod_fade_keep` 是着色器判定的 C 参考实现。
+- **抖动**：4×4 Bayer 有序抖动。细级别保留阈值 + 0.5 ≤ k 的像素，粗级别保留其余像素，每个像素恰好由其中一级覆盖。没有混合也没有排序，深度写入照常开启。
+- **ECS 实例**：选级后，正在淡入淡出（1 ≤ k ≤ 15）的实例在收集时被复制成两行：细级别行带 +k，粗级别行带 −k，各自进入 (网格, 级别) 分桶，和 R702 一样绘制。淡入淡出值放在实例行里上一帧模型矩阵第 0 列的 w 分量（`md[19]`）。仿射矩阵这个位置恒为 0，所以不需要新字段，也不改实例行布局；着色器读出后把它清零，再用于速度计算。
+- **着色器**：GLSL 用 `LOD_FADE` 宏注入，只用于实例化管线（blinn `instanced` 与 clustered `pbr_clustered_inst` + 它专用的一份 `pbr_clustered.frag`；静态、蒙皮、数组管线共用的那份片元着色器不带这个宏）。顶点着色器输出 `flat vLodFade`，片元着色器在开头 `discard`。D3D12 不能运行时注入宏，所以新增两个片元着色器副本 `instanced_mrt_lodfade_hlsl.frag`、`pbr_clustered_lodfade_hlsl.frag`（文件头注明要与原文件同步），两个实例化顶点着色器多输出 `TEXCOORD4`。淡入淡出关闭时创建的仍是原来的着色器和管线。
+- 首次看到的实体（或槽位被复用）直接用选中的级别，不做淡入。
+- **开关**：`BREAK_LOD_FADE_MS`（默认 250，0 = 关闭）；`BREAK_LOD=0` 时强制关闭。启动日志多一行 `ECS LOD: dithered cross-fade 250 ms`，`ECS_LOD_STATS` 多一个 `fading_avg` 字段，调试 UI 多一个 fading 计数。
+- **阴影**：ECS 实例本来就不画阴影（R702 已说明），因此没有阴影淡入淡出。
+- 测试：`test_lod` 36 → 43 个用例：Bayer 排列与两份掩码互补（k = 1..15 时细级别恰好占 k/16）、关闭时立即切换、粗化/细化的占比、单调性、中途反向时覆盖连续、第三级时从占优级别重新开始、与迟滞联用的扫描不会来回跳。
+
+### 验证
+- 构建：build-vk、build-gl、build-d3d12-debug、build-rel-vk 均 0 警告（D3D12 树的 dxc 编译了两个新片元着色器）。
+- ctest（主代理复跑，均 `-j4`）：build-vk 187/187、build-gl 184/184、build-d3d12-debug 192/192，全部通过。
+- 真实淡化冒烟（主代理复跑，Release，`BREAK_CAM=0,3,-2,0,-5`、`BREAK_CAM_DOLLY=0.1`、`BREAK_LOD_FADE_MS=1000`、180 帧）：VK 12 次换级、fading_avg 6.27、0 条验证消息；GL 17 次、fading_avg 1.74；D3D12 17 次、fading_avg 1.83，均正常退出。VK 关闭 clustered 的 blinn 路径同样 12 次换级、fading_avg 6.27、0 条验证消息。此机位与运动确实跨过阈值；默认压力场景机位可能不触发换级（fading_avg=0），不能拿它验证淡化。
+- 与改动前（`bed3f6c1`，同一构建树）对比，第 3 帧截图 + 日志：
+
+| 场景 | 新 vs 旧 平均差 | 旧 vs 旧（噪声） |
+|---|---|---|
+| VK `BREAK_LOD=0` 前向 / 延迟 | 0.018 / 0.045 | 0.033 / 0.043 |
+| VK `BREAK_LOD_FADE_MS=0` / 加 ECS 压力场景 | 0.037 / 0.047 | 0.013 / 0.033 |
+| GL `BREAK_LOD=0` / `FADE_MS=0` | 0.005 / 0.050 | 0.120 / 0.059 |
+| D3D12 `BREAK_LOD=0` / `FADE_MS=0` | 0.000 / 0.000 | 0.000 / 0.000 |
+
+  `BREAK_LOD=0` 时 8 组日志去掉数字后逐行相同。`FADE_MS=0` 时唯一的差别是 `ECS_LOD_STATS` 多了 `fading_avg=0.00` 字段。命令数、上传数、每帧 execute/compact/emission 计数、`draws_avg`、`vis_tris_avg` 全部相同。
+- 校验层：VK Debug（验证层开启），ECS 压力场景 + 相机推远，clustered 与 blinn 实例化各跑一次，淡入淡出确实发生（`fading_avg` 1.67 / 2.73），`VK validation messages this run: 0`。D3D12 调试层 + GPU-based validation 跑了 3 种组合（淡入淡出开 clustered、开 blinn、关），0 条消息。GL 两种组合均正常退出。
+- 截图：VK Release，`BREAK_LOD_FADE_MS=3000`，关闭 TAA/运动模糊/DOF/bloom/锐化，相机推远时第 50 帧与 `FADE_MS=0` 对比：差异只在正处于淡入淡出的 5 块岩石轮廓上（4465 个像素）。放大后可见轮廓呈两级交错的点状边，没有空洞。两级的内部着色几乎相同，所以抖动在内部看不出来，这是预期的。
+- 性能（VK Release，ECS 压力场景 N=200，相机 0.1 m/帧推远，600 帧，2 轮）：淡入淡出关 191.5 / 192.6 fps，开 189.6 / 189.8 fps（约 −1.2%；平均每帧有 0.76 个实例处在淡入淡出中）。
+
+### 已知限制 / 未做
+- mega 路径的淡入淡出：R703b。
+- 淡入淡出期间该实例画两次，三角形数是两级之和（已计入 `vis_tris`）。
+- 实例缓冲满（10000 行）时，淡入淡出中的实例只画细级别那一行。
+- 没有测量淡入淡出的视觉效果是否「看不出跳变」，只确认了两级互补、没有空洞。
+
+
+## 本轮更新：R702 — 运行时 LOD（二期 2.1）：ECS 实例化静态网格按实例选级，按 (网格, 级别) 分组绘制
+
+设计见 `docs/superpowers/specs/2026-10-26-runtime-lod-design.md` 第 8 节（二期状态）。
+
+### 现状（改动前核实）
+- 带 `CTransform + CMeshRef` 的实体走前向实例化路径：每帧收集视锥内实例（行 = 当前/上一帧模型矩阵，128 B），按 `mesh_index` 压缩后每个网格一次 `rhi_cmd_draw_indexed(mesh.index_count, cnt)`（R445）；实例行经 `rhi_cmd_update_buffer` 写入双槽实例缓冲。三后端同一段代码（blinn 实例化与 R590 clustered 实例化两种管线）。
+- ECS 实例**不进**任何阴影 pass、也不进延迟 G-buffer（只有前向画它们），所以本期没有阴影级别；`BREAK_LOD_SHADOW_BIAS` 对 ECS 实例无意义。
+- 蒙皮网格不走这条路径（逐图元绘制 + 骨骼调色板），保持 LOD0：简化器不考虑骨骼权重，折叠会把不同骨骼驱动的顶点合并，动起来会撕裂；需要按权重加属性/锁定的减面，不在本期范围。
+
+### 做法
+- **生成**（启动时，mega 烘焙之后）：所有被实体引用的网格（加上 mesh 0，运行时生成实体的默认网格）复用 `lod_generate_levels`；mega 路径已经简化过的网格直接复用其结果，不重复减面。各级**共享 LOD0 顶点缓冲**，LOD1/LOD2 的索引放进每个网格一个额外的索引缓冲（LOD0 仍用 `Mesh.index_buf`，不动）。误差 = `rel_error × scale`（局部空间；`CTransform` 只有平移，没有缩放）。
+- **选级**：收集实例时就地选级，距离用「网格局部 AABB 包围球平移到实例位置」后的球面距离，`lod_select_by_screen_error` 同一公式与 ±20% 迟滞，像素阈值共用 `BREAK_LOD_PIXEL_ERROR`。迟滞状态按实体槽位保存（新纯函数 `lod_instance_select`，键 = 实体 index，标签 = generation + 1；槽位被复用时从 LOD0 重新开始，不继承旧实体的级别）。
+- **绘制**：新纯函数 `lod_bucket_instances`（稳定计数排序，键 = 网格 × 3 + 级别，网格优先）把实例分桶；每个非空桶一次实例化绘制，级别 ≥ 1 用 `rhi_cmd_draw_indexed_base(级别索引数, cnt, first_index, 0)`。每次绘制最多 512 行（`vkCmdUpdateBuffer` 的 64 KiB 上限：原逐网格代码在同一网格超过 512 个实例时，VK 会拒绝这次更新并打 WARN。LOD 路径分块绘制；`BREAK_LOD=0` 走原代码，这个问题保留，以保证与改动前一致）。
+- **开关**：`BREAK_LOD=0` 不建表、不分配、不上传任何缓冲，收集循环和逐网格绘制走原来的代码。新增 `BREAK_STRESS_LOD_ECS=N`：与 `BREAK_STRESS_LOD` 同一块岩石、同一网格布局，但作为 N 个静态 ECS 实体（无刚体），不进 mega。启动日志 `ECS LOD: ...`，调试 UI 一行，退出时 `ECS_LOD_STATS`。
+- BSCN 加载（`N` 键）替换场景时先释放 ECS LOD 表，再按新场景重建。
+- 测试：`test_lod` 31 → 36 个用例（分桶：网格优先 + 稳定 + 越界钳制/丢弃；全 LOD0 时与原逐网格压缩顺序完全一致；退化输入；按槽位迟滞；槽位复用从 LOD0 开始）。
+
+### 验证
+- 构建：build-vk、build-gl、build-d3d12-debug、build-rel-vk/gl/d3d12 全部 0 警告 0 错误；新配置 `build-ci-asan`（clang + `-fsanitize=address`，同 CI 的 windows-clang-asan）编译 0 条编译器警告（只有既有的 3 条 `lld-link: ignoring unknown argument '--gc-sections'` 链接器提示，与本改动无关）。
+- ctest：vk 183/183、gl 180/180、d3d12-debug 188/188、ASan（`-LE "graphics|fuzz"`）172/172。ASan 版 `engine_demo` 跑 ECS 压力场景 40 帧，无 ASan 报告。
+- `BREAK_LOD=0` 回归（Release 三后端 × 前向/延迟，第 3 帧截图，与改动前 `51957033` 的构建对比；同时测旧构建连跑两次作为噪声基线）：
+
+| 后端/路径 | 新 vs 旧 平均差 | 旧 vs 旧（噪声） |
+|---|---|---|
+| VK 前向 / 延迟 | 0.112 / 0.044 | 0.095 / 0.014 |
+| GL 前向 / 延迟 | 0.243 / 0.001 | 0.625 / 0.000 |
+| D3D12 前向 / 延迟 | 0.046 / 0.129 | 0.046 / 0.037 |
+
+  6 组日志去掉行号和数字后逐行相同（没有新增或缺少的日志行）；`MegaBuffer: 15584 verts, 51180 indices, 11 draw cmds`、`UnifiedCull: uploaded 11 draw cmds`、每帧 execute/compact/emission 计数在新旧构建完全一致。
+- 校验层：VK Debug 构建（验证层开启）ECS 压力场景 clustered 与 blinn 实例化各一次，`VK validation messages this run: 0`；D3D12 调试层 + GPU-based validation，ECS 压力场景 4 种组合（LOD 开/关、blinn 前向、延迟），0 条调试层消息。
+- 性能（`BREAK_STRESS_LOD_ECS=200`，Release，前向，`BREAK_BENCH_STATS=600`，每组 3 轮）：
+
+| 后端 | 相机 | LOD 关 fps_avg | LOD 开 fps_avg |
+|---|---|---|---|
+| VK | 演示 `0,12,22,0,-25` | 104.1 / 103.9 / 103.7 | 195.2 / 194.6 / 191.7（×1.87） |
+| VK | 远处 `0,35,20,0,-35` | 108.6 / 108.9 / 108.6 | 210.5 / 210.9 / 211.0（×1.94） |
+| GL | 演示 | 96.6 / 95.6 / 95.5 | 175.9 / 175.4 / 173.8（×1.83） |
+| GL | 远处 | 99.9 / 100.7 / 100.5 | 192.3 / 187.3 / 191.1（×1.90） |
+| D3D12 | 演示 | 117.9 / 117.7 / 115.6 | 256.5 / 256.7 / 256.6（×2.19） |
+| D3D12 | 远处 | 124.3 / 124.7 / 123.8 | 279.4 / 279.0 / 258.2（×2.21） |
+
+  可见实例三角形 503 万 → 130 万（ratio 0.258）；每帧选级 + 统计 0.012–0.015 ms（VK Release）；LOD 开时每帧 ECS 实例化绘制 5 次（LOD 关时的次数没有单独记录；同一网格的实例分到 N 个级别就是 N 次绘制）。启动时 ECS 部分额外耗时约 68 ms（Debug，含一次 25k 三角形网格减面和索引上传）。
+- 迟滞：相机以 0.1 m/帧推远 900 帧（从岩石阵列旁出发）共 22 次级别切换，拉近 900 帧共 19 次（200 个实例的总和；只统计了总数，没有逐实例记录序列，来回跳靠 `test_lod` 的单元测试覆盖）。
+- 截图（VK，演示相机，LOD 开）人工看过：岩石阵列正常显示，远处实例没有空洞或错位三角形。
+
+### 已知限制
+- 蒙皮网格仍为 LOD0（原因见上）；ECS 实例没有阴影（既有行为，不是本期引入），所以没有阴影级别。
+- 运行时新增的实体若引用了启动时没有实体引用过的网格（mesh 0 除外），保持 LOD0；BSCN 加载后会按新场景重建。
+- 迟滞状态表按 `ECS_MAX_ENTITIES`（65536）分配，约 320 KB，LOD 开启时常驻。
+- 每次分块绘制都重新绑定材质（与原代码每网格一次一致；同一网格分到多个级别时多绑一次），没有做进一步合并。
+
+
+## 本轮更新：R701 — 运行时 LOD（一期）：纯 C 移植 meshoptimizer v1.3 简化器，mega 路径按屏幕误差选级
+
+设计见 `docs/superpowers/specs/2026-10-26-runtime-lod-design.md`（第二版，用户确认采纳第 9 节全部建议：3 级、像素误差 1.0、阴影比相机低 1 级、压力场景 N=200、简化器放 `engine/external/meshopt_c/`）。
+
+### R701a：纯 C 简化器（`engine/external/meshopt_c/`，提交 `7da2498a`）
+- 移植 meshoptimizer 正式版 v1.3（tag 提交 `9e1f07b1`，MIT，保留原许可证）：`meshopt_simplify`、`meshopt_simplifyWithAttributes`、`meshopt_simplifyScale`、`meshopt_optimizeVertexCache`。纯 C11，约 2300 行，不改算法、常量和浮点运算顺序。机械改动：RAII 分配器 → 固定块的 arena（分配失败返回 0，不崩溃），模板 → 具体函数，引用 → 指针，命名空间 → `static`。
+- `test_meshopt_c`：5 种网格 × 22 种参数共 110 个用例，结果（索引数、误差的二进制位、索引哈希）与上游 C++ 版本**逐位相同**；还检查了不变量（索引有效、无退化三角形、随目标单调、锁定边界确实保留）。把一个常量 0.25 改成 0.26，会有 23 个用例不一致，说明这张参考表能抓住移植偏差。速度与 C++ 版本相当或略快（20 万三角形网格：简化到 25% 约 25 ms）。
+- 登记进 `locked_dependencies.json` / `LOCKED_DEPENDENCIES.md`，四个文件都做 sha256 校验。
+
+### R701b：渲染接入
+- **生成**（`renderer/lod_gen.{c,h}`）：每个唯一网格在局部空间简化一次（按 `mesh_index` 去重），LOD1 = 50%、相对误差上限 0.02，LOD2 = 25%、0.05；属性加权（法线 0.5、UV 1.0），开 `meshopt_SimplifyLockBorder`，之后做顶点缓存优化。少于 512 三角形的网格不生成；某级剩下超过上一级的 85% 就停止。与设计的差别：每级都从 LOD0 简化，因此每级误差都是相对 LOD0 的。
+- **烘焙**：各级**共享 LOD0 的顶点**，只追加索引（绝对索引、`vertex_offset = 0`，沿用 R687 的约定）。命令按「节点 × 级别」连续排布（`node_cmd_base` / `cmd_level` / `cmd_node`）。所有级别放进节点原来的材质组，R437 分组 compact 和 R441 材质数组逻辑不变。新常量 `MEGA_MAX_CMDS = 16384`，`GPUCULL_MAX_OBJECTS` / `GPUCULL_MAX_DRAWS` 提到 16384（GPU 缓冲约多 1 MB），直接阴影路径的命令表改为按需分配（去掉了 64 条的上限）；超出时退回只用 LOD0 并打一条 WARN。
+- **选级**：每帧一次，用包围球心算距离，屏幕误差 = 世界误差 × 屏幕高度 / (2 · d · tan(fov/2))，选满足 ≤ 1 像素的最低细节级，±20% 迟滞带。阴影级别 = 相机级别 + 1（不超过最低级）。生成相机掩码 `selected[]` 与阴影掩码 `shadow_selected[]`。
+- **六条消费路径**：`unified_cull.comp`（GLSL binding 5）与 `unified_cull_hlsl.comp`（`register(t5)`）新增只读掩码，未选中级别直接跳过；R169 flags-only 把回读标志折回节点再叠加本帧选级，保证级别切换的那一帧不会两级都没画；R437、R441、4 处 CPU 节点剔除都乘上掩码；直接阴影路径每个节点只画阴影级别那一条。旧的 `cull.comp` 打包是按节点的，LOD 开启时该路径只用 LOD0。
+- **开关**：`BREAK_LOD=0` 完全不生成额外级别（命令数和日志与改动前逐字相同）；`BREAK_LOD_PIXEL_ERROR`、`BREAK_LOD_SHADOW_BIAS`；`BREAK_STRESS_LOD=N` 压力场景（N 个 25280 三角形的噪声位移球，单一网格）；`BREAK_LOD_SELFTEST=1` 烘焙表一致性检查；`BREAK_LOD_TRACE` / `BREAK_CAM_DOLLY` 用于迟滞检查。启动日志有 LOD 统计，调试 UI 有一行，退出时打印 `LOD_STATS`。
+- 测试：`test_lod` 从 20 个用例增加到 31 个（屏幕误差公式、迟滞带、扫描不闪烁、生成不变量、烘焙表校验）。`test_shader_io` 的读缓冲提到 1 MiB（`main.c` 超过 512 KiB 后这些测试读到的是被截断的文件）。
+
+### 验证（我在子代理之外独立复核了带 * 的项）
+- *6 棵构建树 0 警告 0 错误；*ctest d3d12-debug 188/188、vk 183/183、gl 180/180；*WARP 套件 2 次 81/81，debug layer 0 errors / 0 warnings。子代理另外在 D3D12 调试层 + GPU 验证下跑了压力场景的 8 种路径组合，0 条调试层消息。
+- *`BREAK_LOD=0` 回归（Release 三后端 × 前向/延迟，第 3 帧，与 stash 掉本改动的旧构建对比）：平均差 0.000–0.126，同一构建连跑两次本身的差异是 0.001–0.771；`MegaBuffer: 15584 verts, 51180 indices, 11 draw cmds` 和 `UnifiedCull: uploaded 11 draw cmds` 在新旧构建的 6 次运行里完全一致。
+- *演示场景 `BREAK_LOD=1` 对比 `BREAK_LOD=0`：平均差 0.002–0.061（只有地形网格有 LOD，其余都少于 512 三角形）。
+- 压力场景 N=200，前向，fps_avg（子代理 3 轮中位数；*我在 VK 上复测 2 轮：LOD 关 71.8 / 72.1，开 164.0 / 161.2，一致）：
+
+| 后端 | 相机 | LOD 关 | LOD 开 |
+|---|---|---|---|
+| D3D12 | 演示相机 `0,12,22,0,-25` | 105.5 | 242.5（×2.3） |
+| D3D12 | 远处 `0,35,20,0,-35` | 111.3 | 265.6（×2.4） |
+| VK | 演示相机 | 72.5 | 165.9（×2.3） |
+| VK | 远处 | 75.4 | 175.2（×2.3） |
+| GL | 演示相机 | 76.1 | 184.0（×2.4） |
+| GL | 远处 | 79.2 | 198.8（×2.5） |
+
+可见三角形从 492 万降到 124 万（25%）；*每帧选级 CPU 耗时 0.004 ms；生成耗时约 30–45 ms（串行）。
+- 迟滞：相机以 0.1 m/帧推远再拉近 900 帧，跟踪一个节点：推远时 0→1 在 8.09 m、1→2 在 14.0 m；拉近时 2→1 在 9.97 m、1→0 在 5.98 m，每个方向每级只切换一次，没有来回跳。
+
+### 已知限制 / 二期
+- ECS 实例化物体和蒙皮网格没有 LOD；没有磁盘缓存；没有抖动淡入；glTF `MSFT_lod` 不支持。
+- 约 5400 个节点（3 级）会碰到 16384 条命令的上限并整体退回 LOD0；没有测过 N=2000。
+- 阴影 +1 级只在演示相机的截图里看过，没有专门检查阴影瑕疵。
+
+## 本轮更新：R700 — CI：Linux 各 lane 改用预装依赖的容器镜像，不再在 job 里 apt 安装
+
+### 动机
+Linux lane 过去每次运行都执行 `apt-get install`。Ubuntu 的 Azure 镜像站间歇性卡住，导致主 `CI` 工作流在 2026-10-23 的 10:03–16:23 之间连续 10 次失败，失败步骤全是 `Install dependencies`（最近 40 次里占 10 次）。之前的 R675–R682 加了每次尝试的超时、重试、换镜像站、apt 包缓存，只能降低概率，不能根除。
+
+### 做法
+- `.github/docker/ci-linux.Dockerfile`：基于 `ubuntu:24.04`，一次装好所有 Linux lane 需要的包，版本钉死与原来一致（`cmake=3.28.*`、`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`，clang-18、gcc、weston、Xvfb、mesa-vulkan-drivers、vulkan-validationlayers、fonts-noto-cjk 等），外加原来托管 runner 自带而这里要显式装的：`pkg-config`、`python3`、`file`、`procps`、`make`、`git`、`curl`；并配置 `git safe.directory '*'`（`clean-room` 的 `git archive` 需要）。
+- `.github/workflows/ci-image.yml`：Dockerfile 变化时构建并推送 `ghcr.io/konyka/break-ci-linux:latest`（同时打 commit sha 标签），每周日 02:41 UTC 再构建一次以获取安全更新；构建后跑一个冒烟检查。镜像匿名可拉取（用匿名令牌验证过），所以 PR 和 fork 的 job 不需要凭证。
+- `.github/workflows/ci.yml`：9 条 Linux lane 全部改为 `container: image: ghcr.io/konyka/break-ci-linux:latest`，并设默认 shell 为 bash（容器里默认 dash，没有 `set -o pipefail`）。删掉每条 lane 的 apt 缓存、`Install dependencies` / `Install pinned toolchain`、`Install CJK test font` 三个步骤，工作流文件净减约 400 行。
+  - ASan lane 加 `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`（LeakSanitizer 要 ptrace，Docker 默认禁用）。
+  - TSan lane 加 `--privileged`（有一步要在内核里写 `vm.mmap_rnd_bits`）。
+- 保持不变：`lane-proton`（要 i386 多架构和 wine，只每周跑，本来就在 steamrt 容器里构建）、所有 Windows / macOS / iOS lane。
+
+### 迁移中踩到的问题（都已修）
+第一次全量迁移有 5 条 lane 失败，原因都是裸 Ubuntu 镜像缺了托管 runner 自带的东西：
+| 失败 | 原因 | 修复 |
+|---|---|---|
+| Wayland ×2：`Could NOT find PkgConfig` | 镜像里没有 `pkg-config` | 加进镜像 |
+| X11+Vulkan、validation、benchmark：`set: Illegal option -o pipefail` | 容器里 `run` 默认用 dash | `defaults.run.shell: bash` |
+| benchmark 用到 `python3` | 镜像里没有 | 加进镜像 |
+同时第一次试点（只迁 `lane-headless-linux-clang`）先单独跑通，再迁其余 9 条，避免一次性把整个 CI 搞红。
+
+### 迁移前后对比（同一套 lane，迁移前 run 40204094961，迁移后 run 40208340196）
+- 全部 20 个 job 成功；Linux 各 lane 的 job 总耗时相加 1045 s → 1043 s，基本持平：镜像拉取 20–33 s，与好的时候 apt 安装的耗时差不多。收益不在平均速度，而在去掉了会卡住的网络安装环节。
+- 逐个核对没有悄悄丢测试：能看到 ctest 计数的 lane（clean-room 168/168、headless-clang 167/167、ASan 5/5、X11+OpenGL 2/2、X11+Vulkan 5/5、validation 5/5）迁移前后完全一致，跳过数也一致；TSan、Wayland、benchmark 的 ctest 输出被重定向到文件，job 日志里看不到计数，改为比对 15 个 `evidence-receipt-*` 制品：所有 lane 的证据等级迁移前后完全相同。
+
+### 风险与后续
+- CI 现在依赖 GitHub 容器仓库（ghcr.io）可用。它比 Ubuntu 镜像站稳定得多，但不是零风险；出问题时 job 会在 `Initialize containers` 失败。
+- 改了 Dockerfile 才会重建镜像；改包版本要改 Dockerfile 并等 `ci-image` 工作流跑完，再触发 CI。工作流 `ci.yml` 里引用的是 `latest`，没有钉 digest；需要完全可复现的话可以把 digest 钉进 `ci.yml`。
+- 本机没有 Docker，镜像只在 GitHub 上构建验证过。
+- `lane-proton` 仍在 job 里用 apt，周跑，目前没出现问题，没有迁移。
+
+## 本轮更新：R699 — 修复 WARP 套件偶发崩溃：D3D12 亮度着色器的 256 次采样不再完全展开
+
+### 发现
+R698 复核时查了 GitHub Actions：`windows-d3d12` 工作流在很多个最近的提交上失败（`ebd50ac3`、`a14cb44a`、`259f65ff`、`ad12f029`、`33ac35c8`、`41d9b08a`、`d1df5373`），失败的步骤在几个不同的位置（`WARP GPU-runtime floor`、`WARP push-constant write-drop gate`、`Real GPU runtime`），但这三步其实都是在跑 `test_d3d12_warp_runtime`。同一个代码状态在 CI 上有时成功（`fe87b109`、`5e9616da`、`c8f50b6e`），有时失败，是偶发的。本机的 R698 记录里「d3d12-debug ctest 187/187」那次碰巧通过。
+
+### 复现
+在本机用 `ENGINE_D3D12_WARP=1` 连续运行 `test_d3d12_warp_runtime.exe`：14 次里 2 次段错误（Segmentation fault），两次都死在同一个用例 `[37] tonemap_and_luminance_sidecars_match_the_aces_formula`——日志停在 `Tonemap: initialized` 之后。这个用例会创建 R687 改过的 `luminance_hlsl.frag` 着色器管线。CI 是 GitHub 的无 GPU 机器，只能用 WARP，这也解释了为什么它频繁失败。
+
+### 定位
+R687 把 `luminance_hlsl.frag` 的两层循环从 `[loop]` 全部改成 `[unroll]`，把 16×16 = 256 次纹理采样完全展开，好处是 RTX 上这一步从 0.127 ms 降到 0.025 ms。把这个着色器临时恢复成原来的 `[loop]` 后，同样的套件连续跑 16 次全部通过；而且这和 R687 的出现时间吻合（`5e320ac9`，10-24 10:37，在 `d1df5373` 之前）。推测是完全展开出的约 256 个采样及相关指令，在 WARP 的着色器 JIT 编译里偶发触发崩溃，没有进一步深究 WARP 内部。
+
+### 修复（`engine/shaders/luminance_hlsl.frag`）
+只展开内层循环（一行 16 次采样，彼此独立，GPU 可以把这 16 次取样重叠起来），外层的 16 行保留 `[loop]`。
+
+| 版本 | RTX 上 `tonemap_update_auto_exposure` | WARP 套件稳定性 |
+|---|---|---|
+| 原来（两层 `[loop]`） | 0.127 ms | 16 / 16 次通过 |
+| R687（两层 `[unroll]`） | 0.025 ms | 12 / 14 次通过，2 次崩溃 |
+| R699（内层 `[unroll]`、外层 `[loop]`） | 0.028 ms | 24 / 24 次通过 |
+
+这样保留了 R687 收益的约 97%（0.127 → 0.028 ms，GL / VK 版本约 0.028 ms），同时 WARP 不再崩溃。
+
+### 验证
+- d3d12-debug ctest 187/187、vk 182/182、gl 179/179；按 CI 的方式单独跑 headless 步骤（`ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1 ctest -LE "graphics|fuzz"`）173/173；WARP 套件通过 `ctest -V` 跑时 `outside declared`（push-constant 写入被丢弃）计数为 0。
+- WARP 套件直接连续运行 24 次，全部 81/81。
+- Release D3D12 重新编译通过，`tonemap_update_auto_exposure` 实测 0.028 ms。
+
+### CI 日志核对（用 `gh run view --log-failed` 拿到了完整日志）
+最初只能通过 GitHub API 看到失败的步骤名；之后用户在本机登录了 `gh`（GitHub CLI），拿到了失败运行的完整日志，核对如下：
+- 读了 3 个失败运行（`ebd50ac3`、`259f65ff`、`ad12f029`）的日志，三个全部是 `test_d3d12_warp_runtime` 以 `***Exception: SegFault` 退出，日志的最后一行都是 `[37] tonemap_and_luminance_sidecars_match_the_aces_formula ... Tonemap: initialized (ACES + auto-exposure, ...)`，和本机复现的位置完全一致。这直接证实了推断：CI 上的崩溃发生在创建亮度着色器管线这个用例里。
+- 同一个测试在 CI 上也能通过（同一次运行的 `WARP GPU-runtime floor` 步骤通过了，耗时 74–114 秒；同一次运行的第二轮、带 `-V` 的运行崩溃了，只用了 7–9 秒），再次说明是偶发。
+- 统计 `windows-d3d12` 工作流最近 120 次运行的结果（按提交时间分段）：
+
+| 时间段 | 成功 | 失败 |
+|---|---|---|
+| R687 之前（10-19 起） | 99 | 3 |
+| R687 到 R699 之间（10-24 10:37 起） | 10 | 7 |
+| R699 之后 | 1 | 0 |
+
+R687 之前的 3 次失败原因不同（`test_async_loader` 的回调断言，和一次调试层报告 23 个错误），当时已修；R687 之后的 7 次失败里，读过日志的 3 次都是上面的崩溃。失败率从约 3% 升到 41%，和 R687 的出现时间吻合。
+- 「偶发」意味着 CI 上单次通过不能证明已经修好，所以补做了重复实验：对修复后的提交 `edc56b8c` 用 `gh run rerun` 把 `windows-d3d12` 工作流重跑了 5 次（连同最初那次共 6 次），6 次全部成功。如果失败率仍是修复前的 41%，连续 6 次成功的概率约 0.59^6 ≈ 4%，所以可以认为修复有效。另外本机 24 次连续通过（未修时 14 次里 2 次崩溃）。
+- 顺带查了主 `CI` 工作流最近 40 次运行里的 10 次失败：全部集中在 10-23 的 10:03–16:23，失败步骤都是 `Install dependencies`（Linux 的 apt 安装依赖卡住，即 CI 容器镜像一直没做的那个遗留问题），与代码无关，此后到现在（10-25）的运行全部成功。
+
+## 本轮更新：R698 — Windows 全面复核（HEAD `ebd50ac3`，无代码改动）
+
+远程 `origin/master` 与本地一致（没有新提交），在这台 Windows 机器上对当前 HEAD 做了一轮完整复核，没有发现需要修复的问题。
+
+### 构建
+6 棵构建树（Debug：`build-d3d12-debug` / `build-vk` / `build-gl`；Release：`build-rel-d3d12` / `build-rel-vk` / `build-rel-gl`）全部增量重编，0 个警告、0 个错误。
+
+### 自动化测试
+| 构建树 | ctest 结果 |
+|---|---|
+| `build-d3d12-debug` | 187 / 187 |
+| `build-vk` | 182 / 182 |
+| `build-gl` | 179 / 179 |
+
+d3d12-debug 的 187/187 包括：此前崩溃的 6 个 D3D12 契约测试（R697 升级 Agility 后恢复）、`test_d3d12_sdk_lock`、以及 `test_platform_win32_runtime` 的剪贴板用例（ToDesk 已退出）。WARP 套件 81/81，debug layer 0 errors / 0 warnings。
+
+### Windows 系统相关功能（单独逐个运行）
+| 测试 | 结果 |
+|---|---|
+| `test_platform_win32_runtime`（窗口 / 剪贴板 / DPI） | 15 / 15 |
+| `test_platform_wsi_lifecycle_win32`（Win32 WSI 生命周期） | 7 / 7 |
+| `test_myui_gl_desktop_win32` | 3 / 3 |
+| `test_monitor_selection`（多显示器选择） | 5 / 5 |
+| `test_platform_size_semantics` | 4 / 4 |
+| `test_platform_text` / `test_platform_display_media` | 19 / 19、8 / 8 |
+| `test_filewatch_backend`（ReadDirectoryChangesW） | 26 / 26 |
+| `test_input` | 30 / 30 |
+| `test_audio` / `test_network` / `test_vfs` | 17 / 17、18 / 18、33 / 33 |
+
+### 真机运行（本机直连，ToDesk 已关闭）
+三个后端 × 前向 / 延迟 × Debug / Release 共 12 个组合，每个跑 240 帧：全部正常退出（rc=0），日志中 WARN / ERROR / FATAL 为 0。
+
+| fps_avg | 前向 | 延迟 |
+|---|---|---|
+| Release D3D12 | 390 | 442 |
+| Release VK | 293 | 333 |
+| Release GL | 330 | 376 |
+| Debug D3D12（含调试层 + GPU 验证） | 71 | 79 |
+| Debug VK | 288 | 314 |
+| Debug GL | 329 | 380 |
+
+VK 的校验层统计输出 `VK validation messages this run: 0`，D3D12 调试层 0 条消息，没有对象泄漏。
+
+### 仍然存在、已知且与本轮无关
+- RTX 套件的测试 [78]（`gpu_timer_measures_the_gpu_time_of_a_recorded_region`，GPU 计时比值）在带 GPU-based validation 的硬件适配器上偶发失败，已在 R697 记录，关闭 GBV 后不再出现。
+- RTX 套件的测试 [1]（设备名应为 WARP）在硬件适配器上必然失败，属预期。
+
+## 本轮更新：R697 — 依赖：D3D12 Agility SDK 1.616.0 → 1.619.6（修复调试层与 NVIDIA 32.0.16.2101 驱动的崩溃）
+
+### 起因
+R696 记录的问题：在 NVIDIA 驱动 32.0.16.2101 上，Agility 1.616.0 自带的 `d3d12SDKLayers.dll` 在 `D3D12CreateDevice`（硬件适配器 + 调试层）里崩溃，d3d12-debug 树有 7 个测试因此失败。当时只是本机把构建目录里的层 DLL 换成了系统自带的那一份，不够长久（`copy_if_different` 会把它换回来），所以这一轮把钉住的版本升上去。
+
+### 选版本
+NuGet 当前的稳定版最新是 1.619.6（D3D12SDKVersion 619，2026-09-14）；1.617 没有稳定版，之后有 1.618.x、1.619.x。预览版有 1.720/1.721，但生产代码不应依赖预览版。选 1.619.6 的另一个理由：它的发布说明里有针对调试层的一批修复（`.2` 的 SDKLayers 增强屏障修复，`.4`、`.5` 的状态跟踪和校验修复）。注意这个机器访问 `nuget.org` 会被重定向到 `nuget.azure.cn`，`file(DOWNLOAD)` 能跟随重定向，项目自己的获取脚本照常工作。
+
+### 先独立验证再升级
+在不动仓库的前提下，用一个只做「开调试层 → 创建设备」的小程序测试 1.619.6 的 `D3D12Core.dll` + `d3d12SDKLayers.dll`：NVIDIA 和 AMD 两个适配器、开/不开调试层共 3 种组合全部通过，没有崩溃。
+
+### 改动
+- `engine/external/d3d12/agility_sdk_lock.txt`：`agility=1.619.6`；`nupkg_sha512` 和 `dll_sha512`（`D3D12Core.dll`）按新包重新计算（nupkg 35,477,552 字节）。
+- `engine/tools/fetch_d3d12_agility_sdk.cmake`：`_version` 改为 1.619.6。
+- `engine/tests/test_d3d12_sdk_lock.cmake`：版本断言改为 1.619.6。
+- `engine/src/rhi/rhi_d3d12.c`：导出的 `D3D12SDKVersion` 从 616 改为 619，并更新两处注释。这个值必须与锁文件里的版本一致，`test_d3d12_sdk_lock` 会检查（`agility=1.<SDK>.<rev>` → SDK 版本 `<SDK>`）。
+- `docs/Build_Guide.md`：两处版本号。
+- 本机的 `engine/external/d3d12/agility/`（不入库）用项目自己的 `cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake` 重新获取，同时验证了获取脚本和哈希校验路径。头文件也随包升到了 1.619.6，并确认构建时 `copy_if_different` 把新的 `D3D12Core.dll` 和 `d3d12SDKLayers.dll` 部署到了两棵 D3D12 构建树。
+- 旧版本留作回滚用：可以用旧的锁文件（git 历史里 `agility_sdk_lock.txt` 的上一版）重新执行获取脚本。
+
+### 验证
+- d3d12-debug 树 ctest 187/187（之前是 180/187），包括 `test_d3d12_sdk_lock`（新哈希通过）和 6 个之前崩溃的契约测试。其中 `pipeline_contract` 和 `dxr_contract` 返回 77（跳过，当前硬件不支持对应特性）。
+- vk 182/182、gl 179/179。
+- WARP 套件 81/81，debug layer 0 errors / 0 warnings。
+- RTX 套件：只有预期中的 [1]（设备名不是 WARP）；另外 [78] `gpu_timer_measures_the_gpu_time_of_a_recorded_region` 时有时无（`settled[i] > 1.5 * settled[j]`，GPU 计时的比值判断）。为了确认它和升级无关，把环境换回「Agility 1.616 核心 + 系统调试层」（升级前的绿色配置）连跑 6 次，[78] 同样 4/6 次失败；升级到 1.619.6 后 4 次里 2 次失败。关掉 GPU-based validation（`BREAK_D3D12_GBV=0`）之后 6 次全部只有 [1] 失败。所以这是该测试在带 GBV 的硬件适配器上本来就存在的偶发失败，不是这次升级引入的，没有处理。
+
+### CI 注意
+CI 的 4 个 job 在构建前都会执行 `cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake`，现在会下载 1.619.6，并由 `test_d3d12_sdk_lock` 核对新的哈希；哈希是我在本机下载的包上算出的，所以只要 NuGet 上的包没有被替换，CI 就会通过。这一点没有在 CI 上实际跑过。
+
+## 本轮更新：R696 — 物理：低速撞击不再反弹（restitution 速度阈值），修复 demo 里云朵落地后的抖动
+
+### 现象
+用户在本机直接操作（已关闭 ToDesk）时反馈：10 个云朵下落过程顺滑，但落地的时候有明显抖动，云的样子符合预期。
+
+### 定位（Release D3D12，记录 1 号刚体每个物理步的 y 和 vy）
+落地后它不是停住，而是连续弹了几次：
+
+| 帧 | 撞击前速度 | 撞击后速度 | 反弹高度 |
+|---|---|---|---|
+| 422 | −7.16 m/s | +2.15 m/s | 约 24 cm |
+| 489 | −5.04 m/s | +1.53 m/s | 约 12 cm |
+| 498 | −1.62 m/s | +0.52 m/s | 约 1.4 cm |
+
+每次的反弹率都是 0.30，等于 `physics_body_create` 里的默认 `restitution = 0.3`。每次反弹后重力又把它拉回地面，再撞一次，直到速度小到无法再跳起；`rest_frames` 在这期间一直是 0，对应一个持续约 1 秒的抖动。
+
+### 修复（`engine/src/physics/physics.c`）
+在 `resolve_contact` 里加了速度阈值：沿法线的接近速度低于 `RESTITUTION_VEL_THRESHOLD`（3 m/s，约 0.46 m 的落差）时，`e` 取 0，也就是完全非弹性，不再反弹；高于阈值时仍用原来的 restitution（0.3）。
+
+实测结果（同一个物体，Release D3D12）：
+
+| 撞击 | 撞击前速度 | 修改前反弹 | 修改后反弹 |
+|---|---|---|---|
+| 第 1 次 | −7.16 m/s | +2.15 m/s（24 cm） | +2.15 m/s（24 cm，高于阈值，保留） |
+| 第 2 次 | −5.04 m/s | +1.53 m/s（12 cm） | +1.53 m/s（12 cm，保留） |
+| 第 3 次 | −1.62 m/s | +0.52 m/s（1.4 cm） | 0（低于阈值，吸收） |
+
+也就是说，反弹从 3 次减到 2 次，去掉的是最后那次小的颤动。另一个变化是最终静止状态：修改前物体停在 y = −1.0 时，仍带着一个不会消失的 +0.0735 m/s 向上速度（`rest_frames` 始终为 0，每帧都在与地面接触）；修改后速度稳定为 0。
+
+**这个阈值是保守的，前两次较大的反弹仍然保留**。如果还想进一步减弱落地的弹跳感，可以把 `RESTITUTION_VEL_THRESHOLD` 调高：6 m/s 会去掉第 2 次反弹，只剩第 1 次（24 cm）；8 m/s 以上则全部不反弹（演示里的终端速度约 8 m/s，相当于 restitution 为 0）。需要看实际观感再定。
+
+### 测试
+`test_physics` 新增两个用例：`low_speed_landing_does_not_bounce`（2 m/s 撞击后向上速度不超过 0，且基本为 0）和 `high_speed_landing_still_bounces`（8 m/s 撞击后仍反弹，速度大于 1 m/s）。把修复拿掉之后，第一个用例失败（箱子向上弹起，`velocity.y <= 0` 不成立），修复后两个都通过：70/70。
+
+### 验证
+- ctest：vk 182/182、gl 179/179 全部通过（含新增的 2 个物理用例）。WARP 套件 81/81，debug layer 0 errors / 0 warnings。
+- d3d12-debug 树：180/187。失败的 7 个是 `test_d3d12_native_failure` / `device_contract` / `swapchain_contract` / `pipeline_contract` / `shader_contract` / `dxr_contract` 和 `rhi_swapchain_bench`，全部在默认硬件适配器 + D3D12 调试层下于 `D3D12Core.dll` 内崩溃（访问冲突 0xc0000005，偏移 `38b45bf7`），与本次改动无关：stash 掉 R696 的改动之后同样崩溃，而 `ENGINE_D3D12_WARP=1` 下 `device_contract` 通过，Release demo 在 RTX 上正常运行（fps_avg=304）。NVIDIA 驱动 32.0.16.2101 是 2026-10-19 的版本。这个崩溃在 R694 的验证（今天 09:00 前后，ctest 全绿）之后才出现，下面是后续排查的结论。
+
+**排查结论（NVIDIA 驱动 32.0.16.2101 与 Agility 1.616 调试层不兼容）**：
+- 重启电脑之后问题依旧，磁盘也不是原因（清出空间后仍然崩溃）。
+- 写了一个独立的 C 小程序（只做 `D3D12GetDebugInterface` → `EnableDebugLayer` → `CreateDXGIFactory2` → `D3D12CreateDevice`）逐项排除：不开调试层时 NVIDIA 和 AMD 两个适配器都正常；开调试层时 AMD 适配器正常，NVIDIA 适配器在 `D3D12CreateDevice` 里崩溃（`D3D12Core.dll` 内访问冲突，`0xc0000005`）。
+- 再拆开部署的两个 DLL：Agility 1.616 的 `D3D12Core.dll` 搭配系统自带的 `d3d12SDKLayers.dll`（`C:\Windows\System32`，2026-10-14）可以正常运行；用 Agility 1.616 自带的 `d3d12SDKLayers.dll` 就崩溃。所以问题出在 Agility 1.616 的调试层与目前这版 NVIDIA 驱动（2026-10-19 发布）的组合上。
+- 验证：把 `build-d3d12-debug/d3d12SDKLayers.dll` 临时换成系统自带的那一个之后，6 个契约测试全部恢复，ctest 187/187，WARP 套件 81/81，RTX 套件 80/81（只有预期中的 [1]），硬件适配器上的 debug demo 也能正常启动。
+
+**注意**：这个替换只在本机的构建目录里做了，`engine/external/d3d12/agility` 里钉死的 Agility 1.616 文件和 `engine/CMakeLists.txt` 都没有改。`copy_if_different` 以后如果发现源文件和目标不一样，会把 Agility 的 `d3d12SDKLayers.dll` 又拷回来，崩溃会再次出现。需要保留本机修复的话，要么把 Agility 升级到新版本再验证，要么在本机重新建 `build-d3d12-debug` 之后手动再换一次。原来的 Agility 层文件备份在 `.tmp/d3d12SDKLayers_agility_1616.dll`。
+
+## 本轮更新：R694 — 物理改为固定步长 1/60 s + 渲染插值：下落动画不再随帧节奏抖动；记录 D3D12/GL 的 vsync 帧节奏问题
+
+### 现象
+demo 中下落的物理物体看起来一卡一卡的。（R693 曾把它们换成盒子网格，用户反馈效果差，那个改动已经撤回，保留原来的外观。）
+
+### 定位
+记录了 1 号刚体每帧的 `engine.delta_time` 和 y（Release，默认 vsync 开）：
+
+| 后端 | 平均帧时间 | 中位数 | >15 ms 的帧 | 最长 |
+|---|---|---|---|---|
+| D3D12 | 13.5 ms（约 74 fps） | 3.3 ms | 142 / 369 | 45 ms |
+| GL | 12.5 ms | 4.8 ms | 126 / 369 | 56 ms |
+| VK | 4.1 ms | 4.1 ms | 0 / 369 | 6 ms |
+
+D3D12 的帧时间呈 3 → 25 → 3 → 25 → 43 ms 交替。CPU 录制 1–2 ms，Present 0.3–0.5 ms，长的那一截全耗在下一帧 `rhi_frame_begin` 里等 frame fence（20–43 ms）。把 D3D12 的 SyncInterval 临时改成 0 之后，帧时间稳定在 3.1 ms、最长 6.9 ms，可见问题出在 vsync 下的 present 队列节奏上。VK 用 MAILBOX，不受影响。
+
+**根因：ToDesk 远程会话（已验证）。** 上面这组数据是在 ToDesk 运行、用户远程操作时测的。关闭 ToDesk、在本机直接操作之后重测（默认 vsync 开，每个后端 2 轮、639 帧）：
+
+| 后端 | 平均帧时间 | 帧率 | p99 | 最长 | >15 ms 的帧 |
+|---|---|---|---|---|---|
+| D3D12 | 4.17 ms | 239.6 | 5.0 ms | 5.5 ms | 0 |
+| GL | 4.17 ms | 239.6 | 4.8 ms | 5.0 ms | 0 |
+| VK | 4.17–4.22 ms | 237–239 | 4.7 ms | 6.8 ms | 0 |
+
+三个后端的帧率都对准了显示器的 240 Hz，没有 3 ms / 25–45 ms 的交替。也就是说，D3D12/GL 在 vsync 下的卡顿完全是 ToDesk 抓屏占用呈现路径造成的，和引擎代码、显卡结构都无关。
+
+物理原来每帧调用一次 `physics_step(physics, delta_time)`。帧时间的抖动直接变成位移的跳变；而且积分器每步乘一次 0.98 的速度阻尼，下落速度本身也依赖帧率（60 Hz 时终端速度约 8 m/s，300 Hz 时约 1.6 m/s）。
+
+### 修复（`engine/src/main.c`）
+- 帧时间累加进 `phys_accum`，按 `PHYS_FIXED_DT = 1/60 s` 逐步调用 `physics_step`。每帧最多 `PHYS_MAX_SUBSTEPS = 8` 步，卡顿时多出来的余量直接丢弃，避免越积越多。选 1/60 是因为引擎的设计帧率是 60（`EngineConfig.target_fps`），这样保持 demo 原本调好的手感。
+- 最后一步之前，把所有刚体的位置存进 `g_phys_prev_pos`。`sys_sync_transform_from_physics` 用 `g_phys_alpha = 余量 / 步长` 在上一步和当前步之间插值，结果写进 CTransform。跌出世界后被传送回原点的刚体，同时重置它的 prev，避免插值横穿整个场景。
+- 多个子步的 `collision_count` 加起来再写回，屏震和音效的统计仍按「这一帧」来算。
+- 慢动作（×0.25）仍然作用在累加的帧时间上。
+
+### 效果
+1 号刚体从 y = 6.5 落到 0.5：
+
+| | 用时 | 偏离光滑抛物线（RMS / 最大） |
+|---|---|---|
+| 修改前 D3D12 | 1.094 s | 0.0134 / 0.0400 |
+| 修改后 D3D12 | 0.998 s | 0.0102 / 0.0223 |
+| 修改后 VK（约 240 fps） | 1.020 s | 0.0104 / 0.0283 |
+
+修改后，两个帧节奏完全不同的后端，下落用时一致（约 1.0 s）。
+
+### 验证
+- ctest：vk 182/182、gl 179/179。d3d12-debug 186/187，唯一失败的是 `test_d3d12_warp_runtime`：那一次挂住了，超过 6 分钟后被我手动结束。这个测试不链接 `main.c`，不受这次改动影响（stash 掉本改动后 ninja 显示 `no work to do`，exe 是同一个）。同一个 exe 在 ctest 下又跑了 3 次（71 s、77 s、70 s 通过）、直接运行 1 次（81/81，debug layer 0 errors / 0 warnings），只有 1 次在 250 s 超时，所以判断是 WARP 偶发的挂起。
+- 截图：三后端俯视（`BREAK_CAM=0,14,0,0,-89`），第 30 帧，10 个物体保持原来的外观，日志无 WARN/ERROR。
+- 帧率（Release，fps_avg）：前向 D3D12 368、VK 301、GL 337，延迟 423 / 332 / 381，和 R691 一样处在噪声范围内（物理按 60 Hz 步进，比原来每帧一步还少）。
+
+### 未处理：D3D12/GL 的 vsync 帧节奏
+**试过 waitable 交换链，已撤回（这是在 ToDesk 运行的环境下测的，结论仅对该环境有效；本机直连时本来就不需要）。** 做法是 D3D12 用 `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` 加 `SetMaximumFrameLatency(1)`，在 `rhi_frame_begin` 里先等待 waitable object。同一个 exe 交替测了 2 轮：
+
+| | 平均帧时间 | 帧率 | 中位数 | 标准差 | >15 ms 的帧 |
+|---|---|---|---|---|---|
+| 不用 waitable | 13.7 / 12.9 ms | 73 / 78 | 3.4 ms | 13.9 / 13.2 | 211 / 194（共 540 帧） |
+| waitable | 33.5 / 32.7 ms | 30 / 31 | 31.3 ms | 6.8 / 5.9 | 539（共 540 帧） |
+
+抖动确实小了，但节奏被锁在约 30 fps，比原来的平均 74 fps 更差。
+
+同时取了 `IDXGISwapChain::GetFrameStatistics`：ToDesk 运行时 `SyncRefreshCount` / `SyncQPCTime` 一直是 0。当时曾误判为混合显卡跨适配器呈现造成的。关闭 ToDesk 之后重测（见上）：`SyncRefreshCount` 每 60 帧恰好增加 60（与 240 Hz 一致），说明 DXGI 的刷新信息是正常的；只有 `GetContainingOutput` 仍返回 `DXGI_ERROR_NOT_FOUND`（0x887a0004，渲染所在的 RTX 适配器上没有显示输出，这是混合显卡笔记本的正常状态，不影响垂直同步）。因此卡顿是 ToDesk 的虚拟显示/抓屏造成的，「切独显直连」和「默认关闭 vsync」两个建议都不再需要。
+
+## 本轮更新：R692 — 调查记录：VK postfx 比 D3D12 慢约 0.2 ms，原因是相互依赖的全屏 pass 之间必须串行（未修改代码）
+
+R690 的子代理测得 VK postfx 1.33 ms、D3D12 0.97 ms。这一轮专门调查原因，所有实验都已撤回。
+
+### 测量（Release，640×360，按帧奇偶交替的 GPU 计时器，每项 2–4 轮）
+- VK postfx 1.15–1.25 ms，D3D12 0.95–1.08 ms，GL 和 D3D12 持平。差距大约 0.15–0.25 ms。
+- 差距不集中在某一个效果上：每个 postfx 调用只比 D3D12 多 5–15 µs，关掉任意一个效果，两个后端减少的时间也差不多。
+- 差距和 pass 数量成正比：每多一个全屏 pass，VK 多 57 µs，D3D12 多 36 µs；同一个 pass 里每多一次 draw，VK 多 47 µs，D3D12 多 38 µs；一次空的 render pass begin/end，VK 5.7 µs，D3D12 1.5 µs。
+- VK 是 GPU 受限（fence 等待 2–3 ms），GPU 时钟相同，利用率 98%，所以 `vkAllocateDescriptorSets` / `vkUpdateDescriptorSets` 这类 CPU 开销不是原因。按 pass 缓存描述符集解决不了这个差距。
+
+### 没有效果的实验（变化都在 ±0.03 ms 的噪声范围内）
+- color 和/或 depth 的 loadOp 改为 DONT_CARE，depth 的 storeOp 改为 DONT_CARE。
+- 收窄 `vk_external_dep_color_depth` 的 src/dst 掩码：9 个 bit 逐个去掉、多种组合、BY_REGION、另换 5 套掩码，都没有效果。
+- offscreen pass 去掉 depth 附件（延迟 postfx 1.16 → 1.10 ms，处在边缘）、去掉 TRANSFER_SRC usage、改用 dedicated allocation、去掉 update-after-bind、调 sampler 的 maxLod / mip 模式、开 SPIR-V `-O`、去掉 GPU 计时器造成的 pass 中断。
+
+### 唯一明显的效果，但它不是修复
+外部依赖什么都不等（`dependencyCount = 0`，或者 src = TOP_OF_PIPE）时，postfx 降到 0.91–1.03 ms，10 倍 bloom 压力测试从 2.62 降到 1.74 ms，帧率 +3–7%。但这是直接去掉了同步，相邻 pass 之间有真实的读后写冒险；`dependencyCount = 0` 还会让管线和 render pass 不兼容。把正确的等待换成 pass 之前显式的 `vkCmdPipelineBarrier`（全掩码或最小掩码都试过），开销原样回来（2.56–2.58 ms）。结论：VK 多出的时间就是相互依赖的全屏 pass 之间必须的串行；D3D12 的驱动用隐式 SRV 转换处理，代价更低。
+
+### 能带来收益的方向（需要改结构，未做）
+- 减少 pass 数量：bloom extract 和第一次 blur 合并；SSS 的水平和垂直两步合并；sharpen 合进 TAA resolve；combined_color 和 lens_effects 合并。
+- bloom 链改成一次 compute dispatch，或者用 subpass。
+- postfx 的 FBO 加一个显式的「无 depth」标志，同时需要配套只有 color 的管线模板。
+
+探针脚本留在 `.tmp/`（`pfxsect.py`、`pfxcum.py`、`xpass.py`、`xdraw.py`、`xempty.py`、`xbloom.py`、`vk*_exp.py`）。
+
+## 本轮更新：R691 — 引擎性能：CSM 的 4 个 cascade 也改为 CPU 球体剔除 + 直接绘制
+
+### 根因
+R690 的子代理分段计时显示，VK 上 CSM 约是 D3D12 的 2 倍（0.41 vs 0.20 ms）。原因是每个 cascade 都要调一次 `mega_unified_cull_draw`，在 shadow pass 里面做 fill、compute dispatch 和 barrier。VK 每遇到其中一个操作，就得结束 render pass，之后再用 LOAD 重新打开；4 个 cascade 加起来是 6 次 render pass begin、23 个 pipeline barrier。这和 R688 解决点光阴影时遇到的问题是同一种。
+
+### 修复（`engine/src/main.c`）
+CSM 的 mega 绘制先检查 `mega_use_direct_shadow()`，满足就调用 `mega_draw_direct_culled(&mega_buf, cmd, &render.cascade_vp[c])`，用的是 R688 的同一个函数：CPU 用球体和 cascade 视锥做测试，通过的直接绘制。`BREAK_MEGA_DIRECT_SHADOW=0`（或者物体超过 64 个）时，CSM 和点光阴影一起退回 GPU 剔除路径。启动日志改为 `Shadow mega draw (CSM + point): direct ...`。
+
+### 数据（Release，RTX，fps_avg，R690 HEAD → R691，同一时段依次测）
+| | 前向 | 延迟 |
+|---|---|---|
+| D3D12 | 381 → 383 | 413 → 427 |
+| VK | 292 → 303（+3.7%） | 322 → 333（+3.6%） |
+| GL | 322 → 334（+3.9%） | 357 → 383（+7.2%） |
+
+R688 加 R691 合起来（同一个 exe，比较 `BREAK_MEGA_DIRECT_SHADOW=0/1`）：D3D12 前向 341 → 399，VK 前向 264 → 302，GL 前向 272 → 339，GL 延迟 302 → 379。
+
+### 验证
+- WARP 81/81，debug layer 0 errors / 0 warnings；RTX 80/81（只有预期中的 [1]）。
+- ctest：d3d12-debug 187/187、vk 182/182、gl 179/179，全部通过。
+- 截图：Debug 三后端，前向和延迟都在第 3 帧截图，对比 `BREAK_MEGA_DIRECT_SHADOW=0` 与 `=1`。GL 延迟差 0.001，几乎逐像素相同；其余是 0.02–0.36，差异来自粒子动画。日志无 WARN/ERROR。
+
+### 试过但没有采用的两项（都已撤回，记在这里免得以后重复尝试）
+- **前向路径把 skybox 移到地形之后画**（想利用 early-z 跳过被挡住像素的云层 ray march）：三个后端的 scene 段 GPU 时间都没有下降，D3D12 是 0.70 → 0.72–0.86 ms，在噪声范围内。这个机位下天空占了画面的大半，被地形挡住的像素很少。
+- **延迟路径去掉 G-Buffer pass 之后多余的 swapchain CLEAR pass**（`deferred_end_gbuffer` 先回到 swapchain，接着光照 pass 又绑定 scene_fbo）：同一个 exe 用开关交替测了 2 轮，VK +1% 和 −3%，GL +19% 和 −6%，D3D12 +12% 和 +4%，前后两轮正负不一致。逐帧噪声（±10%）比这个效果大，测不出可信的收益。
+
+另外，把 10 个方块临时换成盒子网格（mesh 2）做了一次测量：前向帧率 D3D12 291 → 366、VK 303 → 320、GL 314 → 344。延迟路径反而在噪声里下降（D3D12 378 → 329、GL 379 → 366）。第 30 帧截图中，这 10 个物体落在相机视野之外，所以画面看起来一样。
+
+### 关于演示中的 10 个物理方块（未修改）
+`main.c` 里那 10 个 ECS 方块设的是 `mesh_index = 0`。这行代码从最初的提交 `43359afa` 就有了，当时 `assets/test.glb` 是唯一的网格，所以 mesh 0 就是 glb 里的场景网格（46356 个索引）。现在场景里已经有 `demo_build_showcase` 加进来的 `mesh_box`（36 个索引），这 10 个刚体也是 0.5³ 的盒子（`physics_body_create(..., vec3(0.5f,0.5f,0.5f), ...)`）。如果原本的意图是画方块，就应该换成盒子网格，每帧能少画约 46 万个索引。不过这会改变演示画面，所以留给使用者决定。
+
+## 本轮更新：R690 — 引擎性能：延迟路径的 G-Buffer 按渲染分辨率分配（原来是窗口分辨率），延迟帧率 +24–34%
+
+### 定位
+R689 之后，延迟路径帧率：D3D12 约 345，GL 约 274，VK 约 241。用子代理给 VK 分段计时（每个区段两个计时器按帧奇偶交替，VK 136/136 帧都读到了值）：VK 的 GPU 帧 3.95 ms，D3D12 2.90 ms；VK 在 `rhi_frame_begin` 里等 fence 约 3.1 ms，说明是 GPU 受限。
+
+逐项跳过之后，降幅最大的一项是 Hi-Z（VK 省 0.78 ms，GL/D3D12 各约 0.6 ms）。它读的是 G-Buffer 的 depth，而 G-Buffer 是 1280×720 的。
+
+### 根因（`engine/src/main.c`）
+`render_init` 里调用 `deferred_init(&rs->deferred, rs->device, w, h)` 时还不知道渲染缩放，所以 G-Buffer 按窗口大小 1280×720 分配。而场景 FBO、光照目标（R644 的 `deferred_set_lighting_target_size(dsys, rw, rh)`）、Hi-Z 都是 640×360。窗口改变大小时走的分支本来就会 `deferred_resize(..., rw, rh)`，但启动之后窗口不变，这个分支从来不会执行。
+
+于是延迟路径每帧都要填一个 4 倍大小的 G-Buffer（5 个颜色 MRT 加 depth），Hi-Z 也要从 4 倍大小的 depth 做 reduce，光照 pass 和 TAA 读的同样是这份全尺寸 G-Buffer。
+
+### 修复
+`rw/rh` 算出来之后，紧接着调用一次 `deferred_resize(&render.deferred, render.device, rw, rh)`，失败时退回前向路径（和 resize 分支的 R358 处理方式相同）。启动日志：`deferred: initialized (1280x720)` 之后会接着打印 `deferred: resized to 640x360`。
+
+### 数据（Release，RTX，延迟，fps_avg）
+| | 修改前 | 修改后 |
+|---|---|---|
+| D3D12 | 337–349 | 414–427（+22%） |
+| VK | 241 | 320–322（+33%） |
+| GL | 273–276 | 365–367（+34%） |
+
+前向路径不受影响。
+
+### 验证
+- WARP 81/81，debug layer 0 errors / 0 warnings；RTX 80/81（只有预期中的 [1]）。
+- ctest：d3d12-debug 187/187、vk 182/182、gl 179/179，全部通过。
+- 截图：Debug 三后端的延迟路径，在第 3 帧和第 30 帧分别对比修改前后，平均差 0.24–0.36，肉眼看不出区别；日志无 WARN/ERROR。
+
+### 还没做的（子代理找到的 VK 剩余开销）
+- VK 的 postfx 比 D3D12 多 0.36 ms：一帧里有 18 次 render pass begin、19 次 `vkAllocateDescriptorSets` 加 `vkUpdateDescriptorSets`。可以按 pass 加纹理的组合缓存描述符集；整屏覆盖写的 pass 改用 DONT_CARE load。
+- VK 的 CSM 约是 D3D12 的 2 倍（0.41 vs 0.20 ms）：每个 cascade 的 `mega_unified_cull_draw` 都在 shadow pass 内部做 fill、dispatch 和 barrier，VK 每次都要中断 pass 再用 LOAD 恢复。可以照 R688 的做法，用 CPU 剔除这 11 条命令。
+- `rhi_mrt_fbo_unbind` 在 VK 上会多开一个清 swapchain 的 pass，紧接着又被光照 pass 结束（`rhi_vk.c` 的 `rhi_offscreen_fbo_unbind`）。
+- 演示中那 10 个物理方块都设成了 `mesh_index = 0`，而 `assets/test.glb` 只有一个网格，就是 46356 个索引的主场景网格，所以每帧多画了 10 份完整场景。要先确认原本打算用的网格是哪个，再决定怎么改。
+
+## 本轮更新：R689 — 引擎性能：GL 的 STREAM_READ 放置推迟到第一次 CPU 读，scene 段 GPU 1.48 → 0.89 ms
+
+### 定位
+R688 之后，GL/VK 的 scene 段 GPU 时间约 1.1–1.5 ms，D3D12 约 0.66 ms。这次用跳过法拆分：每次关掉一个子 pass，看 scene 计时少了多少（VK 的 timestamp 会打断 render pass，不能直接分段计时）。
+
+GL 上最大的一项是静态 mega 块，约 0.66 ms，在 D3D12 上只有 0.05 ms。其中单独跳过可见性上传，或单独跳过 compact dispatch，都能省约 0.7 ms，说明是同一个开销：上传之后，compact 读这块 buffer 时卡住了。
+
+### 根因（`engine/src/rhi/rhi_gl.c`）
+R672 把所有「STORAGE、没有初始数据」的 buffer 都建成 `GL_STREAM_READ`。本意是给 readback staging 用：GPU 写、CPU map 读。可是同一种 desc 也用在 indirect-draw 的两个可见性槽位上（`indirect_draw.c` 的 `visibility_buf`）：它们由 CPU 每帧 `glBufferSubData` 写入，再由 compact 着色器读取。驱动按 STREAM_READ 放置之后，GPU 从那里读要等，静态网格的 compact 被拖慢约 0.6 ms。
+
+启动日志统计：这类 buffer 共 10 个，2×64 KB、2×16 KB、6×44 B。真正会被 map 读回的只有 gpucull 的 `vis_flags_staging` 和 occlusion 的 `readback_staging`。
+
+### 修复
+这类 buffer 先按 `GL_DYNAMIC_DRAW` 创建，并记下 `readback_candidate`。第一次 `rhi_buffer_map` 或 `rhi_buffer_read` 时，由 `gl_buffer_make_readback()` 用 `glBufferData(..., GL_STREAM_READ)` 重新指定存储，原有内容先读出来再写回去。所以只有真正被 CPU 读的 buffer 才放到 CPU 可读的位置，R672 修过的 map 慢问题不会再出现（每帧耗时 3.6 ms，当时是 8 ms）。VK/D3D12 不受影响。
+
+### 数据（Release，RTX，GL）
+| | 修改前 | 修改后 |
+|---|---|---|
+| scene GPU，前向 | 1.47–1.49 ms | 0.85–0.92 ms |
+| scene GPU，延迟 | 1.54–1.64 ms | 1.00–1.01 ms |
+| fps_avg，前向 | 279 / 284 | 311 / 292 |
+| fps_avg，延迟 | 245 / 244 | 270 / 259 |
+
+修改后 GL 的 scene 段已经和 D3D12（0.66–0.90 ms）在同一水平。
+
+### 还没做的（VK 的 scene 段约 1.1 ms）
+- skybox 是 VK 上最大的一项（0.52 ms），而且先于地形画在 depth 1.0。要是改成最后用 LEQUAL 画，被地形挡住的像素就不用再走云层 ray march，三个后端都能省。
+- ECS 实例绘制中，每组 mesh 都调一次 `rhi_cmd_update_buffer`（`main.c` 的 ECS instanced 段）。在 VK 上这会结束 render pass，加 barrier，再用 LOAD 重开，约 0.2 ms。可以改成在 pass 开始前一次上传全部实例。
+
+### 验证
+- ctest：gl 179/179、vk 182/182、d3d12-debug 187/187，全部通过。GL 那一套包括 gpucull 和 occlusion 的 readback 用例，这些 buffer 现在会在第一次 map 时切到 STREAM_READ。
+- 截图：GL 第 3 帧和 R688 对比，平均差 0.37，差异像素只在粒子精灵的边缘；前向和延迟日志都无 WARN/ERROR。
+
+## 本轮更新：R688 — 引擎性能：点光阴影的 24 个面改为 CPU 球体剔除 + 直接绘制
+
+### 定位
+R687 之后，用临时开关逐项拆分点光阴影 pass 的 GPU 时间（Release，临时探针，已移除）：
+
+| 点光阴影 | D3D12 | GL |
+|---|---|---|
+| 完整 | 0.55 ms | 0.81–0.97 ms |
+| 不画地形 | 0.97（波动） | 0.73 |
+| 不画 mega 物体 | 0.22 | 0.26 |
+| 都不画 | 0.19 | 0.12 |
+
+地形只有 23814 个索引，基本不花时间。时间几乎都花在 mega 物体上，可场景里总共只有 11 个物体、51180 个索引，几何量很小。真正的开销是每个面都走一遍 GPU 剔除：一次 compute dispatch，加 barrier，再加一次 indirect draw，24 个面就是 24 轮串行的 compute 和 graphics 切换。
+
+### 修复（`engine/src/main.c`）
+- bake 时把绘制命令复制一份到 CPU：`MegaBuffer.direct_cmds`，最多 64 条，即 `MEGA_DIRECT_MAX_DRAWS`。
+- 点光阴影的每个面改为用 `mega_draw_direct_culled()`：在 CPU 上用每个节点的包围球和这个面的视锥做测试，通过的直接 `rhi_cmd_draw_indexed_base`。11 个球 × 24 个面，CPU 开销可以忽略。
+- 条件不满足时（物体超过 64 个，或设置 `BREAK_MEGA_DIRECT_SHADOW=0`）退回原来的 GPU 剔除路径（R170），行为不变。启动日志会打印当前用的是哪条路径。
+- CSM、前向、延迟这几个 pass 没有改：它们每帧只剔除 1–4 次，而且要用 Hi-Z 遮挡剔除。
+
+### 数据（Release，RTX）
+点光阴影 GPU 时间：D3D12 从 0.55 ms 降到 0.22 ms，GL 从 0.97 ms 降到 0.25 ms，VK 从 0.54 ms 降到 0.24 ms。
+
+| fps_avg | R687 | R688（2 轮） |
+|---|---|---|
+| D3D12 前向 | 345 | 379 / 372 |
+| D3D12 延迟 | 299 | 350 / 326 |
+| VK 前向 | 265 | 292 / 291（+10%） |
+| VK 延迟 | 228 | 241 / 241 |
+| GL 前向 | 256 | 279 / 284（+10%） |
+| GL 延迟 | 230 | 245 / 244 |
+
+### 验证
+- WARP 81/81，debug layer 0 errors / 0 warnings；RTX 80/81（只有预期中的 [1]）。
+- ctest：d3d12-debug 187/187、vk 182/182、gl 179/179，全部通过。
+- 截图：三个后端都在第 3 帧截图，对比 `BREAK_MEGA_DIRECT_SHADOW=0` 与 `=1`，平均差 0.04–0.28。差异像素只在粒子精灵的边缘和 FPS 文字上，这两样每帧都会变；阴影区域没有差异。日志无 WARN/ERROR。
+
+## 本轮更新：R687 — 引擎性能：D3D12 自动曝光的循环改为展开；修复 mega-buffer 顶点偏移被加了两次
+
+### 1. D3D12 自动曝光比 GL/VK 慢 4.5 倍（`engine/shaders/luminance_hlsl.frag`）
+R686 之后的 postfx 逐 pass GPU 计时中，`tonemap_update_auto_exposure` 在 D3D12 上是 0.127 ms，GL 是 0.029 ms，VK 是 0.027 ms。这个 pass 只用 1 个像素做 16×16 共 256 次采样。HLSL 版本给两层循环都标了 `[loop]`，dxc 只能逐次串行发出依赖的 fetch；GLSL 那边的编译器会自动展开。把两层都改成 `[unroll]` 后，D3D12 降到 0.025 ms，与另外两个后端一致。整个 shaders 目录里只有这一处 `[loop]`。
+
+### 2. mega-buffer 的 vertex_offset 被加了两次（`engine/src/main.c`，mega bake）
+在给点光阴影做拆分（临时探针，已移除）时，我检查了 mega-buffer 的 bake 数据：`idata[ioff+ii] = src_i[ii] + vbase` 已经把顶点基址加进了索引，`cmds[cidx].vertex_offset` 却又设成了 `vbase`。实际取到的顶点号就变成 `idx + 2*vbase`。临时加的校验输出 `max_eff=31143 total_verts=15584 bad=4824`：除第 0 个节点（vbase=0）之外，其余 10 个节点的全部 4824 个索引都越过了 VBO 末尾。
+
+越界读的结果取决于后端：D3D12/VK 的 robust 访问返回 0，GL 读到的是驱动给的任意数据。所以这 10 个物体在 mega 路径下（前向、延迟、CSM、点光阴影都走这条路径）画成了退化三角形或错位的几何。修复：`vertex_offset = 0`，索引里已经是绝对值。
+
+对照：新加一个临时开关关掉 mega 路径，让每个节点用自己的 VBO 和 world_transform 绘制，作为参考图，在第 3 帧（场景动画还没跑开）截图。参考图中左下有一个白色物体：修复后的 mega 版本在同一位置出现了这个物体，修复前的版本没有，还缺了一块几何。逐像素平均差是修复后 0.50、修复前 0.57。第 30 帧的截图里三张图差异都更大（参考图自己连跑两次也差 3.0），原因是 demo 中随时间变化的内容，所以没有拿它做结论。
+
+### 数据（Release，RTX，fps_avg，R686 → R687）
+| | 前向 | 延迟 |
+|---|---|---|
+| D3D12 | 296–334 → 345 | 286–289 → 299 |
+| VK | 263–269 → 265 | 209–216 → 228 |
+| GL | 267 → 256 | 228–232 → 230 |
+
+D3D12 postfx 每帧 GPU 时间从 1.23 ms 降到 0.91 ms。GL/VK 的帧率在噪声范围内；第 2 项是正确性修复，不以提速为目的。
+
+### 验证
+- WARP 81/81，debug layer 0 errors / 0 warnings；RTX 80/81（只有预期中的 [1]）。
+- ctest：d3d12-debug 186/187、vk 181/182、gl 178/179，唯一失败的都是已知的剪贴板用例 `test_platform_win32_runtime`（OpenClipboard failed，ToDesk 占用剪贴板）。
+- 截图：同一后端 R686 与 R687 对比，前向 0.27–0.96、延迟 0.03–1.22，日志无 WARN/ERROR。
+
+## 本轮更新：R686 — 引擎性能：TSR 上采样去掉整屏复制 pass，Catmull-Rom 16 次采样降到 9 次
+
+### 定位
+R685 之后，在 Release 树里给 postfx 的每个 `*_apply` 加了 GPU 计时（临时探针，已移除）。D3D12 前向 postfx 共 1.23 ms，其中 `upscale_apply` 一项就占 0.506 ms，是最大的一项（第二是 sss 0.155 ms）。
+
+### 根因（`engine/src/renderer/upscale.c` 和 3 个 `upscale*.frag`）
+1. 每帧都多跑一个 1280×720 的全屏 pass。pass 1 把 TSR 结果写进 `s->fbo`，pass 2（R197-A 的 copy-only）再把它原样拷进 `history[write_idx]`。pass 1 的输出本来就可以直接当作下一帧的 history，这次拷贝没有必要。
+2. Catmull-Rom 每像素做 16 次采样（4×4，全部落在 texel 中心）。
+3. 锐化用的十字 4 邻域和 history clip AABB 用的 4 邻域是同一组像素，却分别采样了两次。
+
+### 修复
+- pass 1 直接写 `history[write_idx]`，删掉 `s->fbo` 和 pass 2。新增 `upscale_output_texture()`，返回本帧写入的那个 history；`main.c` 的 present 和 WARP 测试都改用它。`u_ups_copy_only` 分支保留在着色器里，push 布局和各张契约表都不变。
+- Catmull-Rom 改为 9 次双线性采样：每个轴把中间两个权重合成一次线性 fetch，放在 `t1 + w2/(w1+w2)` 处。权重和 R641 修正后的权重完全一致。我用 Python 在 16×16 随机纹理上对新旧两种公式各取 5000 个点比较，最大差 1.4e-15。
+- 4 个邻域只采样一次，锐化和 AABB 共用。因为分支依赖深度，GLSL 用 `textureLod(…, 0)`，HLSL 用 `SampleLevel 0`。
+
+单像素采样次数：16 + 5 + 4 + 1(history) + 1(depth) = 27 次，降到 9 + 5 + 1 + 1 = 16 次。每帧的全屏 pass 从 2 个降到 1 个。
+
+### 数据（Release，RTX）
+`upscale_apply` 的 GPU 时间：D3D12 从 0.506 ms 降到 0.286 ms，GL 0.298 ms，VK 0.287 ms。
+
+fps_avg：基线和新版本交替构建，各跑 2 轮。D3D12 的 p1 偶尔出现 35–80 的尖峰，基线和新版本都出现过，与本改动无关。
+
+| fps_avg | 修改前（2 轮） | 修改后（2 轮） |
+|---|---|---|
+| D3D12 前向 | 298 / 309 | 296 / 334 |
+| D3D12 延迟 | 282 / 240 | 286 / 289 |
+| VK 前向 | 248 / 249 | 263 / 269（+7%） |
+| VK 延迟 | 219 / 196 | 216 / 209 |
+| GL 前向 | 250 / 232 | 267 / 267（+10%） |
+| GL 延迟 | 198 / 197 | 228 / 232（+16%） |
+
+### 验证
+- 截图（Debug 三后端）：R685 和 R686 的同一后端对比，VK 差 0.22 / 0.05（前向 / 延迟），D3D12 差 1.01 / 1.02，GL 差 1.49 / 0.97，都在 demo 动画本身造成的连跑差异范围内（见 R685）。日志无 WARN/ERROR。
+- WARP：`upscale_sidecar_copies_flat_input_and_clips_history` 通过，这个用例同时验证了 frame 0 写进 history，以及 frame 1 的 history 混合。整套测试连跑 3 次：两次 81/81，debug layer 0 errors / 0 warnings；第一次有 10 个用例的 `rhi_present_ex` 失败，都在 [70] 之后，upscale 用例没有失败，后两次重跑都没有复现，判断是 WARP 的偶发问题。RTX 80/81，只有预期中的 [1] 失败。
+- ctest：d3d12-debug 187/187、vk 182/182、gl 179/179，全部通过。剪贴板用例这次也通过了，当时 ToDesk 没有占用剪贴板。
+
+## 本轮更新：R685 — 引擎性能：点光阴影只渲染被采样的 4 盏；首次建立 Release 基线
+
+### Release 基线
+此前所有帧率都是在 Debug 树（`build-gl/vk/d3d12-*` 都是 `CMAKE_BUILD_TYPE=Debug`）上测的。这一轮新建了 3 棵 Release 树：`build-rel-d3d12`（`ENGINE_D3D12_DEBUG=OFF`）、`build-rel-vk`、`build-rel-gl`（clang + Ninja，`ENGINE_BUILD_TESTS=OFF`，只构建 engine_demo）。Release 下 CPU 每帧只要 0.3–1.3ms，三个后端都受 GPU 限制。用整帧 GPU 计时器（临时探针，已移除）拆分 Release 前向每帧的 GPU 时间：
+
+| GPU 每帧 | D3D12 | GL |
+|---|---|---|
+| 整帧 | 3.8 ms | 4.9 ms |
+| 点光阴影（8 灯 × 6 面） | **1.55 ms** | **2.04 ms** |
+| scene | 0.64 | 1.14 |
+| postfx | 1.24 | 1.21 |
+| CSM | 0.15 | 0.29 |
+| particles | 0.04 | 0.02 |
+
+点光阴影是最大的一项，占整帧约 40%。（VK 的 GPU 计时器在整帧和点光阴影这两个区段都读到 0：VK 的 timestamp 不能跨 render pass 边界，这两个区段包含了 pass 切换，所以没测到。不影响结论。）
+
+### 根因：画了 8 个 cube，只读其中 4 个
+`POINT_SHADOW_MAX_LIGHTS = 8`，每帧给离相机最近的 8 盏点光各渲染一个 6 面 cube，共 48 面。可是所有消费方最多只读 4 个：GLSL/VK 光照着色器里是 `u_point_shadow_cubes[4]`，HLSL 是 t10–t13，`point_shadow_gather` 和 `light_system_set_point_shadow_indices` 也都截断到 4。第 5–8 盏的 24 个面每帧照常渲染，但从来没有被采样过。
+
+### 修复
+`point_shadow.h`：`POINT_SHADOW_MAX_LIGHTS` 从 8 改为 4，并在注释里写明，要调高这个值，必须同时调高着色器数组、D3D12 的 t 寄存器和两处截断。被采样的 4 盏点光不变：同样是按距离相机最近选出来的，排序方式也一样。
+
+### 数据（Release，RTX，`BREAK_BENCH_STATS=1`，480 帧，已排除预热帧）
+| fps_avg | 修复前 | 修复后 |
+|---|---|---|
+| D3D12 前向 | 255 | 294（+15%） |
+| D3D12 延迟 | 233 | 251 |
+| VK 前向 | 210 | 248（+18%） |
+| VK 延迟 | 187 | 196 |
+| GL 前向 | 194 | 241（+24%） |
+| GL 延迟 | 176 | 221（+26%） |
+
+### 验证
+- 截图：三个后端互相对比（前向 D3D12-GL 1.17、延迟 1.02），日志无 WARN/ERROR。
+- 修复前后的截图对比：差异只出现在粒子和移动光源的边缘，不在阴影区域。demo 本身每次运行都有时间相关的动画，所以同一份代码连跑两次也会有差异。为了确认，我在 GL 上做了对照：8 盏版本连跑两次差 0.318，4 盏版本连跑两次差 1.343，8 盏对 4 盏差 0.367 / 1.365。这几个差值处在同一量级，没有出现阴影变化带来的系统性差异。
+- 测试：WARP 81/81，debug layer 0 errors / 0 warnings；RTX 80/81（只有预期中的 [1]）。ctest：d3d12-debug 186/187、vk 181/182、gl 178/179，唯一失败的都是已知的剪贴板用例 `test_platform_win32_runtime`（ToDesk 占用剪贴板）。
+
+## 本轮更新：R684 — GL 后端一直跑在核显上：导出 NvOptimusEnablement / AmdPowerXpressRequestHighPerformance
+
+### 发现
+逐 pass 测 GPU 计时（临时探针，已移除）：GL 的每个后处理 pass 都比 VK 慢 3–4 倍，例如 ssao 0.45ms 对 0.14ms、sss 0.50 对 0.16、post_process 0.30 对 0.11。慢得这么均匀，不像是某个着色器的问题。在 GL 初始化日志里加上 `GL_VENDOR/GL_RENDERER` 后看到：**`ATI Technologies Inc. / AMD Radeon(TM) Graphics`**。也就是说，在这台 NVIDIA Optimus 混合显卡笔记本上，GL 上下文一直建在 AMD 核显上；VK 和 D3D12 是自己枚举适配器的，所以用的是 RTX 4060。此前所有「GL 比 VK/D3D12 慢」的结论（包括 R672 里的 GL 数据），比较的其实是两块不同的 GPU。
+
+### 修复（`engine/src/rhi/rhi_gl.c`）
+- Windows 下从 GL 后端导出 `NvOptimusEnablement = 1` 和 `AmdPowerXpressRequestHighPerformance = 1`。这是 NVIDIA/AMD 驱动约定的方式：可执行文件导出这两个符号，驱动就会把它的 GL 上下文放到独显上。`llvm-objdump -p` 确认 engine_demo.exe、test_vulkan.exe 的导出表里有这两项。
+- 初始化日志改为打印 `GL_VERSION (GL_VENDOR / GL_RENDERER)`，以后一眼就能看出跑在哪块 GPU 上。
+- `myui_explorer` 带有自己的 WGL 窗口运行器（`tools/ex_platform_win32.c`），不链接 GL 后端，所以在那个文件里也加了同样的两个导出（已确认三棵构建树中 `myui_explorer.exe` 的导出表里都有，explorer 测试 2/2 通过）。`echarts_demo`、`myui_widgets_demo` 是 headless 的，不创建 GL 上下文，不需要这两个导出。
+
+### 数据（RTX，修复后 GL 已在 RTX 4060 上，`BREAK_BENCH_STATS=1`，已排除预热帧）
+| GL | 修复前（AMD 核显） | 修复后（RTX 4060） |
+|---|---|---|
+| 前向 fps_avg / p1 | 90–104 / ~50 | 192–205 / 113–126 |
+| 延迟 fps_avg / p1 | 59–64 / ~40 | 184 / 148–154 |
+
+三个后端现在都在同一块 GPU 上，同一量级：D3D12 前向 255、VK 147、GL 约 200。
+
+### 验证
+- 截图：前向 D3D12 对 GL 的差 1.0（此前 2.4–2.5，核显上的舍入不同），延迟 0.26（此前约 0.45），日志无 WARN/ERROR。
+- ctest：gl 178/179、vk 181/182、d3d12-debug 186/187。唯一的失败都是 `test_platform_win32_runtime` 的剪贴板用例（`OpenClipboard failed`，ToDesk 占用剪贴板，属已知问题，与本次改动无关）。
+
+### 待查（未复现）：VK demo 退出时一次性的 `vkDestroyDevice: 8 leaked objects`
+排查 GL 时，VK demo（`BREAK_UI=0 BREAK_FRAMES=5`）有一次退出时报了 validation：`VkDevice … has 8 leaked objects`。同一条命令又跑了 24 次，另外试了前向/延迟、240 帧、和 GL demo 同时运行等变体，VK 全量 ctest（182 个，中间有大量创建和销毁）也跑过，都是 0 次。这次 validation 输出没有带对象类型，判断不了漏的是哪类对象，所以暂时记录为偶发，不改代码。下次再出现时，可以设 `VK_LAYER_ENABLES` / `khronos_validation.report_flags` 打开对象列表，拿到对象类型再定位。
+
+## 本轮更新：R683 — BREAK_BENCH_STATS 排除预热帧（更正此前所有 demo 帧率数据的口径）
+
+### 发现
+VK 有一次测出 `fps_p1=89 > fps_avg=69`：1% 最差帧的帧率居然高于平均帧率，说明平均值被个别极端帧拉偏了。逐帧打印超过 40ms 的帧，结果只有 frame 0，其值 VK 1591ms、D3D12 1716ms、GL 751ms，包含了全部启动开销（资源加载、PSO/着色器创建）。对 240 帧取平均时，这一帧就能多出 3–7ms。R669–R673 表格里的 fps_avg 都受了影响：越快的后端低估得越厉害，后端之间的相对比较也被扭曲。
+
+### 修复
+`main.c` 增加 `BENCH_STATS_WARMUP 8`：`engine.frame_count` 不超过 8 时不记录（240 帧最终记录 232 帧）。统计算法（qsort、p99 下标）没有改。CI 基准用的是 `rhi_swapchain_bench`，它本来就只测 clear+present，没有启动尖峰，也没有用到这段代码，所以收据 schema 和 CI 都不受影响。
+
+### 正确口径下的帧率（RTX，`BREAK_UI=0 BREAK_CAM=0,12,22,0,-25 BREAK_FRAMES=240 BREAK_BENCH_STATS=1`）
+| 后端 | 前向 fps_avg / p1 | 延迟 fps_avg / p1 |
+|---|---|---|
+| D3D12（bench 构建） | 255 / 161 | 235 / 161 |
+| VK | 147 / 107 | 137 / 72 |
+| GL | 81 / 39 | 42 / 24 |
+
+此前记录的「D3D12 前向约 90、延迟 93」应当理解为被 frame 0 拉低后的数字。R670–R672 的修复确实有效（瓶颈定位不受这个口径影响），但修复后的实际帧率比当时记录的高得多。GL 延迟只有 42，这是剩下最明显的差距。
+
+验证：d3d12-debug 重建，ctest 187/187；三个后端的 demo 都输出 `frames=232`。
+
+补充：GL 帧率在不同次运行之间波动很大（连续 3 次：前向 90–104、延迟 59–64；表里的 42 那一次偏低）。GL 延迟的 profile 显示，CPU 在 `frame_begin` 里等 GPU 等了 12.6ms，GPU postfx 用了 7.7ms（前向约 4.7ms），也就是受 GPU 限制，不是 CPU 卡顿。GL 后处理比 VK/D3D12 慢（同场景下那两个约 1.2ms），如果要继续优化，下一步是逐个 pass 看 GL postfx 的 GPU 计时。
+
+## 本轮更新：R682 — CI 用 GitHub 自带的 actions/cache 缓存 apt 包
+
+R677–R681 的证据表明，卡住的是 Azure apt 镜像整体的下载速度，具体卡在哪个包每次不同，所以精简包列表解决不了。这一轮改为缓存下载好的 .deb，只用 GitHub 官方的 `actions/cache@v5`（node24，不引入第三方依赖）：
+- 每个 hosted lane 在 apt 安装步骤之前加 `Restore apt package cache`：`path: ~/apt-archives`；key 由 job 名和全部 workflow 文件的哈希组成（包列表或钉版一改，就自动换一个新 key）；restore-keys 按 job 前缀回退，取同一 job 最近一次的缓存。
+- `APT_OPTS` 加上 `Dir::Cache::Archives=$HOME/apt-archives` 和 `Binary::apt::APT::Keep-Downloaded-Packages=true`（runner 默认会删掉已下载的 deb）；同时 `mkdir partial`，并删除 `docker-clean` 配置。缓存里已有的 deb，apt 不会再去下载。
+- apt 是 root 身份运行的，所以安装后 `chown` 回 runner 用户，否则 post 步骤保存缓存时读不到这些文件。可选的 CJK 字体步骤也做了同样处理。
+- 覆盖 `ci.yml` 中 10 个 hosted lane，以及 proton、rollback-drill。self-hosted 的 Steam Deck lane 不加（它本地本来就有 apt 缓存）。
+
+预期：第一轮是 cache miss，照常下载；之后的每一轮只下载有变化的包。镜像慢只会影响 miss 的那一轮，R674–R677 的超时重试仍然保留，作为兜底。缓存配额：每个 job 几百 MB，13 个 job 合计约 4 GB，在仓库 10 GB 上限以内，超出部分按 LRU 淘汰。
+
+验证：3 个 workflow 都能被 `yaml.safe_load` 解析；13 段 apt 脚本和可选字体步骤都通过 `bash -n`；解析 YAML 确认 13 个 apt 步骤前面都紧挨着 `actions/cache`。本机没有能跑 apt 的 Linux（WSL 不可用），所以实际效果要看推送后连续两轮的 CI（第一轮写缓存，第二轮应该命中）。
+
+**结果**：
+- 第一轮（e5bd79ad，cache miss）：Failure。`Linux Wayland + OpenGL` 两次都卡在 `libcodec2-1.2`，TSan 的 CJK 可选步骤超时被跳过（按设计记 warning，job 照常通过）。其余 job 都把缓存存下来了。仓库 Actions caches 页面上有 10 个 `apt-Linux-<job>-eced24…` 条目，单个大小 23–140 MB，合计约 0.8 GB。
+- 第二轮（「gitignore: demo profiler trace…」，与上一轮 workflow 哈希相同）：**Success，4 分 18 秒，apt 超时 0 次**。各缓存条目的 Last used 都更新到了这一轮，说明确实命中了。
+- 已知局限：`actions/cache` 在 key 完全命中时不会再保存。TSan 的缓存是在字体下载失败的那一轮存的（23 MB，里面没有 fonts-noto-cjk），所以在 workflow 文件下次变动之前，TSan 每一轮都要单独去镜像下载这个字体。好在这一步是可选的，下载失败也不影响 job。workflow 一改，key 就会换，届时重新完整保存一次。
+
+## 本轮更新：R681 — CI action 升到 Node 24 版本
+
+每个 job 都会报一条 warning：「Node.js 20 is deprecated … actions/checkout@v4, actions/upload-artifact@v4」。核对各 action 在对应 tag 下 `action.yml` 里的 `runs.using`：checkout v5 起是 node24，upload-artifact v6 起是 node24（v5 仍是 node20），download-artifact v7 起是 node24（v5/v6 仍是 node20）。升级如下：
+- `actions/checkout@v4` → `@v6`（22 处）；
+- `actions/upload-artifact@v4` → `@v6`（20 处）；
+- `actions/download-artifact@v4` → `@v7`（`proton-d3d12.yml`，1 处）。
+
+升级前查过各版本 README 列出的不兼容变化：
+- checkout v6 把 `persist-credentials` 存到 `$RUNNER_TEMP`，只影响 Docker 容器 action，本仓库没有用到；
+- upload/download 的 v6/v7 只是换了运行时，最低要求 runner 2.327.1，托管 runner 满足；self-hosted 的 Steam Deck / D3D12 lane 需要满足同样的版本；
+- download v5 改的是「按 artifact ID 下载」的解压目录，本仓库按 name 下载，不受影响。
+
+`evidence-receipt-gpu-runtime-windows-d3d12` 这个名字被两个 job 共用，但两者互斥（self-hosted GPU 与 unavailable receipt），所以和 v4 时一样，不会在同一轮里重复上传。验证：4 个 workflow 都能被 `yaml.safe_load` 解析。实际效果要看推送后的 CI。
+
+**结果（e66be30a）**：Node 20 弃用 warning 已经没有了（ci 和 windows-d3d12 两个 workflow 都是 0 条）；windows-d3d12 Success，artifact 上传和下载都没有报错。但主 CI 又失败了：`Linux Wayland + OpenGL` 和 `Linux Wayland + Vulkan` 两个 job 的两次 360 秒尝试都超时；X11/GL 和 Clang/LLD 的第一次也超时了，重试后才成功。这一次卡住的包各不一样，不再是 fonts-noto-cjk：`libcodec2-1.2`（9 MB，weston 依赖链上的）、`glslang-dev`、`libx11-dev`。这说明 R679 之前「都卡在同一个包」只是因为那个包最大、最容易撞上。根本原因是 Azure apt 镜像整体时快时慢，靠精简包列表消除不了。要根治需要 apt 缓存 action 或预装依赖的容器镜像，两者都会引入新的外部依赖，需要 owner 决定。
+
+## 本轮更新：R679 — fonts-noto-cjk 改为可选安装步骤
+
+R678 推送后的那轮 CI（bc92f10f）里，有 3 个 job 在 apt 阶段失败：`Linux Wayland + OpenGL`、`Linux + GCC (ASan + UBSan)`、`Linux X11 + Vulkan (lavapipe)`。三者的注解都显示，两次 360 秒尝试最后都停在同一个包：`Get: … fonts-noto-cjk [61.2 MB]`。R678 去掉的那 4 个 lane 这次都通过了。到这里，所有被抓到的停滞都落在这一个包上（R677 两处、R678 三处），R677 里 Wayland lane 的 110 包那次也是在这个包之前停下的。
+
+改动（`ci.yml` 里还安装这个包的 7 个 lane）：
+- 必需的依赖安装列表中去掉 `fonts-noto-cjk`；
+- 紧接着加一个独立步骤 `Install CJK test font (optional)`：`continue-on-error: true`，步骤时限 7 分钟，单次 `timeout 360`。装不上只记一条 warning，用到它的两个 CJK 用例（`test_myui_font.c`）会打印 SKIP。
+
+镜像正常时，覆盖和以前完全一样。镜像卡在这个包上时，job 不再失败，只是 CJK 字体用例被跳过，并留下注解。
+
+验证：`ci.yml` 能被 `yaml.safe_load` 解析，20 段含 apt 的 run 脚本都通过 `bash -n`；7 个可选步骤都紧跟在各自 job 的依赖安装步骤之后（解析 YAML 后确认了步骤顺序）。实际效果要看推送后的 CI。
+
+**结果（f506d181，run 39967095914）**：**全绿**（Status Success，用时 4 分 17 秒），0 个 error。从 R667 起的连续红灯和 cancelled 到这里终止。可选字体步骤这次没有触发 warning，说明镜像正常时字体照常装上了。
+
+## 本轮更新：R680 — 剩余的 `ubuntu-latest` lane 也钉到 ubuntu-24.04
+
+同一轮 CI 的注解提示：`ubuntu-latest` 从 2026-10-19 起迁到 Ubuntu 26（runner-images#14748）。`ci.yml` 中的 `wayland-gl`、`lane-gpu-runtime-linux-gl`、`lane-gpu-runtime-windows-d3d12-unavailable`，以及 `proton-d3d12.yml`，原来写的都是 `ubuntu-latest`；其余 Linux lane 早就钉在 `ubuntu-24.04`，所用的 apt 钉版（cmake 3.28、libvulkan 1.3.275 等）也都取自 noble。现在这 4 处都改成 `ubuntu-24.04`，避免 runner 镜像悄悄换代，导致包名或版本变化。验证：YAML 解析通过，非注释行里已经没有 `ubuntu-latest`。
+
+## 本轮更新：R678 — 不跑字体测试的 CI lane 不再安装 fonts-noto-cjk
+
+根据 R677 拿到的证据，先做不需要新增外部依赖的那一步：`fonts-noto-cjk`（61 MB，是单个最大的下载）只被 `test_myui_font.c` 的两个 CJK 用例用到，而且找不到字体时会 SKIP。所以这几个 lane 不再装它：
+- `lane-validation-linux-vk`、`lane-benchmark-steam-deck-vk`：只跑 `ctest -L graphics`，不跑字体测试；
+- `lane-benchmark-linux-vk`：只跑 `rhi_swapchain_bench`；
+- `clean-room`：会跑 headless ctest，但 CJK 用例在这里打印 SKIP，覆盖由其余 headless lane 提供。
+
+其余 7 个 lane 保持不变。R677 里有一个 lane 在同一个包上连续两次超时，这次改动就是针对它。Wayland lane 一次要下 110 多个包，那种停滞这次消除不了；要根治，还是得用 apt 缓存 action，这需要 owner 决定。
+
+验证：`ci.yml` 能被 `yaml.safe_load` 解析；只有这 4 个 job 的安装列表少了这个包（`grep -v "#"` 确认还剩 7 处）。实际效果要看推送后的 CI。
+
+## 本轮更新：R677 — CI apt 失败时把输出写成注解（为选定根治方案取证）
+
+R674–R676 都在猜 apt 卡在哪一步：是镜像、某个大包（各 lane 都会装几十 MB 的 `fonts-noto-cjk`），还是 dpkg 触发器。匿名访问读不到 job 日志（403/404），只能看到注解。现在 `apt_retry` 每次失败都会把这次 `apt-get` 输出的最后 8 行写成 `::warning::` 注解（输出先 `tee` 到 `/tmp/apt-attempt.log`，用 `pipefail` 保住 apt 的退出码）。下次再卡住，能在 run 页面上直接看到停在哪个包、哪个阶段。拿到这个证据后，再决定是换容器镜像、加 apt 缓存，还是把 CJK 字体改成按需安装。
+
+验证：13 段脚本都通过 `bash -n`；在本地用假 `apt-get` 模拟（挂起和成功两种）：挂起时每次 1 秒超时，重试 3 次，每次都写出最后的输出行，最终 `rc=1`；成功时直接 `rc=0`。
+
+
+**取证结果（05779e1c，run 39956912416）**：19 个 job 通过，1 个 job 失败（`lane: validation (VK_LAYER_KHRONOS_validation)`），另有一个 job 第 1 次尝试超时、重试后成功（`Linux Wayland + Vulkan (GCC)`）。注解里记下了两处卡住的位置：
+- `lane: validation` 第 2 次尝试（每次限时 360 秒）的最后几行，是正从 `azure.archive.ubuntu.com` 下载 `fonts-noto-cjk`（**61.2 MB**），前面依次是 cmake（11.2 MB）和 cmake-data；
+- `Linux Wayland + Vulkan` 第 1 次尝试停在 `Get:110 … libgstreamer-plugins-base1.0-0 [862 kB]`，那次一共要下载 110 多个包。
+
+结论：并不是镜像整个挂掉，而是从 Azure 镜像下载的速度偶尔会掉到很低，一次下载量越大越容易撞上超时。其中最重的单个包是 `fonts-noto-cjk`（61 MB），可它只被 `test_myui_font.c` 的两个 CJK 用例用到，而且这两个用例在找不到字体时会打印 SKIP。
+
+建议（需要 owner 决定）：首选用 apt 缓存类 action（例如 `awalsh128/cache-apt-pkgs-action`）。命中缓存后各 lane 不再从镜像下载，从根上消除这类问题；代价是多一个第三方 action 依赖，版本需要钉到 commit SHA。另一个不加依赖的办法是：只让一个 headless lane 安装 `fonts-noto-cjk`，其余 lane 都去掉，每个 job 少下 61 MB。这只能降低失败概率，消除不了 Wayland lane 那种 110 个包的情况。
+
+## 本轮更新：R676 — CI apt 重试时换镜像（R675 的后续）
+
+R675 那轮 CI（4c22ef1b）里 19 个 job 全部通过，比之前有进步。唯一的失败是 `lane: validation (VK_LAYER_KHRONOS_validation)` 的 `Install pinned toolchain` 步骤，用时 12 分 45 秒，大约就是 3 次 240 秒超时加上间隔，判断是 runner 的 Azure apt 镜像一直卡着。这个 lane 之前几轮也反复卡在同一步。匿名访问拿不到 job 日志（403），所以这个判断依据的是用时和注解，没有看到原始日志。
+
+改动（3 个 workflow，共 13 处）：
+- `apt_retry` 增加一个参数，指定每次尝试的秒数：`update` 每次 120 秒，`install` 每次 360 秒。
+- 一次尝试失败后，把 sources 里的 `azure.archive.ubuntu.com` 换成 `archive.ubuntu.com`；如果失败的是 install，先重新 `update` 再重试。这样不会三次都耗在同一个卡住的镜像上。
+- 步骤时限改为 20 分钟。
+
+验证：`yaml.safe_load` 解析通过，13 段脚本都通过 `bash -n`，每个步骤都带 20 分钟时限。实际效果要看推送后的 CI。
+
+**结果（8d2c3c87）**：没有解决。18 个 job 通过，`Linux + GCC (TSan)` 和 `Linux X11 + OpenGL (GCC)` 两个都卡在 `Install dependencies`，用了约 18 分 40 秒后以退出码 1 失败。也就是说，换到 `archive.ubuntu.com` 以后三次尝试照样超时。三轮下来（R674–R676），每轮被卡住的 job 都不同，编译和测试步骤没有一次失败，所以结论是 GitHub 托管 runner 到 Ubuntu 软件源的网络问题，不是仓库代码的问题。CI 配置调整到此为止，R674–R676 的防护保留：现在卡住时会在 20 分钟内明确失败并给出注解，不会再无声地被取消。可以考虑的根本办法：把依赖做成预装好的容器镜像（`container:`），或者用 apt 缓存类的 action（例如 `awalsh128/cache-apt-pkgs-action`）。这两种都会引入新的外部依赖，需要 owner 决定。
+
+## 本轮更新：R675 — CI apt 步骤按次限时重试（R674 的后续）
+
+R674 推送后的那轮 CI（d5dff51b）不再出现「job 超时被取消」，但还是有一个 job 卡在 apt：`Linux + Clang/LLD (Release, headless)` 的 `Install dependencies` 撞上新加的 10 分钟步骤时限，结论是 failed。同一轮里其余 19 个 job 的安装都在 1 分钟左右完成，编译和测试全部 success。
+
+这说明 `Acquire::*::Timeout` 管不住所有挂起：它只限制单次网络读取，dpkg 触发器或连接挂起时不起作用。所以改成按次限时并重试：
+- `apt_retry` 每次调用 `timeout 240 apt-get …`，最多 3 次；两次之间执行 `dpkg --configure -a`，修复中断安装留下的状态。
+- 删除 `/var/lib/man-db/auto-update`，跳过已知很慢的 man-db 触发器。
+- 步骤时限改为 15 分钟，大于 3 × 4 分钟加上间隔。
+- 覆盖 `ci.yml`（11 处）、`proton-d3d12.yml`、`rollback-drill.yml`。
+
+验证：三个 workflow 都能被 `yaml.safe_load` 解析；13 个 run 脚本都通过 `bash -n` 语法检查；每个用到 apt 的步骤都带 15 分钟时限。实际效果要看推送后的 CI。
+
+## 本轮更新：R674 — CI：apt 安装步骤加网络超时、重试和步骤级时限
+
+### 发现
+R667 之后主 CI（`ci.yml`）每一轮都是 cancelled（5ffe2eda → 636a8415），一直没有出过完整结论。逐个 job 查看后发现，被取消的 job 都卡在 `Install dependencies` / `Install pinned toolchain`（`apt-get update/install`）这一步，直到撞上 job 的 20–30 分钟时限（注解为「The job has exceeded the maximum execution time」）。被取消的 job 每轮不同（Clean-room、benchmark、validation、Linux X11/GL 等），同一轮里其余 job 的编译和测试全部 success。所以这是 runner 侧 apt 镜像挂起，不是代码问题。
+
+### 修复
+- `ci.yml`、`proton-d3d12.yml`、`rollback-drill.yml` 的 13 个 apt 步骤统一加上 `APT_OPTS`：`Acquire::Retries=5`、http/https 超时 30 秒、`DPkg::Lock::Timeout=120`。
+- 每个这样的步骤再加 `timeout-minutes: 10`。镜像挂起时最多 10 分钟就失败，并且失败点明确，不再拖到 job 时限把整个 job 取消。
+
+### 验证
+三个 workflow 都用 `yaml.safe_load` 解析通过，并断言每个含 `APT_OPTS` 的步骤都带有 10 分钟时限。实际效果要看推送后的 CI 运行。
+
+## 本轮更新：R673 — D3D12 GPU-based validation 运行时开关
+
+Debug 构建（`ENGINE_D3D12_DEBUG`）下 demo 只有约 20 FPS，几乎全部是 GBV 的开销：它会给每次着色器资源访问插桩。新增环境变量 `BREAK_D3D12_GBV=0`，只关 GBV，debug layer 照常开着（`rhi_d3d12_context_create`），日志会写明当前状态。默认仍然开启，所以测试套件和 CI 的覆盖不变。
+
+| Debug 构建，RTX | GBV 开 | `BREAK_D3D12_GBV=0` |
+|---|---|---|
+| 前向 | 19.2 | 76.5 |
+| 延迟 | 21.7 | 87.3 |
+
+验证：GBV 关闭时 demo 跑 120 帧，日志无 WARN/ERROR；WARP 81/81，debug layer 0 errors / 0 warnings；d3d12-debug ctest 187/187。`docs/Build_Guide.md` 的 `ENGINE_D3D12_DEBUG` 一条同步补充了说明。
+
+## 本轮更新：R672 — GL 帧率：主机回读暂存缓冲改用 STREAM_READ，并补上帧槽栅栏（GL 前向 62 → 76 FPS、延迟 43 → 51）
+
+### 现象与定位
+R671 之后，GL 前向管线约 62 FPS，D3D12 和 VK 都在 85–95，差距主要在 CPU 侧。逐帧 profiler 显示 GL 的 `scene` 区段中位数约 9ms，D3D12/VK 只有约 0.5ms。加临时区段二分后定位到 `mega_unified_vis_flags` → `gpucull_read_vis_flags` → `rhi_buffer_map`，每帧阻塞约 8.2ms。
+
+### 根因
+gpucull 的可见性标志回读用的是双槽暂存缓冲：GPU 复制进去，两帧后 CPU 再 map 读出。RHI 约定这种「STORAGE、无初始数据」的缓冲是主机可见的暂存区（VK 对应 HOST_VISIBLE，D3D12 对应 UPLOAD，见 `rhi_d3d12_buffer_wants_device_local`）。但 GL 后端统一按 `GL_DYNAMIC_DRAW` 创建，驱动把它放在显存里，每次 map 都要同步下载。
+
+另外 GL 原本没有帧栅栏，所以「两帧前的槽已经完成」这个前提在 GL 上从来没有成立过。
+
+### 修复（`engine/src/rhi/rhi_gl.c`）
+1. `rhi_buffer_create`：usage 只有 STORAGE 且没有初始数据的缓冲，改用 `GL_STREAM_READ`。
+2. `GLBackend.frame_fence[2]`：`gl_frame_end` 时插入 `glFenceSync`；`rhi_frame_begin` 复用这个槽之前先 `glClientWaitSync`（带 FLUSH 位，超时 5 秒），销毁时删除。这和 VK/D3D12 的帧槽语义对齐。
+   - 单独加栅栏测不出提速（map 照样在等下载），但它保证了回读的正确性前提。
+
+### 数据（RTX，`BREAK_BENCH_STATS=1`，fps_avg）
+| | 修复前 | 修复后 |
+|---|---|---|
+| GL 前向 | 62 | 76 |
+| GL 延迟 | 43 | 51 |
+
+`vis_read` 区段从 8.2ms 降到约 1ms。修复后 GL 主要受 GPU 后处理限制（约 4.7ms），不再是 CPU 卡顿。
+
+### 验证
+- ctest：gl 179/179，d3d12-debug 187/187。
+- vk 一次 181/182：`test_vulkan` TEST 9 设备丢失，属于本机已知的 TDR（R577/R574 有记录，R670 也出现过一次，早于本轮所有改动）。单独连跑 4 次通过，整套重跑 182/182。
+- 截图：前向 D3D12 对 GL 2.55，延迟 0.45，和 R671 一致；日志无 WARN/ERROR。
+
+## 本轮更新：R671 — 延迟管线帧率修复：Hi-Z 生成按比例划分输入（三后端 GPU 每帧省约 23ms），修正 D3D12 GPU 计时器 GPU 受限时恒为 0
+
+### 现象
+R670 之后，D3D12 bench 前向约 90 FPS，延迟管线三个后端都只有约 30 FPS（GL 27、VK 33、D3D12 27–30）。和后端无关。
+
+### 排查
+1. 在 profiler 中给 `rhi_frame_begin` 加了 `frame_begin` 区段（`main.c`，保留在代码里）。D3D12 延迟管线 CPU 在这里等栅栏约 26ms，说明瓶颈在 GPU。
+2. D3D12 GPU 计时器（R663）在 demo 里始终读到 0。原因是 `elapsed_ms` 只读最近提交的那一帧槽，而 GPU 受限时这一帧永远没跑完，所以永远拿不到值。
+   - 修复：`rhi_gpu_timer_begin` 复用这个槽之前，`rhi_frame_begin` 已经等过它的栅栏，此时两帧前的结果已经定稿，先把它收下来。
+   - 加了序号 `seq` / `harvested_seq`，保证读到的值只会往新的方向走（WARP 用例 [78] 检查「立即读出的值等于上一帧或本帧」，这个约束不能破坏）。
+3. 用整帧 GPU 计时器二分：G-Buffer 0.9ms、光照 0.2ms、点光阴影 1.1ms，而 Hi-Z 生成（`occlusion_cull_generate_hi_z`）占 23.5ms。`BREAK_OCCLUSION=0` 时三个后端都回到 56–90 FPS。
+
+### 根因
+`hi_z_generate(.comp/_hlsl.comp)` 默认输入正好是第一级输出 mip 的 2 倍。每个输出像素读取固定的 `2^(k+1)` 方块，最后一行和最后一列负责「吸收」剩下的输入。
+- 前向管线下，输入是 render-scale 后的场景深度，2 倍关系成立。
+- 延迟管线下，输入是全分辨率的 G-Buffer 深度（1280×720），金字塔却跟着 render scale 走（0.5 → mip0 320×180）。结果：
+  - 性能：右下角那一个线程要读约 640×540 个深度像素，整个 dispatch 被这个尾巴拖到 23ms；
+  - 正确性：mip0 只覆盖了屏幕左上 640×360，其余区域都压进了最后一行和一列，遮挡剔除的数据是错的。
+
+### 修复
+输出像素的范围改成按比例划分输入：`[pos*in/sz, (pos+1)*in/sz)`，最后一行和一列仍延伸到输入边界，每个像素至少读 1 个输入像素。输入正好是 2 倍时，结果和原来的方块完全一样，所以前向管线输出不变。GLSL 和 HLSL 两份同步修改，`occlusion_cull.c` 的注释也同步更新。
+
+### 数据（RTX，bench 构建，`BREAK_BENCH_STATS=1`，fps_avg）
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| D3D12 延迟 | 27–30 | 93 |
+| VK 延迟 | 33 | 82 |
+| GL 延迟 | 27 | 43 |
+| D3D12 前向 | 88–96 | 96（不变） |
+
+GL 延迟管线仍偏低，因为 GL 自身的 postfx 约 5ms GPU，加上驱动开销，与本问题无关。
+
+### 验证
+- WARP 81/81，调试层 0 errors / 0 warnings；RTX 80/81，只有预期的 [1] 失败，[78] 计时器用例通过。
+- ctest 三棵树：d3d12-debug 187/187、vk 182/182、gl 179/179。
+- 截图：前向 D3D12 对 GL 2.41（不变），延迟 0.42（R670 时为 1.09），关掉遮挡剔除的延迟 0.44，日志无 WARN/ERROR。
+  - 注意：截图脚本连续运行三个后端时，偶尔会抓到动画状态不同的一帧，差值会跳到 15–28。同一配置重跑可以复现到 0.4 左右，这次已经重跑确认过。
+
+## 本轮更新：R670 — D3D12 帧率修复合入：暂存块池与延迟释放分开 + 主机影子副本（更正 R669 的「compact 越界读」结论）
+
+### 更正 R669
+R669 认为复用池「暴露了 compact 着色器本来就有的越界读」。这个结论不对。真正的原因是：`rhi_d3d12_release_deferred`（R645）把所有待延迟释放的对象都塞进同一个 `frame_staging[slot]` 列表，包括 PSO、根签名、GPU 计时器的 `ID3D12QueryHeap`，以及已销毁的 DEFAULT 堆缓冲和 READBACK 资源。R669 的复用池从这个列表回收，于是：
+- 把 DEFAULT 堆缓冲当 UPLOAD 块 Map，GBV 报 [822]；
+- 把别的资源当成可见性数据交给 compact，越界写，设备失效，之后 46 个用例连锁失败；
+- 对 QueryHeap 当资源调用，退出时段错误。
+
+compact 着色器本身没有改动，现在全套测试都通过。
+
+### 实现（`engine/src/rhi/rhi_d3d12.c/.h`）
+1. 暂存块单独记账：`RHI_D3D12StagingBlock`（资源、大小、常驻映射指针），按帧槽存在 `frame_blocks[2]`。只有 `rhi_d3d12_frame_staging` 自己创建的 UPLOAD 块进这个列表。
+   - `rhi_frame_begin` 等到该槽的栅栏后，调用 `rhi_d3d12_recycle_frame_blocks`，把块移进 `block_free` 池（上限 256，超出的直接释放）。
+   - 取块时按 best-fit 选，不接受比需求大 2 倍又 64KB 以上的块，避免小写入占住 MB 级的块。
+   - 延迟释放列表 `frame_staging` 保持原样，照旧直接 Release。
+2. 块常驻映射（UPLOAD 堆允许），复用时只需一次 memcpy。
+3. UPLOAD 缓冲新增主机影子副本 `RHI_D3D12Buffer.shadow`：第一次 record write 时从资源载入一次。
+   - 之后每次写入：先改影子副本里被写的范围；整份影子副本写进块，只写不读写合并内存；`bd->resource` 只写被修改的那一段。
+   - 快照仍然是全尺寸资源，视图按 `bd->size` 创建依旧合法。R669 的「前缀快照」会让视图越界，已放弃。
+   - `rhi_buffer_update_region` 同步更新影子副本；`rhi_buffer_map` 让影子副本失效，下次写入时从资源重新载入；`rhi_buffer_destroy` 释放影子副本。
+4. 测量口径修正：`BREAK_BENCH_STATS` 原来用的是被 R147 钳到 0.1s 的 `delta_time`，任何低于 10 FPS 的测量都会显示成 100.000ms（Debug 构建延迟管线就因此显示「10.00 FPS」）。`Engine` 新增 `raw_delta_time`（未钳制），bench 统计改用它。
+
+### 数据（RTX，`BREAK_UI=0 BREAK_CAM=0,12,22,0,-25 BREAK_FRAMES=240 BREAK_BENCH_STATS=1`，fps_avg，均为未钳制口径）
+| 构建 | 前向 修复前 → 后 | 延迟 修复前 → 后 |
+|---|---|---|
+| d3d12-bench（无调试层） | 14.7 → 99–180 | 21.9 → 30–36 |
+| d3d12-debug（GBV） | 8.9 → 18.4 | 4.5 → 5.4 |
+| GL / VK 参考 | 57 / 86 | 27 / 34 |
+
+bench 前向波动较大（99–180），原因是 vsync 关闭后受 CPU 调度影响。D3D12 bench 构建现在前向和延迟都已与 GL/VK 相当或更快。Debug 构建仍然慢，主要是 GBV 自身的开销（逐次访问校验），属于设计内成本，性能评估请用 bench 构建。
+
+### 验证
+- WARP 全套 81/81，调试层 0 errors / 0 warnings / 1 alias；RTX 80/81，只有预期的 [1] 设备名用例失败。
+- 截图：前向 D3D12 对 GL 平均差 2.45（VK 对 GL 3.54），延迟 1.09。修复前 Debug 构建同一截帧的差是 25.48，那一帧被慢帧打乱了动画状态。日志无 WARN/ERROR。
+- ctest：d3d12-debug 187/187、gl 179/179；vk 181/182，`test_vulkan` 在 -j4 并发下失败一次，单独连跑 4 次都通过（与 GPU 资源争用有关，本轮改动不涉及 VK 后端）。
+
+### 下一步
+- 延迟管线三个后端都在 30 FPS 左右，瓶颈与后端无关。下一个要看的是点光阴影（8 灯 × 6 面 = 48 次 cull+execute），以及延迟管线本身的 CPU 开销。
+- GBV 可考虑做成运行时开关（目前是构建期的 `ENGINE_D3D12_DEBUG`）。
+
+## 本轮更新：R669 — 帧率排查：根因定位到 D3D12 缓冲写入路径（修复已原型验证，尚未合入）
+
+### 现象与测量
+demo 在 D3D12 上约 11-15 FPS（GL 63、VK 158）。系统排查（bench 构建 = Debug 无 GBV，`BREAK_BENCH_STATS=1` + `PROFILER_TRACE=1` + 临时后端计数器/计时器 + 自制采样器）：
+- **GPU 不是瓶颈**：R663 计时器显示 shadow+forward+scene 合计 1.4ms、postfx 1.2ms；nvidia-smi SM 占用 8-11%。
+- **进程 CPU 占 264%（2.7 核）**：主线程 52% 在 VCRUNTIME（mem*）、34% 在 win32u（DXG 系统调用）——大量 memcopy + 内核提交调用。
+- **逐区定位**：`P:point_shadow` ≈ 21-29ms（8 灯 × 6 面 × 48 次 unified cull+execute）、scene ≈ 25ms。
+- **根因（QPC 实测）**：`rhi_d3d12_record_buffer_write`（UPLOAD 堆缓冲的每帧快照路径）**每帧 37ms / 42 次调用 / 0.9ms 一次**。每次写入都：calloc 整个缓冲（instance_buf 1.28MB → 新页清零）+ 3 次整缓冲 memcpy + `CreateCommittedResource` 新建提交资源。写大小只有几 KB，成本却按**缓冲总大小**计。
+- GBV（Debug 构建默认开）再叠加约 21ms/帧（87.9 → 66.7）。
+
+### 已原型验证的修复（265 FPS，已回退未合入）
+1. 快照只拷贝前缀 `[0, offset+size)`（种子 = 实缓冲，256 对齐，≤8KB 走栈）——消除 calloc 与整缓冲 memcpy。
+2. 帧暂存块复用池（`frame_block_free[2][192]`，帧槽隔离，`release_frame_staging` 回收入池、`frame_staging` 按大小出池）——消除每次写入的 `CreateCommittedResource`。
+合计 rbw 37ms → 0.19ms；bench 前向 **261-273 FPS**（p1 40-50）。
+
+### 为什么回退
+合入前跑 WARP 全套：`indirect_draw_system_compacts_and_draws_on_the_gpu` 失败——GBV 报 compact dispatch 对 80 字节可见性/可见列表视图越界写（[83..119]），`counts[0] != 2`，随后设备失效、46 个用例连锁失败、退出段错误。最小化复现：**只保留「暂存块复用」一件事（连前缀快照都不用）即可复现**；只去掉复用则 81/81 全过。
+即：复用的块与「按 bd->size 创建视图 + 着色器越界读几行可见性标志」交互出未定义行为（静态根描述符的越界访问在硬件上返回垃圾 → 过多 draw 被判定可见 → 越界写）。旧实现每次 fresh 分配的块恰好零页、读出 0，把问题掩盖了。这属于「修复暴露了本已存在的越界读」，而非修复本身写错——但要合入就必须先把 compact 对可见性的越界读修掉（dispatch 线程数按 draw_count 对齐，或视图/pool 块保证可读范围），并重跑全套。
+WIP 保存在 `.tmp/r668-fps-WIP-rhi_d3d12.{c,h}.txt`。
+
+### 同步发现与处理
+- Debug 构建（含 GBV）跑日常 demo 慢是**设计内成本**；性能评估用 bench 构建（`ENGINE_D3D12_DEBUG=OFF`）。两者数字都已在案。
+- `time_sleep_us` 在无 `timeBeginPeriod(1)` 时 `Sleep` 粒度 15.6ms——本次无证据指向它，未动。
+- CI ASan 通道的 test_async_loader 修复见 R668；推后该通道的结果待确认。
+
+### 验证结果（当前合入状态）
+回退后 WARP 81/81、RTX 81/80（预期 [1]）、debug 构建重建干净；demo 回到 11.4 FPS 的已提交基线。本轮唯一落盘的代码是文档。
+
+### 下一步（按序）
+1. 修 compact 对可见性的越界读（根因），或让 pool 块对「bd->size 全范围读」安全（块保持 bd->size 全大 + 前缀外保证零：入池时整块 memset 0 一次、出池不 memset、写后由 host 写穿透——已试「出池 memset」仍失败，说明越界读的范围超出块或时序不同，需要 PIX 抓帧定位）。
+2. 重跑 WARP/RTX/三树 + demo 截图。
+3. 预期收益：bench 前向 265 FPS、Debug 前向 ~73 FPS（GBV 21ms 仍在，另行评估运行时开关）。
+
+## 本轮更新：R668 — 修 CI ASan 通道里 test_async_loader 的竞态
+
+### 发现
+此前一直只看本地结果，没核对远程 CI。用 GitHub 公开 API 查了最近的运行：`windows-d3d12` 与 `proton-d3d12` 每次都成功；主 CI 有多次取消/失败。取消大多停在「Install dependencies」（runner 侧，与代码无关）。唯一真正的测试失败是 `b715881c` 那次的 **Linux + GCC (ASan + UBSan) 无头套件**，从检查注解（check-run annotations，公开可读）拿到：
+- `test_async_loader.c:109: atomic_load(&g_callback_called) != 1`
+- `LeakSanitizer: 5176 byte(s) leaked in 2 allocation(s)`
+
+### 原因
+`async_loader_load_nonexistent` 轮询 `async_loader_status`，一看到 `ASSET_FAILED` 就退出循环、再 tick 一次后断言回调已触发。但 worker 的 `async_finalize` 先用 CAS 发布最终状态，**然后**才 `enqueue_completion`。主线程可能在两步之间读到 FAILED，那一次 tick 时完成队列里还没有这个请求，回调就漏了。断言失败后测试提前返回，跳过了 `async_loader_shutdown`/`vfs_destroy`，于是 LeakSanitizer 又报了泄漏——两个报错是同一个原因。只有 worker 恰好在那两步之间被抢占才会触发，所以是偶发的，本地正常跑 200 次 0 失败。
+
+### 复现与修复
+在 `async_finalize` 的 CAS 与 enqueue 之间临时插入一段忙等加宽窗口：未修改的测试每次都在第 109 行失败。测试改为**等回调本身**（`g_callback_called == 1`）而不是等状态，带原有的 5 秒截止时间。同样的加宽窗口下修复后的测试 3/3 通过。只改了测试：引擎的行为（状态先于回调可见）是 API 允许的，`async_loader_status` 本来就不承诺回调已派发。
+
+加宽到极端值（每个请求约 1 秒）时 `async_loader_completion_burst` 也会失败，那是 1200 个请求必然超过 5 秒预算，属于探针本身造成的，适中的加宽下不失败，不是第二个竞态。探针代码已还原。
+
+### 验证
+ASan 构建 100 次 0 失败；GL / VK / D3D12 三棵树该用例均通过。
+
+## 本轮更新：R667 — UI 画布的 scale_filter 在 D3D12 上端到端验证
+
+### 背景
+R666 让 D3D12 遵循调用方的 `RHISampler`，但它的像素测试只走 RHI 层。R665 点名的两个真实用户之一——myui 画布的 `my_vgcanvas_set_scale_filter`（`my_image` 控件经它切换 NEAREST/BILINEAR，画布的 `capabilities.scale_filters` 也声明两者都支持）——没有在 D3D12 上从公开 API 一路验证到像素。
+
+### 测试
+新增独立测试程序 `test_d3d12_ui_canvas`（只在 D3D12 构建里有，链接 `myui_core` + 画布实现，单独成程序，以免 `test_d3d12_warp_runtime` 引入 UI 库）：用 `my_vgcanvas_break_rhi_create` 建画布，在 16×4 目标上把 2×1 的黑白图片 `my_vgcanvas_draw_image` 放大 8 倍。
+- NEAREST：硬台阶，0–7 列纯黑、8–15 列纯白，逐像素精确比较。
+- BILINEAR：中间在两纹素中心之间的列都是真正的中间值（至少 24 个像素），外侧四分之一因 CLAMP 保持纯黑/纯白。
+
+### 反向验证
+用 R666 的 `ignore_sampler` 变异（即 R666 之前的行为）重跑：NEAREST 的 (0,0) 读到 112 而不是 0，失败；恢复后通过。所以这个用例能证明 UI 的 scale filter 依赖 R666，而不只是碰巧通过。
+
+### 验证结果
+WARP 与 RTX 都 1/1。ctest：D3D12 187/187（多了这个用例）、VK 182/182、GL 179/179。
+
+### 未覆盖
+`T` 键切换地形过滤：同一机制（`terrain_render` 把 `nearest_sampler` 经 `rhi_cmd_bind_material_textures` 绑到 unit 0），但地形 HLSL 边车只采样阴影图（t1/s1），并不采样 albedo 纹理（`terrain_hlsl.frag` 里程序化着色），GL 版也是如此——所以这个热键在任何后端上对地形画面都没有可见效果，不是 D3D12 的问题，不加测试。
+
+## 本轮更新：R666 — D3D12 采样器描述符表：调用方的 RHISampler 终于生效
+
+### 为什么做（R665 之后的分析结论）
+`RHISamplerDesc` 是后端无关契约，GL/VK/Metal 每次绑定都应用调用方的采样器，只有 D3D12 丢弃它。这类分歧不会自己暴露：R662 之前后处理在屏幕边缘错了很多轮无人察觉，DOF 和 combined AA 两个像素用例甚至把 WRAP 下的错误结果固化成了期望值。R662 的「按管线类型选 CLAMP/WRAP」只是对当前调用方碰巧成立的近似（UI 字体/图片、水面的采样器都要 CLAMP 却拿到 WRAP）。将来的各向异性、比较采样、LOD 偏移都要经过 `RHISamplerDesc`，在静态采样器模型下 D3D12 只能继续忽略或在 `RHIPipelineDesc` 里堆提示字段。所以这一项按「契约统一」做，而不是按眼下的两个用户（`T` 键、UI 图片 `scale_filter`）做。
+
+### 先做的预算核查
+在 `rhi_pipeline_create` 里临时加日志，统计 WARP 全套 + demo 前向/延迟路径实际创建的 73 条管线：加一张采样器表（1 个根 DWORD）后，push 常量上限是否仍覆盖着色器 b0 结构的末尾。全部容纳；59 条少 4 字节余量，最紧的是**延迟光照：16 张表，push 读到 184 字节，上限 192→188，只剩 4 字节**——以后往 `deferred_light_hlsl` 的 push 块加任何成员都要改放进 CBV。根参数最多 20/24，描述符 range 最多 19/24，单管线最多 5 个采样器寄存器（G-Buffer）。核查代码已还原，未提交。
+
+### 实现
+- **两个堆**：`rhi_sampler_create` 写进一个 CPU-only 采样器堆（256 个）；着色器可见的采样器堆变成 2048 个描述符的环（D3D12 着色器可见采样器堆的硬上限），按帧奇偶分两半，`rhi_frame_begin` 在等待该槽栅栏之后重置本半。`CopyDescriptors` 不能从着色器可见堆读，所以必须拆成两个。
+- **根签名**：`SamplerState` 寄存器不再生成静态采样器，而是收集起来、在两个阶段都处理完后生成**一张**描述符表，第 k 个 range 对应第 k 个寄存器（VS/PS 都声明的寄存器只算一次）。
+- **绑定**：`rhi_cmd_bind_texture` / `bind_cubemap` / `bind_texture_mip`（以及经由它们的所有 material / deferred / multi 绑定器）把采样器记到 `bound_sampler[unit]`（沿用 sN 与 tN 配对的边车约定）。每次 draw / dispatch / indirect 前 `rhi_d3d12_flush_samplers` 在脏时把当前管线各寄存器的采样器拷进环、设置表；同一帧内相同组合通过小缓存共享，环里每种组合只存一份。管线切换会把表标脏（根签名变了，旧表作废）。
+- **兼容**：无效的 `RHISampler`（空句柄）选管线默认——LINEAR，全屏/计算管线 CLAMP、网格管线 WRAP，即 R662 的规则，所以不传采样器的调用方行为不变。环满时退回每半环开头预留的默认块并 WARN 一次，绝不留下未设置的表。
+- 顺带：混合过滤（min LINEAR / mag NEAREST 等）的 mip 过滤改为跟随 min 过滤，与 GL 的映射一致（之前是 `MIN_LINEAR_MAG_MIP_POINT`）。
+
+### 测试与改动的既有用例
+- 12 个后处理用例原先传 `(RHISamplerDesc){0}`，那是 **NEAREST + REPEAT**；它们一直是靠 D3D12 忽略采样器、用静态 LINEAR 才通过的。改成引擎后处理实际创建的 LINEAR + CLAMP（`r666_post_sampler_desc`），期望值不变——这正是采样器生效后才会暴露的那类「测试碰巧依赖后端缺陷」。
+- 新用例 `rhi_sampler_filter_and_address_mode_reach_the_shader`：4×1 斜坡纹理；LINEAR+CLAMP、NEAREST+CLAMP、LINEAR+REPEAT、不绑采样器四种情况逐像素对比 CPU 复算；同一帧内两次 draw 用剪刀分左右、分别绑 NEAREST 与 LINEAR（证明每次 draw 拿到自己的表）；网格管线（blinn_phong，默认 WRAP）显式绑 NEAREST+CLAMP，在 UV 超出 1 且不落在纹素中心的位置读出精确纹素。用例内断言各模式在被测列上确实相差 20 以上，防止空洞。
+- 第一版用例的网格部分 UV 恰好落在纹素中心，NEAREST 与 LINEAR 结果相同，只抓得住寻址不抓过滤；改为 0..3 的 UV 后两者都能区分。
+
+### 反向验证
+四种变异全部失败：忽略采样器（退回旧行为）、记录后不再标脏（同帧两次 draw 共用一张表）、缓存只比较数量不比较内容、NEAREST 映射成 LINEAR。
+
+### 验证过程中发现的问题
+- 采样器默认值的初始化放在了栅栏创建之前，`descriptor_take` 读栅栏完成值时空指针崩溃（所有用例在设备创建后立即退出）。改到栅栏创建之后，并在默认采样器分配失败时让上下文创建失败。
+- 新注释里写了 `rhi_gl.c`，触发 `test_no_hidden_gl_fallback`（D3D12 后端源码里禁止出现 GL 标识）。改了措辞。
+
+### 验证结果
+WARP 81/81，RTX 80/81（仅预期的 [1]），debug layer 0 错误 0 警告。ctest 三棵树 186/186、182/182、179/179。demo 截图（D3D12 对 GL）：延迟路径边缘 0.43、内部 1.14，与 R664 持平；前向路径多次运行 1.22–1.41（R664 为 1.40–1.47），日志无警告。
+
+## 本轮更新：R665 — 更正「NEAREST 采样无人使用」的结论（仅文档）
+
+### 更正
+R662–R664 的几处记录把 D3D12 丢弃 sampler 参数的后果写成「NEAREST 请求被当成双线性，今天没有场景受影响」，依据是只查了 `deferred.c`（着色器用 `Load()`）和 `gpucull.c`/`occlusion_cull.c`（计算着色器）。这个结论不完整，核对后还有两处真实的使用方，在 D3D12 上都**静默无效**：
+
+1. **`T` 键切换纹理过滤**：`main.c` 的 `nearest_filter` 在按键时翻转，`active_sampler` 取 `render.nearest_sampler`，传给 `terrain_render`。D3D12 上无论按不按，地形都是 LINEAR。
+2. **UI 图片控件的 `scale_filter`**：`my_image` 通过 `my_vgcanvas_set_scale_filter` 把 `MY_SCALE_FILTER_NEAREST` 传到 `my_vgcanvas_break_rhi.c`，后者选 `nearest_sampler` 绑定图片批次。D3D12 上图片缩放始终是双线性（控件默认就是 BILINEAR，所以默认画面不受影响；只有显式要像素风缩放的使用者会看到差别）。
+
+另外 `my_vgcanvas_break_rhi.c` 的 `capabilities.scale_filters` 声明了同时支持 NEAREST 和 BILINEAR，在 D3D12 后端上这个能力声明与实际行为不符。
+
+### 为什么这一轮不修
+真正的修法是 sampler 描述符表：CPU 端 sampler 堆（现在 `rhi_sampler_create` 写进的是着色器可见堆，不能作为拷贝源）、每条管线根签名里一张带多个 range 的 sampler 表（一张表只占 1 个 DWORD，但各 range 在堆里必须连续）、绘制前把当前 sampler 拷进着色器可见堆的环形区、管线切换与计算管线后的重新绑定，并且要按帧在途分区。它还会让引擎里每个 pass 在 D3D12 上**第一次**使用调用方真正指定的 sampler（R662 的按管线类型 CLAMP/WRAP 只是近似），影响面是整个渲染器；而收益是一个调试热键和一个默认关闭的控件选项。没有可视化回归对照就动全局，不划算。
+
+### 不引入的权宜做法
+给 `RHIPipelineDesc` 加一个「静态采样器用 NEAREST」的提示、再让调用方为这两处各建一条管线变体：能立刻让两处生效，但会往共享 API 里加一个将来要拆掉的字段，并且 GL/VK 要特意忽略它，所以不做。
+
+### 建议
+- 若要正式支持：做上面的 sampler 描述符表，并在同一轮里用 demo 前向/延迟截图对照 + 全套 WARP/RTX 像素测试做回归。
+- 在那之前，`my_vgcanvas_break_rhi.c` 在 D3D12 上应只声明 BILINEAR，这样上层的能力查询是诚实的（尚未改动，涉及 UI 库的能力位语义，需要单独评估）。
+
+## 本轮更新：R664 — D3D12 对 no_vertex_input 管线不再做背面剔除
+
+### 问题
+R662 审计登记的潜在风险：VK（`cullMode = NONE`）和 GL（`disable_culling || no_vertex_input`）都对 `no_vertex_input` 管线强制关闭背面剔除，D3D12 只认 `disable_culling`。天空盒、粒子等管线没有设 `disable_culling`，在 D3D12 上之所以能画出来，只是因为它们的三角形碰巧是正面朝向。任何改变朝向的矩阵（镜像、翻转的相机）都会让它们整个消失，而且没有任何警告。这类管线是全屏三角形或程序生成的几何，调用方从未选择过绕序，背面剔除只会白白丢掉它们。
+
+### 修复
+`rhi_d3d12_create_graphics_pso`：`CullMode = (disable_culling || no_vertex_input) ? NONE : BACK`，与 VK/GL 一致。
+
+### 测试
+`no_vertex_input_pipelines_are_never_back_face_culled`：blit 管线（SV_VertexID 全屏三角形，`disable_culling` 故意不设）分别用单位矩阵和镜像 x 的推矩阵各画一次，后者翻转绕序。要求两次都铺满 64 个像素。对照组：带顶点输入、默认剔除的 blinn_phong 网格管线画同一个镜像三角形，必须被剔除（0 像素），而正常朝向画满（64 像素），证明没有把剔除整体关掉。
+先写测试、后改代码：修复前镜像那次是 0 像素（`drawn pixels: normal 64, mirrored 0`），失败原因正是被剔除；修复后 64/64，对照组 64/0。
+
+### 验证结果
+WARP 80/80，RTX 79/80（仅预期的 [1]），debug layer 0 错误 0 警告。demo 截图不变（前向 D3D12-GL 1.47、延迟 1.12，日志无警告），符合预期：这是潜在风险的修复，现有场景里没有朝向相反的 no_vertex_input 管线。
+
+## 本轮更新：R663 — D3D12 GPU 计时器
+
+### 问题
+R662 的审计里唯一一组真正的空桩：`rhi_gpu_timer_create/destroy/begin/end/elapsed_ms` 在 D3D12 上全是空函数，create 返回 NULL。后果是 demo 的调试叠层「--- GPU ---」每一行、Chrome trace 的 `gpu_shadow/forward/scene/postfx` 区域、draw-bench 的 GPU 样本都恒为 0。没有崩溃，因为调用方不检查 NULL 计时器。
+
+### 实现
+- 每个计时器：一个 `D3D12_QUERY_HEAP_TYPE_TIMESTAMP` 查询堆（4 个查询 = 2 个帧槽 × begin/end）和一个常驻的 READBACK 缓冲，频率取 `GetTimestampFrequency(direct_queue)`。
+- `begin`/`end` 记录 `EndQuery` 时间戳到当前帧槽（`frame_parity & 1`）；`end` 同时 `ResolveQueryData` 进该槽对应偏移的 READBACK。begin 与 end 跨帧则丢弃这一对。
+- `elapsed_ms`：读**上一个已提交**的帧槽（`(parity + 1) & 1`，帧录制中和 frame_end 之后都是它），且仅当该槽的帧栅栏已完成才 Map 读取，所以**永不阻塞 CPU**；栅栏未完成就返回上一次完成的测量值。与 GL/VK 一样有一帧延迟，区别是已完成的值可重复读取，而不是读一次后清零——调试叠层和 trace 导出在帧内不同位置采样，这样两处看到同一个值。
+- 销毁走 `release_deferred`（帧在途时查询堆和 READBACK 仍被命令列表引用）。
+
+### 测试
+`gpu_timer_measures_the_gpu_time_of_a_recorded_region`：6 帧，计时区域里分别画 300/100/30/300/100/30 次 256×256 全屏 blit，使两个帧槽都各承载一次长和一次短的测量。每帧读两次：frame_end 之后立刻读（GPU 通常还在跑）只能是上一帧或本帧的值；device_idle 之后读必须是本帧自己的值。六个稳定读数里，draw 数更多的必须长 1.5 倍以上；空的 begin/end 对必须低于最短值的一半；值可重复读取；从没录制过的计时器报 0。
+实测 WARP 154.9/53.5/18.3/160.5/53.5/16.8 ms，RTX 35.2/11.8/3.6/35.2/11.8/3.6 ms，空对约 0.0004 ms——两个适配器上都是干净的 3:1 阶梯，说明测到的是 GPU 工作量而不是常数。
+
+### 反向验证
+- 去掉 `ResolveQueryData`：读数恒为 0，失败。
+- 读错帧槽 / 无视栅栏 / READBACK 偏移写成 0：见下方「验证过程中发现的弱点」。
+
+### 验证过程中发现的弱点
+第一版测试（一个长计时器、一个空计时器，三帧同样的负载）只抓得住「完全没解析」。把读槽改成当前槽、无视栅栏、写错偏移这三种变异它都放行——三帧负载相同，读到哪个槽的值都一样。所以改成上面的 300/100/30 阶梯加「立刻读 / 空闲后读」两次读取，并用 `.tmp/r663mut.py` 复跑全部变异。
+
+### 验证结果
+WARP 79/79，RTX 78/79（仅预期的 [1]），debug layer 0 错误 0 警告。ctest：三棵树各 1 个失败，都是 `test_platform_win32_runtime` 的剪贴板用例（`OpenClipboard failed`），其余全过（D3D12 185/186、VK 181/182、GL 178/179）。这个失败与本轮无关：把本轮改动 stash 掉、回到已推送的 R662 提交，同一个用例照样失败；原因是 ToDesk 在远程会话中运行（进程 7896 在控制台会话），它会占用剪贴板。R664 复跑时 ToDesk 没有占着剪贴板，三棵树 186/186、182/182、179/179 全部通过，印证了这一点。
+
+### 遗留
+- NEAREST 采样仍是双线性（需要真正的 sampler 描述符表）。
+- D3D12 对 `no_vertex_input` 管线不强制关闭背面剔除（VK/GL 会），天空盒与粒子管线今天恰好是正面朝向。
+
+## 本轮更新：R661–R662 — 清掉调试 printf；全屏/计算管线的静态采样器改为 CLAMP
+
+### R661：清理
+R658 调试时在 `rhi_d3d12.c` 设备创建里加的 `printf("R658DBG ...")` 被一起提交了，每次建设备都会往 stdout 打一行没有换行的内容。删除；测试里一个只在失败时打印的诊断补上换行并改成有意义的前缀。
+
+### R662：全屏与计算管线的静态采样器地址模式
+**发现**：让子 agent 对比 `rhi_d3d12.c` 与 `rhi_gl.c` 的每个导出函数，D3D12 剩下的真空桩只有 GPU 计时器（读数恒为 0，无功能损坏）。影响最大的是文档里早已写明的「已知限制」：D3D12 丢弃 `rhi_cmd_bind_texture` 的 sampler 参数，根签名里每个 `SamplerState` 都是写死的 LINEAR + **WRAP** 静态采样器。而渲染器里后处理、延迟光照、IBL、粒子等所有 sampler 都要求 CLAMP_TO_EDGE，GL 也确实按此应用。
+
+**量化**：把 demo 截图里 D3D12 与 GL 的差分拆成屏幕边缘 8 像素带和内部。R658 时前向路径边缘误差 3.83、内部 1.32（延迟 2.04 / 1.16）——边缘是内部的 3 倍，与「WRAP 在屏幕边缘取到对侧像素」吻合。实验：临时把所有静态采样器改成 CLAMP，边缘降到 0.77（延迟 0.43），内部不变，确认原因。
+
+**修复**：不去做完整的 sampler 描述符表（那是改所有管线根签名的大改动），而是按管线类型选地址模式：`RHI_D3D12RootSigBuilder.clamp_samplers`，全屏（`no_vertex_input`）和计算管线为 CLAMP，网格管线保持 WRAP（引擎的材质采样器是 REPEAT，网格的 UV 常常超出 [0,1]）。NEAREST 请求仍然被当作双线性，这一条限制保留并写进了代码注释。
+
+**被改写的既有用例**（这三个用例钉住的恰好是 WRAP 行为，不是回归）：
+- `dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind`：期望表在条纹交界处的两列从 142/113 变为 191/64——WRAP 下交界处的双线性采样绕到了对侧。新表用 Python 模型（含 WRAP 表的对照复现，WRAP 模型逐项等于旧表，所以模型可信）算出。
+- `combined_aa_sidecar_reprojects_history_and_matches_fxaa`：FXAA 的 CPU 复算改成 CLAMP；棋盘格在边界处的对角线不再相等，所以第 1、2 帧的「当前色」改用 FXAA 复算而不是原始纹素；斜坡边缘的混合像素数由 8 变 7（旧 WRAP 的绕边行多算了一个），非空洞守卫相应放宽到 7，每个像素仍然逐个对比模型。
+- 新增 `static_samplers_clamp_for_fullscreen_pipelines_and_wrap_for_meshes`：blit 顶点着色器的 UV 取自未变换的顶点，推矩阵只缩放位置，于是 4×1 斜坡 (10/90/170/250) 在列 5..7 读到 u>1。对每个被覆盖像素对比 CPU 的 CLAMP 双线性复算，并要求同一处 WRAP 复算与 CLAMP 复算相差 20 以上，防止测试空洞。
+
+**反向验证**：把 `clamp_samplers` 强制为 0 后，上述三个用例全部失败（DOF 191 vs 170、combined AA 第 1 帧、新用例）；恢复后全部通过。
+
+**验证结果**：WARP 78/78，RTX 77/78（仅预期的 [1]），debug layer 0 错误 0 警告。demo 截图 D3D12 与 GL 的屏幕边缘误差：前向 3.83 → 0.7–0.8，延迟 2.04 → 0.43；内部持平。整体 MAE：前向 1.40–1.46（噪声范围内，之前 1.41），延迟 1.13（之前 1.19）。
+
+### 遗留
+- GPU 计时器在 D3D12 上恒为 0（`rhi_gpu_timer_*` 是空桩）：调试叠层的 GPU 耗时、trace 的 gpu_* 区域和 draw-bench 的 GPU 样本都是 0，不影响渲染。实现需要 timestamp 查询堆 + readback，是下一个可做的功能项。
+- NEAREST 采样仍是双线性（需要真正的 sampler 描述符表）；`rhi_cmd_set_depth_func_*`/`set_cull_face` 在 D3D12 是空函数，但天空盒的 PSO 已经把这些状态烘焙进去，无可见影响。
+- 潜在风险：VK 与 GL 对 `no_vertex_input` 管线强制关闭背面剔除，D3D12 没有；天空盒与粒子管线没设 `disable_culling`，今天恰好是正面朝向所以能渲染。
+
+## 本轮更新：R660 — 补辐照度 +Z 面镜像的像素证明
+
+### 问题
+R654 记录的盲区：`irradiance_env_hlsl.comp` 把 +Z 面左右镜像（`t.x` 取反）后 IBL 用例仍然通过。原用例只在每个面的 (12, 50) 纹素比对 CPU 复算，而辐照度是半球余弦平均，那个位置的镜像对几乎相等。
+
+### 测试
+扩展 `ibl_bake_matches_a_cpu_replay_of_the_compute_shaders`：
+- 把 1024 样本的辐照度 CPU 复算抽成 `r660_irradiance_replay`，原逐面检查改调它，行为不变。
+- 先断言太阳落在 +Z 面。扫描 +Z 面的镜像对（x 与 63-x），最不对称的是边缘一对 (0,62)/(63,62)，复算值相差约 7%。
+- 两个纹素各自对比自己的复算（容差 2%），并断言两者复算值差 5% 以上，防止这一项以后因场景改动而悄悄失效。
+
+### 反向验证
+- +Z 面 `t.x` 取反：两个纹素的 GPU 值正好与对方的复算值互换（0.02766 对 0.02586），失败。
+
+### 验证结果
+WARP 77/77，RTX 76/77（仅预期的 [1]），debug layer 0 错误 0 警告。D3D12 ctest 186/186。只改测试文件，没有重跑 VK/GL 树和 demo。
+
+### 遗留
+- R654 记录的预滤波 mip 采样与 GL 的亚纹素差异（GL 用 NEAREST_MIPMAP_NEAREST、D3D12 静态采样器是 LINEAR）仍在，属于采样器能力差异，在平滑环境图上不可见，不改。
+
+## 本轮更新：R659 — 补前向簇光照 sidecar 的副切线像素证明
+
+### 问题
+R655 记录的测试盲区：前向 `pbr_clustered_hlsl.frag` 的 `perturb_normal` 里副切线符号改反后，所有簇光照用例仍然通过。它们用的都是平坦法线贴图 (128,128,255)，map.xy≈0，T 和 B 被乘了零。
+
+### 测试
+`clustered_forward_sidecar_perturbs_the_normal_along_the_bitangent`：法线纹素 (128,230,200)，map ≈ (0, +0.80, +0.57)，倾斜全在副切线轴上。四边形朝相机的 +Z 平面，UV 随世界 x/y 线性变化。离屏视口下 SV_Position.y 与 NDC y 同向增长（同 GL 的 gl_FragCoord.y），于是着色器算出 T = +x、B = -y，扰动后法线偏向 -y。方向光沿 (0, 0.6, -0.8)，即 L = (0, -0.6, 0.8)：偏向 -y 时 N·L ≈ 0.94，偏向 +y 时 N·L ≈ 0。全部 64×32 像素逐通道对比 CPU 复算（容差 0.008）。
+
+### 反向验证
+- B 符号翻转：画面接近全黑，失败。
+- T/B 互换：失败（0.289 vs 0.369）。
+- 去掉法线扰动：失败（0.377 vs 0.369，单这一项的差别也在容差外）。
+
+### 验证结果
+WARP 77/77，RTX 76/77（仅预期的 [1]），debug layer 0 错误 0 警告。D3D12 ctest 186/186。本轮只改测试文件，未动引擎代码，没有重跑 VK/GL 树和 demo。
+
+### 遗留
+- 辐照度 +Z 面镜像的盲区由 R660 补上。
+
+## 本轮更新：R658 — D3D12 材质数组路径：SV_StartInstanceLocation、blinn/clustered/gbuffer 数组边车
+
+### 问题
+R609 实测过 D3D12 的 SV_InstanceID 拿不到 ExecuteIndirect 记录里的 StartInstanceLocation（那是 gl_InstanceID，不带 base），并据此断定「没有 HLSL 写法能拿到它」，把 `indirect_first_instance_supported` 写死为 false，材质数组单次执行路径在 D3D12 上整体停用。这个结论来自只试过像素阶段 profile——`SV_StartInstanceLocation` 是**顶点**阶段的输入语义，从 shader model 6.8 才有；dxc 对 vs_6_8 编译通过，WARP 和 RTX 4060 都正确交付 base。
+
+### 修复
+- **能力位**（`rhi_d3d12.c`）：不再写死 false，`CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL)` 探测设备，SM ≥ 6.8 才为 true；main.c 已有的能力门会据此打开 MatArray 路径。
+- **CMake**：对含有 `SV_StartInstanceLocation` 的顶点边车用 vs_6_8 编译（读源码探测），其余仍是 6.0。
+- **边车**：`blinn_phong_arr_hlsl.vert` 的层号从 SV_InstanceID 改成 SV_StartInstanceLocation（frag 里的长注记同步改为现在的行为）；新增 `pbr_clustered_arr_hlsl.{vert,frag}`（五个材质寄存器改 Texture2DArray，按层采样；64 项每层的 metallic/roughness/AO 和 emissive 表挂在 b1 cbuffer 的 304/1328 偏移——GL 版把表放在自己的 UBO 192/1216 处，D3D12 这里帧常量占了 0..304）；新增 `gbuffer_arr_hlsl.{vert,frag}`（同样按层采样 + 表在 b1，`u_factor_arr[64]` 后接 `u_emissive_arr[64]`）。
+- **接线**：`main.c` sidecar 分支建 `clustered_arr_pipeline`；`clustered_proj_ubo` 扩容为 `sizeof(ClusterFrameUbo) + 2*64*16`，sidecar 路径的表基址换成 304；deferred 的数组管线补 `_loc_gbuf_arr_vp`（折叠的 view*proj，同 R644 静态管线）并在 `mega_mat_arrays_draw_gbuffer` 上传。
+
+### 测试
+- 改写 R609 的用例为 `indirect_start_instance_reaches_the_shader`：四条记录，{1,0}→层0、{1,1}→层1、{1,2}→层2、**{3,1}→层1**（最后一条证明读的是 base 而不是 instance 编号——旧的失败模式在这里会渲成层 2），参数缓冲回读排除过期上传，能力位断言为 true。
+- 改写 `blinn_phong_arr_sidecar_forwards_the_layer_into_pixels`：两个三角各一条 indirect 记录，用 first_instance 驱动层号（原先借用 InstanceCount 伪造层号）。
+- 新增 `clustered_array_sidecar_picks_texture_and_factors_by_first_instance`：两个四边形两条记录（层 1 / 层 2），逐像素对比 CPU 复算的 PBR，分别验纹理层、系数表层、emissive 表层和零速度。
+- 新增 `gbuffer_array_sidecar_writes_each_layer_its_own_targets`：走真实 DeferredSystem 的 `gbuffer_arr_pipeline`，RT0/RT2/RT4 分别钉纹理层、系数表和 emissive 表，RT3 钉速度为零。
+- 踩到的测试构造细节：用色值 128 的平法线图经切线扰动后是 (+0.0039,+0.0039,1)，低粗糙度层的锐瓣看得到，CPU 复算要含它；RGBA8 目标在 WARP 和 RTX 上对 x.5 的舍入不同，factor 比较放 ±1；`deferred_end_gbuffer` 只是 unbind，不像 offscreen FBO 的 unbind 会隐式切回屏幕，故画完必须再调 `rhi_offscreen_fbo_unbind`，否则 readback 落到屏幕上全黑。
+
+### 反向验证
+- `pbr_clustered_arr`：层改读 SV_InstanceID、系数表偏移加垫一个 float4、emissive 表锁层 0、albedo 锁层 0——四个都失败。
+- `gbuffer_arr`：层改读 SV_InstanceID、系数表锁层 0、albedo 锁层 0——三个都失败（分别表现为层 0 的 128 灰 albedo + 恒 1 的 factor）。
+
+### 验证结果
+WARP 76/76，RTX 75/76 两次（仅预期的 [1]），debug layer 0 错误 0 警告。前向 demo MAE：D3D12-GL 1.41、VK-GL 3.54；延迟 D3D12-GL 1.19、VK-GL 0.29。D3D12 demo 日志确认 `MatArray: 12 layers`、`Material indirect: on`，前向与延迟的数组单次执行路径都真正跑了。
+
+### 遗留
+- 能力位依赖设备 SM 6.8（Agility 1.616 运行时已部署在构建目录）；不支持 6.8 的设备会保持 per-group 回退，这在能力契约里是成文行为。
+- R592 的 arr 变体 push 块与静态变体同形（`u_mr_factor` 等未用），省一张根签名布局。
+
+## 本轮更新：R657 — D3D12 前向簇光照的蒙皮变体
+
+### 问题
+R656 之后，簇光照剩下蒙皮变体没有 D3D12 版本：蒙皮网格在 D3D12 上仍走 blinn 蒙皮管线。GL 版 `pbr_clustered_skin.vert` 把关节放在存储缓冲槽 0（D3D12 上即 t0，被共用像素阶段占用）。
+
+### 修复
+- 新增 `engine/shaders/pbr_clustered_skin_hlsl.vert`：关节放在 t16 的 `StructuredBuffer<float4>`，当前姿态从 float4 槽 0 起，上一帧姿态在 512 槽之后，每个关节四列（需要 transpose）；复用静态变体的像素阶段、PushConsts 和 `ClusterFrame`。
+- `main.c`：sidecar 分支建 `clustered_skin_pipeline`（`uses_storage` + `skinned_vertex`，64 字节蒙皮顶点布局）；绑定关节缓冲时 sidecar 后端用 16 号寄存器，其余后端仍是 0。
+
+### 测试
+`clustered_skin_sidecar_blends_joints_and_writes_velocity`：一个四边形，两个关节各占 0.5 权重。关节 1 平移 x，关节 2 缩放 x 并平移 y，上一帧姿态各不相同。混合后的 RT1 速度随 x 变化（0.25x+0.15, 0.05），所以关节行号、步长、上一帧偏移或转置出错都会改变数值。颜色逐像素对比 CPU 的 PBR 复算（容差 0.008）。
+
+测试里踩到的一个点：片元阶段用 UV 导数构造切线框，UV 恒定时会归一化成 NaN 并输出黑色，因此测试顶点的 UV 必须随位置变化。
+
+### 反向验证
+- 去掉 transpose：平移丢失，覆盖范围错误，失败。
+- 上一帧偏移 512 改成 256：速度错误，失败。
+- 速度用当前蒙皮代替上一帧：速度为 0，失败。
+- 只用第一个权重：颜色偏差，失败。
+每次都确认 dxil 被重新编译，改回后通过。
+
+### 验证结果
+WARP 74/74，RTX 73/74（仅预期的 [1]），debug layer 0 错误 0 警告。前向 demo MAE：D3D12-GL 1.42、VK-GL 3.52；延迟 D3D12-GL 1.22。demo 场景里没有蒙皮网格，蒙皮路径只靠单元测试覆盖。
+
+### 遗留
+- 数组变体（`pbr_clustered_arr`）仍未移植；`gbuffer_arr` 仍被「D3D12 间接绘制不传 first_instance」卡住。
+
+## 本轮更新：R656 — D3D12 前向簇光照的实例化变体
+
+### 问题
+R655 只移植了静态网格的 `pbr_clustered`。实例化的 ECS 绘制在 D3D12 上仍回退到 blinn 实例化管线，与 GL/VK 的 PBR 结果不一致。GL 版 `pbr_clustered_inst.vert` 把实例数据放在存储缓冲槽 0；D3D12 的 `rhi_cmd_bind_storage_buffer` 对只读缓冲退化成同编号的 SRV，也就是 t0，但共用的 `pbr_clustered_hlsl.frag` 已占满 t0-t15。
+
+### 修复
+- 后端寄存器数组从硬编码 16 放宽到 `RHI_D3D12_MAX_REGISTERS`（24）：根参数索引表、存储步长、`cbv_gpu`/`cbv_frame`/`live_srv`、各处边界检查。
+- 新增 `engine/shaders/pbr_clustered_inst_hlsl.vert`：实例行放在 `StructuredBuffer<float4>` 的 t16，每实例 8 个 float4（model 四列 + prev_model 四列，需要 transpose）；复用静态变体的像素阶段、PushConsts 和 `ClusterFrame`（b1）。
+- `main.c`：sidecar 分支建 `clustered_inst_pipeline`（`uses_storage = true`）；绑定实例缓冲时 sidecar 后端用 16 号寄存器，其余后端仍是 0。顺手把通用分支里重复创建 `clustered_proj_ubo` 的块限定为非 sidecar 路径，避免 sidecar 路径下该缓冲被创建两次而泄漏。
+- 根签名预算：实例化变体约 88 字节，18 张表后仍有余量。
+
+### 测试
+`clustered_inst_sidecar_places_two_instances_and_their_velocity`：同一个四边形两个实例（纯平移；缩放 0.8 加平移），单位 view/proj 下像素中心直接对应 NDC。逐像素对比 CPU 复算的 PBR 颜色（容差 0.008），RT1 速度必须等于 current - previous（(0.1,-0.1) 和 (0.2,0)），实例外的像素保持清屏值。
+
+### 反向验证
+- 去掉 transpose：平移落到错误位置，实例外像素被改写，失败。
+- 实例行跨度 8 改成 4：第二个实例读到错行，失败。
+- 速度用 model 代替 prev_model：速度为 0，失败。
+三次都确认 dxil 被重新编译，改回后恢复通过。
+
+### 验证结果
+WARP 73/73，RTX 72/73（仅预期的 [1] `warp_device_identity_is_honest`），debug layer 0 错误 0 警告。前向 demo MAE：D3D12-GL 1.42、VK-GL 3.52；延迟路径 D3D12-GL 0.75。
+
+### 遗留
+- 蒙皮簇变体（`pbr_clustered_skin`）和数组变体（`pbr_clustered_arr`）仍未移植；蒙皮可沿用 t16 方案。
+- `gbuffer_arr` 仍被「D3D12 间接绘制不传 first_instance」卡住。
+
+## 本轮更新：R655 — **D3D12 前向簇光照 PBR**（`pbr_clustered_hlsl.{vert,frag}`）
+
+- **问题**：D3D12 没有 `pbr_clustered` 的 sidecar，`clustered_pipeline` 创建不出来。默认的前向路径（R597 起 `BREAK_FORWARD_CLUSTERED` 默认开）因此回落到 blinn_phong：没有 IBL、没有点光源阴影、没有 GPU 簇分箱的网格，也没有 glTF 的金属度/粗糙度/自发光/遮挡贴图。
+- **新增 sidecar**：`pbr_clustered_hlsl.vert` / `.frag`，逐行对应 GL 版（`FORWARD_MRT` + `HAS_IBL` + `HAS_POINT_SHADOW`，也就是引擎实际编译的那个变体）：
+  - 级联阴影的 PCSS（沿用延迟光照 sidecar 里已验证的实现）、点光源阴影立方体 t10–t13、IBL（t7 BRDF LUT、t8 辐照度、t9 预滤波）、法线贴图、Cook-Torrance、簇光源循环、雾和水下处理。
+  - 输出 RT0 颜色加 RT1 速度，与前向 MRT 通道一致。
+  - POM 没有移植：引擎在所有后端都把 `u_pom_enabled` 写成 0，那个分支是死代码。
+- **根签名预算**：片元阶段声明了 16 张 SRV 表，再加上与顶点阶段共用的帧 CBV b1，共 17 张表，剩 47 个 DWORD 的根常量，放不下 GLSL 里约 30 个松散 uniform。所以：
+  - push 块只放 `u_model`（每个 draw 变）、`u_view`、每材质的 `u_mr_factor` / `u_occlusion_strength` / `u_emissive_factor`，共 156 字节；
+  - 其余全部是整帧不变的值，放进 b1 的 `ClusterFrame` cbuffer（304 字节）：`prev_vp`、`prev_model`、`proj`、相机位置、环境光、雾、屏幕与近远平面、光源数量、阴影偏置、点光源阴影的远平面。
+- **引擎侧**：
+  - `render_init` 在 sidecar 后端上用 `rhi_shader_create_path` 建静态簇管线，并创建 `ClusterFrameUbo` 大小的缓冲。实例化、蒙皮、数组三个变体在 D3D12 上仍没有 sidecar，这些 draw 继续走各自的 blinn 家族管线。
+  - `forward_clustered_bind_frame` 在 sidecar 后端上把帧常量写进这个 cbuffer 并绑到 b1，不再逐个写 uniform。
+- **后端补丁**：`rhi_cmd_bind_material_textures_ibl` 的 t8/t9 原来用 `rhi_cmd_bind_texture` 绑立方体，对彩色立方体建不出 TEXTURECUBE 视图，导致 GPU-based validation 报 [935] "未初始化的根参数"（根参数 10/11）。现在改用 `rhi_cmd_bind_cubemap`，没有真立方体时绑 R654 的黑色立方体。
+- **测试**：WARP 新增 `clustered_forward_sidecar_matches_a_cpu_replay`。
+  - 场景：x∈[−8, 8]、y∈[−4, 4] 的 +Z 四边形，放在 z = −0.5，用引擎自己的 `mat4_lookat` / `mat4_perspective`（60°，宽高比 2，相机 (0, 0, 3)），目标 64×32。
+  - 一盏向 −Z 的方向光，一盏点光源 (1.2, −0.6, −0.2)、半径 0.9。真透视下 `clip.w` 是视距，所以这盏灯只落在 16×8 簇网格的 9–11 列、1–3 行；如果用 w = 1 的投影，每个簇都看得到它，簇索引算错也能碰巧找到灯。
+  - 两帧：A 只有方向光，B 加上点光源。逐像素对比 CPU 复算（Cook-Torrance → Reinhard → γ 2.2），3 通道 × 2048 像素 × 2 帧，误差 0.008 以内。B 与 A 只在灯的半径内有差别，这同时钉住了 b1 帧常量、簇查找和光网格绑定。
+  - 用例结束时 debug layer 干净。
+- **反向验证**（每一项都让用例失败）：
+  - 簇列号用 `frag_pos.y`；簇行号用 `frag_pos.x`；簇深度符号取反；
+  - 顶点着色器里 `proj` 与 `view` 的乘法顺序；粗糙度取自 `mr.x`；
+  - 作为对照，"环境光加常数"、"方向光数量写 0"、"衰减不平方"也都让用例失败。
+  - 第一版场景没有抓住"行号取自 x"和"proj/view 顺序"：当时用的是 w = 1 的投影，所有簇都看得到灯。换成真透视并把灯放到 1–3 行、9–11 列后，两者都能被抓住。
+  - **盲区（R659 已补）**：法线贴图的副切线符号（`B = -normalize(cross(N, T))`）改反后用例仍通过，因为测试用的是平坦法线贴图 (128, 128, 255)，切线空间不影响结果。R659 的 `clustered_forward_sidecar_perturbs_the_normal_along_the_bitangent` 补上了这一项。
+- **验证结果**：
+  - WARP 72/72，debug layer 0/0/alias 1。RTX 连跑 2 次都是 71/72，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过。
+  - demo 前向路径（默认走簇光照）：日志里 `Forward clustered PBR: ON`，D3D12 debug layer 0 条。截图 MAE（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）D3D12-GL 1.3–1.7、VK-GL 3.5–3.6；同样的相机，关掉簇光照（`BREAK_FORWARD_CLUSTERED=0`）时 D3D12-GL 为 1.44，簇光照与 blinn 在 D3D12 上相差 0.77、在 GL 上相差 0.53，也就是两条路径的画面本来就很接近。延迟路径 D3D12-GL 1.22。
+  - **一次未复现的异常**：14 次前向截图里有 1 次只有 D3D12 偏离（均值 76.4，MAE 57.6，GL/VK 都是正常的 130 左右），画面的相机明显偏了，天空占了大半幅。同一条命令随后连跑 10 次全部正常（1.3–1.7）。那次运行 D3D12 的帧率是 11–12 FPS（正常运行约 12–17 FPS），机器上同时有 ToDesk 抓屏。`BREAK_CAM` 把相机固定在启动日志里的位置，截图时相机状态依赖鼠标输入，我没有找到它被改动的证据，也没有找到 D3D12 渲染错误的证据（debug layer 0 条，画面里的地形形状是对的，只是视角不同）。我没法证明这不是回归，所以如实记下：1/14，未复现，嫌疑是外部输入，未证实。
+
+## 本轮更新：R654 — **D3D12 IBL**：彩色立方体贴图、四个 IBL 计算着色器、延迟光照里的 BRDF LUT / 辐照度 / 预滤波环境光
+
+- **问题**：D3D12 上 `rhi_cubemap_create` / `rhi_cmd_bind_image_cubemap_face` / `rhi_cmd_bind_cubemap_sampler` / `rhi_cmd_bind_image_texture` 都是空桩，IBL 的四个计算着色器（`sky_to_cube`、`irradiance_env`、`prefilter_env`、`brdf_lut`）也没有 HLSL 版本。日志里是 `IBL: failed to create environment/irradiance/prefilter cubemap`、`compute shader compile failed: shaders/brdf_lut.comp`，延迟光照的 `diffuse_ibl` / `specular_ibl` 被写死成 0。
+- **后端：彩色立方体贴图**。
+  - `rhi_cubemap_create`：6 层、带 mip 链的纹理，登记为 `RHI_RES_CUBEMAP` 槽位，所以 `RHICubemap` 句柄永远不会被当成 2D 纹理。RGBA16F 创建时带 UAV 权限。给了 `faces[]` 就在创建时上传 mip 0。
+  - `rhi_cubemap_destroy`（走延迟释放）、`rhi_cubemap_transition_to_read`（把所有面/mip 统一到着色器可读状态）。
+  - `rhi_cmd_bind_image_cubemap_face`：把指定的（面，mip）绑成单切片 TEXTURE2DARRAY UAV（ArraySize = 1），只把这一个子资源转到 UNORDERED_ACCESS。
+  - `rhi_cmd_bind_cubemap` / `rhi_cmd_bind_cubemap_sampler`：TEXTURECUBE 的 SRV。
+  - `rhi_texture_read_pixels` 支持立方体：六个面按 mip 0 面主序读回（rhi.h R624 契约）。
+  - 为了能测预滤波链，加了一个测试专用的 `rhi_d3d12_cube_read_face`（不属于 RHI API），可读任意面/任意 mip。
+- **后端：状态跟踪从"按 mip"升级为"按子资源"**。R653 的 `mip_state[16]` 改为 `mip_state[64]`，下标是 D3D12 子资源号（切片 × mip 数 + mip），这样一个立方体可以一个面一个 mip 地写。`rhi_cmd_bind_texture` 和 `rhi_texture_transition_to_read` 在整资源使用前会先统一状态。`rhi_cmd_bind_image_texture` 现在也接受 RGBA16F（BRDF LUT）。
+- **新增 4 个 sidecar**：`sky_to_cube_hlsl.comp`、`irradiance_env_hlsl.comp`、`prefilter_env_hlsl.comp`、`brdf_lut_hlsl.comp`，逐行对应 GL 版（同样的 Hammersley / GGX 采样、同样的面方向表）。输出面是 `RWTexture2DArray` 的第 0 层，环境立方体读取用 `SampleLevel(…, 0)`。`ibl.c` 的加载器按 `caps.shader_sidecar_paths` 走 `*_path`。
+- **延迟光照开启 IBL**。`deferred_light_hlsl.frag` 里 `diffuse_ibl` / `specular_ibl` 现在和 GLSL 的 `HAS_IBL` 分支逐行一致：t7 BRDF LUT、t8 辐照度立方体、t9 预滤波立方体。`rhi_cmd_bind_deferred_gbuf_textures` 绑定它们；没有 IBL 数据时绑白色 LUT / 黑色立方体，两项 IBL 项恰好为 0，等同旧行为。
+- **根签名预算**：延迟光照现在有 17 张描述符表，加上 46 个 DWORD 的根常量，合计 63 / 64。为腾出空间，push 块缩到 184 字节：`u_point_shadow_far_planes` 从偏移 176 搬到 168（占用原来的填充位，拆成两个 float2 保证 4 个远平面连续，引擎仍然是一次写入 vec4）。为了容纳 17 张表，`RHI_D3D12RootSigBuilder` 的参数/范围数组从 16 扩到 24，着色器反射的绑定上限从 16 扩到 32（原来的上限会悄悄丢掉 `s10` 这个采样器，debug layer 报 [690]）。
+- **测试**：
+  - 新增 WARP 用例 `ibl_bake_matches_a_cpu_replay_of_the_compute_shaders`，用真实的 `IBLSystem` 做完整烘焙，再和 CPU 复算对比：
+    - 环境立方体：30 个纹素（6 面 × 5）与解析天空公式逐个比对（误差 3% 以内），外加太阳方向纹素必须比它的左右镜像亮至少 3 倍（这一项能分辨左右镜像的面）；
+    - 辐照度：6 个面各取偏离中心的纹素（12, 50），CPU 复算 1024 个余弦采样，误差 2% 以内；
+    - BRDF LUT：4 个纹素的 1024 样本分裂和积分，误差 0.003 以内；
+    - 预滤波：+Z 面 mip 0（粗糙度 0 应等于环境辐射）的 3 个纹素，以及最粗 mip 的平均值必须落在 mip 0 的最小值和最大值之间。
+  - `test_ibl` 的假后端补了 `rhi_device_get_capabilities` 和 `rhi_shader_create_compute_path`。
+  - 测试里的 `getenv` 调试开关已移除。
+- **反向验证**（每一项都让用例失败）：
+  - 辐照度的 +X 面镜像；预滤波的 V 方向翻转；BRDF LUT 里 k 用 /8 代替 /2；
+  - UAV 的面切片忽略；UAV 的 mip 忽略。
+  - 第一版测试漏掉了两个镜像：天空的 +Z 面镜像、辐照度的 +Z 面镜像。原因：天空的亮度只取决于 `ray.y` 和到太阳的夹角，面内左右镜像时，`ray.y` 相同的位置仍然对得上；而太阳一开始放在 +Y 面，+Z 面上没有太阳瓣。把太阳移到偏 +Z 的方向、并加上"太阳纹素 vs 其镜像"这一项后，天空 +Z 镜像才会失败。**辐照度的 +Z 面镜像仍然没有被捕捉到**：辐照度是对半球的余弦平均，在太阳不在该面附近时，面内左右镜像几乎不改变数值。这是一个已知的测试盲区，已如实记录。（R660 已补，见该节。）
+- **验证结果**：
+  - WARP 71/71，debug layer 0/0/alias 1。RTX 连跑 2 次都是 70/71，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过。
+  - demo 日志：D3D12 没有 `IBL:` 警告，debug layer 0 条。延迟截图里 IBL 在 D3D12 上贡献的平均亮度约为 3 级，GL 上约为 2 级（在两者都有 IBL 光的像素上，D3D12 3.5 对 GL 3.1）。把两边的 IBL 项都置零后，D3D12-GL 的 MAE 为 1.21，开着 IBL 为 1.22，也就是说没有拉开差距。
+  - demo 截图 MAE：延迟路径 D3D12-GL 0.69–1.23、VK-GL 0.30–0.85；前向路径正常时 D3D12-GL 1.4–1.5、VK-GL 3.4–3.6。
+  - **截图在机器有负载时会整体漂移**：本轮有几次前向截图异常（D3D12-GL 21–55、VK-GL 13–56），异常的运行里**没改动的 GL 和 VK 一起偏离**（GL 均值在 94.7–130 之间跳），帧率掉到 11–13。第 30 帧的场景状态依赖时间（太阳轨道、动画），帧率一低，三个后端画的就不是同一时刻。把本轮改动 stash 掉连跑 3 次基线都是 0.9–1.0；恢复改动后 4 次里 3 次正常、1 次异常。这是环境噪声，不是回归。
+- **遗留问题**：
+  - 辐照度的 +Z 面镜像无法被现有场景区分（见上；R660 已补）。
+  - 前向的 `pbr_clustered` 没有 D3D12 sidecar，所以 IBL 目前只进了延迟路径。
+  - 预滤波立方体的 mip 选择：GL 用 NEAREST_MIPMAP_NEAREST 采样，D3D12 的静态采样器是 LINEAR（面内双线性、mip 间线性），我用 `round(lod)` + `SampleLevel` 取最近的 mip；面内的双线性与 GL 的最近采样有亚纹素差异，在 64²/256² 的平滑环境图上不可见。
+
+## 本轮更新：R653 — **D3D12 Hi-Z 遮挡剔除**（`hiz_supported = true`）；顺带修复三个后端共有的 `occlusion_cull.comp` 视锥判定失效
+
+- **问题**：D3D12 的 `hiz_supported` 为 false，`occlusion_cull_init` 直接失败（`device does not report Hi-Z support`）。没有 Hi-Z 金字塔，unified cull 只能对着 1×1 的 fallback 做视锥剔除。
+- **后端补齐**：
+  - **可 UAV 的纹理**：`RHI_FORMAT_R32_FLOAT` 颜色纹理创建时额外加 `ALLOW_UNORDERED_ACCESS`。这是 compute 写入用的格式，Hi-Z 金字塔就是它。
+  - **按 mip 跟踪状态**：Hi-Z 生成在同一个 pass 里，把一个 mip 当 SRV 读，同时把后面的 mip 当 UAV 写。纹理新增 `mip_split` 和 `mip_state[16]`：
+    - 逐 mip 的屏障只转换对应的那个子资源；
+    - 整资源绑定（`rhi_cmd_bind_texture`）之前，先把所有 mip 统一到同一个状态（`rhi_d3d12_tex_unify`）；
+    - `read_pixels` 遇到处于分裂状态的纹理时，拒绝读取。
+  - **`rhi_cmd_bind_image_texture`**（原来是桩）：在 register(u\<unit\>) 绑定单 mip 的 TEXTURE2D UAV，只把该 mip 转换到 UNORDERED_ACCESS。
+  - **`rhi_cmd_bind_texture_mip`**（原来是桩）：在 register(t\<unit\>) 绑定单 mip 的 TEXTURE2D SRV，`MostDetailedMip = level`，符合 rhi.h C-TEX-2 契约；只转换该 mip。
+- **新增 sidecar**：
+  - `hi_z_generate_hlsl.comp`：分段金字塔，每次 dispatch 写最多 4 个 mip，逐行对应 GL 版。
+  - `occlusion_cull_hlsl.comp`：投影 8 个角点 → NDC 立方体拒绝 → 与对应 mip 的纹素比较。Hi-Z 读取用 `Load` 加 clamp 后的纹素。
+  - `occlusion_cull.c` 按 `caps.shader_sidecar_paths` 走 `*_path` 接口。
+  - 另有一个测试专用的 `hiz_probe_hlsl.comp`：把整个金字塔逐 mip 拷进一个缓冲。
+- **三个后端共有的错误**：`occlusion_cull.comp` 里 `ndc_min` / `ndc_max` 的初值是 `vec2(1.0)` / `vec2(-1.0)`，等于一开始就被夹到了屏幕边缘。一个完全在屏幕右侧的盒子会得到 `ndc_min.x = min(1, x) = 1`，`ndc_min.x > 1` 的拒绝条件永远不成立，四个方向都是如此。所以这里的视锥判定对 x/y 一个都剔不掉，屏幕外的物体会继续去做 Hi-Z 采样，结果取决于边缘纹素。现在 GLSL 和 HLSL 都改成 ±1e30 作为初值。
+- **测试**：WARP 新增 `hi_z_pyramid_and_occlusion_cull_match_a_cpu_reduction`，用真实的 `OcclusionCullSystem`。
+  - 场景深度 40×24：左半是 0.05 的近处遮挡，右半是渐变深度。金字塔 20×12，共 5 个 mip，需要**两段** dispatch，第二段通过 `rhi_cmd_bind_texture_mip` 回读 mip 3。用例断言 dispatch 数为 2。
+  - 用测试专用着色器读回所有 mip 的 318 个纹素，与 CPU 按同样分段规则（包括最后一行/列吸收余数）复算的结果**逐个相等**。
+  - 遮挡结果经暂存回读后检查：遮挡物后面的盒子不可见；右半边的盒子可见；完全在屏幕外的盒子被剔除；可见计数为 1。
+  - 用例结束时 debug layer 干净。
+- **反向验证**：
+  - ① 去掉"最后一列吸收余数"：第 76 号纹素是 0.85，应为 0.9125，失败。
+  - ② 单 mip SRV 忽略 level，或偏移一个 level：debug layer 报 6–8 条错误，用例失败。
+  - ③ `ndc_min/max` 改回旧初值：屏幕外的盒子被判为可见，失败。
+  - 全部恢复后 70/70。
+  - 最初的测试场景只有 4 个 mip、只走一段 dispatch，测不到 `bind_texture_mip`。扩大场景后反向验证 ② 才会失败。
+- **验证结果**：
+  - WARP 70/70，debug layer 0/0/alias 1。RTX 连跑 2 次都是 69/70，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过。GL 和 VK 版的 `occlusion_cull.comp` 也随初值修复一起改了，两棵树的回归测试全部通过。
+  - demo 日志：`OcclusionCull: initialized (320x180, 9 mip levels)`、`Hi-Z Occlusion Cull: on`；D3D12 debug layer 0 条，VK validation 0 条。
+  - demo 截图 MAE（各跑 2 次）：前向路径 D3D12-GL 1.44–1.47、VK-GL 3.55；延迟路径 D3D12-GL 1.21–1.23、VK-GL 0.30–0.33。
+- **遗留问题**：IBL（`brdf_lut` / `irradiance_env` / `prefilter_env` / `sky_to_cube`）还需要 `rhi_cubemap_create`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_cubemap_sampler` 三个仍是桩的接口，以及根签名预算。
+
+## 本轮更新：R652 — **D3D12 打开 `compute_supported`**：GPU 视锥剔除（legacy + unified）、计算阶段纹理绑定、GPU→主机回读
+
+- **问题**：D3D12 把 `compute_supported` 报成 false，`gpucull_init` 因此直接返回失败（`backend reports no compute support; cull disabled`）。mega-buffer 的阴影级联、点光源阴影面、前向/延迟可见性全部走 CPU 剔除。
+- **新增 sidecar**：
+  - `cull_hlsl.comp`：逐行对应 GL 版 `cull.comp`。
+  - `unified_cull_hlsl.comp`：逐行对应 GL 版 `unified_cull.comp`，含 Hi-Z 分支。Hi-Z 金字塔在 t4，与 GL 的 `binding = 4` 采样单元一致，和 u4 的 flags UAV 是两个不同的寄存器。读取用 `Load` 加 clamp 后的纹素，与引擎 Hi-Z 采样器的 NEAREST + CLAMP 等价；后端静态采样器是 LINEAR + WRAP，不适用。
+  - `gpucull.c` 的两个 compute 着色器都按 `caps.shader_sidecar_paths` 走 `*_path` 接口。
+- **后端补齐两处桩**：
+  - **`rhi_cmd_bind_texture_compute`**：原来是空函数，unified cull 的 Hi-Z 寄存器从来没有绑过描述符。逐单元绑定器本来就会为计算管线设置 compute root 上的 SRV 表，所以直接委托给它。
+  - **GPU 拷贝到主机可见暂存缓冲**：gpucull 每帧用 `rhi_cmd_copy_buffer` 把 vis flags 拷进无初始数据的 STORAGE 缓冲，下一帧再 `rhi_buffer_map` 读出来。在 D3D12 上，这种缓冲落在 UPLOAD 堆，而 UPLOAD 堆**永远不能作为拷贝目标**。现在第一次被 GPU 拷入时，为它创建一个 READBACK 堆的孪生缓冲；拷贝写进孪生缓冲，`rhi_buffer_map` / `rhi_buffer_read` / `unmap` 改读孪生缓冲；销毁时一并走延迟释放。
+- **能力位**：`compute_supported = true`。`hiz_supported` 仍为 false：`hi_z_generate.comp` 还没有 sidecar，unified cull 对着 1×1、深度为 1 的 fallback 只做视锥剔除。
+- **测试**：WARP 新增 `gpu_cull_sidecars_flag_compact_and_read_back`，用真实的 `GPUCullSystem`。
+  - 场景：8 个球体，VP 取单位矩阵，NDC 立方体就是视锥。偶数号在视锥内，奇数号分别沿 ±x、±y、±z 推到视锥外。6 号放在 NDC z = −0.6：它在 GL 的 [−1, 1] 深度范围内，但在 [0, 1] 近平面之后。
+  - legacy pass：flags 逐个正确，计数为 4。
+  - unified compact pass：flags 正确；恰好压缩出 4 条偶数号命令，载荷（`index_count`、`first_index`）完整；其余槽位为 0。
+  - flags-only pass 带暂存回读：第 3 帧 `gpucull_read_vis_flags` 返回的 flags 与预期一致。
+  - 用例结束时 debug layer 干净。
+- **反向验证**：
+  - ① `rhi_buffer_map` 不读 READBACK 孪生缓冲：回读的 flags 错误；debug layer 还报了 1 条错误。
+  - ② 两个 sidecar 的近平面改成 0（D3D12 的深度范围）：flags 断言失败。第一版测试**没有**捕获这个错误，因为没有物体落在 [−1, 0) 区间；补上 6 号球体后才能区分。
+  - ③ 压缩时从 `dst` 而不是 `src` 读取命令：载荷断言失败。
+  - 全部恢复后 69/69。
+- **验证结果**：
+  - WARP 69/69，debug layer 0/0/alias 1。RTX 连跑 2 次都是 68/69，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过。
+  - demo 日志：`GPUCull: initialized`、`UnifiedCull: initialized`、`Unified GPU Cull+Compact: on`，debug layer 0 条。
+  - demo 截图 MAE（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）：前向路径 D3D12-GL 1.29–1.32、VK-GL 3.5–3.6；延迟路径 D3D12-GL 0.65–1.67。
+  - 延迟路径的数字每次运行都会波动，但这不是本轮引入的：GL 自己两次运行之间的 MAE 就有 0.67（粒子是随机的，帧时间也不同）；用 `BREAK_GPUCULL=0` 关掉 GPU 剔除后，D3D12 落在同样的 0.97–1.04 区间。
+- **遗留问题**：
+  - Hi-Z 生成（`hi_z_generate.comp`）和 `occlusion_cull.comp` 没有 sidecar，`hiz_supported` 仍为 false，`OcclusionCull: init failed`。
+  - IBL 的 4 个 compute 着色器同样没有 sidecar，而且 `rhi_cubemap_create`、`rhi_cmd_bind_image_*` 在 D3D12 上仍是桩。
+
+## 本轮更新：R651 — **D3D12 GPU 簇光源分箱**（`cluster_cull_hlsl.comp`）
+
+- **问题**：D3D12 上 `light_system_init_gpu_cull` 把 GLSL 源码交给 `rhi_shader_create_compute`，日志报 `cluster_cull.comp compile failed; using CPU binning`。前向簇光照和延迟光照的簇网格每帧都由 CPU 分箱，再整块上传。
+- **修复**：
+  - 新增 sidecar `cluster_cull_hlsl.comp`，逐行对应 GL 版 `cluster_cull.comp`：每个簇一个线程（16×8×24），按簇的屏幕 tile 和视深切片测试每个点光源，把命中的灯写进固定的每簇区域（偏移 = ci × 128）。网格布局和 CPU 生产者、光照着色器用的密集 uint 布局完全一致。
+  - 灯光数据是每帧由主机写入的 UPLOAD 堆缓冲，只能作为 SRV 读取，所以放在 t0（ByteAddressBuffer，每盏灯 32 字节）。网格是用零初始化的 DEFAULT 堆缓冲，作为 raw UAV 放在 u1。
+  - `lighting.c` 在 `caps.shader_sidecar_paths` 下改走 `rhi_shader_create_compute_path`。
+- **测试**：WARP 新增 `cluster_cull_sidecar_matches_the_cpu_binning`。
+  - 40 盏点光源排成环形放在相机前，半径 1.5–3；相机 60° 透视，160×90。
+  - 同一组灯先用 CPU 的 `light_system_cull` 分箱，再用 GPU 的 `light_system_cull_gpu` 分箱。逐簇比较灯数和灯索引序列，要求完全一致；同时要求 GPU 每簇的偏移等于 ci × 128。
+  - 实测：152 个非空簇，其中 124 个簇有不止一盏灯，共 644 个条目，CPU 与 GPU 逐项相同。用例结束时 debug layer 干净。
+  - 用例里踩到一个测试本身的问题：网格槽位按 `rhi_frame_index` 选取，帧结束时就会切换，所以必须在帧结束**之前**记下槽位再回读。
+- **反向验证**：
+  - ① 灯光步长从 32 字节改成 16 字节：第 1977 簇 CPU 0 盏、GPU 20 盏，失败。
+  - ② 屏幕 y 翻转：第 2211 簇 CPU 0 盏、GPU 1 盏，失败。
+  - 恢复后 68/68。
+- **验证结果**：
+  - WARP 68/68，debug layer 0/0/alias 1。RTX 连跑 2 次都是 67/68，只有预期中的 [1] 失败，两次的簇统计与 WARP 完全相同（152/124/644）。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过。
+  - demo 截图（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）MAE：前向路径 D3D12-GL 1.46、VK-GL 3.64；延迟路径 D3D12-GL **0.73**（R650 时为 1.34）、VK-GL 0.85。D3D12 日志显示 `GPU cluster binning enabled`，debug layer 0 条。
+- **没有做的部分（如实说明）**：GPU 视锥剔除（`cull.comp` / `unified_cull.comp`）仍未移植，`compute_supported` 仍为 false。原因是这一步会打开 `gpucull_enabled`，进而打开 unified 路径。这条路径还依赖 D3D12 上仍是桩的几项：`rhi_cmd_bind_texture_compute`（Hi-Z 纹理）、vis_flags 回读、`occlusion_cull` 的 Hi-Z 生成。只翻开关会让 demo 改走一条没有验证过的绘制路径，所以留到下一轮整体做。
+
+## 本轮更新：R650 — **D3D12 粒子系统**（GPU 模拟、剔除、间接绘制）；顺带修复 D3D12 的独立混合
+
+- **问题**：D3D12 上 `particles_init` 拿 GLSL 源码去调 `rhi_shader_create_compute`，日志报 `Particle compute shader compile failed`，粒子系统整个被禁用，画面里没有喷泉粒子。
+- **新增 4 个 sidecar**：
+  - `particle_update_hlsl.comp`：逐行对应 GL 版 `particle_update.comp`（loose uniform → push 块，偏移由 `rhi:uniform` 标记发布）。粒子缓冲按 `RWStructuredBuffer<float4>` 访问，每个粒子 4 个 float4，与 `GPUParticle` 一致；因为后端的 UAV 绑定器只能描述标量/向量元素。生成计数器是 raw 缓冲上的 `InterlockedAdd`。
+  - `particle_cull_hlsl.comp`：把存活粒子的索引追加到 DrawBuf，并累加 `instanceCount`（第 1 个字）。
+  - `particle_mrt_hlsl.{vert,frag}`：引擎只构建 FORWARD_MRT 这一种变体。
+- **D3D12 没有 `gl_PointSize`**：POINTLIST 每个点只光栅化 1 个像素。所以 D3D12 上每个粒子画成 **6 顶点的四边形**：
+  - 主机侧把 DrawBuf 的 `vertexCount` 写成 6（其他后端仍是 1）。
+  - VS 以粒子的 clip 位置为中心展开四边形，像素尺寸与 GLSL 相同：`max(1, size*400/w)`。需要的目标尺寸通过新 uniform `u_viewport` 传入。
+  - uv 代替 `gl_PointCoord`，供 PS 做圆形遮罩。
+  - 管线在 D3D12 上不设 `point_list`。
+- **`u_prev_vp` 改放进 push 块**：GLSL 从 binding 0 的 ForwardTemporal UBO 读，而 D3D12 的 b0 是根常量保留寄存器，这个 UBO 到不了着色器。新增 `_loc_prev_vp`，GL/VK 上解析为 −1。`particles_render` 新增参数 `prev_vp / target_w / target_h`，main.c 传入 `prev_view_proj` 和场景 FBO 的尺寸。
+- **加载器**：`particles.c` 的两个 compute 着色器和渲染着色器都按 `caps.shader_sidecar_paths` 走 `*_path` 接口。
+- **后端修复 1：间接参数缓冲同时是 SRV**。粒子的 DrawBuf 既是 ExecuteIndirect 的参数，又被 VS 当作 SRV 读取索引。`rhi_d3d12_execute_indirect` 原来把它整个转换成 INDIRECT_ARGUMENT，丢掉了 shader-read 状态位。现在，如果它当前只处于读取状态，就保留这些位，与 INDIRECT_ARGUMENT 合并成一个组合读状态。
+- **后端修复 2：独立混合（三个后端的共性契约，只有 D3D12 出错）**。`alpha_blend_color_only` 的意思是只混合 RT0，RT1 运动矢量直接写入。D3D12 的 PSO 逐 RT 设置了混合状态，但没有打开 `IndependentBlendEnable`，于是 D3D12 把 RenderTarget[0] 的混合状态套用到所有 RT。结果粒子和**水面**的速度都被和清屏值混在一起（测试测得 0.05，正确值是 0）。现在当 `alpha_blend && alpha_blend_color_only` 时打开它。
+- **测试**：WARP 新增 `particles_spawn_age_cull_and_draw_as_sized_quads`，用真实的 `ParticleSystem`：
+  - 第 1 帧：rate 4、dt 1，恰好生成 4 个粒子。
+  - 第 2 帧：rate 0、dt 0.5，只做老化。读回粒子缓冲：恰好 4 个存活，每个 life 9.5、size 0.955、alpha 0.95。
+  - DrawBuf 的 `vertexCount` 应为 6、`instanceCount` 应为 4，且索引都指向存活粒子。
+  - 用 w=100 的投影渲染到 8×8 MRT：中心 2×2 被覆盖（red > 0.3），速度恰好为 0；四角保持清屏色。
+  - 用例结束时 debug layer 干净。
+- **反向验证**：
+  - ① 关掉 `IndependentBlendEnable`：速度断言失败。
+  - ② 去掉 `vertexCount = 6`：`draw[0] != 6`。
+  - ③ 去掉 VS 的四边形展开：中心覆盖断言失败（red < 0.3）。
+  - 三处都恢复后 67/67。
+- **验证结果**：
+  - WARP 67/67，debug layer 0/0/alias 1。RTX 连跑 3 次都是 66/67，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - ctest：VK 182/182、GL 179/179；D3D12 185/186，失败的是 `test_net_replication`。这是 R633 起就记录在案的网络定时偶发失败，单独连跑 5 次都通过，与本轮无关。
+  - demo 截图（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）MAE：前向路径 D3D12-GL **1.42**（R649 时为 1.93，当时 D3D12 画面里没有粒子）、VK-GL 3.61；延迟路径 D3D12-GL 1.34、VK-GL 0.29。D3D12 日志里粒子系统显示 `compute-driven, GPU cull`，debug layer 0 条。
+- **遗留问题**：GPU 剔除（`cull.comp` / `unified_cull.comp`）、簇剔除（`cluster_cull.comp`）、Hi-Z（`hi_z_generate.comp`）、IBL 生成（`irradiance_env` / `prefilter_env` / `brdf_lut` / `sky_to_cube`）仍没有 sidecar；`compute_supported` 仍为 false。粒子不依赖这个标志，所以本轮不受影响。
+
+## 本轮更新：R649 — **D3D12 蒙皮 G-Buffer**：延迟路径不再跳过蒙皮几何
+
+- **问题**：`gbuffer_skinned_hlsl.vert` 不存在，所以 D3D12 上 `gbuffer_skinned_pipeline` 创建失败，日志里出现 `gbuffer_skinned pipeline unavailable -- skinned geometry skipped`。延迟路径下，蒙皮网格（程序化手臂 / glTF 蒙皮图元）不会写进 G-Buffer，整个从画面中消失。
+- **修复**：
+  - 新增 sidecar `gbuffer_skinned_hlsl.vert`，逐行对应 GLSL 的 `gbuffer_skinned.vert`。
+    - 关节矩阵从 t5（`rhi_cmd_bind_texel_buffers` 的 unit 5）读取，前一帧的姿态在偏移 512 个 float4 处。关节按列主序存储，所以要 transpose，与 `skinned_mrt_hlsl.vert` 相同。
+    - 输入语义是后端 64B 蒙皮布局声明的 BLENDINDICES / BLENDWEIGHT。
+    - 当前位置是 `u_model * (skin * pos)`，前一帧位置是 `u_prev_mvp * (prev_skin * pos)`。速度在 clip z 重映射之前计算。
+  - 片段着色器与 GL 一样复用 `gbuffer_hlsl.frag`。
+  - push 块沿用静态 sidecar 的 `u_model / u_vp / u_prev_mvp` 三个矩阵，原因相同：片段阶段 6 张表加关节 SRV 共 7 张，只剩 57 个 DWORD，放不下四个矩阵。
+  - `deferred.c` 新增 `_loc_gbuf_skinned_vp`（GL/VK 上解析为 −1）。main.c 在 D3D12 上为蒙皮管线上传 `proj*view`。
+- **随之暴露的第二个问题（D3D12 延迟画面整体错乱）**：蒙皮管线一旦可用，D3D12 延迟截图与 GL 的 MAE 就从 1.37 跳到 **58.8**，地形完全错位。原因在 main.c：蒙皮 draw 之后会重新绑回 `gbuffer_pipeline`，但没有重新上传相机。GL 的 program uniform 和 VK 的 push constant 在重绑后都会保留；D3D12 换根签名时会丢掉所有根常量，所以地形和后面的网格 draw 用的是蒙皮 draw 留下的 `u_vp / u_prev_mvp`。这个问题以前一直潜伏着，因为 D3D12 上蒙皮管线根本不存在，重绑之前没有任何 draw 刷新过根常量。修复：把相机上传提取成 `gbuffer_upload_camera`，帧开始时调用一次；蒙皮管线存在时，在重绑之后再调用一次。
+- **测试**：WARP 新增 `deferred_gbuffer_skinned_sidecar_skins_and_writes_velocity`。
+  - 场景：一个左半屏的四边形，按 0.5 / 0.5 的权重绑定到关节 1（x 方向平移 +1）和关节 2（单位矩阵）。混合后应整体右移 0.5，落在第 2–5 列。
+  - 两个前一帧姿态都是单位矩阵，所以速度应恰好是 (+0.5, 0)。
+  - 用例逐像素检查覆盖范围、albedo、速度，并检查 debug layer 干净。
+- **反向验证**：
+  - ① 去掉关节矩阵的 transpose：覆盖范围出错（第 0 列被写入），用例失败。
+  - ② 前一帧姿态改为读当前姿态（去掉 512 偏移）：速度断言失败。
+  - ③ 删掉重绑之后的 `gbuffer_upload_camera`：demo 延迟截图 D3D12-GL 的 MAE 回到 58.84。
+  - 全部恢复后通过。
+- **验证结果**：
+  - WARP 66/66（debug layer 0/0/alias 1）。RTX 连跑 3 次都是 65/66，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - demo 截图（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）MAE：延迟路径 D3D12-GL **1.22**、VK-GL 0.29；前向路径 D3D12-GL 1.93、VK-GL 3.56。D3D12 日志里不再出现 `skinned geometry skipped`。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过（ToDesk 退出后，剪贴板用例也通过了）。
+
+## 本轮更新：R648 — **RTX 上偶发的 GPU-based validation [1358]**：带初始数据的纹理改为以 COMMON 状态创建
+
+- **现象**：在 RTX 4060 Laptop 上跑 `test_d3d12_warp_runtime`，大约一半的运行会在某个用例里报出 `[1358] GPU-BASED VALIDATION: Draw, Incompatible texture barrier layout ... Layout: D3D12_BARRIER_LAYOUT_LEGACY_COPY_DEST`。出现在哪个用例是随机的（[22]、[51]、[53]、[60] 都出现过），每次 3 到 11 条，于是最后一个用例 `debug_layer_reported_nothing_for_the_whole_suite` 失败。WARP 上从来没有出现过。这就是之前记录的"`test_d3d12_warp_runtime` 偶发失败"。
+- **不是 R647 引入的**：把 R647 之前的代码 stash 后连跑 5 次，有 2 次出现（分别 3 条、11 条）。
+- **定位**：在 debug 构建里给每个纹理资源 `SetName`，名字带序号、尺寸、格式、是否有初始数据、创建时的帧号。抓到一次命中，报错的资源是 `tex#81 4x4x1 fmt0 data1`，即 [22] 中用 `rhi_texture_create` 带数据创建的 4×4 albedo。它在 one-shot 上传列表里已经经历了 COPY_DEST → 着色器可读的转换，并且等过 fence。CPU 侧记录的状态是正确的，但 GBV 在 draw 时仍然认为它处于 COPY_DEST。
+- **修复**：带初始数据的纹理改为以 **COMMON** 状态创建，然后在上传列表里显式加一道 COMMON → COPY_DEST 的 barrier，再执行拷贝。原来是直接以 COPY_DEST 创建。拷贝之后到 shader-read 的转换不变。这次排查用的 `SetName` 调试命名保留在 debug 构建里（只在 `ENGINE_D3D12_DEBUG` 下生效），之后的 GBV 报错能直接指出是哪个纹理。
+- **为什么这样改有效，只能如实说明到这一步**：改动之后，RTX 上连续 12 次运行 0 条 [1358]；改动之前，两组运行合计 15 次里有 8 次命中。这是统计上的证据，不是机理上的证明。直接以 COPY_DEST 创建是合法用法，GBV 为什么会偶发地把初始状态"种"晚，我没有找到官方说明；网上能查到的同类报告（[UnleashedRecomp #1638](https://github.com/hedge-dev/UnleashedRecomp/issues/1638)、[DirectXTex #306](https://github.com/microsoft/DirectXTex/issues/306)）都和 GBV 对 legacy 初始布局的处理有关，但不是同一个场景。代码注释也只写观察到的现象。
+- **验证**：
+  - RTX 连续 12 次：每次都是 64/65（只有预期中的 [1]），debug layer 都是 0 error / 0 warning。
+  - WARP 65/65，debug layer 0 error / 0 warning / alias 1。
+  - ctest：D3D12 185/186、VK 181/182、GL 178/179，唯一失败仍是 ToDesk 占用剪贴板导致的 `test_platform_win32_runtime`。
+- **遗留问题**：如果 [1358] 以后在其他创建路径上再出现（例如 `rhi_texture_array_upload_layer`、`rhi_texture_upload_mip`，它们是从着色器可读状态转到 COPY_DEST 再转回来），可以根据 `SetName` 的名字直接定位到是哪个纹理。
+
+## 本轮更新：R647 — **D3D12 点光源阴影**；顺带修复三个后端共有的立方体面朝向错误
+
+- **D3D12 立方体深度 FBO**（原来 `rhi_cubemap_depth_fbo_*` 四个函数都是桩）：
+  - 一张 6 层的 D32 资源，按 R32_TYPELESS 分配，同一份数据有两种视图：每个面一个 D32_FLOAT 的 DSV（TEXTURE2DARRAY，FirstArraySlice=面号，ArraySize=1），以及 R32_FLOAT 的 TEXTURECUBE SRV。
+  - 纹理新增 `is_cube` 标志。`rhi_cmd_bind_texture` 遇到它时建 TEXTURECUBE 视图；`rhi_d3d12_live_cube` 也接受这类纹理（普通 2D 纹理仍然过不了这道门）。
+  - `bind_face` 遵守 R618 契约：转换到 DEPTH_WRITE，清成 1.0，使用离屏视口（内存第 0 行 = NDC y −1，和 GL/VK 写立方体面的行序一致）。`unbind` 复用 `rhi_cmd_unbind_shadow_map`。`destroy` 的 DSV 槽走 fence-retire 归还，纹理走 R645 的延迟释放。
+  - **立方体 fallback**：在 D3D12 上，已声明的寄存器每次 draw 都必须有描述符。新增 1×1 的深度立方体，清成 1.0，读出来等于"无遮挡"。没有活的立方体时，t10–t13 就绑它。IBL binder 和延迟 G-Buffer binder 都改用 `rhi_d3d12_bind_point_shadow_cubes`。这个 fallback 随设备销毁一起释放。
+- **点光源阴影深度 pass 接入 D3D12**：
+  - 新增 sidecar `point_shadow_depth_hlsl.{vert,frag}`。push 布局与 `_vk` 版一致（0/64/128/144），PS 写 `SV_Depth = 距离 / far`，VS 做 clip z 重映射。
+  - `point_shadow.c` 的加载器按 `caps.shader_sidecar_paths` 走 `rhi_shader_create_path`。
+  - `u_light_pos` / `u_far_plane` 改为每个面都设置（R82-3 原来只在 face 0 设）。D3D12 每次 draw 只把上次 draw 之后写过的字节作为根常量刷新出去，而 main.c 在两个面之间可能执行 compute compaction 并重新绑定管线，所以不能依赖根参数在重绑后保留。
+- **延迟光照 sidecar 采样点光源阴影**：`deferred_light_hlsl.frag` 新增 4 个 `TextureCube`（t10–t13）和 `SamplerState s10`。`point_shadow_test` 与 GLSL 逐行对应（距离/far 与 `cube.Sample(dir).r + bias` 比较，被遮挡时乘 0.15）。根签名共 14 张表，剩 50 个 DWORD（200B），192B 的 push 块放得下；以后如果再加 IBL 的 3 个寄存器，就会超出预算。
+- **三个后端共有的问题：立方体面朝向错误**（`point_shadow_compute_face_vp`）。
+  - 旧注释说"渲染和采样用同一个 VP，所以自洽"，这个说法不成立。`texture(cube, dir)` 选纹素靠的是固定的立方体寻址规则：按主轴选面，再由 sc/tc 算出 s,t。它不经过这个 VP。
+  - 用 Python 把旧的面基对照寻址规则逐方向核算：±X 两个面整体旋转了 180°，±Y/±Z 四个面上下镜像。结果是接收面读到的是别的方向的深度，阴影只在每个面的中心附近位置正确。
+  - 修正后，面基改为标准立方体面表：侧面 up=−Y，+Y 面 up=+Z，−Y 面 up=−Z，满足 s×u=−f，与 camera_view 的手性相同，剔除方向不变。
+- **测试**：
+  - 新增 headless 的 `test_point_shadow_faces`，共 2 个用例：① 12 个非对称方向的 NDC 坐标必须等于寻址规则给出的 2s−1、2t−1；② 每个面都保持相机的绕序。
+  - WARP 新增 `point_shadow_cube_faces_read_back_by_direction`：用真实的 `PointShadowSystem` 渲染 6 个面，每个面只在 s<0.5、t<0.5 的象限放一块遮挡物。之后用新的测试专用着色器 `cube_probe_hlsl.frag` 通过 TextureCube **按方向**读回，逐纹素与 `2|d|/far` 比较。
+  - WARP 新增 `deferred_lighting_samples_the_point_shadow_cube`：G-Buffer 平面上方放一块 x<0.5 的遮挡板，共跑四帧——A 无点光、B 空立方体、C 有遮挡物、D 不传立方体（走 fallback）。要求遮挡列的点光份额正好 ×0.15，其余列 C==B，且 D==B。
+- **反向验证**：
+  - ① `point_shadow_test` 改回恒返回 1：只有 [64] 失败。
+  - ② 面基改回旧表：`test_point_shadow_faces` 的 2 个用例都失败；WARP 的 [63]、[64] 都失败（`face 0 texel (0,0) = 255, expected 81`）。
+  - 两处都恢复后全部转绿。
+- **验证结果**：WARP **65/65**，debug layer 0 error / 0 warning / alias 1。RTX 64/65，失败的只有预期中的 [1]。ctest：D3D12 185/186、VK 181/182、GL 178/179（各新增 1 个用例；唯一失败仍是 ToDesk 占用剪贴板导致的 `test_platform_win32_runtime`）。demo 截图（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）MAE：延迟路径 D3D12-GL 1.37、VK-GL 0.31；前向路径 D3D12-GL 1.87、VK-GL 3.59。三个后端都初始化了 `PointShadow`，D3D12 日志里没有 debug layer 错误。
+- **遗留问题**：
+  - RTX 上 GPU-based validation **偶发** `[1358] Incompatible texture barrier layout ... LEGACY_COPY_DEST`，出现在 [22]/[51]/[53] 这类与本轮无关的用例中。**改动前的基线代码**连跑 5 次也有 2 次出现（3 / 11 条），所以不是本轮引入的。这就是之前记录的"`test_d3d12_warp_runtime` 偶发失败"的来源，下一轮排查。
+  - IBL 立方体（t7–t9）仍未接入：`rhi_cubemap_create` 是桩，根签名预算也不够。
+  - 前向 blinn 着色器不采样点光源阴影，所以前向路径下的点光源阴影 pass 仍然是白算（三个后端都一样）。
+
+## 本轮更新：R646 — **Vulkan 画面整体偏亮：sRGB 交换链导致伽马叠加两次**
+
+- **现象**（R644 遗留）：同一相机同一帧，VK 截图比 GL / D3D12 明显发白——前向 MAE 57、延迟 MAE 33。关掉 bloom、TAA/MB、自动曝光差异都不变；inspector 模式 1（tonemap 前的 HDR 场景）GL/VK 基本一致（MAE 0.8），差异只出现在最终输出。
+- **根因**：对 GL 截图逐像素做一次 linear→sRGB 编码后，与 VK 截图的 MAE 从 57 降到 **2.7**（延迟 33 → 1.2）。引擎的 tonemap / 颜色分级自己做伽马编码（`exp2(log2(ldr) / gamma)`），GL 默认帧缓冲与 D3D12 的 `B8G8R8A8_UNORM` 交换链按原样写出；而 `vk_probe_choose_surface_format` 首选 `B8G8R8A8_SRGB`，写入时硬件再编码一次。
+- **修复**：交换链格式协商改为首选 `B8G8R8A8_UNORM`，其次 `R8G8B8A8_UNORM`，否则取列表第一个；"任意格式" 哨兵也映射到 `B8G8R8A8_UNORM`。`test_rhi_vk_probe.c` 的协商用例同步更新（四种格式混合列表中必须选 BGRA UNORM、只有 RGBA UNORM 时选它、都没有时退回第一个）。
+- **golden 图**：`tests/golden/test_vulkan_vk{,_cam}.ppm` 是在伽马叠加的状态下生成的（与 GL golden 的 MAE 66.8 / 65.5），用 `GOLDEN_UPDATE=1` 重新生成后与 **GL golden** 的 MAE 为 **0.33 / 0.64**——两端第一次在数值上一致，说明新输出是对的而不是"换了一个基线"。
+- **验证**：demo 截图（`BREAK_CAM=0,12,22,0,-25`、第 30 帧）VK vs GL：前向 MAE 57.1 → **3.6**，延迟 33.1 → **0.29**。VK demo 前向 / 延迟各 60 帧 validation 0 条。ctest：D3D12 184/185、VK 180/181、GL 177/178，唯一失败为 `test_platform_win32_runtime` 的 OpenClipboard（ToDesk）。另：一次全量并行 ctest 中 `test_d3d12_warp_runtime` 失败过一次，随后单独 3 次、全量并行 3 次均通过，记为偶发，原因未查明。
+
+## 本轮更新：R645 — **D3D12 前向路径间歇卡死 / 段错误修复**：GPU 仍在用的资源被立即释放
+
+- **现象**（R644 记录的遗留，修复前即存在）：D3D12 debug 构建的默认（前向）demo 跑 60 帧，约半数在帧循环中卡死（被 timeout 杀掉），偶发段错误，并伴随 debug layer [921]「资源在命令列表执行前被删除」。
+- **定位**：在 buffer/texture destroy 处临时打印资源指针，与 [921] 报出的指针比对——全部是约 256 KB 的 `RHI_BUFFER_USAGE_VERTEX` 缓冲，来自 UI 画布 `my_vgcanvas_break_rhi.c` 的 `ensure_vbo`：顶点数超出容量时在**帧中途**销毁旧的双缓冲 VBO 并新建更大的。本帧已录制的命令列表、以及上一帧可能仍在执行的提交都引用着旧资源，而 `rhi_buffer_destroy` 立即 `Release`。GL 会保留被删除的缓冲直到最后一次使用，Vulkan 的 destroy 会等待帧完成，只有 D3D12 立即释放。
+- **修复**（`rhi_d3d12.c`）：新增 `rhi_d3d12_release_deferred`，buffer / texture / pipeline（PSO、变体 PSO、根签名）的销毁改为把对象挂到帧暂存列表：帧内挂到正在录制的槽，帧外挂到最后提交的槽；这些列表只在 `rhi_frame_begin` 等待该槽的 fence 之后才释放（与已有的 per-write staging 同一机制）。设备丢失时直接释放；列表扩容失败时先 drain 再释放。
+- **测试**：`destroying_objects_mid_frame_is_deferred_until_the_gpu_is_done`——连续 3 帧，每帧用新建的顶点缓冲 + 管线画两次并立即销毁，再用一张新纹理 + blit 管线画一次并立即销毁，最后校验像素为 blit 颜色且 debug layer 安静（套件末尾的总门也覆盖）。**反向验证**：把延迟释放改回立即释放，测试进程 3/3 次段错误（其中一次先报 9 条 [921]）。
+- **验证**：demo 前向 60 帧连跑 6 次全部 rc=0、[921] 0 条（修复前 6 次中 2 次卡死、1 次段错误）；前向 / 延迟 120 帧各 rc=0、debug layer 0 条。WARP 63/63、RTX 62/63（预期的 [1]）。ctest：D3D12 184/185、VK 180/181、GL 177/178，唯一失败均为 `test_platform_win32_runtime` 的 OpenClipboard（ToDesk 占用剪贴板）。
+
+## 本轮更新：R644 — **D3D12 延迟渲染路径上线**；顺带修掉 4 个三端共有的延迟/光照 bug
+
+- **问题**：`BREAK_RENDER_PATH=deferred` 在 D3D12 上 init 失败（`deferred.c` 内联 GLSL、无 sidecar、`rhi_cmd_bind_deferred_gbuf_textures` 是桩）。接通之后又逐层暴露出下面这些问题，其中 4 个不是 D3D12 专属。
+- **D3D12 部分**：
+  - `deferred.c` 加载函数按 `caps.shader_sidecar_paths` 走 `rhi_shader_create_path`；sidecar 是无 IBL 变体（D3D12 的 cubemap 仍是桩），因此不注入 `HAS_IBL`。
+  - **根签名预算**：G-Buffer 片元 5 张纹理 + factor CBV = 6 张表，只剩 232 字节根常量，放不下 4 个 mat4。`gbuffer_hlsl.vert` 改收 `u_vp`（= proj·view，main.c 上传；GL/VK resolve 为 -1，不受影响）：push `u_model 0 / u_vp 64 / u_prev_mvp 128`。
+  - factor UBO 绑定号改用 `caps.temporal_ubo_binding`（GL/VK 0、D3D12 b1，b0 是根常量）。
+  - `gbuffer_hlsl.frag`：纹理按 bind_material 的 GL 单元（t0 albedo、t2 MR、t3 法线、t4 自发光、t15 AO），五个 SV_Target。
+  - `deferred_light_hlsl.frag`：寄存器同 GL 单元表（t0-4、t5/t6 光源/网格 texel buffer、t14 SSAO、t15 自发光）；push 块 192 字节（inv_vp 0、view 64、camera 128、screen_w/h 140/144、near/far 148/152、bias 156、point/dir count 160/164、far_planes 176）。IBL 与点光源阴影立方体不在本轮（点光源阴影按"无遮挡"处理，已注明）。**所有纹理读取都用 `nearest()`（NEAREST + CLAMP 的精确复刻）按 uv 寻址**：静态采样器是 LINEAR + WRAP，而 SSAO、阴影图集、甚至 G-Buffer 本身（见下）都不是本 pass 的尺寸。
+  - `rhi_cmd_bind_deferred_gbuf_textures` 实现为 GL 单元表；shadow / SSAO 缺失时补白色 fallback。
+- **三端共有的问题（GL / VK / D3D12）**：
+  1. **G-Buffer 视口**：`deferred_begin_gbuffer` 调用 `rhi_cmd_set_viewport`，那是 RHI 面向交换链的 +Y 朝上视口，在 VK/D3D12 上与离屏默认视口高度符号相反——G-Buffer 被上下颠倒写入、绕序镜像。D3D12 整个场景被背面剔除；VK 用颠倒的 G-Buffer 做光照。删除该调用（MRT bind 已设好全目标离屏视口；GL 的 bind 本来就设同一视口，行为不变）。
+  2. **方向光读取越界**：`read_dir_light` 的基址写成 `(512 * 2) + index * 2` = 1024，而光源缓冲只有 536 个 texel（256 点光源×2 + 4 方向光×2 + 4 个级联矩阵×4）。正确值是 `256 * 2`（级联矩阵在 520 = 512 + 4×2 也印证了这一点）。GL/VK 的越界读返回 0 → **太阳从来没生效过**；D3D12 是 GPU-based validation [1005]。七个着色器（deferred_light、pbr_clustered、blinn_phong_clustered 各 GL/VK 版 + 新 HLSL）一并修正。
+  3. **光源系统没有被填充**：main.c 只在 `clustered_pipeline` 有效时才 clear/add 光源，D3D12 没有 clustered 管线（无 pbr_clustered sidecar），延迟路径因此用一个空的光源系统照明——黑屏。条件改为 `clustered_pipeline || deferred.initialized`。
+  4. **簇查找用错了屏幕尺寸**：`deferred_lighting_pass` 把 G-Buffer 尺寸作为 `u_screen_w/h`，但着色器用它去除光照目标的 `gl_FragCoord`，而簇网格由 `light_system_cull` 按 rw×rh（渲染缩放后的场景 FBO）构建。demo 的 G-Buffer 是窗口尺寸，于是每个像素都查到了偏向左上的簇，点光源照亮了错误的屏幕区块。新增 `deferred_set_lighting_target_size`，main.c 传入与 cull 相同的 rw×rh；未设置时沿用 G-Buffer 尺寸（两者相等时行为不变）。
+- **测试**（`test_d3d12_warp_runtime.c` +4，均走真实 DeferredSystem / LightSystem API）：
+  - `deferred_gbuffer_sidecar_writes_all_five_targets`：五个附件 + 深度逐像素对照 gbuffer.frag 公式（u_prev_mvp 平移出非零速度）；第二帧用 uv 与屏幕轴交换的三角形 + 切线空间 +X 法线贴图，只让 ddy 影响切线，校验扰动后法线的八面体编码；中间穿插一次管线往返（demo 的 skinned/compact 模式），确认上传过的矩阵仍生效。
+  - `deferred_lighting_sidecar_matches_the_brdf_and_csm_and_clusters`：恒等相机下双精度重放 Cook-Torrance + Reinhard；帧 A 有点光源、无阴影；帧 B 全遮挡图集 → PCF 0.3。
+  - `deferred_lighting_reads_a_larger_gbuffer_by_uv`：16×16 G-Buffer 光照到 8×8，左半覆盖 → 输出左 4 列亮、右 4 列黑。
+  - `deferred_path_with_a_perspective_camera_matches_a_replay`：真实透视相机俯视地面，16×16 棋盘反照率、正交光源级联 + 部分遮挡图集（完整 PCSS 双精度重放）、一个只覆盖第 0-2 行簇的点光源（光照目标 8×8、G-Buffer 16×16）；12 个阴影像素、27 个受光、25 个天空、点光源命中 8 个。
+- **反向验证**（每条单独破坏、观察失败、恢复）：u_vp / u_prev_mvp / inv_vp / 级联矩阵转置、去掉 clip-z 重映射、AO 读成反照率、MR 通道交换、ddy 取反、PCF 遮挡权重、簇行翻转、簇列翻转、点光源衰减不平方、丢掉自发光、深度/反照率按 SV_Position 读取、binder 法线/粗糙度单元互换、factor 绑到 0、恢复 set_viewport、u_screen_w 用回 G-Buffer 尺寸——全部被检出（旧的方向光偏移 1024 由套件末尾的 debug-layer 门检出 [1005]）。**过程中加强了 4 处**：恒等矩阵检不出转置 → 改透视相机；平坦法线贴图检不出 ddy 符号 → 改 uv 交换 + 倾斜法线；点光源覆盖第 3-4 行时行翻转互相映射 → 移到第 0-2 行；单色反照率检不出按 SV_Position 读取 → 改棋盘。`gbuffer: mr 放到 t0` 这条由 dxc 直接拒绝编译（寄存器重叠），init 失败，同样被检出。
+  - **曾尝试但撤回的改动**：在 `rhi_cmd_bind_pipeline` 时重发图形 push 常量（以为管线往返会丢矩阵）。反向验证显示去掉它不影响任何测试和 demo——暂存的 uniform 只在 draw 时 flush，往返之间没有 draw 就不会丢；已撤回，测试注释说明了这一点。
+- **验证**：WARP 62/62、RTX 4060 61/62（只有预期的 [1]），两者 debug layer 0 error / 0 warning、别名计数恰为 1。ctest：D3D12 184/185、VK 180/181、GL 177/178，唯一失败均为 `test_platform_win32_runtime` 的 OpenClipboard（ToDesk 占用剪贴板，与本轮无关）；VK 全量并行时 `test_vulkan` 偶发一次失败，单独与 graphics 子集各连跑 3 次全过。demo：D3D12 延迟 60 帧 rc=0、debug layer 0 条；VK 延迟 validation 0 条。**截图**（`BREAK_CAM=0,12,22,0,-25`、无 HUD、第 30 帧）：D3D12 vs GL 延迟 MAE **0.57**，前向 MAE **2.08**。
+- **遗留**：
+  - **VK 比 GL 亮**：延迟 MAE 33、前向 MAE 57，均为 VK 偏亮，修复前就存在（不是本轮引入），待查。
+  - **前向路径 D3D12 间歇问题（修复前即存在）**：60 帧 demo 约半数运行在帧循环中挂起（timeout 杀掉），另有一次段错误，并伴随 debug layer [921]（资源在命令列表执行前被销毁）。用 HEAD 的源码重编后复现同样现象，与本轮无关，待查。
+  - 点光源阴影（需要 D3D12 立方体深度 FBO）、IBL、gbuffer_skinned / gbuffer_arr 的 sidecar。
+
+## 本轮更新：R643 — **D3D12 debug layer 的报错终于看得见了，并清零**（6 类真实问题）
+
+- **问题**：debug 构建一直打开着 debug layer + GPU-based validation，但它的消息只写到 `OutputDebugString`，控制台运行**一条都看不到**——"debug layer enabled" 加一份干净日志什么也证明不了。新增 `rhi_d3d12_drain_info_queue`：每次 submit 后把 info queue 中的 CORRUPTION / ERROR / WARNING 写进引擎日志并计数（跳过 [820]：clear 时没有 optimized clear value，是逐次 clear 的速度提示）。第一次打开，demo 12 帧就报出 ~470 条：
+  - **[613] PSO 的 RTV 格式与实际目标不符（121 + 22 条）**：PSO 把渲染目标格式写死，而调用方只在非 RGBA8 时才声明格式——bloom、tonemap、sharpen、motion blur、SSS 都画进 RGBA16F FBO，UI 画进 BGRA8 交换链，管线却按 RGBA8 建。**修复**：后端记录每个绑定 RTV 的格式；draw 前若与 PSO 不符，按当前格式惰性建 PSO 变体并缓存（每管线最多 6 个，与 VK 的 `vk_pipeline_for_fmt` 同一思路）。管线保存 DXIL 副本用于建变体。
+  - **[615] 没绑 DSV 却用了带 D32 深度槽的 PSO**（交换链 pass）：变体键加上"有无深度附件"；无 DSV 时 `DSVFormat = UNKNOWN` 且关闭深度测试。
+  - **[649] CBV 越过缓冲区末尾（33 条）**：CBV 按 256 对齐声明大小（D3D12 要求），缓冲本身却按调用方大小分配（例如 52 字节的 forward temporal 块），视图尾部读到缓冲之外。**修复**：所有缓冲按 256 向上取整分配，`bd->size` 仍是调用方大小，拷贝/回读范围不变。
+  - **[935] 顶点着色器读到未初始化的根参数 1（b1，10 条）**：GL / VK 上 uniform buffer 绑定跨管线切换保持，main.c 依赖这一点（temporal 块发布一次，之后只重绑管线）；D3D12 换根签名会清空全部根实参。**修复**：记住本帧每个 bN 最后绑定的 CBV，`rhi_cmd_bind_pipeline` 时重新应用到新管线声明的寄存器上。
+  - **[1001] 描述符在命令列表执行前被改写（2 条）**：`rhi_cmd_bind_uniform_buffer` 立即归还槽位、以 `next_fence` 作为退役点；同帧稍后的一次 one-shot 上传（带初始数据的纹理/缓冲）恰好 signal 并等待这个值，于是槽位显得已退役，而本帧的列表还没提交，下一次 SRV 绑定就把视图写进了 CBV 的槽。**修复**：CBV 槽与其他每帧视图一样随帧退役。
+  - **[1328] 缓冲 InitialState 被忽略（35 条）**：缓冲总是以 COMMON 创建；带初始数据时改为 COMMON 创建，拷贝隐式提升为 COPY_DEST，屏障从 COPY_DEST 出发（第一次改成从 COMMON 出发，立刻换来 [527]，已改正）。
+- **R629 的 RT/SRV 别名诊断收窄**：原规则是"本帧读过的纹理又被绑成 RT 就警告"，这对合法的 ping-pong（bloom 模糊：读 A 写 B、读 B 写 A，每次绑定都有屏障）也报——demo 每 12 帧 33 条，**全是误报**（debug layer 也一条没报）。现在只有**仍在当前管线描述符表里**的纹理被绑成 RT 才警告（`ctx->live_srv[]`，换管线时清空，纹理销毁时移除）；`srv_ref_frame` 字段删除。
+- **新接口**：`rhi_d3d12_debug_layer_counts(dev, &errors, &warnings, &rt_srv_aliases)`，先 drain 再返回累计数；非 debug 构建返回 0，此时前两项恒为 0、不作证明。
+- **测试**（`test_d3d12_warp_runtime.c` +5）：
+  - `uniform_buffer_survives_a_pipeline_change`：CBV 在别的管线下绑定、再切回 blinn_phong 不重绑，图像必须与"绑定后立即绘制"逐字节一致；同时断言参考图确实依赖相机（有高光像素）。
+  - `cbv_descriptor_survives_a_mid_frame_upload`：帧中途创建带数据纹理后再绑 SRV，图像不变。**已知局限**：`descriptor_take` 从最旧的空闲槽开始扫，堆较空时陈旧槽不会被立刻复用，此用例对旧代码**也能通过**（已验证）；真正兜住 [1001] 回归的是套件末尾的 debug-layer 门和 demo（旧代码 demo 60 帧报 3 条）。
+  - `one_pipeline_draws_into_rgba16f_rgba8_and_the_swapchain`：同一条默认 RGBA8 管线画进 RGBA16F、RGBA8、BGRA8 交换链（无 DSV），三者像素都对且 debug layer 安静。
+  - `rt_srv_alias_diagnostic_ignores_ping_pong_and_catches_a_live_alias`：post_process 顺序的 ping-pong 不报；旧管线下绑过、换管线后再绑成 RT 不报；仍在当前表中被绑成 RT 恰好报 1 次。
+  - `debug_layer_reported_nothing_for_the_whole_suite`（最后运行）：整套 57 个用例在 debug layer 下 0 error / 0 warning、别名计数恰为 1。
+- **反向验证**：去掉 CBV 重应用 → [935] 被门检出；关掉 PSO 变体 → 2 处 [613] + 套件 21 条；关掉无 DSV 变体 → 2 条 [615]；去掉 256 取整 → 2 条 [649]；别名改回"任何 RT 绑定都报" → 230 条；换管线不清空 live 集 → "rebind drops the table" 失败；live 集不记录 → 精确 1 次的断言失败；CBV 立即归还 → demo 3 条 [1001]。
+- **过程中修掉的测试自身问题**：别名用例最后几帧没有回读就销毁资源，D3D12 立即释放而 GPU 仍在执行（[921] + 约 60% 概率段错误）；补 `rhi_device_idle_ex` 后连跑 8 次全过。
+- **验证**：WARP 58/58、RTX 4060 57/58（只有预期的 [1]），两者 debug layer 均 0 消息；demo（D3D12 debug，60 帧）0 条 debug layer 消息、0 条别名警告，rc=0。ctest：D3D12 184/185、VK 180/181、GL 177/178——唯一失败是三棵树共同的 `test_platform_win32_runtime` 的 OpenClipboard：此时 ToDesk 在运行并占用剪贴板，PowerShell 的 `Clipboard.SetText` 同样失败，与本轮改动无关（该用例不经过 D3D12）。
+
+## 本轮更新：R642 — **D3D12 上 DebugViz、合并后处理（CombinedAA / CombinedColor）上线**
+
+- **问题**：`debug_viz.c`、`combined_post_process.c` 仍把内联 GLSL 交给 `rhi_shader_create`。DebugViz 在 D3D12 上 init 失败（F 键切换的深度 / 法线 / AO / 级联视图全部不可用）；CombinedAA、CombinedColor 退回逐个效果串联的链路（功能正常，但每帧多 3 次 pass 切换）。
+- **修复**：两个加载函数沿用 R640 的 `sidecar` 参数模式；新增三个 HLSL twin（顶点阶段复用 `post_hlsl.vert`）：
+  - `debug_viz_hlsl.frag`：push mode 0、near 4、far 8、split0..3 12..24；颜色 t0、深度 t1（material binder）。
+  - `combined_color_hlsl.frag`：14 个 push 常量按 GLSL 声明顺序 0..52；HDR t0、亮度 t1，`combined_color_apply` 的两条绑定分支（material binder / multi-bind）都落在 0/1。AgX 矩阵写法与 `tonemap_hlsl.frag` 相同。
+  - `combined_taa_fxaa_hlsl.frag`：prev_vp 0、inv_proj 64、screen_w 128、screen_h 132、first_frame 136、use_velocity 140。`u_taa_curr_vp` 在 GLSL 中声明但未读取，省略（resolve -1，与 GL 一致）；`u_taa_blend`、`u_fxaa_threshold` 是 GLSL const，这里同为 static const。
+  - 两个 combined pass 现在接管 D3D12 的默认后处理链；D3D12 与 GL 的 demo 截图（第 30 帧）MAE 6.4，差异来自物理状态和 HUD 数字。
+- **测试**（`test_d3d12_warp_runtime.c` +3）：
+  - `debug_viz_sidecar_renders_every_mode_from_the_shader_formulas`：五种模式逐像素对照公式；深度为双轴斜坡，断言四个级联都被覆盖；法线模式只校验有 +x/+y 邻居的像素（WRAP 与 CLAMP 的边界差异）。
+  - `combined_color_sidecar_matches_the_fused_tonemap_grade_vignette`：ACES / AgX / Khronos 三种模式，双精度重放整条 tonemap → 调色 → 暗角链；前两帧走自动曝光的 material binder，第三帧走 multi-bind（亮度 < 0.01，用手动曝光）。
+  - `combined_aa_sidecar_reprojects_history_and_matches_fxaa`：经过真实的 history 乒乓 4 帧——首帧原样输出；棋盘格下 `0.9*hist + 0.1*curr`；prev_vp 平移 2 texel 时按列偏移混合、越界列直接输出当前值；最后一帧对照双精度 FXAA 重放（bilinear + WRAP）和独立 FXAA sidecar 的输出。
+- **反向验证**：级联比较、法线 dy 采样、AO 模式通道、深度读成颜色、饱和度槽、亮度从 t0 读、AgX 矩阵转置、tint 加到 r、饱和度 lerp 反向、prev_vp 转置、blend 系数、去掉 clip_aabb、history 读成 current、FXAA 横竖判定反转、跳过 FXAA 早退，全部失败。**加强了一处**：最初用 2x2 白块做 FXAA 对照，块上没有像素走到端点搜索分支，破坏 `posB` 采样也能通过；改成底边为 64..255 斜坡的水平边（从 64 起步，避免 WRAP 边界出现 FXAA 的 0/0）后 15 个像素被混合，`posB` 破坏被检出。同一输入也检出了独立 `fxaa_hlsl.frag` 的同类破坏。
+- **验证**：WARP 53/53；RTX 4060 52/53（只有预期的 [1]）。ctest：D3D12 185/185、VK 181/181、GL 178/178。demo（D3D12，12 帧）两个 combined pipeline 均 active，rc=0。
+- **遗留**：point_shadow（需 cube RT）、deferred、particles / GPU cull / IBL / cluster cull（compute 仍关闭）；33 条 RENDER_TARGET/SRV 同帧警告仍未查。
+
+## 本轮更新：R641 — **D3D12 上 SSS / 体积雾 / TSR 上采样 / 电影效果上线**；修复三个后端共有的 Catmull-Rom 权重错误
+
+- **问题**：`sss.c`、`volumetric.c`、`upscale.c`、`cinematic.c` 把内联 GLSL 交给 `rhi_shader_create`，D3D12 一律拒绝，demo 在 D3D12 上这四个效果 init 失败（"shader compile failed"）。
+- **修复**：
+  - 四个加载函数沿用 R640 的模式加 `sidecar` 参数，`caps.shader_sidecar_paths` 为真（仅 D3D12）时走 `rhi_shader_create_path`。GL / VK 路径不变。
+  - 新增五个 HLSL twin（顶点阶段复用 `post_hlsl.vert`），逐行对照 GLSL 移植：
+    - `cinematic_hlsl.frag`：push 偏移 0/4/8/12/16/20（与 GLSL uniform 声明顺序一致）。
+    - `sss_hlsl.frag`、`sss_vertical_hlsl.frag`：push 0/4/8/12。
+    - `upscale_hlsl.frag`：inv_proj 0、prev_vp 64、rw 128、rh 132、sharp 136、copy_only 140、first_frame 144。`u_ups_dw/dh` 在 GLSL 中声明但从未读取，不放进 push 块（resolve 为 -1，与 GL 链接器一致）。
+    - `volumetric_hlsl.frag`：三个矩阵 0/64/128，其后 ldx 192 … fog_b 228。`u_vol_sw/sh` 同样未读取，省略。
+- **Catmull-Rom 权重 bug（GL / VK / D3D12 共有）**：`upscale.frag`、`upscale_vk.frag` 的 bicubic 权重漏了整体的 1/2，每个轴权重和为 2（中点 1.5），平坦区域被放大两倍后 clamp 成白。已改为标准权重 `0.5*(...)`，三个着色器一致。golden 测试不走 upscale，不受影响。
+- **测试**（`test_d3d12_warp_runtime.c` +4，驱动真实子系统 API，期望值由着色器公式推导）：
+  - `cinematic_sidecar_applies_the_exact_vignette_without_grain`：vignette=2、色差和颗粒为 0，逐像素校验暗角公式。
+  - `sss_sidecars_blur_only_where_depth_is_continuous`：平坦 200 灰校验数值；竖条纹 + 左天空（depth=1.0、全 255）/右 depth=0.5（255/40 交替）校验分支，与双精度两遍重放比对，并要求足够多像素被移动。
+  - `upscale_sidecar_copies_flat_input_and_clips_history`：第 0 帧平坦输入必须原样输出；第 1 帧换成 40/220 条纹，期望 `0.85*hist + 0.15*stripe`。
+  - `volumetric_sidecar_extincts_the_scene_by_the_marched_fog`：view 为 translate(0,-2,0)（单位阵看不出 inv_view 乘法转置），按光线步进公式解析出期望值。
+- **反向验证**（每次只破坏一处，失败后恢复）：cinematic 从颗粒槽读 vignette → 128（期望 30）；SSS 采样 t9 / 垂直 pass 中心读错输入 → 失败；SSS 去掉 falloff → 0.2036（期望 0.1874）；volumetric shadow 恒为 0 → 失败；inv_view 乘法转置 → 172（期望 183）；upscale 不混 history → 40（期望 83）；去掉权重的 0.5 → 第 0 帧 255（期望 90）。**过程中加强了三个测试**：最初版本 SSS 去 falloff、volumetric 转置（单位 view）、upscale 不混 history（平坦输入被 clip_aabb 截到当前值）都能通过，改成天空 255 / 平移 view / 条纹 history 后全部检出。
+- **验证**：WARP 50/50；RTX 4060 49/50（只有预期中的 [1] 失败）。ctest 与 demo 结果见下。
+- **遗留**：D3D12 的静态采样器是 LINEAR + WRAP，不是调用方要求的 CLAMP，边缘像素可能与 GL 略有差异。combined_post_process、point_shadow（需 cube RT）、deferred、particles / GPU cull（compute 仍关闭）在 D3D12 上尚未实现。demo 中 33 条 "texture read as SRV ... RENDER_TARGET" 警告仍未查。
+
+## 本轮更新：R640 — **D3D12 上 SSAO / 锐化 / 体积光（god rays）三个后处理上线**
+
+- **问题**：`ssao.c`、`sharpen.c`、`god_rays.c` 都把内联 GLSL 交给 `rhi_shader_create`，D3D12 后端一律拒绝（只按 sidecar 名加载预编译 DXIL），三者在 init 阶段报 "shader compile failed"，demo 在 D3D12 上没有 AO、没有锐化、没有体积光。
+- **修复**：
+  - 三个加载函数按 `post_process.c` 的模式加 `sidecar` 参数：`caps.shader_sidecar_paths` 为真（仅 D3D12）时走 `rhi_shader_create_path`，否则保持原 GLSL 路径不变。GL / VK 不受影响。
+  - 新增四个手写 HLSL twin（顶点阶段复用 `post_hlsl.vert`）：
+    - `ssao_hlsl.frag`：push 块 80 字节（`u_ssao_inv_proj` 0、sw 64、sh 68、radius 72、bias 76）。`u_ssao_proj` 在 GLSL 中声明但从未读取，GL 链接器会丢掉它（resolve 为 -1），这里同样不放进 push 块，省 16 DWORD。深度 t0；`dFdx/dFdy` 对应 `ddx_fine/ddy_fine`；循环内用 `SampleLevel 0`。
+    - `ssao_blur_hlsl.frag`：无 push 块。`ssao_apply` 用 `rhi_cmd_bind_material_textures` 绑定，原始 AO 在 albedo（t0），深度在 shadow（t1）；`textureSize` 改为 `GetDimensions`。
+    - `sharpen_hlsl.frag`：push 块 strength 0 / sw 4 / sh 8，纹理 t0；GLSL 向量 `fma` 写成 `mad`（HLSL 的 `fma` 只支持 double）。
+    - `god_rays_hlsl.frag`：push 块 sun_x 0 / sun_y 4 / intensity 8。`u_gr_sw/sh` 在 GLSL 中从未读取，同样省略（resolve 为 -1，与 GL 一致）。场景 t0、深度 t1（material binder）。
+  - 已知差异（沿用既有限制，非本轮引入）：D3D12 采样器是静态 LINEAR + WRAP，而非调用方请求的 CLAMP_TO_EDGE，所以锐化的 1 像素边框和 SSAO 模糊的外两圈在画面边缘可能与 GL 略有不同。
+- **测试**（`test_d3d12_warp_runtime.c` +3，都驱动真实子系统 API，期望值由着色器公式推导）：
+  - `ssao_sidecars_occlude_a_jittered_plane_and_blur_it`：z=-3 平面，投影带非对称抖动（转置或错位的 inv_proj 都会重建出不同的平面）；期望值来自测试内逐行移植的双精度 `warp_ssao_ref`；bias 取 0.9（默认 0.025 在平面上整帧饱和为 0，等于什么都没测），并断言期望分布不退化。模糊结果按回读的原始 AO 做 5x5 高斯校验（深度恒定，双边权重恒为 1），只校验 4x4 内部；深度 1.0 时两个 early-out 必须精确为白。
+  - `sharpen_sidecar_matches_the_cas_formula_on_interior_pixels`：红/绿边缘加一个蓝点，强度 5.0，校验 6x6 内部逐通道公式值，并断言至少 12 个样本落在 ringing clamp 之内（保证强度对输出可见）。
+  - `god_rays_sidecar_scatters_sky_and_passes_occluded_scene`：全天空帧按解析式 illum = 0.8·11440/32768 乘以 smoothstep 遮罩校验（太阳在两个轴上都偏离中心）；全遮挡帧必须与场景完全相等。
+- **反向验证**（每次只破坏一处，均失败后恢复）：三者强制走 GLSL 路径 → init 失败；SSAO 用 `mul(ndc, M)` 转置 → raw (0,0)=71（期望 147）；翻转 ddy → 0（期望 147）；模糊 t0/t1 互换 → 218（期望 160）；radius/bias marker 互换 → 后端 marker 校验拒绝该 shader；锐化 texel 步长错误 → 0.283（期望 0.265）；忽略强度 / 从 sw 槽读强度 → 0.125 / 0.626（期望 0.514）；体积光 t0/t1 互换 → 255（期望 53）；sun_x/sun_y 互换 → 58（期望 54）。**过程中发现一个漏洞并已修正**：锐化测试最初用强度 0.6，此时所有边缘像素都由 clamp 决定，"忽略强度"的破坏版本照样通过；改为 5.0 并加上 unclamped 计数断言后，该破坏被检出。
+- **验证**：WARP 46/46；RTX 4060 45/46（只有预期中的 [1] warp_device_identity_is_honest 失败）。ctest：D3D12 185/185、VK 181/181、GL 178/178。demo（D3D12，12 帧）日志出现 "SSAO: initialized (320x180)"、"Sharpen: initialized"、"GodRays: initialized"，rc=0。
+- **遗留**：demo 中 33 条 "320x180 texture was read as a shader resource ... RENDER_TARGET" 警告在本轮之前就有（SSAO 强制走旧路径、或 BREAK_BLOOM=0 时条数相同），与本轮无关，来源未查。D3D12 上 SSS、volumetric、upscale、cinematic、point_shadow、deferred、particles 仍是 "shader compile failed"。
+
+## 本轮更新：R639 — **Vulkan 的 3D 场景上下颠倒，已修复**；顺带修好 GL 材质数组用例与 golden 图的换行损坏\r
+\r
+- **问题**：Vulkan 的 NDC y 朝下。引擎的投影矩阵和所有 `_vk` 顶点着色器都是 GL 风格（+Y 朝上），而 VK 后端在交换链成为渲染目标的四个地方（`rhi_frame_begin`、`rhi_cmd_begin_render_pass`、`rhi_offscreen_fbo_unbind`、`rhi_cmd_unbind_shadow_map`）用的是正高度视口 `{0,0,w,h}`。结果 Vulkan 窗口里整个 3D 场景是倒的。UI 没倒，是因为它走 `rhi_cmd_set_viewport`（负高度，R715）。证据见 R638「更正」一节：太阳位置解析解、GL 与 D3D12 一致、真实屏幕抓图。\r
+- **修复**（`engine/src/rhi/rhi_vk.c`）：\r
+  - 新增 `vk_set_swapchain_viewport`，上述四处改用负高度视口 `{0, h, w, -h}`。**离屏目标保持正高度视口不变**：它让 NDC y=-1 落在内存第 0 行，与 GL 的 FBO 和 D3D12 的离屏视口一致，后处理按 `uv = ndc*0.5+0.5` 采样离屏纹理的方向因此不受影响。只有用户最终看到的那张图需要翻转。\r
+  - **剔除方向**：视口翻转会镜像屏幕空间的绕序。所以管线不再只有一个 `frontFace`：离屏 pass 仍用 `CLOCKWISE`（以前的值，离屏行为不变）；交换链 pass 由 `vk_pipeline_for_fmt` 构建 `COUNTER_CLOCKWISE` 的变体。变体键从 (格式, 采样数) 扩成 (格式, 采样数, 是否交换链)；当前 pass 是否交换链由 `vk_record_pass` 根据其 LOAD 孪生是否为 `vk->render_pass_load` 判定。不做这一步，golden 三角形在交换链上会被剔除成空白图（实测「captured a single flat color」）。\r
+- **golden 参考图**：`tests/golden/test_vulkan_vk{,_cam}.ppm` 是在场景倒置的状态下生成的，用 `GOLDEN_UPDATE=1` 重新生成。新图与 GL 参考图方向一致（三角形尖朝上），复测 MAE=0.00。**GL 的参考图没有改。**\r
+- **GL「材质数组象限垂直翻转」这个长期失败，根因其实在测试本身**：`test_vulkan.c` 的 MATERIAL ARRAY 用例按 `(y+1)/2*h` 把 NDC y 换算成截图行号。`rhi_screenshot` 在所有后端都是自上而下的行序（R715 契约），正确公式应为 `(1-y)/2*h`。旧公式只在 Vulkan 上碰巧对，因为 Vulkan 整个画面是倒的。改正后该用例在 GL 与 VK 上**都通过**。\r
+- **golden 图被 git 换行转换损坏**：本机 `core.autocrlf=true`，而 `.ppm` 没有标记为二进制。PPM 头是 ASCII，带 `\n`；每次 checkout 或 `git stash pop` 都会把它改写成 `\r\n`，于是 golden 比对报 DRIFT（MAE 28.73），参考图其实并没有变。新增 `.gitattributes` 规则 `*.ppm binary`。\r
+- **验证**：\r
+  - VK ctest 181/181（**`test_vulkan` 首次全绿**：golden 两张 MAE=0.00，材质数组通过，VALIDATION GATE 0 条消息）；D3D12 185/185；GL 178/178（见下）。\r
+  - demo 默认帧在 GL / VK / D3D12 三个后端方向一致，UI 都在左上角。\r
+  - **UNIFIED GPU CULL 间歇失败——已定位并修复**：偶发 `Hi-Z vis flags {0,0}, want {1,0}`，回退改动后 8 次失败 4 次，是既有问题。根因在测试：`gpucull_read_vis_flags` 映射 `rhi_frame_index` 对应的 staging 槽，只有在 demo 那样「`rhi_frame_begin` 已等过该槽 fence」之后调用才无竞争；测试在 `rhi_present` 之后直接读，中间没有 `frame_begin`，GPU 往该槽的拷贝可能还没完成，读到的是旧内容。两处读取前加 `rhi_device_idle_ex` 后连跑 12 次 0 失败。\r
+  - **GL golden 偏差的真相**：一直标注为「Linux Intel Mesa 与本机差异」的 GL golden DRIFT（MAE 15.60 / 1.15），其实是**参考图本身上下颠倒**：本机 GL 输出与上下翻转后的参考图 MAE=0.00，三角形掩码与新的 VK 参考图完全一致（尖在上）。参考图生成于 R435（截图契约统一为自上而下之前，R715），当时的截图路径有二次翻转。已用本机输出重新生成 `test_vulkan_gl{,_cam}.ppm`。\r
+  - **至此三棵树全绿**：VK 181/181、GL 178/178、D3D12 185/185。\r
+\r
+## 本轮更新：R638 — **D3D12 间接绘制上线**（`caps.indirect_draw_supported = true`）\r
+\r
+- **补齐的四块**（都在 `engine/src/rhi/rhi_d3d12.c`）：\r
+  - **`rhi_cmd_update_buffer` / `rhi_cmd_fill_buffer` 真正录入命令列表**。此前两者都走主机写（`rhi_buffer_update_region`），同一帧内的多次写在列表执行前就全部落地，GPU 只看得到最后一次——违反 C-BUF-3（录制写须与前后命令保序）。阴影逐 cascade 重写可见性再 compact 的模式在 D3D12 上会全部用最后一个 cascade 的结果。现在：DEFAULT 堆缓冲用逐次 UPLOAD staging + 帧内 `CopyBufferRegion`；UPLOAD 堆缓冲（永久 `GENERIC_READ`，不能做拷贝目标）改为「帧内快照别名」——写入生成整缓冲快照，本帧之后的绑定读快照，同时主机写保证帧后读到最后一次。staging 在该帧 fence 到达后于 `rhi_frame_begin` 释放。\r
+  - **只读 storage → buffer SRV**：GLSL 的 `readonly buffer` 在 sidecar 里写成 `tN` 上的 `ByteAddressBuffer` / `StructuredBuffer<T>`，`rhi_cmd_bind_storage_buffer` 在管线没有 `uN` 时自动走 SRV。SRV 可以建在 UPLOAD 堆上，这正是主机每帧更新的可见性标志所在之处（UAV 不行）。\r
+  - **`ExecuteIndirect` 的 count buffer 转到 `INDIRECT_ARGUMENT`**（此前只转了 argument buffer）；UPLOAD 堆的 argument/count buffer 不做转换（`GENERIC_READ` 已含该状态）。\r
+  - **`compact_draws_hlsl.comp`**：GLSL `compact_draws.comp` 的 sidecar，寄存器与 GLSL binding 一一对应（只读 → `tN`，可写 → `uN`）。`indirect_draw.c` 在 `caps.shader_sidecar_paths` 时改用 `rhi_shader_create_compute_path`。\r
+- **新能力位 `indirect_first_instance_supported`**（`rhi.h`）：间接绘制记录的 `first_instance` 能否到达着色器。GL / VK 为 true；**D3D12 为 false**——`SV_InstanceID` 不含 `StartInstanceLocation`，RTX 4060 与 WARP 实测都拿到层 0。材质数组路径把纹理层号放在 `first_instance`，所以 `main.c` 在该位为 false 时**保留 R437 的逐材质组路径**（每组一次材质绑定 + 一次 execute），并打印 `MatArray: disabled (...)`。不这样做，每个网格都会静默地用层 0 着色。\r
+- **`compute_supported` 仍为 false（有意）**：它门控 GPU 剔除与粒子，而 `cull.comp` / `unified_cull.comp` / `particle_*.comp` 还没有 HLSL sidecar，打开只会把它们的 fail-closed 点从「无 compute」挪到「找不到着色器」。\r
+- **验证**：\r
+  - 新测试 `indirect_draw_system_compacts_and_draws_on_the_gpu`（`test_d3d12_warp_runtime`）驱动真实的 `IndirectDrawSystem`：4 个四分之一屏四边形分两组，可见性剔掉 1、2 号，GPU compact 后逐组 `ExecuteIndirect`，断言恰好对角的 0、3 号象限变绿；**同一帧绘制之后再用全可见标志 compact 一次但不绘制**，回读计数器为最后一次的结果（每组 2、总计 4）。WARP 与 RTX 4060 均通过。\r
+  - **反向验证**：把 `rhi_cmd_update_buffer` 改回主机写，该用例转红（全可见标志覆盖了被绘制的那次 compact）。\r
+  - `indirect_start_instance_does_not_reach_sv_instance_id` 现在还断言 D3D12 的两个能力位（indirect 为 true、first_instance 为 false）。\r
+  - demo 在 RTX 4060 上 `BREAK_FRAMES=120` 正常退出，无设备移除；日志 `IndirectDraw: initialized (max 11 draws, 11 groups)`，`Draws` 从 64 降到 24（逐网格 draw 合并为逐组 indirect）。\r
+- **D3D12 demo 整帧全黑——已定位并修复**（`BREAK_SCREENSHOT` 截图 1280×720 每像素 0；回退到上一提交同样全黑，VK 正常，所以是既有问题）。\r
+  - **根因**：最终把后处理链结果拷到交换链的是 `PostProcess.tex_pipe`（`main.c` 的 `rhi_offscreen_fbo_unbind` + `postfx.tex_pipe` 那一 draw）。`post_process.c` 用 `rhi_shader_create` 传内联 GLSL，D3D12 一律拒绝（不在进程内编译 HLSL），于是 `post_process_init` 在第一条管线就失败、`postfx.ready = false`，`main.c` 跳过最终 blit——**后台缓冲从未被写过**。先前怀疑的 `tonemap` 不是原因：它缺 sidecar 只是让色调映射这一步跳过。\r
+  - **修复**：补 4 个 sidecar（`post_tex_hlsl.frag`、`bloom_extract_hlsl.frag`、`bloom_blur_hlsl.frag`、`bloom_composite_hlsl.frag`，与现有 `post_hlsl.vert` 配对），`pp_create_pipe` 在 `caps.shader_sidecar_paths` 时走 `rhi_shader_create_path`（与 `color_grade.c` 同一模式）。修后截图均值约 (76, 81, 79)，场景可见。\r
+  - **测试**：`post_process_initialises_and_blits_on_d3d12` 驱动真实 `PostProcess`：init 必须成功、三个 uniform 位置可解析、`tex_pipe` 逐像素拷贝 128 灰、整条 bloom 链（extract + 4 次 blur + composite）跑完后 composite 等于输入（灰度低于阈值，bloom 贡献为 0）。WARP 与 RTX 4060 均通过；**反向验证**：把 `pp_create_pipe` 的 sidecar 开关强制为 false，该用例在 `post_process_init` 处转红。\r
+- **色调映射上 D3D12**：新增 `tonemap_hlsl.frag`（ACES / AgX / Khronos-neutral，与 GLSL 同一常数；GLSL 的 `v * mat3(...)` 与 HLSL 的 `mul(float3x3(...), v)` 用同一组字面量）和 `luminance_hlsl.frag`（16×16 对数平均 + 时间自适应），`tonemap.c` 在 sidecar 后端走 path API。测试 `tonemap_and_luminance_sidecars_match_the_aces_formula`：非灰输入 (2.0, 0.25, 0.25)，先回读 1×1 亮度目标等于其 Rec.709 亮度，再逐通道比对按同一公式算出的 ACES 期望字节（±1）。**反向验证**：让 tonemap 从 t0 而不是 t1 读亮度，红通道 236 ≠ 245，用例转红。（第一版用灰色输入，这个错绑定恰好算出同样的值，测不出来——所以改成非灰。）\r
+- **DSV 描述符堆只有 16 个槽——这是 demo 里一大串后处理静默失效的真正原因**。每个离屏 FBO 占一个 RTV + 一个 DSV，demo 建的 FBO 远超 16，第 17 个起全部失败，于是 TAA、FXAA、motion blur、lens effects、contact shadow、第二个 tonemap、color grade 等都在 init 打印「FBO/sampler creation failed」后自我禁用。RTV/DSV 堆只在 CPU 侧、描述符很小，D3D12 对它们没有实际上限，所以两者都提到 1024（`rhi_d3d12.h`）。FBO 创建失败现在会明确告警是哪个堆耗尽。测试 `offscreen_fbo_budget_covers_the_demo_post_chain` 一次建 64 个 FBO 必须全部成功；把 DSV 改回 16，恰好第 17 个（索引 16）被拒，转红。修后 demo 日志里不再有 FBO 创建失败，截图均值约 (163, 165, 166)。\r
+- **调试 UI 上 D3D12，且修掉了它「上下颠倒、落在左下角」的问题**（本会话最初报告的症状在 D3D12 上的复现）：\r
+  - **sidecar**：`font_hlsl.{vert,frag}`、`ui_img_hlsl.{vert,frag}`；`my_vgcanvas_break_rhi.c` 与 `myui_break.c`（合成管线复用 `post_hlsl.vert` + `post_tex_hlsl.frag`）在 sidecar 后端走 path API。「inline source」告警从 535 条降到 45 条。\r
+  - **方向 bug 的根因**：`rhi_cmd_set_viewport` 是 RHI 的「+Y 向上」视口（R715 起 UI 画布靠它声明朝向），VK 实现是 `{x, y+h, w, -h}`。D3D12 版**照抄了 VK 的负高度**——但 Vulkan 的 NDC y 朝下、D3D12 朝上，符号不能照搬：D3D12 的负高度恰恰等于 VK 的**正**高度。于是 D3D12 的 `rhi_cmd_set_viewport` 与帧默认视口完全相同，UI 和一切依赖它的绘制都上下颠倒。修复：改为正高度 `{x, y, w, h}`。\r
+  - **测试** `swapchain_draws_put_ndc_up_at_the_top_of_the_screen`：直接往后台缓冲画一个覆盖 NDC y>0 的四边形，用 `rhi_screenshot`（自上而下行序）判断它落在上半还是下半。**两种视口都钉住**：显式 `rhi_cmd_set_viewport` 必须在上半；帧默认视口（VK 正高度 `{0,0,w,h}` 的孪生，让离屏目标保持 GL 行序供后处理采样）必须在下半——这样两者不会再悄悄变成同一个。修复前显式视口落在下半，测试红；WARP 与 RTX 4060 修后均通过。\r
+  - demo 截图：FPS 徽章回到左上角、诊断文字逐行向下可读。\r
+- **D3D12 demo 场景与 VK 不一致——已定位到两处，尚未修复**（同机位 `BREAK_CAM=0,8,20,0,-10`、`BREAK_FORWARD_CLUSTERED=0`、`BREAK_UI=0` 对比）：\r
+  1. **instanced 路径在 D3D12 上画出错误几何——已修复（两个独立 bug）**：默认画面里占满屏幕的大块纯色三角形（米黄 / 绿 / 灰）来自 ECS 实例化绘制。\r
+     - **矩阵转置**：引擎按列主序上传实例矩阵（平移在第 4 列，即上传数据的 12..14）。GLSL 的 `mat4(r0,r1,r2,r3)` 把参数当**列**，HLSL 的 `float4x4(...)` 把参数当**行**——`instanced_mrt_hlsl.vert` 直接照抄，平移落进了投影行，每个带平移的实例都被拉成横贯屏幕的细长三角形。`skinned_mrt_hlsl.vert` 的关节矩阵是同一个错误。两处都改成 `transpose(float4x4(...))`。既有测试只用单位矩阵（它的转置还是它自己），所以一直没测出来；现在 `instanced_sidecar_reads_lighting_from_the_temporal_cbv` 加了第三帧：缩放 0.5 + 平移 (+0.5,+0.5) 的实例，必须只落在 +x/+y 象限。去掉 transpose 该帧转红。\r
+     - **UPLOAD 堆缓冲在帧内被多次改写时，绑定读到的是最后一次**：main.c 每个网格都用 `rhi_cmd_update_buffer` 重写同一个实例缓冲再绑定。R638 的帧内快照只接到了 storage 绑定上，texel / 顶点 / 索引 / CBV 绑定仍然直接看缓冲本体，而本体在录制后已经是这一帧的最后一次写入。现在这些绑定统一通过 `rhi_d3d12_buffer_view_source` 取视图源（有本帧快照就用快照）；快照补齐到 256 字节，CBV 才不会越界读。测试 `texel_buffer_rewritten_per_draw_feeds_each_draw_its_own_rows`：同一帧内同一缓冲先写红画左半、再写绿画右半，两半必须各是各的颜色；让 texel 绑定改回直接看缓冲，左半变绿、测试转红。\r
+     - 修后 D3D12 默认 demo 帧（不设 `BREAK_FORCE_PER_ENTITY`）与 GL 内容和朝向一致。WARP 与 RTX 4060 均通过；D3D12 ctest 185/185。\r
+  2. **更正（上一版写反了）：绕开 instanced 后，上下颠倒的是 Vulkan，不是 D3D12。**\r
+     - 先前「VK 是正的、D3D12 是倒的」只是按画面直觉推断。现在有三条独立证据，都指向 D3D12 是对的：\r
+       - **GL 与 D3D12 一致**。GL demo 先前根本起不来（见下条修复），修好后同机位截图，GL 与 D3D12 画面方向相同（山丘在下、实体在上方），与 VK 相反。\r
+       - **太阳位置有解析解**。机位 `BREAK_CAM=0,8,20,0,60`，太阳方向 el=0.93 / az=1.03。按 `camera_view`、`mat4_perspective` 与 skybox 顶点着色器的同一套公式算，太阳应在画面 x≈0.20、y≈0.36（自顶向下）。实测 D3D12 x=0.203 / y=0.349，GL x=0.188 / y=0.283，**VK x=0.199 / y=0.560**：x 都对，只有 VK 的 y 落在镜像位置（≈1−0.36−0.08）。\r
+       - **真实屏幕抓图与引擎截图一致**。用 DPI 感知的 `CopyFromScreen` 抓窗口，VK y=0.558、D3D12 y=0.350，和各自的 `BREAK_SCREENSHOT` 吻合。所以 VK 不是截图读回翻了，是**实际显示的画面就是倒的**。\r
+     - **原因方向（未改）**：Vulkan 的 NDC y 朝下。VK 后端在 `rhi_frame_begin` / `rhi_offscreen_fbo_unbind` / `rhi_cmd_unbind_shadow_map` 用的是正高度视口 `{0,0,w,h}`，而所有 `_vk` 着色器都没有对 `gl_Position.y` 取反，投影矩阵也没有按后端翻转 Y。这样 3D 场景在 VK 上整体上下颠倒；UI 走 `rhi_cmd_set_viewport`（负高度），所以 VK 的 UI 是正的（R715 当时只修了 UI）。VK 的 golden 参考图（`tests/golden/test_vulkan_vk*.ppm`）是在这个状态下生成的，所以 `test_vulkan` 的 golden 用例在 VK 上一直「对得上」，没能暴露问题。\r
+     - **已在 R639 修复**（见文件顶部）：只翻转交换链视口，离屏约定不变。\r
+  - **已排除的 D3D12 侧原因**（都有测试钉住，`c57f2173`，WARP 与 RTX 4060 均通过）：NDC +Y 经离屏 FBO + 最终 `tex_pipe` blit 后仍在屏幕上方；引擎自己的 `mat4_perspective` / `mat4_lookat` 把世界上方投到画面上方；图形管线的 root constant 在一次 compute dispatch + 重新绑定管线后仍然有效（前向 indirect 的模式）。\r
+- **顺带修复：GL demo 启动即崩溃**（`8b29ed6a`）。`blinn_phong.vert` 的 `FORWARD_MRT` 分支读的是裸名 `u_prev_vp` / `u_prev_model`，但 R600 已经把 `ForwardTemporal` 放进实例名 `temporal` 之下。GL 编译该变体时报 `'u_prev_vp' : undeclared identifier`，随后 `Render init failed`。改成 `temporal.u_prev_vp` / `temporal.u_prev_model`，与 `blinn_phong_arr.vert` 的写法一致。GL 构建 ctest 177/178，剩下的 1 个是既有的 `test_vulkan` golden 偏差。\r
+- **仍未处理**：D3D12 仍缺 `ssao`、`sss`、`deferred`、`cinematic`、`god_rays`、`sharpen`、`upscale`、`volumetric`、`debug_viz`、`point_shadow` 深度管线的 sidecar，画面与 VK 仍有差异。这些是逐个补 sidecar 的工作量，不是单点 bug。\r
+\r
+## 本轮更新：R637 — **更正：「本机无法创建 UAV 视图」是探针自身的 bug，不是驱动 / 系统 / 环境问题**；D3D12 storage buffer 绑定随之落地\r
+\r
+> R611 起记录在案、并在 2026-10-20 两次复测（升级驱动、排除 RDP / ToDesk）中被「加固」的结论——「本机任何程序都无法创建 UAV 视图，归因于混合显卡/系统栈」——**是错的**。下文所有引用这条结论的段落（R611、R614 的 compute 行、「判定实验」一节、UAV 参数矩阵各节）均以本节为准。\r
+\r
+- **真正原因**：零依赖探针 `engine/tests/diagnostics/d3d12_uav_minimal.c` 和引擎内的 `rhi_d3d12_probe_create_uav`（供 `test_d3d12_uav_matrix` 用）都只填了 `Format` / `Buffer.Flags`，**从未设置 `ViewDimension = D3D12_UAV_DIMENSION_BUFFER` 和 `Buffer.NumElements`**。零化的 `ViewDimension` 是 `D3D12_UAV_DIMENSION_UNKNOWN`，这是非法描述符；`CreateUnorderedAccessView` 返回 `void`，运行时只能以**移除设备**来报错。\r
+- **证据就一直摆在那里，只是被读错了**：`GetDeviceRemovedReason` 报的 `0x887A0001` 是 **`DXGI_ERROR_INVALID_CALL`**（SDK `winerror.h` 定义），即「调用方传了非法参数」，不是硬件 / 驱动故障。此前文档把它当成「无意义的健康值」或「平台错误」处理。\r
+- **实测（2026-10-20，同一台机器，同一驱动，ToDesk 在跑）**，零依赖探针，RTX 4060 与 WARP 结果一致：\r
+  | 描述符 | 结果 |\r
+  | --- | --- |\r
+  | 原探针（缺 ViewDimension + NumElements） | DEVICE LOST，`0x887A0001` |\r
+  | 只补 ViewDimension | DEVICE LOST |\r
+  | 只补 NumElements | DEVICE LOST |\r
+  | `pDesc = NULL`（缓冲没有可推断的格式） | DEVICE LOST |\r
+  | **R32_TYPELESS + RAW + ViewDimension + NumElements** | **HEALTHY** |\r
+  | **UNKNOWN + StructureByteStride 16（结构化）** | **HEALTHY** |\r
+  | **R32_FLOAT（类型化）** | **HEALTHY** |\r
+- **所以「驱动更新无效」「RDP / ToDesk 被排除」「嫌疑收敛到混合显卡」这三条复测结论的观测是真的，推论全错**：探针在任何机器上都会失败，换驱动、关远程软件自然都没有影响。这台机器的 D3D12 栈**能正常创建 UAV 视图**。\r
+- **顺带修掉的测试缺陷**：`test_d3d12_uav_matrix` 每格新建设备，但存活格把回读用的纹理泄漏了（`if (!alive) rhi_texture_destroy(...)` 条件写反）。D3D12 对同一适配器在仍有引用时**返回同一个设备**，于是第一个存活格之后再死一格，后面所有格都会继承那个已被移除的设备，表现成「device create failed」的级联。修好后矩阵的真实结果（WARP 与 RTX 4060 一致）：合法形态 `R32_TYPELESS+RAW`、`UNKNOWN+stride16`、两个对照格存活；非法形态（无 RAW 的 R32_TYPELESS、stride 0 的结构化、全零描述符、`pDesc=NULL`、在 raw 视图上挂 counter）以 `INVALID_CALL` 被移除。测试现在**断言**合法格必须存活，不再「只打印不断言」。\r
+- **对路线的影响**：R611 表里的第 3 道门（「UAV 视图杀死设备，代码之外」）**不存在**。D3D12 compute 路线（storage buffer、indirect draw、粒子、IBL 预计算）在本机**可以开发和验证**，前提是 binder 写出完整描述符（`ViewDimension`、`NumElements`，raw 视图带 `D3D12_BUFFER_UAV_FLAG_RAW`，counter 只用于结构化视图）。\r
+- **随后落地：`rhi_cmd_bind_storage_buffer` 不再是空桩（R637 第二步）**。\r
+  - 反射器为每个 `register(uN)` 记下视图形态：`RWByteAddressBuffer` → raw（`R32_TYPELESS` + `RAW`，`NumElements = size/4`）；`RWStructuredBuffer<T>` → 结构化（`UNKNOWN` + `StructureByteStride = sizeof(T)`，支持 `uint/int/float` 的 1–4 分量与 `float4x4`）。识别不了的类型（`RWTexture*`、自定义 struct）记为「无法描述」，绑定时**拒绝并告警**，不会把非法描述符交给运行时。\r
+  - 根签名构建器新增 `storage_root_params[]`，与 `image_root_params` / `uniform_root_params` 同样按 push 参数偏移 +1；绑定走 `SetComputeRootDescriptorTable`（图形管线走 Graphics 版本），资源转到 `UNORDERED_ACCESS`，描述符槽按帧回收（复用 `frame_srv_slots`）。\r
+  - **UPLOAD 堆的 STORAGE 缓冲（创建时没有 `initial_data`）没有 UAV 权限**：这是 `gpucull` / `occlusion_cull` 的 CPU 回读 staging 约定。绑定这种缓冲会被拒绝并告警，而不是让设备被移除。\r
+  - 新测试 `storage_buffers_receive_raw_and_structured_compute_writes`（在 `test_d3d12_warp_runtime` 中，配新 sidecar `shaders/probe_storage_hlsl.comp`）：一次 dispatch 同时写 raw UAV（u0，64 个字）和结构化 UAV（u1，16 行 `uint4`），种子值经 root constant 传入，回读后逐字校验；同时验证绑定 UPLOAD 堆缓冲会被拒绝且不影响设备。**WARP 与 RTX 4060 均通过**。全量 ctest：D3D12 185/185；VK 180/181、GL 177/178，唯一失败均为 `test_vulkan` 的既有 golden 漂移（MAE 28.75 / 13.54，与基线逐字相同，回退本改动复测同样失败）。**反向验证**：把绑定器的 `ViewDimension` 改回 `UNKNOWN`，该用例在 `rhi_device_idle_ex` 处转红（设备被移除）。\r
+  - **仍是空桩**：`rhi_cmd_bind_image_texture`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_texture_compute`（需要纹理 UAV / cube 资源，cube 本身在 D3D12 上也还没实现）。`compute_supported` 能力位**仍未打开**：`cull.comp`、粒子等 compute 着色器还没有 `_hlsl.comp` sidecar。（`indirect_draw_supported` 已在 R638 打开，见上。）\r
+\r
+## 本轮更新：R636 — **D3D12 第 1 帧设备丢失已定位并修复**（根因：深度纹理的 SRV 格式非法）、`motion_blur` push 偏移 bug、`instanced`/`skinned` 从未真正绘制、STORAGE 缓冲创建失败；R630/R631 的「默认关闭」缓解**已撤销**
+
+> 这一节更正此前多轮记录在案的结论：R628–R631 判定「TAA 与 motion blur 各自在第 1 帧丢设备、原因未定位、DRED 静默、与本机 UAV 同族」，并以「默认关闭这两个后处理」作为缓解。**根因现在已定位，那条缓解已撤销，两个后处理重新默认开启。**
+
+- **根因（一条，两个后处理共用）**：D3D12 里 **D32_FLOAT 资源根本不能作为 SRV**（仓库里 `rhi_shadow_map_create` 的注释早就写着这条：「a D32_FLOAT resource cannot back a shader resource view at all」）。后端此前只为 **shadow atlas** 一处走 `depth_samplable` 路径（分配 `R32_TYPELESS`，再用 `D32_FLOAT` 深度视图与 `R32_FLOAT` SRV 两别名指向同一批字节），**其余深度目标一律是普通 D32_FLOAT**。
+  - 而 FBO / MRT FBO 的深度附件正是普通 D32_FLOAT。`rhi_cmd_bind_texture` 给它建 SRV 时用的是 `DXGI_FORMAT_D32_FLOAT` → **`CreateShaderResourceView` 直接失败** → 描述符槽里留的是空描述符 → 着色器读**空描述符** → 设备在 present 时被判死（`0x887a0001`）。
+  - **TAA 与 motion blur 是仅有的两个采样 `scene_depth` 且不采样别处的后处理**（contact_shadow 也采样深度，但它同时采样场景色、且它的深度路径与本问题不同）。**为什么单测看不见**：单测里的「深度」是自己建的 `R32_FLOAT` **颜色**纹理（合法 SRV），而 demo 里采样的是**场景深度附件**。这是「单测绿、demo 死」的全部原因。
+  - **修法**：FBO 与 MRT FBO 的深度附件一并改走 `depth_samplable` 路径（`R32_TYPELESS` 资源 + 显式 `DXGI_FORMAT_D32_FLOAT` 的深度视图）。修完 TAA / MB / 两者同开 / 两者同关**四种配置全部 29–30 帧零设备丢失**（`BREAK_FRAMES=120` 跑满）。
+- **`motion_blur` 的 push 偏移是错的，且是确定性的、不是 flake**：`// rhi:uniform u_mb_prev_vp 32` 写在了 `u_mb_inv_proj`（16..80）**里面**。HLSL 的 cbuffer 打包规则里 `float4x4` 占 **64 字节**，所以第二个矩阵在 **80**，不在 32。此前 R635 记的「帧 1 读到 109 是偶发 flake」**结论错误**：109 = 竖条纹 0/31/…/217 的均值 108.75，是**矩阵读到垃圾 → 重建速度非零 → 整幅被糊成均值**的必然结果。已修（marker 32 → 80，结构体注释同步为 80 / 尾部 144）。
+  - **像素守卫已补**：`motion_blur_sidecar_reads_depth_and_velocity_and_blurs` 新增第 3 帧，走 `u_mb_use_velocity = 0` 的**深度重建分支**（两个矩阵给单位阵 → `prev_uv` 塌回 `uv` → 速度恰为零 → `vel_len < 0.5` 提前返回 → 竖条纹**逐字节精确**返回）。**反向检查已做**：把 prev_vp 写到 32（让着色器读到没写过的矩阵）后该帧读回 **109** 而不是 0，用例转红——证明这条守卫真的在守布局，而不是恒真。
+- **`instanced` / `skinned` 在 D3D12 上**从未真正绘制过**：demo 用 `rhi_shader_create_path(dev, "shaders/instanced.vert", …)`，而后端的名字推导规则是 `<base>_hlsl<suffix>` → 推出 **`instanced_hlsl.vert`**，这个文件**从来不存在**（唯一的孪生是 `instanced_mrt_hlsl.vert`；`skinned_hlsl.vert` 同理）。R632/R634 的注释写着「on a sidecar backend this resolves to instanced_mrt_hlsl.{vert,frag}」——**代码并没有实现这件事**。名字对不上的后果是静默的：demo 只打一条 `instanced sidecars unavailable; instanced draws disabled`，这两个网格在 D3D12 上一个都没画。已改为按真实名字直接加载。
+- **instanced 绘制在 D3D12 上**从未绑定时序 CBV**：`forward_temporal_ubo_write_lit` + `rhi_cmd_bind_uniform_buffer` 被放在 `if (!render.caps.shader_sidecar_paths)` 分支**里面**，也就是**只在 GL/VK 上执行**。而 `instanced_mrt_hlsl.frag` 的光照全部从 b1 的 `ForwardTemporal` CBV 读——D3D12 上那块 CBV 永远没绑。已把「写 + 绑」提出到分支外（只有四个 loose uniform 写是后端相关的）。
+- **`RHI_BUFFER_USAGE_STORAGE` 且无 `initial_data` 的缓冲在 D3D12 上创建不出来**（仓库早已记录，但没修）：`rhi_d3d12_buffer_wants_device_local` 要求有 `initial_data` 才走 DEFAULT 堆，于是它落到 UPLOAD 堆；而 `allow_uav` 只看 usage 位，UPLOAD 堆上的 `ALLOW_UNORDERED_ACCESS` 让 `CreateCommittedResource` **失败** → 句柄无效 → **每一次绑定都被静默跳过** → 顶点着色器读空描述符。已修：`allow_uav` 只在 device-local 时才请求（后端的 storage binder 本来就是空桩，这个 flag 在 D3D12 上换不到任何东西），且 UPLOAD 堆缓冲在 texel 绑定时**不再做状态转换**（它们终生是 `GENERIC_READ`，转换既非法也无必要）。这条顺带修好了 demo 日志里那条 `Lighting: buffer creation failed`。
+- **新增 fail-closed 的布局守卫**（`rhi_d3d12_hlsl_markers_match_layout`）：建管线时，后端把 `// rhi:uniform` 公布的偏移与 **b0 cbuffer 结构体的实际布局**（按 HLSL 打包规则算：矩阵按列 16 字节、`float3` 12 字节但 16 字节对齐、`float2` 8 字节、标量 4 字节）逐个核对，**不一致就拒绝这条管线**并打出成员名与两个偏移。这把「marker 与结构体各写各的」这一整类 bug 变成不可能悄悄上线。**反向检查已做**：把 `u_mb_prev_vp` 临时改回 32，后端立刻报 `uniform u_mb_prev_vp is published at byte 32 but the cbuffer layout puts it at 80 … Refusing the shader.`。
+- **`skinned` 的 CBV 布局守卫已补**（R634 留下的缺口）：`skinned_sidecar_reads_lighting_from_the_temporal_cbv` 与 R633 的 instanced 守卫同形（退化光照设置 → 期望色解析可算 → 逐像素精确断言 + RT1 速度全零 + 四个光照 uniform 必须 resolve 为 −1）。**反向检查已做**：把 sidecar 里 `light_dir` 与 `light_color` 的声明顺序对调，instanced 守卫仍绿、skinned 守卫转红（读回 (0,0,0) 而非 (102,51,20)）——证明两条守卫各自独立受检。
+- **R630/R631 的缓解已撤销**：`main.c` 里那段「sidecar 后端默认关掉 TAA 与 motion blur」的闸门整段删除，两个后处理**重新默认开启**。`BREAK_TAA=0` / `BREAK_MB=0` 回到 R446 的原始语义（只为脚本化 A/B 测量关掉某个 pass），`=1` 不再有特殊含义。
+- **WARP 与硬件的差别要说清**：本次定位在**硬件（RTX 4060）**上完成，移除原因是 `0x887a0006`（`DXGI_ERROR_DEVICE_HUNG`，GPU 挂起）与 `0x887a0001`（`GetDeviceRemovedReason` 报「健康」——本机上报不可信，仓库早有记录）。WARP 上 demo **无论 TAA/MB 开关都丢设备**，那是**另一个**既存问题（WARP 的能力缺口），本轮未动它。
+- **门控**：D3D12 WARP 套件 **33/33**（新增 skinned 守卫）、硬件 **32/33**（唯一失败是 `warp_device_identity_is_honest`，硬件上运行时的固有产物）、`ctest -LE "graphics|fuzz"` **172/172**、`ctest -L graphics` **8/8**、VK **171/171**、GL **170/170**。demo 在硬件上：默认配置 120 帧跑满、`Draws: 58`、零设备丢失、零「pipeline creation failed」新增项（与改动前的失败清单逐条一致）。
+
+## 本轮更新：R600 — 方案 B 落地（`u_camera_pos` 从 push 块搬进时序 CBV / UBO），D3D12 sidecar 随之把 push 尾部收在 240，MRT sidecar（`blinn_phong_mrt_hlsl`）已写好并由 dxc 编译进构建
+
+- **做了什么**：`u_camera_pos` 不再是 `blinn_phong` 家族的 push/loose uniform，改为 `ForwardTemporal` 块的成员（`{vec3 u_camera_pos; float pad; mat4 u_prev_vp; mat4 u_prev_model;}`），三后端统一。GLSL/VK 侧改 `blinn_phong.{vert,frag}` 与 `blinn_phong_vk.{vert,frag}`（块改为**无条件**声明）；引擎侧新增 `rs->forward_temporal_ubo`（`ForwardTemporalUbo`，144B）与 `forward_temporal_ubo_write`，base forward 路径每帧写入并在 binding 0 绑定。D3D12 侧 `blinn_phong_hlsl.{vert,frag}` 同步把相机移进 `register(b1, space0)` 的 `ConstantBuffer<ForwardTemporal>`，并新增 MRT 变体 `blinn_phong_mrt_hlsl.{vert,frag}`（同 push/CBV，外加 `TEXCOORD3` / `SV_Target1` 的 velocity）。设计与踩坑详见 `docs/superpowers/plans/2026-10-19-d3d12-forward-mrt-velocity-design-plan.md` 的 "R600 — what actually shipped"。
+- **这解决的正是下面那条"顺序不可颠倒"的坑**：push 块尾部从 252 收到 240，于是即使 b1 的 CBV 新增一张描述符表、把常量压到 62 DWORD = 248 字节，`u_camera_pos@240+12 = 252` 也不再落在被丢弃的那一段——**丢写这件事被消除，而不是被容忍**。下面"offset 240 处若写 16 字节补齐版本会越过 252 而被丢弃"那条负对照，其风险面从 252 缩到 240。
+- **与下面"FORWARD_MRT 变体刻意不做"的关系**：那条写于本轮之前，理由（384B 装不进 256B push）**仍然成立且未被推翻**——变体现在确实存在了，但它是**独立的一对 sidecar 文件 + 独立管线**，不是把基座那块 push 撑大。变体选择走既有机制：`rhi_d3d12_shader_sidecar_name` 的 `_hlsl` 后缀是幂等的，所以 `shaders/blinn_phong_mrt.vert` 解析到 `blinn_phong_mrt_hlsl.vert`，**不需要新机制**。
+- **⚠️ 范围被收窄，且是被证据收窄的**：先前一版把改动铺到全部 27 个声明 `u_camera_pos` 的 shader（`blinn_phong_arr` / `instanced` / `skinned` / `terrain` / `water` / `particle`），**只改了 vert 没改 frag**，结果是 GLSL 链接错误（块成员与同名 loose uniform 冲突）。GL 把它报成 `INTERNAL ERROR: Invalid Uniform variable name : u_camera_pos`——**读起来像驱动 bug，不像契约错配**。这些改动已全部回滚。收窄的三条证据：①D3D12 按 `<base>_hlsl` 解析，而这些变体没有 `terrain_hlsl` / `water_hlsl` / `particle_hlsl`，实际只有 GL 在用；②`terrain.c` / `water.c` 把 `u_camera_pos` 当 loose uniform 写、**且完全不绑 UBO**，改 frag 会让它们去读一个从未绑定过的缓冲；③方案 B 第 1 步原文只点名 `blinn_phong.{vert,frag}` 与 `_vk` twin。27 文件 / 17 写点那张表仍然有效，作为**后续**范围记录，不是已完成。
+- **⚠️ 无条件化的代价是"每个 draw 都要绑"**：`ForwardTemporal` 变无条件后，blinn 管线在 Vulkan 上**静态使用**那个 UBO set，于是**每一个**画它的 draw 都必须绑——不只是原先会写相机的那几个。漏掉的报 `VUID-vkCmdDrawIndexed-None-08600`（"set 1 is out of bounds for the number of sets bound"），并配一份静默清零的相机。`test_vulkan.c` 里 19 处 draw 改为 `tv_bind_forward_temporal`；生产路径在 `rhi_cmd_bind_pipeline(cmd, active_pipeline)` 之后立刻写 + 绑。
+- **⚠️ 时序 UBO 是独立缓冲，不是 `clustered_proj_ubo`**：方案原文说"扩展 `clustered_proj_ubo` 并让相机领读"，**这条是错的**。`clustered_proj_ubo` 被另一个家族按**另一套布局**读：`pbr_clustered.vert` 的 `ClusterVertTemporal {u_prev_vp, u_prev_model}`（或非 MRT 下的 `ClusterVertProj {u_proj}`）在 0/64/128，`CLUSTERED_ARR` 因子表从 192 起。在它头部插 16 字节相机会把所有这些读者**整体平移**，包括非 MRT 下那条把**投影矩阵**读在 0 的默认 clustered 路径。故新建 `forward_temporal_ubo`，`clustered_proj_ubo` 布局与因子偏移一字未动。"相机领读时序块"这条规则保留，只是领读一个**只有 blinn 家族绑**的块。
+- **反向验证**：①把 `// rhi:uniform u_camera_pos 240` 临时塞回 `blinn_phong_hlsl.frag`，新增的 `hlsl_blinn_sidecars_mirror_glsl_twin_after_camera_moved_to_cbv` 用例转红，移除后转绿——证明该用例真的在守这条契约，而不是恒真；②把 `forward_temporal_ubo_write` 的 `cam_pos[0]` 改成 0，`UNIFIED GPU CULL` 转红（该用例本身 flaky，见下），恢复转绿。
+- **本轮没有覆盖到的地方（如实记录，勿当成已验证）**：①**golden 场景看不见相机位置**——把 `cam_pos[0]` 清零后，Vulkan 两张 golden 的 MAE **精确不变**（仍是 28.75 / 13.54）。视线向量只影响高光项，现有 golden 不覆盖它。相机的像素证明必须来自新场景，不能拿现有 golden 充数。②`test_vulkan` 的 `UNIFIED GPU CULL TEST` **在本机是 flaky 的**：未改动的 `HEAD`（`7799b575`）连跑三次是 2 败 1 过，其 `Hi-Z vis flags {0,0}` 断言不能当可靠门信号；此前把它记成"已修好"的那次是走运。③设计计划的**第 5 步（WARP 像素证明 RT0+RT1）未做**——D3D12 forward 路径今天仍在 `main.c:403` 加载 GLSL 源，尚未迁到 path API，故④（调用点迁移）依旧阻塞。
+- **⚠️ 门控口径漏掉了这次改动唯一会炸的地方**（R600 提交后补记）：本仓库的标准口径是 `ctest -LE "graphics|fuzz"`，而 `test_d3d12_warp_runtime` **带 `graphics` 标签**，与 D3D12 的 swapchain/pipeline/shader/DXR 契约同在该 lane。第一次提交的 R600 **三棵树默认门控全绿，却弄坏了那个 lane 里的两个用例**：`blinn_phong_sidecar_resolves_offsets_and_shades_red` 仍钉着 `u_camera_pos -> 240`（实际返回 -1），`material_binder_puts_albedo_on_t0_and_falls_back_to_white` 仍断言 `loc[i] >= 0`。两者已按 R600 契约改写——`u_camera_pos` 必须 resolve **-1**，相机改由 `warp_forward_temporal_create` + `rhi_cmd_bind_uniform_buffer(cmd, ubo, 1)` 经 CBV 送达。D3D12 graphics lane 现为 **8/8**。**结论：凡改 push/uniform 契约，必须额外显式跑 `ctest -L graphics`，默认门控不足以覆盖它。**
+- **反向验证（b1 这条最关键）**：删掉那唯一一行 `rhi_cmd_bind_uniform_buffer`，WARP 套件**转红**；恢复转绿。即像素断言确实是从 CBV 里读到相机位置的——相机与几何重合处会 `normalize(0)` 出 NaN，从而打掉精确颜色断言。这正是方案第 5 步需要的机制；但它**尚未**覆盖 RT1 velocity 附件，那部分仍无像素证明。
+- **⚠️ 第 5 步已二分到根因域，比上条更精确**：不是 shader 作者问题，而是 **D3D12 后端问题——同一个 `register(b1)` cbuffer，像素阶段读没事，顶点阶段读就丢设备**。七次构建+运行的结果：(1) MRT sidecar 完整 velocity → 丢；(2) 去掉 `SV_Target1`（保留 varying 与除法）→ 丢；(3) 去掉 `TEXCOORD3`（保留除法）→ 丢；(4) `TEXCOORD3` 去掉且除法换成 `rcp()` → 丢；(5) `TEXCOORD3`、除法、`prev_clip` 全去掉，VS 只读 `g_temporal.u_camera_pos` → **仍丢**；(6) `TEXCOORD3` 保留但 **VS 完全不读 CBV** → 正常；(7) **非 MRT** sidecar 对、单目标管线、无第二 RT，把 CBV 读加进**顶点着色器** → 丢。七次全程开调试层与 GPU-based validation，**一次消息都没有**。
+- **被实验排除的假设（不是靠论证排除的）**：①**堆类型**——CBV 必须指向 DEFAULT 堆，而 `rhi_d3d12_buffer_wants_device_local` 把 `RHI_BUFFER_USAGE_UNIFORM` 落到了 UPLOAD 堆。这看起来确实是规范违规、大概率也是个真缺陷，但强制 uniform 走 device-local 后**现象完全不变**，所以**这个改动没有在未经验证的理论上线**（记录在案，不声称已修）。②**CBV 尺寸**——`rhi_cmd_bind_uniform_buffer` 把 `SizeInBytes` 向上取整到 256，而缓冲只有 144B，即视图越界 112B；把缓冲补足到 256B 后**现象不变**。③除法与 `rcp()`、`TEXCOORD3` varying、`SV_Target1`、第二个 render target——逐一移除，均不变。
+- **⚠️ 上一条把话说重了，这里更正：这是 WARP 的限制，不是 D3D12 后端的缺陷**。同一台机器、同一个改动，只换适配器：| 适配器 | 顶点着色器读 `register(b1)` CBV |
+| --- | --- |
+| WARP（设了 `ENGINE_D3D12_WARP`） | **丢设备** |
+| RTX 4060（取消该变量） | **正常**，套件其余断言全过 |
+注意 `rhi_d3d12_pick_adapter` 是按变量的**存在与否**选 WARP 的（不是按值），所以 `ENGINE_D3D12_WARP=0` 仍然是 WARP；跑硬件必须**取消设置**该变量并加上 `BREAK_D3D12_TEST_FALLBACK_HWND=1`（本会话没有真实 HWND）。结论：根签名、描述符表、CBV 尺寸、堆、着色器**全都是对的**，后端没坏；WARP 在顶点阶段的常量缓冲视图上会挂，而本仓库自己的证据规则早就写着 WARP 回执"绝不把证据等级抬过 GPU-runtime"——WARP 是地板，不是权威。
+- **由此两条推论**：①**引擎没有被阻塞**——顶点着色器从 b1 CBV 读 `u_prev_vp`/`u_prev_model` 的 D3D12 forward 路径在硬件上是通的，这正是第 5 步需要的。②**WARP 套件承载不了这个证明**——任何让顶点阶段读描述符绑定 CBV 的测试都必须走硬件门控，否则会把 WARP 的限制报成引擎故障；这是**测试基础设施决策**，不是着色器决策，是下一件要定的事。
+- **仍开放（未由上述任何一条解释）**：把 RT1 证明放到硬件上跑之后，它越过了 WARP 跑不过的所有环节——管线建成、每次绘制 RT0 精确红、回读成功——然后停在 RT1 内容断言上：draw 0 用单位 `u_prev_vp` 期望两通道精确 `+0.0`，实际不是。最直接的下一步是确认 RT1 **到底有没有被写入**、还是保持清屏后的内容；这需要一次像素 dump，本轮没能在预算内干净落地。
+- **RT1 到底写没写？硬件上量出来了**（把 PS 改成写**已知常量**，RT1 按 binary16 原样回读，跑在 RTX 4060 上）：| PS 写入 | RT1 回读 | 结论 |
+| --- | --- | --- |
+| `float2(0.25, -0.5)` | 每像素 `3400 b800` | **RT1 绑定、写入、回读全部精确** |
+| 来自 varying 的 `velocity`、单位 `u_prev_vp` | `7fff 7fff` | 是 NaN，不是 0 |
+| VS 吐**常量** varying `(0.75, 0.5)` | 精确 `3a00 3800` | VS→PS varying 通路没问题 |
+| VS 吐 `curr_clip.xy / curr_clip.w` | `baff baff`、`b8ff baff`… | 垃圾 |
+| VS 吐 `curr_clip.wx` | 第一通道 `3c00` = **1.0**，第二通道 `-128`、`-255`… | **w 完全正确，x 是垃圾** |
+最后一行就是剩下的全部问题，而且很小：**push 常量确实到达了顶点阶段**——`curr_clip.w` 精确回读为 1.0，只有当 model/view/proj 都是测试写下的单位阵时才成立；常量 varying 能穿过，非常量 varying 不能。所以待解的不再是「RT1 通不通」或「uniform 到不到 VS」，而是：**这条路径上一个非常量的顶点输出到不了像素阶段，而同一个 varying 取常量值就能到**。按值得查的顺序：①`float2` 放在 TEXCOORD3、且是该 PS 的**第五个**输入（输入布局反射只描述 VS 的**输入**，没有任何环节校验 VS 的**输出**与 PS 的**输入**，而 MRT 的 PS 输入比它的孪生多一个）——先试 `float4` 或换个 varying 位置；②SM 6.0 下该签名的插值器/寄存器压力；③测试那个放大三角形 `curr_clip.x` 在顶点上本就跨 -1..3，插值后除法前确实会越出 [-1,1]，但这解释不了为什么同一个插值器里 w 是对的。本轮**什么都没上线**，varying 没解释清楚之前测试不进仓库——**一个因为错误原因而通过的像素证明比没有证明更糟**。
+- **两个「可观测性缺口」的真实情况**：①调试层没接回调，消息只走 `OutputDebugString`，控制台测试根本看不见——这就是之前每次都以为「调试层什么都没说」的原因；②**本 SDK 里回调根本装不上**：写完了又删掉，因为 `ID3D12InfoQueue`、`ID3D12Device_GetDebugInterface`、`D3D12_INFO_QUEUE_FILTER`、`D3D12_MESSAGE_ID_CLEAR_*` 在本项目用的 D3D12 头文件里**全是未声明**（`D3D12GetDebugInterface` 本身有，DRED 在用，但它周围的 info-queue API 没有），所以这里没有任何受支持的办法把校验文本变成日志行。**什么都没上线**。
+- **于是 DRED 是唯一的机器可读通道，且它的边界要说清**：DRED 报的是**页面错误**，需要设备被移除才会触发。WARP 确实会移除设备，所以那里 DRED 能说话；**硬件从不移除设备**——它只是静默返回错误数据——所以 DRED 恰好在最有意思的那个症状上是哑的。**没有任何校验通道能看到硬件上的失败**，这意味着硬件症状只能靠读代码 + 定点插桩来打，不能等消息。
+- **下一个人该按这个顺序读**（详见设计计划文档）：①`rhi_cmd_bind_uniform_buffer`——描述符在**同一次调用里**就被 `rhi_d3d12_descriptor_give_back(..., ctx->next_fence)` 还回池子；如果 `rhi_cmd_bind_texture` 从同一个分配器取槽，它可能在 GPU 跑之前就把 CBV 描述符覆盖掉——先确认两个路径用的堆是否相同。②`rhi_d3d12_root_signature_create`——32BIT_CONSTANTS 参数是靠搬移 `b->params` 插进去的，`uniform_root_params[i]++` 做补偿；在重复表仍存在的前提下，这个搬移和顶点阶段最终解析到哪张表有交互。③逐 stage 反射合并本身——`rhi_d3d12_reflect_hlsl` 每个 stage 跑一次、共用同一个 `bindings` 数组，两份结果都喂给 builder，数组内容与 `count` 的处理值得重读。**不用以上任何一条也能回答它的插桩**：在出问题的那个 draw 上，把绑定时刻的 `pd->uniform_root_params[1]` 和真正绑上去的描述符句柄打出来。
+- **读代码清单第 ① 条有答案了**：`rhi_cmd_bind_texture` 与 `rhi_cmd_bind_uniform_buffer` **确实共用同一个描述符分配器**——都从 `ctx->cbv_srv_uav_alloc` 取槽（`rhi_d3d12.c:3671` 与 `:3724`），并且都在同一次调用里立刻 `rhi_d3d12_descriptor_give_back(..., ctx->next_fence)` 还回去。所以 CBV 写进去的槽，很可能就是下一次纹理绑定重新拿走并覆盖的那个槽。
+- **但这不足以解释故障，这点要说清楚而不是悬着**：**通过**的非 MRT 管线每帧都以同样的顺序、从同一个分配器绑 uniform buffer 和纹理，而它的像素阶段 cbuffer 读是正确的。若覆盖真的发生，在那里必然是无害的——多半是因为最后写入的描述符正是被绑定那张表指向的，或者分配器不会立刻把同一个槽发回来。于是观察反而更锋利也更费解：**同一个描述符、同一个分配器、同样的顺序，像素阶段读对，顶点阶段读不对**。
+- **①也不是时序缓冲的生命周期问题**：把每帧「销毁重建 UBO」换成「单个缓冲 + `rhi_buffer_update`」，现象完全不变（draw 0 仍然回读到 NaN 速度）。
+- **上一条留的插桩仍未跑，且仍是最便宜的下一步**：在出问题的 draw 上，把绑定时刻的 `pd->uniform_root_params[1]` 与真正绑上去的描述符句柄打出来。若顶点阶段解析到的是与像素阶段不同的表，这一行立刻把差异打出来；若两者解析到同一张表，故障就完全在根签名下游。
+- **⚠️ 插桩跑出来了：这是一个只靠读代码就能证实的确定缺陷**。在 `rhi_cmd_bind_uniform_buffer` 里打点后，硬件上出问题的那个 draw 打印：`root_param=2`。根签名实际长这样：| 下标 | 内容 | 是否被绑定过 |
+| --- | --- | --- |
+| 0 | 32BIT_CONSTANTS | 是，flush 时 |
+| 1 | CBV `b1`，**仅顶点可见**（顶点 pass 生成） | **否** |
+| 2 | CBV `b1`，**仅像素可见**（像素 pass 生成） | 是 |
+| 3 | SRV `t0`，仅顶点可见 | **否** |
+| 4 | SRV `t0`，仅像素可见 | 是 |
+全代码只有两处 `SetGraphicsRootDescriptorTable`（`rhi_d3d12.c:3695` 与 `:3738`），每次只绑一张表——**根参数 1 和 3 从来没被设过**，而 D3D12 要求绘制前根签名里每个描述符表参数都必须被设置。顶点着色器经参数 1 读 `b1`，像素着色器经参数 2 读同一份，而参数 2 恰好是被绑上的那个。**这就是整个不对称性，不需要任何驱动 bug 来解释。**
+- **这一部分已经定案，且不依赖调查的其余部分**：逐 stage 重复表是真缺陷，读 builder 就能证实，不是只与症状相关。
+- **但还没解释的是**：为什么去重之后顶点阶段的读**仍然**不对（而且还引入了 MRT PSO 的 `E_INVALIDARG`）。要么去重本身有 bug，要么重复表之外**还有别的东西也不对**。这现在是两个独立问题：第一个小而明确——把两个逐 stage 的表按 (kind, register, space) 合并成一张、可见性取或；第二个是**根签名声明的每个描述符表参数在绘制前都必须真的被绑上**，这一点值得用测试断言，而不是默认成立。
+- **修复实现并审计过了——但没有上线**。去重这次是正确实现的（复用匹配的 range、可见性取或、保留复用的 param 下标），并把每条管线的根签名在序列化前全部打出来：`param 0: non-table`（32BIT_CONSTANTS）、`param 1: type=2 reg=1 vis=5`（CBV b1，全阶段）、`param 1: type=0 reg=0 vis=5`（SRV t0，全阶段）。**没有重复表、每个寄存器一张表、可见性正确、两张都绑上了**——**去重产出的根签名是可证明正确的**，这部分故事结束了。
+- **仍然不上线**，因为换成这个正确签名后 blinn_phong 管线**建不出来了**：`rhi_pipeline_create` 对 `blinn_phong_sidecar_resolves_offsets_and_shades_red` 和 `material_binder_puts_albedo_on_t0_and_falls_back_to_white` 都返回 NULL，既没有着色器编译告警，`CreateRootSignature` 也没报错。其它管线（blit / probe / shadow）都正常，这与之前 MRT PSO 的 `E_INVALIDARG` 一致：**让 blinn 或 MRT 管线失败的，是「CBV 表与纹理表共存」这件事**，而此前多出来的重复表把它掩盖了。
+- **所以现在的状态**：**已定案**——逐 stage 重复表是真缺陷；正确的根签名做得到且已审计；顶点/像素的不对称完全由「根参数 1 和 3 从未被绑定」解释。**未定案**——为什么「CBV + SRV 两张表共存」的正确签名建不出管线。这是一个**更小、隔离得更好**的问题，而且重复表这个干扰项已经不在里面了。**没上线**——顶点阶段 cbuffer 读仍然不对，而上线一个「修一半、反而弄坏管线创建」的东西比现状更糟。
+- **下一步不是「再试一次去重」，而是「查清 `CreateGraphicsPipelineState` 到底嫌弃这个签名的哪一点」**：签名现在是最小且已打出来的，候选只剩一个——**1.1 版根签名里 CBV 表、SRV 表与静态采样器共存**。这正是此前从未被真正跑到的配置（旧签名靠重复表把它遮住了，没人刻画过它到底在承担什么）。
+- **PSO 失败点已精确定位**。给 `CreateGraphicsPipelineState` 打了点，在**正确（去重后）的根签名**下跑，整个套件：`blit` `hr=0x00000000`、`probe` `hr=0`、`push-constants probe` `hr=0`、`shadow`（无颜色目标）`hr=0`、而 `blinn_phong hr=0x80070057`（E_INVALIDARG）。
+- 也就是说：**只有一条管线失败，是 E_INVALIDARG，而它与 `blit` 的差别恰好只有一个东西——`b1` 上的 CBV 表**（push 常量、单张 SRV 表、静态采样器三者都相同）。MRT 用同样的签名加两个 RT，行为一致。
+- **关于本 SDK 有两点必须先写下来**：①`D3D12_GRAPHICS_PIPELINE_STATE_DESC` 在这里**没有 `NumStaticSamplers` 成员**，也就是 PSO 用的是旧结构，而根签名是按 **1.1** 序列化并创建的——这个组合在本项目从未被真正跑到，因为重复表一直把它遮着。它是不是触发点，**一个实验就能验**：把根签名按 1.0 创建，看 blinn 的 PSO 是否开始能建。②重复表**可能是「以某种没人刻画过的方式在承重」**。它们确实是错的，但「错且在承重」这个组合必须被有意识地解决，不能删掉然后去承受后果。
+- 所以问题被收窄成一句：**为什么 `ID3D12Device_CreateGraphicsPipelineState` 拒绝「[0] 32BIT_CONSTANTS、[1] CBV b1、[2] SRV t0、静态采样器 s0」这个 1.1 版根签名，却接受去掉 [1] 的同一个列表？****什么都没上线**，去重在原理上依然正确，在弄清这个之前不能落地。
+- **又做了两次单变量实验，PSO 这条线收窄到一个更锋利的命题**：| blinn 根签名 | `CreateGraphicsPipelineState` |
+| --- | --- |
+| `[0] constants、[1] CBV b1、[2] SRV t0、静态采样器 s0` | **E_INVALIDARG** |
+| `[0] constants、[1] SRV t0、静态采样器 s0（**CBV 表整个去掉**）` | **E_INVALIDARG** |
+第二行推翻了「CBV 表是触发点」这个说法。它失败是另一个很无聊的原因——blinn sidecar 仍然声明着 `ConstantBuffer<ForwardTemporal> g_temporal : register(b1)`，根签名里没有 `b1` 的话就是「着色器用了根签名没有提供的寄存器」，同样非法。**两个方向都失败。**
+- **但这两行给出了一个比之前锋利得多的命题**：**blinn_phong 用五参数的根签名能建出来，用三参数的建不出来；而 blit 两种都能建。**这两个 blinn 签名与 blit 唯一的结构差别，就是表从「重复」（两张 SRV + 两张 CBV）变成了「单张」（一张 SRV + 一张 CBV），别的都没动。**所以触发点是「被精简后的参数列表」的性质，而不是 CBV 本身的存在、寄存器号或描述符类型。**
+- **由此得出的下一个实验不需要任何新机制**：**把一个假的第四个描述符表参数加回去**，看 blinn 是否开始能建。能建 → 驱动拒绝的是参数的**个数或相邻关系**，修法在 builder 怎么摆它们；不能建 → 问题在三个参数中**某一个的内容**，逐个变即可。
+- **两条必须带上的告诫**：①本 SDK 的 `D3D12_GRAPHICS_PIPELINE_STATE_DESC` **没有 `NumStaticSamplers` 成员**，PSO 用旧结构而根签名按 **1.1** 序列化——这个组合在本项目从未被跑到，重复表一直遮着它。②重复表可能是「错**且在承重**」：一个没人刻画过的原因，让五参数签名能建而三参数不能。**这是目前最值得挖出来的东西**，而且它可以用二分法回答，不需要靠推理。**什么都没上线。**
+- **R607：material-array 变体跟进，D3D12 长出了 2D array 纹理能力**。`blinn_phong_arr` 是 `blinn_phong` 最接近的兄弟，因此套用同一套五步：四个 GLSL 文件做 R600 相机迁移（**vert 与 frag 一起改**——这正是之前被回滚的那次的错法）、引擎经 `forward_temporal_ubo` 发布、`render_init` 按 `caps.shader_sidecar_paths` 分支、新增 `blinn_phong_arr_hlsl.{vert,frag}`、以及一个 WARP 像素证明。
+- **D3D12 此前完全没有 2D array 纹理**：`rhi_texture_array_create` / `rhi_texture_array_upload_layer` 是返回 NULL 的桩，`rhi_cmd_bind_texture` 硬编码 `D3D12_SRV_DIMENSION_TEXTURE2D`。证明要成立就得先实现它们：`array_size` 接入 `DepthOrArraySize`、逐层 footprint + `CopyTextureRegion` 上传（沿用 GL 那套 host OOB 防护）、array-aware SRV 发 `D3D12_SRV_DIMENSION_TEXTURE2DARRAY` 且 `ArraySize = layers`。两处命名要记：`D3D12_TEX2D_ARRAY_SRV` 用的是 `FirstArraySlice` / `ArraySize`；枚举是 `D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT`，不是 `..._INDIRECT_COMMAND`。
+- 顺带挖出一个**真实潜在 bug**：`ExecuteIndirect` 之前**没有任何代码把间接参数缓冲切到 `INDIRECT_ARGUMENT` 状态**，而 API 要求如此，不切则读取未定义。已一并修掉。
+- **像素证明是「让层可见」而不是断言「不是黑的」**：三层数组（红/绿/蓝），两个三角形沿一条刻意让任何像素中心都不落在其上的接缝铺开，用 `InstanceCount` 2 和 3 绘制，于是层号决定颜色。64 个像素全部精确断言、逐层精确计数（0→64、1→28、2→36）、RT1 按原始 binary16 断言为零。**反向验证**：把 frag 里的层号换成字面量 `0.0f`，测试转红。
+- **⚠️ 这条没有证明什么**：生产路径的层号来自 `first_instance`，也就是间接绘制的 `StartInstanceLocation`（`SV_InstanceID` 读的就是它）。**WARP 上这个值被丢掉**：同一条管线、同一个着色器，记录的 `StartInstanceLocation = 1 或 2` 仍然给出 `SV_InstanceID = 0`，而 `InstanceCount` 正常。所以测试只能通过**它能观察到的那个寄存器**驱动层，**first-instance 这条路未经验证**。DXIL 反汇编是单条 `dx.op.loadInput` 读 `SV_InstanceID`，真实 D3D12 硬件也遵守 `StartInstanceLocation`，因此读起来是 WARP 的限制而非引擎缺陷——但要闭掉它需要拿真实 GPU 把同一个测试跑一遍 `rhi_cmd_draw_indirect`。这个局限连同它的证据都写在了测试头部，而不是留给下一个人重新发现。
+- 门控（D3D12 172/172、8/8 graphics、WARP 14/14；VK 171/171、MATERIAL ARRAY **通过**、validation 0 条、golden MAE 仍 28.75/13.54、fuzz 5/5；GL 170/170、golden MAE 仍 15.60/1.15，失败集合与 HEAD 基线逐条一致）。
+- **方案第 4 步闭了：生产管线走 path API**。`main.c` 此前**分不出 D3D12 和桌面 GL**——两者的 `shader_variant` 都是 `GLSL`（D3D12 干脆不赋值），所以分支需要一个新的能力位，而不是重新解释既有字段：
+- `RHICapabilities.shader_sidecar_paths`：仅在 `rhi_shader_create_path` 会解析手写 sidecar 的后端为真（D3D12 true；GL/VK/Metal false）。**刻意不并入 `shader_variant`**——那个字段在 D3D12 上读回来与桌面 GL 逐字节相同，而这正是原调用点无法分支的原因。
+- `RHICapabilities.temporal_ubo_binding`：每帧 `ForwardTemporal` 块该发布到哪里——两个 GLSL twin 是 `binding = 0`，D3D12 sidecar 是 `register(b1)`（那边 `b0` 是 push 块）。寄存器号只有后端知道，所以帧循环只做转发、不自己重算。
+- `render_init` 现在按 `caps.shader_sidecar_paths` 分支：sidecar 分支请求 `shaders/blinn_phong_mrt.{vert,frag}`，由幂等的 `_hlsl` 派生解析为 `blinn_phong_mrt_hlsl.{vert,frag}`（因为 `pdesc` 声明 `mrt_attachment_count = 2`，要 **MRT** 那一对）；GLSL 分支是原来的 read + `shader_inject_define` + create，逐字保留，两者共用既有的句柄校验清理。
+- **这实际改变了什么**：改之前，D3D12 上 `render_init` 直接 `Render init failed` 退出——GLSL 源没有 DXIL blob，`rhi_pipeline_create` 拒绝它，**D3D12 forward 路径从来没能初始化**。现在能了：
+  `[INFO] main.c:429 blinn_phong: backend resolves shader sidecars; loading shaders/blinn_phong_mrt.{vert,frag} as blinn_phong_mrt_hlsl.{vert,frag}`
+  demo 里剩下的 `D3D12: pipeline needs compiled VS/PS blobs` 来自**其它子系统**（terrain / clustered / deferred / 后处理 / skybox / water / IBL / 粒子 / 点阴影），它们仍是 GLSL-only、走老路径，按各自既有告警降级，没有门覆盖。`main.c` 的热重载管线是同形状的下一个调用点。
+- **GL/VK 未受影响**：两张 golden 的 MAE 逐字节不变（15.60 / 1.15 与 28.75 / 13.54），发出的命令也不变，因为 `temporal_ubo_binding` 在那两个后端求值出来就是原来的 `0u`。
+- **本计划至此全部五步完成。**
+- **方案第 5 步闭了：RT1 velocity 像素证明通过**。`blinn_phong_mrt_sidecar_writes_velocity_to_rt1` 用 8x8 MRT FBO `{R8G8B8A8, R16G16_SFLOAT}` 跑 `blinn_phong_mrt_hlsl` sidecar，**画两次**、RT1 按原始 binary16 回读，断言刻意与朝向无关，所以「通过」是关于速度本身、不是关于视口变换：
+- **Draw A**（单位 `u_prev_vp`）：两通道**精确 `+0.0`**，且是按**原始 16 位**断言的，「近似为零」蒙混不过。
+- **Draw B**（`u_prev_vp` 缩放 (2,1)）：每个像素的 velocity.y **精确为 0**，而 velocity.x 有正有负、且 `|·| <= 1.01`（w 除错了就会露馅）。**一个通道被钉死在硬零、另一个是活的**——这才是逐通道读正确的形状，附件缺失或读成垃圾都做不出来。
+- **每次绘制 RT0 都精确红**——这是「把相机搬到 b1 cbuffer」这件事的回归守卫。
+- 算法依据：单位 model/view/proj 下顶点阶段算 `curr = (x, y, 0, 1)` 即 `curr_ndc = (x, y)`；`u_prev_model` 为单位、对角缩放 (sx, sy) 的 `u_prev_vp` 给出 `velocity = ((1 - sx)*x, (1 - ty)*y)`。
+- **WARP 13/13**。**反向验证过**：把 `rhi_d3d12.c` 换回 R600 修复前的版本，同一个测试在回读处转红并连累整个套件（9/13）——证明它不是因为「与被测修复无关的原因」而变绿的。
+- 这个测试还顺带定案了它需要的 half 解码器：第一版用了 `1u << (exp - 15)`，对**幅值小于 1.0 的每个值**（屏幕上的大部分）都是未定义行为，产出的垃圾**长得极像坏掉的着色器**。`0xbaff` 正确解码是 **-0.8745**，正好是 8x8 目标第 0 像素的 NDC x。**这一类 bug 值得记住：oracle 里的解码器 bug 会伪装成被测对象的缺陷。**
+- **本计划剩下的只有第 4 步**——把 `main.c` 迁到 path API，此前被本问题阻塞，**现已解除**。
+- **R605：修好了、验证了、上线了**。前两条的前提是错的。要成立的有两件事，**第二件才是陷阱**：
+- **①表必须复用。** `rhi_d3d12_root_sig_add_bindings` 现在先扫已有 param，找单个 range 匹配 `(RangeType, BaseShaderRegister, RegisterSpace, NumDescriptors)` 的，复用它的下标并同时记进 `image_root_params` 与 `uniform_root_params`，跳过新建。blinn_phong 的根签名因此从「五个 param、其中两个永远不被绑定」变成 `[0] 32BIT_CONSTANTS、[1] CBV b1、[2] SRV t0` + 静态采样器；顺带每个重复寄存器省下一个 DWORD 的 64-DWORD 预算。
+- **②可见性必须「赋值」，绝不能「按位或」——这正是朴素修法会踩的坑。** 本 SDK 的 Agility 1.616.0 头文件里 `D3D12_SHADER_VISIBILITY` 是**连续枚举值、不是位掩码**（ALL 0、VERTEX 1、HULL 2、DOMAIN 3、GEOMETRY 4、`PIXEL 5`、AMP 6、MESH 7），所以 `VERTEX | PIXEL == 1 | 5 == 5 == PIXEL` —— 按位或的去重会**悄悄丢掉顶点可见性**，完整复现原来的症状，**而且照样能建出来**，因为 D3D12 根本不校验表可见性与使用它的 stage 是否匹配。修法是直接赋值 `D3D12_SHADER_VISIBILITY_ALL`，并且测试断言「按位或」那种写法不存在。
+- **实测（把 `blinn_phong_hlsl.vert` 的顶点阶段故意改成读 b1 cbuffer，即症状本身）**：RTX 4060 上修复前顶点读垃圾、RT0 错误 → **修复后 [7]/[8] 通过、RT0 精确红**；WARP 上修复前同一个 draw 直接丢设备 → **修复后 12/12 通过**。探针用的着色器改动已回退，那只是测量手段；上线的是后端修复 + 回归测试 `d3d12_root_signature_dedupes_per_stage_tables_with_full_visibility`（钉住去重、两种 binding kind 的复用下标记账、赋值写法、以及按位或写法必须不存在）。**反向验证过**：把赋值改回 `|= visibility`，该测试转红。
+- **于是前面四条记录的整个谜团就是这一个缺陷**：WARP 不是异类，它只是对「读一张从未被绑定的表」更严格。
+- **顺带得到两条值得留下的知识**：①`CreateRootSignature` 在**根签名总 DWORD 数 > 64** 时返回 `E_INVALIDARG`，而 `D3D12SerializeVersionedRootSignature` **抓不到**——blob 能正常序列化，只有创建时拒绝；代价模型在边界上量过（64 通过、65 失败）：32BIT_CONSTANTS 代价是它的 Num32BitValues；**每张描述符表无论含几个 range 都只算 1 个 DWORD**；静态采样器算 0。②`CreateGraphicsPipelineState` 在**着色器声明的某个寄存器整个不在根签名里**时返回 `E_INVALIDARG`；而**可见性根本不校验**——这正是当初那个 bug 还能建出来的原因。
+- **五个假设全部排除；缺陷可以一句话说清了**。上一轮每个假设都只在 WARP 上验过；这一轮**同时在硬件上验**，正是这一步把「看不见的垃圾」变成了「可复现的垃圾」：| 改动 | WARP | RTX 4060 |
+| --- | --- | --- |
+| uniform 强制走 DEFAULT 堆 | 无变化 | 无变化 |
+| CBV 补足 256B | 无变化 | 无变化 |
+| 去掉重复描述符表 | 无变化（且 PSO 报 `E_INVALIDARG`） | **无变化**——非 MRT 管线只要 VS 一读 CBV 就照样渲错颜色 |
+| varying 由 `float2` 改 `float4` | — | 无变化 |
+| 我自己的 fp16 解码器 | — | **本身就是 bug，已修** |
+那个解码器用了 `1u << (exp - 15)`，对**幅值小于 1.0 的每一个值**（也就是屏幕上的大部分）都是未定义行为，产出的垃圾**长得极像坏掉的着色器**。`0xbaff` 正确解码是 **-0.8745**——正好是 8x8 目标里第 0 像素的 NDC x。**所以 varying 一直是对的**。
+于是只剩一条事实，两边都证过：**同一个 `register(b1)` 常量缓冲，像素阶段读出来是对的，顶点阶段读出来是垃圾**——硬件上静默，WARP 上直接丢设备。像素阶段正确的证据是「RT0 精确红」：相机就是从那个 CBV 读的，相机错或 NaN 会让 `H` 变 NaN 并把 NaN 带进颜色，但它没有。顶点阶段不正确的证据是 `u_prev_vp`/`u_prev_model` 回来是 NaN，velocity 成了 `7fff 7fff`。
+**缓冲侧已经穷尽**：堆、视图尺寸、表布局、描述符生命周期、可见性、着色器内容、适配器，全都试过了。剩下的嫌疑都在 `rhi_d3d12_root_signature_create` / `SetGraphicsRootDescriptorTable` 的顺序，以及逐 stage 反射上；要查下去，需要把调试层接到回调（它的消息现在走 OutputDebugString，所以一直「看起来没说话」）或让 DRED 在设备丢失时输出，**两者目前都没装**。本轮所有改动**一个都没上线**。
+- **再排除一个：逐 stage 重复描述符表**（实现并实测后回退，未上线）。`rhi_d3d12_root_sig_add_bindings` 对 VS 传 `VISIBILITY_VERTEX`、对 PS 传 `VISIBILITY_PIXEL` 且**不去重**，于是两 stage 都声明的寄存器会生成**两张同 `(type, register, space)` 的表**；`image_root_params`/`uniform_root_params` 只保留**最后那个**下标，另一张**从未被绑定**——顶点着色器读它就是读了一张没设过的表，与症状高度吻合，而且每个重复寄存器还白占 64-DWORD 预算里的一个 DWORD。实测去重后：既有 blinn 管线变成 **2 params / 2 ranges / 1 sampler**（原 4 张表），其他 D3D12 测试全过，但**设备丢失现象完全不变**；更进一步，MRT 的 PSO 改为 `CreateGraphicsPipelineState` 返回 `E_INVALIDARG`（`NumRenderTargets=2`、`{R8G8B8A8_UNORM, R16G16_SFLOAT}`），而同样的 2-param 根签名配非 MRT 着色器、或配 4 张表时都不报。结论：重复表是真实的浪费、很可能也是真实缺陷，但**不是这个 bug**，且在弄懂那个 `E_INVALIDARG` 之前不能安全上线，**已回退，什么都没上线**。
+- **附带记一笔（不在 R600 范围）**：那个 `E_INVALIDARG` 本身值得查——同样的两种格式、同样的根签名形状，PSO 成败取决于前面有几张描述符表。目前无人刻画过。
+- **因此剩下的入口在根签名侧**（可见性 / `rhi_d3d12_root_sig_add_bindings` 的逐 stage 重复绑定合并 / `uniform_root_params[1]` 是否指向了错误的 param），而不是缓冲本身。**当前 D3D12 测试全部只走像素阶段读 CBV**，所以整套件是绿的——这也解释了为什么这个缺陷能一直藏着。
+- **构建与门控**：新 sidecar 由 `build-d3d12-debug` 的 CMake GLOB 自动纳入，`dxc -T vs_6_0 / ps_6_0 -E main` 四个文件全部编译通过并产出 DXIL。三棵树 `ctest -LE "graphics|fuzz"` 全绿，唯一失败是 `test_platform_win32_runtime` 的 `FAIL: OpenClipboard failed`（**未改动的 HEAD 同样失败**，本会话无剪贴板）；Vulkan `ctest -L fuzz` 5/5。图形用例的失败集合与 HEAD 基线逐条一致（GL golden DRIFT 15.60 / 1.15、GL `MATERIAL ARRAY` 象限垂直翻转、VK golden DRIFT 28.75 / 13.54，均为既有基线）。
+- **R608：skybox / water / terrain 三个环境着色器上 D3D12**。9 个新 sidecar（每对 `vert`+`frag`，外加 `_mrt` 变体），三处调用点按 `caps.shader_sidecar_paths` 分支。三个 sidecar 镜像的都是 **GL 变体**（不是 `_vk` twin）。
+- **三个刻意的寄存器决定**——都是被根签名预算和「引擎从来不绑这张表」逼出来的，不是风格选择：①**MRT 顶点阶段写 `velocity = (0,0)` 而不接 `b1` 时序 CBV**：`terrain_render` / `water_render` **从不调** `rhi_cmd_bind_uniform_buffer`，而 `rhi_cmd_bind_pipeline` **不重置描述符表**，所以新增的 CBV 表会读到上一次 draw 留下的陈旧描述符；零速度既是定义良好的值，也正好等于附件的清除值。②**terrain 不声明 `t0`**：`terrain.frag` 声明了 `u_albedo` 却从不采样，GLSL 编译器会丢掉这个非活跃绑定，sidecar 跟着不声明；这同时让该管线**只有一张描述符表**，两张表会把根常量压到 248B 从而丢掉 `u_fog_strength@216+4`。③**terrain 不声明 `u_model`**：4 矩阵 + 5 标量要 284B，超出 64-DWORD 预算；terrain 的 model 恒为单位矩阵（`terrain_vk.vert` 出于同样理由省略它），省略即精确复现恒等变换，`terrain_render` 的 model 写因此 resolve **-1** 并加了守卫，否则每帧都为一份没人读的矩阵打一条 dropped-set_uniform。
+- **没有产生语义分叉——这条是专门核对过的，不是假设**：`terrain.frag` 把 `u_light_dir` / `u_light_color` / `u_ambient` 声明为 GLSL **`const`**，所以 `terrain_render` 在 GL 上写它们**同样**是 no-op；sidecar 照抄成 HLSL `static const` 并**不发 `rhi:uniform` 标记**，两边 resolve 都是 -1，行为一致。子 agent 只报了「terrain 侧 resolve -1」，没说明这是否构成语义分叉；核对 GLSL 原件后确认不构成。
+- **三个像素证明的期望色都可由 shader 数学解析推出**，不是快照录制：skybox 的几何选到 `ray.y < 0.01` 让 24 步云层行进整个跳过，闭式解给出 (0.20565, 0.13692, 0.08983) → 字节 **(52,35,23)**，且三通道正是 `RAYLEIGH_COEFF` 的 5.5 : 13 : 22.4 之比（逐通道系数或相位函数错会**变红**而不只是变暗）；water 的平面被放在 10..50 淡出斜坡**之外**，`fade = 0` 使菲涅尔项塌缩，`color` 精确等于 `u_water_color * 0.5` = **(17,120,115)**，水下那一帧再乘 0.94 = **(16,113,108)**；terrain 受光 **(61,120,30)**、受阴影 **(35,70,19)**，两者用**同一组 uniform**，唯一变化是把阴影图集从全白换成全黑——所以它是 `t1` 的真实测试而不是纯算术测试。
+- **反向验证**：把 terrain MRT sidecar 的阴影常数 `0.4f` 改成 `0.5f`，用例在**受阴影那一个像素**上转红，读回 **(39,79,20)**——与按 shadow=0.5 手算的 (39.43, 78.65, 20.47) 一致；恢复后 17/17。
+- **顺带修掉测试注释里两处算术错**（**断言值本身一直是对的**，错的只是注释里推导它们的中间量）：terrain 的 `pattern` 是 -0.01490 而非 -0.02498、`grass_color` 是 (0.20510, 0.42020, 0.10510)；skybox 的 `horizon_fog` 是 0.0755 而**非 0**，且 scattering / extinction 两式都漏了 `density` 因子。
+- 门控（D3D12 默认 **171/172**、`ctest -L graphics` **8/8**、WARP **17/17**；VK **170/171**、validation **0 条**、golden MAE 仍 28.75/13.54；GL **169/170**、golden MAE 仍 15.60/1.15。三棵树唯一失败均为 `test_platform_win32_runtime` 的 `FAIL: OpenClipboard failed`，未改动的 HEAD 同样失败；构建在 `-Wall -Wextra -Werror -pedantic` 下零警告）。
+- **⚠️ D3D12 上仍走 GLSL fallback 的调用点（本轮自己数的，不采信子 agent 的清单）**。判据是「有没有 `caps.shader_sidecar_paths` 分支」——全仓库目前**只有 6 处**有：`main.c:421`（blinn_phong）、`main.c:495`（blinn_phong_arr）、`main.c:533`（同上的告警）、`skybox.c:24`、`terrain.c:142`、`water.c:35`。其余全部**无条件** `shader_read_file` + `rhi_shader_create`，在 D3D12 上必然编译失败并按各自既有告警降级：
+  - `main.c`：clustered 家族（`pbr_clustered` / `_inst` / `_skin` / `_arr`）、deferred（gbuffer / gbuffer_arr / deferred_light）、`depth_only`、`instanced`、`skinned`，以及约 2940 行的**热重载管线**（`hotreload_pipeline_init`，与本轮三个调用点同形状）。
+  - `src/renderer/`（每个都是一对 vert/frag）：`cinematic`、`color_grade`、`combined_post_process`、`contact_shadow`、`debug_viz`、`deferred`、`dof`、`forward_velocity`、`fxaa`、`god_rays`、`lens_effects`、`lens_flare`、`motion_blur`、`point_shadow`、`post_process`、`sharpen`、`ssao`、`ssgi`、`ssr`、`sss`、`taa`、`tonemap`、`upscale`、`volumetric`。
+  - compute：`gpucull.c`（`cull.comp` / `unified_cull.comp`）、`lighting.c`（`cluster_cull.comp`）、`particles.c`（`particle_update.comp` / `particle_cull.comp` / `particle.{vert,frag}`）、`ibl.c`、`indirect_draw.c`、`occlusion_cull.c`。
+  - 其它：`asset/hotreload.c`、`myui/myr/my_vgcanvas_break_rhi.c`、`ui/myui_break.c`。
+  （`test_vulkan.c` 里的 `shader_read_file` 是测试夹具，不计入。）
+- **⚠️ demo 的 `D3D12 device removed: 0x887a0005`：本轮用 `BREAK_FRAMES=120` 让 demo 跑到**正常退出**，四种配置全部实测，结论是「只在 WARP 上发生，硬件完全干净」**，这条不再是开放项**：
+
+  | 配置 | 结果 |
+  | --- | --- |
+  | RTX 4060，正常窗口 | 120 帧跑满，**0 次** device removed，完整 shutdown |
+  | RTX 4060 + `BREAK_D3D12_TEST_FALLBACK_HWND=1` | 同上，**0 次** |
+  | WARP + 回退窗口 | 1 次，demo 优雅退出（exit=0） |
+  | WARP，正常窗口 | 1 次，demo 优雅退出（exit=0） |
+
+  所以**回退窗口与它无关，WARP 才是变量**。而且它在日志里的位置是**跑到一半**，不是收尾：
+  ```
+  [UI] Closest pair: 11-12 dist=0.4 ...          <- 正常模拟中
+  ERROR rhi_d3d12.c:318 D3D12 device removed: 0x887a0005
+  RHIEVT {"event":"device_lost",...,"result":"DEVICE_LOST"}
+  ERROR main.c:6289 frame_begin returned NULL (device lost?) — exiting demo loop
+  INFO  main.c:8956 Shutting down...             <- 优雅退出，exit=0
+  ```
+  **设备丢失是 WARP 独有的现象，且 demo 已能检测并优雅处理**（`frame_begin` 返回 NULL → 退出循环 → 正常 shutdown）。真实 GPU 上这条路径完全健康。子 agent 早前「既有问题」的 A/B 判断是对的，这里补上精确定位。
+- **同一套像素证明第一次在真实 GPU 上跑了，并因此发现断言本身有缺陷**：`env -u ENGINE_D3D12_WARP` 后地形受阴影那一个像素的蓝通道读回 **18** 而不是 19。**不是着色器缺陷**——解析值是 **18.52**，离字节取整边界只有 **0.02**，而链路上有 `sin(10)*sin(20)`，fp32 的参数规约就足以决定它落在哪一侧。三个期望三元组**全都**至少有一个通道落在边界 0.08 以内（地形 60.57 / 18.52、水 16.575、天空盒 52.44），因为它们都是被挑成整数字节值的——这是设计的系统性特征，不是地形独有。`warp_expect_rgba` 因此改为接受每通道容差，三处颜色断言一律传 1；**velocity 断言仍然精确**，因为 0.0 是字面量，没有边界可跨。容差之下反向验证照样转红（0.4→0.5 让红偏 4、绿偏 9）。
+- 硬件上的结果是 **16/17**：唯一失败是 `warp_device_identity_is_honest`，它断言的正是「适配器**就是** WARP」，所以 `ENGINE_D3D12_WARP` 被 unset 时它本来就该红。**这是 D3D12 像素证明第一次跑在真实硅片上**（RTX 4060），此前所有像素证据都来自 WARP。
+
+- **⚠️ R609：真实 GPU 推翻了挂了好几轮的结论——材质数组的层号在 D3D12 上根本到不了着色器，不是 WARP 限制**。在 RTX 4060 上跑同一套件得到：
+  | 间接参数 | 实际渲染层 |
+  | --- | --- |
+  | `{InstanceCount = 1, StartInstanceLocation = 1}` | 层 0 |
+  | `{InstanceCount = 1, StartInstanceLocation = 2}` | 层 0 |
+  | `{InstanceCount = 2, StartInstanceLocation = 2}` | 末实例是**层 1** |
+
+  第三行是判别式证据：`InstanceCount` **确实被采纳**（两个实例都光栅化、后一个覆盖），所以参数缓冲是真的被读到了；前两行的「层 0」只可能是 **base 被丢弃**，而不是上传没生效。每一次 draw 的参数缓冲还会回读断言，所以「CPU 侧记录是对的」是**被记录的证据**而非假设。
+- **根因**：`blinn_phong_arr.vert` 读 `uint(gl_BaseInstanceARB)`（= 间接记录的 `first_instance`，与 `InstanceCount` 无关），而 D3D12 sidecar 读 `SV_InstanceID`（= `gl_InstanceID`，base + 实例下标）。R607 的 sidecar 注释断言两者「是同一个系统值」，**它们不是**；只有 `first_instance == 0` 时才相等——而生产恰恰相反：`main.c:3779` 写 `instance_count = 1`，`main.c:3947` 写 `first_instance = group_layer[mg]`。GL/VK 正确，所以上游一直没发现。
+- **没有任何 HLSL 语义能修**。`SV_StartInstanceLocation` 是正确的那个，但 dxc 在 `ps_6_0` 到 `ps_6_11` 的**每一个** shader model、两个阶段都拒绝：`invalid semantic 'SV_StartInstanceLocation' for ps 6.0`。**裸名 `StartInstanceLocation` 能编译，这是个陷阱**——`dxc -dumpbin` 显示它是 `SysValue = NONE` 的普通用户语义、独立寄存器，运行时**不会**填充；接上去会「看起来修好了」然后读到垃圾。
+- **⚠️ 更正严重性（前一版说过头了）**：第一版写的是「D3D12 上每个材质数组网格都在采样层 0」，**这夸大了**。`rhi_d3d12.c` **从未设置** `caps.indirect_draw_supported`（只有 `rhi_gl.c:770` 和 `rhi_vk.c:1852` 设了），所以 `indirect_draw_init` 直接 fail-closed（"backend reports no indirect draw support"），`mb->array_system_ready` 恒为 false，`mega_mat_arrays_draw` **第一行就 return 0**。数组管线被创建但**从不绘制**。
+- 因此这是一扇**架在已禁用子系统下面的活板门（trapdoor）**，**不是**正在发生的渲染 bug。它会在 D3D12 启用间接绘制的**那一刻**变成真 bug，而且**不会自己暴露**——每个网格依然着色正确，只是永远用材质层 0。这也顺带说清了 R607 把数组工作留在什么位置：**建好了但在这个后端上端到端从未跑过**。
+- **正确修法是 D3D12 为此专门提供的机制**：命令签名加第二个 `D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT` 参数，把参数缓冲里的值拷进 root constant 供着色器读。**空间是有的**——该管线 push 块止于 240，两张描述符表把 `32BIT_CONSTANTS` 压到 62 DWORD = 248 字节，`uint u_layer` 放 240 无需新增根参数。但**影响面比初看更大**：`indirect_draw_execute` 派发的是 `visible_draws_buf`，而它由一个 **GPU compute pass** 填充，该 compute 把整条 `DrawIndexedIndirectCmd` 压实并重排——**那个 compute 着色器在 D3D12 上是 GLSL-only 的**。所以修复必须同时落地：命令签名、compute 压实着色器自己的结构体布局、间接参数 ABI、sidecar。**如实记录，不盲改**。
+- sidecar **维持读 `SV_InstanceID`**（行为不变，无回归），新增的 `indirect_start_instance_does_not_reach_sv_instance_id` 把上面三行全部钉成断言——**路径被启用的那天这个用例会转红**，这正是目的：修复必须是一次有意识的更新，而不是在「一直绿」的测试里悄悄把层号变成 0。
+- 硬件上的结果是 **17/18**：唯一失败是 `warp_device_identity_is_honest`，它断言适配器**就是** WARP，`ENGINE_D3D12_WARP` 被 unset 时本来就该红。WARP 上 18/18。
+- **补一条把话说全：D3D12 的数组路径其实被**两道**正确的 fail-closed 挡着**，第一道只是刚好掩盖了第二道。①`caps.indirect_draw_supported` 在 D3D12 上为 false → `indirect_draw_init` 打印 "backend reports no indirect draw support" 后返回 false；②即便把标志打开，`indirect_draw_init` 还会因为 `compact_draws.comp` 在 D3D12 上是 **GLSL-only**（`id_load_compute` 用 `shader_read_file`）而拿不到压实管线，同样 `indirect_draw_destroy` + 返回 false。所以 **R607 的数组 sidecar + 2D array 纹理能力目前是「建好但用不上」**；要真正启用这条路径，得先让 `compact_draws.comp` 有 D3D12 compute sidecar（而 `rhi_shader_create_compute` 在 D3D12 上是否可用本身也还没验证过），再解决层号问题。
+- **R610：`main.c` 的热重载管线改走 path API**。它和 R608 那三个调用点同形状：`hotreload_pipeline_init` 在 `main.c` 里传的是 `shader_variant_path` 解析后的路径，而 D3D12 的 `shader_variant` 留在 GLSL，所以拿到的是 `shaders/blinn_phong.vert`——读它得到的是**没有 DXIL blob 的 GLSL 源**，`rhi_shader_create` 必然失败，热重载管线从来就没建成过。分支放在 `hotreload_compile_pipeline` 内部而不是调用点，这样**文件监视回调触发的重新编译也一起走上**。`blinn_phong_hlsl.{vert,frag}` 早就存在，所以这次不需要新 sidecar。
+- **新测试 `hotreload_uses_the_path_api_on_a_sidecar_backend` 两条路线都钉住**（GLSL 后端 `create` ×2 / `path` ×0；sidecar 后端 `path` ×2 / `create` ×0）。**反向验证**：把 `if (caps.shader_sidecar_paths)` 改成 `if (0 && ...)`，该用例在 `s_path_calls != 2` 处转红。这个测试必须有，因为它钉的失败模式是**静默**的——GLSL 路线对着桩会成功，只在真实硬件上才失败。
+- **未修且如实记录的文件监视器缺陷**：sidecar 后端上真正被编译的是 `<base>_hlsl.{vert,frag}`，但 watcher 仍监视调用方传的 GLSL 路径。于是**改 GLSL twin 会触发一次「读未变 sidecar」的无效重编译，改 sidecar 则什么都不触发**。修它需要把后端的 `_hlsl` 派生规则暴露出来。管线产物本身是对的（那正是本次修的），错的只是触发。
+- **❌ R611 本条及下面三条复测结论已被 R637 推翻（见文件顶部）：死因是探针描述符缺 `ViewDimension`/`NumElements`，不是本机驱动栈。以下保留为历史记录。** 原文：`test_d3d12_uav_matrix` 至今仍然成立——**创建 UAV 视图会立即杀死 D3D12 设备**，而且 **WARP 与 RTX 4060 表现完全一致**，不是 WARP 的能力缺口：
+  ```
+  uav-matrix[0..6]  view=1  -> KILLED（视图建成功后，随后的 texture create 失败）
+  uav-matrix[7..8]  view=0  -> ALIVE（不建视图，buffer+resource 全程正常）
+  2/9 cells survived
+  ```
+  **7 个建了 UAV 视图的格子全死，2 个没建的格子全活**——死因是 `ID3D12Device_CreateUnorderedAccessView`，且**立即生效**（没有失败提交、无失败提交面包屑）。
+- **这条把「把 compute 子系统迁到 D3D12」整个计划的前提推翻了**，而不只是推迟：所有需要 storage buffer / atomic 的着色器（`compact_draws.comp` 的 atomicAdd、`cull.comp`、`cluster_cull.comp`、`particle_update.comp`、`particle_cull.comp`、粒子与后处理里的一切）都必然要建 UAV 视图，**在这台机器上一律会丢设备**。
+- **因此 D3D12 的数组路径被四道门挡住，其中一道在代码之外**：
+  | # | 门 | 性质 |
+  | --- | --- | --- |
+  | 1 | ~~`caps.indirect_draw_supported` 从未被 D3D12 设置~~ **R638 已打开** | 代码 |
+  | 2 | `compact_draws.comp` 是 GLSL-only，无 compute sidecar | 代码，需写 sidecar（CMake 的 `.comp → cs_6_0` 规则**已支持**，只是没人写） |
+  | 3 | ~~UAV 视图杀死设备（本机驱动栈）~~ **R637：不存在，是探针描述符 bug** | ~~代码之外~~ |
+  | 4 | 层号到不了着色器（R609） | 代码，需命令签名 CONSTANT + ABI 变更 |
+
+  第 3 条决定了：**即使把 1、2、4 全部做完并打开能力位，这台机器上数组路径依然会丢设备**。所以正确顺序是**先解决第 3 条**，否则做 1、2、4 只是把一个被 fail-closed 挡住的活板门换成一次崩溃。
+- **⚠️ 显卡驱动更新没有救回这个能力（2026-10-20 复测）**：把 NVIDIA 驱动更到 `32.0.15.9186`（2026-01-20）后重跑零依赖探针 `engine/tests/diagnostics/d3d12_uav_minimal.c`（新建 `.tmp` 编译，clang + SDK 10.0.26100.0），**RTX 4060 与 WARP 双适配器依旧在 `CreateUnorderedAccessView` 处丢设备**，症状逐字节相同（post-view 分配返回 `DXGI_ERROR_DEVICE_REMOVED`、`GetDeviceRemovedReason` 仍报 `0x887a0001`）。**结论不变、且更硬一分**：这不是驱动版本问题，单升级驱动救不了；本机仍无法验证任何 UAV 相关 D3D12 compute 工作（IBL / cubemap / indirect draw / 粒子 / storage buffer）。要解锁仍只有两条路：换一台能建 UAV 视图的对照机器 / CI runner，或查明混合显卡 + 远程会话这一更底层的环境因素。
+- **⚠️ 「远程会话」这条嫌疑也被排除了（2026-10-20 二复测）**：本会话实为物理控制台（`SESSIONNAME=Console`、`qwinsta` 仅 console/ID 1 运行中、`fDenyTSConnections=1`，RDP 接入被禁用，RDP 已排除）；而 ToDesk——先确认它在跑（3 个 ToDesk.exe：session0 一个 + Console session1 两个，但**无 ToDesk 虚拟显示驱动**，显示栈只有 RTX 4060 + AMD 集显 + 内置屏，它走 DXGI Desktop Duplication 而非 IDD）——在用户**退出 ToDesk 后重跑同一探针，RTX 4060 与 WARP 症状逐字节不变**（仍旧 post-view `DXGI_ERROR_DEVICE_REMOVED` / `0x887a0001`）。**结论：RDP 与 ToDesk 的屏幕捕获路径都被排除**，嫌疑收敛到**混合显卡（dGPU 渲染 + 集显显示）/系统栈这层**；两个独立适配器（硬件 RTX + 软件 WARP）在同一调用上同死，指向二者公共的底层而非任一驱动。
+- **⚠️ 上条那个「demo 的 hang 也是 UAV 造成的」推测，本轮实测被推翻，不要采信**：demo 在 RTX 4060 上 `BREAK_FRAMES=120` 跑满并干净退出，**全程 0 次 device removed**；而且 demo 里所有 compute 子系统都在**建 UAV 之前**就 fail-closed 了（`cluster_cull.comp not found` / `Particle compute shader not found` / `GPUCull: backend reports no compute support` / `IndirectDraw: backend reports no indirect draw support`）——**demo 从头到尾没建过任何 UAV 视图**，所以第 3 条（UAV 杀设备）**不是** demo 的 hang 的原因。两条记录要分开看。
+- **R614：把 D3D12 的 RHI 缺口逐个查清——剩下的渲染子系统大多不是卡在着色器，而是卡在缺失的 RHI 特性**。这条是查出来的，不是推断的，方法是通读 `rhi_d3d12.c` 里全部空实现桩并对每个去查生产调用方。**它直接推翻了我原本打算做的两件事**（`point_shadow`、`instanced`/`skinned` 的 sidecar），那两件都会是白做：
+
+  | 空实现桩 | 卡住谁 | 性质 |
+  | --- | --- | --- |
+  | `rhi_cmd_bind_texel_buffers`（unit 5/6） | `instanced`、`skinned`（两者都用 `layout(binding=5) samplerBuffer`） | 真实缺口，**一次解锁两个** |
+  | `rhi_cubemap_create` / `_destroy` / `_transition_to_read`、`rhi_cmd_bind_cubemap`、`rhi_cubemap_depth_fbo_{create,destroy,bind_face,unbind}` | `point_shadow`（六个 cubemap 面）、`ibl`（环境/辐照度/预滤波 cube） | **三个桩起步**，写 sidecar 无用 |
+  | `rhi_cmd_bind_deferred_gbuf_textures` | deferred GBuffer 路径 | 真实缺口 |
+  | `rhi_cmd_bind_textures_multi` | 任何多纹理绑定调用方 | 真实缺口 |
+  | `rhi_cmd_bind_storage_buffer`、`rhi_cmd_bind_image_texture`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_texture_compute` | 全部 compute 子系统 | 真实缺口（R637：UAV 视图本机可用，原「即使实现也会丢设备」结论作废；`rhi_cmd_bind_storage_buffer` 已在 R637 实现，其余三个仍是桩） |
+  | `rhi_cmd_set_depth_func_less` / `_less_or_equal`、`rhi_cmd_set_depth_mask`、`rhi_cmd_set_cull_face` | 目前**无人调用** | **惰性桩**：深度状态全部来自 `RHIPipelineDesc` 的 `depth_compare_lequal` / `depth_write_disable` / `disable_culling`，生产代码一次都没调过这四个。是留给后人的陷阱，不是现存缺陷 |
+  | `rhi_gpu_timer_{begin,end,destroy}`、`rhi_backend_*_get_native_info`、`rhi_backend_acceleration_structure_get_vk_handle` | 无 | 诊断/互操作/VK 专用逃生口，不阻塞渲染 |
+
+- **两个具体结论**：
+  - **`point_shadow` 的告警是误导性的**。它报 `PointShadow: depth pipeline creation failed (shaders missing?)`，括号里那句是猜测；真实情况是 `point_shadow_depth.vert` 是 `#version 330 core`（**GL 语法，且没有 `_vk` 变体**），本来就没打算给 D3D12 写，而它需要的 cubemap 深度 FBO 在 D3D12 上是三个空桩。就算现在给它写 sidecar，系统依然会在 `cubemap_fbos[i].fb` 无效处失败并报 "resource creation failed"。
+  - **`instanced` / `skinned` 的 sidecar 同理是白做**：`rhi_cmd_bind_texel_buffers` 在 D3D12 上是 `(void)cmd; (void)buf0; (void)buf1;`，着色器永远读不到实例/骨骼数据。正确顺序是**先实现这个 binder**（D3D12 侧是 `D3D12_SRV_DIMENSION_BUFFER` 描述符 + `image_root_params[5]`/`[6]`，**只读 SRV 不需要 UAV，因此不受 R611 的设备丢失影响**），再写 sidecar。
+- **不受任何 RHI 缺口阻塞、纯粹是着色器工作的只剩后处理那一族**（`ssao`、`taa`、`bloom`、`dof`、`ssr`、`ssgi`、`fxaa`、`tonemap`、`sharpen`、`sss`、`upscale`、`post_process`、`combined_post_process`、`motion_blur`、`vignette` 类等 `src/renderer/` 下 24 个子系统）。它们各自是一对 vert/frag，是 R608 那种机械工作——但每一个都需要自己的像素证明才值得上。
+- **⚠️ R616：`instanced` / `skinned` 不是「照搬 GL 孪生」能完成的移植，卡在一道结构性约束上**（R615 把 RHI 桩补上之后才暴露出来，所以这是新结论，不是旧结论的重述）：
+  - **根常量预算装不下。** `main.c` 的 instanced 绘制点用 `rhi_cmd_set_uniform_*` 写**六个** uniform：`u_view`(64B) + `u_proj`(64B) + `u_light_dir`/`u_light_color`/`u_ambient`/`u_camera_pos`（各 48B）= **320 字节**。而 D3D12 上这个入口**只能写 b0**——`rhi_cmd_set_uniform_*` → `rhi_cmd_push_constants` → `SetGraphicsRoot32BitConstants(pd->push_param_index, …)`，`rhi_pipeline_get_uniform_location` 返回的也是根常量内偏移。instanced 管线另有 4 张描述符表（t0 albedo、t5 实例、b1 时序、+1），于是 b0 的上限是 **60 DWORD = 240 字节**。**320 > 240，装不下。**
+  - **这不是 R600 那种「挪 12 字节」的悬崖，而是需要新增引擎侧 uniform 缓冲。** 可行路径是把 frag 那四个 vec3 放进时序 CBV：`ForwardTemporalUbo` 尾部追加三个成员（blinn_phong 读的是 `u_camera_pos@0` 与 `u_prev_vp@16`，追加在 `prev_model` **之后**不改变既有偏移），sidecar 从 `register(b1)` 读，绘制点改调 `forward_temporal_ubo_write` 并停掉那三个 `set_uniform` 写（对应 `inst_loc_*` 变 -1）。这是**子系统移植**，不是搬偏移。
+  - **`instanced` 的时序契约和 blinn_phong 家族相反，不能照搬 R600 的做法。** `instanced.vert` 的 `ForwardTemporal` 只装 `u_prev_vp`（`u_prev_model_unused` 是真的没用——prev_model 来自实例缓冲 `texelFetch idx+4..7`），**且整块在 `#ifdef FORWARD_MRT` 里**；`u_camera_pos` 是 frag 里的 loose uniform 而不是时序块成员。把块改成无条件会**迫使每次 draw 都绑一个只有 MRT 才用的 UBO**，正是 R600 头部警告的陷阱。
+  - **顺带一个现存的设计异味，如实记录不修**：非集群的 instanced 绘制点**根本不绑** `forward_temporal_ubo`，只写那六个 uniform。GL/VK 上 MRT 的 `u_prev_vp` 因此读到的是**上一帧遗留的值**（同一帧里 blinn 路径先绑过 binding 0），而不是这一帧的。sidecar 若忠实镜像就会继承同一行为——改它就会与 GL/VK 分叉，所以这里只登记。
+  - **`is_instanced` 与 `uses_texel_buffer` 两个 `RHIPipelineDesc` 字段在 D3D12 后端从未被读取**，与 `indirect_draw_supported` 同一族「标志存在但后端忽略」。本轮实现 `rhi_cmd_bind_texel_buffers` 时按 unit 5/6 无条件绑定，与 GL 侧一致，因此不需要它们。
+  - **好消息：`main.c` 只建 MRT 一套 instanced 管线**（无条件注入 `FORWARD_MRT`，`mrt_attachment_count = 2`，目标是 `R16G16B16A16_SFLOAT`/`R16G16_SFLOAT` 浮点格式），所以只需要 `instanced_mrt_hlsl.{vert,frag}` 一对，不必做非 MRT 变体。
+- **R617：`color_grade` 上 D3D12，顺带写下 `post_hlsl.vert`**——这是整族后处理的公共前提。**`shaders/post.vert` 被 `src/renderer/` 下 21 个子系统共用**（`cinematic`/`dof`/`fxaa`/`ssao`/`taa`/`ssr`/`tonemap`/`sharpen`/`upscale`/`volumetric`…），而它**一个 uniform 都没有**，所以移植它不牵涉任何预算问题；写完这一个文件，剩下 20 个后处理子系统就都只差自己的 frag sidecar 了。`color_grade` 是其中最便宜的一个：**5 个 float = 20 字节**的 push 块，数学封闭，所以像素期望值能解析推出。
+  - 两个配置各自隔离一段链路，期望值都是**精确字节**：
+    | 用例 | 输入 | saturation | temperature | 推导 | 结果 |
+    | --- | --- | --- | --- | --- | --- |
+    | A | 灰 (200,200,200) | 1 | 0 | sat/contrast/brightness 三段都是恒等；`t = mix(cool, warm, 0.5) = (0.85,0.85,0.85)` 灰色；`200*0.85 = 170` | **(170,170,170)** |
+    | B | 纯红 (255,0,0) | 0 | 0 | `luma = dot(red, Rec.709) = 0.2126`，sat=0 把颜色精确塌成 luma；`0.2126*0.85*255 = 46.08` | **(46,46,46)** |
+    A 证明三段恒等真的是恒等、且白平衡给的是**中性灰而不是逐通道**；B 是「saturation 读的是 uniform 而不是常量」的最强表述（结果变成灰色而非红色）。清屏色设成亮绿色，它永远不是答案。
+  - **反向验证**：把 frag 里的 saturation 写死成 `1.0f`，用例 B 读回 **(217,0,0)**（即 `255*0.85`，红通道原样透传）而不是 (46,46,46)——正是预测的失效形状；恢复后 21/21。
+  - **顺带记下一条工具链限制（会绊倒下一个写 sidecar 的人）**：**这个 DXC 拒绝单参数向量构造**。`float3(x)` 报 `too few elements in vector initialization (expected 3 elements, have 1)`，标量必须用 C 风格转换 `(float3)x` 展开。最小复现已确认。既有 sidecar 恰好都没用 splat，所以此前没人写下来过。而 `lerp(vec, vec, scalar)` 是**允许**的——和 GLSL 习惯把 mix 的第三参数留作标量正好相反，容易写错。
+  - demo 侧证据：RTX 4060 上从 `ColorGrade: pipeline creation failed` 变成 `[INFO] ColorGrade: initialized (640x360)`。
+- 门控（WARP 20/20 → **21/21**、硬件 20/21（`warp_device_identity_is_honest` 按设计红）、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170，三棵树唯一失败都是已知的 `FAIL: OpenClipboard failed`）。
+- **R618：`lens_effects` 上 D3D12**（色差 + 暗角 + 颗粒，4 个 float = 16 字节，共用 `post_hlsl.vert`）。像素证明关掉色差和颗粒，只留暗角——它是像素位置的纯函数，所以 **64 个像素全部可推导**：`vignette = 1 - smoothstep(0, 0.8, length(uv - 0.5))`，灰 200 输入。两个手算锚点（中心附近 (3,3) → **193**，角落 (7,7) → **26**）先与闭式表对上，再把整张表写进测试；**首次运行 64 个值全部精确命中**。断言整张径向表而不是一个纯色，是因为错误的 vUV 映射、错误的顶点着色器、缺 t0 描述符、错位的 `u_vignette_strength` 各自产生**不同的**径向表。反向验证：去掉 `color *= vignette`，像素 0 读回 200 而不是 26。顺带补了一行 `LensEffects: initialized` 日志——此前成功路径**一行都不打**，demo 日志里无法区分「成功」与「没被调用」。demo 在 RTX 4060 上现在打印 `ColorGrade: initialized` 与 `LensEffects: initialized`。
+- **⚠️ 顺带定位（非本轮引入）：Git Bash 下 demo 偶发 exit 125，且截断在 shutdown 的不同阶段**（`postfx done` / `asset done` / `lights done`）。A/B：**HEAD 本身同样出现**（2 次中 1 次），所以不是本轮改动。代码里不存在 `exit(125)`。同一二进制用 **PowerShell `Start-Process` 跑 3 次全部 exit 0**；只在 Git Bash 把 stdout 重定向到文件或管道时出现（4 次中 3 次）。结论：这是 **Git Bash（MSYS）对原生 Windows 进程的 stdout 重定向/退出码处理问题**，日志截断是 MSYS 管道在进程退出时未刷完，不是引擎在 shutdown 中崩溃。**以后判断 demo 是否干净退出，用 PowerShell 取退出码，不要用 Bash 的 `$?`。**
+- **R619：`fxaa` 上 D3D12**（2 个 float；`u_fxaa_threshold` 在 GL 孪生里是 `const`，所以 `fxaa_apply` 对它的写入在 GL 上本来就是 no-op，sidecar 用 `static const` 且不发 marker，两边一致——同 terrain 的 `u_light_*` 规则）。逐行移植。
+  - **FXAA 不能像暗角那样断言整张推导表，原因如实记下**：①**GLSL 参考实现本身在部分边缘像素上做 0/0**——邻域跨边但两端探测点恰好都落在局部均值上时 `distA + distB == 0`，`blend` 变成 NaN 并被当作纹理坐标使用，GPU 对 NaN UV 返回什么是**未定义的**，因此这些像素与适配器相关。sidecar 是逐行移植、**故意继承**这一点（修了就和 GL 分叉），测试不看这些像素。用 Python 复刻着色器跑出：下面这个图案有 6 个这样的像素，全在方块轮廓上。②混合方向取决于纹理行序与回读行序的关系，钉死精确行号就等于在断言一个朝向约定而不是 FXAA。
+  - 所以只断言**定义良好且与朝向无关**的部分：8x8 黑底、列 3..4 / 行 3..4 一个白色 2x2 方块——4x4 窗口外 48 个像素**精确为 0**（平坦区走 early-out 原样通过）；窗口内**恰好两个**像素被混合到 **191±1**（= 255×0.75，模型值）且位于**同一行的第 3、4 列**；方块自身至少两个像素保持 255；每个像素灰度三通道相等（任何通道分裂都意味着采样错位）。
+  - 反向验证：把 early-out 条件改成恒真（即直通），用例报 `blended=0`。WARP 与 RTX 4060 **都通过**——两者在非 NaN 像素上一致。
+  - demo（PowerShell 启动，exit 0）在 RTX 4060 上现在打印 `ColorGrade` / `FXAA` / `LensEffects` 三条 `initialized`。
+- 门控（WARP **23/23**、硬件 22/23（身份断言按设计）、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170）。
+- **R620：`dof` 上 D3D12，同时补上 `rhi_cmd_bind_textures_multi`**（又一个空桩）。**9 个后处理调用点走它**——`dof`、`motion_blur`、`taa`、`ssr`、`ssgi`、`contact_shadow`、`lens_flare`、`combined_post_process` 两处——所以 D3D12 上它们即便有了 sidecar 也会读到未绑定的表。契约照 GL：`textures[i]` → unit i，最多 6 个；实现直接**委托给 `rhi_cmd_bind_texture`**（逐 unit 解析 `image_root_params`、跳过管线未声明的寄存器、按 2D / 2D-array 建视图、转到着色器读状态），不复制一份 SRV 路径。
+  - `dof` sidecar：4 个 float；`u_dof_near` / `u_dof_far` 在 GL 孪生里是 `const`（R89-2），测试钉 resolve 为 -1，与 fxaa / terrain 同规则。颜色 t0、深度 t1（R32_FLOAT）。
+  - 像素证明：左红右蓝条纹 + 全 0.5 深度（线性化为 0.1998）。帧 0 对焦 → coc=0 → early-out，条纹**精确**原样通过；帧 1 失焦 100 → coc 饱和 → 半径 10 texel 的六边形采样模糊边缘。期望值来自 Python 复刻模型。
+  - **测试第一稿是错的，两个适配器第一次运行就指出来了**：我只建模了第 3 行，并因为「源图逐行相同」就断言每行等于第 0 行。实际上着色器会**跳过 UV 越出 [0,1] 的采样点**，而 8 像素宽、半径 10 时大部分采样点都越界，**哪些点存活取决于行**——第 0 行第 1 列读回 170 而不是 128。改为对全部 64 像素建模后两个适配器都精确通过。该表在 r ↔ 7-r 下对称，所以与回读行序无关。多个模型值恰好落在 .5（127.5），所以帧 1 用 ±2 容差（否则就是在断言硬件的舍入规则），帧 0 精确；绿通道恒 0、红+蓝 = 255±2。
+  - **两路反向验证**：把多纹理 binder 改回空操作 → 读到未绑定表、断言失败；把 unit 对调（深度当颜色读）→ 对焦帧第 0 像素读回 **(128,0,0)** 而不是 (255,0,0)。
+  - demo（PowerShell，exit 0）在 RTX 4060 上现在打印 `DOF: initialized (320x180, …)`；后处理已上线：**ColorGrade / LensEffects / FXAA / DOF**。仍报 "shader compile failed"（无 sidecar）的：ContactShadow、LensFlare、MotionBlur、SSGI、SSR、TAA——它们的多纹理绑定现在已经就绪，只差 frag sidecar。
+- **⚠️ 顺带发现的前向通道缺陷（读代码确认，未修）：D3D12 的场景深度与 GL/VK 不一致**。`mat4_perspective` 是 OpenGL 形式（NDC z ∈ [-1,1]）；GL 靠深度范围把它映射到 [0,1]，**VK 前向着色器自己做** `gl_Position.z = (z + w) * 0.5`（`blinn_phong_vk.vert` R214-A）。而 **D3D12 的前向 sidecar 全都没做这一步**（逐个查过 `blinn_phong*_hlsl.vert`、`terrain_hlsl.vert`、`water_hlsl.vert`，均不碰 `pos.z`）——R613 只在阴影级联的 `depth_only_hlsl.vert` 里做了。后果：①D3D12 深度缓冲存的是原始 ndc_z 而不是 (ndc_z+1)/2，任何读场景深度的后处理（DOF、SSR、SSAO、contact shadow…）都会解出错误的距离；②ndc_z < 0 的部分被硬件裁掉——near 0.1 / far 100 时是视距 **0.1 到约 0.2**，一个很薄的近裁带，平时看不出来。修法与 R613 相同（每个前向 sidecar 的 VS 末尾加那一行），但会改变 D3D12 的深度测试与所有既有像素测试的深度值，**单独一轮做**，不在后处理移植里顺手改——在 DOF 侧做补偿只会把缺陷藏起来。
+- 门控（WARP **24/24**、硬件 23/24、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170）。
+- **R621：修前向通道深度约定——D3D12 上 R620 之前的整个近处场景被裁掉了**。五个前向 sidecar 的顶点着色器末尾各加一行 `o.pos.z = (o.pos.z + o.pos.w) * 0.5`：`blinn_phong_hlsl.vert`、`blinn_phong_mrt_hlsl.vert`、`blinn_phong_arr_hlsl.vert`、`terrain_hlsl.vert`、`water_hlsl.vert`。与 Vulkan 前向孪生逐字一致（`blinn_phong_vk.vert` R214-A、`terrain_vk` / `water_vk` / `blinn_phong_arr_vk` 同一行），R613 已在 `depth_only_hlsl.vert` 做过。后处理与全屏三角形着色器**不受影响**：`post_hlsl.vert` / skybox 写字面 z=1、w=1，该转换是恒等。
+- **像素证明 `forward_clip_z_conversion_keeps_near_geometry_unclipped`** 用探针 `depth_clip_hlsl.{vert,frag}`（blinn_phong 的 push 块 + 同一行转换，未转换时 ndc_z<0 处写红）。几何是视距 **0.15** 处 y=±0.6 的单个四边形——它的 NDC 纵向跨度是 ±6.93，所以铺满整个 8x8 目标，而 D3D12 的 z 裁剪是**逐像素**的：像素在视距 0.15 到约 0.2 之间存活，也就是 8 行里的 3 行。带转换时 **64 个像素全是红**。
+  - **反向验证极干净**：去掉那一行，像素 0 读回**蓝色清屏色**——近处几何**整个消失**。这就是修复前 D3D12 上的行为，两种适配器上完全一致。
+  - **这个测试第一稿错了两处，都由第一次运行暴露**：①`proj` 的 `m.e[3][2]` 我写成了 -0.0020020，正确值是 **-0.2002002**（`-2*far*near/(far-near)`，少写了一位数字），整个四边形被推到视口外；②还多画了一个视距 1.0 的远四边形「证明绿色部分存在」，但它覆盖同样的像素、把近处**覆盖掉了**，于是几何画出来了（64 绿）而近处条带始终不出现。第三稿只留近处四边形，注释里把这个错误记下来了。
+- 门控（WARP **25/25**、硬件 24/25（仅身份断言按设计红）、D3D12 **172/172** + graphics **8/8**、VK **171/171**、GL **170/170**；VK golden MAE 仍精确为基线 28.75/13.54；demo 在 RTX 4060 上 exit=0 且无 device removed）。
+- **R622：`ssr` 上 D3D12**（7 个 uniform = 208 字节；2 张表把根常量压到 62 DWORD = 248 字节，**放得下**——这是 instanced 放不下的对照）。`u_ssr_thickness` 是 GLSL `const`，测试钉 resolve = -1。
+  - **⚠️ 这个像素证明比前几个弱，如实说清它证明了什么、没证明什么**：光线步进**没有断言**——要钉它就得在 Python 里复刻 32 步步进 + 4 次二分，然后指望模型的双线性权重和 GPU 落在同一个字节上，而这正是 R619 断言 fxaa 混合表时失败过的方式；fxaa 本身还在部分边缘像素上 0/0，所以部分步进输入是未定义的。**而且两个 early-out 也分不开，这一点是反向验证查出来的、不是假设的**：把 `if (depth >= 1.0)` 改成 `if (false)` 后用例**仍然绿**——第二个 early-out 接住了同样的像素，平坦深度场下步进也找不到命中、`fade` 保持 0，三条路径都返回场景色。所以这个测试**钉的是接线**不是「early-out 触发了」：7 个偏移（0/64/128/192/196/200/204）、const 为 -1、两张纹理经 `rhi_cmd_bind_textures_multi` 送达（SSR 是 R620 那个 binder 的第二个消费者）。动了 uniform / 纹理 / 投影会转红；只换了走哪条分支不会。
+  - **工具链又一条命名坑，已写进 shader 头**：GLSL 的 `dFdx`/`dFdy` 是 **fine** 导数，而这个 DXC 的正确拼法是 **`ddx_fine` / `ddy_fine`**。三种直觉写法都不对——`DDX`/`DDY` 和 `dFdx`/`dFdy` 都被拒（"use of undeclared identifier"），而**小写 `ddx`/`ddy` 能编译却是 COARSE 导数**（`dx.op.unary.f32` opcode 83 `DerivCoarseX`）。2×2 quad 上 coarse 与 fine 斜率不同，误用会让重建法线与 GL 分叉。
+  - demo 上 `SSR: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR** 五个。
+  - 门控（WARP **26/26**、硬件 25/26、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。**一次瞬时 flake 记录在案**：某次 D3D12 全量门控里 `test_myui_loader` 失败，但单独连跑 3 次都是 120/120、重跑全量门控也不再出现，与本轮改动无关（很可能是共享临时文件）。
+- **R623：`taa` 上 D3D12**（**4 张纹理**，是 `rhi_cmd_bind_textures_multi` 支持的上限，所以 R620 那个 binder 改动在这里同样关键）。212 字节 push 块，4 张表把根常量压到 240 字节，放得下。`u_taa_blend` 在 GLSL 孪生里是 `const`，测试钉 resolve = -1。
+  - **测试图案是刻意选的**：8×8 的 0/255 **棋盘格**，目的是让**每个**像素的 3×3 邻域在每个通道上都张满 [0,255]。这一点很关键——`clip_aabb()` 会把邻域盒之外的历史颜色拉回盒内，所以若用平坦或渐变源，历史色会被钳到中心像素、混合就**看不见**。棋盘格让 128 的纯色历史**不被钳制**，于是结果精确可推：`mix(128, curr, 0.1) = 128 + (curr - 128)*0.1`，curr=0 → **115**、curr=255 → **141**。两个值都不落在 .5 上，所以可以**精确**断言（对比 R620 的 DOF 模糊正因多个模型值恰好落在 .5 而需要 ±2）。8×8 棋盘格在翻转行序下不变，所以与回读朝向无关。
+  - 单位矩阵 + `use_velocity = 0` 时 `prev_uv` 恰好塌回 `uv`（ndc = uv*2−1，单位 inv_proj 与 prev_vp 不动 x/y，故 prev_uv = (uv*2−1)*0.5+0.5 = uv），所以「历史纹理取纯色」是合法输入。
+  - 两帧：帧 0 `first_frame = 1` → 时序块整段跳过、棋盘格**原样**通过（这是对照帧，证明帧 1 的 115/141 真的是混合的结果）；帧 1 走混合。反向验证：把 `lerp(...)` 换成直接赋历史色，帧 1 第 0 像素读回 **(128,128,128)** 而不是 115。
+  - demo 上 `TAA: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA** 六个。
+  - 门控（WARP **27/27**、硬件 26/27、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
+- **R627：`ssgi` 上 D3D12（两个 pass）——至此 demo 默认开启的后处理全部到位**。`ssgi_hlsl.frag`（16 抽半球采样）与 `ssgi_blur_hlsl.frag`（9 抽高斯、自合成），共用 `post_hlsl.vert`。demo 上 `SSGI: initialized (320x180, radius=0.50, intensity=0.30)`，且**日志里已无任何 `shader compile` / `shaders not found` 告警**。
+  - **两处各有一个「精确可推」的断言点**：①gather pass 深度处处 1.0 → 着色器返回 `(0,0,0,1)`，与其它一切无关，逐像素精确断言；②blur pass 用**纯色 GI 缓冲**——九个权重之和 `0.0162*2 + 0.0540*2 + 0.1218*2 + 0.1960*2 + 0.2240 = 1.0000` 恰好为 1，且每次采样都落在精确纹理中心（纹素步长的整数倍），所以纯色的 9 抽和就是它本身，输出精确等于 `scene + gi`。这证明了模糊确实跑了、`u_direction` 确实送到了、两张纹理都绑上了，而答案**不依赖采样点如何摆放**。
+  - gather pass 的 `u_ssgi_proj` 在 GLSL 里声明、`ssgi_apply` 也会写，但**着色器函数体从不读它**。仍然按 offset 64 发布 marker，这样引擎的写入不会被静默丢弃；测试钉住这个偏移。
+  - push 块把两个 mat4 放最前，四个 float 跟在后面（GLSL 声明顺序会把 `u_ssgi_radius` 放最前、第一个矩阵被推到 16，白花 4 个 DWORD）。
+  - 反向验证：把中心权重 0.2240 改成 0.5000，blur 像素 0 读回 **26** 而不是 20。
+  - 门控（WARP **31/31**、硬件 30/31、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
+- **D3D12 后处理小结**：`ColorGrade`/`LensEffects`/`FXAA`/`DOF`/`SSR`/`TAA`/`MotionBlur`/`ContactShadow`/`LensFlare`/`SSGI` 共 **10 个**，demo 默认开启的**全部**已可用。其中 `LensFlare` 与 `ColorGrade` 的测试是真正推导像素的；`SSR`/`MotionBlur`/`ContactShadow` 三个的测试**只钉接线不钉控制流**（反向验证证明它们的分支不可单独观测），这一点已在各自条目里如实写明。
+- **⚠️ R635：`motion_blur` 的 `use_velocity = 0` 重建路径，定位推进了一步但**未**结论**。观测到的事实：
+  - 用「三条路径各返回一种纯色」的插桩跑，帧 1（`use_velocity = 0`、两个矩阵均为单位阵、深度 0.5）落到的是**模糊路径**而不是 `vel_len < 0.5` 的 early-out。
+  - 而把片元输出临时改成直接打印 `velocity` 时，帧 1 像素 0 的速度读数**约等于零**。两者互相矛盾：速度为零就不该进入模糊。
+  - 另有一个线索支持「速度其实不小」：**未插桩时帧 1 像素 0 读到 109**，而 109 ≈ 竖条纹 0/31/62/93/124/155/186/217 的**均值 108.75**——正是整幅宽度都被采到才会出现的平均，而不是任何单个纹素值。
+  - 代数上重建路径必为零速度：`ndc → 单位 inv_proj → 单位 prev_vp → ndc`，于是 `prev_uv == uv`。范围检查也确认写入没被丢（`64 <= 96 - 32`），运行日志里没有 `write dropped`。
+  - **当前最可能的解释，与 R633 修掉的是同一类缺陷**：sidecar 里手写的结构体成员偏移与 dxc 实际编译出的布局不一致，于是 `rhi_cmd_set_uniform_mat4(cmd, 32, identity)` 写在了标记说的位置、而着色器从别处读。**`motion_blur` 至今没有 R633 那种像素守卫**，所以这种偏移错位在这里是查不出来的——测试只钉了标记解析出的偏移，没钉编译后的实际读取位置。
+  - **本轮两次误判一并记录**：①第一次插桩时测试的 `use_velocity` 帧序映射还是旧版，所以帧 1 走的是**纹理分支**而非重建分支，我却据此下了「重建路径正确」的结论；②第二次插桩我按 `ch0` 判断路径，而路径 A/B 的红都是 0、只有 C 的红是 255，读成了 B 实为 C。两次都是把观测读错，而不是代码或工具有问题。
+  - **下一步**：给 `motion_blur` 补与 R633 同形的布局守卫（用已知偏移写入已知值，断言只有偏移匹配才会出现的颜色），先确定偏移是否真的错位，再决定是改 sidecar 还是改测试。
+- **R634：`skinned` 上 D3D12**。与 `instanced` 同形：四个光照 uniform 也搬进时序 CBV（追加在 `prev_model` 之后，不动 blinn_phong 的偏移），块不改无条件，绘制点的四个 `set_uniform` 跳过而不是留着。页面 stride 是 **64 字节**（aPos 3 + aNormal 3 + aUV 2 + aJoints 4 + aWeights 4）。
+  - **⚠️ 两个发现自己犯的错，都由编译器/PSO 抓到**：①**顶点 stride 我一度写成 48、并只写了每顶点 12 个 float**——`-Wexcess-initializers` 抓到少算的 `aJoints`/`aWeights` 各 4 个。②**蒙皮两个属性的语义名我写成 `TEXCOORD1` / `TEXCOORD2`，编译通过但 `CreateGraphicsPipelineState` 直接拒绝**——它们应使用 glTF 惯例名 **`BLENDINDICES` / `BLENDWEIGHT`**，这正是 `rhi_d3d12_input_layout` 的 `skinned_vertex` 臂生成的元素名。
+  - **⚠️ 这条路径的 CBV 布局尚未有像素证明**：`skinned` 的侧写偏移同样是手工对齐的（测试草稿存在但未通过——WARP 帧 0 第 0 像素读到 (13,13,26) 而非期望色，硬件则 RT1 非零），按 R632 的先例**不提交失败的测试**，故布局守卫**只对 `instanced` 有效**。demo 侧 120 帧跑完、`Draws: 69`、无设备丢失，但那只说明接线正确，不说明偏移逐字节对齐。
+  - 门控（WARP 32/32、硬件 31/32、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170）。
+- **R632：`instanced` 上 D3D12——R616 判定「不是机械移植」的那一项做成了**。做法：
+  - **把四个光照 uniform 搬进时序 CBV**。GLSL 孪生里 `u_light_dir`/`u_light_color`/`u_ambient`/`u_camera_pos` 是 frag 的 loose uniform；D3D12 的 `rhi_cmd_set_uniform_*` **只能写根常量**，而这条管线要六个 push 块字 + 两个 mat4 = 320 字节，超过两张表留下的 244 字节上限。追加在 `ForwardTemporalUbo` 的 **`prev_model` 之后**，所以 blinn_phong 依赖的 `u_camera_pos@0` 与 `u_prev_vp@16` **一个字节都不动**。三个 vec3 各带一个显式 pad 字——cbuffer 里 `float3` 占 16 字节，没有 pad 就与引擎结构体对不齐。
+  - **没有照搬 R600 的「块改无条件」**：那条对 blinn_phong 成立，但对 instanced 会**迫使每次 draw 都绑一个只有 MRT 才用的 UBO**，正是 R600 头部警告的陷阱。
+  - 只建 **MRT** 一套：GLSL 路径无条件注入 `FORWARD_MRT`，非 MRT 变体从来不会被构建。
+  - 绘制点的四个 `set_uniform` 写**跳过**而不是留着——D3D12 上它们 resolve 到 -1、会变成静默空操作，正是 R600 要消除的「丢写不可见」形状；改为调 `forward_temporal_ubo_write_lit` + 按 `temporal_ubo_binding` 绑定。GL/VK 分支逐字未动。
+  - **效果是实测的**：D3D12 demo 的 `Draws:` 从移植前的 **20** 变成 **69**，且 120 帧干净跑完、无设备丢失——实例化网格现在真的在 D3D12 上画出来了。
+  - **⚠️ 这条路径的薄弱点已补上守卫（R633）**：R632 落地时 sidecar 的 CBV 布局是**手工对齐**引擎 `ForwardTemporalUbo` 的，**没有任何东西断言二者一致**——位偏移错一位会让光照读到垃圾而不报错。现补 `instanced_sidecar_reads_lighting_from_the_temporal_cbv`：把光照做成退化设置（顶点都在 z=0 平面、N=(0,0,1)、相机在 (0,0,-10)），使期望色是**解析可算**而非建模得到——帧 A `light_dir=(0,-1,0)` 使 diff=0 且 spec=0，输出精确等于 `ambient * albedo`（钉住 ambient 偏移，并证明 CBV 确实绑上了）；帧 B `light_dir=(0,0,-1)` 使 L=N、diff=1、ambient 清零，输出等于 `light_color * albedo`（钉住 light_dir 的 z 与 light_color 三分量）。RT1 速度全零再证明时序块被读而非未绑。另断言四个光照 uniform **必须 resolve 为 -1**（若为 0，说明移植被悄悄改回旧形状）。
+  - 反向验证：在光照块前插入 64 字节，用例在帧 0 第 0 像素读回 **(0,0,0)** 而不是 (102,51,20)——布局现在真的有守卫。（第一次的反向检查只改了注释，HLSL 布局由声明顺序决定，那次是无效验证，已重做。）
+  - 门控（WARP **32/32**、硬件 31/32、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170；VK golden MAE 仍精确为 28.75/13.54，GL 为 15.60/1.15）。
+  - **R629：加了一条常驻诊断，并用它把一整类原因干净地排除掉**。后端新增 `ctx->debug_frame`（每帧 `rhi_frame_begin` 自增）与 `RHI_D3D12Texture.srv_ref_frame`（每次 `rhi_cmd_bind_texture` 盖上当前帧号）；`rhi_d3d12_fbo_bind_impl` 与 `rhi_d3d12_mrt_fbo_bind_impl` 在把纹理转为 RENDER_TARGET / DEPTH_WRITE **之前**检查该标记，若同一帧内既被当作着色器资源读过、又要成为渲染目标，就报出尺寸与两个角色。
+    - **诊断本身被证明是活的**：把判定临时改成无条件后，10 帧内出现 **13 条**警告；恢复守卫后一条不出现。所以「没触发」是有效结论，不是死代码。
+    - **结论：同帧内资源既是渲染目标又是 SRV——这一整类原因被排除**，不是 TAA+MB 设备丢失的机制。
+  - **再更正一次二分结论（第一次是度量错，第二次是读表错）**：R628 写的是「需要 TAA 与 motion blur **同时**开启」。重读那张表——`BREAK_MB=0`（TAA 开）**仍丢失**、`BREAK_TAA=0`（MB 开）**仍丢失**、只有**两者都关**才不丢。正确表述是：**两者各自单独就足以触发丢失**，「同时」是我从表里读反了方向。这也推翻了「共同点是机制」这个假设：既然单独就能触发，就与共性无关，而是它们**各自**做了同一件别处没有的事。
+  - **⚠️ 标志的实际作用比名字窄**：`BREAK_TAA=0` 关掉的是 demo 里的 `combined_aa_apply`，而 `combined_aa` 用的是 `shaders/combined_taa_fxaa.frag`——**我没有移植它**，所以在 D3D12 上 `use_combined` 恒为 false，它走 fallback 链，**恰好就是我移植的 FXAA + TAA**。所以「TAA 开启」在 D3D12 上实际等于「FXAA + TAA 的 fallback 链在跑」。这条必须记下来，否则下次读这些标志会得出错的结论。
+  - **已排除的六条**（都记下来省得重复）。**方法论提醒**：每排除一条都必须**关掉另一个 pass**，否则「A 关掉仍丢失」可能只是因为 B 自己就会丢——本轮有两条排除最初就是这么作废的，下面按修正后的结果记录：
+    ①**同帧内资源既是渲染目标又是 SRV**——R629 的常驻诊断在 demo 上**一条都没报**（而诊断本身被证明是活的：强制打开守卫后 10 帧内 13 条）。整类原因排除。
+    ②**`taa_velocity`（前向 MRT 速度附件）**——强制置为 `RHI_HANDLE_NULL` 让 TAA 走 `vel_tex = current_color` 退化路径，**并且带 `BREAK_MB=0`** 以排除 MB 自己的致命性，设备**仍然丢失**。排除。临时开关已撤销。
+    ③**TAA history 的 `R16G16B16A16_SFLOAT`**——改成 `R8G8B8A8_UNORM`、同样带 `BREAK_MB=0` 后**仍然丢失**。（第一次测它时 MB 还开着，那次结论无效；重测后才成立。）排除。改动已撤销。
+    ④`rhi_cmd_end_render_pass` 不是共性——只有 TAA 和 DOF 调它，**motion blur 不调**，且 DOF 默认就是关的、关它也不影响丢失。
+    ⑤**「深度绑在非 0 号槽位」不是原因**——TAA 把深度绑在 unit 2、MB 在 unit 1，而存活的 `contact_shadow` 绑在 unit 0，看似是唯一区分点；把 `contact_shadow` 的两个输入对调（深度改到 unit 1）后**依然不丢**。排除。已撤销。
+    ⑥两个 pass 的 **RHI 调用序列形状相同**（`fbo_bind → bind_pipeline → bind_textures_multi → 若干 set_uniform → draw`，与存活的 pass 逐项对照），差异不在调用形状。
+  - **前提也核实过，没有建在未测的假设上**：在「TAA+MB 关」的**成功**配置里，`contact_shadow`、`lens_flare`、`lens_effects` 三者都正常初始化并在跑，且**同样采样 `scene_depth`**——设备依然不丢。所以这三个（进而「采样场景深度」）**不是**触发条件。`dof`/`ssr`/`ssgi` 默认就是关的，不构成证据。
+  - **⚠️ R636 已定位并修复**（本条结论作废，详见顶部 R636 一节）。**仍未定位**。已确认：**TAA 与 motion blur 各自单独、在第 1 帧自己的 draw 之后就丢设备**；上述三个 pass 单独不触发；六条假设已排除；**DRED 完全静默**（无 page fault、无 breadcrumb），说明设备是在提交时或 GPU 执行已录制命令时消失的，CPU 侧没有可见故障点。由于 DRED 静默且现象与 R611 记录的「建 UAV 视图即丢设备」同族，这更像**本机驱动/运行时层面的问题**。
+  - **⚠️ R636 撤销**：本条缓解已删除，TAA 与 motion blur **重新默认开启**——根因已定位（深度纹理的 SRV 格式非法，详见顶部 R636 一节）。
+  - **已采取的缓解（R631）**：在 demo 里**仅对 sidecar 后端**把 TAA 与 motion blur 默认为关，并打一条明确的 `LOG_WARN` 说明原因与复现方法。理由是它们的单测绿只说明「单独正确」，留在默认链路上等于用一个能用的 demo 换一个第一帧就死的 demo。GL/Vulkan 的 `shader_sidecar_paths` 为 false，**完全不受影响**（已核对 GL demo 零条该警告，GL 门控 170/170）。
+    - 逃生开关：`BREAK_TAA=1` / `BREAK_MB=1` 重新打开。**注意这里踩过一个坑并已修正**：既有的 `BREAK_TAA`/`BREAK_MB` 语义**只有 `=0` 关闭**（默认开），所以 gating 若无条件生效，逃生开关会静默失效——第一版就是这样，`BREAK_TAA=1 BREAK_MB=1` 跑出来仍然 lost=0。现在 gating 会先看这两个变量是否为真值，是则不关。修正后实测：默认 lost=0 / UI=54（跑满 120 帧）；`BREAK_TAA=1 BREAK_MB=1` lost=1 / UI=1（复现）；`BREAK_TAA=1`（MB 仍被 gating 关掉）lost=1（**再次印证 TAA 单独即致命**）。
+- **⚠️ 但「可用」只到单元测试这一层：把它们接回 demo 后，D3D12 在**第一帧**就丢设备**。这是本轮最重要的、也是最需要如实说明的结果：
+  ```
+  [INFO ] main.c:8635 PASSMARK before taa_resolve frame 1
+  ERROR rhi_d3d12.c:318 D3D12 device removed: 0x887a0001
+  ERROR main.c:6320 frame_begin returned NULL (device lost?) — exiting demo loop
+  ```
+  **插桩定位（R630）**：在 demo 的 `taa_resolve` 与 `motion_blur_apply` 调用前各打一个 pass 标记。结果是**两者各自都在第 1 帧、紧接自己的 draw 之后丢设备**（分别用 `BREAK_MB=0` 与 `BREAK_TAA=0` 单独验证）。**这一条同时更正了先前「约 30 帧后」的表述**——那是用 UI 行数估的，而 UI 行不是每帧一行，所以严重性被我低估了：真实情况是第一帧就死。探针已全部撤销，工作树干净。
+  **DRED 给不出答案**：demo 启用 DRED 且在设备丢失时会 dump（`rhi_d3d12_dred_enable` / `rhi_d3d12_dred_dump`），但这次输出**完全为空**——没有 page fault，也没有 breadcrumb。这与仓库早前记录一致（「从来没有一次失败的提交」）：设备是在提交时或 GPU 执行已录制命令时消失的，CPU 侧没有可见故障点，**DRED 无法命名具体命令**。
+  `BREAK_FRAMES=30/60/120` 三档都在同一位置丢失；**单独关掉 SSGI / DOF / SHARPEN / BLOOM 任何一个都不能避免**；`BREAK_FRAMES=30` 与 `120` 丢在同一处，说明不是帧数累积。WARP 上的表现与硬件不同（未见同一消息），但这条记录受限于当轮的 shell 引号问题，**不够干净，不能当结论**。
+  - **这不是「新引入的 bug」也不是「早就坏了」——是第一次变得可达**：R611 判定「硬件干净」时，这 10 个后处理**一个都没有 sidecar**，管线建不出来、`ready = false`、`apply()` 第一行就返回，整条后处理链在 D3D12 上根本没执行过。R619–R627 让它第一次真的跑 GPU 工作，于是一直潜伏在下面的东西露了出来。
+  - **定位进展（方法上先纠正了一个错误度量）**：第一轮二分只看「有没有 device removed」，结论是「四个全关才不丢」。**那个结论不可信**——不同配置运行到死亡的时刻不同，跑得更久的配置可能只是越过了比较窗口。改用「跑到第几行 UI + 耗时」作度量后结论反转为：
+    | 配置 | UI 行数 | 丢失 | 耗时 |
+    | --- | --- | --- | --- |
+    | 默认（全部开） | 2 | 是 | 2.0 s |
+    | `BREAK_TAA=0` | 2 | 是 | 2.0 s |
+    | `BREAK_MB=0` | 2 | 是 | 2.0 s |
+    | **`BREAK_TAA=0` + `BREAK_MB=0`** | **153** | **否** | **18.1 s**（跑满 120 帧） |
+
+    所以设备丢失需要 **TAA 与 motion blur 同时开启**，单独任何一个都不触发。
+  - **这与它们的共同点是吻合的**：TAA 与 motion blur 是**仅有的两个消费 `taa_velocity` 的后处理**，而 `taa_velocity` 就是前向场景 MRT 的第二张附件（`forward_scene.color_tex[1]`，R16G16_SFLOAT 速度目标，`main.c:8614-8621`）。FXAA、sharpen、color_grade 等只消费颜色。
+  - **⚠️ 第一条线索已被代码证伪，记录下来是为了不让下一个人去追它**：我猜是速度附件在帧间的 RT↔SRV 转换缺失（前向场景 pass 写它、后处理经 `rhi_cmd_bind_texture` 的 `td->state != read_state` 分支读它、下一帧要转回）。查了 `rhi_d3d12` 的绑定路径——**不成立**：`rhi_d3d12_fbo_bind_impl` 确实只转换单附件 FBO 的 `color_tex` 与 `depth_tex`，但 `forward_scene` 是 `rhi_mrt_fbo_create` 建的 MRT，走的是 `rhi_d3d12_mrt_fbo_bind_impl`，那个函数**在循环里把所有附件都转回 RENDER_TARGET**（`colors[i]->state = D3D12_RESOURCE_STATE_RENDER_TARGET`）。转换是到位的。
+  - **所以机制仍然未知**，定位范围收窄到「TAA + motion blur 同时开启」这一条事实本身。下一个更具体的做法是**加一条运行时诊断**而不是继续读代码：在 `rhi_d3d12_mrt_fbo_bind_impl` 与 `rhi_cmd_bind_texture` 里各加一个断言/日志——当一个即将被转为 RENDER_TARGET（或正被绑为 RT/DSV）的纹理，**同时**还挂在本帧某个已绑定的 SRV 描述符表上时报警。这类「同一资源既是 RT 又是 SRV」正是会丢设备/挂起的形状，而当前代码没有任何东西会报告它。
+  - **在定位之前，诚实的结论是**：D3D12 现在能**构建**并**逐个验证**这 10 个后处理，但 demo 的完整后处理链**尚不可长时间运行**。不要把本轮的绿灯读成「D3D12 后处理完成」。
+- **R626：`lens_flare` 上 D3D12**（2 纹理：**深度在 t0、场景在 t1**，与 GL 顺序一致 R550-A）。8 个 float、无矩阵，push 块只有 32 字节，是后处理族里最小的。demo 上 `LensFlare: initialized (640x360, intensity=0.50)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA / MotionBlur / ContactShadow / LensFlare** 九个。**至此默认开启的后处理全部到位。**
+  - **这是第一个真正「推导像素」而不是只钉接线的后处理测试**。lens_flare 是 uv 的闭式函数：径向星芒 + 两道条纹 + 由 `depth > 0.99` 门控的鬼影 + 光晕，叠加到场景色上。没有步进、没有 early-out、没有反馈，所以 64 个像素全部可算：场景取 `(col*31, 0, 0)` 竖条纹、深度处处 1.0（鬼影恒成立）、光照 (0.5,0.5)、光色 (1,1,1)、强度 0.375，输出 `(scene_r + flare, flare, flare)`。
+  - **强度是搜出来的而不是挑的**：0.375 处最接近取整边界的余量是 **0.007**，而 1.0 处只有 0.001——都太紧，不能精确断言，所以比较用 **±1**（与 R620 的 DOF 模糊同一处理）。±1 仍然抓得住结构性问题，因为整张表跨越 29..254。
+  - 表在 r ↔ 7−r 下对称，与回读朝向无关；竖条纹按列取值，行翻转也不变。
+  - **反向验证**：去掉鬼影项，帧 1 第 0 像素读回 **21** 而不是 29。
+  - 工具链：`fabs` 在这个 DXC 上不存在，HLSL 用 `abs`（已改）。
+  - 门控（WARP **30/30**、硬件 29/30、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
+- **R625：`contact_shadow` 上 D3D12**（2 纹理：**深度在 t0、场景在 t1**，与 GL 的 `bind_textures_multi` 顺序一致，R550-A）。demo 上 `ContactShadow: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA / MotionBlur / ContactShadow** 八个。
+  - **push 块把 mat4 放在最前**，这是与 R624 相反的选择：`u_cs_light_x/_y/_z`、`u_cs_sw`、`u_cs_sh` 是 5 个 float，若照 GLSL 声明顺序放在矩阵前面，会在 16 字节对齐边界前留下 12 字节空洞；矩阵打头把块压进 **21 DWORD** 而不是 24。偏移由测试钉住（0/64/68/72/76/80），且这是 sidecar 局部布局，不改引擎契约。
+  - **两帧都精确可推**：帧 0 深度 1.0 → early-out，竖条纹原样通过；帧 1 深度 0.5、光照方向 (0,0,1) → `screen_step` 为 0、12 次采样都落在 vUV 上、每次重建的深度相同而 `ray_pos.z` 随 offset 增长，故 `diff` 恒为负、无命中、`shadow` 保持 1——**12 步循环跑完而输出恰好是场景色**。
+  - **⚠️ 两个分支都不可单独观测，由反向验证查出而非假设**：禁掉深度 early-out 用例**仍绿**（因为直照光下步进也不命中）；把 `ray_pos` 压平让每步都命中也**仍绿**（`diff` 变成 0，而判定是严格 `> 0`）。**真正会转红的反向检查是交换 t0/t1**：帧 0 于是把深度纹理当颜色读，第 0 像素读回 (255,0,0)。所以这个测试钉的是**接线**（六个偏移、两张纹理经 `bind_textures_multi` 以「深度在前」到达），不是「走了哪条分支」。
+  - 门控（WARP **29/29**、硬件 28/29、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
+- **R624：`motion_blur` 上 D3D12**（3 纹理：颜色/深度/速度；152 字节 push 块）。demo 上 `MotionBlur: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA / MotionBlur** 七个。
+  - **push 块有一处刻意的 16 字节空洞**：`u_mb_use_velocity` 排在 offset 12 之后，两个 `mat4` 必须 16B 对齐，所以从 **16** 而不是 12 开始。测试钉住这六个偏移（0/4/8/12/16/**32**）。**⚠️ R636 更正：最后一个偏移是错的**——`float4x4` 在 cbuffer 里占 64 字节，`u_mb_prev_vp` 应在 **80** 而不在 32（旧 marker 落在 `u_mb_inv_proj` 里面）。已修并补了像素守卫，见本文件顶部的 R636 一节。
+  - **测试图案改成竖条纹**并记录原因：第一稿用的是「按纹理索引递增」的渐变，**每行不同**，于是回读的行序决定了它匹不匹配。竖条纹只依赖列，各行相同，翻转行序后不变，且条纹中心正好落在纹理中心（uv = (col+0.5)/8），所以采样精确、early-out 能逐字节断言。
+  - **⚠️ 两条路径没有被断言，且都是量出来的、不是猜的**：
+    ①**`u_mb_use_velocity = 0` 的矩阵重建分支**：两个矩阵都给单位阵、res = (8,8) 时 `prev_uv` 应当塌回 `uv`、速度恰好为零，但**两个适配器上都不是**——条纹带着模糊回来了，说明没走 `vel_len < 0.5` 的 early-out。六个偏移都能正确解析（已断言），64 字节的矩阵写也在 96 字节声明块之内，所以**原因未定位，也不在此处臆测**。帧 1/2 改用速度纹理那条路径。
+    ②**`vel_len` early-out 同样不可单独观测**：反向验证证明——把它禁掉后用例**仍然绿**，因为零速度时 `sample_count = 0`、循环退化成 uv 处权重为 1 的单次采样、`step_size` 也是 0，两条路返回同一颜色。**真正会转红的反向检查是交换 t0 与 t1**：帧 0 于是把深度纹理当颜色读，第 0 像素读回 255 而不是 0。
+    ③帧 2 只能证明**循环执行了**：源是纯色，每次采样相等，所以模糊的**几何**（跨度、jitter、权重）在这里没有断言。
+  - 门控（WARP **28/28**、硬件 27/28、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
+
+## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
+
+- **意义**：此前 D3D12 的 `rhi_cmd_bind_material_textures{,_ibl}` 是**空桩**，于是 forward draw 永远到不了 sidecar 的 albedo——上一轮 blinn_phong sidecar 之所以只能手工 `rhi_cmd_bind_texture` 绑 unit 0 验证，正是因为真实入口是空的。本轮把两个 binder 落地，并让"引擎真实调用"这件事本身被 WARP 像素覆盖。
+- **与 GL 逐槽位镜像的 unit map**（`rhi_gl.c:2400` / `:2412` 是唯一事实来源，D3D12 侧一字不改地照抄，**不重编号**）：
+
+  | unit | register | 槽位 | 前向 binder | IBL binder |
+  | --- | --- | --- | --- | --- |
+  | 0 | t0 | albedo | 有 | 有 |
+  | 1 | t1 | shadow | 有 | 有 |
+  | 2 | t2 | metallic-roughness | 有 | 有 |
+  | 3 | t3 | normal | 有 | 有 |
+  | 4 | t4 | emissive | 有 | 有 |
+  | 5 | t5 | ssao | 有 | — |
+  | 7 | t7 | brdf_lut | — | 有 |
+  | 8 | t8 | irradiance cube | — | **留空**（cube 未实现） |
+  | 9 | t9 | prefilter cube | — | **留空**（cube 未实现） |
+  | 10-13 | t10-t13 | `u_point_shadow_cubes[4]` | — | **留空**（cube 未实现） |
+  | 14 | t14 | ssao | — | 有（R213-B） |
+  | 15 | t15 | occlusion | — | 有（R583） |
+
+  镜像之所以成立：D3D12 侧 `register(tN)` 经根签名反射落进 `pd->image_root_params[N]`，`rhi_cmd_bind_texture` 用 `unit` 直接索引该表，故 **GL 纹理单元 N ≡ D3D12 register tN**。blinn_phong sidecar 声明 `Texture2D g_albedo : register(t0, space0)`，所以 unit 0 必须是 albedo，且这也是测试能钉死映射的原因。管线**未声明**的寄存器，`rhi_cmd_bind_texture` 在碰任何描述符表之前就返回——因此只声明 t0 的 sidecar 在这里照常工作，t1-t15 是静默 no-op 而非错误。
+- **白色 fallback 规则，以及为什么 D3D12 需要它**：GL 纹理单元即使什么都不绑也仍读作 textureless 默认值，所以 GL binder 可以放着缺失贴图不管；**D3D12 的根描述符表没有"unset"这个态**——没写过的表仍指向上一帧留在该描述符槽里的东西。实测（WARP，未绑定 t0 时）：**着色器照常运行（alpha=255），采样结果为黑 `(0,0,0,255)`**，即描述符本身是垃圾/空。故 D3D12 侧每个 2D 材质槽都先过一层解析：`rhi_d3d12_material_slot` 只在句柄指向**活的纹理**（`RHI_RES_TEXTURE`，含空句柄、陈旧句柄、非纹理句柄）时原样使用，否则换成 context 上**惰性创建、随 context 释放**的 1x1 RGBA8 白色纹理（`rhi_d3d12_white_fallback`；在 `rhi_device_destroy` 里 GPU drain 之后销毁，确保没有在飞命令列表还引用其 SRV）。白色是这些贴图的中性值（ao/occlusion 1.0、metallic-roughness 默认），与引擎自身"缺失贴图用白色 1x1"的既有做法一致（`engine/src/main.c` 的 `rs->fallback_*`）。
+  **该保证的边界（如实记录，勿写成无条件）**："永不留下未写描述符"**只在正常路径成立**。三条失败路径仍会跳过绑定而让描述符表保持原样：fallback 创建失败（device lost 或上传路径拒绝）、描述符分配器取不到槽、以及每帧 SRV 预算 `RHI_D3D12_CBV_SRV_UAV_CAPACITY` 用尽。三者都是**响亮/失败关闭**的条件而非"看起来正确的帧"，但保证是"逐槽位、尽力而为"，不是无条件的。
+- **cube 槽位刻意留空，且**不接** 2D fallback（评审 Important I-1 的修复）**：unit 8/9 与 10-13 在着色器里是 **cube** 采样——`engine/shaders/pbr_clustered.frag:56`、`blinn_phong_clustered.frag:22`、`deferred_light.frag:15` 均声明 `layout(binding = 10) uniform samplerCube u_point_shadow_cubes[4]`。把 1x1 **2D** 白色 SRV 绑到 cube 寄存器上是**描述符/着色器类型错配**，也直接违反引擎自己的规则（`engine/src/main.c:1109`：IBL cube "must never receive a 2D fallback view"）。修复方式与 unit 8/9 一致：**除非句柄是活的 cube，否则整槽跳过**。判据 `rhi_d3d12_live_cube` 查的是 **`RHI_RES_CUBEMAP` 槽类型**（GL 侧 `rhi_cubemap_depth_fbo_create` 给 point-shadow depth cube 打的正是这个标签），所以**2D 纹理句柄不可能误过此门**，而 cube 句柄也不可能被 `rhi_d3d12_material_slot`（要求 `RHI_RES_TEXTURE`）误认成纹理——两个方向的混淆都被结构堵死。D3D12 今天根本没有 cube（`rhi_cubemap_create`、`rhi_cubemap_depth_fbo_create` 均为桩），故这六个槽位一律跳过；这正是"刻意留空"与"将来 cube FBO 落地时自动开始工作"的分界。**再往里一步仍然跳过**：`rhi_cmd_bind_texture` 只解析 `RHI_RES_TEXTURE` 并建 `TEXTURE2D` SRV，遇到 cube 句柄会拒绝而不是写出错误维度的描述符；cube SRV（`D3D12_SRV_DIMENSION_TEXTURECUBE` + `Cube2DArraySize`）属于 cube 工作，不属于本 binder。
+- **静态采样器限制（评审 Important I-2；既有基础设施缺陷，非本轮引入）——⚠️ 本条此前含一处事实错误，已更正**：`rhi_cmd_bind_texture` 接收 `sampler` 参数后**直接丢弃**。根签名构造把每个 `SamplerState` 寄存器解析成 `D3D12_STATIC_SAMPLER_DESC`，硬编码 `MIN_MAG_MIP_LINEAR` + `WRAP/WRAP/WRAP` + `MaxLOD=FLT_MAX`（`rhi_d3d12_root_sig_add_bindings`），**不发出任何 SAMPLER 表根参数**，因此根本没有"可指向"的采样器表。精确地说，D3D12 **能**表达的只有：线性过滤 + WRAP 寻址、按纹理 L0..MipLevels 采样；**不能**表达：调用方的过滤/寻址/LOD 选择，**尤其是比较采样（comparison sampling）**——`EnableComparison` 从未被置位，也没有 `D3D12_SAMPLER_DESC` 真正到达着色器。
+  **更正**：本条此前接着断言"shadow map 与 point-shadow cube 在 GL 上是经比较采样器采样的，在 D3D12 上今天根本做不了深度比较，因此卡住 D3D12 forward"。**这是错的。** 全树 grep `sampler2DShadow|samplerCubeShadow` 只命中 `engine/tests/test_shader_io.c:497`（一条断言该类型被拒绝的用例）和 `rhi_gl.c:3809` 的注释，**没有任何生产着色器声明它**。生产 clustered forward 着色器是**手写比较**：`blinn_phong_clustered.frag:70-71` 取 `texture(u_point_shadow_cubes[i], uv).r` 再在 GLSL 里比；GL 后端为同一理由**显式关闭**硬件比较（`rhi_gl.c:3811` `GL_TEXTURE_COMPARE_MODE = GL_NONE`，R215-A 注释"Shaders use samplerCube + .r manual compare (not samplerCubeShadow)"）。所以静态 LINEAR 采样器 + 普通 SRV 正是这套代码需要的，比较采样**不构成阴影通路的前置条件**。
+  **基础设施已半成品且闲置**：context 早已持有 shader-visible sampler heap（`sampler_heap`/`sampler_alloc`），`rhi_sampler_create` 也早已把真实的、遵循 `RHISamplerDesc` 过滤与寻址的 `D3D12_SAMPLER_DESC` 写进去（`RHI_D3D12Sampler` 只存槽号）——缺的只是没人去绑。**仍然刻意不做**：这是影响所有既有管线的根签名改动。当前没有任何着色器需要它；它只会影响将来出现的硬件比较采样路径（`SamplerComparisonState`）。修复所需三件事仍记录在 `rhi_d3d12.c` 的 `rhi_cmd_bind_texture` 注释里：(a) 带 SAMPLER 描述符范围的根参数；(b) 在那里与 SRV 表一起 `SetGraphicsRootDescriptorTable`；(c) `RHISamplerDesc` → `D3D12_SAMPLER_DESC` 的比较标志。
+- **WARP 像素证明（`material_binder_puts_albedo_on_t0_and_falls_back_to_white`，`test_d3d12_warp_runtime` 9/9）**：三次 draw。①红 2x2 albedo + 其余五个**无效句柄**走**真实入口** `rhi_cmd_bind_material_textures`（不是手摆的 `rhi_cmd_bind_texture`），8x8 离屏 FBO，**64 像素逐通道精确 (255,0,0,255)**；②**albedo 换成无效句柄**，同一着色器同一组 uniform 必须**精确 (255,255,255,255)**——即 fallback 真的被绑上了，而不是留着上一帧的描述符；③改走引擎真正调用的 `rhi_cmd_bind_material_textures_ibl`，红 albedo + 四个无效 point-shadow cube，必须**仍然精确全红**——证明 cube 槽位的跳过逻辑与另外十一个 IBL 槽位都没有扰动 t0。颜色用精确相等而非容差：沿用同文件 blinn_phong 测试的退化光照（`u_light_dir=(0,-1,0)`、`u_camera_pos=(0,0,-10)`、恒定 `N=(0,0,1)`），`diff` 与 `spec` 由**几何**归零，着色器退化为 `albedo * u_ambient`。
+- **反向验证（三路 + 一条负对照）**：
+  ①**把 binder 退回成空桩**（即实现前的状态）→ 测试在 draw 1 的像素断言处转红（`px[i + 0] != 255`）。这同时是计划要求的"实现完成前测试必须是红的"。
+  ②**albedo 换到 unit 1**（shadow 换到 unit 0）→ draw 1 转红（`px[i + 1] != 0`）：t0 现在拿到的是 shadow 槽的白色 fallback，画面变白而非变红，**错单元是可见的错**。
+  ③**抽掉 fallback 替换**（`rhi_d3d12_material_slot` 原样返回句柄）→ **draw 1 仍然通过**（albedo 合法，与 fallback 无关），**draw 2 转红**（`px[i + 0] != 255`，实测像素 `(0,0,0,255)`）。这一路是唯一能区分"fallback 规则真的承重"与"恰好碰对了"的对照，且它顺带给出了"未写入的 D3D12 描述符到底会怎样"的实测答案：**WARP 返回黑、调试层不报、设备不被移除**——所以失败表现为像素断言不通过，而不是崩溃或设备丢失。
+  ④**负对照（cube 门禁没有自动守卫）**：把 `rhi_d3d12_live_cube` 改成接受 `RHI_RES_TEXTURE`（即"只要是纹理就算 cube"，正是评审要求堵掉的那个缺陷形态），测试**仍然 9/9 全绿**。这不是修复失败，而是如实记录：**在只有 t0 的管线下，unit 8/9/10-13 在像素上结构性不可观测**（未声明的寄存器在碰描述符之前就返回，旧代码即使给它们塞 2D fallback 也不会产生任何像素差异），因此该门禁目前**只有评审保证、没有自动化守卫**。若要自动化，需要导出成可测谓词或新增一条声明 t10+ 的 sidecar，二者都超出本轮范围。
+- **诚实的证明边界（勿把 unit map 整张表当成已被像素证明）**：**只有 unit 0 在这些像素里可观测**。blinn_phong sidecar 只声明 t0，而未声明的寄存器会被跳过，于是 unit 1-15 在此测试中**结构性不可见**。本测试证明的是：映射表的 **albedo 项**（以及经由 albedo 体现的 fallback 规则）、以及其余各项**不会扰动** t0。**不**证明 shadow 在 1、mr 在 2、ssao 在 14——那些依据是"逐槽位镜像 GL binder"这一事实加人工评审，不是像素。要像素证明它们，需要声明那些寄存器的 sidecar。
+- **回归证据**：全部使用本 worktree 自己的构建树（`build-d3d12-debug` / `build-gl` / `build-vk`，`CMAKE_HOME_DIRECTORY` 均指向本 worktree 的 `engine/`；Ninja + clang 22.1.6 + `ENGINE_RHI_BACKEND=d3d12`），CTest 环境 `ENGINE_D3D12_WARP=1 BREAK_D3D12_TEST_FALLBACK_HWND=1`，D3D12 调试层与 GPU-based validation 均开启。`test_d3d12_warp_runtime` **9/9**；`ctest -R "d3d12|warp|swapchain"` **12/12**；全树 `ninja` 无错无警告。
+  **一条需要更正的口径（此前落账把全树写成 184/184）**：全新 worktree 里 `engine/external/VulkanSDK` 是 gitignore 的 vendored 依赖、并不存在，故 `ctest` 必须带 `ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1` 才能跳过 `test_locked_dependencies`；**不带该变量时全树是 182/184**（多出的那一项正是 `test_locked_dependencies`，纯粹因为 vendored VulkanSDK 缺席，与本轮代码无关）。另需注明：`test_platform_win32_runtime` 的 `clipboard_read_bounds_unterminated_unicode_text`（`OpenClipboard failed`）在本会话后段失败——**它是会话级的环境性失败**：主 checkout 的 `build-d3d12-debug` 与本 worktree 的 `build-gl` 树同样失败，且它在本次会话早先的同一套命令里是通过的。GL **169/175**、Vulkan **170/176**（`ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1 ctest -LE graphics`），两边失败项完全一致：5 个 `fuzz_*_smoke`（`EXCLUDE_FROM_ALL`，默认 `ninja` 不构建故 "Not Run"——⚠️ **这不是失败**，是门控命令漏了 `-LE fuzz`；本轮实测构建后 `ctest -L fuzz` 为 5/5 PASS，详见上方「门控口径更正」）+ 上述 clipboard 项。
+  **一次真实的跨后端抓漏**：首次跑 GL 树时 `test_no_hidden_gl_fallback` 转红，报 `src/rhi/rhi_d3d12.c: token 'rhi_gl'`——该守卫对**注释原文**做子串扫描。修复同样选择了**不放宽守卫**（给整个 D3D12 后端永久豁免全部 GL token 的代价太大），而是让注释改指 GL 的**函数名**而非文件名；修复本轮注释时该守卫再次以同样方式转红一次，已按同一办法处理。
+- **剩余有序工作（顺序是约束，不是偏好）**：本轮完成材质 binder 后，上一轮清单里的"①材质 binder"出清，顺序变为：**② shadow map → ③ compute 绑定 → ④ FORWARD_MRT velocity 输出 → ⑤ 引擎调用点迁移到 path API**。
+  - **② shadow map —— 本轮已完成，见上方"阴影图"条目**。此前记录的顺序约束（"卡在采样器，先做 pass 后做采样器等于交付一帧采样结果错误但看起来在跑的画面"）是**从上面那条错误论断推导出来的，因而一并作废**：采样从未是前置条件。
+  - **③ compute 绑定（storage buffer）——仍未落地，本轮只换来结论，详见上方"compute 绑定"条目**。可以**从清单上划掉的两条前置猜测**：①**不存在"寄存器空间冲突"**，根签名构造器本就按 kind 分表，加一张 `storage_root_params[uN]` 即可，反射器与 `ShaderIOBinding` 都不必改；②`rhi_cmd_memory_barrier`**早已实现**（全局 UAV 屏障），不是缺口。真正的阻塞是：**compute 管线一旦绑定 UAV 描述符，设备在下一帧的某个不相关调用上失效，且 `GetDeviceRemovedReason` 同时仍报健康**。**下一步第一件事是 drain `ID3D12InfoQueue`**——调试层全程开着但消息从未被读取过，那是唯一还没试过的、能直接点名被拒绝对象的信息源。
+
+  - **④ FORWARD_MRT velocity 输出**：**设计已完成，实现未开始**——见 `docs/superpowers/plans/2026-10-19-d3d12-forward-mrt-velocity-design-plan.md`。真实阻塞点比此前记录的更精确：**不是"384B 装不进 256B push"，而是加一张描述符表会把声明的 push 范围从 252B 钳到 248B**（D3D12 根签名共 64 DWORD，每张表占 1；`max_dwords = 64 - table_params`，`rhi_d3d12.c:2605`），于是 `rhi_push_range_fits(240, 12, 248)` 为假、`u_camera_pos` 被**静默丢弃**——而 FS 的视线向量正需要相机位置，结果是"帧照跑、但算错了"。**好消息**：时序数据本来就在 UBO 里（`main.c:598` 的 `clustered_proj_ubo` = `{prev_vp, prev_model, proj}`，时序对在前），**不需要新增任何每帧 CPU 工作**，sidecar 只需声明并绑定。两个方案已权衡：**方案 B**（把 `u_camera_pos` 移进时序 CBV，一条管线一次绘制，但属契约变更，**必须三后端统一做**否则 D3D12 sidecar 就不再逐字段镜像 GLSL twin）与 **方案 D**（拆成颜色管线 + 纯 velocity 管线，纯 D3D12 增量，但把生产 forward 路径的绘制次数翻倍）。推荐 **方案 B**。 ⚠️ **本轮进一步核实：方案 B 的实际代价远大于初判**——`u_camera_pos` 是**无条件**使用的（`blinn_phong.frag:25`），而 `ForwardTemporal` 只在 `#ifdef FORWARD_MRT` 下声明。所以"把 u_camera_pos 移进时序块"不是搬一个 uniform，而是**逼那个块在非 MRT 管线里也必须存在**：**27 个 shader 声明 u_camera_pos、17 处 `loc_camera_pos` 写点**，而目前**只有 clustered 路径绑 `clustered_proj_ubo`**（`main.c:1196`），其余变体都得新加绑定。方案 B 仍然正确，但它是"把时序 UBO 对整个 forward 家族无条件化并处处重绑"，**不是一轮能做完并反向验证的活**。另一条可能缩小问题面的观察：`main.c:1192` 显示 base forward 路径的 `u_prev_model` **已经是单位阵**（世界空间 mega verts），只有 instanced 变体从 SSBO 读真实的 prev_model——所以 base 管线的时序块可缩到 `{u_prev_vp}` + 相机位置。
+  - **⑤ 引擎调用点迁移到 path API**：`engine/src/main.c:383-405` 为生产用 blinn_phong forward 管线**无条件**注入 `FORWARD_MRT` 并以 `mrt_attachment_count = 2u` 建管线，而 path API 只映射到**不含 MRT** 的 sidecar。因此该调用点必须等 ④ 的 velocity/RT1 输出落地后才能迁，**不可当作"顺手加个可选变体"**处理。
+  - **cube（本轮刻意留空的那六个槽）**：unit 8/9/10-13 要真正可用，需要 cube 资源创建、`D3D12_SRV_DIMENSION_TEXTURECUBE` 描述符、cube FBO 与 cube 渲染目标支持；本轮已把门禁与注释就位，届时无需再改 binder。
+
+## 本轮更新：GL `MATERIAL ARRAY SINGLE-EXECUTE` 定位为**纯粹的垂直翻转**，VK 同一用例通过
+
+- **对比**：同一份 `test_vulkan.c`，**VK 树失败项是 golden×2 + Hi-Z，不含 material array；GL 树失败项含 material array**。所以这不是"GL 与 VK 都不支持的特性"，而是 GL 侧独有的行序问题。
+- **四个象限采样值全部指向"垂直对面的象限"**（用例期望 q0 红 / q1 绿 / q2 黑（被剔除）/ q3 白）：
+
+  | 象限 | 用例期望 | GL 实测 | 垂直对面的象限 |
+  |---|---|---|---|
+  | q0 (NDC -0.5,+0.5) | 红 亮/暗双拼 | `{0,0}` 黑 | q2（被剔除 = 黑） |
+  | q1 (NDC +0.5,+0.5) | 绿 亮/暗双拼 | `{255,255}` 亮 | q3（白） |
+  | q2 (NDC -0.5,-0.5) | 黑（剔除） | `{255,34,34}` **红** | q0（红） |
+  | q3 (NDC +0.5,-0.5) | 白 亮 | `{36}` 暗 | q1（绿的 R 通道） |
+
+  四项**全部**吻合"采样到了垂直对面的象限"，且不是色域偏差、不是双拼范围问题。**这是图像整体上下翻转，不是渲染内容错误。**
+- **嫌疑点已定位到一处且只有一处**：`rhi_gl.c:3494-3509` 的 `rhi_screenshot`。它在 `glReadPixels` 之后**做了一次行反转**（`scratch + (h-1-row_i)`），目的是把 glReadPixels 的自底向上转成契约要求的自顶向下（`rhi.h` 契约与 VK 拷贝路径一致）。**GL 树实测结果说明这一次反转在本驱动上是多余的——即这里发生了双重翻转。**
+- **用例注释里的既有断言被本轮实测证伪**：`test_vulkan.c:4279` 写着"readback 行原点两端不同（VK top-down、GL bottom-up），但 NDC->行 的公式在两种约定下都落到同一索引（R442：已对两个驱动验证过）"。**在 GL 侧这句话不成立**——公式假设自顶向下，而 `rhi_screenshot` 已经保证了自顶向下，于是采样整体错位一行块。
+- **两个候选修复，本轮不做（预算不足以覆盖三后端全量回归）**：
+  - **修后端（推荐）**：去掉 GL `rhi_screenshot` 的那次行反转。但**必须先确认**该反转不是为别的调用点存在——R445 记录过"修 GL 行翻转——glReadPixels 底向上"，说明这条路径历史上动过，盲删有回归风险。
+  - **修用例**：把 `test_vulkan.c:4292` 的 NDC→行公式改成按实际行序计算。但那只让这条用例变绿，**掩盖后端与契约的不一致**——`rhi.h` 明确写了截图自顶向下，后端就该交付自顶向下。
+  - **下一步该做的验证**：把 material array 的 `shot` 直接导出成 PPM 肉眼看一次。四个采样值的镜像吻合已经很强，但**导出实图能一次性排除"是内容错位而不是采样错位"**，成本极低（用例里已有 `shot`，只需一次写文件）。
+
+## 本轮更新：**归属判定完成 —— 约 150 行零依赖 D3D12 程序同样失去设备，这是本机运行时/驱动栈的问题，不是本仓库的代码**
+
+- **判定实验**：`engine/tests/diagnostics/d3d12_uav_minimal.c`，**不包含任何引擎头文件**，只链 `d3d12/dxgi/dxguid`，行为只镜像 `rhi_d3d12.c` 建 storage buffer 绑定所做的四件事（工厂枚举 → FL11_0 建设备 → shader-visible CBV_SRV_UAV 描述符堆 → `ALLOW_UNORDERED_ACCESS` 的 256B `CreateCommittedResource` → `CreateUnorderedAccessView` → 再做一次无关分配）。
+
+  | 适配器 | UAV 缓冲创建 | 建视图 | 之后的无关分配 | `GetDeviceRemovedReason` | 结论 |
+  |---|---|---|---|---|---|
+  | NVIDIA GeForce RTX 4060 Laptop GPU | S_OK | 返回（void） | **DXGI_ERROR_DEVICE_REMOVED** | **0x887a0001** | **DEVICE LOST** |
+  | WARP | S_OK | 返回（void） | **DXGI_ERROR_DEVICE_REMOVED** | **0x887a0001** | **DEVICE LOST** |
+
+- **结论（❌ 已被 R637 推翻：探针缺 `ViewDimension`/`NumElements`，补全后两适配器均 HEALTHY）**：**本机上任何程序都无法创建 UAV 视图。** `rhi_cmd_bind_storage_buffer` 不是被我们的代码写坏了，而是**在这台机器上根本无法被验证**——因为没有任何代码能通过这一步。
+- **这一条同时解释了此前所有观察**，而且解释得比"我们的描述符有问题"干净得多：
+  - `CreateUnorderedAccessView` **返回 void**，没有任何错误返回通道；
+  - 调用"成功"之后设备就没了；
+  - `GetDeviceRemovedReason` 仍报 `0x887A0001`（`NOT_FOUND`，健康值）——**这条在最小程序里同样复现**，所以它不是引擎的假象，而是本机 D3D12 栈的固有行为；
+  - DRED 没有面包屑——因为从来没有失败的**提交**，设备是在一次**立即生效的 API 调用**里没的。
+- **已排除的解释（全部有实验支撑）**：
+  - 不是描述符内容：引擎矩阵里 `pDesc = NULL`（完全不传描述符）同样死，而最小程序用的是正确的 `R32_TYPELESS + D3D12_BUFFER_UAV_FLAG_RAW` 形式，照样死；
+  - 不是目标描述符句柄越界：实测 `slot=0 off=0 heapsz=262144`，合法；最小程序用的是堆首句柄，照样死；
+  - 不是资源的初始状态：最小程序在 `COPY_DEST` 与 `UNORDERED_ACCESS` 两种初始状态下分别试过，结果相同；
+  - 不是调试层：最小程序**从不创建调试层**；
+  - 不是 WARP 独有问题：RTX 4060 同样复现。
+- **仍未定因（诚实边界，如实标注）**：为什么本机的 D3D12 栈在 `CreateUnorderedAccessView` 上失败。已知这台机器是 **RTX 4060 dGPU + AMD 显示的混合显卡笔记本**，`Implementation_Status.md:1543` 早就记录过该机型上的驱动级故障（Windows 事件日志 `nvlddmkm Event 153`）。**可能**是驱动栈/混合显卡/远程会话层面的问题，但**本轮不具备判定它的条件**——需要 RenderDoc/Nsight 级捕获，或一台能正常工作的对照机器。
+- **对路线的影响（这是本轮真正要交付的东西）**：
+  - **storage buffer 绑定在 D3D12 上继续挂起不是我们的过错**，但它也**不能交付**——在没有能跑通这一步的机器上，任何实现都无法被验证，而本会话的纪律是不提交无法反向验证的东西。
+  - **需要一台能创建 UAV 视图的机器**（CI runner 或另一台开发机）。一旦有了，最小程序先跑一遍确认环境可用，随后 storage binder 可以按 `R32_TYPELESS + D3D12_BUFFER_UAV_FLAG_RAW` 实现并用矩阵用例验证——**其余基础设施（`storage_root_params` 映射、DRED page fault、`DEVICE_REMOVED` 接线）都已就位且过门控**。
+  - **不浪费的一处副产品**：`CreateUnorderedAccessView` 缺失错误返回这件事本身就值得记进后端注释——它意味着 D3D12 上任何描述符创建的失败都**不可能**被就地诊断，只能靠"建视图前后各做一次无关分配"来检测。矩阵用例正是这么写的。
+
+## 本轮更新：字段级定位 — **`pDesc = NULL` 也杀死设备，描述符内容被排除；句柄与资源均已验证为合法**
+
+- **矩阵从"换格式"升级为"换字段"**。7 个视图格各自只动一个字段，另有 2 个不建视图的对照格：
+
+  | 格 | 描述符形态 | WARP | RTX 4060 |
+  |---|---|---|---|
+  | 0 | `R32_TYPELESS`，`Buffer.Flags = 0`（**今天 binder 用的形态**） | KILLED | **KILLED** |
+  | 1 | `R32_TYPELESS` + `Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW` | KILLED | **KILLED** |
+  | 2 | `DXGI_FORMAT_UNKNOWN`，flags=0 | KILLED | **KILLED** |
+  | 3 | `DXGI_FORMAT_UNKNOWN` + `StructureByteStride = 16` | KILLED | **KILLED** |
+  | 4 | 全零描述符 | KILLED | **KILLED** |
+  | 5 | **`pDesc = NULL`（让 D3D12 自行推断）** | KILLED | **KILLED** |
+  | 6 | `R32_TYPELESS` + RAW + counter 资源 | KILLED | **KILLED** |
+  | 7–8 | 对照：不建视图 | ALIVE | **ALIVE** |
+
+- **格 5 是本轮的关键**：`pDesc = NULL` 时**我们没有传任何描述符内容**，D3D12 完全依据资源自行推断——**设备照样死**。这就把"描述符字段填错"整个方向排除了。
+- **顺手定位了一个真实的字段陷阱（已记，未修）**：`D3D12_UNORDERED_ACCESS_VIEW_DESC` 的成员藏在 `Buffer` union 里，而**区分"字节寻址"与"结构化"的是 `Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW`**。今天 binder 的形态是 `ZeroMemory` 后只设 `Format`，`Flags = 0`——于是 `R32_TYPELESS` 被当成**结构化** UAV 且 `StructureByteStride = 0`，这本身就不是合法描述符。**格 1 专门补上了 RAW 标志，但设备仍然死**，所以这不是（唯一的）原因，**但在正式实现 binder 之前必须按 RAW 形式写**。
+- **目标句柄第一次被真正验证**（此前从未验证过，它是我们**算出来**的而非读回来的）：新增断言比对 `base.ptr + slot*increment` 是否落在堆内。实测 `slot=0 incr=64 cap=4096 heapsz=262144 off=0`——**句柄合法且位于堆首**。资源侧同样验证：`bufsz=256 devloc=1`（正确的 device-local UAV 缓冲）。
+- **于是剩下的可能只有两个**：**(a) 资源本身**（创建期上传 one-shot 之后，该缓冲的 GPU VA 或状态不是我们以为的样子）；**(b) 这台机器的 D3D12 运行时确实无法创建 UAV 视图**（WARP 与 RTX 4060 都复现，且运行时对畸形视图既不返回错误码也不安全失败——零目标句柄会直接访问违例崩溃）。
+- **下一步（二选一，本轮不选）**：**(a)** 针对"创建期上传"做对照——用一条**不走上传路径**的 device-local UAV 缓冲建视图（需要给 `RHIBufferDesc` 一个显式的 device-local 信号，或临时给 `rhi_d3d12_buffer_alloc` 加测试钩子）；**(b)** 写一个**不经过本仓库任何代码**的最小 D3D12 UAV 程序（裸 Win32 + D3D12CreateDevice + CreateCommittedResource + CreateUnorderedAccessView），在同一台机器上跑。**(b) 能一次性判定"是我们的代码"还是"是这台机器的运行时"**，代价也小，**建议优先做 (b)**。
+
+## 本轮更新：真实 GPU 复测 — **不是 WARP 的能力缺口，RTX 4060 上同样杀死设备**
+
+- **上一轮的结论被本轮推翻了一半**：矩阵在 **WARP** 上是"建 UAV 视图即移除设备"，当时据此推断"这台机器的 WARP 不支持 UAV"。本轮把同一矩阵跑在**真实 GPU** 上（不设 `ENGINE_D3D12_WARP`）：
+
+  | 视图格式 | 大小 | usage | WARP | RTX 4060 |
+  |---|---|---|---|---|
+  | R32_TYPELESS (raw) | 48 / 256 | STORAGE | KILLED | **KILLED** |
+  | DXGI_FORMAT_UNKNOWN | 48 / 256 | STORAGE | KILLED | **KILLED** |
+  | R32_FLOAT (typed) | 48 / 256 | STORAGE | KILLED | **KILLED** |
+  | 对照（不建视图） | 48 / 256 | STORAGE | ALIVE | **ALIVE** |
+
+  **完全一致。** 所以**方案 1（换真实 GPU lane）救不了这个特性**——问题不在运行时，在我们的代码路径。这直接回答了上一轮留档的抉择题：**选项 1 不成立**。
+- **另一条更硬的线索**：把视图的目标描述符换成**全零句柄**（D3D12 语义上表示"只校验不写入"）后，进程**不是返回错误，而是直接崩溃**（exit 125，访问违例）。也就是说，**D3D12 运行时对畸形的 UAV 视图创建不会返回错误码，而是直接崩**。这解释了为什么我们从来没能通过 HRESULT 拿到任何诊断信息——那些"失败"根本没走正常的错误返回路径。
+- **由此得到的当前最强假设（未验证，如实标注）**：我们的调用很可能传了某个畸形参数，而运行时的反应不是返回 `E_INVALIDARG` 而是毁掉设备。**下一轮该做的不是再换参数，而是先把 `CreateUnorderedAccessView` 的每个字段单独归零**（`Offset`/`NumElements`/`Flags`/`Format` 逐个），找出哪一个在触发——**与"整格换格式"的粗筛不同，这是字段级定位**。另外 `rhi_d3d12_descriptor_cpu` 算出的 `base.ptr + slot*increment` 是否落在堆内也值得直接断言一次。
+- **本轮顺手修回的东西**：上一轮的 python 批量替换在裁剪 binder 桩时多切掉了 `rhi_cmd_bind_storage_buffer` 与 `rhi_cmd_bind_acceleration_structure` 两个函数（链接期才发现 `undefined symbol`）。已恢复。**提醒自己：批量文本替换在这个文件上不可靠，逐段核对 `git diff` 才是可靠的。**
+
+## 本轮更新：UAV 参数矩阵 — **这台机器的 WARP 上，任何 UAV 视图都会直接杀死设备**（❌ 已被 R637 推翻，见文件顶部）
+
+- **新增诊断用例** `test_d3d12_uav_matrix`（D3D12 树内已注册，`platform_runtime` 标签，2.6s）。它把 UAV 视图参数做成矩阵逐格实测，**每格单独建一个设备**——因为设备一旦死掉就无法测下一格，且 `GetDeviceRemovedReason` 在 WARP 上不可信。判定方式是"之后一个无关的纹理创建是否还成功"，**从不看 removal reason**。
+- **实测结果（10 格）**：
+
+  | 格 | 视图格式 | 缓冲大小 | usage | 建视图 | 结果 |
+  |---|---|---|---|---|---|
+  | 0 | R32_TYPELESS (raw) | 48 | STORAGE | 是 | **KILLED** |
+  | 1 | R32_TYPELESS (raw) | 256 | STORAGE | 是 | **KILLED** |
+  | 2 | DXGI_FORMAT_UNKNOWN (structured) | 48 | STORAGE | 是 | **KILLED** |
+  | 3 | DXGI_FORMAT_UNKNOWN (structured) | 256 | STORAGE | 是 | **KILLED** |
+  | 4 | R32_FLOAT (typed) | 48 | STORAGE | 是 | **KILLED** |
+  | 5 | R32_FLOAT (typed) | 256 | STORAGE | 是 | **KILLED** |
+  | 6 | —（对照，不建视图） | 48 | STORAGE | 否 | **ALIVE** |
+  | 7 | —（对照，不建视图） | 256 | STORAGE | 否 | **ALIVE** |
+  | 8 | R32_TYPELESS (raw) | 256 | UNIFORM（无 UAV flag） | 是 | **KILLED** |
+  | 9 | DXGI_FORMAT_UNKNOWN | 256 | UNIFORM（无 UAV flag） | 是 | **KILLED**（设备创建失败，视为噪声） |
+
+- **结论**：**三种描述符形态、两种缓冲大小、两种 usage 标记，全部杀死设备；两个不建视图的对照组全部存活。** 所以这**不是参数选错的问题**——**这台机器的 WARP（Microsoft Basic Render Driver）在创建任何 unordered access view 时就会移除设备**。此前几轮把它当成"某个 UAV 参数不对"来二分，方向本身就是错的。
+- **这同时解释了 D3D12 树一直绿的现象**：`test_d3d12_pipeline_contract` 确实会建 `RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_DEVICE_ADDRESS` 缓冲并回读通过，但**它从不创建 UAV 视图**；`rhi_sampler_create` 创建的是采样器描述符，也不是 UAV。所以既有 184 项用例里**没有任何一项触碰过 UAV 视图**，设备一直没机会暴露这个能力缺口。
+- **矩阵本身的两处设计取舍**：
+  ① **视图格只打印不断言**。断言"建视图必死"会在任何支持 UAV 的 GPU 上误报；断言"建视图必活"在这里又是假的。**跨 runtime 稳定成立的不变量只有对照格**（不建视图则设备健康）——那正是证明"矩阵测的是视图、而不是设备一开始就起不来"的东西，所以只有它被断言。
+  ② **缓冲必须带 `initial_data`**，否则格子根本走不到视图：没有 `initial_data` 的 STORAGE 缓冲不是 device-local，会落到 UPLOAD heap，而 **UPLOAD heap 缓冲不能携带 `ALLOW_UNORDERED_ACCESS`**，`CreateCommittedResource` 直接失败。首轮矩阵正是栽在这里（前 6 格全部报 "buffer create failed"，是放置问题不是视图问题）。这条同时是一条**独立于本轮的真实缺陷**：`RHI_BUFFER_USAGE_STORAGE` 且无 `initial_data` 的缓冲在 D3D12 上**根本创建不出来**，而 `rhi_cmd_bind_storage_buffer` 对这种句柄只会静默返回——引擎侧 `gpucull.c` 的 R169 读回暂存孪生缓冲正是这个形状（它是**故意**要 host-visible 的，所以那里不修）。
+- **对 D3D12 compute 路线的后果（如实记录）**：**在 WARP 上无法验证 compute 绑定**，因为跑不出一个能创建 UAV 视图的设备。本机的真实 GPU 是 NVIDIA RTX 4060，**D3D12 树一直强制 WARP**（`ENGINE_D3D12_WARP=1`，证据规则要求 WARP 收据不升级到 GPU-runtime 级）。因此下一步必须二选一：**① 在真实 GPU 上跑 D3D12 compute 验证**（新起一个非 graphics 标签的 lane，证据等级按 GPU_RUNTIME 记录）；**② 保持现状，把 storage 绑定标记为"WARP 不可验证"**。**这已不是代码问题，是验证策略的选择**，留档待决。
+
+## 本轮更新：storage buffer 根因定位 — **`ID3D12Device_CreateUnorderedAccessView` 就是杀手**，且它**立即**生效（无失败提交，故 DRED 无面包屑）
+
+- **前两轮白走的路，本轮说清楚**：先前一直假设"设备是在某次提交后失效、只是症状出现在下一次 API 调用上"，所以一直在找"哪次提交有问题"，并试图靠 DRED/调试层拿到证据。**这个前提是错的。**
+- **本轮的判定链（每一步都是实测，不是推断）**：
+  | 步骤 | 结果 |
+  |---|---|
+  | binder 完全不调用 | 一切正常（这是前几轮已知的基线） |
+  | binder 调用，**去掉 dispatch** | 设备照样在下一帧后失效 → **与 GPU 执行无关** |
+  | binder 调用，去掉 dispatch，**再去掉 `SetComputeRootDescriptorTable`** | 仍然失效 → **与根描述符表无关** |
+  | binder 调用，去掉 dispatch，去掉根表，**只留 `CreateUnorderedAccessView`** | **仍然失效** |
+  | 同上，但**把 `CreateUnorderedAccessView` 也去掉**（其余全留） | **一切正常**：`read=1`、`tex=1`、`texread=1`、`p0=1` |
+  
+  收口只有一条：**`ID3D12Device_CreateUnorderedAccessView` 这一次调用本身就把设备弄死了。**
+- **这解释了此前一切反常现象**：
+  - **DRED 一片空白、没有任何面包屑**——因为**从来没有一次"失败的提交"**。DRED 的 auto-breadcrumb 记录的是命令列表执行到哪，而这里在命令列表被提交之前、甚至在没有任何 GPU 工作排队时设备就没了。
+  - **`ID3D12Device_GetDeviceRemovedReason` 一直报 `0x887a0001`（`DXGI_ERROR_NOT_FOUND`，即"健康"）**——前几轮我反复据此判定"设备是好的"，**这个判断在 WARP 上不可信**。本轮实测：失效之后**纹理创建同样失败**（`tex=0`），证明设备确实已经不可用，而 `GetDeviceRemovedReason` 仍在说健康。**WARP 的移除原因上报与真实状态不一致，后续任何诊断都不应再拿它当判据。**
+  - **症状总是落在不相关的地方**——readback 的 `CreateCommittedResource` 先撞上，返回 `0x887A0005`，于是看起来像"readback 尺寸不对"或"显存不足"。它只是**第一个撞上已死设备的 API**。
+- **本轮顺手修掉的两个真实缺陷（都已过门控）**：
+  ① **DRED 的 page fault 通道被"打开却从不读取"**。`rhi_d3d12_dred_enable` 早就 `SetPageFaultEnablement(FORCED_ON)`，但 `rhi_d3d12_dred_dump` 只读 auto-breadcrumbs。**能指出"什么东西坏了"的那一半（`GetPageFaultAllocationOutput1`，含故障虚拟地址 + 归属分配链 + 最近释放分配链）一直在空转**，现在补上并按"故障地址 → 归属分配 → 是否落在最近释放的分配里"输出，后者正是"描述符活得比它指向的缓冲久"的特征签名。
+  ② **`DXGI_ERROR_DEVICE_REMOVED` 此前不经过 `rhi_d3d12_note_device_lost`**。资源创建类 API（`rhi_d3d12_staging_buffer`、`rhi_d3d12_buffer_alloc`）拿到移除码只是返回 NULL，于是**损失被晚一两次调用才发现，届时 DRED 现场早已丢失**。现已接入，`note_device_lost` 会立刻锁存并 dump。
+- **仍未确定的是什么（诚实边界）**：**具体是哪个 UAV 参数让 WARP 拒绝**。已逐项排除：视图格式（`R32_TYPELESS` vs `DXGI_FORMAT_UNKNOWN`）、`StructureByteStride` 0、缓冲的 256B tile 对齐（实际打上补丁验证过仍失败）、缓冲放置、dispatch 尺寸、寄存器个数。**下一步实验因此已经很明确**：把 UAV 视图参数做成一个小矩阵（格式 × stride × 缓冲 flags × 缓冲大小）逐格实测，找出 WARP 接受的那一格。**这是机械活，不再是猜测。**
+- **本轮没有提交 binder 本身**：它仍然会让设备失效，不能交付。提交的是定位结论 + 两个已验证的诊断能力修复。
+
+## 本轮更新：门控口径更正 — 5 个 `fuzz_*_smoke` **从来不是失败用例**，此前多轮落账把它记成"已知失败"是错的
+
+- **问题**：本会话此前的每一轮门控都写 `ctest -LE graphics`，然后把结果里的 5 个 `fuzz_*_smoke (Not Run)` 当作"已知环境失败"记进 `Implementation_Status.md`。**这个口径从根上就是错的**：那 5 项之所以 `Not Run`，是因为 `cmake` 用 `EXCLUDE_FROM_ALL` 建它们（`engine/CMakeLists.txt:3215/3421/3451/3463/3476`，注释写明"run by hand under ASan/UBSan"），而门控命令**没有排除 `fuzz` 标签**。
+- **CI 的正确口径**是 `ctest -LE "graphics|fuzz"`（`.github/workflows/ci.yml:128` 明确写了 `-LE graphics|fuzz`），fuzz 由独立的 sanitizer job 显式 `cmake --build --target fuzz_*` 后 `ctest -L fuzz` 跑。**本会话的门控命令漏了 `fuzz`，等于把"按设计不参与默认运行"报成了失败。**
+- **实证（本轮亲自跑过，不是推断）**：`cmake --build . --target fuzz_scene_serial fuzz_net_packet fuzz_asset_gltf fuzz_decode_image fuzz_vfs_pak` 五个目标全部零错误建成，随后 `ctest -L fuzz --output-on-failure` 得 **5/5 PASS**（scene_serial 0.35s、net_packet 0.04s、decode_image 5.94s、vfs_pak 0.50s、asset_gltf 1.95s）。**它们是好的。**
+- **本机正确口径下的三棵树实测**：
+  | 树 | 命令 | 结果 |
+  |---|---|---|
+  | `build-d3d12-debug` | `ctest`（全量，含 graphics 与 fuzz） | **184/184 PASS** |
+  | `build-d3d12-debug` | `ctest -LE "graphics\|fuzz"` | **171/171 PASS** |
+  | `build-gl` | `ctest -LE "graphics\|fuzz"` | **170/170 PASS** |
+  | `build-vk` | `ctest -LE "graphics\|fuzz"` | **171/171 PASS** |
+  即：**默认门控范围内三棵树全绿，零失败**。
+- **`test_vulkan`（graphics 标签，只在 vulkan/opengl 构建注册）的失败需要分开看，三类性质完全不同**：
+  1. **golden 漂移（双树各 2 项）——已立项的既有基线，不是回归**。本机实测 VK `MAE=28.75 max=126`、VK cam `MAE=13.54 max=79`，GL `MAE=15.60 max=63`、GL cam `MAE=1.15 max=60`（阈值 `MAE<=8.0 max<=56`）。`Implementation_Status.md:184` 早已用 `git stash` 回退复测得到**完全相同**的 MAE，定性为 Windows/NVIDIA 与参考图生成机（Linux Intel Mesa）的既有差异。本轮又做了一步更强的确认：用 `GOLDEN_UPDATE=1` 重新生成参考后两树 golden 门**立刻转绿**，证明**渲染器自身自洽、只是提交进仓库的参考图与本机硬件不匹配**（随后已 `git checkout` 还原，**没有**把本机硬件的参考图提交上去——那会摧毁 CI 的权威性）。
+  2. **VK `UNIFIED GPU CULL TEST FAILED`（`FAIL: Hi-Z vis flags {0,0}, want {1,0}`）**：`Implementation_Status.md:1543` 精确记录过同一台机器型号（"NVIDIA 混合 GPU 笔记本（RTX 4060 dGPU + AMD 显示）"）上 TEST 9 unified cull 的 DEVICE_LOST 调查；`:1529` 记录 R574 修复后"首次全绿"。本轮它**又红了，且这次不是设备丢失而是可见性全 0**。
+  3. **GL `MATERIAL ARRAY SINGLE-EXECUTE TEST FAILED`**（象限 `red{0,0} green{255,255} culled{255,34,34} white{36}`）：red 与 culled 两个象限**对调**、white 落到 36，这不是色域标定偏差而是**实例层落位错误**；多条历史落账写的是"GL 全套件 ALL PASSED"。
+- **诚实边界**：第 2、3 项是**本会话完全没碰过的 GL/VK 代码**（`rhi_gl.c`/`rhi_vk.c` 最后一次改动是 `02c95e8b`，2026-10-18，且其内容经核对是纯增量的 path 入口委托，对现有编译结果字节级不变；golden 用到的 `blinn_phong*` shader 最后改动 2026-08-14，且新增部分全在 `#ifdef FORWARD_MRT` 内而 `test_vulkan.c` 从不定义该宏）。所以**不是本会话引入的回归**，但它们确实是**真实失败**，且都属于本会话工作流（GL/VK 渲染）之外的子系统。**本轮没有动它们**——在没有权威硬件基线的前提下，"修"它们的唯一可行手段是放宽断言，那会削弱真实的回归探测器，这个决定不该由本轮单方面做出。
+
+## 本轮更新：compute 绑定（storage buffer）——**未落地**，一轮只换来结论
+
+- **结果先说**：`rhi_cmd_bind_storage_buffer` **仍是桩**，本轮**没有产生可提交的代码改动**。实现写出来了，在 WARP 上逐项 bisect 后未能定位到设备移除的确切触发条件，因此按既定纪律**整体回滚**，只把结论与证据写进本文件。计划见 `docs/superpowers/plans/2026-10-19-d3d12-storage-buffer-design-plan.md`。
+- **先纠正计划里一处预测**：计划写"必须先解决寄存器空间冲突——反射器把 HLSL 寄存器类别压进 `kind`，`RWStructuredBuffer<u0>` 与 `Texture2D<t0>` 都落在 `binding=0`，单靠 register 建键会与 `image_root_params` 撞车"。**这是虚惊**。根签名构造器（`rhi_d3d12_root_sig_add_bindings`）本来就按 kind 分成**互不相干的两张表**（`image_root_params[tN]` / `uniform_root_params[bN]`），每个 kind 只写自己那张。于是同一条 compute 管线里 `Texture2D t0` 与 `RWStructuredBuffer u0` 会拿到**两个独立根参数**——一个是 t0 的 SRV range，一个是 u0 的 UAV range——**都从寄存器 0 开始，这在 D3D12 上合法**（SRV 与 UAV 是不同描述符类型、不同描述符表）。加一张 `storage_root_params[uN]` 照抄现有模式即可，**不需要改反射器，也不需要给 `ShaderIOBinding` 加类别字段**。
+- **另一个计划里的预测也是错的**：计划把 `rhi_cmd_memory_barrier` 记为"仍是桩、且会构成静默正确性缺口"。核对后**它早已实现**（`rhi_d3d12.c` 内是一记 `D3D12_RESOURCE_BARRIER_TYPE_UAV` 全局屏障，NULL 资源 = 覆盖表上所有 UAV）。
+- **真正撞上的墙：compute 管线一旦绑定 UAV 相关状态，设备会在随后的某次调用上"被移除"，而 `ID3D12Device_GetDeviceRemovedReason` 同时仍报设备健康。** 这个失败形态极具误导性：
+  - `rhi_frame_end_ex` **照常返回 `RHI_RESULT_OK`**；
+  - 最早的症状是**毫不相干的下一个调用**失败——典型是一个 readback 用的 READBACK staging buffer 创建返回 `0x887A0005`（`DXGI_ERROR_DEVICE_REMOVED`）；
+  - 而同一时刻 `GetDeviceRemovedReason` 返回 `0x887A0001`（`NOT_FOUND`，即"健康"）；
+  - 结果是**这一轮里后续所有 API 连环失败**，看起来像显存耗尽或 readback 尺寸问题，实则是上一帧的提交被判无效。
+- **逐项 bisect 的实测结论（都是观察，不是推断）**：
+
+  | 变量 | 结果 |
+  |---|---|
+  | 是否 `rhi_cmd_bind_storage_buffer` | 唯一决定性因素：不绑则一切正常；一绑（哪怕不 dispatch、不设根描述符表）设备即在下一帧后失效 |
+  | `uav.Format`：`R32_TYPELESS` vs `DXGI_FORMAT_UNKNOWN` | 都失败 |
+  | `StructureByteStride` 0 vs 类型化视图 | 都失败 |
+  | `OffsetInDescriptorsFromTableStart`：`APPEND` vs 显式 0 | 都失败 |
+  | UAV 缓冲 256B 对齐（已实际打上补丁） | **仍然失败**——该补丁随后回滚 |
+  | 缓冲放置（`GENERIC_READ` → `UNORDERED_ACCESS` 转换） | 状态本来就是 8（`UNORDERED_ACCESS`），转换是 no-op，不是原因 |
+  | dispatch 尺寸、绑定寄存器个数 | 无关（1 与 3、绑 1 个与 2 个，结果相同） |
+  | 管线侧 `storage_root_params` | **正确**：`stor0=0 stor1=1 compute=1`，反射器也确实数到 2 个绑定 |
+  | 一个附带发现（**真实但本轮未能单独固定**） | 根签名构造器无条件为 compute 管线发出 `32BIT_CONSTANTS` 根参数；compute sidecar 若不声明 `ConstantBuffer<cbuffer>`，该参数永远不会被写入。**在 binder 桩状态下加/去这个修复对测试没有可观测差别**——只有在 binder 真正工作时才显现。所以它既没有被证实也没有被否证，**不作为已修 bug 记账** |
+
+- **另一条独立观测（与上面无关，但同样值得记）**：着色器**只绑 u0 就 dispatch、而着色器同时写 u1** 会**直接破坏进程内存**。未写入的 UAV 描述符不是惰性槽位——着色器照写不误，写入落到陈旧描述符所指向的地址上。这解释了开发过程中若干次莫名其妙的内存损坏，也说明**任何 compute 侧车脚本的每个 UAV 寄存器都必须在 dispatch 前绑定**，不能靠"这个槽没人用"。
+- **顺带修正了本会话另一处自查错误**：本轮诊断中我一度用 `fprintf(stderr, ..., rhi_buffer_read(...), readback[0], ...)` 采样返回值——C 的实参求值顺序未指定，`readback[0]` 可能在 `rhi_buffer_read` **之前**被读取，于是"读到全零"的结论是探针自身的假象，不是被测代码的行为。**探针必须先落变量、再断言**。
+- **下一步建议（按性价比排序）**：①**提交后立即 drain `ID3D12InfoQueue`**——调试层全程开着，但它的消息从未被读出来过，其中一条会直接点名被拒绝的对象；本轮试过引入 `d3d12sdklayers.h` 但 `ID3D12InfoQueue` 接口声明没进来（`__ID3D12InfoQueue_INTERFACE_DEFINED__` 守卫），需要先把接口头拉通。②**单独验证 GPU-based validation**（`ENGINE_D3D12_DEBUG` 在本构建里开着，移除可能就是 GBV 在拦）。③验证 RAW UAV 是否要求缓冲资源自身按 `R32_TYPELESS` 创建而非无格式。④`RHIBufferDesc` 没有 stride 字段，结构化 UAV（`RWStructuredBuffer<T>`）无法表达；要么加字段（跨后端公开 API 改动），要么 D3D12 侧车脚本统一走字节寻址形式。
+- **下一轮追加：把 `ID3D12InfoQueue` 真正读通，踩到两个必须先解决的坑**（本轮为此专门开了一轮，仍未取到消息，故一并留档）：
+  ① **默认不存消息**。即使 `ID3D12Debug1_EnableDebugLayer` + `SetEnableGPUBasedValidation` 都开了（`ENGINE_D3D12_DEBUG` 构建里确实都开），info queue 的**消息存储上限默认是 0**，等于一条都不留——必须显式 `ID3D12InfoQueue_SetMessageCountLimit(q, N)`，而且**要在设备创建之后、错误发生之前**调用（本轮放在 `rhi_d3d12_context_create` 里、queue 创建之前）。设了之后确实能数到消息：常规帧里每帧稳定增加 2~4 条，触发 storage bind 的那一帧**从 19 条跳到 31 条**——也就是说**调试层确实看见了那 12 条新消息**，只是取不出来。
+  ② **本机 SDK 的 `d3d12sdklayers.h` 里 `ID3D12InfoQueue::GetMessage` 签名是过时的**：头文件声明 3 个显式参数 `(MessageIndex, D3D12_MESSAGE*, SIZE_T*)`，而真实运行时实现的是 4 个 `(MessageIndex, D3D12_MESSAGE_ID*, UINT64* pSequenceId, D3D12_MESSAGE*, SIZE_T*)`。按头文件调用**一律返回 `0x80070057`（E_INVALIDARG）**。用头文件里的 `ID3D12InfoQueueVtbl` 结构强转同样编不过（成员签名是 4 参）。可行做法是**自己声明一个前 5 个槽位一致、`GetMessage` 为 6 参的 vtable 结构体**再强转调用——本轮编过了、也调用了，但**依然失败**（连 `pMessage = NULL` 只查长度那条官方两段式路径也一样返回 `E_INVALIDARG`）。
+  **结论**：d3d12SDKLayers.dll 的运行时与本机 SDK 头文件之间存在签名不一致，靠头文件这条路在当前工具链上走不通。可行的替代路径是 **DRED**（`rhi_d3d12_dred_enable` 已经在跑，且 `rhi_d3d12_note_device_lost` 会调 `rhi_d3d12_dred_dump`，但设备是在**下一次 API 调用**才发现被移除的，而那条路径**没走 `note_device_lost`**，所以 dump 从来没被触发）——把"某次 API 返回 `DXGI_ERROR_DEVICE_REMOVED`"也接到 `note_device_lost` 上，DRED 就会自动吐出最后一次失败提交的上下文。**这比和头文件较劲更值得先做。**
+- **纪律记录**：这一轮**没有做到"改完就提交"**，因为反向验证把测试的意义否掉了——把唯一的修复回退后测试**仍然是绿的**，说明测试并没有钉住它。没有可验证收益的改动不提交，因此选择整体回滚、把结论留档。**这比提交一个看起来合理、实则无法证伪的"修复"要诚实。**
+
+## 本轮更新：阴影图（shadow map）落地 — 六个桩入口实现、D3D12 typeless 别名、深度-only 管线接受空 PS、WARP 像素级往返证明（含五项反向验证与一项"证明不了"的如实登记）
+
+- **意义**：六个此前是空桩的入口全部落地——`rhi_shadow_map_create`/`destroy`、`rhi_cmd_bind_shadow_map`/`unbind`、`rhi_cmd_bind_shadow_texture`、`rhi_cmd_transition_depth_to_read`。至此 CSM 阴影 pass 在 D3D12 上既能渲染进 atlas，也能被光照 pass 采样回来。附带修正了上一轮落账的一处**事实错误**（见上方静态采样器条目与有序工作②）。
+- **真正的前置条件不是采样器，是 typeless 别名**：上一轮说"shadow map 卡在比较采样"是错的（生产着色器全部手写 `.r` 比较，GL 甚至显式关掉 `GL_TEXTURE_COMPARE_MODE`）。D3D12 真正的约束方向**相反**：`DXGI_FORMAT_D32_FLOAT` **根本不能**做 SRV 底格式，而阴影图必须同时是"深度 pass 写入的 DSV"和"光照 pass 读回的 SRV"。解法是 D3D12 的 typeless 别名对——资源按规范无类型格式 `DXGI_FORMAT_R32_TYPELESS` 分配，同一份字节上开两个视图：DSV 命名 `DXGI_FORMAT_D32_FLOAT`，SRV 命名 `DXGI_FORMAT_R32_FLOAT`。
+- **实现要点**：
+  ①`RHI_D3D12Texture` 新增 `srv_format` 字段，`DXGI_FORMAT_UNKNOWN`（calloc 默认）意为"与 `dxgi_format` 相同"——**所有既有纹理与普通 D32 深度目标按构造不受影响**；只有阴影图 atlas 设为 `R32_FLOAT`。`rhi_texture_create` 内联为静态 `rhi_d3d12_texture_create_ex(dev, desc, depth_samplable)`，公开入口传 0，因此上传、mip、校验、槽位注册全部共用同一条路径。
+  ②`rhi_cmd_bind_texture` 的 `srv.Format` 改经 `rhi_d3d12_srv_format(td)` 取得。
+  ③`RHI_D3D12ShadowAtlas`（只持 DSV 槽，无 RTV）经 `RHI_RES_FRAMEBUFFER` 槽发布，与离屏 FBO 同一套 typed lookup；销毁走 fence-retire 归还槽位（GPU 可能仍持有描述符）。
+  ④`rhi_cmd_bind_shadow_map` 用**非翻转**视口 `(0,0,w,h)`，与既有 `rhi_cmd_set_shadow_viewport` 一致——**刻意不走**颜色 pass 用的 Y 翻转 `rhi_d3d12_set_full_target_viewport`；随后全图清深度至 1.0（R618 "bind == fresh"）。R358 门禁照搬：atlas 无效时直接返回，绝不清当前仍绑着的深度。
+  ⑤**顺带修掉一个真实的管线创建缺口**：`rhi_pipeline_create` 原本硬性要求 VS/PS 两个 blob，但深度-only 阴影管线的 PSO 渲染目标数为 0，本就没有像素阶段（GL/Metal 都接受空 frag 句柄）。现 `is_shadow_depth` 时放行空 PS，reflection 与 uniform marker 同步跳过。
+- **WARP 像素证明（`test_d3d12_warp_runtime` 12/12，新增 3 条）**：
+  ①`shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent`——`0x0` 请求必须**不产出任何句柄**（R358 门禁的另一面），正常请求产出有效 `depth_tex`/`fbo`/`width`/`height`，destroy 后句柄清空且二次 destroy 无害。
+  ②`shadow_atlas_depth_round_trips_through_the_sampling_path`——8x8 atlas + 8x8 RGBA8 离屏 FBO，一次 frame 内：bind 清 1.0 → 深度-only 管线用 0.5 缩放矩阵把 z=0.25 的四边形写进**中心 4x4** → unbind → 光照管线在接收深度 0.5 处经 **unit 1** 采样回来。中心 16 像素必须**精确黑**（0.5<=0.25 为假 = 被遮挡），外圈 48 像素必须**精确白**（0.5<=1.0 为真 = 受光）。中心方块的位置同时钉死了非翻转视口：翻转或尺寸错都会让方块跑到 rows/cols 2..5 之外。
+  ③`shadow_bind_clears_each_frame_and_unbind_restores_the_screen`——两帧：第一帧画方块（中心黑），第二帧**什么都不画**只 bind 一次，必须**整帧全白**（证明 R618 每次 bind 都重置），且第二帧的采样结果证明 unbind 后绑的是屏幕目标而非 atlas（R230）。
+- **反向验证（五红 + 一项如实登记的"证明不了"）**：
+  | # | 故意打断 | 结果 |
+  |---|---|---|
+  | A1 | 改回分配普通 `DXGI_FORMAT_D32_FLOAT`（SRV 仍别名到 R32_FLOAT） | **仍然全绿——WARP 上不可观测**。两种格式同为 4B/texel，WARP 容忍该重解释。typeless 分配是规范要求、故实现保留，但**没有任何 WARP 像素能证明它**，用例注释已明写，不得反过来当成已证。 |
+  | A2 | 让 `srv_format` 保持 UNKNOWN，即 SRV 命名 `D32_FLOAT` | 转红（非法 SRV 拖垮设备，回读 one-shot 失败） |
+  | B | 阴影 SRV 绑到 unit 0 而非 1 | 转红，**在像素断言处** |
+  | C | 去掉深度-only 的 `OMSetRenderTargets` | 转红，**在像素断言处** |
+  | D | 清深度值改 0.0 而非 1.0 | 转红，**在像素断言处** |
+  | E | 抽掉 `rhi_cmd_bind_texture` 里进入读状态的 barrier | 转红，**在像素断言处** |
+  A1 特意登记而非隐去：这正是 WARP 收据对本特性**证明力有限**的真实边界。
+- **新增 sidecar**：`shadow_depth_hlsl.vert`（POSITION-only、无像素输出、根常量定位）、`shadow_sample_hlsl.{vert,frag}`。**`shadow_sample_hlsl.frag` 刻意手写 `.r` 比较而非 `SamplerComparisonState`**，并在注释里写明理由——它同时是上面那条更正结论的自动化守卫：若有人改回硬件比较采样器，这条用例的语义前提就被推翻。
+- **回归证据**：见下方"本轮全量门控"。
+
+### 本轮全量门控（阴影图轮）
+
+三棵树均用主检出自己的构建目录（Ninja + clang，`ENGINE_RHI_BACKEND` 分别为 d3d12/gl/vk），D3D12 侧 `ENGINE_D3D12_WARP=1 BREAK_D3D12_TEST_FALLBACK_HWND=1` 由 CTest 环境注入，调试层与 GPU-based validation 均开启。
+
+| 树 | 命令 | 结果 |
+|---|---|---|
+| `build-d3d12-debug` | `ctest -R "d3d12\|warp\|swapchain"` | **12/12 PASS** |
+| `build-d3d12-debug` | `ctest -LE graphics` | 170/176。⚠️ **此口径本身有误**：它把按设计 `EXCLUDE_FROM_ALL` 的 5 个 `fuzz_*_smoke` 报成了失败（"Not Run"），而它们并非失败用例——见上方「门控口径更正」。正确口径 `ctest -LE "graphics\|fuzz"` 为 **171/171**；全量 `ctest`（含 graphics 与 fuzz）为 **184/184**。 |
+| `build-gl` | `ctest -LE graphics` | **174/175**，唯一失败 = 上述 clipboard 项 |
+| `build-vk` | `ctest -LE graphics` | **175/176**，唯一失败 = 上述 clipboard 项 |
+
+`test_platform_win32_runtime` 的剪贴板子用例是**会话级环境性失败**：它在本次会话早先的同一套命令里通过过，GL/VK/D3D12 三棵树失败点完全相同，与本轮代码无关。
+
+`test_no_hidden_gl_fallback` **本轮再次以同样方式转红一次**（`src/rhi/rhi_d3d12.c: token 'rhi_gl'`）——新写的 `rhi_shadow_map_create` 注释里引用了 GL 源文件名。按既定处置：**不放宽守卫**，改指 GL 的函数名。
+
+## 本轮更新：Task 1-3 / D3D12 第一条真实渲染管线 sidecar — `blinn_phong_hlsl.{vert,frag}` 手写成对、七个 uniform 字节偏移由 sidecar 自持、CMake sidecar 契约纳入 blinn_phong、WARP 像素级证明（含反向验证与"丢写不可见"负对照）
+
+- **意义**：在此之前 D3D12 只有 `blit`/`myui`/`probe*` 四个探针级 sidecar——没有任何**真实渲染管线**跑通过。`blinn_phong_hlsl.{vert,frag}` 是第一条，其渲染结果经 WARP 回读像素断言，不靠句柄有效性。
+- **sidecar 布局（sidecar 自持字节偏移）**：两个 stage 声明**逐字节相同**的根常量 struct，绑 `ConstantBuffer<PushConsts> g_push : register(b0, space0)`。b0 是保留的 32BIT_CONSTANTS 根参数（反射把它折进 constants param，不与任何 CBV 竞争）。偏移靠 HLSL 自然打包得出，**未使用 `packoffset`**——好处是没有任何人工事后对齐可写错，代价见下。
+  **偏移断言证明什么、不证明什么（勿过度声称）**：`rhi_pipeline_get_uniform_location` 读的是 `// rhi:uniform` **注释文本**（`rhi_d3d12_uniform_markers` 逐字解析，`rhi_d3d12.c:2411-2452`），**没有任何环节把它与编译后的着色器反射或与 struct 本身做交叉校验**。因此七个偏移断言只证明"标记文本被解析出来，且 lookup 返回标记里写的数字"；**不证明 struct 与标记一致**——把某个成员类型改掉（例如 `u_ambient` 从 `float3` 改成 `float4`）会让编译槽位移动，而标记仍写旧数字，**偏移断言照样全绿**。像素断言能在若干具体漂移下偶然转红（例如成员加宽后 `u_camera_pos@240` 落到填充道、读出 0 从而在视口中心触发 `V=normalize(0)` 的 NaN），但那是**症状**而非**诊断**，不能当作结构性保证。真正的守卫只有两条：人工 review struct 与标记的对应关系，以及 CI 里那条 `"outside declared"` grep。
+
+  | 成员 | 类型 | 字节偏移 |
+  | --- | --- | --- |
+  | `u_model` | `float4x4` | 0 |
+  | `u_view` | `float4x4` | 64 |
+  | `u_proj` | `float4x4` | 128 |
+  | `u_light_dir` | `float3` | 192（16B 槽） |
+  | `u_light_color` | `float3` | 208 |
+  | `u_ambient` | `float3` | 224 |
+  | `u_camera_pos` | `float3` | 240 |
+
+  标记按 stage 拆分：三个矩阵标记在 VS，四个光照/相机标记在 FS（管线创建时 VS 与 PS 源码读进同一张表，`rhi_d3d12.c:2824-2827`）。`u_albedo` **不是**标记而是采样资源：`Texture2D g_albedo : register(t0, space0)` + `SamplerState g_smp : register(s0, space0)`，反射转成一条 SRV 描述符范围 + 一个静态采样器。顶点输入语义 `POSITION`/`NORMAL`/`TEXCOORD0` 与 D3D12 默认 mesh 布局分支（`rhi_d3d12.c:2651-2656`，stride 32）一致。
+- **CMake sidecar 契约**：`blinn_phong` 已加入 `ENGINE_D3D12_HLSL_PIPELINES`，缺 twin 即 configure 期 `FATAL_ERROR`。已反向验证：把 `.frag` 藏起来后 configure 如期报 `D3D12 HLSL sidecar assertion failed … shaders/blinn_phong_hlsl.frag (renderer pipeline 'blinn_phong')` 并退出 1。加管线只需往该列表加名字，`*_hlsl.*` glob 会自动 dxc 出 DXIL，无需改构建脚本。
+- **本条修正计划里两个被证伪的值**：① **高光指数是 32，不是 8**——`engine/shaders/blinn_phong.frag:29` 有**五次** `spec *= spec`，即 2^5。sidecar 跟随 GLSL。若"8"才是本意，那是 GLSL 本身的既有跨后端缺陷（VK/GL 同样在渲染它），属独立决策，D3D12 sidecar 不得擅自分叉。② **Task 2 的 uniform 取值原写法会让测试失败**：`u_camera_pos=(0,0,0)` 配 z=0 三角形使 `V=normalize(0)=NaN`；`u_light_dir=(0,0,-1)` 使视口**中心**像素（世界原点）处 `V` 恰为 `(0,0,-1)`、`L+V=0`、`H=normalize(0)=NaN`。NaN 穿透乘法且 `0*NaN=NaN`——**零光色救不了退化的 H**。实际取值 `u_camera_pos=(0,0,-10)`、`u_light_dir=(0,-1,0)`、`u_light_color=(1,1,1)`（**刻意非零**），使 `diff`/`spec` 由**几何**归零：`(L+V).z = V.z < 0` 恒成立，故任意像素处 `H` 都有限。
+- **WARP 像素证明（`blinn_phong_sidecar_resolves_offsets_and_shades_red`）**：经 `rhi_shader_create_path` 用 GLSL 形态路径解析两 stage，断言七个偏移恰为 0/64/128/192/208/224/240，`vertex_stride=32` + `R8G8B8A8_UNORM` 建管线，2x2 纯红纹理绑 unit 0，超大 NDC 三角形画进 8x8 离屏 FBO，**64 个像素逐通道精确等于 (255,0,0,255)**。第二次 draw 用白色 albedo + `u_ambient=(0,1,0)` 必须读回纯绿——因为偏移断言读的是**标记**而非 struct，只断言数字无法排除"标记对、struct 不符"导致写入落到别的成员（但这只覆盖部分漂移，见上条的证明边界）。
+  **该断言的两处已知盲区（如实记录）**：①model/view/proj 三个矩阵都推**单位阵**，因此**对 0/64/128 三个偏移之间的任何错位/置换完全免疫**——三者是可交换的，用同一值代入谁也看不出谁被换过；要拆开必须用互不相同的矩阵（如 view 带平移、proj 非单位）才能暴露。②"逐通道精确等于"依赖引擎为 `SamplerState` 生成的那条**静态采样器恰好是 LINEAR + WRAP**，且 2x2 纹理本身四像素同色；两者任一改变都会改变采样结果而使精确断言失效（换 NEAREST 或改纹理内容都可能仍然通过，因为本例要求的是恒定色）。精确断言之所以成立，是因为被采样的量在数学上是常数，与过滤无关。
+  **可选加固（尚未做）**：`ASSERT_EQ(rhi_pipeline_get_uniform_location(pipe, "u_albedo"), -1)`——可证明标记表恰好只有七个 uniform 条目、且被采样纹理永远不会拿到字节偏移。本轮按"不改测试"约束未实施。
+- **反向验证（两路）**：①把绿通道期望 0 改成 255，测试在像素断言处转红，恢复转绿；②移走两个 sidecar 并回退 CMake 列表项（还原 Task 1 之前的状态），测试在 shader 创建处转红并给出点名诊断 `HLSL source …/blinn_phong_hlsl.vert not readable — refusing shader`。
+- **负对照——丢掉的 push-constant 写入对测试不可见（必须在 CI grep）**：本管线**有效**根常量范围是 **252 字节而非 256**。根签名预算是 64 DWORD 且每条描述符表占 1 DWORD（`rhi_d3d12.c:2559-2562`），blinn_phong 有一条 t0 SRV 表（`SamplerState` 走静态采样器不占表），故 64 被钳到 **63 DWORD = 252 字节**。故所有 uniform 必须用 12/64 字节 setter；偏移 240 处若写 16 字节补齐版本会越过 252 而被丢弃。已做负对照：临时插入 `rhi_cmd_push_constants(cmd, 240, cam4, 16)` 后日志如期出现 `push_constants offset 240+16 outside declared 252 … write dropped`，而**测试仍然全绿（exit 0）**——丢写只记日志、绝不转红。因此 `"outside declared"` 的 grep 必须进 CI/评审，不能只靠本条落账。
+- **诚实的边界（勿写成"二者恰好一致"）**：HLSL struct 实为 **256 字节**（末尾 `float3` 占满 16 字节槽）；FS 生成 `cbufferLoadLegacy` 槽号 12/13/14/15，每次返回 4 分量 `CBufRet.f32`，即槽 *n* 覆盖字节 `16n..16n+15`，最后一次加载**名义上跨越字节 240-255**（同时独立印证了 192/208/224/240 四个偏移）。但只提取分量 0/1/2，分量 3 是 `float3` 填充道，从未被读。准确表述是：**根签名覆盖着色器实际消费的每个字节（0-251），而最后那次加载名义上跨到 255**。今天无害（未用道被丢弃 + D3D12 越界根常量读定义为返回 0），但若将来真去读那一道、或加第八个 uniform 越过 252，即破。
+- **FORWARD_MRT 变体刻意不做**：其 `#ifdef FORWARD_MRT` 分支额外引入 `std140` UBO（`u_prev_vp` + `u_prev_model` = 128B），与基座 256B 合计 384B，**装不进 D3D12 256 字节 graphics push 范围**，硬塞就得重排整块并改掉上面七个已钉死的偏移；FS 侧还需要第二张 render target（FBO/格式变更，非着色器翻译）。sidecar 头部已就地注明此省略，避免被误读为疏漏。**顺序不可颠倒**：它需要**第二条根常量范围或一个 CBV**，而**在 b1 加 CBV 会新增一条描述符表**，把 constants 压到 **62 DWORD = 248 字节**，于是 `u_camera_pos@240+12 = 252 > 248` 被**静默丢弃**——正是上面那条丢写不可见的坑，且会先牺牲 `u_camera_pos`。故 velocity 变体必须随独立 MRT FBO 计划一并设计，不能顺手加。
+- **回归证据**：全部用本 worktree 自己的构建树（`build-d3d12-debug`，Ninja + clang 22.1.6 + `ENGINE_RHI_BACKEND=d3d12`），CTest 环境 `ENGINE_D3D12_WARP=1 BREAK_D3D12_TEST_FALLBACK_HWND=1`，D3D12 调试层与 GPU-based validation 均开启（根签名/PSO 有问题会当场报）。`test_d3d12_warp_runtime` **8/8**；`ctest -R "d3d12|warp|swapchain"` **12/12**；全树 `ninja` 无错无警告。GL **175/175**、Vulkan **176/176**（`ctest -LE graphics`，跑在主 checkout 的 `build-gl`/`build-vk`——本 worktree 无 GL/VK 树；这是充分的：相对主 checkout HEAD 仅 4 个文件变动，全部 D3D12 专属，且 `test_d3d12_warp_runtime` 在 GL/VK 树里根本不编译也不注册，`ctest -N -R` 返回 0 项）。
+- **剩余有序工作（顺序是约束，不是偏好）**：①**材质 binder**；②**shadow map**；③**compute 绑定**；④**引擎调用点迁移到 path API**。前两项未落地之前继续加 sidecar，只会把今天那句响亮的 `pipeline needs compiled VS/PS blobs` 变成一帧静默错误的画面。
+- **④被 FORWARD_MRT 阻塞（不是可选变体，是硬依赖）**：`engine/src/main.c:383-405` 为**生产用** blinn_phong forward 管线**无条件**向两个 stage 注入 `FORWARD_MRT`（`shader_inject_define`），并以 `mrt_attachment_count = 2u` + 两种格式（`R16G16B16A16_SFLOAT` + `R16G16_SFLOAT`）建管线。而 `rhi_shader_create_path` 只按路径映射到**不含 MRT** 的 sidecar。因此把该调用点迁到 path API 会得到一个**不带 velocity 输出**的着色器去配一条**仍声明 2 个 attachment** 的管线——variant 与管线契约错配。该调用点必须等 velocity/RT1 输出（及上条那 384B 装不下 push 范围的解法）落地后才能迁，**不可当作"顺手加个可选变体"处理**。
+- **更正一条此前过时的落账**（评审发现）：早前两条记录称 `rhi_headless.c`/`rhi_metal.m`/`engine/tests/rhi_stubs.c` "仍无 `rhi_shader_create_path*` 定义，需补定义"——**该说法为假且已过时**，提交 `2374e07d`（本分支基点前两个提交）已补齐三处定义。三者真实行为各不相同：①**`rhi_headless.c` 无条件返回 `RHI_HANDLE_NULL`**——按设计拒绝（headless 无渲染，不存在要加载的着色器），不是缺口；②**`rhi_metal.m` 用既有 `shader_read_file` 读文件并委托 `rhi_shader_create`**，与 GL/VK 同构，读不到照旧 fail closed；③**`engine/tests/rhi_stubs.c` 是无视参数的桩**，直接返回 `stub_shader`，刻意与同文件的 `rhi_shader_create` 保持同规则、不为 path 形态单发明一套更严的判据。故 path API 已是**五后端齐备**（GL/VK/D3D12 各自映射，Metal 读文件委托，headless 按设计拒绝），无待补定义。
+
+## 本轮更新：Task 1-2 / D3D12 shader 路径入口 — 根因是引擎丢弃 shader 路径（D3D12 上**任何**渲染管线都建不出来）、`rhi_shader_create_path` 三后端落地、sidecar 映射契约 + 无设备单测 + WARP 双形态像素证明
+
+- **根因（"缺 blinn_phong 的 sidecar"是误判）**：每条渲染管线都经共用的 `shader_io` 读 GLSL 后调用 `rhi_shader_create(dev, src, len, is_fragment)`——**文本**入口，文件路径从未进入 RHI。而 D3D12 的 `rhi_shader_create` 只在 `len == 0`（文件名模式）时解析 sidecar：读 HLSL 源码 + 预编译 DXIL；`len > 0` 时它把 GLSL 文本存进 shader 记录、**不带 blob**，随后 `rhi_pipeline_create` 以 `D3D12: pipeline needs compiled VS/PS blobs` 拒绝。因此这不是"某条管线还没写 sidecar"：**即使 sidecar 手写齐了也永远够不着**，因为标识它的那个名字早已被丢弃——D3D12 上**任何**渲染管线都建不出来。
+- **入口**：`rhi_shader_create_path(dev, path, is_fragment)` 与 `rhi_shader_create_compute_path(dev, path)`（`engine/src/rhi/rhi.h:493` / `:863`），就贴在各自对应的文本入口旁。**GL / Vulkan 语义完全不变**：两者都用既有 `shader_read_file` helper 读文件、以读到的长度委托给原文本入口，编译结果与今日逐字节相同——没有新 I/O helper，编译/反射路径未动，文件读不到照旧 fail closed 返回 `RHI_HANDLE_NULL`。改后 `build-gl` / `build-vk` 的 `ninja` 均报 *no work to do*。
+- **D3D12 sidecar 映射约定**：取路径最后一段 → 去掉最后一个扩展名 → 追加 `_hlsl` → 追加 stage 后缀（`.vert`/`.frag` 由 `is_fragment` 决定，compute 用 `.comp`），再把这个**裸文件名**交给既有文件名模式加载器。HLSL 源码与预编译 DXIL 的读法与 `test_d3d12_shader_contract` 早已验证的完全一致，**没有引入第二条 DXIL 通路**。三条规则作为 decision record 落在 `engine/src/rhi/rhi_d3d12.h`：
+  - **`_hlsl` 后缀幂等**：base 已以 `_hlsl` 结尾时解析到自身。字面执行原措辞会把 `shaders/blit_hlsl.vert` 映到并不存在的 `blit_hlsl_hlsl.vert`，而两种形态都是承重的——引擎传的是 GLSL 路径，已经握着 sidecar 名的调用方传的才是 sidecar 本身。
+  - **stage / 扩展名不符一律拒绝，不解析**：`shaders/blit.frag` 传给顶点入口，旧行为会解析出 `blit_hlsl.vert` 并真的把它画出来——静默换 stage，比拒绝更难发现（GL/VK 在那里会因文件不存在而响亮失败）。现按路径自身扩展名解析 stage 并与请求比对；扩展名不指示已知 stage 时不作主张，仍由调用方的 stage 参数说了算，裸名形态因此保持安静。
+  - **无法产出可用名字时 fail closed**：空 base、或名字放不进 256 字节预算，一律拒绝而非截断——截断出来的名字会解析到**另一个**文件，永远不会是目标那个。这不是假想：写测试时发现 `snprintf` 会在调用方缓冲区里留下写了一半的名字（已改为先精确校验所需长度，且每次拒绝都清空输出）。
+- **无设备派生单测**：这段派生逻辑原本只是字符串运算，却只能经活设备触达，因此此前只活在临时探针里。现导出为 `rhi_d3d12_shader_sidecar_name()`，由 `test_d3d12_shader_contract` 的 `shader_path_sidecar_derivation` 以 **20 行表**钉死——**无需设备、无需 WARP、无需磁盘上的 sidecar**；`expect == NULL` 的行断言"必须拒绝"。覆盖主映射、自解析、裸名、反斜杠分隔、带点的 base（`my.pirates.vert`）、不指示 stage 的 `.glsl`、五种 stage 不符、枚举外的 stage，以及退化输入（NULL / 空串 / `.vert` / `shaders/`）。该测试**首次运行是红的**：在加一致性检查之前，`"shaders/blit.frag"` + 顶点报告 `ok=1, out="blit_hlsl.vert"`，与评审意见逐字吻合。
+- **WARP 双形态像素证明（含反向验证）**：`shader_paths_resolve_to_blit_sidecars_and_render_red`（`test_d3d12_warp_runtime`，7/7）对**两种路径形态**分别解析、各建一条 `no_vertex_input` 管线，再把一张已知纯红纹理经 `rhi_cmd_bind_texture` 绑定、把全屏三角形画进 8x8 FBO，逐像素断言 64 个像素全红——只坏掉其中一种形态的回归照样会在这里暴露。同时做反射交叉校验：只有 `blit_hlsl.vert` 声明 `u_transform`，故两条管线必须在**同一字节偏移**上暴露它；一个"句柄有效但装错了字节码"的着色器过不了这一关，仅靠句柄有效性是查不出来的。FBO 每次 bind 都会清除，因此着色器没跑起来只会留下清除色，被断言当场抓住。**反向验证**：把绿通道期望改掉后测试在像素断言处转红，恢复后转绿——排除空转路径。由于 Task 1 已覆盖两种形态，计划里"红→绿"改为对临时打过补丁的 `rhi_d3d12.c` 跑**两个反向对照**：①强制入口拒绝；②只打断 `_hlsl` 映射（GLSL 式形态失败而自解析仍通过，正是该特性要防的回归）。两者均如期转红，源码随后逐字节还原。
+- **回归证据**：全部使用本 worktree 自己的构建树（`build-d3d12-debug` / `build-gl` / `build-vk`，`CMAKE_HOME_DIRECTORY` 均指向本 worktree 的 `engine/`），三个树 `ninja` 均 *no work to do*（本轮只改文档），零编译错误零编译警告（`-Wall -Wextra -Werror`）。D3D12 `ctest -R "d3d12|warp|swapchain"` **12/12**；`test_d3d12_warp_runtime` **7/7**（含新用例）；`test_d3d12_shader_contract` **3/3**（含新的 20 行派生表）。GL **169/170**、Vulkan **170/171**（`ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1 ctest -LE "graphics|fuzz"`），两边**唯一**的失败同为 `test_platform_win32_runtime` 的 `clipboard_read_bounds_unterminated_unicode_text`（`OpenClipboard failed`，本会话无剪贴板访问；该目标 15 个子用例中 14 个通过）——与本轮工作无关，且此前各轮已多次记录为环境性失败。
+- **剩余 D3D12 工作（顺序是约束，不是偏好）**：① 按 CMake `ENGINE_D3D12_HLSL_PIPELINES` 既定的增量顺序，为渲染管线逐条手写 `*_hlsl.{vert,frag,comp}` sidecar（CMake 已对"列出的管线缺 twin"直接 `FATAL_ERROR`，且 `*_hlsl.*` glob 会自动 dxc 出 DXIL，逐条加管线无需改构建脚本）；② 材质 binder；③ shadow map；④ compute 绑定。**顺序不可颠倒**：在 ②-④ 之前加 sidecar，只会把今天那句响亮的 `pipeline needs compiled VS/PS blobs` 变成一帧静默错误的画面，正是此前各轮明确拒绝的反模式。**更正**：本条此前附带的"已知无害缺口——`rhi_headless.c`/`rhi_metal.m`/`engine/tests/rhi_stubs.c` 尚无这两个新入口的定义，若要让这些后端也服务路径 API 需补上对应定义"，已被后续提交 `2374e07d` 作废：三处定义均已补齐（headless 按设计无条件拒绝、metal 读文件后委托、stubs 为无视参数桩，与各自同族入口同规则），path API 已五后端齐备，无待补项。
 
 ## 本轮更新：Task 6 / D3D12 MRT FBO 收口 — 多附件 FBO 生命周期、清除/加载语义与 WARP 像素证据
 
@@ -6695,3 +9497,188 @@ the Vulkan engine target builds successfully and `git diff --check` remains
 the local documentation/source gate. Real X11, Wayland, Win32, macOS WSI
 matrices, allocator fault injection, device-lost recovery, and multi-device
 runtime teardown remain open validation work.
+
+## QNX headless platform support (2026-10-26)
+
+QNX Neutrino joins the platform matrix as a headless compatibility layer on
+branch feat/qnx-compat (docs/qnx_compat.md). The platform descriptor adds
+ENGINE_TARGET_FAMILY_QNX with a new ENGINE_NET_LOOP_POLL backend: Neutrino has
+no epoll/kqueue, so net_loop_poll.c keeps the interest set in userspace and
+rebuilds the pollfd array only on registration changes, with a non-blocking
+pipe for cross-thread wakeup. RHI resolution on qnx is headless and fails
+closed: ENGINE_VULKAN=ON or an explicit ENGINE_RHI_BACKEND is a configure-time
+FATAL_ERROR, engine_link_rhi_backend() links engine_rhi_headless, and
+window_mobile.c (now also compiled for QNX) rejects platform_create without a
+host-injected window. platform_vk_surface.c guards pvk_resolve behind the
+active WSI branches so fail-closed platforms stay -Werror clean. myui runs
+the dummy PAL offscreen path unchanged.
+
+TDD coverage: test_platform_compat_qnx (descriptor contract), test_net_loop_qnx
+(full generic net_loop semantics plus QNX fault injection against the poll
+backend, running in headless CI lanes), and test_qnx_perf_smoke (throughput
+floors for poll datagrams, task-system scheduling, and the myui offscreen vg
+pipeline; host reference rates in docs/qnx_compat.md). Verification: full
+headless suite green on both the untouched master baseline and a host-simulated
+QNX platform tree (CMAKE_SYSTEM_NAME=QNX). Honest boundary: no QNX SDP
+cross-compile or on-target receipts yet - evidence level is COMPILED; the
+Screen WSI integration and target runs are the follow-up milestone.
+
+## QNX on-target runtime receipts (2026-10-26, feat/qnx-compat)
+
+The QNX headless compatibility layer now carries real target receipts, upgrading
+its evidence level from COMPILED to HEADLESS. Cross-compiled with QNX SDP 8.0.0
+(qcc, gcc 12.2 frontend, x86_64) the full tree builds 100%; the complete
+headless suite - 144 commands including every myui headless test, the poll
+net_loop backend under test, network/replication, task system, rule engine,
+and the verify tools WILL_FAIL cases - passes 144/144 on a QNX 8.0.0 Neutrino
+x86_64 target (QEMU/KVM VM) in 7.6 s. test_qnx_perf_smoke on target: 61,918
+poll datagrams/s, 1,775,253 tasks/s, 97,799,511 myui offscreen vg ops/s
+(floors 256 / 5,000 / 20,000).
+
+Portability fixes driven by the real SDP and target: toolchain-qnx.cmake adds
+-D_QNX_SOURCE under -std=c11 (otherwise _SC_NPROCESSORS_ONLN and QNX clock
+exposure are hidden) and selects nto<arch> cross binutils; QNX 8 folds pthread
+and dl into libc so qnx link lines drop -lpthread/-ldl; standalone network
+test targets link -lsocket conditionally, net_replication gains -lm for
+__isfinitef; the on-target runner sets ulimit -s 8192 (QNX default stacks
+fault on tests with large local arrays) and honours ctest WILL_FAIL.
+ENGINE_TEST_SOURCE_ROOT becomes a cache override so tests reading repo
+sources/assets can be re-rooted onto the target copy. Remaining honest
+boundaries: aarch64le cross build, non-VM hardware receipts, and the Screen
+WSI graphics milestone stay open (docs/qnx_compat.md 5/7).
+
+## QNX aarch64le cross build + on-target suite scripts (2026-10-26)
+
+The QNX toolchain file is architecture-parameterized end to end: with
+QNX_ARCH=aarch64le the full tree cross-builds 100% under the same SDP 8.0.0
+(qcc, gcc 12.2 frontend, ntoaarch64 binutils) with zero source changes;
+artifacts verified as AArch64 QNX PIE executables. aarch64le stays at
+COMPILED evidence until an aarch64 target runs the suite. The on-target
+workflow used for the x86_64 144/144 receipts is now committed:
+gen_target_cmds.py (host) regenerates the headless command list from the
+cross build ctest registry (drops cmake -P contract tests, honours WILL_FAIL),
+run_target_suite.sh (target) runs it with ulimit -s 8192 and EXPECT_FAIL
+semantics; both under engine/tools/qnx/.
+
+## QNX Screen window layer (2026-10-26, feat/qnx-compat)
+
+window_screen.c adds a native QNX Screen platform layer (ENGINE_QNX_SCREEN,
+probe-enabled by default when the SDP provides screen.h + libscreen):
+screen_context/screen_window creation with RGBA8888 read/write usage, a
+non-blocking event pump mapping CLOSE and POINTER events (position + left/
+middle/right buttons) into InputState, live SCREEN_PROPERTY_SIZE queries, and
+WSI handles shaped for a future vkCreateScreenSurfaceQNX (window + context).
+When no screen service is reachable the layer fails closed at the first
+screen_create_context, so headless behaviour is unchanged. The platform
+descriptor gains ENGINE_SURFACE_QNX_SCREEN (self-created native window) with
+graphics APIs still fail-closed; contract coverage is the new
+test_platform_compat_qnx_screen on every host lane. The toolchain file now
+roots CMake find at both $QNX_TARGET and $QNX_TARGET/<arch> because QNX
+multiarch keeps headers in usr/include but libscreen.so in <arch>/usr/lib.
+
+Evidence: cross build 100% on both x86_64 and aarch64le (COMPILED); Linux
+headless suite 173/173 after the change. Remaining for the graphics
+milestone: GL/Vulkan via Screen, keyboard/text/wheel/clipboard/monitor
+events, and runtime receipts on a target running the screen service.
+
+## QNX Screen keyboard/wheel mapping + vfs test robustness (2026-10-26)
+
+window_screen.c now translates Screen keyboard and wheel events. The QNX
+key-symbol mapping (Unicode printables + KEYCODE_PC_KEYS offsets from
+sys/keycodes.h) to the engine key codes (same codes x11_key_to_index emits)
+lives in platform/screen_keymap.h as a pure inline integer function, so
+test_screen_keymap runs on every host lane; window_screen.c pins the mirrored
+constants to the real sys/keycodes.h with _Static_assert, making drift a
+compile error on cross builds. Pointer events also feed the vertical wheel
+(SCREEN_PROPERTY_MOUSE_WHEEL, upward positive, x11 parity). Text/IME,
+clipboard, monitors, and relative mouse stay fail-closed stubs.
+
+Also fixed a real target-environment sensitivity the QNX runs exposed:
+test_vfs oversized-file occasionally failed on the VM because qnx6 ftruncate
+"succeeds" while provisioning only the space the filesystem has free, so the
+file could land at or below VFS_MAX_FILE_BYTES and the vfs would correctly
+accept it. The test now verifies the >MAX precondition before asserting the
+rejection; engine vfs logic is unchanged.
+
+Verification: cross builds 100% (x86_64 + aarch64le, _Static_asserts pass);
+Linux headless 174/174; QNX target VM 146/146 (vfs case stable across
+repeated runs).
+
+## iOS UIWindowScene host and Simulator rendering (2026-10-27)
+
+`engine/src/apps/ios_main.m` now supplies the production `UIApplicationMain`
+entry for `engine_demo`. UIKit owns a scene/window/view and its CAMetalLayer on
+the main thread; the existing C demo runs on a dedicated 16 MiB-stack engine
+thread through `engine_demo_main`, with native handles, Retina sizing and a
+host poll supplied through `EngineConfig`. Scene lifecycle and primary-touch
+events are synchronized onto the engine thread. Background waits do not acquire
+a drawable, and each frame has an Objective-C autorelease pool.
+
+The app bundles assets/shaders and a simulator-targeted metallib, stages a
+writable working directory under Library/Caches, and uses private texel-buffer
+storage with staged uploads on iOS. Simulator audio explicitly uses miniaudio's
+Null backend (silent); physical-device audio and GPU behavior remain unverified.
+CI remains compile-only, now checking the scene manifest and resources as well
+as the bundle identifier and metallib. This does not change iOS's COMPILED
+evidence level or the OpenGL removal gate.
+
+Verification on an iPhone 18 Pro Simulator (iOS 27.0, Xcode 27.1): 124 offline
+shader entries, `--frames 300` with orderly shutdown, visible 3D/UI in both RHI
+frame-60 and OS screenshots, and suspend/resume with continued rendering after
+returning from Safari. No ERROR/FATAL occurred in the successful run. The
+viewport is 402x874 logical versus 1206x2622 drawable at scale 3. Narrow-screen
+HUD layout and physical-device testing remain open; optional Hi-Z,
+indirect/culling and GPU-timer paths still degrade where unsupported.
+
+A local XCTest UI Automation follow-up passes 1/1: the window changes from
+402x874 portrait to 874x402 landscape and back, and a tap at (437, 201) reaches
+the engine thread as matching `iOS input: down` / `up` log entries. A simctl
+screen capture during a sustained landscape phase is 2622x1206 with full-width
+3D/UI and upright HUD text. The engine reports 1311x603 internal rendering to
+that drawable. Local XCTest PNG attachments can preserve the physical-pixel
+orientation or crop the rotated application capture, so they are not sufficient
+orientation evidence by themselves; the simctl image resolves that ambiguity.
+The temporary harness is not a repository/CI test target. Physical-device
+rotation, touchscreen input, audio and Metal remain unverified.
+
+On macOS, both MoltenVK and Metal full CTest configurations pass 191/191
+(the D3D12 dependency gate skips by platform). Metal graphics is 5/5, resource
+tests 48/48 and audio tests 17/17. Both backend demos render 3D/UI with correct
+orientation in 70-frame screenshot checks; their known lighting/material/water
+differences are not claimed to be pixel-identical. The full CTest totals and
+Metal graphics result were reproduced after the iOS interaction follow-up.
+
+A Metal-only magenta artifact on the ECS-instanced helmets in the default
+clustered forward path is fixed: the clustered instanced/skinned pipelines set
+`uses_storage`, so `metal_uniform_location` resolved their lighting and material
+push members through the particle-only storage table (-1) and the fragment
+shader read stale push bytes. The storage table is now limited to non-clustered
+pipelines, matching VK reflection. A new regression case
+`clustered_storage_variant_keeps_clustered_push_table` fails before the fix and
+passes after it; Metal resource tests are 49/49, and both macOS CTest
+configurations remain 191/191. Metal and MoltenVK screenshots (HUD and an
+elevated BREAK_CAM view) show no magenta pixels, and the fullscreen/title-bar
+toggle demo still reports two rebuilds and two `ok=1` switches per backend.
+
+**Demo default camera above terrain (2026-10-28).** The `camera_init` eye
+point (0,2,8) sat inside the generated terrain (ground 4.19 m, HUD
+`Above: -2.19`), so the default view started inside a hill. `engine_demo` now
+lifts the default eye to at least 2 m above the ground below it and 1 m above
+the ground sampled 2/4/6 m ahead (-Z); it logs
+`Camera: lifted above terrain to y=6.19 (ground 4.19)`. `BREAK_MODEL_VIEW`
+(no terrain) is untouched, and `BREAK_CAM` still overrides the result. Both
+macOS CTest configurations are 191/191 and Metal graphics is 5/5. Metal and
+MoltenVK 70-frame runs report `Pos: (0.0,6.2,8.0)` and `Above: 2.00`.
+
+**Metal default-view fidelity (2026-10-28).** Same camera and settings, Metal vs
+MoltenVK mean absolute difference dropped from about 32 to about 7 (blinn 6.7).
+Four Metal-only bugs were fixed in `rhi_metal.m`: `draw_indexed_base` and
+`draw_indexed_instanced_base` were log-only stubs; storage-buffer binds from
+compute passes leaked into graphics draws and overwrote the mesh vertex buffer;
+light-grid texel buffers were lost when a blit ended the render encoder; and
+offscreen/MRT passes used the unflipped viewport, so post passes sampled
+vertically mirrored input. `test_rhi_metal_resources` is 53/53 with four new
+cases that fail without their fix. Both macOS CTest configurations are 191/191
+and Metal graphics is 5/5. The window toggle demo still reports two `ok=1`
+switches on both backends. Open: `BREAK_RENDER_PATH=deferred` on Metal still
+renders near black.

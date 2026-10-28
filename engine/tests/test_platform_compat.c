@@ -41,6 +41,18 @@ TEST(host_descriptor)
               ENGINE_TARGET_GRAPHICS_API_D3D12);
     ASSERT_EQ(ENGINE_PLATFORM_COMPAT.support_evidence,
               ENGINE_SUPPORT_EVIDENCE_COMPILED);
+#elif defined(ENGINE_PLATFORM_QNX)
+    /* Host descriptor facts on a real QNX target: poll() net loop, headless
+     * surface policy (none required), graphics fail-closed, COMPILED evidence
+     * until runtime receipts from target hardware exist. */
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT_TARGET_FAMILY, ENGINE_TARGET_FAMILY_QNX);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT_NET_LOOP, ENGINE_NET_LOOP_POLL);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT_SURFACE, ENGINE_SURFACE_UNAVAILABLE);
+    ASSERT_FALSE(ENGINE_PLATFORM_COMPAT_REQUIRES_HOST_SURFACE);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT.vulkan_support,
+              ENGINE_VULKAN_SUPPORT_UNAVAILABLE);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT.support_evidence,
+              ENGINE_SUPPORT_EVIDENCE_COMPILED);
 #endif
 }
 

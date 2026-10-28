@@ -1,0 +1,22 @@
+// particle_cull_hlsl.comp - D3D12 sidecar of shaders/particle_cull.comp.
+// Appends the index of every alive particle to the DrawBuf and counts them
+// into its instanceCount (word 1). The DrawBuf layout is the
+// D3D12_DRAW_ARGUMENTS header (vertexCount, instanceCount, firstVertex,
+// firstInstance) followed by the indices, the same as the GLSL; on D3D12 the
+// host writes vertexCount = 6 because each particle is drawn as a quad (see
+// particle_mrt_hlsl.vert).
+RWStructuredBuffer<float4> g_particles : register(u0);
+RWByteAddressBuffer        g_draw      : register(u1);
+
+[numthreads(256, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint n, stride;
+    g_particles.GetDimensions(n, stride);
+    uint idx = id.x;
+    if (idx >= n / 4u) return;
+    if (g_particles[idx * 4u].w > 0.0) {
+        uint slot;
+        g_draw.InterlockedAdd(4u, 1u, slot);
+        g_draw.Store(16u + slot * 4u, idx);
+    }
+}

@@ -5,6 +5,13 @@
 #include <string.h>
 #include <stddef.h>
 
+#if defined(ENGINE_PLATFORM_IOS)
+#include <TargetConditionals.h>
+#if TARGET_OS_SIMULATOR
+#define AUDIO_SIMULATOR_NULL_BACKEND 1
+#endif
+#endif
+
 #define MINIAUDIO_IMPLEMENTATION
 #if defined(_MSC_VER)
 #pragma warning(push)
@@ -90,6 +97,8 @@ static AudioSource *audio_resolve(AudioSystem *as, u32 handle) {
 
 struct AudioImpl {
     ma_engine engine;
+    ma_context context;
+    bool context_initialized;
 };
 
 /* The AudioImpl offset formula below (mirrored in audio_system_destroy) aligns
@@ -111,10 +120,28 @@ AudioSystem *audio_system_create(void) {
     }
     AudioSystem *as  = (AudioSystem *)audio_block;
     struct AudioImpl *impl = (struct AudioImpl *)(audio_block + as_off);
+    const ma_engine_config *engine_config_ptr = NULL;
+    ma_result result;
 
-    ma_result result = ma_engine_init(NULL, &impl->engine);
+#if defined(AUDIO_SIMULATOR_NULL_BACKEND)
+    ma_backend backend = ma_backend_null;
+    ma_engine_config engine_config;
+    result = ma_context_init(&backend, 1, NULL, &impl->context);
+    if (result != MA_SUCCESS) {
+        LOG_ERROR("Failed to init iOS Simulator null audio context (%d)", result);
+        free(as);
+        return NULL;
+    }
+    impl->context_initialized = true;
+    engine_config = ma_engine_config_init();
+    engine_config.pContext = &impl->context;
+    engine_config_ptr = &engine_config;
+#endif
+
+    result = ma_engine_init(engine_config_ptr, &impl->engine);
     if (result != MA_SUCCESS) {
         LOG_ERROR("Failed to init audio engine (%d)", result);
+        if (impl->context_initialized) ma_context_uninit(&impl->context);
         free(as);
         return NULL;
     }
@@ -125,6 +152,7 @@ AudioSystem *audio_system_create(void) {
     if (!as->sources) {
         LOG_ERROR("Audio: sources allocation failed");
         ma_engine_uninit(&impl->engine);
+        if (impl->context_initialized) ma_context_uninit(&impl->context);
         free(as);
         return NULL;
     }
@@ -133,7 +161,11 @@ AudioSystem *audio_system_create(void) {
     as->listener_up = vec3(0, 1, 0);
     audio_bus_table_reset(as); /* R435: master bus exists from birth */
 
+#if defined(AUDIO_SIMULATOR_NULL_BACKEND)
+    LOG_WARN("Audio system initialized with iOS Simulator null backend (silent)");
+#else
     LOG_INFO("Audio system initialized");
+#endif
     return as;
 }
 
@@ -151,6 +183,7 @@ void audio_system_destroy(AudioSystem *as) {
         }
     }
     ma_engine_uninit(&impl->engine);
+    if (impl->context_initialized) ma_context_uninit(&impl->context);
     free(as->sources);
     free(as); /* single free: AudioSystem + AudioImpl */
 }
@@ -462,6 +495,11 @@ u32 audio_get_device_count(AudioSystem *sys) {
 
     /* Return cached result to avoid re-creating ma_context (10-100ms) each call */
     if (sys->devices_enumerated) return sys->device_count;
+#if defined(AUDIO_SIMULATOR_NULL_BACKEND)
+    sys->devices_enumerated = true;
+    sys->device_count = 0u;
+    return 0u;
+#endif
 
     ma_context context;
     if (ma_context_init(NULL, 0, NULL, &context) != MA_SUCCESS) {

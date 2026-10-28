@@ -441,6 +441,16 @@ static void rhi_stub_rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuff
     rhi_dispatch_stub_log_once();
 }
 
+static void rhi_stub_rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset, u32 first_instance) {
+    (void)cmd;
+    (void)index_count;
+    (void)instance_count;
+    (void)first_index;
+    (void)vertex_offset;
+    (void)first_instance;
+    rhi_dispatch_stub_log_once();
+}
+
 static void rhi_stub_rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 draw_count, u32 stride) {
     (void)dev;
     (void)cmd_buf;
@@ -952,6 +962,23 @@ static RHIShader rhi_stub_rhi_shader_create_compute(RHIDevice *dev, const char *
     return zero;
 }
 
+static RHIShader rhi_stub_rhi_shader_create_compute_path(RHIDevice *dev, const char *path) {
+    (void)dev;
+    (void)path;
+    rhi_dispatch_stub_log_once();
+    RHIShader zero = {0};
+    return zero;
+}
+
+static RHIShader rhi_stub_rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_fragment) {
+    (void)dev;
+    (void)path;
+    (void)is_fragment;
+    rhi_dispatch_stub_log_once();
+    RHIShader zero = {0};
+    return zero;
+}
+
 static void rhi_stub_rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
     (void)dev;
     (void)shader;
@@ -1094,6 +1121,7 @@ static const RHIApi g_stub_api = {
     .rhi_cmd_draw_indexed_base = rhi_stub_rhi_cmd_draw_indexed_base,
     .rhi_cmd_draw_indexed_indirect = rhi_stub_rhi_cmd_draw_indexed_indirect,
     .rhi_cmd_draw_indexed_indirect_count = rhi_stub_rhi_cmd_draw_indexed_indirect_count,
+    .rhi_cmd_draw_indexed_instanced_base = rhi_stub_rhi_cmd_draw_indexed_instanced_base,
     .rhi_cmd_draw_indirect = rhi_stub_rhi_cmd_draw_indirect,
     .rhi_cmd_end_render_pass = rhi_stub_rhi_cmd_end_render_pass,
     .rhi_cmd_fill_buffer = rhi_stub_rhi_cmd_fill_buffer,
@@ -1164,6 +1192,8 @@ static const RHIApi g_stub_api = {
     .rhi_set_vsync = rhi_stub_rhi_set_vsync,
     .rhi_shader_create = rhi_stub_rhi_shader_create,
     .rhi_shader_create_compute = rhi_stub_rhi_shader_create_compute,
+    .rhi_shader_create_compute_path = rhi_stub_rhi_shader_create_compute_path,
+    .rhi_shader_create_path = rhi_stub_rhi_shader_create_path,
     .rhi_shader_destroy = rhi_stub_rhi_shader_destroy,
     .rhi_shadow_map_create = rhi_stub_rhi_shadow_map_create,
     .rhi_shadow_map_destroy = rhi_stub_rhi_shadow_map_destroy,
@@ -1391,6 +1421,10 @@ void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset
 
 void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 cmd_offset, RHIBuffer count_buf, u32 count_offset, u32 max_draws, u32 stride) {
     rhi_dispatch_active()->rhi_cmd_draw_indexed_indirect_count(dev, cmd_buf, cmd_offset, count_buf, count_offset, max_draws, stride);
+}
+
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset, u32 first_instance) {
+    rhi_dispatch_active()->rhi_cmd_draw_indexed_instanced_base(cmd, index_count, instance_count, first_index, vertex_offset, first_instance);
 }
 
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 draw_count, u32 stride) {
@@ -1663,6 +1697,14 @@ RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool 
 
 RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len) {
     return rhi_dispatch_active()->rhi_shader_create_compute(dev, source, len);
+}
+
+RHIShader rhi_shader_create_compute_path(RHIDevice *dev, const char *path) {
+    return rhi_dispatch_active()->rhi_shader_create_compute_path(dev, path);
+}
+
+RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_fragment) {
+    return rhi_dispatch_active()->rhi_shader_create_path(dev, path, is_fragment);
 }
 
 void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {

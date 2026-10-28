@@ -1,0 +1,97 @@
+// unified_cull_hlsl.comp - D3D12 sidecar of shaders/unified_cull.comp (the GL
+// variant). Single-pass frustum (+ optional Hi-Z) cull and draw compaction:
+// every visible draw's DrawIndexedIndirectCommand is appended to t2's list
+// and counted in u3; u4 gets one flag per object.
+//
+// Registers follow the GLSL bindings (readonly -> tN SRV, writable -> uN
+// UAV). The Hi-Z pyramid is the GL `binding = 4` sampler2D, which
+// gpucull_dispatch_unified binds through rhi_cmd_bind_texture_compute at
+// unit 4 (the GL unit) -- t4, distinct from the u4 flags UAV. It is always
+// bound (the 1x1 depth-1 fallback when Hi-Z is off), as a D3D12 table has no
+// unbound state. Reads are Load() at the chosen mip: the engine's Hi-Z
+// sampler is NEAREST + CLAMP and the backend's static sampler is LINEAR +
+// WRAP, so Load with a clamped texel is the exact equivalent.
+//
+// t5 is the runtime LOD selection mask (GLSL `readonly buffer` binding 5,
+// one uint per draw; 0 = not the selected level, skip it). It is a host-
+// written UPLOAD-heap buffer, so an SRV.
+struct PushConsts {
+    float4x4 u_cull_vp;            //  0
+    int      u_cull_count;         // 64
+    float    u_cull_hi_z_width;    // 68
+    float    u_cull_hi_z_height;   // 72
+    float    u_cull_use_hi_z;      // 76
+    float    u_cull_write_draws;   // 80
+};                                 // tail at 84
+ConstantBuffer<PushConsts> g_push : register(b0, space0);
+// rhi:uniform u_cull_vp 0
+// rhi:uniform u_cull_count 64
+// rhi:uniform u_cull_hi_z_width 68
+// rhi:uniform u_cull_hi_z_height 72
+// rhi:uniform u_cull_use_hi_z 76
+// rhi:uniform u_cull_write_draws 80
+ByteAddressBuffer   g_objects       : register(t0);   // float4 pos_radius
+ByteAddressBuffer   g_all_draws     : register(t1);   // 5 uints per draw
+RWByteAddressBuffer g_visible_draws : register(u2);
+RWByteAddressBuffer g_draw_count    : register(u3);
+RWByteAddressBuffer g_flags         : register(u4);
+Texture2D           g_hi_z          : register(t4);
+ByteAddressBuffer   g_selected      : register(t5);   // 1 = selected LOD level
+
+bool sphere_frustum_visible(float3 center, float radius) {
+    float4 clip = mul(g_push.u_cull_vp, float4(center, 1.0));
+    float w = clip.w;
+    if (w <= 0.0) w = 1e-6;
+    float3 nc = clip.xyz / w;
+    float r = radius / w;
+    if (nc.x - r >  1.0) return false;
+    if (nc.x + r < -1.0) return false;
+    if (nc.y - r >  1.0) return false;
+    if (nc.y + r < -1.0) return false;
+    if (nc.z - r >  1.0) return false;
+    if (nc.z + r < -1.0) return false;   // R212-A: GL NDC z in [-1, 1]
+    return true;
+}
+
+bool sphere_hi_z_visible(float3 center, float radius) {
+    float4 clip = mul(g_push.u_cull_vp, float4(center, 1.0));
+    if (clip.w <= 0.0) return true;
+    float3 ndc = clip.xyz / clip.w;
+    float r_ndc = radius / abs(clip.w);
+    float2 ndc_min = clamp(ndc.xy - r_ndc, -1.0, 1.0);
+    float2 ndc_max = clamp(ndc.xy + r_ndc, -1.0, 1.0);
+    float2 screen_size = (ndc_max - ndc_min) * 0.5 *
+                         float2(g_push.u_cull_hi_z_width, g_push.u_cull_hi_z_height);
+    uint w0, h0, levels;
+    g_hi_z.GetDimensions(0u, w0, h0, levels);
+    float mip_level = ceil(log2(max(screen_size.x, screen_size.y)));
+    mip_level = clamp(mip_level, 0.0, float(levels - 1u));
+    uint mip = (uint)mip_level;
+    uint mw, mh, ml;
+    g_hi_z.GetDimensions(mip, mw, mh, ml);
+    float2 uv_center = (ndc_min + ndc_max) * 0.25 + 0.5;
+    int2 texel = clamp(int2(floor(uv_center * float2(mw, mh))), int2(0, 0),
+                       int2((int)mw - 1, (int)mh - 1));
+    float closest_z = (ndc.z - r_ndc) * 0.5 + 0.5;
+    float hi_z_depth = g_hi_z.Load(int3(texel, (int)mip)).r;
+    return closest_z <= hi_z_depth;
+}
+
+[numthreads(64, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint idx = id.x;
+    if (idx >= (uint)g_push.u_cull_count) return;
+    float4 pr = asfloat(g_objects.Load4(idx * 16u));
+    g_flags.Store(idx * 4u, 0u);
+    if (g_selected.Load(idx * 4u) == 0u) return;
+    if (!sphere_frustum_visible(pr.xyz, pr.w)) return;
+    if (g_push.u_cull_use_hi_z > 0.5 && !sphere_hi_z_visible(pr.xyz, pr.w)) return;
+    g_flags.Store(idx * 4u, 1u);
+    if (g_push.u_cull_write_draws < 0.5) return;   // R169: flags only
+    uint slot;
+    g_draw_count.InterlockedAdd(0u, 1u, slot);
+    uint src = idx * 20u;
+    uint dst = slot * 20u;
+    [unroll] for (uint i = 0u; i < 5u; ++i)
+        g_visible_draws.Store(dst + i * 4u, g_all_draws.Load(src + i * 4u));
+}

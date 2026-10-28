@@ -29,15 +29,22 @@ static u32 oc_calc_mip_levels(u32 width, u32 height) {
 
 /* ---- Helper: load compute pipeline from shader file ---- */
 static RHIPipeline oc_load_compute_pipeline(RHIDevice *dev, const char *shader_path) {
-    usize src_len = 0;
-    char *src = shader_read_file(shader_path, &src_len);
-    if (!src) {
-        LOG_WARN("OcclusionCull: shader not found: %s", shader_path);
-        return RHI_HANDLE_NULL;
+    RHICapabilities caps;
+    RHIShader cs;
+    if (!rhi_device_get_capabilities(dev, &caps)) memset(&caps, 0, sizeof(caps));
+    if (caps.shader_sidecar_paths) {
+        /* R653: D3D12 loads the precompiled <name>_hlsl.comp sidecar. */
+        cs = rhi_shader_create_compute_path(dev, shader_path);
+    } else {
+        usize src_len = 0;
+        char *src = shader_read_file(shader_path, &src_len);
+        if (!src) {
+            LOG_WARN("OcclusionCull: shader not found: %s", shader_path);
+            return RHI_HANDLE_NULL;
+        }
+        cs = rhi_shader_create_compute(dev, src, src_len);
+        free(src);
     }
-
-    RHIShader cs = rhi_shader_create_compute(dev, src, src_len);
-    free(src);
     if (!rhi_handle_valid(cs)) {
         LOG_WARN("OcclusionCull: shader compile failed: %s", shader_path);
         return RHI_HANDLE_NULL;
@@ -302,7 +309,8 @@ void occlusion_cull_upload_aabbs(OcclusionCullSystem *sys, const ObjectAABB *aab
  * R436: Segmented generation chain (was: one dispatch + one barrier per mip
  * level — 10 dispatches at 1280x720). Each dispatch now produces a chunk of
  * up to 4 consecutive mip levels in a single pass: every output texel is
- * reduced directly from the chunk input (2^(k+1) x 2^(k+1) block), so no
+ * reduced directly from the chunk input (its proportional block -- 2^(k+1)
+ * square when the input is 2x the first output mip), so no
  * cross-workgroup synchronization is required and no atomic-spin SPD tricks
  * are needed. Chunks are separated by one memory barrier (chunk c+1 samples
  * the last mip written by chunk c). 10 levels -> 3 dispatches + 3 barriers.

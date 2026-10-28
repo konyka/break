@@ -1,4 +1,5 @@
 #include <renderer/volumetric.h>
+#include <renderer/post_targets.h>
 #include <core/log.h>
 #include <math/math.h>
 #include <stdio.h>
@@ -7,20 +8,27 @@
 #include <core/shader_io.h>
 
 
-static RHIPipeline vol_create_pipe(RHIDevice *dev,
+static RHIPipeline vol_create_pipe(RHIDevice *dev, bool sidecar,
                                     const char *vert_path, const char *frag_path) {
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vert_path, &vs_len);
-    char *fs_src = shader_read_file(frag_path, &fs_len);
-    if (!vs_src || !fs_src) {
-        LOG_WARN("Volumetric: shaders not found (%s)", frag_path);
+    RHIShader vs, fs;
+    if (sidecar) {
+        /* D3D12 never compiles source in-process: the GLSL path resolves to
+         * the precompiled <name>_hlsl sidecar instead. */
+        vs = rhi_shader_create_path(dev, vert_path, false);
+        fs = rhi_shader_create_path(dev, frag_path, true);
+    } else {
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vert_path, &vs_len);
+        char *fs_src = shader_read_file(frag_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            LOG_WARN("Volumetric: shaders not found (%s)", frag_path);
+            free(vs_src); free(fs_src);
+            return RHI_HANDLE_NULL;
+        }
+        vs = rhi_shader_create(dev, vs_src, vs_len, false);
+        fs = rhi_shader_create(dev, fs_src, fs_len, true);
         free(vs_src); free(fs_src);
-        return RHI_HANDLE_NULL;
     }
-
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
-    free(vs_src); free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_WARN("Volumetric: shader compile failed");
@@ -44,6 +52,13 @@ static RHIPipeline vol_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool volumetric_targets_create(VolumetricSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->vol_fbo, w, h, RHI_FORMAT_UNDEFINED },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 height) {
     memset(vol, 0, sizeof(*vol));
     vol->device = dev;
@@ -61,7 +76,7 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
         LOG_WARN("Volumetric: capability query or shader variant path failed");
         return false;
     }
-    vol->vol_pipe = vol_create_pipe(dev, vs_path, fs_path);
+    vol->vol_pipe = vol_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path);
 
     if (!rhi_handle_valid(vol->vol_pipe)) {
         LOG_WARN("Volumetric: pipeline creation failed");
@@ -73,7 +88,7 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
      * Pass stays opt-in (vol_enabled default off), so no default cost. */
     u32 pw = width, ph = height;
 
-    vol->vol_fbo = rhi_offscreen_fbo_create(dev, pw, ph);
+    (void)volumetric_targets_create(vol, dev, pw, ph);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -113,6 +128,15 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
 
     vol->ready = true;
     LOG_INFO("Volumetric: initialized (%ux%u, density=%.4f)", pw, ph, vol->fog_density);
+    return true;
+}
+
+bool volumetric_resize(VolumetricSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!volumetric_targets_create(s, dev, w, h)) {
+        LOG_WARN("Volumetric: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

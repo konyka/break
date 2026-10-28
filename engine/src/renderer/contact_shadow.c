@@ -1,4 +1,5 @@
 #include "contact_shadow.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -6,6 +7,32 @@
 #include <string.h>
 #include <core/shader_io.h>
 
+
+static RHIPipeline cs_create_pipe_path(RHIDevice *dev, const char *vert_path,
+                                       const char *frag_path) {
+    RHIShader vs = rhi_shader_create_path(dev, vert_path, false);
+    RHIShader fs = rhi_shader_create_path(dev, frag_path, true);
+    RHIPipelineDesc pdesc;
+    RHIPipeline pipe;
+    if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
+        LOG_WARN("ContactShadow: sidecar shader unavailable (%s, %s)",
+                 vert_path, frag_path);
+        if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
+        if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
+        return RHI_HANDLE_NULL;
+    }
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs;
+    pdesc.frag = fs;
+    pdesc.no_vertex_input = true;
+    pdesc.uses_textures = true;
+    pdesc.depth_write_disable = true;
+    pdesc.disable_culling = true;
+    pipe = rhi_pipeline_create(dev, &pdesc);
+    rhi_shader_destroy(dev, vs);
+    rhi_shader_destroy(dev, fs);
+    return pipe;
+}
 
 static RHIPipeline cs_create_pipe(RHIDevice *dev,
                                    const char *vert_path, const char *frag_path) {
@@ -42,6 +69,13 @@ static RHIPipeline cs_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool contact_shadow_targets_create(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool contact_shadow_init(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s || !dev) return false;
     memset(s, 0, sizeof(*s));
@@ -50,13 +84,23 @@ bool contact_shadow_init(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
     /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
     RHICapabilities caps;
     char vs_path[96], fs_path[96];
-    if (!rhi_device_get_capabilities(dev, &caps) ||
-        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
-        !shader_variant_path("shaders/contact_shadow.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
-        LOG_WARN("ContactShadow: capability query or shader variant path failed");
+    if (!rhi_device_get_capabilities(dev, &caps)) {
+        LOG_WARN("ContactShadow: capability query failed");
         return false;
     }
-    s->pipe = cs_create_pipe(dev, vs_path, fs_path);
+    if (caps.shader_sidecar_paths) {
+        /* R625: D3D12 never compiles HLSL in-process; the backend resolves
+         * these to post_hlsl.vert / contact_shadow_hlsl.frag. */
+        s->pipe = cs_create_pipe_path(dev, "shaders/post.vert",
+                                      "shaders/contact_shadow.frag");
+    } else {
+        if (!shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+            !shader_variant_path("shaders/contact_shadow.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+            LOG_WARN("ContactShadow: shader variant path failed");
+            return false;
+        }
+        s->pipe = cs_create_pipe(dev, vs_path, fs_path);
+    }
 
     if (!rhi_handle_valid(s->pipe)) {
         LOG_WARN("ContactShadow: pipeline creation failed");
@@ -73,7 +117,7 @@ bool contact_shadow_init(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
      * color (god_rays idiom), so the output must not lose scene detail.
      * Pass stays opt-in (cs_enabled default off), so no default cost. */
     u32 hw = w, hh = h;
-    s->fbo = rhi_offscreen_fbo_create_fmt(dev, hw, hh, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)contact_shadow_targets_create(s, dev, hw, hh);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -100,6 +144,15 @@ bool contact_shadow_init(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
     s->ready = true;
     LOG_INFO("ContactShadow: initialized (%ux%u)", hw, hh);
+    return true;
+}
+
+bool contact_shadow_resize(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!contact_shadow_targets_create(s, dev, w, h)) {
+        LOG_WARN("ContactShadow: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

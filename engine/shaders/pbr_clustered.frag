@@ -121,7 +121,12 @@ PointLight read_point_light(int index) {
 }
 
 DirLight read_dir_light(int index) {
-    int base = (512 * 2) + index * 2;
+    /* R644: dir lights start right after LIGHT_MAX_POINT (256) point lights
+     * of 2 texels each -- texel 512, which is also why the cascades sit at
+     * 520 = 512 + LIGHT_MAX_DIR * 2 (lighting.c upload layout). This read
+     * (512 * 2) = 1024, past the end of the 536-texel buffer: the sun read
+     * as zero on GL/VK (robust access) and out of bounds on D3D12. */
+    int base = (256 * 2) + index * 2;
     vec4 d0 = texelFetch(u_light_data, base);
     vec4 d1 = texelFetch(u_light_data, base + 1);
     DirLight l;
@@ -403,7 +408,28 @@ vec2 parallax_occlusion_mapping(vec3 V, vec3 N, vec2 uv) {
     return mix(prev_uv, current_uv, weight);
 }
 
+#ifdef LOD_FADE
+/* R703a/R703b: instanced and mega static/array fragment variants are built
+ * with LOD_FADE only when fading is enabled. */
+flat in float vLodFade;
+/* Runtime LOD cross-fade (R703a): vLodFade = +k keeps the pixels whose 4x4
+ * Bayer threshold + 0.5 is <= k (finer level), -k keeps those >= k (coarser
+ * level), 0 keeps everything; the two draws of a fading instance cover
+ * complementary pixels. Mirrors lod_fade_keep() in renderer/lod.c. */
+bool lod_fade_discard(float fade) {
+    if (fade == 0.0) return false;
+    const float bayer[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,
+                                      3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    ivec2 p = ivec2(gl_FragCoord.xy) & 3;
+    float b = bayer[p.y * 4 + p.x] + 0.5;
+    return fade > 0.0 ? (b > fade) : (b < -fade);
+}
+#endif
+
 void main() {
+#ifdef LOD_FADE
+    if (lod_fade_discard(vLodFade)) discard;
+#endif
     vec3 N = normalize(vNormal);
     vec3 V = normalize(u_camera_pos - vWorldPos);
 

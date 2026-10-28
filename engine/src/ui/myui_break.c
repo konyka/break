@@ -97,19 +97,25 @@ static RHIPipeline break_ui_create_composite_pipeline(RHIDevice *device) {
       !shader_variant_path("shaders/post_tex.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
     return RHI_HANDLE_NULL;
   }
-  vertex_source = break_ui_read_shader(vs_path, &vertex_len);
-  fragment_source = break_ui_read_shader(fs_path, &fragment_len);
-  if (vertex_source == NULL || fragment_source == NULL) {
+  if (caps.shader_sidecar_paths) {
+    /* D3D12: precompiled post_hlsl.vert + post_tex_hlsl.frag sidecars. */
+    vertex_shader = rhi_shader_create_path(device, vs_path, false);
+    fragment_shader = rhi_shader_create_path(device, fs_path, true);
+  } else {
+    vertex_source = break_ui_read_shader(vs_path, &vertex_len);
+    fragment_source = break_ui_read_shader(fs_path, &fragment_len);
+    if (vertex_source == NULL || fragment_source == NULL) {
+      free(vertex_source);
+      free(fragment_source);
+      return RHI_HANDLE_NULL;
+    }
+    vertex_shader =
+        rhi_shader_create(device, vertex_source, vertex_len, false);
+    fragment_shader =
+        rhi_shader_create(device, fragment_source, fragment_len, true);
     free(vertex_source);
     free(fragment_source);
-    return RHI_HANDLE_NULL;
   }
-  vertex_shader =
-      rhi_shader_create(device, vertex_source, vertex_len, false);
-  fragment_shader =
-      rhi_shader_create(device, fragment_source, fragment_len, true);
-  free(vertex_source);
-  free(fragment_source);
   if (!rhi_handle_valid(vertex_shader) || !rhi_handle_valid(fragment_shader)) {
     if (rhi_handle_valid(vertex_shader))
       rhi_shader_destroy(device, vertex_shader);

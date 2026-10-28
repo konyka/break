@@ -2,8 +2,15 @@
 
 #include <rhi/rhi.h>
 
-#define GPUCULL_MAX_OBJECTS 4096
-#define GPUCULL_MAX_DRAWS   8192
+/* Sized for the mega buffer's node x LOD-level command table (MEGA_MAX_CMDS
+ * in main.c): object i <-> draw i, so both share one capacity. */
+#define GPUCULL_MAX_OBJECTS 16384
+#define GPUCULL_MAX_DRAWS   16384
+
+/* Per-draw LOD selection masks read by unified_cull.comp (binding 5). */
+#define GPUCULL_SELECT_CAMERA 0u
+#define GPUCULL_SELECT_SHADOW 1u
+#define GPUCULL_SELECT_KINDS  2u
 
 /* Draw command for indirect drawing */
 typedef struct {
@@ -37,6 +44,12 @@ typedef struct {
     RHIBuffer       draw_count_buf;      /* Atomic counter for draw count */
     RHIBuffer       visible_flags_ssbo;  /* Per-object visibility (1/0) from unified cull */
     RHIBuffer       vis_flags_staging[2]; /* R172: per in-flight frame slot */
+    /* Runtime LOD: 1 = draw i is the selected level for this pass. Host
+     * written, one buffer per in-flight frame slot x kind (camera/shadow);
+     * initialized to all ones, so a caller that never uploads a selection
+     * gets the pre-LOD behavior. */
+    RHIBuffer       selection_buf[2][GPUCULL_SELECT_KINDS];
+    u32             selection_kind;      /* GPUCULL_SELECT_* bound by the next dispatch */
     RHISampler      hi_z_sampler;        /* Nearest sampler for unified Hi-Z reads */
     RHITexture      hi_z_fallback;       /* 1x1 placeholder when Hi-Z disabled */
     u32             object_count;
@@ -113,6 +126,12 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
                               RHIBuffer vis_flags_out,
                               bool compact_draws,
                               bool stage_readback);
+
+/* Runtime LOD: write this frame's per-draw selection mask of one kind into
+ * the current frame slot (call after rhi_frame_begin, once per frame). */
+void gpucull_upload_selection(GPUCullSystem *gc, u32 kind, const u32 *selected, u32 count);
+/* Choose which selection mask the following unified dispatches read. */
+void gpucull_set_selection_kind(GPUCullSystem *gc, u32 kind);
 
 /* Read per-draw visibility flags from the previous frame's staging copy (R169).
  * Returns false if no prior frame is available — caller should treat all as visible. */

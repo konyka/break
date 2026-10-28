@@ -56,6 +56,8 @@ typedef struct {
     /* Cached uniform locations — render pipeline */
     i32 _loc_view;
     i32 _loc_proj;
+    i32 _loc_prev_vp;    /* R650: D3D12 sidecar only */
+    i32 _loc_viewport;   /* R650: D3D12 sidecar only (quad pixel size) */
 
     /* Pre-built push constant template (Round 18) — only [0] (dt) changes per frame */
     f32 _push_template[20];
@@ -68,7 +70,11 @@ bool  particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt);
 void  particles_shutdown(ParticleSystem *ps);
 void  particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt);
 void  particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd);
-void  particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, const f32 *proj);
+/* prev_vp / target_w / target_h feed the D3D12 sidecar only (velocity and
+ * the quad's pixel size); GL/VK take prev_vp from the bound temporal UBO
+ * and size points with gl_PointSize. */
+void  particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, const f32 *proj,
+                       const f32 *prev_vp, u32 target_w, u32 target_h);
 
 /* Build a valid DrawIndirectCommand fallback when GPU culling is unavailable. */
 static inline void particles_build_cull_fallback(u32 *words, usize word_count) {

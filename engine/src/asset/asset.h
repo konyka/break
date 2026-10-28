@@ -55,6 +55,10 @@ typedef struct {
     u32       material_idx;
     Vec3      aabb_min;
     Vec3      aabb_max;
+    /* R705: mesh slots of up to two authored lower-detail alternatives.
+     * These are references, not owned resources; zero count = auto-generate. */
+    u32       authored_lod[2];
+    u8        authored_lod_count;
 } Mesh;
 
 /* R612: CPU-side mesh geometry recovered from a BSCN MESH_DATA chunk (or, as

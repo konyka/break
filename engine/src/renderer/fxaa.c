@@ -1,10 +1,38 @@
 #include "fxaa.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <core/shader_io.h>
 
+
+static RHIPipeline fxaa_create_pipe_path(RHIDevice *dev, const char *vert_path,
+                                         const char *frag_path) {
+    RHIShader vs = rhi_shader_create_path(dev, vert_path, false);
+    RHIShader fs = rhi_shader_create_path(dev, frag_path, true);
+    RHIPipelineDesc pdesc;
+    RHIPipeline pipe;
+    if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
+        LOG_WARN("FXAA: sidecar shader unavailable (%s, %s)", vert_path,
+                 frag_path);
+        if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
+        if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
+        return RHI_HANDLE_NULL;
+    }
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs;
+    pdesc.frag = fs;
+    pdesc.no_vertex_input = true;
+    pdesc.uses_textures = true;
+    pdesc.depth_write_disable = true;
+    pdesc.disable_culling = true;
+    pipe = rhi_pipeline_create(dev, &pdesc);
+    rhi_shader_destroy(dev, vs);
+    rhi_shader_destroy(dev, fs);
+    return pipe;
+}
 
 static RHIPipeline fxaa_create_pipe(RHIDevice *dev,
                                      const char *vert_path, const char *frag_path) {
@@ -41,6 +69,13 @@ static RHIPipeline fxaa_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool fxaa_targets_create(FXAASystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->fxaa_fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
     if (!fxaa || !dev) return false;
     fxaa->device = dev;
@@ -48,13 +83,24 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
     /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
     RHICapabilities caps;
     char vs_path[96], fs_path[96];
-    if (!rhi_device_get_capabilities(dev, &caps) ||
-        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
-        !shader_variant_path("shaders/fxaa.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
-        LOG_WARN("FXAA: capability query or shader variant path failed");
+    if (!rhi_device_get_capabilities(dev, &caps)) {
+        LOG_WARN("FXAA: capability query failed");
         return false;
     }
-    fxaa->fxaa_pipe = fxaa_create_pipe(dev, vs_path, fs_path);
+    if (caps.shader_sidecar_paths) {
+        /* R619: D3D12 never compiles HLSL in-process, so the GLSL branch
+         * below cannot build there; the backend resolves these two names to
+         * post_hlsl.vert / fxaa_hlsl.frag. */
+        fxaa->fxaa_pipe = fxaa_create_pipe_path(dev, "shaders/post.vert",
+                                                "shaders/fxaa.frag");
+    } else {
+        if (!shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+            !shader_variant_path("shaders/fxaa.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+            LOG_WARN("FXAA: shader variant path failed");
+            return false;
+        }
+        fxaa->fxaa_pipe = fxaa_create_pipe(dev, vs_path, fs_path);
+    }
 
     if (!rhi_handle_valid(fxaa->fxaa_pipe)) {
         LOG_WARN("FXAA: pipeline creation failed");
@@ -67,7 +113,7 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
     if (!fxaa->bind_pipe)
         LOG_WARN("FXAA: bindings create failed; uniform locations resolve -1");
 
-    fxaa->fxaa_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)fxaa_targets_create(fxaa, dev, width, height);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -92,6 +138,15 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
 
     fxaa->ready = true;
     LOG_INFO("FXAA: initialized (%ux%u)", width, height);
+    return true;
+}
+
+bool fxaa_resize(FXAASystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!fxaa_targets_create(s, dev, w, h)) {
+        LOG_WARN("FXAA: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

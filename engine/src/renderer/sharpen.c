@@ -1,4 +1,5 @@
 #include "sharpen.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -7,20 +8,27 @@
 #include <core/shader_io.h>
 
 
-static RHIPipeline sh_create_pipe(RHIDevice *dev,
+static RHIPipeline sh_create_pipe(RHIDevice *dev, bool sidecar,
                                    const char *vert_path, const char *frag_path) {
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vert_path, &vs_len);
-    char *fs_src = shader_read_file(frag_path, &fs_len);
-    if (!vs_src || !fs_src) {
-        LOG_WARN("Sharpen: shaders not found (%s)", frag_path);
+    RHIShader vs, fs;
+    if (sidecar) {
+        /* D3D12 never compiles source in-process: the GLSL path resolves to
+         * the precompiled <name>_hlsl sidecar instead. */
+        vs = rhi_shader_create_path(dev, vert_path, false);
+        fs = rhi_shader_create_path(dev, frag_path, true);
+    } else {
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vert_path, &vs_len);
+        char *fs_src = shader_read_file(frag_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            LOG_WARN("Sharpen: shaders not found (%s)", frag_path);
+            free(vs_src); free(fs_src);
+            return RHI_HANDLE_NULL;
+        }
+        vs = rhi_shader_create(dev, vs_src, vs_len, false);
+        fs = rhi_shader_create(dev, fs_src, fs_len, true);
         free(vs_src); free(fs_src);
-        return RHI_HANDLE_NULL;
     }
-
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
-    free(vs_src); free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_WARN("Sharpen: shader compile failed");
@@ -42,6 +50,13 @@ static RHIPipeline sh_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool sharpen_targets_create(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s || !dev) return false;
     memset(s, 0, sizeof(*s));
@@ -56,7 +71,7 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
         LOG_WARN("Sharpen: capability query or shader variant path failed");
         return false;
     }
-    s->pipe = sh_create_pipe(dev, vs_path, fs_path);
+    s->pipe = sh_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path);
 
     if (!rhi_handle_valid(s->pipe)) {
         LOG_WARN("Sharpen: pipeline creation failed");
@@ -69,7 +84,7 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s->bind_pipe)
         LOG_WARN("Sharpen: bindings create failed; uniform locations resolve -1");
 
-    s->fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)sharpen_targets_create(s, dev, w, h);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -93,6 +108,15 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
     s->ready = true;
     LOG_INFO("Sharpen: initialized (%ux%u)", w, h);
+    return true;
+}
+
+bool sharpen_resize(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!sharpen_targets_create(s, dev, w, h)) {
+        LOG_WARN("Sharpen: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

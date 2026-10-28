@@ -1,3 +1,4 @@
+#include <apps/engine_demo.h>
 #include <engine.h>
 #include <rhi/rhi.h>
 #include "rhi/rhi_rollout.h"
@@ -34,6 +35,9 @@
 #include <renderer/lens_effects.h>
 #include <renderer/cinematic.h>
 #include <renderer/lod.h>
+#include <renderer/lod_gen.h>
+#include <renderer/lod_cache.h>
+#include <renderer/lod_skin.h>
 #include <renderer/combined_post_process.h>
 #include <renderer/motion_history.h>
 #include <renderer/occlusion_cull.h>
@@ -174,9 +178,124 @@ typedef struct { f32 pos[3]; } CTransform;
 typedef struct { u32 physics_id; } CRigidBody;
 typedef struct { u32 mesh_index; } CMeshRef;
 
+/* R600: mirrors the unconditional ForwardTemporal block the blinn_phong family
+ * declares — {vec3 u_camera_pos; float pad; mat4 u_prev_vp; mat4
+ * u_prev_model}. std140 and the D3D12 sidecar's cbuffer agree member for
+ * member, so the same bytes feed all three backends. The camera position
+ * LEADS so a stale rebind can never feed a zeroed camera to a shader that
+ * expects the temporal pair (R589's rule). This buffer is deliberately NOT
+ * rs->clustered_proj_ubo: the clustered family reads that one at a different
+ * layout and must keep it. */
+typedef struct {
+    f32  cam_pos[3];
+    f32  cam_pad;
+    Mat4 prev_vp;
+    Mat4 prev_model;
+    /* R632: the instanced variant's lighting uniforms. They live here rather
+     * than in the push block because D3D12's rhi_cmd_set_uniform_* only
+     * writes root constants, and the instanced pass needs six push-block
+     * words plus two mat4 -- 320 bytes, past the 244-byte ceiling two
+     * descriptor tables leave (R616). Appending AFTER prev_model is what
+     * makes this safe: the blinn_phong family reads u_camera_pos@0 and
+     * u_prev_vp@16, and neither moves. */
+    f32  light_dir[3];
+    f32  light_dir_pad;
+    f32  light_color[3];
+    f32  light_color_pad;
+    f32  ambient[3];
+    f32  ambient_pad;
+} ForwardTemporalUbo;
+
+/* R655: the D3D12 clustered sidecar's b1 cbuffer (ClusterFrame in
+ * pbr_clustered_hlsl.{vert,frag}). The frame constants cannot ride the push
+ * block there -- 17 descriptor tables leave 47 root DWORDs -- so
+ * forward_clustered_bind_frame fills this and binds it at b1. GL/VK keep the
+ * {prev_vp, prev_model, proj} + factor tables layout of clustered_proj_ubo. */
+typedef struct {
+    Mat4 prev_vp;
+    Mat4 prev_model;
+    Mat4 proj;
+    f32  camera_pos[4];
+    f32  ambient[4];
+    f32  fog_color[4];
+    f32  fog[4];          /* near, far, underwater, pom */
+    f32  screen[4];       /* w, h, near, far */
+    f32  counts[4];       /* point, dir, shadow_bias, - */
+    f32  far_planes[4];
+} ClusterFrameUbo;
+
+/* Writes the blinn forward path's frame UBO in one shot. Every path that draws
+ * a blinn_phong shader must call this and bind the buffer: the camera position
+ * lives there now, not in the push block, so a path that forgets renders with a
+ * zeroed view vector. prev_model is identity here — mega verts are world-space
+ * and static nodes match the blinn approximation; the instanced variant reads
+ * per-instance prev_model from its SSBO. */
+static void forward_temporal_ubo_write(RHIDevice *device, RHIBuffer ubo,
+                                      const Vec3 *cam_pos,
+                                      const Mat4 *prev_vp) {
+    ForwardTemporalUbo data;
+    if (!rhi_handle_valid(ubo) || cam_pos == NULL || prev_vp == NULL) return;
+    memset(&data, 0, sizeof(data));
+    data.cam_pos[0] = cam_pos->e[0];
+    data.cam_pos[1] = cam_pos->e[1];
+    data.cam_pos[2] = cam_pos->e[2];
+    data.cam_pad = 0.0f;
+    data.prev_vp = *prev_vp;
+    data.prev_model = mat4_identity();
+    rhi_buffer_update(device, ubo, &data, sizeof(data));
+}
+
+/* R632: the same block with the instanced pass's lighting uniforms filled in.
+ * The blinn forward path calls forward_temporal_ubo_write and never reads
+ * them; sharing one buffer means there is a single temporal block to bind on
+ * every backend, and the members are appended so neither variant disturbs
+ * the other's offsets. */
+static void forward_temporal_ubo_write_lit(RHIDevice *device, RHIBuffer ubo,
+                                          const Vec3 *cam_pos,
+                                          const Mat4 *prev_vp,
+                                          const Vec3 *light_dir,
+                                          const Vec3 *light_color,
+                                          const Vec3 *ambient) {
+    ForwardTemporalUbo data;
+    if (!rhi_handle_valid(ubo) || cam_pos == NULL || prev_vp == NULL ||
+        light_dir == NULL || light_color == NULL || ambient == NULL) return;
+    memset(&data, 0, sizeof(data));
+    data.cam_pos[0] = cam_pos->e[0];
+    data.cam_pos[1] = cam_pos->e[1];
+    data.cam_pos[2] = cam_pos->e[2];
+    data.prev_vp = *prev_vp;
+    data.prev_model = mat4_identity();
+    data.light_dir[0] = light_dir->e[0];
+    data.light_dir[1] = light_dir->e[1];
+    data.light_dir[2] = light_dir->e[2];
+    data.light_color[0] = light_color->e[0];
+    data.light_color[1] = light_color->e[1];
+    data.light_color[2] = light_color->e[2];
+    data.ambient[0] = ambient->e[0];
+    data.ambient[1] = ambient->e[1];
+    data.ambient[2] = ambient->e[2];
+    rhi_buffer_update(device, ubo, &data, sizeof(data));
+}
+
 /* ECS system: copy simulated rigid-body positions back into transforms and
  * respawn anything that fell out of the world. Each entity touches only its own
  * physics body (unique physics_id), so chunks dispatch safely across workers. */
+/* R694: physics runs at a fixed PHYS_FIXED_DT; the rendered transform is the
+ * body position interpolated between the last two steps by g_phys_alpha
+ * (accumulator remainder / step). g_phys_prev_pos holds each body's position
+ * before the last step of this frame; NULL (no step yet / OOM) means "use the
+ * current position" -- the pre-R694 behavior. */
+/* 1/60: the engine's design rate (EngineConfig target_fps 60). The
+ * integrator applies its 0.98 velocity damping once per step, so the step
+ * size sets the terminal fall speed (~8 m/s at 60 Hz, ~4 at 120 Hz); 60 Hz
+ * keeps the motion the demo was tuned for, now independent of render fps. */
+#define PHYS_FIXED_DT     (1.0f / 60.0f)
+#define PHYS_MAX_SUBSTEPS 8u
+static Vec3 *g_phys_prev_pos = NULL;
+static u32   g_phys_prev_cap = 0u;
+static u32   g_phys_prev_count = 0u;
+static f32   g_phys_alpha = 1.0f;
+
 static void sys_sync_transform_from_physics(EcsChunkView *v, void *user) {
     PhysicsWorld *physics = (PhysicsWorld *)user;
     CTransform *xs = (CTransform *)ecs_chunk_column(v, COMP_TRANSFORM);
@@ -185,13 +304,20 @@ static void sys_sync_transform_from_physics(EcsChunkView *v, void *user) {
     for (u32 i = 0; i < v->count; i++) {
         u32 pid = rs[i].physics_id;
         if (pid > 0 && pid < physics->count) {
-            xs[i].pos[0] = physics->bodies[pid].position.e[0];
-            xs[i].pos[1] = physics->bodies[pid].position.e[1];
-            xs[i].pos[2] = physics->bodies[pid].position.e[2];
-            if (xs[i].pos[1] < -20.0f) {
+            Vec3 cur = physics->bodies[pid].position;
+            Vec3 shown = cur;
+            if (g_phys_prev_pos && pid < g_phys_prev_count)
+                shown = vec3_lerp(g_phys_prev_pos[pid], cur, g_phys_alpha);
+            xs[i].pos[0] = shown.e[0];
+            xs[i].pos[1] = shown.e[1];
+            xs[i].pos[2] = shown.e[2];
+            if (cur.e[1] < -20.0f) {
                 xs[i].pos[0] = 0.0f; xs[i].pos[1] = 5.0f; xs[i].pos[2] = 0.0f;
                 physics->bodies[pid].position = vec3(0.0f, 5.0f, 0.0f);
                 physics->bodies[pid].velocity = vec3(0.0f, 0.0f, 0.0f);
+                /* R694: a teleport must not interpolate across the world. */
+                if (g_phys_prev_pos && pid < g_phys_prev_count)
+                    g_phys_prev_pos[pid] = vec3(0.0f, 5.0f, 0.0f);
                 /* R375: resting/static skip BVH refit after fall-respawn teleport. */
                 physics->bodies[pid].rest_frames = 0;
                 physics->bvh_dirty = true;
@@ -241,7 +367,10 @@ typedef struct {
     RHIPipeline   arr_pipeline;
     RHIPipelineBindings *bind_arr;
     i32 arr_loc_model, arr_loc_view, arr_loc_proj;
-    i32 arr_loc_light_dir, arr_loc_light_color, arr_loc_ambient, arr_loc_camera_pos;
+    /* R600: no arr_loc_camera_pos — the camera rides forward_temporal_ubo
+     * (see mega_mat_arrays_draw), so the name resolves -1 and there is
+     * nothing left to write. */
+    i32 arr_loc_light_dir, arr_loc_light_color, arr_loc_ambient;
     RHIBuffer     instance_buf[2]; /* R183: dual-slot vs in-flight instanced VS */
     RHISampler    sampler;
     RHISampler    nearest_sampler;
@@ -286,6 +415,14 @@ typedef struct {
      * index differs per variant (static: set=2, instanced: set=3), but the
      * bind call resolves the pipeline's own ubo_set. */
     RHIBuffer     clustered_proj_ubo;
+    /* R600: blinn_phong's own frame UBO {u_camera_pos, u_prev_vp,
+     * u_prev_model}. Separate from clustered_proj_ubo, whose readers
+     * (pbr_clustered{,_vk}.vert) use a different layout. */
+    RHIBuffer     forward_temporal_ubo;
+    /* R606: where forward_temporal_ubo has to be published. Copied from
+     * caps.temporal_ubo_binding at init — 0 on GL/Vulkan (the GLSL
+     * layout(binding = 0)), 1 on D3D12 (register b1; b0 is the push block). */
+    u32           temporal_ubo_binding;
     i32 inst_loc_view, inst_loc_proj;
     i32 inst_loc_light_dir, inst_loc_light_color, inst_loc_ambient, inst_loc_camera_pos;
     i32 sk_loc_view, sk_loc_proj;
@@ -368,31 +505,69 @@ static bool render_init(RenderState *rs, Platform *platform) {
     RHICapabilities caps = {0};
     if (!rhi_device_get_capabilities(rs->device, &caps)) goto fail;
     rs->caps = caps;
+    /* R606: the per-frame ForwardTemporal block has to be published at the
+     * index/register the active shader declares — binding 0 in both GLSL
+     * twins, register b1 in the D3D12 sidecars (b0 is the push block there).
+     * The backend owns that number; the frame loop only forwards it. */
+    rs->temporal_ubo_binding = caps.temporal_ubo_binding;
 
-    char vs_path[128], fs_path[128];
-    if (!shader_variant_path("shaders/blinn_phong.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
-        !shader_variant_path("shaders/blinn_phong.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path)))
-        goto fail;
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vs_path, &vs_len);
-    char *fs_src = shader_read_file(fs_path, &fs_len);
-    if (!vs_src || !fs_src) {
-        LOG_FATAL("Failed to load shaders");
+    RHIShader vs, fs;
+    if (caps.shader_sidecar_paths) {
+        /* R606: D3D12 never compiles GLSL. Its shaders are hand-authored HLSL
+         * sidecars resolved from the requested path by the backend: the name
+         * gains an idempotent "_hlsl" before the stage extension. This
+         * pipeline declares two colour attachments, so it takes the MRT pair —
+         * shaders/blinn_phong_mrt.vert resolves to blinn_phong_mrt_hlsl.vert,
+         * the twin of blinn_phong.vert with FORWARD_MRT defined.
+         * shader_variant cannot select this: D3D12 leaves it at the GLSL
+         * default, identical to desktop GL. */
+        LOG_INFO("blinn_phong: backend resolves shader sidecars; "
+                 "loading shaders/blinn_phong_mrt.{vert,frag} as "
+                 "blinn_phong_mrt_hlsl.{vert,frag}");
+        if (lod_fade_seconds() > 0.0f) {
+            vs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt_lodfade.vert", false);
+            fs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt_lodfade.frag", true);
+        } else {
+            vs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt.vert", false);
+            fs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt.frag", true);
+        }
+    } else {
+        char vs_path[128], fs_path[128];
+        if (!shader_variant_path("shaders/blinn_phong.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+            !shader_variant_path("shaders/blinn_phong.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path)))
+            goto fail;
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vs_path, &vs_len);
+        char *fs_src = shader_read_file(fs_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            LOG_FATAL("Failed to load shaders");
+            free(vs_src);
+            free(fs_src);
+            goto fail; /* R359: device already live */
+        }
+
+        usize vs_mrt_len = 0, fs_mrt_len = 0;
+        char *vs_mrt = shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len);
+        char *fs_mrt = shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len);
+        if (lod_fade_seconds() > 0.0f && vs_mrt && fs_mrt) {
+            usize vfl = 0, ffl = 0;
+            char *vf = shader_inject_define(vs_mrt, vs_mrt_len, "LOD_FADE", &vfl);
+            char *ff = shader_inject_define(fs_mrt, fs_mrt_len, "LOD_FADE", &ffl);
+            if (vf && ff) {
+                free(vs_mrt); free(fs_mrt);
+                vs_mrt = vf; vs_mrt_len = vfl; fs_mrt = ff; fs_mrt_len = ffl;
+            } else {
+                free(vf); free(ff);
+            }
+        }
+        vs = rhi_shader_create(rs->device, vs_mrt ? vs_mrt : vs_src,
+                               vs_mrt ? vs_mrt_len : vs_len, false);
+        fs = rhi_shader_create(rs->device, fs_mrt ? fs_mrt : fs_src,
+                               fs_mrt ? fs_mrt_len : fs_len, true);
+        free(vs_mrt); free(fs_mrt);
         free(vs_src);
         free(fs_src);
-        goto fail; /* R359: device already live */
     }
-
-    usize vs_mrt_len = 0, fs_mrt_len = 0;
-    char *vs_mrt = shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len);
-    char *fs_mrt = shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len);
-    RHIShader vs = rhi_shader_create(rs->device, vs_mrt ? vs_mrt : vs_src,
-                                     vs_mrt ? vs_mrt_len : vs_len, false);
-    RHIShader fs = rhi_shader_create(rs->device, fs_mrt ? fs_mrt : fs_src,
-                                     fs_mrt ? fs_mrt_len : fs_len, true);
-    free(vs_mrt); free(fs_mrt);
-    free(vs_src);
-    free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         if (rhi_handle_valid(vs)) rhi_shader_destroy(rs->device, vs);
@@ -419,37 +594,71 @@ static bool render_init(RenderState *rs, Platform *platform) {
 
     /* R441: material texture-array forward variant. Same uniforms/push layout
      * as blinn_phong, but u_albedo is a sampler2DArray and the vertex stage
-     * forwards gl_BaseInstance(ARB) as the array layer. */
+     * forwards gl_BaseInstance(ARB) as the array layer. R606: D3D12 takes the
+     * sidecar route exactly as the blinn_phong pair above does — the backend
+     * derives blinn_phong_arr_hlsl.{vert,frag} from the same two GLSL paths,
+     * and the sidecars carry the MRT behaviour already authored in, so no
+     * FORWARD_MRT define is injected here (that injection is the GLSL-only
+     * branch's job). */
     {
-        usize avl = 0, afl = 0;
-        char avs_path[128] = {0}, afs_path[128] = {0};
-        shader_variant_path("shaders/blinn_phong_arr.vert", (RHIShaderVariant)caps.shader_variant, avs_path, sizeof(avs_path));
-        shader_variant_path("shaders/blinn_phong_arr.frag", (RHIShaderVariant)caps.shader_variant, afs_path, sizeof(afs_path));
-        char *avs = avs_path[0] ? shader_read_file(avs_path, &avl) : NULL;
-        char *afs = afs_path[0] ? shader_read_file(afs_path, &afl) : NULL;
-        if (avs && afs) {
-            usize avm_len = 0, afm_len = 0;
-            char *avm = shader_inject_define(avs, avl, "FORWARD_MRT", &avm_len);
-            char *afm = shader_inject_define(afs, afl, "FORWARD_MRT", &afm_len);
-            RHIShader svs = rhi_shader_create(rs->device, avm ? avm : avs,
-                                               avm ? avm_len : avl, false);
-            RHIShader sfs = rhi_shader_create(rs->device, afm ? afm : afs,
-                                               afm ? afm_len : afl, true);
-            free(avm); free(afm);
-            if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
-                RHIPipelineDesc apd = {.vert = svs, .frag = sfs, .uses_textures = true,
-                                       .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
-                                       .mrt_attachment_count = 2u,
-                                       .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
-                rs->arr_pipeline = rhi_pipeline_create(rs->device, &apd);
-            }
-            if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
-            if (rhi_handle_valid(sfs)) rhi_shader_destroy(rs->device, sfs);
+        RHIShader svs = RHI_HANDLE_NULL, sfs = RHI_HANDLE_NULL;
+        if (caps.shader_sidecar_paths) {
+            LOG_INFO("blinn_phong_arr: backend resolves shader sidecars; "
+                     "loading shaders/blinn_phong_arr.{vert,frag} as "
+                     "blinn_phong_arr_hlsl.{vert,frag}");
+            svs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+                ? "shaders/blinn_phong_arr_lodfade.vert" : "shaders/blinn_phong_arr.vert", false);
+            sfs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+                ? "shaders/blinn_phong_arr_lodfade.frag" : "shaders/blinn_phong_arr.frag", true);
         } else {
-            LOG_WARN("MatIndirect: array shaders missing; single-execute path disabled");
+            usize avl = 0, afl = 0;
+            char avs_path[128] = {0}, afs_path[128] = {0};
+            shader_variant_path("shaders/blinn_phong_arr.vert", (RHIShaderVariant)caps.shader_variant, avs_path, sizeof(avs_path));
+            shader_variant_path("shaders/blinn_phong_arr.frag", (RHIShaderVariant)caps.shader_variant, afs_path, sizeof(afs_path));
+            char *avs = avs_path[0] ? shader_read_file(avs_path, &avl) : NULL;
+            char *afs = afs_path[0] ? shader_read_file(afs_path, &afl) : NULL;
+            if (avs && afs) {
+                usize avm_len = 0, afm_len = 0;
+                char *avm = shader_inject_define(avs, avl, "FORWARD_MRT", &avm_len);
+                char *afm = shader_inject_define(afs, afl, "FORWARD_MRT", &afm_len);
+                if (lod_fade_seconds() > 0.0f && avm && afm) {
+                    usize vfl = 0, ffl = 0;
+                    char *vf = shader_inject_define(avm, avm_len, "LOD_FADE", &vfl);
+                    char *ff = shader_inject_define(afm, afm_len, "LOD_FADE", &ffl);
+                    if (vf && ff) {
+                        free(avm); free(afm);
+                        avm = vf; avm_len = vfl; afm = ff; afm_len = ffl;
+                    } else {
+                        free(vf); free(ff);
+                    }
+                }
+                svs = rhi_shader_create(rs->device, avm ? avm : avs,
+                                        avm ? avm_len : avl, false);
+                sfs = rhi_shader_create(rs->device, afm ? afm : afs,
+                                        afm ? afm_len : afl, true);
+                free(avm); free(afm);
+            } else {
+                LOG_WARN("MatIndirect: array shaders missing; single-execute path disabled");
+            }
+            free(avs);
+            free(afs);
         }
-        free(avs);
-        free(afs);
+        if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
+            RHIPipelineDesc apd = {.vert = svs, .frag = sfs, .uses_textures = true,
+                                   .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                                   .mrt_attachment_count = 2u,
+                                   .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
+            rs->arr_pipeline = rhi_pipeline_create(rs->device, &apd);
+        }
+        /* The GLSL branch above already named the failure it hit; the sidecar
+         * branch has no such line, and an unloadable sidecar otherwise
+         * disables the whole material-array path with nothing in the log. */
+        if (caps.shader_sidecar_paths &&
+            !(rhi_handle_valid(svs) && rhi_handle_valid(sfs)))
+            LOG_WARN("MatIndirect: blinn_phong_arr sidecars unusable; "
+                     "single-execute path disabled");
+        if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
+        if (rhi_handle_valid(sfs)) rhi_shader_destroy(rs->device, sfs);
     }
     if (rhi_handle_valid(rs->arr_pipeline)) {
         rs->bind_arr = rhi_pipeline_bindings_create(rs->device, rs->arr_pipeline);
@@ -461,7 +670,6 @@ static bool render_init(RenderState *rs, Platform *platform) {
         rs->arr_loc_light_dir   = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_light_dir");
         rs->arr_loc_light_color = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_light_color");
         rs->arr_loc_ambient     = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_ambient");
-        rs->arr_loc_camera_pos  = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_camera_pos");
     }
 
     rs->loc_model       = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_model");
@@ -473,6 +681,97 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rs->loc_camera_pos  = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_camera_pos");
     rs->loc_albedo      = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_albedo");
 
+    /* R655: a sidecar backend (D3D12) builds the STATIC clustered pipeline
+     * from pbr_clustered_hlsl.{vert,frag}. IBL, point-shadow cubes and
+     * FORWARD_MRT are authored into the pair (the GLSL needs the defines
+     * injected), and the instanced / skinned / array variants have no
+     * sidecar, so those draws keep their blinn-family pipelines. */
+    if (caps.shader_sidecar_paths) {
+        RHIShader cvs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+            ? "shaders/pbr_clustered_lodfade.vert" : "shaders/pbr_clustered.vert", false);
+        RHIShader cfs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+            ? "shaders/pbr_clustered_lodfade.frag" : "shaders/pbr_clustered.frag", true);
+        if (rhi_handle_valid(cvs) && rhi_handle_valid(cfs)) {
+            RHIPipelineDesc cpd = {.vert = cvs, .frag = cfs, .uses_textures = true, .uses_texel_buffer = true, .disable_culling = true,
+                                   .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                                   .mrt_attachment_count = 2u,
+                                   .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
+            rs->clustered_pipeline = rhi_pipeline_create(rs->device, &cpd);
+            if (!rhi_handle_valid(rs->clustered_pipeline))
+                LOG_WARN("clustered: D3D12 sidecar pipeline creation failed");
+            /* R656: instanced variant. Same fragment object; the instance
+             * rows are a structured buffer at t16 (see the shader header). */
+            RHIShader civs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_inst.vert", false);
+            if (rhi_handle_valid(civs)) {
+                /* R703a/R703b: instanced and static mega pipelines use the fade
+                 * pixel stage; skinned keeps a separate discard-free stage. */
+                RHIShader cffs = lod_fade_seconds() > 0.0f
+                    ? rhi_shader_create(rs->device, "pbr_clustered_lodfade_hlsl.frag", 0, true)
+                    : RHI_HANDLE_NULL;
+                cpd.vert = civs;
+                cpd.uses_storage = true;
+                if (rhi_handle_valid(cffs)) cpd.frag = cffs;
+                rs->clustered_inst_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                cpd.frag = cfs;
+                if (rhi_handle_valid(cffs)) rhi_shader_destroy(rs->device, cffs);
+                if (!rhi_handle_valid(rs->clustered_inst_pipeline))
+                    LOG_WARN("clustered: D3D12 instanced sidecar pipeline creation failed");
+                rhi_shader_destroy(rs->device, civs);
+            }
+            /* R657: skinned variant. Joints are a structured buffer at t16;
+             * the 64-byte joint vertex layout comes from .skinned_vertex. */
+            /* R707c: with the skinned LOD fade on, the skinned variant takes
+             * the fade vertex twin and the shared fade pixel stage (cfs). */
+            const bool skin_fade = caps.indirect_first_instance_supported && lod_fade_seconds() > 0.0f;
+            RHIShader csvs = rhi_shader_create_path(rs->device, skin_fade
+                ? "shaders/pbr_clustered_skin_lodfade.vert" : "shaders/pbr_clustered_skin.vert", false);
+            RHIShader csfs = (lod_fade_seconds() > 0.0f && !skin_fade)
+                ? rhi_shader_create_path(rs->device, "shaders/pbr_clustered.frag", true)
+                : RHI_HANDLE_NULL;
+            if (rhi_handle_valid(csvs)) {
+                cpd.vert = csvs;
+                cpd.uses_storage = true;
+                cpd.skinned_vertex = true;
+                if (rhi_handle_valid(csfs)) cpd.frag = csfs;
+                rs->clustered_skin_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                cpd.frag = cfs;
+                if (!rhi_handle_valid(rs->clustered_skin_pipeline))
+                    LOG_WARN("clustered: D3D12 skinned sidecar pipeline creation failed");
+                rhi_shader_destroy(rs->device, csvs);
+            }
+            if (rhi_handle_valid(csfs)) rhi_shader_destroy(rs->device, csfs);
+            /* R658: texture-array variant -- own pixel stage (Texture2DArray
+             * registers, per-layer factor tables in the b1 cbuffer) and a
+             * vertex stage that forwards first_instance as the layer. */
+            {
+                RHIShader cavs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+                    ? "shaders/pbr_clustered_arr_lodfade.vert" : "shaders/pbr_clustered_arr.vert", false);
+                RHIShader cafs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+                    ? "shaders/pbr_clustered_arr_lodfade.frag" : "shaders/pbr_clustered_arr.frag", true);
+                if (rhi_handle_valid(cavs) && rhi_handle_valid(cafs)) {
+                    cpd.vert = cavs;
+                    cpd.frag = cafs;
+                    cpd.uses_storage = false;
+                    cpd.skinned_vertex = false;
+                    rs->clustered_arr_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                    if (!rhi_handle_valid(rs->clustered_arr_pipeline))
+                        LOG_WARN("clustered: D3D12 array sidecar pipeline creation failed");
+                }
+                if (rhi_handle_valid(cavs)) rhi_shader_destroy(rs->device, cavs);
+                if (rhi_handle_valid(cafs)) rhi_shader_destroy(rs->device, cafs);
+            }
+        } else {
+            LOG_WARN("clustered: pbr_clustered sidecars unavailable");
+        }
+        if (rhi_handle_valid(cvs)) rhi_shader_destroy(rs->device, cvs);
+        if (rhi_handle_valid(cfs)) rhi_shader_destroy(rs->device, cfs);
+        if (rhi_handle_valid(rs->clustered_pipeline)) {
+            RHIBufferDesc pjd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                                  .size = sizeof(ClusterFrameUbo) + 2u * 64u * 4u * sizeof(f32),
+                                  .initial_data = NULL };
+            rs->clustered_proj_ubo = rhi_buffer_create(rs->device, &pjd);
+        }
+    } else
     /* Clustered lighting pipelines (static + R590 instanced + R591 skinned + R592 array) */
     {
         usize cvl = 0, cfl = 0, civl = 0, csvl = 0, cavl = 0;
@@ -510,23 +809,74 @@ static bool render_init(RenderState *rs, Platform *platform) {
             RHIShader cfs = cf_mrt ? rhi_shader_create(rs->device, cf_mrt, cfl_mrt, true)
                                    : (cf_ps ? rhi_shader_create(rs->device, cf_ps, cfl_ps, true)
                                             : rhi_shader_create(rs->device, cf, cfl, true));
+            RHIShader cmvs = RHI_HANDLE_NULL, cmfs = RHI_HANDLE_NULL;
+            if (lod_fade_seconds() > 0.0f && cv_mrt && cf_mrt) {
+                usize vfl = 0, ffl = 0;
+                char *vf = shader_inject_define(cv_mrt, cvl_mrt, "LOD_FADE", &vfl);
+                char *ff = shader_inject_define(cf_mrt, cfl_mrt, "LOD_FADE", &ffl);
+                if (vf && ff) {
+                    cmvs = rhi_shader_create(rs->device, vf, vfl, false);
+                    cmfs = rhi_shader_create(rs->device, ff, ffl, true);
+                }
+                free(vf); free(ff);
+                if (!rhi_handle_valid(cmvs) || !rhi_handle_valid(cmfs)) {
+                    LOG_WARN("LOD fade: clustered static LOD_FADE variant failed; using the plain variant");
+                    if (rhi_handle_valid(cmvs)) rhi_shader_destroy(rs->device, cmvs);
+                    if (rhi_handle_valid(cmfs)) rhi_shader_destroy(rs->device, cmfs);
+                    cmvs = cmfs = RHI_HANDLE_NULL;
+                }
+            }
             /* R590: instanced variant vert (instances ride a vertex SSBO;
              * the frag object is SHARED with the static pipeline). */
-            RHIShader civs = RHI_HANDLE_NULL;
+            RHIShader civs = RHI_HANDLE_NULL, cifs = RHI_HANDLE_NULL;
             if (civ) {
                 usize civm_len = 0;
                 char *civ_mrt = shader_inject_define(civ, civl, "FORWARD_MRT", &civm_len);
-                civs = rhi_shader_create(rs->device, civ_mrt ? civ_mrt : civ,
-                                         civ_mrt ? civm_len : civl, false);
+                /* R703a: with the LOD cross-fade on, the instanced variant gets
+                 * its own LOD_FADE vert + frag pair (dither discard); every
+                 * other clustered pipeline keeps the shared discard-free frag. */
+                if (lod_fade_seconds() > 0.0f && civ_mrt && cf_mrt) {
+                    usize vfl = 0, ffl = 0;
+                    char *vf = shader_inject_define(civ_mrt, civm_len, "LOD_FADE", &vfl);
+                    char *ff = shader_inject_define(cf_mrt, cfl_mrt, "LOD_FADE", &ffl);
+                    if (vf && ff) {
+                        civs = rhi_shader_create(rs->device, vf, vfl, false);
+                        cifs = rhi_shader_create(rs->device, ff, ffl, true);
+                    }
+                    free(vf); free(ff);
+                    if (!rhi_handle_valid(civs) || !rhi_handle_valid(cifs)) {
+                        LOG_WARN("LOD fade: clustered instanced LOD_FADE variant failed; using the plain variant");
+                        if (rhi_handle_valid(civs)) rhi_shader_destroy(rs->device, civs);
+                        if (rhi_handle_valid(cifs)) rhi_shader_destroy(rs->device, cifs);
+                        civs = cifs = RHI_HANDLE_NULL;
+                    }
+                }
+                if (!rhi_handle_valid(civs))
+                    civs = rhi_shader_create(rs->device, civ_mrt ? civ_mrt : civ,
+                                             civ_mrt ? civm_len : civl, false);
                 free(civ_mrt);
             }
             /* R591: skinned variant vert (joints ride a vertex SSBO). */
             RHIShader csvs = RHI_HANDLE_NULL;
+            /* R707c: skinned LOD cross-fade -- LOD_FADE vert + the LOD_FADE
+             * frag shared with the instanced variant (cifs). */
+            bool csk_fade = false;
             if (csv) {
                 usize csvm_len = 0;
                 char *csv_mrt = shader_inject_define(csv, csvl, "FORWARD_MRT", &csvm_len);
-                csvs = rhi_shader_create(rs->device, csv_mrt ? csv_mrt : csv,
-                                         csv_mrt ? csvm_len : csvl, false);
+                if (caps.indirect_first_instance_supported && lod_fade_seconds() > 0.0f &&
+                    csv_mrt && rhi_handle_valid(cifs)) {
+                    usize vfl = 0;
+                    char *vf = shader_inject_define(csv_mrt, csvm_len, "LOD_FADE", &vfl);
+                    if (vf) csvs = rhi_shader_create(rs->device, vf, vfl, false);
+                    free(vf);
+                    csk_fade = rhi_handle_valid(csvs);
+                    if (!csk_fade)
+                        LOG_WARN("LOD fade: clustered skinned LOD_FADE variant failed; using the plain variant");
+                }
+                if (!rhi_handle_valid(csvs))
+                    csvs = rhi_shader_create(rs->device, csv_mrt ? csv_mrt : csv,
+                                             csv_mrt ? csvm_len : csvl, false);
                 free(csv_mrt);
             }
             /* R592: texture-array variant — own frag object (CLUSTERED_ARR
@@ -535,15 +885,31 @@ static bool render_init(RenderState *rs, Platform *platform) {
             RHIShader cavs = RHI_HANDLE_NULL, cafs = RHI_HANDLE_NULL;
             char *cf_arr = NULL;
             if (cav) {
-                usize cavm_len = 0;
+                usize cavm_len = 0, cfa_len = 0;
                 char *cav_mrt = shader_inject_define(cav, cavl, "FORWARD_MRT", &cavm_len);
-                cavs = rhi_shader_create(rs->device, cav_mrt ? cav_mrt : cav,
-                                         cav_mrt ? cavm_len : cavl, false);
-                free(cav_mrt);
-                usize cfa_len = 0;
                 cf_arr = cf_mrt ? shader_inject_define(cf_mrt, cfl_mrt, "CLUSTERED_ARR", &cfa_len) : NULL;
-                if (cf_arr)
-                    cafs = rhi_shader_create(rs->device, cf_arr, cfa_len, true);
+                char *cav_use = cav_mrt ? cav_mrt : cav;
+                char *caf_use = cf_arr;
+                usize cav_use_len = cav_mrt ? cavm_len : cavl;
+                usize caf_use_len = cfa_len;
+                if (lod_fade_seconds() > 0.0f && cav_mrt && cf_arr) {
+                    usize vfl = 0, ffl = 0;
+                    char *vf = shader_inject_define(cav_mrt, cavm_len, "LOD_FADE", &vfl);
+                    char *ff = shader_inject_define(cf_arr, cfa_len, "LOD_FADE", &ffl);
+                    if (vf && ff) {
+                        cav_use = vf; cav_use_len = vfl; caf_use = ff; caf_use_len = ffl;
+                    } else {
+                        free(vf); free(ff);
+                        vf = ff = NULL;
+                    }
+                    cavs = rhi_shader_create(rs->device, cav_use, cav_use_len, false);
+                    if (caf_use) cafs = rhi_shader_create(rs->device, caf_use, caf_use_len, true);
+                    free(vf); free(ff);
+                } else {
+                    cavs = rhi_shader_create(rs->device, cav_use, cav_use_len, false);
+                    if (caf_use) cafs = rhi_shader_create(rs->device, caf_use, caf_use_len, true);
+                }
+                free(cav_mrt);
             }
             free(cv); free(cf); free(cf_ibl); free(cf_ps); free(cv_mrt); free(cf_mrt); free(civ); free(csv); free(cav); free(cf_arr);
             if (rhi_handle_valid(cvs) && rhi_handle_valid(cfs)) {
@@ -551,7 +917,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
                                        .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
                                        .mrt_attachment_count = 2u,
                                        .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
+                if (rhi_handle_valid(cmvs) && rhi_handle_valid(cmfs)) {
+                    cpd.vert = cmvs; cpd.frag = cmfs;
+                }
                 rs->clustered_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                cpd.vert = cvs; cpd.frag = cfs;
                 if (rhi_handle_valid(civs)) {
                     /* R590: NOT .is_instanced — that flag only reclassifies
                      * the uniform mapping to the blinn-instanced table (it
@@ -560,7 +930,9 @@ static bool render_init(RenderState *rs, Platform *platform) {
                      * must apply. */
                     cpd.vert = civs;
                     cpd.uses_storage = true;
+                    if (rhi_handle_valid(cifs)) cpd.frag = cifs;
                     rs->clustered_inst_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                    cpd.frag = cfs;
                 }
                 if (rhi_handle_valid(csvs)) {
                     /* R591: skinned variant — 64B joint vertex contract via
@@ -570,7 +942,9 @@ static bool render_init(RenderState *rs, Platform *platform) {
                     cpd.vert = csvs;
                     cpd.uses_storage = true;
                     cpd.skinned_vertex = true;
+                    if (csk_fade) cpd.frag = cifs;
                     rs->clustered_skin_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                    cpd.frag = cfs;
                 }
                 if (rhi_handle_valid(cavs) && rhi_handle_valid(cafs)) {
                     /* R592: array variant — no storage set (ubo stays at
@@ -585,7 +959,10 @@ static bool render_init(RenderState *rs, Platform *platform) {
                 rhi_shader_destroy(rs->device, cvs);
                 rhi_shader_destroy(rs->device, cfs);
             }
+            if (rhi_handle_valid(cmvs)) rhi_shader_destroy(rs->device, cmvs);
+            if (rhi_handle_valid(cmfs)) rhi_shader_destroy(rs->device, cmfs);
             if (rhi_handle_valid(civs)) rhi_shader_destroy(rs->device, civs);
+            if (rhi_handle_valid(cifs)) rhi_shader_destroy(rs->device, cifs);
             if (rhi_handle_valid(csvs)) rhi_shader_destroy(rs->device, csvs);
             if (rhi_handle_valid(cavs)) rhi_shader_destroy(rs->device, cavs);
             if (rhi_handle_valid(cafs)) rhi_shader_destroy(rs->device, cafs);
@@ -596,7 +973,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
         if (!rs->bind_clustered)
             LOG_WARN("clustered bindings create failed; locations resolve -1");
         clustered_query_locs(&rs->cl, rs->bind_clustered);
-        {
+        if (!caps.shader_sidecar_paths) {
             /* R589: clustered frame UBO {prev_vp, prev_model, proj} — the RHI
              * binds one UBO descriptor set per call, so proj (VK) and the
              * FORWARD_MRT temporal pair share a single binding (VK set=2
@@ -605,11 +982,23 @@ static bool render_init(RenderState *rs, Platform *platform) {
              * pipeline still reads correct values. Refreshed per frame.
              * R592: +2x64 vec4 factor tables (offsets 192..2240) consumed by
              * the CLUSTERED_ARR frag branch's per-layer factor lookups. */
+            /* R600: the camera position left this block — it belongs to the
+             * blinn family's forward_temporal_ubo, so the {prev_vp,
+             * prev_model, proj} layout and the 192.. factor offsets below are
+             * unchanged. */
             RHIBufferDesc pjd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
                                   .size = 3u * sizeof(Mat4) + 2u * 64u * 4u * sizeof(f32),
                                   .initial_data = NULL };
             rs->clustered_proj_ubo = rhi_buffer_create(rs->device, &pjd);
         }
+    }
+    {
+        /* R600: the blinn_phong pipeline's frame UBO. Created unconditionally
+         * so the D3D12 sidecar can bind the same bytes as its b1 CBV. */
+        RHIBufferDesc ftd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                              .size = sizeof(ForwardTemporalUbo),
+                              .initial_data = NULL };
+        rs->forward_temporal_ubo = rhi_buffer_create(rs->device, &ftd);
     }
     if (rhi_handle_valid(rs->clustered_inst_pipeline)) {
         rs->bind_clustered_inst = rhi_pipeline_bindings_create(rs->device, rs->clustered_inst_pipeline);
@@ -683,31 +1072,104 @@ static bool render_init(RenderState *rs, Platform *platform) {
     }
 
     {
-        usize dvl = 0, dfl = 0;
-        char *dv = shader_read_file("shaders/depth_only.vert", &dvl);
-        char *df = shader_read_file("shaders/depth_only.frag", &dfl);
-        if (dv && df) {
-            RHIShader dvs = rhi_shader_create(rs->device, dv, dvl, false);
-            RHIShader dfs = rhi_shader_create(rs->device, df, dfl, true);
-            free(dv); free(df);
-            if (rhi_handle_valid(dvs) && rhi_handle_valid(dfs)) {
-                RHIPipelineDesc dpd = {
-                    .vert = dvs, .frag = dfs,
-                    .depth_write_disable = false,
-                    .is_shadow_depth = true,
-                };
-                rs->depth_pipeline = rhi_pipeline_create(rs->device, &dpd);
-                rs->bind_depth = rhi_pipeline_bindings_create(rs->device, rs->depth_pipeline);
-                if (!rs->bind_depth)
-                    LOG_WARN("depth bindings create failed; locations resolve -1");
-                rs->depth_loc_model = rhi_pipeline_bindings_resolve(rs->bind_depth, "u_model");
-                rs->depth_loc_lvp   = rhi_pipeline_bindings_resolve(rs->bind_depth, "u_light_vp");
-                rhi_shader_destroy(rs->device, dvs);
-                rhi_shader_destroy(rs->device, dfs);
+        RHIPipelineDesc dpd;
+        RHIShader dvs = RHI_HANDLE_NULL, dfs = RHI_HANDLE_NULL;
+        bool stages_ok;
+        memset(&dpd, 0, sizeof(dpd));
+        dpd.depth_write_disable = false;
+        dpd.is_shadow_depth = true;
+        if (caps.shader_sidecar_paths) {
+            /* R613: on D3D12 the shadow cascade had no pipeline at all, so
+             * render.depth_pipeline stayed invalid and every cascade drew
+             * with depth_loc_model/lvp at -1 -- the guards at the call site
+             * swallow those writes silently, which is why this showed up as
+             * "shadows look fine but never update" rather than a crash.
+             *
+             * vertex_stride is set explicitly here and left at 0 in the GLSL
+             * branch below, because the cascade binds terrain.vbo (pos3 +
+             * nrm3 + uv2 = 32B). rhi_d3d12_input_layout turns 0 into the same
+             * 32B layout, so this states the contract rather than relying on
+             * that fallback, and the GLSL path stays byte-identical.
+             *
+             * No fragment stage: is_shadow_depth drops every render target,
+             * and depth_only.frag is an empty main() anyway. */
+            dvs = rhi_shader_create_path(rs->device, "shaders/depth_only.vert",
+                                         false);
+            dpd.vert = dvs;
+            dpd.frag = RHI_HANDLE_NULL;
+            dpd.vertex_stride = 32u;
+        } else {
+            usize dvl = 0, dfl = 0;
+            char *dv = shader_read_file("shaders/depth_only.vert", &dvl);
+            char *df = shader_read_file("shaders/depth_only.frag", &dfl);
+            if (dv && df) {
+                dvs = rhi_shader_create(rs->device, dv, dvl, false);
+                dfs = rhi_shader_create(rs->device, df, dfl, true);
+                free(dv); free(df);
+                dpd.vert = dvs; dpd.frag = dfs;
             }
         }
+        /* RHIHandle is a struct, so "no fragment stage" cannot be spelled as a
+         * comparison; each branch states whether its stages must all exist. */
+        stages_ok = caps.shader_sidecar_paths
+                        ? rhi_handle_valid(dpd.vert)
+                        : (rhi_handle_valid(dvs) && rhi_handle_valid(dfs));
+        if (stages_ok) {
+            rs->depth_pipeline = rhi_pipeline_create(rs->device, &dpd);
+            rs->bind_depth = rhi_pipeline_bindings_create(rs->device, rs->depth_pipeline);
+            if (!rs->bind_depth)
+                LOG_WARN("depth bindings create failed; locations resolve -1");
+            rs->depth_loc_model = rhi_pipeline_bindings_resolve(rs->bind_depth, "u_model");
+            rs->depth_loc_lvp   = rhi_pipeline_bindings_resolve(rs->bind_depth, "u_light_vp");
+        } else {
+            LOG_WARN("depth_only: shader unavailable -- shadow cascades disabled");
+        }
+        if (rhi_handle_valid(dvs)) rhi_shader_destroy(rs->device, dvs);
+        if (rhi_handle_valid(dfs)) rhi_shader_destroy(rs->device, dfs);
     }
 
+    {
+        /* R632/R636: the D3D12 twin of this GLSL pair is the MRT variant,
+         * because the GLSL path below injects FORWARD_MRT unconditionally.
+         *
+         * The sidecar has to be named directly. rhi_shader_create_path
+         * derives "<base>_hlsl<suffix>" from the GLSL path, which for
+         * "shaders/instanced.vert" is "instanced_hlsl.vert" -- a file that
+         * does not exist, because the only twin of this shader is the MRT
+         * one. The name mismatch was silent: the demo logged "instanced
+         * sidecars unavailable; instanced draws disabled" and drew none of
+         * these meshes, while the path looked ported. */
+        if (caps.shader_sidecar_paths) {
+            RHIShader ivs = rhi_shader_create(rs->device,
+                                              "instanced_mrt_hlsl.vert", 0, false);
+            /* R703a: LOD cross-fade twin of the pixel stage (dither discard). */
+            RHIShader ifs = rhi_shader_create(rs->device,
+                                              lod_fade_seconds() > 0.0f
+                                                  ? "instanced_mrt_lodfade_hlsl.frag"
+                                                  : "instanced_mrt_hlsl.frag", 0, true);
+            if (rhi_handle_valid(ivs) && rhi_handle_valid(ifs)) {
+                RHIPipelineDesc ipd = {
+                    .vert = ivs, .frag = ifs,
+                    .uses_textures = true,
+                    .uses_texel_buffer = true,
+                    .is_instanced = true,
+                    .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                    .mrt_attachment_count = 2u,
+                    .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT},
+                };
+                rs->instanced_pipeline = rhi_pipeline_create(rs->device, &ipd);
+                ipd.wireframe = true;
+                rs->wire_instanced_pipeline = rhi_pipeline_create(rs->device, &ipd);
+                rhi_shader_destroy(rs->device, ivs);
+                rhi_shader_destroy(rs->device, ifs);
+            } else {
+                LOG_WARN("instanced sidecars unavailable; instanced draws disabled");
+                if (rhi_handle_valid(ivs)) rhi_shader_destroy(rs->device, ivs);
+                if (rhi_handle_valid(ifs)) rhi_shader_destroy(rs->device, ifs);
+            }
+            goto instanced_pipeline_done;
+        }
+    }
     {
         usize ivl = 0, ifl = 0;
         char *iv = NULL, *ifl_src = NULL;
@@ -720,6 +1182,19 @@ static bool render_init(RenderState *rs, Platform *platform) {
             usize ivm_len = 0, ifm_len = 0;
             char *ivm = shader_inject_define(iv, ivl, "FORWARD_MRT", &ivm_len);
             char *ifm = shader_inject_define(ifl_src, ifl, "FORWARD_MRT", &ifm_len);
+            /* R703a: LOD cross-fade (dither discard) when the fade is on. */
+            if (lod_fade_seconds() > 0.0f && ivm && ifm) {
+                usize a = 0, b = 0;
+                char *ivf = shader_inject_define(ivm, ivm_len, "LOD_FADE", &a);
+                char *iff = shader_inject_define(ifm, ifm_len, "LOD_FADE", &b);
+                if (ivf && iff) {
+                    free(ivm); free(ifm);
+                    ivm = ivf; ivm_len = a;
+                    ifm = iff; ifm_len = b;
+                } else {
+                    free(ivf); free(iff);
+                }
+            }
             RHIShader ivs = rhi_shader_create(rs->device, ivm ? ivm : iv,
                                                ivm ? ivm_len : ivl, false);
             RHIShader ifs = rhi_shader_create(rs->device, ifm ? ifm : ifl_src,
@@ -744,6 +1219,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
             }
         } else { free(iv); free(ifl_src); }
     }
+instanced_pipeline_done:
     if (rhi_handle_valid(rs->instanced_pipeline)) {
         rs->bind_instanced = rhi_pipeline_bindings_create(rs->device, rs->instanced_pipeline);
         if (!rs->bind_instanced)
@@ -767,6 +1243,48 @@ static bool render_init(RenderState *rs, Platform *platform) {
         rs->instance_buf[1] = rhi_buffer_create(rs->device, &bdesc);
     }
 
+    /* R634/R636: the D3D12 twin is skinned_mrt_hlsl.{vert,frag}. Only the
+     * MRT variant is needed -- the GLSL path below injects FORWARD_MRT
+     * unconditionally, so the non-MRT form of this shader is never built.
+     * The CBV layout and the lighting move are the same as R632's instanced
+     * port; see skinned_mrt_hlsl.vert for why the block is not made
+     * unconditional.
+     *
+     * R636: the sidecar is named directly for the same reason as the
+     * instanced pair above -- rhi_shader_create_path would derive
+     * "skinned_hlsl.vert", which does not exist, and the skinned meshes
+     * were silently not drawn on this backend. */
+    if (caps.shader_sidecar_paths) {
+        /* R707c: skinned LOD cross-fade twins (first_instance dither). */
+        const bool skin_fade = caps.indirect_first_instance_supported && lod_fade_seconds() > 0.0f;
+        RHIShader svs = rhi_shader_create(rs->device, skin_fade
+                                           ? "skinned_mrt_lodfade_hlsl.vert"
+                                           : "skinned_mrt_hlsl.vert", 0, false);
+        RHIShader sfs = rhi_shader_create(rs->device, skin_fade
+                                           ? "skinned_mrt_lodfade_hlsl.frag"
+                                           : "skinned_mrt_hlsl.frag", 0, true);
+        if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
+            RHIPipelineDesc spd = {
+                .vert = svs, .frag = sfs,
+                .uses_textures = true,
+                .uses_texel_buffer = true,
+                .skinned_vertex = true,
+                .is_instanced = true,
+                .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                .mrt_attachment_count = 2u,
+                .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT},
+            };
+            rs->skinned_pipeline = rhi_pipeline_create(rs->device, &spd);
+            spd.wireframe = true;
+            rs->wire_skinned_pipeline = rhi_pipeline_create(rs->device, &spd);
+            rhi_shader_destroy(rs->device, svs);
+            rhi_shader_destroy(rs->device, sfs);
+        } else {
+            LOG_WARN("skinned sidecars unavailable; skinned draws disabled");
+            if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
+            if (rhi_handle_valid(sfs)) rhi_shader_destroy(rs->device, sfs);
+        }
+    } else {
     {
         usize svl = 0, sfl = 0;
         char *sv = NULL, *sf = NULL;
@@ -779,6 +1297,19 @@ static bool render_init(RenderState *rs, Platform *platform) {
             usize svm_len = 0, sfm_len = 0;
             char *svm = shader_inject_define(sv, svl, "FORWARD_MRT", &svm_len);
             char *sfm = shader_inject_define(sf, sfl, "FORWARD_MRT", &sfm_len);
+            /* R707c: skinned LOD cross-fade (dither discard) when it can run. */
+            if (caps.indirect_first_instance_supported && lod_fade_seconds() > 0.0f && svm && sfm) {
+                usize a = 0, b = 0;
+                char *svf = shader_inject_define(svm, svm_len, "LOD_FADE", &a);
+                char *sff = shader_inject_define(sfm, sfm_len, "LOD_FADE", &b);
+                if (svf && sff) {
+                    free(svm); free(sfm);
+                    svm = svf; svm_len = a;
+                    sfm = sff; sfm_len = b;
+                } else {
+                    free(svf); free(sff);
+                }
+            }
             RHIShader svs = rhi_shader_create(rs->device, svm ? svm : sv,
                                                svm ? svm_len : svl, false);
             RHIShader sfs = rhi_shader_create(rs->device, sfm ? sfm : sf,
@@ -803,6 +1334,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
                 rhi_shader_destroy(rs->device, sfs);
             }
         } else { free(sv); free(sf); }
+    }
     }
     if (rhi_handle_valid(rs->skinned_pipeline)) {
         rs->bind_skinned = rhi_pipeline_bindings_create(rs->device, rs->skinned_pipeline);
@@ -943,8 +1475,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
             u32 ja = s;
             u32 jb = (s + 1 < seg_count) ? s + 1 : s;
             for (u32 fi = 0; fi < 6; fi++) {
+                /* Face fi is two triangles (a,b,c, a,c,d): its four corners
+                 * are indices 0,1,2,5 of the face's six. */
+                static const u32 corner_slot[4] = { 0u, 1u, 2u, 5u };
                 for (u32 fj = 0; fj < 4; fj++) {
-                    u32 oi = box_idx[fi * 6 + fj];
+                    u32 oi = box_idx[fi * 6 + corner_slot[fj]];
                     f32 *vp = (f32 *)(vdata + vi * 64);
                     memcpy(vp, seg_pos[oi], 12);
                     memcpy(vp + 3, box_norm[fi], 12);
@@ -967,7 +1502,15 @@ static bool render_init(RenderState *rs, Platform *platform) {
             }
         }
 
-        for (u32 i = 0; i < icount; i++) idata[i] = i;
+        /* Two triangles per 4-vertex face. The old idata[i] = i drew 144
+         * indices into 96 vertices: an out-of-bounds vertex fetch every frame
+         * (reported by GPU-assisted validation), and the arm drew only the
+         * first two thirds of its faces. */
+        for (u32 f = 0; f < icount / 6u; f++) {
+            u32 b = f * 4u;
+            idata[f * 6u + 0u] = b + 0u; idata[f * 6u + 1u] = b + 1u; idata[f * 6u + 2u] = b + 2u;
+            idata[f * 6u + 3u] = b + 0u; idata[f * 6u + 4u] = b + 2u; idata[f * 6u + 5u] = b + 3u;
+        }
 
         RHIBufferDesc vbdesc = {0};
         vbdesc.usage = RHI_BUFFER_USAGE_VERTEX;
@@ -1056,6 +1599,7 @@ static void render_shutdown(RenderState *rs) {
     if (rhi_handle_valid(rs->clustered_skin_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_skin_pipeline);
     if (rhi_handle_valid(rs->clustered_arr_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_arr_pipeline);
     if (rhi_handle_valid(rs->clustered_proj_ubo)) rhi_buffer_destroy(rs->device, rs->clustered_proj_ubo);
+    if (rhi_handle_valid(rs->forward_temporal_ubo)) rhi_buffer_destroy(rs->device, rs->forward_temporal_ubo);
     if (rhi_handle_valid(rs->terrain_tex))  rhi_texture_destroy(rs->device, rs->terrain_tex);
     if (rhi_handle_valid(rs->fallback_tex)) rhi_texture_destroy(rs->device, rs->fallback_tex);
     if (rhi_handle_valid(rs->fallback_mr)) rhi_texture_destroy(rs->device, rs->fallback_mr);
@@ -1095,6 +1639,23 @@ static u32 point_shadow_gather(const PointShadowSystem *pt, RHITexture *psc, f32
         psc_far_planes[i] = pt->far_planes[i];
     }
     return psc_n;
+}
+
+/* G-Buffer camera uniforms on the bound gbuffer_pipeline: u_view / u_proj on
+ * GL and VK, the folded u_vp on the D3D12 sidecar (R644), u_prev_mvp on all. */
+static void gbuffer_upload_camera(RHICmdBuffer *cmd, const DeferredSystem *dsys,
+                                  const Mat4 *view, const Mat4 *proj,
+                                  const Mat4 *prev_view_proj) {
+    if (dsys->_loc_gbuf_view >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_view, &view->e[0][0]);
+    if (dsys->_loc_gbuf_proj >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_proj, &proj->e[0][0]);
+    if (dsys->_loc_gbuf_prev_mvp >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_prev_mvp, &prev_view_proj->e[0][0]);
+    if (dsys->_loc_gbuf_vp >= 0) {
+        Mat4 gvp = mat4_mul(*proj, *view);
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_vp, &gvp.e[0][0]);
+    }
 }
 
 static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Scene *scene) {
@@ -1186,10 +1747,43 @@ static void forward_clustered_bind_frame(RHICmdBuffer *cmd, RenderState *rs,
                                          u32 screen_w, u32 screen_h, f32 shadow_bias) {
     rhi_cmd_bind_pipeline(cmd, pipe);
     rhi_cmd_set_uniform_mat4(cmd, L->cl_loc_view, &view->e[0][0]);
+    if (rs->caps.shader_sidecar_paths) {
+        /* R655: D3D12 -- one cbuffer instead of ~30 loose uniforms. */
+        ClusterFrameUbo fr;
+        memset(&fr, 0, sizeof(fr));
+        fr.prev_vp = *prev_vp;
+        fr.prev_model = mat4_identity();
+        fr.proj = *proj;
+        fr.camera_pos[0] = cam_pos->e[0]; fr.camera_pos[1] = cam_pos->e[1];
+        fr.camera_pos[2] = cam_pos->e[2];
+        fr.ambient[0] = ambient->e[0]; fr.ambient[1] = ambient->e[1];
+        fr.ambient[2] = ambient->e[2];
+        fr.fog_color[0] = fog_col->e[0]; fr.fog_color[1] = fog_col->e[1];
+        fr.fog_color[2] = fog_col->e[2];
+        fr.fog[0] = fog_on ? fog_n : 1e6f;
+        fr.fog[1] = fog_on ? fog_f : 2e6f;
+        fr.fog[2] = underwater ? 1.0f : 0.0f;
+        fr.screen[0] = (f32)screen_w; fr.screen[1] = (f32)screen_h;
+        fr.screen[2] = near_p; fr.screen[3] = far_p;
+        fr.counts[0] = (f32)ls->point_count; fr.counts[1] = (f32)ls->dir_count;
+        fr.counts[2] = shadow_bias;
+        for (u32 q = 0u; q < 4u; ++q) fr.far_planes[q] = g_psc.far_planes[q];
+        if (rhi_handle_valid(rs->clustered_proj_ubo)) {
+            rhi_buffer_update(rs->device, rs->clustered_proj_ubo, &fr, sizeof(fr));
+            rhi_cmd_bind_uniform_buffer(cmd, rs->clustered_proj_ubo,
+                                        (u32)rs->temporal_ubo_binding);
+        }
+        rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
+                                   light_system_grid_slot(ls));
+        g_fwd_clustered_taken++;
+        return;
+    }
     /* Frame UBO {prev_vp, prev_model(identity — mega verts are world-space
      * and static nodes match the blinn bind_forward_temporal approximation;
      * the instanced variant reads per-instance prev_model from its SSBO),
-     * proj} — one buffer, one binding, both backends (RHI single-UBO model). */
+     * proj} — one buffer, one binding, both backends (RHI single-UBO model).
+     * R600 left this layout alone: the camera position moved to
+     * forward_temporal_ubo, which only the blinn family binds. */
     if (rhi_handle_valid(rs->clustered_proj_ubo)) {
         Mat4 ubo_data[3];
         ubo_data[0] = *prev_vp;
@@ -1408,8 +2002,14 @@ bool occ_cull_enabled = true;
  * paths (executed sequentially within a frame, never concurrently).
  * Replaces 11 stack-allocated 16-64KB arrays to prevent stack overflow on
  * constrained stacks (WASM 256KB, worker threads 512KB). */
-static u32 g_vis_flags[16384];   /* 64KB: used by mega_mat_groups_* and CPU cull */
-static u32 g_draw_vis[16384];    /* 64KB: used by unified vis paths */
+/* Mega-buffer command capacity: one cmd per (static node x LOD level). The
+ * unified cull's object table is one entry per cmd, so GPUCull is sized to
+ * match. */
+#define MEGA_MAX_CMDS 16384u
+_Static_assert(GPUCULL_MAX_OBJECTS >= MEGA_MAX_CMDS && GPUCULL_MAX_DRAWS >= MEGA_MAX_CMDS,
+               "GPUCull capacity must cover every mega cmd");
+static u32 g_vis_flags[MEGA_MAX_CMDS];   /* 64KB: used by mega_mat_groups_* and CPU cull */
+static u32 g_draw_vis[MEGA_MAX_CMDS];    /* 64KB: used by unified vis paths */
 static u8  g_node_vis[16384];    /* 16KB: used by legacy node vis paths */
 /* R438: per-frame count of forward mega-branch executions — logged next to
  * the R437 compact-dispatch log, then reset. */
@@ -1879,11 +2479,71 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
     return true;
 }
 
+/* ---- Runtime mesh LOD for the mega buffer (phase 1) ----
+ * Each static mega node bakes LOD0 plus up to LOD_GEN_MAX_LEVELS-1
+ * simplified index lists that reuse the node's LOD0 vertices (absolute
+ * indices, vertex_offset 0 -- the R687 convention). Commands are laid out
+ * node-major: node b owns [node_cmd_base[b], node_cmd_base[b] + levels).
+ * Every frame mega_lod_select picks a level per node from its screen-space
+ * geometric error and writes the per-cmd masks every consumer path ANDs with
+ * its visibility (camera: selected[], shadow passes: shadow_selected[]).
+ * BREAK_LOD=0 bakes LOD0 only and leaves `active` false, which keeps every
+ * path on its pre-LOD code. */
+#define MEGA_LOD_LEVELS LOD_GEN_MAX_LEVELS
+
+typedef struct {
+    bool  active;              /* levels baked and BREAK_LOD on */
+    u32   node_count;          /* dense mega nodes, bake order */
+    u32   cmd_count;
+    u32  *node_scene;          /* [node] scene node index */
+    u32  *node_cmd_base;       /* [node] first cmd */
+    u8   *node_level_count;    /* [node] 1..MEGA_LOD_LEVELS */
+    u8   *node_level;          /* [node] camera level (hysteresis state) */
+    u8   *node_shadow_level;   /* [node] min(level + shadow bias, count - 1) */
+    f32  *node_err;            /* [node * MEGA_LOD_LEVELS] world-space error vs LOD0 */
+    u32  *node_tris;           /* [node * MEGA_LOD_LEVELS] triangles per level */
+    u32  *node_vbase;          /* [node] first LOD0 vertex (validation) */
+    u32  *node_vcount;         /* [node] LOD0 vertex count (validation) */
+    u32  *cmd_node;            /* [cmd] dense node */
+    u8   *cmd_level;           /* [cmd] level */
+    u32  *cmd_vbase;           /* [cmd] first vertex (authored levels differ from LOD0) */
+    u32  *cmd_vcount;          /* [cmd] vertex count */
+    u32  *selected;            /* [cmd] 1 = camera-visible level (two while fading) */
+    u32  *shadow_selected;     /* [cmd] 1 = shadow level, always instantaneous */
+    LodFade *fade;             /* [node] R703b; NULL when BREAK_LOD_FADE_MS=0 */
+    i8   *cmd_dither;          /* [cmd] signed k, uploaded in first_instance high bits */
+    DrawIndexedIndirectCmd *cmd_upload;   /* [cmd] bake-order upload scratch */
+    DrawIndexedIndirectCmd *group_upload; /* [cmd] group-order upload scratch */
+    f32   fade_s;
+    /* last selection */
+    u32   level_nodes[MEGA_LOD_LEVELS];   /* nodes per camera level */
+    u32   level_tris[MEGA_LOD_LEVELS];    /* triangles per camera level (all nodes) */
+    u32   vis_tris;            /* frustum-visible commands, both levels while fading */
+    u32   vis_tris_lod0;       /* same nodes at LOD0 */
+    u32   transitions;         /* camera level changes this frame */
+    u32   fading;              /* nodes with two camera-visible commands */
+    u32   shadow_tris;         /* all nodes at their shadow level */
+    f64   select_ms;
+    /* session totals (LOD_STATS at shutdown) */
+    u64   frames;
+    f64   select_ms_sum;
+    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum, fading_sum, shadow_tris_sum;
+} MegaLod;
+
+static MegaLod g_mega_lod;
+static LodCache g_lod_cache;
+static bool mega_lod_enabled = true;       /* BREAK_LOD (default 1) */
+static f32  mega_lod_pixel_error = 1.0f;   /* BREAK_LOD_PIXEL_ERROR */
+static u32  mega_lod_shadow_bias = 1u;     /* BREAK_LOD_SHADOW_BIAS */
+static i32  mega_lod_trace_node = -1;      /* BREAK_LOD_TRACE=<dense node>: per-frame level log */
+static bool mega_lod_selftest = false;     /* BREAK_LOD_SELFTEST=1: bake-table check */
+
 typedef struct {
     RHIBuffer vbo;
     RHIBuffer ibo;
     u32       draw_cmd_count;
     u32       total_index_count;
+    u32       lod0_index_count;   /* indices of the LOD0 cmds only (== total without LOD levels) */
     bool      valid;
 
     /* R437: single merged system holding ALL groups' cmds (group-sorted).
@@ -1901,15 +2561,35 @@ typedef struct {
     MatArraySet mats;
     u32       mat_indices[MEGA_MAX_MAT_GROUPS];
     u32       mat_group_count;
-    i32       cmd_mat_group[16384];
-    u32       cmd_node_index[16384];
+    i32       cmd_mat_group[MEGA_MAX_CMDS];
+    /* cmd -> scene node; one-to-many once a node bakes several LOD levels. */
+    u32       cmd_node_index[MEGA_MAX_CMDS];
     NodeSphere node_spheres[16384];
     u32       sphere_count;
     /* R75-2: Pre-built inverse index — group→cmd list. Eliminates O(N×G)
      * linear scan in mega_mat_groups_draw/indirect (called 12-17×/frame). */
     u32       group_cmd_offsets[MEGA_MAX_MAT_GROUPS + 1]; /* prefix sums */
-    u32       group_cmd_list[16384];                     /* sorted by group */
+    u32       group_cmd_list[MEGA_MAX_CMDS];             /* sorted by group */
+    /* R688: CPU copy of the baked draw cmds. Point-shadow faces (24 per
+     * frame) and CSM cascades draw these directly after a CPU sphere test;
+     * a per-face GPU cull + compact costs more than it saves. Heap, sized to
+     * draw_cmd_count (was a fixed 64-entry array that switched the direct
+     * path off for larger scenes). */
+    DrawIndexedIndirectCmd *direct_cmds;
+    bool      direct_ready;
+    /* Runtime LOD tables (node x level layout + per-frame selection). */
+    MegaLod  *lod;
 } MegaBuffer;
+
+static inline bool mega_lod_on(const MegaBuffer *mb) {
+    return mb && mb->lod && mb->lod->active;
+}
+
+/* 1 when cmd ci is the camera-selected LOD level of its node (always 1 with
+ * LOD off). */
+static inline u32 mega_cmd_selected(const MegaBuffer *mb, u32 ci) {
+    return mega_lod_on(mb) ? mb->lod->selected[ci] : 1u;
+}
 
 bool unified_cull_enabled = false;
 bool unified_forward_enabled = false;
@@ -1919,6 +2599,52 @@ bool gpucull_enabled = false;
 /* R441: material-indirect single-execute forward (texture array). Default on;
  * BREAK_MAT_INDIRECT=0 falls back to the R437 per-group loop. */
 bool mat_indirect_enabled = true;
+
+bool mega_direct_shadow_enabled = true;
+
+/* R688: point-shadow faces (and, R691, CSM cascades) use
+ * mega_draw_direct_culled when this holds. */
+static bool mega_use_direct_shadow(const MegaBuffer *mb) {
+    return mega_direct_shadow_enabled && mb && mb->valid && mb->direct_ready;
+}
+
+/* Draws every baked cmd whose node sphere passes the frustum. The mega VBO /
+ * IBO and the depth pipeline must already be bound. Returns the draw count. */
+static u32 mega_draw_direct_culled(const MegaBuffer *mb, RHICmdBuffer *cmd,
+                                   const Mat4 *vp) {
+    Frustum f = frustum_from_vp(vp);
+    u32 n = 0u;
+    if (mega_lod_on(mb)) {
+        /* Runtime LOD: one draw per node, its shadow-selected level. */
+        const MegaLod *L = mb->lod;
+        for (u32 b = 0; b < L->node_count; b++) {
+            u32 ni = L->node_scene[b];
+            const NodeSphere *ns = &mb->node_spheres[ni];
+            if (ns->r < 0.0f) continue;
+            Vec3 ctr = {{ ns->cx, ns->cy, ns->cz }};
+            if (!frustum_test_sphere(&f, ctr, ns->r)) continue;
+            const DrawIndexedIndirectCmd *dc =
+                &mb->direct_cmds[L->node_cmd_base[b] + L->node_shadow_level[b]];
+            rhi_cmd_draw_indexed_base(cmd, dc->index_count, 1u, dc->first_index,
+                                      dc->vertex_offset);
+            n++;
+        }
+        return n;
+    }
+    for (u32 ci = 0; ci < mb->draw_cmd_count; ci++) {
+        u32 ni = mb->cmd_node_index[ci];
+        if (ni >= 16384u) continue;
+        const NodeSphere *ns = &mb->node_spheres[ni];
+        if (ns->r < 0.0f) continue;
+        Vec3 ctr = {{ ns->cx, ns->cy, ns->cz }};
+        if (!frustum_test_sphere(&f, ctr, ns->r)) continue;
+        rhi_cmd_draw_indexed_base(cmd, mb->direct_cmds[ci].index_count, 1u,
+                                  mb->direct_cmds[ci].first_index,
+                                  mb->direct_cmds[ci].vertex_offset);
+        n++;
+    }
+    return n;
+}
 
 static bool mega_use_unified_shadow(const MegaBuffer *mb) {
     return unified_shadow_enabled && gpucull_enabled && mb && mb->valid &&
@@ -1935,11 +2661,13 @@ static bool mega_use_unified_vis(bool deferred_pass) {
 static bool mega_unified_cull_draw(GPUCullSystem *gc, RHIDevice *dev, RHICmdBuffer *cmd,
                                    const f32 *vp, u32 vis_count,
                                    OcclusionCullSystem *occ,
-                                   RHIPipeline restore_pipe) {
+                                   RHIPipeline restore_pipe,
+                                   u32 sel_kind /* GPUCULL_SELECT_* LOD mask */) {
     if (!gc->unified_ready || !unified_cull_enabled ||
-        vis_count == 0 || vis_count > GPUCULL_MAX_OBJECTS) {
+        vis_count == 0 || vis_count > MEGA_MAX_CMDS) {
         return false;
     }
+    gpucull_set_selection_kind(gc, sel_kind);
     RHITexture hi_z = RHI_HANDLE_NULL;
     u32 hz_w = 0u, hz_h = 0u;
     if (occ && occ->enabled && rhi_handle_valid(occ->hi_z_texture)) {
@@ -1960,9 +2688,10 @@ static bool mega_unified_vis_flags(GPUCullSystem *gc, RHICmdBuffer *cmd,
                                    const f32 *vp, u32 vis_count,
                                    OcclusionCullSystem *occ, u32 *out_flags) {
     if (!gc->unified_ready || !unified_cull_enabled ||
-        vis_count == 0 || vis_count > GPUCULL_MAX_OBJECTS || !out_flags) {
+        vis_count == 0 || vis_count > MEGA_MAX_CMDS || !out_flags) {
         return false;
     }
+    gpucull_set_selection_kind(gc, GPUCULL_SELECT_CAMERA);
     RHITexture hi_z = RHI_HANDLE_NULL;
     u32 hz_w = 0u, hz_h = 0u;
     if (occ && occ->enabled && rhi_handle_valid(occ->hi_z_texture)) {
@@ -2000,7 +2729,8 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
      * trivially, since there is only one compact left. */
     u32 total = mb->group_cmd_offsets[mb->mat_group_count];
     for (u32 ci = 0; ci < total; ci++) {
-        g_vis_flags[ci] = draw_vis ? draw_vis[mb->group_cmd_list[ci]] : 1u;
+        g_vis_flags[ci] = draw_vis ? draw_vis[mb->group_cmd_list[ci]]
+                                   : mega_cmd_selected(mb, mb->group_cmd_list[ci]);
     }
     indirect_draw_upload_visibility(&mb->group_system, render->device, g_vis_flags, total);
     indirect_draw_compact_no_barrier(&mb->group_system, render->device, cmd);
@@ -2036,6 +2766,9 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
                                 const Mat4 *view, const Mat4 *proj,
                                 const Vec3 *light_dir, const Vec3 *light_color,
                                 const Vec3 *ambient, const Vec3 *cam_pos,
+                                /* R600: prev-frame view-proj for the blinn (non-
+                                 * clustered) arm's ForwardTemporal block. */
+                                const Mat4 *prev_vp,
                                 /* R592: true = clustered forward mode
                                  * (BREAK_FORWARD_CLUSTERED): bind the
                                  * CLUSTERED_ARR variant pipeline, publish the
@@ -2050,7 +2783,7 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
 
     u32 total = mb->draw_cmd_count;
     for (u32 ci = 0; ci < total; ci++)
-        g_vis_flags[ci] = draw_vis ? draw_vis[ci] : 1u;
+        g_vis_flags[ci] = draw_vis ? draw_vis[ci] : mega_cmd_selected(mb, ci);
     indirect_draw_upload_visibility(&mb->array_system, render->device, g_vis_flags, total);
     indirect_draw_compact_no_barrier(&mb->array_system, render->device, cmd);
     rhi_cmd_memory_barrier(cmd);
@@ -2074,11 +2807,15 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
          * (offsets 192+; R592 layout note at the buffer's creation). */
         rhi_cmd_set_uniform_mat4(cmd, render->car.cl_loc_model, &idm.e[0][0]);
         if (rhi_handle_valid(render->clustered_proj_ubo)) {
+            /* R600: unchanged — the camera never entered this buffer. */
+            const u32 factor_base = render->caps.shader_sidecar_paths
+                                        ? (u32)sizeof(ClusterFrameUbo)
+                                        : 3u * (u32)sizeof(Mat4);
             rhi_buffer_update_region(render->device, render->clustered_proj_ubo,
-                                     3u * sizeof(Mat4),
+                                     factor_base,
                                      mb->mats.mat_factors, sizeof(mb->mats.mat_factors));
             rhi_buffer_update_region(render->device, render->clustered_proj_ubo,
-                                     3u * sizeof(Mat4) + sizeof(mb->mats.mat_factors),
+                                     factor_base + (u32)sizeof(mb->mats.mat_factors),
                                      mb->mats.emissive_factors, sizeof(mb->mats.emissive_factors));
         }
         /* One bind for the whole pass: the five baked arrays (2D_ARRAY views
@@ -2103,8 +2840,15 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
                              light_color->e[0], light_color->e[1], light_color->e[2]);
     rhi_cmd_set_uniform_vec3(cmd, render->arr_loc_ambient,
                              ambient->e[0], ambient->e[1], ambient->e[2]);
-    rhi_cmd_set_uniform_vec3(cmd, render->arr_loc_camera_pos,
-                             cam_pos->e[0], cam_pos->e[1], cam_pos->e[2]);
+    /* R600: u_camera_pos left this path's loose-uniform set for the
+     * ForwardTemporal block, so the camera is published and bound here the
+     * way the blinn_phong frame path does it — not written as a uniform that
+     * resolves -1 on every backend now. R606: at the index the active shader
+     * declares (binding 0 in GLSL, register b1 on D3D12). */
+    forward_temporal_ubo_write(render->device, render->forward_temporal_ubo,
+                               cam_pos, prev_vp);
+    rhi_cmd_bind_uniform_buffer(cmd, render->forward_temporal_ubo,
+                                render->temporal_ubo_binding);
 
     /* One bind for the whole pass: slot 0 = array, the rest reuse the same
      * fallback/shadow/SSAO/IBL slots bind_material would use. */
@@ -2135,7 +2879,7 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
 
     u32 total = mb->draw_cmd_count;
     for (u32 ci = 0; ci < total; ci++)
-        g_vis_flags[ci] = draw_vis ? draw_vis[ci] : 1u;
+        g_vis_flags[ci] = draw_vis ? draw_vis[ci] : mega_cmd_selected(mb, ci);
     indirect_draw_upload_visibility(&mb->array_system, render->device, g_vis_flags, total);
     indirect_draw_compact_no_barrier(&mb->array_system, render->device, cmd);
     rhi_cmd_memory_barrier(cmd);
@@ -2155,6 +2899,12 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
         rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_proj, &proj->e[0][0]);
     if (dsys->_loc_gbuf_arr_prev_mvp >= 0)
         rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_prev_mvp, &prev_mvp->e[0][0]);
+    if (dsys->_loc_gbuf_arr_vp >= 0) {
+        /* R658: the D3D12 sidecar's folded view*proj (R644 for the static
+         * pipeline). */
+        Mat4 vp = mat4_mul(*proj, *view);
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_vp, &vp.e[0][0]);
+    }
 
     /* One bind for the whole pass: slot 0 = albedo array, slot 2 = MR array,
      * slot 3 = normal array (R595: R594's baked per-layer normal maps drive
@@ -2180,7 +2930,7 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
 static u32 mega_count_visible_draws(const MegaBuffer *mb, const u32 *draw_vis) {
     if (!mb || !mb->valid) return 0u;
     u32 n = mb->draw_cmd_count;
-    if (!draw_vis) return n;
+    if (!draw_vis) return mega_lod_on(mb) ? mb->lod->node_count : n;
     u32 vis = 0u;
     for (u32 i = 0; i < n; i++)
         if (draw_vis[i]) vis++;
@@ -2194,9 +2944,892 @@ static u32 mega_count_visible_node_vis(const MegaBuffer *mb, const u8 *node_vis)
         u32 ni = mb->cmd_node_index[ci];
         /* R155: Guard against ni >= 16384 — g_node_vis is [16384] but cmd_node_index
          * stores original node indices which can exceed 16384 when scene.node_count > 16384. */
+        if (!mega_cmd_selected(mb, ci)) continue;
         if (ni >= 16384 || node_vis[ni]) vis++;
     }
     return vis;
+}
+
+/* Runtime LOD, R169 flags-only path: the read-back flags are last frame's
+ * cull masked by last frame's selection. Fold them back to the node (visible
+ * if any level was visible) and apply THIS frame's selection, so a level
+ * switch never leaves a frame where neither level draws. */
+static void mega_lod_fold_vis(const MegaBuffer *mb, u32 *draw_vis) {
+    if (!mega_lod_on(mb) || !draw_vis) return;
+    const MegaLod *L = mb->lod;
+    for (u32 b = 0; b < L->node_count; b++) {
+        u32 base = L->node_cmd_base[b], lc = L->node_level_count[b];
+        u32 any = 0u;
+        for (u32 l = 0; l < lc; l++) any |= draw_vis[base + l];
+        for (u32 l = 0; l < lc; l++)
+            draw_vis[base + l] = (any && L->selected[base + l]) ? 1u : 0u;
+    }
+}
+
+static void mega_lod_free(MegaLod *L) {
+    if (!L) return;
+    free(L->node_scene); free(L->node_cmd_base); free(L->node_level_count);
+    free(L->node_level); free(L->node_shadow_level); free(L->node_err);
+    free(L->node_tris); free(L->node_vbase); free(L->node_vcount);
+    free(L->cmd_node); free(L->cmd_level); free(L->cmd_vbase); free(L->cmd_vcount);
+    free(L->selected); free(L->shadow_selected);
+    free(L->fade); free(L->cmd_dither); free(L->cmd_upload); free(L->group_upload);
+    memset(L, 0, sizeof(*L));
+}
+
+static bool mega_lod_alloc(MegaLod *L, u32 node_count, u32 cmd_count) {
+    memset(L, 0, sizeof(*L));
+    L->node_count = node_count;
+    L->cmd_count = cmd_count;
+    L->node_scene        = (u32 *)calloc(node_count, sizeof(u32));
+    L->node_cmd_base     = (u32 *)calloc(node_count, sizeof(u32));
+    L->node_level_count  = (u8 *)calloc(node_count, 1);
+    L->node_level        = (u8 *)calloc(node_count, 1);
+    L->node_shadow_level = (u8 *)calloc(node_count, 1);
+    L->node_err          = (f32 *)calloc((usize)node_count * MEGA_LOD_LEVELS, sizeof(f32));
+    L->node_tris         = (u32 *)calloc((usize)node_count * MEGA_LOD_LEVELS, sizeof(u32));
+    L->node_vbase        = (u32 *)calloc(node_count, sizeof(u32));
+    L->node_vcount       = (u32 *)calloc(node_count, sizeof(u32));
+    L->cmd_node          = (u32 *)calloc(cmd_count, sizeof(u32));
+    L->cmd_level         = (u8 *)calloc(cmd_count, 1);
+    L->cmd_vbase         = (u32 *)calloc(cmd_count, sizeof(u32));
+    L->cmd_vcount        = (u32 *)calloc(cmd_count, sizeof(u32));
+    L->selected          = (u32 *)calloc(cmd_count, sizeof(u32));
+    L->shadow_selected   = (u32 *)calloc(cmd_count, sizeof(u32));
+    if (!L->node_scene || !L->node_cmd_base || !L->node_level_count || !L->node_level ||
+        !L->node_shadow_level || !L->node_err || !L->node_tris || !L->node_vbase ||
+        !L->node_vcount || !L->cmd_node || !L->cmd_level || !L->cmd_vbase ||
+        !L->cmd_vcount || !L->selected ||
+        !L->shadow_selected) {
+        mega_lod_free(L);
+        return false;
+    }
+    L->fade_s = lod_fade_seconds();
+    if (L->fade_s > 0.0f) {
+        L->fade = (LodFade *)calloc(node_count, sizeof(LodFade));
+        L->cmd_dither = (i8 *)calloc(cmd_count, 1);
+        L->cmd_upload = (DrawIndexedIndirectCmd *)malloc((usize)cmd_count * sizeof(DrawIndexedIndirectCmd));
+        L->group_upload = (DrawIndexedIndirectCmd *)malloc((usize)cmd_count * sizeof(DrawIndexedIndirectCmd));
+        if (!L->fade || !L->cmd_dither || !L->cmd_upload || !L->group_upload) {
+            LOG_WARN("Mega LOD: fade scratch alloc failed; level switches pop");
+            free(L->fade); free(L->cmd_dither); free(L->cmd_upload); free(L->group_upload);
+            L->fade = NULL; L->cmd_dither = NULL; L->cmd_upload = NULL; L->group_upload = NULL;
+            L->fade_s = 0.0f;
+        }
+    }
+    return true;
+}
+
+/* R705: glTF MSFT_lod levels (asset.c links them on the base Mesh). Each
+ * authored level keeps its own vertices; its error is the measured symmetric
+ * deviation from LOD0 (lod_authored_error, local units), made non-decreasing
+ * so the shared screen-error selection, hysteresis and fade apply unchanged.
+ * rel_error is stored relative to scale = local AABB diagonal so that
+ * rel_error * scale reproduces the measured value like simplifier levels.
+ * MSFT_screencoverage is not used. Returns false (ml = LOD0 only) on failure. */
+static bool mesh_lod_authored(RHIDevice *dev, const Scene *scene, const Mesh *m,
+                              LodMeshLevels *ml) {
+    if (m->authored_lod_count == 0u || m->vertex_count == 0u || m->index_count < 3u) return false;
+    memset(ml, 0, sizeof(*ml));
+    ml->level_count = 1u;
+    ml->index_count[0] = m->index_count;
+    usize bvb = (usize)m->vertex_count * 32u, bib = (usize)m->index_count * sizeof(u32);
+    f32 *base = (f32 *)malloc(bvb);
+    u32 *base_i = (u32 *)malloc(bib);
+    if (!base || !base_i || !rhi_buffer_read(dev, m->vertex_buf, base, 0, bvb) ||
+        !rhi_buffer_read(dev, m->index_buf, base_i, 0, bib)) {
+        free(base); free(base_i);
+        return false;
+    }
+    Vec3 ext = vec3_sub(m->aabb_max, m->aabb_min);
+    f32 diag = vec3_len(ext);
+    ml->scale = diag > 1e-6f ? diag : 1.0f;
+    bool ok = true;
+    u32 n = m->authored_lod_count < MEGA_LOD_LEVELS - 1u ? m->authored_lod_count : MEGA_LOD_LEVELS - 1u;
+    for (u32 l = 1; l <= n && ok; l++) {
+        u32 alt_index = m->authored_lod[l - 1u];
+        if (alt_index >= scene->mesh_count) { ok = false; break; }
+        const Mesh *alt = &scene->meshes[alt_index];
+        if (!alt->vertex_count || alt->index_count < 3u || alt->index_count % 3u != 0u) {
+            ok = false;
+            break;
+        }
+        u32 *indices = (u32 *)malloc((usize)alt->index_count * sizeof(u32));
+        f32 *verts = (f32 *)malloc((usize)alt->vertex_count * 32u);
+        if (!indices || !verts ||
+            !rhi_buffer_read(dev, alt->index_buf, indices, 0, (usize)alt->index_count * sizeof(u32)) ||
+            !rhi_buffer_read(dev, alt->vertex_buf, verts, 0, (usize)alt->vertex_count * 32u)) {
+            free(indices); free(verts);
+            ok = false;
+            break;
+        }
+        f32 err = lod_authored_error(base, m->vertex_count, base_i, m->index_count,
+                                     verts, alt->vertex_count, indices, alt->index_count, 32u);
+        free(verts);
+        if (err < 0.0f) { free(indices); ok = false; break; }
+        f32 rel = err / ml->scale;
+        if (rel < ml->rel_error[l - 1u]) rel = ml->rel_error[l - 1u];
+        ml->indices[l] = indices;
+        ml->index_count[l] = alt->index_count;
+        ml->rel_error[l] = rel;
+        ml->level_count = l + 1u;
+    }
+    free(base); free(base_i);
+    if (!ok) {
+        lod_mesh_levels_free(ml);
+        ml->level_count = 1u;
+        ml->index_count[0] = m->index_count;
+        return false;
+    }
+    ml->authored = true;
+    return true;
+}
+
+/* Read one mesh back and simplify it in its local space (32-byte Vertex).
+ * Always leaves ml->level_count >= 1. Authored alternatives bypass both the
+ * simplifier and its disk cache; their own vertices are appended at bake time. */
+static void mesh_lod_generate(RHIDevice *dev, const Scene *scene, const Mesh *m,
+                              u32 mesh_index, LodMeshLevels *ml) {
+    if (mesh_lod_authored(dev, scene, m, ml)) {
+        LOG_INFO("LOD authored: mesh %u levels=%u rel_err=%.6f/%.6f scale=%.3f",
+                 mesh_index, ml->level_count, ml->rel_error[1], ml->rel_error[2], ml->scale);
+        return;
+    }
+    if (m->authored_lod_count > 0u)
+        LOG_WARN("LOD: authored mesh %u could not be used; generating LODs", mesh_index);
+    ml->level_count = 1u;
+    ml->index_count[0] = m->index_count;
+    usize vb = (usize)m->vertex_count * 32u, ib = (usize)m->index_count * sizeof(u32);
+    f32 *v = (f32 *)malloc(vb);
+    u32 *ix = (u32 *)malloc(ib);
+    if (v && ix && rhi_buffer_read(dev, m->vertex_buf, v, 0, vb) &&
+        rhi_buffer_read(dev, m->index_buf, ix, 0, ib)) {
+        lod_cache_generate(&g_lod_cache, v, m->vertex_count, 32u, ix, m->index_count,
+                           MEGA_LOD_LEVELS, ml);
+    } else {
+        LOG_WARN("LOD: failed to read mesh %u; LOD0 only", mesh_index);
+    }
+    free(v);
+    free(ix);
+    if (ml->level_count == 0u) { ml->level_count = 1u; ml->index_count[0] = m->index_count; }
+}
+
+/* Simplify every unique mesh used by a mega node once, in its local space.
+ * Returns scene->mesh_count entries (level_count 0 = mesh not used / not
+ * read), or NULL. */
+static LodMeshLevels *mega_lod_generate(RHIDevice *dev, const Scene *scene) {
+    if (!dev || !scene || scene->mesh_count == 0u) return NULL;
+    LodMeshLevels *out = (LodMeshLevels *)calloc(scene->mesh_count, sizeof(LodMeshLevels));
+    if (!out) return NULL;
+    u64 t0 = time_microseconds();
+    u32 meshes = 0u, simplified = 0u;
+    u64 tris[MEGA_LOD_LEVELS] = {0};
+    for (u32 ni = 0; ni < scene->node_count; ni++) {
+        const SceneNode *nd = &scene->nodes[ni];
+        if (!nd->has_mesh || nd->skinned || nd->mesh_index >= scene->mesh_count) continue;
+        const Mesh *m = &scene->meshes[nd->mesh_index];
+        if (m->vertex_count == 0 || m->index_count == 0) continue;
+        LodMeshLevels *ml = &out[nd->mesh_index];
+        if (ml->level_count != 0u) continue;
+        meshes++;
+        if (m->authored_lod_count == 0u && m->index_count / 3u < LOD_GEN_MIN_TRIANGLES) {
+            ml->level_count = 1u;
+            ml->index_count[0] = m->index_count;
+            tris[0] += m->index_count / 3u;
+            continue;
+        }
+        mesh_lod_generate(dev, scene, m, nd->mesh_index, ml);
+        if (ml->level_count > 1u) simplified++;
+        for (u32 l = 0; l < ml->level_count; l++) tris[l] += ml->index_count[l] / 3u;
+        LOG_DEBUG("LOD: mesh %u: %u levels, tris %u/%u/%u rel_err %.4f/%.4f scale %.3f",
+                  nd->mesh_index, ml->level_count, ml->index_count[0] / 3u,
+                  ml->index_count[1] / 3u, ml->index_count[2] / 3u,
+                  ml->rel_error[1], ml->rel_error[2], ml->scale);
+    }
+    f64 ms = (f64)(time_microseconds() - t0) / 1000.0;
+    LOG_INFO("LOD gen: %u unique meshes, %u simplified, unique-mesh tris L0=%llu L1=%llu L2=%llu, %.1f ms (serial)",
+             meshes, simplified, (unsigned long long)tris[0], (unsigned long long)tris[1],
+             (unsigned long long)tris[2], ms);
+    return out;
+}
+
+/* Per-frame camera/shadow level selection. Distance is measured from the
+ * camera to the node's bounding-sphere surface (center = mega node sphere,
+ * not the node origin). */
+static void mega_lod_select(MegaBuffer *mb, Vec3 cam_pos, f32 fov, f32 screen_h,
+                            const Frustum *fr) {
+    if (!mega_lod_on(mb)) return;
+    MegaLod *L = mb->lod;
+    u64 t0 = time_microseconds();
+    f32 pf = lod_screen_proj_factor(fov, screen_h);
+    memset(L->level_nodes, 0, sizeof(L->level_nodes));
+    memset(L->level_tris, 0, sizeof(L->level_tris));
+    L->vis_tris = 0u;
+    L->vis_tris_lod0 = 0u;
+    L->transitions = 0u;
+    L->fading = 0u;
+    L->shadow_tris = 0u;
+    f64 now = (f64)t0 / 1e6;
+    for (u32 b = 0; b < L->node_count; b++) {
+        const NodeSphere *ns = &mb->node_spheres[L->node_scene[b]];
+        u32 lc = L->node_level_count[b];
+        u32 cur = L->node_level[b];
+        u32 lvl = 0u;
+        f32 dx = ns->cx - cam_pos.e[0], dy = ns->cy - cam_pos.e[1], dz = ns->cz - cam_pos.e[2];
+        if (lc > 1u) {
+            f32 dist = sqrtf(dx * dx + dy * dy + dz * dz) - (ns->r > 0.0f ? ns->r : 0.0f);
+            lvl = lod_select_by_screen_error(&L->node_err[(usize)b * MEGA_LOD_LEVELS], lc,
+                                             dist, pf, mega_lod_pixel_error, cur);
+        }
+        if (lvl != cur) L->transitions++;
+        u32 sl = lvl + mega_lod_shadow_bias;
+        if (sl > lc - 1u) sl = lc - 1u;
+        L->node_level[b] = (u8)lvl;
+        L->node_shadow_level[b] = (u8)sl;
+        u32 base = L->node_cmd_base[b];
+        u32 draws = 1u;
+        if (L->fade) {
+            lod_fade_update(&L->fade[b], lvl, now, L->fade_s);
+            draws = lod_fade_write_commands(&L->fade[b], now, L->fade_s, lc,
+                                            L->selected + base, L->cmd_dither + base);
+            if (draws == 2u) L->fading++;
+        } else {
+            for (u32 l = 0; l < lc; l++) L->selected[base + l] = (l == lvl) ? 1u : 0u;
+        }
+        for (u32 l = 0; l < lc; l++) L->shadow_selected[base + l] = (l == sl) ? 1u : 0u;
+        const u32 *tris = &L->node_tris[(usize)b * MEGA_LOD_LEVELS];
+        L->level_nodes[lvl]++;
+        L->level_tris[lvl] += tris[lvl];
+        L->shadow_tris += tris[sl];
+        if (fr && ns->r >= 0.0f) {
+            Vec3 c = {{ ns->cx, ns->cy, ns->cz }};
+            if (frustum_test_sphere(fr, c, ns->r)) {
+                if (L->fade) {
+                    for (u32 l = 0; l < lc; l++)
+                        if (L->selected[base + l]) L->vis_tris += tris[l];
+                } else {
+                    L->vis_tris += tris[lvl];
+                }
+                L->vis_tris_lod0 += tris[0];
+            }
+        }
+    }
+    L->select_ms = (f64)(time_microseconds() - t0) / 1000.0;
+    L->frames++;
+    L->select_ms_sum += L->select_ms;
+    L->vis_tris_sum += L->vis_tris;
+    L->vis_tris_lod0_sum += L->vis_tris_lod0;
+    L->transitions_sum += L->transitions;
+    L->fading_sum += L->fading;
+    L->shadow_tris_sum += L->shadow_tris;
+}
+
+static void mega_lod_update_cmds(RHICmdBuffer *cmd, RHIBuffer buf,
+                                 const DrawIndexedIndirectCmd *cmds, u32 count) {
+    usize bytes = (usize)count * sizeof(*cmds);
+    for (usize off = 0; off < bytes; ) {
+        usize n = bytes - off;
+        if (n > 65536u) n = 65536u;
+        rhi_cmd_update_buffer(cmd, buf, off, (const u8 *)cmds + off, n);
+        off += n;
+    }
+}
+
+static void mega_lod_upload_fade_commands(MegaBuffer *mb, RHICmdBuffer *cmd) {
+    if (!mega_lod_on(mb) || !mb->lod->fade || !mb->direct_ready || !cmd) return;
+    MegaLod *L = mb->lod;
+    for (u32 ci = 0; ci < mb->draw_cmd_count; ci++) {
+        L->cmd_upload[ci] = mb->direct_cmds[ci];
+        L->cmd_upload[ci].first_instance =
+            lod_fade_pack_first_instance(L->cmd_upload[ci].first_instance, L->cmd_dither[ci]);
+    }
+    if (mb->group_system_ready) {
+        u32 total = mb->group_cmd_offsets[mb->mat_group_count];
+        for (u32 gi = 0; gi < total; gi++)
+            L->group_upload[gi] = L->cmd_upload[mb->group_cmd_list[gi]];
+        mega_lod_update_cmds(cmd, mb->group_system.all_draws_buf, L->group_upload, total);
+    }
+    if (mb->array_system_ready)
+        mega_lod_update_cmds(cmd, mb->array_system.all_draws_buf, L->cmd_upload, mb->draw_cmd_count);
+}
+
+/* ---- Runtime mesh LOD for ECS instanced meshes (phase 2.1) ----
+ * Entities with CTransform + CMeshRef are drawn by the forward instanced
+ * path, one instanced draw per mesh. With LOD on, every mesh referenced by
+ * an entity at startup (plus mesh 0, the spawn default) gets the same
+ * LOD1/LOD2 index lists as the mega path (shared LOD0 vertices; the levels
+ * live in one extra index buffer per mesh, LOD0 keeps Mesh.index_buf). Each
+ * frame every frustum-visible instance picks its level from its screen-space
+ * error (bounding-sphere surface distance, hysteresis per entity slot), and
+ * the draw groups instances by (mesh, level). ECS instances are not drawn
+ * by any shadow pass or the deferred G-buffer, so there is no shadow level.
+ * Skinned meshes never go through this path (they are drawn per primitive
+ * with the joint palette); their LOD is the separate SkinLod below (R707c).
+ * BREAK_LOD=0 skips the setup and leaves `active` false, which keeps the
+ * gather loop and the per-mesh draw on their pre-LOD code. */
+#define ECS_LOD_LEVELS LOD_GEN_MAX_LEVELS
+/* vkCmdUpdateBuffer's 65536-byte cap / 128 bytes per instance row. */
+#define ECS_LOD_DRAW_CHUNK 512u
+
+typedef struct {
+    bool       active;
+    u32        mesh_count;         /* scene meshes the tables were built for */
+    u32        inst_cap;
+    u8        *mesh_level_count;   /* [mesh] 1..ECS_LOD_LEVELS */
+    f32       *mesh_err;           /* [mesh * L] local-space error vs LOD0 */
+    u32       *mesh_tris;          /* [mesh * L] triangles per level */
+    u32       *mesh_first;         /* [mesh * L] first index in mesh_ibo (levels >= 1) */
+    f32       *mesh_sphere;        /* [mesh * 4] local AABB center xyz + half diagonal */
+    RHIBuffer *mesh_ibo;           /* [mesh] LOD1.. indices; invalid when 1 level */
+    RHIBuffer *mesh_vbo;           /* [mesh * L] authored vertex buffers; invalid = share LOD0 */
+    LodInstanceState st;           /* per entity slot (index, generation + 1) */
+    u8        *inst_level;         /* [inst_cap] level of this frame's instance k */
+    u32       *bucket_off;         /* [mesh * L + 1] */
+    u32       *bucket_order;       /* [inst_cap] */
+    LodFade   *fade;               /* [ECS_MAX_ENTITIES] cross-fade state (R703a); NULL = off */
+    f32        fade_s;             /* BREAK_LOD_FADE_MS / 1000 */
+    /* last frame */
+    u32   level_inst[ECS_LOD_LEVELS];
+    u32   vis_tris, vis_tris_lod0, transitions, draws, fading;
+    f64   select_ms;
+    /* session totals (ECS_LOD_STATS at shutdown) */
+    u64   frames;
+    f64   select_ms_sum;
+    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum, draws_sum, fading_sum;
+} EcsLod;
+
+static EcsLod g_ecs_lod;
+
+static void ecs_lod_free(EcsLod *E, RHIDevice *dev) {
+    if (!E) return;
+    if (E->mesh_ibo && dev) {
+        for (u32 i = 0; i < E->mesh_count; i++)
+            if (rhi_handle_valid(E->mesh_ibo[i])) rhi_buffer_destroy(dev, E->mesh_ibo[i]);
+    }
+    free(E->mesh_level_count); free(E->mesh_err); free(E->mesh_tris); free(E->mesh_first);
+    free(E->mesh_sphere); free(E->mesh_ibo); free(E->mesh_vbo); free(E->st.level); free(E->st.tag);
+    free(E->inst_level); free(E->bucket_off); free(E->bucket_order); free(E->fade);
+    u64 frames = E->frames, vt = E->vis_tris_sum, vt0 = E->vis_tris_lod0_sum;
+    u64 tr = E->transitions_sum, dr = E->draws_sum, fa = E->fading_sum;
+    f64 sm = E->select_ms_sum;
+    memset(E, 0, sizeof(*E));
+    /* Session totals survive a rebuild (BSCN restore) for the shutdown log. */
+    E->frames = frames; E->vis_tris_sum = vt; E->vis_tris_lod0_sum = vt0;
+    E->transitions_sum = tr; E->draws_sum = dr; E->select_ms_sum = sm; E->fading_sum = fa;
+}
+
+/* Build the tables for every mesh an entity references (plus mesh 0).
+ * pre: the mega path's per-mesh levels (may be NULL or partial); meshes it
+ * already simplified are reused instead of simplified again. */
+static void ecs_lod_setup(EcsLod *E, RHIDevice *dev, const Scene *scene, World *world,
+                          const LodMeshLevels *pre, u32 inst_cap) {
+    ecs_lod_free(E, dev);
+    if (!dev || !scene || !world || scene->mesh_count == 0u || inst_cap == 0u) return;
+    const u32 L = ECS_LOD_LEVELS, mc = scene->mesh_count;
+    bool *used = (bool *)calloc(mc, sizeof(bool));
+    if (!used) return;
+    used[0] = true;
+    ComponentType qt[] = { COMP_TRANSFORM, COMP_MESH_REF };
+    Query *q = world_query(world, qt, 2);
+    u32 entities = 0u;
+    if (q) {
+        for (u32 mi = 0; mi < q->match_count; mi++) {
+            Archetype *a = q->matching[mi];
+            u32 mcol = UINT32_MAX;
+            for (u32 ki = 0; ki < a->key.count; ki++)
+                if (a->key.ids[ki] == COMP_MESH_REF) mcol = ki;
+            if (mcol == UINT32_MAX) continue;
+            for (Chunk *c = a->chunks; c; c = c->next) {
+                for (u32 ci = 0; ci < c->count; ci++) {
+                    const CMeshRef *em = (const CMeshRef *)((u8 *)c + a->offsets[mcol] + ci * sizeof(CMeshRef));
+                    used[em->mesh_index < mc ? em->mesh_index : 0u] = true;
+                    entities++;
+                }
+            }
+        }
+        query_done(q);
+    }
+    E->mesh_count = mc;
+    E->inst_cap = inst_cap;
+    E->mesh_level_count = (u8 *)calloc(mc, 1);
+    E->mesh_err    = (f32 *)calloc((usize)mc * L, sizeof(f32));
+    E->mesh_tris   = (u32 *)calloc((usize)mc * L, sizeof(u32));
+    E->mesh_first  = (u32 *)calloc((usize)mc * L, sizeof(u32));
+    E->mesh_sphere = (f32 *)calloc((usize)mc * 4u, sizeof(f32));
+    E->mesh_ibo    = (RHIBuffer *)calloc(mc, sizeof(RHIBuffer));
+    E->mesh_vbo    = (RHIBuffer *)calloc((usize)mc * L, sizeof(RHIBuffer));
+    E->st.level    = (u8 *)calloc(ECS_MAX_ENTITIES, 1);
+    E->st.tag      = (u32 *)calloc(ECS_MAX_ENTITIES, sizeof(u32));
+    E->st.capacity = ECS_MAX_ENTITIES;
+    E->inst_level  = (u8 *)calloc(inst_cap, 1);
+    E->bucket_off  = (u32 *)calloc((usize)mc * L + 1u, sizeof(u32));
+    E->bucket_order = (u32 *)calloc(inst_cap, sizeof(u32));
+    E->fade_s = lod_fade_seconds();
+    if (E->fade_s > 0.0f) {
+        E->fade = (LodFade *)calloc(ECS_MAX_ENTITIES, sizeof(LodFade));
+        if (!E->fade) {
+            LOG_WARN("ECS LOD: fade state alloc failed; level switches pop");
+            E->fade_s = 0.0f;
+        }
+    }
+    if (!E->mesh_level_count || !E->mesh_err || !E->mesh_tris || !E->mesh_first ||
+        !E->mesh_sphere || !E->mesh_ibo || !E->mesh_vbo || !E->st.level || !E->st.tag || !E->inst_level ||
+        !E->bucket_off || !E->bucket_order) {
+        LOG_WARN("ECS LOD: table alloc failed; ECS instances stay at LOD0");
+        free(used);
+        ecs_lod_free(E, dev);
+        return;
+    }
+    u64 t0 = time_microseconds();
+    u32 with_levels = 0u, generated = 0u, reused = 0u, used_count = 0u;
+    for (u32 i = 0; i < mc; i++) {
+        const Mesh *m = &scene->meshes[i];
+        E->mesh_level_count[i] = 1u;
+        E->mesh_tris[(usize)i * L] = m->index_count / 3u;
+        Vec3 ext = vec3_sub(m->aabb_max, m->aabb_min);
+        E->mesh_sphere[i * 4u + 0u] = 0.5f * (m->aabb_min.e[0] + m->aabb_max.e[0]);
+        E->mesh_sphere[i * 4u + 1u] = 0.5f * (m->aabb_min.e[1] + m->aabb_max.e[1]);
+        E->mesh_sphere[i * 4u + 2u] = 0.5f * (m->aabb_min.e[2] + m->aabb_max.e[2]);
+        E->mesh_sphere[i * 4u + 3u] = vec3_len(ext) * 0.5f;
+        if (!used[i]) continue;
+        used_count++;
+        if (m->vertex_count == 0u || (m->authored_lod_count == 0u && m->index_count / 3u < LOD_GEN_MIN_TRIANGLES) ||
+            !rhi_handle_valid(m->vertex_buf) || !rhi_handle_valid(m->index_buf) ||
+            !(m->aabb_max.e[0] >= m->aabb_min.e[0]))
+            continue;
+        LodMeshLevels own;
+        memset(&own, 0, sizeof(own));
+        const LodMeshLevels *ml = NULL;
+        if (pre && pre[i].level_count > 1u) {
+            ml = &pre[i];
+            reused++;
+        } else if (pre && pre[i].level_count == 1u) {
+            continue; /* the mega path already tried this mesh: nothing to gain */
+        } else {
+            mesh_lod_generate(dev, scene, m, i, &own);
+            ml = &own;
+            generated++;
+        }
+        if (ml->level_count > 1u) {
+            u32 extra = 0u;
+            for (u32 l = 1; l < ml->level_count; l++) extra += ml->index_count[l];
+            u32 *ix = (u32 *)malloc((usize)extra * sizeof(u32));
+            if (ix) {
+                u32 off = 0u;
+                for (u32 l = 1; l < ml->level_count; l++) {
+                    memcpy(ix + off, ml->indices[l], (usize)ml->index_count[l] * sizeof(u32));
+                    E->mesh_first[(usize)i * L + l] = off;
+                    E->mesh_tris[(usize)i * L + l] = ml->index_count[l] / 3u;
+                    E->mesh_err[(usize)i * L + l] = ml->rel_error[l] * ml->scale;
+                    if (ml->authored && m->authored_lod[l - 1u] < scene->mesh_count)
+                        E->mesh_vbo[(usize)i * L + l] = scene->meshes[m->authored_lod[l - 1u]].vertex_buf;
+                    off += ml->index_count[l];
+                }
+                RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
+                                     .size = (usize)extra * sizeof(u32),
+                                     .initial_data = ix };
+                E->mesh_ibo[i] = rhi_buffer_create(dev, &id);
+                free(ix);
+                if (rhi_handle_valid(E->mesh_ibo[i])) {
+                    E->mesh_level_count[i] = (u8)ml->level_count;
+                    with_levels++;
+                }
+            }
+            if (!rhi_handle_valid(E->mesh_ibo[i]))
+                LOG_WARN("ECS LOD: mesh %u level upload failed; LOD0 only", i);
+        }
+        lod_mesh_levels_free(&own);
+    }
+    free(used);
+    E->active = with_levels > 0u;
+    LOG_INFO("ECS LOD: %s -- %u entities, %u meshes referenced, %u with levels (%u reused from mega, %u simplified here), %.1f ms",
+             E->active ? "on" : "on (no referenced mesh simplified; inactive)",
+             entities, used_count, with_levels, reused, generated,
+             (f64)(time_microseconds() - t0) / 1000.0);
+    if (E->active && E->fade_s > 0.0f)
+        LOG_INFO("ECS LOD: dithered cross-fade %.0f ms (BREAK_LOD_FADE_MS)", (f64)E->fade_s * 1000.0);
+}
+
+/* Camera level of one instance: translation-only CTransform, so the world
+ * bounding sphere is the mesh's local sphere moved to pos. The returned level
+ * is the one to draw. With the cross-fade on, the committed (hysteresis)
+ * level can differ from it while a fade runs: *fade_k < LOD_FADE_STEPS then
+ * means "draw the returned (finer) level with dither +k and *fade_coarser
+ * with dither -k". */
+static inline u8 ecs_lod_pick(EcsLod *E, u32 mesh, Entity e, const f32 pos[3],
+                              Vec3 cam, f32 pf, f64 now, u32 *fade_k, u8 *fade_coarser) {
+    u32 lc = E->mesh_level_count[mesh];
+    u32 lvl = 0u;
+    *fade_k = LOD_FADE_STEPS;
+    *fade_coarser = 0u;
+    if (lc > 1u) {
+        const f32 *s = &E->mesh_sphere[mesh * 4u];
+        f32 dx = pos[0] + s[0] - cam.e[0], dy = pos[1] + s[1] - cam.e[1], dz = pos[2] + s[2] - cam.e[2];
+        f32 dist = sqrtf(dx * dx + dy * dy + dz * dz) - s[3];
+        bool changed = false;
+        bool faded = E->fade && e.index < E->st.capacity;
+        bool fresh = faded && E->st.tag[e.index] != e.generation + 1u;
+        lvl = lod_instance_select(&E->st, e.index, e.generation + 1u,
+                                  &E->mesh_err[(usize)mesh * ECS_LOD_LEVELS], lc, dist, pf,
+                                  mega_lod_pixel_error, &changed);
+        if (changed) E->transitions++;
+        if (faded) {
+            LodFade *f = &E->fade[e.index];
+            /* First sighting of this entity (or a reused slot): no fade in. */
+            if (fresh) lod_fade_reset(f, lvl);
+            else       lod_fade_update(f, lvl, now, E->fade_s);
+            u32 fi = lvl, co = lvl;
+            u32 k = lod_fade_split(f, now, E->fade_s, &fi, &co);
+            if (fi >= lc) fi = lc - 1u;
+            if (co >= lc) co = lc - 1u;
+            if (fi == co || k >= LOD_FADE_STEPS) {
+                lvl = fi;
+            } else if (k == 0u) {
+                lvl = co;
+            } else {
+                lvl = fi;
+                *fade_k = k;
+                *fade_coarser = (u8)co;
+                E->fading++;
+            }
+        }
+    }
+    const u32 *tris = &E->mesh_tris[(usize)mesh * ECS_LOD_LEVELS];
+    E->level_inst[lvl]++;
+    E->vis_tris += tris[lvl];
+    if (*fade_k < LOD_FADE_STEPS) E->vis_tris += tris[*fade_coarser];
+    E->vis_tris_lod0 += tris[0];
+    return (u8)lvl;
+}
+
+/* ---- Runtime LOD for skinned meshes (R707c) ----
+ * Every SkinnedMesh with >= LOD_GEN_MIN_TRIANGLES gets LOD1/LOD2 index lists
+ * from lod_skin_cache_generate (multi-pose simplification, measured skinned
+ * error; poses sampled from scene.anim_clips on a CPU-only Skeleton). The
+ * levels share LOD0's vertices and live in one extra index buffer per mesh;
+ * LOD0 keeps SkinnedMesh.index_buf and the original draw call. Each frame,
+ * after the skeleton update, the current pose gives a conservative bounding
+ * sphere (lod_skin_bounds over per-joint bind spheres) and the shared screen
+ * error selection + hysteresis picks the level. The cross-fade uses the R703
+ * LodFade with the signed dither in first_instance's high half (direct draws
+ * via rhi_cmd_draw_indexed_instanced_base); it is off when the backend drops
+ * first_instance or BREAK_LOD_FADE_MS=0. BREAK_LOD=0 never builds this. */
+#define SKIN_LOD_LEVELS LOD_GEN_MAX_LEVELS
+
+typedef struct {
+    bool       active;              /* at least one mesh has levels */
+    u32        mesh_count;          /* scene skinned meshes the tables were built for */
+    u32        joint_count;         /* skeleton joints the spheres were built for */
+    u8        *level_count;         /* [mesh] 1..SKIN_LOD_LEVELS */
+    u8        *level;               /* [mesh] committed level (hysteresis state) */
+    f32       *err;                 /* [mesh * L] bind-space error vs LOD0 */
+    u32       *tris;                /* [mesh * L] triangles per level */
+    u32       *first;               /* [mesh * L] first index in ibo (levels >= 1) */
+    u32       *count;               /* [mesh * L] index count per level */
+    RHIBuffer *ibo;                 /* [mesh] LOD1.. indices; invalid when 1 level */
+    LodSphere *spheres;             /* [mesh * joint_count] bind-pose joint spheres */
+    LodFade   *fade;                /* [mesh]; NULL = fade off */
+    u8        *draw_fine;           /* [mesh] this frame's level to draw */
+    u8        *draw_coarse;         /* [mesh] second level while fading */
+    u8        *draw_k;              /* [mesh] finer share 1..15 while fading, else 0 */
+    f32        fade_s;
+    /* last frame */
+    u32   level_meshes[SKIN_LOD_LEVELS];
+    u32   vis_tris, vis_tris_lod0, transitions, fading;
+    f64   select_ms;
+    /* session totals (SKIN_LOD_STATS at shutdown) */
+    u64   frames;
+    f64   select_ms_sum;
+    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum, fading_sum;
+} SkinLod;
+
+static SkinLod g_skin_lod;
+
+/* Fade only when the backend delivers a direct draw's first_instance to the
+ * shader; the skinned pipelines are built with LOD_FADE under the same rule. */
+static f32 skin_lod_fade_seconds(const RHICapabilities *caps) {
+    return (caps && caps->indirect_first_instance_supported) ? lod_fade_seconds() : 0.0f;
+}
+
+static void skin_lod_free(SkinLod *S, RHIDevice *dev) {
+    if (!S) return;
+    if (S->ibo && dev) {
+        for (u32 i = 0; i < S->mesh_count; i++)
+            if (rhi_handle_valid(S->ibo[i])) rhi_buffer_destroy(dev, S->ibo[i]);
+    }
+    free(S->level_count); free(S->level); free(S->err); free(S->tris); free(S->first);
+    free(S->count); free(S->ibo); free(S->spheres); free(S->fade);
+    free(S->draw_fine); free(S->draw_coarse); free(S->draw_k);
+    u64 frames = S->frames, vt = S->vis_tris_sum, vt0 = S->vis_tris_lod0_sum;
+    u64 tr = S->transitions_sum, fa = S->fading_sum;
+    f64 sm = S->select_ms_sum;
+    memset(S, 0, sizeof(*S));
+    /* Session totals survive a rebuild (BSCN restore) for the shutdown log. */
+    S->frames = frames; S->vis_tris_sum = vt; S->vis_tris_lod0_sum = vt0;
+    S->transitions_sum = tr; S->fading_sum = fa; S->select_ms_sum = sm;
+}
+
+/* Up to LOD_SKIN_MAX_POSES skin-matrix sets sampled evenly over the clips'
+ * time axes on a CPU-only Skeleton (no joint buffers, never uploaded).
+ * Returns the pose count; *out is malloc'd (NULL when 0). */
+static u32 skin_lod_sample_poses(const Scene *scene, Mat4 **out) {
+    *out = NULL;
+    u32 jc = scene->joint_count;
+    if (jc == 0u || jc > SKELETON_MAX_JOINTS || !scene->joint_parents || !scene->inverse_bind)
+        return 0u;
+    u32 usable = 0u;
+    for (u32 c = 0; c < scene->anim_clip_count; c++)
+        if (scene->anim_clips[c].channel_count > 0u) usable++;
+    if (usable == 0u) return 0u;
+    Skeleton *sk = (Skeleton *)calloc(1, sizeof(Skeleton));
+    AnimClip *clip = (AnimClip *)malloc(sizeof(AnimClip));
+    Mat4 *poses = (Mat4 *)malloc((usize)LOD_SKIN_MAX_POSES * jc * sizeof(Mat4));
+    if (!sk || !clip || !poses) { free(sk); free(clip); free(poses); return 0u; }
+    sk->joint_count = jc;
+    for (u32 j = 0; j < jc; j++) {
+        sk->joint_parents[j] = scene->joint_parents[j];
+        sk->inverse_bind[j] = scene->inverse_bind[j];
+    }
+    u32 per_clip = LOD_SKIN_MAX_POSES / usable;
+    if (per_clip == 0u) per_clip = 1u;
+    u32 n = 0u;
+    for (u32 c = 0; c < scene->anim_clip_count && n < LOD_SKIN_MAX_POSES; c++) {
+        const AnimClip *src = &scene->anim_clips[c];
+        if (src->channel_count == 0u) continue;
+        *clip = *src;
+        for (u32 s = 0; s < per_clip && n < LOD_SKIN_MAX_POSES; s++) {
+            f32 dur = clip->duration > 0.0f ? clip->duration : 0.0f;
+            clip->time = dur * (f32)s / (f32)per_clip;
+            skeleton_evaluate(sk, clip, 0.0f);
+            memcpy(&poses[(usize)n * jc], sk->current_pose, (usize)jc * sizeof(Mat4));
+            n++;
+        }
+    }
+    free(sk);
+    free(clip);
+    if (n == 0u) { free(poses); return 0u; }
+    *out = poses;
+    return n;
+}
+
+static void skin_lod_setup(SkinLod *S, RHIDevice *dev, const Scene *scene, f32 fade_s) {
+    skin_lod_free(S, dev);
+    if (!dev || !scene || scene->skinned_mesh_count == 0u) return;
+    u32 jc = scene->joint_count;
+    if (jc == 0u || jc > LOD_SKIN_MAX_JOINTS) return;
+    const u32 L = SKIN_LOD_LEVELS, mc = scene->skinned_mesh_count;
+    S->mesh_count = mc;
+    S->joint_count = jc;
+    S->level_count = (u8 *)calloc(mc, 1);
+    S->level   = (u8 *)calloc(mc, 1);
+    S->err     = (f32 *)calloc((usize)mc * L, sizeof(f32));
+    S->tris    = (u32 *)calloc((usize)mc * L, sizeof(u32));
+    S->first   = (u32 *)calloc((usize)mc * L, sizeof(u32));
+    S->count   = (u32 *)calloc((usize)mc * L, sizeof(u32));
+    S->ibo     = (RHIBuffer *)calloc(mc, sizeof(RHIBuffer));
+    S->spheres = (LodSphere *)calloc((usize)mc * jc, sizeof(LodSphere));
+    S->draw_fine   = (u8 *)calloc(mc, 1);
+    S->draw_coarse = (u8 *)calloc(mc, 1);
+    S->draw_k      = (u8 *)calloc(mc, 1);
+    S->fade_s = fade_s;
+    if (fade_s > 0.0f) {
+        S->fade = (LodFade *)calloc(mc, sizeof(LodFade));
+        if (!S->fade) {
+            LOG_WARN("Skin LOD: fade state alloc failed; level switches pop");
+            S->fade_s = 0.0f;
+        }
+    }
+    if (!S->level_count || !S->level || !S->err || !S->tris || !S->first || !S->count ||
+        !S->ibo || !S->spheres || !S->draw_fine || !S->draw_coarse || !S->draw_k) {
+        LOG_WARN("Skin LOD: table alloc failed; skinned meshes stay at LOD0");
+        skin_lod_free(S, dev);
+        return;
+    }
+    u64 t0 = time_microseconds();
+    Mat4 *poses = NULL;
+    u32 pose_count = skin_lod_sample_poses(scene, &poses);
+    u32 with_levels = 0u, eligible = 0u;
+    u64 tris_sum[SKIN_LOD_LEVELS] = {0};
+    for (u32 i = 0; i < mc; i++) {
+        const SkinnedMesh *sm = &scene->skinned_meshes[i];
+        S->level_count[i] = 1u;
+        S->tris[(usize)i * L] = sm->index_count / 3u;
+        S->count[(usize)i * L] = sm->index_count;
+        tris_sum[0] += sm->index_count / 3u;
+        for (u32 j = 0; j < jc; j++) S->spheres[(usize)i * jc + j].r = -1.0f;
+        if (sm->index_count / 3u < LOD_GEN_MIN_TRIANGLES || sm->vertex_count == 0u ||
+            !rhi_handle_valid(sm->vertex_buf) || !rhi_handle_valid(sm->index_buf))
+            continue;
+        eligible++;
+        u64 m0 = time_microseconds();
+        usize vb = (usize)sm->vertex_count * LOD_SKIN_VERTEX_STRIDE;
+        usize ib = (usize)sm->index_count * sizeof(u32);
+        f32 *v = (f32 *)malloc(vb);
+        u32 *ix = (u32 *)malloc(ib);
+        if (!v || !ix || !rhi_buffer_read(dev, sm->vertex_buf, v, 0, vb) ||
+            !rhi_buffer_read(dev, sm->index_buf, ix, 0, ib)) {
+            LOG_WARN("Skin LOD: failed to read skinned mesh %u; LOD0 only", i);
+            free(v); free(ix);
+            continue;
+        }
+        lod_skin_joint_spheres(v, sm->vertex_count, jc, &S->spheres[(usize)i * jc]);
+        LodMeshLevels ml;
+        memset(&ml, 0, sizeof(ml));
+        lod_skin_cache_generate(&g_lod_cache, v, sm->vertex_count, ix, sm->index_count,
+                                poses, pose_count, jc, L, &ml);
+        free(v); free(ix);
+        if (ml.level_count > 1u) {
+            u32 extra = 0u;
+            for (u32 l = 1; l < ml.level_count; l++) extra += ml.index_count[l];
+            u32 *lx = (u32 *)malloc((usize)extra * sizeof(u32));
+            if (lx) {
+                u32 off = 0u;
+                for (u32 l = 1; l < ml.level_count; l++) {
+                    memcpy(lx + off, ml.indices[l], (usize)ml.index_count[l] * sizeof(u32));
+                    S->first[(usize)i * L + l] = off;
+                    S->count[(usize)i * L + l] = ml.index_count[l];
+                    S->tris[(usize)i * L + l] = ml.index_count[l] / 3u;
+                    S->err[(usize)i * L + l] = ml.rel_error[l] * ml.scale;
+                    off += ml.index_count[l];
+                }
+                RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
+                                     .size = (usize)extra * sizeof(u32),
+                                     .initial_data = lx };
+                S->ibo[i] = rhi_buffer_create(dev, &id);
+                free(lx);
+                if (rhi_handle_valid(S->ibo[i])) {
+                    S->level_count[i] = (u8)ml.level_count;
+                    with_levels++;
+                    for (u32 l = 1; l < ml.level_count; l++) tris_sum[l] += ml.index_count[l] / 3u;
+                }
+            }
+            if (!rhi_handle_valid(S->ibo[i]))
+                LOG_WARN("Skin LOD: skinned mesh %u level upload failed; LOD0 only", i);
+        }
+        LOG_INFO("Skin LOD: mesh %u levels=%u tris %u/%u/%u rel_err %.6f/%.6f scale %.3f poses=%u %.1f ms",
+                 i, S->level_count[i], ml.index_count[0] / 3u, ml.index_count[1] / 3u,
+                 ml.index_count[2] / 3u, ml.rel_error[1], ml.rel_error[2], ml.scale, pose_count,
+                 (f64)(time_microseconds() - m0) / 1000.0);
+        lod_mesh_levels_free(&ml);
+    }
+    free(poses);
+    S->active = with_levels > 0u;
+    LOG_INFO("Skin LOD: %s -- %u skinned meshes, %u eligible, %u with levels, %u joints, %u sampled poses, "
+             "tris L0=%llu L1=%llu L2=%llu, %.1f ms",
+             S->active ? "on" : "on (no skinned mesh simplified; inactive)", mc, eligible,
+             with_levels, jc, pose_count, (unsigned long long)tris_sum[0],
+             (unsigned long long)tris_sum[1], (unsigned long long)tris_sum[2],
+             (f64)(time_microseconds() - t0) / 1000.0);
+    if (S->active && S->fade_s > 0.0f)
+        LOG_INFO("Skin LOD: dithered cross-fade %.0f ms (BREAK_LOD_FADE_MS)", (f64)S->fade_s * 1000.0);
+    if (!S->active) skin_lod_free(S, dev);
+}
+
+/* Per-frame level selection under the current pose (the matrices uploaded to
+ * the joint buffer this frame). skin_mats has joint_count entries. */
+static void skin_lod_select(SkinLod *S, const Scene *scene, const Mat4 *skin_mats,
+                            u32 joint_count, Vec3 cam, f32 fov, f32 screen_h) {
+    if (!S->active || S->mesh_count != scene->skinned_mesh_count) return;
+    u64 t0 = time_microseconds();
+    f64 now = (f64)t0 / 1e6;
+    f32 pf = lod_screen_proj_factor(fov, screen_h);
+    const u32 L = SKIN_LOD_LEVELS;
+    bool pose_ok = joint_count == S->joint_count && skin_mats;
+    memset(S->level_meshes, 0, sizeof(S->level_meshes));
+    S->vis_tris = 0u;
+    S->vis_tris_lod0 = 0u;
+    S->transitions = 0u;
+    S->fading = 0u;
+    for (u32 i = 0; i < S->mesh_count; i++) {
+        u32 lc = S->level_count[i];
+        u32 cur = S->level[i];
+        u32 lvl = 0u;
+        const u32 *tris = &S->tris[(usize)i * L];
+        if (lc > 1u && pose_ok) {
+            const LodSphere *js = &S->spheres[(usize)i * S->joint_count];
+            LodSphere b = lod_skin_bounds(js, S->joint_count, skin_mats);
+            if (b.r >= 0.0f) {
+                f32 dx = b.c[0] - cam.e[0], dy = b.c[1] - cam.e[1], dz = b.c[2] - cam.e[2];
+                f32 dist = sqrtf(dx * dx + dy * dy + dz * dz) - b.r;
+                lvl = lod_select_by_screen_error(&S->err[(usize)i * L], lc, dist, pf,
+                                                 mega_lod_pixel_error, cur);
+            } else {
+                lvl = cur;
+            }
+        }
+        if (lvl != cur) S->transitions++;
+        S->level[i] = (u8)lvl;
+        S->level_meshes[lvl]++;
+        S->vis_tris_lod0 += tris[0];
+        u32 dfi = lvl, dco = lvl, dk = 0u;
+        if (S->fade) {
+            lod_fade_update(&S->fade[i], lvl, now, S->fade_s);
+            u32 fi = lvl, co = lvl;
+            u32 k = lod_fade_split(&S->fade[i], now, S->fade_s, &fi, &co);
+            if (fi >= lc) fi = lc - 1u;
+            if (co >= lc) co = lc - 1u;
+            if (fi != co && k > 0u && k < LOD_FADE_STEPS) {
+                dfi = fi; dco = co; dk = k;
+            } else {
+                dfi = dco = (fi == co || k >= LOD_FADE_STEPS) ? fi : co;
+            }
+        }
+        S->draw_fine[i] = (u8)dfi;
+        S->draw_coarse[i] = (u8)dco;
+        S->draw_k[i] = (u8)dk;
+        if (dk) {
+            S->fading++;
+            S->vis_tris += tris[dfi] + tris[dco];
+        } else {
+            S->vis_tris += tris[dfi];
+        }
+    }
+    S->select_ms = (f64)(time_microseconds() - t0) / 1000.0;
+    S->frames++;
+    S->select_ms_sum += S->select_ms;
+    S->vis_tris_sum += S->vis_tris;
+    S->vis_tris_lod0_sum += S->vis_tris_lod0;
+    S->transitions_sum += S->transitions;
+    S->fading_sum += S->fading;
+}
+
+/* One level of skinned mesh si with first_instance fi (0 = no dither). */
+static u32 skin_lod_draw_level(RHICmdBuffer *cmd, const SkinLod *S, u32 si,
+                               const SkinnedMesh *sm, u32 level, u32 fi) {
+    const u32 L = SKIN_LOD_LEVELS;
+    if (level == 0u) {
+        rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
+        if (fi) rhi_cmd_draw_indexed_instanced_base(cmd, sm->index_count, 1u, 0u, 0, fi);
+        else    rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
+        return sm->index_count / 3u;
+    }
+    u32 n = S->count[(usize)si * L + level];
+    rhi_cmd_bind_index_buffer(cmd, S->ibo[si], 0, true);
+    if (fi) rhi_cmd_draw_indexed_instanced_base(cmd, n, 1u, S->first[(usize)si * L + level], 0, fi);
+    else    rhi_cmd_draw_indexed_base(cmd, n, 1u, S->first[(usize)si * L + level], 0);
+    return n / 3u;
+}
+
+/* Draw skinned mesh si (vertex buffer already bound, index_count > 0) at its
+ * selected level(s). Without skin LOD (or at LOD0, not fading) this is the
+ * original bind + rhi_cmd_draw_indexed. Returns the triangles drawn. */
+static u32 skin_lod_draw(RHICmdBuffer *cmd, const SkinLod *S, u32 scene_mesh_count,
+                         u32 si, const SkinnedMesh *sm) {
+    if (!S->active || S->mesh_count != scene_mesh_count || si >= S->mesh_count ||
+        S->level_count[si] <= 1u) {
+        rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
+        rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
+        return sm->index_count / 3u;
+    }
+    u32 k = S->draw_k[si];
+    if (k) {
+        u32 t = skin_lod_draw_level(cmd, S, si, sm, S->draw_fine[si],
+                    lod_fade_pack_first_instance(0u, (i32)lod_fade_dither_value(k, true)));
+        t += skin_lod_draw_level(cmd, S, si, sm, S->draw_coarse[si],
+                    lod_fade_pack_first_instance(0u, (i32)lod_fade_dither_value(k, false)));
+        return t;
+    }
+    return skin_lod_draw_level(cmd, S, si, sm, S->draw_fine[si], 0u);
 }
 
 static u32 draw_bench_mega = 0u;
@@ -2326,7 +3959,7 @@ static void mega_upload_unified_cull(GPUCullSystem *gc,
                                      GPUCullObject *uobj_buf) {
     if (!gc->unified_ready || !cmds || !cmd_node_index || !node_spheres || mesh_cmd_count == 0) return;
     if (!udc_buf || !uobj_buf) return;
-    if (mesh_cmd_count > GPUCULL_MAX_OBJECTS) mesh_cmd_count = GPUCULL_MAX_OBJECTS;
+    if (mesh_cmd_count > MEGA_MAX_CMDS) mesh_cmd_count = MEGA_MAX_CMDS;
 
     GPUCullDrawCmd *udc = udc_buf;
     GPUCullObject  *uobj = uobj_buf;
@@ -2596,6 +4229,409 @@ static void demo_showcase_entity(World *world, u32 mesh_index, u32 physics_id,
     if (mr) mr->mesh_index = mesh_index;
 }
 
+/* Runtime LOD stress scene (BREAK_STRESS_LOD=N): N static nodes sharing one
+ * procedural ~25k-triangle "rock" (a UV sphere displaced by deterministic
+ * multi-octave sinusoids of the surface direction, so it has real surface
+ * detail and simplification carries real geometric error), laid out on a
+ * grid in front of the default camera. Appended before the mega bake, so
+ * every node goes through the mega path; the one shared mesh_index means
+ * LOD generation runs once. */
+static f32 demo_rock_disp(f32 x, f32 y, f32 z) {
+    f32 d = 0.050f * sinf(3.1f * x + 1.3f) * sinf(2.7f * y + 0.7f) * sinf(3.3f * z + 2.1f)
+          + 0.030f * sinf(7.0f * x + 5.0f * y + 0.4f) * sinf(6.0f * z - 4.0f * y + 1.1f)
+          + 0.018f * sinf(13.0f * x - 11.0f * z + 0.9f) * sinf(12.0f * y + 7.0f * x + 2.3f)
+          + 0.010f * sinf(29.0f * x + 23.0f * y - 19.0f * z + 0.2f)
+          + 0.006f * sinf(41.0f * z - 37.0f * x + 31.0f * y + 1.7f);
+    return 1.0f + d;
+}
+
+/* BREAK_MODEL_VIEW: world-space bounds of the loaded model -- static nodes
+ * through their mesh AABB and world transform, skinned meshes from their
+ * vertices skinned by the first sampled animation pose (bind positions when
+ * the rig has no animation), read back once. Returns false when empty. */
+static bool demo_model_bounds(RHIDevice *dev, Scene *scene, Vec3 *out_min, Vec3 *out_max) {
+    Vec3 mn = vec3(1e30f, 1e30f, 1e30f), mx = vec3(-1e30f, -1e30f, -1e30f);
+    bool any = false;
+    scene_compute_world_transforms(scene);
+    for (u32 ni = 0; ni < scene->node_count; ni++) {
+        const SceneNode *nd = &scene->nodes[ni];
+        if (!nd->has_mesh || nd->skinned || nd->mesh_index >= scene->mesh_count) continue;
+        const Mesh *m = &scene->meshes[nd->mesh_index];
+        if (!(m->aabb_max.e[0] >= m->aabb_min.e[0])) continue;
+        const Mat4 *wt = &nd->world_transform;
+        for (int ci = 0; ci < 8; ci++) {
+            f32 l[3] = { (ci & 1) ? m->aabb_max.e[0] : m->aabb_min.e[0],
+                         (ci & 2) ? m->aabb_max.e[1] : m->aabb_min.e[1],
+                         (ci & 4) ? m->aabb_max.e[2] : m->aabb_min.e[2] };
+            for (int c = 0; c < 3; c++) {
+                f32 w = wt->e[0][c] * l[0] + wt->e[1][c] * l[1] + wt->e[2][c] * l[2] + wt->e[3][c];
+                if (w < mn.e[c]) mn.e[c] = w;
+                if (w > mx.e[c]) mx.e[c] = w;
+            }
+        }
+        any = true;
+    }
+    Mat4 *poses = NULL;
+    u32 pose_count = skin_lod_sample_poses(scene, &poses);
+    const u32 jc = scene->joint_count;
+    for (u32 si = 0; si < scene->skinned_mesh_count; si++) {
+        const SkinnedMesh *sm = &scene->skinned_meshes[si];
+        if (sm->vertex_count == 0u || !rhi_handle_valid(sm->vertex_buf)) continue;
+        usize vb = (usize)sm->vertex_count * LOD_SKIN_VERTEX_STRIDE;
+        f32 *v = (f32 *)malloc(vb);
+        if (v && rhi_buffer_read(dev, sm->vertex_buf, v, 0, vb)) {
+            for (u32 vi = 0; vi < sm->vertex_count; vi++) {
+                const f32 *src = &v[(usize)vi * (LOD_SKIN_VERTEX_STRIDE / sizeof(f32))];
+                f32 pos[3] = { src[0], src[1], src[2] };
+                if (pose_count > 0u) {
+                    const u32 *ji = (const u32 *)&src[8];
+                    const f32 *jw = &src[12];
+                    f32 acc[3] = { 0, 0, 0 }, wsum = 0.0f;
+                    for (int k = 0; k < 4; k++) {
+                        if (!(jw[k] > 0.0f) || ji[k] >= jc) continue;
+                        const Mat4 *M = &poses[ji[k]];
+                        for (int c = 0; c < 3; c++)
+                            acc[c] += jw[k] * (M->e[0][c] * src[0] + M->e[1][c] * src[1] +
+                                               M->e[2][c] * src[2] + M->e[3][c]);
+                        wsum += jw[k];
+                    }
+                    if (wsum > 0.0f)
+                        for (int c = 0; c < 3; c++) pos[c] = acc[c] / wsum;
+                }
+                for (int c = 0; c < 3; c++) {
+                    if (pos[c] < mn.e[c]) mn.e[c] = pos[c];
+                    if (pos[c] > mx.e[c]) mx.e[c] = pos[c];
+                }
+            }
+            any = true;
+        }
+        free(v);
+    }
+    free(poses);
+    if (!any) return false;
+    *out_min = mn;
+    *out_max = mx;
+    return true;
+}
+
+static void demo_build_lod_stress(RHIDevice *dev, Scene *scene, const Terrain *terrain, u32 n) {
+    if (!dev || !scene || n == 0u) return;
+    const u32 sectors = 160u, rings = 80u;
+    const f32 radius = 1.2f;
+    u32 vc = (rings + 1u) * (sectors + 1u);
+    u32 imax = rings * sectors * 6u;
+    DemoVert *v = (DemoVert *)calloc(vc, sizeof(DemoVert));
+    u32 *idx = (u32 *)malloc((usize)imax * sizeof(u32));
+    if (!v || !idx) { free(v); free(idx); LOG_WARN("LOD stress: OOM"); return; }
+    u32 k = 0;
+    for (u32 ri = 0; ri <= rings; ri++) {
+        f32 phi = (f32)ri / (f32)rings * 3.14159265f;
+        for (u32 si = 0; si <= sectors; si++) {
+            f32 th = (f32)si / (f32)sectors * 6.2831853f;
+            f32 dx = sinf(phi) * cosf(th), dy = cosf(phi), dz = sinf(phi) * sinf(th);
+            f32 r = radius * demo_rock_disp(dx, dy, dz);
+            DemoVert *dv = &v[k++];
+            dv->pos[0] = dx * r; dv->pos[1] = dy * r; dv->pos[2] = dz * r;
+            dv->uv[0] = (f32)si / (f32)sectors * 4.0f;
+            dv->uv[1] = (f32)ri / (f32)rings * 2.0f;
+        }
+    }
+    u32 ic = 0;
+    for (u32 ri = 0; ri < rings; ri++) {
+        for (u32 si = 0; si < sectors; si++) {
+            u32 a = ri * (sectors + 1u) + si, b = a + sectors + 1u;
+            /* Skip the zero-area triangles that touch a pole twice. */
+            if (ri != 0u) { idx[ic++] = a; idx[ic++] = b; idx[ic++] = a + 1u; }
+            if (ri != rings - 1u) { idx[ic++] = a + 1u; idx[ic++] = b; idx[ic++] = b + 1u; }
+        }
+    }
+    /* Smooth normals from the displaced geometry (area-weighted face normals). */
+    for (u32 t = 0; t < ic; t += 3) {
+        f32 *p0 = v[idx[t]].pos, *p1 = v[idx[t + 1]].pos, *p2 = v[idx[t + 2]].pos;
+        f32 e1[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+        f32 e2[3] = { p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2] };
+        f32 fn[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                      e1[0] * e2[1] - e1[1] * e2[0] };
+        for (u32 j = 0; j < 3; j++)
+            for (u32 c = 0; c < 3; c++) v[idx[t + j]].nrm[c] += fn[c];
+    }
+    for (u32 i = 0; i < vc; i++) {
+        f32 *nn = v[i].nrm;
+        f32 l = sqrtf(nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]);
+        if (l > 1e-12f) { nn[0] /= l; nn[1] /= l; nn[2] /= l; }
+        else { nn[0] = 0.0f; nn[1] = 1.0f; nn[2] = 0.0f; }
+    }
+    /* Seam / pole duplicates: average so the duplicated vertices shade alike. */
+    for (u32 ri = 0; ri <= rings; ri++) {
+        DemoVert *s0 = &v[ri * (sectors + 1u)], *s1 = &v[ri * (sectors + 1u) + sectors];
+        for (u32 c = 0; c < 3; c++) {
+            f32 m = 0.5f * (s0->nrm[c] + s1->nrm[c]);
+            s0->nrm[c] = m; s1->nrm[c] = m;
+        }
+    }
+    for (u32 pole = 0; pole < 2u; pole++) {
+        u32 row = pole ? rings : 0u;
+        f32 sy = pole ? -1.0f : 1.0f;
+        for (u32 si = 0; si <= sectors; si++) {
+            f32 *nn = v[row * (sectors + 1u) + si].nrm;
+            nn[0] = 0.0f; nn[1] = sy; nn[2] = 0.0f;
+        }
+    }
+    u32 mesh = demo_scene_push_mesh(scene, demo_mesh_upload(dev, v, vc, idx, ic));
+    free(v);
+    free(idx);
+    if (mesh == UINT32_MAX) return;
+    static const u8 rock_a[4] = { 150, 130, 110, 255 }, rock_b[4] = { 110, 100, 90, 255 };
+    u32 mat = demo_scene_push_material(scene, demo_tex_pattern(dev, 0, rock_a, rock_b),
+                                       demo_tex_mr(dev, 0.0f, 0.85f));
+    if (mat == UINT32_MAX) return;
+    scene->meshes[mesh].material_idx = mat;
+
+    /* Grid in front of the default camera (looking down -Z), 6 m pitch,
+     * starting 6 m ahead of the origin and extending away from the camera. */
+    u32 cols = 1u;
+    while (cols * cols < n) cols++;
+    const f32 pitch = 6.0f;
+    u32 placed = 0;
+    for (u32 i = 0; i < n; i++) {
+        u32 cx = i % cols, cz = i / cols;
+        f32 x = ((f32)cx - 0.5f * (f32)(cols - 1u)) * pitch;
+        f32 z = -6.0f - (f32)cz * pitch;
+        f32 y = (terrain ? terrain_get_height(terrain, x, z) : 0.0f) + radius;
+        if (demo_scene_push_node(scene, mesh, mat, x, y, z)) placed++;
+    }
+    LOG_INFO("LOD stress: %u nodes of one %u-vertex / %u-triangle procedural mesh (BREAK_STRESS_LOD=%u)",
+             placed, vc, ic / 3u, n);
+}
+
+/* ECS variant (BREAK_STRESS_LOD_ECS=N): the same rock, but as N static ECS
+ * entities (CTransform + CMeshRef, no rigid body) on the same grid, so they
+ * render through the forward instanced path instead of the mega bake. */
+static void demo_build_lod_stress_ecs(RHIDevice *dev, Scene *scene, World *world,
+                                      const Terrain *terrain, u32 n) {
+    if (!world || n == 0u) return;
+    u32 nodes_before = scene->node_count;
+    demo_build_lod_stress(dev, scene, terrain, n);
+    if (scene->node_count == nodes_before) return;
+    u32 placed = 0;
+    for (u32 ni = nodes_before; ni < scene->node_count; ni++) {
+        SceneNode *nd = &scene->nodes[ni];
+        Entity e = world_create_entity(world);
+        CTransform *t = world_add_component(world, e, COMP_TRANSFORM);
+        CMeshRef *mr = world_add_component(world, e, COMP_MESH_REF);
+        if (!t || !mr) continue;
+        t->pos[0] = nd->local_transform.e[3][0];
+        t->pos[1] = nd->local_transform.e[3][1];
+        t->pos[2] = nd->local_transform.e[3][2];
+        mr->mesh_index = nd->mesh_index;
+        placed++;
+    }
+    /* The nodes only carried the layout; the entities replace them. */
+    scene->node_count = nodes_before;
+    LOG_INFO("LOD stress (ECS): %u instanced entities (BREAK_STRESS_LOD_ECS=%u)", placed, n);
+}
+
+/* Skinned LOD stress scene (BREAK_STRESS_LOD_SKIN=N, N <= 16): N procedural
+ * bumpy tubes (~20k triangles each, 3 m tall) as scene skinned meshes, each
+ * with its own 4-joint chain, on a grid in front of the default camera. The
+ * scene rig replaces the R445 demo arm (the draw loops prefer scene skinned
+ * meshes, and the arm's blend/IK set-up only runs without a scene rig).
+ * One AnimClip drives every chain with 4 channels per chain (16 x 4 = 64 =
+ * SKELETON_MAX_CHANNELS): j0 translation (tube base, static), j1 rotation
+ * (bend about the base pivot at 1 m), j2 translation (+1 m, second pivot),
+ * j3 rotation (bend about the second pivot). j1 and j2 therefore share a skin
+ * matrix; the weights blend j0->j1 around 1 m and j2->j3 around 2 m. Each
+ * chain has its own phase and bend axis. Needs a scene without a rig. */
+#define SKIN_STRESS_MAX      16u
+#define SKIN_STRESS_SEGS     96u    /* around */
+#define SKIN_STRESS_RINGS    104u   /* along: 96 x 104 x 2 = 19968 triangles */
+#define SKIN_STRESS_HEIGHT   3.0f
+#define SKIN_STRESS_RADIUS   0.28f
+#define SKIN_STRESS_KEYS     9u
+
+static f32 skin_stress_smooth(f32 e0, f32 e1, f32 x) {
+    f32 t = (x - e0) / (e1 - e0);
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static void demo_build_lod_stress_skin(RHIDevice *dev, Scene *scene, const Terrain *terrain, u32 n) {
+    if (!dev || !scene || n == 0u) return;
+    if (n > SKIN_STRESS_MAX) {
+        LOG_WARN("Skin LOD stress: N=%u clamped to %u (4 joints / 4 channels per chain)", n, SKIN_STRESS_MAX);
+        n = SKIN_STRESS_MAX;
+    }
+    if (scene->joint_count > 0u || scene->anim_clip_count > 0u || scene->skinned_mesh_count > 0u) {
+        LOG_WARN("Skin LOD stress: the loaded scene already has a rig; BREAK_STRESS_LOD_SKIN ignored");
+        return;
+    }
+    const u32 segs = SKIN_STRESS_SEGS, rings = SKIN_STRESS_RINGS;
+    const u32 vc = (rings + 1u) * (segs + 1u), ic = rings * segs * 6u;
+    const u32 jc = n * 4u;
+    f32 *vtx = (f32 *)calloc((usize)vc, LOD_SKIN_VERTEX_STRIDE);
+    u32 *idx = (u32 *)malloc((usize)ic * sizeof(u32));
+    usize jp_bytes = (usize)jc * sizeof(u32);
+    usize ib_off = (jp_bytes + 15u) & ~(usize)15u;
+    u8 *rig = (u8 *)calloc(1, ib_off + (usize)jc * sizeof(Mat4));
+    AnimClip *clip = (AnimClip *)calloc(1, sizeof(AnimClip));
+    SkinnedMesh *sms = (SkinnedMesh *)calloc(n, sizeof(SkinnedMesh));
+    if (!vtx || !idx || !rig || !clip || !sms) {
+        free(vtx); free(idx); free(rig); free(clip); free(sms);
+        LOG_WARN("Skin LOD stress: OOM");
+        return;
+    }
+    u32 *parents = (u32 *)rig;
+    Mat4 *inv_bind = (Mat4 *)(rig + ib_off);
+    for (u32 r = 0; r < rings; r++) {
+        for (u32 s = 0; s < segs; s++) {
+            u32 a = r * (segs + 1u) + s, b = a + segs + 1u;
+            u32 *t = &idx[(r * segs + s) * 6u];
+            t[0] = a; t[1] = b; t[2] = a + 1u;
+            t[3] = a + 1u; t[4] = b; t[5] = b + 1u;
+        }
+    }
+    static const u8 tube_a[4] = { 70, 150, 190, 255 }, tube_b[4] = { 40, 90, 130, 255 };
+    u32 mat = demo_scene_push_material(scene, demo_tex_pattern(dev, 0, tube_a, tube_b),
+                                       demo_tex_mr(dev, 0.0f, 0.6f));
+    anim_clip_init(clip, 2.4f, true);
+    u32 cols = 1u;
+    while (cols * cols < n) cols++;
+    const f32 pitch = 2.5f, h1 = SKIN_STRESS_HEIGHT / 3.0f, bw = 0.25f;
+    u32 placed = 0u;
+    for (u32 c = 0; c < n; c++) {
+        u32 cx = c % cols, cz = c / cols;
+        f32 bx = ((f32)cx - 0.5f * (f32)(cols - 1u)) * pitch;
+        f32 bz = -4.0f - (f32)cz * pitch * 1.6f;
+        /* Stand on the terrain, but never below the demo water plane (y = -1). */
+        f32 by = (terrain ? terrain_get_height(terrain, bx, bz) : 0.0f) - 0.05f;
+        if (by < -1.0f) by = -1.0f;
+        u32 j0 = c * 4u;
+        /* Joint bind frames: j0 at the base, j1 at the base (pivot via j0),
+         * j2/j3 at 2 m up. inverse_bind = inverse of the bind world. */
+        parents[j0 + 0u] = UINT32_MAX;
+        parents[j0 + 1u] = j0 + 0u;
+        parents[j0 + 2u] = j0 + 1u;
+        parents[j0 + 3u] = j0 + 2u;
+        f32 py1 = by + h1, py2 = by + 2.0f * h1;
+        inv_bind[j0 + 0u] = mat4_translation(-bx, -py1, -bz);
+        inv_bind[j0 + 1u] = mat4_translation(-bx, -py1, -bz);
+        inv_bind[j0 + 2u] = mat4_translation(-bx, -py2, -bz);
+        inv_bind[j0 + 3u] = mat4_translation(-bx, -py2, -bz);
+        f32 t0[1] = { 0.0f };
+        f32 root_t[4] = { bx, py1, bz, 0.0f };
+        f32 mid_t[4] = { 0.0f, h1, 0.0f, 0.0f };
+        anim_clip_add_channel(clip, j0 + 0u, ANIM_PATH_TRANSLATION, 1u, t0, root_t);
+        anim_clip_add_channel(clip, j0 + 2u, ANIM_PATH_TRANSLATION, 1u, t0, mid_t);
+        f32 times[SKIN_STRESS_KEYS], q1[SKIN_STRESS_KEYS][4], q3[SKIN_STRESS_KEYS][4];
+        f32 phase = (f32)c * 0.9f;
+        f32 ax = cosf((f32)c * 1.3f), az = sinf((f32)c * 1.3f);
+        for (u32 k = 0; k < SKIN_STRESS_KEYS; k++) {
+            f32 u = (f32)k / (f32)(SKIN_STRESS_KEYS - 1u);
+            times[k] = u * clip->duration;
+            f32 w = 6.2831853f * u + phase;
+            f32 a1 = 0.45f * sinf(w), a3 = 0.70f * sinf(w + 1.2f);
+            q1[k][0] = ax * sinf(0.5f * a1); q1[k][1] = 0.0f;
+            q1[k][2] = az * sinf(0.5f * a1); q1[k][3] = cosf(0.5f * a1);
+            q3[k][0] = -az * sinf(0.5f * a3); q3[k][1] = 0.0f;
+            q3[k][2] = ax * sinf(0.5f * a3); q3[k][3] = cosf(0.5f * a3);
+        }
+        anim_clip_add_channel(clip, j0 + 1u, ANIM_PATH_ROTATION, SKIN_STRESS_KEYS, times, &q1[0][0]);
+        anim_clip_add_channel(clip, j0 + 3u, ANIM_PATH_ROTATION, SKIN_STRESS_KEYS, times, &q3[0][0]);
+
+        /* Geometry in world (bind) space: a bumpy closed-side tube. */
+        memset(vtx, 0, (usize)vc * LOD_SKIN_VERTEX_STRIDE);
+        for (u32 r = 0; r <= rings; r++) {
+            f32 v = (f32)r / (f32)rings;
+            f32 y = v * SKIN_STRESS_HEIGHT;
+            for (u32 s = 0; s <= segs; s++) {
+                f32 th = (f32)s / (f32)segs * 6.2831853f;
+                f32 bump = 0.035f * sinf(7.0f * th + 9.0f * y + phase)
+                         + 0.020f * sinf(13.0f * th - 17.0f * y + 1.7f)
+                         + 0.012f * sinf(29.0f * y + 3.0f * th);
+                f32 taper = 1.0f - 0.25f * v;
+                f32 rr = SKIN_STRESS_RADIUS * taper + bump * taper;
+                f32 *vp = &vtx[(usize)(r * (segs + 1u) + s) * 16u];
+                vp[0] = bx + rr * cosf(th);
+                vp[1] = by + y;
+                vp[2] = bz + rr * sinf(th);
+                vp[6] = (f32)s / (f32)segs * 4.0f;
+                vp[7] = v * 6.0f;
+                u32 *jj = (u32 *)&vp[8];
+                f32 *ww = &vp[12];
+                f32 w01 = skin_stress_smooth(h1 - bw, h1 + bw, y);
+                f32 w23 = skin_stress_smooth(2.0f * h1 - bw, 2.0f * h1 + bw, y);
+                if (y < 1.5f * h1) {
+                    jj[0] = j0 + 0u; ww[0] = 1.0f - w01;
+                    jj[1] = j0 + 1u; ww[1] = w01;
+                } else {
+                    jj[0] = j0 + 2u; ww[0] = 1.0f - w23;
+                    jj[1] = j0 + 3u; ww[1] = w23;
+                }
+                jj[2] = jj[3] = j0;
+                ww[2] = ww[3] = 0.0f;
+            }
+        }
+        for (u32 t = 0; t < ic; t += 3u) {
+            f32 *p0 = &vtx[(usize)idx[t] * 16u], *p1 = &vtx[(usize)idx[t + 1u] * 16u];
+            f32 *p2 = &vtx[(usize)idx[t + 2u] * 16u];
+            f32 e1[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+            f32 e2[3] = { p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2] };
+            f32 fn[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                          e1[0] * e2[1] - e1[1] * e2[0] };
+            for (u32 q = 0; q < 3u; q++)
+                for (u32 a = 0; a < 3u; a++) vtx[(usize)idx[t + q] * 16u + 3u + a] += fn[a];
+        }
+        for (u32 r = 0; r <= rings; r++) {
+            f32 *s0 = &vtx[(usize)(r * (segs + 1u)) * 16u];
+            f32 *s1 = &vtx[(usize)(r * (segs + 1u) + segs) * 16u];
+            for (u32 a = 3u; a < 6u; a++) { f32 m = s0[a] + s1[a]; s0[a] = m; s1[a] = m; }
+        }
+        for (u32 i = 0; i < vc; i++) {
+            f32 *nn = &vtx[(usize)i * 16u + 3u];
+            f32 l = sqrtf(nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]);
+            if (l > 1e-12f) { nn[0] /= l; nn[1] /= l; nn[2] /= l; }
+            else { nn[0] = 0.0f; nn[1] = 1.0f; nn[2] = 0.0f; }
+        }
+        RHIBufferDesc vd = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                             .size = (usize)vc * LOD_SKIN_VERTEX_STRIDE, .initial_data = vtx };
+        RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
+                             .size = (usize)ic * sizeof(u32), .initial_data = idx };
+        SkinnedMesh *sm = &sms[placed];
+        sm->vertex_buf = rhi_buffer_create(dev, &vd);
+        sm->index_buf = rhi_buffer_create(dev, &id);
+        if (!rhi_handle_valid(sm->vertex_buf) || !rhi_handle_valid(sm->index_buf)) {
+            if (rhi_handle_valid(sm->vertex_buf)) rhi_buffer_destroy(dev, sm->vertex_buf);
+            if (rhi_handle_valid(sm->index_buf)) rhi_buffer_destroy(dev, sm->index_buf);
+            memset(sm, 0, sizeof(*sm));
+            continue;
+        }
+        sm->index_count = ic;
+        sm->vertex_count = vc;
+        sm->material_idx = mat == UINT32_MAX ? 0u : mat;
+        sm->skinned = true;
+        placed++;
+    }
+    free(vtx);
+    free(idx);
+    if (placed == 0u) {
+        free(rig); free(clip); free(sms);
+        LOG_WARN("Skin LOD stress: no tube uploaded");
+        return;
+    }
+    free(scene->skinned_meshes);
+    scene->skinned_meshes = sms;
+    scene->skinned_mesh_count = placed;
+    free(scene->joint_parents);
+    scene->joint_parents = parents;
+    scene->inverse_bind = inv_bind;
+    scene->joint_count = jc;
+    free(scene->anim_clips);
+    scene->anim_clips = clip;
+    scene->anim_clip_count = 1u;
+    LOG_INFO("Skin LOD stress: %u skinned tubes of %u vertices / %u triangles, %u joints, %u channels "
+             "(BREAK_STRESS_LOD_SKIN=%u)", placed, vc, ic / 3u, jc, clip->channel_count, n);
+}
+
 static void demo_build_showcase(RHIDevice *dev, Scene *scene, PhysicsWorld *physics,
                                 World *world, const Terrain *terrain,
                                 u32 *out_elevator_body) {
@@ -2754,6 +4790,76 @@ static int bench_stats_cmp_f32(const void *a, const void *b) {
     return (x > y) - (x < y);
 }
 
+/* FS2: window-mode switch measurement. A switch is a set/toggle request;
+ * rebuild_ms is the time spent in the size-change rebuild block that follows
+ * it, max_frame_ms_next5 the longest raw frame over the 5 frames after it. */
+#define WINDOW_MODE_TOGGLE_MAX 64
+#define WINDOW_MODE_SWITCH_WATCH_FRAMES 5u
+typedef struct {
+    u64 frames[WINDOW_MODE_TOGGLE_MAX];   /* BREAK_TOGGLE_FULLSCREEN_AT */
+    u32 frame_count;
+    u32 next;
+    bool active;                          /* watching the frames after a switch */
+    u64 switch_frame;
+    u32 frames_seen;
+    f64 rebuild_ms;
+    f64 max_frame_ms;
+    u32 switches;
+    f64 worst_frame_ms;
+    f64 worst_rebuild_ms;
+} WindowModeSwitchStats;
+
+static void window_mode_stats_parse(WindowModeSwitchStats *s, const char *list) {
+    const char *p = list;
+    while (p != NULL && *p && s->frame_count < WINDOW_MODE_TOGGLE_MAX) {
+        char *end = NULL;
+        long long v = strtoll(p, &end, 10);
+        if (end == p) break;
+        if (v > 0) s->frames[s->frame_count++] = (u64)v;
+        p = end;
+        if (*p == ',') p++; else break;
+    }
+}
+
+/* Alt+T / BREAK_TOGGLE_TITLE_BAR_AT: flip the windowed title bar. The
+ * drawable size is logged so a run shows it did not change. */
+static void title_bar_toggle(Platform *platform, u64 frame) {
+    bool want = !platform_get_window_decorated(platform);
+    bool ok = platform_set_window_decorated(platform, want);
+    u32 dw = 0u, dh = 0u;
+    platform_get_drawable_size(platform, &dw, &dh);
+    LOG_INFO("TITLE_BAR_SWITCH frame=%llu decorated=%d ok=%d visible=%d drawable=%ux%u",
+             (unsigned long long)frame, want ? 1 : 0, ok ? 1 : 0,
+             platform_window_title_bar_visible(platform) ? 1 : 0, dw, dh);
+}
+
+static void window_mode_switch(WindowModeSwitchStats *s, Platform *platform, u64 frame) {
+    platform_toggle_fullscreen(platform);
+    s->active = true;
+    s->switch_frame = frame;
+    s->frames_seen = 0u;
+    s->rebuild_ms = 0.0;
+    s->max_frame_ms = 0.0;
+    s->switches++;
+}
+
+static void window_mode_switch_frame(WindowModeSwitchStats *s, Platform *platform,
+                                     f64 raw_frame_ms) {
+    u32 dw = 0u, dh = 0u;
+    if (!s->active) return;
+    if (raw_frame_ms > s->max_frame_ms) s->max_frame_ms = raw_frame_ms;
+    if (++s->frames_seen < WINDOW_MODE_SWITCH_WATCH_FRAMES) return;
+    platform_get_drawable_size(platform, &dw, &dh);
+    LOG_INFO("WINDOW_MODE_SWITCH frame=%llu mode=%s drawable=%ux%u rebuild_ms=%.2f max_frame_ms_next5=%.2f",
+             (unsigned long long)s->switch_frame,
+             platform_get_window_mode(platform) == PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN
+                 ? "borderless_fullscreen" : "windowed",
+             dw, dh, s->rebuild_ms, s->max_frame_ms);
+    if (s->max_frame_ms > s->worst_frame_ms) s->worst_frame_ms = s->max_frame_ms;
+    if (s->rebuild_ms > s->worst_rebuild_ms) s->worst_rebuild_ms = s->rebuild_ms;
+    s->active = false;
+}
+
 /* R447 frame pacing ownership: presentation pacing belongs to exactly ONE
  * clock. While vsync is enabled the swapchain presents at refresh rate, so
  * the CPU target_fps limiter must stay disengaged — sleeping to 1/target on
@@ -2767,10 +4873,21 @@ static void apply_frame_pacing(Engine *e, RHIDevice *dev, bool vsync_enabled,
     e->target_fps = vsync_enabled ? 0.0f : limit_when_off;
 }
 
+#if !defined(ENGINE_PLATFORM_IOS)
 int main(int argc, char **argv) {
+    return engine_demo_main(argc, argv, NULL);
+}
+#endif
+
+int engine_demo_main(int argc, char **argv, const EngineConfig *host_config) {
     log_set_level(LOG_DEBUG);
 
     EngineConfig cfg = { .width = 1280, .height = 720, .title = "Pure C Engine - Phase 4", .target_fps = 60.0 };
+    if (host_config != NULL) cfg = *host_config;
+    /* FS2: BREAK_FULLSCREEN=1 starts in borderless fullscreen. */
+    { const char *e = getenv("BREAK_FULLSCREEN"); if (e && atoi(e)) cfg.start_fullscreen = true; }
+    /* BREAK_UNDECORATED=1 starts the window without title bar. */
+    { const char *e = getenv("BREAK_UNDECORATED"); if (e && atoi(e)) cfg.undecorated = true; }
     Engine engine = {0};
     if (!engine_init(&engine, &cfg)) { LOG_FATAL("Engine init failed"); return 1; }
 
@@ -2973,6 +5090,27 @@ int main(int argc, char **argv) {
     if (!asset_load_gltf(&asset, model_path, &scene)) {
         LOG_WARN("No model loaded (%s)", model_path);
     }
+    { const char *e = getenv("BREAK_STRESS_LOD_SKIN");
+      if (e && atoi(e) > 0) demo_build_lod_stress_skin(render.device, &scene, &terrain, (u32)atoi(e)); }
+    /* BREAK_MODEL_VIEW=s: model inspection -- no terrain, water, showcase or
+     * falling boxes; the camera frames the loaded model's bounds from +Z at
+     * s times the fit distance (s=1 whole model, s<1 closer). BREAK_CAM
+     * still overrides the placement. */
+    f32 model_view_scale = 0.0f;
+    Vec3 model_view_min = vec3(0, 0, 0), model_view_max = vec3(0, 0, 0);
+    { const char *e = getenv("BREAK_MODEL_VIEW");
+      if (e && e[0] && atof(e) > 0.0) {
+          if (demo_model_bounds(render.device, &scene, &model_view_min, &model_view_max)) {
+              model_view_scale = (f32)atof(e);
+              LOG_INFO("BREAK_MODEL_VIEW: bounds (%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f), scale %.2f",
+                       model_view_min.e[0], model_view_min.e[1], model_view_min.e[2],
+                       model_view_max.e[0], model_view_max.e[1], model_view_max.e[2],
+                       model_view_scale);
+          } else {
+              LOG_WARN("BREAK_MODEL_VIEW: model has no geometry; ignored");
+          }
+      } }
+    const bool model_view = model_view_scale > 0.0f;
 
     if (scene.joint_count > 0 && scene.anim_clip_count > 0) {
         skeleton_set_joints(&render.skeleton, scene.joint_count, scene.joint_parents, scene.inverse_bind);
@@ -2988,7 +5126,7 @@ int main(int argc, char **argv) {
     PhysicsWorld *physics = physics_world_create(256);
     u32 ground = physics_body_create(physics, vec3(0, -2, 0), vec3(20, 0.5f, 20), 0, true, 0);
 
-    for (u32 i = 0; i < 10; i++) {
+    for (u32 i = 0; i < (model_view ? 0u : 10u); i++) {
         Entity e = world_create_entity(world);
         CTransform *t = world_add_component(world, e, COMP_TRANSFORM);
         if (!t) {
@@ -3017,8 +5155,14 @@ int main(int argc, char **argv) {
      * CCD wall, scripted-velocity elevator). Must run after asset_load_gltf
      * and before scene_compute_world_transforms / the bake. */
     u32 showcase_elevator_body = UINT32_MAX;
-    demo_build_showcase(render.device, &scene, physics, world, &terrain,
-                        &showcase_elevator_body);
+    if (!model_view)
+        demo_build_showcase(render.device, &scene, physics, world, &terrain,
+                            &showcase_elevator_body);
+    { const char *e = getenv("BREAK_STRESS_LOD");
+      if (e && atoi(e) > 0) demo_build_lod_stress(render.device, &scene, &terrain, (u32)atoi(e)); }
+    { const char *e = getenv("BREAK_STRESS_LOD_ECS");
+      if (e && atoi(e) > 0)
+          demo_build_lod_stress_ecs(render.device, &scene, world, &terrain, (u32)atoi(e)); }
 
     if (netrep_enabled) {
         Entity ge = world_create_entity(world);
@@ -3138,10 +5282,35 @@ int main(int argc, char **argv) {
     platform_get_logical_size(engine.platform, &logical_w, &logical_h);
     /* R142: Guard against h==0 (window minimized) producing Inf/NaN aspect */
     camera_init(&camera, 1.047f, (f32)w / (f32)(h > 0 ? h : 1), 0.1f, 100.0f);
+    if (model_view) {
+        Vec3 c = vec3_scale(vec3_add(model_view_min, model_view_max), 0.5f);
+        f32 r = 0.5f * vec3_len(vec3_sub(model_view_max, model_view_min));
+        if (r < 0.01f) r = 0.01f;
+        f32 dist = model_view_scale * r / tanf(0.5f * camera.fov);
+        if (dist < 2.0f * camera.near_plane) dist = 2.0f * camera.near_plane;
+        camera.position = vec3(c.e[0], c.e[1], c.e[2] + dist);
+        LOG_INFO("BREAK_MODEL_VIEW: camera (%.2f,%.2f,%.2f) radius %.2f", camera.position.e[0],
+                 camera.position.e[1], camera.position.e[2], r);
+    } else {
+        /* The terrain heightfield rises above the camera_init eye point
+         * (0,2,8), which leaves the default view inside the hill. Keep the eye
+         * 2 m above the ground under it and 1 m above the ground in the first
+         * 6 m ahead along the view direction (-Z at yaw 0). */
+        f32 ex = camera.position.e[0], ez = camera.position.e[2];
+        f32 ground_y = terrain_get_height(&terrain, ex, ez);
+        f32 eye_y = ground_y + 2.0f;
+        for (int i = 1; i <= 3; i++) {
+            f32 ahead = terrain_get_height(&terrain, ex, ez - 2.0f * (f32)i) + 1.0f;
+            if (ahead > eye_y) eye_y = ahead;
+        }
+        if (camera.position.e[1] < eye_y) {
+            camera.position.e[1] = eye_y;
+            LOG_INFO("Camera: lifted above terrain to y=%.2f (ground %.2f)", eye_y, ground_y);
+        }
+    }
     /* R445: BREAK_CAM=x,y,z[,yaw_deg,pitch_deg] — scripted camera placement for
-     * headless screenshot verification. The terrain heightfield can bury the
-     * default (0,2,8) eye point (AGL < 0) on some seeds; opt-in, default
-     * behavior unchanged. */
+     * headless screenshot verification. Overrides the terrain-lifted default
+     * eye point above. */
     { const char *e = getenv("BREAK_CAM");
       if (e && e[0]) {
           float cx = 0, cy = 0, cz = 0, cyaw = 0, cpitch = 0;
@@ -3162,6 +5331,15 @@ int main(int argc, char **argv) {
      * headless reproduction of camera-motion artifacts (TAA reprojection /
      * velocity stress). Composes with BREAK_CAM initial placement; 0/absent
      * keeps default behavior. */
+    /* BREAK_CAM_DOLLY=m: scripted per-frame move of m metres backwards
+     * along the view direction (negative = forwards); runtime LOD
+     * hysteresis check. */
+    f32 cam_dolly = 0.0f;
+    { const char *e = getenv("BREAK_CAM_DOLLY");
+      if (e && e[0]) {
+          cam_dolly = (f32)atof(e);
+          if (cam_dolly != 0.0f) LOG_INFO("BREAK_CAM_DOLLY: %.3f m/frame", cam_dolly);
+      } }
     f32 cam_spin_deg = 0.0f;
     { const char *e = getenv("BREAK_CAM_SPIN");
       if (e && e[0]) {
@@ -3185,6 +5363,14 @@ int main(int argc, char **argv) {
     gpu_shadow_timer = rhi_gpu_timer_create(render.device);
     gpu_forward_timer = rhi_gpu_timer_create(render.device);
     u32 frame_w = w, frame_h = h;
+    /* FS3: swapchain size last handed to rhi_device_resize (the swapchain
+     * follows the window at once; the render targets follow the coalesced
+     * request below). */
+    u32 dev_w = w, dev_h = h;
+    /* FS3: target rebuild request waiting for one quiet frame. */
+    bool rebuild_pending = false;
+    u32 pending_rw = 0, pending_rh = 0, pending_w = 0, pending_h = 0;
+    u64 pending_frame = 0;
     f64 total_time = 0.0;
     u32 taa_frame = 0;
     Mat4 prev_view_proj = mat4_identity();
@@ -3209,6 +5395,16 @@ int main(int argc, char **argv) {
     f32 render_scale = render_scale_options[render_scale_idx];
     u32 rw = (u32)(w * render_scale); if (rw < 1) rw = 1;
     u32 rh = (u32)(h * render_scale); if (rh < 1) rh = 1;
+    /* R690: render_init allocates the G-Buffer at the window size before the
+     * render scale is known; the window-resize path below already resizes it
+     * to rw x rh. Without this the deferred path filled a 1280x720 G-Buffer
+     * (4x the 640x360 scene it lights into) and Hi-Z reduced that full-size
+     * depth every frame. */
+    deferred_resize(&render.deferred, render.device, rw, rh);
+    if (render.render_path == RENDER_PATH_DEFERRED && !render.deferred.initialized) {
+        render.render_path = RENDER_PATH_FORWARD;
+        LOG_WARN("Deferred resize to render scale failed; switched to FORWARD");
+    }
 
     const RHIFormat forward_formats[2] = {
         RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT
@@ -3305,6 +5501,18 @@ bool dof_enabled = false; /* R446: default off -- DOF focus behavior was never v
 { const char *e = getenv("BREAK_TAA"); if (e && !atoi(e)) taa_enabled = false; }
 { const char *e = getenv("BREAK_MB");  if (e && !atoi(e)) mb_enabled = false; }
 { const char *e = getenv("BREAK_DOF"); if (e && !atoi(e)) dof_enabled = false; }
+/* R636: the R630/R631 mitigation is GONE. Both passes used to lose the
+ * D3D12 device on frame 1, and the cause is now located: the scene depth
+ * was a plain D32_FLOAT resource, which cannot back a shader resource
+ * view at all. The SRV creation failed, the descriptor stayed empty, and
+ * the pass read a null descriptor -- the device went down at present
+ * time (0x887a0001). The depth attachments now go through the
+ * depth_samplable path (R32_TYPELESS aliased as D32_FLOAT for the
+ * depth-stencil view and R32_FLOAT for the SRV), so the passes read real
+ * depth values and the demo runs them by default again.
+ *
+ * BREAK_TAA=0 / BREAK_MB=0 keep their R446 meaning: they turn the pass
+ * off for a scripted A/B measurement. `=1` is no longer special. */
 { const char *e = getenv("BREAK_BLOOM"); if (e && !atoi(e)) postfx.bloom_strength = 0.0f; }
 /* R446: BREAK_UI=0 — hide the debug HUD for clean scripted captures (HUD text
  * is drawn post-tonemap and polluted pixel-diff A/B measurements). */
@@ -3354,6 +5562,15 @@ i32 inspector_mode = 0;
 i32 effect_preset = 0;
 f32 sun_azimuth = 1.03f;
 f32 sun_elevation = 0.93f;
+/* BREAK_SUN=azimuth_deg,elevation_deg: scripted sun for headless shadow
+ * checks (R706); absent keeps the default sun. */
+{ const char *e = getenv("BREAK_SUN");
+  float az = 0.0f, el = 0.0f;
+  if (e && e[0] && sscanf(e, "%f,%f", &az, &el) == 2) {
+      sun_azimuth = az * (3.14159265f / 180.0f);
+      sun_elevation = el * (3.14159265f / 180.0f);
+      LOG_INFO("BREAK_SUN: azimuth=%.1f elevation=%.1f deg", az, el);
+  } }
 bool wireframe_mode = false;
 bool nearest_filter = false;
 bool show_help = false;
@@ -3431,7 +5648,11 @@ i32 bench_frames = 0;
 /* BREAK_BENCH_STATS=N: record per-frame ms (cap 4096) and print
  * fps_avg/fps_p1/frame_ms_avg/frame_ms_p99 at shutdown (rhi benchmark
  * receipt schema, plan C Task 15); also disables vsync so the numbers
- * measure throughput rather than display pacing. */
+ * measure throughput rather than display pacing. R683: the first
+ * BENCH_STATS_WARMUP frames are not recorded -- frame 0 carries all of
+ * startup (0.75-1.7 s: asset load, PSO/shader creation) and alone added
+ * 3-7 ms to a 240-frame average, which also put fps_p1 above fps_avg. */
+#define BENCH_STATS_WARMUP 8u
 static f32 bench_stats_ms[4096];
 static u32 bench_stats_count = 0u;
 static u32 bench_stats_target = 0u;
@@ -3573,9 +5794,20 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         LOG_INFO("Forward clustered PBR: ON (default since R597 — BREAK_FORWARD_CLUSTERED=0 opts out to blinn)");
     else
         LOG_INFO("Forward clustered PBR: OFF (BREAK_FORWARD_CLUSTERED=0) — blinn forward family active");
+    { const char *e = getenv("BREAK_LOD"); if (e && e[0] && !atoi(e)) mega_lod_enabled = false; }
+    /* R704: disk caching is strictly opt-in; unset/empty preserves the old
+     * generate-only call and performs no cache file I/O. */
+    lod_cache_init(&g_lod_cache, getenv("BREAK_LOD_CACHE"));
+    { const char *e = getenv("BREAK_LOD_PIXEL_ERROR");
+      if (e && e[0]) { f32 v = (f32)atof(e); if (v > 0.0f) mega_lod_pixel_error = v; } }
+    { const char *e = getenv("BREAK_LOD_SHADOW_BIAS");
+      if (e && e[0]) { int v = atoi(e); mega_lod_shadow_bias = v > 0 ? (u32)v : 0u; } }
+    { const char *e = getenv("BREAK_LOD_TRACE"); if (e && e[0]) mega_lod_trace_node = atoi(e); }
+    { const char *e = getenv("BREAK_LOD_SELFTEST"); if (e && atoi(e)) mega_lod_selftest = true; }
     {
         typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; } MegaVert;
         u32 total_verts = 0, total_idxs = 0, mesh_cmd_count = 0;
+        u32 mega_node_count = 0, lod0_idxs = 0;
         bool mega_sizes_ok = true;
 
         for (u32 ni = 0; ni < scene.node_count; ni++) {
@@ -3592,8 +5824,59 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             total_idxs  += m->index_count;
             mesh_cmd_count++;
         }
+        mega_node_count = mesh_cmd_count;
+        lod0_idxs = total_idxs;
+        u32 lod0_verts = total_verts;
 
-        if (mega_sizes_ok && mesh_cmd_count > 0 && mesh_cmd_count <= 16384) {
+        /* Runtime LOD: simplified levels per unique mesh, then node x level
+         * cmd / index totals. Over MEGA_MAX_CMDS (or u32 index overflow) the
+         * bake falls back to LOD0 only. BREAK_LOD=0 skips all of it. */
+        LodMeshLevels *lod_levels = NULL;
+        if (mega_lod_enabled && mega_sizes_ok && mesh_cmd_count > 0 &&
+            mesh_cmd_count <= MEGA_MAX_CMDS) {
+            lod_levels = mega_lod_generate(render.device, &scene);
+            if (lod_levels) {
+                u64 cmds_all = 0, idx_all = 0, verts_all = total_verts;
+                for (u32 ni = 0; ni < scene.node_count; ni++) {
+                    SceneNode *nd = &scene.nodes[ni];
+                    if (!nd->has_mesh || nd->skinned || nd->mesh_index >= scene.mesh_count) continue;
+                    Mesh *m = &scene.meshes[nd->mesh_index];
+                    if (m->vertex_count == 0 || m->index_count == 0) continue;
+                    const LodMeshLevels *ml = &lod_levels[nd->mesh_index];
+                    u32 lc = ml->level_count ? ml->level_count : 1u;
+                    cmds_all += lc;
+                    idx_all += m->index_count;
+                    for (u32 l = 1; l < lc; l++) {
+                        idx_all += ml->index_count[l];
+                        if (ml->authored && m->authored_lod[l - 1u] < scene.mesh_count)
+                            verts_all += scene.meshes[m->authored_lod[l - 1u]].vertex_count;
+                    }
+                }
+                if (cmds_all > MEGA_MAX_CMDS || idx_all > UINT32_MAX || verts_all > UINT32_MAX) {
+                    LOG_WARN("LOD: %llu cmds / %llu indices exceed the mega limits (%u cmds); baking LOD0 only",
+                             (unsigned long long)cmds_all, (unsigned long long)idx_all, MEGA_MAX_CMDS);
+                    for (u32 mi = 0; mi < scene.mesh_count; mi++) lod_mesh_levels_free(&lod_levels[mi]);
+                    free(lod_levels);
+                    lod_levels = NULL;
+                } else {
+                    mesh_cmd_count = (u32)cmds_all;
+                    total_idxs = (u32)idx_all;
+                    total_verts = (u32)verts_all;
+                }
+            }
+        }
+
+        if (mega_sizes_ok && mesh_cmd_count > 0 && mesh_cmd_count <= MEGA_MAX_CMDS) {
+            bool lod_tables_ok = mega_lod_alloc(&g_mega_lod, mega_node_count, mesh_cmd_count);
+            if (!lod_tables_ok && lod_levels) {
+                LOG_WARN("LOD: table alloc failed; baking LOD0 only");
+                for (u32 mi = 0; mi < scene.mesh_count; mi++) lod_mesh_levels_free(&lod_levels[mi]);
+                free(lod_levels);
+                lod_levels = NULL;
+                mesh_cmd_count = mega_node_count;
+                total_idxs = lod0_idxs;
+                total_verts = lod0_verts;
+            }
             /* Single alloc: vdata + idata + cmds */
             usize v_bytes = (usize)total_verts * sizeof(MegaVert);
             usize i_off   = (v_bytes + 3u) & ~(usize)3u;
@@ -3611,7 +5894,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             MegaVert *vdata = (MegaVert *)mega_block;
             u32      *idata = (u32 *)(mega_block + i_off);
             DrawIndexedIndirectCmd *cmds = (DrawIndexedIndirectCmd *)(mega_block + c_off);
-            u32 voff = 0, ioff = 0, cidx = 0;
+            u32 voff = 0, ioff = 0, cidx = 0, bnode = 0;
 
             for (u32 ni = 0; ni < scene.node_count; ni++) {
                 SceneNode *nd = &scene.nodes[ni];
@@ -3661,18 +5944,89 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     idata[ioff + ii] = src_i[ii] + vbase;
                 free(src_v);
                 free(src_i);
-
-                /* Build indirect draw command for this scene node */
-                cmds[cidx].index_count    = m->index_count;
-                cmds[cidx].instance_count = 1;
-                cmds[cidx].first_index    = ioff;
-                cmds[cidx].vertex_offset  = (i32)vbase;
-                cmds[cidx].first_instance = 0;
-                mega_buf.cmd_node_index[cidx] = ni;
-
                 voff += vc;
-                ioff += m->index_count;
-                cidx++;
+
+                /* One indirect draw command per (node, LOD level). Simplified
+                 * levels index the node's LOD0 vertices (shared); authored
+                 * MSFT_lod levels append their own vertices after them, so a
+                 * node's vertices are [vbase, voff) and every cmd keeps
+                 * vertex_offset 0 with absolute indices (R687). */
+                const LodMeshLevels *ml = lod_levels ? &lod_levels[nd->mesh_index] : NULL;
+                u32 lc = (ml && ml->level_count > 1u) ? ml->level_count : 1u;
+                f32 node_scale = 1.0f;
+                if (lc > 1u) {
+                    const Mat4 *wt = &nd->world_transform;
+                    f32 sx = sqrtf(wt->e[0][0]*wt->e[0][0] + wt->e[0][1]*wt->e[0][1] + wt->e[0][2]*wt->e[0][2]);
+                    f32 sy = sqrtf(wt->e[1][0]*wt->e[1][0] + wt->e[1][1]*wt->e[1][1] + wt->e[1][2]*wt->e[1][2]);
+                    f32 sz = sqrtf(wt->e[2][0]*wt->e[2][0] + wt->e[2][1]*wt->e[2][1] + wt->e[2][2]*wt->e[2][2]);
+                    node_scale = fmaxf(sx, fmaxf(sy, sz));
+                }
+                if (lod_tables_ok) {
+                    g_mega_lod.node_scene[bnode] = ni;
+                    g_mega_lod.node_cmd_base[bnode] = cidx;
+                    g_mega_lod.node_level_count[bnode] = (u8)lc;
+                    g_mega_lod.node_vbase[bnode] = vbase;
+                    g_mega_lod.node_vcount[bnode] = vc;
+                }
+                for (u32 l = 0; l < lc; l++) {
+                    u32 lic = m->index_count, level_vbase = vbase, level_vcount = vc;
+                    if (l > 0u) {
+                        lic = ml->index_count[l];
+                        if (ml->authored) {
+                            const Mesh *alt = &scene.meshes[m->authored_lod[l - 1u]];
+                            u32 avc = alt->vertex_count;
+                            MegaVert *av = (MegaVert *)malloc((usize)avc * sizeof(MegaVert));
+                            if (!av || !rhi_buffer_read(render.device, alt->vertex_buf, av, 0,
+                                                        (usize)avc * sizeof(MegaVert))) {
+                                free(av); free(mega_block); mega_block = NULL;
+                                LOG_WARN("Mega: failed to read authored LOD mesh %u", m->authored_lod[l - 1u]);
+                                break;
+                            }
+                            const Mat4 *wt = &nd->world_transform;
+                            for (u32 vi = 0; vi < avc; vi++) {
+                                f32 px = av[vi].pos[0], py = av[vi].pos[1], pz = av[vi].pos[2];
+                                vdata[voff+vi].pos[0] = wt->e[0][0]*px + wt->e[1][0]*py + wt->e[2][0]*pz + wt->e[3][0];
+                                vdata[voff+vi].pos[1] = wt->e[0][1]*px + wt->e[1][1]*py + wt->e[2][1]*pz + wt->e[3][1];
+                                vdata[voff+vi].pos[2] = wt->e[0][2]*px + wt->e[1][2]*py + wt->e[2][2]*pz + wt->e[3][2];
+                                f32 nx = av[vi].nrm[0], ny = av[vi].nrm[1], nz = av[vi].nrm[2];
+                                vdata[voff+vi].nrm[0] = wt->e[0][0]*nx + wt->e[1][0]*ny + wt->e[2][0]*nz;
+                                vdata[voff+vi].nrm[1] = wt->e[0][1]*nx + wt->e[1][1]*ny + wt->e[2][1]*nz;
+                                vdata[voff+vi].nrm[2] = wt->e[0][2]*nx + wt->e[1][2]*ny + wt->e[2][2]*nz;
+                                vdata[voff+vi].uv[0] = av[vi].uv[0]; vdata[voff+vi].uv[1] = av[vi].uv[1];
+                            }
+                            free(av);
+                            level_vbase = voff;
+                            level_vcount = avc;
+                            voff += avc;
+                        }
+                        const u32 *li = ml->indices[l];
+                        for (u32 ii = 0; ii < lic; ii++)
+                            idata[ioff + ii] = li[ii] + level_vbase;
+                    }
+                    cmds[cidx].index_count    = lic;
+                    cmds[cidx].instance_count = 1;
+                    cmds[cidx].first_index    = ioff;
+                    cmds[cidx].vertex_offset  = 0; /* absolute mega indices, R687 */
+                    cmds[cidx].first_instance = 0;
+                    mega_buf.cmd_node_index[cidx] = ni;
+                    if (lod_tables_ok) {
+                        usize ek = (usize)bnode * MEGA_LOD_LEVELS + l;
+                        g_mega_lod.node_err[ek] = (l > 0u) ? ml->rel_error[l] * ml->scale * node_scale : 0.0f;
+                        g_mega_lod.node_tris[ek] = lic / 3u;
+                        g_mega_lod.cmd_node[cidx] = bnode;
+                        g_mega_lod.cmd_level[cidx] = (u8)l;
+                        g_mega_lod.cmd_vbase[cidx] = level_vbase;
+                        g_mega_lod.cmd_vcount[cidx] = level_vcount;
+                        g_mega_lod.selected[cidx] = (l == 0u) ? 1u : 0u;
+                        u32 sl0 = mega_lod_shadow_bias < lc - 1u ? mega_lod_shadow_bias : lc - 1u;
+                        g_mega_lod.shadow_selected[cidx] = (l == sl0) ? 1u : 0u;
+                        if (l == 0u) g_mega_lod.node_shadow_level[bnode] = (u8)sl0;
+                    }
+                    ioff += lic;
+                    cidx++;
+                }
+                if (!mega_block) break;
+                bnode++;
             }
 
             if (!mega_block) {
@@ -3727,6 +6081,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
             mega_buf.draw_cmd_count    = mesh_cmd_count;
             mega_buf.total_index_count = total_idxs;
+            mega_buf.lod0_index_count  = lod0_idxs;
+            mega_buf.direct_cmds = (DrawIndexedIndirectCmd *)malloc((usize)mesh_cmd_count * sizeof(cmds[0]));
+            mega_buf.direct_ready = mega_buf.direct_cmds != NULL;
+            if (mega_buf.direct_ready)
+                memcpy(mega_buf.direct_cmds, cmds, mesh_cmd_count * sizeof(cmds[0]));
+            else
+                LOG_WARN("MegaBuffer: direct shadow cmd table alloc failed; direct shadow path off");
             mega_buf.valid = mega_geom_ok;
             gpu_indirect_enabled = mega_geom_ok && indirect_ok;
             gpucull_enabled = mega_geom_ok && gpucull_ok;
@@ -3741,6 +6102,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     if (!nd->has_mesh || nd->skinned || nd->mesh_index >= scene.mesh_count) continue;
                     Mesh *m = &scene.meshes[nd->mesh_index];
                     if (m->vertex_count == 0 || m->index_count == 0) continue;
+                    /* Every LOD level of a node joins the node's material group. */
+                    const LodMeshLevels *gml = lod_levels ? &lod_levels[nd->mesh_index] : NULL;
+                    u32 glc = (gml && gml->level_count > 1u) ? gml->level_count : 1u;
 
                     u32 mat_idx = nd->material_idx;
                     /* Find existing group or create new one */
@@ -3752,8 +6116,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         mega_buf.mat_indices[g] = mat_idx;
                         mega_buf.mat_group_count++;
                     }
-                    mega_buf.cmd_mat_group[gcmd] = (i32)g;
-                    gcmd++;
+                    for (u32 l = 0; l < glc; l++) {
+                        mega_buf.cmd_mat_group[gcmd] = (i32)g;
+                        gcmd++;
+                    }
                 }
 
                 /* R75-2: Build inverse index (group→cmd list) in O(N) — replaces
@@ -3818,7 +6184,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                  * R437 fallback path never reads it. */
                 mega_buf.array_system_ready = false;
                 mega_buf.mats.ready = false;
-                if (mat_indirect_enabled && mega_buf.mat_group_count > 0 &&
+                /* R637: the array path carries each draw's texture layer in
+                 * first_instance. A backend that cannot deliver it to the
+                 * shader would shade every mesh with layer 0, silently, so
+                 * keep the R437 per-group path there. */
+                if (mat_indirect_enabled && !render.caps.indirect_first_instance_supported) {
+                    LOG_WARN("MatArray: disabled (backend drops the indirect first_instance the layer rides in)");
+                } else if (mat_indirect_enabled && mega_buf.mat_group_count > 0 &&
                     rhi_handle_valid(render.arr_pipeline)) {
                     if (hotreload_tex_ready) {
                         /* Texture hot reload replaces texture handles at
@@ -3867,6 +6239,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     }
                 }
             }
+
+            /* Canonical CPU commands retain the final material layers; per-frame
+             * fade uploads add high bits without mutating this shadow-safe base. */
+            if (mega_buf.direct_ready)
+                memcpy(mega_buf.direct_cmds, cmds, mesh_cmd_count * sizeof(cmds[0]));
 
             /* Precompute per-node bounding sphere cache for fast visibility tests */
             mega_buf.sphere_count = 0;
@@ -3953,12 +6330,79 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 }
             }
 
-            LOG_INFO("MegaBuffer: %u verts, %u indices, %u draw cmds",
-                     total_verts, total_idxs, mesh_cmd_count);
+            if (lod_levels) {
+                LOG_INFO("MegaBuffer: %u verts, %u indices, %u draw cmds (LOD: %u nodes, LOD0 %u indices)",
+                         total_verts, total_idxs, mesh_cmd_count, mega_node_count, lod0_idxs);
+            } else {
+                LOG_INFO("MegaBuffer: %u verts, %u indices, %u draw cmds",
+                         total_verts, total_idxs, mesh_cmd_count);
+            }
+
+            if (lod_tables_ok && mega_buf.valid) {
+                mega_buf.lod = &g_mega_lod;
+                u32 multi = 0, lvl_nodes[MEGA_LOD_LEVELS] = {0};
+                u64 lvl_tris[MEGA_LOD_LEVELS] = {0};
+                for (u32 b = 0; b < g_mega_lod.node_count; b++) {
+                    u32 lc = g_mega_lod.node_level_count[b];
+                    if (lc > 1u) multi++;
+                    for (u32 l = 0; l < lc; l++) {
+                        lvl_nodes[l]++;
+                        lvl_tris[l] += g_mega_lod.node_tris[(usize)b * MEGA_LOD_LEVELS + l];
+                    }
+                }
+                g_mega_lod.active = mega_lod_enabled && multi > 0u;
+                if (!mega_lod_enabled)
+                    LOG_INFO("LOD: off (BREAK_LOD=0) -- LOD0 only, %u cmds", mesh_cmd_count);
+                else
+                    LOG_INFO("LOD: %s -- %u/%u nodes with levels; nodes per level %u/%u/%u, tris per level %llu/%llu/%llu; "
+                             "pixel_error=%.2f shadow_bias=%u",
+                             g_mega_lod.active ? "on" : "on (no mesh simplified; inactive)",
+                             multi, g_mega_lod.node_count, lvl_nodes[0], lvl_nodes[1], lvl_nodes[2],
+                             (unsigned long long)lvl_tris[0], (unsigned long long)lvl_tris[1],
+                             (unsigned long long)lvl_tris[2], mega_lod_pixel_error, mega_lod_shadow_bias);
+                if (mega_lod_selftest) {
+                    char lerr[256] = {0};
+                    bool ok = lod_bake_validate_ex((const u32 *)cmds, mesh_cmd_count, idata, total_idxs,
+                                                   total_verts, g_mega_lod.node_cmd_base,
+                                                   g_mega_lod.node_level_count, g_mega_lod.node_vbase,
+                                                   g_mega_lod.node_vcount, g_mega_lod.node_count,
+                                                   g_mega_lod.cmd_node, g_mega_lod.cmd_level,
+                                                   g_mega_lod.cmd_vbase, g_mega_lod.cmd_vcount,
+                                                   lerr, sizeof(lerr));
+                    /* cmd_node_index (cmd -> scene node) must agree with the dense tables. */
+                    for (u32 ci = 0; ok && ci < mesh_cmd_count; ci++) {
+                        if (mega_buf.cmd_node_index[ci] != g_mega_lod.node_scene[g_mega_lod.cmd_node[ci]]) {
+                            snprintf(lerr, sizeof(lerr), "cmd %u cmd_node_index %u != node_scene %u", ci,
+                                     mega_buf.cmd_node_index[ci], g_mega_lod.node_scene[g_mega_lod.cmd_node[ci]]);
+                            ok = false;
+                        }
+                        i32 mg = mega_buf.cmd_mat_group[ci];
+                        u32 b0 = g_mega_lod.node_cmd_base[g_mega_lod.cmd_node[ci]];
+                        if (ok && mg != mega_buf.cmd_mat_group[b0]) {
+                            snprintf(lerr, sizeof(lerr), "cmd %u material group %d != its LOD0 group %d",
+                                     ci, mg, mega_buf.cmd_mat_group[b0]);
+                            ok = false;
+                        }
+                    }
+                    if (ok) LOG_INFO("LOD_SELFTEST: PASS (%u cmds, %u nodes, %u indices, %u verts)",
+                                     mesh_cmd_count, g_mega_lod.node_count, total_idxs, total_verts);
+                    else    LOG_ERROR("LOD_SELFTEST: FAIL: %s", lerr);
+                }
+            }
 
             free(mega_block); /* single free: vdata + idata + cmds */
             } /* else mega bake succeeded */
             } /* R408: overflow-safe mega_block alloc */
+        }
+        /* Runtime ECS LOD (phase 2.1): reuses the mega levels computed above
+         * for meshes the bake already simplified. */
+        if (mega_lod_enabled)
+            ecs_lod_setup(&g_ecs_lod, render.device, &scene, world, lod_levels, INSTANCE_DATA_CAP);
+        if (mega_lod_enabled)
+            skin_lod_setup(&g_skin_lod, render.device, &scene, skin_lod_fade_seconds(&render.caps));
+        if (lod_levels) {
+            for (u32 mi = 0; mi < scene.mesh_count; mi++) lod_mesh_levels_free(&lod_levels[mi]);
+            free(lod_levels);
         }
     }
 
@@ -3975,6 +6419,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             auto_exit_frames = atoll(argv[ai + 1]);
     { const char *e = getenv("BREAK_BENCH_STATS");
       if (e) bench_stats_target = (u32)atoll(e); }
+    /* FS2: BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,... toggles the window mode at
+     * those frames (ascending) and logs WINDOW_MODE_SWITCH for each. */
+    WindowModeSwitchStats wm_stats;
+    memset(&wm_stats, 0, sizeof(wm_stats));
+    window_mode_stats_parse(&wm_stats, getenv("BREAK_TOGGLE_FULLSCREEN_AT"));
     if (bench_stats_target > 0u) {
         vsync_on = false;
         apply_frame_pacing(&engine, render.device, vsync_on, 0.0f); /* raw stats: no limiter */
@@ -4000,6 +6449,36 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
           }
           if (screenshot_count == 0 && auto_exit_frames > 0)
               screenshot_frames[screenshot_count++] = auto_exit_frames;
+      } }
+    /* FS3: BREAK_RESIZE_AT=frame:WxH[,frame:WxH...] forces the render size
+     * (rw x rh) from that frame on, driving the need_rebuild block below
+     * without a real window resize; each rebuild logs RESIZE_REBUILD. */
+    struct { i64 frame; u32 w, h; } resize_at[16];
+    int resize_at_count = 0;
+    u32 resize_force_w = 0, resize_force_h = 0;
+    { const char *e = getenv("BREAK_RESIZE_AT");
+      if (e) {
+          const char *p = e;
+          while (*p && resize_at_count < 16) {
+              char *end = NULL;
+              i64 fr = strtoll(p, &end, 10);
+              unsigned long rw_req = 0, rh_req = 0;
+              if (end == p || *end != ':') break;
+              p = end + 1;
+              rw_req = strtoul(p, &end, 10);
+              if (end == p || (*end != 'x' && *end != 'X')) break;
+              p = end + 1;
+              rh_req = strtoul(p, &end, 10);
+              if (end == p) break;
+              p = end;
+              if (fr > 0 && rw_req > 0 && rh_req > 0 && rw_req <= 16384 && rh_req <= 16384) {
+                  resize_at[resize_at_count].frame = fr;
+                  resize_at[resize_at_count].w = (u32)rw_req;
+                  resize_at[resize_at_count].h = (u32)rh_req;
+                  resize_at_count++;
+              }
+              if (*p == ',') p++; else break;
+          }
       } }
     /* R446: BREAK_INSPECT=N — preset the F3 inspector mode (1..10) for headless
      * intermediate-buffer captures (composes with BREAK_SCREENSHOT; the
@@ -4047,6 +6526,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         const char *sh = getenv("BREAK_UNIFIED_SHADOW");
         LOG_INFO("Unified shadow draw: on (%s)", sh ? "BREAK_UNIFIED_SHADOW=1" : "default mega-buffer");
     }
+    { const char *e = getenv("BREAK_MEGA_DIRECT_SHADOW"); if (e && !atoi(e)) mega_direct_shadow_enabled = false; }
+    if (mega_use_direct_shadow(&mega_buf))
+        LOG_INFO("Shadow mega draw (CSM + point): direct, CPU sphere cull (%u cmds; BREAK_MEGA_DIRECT_SHADOW=0 for GPU cull)",
+                 mega_buf.draw_cmd_count);
     if (occ_cull_enabled) LOG_INFO("Hi-Z Occlusion Cull: on (1-frame latency, opt-out BREAK_OCCLUSION=0)");
     /* R441: report the material-array single-execute path state at startup. */
     if (mat_indirect_enabled && mega_buf.array_system_ready && mega_buf.mats.ready) {
@@ -4083,11 +6566,43 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     u32 culled_count = 0;
 
     while (engine_frame(&engine)) {
+#if defined(ENGINE_PLATFORM_IOS)
+        @autoreleasepool {
+#endif
         arena_free_all(&frame_arena);
-        if (bench_stats_target > 0u && bench_stats_count < 4096u)
+        if (bench_stats_target > 0u && bench_stats_count < 4096u &&
+            engine.frame_count > BENCH_STATS_WARMUP)
             bench_stats_ms[bench_stats_count++] =
-                (f32)(engine.delta_time * 1000.0);
+                (f32)(engine.raw_delta_time * 1000.0);
+        window_mode_switch_frame(&wm_stats, engine.platform, engine.raw_delta_time * 1000.0);
         if (auto_exit_frames > 0 && (i64)engine.frame_count >= auto_exit_frames) break;
+        while (wm_stats.next < wm_stats.frame_count &&
+               wm_stats.frames[wm_stats.next] <= engine.frame_count) {
+            if (wm_stats.frames[wm_stats.next++] == engine.frame_count)
+                window_mode_switch(&wm_stats, engine.platform, engine.frame_count);
+        }
+        /* BREAK_TOGGLE_TITLE_BAR_AT=f1,f2,...: scripted title-bar toggles
+         * (same as Alt+T), logged as TITLE_BAR_SWITCH. */
+        {
+            static u64 tb_frames[16];
+            static u32 tb_count, tb_next;
+            static bool tb_parsed;
+            if (!tb_parsed) {
+                const char *e = getenv("BREAK_TOGGLE_TITLE_BAR_AT");
+                tb_parsed = true;
+                while (e && *e && tb_count < 16u) {
+                    char *end = NULL;
+                    unsigned long long f = strtoull(e, &end, 10);
+                    if (end == e) break;
+                    tb_frames[tb_count++] = (u64)f;
+                    e = (*end == ',') ? end + 1 : end;
+                }
+            }
+            while (tb_next < tb_count && tb_frames[tb_next] <= engine.frame_count) {
+                if (tb_frames[tb_next++] == engine.frame_count)
+                    title_bar_toggle(engine.platform, engine.frame_count);
+            }
+        }
         profiler_begin_frame();
 
         if (bench_frames > 0) {
@@ -4445,6 +6960,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
         }
 
+        u64 wm_rebuild_t0 = time_microseconds();
         bool need_rebuild = false;
         if (w != frame_w || h != frame_h) {
             PlatformWsiSurface wsi_snapshot;
@@ -4453,15 +6969,56 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 w = wsi_snapshot.drawable_width;
                 h = wsi_snapshot.drawable_height;
             }
-            rhi_device_resize(render.device, w, h);
+            if (w != dev_w || h != dev_h) {
+                rhi_device_resize(render.device, w, h);
+                dev_w = w;
+                dev_h = h;
+            }
             camera.aspect = (f32)w / (f32)(h > 0 ? h : 1); /* R142: guard h==0 */
             need_rebuild = true;
         }
         u32 new_rw = (u32)(w * render_scale); if (new_rw < 1) new_rw = 1;
         u32 new_rh = (u32)(h * render_scale); if (new_rh < 1) new_rh = 1;
+        for (int ri = 0; ri < resize_at_count; ri++) {
+            if (resize_at[ri].frame == (i64)engine.frame_count) {
+                resize_force_w = resize_at[ri].w;
+                resize_force_h = resize_at[ri].h;
+                LOG_INFO("RESIZE_REQUEST frame=%llu rw=%u rh=%u",
+                         (unsigned long long)engine.frame_count, resize_force_w, resize_force_h);
+            }
+        }
+        if (resize_force_w > 0u) { new_rw = resize_force_w; new_rh = resize_force_h; }
         if (new_rw != rw || new_rh != rh) need_rebuild = true;
 
+        /* FS3: coalesce size changes. A new size is only rebuilt once it is
+         * still the requested size on the next frame; a change in between
+         * (window drag, fullscreen toggle settling) replaces the pending
+         * request, so only the final size is ever built. */
         if (need_rebuild) {
+            bool same_request = rebuild_pending && pending_rw == new_rw &&
+                                pending_rh == new_rh && pending_w == w && pending_h == h;
+            if (!same_request) {
+                if (rebuild_pending)
+                    LOG_INFO("RESIZE_COALESCE frame=%llu drop=%ux%u keep=%ux%u",
+                             (unsigned long long)engine.frame_count,
+                             pending_rw, pending_rh, new_rw, new_rh);
+                rebuild_pending = true;
+                pending_rw = new_rw; pending_rh = new_rh;
+                pending_w = w; pending_h = h;
+                pending_frame = engine.frame_count;
+                need_rebuild = false;
+            } else if (engine.frame_count == pending_frame) {
+                need_rebuild = false;
+            }
+        } else {
+            rebuild_pending = false;
+        }
+
+        if (need_rebuild) {
+            u64 rebuild_t0 = time_microseconds();
+            u64 rebuild_t_post = rebuild_t0, rebuild_t_tail = rebuild_t0;
+            u32 rebuild_fallbacks = 0;
+            rebuild_pending = false;
             /* R362: create into temp first — never destroy the live FBO until the
              * replacement is valid, and do not commit rw/rh/frame_* on failure
              * (otherwise same-size rebuild never retries → permanent blank). */
@@ -4491,48 +7048,76 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             forward_scene = new_forward;
             rw = new_rw;
             rh = new_rh;
-            post_process_shutdown(&postfx);
-            ssao_shutdown(&ssao);
-            taa_shutdown(&taa);
-            ssr_shutdown(&ssr_sys);
-            dof_shutdown(&dof_sys);
-            volumetric_shutdown(&vol);
-            tonemap_shutdown(&tonemap);
-            fxaa_shutdown(&fxaa_sys);
-            ssgi_shutdown(&ssgi_sys);
-            lens_flare_shutdown(&lens_flare);
-            sharpen_shutdown(&sharpen_sys);
-            motion_blur_shutdown(&motion_blur);
-            contact_shadow_shutdown(&contact_shadow);
-            sss_shutdown(&sss_sys);
-            upscale_shutdown(&upscale_sys);
-            color_grade_shutdown(&cg_sys);
-            god_rays_shutdown(&gr_sys);
-            debug_viz_shutdown(&debug_viz);
-            lens_effects_shutdown(&lens_fx);
-            combined_aa_shutdown(&combined_aa);
-            combined_color_shutdown(&combined_color);
-            post_process_init(&postfx, render.device, rw, rh);
-            ssao_init(&ssao, render.device, rw, rh);
-            taa_init(&taa, render.device, rw, rh);
-            ssr_init(&ssr_sys, render.device, rw, rh);
-            dof_init(&dof_sys, render.device, rw, rh);
-            volumetric_init(&vol, render.device, rw, rh);
-            tonemap_init(&tonemap, render.device);
-            fxaa_init(&fxaa_sys, render.device, rw, rh);
-            ssgi_init(&ssgi_sys, render.device, rw, rh);
-            lens_flare_init(&lens_flare, render.device, rw, rh);
-            sharpen_init(&sharpen_sys, render.device, rw, rh);
-            motion_blur_init(&motion_blur, render.device, rw, rh);
-            contact_shadow_init(&contact_shadow, render.device, rw, rh);
-            sss_init(&sss_sys, render.device, rw, rh);
-            upscale_init(&upscale_sys, render.device, rw, rh, w, h);
-            color_grade_init(&cg_sys, render.device, rw, rh);
-            god_rays_init(&gr_sys, render.device, rw, rh);
-            debug_viz_init(&debug_viz, render.device, rw, rh);
-            lens_effects_init(&lens_fx, render.device, rw, rh);
-            combined_aa_init(&combined_aa, render.device, rw, rh);
-            combined_color_init(&combined_color, render.device, rw, rh);
+            rebuild_t_post = time_microseconds();
+            /* FS3: only size-dependent targets are rebuilt; pipelines,
+             * bindings and samplers stay (each *_init used to recompile its
+             * shaders here). Tonemap/cinematic have no size-dependent targets.
+             * A system whose resize fails falls back to shutdown + init. */
+#define FS3_RESIZE_OR_REINIT(resize_ok, shutdown_call, init_call, label) \
+            do { if (!(resize_ok)) { LOG_WARN("RESIZE_FALLBACK %s", label); \
+                 shutdown_call; init_call; rebuild_fallbacks++; } } while (0)
+            FS3_RESIZE_OR_REINIT(post_process_resize(&postfx, render.device, rw, rh),
+                                 post_process_shutdown(&postfx),
+                                 post_process_init(&postfx, render.device, rw, rh), "post_process");
+            FS3_RESIZE_OR_REINIT(ssao_resize(&ssao, render.device, rw, rh),
+                                 ssao_shutdown(&ssao),
+                                 ssao_init(&ssao, render.device, rw, rh), "ssao");
+            FS3_RESIZE_OR_REINIT(taa_resize(&taa, render.device, rw, rh),
+                                 taa_shutdown(&taa),
+                                 taa_init(&taa, render.device, rw, rh), "taa");
+            FS3_RESIZE_OR_REINIT(ssr_resize(&ssr_sys, render.device, rw, rh),
+                                 ssr_shutdown(&ssr_sys),
+                                 ssr_init(&ssr_sys, render.device, rw, rh), "ssr");
+            FS3_RESIZE_OR_REINIT(dof_resize(&dof_sys, render.device, rw, rh),
+                                 dof_shutdown(&dof_sys),
+                                 dof_init(&dof_sys, render.device, rw, rh), "dof");
+            FS3_RESIZE_OR_REINIT(volumetric_resize(&vol, render.device, rw, rh),
+                                 volumetric_shutdown(&vol),
+                                 volumetric_init(&vol, render.device, rw, rh), "volumetric");
+            FS3_RESIZE_OR_REINIT(fxaa_resize(&fxaa_sys, render.device, rw, rh),
+                                 fxaa_shutdown(&fxaa_sys),
+                                 fxaa_init(&fxaa_sys, render.device, rw, rh), "fxaa");
+            FS3_RESIZE_OR_REINIT(ssgi_resize(&ssgi_sys, render.device, rw, rh),
+                                 ssgi_shutdown(&ssgi_sys),
+                                 ssgi_init(&ssgi_sys, render.device, rw, rh), "ssgi");
+            FS3_RESIZE_OR_REINIT(lens_flare_resize(&lens_flare, render.device, rw, rh),
+                                 lens_flare_shutdown(&lens_flare),
+                                 lens_flare_init(&lens_flare, render.device, rw, rh), "lens_flare");
+            FS3_RESIZE_OR_REINIT(sharpen_resize(&sharpen_sys, render.device, rw, rh),
+                                 sharpen_shutdown(&sharpen_sys),
+                                 sharpen_init(&sharpen_sys, render.device, rw, rh), "sharpen");
+            FS3_RESIZE_OR_REINIT(motion_blur_resize(&motion_blur, render.device, rw, rh),
+                                 motion_blur_shutdown(&motion_blur),
+                                 motion_blur_init(&motion_blur, render.device, rw, rh), "motion_blur");
+            FS3_RESIZE_OR_REINIT(contact_shadow_resize(&contact_shadow, render.device, rw, rh),
+                                 contact_shadow_shutdown(&contact_shadow),
+                                 contact_shadow_init(&contact_shadow, render.device, rw, rh), "contact_shadow");
+            FS3_RESIZE_OR_REINIT(sss_resize(&sss_sys, render.device, rw, rh),
+                                 sss_shutdown(&sss_sys),
+                                 sss_init(&sss_sys, render.device, rw, rh), "sss");
+            FS3_RESIZE_OR_REINIT(upscale_resize(&upscale_sys, render.device, rw, rh, w, h),
+                                 upscale_shutdown(&upscale_sys),
+                                 upscale_init(&upscale_sys, render.device, rw, rh, w, h), "upscale");
+            FS3_RESIZE_OR_REINIT(color_grade_resize(&cg_sys, render.device, rw, rh),
+                                 color_grade_shutdown(&cg_sys),
+                                 color_grade_init(&cg_sys, render.device, rw, rh), "color_grade");
+            FS3_RESIZE_OR_REINIT(god_rays_resize(&gr_sys, render.device, rw, rh),
+                                 god_rays_shutdown(&gr_sys),
+                                 god_rays_init(&gr_sys, render.device, rw, rh), "god_rays");
+            FS3_RESIZE_OR_REINIT(debug_viz_resize(&debug_viz, render.device, rw, rh),
+                                 debug_viz_shutdown(&debug_viz),
+                                 debug_viz_init(&debug_viz, render.device, rw, rh), "debug_viz");
+            FS3_RESIZE_OR_REINIT(lens_effects_resize(&lens_fx, render.device, rw, rh),
+                                 lens_effects_shutdown(&lens_fx),
+                                 lens_effects_init(&lens_fx, render.device, rw, rh), "lens_effects");
+            FS3_RESIZE_OR_REINIT(combined_aa_resize(&combined_aa, render.device, rw, rh),
+                                 combined_aa_shutdown(&combined_aa),
+                                 combined_aa_init(&combined_aa, render.device, rw, rh), "combined_aa");
+            FS3_RESIZE_OR_REINIT(combined_color_resize(&combined_color, render.device, rw, rh),
+                                 combined_color_shutdown(&combined_color),
+                                 combined_color_init(&combined_color, render.device, rw, rh), "combined_color");
+#undef FS3_RESIZE_OR_REINIT
+            rebuild_t_tail = time_microseconds();
             occlusion_cull_resize(&occ_sys, rw, rh);
             deferred_resize(&render.deferred, render.device, rw, rh);
             /* R358: resize may destroy deferred — fall back so 'p' path stays drawable. */
@@ -4543,7 +7128,22 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             frame_w = w;
             frame_h = h;
             } /* end successful scene_fbo recreate */
+            {
+                u64 rebuild_t1 = time_microseconds();
+                if (rebuild_t_post < rebuild_t0) rebuild_t_post = rebuild_t0;
+                if (rebuild_t_tail < rebuild_t_post) rebuild_t_tail = rebuild_t_post;
+                LOG_INFO("RESIZE_REBUILD frame=%llu rw=%u rh=%u w=%u h=%u fallbacks=%u "
+                         "ms=%.2f scene_ms=%.2f post_ms=%.2f tail_ms=%.2f",
+                         (unsigned long long)engine.frame_count, rw, rh, w, h,
+                         rebuild_fallbacks,
+                         (f64)(rebuild_t1 - rebuild_t0) / 1000.0,
+                         (f64)(rebuild_t_post - rebuild_t0) / 1000.0,
+                         (f64)(rebuild_t_tail - rebuild_t_post) / 1000.0,
+                         (f64)(rebuild_t1 - rebuild_t_tail) / 1000.0);
+            }
         }
+        if (wm_stats.active && need_rebuild)
+            wm_stats.rebuild_ms += (f64)(time_microseconds() - wm_rebuild_t0) / 1000.0;
 
         draw_bench_reset();
         if (playing_path && path_count > 0) {
@@ -4573,6 +7173,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         if (cam_spin_deg != 0.0f) {
             camera.yaw += cam_spin_deg * (3.14159265f / 180.0f);
             camera._cy = cosf(camera.yaw); camera._sy = sinf(camera.yaw);
+        }
+        if (cam_dolly != 0.0f) {
+            f32 dcp = cosf(camera.pitch), dsp = sinf(camera.pitch);
+            Vec3 dfwd = vec3(dcp * sinf(camera.yaw), dsp, -dcp * cosf(camera.yaw));
+            camera.position = vec3_sub(camera.position, vec3_scale(dfwd, cam_dolly));
         }
         if (recording_path && path_count < CAM_PATH_CAPACITY) {
             cam_path[path_count].px = camera.position.e[0];
@@ -4870,11 +7475,26 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             LOG_INFO("Gravity well: %s", gravity_well ? "ON (attracts entities to camera)" : "OFF");
         }
 
-        /* B: Save scene (BSCN binary)  N: Load scene  Shift+B: Export JSON */
-        if (input_key_pressed(platform_input(engine.platform), (i32)'b')) {
+        /* B: Save scene (BSCN binary)  N: Load scene  Shift+B: Export JSON.
+         * BREAK_BSCN_ROUNDTRIP_AT=f: scripted save at frame f and load at
+         * f+10 (the same code as B then N), so the reload path -- every LOD
+         * table rebuilt for the loaded scene -- runs in headless checks. */
+        static i64 bscn_roundtrip_at = -2;
+        if (bscn_roundtrip_at == -2) {
+            const char *e = getenv("BREAK_BSCN_ROUNDTRIP_AT");
+            bscn_roundtrip_at = (e && e[0]) ? atoll(e) : -1;
+        }
+        const bool bscn_script_save = bscn_roundtrip_at >= 0 &&
+                                      (i64)engine.frame_count == bscn_roundtrip_at;
+        const bool bscn_script_load = bscn_roundtrip_at >= 0 &&
+                                      (i64)engine.frame_count == bscn_roundtrip_at + 10;
+        if (bscn_script_save || bscn_script_load)
+            LOG_INFO("BSCN_ROUNDTRIP %s at frame %llu", bscn_script_save ? "save" : "load",
+                     (unsigned long long)engine.frame_count);
+        if (bscn_script_save || input_key_pressed(platform_input(engine.platform), (i32)'b')) {
             InputState *bs_inp = platform_input(engine.platform);
             /* R365: Shift is 289 on all platforms (was dead GLFW 340/344). */
-            bool shift_held = input_key_down(bs_inp, 289);
+            bool shift_held = !bscn_script_save && input_key_down(bs_inp, 289);
             if (shift_held) {
                 /* Export as JSON for debugging / interoperability. */
                 SerializeOptions opts = { .pretty_json = true };
@@ -4911,7 +7531,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     LOG_WARN("Scene state save failed");
             }
         }
-        if (input_key_pressed(platform_input(engine.platform), (i32)'n')) {
+        if (bscn_script_load || input_key_pressed(platform_input(engine.platform), (i32)'n')) {
             /* R381: load into a temp World first — only swap after success so a
              * corrupt BSCN cannot empty the live scene. Companion state runs
              * only after a successful swap (bare N must not rewrite pose/camera). */
@@ -4959,14 +7579,23 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             tex_base[0] = '\0';
                         }
                         if (asset_scene_restore(&asset, &bscn_scene, tex_base)) {
+                            /* The ECS LOD tables index the old meshes' vertices. */
+                            ecs_lod_free(&g_ecs_lod, render.device);
+                            skin_lod_free(&g_skin_lod, render.device);
                             asset_scene_free(&asset, &scene);
                             scene = bscn_scene; /* move; bscn_scene zeroed below */
                             memset(&bscn_scene, 0, sizeof(bscn_scene));
+                            if (mega_lod_enabled)
+                                ecs_lod_setup(&g_ecs_lod, render.device, &scene, world, NULL,
+                                              INSTANCE_DATA_CAP);
                             if (scene.joint_count > 0 && scene.anim_clip_count > 0) {
                                 skeleton_set_joints(&render.skeleton, scene.joint_count,
                                                     scene.joint_parents, scene.inverse_bind);
                                 render.anim_clip = scene.anim_clips[0];
                             }
+                            if (mega_lod_enabled)
+                                skin_lod_setup(&g_skin_lod, render.device, &scene,
+                                               skin_lod_fade_seconds(&render.caps));
                             if (anim_blend_ready) {
                                 /* The blend state pointed into the old scene's
                                  * clips — re-init against the restored rig. */
@@ -5127,7 +7756,45 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             eb->acceleration = vec3(0, 0, 0);
             eb->velocity = vec3(0, 1.5f * sinf((f32)total_time * 1.2f), 0);
         }
-        physics_step(physics, slow_motion ? (f32)engine.delta_time * 0.25f : (f32)engine.delta_time);
+        /* R694: fixed-step physics. It used to step once per frame with the
+         * raw frame time, so frame-pacing jitter (vsync presents alternating
+         * 3 ms / 25-45 ms on D3D12 and GL here) went straight into the motion
+         * -- and the per-step 0.98 velocity damping made the fall speed itself
+         * frame-rate dependent. Now the frame time feeds an accumulator that
+         * is drained in PHYS_FIXED_DT steps (capped, remainder dropped on a
+         * hitch); sys_sync_transform_from_physics draws the interpolated pose.
+         * Collision counters are summed over the sub-steps so the screen-shake
+         * / sfx bookkeeping below still sees one frame's worth. */
+        {
+            static f32 phys_accum = 0.0f;
+            f32 frame_dt = slow_motion ? (f32)engine.delta_time * 0.25f : (f32)engine.delta_time;
+            phys_accum += frame_dt;
+            u32 nsteps = (u32)(phys_accum / PHYS_FIXED_DT);
+            if (nsteps > PHYS_MAX_SUBSTEPS) {
+                nsteps = PHYS_MAX_SUBSTEPS;
+                phys_accum = (f32)nsteps * PHYS_FIXED_DT;
+            }
+            if (nsteps > 0u && physics->count > g_phys_prev_cap) {
+                u32 cap = physics->capacity > physics->count ? physics->capacity : physics->count;
+                Vec3 *np = (Vec3 *)realloc(g_phys_prev_pos, (usize)cap * sizeof(Vec3));
+                if (np) { g_phys_prev_pos = np; g_phys_prev_cap = cap; }
+            }
+            u32 col_sum = 0u;
+            for (u32 si = 0; si < nsteps; si++) {
+                if (si + 1u == nsteps && g_phys_prev_pos && physics->count <= g_phys_prev_cap) {
+                    for (u32 bi = 0; bi < physics->count; bi++)
+                        g_phys_prev_pos[bi] = physics->bodies[bi].position;
+                    g_phys_prev_count = physics->count;
+                }
+                physics_step(physics, PHYS_FIXED_DT);
+                col_sum += physics->collision_count;
+            }
+            if (nsteps > 0u) physics->collision_count = col_sum;
+            phys_accum -= (f32)nsteps * PHYS_FIXED_DT;
+            if (phys_accum < 0.0f) phys_accum = 0.0f;
+            g_phys_alpha = phys_accum / PHYS_FIXED_DT;
+            if (g_phys_alpha > 1.0f) g_phys_alpha = 1.0f;
+        }
         if (sfx_cooldown > 0.0f) sfx_cooldown -= (f32)engine.delta_time;
         if (physics->collision_count > prev_collision_count) {
             u32 new_cols = physics->collision_count - prev_collision_count;
@@ -5977,6 +8644,25 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                               avg_u, draw_bench_gpu_uni_frames,
                               avg_l, draw_bench_gpu_leg_frames);
             }
+            if (mega_lod_on(&mega_buf)) {
+                const MegaLod *ul = mega_buf.lod;
+                debug_ui_text(&ui, "LOD: nodes L0/L1/L2 %u/%u/%u  tris %u/%u/%u  fading %u  vis tris %u (LOD0 %u)  sel %.3fms",
+                              ul->level_nodes[0], ul->level_nodes[1], ul->level_nodes[2],
+                              ul->level_tris[0], ul->level_tris[1], ul->level_tris[2], ul->fading,
+                              ul->vis_tris, ul->vis_tris_lod0, ul->select_ms);
+            }
+            if (g_ecs_lod.active) {
+                debug_ui_text(&ui, "ECS LOD: inst L0/L1/L2 %u/%u/%u  fading %u  vis tris %u (LOD0 %u)  draws %u  sel %.3fms",
+                              g_ecs_lod.level_inst[0], g_ecs_lod.level_inst[1], g_ecs_lod.level_inst[2],
+                              g_ecs_lod.fading, g_ecs_lod.vis_tris, g_ecs_lod.vis_tris_lod0, g_ecs_lod.draws,
+                              g_ecs_lod.select_ms);
+            }
+            if (g_skin_lod.active) {
+                debug_ui_text(&ui, "Skin LOD: meshes L0/L1/L2 %u/%u/%u  fading %u  tris %u (LOD0 %u)  sel %.3fms",
+                              g_skin_lod.level_meshes[0], g_skin_lod.level_meshes[1], g_skin_lod.level_meshes[2],
+                              g_skin_lod.fading, g_skin_lod.vis_tris, g_skin_lod.vis_tris_lod0,
+                              g_skin_lod.select_ms);
+            }
             if (combined_aa.use_combined || combined_color.use_combined) {
                 debug_ui_text(&ui, "--- CombinedPost ---");
                 debug_ui_text(&ui, "  TAA+FXAA=%s Tonemap+CG=%s",
@@ -6038,7 +8724,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         if (show_help && ui.visible) {
             debug_ui_text(&ui, "=== CONTROLS (U to toggle) ===");
-            debug_ui_text(&ui, "F1:Scale  F2:DebugViz  F3:Inspector  F:Wireframe  KP4:AA  V:VSync  T:Filter  G:Fullscreen");
+            debug_ui_text(&ui, "F1:Scale  F2:DebugViz  F3:Inspector  F:Wireframe  KP4:AA  V:VSync  T:Filter  G/Alt+Enter:Fullscreen  Alt+T:TitleBar");
             debug_ui_text(&ui, "L/J/I/K:Sun  O:TimeCycle  Z/X:ShadowBias  .:TimePreset  ;:TerrainPreset");
             debug_ui_text(&ui, "WASD:Move  Shift+A/W/S/D:Brush/Teleport/Amb/Mass  Scroll:FOV  9:Gravity  0:WaterColor");
             debug_ui_text(&ui, "Shift+9/0:CamSpeed  B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  M:Bench");
@@ -6096,12 +8782,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         /* Capture render transforms once before any geometry pass. The dense
          * node index is stable for the loaded scene; generation 1 is reset by
          * destroying/reinitializing this history when the scene changes. */
+        profiler_push("transforms");
         scene_compute_world_transforms(&scene);
         motion_history_begin_frame(&node_motion_history);
         motion_history_begin_frame(&entity_motion_history);
         for (u32 ni = 0; ni < scene.node_count; ni++)
             motion_history_set_current(&node_motion_history, ni, 1u,
                                        &scene.nodes[ni].world_transform);
+        profiler_pop();
 
         RHISampler active_sampler = nearest_filter && rhi_handle_valid(render.nearest_sampler) ? render.nearest_sampler : render.sampler;
 
@@ -6170,7 +8858,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             platform_poll(engine.platform);
             continue; /* SUSPENDED/LOST/DESTROYING：跳过本帧渲染 */
         }
+        /* R671: frame_begin waits for the frame slot's fence, so on a
+         * GPU-bound frame this zone is the GPU time the CPU waited for. */
+        profiler_push("frame_begin");
         RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+        profiler_pop();
         if (!cmd) {
             /* R578: device lost (or fatal frame error) — exit gracefully
              * instead of spinning NULL frames on a dead device. */
@@ -6180,6 +8872,32 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         draw_calls = 0;
         culled_count = 0;
         tri_count = 0; /* R445: matches the old loop-local redeclaration cadence */
+
+        /* Runtime LOD: pick every mega node's camera + shadow level once,
+         * before any pass, and publish the per-cmd masks for unified_cull. */
+        if (mega_lod_on(&mega_buf)) {
+            /* Output height, not the (TSR-scaled) render height: the error
+             * budget is in displayed pixels. */
+            mega_lod_select(&mega_buf, camera.position, camera.fov, (f32)h, &frame_frustum);
+            mega_lod_upload_fade_commands(&mega_buf, cmd);
+            if (gpucull_sys.unified_ready) {
+                gpucull_upload_selection(&gpucull_sys, GPUCULL_SELECT_CAMERA,
+                                         mega_buf.lod->selected, mega_buf.draw_cmd_count);
+                gpucull_upload_selection(&gpucull_sys, GPUCULL_SELECT_SHADOW,
+                                         mega_buf.lod->shadow_selected, mega_buf.draw_cmd_count);
+            }
+            if (mega_lod_trace_node >= 0 && (u32)mega_lod_trace_node < mega_buf.lod->node_count) {
+                u32 tb = (u32)mega_lod_trace_node;
+                const NodeSphere *tns = &mega_buf.node_spheres[mega_buf.lod->node_scene[tb]];
+                f32 tdx = tns->cx - camera.position.e[0], tdy = tns->cy - camera.position.e[1],
+                    tdz = tns->cz - camera.position.e[2];
+                LOG_INFO("LOD_TRACE frame=%u node=%u dist=%.2f level=%u shadow=%u transitions=%u sel_ms=%.4f vis_tris=%u/%u",
+                         (unsigned)engine.frame_count, tb, sqrtf(tdx*tdx + tdy*tdy + tdz*tdz),
+                         mega_buf.lod->node_level[tb], mega_buf.lod->node_shadow_level[tb],
+                         mega_buf.lod->transitions, mega_buf.lod->select_ms,
+                         mega_buf.lod->vis_tris, mega_buf.lod->vis_tris_lod0);
+            }
+        }
 
         profiler_push("particles+csm");
         particles_compute(&particles, cmd, (f32)engine.delta_time);
@@ -6206,7 +8924,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
              * R82-1: Skip when unified cull is active — object data already uploaded
              * via gpucull_upload_objects_unified at init, legacy pack output never consumed. */
             bool legacy_gpucull_packed = false;
-            if (mega_buf.valid && gpu_indirect_enabled &&
+            if (mega_buf.valid && gpu_indirect_enabled && !mega_lod_on(&mega_buf) &&
                 gpucull_enabled && gpucull_sys.ready && !unified_cull_enabled) {
                 u32 vc_pre = mega_buf.draw_cmd_count;
                 if (vc_pre <= GPUCULL_MAX_OBJECTS) {
@@ -6252,7 +8970,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 if (render.depth_loc_model >= 0) rhi_cmd_set_uniform_mat4(cmd, render.depth_loc_model, &frame_identity.e[0][0]);
                 if (render.depth_loc_lvp >= 0) rhi_cmd_set_uniform_mat4(cmd, render.depth_loc_lvp, &render.cascade_vp[c].e[0][0]);
 
-                if (rhi_handle_valid(terrain.vbo)) {
+                if (!model_view && rhi_handle_valid(terrain.vbo)) {
                     rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
                     rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0, true);
                     rhi_cmd_draw_indexed(cmd, terrain.index_count, 1);
@@ -6268,10 +8986,17 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     /* R170: Shadow uses GPU compact only — never camera Hi-Z or
                      * shared vis_flags staging (wrong VP / cross-view pollution). */
                     u32 vis_count = mega_buf.draw_cmd_count;
-                    if (mega_use_unified_shadow(&mega_buf) &&
+                    /* R691: CSM cascades take the R688 direct path too. Each
+                     * GPU cull ran fill + dispatch + barrier inside the shadow
+                     * pass; on VK every one of those ends and re-opens the
+                     * render pass (VK CSM was ~2x D3D12). */
+                    if (mega_use_direct_shadow(&mega_buf)) {
+                        draw_calls += mega_draw_direct_culled(&mega_buf, cmd,
+                                                              &render.cascade_vp[c]);
+                    } else if (mega_use_unified_shadow(&mega_buf) &&
                         mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                   &render.cascade_vp[c].e[0][0], vis_count, NULL,
-                                                  render.depth_pipeline)) {
+                                                  render.depth_pipeline, GPUCULL_SELECT_SHADOW)) {
                         draw_calls++;
                         draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                         draw_bench_mark_unified();
@@ -6284,6 +9009,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         /* CPU frustum culling per cascade */
                         Frustum shadow_frustum = frustum_from_vp(&render.cascade_vp[c]);
                         u32 obj_idx = 0;
+                        if (mega_lod_on(&mega_buf)) {
+                            /* Runtime LOD: flags are per cmd (node x level). */
+                            for (u32 ci = 0; ci < vis_count; ci++) {
+                                const NodeSphere *ns = &mega_buf.node_spheres[mega_buf.cmd_node_index[ci]];
+                                Vec3 ctr = {{ ns->cx, ns->cy, ns->cz }};
+                                g_vis_flags[ci] = (mega_buf.lod->shadow_selected[ci] && ns->r >= 0.0f &&
+                                                   frustum_test_sphere(&shadow_frustum, ctr, ns->r)) ? 1u : 0u;
+                            }
+                            obj_idx = vis_count;
+                        }
                         for (u32 ni = 0; ni < scene.node_count && ni < 16384 && obj_idx < vis_count; ni++) {
                             if (mega_buf.node_spheres[ni].r < 0.0f) continue;
                             Vec3 ctr = {{ mega_buf.node_spheres[ni].cx,
@@ -6306,7 +9041,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                     draw_bench_mark_legacy();
                     }
-                    tri_count += mega_buf.total_index_count / 3;
+                    tri_count += mega_lod_on(&mega_buf) ? mega_buf.lod->shadow_tris
+                                                        : mega_buf.total_index_count / 3;
                 } else {
                 for (u32 ni = 0; ni < scene.node_count; ni++) {
                     SceneNode *node = &scene.nodes[ni];
@@ -6350,7 +9086,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         point_shadow_render_begin(&pt_shadows, cmd, pli, pface);
 
                         /* Render scene geometry into depth cubemap face. */
-                        if (rhi_handle_valid(terrain.vbo)) {
+                        if (!model_view && rhi_handle_valid(terrain.vbo)) {
                             /* R81-4: u_model=identity already set by point_shadow_render_begin. */
                             rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
                             rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0, true);
@@ -6365,17 +9101,32 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             /* R170: Point-shadow faces — GPU compact, no camera Hi-Z. */
                             u32 vis_count = mega_buf.draw_cmd_count;
                             u32 face_idx = pli * POINT_SHADOW_FACES + pface;
-                            if (mega_use_unified_shadow(&mega_buf) &&
+                            if (mega_use_direct_shadow(&mega_buf)) {
+                                u32 nd = mega_draw_direct_culled(&mega_buf, cmd,
+                                                                 &pt_shadows.light_vp[face_idx]);
+                                draw_calls += nd;
+                            } else if (mega_use_unified_shadow(&mega_buf) &&
                                 mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                           &pt_shadows.light_vp[face_idx].e[0][0],
                                                           vis_count, NULL,
-                                                          pt_shadows.depth_pipeline)) {
+                                                          pt_shadows.depth_pipeline,
+                                                          GPUCULL_SELECT_SHADOW)) {
                                 draw_calls++;
                                 draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                                 draw_bench_mark_unified();
                             } else {
                                 Frustum pface_frustum = frustum_from_vp(&pt_shadows.light_vp[face_idx]);
                                 u32 obj_idx = 0;
+                                if (mega_lod_on(&mega_buf)) {
+                                    /* Runtime LOD: flags are per cmd (node x level). */
+                                    for (u32 ci = 0; ci < vis_count; ci++) {
+                                        const NodeSphere *ns = &mega_buf.node_spheres[mega_buf.cmd_node_index[ci]];
+                                        Vec3 ctr = {{ ns->cx, ns->cy, ns->cz }};
+                                        g_vis_flags[ci] = (mega_buf.lod->shadow_selected[ci] && ns->r >= 0.0f &&
+                                                           frustum_test_sphere(&pface_frustum, ctr, ns->r)) ? 1u : 0u;
+                                    }
+                                    obj_idx = vis_count;
+                                }
                                 for (u32 ni = 0; ni < scene.node_count && ni < 16384 && obj_idx < vis_count; ni++) {
                                     if (mega_buf.node_spheres[ni].r < 0.0f) continue;
                                     Vec3 ctr = {{ mega_buf.node_spheres[ni].cx,
@@ -6443,8 +9194,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * pt_shadows gather above so that gather still observes the PREVIOUS
          * frame's lights (R75-1 semantics preserved); nothing between here and
          * the forward/deferred passes reads `lights`, so forward output is
-         * unchanged. */
-        if (rhi_handle_valid(render.clustered_pipeline)) {
+         * unchanged.
+         * R644: gated on the light system having a consumer, not on the
+         * clustered forward pipeline alone. D3D12 has no clustered pipeline
+         * (no pbr_clustered sidecar), so the deferred path lit the scene with
+         * an EMPTY light system: no sun, no point lights -- a black frame. */
+        if (rhi_handle_valid(render.clustered_pipeline) || render.deferred.initialized) {
             light_system_clear(&lights);
             light_system_add_dir(&lights, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
             /* R59-fix: Incremental orbit rotation — 0 trig calls per frame.
@@ -6599,6 +9354,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             if (scene.skinned_mesh_count > 0 || rhi_handle_valid(render.skinned_vbo)) {
             skeleton_upload(&render.skeleton);
             }
+            if (g_skin_lod.active)
+                skin_lod_select(&g_skin_lod, &scene, render.skeleton.current_pose,
+                                render.skeleton.joint_count, camera.position, camera.fov, (f32)h);
         }
 
         /* ---- Forward path guard: skip entire forward scene pass when deferred is active ---- */
@@ -6626,21 +9384,24 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * effects (shoreline foam, underwater caustics/darkening via u_water_y/u_time).
          * It runs unconditionally — the clustered terrain draw below was always
          * depth-culled (same geometry, same depth, LESS test) and is now skipped. */
+        if (!model_view)
         terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
                        render.terrain_tex, active_sampler,
                        render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias,
                        water.water_y, (f32)total_time, fog_enabled ? 0.3f : 0.0f);
 
         water_update(&water, (f32)engine.delta_time);
-        water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
-                     render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias);
+        if (!model_view)
+            water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
+                         render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias);
 
         /* R273: light population (clear + add_dir + 32× orbit add_point) moved
          * above the forward/deferred split so DEFERRED gets fresh lights too.
          * It used to be forward-only here. */
 
         particles_cull(&particles, cmd);
-        particles_render(&particles, cmd, &view.e[0][0], &proj.e[0][0]);
+        particles_render(&particles, cmd, &view.e[0][0], &proj.e[0][0],
+                         &prev_view_proj.e[0][0], rw, rh);
 
 
         if (rhi_handle_valid(render.skinned_pipeline)) {
@@ -6663,16 +9424,31 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 /* Joints ride the vertex SSBO (R591) — bound ONCE here (the
                  * R590 UPDATE_AFTER_BIND lesson: never re-update a consumed
                  * descriptor set between draws). */
-                rhi_cmd_bind_storage_buffer(cmd, skeleton_joint_slot(&render.skeleton), 0u);
+                rhi_cmd_bind_storage_buffer(cmd, skeleton_joint_slot(&render.skeleton),
+                                            render.caps.shader_sidecar_paths ? 16u : 0u);
             } else {
             rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_skinned_pipeline) ? render.wire_skinned_pipeline : render.skinned_pipeline);
             rhi_cmd_set_uniform_mat4(cmd, render.sk_loc_view, &view.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.sk_loc_proj, &proj.e[0][0]);
-            rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
-            rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
-            rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
-            rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_camera_pos,
-                camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+            /* R634: on a sidecar backend the four lighting uniforms come from
+             * the temporal CBV rather than from here -- see
+             * skinned_mrt_hlsl.vert. Skipping them rather than leaving the
+             * writes is deliberate: on D3D12 they resolve to -1 and would be
+             * silent no-ops, which is the dropped-write shape R600 exists to
+             * eliminate. */
+            if (!render.caps.shader_sidecar_paths) {
+                rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
+                rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
+                rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
+                rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_camera_pos,
+                    camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+            } else {
+                forward_temporal_ubo_write_lit(render.device,
+                    render.forward_temporal_ubo, &camera.position,
+                    &prev_view_proj, &sun_dir_vec, &sun_color, &ambient_col);
+                rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo,
+                    (u32)render.temporal_ubo_binding);
+            }
             }
 
             if (scene.skinned_mesh_count > 0) {
@@ -6686,13 +9462,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                     }
                     rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
+                    u32 sk_tris = 1u;
                     if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
-                        rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
-                        rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
+                        sk_tris = skin_lod_draw(cmd, &g_skin_lod, scene.skinned_mesh_count, si, sm);
                     } else {
                         rhi_cmd_draw(cmd, 3, 1);
                     }
-                    draw_calls++; tri_count += sm->index_count > 0 ? sm->index_count / 3 : 1;
+                    draw_calls++; tri_count += sk_tris;
                 }
             } else if (rhi_handle_valid(render.skinned_vbo) && render.skeleton.joint_count >= 4u) {
                 /* R445: the procedural arm geometry references joints 0-3 —
@@ -6717,8 +9493,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
-        rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
-                                 camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+        /* R600: blinn_phong reads the camera from its ForwardTemporal block,
+         * not from the push/loose uniform, so this path must publish and bind
+         * forward_temporal_ubo every frame. R606: at the index the active
+         * shader declares for it — 0 in GLSL, register b1 on D3D12. */
+        forward_temporal_ubo_write(render.device, render.forward_temporal_ubo,
+                                   &camera.position, &prev_view_proj);
+        rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo,
+                                    render.temporal_ubo_binding);
 
         Frustum frustum = frame_frustum;
 
@@ -6731,6 +9513,19 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             ComponentType mesh_query_types[] = { COMP_TRANSFORM, COMP_MESH_REF };
             Query *mq = world_query_cached(world, mesh_query_types, 2);
             u32 instance_count = 0;
+            /* Runtime ECS LOD: per-instance camera level, picked while gathering. */
+            const bool ecs_lod = g_ecs_lod.active && g_ecs_lod.mesh_count == scene.mesh_count;
+            u64 ecs_lod_t0 = 0u;
+            f32 ecs_lod_pf = 0.0f;
+            f64 ecs_lod_now = 0.0;
+            if (ecs_lod) {
+                ecs_lod_t0 = time_microseconds();
+                ecs_lod_pf = lod_screen_proj_factor(camera.fov, (f32)h);
+                ecs_lod_now = (f64)ecs_lod_t0 / 1e6;
+                memset(g_ecs_lod.level_inst, 0, sizeof(g_ecs_lod.level_inst));
+                g_ecs_lod.vis_tris = g_ecs_lod.vis_tris_lod0 = 0u;
+                g_ecs_lod.transitions = g_ecs_lod.draws = g_ecs_lod.fading = 0u;
+            }
 
             if (mq && mq->match_count > 0) {
                 for (u32 mi = 0; mi < mq->match_count; mi++) {
@@ -6777,6 +9572,31 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                 } else {
                                     inst_mesh_idx[instance_count] = 0;
                                 }
+                                if (ecs_lod) {
+                                    u32 fade_k;
+                                    u8 fade_co;
+                                    g_ecs_lod.inst_level[instance_count] =
+                                        ecs_lod_pick(&g_ecs_lod, inst_mesh_idx[instance_count],
+                                                     entity, et->pos, camera.position, ecs_lod_pf,
+                                                     ecs_lod_now, &fade_k, &fade_co);
+                                    /* R703a: a fading instance is drawn twice --
+                                     * finer level with dither +k, coarser with -k.
+                                     * The value rides the previous model's
+
+                                     * column-0 w (md[19], always 0 for the
+                                     * translation-only model). */
+                                    if (fade_k < LOD_FADE_STEPS) {
+                                        if (instance_count + 1u < INSTANCE_DATA_CAP) {
+                                            md[19] = lod_fade_dither_value(fade_k, true);
+                                            f32 *md2 = md + 32;
+                                            memcpy(md2, md, 128);
+                                            md2[19] = lod_fade_dither_value(fade_k, false);
+                                            inst_mesh_idx[instance_count + 1u] = inst_mesh_idx[instance_count];
+                                            g_ecs_lod.inst_level[instance_count + 1u] = fade_co;
+                                            instance_count++;
+                                        }
+                                    }
+                                }
                                 instance_count++;
                             }
                         }
@@ -6785,6 +9605,15 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 }
             }
             /* cached query — no query_done() needed */
+            if (ecs_lod) {
+                g_ecs_lod.select_ms = (f64)(time_microseconds() - ecs_lod_t0) / 1000.0;
+                g_ecs_lod.frames++;
+                g_ecs_lod.select_ms_sum += g_ecs_lod.select_ms;
+                g_ecs_lod.vis_tris_sum += g_ecs_lod.vis_tris;
+                g_ecs_lod.vis_tris_lod0_sum += g_ecs_lod.vis_tris_lod0;
+                g_ecs_lod.transitions_sum += g_ecs_lod.transitions;
+                g_ecs_lod.fading_sum += g_ecs_lod.fading;
+            }
 
             {
                 InputState *input_state = platform_input(engine.platform);
@@ -6854,7 +9683,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                              vsync_on ? "off — vsync paces" :
                              engine.target_fps == 0.0f ? "unlimited" : "engaged");
                 }
-                if (input_key_pressed(inp, (i32)'t')) {
+                if (input_key_down(inp, INPUT_KEY_ALT) && input_key_pressed(inp, (i32)'t')) {
+                    title_bar_toggle(engine.platform, engine.frame_count);
+                } else if (input_key_pressed(inp, (i32)'t')) {
                     nearest_filter = !nearest_filter;
                     LOG_INFO("Tex filter: %s", nearest_filter ? "nearest" : "linear");
                 }
@@ -6922,8 +9753,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     LOG_INFO("Spawned 3 entities (%u/%u bodies, %u/%u entities)", physics->count, physics->capacity, world->entity_count, ENTITY_SPAWN_CAP);
                     }
                 }
-                if (input_key_pressed(inp, (i32)'g')) {
-                    platform_toggle_fullscreen(engine.platform);
+                if (input_key_pressed(inp, (i32)'g') ||
+                    (input_key_down(inp, INPUT_KEY_ALT) && input_key_pressed(inp, 257))) {
+                    window_mode_switch(&wm_stats, engine.platform, engine.frame_count);
                 }
                 if (input_key_pressed(inp, (i32)'\'')) {
                     static const f32 rates[] = {200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 0.0f};
@@ -7338,7 +10170,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     LOG_INFO("Terrain preset: %s", tnames[terrain_preset]);
                 }
                 /* R361: Enter (257) — was Tab, which also toggled the debug UI overlay. */
-                if (input_key_pressed(inp, 257)) {
+                if (input_key_pressed(inp, 257) && !input_key_down(inp, INPUT_KEY_ALT)) {
                     ComponentType sel_types[] = { COMP_TRANSFORM, COMP_MESH_REF };
                     Query *sq = world_query(world, sel_types, 2);
                     u32 total = 0;
@@ -7513,23 +10345,96 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                      * descriptor set between draws invalidates the command
                      * buffer (no UPDATE_AFTER_BIND). Content changes ride
                      * rhi_cmd_update_buffer below; the binding is constant. */
-                    rhi_cmd_bind_storage_buffer(cmd, inst_slot, 0u);
+                    rhi_cmd_bind_storage_buffer(cmd, inst_slot,
+                                                render.caps.shader_sidecar_paths ? 16u : 0u);
                 } else {
                 rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_instanced_pipeline) ? render.wire_instanced_pipeline : render.instanced_pipeline);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_view, &view.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_proj, &proj.e[0][0]);
-                rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
-                rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
-                rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
-                rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_camera_pos,
-                    camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+                /* R632: on a sidecar backend the four lighting uniforms are
+                 * read from the temporal CBV, not written here -- see
+                 * instanced_mrt_hlsl.vert for why the push block cannot hold
+                 * them. The GLSL path is untouched. The writes below are
+                 * skipped rather than left in place: on D3D12 they resolve to
+                 * -1 (no marker) and would be silent no-ops, which is the
+                 * "dropped write" shape R600 exists to avoid.
+                 *
+                 * R636: the CBV write and bind are NOT part of that skip.
+                 * They used to sit inside it, which meant the D3D12 path
+                 * never bound the temporal block at all -- the instanced
+                 * fragment shader read an unbound descriptor at b1 and the
+                 * GPU hung (DXGI_ERROR_DEVICE_HUNG, 0x887a0006) on the
+                 * first frame. Both backends need the bind; only the four
+                 * loose uniform writes are backend-specific. */
+                if (!render.caps.shader_sidecar_paths) {
+                    rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
+                    rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
+                    rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
+                    rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_camera_pos,
+                        camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+                }
+                forward_temporal_ubo_write_lit(render.device,
+                    render.forward_temporal_ubo, &camera.position,
+                    &prev_view_proj, &sun_dir_vec, &sun_color, &ambient_col);
+                rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo,
+                    (u32)render.temporal_ubo_binding);
                 }
 
                 /* R445: group instances by MeshRef.mesh_index — previously every
                  * scene mesh was drawn at EVERY entity transform, so adding the
                  * showcase meshes stacked all scene geometry onto all entities.
                  * Entities are few (<100), so an O(meshes x instances)
-                 * compaction per frame is negligible. */
+                 * compaction per frame is negligible.
+                 * Runtime ECS LOD: instances are bucketed by (mesh, level)
+                 * instead (one counting sort); level l >= 1 draws the mesh's
+                 * LOD vertices with its level index range. Buckets are drawn
+                 * in chunks of ECS_LOD_DRAW_CHUNK rows (vkCmdUpdateBuffer
+                 * limit). */
+                if (ecs_lod) {
+                    EcsLod *E = &g_ecs_lod;
+                    lod_bucket_instances(inst_mesh_idx, E->inst_level, instance_count,
+                                         scene.mesh_count, ECS_LOD_LEVELS,
+                                         E->bucket_off, E->bucket_order);
+                    for (u32 i = 0; i < scene.mesh_count; i++) {
+                        Mesh *m = &scene.meshes[i];
+                        Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
+                        for (u32 l = 0; l < ECS_LOD_LEVELS; l++) {
+                            u32 b0 = E->bucket_off[i * ECS_LOD_LEVELS + l];
+                            u32 b1 = E->bucket_off[i * ECS_LOD_LEVELS + l + 1u];
+                            for (u32 c0 = b0; c0 < b1; c0 += ECS_LOD_DRAW_CHUNK) {
+                                u32 cnt = b1 - c0 < ECS_LOD_DRAW_CHUNK ? b1 - c0 : ECS_LOD_DRAW_CHUNK;
+                                for (u32 k = 0; k < cnt; k++)
+                                    memcpy(instance_draw + (usize)k * 32,
+                                           instance_data + (usize)E->bucket_order[c0 + k] * 32, 128);
+                                rhi_cmd_update_buffer(cmd, inst_slot, 0u, instance_draw, cnt * 128u);
+                                rhi_cmd_bind_pipeline(cmd, inst_clustered ? render.clustered_inst_pipeline :
+                                    (wireframe_mode && rhi_handle_valid(render.wire_instanced_pipeline) ?
+                                     render.wire_instanced_pipeline : render.instanced_pipeline));
+                                if (inst_clustered) {
+                                    clustered_bind_material(cmd, &render, &render.cli, mat, &scene);
+                                } else {
+                                    bind_material(cmd, &render, mat, &scene);
+                                    rhi_cmd_bind_texel_buffers(cmd, inst_slot, inst_slot);
+                                }
+                                RHIBuffer level_vbo = E->mesh_vbo[(usize)i * ECS_LOD_LEVELS + l];
+                                rhi_cmd_bind_vertex_buffer(cmd, rhi_handle_valid(level_vbo) ? level_vbo : m->vertex_buf, 0);
+                                if (l > 0u) {
+                                    rhi_cmd_bind_index_buffer(cmd, E->mesh_ibo[i], 0, true);
+                                    rhi_cmd_draw_indexed_base(cmd, E->mesh_tris[(usize)i * ECS_LOD_LEVELS + l] * 3u,
+                                                              cnt, E->mesh_first[(usize)i * ECS_LOD_LEVELS + l], 0);
+                                } else if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
+                                    rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
+                                    rhi_cmd_draw_indexed(cmd, m->index_count, cnt);
+                                } else {
+                                    rhi_cmd_draw(cmd, 3, cnt);
+                                }
+                                draw_calls++; E->draws++;
+                                tri_count += E->mesh_tris[(usize)i * ECS_LOD_LEVELS + l] * cnt;
+                            }
+                        }
+                    }
+                    E->draws_sum += E->draws;
+                } else
                 for (u32 i = 0; i < scene.mesh_count; i++) {
                     u32 cnt = 0;
                     for (u32 k = 0; k < instance_count; k++) {
@@ -7539,6 +10444,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     }
                     if (cnt == 0) continue;
                     rhi_cmd_update_buffer(cmd, inst_slot, 0u, instance_draw, cnt * 128u);
+                    /* Metal suspends the render encoder for the upload blit;
+                     * restore this draw's pipeline before binding its material
+                     * and vertex data into the resumed pass. */
+                    rhi_cmd_bind_pipeline(cmd, inst_clustered ? render.clustered_inst_pipeline :
+                        (wireframe_mode && rhi_handle_valid(render.wire_instanced_pipeline) ?
+                         render.wire_instanced_pipeline : render.instanced_pipeline));
                     Mesh *m = &scene.meshes[i];
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
                     if (inst_clustered) {
@@ -7647,8 +10558,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
                     rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
                     rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
-                    rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
-                                             camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+                    forward_temporal_ubo_write(render.device, render.forward_temporal_ubo,
+                                               &camera.position, &prev_view_proj);
+                    rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo,
+                                                render.temporal_ubo_binding);
                 }
                 Entity se = world->entities[selected_entity_id];
                 CTransform *st = world_get_component(world, se, COMP_TRANSFORM);
@@ -7746,6 +10659,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     if (mega_use_unified_vis(false) &&
                         mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
                                                mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
+                        mega_lod_fold_vis(&mega_buf, g_draw_vis);
                         /* g_draw_vis is bake-ordered — the array system consumes
                          * it directly; the grouped path re-sorts internally. */
                         /* R592: clustered array path — emit the frame state
@@ -7770,7 +10684,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             mc = mega_mat_arrays_draw(cmd, &render, &mega_buf, g_draw_vis,
                                                       &view, &proj, &sun_dir_vec, &sun_color,
                                                       &ambient_col, &camera.position,
-                                                      arr_clustered);
+                                                      &prev_view_proj, arr_clustered);
                         } else {
                             mc = mega_mat_groups_draw(cmd, &render, &scene,
                                                       &mega_buf, g_draw_vis,
@@ -7812,6 +10726,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
                             g_draw_vis[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
                             if (!node_occ_visible(ni)) g_draw_vis[ci] = 0;
+                            if (!mega_cmd_selected(&mega_buf, ci)) g_draw_vis[ci] = 0;
                         }
                         /* R592: clustered array path — frame-state emission
                          * before the call (same reasoning as the unified
@@ -7831,7 +10746,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         u32 mc = mega_mat_arrays_draw(cmd, &render, &mega_buf, g_draw_vis,
                                                       &view, &proj, &sun_dir_vec, &sun_color,
                                                       &ambient_col, &camera.position,
-                                                      arr_clustered);
+                                                      &prev_view_proj, arr_clustered);
                         draw_calls += mc;
                         draw_bench_add(mc,
                                        draw_bench_enabled ? mega_count_visible_node_vis(&mega_buf, g_node_vis) : 0u);
@@ -7846,6 +10761,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
                             g_vis_flags[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
                             if (!node_occ_visible(ni)) g_vis_flags[ci] = 0;
+                            if (!mega_cmd_selected(&mega_buf, mega_buf.group_cmd_list[ci])) g_vis_flags[ci] = 0;
                         }
                         indirect_draw_upload_visibility(&mega_buf.group_system, render.device, g_vis_flags, total);
                         indirect_draw_compact_no_barrier(&mega_buf.group_system, render.device, cmd);
@@ -8027,12 +10943,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             deferred_begin_gbuffer(dsys, render.device, cmd);
 
             /* Upload view/proj once per frame using cached locations. */
-            if (dsys->_loc_gbuf_view >= 0)
-                rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_view, &view.e[0][0]);
-            if (dsys->_loc_gbuf_proj >= 0)
-                rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_proj, &proj.e[0][0]);
-            if (dsys->_loc_gbuf_prev_mvp >= 0)
-                rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_prev_mvp, &prev_view_proj.e[0][0]);
+            gbuffer_upload_camera(cmd, dsys, &view, &proj, &prev_view_proj);
 
             /* R560: skinned geometry -- procedural arm and glTF skinned
              * primitives write the same four G-Buffer attachments with the
@@ -8051,6 +10962,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_skinned_prev_mvp, &prev_view_proj.e[0][0]);
                 if (dsys->_loc_gbuf_skinned_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_skinned_model, &frame_identity.e[0][0]);
+                if (dsys->_loc_gbuf_skinned_vp >= 0) { /* R649: D3D12 sidecar */
+                    Mat4 gvp = mat4_mul(proj, view);
+                    rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_skinned_vp, &gvp.e[0][0]);
+                }
 
                 if (scene.skinned_mesh_count > 0) {
                     for (u32 si = 0; si < scene.skinned_mesh_count; si++) {
@@ -8059,13 +10974,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         gbuffer_bind_material(cmd, &render, mat, &scene); /* R580 */
                         rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                         rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
+                        u32 sk_tris = 1u;
                         if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
-                            rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
-                            rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
+                            sk_tris = skin_lod_draw(cmd, &g_skin_lod, scene.skinned_mesh_count, si, sm);
                         } else {
                             rhi_cmd_draw(cmd, 3, 1);
                         }
-                        draw_calls++; tri_count += sm->index_count > 0 ? sm->index_count / 3 : 1;
+                        draw_calls++; tri_count += sk_tris;
                     }
                 } else if (rhi_handle_valid(render.skinned_vbo) && render.skeleton.joint_count >= 4u) {
                     /* R445: the procedural arm geometry references joints 0-3 --
@@ -8084,11 +10999,20 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
              * draws. The skinned variant owns the 64B skinned vertex layout
              * and a joint texel buffer; leaving it bound would make terrain
              * (and any later geometry) read the wrong vertex contract. */
-            if (rhi_handle_valid(dsys->gbuffer_pipeline))
+            if (rhi_handle_valid(dsys->gbuffer_pipeline)) {
                 rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_pipeline);
+                /* R649: and re-upload the camera. GL keeps program uniforms
+                 * and VK keeps push constants across this re-bind, but a
+                 * D3D12 root-signature change drops every root constant, so
+                 * terrain and the mesh draws below would run with whatever
+                 * the skinned draws left in u_vp / u_prev_mvp. Latent until
+                 * the D3D12 skinned pipeline existed. */
+                if (rhi_handle_valid(dsys->gbuffer_skinned_pipeline))
+                    gbuffer_upload_camera(cmd, dsys, &view, &proj, &prev_view_proj);
+            }
 
             /* Render terrain. */
-            if (rhi_handle_valid(terrain.vbo)) {
+            if (!model_view && rhi_handle_valid(terrain.vbo)) {
                 gbuffer_bind_material(cmd, &render, NULL, &scene); /* R580 */
                 if (dsys->_loc_gbuf_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &frame_identity.e[0][0]);
@@ -8122,6 +11046,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 if (mega_use_unified_vis(true) &&
                     mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
                                            mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
+                    mega_lod_fold_vis(&mega_buf, g_draw_vis);
                     /* g_draw_vis is bake-ordered — the array system consumes it
                      * directly; the grouped path re-sorts internally. */
                     u32 mc = def_mat_arr
@@ -8169,6 +11094,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
                         g_draw_vis[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
                         if (!node_occ_visible(ni)) g_draw_vis[ci] = 0;
+                        if (!mega_cmd_selected(&mega_buf, ci)) g_draw_vis[ci] = 0;
                     }
                 }
                 {
@@ -8214,6 +11140,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
                         g_vis_flags[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
                         if (!node_occ_visible(ni)) g_vis_flags[ci] = 0;
+                        if (!mega_cmd_selected(&mega_buf, mega_buf.group_cmd_list[ci])) g_vis_flags[ci] = 0;
                     }
                     indirect_draw_upload_visibility(&mega_buf.group_system, render.device, g_vis_flags, total);
                     indirect_draw_compact_no_barrier(&mega_buf.group_system, render.device, cmd);
@@ -8306,6 +11233,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 light_system_upload(&lights);
             }
 
+            deferred_set_lighting_target_size(dsys, rw, rh); /* R644: = cull size */
             deferred_lighting_pass(dsys, render.device, cmd,
                                    light_system_data_slot(&lights), light_system_grid_slot(&lights),
                                    lights.point_count, lights.dir_count,
@@ -8706,7 +11634,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             rhi_offscreen_fbo_unbind(cmd, w, h);
             if (postfx.ready && rhi_handle_valid(postfx.tex_pipe)) {
                 rhi_cmd_bind_pipeline(cmd, postfx.tex_pipe);
-                rhi_cmd_bind_texture(cmd, upscale_sys.fbo.color_tex, postfx.sampler, 0);
+                rhi_cmd_bind_texture(cmd, upscale_output_texture(&upscale_sys), postfx.sampler, 0);
                 rhi_cmd_draw(cmd, 3, 1);
             }
         } else {
@@ -8803,6 +11731,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         profiler_pop();
 
         profiler_end_frame();
+#if defined(ENGINE_PLATFORM_IOS)
+        }
+#endif
     }
 
     if (bench_stats_target > 0u && bench_stats_count > 0u) {
@@ -8833,6 +11764,47 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                  bs_avg, bs_p99);
     }
 
+    if (g_mega_lod.frames > 0u) {
+        f64 fr = (f64)g_mega_lod.frames;
+        LOG_INFO("LOD_STATS frames=%llu select_ms_avg=%.4f vis_tris_avg=%.0f vis_tris_lod0_avg=%.0f "
+                 "ratio=%.3f transitions=%llu fading_avg=%.2f shadow_tris_avg=%.0f",
+                 (unsigned long long)g_mega_lod.frames, g_mega_lod.select_ms_sum / fr,
+                 (f64)g_mega_lod.vis_tris_sum / fr, (f64)g_mega_lod.vis_tris_lod0_sum / fr,
+                 g_mega_lod.vis_tris_lod0_sum ? (f64)g_mega_lod.vis_tris_sum / (f64)g_mega_lod.vis_tris_lod0_sum : 1.0,
+                 (unsigned long long)g_mega_lod.transitions_sum,
+                 (f64)g_mega_lod.fading_sum / fr, (f64)g_mega_lod.shadow_tris_sum / fr);
+    }
+    if (g_ecs_lod.frames > 0u) {
+        f64 fr = (f64)g_ecs_lod.frames;
+        LOG_INFO("ECS_LOD_STATS frames=%llu select_ms_avg=%.4f vis_tris_avg=%.0f vis_tris_lod0_avg=%.0f "
+                 "ratio=%.3f transitions=%llu draws_avg=%.2f fading_avg=%.2f",
+                 (unsigned long long)g_ecs_lod.frames, g_ecs_lod.select_ms_sum / fr,
+                 (f64)g_ecs_lod.vis_tris_sum / fr, (f64)g_ecs_lod.vis_tris_lod0_sum / fr,
+                 g_ecs_lod.vis_tris_lod0_sum ? (f64)g_ecs_lod.vis_tris_sum / (f64)g_ecs_lod.vis_tris_lod0_sum : 1.0,
+                 (unsigned long long)g_ecs_lod.transitions_sum, (f64)g_ecs_lod.draws_sum / fr,
+                 (f64)g_ecs_lod.fading_sum / fr);
+    }
+    if (g_lod_cache.directory && g_lod_cache.directory[0]) {
+        const LodCacheStats *cs = &g_lod_cache.stats;
+        LOG_INFO("LOD_CACHE_STATS hits=%llu misses=%llu bytes_read=%llu bytes_written=%llu "
+                 "regen_ms=%.3f cache_io_ms=%.3f estimated_saved_ms=%.3f",
+                 (unsigned long long)cs->hits, (unsigned long long)cs->misses,
+                 (unsigned long long)cs->read_bytes, (unsigned long long)cs->write_bytes,
+                 cs->regenerate_ms, cs->io_ms, cs->saved_ms);
+        if (cs->io_failed)
+            LOG_WARN("LOD cache: writes disabled after an I/O error; scene loading continued");
+    }
+    if (g_skin_lod.frames > 0u) {
+        f64 fr = (f64)g_skin_lod.frames;
+        LOG_INFO("SKIN_LOD_STATS frames=%llu select_ms_avg=%.4f vis_tris_avg=%.0f vis_tris_lod0_avg=%.0f "
+                 "ratio=%.3f transitions=%llu fading_avg=%.2f",
+                 (unsigned long long)g_skin_lod.frames, g_skin_lod.select_ms_sum / fr,
+                 (f64)g_skin_lod.vis_tris_sum / fr, (f64)g_skin_lod.vis_tris_lod0_sum / fr,
+                 g_skin_lod.vis_tris_lod0_sum ? (f64)g_skin_lod.vis_tris_sum / (f64)g_skin_lod.vis_tris_lod0_sum : 1.0,
+                 (unsigned long long)g_skin_lod.transitions_sum, (f64)g_skin_lod.fading_sum / fr);
+    }
+    ecs_lod_free(&g_ecs_lod, render.device);
+    skin_lod_free(&g_skin_lod, render.device);
     LOG_INFO("Shutting down...");
     world_destroy(world);
     motion_history_destroy(&node_motion_history);
@@ -8852,6 +11824,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     audio_system_destroy(audio);
     LOG_INFO("  audio done");
     physics_world_destroy(physics);
+    free(g_phys_prev_pos);
+    g_phys_prev_pos = NULL;
+    g_phys_prev_cap = 0u;
+    g_phys_prev_count = 0u;
     LOG_INFO("  physics done");
     particles_shutdown(&particles);
     LOG_INFO("  particles done");
@@ -8906,6 +11882,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             rhi_texture_destroy(render.device, mega_buf.mats.normal_array);
         if (rhi_handle_valid(mega_buf.vbo)) rhi_buffer_destroy(render.device, mega_buf.vbo);
         if (rhi_handle_valid(mega_buf.ibo)) rhi_buffer_destroy(render.device, mega_buf.ibo);
+        free(mega_buf.direct_cmds);
+        mega_buf.direct_cmds = NULL;
+        mega_buf.lod = NULL;
+        mega_lod_free(&g_mega_lod);
         if (rhi_handle_valid(scene_fbo.fb)) rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
         if (rhi_handle_valid(forward_scene.fb)) rhi_mrt_fbo_destroy(render.device, &forward_scene);
     LOG_INFO("  postfx done");
@@ -8962,6 +11942,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 #if defined(ENGINE_RHI_BACKEND_VULKAN)
     LOG_INFO("VK validation messages this run: %u", rhi_vk_validation_message_count());
 #endif
+    if (wm_stats.switches > 0u)
+        LOG_INFO("WINDOW_MODE_STATS switches=%u worst_frame_ms=%.2f worst_rebuild_ms=%.2f",
+                 wm_stats.switches, wm_stats.worst_frame_ms, wm_stats.worst_rebuild_ms);
     render_shutdown(&render);
     LOG_INFO("  render done");
     engine_shutdown(&engine);

@@ -354,11 +354,20 @@ bool light_system_init_gpu_cull(LightSystem *ls) {
     if (!ls || !ls->device) return false;
     if (rhi_handle_valid(ls->cluster_cull_pipeline)) { ls->gpu_cull = true; return true; }
 
-    usize len = 0;
-    char *src = shader_read_file("shaders/cluster_cull.comp", &len);
-    if (!src) { LOG_WARN("Lighting: cluster_cull.comp not found; using CPU binning"); return false; }
-    RHIShader cs = rhi_shader_create_compute(ls->device, src, len);
-    free(src);
+    RHICapabilities caps;
+    RHIShader cs;
+    if (!rhi_device_get_capabilities(ls->device, &caps)) memset(&caps, 0, sizeof(caps));
+    if (caps.shader_sidecar_paths) {
+        /* R651: D3D12 compiles no source in-process; the path resolves to
+         * the precompiled cluster_cull_hlsl.comp. */
+        cs = rhi_shader_create_compute_path(ls->device, "shaders/cluster_cull.comp");
+    } else {
+        usize len = 0;
+        char *src = shader_read_file("shaders/cluster_cull.comp", &len);
+        if (!src) { LOG_WARN("Lighting: cluster_cull.comp not found; using CPU binning"); return false; }
+        cs = rhi_shader_create_compute(ls->device, src, len);
+        free(src);
+    }
     if (!rhi_handle_valid(cs)) { LOG_WARN("Lighting: cluster_cull.comp compile failed; using CPU binning"); return false; }
 
     RHIPipelineDesc d = {0};

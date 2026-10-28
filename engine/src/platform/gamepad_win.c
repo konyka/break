@@ -19,6 +19,7 @@
 #include <stdio.h>
 
 #include <platform/input.h>
+#include <platform/win_proc.h>
 #include <core/types.h>
 #include <core/log.h>
 
@@ -106,8 +107,9 @@ void gamepad_init(void) {
     for (int i = 0; i < 3; i++) {
         g_pad.dll = LoadLibraryA(dlls[i]);
         if (g_pad.dll) {
-            g_pad.get_state =
-                (PFN_XInputGetState)GetProcAddress(g_pad.dll, "XInputGetState");
+            g_pad.get_state = NULL;
+            WIN_PROC_LOAD(g_pad.get_state,
+                          GetProcAddress(g_pad.dll, "XInputGetState"));
             if (g_pad.get_state) {
                 LOG_INFO("gamepad: XInput backend loaded (%s)", dlls[i]);
                 break;

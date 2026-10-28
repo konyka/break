@@ -22,6 +22,11 @@ layout(set = 1, binding = 0) uniform samplerBuffer u_instances;
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUV;
+#ifdef LOD_FADE
+/* R703a: per-instance LOD cross-fade value, carried in the previous
+ * model's column-0 w (always 0 for an affine matrix). */
+layout(location = 5) flat out float vLodFade;
+#endif
 #ifdef FORWARD_MRT
 layout(location = 3) out vec2 v_velocity;
 layout(std140, set = 2, binding = 0) uniform ForwardTemporal {
@@ -36,6 +41,9 @@ void main() {
     vec4 r1 = texelFetch(u_instances, idx + 1);
     vec4 r2 = texelFetch(u_instances, idx + 2);
     vec4 r3 = texelFetch(u_instances, idx + 3);
+#ifdef LOD_FADE
+    vLodFade = texelFetch(u_instances, idx + 4).w;
+#endif
     mat4 model = mat4(r0, r1, r2, r3);
 
     vec4 world_pos = model * vec4(aPos, 1.0);
@@ -49,6 +57,9 @@ void main() {
         texelFetch(u_instances, idx + 5),
         texelFetch(u_instances, idx + 6),
         texelFetch(u_instances, idx + 7));
+#ifdef LOD_FADE
+    prev_model[0].w = 0.0;  /* R703a: column-0 w carries the fade value */
+#endif
     vec4 prev_clip = temporal.u_prev_vp * prev_model * vec4(aPos, 1.0);
     v_velocity = curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w;
 #endif

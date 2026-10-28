@@ -200,7 +200,7 @@ TEST(ibl_capture_uses_to_sun_direction)
  * to-sun direction, and emits only one standalone GPU dispatch per frame. */
 TEST(ibl_runtime_recapture_contract)
 {
-    static char src[524288];
+    static char src[1048576];
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "bool ibl_static = false"));
     ASSERT_NOT_NULL(strstr(src, "BREAK_IBL_STATIC"));
@@ -247,7 +247,7 @@ TEST(forward_velocity_uses_single_pass_mrt_contract)
     /* main.c is ~460 KB — the old 128 KB stack buffer silently truncated it
      * (the markers below live past the cut). Static, per the line-277
      * precedent, and sized with headroom. */
-    static char src[524288];
+    static char src[1048576];
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "FORWARD_MRT"));
     ASSERT_NOT_NULL(strstr(src, "RHI_FORMAT_R16G16_SFLOAT"));
@@ -274,6 +274,133 @@ TEST(forward_velocity_uses_single_pass_mrt_contract)
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "rhi_cmd_clear_color_attachment(cmd, 1u"));
     ASSERT_NOT_NULL(strstr(src, "rhi_offscreen_fbo_bind_load(cmd, &scene_fbo)"));
+}
+
+/* R600: the D3D12 blinn_phong sidecars must mirror their GLSL twins field for
+ * field. The contract that actually bites is the `// rhi:uniform` marker
+ * table — that is what rhi_pipeline_bindings_resolve reads, so a missing
+ * marker is the only thing that turns a dropped push write from a log line
+ * into a silently zeroed camera. These four files therefore assert:
+ *   - every base push member still carries its marker,
+ *   - u_camera_pos carries NONE (it rides the b1 temporal CBV now),
+ *   - the CBV is declared at b1, which is what adds the second descriptor
+ *     table that truncates the push range from 252 to 248 bytes. */
+TEST(hlsl_blinn_sidecars_mirror_glsl_twin_after_camera_moved_to_cbv)
+{
+    static const char *const k_sidecars[] = {
+        "blinn_phong_hlsl.vert", "blinn_phong_hlsl.frag",
+        "blinn_phong_mrt_hlsl.vert", "blinn_phong_mrt_hlsl.frag",
+    };
+    /* Names each sidecar declares in the push block, with their offsets. */
+    static const char *const k_push_markers[] = {
+        "// rhi:uniform u_model 0",
+        "// rhi:uniform u_view 64",
+        "// rhi:uniform u_proj 128",
+        "// rhi:uniform u_light_dir 192",
+        "// rhi:uniform u_light_color 208",
+        "// rhi:uniform u_ambient 224",
+    };
+    usize i;
+    for (i = 0; i < sizeof(k_sidecars) / sizeof(k_sidecars[0]); i++) {
+        char src[16384];
+        ASSERT_TRUE(read_shader_source(k_sidecars[i], src, sizeof(src)));
+        /* The push block must not grow back past 240: that is the whole
+         * reason the camera moved, and 240 is what survives the 248-byte
+         * clamp a second descriptor table imposes. */
+        ASSERT_FALSE(strstr(src, "u_camera_pos;  // 240") != NULL);
+        ASSERT_FALSE(strstr(src, "rhi:uniform u_camera_pos") != NULL);
+        /* The temporal CBV is the second table; losing it puts the camera
+         * back into a push write that would be dropped. */
+        ASSERT_NOT_NULL(strstr(src, "struct ForwardTemporal {"));
+        ASSERT_NOT_NULL(strstr(src, "register(b1, space0)"));
+    }
+    /* Markers are per-stage (VS publishes the matrices, PS the lights), so
+     * each stage file is checked against the members it must carry. */
+    {
+        char src[16384];
+        ASSERT_TRUE(read_shader_source("blinn_phong_hlsl.vert", src, sizeof(src)));
+        for (i = 0; i < 3; i++)
+            ASSERT_NOT_NULL(strstr(src, k_push_markers[i]));
+        ASSERT_TRUE(read_shader_source("blinn_phong_hlsl.frag", src, sizeof(src)));
+        for (i = 3; i < sizeof(k_push_markers) / sizeof(k_push_markers[0]); i++)
+            ASSERT_NOT_NULL(strstr(src, k_push_markers[i]));
+    }
+    /* The MRT pair is the only one that may emit velocity, and it must emit
+     * it to RT1 — the whole point of the variant. */
+    {
+        char src[16384];
+        ASSERT_TRUE(read_shader_source("blinn_phong_mrt_hlsl.vert", src, sizeof(src)));
+        ASSERT_NOT_NULL(strstr(src, "float2 velocity : TEXCOORD3"));
+        ASSERT_NOT_NULL(strstr(src, "curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w"));
+        ASSERT_TRUE(read_shader_source("blinn_phong_mrt_hlsl.frag", src, sizeof(src)));
+        ASSERT_NOT_NULL(strstr(src, "float2 velocity : SV_Target1"));
+        ASSERT_TRUE(read_shader_source("blinn_phong_hlsl.frag", src, sizeof(src)));
+        ASSERT_FALSE(strstr(src, "SV_Target1") != NULL);
+    }
+    /* The engine publishes the CBV bytes: one struct, one buffer, both
+     * backends. If it drifts from the sidecar the whole contract is a lie. */
+    {
+        static char src[1048576];
+        ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+        ASSERT_NOT_NULL(strstr(src, "cam_pos[3]"));
+        ASSERT_NOT_NULL(strstr(src, "forward_temporal_ubo"));
+        ASSERT_NOT_NULL(strstr(src, "forward_temporal_ubo_write"));
+        /* R606: the production forward pipeline must reach the sidecar
+         * through the path API on a sidecar backend, and it must ask
+         * for the MRT pair -- the pipeline declares two colour
+         * attachments, so the non-MRT sidecar would drop the velocity
+         * output RT1 exists for. The temporal UBO must be bound at the
+         * index the backend reports: a hard 0 is the GLSL binding and a
+         * silent no-op against register b1. */
+        ASSERT_NOT_NULL(strstr(src, "caps.shader_sidecar_paths"));
+        ASSERT_NOT_NULL(strstr(src,
+            "rhi_shader_create_path(rs->device, \"shaders/blinn_phong_mrt.vert\", false)"));
+        ASSERT_NOT_NULL(strstr(src,
+            "rhi_shader_create_path(rs->device, \"shaders/blinn_phong_mrt.frag\", true)"));
+        ASSERT_NOT_NULL(strstr(src,
+            "rs->temporal_ubo_binding = caps.temporal_ubo_binding;"));
+        ASSERT_TRUE(strstr(src,
+            "rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo, 0u)") == NULL);
+    }
+}
+
+/* R605: the D3D12 root-signature builder used to run once per shader stage with
+ * no dedupe, so a register both stages declared produced TWO descriptor tables
+ * for the same (type, register, space). Only the last index was ever recorded
+ * in image_root_params / uniform_root_params and only that one was ever bound,
+ * leaving a root parameter permanently unbound -- which D3D12 forbids, and
+ * which a vertex shader reading a cbuffer paid for: it read the unbound table
+ * and got garbage, silently on hardware and as device loss on WARP. The pixel
+ * stage read the bound table and was fine, which is what made the asymmetry so
+ * hard to see.
+ *
+ * Two things are pinned here, both of which a naive fix gets wrong:
+ *   1. the tables must be reused, not duplicated;
+ *   2. the visibility must be ASSIGNED D3D12_SHADER_VISIBILITY_ALL, never
+ *      OR-ed with the incoming stage visibility -- in this SDK the
+ *      D3D12_SHADER_VISIBILITY enumerators are sequential values (ALL 0,
+ *      VERTEX 1, PIXEL 5), not bitmasks, so VERTEX | PIXEL evaluates to PIXEL
+ *      and silently drops vertex visibility. That failure still builds fine and
+ *      only shows up as the same unreadable-cbuffer symptom, so it earns a
+ *      test of its own. */
+TEST(d3d12_root_signature_dedupes_per_stage_tables_with_full_visibility)
+{
+    static char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_d3d12.c", src, sizeof(src)));
+    /* The dedupe itself. */
+    ASSERT_NOT_NULL(strstr(src, "for (reuse = 0u; reuse < b->param_count; ++reuse)"));
+    ASSERT_NOT_NULL(strstr(src, "goto next_binding;"));
+    ASSERT_NOT_NULL(strstr(src, "next_binding:"));
+    /* Visibility assigned, never OR-ed: the OR form is a silent regression. */
+    ASSERT_NOT_NULL(strstr(src,
+                         "rp->ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;"));
+    ASSERT_FALSE(strstr(src, "rp->ShaderVisibility |= visibility;") != NULL);
+    /* The reused param index has to be recorded for BOTH binding kinds,
+     * otherwise the resource still resolves to the param that is never bound. */
+    ASSERT_NOT_NULL(strstr(src,
+                         "b->image_root_params[base_register] = reuse;"));
+    ASSERT_NOT_NULL(strstr(src,
+                         "b->uniform_root_params[base_register] = reuse;"));
 }
 
 TEST(vulkan_ibl_gate_uses_compatible_vertex_contract)
@@ -751,7 +878,7 @@ TEST(deferred_skinned_gbuffer_contract)
     ASSERT_NOT_NULL(strstr(src, "skinned_desc.skinned_vertex"));
     ASSERT_NOT_NULL(strstr(src, "skinned_desc.uses_texel_buffer"));
 
-    static char main_src[524288];
+    static char main_src[1048576];
     ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
     ASSERT_NOT_NULL(strstr(main_src, "dsys->gbuffer_skinned_pipeline"));
     ASSERT_NOT_NULL(strstr(main_src, "skeleton_upload(&render.skeleton)"));
@@ -788,7 +915,7 @@ TEST(deferred_skinned_gbuffer_regressions_are_guarded)
     m = push_member_by_name(members, n, "u_proj");     ASSERT_NOT_NULL(m); ASSERT_EQ(m->offset, 128u);
     m = push_member_by_name(members, n, "u_prev_mvp"); ASSERT_NOT_NULL(m); ASSERT_EQ(m->offset, 192u);
 
-    static char main_src[524288];
+    static char main_src[1048576];
     ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
     const char *skinned = strstr(main_src,
                                  "rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_skinned_pipeline)");
@@ -823,7 +950,7 @@ TEST(static_mega_geometry_contract_is_documented_and_unchanged)
 
     /* The bake excludes skinned nodes and pre-transforms positions + normals
      * into world space so u_model=identity works for the GPU-driven paths. */
-    static char main_src[524288];
+    static char main_src[1048576];
     ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
     ASSERT_NOT_NULL(strstr(main_src, "Vertices are pre-transformed to world space"));
     ASSERT_NOT_NULL(strstr(main_src, "nd->skinned"));
@@ -855,7 +982,7 @@ TEST(static_mega_geometry_contract_is_documented_and_unchanged)
  * R579-D), per-frame observability counter. */
 TEST(forward_clustered_opt_in_production_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "BREAK_FORWARD_CLUSTERED"));
     ASSERT_NOT_NULL(strstr(src, "fwd_static_pipeline"));
@@ -893,7 +1020,7 @@ TEST(forward_clustered_opt_in_production_wiring)
  * clustered frag is reused unchanged (light texel set untouched). */
 TEST(forward_clustered_instanced_variant_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "clustered_inst_pipeline"));
     /* 计划 E Task 2：路径由 caps.shader_variant 驱动（shader_variant_path），
@@ -936,7 +1063,7 @@ TEST(forward_clustered_instanced_variant_wiring)
  * narrowed so clustered mapping applies). */
 TEST(forward_clustered_skinned_variant_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "clustered_skin_pipeline"));
     /* 计划 E Task 2：caps 驱动变体路径（见 instanced 变体注释）。 */
@@ -976,7 +1103,7 @@ TEST(forward_clustered_skinned_variant_wiring)
  * gl_BaseInstanceARB as the layer (blinn_phong_arr precedent). */
 TEST(forward_clustered_array_variant_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "clustered_arr_pipeline"));
     /* 计划 E Task 2：caps 驱动变体路径（见 instanced 变体注释）。 */
@@ -1079,7 +1206,7 @@ TEST(gl_clustered_vertex_outputs_match_fragment_locations)
  * two passes key identically. */
 TEST(mat_array_bake_includes_normal_array)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     /* MatArraySet fifth array + unique-handle table + per-layer bake */
     ASSERT_NOT_NULL(strstr(src, "normal_array"));
@@ -1133,7 +1260,7 @@ TEST(deferred_gbuffer_normal_mapping_wiring)
     }
     /* The arr gbuffer path binds the R594 baked per-layer normal array
      * (forward clustered arr bind is the other consumer — count both). */
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     int nrm_bind_hits = 0;
     for (const char *p = src; (p = strstr(p, "mb->mats.normal_array")) != NULL; p++)
@@ -1150,7 +1277,7 @@ TEST(deferred_gbuffer_normal_mapping_wiring)
  * draw) and rebinds the blinn frame state. */
 TEST(forward_clustered_per_entity_fallback_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     /* Diagnostic env that forces the fallback branch (makes the path
      * exercisable without an instanced-pipeline failure). */
@@ -1171,7 +1298,7 @@ TEST(forward_clustered_per_entity_fallback_wiring)
  * set blinn lacks). BREAK_FORWARD_CLUSTERED=0 opts out back to blinn. */
 TEST(forward_clustered_default_on_after_bench)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     /* Default ON at declaration; env semantics inverted to opt-out. */
     ASSERT_NOT_NULL(strstr(src, "bool fwd_clustered_mode = true"));
@@ -1188,7 +1315,7 @@ TEST(forward_clustered_default_on_after_bench)
  * material by clustered_bind_material (default 1.0 = full effect). */
 TEST(forward_clustered_occlusion_strength_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "cl_loc_occ_strength"));
     ASSERT_NOT_NULL(strstr(src, "occlusion_strength : 1.0f"));
@@ -1314,36 +1441,38 @@ TEST(vk_push_tables_match_reflection)
 {
     static const VKPushRow rows[] = {
         /* blinn 家族（默认 forward 段：u_model@0 u_view@64 u_proj@128 +
-         * else 段 u_light_dir@192 u_light_color@208 u_ambient@224
-         * u_camera_pos@240） */
+         * else 段 u_light_dir@192 u_light_color@208 u_ambient@224）。
+         * R600：u_camera_pos 不再是 push 成员 —— 它进了 ForwardTemporal
+         * UBO（std140 {vec3 u_camera_pos; float pad; mat4 u_prev_vp;
+         * mat4 u_prev_model}），push 尾部止于 240。这样 D3D12 sidecar 加
+         * 一张 b1 CBV 表时，根签名 64-DWORD 预算只会把 push range 从
+         * 252 压到 248，而 u_camera_pos 不再落在被丢弃的那一段。 */
         { "blinn_phong_vk.vert", "u_model", "u_model", 0u, 64u },
         { "blinn_phong_vk.vert", "u_view", "u_view", 64u, 64u },
         { "blinn_phong_vk.vert", "u_proj", "u_proj", 128u, 64u },
         { "blinn_phong_vk.vert", "u_light_dir", "u_light_dir", 192u, 12u },
         { "blinn_phong_vk.vert", "u_light_color", "u_light_color", 208u, 12u },
         { "blinn_phong_vk.vert", "u_ambient", "u_ambient", 224u, 12u },
-        { "blinn_phong_vk.vert", "u_camera_pos", "u_camera_pos", 240u, 12u },
+
         { "blinn_phong_vk.frag", "u_model", "u_model", 0u, 64u },
         { "blinn_phong_vk.frag", "u_view", "u_view", 64u, 64u },
         { "blinn_phong_vk.frag", "u_proj", "u_proj", 128u, 64u },
         { "blinn_phong_vk.frag", "u_light_dir", "u_light_dir", 192u, 12u },
         { "blinn_phong_vk.frag", "u_light_color", "u_light_color", 208u, 12u },
         { "blinn_phong_vk.frag", "u_ambient", "u_ambient", 224u, 12u },
-        { "blinn_phong_vk.frag", "u_camera_pos", "u_camera_pos", 240u, 12u },
+
         { "blinn_phong_arr_vk.vert", "u_model", "u_model", 0u, 64u },
         { "blinn_phong_arr_vk.vert", "u_view", "u_view", 64u, 64u },
         { "blinn_phong_arr_vk.vert", "u_proj", "u_proj", 128u, 64u },
         { "blinn_phong_arr_vk.vert", "u_light_dir", "u_light_dir", 192u, 12u },
         { "blinn_phong_arr_vk.vert", "u_light_color", "u_light_color", 208u, 12u },
         { "blinn_phong_arr_vk.vert", "u_ambient", "u_ambient", 224u, 12u },
-        { "blinn_phong_arr_vk.vert", "u_camera_pos", "u_camera_pos", 240u, 12u },
         { "blinn_phong_arr_vk.frag", "u_model", "u_model", 0u, 64u },
         { "blinn_phong_arr_vk.frag", "u_view", "u_view", 64u, 64u },
         { "blinn_phong_arr_vk.frag", "u_proj", "u_proj", 128u, 64u },
         { "blinn_phong_arr_vk.frag", "u_light_dir", "u_light_dir", 192u, 12u },
         { "blinn_phong_arr_vk.frag", "u_light_color", "u_light_color", 208u, 12u },
         { "blinn_phong_arr_vk.frag", "u_ambient", "u_ambient", 224u, 12u },
-        { "blinn_phong_arr_vk.frag", "u_camera_pos", "u_camera_pos", 240u, 12u },
         /* gbuffer 家族（共享段 + skinned_gbuffer 段，两段同值） */
         { "gbuffer_vk.vert", "u_model", "u_model", 0u, 64u },
         { "gbuffer_vk.vert", "u_view", "u_view", 64u, 64u },
@@ -2077,4 +2206,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(push_constants_absent_returns_zero_and_handles_null);
     RUN_TEST(vk_push_tables_match_reflection);
     RUN_TEST(vk_compute_push_tables_match_reflection);
+    RUN_TEST(hlsl_blinn_sidecars_mirror_glsl_twin_after_camera_moved_to_cbv);
+    RUN_TEST(d3d12_root_signature_dedupes_per_stage_tables_with_full_visibility);
 TEST_MAIN_END()

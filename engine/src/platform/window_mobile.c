@@ -1,28 +1,42 @@
 int platform_mobile_translation_unit;
 
-#if defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_ANDROID) || defined(ENGINE_PLATFORM_HARMONYOS)
+#if defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_ANDROID) || \
+    defined(ENGINE_PLATFORM_HARMONYOS) || defined(ENGINE_PLATFORM_QNX)
 
 #include <platform/platform.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <platform/window_mode.h>
 
 struct Platform {
     void *native_window;
     void *native_display;
     InputState input;
     u32 width, height;
+    u32 logical_width, logical_height;
+    f32 content_scale;
     bool ime_enabled;
     u64 media_generation;
     PlatformMediaContext media;
     PlatformWsiSurface wsi;
+    PlatformWindowModeState window_mode;
 };
 
 Platform *platform_create(const PlatformConfig *cfg)
 {
     Platform *p;
+    f32 scale;
+    f64 logical_width, logical_height;
     if (!platform_config_valid(cfg) || cfg->native_window == NULL) {
         return NULL;
     }
+    scale = cfg->native_content_scale == 0.0f ? 1.0f : cfg->native_content_scale;
+    logical_width = ceil((f64)cfg->width / (f64)scale);
+    logical_height = ceil((f64)cfg->height / (f64)scale);
+    if (!isfinite(scale) || scale <= 0.0f ||
+        logical_width > PLATFORM_MAX_WINDOW_DIMENSION ||
+        logical_height > PLATFORM_MAX_WINDOW_DIMENSION) return NULL;
     p = calloc(1, sizeof(*p));
     if (!p) return NULL;
     /* Handles remain owned by the host; Android Vulkan takes its own reference. */
@@ -30,8 +44,13 @@ Platform *platform_create(const PlatformConfig *cfg)
     p->native_display = cfg->native_display;
     p->width = cfg->width;
     p->height = cfg->height;
-    (void)platform_wsi_surface_init(&p->wsi, true, cfg->width, cfg->height,
-                                    cfg->width, cfg->height);
+    p->logical_width = (u32)logical_width;
+    p->logical_height = (u32)logical_height;
+    p->content_scale = scale;
+    (void)platform_wsi_surface_init(&p->wsi, true, p->logical_width,
+                                    p->logical_height, cfg->width, cfg->height);
+    platform_window_mode_init_fixed(&p->window_mode,
+                                    PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
     p->media_generation = 1u;
     p->media.screen = true;
     p->media.capabilities = PLATFORM_MEDIA_CAP_POINTER_COARSE |
@@ -60,6 +79,21 @@ PlatformWsiSurface *platform_wsi_surface(Platform *p) {
     return p != NULL ? &p->wsi : NULL;
 }
 
+bool platform_mobile_resize(Platform *p, u32 logical_width, u32 logical_height,
+                            u32 drawable_width, u32 drawable_height, f32 scale) {
+    if (!p || !isfinite(scale) || scale <= 0.0f ||
+        !platform_wsi_sizes_valid(logical_width, logical_height,
+                                  drawable_width, drawable_height) ||
+        platform_wsi_surface_resize(&p->wsi, logical_width, logical_height,
+                                    drawable_width, drawable_height) != PLATFORM_WSI_OK)
+        return false;
+    p->logical_width = logical_width;
+    p->logical_height = logical_height;
+    p->width = drawable_width;
+    p->height = drawable_height;
+    p->content_scale = scale;
+    return true;
+}
 void platform_mobile_notify_suspend(Platform *p) {
     if (p) (void)platform_wsi_surface_suspend(&p->wsi);
 }
@@ -75,6 +109,9 @@ void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
     p->native_window = native_window;
     p->width = width;
     p->height = height;
+    p->logical_width = width;
+    p->logical_height = height;
+    p->content_scale = 1.0f;
     /* 状态机没有 LOST->CREATED 迁移（platform_wsi.h:280-291）；Android 语义上
      * surfaceCreated 产出的是全新 surface，走 init 全量重置回 CREATED。
      * Vulkan 侧此时必须整体重建设备（VK_ERROR_SURFACE_LOST 路径）。 */
@@ -99,14 +136,37 @@ void *platform_surface_native(Platform *p) { return p ? p->native_window : NULL;
 void platform_window_show(Platform *p) { (void)p; }
 void platform_window_hide(Platform *p) { (void)p; }
 
-static void mobile_size(Platform *p, u32 *w, u32 *h) {
+static void mobile_logical_size(Platform *p, u32 *w, u32 *h) {
+    if (w) *w = p ? p->logical_width : 0u;
+    if (h) *h = p ? p->logical_height : 0u;
+}
+void platform_get_size(Platform *p, u32 *w, u32 *h) { mobile_logical_size(p, w, h); }
+void platform_get_logical_size(Platform *p, u32 *w, u32 *h) { mobile_logical_size(p, w, h); }
+void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {
     if (w) *w = p ? p->width : 0u;
     if (h) *h = p ? p->height : 0u;
 }
-void platform_get_size(Platform *p, u32 *w, u32 *h) { mobile_size(p, w, h); }
-void platform_get_logical_size(Platform *p, u32 *w, u32 *h) { mobile_size(p, w, h); }
-void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) { mobile_size(p, w, h); }
-void platform_toggle_fullscreen(Platform *p) { (void)p; }
+/* The host surface is always the whole screen. */
+bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
+    if (!p || !platform_window_mode_valid(mode)) return false;
+    return platform_window_mode_request(&p->window_mode, mode) ==
+           PLATFORM_WINDOW_MODE_ACTION_NONE;
+}
+PlatformWindowMode platform_get_window_mode(Platform *p) {
+    return p ? p->window_mode.current : PLATFORM_WINDOW_MODE_WINDOWED;
+}
+void platform_toggle_fullscreen(Platform *p) {
+    if (p) (void)platform_set_window_mode(p, platform_window_mode_toggle_target(&p->window_mode));
+}
+/* No window frame exists: only "undecorated" is accepted. */
+bool platform_set_window_decorated(Platform *p, bool decorated) {
+    return p && platform_window_mode_set_decorated(&p->window_mode, decorated) ==
+                    PLATFORM_DECORATION_ACTION_NONE;
+}
+bool platform_get_window_decorated(Platform *p) { return p && p->window_mode.decorated; }
+bool platform_window_title_bar_visible(Platform *p) {
+    return p && platform_window_mode_title_bar_visible(&p->window_mode);
+}
 void platform_mouse_capture(Platform *p, bool v) { (void)p; (void)v; }
 void platform_mouse_set_visible(Platform *p, bool v) { (void)p; (void)v; }
 void platform_mouse_set_relative(Platform *p, bool v) { (void)p; (void)v; }
@@ -116,10 +176,10 @@ bool platform_needs_client_decoration(Platform *p) { (void)p; return false; }
 bool platform_clipboard_set_text(Platform *p, const char *s) { (void)p; (void)s; return false; }
 bool platform_clipboard_get_text(Platform *p, char *s, usize n) { (void)p; (void)s; (void)n; return false; }
 PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p, char **out) { (void)p; if (out) *out = NULL; return PLATFORM_CLIPBOARD_EMPTY; }
-f32 platform_get_dpi(Platform *p) { (void)p; return 96.0f; }
-f32 platform_get_content_scale(Platform *p) { (void)p; return 1.0f; }
+f32 platform_get_dpi(Platform *p) { return p ? 96.0f * p->content_scale : 96.0f; }
+f32 platform_get_content_scale(Platform *p) { return p ? p->content_scale : 1.0f; }
 f32 platform_get_input_scale(Platform *p) { (void)p; return 1.0f; }
-i32 platform_get_scale_factor(Platform *p) { (void)p; return 1; }
+i32 platform_get_scale_factor(Platform *p) { return p ? (i32)(p->content_scale + 0.5f) : 1; }
 bool platform_get_media_context(Platform *p, PlatformMediaContext *out) {
     if (!p || !out) { if (out) memset(out, 0, sizeof(*out)); return false; }
     *out = p->media; return true;

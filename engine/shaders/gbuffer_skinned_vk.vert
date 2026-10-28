@@ -1,4 +1,7 @@
 #version 450 core
+#ifdef LOD_FADE
+#extension GL_ARB_shader_draw_parameters : require
+#endif
 
 /* R560: Deferred G-Buffer write pass -- skinned vertex stage (Vulkan).
  * Push block matches gbuffer_vk.vert (u_model@0 u_view@64 u_proj@128
@@ -25,7 +28,14 @@ layout(push_constant) uniform Push {
 
 layout(set = 1, binding = 0) uniform samplerBuffer u_joints;
 
+#ifdef LOD_FADE
+layout(location = 5) flat out float vLodFade;
+#endif
 void main() {
+#ifdef LOD_FADE
+    uint fade_code = uint(gl_BaseInstanceARB) >> 16;
+    vLodFade = fade_code == 0u ? 0.0 : float(int(fade_code) - 16);
+#endif
     mat4 skin = mat4(0.0);
     mat4 prev_skin = mat4(0.0);
     for (int i = 0; i < 4; i++) {

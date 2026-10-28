@@ -27,14 +27,14 @@ Non-goals (NOT delivered):
 The app calls the public `rhi_*` API exactly as before; no app source changes are needed to route calls.
 
 Facts this design relies on (verified 2026-10-26 against `libengine.a`, `libengine_rhi_opengl.a`, `libengine_rhi_vulkan.a`):
-- The core (`libengine.a`) and the backends export **disjoint** symbol sets: 72 core `rhi_*` functions, 132 backend `rhi_*` functions. The 132 are identical between GL and VK except five VK-only test helpers.
-- The two backend libraries share **no** global symbol outside those 132, so they can be linked into one binary once their API symbols are namespaced.
+- The core (`libengine.a`) and the backends export **disjoint** symbol sets: 72 core `rhi_*` functions, 135 backend `rhi_*` functions (132 at introduction; the merge of origin/master on 2026-10-28 added `rhi_shader_create_path`, `rhi_shader_create_compute_path` and `rhi_cmd_draw_indexed_instanced_base`). The 135 are identical between GL and VK except five VK-only test helpers.
+- The two backend libraries share **no** global symbol outside those 135, so they can be linked into one binary once their API symbols are namespaced.
 - No code takes the address of a public `rhi_*` function (verified before this work; the generated binding tables now take the addresses of the namespaced `rhi_gl_*` / `rhi_vk_*` functions, which is the mechanism itself).
 
 Mechanism:
-1. `engine/src/rhi/dispatch/rhi_backend_api.txt` lists the 132 backend API names and is the single source of truth.
-2. Each backend is compiled with a namespace header (`rhi_gl_*` / `rhi_vk_*`) in the multi-backend shape only. The namespace covers exactly the 132 names; core helpers are untouched.
-3. `RHIApi` is a table of 132 function pointers whose types are copied from the public declarations. One table is bound per backend.
+1. `engine/src/rhi/dispatch/rhi_backend_api.txt` lists the 135 backend API names and is the single source of truth.
+2. Each backend is compiled with a namespace header (`rhi_gl_*` / `rhi_vk_*`) in the multi-backend shape only. The namespace covers exactly the 135 names; core helpers are untouched.
+3. `RHIApi` is a table of 135 function pointers whose types are copied from the public declarations. One table is bound per backend.
 4. The public `rhi_*` symbols in a multi-backend binary are small forwarders in the dispatch layer that call through the **active** table. They are real functions, not macros, so public headers do not change and no function-like macro can leak into tests or apps.
 5. Before any device is created, the active table is a stub table: every entry logs once and returns a zero/failure value instead of crashing.
 6. Creation and destruction of the active table are owned by the runtime module, not by the generic forwarders.

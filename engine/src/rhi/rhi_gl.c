@@ -2,6 +2,7 @@
 
 #ifdef ENGINE_PLATFORM_WINDOWS
     #include <windows.h>
+    #include <platform/win_proc.h>
 #endif
 
 #include <glad.h>
@@ -14,9 +15,22 @@
 #include <rhi/rhi.h>
 #include <rhi/rhi_native_vulkan.h>
 #include <rhi/rhi_backend_internal.h>
+#include <platform/time.h>
 
 #if !defined(ENGINE_PLATFORM_WINDOWS)
 static bool gl_extension_has(const char *extensions, const char *name);
+#endif
+
+#ifdef ENGINE_PLATFORM_WINDOWS
+/* R684: on hybrid laptops (NVIDIA Optimus / AMD PowerXpress) the GL driver
+ * creates the context on the integrated GPU unless the EXECUTABLE exports
+ * these two symbols -- the demo's GL backend ran on the AMD iGPU while
+ * VK/D3D12 (which pick the adapter themselves) used the RTX 4060, so GL
+ * postfx was 3-4x slower per pass. Vulkan/D3D12 are unaffected (they
+ * enumerate adapters). Exported from the GL backend so every GL consumer
+ * gets it (the object is always linked: it holds the whole backend). */
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 #endif
 
 bool rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
@@ -170,6 +184,18 @@ typedef struct {
     RHIPresentDamageHistory damage_history;
     bool       damage_history_valid;
 #endif
+    /* R672: one fence per frame slot, inserted at frame end and waited on
+     * when the slot is reused (rhi_frame_begin), as VK and D3D12 do. The
+     * dual-slot staging readbacks (gpucull vis flags, occlusion) read the
+     * slot written two frames ago; without the fence GL had no way to know
+     * that copy had finished, so mapping it drained the whole pipeline
+     * (~8 ms per frame in the demo). */
+    GLsync frame_fence[2];
+    /* FS7 deferred deletion queue (see gl_retire_name). Per device: GL names
+     * belong to this device's context, so another device's frame or
+     * shutdown must never delete them. */
+    struct GLRetired *retired;
+    u32 retired_count, retired_cap;
 } GLBackend;
 
 /* Plan E Task 5: reflection-driven bindings — per-stage push-member name
@@ -205,7 +231,27 @@ typedef struct {
     GLuint tbo_tex;
     usize  size;
     bool   uniform_buffer;
+    /* R689: "STORAGE, no initial data" buffer still in DYNAMIC_DRAW. It is
+     * re-specified GL_STREAM_READ on the first CPU read (map / read), so
+     * only real readback staging pays for host-readable placement. */
+    bool   readback_candidate;
 } GLBufferData;
+
+/* R689: R672 placed every STORAGE buffer created without data in
+ * GL_STREAM_READ, because that desc is the RHI contract's readback staging
+ * buffer. The same desc also backs GPU-written / GPU-read and CPU-written
+ * buffers (indirect-draw visibility slots), and compute reading from a
+ * STREAM_READ placement stalled the static-mesh compact by ~0.6 ms/frame on
+ * NVIDIA. The switch now happens on the first host read; contents survive. */
+static void gl_buffer_make_readback(GLBufferData *bd) {
+    if (!bd->readback_candidate) return;
+    bd->readback_candidate = false;
+    void *keep = malloc(bd->size);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
+    if (keep) glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)bd->size, keep);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)bd->size, keep, GL_STREAM_READ);
+    free(keep);
+}
 
 typedef struct {
     GLuint gl_shader;
@@ -360,6 +406,84 @@ static void gl_resolve_active_offscreen(void) {
     }
 }
 
+/* FS7: deferred texture / renderbuffer deletion. A window-mode switch
+ * replaces ~80 full-screen render targets in one frame; on this NVIDIA
+ * driver each glDeleteTextures of a large target blocks for ~0.3-0.5 ms
+ * (27-39 ms per switch), which was most of the GL rebuild time. Names are
+ * queued here and released at frame begin under a per-frame host-time
+ * budget, the same policy as the VK retire queue. GL keeps the storage of a
+ * deleted name alive while queued work still uses it, so deferring only
+ * moves the cost; it never changes what the GPU reads. The FBO bind and
+ * texture-unit caches are still invalidated at the original call site.
+ * Shutdown and a failed queue growth release synchronously. */
+#define GL_RETIRE_FRAME_BUDGET_US 2000u
+
+typedef struct GLRetired {
+    GLuint name;
+    bool   renderbuffer;
+} GLRetired;
+
+static void gl_delete_name(GLuint name, bool renderbuffer) {
+    if (renderbuffer) glDeleteRenderbuffers(1, &name);
+    else glDeleteTextures(1, &name);
+}
+
+/* Queue `name` on `dev`'s context. Without a backend (or when the queue
+ * cannot grow) it is deleted at once, which is what destroy did before. */
+static void gl_retire_name(RHIDevice *dev, GLuint name, bool renderbuffer) {
+    GLBackend *gl;
+    if (name == 0u) return;
+    gl = dev != NULL ? (GLBackend *)dev->backend_data : NULL;
+    if (gl == NULL) {
+        gl_delete_name(name, renderbuffer);
+        return;
+    }
+    if (gl->retired_count == gl->retired_cap) {
+        u32 cap = gl->retired_cap ? gl->retired_cap * 2u : 256u;
+        GLRetired *n = (GLRetired *)realloc(gl->retired, (usize)cap * sizeof(GLRetired));
+        if (!n) {
+            gl_delete_name(name, renderbuffer);
+            return;
+        }
+        gl->retired = n;
+        gl->retired_cap = cap;
+    }
+    gl->retired[gl->retired_count].name = name;
+    gl->retired[gl->retired_count].renderbuffer = renderbuffer;
+    gl->retired_count++;
+}
+
+static void gl_retire_texture(RHIDevice *dev, GLuint name) { gl_retire_name(dev, name, false); }
+static void gl_retire_renderbuffer(RHIDevice *dev, GLuint name) { gl_retire_name(dev, name, true); }
+
+/* Release `gl`'s queued names oldest first, with its context current;
+ * budget_us 0 releases everything and frees the queue. */
+static void gl_retire_collect(GLBackend *gl, u32 budget_us) {
+    if (gl == NULL || gl->retired_count == 0u) {
+        if (gl != NULL && budget_us == 0u) {
+            free(gl->retired);
+            gl->retired = NULL;
+            gl->retired_cap = 0u;
+        }
+        return;
+    }
+    u64 t0 = budget_us ? time_microseconds() : 0u;
+    u32 i = 0u;
+    while (i < gl->retired_count) {
+        gl_delete_name(gl->retired[i].name, gl->retired[i].renderbuffer);
+        i++;
+        if (budget_us && time_microseconds() - t0 >= budget_us) break;
+    }
+    memmove(gl->retired, gl->retired + i,
+            (usize)(gl->retired_count - i) * sizeof(GLRetired));
+    gl->retired_count -= i;
+    if (gl->retired_count == 0u && budget_us == 0u) {
+        free(gl->retired);
+        gl->retired = NULL;
+        gl->retired_cap = 0u;
+    }
+}
+
 static void gl_release_offscreen_storage(GLFBOData *fd) {
     if (!fd) return;
     if (g_gl_bound_fbo == fd->gl_fbo || g_gl_bound_fbo == fd->resolve_fbo)
@@ -467,8 +591,9 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     wglMakeCurrent(gl->hdc, temp_ctx);
 
     /* Get wglCreateContextAttribsARB */
-    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB =
-        (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
+    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB = NULL;
+    WIN_PROC_LOAD(wglCreateContextAttribsARB,
+                  wglGetProcAddress("wglCreateContextAttribsARB"));
 
     if (wglCreateContextAttribsARB) {
         /* Create OpenGL 4.5 Core Profile context */
@@ -681,7 +806,8 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     }
 #endif
 
-    LOG_INFO("OpenGL %s initialized", (const char *)glGetString(GL_VERSION));
+    LOG_INFO("OpenGL %s initialized (%s / %s)", (const char *)glGetString(GL_VERSION),
+             (const char *)glGetString(GL_VENDOR), (const char *)glGetString(GL_RENDERER));
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
@@ -770,7 +896,13 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->capabilities.hiz_supported = true;
     dev->capabilities.compute_supported = true;
     dev->capabilities.indirect_draw_supported = true;
+    dev->capabilities.indirect_first_instance_supported = true;
     dev->capabilities.shader_variant = (u32)RHI_SHADER_VARIANT_GLSL;
+    /* R606: rhi_shader_create_path returns the GLSL file itself on GL — there
+     * are no sidecars. blinn_phong.frag declares ForwardTemporal at
+     * layout(binding = 0), which is what the frame loop publishes. */
+    dev->capabilities.shader_sidecar_paths = false;
+    dev->capabilities.temporal_ubo_binding = 0u;
 
     dev->backend_data = gl;
     dev->width  = w;
@@ -803,6 +935,13 @@ bool rhi_device_idle(RHIDevice *dev) {
 static void gl_shutdown(RHIDevice *dev) {
     GLBackend *gl = (GLBackend *)dev->backend_data;
     if (!gl) return;
+    gl_retire_collect(gl, 0u);
+    for (int i = 0; i < 2; i++) {
+        if (gl->frame_fence[i] != NULL) {
+            glDeleteSync(gl->frame_fence[i]);
+            gl->frame_fence[i] = NULL;
+        }
+    }
 #ifdef ENGINE_PLATFORM_WINDOWS
     wglMakeCurrent(NULL, NULL);
     wglDeleteContext(gl->gl_ctx);
@@ -1007,9 +1146,27 @@ static void *gl_frame_begin(RHIDevice *dev) {
 }
 
 static void gl_frame_end(RHIDevice *dev) {
-    (void)dev;
+    GLBackend *gl = (GLBackend *)dev->backend_data;
+    if (gl != NULL) {
+        u32 slot = g_gl_frame_index & 1u;
+        if (gl->frame_fence[slot] != NULL) glDeleteSync(gl->frame_fence[slot]);
+        gl->frame_fence[slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    }
     /* R178: Advance so dual staging (gpucull/occlusion) can ping-pong. */
     g_gl_frame_index++;
+}
+
+/* R672: wait for the frame that last used this slot (see
+ * GLBackend.frame_fence). The flush bit guarantees the fence is submitted,
+ * so the wait cannot deadlock on an unflushed command stream. */
+static void gl_wait_frame_slot(RHIDevice *dev) {
+    GLBackend *gl = (GLBackend *)dev->backend_data;
+    u32 slot = g_gl_frame_index & 1u;
+    if (gl == NULL || gl->frame_fence[slot] == NULL) return;
+    (void)glClientWaitSync(gl->frame_fence[slot], GL_SYNC_FLUSH_COMMANDS_BIT,
+                           (GLuint64)5000000000ull);
+    glDeleteSync(gl->frame_fence[slot]);
+    gl->frame_fence[slot] = NULL;
 }
 
 static bool gl_present(RHIDevice *dev) {
@@ -1105,7 +1262,8 @@ static void gl_set_vsync(RHIDevice *dev, bool enabled) {
     GLBackend *gl = (GLBackend *)dev->backend_data;
 #ifdef ENGINE_PLATFORM_WINDOWS
     typedef BOOL (WINAPI *PFNWGLSWAPINTERVALEXTPROC)(int);
-    PFNWGLSWAPINTERVALEXTPROC fn = (PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
+    PFNWGLSWAPINTERVALEXTPROC fn = NULL;
+    WIN_PROC_LOAD(fn, wglGetProcAddress("wglSwapIntervalEXT"));
     if (fn) {
         fn(enabled ? 1 : 0);
     }
@@ -1260,6 +1418,32 @@ static void gl_cmd_draw_indexed_base(void *cmd, u32 index_count, u32 instance_co
     /* R227-A: Use pipeline draw mode (was hardcoded GL_TRIANGLES). */
     glDrawElementsInstancedBaseVertex(g_gl_draw_mode, (GLsizei)index_count, g_gl_index_type,
                                       indices, (GLsizei)instance_count, (GLint)vertex_offset);
+}
+
+/* R707b: GL 4.2 base-instance draw. Contexts are created as 4.5 core, where
+ * the entry point is core and indirect_first_instance_supported is reported
+ * true; a missing pointer is logged once and the draw drops the base. */
+static void gl_cmd_draw_indexed_base_instance(void *cmd, u32 index_count, u32 instance_count,
+                                              u32 first_index, i32 vertex_offset,
+                                              u32 first_instance) {
+    static bool s_warned = false;
+    (void)cmd;
+    const void *indices = (const void *)(uintptr_t)(
+        g_gl_index_offset + first_index * (usize)g_gl_index_stride);
+    if (!glDrawElementsInstancedBaseVertexBaseInstance) {
+        if (!s_warned) {
+            LOG_ERROR("rhi_gl: glDrawElementsInstancedBaseVertexBaseInstance unavailable; "
+                      "first_instance dropped");
+            s_warned = true;
+        }
+        glDrawElementsInstancedBaseVertex(g_gl_draw_mode, (GLsizei)index_count, g_gl_index_type,
+                                          indices, (GLsizei)instance_count, (GLint)vertex_offset);
+        return;
+    }
+    glDrawElementsInstancedBaseVertexBaseInstance(g_gl_draw_mode, (GLsizei)index_count,
+                                                  g_gl_index_type, indices,
+                                                  (GLsizei)instance_count, (GLint)vertex_offset,
+                                                  (GLuint)first_instance);
 }
 
 static void gl_cmd_clear_color(void *cmd, f32 r, f32 g, f32 b, f32 a) {
@@ -1420,6 +1604,8 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     gl_cache_sync(dev);
     g_current_device = dev;
     g_gl_frame_active = true;
+    gl_wait_frame_slot(dev);
+    gl_retire_collect((GLBackend *)dev->backend_data, GL_RETIRE_FRAME_BUDGET_US);
     return (RHICmdBuffer *)gl_frame_begin(dev);
 }
 
@@ -1514,6 +1700,18 @@ void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
     rhi_free_slot(dev, shader);
 }
 
+RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_fragment) {
+    usize len = 0u;
+    char *source;
+    RHIShader sh;
+    if (dev == NULL || path == NULL) return RHI_HANDLE_NULL;
+    source = shader_read_file(path, &len);
+    if (source == NULL) return RHI_HANDLE_NULL;
+    sh = rhi_shader_create(dev, source, len, is_fragment);
+    free(source);
+    return sh;
+}
+
 RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len) {
     if (dev == NULL || source == NULL || len == 0u) return RHI_HANDLE_NULL;
     GLuint gl_sh = gl_compile_shader(source, len, GL_COMPUTE_SHADER);
@@ -1526,6 +1724,18 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize le
     dev->slots[idx].ptr = sd;
     dev->slots[idx].type = RHI_RES_SHADER;
     return rhi_make_handle(idx, dev->slots[idx].generation);
+}
+
+RHIShader rhi_shader_create_compute_path(RHIDevice *dev, const char *path) {
+    usize len = 0u;
+    char *source;
+    RHIShader sh;
+    if (dev == NULL || path == NULL) return RHI_HANDLE_NULL;
+    source = shader_read_file(path, &len);
+    if (source == NULL) return RHI_HANDLE_NULL;
+    sh = rhi_shader_create_compute(dev, source, len);
+    free(source);
+    return sh;
 }
 
 /* Plan E Task 5: merge a stage's reflected push-member names into the
@@ -1710,6 +1920,16 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     glBindBuffer(target, gl_buf);
     GLenum usage = (desc->usage & (RHI_BUFFER_USAGE_UNIFORM | RHI_BUFFER_USAGE_TEXEL)) ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
     if (is_storage) usage = GL_DYNAMIC_DRAW;
+    /* R672: a STORAGE-only buffer created without data is the host-visible
+     * staging buffer of the RHI contract (VK HOST_VISIBLE, D3D12 UPLOAD --
+     * see rhi_d3d12_buffer_wants_device_local): written by a GPU copy, read
+     * back with rhi_buffer_map. DYNAMIC_DRAW kept it in video memory and the
+     * map paid for a synchronous download (~8 ms/frame for the gpucull
+     * vis-flags readback in the demo); STREAM_READ lets the driver place it
+     * where the CPU can read it. R689: deferred to the first host read, see
+     * gl_buffer_make_readback. */
+    bool readback_candidate =
+        desc->usage == RHI_BUFFER_USAGE_STORAGE && desc->initial_data == NULL;
     glBufferData(target, (GLsizeiptr)desc->size, desc->initial_data, usage);
     glBindBuffer(target, 0);
     /* R191-A: create bypasses cached binds — ARRAY_BUFFER cache would still
@@ -1735,6 +1955,7 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     bd->tbo_tex = tbo_tex;
     bd->size    = desc->size;
     bd->uniform_buffer = (desc->usage & RHI_BUFFER_USAGE_UNIFORM) != 0;
+    bd->readback_candidate = readback_candidate;
     dev->slots[idx].ptr  = bd;
     dev->slots[idx].type = RHI_RES_BUFFER;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -1884,6 +2105,19 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_
         gl_cmd_draw_indexed(cmd, index_count, instance_count);
     else
         gl_cmd_draw_indexed_base(cmd, index_count, instance_count, first_index, vertex_offset);
+}
+
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count,
+                                         u32 instance_count, u32 first_index,
+                                         i32 vertex_offset, u32 first_instance) {
+    if (first_instance == 0u) {
+        rhi_cmd_draw_indexed_base(cmd, index_count, instance_count, first_index,
+                                  vertex_offset);
+        return;
+    }
+    if (!gl_cmd_device_ready(cmd)) return;
+    gl_cmd_draw_indexed_base_instance(cmd, index_count, instance_count, first_index,
+                                      vertex_offset, first_instance);
 }
 
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
@@ -2077,7 +2311,7 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
         if (td->mip_views[i]) {
             for (u32 u = 0; u < 16; u++)
                 if (g_tex_cache[u] == td->mip_views[i]) g_tex_cache[u] = 0;
-            glDeleteTextures(1, &td->mip_views[i]);
+            gl_retire_texture(dev, td->mip_views[i]);
             td->mip_views[i] = 0;
         }
     }
@@ -2085,7 +2319,7 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
         g_mip_clamp_tex = 0;
         g_mip_clamp_level = -1;
     }
-    glDeleteTextures(1, &td->gl_tex);
+    gl_retire_texture(dev, td->gl_tex);
     free(td);
     rhi_free_slot(dev, tex);
 }
@@ -2827,7 +3061,7 @@ void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
     for (u32 i = 0; i < 16; i++) {
         if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;
     }
-    glDeleteTextures(1, &td->gl_tex);
+    gl_retire_texture(dev, td->gl_tex);
     free(td);
     rhi_free_slot(dev, cm);
 }
@@ -2919,6 +3153,7 @@ void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const
 void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     GLBufferData *bd = (GLBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd) return NULL;
+    gl_buffer_make_readback(bd);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
     /* R79-3: Removed trailing unbind — next glBindBuffer/glBindBufferBase
      * will overwrite the generic binding point. Same pattern as R77-2.
@@ -2943,6 +3178,7 @@ bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usi
     if (!bd || !dst || size == 0u) return false;
     if (offset >= bd->size) return false;
     if (size > bd->size - offset) size = bd->size - offset;
+    gl_buffer_make_readback(bd);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, (GLintptr)offset, (GLsizeiptr)size, dst);
     return true;
@@ -3227,10 +3463,10 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     glDeleteFramebuffers(1, &fd->gl_fbo);
     if (fd->resolve_fbo && fd->resolve_fbo != fd->gl_fbo)
         glDeleteFramebuffers(1, &fd->resolve_fbo);
-    glDeleteTextures(1, &fd->color_tex);
-    if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
-    if (fd->color_rb) glDeleteRenderbuffers(1, &fd->color_rb);
-    if (fd->depth_rb) glDeleteRenderbuffers(1, &fd->depth_rb);
+    gl_retire_texture(dev, fd->color_tex);
+    gl_retire_texture(dev, fd->depth_tex);
+    gl_retire_renderbuffer(dev, fd->color_rb);
+    gl_retire_renderbuffer(dev, fd->depth_rb);
     free(fd);
     rhi_free_slot(dev, fbo->fb);
     memset(fbo, 0, sizeof(*fbo));
@@ -3675,7 +3911,7 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
             for (u32 u = 0; u < 16; u++) {
                 if (g_tex_cache[u] == md->color_tex[i]) g_tex_cache[u] = 0;
             }
-            glDeleteTextures(1, &md->color_tex[i]);
+            gl_retire_texture(dev, md->color_tex[i]);
         }
         /* The texture slot shares the same GLTextureData pointer; null it
          * out so device-destroy skips the double-free. */
@@ -3704,9 +3940,9 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
         }
         rhi_free_slot(dev, fbo->depth_tex);
     } else if (md->depth_rb) {
-        glDeleteRenderbuffers(1, &md->depth_rb);
+        gl_retire_renderbuffer(dev, md->depth_rb);
     }
-    if (md->depth_tex) glDeleteTextures(1, &md->depth_tex);
+    gl_retire_texture(dev, md->depth_tex);
     free(md);
     rhi_free_slot(dev, fbo->fb);
     memset(fbo, 0, sizeof(*fbo));
@@ -3873,7 +4109,7 @@ void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
             for (u32 i = 0; i < 16; i++) {
                 if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;
             }
-            glDeleteTextures(1, &td->gl_tex);
+            gl_retire_texture(dev, td->gl_tex);
             free(td);
         }
         rhi_free_slot(dev, fbo->depth_tex);

@@ -28,6 +28,18 @@
         "ENGINE_VULKAN": "OFF",
         "RULE_ENGINE_ENABLE_C11_PARALLEL": "ON"
       }
+    },
+    {
+      "name": "qnx-cross",
+      "displayName": "QNX SDP cross build (headless, poll net_loop)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-qnx",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/toolchain-qnx.cmake",
+        "QNX_ARCH": "aarch64le",
+        "ENGINE_BUILD_TESTS": "ON"
+      }
     }
   ]
 }

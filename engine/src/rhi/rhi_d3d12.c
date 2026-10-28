@@ -6,8 +6,8 @@
 #include <d3d12.h>
 
 /* Route d3d12.dll to the side-by-side Agility SDK deployed next to the
- * executable (Task 1 lock: version 1.616.0 -> SDK version 616). */
-__declspec(dllexport) const UINT D3D12SDKVersion = 616u;
+ * executable (lock: version 1.619.6 -> SDK version 619). */
+__declspec(dllexport) const UINT D3D12SDKVersion = 619u;
 __declspec(dllexport) const char *D3D12SDKPath = ".\\";
 #endif
 
@@ -28,6 +28,21 @@ __declspec(dllexport) const char *D3D12SDKPath = ".\\";
 #include <string.h>
 
 #define RHI_D3D12_FENCE_TIMEOUT_MS 20000u
+
+/* The resource a view or binding of `bd` must point at right now. For an
+ * UPLOAD-heap buffer that rhi_cmd_update_buffer / _fill_buffer wrote earlier
+ * in this frame, that is the write's snapshot (rhi_d3d12_record_buffer_write):
+ * the buffer itself already holds the frame's LAST write, so binding it
+ * directly would give every earlier draw the last draw's data. Every binder
+ * that reads a buffer -- vertex, index, CBV, SRV, texel -- goes through
+ * here. */
+static ID3D12Resource *rhi_d3d12_buffer_view_source(const RHI_D3D12Context *ctx,
+                                                    const RHI_D3D12Buffer *bd) {
+    if (!bd->device_local && bd->alias_resource != NULL &&
+        bd->alias_frame == ctx->debug_frame)
+        return bd->alias_resource;
+    return bd->resource;
+}
 
 static void rhi_d3d12_release(IUnknown **object) {
     if (*object != NULL) {
@@ -105,7 +120,7 @@ UINT rhi_d3d12_descriptor_take(RHI_D3D12Context *ctx,
     /* Scan the whole free stack (bottom = oldest retire) for a slot whose
      * retire fence has completed. A GPU-busy youngest entry must not mask
      * deeper completed slots (review fix: the old top-only check produced
-     * false exhaustion under churn, most acute on the 16-slot DSV heap).
+     * false exhaustion under churn, most acute on the then 16-slot DSV heap).
      * Still fail-closed: returns UINT_MAX only when every free slot is
      * genuinely in flight. */
     completed = ID3D12Fence_GetCompletedValue(ctx->fence);
@@ -155,6 +170,30 @@ static void rhi_d3d12_cleanup_objects(RHI_D3D12Context *context) {
         context->fence_event = NULL;
     }
     rhi_d3d12_release((IUnknown **)&context->fence);
+    for (i = 0u; i < 2u; ++i) {
+        UINT k;
+        for (k = 0u; k < context->frame_staging_count[i]; ++k)
+            rhi_d3d12_release((IUnknown **)&context->frame_staging[i][k]);
+        free(context->frame_staging[i]);
+        context->frame_staging[i] = NULL;
+        context->frame_staging_count[i] = 0u;
+        context->frame_staging_cap[i] = 0u;
+        for (k = 0u; k < context->frame_blocks_count[i]; ++k)
+            rhi_d3d12_release((IUnknown **)&context->frame_blocks[i][k].resource);
+        free(context->frame_blocks[i]);
+        context->frame_blocks[i] = NULL;
+        context->frame_blocks_count[i] = 0u;
+        context->frame_blocks_cap[i] = 0u;
+    }
+    {
+        UINT k;
+        for (k = 0u; k < context->block_free_count; ++k)
+            rhi_d3d12_release((IUnknown **)&context->block_free[k].resource);
+        free(context->block_free);
+        context->block_free = NULL;
+        context->block_free_count = 0u;
+        context->block_free_cap = 0u;
+    }
     rhi_d3d12_descriptor_alloc_destroy(&context->rtv_alloc);
     rhi_d3d12_descriptor_alloc_destroy(&context->dsv_alloc);
     rhi_d3d12_descriptor_alloc_destroy(&context->cbv_srv_uav_alloc);
@@ -164,6 +203,7 @@ static void rhi_d3d12_cleanup_objects(RHI_D3D12Context *context) {
     rhi_d3d12_release((IUnknown **)&context->upload_list);
     rhi_d3d12_release((IUnknown **)&context->upload_allocator);
     rhi_d3d12_release((IUnknown **)&context->sampler_heap);
+    rhi_d3d12_release((IUnknown **)&context->sampler_cpu_heap);
     rhi_d3d12_release((IUnknown **)&context->cbv_srv_uav_heap);
     rhi_d3d12_release((IUnknown **)&context->dsv_heap);
     rhi_d3d12_release((IUnknown **)&context->rtv_heap);
@@ -270,9 +310,36 @@ static void rhi_d3d12_dred_enable(RHI_D3D12Context *context) {
 static void rhi_d3d12_dred_dump(RHI_D3D12Context *ctx) {
     ID3D12DeviceRemovedExtendedData1 *dred = NULL;
     D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 crumbs;
+    D3D12_DRED_PAGE_FAULT_OUTPUT1 faults;
     if (!ctx->dred_enabled) return;
     if (FAILED(ID3D12Device_QueryInterface(ctx->device,
             &IID_ID3D12DeviceRemovedExtendedData1, (void **)&dred))) return;
+    /* Page faults first: a descriptor pointing at freed or bogus memory faults,
+     * and the faulting address names the resource. Breadcrumbs only say which
+     * command list got that far, which is much weaker evidence. DRED page
+     * faulting is already forced on in rhi_d3d12_dred_enable — it was enabled
+     * but never read, so the half that identifies WHAT was wrong went unused. */
+    ZeroMemory(&faults, sizeof(faults));
+    if (SUCCEEDED(ID3D12DeviceRemovedExtendedData1_GetPageFaultAllocationOutput1(
+            dred, &faults)) && faults.PageFaultVA != 0) {
+        LOG_ERROR("DRED page fault at VA=%p",
+                  (const void *)(ULONG_PTR)faults.PageFaultVA);
+        /* Walking the existing-allocation chain names what the bad address
+         * belongs to; a non-null recent-FREED chain instead means the address
+         * was freed — the signature of a descriptor outliving its buffer. */
+        {
+            const D3D12_DRED_ALLOCATION_NODE1 *node =
+                faults.pHeadExistingAllocationNode;
+            for (u32 i = 0; node != NULL && i < 4u; ++i, node = node->pNext) {
+                LOG_ERROR("DRED fault alloc[%u] type=%d name=%s", i,
+                          (int)node->AllocationType,
+                          node->ObjectNameA ? node->ObjectNameA : "(unnamed)");
+            }
+        }
+        if (faults.pHeadRecentFreedAllocationNode != NULL)
+            LOG_ERROR("DRED fault: the faulting address falls in a RECENTLY "
+                      "FREED allocation");
+    }
     if (SUCCEEDED(ID3D12DeviceRemovedExtendedData1_GetAutoBreadcrumbsOutput1(dred, &crumbs))) {
         const D3D12_AUTO_BREADCRUMB_NODE1 *node = crumbs.pHeadAutoBreadcrumbNode;
         while (node != NULL) {
@@ -353,6 +420,106 @@ static u32 rhi_d3d12_probe_feature_bits(const RHI_D3D12Context *ctx) {
     return 0u;
 }
 
+/* ---- R666: sampler descriptor tables ----
+ * The ring is split by frame parity: half `slot` serves the frame recording
+ * into command list `slot`, and is reset in rhi_frame_begin right after that
+ * slot's fence was waited on. Each half starts with two reserved blocks of
+ * RHI_D3D12_SAMPLER_TABLE_MAX default descriptors (WRAP, then CLAMP), so a
+ * full ring degrades to the pipeline's default instead of leaving a table
+ * unset. */
+#define RHI_D3D12_SAMPLER_RING_HALF (RHI_D3D12_SAMPLER_RING / 2u)
+#define RHI_D3D12_SAMPLER_RING_RESERVED (2u * RHI_D3D12_SAMPLER_TABLE_MAX)
+
+static void rhi_d3d12_sampler_desc_fill(D3D12_SAMPLER_DESC *sd,
+                                        RHIFilter min_filter, RHIFilter mag_filter,
+                                        RHIWrapMode u, RHIWrapMode v, RHIWrapMode w) {
+    ZeroMemory(sd, sizeof(*sd));
+    /* Same rule as the GL backend's min-filter mapping: the mip filter follows the
+     * MIN filter -- LINEAR -> *_MIPMAP_LINEAR, NEAREST -> *_MIPMAP_NEAREST. */
+    if (min_filter == RHI_FILTER_NEAREST && mag_filter == RHI_FILTER_NEAREST)
+        sd->Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    else if (min_filter == RHI_FILTER_LINEAR && mag_filter == RHI_FILTER_LINEAR)
+        sd->Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    else if (min_filter == RHI_FILTER_LINEAR)
+        sd->Filter = D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR;
+    else
+        sd->Filter = D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT;
+    sd->AddressU = u == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
+                                        : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sd->AddressV = v == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
+                                        : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sd->AddressW = w == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
+                                        : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sd->MaxLOD = D3D12_FLOAT32_MAX;
+}
+
+static D3D12_CPU_DESCRIPTOR_HANDLE rhi_d3d12_sampler_ring_cpu(
+        const RHI_D3D12Context *ctx, UINT index) {
+    D3D12_CPU_DESCRIPTOR_HANDLE h;
+    ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(ctx->sampler_heap, &h);
+    h.ptr += (SIZE_T)index * (SIZE_T)ctx->sampler_increment;
+    return h;
+}
+
+static D3D12_GPU_DESCRIPTOR_HANDLE rhi_d3d12_sampler_ring_gpu(
+        const RHI_D3D12Context *ctx, UINT index) {
+    D3D12_GPU_DESCRIPTOR_HANDLE h;
+    ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(ctx->sampler_heap, &h);
+    h.ptr += (UINT64)index * (UINT64)ctx->sampler_increment;
+    return h;
+}
+
+/* The two defaults (LINEAR + WRAP, LINEAR + CLAMP: what R662's static
+ * samplers were) as sampler objects, plus their reserved blocks in both ring
+ * halves, which are never overwritten. */
+static void rhi_d3d12_sampler_defaults_init(RHI_D3D12Context *ctx) {
+    UINT k, half, i;
+    for (k = 0u; k < 2u; ++k) {
+        D3D12_SAMPLER_DESC sd;
+        RHIWrapMode m = k == 0u ? RHI_WRAP_REPEAT : RHI_WRAP_CLAMP_TO_EDGE;
+        UINT slot = rhi_d3d12_descriptor_take(ctx, &ctx->sampler_alloc);
+        ctx->sampler_default_slot[k] = slot;
+        if (slot == UINT_MAX) continue;
+        rhi_d3d12_sampler_desc_fill(&sd, RHI_FILTER_LINEAR, RHI_FILTER_LINEAR, m, m, m);
+        ID3D12Device_CreateSampler(ctx->device, &sd,
+            rhi_d3d12_descriptor_cpu(&ctx->sampler_alloc, slot));
+        for (half = 0u; half < 2u; ++half)
+            for (i = 0u; i < RHI_D3D12_SAMPLER_TABLE_MAX; ++i)
+                ID3D12Device_CreateSampler(ctx->device, &sd,
+                    rhi_d3d12_sampler_ring_cpu(ctx, half * RHI_D3D12_SAMPLER_RING_HALF +
+                                               k * RHI_D3D12_SAMPLER_TABLE_MAX + i));
+    }
+    for (i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) ctx->bound_sampler[i] = UINT_MAX;
+    ctx->sampler_dirty = 1u;
+}
+
+/* Frame begin: this half of the ring is free again (its fence was waited). */
+static void rhi_d3d12_sampler_ring_reset(RHI_D3D12Context *ctx) {
+    UINT i;
+    ctx->sampler_ring_cursor = RHI_D3D12_SAMPLER_RING_RESERVED;
+    ctx->sampler_cache_count = 0u;
+    for (i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) ctx->bound_sampler[i] = UINT_MAX;
+    ctx->sampler_dirty = 1u;
+}
+
+/* Record the sampler a texture bind brings for register(s<unit>). An invalid
+ * handle selects the pipeline's default, as R662's static samplers did. */
+static void rhi_d3d12_note_sampler(RHI_D3D12Context *ctx, RHISampler sampler,
+                                   u32 unit) {
+    UINT slot = UINT_MAX;
+    if (ctx == NULL || unit >= RHI_D3D12_MAX_REGISTERS || g_current_device == NULL)
+        return;
+    if (rhi_handle_valid(sampler)) {
+        const RHI_D3D12Sampler *smp = (const RHI_D3D12Sampler *)
+            rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
+        if (smp != NULL) slot = smp->slot;
+    }
+    if (ctx->bound_sampler[unit] != slot) {
+        ctx->bound_sampler[unit] = slot;
+        ctx->sampler_dirty = 1u;
+    }
+}
+
 HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
                                  RHI_D3D12CreateFailure injected_failure) {
     D3D12_COMMAND_QUEUE_DESC queue_desc;
@@ -372,12 +539,21 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
      * instead of faking validation. */
     {
         ID3D12Debug1 *debug = NULL;
+        /* R673: BREAK_D3D12_GBV=0 keeps the debug layer but drops GPU-based
+         * validation, which instruments every shader resource access and
+         * costs the demo ~20-40 ms per frame. Default stays on (tests, CI). */
+        const char *gbv_env = getenv("BREAK_D3D12_GBV");
+        BOOL gbv = !(gbv_env != NULL && gbv_env[0] == '0');
         if (SUCCEEDED(D3D12GetDebugInterface(&IID_ID3D12Debug1, (void **)&debug))) {
             ID3D12Debug1_EnableDebugLayer(debug);
-            ID3D12Debug1_SetEnableGPUBasedValidation(debug, TRUE);
+            ID3D12Debug1_SetEnableGPUBasedValidation(debug, gbv);
             ID3D12Debug1_Release(debug);
-            LOG_INFO("D3D12: debug layer + GPU-based validation enabled "
-                     "(ENGINE_D3D12_DEBUG)");
+            if (gbv)
+                LOG_INFO("D3D12: debug layer + GPU-based validation enabled "
+                         "(ENGINE_D3D12_DEBUG)");
+            else
+                LOG_INFO("D3D12: debug layer enabled, GPU-based validation off "
+                         "(BREAK_D3D12_GBV=0)");
         } else {
             LOG_WARN("D3D12: ENGINE_D3D12_DEBUG is set but the debug layer is "
                      "unavailable (deploy d3d12SDKLayers.dll next to the exe)");
@@ -471,10 +647,16 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
                                            (void **)&context->cbv_srv_uav_heap);
     if (FAILED(hr)) goto fail;
     heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
-    heap_desc.NumDescriptors = RHI_D3D12_SAMPLER_CAPACITY;
+    heap_desc.NumDescriptors = RHI_D3D12_SAMPLER_RING;
     hr = ID3D12Device_CreateDescriptorHeap(context->device, &heap_desc,
                                            &IID_ID3D12DescriptorHeap,
                                            (void **)&context->sampler_heap);
+    if (FAILED(hr)) goto fail;
+    heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    heap_desc.NumDescriptors = RHI_D3D12_SAMPLER_CAPACITY;
+    hr = ID3D12Device_CreateDescriptorHeap(context->device, &heap_desc,
+                                           &IID_ID3D12DescriptorHeap,
+                                           (void **)&context->sampler_cpu_heap);
     if (FAILED(hr)) goto fail;
     context->rtv_increment = ID3D12Device_GetDescriptorHandleIncrementSize(
         context->device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -495,7 +677,7 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
         RHI_D3D12_CBV_SRV_UAV_CAPACITY);
     if (FAILED(hr)) goto fail;
     hr = rhi_d3d12_descriptor_alloc_init(&context->sampler_alloc,
-        context->sampler_heap, context->sampler_increment,
+        context->sampler_cpu_heap, context->sampler_increment,
         RHI_D3D12_SAMPLER_CAPACITY);
     if (FAILED(hr)) goto fail;
     /* One-shot upload/readback command pair (private allocator + list; the
@@ -556,6 +738,13 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
         goto fail;
     }
     context->next_fence = 1u;
+    /* R666: needs the fence -- descriptor_take reads its completed value. */
+    rhi_d3d12_sampler_defaults_init(context);
+    if (context->sampler_default_slot[0] == UINT_MAX ||
+        context->sampler_default_slot[1] == UINT_MAX) {
+        hr = E_OUTOFMEMORY;
+        goto fail;
+    }
     return S_OK;
 fail:
     rhi_d3d12_cleanup_objects(context);
@@ -656,6 +845,67 @@ HRESULT rhi_d3d12_resource_transition(RHI_D3D12Context *context,
     return S_OK;
 }
 
+#if defined(ENGINE_D3D12_DEBUG)
+/* R643: the debug layer writes its messages to OutputDebugString only, so a
+ * console run never saw them -- "debug layer enabled" and a clean log meant
+ * nothing. Drain the device's info queue into the engine log after every
+ * submit. Only CORRUPTION / ERROR / WARNING are reported; INFO and MESSAGE
+ * are the layer's own chatter, and so is [820] (a clear without an optimised
+ * clear value: a speed hint, emitted on every clear of every FBO). The queue
+ * is cleared after each drain so a message is reported once. */
+static void rhi_d3d12_drain_info_queue(RHI_D3D12Context *ctx) {
+    ID3D12InfoQueue *q = NULL;
+    UINT64 n, i;
+    if (ctx == NULL || ctx->device == NULL) return;
+    if (FAILED(ID3D12Device_QueryInterface(ctx->device, &IID_ID3D12InfoQueue,
+                                           (void **)&q)))
+        return;
+    n = ID3D12InfoQueue_GetNumStoredMessages(q);
+    for (i = 0u; i < n; ++i) {
+        SIZE_T len = 0u;
+        D3D12_MESSAGE *msg;
+        if (FAILED(ID3D12InfoQueue_GetMessage(q, i, NULL, &len)) || len == 0u)
+            continue;
+        msg = (D3D12_MESSAGE *)malloc(len);
+        if (msg == NULL) break;
+        if (SUCCEEDED(ID3D12InfoQueue_GetMessage(q, i, msg, &len)) &&
+            msg->ID != D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE) {
+            if (msg->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ||
+                msg->Severity == D3D12_MESSAGE_SEVERITY_ERROR) {
+                LOG_ERROR("D3D12 debug layer [%d]: %s", (int)msg->ID,
+                          msg->pDescription);
+                ctx->debug_layer_errors++;
+            } else if (msg->Severity == D3D12_MESSAGE_SEVERITY_WARNING) {
+                LOG_WARN("D3D12 debug layer [%d]: %s", (int)msg->ID,
+                         msg->pDescription);
+                ctx->debug_layer_warnings++;
+            }
+        }
+        free(msg);
+    }
+    ID3D12InfoQueue_ClearStoredMessages(q);
+    ID3D12InfoQueue_Release(q);
+}
+#else
+static void rhi_d3d12_drain_info_queue(RHI_D3D12Context *ctx) { (void)ctx; }
+#endif
+
+int rhi_d3d12_debug_layer_counts(RHIDevice *dev, UINT64 *errors,
+                                 UINT64 *warnings, UINT64 *rt_srv_aliases) {
+    RHI_D3D12Context *ctx;
+    if (dev == NULL || dev->backend_data == NULL) return 0;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    rhi_d3d12_drain_info_queue(ctx);
+    if (errors != NULL) *errors = ctx->debug_layer_errors;
+    if (warnings != NULL) *warnings = ctx->debug_layer_warnings;
+    if (rt_srv_aliases != NULL) *rt_srv_aliases = ctx->rt_srv_alias_count;
+#if defined(ENGINE_D3D12_DEBUG)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 HRESULT rhi_d3d12_submit(RHI_D3D12Context *context, UINT allocator_index,
                          UINT64 *out_fence) {
     ID3D12CommandList *lists[1];
@@ -667,6 +917,7 @@ HRESULT rhi_d3d12_submit(RHI_D3D12Context *context, UINT allocator_index,
     if (FAILED(hr)) return hr;
     lists[0] = (ID3D12CommandList *)context->command_lists[allocator_index];
     ID3D12CommandQueue_ExecuteCommandLists(context->direct_queue, 1u, lists);
+    rhi_d3d12_drain_info_queue(context);
     value = context->next_fence++;
     hr = ID3D12CommandQueue_Signal(context->direct_queue, context->fence, value);
     if (FAILED(hr)) return hr;
@@ -713,6 +964,7 @@ static RHIResult rhi_d3d12_oneshot_flush(RHI_D3D12Context *ctx) {
     if (FAILED(hr)) return RHI_RESULT_ERROR;
     lists[0] = (ID3D12CommandList *)ctx->upload_list;
     ID3D12CommandQueue_ExecuteCommandLists(ctx->direct_queue, 1u, lists);
+    rhi_d3d12_drain_info_queue(ctx);
     value = ctx->next_fence++;
     hr = ID3D12CommandQueue_Signal(ctx->direct_queue, ctx->fence, value);
     if (hr == DXGI_ERROR_DEVICE_REMOVED) return rhi_d3d12_note_device_lost(ctx);
@@ -747,6 +999,12 @@ static ID3D12Resource *rhi_d3d12_staging_buffer(RHI_D3D12Context *ctx,
         heap_type == D3D12_HEAP_TYPE_READBACK ? D3D12_RESOURCE_STATE_COPY_DEST
                                               : D3D12_RESOURCE_STATE_GENERIC_READ,
         NULL, &IID_ID3D12Resource, (void **)&staging);
+    /* A device that has already been removed answers every later call with
+     * DXGI_ERROR_DEVICE_REMOVED. Without this the loss is discovered one or
+     * two calls too late, by whichever unrelated API happens to fail next, and
+     * the DRED breadcrumbs for the submit that actually killed it are gone
+     * by then. */
+    if (hr == DXGI_ERROR_DEVICE_REMOVED) (void)rhi_d3d12_note_device_lost(ctx);
     return SUCCEEDED(hr) ? staging : NULL;
 }
 
@@ -924,6 +1182,7 @@ HRESULT rhi_d3d12_swapchain_resize(RHI_D3D12Context *context,
         return hr;
     }
     swapchain->width = width; swapchain->height = height;
+    LOG_INFO("D3D12: swapchain resized to %ux%u", (unsigned)width, (unsigned)height);
     swapchain->current_index = IDXGISwapChain3_GetCurrentBackBufferIndex(
         (IDXGISwapChain3 *)swapchain->swapchain);
     for (i = 0u; i < RHI_D3D12_BACKBUFFER_COUNT; ++i) {
@@ -1116,6 +1375,43 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
     dev->capabilities.present_damage_supported = true;
     dev->capabilities.present_buffer_age_supported = true;
     dev->capabilities.feature_bits = rhi_d3d12_probe_feature_bits(ctx);
+    /* R606: D3D12 is the sidecar backend — rhi_shader_create_path resolves the
+     * hand-authored HLSL pair via rhi_d3d12_shader_sidecar_name. shader_variant
+     * is deliberately left at its GLSL default: D3D12 has no GLSL, but claiming
+     * the VK variant would send the renderer looking for *_vk files that do not
+     * exist, and that is what caps.shader_sidecar_paths now answers instead.
+     *
+     * The temporal block rides register b1 because b0 is reserved for the
+     * 32BIT_CONSTANTS root parameter (the push block); see
+     * rhi_d3d12_root_sig_add_bindings and the blinn_phong_hlsl.vert header. */
+    dev->capabilities.shader_sidecar_paths = true;
+    dev->capabilities.temporal_ubo_binding = 1u;
+    /* R637: indirect draw is complete on this backend -- ExecuteIndirect with
+     * a count buffer, the storage binder (UAV + read-only SRV), recorded
+     * buffer fills/updates, and the compact_draws_hlsl.comp sidecar.
+     * first_instance is answered below from the device's shader model:
+     * the sidecars read the base through SV_StartInstanceLocation, a
+     * shader-model 6.8 vertex input (R658).
+     *
+     * R652: compute_supported is true. It only gates GPU culling
+     * (gpucull_init); cull.comp and unified_cull.comp now have HLSL
+     * sidecars, rhi_cmd_bind_texture_compute binds the Hi-Z SRV, and a GPU
+     * copy into a host-visible staging buffer lands in its READBACK twin.
+     * R653: hiz_supported is true -- hi_z_generate.comp and
+     * occlusion_cull.comp have sidecars, and the per-mip SRV / storage-image
+     * binders exist, so the unified cull reads a real Hi-Z pyramid. */
+    dev->capabilities.compute_supported = true;
+    dev->capabilities.hiz_supported = true;
+    dev->capabilities.indirect_draw_supported = true;
+    {
+        D3D12_FEATURE_DATA_SHADER_MODEL sm;
+        ZeroMemory(&sm, sizeof(sm));
+        sm.HighestShaderModel = D3D_SHADER_MODEL_6_8;
+        dev->capabilities.indirect_first_instance_supported =
+            SUCCEEDED(ID3D12Device_CheckFeatureSupport(
+                ctx->device, D3D12_FEATURE_SHADER_MODEL, &sm, (UINT)sizeof(sm))) &&
+            sm.HighestShaderModel >= D3D_SHADER_MODEL_6_8;
+    }
     g_current_device = dev;
     return dev;
 }
@@ -1131,6 +1427,19 @@ void rhi_device_destroy(RHIDevice *dev) {
          * latched-lost device skips the waits (fences may never signal
          * post-TDR). */
         (void)rhi_d3d12_drain_gpu(ctx);
+        /* The material binder's shared white fallback is an ordinary RHI
+         * texture, so it is released here — after the drain that guarantees
+         * no command list still references its SRV — and before the context
+         * itself goes away. */
+        if (rhi_handle_valid(ctx->white_fallback)) {
+            rhi_texture_destroy(dev, ctx->white_fallback);
+            ctx->white_fallback = RHI_HANDLE_NULL;
+        }
+        rhi_cubemap_depth_fbo_destroy(dev, &ctx->cube_fallback);
+        if (rhi_handle_valid(ctx->black_cube)) {
+            rhi_cubemap_destroy(dev, ctx->black_cube);
+            ctx->black_cube = RHI_HANDLE_NULL;
+        }
         if (ctx->swapchain_ready) {
             rhi_d3d12_swapchain_destroy(ctx, &ctx->swapchain);
             ctx->swapchain_ready = 0u;
@@ -1185,6 +1494,77 @@ void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
     }
     rhi_device_control_release(dev);
 }
+static void rhi_d3d12_release_frame_staging(RHI_D3D12Context *ctx, UINT slot) {
+    UINT k;
+    for (k = 0u; k < ctx->frame_staging_count[slot]; ++k)
+        rhi_d3d12_release((IUnknown **)&ctx->frame_staging[slot][k]);
+    ctx->frame_staging_count[slot] = 0u;
+}
+/* R670: the slot's fence has been reached, so its UPLOAD blocks are idle:
+ * return them to the free pool (bounded; the rest are released). */
+#define RHI_D3D12_BLOCK_FREE_MAX 256u
+static void rhi_d3d12_recycle_frame_blocks(RHI_D3D12Context *ctx, UINT slot) {
+    UINT k;
+    for (k = 0u; k < ctx->frame_blocks_count[slot]; ++k) {
+        RHI_D3D12StagingBlock *b = &ctx->frame_blocks[slot][k];
+        if (ctx->block_free_count == ctx->block_free_cap &&
+            ctx->block_free_cap < RHI_D3D12_BLOCK_FREE_MAX) {
+            UINT cap = ctx->block_free_cap ? ctx->block_free_cap * 2u : 32u;
+            RHI_D3D12StagingBlock *grown;
+            if (cap > RHI_D3D12_BLOCK_FREE_MAX) cap = RHI_D3D12_BLOCK_FREE_MAX;
+            grown = (RHI_D3D12StagingBlock *)realloc(ctx->block_free,
+                                                     (size_t)cap * sizeof(*grown));
+            if (grown != NULL) {
+                ctx->block_free = grown;
+                ctx->block_free_cap = cap;
+            }
+        }
+        if (ctx->block_free_count < ctx->block_free_cap)
+            ctx->block_free[ctx->block_free_count++] = *b;
+        else
+            rhi_d3d12_release((IUnknown **)&b->resource);
+        b->resource = NULL;
+    }
+    ctx->frame_blocks_count[slot] = 0u;
+}
+/* R645: release a D3D12 object that a command list may still reference.
+ * rhi_*_destroy used to Release at once; the UI canvas grows its vertex
+ * buffers mid-frame (ensure_vbo destroys and recreates them while the frame
+ * that drew with the old ones is recording or in flight), so the GPU read a
+ * freed resource -- debug layer [921], and the demo intermittently hung or
+ * crashed. GL keeps a deleted buffer alive until its last use and Vulkan's
+ * destroy waits for the frames; here the object joins the frame-staging list
+ * of the slot being recorded, which is released only after that slot's
+ * fence has been waited on (rhi_frame_begin). Outside a frame the previous
+ * submission may still run, so the object goes to the slot submitted last
+ * (released when that slot is next acquired, after its fence). */
+static void rhi_d3d12_release_deferred(RHI_D3D12Context *ctx, IUnknown **obj) {
+    UINT slot;
+    if (obj == NULL || *obj == NULL) return;
+    if (ctx == NULL || ctx->device_lost) {
+        rhi_d3d12_release(obj);
+        return;
+    }
+    slot = ctx->frame_started ? (ctx->frame_parity & 1u)
+                              : ((ctx->frame_parity + 1u) & 1u);
+    if (ctx->frame_staging_count[slot] == ctx->frame_staging_cap[slot]) {
+        UINT cap = ctx->frame_staging_cap[slot] ? ctx->frame_staging_cap[slot] * 2u : 16u;
+        ID3D12Resource **grown = (ID3D12Resource **)realloc(
+            ctx->frame_staging[slot], (size_t)cap * sizeof(*grown));
+        if (grown == NULL) {
+            /* Out of memory for the list: wait instead of racing the GPU. */
+            (void)rhi_d3d12_drain_gpu(ctx);
+            rhi_d3d12_release(obj);
+            return;
+        }
+        ctx->frame_staging[slot] = grown;
+        ctx->frame_staging_cap[slot] = cap;
+    }
+    ctx->frame_staging[slot][ctx->frame_staging_count[slot]++] =
+        (ID3D12Resource *)*obj;
+    *obj = NULL;
+}
+
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     RHI_D3D12Context *ctx;
     RHI_D3D12Swapchain *sc;
@@ -1206,6 +1586,9 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     }
     g_current_device = dev;
     dev->frame_partial_active = false;
+    /* R629 diagnostic: bump before anything in this frame can bind a resource,
+     * so every stamp written below belongs to the frame that reads it. */
+    ctx->debug_frame++;
     if (ctx->device_lost) { /* sticky latch: quiet fail-fast, no spam */
         rhi_device_set_lifecycle_result(dev, RHI_RESULT_DEVICE_LOST);
         rhi_frame_owner_release(dev);
@@ -1218,6 +1601,9 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
         rhi_frame_owner_release(dev);
         return NULL;
     }
+    rhi_d3d12_release_frame_staging(ctx, slot);
+    rhi_d3d12_recycle_frame_blocks(ctx, slot);
+    rhi_d3d12_sampler_ring_reset(ctx);
     sc->current_index = IDXGISwapChain3_GetCurrentBackBufferIndex(
         (IDXGISwapChain3 *)sc->swapchain);
     hr = ID3D12CommandAllocator_Reset(ctx->allocators[slot]);
@@ -1241,10 +1627,12 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     rhi_d3d12_set_full_target_viewport(ctx->command_lists[slot],
                                        sc->width, sc->height);
     ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_formats[0] = sc->format;
     ctx->bound_rtv_count = 1u;
     ctx->bound_dsv_valid = 0u;
     ctx->bound_pipeline = NULL;
     ctx->bound_pipeline_compute = 0u;
+    memset(ctx->live_srv, 0, sizeof(ctx->live_srv));
     ctx->frame_started = 1u;
     ctx->frame_submitted = 0u;
     ctx->acquire_in_flight = 1u;
@@ -1488,7 +1876,7 @@ static ID3D12GraphicsCommandList4 *rhi_d3d12_cmdlist4(
  * CreateCommittedResource (the runtime sets them automatically;
  * E_INVALIDARG otherwise), and the AS-only alias
  * D3D12_HEAP_FLAG_ALLOW_ONLY_RT_ACCELERATION_STRUCTURE_BUFFERS
- * postdates the pinned Agility 1.616 headers (Task 1 lock). */
+ * postdates the pinned Agility headers (lock: 1.619.6). */
 static HRESULT rhi_d3d12_as_create_storage(RHI_D3D12Context *ctx, UINT64 size,
                                            RHI_D3D12Resource *out) {
     D3D12_HEAP_PROPERTIES heap;
@@ -1874,6 +2262,7 @@ static HRESULT rhi_d3d12_buffer_alloc(RHI_D3D12Context *ctx, UINT64 size,
                                       ID3D12Resource **out) {
     D3D12_HEAP_PROPERTIES properties;
     D3D12_RESOURCE_DESC description;
+    HRESULT hr;
     ZeroMemory(&properties, sizeof(properties));
     properties.Type = device_local ? D3D12_HEAP_TYPE_DEFAULT : D3D12_HEAP_TYPE_UPLOAD;
     properties.CreationNodeMask = 1u;
@@ -1887,9 +2276,11 @@ static HRESULT rhi_d3d12_buffer_alloc(RHI_D3D12Context *ctx, UINT64 size,
     description.SampleDesc.Count = 1u;
     description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     if (allow_uav) description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    return ID3D12Device_CreateCommittedResource(
+    hr = ID3D12Device_CreateCommittedResource(
         ctx->device, &properties, D3D12_HEAP_FLAG_NONE, &description,
         initial_state, NULL, &IID_ID3D12Resource, (void **)out);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED) (void)rhi_d3d12_note_device_lost(ctx);
+    return hr;
 }
 
 /* One-shot staging upload into a DEFAULT-heap buffer range. */
@@ -1926,6 +2317,7 @@ static RHIResult rhi_d3d12_buffer_stage_upload(RHI_D3D12Context *ctx,
 RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     RHI_D3D12Context *ctx;
     RHI_D3D12Buffer *bd;
+    UINT64 alloc_size;
     u32 idx;
     UINT device_local;
     UINT allow_uav;
@@ -1934,19 +2326,38 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     ctx = (RHI_D3D12Context *)dev->backend_data;
     if (ctx == NULL || ctx->device_lost) return RHI_HANDLE_NULL;
     device_local = rhi_d3d12_buffer_wants_device_local(desc);
-    allow_uav = (desc->usage & RHI_BUFFER_USAGE_STORAGE) != 0u;
+    /* R636: ALLOW_UNORDERED_ACCESS is only legal on a DEFAULT-heap
+     * resource. A STORAGE buffer without initial data lands on the UPLOAD
+     * heap, and CreateCommittedResource refuses the flag there -- so the
+     * buffer came back as an invalid handle and EVERY binding of it was
+     * silently unbound. The skinned vertex shader then read a descriptor
+     * that was never set and the GPU hung (DXGI_ERROR_DEVICE_HUNG). The
+     * flag is dropped rather than failing the creation, and
+     * rhi_cmd_bind_storage_buffer refuses to bind such a buffer as a UAV. */
+    allow_uav = (desc->usage & RHI_BUFFER_USAGE_STORAGE) != 0u && device_local != 0u;
     if (!device_local) {
         /* UPLOAD heaps are persistently GENERIC_READ. */
         initial_state = D3D12_RESOURCE_STATE_GENERIC_READ;
     } else if (desc->initial_data != NULL) {
-        initial_state = D3D12_RESOURCE_STATE_COPY_DEST;
+        /* R643: buffers are always created in COMMON whatever InitialState
+         * says (debug layer [1328]); the upload copy promotes it. */
+        initial_state = D3D12_RESOURCE_STATE_COMMON;
     } else {
         initial_state = allow_uav ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                   : D3D12_RESOURCE_STATE_COMMON;
     }
     bd = (RHI_D3D12Buffer *)calloc(1u, sizeof(*bd));
     if (bd == NULL) return RHI_HANDLE_NULL;
-    if (FAILED(rhi_d3d12_buffer_alloc(ctx, (UINT64)desc->size, device_local,
+    /* R643: rhi_cmd_bind_uniform_buffer declares a CBV over the 256-rounded
+     * size (D3D12 requires SizeInBytes % 256 == 0), so a buffer whose size is
+     * not a multiple of 256 had a view running past the end of its
+     * own resource -- debug layer [649], undefined reads of the tail. Any buffer
+     * can be bound that way (usage flags are not checked there), so every
+     * resource is allocated at the rounded size; bd->size stays the caller's
+     * size, so every copy and readback still covers exactly the caller's
+     * bytes. */
+    alloc_size = ((UINT64)desc->size + 255u) & ~(UINT64)255u;
+    if (FAILED(rhi_d3d12_buffer_alloc(ctx, alloc_size, device_local,
                                       allow_uav, initial_state,
                                       &bd->resource))) {
         free(bd);
@@ -1955,6 +2366,7 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     bd->size = (UINT64)desc->size;
     bd->usage = (UINT)desc->usage;
     bd->device_local = device_local;
+    bd->allow_uav = allow_uav;
     if (device_local && desc->initial_data != NULL) {
         D3D12_RESOURCE_STATES final_state =
             allow_uav ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
@@ -1971,6 +2383,8 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
             if (SUCCEEDED(rhi_d3d12_oneshot_begin(ctx))) {
                 ID3D12GraphicsCommandList_CopyBufferRegion(ctx->upload_list,
                     bd->resource, 0u, staging, 0u, bd->size);
+                /* The copy implicitly promoted COMMON to COPY_DEST, so the
+                 * barrier starts there. */
                 rhi_d3d12_transition(ctx->upload_list, bd->resource,
                                      D3D12_RESOURCE_STATE_COPY_DEST,
                                      final_state);
@@ -2009,10 +2423,16 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (bd == NULL) return;
     if (bd->mapped != NULL) {
-        ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+        ID3D12Resource_Unmap(bd->readback != NULL ? bd->readback : bd->resource,
+                             0u, NULL);
         bd->mapped = NULL;
     }
-    rhi_d3d12_release((IUnknown **)&bd->resource);
+    rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
+                               (IUnknown **)&bd->resource);
+    if (bd->readback != NULL)
+        rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
+                                   (IUnknown **)&bd->readback);
+    free(bd->shadow);
     free(bd);
     rhi_free_slot(dev, buf);
 }
@@ -2059,9 +2479,37 @@ typedef struct RHI_D3D12Pipeline {
     D3D12_PRIMITIVE_TOPOLOGY topology;
     UINT uniform_count;
     RHI_D3D12UniformLoc uniforms[RHI_D3D12_MAX_UNIFORM_LOCS];
-    UINT image_root_params[16];
-    UINT uniform_root_params[16];
+    UINT image_root_params[RHI_D3D12_MAX_REGISTERS];
+    UINT uniform_root_params[RHI_D3D12_MAX_REGISTERS];
+    UINT storage_root_params[RHI_D3D12_MAX_REGISTERS];
+    UINT storage_strides[RHI_D3D12_MAX_REGISTERS];
+    UINT srv_buffer_strides[RHI_D3D12_MAX_REGISTERS];
+    /* R666: the sampler table (see rhi_d3d12_root_sig_add_sampler_table). */
+    UINT sampler_root_param;    /* UINT_MAX = the shaders declare no sampler */
+    UINT sampler_count;
+    UINT sampler_regs[RHI_D3D12_SAMPLER_TABLE_MAX];
+    UINT default_clamp;         /* default for an unbound register: CLAMP vs WRAP */
     RHIPipelineDesc desc;
+    /* R643: the PSO bakes its render-target formats, but callers only name a
+     * colour format when it is not the RGBA8 default -- the bloom, tonemap,
+     * sharpen, motion blur and SSS passes all draw into RGBA16F FBOs, and
+     * the UI draws into the BGRA8 swapchain, through pipelines that never
+     * said so. GL has no such state and VK builds per-format variants on
+     * first use (vk_pipeline_for_fmt); this mirrors VK. rtv_formats is what
+     * `pso` was built for (always with a D32 depth slot); variants are
+     * created at draw time when the bound targets differ -- colour formats,
+     * or no depth attachment at all -- from the DXIL copies kept here. */
+    DXGI_FORMAT rtv_formats[RHI_MRT_MAX_ATTACHMENTS];
+    UINT rtv_count;
+    void *vs_blob, *ps_blob;
+    usize vs_blob_size, ps_blob_size;
+    struct {
+        DXGI_FORMAT formats[RHI_MRT_MAX_ATTACHMENTS];
+        UINT count;
+        UINT no_dsv;
+        ID3D12PipelineState *pso;
+    } variants[6];
+    UINT variant_count;
 } RHI_D3D12Pipeline;
 
 /* Bare file names only: no separators, drive letters, or traversal — the
@@ -2123,14 +2571,23 @@ static RHIShader rhi_d3d12_shader_alloc(RHIDevice *dev, const char *source,
             return RHI_HANDLE_NULL;
         }
     } else {
-        sd->source = (char *)malloc(len + 1u);
-        if (sd->source == NULL) {
-            free(sd);
-            return RHI_HANDLE_NULL;
-        }
-        memcpy(sd->source, source, len);
-        sd->source[len] = '\0';
-        sd->source_len = len;
+        /* Inline-source mode. This backend has no HLSL compiler in-process:
+         * it loads precompiled DXIL by sidecar name (filename mode above,
+         * which refuses loudly when the DXIL is absent). So an inline source
+         * can only ever produce a shader with no blob, and returning a valid
+         * handle for one hides the real cause two steps downstream -- every
+         * call site saw "shader compile failed" as false, went on to
+         * rhi_pipeline_create, and reported "pipeline creation failed" or
+         * "bindings create failed", which names neither the backend nor the
+         * missing sidecar. Refusing here is what turns ~25 misleading demo
+         * warnings into one actionable line each. */
+        LOG_WARN("D3D12: rhi_shader_create was given inline source, but this "
+                 "backend never compiles HLSL in-process -- it only loads "
+                 "precompiled DXIL by sidecar name. Use rhi_shader_create_path"
+                 "(\"shaders/<name>.vert\") and add shaders/<name>_hlsl.vert "
+                 "to the build.");
+        free(sd);
+        return RHI_HANDLE_NULL;
     }
     sd->is_fragment = is_fragment;
     idx = rhi_alloc_slot(dev);
@@ -2147,6 +2604,137 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source,
                                     usize len) {
     return rhi_d3d12_shader_alloc(dev, source, len, 0u);
 }
+
+/* Sidecar name derivation for rhi_shader_create_path: drop the directory and
+ * the extension, append "_hlsl" unless the base already carries it, then add
+ * the stage suffix. See rhi_d3d12.h for the full contract and the decision
+ * record on the idempotent suffix.
+ *
+ * The path's own stage extension is authoritative about intent: a path that
+ * says ".frag" handed to the vertex path entry point is a caller bug, and
+ * ignoring the extension would silently resolve the vertex sidecar and
+ * render it — the one outcome harder to notice than a refusal. So the
+ * mismatch is refused rather than papered over. An extension that names no
+ * known stage (or no extension at all) carries no claim about the stage, and
+ * the caller's stage argument stays authoritative there. */
+static const char *rhi_d3d12_shader_stage_suffix(RHI_D3D12ShaderStage stage) {
+    switch (stage) {
+        case RHI_D3D12_SHADER_STAGE_VERTEX:   return ".vert";
+        case RHI_D3D12_SHADER_STAGE_FRAGMENT: return ".frag";
+        case RHI_D3D12_SHADER_STAGE_COMPUTE:  return ".comp";
+        default: return NULL;
+    }
+}
+
+static int rhi_d3d12_shader_stage_from_ext(const char *ext,
+                                           RHI_D3D12ShaderStage *out) {
+    if (strcmp(ext, ".vert") == 0) { *out = RHI_D3D12_SHADER_STAGE_VERTEX;   return 1; }
+    if (strcmp(ext, ".frag") == 0) { *out = RHI_D3D12_SHADER_STAGE_FRAGMENT; return 1; }
+    if (strcmp(ext, ".comp") == 0) { *out = RHI_D3D12_SHADER_STAGE_COMPUTE;  return 1; }
+    return 0;
+}
+
+int rhi_d3d12_shader_sidecar_name(const char *path,
+                                  RHI_D3D12ShaderStage stage, char *out,
+                                  usize out_cap) {
+    const char *base;
+    const char *p;
+    const char *ext = NULL;
+    const char *suffix;
+    usize base_len;
+    usize needed;
+    int already_suffixed;
+    int written;
+    /* Cleared up front so every refusal — including a NULL path or a zero
+     * capacity — leaves the caller with a name it can trust is absent. */
+    if (out != NULL && out_cap > 0u) out[0] = '\0';
+    if (path == NULL || out == NULL || out_cap == 0u) return 0;
+
+    suffix = rhi_d3d12_shader_stage_suffix(stage);
+    if (suffix == NULL) {
+        LOG_WARN("D3D12: shader stage %d is outside RHI_D3D12ShaderStage — no "
+                 "sidecar suffix exists, refusing shader", (int)stage);
+        return 0;
+    }
+
+    base = path;
+    for (p = path; *p != '\0'; ++p)
+        if (*p == '/' || *p == '\\') base = p + 1;
+    for (p = base; *p != '\0'; ++p)
+        if (*p == '.') ext = p;
+
+    if (ext != NULL) {
+        RHI_D3D12ShaderStage path_stage;
+        if (rhi_d3d12_shader_stage_from_ext(ext, &path_stage) &&
+            path_stage != stage) {
+            LOG_WARN("D3D12: shader path %s names the %s stage but the %s "
+                     "stage was requested — refusing shader rather than "
+                     "resolving the wrong sidecar", path,
+                     rhi_d3d12_shader_stage_suffix(path_stage), suffix);
+            return 0;
+        }
+    }
+
+    base_len = ext != NULL ? (usize)(ext - base) : strlen(base);
+    if (base_len == 0u) {
+        LOG_WARN("D3D12: shader path %s has no base name before its extension "
+                 "— refusing shader", path);
+        return 0;
+    }
+    /* Rejecting an over-long base here (rather than only via `needed` below)
+     * also keeps the (int) precision cast in range. */
+    if (base_len >= out_cap) {
+        LOG_WARN("D3D12: shader path %s has a %u byte base name, over the %u "
+                 "byte name budget — refusing shader", path,
+                 (unsigned)base_len, (unsigned)out_cap);
+        return 0;
+    }
+    already_suffixed = base_len >= 5u &&
+                       memcmp(base + base_len - 5u, "_hlsl", 5u) == 0;
+    /* Budget the whole name up front so the format below can never
+     * truncate: a partial name left in `out` would resolve some other file,
+     * which is exactly what the refusal exists to prevent. */
+    needed = base_len + (already_suffixed ? 0u : 5u) + strlen(suffix) + 1u;
+    if (needed > out_cap) {
+        LOG_WARN("D3D12: sidecar name for %s needs %u bytes, over the %u byte "
+                 "name budget — refusing shader", path, (unsigned)needed,
+                 (unsigned)out_cap);
+        return 0;
+    }
+    if (already_suffixed) {
+        written = snprintf(out, out_cap, "%.*s%s", (int)base_len, base, suffix);
+    } else {
+        written = snprintf(out, out_cap, "%.*s_hlsl%s", (int)base_len, base, suffix);
+    }
+    if (written < 0 || (usize)written >= out_cap) {
+        out[0] = '\0';
+        LOG_WARN("D3D12: sidecar name for %s did not fit the %u byte name "
+                 "budget — refusing shader", path, (unsigned)out_cap);
+        return 0;
+    }
+    return 1;
+}
+
+RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path,
+                                 bool is_fragment) {
+    char name[RHI_D3D12_SHADER_SIDECAR_NAME_CAPACITY];
+    RHI_D3D12ShaderStage stage = is_fragment ? RHI_D3D12_SHADER_STAGE_FRAGMENT
+                                            : RHI_D3D12_SHADER_STAGE_VERTEX;
+    if (dev == NULL) return RHI_HANDLE_NULL;
+    if (!rhi_d3d12_shader_sidecar_name(path, stage, name, (usize)sizeof(name)))
+        return RHI_HANDLE_NULL;
+    return rhi_shader_create(dev, name, 0u, is_fragment);
+}
+
+RHIShader rhi_shader_create_compute_path(RHIDevice *dev, const char *path) {
+    char name[RHI_D3D12_SHADER_SIDECAR_NAME_CAPACITY];
+    if (dev == NULL) return RHI_HANDLE_NULL;
+    if (!rhi_d3d12_shader_sidecar_name(path, RHI_D3D12_SHADER_STAGE_COMPUTE,
+                                       name, (usize)sizeof(name)))
+        return RHI_HANDLE_NULL;
+    return rhi_shader_create_compute(dev, name, 0u);
+}
+
 void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
     RHI_D3D12Shader *sd;
     if (dev == NULL) return;
@@ -2168,10 +2756,10 @@ void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
  *       handoff): a CBV at b0 would collide with the constants register and
  *       fail root-signature serialization.
  *   ConstantBuffer<T> name : register(bN)  (N > 0)   -> CBV table
- *   Texture2D name : register(tN)                    -> SRV + static sampler
- *       (sidecar convention: SamplerState sN pairs with Texture2D tN; the
- *       SamplerState line itself is skipped, the builder emits the static
- *       sampler for the SAMPLER-kind binding)
+ *   Texture2D name : register(tN)                    -> SRV table
+ *   SamplerState name : register(sN)                 -> sampler table range
+ *       (sidecar convention: SamplerState sN pairs with Texture2D tN, so the
+ *       sampler bound with texture unit N lands in register sN)
  *   StructuredBuffer<T> name : register(tN)          -> SRV
  *   RWStructuredBuffer<T> / RWByteAddressBuffer /
  *   RWTexture2D<T> name : register(uN)               -> UAV
@@ -2272,6 +2860,27 @@ static usize rhi_d3d12_reflect_hlsl(const char *src, usize len,
         b->layout = layout;
         b->set = 0u;
         b->binding = regnum;
+        /* A UAV descriptor has to match the shader's view of the buffer, so
+         * the binder needs the element type. It rides in `format`: "raw" for
+         * RWByteAddressBuffer, the template argument for RWStructuredBuffer,
+         * empty for anything else (RWTexture*). */
+        if (kind == SHADER_IO_RESOURCE_STORAGE ||
+            (kind == SHADER_IO_RESOURCE_IMAGE && klass == 't' &&
+             rhi_d3d12_hlsl_find(p, line_end, "Texture") == NULL)) {
+            const char *sb = rhi_d3d12_hlsl_find(p, line_end, "StructuredBuffer<");
+            if (rhi_d3d12_hlsl_find(p, line_end, "ByteAddressBuffer") != NULL) {
+                memcpy(b->format, "raw", 4u);
+            } else if (sb != NULL) {
+                const char *t = sb + 17u;
+                usize n = 0u;
+                while (t < line_end && (*t == ' ' || *t == '\t')) ++t;
+                while (t + n < line_end && rhi_d3d12_hlsl_ident_char(t[n]) &&
+                       n + 1u < sizeof(b->format))
+                    ++n;
+                memcpy(b->format, t, n);
+                b->format[n] = '\0';
+            }
+        }
         line = nl != NULL ? nl + 1 : end;
     }
     return count;
@@ -2320,11 +2929,312 @@ static void rhi_d3d12_uniform_markers(const char *src, usize len,
     }
 }
 
+/* R636: the HLSL constant-buffer packing rules, as dxc applies them to a
+ * struct declared in a cbuffer: a matrix is one 16-byte column per column
+ * of the type (float4x4 -> 64 bytes) on a 16-byte boundary, a float3 is 12
+ * bytes but still 16-byte aligned, a float2 is 8 bytes on an 8-byte
+ * boundary, and a scalar is 4 bytes.
+ *
+ * The `// rhi:uniform` markers publish byte offsets into that same block,
+ * so a marker that disagrees with the struct it names is a silent bug: the
+ * write lands on the wrong member and the shader reads a value nobody
+ * wrote. motion_blur's u_mb_prev_vp said 32 where the layout says 80 --
+ * inside the 64-byte u_mb_inv_proj -- and the depth-reconstruction branch
+ * then read a matrix that was never written.
+ *
+ * The check is fail-closed: the pipeline is refused rather than built on
+ * offsets nobody can vouch for. */
+#define RHI_D3D12_MAX_CBUFFER_MEMBERS 32u
+
+typedef struct {
+    char name[SHADER_IO_NAME_MAX];
+    UINT offset;
+} RHI_D3D12CbufferMember;
+
+/* Size and alignment of one cbuffer member type, or 0 when the type is not
+ * one this checker understands (a struct member with a semantic, say, which
+ * is not a cbuffer member at all). */
+static int rhi_d3d12_hlsl_member_layout(const char *type, usize type_len,
+                                         UINT *out_size, UINT *out_align) {
+    static const struct { const char *name; UINT size; UINT align; } scalars[] = {
+        { "float", 4u, 4u },  { "int", 4u, 4u },    { "uint", 4u, 4u },
+        { "bool", 4u, 4u },   { "half", 4u, 4u },   { "float2", 8u, 8u },
+        { "int2", 8u, 8u },   { "uint2", 8u, 8u },  { "float3", 12u, 16u },
+        { "int3", 12u, 16u },{ "uint3", 12u, 16u },{ "float4", 16u, 16u },
+        { "int4", 16u, 16u }, { "uint4", 16u, 16u },
+    };
+    usize i;
+    for (i = 0u; i < sizeof(scalars) / sizeof(scalars[0]); ++i) {
+        if (strlen(scalars[i].name) == type_len &&
+            memcmp(scalars[i].name, type, type_len) == 0) {
+            *out_size = scalars[i].size;
+            *out_align = scalars[i].align;
+            return 1;
+        }
+    }
+    /* floatRxC: the cbuffer stores C columns of 16 bytes each. */
+    if (type_len >= 8u && memcmp(type, "float", 5u) == 0 &&
+        type[5] >= '2' && type[5] <= '4' && type[6] == 'x' &&
+        type[7] >= '2' && type[7] <= '4' && type_len == 8u) {
+        *out_size = (UINT)(type[7] - '0') * 16u;
+        *out_align = 16u;
+        return 1;
+    }
+    return 0;
+}
+
+/* Locate `struct <name> {` and hand back the body between the braces. */
+static int rhi_d3d12_hlsl_struct_body(const char *src, usize len,
+                                       const char *name, const char **out_body,
+                                       usize *out_len) {
+    const char *p = src;
+    const char *end = src + len;
+    char pattern[64];
+    int written = snprintf(pattern, sizeof(pattern), "struct %s", name);
+    if (written <= 0) return 0;
+    while (p < end) {
+        const char *hit = rhi_d3d12_hlsl_find(p, end, pattern);
+        const char *brace;
+        const char *scan;
+        int depth = 0;
+        if (hit == NULL) return 0;
+        brace = hit + written;
+        while (brace < end && *brace != '{') {
+            if (*brace == ';') return 0;   /* a forward declaration */
+            ++brace;
+        }
+        if (brace >= end) return 0;
+        for (scan = brace; scan < end; ++scan) {
+            if (*scan == '{') depth++;
+            else if (*scan == '}') {
+                depth--;
+                if (depth == 0) {
+                    *out_body = brace + 1;
+                    *out_len = (usize)(scan - brace - 1);
+                    return 1;
+                }
+            }
+        }
+        p = hit + written;
+    }
+    return 0;
+}
+
+/* The layout of the struct the push block is declared with: the markers
+ * publish offsets into the b0 cbuffer, so that is the struct they have to
+ * agree with. */
+static int rhi_d3d12_hlsl_push_layout(const char *src, usize len,
+                                       RHI_D3D12CbufferMember *out,
+                                       usize capacity, usize *out_count) {
+    const char *bind;
+    const char *end = src + len;
+    const char *body;
+    usize body_len;
+    char struct_name[SHADER_IO_NAME_MAX];
+    usize n = 0u;
+    *out_count = 0u;
+    /* The markers publish offsets into the b0 cbuffer, so the struct they
+     * have to agree with is the one bound at b0 -- not the first cbuffer in
+     * the file, which is the b1 temporal block in the sidecars that have
+     * one. */
+    bind = src;
+    struct_name[0] = '\0';
+    while (bind < end) {
+        const char *hit = rhi_d3d12_hlsl_find(bind, end, "ConstantBuffer<");
+        const char *scan;
+        usize name_len = 0u;
+        if (hit == NULL) break;
+        scan = hit + strlen("ConstantBuffer<");
+        while (scan < end && *scan != '>' && name_len + 1u < sizeof(struct_name)) {
+            if (rhi_d3d12_hlsl_ident_char(*scan))
+                struct_name[name_len++] = *scan;
+            else if (name_len > 0u) break;
+            ++scan;
+        }
+        struct_name[name_len] = '\0';
+        if (name_len == 0u) { bind = scan; continue; }
+        /* Is this declaration the b0 one? */
+        {
+            const char *probe = scan;
+            for (; probe < end && *probe != ';'; ++probe) {
+                if (rhi_d3d12_hlsl_find(probe, end, "register(b0") == probe)
+                    goto found;
+                if (*probe == '\n') break;   /* the declaration ended */
+            }
+        }
+        bind = hit + strlen("ConstantBuffer<");
+    }
+found:
+    if (struct_name[0] == '\0') return 1;   /* no push block: nothing to check */
+    if (!rhi_d3d12_hlsl_struct_body(src, len, struct_name, &body, &body_len))
+        return 1;
+    /* Members are `type name;` declarations; a member with a semantic
+     * (`: SV_Position`) is not a cbuffer member and is skipped. The body is
+     * copied with its comments blanked out first: a trailing `// 16` comment
+     * sits AFTER the semicolon, so splitting the raw text on ';' would make
+     * every declaration but the first start with the comment. */
+    {
+        char buf[2048];
+        usize n_copy = body_len < sizeof(buf) - 1u ? body_len : sizeof(buf) - 1u;
+        char *p;
+        char *pend;
+        char *semi;
+        char *colon;
+        char *d;
+        char *type_start;
+        char *type_end;
+        char *name_start;
+        char *name_end;
+        char type[32];
+        usize type_len;
+        UINT size = 0u;
+        UINT align_ = 0u;
+        UINT offset = 0u;
+        memcpy(buf, body, n_copy);
+        buf[n_copy] = '\0';
+        /* Blank the comments in the COPY: the source is const and a trailing
+         * `// 16` comment sits AFTER the semicolon, so splitting the raw
+         * text on ';' would make every declaration but the first start with
+         * the comment. */
+        p = buf;
+        pend = buf + n_copy;
+        while (p < pend) {
+            if (p + 1 < pend && p[0] == '/' && p[1] == '/') {
+                while (p < pend && *p != '\n') *p++ = ' ';
+                continue;
+            }
+            if (p + 1 < pend && p[0] == '/' && p[1] == '*') {
+                *p++ = ' ';
+                *p++ = ' ';
+                while (p + 1 < pend && !(p[0] == '*' && p[1] == '/')) {
+                    if (*p != '\n') *p = ' ';
+                    ++p;
+                }
+                if (p + 1 < pend) { *p = ' '; *(p + 1) = ' '; p += 2; }
+                continue;
+            }
+            ++p;
+        }
+        p = buf;
+        while (p < pend) {
+            semi = (char *)memchr(p, ';', (size_t)(pend - p));
+            if (semi == NULL) break;
+            colon = (char *)memchr(p, ':', (size_t)(semi - p));
+            if (colon != NULL) {   /* has a semantic: not a cbuffer member */
+                p = semi + 1;
+                continue;
+            }
+            d = p;
+            while (d < semi && (*d == ' ' || *d == '\t' || *d == '\r' ||
+                                *d == '\n')) ++d;
+            type_start = d;
+            while (d < semi && *d != ' ' && *d != '\t' && *d != '\r' &&
+                   *d != '\n') ++d;
+            type_end = d;
+            while (d < semi && (*d == ' ' || *d == '\t' || *d == '\r' ||
+                                *d == '\n')) ++d;
+            name_start = d;
+            while (d < semi && rhi_d3d12_hlsl_ident_char(*d)) ++d;
+            name_end = d;
+            type_len = (usize)(type_end - type_start);
+            if (type_len == 0u || type_len >= sizeof(type)) {
+                p = semi + 1;
+                continue;
+            }
+            memcpy(type, type_start, type_len);
+            type[type_len] = '\0';
+            if (!rhi_d3d12_hlsl_member_layout(type, type_len, &size, &align_)) {
+                p = semi + 1;
+                continue;
+            }
+            offset = (offset + align_ - 1u) / align_ * align_;
+            if (n < capacity) {
+                usize name_size = (usize)(name_end - name_start);
+                if (name_size > 0u && name_size < SHADER_IO_NAME_MAX) {
+                    memcpy(out[n].name, name_start, name_size);
+                    out[n].name[name_size] = '\0';
+                    out[n].offset = offset;
+                    n++;
+                }
+            }
+            offset += size;
+            p = semi + 1;
+        }
+    }
+    *out_count = n;
+    return 1;
+}
+
+/* Cross-check the markers against the push block's layout. Returns 0 when a
+ * marker disagrees, so the caller can refuse the pipeline. */
+static int rhi_d3d12_hlsl_markers_match_layout(const char *src, usize len) {
+    RHI_D3D12UniformLoc markers[RHI_D3D12_MAX_UNIFORM_LOCS];
+    RHI_D3D12CbufferMember members[RHI_D3D12_MAX_CBUFFER_MEMBERS];
+    UINT marker_count = 0u;
+    usize member_count = 0u;
+    UINT i;
+    int ok = 1;
+    rhi_d3d12_uniform_markers(src, len, markers, &marker_count);
+    if (marker_count == 0u) return 1;
+    if (!rhi_d3d12_hlsl_push_layout(src, len, members,
+                                    RHI_D3D12_MAX_CBUFFER_MEMBERS,
+                                    &member_count))
+        return 1;
+    if (member_count == 0u) return 1;
+    for (i = 0u; i < marker_count; ++i) {
+        usize j;
+        for (j = 0u; j < member_count; ++j) {
+            if (strcmp(members[j].name, markers[i].name) != 0) continue;
+            if (members[j].offset == markers[i].offset) break;
+            LOG_ERROR("D3D12: uniform %s is published at byte %u but the "
+                      "cbuffer layout puts it at %u -- the marker and the "
+                      "struct disagree, so the write would land on the "
+                      "wrong member. Refusing the shader.", markers[i].name,
+                      (unsigned)markers[i].offset, (unsigned)members[j].offset);
+            ok = 0;
+            break;
+        }
+    }
+    return ok;
+}
+
+/* Element size of a reflected RWStructuredBuffer<T> for the scalar and
+ * vector types the compute sidecars use. 0 = raw view; UINT_MAX = no view
+ * this backend can describe, which makes the binder refuse the bind. */
+static UINT rhi_d3d12_storage_stride(const char *format) {
+    static const struct { const char *name; UINT size; } k_types[] = {
+        { "uint", 4u }, { "int", 4u }, { "float", 4u },
+        { "uint2", 8u }, { "int2", 8u }, { "float2", 8u },
+        { "uint3", 12u }, { "int3", 12u }, { "float3", 12u },
+        { "uint4", 16u }, { "int4", 16u }, { "float4", 16u },
+        { "float4x4", 64u },
+    };
+    usize i;
+    if (strcmp(format, "raw") == 0) return 0u;
+    for (i = 0u; i < sizeof(k_types) / sizeof(k_types[0]); ++i)
+        if (strcmp(format, k_types[i].name) == 0) return k_types[i].size;
+    return UINT_MAX;
+}
+
+static void rhi_d3d12_root_sig_note_storage(RHI_D3D12RootSigBuilder *b,
+                                            const ShaderIOBinding *bind,
+                                            UINT param) {
+    if (bind->binding >= RHI_D3D12_MAX_REGISTERS) return;
+    if (bind->kind == SHADER_IO_RESOURCE_STORAGE) {
+        b->storage_root_params[bind->binding] = param;
+        b->storage_strides[bind->binding] = rhi_d3d12_storage_stride(bind->format);
+    } else if (bind->kind == SHADER_IO_RESOURCE_IMAGE && bind->format[0] != '\0') {
+        /* A read-only buffer at register(tN): GLSL's `readonly buffer`. */
+        b->srv_buffer_strides[bind->binding] = rhi_d3d12_storage_stride(bind->format);
+    }
+}
+
 /* ---- root signature generation (Task 5) ---- */
 /* One pass over reflected bindings: PUSH_CONSTANT folds into the constants
- * param the caller added first; UNIFORM -> CBV table; SAMPLER -> SRV table +
- * static sampler slot; STORAGE -> UAV table; IMAGE -> SRV table. Registers
- * follow the reflected binding (space 0). Returns 0 on overflow. */
+ * param the caller added first; UNIFORM -> CBV table; SAMPLER -> collected
+ * for the one sampler table (R666, rhi_d3d12_root_sig_add_sampler_table);
+ * STORAGE -> UAV table; IMAGE -> SRV table. Registers follow the reflected
+ * binding (space 0). Returns 0 on overflow. */
 static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
                                            const ShaderIOBinding *bindings,
                                            usize count,
@@ -2344,21 +3254,18 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
             range_type = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
             break;
         case SHADER_IO_RESOURCE_SAMPLER:
-            /* A SamplerState resolves through a static sampler, not a
-             * descriptor table; emitting both overlaps at register 0. */
+            /* R666: collected here, emitted as one descriptor table by
+             * rhi_d3d12_root_sig_add_sampler_table once both stages are in
+             * (a register the VS and PS both declare is one range). */
             {
-                D3D12_STATIC_SAMPLER_DESC *sampler;
-                if (b->sampler_count >= 8u) return 0;
-                sampler = &b->samplers[b->sampler_count++];
-                ZeroMemory(sampler, sizeof(*sampler));
-                sampler->Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-                sampler->AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampler->AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampler->AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampler->MaxLOD = D3D12_FLOAT32_MAX;
-                sampler->ShaderRegister = bind->binding;
-                sampler->RegisterSpace = 0u;
-                sampler->ShaderVisibility = visibility;
+                UINT s;
+                if (bind->binding >= RHI_D3D12_MAX_REGISTERS) return 0;
+                for (s = 0u; s < b->sampler_count; ++s)
+                    if (b->sampler_regs[s] == bind->binding) break;
+                if (s == b->sampler_count) {
+                    if (b->sampler_count >= RHI_D3D12_SAMPLER_TABLE_MAX) return 0;
+                    b->sampler_regs[b->sampler_count++] = bind->binding;
+                }
             }
             continue;
         case SHADER_IO_RESOURCE_IMAGE:
@@ -2368,8 +3275,37 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
         default:
             continue; /* folded into the 32BIT_CONSTANTS param */
         }
-        if (b->param_count >= 16u || b->range_count >= 16u) return 0;
         base_register = bind->binding;
+        {
+            UINT reuse;
+            for (reuse = 0u; reuse < b->param_count; ++reuse) {
+                D3D12_ROOT_PARAMETER1 *rp = &b->params[reuse];
+                const D3D12_DESCRIPTOR_RANGE1 *rr;
+                if (rp->ParameterType !=
+                    D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) continue;
+                if (rp->DescriptorTable.NumDescriptorRanges != 1u) continue;
+                rr = rp->DescriptorTable.pDescriptorRanges;
+                if (rr->RangeType != range_type) continue;
+                if (rr->BaseShaderRegister != base_register) continue;
+                if (rr->RegisterSpace != 0u) continue;
+                if (rr->NumDescriptors != 1u) continue;
+                /* R605: assign, never OR. In this SDK the
+                 * D3D12_SHADER_VISIBILITY enumerators are sequential
+                 * values (ALL 0, VERTEX 1, PIXEL 5), NOT bitmasks, so
+                 * VERTEX | PIXEL evaluates to PIXEL and silently drops
+                 * vertex visibility -- which is exactly the bug: the
+                 * vertex shader would keep reading a table it cannot
+                 * see, and the failure would be silent. */
+                rp->ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+                if (bind->kind == SHADER_IO_RESOURCE_IMAGE && base_register < RHI_D3D12_MAX_REGISTERS)
+                    b->image_root_params[base_register] = reuse;
+                if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && base_register < RHI_D3D12_MAX_REGISTERS)
+                    b->uniform_root_params[base_register] = reuse;
+                rhi_d3d12_root_sig_note_storage(b, bind, reuse);
+                goto next_binding;
+            }
+        }
+        if (b->param_count >= 23u || b->range_count >= 24u) return 0;
         range = &b->ranges[b->range_count++];
         ZeroMemory(range, sizeof(*range));
         range->RangeType = range_type;
@@ -2385,11 +3321,44 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
         param->DescriptorTable.NumDescriptorRanges = 1u;
         param->DescriptorTable.pDescriptorRanges = range;
         param->ShaderVisibility = visibility;
-        if (bind->kind == SHADER_IO_RESOURCE_IMAGE && bind->binding < 16u)
+        if (bind->kind == SHADER_IO_RESOURCE_IMAGE && bind->binding < RHI_D3D12_MAX_REGISTERS)
             b->image_root_params[bind->binding] = b->param_count - 1u;
-        if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && bind->binding < 16u)
+        if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && bind->binding < RHI_D3D12_MAX_REGISTERS)
             b->uniform_root_params[bind->binding] = b->param_count - 1u;
+        rhi_d3d12_root_sig_note_storage(b, bind, b->param_count - 1u);
+next_binding:
+        ;
     }
+    return 1;
+}
+
+/* R666: the SamplerState registers as ONE descriptor table: range k holds
+ * register sampler_regs[k] at table offset k, so a draw fills `count`
+ * consecutive ring descriptors. Costs one root DWORD (audited in R666: every
+ * pipeline still fits its push block). */
+static int rhi_d3d12_root_sig_add_sampler_table(RHI_D3D12RootSigBuilder *b) {
+    D3D12_ROOT_PARAMETER1 *param;
+    UINT k;
+    b->sampler_table_param = UINT_MAX;
+    if (b->sampler_count == 0u) return 1;
+    if (b->param_count >= 23u) return 0;
+    for (k = 0u; k < b->sampler_count; ++k) {
+        D3D12_DESCRIPTOR_RANGE1 *r = &b->sampler_ranges[k];
+        ZeroMemory(r, sizeof(*r));
+        r->RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+        r->NumDescriptors = 1u;
+        r->BaseShaderRegister = b->sampler_regs[k];
+        r->RegisterSpace = 0u;
+        r->Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+        r->OffsetInDescriptorsFromTableStart = k;
+    }
+    param = &b->params[b->param_count];
+    ZeroMemory(param, sizeof(*param));
+    param->ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    param->DescriptorTable.NumDescriptorRanges = b->sampler_count;
+    param->DescriptorTable.pDescriptorRanges = b->sampler_ranges;
+    param->ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    b->sampler_table_param = b->param_count++;
     return 1;
 }
 
@@ -2422,7 +3391,7 @@ static ID3D12RootSignature *rhi_d3d12_root_signature_create(
     HRESULT hr;
     *out_push_param_index = UINT_MAX;
     *out_push_size = 0u;
-    if (b->push_constant_size > 0u && b->param_count < 16u) {
+    if (b->push_constant_size > 0u && b->param_count < 24u) {
         D3D12_ROOT_PARAMETER1 *param;
         UINT i;
         requested_dwords = b->push_constant_size / 4u;
@@ -2459,8 +3428,8 @@ static ID3D12RootSignature *rhi_d3d12_root_signature_create(
     d1 = &desc.Desc_1_1;
     d1->NumParameters = b->param_count;
     d1->pParameters = b->params;
-    d1->NumStaticSamplers = b->sampler_count;
-    d1->pStaticSamplers = b->samplers;
+    d1->NumStaticSamplers = 0u;   /* R666: samplers are a descriptor table */
+    d1->pStaticSamplers = NULL;
     d1->Flags = is_compute ? D3D12_ROOT_SIGNATURE_FLAG_NONE
                            : D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
     hr = D3D12SerializeVersionedRootSignature(&desc, &serialized, &error_blob);
@@ -2528,7 +3497,9 @@ static UINT rhi_d3d12_input_layout(const RHIPipelineDesc *desc,
 static ID3D12PipelineState *rhi_d3d12_create_graphics_pso(
         RHI_D3D12Context *ctx, ID3D12RootSignature *root_sig,
         const D3D12_SHADER_BYTECODE *vs, const D3D12_SHADER_BYTECODE *ps,
-        const RHIPipelineDesc *desc, UINT *out_stride) {
+        const RHIPipelineDesc *desc, UINT *out_stride,
+        const DXGI_FORMAT *rtv_override, UINT rtv_override_count,
+        UINT no_dsv) {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso;
     D3D12_INPUT_ELEMENT_DESC elements[5];
     UINT rt_count;
@@ -2541,8 +3512,14 @@ static ID3D12PipelineState *rhi_d3d12_create_graphics_pso(
     pso.InputLayout.pInputElementDescs = elements;
     pso.RasterizerState.FillMode = desc->wireframe ? D3D12_FILL_MODE_WIREFRAME
                                                    : D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = desc->disable_culling ? D3D12_CULL_MODE_NONE
-                                                         : D3D12_CULL_MODE_BACK;
+    /* no_vertex_input also forces culling off, as on VK (cullMode NONE) and GL:
+     * those pipelines are fullscreen triangles / generated geometry whose
+     * winding the caller never chose, so a back-face cull can only ever drop
+     * them. Without this the skybox and particle pipelines drew only because
+     * their triangles happened to wind front-facing (R664). */
+    pso.RasterizerState.CullMode =
+        (desc->disable_culling || desc->no_vertex_input) ? D3D12_CULL_MODE_NONE
+                                                          : D3D12_CULL_MODE_BACK;
     pso.RasterizerState.FrontCounterClockwise = FALSE;
     pso.RasterizerState.DepthClipEnable = TRUE;
     /* R445 parity with VK/GL: fullscreen blits (write-disable without
@@ -2557,6 +3534,14 @@ static ID3D12PipelineState *rhi_d3d12_create_graphics_pso(
         ? D3D12_DEPTH_WRITE_MASK_ZERO : D3D12_DEPTH_WRITE_MASK_ALL;
     rt_count = desc->mrt_attachment_count > 1u ? desc->mrt_attachment_count : 1u;
     if (desc->is_shadow_depth) rt_count = 0u;
+    if (rtv_override != NULL) rt_count = rtv_override_count;
+    /* R650: per-target blend state only takes effect with
+     * IndependentBlendEnable; without it D3D12 applies RenderTarget[0] to
+     * every target, so alpha_blend_color_only blended the motion-vector RT1
+     * as well (particles and water wrote a velocity mixed with the clear
+     * value instead of their own). */
+    pso.BlendState.IndependentBlendEnable =
+        (desc->alpha_blend && desc->alpha_blend_color_only) ? TRUE : FALSE;
     for (i = 0u; i < 8u; ++i) {
         pso.BlendState.RenderTarget[i].RenderTargetWriteMask =
             D3D12_COLOR_WRITE_ENABLE_ALL;
@@ -2577,11 +3562,19 @@ static ID3D12PipelineState *rhi_d3d12_create_graphics_pso(
         for (i = 0u; i < rt_count; ++i) {
             RHIFormat f = desc->mrt_attachment_count > 1u
                 ? desc->mrt_formats[i] : desc->color_format;
-            pso.RTVFormats[i] = rhi_d3d12_format(f);
+            pso.RTVFormats[i] = rtv_override != NULL ? rtv_override[i]
+                                                     : rhi_d3d12_format(f);
             if (pso.RTVFormats[i] == DXGI_FORMAT_UNKNOWN) return NULL;
         }
     }
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    /* R643: a pass with no depth attachment bound (the swapchain: frame
+     * begin, FBO unbind) must use a PSO whose DSVFormat is UNKNOWN, with
+     * depth testing off -- debug layer [615]. */
+    pso.DSVFormat = no_dsv ? DXGI_FORMAT_UNKNOWN : DXGI_FORMAT_D32_FLOAT;
+    if (no_dsv) {
+        pso.DepthStencilState.DepthEnable = FALSE;
+        pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    }
     pso.SampleDesc.Count = desc->sample_count == 0u ? 1u : desc->sample_count;
     pso.SampleMask = UINT_MAX;
     pso.PrimitiveTopologyType = desc->point_list
@@ -2612,7 +3605,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     RHI_D3D12Context *ctx;
     RHI_D3D12Pipeline *pd;
     RHI_D3D12RootSigBuilder builder;
-    ShaderIOBinding bindings[16];
+    ShaderIOBinding bindings[32];   /* R654: deferred_light declares 19 */
     usize binding_count;
     D3D12_SHADER_BYTECODE vs_code;
     D3D12_SHADER_BYTECODE ps_code;
@@ -2624,15 +3617,20 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         !rhi_mrt_formats_valid(desc->mrt_formats, desc->mrt_attachment_count))
         return RHI_HANDLE_NULL;
     ZeroMemory(&builder, sizeof(builder));
-    for (u32 i = 0u; i < 16u; ++i) {
+    builder.sampler_table_param = UINT_MAX;
+    for (u32 i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) {
         builder.image_root_params[i] = UINT_MAX;
         builder.uniform_root_params[i] = UINT_MAX;
+        builder.storage_root_params[i] = UINT_MAX;
+        builder.storage_strides[i] = UINT_MAX;
+        builder.srv_buffer_strides[i] = UINT_MAX;
     }
     /* Push-constant contract: 128B compute / 256B graphics (VK parity); the
      * terrain/water/combined_* layout booleans select which HLSL root
      * constant block consumes these bytes (declared by Task 6's shaders);
      * they are retained in pd->desc for the uniform-location mapping. */
     builder.push_constant_size = desc->is_compute ? 128u : 256u;
+    builder.clamp_samplers = (desc->is_compute || desc->no_vertex_input) ? 1u : 0u;
     ZeroMemory(&vs_code, sizeof(vs_code));
     ZeroMemory(&ps_code, sizeof(ps_code));
     if (desc->is_compute) {
@@ -2643,12 +3641,19 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             return RHI_HANDLE_NULL;
         }
         binding_count = rhi_d3d12_reflect_hlsl(cs->source, cs->source_len,
-                                               bindings, 16u);
+                                               bindings, 32u);
         if (!rhi_d3d12_root_sig_from_bindings(&builder, bindings,
-                                              binding_count))
+                                              binding_count) ||
+            !rhi_d3d12_root_sig_add_sampler_table(&builder))
             return RHI_HANDLE_NULL;
         pd = (RHI_D3D12Pipeline *)calloc(1u, sizeof(*pd));
         if (pd == NULL) return RHI_HANDLE_NULL;
+        /* R636: same fail-closed marker/layout cross-check as the graphics
+         * path. */
+        if (!rhi_d3d12_hlsl_markers_match_layout(cs->source, cs->source_len)) {
+            free(pd);
+            return RHI_HANDLE_NULL;
+        }
         rhi_d3d12_uniform_markers(cs->source, cs->source_len, pd->uniforms,
                                   &pd->uniform_count);
         pd->root_sig = rhi_d3d12_root_signature_create(ctx, &builder, 1u,
@@ -2670,42 +3675,84 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             dev, desc->vert, RHI_RES_SHADER);
         RHI_D3D12Shader *ps = (RHI_D3D12Shader *)rhi_get_resource_typed(
             dev, desc->frag, RHI_RES_SHADER);
-        if (vs == NULL || ps == NULL || vs->blob == NULL || ps->blob == NULL) {
+        /* A shadow-depth pass legitimately has no pixel stage: the PSO is built
+         * with zero render targets, so a pixel shader would have nothing to
+         * write. GL and Metal both accept the null fragment handle here. */
+        if (vs == NULL || vs->blob == NULL ||
+            (!desc->is_shadow_depth && (ps == NULL || ps->blob == NULL))) {
             LOG_WARN("D3D12: pipeline needs compiled VS/PS blobs");
             return RHI_HANDLE_NULL;
         }
         binding_count = rhi_d3d12_reflect_hlsl(vs->source, vs->source_len,
-                                               bindings, 16u);
+                                               bindings, 32u);
         if (!rhi_d3d12_root_sig_add_bindings(&builder, bindings, binding_count,
                                              D3D12_SHADER_VISIBILITY_VERTEX))
             return RHI_HANDLE_NULL;
-        binding_count = rhi_d3d12_reflect_hlsl(ps->source, ps->source_len,
-                                               bindings, 16u);
-        if (!rhi_d3d12_root_sig_add_bindings(&builder, bindings, binding_count,
-                                             D3D12_SHADER_VISIBILITY_PIXEL))
+        if (ps != NULL) {
+            binding_count = rhi_d3d12_reflect_hlsl(ps->source, ps->source_len,
+                                                   bindings, 32u);
+            if (!rhi_d3d12_root_sig_add_bindings(&builder, bindings,
+                                                 binding_count,
+                                                 D3D12_SHADER_VISIBILITY_PIXEL))
+                return RHI_HANDLE_NULL;
+        }
+        if (!rhi_d3d12_root_sig_add_sampler_table(&builder))
             return RHI_HANDLE_NULL;
         vs_code.pShaderBytecode = vs->blob;
         vs_code.BytecodeLength = vs->blob_size;
-        ps_code.pShaderBytecode = ps->blob;
-        ps_code.BytecodeLength = ps->blob_size;
+        if (ps != NULL) {
+            ps_code.pShaderBytecode = ps->blob;
+            ps_code.BytecodeLength = ps->blob_size;
+        }
         pd = (RHI_D3D12Pipeline *)calloc(1u, sizeof(*pd));
         if (pd == NULL) return RHI_HANDLE_NULL;
+        /* R636: the published uniform offsets have to agree with the cbuffer
+         * layout of the struct they name, or a write lands on the wrong
+         * member and the shader reads a value nobody wrote. Fail closed: a
+         * pipeline built on offsets nobody can vouch for is worse than no
+         * pipeline. */
+        if (!rhi_d3d12_hlsl_markers_match_layout(vs->source, vs->source_len) ||
+            (ps != NULL &&
+             !rhi_d3d12_hlsl_markers_match_layout(ps->source, ps->source_len))) {
+            free(pd);
+            return RHI_HANDLE_NULL;
+        }
         rhi_d3d12_uniform_markers(vs->source, vs->source_len, pd->uniforms,
                                   &pd->uniform_count);
-        rhi_d3d12_uniform_markers(ps->source, ps->source_len, pd->uniforms,
-                                  &pd->uniform_count);
+        if (ps != NULL)
+            rhi_d3d12_uniform_markers(ps->source, ps->source_len, pd->uniforms,
+                                      &pd->uniform_count);
         pd->root_sig = rhi_d3d12_root_signature_create(ctx, &builder, 0u,
             &pd->push_param_index, &pd->push_size);
         if (pd->root_sig != NULL)
             pd->pso = rhi_d3d12_create_graphics_pso(ctx, pd->root_sig,
-                &vs_code, &ps_code, desc, &pd->vertex_stride);
+                &vs_code, &ps_code, desc, &pd->vertex_stride, NULL, 0u, 0u);
         if (pd->pso == NULL) {
             rhi_d3d12_release((IUnknown **)&pd->root_sig);
             free(pd);
             return RHI_HANDLE_NULL;
         }
+        if (!desc->is_shadow_depth) {
+            UINT n = desc->mrt_attachment_count > 1u
+                ? desc->mrt_attachment_count : 1u;
+            for (UINT k = 0u; k < n; ++k)
+                pd->rtv_formats[k] = rhi_d3d12_format(
+                    desc->mrt_attachment_count > 1u ? desc->mrt_formats[k]
+                                                    : desc->color_format);
+            pd->rtv_count = n;
+            pd->vs_blob = malloc(vs->blob_size);
+            pd->ps_blob = ps != NULL ? malloc(ps->blob_size) : NULL;
+            if (pd->vs_blob != NULL) {
+                memcpy(pd->vs_blob, vs->blob, vs->blob_size);
+                pd->vs_blob_size = vs->blob_size;
+            }
+            if (pd->ps_blob != NULL) {
+                memcpy(pd->ps_blob, ps->blob, ps->blob_size);
+                pd->ps_blob_size = ps->blob_size;
+            }
+        }
     }
-    for (u32 i = 0u; i < 16u; ++i) {
+    for (u32 i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) {
         pd->image_root_params[i] = builder.image_root_params[i];
         pd->uniform_root_params[i] = builder.uniform_root_params[i];
         if (pd->image_root_params[i] != UINT_MAX &&
@@ -2714,7 +3761,20 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         if (pd->uniform_root_params[i] != UINT_MAX &&
             pd->push_param_index != UINT_MAX)
             pd->uniform_root_params[i]++;
+        pd->storage_root_params[i] = builder.storage_root_params[i];
+        pd->storage_strides[i] = builder.storage_strides[i];
+        pd->srv_buffer_strides[i] = builder.srv_buffer_strides[i];
+        if (pd->storage_root_params[i] != UINT_MAX &&
+            pd->push_param_index != UINT_MAX)
+            pd->storage_root_params[i]++;
     }
+    pd->sampler_root_param = builder.sampler_table_param;
+    if (pd->sampler_root_param != UINT_MAX && pd->push_param_index != UINT_MAX)
+        pd->sampler_root_param++;
+    pd->sampler_count = builder.sampler_count;
+    for (u32 i = 0u; i < builder.sampler_count; ++i)
+        pd->sampler_regs[i] = builder.sampler_regs[i];
+    pd->default_clamp = builder.clamp_samplers;
     pd->desc = *desc;
     pd->topology = desc->point_list ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST
                                     : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
@@ -2728,8 +3788,15 @@ void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
     if (dev == NULL) return;
     pd = (RHI_D3D12Pipeline *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
     if (pd == NULL) return;
-    rhi_d3d12_release((IUnknown **)&pd->pso);
-    rhi_d3d12_release((IUnknown **)&pd->root_sig);
+    {
+        RHI_D3D12Context *dctx = (RHI_D3D12Context *)dev->backend_data;
+        rhi_d3d12_release_deferred(dctx, (IUnknown **)&pd->pso);
+        for (UINT k = 0u; k < pd->variant_count; ++k)
+            rhi_d3d12_release_deferred(dctx, (IUnknown **)&pd->variants[k].pso);
+        rhi_d3d12_release_deferred(dctx, (IUnknown **)&pd->root_sig);
+    }
+    free(pd->vs_blob);
+    free(pd->ps_blob);
     free(pd);
     rhi_free_slot(dev, pipe);
 }
@@ -2747,7 +3814,18 @@ static D3D12_RESOURCE_STATES rhi_d3d12_texture_final_state(RHIFormat format) {
            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 }
 
-RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
+/* depth_samplable asks for the typeless alias pair: the resource is allocated
+ * R32_TYPELESS so a D32_FLOAT depth-stencil view and an R32_FLOAT
+ * shader resource view can both address the same bytes. Only the shadow atlas
+ * needs it; every other depth target stays unsamplable D32_FLOAT, which is
+ * exactly what it is today.
+ * R441: array_size is the resource's slice count (D3D12's DepthOrArraySize);
+ * 0 and 1 both mean an ordinary 2D texture and are the only values any
+ * non-array caller passes. */
+static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
+                                              const RHITextureDesc *desc,
+                                              int depth_samplable,
+                                              u32 array_size) {
     RHI_D3D12Context *ctx;
     RHI_D3D12Texture *td;
     D3D12_HEAP_PROPERTIES properties;
@@ -2756,6 +3834,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     D3D12_CLEAR_VALUE clear_value;
     D3D12_CLEAR_VALUE *clear_ptr = NULL;
     DXGI_FORMAT dxgi_format;
+    DXGI_FORMAT alloc_format;
     HRESULT hr;
     u32 idx;
     if (dev == NULL || !rhi_texture_desc_validate(desc)) return RHI_HANDLE_NULL;
@@ -2763,6 +3842,10 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     if (ctx == NULL || ctx->device_lost) return RHI_HANDLE_NULL;
     dxgi_format = rhi_d3d12_format(desc->format);
     if (dxgi_format == DXGI_FORMAT_UNKNOWN) return RHI_HANDLE_NULL;
+    if (depth_samplable && desc->format != RHI_FORMAT_D32_FLOAT)
+        return RHI_HANDLE_NULL;
+    alloc_format = (depth_samplable && desc->format == RHI_FORMAT_D32_FLOAT)
+        ? DXGI_FORMAT_R32_TYPELESS : dxgi_format;
     ZeroMemory(&properties, sizeof(properties));
     properties.Type = D3D12_HEAP_TYPE_DEFAULT;
     properties.CreationNodeMask = 1u;
@@ -2771,20 +3854,37 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     description.Width = desc->width;
     description.Height = desc->height;
-    description.DepthOrArraySize = 1u;
+    description.DepthOrArraySize = (UINT)(array_size > 0u ? array_size : 1u);
     description.MipLevels = (UINT16)(desc->mip_levels == 0u ? 1u : desc->mip_levels);
-    description.Format = dxgi_format;
+    description.Format = alloc_format;
     description.SampleDesc.Count = 1u;
-    initial_state = desc->data != NULL ? D3D12_RESOURCE_STATE_COPY_DEST
+    /* R648: a texture with initial data is created in COMMON and moved to
+     * COPY_DEST by an explicit barrier on the upload list, rather than being
+     * created in COPY_DEST. Created in COPY_DEST, the first draw sampling
+     * such a texture intermittently tripped GPU-based validation [1358]
+     * ("Incompatible texture barrier layout ... LEGACY_COPY_DEST") on the
+     * RTX driver even though the upload list's COPY_DEST -> shader-read
+     * barrier had already executed and been waited on. WARP never showed it.
+     * See docs/Implementation_Status.md R648 for the run counts. */
+    initial_state = desc->data != NULL ? D3D12_RESOURCE_STATE_COMMON
                                        : rhi_d3d12_texture_final_state(desc->format);
     if (desc->format == RHI_FORMAT_D32_FLOAT) {
         description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
         ZeroMemory(&clear_value, sizeof(clear_value));
+        /* The clear value names the depth-stencil aspect, which is D32_FLOAT
+         * even when the resource itself was allocated typeless. */
         clear_value.Format = dxgi_format;
         clear_value.DepthStencil.Depth = 1.0f;
         clear_ptr = &clear_value;
     } else {
         description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        /* R653: R32_FLOAT is the compute-written format (the Hi-Z pyramid,
+         * written through rhi_cmd_bind_image_texture), so it may also back
+         * a UAV. R654: so may RGBA16F -- the IBL BRDF LUT and cubemaps are
+         * written by compute too. */
+        if (desc->format == RHI_FORMAT_R32_FLOAT ||
+            desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT)
+            description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     }
     td = (RHI_D3D12Texture *)calloc(1u, sizeof(*td));
     if (td == NULL) return RHI_HANDLE_NULL;
@@ -2795,11 +3895,24 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         free(td);
         return RHI_HANDLE_NULL;
     }
-    td->dxgi_format = dxgi_format;
-    td->rhi_format = (UINT)desc->format;
-    td->width = desc->width;
+#if defined(ENGINE_D3D12_DEBUG)
+    {
+        static unsigned s_tex_serial;
+        wchar_t wname[96];
+        swprintf(wname, 96, L"tex#%u %ux%ux%u fmt%u data%d frame%llu",
+                 ++s_tex_serial, (unsigned)desc->width, (unsigned)desc->height,
+                 (unsigned)description.DepthOrArraySize, (unsigned)desc->format,
+                 desc->data != NULL, (unsigned long long)ctx->debug_frame);
+        ID3D12Object_SetName((ID3D12Object *)td->resource, wname);
+    }
+#endif
+    td->dxgi_format = alloc_format;
+    td->srv_format = depth_samplable ? DXGI_FORMAT_R32_FLOAT
+                                     : DXGI_FORMAT_UNKNOWN;
+    td->rhi_format = (UINT)desc->format;    td->width = desc->width;
     td->height = desc->height;
     td->mip_levels = description.MipLevels;
+    td->array_size = description.DepthOrArraySize;
     td->state = initial_state;
     if (desc->data != NULL) {
         /* Tightly packed native-layout texels for mip 0. */
@@ -2835,6 +3948,8 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
                 src_loc.pResource = staging;
                 src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
                 src_loc.PlacedFootprint = footprint;
+                rhi_d3d12_transition(ctx->upload_list, td->resource,
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
                 ID3D12GraphicsCommandList_CopyTextureRegion(
                     ctx->upload_list, &dst_loc, 0u, 0u, 0u, &src_loc, NULL);
                 rhi_d3d12_transition(ctx->upload_list, td->resource,
@@ -2856,23 +3971,133 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     dev->slots[idx].type = RHI_RES_TEXTURE;
     return rhi_make_handle(idx, dev->slots[idx].generation);
 }
+RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
+    return rhi_d3d12_texture_create_ex(dev, desc, 0, 0u);
+}
 void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     RHI_D3D12Texture *td;
     if (dev == NULL) return;
     td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (td == NULL) return;
-    rhi_d3d12_release((IUnknown **)&td->resource);
+    {
+        RHI_D3D12Context *ctx = (RHI_D3D12Context *)dev->backend_data;
+        UINT i;
+        if (ctx != NULL)
+            for (i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i)
+                if (ctx->live_srv[i] == td) ctx->live_srv[i] = NULL;
+    }
+    rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
+                               (IUnknown **)&td->resource);
     free(td);
     rhi_free_slot(dev, tex);
 }
+/* R441: 2D texture array — one mip, RGBA8/BGRA8 only (material albedo
+ * packing). The D3D12 shape is the ordinary TEXTURE2D resource description
+ * with DepthOrArraySize = layers and no separate "array" resource dimension:
+ * D3D12 spells GL_TEXTURE_2D_ARRAY / VkImageView 2D-array as slices of a
+ * TEXTURE2D, and the SRV view dimension (not the resource) is what tells the
+ * shader the slices are addressable. The validation mirror is the GL
+ * backend's rhi_texture_array_create so a bad request is refused identically
+ * on both. */
 RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
                                     u32 layers, RHIFormat fmt) {
-    (void)dev; (void)width; (void)height; (void)layers; (void)fmt;
-    return RHI_HANDLE_NULL;
+    RHITextureDesc td;
+    if (dev == NULL || width == 0u || height == 0u || layers == 0u ||
+        width > RHI_MAX_DRAWABLE_DIMENSION ||
+        height > RHI_MAX_DRAWABLE_DIMENSION ||
+        layers > RHI_MAX_TEXTURE_ARRAY_LAYERS) return RHI_HANDLE_NULL;
+    if (fmt != RHI_FORMAT_R8G8B8A8_UNORM && fmt != RHI_FORMAT_B8G8R8A8_UNORM) {
+        LOG_WARN("D3D12: texture array only supports 8-bit RGBA formats");
+        return RHI_HANDLE_NULL;
+    }
+    memset(&td, 0, sizeof(td));
+    td.width = width;
+    td.height = height;
+    td.format = fmt;
+    td.mip_levels = 1u;
+    td.data = NULL;
+    return rhi_d3d12_texture_create_ex(dev, &td, 0, layers);
 }
 void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex, u32 layer,
                                     const void *rgba8, usize size) {
-    (void)dev; (void)tex; (void)layer; (void)rgba8; (void)size;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *td;
+    D3D12_RESOURCE_DESC description;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    UINT num_rows;
+    UINT64 row_size;
+    UINT64 total_size;
+    UINT64 row_bytes;
+    UINT bpp;
+    UINT r;
+    ID3D12Resource *staging;
+    void *mapped = NULL;
+    RHIResult rr = RHI_RESULT_ERROR;
+    if (dev == NULL || rgba8 == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
+    if (ctx == NULL || ctx->device_lost || td == NULL || td->resource == NULL)
+        return;
+    if (td->array_size <= 1u || layer >= td->array_size) return;
+    bpp = rhi_d3d12_format_bytes_per_pixel((RHIFormat)td->rhi_format);
+    if (bpp == 0u) return;
+    row_bytes = (UINT64)td->width * bpp;
+    /* Same host-OOB guard class as GL's copy (rhi.h:R441) — the copy reads
+     * w*h*bpp bytes and must never run off the caller's buffer. */
+    if (size < (usize)row_bytes * td->height) return;
+    /* One slice is subresource `layer` of a mip-0 chain; the footprint the
+     * copy needs is exactly what GetCopyableFootprints reports for that single
+     * subresource, so the staging buffer is one slice, not the whole array. */
+    ZeroMemory(&description, sizeof(description));
+    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    description.Width = td->width;
+    description.Height = td->height;
+    description.DepthOrArraySize = td->array_size;
+    description.MipLevels = td->mip_levels;
+    description.Format = td->dxgi_format;
+    description.SampleDesc.Count = 1u;
+    ID3D12Device_GetCopyableFootprints(ctx->device, &description, layer, 1u, 0u,
+                                       &footprint, &num_rows, &row_size,
+                                       &total_size);
+    staging = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_UPLOAD, total_size);
+    if (staging != NULL &&
+        SUCCEEDED(ID3D12Resource_Map(staging, 0u, NULL, &mapped))) {
+        const u8 *src = (const u8 *)rgba8;
+        u8 *dst = (u8 *)mapped + footprint.Offset;
+        for (r = 0u; r < num_rows; ++r)
+            memcpy(dst + (UINT64)r * footprint.Footprint.RowPitch,
+                   src + (UINT64)r * row_bytes, (size_t)row_bytes);
+        ID3D12Resource_Unmap(staging, 0u, NULL);
+        if (SUCCEEDED(rhi_d3d12_oneshot_begin(ctx))) {
+            D3D12_TEXTURE_COPY_LOCATION dst_loc;
+            D3D12_TEXTURE_COPY_LOCATION src_loc;
+            D3D12_RESOURCE_STATES after =
+                rhi_d3d12_texture_final_state((RHIFormat)td->rhi_format);
+            ZeroMemory(&dst_loc, sizeof(dst_loc));
+            dst_loc.pResource = td->resource;
+            dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            dst_loc.SubresourceIndex = layer;
+            ZeroMemory(&src_loc, sizeof(src_loc));
+            src_loc.pResource = staging;
+            src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            src_loc.PlacedFootprint = footprint;
+            /* The resource is already in its shader-read state (create
+             * allocated it there and nothing has bound it yet at bake time),
+             * so the slice copy has to walk it through COPY_DEST and back —
+             * the same two transitions rhi_texture_create does. */
+            rhi_d3d12_transition(ctx->upload_list, td->resource, td->state,
+                                 D3D12_RESOURCE_STATE_COPY_DEST);
+            ID3D12GraphicsCommandList_CopyTextureRegion(
+                ctx->upload_list, &dst_loc, 0u, 0u, 0u, &src_loc, NULL);
+            rhi_d3d12_transition(ctx->upload_list, td->resource,
+                                 D3D12_RESOURCE_STATE_COPY_DEST, after);
+            td->state = after;
+            rr = rhi_d3d12_oneshot_flush(ctx);
+        }
+    }
+    if (staging != NULL) ID3D12Resource_Release(staging);
+    if (rr != RHI_RESULT_OK)
+        LOG_WARN("D3D12: texture array layer %u upload failed", (unsigned)layer);
 }
 bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w,
                           u32 *out_h) {
@@ -2883,6 +4108,79 @@ bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w,
     *out_w = td->width;
     *out_h = td->height;
     return true;
+}
+/* R654: one subresource (slice * mips + mip) to tightly packed rows. */
+static bool rhi_d3d12_read_subresource(RHI_D3D12Context *ctx,
+                                       RHI_D3D12Texture *td, UINT sub,
+                                       u8 *dst) {
+    D3D12_RESOURCE_DESC description;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    D3D12_TEXTURE_COPY_LOCATION src_loc, dst_loc;
+    UINT num_rows, r;
+    UINT64 row_size, total_size, row_bytes;
+    ID3D12Resource *staging;
+    void *mapped = NULL;
+    D3D12_RANGE read_range;
+    UINT mip = sub % td->mip_levels;
+    UINT w = td->width >> mip, h = td->height >> mip;
+    if (w == 0u) w = 1u;
+    if (h == 0u) h = 1u;
+    row_bytes = (UINT64)w * rhi_d3d12_format_bytes_per_pixel((RHIFormat)td->rhi_format);
+    ID3D12Resource_GetDesc(td->resource, &description);
+    ID3D12Device_GetCopyableFootprints(ctx->device, &description, sub, 1u, 0u,
+        &footprint, &num_rows, &row_size, &total_size);
+    staging = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_READBACK, total_size);
+    if (staging == NULL) return false;
+    if (FAILED(rhi_d3d12_oneshot_begin(ctx))) {
+        ID3D12Resource_Release(staging);
+        return false;
+    }
+    rhi_d3d12_transition(ctx->upload_list, td->resource, td->state,
+                         D3D12_RESOURCE_STATE_COPY_SOURCE);
+    ZeroMemory(&src_loc, sizeof(src_loc));
+    src_loc.pResource = td->resource;
+    src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src_loc.SubresourceIndex = sub;
+    ZeroMemory(&dst_loc, sizeof(dst_loc));
+    dst_loc.pResource = staging;
+    dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst_loc.PlacedFootprint = footprint;
+    ID3D12GraphicsCommandList_CopyTextureRegion(ctx->upload_list, &dst_loc,
+                                                0u, 0u, 0u, &src_loc, NULL);
+    rhi_d3d12_transition(ctx->upload_list, td->resource,
+                         D3D12_RESOURCE_STATE_COPY_SOURCE, td->state);
+    if (rhi_d3d12_oneshot_flush(ctx) != RHI_RESULT_OK) {
+        ID3D12Resource_Release(staging);
+        return false;
+    }
+    read_range.Begin = 0u;
+    read_range.End = (SIZE_T)total_size;
+    if (FAILED(ID3D12Resource_Map(staging, 0u, &read_range, &mapped))) {
+        ID3D12Resource_Release(staging);
+        return false;
+    }
+    for (r = 0u; r < num_rows; ++r)
+        memcpy(dst + (UINT64)r * row_bytes,
+               (const u8 *)mapped + footprint.Offset +
+                   (UINT64)r * footprint.Footprint.RowPitch,
+               (size_t)row_bytes);
+    ID3D12Resource_Unmap(staging, 0u, NULL);
+    ID3D12Resource_Release(staging);
+    return true;
+}
+/* R654 test hook (not RHI API): read one face/mip of a colour cube, so the
+ * WARP suite can check the IBL prefilter chain below mip 0. */
+bool rhi_d3d12_cube_read_face(RHIDevice *dev, RHICubemap cm, u32 face,
+                              u32 mip, void *dst) {
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *td;
+    if (dev == NULL || dst == NULL || face >= 6u) return false;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return false;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, cm, RHI_RES_CUBEMAP);
+    if (td == NULL || td->mip_split || mip >= td->mip_levels) return false;
+    return rhi_d3d12_read_subresource(ctx, td, face * td->mip_levels + mip,
+                                      (u8 *)dst);
 }
 bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8,
                              usize size) {
@@ -2902,7 +4200,27 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8,
     ctx = (RHI_D3D12Context *)dev->backend_data;
     if (ctx == NULL || ctx->device_lost) return false;
     td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
-    if (td == NULL) return false;
+    /* R654: a colour cube (RHI_RES_CUBEMAP) reads back all six faces at
+     * mip 0, face-major, in native bytes (rhi.h R624). */
+    if (td == NULL) {
+        RHI_D3D12Texture *cube = (RHI_D3D12Texture *)rhi_get_resource_typed(
+            dev, tex, RHI_RES_CUBEMAP);
+        UINT64 face_bytes;
+        u32 f;
+        bool ok = true;
+        if (cube == NULL || cube->mip_split) return false;
+        face_bytes = (UINT64)cube->width * cube->height *
+                     rhi_d3d12_format_bytes_per_pixel((RHIFormat)cube->rhi_format);
+        if (size < (usize)(face_bytes * 6u)) return false;
+        for (f = 0u; f < 6u && ok; ++f)
+            ok = rhi_d3d12_read_subresource(ctx, cube, f * cube->mip_levels,
+                                            (u8 *)dst_rgba8 + face_bytes * f);
+        return ok;
+    }
+    if (td->mip_split) {
+        LOG_WARN("D3D12: read_pixels on a texture with per-mip states pending");
+        return false;
+    }
     bpp = rhi_d3d12_format_bytes_per_pixel((RHIFormat)td->rhi_format);
     data_size = (UINT64)td->width * td->height * bpp;
     if (size < (usize)data_size) return false;
@@ -3032,24 +4350,8 @@ RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
     if (ctx == NULL || ctx->device_lost) return RHI_HANDLE_NULL;
     slot = rhi_d3d12_descriptor_take(ctx, &ctx->sampler_alloc);
     if (slot == UINT_MAX) return RHI_HANDLE_NULL;
-    ZeroMemory(&sd, sizeof(sd));
-    if (desc->min_filter == RHI_FILTER_NEAREST &&
-        desc->mag_filter == RHI_FILTER_NEAREST)
-        sd.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    else if (desc->min_filter == RHI_FILTER_LINEAR &&
-             desc->mag_filter == RHI_FILTER_LINEAR)
-        sd.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    else if (desc->min_filter == RHI_FILTER_LINEAR)
-        sd.Filter = D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT;
-    else
-        sd.Filter = D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR;
-    sd.AddressU = desc->wrap_u == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
-                                                  : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sd.AddressV = desc->wrap_v == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
-                                                  : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sd.AddressW = desc->wrap_w == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
-                                                  : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sd.MaxLOD = D3D12_FLOAT32_MAX;
+    rhi_d3d12_sampler_desc_fill(&sd, desc->min_filter, desc->mag_filter,
+                                desc->wrap_u, desc->wrap_v, desc->wrap_w);
     ID3D12Device_CreateSampler(ctx->device, &sd,
         rhi_d3d12_descriptor_cpu(&ctx->sampler_alloc, slot));
     smp = (RHI_D3D12Sampler *)calloc(1u, sizeof(*smp));
@@ -3091,6 +4393,118 @@ static ID3D12GraphicsCommandList *rhi_d3d12_cmd_list(RHI_D3D12Context *ctx) {
  * Root-constant writes are 4-byte granular, so the dirty byte range widens
  * to DWORD alignment; every staged write was already validated against the
  * pipeline's declared (clamped) push range via rhi_push_helper_range_ok. */
+/* R643: select the PSO whose render-target formats (and depth slot) match
+ * what is bound now
+ * (see RHI_D3D12Pipeline.rtv_formats). Called right before every draw. The
+ * common case -- the pipeline was built for the bound formats -- is one
+ * compare loop. A miss looks up / builds a variant; if the cache is full or
+ * creation fails, the original PSO stays bound (the old behaviour). */
+static void rhi_d3d12_match_rtv_formats(RHI_D3D12Context *ctx) {
+    RHI_D3D12Pipeline *pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    ID3D12GraphicsCommandList *list = rhi_d3d12_cmd_list(ctx);
+    ID3D12PipelineState *want = NULL;
+    UINT i, k, n, no_dsv;
+    if (pd == NULL || list == NULL || pd->is_compute || pd->rtv_count == 0u ||
+        pd->vs_blob == NULL)
+        return;
+    n = ctx->bound_rtv_count;
+    if (n == 0u) return;
+    no_dsv = ctx->bound_dsv_valid ? 0u : 1u;
+    if (n == pd->rtv_count && !no_dsv) {
+        for (i = 0u; i < n; ++i)
+            if (ctx->bound_rtv_formats[i] != pd->rtv_formats[i]) break;
+        if (i == n) want = pd->pso;
+    }
+    for (k = 0u; want == NULL && k < pd->variant_count; ++k) {
+        if (pd->variants[k].count != n || pd->variants[k].no_dsv != no_dsv)
+            continue;
+        for (i = 0u; i < n; ++i)
+            if (pd->variants[k].formats[i] != ctx->bound_rtv_formats[i]) break;
+        if (i == n) want = pd->variants[k].pso;
+    }
+    if (want == NULL && pd->variant_count < 6u) {
+        D3D12_SHADER_BYTECODE vs, ps;
+        UINT stride = 0u;
+        vs.pShaderBytecode = pd->vs_blob;
+        vs.BytecodeLength = pd->vs_blob_size;
+        ps.pShaderBytecode = pd->ps_blob;
+        ps.BytecodeLength = pd->ps_blob_size;
+        want = rhi_d3d12_create_graphics_pso(ctx, pd->root_sig, &vs,
+            pd->ps_blob != NULL ? &ps : NULL, &pd->desc, &stride,
+            ctx->bound_rtv_formats, n, no_dsv);
+        if (want != NULL) {
+            k = pd->variant_count++;
+            pd->variants[k].no_dsv = no_dsv;
+            for (i = 0u; i < n; ++i)
+                pd->variants[k].formats[i] = ctx->bound_rtv_formats[i];
+            pd->variants[k].count = n;
+            pd->variants[k].pso = want;
+        }
+    }
+    if (want != NULL && want != ctx->bound_pso) {
+        ID3D12GraphicsCommandList_SetPipelineState(list, want);
+        ctx->bound_pso = want;
+    }
+}
+
+/* R666: before a draw/dispatch, give the bound pipeline's sampler table the
+ * descriptors for its registers: the bound sampler, else the pipeline's
+ * default. Identical tables are shared within a frame through a small cache,
+ * so the ring holds one copy per distinct combination, not one per draw. */
+static void rhi_d3d12_flush_samplers(RHI_D3D12Context *ctx) {
+    RHI_D3D12Pipeline *pd;
+    ID3D12GraphicsCommandList *list;
+    UINT slots[RHI_D3D12_SAMPLER_TABLE_MAX];
+    UINT half, base = UINT_MAX, k, c;
+    if (ctx == NULL || !ctx->sampler_dirty) return;
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (pd == NULL || list == NULL) return;
+    if (pd->sampler_root_param == UINT_MAX) { ctx->sampler_dirty = 0u; return; }
+    half = (ctx->frame_parity & 1u) * RHI_D3D12_SAMPLER_RING_HALF;
+    for (k = 0u; k < pd->sampler_count; ++k) {
+        UINT s = ctx->bound_sampler[pd->sampler_regs[k]];
+        slots[k] = s != UINT_MAX ? s : ctx->sampler_default_slot[pd->default_clamp ? 1u : 0u];
+    }
+    for (c = 0u; c < ctx->sampler_cache_count && base == UINT_MAX; ++c) {
+        if (ctx->sampler_cache[c].count != pd->sampler_count) continue;
+        if (memcmp(ctx->sampler_cache[c].slots, slots,
+                   pd->sampler_count * sizeof(UINT)) == 0)
+            base = ctx->sampler_cache[c].base;
+    }
+    if (base == UINT_MAX) {
+        if (ctx->sampler_ring_cursor + pd->sampler_count > RHI_D3D12_SAMPLER_RING_HALF ||
+            ctx->sampler_cache_count >= RHI_D3D12_SAMPLER_CACHE) {
+            /* Never leave the table unset: the reserved default block. */
+            if (!ctx->sampler_ring_warned) {
+                LOG_WARN("D3D12: sampler table ring full this frame -- "
+                         "falling back to default samplers");
+                ctx->sampler_ring_warned = 1u;
+            }
+            base = half + (pd->default_clamp ? RHI_D3D12_SAMPLER_TABLE_MAX : 0u);
+        } else {
+            base = half + ctx->sampler_ring_cursor;
+            for (k = 0u; k < pd->sampler_count; ++k)
+                ID3D12Device_CopyDescriptorsSimple(ctx->device, 1u,
+                    rhi_d3d12_sampler_ring_cpu(ctx, base + k),
+                    rhi_d3d12_descriptor_cpu(&ctx->sampler_alloc, slots[k]),
+                    D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+            ctx->sampler_ring_cursor += pd->sampler_count;
+            c = ctx->sampler_cache_count++;
+            ctx->sampler_cache[c].count = pd->sampler_count;
+            memcpy(ctx->sampler_cache[c].slots, slots, pd->sampler_count * sizeof(UINT));
+            ctx->sampler_cache[c].base = base;
+        }
+    }
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list,
+            pd->sampler_root_param, rhi_d3d12_sampler_ring_gpu(ctx, base));
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list,
+            pd->sampler_root_param, rhi_d3d12_sampler_ring_gpu(ctx, base));
+    ctx->sampler_dirty = 0u;
+}
+
 static void rhi_d3d12_flush_uniform_staging(RHI_D3D12Context *ctx) {
     RHI_D3D12Pipeline *pd;
     ID3D12GraphicsCommandList *list;
@@ -3150,14 +4564,32 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
     heaps[1] = ctx->sampler_heap;
     ID3D12GraphicsCommandList_SetDescriptorHeaps(list, 2u, heaps);
     ID3D12GraphicsCommandList_SetPipelineState(list, pd->pso);
+    ctx->bound_pso = pd->pso;
+    if (!pd->is_compute) memset(ctx->live_srv, 0, sizeof(ctx->live_srv));
     if (pd->is_compute) {
         ID3D12GraphicsCommandList_SetComputeRootSignature(list, pd->root_sig);
     } else {
         ID3D12GraphicsCommandList_SetGraphicsRootSignature(list, pd->root_sig);
         ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, pd->topology);
+        /* R643: a uniform buffer bound with rhi_cmd_bind_uniform_buffer stays
+         * bound across pipeline changes on GL (global binding points) and on
+         * Vulkan (compatible set layouts), and main.c relies on it: it binds
+         * the forward temporal block once and rebinds only the pipeline after
+         * other passes ran. D3D12 resets every root argument when the root
+         * signature changes, so the next draw read an uninitialised b1
+         * (GPU-based validation [935]). Re-apply this frame's CBVs to the
+         * registers the new pipeline declares. */
+        for (UINT r = 0u; r < RHI_D3D12_MAX_REGISTERS; ++r) {
+            UINT param = pd->uniform_root_params[r];
+            if (param == UINT_MAX || ctx->cbv_frame[r] != ctx->debug_frame)
+                continue;
+            ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(
+                list, param, ctx->cbv_gpu[r]);
+        }
     }
     ctx->bound_pipeline = pd;
     ctx->bound_pipeline_compute = pd->is_compute;
+    ctx->sampler_dirty = 1u;   /* R666: the new root signature has no table yet */
 }
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
                                 usize offset) {
@@ -3174,7 +4606,8 @@ void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
                                                    RHI_RES_BUFFER);
     if (bd == NULL || offset >= (usize)bd->size) return;
-    view.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(bd->resource) +
+    view.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(
+                              rhi_d3d12_buffer_view_source(ctx, bd)) +
                           (UINT64)offset;
     view.SizeInBytes = (UINT)(bd->size - offset);
     view.StrideInBytes = pd->vertex_stride;
@@ -3192,7 +4625,8 @@ void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
                                                    RHI_RES_BUFFER);
     if (bd == NULL || offset >= (usize)bd->size) return;
-    view.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(bd->resource) +
+    view.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(
+                              rhi_d3d12_buffer_view_source(ctx, bd)) +
                           (UINT64)offset;
     view.SizeInBytes = (UINT)(bd->size - offset);
     view.Format = is_u32 ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT;
@@ -3204,13 +4638,24 @@ void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
     ID3D12GraphicsCommandList *list = rhi_d3d12_cmd_list(ctx);
     D3D12_VIEWPORT vp;
     if (list == NULL) return;
-    /* R225-A parity with VK: the RHI viewport convention is GL bottom-left;
-     * a negative-height viewport flips to D3D12's top-left origin while
-     * honoring the recorded depth range. */
+    /* This is the RHI's "+Y up" viewport (R715: the UI canvas states its
+     * orientation through it), the twin of VK's {x, y + h, w, -h}.
+     *
+     * The sign does NOT carry over from Vulkan. Vulkan's NDC y points down,
+     * so VK needs a negative height to put NDC +Y at the top; D3D12's NDC y
+     * already points up, so the positive-height viewport does that, and a
+     * negative height is what turns +Y downward -- i.e. D3D12's negative
+     * height is VK's POSITIVE one. This used to copy VK's sign and was
+     * therefore identical to the frame/FBO default viewports
+     * (rhi_d3d12_set_full_target_viewport, which match VK's positive
+     * {0, 0, w, h}); R638 measured a quad covering NDC y > 0 landing in the
+     * bottom half of the back buffer under both, and the demo's UI drawing
+     * upside down at the bottom of the window. Covered by
+     * swapchain_draws_put_ndc_up_at_the_top_of_the_screen. */
     vp.TopLeftX = x;
-    vp.TopLeftY = y + h;
+    vp.TopLeftY = y;
     vp.Width = w;
-    vp.Height = -h;
+    vp.Height = h;
     vp.MinDepth = min_depth;
     vp.MaxDepth = max_depth;
     ID3D12GraphicsCommandList_RSSetViewports(list, 1u, &vp);
@@ -3273,6 +4718,8 @@ void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
+    rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawInstanced(list, vertex_count, instance_count,
                                             0u, 0u);
@@ -3282,6 +4729,8 @@ void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count,
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
+    rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawInstanced(list, vertex_count, instance_count,
                                             first_vertex, 0u);
@@ -3291,6 +4740,8 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count,
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
+    rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawIndexedInstanced(list, index_count,
                                                    instance_count, 0u, 0, 0u);
@@ -3298,12 +4749,23 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count,
 void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count,
                                u32 instance_count, u32 first_index,
                                i32 vertex_offset) {
+    rhi_cmd_draw_indexed_instanced_base(cmd, index_count, instance_count,
+                                        first_index, vertex_offset, 0u);
+}
+/* R707b: StartInstanceLocation reaches the vs_6_8 sidecars through
+ * SV_StartInstanceLocation for direct draws too, so the shader-model cap
+ * indirect_first_instance_supported covers this entry point as well. */
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count,
+                                         u32 instance_count, u32 first_index,
+                                         i32 vertex_offset, u32 first_instance) {
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
+    rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawIndexedInstanced(list, index_count,
-        instance_count, first_index, vertex_offset, 0u);
+        instance_count, first_index, vertex_offset, first_instance);
 }
 UINT rhi_d3d12_indirect_args_valid(UINT indexed, UINT stride, UINT draw_count) {
     if (indexed)
@@ -3334,6 +4796,8 @@ static void rhi_d3d12_execute_indirect(RHIDevice *dev, RHIBuffer cmd_buf,
     }
     list = rhi_d3d12_cmd_list(ctx);
     if (list == NULL) return;
+    rhi_d3d12_match_rtv_formats(ctx);
+    rhi_d3d12_flush_samplers(ctx);
     rhi_d3d12_flush_uniform_staging(ctx);
     args = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
     if (args == NULL) {
@@ -3349,7 +4813,47 @@ static void rhi_d3d12_execute_indirect(RHIDevice *dev, RHIBuffer cmd_buf,
         }
     }
     /* ExecuteIndirect requires the argument stride to equal the command
-     * signature stride; the gate above already enforced exactly that. */
+     * signature stride; the gate above already enforced exactly that.
+     *
+     * It also requires the argument buffer to be in INDIRECT_ARGUMENT state.
+     * Nothing else put it there: rhi_buffer_create ends a create-time upload
+     * in COMMON (or GENERIC_READ for an UPLOAD-heap buffer) and
+     * rhi_buffer_update returns it to COMMON, so without this transition the
+     * ExecuteIndirect reads a resource whose state never named the
+     * indirection, which the API leaves undefined. The state is left as
+     * INDIRECT_ARGUMENT: a later rhi_buffer_update transitions out of it
+     * before writing, and back is cheap.
+     *
+     * Note this is a correctness fix, not a fix for the layer: with this
+     * transition in place WARP still returns SV_InstanceID = 0 for a record
+     * whose StartInstanceLocation is 1 or 2, while the same pipeline and
+     * shader take it correctly from InstanceCount. See
+     * blinn_phong_arr_sidecar_forwards_the_layer_into_pixels in
+     * tests/test_d3d12_warp_runtime.c. */
+    /* R650: a buffer the bound pipeline also reads as an SRV (the particle
+     * DrawBuf: header for ExecuteIndirect, alive indices for the vertex
+     * shader) keeps its shader-read bits -- read states combine, and
+     * dropping them would leave that SRV reading a buffer in a state that
+     * does not name it. */
+    if (args->device_local &&
+        (args->state & D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) == 0) {
+        const D3D12_RESOURCE_STATES srv_bits =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        D3D12_RESOURCE_STATES want = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        if ((args->state & ~srv_bits) == 0 && (args->state & srv_bits) != 0)
+            want |= args->state;
+        rhi_d3d12_transition(list, args->resource, args->state, want);
+        args->state = want;
+    }
+    /* The count buffer is read by ExecuteIndirect the same way and has the
+     * same requirement. compact_draws writes it as a UAV right before this. */
+    if (counter != NULL && counter->device_local &&
+        counter->state != D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) {
+        rhi_d3d12_transition(list, counter->resource, counter->state,
+                             D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        counter->state = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    }
     ID3D12GraphicsCommandList_ExecuteIndirect(list,
         indexed ? ctx->draw_indexed_signature : ctx->draw_signature,
         counter != NULL ? max_draws : draw_count,
@@ -3395,23 +4899,97 @@ void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r,
     ID3D12GraphicsCommandList_ClearRenderTargetView(list,
         ctx->bound_rtvs[attachment], color, 0u, NULL);
 }
+/* The format a shader resource view over this texture must declare. Every
+ * colour texture and every ordinary D32_FLOAT depth target reports its own
+ * format; only a shadow-atlas depth texture, allocated typeless so it can be
+ * both the shadow pass's DSV and the lighting pass's SRV, reports the
+ * R32_FLOAT alias instead of the unsamplable R32_TYPELESS it was
+ * actually allocated with. */
+/* R653/R654: per-subresource state tracking (see RHI_D3D12Texture.mip_state). */
+static UINT rhi_d3d12_tex_subresource_count(const RHI_D3D12Texture *td) {
+    UINT n = td->mip_levels * (td->array_size > 0u ? td->array_size : 1u);
+    return n < 64u ? n : 64u;
+}
+static void rhi_d3d12_tex_sub_transition(ID3D12GraphicsCommandList *list,
+                                         RHI_D3D12Texture *td, UINT sub,
+                                         D3D12_RESOURCE_STATES want) {
+    D3D12_RESOURCE_BARRIER barrier;
+    UINT n = rhi_d3d12_tex_subresource_count(td);
+    UINT m;
+    if (sub >= n) return;
+    if (!td->mip_split) {
+        for (m = 0u; m < n; ++m) td->mip_state[m] = td->state;
+        td->mip_split = 1u;
+    }
+    if (td->mip_state[sub] == want) return;
+    ZeroMemory(&barrier, sizeof(barrier));
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = td->resource;
+    barrier.Transition.Subresource = sub;
+    barrier.Transition.StateBefore = td->mip_state[sub];
+    barrier.Transition.StateAfter = want;
+    ID3D12GraphicsCommandList_ResourceBarrier(list, 1u, &barrier);
+    td->mip_state[sub] = want;
+}
+static void rhi_d3d12_tex_mip_transition(ID3D12GraphicsCommandList *list,
+                                         RHI_D3D12Texture *td, UINT mip,
+                                         D3D12_RESOURCE_STATES want) {
+    if (mip >= td->mip_levels) return;
+    rhi_d3d12_tex_sub_transition(list, td, mip, want);
+}
+static void rhi_d3d12_tex_unify(ID3D12GraphicsCommandList *list,
+                                RHI_D3D12Texture *td,
+                                D3D12_RESOURCE_STATES want) {
+    UINT n = rhi_d3d12_tex_subresource_count(td);
+    UINT m;
+    if (!td->mip_split) return;
+    for (m = 0u; m < n; ++m)
+        rhi_d3d12_tex_sub_transition(list, td, m, want);
+    td->mip_split = 0u;
+    td->state = want;
+}
+static DXGI_FORMAT rhi_d3d12_srv_format(const RHI_D3D12Texture *td) {
+    return td->srv_format != DXGI_FORMAT_UNKNOWN ? td->srv_format
+                                                 : td->dxgi_format;
+}
+static void rhi_d3d12_bind_texture_td(RHICmdBuffer *cmd, RHI_D3D12Texture *td,
+                                      u32 unit);
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
                           RHISampler sampler, u32 unit) {
+    RHI_D3D12Texture *td;
+    /* R666: the sampler is honoured. It is recorded for register(s<unit>)
+     * (the sidecar convention pairs SamplerState sN with texture tN), and
+     * the next draw/dispatch copies the bound pipeline's sampler registers
+     * into one descriptor table (rhi_d3d12_flush_samplers). An invalid
+     * RHISampler selects the pipeline's default -- LINEAR, CLAMP for
+     * fullscreen / compute pipelines and WRAP for mesh pipelines (the R662
+     * rule) -- so callers that pass none keep their old behaviour.
+     *
+     * Still not expressible: comparison sampling (RHISamplerDesc has no
+     * compare flag). No production shader needs it -- the shadow passes
+     * compare the raw .r by hand, and GL sets GL_TEXTURE_COMPARE_MODE =
+     * GL_NONE for the same reason. The shadow atlas's D3D12 constraint is
+     * different: D32_FLOAT cannot back an SRV, so it is R32_TYPELESS aliased
+     * to an R32_FLOAT SRV (rhi_d3d12_srv_format). */
+    if (g_current_device == NULL) return;
+    rhi_d3d12_note_sampler((RHI_D3D12Context *)cmd, sampler, unit);
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
+                                                    RHI_RES_TEXTURE);
+    if (td != NULL) rhi_d3d12_bind_texture_td(cmd, td, unit);
+}
+static void rhi_d3d12_bind_texture_td(RHICmdBuffer *cmd, RHI_D3D12Texture *td,
+                                      u32 unit) {
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
     ID3D12GraphicsCommandList *list;
     RHI_D3D12Pipeline *pd;
-    RHI_D3D12Texture *td;
     D3D12_SHADER_RESOURCE_VIEW_DESC srv;
     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
     D3D12_RESOURCE_STATES read_state;
     UINT root_param;
     UINT slot;
-    (void)sampler; /* blit samplers are static root-signature samplers */
-    if (ctx == NULL || g_current_device == NULL || unit >= 16u) return;
+    if (ctx == NULL || g_current_device == NULL || unit >= RHI_D3D12_MAX_REGISTERS) return;
     list = rhi_d3d12_cmd_list(ctx);
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
-    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
-                                                    RHI_RES_TEXTURE);
     if (list == NULL || pd == NULL || td == NULL || td->resource == NULL)
         return;
     root_param = pd->image_root_params[unit];
@@ -3423,21 +5001,50 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
         return;
     }
     ZeroMemory(&srv, sizeof(srv));
-    srv.Format = td->dxgi_format;
-    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Format = rhi_d3d12_srv_format(td);
+    /* R441: the view dimension is the ONLY thing that distinguishes a 2D-array
+     * texture from a 2D one in D3D12 — both are a TEXTURE2D resource whose
+     * slices are counted by DepthOrArraySize. A sampler2DArray declared in a
+     * shader (blinn_phong_arr_hlsl.frag's Texture2DArray) needs a
+     * TEXTURE2DARRAY descriptor spanning every slice; handing it the TEXTURE2D
+     * view a 2D shader wants is a descriptor/shader dimension mismatch, not a
+     * soft fallback. ArraySize is the whole array because the shader selects
+     * the layer per draw (SV_InstanceID), not per descriptor. */
+    if (td->is_cube) {
+        /* R647: a point-shadow depth cube. The shader declares TextureCube
+         * and selects the face by direction, so the view spans all six
+         * slices as one cube. */
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+        srv.TextureCube.MostDetailedMip = 0u;
+        srv.TextureCube.MipLevels = td->mip_levels;
+        srv.TextureCube.ResourceMinLODClamp = 0.0f;
+    } else if (td->array_size > 1u) {
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        srv.Texture2DArray.MostDetailedMip = 0u;
+        srv.Texture2DArray.MipLevels = td->mip_levels;
+        srv.Texture2DArray.FirstArraySlice = 0u;
+        srv.Texture2DArray.ArraySize = td->array_size;
+        srv.Texture2DArray.PlaneSlice = 0u;
+    } else {
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv.Texture2D.MostDetailedMip = 0u;
+        srv.Texture2D.MipLevels = td->mip_levels;
+    }
     srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.Texture2D.MostDetailedMip = 0u;
-    srv.Texture2D.MipLevels = td->mip_levels;
     ID3D12Device_CreateShaderResourceView(ctx->device, td->resource, &srv,
         rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
     ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
     read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    rhi_d3d12_tex_unify(list, td, read_state);
     if (td->state != read_state) {
         rhi_d3d12_transition(list, td->resource, td->state, read_state);
         td->state = read_state;
     }
     gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    /* R629/R643 diagnostic: the texture is now live in this pipeline's
+     * descriptor tables, so a render-target bind of it can be noticed. */
+    if (!pd->is_compute) ctx->live_srv[unit] = td;
     if (pd->is_compute)
         ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, root_param, gpu);
     else
@@ -3445,7 +5052,11 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
 }
 void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex,
                                  RHISampler sampler) {
-    (void)cmd; (void)shadow_tex; (void)sampler;
+    /* Material unit 1 is where the atlas belongs — the same slot the GL
+     * backend binds it to. The production shaders compare the sampled .r by
+     * hand rather than through a comparison sampler, so a plain sampler is
+     * what they expect. */
+    rhi_cmd_bind_texture(cmd, shadow_tex, sampler, 1u);
 }
 void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
                                  u32 binding) {
@@ -3456,7 +5067,7 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbv;
     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
     UINT param, slot;
-    if (ctx == NULL || g_current_device == NULL || binding >= 16u) return;
+    if (ctx == NULL || g_current_device == NULL || binding >= RHI_D3D12_MAX_REGISTERS) return;
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
     list = rhi_d3d12_cmd_list(ctx);
     if (pd == NULL || list == NULL) return;
@@ -3465,20 +5076,32 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
                                                     RHI_RES_BUFFER);
     if (bd == NULL || bd->resource == NULL) return;
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
     slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
     if (slot == UINT_MAX) return;
     ZeroMemory(&cbv, sizeof(cbv));
-    cbv.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(bd->resource);
+    cbv.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(
+        rhi_d3d12_buffer_view_source(ctx, bd));
     cbv.SizeInBytes = (UINT)((bd->size + 255u) & ~255u);
     ID3D12Device_CreateConstantBufferView(ctx->device, &cbv,
         rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
     gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
-    if (pd->is_compute)
+    if (pd->is_compute) {
         ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
-    else
+    } else {
         ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
-    rhi_d3d12_descriptor_give_back(&ctx->cbv_srv_uav_alloc, slot,
-                                   ctx->next_fence);
+        ctx->cbv_gpu[binding] = gpu;
+        ctx->cbv_frame[binding] = ctx->debug_frame;
+    }
+    /* R643: retire with the frame, like every other per-frame view. Giving
+     * the slot back here with ctx->next_fence as its retire point was wrong
+     * whenever a one-shot submit (a buffer or texture upload with initial
+     * data) ran later in the same frame: the one-shot signals that very
+     * value and waits for it, so the slot looked retired while the frame's
+     * own list -- which still points at it -- had not even been submitted.
+     * The next SRV bind then overwrote the descriptor under this CBV
+     * (debug layer [1001]). */
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
 }
 /* Legacy per-uniform setters write the 256B push staging buffer; the dirty
  * range flushes as root constants before the next draw/dispatch (VK parity).
@@ -3611,20 +5234,170 @@ i32 rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *name
 }
 
 /* ---- shadow map / cubemap / FBO ---- */
+/* Mirrors the GL backend's shadow_map_create. The one D3D12-specific step is the
+ * allocation: a D32_FLOAT resource cannot back a shader resource view at all,
+ * so the atlas is created through the depth_samplable path, which allocates the
+ * canonical DXGI_FORMAT_R32_TYPELESS and aliases it two ways over the same
+ * bytes — a D32_FLOAT depth-stencil view here, and the R32_FLOAT SRV that
+ * rhi_cmd_bind_shadow_texture hands the lighting pass. */
 RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
-    RHIShadowMap out;
-    (void)dev; (void)width; (void)height;
-    memset(&out, 0, sizeof(out));
-    return out;
+    RHIShadowMap sm;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *depth;
+    RHI_D3D12ShadowAtlas *sd;
+    RHITextureDesc tdesc;
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
+    u32 idx;
+    memset(&sm, 0, sizeof(sm));
+    /* An atlas that publishes no target must never be bound: the R358 gate —
+     * binding it would clear whatever depth was left bound before it. */
+    if (dev == NULL || !rhi_drawable_dimensions_valid(width, height)) return sm;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return sm;
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = width;
+    tdesc.height = height;
+    tdesc.format = RHI_FORMAT_D32_FLOAT;
+    tdesc.mip_levels = 1u;
+    tdesc.data = NULL;
+    sm.depth_tex = rhi_d3d12_texture_create_ex(dev, &tdesc, 1, 0u);
+    if (!rhi_handle_valid(sm.depth_tex)) return sm;
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, sm.depth_tex,
+                                                       RHI_RES_TEXTURE);
+    if (depth == NULL) goto fail_tex;
+
+    sd = (RHI_D3D12ShadowAtlas *)calloc(1u, sizeof(*sd));
+    if (sd == NULL) goto fail_tex;
+    sd->dsv_slot = rhi_d3d12_descriptor_take(ctx, &ctx->dsv_alloc);
+    if (sd->dsv_slot == UINT_MAX) {
+        free(sd);
+        goto fail_tex;
+    }
+    /* The typeless resource is viewed as D32_FLOAT on the depth-stencil
+     * aspect; the NULL-desc default would guess from the typeless format and
+     * fail, so the alias is named explicitly. */
+    ZeroMemory(&dsv_desc, sizeof(dsv_desc));
+    dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
+    dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    dsv_desc.Flags = D3D12_DSV_FLAG_NONE;
+    ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource, &dsv_desc,
+        rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, sd->dsv_slot));
+    sd->width = width;
+    sd->height = height;
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = sd;
+    dev->slots[idx].type = RHI_RES_FRAMEBUFFER;
+    sm.fbo = rhi_make_handle(idx, dev->slots[idx].generation);
+    sm.width = width;
+    sm.height = height;
+    return sm;
+
+fail_tex:
+    rhi_texture_destroy(dev, sm.depth_tex);
+    memset(&sm, 0, sizeof(sm));
+    return sm;
 }
 void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
-    (void)dev; (void)sm;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12ShadowAtlas *sd;
+    UINT64 retire;
+    if (dev == NULL || sm == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (rhi_handle_valid(sm->depth_tex)) rhi_texture_destroy(dev, sm->depth_tex);
+    if (rhi_handle_valid(sm->fbo)) {
+        sd = (RHI_D3D12ShadowAtlas *)rhi_get_resource_typed(dev, sm->fbo,
+                                                            RHI_RES_FRAMEBUFFER);
+        if (sd != NULL && ctx != NULL && sd->dsv_slot != UINT_MAX) {
+            /* A command list may still hold this descriptor, so the slot goes
+             * back through the fence-retire path, not straight to the
+             * allocator — same rule the offscreen FBO teardown follows. */
+            retire = rhi_d3d12_retire_fence(ctx);
+            rhi_d3d12_descriptor_give_back(&ctx->dsv_alloc, sd->dsv_slot,
+                                           retire);
+        }
+        free(sd);
+        rhi_free_slot(dev, sm->fbo);
+    }
+    sm->fbo = RHI_HANDLE_NULL;
+    sm->depth_tex = RHI_HANDLE_NULL;
 }
 void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
-    (void)cmd; (void)sm;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12ShadowAtlas *sd;
+    RHI_D3D12Texture *depth;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv;
+    D3D12_VIEWPORT vp;
+    D3D12_RECT sc;
+    /* R358: never touch the depth attachment that is still bound when the
+     * atlas is missing — that would clear the caller's frame. */
+    if (ctx == NULL || g_current_device == NULL || sm == NULL) return;
+    if (!rhi_handle_valid(sm->fbo)) return;
+    sd = (RHI_D3D12ShadowAtlas *)rhi_get_resource_typed(g_current_device,
+                                                        sm->fbo,
+                                                        RHI_RES_FRAMEBUFFER);
+    if (sd == NULL || sd->dsv_slot == UINT_MAX) return;
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device,
+                                                       sm->depth_tex,
+                                                       RHI_RES_TEXTURE);
+    if (depth == NULL || depth->resource == NULL) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    if (depth->state != D3D12_RESOURCE_STATE_DEPTH_WRITE) {
+        rhi_d3d12_transition(list, depth->resource, depth->state,
+                             D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        depth->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    }
+    dsv = rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, sd->dsv_slot);
+    /* Depth-only pass: the shadow-depth PSO already declares zero render
+     * targets for is_shadow_depth (rhi_d3d12_create_graphics_pso), so zero
+     * RTVs is what it expects. */
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 0u, NULL, TRUE, &dsv);
+    ctx->bound_rtv_count = 0u;
+    ctx->bound_dsv = dsv;
+    ctx->bound_dsv_valid = 1u;
+    /* Non-flipped, matching rhi_cmd_set_shadow_viewport — the shadow pass uses
+     * a top-left-origin viewport, so it must NOT go through the Y-flipping
+     * rhi_d3d12_set_full_target_viewport the colour passes use. */
+    vp.TopLeftX = 0.0f; vp.TopLeftY = 0.0f;
+    vp.Width = (f32)sd->width; vp.Height = (f32)sd->height;
+    vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
+    ID3D12GraphicsCommandList_RSSetViewports(list, 1u, &vp);
+    sc.left = 0; sc.top = 0;
+    sc.right = (LONG)sd->width; sc.bottom = (LONG)sd->height;
+    ID3D12GraphicsCommandList_RSSetScissorRects(list, 1u, &sc);
+    /* R618 "bind == fresh": the whole atlas clears to 1.0 with the scissor
+     * wide open. Per-cascade quadrants are applied afterwards by
+     * rhi_cmd_set_shadow_viewport. */
+    ID3D12GraphicsCommandList_ClearDepthStencilView(list, dsv,
+        D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
 }
 void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
-    (void)cmd; (void)screen_w; (void)screen_h;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+    D3D12_VIEWPORT vp;
+    D3D12_RECT sc;
+    if (ctx == NULL || g_current_device == NULL || !ctx->swapchain_ready) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    /* D3D12's "target 0" is the swapchain back buffer; the shadow depth buffer
+     * is not part of it, which is the same shape as the GL bind-FBO-0
+     * restore and the same shape as rhi_offscreen_fbo_unbind. */
+    rtv = rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc,
+                                   ctx->swapchain.rtv_slots[ctx->swapchain.current_index]);
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1u, &rtv, FALSE, NULL);
+    ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_formats[0] = ctx->swapchain.format;
+    ctx->bound_rtv_count = 1u;
+    ctx->bound_dsv_valid = 0u;
+    vp.TopLeftX = 0.0f; vp.TopLeftY = 0.0f;
+    vp.Width = (f32)screen_w; vp.Height = (f32)screen_h;
+    vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
+    ID3D12GraphicsCommandList_RSSetViewports(list, 1u, &vp);
+    sc.left = 0; sc.top = 0; sc.right = (LONG)screen_w; sc.bottom = (LONG)screen_h;
+    ID3D12GraphicsCommandList_RSSetScissorRects(list, 1u, &sc);
 }
 void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
@@ -3633,14 +5406,116 @@ void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
     ID3D12GraphicsCommandList_ClearDepthStencilView(list, ctx->bound_dsv,
         D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
 }
+/* R654: colour cubemap (IBL env / irradiance / prefilter). An ordinary
+ * RHI_D3D12Texture -- six slices, mip chain, is_cube -- that lives in a
+ * RHI_RES_CUBEMAP slot, so RHICubemap handles never pass for 2D textures.
+ * RGBA16F is created UAV-capable: the IBL bake writes every face/mip from
+ * compute (rhi_cmd_bind_image_cubemap_face). Faces are uploaded at create
+ * when given (mip 0, native bytes per rhi.h R625). */
+static RHI_D3D12Texture *rhi_d3d12_cube_tex(RHIHandle handle) {
+    if (g_current_device == NULL) return NULL;
+    return (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, handle,
+                                                      RHI_RES_CUBEMAP);
+}
 RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
-    (void)dev; (void)desc; return RHI_HANDLE_NULL;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *td;
+    RHITextureDesc tdesc;
+    RHITexture tex;
+    RHIResourceSlot *slot;
+    u32 f;
+    if (dev == NULL || !rhi_cubemap_desc_validate(desc)) return RHI_HANDLE_NULL;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return RHI_HANDLE_NULL;
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = desc->size;
+    tdesc.height = desc->size;
+    tdesc.format = desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT
+                       ? RHI_FORMAT_R16G16B16A16_SFLOAT : RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.mip_levels = desc->mip_levels == 0u ? 1u : desc->mip_levels;
+    tex = rhi_d3d12_texture_create_ex(dev, &tdesc, 0, 6u);
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
+    if (td == NULL) return RHI_HANDLE_NULL;
+    td->is_cube = 1u;
+    slot = &dev->slots[tex.index];
+    slot->type = RHI_RES_CUBEMAP;
+    for (f = 0u; f < 6u; ++f) {
+        UINT bpp = rhi_d3d12_format_bytes_per_pixel(tdesc.format);
+        UINT64 row_bytes = (UINT64)desc->size * bpp;
+        D3D12_RESOURCE_DESC rd;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+        UINT rows;
+        UINT64 rsz, total;
+        ID3D12Resource *staging;
+        void *mapped = NULL;
+        UINT sub = f * td->mip_levels;
+        if (desc->faces[f] == NULL) continue;
+        ID3D12Resource_GetDesc(td->resource, &rd);
+        ID3D12Device_GetCopyableFootprints(ctx->device, &rd, sub, 1u, 0u, &fp,
+                                           &rows, &rsz, &total);
+        staging = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_UPLOAD, total);
+        if (staging == NULL) continue;
+        if (SUCCEEDED(ID3D12Resource_Map(staging, 0u, NULL, &mapped))) {
+            UINT r;
+            for (r = 0u; r < rows; ++r)
+                memcpy((u8 *)mapped + fp.Offset + (UINT64)r * fp.Footprint.RowPitch,
+                       (const u8 *)desc->faces[f] + (UINT64)r * row_bytes,
+                       (size_t)row_bytes);
+            ID3D12Resource_Unmap(staging, 0u, NULL);
+            if (SUCCEEDED(rhi_d3d12_oneshot_begin(ctx))) {
+                D3D12_TEXTURE_COPY_LOCATION dst_loc, src_loc;
+                ZeroMemory(&dst_loc, sizeof(dst_loc));
+                dst_loc.pResource = td->resource;
+                dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                dst_loc.SubresourceIndex = sub;
+                ZeroMemory(&src_loc, sizeof(src_loc));
+                src_loc.pResource = staging;
+                src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                src_loc.PlacedFootprint = fp;
+                rhi_d3d12_transition(ctx->upload_list, td->resource, td->state,
+                                     D3D12_RESOURCE_STATE_COPY_DEST);
+                ID3D12GraphicsCommandList_CopyTextureRegion(ctx->upload_list,
+                    &dst_loc, 0u, 0u, 0u, &src_loc, NULL);
+                rhi_d3d12_transition(ctx->upload_list, td->resource,
+                                     D3D12_RESOURCE_STATE_COPY_DEST, td->state);
+                (void)rhi_d3d12_oneshot_flush(ctx);
+            }
+        }
+        ID3D12Resource_Release(staging);
+    }
+    return tex;
 }
 void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
-    (void)dev; (void)cm;
+    RHI_D3D12Texture *td;
+    if (dev == NULL) return;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, cm, RHI_RES_CUBEMAP);
+    if (td == NULL) return;
+    rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
+                               (IUnknown **)&td->resource);
+    free(td);
+    rhi_free_slot(dev, cm);
 }
+/* All faces/mips back to the shader-read state, on the upload list (the
+ * rhi.h contract: a device-idle one-time submit after the bake). */
 void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
-    (void)dev; (void)cm;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *td;
+    const D3D12_RESOURCE_STATES read_state =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (dev == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, cm, RHI_RES_CUBEMAP);
+    if (td == NULL) return;
+    if (!td->mip_split && td->state == read_state) return;
+    if (FAILED(rhi_d3d12_oneshot_begin(ctx))) return;
+    if (td->mip_split) rhi_d3d12_tex_unify(ctx->upload_list, td, read_state);
+    else rhi_d3d12_transition(ctx->upload_list, td->resource, td->state, read_state);
+    if (rhi_d3d12_oneshot_flush(ctx) == RHI_RESULT_OK) {
+        td->state = read_state;
+        td->mip_split = 0u;
+    }
 }
 void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
     RHI_D3D12Context *ctx;
@@ -3653,15 +5528,25 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
     if (td == NULL) return;
     read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    if (td->state == read_state) return;
+    if (!td->mip_split && td->state == read_state) return;
     if (FAILED(rhi_d3d12_oneshot_begin(ctx))) return;
-    rhi_d3d12_transition(ctx->upload_list, td->resource, td->state, read_state);
-    if (rhi_d3d12_oneshot_flush(ctx) == RHI_RESULT_OK)
+    if (td->mip_split) rhi_d3d12_tex_unify(ctx->upload_list, td, read_state);
+    else rhi_d3d12_transition(ctx->upload_list, td->resource, td->state, read_state);
+    if (rhi_d3d12_oneshot_flush(ctx) == RHI_RESULT_OK) {
         td->state = read_state;
+        td->mip_split = 0u;
+    }
 }
+/* R654: a colour cube's TEXTURECUBE SRV at register(t<unit>). The cube is
+ * an RHI_D3D12Texture in an RHI_RES_CUBEMAP slot; rhi_d3d12_bind_texture_td
+ * is the per-unit binder rhi_cmd_bind_texture wraps. */
+static void rhi_d3d12_bind_texture_td(RHICmdBuffer *cmd, RHI_D3D12Texture *td,
+                                      u32 unit);
 void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm,
                           RHISampler sampler, u32 unit) {
-    (void)cmd; (void)cm; (void)sampler; (void)unit;
+    RHI_D3D12Texture *td = rhi_d3d12_cube_tex(cm);
+    rhi_d3d12_note_sampler((RHI_D3D12Context *)cmd, sampler, unit);
+    if (td != NULL) rhi_d3d12_bind_texture_td(cmd, td, unit);
 }
 void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) { (void)cmd; }
 void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) { (void)cmd; }
@@ -3673,9 +5558,133 @@ void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) {
 }
 
 /* ---- buffers / texel (Task 5 host-side ops) ---- */
+/* R614: texel buffers (units 5 and 6).
+ *
+ * This was a no-op stub, which made instanced.vert and skinned.vert
+ * unwritable on D3D12 no matter how correct a sidecar was: both declare
+ * layout(binding = 5) uniform samplerBuffer, and the GL backend's
+ * rhi_cmd_bind_texel_buffers is what puts data there. Without it the shader
+ * reads an unbound table.
+ *
+ * D3D12 has no texel buffer. The equivalent is a raw buffer SRV:
+ * D3D12_SRV_DIMENSION_BUFFER, and the shader-side spelling is
+ * StructuredBuffer<float4> at register tN -- which the HLSL reflection
+ * already maps to an SRV range, so image_root_params[5] / [6] are populated
+ * by the sidecar declaring it and nothing else has to change.
+ *
+ * Stride: GLSL's texelFetch(u_instances, i) indexes vec4 elements, and
+ * instanced.vert reads the model matrix as eight separate fetches
+ * (idx + 0 .. idx + 3, and + 4 .. + 7 for prev_model under FORWARD_MRT), so
+ * the element is 16 bytes and NumElements is size/16. A StructuredBuffer
+ * declared with any other element type would silently mis-index here, which
+ * is why the divisor is fixed rather than taken from the shader: the engine
+ * only ever uploads vec4 instance/joint rows.
+ *
+ * Read-only SRV, so no UAV descriptor is created. Buffers here are
+ * UPLOAD-heap and CPU-mapped, so the transition is from COMMON to a combined
+ * read state.
+ */
+/* R614: texel buffers (units 5 and 6).
+ *
+ * This was a no-op stub, which made instanced.vert and skinned.vert
+ * unwritable on D3D12 no matter how correct a sidecar was: both declare
+ * layout(binding = 5) uniform samplerBuffer, and the GL backend's
+ * rhi_cmd_bind_texel_buffers is what puts data there. Without it the shader
+ * reads an unbound table.
+ *
+ * D3D12 has no texel buffer. The equivalent is a raw buffer SRV:
+ * D3D12_SRV_DIMENSION_BUFFER, and the shader-side spelling is
+ * StructuredBuffer<float4> at register tN -- which the HLSL reflection
+ * already maps to an SRV range, so image_root_params[5] / [6] are populated
+ * by the sidecar declaring it and nothing else has to change.
+ *
+ * Stride: GLSL's texelFetch(u_instances, i) indexes vec4 elements, and
+ * instanced.vert reads the model matrix as eight separate fetches
+ * (idx + 0 .. idx + 3, and + 4 .. + 7 for prev_model under FORWARD_MRT), so
+ * the element is 16 bytes and NumElements is size/16. A StructuredBuffer
+ * declared with any other element type would silently mis-index here, which
+ * is why the divisor is fixed rather than taken from the shader: the engine
+ * only ever uploads vec4 instance/joint rows.
+ *
+ * Read-only SRV, so no UAV descriptor is created. Buffers here are
+ * UPLOAD-heap and CPU-mapped, so the transition is from COMMON to a combined
+ * read state.
+ */
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0,
                                 RHIBuffer buf1) {
-    (void)cmd; (void)buf0; (void)buf1;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Pipeline *pd;
+    RHIBuffer handles[2];
+    u32 unit;
+    if (ctx == NULL || g_current_device == NULL) return;
+    handles[0] = buf0;
+    handles[1] = buf1;
+    for (unit = 5u; unit <= 6u; ++unit) {
+        RHI_D3D12Buffer *bd;
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+        D3D12_RESOURCE_STATES read_state;
+        D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+        UINT root_param;
+        UINT slot;
+        list = rhi_d3d12_cmd_list(ctx);
+        pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+        if (list == NULL || pd == NULL) return;
+        /* An unset handle leaves the previous draw's descriptor in place, the
+         * same contract every other binder here follows -- there is no unset
+         * state in D3D12, which is why the material binder binds a white
+         * fallback instead of clearing. */
+        if (!rhi_handle_valid(handles[unit - 5u])) continue;
+        bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device,
+                                    handles[unit - 5u], RHI_RES_BUFFER);
+        if (bd == NULL || bd->resource == NULL || bd->size < 16u) continue;
+        root_param = pd->image_root_params[unit];
+        if (root_param == UINT_MAX) continue;
+        if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+        slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+        if (slot == UINT_MAX) {
+            LOG_WARN("D3D12: SRV descriptor heap exhausted");
+            return;
+        }
+        ZeroMemory(&srv, sizeof(srv));
+        srv.Format = DXGI_FORMAT_UNKNOWN;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        /* This SDK's D3D12_BUFFER_SRV carries FirstElement /
+         * StructureByteStride / Flags rather than the older FirstBeforeUpdate
+         * pair. StructureByteStride is what makes the shader's float4
+         * indexing exact, so it is stated rather than left at 0. */
+        srv.Buffer.FirstElement = 0u;
+        srv.Buffer.NumElements = (UINT)(bd->size / 16u);
+        srv.Buffer.StructureByteStride = 16u;
+        srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        /* An UPLOAD-heap buffer written with rhi_cmd_update_buffer earlier in
+         * this frame is read through that write's snapshot (see
+         * rhi_d3d12_record_buffer_write). main.c rewrites the instance buffer
+         * once per mesh and binds it here before each draw; viewing the raw
+         * resource would give every mesh the LAST mesh's rows, which is what
+         * drew the large garbage triangles in the R638 demo. */
+        ID3D12Device_CreateShaderResourceView(ctx->device,
+            rhi_d3d12_buffer_view_source(ctx, bd), &srv, rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+        ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+        read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        /* R636: an UPLOAD-heap buffer lives in GENERIC_READ for its whole
+         * life and may not be transitioned; GENERIC_READ already implies
+         * both shader-read states, so the barrier is not just illegal there
+         * -- it is unnecessary. */
+        if (bd->device_local && bd->state != read_state) {
+            rhi_d3d12_transition(list, bd->resource, bd->state, read_state);
+            bd->state = read_state;
+        }
+        gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+        if (pd->is_compute)
+            ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list,
+                                                                    root_param, gpu);
+        else
+            ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list,
+                                                                    root_param, gpu);
+    }
 }
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data,
                        usize size) {
@@ -3692,11 +5701,15 @@ void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset,
     if (bd == NULL || offset >= (usize)bd->size) return;
     if (size > (usize)bd->size - offset) size = (usize)bd->size - offset;
     if (!bd->device_local) {
-        /* UPLOAD heap: host write through a transient Map. */
+        /* UPLOAD heap: host write through a transient Map. A host write is
+         * immediate, so it supersedes any recorded-write snapshot this frame
+         * made: later binds read the buffer itself again. */
         void *mapped = NULL;
+        bd->alias_resource = NULL;
         if (FAILED(ID3D12Resource_Map(bd->resource, 0u, NULL, &mapped))) return;
         memcpy((u8 *)mapped + offset, data, size);
         ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+        if (bd->shadow != NULL) memcpy(bd->shadow + offset, data, size);
         return;
     }
     (void)rhi_d3d12_buffer_stage_upload(ctx, bd, (UINT64)offset, data,
@@ -3717,15 +5730,19 @@ bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset,
         return true;
     }
     if (!bd->device_local) {
-        /* UPLOAD heaps are host-readable (write-combined; slow but legal). */
+        /* UPLOAD heaps are host-readable (write-combined; slow but legal).
+         * R652: after a GPU copy into it, the READBACK twin holds the
+         * bytes (see RHI_D3D12Buffer.readback). */
+        ID3D12Resource *src = bd->readback != NULL ? bd->readback : bd->resource;
         D3D12_RANGE read_range;
+        D3D12_RANGE none = { 0u, 0u };
         void *mapped = NULL;
         read_range.Begin = (SIZE_T)offset;
         read_range.End = (SIZE_T)(offset + size);
-        if (FAILED(ID3D12Resource_Map(bd->resource, 0u, &read_range, &mapped)))
+        if (FAILED(ID3D12Resource_Map(src, 0u, &read_range, &mapped)))
             return false;
         memcpy(dst, (const u8 *)mapped + offset, size);
-        ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+        ID3D12Resource_Unmap(src, 0u, bd->readback != NULL ? &none : NULL);
         return true;
     }
     /* DEFAULT heap: READBACK staging + one-shot copy + Map/memcpy/Unmap. */
@@ -3763,23 +5780,139 @@ bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset,
         return ok;
     }
 }
+/* C-BUF-3: a recorded buffer write is ordered against the draws/dispatches
+ * recorded around it. Both entry points used to write through the host
+ * (rhi_buffer_update_region), so every write in a frame landed before the
+ * frame's list ran and the GPU saw only the last one -- harmless while
+ * nothing read storage buffers on D3D12, wrong as soon as compact_draws runs
+ * once per shadow cascade with fresh visibility.
+ *
+ * DEFAULT heap: the bytes go into a per-write UPLOAD staging buffer and are
+ * copied by the frame's own command list, between barriers, so they take
+ * effect exactly at their place in the list.
+ *
+ * UPLOAD heap: such a resource is permanently GENERIC_READ and can never be
+ * a copy destination, so the in-list copy is impossible. The staging buffer
+ * itself becomes the buffer's view source for the rest of the frame
+ * (alias_resource): every later bind this frame reads that snapshot, earlier
+ * binds keep the previous one. The bytes are also written through the host
+ * so the buffer's own contents end up as the last write, which is what a
+ * host read after the frame expects. */
+static ID3D12Resource *rhi_d3d12_frame_staging(RHI_D3D12Context *ctx,
+                                               const void *data, u32 fill,
+                                               usize size) {
+    UINT slot = ctx->frame_parity & 1u;
+    RHI_D3D12StagingBlock block;
+    UINT64 want = ((UINT64)size + 255u) & ~(UINT64)255u;
+    UINT best = UINT_MAX;
+    UINT k;
+    if (ctx->frame_blocks_count[slot] == ctx->frame_blocks_cap[slot]) {
+        UINT cap = ctx->frame_blocks_cap[slot] ? ctx->frame_blocks_cap[slot] * 2u : 16u;
+        RHI_D3D12StagingBlock *grown = (RHI_D3D12StagingBlock *)realloc(
+            ctx->frame_blocks[slot], (size_t)cap * sizeof(*grown));
+        if (grown == NULL) return NULL;
+        ctx->frame_blocks[slot] = grown;
+        ctx->frame_blocks_cap[slot] = cap;
+    }
+    /* R670: best fit from the idle pool, but not a block far larger than
+     * the write (a small update must not pin a megabyte snapshot block). */
+    for (k = 0u; k < ctx->block_free_count; ++k) {
+        UINT64 bs = ctx->block_free[k].size;
+        if (bs < want || bs > want * 2u + 65536u) continue;
+        if (best == UINT_MAX || bs < ctx->block_free[best].size) best = k;
+    }
+    if (best != UINT_MAX) {
+        block = ctx->block_free[best];
+        ctx->block_free[best] = ctx->block_free[--ctx->block_free_count];
+    } else {
+        block.mapped = NULL;
+        block.size = want;
+        block.resource = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_UPLOAD, want);
+        if (block.resource == NULL) return NULL;
+        if (FAILED(ID3D12Resource_Map(block.resource, 0u, NULL, &block.mapped))) {
+            ID3D12Resource_Release(block.resource);
+            return NULL;
+        }
+    }
+    if (data != NULL) {
+        memcpy(block.mapped, data, size);
+    } else {
+        usize i;
+        for (i = 0u; i < size; i += 4u) memcpy((u8 *)block.mapped + i, &fill, 4u);
+    }
+    ctx->frame_blocks[slot][ctx->frame_blocks_count[slot]++] = block;
+    return block.resource;
+}
+
+static void rhi_d3d12_record_buffer_write(RHICmdBuffer *cmd, RHIBuffer buf,
+                                          usize offset, const void *data,
+                                          u32 fill, usize size) {
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Buffer *bd;
+    ID3D12Resource *staging;
+    if (ctx == NULL || g_current_device == NULL || size == 0u) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
+                                                    RHI_RES_BUFFER);
+    if (bd == NULL || bd->resource == NULL || offset >= (usize)bd->size) return;
+    if (size > (usize)bd->size - offset) size = (usize)bd->size - offset;
+    if (!bd->device_local) {
+        /* The snapshot has to be the whole buffer: a view over it replaces
+         * the buffer for every element, not just the written range. It is
+         * padded to 256 bytes because a CBV over it covers the 256-rounded
+         * size, as rhi_cmd_bind_uniform_buffer declares for the original. */
+        /* R670: the snapshot is built from the host shadow (see
+         * RHI_D3D12Buffer.shadow) rather than read back from write-combined
+         * UPLOAD memory, and only the written range goes to the resource. */
+        usize snap_size = ((usize)bd->size + 255u) & ~(usize)255u;
+        void *mapped = NULL;
+        if (bd->mapped != NULL) bd->shadow_valid = 0u;
+        if (bd->shadow == NULL) {
+            bd->shadow = (u8 *)calloc(1u, snap_size);
+            if (bd->shadow == NULL) return;
+            bd->shadow_valid = 0u;
+        }
+        if (FAILED(ID3D12Resource_Map(bd->resource, 0u, NULL, &mapped))) return;
+        if (!bd->shadow_valid) {
+            memcpy(bd->shadow, mapped, (size_t)bd->size);
+            bd->shadow_valid = 1u;
+        }
+        if (data != NULL) {
+            memcpy(bd->shadow + offset, data, size);
+        } else {
+            usize i;
+            for (i = 0u; i < size; i += 4u) memcpy(bd->shadow + offset + i, &fill, 4u);
+        }
+        memcpy((u8 *)mapped + offset, bd->shadow + offset, size);
+        ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+        staging = rhi_d3d12_frame_staging(ctx, bd->shadow, 0u, snap_size);
+        if (staging == NULL) return;
+        bd->alias_resource = staging;
+        bd->alias_frame = ctx->debug_frame;
+        return;
+    }
+    staging = rhi_d3d12_frame_staging(ctx, data, fill, size);
+    if (staging == NULL) return;
+    rhi_d3d12_transition(list, bd->resource, bd->state,
+                         D3D12_RESOURCE_STATE_COPY_DEST);
+    ID3D12GraphicsCommandList_CopyBufferRegion(list, bd->resource,
+        (UINT64)offset, staging, 0u, (UINT64)size);
+    rhi_d3d12_transition(list, bd->resource, D3D12_RESOURCE_STATE_COPY_DEST,
+                         bd->state);
+}
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
                          usize size, u32 value) {
-    u8 *bytes;
-    usize i;
-    if (cmd == NULL || size == 0u || (size & 3u) != 0u) return;
-    bytes = (u8 *)malloc(size);
-    if (bytes == NULL) return;
-    for (i = 0u; i < size; i += 4u)
-        memcpy(bytes + i, &value, sizeof(value));
-    rhi_buffer_update_region(g_current_device, buf, offset, bytes, size);
-    free(bytes);
+    if (cmd == NULL || size == 0u || ((offset | size) & 3u) != 0u) return;
+    rhi_d3d12_record_buffer_write(cmd, buf, offset, NULL, value, size);
 }
 void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
                            const void *data, usize size) {
     if (cmd == NULL || data == NULL || size == 0u) return;
-    rhi_buffer_update_region(g_current_device, buf, offset, data, size);
+    rhi_d3d12_record_buffer_write(cmd, buf, offset, data, 0u, size);
 }
+
 void *rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     RHI_D3D12Buffer *bd;
     void *mapped = NULL;
@@ -3790,9 +5923,11 @@ void *rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
         LOG_WARN("D3D12: rhi_buffer_map on DEFAULT-heap buffer; use rhi_buffer_read");
         return NULL;
     }
-    if (FAILED(ID3D12Resource_Map(bd->resource, 0u, NULL, &mapped)))
+    if (FAILED(ID3D12Resource_Map(bd->readback != NULL ? bd->readback : bd->resource,
+                                  0u, NULL, &mapped)))
         return NULL;
     bd->mapped = mapped;
+    bd->shadow_valid = 0u;
     return mapped;
 }
 void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
@@ -3800,7 +5935,13 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
     if (dev == NULL) return;
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (bd == NULL || bd->mapped == NULL) return;
-    ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+    {
+        D3D12_RANGE none = { 0u, 0u };
+        if (bd->readback != NULL)
+            ID3D12Resource_Unmap(bd->readback, 0u, &none);
+        else
+            ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+    }
     bd->mapped = NULL;
 }
 void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
@@ -3819,6 +5960,23 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
     if (sbd == NULL || dbd == NULL) return;
     if (size > (usize)sbd->size) size = (usize)sbd->size;
     if (size > (usize)dbd->size) size = (usize)dbd->size;
+    if (!dbd->device_local) {
+        /* R652: GPU -> host staging (gpucull's vis-flag readback). The
+         * READBACK twin stays in COPY_DEST for its whole life. */
+        if (!sbd->device_local) return;
+        if (dbd->readback == NULL) {
+            dbd->readback = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_READBACK,
+                                                     dbd->size);
+            if (dbd->readback == NULL) return;
+        }
+        rhi_d3d12_transition(list, sbd->resource, sbd->state,
+                             D3D12_RESOURCE_STATE_COPY_SOURCE);
+        ID3D12GraphicsCommandList_CopyBufferRegion(list, dbd->readback, 0u,
+                                                   sbd->resource, 0u, (UINT64)size);
+        rhi_d3d12_transition(list, sbd->resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                             sbd->state);
+        return;
+    }
     rhi_d3d12_transition(list, sbd->resource, sbd->state,
                          D3D12_RESOURCE_STATE_COPY_SOURCE);
     rhi_d3d12_transition(list, dbd->resource, dbd->state,
@@ -3832,22 +5990,220 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
 }
 
 /* ---- material texture binders ---- */
+/* A GL texture unit that nothing bound still reads as the textureless
+ * default, so the GL binder can leave a missing map alone. A D3D12 root
+ * descriptor table has no such "unset" state: whatever the last draw left in
+ * that descriptor slot is what the shader samples, so a missing material map
+ * would read stale or never-written descriptor memory (measured on WARP:
+ * black, with the shader itself still running). Every 2D material slot
+ * therefore resolves through this shared 1x1 RGBA8 white texture, created on
+ * first use and released with the context (rhi_device_destroy). White is the
+ * neutral value for the maps that reach it (ao/occlusion 1.0, metallic-
+ * roughness defaults), and it is the same fallback the engine's own scene
+ * resources use for absent textures.
+ *
+ * SCOPE OF THE RULE, honestly: "never leaves a descriptor unwritten" holds on
+ * the NORMAL path only. Three failure paths still skip the bind and leave the
+ * table as it was — fallback creation failing (device lost, or the upload
+ * path refusing), the descriptor allocator returning no slot, and the
+ * per-frame SRV budget (RHI_D3D12_CBV_SRV_UAV_CAPACITY) being full. Each of
+ * those is a loud, logged or fail-closed condition rather than a silent
+ * correct-looking frame, but the guarantee is per-slot-and-best-effort, not
+ * unconditional. Cube-typed slots do not even get this rule — see
+ * rhi_d3d12_live_cube. */
+static RHITexture rhi_d3d12_white_fallback(RHI_D3D12Context *ctx) {
+    static const unsigned char white[4] = { 255u, 255u, 255u, 255u };
+    RHITextureDesc desc;
+    if (ctx == NULL || g_current_device == NULL) return RHI_HANDLE_NULL;
+    if (rhi_handle_valid(ctx->white_fallback)) return ctx->white_fallback;
+    memset(&desc, 0, sizeof(desc));
+    desc.width = 1u;
+    desc.height = 1u;
+    desc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    desc.mip_levels = 1u;
+    desc.data = white;
+    ctx->white_fallback = rhi_texture_create(g_current_device, &desc);
+    return ctx->white_fallback;
+}
+/* A handle that names no live texture (null, stale, or not a texture) takes
+ * the fallback, so a bound descriptor always describes something real. */
+static RHITexture rhi_d3d12_material_slot(RHI_D3D12Context *ctx,
+                                          RHITexture tex) {
+    if (g_current_device != NULL && rhi_get_resource_typed(g_current_device,
+            tex, RHI_RES_TEXTURE) != NULL) return tex;
+    return rhi_d3d12_white_fallback(ctx);
+}
+/* Cube-typed slots — units 8/9 (irradiance, prefiltered radiance) and 10-13
+ * (u_point_shadow_cubes[4]) — are sampled as CUBES, not 2D: see
+ * engine/shaders/pbr_clustered.frag:56, blinn_phong_clustered.frag:22 and
+ * deferred_light.frag:15, all of which declare
+ * `layout(binding = 10) uniform samplerCube u_point_shadow_cubes[4]`. The
+ * 2D white fallback is therefore WRONG for them: a TEXTURE2D descriptor on a
+ * cube-sampled register is a descriptor/shader type mismatch, which is why
+ * the engine's own bind path never gives these a 2D view
+ * (engine/src/main.c:1109). They are skipped instead.
+ *
+ * "Live cube" is tested against the RHI_RES_CUBEMAP slot type — the type the
+ * GL backend tags a point-shadow depth cube with in its
+ * rhi_cubemap_depth_fbo_create — so a 2D texture handle can never pass this
+ * gate by accident, and a cube handle can never be mistaken for a texture by
+ * rhi_d3d12_material_slot (which requires RHI_RES_TEXTURE).
+ * D3D12 creates no cubes today (rhi_cubemap_create and
+ * rhi_cubemap_depth_fbo_create are stubs), so every one of these six slots
+ * skips; the gate is what makes that omission deliberate and self-starting
+ * rather than accidental when cube FBOs land. Note that even a live cube
+ * still skips today, one step further in: rhi_cmd_bind_texture resolves
+ * RHI_RES_TEXTURE and builds a TEXTURE2D SRV, so it declines a cube handle
+ * rather than writing a wrong-dimension descriptor. Cube SRVs
+ * (D3D12_SRV_DIMENSION_TEXTURECUBE + Cube2DArraySize) are part of the cube
+ * work, not this binder. */
+static int rhi_d3d12_live_cube(RHIHandle handle) {
+    const RHI_D3D12Texture *td;
+    if (g_current_device == NULL) return 0;
+    if (rhi_get_resource_typed(g_current_device, handle, RHI_RES_CUBEMAP) != NULL)
+        return 1;
+    /* R647: a point-shadow depth cube is an RHI_RES_TEXTURE flagged is_cube
+     * (rhi_cubemap_depth_fbo_create), which rhi_cmd_bind_texture views as a
+     * TEXTURECUBE. A plain 2D texture still fails this gate. */
+    td = (const RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device,
+                                                          handle, RHI_RES_TEXTURE);
+    return td != NULL && td->is_cube;
+}
+/* R647: the cube twin of the white fallback, for the point-shadow cube
+ * registers (t10-t13). A sidecar that declares them gets a descriptor on
+ * every draw, and a depth of 1.0 is "nothing nearer than the far plane",
+ * i.e. unshadowed — the same answer the old stubbed point_shadow_test gave.
+ * The resource is cleared once, on the command list that first binds it,
+ * before any read of it on that list. */
+static RHITexture rhi_d3d12_cube_fallback(RHI_D3D12Context *ctx) {
+    RHI_D3D12CubeDepthFBO *cd;
+    RHI_D3D12Texture *td;
+    ID3D12GraphicsCommandList *list;
+    UINT f;
+    if (ctx == NULL || g_current_device == NULL) return RHI_HANDLE_NULL;
+    if (rhi_handle_valid(ctx->cube_fallback.depth_tex))
+        return ctx->cube_fallback.depth_tex;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return RHI_HANDLE_NULL;
+    ctx->cube_fallback = rhi_cubemap_depth_fbo_create(g_current_device, 1u);
+    cd = (RHI_D3D12CubeDepthFBO *)rhi_get_resource_typed(g_current_device,
+        ctx->cube_fallback.fb, RHI_RES_CUBEMAP_DEPTH_FBO);
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device,
+        ctx->cube_fallback.depth_tex, RHI_RES_TEXTURE);
+    if (cd == NULL || td == NULL) {
+        rhi_cubemap_depth_fbo_destroy(g_current_device, &ctx->cube_fallback);
+        return RHI_HANDLE_NULL;
+    }
+    if (td->state != D3D12_RESOURCE_STATE_DEPTH_WRITE) {
+        rhi_d3d12_transition(list, td->resource, td->state,
+                             D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        td->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    }
+    for (f = 0u; f < 6u; ++f)
+        ID3D12GraphicsCommandList_ClearDepthStencilView(list,
+            rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, cd->dsv_slots[f]),
+            D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
+    return ctx->cube_fallback.depth_tex;
+}
+/* R654: IBL cube fallback (t8 irradiance / t9 prefilter) -- a 1x1 RGBA16F
+ * colour cube of zeros, i.e. "no environment light", the GLSL #else branch
+ * of HAS_IBL. Created on first use and released with the context. */
+static RHICubemap rhi_d3d12_black_cube(RHI_D3D12Context *ctx) {
+    static const u16 zero[4] = { 0u, 0u, 0u, 0u };
+    RHICubemapDesc d;
+    u32 f;
+    if (ctx == NULL || g_current_device == NULL) return RHI_HANDLE_NULL;
+    if (rhi_handle_valid(ctx->black_cube)) return ctx->black_cube;
+    memset(&d, 0, sizeof(d));
+    d.size = 1u;
+    d.format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    d.mip_levels = 1u;
+    for (f = 0u; f < 6u; ++f) d.faces[f] = zero;
+    ctx->black_cube = rhi_cubemap_create(g_current_device, &d);
+    return ctx->black_cube;
+}
+/* Point-shadow cube unit 10 + i: the caller's cube when it is live, else the
+ * cleared fallback. */
+static void rhi_d3d12_bind_point_shadow_cubes(RHICmdBuffer *cmd,
+    RHI_D3D12Context *ctx, const RHITexture *cubes, u32 count,
+    RHISampler sampler) {
+    u32 i;
+    if (cubes == NULL) count = 0u;
+    if (count > 4u) count = 4u;
+    for (i = 0u; i < 4u; ++i) {
+        RHITexture t = (i < count && rhi_d3d12_live_cube(cubes[i]))
+                           ? cubes[i] : rhi_d3d12_cube_fallback(ctx);
+        if (rhi_handle_valid(t)) rhi_cmd_bind_texture(cmd, t, sampler, 10u + i);
+    }
+}
+/* The binders only mean anything inside a started frame with a bound
+ * pipeline, and creating the fallback uploads on the queue, so both guard
+ * here rather than relying on rhi_cmd_bind_texture's per-call bail-outs. */
+static int rhi_d3d12_material_bindable(RHI_D3D12Context *ctx) {
+    if (ctx == NULL || g_current_device == NULL) return 0;
+    return rhi_d3d12_cmd_list(ctx) != NULL && ctx->bound_pipeline != NULL;
+}
+/* Unit map mirrors the GL backend's rhi_cmd_bind_material_textures binder
+ * exactly, so a D3D12 sidecar's register(tN) lines up with GL texture unit
+ * N — the blinn_phong sidecar declares g_albedo : register(t0), which is why
+ * albedo is unit 0. rhi_cmd_bind_texture returns without touching any table
+ * for a register the bound pipeline does not declare, so a sidecar
+ * declaring only t0 works here too.
+ *
+ * `sampler` applies to every unit this binds (R666; see
+ * rhi_cmd_bind_texture), as GL's binder does. */
 void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo,
     RHITexture mr, RHITexture normal, RHITexture emissive, RHITexture shadow,
     RHITexture ssao, RHISampler sampler) {
-    (void)cmd; (void)albedo; (void)mr; (void)normal; (void)emissive;
-    (void)shadow; (void)ssao; (void)sampler;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    if (!rhi_d3d12_material_bindable(ctx)) return;
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, albedo), sampler, 0u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, shadow), sampler, 1u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, mr), sampler, 2u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, normal), sampler, 3u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, emissive), sampler, 4u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, ssao), sampler, 5u);
 }
+/* Unit map mirrors the GL backend's rhi_cmd_bind_material_textures_ibl binder
+ * exactly, including occlusion at 15, the point-shadow cubes at 10-13
+ * (clamped to four), ssao at 14, and the IBL units 7-9. Same sampler caveat
+ * as the non-IBL binder, and it bites hardest here: the point-shadow cubes
+ * are samplerCube + manual .r compare on GL and want a comparison sampler
+ * both for the cube and for the depth comparison. */
 void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo,
     RHITexture mr, RHITexture normal, RHITexture emissive,
     RHITexture occlusion, RHITexture shadow, RHITexture ssao,
     RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map,
     RHICubemap prefilter_map, const RHITexture *point_shadow_cubes,
     u32 point_shadow_count) {
-    (void)cmd; (void)albedo; (void)mr; (void)normal; (void)emissive;
-    (void)occlusion; (void)shadow; (void)ssao; (void)sampler; (void)brdf_lut;
-    (void)irradiance_map; (void)prefilter_map; (void)point_shadow_cubes;
-    (void)point_shadow_count;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    if (!rhi_d3d12_material_bindable(ctx)) return;
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, albedo), sampler, 0u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, shadow), sampler, 1u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, mr), sampler, 2u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, normal), sampler, 3u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, emissive), sampler, 4u);
+    /* R583: occlusion at 15. */
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, occlusion), sampler, 15u);
+    /* Cube slots: a live cube, else the cube fallback — never a 2D
+     * texture, which on a samplerCube register is a type mismatch (see
+     * rhi_d3d12_live_cube). */
+    rhi_d3d12_bind_point_shadow_cubes(cmd, ctx, point_shadow_cubes,
+                                      point_shadow_count, sampler);
+    /* R213-B: ssao at 14 — units 10-13 are u_point_shadow_cubes[4]. */
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, ssao), sampler, 14u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, brdf_lut), sampler, 7u);
+    /* Units 8 and 9 are the IBL cubes. R655: a live cube, else the black
+     * fallback -- a sidecar that declares t8/t9 (pbr_clustered_hlsl.frag)
+     * must get a descriptor on every draw, and black adds no environment
+     * light. rhi_cmd_bind_cubemap understands the colour cube; the old
+     * rhi_cmd_bind_texture call could not build a cube view for it. */
+    rhi_cmd_bind_cubemap(cmd, rhi_d3d12_cube_tex(irradiance_map) != NULL
+                                  ? irradiance_map : rhi_d3d12_black_cube(ctx),
+                         sampler, 8u);
+    rhi_cmd_bind_cubemap(cmd, rhi_d3d12_cube_tex(prefilter_map) != NULL
+                                  ? prefilter_map : rhi_d3d12_black_cube(ctx),
+                         sampler, 9u);
 }
 void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
     RHITexture albedo_metallic, RHITexture roughness_ao, RHITexture normal,
@@ -3855,15 +6211,57 @@ void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
     RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map,
     RHICubemap prefilter_map, const RHITexture *point_shadow_cubes,
     u32 point_shadow_count, RHISampler cube_sampler) {
-    (void)cmd; (void)albedo_metallic; (void)roughness_ao; (void)normal;
-    (void)depth; (void)emissive; (void)shadow; (void)ssao; (void)sampler;
-    (void)brdf_lut; (void)irradiance_map; (void)prefilter_map;
-    (void)point_shadow_cubes;
-    (void)point_shadow_count; (void)cube_sampler;
+    /* R644: was a no-op stub. The GL backend's unit map, which is what
+     * deferred_light_hlsl.frag declares: 0 albedo+metallic, 1 normal,
+     * 2 roughness/AO, 3 depth, 4 shadow, 14 SSAO, 15 emissive. Units the
+     * bound pipeline does not declare are skipped by rhi_cmd_bind_texture.
+     * Shadow and SSAO fall back to white (lit, unoccluded) like the material
+     * binder, because the sidecar always declares them and a D3D12 table has
+     * no unbound state. R647: the point-shadow cubes go to 10-13 (a live
+     * cube, else the 1.0 cube fallback). R654: the IBL inputs go to 7-9 --
+     * the BRDF LUT (white fallback) and the irradiance / prefiltered cubes
+     * (black fallback, so a missing environment adds no light). */
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    if (!rhi_d3d12_material_bindable(ctx)) return;
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, brdf_lut), sampler, 7u);
+    rhi_cmd_bind_cubemap(cmd, rhi_d3d12_cube_tex(irradiance_map) != NULL
+                                  ? irradiance_map : rhi_d3d12_black_cube(ctx),
+                         sampler, 8u);
+    rhi_cmd_bind_cubemap(cmd, rhi_d3d12_cube_tex(prefilter_map) != NULL
+                                  ? prefilter_map : rhi_d3d12_black_cube(ctx),
+                         sampler, 9u);
+    rhi_d3d12_bind_point_shadow_cubes(cmd, ctx, point_shadow_cubes,
+                                      point_shadow_count, cube_sampler);
+    rhi_cmd_bind_texture(cmd, albedo_metallic, sampler, 0u);
+    rhi_cmd_bind_texture(cmd, normal, sampler, 1u);
+    rhi_cmd_bind_texture(cmd, roughness_ao, sampler, 2u);
+    rhi_cmd_bind_texture(cmd, depth, sampler, 3u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, shadow), sampler, 4u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, ssao), sampler, 14u);
+    rhi_cmd_bind_texture(cmd, emissive, sampler, 15u);
 }
+/* R620: was a no-op stub. Nine post passes route through it -- dof,
+ * motion_blur, taa, ssr, ssgi, contact_shadow, lens_flare and both arms of
+ * combined_post_process -- so on D3D12 every one of them would have built a
+ * pipeline and then sampled unbound tables.
+ *
+ * The contract is the GL one, which is the simplest of the three backends:
+ * textures[i] goes to unit i, at most six. That is exactly
+ * rhi_cmd_bind_texture called once per unit, so this delegates instead of
+ * duplicating the SRV path -- the per-unit binder already resolves
+ * image_root_params[unit], skips a register the pipeline does not declare,
+ * builds a 2D or 2D-array view from the texture, and transitions it to a
+ * shader-read state. Invalid handles are skipped the same way GL's
+ * gl_bind_tex_unit skips them. The sampler applies to every unit, as in
+ * rhi_cmd_bind_texture. */
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd, RHITexture *textures,
                                  int count, RHISampler sampler) {
-    (void)cmd; (void)textures; (void)count; (void)sampler;
+    int i;
+    if (cmd == NULL || textures == NULL || count <= 0) return;
+    for (i = 0; i < count && i < 6; ++i) {
+        if (!rhi_handle_valid(textures[i])) continue;
+        rhi_cmd_bind_texture(cmd, textures[i], sampler, (u32)i);
+    }
 }
 
 /* ---- offscreen / MRT / depth-cube FBO ---- */
@@ -3895,7 +6293,15 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev,
     out.color_tex = rhi_texture_create(dev, &tex_desc);
     if (!rhi_handle_valid(out.color_tex)) return out;
     tex_desc.format = RHI_FORMAT_D32_FLOAT;
-    out.depth_tex = rhi_texture_create(dev, &tex_desc);
+    /* R636: the depth attachment goes through the depth_samplable path, so
+     * the resource is the canonical R32_TYPELESS and can be aliased both as
+     * a D32_FLOAT depth-stencil view (here) and as an R32_FLOAT shader
+     * resource view (by every post pass that samples the scene depth).
+     * A plain D32_FLOAT resource cannot back an SRV at all: the SRV
+     * creation failed, the descriptor stayed empty, and the shader read a
+     * null descriptor -- which is how TAA and motion blur took the device
+     * down on the first frame (0x887a0001 at present time). */
+    out.depth_tex = rhi_d3d12_texture_create_ex(dev, &tex_desc, 1, 0u);
     if (!rhi_handle_valid(out.depth_tex)) {
         rhi_texture_destroy(dev, out.color_tex);
         memset(&out, 0, sizeof(out));
@@ -3908,6 +6314,8 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev,
     fd->rtv_slot = rhi_d3d12_descriptor_take(ctx, &ctx->rtv_alloc);
     fd->dsv_slot = rhi_d3d12_descriptor_take(ctx, &ctx->dsv_alloc);
     if (fd->rtv_slot == UINT_MAX || fd->dsv_slot == UINT_MAX) {
+        LOG_WARN("D3D12: offscreen FBO refused -- %s descriptor heap exhausted",
+                 fd->rtv_slot == UINT_MAX ? "RTV" : "DSV");
         retire = rhi_d3d12_retire_fence(ctx);
         if (fd->rtv_slot != UINT_MAX)
             rhi_d3d12_descriptor_give_back(&ctx->rtv_alloc, fd->rtv_slot, retire);
@@ -3918,8 +6326,19 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev,
     }
     ID3D12Device_CreateRenderTargetView(ctx->device, color->resource, NULL,
         rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc, fd->rtv_slot));
-    ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource, NULL,
-        rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, fd->dsv_slot));
+    {
+        /* R636: the depth resource is R32_TYPELESS (see above), so the
+         * depth-stencil view has to name the D32_FLOAT aspect explicitly --
+         * a NULL-desc default would guess from the typeless format and
+         * fail. */
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
+        ZeroMemory(&dsv_desc, sizeof(dsv_desc));
+        dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsv_desc.Flags = D3D12_DSV_FLAG_NONE;
+        ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource,
+            &dsv_desc, rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, fd->dsv_slot));
+    }
     /* R617/R619 portable contract: the bind clear color is caller-owned and
      * defaults to {0.05, 0.05, 0.1, 1.0}; depth always clears to 1.0. */
     fd->clear_color[0] = 0.05f; fd->clear_color[1] = 0.05f;
@@ -3977,6 +6396,31 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     if (rhi_handle_valid(fbo->depth_tex)) rhi_texture_destroy(dev, fbo->depth_tex);
     memset(fbo, 0, sizeof(*fbo));
 }
+/* R629 diagnostic, narrowed in R643. A texture that is still bound as a
+ * shader resource of the current pipeline when it becomes a render target is
+ * read and written by the next draw -- undefined, and the shape that loses a
+ * device. R629 warned whenever the texture had been read at any point in the
+ * frame, which also fired on every legal ping-pong (bloom blur: read A ->
+ * write B, read B -> write A; each bind barriers the resource): 33 warnings
+ * per 12 demo frames, none of them a hazard, and the debug layer agreed. Now
+ * only a live binding counts: ctx->live_srv[] holds the textures in the bound
+ * pipeline's tables and is cleared when the root signature changes (which
+ * drops every root argument). */
+static void rhi_d3d12_warn_rt_srv_alias(RHI_D3D12Context *ctx,
+                                         const RHI_D3D12Texture *tex,
+                                         const char *role) {
+    UINT i;
+    if (ctx == NULL || tex == NULL) return;
+    for (i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) {
+        if (ctx->live_srv[i] != tex) continue;
+        LOG_WARN("D3D12: %ux%u texture is still bound as a shader resource "
+                 "(unit %u) and is now being bound as %s -- the next draw "
+                 "would read and write it", tex->width, tex->height, i, role);
+        ctx->rt_srv_alias_count++;
+        return;
+    }
+}
+
 static void rhi_d3d12_fbo_bind_impl(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo,
                                     bool load) {
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
@@ -3995,9 +6439,11 @@ static void rhi_d3d12_fbo_bind_impl(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo,
     if (color == NULL || depth == NULL) return;
     /* Transitions declare the CPU-tracked state (td->state), the same rule
      * the texture upload / readback one-shots follow. */
+    rhi_d3d12_warn_rt_srv_alias(ctx, color, "RENDER_TARGET");
     rhi_d3d12_transition(list, color->resource, color->state,
                          D3D12_RESOURCE_STATE_RENDER_TARGET);
     color->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    rhi_d3d12_warn_rt_srv_alias(ctx, depth, "DEPTH_WRITE");
     rhi_d3d12_transition(list, depth->resource, depth->state,
                          D3D12_RESOURCE_STATE_DEPTH_WRITE);
     depth->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
@@ -4006,6 +6452,7 @@ static void rhi_d3d12_fbo_bind_impl(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo,
     ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1u, &rtv, TRUE, &dsv);
     rhi_d3d12_set_full_target_viewport(list, fd->width, fd->height);
     ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_formats[0] = color->dxgi_format;
     ctx->bound_rtv_count = 1u;
     ctx->bound_dsv = dsv;
     ctx->bound_dsv_valid = 1u;
@@ -4037,6 +6484,7 @@ void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
                                    ctx->swapchain.rtv_slots[ctx->swapchain.current_index]);
     ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1u, &rtv, FALSE, NULL);
     ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_formats[0] = ctx->swapchain.format;
     ctx->bound_rtv_count = 1u;
     ctx->bound_dsv_valid = 0u;
     vp.TopLeftX = 0.0f; vp.TopLeftY = 0.0f;
@@ -4129,7 +6577,10 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         }
     }
     tex_desc.format = RHI_FORMAT_D32_FLOAT;
-    out.depth_tex = rhi_texture_create(dev, &tex_desc);
+    /* R636: same typeless-alias treatment as the plain FBO's depth
+     * attachment -- the forward scene's depth is the one TAA, motion blur
+     * and every other depth-reading post pass samples. */
+    out.depth_tex = rhi_d3d12_texture_create_ex(dev, &tex_desc, 1, 0u);
     if (!rhi_handle_valid(out.depth_tex)) {
         rhi_d3d12_mrt_cleanup(dev, &out, md);
         return (RHIMRTFBO){0};
@@ -4159,12 +6610,19 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     {
         RHI_D3D12Texture *depth = (RHI_D3D12Texture *)
             rhi_get_resource_typed(dev, out.depth_tex, RHI_RES_TEXTURE);
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
         if (depth == NULL) {
             rhi_d3d12_mrt_cleanup(dev, &out, md);
             return (RHIMRTFBO){0};
         }
-        ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource, NULL,
-            rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, md->dsv_slot));
+        /* R636: the depth resource is R32_TYPELESS, so the depth-stencil
+         * view names the D32_FLOAT aspect explicitly. */
+        ZeroMemory(&dsv_desc, sizeof(dsv_desc));
+        dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsv_desc.Flags = D3D12_DSV_FLAG_NONE;
+        ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource,
+            &dsv_desc, rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, md->dsv_slot));
     }
     if (dev->free_count == 0u) {
         rhi_d3d12_mrt_cleanup(dev, &out, md);
@@ -4225,11 +6683,13 @@ static void rhi_d3d12_mrt_bind_impl(RHICmdBuffer *cmd, RHIMRTFBO *fbo,
         g_current_device, fbo->depth_tex, RHI_RES_TEXTURE);
     if (depth == NULL) return;
     for (i = 0u; i < md->attachment_count; ++i) {
+        rhi_d3d12_warn_rt_srv_alias(ctx, colors[i], "RENDER_TARGET");
         rhi_d3d12_transition(list, colors[i]->resource, colors[i]->state,
                              D3D12_RESOURCE_STATE_RENDER_TARGET);
         colors[i]->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
         rtvs[i] = rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc, md->rtv_slots[i]);
     }
+    rhi_d3d12_warn_rt_srv_alias(ctx, depth, "DEPTH_WRITE");
     rhi_d3d12_transition(list, depth->resource, depth->state,
                          D3D12_RESOURCE_STATE_DEPTH_WRITE);
     depth->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
@@ -4238,8 +6698,10 @@ static void rhi_d3d12_mrt_bind_impl(RHICmdBuffer *cmd, RHIMRTFBO *fbo,
     ID3D12GraphicsCommandList_OMSetRenderTargets(list, md->attachment_count,
                                                  rtvs, FALSE, &dsv);
     rhi_d3d12_set_full_target_viewport(list, md->width, md->height);
-    for (i = 0u; i < md->attachment_count; ++i)
+    for (i = 0u; i < md->attachment_count; ++i) {
         ctx->bound_rtvs[i] = rtvs[i];
+        ctx->bound_rtv_formats[i] = colors[i]->dxgi_format;
+    }
     ctx->bound_rtv_count = md->attachment_count;
     ctx->bound_dsv = dsv;
     ctx->bound_dsv_valid = 1u;
@@ -4260,22 +6722,136 @@ void rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
 }
+/* R647: point-light depth cube. One six-slice D32 resource allocated
+ * typeless (R32_TYPELESS) so it has two views over the same bytes: a
+ * D32_FLOAT DSV per face for the depth pass, and the R32_FLOAT TEXTURECUBE
+ * SRV the lighting pass samples (is_cube, see rhi_cmd_bind_texture). Slice
+ * N is face N in D3D12 TextureCube order +X,-X,+Y,-Y,+Z,-Z — the same order
+ * rhi.h documents for the face index. */
 RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     RHICubemapDepthFBO out;
-    (void)dev; (void)size;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *depth;
+    RHI_D3D12CubeDepthFBO *cd;
+    RHITextureDesc tdesc;
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
+    u32 idx;
+    u32 f;
     memset(&out, 0, sizeof(out));
+    if (dev == NULL || !rhi_drawable_dimensions_valid(size, size)) return out;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return out;
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = size;
+    tdesc.height = size;
+    tdesc.format = RHI_FORMAT_D32_FLOAT;
+    tdesc.mip_levels = 1u;
+    out.depth_tex = rhi_d3d12_texture_create_ex(dev, &tdesc, 1, 6u);
+    if (!rhi_handle_valid(out.depth_tex)) return out;
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, out.depth_tex,
+                                                       RHI_RES_TEXTURE);
+    cd = (RHI_D3D12CubeDepthFBO *)calloc(1u, sizeof(*cd));
+    if (depth == NULL || cd == NULL) {
+        free(cd);
+        rhi_texture_destroy(dev, out.depth_tex);
+        memset(&out, 0, sizeof(out));
+        return out;
+    }
+    depth->is_cube = 1u;
+    for (f = 0u; f < 6u; ++f) cd->dsv_slots[f] = UINT_MAX;
+    for (f = 0u; f < 6u; ++f) {
+        cd->dsv_slots[f] = rhi_d3d12_descriptor_take(ctx, &ctx->dsv_alloc);
+        if (cd->dsv_slots[f] == UINT_MAX) {
+            u32 k;
+            for (k = 0u; k < f; ++k)
+                rhi_d3d12_descriptor_give_back(&ctx->dsv_alloc,
+                    cd->dsv_slots[k], rhi_d3d12_retire_fence(ctx));
+            free(cd);
+            rhi_texture_destroy(dev, out.depth_tex);
+            memset(&out, 0, sizeof(out));
+            return out;
+        }
+        ZeroMemory(&dsv_desc, sizeof(dsv_desc));
+        dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+        dsv_desc.Flags = D3D12_DSV_FLAG_NONE;
+        dsv_desc.Texture2DArray.MipSlice = 0u;
+        dsv_desc.Texture2DArray.FirstArraySlice = f;
+        dsv_desc.Texture2DArray.ArraySize = 1u;
+        ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource,
+            &dsv_desc, rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, cd->dsv_slots[f]));
+    }
+    cd->size = size;
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = cd;
+    dev->slots[idx].type = RHI_RES_CUBEMAP_DEPTH_FBO;
+    out.fb = rhi_make_handle(idx, dev->slots[idx].generation);
+    out.size = size;
     return out;
 }
 void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
-    (void)dev; (void)fbo;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12CubeDepthFBO *cd;
+    u32 f;
+    if (dev == NULL || fbo == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (rhi_handle_valid(fbo->depth_tex)) rhi_texture_destroy(dev, fbo->depth_tex);
+    cd = (RHI_D3D12CubeDepthFBO *)rhi_get_resource_typed(dev, fbo->fb,
+                                                         RHI_RES_CUBEMAP_DEPTH_FBO);
+    if (cd != NULL) {
+        /* Same rule as the shadow atlas: a recorded list may still hold the
+         * DSVs, so the slots go back through the fence-retire path. */
+        if (ctx != NULL)
+            for (f = 0u; f < 6u; ++f)
+                if (cd->dsv_slots[f] != UINT_MAX)
+                    rhi_d3d12_descriptor_give_back(&ctx->dsv_alloc,
+                        cd->dsv_slots[f], rhi_d3d12_retire_fence(ctx));
+        free(cd);
+        rhi_free_slot(dev, fbo->fb);
+    }
+    fbo->fb = RHI_HANDLE_NULL;
+    fbo->depth_tex = RHI_HANDLE_NULL;
+    fbo->size = 0u;
 }
+/* rhi.h R618 contract: binding a face clears it to 1.0. The viewport is the
+ * offscreen one (memory row 0 = NDC y -1), the same row order GL and Vulkan
+ * give a cube face: cube addressing puts face-space t = 0 on row 0, and
+ * point_shadow_compute_face_vp builds each face for exactly that order. */
 void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd,
                                      RHICubemapDepthFBO *fbo, u32 face) {
-    (void)cmd; (void)fbo; (void)face;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12CubeDepthFBO *cd;
+    RHI_D3D12Texture *depth;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv;
+    if (ctx == NULL || g_current_device == NULL || fbo == NULL || face >= 6u)
+        return;
+    cd = (RHI_D3D12CubeDepthFBO *)rhi_get_resource_typed(g_current_device,
+        fbo->fb, RHI_RES_CUBEMAP_DEPTH_FBO);
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device,
+        fbo->depth_tex, RHI_RES_TEXTURE);
+    if (cd == NULL || depth == NULL || depth->resource == NULL ||
+        cd->dsv_slots[face] == UINT_MAX) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    rhi_d3d12_warn_rt_srv_alias(ctx, depth, "DEPTH_WRITE");
+    if (depth->state != D3D12_RESOURCE_STATE_DEPTH_WRITE) {
+        rhi_d3d12_transition(list, depth->resource, depth->state,
+                             D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        depth->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    }
+    dsv = rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, cd->dsv_slots[face]);
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 0u, NULL, TRUE, &dsv);
+    ctx->bound_rtv_count = 0u;
+    ctx->bound_dsv = dsv;
+    ctx->bound_dsv_valid = 1u;
+    rhi_d3d12_set_full_target_viewport(list, cd->size, cd->size);
+    ID3D12GraphicsCommandList_ClearDepthStencilView(list, dsv,
+        D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
 }
 void rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w,
                                   u32 screen_h) {
-    (void)cmd; (void)screen_w; (void)screen_h;
+    rhi_cmd_unbind_shadow_map(cmd, screen_w, screen_h);
 }
 
 /* ---- compute ---- */
@@ -4283,12 +6859,235 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_Dispatch(list, x, y, z);
 }
+/* R-matrix probe: build one UAV view over `buf` so the caller can enumerate
+ * which descriptor field shape this runtime accepts.
+ *
+ * variant:
+ *   0  Format=R32_TYPELESS, Buffer.Flags left 0        (illegal: no RAW)
+ *   1  Format=R32_TYPELESS + Buffer.Flags = RAW
+ *   2  Format=DXGI_FORMAT_UNKNOWN, Buffer.Flags left 0  (structured)
+ *   3  Format=DXGI_FORMAT_UNKNOWN + StructureByteStride 16
+ *   4  fully zeroed descriptor
+ *   5  pDesc = NULL (D3D12 infers everything from the resource)
+ *   6  Format=R32_TYPELESS + RAW + counter resource
+ *
+ * Internal, not part of the RHI; exists for test_d3d12_uav_matrix. */
+int rhi_d3d12_probe_create_uav(RHIDevice *dev, RHIBuffer buf, int variant) {
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Buffer *bd;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC desc;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+    D3D12_CPU_DESCRIPTOR_HANDLE heap_base;
+    ID3D12Resource *counter = NULL;
+    UINT64 heap_size;
+    UINT slot;
+    int rc = 0;
+    if (dev == NULL || variant < 0 || variant > 6) return -1;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device == NULL) return -1;
+    bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
+    if (bd == NULL || bd->resource == NULL) return -1;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) return -1;
+    cpu = rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot);
+    /* The handle is computed, not read back, so nothing ever proved it lands
+     * inside the heap this allocator owns. An out-of-range slot would write
+     * past the heap end and the only symptom would be the device dying
+     * somewhere unrelated. */
+    ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(
+        ctx->cbv_srv_uav_alloc.heap, &heap_base);
+    heap_size = (UINT64)ctx->cbv_srv_uav_alloc.capacity *
+                (UINT64)ctx->cbv_srv_uav_alloc.increment;
+    if ((UINT64)(cpu.ptr - heap_base.ptr) >= heap_size) {
+        rc = -2;  /* handle outside the heap */
+        goto done;
+    }
+
+    ZeroMemory(&desc, sizeof(desc));
+    /* Variants 0..3 and 6 are complete buffer views. ViewDimension and
+     * NumElements are mandatory: leaving either zeroed is an illegal
+     * descriptor, which D3D12 reports by removing the device with
+     * DXGI_ERROR_INVALID_CALL. Variants 4 and 5 keep that failure on purpose
+     * as negative cells. */
+    if (variant <= 3 || variant == 6) {
+        desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        desc.Buffer.NumElements = (UINT)(bd->size / 4u);
+    }
+    switch (variant) {
+    case 0:
+    case 6:
+        desc.Format = DXGI_FORMAT_R32_TYPELESS;
+        break;
+    case 1:
+        /* RAW is what distinguishes byte-address access from structured.
+         * Without it a R32_TYPELESS view is read as a structured UAV with
+         * StructureByteStride 0, which is not a legal descriptor. */
+        desc.Format = DXGI_FORMAT_R32_TYPELESS;
+        desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        break;
+    case 2:
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        break;
+    case 3:
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.Buffer.StructureByteStride = 16u;
+        desc.Buffer.NumElements = (UINT)(bd->size / 16u);
+        break;
+    default:
+        break;
+    }
+    if (variant == 6) counter = bd->resource;
+    ID3D12Device_CreateUnorderedAccessView(ctx->device, bd->resource, counter,
+                                           (variant == 5) ? NULL : &desc, cpu);
+done:
+    rhi_d3d12_descriptor_give_back(&ctx->cbv_srv_uav_alloc, slot,
+                                   ctx->next_fence);
+    return rc;
+}
+/* Read-only storage buffer -> buffer SRV at register(tN). Unlike a UAV this
+ * works on an UPLOAD-heap buffer (GENERIC_READ already includes the shader
+ * resource states), which is where host-updated inputs such as the per-frame
+ * visibility flags live. A recorded write earlier in this frame
+ * (alias_resource) is what the view reads. */
+static void rhi_d3d12_bind_buffer_srv(RHI_D3D12Context *ctx,
+                                      ID3D12GraphicsCommandList *list,
+                                      RHI_D3D12Pipeline *pd,
+                                      RHI_D3D12Buffer *bd, u32 binding) {
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    ID3D12Resource *source = bd->resource;
+    UINT stride = pd->srv_buffer_strides[binding];
+    UINT slot;
+    if (stride != 0u ? bd->size < stride : bd->size < 4u) return;
+    source = rhi_d3d12_buffer_view_source(ctx, bd);
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) {
+        LOG_WARN("D3D12: SRV descriptor heap exhausted");
+        return;
+    }
+    ZeroMemory(&srv, sizeof(srv));
+    srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    if (stride == 0u) {
+        srv.Format = DXGI_FORMAT_R32_TYPELESS;
+        srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        srv.Buffer.NumElements = (UINT)(bd->size / 4u);
+    } else {
+        srv.Format = DXGI_FORMAT_UNKNOWN;
+        srv.Buffer.StructureByteStride = stride;
+        srv.Buffer.NumElements = (UINT)(bd->size / stride);
+    }
+    ID3D12Device_CreateShaderResourceView(ctx->device, source, &srv,
+        rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    if (bd->device_local) {
+        D3D12_RESOURCE_STATES read_state =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        if (bd->state != read_state) {
+            rhi_d3d12_transition(list, bd->resource, bd->state, read_state);
+            bd->state = read_state;
+        }
+    }
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list,
+            pd->image_root_params[binding], gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list,
+            pd->image_root_params[binding], gpu);
+}
+
+/* Storage buffer -> UAV at register(uN) of the bound pipeline, or -- when
+ * the pipeline declares no UAV there -- a buffer SRV at register(tN).
+ *
+ * The descriptor must be complete: ViewDimension BUFFER and a non-zero
+ * NumElements are mandatory, and the shape has to match the shader's
+ * declaration -- RWByteAddressBuffer wants R32_TYPELESS + RAW (4-byte
+ * elements), RWStructuredBuffer<T> wants UNKNOWN + StructureByteStride.
+ * Anything else is an illegal descriptor, and since
+ * CreateUnorderedAccessView returns void the runtime reports it by removing
+ * the device (DXGI_ERROR_INVALID_CALL). R611-R636 misread exactly that as a
+ * platform fault; see R637 and test_d3d12_uav_matrix.
+ *
+ * Only DEFAULT-heap buffers carry ALLOW_UNORDERED_ACCESS. A STORAGE buffer
+ * created without initial_data stays on the UPLOAD heap (it is the
+ * CPU-readback convention the staging twins rely on), and binding one as a
+ * UAV is refused here rather than handed to the runtime. */
 void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
                                  u32 binding) {
-    (void)cmd; (void)buf; (void)binding;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    RHI_D3D12Pipeline *pd;
+    RHI_D3D12Buffer *bd;
+    ID3D12GraphicsCommandList *list;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    UINT param, stride, slot;
+    if (ctx == NULL || g_current_device == NULL || binding >= RHI_D3D12_MAX_REGISTERS) return;
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (pd == NULL || list == NULL) return;
+    bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
+                                                    RHI_RES_BUFFER);
+    if (bd == NULL || bd->resource == NULL) return;
+    param = pd->storage_root_params[binding];
+    if (param == UINT_MAX) {
+        /* No UAV at uN: GLSL's `readonly buffer` at binding N is an SRV at
+         * tN in the sidecar convention. */
+        if (pd->image_root_params[binding] != UINT_MAX &&
+            pd->srv_buffer_strides[binding] != UINT_MAX)
+            rhi_d3d12_bind_buffer_srv(ctx, list, pd, bd, binding);
+        return;
+    }
+    stride = pd->storage_strides[binding];
+    if (stride == UINT_MAX) {
+        LOG_WARN("D3D12: register(u%u) is not a buffer view this backend can "
+                 "describe -- storage bind refused", (unsigned)binding);
+        return;
+    }
+    if (!bd->allow_uav) {
+        LOG_WARN("D3D12: storage bind at u%u refused -- buffer was not created "
+                 "with UAV access (STORAGE buffers need initial_data to be "
+                 "DEFAULT-heap)", (unsigned)binding);
+        return;
+    }
+    if (stride != 0u ? bd->size < stride : bd->size < 4u) return;
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) {
+        LOG_WARN("D3D12: UAV descriptor heap exhausted");
+        return;
+    }
+    ZeroMemory(&uav, sizeof(uav));
+    uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uav.Buffer.FirstElement = 0u;
+    if (stride == 0u) {
+        uav.Format = DXGI_FORMAT_R32_TYPELESS;
+        uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        uav.Buffer.NumElements = (UINT)(bd->size / 4u);
+    } else {
+        uav.Format = DXGI_FORMAT_UNKNOWN;
+        uav.Buffer.StructureByteStride = stride;
+        uav.Buffer.NumElements = (UINT)(bd->size / stride);
+    }
+    ID3D12Device_CreateUnorderedAccessView(ctx->device, bd->resource, NULL,
+        &uav, rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    if (bd->state != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        rhi_d3d12_transition(list, bd->resource, bd->state,
+                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        bd->state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
 }
 void rhi_cmd_bind_acceleration_structure(RHICmdBuffer *cmd,
                                          RHIAccelerationStructure structure,
@@ -4307,30 +7106,170 @@ void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
     barrier.UAV.pResource = NULL;
     ID3D12GraphicsCommandList_ResourceBarrier(list, 1u, &barrier);
 }
+/* R653: storage image = a single-mip TEXTURE2D UAV at register(u<unit>),
+ * with only that mip moved to UNORDERED_ACCESS. */
 void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit,
                                 u32 mip_level, bool write_only) {
-    (void)cmd; (void)tex; (void)unit; (void)mip_level; (void)write_only;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Pipeline *pd;
+    RHI_D3D12Texture *td;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    UINT param, slot;
+    (void)write_only;
+    if (ctx == NULL || g_current_device == NULL || unit >= RHI_D3D12_MAX_REGISTERS) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
+                                                    RHI_RES_TEXTURE);
+    if (list == NULL || pd == NULL || td == NULL || td->resource == NULL ||
+        mip_level >= td->mip_levels) return;
+    param = pd->storage_root_params[unit];
+    if (param == UINT_MAX) return;
+    if (td->rhi_format != (UINT)RHI_FORMAT_R32_FLOAT &&
+        td->rhi_format != (UINT)RHI_FORMAT_R16G16B16A16_SFLOAT) {
+        LOG_WARN("D3D12: storage image bind refused -- only R32_FLOAT and "
+                 "RGBA16F textures are created UAV-capable");
+        return;
+    }
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) return;
+    ZeroMemory(&uav, sizeof(uav));
+    uav.Format = td->dxgi_format;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    uav.Texture2D.MipSlice = mip_level;
+    ID3D12Device_CreateUnorderedAccessView(ctx->device, td->resource, NULL,
+        &uav, rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    rhi_d3d12_tex_mip_transition(list, td, mip_level,
+                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
 }
+/* R654: one face at one mip of a colour cube as a TEXTURE2DARRAY UAV with
+ * ArraySize 1 (the shader declares RWTexture2D, which a single-slice array
+ * UAV satisfies), and only that subresource moved to UNORDERED_ACCESS. */
 void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm,
                                      u32 face, u32 mip, u32 unit,
                                      bool write_only) {
-    (void)cmd; (void)cm; (void)face; (void)mip; (void)unit; (void)write_only;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Pipeline *pd;
+    RHI_D3D12Texture *td;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    UINT param, slot;
+    (void)write_only;
+    if (ctx == NULL || g_current_device == NULL || unit >= RHI_D3D12_MAX_REGISTERS || face >= 6u) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    td = rhi_d3d12_cube_tex(cm);
+    if (list == NULL || pd == NULL || td == NULL || td->resource == NULL ||
+        mip >= td->mip_levels) return;
+    param = pd->storage_root_params[unit];
+    if (param == UINT_MAX) return;
+    if (td->rhi_format != (UINT)RHI_FORMAT_R16G16B16A16_SFLOAT) {
+        LOG_WARN("D3D12: cube face storage bind refused -- only RGBA16F cubes "
+                 "are created UAV-capable");
+        return;
+    }
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) return;
+    ZeroMemory(&uav, sizeof(uav));
+    uav.Format = td->dxgi_format;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+    uav.Texture2DArray.MipSlice = mip;
+    uav.Texture2DArray.FirstArraySlice = face;
+    uav.Texture2DArray.ArraySize = 1u;
+    ID3D12Device_CreateUnorderedAccessView(ctx->device, td->resource, NULL,
+        &uav, rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    rhi_d3d12_tex_sub_transition(list, td, face * td->mip_levels + mip,
+                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
 }
 void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm,
                                   RHISampler sampler, u32 unit) {
-    (void)cmd; (void)cm; (void)sampler; (void)unit;
+    rhi_cmd_bind_cubemap(cmd, cm, sampler, unit);
 }
+/* R653: a single-mip TEXTURE2D SRV at register(t<unit>) (rhi.h C-TEX-2:
+ * mip 0 of the view is `mip_level`), with only that mip moved to the
+ * shader-read state -- the others may be UAVs of the same pass. */
 void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex,
                               RHISampler sampler, u32 unit, u32 mip_level) {
-    (void)cmd; (void)tex; (void)sampler; (void)unit; (void)mip_level;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Pipeline *pd;
+    RHI_D3D12Texture *td;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    UINT param, slot;
+    if (ctx == NULL || g_current_device == NULL || unit >= RHI_D3D12_MAX_REGISTERS) return;
+    rhi_d3d12_note_sampler(ctx, sampler, unit);
+    list = rhi_d3d12_cmd_list(ctx);
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
+                                                    RHI_RES_TEXTURE);
+    if (list == NULL || pd == NULL || td == NULL || td->resource == NULL ||
+        mip_level >= td->mip_levels || td->array_size > 1u || td->is_cube)
+        return;
+    param = pd->image_root_params[unit];
+    if (param == UINT_MAX) return;
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) return;
+    ZeroMemory(&srv, sizeof(srv));
+    srv.Format = rhi_d3d12_srv_format(td);
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Texture2D.MostDetailedMip = mip_level;
+    srv.Texture2D.MipLevels = 1u;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    ID3D12Device_CreateShaderResourceView(ctx->device, td->resource, &srv,
+        rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    rhi_d3d12_tex_mip_transition(list, td, mip_level,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
 }
+/* R652: the per-unit binder already resolves the bound pipeline's SRV table
+ * for register(t<unit>) and sets it on the compute root when the pipeline is
+ * a compute one, so a compute-stage sampled texture is that same bind. */
 void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex,
                                   RHISampler sampler, u32 unit) {
-    (void)cmd; (void)tex; (void)sampler; (void)unit;
+    rhi_cmd_bind_texture(cmd, tex, sampler, unit);
 }
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd,
                                       RHITexture depth_tex) {
-    (void)cmd; (void)depth_tex;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Texture *td;
+    D3D12_RESOURCE_STATES read_state;
+    if (ctx == NULL || g_current_device == NULL) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, depth_tex,
+                                                    RHI_RES_TEXTURE);
+    if (td == NULL || td->resource == NULL) return;
+    read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (td->state == read_state) return;
+    rhi_d3d12_transition(list, td->resource, td->state, read_state);
+    td->state = read_state;
 }
 
 /* ---- screenshot ---- */
@@ -4477,13 +7416,160 @@ cleanup:
     return SUCCEEDED(hr);
 }
 
-/* ---- GPU timer ---- */
-RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) { (void)dev; return NULL; }
-void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
-    (void)dev; (void)t;
+/* ---- GPU timer ----
+ * R663: a timestamp query heap with two queries per frame slot (begin, end),
+ * resolved into a persistent READBACK buffer when the end timestamp is
+ * written. The slot is the frame-parity slot being recorded, so a frame in
+ * flight never overwrites the results of the one before it. Results are read
+ * from the slot that was submitted LAST (parity ^ 1, both during and after a
+ * frame) and only once its frame fence has completed, so elapsed_ms never
+ * blocks: it returns the newest finished measurement, or 0 before the first
+ * one lands. GL and Vulkan report one frame of latency in the same way; the
+ * difference is that a finished value stays readable instead of dropping to 0
+ * after one read, which is what the debug overlay and the trace export want
+ * when they sample at different points of the frame. */
+struct RHIGPUTimer {
+    RHIDevice *owner;
+    ID3D12QueryHeap *heap;
+    ID3D12Resource *readback;       /* 2 slots x 2 x u64, kept in COPY_DEST */
+    UINT64 frequency;               /* timestamp ticks per second */
+    UINT cur_slot;                  /* slot begin() recorded into */
+    UINT started;                   /* begin() seen, end() not yet */
+    UINT recorded[2];               /* slot holds a resolved measurement */
+    UINT64 seq[2];                  /* R671: end() count when the slot resolved */
+    UINT64 end_count;
+    UINT64 harvested_seq;           /* seq of the value in last_ms */
+    f64 last_ms;
+};
+
+RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) {
+    RHI_D3D12Context *ctx;
+    RHIGPUTimer *t;
+    D3D12_QUERY_HEAP_DESC qd;
+    if (dev == NULL) return NULL;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost || ctx->direct_queue == NULL) return NULL;
+    t = (RHIGPUTimer *)calloc(1u, sizeof(*t));
+    if (t == NULL) return NULL;
+    ZeroMemory(&qd, sizeof(qd));
+    qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    qd.Count = 4u;
+    if (FAILED(ID3D12Device_CreateQueryHeap(ctx->device, &qd, &IID_ID3D12QueryHeap,
+                                            (void **)&t->heap)) ||
+        FAILED(ID3D12CommandQueue_GetTimestampFrequency(ctx->direct_queue,
+                                                        &t->frequency)) ||
+        t->frequency == 0u) {
+        LOG_WARN("D3D12: timestamp queries unavailable -- GPU timer disabled");
+        rhi_d3d12_release((IUnknown **)&t->heap);
+        free(t);
+        return NULL;
+    }
+    t->readback = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_READBACK,
+                                           4u * sizeof(UINT64));
+    if (t->readback == NULL) {
+        rhi_d3d12_release((IUnknown **)&t->heap);
+        free(t);
+        return NULL;
+    }
+    t->owner = dev;
+    return t;
 }
-void rhi_gpu_timer_begin(RHIGPUTimer *t) { (void)t; }
-void rhi_gpu_timer_end(RHIGPUTimer *t) { (void)t; }
-f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) { (void)t; return 0.0; }
+
+void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
+    RHI_D3D12Context *ctx;
+    if (t == NULL) return;
+    ctx = dev != NULL ? (RHI_D3D12Context *)dev->backend_data : NULL;
+    /* A command list in flight may still reference both objects. */
+    rhi_d3d12_release_deferred(ctx, (IUnknown **)&t->readback);
+    rhi_d3d12_release_deferred(ctx, (IUnknown **)&t->heap);
+    free(t);
+}
+
+static void rhi_d3d12_gpu_timer_harvest(RHIGPUTimer *t, UINT slot);
+
+void rhi_gpu_timer_begin(RHIGPUTimer *t) {
+    RHI_D3D12Context *ctx;
+    ID3D12GraphicsCommandList *list;
+    if (t == NULL || t->owner == NULL || g_current_device != t->owner) return;
+    ctx = (RHI_D3D12Context *)t->owner->backend_data;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    t->cur_slot = ctx->frame_parity & 1u;
+    /* R671: a GPU-bound frame is still running whenever elapsed_ms looks
+     * at the slot submitted last, so the value never landed (last_ms stayed
+     * 0). This slot's fence was waited on by rhi_frame_begin, so its pair
+     * -- two frames old -- is final: take it before it is overwritten,
+     * unless last_ms already holds something newer. */
+    if (t->recorded[t->cur_slot] && t->seq[t->cur_slot] > t->harvested_seq &&
+        ID3D12Fence_GetCompletedValue(ctx->fence) >= ctx->frame_fence[t->cur_slot])
+        rhi_d3d12_gpu_timer_harvest(t, t->cur_slot);
+    t->recorded[t->cur_slot] = 0u;
+    ID3D12GraphicsCommandList_EndQuery(list, t->heap,
+                                       D3D12_QUERY_TYPE_TIMESTAMP,
+                                       t->cur_slot * 2u);
+    t->started = 1u;
+}
+
+void rhi_gpu_timer_end(RHIGPUTimer *t) {
+    RHI_D3D12Context *ctx;
+    ID3D12GraphicsCommandList *list;
+    if (t == NULL || t->owner == NULL || !t->started ||
+        g_current_device != t->owner)
+        return;
+    ctx = (RHI_D3D12Context *)t->owner->backend_data;
+    list = rhi_d3d12_cmd_list(ctx);
+    /* begin() and end() must land in the same frame: the pair shares one
+     * slot of the heap. */
+    if (list == NULL || t->cur_slot != (ctx->frame_parity & 1u)) {
+        t->started = 0u;
+        return;
+    }
+    ID3D12GraphicsCommandList_EndQuery(list, t->heap,
+                                       D3D12_QUERY_TYPE_TIMESTAMP,
+                                       t->cur_slot * 2u + 1u);
+    ID3D12GraphicsCommandList_ResolveQueryData(list, t->heap,
+        D3D12_QUERY_TYPE_TIMESTAMP, t->cur_slot * 2u, 2u, t->readback,
+        (UINT64)t->cur_slot * 2u * sizeof(UINT64));
+    t->recorded[t->cur_slot] = 1u;
+    t->seq[t->cur_slot] = ++t->end_count;
+    t->started = 0u;
+}
+
+/* Read the resolved pair of `slot` into last_ms. The caller has checked
+ * that the frame which resolved it has completed. */
+static void rhi_d3d12_gpu_timer_harvest(RHIGPUTimer *t, UINT slot) {
+    D3D12_RANGE range;
+    UINT64 *ticks = NULL;
+    range.Begin = (SIZE_T)slot * 2u * sizeof(UINT64);
+    range.End = range.Begin + 2u * sizeof(UINT64);
+    if (SUCCEEDED(ID3D12Resource_Map(t->readback, 0u, &range, (void **)&ticks)) &&
+        ticks != NULL) {
+        UINT64 a = ticks[slot * 2u], z = ticks[slot * 2u + 1u];
+        D3D12_RANGE none = { 0u, 0u };
+        ID3D12Resource_Unmap(t->readback, 0u, &none);
+        if (z >= a) {
+            t->last_ms = (f64)(z - a) * 1000.0 / (f64)t->frequency;
+            t->harvested_seq = t->seq[slot];
+        }
+    }
+}
+
+f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
+    RHI_D3D12Context *ctx;
+    UINT slot;
+    if (t == NULL || t->owner == NULL || g_current_device != t->owner)
+        return 0.0;
+    ctx = (RHI_D3D12Context *)t->owner->backend_data;
+    if (ctx == NULL || ctx->device_lost || ctx->fence == NULL) return t->last_ms;
+    /* The slot submitted last: while a frame records, the recording slot is
+     * parity and the previous frame sits in the other one; after frame_end the
+     * parity has flipped, so it is again the other one. */
+    slot = (ctx->frame_parity + 1u) & 1u;
+    if (!t->recorded[slot] || ctx->frame_fence[slot] == 0u ||
+        ID3D12Fence_GetCompletedValue(ctx->fence) < ctx->frame_fence[slot])
+        return t->last_ms;
+    rhi_d3d12_gpu_timer_harvest(t, slot);
+    return t->last_ms;
+}
 
 #endif

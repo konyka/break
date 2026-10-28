@@ -1,0 +1,72 @@
+// brdf_lut_hlsl.comp - D3D12 sidecar of shaders/brdf_lut.comp. Split-sum
+// BRDF LUT: for each (NdotV, roughness) the GGX-importance-sampled Fresnel
+// scale and bias, 1024 samples, into RG of the RGBA16F LUT (u0, bound by
+// rhi_cmd_bind_image_texture as a single-mip TEXTURE2D UAV).
+RWTexture2D<float4> g_brdf_lut : register(u0);
+
+static const float PI = 3.14159265359;
+static const uint SAMPLE_COUNT = 1024u;
+
+float radical_inverse_vdc(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10;
+}
+float2 hammersley(uint i, uint n) {
+    return float2(float(i) / float(n), radical_inverse_vdc(i));
+}
+float3 importance_sample_ggx(float2 xi, float3 N, float roughness) {
+    float a = roughness * roughness;
+    float phi = 2.0 * PI * xi.x;
+    float cos_theta = sqrt((1.0 - xi.y) / (1.0 + (a * a - 1.0) * xi.y));
+    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+    float3 H = float3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+    float3 up = abs(N.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+    float3 tangent = normalize(cross(up, N));
+    float3 bitangent = cross(N, tangent);
+    return normalize(tangent * H.x + bitangent * H.y + N * H.z);
+}
+float geometry_schlick_ggx_ibl(float n_dot_v, float roughness) {
+    float k = (roughness * roughness) / 2.0;
+    return n_dot_v / (n_dot_v * (1.0 - k) + k);
+}
+float geometry_smith_ibl(float3 N, float3 V, float3 L, float roughness) {
+    float n_dot_v = max(dot(N, V), 0.0);
+    float n_dot_l = max(dot(N, L), 0.0);
+    return geometry_schlick_ggx_ibl(n_dot_v, roughness) *
+           geometry_schlick_ggx_ibl(n_dot_l, roughness);
+}
+float2 integrate_brdf(float n_dot_v, float roughness) {
+    float3 V = float3(sqrt(1.0 - n_dot_v * n_dot_v), 0.0, n_dot_v);
+    float3 N = float3(0.0, 0.0, 1.0);
+    float A = 0.0;
+    float B = 0.0;
+    for (uint i = 0u; i < SAMPLE_COUNT; ++i) {
+        float3 H = importance_sample_ggx(hammersley(i, SAMPLE_COUNT), N, roughness);
+        float3 L = normalize(2.0 * dot(V, H) * H - V);
+        float n_dot_l = max(L.z, 0.0);
+        if (n_dot_l > 0.0) {
+            float n_dot_h = max(H.z, 0.0);
+            float v_dot_h = max(dot(V, H), 0.0);
+            float G = geometry_smith_ibl(N, V, L, roughness);
+            float g_vis = (G * v_dot_h) / max(n_dot_h * n_dot_v, 1e-5);
+            float t = 1.0 - v_dot_h;
+            float fc = t * t * t * t * t;
+            A += (1.0 - fc) * g_vis;
+            B += fc * g_vis;
+        }
+    }
+    return float2(A, B) / float(SAMPLE_COUNT);
+}
+
+[numthreads(16, 16, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint w, h;
+    g_brdf_lut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float2 uv = (float2(id.xy) + 0.5) / float2(w, h);
+    g_brdf_lut[id.xy] = float4(integrate_brdf(uv.x, uv.y), 0.0, 1.0);
+}

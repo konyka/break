@@ -27,16 +27,14 @@ jobs:
   lane-headless-linux-clang:
     name: Linux + Clang/LLD (Release, headless)
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang lld llvm cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
-            libfreetype6-dev fonts-noto-cjk
+      - uses: actions/checkout@v6
 
       - name: Configure
         run: cmake -S engine -B build -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain-clang-linux.cmake" -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_IPO=ON -DENGINE_RHI_BACKEND=opengl
@@ -68,7 +66,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-headless-linux-clang
@@ -77,16 +75,16 @@ jobs:
   lane-headless-linux-gcc-asan:
     name: Linux + GCC (ASan + UBSan, headless)
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
+      # LeakSanitizer stops the world with ptrace; Docker blocks it by default.
+      options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
-            libfreetype6-dev fonts-noto-cjk
+      - uses: actions/checkout@v6
 
       - name: Configure
         run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON -DENGINE_BUILD_FUZZ_SMOKE=ON -DENGINE_RHI_BACKEND=opengl
@@ -130,7 +128,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-headless-linux-gcc-asan
@@ -139,16 +137,16 @@ jobs:
   lane-headless-linux-gcc-tsan:
     name: Linux + GCC (TSan, headless)
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
+      # the "Lower the ASLR entropy" step writes vm.mmap_rnd_bits on the host kernel.
+      options: --privileged
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
-            libfreetype6-dev fonts-noto-cjk
+      - uses: actions/checkout@v6
 
       - name: Lower the ASLR entropy for TSan
         # R697: TSan cannot map its shadow on kernels with 32-bit
@@ -193,7 +191,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-headless-linux-gcc-tsan
@@ -204,7 +202,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # test_rhi_backend_selection sub-configures ENGINE_RHI_BACKEND=d3d12,
       # which fail-closes without the pinned Agility redist
@@ -283,7 +281,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-headless-windows-clang
@@ -294,7 +292,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Same d3d12 selector-contract prerequisite as the windows-clang job.
       - name: Fetch Agility SDK (pinned)
@@ -365,10 +363,168 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-headless-windows-asan
+          path: receipt.json
+
+  # MSVC 与 MinGW 没有别的 lane 覆盖；两者各自的编译器/链接器对同一份源码的诊断不同
+  # （MSVC /W4 /WX、GCC -Werror），在这里漂移过一次（见 docs/Implementation_Status.md）。
+  # 只跑 headless 套件，不宣称 GPU/窗口系统证据。
+  lane-headless-windows-msvc:
+    name: Windows + MSVC (headless)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # Same d3d12 selector-contract prerequisite as the windows-clang job.
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+
+      # cl.exe is not on PATH by default; this exports the x64 MSVC environment
+      # (INCLUDE/LIB/PATH) to the following steps.
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Keep Configure/Build on the default shell: with `shell: bash` the runner
+      # prepends /usr/bin, whose GNU `link` shadows MSVC's link.exe.
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # The fuzz targets are EXCLUDE_FROM_ALL; without building them the
+      # *_smoke tests report Not Run.
+      - name: Build fuzz targets
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf --parallel
+
+      - name: Test (headless suite)
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build -LE "graphics" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest.log" | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
+            done
+            exit 1
+          fi
+
+      - name: Emit evidence receipt
+        if: always()
+        shell: bash
+        run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics (MSVC)" -DBUILD_CONFIG=Debug \
+            -DGPU=unknown \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: evidence-receipt-headless-windows-msvc
+          path: receipt.json
+
+  lane-headless-windows-mingw:
+    name: Windows + MinGW GCC (headless)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # Same d3d12 selector-contract prerequisite as the windows-clang job.
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+
+      # The image ships a MinGW-w64 gcc, but its location is an image detail.
+      # Resolve it here and fail loudly rather than silently using another gcc.
+      - name: Locate MinGW-w64 GCC
+        shell: pwsh
+        run: |
+          $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+          if (-not $gcc) { Write-Error "gcc.exe not found on PATH"; exit 1 }
+          $target = & $gcc.Source -dumpmachine
+          Write-Output "gcc: $($gcc.Source)  target: $target"
+          if ($target -notmatch 'mingw') { Write-Error "gcc target is '$target', not MinGW"; exit 1 }
+          & $gcc.Source --version | Select-Object -First 1
+
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Build fuzz targets
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf --parallel
+
+      - name: Test (headless suite)
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build -LE "graphics" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest.log" | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
+            done
+            exit 1
+          fi
+
+      - name: Emit evidence receipt
+        if: always()
+        shell: bash
+        run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics (MinGW GCC)" -DBUILD_CONFIG=Debug \
+            -DGPU=unknown \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: evidence-receipt-headless-windows-mingw
           path: receipt.json
 
   # ---- lane: native-surface（真实 surface 创建/resize/销毁；evidence_level=NATIVE_SURFACE）----
@@ -376,18 +532,14 @@ jobs:
     # 原 wayland-vk（brief :158）。
     name: Linux Wayland + Vulkan (GCC)
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
-             libegl1-mesa-dev libgles2-mesa-dev \
-             libwayland-dev wayland-protocols libxkbcommon-dev libx11-dev \
-            libfreetype6-dev fonts-noto-cjk weston
+      - uses: actions/checkout@v6
 
       - name: Configure
         run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON
@@ -461,7 +613,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-native-surface-wayland
@@ -471,19 +623,17 @@ jobs:
     # OpenGL 长期保留（最后降级方案 + 渲染对比基准）的 Wayland+OpenGL lane；收据归
     # native-surface 类（test_platform_wayland_runtime 真实 surface 证据）。
     name: Linux Wayland + OpenGL (GCC)
-    runs-on: ubuntu-latest
+    # R680: pinned like every other Linux lane -- ubuntu-latest moves to
+    # Ubuntu 26 from 2026-10-19 (runner-images#14748).
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake libgl1-mesa-dev libegl1-mesa-dev \
-             libgles2-mesa-dev \
-             libwayland-dev wayland-protocols libxkbcommon-dev libx11-dev \
-            libfreetype6-dev fonts-noto-cjk weston
+      - uses: actions/checkout@v6
 
       - name: Configure
         run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_RHI_BACKEND=opengl
@@ -557,7 +707,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-native-surface-wayland-gl
@@ -570,7 +720,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Fetch Agility SDK (pinned)
         run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
@@ -607,7 +757,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-native-surface-win32
@@ -620,7 +770,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         # spirv-cross: test_rhi_backend_selection (headless suite) asserts the
@@ -754,7 +904,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-native-surface-cocoa
@@ -765,17 +915,17 @@ jobs:
     # OpenGL 长期保留（最后降级方案 + 渲染对比基准）的 X11+OpenGL lane（brief :121），
     # 不扩展新能力；Xvfb + LIBGL_ALWAYS_SOFTWARE 下跑 X11/GL runtime。
     name: Linux X11 + OpenGL (GCC)
-    runs-on: ubuntu-latest
+    # R680: pinned like every other Linux lane -- ubuntu-latest moves to
+    # Ubuntu 26 from 2026-10-19 (runner-images#14748).
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake libx11-dev libxrandr-dev libgl1-mesa-dev \
-            libfreetype6-dev fonts-noto-cjk xvfb x11-utils
+      - uses: actions/checkout@v6
 
       - name: Configure
         run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl
@@ -819,7 +969,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-gpu-runtime-linux-gl
@@ -830,18 +980,14 @@ jobs:
     # VK_ICD_FILENAMES，headless 全量与 graphics suite 同 lane 出 GPU_RUNTIME 收据。
     name: Linux X11 + Vulkan (lavapipe, Clang)
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install pinned toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
-            libgl1-mesa-dev libgl1-mesa-dri \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils
+      - uses: actions/checkout@v6
 
       - name: Configure
         # runner 的 toolcache cmake (/usr/local/bin) 会遮蔽 apt 钉版的
@@ -906,7 +1052,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-gpu-runtime-linux
@@ -920,7 +1066,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Pin Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer && xcodebuild -version
@@ -992,7 +1138,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-gpu-runtime-macos-metal
@@ -1009,7 +1155,7 @@ jobs:
     runs-on: [self-hosted, windows, gpu]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Fetch Agility SDK (pinned)
         run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
@@ -1065,7 +1211,7 @@ jobs:
             -DGPU=unknown -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-gpu-runtime-windows-d3d12
@@ -1077,10 +1223,12 @@ jobs:
     #（<1 min，ubuntu 即可——只跑 cmake 脚本）；artifact 名与真机 lane 互斥共用。
     if: vars.ENABLE_GPU_LANES != '1'
     name: "lane: GPU-runtime (windows d3d12, unavailable receipt)"
-    runs-on: ubuntu-latest
+    # R680: pinned like every other Linux lane -- ubuntu-latest moves to
+    # Ubuntu 26 from 2026-10-19 (runner-images#14748).
+    runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Emit UNAVAILABLE receipt
         run: |
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=d3d12 \
@@ -1090,7 +1238,7 @@ jobs:
             -DGPU=none -DDRIVER_VERSION=none -DCPU=none -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-gpu-runtime-windows-d3d12
@@ -1100,18 +1248,14 @@ jobs:
   lane-validation-linux-vk:
     name: "lane: validation (VK_LAYER_KHRONOS_validation)"
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install pinned toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils \
-            vulkan-validationlayers
+      - uses: actions/checkout@v6
 
       - name: Configure / build
         run: |
@@ -1150,7 +1294,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-validation-linux
@@ -1160,17 +1304,14 @@ jobs:
   lane-benchmark-linux-vk:
     name: "lane: benchmark (linux vulkan, lavapipe)"
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install pinned toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 lld-18 llvm-18-tools cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils
+      - uses: actions/checkout@v6
 
       - name: Configure / build
         run: |
@@ -1226,7 +1367,7 @@ jobs:
             -DFRAME_MS_P99=$(m frame_ms_p99) \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-benchmark-linux-vk
@@ -1241,15 +1382,32 @@ jobs:
     runs-on: [self-hosted, linux, gpu-vulkan]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
+        timeout-minutes: 20
         run: |
-          sudo apt-get update
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
+          # R675: each attempt is capped and retried -- a hung mirror otherwise
+          # ate the whole step (R674 run: one job timed out at 10 min while
+          # every other job installed in ~1 min). man-db triggers are skipped.
+          sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
+          # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
+          # attempt moves the runner off its Azure mirror to archive.ubuntu.com
+          # (R675 run: three 240 s attempts on the same stalled mirror).
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          # R678: no fonts-noto-cjk here (61 MB, the largest download; R677
+          # caught this lane timing out on it twice) -- this lane runs no font
+          # test; the headless lanes keep it for test_myui_font's CJK cases.
+          apt_retry 120 update
           # 钉版候选取自 ubuntu-24.04 (noble)：self-hosted runner 需为 24.04。
-          sudo apt-get install -y --no-install-recommends \
+          apt_retry 360 install -y --no-install-recommends \
             build-essential cmake ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* libfreetype6-dev fonts-noto-cjk
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* libfreetype6-dev
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Configure
         run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENGINE_VULKAN=ON
@@ -1303,7 +1461,7 @@ jobs:
 
       - name: Upload receipt
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: evidence-receipt-benchmark-steam-deck
           path: |
@@ -1318,7 +1476,7 @@ jobs:
     timeout-minutes: 40
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build under Steam Runtime (pinned)
         id: steamrt
@@ -1343,7 +1501,7 @@ jobs:
             -DGPU=none -DDRIVER_VERSION=none -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-proton
@@ -1355,7 +1513,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Pin Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer && xcodebuild -version
@@ -1364,7 +1522,7 @@ jobs:
         run: brew install shaderc spirv-cross
 
       - name: Configure (iOS, metal)
-        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
+        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
 
       - name: Build (iOS Simulator destination)
         run: xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build
@@ -1374,34 +1532,29 @@ jobs:
           test -s build-ios/metal_shaders/engine.metallib
           test -d build-ios/Debug-iphonesimulator/engine_demo.app
           test -s build-ios/Debug-iphonesimulator/engine_demo.app/engine.metallib
+          test -s build-ios/Debug-iphonesimulator/engine_demo.app/assets/init.script
+          test -s build-ios/Debug-iphonesimulator/engine_demo.app/assets/LiberationSans-Regular.ttf
+          test -s build-ios/Debug-iphonesimulator/engine_demo.app/shaders/blinn_phong_vk.vert
+          test -s build-ios/Debug-iphonesimulator/engine_demo.app/shaders/blinn_phong_vk.frag
+          test "$(plutil -extract CFBundleIdentifier raw build-ios/Debug-iphonesimulator/engine_demo.app/Info.plist)" = "com.purecengine.engine-demo"
+          test "$(plutil -extract UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication.0.UISceneDelegateClassName raw build-ios/Debug-iphonesimulator/engine_demo.app/Info.plist)" = "IOSDemoSceneDelegate"
 
   clean-room:
     # headless 证据 lane：git archive 干净导出 + 仅锁定依赖（spec §8.2 headless 类；
     # task 2 交付，保留原名；不产出 GPU 收据 artifact）。
     name: Clean-room build (locked deps, fresh export)
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # 钉版以 ubuntu-24.04 (noble) apt-cache policy 实测候选为准：
       # cmake=3.28.3 / libvulkan-dev=1.3.275.0-1build1 / libshaderc-dev=2023.8-1build1。
-      - name: Install pinned toolchain
-        run: |
-          set +e
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers > /tmp/apt-install.log 2>&1
-          rc=$?
-          set -e
-          if [ $rc -ne 0 ]; then
-            tail -40 /tmp/apt-install.log | while IFS= read -r line; do echo "::error::$line"; done
-            echo '## apt pin diagnosis' >> "$GITHUB_STEP_SUMMARY"
-            apt-cache policy cmake "libvulkan-dev" "libshaderc-dev" clang-18 lld-18 >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
-            exit $rc
-          fi
 
       - name: Clean-room configure/build/test
         run: |

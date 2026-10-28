@@ -22,6 +22,7 @@
 #define VK_PROBE_PRESENT_MODE_FIFO_RELAXED 3u
 /* VkFormat / VkColorSpaceKHR */
 #define VK_PROBE_FORMAT_UNDEFINED           0u
+#define VK_PROBE_FORMAT_R8G8B8A8_UNORM      37u
 #define VK_PROBE_FORMAT_R8G8B8A8_SRGB       43u
 #define VK_PROBE_FORMAT_B8G8R8A8_UNORM      44u
 #define VK_PROBE_FORMAT_B8G8R8A8_SRGB       50u
@@ -133,28 +134,34 @@ static inline u32 vk_probe_choose_present_mode(const u32 *modes, u32 count,
     return VK_PROBE_PRESENT_MODE_FIFO;
 }
 
-/* surface format 协商（锁定既有行为 rhi_vk.c:1069-1095）：
- * count==1 且 format==UNDEFINED（"任意格式"哨兵）→ B8G8R8A8_SRGB + 其
- * colorSpace；否则首选 B8G8R8A8_SRGB，再 R8G8B8A8_SRGB，否则 formats[0]。
- * count==0 / 参数为 NULL 返回 false。 */
+/* surface format 协商：
+ * count==1 且 format==UNDEFINED（"任意格式"哨兵）→ B8G8R8A8_UNORM + 其
+ * colorSpace；否则首选 B8G8R8A8_UNORM，再 R8G8B8A8_UNORM，否则 formats[0]。
+ * count==0 / 参数为 NULL 返回 false。
+ *
+ * R646：改为优先 UNORM。引擎的 tonemap / 颜色分级着色器自己做伽马编码
+ * （tonemap.frag 的 exp2(log2(ldr) / gamma)），GL 默认帧缓冲与 D3D12 的
+ * B8G8R8A8_UNORM 交换链都按原样写出。Vulkan 选 *_SRGB 交换链会在写入时
+ * 再做一次 linear->sRGB 编码，等于伽马叠加两次：画面整体发白（与 GL 截图
+ * 比 MAE 57，对 GL 图做一次 sRGB 编码后降到 2.7）。 */
 static inline bool vk_probe_choose_surface_format(const VkProbeSurfaceFormat *formats,
                                                   u32 count,
                                                   VkProbeSurfaceFormat *out) {
     u32 i;
     if (formats == NULL || out == NULL || count == 0u) return false;
     if (count == 1u && formats[0].format == VK_PROBE_FORMAT_UNDEFINED) {
-        out->format = VK_PROBE_FORMAT_B8G8R8A8_SRGB;
+        out->format = VK_PROBE_FORMAT_B8G8R8A8_UNORM;
         out->color_space = formats[0].color_space;
         return true;
     }
     for (i = 0; i < count; i++) {
-        if (formats[i].format == VK_PROBE_FORMAT_B8G8R8A8_SRGB) {
+        if (formats[i].format == VK_PROBE_FORMAT_B8G8R8A8_UNORM) {
             *out = formats[i];
             return true;
         }
     }
     for (i = 0; i < count; i++) {
-        if (formats[i].format == VK_PROBE_FORMAT_R8G8B8A8_SRGB) {
+        if (formats[i].format == VK_PROBE_FORMAT_R8G8B8A8_UNORM) {
             *out = formats[i];
             return true;
         }

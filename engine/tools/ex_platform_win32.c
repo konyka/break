@@ -17,6 +17,13 @@
 #define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
 #endif
 
+/* R684 (as in rhi_gl.c): ask hybrid-GPU drivers (NVIDIA Optimus, AMD
+ * PowerXpress) for the discrete GPU; without these exports the WGL
+ * context lands on the integrated GPU. This file is linked only into
+ * myui_explorer, which does not link the engine GL backend. */
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+
 static app_t* g_app;
 static int g_gl;
 static HWND g_hwnd;

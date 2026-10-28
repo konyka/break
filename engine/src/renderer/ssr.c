@@ -1,10 +1,37 @@
 #include <renderer/ssr.h>
+#include <renderer/post_targets.h>
 #include <core/log.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <core/shader_io.h>
 
+
+static RHIPipeline ssr_create_pipe_path(RHIDevice *dev, const char *vert_path,
+                                        const char *frag_path) {
+    RHIShader vs = rhi_shader_create_path(dev, vert_path, false);
+    RHIShader fs = rhi_shader_create_path(dev, frag_path, true);
+    RHIPipelineDesc pdesc;
+    RHIPipeline pipe;
+    if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
+        LOG_WARN("SSR: sidecar shader unavailable (%s, %s)", vert_path,
+                 frag_path);
+        if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
+        if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
+        return RHI_HANDLE_NULL;
+    }
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs;
+    pdesc.frag = fs;
+    pdesc.no_vertex_input = true;
+    pdesc.uses_textures = true;
+    pdesc.depth_write_disable = true;
+    pdesc.disable_culling = true;
+    pipe = rhi_pipeline_create(dev, &pdesc);
+    rhi_shader_destroy(dev, vs);
+    rhi_shader_destroy(dev, fs);
+    return pipe;
+}
 
 static RHIPipeline ssr_create_pipe(RHIDevice *dev,
                                     const char *vert_path, const char *frag_path) {
@@ -41,6 +68,13 @@ static RHIPipeline ssr_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool ssr_targets_create(SSRSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->ssr_fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
     memset(ssr, 0, sizeof(*ssr));
     ssr->device = dev;
@@ -48,13 +82,23 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
     /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
     RHICapabilities caps;
     char vs_path[96], fs_path[96];
-    if (!rhi_device_get_capabilities(dev, &caps) ||
-        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
-        !shader_variant_path("shaders/ssr.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
-        LOG_WARN("SSR: capability query or shader variant path failed");
+    if (!rhi_device_get_capabilities(dev, &caps)) {
+        LOG_WARN("SSR: capability query failed");
         return false;
     }
-    ssr->ssr_pipe = ssr_create_pipe(dev, vs_path, fs_path);
+    if (caps.shader_sidecar_paths) {
+        /* R622: D3D12 never compiles HLSL in-process; the backend resolves
+         * these two names to post_hlsl.vert / ssr_hlsl.frag. */
+        ssr->ssr_pipe = ssr_create_pipe_path(dev, "shaders/post.vert",
+                                             "shaders/ssr.frag");
+    } else {
+        if (!shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+            !shader_variant_path("shaders/ssr.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+            LOG_WARN("SSR: shader variant path failed");
+            return false;
+        }
+        ssr->ssr_pipe = ssr_create_pipe(dev, vs_path, fs_path);
+    }
 
     if (!rhi_handle_valid(ssr->ssr_pipe)) {
         LOG_WARN("SSR: pipeline creation failed");
@@ -72,7 +116,7 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
      * Pass stays opt-in (ssr_enabled default off), so no default cost. */
     u32 pw = width, ph = height;
 
-    ssr->ssr_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)ssr_targets_create(ssr, dev, pw, ph);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -100,6 +144,15 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
 
     ssr->ready = true;
     LOG_INFO("SSR: initialized (%ux%u)", pw, ph);
+    return true;
+}
+
+bool ssr_resize(SSRSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!ssr_targets_create(s, dev, w, h)) {
+        LOG_WARN("SSR: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

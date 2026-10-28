@@ -43,7 +43,13 @@ u32 platform_vk_instance_create_flags(Platform *p) {
 }
 
 /* get_proc 返回 void *；函数指针与 void * 的互转全部经 memcpy，
- * 否则 -Wpedantic 报错（ISO C 不允许这两类指针直接强转）。 */
+ * 否则 -Wpedantic 报错（ISO C 不允许这两类指针直接强转）。
+ * 仅在存在可用的平台 WSI 分支时定义；QNX/OHOS 等 fail-closed 平台
+ * 没有任何调用点，定义出来只会触发 -Werror=unused-function。 */
+#if defined(ENGINE_PLATFORM_WINDOWS) || defined(ENGINE_PLATFORM_MACOS) || \
+    defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_WAYLAND) || \
+    (defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)) || \
+    defined(ENGINE_PLATFORM_LINUX)
 static PVkCreateSurfaceFn pvk_resolve(void *vk_instance, void *vk_get_proc_addr,
                                       const char *entry_name) {
     PVkGetProcAddrFn get_proc;
@@ -54,6 +60,7 @@ static PVkCreateSurfaceFn pvk_resolve(void *vk_instance, void *vk_get_proc_addr,
     if (entry != NULL) memcpy(&create, &entry, sizeof(create));
     return create;
 }
+#endif
 
 u64 platform_vk_create_surface(Platform *p, void *vk_instance,
                                void *vk_get_proc_addr, u64 *out_surface) {

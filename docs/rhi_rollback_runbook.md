@@ -6,7 +6,7 @@
 
 **运行时降级（2026-10-26 交付）：** 默认 `auto` 构建同时链接 Vulkan 与 OpenGL，设备创建时先试 Vulkan，失败则在同一窗口改用 OpenGL，并记录 `RHIEVT fallback` 与 `backend_selected`。只在设备创建失败时降级；运行中的 device lost 不会切换后端。运行时开关：`BREAK_RHI_BACKEND=opengl|vulkan`（限定后端）、`BREAK_RHI_NO_FALLBACK=1`（禁止降级）、`BREAK_RHI_FAIL_VULKAN=1`（测试钩子，强制 Vulkan 创建失败）。契约见 `docs/design/rhi_runtime_backend.md`。
 
-**OpenGL 策略（维护者决定，2026-10-26）：长期保留，不计划移除。** 它是 `fallback_chain` 的**最后一级**降级方案（Windows/Linux/steam-linux），同时是跨后端渲染效果对比的参考基准（`test_rhi_golden_parity`：VK golden ≈ sRGB(GL golden) 的垂直镜像）。原 "v2.0.0 删除 OpenGL" 计划作废。
+**OpenGL 策略（维护者决定，2026-10-26）：长期保留，不计划移除。** 它是 `fallback_chain` 的**最后一级**降级方案（Windows/Linux/steam-linux），同时是跨后端渲染效果对比的参考基准（`test_rhi_golden_parity`：VK golden ≈ GL golden，两后端同向、同为 UNORM 输出）。原 "v2.0.0 删除 OpenGL" 计划作废。
 日志入口：运行时结构化行 `RHIEVT {...}`（event ∈ backend_selected/fallback/device_lost/present_failure/shader_failure）。
 
 ## 1. 开关治理表

@@ -14,6 +14,19 @@
 
 #include <core/shader_io.h>
 
+/* R652: D3D12 compiles no source in-process; a sidecar backend gets the
+ * precompiled <name>_hlsl.comp for the same path. */
+static RHIShader gpucull_compute_shader(RHIDevice *dev, const RHICapabilities *caps,
+                                        const char *path) {
+    if (caps->shader_sidecar_paths) return rhi_shader_create_compute_path(dev, path);
+    usize len = 0;
+    char *src = shader_read_file(path, &len);
+    if (!src) return RHI_HANDLE_NULL;
+    RHIShader cs = rhi_shader_create_compute(dev, src, len);
+    free(src);
+    return cs;
+}
+
 
 bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     memset(gc, 0, sizeof(*gc));
@@ -33,15 +46,7 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
         return false;
     }
 
-    usize cs_len = 0;
-    char *cs_src = shader_read_file("shaders/cull.comp", &cs_len);
-    if (!cs_src) {
-        LOG_WARN("GPUCull: compute shader not found");
-        return false;
-    }
-
-    RHIShader cs = rhi_shader_create_compute(dev, cs_src, cs_len);
-    free(cs_src);
+    RHIShader cs = gpucull_compute_shader(dev, &gc->caps, "shaders/cull.comp");
     if (!rhi_handle_valid(cs)) {
         LOG_WARN("GPUCull: shader compile failed");
         return false;
@@ -166,6 +171,10 @@ void gpucull_shutdown(GPUCullSystem *gc) {
     if (rhi_handle_valid(gc->visible_flags_ssbo)) rhi_buffer_destroy(gc->device, gc->visible_flags_ssbo);
     if (rhi_handle_valid(gc->vis_flags_staging[0])) rhi_buffer_destroy(gc->device, gc->vis_flags_staging[0]);
     if (rhi_handle_valid(gc->vis_flags_staging[1])) rhi_buffer_destroy(gc->device, gc->vis_flags_staging[1]);
+    for (u32 s = 0; s < 2u; s++)
+        for (u32 k = 0; k < GPUCULL_SELECT_KINDS; k++)
+            if (rhi_handle_valid(gc->selection_buf[s][k]))
+                rhi_buffer_destroy(gc->device, gc->selection_buf[s][k]);
     if (rhi_handle_valid(gc->hi_z_sampler)) rhi_sampler_destroy(gc->device, gc->hi_z_sampler);
     if (rhi_handle_valid(gc->hi_z_fallback)) rhi_texture_destroy(gc->device, gc->hi_z_fallback);
     
@@ -265,19 +274,7 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     gc->device = dev;
     
     /* Load unified culling compute shader */
-    usize cs_len = 0;
-    char *cs_src = shader_read_file("shaders/unified_cull.comp", &cs_len);
-    if (!cs_src) {
-        LOG_WARN("UnifiedCull: compute shader not found, using fallback");
-        /* Create a minimal inline shader as fallback */
-        gc->unified_cull_pipe = RHI_HANDLE_NULL;
-        gc->unified_ready = false;
-        return true; /* Not a fatal error - can use legacy path */
-    }
-    
-    RHIShader cs = rhi_shader_create_compute(dev, cs_src, cs_len);
-    free(cs_src);
-    
+    RHIShader cs = gpucull_compute_shader(dev, &gc->caps, "shaders/unified_cull.comp");
     if (!rhi_handle_valid(cs)) {
         LOG_WARN("UnifiedCull: shader compile failed");
         gc->unified_ready = false;
@@ -362,8 +359,34 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     gc->vis_flags_staged_count[0] = 0; /* R430 */
     gc->vis_flags_staged_count[1] = 0;
     gc->_zero_draws = NULL; /* R171: GPU fill replaces CPU zero-draws buffer */
-    
-    if (!rhi_handle_valid(gc->draw_cmds_ssbo) ||
+
+    /* Runtime LOD selection masks: host-updated per frame slot (like the
+     * IndirectDrawSystem visibility slots), so HOST_VISIBLE (no
+     * initial_data); filled with ones = every draw selected. */
+    bool sel_ok = true;
+    {
+        u32 *ones = (u32 *)malloc(vis_flags_bytes);
+        RHIBufferDesc sel_desc = {
+            .size = vis_flags_bytes,
+            .usage = RHI_BUFFER_USAGE_STORAGE,
+        };
+        for (u32 s = 0; s < 2u; s++) {
+            for (u32 k = 0; k < GPUCULL_SELECT_KINDS; k++) {
+                gc->selection_buf[s][k] = rhi_buffer_create(dev, &sel_desc);
+                if (!rhi_handle_valid(gc->selection_buf[s][k])) { sel_ok = false; continue; }
+                if (ones) {
+                    for (u32 i = 0; i < GPUCULL_MAX_OBJECTS; i++) ones[i] = 1u;
+                    rhi_buffer_update_region(dev, gc->selection_buf[s][k], 0, ones, vis_flags_bytes);
+                }
+            }
+        }
+        if (!ones) sel_ok = false;
+        free(ones);
+    }
+    gc->selection_kind = GPUCULL_SELECT_CAMERA;
+
+    if (!sel_ok ||
+        !rhi_handle_valid(gc->draw_cmds_ssbo) ||
         !rhi_handle_valid(gc->visible_draws_ssbo) ||
         !rhi_handle_valid(gc->draw_count_buf) ||
         !rhi_handle_valid(gc->visible_flags_ssbo) ||
@@ -401,6 +424,12 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
             rhi_buffer_destroy(gc->device, gc->vis_flags_staging[1]);
             gc->vis_flags_staging[1] = RHI_HANDLE_NULL;
         }
+        for (u32 s = 0; s < 2u; s++)
+            for (u32 k = 0; k < GPUCULL_SELECT_KINDS; k++)
+                if (rhi_handle_valid(gc->selection_buf[s][k])) {
+                    rhi_buffer_destroy(gc->device, gc->selection_buf[s][k]);
+                    gc->selection_buf[s][k] = RHI_HANDLE_NULL;
+                }
         return true;
     }
 
@@ -465,6 +494,12 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
             rhi_buffer_destroy(gc->device, gc->vis_flags_staging[1]);
             gc->vis_flags_staging[1] = RHI_HANDLE_NULL;
         }
+        for (u32 s = 0; s < 2u; s++)
+            for (u32 k = 0; k < GPUCULL_SELECT_KINDS; k++)
+                if (rhi_handle_valid(gc->selection_buf[s][k])) {
+                    rhi_buffer_destroy(gc->device, gc->selection_buf[s][k]);
+                    gc->selection_buf[s][k] = RHI_HANDLE_NULL;
+                }
         return true;
     }
 
@@ -564,6 +599,11 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
     rhi_cmd_bind_storage_buffer(cmd, gc->draw_count_buf,     3);
     if (rhi_handle_valid(flags_buf))
         rhi_cmd_bind_storage_buffer(cmd, flags_buf, 4);
+    {
+        u32 si = rhi_frame_index(gc->device) & 1u;
+        u32 sk = gc->selection_kind < GPUCULL_SELECT_KINDS ? gc->selection_kind : 0u;
+        rhi_cmd_bind_storage_buffer(cmd, gc->selection_buf[si][sk], 5);
+    }
 
     bool use_hi_z = rhi_handle_valid(hi_z_texture) && hi_z_width > 0u && hi_z_height > 0u
                  && rhi_handle_valid(gc->hi_z_sampler);
@@ -603,6 +643,18 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
             gc->vis_flags_staged_count[fi] = n; /* R430: for readback clamp */
         }
     }
+}
+
+void gpucull_upload_selection(GPUCullSystem *gc, u32 kind, const u32 *selected, u32 count) {
+    if (!gc || !gc->unified_ready || !selected || count == 0u || kind >= GPUCULL_SELECT_KINDS) return;
+    if (count > GPUCULL_MAX_OBJECTS) count = GPUCULL_MAX_OBJECTS;
+    u32 si = rhi_frame_index(gc->device) & 1u;
+    rhi_buffer_update_region(gc->device, gc->selection_buf[si][kind], 0, selected,
+                             (usize)count * sizeof(u32));
+}
+
+void gpucull_set_selection_kind(GPUCullSystem *gc, u32 kind) {
+    if (gc && kind < GPUCULL_SELECT_KINDS) gc->selection_kind = kind;
 }
 
 bool gpucull_read_vis_flags(GPUCullSystem *gc, u32 count, u32 *out_flags) {

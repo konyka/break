@@ -16,11 +16,17 @@ bool engine_init(Engine *e, const EngineConfig *cfg) {
         .width  = cfg->width,
         .height = cfg->height,
         .title  = cfg->title,
+        .native_window = cfg->native_window,
+        .native_display = cfg->native_display,
         .hide_window_until_first_frame = cfg->hide_window_until_first_frame,
+        .start_fullscreen = cfg->start_fullscreen,
+        .undecorated = cfg->undecorated,
+        .native_content_scale = cfg->native_content_scale,
     };
     if (!platform_config_valid(&pcfg)) return false;
 
     e->delta_time = 0.0;
+    e->raw_delta_time = 0.0;
     e->frame_count = 0;
     e->fps = 0.0;
     e->target_fps = 0.0;
@@ -37,6 +43,7 @@ bool engine_init(Engine *e, const EngineConfig *cfg) {
         LOG_FATAL("Failed to create platform");
         return false;
     }
+    e->host = cfg->host;
 
     e->delta_time    = 0.0;
     e->frame_count   = 0;
@@ -56,6 +63,7 @@ void engine_shutdown(Engine *e) {
         platform_destroy(e->platform);
         e->platform = NULL;
     }
+    e->host = NULL;
     LOG_INFO("Engine shutdown complete");
 }
 
@@ -86,6 +94,10 @@ bool engine_frame(Engine *e) {
     if (result == PLATFORM_EVENT_QUIT) {
         return false;
     }
+    if (e->host != NULL && e->host->poll != NULL &&
+        !e->host->poll(e->host->context, e)) {
+        return false;
+    }
 
     InputState *input = platform_input(e->platform);
     if (input_key_pressed(input, 256)) {
@@ -96,6 +108,7 @@ bool engine_frame(Engine *e) {
     now_us = time_microseconds();
 
     e->delta_time = (f64)(now_us - e->last_frame_us) / 1e6;
+    e->raw_delta_time = e->delta_time;
     /* R147: Clamp delta_time to prevent physics tunneling / animation jumps
      * when the process is paused (debugger, system sleep, window minimized). */
     if (e->delta_time > 0.1) e->delta_time = 0.1;

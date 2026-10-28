@@ -13,6 +13,8 @@
 #include "test_framework.h"
 #include <asset/vfs.h>
 #include <errno.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -361,6 +363,19 @@ TEST(vfs_dir_rejects_oversized_file)
     if (fseek(f, (long)VFS_MAX_FILE_BYTES, SEEK_SET) == 0) fputc('x', f);
 #endif
     fclose(f);
+
+    /* QNX qnx6 ftruncate "succeeds" but provisions only what the filesystem
+     * has free, so on a small /tmp the file can land at or below
+     * VFS_MAX_FILE_BYTES — the vfs would then correctly accept it. Only
+     * assert the rejection when the >MAX precondition actually holds. */
+    {
+        struct stat st;
+        if (stat(big_path, &st) != 0 || st.st_size <= (off_t)VFS_MAX_FILE_BYTES) {
+            remove(big_path);
+            vfs_destroy(vfs_create());
+            return;
+        }
+    }
 
     VFS *vfs = vfs_create();
     ASSERT_TRUE(vfs_mount_dir(vfs, TMP_DIR));

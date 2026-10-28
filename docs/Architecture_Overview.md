@@ -390,6 +390,7 @@ same public validation results without inheriting API-specific state.
 | `dynamic_rendering_supported` / `synchronization2_supported` | VK_KHR 扩展探测（迁移期追加，只探测） |
 | `push_constants_supported` / `max_push_constant_size` | **计划 E 新增**：push 常量支持位与字节上限（VK=true/设备 limit≥128，GL=false/0） |
 | `hiz_supported` / `compute_supported` / `indirect_draw_supported` | **计划 E 新增**：Hi-Z 金字塔 / `rhi_cmd_dispatch` / indirect draw 族 |
+| `indirect_first_instance_supported` | **R638 新增**：间接绘制记录的 `first_instance` 能否到达着色器（GL/VK 为 true，D3D12 为 false）；为 false 时材质数组路径退回逐组绘制 |
 | `shader_variant` | **计划 E 新增**：`RHI_SHADER_VARIANT_GLSL`（desktop 源）/ `RHI_SHADER_VARIANT_GLSL_VK`（`*_vk` 后缀 push-constant 块源）；`shader_variant_path()` 负责换源 |
 
 新增 6 字段在每个后端（GL/VK/headless）有真实消费，并由 `test_rhi_capabilities` 契约测试钉死。
@@ -398,7 +399,9 @@ same public validation results without inheriting API-specific state.
 按 std430 规则解析 GLSL `layout(push_constant)` 块，是 uniform/push 布局的唯一权威源；VK 后端在
 shader/pipeline create 时缓存反射结果，GL 走 `glGetActiveUniform`，slot 值全后端同源。每管线一次
 `rhi_pipeline_bindings_create()` 物化 name→slot 表（VK=push 字节偏移 / GL=location），取值用
-`rhi_pipeline_bindings_resolve()`（成员不存在返回 -1；反射 fail-closed 时不伪造槽位）。计划 E 已将
+`rhi_pipeline_bindings_resolve()`（成员不存在返回 -1；反射 fail-closed 时不伪造槽位）。
+Metal 当前保存 `RHIPipelineDesc` 拥有副本，并通过与 VK golden 对齐的既有 offset 表解析，尚未迁移到
+GLSL 真反射；`test_rhi_metal_resources` 对两套 bindings API 的同名结果逐项比对。计划 E 已将
 412 个 legacy 逐名查询调用点全部迁移并删除 VK 手写 push offset 表；旧 API
 `rhi_pipeline_get_uniform_location` 已 DEPRECATED（残留 = rhi.h 声明 + 各后端实现 + 注释，调用点 0），
 调用点清零后的删除时机另行决定（OpenGL 不再退役，该 API 不再随之删除）。反射布局与实际 VK 布局的一致性由 `test_shader_io` 的
@@ -420,7 +423,7 @@ gate = `test_renderer_backend_token_gate`（headless label，扫描 main.c / ren
 | **Windows** | Win32 | D3D12（原生，Agility SDK 1.616.0 + Windows SDK 10.0.26100.0） | `build-d3d12*/`（`-DENGINE_RHI_BACKEND=d3d12`） | ✅ GPU_RUNTIME + BENCHMARK_COMPARABLE（本机 RTX 4060 Laptop 真机收据；CI `windows-d3d12.yml` WARP floor；收据见 `docs/rhi_backend_evidence.md`） |
 | **macOS** | Cocoa | Metal（原生） | `build-metal/`（`-DENGINE_RHI_BACKEND=metal`） | ✅ BENCHMARK_COMPARABLE（M2 真机 2026-10-16；CI `lane-gpu-runtime-macos-metal`） |
 | **macOS** | Cocoa | Vulkan via MoltenVK | `build-macos/` | ✅ GPU_RUNTIME 并行基线（M2 本机 133/133；CI `lane-native-surface-cocoa`；不计入原生 Metal 证据） |
-| **iOS** | — | Metal | iOS toolchain | ⚠️ COMPILED（模拟器 compile only，无真机——`ios-metal-build` lane） |
+| **iOS** | UIKit / UIWindowScene + CAMetalLayer | Metal | iOS toolchain | ⚠️ COMPILED（`ios-metal-build` lane 仍 compile-only；本机 Simulator 已有 300 帧、旋转/主触摸交互、截图与后台恢复记录，但不计 GPU_RUNTIME；无真机收据） |
 | **Android** | — | Vulkan（需 `ENGINE_ANDROID_NATIVE_WINDOW=ON` 和 NDK `android/native_window.h`） | Android toolchain | ⚠️ COMPILED（host-injected，无 runtime 收据） |
 | **OHOS** | — | — | OHOS toolchain | ❌ UNAVAILABLE（fail-closed；`test_platform_compat_harmonyos`） |
 | **WebAssembly** | — | — | — | 📋 规划中 |

@@ -30,6 +30,10 @@ typedef struct {
 } VolumetricSystem;
 
 bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 height);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool volumetric_resize(VolumetricSystem *s, RHIDevice *dev, u32 w, u32 h);
 void volumetric_shutdown(VolumetricSystem *vol);
 /* R550-A: self-compositing (god_rays idiom) — scene_tex is the incoming
  * frame-chain color; the shader outputs scene*transmittance + fog and the

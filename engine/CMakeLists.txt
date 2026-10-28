@@ -34,6 +34,10 @@ option(MYUI_HARFBUZZ "Optional OpenType shaping through HarfBuzz + FreeType" ON)
 option(MYUI_GLES2 "Enable the reusable myui GLES2 backend when available" ON)
 option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when available" ON)
 option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
+# QNX Screen window layer: compiled when the QNX SDP target provides
+# screen.h + libscreen (window_screen.c); otherwise the platform layer
+# stays the fail-closed window_mobile.c path.
+option(ENGINE_QNX_SCREEN "Compile the QNX Screen window layer when the SDP provides it" ON)
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
 option(ENGINE_BUILD_FUZZ_SMOKE
     "Register deterministic fuzz smoke tests (requires explicit fuzz targets)" OFF)
@@ -67,6 +71,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     set(ENGINE_PLATFORM "android")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "OHOS")
     set(ENGINE_PLATFORM "harmonyos")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "QNX")
+    set(ENGINE_PLATFORM "qnx")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
     if(APPLE)
         if(CMAKE_OSX_SYSROOT MATCHES "iphone")
@@ -105,11 +111,14 @@ endif()
 #   Linux   -> epoll         (net_loop_epoll.c), or io_uring when
 #               ENGINE_NET_IOURING=ON (net_loop_iouring.c, experimental)
 #   Windows -> IOCP          (net_loop_iocp.c)
+#   QNX     -> poll          (net_loop_poll.c) — Neutrino has no epoll/kqueue
 option(ENGINE_NET_IOURING "Use io_uring net_loop backend on Linux (experimental)" OFF)
 if(ENGINE_PLATFORM STREQUAL "macos" OR ENGINE_PLATFORM STREQUAL "ios")
     set(NET_LOOP_BACKEND_SRC src/network/net_loop_kqueue.c)
 elseif(ENGINE_PLATFORM STREQUAL "windows")
     set(NET_LOOP_BACKEND_SRC src/network/net_loop_iocp.c)
+elseif(ENGINE_PLATFORM STREQUAL "qnx")
+    set(NET_LOOP_BACKEND_SRC src/network/net_loop_poll.c)
 elseif(ENGINE_PLATFORM STREQUAL "android" OR ENGINE_PLATFORM STREQUAL "harmonyos")
     set(NET_LOOP_BACKEND_SRC src/network/net_loop_epoll.c)
 elseif(ENGINE_NET_IOURING)
@@ -117,6 +126,19 @@ elseif(ENGINE_NET_IOURING)
 else()
     set(NET_LOOP_BACKEND_SRC src/network/net_loop_epoll.c)
 endif()
+
+# QNX keeps the socket API in libsocket; glibc/macOS hosts used for
+# QNX-simulated verification have it in libc, so probe instead of assuming.
+if(ENGINE_PLATFORM STREQUAL "qnx")
+    include(CheckLibraryExists)
+    check_library_exists(socket socket "" ENGINE_HAVE_LIBSOCKET)
+endif()
+
+# Tests that read repository sources/assets bake TEST_SOURCE_ROOT at compile
+# time. Cross deployments (QNX target) copy the tree to the target and
+# override this with the on-target path.
+set(ENGINE_TEST_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH
+    "Root used by TEST_SOURCE_ROOT in tests that read repo sources/assets")
 
 # === Compiler flags ===
 if(MSVC)
@@ -218,6 +240,11 @@ if(ENGINE_RHI_BACKEND STREQUAL "metal" AND NOT APPLE)
     message(FATAL_ERROR
         "metal backend is UNAVAILABLE on this platform (native Metal requires macOS/iOS)")
 endif()
+if(ENGINE_PLATFORM STREQUAL "qnx" AND NOT ENGINE_RHI_BACKEND STREQUAL "auto")
+    # Fail closed: QNX has no window system / GL / Vulkan WSI in this tree.
+    message(FATAL_ERROR
+        "ENGINE_RHI_BACKEND=${ENGINE_RHI_BACKEND} is UNAVAILABLE on qnx (headless platform; Screen WSI is not integrated)")
+endif()
 if(ENGINE_RHI_BACKEND STREQUAL "vulkan")
     set(ENGINE_VULKAN ON CACHE BOOL "Use Vulkan backend instead of OpenGL" FORCE)
 elseif(ENGINE_RHI_BACKEND STREQUAL "opengl")
@@ -234,6 +261,10 @@ if(ENGINE_RHI_BACKEND STREQUAL "metal")
     # metal 不改写 ENGINE_VULKAN（保持 OFF），兼容层语义仅服务 gl/vk。
 elseif(ENGINE_RHI_BACKEND STREQUAL "d3d12" AND WIN32)
     set(_rhi_backend_effective "d3d12")
+elseif(ENGINE_PLATFORM STREQUAL "qnx")
+    # QNX milestone is headless: every graphics entry point fails closed
+    # (engine_rhi_headless), matching the platform descriptor's evidence.
+    set(_rhi_backend_effective "headless")
 elseif(ENGINE_VULKAN)
     set(_rhi_backend_effective "vulkan")
 else()
@@ -252,6 +283,10 @@ endif()
 set(ENGINE_RHI_BACKEND_EFFECTIVE "${_rhi_backend_effective}" CACHE INTERNAL
     "Resolved RHI backend for this build" FORCE)
 message(STATUS "RHI backend: requested=${ENGINE_RHI_BACKEND}; effective=${ENGINE_RHI_BACKEND_EFFECTIVE}")
+if(ENGINE_PLATFORM STREQUAL "qnx" AND ENGINE_VULKAN)
+    message(FATAL_ERROR
+        "ENGINE_VULKAN is UNAVAILABLE on qnx (no Screen/Vulkan WSI; headless platform)")
+endif()
 if(ENGINE_PLATFORM STREQUAL "android" AND ENGINE_VULKAN)
     find_path(ANDROID_NATIVE_WINDOW_INCLUDE_DIR android/native_window.h)
     if(NOT ENGINE_ANDROID_NATIVE_WINDOW OR NOT ANDROID_NATIVE_WINDOW_INCLUDE_DIR)
@@ -658,6 +693,9 @@ src/renderer/water.c
 src/renderer/debug_viz.c
 src/renderer/lens_effects.c
     src/renderer/lod.c
+    src/renderer/lod_gen.c
+    src/renderer/lod_cache.c
+    src/renderer/lod_skin.c
     src/renderer/ibl.c
     src/renderer/render_graph.c
     src/renderer/cmd_buffer.c
@@ -747,6 +785,8 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_platform_compat PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_platform_compat PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_platform_compat PRIVATE ENGINE_PLATFORM_QNX=1)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
         target_compile_definitions(test_platform_compat PRIVATE ENGINE_PLATFORM_MACOS=1)
     elseif(ENGINE_PLATFORM STREQUAL "ios")
@@ -760,7 +800,7 @@ if(ENGINE_BUILD_TESTS)
     endif()
     add_test(NAME test_platform_compat COMMAND test_platform_compat)
 
-    foreach(_compat_name IN ITEMS MACOS IOS ANDROID HARMONYOS)
+    foreach(_compat_name IN ITEMS MACOS IOS ANDROID HARMONYOS QNX)
         string(TOLOWER "${_compat_name}" _compat_lower)
         add_executable(test_platform_compat_${_compat_lower}
             tests/test_platform_compat_simulated.c)
@@ -771,6 +811,54 @@ if(ENGINE_BUILD_TESTS)
         add_test(NAME test_platform_compat_${_compat_lower}
             COMMAND test_platform_compat_${_compat_lower})
     endforeach()
+
+    # QNX Screen descriptor variant: same simulated harness with the Screen
+    # window layer compiled in — header-only, runs on every host lane.
+    add_executable(test_platform_compat_qnx_screen
+        tests/test_platform_compat_simulated.c)
+    target_include_directories(test_platform_compat_qnx_screen
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(test_platform_compat_qnx_screen PRIVATE
+        SIMULATE_QNX=1 ENGINE_QNX_SCREEN=1)
+    add_test(NAME test_platform_compat_qnx_screen
+        COMMAND test_platform_compat_qnx_screen)
+
+    # QNX Screen window layer compiled against a fake Screen SDK
+    # (tests/fake_qnx_screen): fixed borderless-fullscreen contract on every
+    # host lane (FS4).
+    if(NOT ENGINE_PLATFORM STREQUAL "qnx")
+        add_executable(test_platform_screen_simulated
+            tests/test_platform_screen_simulated.c
+            src/platform/window_screen.c
+            src/platform/input.c
+            src/platform/platform_config.c)
+        target_include_directories(test_platform_screen_simulated PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_qnx_screen)
+        target_compile_definitions(test_platform_screen_simulated PRIVATE
+            ENGINE_PLATFORM_QNX=1 ENGINE_QNX_SCREEN=1)
+        add_test(NAME test_platform_screen_simulated
+            COMMAND test_platform_screen_simulated)
+        set_tests_properties(test_platform_screen_simulated PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
+
+    # QNX Screen keymap: pure integer mapping, host-testable on every lane;
+    # window_screen.c static-asserts the mirrored constants against
+    # <sys/keycodes.h> on real cross builds.
+    add_executable(test_screen_keymap tests/test_screen_keymap.c)
+    target_include_directories(test_screen_keymap PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_screen_keymap COMMAND test_screen_keymap)
+
+    # Borderless-fullscreen window-mode state machine (platform/window_mode.h):
+    # pure, header-only, shared by every window backend.
+    add_executable(test_platform_window_mode tests/test_platform_window_mode.c)
+    target_include_directories(test_platform_window_mode PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_platform_window_mode COMMAND test_platform_window_mode)
+    set_tests_properties(test_platform_window_mode PROPERTIES
+        LABELS "headless;platform_contract")
 
     foreach(_wsi_name IN ITEMS X11 WAYLAND WIN32 COCOA ANDROID IOS)
         string(TOLOWER "${_wsi_name}" _wsi_lower)
@@ -849,10 +937,18 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         HINTS /opt/homebrew/bin /usr/local/bin REQUIRED)
     find_program(ENGINE_METAL_XCRUN xcrun REQUIRED)
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-        set(METAL_SHADER_SDK iphoneos)
+        # Device and Simulator metallibs are incompatible. The SDK is fixed at
+        # configure time; an Xcode -destination alone cannot retarget this
+        # offline shader build.
+        if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+            set(METAL_SHADER_SDK iphonesimulator)
+        else()
+            set(METAL_SHADER_SDK iphoneos)
+        endif()
     else()
         set(METAL_SHADER_SDK macosx)
     endif()
+    message(STATUS "Metal shader SDK: ${METAL_SHADER_SDK}")
     add_executable(gen_metal_shader_manifest
         tools/gen_metal_shader_manifest.c)
     target_include_directories(gen_metal_shader_manifest PRIVATE
@@ -863,11 +959,39 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
     # Cross-compiling (iOS): host-compile a copy with the system
     # compiler at configure time and use it in the custom command.
     # Native (macOS): use the target as before.
+    # xcode-select points at CommandLineTools on this host; xcrun metal
+    # needs DEVELOPER_DIR=<Xcode>. Bake the configure-time value, falling
+    # back to the standard Xcode path.
+    if(NOT DEFINED ENGINE_METAL_DEVELOPER_DIR)
+        set(ENGINE_METAL_DEVELOPER_DIR "$ENV{DEVELOPER_DIR}")
+    endif()
+    if(ENGINE_METAL_DEVELOPER_DIR STREQUAL "")
+        set(ENGINE_METAL_DEVELOPER_DIR
+            "/Applications/Xcode.app/Contents/Developer")
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         set(METAL_SHADER_GEN
             ${CMAKE_CURRENT_BINARY_DIR}/gen_metal_shader_manifest_host)
         execute_process(
-            COMMAND cc -O1 -std=c11
+            COMMAND ${CMAKE_COMMAND} -E env
+                "DEVELOPER_DIR=${ENGINE_METAL_DEVELOPER_DIR}"
+                ${ENGINE_METAL_XCRUN} --sdk macosx --show-sdk-path
+            RESULT_VARIABLE metal_host_sdk_rc
+            OUTPUT_VARIABLE METAL_HOST_SDKROOT
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT metal_host_sdk_rc EQUAL 0 OR METAL_HOST_SDKROOT STREQUAL "")
+            message(FATAL_ERROR "macOS host SDK for shader manifest generator unavailable")
+        endif()
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E env
+                --unset=SDKROOT --unset=CFLAGS --unset=CPPFLAGS
+                --unset=CXXFLAGS --unset=LDFLAGS --unset=CPATH
+                --unset=C_INCLUDE_PATH --unset=LIBRARY_PATH
+                --unset=DYLD_LIBRARY_PATH --unset=DYLD_FRAMEWORK_PATH
+                --unset=DYLD_FALLBACK_LIBRARY_PATH
+                --unset=DYLD_FALLBACK_FRAMEWORK_PATH
+                cc -target ${CMAKE_HOST_SYSTEM_PROCESSOR}-apple-macosx
+                -isysroot ${METAL_HOST_SDKROOT} -O1 -std=c11
                 -I${CMAKE_CURRENT_SOURCE_DIR}/src
                 -I${CMAKE_CURRENT_SOURCE_DIR}/external
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_metal_shader_manifest.c
@@ -892,16 +1016,6 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         ${ENGINE_METAL_GLSLC} DIRECTORY)
     get_filename_component(ENGINE_METAL_SPIRV_CROSS_DIR
         ${ENGINE_METAL_SPIRV_CROSS} DIRECTORY)
-    # xcode-select points at CommandLineTools on this host; xcrun metal
-    # needs DEVELOPER_DIR=<Xcode>. Bake the configure-time value, falling
-    # back to the standard Xcode path.
-    if(NOT DEFINED ENGINE_METAL_DEVELOPER_DIR)
-        set(ENGINE_METAL_DEVELOPER_DIR "$ENV{DEVELOPER_DIR}")
-    endif()
-    if(ENGINE_METAL_DEVELOPER_DIR STREQUAL "")
-        set(ENGINE_METAL_DEVELOPER_DIR
-            "/Applications/Xcode.app/Contents/Developer")
-    endif()
     add_custom_command(
         OUTPUT ${METAL_SHADER_OUT_DIR}/engine.metallib
                ${METAL_SHADER_OUT_DIR}/rhi_metal_shader_manifest.c
@@ -1020,7 +1134,7 @@ if(WIN32 AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         unset(ENGINE_DXC)
         find_program(ENGINE_DXC NAMES dxc dxc.exe REQUIRED)
     endif()
-    set(ENGINE_D3D12_HLSL_PIPELINES blit myui)
+    set(ENGINE_D3D12_HLSL_PIPELINES blit myui blinn_phong skybox terrain water)
     set(_d3d12_missing_sidecars "")
     foreach(_pipe IN LISTS ENGINE_D3D12_HLSL_PIPELINES)
         foreach(_stage vert frag)
@@ -1043,6 +1157,14 @@ if(WIN32 AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         get_filename_component(_name "${_hlsl}" NAME)
         if(_hlsl MATCHES "\\.vert$")
             set(_profile vs_6_0)
+            # SV_StartInstanceLocation (the indirect draw's first_instance, the
+            # GLSL gl_BaseInstance) is a vertex input only from shader model 6.8.
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_hlsl}")
+            file(READ "${_hlsl}" _hlsl_src)
+            string(FIND "${_hlsl_src}" "SV_StartInstanceLocation" _hlsl_si_pos)
+            if(NOT _hlsl_si_pos EQUAL -1)
+                set(_profile vs_6_8)
+            endif()
         elseif(_hlsl MATCHES "\\.frag$")
             set(_profile ps_6_0)
         else()
@@ -1091,6 +1213,10 @@ function(engine_link_rhi_backend target)
         target_link_libraries(${target} PRIVATE engine_rhi_vulkan)
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl")
         target_link_libraries(${target} PRIVATE engine_rhi_opengl)
+    elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "headless")
+        # QNX milestone: every rhi entry point fails closed at runtime;
+        # linking headless keeps the build graph valid on the target.
+        target_link_libraries(${target} PRIVATE engine_rhi_headless)
     else()
         message(FATAL_ERROR
             "engine_link_rhi_backend: no backend library for ENGINE_RHI_BACKEND_EFFECTIVE=${ENGINE_RHI_BACKEND_EFFECTIVE}")
@@ -1172,6 +1298,23 @@ endif()
 add_library(stb_image STATIC external/stb_image_impl.c)
 target_include_directories(stb_image PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
 
+# Pure C11 port of the meshoptimizer v1.3 simplifier + vertex cache optimizer
+# (external/meshopt_c/README.md). Built with the engine's normal warning flags;
+# linked into engine for the runtime mesh LOD generator (renderer/lod_gen.c).
+# Consumers include "meshopt_c/meshopt.h".
+add_library(meshopt_c STATIC
+    external/meshopt_c/simplifier.c
+    external/meshopt_c/vcacheoptimizer.c)
+target_include_directories(meshopt_c PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    # Keep the simplifier's floating-point expression order bit-exact with the
+    # upstream reference table; AppleClang contracts a*b+c into FMA by default.
+    target_compile_options(meshopt_c PRIVATE -ffp-contract=off)
+endif()
+if(NOT WIN32)
+    target_link_libraries(meshopt_c PUBLIC m)
+endif()
+
 add_library(stb_image_write STATIC external/stb_image_write_impl.c)
 target_include_directories(stb_image_write PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
 
@@ -1183,7 +1326,7 @@ foreach(stb_target stb_truetype stb_image stb_image_write)
     endif()
 endforeach()
 
-target_link_libraries(engine PRIVATE glad lua stb_image)
+target_link_libraries(engine PRIVATE glad lua stb_image meshopt_c)
 
 set(MYUI_CORE_SOURCES
     src/myui/myc/my_mem.c
@@ -1877,6 +2020,34 @@ elseif(ENGINE_PLATFORM STREQUAL "macos")
         "-framework CoreServices"
         "-framework CoreFoundation"
     )
+elseif(ENGINE_PLATFORM STREQUAL "qnx")
+    # QNX: window layer is Screen when the SDP provides screen.h/libscreen
+    # (ENGINE_QNX_SCREEN — window_screen.c creates its own native window);
+    # otherwise window_mobile.c keeps platform_create fail-closed. Graphics
+    # above the window layer stays headless-only either way (RHI gates above).
+    if(ENGINE_QNX_SCREEN)
+        find_path(ENGINE_QNX_SCREEN_INCLUDE_DIR screen/screen.h)
+        find_library(ENGINE_QNX_SCREEN_LIBRARY screen)
+    endif()
+    if(ENGINE_QNX_SCREEN AND ENGINE_QNX_SCREEN_INCLUDE_DIR AND
+       ENGINE_QNX_SCREEN_LIBRARY)
+        message(STATUS "QNX Screen window layer: ${ENGINE_QNX_SCREEN_LIBRARY}")
+        target_compile_definitions(engine PUBLIC
+            ENGINE_PLATFORM_QNX=1 ENGINE_QNX_SCREEN=1 _POSIX_C_SOURCE=200112L)
+        target_sources(engine PRIVATE src/platform/window_screen.c)
+        target_include_directories(engine PRIVATE ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+        target_link_libraries(engine PRIVATE ${ENGINE_QNX_SCREEN_LIBRARY})
+    else()
+        message(STATUS
+            "QNX Screen window layer unavailable; headless fail-closed platform")
+        target_compile_definitions(engine PUBLIC
+            ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200112L)
+        target_sources(engine PRIVATE src/platform/window_mobile.c)
+    endif()
+    if(ENGINE_HAVE_LIBSOCKET)
+        target_link_libraries(engine PRIVATE socket)
+    endif()
+
 elseif(ENGINE_PLATFORM STREQUAL "ios" OR ENGINE_PLATFORM STREQUAL "android" OR
        ENGINE_PLATFORM STREQUAL "harmonyos")
     target_sources(engine PRIVATE src/platform/window_mobile.c)
@@ -1957,6 +2128,33 @@ endif()
 add_executable(engine_demo src/main.c)
 target_link_libraries(engine_demo PRIVATE engine break_myui m)
 engine_link_rhi_backend(engine_demo)
+if(ENGINE_PLATFORM STREQUAL "ios")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/apps/ios_Info.plist")
+    file(GLOB_RECURSE ENGINE_DEMO_IOS_RESOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/*"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*")
+    foreach(_resource IN LISTS ENGINE_DEMO_IOS_RESOURCES)
+        file(RELATIVE_PATH _resource_rel "${CMAKE_CURRENT_SOURCE_DIR}" "${_resource}")
+        get_filename_component(_resource_dir "${_resource_rel}" DIRECTORY)
+        set_property(SOURCE "${_resource}" PROPERTY
+            MACOSX_PACKAGE_LOCATION "${_resource_dir}")
+    endforeach()
+    set_source_files_properties(src/main.c PROPERTIES
+        LANGUAGE OBJC COMPILE_OPTIONS "-fno-objc-arc")
+    set_source_files_properties(src/apps/ios_main.m PROPERTIES
+        COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-fno-objc-arc")
+    target_sources(engine_demo PRIVATE src/apps/ios_main.m
+        ${ENGINE_DEMO_IOS_RESOURCES})
+    set_target_properties(engine_demo PROPERTIES
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.purecengine.engine-demo"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/apps/ios_Info.plist"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.purecengine.engine-demo")
+    target_link_libraries(engine_demo PRIVATE
+        "-framework UIKit" "-framework QuartzCore" "-framework Metal"
+        "-framework Foundation" Threads::Threads)
+endif()
 # main() holds ~4.4 MB of renderer/subsystem structs as locals, sized
 # against the Linux default 8 MB stack; the MSVC-family linker default
 # reserve is 1 MB, which faults during the prologue stack probe on
@@ -2356,7 +2554,7 @@ if(ENGINE_BUILD_TESTS)
     set_property(TARGET test_backward_machine_structure PROPERTY C_STANDARD 99)
     target_include_directories(test_backward_machine_structure PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_backward_machine_structure PRIVATE
-        TEST_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
+        TEST_SOURCE_ROOT="${ENGINE_TEST_SOURCE_ROOT}"
     )
     target_link_libraries(test_backward_machine_structure PRIVATE rule_engine_core)
      add_test(NAME test_backward_machine_structure COMMAND test_backward_machine_structure)
@@ -2418,7 +2616,7 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_platform_config PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_platform_config COMMAND test_platform_config)
 
-    foreach(_mobile_name IN ITEMS IOS ANDROID HARMONYOS)
+    foreach(_mobile_name IN ITEMS IOS ANDROID HARMONYOS QNX)
         string(TOLOWER "${_mobile_name}" _mobile_lower)
         add_executable(test_platform_mobile_layer_${_mobile_lower}
             tests/test_platform_mobile.c
@@ -2429,9 +2627,22 @@ if(ENGINE_BUILD_TESTS)
             PRIVATE ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_platform_mobile_layer_${_mobile_lower}
             PRIVATE ENGINE_PLATFORM_${_mobile_name}=1)
+        target_link_libraries(test_platform_mobile_layer_${_mobile_lower} PRIVATE m)
         add_test(NAME test_platform_mobile_layer_${_mobile_lower}
             COMMAND test_platform_mobile_layer_${_mobile_lower})
     endforeach()
+
+    add_executable(test_engine_mobile_host
+        tests/test_engine_mobile_host.c
+        src/engine.c
+        src/core/log.c
+        src/platform/window_mobile.c
+        src/platform/input.c
+        src/platform/platform_config.c)
+    target_include_directories(test_engine_mobile_host PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_engine_mobile_host PRIVATE ENGINE_PLATFORM_IOS=1)
+    target_link_libraries(test_engine_mobile_host PRIVATE m)
+    add_test(NAME test_engine_mobile_host COMMAND test_engine_mobile_host)
 
     add_executable(test_platform_display_media tests/test_platform_display_media.c
         src/platform/platform_display_media.c)
@@ -2505,7 +2716,7 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_platform_win32_runtime PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_platform_win32_runtime PRIVATE engine m)
     engine_link_rhi_backend(test_platform_win32_runtime)
-    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(test_platform_win32_runtime PRIVATE
             -Wno-missing-field-initializers)
     endif()
@@ -2515,8 +2726,14 @@ if(ENGINE_BUILD_TESTS)
 
     if(ENGINE_PLATFORM STREQUAL "macos")
         add_executable(test_platform_cocoa_runtime tests/test_platform_cocoa_runtime.c)
+        # Objective-C so the FS4 fullscreen test can inspect the NSWindow
+        # (styleMask / frame / level); same flags as window_cocoa.m.
+        set_source_files_properties(tests/test_platform_cocoa_runtime.c PROPERTIES
+            LANGUAGE OBJC
+            COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-fno-objc-arc")
         target_include_directories(test_platform_cocoa_runtime PRIVATE ${TEST_INCLUDE_DIRS})
-        target_link_libraries(test_platform_cocoa_runtime PRIVATE engine m)
+        target_link_libraries(test_platform_cocoa_runtime PRIVATE engine m
+            "-framework Cocoa")
         engine_link_rhi_backend(test_platform_cocoa_runtime)
         add_test(NAME test_platform_cocoa_runtime COMMAND test_platform_cocoa_runtime)
         set_tests_properties(test_platform_cocoa_runtime PROPERTIES LABELS platform_runtime)
@@ -2660,7 +2877,7 @@ endif()
     add_executable(test_font_shader_contract tests/test_font_shader_contract.c)
     target_include_directories(test_font_shader_contract PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_font_shader_contract PRIVATE
-        TEST_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+        TEST_SOURCE_ROOT="${ENGINE_TEST_SOURCE_ROOT}")
     add_test(NAME test_font_shader_contract COMMAND test_font_shader_contract)
 
     add_executable(test_myui_mvvm tests/test_myui_mvvm.c
@@ -2788,6 +3005,8 @@ endif()
     target_include_directories(test_rhi_capabilities PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_QNX=1)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
@@ -2810,7 +3029,7 @@ endif()
         target_compile_options(test_rhi_capabilities PRIVATE
             -ffunction-sections -fdata-sections)
     endif()
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT (WIN32 AND (MSVC OR CMAKE_C_COMPILER_ID MATCHES "Clang")))
         # macOS ld has no --gc-sections; dead-code stripping is the default.
         target_link_options(test_rhi_capabilities PRIVATE -Wl,--gc-sections)
     endif()
@@ -2827,9 +3046,8 @@ endif()
     add_test(NAME test_rhi_oracle COMMAND test_rhi_oracle)
 
     # OpenGL is kept as the reference backend for rendering comparison: pins
-    # VK golden ~= srgb_encode(GL golden). Pure CPU over the committed PPMs.
+    # VK golden ~= GL golden. Pure CPU over the committed PPMs.
     add_executable(test_rhi_golden_parity tests/test_rhi_golden_parity.c)
-    target_link_libraries(test_rhi_golden_parity PRIVATE m)
     add_test(NAME test_rhi_golden_parity
         COMMAND test_rhi_golden_parity ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden)
     set_tests_properties(test_rhi_golden_parity PROPERTIES
@@ -2841,6 +3059,8 @@ endif()
     target_include_directories(test_rhi_fault_injection PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_rhi_fault_injection PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_rhi_fault_injection PRIVATE ENGINE_PLATFORM_QNX=1)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_rhi_fault_injection PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
@@ -2863,7 +3083,7 @@ endif()
         target_compile_options(test_rhi_fault_injection PRIVATE
             -ffunction-sections -fdata-sections)
     endif()
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT (WIN32 AND (MSVC OR CMAKE_C_COMPILER_ID MATCHES "Clang")))
         # macOS ld has no --gc-sections; dead-code stripping is the default.
         target_link_options(test_rhi_fault_injection PRIVATE -Wl,--gc-sections)
     endif()
@@ -2901,6 +3121,8 @@ endif()
     target_include_directories(test_rhi_wsi_attach PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_rhi_wsi_attach PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_rhi_wsi_attach PRIVATE ENGINE_PLATFORM_QNX=1)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_rhi_wsi_attach PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
@@ -2923,7 +3145,7 @@ endif()
         target_compile_options(test_rhi_wsi_attach PRIVATE
             -ffunction-sections -fdata-sections)
     endif()
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT (WIN32 AND (MSVC OR CMAKE_C_COMPILER_ID MATCHES "Clang")))
         target_link_options(test_rhi_wsi_attach PRIVATE -Wl,--gc-sections)
     endif()
     add_test(NAME test_rhi_wsi_attach COMMAND test_rhi_wsi_attach)
@@ -2936,6 +3158,8 @@ endif()
     target_include_directories(test_rhi_error_contract PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_PLATFORM_QNX=1)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
@@ -2968,6 +3192,9 @@ endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_rhi_frame_lifecycle_contract
             PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_rhi_frame_lifecycle_contract
+            PRIVATE ENGINE_PLATFORM_QNX=1)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_rhi_frame_lifecycle_contract
             PRIVATE ENGINE_PLATFORM_WINDOWS=1)
@@ -2998,6 +3225,8 @@ endif()
     target_compile_definitions(test_rhi_native PRIVATE ENGINE_RHI_TEST=1)
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_rhi_native PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_rhi_native PRIVATE ENGINE_PLATFORM_QNX=1)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_rhi_native PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
@@ -3368,6 +3597,37 @@ endif()
         set_tests_properties(test_d3d12_warp_runtime PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
             ENVIRONMENT "ENGINE_D3D12_WARP=1;BREAK_D3D12_TEST_FALLBACK_HWND=1")
+
+        # R667: the myui break-RHI canvas on D3D12 -- the scale filter the
+        # canvas advertises must reach the pixels (R666 made the RHISampler
+        # count). Kept out of test_d3d12_warp_runtime so that suite stays
+        # pure RHI.
+        add_executable(test_d3d12_ui_canvas tests/test_d3d12_ui_canvas.c
+            src/myui/myr/my_vgcanvas_break_rhi.c)
+        target_include_directories(test_d3d12_ui_canvas PRIVATE
+            ${TEST_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+        target_link_libraries(test_d3d12_ui_canvas PRIVATE
+            myui_core engine_rhi_d3d12 d3d12 dxgi dxguid)
+        add_test(NAME test_d3d12_ui_canvas COMMAND test_d3d12_ui_canvas)
+        set_tests_properties(test_d3d12_ui_canvas PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
+            ENVIRONMENT "ENGINE_D3D12_WARP=1;BREAK_D3D12_TEST_FALLBACK_HWND=1")
+
+        # UAV view parameter matrix: each cell builds its own device because the
+        # failure under investigation kills the device outright, and GetDevice-
+        # RemovedReason keeps reporting healthy, so cells cannot share one.
+        # headless rather than graphics-labelled: no swapchain is involved.
+        add_executable(test_d3d12_uav_matrix tests/test_d3d12_uav_matrix.c)
+        target_include_directories(test_d3d12_uav_matrix PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_d3d12_uav_matrix PRIVATE
+            engine_rhi_d3d12 d3d12 dxgi dxguid)
+        add_test(NAME test_d3d12_uav_matrix
+            COMMAND test_d3d12_uav_matrix)
+        set_tests_properties(test_d3d12_uav_matrix PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "platform_runtime"
+            ENVIRONMENT "ENGINE_D3D12_WARP=1;BREAK_D3D12_TEST_FALLBACK_HWND=1")
     endif()
     add_test(NAME test_rhi_backend_internal_contract
         COMMAND ${CMAKE_COMMAND}
@@ -3379,6 +3639,9 @@ endif()
              -DRHI_PRESENT_HISTORY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_present_history.c
              -DRHI_RT_TRACE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/rt_trace.c
              -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DENGINE_NINJA_FILE=${CMAKE_CURRENT_BINARY_DIR}/build.ninja
+            -DENGINE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+            -DENGINE_C_COMPILER_ID=${CMAKE_C_COMPILER_ID}
             -DRHI_GL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_gl.c
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
             -DRHI_HEADLESS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_headless.c
@@ -3423,7 +3686,7 @@ endif()
     if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         add_executable(test_rhi_metal_device_contract
             tests/test_rhi_metal_device_contract.c tests/metal_test_layer.m
-            ${RHI_CORE_SOURCES} src/core/log.c)
+            ${RHI_CORE_SOURCES} src/core/log.c src/core/shader_io.c)
         target_include_directories(test_rhi_metal_device_contract PRIVATE
             ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_rhi_metal_device_contract PRIVATE
@@ -3447,7 +3710,7 @@ endif()
         # offscreen-layer and direct-RHI_CORE_SOURCES pattern as above.
         add_executable(test_rhi_metal_frame_lifecycle
             tests/test_rhi_metal_frame_lifecycle.c tests/metal_test_layer.m
-            ${RHI_CORE_SOURCES} src/core/log.c)
+            ${RHI_CORE_SOURCES} src/core/log.c src/core/shader_io.c)
         target_include_directories(test_rhi_metal_frame_lifecycle PRIVATE
             ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_rhi_metal_frame_lifecycle PRIVATE
@@ -3610,6 +3873,9 @@ endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_task PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
         target_link_libraries(test_task PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_task PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_task PRIVATE m)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_task PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_task PRIVATE kernel32)
@@ -3622,17 +3888,42 @@ endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_task_singleton PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
         target_link_libraries(test_task_singleton PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_task_singleton PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_task_singleton PRIVATE m)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_task_singleton PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_task_singleton PRIVATE kernel32)
     endif()
     add_test(NAME test_task_singleton COMMAND test_task_singleton)
 
-    # test_lod: needs lod.c + math.c
-    add_executable(test_lod tests/test_lod.c src/renderer/lod.c src/math/math.c)
+    # test_lod: needs lod.c + lod_gen.c (meshopt_c) + math.c
+    add_executable(test_lod tests/test_lod.c src/renderer/lod.c src/renderer/lod_gen.c src/math/math.c)
     target_include_directories(test_lod PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_lod PRIVATE m)
+    target_link_libraries(test_lod PRIVATE meshopt_c m)
     add_test(NAME test_lod COMMAND test_lod)
+
+    # test_lod_cache: disk round-trip, keys, corruption guards, atomic writers
+    add_executable(test_lod_cache tests/test_lod_cache.c src/renderer/lod_cache.c src/renderer/lod_gen.c)
+    target_include_directories(test_lod_cache PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_lod_cache PRIVATE meshopt_c m)
+    add_test(NAME test_lod_cache COMMAND test_lod_cache)
+
+    # test_lod_skin: R707a skinned LOD (multi-pose simplification, measured error, bounds, cache)
+    add_executable(test_lod_skin tests/test_lod_skin.c src/renderer/lod_skin.c src/renderer/lod_cache.c src/renderer/lod_gen.c)
+    target_include_directories(test_lod_skin PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_lod_skin PRIVATE meshopt_c m)
+    add_test(NAME test_lod_skin COMMAND test_lod_skin)
+
+    # test_meshopt_c: invariants + bit-exact upstream v1.3 reference table
+    add_executable(test_meshopt_c tests/test_meshopt_c.c)
+    target_include_directories(test_meshopt_c PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_meshopt_c PRIVATE meshopt_c)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        # The procedural mesh generators must match the reference harness too.
+        target_compile_options(test_meshopt_c PRIVATE -ffp-contract=off)
+    endif()
+    add_test(NAME test_meshopt_c COMMAND test_meshopt_c)
 
     # test_async_loader: needs async_loader.c + vfs.c + log.c
     add_executable(test_async_loader tests/test_async_loader.c
@@ -3642,6 +3933,9 @@ endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_async_loader PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
         target_link_libraries(test_async_loader PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_async_loader PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_async_loader PRIVATE m)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_async_loader PRIVATE ENGINE_PLATFORM_WINDOWS=1 _CRT_SECURE_NO_WARNINGS)
         target_link_libraries(test_async_loader PRIVATE kernel32)
@@ -4125,6 +4419,9 @@ endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_ecs_system PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
         target_link_libraries(test_ecs_system PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_ecs_system PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_ecs_system PRIVATE m)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_ecs_system PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_ecs_system PRIVATE kernel32)
@@ -4150,6 +4447,12 @@ endif()
     if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
        ENGINE_PLATFORM STREQUAL "harmonyos")
         target_compile_definitions(test_network PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_network PRIVATE
+            ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200112L)
+        if(ENGINE_HAVE_LIBSOCKET)
+            target_link_libraries(test_network PRIVATE socket)
+        endif()
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_network PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_network PRIVATE ws2_32)
@@ -4228,11 +4531,65 @@ endif()
         target_compile_definitions(test_net_loop PRIVATE ENGINE_PLATFORM_MACOS=1)
         target_compile_definitions(test_net_loop PRIVATE ENGINE_NET_LOOP_TESTING=1)
         target_link_libraries(test_net_loop PRIVATE pthread)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_net_loop PRIVATE
+            ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200112L ENGINE_NET_LOOP_TESTING=1)
+        if(ENGINE_HAVE_LIBSOCKET)
+            target_link_libraries(test_net_loop PRIVATE socket)
+        endif()
     endif()
     if(ENGINE_NET_IOURING AND ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_net_loop PRIVATE ENGINE_NET_IOURING=1)
     endif()
     add_test(NAME test_net_loop COMMAND test_net_loop)
+
+    # QNX net_loop coverage on host: the poll backend is plain POSIX, so the
+    # generic semantics suite plus the QNX fault-injection section run
+    # unchanged on the linux/macos headless lanes. On a real QNX target the
+    # primary target above already compiles the poll backend.
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "macos")
+        add_executable(test_net_loop_qnx tests/test_net_loop.c
+            src/network/network.c src/platform/time.c src/network/net_loop_poll.c)
+        target_include_directories(test_net_loop_qnx PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_net_loop_qnx PRIVATE
+            ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200112L ENGINE_NET_LOOP_TESTING=1)
+        target_link_libraries(test_net_loop_qnx PRIVATE pthread)
+        add_test(NAME test_net_loop_qnx COMMAND test_net_loop_qnx)
+        set_tests_properties(test_net_loop_qnx PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
+
+    # QNX efficiency smoke: portable throughput floors for the subsystems a
+    # QNX headless deployment exercises — the poll net_loop backend, the task
+    # system, and the myui offscreen draw pipeline. Compiled with the QNX
+    # platform define so the poll backend is the code under test; the same
+    # binary shape runs on a QNX target (docs/qnx_compat.md).
+    # POSIX-only (poll, BSD sockets, clock_gettime): not built on Windows.
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "macos"
+       OR ENGINE_PLATFORM STREQUAL "qnx")
+        add_executable(test_qnx_perf_smoke tests/test_qnx_perf_smoke.c
+            src/network/network.c src/platform/time.c src/network/net_loop_poll.c
+            src/task/task.c src/core/log.c)
+        target_include_directories(test_qnx_perf_smoke PRIVATE
+            ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+        target_compile_definitions(test_qnx_perf_smoke PRIVATE
+            ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200809L)
+        if(ENGINE_PLATFORM STREQUAL "macos")
+            # _POSIX_C_SOURCE hides sysconf(_SC_NPROCESSORS_ONLN) on Darwin.
+            target_compile_definitions(test_qnx_perf_smoke PRIVATE _DARWIN_C_SOURCE)
+        endif()
+        target_link_libraries(test_qnx_perf_smoke PRIVATE myui_core m)
+        if(NOT ENGINE_PLATFORM STREQUAL "qnx")
+            # QNX 8 folds pthread into libc; hosts still need -lpthread.
+            target_link_libraries(test_qnx_perf_smoke PRIVATE pthread)
+        endif()
+        if(ENGINE_HAVE_LIBSOCKET)
+            target_link_libraries(test_qnx_perf_smoke PRIVATE socket)
+        endif()
+        add_test(NAME test_qnx_perf_smoke COMMAND test_qnx_perf_smoke)
+        set_tests_properties(test_qnx_perf_smoke PROPERTIES
+            LABELS "headless;platform_contract" TIMEOUT 90)
+    endif()
 
     # test_net_replication: transform snapshot broadcast over UDP loopback
     add_executable(test_net_replication tests/test_net_replication.c
@@ -4241,6 +4598,14 @@ endif()
     target_include_directories(test_net_replication PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_net_replication PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_net_replication PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200112L)
+        # QNX libm provides __isfinitef; glibc inlines isfinite so the linux
+        # branch above links no math library.
+        target_link_libraries(test_net_replication PRIVATE m)
+        if(ENGINE_HAVE_LIBSOCKET)
+            target_link_libraries(test_net_replication PRIVATE socket)
+        endif()
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_net_replication PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_net_replication PRIVATE ws2_32)
@@ -4256,6 +4621,12 @@ endif()
     target_include_directories(fuzz_net_packet PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(fuzz_net_packet PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(fuzz_net_packet PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200112L)
+        target_link_libraries(fuzz_net_packet PRIVATE m)
+        if(ENGINE_HAVE_LIBSOCKET)
+            target_link_libraries(fuzz_net_packet PRIVATE socket)
+        endif()
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(fuzz_net_packet PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(fuzz_net_packet PRIVATE ws2_32)
@@ -4435,6 +4806,9 @@ endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_mipmap_stream PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
         target_link_libraries(test_mipmap_stream PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_mipmap_stream PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_mipmap_stream PRIVATE m)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_mipmap_stream PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_mipmap_stream PRIVATE kernel32)
@@ -4524,6 +4898,8 @@ endif()
     target_link_libraries(test_script_lua PRIVATE lua m)
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_script_lua PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_script_lua PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=199309L)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_script_lua PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     endif()
@@ -4568,6 +4944,8 @@ endif()
     # ENGINE_PLATFORM_WINDOWS; without it the #else pulls in <sys/inotify.h>.
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_hotreload PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_hotreload PRIVATE ENGINE_PLATFORM_QNX=1)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_hotreload PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_hotreload PRIVATE kernel32)
@@ -4609,6 +4987,8 @@ endif()
     target_compile_definitions(test_rt_trace PRIVATE ENGINE_RHI_TEST=1)
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_QNX=1)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
@@ -4670,6 +5050,9 @@ endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(fuzz_decode_image PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
         target_link_libraries(fuzz_decode_image PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(fuzz_decode_image PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(fuzz_decode_image PRIVATE m)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(fuzz_decode_image PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(fuzz_decode_image PRIVATE kernel32)
@@ -4761,6 +5144,8 @@ endif()
     # Windows/macOS builds; mirror the per-platform pattern used by test_task.
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_profiler PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_profiler PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=199309L)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_profiler PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     endif()
@@ -4773,6 +5158,13 @@ endif()
     target_include_directories(test_lighting PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_lighting PRIVATE m)
     add_test(NAME test_lighting COMMAND test_lighting)
+
+    # R647: point-shadow cube face VPs against the cube addressing rule.
+    add_executable(test_point_shadow_faces tests/test_point_shadow_faces.c
+        src/renderer/point_shadow.c src/core/shader_io.c src/math/math.c src/core/log.c tests/rhi_stubs.c)
+    target_include_directories(test_point_shadow_faces PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_point_shadow_faces PRIVATE m)
+    add_test(NAME test_point_shadow_faces COMMAND test_point_shadow_faces)
 
     # test_occlusion_visibility: needs occlusion_cull.c + log.c + RHI stubs
     add_executable(test_occlusion_visibility tests/test_occlusion_visibility.c

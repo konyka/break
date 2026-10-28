@@ -22,6 +22,10 @@ typedef struct {
 } LensFlareSystem;
 
 bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool lens_flare_resize(LensFlareSystem *s, RHIDevice *dev, u32 w, u32 h);
 void lens_flare_shutdown(LensFlareSystem *lf);
 /* R550-A: self-compositing (god_rays idiom) — scene_tex is the incoming
  * frame-chain color; the shader outputs scene + flare and the result in

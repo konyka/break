@@ -85,6 +85,14 @@ RHIShader rhi_shader_create_compute(RHIDevice *d, const char *src, usize len) {
     (void)d; (void)src; (void)len; return fake_handle();
 }
 void rhi_shader_destroy(RHIDevice *d, RHIShader s) { (void)d; (void)s; }
+/* R654: ibl_load_compute asks the backend whether it resolves sidecars;
+ * this fake backend compiles source like GL, so it reports none. */
+bool rhi_device_get_capabilities(const RHIDevice *d, RHICapabilities *out) {
+    (void)d; if (out) memset(out, 0, sizeof(*out)); return true;
+}
+RHIShader rhi_shader_create_compute_path(RHIDevice *d, const char *path) {
+    (void)d; (void)path; return fake_handle();
+}
 
 RHIPipeline rhi_pipeline_create(RHIDevice *d, const RHIPipelineDesc *desc) {
     (void)d; (void)desc; return fake_handle();

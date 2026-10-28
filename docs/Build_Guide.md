@@ -16,6 +16,7 @@
 | Windows | MSVC (cl) | 支持 | `toolchain-msvc.cmake` | 原生 Windows 开发 |
 | Windows | Clang | 支持 | `toolchain-clang-win.cmake` | clang + lld-link |
 | Windows | MinGW GCC | 支持 | `toolchain-mingw.cmake` | Linux 交叉编译 |
+| QNX | qcc/q++ (SDP 7.1/8.0) | headless 兼容层 | `toolchain-qnx.cmake` | poll net_loop、headless RHI；见 `docs/qnx_compat.md` |
 
 ### 1.2 系统依赖（Linux）
 - X11 开发库 (libx11-dev、libxrandr-dev) 或 Wayland 开发库（二选一，编译时互斥)；Wayland 还需要 xkbcommon、wayland-scanner 和 wayland-protocols
@@ -29,12 +30,13 @@
 - Windows SDK
 - DirectX 11 SDK (可选，用于 platform 演示)
 
-### 1.4 macOS、iOS、Android 与 OHOS
+### 1.4 macOS、iOS、Android、OHOS 与 QNX
 - 平台图形元数据把性能基线与 Vulkan 证据分开：Linux/Windows 的 native baseline 是 OpenGL（渲染对比基准），默认后端是 Vulkan，macOS 是 Metal；macOS Vulkan 明确走 MoltenVK，不表示已实现 Metal RHI。Vulkan 证据级别使用 `compiled`、`headless`、`native-surface`、`GPU-runtime`、`benchmark-comparable`，不能把编译通过当作运行时支持。
 - macOS 由 CMake 识别为 `macos`，当前 Cocoa Vulkan 路径使用 Vulkan loader/MoltenVK、`shaderc_shared` 和 FreeType；仓库的 macOS CI 安装 `molten-vk`、`shaderc`、`freetype`。
 - iOS 由 CMake 识别为 `ios`，使用 kqueue 网络后端，但仓库没有声明 iOS runtime 或窗口渲染 CI 覆盖。
 - Android 由 CMake 识别为 `android`，使用 epoll；Vulkan 是宿主注入的 compile/integration 路径。启用 `ENGINE_VULKAN=ON` 时必须同时设置 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，并让 CMake 找到 NDK 的 `android/native_window.h`；这不代表完整 Android runtime 支持。
 - iOS/Android 的平台契约测试只证明编译路径与宿主注入边界；HarmonyOS 的 Vulkan 状态为 unavailable/unsupported，直到存在 native surface 实现。
+- QNX 由 CMake 识别为 `qnx`（`CMAKE_SYSTEM_NAME=QNX`），net_loop 使用 POSIX `poll()` 后端，RHI 解析为 headless（图形 fail-closed），myui 走 dummy PAL 离屏路径；交叉构建用 `cmake --preset qnx-cross`，架构与证据边界见 `docs/qnx_compat.md`。
 
 ## 2. 构建配置
 
@@ -345,6 +347,9 @@ configure 时真实探测 `GLES2/gl2.h` 与导入库，stock Windows 无 SDK 时
 `test_platform_win32_runtime` 使用真实 Win32 窗口、`GetWindowTextW`、`WM_SIZE` 和平台销毁路径，
 不创建 graphics context；WM_SETTINGCHANGE/WM_DPICHANGED 以同步 `SendMessageW` 注入以兼容
 新版 Windows 的 `ERROR_MESSAGE_SYNC_ONLY` 限制。源码路径同时支持 `/` 与 `\\` 分隔符。
+该用例的剪贴板回归检查会改写系统剪贴板，并使用真实 CF_UNICODETEXT 验证无 NUL 终止输入的
+边界；运行前请保存需要保留的剪贴板内容。远程桌面剪贴板同步可能短时占用全局剪贴板，
+首次 `OpenClipboard` 最多重试约 5 秒；持续不可用仍判失败，不跳过检查。
 `test_vulkan` 与 `test_myui_gl_desktop_runtime` 需要真实 WGL/GPU 环境，因此保留 `graphics`
 标签并从 headless CI 中排除。
 
@@ -402,8 +407,7 @@ cmake --build build-msvc-1451-audit --parallel
 ctest --test-dir build-msvc-1451-audit -LE graphics --output-on-failure
 ```
 
-上述配置成功，完整构建在 `/W4 /WX /utf-8` 以及 `/experimental:c11atomics` 下通过；重复构建无剩余工作。
-非图形 CTest `56/56` 通过，其中包括 `test_platform_win32_runtime`。CI 另外显式构建并执行
+上述配置在 `/W4 /WX /utf-8` 以及 `/experimental:c11atomics` 下构建。早先记录的「完整构建通过、非图形 CTest `56/56`」只对当时的代码成立；当时 CI 没有 MSVC lane，之后新增的代码曾让 MSVC 构建失败（10 个文件的 C4090/C4132/C4456/C4310/C4701），2026-10-27 已修复，并在 MSVC 19.51.36260 上重新验证：全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟）`186/186` 通过，包括 `test_platform_win32_runtime`。现在 CI 有 `lane-headless-windows-msvc`（同样的配置与 `-LE graphics` 筛选），新增代码后以它为准；本机重跑上面三条命令仍可复现。CI 另外显式构建并执行
 `test_platform_config`、`test_platform_null_safety` 和 `test_platform_win32_runtime`，避免平台
 runtime 门禁仅依赖全量测试筛选。这提供的是非图形、headless
 Win32 平台证据，不证明 WGL、Vulkan、GPU、present 或图形 runtime，也不证明 Windows Vulkan 构建。
@@ -426,9 +430,12 @@ make -j$(nproc)
 #### 使用 MinGW（原生 Windows）
 ```bash
 cd engine
-cmake -B build-mingw -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc
+cmake -B build-mingw -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc
 cmake --build build-mingw
+ctest --test-dir build-mingw -LE graphics --output-on-failure
 ```
+
+2026-10-27 在 MSYS2 UCRT64 的 GCC 16.2 上验证：此前构建失败（GCC 的 `-Werror` 拒绝 `GetProcAddress`/`wglGetProcAddress` 结果直接强转为函数指针、`net_loop_iocp.c` 的恒假比较、`PlatformConfig` 在 Win32 测试里的省略初始化、`verify_pak.c` 的 `snprintf` 截断），现已修复，全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟）`186/186` 通过。函数指针转换统一走 `platform/win_proc.h` 的 `WIN_PROC_LOAD`（memcpy，不触发 `-Wcast-function-type`/`-Wpedantic`）。CI 现有 `lane-headless-windows-mingw`（镜像自带的 MinGW-w64 gcc，非 MSYS2 UCRT64 的 GCC 16.2，版本不同）。
 
 #### 使用 MinGW 交叉编译（Linux 主机）
 ```bash
@@ -525,9 +532,9 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
   （`engine/tools/fetch_vulkan_sdk_windows.cmake`，版本 + SHA256 钉死）。
 - Android NDK r27c（27.2.12479018）；Xcode `>=15.4`（macOS 侧 glslc/spirv-cross/cmake/ninja
   的 pin 见 LOCKED_DEPENDENCIES.md 注记）；Windows SDK 10.0.26100.0。
-- D3D12 Agility SDK 1.616.0（runtime-shipped；`engine/external/d3d12/agility_sdk_lock.txt`
+- D3D12 Agility SDK 1.619.6（runtime-shipped；`engine/external/d3d12/agility_sdk_lock.txt`
   以 SHA512 复核 nupkg 与 D3D12Core.dll）。
-- Linux CI apt 钉版（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`。
+- Linux CI 依赖（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`。自 R700 起这些包预装在容器镜像 `ghcr.io/konyka/break-ci-linux:latest` 里（`.github/docker/ci-linux.Dockerfile`，由 `.github/workflows/ci-image.yml` 构建发布），Linux lane 在镜像里运行，job 里不再执行 `apt-get install`。要改包或版本：改 Dockerfile，等 `ci-image` 工作流构建完成后再触发 CI。`lane-proton`（周跑，需要 i386 + wine）仍在 job 里 apt 安装。
 
 禁止使用 "latest" 或未钉版系统包构建 release。缺失依赖的平台在 CI/台账中标记 UNAVAILABLE，
 不得伪造证据。
@@ -559,6 +566,87 @@ MoltenVK ICD 与验证层 manifest 按 2.1 节 macOS 备注安装）全量构建
 CTest `178/178`、MoltenVK 默认构建 `176/176`，D3D12 依赖门均为平台跳过；Metal
 `-L graphics` 为 `5/5`，`rhi_swapchain_bench` 约 120 fps（vsync 未关闭的合成 harness，
 非 benchmark-comparable 证据）。
+
+2026-10-22 同步 @fb589d7e（含 R638–R661 的 D3D12 工作）后在 macOS 复核，发现并修复两处
+回归：① `tools/compile_metal_shaders.sh` 的 `shaders/*.comp` 通配吞入了新增的
+`*_hlsl.comp`（D3D12 HLSL sidecar，不是 GLSL），`glslc` 报 `#version` 错误导致
+`engine.metallib` 无法生成，现与 `*_gl.comp` 一并跳过；② `rhi_metal.m` 新增的
+`rhi_shader_create_path` 依赖 `shader_read_file`，`test_rhi_metal_device_contract` 与
+`test_rhi_metal_frame_lifecycle` 的源文件列表缺 `src/core/shader_io.c`，链接失败，已补上。
+复核结果：Metal 构建（含 5 个手动 fuzz 目标）CTest `179/179`，`-L graphics` `5/5`；
+MoltenVK 构建（`-DENGINE_VULKAN=ON`，与 CI 一致）`179/179`，`test_vulkan` 与
+`rhi_swapchain_bench` 均通过，D3D12 依赖门均为平台跳过。注意：`ENGINE_RHI_BACKEND=auto`
+在 macOS 上解析为 `opengl`（macOS 不支持，`rhi_gl.c` 编译失败），macOS 上必须显式给出
+`-DENGINE_VULKAN=ON` 或 `-DENGINE_RHI_BACKEND=metal`。
+
+2026-10-24 同步 @5e320ac9（R662–R687）后复核：两套构建 CTest 均 `179/179`（Metal 含 5 个
+手动 fuzz 目标，`-L graphics` `5/5`），本轮远程改动未引入 macOS 构建或测试回归。
+`engine_demo` 实机截图（`BREAK_SCREENSHOT=60 ... --frames 70`，须在 `engine/` 目录运行，
+shader 按相对路径加载）发现 Metal 的 `rhi_screenshot` 仍按旧的 bottom-up 约定反转行序，
+与 `rhi.h` 现行契约（ac15c54a 起：top-left 原点、各后端 top-down）相反，Metal 截图因此上下
+颠倒；已改为直接拷贝，`test_rhi_metal_resources` 新增 `screenshot_rows_are_top_down`
+（顶部半屏 scissor 画红、底部为清屏蓝，断言首行红末行蓝；修复前该用例失败）。
+已知缺口（非本轮回归，同步前的 b715881c 截图一致）：Metal 下 `engine_demo` 只有 UI 可见、
+3D 场景为黑——`rhi_metal.m` 的 `rhi_cmd_bind_material_textures_ibl`、
+`rhi_cmd_set_shadow_viewport`、`rhi_cmd_bind_texel_buffers`、深度状态等十余个入口仍是
+`not implemented` 桩，且多条渲染器管线的 bindings 创建失败，70 帧日志约 3000 条错误；
+MoltenVK 构建下同一场景正常渲染。
+
+2026-10-25 同步 @51e2d1a7（R689–R694：GL 回读、延迟 G-buffer 尺寸、CSM 直接 mega draw、
+R694 固定步长物理）后复核：无冲突（`--ff-only`），MoltenVK 与 Metal 两套构建 CTest 均
+`179/179`，Metal `-L graphics` `5/5`，无需修复。`engine_demo` 截图：MoltenVK 3D 场景与 UI 朝向
+正确；Metal 仍只有 UI（既有缺口，日志错误数约 3000/70 帧，与上次持平）。R694 后物理改为
+1/60 s 固定步长，第 60 帧角色尚在下落（HUD `grounded: 0 (body 4294967295)`，即 UINT32_MAX
+未着地），第 300 帧已 `grounded: 1`，属预期行为变化。
+
+2026-10-26 同步 @7da2498a（18 个提交，含 R696 弹性阈值、R697 Agility SDK、R699 WARP
+着色器修复、Linux 预构建 CI 镜像及 R701a 纯 C11 meshoptimizer 移植）后复核：无冲突
+（`--ff-only`）。新增 `test_meshopt_c` 起初在 MoltenVK 与 Metal 两套构建均失败：AppleClang
+在 ARM64 默认将 `a*b+c` 融合为 FMA，使库计算及测试网格生成器的浮点结果偏离上游参考表；
+未放宽断言，改为对 `meshopt_c` 和 `test_meshopt_c` 固定 `-ffp-contract=off`，并同步更新
+`external/meshopt_c/README.md` 的参考表复现命令。修复前两套均 179/180、该测试失败，修复后
+两套均 `180/180`，Metal `-L graphics` `5/5`。`engine_demo` 截图：MoltenVK 的 3D 场景和 UI
+正常；Metal 仍只有 UI、3D 黑屏（既有缺口，70 帧约 3000 条错误，无变化）。
+
+2026-10-26 后续修复 Metal 默认 FORWARD 黑屏：① `rhi_pipeline_bindings_create/resolve` 从固定空桩
+改为持有 pipeline desc 副本并复用 VK 对齐的 offset 表，恢复全部命名 uniform 写入；② bloom 六个
+pass 改为先绑 FBO 再绑 pipeline/texture，避免 Metal encoder 切换丢弃绑定；③ 实现 IBL 材质/cubemap、
+RGBA32F texel buffer（4096 texel 行宽、16/17 槽位）和 graphics storage buffer 按 set 展开绑定，
+实例 upload blit 后显式重绑 pipeline；④ 实现阴影视口、MRT 单附件 clear、各目标 depth clear，
+深度状态与 depth-to-read 按 Metal/PSO 语义处理。`test_rhi_metal_resources` 由 44 增至 **47/47**，
+新增阴影像限、清深度保留颜色、跨 4096 行 texel 读取断言；consumer smoke 增加 bindings/pipeline
+坏日志门禁。MoltenVK 与 Metal 全量 CTest 均 `180/180`，Metal `-L graphics` `5/5`。
+`BREAK_SCREENSHOT=60 ... --frames 70` 实证 Metal 的 3D 场景已恢复、朝向正确，本次运行日志中
+`not implemented` 和 `without a bound graphics pipeline` 均未出现。与 MoltenVK 对比，构图接近，
+但水面、光照和物体细节仍有明显差异，尚不宣称逐像素一致；DEFERRED binder、indirect-count 等
+可选路径也未在本次补齐，证据等级保持待复核。
+
+随后获取并整合远程 `@bed3f6c1`（含 R701b/R702 LOD 与 QNX 支持）。新增 ECS LOD 分块绘制在
+每批实例 upload blit 后遗漏了实例管线重绑；Metal consumer smoke 的 `without a bound graphics
+pipeline` 日志门禁捕获该问题，补齐后再次验证两后端 70 帧截图及默认路径日志。最终 Metal 与
+MoltenVK 全量 CTest 均 **186/186**（远程新增 6 项亦通过），Metal graphics **5/5**、资源测试
+**47/47**；上文所述渲染差异、未实现路径及证据等级复核状态不变。
+
+2026-10-26 同步 `@0e714f06`（R703/R704 LOD fade/cache）后，Metal consumer smoke 初次因
+离线 manifest 未覆盖 LOD 变体而 fail-closed。`engine/tools/compile_metal_shaders.sh` 补齐
+blinn/pbr 前向路径及 G-Buffer 静态、数组路径的实际 define 链（含 `FORWARD_MRT,LOD_FADE`
+和 `HAS_IBL,LOD_FADE`），生成 **124** 个 manifest 条目，修复提交为 `@83d672b7`。重新构建后
+Metal 全量 CTest **187/187**、graphics **5/5**、资源测试 **47/47**；MoltenVK 全量 CTest
+同样 **187/187**（两者仅 D3D12 dependency gate 按平台跳过）。两后端均完成
+`BREAK_SCREENSHOT=60 ... --frames 70` 实机运行，3D 场景和 UI 可见、朝向正确，日志无 manifest
+缺失、管线绑定或 fatal 错误。Metal 与 MoltenVK 的光照、材质和水面仍有差异，本次不宣称
+逐像素一致，也不升级证据等级。推送前远程又前进至 `@8eee4a58`（R705/R706），本地提交
+无冲突 rebase 后再次完成上述两套测试和 70 帧截图，结果保持 **187/187**、graphics **5/5**、
+资源 **47/47**。
+
+2026-10-27 日常同步与复核：本轮从 `@65f8aae0` 同步至 `@83f5670e`，累计 13 个远程
+提交，未发生冲突；iOS 修复 rebase 后也完成复验。Metal 与 MoltenVK 全量 CTest 均
+**191/191**（D3D12 dependency gate 按平台跳过），Metal `-L graphics` **5/5**、资源
+**48/48**、音频 **17/17**，指定的 5 个 fuzz targets 均构建。两后端分别执行
+`BREAK_SCREENSHOT=60 ./build-macos-current/engine_demo --frames 70` 和对应的
+`build-macos/engine_demo --frames 70`，实际查看截图后确认 3D 场景与 UI 可见、朝向正确；
+光照、材质与水面仍有差异，不宣称逐像素一致。远程新增 Win32、GL/myui 修复与本地
+iOS 改动均保留，未使用 force push。
 
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
@@ -610,7 +698,7 @@ ctest --test-dir build-d3d12 -L graphics -R test_d3d12 --output-on-failure
 
 - 依赖锁定（`engine/external/d3d12/agility_sdk_lock.txt`，由 `test_d3d12_sdk_lock`
   做哈希校验）：Windows SDK 10.0.26100.0、Agility SDK
-  （Microsoft.Direct3D.D3D12）1.616.0、dxc 优先 vendored
+  （Microsoft.Direct3D.D3D12）1.619.6、dxc 优先 vendored
   `engine/external/VulkanSDK/Bin/dxc.exe`（CI 用 Windows SDK 自带 dxc）。
 - Agility SDK 获取：`cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake`（NuGet
   下载 + 锁文件 SHA512 校验）；构建系统把 `D3D12Core.dll` / `d3d12SDKLayers.dll`
@@ -619,6 +707,8 @@ ctest --test-dir build-d3d12 -L graphics -R test_d3d12 --output-on-failure
 - `ENGINE_D3D12_DEBUG`：Debug 默认 ON、Release 默认 OFF（显式
   `-DENGINE_D3D12_DEBUG=OFF` 可覆盖）；ON 时启用 D3D12 debug layer +
   GPU-based validation，DRED（auto breadcrumbs + page fault）全配置强制。
+  运行时 `BREAK_D3D12_GBV=0` 只保留 debug layer、关掉 GPU-based validation
+  （demo 在 Debug 构建下从约 20 FPS 回到 76–87 FPS）；默认开启，测试与 CI 不受影响。
   PIX 捕获与 device-lost（DRED）排查见 `docs/rhi_rollback_runbook.md` 的
   D3D12/PIX 节。
 - shader 路径：手写 HLSL 旁挂（`engine/shaders/*_hlsl.{vert,frag}`）构建期经 dxc
@@ -674,6 +764,8 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 | lane-headless-linux-gcc-tsan | ubuntu-24.04 | 默认 GL，GCC Debug + TSan | evidence-receipt-headless-linux-gcc-tsan |
 | lane-headless-windows-clang | windows-latest | Vulkan（+GL 默认），Clang Debug（含 win32 runtime trio 步） | evidence-receipt-headless-windows-clang |
 | lane-headless-windows-asan | windows-latest | 默认 GL，Clang Debug + ASan | evidence-receipt-headless-windows-asan |
+| lane-headless-windows-msvc | windows-latest | 默认 GL，MSVC（`cl`，`/W4 /WX`）Debug，`-LE graphics`（+fuzz smoke） | evidence-receipt-headless-windows-msvc |
+| lane-headless-windows-mingw | windows-latest | 默认 GL，MinGW-w64 GCC Debug，`-LE graphics`（+fuzz smoke） | evidence-receipt-headless-windows-mingw |
 | lane-native-surface-wayland | ubuntu-24.04 | Wayland + Vulkan，Debug（weston headless） | evidence-receipt-native-surface-wayland |
 | wayland-gl（OpenGL 长期保留，对比基准） | ubuntu-latest | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
 | lane-native-surface-win32 | windows-latest | Win32 原生 surface trio，Clang Debug | evidence-receipt-native-surface-win32 |
@@ -687,7 +779,7 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 | lane-benchmark-steam-deck-vk | self-hosted linux gpu-vulkan（`ENABLE_GPU_LANES` 门控） | Vulkan，RelWithDebInfo，真 GPU BENCHMARK_COMPARABLE 收据 | evidence-receipt-benchmark-steam-deck |
 | lane-proton（schedule 周一 03:23 UTC + 手动） | ubuntu-24.04 | steamrt sniper 钉 digest 容器内构建 + ctest（兼容参考） | evidence-receipt-proton |
 | clean-room（Task 2 交付，非 lane 命名） | ubuntu-24.04 | 钉版工具链 + git archive 干净导出 + Vulkan | — |
-| ios-metal-build（compile only） | macos-14 | iOS Simulator build-only + metallib 断言 | — |
+| ios-metal-build（compile only） | macos-14 | iOS Simulator build-only + metallib、scene manifest 与资源入包断言 | — |
 
 ## 3. 构建产物
 
@@ -703,7 +795,27 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 ### 3.1 运行 engine_demo（Linux 桌面）
 
 - **Wayland/XWayland 节流**：在 Wayland 会话下 GL demo 走 XWayland，`glXSwapBuffers` 会被 Present 节流到 ~1 FPS（profiler 显示 `Frame: 1000 ms`，而引擎 dt 按 R147 钳制 0.1s）。脚本化截图/相机复现前请用 `vblank_mode=0 ./build_gl/engine_demo` 绕过节流，否则一秒的鼠标输入会在单帧内一次性生效。
-- 脚本化钩子（均无默认值，不设即原行为）：`BREAK_FRAMES=N`（N 帧后退出）、`BREAK_SCREENSHOT=a,b,c`（R446 起支持逗号列表，逐帧截图到 screenshot_N.bmp）、`BREAK_CAM=x,y,z[,yaw,pitch]`（初始机位）、`BREAK_CAM_SPIN=deg`（R446，每帧 yaw 增量，复现相机运动伪影）、`BREAK_TAA=0` / `BREAK_MB=0`（R446，TAA/动态模糊开关，用于 A/B 对照）、`BREAK_SSR=1` / `BREAK_SSGI=1` / `BREAK_CS=1` / `BREAK_VOL=1` / `BREAK_LF=1`（R550-A，开启默认关闭的 SSR/SSGI/接触阴影/体积雾/镜头光晕——五路 pass 自 R550-A 起真实合成进帧链）、`BREAK_IBL_STATIC=1`（R559，禁用运行时 IBL rebake）、`BREAK_IBL_REBAKE_FRAMES=N`（R559，每 N 帧触发一次、用于无头验证；rebake 仍跨 42 帧完成）、`BREAK_JITTER=0`（关闭 Halton 抖动，便于隔离时间重投影伪影）。TSR 在初始化或分辨率重建后的第一帧只输出当前帧，不采样历史；随后才恢复历史重投影。
+- 窗口模式：`G` 或 Alt+Enter 在窗口与**无标题栏全屏**（铺满窗口所在显示器、不改显示器分辨率、不独占，Alt-Tab 不黑屏）之间切换，离开全屏恢复原位置、尺寸与最大化状态；`BREAK_FULLSCREEN=1` 以全屏启动；`BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,...` 在指定帧自动切换，每次切换输出 `WINDOW_MODE_SWITCH`（重建耗时、之后 5 帧最长帧时间），退出时输出 `WINDOW_MODE_STATS`。`BREAK_RESIZE_AT=frame:WxH,...` 不改窗口、只按给定尺寸走同一重建路径，输出 `RESIZE_REBUILD`。API：`platform_set_window_mode` / `platform_get_window_mode`、`PlatformConfig.start_fullscreen`（`platform/platform.h`）。标题栏：Alt+T 切换窗口模式下的标题栏和边框（客户区位置和大小不变，全屏期间的改动在回到窗口时生效）；`BREAK_UNDECORATED=1` 以无标题栏窗口启动；`BREAK_TOGGLE_TITLE_BAR_AT=f1,f2,...` 自动切换并输出 `TITLE_BAR_SWITCH`。API：`platform_set_window_decorated` / `platform_get_window_decorated` / `platform_window_title_bar_visible`、`PlatformConfig.undecorated`。Win32 改窗口样式（无标题栏时最大化只铺满工作区）；X11 用 `_MOTIF_WM_HINTS`；Wayland 关掉 myui 的客户端装饰；Cocoa 去掉 `NSWindowStyleMaskTitled`；QNX Screen 与移动端固定无标题栏。Win32、Cocoa 同步切换；X11、Wayland 以窗口管理器 / 合成器的回报为准（X11 无 EWMH 窗口管理器时退回 Motif 去装饰 + 移到显示器矩形）；QNX Screen 与移动端固定全屏。
+- 脚本化钩子（均无默认值，不设即原行为）：`BREAK_FRAMES=N`（N 帧后退出）、`BREAK_SCREENSHOT=a,b,c`（R446 起支持逗号列表，逐帧截图到 screenshot_N.bmp）、`BREAK_CAM=x,y,z[,yaw,pitch]`（初始机位；不设时默认 (0,2,8) 会抬到地形上方 2 m）、`BREAK_CAM_SPIN=deg`（R446，每帧 yaw 增量，复现相机运动伪影）、`BREAK_TAA=0` / `BREAK_MB=0`（R446，TAA/动态模糊开关，用于 A/B 对照）、`BREAK_SSR=1` / `BREAK_SSGI=1` / `BREAK_CS=1` / `BREAK_VOL=1` / `BREAK_LF=1`（R550-A，开启默认关闭的 SSR/SSGI/接触阴影/体积雾/镜头光晕——五路 pass 自 R550-A 起真实合成进帧链）、`BREAK_IBL_STATIC=1`（R559，禁用运行时 IBL rebake）、`BREAK_IBL_REBAKE_FRAMES=N`（R559，每 N 帧触发一次、用于无头验证；rebake 仍跨 42 帧完成）、`BREAK_JITTER=0`（关闭 Halton 抖动，便于隔离时间重投影伪影）、`BREAK_MODEL_VIEW=s`（模型查看：不画地形/水面/展示区，相机对准命令行加载的模型，s 为距离倍数，s<1 更近）、`BREAK_BSCN_ROUNDTRIP_AT=f`（第 f 帧按 `B` 键路径保存 BSCN，第 f+10 帧按 `N` 键路径读回，用于无头验证读档后 LOD 等状态重建；会在工作目录写 `scene_save.bscn` / `scene_state.bin`）。TSR 在初始化或分辨率重建后的第一帧只输出当前帧，不采样历史；随后才恢复历史重投影。
+
+### 3.2 macOS 窗口模式与标题栏验证
+
+交互演示：`G` 或 Alt+Enter 在窗口与无标题栏全屏之间切换，Alt+T 切换窗口模式的标题栏。`BREAK_FULLSCREEN=1` 直接全屏启动，`BREAK_UNDECORATED=1` 直接以无标题栏窗口启动。
+
+在 `engine/` 下执行以下命令，可单独运行公共状态机与真实 Cocoa 窗口测试，并自动演示全屏进出和标题栏显隐（Metal 构建目录示例为 `build-macos-current`）：
+
+```sh
+ctest --test-dir build-macos-current \
+  -R '^(test_platform_cocoa_runtime|test_platform_window_mode)$' -V
+
+BREAK_UNDECORATED=1 \
+BREAK_TOGGLE_FULLSCREEN_AT=10,40 \
+BREAK_TOGGLE_TITLE_BAR_AT=50,60 \
+BREAK_SCREENSHOT=25 \
+./build-macos-current/engine_demo --frames 70
+```
+
+Cocoa 测试直接断言 `NSWindow` 的全屏样式、屏幕矩形、窗口层级，以及标题栏显隐前后的内容矩形。demo 在第 10、40 帧进出全屏，第 50、60 帧显示再隐藏标题栏，第 25 帧保存全屏内容；对应日志为 `WINDOW_MODE_SWITCH`、`TITLE_BAR_SWITCH` 和退出时的 `WINDOW_MODE_STATS`。MoltenVK 演示将可执行文件替换为 `build-macos/engine_demo`。这些入口已集成在现有测试与 `engine_demo` 中，不需要单独的窗口模式 demo 程序。
 
 ## 4. 编译选项与标准
 
@@ -822,7 +934,7 @@ GitHub Actions workflow：`.github/workflows/ci.yml`。触发：push/PR 到 `mas
 
 | lane 类 | job |
 |---|---|
-| headless | lane-headless-linux-clang / -gcc-asan / -gcc-tsan / -windows-clang / -windows-asan |
+| headless | lane-headless-linux-clang / -gcc-asan / -gcc-tsan / -windows-clang / -windows-asan / -windows-msvc / -windows-mingw |
 | native-surface | lane-native-surface-wayland / -win32 / -cocoa（+ wayland-gl，OpenGL 对比基准） |
 | GPU-runtime | lane-gpu-runtime-linux-gl（OpenGL 对比基准）/ -linux-vk / -macos-metal / -windows-d3d12（+ 常开 unavailable 孪生 job） |
 | validation | lane-validation-linux-vk（VK_LAYER_KHRONOS_validation，VUID 即红） |
@@ -968,11 +1080,30 @@ cmake --build build-metal --parallel
 ctest --test-dir build-metal -R test_rhi_metal --output-on-failure
 ./build-metal/engine_demo --frames 3          # consumer smoke（退出码 0）
 
-# iOS（build-only；模拟器证据 = compile only）
+# iOS Simulator（构建与本机运行；CI 仍为 compile-only）
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cmake -S engine -B build-ios -G Xcode \
-    -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
+    -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
+    -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
 xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo \
     -destination 'generic/platform=iOS Simulator' build
+
+# UDID 用 xcrun simctl list devices available 查询；已 Booted 时跳过 boot。
+UDID=替换为模拟器UDID
+xcrun simctl boot "$UDID"
+xcrun simctl bootstatus "$UDID" -b
+xcrun simctl install "$UDID" build-ios/Debug-iphonesimulator/engine_demo.app
+SIMCTL_CHILD_BREAK_SCREENSHOT=60 xcrun simctl launch --console-pty \
+    "$UDID" com.purecengine.engine-demo --frames 300
+
+# 持续运行期间可直接截取屏幕合成结果：
+xcrun simctl io "$UDID" screenshot /tmp/engine-ios-screen.png
+
+# 也可读取第 60 帧在 present 前的 RHI 截图：
+DATA_DIR=$(xcrun simctl get_app_container "$UDID" com.purecengine.engine-demo data)
+sips -s format png \
+    "$DATA_DIR/Library/Caches/PureCEngine/screenshot_0.bmp" \
+    --out /tmp/engine-ios-frame60.png
 ```
 
 说明：
@@ -980,6 +1111,44 @@ xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo \
   产物 `metal_shaders/engine.metallib` 拷到各 consumer 旁；`xcode-select` 指向
   CommandLineTools 时 `DEVELOPER_DIR` 由 CMake 自动烘焙为标准 Xcode 路径。
 - iOS 交叉编译时 manifest 生成器自动切换为宿主编译（`gen_metal_shader_manifest_host`，
-  见 `engine/CMakeLists.txt` M6 注释）；`xcrun metal` 目标 SDK 切 `iphoneos`。
+  见 `engine/CMakeLists.txt` M6 注释）。宿主工具通过 `xcrun --sdk macosx --show-sdk-path`
+  和主机目标三元组显式编译，并清理 Xcode 传入的 SDKROOT、编译/链接环境；在 Xcode
+  自动重配置时也不会误产 Simulator 可执行文件。`xcrun metal` 的 SDK 与
+  `CMAKE_OSX_SYSROOT` 一致：设备为 `iphoneos`，Simulator 为 `iphonesimulator`。Xcode 的
+  `-destination` 不会改写这个自定义 shader 命令的 SDK；Simulator 必须显式配置对应
+  sysroot，不能复用设备版 metallib。设备与 Simulator 建议使用不同构建目录。
+- `engine_demo` 的 iOS target 使用 `com.purecengine.engine-demo`。CI 对 bundle ID、
+  scene delegate、`engine.metallib` 以及 assets/shaders 入包结果做硬断言，但 lane 仍为
+  build-only，不提供 GPU_RUNTIME 收据。按上面的 `engine_demo` scheme 构建；直接
+  `cmake --build build-ios` 会拉起 `ALL_BUILD` 中的 macOS 专用 Cocoa/OpenGL
+  `myui_explorer`，该桌面工具的全目标构建不是受支持的 iOS 验收入口。
+- `engine/src/apps/ios_main.m` 通过 `UIApplicationMain` + `UIWindowScene` 创建
+  `UIWindow`、Metal view 和 `CAMetalLayer`。UIKit 留在主线程，现有 demo 在 16 MiB
+  栈的专用引擎线程执行 `engine_demo_main`；`EngineConfig` 注入原生句柄、scale 和
+  宿主 poll。主线程同步 viewport、主触摸位置/主按钮 down/up 与 scene 生命周期，
+  引擎线程串行应用；后台等待条件变量而不获取 drawable，每帧有独立 Objective-C
+  autoreleasepool。
+- assets/shaders 保持目录结构入包，启动时暂存到 app 自己的
+  `Library/Caches/PureCEngine` 并作为工作目录，截图、缓存和 trace 不写入只读 bundle。
+  工作目录会在再次启动时重建，不能当作持久用户存储。
+- iOS texel buffer 使用 private storage，初始数据与后续更新经 shared staging blit；
+  macOS 默认路径不变。Simulator 音频使用 miniaudio Null 后端（静音，不枚举输出设备），
+  避免无输出设备环境下 Core Audio 初始化超时；真机仍使用原默认后端，尚未实测。
+- 2026-10-27 本机 Xcode 27.1 / iPhone 18 Pro Simulator（iOS 27.0）实测：
+  124 个离线 shader 条目入包，`--frames 300` 完成并正常 shutdown；第 60 帧 RHI 截图
+  及运行中的 `simctl io screenshot` 均可见 3D 场景与 UI，方向正确，日志无 ERROR/FATAL。
+  同一进程切到 Safari 再返回时记录到 `iOS host: suspended` / `resumed`，恢复后继续出帧。
+  初始 viewport 为 logical 402x874、drawable 1206x2622、scale 3.0。
+- 同日以本机 XCTest UI Automation harness 驱动 `XCUIDevice` 旋转和 `XCUICoordinate`
+  点击，测试 1/1 通过：窗口从 402x874 变为 874x402，点击后恢复 402x874。横屏点击
+  (437, 201) 后，系统日志确认引擎线程消费 `iOS input: down` / `up`，坐标一致。
+  横屏稳定期的 `simctl io screenshot` 为 2622x1206，3D/UI 铺满且 HUD 正立，
+  HUD 显示 `Render: 1311x603 -> 2622x1206`。本机 XCTest 的横屏截图附件存在按物理像素
+  方向保存和应用裁切黑区的呈现差异，不能据此判定渲染失败；朝向以实际 `simctl`
+  屏幕截图交叉核对。临时 harness 未注册为仓库或 CI 测试 target，CI 仍 compile-only。
+- 当前验证边界：Hi-Z、indirect draw/GPU cull 与 GPU timer 仍有能力降级，不宣称可选路径
+  全齐；现有桌面 HUD 未做窄屏排版适配。真机旋转、物理触摸、音频/Metal 仍待验证。
+  Simulator 结果只登记为本地可见运行证据，iOS 等级保持 COMPILED，不改变 OpenGL
+  删除 gate，也不宣称真机 GPU_RUNTIME。
 - `METAL_DEVICE_WRAPPER_TYPE=1 ./engine_demo --frames 3` 开 Metal validation
   取证（encoder-state 类缺陷的唯一可靠观测，计划 C Task 11 方法学）。

@@ -463,6 +463,122 @@ TEST(loop_kqueue_remove_readd_preserves_udata)
 }
 #endif
 
+#if defined(ENGINE_PLATFORM_QNX)
+extern void net_loop_poll_test_fail_next_poll(NetLoop *loop);
+extern bool net_loop_poll_test_next_capacity(u32 current, u32 required,
+                                             u32 *next);
+
+TEST(loop_poll_failed_wait_preserves_registration)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)1));
+
+    /* A failed poll() must surface NET_ERROR without disturbing the
+     * userspace interest set; the next wait still reports the socket. */
+    net_loop_poll_test_fail_next_poll(loop);
+    NetLoopEvent ev[4] = {0};
+    ASSERT_EQ(net_loop_wait(loop, ev, 4, 100), NET_ERROR);
+
+    const char payload[] = "after-failed-wait";
+    ASSERT_TRUE(net_sendto(send_s, payload, (u32)sizeof(payload), &dst) > 0);
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(ev[0].socket == recv_s);
+    ASSERT_TRUE(ev[0].tag == (void *)1);
+    ASSERT_TRUE((ev[0].events & NET_LOOP_READ) != 0u);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
+    net_shutdown();
+}
+
+TEST(loop_poll_remove_readd_preserves_latest_tag)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)1));
+    ASSERT_TRUE(net_loop_remove(loop, recv_s));
+
+    /* No registration: a datagram must not surface after remove. */
+    ASSERT_TRUE(net_sendto(send_s, "removed", 8u, &dst) > 0);
+    NetLoopEvent ev[4] = {0};
+    ASSERT_EQ(net_loop_wait(loop, ev, 4, 50), 0);
+
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)2));
+    ASSERT_TRUE(net_sendto(send_s, "readded", 8u, &dst) > 0);
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(ev[0].socket == recv_s);
+    ASSERT_TRUE(ev[0].tag == (void *)2);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
+    net_shutdown();
+}
+
+TEST(loop_poll_registration_growth_rejects_capacity_overflow)
+{
+    u32 next = 0;
+    ASSERT_TRUE(net_loop_poll_test_next_capacity(15u, 16u, &next));
+    ASSERT_EQ(next, 30u);
+    ASSERT_FALSE(net_loop_poll_test_next_capacity(UINT32_MAX / 2u + 1u,
+                                                  UINT32_MAX, &next));
+}
+
+TEST(loop_poll_stale_pfd_mapping_skips_removed_slot)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_a = NULL, *recv_b = NULL, *send_s = NULL;
+    NetAddress dst_a = {0}, dst_b = {0};
+    make_loopback_pair(&recv_a, &send_s, &dst_a);
+    recv_b = net_udp_create(0);
+    ASSERT_NOT_NULL(recv_b);
+    net_set_nonblocking(recv_b, true);
+    ASSERT_TRUE(net_socket_get_local_address(recv_b, &dst_b));
+    if (strcmp(dst_b.host, "0.0.0.0") == 0) {
+        strncpy(dst_b.host, "127.0.0.1", sizeof(dst_b.host) - 1u);
+        dst_b.host[sizeof(dst_b.host) - 1u] = '\0';
+    }
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, recv_a, NET_LOOP_READ, (void *)1));
+    ASSERT_TRUE(net_loop_add(loop, recv_b, NET_LOOP_READ, (void *)2));
+
+    /* Fire both, then remove b before waiting: the stale pollfd mapping built
+     * for b must not report a dead slot. */
+    ASSERT_TRUE(net_sendto(send_s, "a", 2u, &dst_a) > 0);
+    ASSERT_TRUE(net_sendto(send_s, "b", 2u, &dst_b) > 0);
+    ASSERT_TRUE(net_loop_remove(loop, recv_b));
+    NetLoopEvent ev[4] = {0};
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    for (i32 i = 0; i < n; i++) {
+        ASSERT_TRUE(ev[i].socket == recv_a);
+        ASSERT_TRUE(ev[i].tag == (void *)1);
+    }
+
+    net_loop_destroy(loop);
+    net_close(recv_a);
+    net_close(recv_b);
+    net_close(send_s);
+    net_shutdown();
+}
+#endif
+
 TEST(loop_batched_events_two_sockets)
 {
     ASSERT_TRUE(net_init());
@@ -1039,6 +1155,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(loop_kqueue_failed_flush_preserves_registration);
     RUN_TEST(loop_kqueue_registration_growth_rejects_capacity_overflow);
     RUN_TEST(loop_kqueue_remove_readd_preserves_udata);
+#endif
+#if defined(ENGINE_PLATFORM_QNX)
+    RUN_TEST(loop_poll_failed_wait_preserves_registration);
+    RUN_TEST(loop_poll_remove_readd_preserves_latest_tag);
+    RUN_TEST(loop_poll_registration_growth_rejects_capacity_overflow);
+    RUN_TEST(loop_poll_stale_pfd_mapping_skips_removed_slot);
 #endif
     RUN_TEST(loop_batched_events_two_sockets);
 #if !defined(ENGINE_PLATFORM_WINDOWS)

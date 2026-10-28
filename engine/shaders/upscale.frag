@@ -18,33 +18,35 @@ uniform float u_ups_first_frame; /* Skip history reprojection after init/resize.
 uniform mat4 u_ups_inv_proj;
 uniform mat4 u_ups_prev_vp;
 
+/* R686: Catmull-Rom in 9 bilinear taps instead of 16 point taps. The two
+ * inner weights of each axis are folded into one linear fetch placed at
+ * w2 / (w1 + w2) between texels 1 and 2; the outer taps sit on texel
+ * centres. Same weights as before (R641's overall 1/2 included). */
 vec3 sample_catmull(sampler2D tex, vec2 uv, vec2 texel) {
-    vec2 pos = uv / texel - 0.5;
-    vec2 f = fract(pos);
-    float fx = f.x, fy = f.y;
+    vec2 pos = uv / texel;
+    vec2 t1 = floor(pos - 0.5) + 0.5;
+    vec2 f = pos - t1;
 
-    float wx0 =       -fx + 2.0*fx*fx - fx*fx*fx;
-    float wx1 =  2.0 - fx +       fx*fx*(-5.0 + 3.0*fx);
-    float wx2 =       fx +       fx*fx*( 4.0 - 3.0*fx);
-    float wx3 =           -fx*fx + fx*fx*fx;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
 
-    float wy0 =       -fy + 2.0*fy*fy - fy*fy*fy;
-    float wy1 =  2.0 - fy +       fy*fy*(-5.0 + 3.0*fy);
-    float wy2 =       fy +       fy*fy*( 4.0 - 3.0*fy);
-    float wy3 =           -fy*fy + fy*fy*fy;
-
-    float row_w[4] = float[4](wy0, wy1, wy2, wy3);
-    float col_w[4] = float[4](wx0, wx1, wx2, wx3);
-
-    vec2 base = (floor(pos) - vec2(0.5, 0.5)) * texel;
+    vec2 w12 = w1 + w2;
+    vec2 uv0  = (t1 - 1.0) * texel;
+    vec2 uv12 = (t1 + w2 / w12) * texel;
+    vec2 uv3  = (t1 + 2.0) * texel;
 
     vec3 result = vec3(0.0);
-    for (int r = 0; r < 4; r++) {
-        for (int c = 0; c < 4; c++) {
-            vec2 sample_uv = base + vec2(float(c), float(r)) * texel;
-            result += texture(tex, sample_uv).rgb * row_w[r] * col_w[c];
-        }
-    }
+    result += texture(tex, vec2(uv0.x,  uv0.y)).rgb  * (w0.x  * w0.y);
+    result += texture(tex, vec2(uv12.x, uv0.y)).rgb  * (w12.x * w0.y);
+    result += texture(tex, vec2(uv3.x,  uv0.y)).rgb  * (w3.x  * w0.y);
+    result += texture(tex, vec2(uv0.x,  uv12.y)).rgb * (w0.x  * w12.y);
+    result += texture(tex, vec2(uv12.x, uv12.y)).rgb * (w12.x * w12.y);
+    result += texture(tex, vec2(uv3.x,  uv12.y)).rgb * (w3.x  * w12.y);
+    result += texture(tex, vec2(uv0.x,  uv3.y)).rgb  * (w0.x  * w3.y);
+    result += texture(tex, vec2(uv12.x, uv3.y)).rgb  * (w12.x * w3.y);
+    result += texture(tex, vec2(uv3.x,  uv3.y)).rgb  * (w3.x  * w3.y);
     return result;
 }
 
@@ -62,8 +64,9 @@ vec3 clip_aabb(vec3 aabb_min, vec3 aabb_max, vec3 p) {
 void main() {
     vec2 render_uv = vUV;
 
-    /* R197-A: Pass 2 must store Pass 1 output verbatim into history.
-     * Re-running TSR with stale read_idx history double-mixes and ghosts. */
+    /* R197-A copy-only blit. R686: upscale_apply no longer issues it (pass 1
+     * writes the history target directly); kept so the push layout and the
+     * contract tables stay put. */
     if (u_ups_copy_only > 0.5) {
         fragColor = vec4(clamp(texture(u_ups_src, render_uv).rgb, 0.0, 1.0), 1.0);
         return;
@@ -72,17 +75,25 @@ void main() {
     vec2 render_texel = 1.0 / vec2(u_ups_rw, u_ups_rh);
     vec3 upscaled = sample_catmull(u_ups_src, render_uv, render_texel);
 
-    if (u_ups_sharp > 0.0) {
-        vec3 c  = texture(u_ups_src, render_uv).rgb;
-        vec3 n  = texture(u_ups_src, render_uv + vec2(0, -render_texel.y)).rgb;
-        vec3 s  = texture(u_ups_src, render_uv + vec2(0,  render_texel.y)).rgb;
-        vec3 w  = texture(u_ups_src, render_uv + vec2(-render_texel.x, 0)).rgb;
-        vec3 e  = texture(u_ups_src, render_uv + vec2( render_texel.x, 0)).rgb;
-        upscaled += (c * 4.0 - n - s - w - e) * u_ups_sharp * 0.25;
+    /* R686: the sharpen cross and the history clip AABB read the same four
+     * neighbours; fetch them once. The branch depends on depth, so explicit
+     * LOD 0 (single-mip source) instead of implicit derivatives. */
+    float depth = texture(u_ups_depth, render_uv).r;
+    bool use_history = depth < 1.0 && u_ups_first_frame < 0.5;
+    vec3 nw = vec3(0.0), ne = vec3(0.0), nn = vec3(0.0), ns = vec3(0.0);
+    if (u_ups_sharp > 0.0 || use_history) {
+        nw = textureLod(u_ups_src, render_uv + vec2(-render_texel.x, 0), 0.0).rgb;
+        ne = textureLod(u_ups_src, render_uv + vec2( render_texel.x, 0), 0.0).rgb;
+        nn = textureLod(u_ups_src, render_uv + vec2(0, -render_texel.y), 0.0).rgb;
+        ns = textureLod(u_ups_src, render_uv + vec2(0,  render_texel.y), 0.0).rgb;
     }
 
-    float depth = texture(u_ups_depth, render_uv).r;
-    if (depth < 1.0 && u_ups_first_frame < 0.5) {
+    if (u_ups_sharp > 0.0) {
+        vec3 c  = texture(u_ups_src, render_uv).rgb;
+        upscaled += (c * 4.0 - nn - ns - nw - ne) * u_ups_sharp * 0.25;
+    }
+
+    if (use_history) {
         vec2 ndc = render_uv * 2.0 - 1.0;
         vec4 clip_pos = vec4(ndc.x, ndc.y, depth * 2.0 - 1.0, 1.0);
         vec4 view_pos = u_ups_inv_proj * clip_pos;
@@ -93,12 +104,8 @@ void main() {
         if (prev_uv.x >= 0.0 && prev_uv.x <= 1.0 && prev_uv.y >= 0.0 && prev_uv.y <= 1.0) {
             vec3 history = texture(u_ups_history, prev_uv).rgb;
 
-            vec3 n0 = textureOffset(u_ups_src, render_uv, ivec2(-1, 0)).rgb;
-            vec3 n1 = textureOffset(u_ups_src, render_uv, ivec2( 1, 0)).rgb;
-            vec3 n2 = textureOffset(u_ups_src, render_uv, ivec2( 0,-1)).rgb;
-            vec3 n3 = textureOffset(u_ups_src, render_uv, ivec2( 0, 1)).rgb;
-            vec3 aabb_min = min(min(n0, n1), min(n2, n3));
-            vec3 aabb_max = max(max(n0, n1), max(n2, n3));
+            vec3 aabb_min = min(min(nw, ne), min(nn, ns));
+            vec3 aabb_max = max(max(nw, ne), max(nn, ns));
 
             history = clip_aabb(aabb_min, aabb_max, history);
             upscaled = mix(history, upscaled, 0.15);
