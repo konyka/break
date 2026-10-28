@@ -459,6 +459,40 @@ TEST(bvh_raycast_rejects_negative_max_dist_on_parallel_ray)
     bvh_destroy(&bvh);
 }
 
+TEST(bvh_raycast_nonparallel_ray_z_slab_miss)
+{
+    /* simd.h SSE2 regression pin (found by Stage 4 scene editor Phase 2
+     * Task 1 viewport picking): the SIMD slab reduction splatted lanes into
+     * t_min/t_max IN PLACE, so the lane-1 splat overwrote lane 2 before it
+     * was extracted and the z slab never constrained the result — a ray
+     * with all three direction components non-zero whose x/y slabs overlap
+     * but whose z slab is disjoint false-positive HIT (typically at t=0).
+     * Only rays with NO near-parallel axis take the SIMD path, which is why
+     * every axis-aligned ray test above never saw it. */
+    BVH bvh;
+    bvh_init(&bvh, 1);
+    BVHAABB aabb = { .min = vec3(-0.5f, -0.5f, -5.5f),
+                     .max = vec3( 0.5f,  0.5f, -4.5f) };
+    bvh_build(&bvh, &aabb, 1);
+
+    /* From (0,0,5): x/y slabs overlap at t in [-1.21, 0.91] but the z slab
+     * is [13.18, 14.57] — a geometric miss. */
+    Vec3 dir = vec3(-0.5547f, 0.416025f, -0.720577f);
+    ASSERT_FALSE(bvh_raycast(&bvh, vec3(0, 0, 5), dir, 1000.0f, NULL));
+
+    /* Control: a box placed on the same ray's path (its z=-5 crossing is
+     * (-7.698, 5.775, -5)) DOES hit. */
+    BVHAABB on_path = { .min = vec3(-8.2f, 5.3f, -5.5f),
+                        .max = vec3(-7.2f, 6.3f, -4.5f) };
+    bvh_build(&bvh, &on_path, 1);
+    BVHRayHit hit;
+    ASSERT_TRUE(bvh_raycast(&bvh, vec3(0, 0, 5), dir, 1000.0f, &hit));
+    ASSERT_EQ(hit.object_index, 0u);
+    ASSERT_TRUE(hit.t > 12.0f && hit.t < 16.0f);
+
+    bvh_destroy(&bvh);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  Edge Cases                                                              */
 /* ----------------------------------------------------------------------- */
@@ -1347,6 +1381,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bvh_raycast_test);
     RUN_TEST(bvh_raycast_allows_null_hit_output);
     RUN_TEST(bvh_raycast_rejects_negative_max_dist_on_parallel_ray);
+    RUN_TEST(bvh_raycast_nonparallel_ray_z_slab_miss);
     /* Edge cases */
     RUN_TEST(physics_empty_world_raycast);
     RUN_TEST(physics_zero_velocity_body);

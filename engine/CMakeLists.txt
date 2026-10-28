@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 # VERSION 语义（Task 9 semver 规则，docs/rhi_rollback_runbook.md §5）：
-#   major = 破坏性变更（如 OpenGL 删除→v2.0.0，保留给删除 release；Task 6 闸门 BLOCKED）；
+#   major = 破坏性变更（OpenGL 已决定长期保留，不占用 major 版号）；
 #   minor = 新后端/新能力；patch = 修复。版本唯一来源本 project() VERSION；
 #   tag 名 v<x.y.z> 与之严格相等（契约测试比对；tag 由 maintainer 发布时创建）。
 project(PureCEngine VERSION 1.9.0 LANGUAGES C)
@@ -39,6 +39,16 @@ option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
 # stays the fail-closed window_mobile.c path.
 option(ENGINE_QNX_SCREEN "Compile the QNX Screen window layer when the SDP provides it" ON)
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
+option(ENGINE_BUILD_FUZZ_SMOKE
+    "Register deterministic fuzz smoke tests (requires explicit fuzz targets)" OFF)
+option(BREAK_ENABLE_SNOWFLAKE
+    "Enable the Snowflake-backed C11 Break network adapter" OFF)
+set(SNOWFLAKE_SOURCE_DIR "" CACHE PATH
+    "Snowflake source tree required by the Break network adapter")
+option(BREAK_ENABLE_CRYPTO
+    "Enable the break_crypto OpenSSL EVP wrapper library (Stage 5)" ON)
+option(BREAK_ENABLE_CRASH
+    "Enable the break_crash crash-record/spool library (Stage 5 Phase C)" ON)
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
     "RHI backend selection: auto | opengl | vulkan | metal | d3d12")
 set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal d3d12)
@@ -173,7 +183,51 @@ endif()
 option(ENGINE_USE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_USE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(ENGINE_USE_TSAN "Enable ThreadSanitizer" OFF)
+# ENGINE_RHI_BACKEND=auto defaults to Vulkan on Linux and Windows (maintainer
+# decision 2026-10-26). The legacy ENGINE_VULKAN switch only counts as an
+# explicit user choice when its cache entry predates this file's own default;
+# ENGINE_VULKAN_DEFAULTED marks trees whose entry was created by the option()
+# below, so a plain reconfigure keeps following the default.
+if(DEFINED CACHE{ENGINE_VULKAN} AND NOT ENGINE_VULKAN_DEFAULTED)
+    set(_engine_vulkan_user_choice TRUE)
+else()
+    set(_engine_vulkan_user_choice FALSE)
+endif()
 option(ENGINE_VULKAN "Use Vulkan backend instead of OpenGL" OFF)
+if(NOT _engine_vulkan_user_choice)
+    set(ENGINE_VULKAN_DEFAULTED ON CACHE INTERNAL
+        "ENGINE_VULKAN cache entry was created by the build default, not the user")
+endif()
+if(ENGINE_RHI_BACKEND STREQUAL "auto" AND NOT ENGINE_VULKAN AND
+   NOT _engine_vulkan_user_choice AND
+   (ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "windows"))
+    # Same probes (and VULKAN_SDK hints) as the hard requirement further down,
+    # so the default and the later REQUIRED checks cannot disagree.
+    find_package(Vulkan QUIET)
+    find_library(SHADERC_LIB NAMES shaderc_shared shaderc
+        HINTS "$ENV{VULKAN_SDK}/Lib" "$ENV{VULKAN_SDK}/lib")
+    find_path(SHADERC_INCLUDE_DIR NAMES shaderc/shaderc.h
+        HINTS "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
+    if(Vulkan_FOUND AND SHADERC_LIB AND SHADERC_INCLUDE_DIR)
+        # Normal variable, not a cache write: a later reconfigure on a host
+        # that lost the Vulkan packages falls back instead of failing on a
+        # stale cached ON.
+        set(ENGINE_VULKAN ON)
+        # Runtime fallback (docs/design/rhi_runtime_backend.md): the auto
+        # Vulkan build also links OpenGL as the last-resort backend and picks
+        # one at device creation. ENGINE_RHI_MULTI_BACKEND=OFF opts out.
+        if(NOT DEFINED ENGINE_RHI_MULTI_BACKEND OR ENGINE_RHI_MULTI_BACKEND)
+            set(_engine_rhi_multi_backend ON)
+        endif()
+    else()
+        message(WARNING
+            "ENGINE_RHI_BACKEND=auto: Vulkan development files not found "
+            "(need the Vulkan loader/headers and shaderc); falling back to OpenGL, "
+            "the last-resort backend. Install them (e.g. libvulkan-dev libshaderc-dev) "
+            "to get the Vulkan default, pass -DENGINE_RHI_BACKEND=vulkan to make "
+            "missing Vulkan an error, or -DENGINE_RHI_BACKEND=opengl to choose OpenGL.")
+    endif()
+endif()
 if(NOT ENGINE_RHI_BACKEND STREQUAL "auto" AND
    NOT ENGINE_RHI_BACKEND STREQUAL "opengl" AND
    NOT ENGINE_RHI_BACKEND STREQUAL "vulkan" AND
@@ -215,6 +269,16 @@ elseif(ENGINE_VULKAN)
     set(_rhi_backend_effective "vulkan")
 else()
     set(_rhi_backend_effective "opengl")
+endif()
+option(ENGINE_RHI_MULTI_BACKEND
+    "auto Vulkan builds also link OpenGL and select at runtime (fallback)" ON)
+if(NOT _engine_rhi_multi_backend OR NOT _rhi_backend_effective STREQUAL "vulkan")
+    set(_engine_rhi_multi_backend OFF)
+endif()
+set(ENGINE_RHI_MULTI_BACKEND_ACTIVE ${_engine_rhi_multi_backend} CACHE INTERNAL
+    "auto build links Vulkan + OpenGL with runtime selection" FORCE)
+if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+    message(STATUS "RHI runtime selection: vulkan -> opengl (multi-backend build)")
 endif()
 set(ENGINE_RHI_BACKEND_EFFECTIVE "${_rhi_backend_effective}" CACHE INTERNAL
     "Resolved RHI backend for this build" FORCE)
@@ -317,6 +381,254 @@ if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
     find_package(Vulkan REQUIRED)
 endif()
 
+if(BREAK_ENABLE_SNOWFLAKE)
+    if(NOT SNOWFLAKE_SOURCE_DIR OR
+       NOT EXISTS "${SNOWFLAKE_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "BREAK_ENABLE_SNOWFLAKE requires SNOWFLAKE_SOURCE_DIR to point to "
+            "a Snowflake source tree with CMakeLists.txt; got '${SNOWFLAKE_SOURCE_DIR}'")
+    endif()
+    # Stage 5 Phase D Task 1: Snowflake is commit-pinned, fail-closed at
+    # configure time. The pin below is mirrored by the snowflake entry in
+    # engine/external/locked_dependencies.json and the pin policy in
+    # docs/design/snowflake_c11_adapter.md; all three move in one commit.
+    set(BREAK_SNOWFLAKE_PIN "0fceed6d885bb8578743d82cc4a5d7ab2f6b0620")  # snowflake main HEAD 2026-10-24
+    execute_process(
+        COMMAND git -C "${SNOWFLAKE_SOURCE_DIR}" rev-parse HEAD
+        RESULT_VARIABLE _break_snowflake_rev_result
+        OUTPUT_VARIABLE _break_snowflake_head
+        ERROR_VARIABLE _break_snowflake_rev_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_STRIP_TRAILING_WHITESPACE)
+    if(NOT _break_snowflake_rev_result STREQUAL "0")
+        message(FATAL_ERROR
+            "Snowflake pin check failed: `git -C \"${SNOWFLAKE_SOURCE_DIR}\" "
+            "rev-parse HEAD` did not succeed "
+            "(result: ${_break_snowflake_rev_result}; ${_break_snowflake_rev_error}). "
+            "BREAK_SNOWFLAKE_PIN requires commit ${BREAK_SNOWFLAKE_PIN}, so "
+            "SNOWFLAKE_SOURCE_DIR must be a git checkout of the pinned Snowflake "
+            "tree. Update procedure: to move the pin, update BREAK_SNOWFLAKE_PIN "
+            "in engine/CMakeLists.txt, the snowflake entry in "
+            "engine/external/locked_dependencies.json, and the pin policy in "
+            "docs/design/snowflake_c11_adapter.md in the same commit.")
+    endif()
+    if(NOT _break_snowflake_head STREQUAL "${BREAK_SNOWFLAKE_PIN}")
+        message(FATAL_ERROR
+            "Snowflake pin mismatch at SNOWFLAKE_SOURCE_DIR='${SNOWFLAKE_SOURCE_DIR}':\n"
+            "  pinned: ${BREAK_SNOWFLAKE_PIN}\n"
+            "  found:  ${_break_snowflake_head}\n"
+            "Update procedure: to move the pin, update BREAK_SNOWFLAKE_PIN in "
+            "engine/CMakeLists.txt, the snowflake entry in "
+            "engine/external/locked_dependencies.json, and the pin policy in "
+            "docs/design/snowflake_c11_adapter.md in the same commit.")
+    endif()
+    message(STATUS
+        "Break Snowflake adapter: pinned commit ${BREAK_SNOWFLAKE_PIN} verified")
+    message(STATUS "Break Snowflake adapter: adding ${SNOWFLAKE_SOURCE_DIR}")
+    set(SNOW_BUILD_TESTS OFF CACHE BOOL "Snowflake tests are not part of Break builds" FORCE)
+    set(SNOW_BUILD_EXAMPLES OFF CACHE BOOL "Snowflake examples are not part of Break builds" FORCE)
+    set(SNOW_BUILD_BENCH OFF CACHE BOOL "Snowflake benchmarks are not part of Break builds" FORCE)
+    # Stage 4 Phase 4 Task 1 (documented deviation): snow::warnings is an
+    # INTERFACE library whose -Wconversion/-Wfloat-equal/-Wcast-qual/... flag
+    # set leaks directory-wide once snow is added via add_subdirectory. That
+    # flag set is snow's own posture for snow's code — Break's tree is -Wall
+    # -Wextra -Werror -pedantic clean and was never validated against the
+    # snow set (editor/myui TUs trip conversion/float-equal/cast-qual under
+    # it). Keep the strict flags scoped to the snow subtree and to targets
+    # that link snow targets (break_net and its tests — the Stage 5 Phase D
+    # status quo); the editor executable, test_editor_shell, and every other
+    # Break target keep the project-wide flag set exactly.
+    add_subdirectory("${SNOWFLAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/snowflake"
+        EXCLUDE_FROM_ALL)
+    if(TARGET snow_warnings)
+        set_property(TARGET snow_warnings PROPERTY INTERFACE_COMPILE_OPTIONS "")
+    endif()
+    if(NOT TARGET snow::net)
+        message(FATAL_ERROR
+            "Snowflake source tree did not provide the required target snow::net")
+    endif()
+    message(STATUS "Break Snowflake adapter: using target snow::net")
+    # Stage 5 Phase D Task 1: fail-closed OpenSSL assertion. snow_net compiles
+    # snow_openssl_stub.c (every snow_ssl_* returns SNOW_ERR_NOSYS) when its
+    # quiet find_package(OpenSSL) fails; with BREAK_ENABLE_CRYPTO=ON that stub
+    # build is rejected here at configure time (no runtime NOSYS surprise).
+    # BREAK_ENABLE_CRYPTO=OFF + stub remains an accepted configuration
+    # (documented in docs/design/snowflake_c11_adapter.md). SNOW_HAVE_OPENSSL
+    # is the CACHE INTERNAL flag snow sets after its own detection, so this
+    # reads snow's actual decision rather than re-running find_package.
+    # NOTE: the conditions use the compound form "BREAK_ENABLE_CRYPTO AND ..."
+    # on purpose — test_break_crypto/update_target_contract.cmake locate the
+    # crypto gated block by the first bare gated-if line for BREAK_ENABLE_CRYPTO
+    # in this file, so no such bare line may exist above that block.
+    if(BREAK_ENABLE_CRYPTO AND NOT EXISTS "${SNOWFLAKE_SOURCE_DIR}/src/snow_openssl.c")
+        message(FATAL_ERROR
+            "BREAK_ENABLE_CRYPTO=ON requires Snowflake's OpenSSL wrapper, but "
+            "'${SNOWFLAKE_SOURCE_DIR}/src/snow_openssl.c' does not exist. "
+            "The pinned Snowflake tree (${BREAK_SNOWFLAKE_PIN}) ships this "
+            "file; a tree without it is not the pinned tree.")
+    endif()
+    if(BREAK_ENABLE_CRYPTO AND NOT SNOW_HAVE_OPENSSL)
+        message(FATAL_ERROR
+            "BREAK_ENABLE_CRYPTO=ON requires Snowflake built with OpenSSL, "
+            "but snow reported SNOW_HAVE_OPENSSL=FALSE: snow's own "
+            "find_package(OpenSSL QUIET) failed, so snow_net fell back to "
+            "snow_openssl_stub.c (all snow_ssl_* return SNOW_ERR_NOSYS). "
+            "Install OpenSSL development headers (libssl-dev / openssl-devel) "
+            "so snow detects OpenSSL, or configure with "
+            "-DBREAK_ENABLE_CRYPTO=OFF (stub-NOSYS is accepted only in that "
+            "configuration).")
+    endif()
+    if(BREAK_ENABLE_CRYPTO AND SNOW_HAVE_OPENSSL)
+        message(STATUS
+            "Break Snowflake adapter: snow OpenSSL enabled (SNOW_HAVE_OPENSSL=${SNOW_HAVE_OPENSSL})")
+    endif()
+endif()
+
+# Stage 5 Phase A Task 2: break_crypto — formal optional static library, a
+# thin C11 wrapper over the system OpenSSL 3 libcrypto EVP API (SHA-256 /
+# HMAC-SHA256 / Ed25519 verify / CSPRNG; zero home-grown crypto).
+# find_package with REQUIRED IS the fail-closed FATAL_ERROR when OpenSSL
+# libcrypto is absent (mirrors the BREAK_ENABLE_SNOWFLAKE idiom above).
+# Independent of ENGINE_BUILD_TESTS; engine, engine_demo, dxx_break, and
+# editor never link it (pinned by test_break_crypto_target_contract).
+# Stage 5 Phase A Task 4 adds break_update (signed canonical manifest +
+# content-addressed chunk store) to the same gated block, PUBLIC-chained on
+# break_crypto; the same no-link rule applies (pinned by
+# test_break_update_target_contract). Stage 5 Phase B extends the target to
+# TWO TUs (+ break_update_client.c: Task 1 client state machine + A/B slot
+# layout, Task 2 chunked downloader with byte-level resume via the
+# caller-supplied BreakUpdateFetchFn seam — no transport code, Task 3
+# stage/activate/unstage pipeline). Keep this block free of nested if(): both
+# contract scripts extract it up to its first endif(); they also locate the
+# block by the first bare gated-if line for BREAK_ENABLE_CRYPTO in this file,
+# so no earlier bare line may exist (the Stage 5 Phase D Snowflake OpenSSL
+# assertion above therefore uses compound "BREAK_ENABLE_CRYPTO AND ...").
+if(BREAK_ENABLE_CRYPTO)
+    find_package(OpenSSL REQUIRED)
+    message(STATUS "Break crypto: using OpenSSL ${OPENSSL_VERSION}")
+    add_library(break_crypto STATIC src/crypto/break_crypto.c)
+    set_property(TARGET break_crypto PROPERTY C_STANDARD 11)
+    target_include_directories(break_crypto PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_crypto PUBLIC OpenSSL::Crypto)
+
+    add_library(break_update STATIC src/update/break_update.c src/update/break_update_client.c)
+    set_property(TARGET break_update PROPERTY C_STANDARD 11)
+    target_include_directories(break_update PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_update PUBLIC break_crypto)
+endif()
+
+# Stage 5 Phase C Tasks 1-3: break_crash — the crash record format (canonical
+# text "break-crash-v1") + bounded on-disk spool + async-signal-safe capture
+# (install/handler) + redaction + the caller-supplied upload seam. Formal optional
+# static library with ZERO external dependencies and no link libraries (the
+# write-side PAL and break_version are consumed header-only; callers link
+# platform_fs.c and break_version.c themselves — the tests compile the TUs
+# inline, the test_break_update / test_break_version precedent). Independent
+# of BREAK_ENABLE_CRYPTO and ENGINE_BUILD_TESTS;
+# engine, engine_demo, dxx_break, and editor never link it (pinned by
+# test_break_crash_target_contract). Keep this block free of nested if():
+# the contract script extracts it up to its first endif().
+if(BREAK_ENABLE_CRASH)
+    add_library(break_crash STATIC src/crash/break_crash.c)
+    set_property(TARGET break_crash PROPERTY C_STANDARD 11)
+    target_include_directories(break_crash PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+endif()
+
+# Formal optional replication libraries. These are intentionally independent of
+# engine and Snowflake: consumers opt in and own the transport/session boundary.
+add_library(break_ecs_replication STATIC
+    src/ecs/ecs.c
+    src/ecs/replication_schema.c
+    src/ecs/world_snapshot.c
+    src/ecs/world_delta.c
+    src/core/log.c)
+set_property(TARGET break_ecs_replication PROPERTY C_STANDARD 11)
+target_include_directories(break_ecs_replication PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if(NOT ENGINE_PLATFORM STREQUAL "windows")
+    target_link_libraries(break_ecs_replication PUBLIC m)
+endif()
+
+add_library(break_replication_core STATIC
+    src/network/break_aoi.c
+    src/network/break_replication.c
+    src/network/break_replication_fragment.c)
+set_property(TARGET break_replication_core PROPERTY C_STANDARD 11)
+target_include_directories(break_replication_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
+
+# Formal optional Runtime Core library: unified error/lifecycle types, the
+# single-owner lifecycle coordinator, the formal message/queue/task facade,
+# the formal thread + IO/VFS facades, and the reload coordinator + profiler
+# bridge. Top-level like the other formal optional libraries — built
+# regardless of ENGINE_BUILD_TESTS, and deliberately NOT linked into engine,
+# engine_demo, or dxx_break; consumers opt in explicitly in later tasks.
+# runtime_io.c/runtime_reload.c reference the borrowed VFS (vfs_*),
+# runtime_task.c the legacy TaskSystem (task_*), and runtime_profiler.c the
+# existing profiler singleton (profiler_*) + time_microseconds: all resolve
+# at the consumer's final link, exactly like the task facade precedent.
+add_library(runtime_core STATIC
+    src/runtime/runtime_coordinator.c
+    src/runtime/runtime_message.c
+    src/runtime/runtime_queue.c
+    src/runtime/runtime_task.c
+    src/runtime/runtime_thread.c
+    src/runtime/runtime_io.c
+    src/runtime/runtime_reload.c
+    src/runtime/runtime_profiler.c)
+set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
+target_include_directories(runtime_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# Formal optional Snowflake network/session library. Produced whenever
+# BREAK_ENABLE_SNOWFLAKE=ON, independent of ENGINE_BUILD_TESTS; the base
+# engine target stays transport-neutral and never links it. Consumers
+# (engine_demo and dxx_break excluded) opt into break_net explicitly.
+if(BREAK_ENABLE_SNOWFLAKE)
+    add_library(break_net STATIC
+        src/network/break_net_adapter.c
+        src/network/break_net_events.c
+        src/network/break_net_message.c
+        src/network/break_net_protocol.c
+        src/network/break_net_envelope.c
+        src/network/break_net_message_registry.c
+        src/network/break_session.c)
+    set_property(TARGET break_net PROPERTY C_STANDARD 11)
+    target_include_directories(break_net PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(break_net PRIVATE
+        ${SNOWFLAKE_SOURCE_DIR}/include)
+    target_link_libraries(break_net PUBLIC break_replication_core snow::net)
+    # PUBLIC so every break_net consumer (the editor executable's
+    # editor_remote.c, test_editor_shell) compiles the real remote host,
+    # never the !BREAK_ENABLE_SNOWFLAKE stub surface.
+    target_compile_definitions(break_net PUBLIC BREAK_ENABLE_SNOWFLAKE=1)
+    if(BREAK_ENABLE_CRYPTO)
+        target_compile_definitions(break_net PUBLIC BREAK_ENABLE_CRYPTO=1)
+        target_link_libraries(break_net PUBLIC break_crypto)
+    endif()
+endif()
+
+# Product build identity: short git hash baked into break_version.c (engine)
+# and into its test. Falls back to "unknown" outside a git checkout (e.g.
+# clean-room source exports) or when git is absent/fails.
+find_program(BREAK_GIT_EXECUTABLE git)
+if(BREAK_GIT_EXECUTABLE)
+    execute_process(COMMAND ${BREAK_GIT_EXECUTABLE} rev-parse --short=12 HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE BREAK_BUILD_ID
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+endif()
+if(NOT BREAK_BUILD_ID)
+    set(BREAK_BUILD_ID "unknown")
+endif()
+message(STATUS "Break build identity: ${BREAK_BUILD_ID}")
+
 # Engine library
 set(RHI_CORE_SOURCES
     src/rhi/rhi.c
@@ -327,6 +639,7 @@ set(RHI_CORE_SOURCES
     src/rhi/rhi_rollout.c)
 add_library(engine STATIC
     src/core/log.c
+    src/core/break_version.c
     src/core/shader_io.c
     src/core/alloc.c
     src/core/pool.c
@@ -337,6 +650,7 @@ add_library(engine STATIC
     src/platform/platform_display_media.c
     src/platform/platform_vk_surface.c
     src/platform/platform_text.c
+    src/platform/platform_fs.c
     src/platform/time.c
     src/platform/filewatch.c
     src/platform/filewatch_backend.c
@@ -422,6 +736,9 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/rhi_backend_rollout.json" ENGINE_R
 string(JSON ENGINE_ROLLOUT_CFGVER GET "${ENGINE_ROLLOUT_JSON}" config_version)
 target_compile_definitions(engine PUBLIC
     ENGINE_RHI_ROLLOUT_CONFIG_VERSION=${ENGINE_ROLLOUT_CFGVER})
+# Build identity is consumed only by break_version.c inside this target; the
+# test target injects the same value itself.
+target_compile_definitions(engine PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
 
 if(WIN32 AND STREAMLINE_ROOT)
     enable_language(CXX)
@@ -578,6 +895,12 @@ add_library(engine_rhi_opengl STATIC EXCLUDE_FROM_ALL src/rhi/rhi_gl.c)
 target_include_directories(engine_rhi_opengl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
 target_link_libraries(engine_rhi_opengl PUBLIC engine PRIVATE glad)
+if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+    # Runtime fallback build: the GL backend exports rhi_gl_rhi_* only; the
+    # public rhi_* symbols come from engine_rhi_runtime's forwarders.
+    target_compile_definitions(engine_rhi_opengl PRIVATE
+        RHI_BACKEND_NAMESPACE_GL=1 ENGINE_RHI_MULTI_BACKEND=1)
+endif()
 
 add_library(engine_rhi_headless STATIC src/rhi/rhi_headless.c)
 target_include_directories(engine_rhi_headless PRIVATE
@@ -731,6 +1054,25 @@ if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
     target_compile_definitions(engine_rhi_vulkan PRIVATE ENGINE_VULKAN=1)
     target_link_libraries(engine_rhi_vulkan PUBLIC engine
         PRIVATE Vulkan::Vulkan ${SHADERC_LIB})
+    if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        target_compile_definitions(engine_rhi_vulkan PRIVATE
+            RHI_BACKEND_NAMESPACE_VK=1 ENGINE_RHI_MULTI_BACKEND=1)
+        # Dispatch forwarders + runtime chain + both binding tables. The
+        # binding TUs include the rename headers, so they must see the same
+        # include dirs and ENGINE_VULKAN-gated declarations as the backends.
+        add_library(engine_rhi_runtime STATIC EXCLUDE_FROM_ALL
+            src/rhi/dispatch/rhi_dispatch.c
+            src/rhi/dispatch/rhi_api_bind_gl.c
+            src/rhi/dispatch/rhi_api_bind_vk.c
+            src/rhi/rhi_runtime.c
+            src/rhi/rhi_runtime_backends.c)
+        target_include_directories(engine_rhi_runtime PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+        target_compile_definitions(engine_rhi_runtime PRIVATE ENGINE_VULKAN=1
+            PUBLIC ENGINE_RHI_MULTI_BACKEND=1)
+        target_link_libraries(engine_rhi_runtime PUBLIC engine
+            engine_rhi_vulkan engine_rhi_opengl)
+    endif()
 endif()
 
 # Native D3D12 backend (plan D): Windows-only static library with real
@@ -863,6 +1205,10 @@ function(engine_link_rhi_backend target)
         endif()
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         target_link_libraries(${target} PRIVATE engine_rhi_d3d12)
+    elseif(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        # Runtime selection: vulkan first, opengl as the last-resort fallback.
+        target_link_libraries(${target} PRIVATE engine_rhi_runtime
+            engine_rhi_vulkan engine_rhi_opengl)
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan")
         target_link_libraries(${target} PRIVATE engine_rhi_vulkan)
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl")
@@ -892,6 +1238,54 @@ if(MSVC)
 else()
     target_compile_options(lua PRIVATE -w)
 endif()
+
+# Formal optional Stage 3 Lua runtime facade. One runtime = one lua_State =
+# one owner thread behind an opaque handle; scripts reach the host only
+# through the bounded break.ecs/break.config batch API and run in a
+# whitelisted module sandbox. Top-level like the other formal
+# optional libraries (runtime_core precedent) — built regardless of
+# ENGINE_BUILD_TESTS, and deliberately NOT linked into engine, engine_demo,
+# or dxx_break; consumers opt in explicitly in later tasks. Links the
+# vendored Lua 5.4 target PUBLIC so consumers inherit its external/ include
+# dir; the public header itself only needs src/.
+add_library(break_lua STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c)
+set_property(TARGET break_lua PROPERTY C_STANDARD 11)
+target_include_directories(break_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_lua PUBLIC lua)
+
+# Formal optional Stage 4 scene editor core library: the document model
+# (one owned ECS World, bounded entity name map, dirty flag), the bounded
+# command-based undo/redo stack, BSCN + sidecar scene save/load, the
+# bounded editable-component registry (inspector data model + undoable
+# field/add/remove-component commands), the Phase 2 viewport CPU core
+# (orbit camera, screen->world ray, BVH picking), the Phase 3 asset
+# browser model (editor_assets.c — pure CPU directory view model), and the
+# Phase 3 Lua console core (editor_lua.c — owns one Stage 3 BreakLuaRuntime
+# + ECS batch; hence the PUBLIC break_lua link: consumers of break_editor
+# (the editor executable, tests) inherit it, while engine/engine_demo/
+# dxx_break never link break_editor and so never see break_lua symbols).
+# Top-level like the other formal optional libraries (runtime_core/break_lua
+# precedent) — built regardless of ENGINE_BUILD_TESTS, and deliberately NOT
+# linked into engine, engine_demo, or dxx_break; the editor shell (Phase 1
+# Task 4) opts in explicitly. ecs.c is NOT compiled here: the formal
+# break_ecs_replication library already owns it (and log.c) and is linked
+# PUBLIC instead. scene_serial.c, bvh.c, and math.c have no formal library
+# owner (the engine target and several tests each compile their own inline
+# copies — the accepted existing pattern), so break_editor owns exactly one
+# copy of each itself; the editor executable's link line keeps break_editor
+# first, so the engine archive's copies are never pulled (nm-verified, same
+# as scene_serial). The viewport's remaining includes resolve header-only
+# (math/math.h vector/quaternion helpers are static inline) or via
+# break_ecs_replication (core/log.c). platform_fs.c is NOT compiled here
+# either (Phase 3 Task 1 decision): its single production owner is the
+# engine target (its platform siblings live there) and the editor
+# executable resolves platform_list_dir from libengine.a; editor tests
+# compile the TU inline instead (test_editor_assets).
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c)
+set_property(TARGET break_editor PROPERTY C_STANDARD 11)
+target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_editor PUBLIC break_ecs_replication)
+target_link_libraries(break_editor PUBLIC break_lua)
 
 # Vendored stb single-header implementations are shared by the engine asset
 # pipeline, myui's font/image backends, and the dxx application.
@@ -1284,6 +1678,83 @@ target_include_directories(dxx_break PRIVATE
 )
 target_link_libraries(dxx_break PRIVATE dxx_core break_myui engine m)
 engine_link_rhi_backend(dxx_break)
+
+# Stage 4 scene editor Phase 1 shell executable (Task 4). Top-level like the
+# break_editor library: built regardless of ENGINE_BUILD_TESTS and kept thin —
+# all panel logic lives in editor_panels.c so the headless dummy-PAL test
+# exercises it. src/myui/mypal/dummy/my_pal_dummy.c is compiled in because
+# editor_panels.c hosts break_editor_shell_create_for_test(); when MYUI_PAL
+# is a desktop port myui_core also carries the dummy PAL, and the archive
+# copy is then simply never pulled (the executable's own object defines the
+# symbols first) — no duplicate definitions.
+#
+# Phase 3 Task 3: + the three panel TUs (assets browser / Lua console /
+# profiler view; the panel structs are opaque to the shell — see
+# apps/editor/editor_shell_internal.h). The Lua console panel references
+# break_editor_lua_*, so editor_lua.o and the break_lua archive are now
+# pulled into the binary — break_lua is listed EXPLICITLY (it also arrives
+# via break_editor's PUBLIC link, Task 2); the contract ctest pins this
+# line. engine/engine_demo/dxx_break still link neither break_editor nor
+# break_lua (consumer no-link scan unchanged).
+#
+# Link-order note (carried review item): libbreak_editor.a and libengine.a
+# BOTH contain scene_serial.o (break_editor owns a copy since Task 2;
+# engine compiles src/scene/scene_serial.c inline). Static archives only pull
+# objects to resolve still-undefined symbols, and break_editor is listed
+# FIRST, so editor_panels.o -> editor_scene.o -> scene_serial.o all resolve
+# from break_editor; engine's copy is never pulled for the same symbols.
+# Verified at link time and via `nm` (exactly one scene_save_binary
+# definition in the binary).
+#
+# Phase 4 Task 1: + editor_remote.c (the remote session host: STEP-mode
+# reactor + session manager + editor wire protocol handlers, all driven from
+# break_editor_shell_tick on the shell thread). The editor target is built
+# regardless of BREAK_ENABLE_SNOWFLAKE (as on master): with SNOWFLAKE=ON it
+# links break_net (whose PUBLIC BREAK_ENABLE_SNOWFLAKE=1 selects the real
+# remote host; break_crypto arrives transitively when BREAK_ENABLE_CRYPTO=ON);
+# with SNOWFLAKE=OFF editor_remote.c compiles its stub surface, so --remote
+# fails closed with a clear message. engine/engine_demo/dxx_break still link
+# neither break_editor/break_lua nor break_net (consumer no-link scan pins the
+# editor-only exception).
+# Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel: pure
+# view over editor_remote.h's read-only accessors, no new link).
+add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
+    apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c
+    apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
+    apps/editor/editor_panel_profiler.c
+    apps/editor/editor_remote.c apps/editor/editor_panel_network.c
+        apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
+    apps/editor/editor_fonts.c
+    src/myui/mypal/dummy/my_pal_dummy.c)
+set_property(TARGET editor PROPERTY C_STANDARD 11)
+# Editor UI fonts (editor_fonts.c): fontconfig is optional; without it the
+# built-in per-platform path table is used.
+if(ENGINE_PLATFORM STREQUAL "linux")
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(BREAK_EDITOR_FONTCONFIG QUIET IMPORTED_TARGET fontconfig)
+    endif()
+endif()
+if(BREAK_EDITOR_FONTCONFIG_FOUND)
+    target_compile_definitions(editor PRIVATE BREAK_EDITOR_FONTCONFIG=1)
+    target_link_libraries(editor PRIVATE PkgConfig::BREAK_EDITOR_FONTCONFIG)
+endif()
+target_include_directories(editor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+target_link_libraries(editor PRIVATE break_editor break_lua break_myui engine m)
+if(BREAK_ENABLE_SNOWFLAKE)
+    target_link_libraries(editor PRIVATE break_net)
+endif()
+# Editor hot reload: the scene host and viewport each own a Runtime Core
+# coordinator (editor_hot_reload.c/editor_shader_reload.c). runtime_core
+# resolves vfs_*/profiler_*/time_* from engine, so engine is repeated after it
+# for static-archive ordering.
+target_link_libraries(editor PRIVATE runtime_core engine)
+engine_link_rhi_backend(editor)
 
 if(ENGINE_ENABLE_IPO)
     include(CheckIPOSupported)
@@ -2459,6 +2930,47 @@ endif()
     target_include_directories(test_rhi_rollout_log PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_rhi_rollout_log COMMAND test_rhi_rollout_log)
     set_tests_properties(test_rhi_rollout_log PROPERTIES LABELS "headless;platform_contract")
+
+    add_executable(test_rhi_dispatch tests/test_rhi_dispatch.c
+        src/rhi/dispatch/rhi_dispatch.c)
+    target_include_directories(test_rhi_dispatch PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_rhi_dispatch PRIVATE
+        TEST_RHI_DISPATCH_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch/rhi_dispatch.c")
+    add_test(NAME test_rhi_dispatch COMMAND test_rhi_dispatch)
+    set_tests_properties(test_rhi_dispatch PROPERTIES LABELS "headless;platform_contract")
+    add_executable(test_rhi_runtime_select tests/test_rhi_runtime_select.c
+        src/rhi/rhi_runtime.c src/rhi/dispatch/rhi_dispatch.c
+        src/rhi/rhi_rollout.c)
+    target_include_directories(test_rhi_runtime_select PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_rhi_runtime_select PRIVATE
+        ENGINE_RHI_ROLLOUT_CONFIG_VERSION=0)
+    add_test(NAME test_rhi_runtime_select COMMAND test_rhi_runtime_select)
+    set_tests_properties(test_rhi_runtime_select PROPERTIES LABELS "headless;platform_contract")
+    # Symbol shape of the linked app: forwarders + namespaced backends in the
+    # runtime-fallback build, plain single backend otherwise.
+    if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        set(_rhi_multi_flag ON)
+    else()
+        set(_rhi_multi_flag OFF)
+    endif()
+    if(CMAKE_NM AND (ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan" OR
+                     ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl"))
+        add_test(NAME test_rhi_multi_backend_symbols
+            COMMAND ${CMAKE_COMMAND}
+                -DNM=${CMAKE_NM} -DAPP=$<TARGET_FILE:engine_demo>
+                -DAPI_LIST=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch/rhi_backend_api.txt
+                -DMULTI=${_rhi_multi_flag}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_multi_backend_symbols.cmake)
+        set_tests_properties(test_rhi_multi_backend_symbols PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
+    add_test(NAME test_rhi_dispatch_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DRHI_DISPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch
+            -DRHI_API_LIST=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch/rhi_backend_api.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_dispatch_contract.cmake)
+    set_tests_properties(test_rhi_dispatch_contract PROPERTIES LABELS "headless;platform_contract")
+
     add_test(NAME test_rhi_rollout_config_contract
         COMMAND ${CMAKE_COMMAND}
             -DROLLOUT_JSON=${CMAKE_CURRENT_SOURCE_DIR}/assets/rhi_backend_rollout.json
@@ -2532,6 +3044,14 @@ endif()
     # backend resolves it (same pattern as the RHI contract tests above).
     target_link_libraries(test_rhi_oracle PRIVATE engine_rhi_headless m)
     add_test(NAME test_rhi_oracle COMMAND test_rhi_oracle)
+
+    # OpenGL is kept as the reference backend for rendering comparison: pins
+    # VK golden ~= GL golden. Pure CPU over the committed PPMs.
+    add_executable(test_rhi_golden_parity tests/test_rhi_golden_parity.c)
+    add_test(NAME test_rhi_golden_parity
+        COMMAND test_rhi_golden_parity ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden)
+    set_tests_properties(test_rhi_golden_parity PROPERTIES
+        LABELS "headless;platform_contract")
 
     add_executable(test_rhi_fault_injection tests/test_rhi_fault_injection.c
         ${RHI_CORE_SOURCES} src/core/log.c)
@@ -3425,10 +3945,472 @@ endif()
     # test_ecs: needs ecs.c + log.c
     add_executable(test_ecs tests/test_ecs.c src/ecs/ecs.c src/core/log.c)
     target_include_directories(test_ecs PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_ecs PRIVATE ECS_TESTING=1)
     if(NOT ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(test_ecs PRIVATE m)
     endif()
     add_test(NAME test_ecs COMMAND test_ecs)
+
+    # Focused ECS snapshot/schema/delta/AoI API coverage links the formal
+    # non-Snowflake library. Fault injection remains test-target-only.
+    add_library(break_ecs_replication_test STATIC
+        src/ecs/ecs.c
+        src/ecs/replication_schema.c
+        src/ecs/world_snapshot.c
+        src/ecs/world_delta.c
+        src/network/break_aoi.c
+        src/core/log.c
+        tests/break_world_delta_test_hooks.c)
+    set_property(TARGET break_ecs_replication_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_ecs_replication_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_ecs_replication_test PRIVATE BREAK_WORLD_DELTA_TESTING=1)
+    if(NOT ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(break_ecs_replication_test PUBLIC m)
+    endif()
+
+    add_executable(test_ecs_replication tests/test_ecs_replication.c)
+    target_include_directories(test_ecs_replication PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_ecs_replication PRIVATE BREAK_WORLD_DELTA_TESTING=1)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(test_ecs_replication PRIVATE -Wno-missing-field-initializers)
+    endif()
+    target_link_libraries(test_ecs_replication PRIVATE break_ecs_replication_test)
+    add_test(NAME test_ecs_replication COMMAND test_ecs_replication)
+    add_test(NAME test_replication_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_replication_target_contract.cmake)
+    set_tests_properties(test_replication_target_contract PROPERTIES
+        LABELS "headless;replication;platform_contract")
+
+    # Runtime Core lifecycle coordinator focused tests link the formal
+    # top-level runtime_core target (defined independent of
+    # ENGINE_BUILD_TESTS); engine/engine_demo/dxx_break never link it.
+    add_executable(test_runtime_core tests/test_runtime_core.c)
+    target_include_directories(test_runtime_core PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_runtime_core PRIVATE runtime_core)
+    add_test(NAME test_runtime_core COMMAND test_runtime_core)
+    add_test(NAME test_runtime_core_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_core_target_contract.cmake)
+    set_tests_properties(test_runtime_core_target_contract PROPERTIES
+        LABELS "headless;runtime_core;platform_contract")
+
+    # Stage 3 Lua runtime facade (Task 1: VM ownership and lifecycle;
+    # Task 2: module load + versioned reload with old-version retention;
+    # Task 3: value marshalling, module calls, frame lifecycle with a stable
+    # registry snapshot, bounded hook error records, and an opt-in
+    # instruction budget; Task 4: bounded ECS batch + config host bindings
+    # and the whitelisted module sandbox)
+    # focused tests. The test-only break_lua_test variant compiles the same
+    # sources with BREAK_LUA_TESTING=1 hooks (allocation failure injection
+    # covering the struct calloc AND the Lua allocator, double-destroy
+    # fail-stop registry, type-erased VM state accessor, module registry /
+    # environment / state-table probes, frame-error record and
+    # hooks-disabled probes, and a test-only mid-frame reloader binding),
+    # mirroring the runtime_core_test /
+    # BREAK_RUNTIME_TESTING pattern; the production break_lua target
+    # (top-level, defined independent of ENGINE_BUILD_TESTS) stays hook-free
+    # and is never linked into engine, engine_demo, or dxx_break.
+    add_library(break_lua_test STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c)
+    set_property(TARGET break_lua_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_lua_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_lua_test PRIVATE BREAK_LUA_TESTING=1)
+    target_link_libraries(break_lua_test PUBLIC lua)
+
+    add_executable(test_break_lua_runtime tests/test_break_lua_runtime.c)
+    target_include_directories(test_break_lua_runtime PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_runtime PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_runtime PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_runtime PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_runtime PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_runtime PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_runtime PRIVATE break_lua_test)
+    add_test(NAME test_break_lua_runtime COMMAND test_break_lua_runtime)
+    set_tests_properties(test_break_lua_runtime PROPERTIES
+        LABELS "headless;break_lua")
+
+    add_executable(test_break_lua_module tests/test_break_lua_module.c)
+    target_include_directories(test_break_lua_module PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_module PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_module PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_module PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_module PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_module PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_module PRIVATE break_lua_test)
+    add_test(NAME test_break_lua_module COMMAND test_break_lua_module)
+    set_tests_properties(test_break_lua_module PROPERTIES
+        LABELS "headless;break_lua")
+
+    # Task 3: value marshalling, module calls, frame lifecycle (hook
+    # snapshot, bounded error records, instruction budget).
+    add_executable(test_break_lua_value tests/test_break_lua_value.c)
+    target_include_directories(test_break_lua_value PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_value PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_value PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_value PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_value PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_value PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_value PRIVATE break_lua_test)
+    add_test(NAME test_break_lua_value COMMAND test_break_lua_value)
+    set_tests_properties(test_break_lua_value PROPERTIES
+        LABELS "headless;break_lua")
+
+    # Task 4: host bindings (bounded ECS batch commands + config) and the
+    # whitelisted module sandbox.
+    add_executable(test_break_lua_binding tests/test_break_lua_binding.c)
+    target_include_directories(test_break_lua_binding PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_binding PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_binding PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_binding PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_binding PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_binding PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_binding PRIVATE break_lua_test)
+    add_test(NAME test_break_lua_binding COMMAND test_break_lua_binding)
+    set_tests_properties(test_break_lua_binding PROPERTIES
+        LABELS "headless;break_lua")
+
+    add_test(NAME test_break_lua_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_lua_target_contract.cmake)
+    set_tests_properties(test_break_lua_target_contract PROPERTIES
+        LABELS "headless;break_lua;platform_contract")
+
+    # Stage 4 scene editor Phase 1 Task 1+2+3 + Phase 2 Task 1+2 + Phase 3
+    # Task 1+2 focused
+    # tests. The test-only
+    # break_editor_test variant compiles the same eleven translation units
+    # with BREAK_EDITOR_TESTING=1 hooks (allocation failure injection
+    # covering every editor-owned allocation: doc struct, name-slot block,
+    # stack struct, stack entry array, command objects — including the
+    # component commands and the gizmo's drag command, sidecar read buffer,
+    # the viewport pick's proxy AABB array / entity-id map / BVH
+    # struct, the assets model's struct / 4096-entry cache /
+    # visible-index array, and the Lua console struct), mirroring the
+    # break_lua_test / BREAK_LUA_TESTING pattern; the
+    # production break_editor target (top-level, defined independent of
+    # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
+    # engine_demo, or dxx_break. The variant links break_lua_test (not
+    # break_lua) so console-core tests share the Lua-side injection hooks.
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c)
+    set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_editor_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(break_editor_test PUBLIC break_ecs_replication)
+    target_link_libraries(break_editor_test PUBLIC break_lua_test)
+
+    add_executable(test_editor_doc tests/test_editor_doc.c)
+    target_include_directories(test_editor_doc PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_doc PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_doc PRIVATE break_editor_test)
+    add_test(NAME test_editor_doc COMMAND test_editor_doc)
+    set_tests_properties(test_editor_doc PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_cmd tests/test_editor_cmd.c)
+    target_include_directories(test_editor_cmd PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_cmd PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_cmd PRIVATE break_editor_test)
+    add_test(NAME test_editor_cmd COMMAND test_editor_cmd)
+    set_tests_properties(test_editor_cmd PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_scene tests/test_editor_scene.c)
+    target_include_directories(test_editor_scene PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_scene PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_scene PRIVATE break_editor_test)
+    add_test(NAME test_editor_scene COMMAND test_editor_scene)
+    set_tests_properties(test_editor_scene PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_components tests/test_editor_components.c)
+    target_include_directories(test_editor_components PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_components PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_components PRIVATE break_editor_test)
+    add_test(NAME test_editor_components COMMAND test_editor_components)
+    set_tests_properties(test_editor_components PROPERTIES LABELS "headless;editor")
+
+    # Stage 4 scene editor Phase 2 Task 1: viewport CPU core (camera math,
+    # screen->ray unprojection, BVH picking, focus/orbit/pan/zoom). Pure
+    # CPU — no RHI; the bvh.c/math.c copies come from break_editor_test.
+    add_executable(test_editor_viewport tests/test_editor_viewport.c)
+    target_include_directories(test_editor_viewport PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_viewport PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_viewport PRIVATE break_editor_test)
+    add_test(NAME test_editor_viewport COMMAND test_editor_viewport)
+    set_tests_properties(test_editor_viewport PROPERTIES LABELS "headless;editor")
+
+    # Stage 4 scene editor Phase 2 Task 2: gizmo state machine (modes,
+    # handles, hit-test, drag math, single-command undo semantics). Pure CPU
+    # — the drag command lives in break_editor_test's editor_gizmo.c copy.
+    add_executable(test_editor_gizmo tests/test_editor_gizmo.c)
+    target_include_directories(test_editor_gizmo PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_gizmo PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_gizmo PRIVATE break_editor_test)
+    add_test(NAME test_editor_gizmo COMMAND test_editor_gizmo)
+    set_tests_properties(test_editor_gizmo PROPERTIES LABELS "headless;editor")
+
+    # Stage 4 scene editor Phase 3 Task 1: asset browser model +
+    # platform_list_dir. platform_fs.c's single production owner is the
+    # engine target (its platform siblings live there); break_editor and
+    # break_editor_test deliberately do NOT compile it — the editor
+    # executable resolves platform_list_dir from libengine.a, and this test
+    # compiles the production TU inline (the test_scene_serial /
+    # test_editor_shell inline-copy precedent). Exactly one definition per
+    # binary.
+    add_executable(test_editor_assets tests/test_editor_assets.c src/platform/platform_fs.c)
+    target_include_directories(test_editor_assets PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_assets PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_assets PRIVATE break_editor_test)
+    add_test(NAME test_editor_assets COMMAND test_editor_assets)
+    set_tests_properties(test_editor_assets PROPERTIES LABELS "headless;editor")
+
+    # Editor UI translations (docs/design/editor_i18n.md): table coverage,
+    # UTF-8 validity, format-shape parity, tag parsing and env priority.
+    add_executable(test_editor_i18n tests/test_editor_i18n.c)
+    target_include_directories(test_editor_i18n PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_i18n PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_i18n PRIVATE break_editor_test)
+    add_test(NAME test_editor_i18n COMMAND test_editor_i18n)
+    set_tests_properties(test_editor_i18n PROPERTIES LABELS "headless;editor")
+
+    # Editor UI font discovery: distro layouts simulated under a temp root,
+    # plus a real-system check (fontconfig when available).
+    add_executable(test_editor_fonts tests/test_editor_fonts.c
+        apps/editor/editor_fonts.c)
+    target_include_directories(test_editor_fonts PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_editor_fonts PRIVATE break_editor_test)
+    if(BREAK_EDITOR_FONTCONFIG_FOUND)
+        target_compile_definitions(test_editor_fonts PRIVATE BREAK_EDITOR_FONTCONFIG=1)
+        target_link_libraries(test_editor_fonts PRIVATE PkgConfig::BREAK_EDITOR_FONTCONFIG)
+    endif()
+    add_test(NAME test_editor_fonts COMMAND test_editor_fonts)
+    set_tests_properties(test_editor_fonts PROPERTIES LABELS "headless;editor")
+
+    # Mojibake guard: UTF-8 text decoded as GBK and saved again (rhi.h had
+    # ~30 such comments). Scans engine sources, shaders and docs.
+    add_test(NAME test_source_encoding
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_source_encoding.cmake)
+    set_tests_properties(test_source_encoding PROPERTIES
+        LABELS "headless;platform_contract")
+
+    # Stage 4 scene editor Phase 3 Task 2: Lua console core. Links BOTH test
+    # variants: break_editor_test (BREAK_EDITOR_TESTING=1 editor allocation
+    # hooks) and break_lua_test (BREAK_LUA_TESTING=1 Lua-side hooks — the
+    # console's runtime/batch allocations are injected through its budget).
+    # platform_thread.h drives the owner-thread rejection probe (the
+    # test_break_lua_runtime precedent).
+    add_executable(test_editor_lua tests/test_editor_lua.c)
+    target_include_directories(test_editor_lua PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_lua PRIVATE BREAK_EDITOR_TESTING=1)
+    target_compile_definitions(test_editor_lua PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_editor_lua PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_editor_lua PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_editor_lua PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_editor_lua PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_editor_lua PRIVATE break_editor_test break_lua_test)
+    add_test(NAME test_editor_lua COMMAND test_editor_lua)
+    set_tests_properties(test_editor_lua PROPERTIES LABELS "headless;editor")
+
+    # Stage 4 scene editor Phase 1 Task 4: headless shell test. Compiles the
+    # production editor_panels.c translation unit directly (the
+    # test_scene_serial inline-copy precedent) plus the dummy PAL port (the
+    # test_myui_window_manager precedent — MYUI_PAL=dummy keeps the port out
+    # of myui_core); links the hook-instrumented break_editor_test like the
+    # other editor tests.
+    # Phase 2 Task 3: + editor_viewport3d.c (the viewport panel widget and
+    # its pointer routing are headless-tested; the GPU render path is a
+    # guarded no-op without a device) + my_vgcanvas_break_rhi.c (hosts the
+    # Task 3 additive blit the widget's on_paint calls — linked for the
+    # symbol, never exercised on the dummy-PAL canvas) + shader_io.c (the
+    # viewport's shader-source lookup) + rhi_stubs.c (the renderer TUs
+    # reference rhi_* symbols; no device exists so none are called).
+    # Phase 3 Task 3: + the three panel TUs (editor_panel_assets.c /
+    # editor_panel_lua.c / editor_panel_profiler.c) and their support TUs
+    # compiled inline — platform_fs.c (the assets model's platform_list_dir;
+    # the test_editor_assets precedent), profiler.c + time.c (the profiler
+    # panel reads profiler_last_frame; the engine target keeps sole
+    # production ownership of all three — exactly one definition per
+    # binary). break_lua symbols arrive transitively: break_editor_test
+    # links break_lua_test PUBLIC (Phase 3 Task 2).
+    # Phase 4 Task 1: + editor_remote.c (the remote session host the shell
+    # tick drives — the test exercises the plaintext seam over loopback) and
+    # a break_net link when BREAK_ENABLE_SNOWFLAKE=ON (the editor-remote
+    # tests are compiled only then — see the target_compile_definitions
+    # below; with snowflake OFF the suite is byte-identical to Phase 3).
+    # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel,
+    # pure view over the remote's read-only accessors).
+    add_executable(test_editor_shell tests/test_editor_shell.c
+        apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c
+        apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
+        apps/editor/editor_panel_profiler.c
+        apps/editor/editor_remote.c apps/editor/editor_panel_network.c
+        apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
+        src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
+        src/asset/vfs.c src/platform/filewatch.c src/platform/filewatch_backend.c
+        src/myui/myr/my_vgcanvas_break_rhi.c src/core/shader_io.c
+        src/myui/mypal/dummy/my_pal_dummy.c tests/rhi_stubs.c)
+    set_property(TARGET test_editor_shell PROPERTY C_STANDARD 11)
+    target_include_directories(test_editor_shell PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
+    # Phase 4 Task 3: the network panel pure-view source-scan pin reads the
+    # panel TU in place (the test_rhi_metal_* source-read precedent).
+    target_compile_definitions(test_editor_shell PRIVATE
+        BREAK_EDITOR_SHELL_TESTING=1
+        BREAK_EDITOR_NETWORK_PANEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/apps/editor/editor_panel_network.c
+        BREAK_EDITOR_RENDER_PANEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/apps/editor/editor_panel_render.c)
+    # Phase 3 Task 3: time.c needs the same platform feature macros the
+    # engine target carries PUBLIC (the test_editor_lua precedent).
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_editor_shell PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_editor_shell PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    endif()
+    if(BREAK_ENABLE_SNOWFLAKE)
+        # Phase 4 Task 2: TLS + AUTH-v2 remote tests reference the pinned
+        # Snowflake self-signed fixtures in place (test-only; the
+        # test_break_net_tls BREAK_TEST_SSL_FIXTURE_DIR idiom).
+        target_compile_definitions(test_editor_shell PRIVATE BREAK_EDITOR_REMOTE_TESTS=1
+            BREAK_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
+        target_link_libraries(test_editor_shell PRIVATE break_net)
+    endif()
+    # editor_hot_reload.c: Runtime Core coordinator (test variant) + the VFS
+    # and legacy file watcher compiled inline (exactly one definition each).
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_link_libraries(test_editor_shell PRIVATE pthread)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(test_editor_shell PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_editor_shell PRIVATE runtime_core_test)
+    target_link_libraries(test_editor_shell PRIVATE break_editor_test myui_core m)
+    add_test(NAME test_editor_shell COMMAND test_editor_shell)
+    set_tests_properties(test_editor_shell PROPERTIES LABELS "headless;editor")
+
+    add_test(NAME test_break_editor_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_editor_target_contract.cmake)
+    set_tests_properties(test_break_editor_target_contract PROPERTIES
+        LABELS "headless;editor;platform_contract")
+
+    # Formal facade (owned message / bounded queue / formal task submit)
+    # focused tests. The test-only runtime_core_test variant compiles the new
+    # runtime_core sources with BREAK_RUNTIME_TESTING=1 hooks (allocation
+    # failure injection, double-release registry), mirroring the
+    # break_ecs_replication_test / BREAK_WORLD_DELTA_TESTING pattern; the
+    # production runtime_core target stays hook-free.
+    add_library(runtime_core_test STATIC
+        src/runtime/runtime_message.c
+        src/runtime/runtime_queue.c
+        src/runtime/runtime_task.c
+        src/runtime/runtime_thread.c
+        src/runtime/runtime_io.c
+        src/runtime/runtime_reload.c
+        src/runtime/runtime_profiler.c)
+    set_property(TARGET runtime_core_test PROPERTY C_STANDARD 11)
+    target_include_directories(runtime_core_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(runtime_core_test PRIVATE BREAK_RUNTIME_TESTING=1)
+
+    add_executable(test_runtime_facade tests/test_runtime_facade.c
+        src/task/task.c src/core/log.c)
+    target_include_directories(test_runtime_facade PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_facade PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_facade PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_facade PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_facade PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_facade PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_facade PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_facade COMMAND test_runtime_facade)
+    set_tests_properties(test_runtime_facade PROPERTIES
+        LABELS "headless;runtime_core")
+
+    # Formal thread + IO/VFS facade focused tests (Task 5). vfs.c/log.c are
+    # compiled beside the test: the facade reads through a borrowed VFS whose
+    # symbols resolve at this final link (same pattern as the task facade
+    # resolving the legacy TaskSystem). The compatibility async loader is not
+    # involved and stays unchanged.
+    add_executable(test_runtime_io tests/test_runtime_io.c
+        src/asset/vfs.c src/core/log.c)
+    target_include_directories(test_runtime_io PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_io PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_io PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_io PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_io PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_io PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_io PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_io COMMAND test_runtime_io)
+    set_tests_properties(test_runtime_io PROPERTIES
+        LABELS "headless;runtime_core")
+
+    # Reload coordinator + profiler bridge focused tests (Task 6). vfs.c,
+    # log.c, profiler.c and time.c are compiled beside the test: the
+    # coordinator reads through a borrowed VFS and the profiler bridge hands
+    # off to the existing profiler singleton — both resolve at this final
+    # link (same pattern as test_runtime_io). The compatibility
+    # filewatch.c/hotreload.c are NOT compiled here and stay unchanged; the
+    # only seams are break_runtime_reload_notify_file_event() and the
+    # owner-thread commit hook.
+    add_executable(test_runtime_reload tests/test_runtime_reload.c
+        src/asset/vfs.c src/core/log.c src/core/profiler.c src/platform/time.c)
+    target_include_directories(test_runtime_reload PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_reload PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_reload PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_reload PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_reload PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_reload PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_reload PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_reload COMMAND test_runtime_reload)
+    set_tests_properties(test_runtime_reload PROPERTIES
+        LABELS "headless;runtime_core")
 
     # test_ecs_system: needs ecs.c + ecs_system.c + task.c + log.c
     add_executable(test_ecs_system tests/test_ecs_system.c
@@ -3476,6 +4458,61 @@ endif()
         target_link_libraries(test_network PRIVATE ws2_32)
     endif()
     add_test(NAME test_network COMMAND test_network)
+
+    # Focused fragmentation coverage links the formal non-Snowflake core.
+    add_executable(test_break_replication_fragment tests/test_break_replication_fragment.c)
+    target_include_directories(test_break_replication_fragment PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_replication_fragment PRIVATE break_replication_core)
+    add_test(NAME test_break_replication_fragment COMMAND test_break_replication_fragment)
+    set_tests_properties(test_break_replication_fragment PROPERTIES
+        TIMEOUT 20 LABELS "network;replication;fragmentation")
+
+    # Adapter-backed test executables link the formal top-level break_net
+    # target (defined independent of ENGINE_BUILD_TESTS when
+    # BREAK_ENABLE_SNOWFLAKE=ON); engine_demo and dxx_break do not link it.
+    if(BREAK_ENABLE_SNOWFLAKE)
+        add_executable(test_break_net_adapter tests/test_break_net_adapter.c)
+        target_include_directories(test_break_net_adapter PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_net_adapter PRIVATE break_net)
+        add_test(NAME test_break_net_adapter COMMAND test_break_net_adapter)
+        set_tests_properties(test_break_net_adapter PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake")
+
+        add_executable(test_break_replication tests/test_break_replication.c)
+        target_include_directories(test_break_replication PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_replication PRIVATE break_net)
+        add_test(NAME test_break_replication COMMAND test_break_replication)
+        set_tests_properties(test_break_replication PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake;replication")
+
+        add_executable(test_break_session tests/test_break_session.c)
+        target_include_directories(test_break_session PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+            target_compile_options(test_break_session PRIVATE -Wno-type-limits -Wno-maybe-uninitialized)
+        endif()
+        target_link_libraries(test_break_session PRIVATE break_net)
+        add_test(NAME test_break_session COMMAND test_break_session)
+        set_tests_properties(test_break_session PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake;session")
+
+        # Stage 5 Phase D Task 2: TLS transport mode. The self-signed PEM
+        # fixtures are referenced in place from the pinned Snowflake tree
+        # (no copies); the macro mirrors snow's SNOW_TEST_SSL_FIXTURE_DIR
+        # stringize idiom.
+        add_executable(test_break_net_tls tests/test_break_net_tls.c)
+        target_include_directories(test_break_net_tls PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_net_tls PRIVATE
+            BREAK_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
+        target_link_libraries(test_break_net_tls PRIVATE break_net)
+        add_test(NAME test_break_net_tls COMMAND test_break_net_tls)
+        set_tests_properties(test_break_net_tls PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake;tls")
+    endif()
 
     # test_net_loop: platform-optimal event loop (kqueue/epoll/IOCP).
     # Backend source is selected the same way the engine target does it.
@@ -3607,6 +4644,148 @@ endif()
     target_link_libraries(test_alloc PRIVATE m)
     add_test(NAME test_alloc COMMAND test_alloc)
 
+    # test_break_version: product version/build identity (core TU, like log.c)
+    add_executable(test_break_version tests/test_break_version.c src/core/break_version.c)
+    target_include_directories(test_break_version PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_version PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
+    target_link_libraries(test_break_version PRIVATE m)
+    add_test(NAME test_break_version COMMAND test_break_version)
+
+    # Stage 5 Phase A Task 3: write-side PAL (PlatformAtomicWriter /
+    # platform_mkdir / platform_file_size). platform_fs.c's single production
+    # owner is the engine target; this test compiles the TU inline (the
+    # test_editor_assets precedent — exactly one definition per binary).
+    add_executable(test_platform_fs_write tests/test_platform_fs_write.c src/platform/platform_fs.c)
+    target_include_directories(test_platform_fs_write PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_platform_fs_write PRIVATE m)
+    add_test(NAME test_platform_fs_write COMMAND test_platform_fs_write)
+    set_tests_properties(test_platform_fs_write PROPERTIES LABELS "headless;platform")
+
+    # Stage 5 Phase A Task 2: break_crypto known-answer/misuse tests link the
+    # formal library; the contract ctest pins the target shape, the
+    # engine/engine_demo/dxx_break/editor no-link rule, the nm export gate
+    # (exactly 8 public symbols), and a minimal archive-only link test.
+    if(BREAK_ENABLE_CRYPTO)
+        add_executable(test_break_crypto tests/test_break_crypto.c)
+        target_include_directories(test_break_crypto PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_crypto PRIVATE break_crypto)
+        add_test(NAME test_break_crypto COMMAND test_break_crypto)
+
+        # The contract script compiles a tiny checker against the production
+        # archive with the system compiler; sanitizer trees must propagate
+        # their instrumentation flags or the archive's sanitizer runtime
+        # references would not resolve.
+        set(BREAK_CRYPTO_CONTRACT_SAN "")
+        if(ENGINE_USE_ASAN)
+            string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=address")
+        endif()
+        if(ENGINE_USE_UBSAN)
+            string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=undefined")
+        endif()
+        if(ENGINE_USE_TSAN)
+            string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=thread")
+        endif()
+        add_test(NAME test_break_crypto_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DCRYPTO_CONTRACT_ARCHIVE=$<TARGET_FILE:break_crypto>
+                -DCRYPTO_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DCRYPTO_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
+                -DCRYPTO_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/crypto_contract_tmp
+                -DCRYPTO_CONTRACT_SAN=${BREAK_CRYPTO_CONTRACT_SAN}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crypto_target_contract.cmake)
+        set_tests_properties(test_break_crypto_target_contract PROPERTIES
+            LABELS "headless;crypto;platform_contract")
+
+        # Stage 5 Phase A Task 4: break_update tests link the formal library
+        # (PUBLIC break_crypto chain); platform_fs.c compiles inline (the
+        # test_platform_fs_write precedent — engine keeps sole production
+        # ownership of that TU, exactly one definition per binary). The
+        # contract ctest pins the target shape, the no-link rule, the nm
+        # export gate (exactly 28 public symbols since Phase B Task 3:
+        # 15 manifest/store + 13 client), and a minimal archive link test.
+        add_executable(test_break_update tests/test_break_update.c src/platform/platform_fs.c)
+        target_include_directories(test_break_update PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_update PRIVATE break_update m)
+        add_test(NAME test_break_update COMMAND test_break_update)
+
+        # Stage 5 Phase B: update client tests (same inline-platform_fs.c
+        # precedent — engine keeps sole production ownership of that TU;
+        # links the formal break_update library). Task 1: state machine +
+        # A/B slots; Task 2: fake-fetch download/resume suite; Task 3:
+        # signed-fixture stage/activate/unstage pipeline suite.
+        add_executable(test_break_update_client tests/test_break_update_client.c src/platform/platform_fs.c)
+        target_include_directories(test_break_update_client PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_update_client PRIVATE break_update m)
+        add_test(NAME test_break_update_client COMMAND test_break_update_client)
+
+        # Sanitizer trees propagate their flags to the contract's
+        # system-compiler link test (the crypto contract precedent).
+        set(BREAK_UPDATE_CONTRACT_SAN "")
+        if(ENGINE_USE_ASAN)
+            string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=address")
+        endif()
+        if(ENGINE_USE_UBSAN)
+            string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=undefined")
+        endif()
+        if(ENGINE_USE_TSAN)
+            string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=thread")
+        endif()
+        add_test(NAME test_break_update_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DUPDATE_CONTRACT_ARCHIVE=$<TARGET_FILE:break_update>
+                -DUPDATE_CONTRACT_CRYPTO_ARCHIVE=$<TARGET_FILE:break_crypto>
+                -DUPDATE_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DUPDATE_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
+                -DUPDATE_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/update_contract_tmp
+                -DUPDATE_CONTRACT_SAN=${BREAK_UPDATE_CONTRACT_SAN}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_update_target_contract.cmake)
+        set_tests_properties(test_break_update_target_contract PROPERTIES
+            LABELS "headless;update;platform_contract")
+    endif()
+
+    # Stage 5 Phase C Tasks 1-3: break_crash record/spool tests link the formal
+    # library; platform_fs.c compiles inline (the test_break_update
+    # precedent — engine keeps sole production ownership of that TU), and
+    # break_version.c compiles inline with the same BREAK_BUILD_ID (the
+    # test_break_version precedent) for the Task 2 build-id capture. The
+    # contract ctest pins the option gate, the target shape + zero-dep rule,
+    # the engine/engine_demo/dxx_break/editor no-link rule, the nm export
+    # gate (exactly 36 public symbols), and a minimal archive link test.
+    if(BREAK_ENABLE_CRASH)
+        add_executable(test_break_crash tests/test_break_crash.c src/platform/platform_fs.c src/core/break_version.c)
+        target_include_directories(test_break_crash PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_crash PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
+        target_link_libraries(test_break_crash PRIVATE break_crash m)
+        add_test(NAME test_break_crash COMMAND test_break_crash)
+        set_tests_properties(test_break_crash PROPERTIES LABELS "headless;crash")
+
+        # Sanitizer trees propagate their flags to the contract's
+        # system-compiler link test (the crypto/update contract precedent).
+        set(BREAK_CRASH_CONTRACT_SAN "")
+        if(ENGINE_USE_ASAN)
+            string(APPEND BREAK_CRASH_CONTRACT_SAN " -fsanitize=address")
+        endif()
+        if(ENGINE_USE_UBSAN)
+            string(APPEND BREAK_CRASH_CONTRACT_SAN " -fsanitize=undefined")
+        endif()
+        if(ENGINE_USE_TSAN)
+            string(APPEND BREAK_CRASH_CONTRACT_SAN " -fsanitize=thread")
+        endif()
+        add_test(NAME test_break_crash_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DCRASH_CONTRACT_ARCHIVE=$<TARGET_FILE:break_crash>
+                -DCRASH_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DCRASH_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
+                -DCRASH_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/crash_contract_tmp
+                -DCRASH_CONTRACT_SAN=${BREAK_CRASH_CONTRACT_SAN}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crash_target_contract.cmake)
+        set_tests_properties(test_break_crash_target_contract PROPERTIES
+            LABELS "headless;crash;platform_contract")
+    endif()
+
     # test_pbr_math: CPU reference Cook-Torrance PBR (header-only, R579)
     add_executable(test_pbr_math tests/test_pbr_math.c)
     target_include_directories(test_pbr_math PRIVATE ${TEST_INCLUDE_DIRS})
@@ -3673,6 +4852,30 @@ endif()
         COMMAND rhi_swapchain_bench ${CMAKE_CURRENT_BINARY_DIR}/rhi_receipt_local.json)
     set_tests_properties(rhi_swapchain_bench PROPERTIES
         LABELS "graphics;benchmark" SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+    # Runtime fallback on a real window: vulkan default, forced opengl
+    # fallback, and the BREAK_RHI_BACKEND=opengl override, each rendering and
+    # reading back through the backend the chain picked.
+    if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        add_executable(test_rhi_runtime_fallback tests/test_rhi_runtime_fallback.c)
+        target_include_directories(test_rhi_runtime_fallback PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_rhi_runtime_fallback PRIVATE engine m)
+        engine_link_rhi_backend(test_rhi_runtime_fallback)
+        add_test(NAME test_rhi_runtime_fallback_default
+            COMMAND test_rhi_runtime_fallback vulkan default)
+        add_test(NAME test_rhi_runtime_fallback_forced
+            COMMAND test_rhi_runtime_fallback opengl forced)
+        add_test(NAME test_rhi_runtime_fallback_env_opengl
+            COMMAND test_rhi_runtime_fallback opengl env)
+        set_tests_properties(test_rhi_runtime_fallback_forced PROPERTIES
+            ENVIRONMENT "BREAK_RHI_FAIL_VULKAN=1")
+        set_tests_properties(test_rhi_runtime_fallback_env_opengl PROPERTIES
+            ENVIRONMENT "BREAK_RHI_BACKEND=opengl")
+        set_tests_properties(test_rhi_runtime_fallback_default
+            test_rhi_runtime_fallback_forced test_rhi_runtime_fallback_env_opengl
+            PROPERTIES LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77
+            TIMEOUT 60 RUN_SERIAL TRUE)
+    endif()
 
     # test_physics: needs physics.c + bvh.c + math.c + log.c
     add_executable(test_physics tests/test_physics.c
@@ -3862,20 +5065,58 @@ endif()
     target_include_directories(fuzz_vfs_pak PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_vfs_pak PRIVATE m)
 
-    # R630: fuzz smoke — bounded deterministic runs of the manual fuzzers.
-    # Labeled "fuzz" so default runs skip them (like "graphics"); the
-    # ASan/UBSan CI job builds the targets explicitly and runs them under
-    # sanitizers (the R623 "manual sanitizer evidence" boundary, automated).
-    # Args are (iters, seed[, seed file]); scratch paths are pid-unique.
-    add_test(NAME fuzz_scene_serial_smoke COMMAND fuzz_scene_serial 500 7)
-    add_test(NAME fuzz_net_packet_smoke   COMMAND fuzz_net_packet 2000 11)
-    add_test(NAME fuzz_decode_image_smoke COMMAND fuzz_decode_image 2000 13)
-    add_test(NAME fuzz_vfs_pak_smoke      COMMAND fuzz_vfs_pak 2000 17)
-    add_test(NAME fuzz_asset_gltf_smoke   COMMAND fuzz_asset_gltf 800 23
-             "${CMAKE_SOURCE_DIR}/assets/test.glb")
-    set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
-        fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
-        PROPERTIES LABELS "fuzz")
+    # Mutation fuzzer for the editor remote session wire path (ids 4..13):
+    # mutated envelopes -> the real break_net codec -> the real session
+    # manager -> the real editor_remote.c handlers on a live headless shell
+    # and document, no sockets. Needs the remote host, so it exists only with
+    # Snowflake. Same source/link set as test_editor_shell (the shell TUs are
+    # compiled inline; exactly one definition per binary).
+    if(BREAK_ENABLE_SNOWFLAKE)
+        add_executable(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c
+            apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c
+            apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
+            apps/editor/editor_panel_profiler.c
+            apps/editor/editor_remote.c apps/editor/editor_panel_network.c
+            apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
+            src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
+            src/asset/vfs.c src/platform/filewatch.c src/platform/filewatch_backend.c
+            src/myui/myr/my_vgcanvas_break_rhi.c src/core/shader_io.c
+            src/myui/mypal/dummy/my_pal_dummy.c tests/rhi_stubs.c)
+        set_property(TARGET fuzz_editor_remote PROPERTY C_STANDARD 11)
+        target_include_directories(fuzz_editor_remote PRIVATE
+            ${TEST_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
+        target_compile_definitions(fuzz_editor_remote PRIVATE
+            BREAK_EDITOR_SHELL_TESTING=1)
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(fuzz_editor_remote PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+            target_link_libraries(fuzz_editor_remote PRIVATE pthread)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(fuzz_editor_remote PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(fuzz_editor_remote PRIVATE kernel32)
+        endif()
+        target_link_libraries(fuzz_editor_remote PRIVATE break_net
+            runtime_core_test break_editor_test myui_core m)
+    endif()
+
+    if(ENGINE_BUILD_FUZZ_SMOKE)
+        # Explicit fuzz lane only: these targets are EXCLUDE_FROM_ALL and are
+        # built before CTest runs them, so ordinary CTest has no Not Run tests.
+        add_test(NAME fuzz_scene_serial_smoke COMMAND fuzz_scene_serial 500 7)
+        add_test(NAME fuzz_net_packet_smoke   COMMAND fuzz_net_packet 2000 11)
+        add_test(NAME fuzz_decode_image_smoke COMMAND fuzz_decode_image 2000 13)
+        add_test(NAME fuzz_vfs_pak_smoke      COMMAND fuzz_vfs_pak 2000 17)
+        add_test(NAME fuzz_asset_gltf_smoke   COMMAND fuzz_asset_gltf 800 23
+                 "${CMAKE_SOURCE_DIR}/assets/test.glb")
+        set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
+            fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
+            PROPERTIES LABELS "fuzz")
+        if(BREAK_ENABLE_SNOWFLAKE)
+            add_test(NAME fuzz_editor_remote_smoke COMMAND fuzz_editor_remote 600 29)
+            set_tests_properties(fuzz_editor_remote_smoke PROPERTIES LABELS "fuzz")
+        endif()
+    endif()
 
     # test_camera_frustum: needs camera.c + cull.c + frustum_cull.c + math.c
     add_executable(test_camera_frustum tests/test_camera_frustum.c

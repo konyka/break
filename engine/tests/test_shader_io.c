@@ -1134,6 +1134,69 @@ TEST(forward_clustered_array_variant_wiring)
     ASSERT_NOT_NULL(strstr(vsh, "set = 2, binding = 0"));
 }
 
+/* GL stage interface: when a fragment input carries an explicit location, the
+ * matching vertex output must carry the same one, or the GL program link
+ * fails ("input with explicit location has no matching output"). The four
+ * clustered vertex variants all feed the shared pbr_clustered.frag; the R592
+ * GL arr variant declared its outputs without locations and broke the
+ * engine_demo OpenGL path at pipeline creation. */
+static bool glsl_find_location(const char *src, const char *qual,
+                               const char *name, int *out_loc)
+{
+    const char *p = src;
+    usize nlen = strlen(name);
+    while ((p = strstr(p, name)) != NULL) {
+        const char *line = p;
+        const char *end = p + nlen;
+        while (line > src && line[-1] != '\n') line--;
+        if ((*end == ';' || *end == ' ') && (p == src || p[-1] == ' ')) {
+            char buf[256];
+            usize len = (usize)(end - line);
+            if (len < sizeof(buf)) {
+                memcpy(buf, line, len);
+                buf[len] = '\0';
+                char padded[260];
+                snprintf(padded, sizeof(padded), " %s", buf);
+                if (strstr(padded, qual) != NULL && strstr(buf, "//") == NULL) {
+                    const char *loc = strstr(buf, "location");
+                    *out_loc = -1;
+                    if (loc != NULL) {
+                        loc = strchr(loc, '=');
+                        if (loc != NULL) *out_loc = atoi(loc + 1);
+                    }
+                    return true;
+                }
+            }
+        }
+        p = end;
+    }
+    return false;
+}
+
+TEST(gl_clustered_vertex_outputs_match_fragment_locations)
+{
+    static const char *const verts[] = {
+        "pbr_clustered.vert", "pbr_clustered_inst.vert",
+        "pbr_clustered_skin.vert", "pbr_clustered_arr.vert"
+    };
+    static const char *const varyings[] = { "vWorldPos", "vNormal", "vUV" };
+    static char fsh[24576];
+    char vsh[8192];
+    ASSERT_TRUE(read_shader_source("pbr_clustered.frag", fsh, sizeof(fsh)));
+    for (usize v = 0; v < sizeof(verts) / sizeof(verts[0]); v++) {
+        ASSERT_TRUE(read_shader_source(verts[v], vsh, sizeof(vsh)));
+        for (usize i = 0; i < sizeof(varyings) / sizeof(varyings[0]); i++) {
+            int in_loc = -2, out_loc = -2;
+            ASSERT_TRUE(glsl_find_location(fsh, " in ", varyings[i], &in_loc));
+            ASSERT_TRUE(glsl_find_location(vsh, " out ", varyings[i], &out_loc));
+            if (in_loc != out_loc)
+                printf("    %s: %s out location %d, pbr_clustered.frag in location %d\n",
+                       verts[v], varyings[i], out_loc, in_loc);
+            ASSERT_EQ(in_loc, out_loc);
+        }
+    }
+}
+
 /* R594: the material-array bake gains a NORMAL array — the clustered arr
  * variant's u_normal_map_arr slot (R592) finally receives per-layer normal
  * maps instead of the 1-layer flat fallback. MatArraySet grows normal_array;
@@ -2131,6 +2194,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(forward_clustered_instanced_variant_wiring);
     RUN_TEST(forward_clustered_skinned_variant_wiring);
     RUN_TEST(forward_clustered_array_variant_wiring);
+    RUN_TEST(gl_clustered_vertex_outputs_match_fragment_locations);
     RUN_TEST(mat_array_bake_includes_normal_array);
     RUN_TEST(deferred_gbuffer_normal_mapping_wiring);
     RUN_TEST(forward_clustered_per_entity_fallback_wiring);

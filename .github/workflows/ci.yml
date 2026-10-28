@@ -10,7 +10,7 @@ name: CI
 #   lane-proton            — 仅兼容验证，不计入 Windows D3D12 证据（周跑 + 手动）
 # 收据由 engine/tools/make_evidence_receipt.cmake 生成、engine/tests/test_evidence_receipt_schema.cmake
 # 校验（Task 8 台账消费 evidence-receipt-* artifact 链接）。
-# 保留的非 lane 命名 job：clean-room（task 2 交付）、wayland-gl（兼容期保留，task 6 删除）、
+# 保留的非 lane 命名 job：clean-room（task 2 交付）、wayland-gl（OpenGL 长期保留：最后降级 + 渲染对比基准）、
 # ios-metal-build（Simulator compile-only 证据）。
 
 on:
@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Configure
-        run: cmake -S engine -B build -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain-clang-linux.cmake" -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_IPO=ON
+        run: cmake -S engine -B build -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain-clang-linux.cmake" -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_IPO=ON -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build --parallel
@@ -87,7 +87,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON -DENGINE_BUILD_FUZZ_SMOKE=ON -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build --parallel
@@ -155,7 +155,7 @@ jobs:
         run: sudo sysctl -w vm.mmap_rnd_bits=28
 
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_TSAN=ON
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_TSAN=ON -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build --parallel
@@ -310,7 +310,7 @@ jobs:
         # R696: AddressSanitizer on Windows/clang — the runtime ships as
         # clang_rt.asan DLLs that the loader must find; the test step
         # copies them next to the executables after building.
-        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build-asan --parallel
@@ -620,7 +620,7 @@ jobs:
           path: receipt.json
 
   wayland-gl:
-    # DEPRECATED（task 6 删除）：兼容期保留的 Wayland+OpenGL lane；收据归
+    # OpenGL 长期保留（最后降级方案 + 渲染对比基准）的 Wayland+OpenGL lane；收据归
     # native-surface 类（test_platform_wayland_runtime 真实 surface 证据）。
     name: Linux Wayland + OpenGL (GCC)
     # R680: pinned like every other Linux lane -- ubuntu-latest moves to
@@ -636,7 +636,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Configure
-        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: |
@@ -912,8 +912,8 @@ jobs:
 
   # ---- lane: GPU-runtime（真实 GPU/软渲染 ICD 跑通帧；evidence_level=GPU_RUNTIME）----
   lane-gpu-runtime-linux-gl:
-    # DEPRECATED（task 6 删除）：兼容期保留的 X11+OpenGL lane（brief :121），
-    # 不再扩展；Xvfb + LIBGL_ALWAYS_SOFTWARE 下跑 X11/GL runtime。
+    # OpenGL 长期保留（最后降级方案 + 渲染对比基准）的 X11+OpenGL lane（brief :121），
+    # 不扩展新能力；Xvfb + LIBGL_ALWAYS_SOFTWARE 下跑 X11/GL runtime。
     name: Linux X11 + OpenGL (GCC)
     # R680: pinned like every other Linux lane -- ubuntu-latest moves to
     # Ubuntu 26 from 2026-10-19 (runner-images#14748).
@@ -928,7 +928,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Configure
-        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build --parallel

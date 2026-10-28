@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "config_version": 1,
+  "config_version": 3,
   "comment": "signature.algorithm=sha256-payload = 完整性哈希（非真实性签名）；ed25519-sha256 随发布签名设施启用",
-  "signature": { "algorithm": "sha256-payload", "value": "1ebe41340fa6b94e71564114793d911709465da8f54f92013e83acacb5c13c56" },
+  "signature": { "algorithm": "sha256-payload", "value": "320d9db0d5760e50186b391193b38c82ac19afde330dbf03064dbc9cb64efe02" },
   "platforms": {
-    "windows":     { "allowed": ["d3d12", "vulkan"],  "fallback_chain": ["d3d12", "vulkan"] },
+    "windows":     { "allowed": ["d3d12", "vulkan", "opengl"], "fallback_chain": ["d3d12", "vulkan", "opengl"] },
     "linux":       { "allowed": ["vulkan", "opengl"], "fallback_chain": ["vulkan", "opengl"] },
     "android":     { "allowed": ["vulkan"],           "fallback_chain": ["vulkan"] },
     "macos":       { "allowed": ["metal", "vulkan"],  "fallback_chain": ["metal", "vulkan"] },

@@ -1,0 +1,189 @@
+# Editor Remote Session — wire protocol, security model, threading, network panel
+
+Status: **delivered in dev-tool form** (Stage 4 scene editor Phase 4, 2026-10-25, branch `sdd/scene-editor-phase4`, range `master..HEAD` = Task 1 `1af632eb`, Task 2 `7fc7a1ef` + review `ca9a2785`, Task 3 `5df792cd` + review `357be082`, Task 4 closeout; plan `docs/superpowers/plans/2026-10-24-scene-editor-phase4.md`). This is the contract record for Stage 4 subproject 7's remote-session half and the network-panel part of subproject 6. It is a **development/diagnostic tool**: TLS + CHALLENGE/AUTH-v2 are required, but key provisioning is a dev path, the certificates in the test suite are self-signed fixtures, and nothing here is a production deployment or WAN claim (§9).
+
+Implementation: `engine/src/editor/editor_protocol.h` (wire ids, status values, bounds), `engine/apps/editor/editor_remote.{h,c}` (host + CLI plumbing), `engine/apps/editor/editor_panel_network.c` (panel), `engine/apps/editor/editor_main.c` (`--remote` wiring), `engine/src/network/break_net_message_registry.c` (default-registry definitions 4..13), `engine/src/network/break_session.c` (CLOSED-entry key-reuse reclaim). Tests: `engine/tests/test_editor_shell.c` (remote/panel cases 37..59).
+
+## 1. Protocol reference
+
+The editor messages ride the existing 18-byte `break_net` envelope (`network/break_net_envelope.h`; `protocol_version`, `message_id`, `sequence`, `payload_size`). Every editor message uses envelope `protocol_version = BREAK_EDITOR_PROTO_VERSION = 1`; any other version closes the session.
+
+Wire rules (pinned by tests):
+
+- Payloads are canonical little-endian binary parsed with explicit get16/get32 helpers — no structs on the wire, no unbounded reads.
+- Strings are length-prefixed (`u16` byte count, no NUL on the wire).
+- `f32` is its 4 little-endian bytes (uint32 lane, `memcpy`'d).
+- Entity ids are 8 bytes: `index/u32` then `generation/u32` (the `BreakEditorEntityId` layout).
+- Every well-formed request gets exactly **one** response: the per-id success response below, or `RESULT` with a non-ok status. Malformed frames never get a response — the session is closed (§2).
+
+| ID | Name | Request payload | Success response (same id) | Maps to |
+|---:|---|---|---|---|
+| 4 | DESCRIBE | empty | `version/u16, entity_count/u32, dirty/u8` (7 B) | read-only |
+| 5 | LIST | empty | `count/u16` + per entity `{id/u64, name_len/u16, name}` (truncated at the 4096 B cap; `count` = rows actually sent) | read-only |
+| 6 | SPAWN | `name_len/u16 + name` (0 = generated name) | `entity_id/u64` | `break_editor_doc_add_entity` |
+| 7 | REMOVE | `entity_id/u64` | `removed/u8` | `break_editor_doc_remove_entity` |
+| 8 | RENAME | `entity_id/u64 + name_len/u16 + name` | `ok/u8` | `break_editor_doc_rename_entity` |
+| 9 | SET_FIELD | `entity_id/u64 + comp_len/u16 + comp + field_len/u16 + field + value/f32` | `ok/u8` | `break_editor_doc_set_field_f32` (component/field names resolved through the registry, byte-wise case-sensitive) |
+| 10 | UNDO | empty | `applied/u8` | `break_editor_undo` |
+| 11 | REDO | empty | `applied/u8` | `break_editor_redo` |
+| 12 | EVAL | `text_len/u16 + text` | `ok/u8, line_count/u16`, then per line `{line_len/u16, bytes}` — newest tail of the eval's console output, ≤ 16 lines, each ≤ 127 B incl. the `lua| ` prefix, whole payload ≤ 4096 B | `break_editor_lua_eval` (same sandbox, budget, and 4096 B input cap as the local console) |
+| 13 | RESULT | — (server → client only) | `status/u8` + optional payload | generic failure wrapper. No host handler is registered for id 13: a client-sent RESULT gets no response and counts as `handler_failed`. It does **not** close the session (break_session auto-closes only a failed AUTH), which is the one exception to the close-on-protocol-error rule. |
+
+Every mutation maps 1:1 to an existing undoable doc command: a remote SPAWN is reverted by a local Ctrl+Z and by a remote UNDO (both test-pinned). No raw world pointer is reachable.
+
+### RESULT status taxonomy
+
+| Status | Value | Meaning | Connection |
+|---|---:|---|---|
+| OK | 0 | reserved (success uses the per-id response) | stays up |
+| INVALID | 1 | well-formed request with an unusable argument: invalid entity id, name ≥ name capacity, empty/oversize rename, unknown component or field, empty/oversize component/field name, EVAL text over the console's 4096 B input bound | stays up |
+| FAILED | 2 | well-formed request whose command failed: SPAWN produced no valid id, LIST could not read an entity row, EVAL console core unavailable or allocation failure | stays up |
+
+A command that runs but does nothing (REMOVE of a stale id, UNDO with an empty stack) is not a RESULT case: it answers the per-id response with `removed/ok/applied = 0`.
+
+### Bounds
+
+| Resource | Bound | Enforcement |
+|---|---|---|
+| Inbound payload | ≤ 4096 B per frame | default-registry `payload_limit` (codec rejects before any handler) + exact-layout handler checks |
+| Editor ids | 4..13 used of the free space 4..19 (≤ 16 definitions) | `break_net_message_registry_default` |
+| EVAL input | ≤ 4096 B (`BREAK_EDITOR_LUA_INPUT_MAX_BYTES`) | larger → RESULT INVALID, connection stays up |
+| EVAL response | ≤ 16 lines × ≤ 127 B, ≤ 4096 B total | fixed capture buffer in the host |
+| Connection table | ≤ 32 rows (`max_connections`, 0 ⇒ 32; the CLI uses 4) | create rejects > 32; the reactor gets the same cap |
+| Session bindings | `max_sessions = capacity` distinct connection keys per manager lifetime | break_session lifetime capacity; recycled snow keys reclaim their CLOSED entry in place (see `session_protocol.md`) |
+| Network panel | ≤ 16 rows × 96 B | fixed storage |
+
+Duplicate policy: the editor definitions are `IDEMPOTENT`, not `REJECT`. In break_session, `REJECT` means "at most once per session" (AUTH/CHALLENGE semantics), which would make every editor command single-use per connection. `IDEMPOTENT` dispatches every request that carries a new sequence and only swallows an exact replay of the last sequence for that id; strict inbound sequence monotonicity is unchanged.
+
+## 2. Security model
+
+Trust chain, all links required for the real remote path (the Stage 5 Phase D contracts used as-is — `docs/design/transport_security.md`):
+
+```text
+loopback listener 127.0.0.1 (editor_main), admission rate limits
+        ▼
+TLS (server-side acceptor; handshake failure closes)
+        ▼
+CHALLENGE id=3 (16 B CSPRNG server nonce) → AUTH v2 id=1 (56 B, HMAC-SHA256 tag)
+        ▼
+session AUTHENTICATED → editor commands 4..12 dispatched on the shell thread
+```
+
+- **Default OFF.** The shell never creates a remote on its own. Without `--remote`, `editor` creates no reactor and nothing listens. Any `--remote-*` option without `--remote` fails the parse (exit 2). Pinned by `remote_cli_default_off_and_fail_closed_flags` and `remote_disabled_leaves_shell_untouched`. With no remote attached, the shell behaves exactly as in Phase 3 (the existing editor lane proves it).
+- **Flags** (`editor_remote.h`): `--remote`; `--remote-port N` (default 47700); `--remote-cert F --remote-key F` (required); `[--remote-ca F]` (also turns on `verify_peer` = mTLS); `--remote-psk-file F` (exactly 32 raw bytes) or `--remote-psk-hex <64 hex>`; `[--remote-key-id-hex <16 hex>]` (default all-zero key id). Missing TLS files or PSK, a malformed value, or an unknown `--remote-*` flag fails the parse. Inline `--remote-*=value` forms are echoed as `=<redacted>` in errors, never with the value. A start failure (unreadable cert/key, port in use, auth setup) exits 1 before the main loop runs.
+- **TLS + AUTH-v2 required.** `use_tls=true` without cert, key, and PSK fails `break_editor_remote_start`, so no TLS path exists without authentication. In TLS mode sessions never auto-authenticate. Every editor command on a session that is not AUTHENTICATED is refused: the host marks the session closed with zero doc effect (no AUTH, tampered tag, unknown key id, and AUTH v1 under v2 config are all pinned by `remote_tls_unauthenticated_clients_closed_zero_doc_effect`). Editor ids are `PHASE_ANY` in the default registry, so authorization is enforced by the host gate (`remote_on_message`), which closes rather than only rejecting.
+- **Plaintext is a test-only seam.** `use_tls=false` with no PSK auto-marks each session AUTHENTICATED on open. Only tests reach it; `editor_main` always builds a TLS config (`break_editor_remote_cli_to_config`).
+- **PSK provisioning is a dev path, not production.** One static `key_id → 32-byte PSK` pair, supplied by the host. There is no provisioning, rotation, or revocation. Prefer `--remote-psk-file`: the hex form sits in argv and is readable by other local users through `/proc/<pid>/cmdline` for the process lifetime. The PSK file is read unbuffered. Parsed key bytes are wiped with a volatile (non-elidable) store right after `break_editor_remote_set_psk`, and the remote's copies are wiped on destroy. The Snowflake self-signed fixtures used by the tests (`BREAK_TEST_SSL_FIXTURE_DIR`) are test-only trust anchors; production PKI requirements are in `transport_security.md` §7.
+- **Loopback-first bind.** `editor_main` always binds `127.0.0.1`; there is no flag to change the bind host. `BreakEditorRemoteConfig.bind_host` defaults to `127.0.0.1` for library callers.
+- **Default admission rate limits** (CLI): global 20 accepts/s with burst 40, plus 120 accepts per source IP per minute (`BREAK_EDITOR_REMOTE_DEFAULT_RATE_*`). Denials happen before any connection object is allocated and are observable via `break_editor_remote_admission_denied` (pinned by `remote_tls_rate_limit_denials_observable`). Library callers that pass zeros get no limits (the Phase D all-zero semantics).
+- **One authenticated remote per process.** `break_session_set_auth` is process-global, so `start` installs the remote's key slot as the process auth domain, and a second PSK-carrying remote fails `start`. Destroy clears the domain.
+- **Unauthenticated sessions are marked closed and their frames dropped.** On a refused or failed session, break_session moves it to CLOSING/CLOSED. Every later frame is classified stale: no dispatch, no response bytes, no doc effect (the stale counter is test-pinned).
+- **Closed sessions lose their transport; idle unauthenticated peers are evicted** (2026-10-26). When a session enters CLOSING/CLOSED for any reason (host gate refusal, malformed frame, AUTH failure, registry rejection), the host calls `break_net_reactor_close` for its key once. The adapter writes every response that was queued before the close, then closes the socket (Snowflake close-after-flush); the normal `CONNECTION_CLOSED` path then frees the identity and the connection slot. Commands queued after the close are refused (`BREAK_NET_SEND_CLOSED`); commands that could not reach the transport by then (TLS handshake unfinished) are dropped. Separately, a connection that has not reached AUTHENTICATED `auth_timeout_ms` after the host first saw it is closed the same way and counted (`break_editor_remote_auth_timeouts`). `--remote` always sets `BREAK_EDITOR_REMOTE_DEFAULT_AUTH_TIMEOUT_MS` (10 s); library callers that pass 0 get no deadline (the plaintext test seam relies on that). The deadline is checked once per editor frame, so eviction happens within one frame after it expires.
+- **Fail closed.** An unknown message id, wrong envelope version, malformed or mis-sized payload, or a handler-side protocol error closes the session with no response. Oversize frames are rejected by the codec before any handler runs. Command failures on well-formed payloads answer `RESULT` instead (§1).
+
+## 3. Threading model
+
+- **The shell thread is the GameThread.** The remote is created, started, ticked, and destroyed on the shell thread (single-owner convention, same as the document).
+- **STEP-mode reactor.** The reactor runs in `BREAK_NET_DRIVE_STEP`: no host network thread exists. Each frame, `break_editor_shell_tick` calls `break_editor_remote_tick` exactly once (`remote_tick_wiring_polls_adapter_every_frame` pins the per-tick counter). The tick does `break_net_reactor_step(reactor, 0)` (non-blocking; the reactor's atomic step-driver guard), then the poll-adapter drain: up to 32 events per tick through `break_session_manager_apply_adapter_event`, then `break_session_manager_poll` to finalize CLOSING → CLOSED once the event queue is empty. This is the `break_session_manager_poll_adapter` loop written out in the host so the connection table can adopt keys from the OPENED events (the manager has no enumeration API). It is the same apply/finalize sequence and gate.
+- **Consequence:** every network callback and every protocol handler runs on the shell thread. Handlers call `break_editor_doc_*`, `break_editor_undo|redo`, and `break_editor_lua_eval` directly, so the doc, Lua, and command owner-thread rules hold by construction with zero cross-thread dispatch. No widget events are injected for remote commands; handlers use the doc API (the `editor_panels.h` layering).
+- **Why STEP rather than THREAD:** a THREAD-mode reactor would need a cross-thread command queue into the doc and console, plus a second owner for the TLS state. STEP mode keeps one owner for doc, Lua, session, and every `snow_ssl_t` touch. The cost is that network latency is bounded by frame cadence, which is acceptable for a dev tool.
+- Evidence: `test_editor_shell` ×5 under TSan with zero reports (§10).
+
+## 4. Network diagnostics panel
+
+- **Placement:** in the right-hand diagnostics column (`editor-right-panel`), directly under the profiler panel, at `h:20%` (label row plus list view). Pinned by `network_panel_layout_in_diagnostics_column_under_profiler`.
+- **Pure view.** It reads only the read-only `editor_remote.h` accessors (`is_running`, `is_tls`, `outbound_count`, `admission_denied`, `session_stats`, `connection_count`, `connections_snapshot`). It includes no transport or session header and never steps, drains, sends, closes, or transitions anything. A source-scan pin plus a behavior pin show state is unchanged across refreshes.
+- **Throttle:** at most 4 Hz (250,000 µs between refreshes, platform monotonic clock; injectable in tests). The first tick after create, or after any remote attach or detach, always refreshes. Two ticks within 250 ms leave row storage byte-identical (pinned).
+- **Rows** (fixed 16 × 96 B storage, refresh allocates nothing):
+  - no remote attached: exactly one row, `remote: off`
+  - `[0]` `reactor: running=<0|1> tls=<0|1> outbound=<n> denied=<n>`
+  - `[1]` `session: applied=<n> unknown=<n> stale=<n>`
+  - `[2]` `session: invalid=<n> phase_rejected=<n>`
+  - `[3]` `session: duplicate=<n> handler_failed=<n>`
+  - `[4]` `connections: <count>`
+  - `[5..15]` `conn: key=<connection_key> state=<SESSION_STATE>` (at most 11 rows; the header row carries the full count)
+- The session counters are `break_session_manager_apply_stats` verbatim (the mirror struct is `static_assert`-checked field for field). Equality with the reactor accessors is pinned by `network_panel_rows_match_session_stats_and_reactor_accessors`.
+
+## 5. Codec boundary
+
+The envelope codec consults only `break_net_message_registry_default()` (`session_protocol.md`, codec-boundary note). A custom registry cannot admit ids the codec does not know, so the editor ids are registered **in the default registry**, in its free id space after AUTH(1)/PING(2)/CHALLENGE(3). Ids 4..13 are used and 14..19 stay reserved for the editor (≤ 16 definitions in total). The manager is created with `registry = NULL` (the default registry) so the manager and the codec see the same table. The consequence is documented rather than worked around: every `break_net` consumer in the process now recognizes ids 4..13 as valid frames (`PHASE_ANY`, `payload_limit` 4096). An application that hosts its own `break_session` manager without editor handlers would see such frames as unhandled. Pinned by `remote_protocol_ids_live_in_default_registry`.
+
+## 6. Lifecycle
+
+- `create(shell, cfg)` → `set_psk` (before start only) → `start` (fail-closed) → `break_editor_shell_set_remote(shell, remote)` → per-frame tick via the shell → `break_editor_remote_destroy`. The shell **borrows** the remote; the host (`editor_main` or a test) owns it. `destroy` detaches itself from the shell first, then stops the reactor, destroys the manager and reactor, releases the process auth domain, and wipes the key copies.
+- **Shell destroy orphans the attached remote.** If the shell is destroyed while a remote is still attached, `break_editor_shell_destroy` first calls `editor_remote_shell_destroyed` while the doc is still alive. The remote drops its shell back-pointer, destroys its doc-borrowing console core, and stops its reactor. The orphaned remote is then inert: `tick` is a no-op, `start` returns false, and a later `break_editor_remote_destroy` never touches the freed shell or its network panel. Pinned by `network_panel_shell_destroyed_before_attached_remote`. `editor_main` destroys the remote before the shell (the normal order).
+
+## 7. End-to-end transcript (TLS + AUTH-v2)
+
+A scripted client test binary (`test_editor_shell`, case `remote_tls_e2e_connect_auth_describe_spawn_undo_disconnect`) runs a dummy-PAL editor shell with a TLS remote on an ephemeral loopback port. The client side is a Snowflake `snow_ssl_*` client over a raw socket, using the Snowflake self-signed test fixture cert and a test PSK. It runs connect → auth → describe → spawn → undo → disconnect, asserts every step, and prints one `E2E|` line per step. Captured 2026-10-25 from `build-sdd-p4-final/test_editor_shell` (normal tree; the same case passes in the ASan+UBSan and TSan trees):
+
+```text
+E2E| listen 127.0.0.1:<ephemeral> tls=1
+E2E| connect: TLS handshake ok; <- CHALLENGE id=3 v1 16B server_nonce
+E2E| session state=NEW
+E2E| -> AUTH id=1 v2 56B (key_id||client_nonce||hmac) ; session state=AUTHENTICATED
+E2E| -> DESCRIBE id=4 0B ; <- DESCRIBE id=4 7B version=1 entity_count=0 dirty=0
+E2E| -> SPAWN id=6 6B name="hero" ; <- SPAWN id=6 8B entity={index=1,generation=1} ; doc entity_count=1
+E2E| -> UNDO id=10 0B ; <- UNDO id=10 1B applied=1 ; doc entity_count=0
+E2E| disconnect: client closed ; remote connection_count=0 admission_denied=0
+```
+
+Status values: every response was the per-id success response (no `RESULT` frame, i.e. no INVALID/FAILED status). The session went NEW → AUTHENTICATED. UNDO returned `applied=1` and the doc entity count went 1 → 0. After disconnect the connection table drained to 0 with zero admission denials.
+
+## 8. Known limitations
+
+- **Auth deadline granularity:** checked once per editor frame against the monotonic clock; a peer that authenticates is never evicted later by it (sessions have no idle timeout after authentication).
+- **Process-wide auth domain:** one PSK-carrying remote per process (§2).
+- **Frame-cadence latency:** one reactor step and ≤ 32 events per frame (§3).
+- **Shared default registry:** ids 4..13 are visible to every `break_net` consumer in the process (§5).
+- **Client-sent RESULT** counts as `handler_failed` without closing (§1).
+- **The EVAL console is separate from the panel console:** the remote owns its own `BreakEditorLuaConsole` core on the same doc and logs into the same shared ring. Lua module state is not shared with the local Lua panel, though doc effects are, since both go through one command stack.
+
+## 9. NOT delivered
+
+- Remote load/save (load's world swap plus selection reconcile needs its own design; save is not exposed either).
+- Remote render control (camera, viewport, render settings). The **render debugger panel** is delivered separately as a local pure view (`docs/design/editor_render_debugger.md`), not as a remote-control surface.
+- A production credential system: per-device provisioning, rotation, revocation, key storage. The PSK is a dev path (`transport_security.md` §4).
+- WAN deployment and multi-client management (no user or role model, no per-client permissions, no session listing or kick control, no non-loopback bind flag).
+- Remote undo-stack sharing or collaboration semantics (remote and local commands share the one doc command stack; there is no per-client history, conflict handling, or change notification push).
+- Win32 runtime validation: the `editor` target only cross-compiles (see §10 follow-up evidence); no Windows binary has been run, and the Snowflake-ON Windows link is unverified. The repo's own fuzz smoke targets pass under ASan+UBSan (§10), and `fuzz_editor_remote` (§10, 2026-10-26) now exercises the plaintext-seam handler path in-process; it does not cover the TLS transport, the CHALLENGE/AUTH-v2 handshake, or the socket layer.
+
+## 10. Evidence
+
+Phase 4 Task 4 closeout, HEAD = `357be082` + the closeout commit (one added test case plus docs):
+
+- Fresh normal tree `build-sdd-p4-final` (`-DBREAK_ENABLE_SNOWFLAKE=ON`, Snowflake pin `0fceed6d…` verified at configure): full default build exit 0. Editor lane 10/10 (`test_editor_shell` 59/59), break_net lane 3/3 (adapter 38/38, session 35/35, TLS 10/10), target-contract ctests 7/7 ×3.
+- `ENGINE_BUILD_TESTS=OFF` tree `build-sdd-p4-notests`: builds `editor`.
+- nm: `editor` carries `break_net`/`break_session` (61 `T`) and `break_crypto` (8 `T`). `engine_demo`, `dxx_break`, and `libengine.a` carry zero `break_net_*`/`break_session_*`/`break_crypto_*`/`snow_*` symbols. `libbreak_net.a` exports are identical to Phase D (63).
+- ASan+UBSan `build-sdd-p4-asan`: `test_editor_shell` ×3; TSan `build-sdd-p4-tsan`: ×5. All 59/59, zero sanitizer reports, each run under `timeout 120`. Editor/net/contract lanes green on both trees.
+- Full non-graphics/non-fuzz suite (`ctest -LE 'graphics|fuzz'`, normal tree): 203 selected = 202 passed + 1 Windows-only skip (`test_d3d12_dependency_gate`), 0 failed.
+- Build shape: the `editor` executable is built regardless of `BREAK_ENABLE_SNOWFLAKE` (unchanged from master). With Snowflake ON it links `break_net` and carries the real remote host; with Snowflake OFF `editor_remote.c` compiles its stub surface (remote unavailable), so `editor --remote …` exits non-zero with a clear message and the editor is otherwise identical. Final review verified a Snowflake-OFF tree builds `editor` and the editor/contract lanes pass.
+
+### Follow-up evidence (2026-10-25, master `4a28ddf0`)
+
+- **Sanitizer trees re-run on master.** `build-sdd-p4-asan` (ASan+UBSan) and `build-sdd-p4-tsan` were rebuilt on the merged tree. `test_editor_shell` ASan ×3 and TSan ×5 each gave 59/59, exit 0, zero sanitizer reports. The editor + break_net + contract ctest lane is 32/32 on both trees.
+- **Fuzz lane.** A fresh ASan+UBSan tree `build-sdd-p4-fuzz` (`-DENGINE_BUILD_FUZZ_SMOKE=ON`) built the five `fuzz_*` targets and `ctest -L fuzz` passed 5/5 (`fuzz_scene_serial_smoke`, `fuzz_net_packet_smoke`, `fuzz_decode_image_smoke`, `fuzz_vfs_pak_smoke`, `fuzz_asset_gltf_smoke`). These are the repo's pre-existing fuzzers; none targets the editor wire protocol.
+- **Live `editor --remote` smoke (X11, Mesa OpenGL).** The real `editor` binary was started with a throwaway self-signed cert, a random 32-byte PSK file and key id `0000000000000000`, bound to `127.0.0.1:47711`. It must be started from the `engine/` directory: shaders load by the relative path `shaders/…`, and from any other directory `break_ui_init` fails with `editor: break_ui_init failed`. A scripted Python client (`ssl` + `hmac`, outside the repo) then ran TLS 1.3 handshake → CHALLENGE (id 3, 16 B) → AUTH-v2 (56 B) → DESCRIBE (0 entities) → SPAWN `smoke_hero` (entity `{1,1}`) → DESCRIBE (1 entity, dirty) → LIST → UNDO (`applied=1`) → DESCRIBE (0 entities), all as per-id success responses. Two negative clients, one sending a command without AUTH and one authenticating with a wrong PSK, received no response bytes (fail closed). A valid client afterwards still worked. The editor process kept running until its `timeout`.
+- **Win32 cross-compile (compile-only).** `zig cc -target x86_64-windows-gnu` (zig 0.16.0, with `-Wno-macro-redefined`) configured with `BREAK_ENABLE_SNOWFLAKE=OFF`, crypto and crash OFF built `editor.exe` (PE32+ x86-64). With `BREAK_ENABLE_SNOWFLAKE=ON` the `break_net` library and `editor_remote.c`/`editor_panel_network.c` compiled to COFF objects, but the link stopped because Snowflake requires system `nghttp2`, which this cross environment lacks. No Windows binary was executed.
+
+### Editor wire-protocol fuzzer (2026-10-26)
+
+`engine/tests/fuzz_editor_remote.c`, target `fuzz_editor_remote` (EXCLUDE_FROM_ALL, only defined with `BREAK_ENABLE_SNOWFLAKE=ON`; registered as `fuzz_editor_remote_smoke 600 29`, label `fuzz`, when `ENGINE_BUILD_FUZZ_SMOKE=ON`). Usage: `fuzz_editor_remote [iterations] [seed]`.
+
+- **What it drives.** No sockets. Mutated envelopes go through the real `break_net_envelope_decode`, then into the real `break_session_manager_apply_adapter_event`, which runs the registry/version/size checks, the host's authorization gate (`remote_on_message`) and the real `editor_remote.c` handlers against a live headless shell and document. The host is ticked after every message so responses are drained as in the editor. The document is re-created every 160 messages; sessions are recycled through a small key pool because the session manager only reclaims a CLOSED entry when its transport key opens again (fresh keys every time would exhaust the 8-entry table, a harness artifact, not a product finding).
+- **Message sources.** Valid requests for ids 4..13 are built from live entity ids/names and structurally mutated (byte writes, bit flips, boundary values on u16/u32 lanes, insert/delete/truncate, extension past the 4096 B bound); the encoded frame is damaged at wire level; and arbitrary id/version/length events are injected directly into the session manager. Every payload handed to the manager is an exact-size heap copy, so a handler over-read is an immediate ASan report. Sequences include in-order, replayed, zero and boundary values.
+- **Invariants checked after every message.** No sanitizer report; the document fingerprint (entity ids, names, dirty flag, undo/redo depth, every registered component field) is unchanged whenever the message was not applied OK (fail closed means zero document effect); names stay under their capacity and ids resolvable; the outliner row count equals the document; the connection table stays within its bound; the session table recovers (`table stuck 0`).
+- **Evidence (ASan+UBSan, `build-sdd-p4-asan`).** 8 seeds x 20,000 messages and then 40 further seeds (100..139) x 20,000, i.e. about 960k messages, all exit 0 with zero reports. A typical 20,000-message run: 3,594 applied OK, 6,402 rejected at encode and 9,669 at decode, 5,579 sessions (6,251 closed by a message, none stuck), 930 EVAL messages, 1,333 accepted messages that changed the document; every id 4..13 reaches the manager about 900 times (accepted counts: DESCRIBE 490, LIST 484, SPAWN 310, REMOVE 338, RENAME 303, SET_FIELD 356, UNDO 522, REDO 485, EVAL 306, RESULT 0 since RESULT has no host handler). Also builds and runs on the normal Snowflake tree `build-sdd-p4-final`; `ctest -L fuzz` in the fuzz-enabled ASan tree registers and passes `fuzz_editor_remote_smoke`.
+- **The harness can fail.** Three deliberate mutations of `editor_remote.c`, each restored afterwards (file byte-identical): dropping RENAME's `name_len` vs payload-size check made ASan report a heap-buffer-overflow on seed 1; making REMOVE mutate the document before failing closed on a bad size tripped the "rejected message changed the document" invariant at iteration 466 of seed 1. Skipping the authorization gate was NOT detected (3 seeds green): in this plaintext seam every session is auto-authenticated, so the gate has nothing to refuse. That check belongs to the TLS tests (`remote_tls_unauthenticated_clients_closed_zero_doc_effect`), and this fuzzer makes no claim about it.
+- **Not covered.** TLS, CHALLENGE/AUTH-v2 and the socket/adapter layer; Lua semantics beyond a handful of small snippets under the console's existing instruction budget; multi-connection interleaving (one session at a time); timing. Windows/macOS and CI not run (the CI fuzz step lists targets explicitly and was not changed).
+
+### Server-side transport close and auth deadline (2026-10-26)
+
+- **Library:** `break_net_reactor_close(reactor, key)` (`engine/src/network/break_net_adapter.{h,c}`). Thread-safe request; armed at the start of the next outbound drain so every send queued before it is handed to Snowflake first; started on the driver thread right after that step via `snow_connection_set_close` + `snow_connection_handle_output` (Snowflake's close-after-flush). Idempotent while pending; false for unknown/closed keys or a stopped reactor; later sends return `BREAK_NET_SEND_CLOSED`.
+- **Tests (`test_break_net_adapter` 38 -> 42):** `break_net_adapter_server_close_flushes_then_closes_peer` (a PING queued before the close arrives intact, then the client reads EOF, `CONNECTION_CLOSED` is emitted, the identity is released, later send/close are refused), `break_net_adapter_server_close_is_per_connection` (closing one connection leaves the other open and still receiving), `break_net_adapter_server_close_thread_mode` (same contract on the THREAD driver), and `break_net_adapter_reset_with_pending_send_then_reconnect_same_key`. A deliberate mutation that starts the close before draining the queued send fails the first test on the byte count.
+- **Pre-existing adapter bug fixed on the way (found by the independent review, reproduced as a failing test first):** a peer that reset while a send was in flight left its identity `closing` forever, because Snowflake drops a send to a dead connection without `on_send_drained`. Snowflake reuses connection slots, so the next connection got the same key and the stale entry shadowed it: no CHALLENGE, sends silently lost, `break_net_reactor_close` returning false, and one identity slot leaked per occurrence. Now a new connection on a key retires any old identity with that key at once (it can no longer be found) and frees it right after the current driver step, when Snowflake has consumed every send context that referenced it.
+- **TLS close semantics:** encrypted bytes queued before the close are written, then the socket closes without a TLS `close_notify`; strict clients may report an unexpected EOF.
+- **Editor row reuse:** an OPENED event for a key that still has a row (finalization deferred by a long event backlog) restarts that row's deadline and transport-close state, since it is a new connection.
+- **Editor (`test_editor_shell` 80 -> 82, Snowflake tree):** the unauthenticated-client cases (no AUTH, tampered tag, unknown key id, AUTH v1 under v2) and the malformed-REMOVE case now assert the client reads EOF with zero response bytes and zero doc effect; `remote_tls_auth_deadline_closes_idle_unauthenticated_client` (300 ms deadline, EOF no earlier than 300 ms after connecting, slot freed, one timeout counted) and `remote_tls_auth_deadline_spares_authenticated_client` (still served 700 ms past the deadline); the CLI config pins the 10 s default. Mutations: removing the transport close fails three tests, removing the deadline fails one, letting the deadline hit authenticated sessions fails one.
+- **Live `editor --remote` (Snowflake Debug tree, default Vulkan, X11):** throwaway self-signed cert and random PSK, Python `ssl` client. A client that completes TLS but sends nothing was closed by the server 11.05 s after connecting (10 s deadline plus TLS/CHALLENGE time and frame cadence), with 0 response bytes. A command sent without AUTH: server closed the connection, 0 response bytes. A correctly authenticated client was still answered (DESCRIBE `version 1, 0 entities, clean`) 12 s after connecting, i.e. past the deadline; its malformed REMOVE then got the connection closed with 0 response bytes. The editor kept running throughout. In these runs the close arrived about 2 s after the offending frame; the unit tests show sub-second closes, and the extra latency in the live run comes from the editor's frame pacing, which I did not profile.
+- **Sanitizers:** `test_editor_shell` ASan x3 and TSan x3 82/82, `test_break_net_adapter`/`test_break_net_tls`/`test_break_session` clean under both; `fuzz_editor_remote` 3 seeds x 20,000 on the normal tree and 4 seeds under ASan, all clean.

@@ -33,7 +33,7 @@ find "$BUILD" -name '*.spv' -exec cp {} "$PKG/shaders/" \; 2>/dev/null || true
 # 配置与证据
 cp "$REPO/engine/assets/rhi_backend_rollout.json" "$PKG/config/"
 cp "$REPO/engine/external/locked_dependencies.json" "$PKG/config/"
-# rhi_opengl_removal_migration.md 属 BLOCKED 的 Task 6 域（尚不存在），容忍缺失
+# rhi_opengl_removal_migration.md 随已取消的 OpenGL 移除计划不再产出，容忍缺失
 cp "$REPO/docs/rhi_opengl_removal_migration.md" "$REPO/docs/rhi_rollback_runbook.md" "$PKG/docs/" 2>/dev/null || true
 find "$BUILD" -name 'receipt*.json' -exec cp {} "$PKG/evidence/" \; 2>/dev/null || true
 # bench 收据命名为 rhi_receipt_*.json（前缀 rhi_），单独收集

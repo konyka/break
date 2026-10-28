@@ -20,7 +20,7 @@
 
 ### 1.2 系统依赖（Linux）
 - X11 开发库 (libx11-dev、libxrandr-dev) 或 Wayland 开发库（二选一，编译时互斥)；Wayland 还需要 xkbcommon、wayland-scanner 和 wayland-protocols
-- OpenGL (libgl1-mesa-dev) 或 Vulkan SDK
+- Vulkan 加载器/头文件 + shaderc（默认后端，例如 libvulkan-dev libshaderc-dev）；OpenGL (libgl1-mesa-dev) 仅在选 `-DENGINE_RHI_BACKEND=opengl` 或 Vulkan 依赖缺失而降级时需要
 - FreeType 开发库（推荐；`dxx_break` 默认 CJK TTC 字体和中文显示需要它）
 - pthread
 - 游戏手柄支持：evdev（Linux 内核内置，无需额外包）
@@ -31,7 +31,7 @@
 - DirectX 11 SDK (可选，用于 platform 演示)
 
 ### 1.4 macOS、iOS、Android、OHOS 与 QNX
-- 平台图形元数据把性能基线与 Vulkan 证据分开：Linux/Windows 的 native baseline 是 OpenGL，macOS 是 Metal；macOS Vulkan 明确走 MoltenVK，不表示已实现 Metal RHI。Vulkan 证据级别使用 `compiled`、`headless`、`native-surface`、`GPU-runtime`、`benchmark-comparable`，不能把编译通过当作运行时支持。
+- 平台图形元数据把性能基线与 Vulkan 证据分开：Linux/Windows 的 native baseline 是 OpenGL（渲染对比基准），默认后端是 Vulkan，macOS 是 Metal；macOS Vulkan 明确走 MoltenVK，不表示已实现 Metal RHI。Vulkan 证据级别使用 `compiled`、`headless`、`native-surface`、`GPU-runtime`、`benchmark-comparable`，不能把编译通过当作运行时支持。
 - macOS 由 CMake 识别为 `macos`，当前 Cocoa Vulkan 路径使用 Vulkan loader/MoltenVK、`shaderc_shared` 和 FreeType；仓库的 macOS CI 安装 `molten-vk`、`shaderc`、`freetype`。
 - iOS 由 CMake 识别为 `ios`，使用 kqueue 网络后端，但仓库没有声明 iOS runtime 或窗口渲染 CI 覆盖。
 - Android 由 CMake 识别为 `android`，使用 epoll；Vulkan 是宿主注入的 compile/integration 路径。启用 `ENGINE_VULKAN=ON` 时必须同时设置 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，并让 CMake 找到 NDK 的 `android/native_window.h`；这不代表完整 Android runtime 支持。
@@ -45,14 +45,14 @@
 #### OpenGL 后端
 ```bash
 cd engine
-cmake -B build-gl
+cmake -B build-gl -DENGINE_RHI_BACKEND=opengl
 cmake --build build-gl
 ```
 
-#### Vulkan 后端
+#### Vulkan 后端（Linux / Windows 默认）
 ```bash
 cd engine
-cmake -B build-vk -DENGINE_VULKAN=ON
+cmake -B build-vk -DENGINE_RHI_BACKEND=vulkan   # 等价于省略该参数；显式写出则缺依赖时报错而不是降级
 cmake --build build-vk
 ```
 
@@ -68,7 +68,8 @@ cmake --build build-d3d12
 - `engine` 静态库只含 `RHI_CORE_SOURCES`（rhi.c 调度/校验、ownership、validation、resources、present_history），不再编译任何后端源。
 - 后端各自为独立静态库：`engine_rhi_opengl`（`src/rhi/rhi_gl.c` + glad + 平台 GL 库）、`engine_rhi_vulkan`（`src/rhi/rhi_vk.c`，链接 `Vulkan::Vulkan` + shaderc）、`engine_rhi_d3d12`（`src/rhi/rhi_d3d12.c` + `rhi_d3d12.h`，仅 Windows，链接 d3d12/dxgi/dxguid，Agility redist 由 POST_BUILD 部署）、`engine_rhi_headless`（`src/rhi/rhi_headless.c`，全入口 fail-closed，仅供契约/headless 测试链接，永不构成 GPU 证据）。
 - 需要 RHI 的可执行 target 在其 `target_link_libraries` 之后调用 `engine_link_rhi_backend(<target>)`；headless 测试不调用该 helper，直接链接 `engine_rhi_headless`。
-- 后端选择：`ENGINE_RHI_BACKEND=auto|opengl|vulkan|d3d12` 与 `ENGINE_VULKAN` 兼容层；`d3d12` 仅 Windows 可选（计划 D 已落地，见下方「Windows D3D12 后端（计划 D）」节），`metal` 在计划 C 落地前仍被拒绝（非 Apple 平台 FATAL_ERROR）。
+- 后端选择：`ENGINE_RHI_BACKEND=auto|opengl|vulkan|d3d12` 与 `ENGINE_VULKAN` 兼容层。**`auto` 在 Linux/Windows 默认 Vulkan**（2026-10-26 决定；Apple 平台保持原生 Metal 路径）：配置期探测 Vulkan 加载器/头文件 + shaderc，齐全则选 Vulkan，缺失则打印 `falling back to OpenGL` 警告并降级到 OpenGL（最后降级方案，不静默）。显式 `-DENGINE_RHI_BACKEND=vulkan` 缺依赖直接报错；显式 `-DENGINE_RHI_BACKEND=opengl` 或旧开关 `-DENGINE_VULKAN=OFF` 选 OpenGL。已有构建目录里缓存的 `ENGINE_VULKAN` 若是用户显式设置的则继续生效。`auto` 解析为 Vulkan 时默认还会链接 OpenGL 做**运行时降级**（`ENGINE_RHI_MULTI_BACKEND=ON`，可设 OFF 关闭）：Vulkan 设备创建失败即在同一窗口改用 OpenGL；运行时开关 `BREAK_RHI_BACKEND=opengl|vulkan`、`BREAK_RHI_NO_FALLBACK=1`，契约见 `docs/design/rhi_runtime_backend.md`；
+  `d3d12` 仅 Windows 可选（计划 D 已落地，见下方「Windows D3D12 后端（计划 D）」节），`metal` 在计划 C 落地前仍被拒绝（非 Apple 平台 FATAL_ERROR）。
 
 ## WSI / Vulkan surface 分层（2026-10-15 起）
 
@@ -274,19 +275,19 @@ Linux 平台支持 4 种窗口后端 + 图形 API 组合：
 
 | 配置 | 窗口 | 图形 | CMake 选项 | 验证构建目录 |
 |------|------|------|-----------|---------------|
-| **X11 + OpenGL** | X11 | OpenGL 4.x | `(默认)` | `build-verify-x11-gl/` |
-| **X11 + Vulkan** | X11 | Vulkan 1.x | `-DENGINE_VULKAN=ON` | `build-verify-x11-vk/` |
-| **Wayland + OpenGL** | Wayland | OpenGL 4.x (EGL) | `-DENGINE_ENABLE_WAYLAND=ON` | `build-verify-wl-gl/` |
-| **Wayland + Vulkan** | Wayland | Vulkan 1.x | `-DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON` | `build-verify-wl-vk/` |
+| **X11 + Vulkan** | X11 | Vulkan 1.x | `(默认)` | `build-verify-x11-vk/` |
+| **X11 + OpenGL** | X11 | OpenGL 4.x | `-DENGINE_RHI_BACKEND=opengl` | `build-verify-x11-gl/` |
+| **Wayland + Vulkan** | Wayland | Vulkan 1.x | `-DENGINE_ENABLE_WAYLAND=ON`（Vulkan 默认） | `build-verify-wl-vk/` |
+| **Wayland + OpenGL** | Wayland | OpenGL 4.x (EGL) | `-DENGINE_ENABLE_WAYLAND=ON -DENGINE_RHI_BACKEND=opengl` | `build-verify-wl-gl/` |
 
 示例：
 ```bash
 cd engine
-# X11 + OpenGL (默认)
-cmake -B build-verify-x11-gl && cmake --build build-verify-x11-gl
+# X11 + OpenGL（显式选择）
+cmake -B build-verify-x11-gl -DENGINE_RHI_BACKEND=opengl && cmake --build build-verify-x11-gl
 
-# X11 + Vulkan
-cmake -B build-verify-x11-vk -DENGINE_VULKAN=ON && cmake --build build-verify-x11-vk
+# X11 + Vulkan（默认）
+cmake -B build-verify-x11-vk && cmake --build build-verify-x11-vk
 
 # Wayland + OpenGL
 cmake -B build-verify-wl-gl -DENGINE_ENABLE_WAYLAND=ON && cmake --build build-verify-wl-gl
@@ -482,7 +483,7 @@ cmake --build build-macos --parallel
 ### 2.6 框架应用
 ```bash
 # 从项目根目录
-cmake -B build-gl
+cmake -B build-gl -DENGINE_RHI_BACKEND=opengl
 cmake --build build-gl
 ```
 
@@ -722,7 +723,7 @@ cmake -S engine -B build-rhi-gl -DENGINE_RHI_BACKEND=opengl
 cmake -S engine -B build-rhi-vk -DENGINE_RHI_BACKEND=vulkan
 ```
 
-`ENGINE_RHI_BACKEND=auto` 保持历史默认行为。当前 selector 控制已有 OpenGL/Vulkan/D3D12（仅 Windows）
+`ENGINE_RHI_BACKEND=auto` 在 Linux/Windows 默认 Vulkan（依赖缺失时带警告降级到 OpenGL；Apple 不变）。当前 selector 控制已有 OpenGL/Vulkan/D3D12（仅 Windows）
 实现的构建选择，不声称 Metal 已实现；`test_rhi_backend_selection` 会锁定
 允许值和后续拆分前的行为边界。配置阶段还会输出 effective backend，并定义
 `ENGINE_RHI_BACKEND_OPENGL=1` / `ENGINE_RHI_BACKEND_VULKAN=1` / `ENGINE_RHI_BACKEND_D3D12=1` 编译宏，供后续
@@ -758,18 +759,18 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 
 | lane（.github/workflows/ci.yml） | runner | 后端 / 配置 | 收据 artifact |
 |---|---|---|---|
-| lane-headless-linux-clang | ubuntu-24.04 | 默认 GL（兼容期），Clang/LLD Release + IPO | evidence-receipt-headless-linux-clang |
-| lane-headless-linux-gcc-asan | ubuntu-24.04 | 默认 GL（兼容期），GCC Debug + ASan/UBSan（+fuzz smoke） | evidence-receipt-headless-linux-gcc-asan |
-| lane-headless-linux-gcc-tsan | ubuntu-24.04 | 默认 GL（兼容期），GCC Debug + TSan | evidence-receipt-headless-linux-gcc-tsan |
+| lane-headless-linux-clang | ubuntu-24.04 | 默认 GL，Clang/LLD Release + IPO | evidence-receipt-headless-linux-clang |
+| lane-headless-linux-gcc-asan | ubuntu-24.04 | 默认 GL，GCC Debug + ASan/UBSan（+fuzz smoke） | evidence-receipt-headless-linux-gcc-asan |
+| lane-headless-linux-gcc-tsan | ubuntu-24.04 | 默认 GL，GCC Debug + TSan | evidence-receipt-headless-linux-gcc-tsan |
 | lane-headless-windows-clang | windows-latest | Vulkan（+GL 默认），Clang Debug（含 win32 runtime trio 步） | evidence-receipt-headless-windows-clang |
-| lane-headless-windows-asan | windows-latest | 默认 GL（兼容期），Clang Debug + ASan | evidence-receipt-headless-windows-asan |
+| lane-headless-windows-asan | windows-latest | 默认 GL，Clang Debug + ASan | evidence-receipt-headless-windows-asan |
 | lane-headless-windows-msvc | windows-latest | 默认 GL，MSVC（`cl`，`/W4 /WX`）Debug，`-LE graphics`（+fuzz smoke） | evidence-receipt-headless-windows-msvc |
 | lane-headless-windows-mingw | windows-latest | 默认 GL，MinGW-w64 GCC Debug，`-LE graphics`（+fuzz smoke） | evidence-receipt-headless-windows-mingw |
 | lane-native-surface-wayland | ubuntu-24.04 | Wayland + Vulkan，Debug（weston headless） | evidence-receipt-native-surface-wayland |
-| wayland-gl（DEPRECATED，兼容期，Task 6 删） | ubuntu-latest | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
+| wayland-gl（OpenGL 长期保留，对比基准） | ubuntu-latest | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
 | lane-native-surface-win32 | windows-latest | Win32 原生 surface trio，Clang Debug | evidence-receipt-native-surface-win32 |
 | lane-native-surface-cocoa | macos-14 | Cocoa + MoltenVK，Debug | evidence-receipt-native-surface-cocoa |
-| lane-gpu-runtime-linux-gl（DEPRECATED，兼容期，Task 6 删） | ubuntu-latest | X11 + GL，Debug，Xvfb 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
+| lane-gpu-runtime-linux-gl（OpenGL 长期保留，对比基准） | ubuntu-latest | X11 + GL，Debug，Xvfb 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
 | lane-gpu-runtime-linux-vk | ubuntu-24.04 | X11 + Vulkan，clang-18 Debug，Xvfb + lavapipe（软渲染，收据如实标注） | evidence-receipt-gpu-runtime-linux |
 | lane-gpu-runtime-macos-metal | macos-14 | Metal，Debug（hosted 无 Metal 会话时收据如实降级 HEADLESS） | evidence-receipt-gpu-runtime-macos-metal |
 | lane-gpu-runtime-windows-d3d12（+ 常开 unavailable 孪生 job） | self-hosted windows gpu（`ENABLE_GPU_LANES` 门控） | D3D12，Release（hosted WARP floor 在 windows-d3d12.yml） | evidence-receipt-gpu-runtime-windows-d3d12 |
@@ -888,12 +889,12 @@ glslangValidator -V shader.frag -o shader.frag.spv
 ### 6.3 测试
 ```bash
 cd engine
-cmake -B build-verify-x11-gl
+cmake -B build-verify-x11-gl -DENGINE_RHI_BACKEND=opengl
 cmake --build build-verify-x11-gl
 ctest --test-dir build-verify-x11-gl -LE graphics --output-on-failure
 
-# Vulkan 后端集成测试（需要 -DENGINE_VULKAN=ON）
-cmake -B build-verify-x11-vk -DENGINE_VULKAN=ON
+# Vulkan 后端集成测试（Linux/Windows 默认后端）
+cmake -B build-verify-x11-vk
 cmake --build build-verify-x11-vk
 ctest --test-dir build-verify-x11-vk -L graphics --output-on-failure
 ```
@@ -934,8 +935,8 @@ GitHub Actions workflow：`.github/workflows/ci.yml`。触发：push/PR 到 `mas
 | lane 类 | job |
 |---|---|
 | headless | lane-headless-linux-clang / -gcc-asan / -gcc-tsan / -windows-clang / -windows-asan / -windows-msvc / -windows-mingw |
-| native-surface | lane-native-surface-wayland / -win32 / -cocoa（+ 兼容期 wayland-gl，DEPRECATED） |
-| GPU-runtime | lane-gpu-runtime-linux-gl（DEPRECATED）/ -linux-vk / -macos-metal / -windows-d3d12（+ 常开 unavailable 孪生 job） |
+| native-surface | lane-native-surface-wayland / -win32 / -cocoa（+ wayland-gl，OpenGL 对比基准） |
+| GPU-runtime | lane-gpu-runtime-linux-gl（OpenGL 对比基准）/ -linux-vk / -macos-metal / -windows-d3d12（+ 常开 unavailable 孪生 job） |
 | validation | lane-validation-linux-vk（VK_LAYER_KHRONOS_validation，VUID 即红） |
 | benchmark | lane-benchmark-linux-vk（lavapipe，GPU_RUNTIME 收据）/ lane-benchmark-steam-deck-vk（真机 BENCHMARK_COMPARABLE，`ENABLE_GPU_LANES` 门控） |
 | proton | lane-proton（steamrt sniper 钉 digest 容器内构建 + ctest；兼容参考，不计 Windows 原生证据；仅 schedule/手动触发） |

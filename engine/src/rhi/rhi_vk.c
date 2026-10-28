@@ -1,3 +1,5 @@
+#include "rhi/rhi_backend_namespace.h"
+
 #include <vulkan/vulkan.h>
 #include <rhi/rhi_backend_internal.h>
 #include <rhi/rhi_native_vulkan.h>
@@ -3005,12 +3007,14 @@ static u32 rhi_format_bpp(RHIFormat fmt) {
 
 /* 计划 E Task 2：编译期单后端入口——VK 实现转发到自身后端。
  * 双句柄约定（rhi.h）：VK 消费 surface_native（Wayland 上为 wl_surface*）。 */
+#ifndef ENGINE_RHI_MULTI_BACKEND
 RHIDevice *rhi_device_create_compiled(void *window_native, void *surface_native,
                                       void *display_native, u32 w, u32 h) {
     (void)window_native;
     return rhi_device_create(RHI_BACKEND_VULKAN, surface_native,
                              display_native, w, h);
 }
+#endif /* multi-backend: rhi_runtime_backends.c owns the chain entry */
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
     if (backend != RHI_BACKEND_VULKAN || !rhi_drawable_dimensions_valid(w, h)) {
@@ -6887,8 +6891,21 @@ void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
         vk->cached_vp_w == w && vk->cached_vp_h == h &&
         vk->cached_vp_min_d == min_depth && vk->cached_vp_max_d == max_depth)
         return;  /* R94-2: cache hit */
-    /* R225-A: Honor recorded depth range (was hard-coded 0..1). */
-    VkViewport vp = {x, y + h, w, -h, min_depth, max_depth};
+    /* R225-A: Honor recorded depth range (was hard-coded 0..1).
+     *
+     * The RHI's +Y-up viewport follows the target's own convention, like
+     * glViewport does on GL. On the swapchain NDC +Y must be the top of the
+     * presented image, which on Vulkan takes the negative height (R639's
+     * vk_set_swapchain_viewport). On an offscreen target the convention is
+     * NDC y = -1 in memory row 0 (GL FBOs, VK/D3D12 offscreen defaults), so
+     * a pass sampling it with uv = ndc * 0.5 + 0.5 reads it the right way up;
+     * that is the positive height. Flipping offscreen too stored the myui
+     * canvas surface upside down, which only looked right while the
+     * swapchain viewport was unflipped and the composite undid it. Pinned by
+     * test_vulkan's UI OFFSCREEN CANVAS + COMPOSITE ORIENTATION gate. */
+    VkViewport vp = vk->active_is_swapchain
+                        ? (VkViewport){x, y + h, w, -h, min_depth, max_depth}
+                        : (VkViewport){x, y, w, h, min_depth, max_depth};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
     vk->cached_vp_x = x; vk->cached_vp_y = y; vk->cached_vp_w = w; vk->cached_vp_h = h;
     vk->cached_vp_min_d = min_depth; vk->cached_vp_max_d = max_depth;

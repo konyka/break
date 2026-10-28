@@ -14,7 +14,7 @@
 | 平台 | Vulkan 形态 | 最低 Vulkan | 证据等级 | 收据 | 已知限制 |
 |---|---|---|---|---|---|
 | Linux X11 | 原生（Xcb surface） | 1.2 | GPU_RUNTIME（CI lavapipe **软渲染** + 本机真 GPU） | CI `lane-gpu-runtime-linux-vk`（run 38990768014，收据注明 lavapipe）+ validation lane `lane-validation-linux-vk`；本机真 GPU 见台账 Windows 行注（test_vulkan 日志） | CI 侧为 **software-rendering（lavapipe/llvmpipe），不计入硬件 GPU 证据**；台账行内必须注明软渲染 |
-| Linux Wayland | 原生（`VK_KHR_wayland_surface`，weston headless） | 1.2 | NATIVE_SURFACE | CI `lane-native-surface-wayland`（run 38990768014） | weston headless compositor（无 GPU 断言）；兼容期另有 `wayland-gl` lane（GL，DEPRECATED） |
+| Linux Wayland | 原生（`VK_KHR_wayland_surface`，weston headless） | 1.2 | NATIVE_SURFACE | CI `lane-native-surface-wayland`（run 38990768014） | weston headless compositor（无 GPU 断言）；另有 `wayland-gl` lane（GL，长期保留的对比基准） |
 | Windows | 原生（Win32 surface；D3D12 已是首选后端，Vulkan 为 fallback 形态） | 1.2 | GPU_RUNTIME + BENCHMARK_COMPARABLE（本机真 GPU benchmark 收据） | 本机 `build-vk/`（RTX 4060 Laptop，`rhi_receipt_local.json` + `docs/receipts/rhi_receipt_windows_vulkan_planf.json` 基线）；CI `lane-headless-windows-clang`（headless 面） | 本机 NVIDIA 混合 GPU 环境性 DEVICE_LOST（规格 §7 登记，见下「已知风险」） |
 | macOS | MoltenVK（`VK_EXT_metal_surface`） | 1.2（loader） | GPU_RUNTIME | 本机 M2 133/133（2026-10-13，台账）；CI `lane-native-surface-cocoa`（run 38990768014） | **不计入原生 Metal 证据**（原生 Metal 见特性矩阵文档） |
 | iOS | MoltenVK（host-injected CAMetalLayer） | 1.2 | COMPILED | `engine/src/platform/platform_compat.h`（源码审查，2026-10-14 冻结） | 模拟器不计 GPU_RUNTIME；无真机收据（OpenGL 删除闸门 BLOCKED 原因之一） |

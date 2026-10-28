@@ -1435,7 +1435,7 @@ cmake -S engine -B build-myui-vk -DENGINE_BUILD_TESTS=OFF -DENGINE_VULKAN=ON
 cmake --build build-myui-vk --target dxx_break break_myui -j
 
 # Headless myui 单元测试
-cmake -S engine -B build-myui-tests -DENGINE_BUILD_TESTS=ON -DENGINE_VULKAN=OFF
+cmake -S engine -B build-myui-tests -DENGINE_BUILD_TESTS=ON -DENGINE_RHI_BACKEND=opengl
 cmake --build build-myui-tests -j
 ctest --test-dir build-myui-tests -R 'test_break_ui_input|test_myui_vggeometry|test_myui_window_manager|test_myui_font' --output-on-failure
 

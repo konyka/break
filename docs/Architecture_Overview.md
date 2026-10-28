@@ -89,7 +89,7 @@ Break Engine 采用**严格分层、单向依赖**的架构模型：
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │  High-Level: Renderer / ECS / Asset / Animation / Physics │  │
 │  ├───────────────────────────────────────────────────────────┤  │
-│  │  Mid-Level:  RHI (VK/Metal/D3D12, GL 兼容期) / Task / Script / UI   │  │
+│  │  Mid-Level:  RHI (VK/Metal/D3D12, GL 降级) / Task / Script / UI   │  │
 │  ├───────────────────────────────────────────────────────────┤  │
 │  │  Low-Level:  Core (Log/Alloc/String) / Math / Platform    │  │
 │  └───────────────────────────────────────────────────────────┘  │
@@ -128,9 +128,9 @@ graph TB
 |------|------|------|
 | **Core** | `engine/src/core/` | 基础设施：日志(log)、内存分配器(alloc)、字符串(string)、性能剖析(profiler)、类型定义(types)、断言(assert) |
 | **Platform** | `engine/src/platform/` | 平台抽象：窗口管理(window_x11 / window_wayland / window_win32 / window_cocoa)、输入处理(input，含键盘/鼠标/游戏手柄)、高精度时间(time)、文件监视(filewatch，递归；macOS kqueue/FSEvents 自适应)、高 DPI 与多显示器查询 |
-| **RHI** | `engine/src/rhi/` | 渲染硬件接口：统一的 GPU API 抽象层，编译期单后端：Vulkan (`rhi_vk.c`)、Metal (`rhi_metal.m`，Apple)、D3D12 (`rhi_d3d12.c`，仅 Windows)、兼容期 OpenGL (`rhi_gl.c`，deprecated，计划 v2.0.0 移除)、headless fail-closed stub (`rhi_headless.c`) |
+| **RHI** | `engine/src/rhi/` | 渲染硬件接口：统一的 GPU API 抽象层，编译期单后端：Vulkan (`rhi_vk.c`)、Metal (`rhi_metal.m`，Apple)、D3D12 (`rhi_d3d12.c`，仅 Windows)、OpenGL (`rhi_gl.c`，长期保留：最后降级方案 + 渲染对比基准)、headless fail-closed stub (`rhi_headless.c`) |
 | **Math** | `engine/src/math/` | 数学库：向量、矩阵、四元数、变换等 |
-| **ECS** | `engine/src/ecs/` | 实体-组件-系统架构，数据驱动的对象管理 |
+| **ECS** | `engine/src/ecs/` | 实体-组件-系统架构，数据驱动的对象管理；不可变 Snapshot/Delta 与确定性组件 schema 见 [`design/ecs_snapshot_replication_aoi.md`](design/ecs_snapshot_replication_aoi.md) |
 | **Asset** | `engine/src/asset/` | 资源管理：资产加载(asset)、热重载(hotreload)、虚拟文件系统(vfs) |
 | **Renderer** | `engine/src/renderer/` | 渲染管线：相机、剔除、天空盒、地形、水体、粒子、光照、阴影、后处理全链路（SSAO/TAA/SSR/DoF/Bloom/FXAA/运动模糊/色调映射/体积光/God Rays 等） |
 | **Animation** | `engine/src/animation/` | 骨骼动画系统 |
@@ -191,7 +191,7 @@ graph TB
 |------|------|
 | **语言** | C11（引擎核心）、C++11（框架层） |
 | **构建系统** | `engine/` 要求 CMake 3.20+；仓库根项目要求 CMake 3.25+，支持 GL/VK/ASAN/UBSAN/TSAN/Debug 配置 |
-| **图形 API** | Vulkan 1.2 / Metal / D3D12（按平台单选）；OpenGL 4.x 兼容期保留（deprecated，计划 v2.0.0 移除） |
+| **图形 API** | Vulkan 1.2 / Metal / D3D12（按平台单选）；OpenGL 4.x 长期保留（最后降级方案 + 渲染对比基准） |
 | **窗口系统** | X11 / Wayland（Linux，编译时互斥）、Win32（Windows）、Cocoa（macOS）；iOS/Android/OHOS 的 CMake 平台识别不等于完整窗口 runtime 支持 |
 | **着色器语言** | GLSL 450、SPIR-V（Vulkan 路径使用 shaderc 编译） |
 | **编译器** | GCC、Clang、MSVC（/W4 /WX 级别警告） |
@@ -210,7 +210,7 @@ graph TB
 | **封装** | 不透明指针（opaque pointer） | 隐藏实现细节，保持 ABI 稳定 |
 | **错误处理** | 返回值（bool/错误码） | 无异常表、可预测的控制流 |
 | **字符串** | Slice 模式（指针 + 长度） | 避免隐式 `strlen()`，支持非拷贝子串 |
-| **GPU 抽象** | RHI 层 + 编译期单后端链接 | 统一接口（VK/Metal/D3D12，GL 兼容期），SPIR-V/MSL/DXIL 着色器路径 |
+| **GPU 抽象** | RHI 层 + 编译期单后端链接 | 统一接口（VK/Metal/D3D12，GL 作最后降级），SPIR-V/MSL/DXIL 着色器路径 |
 | **内存管理** | 自定义分配器 + Arena | 显式生命周期，避免碎片化 |
 | **并行** | 任务系统（Task） | 基于线程池的细粒度并行 |
 | **资源热重载** | inotify/文件监视 | 开发期免重启，即时看到修改效果 |
@@ -256,8 +256,8 @@ Windows D3D12 已经过 contract-first 阶段并落地为可选后端（计划 D
 （tier < 1.0 fail-closed）、debug layer + GBV + DRED 全部实现，本机 RTX 4060 Laptop
 真 GPU 契约测试 6/6 绿（GPU_RUNTIME；收据见 `docs/rhi_backend_evidence.md`），PIX
 捕获 runbook 见 `docs/rhi_rollback_runbook.md`。Vulkan 继续保持现有实现与回滚基线；
-OpenGL 为兼容期保留（deprecated：显式 fallback、白名单钉死，计划 v2.0.0 移除——删除
-闸门 BLOCKED，解锁条件见 `docs/rhi_backend_evidence.md` 计划 F 前置确认节）。macOS
+OpenGL 长期保留（维护者决定 2026-10-26：`fallback_chain` 最后一级降级方案 + 渲染效果对比基准；
+显式 fallback、白名单钉死，无移除计划；`test_rhi_golden_parity` 钉住 VK/GL golden 的对应关系）。macOS
 原生 Metal 已落地（计划 C：BENCHMARK_COMPARABLE，M2 真机收据）。CI 证据面为六类
 lane（计划 F Task 7：headless / native-surface / GPU-runtime / validation / benchmark /
 proton），每 lane 上传 `evidence-receipt-*` 收据 artifact（最近全绿 run
@@ -277,11 +277,11 @@ RHI 现在提供 backend-neutral 的 `RHI_DEVICE_STATUS_UNKNOWN`、`READY`、`LO
 
 Backend linking model (计划 F 收尾态): compile-time single backend, chosen by the
 explicit CMake selector `ENGINE_RHI_BACKEND=auto|opengl|vulkan|d3d12`（`metal` 仅
-Apple；`opengl` 兼容期显式 fallback，计划 v2.0.0 移除）. The `engine` core static
+Apple；`opengl` 显式最后降级，长期保留）. The `engine` core static
 library contains only `RHI_CORE_SOURCES` (rhi.c dispatch/validation + ownership +
 validation + resources + present_history). Each backend builds as its own static
 library — `engine_rhi_vulkan` | `engine_rhi_metal` | `engine_rhi_d3d12`（仅 Windows；
-兼容期含 `engine_rhi_opengl`，deprecated）— and `engine_link_rhi_backend(<target>)`
+含 `engine_rhi_opengl`，长期保留）— and `engine_link_rhi_backend(<target>)`
 links exactly one of them. Headless contract tests link `engine_rhi_headless`
 instead (fail-closed on every entry point, never GPU evidence).
 
@@ -290,7 +290,7 @@ instead (fail-closed on every entry point, never GPU evidence).
 ```
 应用 / renderer（rhi.h 公共 API，后端中性）
   └─ engine（RHI_CORE_SOURCES：rhi.c 调度/校验 + ownership + validation + resources + present_history）
-       └─ 恰好一个后端静态库：engine_rhi_vulkan | engine_rhi_metal | engine_rhi_d3d12 |（兼容期 engine_rhi_opengl）| engine_rhi_headless
+       └─ 恰好一个后端静态库：engine_rhi_vulkan | engine_rhi_metal | engine_rhi_d3d12 |（engine_rhi_opengl）| engine_rhi_headless
             └─ 平台图形栈（GL/EGL、Vulkan+shaderc、D3D12+DXGI+Agility SDK（仅 Windows）、或 fail-closed stub）
 ```
 
@@ -320,8 +320,8 @@ resource-slot types, current-device TLS declaration, and backend-facing resource
 helpers in the private `engine/src/rhi/rhi_backend_internal.h` contract. That
 split is now complete: each backend compiles in its own translation unit inside
 its static library (`engine_rhi_vulkan` / `engine_rhi_metal` /
-`engine_rhi_d3d12` / `engine_rhi_headless`; 兼容期另含 `engine_rhi_opengl`，
-deprecated，计划 v2.0.0 移除), with `rhi_backend_internal.h`
+`engine_rhi_d3d12` / `engine_rhi_headless`; 另含 `engine_rhi_opengl`，
+长期保留), with `rhi_backend_internal.h`
 as the shared private contract.
 
 The `test_rhi_backend_internal_contract` CMake test now requires `rhi.c`,
@@ -396,14 +396,16 @@ same public validation results without inheriting API-specific state.
 新增 6 字段在每个后端（GL/VK/headless）有真实消费，并由 `test_rhi_capabilities` 契约测试钉死。
 
 **Shader 绑定与反射权威**——`shader_reflect_push_constants()`（`engine/src/core/shader_io.h`）
-按 std430 规则解析 GLSL `layout(push_constant)` 块；VK 后端在 shader/pipeline create 时缓存反射结果，
-GL 走 `glGetActiveUniform`。每管线一次 `rhi_pipeline_bindings_create()` 物化 name→slot 表
-（VK=push 字节偏移 / GL=location），取值用 `rhi_pipeline_bindings_resolve()`（成员不存在返回 -1）。
+按 std430 规则解析 GLSL `layout(push_constant)` 块，是 uniform/push 布局的唯一权威源；VK 后端在
+shader/pipeline create 时缓存反射结果，GL 走 `glGetActiveUniform`，slot 值全后端同源。每管线一次
+`rhi_pipeline_bindings_create()` 物化 name→slot 表（VK=push 字节偏移 / GL=location），取值用
+`rhi_pipeline_bindings_resolve()`（成员不存在返回 -1；反射 fail-closed 时不伪造槽位）。
 Metal 当前保存 `RHIPipelineDesc` 拥有副本，并通过与 VK golden 对齐的既有 offset 表解析，尚未迁移到
-GLSL 真反射；`test_rhi_metal_resources` 对两套 bindings API 的同名结果逐项比对。计划 E 已将 412 个
-legacy 逐名查询调用点全部迁移；旧 API `rhi_pipeline_get_uniform_location` 已 DEPRECATED（残留 =
-rhi.h 声明 + 各后端实现 + 注释，调用点 0），随计划 F 的 OpenGL 退役删除。反射布局与实际 VK 布局的
-一致性由 `test_shader_io` 的反射×push 表交叉对照 gate 钉死（graphics + compute）。
+GLSL 真反射；`test_rhi_metal_resources` 对两套 bindings API 的同名结果逐项比对。计划 E 已将
+412 个 legacy 逐名查询调用点全部迁移并删除 VK 手写 push offset 表；旧 API
+`rhi_pipeline_get_uniform_location` 已 DEPRECATED（残留 = rhi.h 声明 + 各后端实现 + 注释，调用点 0），
+调用点清零后的删除时机另行决定（OpenGL 不再退役，该 API 不再随之删除）。反射布局与实际 VK 布局的一致性由 `test_shader_io` 的
+反射×push 表交叉对照 gate 钉死（graphics + compute）。
 
 **`RHI-ESCAPE` 逃生舱**——确实无法用 capability contract 表达的后端原生差异（native handle 桥接、
 VK 专属扩展计数器等）必须收进白名单块：命中行本身或其上一行携带 `RHI-ESCAPE` 注释。当前白名单
@@ -414,14 +416,14 @@ gate = `test_renderer_backend_token_gate`（headless label，扫描 main.c / ren
 
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
-| **Linux** | X11 | OpenGL 4.x（兼容期，deprecated，v2.0.0 移除） | `build-verify-x11-gl/` | ✅ GPU_RUNTIME（CI `lane-gpu-runtime-linux-gl`，Xvfb 软渲染） |
+| **Linux** | X11 | OpenGL 4.x（最后降级 + 对比基准） | `build-verify-x11-gl/` | ✅ GPU_RUNTIME（CI `lane-gpu-runtime-linux-gl`，Xvfb 软渲染） |
 | **Linux** | X11 | Vulkan 1.2 | `build-verify-x11-vk/` | ✅ GPU_RUNTIME（CI `lane-gpu-runtime-linux-vk` lavapipe 软渲染 + 本机真 GPU；validation lane `lane-validation-linux-vk`） |
-| **Linux** | Wayland | OpenGL 4.x（兼容期）/ Vulkan 1.2 | `build-verify-wl-*/` | ✅ NATIVE_SURFACE（weston headless；CI `wayland-gl` / `lane-native-surface-wayland`） |
+| **Linux** | Wayland | OpenGL 4.x（最后降级）/ Vulkan 1.2 | `build-verify-wl-*/` | ✅ NATIVE_SURFACE（weston headless；CI `wayland-gl` / `lane-native-surface-wayland`） |
 | **Windows** | Win32 | Vulkan 1.2（Win32 Surface；D3D12 的 fallback 形态） | `build-win-vk/` | ✅ GPU_RUNTIME（本机真 GPU 收据 + CI `lane-headless-windows-clang` win32 trio） |
 | **Windows** | Win32 | D3D12（原生，Agility SDK 1.616.0 + Windows SDK 10.0.26100.0） | `build-d3d12*/`（`-DENGINE_RHI_BACKEND=d3d12`） | ✅ GPU_RUNTIME + BENCHMARK_COMPARABLE（本机 RTX 4060 Laptop 真机收据；CI `windows-d3d12.yml` WARP floor；收据见 `docs/rhi_backend_evidence.md`） |
 | **macOS** | Cocoa | Metal（原生） | `build-metal/`（`-DENGINE_RHI_BACKEND=metal`） | ✅ BENCHMARK_COMPARABLE（M2 真机 2026-10-16；CI `lane-gpu-runtime-macos-metal`） |
 | **macOS** | Cocoa | Vulkan via MoltenVK | `build-macos/` | ✅ GPU_RUNTIME 并行基线（M2 本机 133/133；CI `lane-native-surface-cocoa`；不计入原生 Metal 证据） |
-| **iOS** | UIKit / UIWindowScene + CAMetalLayer | Metal | iOS toolchain | ⚠️ COMPILED（`ios-metal-build` lane 仍 compile-only；本机 Simulator 已有 300 帧、旋转/主触摸交互、截图与后台恢复记录，但不计 GPU_RUNTIME；无真机收据，OpenGL 删除闸门仍 BLOCKED） |
+| **iOS** | UIKit / UIWindowScene + CAMetalLayer | Metal | iOS toolchain | ⚠️ COMPILED（`ios-metal-build` lane 仍 compile-only；本机 Simulator 已有 300 帧、旋转/主触摸交互、截图与后台恢复记录，但不计 GPU_RUNTIME；无真机收据） |
 | **Android** | — | Vulkan（需 `ENGINE_ANDROID_NATIVE_WINDOW=ON` 和 NDK `android/native_window.h`） | Android toolchain | ⚠️ COMPILED（host-injected，无 runtime 收据） |
 | **OHOS** | — | — | OHOS toolchain | ❌ UNAVAILABLE（fail-closed；`test_platform_compat_harmonyos`） |
 | **WebAssembly** | — | — | — | 📋 规划中 |
@@ -440,11 +442,80 @@ Linux 的 X11、Wayland 配置和部分 runtime 路径已有实现与 CI 验证�
 
 `engine/src/task/task.h` 定义的 `TaskSystem` 是进程内单实例 API，创建第二个存活实例会与全局任务释放状态冲突。任务提交可来自外部线程，系统内部使用 worker 线程；`task_wait()` 和 `task_wait_handle()` 不能从 worker task 调用，否则会形成自等待死锁并按头文件契约直接返回。UI 和窗口 API 仍必须在所属主循环线程执行，跨线程 UI 操作应投递 command。规则引擎的 engine、facts、windows 和 provider handle 是单线程句柄，调用方必须为同一 handle 提供外部同步；可选 C11 executor 只在私有 worker 中评估只读条件，再回到 engine 线程合并结果。
 
+### Snowflake C11 网络适配器边界
+
+启用 `BREAK_ENABLE_SNOWFLAKE=ON` 时，`engine/src/network/` 中的
+`break_net_adapter.*` 以不透明 C11 `BreakNetReactor` 包装 Snowflake 的
+passive reactor，并通过 `SNOWFLAKE_SOURCE_DIR` 绑定真实的 `snow::net` 目标；
+没有替代 transport。Snowflake 继续拥有 socket、连接、readiness backend 和
+transport queue，Break 只拥有生命周期、驱动线程、状态同步，以及有界消息
+view/copy/release 和 envelope validation。
+
+适配器支持两种互斥驱动方式：`BREAK_NET_DRIVE_STEP` 由单一调用方逐次调用
+`break_net_reactor_step`，`BREAK_NET_DRIVE_THREAD` 由 Break 创建并 join 一个
+host thread。每个 reactor 只能有一个 Snowflake driver；回调/网络线程不调用
+GameThread、Session、ECS、World、Lua、UI 或 RHI。`start` 通过真实的
+`snow_net_thread_add_acceptor_with_handlers` 注册 parser/open/packet/send-drained/close
+handlers；adapter loopback fixture 驱动真实 accept/read/write/close。消息 view 借用输入，owned
+message 由 Break 拷贝并由 `break_net_message_release` 释放。adapter focused normal/ASan/TSan
+均为 30/30；真实 loopback 已覆盖 inbound、outbound、close notification、identity
+cleanup，bounded stop 也已实现。
+
+当前 Session/Protocol 切片已提供 18-byte little-endian `BreakNetEnvelope`、默认
+message registry、256 项有界 adapter event/outbound queues，以及由 GameThread
+串行拥有的 `BreakSessionManager`。Session 状态迁移为
+`NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED`，也允许
+`NEW -> CLOSING -> CLOSED`；已关闭或未知 connection 的后续 event 被拒绝。
+Session manager 的 `poll` 当前只推进 `CLOSING -> CLOSED`，不自动轮询 adapter
+队列；推荐的 `poll_adapter` 消费 adapter event、应用 close watermark，并在队列排空后
+完成 `CLOSING -> CLOSED`。outbound queue 已接线为 18-byte little-endian envelope 到
+Snowflake send context 的真实发送路径；adapter 与 Session focused loopback 覆盖真实
+wire-level 入站、handler dispatch、出站 response、client close、identity cleanup 和
+stale 语义。完整当前 API、ownership、wire layout、stale-event 边界和未实现项见
+[`design/session_protocol.md`](design/session_protocol.md)。
+
+停止顺序是 terminate Snowflake、必要时 join Break host thread、destroy
+Snowflake reactor、再发布 stopped。`break_net_reactor_stop` 的 `timeout_ms` 是
+adapter-owned bounded deadline：thread mode 等待 host exit，step mode 等待 active
+step 完成；超时返回 false 并保留 STOPPING、reactor 和 thread/step ownership，后续
+stop 可完成清理。stop 不在 lifecycle lock 内调用 Snowflake step。非 Linux timeout/stop
+platform lane 尚未在本机验证；Snowflake per-context completion/drop notification 仍较粗粒度；adapter ownership、callback signatures 和停止语义见
+[`design/snowflake_c11_adapter.md`](design/snowflake_c11_adapter.md)。
+
+### ECS Snapshot / Replication / AoI 边界
+
+最新验证记录（2026-10-23，Task 7）：clean 构建树 `build-sdd-t7`（`-DBREAK_ENABLE_SNOWFLAKE=ON`，187 项注册测试）中 5 个 fuzz executable 全部显式构建，`ctest -L fuzz` **5/5**；完整构建后非 graphics/fuzz CTest 178 项入选：**177 通过、0 失败、1 platform skip**（`test_d3d12_dependency_gate`，Windows-only lane）。ASan+UBSan 树（`build-sdd-t7-asan`）与 TSan 树（`build-sdd-t7-tsan`）的 runtime/ecs/net focused lane 各 **16/16** 通过、无 sanitizer 报告。早期记录中的 `test_myui_text_layout` Hebrew boundary 失败本次未复现（该测试在 full run 中通过）；`test_vulkan` 带 graphics label，本轮未在本机执行。`test_break_replication_fragment` 在各 lane 均通过；它带有一条与本计划提交无关的间歇性 flake 记录（已在 ledger 停放）。该证据确认 focused API 与正式可选 target 已实现及其测试边界，不等同于正式 engine runtime/session integration；后者另列边界，包括真实 Snowflake registration/socket-send E2E、Task 6 scheduler/close-event integration、Task 7 timeout/eviction chain、timeout/eviction 或 cryptographic authentication。fragment checksum 仍非加密认证。
+
+ECS 的 GameThread 拥有可变 `World`；系统完成并进入结构屏障后，`world_snapshot.*` 才能深拷贝
+带 `(index,generation)` 身份的实体和已注册确定性 POD 组件。Snapshot build 不会自动建立
+barrier，调用方必须维持 GameThread/结构屏障纪律。`world_delta.*` 只在不可变 Snapshot 间
+做 diff，并通过 ECS-owned deep clone/staging、最终验证和 atomic replace commit 应用；失败时
+销毁 staging，原 World 保持不变。schema hash 基于 canonical component ID，delta 还要求 tick
+单调递增；clone、mutation、final-validation fault injection 仅用于测试。`break_aoi.*`
+用简单空间网格、Witness、owner/dormant/relevancy flags 和 hysteresis 计算确定性的
+`enter/stay/leave`；`break_replication.*` 将 Real/Ghost 生命周期转换成 baseline、dirty、
+destroy/dormant 消息，并通过 BreakNetAdapter 有界 outbound queue 发送。
+
+网络线程只处理有界消息 view/copy 和队列事件，不访问 World/ECS/Lua/UI/RHI；网络回调不
+直接变更 GameThread 状态。Task 7 的 `break_replication_fragment.*` 已实现 transport-independent
+分片与 opaque reassembly：携带 delta/base ID、fragment index/count、FNV-1a checksum，支持
+乱序、完整性校验、精确重复识别、冲突拒绝、owned 完整 payload、reset/destroy；该 API 不
+直接调用 Snowflake 或 World。需要明确：snapshot/schema/delta/AoI/replication focused API 已实现，并由两个正式的可选、
+非 Snowflake static target 承载：`break_ecs_replication`（ECS schema/snapshot/delta、AoI
+独立依赖及 core logging）和 `break_replication_core`（AoI、replication、fragmentation）。
+`break_ecs_replication_test` 只供测试使用并私有启用 `BREAK_WORLD_DELTA_TESTING=1`，生产库
+不包含 fault-injection hooks。两个 formal target 当前不加入 `engine`，`engine_demo`/`dxx_break`
+也不链接它们；这样 runtime/session owner 必须先定义 snapshot publication、authority 和线程
+生命周期边界。`break_net` 在 `BREAK_ENABLE_SNOWFLAKE=ON` 时生成（独立于 `ENGINE_BUILD_TESTS`），并通过链接 `break_replication_core` 复用非 Snowflake 实现。timeout/eviction、checksum 的加密认证，
+以及正式 runtime/session integration 仍是另列边界。
+完整边界、线程/生命周期 Mermaid 图和 future work 见
+[`design/ecs_snapshot_replication_aoi.md`](design/ecs_snapshot_replication_aoi.md)。
+
 ### 构建变体
 
 ```bash
 # X11 + OpenGL 后端
-cmake -B build-gl -DENGINE_VULKAN=OFF && make -C build-gl
+cmake -B build-gl -DENGINE_RHI_BACKEND=opengl && make -C build-gl
 
 # X11 + Vulkan 后端
 cmake -B build-vk -DENGINE_VULKAN=ON && make -C build-vk

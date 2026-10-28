@@ -488,6 +488,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rs->device = rhi_device_create_compiled(window_native, surface_native,
                                             display, w, h);
     if (!rs->device) return false;
+#ifndef ENGINE_RHI_MULTI_BACKEND
+    /* Multi-backend builds: the runtime chain already logged it. */
     {
         RHIRolloutEvent ev = {
             .event = "backend_selected",
@@ -498,6 +500,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
         };
         rhi_rollout_emit(&ev);
     }
+#endif
     rhi_device_attach_wsi(rs->device, platform_wsi_surface(platform));
     RHICapabilities caps = {0};
     if (!rhi_device_get_capabilities(rs->device, &caps)) goto fail;

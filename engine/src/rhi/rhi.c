@@ -59,6 +59,14 @@ RHIDeviceStatus rhi_device_get_status(const RHIDevice *dev) {
     return dev->backend_data != NULL ? RHI_DEVICE_STATUS_READY : dev->status;
 }
 
+bool rhi_device_resource_usage(const RHIDevice *dev, u32 *out_used,
+                               u32 *out_capacity) {
+    if (dev == NULL) return false;
+    if (out_used != NULL) *out_used = RHI_MAX_RESOURCES - dev->free_count;
+    if (out_capacity != NULL) *out_capacity = RHI_MAX_RESOURCES;
+    return true;
+}
+
 static RHIResult rhi_result_for_device(const RHIDevice *dev) {
     if (dev == NULL) return RHI_RESULT_INVALID_ARGUMENT;
     if (dev->status == RHI_DEVICE_STATUS_LOST) return RHI_RESULT_DEVICE_LOST;

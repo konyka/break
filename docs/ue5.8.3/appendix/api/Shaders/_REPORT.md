@@ -1,0 +1,161 @@
+# Shader extraction report
+
+- files: 1693 (usf 858, ush 790, shared .h 45)
+- records (TSV rows): 55388
+- kinds: class=2, cpp_binding=2036, ctor=1, define=10705, entry=1920, enum=3, enumerator=21, forward=4, function=12887, groupshared=632, include=5223, macro_block=7, macro_call=404, member=6404, method=925, method_proto=50, namespace=15, parameter=6606, prototype=181, resource=5652, static_const=343, static_var=73, stray_block=30, struct=1168, typedef=59, unparsed=37
+- parse modes: all-branches=1643, first-branch=3, first-branch (retry)=22, last-branch (retry)=9, per-group=14, unbalanced=2
+- hard failures: 0
+- C++ IMPLEMENT_* bindings: 2009 (inside #define bodies, skipped: 0; unresolved virtual paths: 0); functions promoted to entry by binding: 792
+
+## Files with parse notes (top 200)
+
+- `Plugins/PCG/Shaders/Private/PCGDataCollectionDataInterface.ush`: 22 — L74: brace block without header (code split across #if branches); L128: brace block without header (code split across #if branches); L133: brace block without header (code split across #if branches); L140: brace block without header (code split across #if branches); L143: brace block without header (code split across #if branches)
+- `Shaders/Private/MaterialTemplate.ush`: 14 — L53: unrecognised block header 'COMPILER_FORCE_WAVE32_MODE %'; L116: unrecognised block header '%'; L356: unrecognised block header 'SHADER_PUSH_WARNINGS_STATE SHADER_DISABLE_WARNINGS %'; L363: unrecognised block header '%'; L364: unrecognised block header '%'
+- `Plugins/Enterprise/MDLImporter/Shaders/Private/FlakesAccess.ush`: 4 — L77: unrecognised block header 'if (NumThetaI < NumThetaF)'; L96: unrecognised block header 'if (LowThetaI < MaxThetaI)'; L114: unrecognised block header 'if (HighThetaI < MaxThetaI)'; L137: statement at declaration scope 'return (1.0 - DiffThetaI) * Bottom + DiffThetaI * Top'
+- `Plugins/PCG/Shaders/Private/PCGRawBufferDataInterface.ush`: 4 — L25: brace block without header (code split across #if branches); L35: brace block without header (code split across #if branches); L38: brace block without header (code split across #if branches); L72: brace block without header (code split across #if branches)
+- `Shaders/Private/BitStreamReaderImplementation.ush`: 4 — L25: unrecognised block header 'uint CONCAT(BitStreamReader_Read_, TYPE_SUFFIX) (INPUT_BUFFER_TYPE InputBuffer, '; L80: unrecognised block header 'uint2 CONCAT(BitStreamReader_Read2_, TYPE_SUFFIX) (INPUT_BUFFER_TYPE InputBuffer'; L88: unrecognised block header 'uint3 CONCAT(BitStreamReader_Read3_, TYPE_SUFFIX) (INPUT_BUFFER_TYPE InputBuffer'; L97: unrecognised block header 'uint4 CONCAT(BitStreamReader_Read4_, TYPE_SUFFIX) (INPUT_BUFFER_TYPE InputBuffer'
+- `Shaders/Shared/RayTracingDebugTypes.h`: 3 — L25: unrecognised block header 'FRayTracingInstanceDebugData() : Flags(0) , ProxyHash(0) , GeometryAddress(0)'; L39: unrecognised block header 'FRayTracingInstanceExtraData() : SceneInstanceIndex(-1) , GPUSceneInstanceId(-1)'; L63: unrecognised block header 'FRayTracingPickingFeedback() : InstanceIndex(0xFFFFFFFF) , GeometryAddress(0xFFF'
+- `Plugins/Enterprise/MDLImporter/Shaders/Private/SpiralBlurWithIOR.ush`: 2 — L95: unrecognised block header 'if (BlurAmount == 0.0)'; L99: unrecognised block header 'else'
+- `Shaders/Private/Common.ush`: 2 — L2249: unrecognised block header 'SafeSaturate_Def(float) SafeSaturate_Def(float2) SafeSaturate_Def(float3) SafeSa'; L2477: unrecognised block header 'SwapGeneric(uint) SwapGeneric(uint2) SwapGeneric(uint3) SwapGeneric(uint4) SwapG'
+- `Shaders/Private/HairStrands/HairStrandsVoxelPageTraversal.ush`: 2 — L166: brace block without header (code split across #if branches); L315: brace block without header (code split across #if branches)
+- `Plugins/Experimental/Volumetrics/Shaders/Private/TestCustomNode.ush`: 1 — L13: statement at declaration scope 'return MyStruct.AddValues(A, B)'
+- `Plugins/Experimental/Volumetrics/Shaders/Private/VolumetricCloudFunctions.ush`: 1 — L456: statement at declaration scope 'return Clouds.Render()'
+- `Plugins/TextureGraph/Shaders/BlobViewWidget.ush`: 1 — L18: statement at declaration scope 'return finalColor'
+- `Shaders/Private/FastMath.ush`: 1 — L13: unparsed fragment 'FastExp_N(float) FastExp_N(float2) FastExp_N(float3) FastExp_N(float4) FastLog_N'
+- `Shaders/Private/HairStrands/HairBsdfSample.ush`: 1 — L198: brace block without header (code split across #if branches)
+- `Shaders/Private/HairStrands/HairStrandsCoverage.usf`: 1 — L44: brace block without header (code split across #if branches)
+- `Shaders/Private/LocalFogVolumes/LocalFogVolumeSplat.usf`: 1 — L71: unrecognised block header 'void LocalFogVolumeTiledPS( in float4 SVPos : SV_POSITION, out float4 OutColorTh'
+- `Shaders/Private/Nanite/NaniteCurveCommon.ush`: 1 — L1339: unrecognised block header 'PAR_DECL_TYPED PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelPack, PAR_PASS_TYPED(uint x'
+- `Shaders/Private/Substrate/SubstrateEvaluation.ush`: 1 — L1413: unrecognised block header 'SubstrateSelectLobe_Type(uint) SubstrateSelectLobe_Type(float) FSubstrateImporta'
+- `Shaders/Private/TransmissionCommon.ush`: 1 — L70: unparsed fragment 'GetSubSurfaceTransmissionGeneric(float) GetSubSurfaceTransmissionGeneric(float4)'
+
+## Groups
+
+- `Plugins/Animation/DeformerGraph/Shaders/Private`: 22 files → Plugins__Animation__DeformerGraph__Shaders__Private.md
+- `Plugins/Animation/MLDeformer/MLDeformerFramework/Shaders/Private`: 2 files → Plugins__Animation__MLDeformer__MLDeformerFramework__Shaders__Private.md
+- `Plugins/Animation/MLDeformer/NearestNeighborModel/Shaders/Private`: 1 files → Plugins__Animation__MLDeformer__NearestNeighborModel__Shaders__Private.md
+- `Plugins/Animation/MLDeformer/VertexDeltaModel/Shaders/Private`: 2 files → Plugins__Animation__MLDeformer__VertexDeltaModel__Shaders__Private.md
+- `Plugins/Compositing/CompositeCore/Shaders/Private`: 4 files → Plugins__Compositing__CompositeCore__Shaders__Private.md
+- `Plugins/Compositing/Composite/Shaders/Private`: 12 files → Plugins__Compositing__Composite__Shaders__Private.md
+- `Plugins/Compositing/LensDistortion/Shaders/Private`: 1 files → Plugins__Compositing__LensDistortion__Shaders__Private.md
+- `Plugins/Compositing/OpenCVLensDistortion/Shaders/Private`: 1 files → Plugins__Compositing__OpenCVLensDistortion__Shaders__Private.md
+- `Plugins/Compositing/OpenColorIO/Shaders/Private`: 2 files → Plugins__Compositing__OpenColorIO__Shaders__Private.md
+- `Plugins/Editor/LandscapePatch/Shaders/Private`: 2 files → Plugins__Editor__LandscapePatch__Shaders__Private.md
+- `Plugins/Enterprise/GLTFExporter/Shaders/Private`: 1 files → Plugins__Enterprise__GLTFExporter__Shaders__Private.md
+- `Plugins/Enterprise/LidarPointCloud/Shaders/Private`: 1 files → Plugins__Enterprise__LidarPointCloud__Shaders__Private.md
+- `Plugins/Enterprise/MDLImporter/Shaders/Private`: 2 files → Plugins__Enterprise__MDLImporter__Shaders__Private.md
+- `Plugins/Experimental/ChaosFlesh/Shaders/Private`: 1 files → Plugins__Experimental__ChaosFlesh__Shaders__Private.md
+- `Plugins/Experimental/ChaosNiagara/Shaders`: 3 files → Plugins__Experimental__ChaosNiagara__Shaders.md
+- `Plugins/Experimental/ColorCorrectRegions/Shaders/Private`: 4 files → Plugins__Experimental__ColorCorrectRegions__Shaders__Private.md
+- `Plugins/Experimental/DynamicWind/Shaders`: 1 files → Plugins__Experimental__DynamicWind__Shaders.md
+- `Plugins/Experimental/DynamicWind/Shaders/Shared`: 1 files → Plugins__Experimental__DynamicWind__Shaders__Shared.md
+- `Plugins/Experimental/GPULightmass/Shaders/Private`: 14 files → Plugins__Experimental__GPULightmass__Shaders__Private.md
+- `Plugins/Experimental/MeshPartition/Shaders`: 2 files → Plugins__Experimental__MeshPartition__Shaders.md
+- `Plugins/Experimental/NFORDenoise/Shaders`: 3 files → Plugins__Experimental__NFORDenoise__Shaders.md
+- `Plugins/Experimental/NNERuntimeIREE/Shaders`: 2 files → Plugins__Experimental__NNERuntimeIREE__Shaders.md
+- `Plugins/Experimental/NNERuntimeRDG/Shaders/Private/NNEHlslShaders`: 30 files → Plugins__Experimental__NNERuntimeRDG__Shaders__Private__NNEHlslShaders.md
+- `Plugins/Experimental/NeuralRendering/Source/NeuralPostProcessing/Shaders`: 1 files → Plugins__Experimental__NeuralRendering__Source__NeuralPostProcessing__Shaders.md
+- `Plugins/Experimental/ProceduralVegetationEditor/Shaders`: 3 files → Plugins__Experimental__ProceduralVegetationEditor__Shaders.md
+- `Plugins/Experimental/VirtualHeightfieldMesh/Shaders/Private`: 4 files → Plugins__Experimental__VirtualHeightfieldMesh__Shaders__Private.md
+- `Plugins/Experimental/Volumetrics/Shaders/Private`: 2 files → Plugins__Experimental__Volumetrics__Shaders__Private.md
+- `Plugins/Experimental/WaterAdvanced/Shaders`: 1 files → Plugins__Experimental__WaterAdvanced__Shaders.md
+- `Plugins/Experimental/Water/Shaders/Private`: 11 files → Plugins__Experimental__Water__Shaders__Private.md
+- `Plugins/FX/ExampleCustomDataInterface/Shaders/Private`: 1 files → Plugins__FX__ExampleCustomDataInterface__Shaders__Private.md
+- `Plugins/FX/NiagaraFluids/Shaders`: 2 files → Plugins__FX__NiagaraFluids__Shaders.md
+- `Plugins/FX/NiagaraMRQ/Shaders/Private`: 1 files → Plugins__FX__NiagaraMRQ__Shaders__Private.md
+- `Plugins/FX/NiagaraNanite/Shaders`: 1 files → Plugins__FX__NiagaraNanite__Shaders.md
+- `Plugins/FX/Niagara/Shaders/Private`: 95 files → Plugins__FX__Niagara__Shaders__Private.md
+- `Plugins/FX/Niagara/Shaders/Private/DataChannel`: 8 files → Plugins__FX__Niagara__Shaders__Private__DataChannel.md
+- `Plugins/FX/Niagara/Shaders/Private/Experimental`: 1 files → Plugins__FX__Niagara__Shaders__Private__Experimental.md
+- `Plugins/FX/Niagara/Shaders/Private/Ribbons`: 10 files → Plugins__FX__Niagara__Shaders__Private__Ribbons.md
+- `Plugins/FX/Niagara/Shaders/Private/Stateless`: 3 files → Plugins__FX__Niagara__Shaders__Private__Stateless.md
+- `Plugins/FX/Niagara/Shaders/Private/Stateless/Modules`: 19 files → Plugins__FX__Niagara__Shaders__Private__Stateless__Modules.md
+- `Plugins/FX/Niagara/Shaders/Private/Stateless/Template`: 2 files → Plugins__FX__Niagara__Shaders__Private__Stateless__Template.md
+- `Plugins/Interchange/Assets/Shaders`: 1 files → Plugins__Interchange__Assets__Shaders.md
+- `Plugins/Media/ImgMedia/Shaders/Private`: 1 files → Plugins__Media__ImgMedia__Shaders__Private.md
+- `Plugins/Media/MediaIOFramework/Shaders`: 1 files → Plugins__Media__MediaIOFramework__Shaders.md
+- `Plugins/Media/NDIMedia/Shaders/Private`: 1 files → Plugins__Media__NDIMedia__Shaders__Private.md
+- `Plugins/Media/PixelCapture/Shaders/Private`: 1 files → Plugins__Media__PixelCapture__Shaders__Private.md
+- `Plugins/Media/TmvMedia/Shaders/Private`: 4 files → Plugins__Media__TmvMedia__Shaders__Private.md
+- `Plugins/Media/WmfMedia/Shaders/Private`: 1 files → Plugins__Media__WmfMedia__Shaders__Private.md
+- `Plugins/NNE/NNEDenoiser/Shaders`: 7 files → Plugins__NNE__NNEDenoiser__Shaders.md
+- `Plugins/PCG/Shaders/Private`: 16 files → Plugins__PCG__Shaders__Private.md
+- `Plugins/PCG/Shaders/Private/BuiltInKernels`: 5 files → Plugins__PCG__Shaders__Private__BuiltInKernels.md
+- `Plugins/PCG/Shaders/Private/Elements`: 7 files → Plugins__PCG__Shaders__Private__Elements.md
+- `Plugins/Runtime/AR/AppleAR/AppleARKit/Shaders/Private`: 1 files → Plugins__Runtime__AR__AppleAR__AppleARKit__Shaders__Private.md
+- `Plugins/Runtime/ComputeFramework/Shaders/Private`: 5 files → Plugins__Runtime__ComputeFramework__Shaders__Private.md
+- `Plugins/Runtime/HairStrands/Shaders/Private`: 20 files → Plugins__Runtime__HairStrands__Shaders__Private.md
+- `Plugins/Runtime/HairStrands/Shaders/Private/Deformers`: 9 files → Plugins__Runtime__HairStrands__Shaders__Private__Deformers.md
+- `Plugins/Runtime/RenderTrace/Shaders/Private`: 1 files → Plugins__Runtime__RenderTrace__Shaders__Private.md
+- `Plugins/Runtime/WarpUtils/Shaders/Private`: 1 files → Plugins__Runtime__WarpUtils__Shaders__Private.md
+- `Plugins/Runtime/nDisplay/Shaders/Private`: 18 files → Plugins__Runtime__nDisplay__Shaders__Private.md
+- `Plugins/Tests/RHITests/Shaders/Private`: 8 files → Plugins__Tests__RHITests__Shaders__Private.md
+- `Plugins/TextureGraph/Shaders`: 16 files → Plugins__TextureGraph__Shaders.md
+- `Plugins/TextureGraph/Shaders/Expressions`: 29 files → Plugins__TextureGraph__Shaders__Expressions.md
+- `Plugins/TextureGraph/Shaders/Layer`: 17 files → Plugins__TextureGraph__Shaders__Layer.md
+- `Plugins/TextureGraph/Shaders/Mask`: 9 files → Plugins__TextureGraph__Shaders__Mask.md
+- `Plugins/TextureGraph/Shaders/Mask/Blend`: 2 files → Plugins__TextureGraph__Shaders__Mask__Blend.md
+- `Plugins/TextureGraph/Shaders/Mesh`: 4 files → Plugins__TextureGraph__Shaders__Mesh.md
+- `Plugins/TextureGraph/Shaders/Noise`: 4 files → Plugins__TextureGraph__Shaders__Noise.md
+- `Plugins/TextureGraph/Shaders/Utils`: 5 files → Plugins__TextureGraph__Shaders__Utils.md
+- `Plugins/VirtualProduction/AccumulationDOF/Shaders/Private`: 6 files → Plugins__VirtualProduction__AccumulationDOF__Shaders__Private.md
+- `Plugins/VirtualProduction/Avalanche/Shaders`: 1 files → Plugins__VirtualProduction__Avalanche__Shaders.md
+- `Plugins/VirtualProduction/CameraCalibrationCore/Shaders/Private`: 12 files → Plugins__VirtualProduction__CameraCalibrationCore__Shaders__Private.md
+- `Plugins/VirtualProduction/DMX/DMXPixelMapping/Shaders/Private`: 2 files → Plugins__VirtualProduction__DMX__DMXPixelMapping__Shaders__Private.md
+- `Plugins/VirtualProduction/DynamicMaterial/Shaders`: 1 files → Plugins__VirtualProduction__DynamicMaterial__Shaders.md
+- `Plugins/VirtualProduction/GeometryMask/Shaders/Private`: 4 files → Plugins__VirtualProduction__GeometryMask__Shaders__Private.md
+- `Plugins/VirtualProduction/Rivermax/RivermaxCore/Shaders/Private`: 1 files → Plugins__VirtualProduction__Rivermax__RivermaxCore__Shaders__Private.md
+- `Plugins/VirtualProduction/TextureShare/Shaders/Private`: 1 files → Plugins__VirtualProduction__TextureShare__Shaders__Private.md
+- `Plugins/VirtualProduction/ViewportWidgetOverlay/Shaders/Private`: 1 files → Plugins__VirtualProduction__ViewportWidgetOverlay__Shaders__Private.md
+- `Shaders/Private`: 452 files → Shaders__Private.md
+- `Shaders/Private/ACES`: 6 files → Shaders__Private__ACES.md
+- `Shaders/Private/Bloom`: 11 files → Shaders__Private__Bloom.md
+- `Shaders/Private/DiaphragmDOF`: 22 files → Shaders__Private__DiaphragmDOF.md
+- `Shaders/Private/DistanceField`: 9 files → Shaders__Private__DistanceField.md
+- `Shaders/Private/Froxel`: 2 files → Shaders__Private__Froxel.md
+- `Shaders/Private/GPUScene`: 2 files → Shaders__Private__GPUScene.md
+- `Shaders/Private/HairStrands`: 79 files → Shaders__Private__HairStrands.md
+- `Shaders/Private/HeterogeneousVolumes`: 35 files → Shaders__Private__HeterogeneousVolumes.md
+- `Shaders/Private/InstanceCulling`: 7 files → Shaders__Private__InstanceCulling.md
+- `Shaders/Private/Landscape`: 6 files → Shaders__Private__Landscape.md
+- `Shaders/Private/LightFunctionAtlas`: 2 files → Shaders__Private__LightFunctionAtlas.md
+- `Shaders/Private/LocalFogVolumes`: 3 files → Shaders__Private__LocalFogVolumes.md
+- `Shaders/Private/Lumen`: 87 files → Shaders__Private__Lumen.md
+- `Shaders/Private/Lumen/Radiosity`: 5 files → Shaders__Private__Lumen__Radiosity.md
+- `Shaders/Private/Lumen/SurfaceCache`: 3 files → Shaders__Private__Lumen__SurfaceCache.md
+- `Shaders/Private/MaterialCache`: 9 files → Shaders__Private__MaterialCache.md
+- `Shaders/Private/MegaLights`: 32 files → Shaders__Private__MegaLights.md
+- `Shaders/Private/MotionBlur`: 9 files → Shaders__Private__MotionBlur.md
+- `Shaders/Private/Nanite`: 52 files → Shaders__Private__Nanite.md
+- `Shaders/Private/Nanite/Voxel`: 6 files → Shaders__Private__Nanite__Voxel.md
+- `Shaders/Private/OIT`: 1 files → Shaders__Private__OIT.md
+- `Shaders/Private/PathTracing`: 26 files → Shaders__Private__PathTracing.md
+- `Shaders/Private/PathTracing/Light`: 8 files → Shaders__Private__PathTracing__Light.md
+- `Shaders/Private/PathTracing/Material`: 16 files → Shaders__Private__PathTracing__Material.md
+- `Shaders/Private/PathTracing/Utilities`: 2 files → Shaders__Private__PathTracing__Utilities.md
+- `Shaders/Private/PathTracing/Volume`: 14 files → Shaders__Private__PathTracing__Volume.md
+- `Shaders/Private/PostProcessing`: 2 files → Shaders__Private__PostProcessing.md
+- `Shaders/Private/RayTracing`: 64 files → Shaders__Private__RayTracing.md
+- `Shaders/Private/SMAA`: 6 files → Shaders__Private__SMAA.md
+- `Shaders/Private/SSRT`: 6 files → Shaders__Private__SSRT.md
+- `Shaders/Private/SceneCulling`: 3 files → Shaders__Private__SceneCulling.md
+- `Shaders/Private/ScreenSpaceDenoise`: 20 files → Shaders__Private__ScreenSpaceDenoise.md
+- `Shaders/Private/Skinning`: 8 files → Shaders__Private__Skinning.md
+- `Shaders/Private/SparseVolumeTexture`: 3 files → Shaders__Private__SparseVolumeTexture.md
+- `Shaders/Private/StochasticLighting`: 5 files → Shaders__Private__StochasticLighting.md
+- `Shaders/Private/Substrate`: 23 files → Shaders__Private__Substrate.md
+- `Shaders/Private/Substrate/Glint`: 1 files → Shaders__Private__Substrate__Glint.md
+- `Shaders/Private/TemporalSuperResolution`: 23 files → Shaders__Private__TemporalSuperResolution.md
+- `Shaders/Private/Tools`: 11 files → Shaders__Private__Tools.md
+- `Shaders/Private/VariableRateShading`: 6 files → Shaders__Private__VariableRateShading.md
+- `Shaders/Private/VirtualShadowMaps`: 37 files → Shaders__Private__VirtualShadowMaps.md
+- `Shaders/Public`: 13 files → Shaders__Public.md
+- `Shaders/Public/Platform/D3D`: 3 files → Shaders__Public__Platform__D3D.md
+- `Shaders/Public/Platform/GL`: 2 files → Shaders__Public__Platform__GL.md
+- `Shaders/Public/Platform/Metal`: 2 files → Shaders__Public__Platform__Metal.md
+- `Shaders/Public/Platform/Vulkan`: 2 files → Shaders__Public__Platform__Vulkan.md
+- `Shaders/Shared`: 37 files → Shaders__Shared.md
+- `Shaders/Shared/ThirdParty`: 1 files → Shaders__Shared__ThirdParty.md
+- `Shaders/Shared/ThirdParty/AMD`: 2 files → Shaders__Shared__ThirdParty__AMD.md
+- `Shaders/Shared/ThirdParty/Intel`: 2 files → Shaders__Shared__ThirdParty__Intel.md
+- `Shaders/Shared/ThirdParty/NVIDIA`: 3 files → Shaders__Shared__ThirdParty__NVIDIA.md
