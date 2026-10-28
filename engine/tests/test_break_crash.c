@@ -681,8 +681,14 @@ TEST(null_matrix) {
 
 /* ---- spool helpers -------------------------------------------------------- */
 
+/* A truncated fixture path would point the test at a different file, so a
+ * path that does not fit aborts the run instead. */
 static void join2(char *out, usize cap, const char *a, const char *b) {
-    snprintf(out, cap, "%s/%s", a, b);
+    int n = snprintf(out, cap, "%s/%s", a, b);
+    if (n < 0 || (usize)n >= cap) {
+        fprintf(stderr, "fixture path too long: %s/%s\n", a, b);
+        abort();
+    }
 }
 
 static bool put_file(const char *path, const void *data, usize len) {
@@ -1878,7 +1884,12 @@ TEST(upload_retention_overflow_removes_sidecar) {
 __attribute__((noinline, no_sanitize("address"), no_sanitize("undefined"), no_sanitize("thread")))
 #endif
 static void crash_null_store(void) {
-    *(volatile char *)0 = 0;
+    /* The null address comes through a volatile object: a literal
+     * `*(volatile char *)0 = 0` is UB the optimizer may delete outright
+     * (GCC -O3 removed it, so the child exited 43 instead of faulting and
+     * the Release build silently stopped testing capture). */
+    static char *volatile null_page = NULL;
+    *(volatile char *)null_page = 0;
 }
 
 /* Deterministic context-blob pattern shared by the publishing child and the

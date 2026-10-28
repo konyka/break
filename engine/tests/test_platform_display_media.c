@@ -147,7 +147,7 @@ TEST(edid_rejects_truncated_extension_without_using_partial_hdr_data)
 
 TEST(edid_accepts_empty_cta_extension)
 {
-    unsigned char edid[256];
+    unsigned char edid[256] = {0}; /* make_edid(hdr=false) clears only block 0 */
     u32 capabilities = 0u;
     bool gamut_known = false;
     bool hdr_known = true;
@@ -168,7 +168,7 @@ TEST(edid_accepts_empty_cta_extension)
 
 TEST(edid_rejects_hdr_block_without_static_metadata_descriptor)
 {
-    unsigned char edid[256];
+    unsigned char edid[256] = {0}; /* make_edid(hdr=false) clears only block 0 */
     u32 capabilities = UINT32_MAX;
     bool gamut_known = false;
     bool hdr_known = true;
@@ -192,7 +192,7 @@ TEST(edid_rejects_hdr_block_without_static_metadata_descriptor)
 
 TEST(edid_rolls_back_partial_cta_parse)
 {
-    unsigned char edid[256];
+    unsigned char edid[256] = {0}; /* make_edid(hdr=false) clears only block 0 */
     u32 capabilities = 0u;
     bool gamut_known = false;
     bool hdr_known = false;

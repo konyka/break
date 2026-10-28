@@ -40,8 +40,14 @@ static bool mk_dir(const char *path) {
     return TEST_MKDIR(path) == 0;
 }
 
+/* A truncated fixture path would point the test at a different file, so a
+ * path that does not fit aborts the run instead. */
 static void join2(char *out, usize cap, const char *a, const char *b) {
-    snprintf(out, cap, "%s/%s", a, b);
+    int n = snprintf(out, cap, "%s/%s", a, b);
+    if (n < 0 || (usize)n >= cap) {
+        fprintf(stderr, "fixture path too long: %s/%s\n", a, b);
+        abort();
+    }
 }
 
 /* Creates/truncates a file with the given bytes (fixture pre-state). */

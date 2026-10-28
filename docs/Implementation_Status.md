@@ -1,5 +1,19 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：发布（Release）配置测试（2026-10-28）
+
+- **起因**：TODO 中“release 配置测试不存在”。本机此前从未构建过 Release 树（CI 的 Release lane 用 clang）。用 GCC 16.2 `-O3 -DNDEBUG` 配置多后端 + Snowflake 树后，构建在 6 处 `-Werror` 失败，构建通过后 `test_break_crash` 又有 4 项失败。
+- **修复（逐个查根因）**：
+  - `break_crash.c` `bc_fill`：`line`/`n` 未初始化即可能被使用（依赖“第一遍已校验”的跨函数不变量），改为指向记录起点的初值，两遍不一致时也不会读未定义指针；
+  - `rule_engine/builtins.c` `sb_append`：加 `PTRDIFF_MAX` 上界（任何对象都不超过它），优化器不再推出 SIZE_MAX 的 memcpy；
+  - `rhi_vk.c` `rhi_backend_get_device_info`：`strncpy` 在驱动名填满缓冲时不写结尾 NUL，依赖调用方事先清零；改为 `snprintf`（**真实缺陷**）；
+  - `test_platform_display_media.c`：三个用例声明 256 字节 EDID 却用 `make_edid(hdr=false)` 只清前 128 字节，扩展块校验和累加了未初始化栈内容（**测试缺陷**，结果取决于栈上残留）；
+  - `test_platform_fs_write.c` / `test_break_crash.c` 的 `join2`：路径截断会让测试作用于另一个文件，改为截断即 abort；
+  - `test_break_crash.c` `crash_null_store`：`*(volatile char *)0 = 0` 是 UB，GCC `-O3` 把整个函数删掉，子进程以 43 正常退出，**Release 构建实际上没有在测崩溃捕获**；改为经 volatile 对象取得空地址。
+- **新增 `test_release_config_contract`**（`engine/tests/test_release_config_contract.cmake`，标签 `release_gate`，所有配置都注册）：① `engine_demo`/`dxx_break` 不含 `break_net_`/`break_session_`/`break_update_`/`break_crypto_`/`break_editor_`/`snow_` 任何符号（无远程、无任何更新路径）；② 三个发布二进制中的 `*_for_test`/`*test_hook*` 必须在基线白名单内（26 个，现状），新增即失败；③ `editor --remote` 无 TLS 材料、`--remote-*` 无 `--remote` 均退出码 2。变异自检：白名单删一项、把 editor 当作运行时二进制、用 `/usr/bin/true` 冒充 editor，各自使门失败。
+- **验证**：Release 树（GCC 16 `-O3`，多后端 + Snowflake）全量 226/226、图形 7/7（不含 x11_runtime）；Debug 树 OpenGL 221/221、Vulkan 222/222、Snowflake 225/225、多后端 222/222；ASan/TSan 下 `test_break_crash`、`test_platform_display_media`、`test_platform_fs_write`、`test_editor_shell`、rule_engine 套件零报告。
+- **边界**：契约钉住的是现状——发布二进制仍带测试钩子（见 `docs/design/security_threat_model.md` §10 第 8 条）；未在 clang Release、MSVC、macOS 上运行本契约（nm 解析已兼容 Mach-O 前导下划线，但未实测）。
+
 ## 本轮更新：`test_platform_x11_runtime` 在 GNOME Xwayland 上不稳定——调查结论（2026-10-28，未修）
 
 - **现象**：上游新增的 X11 全屏/标题栏用例在本机（Fedora GNOME，Mutter 作为 Xwayland 的窗口管理器）每次失败 0–8 项，纯 origin/master 同样如此；CI 在无窗口管理器的 Xvfb 上运行，走 motif + 自行移动/缩放的回退路径，不受影响。

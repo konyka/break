@@ -7182,8 +7182,10 @@ bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
     vk = (const VKBackend *)dev->backend_data;
     if (vk == NULL) return false;
     out->backend = RHI_BACKEND_VULKAN;
-    strncpy(out->device_name, vk->device_props.deviceName,
-            sizeof(out->device_name) - 1u);
+    /* snprintf always terminates: strncpy left the last byte to whatever the
+     * caller's struct held when the driver name filled the buffer. */
+    snprintf(out->device_name, sizeof(out->device_name), "%s",
+             vk->device_props.deviceName);
     out->vendor_id = vk->device_props.vendorID;
     out->device_id = vk->device_props.deviceID;
     out->api_version = vk->device_props.apiVersion;
