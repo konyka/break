@@ -4312,6 +4312,13 @@ endif()
     add_test(NAME test_editor_i18n COMMAND test_editor_i18n)
     set_tests_properties(test_editor_i18n PROPERTIES LABELS "headless;editor")
 
+    add_executable(test_editor_input_script tests/test_editor_input_script.c
+        apps/editor/editor_input_script.c src/platform/input.c)
+    target_include_directories(test_editor_input_script PRIVATE
+        ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
+    add_test(NAME test_editor_input_script COMMAND test_editor_input_script)
+    set_tests_properties(test_editor_input_script PROPERTIES LABELS "headless;editor")
+
     add_executable(test_editor_image tests/test_editor_image.c)
     target_include_directories(test_editor_image PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_editor_image PRIVATE break_editor_test stb_image_write)
