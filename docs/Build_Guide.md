@@ -20,7 +20,7 @@
 
 ### 1.2 系统依赖（Linux）
 - X11 开发库 (libx11-dev、libxrandr-dev) 或 Wayland 开发库（二选一，编译时互斥)；Wayland 还需要 xkbcommon、wayland-scanner 和 wayland-protocols
-- OpenGL (libgl1-mesa-dev) 或 Vulkan SDK
+- Vulkan 加载器/头文件 + shaderc（默认后端，例如 libvulkan-dev libshaderc-dev）；OpenGL (libgl1-mesa-dev) 仅在选 `-DENGINE_RHI_BACKEND=opengl` 或 Vulkan 依赖缺失而降级时需要
 - FreeType 开发库（推荐；`dxx_break` 默认 CJK TTC 字体和中文显示需要它）
 - pthread
 - 游戏手柄支持：evdev（Linux 内核内置，无需额外包）
@@ -31,7 +31,7 @@
 - DirectX 11 SDK (可选，用于 platform 演示)
 
 ### 1.4 macOS、iOS、Android、OHOS 与 QNX
-- 平台图形元数据把性能基线与 Vulkan 证据分开：Linux/Windows 的 native baseline 是 OpenGL，macOS 是 Metal；macOS Vulkan 明确走 MoltenVK，不表示已实现 Metal RHI。Vulkan 证据级别使用 `compiled`、`headless`、`native-surface`、`GPU-runtime`、`benchmark-comparable`，不能把编译通过当作运行时支持。
+- 平台图形元数据把性能基线与 Vulkan 证据分开：Linux/Windows 的 native baseline 是 OpenGL（渲染对比基准），默认后端是 Vulkan，macOS 是 Metal；macOS Vulkan 明确走 MoltenVK，不表示已实现 Metal RHI。Vulkan 证据级别使用 `compiled`、`headless`、`native-surface`、`GPU-runtime`、`benchmark-comparable`，不能把编译通过当作运行时支持。
 - macOS 由 CMake 识别为 `macos`，当前 Cocoa Vulkan 路径使用 Vulkan loader/MoltenVK、`shaderc_shared` 和 FreeType；仓库的 macOS CI 安装 `molten-vk`、`shaderc`、`freetype`。
 - iOS 由 CMake 识别为 `ios`，使用 kqueue 网络后端，但仓库没有声明 iOS runtime 或窗口渲染 CI 覆盖。
 - Android 由 CMake 识别为 `android`，使用 epoll；Vulkan 是宿主注入的 compile/integration 路径。启用 `ENGINE_VULKAN=ON` 时必须同时设置 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，并让 CMake 找到 NDK 的 `android/native_window.h`；这不代表完整 Android runtime 支持。
@@ -45,14 +45,14 @@
 #### OpenGL 后端
 ```bash
 cd engine
-cmake -B build-gl
+cmake -B build-gl -DENGINE_RHI_BACKEND=opengl
 cmake --build build-gl
 ```
 
-#### Vulkan 后端
+#### Vulkan 后端（Linux / Windows 默认）
 ```bash
 cd engine
-cmake -B build-vk -DENGINE_VULKAN=ON
+cmake -B build-vk -DENGINE_RHI_BACKEND=vulkan   # 等价于省略该参数；显式写出则缺依赖时报错而不是降级
 cmake --build build-vk
 ```
 
@@ -68,7 +68,8 @@ cmake --build build-d3d12
 - `engine` 静态库只含 `RHI_CORE_SOURCES`（rhi.c 调度/校验、ownership、validation、resources、present_history），不再编译任何后端源。
 - 后端各自为独立静态库：`engine_rhi_opengl`（`src/rhi/rhi_gl.c` + glad + 平台 GL 库）、`engine_rhi_vulkan`（`src/rhi/rhi_vk.c`，链接 `Vulkan::Vulkan` + shaderc）、`engine_rhi_d3d12`（`src/rhi/rhi_d3d12.c` + `rhi_d3d12.h`，仅 Windows，链接 d3d12/dxgi/dxguid，Agility redist 由 POST_BUILD 部署）、`engine_rhi_headless`（`src/rhi/rhi_headless.c`，全入口 fail-closed，仅供契约/headless 测试链接，永不构成 GPU 证据）。
 - 需要 RHI 的可执行 target 在其 `target_link_libraries` 之后调用 `engine_link_rhi_backend(<target>)`；headless 测试不调用该 helper，直接链接 `engine_rhi_headless`。
-- 后端选择：`ENGINE_RHI_BACKEND=auto|opengl|vulkan|d3d12` 与 `ENGINE_VULKAN` 兼容层；`d3d12` 仅 Windows 可选（计划 D 已落地，见下方「Windows D3D12 后端（计划 D）」节），`metal` 在计划 C 落地前仍被拒绝（非 Apple 平台 FATAL_ERROR）。
+- 后端选择：`ENGINE_RHI_BACKEND=auto|opengl|vulkan|d3d12` 与 `ENGINE_VULKAN` 兼容层。**`auto` 在 Linux/Windows 默认 Vulkan**（2026-10-26 决定；Apple 平台保持原生 Metal 路径）：配置期探测 Vulkan 加载器/头文件 + shaderc，齐全则选 Vulkan，缺失则打印 `falling back to OpenGL` 警告并降级到 OpenGL（最后降级方案，不静默）。显式 `-DENGINE_RHI_BACKEND=vulkan` 缺依赖直接报错；显式 `-DENGINE_RHI_BACKEND=opengl` 或旧开关 `-DENGINE_VULKAN=OFF` 选 OpenGL。已有构建目录里缓存的 `ENGINE_VULKAN` 若是用户显式设置的则继续生效。`auto` 解析为 Vulkan 时默认还会链接 OpenGL 做**运行时降级**（`ENGINE_RHI_MULTI_BACKEND=ON`，可设 OFF 关闭）：Vulkan 设备创建失败即在同一窗口改用 OpenGL；运行时开关 `BREAK_RHI_BACKEND=opengl|vulkan`、`BREAK_RHI_NO_FALLBACK=1`，契约见 `docs/design/rhi_runtime_backend.md`；
+  `d3d12` 仅 Windows 可选（计划 D 已落地，见下方「Windows D3D12 后端（计划 D）」节），`metal` 在计划 C 落地前仍被拒绝（非 Apple 平台 FATAL_ERROR）。
 
 ## WSI / Vulkan surface 分层（2026-10-15 起）
 
@@ -280,19 +281,19 @@ Linux 平台支持 4 种窗口后端 + 图形 API 组合：
 
 | 配置 | 窗口 | 图形 | CMake 选项 | 验证构建目录 |
 |------|------|------|-----------|---------------|
-| **X11 + OpenGL** | X11 | OpenGL 4.x | `(默认)` | `build-verify-x11-gl/` |
-| **X11 + Vulkan** | X11 | Vulkan 1.x | `-DENGINE_VULKAN=ON` | `build-verify-x11-vk/` |
-| **Wayland + OpenGL** | Wayland | OpenGL 4.x (EGL) | `-DENGINE_ENABLE_WAYLAND=ON` | `build-verify-wl-gl/` |
-| **Wayland + Vulkan** | Wayland | Vulkan 1.x | `-DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON` | `build-verify-wl-vk/` |
+| **X11 + Vulkan** | X11 | Vulkan 1.x | `(默认)` | `build-verify-x11-vk/` |
+| **X11 + OpenGL** | X11 | OpenGL 4.x | `-DENGINE_RHI_BACKEND=opengl` | `build-verify-x11-gl/` |
+| **Wayland + Vulkan** | Wayland | Vulkan 1.x | `-DENGINE_ENABLE_WAYLAND=ON`（Vulkan 默认） | `build-verify-wl-vk/` |
+| **Wayland + OpenGL** | Wayland | OpenGL 4.x (EGL) | `-DENGINE_ENABLE_WAYLAND=ON -DENGINE_RHI_BACKEND=opengl` | `build-verify-wl-gl/` |
 
 示例：
 ```bash
 cd engine
-# X11 + OpenGL (默认)
-cmake -B build-verify-x11-gl && cmake --build build-verify-x11-gl
+# X11 + OpenGL（显式选择）
+cmake -B build-verify-x11-gl -DENGINE_RHI_BACKEND=opengl && cmake --build build-verify-x11-gl
 
-# X11 + Vulkan
-cmake -B build-verify-x11-vk -DENGINE_VULKAN=ON && cmake --build build-verify-x11-vk
+# X11 + Vulkan（默认）
+cmake -B build-verify-x11-vk && cmake --build build-verify-x11-vk
 
 # Wayland + OpenGL
 cmake -B build-verify-wl-gl -DENGINE_ENABLE_WAYLAND=ON && cmake --build build-verify-wl-gl
@@ -331,6 +332,23 @@ cmake --build build-ubsan
 ```
 
 ### 2.5 Windows 平台构建
+
+#### Windows 上的 OpenSSL（`BREAK_ENABLE_CRYPTO`，默认 ON）
+
+`break_crypto` / `break_update` 需要 OpenSSL libcrypto。CMake 自带的 `FindOpenSSL`
+只在 MSVC 分支里搜索安装器目录 `lib/VC/<arch>/<crt>`，所以：
+
+- **MSVC**：`find_package(OpenSSL)` 自己能找到 `C:/Program Files/OpenSSL*`，无需额外参数。
+- **Clang / MinGW**：`engine/CMakeLists.txt` 在配置期按顺序探测 `-DOPENSSL_ROOT_DIR`、
+  `%OPENSSL_ROOT_DIR%`、`%ProgramFiles%\OpenSSL`、`%ProgramFiles%\OpenSSL-Win64`、
+  `C:\OpenSSL-Win64`，命中安装器布局（`lib/VC/x64/MD/libcrypto.lib` 与 `libssl.lib`）后自动
+  设置 `LIB_EAY`/`SSL_EAY`。MSYS2/MinGW 自带 OpenSSL（编译器旁 `../lib/libcrypto.dll.a`）时直接使用，不探测安装器目录。
+  自动探测不到时手动传 `-DOPENSSL_ROOT_DIR=<前缀> -DLIB_EAY=<libcrypto.lib> -DSSL_EAY=<libssl.lib>`，
+  或 `-DBREAK_ENABLE_CRYPTO=OFF`。
+- 运行测试时 `libcrypto-*-x64.dll`（安装器的 `bin` 目录）须在 `PATH` 上。
+- 契约测试（crypto/update/crash）用 `llvm-nm`/`nm` 做导出符号检查，Windows 上会忽略 UCRT 内联的
+  `sprintf`/`_snprintf` 等头文件产物；最小链接用例使用与树一致的 CRT（MSVC 下 `/MD` 或 `/MDd`，
+  Clang ASan 树附带 `-D_DLL -D_MT --dependent-lib=msvcrt`）。
 
 #### Windows + Clang 验证
 
@@ -412,8 +430,7 @@ cmake --build build-msvc-1451-audit --parallel
 ctest --test-dir build-msvc-1451-audit -LE graphics --output-on-failure
 ```
 
-上述配置成功，完整构建在 `/W4 /WX /utf-8` 以及 `/experimental:c11atomics` 下通过；重复构建无剩余工作。
-非图形 CTest `56/56` 通过，其中包括 `test_platform_win32_runtime`。CI 另外显式构建并执行
+上述配置在 `/W4 /WX /utf-8` 以及 `/experimental:c11atomics` 下构建。早先记录的「完整构建通过、非图形 CTest `56/56`」只对当时的代码成立；当时 CI 没有 MSVC lane，之后新增的代码曾让 MSVC 构建失败（10 个文件的 C4090/C4132/C4456/C4310/C4701），2026-10-27 已修复，并在 MSVC 19.51.36260 上重新验证：全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟）`186/186` 通过，包括 `test_platform_win32_runtime`。现在 CI 有 `lane-headless-windows-msvc`（同样的配置与 `-LE graphics` 筛选），新增代码后以它为准；本机重跑上面三条命令仍可复现。CI 另外显式构建并执行
 `test_platform_config`、`test_platform_null_safety` 和 `test_platform_win32_runtime`，避免平台
 runtime 门禁仅依赖全量测试筛选。这提供的是非图形、headless
 Win32 平台证据，不证明 WGL、Vulkan、GPU、present 或图形 runtime，也不证明 Windows Vulkan 构建。
@@ -436,9 +453,12 @@ make -j$(nproc)
 #### 使用 MinGW（原生 Windows）
 ```bash
 cd engine
-cmake -B build-mingw -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc
+cmake -B build-mingw -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc
 cmake --build build-mingw
+ctest --test-dir build-mingw -LE graphics --output-on-failure
 ```
+
+2026-10-27 在 MSYS2 UCRT64 的 GCC 16.2 上验证：此前构建失败（GCC 的 `-Werror` 拒绝 `GetProcAddress`/`wglGetProcAddress` 结果直接强转为函数指针、`net_loop_iocp.c` 的恒假比较、`PlatformConfig` 在 Win32 测试里的省略初始化、`verify_pak.c` 的 `snprintf` 截断），现已修复，全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟）`186/186` 通过。函数指针转换统一走 `platform/win_proc.h` 的 `WIN_PROC_LOAD`（memcpy，不触发 `-Wcast-function-type`/`-Wpedantic`）。CI 现有 `lane-headless-windows-mingw`（镜像自带的 MinGW-w64 gcc，非 MSYS2 UCRT64 的 GCC 16.2，版本不同）。
 
 #### 使用 MinGW 交叉编译（Linux 主机）
 ```bash
@@ -457,6 +477,11 @@ cmake --build build-cross
 macOS 使用 Xcode Command Line Tools 提供系统框架；当前 Cocoa 渲染路径还需要
 MoltenVK/Vulkan、`shaderc_shared` 和 FreeType。文件监视模块额外链接 `CoreServices`
 与 `CoreFoundation`。
+
+`BREAK_ENABLE_CRYPTO` 默认开启，需要 OpenSSL（libcrypto）。macOS 没有系统自带的
+可链接版本；OpenSSL 不在 Homebrew 默认前缀时，配置时加
+`-DOPENSSL_ROOT_DIR=<openssl 前缀>`。契约测试的最小链接用例会用解析到的
+`OPENSSL_CRYPTO_LIBRARY`，嵌套配置（`test_rhi_backend_selection`）也会继承该前缀。
 
 ```bash
 cd engine
@@ -486,7 +511,7 @@ cmake --build build-macos --parallel
 ### 2.6 框架应用
 ```bash
 # 从项目根目录
-cmake -B build-gl
+cmake -B build-gl -DENGINE_RHI_BACKEND=opengl
 cmake --build build-gl
 ```
 
@@ -537,7 +562,7 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
   的 pin 见 LOCKED_DEPENDENCIES.md 注记）；Windows SDK 10.0.26100.0。
 - D3D12 Agility SDK 1.619.6（runtime-shipped；`engine/external/d3d12/agility_sdk_lock.txt`
   以 SHA512 复核 nupkg 与 D3D12Core.dll）。
-- Linux CI 依赖（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`。自 R700 起这些包预装在容器镜像 `ghcr.io/konyka/break-ci-linux:latest` 里（`.github/docker/ci-linux.Dockerfile`，由 `.github/workflows/ci-image.yml` 构建发布），Linux lane 在镜像里运行，job 里不再执行 `apt-get install`。要改包或版本：改 Dockerfile，等 `ci-image` 工作流构建完成后再触发 CI。`lane-proton`（周跑，需要 i386 + wine）仍在 job 里 apt 安装。
+- Linux CI 依赖（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`；另需 `libssl-dev`（noble 为 OpenSSL 3.0.x，未钉小版本，随 apt 安全更新），`BREAK_ENABLE_CRYPTO` 默认开启时缺它整个 Linux configure 都会失败。自 R700 起这些包预装在容器镜像 `ghcr.io/konyka/break-ci-linux:latest` 里（`.github/docker/ci-linux.Dockerfile`，由 `.github/workflows/ci-image.yml` 构建发布），Linux lane 在镜像里运行，job 里不再执行 `apt-get install`。要改包或版本：改 Dockerfile，等 `ci-image` 工作流构建完成后再触发 CI。注意：同一次 push 会同时启动 `ci-image` 与 `CI`，此时 Linux lane 拉到的仍是旧镜像（2026-10-28 加 `libssl-dev` 时就是这样：10 个 Linux 任务拉到旧镜像 digest 全部 configure 失败），需要在镜像发布后再推一次提交或手动触发 `CI`（`workflow_dispatch`；只读令牌无权限重跑，需在 GitHub 页面操作）。`lane-proton`（周跑，需要 i386 + wine）仍在 job 里 apt 安装。
 
 禁止使用 "latest" 或未钉版系统包构建 release。缺失依赖的平台在 CI/台账中标记 UNAVAILABLE，
 不得伪造证据。
@@ -726,7 +751,7 @@ cmake -S engine -B build-rhi-gl -DENGINE_RHI_BACKEND=opengl
 cmake -S engine -B build-rhi-vk -DENGINE_RHI_BACKEND=vulkan
 ```
 
-`ENGINE_RHI_BACKEND=auto` 保持历史默认行为。当前 selector 控制已有 OpenGL/Vulkan/D3D12（仅 Windows）
+`ENGINE_RHI_BACKEND=auto` 在 Linux/Windows 默认 Vulkan（依赖缺失时带警告降级到 OpenGL；Apple 不变）。当前 selector 控制已有 OpenGL/Vulkan/D3D12（仅 Windows）
 实现的构建选择，不声称 Metal 已实现；`test_rhi_backend_selection` 会锁定
 允许值和后续拆分前的行为边界。配置阶段还会输出 effective backend，并定义
 `ENGINE_RHI_BACKEND_OPENGL=1` / `ENGINE_RHI_BACKEND_VULKAN=1` / `ENGINE_RHI_BACKEND_D3D12=1` 编译宏，供后续
@@ -762,16 +787,18 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 
 | lane（.github/workflows/ci.yml） | runner | 后端 / 配置 | 收据 artifact |
 |---|---|---|---|
-| lane-headless-linux-clang | ubuntu-24.04 | 默认 GL（兼容期），Clang/LLD Release + IPO | evidence-receipt-headless-linux-clang |
-| lane-headless-linux-gcc-asan | ubuntu-24.04 | 默认 GL（兼容期），GCC Debug + ASan/UBSan（+fuzz smoke） | evidence-receipt-headless-linux-gcc-asan |
-| lane-headless-linux-gcc-tsan | ubuntu-24.04 | 默认 GL（兼容期），GCC Debug + TSan | evidence-receipt-headless-linux-gcc-tsan |
+| lane-headless-linux-clang | ubuntu-24.04 | 默认 GL，Clang/LLD Release + IPO | evidence-receipt-headless-linux-clang |
+| lane-headless-linux-gcc-asan | ubuntu-24.04 | 默认 GL，GCC Debug + ASan/UBSan（+fuzz smoke） | evidence-receipt-headless-linux-gcc-asan |
+| lane-headless-linux-gcc-tsan | ubuntu-24.04 | 默认 GL，GCC Debug + TSan | evidence-receipt-headless-linux-gcc-tsan |
 | lane-headless-windows-clang | windows-latest | Vulkan（+GL 默认），Clang Debug（含 win32 runtime trio 步） | evidence-receipt-headless-windows-clang |
-| lane-headless-windows-asan | windows-latest | 默认 GL（兼容期），Clang Debug + ASan | evidence-receipt-headless-windows-asan |
+| lane-headless-windows-asan | windows-latest | 默认 GL，Clang Debug + ASan | evidence-receipt-headless-windows-asan |
+| lane-headless-windows-msvc | windows-latest | 默认 GL，MSVC（`cl`，`/W4 /WX`）Debug，`-LE graphics`（+fuzz smoke） | evidence-receipt-headless-windows-msvc |
+| lane-headless-windows-mingw | windows-latest | 默认 GL，MinGW-w64 GCC Debug，`-LE graphics`（+fuzz smoke） | evidence-receipt-headless-windows-mingw |
 | lane-native-surface-wayland | ubuntu-24.04 | Wayland + Vulkan，Debug（weston headless） | evidence-receipt-native-surface-wayland |
-| wayland-gl（DEPRECATED，兼容期，Task 6 删） | ubuntu-latest | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
+| wayland-gl（OpenGL 长期保留，对比基准） | ubuntu-latest | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
 | lane-native-surface-win32 | windows-latest | Win32 原生 surface trio，Clang Debug | evidence-receipt-native-surface-win32 |
 | lane-native-surface-cocoa | macos-14 | Cocoa + MoltenVK，Debug | evidence-receipt-native-surface-cocoa |
-| lane-gpu-runtime-linux-gl（DEPRECATED，兼容期，Task 6 删） | ubuntu-latest | X11 + GL，Debug，Xvfb 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
+| lane-gpu-runtime-linux-gl（OpenGL 长期保留，对比基准） | ubuntu-latest | X11 + GL，Debug，Xvfb 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
 | lane-gpu-runtime-linux-vk | ubuntu-24.04 | X11 + Vulkan，clang-18 Debug，Xvfb + lavapipe（软渲染，收据如实标注） | evidence-receipt-gpu-runtime-linux |
 | lane-gpu-runtime-macos-metal | macos-14 | Metal，Debug（hosted 无 Metal 会话时收据如实降级 HEADLESS） | evidence-receipt-gpu-runtime-macos-metal |
 | lane-gpu-runtime-windows-d3d12（+ 常开 unavailable 孪生 job） | self-hosted windows gpu（`ENABLE_GPU_LANES` 门控） | D3D12，Release（hosted WARP floor 在 windows-d3d12.yml） | evidence-receipt-gpu-runtime-windows-d3d12 |
@@ -797,7 +824,26 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 
 - **Wayland/XWayland 节流**：在 Wayland 会话下 GL demo 走 XWayland，`glXSwapBuffers` 会被 Present 节流到 ~1 FPS（profiler 显示 `Frame: 1000 ms`，而引擎 dt 按 R147 钳制 0.1s）。脚本化截图/相机复现前请用 `vblank_mode=0 ./build_gl/engine_demo` 绕过节流，否则一秒的鼠标输入会在单帧内一次性生效。
 - 窗口模式：`G` 或 Alt+Enter 在窗口与**无标题栏全屏**（铺满窗口所在显示器、不改显示器分辨率、不独占，Alt-Tab 不黑屏）之间切换，离开全屏恢复原位置、尺寸与最大化状态；`BREAK_FULLSCREEN=1` 以全屏启动；`BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,...` 在指定帧自动切换，每次切换输出 `WINDOW_MODE_SWITCH`（重建耗时、之后 5 帧最长帧时间），退出时输出 `WINDOW_MODE_STATS`。`BREAK_RESIZE_AT=frame:WxH,...` 不改窗口、只按给定尺寸走同一重建路径，输出 `RESIZE_REBUILD`。API：`platform_set_window_mode` / `platform_get_window_mode`、`PlatformConfig.start_fullscreen`（`platform/platform.h`）。标题栏：Alt+T 切换窗口模式下的标题栏和边框（客户区位置和大小不变，全屏期间的改动在回到窗口时生效）；`BREAK_UNDECORATED=1` 以无标题栏窗口启动；`BREAK_TOGGLE_TITLE_BAR_AT=f1,f2,...` 自动切换并输出 `TITLE_BAR_SWITCH`。API：`platform_set_window_decorated` / `platform_get_window_decorated` / `platform_window_title_bar_visible`、`PlatformConfig.undecorated`。Win32 改窗口样式（无标题栏时最大化只铺满工作区）；X11 用 `_MOTIF_WM_HINTS`；Wayland 关掉 myui 的客户端装饰；Cocoa 去掉 `NSWindowStyleMaskTitled`；QNX Screen 与移动端固定无标题栏。Win32、Cocoa 同步切换；X11、Wayland 以窗口管理器 / 合成器的回报为准（X11 无 EWMH 窗口管理器时退回 Motif 去装饰 + 移到显示器矩形）；QNX Screen 与移动端固定全屏。
-- 脚本化钩子（均无默认值，不设即原行为）：`BREAK_FRAMES=N`（N 帧后退出）、`BREAK_SCREENSHOT=a,b,c`（R446 起支持逗号列表，逐帧截图到 screenshot_N.bmp）、`BREAK_CAM=x,y,z[,yaw,pitch]`（初始机位）、`BREAK_CAM_SPIN=deg`（R446，每帧 yaw 增量，复现相机运动伪影）、`BREAK_TAA=0` / `BREAK_MB=0`（R446，TAA/动态模糊开关，用于 A/B 对照）、`BREAK_SSR=1` / `BREAK_SSGI=1` / `BREAK_CS=1` / `BREAK_VOL=1` / `BREAK_LF=1`（R550-A，开启默认关闭的 SSR/SSGI/接触阴影/体积雾/镜头光晕——五路 pass 自 R550-A 起真实合成进帧链）、`BREAK_IBL_STATIC=1`（R559，禁用运行时 IBL rebake）、`BREAK_IBL_REBAKE_FRAMES=N`（R559，每 N 帧触发一次、用于无头验证；rebake 仍跨 42 帧完成）、`BREAK_JITTER=0`（关闭 Halton 抖动，便于隔离时间重投影伪影）、`BREAK_MODEL_VIEW=s`（模型查看：不画地形/水面/展示区，相机对准命令行加载的模型，s 为距离倍数，s<1 更近）、`BREAK_BSCN_ROUNDTRIP_AT=f`（第 f 帧按 `B` 键路径保存 BSCN，第 f+10 帧按 `N` 键路径读回，用于无头验证读档后 LOD 等状态重建；会在工作目录写 `scene_save.bscn` / `scene_state.bin`）。TSR 在初始化或分辨率重建后的第一帧只输出当前帧，不采样历史；随后才恢复历史重投影。
+- 脚本化钩子（均无默认值，不设即原行为）：`BREAK_FRAMES=N`（N 帧后退出）、`BREAK_SCREENSHOT=a,b,c`（R446 起支持逗号列表，逐帧截图到 screenshot_N.bmp）、`BREAK_CAM=x,y,z[,yaw,pitch]`（初始机位；不设时默认 (0,2,8) 会抬到地形上方 2 m）、`BREAK_CAM_SPIN=deg`（R446，每帧 yaw 增量，复现相机运动伪影）、`BREAK_TAA=0` / `BREAK_MB=0`（R446，TAA/动态模糊开关，用于 A/B 对照）、`BREAK_SSR=1` / `BREAK_SSGI=1` / `BREAK_CS=1` / `BREAK_VOL=1` / `BREAK_LF=1`（R550-A，开启默认关闭的 SSR/SSGI/接触阴影/体积雾/镜头光晕——五路 pass 自 R550-A 起真实合成进帧链）、`BREAK_IBL_STATIC=1`（R559，禁用运行时 IBL rebake）、`BREAK_IBL_REBAKE_FRAMES=N`（R559，每 N 帧触发一次、用于无头验证；rebake 仍跨 42 帧完成）、`BREAK_JITTER=0`（关闭 Halton 抖动，便于隔离时间重投影伪影）、`BREAK_MODEL_VIEW=s`（模型查看：不画地形/水面/展示区，相机对准命令行加载的模型，s 为距离倍数，s<1 更近）、`BREAK_BSCN_ROUNDTRIP_AT=f`（第 f 帧按 `B` 键路径保存 BSCN，第 f+10 帧按 `N` 键路径读回，用于无头验证读档后 LOD 等状态重建；会在工作目录写 `scene_save.bscn` / `scene_state.bin`）。TSR 在初始化或分辨率重建后的第一帧只输出当前帧，不采样历史；随后才恢复历史重投影。
+
+### 3.2 macOS 窗口模式与标题栏验证
+
+交互演示：`G` 或 Alt+Enter 在窗口与无标题栏全屏之间切换，Alt+T 切换窗口模式的标题栏。`BREAK_FULLSCREEN=1` 直接全屏启动，`BREAK_UNDECORATED=1` 直接以无标题栏窗口启动。
+
+在 `engine/` 下执行以下命令，可单独运行公共状态机与真实 Cocoa 窗口测试，并自动演示全屏进出和标题栏显隐（Metal 构建目录示例为 `build-macos-current`）：
+
+```sh
+ctest --test-dir build-macos-current \
+  -R '^(test_platform_cocoa_runtime|test_platform_window_mode)$' -V
+
+BREAK_UNDECORATED=1 \
+BREAK_TOGGLE_FULLSCREEN_AT=10,40 \
+BREAK_TOGGLE_TITLE_BAR_AT=50,60 \
+BREAK_SCREENSHOT=25 \
+./build-macos-current/engine_demo --frames 70
+```
+
+Cocoa 测试直接断言 `NSWindow` 的全屏样式、屏幕矩形、窗口层级，以及标题栏显隐前后的内容矩形。demo 在第 10、40 帧进出全屏，第 50、60 帧显示再隐藏标题栏，第 25 帧保存全屏内容；对应日志为 `WINDOW_MODE_SWITCH`、`TITLE_BAR_SWITCH` 和退出时的 `WINDOW_MODE_STATS`。MoltenVK 演示将可执行文件替换为 `build-macos/engine_demo`。这些入口已集成在现有测试与 `engine_demo` 中，不需要单独的窗口模式 demo 程序。
 
 ## 4. 编译选项与标准
 
@@ -871,12 +917,12 @@ glslangValidator -V shader.frag -o shader.frag.spv
 ### 6.3 测试
 ```bash
 cd engine
-cmake -B build-verify-x11-gl
+cmake -B build-verify-x11-gl -DENGINE_RHI_BACKEND=opengl
 cmake --build build-verify-x11-gl
 ctest --test-dir build-verify-x11-gl -LE graphics --output-on-failure
 
-# Vulkan 后端集成测试（需要 -DENGINE_VULKAN=ON）
-cmake -B build-verify-x11-vk -DENGINE_VULKAN=ON
+# Vulkan 后端集成测试（Linux/Windows 默认后端）
+cmake -B build-verify-x11-vk
 cmake --build build-verify-x11-vk
 ctest --test-dir build-verify-x11-vk -L graphics --output-on-failure
 ```
@@ -916,9 +962,9 @@ GitHub Actions workflow：`.github/workflows/ci.yml`。触发：push/PR 到 `mas
 
 | lane 类 | job |
 |---|---|
-| headless | lane-headless-linux-clang / -gcc-asan / -gcc-tsan / -windows-clang / -windows-asan |
-| native-surface | lane-native-surface-wayland / -win32 / -cocoa（+ 兼容期 wayland-gl，DEPRECATED） |
-| GPU-runtime | lane-gpu-runtime-linux-gl（DEPRECATED）/ -linux-vk / -macos-metal / -windows-d3d12（+ 常开 unavailable 孪生 job） |
+| headless | lane-headless-linux-clang / -gcc-asan / -gcc-tsan / -windows-clang / -windows-asan / -windows-msvc / -windows-mingw |
+| native-surface | lane-native-surface-wayland / -win32 / -cocoa（+ wayland-gl，OpenGL 对比基准） |
+| GPU-runtime | lane-gpu-runtime-linux-gl（OpenGL 对比基准）/ -linux-vk / -macos-metal / -windows-d3d12（+ 常开 unavailable 孪生 job） |
 | validation | lane-validation-linux-vk（VK_LAYER_KHRONOS_validation，VUID 即红） |
 | benchmark | lane-benchmark-linux-vk（lavapipe，GPU_RUNTIME 收据）/ lane-benchmark-steam-deck-vk（真机 BENCHMARK_COMPARABLE，`ENABLE_GPU_LANES` 门控） |
 | proton | lane-proton（steamrt sniper 钉 digest 容器内构建 + ctest；兼容参考，不计 Windows 原生证据；仅 schedule/手动触发） |
@@ -1101,12 +1147,15 @@ sips -s format png \
   sysroot，不能复用设备版 metallib。设备与 Simulator 建议使用不同构建目录。
 - `engine_demo` 的 iOS target 使用 `com.purecengine.engine-demo`。CI 对 bundle ID、
   scene delegate、`engine.metallib` 以及 assets/shaders 入包结果做硬断言，但 lane 仍为
-  build-only，不提供 GPU_RUNTIME 收据。
+  build-only，不提供 GPU_RUNTIME 收据。按上面的 `engine_demo` scheme 构建；直接
+  `cmake --build build-ios` 会拉起 `ALL_BUILD` 中的 macOS 专用 Cocoa/OpenGL
+  `myui_explorer`，该桌面工具的全目标构建不是受支持的 iOS 验收入口。
 - `engine/src/apps/ios_main.m` 通过 `UIApplicationMain` + `UIWindowScene` 创建
   `UIWindow`、Metal view 和 `CAMetalLayer`。UIKit 留在主线程，现有 demo 在 16 MiB
   栈的专用引擎线程执行 `engine_demo_main`；`EngineConfig` 注入原生句柄、scale 和
-  宿主 poll。主线程同步 viewport、主触摸与 scene 生命周期，引擎线程串行应用；
-  后台等待条件变量而不获取 drawable，每帧有独立 Objective-C autoreleasepool。
+  宿主 poll。主线程同步 viewport、主触摸位置/主按钮 down/up 与 scene 生命周期，
+  引擎线程串行应用；后台等待条件变量而不获取 drawable，每帧有独立 Objective-C
+  autoreleasepool。
 - assets/shaders 保持目录结构入包，启动时暂存到 app 自己的
   `Library/Caches/PureCEngine` 并作为工作目录，截图、缓存和 trace 不写入只读 bundle。
   工作目录会在再次启动时重建，不能当作持久用户存储。
@@ -1118,9 +1167,16 @@ sips -s format png \
   及运行中的 `simctl io screenshot` 均可见 3D 场景与 UI，方向正确，日志无 ERROR/FATAL。
   同一进程切到 Safari 再返回时记录到 `iOS host: suspended` / `resumed`，恢复后继续出帧。
   初始 viewport 为 logical 402x874、drawable 1206x2622、scale 3.0。
+- 同日以本机 XCTest UI Automation harness 驱动 `XCUIDevice` 旋转和 `XCUICoordinate`
+  点击，测试 1/1 通过：窗口从 402x874 变为 874x402，点击后恢复 402x874。横屏点击
+  (437, 201) 后，系统日志确认引擎线程消费 `iOS input: down` / `up`，坐标一致。
+  横屏稳定期的 `simctl io screenshot` 为 2622x1206，3D/UI 铺满且 HUD 正立，
+  HUD 显示 `Render: 1311x603 -> 2622x1206`。本机 XCTest 的横屏截图附件存在按物理像素
+  方向保存和应用裁切黑区的呈现差异，不能据此判定渲染失败；朝向以实际 `simctl`
+  屏幕截图交叉核对。临时 harness 未注册为仓库或 CI 测试 target，CI 仍 compile-only。
 - 当前验证边界：Hi-Z、indirect draw/GPU cull 与 GPU timer 仍有能力降级，不宣称可选路径
-  全齐；现有桌面 HUD 未做窄屏排版适配。旋转 resize、真实触摸交互和真机音频/Metal
-  仍待验证。Simulator 结果只登记为本地可见运行证据，iOS 等级保持 COMPILED，
-  不改变 OpenGL 删除 gate，也不宣称真机 GPU_RUNTIME。
+  全齐；现有桌面 HUD 未做窄屏排版适配。真机旋转、物理触摸、音频/Metal 仍待验证。
+  Simulator 结果只登记为本地可见运行证据，iOS 等级保持 COMPILED，不改变 OpenGL
+  删除 gate，也不宣称真机 GPU_RUNTIME。
 - `METAL_DEVICE_WRAPPER_TYPE=1 ./engine_demo --frames 3` 开 Metal validation
   取证（encoder-state 类缺陷的唯一可靠观测，计划 C Task 11 方法学）。

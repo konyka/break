@@ -30,6 +30,7 @@
 #endif
 #include <windows.h>
 #include <GL/gl.h>
+#include <platform/win_proc.h>
 
 /* ---- enums missing from the Windows SDK GL 1.1 header -------------- */
 
@@ -160,7 +161,7 @@ bool my_gl_desktop_wgl_proc_usable(my_gl_desktop_proc_t proc) {
     if (s_wgl.field == NULL) {                                        \
       PROC candidate = wglGetProcAddress(name);                       \
       if (my_gl_desktop_wgl_proc_usable((my_gl_desktop_proc_t)candidate)) { \
-        s_wgl.field = (my_gl_desktop_pfn_##field##_t)candidate;       \
+        WIN_PROC_LOAD(s_wgl.field, candidate);                        \
       }                                                               \
     }                                                                 \
     ok = ok && s_wgl.field != NULL;                                   \

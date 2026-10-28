@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <ecs/ecs.h>
+#include <ecs/ecs_internal.h>
 
 /* Component type IDs for testing */
 #define COMP_POSITION 1
@@ -16,6 +17,23 @@ typedef struct { int hp; } Health;
  * corrupts global-slot addressing. */
 #define COMP_BIG 5
 typedef struct { u32 value; char pad[512]; } BigComp;
+
+TEST(ecs_world_replace_rejects_malformed_replacement_without_destroying_destination) {
+    World *destination = world_create();
+    World *replacement = world_clone_deep(destination);
+    ASSERT_NOT_NULL(destination);
+    ASSERT_NOT_NULL(replacement);
+    Entity entity = world_create_entity(destination);
+    ASSERT_TRUE(entity_valid(entity));
+    replacement->archetypes[0].edges_add_count = 1u;
+    replacement->archetypes[0].edges_add = (ArchetypeEdge *)calloc(1u, sizeof(ArchetypeEdge));
+    ASSERT_NOT_NULL(replacement->archetypes[0].edges_add);
+    replacement->archetypes[0].edges_add[0].target = (Archetype *)(uintptr_t)1u;
+    ASSERT_FALSE(world_replace_contents(destination, replacement));
+    ASSERT_TRUE(world_entity_exists(destination, entity));
+    world_destroy(replacement);
+    world_destroy(destination);
+}
 
 /* ---- World Create/Destroy ---- */
 
@@ -1105,7 +1123,225 @@ TEST(ecs_component_columns_aligned) {
     world_destroy(w);
 }
 
+TEST(ecs_world_clone_is_independent) {
+    World *source = world_create();
+    ASSERT_NOT_NULL(source);
+    world_register_component(source, COMP_POSITION, sizeof(Position));
+    world_register_component(source, COMP_VELOCITY, sizeof(Velocity));
+    Entity e = world_create_entity(source);
+    Position *p = (Position *)world_add_component(source, e, COMP_POSITION);
+    ASSERT_NOT_NULL(p);
+    p->x = 11.0f;
+    ASSERT_NOT_NULL(world_add_component(source, e, COMP_VELOCITY));
+
+    World *clone = world_clone_deep(source);
+    ASSERT_NOT_NULL(clone);
+    Position *clone_p = (Position *)world_get_component(clone, e, COMP_POSITION);
+    ASSERT_NOT_NULL(clone_p);
+    clone_p->x = 99.0f;
+    ASSERT_FLOAT_EQ(((Position *)world_get_component(source, e, COMP_POSITION))->x,
+                    11.0f, 1e-5f);
+    Entity clone_entity = world_create_entity(clone);
+    ASSERT_TRUE(entity_valid(clone_entity));
+    world_remove_component(clone, e, COMP_VELOCITY);
+    ASSERT_NOT_NULL(world_get_component(source, e, COMP_VELOCITY));
+
+    world_destroy(clone);
+    world_destroy(source);
+}
+
+TEST(ecs_world_replace_preserves_runtime_invariants) {
+    World *source = world_create();
+    World *replacement = world_create();
+    ASSERT_NOT_NULL(source);
+    ASSERT_NOT_NULL(replacement);
+    world_register_component(source, COMP_POSITION, sizeof(Position));
+    Entity e = world_create_entity(source);
+    Position *p = (Position *)world_add_component(source, e, COMP_POSITION);
+    ASSERT_NOT_NULL(p);
+    p->x = 42.0f;
+    ComponentType types[] = {COMP_POSITION};
+    ASSERT_EQ(world_query_cached(source, types, 1)->match_count, 1u);
+
+    World *staged = world_clone_deep(source);
+    ASSERT_NOT_NULL(staged);
+    ASSERT_TRUE(world_replace_contents(replacement, staged));
+    ASSERT_FLOAT_EQ(((Position *)world_get_component(replacement, e, COMP_POSITION))->x,
+                    42.0f, 1e-5f);
+    Entity next = world_create_entity(replacement);
+    ASSERT_TRUE(entity_valid(next));
+    world_remove_component(replacement, e, COMP_POSITION);
+    ASSERT_TRUE(world_get_component(replacement, e, COMP_POSITION) == NULL);
+    Query *q = world_query_cached(replacement, types, 1);
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(q->match_count, 0u);
+
+    world_destroy(source);
+    world_destroy(replacement);
+}
+
+TEST(ecs_world_clone_oom_preserves_source) {
+    World *source = world_create();
+    ASSERT_NOT_NULL(source);
+    world_register_component(source, COMP_POSITION, sizeof(Position));
+    world_register_component(source, COMP_VELOCITY, sizeof(Velocity));
+    Entity e = world_create_entity(source);
+    ASSERT_NOT_NULL(world_add_component(source, e, COMP_POSITION));
+    ASSERT_NOT_NULL(world_add_component(source, e, COMP_VELOCITY));
+    ComponentType types[] = {COMP_POSITION};
+    ASSERT_EQ(world_query_cached(source, types, 1)->match_count, 1u);
+
+    for (i32 fail = 0; fail < 8; ++fail) {
+        world_clone_test_fail_after(fail);
+        World *clone = world_clone_deep(source);
+        ASSERT_TRUE(clone == NULL);
+        ASSERT_TRUE(world_entity_exists(source, e));
+        ASSERT_NOT_NULL(world_get_component(source, e, COMP_POSITION));
+        ASSERT_EQ(world_query_cached(source, types, 1)->match_count, 1u);
+    }
+    world_clone_test_fail_after(-1);
+    world_destroy(source);
+}
+
+TEST(ecs_world_clone_copies_query_count_and_heap_query) {
+    World *source = world_create();
+    ASSERT_NOT_NULL(source);
+    for (ComponentType id = 1u; id <= 65u; ++id) {
+        world_register_component(source, id, 1u);
+        Entity e = world_create_entity(source);
+        ASSERT_NOT_NULL(world_add_component(source, e, id));
+    }
+    source->query_count = 17u;
+    Query *source_query = world_query(source, NULL, 0u);
+    ASSERT_NOT_NULL(source_query);
+    ASSERT_TRUE(source_query->match_count > ECS_QUERY_INLINE_CAP);
+
+    World *clone = world_clone_deep(source);
+    ASSERT_NOT_NULL(clone);
+    ASSERT_EQ(clone->query_count, 17u);
+    Query *clone_query = &clone->queries[0];
+    ASSERT_EQ(clone_query->match_count, source_query->match_count);
+    QueryIter it = query_begin(clone_query);
+    u32 count = 0u;
+    while (query_next(&it)) count++;
+    ASSERT_EQ(count, clone_query->match_count);
+
+    world_destroy(clone);
+    world_destroy(source);
+}
+
+TEST(ecs_world_replace_transfers_heap_query_ownership) {
+    World *source = world_create();
+    World *destination = world_create();
+    ASSERT_NOT_NULL(source);
+    ASSERT_NOT_NULL(destination);
+    for (ComponentType id = 1u; id <= 65u; ++id) {
+        world_register_component(source, id, 1u);
+        Entity e = world_create_entity(source);
+        ASSERT_NOT_NULL(world_add_component(source, e, id));
+    }
+    Query *source_query = world_query(source, NULL, 0u);
+    ASSERT_NOT_NULL(source_query);
+    ASSERT_TRUE(source_query->match_count > ECS_QUERY_INLINE_CAP);
+    World *replacement = world_clone_deep(source);
+    ASSERT_NOT_NULL(replacement);
+
+    ASSERT_TRUE(world_replace_contents(destination, replacement));
+    Query *query = &destination->queries[0];
+    QueryIter it = query_begin(query);
+    u32 count = 0u;
+    while (query_next(&it)) count++;
+    ASSERT_EQ(count, query->match_count);
+    world_destroy(source);
+    world_destroy(destination);
+}
+
+TEST(ecs_world_replace_rejects_malformed_edges) {
+    World *source = world_create();
+    World *destination = world_create();
+    ASSERT_NOT_NULL(source);
+    world_register_component(source, COMP_POSITION, sizeof(Position));
+    Entity e = world_create_entity(source);
+    ASSERT_NOT_NULL(world_add_component(source, e, COMP_POSITION));
+    World *replacement = world_clone_deep(source);
+    ASSERT_NOT_NULL(replacement);
+    ASSERT_TRUE(replacement->archetypes[0].edges_add_count > 0u);
+    ArchetypeEdge *saved_edges = replacement->archetypes[0].edges_add;
+    replacement->archetypes[0].edges_add = NULL;
+    ASSERT_FALSE(world_replace_contents(destination, replacement));
+    replacement->archetypes[0].edges_add = saved_edges;
+    world_destroy(replacement);
+    world_destroy(destination);
+    world_destroy(source);
+}
+
+TEST(ecs_world_replace_rejects_malformed_query_without_consuming_replacement) {
+    World *source = world_create();
+    World *destination = world_create();
+    ASSERT_NOT_NULL(source);
+    ASSERT_NOT_NULL(destination);
+    world_register_component(source, COMP_POSITION, sizeof(Position));
+    Entity source_entity = world_create_entity(source);
+    ASSERT_NOT_NULL(world_add_component(source, source_entity, COMP_POSITION));
+    World *replacement = world_clone_deep(source);
+    ASSERT_NOT_NULL(replacement);
+    replacement->queries[0].match_count = ECS_MAX_ARCHETYPES + 1u;
+    ASSERT_FALSE(world_replace_contents(destination, replacement));
+    ASSERT_EQ(destination->entity_count, 1u);
+    ASSERT_NOT_NULL(replacement->entities);
+    world_destroy(replacement);
+    world_destroy(destination);
+    world_destroy(source);
+}
+
+TEST(ecs_world_replace_rejects_inline_query_pointer_mismatch) {
+    World *source = world_create();
+    World *destination = world_create();
+    ASSERT_NOT_NULL(source);
+    ASSERT_NOT_NULL(destination);
+    world_register_component(source, COMP_POSITION, sizeof(Position));
+    Entity source_entity = world_create_entity(source);
+    ASSERT_NOT_NULL(world_add_component(source, source_entity, COMP_POSITION));
+    World *replacement = world_clone_deep(source);
+    ASSERT_NOT_NULL(replacement);
+    replacement->queries[0].matching = NULL;
+    ASSERT_FALSE(world_replace_contents(destination, replacement));
+    ASSERT_EQ(destination->entity_count, 1u);
+    replacement->queries[0].matching = replacement->queries[0]._inline_matching;
+    world_destroy(replacement);
+    world_destroy(destination);
+    world_destroy(source);
+}
+
+TEST(ecs_world_replace_rejects_malformed_edge_count) {
+    World *source = world_create();
+    World *destination = world_create();
+    ASSERT_NOT_NULL(source);
+    ASSERT_NOT_NULL(destination);
+    world_register_component(source, COMP_POSITION, sizeof(Position));
+    Entity source_entity = world_create_entity(source);
+    ASSERT_NOT_NULL(world_add_component(source, source_entity, COMP_POSITION));
+    World *replacement = world_clone_deep(source);
+    ASSERT_NOT_NULL(replacement);
+    replacement->archetypes[0].edges_add_count = ECS_MAX_ARCHETYPES + 1u;
+    ASSERT_FALSE(world_replace_contents(destination, replacement));
+    ASSERT_EQ(destination->entity_count, 1u);
+    world_destroy(replacement);
+    world_destroy(destination);
+    world_destroy(source);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(ecs_world_replace_rejects_malformed_query_without_consuming_replacement);
+    RUN_TEST(ecs_world_replace_rejects_inline_query_pointer_mismatch);
+    RUN_TEST(ecs_world_replace_rejects_malformed_edge_count);
+    RUN_TEST(ecs_world_clone_copies_query_count_and_heap_query);
+    RUN_TEST(ecs_world_replace_transfers_heap_query_ownership);
+    RUN_TEST(ecs_world_replace_rejects_malformed_edges);
+    RUN_TEST(ecs_world_replace_rejects_malformed_replacement_without_destroying_destination);
+    RUN_TEST(ecs_world_clone_oom_preserves_source);
+    RUN_TEST(ecs_world_clone_is_independent);
+    RUN_TEST(ecs_world_replace_preserves_runtime_invariants);
     RUN_TEST(ecs_world_create_destroy);
     RUN_TEST(ecs_register_component_size_change_rejected);
     RUN_TEST(ecs_rejects_out_of_range_component_id);

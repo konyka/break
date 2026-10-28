@@ -27,13 +27,35 @@ endforeach()
 
 if(NOT _already_installed)
     if(NOT EXISTS "${_installer}")
-        message(STATUS "Downloading Vulkan SDK ${_version} from ${_url}")
-        file(DOWNLOAD "${_url}" "${_installer}" STATUS _st TLS_VERIFY ON
-            EXPECTED_HASH "SHA256=${_sha256}")
-        list(GET _st 0 _code)
-        if(NOT _code EQUAL 0)
+        # sdk.lunarg.com drops connections now and then ("Failure when receiving
+        # data from the peer", curl 56) and can stall. EXPECTED_HASH on
+        # file(DOWNLOAD) turns any failed transfer into an immediate fatal error,
+        # so it cannot be retried; download without it, retry the transfer, and
+        # verify the pinned SHA256 myself after each completed attempt. A hash
+        # mismatch is never retried: it is fail-closed, same as before.
+        set(_code 1)
+        foreach(_attempt RANGE 1 4)
+            message(STATUS "Downloading Vulkan SDK ${_version} from ${_url} (attempt ${_attempt}/4)")
+            file(DOWNLOAD "${_url}" "${_installer}" STATUS _st TLS_VERIFY ON
+                INACTIVITY_TIMEOUT 60)
+            list(GET _st 0 _code)
+            if(_code EQUAL 0)
+                break()
+            endif()
             file(REMOVE "${_installer}")
-            message(FATAL_ERROR "Vulkan SDK download failed: ${_st}")
+            message(WARNING "Vulkan SDK download attempt ${_attempt} failed: ${_st}")
+            if(_attempt LESS 4)
+                execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 15)
+            endif()
+        endforeach()
+        if(NOT _code EQUAL 0)
+            message(FATAL_ERROR "Vulkan SDK download failed after 4 attempts: ${_st}")
+        endif()
+        file(SHA256 "${_installer}" _downloaded_sha)
+        if(NOT _downloaded_sha STREQUAL _sha256)
+            file(REMOVE "${_installer}")
+            message(FATAL_ERROR
+                "Vulkan SDK installer hash mismatch (expected ${_sha256}, got ${_downloaded_sha})")
         endif()
     else()
         file(SHA256 "${_installer}" _cached_sha)

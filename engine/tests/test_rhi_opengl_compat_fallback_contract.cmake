@@ -1,4 +1,4 @@
-# Contract test: 兼容期内 ENGINE_RHI_BACKEND=opengl 是显式、可观测的 fallback。
+# Contract test: ENGINE_RHI_BACKEND=opengl（长期保留的最后降级方案 + 渲染对比基准）是显式、可观测的 fallback。
 # -DENGINE_CMAKE=<abs engine/CMakeLists.txt> -DRHI_C=<abs src/rhi/rhi.c>
 # -DROLLOUT_C=<abs src/rhi/rhi_rollout.c>（reason=compat-override 的居所）
 # -DROLLOUT_JSON=<abs assets/rhi_backend_rollout.json>

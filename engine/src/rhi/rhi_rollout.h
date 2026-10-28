@@ -28,4 +28,11 @@ const char *rhi_result_name(RHIResult result);
 const char *rhi_rollout_compiled_backend(void);
 const char *rhi_rollout_compiled_reason(void);
 
+/* Multi-backend builds (docs/design/rhi_runtime_backend.md): the runtime
+ * selection module records the backend it actually created, so every later
+ * RHIEVT line (device_lost, present_failure, ...) names that backend instead
+ * of the build's primary. NULL backend clears the record. Single-backend
+ * builds never call it and keep the compile-time answer. */
+void rhi_rollout_set_runtime_selection(const char *backend, const char *reason);
+
 #endif

@@ -125,6 +125,16 @@
       "platforms": ["windows", "linux"]
     },
     {
+      "name": "snowflake",
+      "version": "0fceed6d885bb8578743d82cc4a5d7ab2f6b0620 (snowflake main HEAD 2026-10-24)",
+      "purpose": "runtime-optional (BREAK_ENABLE_SNOWFLAKE)",
+      "source": "path reference via SNOWFLAKE_SOURCE_DIR (external git checkout, not vendored; consumed via add_subdirectory, required target snow::net)",
+      "sha256": "n/a-commit-pinned-via-configure-check",
+      "verify_path": "",
+      "verify": "configure-time, inside engine/CMakeLists.txt if(BREAK_ENABLE_SNOWFLAKE): `git -C ${SNOWFLAKE_SOURCE_DIR} rev-parse HEAD` must equal BREAK_SNOWFLAKE_PIN (this entry's version commit), else FATAL_ERROR naming pinned/found/update-procedure; when BREAK_ENABLE_CRYPTO=ON the same block additionally FATAL_ERRORs unless the tree ships src/snow_openssl.c and reports SNOW_HAVE_OPENSSL=TRUE after add_subdirectory (fail-closed; the snow_openssl_stub.c NOSYS build is accepted only with BREAK_ENABLE_CRYPTO=OFF). Moving the pin requires updating BREAK_SNOWFLAKE_PIN, this entry, and docs/design/snowflake_c11_adapter.md in the same commit.",
+      "platforms": ["linux", "windows", "macos"]
+    },
+    {
       "name": "meshoptimizer-c-port",
       "version": "1.3 (pure C port)",
       "purpose": "runtime-shipped",

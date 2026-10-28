@@ -87,7 +87,7 @@ panel that drives it in real time:
 ## Run the demo
 
 ```sh
-cmake -S engine -B build -DENGINE_BUILD_TESTS=ON -DENGINE_VULKAN=OFF
+cmake -S engine -B build -DENGINE_BUILD_TESTS=ON -DENGINE_RHI_BACKEND=opengl
 cmake --build build --target echarts_demo --parallel 2
 mkdir -p /tmp/scenes && ./build/echarts_demo /tmp/scenes
 ```

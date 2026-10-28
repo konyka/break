@@ -13,6 +13,13 @@
 #define FW_EVENT_QUEUE_SIZE 32
 #define FW_NOTIFY_BUF_SIZE 4096
 
+/* Legacy FileWatcher change rule, shared by every backend's poll loop. mtime
+ * 0 means "missing": it never notifies for plain filewatch_add entries, and
+ * notifies once (existing -> missing) for filewatch_add_with_missing ones. */
+static bool filewatch_entry_changed(const FileWatchEntry *e, u32 mt) {
+    return mt != e->last_modified && (mt != 0 || e->notify_missing);
+}
+
 #ifdef ENGINE_PLATFORM_WINDOWS
 #include <windows.h>
 
@@ -98,7 +105,7 @@ void filewatch_poll(FileWatcher *fw) {
     for (u32 i = 0; i < fw->count; i++) {
         FileWatchEntry *e = &fw->entries[i];
         u32 mt = file_mtime(e->path);
-        if (mt != 0 && mt != e->last_modified) {
+        if (filewatch_entry_changed(e, mt)) {
             e->last_modified = mt;
             if (e->callback) e->callback(e->path, e->user);
         }
@@ -370,7 +377,7 @@ void filewatch_poll(FileWatcher *fw) {
         if (kq_ok && !dirty[i]) continue;
         FileWatchEntry *e = &fw->entries[i];
         u32 mt = kq_file_mtime(e->path);
-        if (mt != 0 && mt != e->last_modified) {
+        if (filewatch_entry_changed(e, mt)) {
             e->last_modified = mt;
             if (e->callback) e->callback(e->path, e->user);
         }
@@ -944,7 +951,7 @@ void filewatch_poll(FileWatcher *fw) {
 
         FileWatchEntry *e = &fw->entries[i];
         u32 mt = file_mtime(e->path);
-        if (mt != 0 && mt != e->last_modified) {
+        if (filewatch_entry_changed(e, mt)) {
             e->last_modified = mt;
             if (e->callback) e->callback(e->path, e->user);
         }
@@ -1217,7 +1224,7 @@ void filewatch_poll(FileWatcher *fw) {
     for (u32 i = 0; i < fw->count; i++) {
         FileWatchEntry *e = &fw->entries[i];
         u32 mt = file_mtime(e->path);
-        if (mt != 0 && mt != e->last_modified) {
+        if (filewatch_entry_changed(e, mt)) {
             e->last_modified = mt;
             if (e->callback) e->callback(e->path, e->user);
         }
@@ -1266,3 +1273,16 @@ void filewatch_destroy(FileWatch *fw) {
 }
 
 #endif
+
+void filewatch_add_with_missing(FileWatcher *fw, const char *path,
+                                void (*callback)(const char *path, void *user),
+                                void *user) {
+    u32 before;
+    if (!fw) return;
+    before = fw->count;
+    filewatch_add(fw, path, callback, user);
+    /* every backend appends the accepted entry at index `before` */
+    if (fw->count == before + 1u) {
+        fw->entries[before].notify_missing = true;
+    }
+}

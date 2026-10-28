@@ -54,7 +54,16 @@ const char *rhi_result_name(RHIResult result) {
     return "ERROR";
 }
 
+static const char *g_runtime_backend;
+static const char *g_runtime_reason;
+
+void rhi_rollout_set_runtime_selection(const char *backend, const char *reason) {
+    g_runtime_backend = backend;
+    g_runtime_reason = backend != NULL ? reason : NULL;
+}
+
 const char *rhi_rollout_compiled_backend(void) {
+    if (g_runtime_backend != NULL) return g_runtime_backend;
 #if defined(ENGINE_RHI_BACKEND_VULKAN)
     return "vulkan";
 #elif defined(ENGINE_RHI_BACKEND_METAL)
@@ -67,6 +76,7 @@ const char *rhi_rollout_compiled_backend(void) {
 }
 
 const char *rhi_rollout_compiled_reason(void) {
+    if (g_runtime_reason != NULL) return g_runtime_reason;
 #if defined(ENGINE_RHI_BACKEND_VULKAN) || defined(ENGINE_RHI_BACKEND_METAL) \
     || defined(ENGINE_RHI_BACKEND_D3D12)
     return "platform-default";

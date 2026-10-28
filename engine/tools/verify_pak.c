@@ -121,13 +121,24 @@ static int verify_dir(VFS *vfs, const char *base_dir, const char *rel_prefix) {
         if (fd.cFileName[0] == '.') continue;
 
         char rel[1024];
+        int ret;
         if (rel_prefix[0])
-            snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, fd.cFileName);
+            ret = snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, fd.cFileName);
         else
-            snprintf(rel, sizeof(rel), "%s", fd.cFileName);
+            ret = snprintf(rel, sizeof(rel), "%s", fd.cFileName);
+        if (ret < 0 || (size_t)ret >= sizeof(rel)) {
+            fprintf(stderr, "FAIL: path too long under '%s'\n", base_dir);
+            all_ok = 0;
+            continue;
+        }
 
         char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", base_dir, rel);
+        ret = snprintf(full, sizeof(full), "%s/%s", base_dir, rel);
+        if (ret < 0 || (size_t)ret >= sizeof(full)) {
+            fprintf(stderr, "FAIL: path too long under '%s'\n", base_dir);
+            all_ok = 0;
+            continue;
+        }
 
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if (!verify_dir(vfs, base_dir, rel))

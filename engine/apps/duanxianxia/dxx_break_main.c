@@ -79,7 +79,6 @@ int main(void) {
   PlatformConfig cfg;
   Platform *platform;
   RHIDevice *device;
-  RHIBackend backend;
   BreakUI *ui;
   my_window_manager_t *wm;
   dxx_app_t *app;
@@ -100,24 +99,14 @@ int main(void) {
   platform_get_logical_size(platform, &w, &h);
   platform_get_drawable_size(platform, &drawable_w, &drawable_h);
 
-#if defined(ENGINE_RHI_BACKEND_METAL)
-  backend = RHI_BACKEND_METAL;
-#elif defined(ENGINE_VULKAN)
-  backend = RHI_BACKEND_VULKAN;
-#else
-  backend = RHI_BACKEND_OPENGL;
-#endif
-#if defined(ENGINE_VULKAN) || defined(ENGINE_RHI_BACKEND_METAL)
-  device = rhi_device_create(backend, platform_surface_native(platform),
-                             platform_display_native(platform), drawable_w,
-                             drawable_h);
-#else
-  device = rhi_device_create(backend, platform_window_native(platform),
-                             platform_display_native(platform), drawable_w,
-                             drawable_h);
-#endif
+  /* Every backend implements the compiled entry; in the multi-backend
+   * build it is the runtime chain (vulkan, then the opengl fallback). */
+  device = rhi_device_create_compiled(platform_window_native(platform),
+                                      platform_surface_native(platform),
+                                      platform_display_native(platform),
+                                      drawable_w, drawable_h);
   if (device == NULL) {
-    fprintf(stderr, "dxx: rhi_device_create failed\n");
+    fprintf(stderr, "dxx: rhi_device_create_compiled failed\n");
     platform_destroy(platform);
     return 1;
   }

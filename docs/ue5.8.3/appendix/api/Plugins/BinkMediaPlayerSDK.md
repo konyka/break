@@ -1,0 +1,281 @@
+# Plugins / BinkMediaPlayerSDK
+
+- module root: `Plugins/Media/BinkMedia/Source/BinkMediaPlayerSDK`
+- headers: 2; symbols: 256
+- symbol kinds: macro=162, member=49, prototype=25, struct=2, typedef=18
+- PrivateDependencyModuleNames: DesktopPlatform, EditorStyle, PropertyEditor, SourceControl, UnrealEd
+- PublicDependencyModuleNames: Core, CoreUObject, DesktopWidgets, Engine, InputCore, Launch, MediaAssets, MetalRHI, MoviePlayer, Projects, RHI, RenderCore, Slate, SlateCore
+
+### `Plugins/Media/BinkMedia/Source/BinkMediaPlayerSDK/include/binktiny.h` (Other)
+
+
+#### struct `BINK`  
+`typedef struct BINK`  
+_L12-33_
+- L14 _public member_ `U32 Width;` — Width (1 based, 640 for example)
+- L15 _public member_ `U32 Height;` — Height (1 based, 480 for example)
+- L16 _public member_ `U32 Frames;` — Number of frames (1 based, 100 = 100 frames)
+- L17 _public member_ `U32 FrameNum;` — Frame to *be* displayed (1 based)
+- L19 _public member_ `U32 LastFrameNum;` — Last frame decompressed or skipped (1 based)
+- L20 _public member_ `U32 FrameRate;` — Frame Rate Numerator
+- L21 _public member_ `U32 FrameRateDiv;` — Frame Rate Divisor (frame rate=numerator/divisor)
+- L22 _public member_ `U32 ReadError;` — Non-zero if a read error has ocurred
+- L24 _public member_ `U32 OpenFlags;` — flags used on open
+- L25 _public member_ `U32 BinkType;` — Bink flags
+- L26 _public member_ `U32 LargestFrameSize;` — Largest frame size
+- L27 _public member_ `U32 FrameSize;` — The current frame's size in bytes
+- L29 _public member_ `U32 SndSize;` — The current frame sound tracks' size in bytes
+- L30 _public member_ `U32 FrameChangePercent;` — very rough percentage of the frame that changed
+- L31 _public member_ `S32 NumTracks;` — how many tracks
+
+#### struct `BINKHLINFO`  
+`typedef struct BINKHLINFO`  
+_L70-91_
+- L72 _public member_ `U32 Width;`
+- L73 _public member_ `U32 Height;`
+- L74 _public member_ `U32 TextureBufferYAWidth;`
+- L75 _public member_ `U32 TextureBufferYAHeight;`
+- L76 _public member_ `U32 TextureBufferChWidth;`
+- L77 _public member_ `U32 TextureBufferChHeight;`
+- L78 _public member_ `U32 TextureDrawIndex;`
+- L79 _public member_ `U32 TextureDrawFrame;` — what frame would be drawn with TextureDrawIndex
+- L80 _public member_ `S32 NeedAlpha;`
+- L81 _public member_ `S32 NeedHDR;`
+- L82 _public member_ `U32 Frames;`
+- L83 _public member_ `U32 FrameNum;`
+- L84 _public member_ `U32 FrameRate;`
+- L85 _public member_ `U32 FrameRateDiv;`
+- L86 _public member_ `U32 LoopsRemaining;`
+- L87 _public member_ `U32 ReadError;`
+- L88 _public member_ `U32 NumTracksOpened;`
+- L89 _public member_ `U32 PlaybackState;` — 0 = playing, 1 = paused, 2 = gotoing, 3 = at end (stopped)
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+- L90 _public member_ `F32 cs0, cs1, cs2, cs3, cs4, cs5, cs6, cs7, cs8, cs9, cs10, cs11, cs12, cs13, cs14, cs15;`
+
+#### Free symbols / members of external scopes
+
+- L8 _macro_ `#define __BINKH__`
+- L10 _typedef_ `typedef struct BINK * HBINK;`
+- L33 _typedef_ `} BINK;`
+- L38 _prototype_ `RADEXPFUNC void * RADEXPLINK BinkZipOpen( char const * zipfn );`
+- L39 _prototype_ `RADEXPFUNC S32 RADEXPLINK BinkZipFindUncompressedFileOffset( void * zip, char const * filename, U64 * out_ofs );`
+- L40 _prototype_ `RADEXPFUNC S32 RADEXPLINK BinkZipGetFileInfo( void * zip, U64 index, char * out_filename, U32 bytes_filename, U64 * out_offset, S32 * out_uncompressed );`
+- L41 _prototype_ `RADEXPFUNC void RADEXPLINK BinkZipClose( void * zip );`
+- L47 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLInit( U32 thread_count, U32 snd_freq, U32 snd_chans );` — snd_freq == 0, no sound init
+- L48 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLShutdown( void );`
+- L50 _macro_ `#define BINKHLSNDLAYOUT_NONE 0 // don't open any sound tracks snd_track_start not used`
+- L51 _macro_ `#define BINKHLSNDLAYOUT_SIMPLE 1 // based on filename, OR simply mono or stereo sound in track snd_track_start (default speaker spread)`
+- L52 _macro_ `#define BINKHLSNDLAYOUT_LANGUAGEOVERRIDE 2 // mono or stereo sound in track 0, language track at snd_track_start`
+- L53 _macro_ `#define BINKHLSNDLAYOUT_51 3 // 6 mono tracks in tracks snd_track_start[0..5]`
+- L54 _macro_ `#define BINKHLSNDLAYOUT_51LANGUAGEOVERRIDE 4 // 6 mono tracks in tracks 0..5, center language track at snd_track_start`
+- L55 _macro_ `#define BINKHLSNDLAYOUT_71 5 // 8 mono tracks in tracks snd_track_start[0..7]`
+- L56 _macro_ `#define BINKHLSNDLAYOUT_71LANGUAGEOVERRIDE 6 // 8 mono tracks in tracks 0..7, center language track at snd_track_start`
+- L58 _macro_ `#define BINKHLBUFFER_STREAM 0 // stream the movie off the media during playback (caches about 1 second of video)`
+- L59 _macro_ `#define BINKHLBUFFER_LOADALL 1 // loads the whole movie into memory at Open time (will block)`
+- L60 _macro_ `#define BINKHLBUFFER_STREAMUNTILRESIDENT 2 // streams the movie into a memory buffer as big as the movie, so it will be preloaded eventually)`
+- L63 _prototype_ `RADEXPFUNC HBINK RADEXPLINK BinkHLOpen( char const * name, U32 snd_track_type, U32 snd_track_start, U32 buffering_type, U64 file_byte_offset );`
+- L65 _typedef_ `typedef struct BINKHLPRELOADED BINKHLPRELOADED;`
+- L66 _prototype_ `RADEXPFUNC BINKHLPRELOADED * RADEXPLINK BinkHLPreload( char const * name, U64 file_byte_offset );`
+- L67 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLUnpreload( BINKHLPRELOADED * pre );`
+- L68 _prototype_ `RADEXPFUNC HBINK RADEXPLINK BinkHLOpenPreload( BINKHLPRELOADED * pre, U32 snd_track_type, U32 snd_track_start );`
+- L91 _typedef_ `} BINKHLINFO;`
+- L93 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLGetInfo( HBINK b, BINKHLINFO * info );`
+- L95 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLRegisterTextureBuffers( HBINK b, U8 ** Luma,` — two luma pointers
+- L101 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLPause( HBINK b, U32 on_off );`
+- L103 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLVolume( HBINK b, F32 vol );`
+- L112 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLSpeakerVolumes( HBINK b, F32 * vols, U32 count );` — set speaker volumes BinkSndSimple = count must be 2 (l/r) - OR match filename (is there a "_51." or "_51L." or "_71." or "_71L." in the filename?) BinkSndLanguageOverride = count must be 3 (l,r)/language BinkSnd51 = count must be 6 (front l/r),center,sub,(rear l/r), BinkSnd51LanguageOverride = 7 (front l/r),center,sub,(rear l/r),language BinkSnd71 = count must be 8 (front l/r),center,sub,(read l/r),(surr l/r) BinkSnd71LanguageOverride = 9 (front l/r),center,sub,(read l/r),(surr l/r), lang
+- L114 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLLoopCount( HBINK b, U32 count );` — 0 = loop forever
+- L116 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLGoto( HBINK b, U32 goto_frame, U32 max_frames_to_decode_per_process );` — goto frame goes from 1 to framenum (0 means stop current goto), max_frames_to_decode_per_process = 0 means block until at frame
+- L118 _prototype_ `RADEXPFUNC void RADEXPLINK BinkHLProcess( void );` — decodes/moves to next frame (next frame, or loop, or goto) for all Binks that are playing (if they need advancing)
+- L120 _prototype_ `RADEXPFUNC char * RADEXPLINK BinkGetError( void );`
+- L122 _prototype_ `RADEXPFUNC void RADEXPLINK BinkClose( HBINK bnk );`
+- L124 _macro_ `#define BINKSURFACE32BGRx 3`
+- L125 _macro_ `#define BINKSURFACE32RGBx 4`
+- L126 _macro_ `#define BINKSURFACE32BGRA 5`
+- L127 _macro_ `#define BINKSURFACE32RGBA 6`
+- L128 _macro_ `#define BINKSURFACE32ARGB 12`
+- L130 _prototype_ `RADEXPFUNC S32 RADEXPLINK BinkCopyToBuffer(HBINK bnk,void* dest,S32 destpitch,U32 destheight,U32 destx,U32 desty,U32 flags);`
+- L131 _prototype_ `RADEXPFUNC S32 RADEXPLINK BinkCopyToBufferRect(HBINK bnk,void* dest,S32 destpitch,U32 destheight,U32 destx,U32 desty,U32 srcx, U32 srcy, U32 srcw, U32 srch, U32 flags);`
+- L133 _prototype_ `RADEXPFUNC S32 RADEXPLINK BinkLoadSubtitles( HBINK bink, char const * srt_file );`
+- L134 _prototype_ `RADEXPFUNC char const * RADEXPLINK BinkCurrentSubtitle( HBINK bink, U32 * iterate, U32 * opt_out_start_ms, U32 * opt_out_end_ms );`
+- L135 _prototype_ `RADEXPFUNC char const * RADEXPLINK BinkGetSubtitleByIndex( HBINK bink, U32 index, U32 * opt_out_start_ms, U32 * opt_out_end_ms );`
+
+### `Plugins/Media/BinkMedia/Source/BinkMediaPlayerSDK/include/egttypes.h` (Other)
+
+
+#### Free symbols / members of external scopes
+
+- L10 _macro_ `#define __EGTTYPESH__`
+- L13 _macro_ `#define __RADTYPESH__`
+- L14 _macro_ `#define __RADRR_COREH__ // block old rr_core`
+- L16 _macro_ `#define RADCOPYRIGHT "Copyright (C) 1994-2026, Epic Games, Inc."`
+- L73 _macro_ `#define RADDEFFUNC extern "C"`
+- L74 _macro_ `#define RADDEFSTART extern "C" {`
+- L75 _macro_ `#define RADDEFEND }`
+- L76 _macro_ `#define RADDEFAULT( val ) =val`
+- L78 _macro_ `#define RADDEFFUNC`
+- L79 _macro_ `#define RADDEFSTART`
+- L80 _macro_ `#define RADDEFEND`
+- L81 _macro_ `#define RADDEFAULT( val )`
+- L86 _macro_ `#define RR_STRINGIZE( L ) #L` — preprocessor string stuff
+- L87 _macro_ `#define RR_DO_MACRO( M, X ) M(X)`
+- L88 _macro_ `#define RR_STRINGIZE_DELAY( X ) RR_DO_MACRO( RR_STRINGIZE, X )`
+- L90 _macro_ `#define RR_STRING_JOIN(arg1, arg2) RR_STRING_JOIN_DELAY(arg1, arg2)`
+- L91 _macro_ `#define RR_STRING_JOIN_DELAY(arg1, arg2) RR_STRING_JOIN_IMMEDIATE(arg1, arg2)`
+- L92 _macro_ `#define RR_STRING_JOIN_IMMEDIATE(arg1, arg2) arg1 ## arg2`
+- L95 _macro_ `#define RR_PLATFORM_PATH_STR( plat, file ) RR_STRINGIZE_DELAY( RR_STRING_JOIN( plat, file ) )` — makes "plat/plat_file"
+- L109 _macro_ `#define __RADANDROID__ 1`
+- L110 _macro_ `#define __RADDETECTED__ __RADANDROID__`
+- L114 _macro_ `#define __RADQNX__ 2`
+- L115 _macro_ `#define __RADDETECTED__ __RADQNX__`
+- L126 _macro_ `#define RAD_WINAPI_IS_APP (!WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP))`
+- L128 _macro_ `#define __RADWINRTAPI__`
+- L129 _macro_ `#define __RADWINRT__ 13`
+- L130 _macro_ `#define __RADDETECTED__ __RADWINRT__`
+- L133 _macro_ `#define RAD_WINAPI_IS_APP 0`
+- L138 _macro_ `#define __RADNT__ 14` — if we aren't WinRT, then we are plain old NT
+- L139 _macro_ `#define __RADDETECTED__ __RADNT__`
+- L146 _macro_ `#define __RADIPHONE__ 15`
+- L147 _macro_ `#define __RADIPHONESIM__ 16`
+- L148 _macro_ `#define __RADDETECTED__ __RADIPHONESIM__`
+- L151 _macro_ `#define __RADDETECTED__ __RADIPHONE__`
+- L153 _macro_ `#define __RADMAC__ 17`
+- L154 _macro_ `#define __RADDETECTED__ __RADMAC__`
+- L158 _macro_ `#define __RADIOS__ 18`
+- L161 _macro_ `#define __RADTVOS__ 19`
+- L164 _macro_ `#define __RADWATCHOS__ 20`
+- L169 _macro_ `#define __RADEMSCRIPTEN__ 22`
+- L170 _macro_ `#define __RADDETECTED__ __RADEMSCRIPTEN__`
+- L175 _macro_ `#define __RADLINUX__ 3`
+- L176 _macro_ `#define __RADDETECTED__ __RADLINUX__`
+- L181 _macro_ `#define __RADUNKNOWN__ 99` — this is the catch all, when you aren't building internally at rad
+- L182 _macro_ `#define __RADDETECTED__ __RADUNKNOWN__`
+- L195 _macro_ `#define __RAD32__ // we have no non-at-least-32-bit cpus any more`
+- L198 _macro_ `#define __RADARM__ 1`
+- L199 _macro_ `#define __RADDETECTEDPROC__ __RADARM__`
+- L200 _macro_ `#define __RADLITTLEENDIAN__`
+- L202 _macro_ `#define __RADNEON__`
+- L205 _macro_ `#define __RADSOFTFP__`
+- L209 _macro_ `#define __RADX86__ 2`
+- L212 _macro_ `#define __RADMMX__` — only use mmx on PC, Win, Linux - not iphone sim!
+- L214 _macro_ `#define __RADDETECTEDPROC__ __RADX86__`
+- L219 _macro_ `#define __RADX64__ 3`
+- L223 _macro_ `#define __RADDETECTEDPROC__ __RADX64__`
+- L227 _macro_ `#define __RADPPC__ 4`
+- L228 _macro_ `#define __RADALTIVEC__`
+- L229 _macro_ `#define __RADDETECTEDPROC__ __RADPPC__`
+- L230 _macro_ `#define __RADBIGENDIAN__`
+- L234 _macro_ `#define __RADARM64__ 6`
+- L235 _macro_ `#define __RADDETECTEDPROC__ __RADARM64__`
+- L240 _macro_ `#define __RADDETECTEDPROC__`
+- L249 _macro_ `#define __RAD64__`
+- L250 _macro_ `#define __RAD64REGS__ // need to set this for platforms that aren't 64-bit, but have 64-bit regs (old consoles)`
+- L264 _macro_ `#define RADEXPFUNC RADDEFFUNC` — if we are in a static lib, or exports are off, or if we are in an EXE we asked for no exe exports (or imports) then EXPFUNC is just a normal function
+- L268 _macro_ `#define RADEXPFUNC RADDEFFUNC RADDLLEXPORTDLL`
+- L270 _macro_ `#define RADEXPFUNC RADDEFFUNC RADDLLIMPORTDLL`
+- L275 _macro_ `#define RADRESTRICT __restrict`
+- L276 _macro_ `#define RADSTRUCT struct __attribute__((__packed__))`
+- L278 _macro_ `#define RADLINK`
+- L279 _macro_ `#define RADEXPLINK`
+- L280 _macro_ `#define RADDLLEXPORTDLL __attribute__((visibility("default")))`
+- L281 _macro_ `#define RADDLLIMPORTDLL`
+- L289 _macro_ `#define RADEXPLINK RADLINK`
+- L290 _macro_ `#define RADDLLEXPORTDLL`
+- L299 _macro_ `#define RADLINK __attribute__((cdecl))`
+- L300 _macro_ `#define RADEXPLINK __attribute__((cdecl))`
+- L312 _macro_ `#define __RADWIN__`
+- L317 _macro_ `#define RADRESTRICT` — vc6 and older
+- L318 _macro_ `#define __RADNOVARARGMACROS__`
+- L320 _macro_ `#define RADSTRUCT struct`
+- L322 _macro_ `#define RADLINK __stdcall`
+- L323 _macro_ `#define RADEXPLINK __stdcall`
+- L325 _macro_ `#define RADDLLEXPORTDLL __declspec(dllexport)`
+- L331 _macro_ `#define RADDLLIMPORTDLL __declspec(dllimport)` — normal win32 dll import
+- L350 _macro_ `#define __RADMACAPI__`
+- L361 _macro_ `#define __RADMACH__`
+- L376 _macro_ `#define __RADCARBON__`
+- L388 _macro_ `#define RADEXPLINK EMSCRIPTEN_KEEPALIVE`
+- L398 _macro_ `#define RADINLINE __inline`
+- L400 _macro_ `#define RADINLINE inline`
+- L409 _macro_ `#define RR_NUMBERNAME(name) RR_STRING_JOIN(name,__COUNTER__)`
+- L411 _macro_ `#define RR_NUMBERNAME(name) RR_STRING_JOIN(name,__LINE__)`
+- L419 _macro_ `#define RR_COMPILER_ASSERT_UNUSED __attribute__((unused)) // hides warnings when compiler_asserts are in a local scope`
+- L421 _macro_ `#define RR_COMPILER_ASSERT_UNUSED`
+- L424 _macro_ `#define RR_COMPILER_ASSERT(exp) typedef char RR_NUMBERNAME(_dummy_array) [ (exp) ? 1 : -1 ] RR_COMPILER_ASSERT_UNUSED`
+- L431 _macro_ `#define RAD_S8 signed char`
+- L432 _macro_ `#define RAD_U8 unsigned char`
+- L433 _macro_ `#define RAD_U16 unsigned short`
+- L434 _macro_ `#define RAD_S16 signed short`
+- L437 _macro_ `#define RAD_U32 unsigned int`
+- L438 _macro_ `#define RAD_S32 signed int`
+- L442 _macro_ `#define RAD_SINTa __w64 signed __int64`
+- L443 _macro_ `#define RAD_UINTa __w64 unsigned __int64`
+- L446 _macro_ `#define RAD_UINTa unsigned long long` — non-vc.net compiler or /Wp64 turned off
+- L447 _macro_ `#define RAD_SINTa signed long long`
+- L456 _macro_ `#define RAD_SINTa __w64 signed long`
+- L457 _macro_ `#define RAD_UINTa __w64 unsigned long`
+- L461 _macro_ `#define RAD_SINTa signed long`
+- L462 _macro_ `#define RAD_UINTa unsigned long`
+- L464 _macro_ `#define RAD_SINTa signed int`
+- L465 _macro_ `#define RAD_UINTa unsigned int`
+- L470 _macro_ `#define RAD_F32 float`
+- L471 _macro_ `#define RAD_F64 double`
+- L474 _macro_ `#define RAD_U64 unsigned __int64`
+- L475 _macro_ `#define RAD_S64 signed __int64`
+- L477 _macro_ `#define RAD_U64 unsigned long long`
+- L478 _macro_ `#define RAD_S64 signed long long`
+- L488 _macro_ `#define S8_DEFINED`
+- L489 _typedef_ `typedef RAD_S8 S8;`
+- L493 _macro_ `#define U8_DEFINED`
+- L494 _typedef_ `typedef RAD_U8 U8;`
+- L498 _macro_ `#define S16_DEFINED`
+- L499 _typedef_ `typedef RAD_S16 S16;`
+- L503 _macro_ `#define U16_DEFINED`
+- L504 _typedef_ `typedef RAD_U16 U16;`
+- L508 _macro_ `#define S32_DEFINED`
+- L509 _typedef_ `typedef RAD_S32 S32;`
+- L513 _macro_ `#define U32_DEFINED`
+- L514 _typedef_ `typedef RAD_U32 U32;`
+- L518 _macro_ `#define S64_DEFINED`
+- L519 _typedef_ `typedef RAD_S64 S64;`
+- L523 _macro_ `#define U64_DEFINED`
+- L524 _typedef_ `typedef RAD_U64 U64;`
+- L528 _macro_ `#define F32_DEFINED`
+- L529 _typedef_ `typedef RAD_F32 F32;`
+- L533 _macro_ `#define F64_DEFINED`
+- L534 _typedef_ `typedef RAD_F64 F64;`
+- L538 _macro_ `#define SINTa_DEFINED`
+- L539 _typedef_ `typedef RAD_SINTa SINTa;`
+- L543 _macro_ `#define UINTa_DEFINED`
+- L544 _typedef_ `typedef RAD_UINTa UINTa;`
+- L548 _macro_ `#define RRBOOL_DEFINED`
+- L549 _typedef_ `typedef S32 rrbool;`
+- L550 _typedef_ `typedef S32 RRBOOL;`
+- L557 _macro_ `#define S8 RAD_S8`
+- L562 _macro_ `#define U8 RAD_U8`
+- L567 _macro_ `#define S16 RAD_S16`
+- L572 _macro_ `#define U16 RAD_U16`
+- L577 _macro_ `#define S32 RAD_S32`
+- L582 _macro_ `#define U32 RAD_U32`
+- L587 _macro_ `#define S64 RAD_S64`
+- L592 _macro_ `#define U64 RAD_U64`
+- L597 _macro_ `#define F32 RAD_F32`
+- L602 _macro_ `#define F64 RAD_F64`
+- L607 _macro_ `#define SINTa RAD_SINTa`
+- L612 _macro_ `#define UINTa RAD_UINTa`
+- L617 _macro_ `#define rrbool S32`
+- L618 _macro_ `#define RRBOOL S32`

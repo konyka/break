@@ -234,6 +234,160 @@ static bool tv_test_msaa_offscreen(const TestRenderState *rs, RHIBuffer vbo,
 #endif
 }
 
+/* UI orientation gate: the myui route end to end. The canvas draws into an
+ * offscreen FBO under rhi_cmd_set_viewport (my_vgcanvas_break_rhi.c), then
+ * BreakUI composites that texture to the swapchain with post.vert +
+ * post_tex.frag after rhi_offscreen_fbo_unbind (myui_break.c). A quad over
+ * NDC y > 0 must come out as the TOP half of the presented image, which is
+ * what rhi_screenshot returns first (top-down rows). */
+static bool tv_test_ui_composite_orientation(const TestRenderState *rs,
+                                             u32 scr_w, u32 scr_h) {
+    static const f32 quad[6 * 3] = {
+        -1, 0, 0,  1, 0, 0,  1, 1, 0,  -1, 0, 0,  1, 1, 0,  -1, 1, 0
+    };
+    const u32 fw = 64u, fh = 64u;
+    bool ok = false;
+    char vs_path[96], fs_path[96];
+    RHICapabilities caps;
+    RHIShader cvs = RHI_HANDLE_NULL, cfs = RHI_HANDLE_NULL;
+    RHIShader pvs = RHI_HANDLE_NULL, pfs = RHI_HANDLE_NULL;
+    RHIPipeline color_pipe = RHI_HANDLE_NULL, post_pipe = RHI_HANDLE_NULL;
+    RHIPipelineBindings *bindings = NULL;
+    RHIBuffer vbo = RHI_HANDLE_NULL;
+    RHISampler sampler = RHI_HANDLE_NULL;
+    RHIOffscreenFBO fbo;
+    u8 *shot = NULL;
+    usize len = 0;
+    char *src;
+    memset(&fbo, 0, sizeof(fbo));
+    if (!rhi_device_get_capabilities(rs->device, &caps)) return false;
+#ifdef ENGINE_VULKAN
+    src = shader_read_file("shaders/editor_color_vk.vert", &len);
+    if (src) { cvs = rhi_shader_create(rs->device, src, len, false); free(src); }
+    src = shader_read_file("shaders/editor_color_vk.frag", &len);
+    if (src) { cfs = rhi_shader_create(rs->device, src, len, true); free(src); }
+#else
+    src = shader_read_file("shaders/editor_color.vert", &len);
+    if (src) { cvs = rhi_shader_create(rs->device, src, len, false); free(src); }
+    src = shader_read_file("shaders/editor_color.frag", &len);
+    if (src) { cfs = rhi_shader_create(rs->device, src, len, true); free(src); }
+#endif
+    if (shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant,
+                            vs_path, sizeof(vs_path)) &&
+        shader_variant_path("shaders/post_tex.frag", (RHIShaderVariant)caps.shader_variant,
+                            fs_path, sizeof(fs_path))) {
+        src = shader_read_file(vs_path, &len);
+        if (src) { pvs = rhi_shader_create(rs->device, src, len, false); free(src); }
+        src = shader_read_file(fs_path, &len);
+        if (src) { pfs = rhi_shader_create(rs->device, src, len, true); free(src); }
+    }
+    if (!rhi_handle_valid(cvs) || !rhi_handle_valid(cfs) ||
+        !rhi_handle_valid(pvs) || !rhi_handle_valid(pfs)) {
+        LOG_ERROR("FAIL: UI orientation shader load");
+        goto done;
+    }
+    {
+        RHIPipelineDesc d;
+        memset(&d, 0, sizeof(d));
+        d.vert = cvs; d.frag = cfs;
+        d.vertex_stride = 12u;
+        d.disable_culling = true; /* orientation only, not facing */
+        d.depth_write_disable = true;
+        color_pipe = rhi_pipeline_create(rs->device, &d);
+        memset(&d, 0, sizeof(d));
+        d.vert = pvs; d.frag = pfs;
+        d.no_vertex_input = true;
+        d.uses_textures = true;
+        d.depth_write_disable = true;
+        d.disable_culling = true;
+        post_pipe = rhi_pipeline_create(rs->device, &d);
+    }
+    {
+        RHIBufferDesc b;
+        RHISamplerDesc s;
+        RHIOffscreenFBODesc f;
+        memset(&b, 0, sizeof(b));
+        b.usage = RHI_BUFFER_USAGE_VERTEX;
+        b.size = sizeof(quad);
+        b.initial_data = quad;
+        vbo = rhi_buffer_create(rs->device, &b);
+        memset(&s, 0, sizeof(s));
+        s.min_filter = RHI_FILTER_NEAREST;
+        s.mag_filter = RHI_FILTER_NEAREST;
+        s.wrap_u = s.wrap_v = s.wrap_w = RHI_WRAP_CLAMP_TO_EDGE;
+        sampler = rhi_sampler_create(rs->device, &s);
+        memset(&f, 0, sizeof(f));
+        f.width = fw; f.height = fh;
+        f.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+        f.sample_count = 1u;
+        fbo = rhi_offscreen_fbo_create_desc(rs->device, &f);
+    }
+    if (!rhi_handle_valid(color_pipe) || !rhi_handle_valid(post_pipe) ||
+        !rhi_handle_valid(vbo) || !rhi_handle_valid(sampler) ||
+        !rhi_handle_valid(fbo.fb)) {
+        LOG_ERROR("FAIL: UI orientation resource setup");
+        goto done;
+    }
+    bindings = rhi_pipeline_bindings_create(rs->device, color_pipe);
+    {
+        i32 loc_mvp = bindings ? rhi_pipeline_bindings_resolve(bindings, "u_mvp") : -1;
+        i32 loc_color = bindings ? rhi_pipeline_bindings_resolve(bindings, "u_color") : -1;
+        Mat4 ident = mat4_identity();
+        RHICmdBuffer *cmd;
+        if (loc_mvp < 0 || loc_color < 0) {
+            LOG_ERROR("FAIL: UI orientation uniform resolve");
+            goto done;
+        }
+        cmd = rhi_frame_begin(rs->device);
+        if (!cmd) goto done;
+        rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 1.0f);
+        rhi_offscreen_fbo_set_clear_color(rs->device, &fbo, 0.0f, 0.0f, 0.0f, 1.0f);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_set_viewport(cmd, 0.0f, 0.0f, (f32)fw, (f32)fh, 0.0f, 1.0f);
+        rhi_cmd_bind_pipeline(cmd, color_pipe);
+        rhi_cmd_set_uniform_mat4(cmd, loc_mvp, &ident.e[0][0]);
+        rhi_cmd_set_uniform_vec4(cmd, loc_color, 0.0f, 1.0f, 0.0f, 1.0f);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+        rhi_cmd_draw(cmd, 6u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, scr_w, scr_h);
+        rhi_cmd_set_scissor_top_left(cmd, 0u, 0u, scr_w, scr_h);
+        rhi_cmd_bind_pipeline(cmd, post_pipe);
+        rhi_cmd_bind_texture(cmd, fbo.color_tex, sampler, 0);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_frame_end(rs->device);
+        shot = malloc((usize)scr_w * scr_h * 4u);
+        if (shot && rhi_screenshot(rs->device, 0, 0, scr_w, scr_h, shot,
+                                   (usize)scr_w * scr_h * 4u)) {
+            u32 x = scr_w / 2u;
+            u32 top_y = scr_h / 4u, bottom_y = (scr_h * 3u) / 4u;
+            u8 top_g = shot[((usize)top_y * scr_w + x) * 4u + 1u];
+            u8 bottom_g = shot[((usize)bottom_y * scr_w + x) * 4u + 1u];
+            LOG_INFO("UI orientation: top-quarter green=%u bottom-quarter green=%u",
+                     (unsigned)top_g, (unsigned)bottom_g);
+            ok = top_g > 200u && bottom_g < 50u;
+            if (!ok)
+                LOG_ERROR("FAIL: UI drawn through the offscreen canvas + "
+                          "composite is upside down (NDC +Y not on top)");
+        } else {
+            LOG_ERROR("FAIL: UI orientation screenshot");
+        }
+        rhi_present(rs->device);
+    }
+done:
+    free(shot);
+    if (bindings) rhi_pipeline_bindings_destroy(rs->device, bindings);
+    if (rhi_handle_valid(fbo.fb)) rhi_offscreen_fbo_destroy(rs->device, &fbo);
+    if (rhi_handle_valid(sampler)) rhi_sampler_destroy(rs->device, sampler);
+    if (rhi_handle_valid(vbo)) rhi_buffer_destroy(rs->device, vbo);
+    if (rhi_handle_valid(color_pipe)) rhi_pipeline_destroy(rs->device, color_pipe);
+    if (rhi_handle_valid(post_pipe)) rhi_pipeline_destroy(rs->device, post_pipe);
+    if (rhi_handle_valid(cvs)) rhi_shader_destroy(rs->device, cvs);
+    if (rhi_handle_valid(cfs)) rhi_shader_destroy(rs->device, cfs);
+    if (rhi_handle_valid(pvs)) rhi_shader_destroy(rs->device, pvs);
+    if (rhi_handle_valid(pfs)) rhi_shader_destroy(rs->device, pfs);
+    return ok;
+}
+
 /* FS6: resize-path synchronisation gate. Render-target churn and swapchain
  * recreation (the fullscreen-switch path) must not stall the CPU on the GPU:
  * FBO destroy goes through the fence-retired list (also when the FBO was used
@@ -6684,9 +6838,17 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
         LOG_INFO("RESULT: DEFERRED GBUFFER NORMAL MAP TEST %s",
                  nmap_pass ? "PASSED ✓" : "FAILED");
 
+        LOG_INFO("============================================");
+        LOG_INFO("TEST: UI OFFSCREEN CANVAS + COMPOSITE ORIENTATION");
+        LOG_INFO("============================================");
+        u32 w = 0, h = 0;
+        platform_get_drawable_size(engine.platform, &w, &h);
+        bool ui_orient_pass = tv_test_ui_composite_orientation(&render, w, h);
+        LOG_INFO("RESULT: UI ORIENTATION TEST %s", ui_orient_pass ? "PASSED ✓" : "FAILED");
+
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass;
+        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass && ui_orient_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -6797,6 +6959,13 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     LOG_INFO("============================================");
     bool msaa_pass = tv_test_msaa_offscreen(&render, vbo, ibo);
     LOG_INFO("RESULT: VULKAN 2x MSAA TEST %s", msaa_pass ? "PASSED ✓" : "FAILED");
+
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: UI OFFSCREEN CANVAS + COMPOSITE ORIENTATION");
+    LOG_INFO("============================================");
+    platform_get_drawable_size(engine.platform, &w, &h);
+    bool ui_orient_pass = tv_test_ui_composite_orientation(&render, w, h);
+    LOG_INFO("RESULT: UI ORIENTATION TEST %s", ui_orient_pass ? "PASSED ✓" : "FAILED");
 
     bool fs6_pass = true;
 #ifdef ENGINE_VULKAN
@@ -7791,7 +7960,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 #endif
 
     bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
-msaa_pass && fs6_pass &&
+msaa_pass && ui_orient_pass && fs6_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass && bindings_parity_pass &&
 validation_pass;

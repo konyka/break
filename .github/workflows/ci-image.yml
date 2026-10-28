@@ -65,4 +65,6 @@ jobs:
             test -f /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc || ls /usr/share/fonts | head -3
             dpkg -s libvulkan-dev | grep ^Version
             dpkg -s libshaderc-dev | grep ^Version
+            dpkg -s libssl-dev | grep ^Version
+            test -f /usr/include/openssl/evp.h
           '

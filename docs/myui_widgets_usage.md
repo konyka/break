@@ -6,7 +6,7 @@ Runnable snippets for every core widget. All snippets mirror scenes in
 ## Run the demo
 
 ```sh
-cmake -S engine -B build -DENGINE_BUILD_TESTS=ON -DENGINE_VULKAN=OFF
+cmake -S engine -B build -DENGINE_BUILD_TESTS=ON -DENGINE_RHI_BACKEND=opengl
 cmake --build build --target myui_widgets_demo --parallel 2
 mkdir -p /tmp/widgets && ./build/myui_widgets_demo /tmp/widgets
 ```

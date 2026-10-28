@@ -90,6 +90,14 @@ typedef struct my_widget_class_snapshot_t {
 
 static my_widget_class_snapshot_t* g_class_snapshots;
 
+/* MSVC /W4 rejects memcpy between arrays of const pointers (C4090), so the
+ * class tables are copied element by element. */
+static void class_ptrs_copy(const my_widget_class_t** dst,
+                            const my_widget_class_t* const* src, size_t count) {
+  size_t i;
+  for (i = 0; i < count; i++) dst[i] = src[i];
+}
+
 typedef struct my_widget_class_table_t {
   size_t count;
   const my_widget_class_t* classes[MY_WIDGET_CLASS_MAX];
@@ -149,7 +157,7 @@ static void class_snapshot_rollback(
     g_class_snapshots = snapshot->next;
     class_snapshot_destroy(snapshot);
   }
-  memcpy(g_classes, classes, sizeof(g_classes));
+  class_ptrs_copy(g_classes, classes, MY_WIDGET_CLASS_MAX);
   g_class_count = class_count;
 }
 
@@ -424,7 +432,7 @@ my_ret_t my_widget_class_freeze(void) {
     return MY_RET_OK;
   }
   if (!g_builtins_done) {
-    memcpy(class_checkpoint, g_classes, sizeof(g_classes));
+    class_ptrs_copy(class_checkpoint, g_classes, MY_WIDGET_CLASS_MAX);
     class_count_checkpoint = g_class_count;
     snapshot_checkpoint = g_class_snapshots;
     my_ret_t ret = my_widget_class_register_builtins();
@@ -444,7 +452,7 @@ my_ret_t my_widget_class_freeze(void) {
       return MY_RET_OOM;
     }
     table->count = g_class_count;
-    memcpy(table->classes, g_classes, sizeof(g_classes));
+    class_ptrs_copy(table->classes, g_classes, MY_WIDGET_CLASS_MAX);
     table->next = g_class_tables;
     g_class_tables = table;
     atomic_store_explicit(&g_active_table, table, memory_order_release);
@@ -852,7 +860,7 @@ static my_ret_t class_runtime_register_module(
   }
   if (old_table != NULL) {
     table->count = old_table->count;
-    memcpy(table->classes, old_table->classes, sizeof(table->classes));
+    class_ptrs_copy(table->classes, old_table->classes, MY_WIDGET_CLASS_MAX);
   }
   for (i = 0; i < table->count; i++) {
     if (my_str_eq(table->classes[i]->type, cls->type)) {
@@ -951,9 +959,9 @@ my_ret_t my_widget_class_runtime_unregister(const char* type) {
     return MY_RET_OOM;
   }
   table->count = old_table->count - 1u;
-  memcpy(table->classes, old_table->classes, i * sizeof(table->classes[0]));
-  memcpy(&table->classes[i], &old_table->classes[i + 1u],
-         (old_table->count - i - 1u) * sizeof(table->classes[0]));
+  class_ptrs_copy(table->classes, old_table->classes, i);
+  class_ptrs_copy(&table->classes[i], &old_table->classes[i + 1u],
+                  old_table->count - i - 1u);
   table->next = g_class_tables;
   g_class_tables = table;
   atomic_store_explicit(&g_active_table, table, memory_order_release);
@@ -1001,7 +1009,7 @@ const my_widget_class_t* my_widget_class_find(const char* type) {
   class_sync_init();
   platform_mutex_lock(&g_class_mutex);
   if (!g_builtins_done) {
-    memcpy(class_checkpoint, g_classes, sizeof(g_classes));
+    class_ptrs_copy(class_checkpoint, g_classes, MY_WIDGET_CLASS_MAX);
     class_count_checkpoint = g_class_count;
     snapshot_checkpoint = g_class_snapshots;
     if (my_widget_class_register_builtins() != MY_RET_OK) {

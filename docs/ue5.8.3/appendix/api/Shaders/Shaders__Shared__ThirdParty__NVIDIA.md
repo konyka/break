@@ -1,0 +1,523 @@
+# Shaders / Shaders/Shared/ThirdParty/NVIDIA
+
+- files: 3; lines: 3715
+- record kinds: define=120, function=266, include=2, member=17, method=35, prototype=2, struct=4
+
+### `Shaders/Shared/ThirdParty/NVIDIA/nvHLSLExtns.h` (Shared)
+
+- lines: 2579; parse: all-branches
+- includes: L33 `nvHLSLExtnsInternal.h`
+
+#### Macros (#define, 21)
+
+- L1754 `#define NvRtGetCandidateClusterID(rq) __NvRtGetCandidateClusterID(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1756 `#define NvRtGetCommittedClusterID(rq) __NvRtGetCommittedClusterID(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1758 `#define NvRtCandidateTriangleObjectPositions(rq) __NvRtCandidateTriangleObjectPositions(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1760 `#define NvRtCommittedTriangleObjectPositions(rq) __NvRtCommittedTriangleObjectPositions(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1820 `#define NvRtCandidateIsNonOpaqueSphere(rq) __NvRtCandidateIsNonOpaqueSphere(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1822 `#define NvRtCandidateIsNonOpaqueLss(rq) __NvRtCandidateIsNonOpaqueLss(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1824 `#define NvRtCandidateLssHitParameter(rq) __NvRtCandidateLssHitParameter(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1826 `#define NvRtCandidateSphereObjectPositionAndRadius(rq) __NvRtCandidateSphereObjectPositionAndRadius(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1828 `#define NvRtCandidateLssObjectPositionsAndRadii(rq) __NvRtCandidateLssObjectPositionsAndRadii(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1830 `#define NvRtCandidateBuiltinPrimitiveRayT(rq) __NvRtCandidateBuiltinPrimitiveRayT(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1832 `#define NvRtCommittedIsSphere(rq) __NvRtCommittedIsSphere(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1834 `#define NvRtCommittedIsLss(rq) __NvRtCommittedIsLss(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1836 `#define NvRtCommittedLssHitParameter(rq) __NvRtCommittedLssHitParameter(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1838 `#define NvRtCommittedSphereObjectPositionAndRadius(rq) __NvRtCommittedSphereObjectPositionAndRadius(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1840 `#define NvRtCommittedLssObjectPositionsAndRadii(rq) __NvRtCommittedLssObjectPositionsAndRadii(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1842 `#define NvRtCommitNonOpaqueBuiltinPrimitiveHit(rq) __NvRtCommitNonOpaqueBuiltinPrimitiveHit(rq.RayFlags())` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L2430 `#define NvTraceRayHitObject(AccelerationStructure,RayFlags,InstanceInclusionMask,RayContributionToHitGroupIndex,MultiplierForGeometryContributionToHitGroupIndex,MissShaderIndex,Ray,Payload,ResultHitObj) do { uint _rayFlags = RayFlags; uint _instanceInclusionMask = InstanceInclusionMask; uint _rayContributionToHitGroupIndex = RayContributionToHitGroupIndex; uint _multiplierForGeometryContributionToHit ...` (17 lines) _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2450 `#define NvMakeHit(AccelerationStructure,InstanceIndex,GeometryIndex,PrimitiveIndex,HitKind,RayContributionToHitGroupIndex,MultiplierForGeometryContributionToHitGroupIndex,Ray,Attributes,ResultHitObj) do { uint _instanceIndex = InstanceIndex; uint _geometryIndex = GeometryIndex; uint _primitiveIndex = PrimitiveIndex; uint _hitKind = HitKind; uint _rayContributionToHitGroupIndex = RayContributionToH ...` (25 lines) _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2476 `#define NvMakeHitWithRecordIndex(HitGroupRecordIndex,AccelerationStructure,InstanceIndex,GeometryIndex,PrimitiveIndex,HitKind,Ray,Attributes,ResultHitObj) do { uint _hitGroupRecordIndex = HitGroupRecordIndex; uint _instanceIndex = InstanceIndex; uint _geometryIndex = GeometryIndex; uint _primitiveIndex = PrimitiveIndex; uint _hitKind = HitKind; RayDesc  ...` (23 lines) _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2533 `#define NvGetAttributesFromHitObject(HitObj,ResultAttributes) do { uint _index = g_NvidiaExt.IncrementCounter(); g_NvidiaExt[_index].opcode = NV_EXTN_OP_HIT_OBJECT_GET_ATTRIBUTES; g_NvidiaExt[_index].src0u.x = HitObj._handle; uint _callHandle = g_NvidiaExt.Incre ...` (8 lines) _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2569 `#define NvInvokeHitObject(AccelerationStructure,HitObj,Payload) do { uint _index = g_NvidiaExt.IncrementCounter(); g_NvidiaExt[_index].opcode = NV_EXTN_OP_HIT_OBJECT_INVOKE; g_NvidiaExt[_index].src0u.x = HitObj._handle; uint _handle = g_NvidiaExt.IncrementCounter( ...` (8 lines) _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+
+#### Structs / classes (3)
+
+- L1854-2058 _struct_ **`NvHitObject`** `struct NvHitObject` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1855 _member_ `uint _handle;` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1857 _method_ `bool IsMiss()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1866 _method_ `bool IsHit()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1875 _method_ `bool IsNop()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1884 _method_ `uint GetInstanceID()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1892 _method_ `uint GetInstanceIndex()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1900 _method_ `uint GetPrimitiveIndex()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1908 _method_ `uint GetGeometryIndex()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1916 _method_ `uint GetHitKind()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1924 _method_ `RayDesc GetRayDesc()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1952 _method_ `template <typename T> T GetAttributes()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1965 _method_ `uint GetShaderTableIndex()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1973 _method_ `uint LoadLocalRootTableConstant(uint RootConstantOffsetInBytes)` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1982 _method_ `float4 GetSphereObjectPositionAndRadius()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1996 _method_ `float2x4 GetLssObjectPositionsAndRadii()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2014 _method_ `bool IsSphereHit()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2023 _method_ `bool IsLssHit()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2032 _method_ `uint GetClusterID()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2040 _method_ `float3x3 GetTriangleObjectPositions()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2238 _member_ `uint _handle;` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2240 _method_ `bool IsMiss()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2249 _method_ `bool IsHit()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2258 _method_ `bool IsNop()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2267 _method_ `uint GetInstanceID()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2275 _method_ `uint GetInstanceIndex()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2283 _method_ `uint GetPrimitiveIndex()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2291 _method_ `uint GetGeometryIndex()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2299 _method_ `uint GetHitKind()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2307 _method_ `RayDesc GetRayDesc()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2335 _method_ `uint GetShaderTableIndex()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2343 _method_ `uint LoadLocalRootTableConstant(uint RootConstantOffsetInBytes)` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2352 _method_ `float4 GetSphereObjectPositionAndRadius()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2366 _method_ `float2x4 GetLssObjectPositionsAndRadii()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2384 _method_ `bool IsSphereHit()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2393 _method_ `bool IsLssHit()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2402 _method_ `uint GetClusterID()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2410 _method_ `float3x3 GetTriangleObjectPositions()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2237-2428 _struct_ **`NvHitObject`** `struct NvHitObject` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1855 _member_ `uint _handle;` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1857 _method_ `bool IsMiss()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1866 _method_ `bool IsHit()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1875 _method_ `bool IsNop()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1884 _method_ `uint GetInstanceID()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1892 _method_ `uint GetInstanceIndex()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1900 _method_ `uint GetPrimitiveIndex()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1908 _method_ `uint GetGeometryIndex()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1916 _method_ `uint GetHitKind()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1924 _method_ `RayDesc GetRayDesc()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1952 _method_ `template <typename T> T GetAttributes()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1965 _method_ `uint GetShaderTableIndex()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1973 _method_ `uint LoadLocalRootTableConstant(uint RootConstantOffsetInBytes)` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1982 _method_ `float4 GetSphereObjectPositionAndRadius()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L1996 _method_ `float2x4 GetLssObjectPositionsAndRadii()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2014 _method_ `bool IsSphereHit()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2023 _method_ `bool IsLssHit()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2032 _method_ `uint GetClusterID()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2040 _method_ `float3x3 GetTriangleObjectPositions()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2238 _member_ `uint _handle;` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2240 _method_ `bool IsMiss()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2249 _method_ `bool IsHit()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2258 _method_ `bool IsNop()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2267 _method_ `uint GetInstanceID()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2275 _method_ `uint GetInstanceIndex()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2283 _method_ `uint GetPrimitiveIndex()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2291 _method_ `uint GetGeometryIndex()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2299 _method_ `uint GetHitKind()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2307 _method_ `RayDesc GetRayDesc()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2335 _method_ `uint GetShaderTableIndex()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2343 _method_ `uint LoadLocalRootTableConstant(uint RootConstantOffsetInBytes)` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2352 _method_ `float4 GetSphereObjectPositionAndRadius()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2366 _method_ `float2x4 GetLssObjectPositionsAndRadii()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2384 _method_ `bool IsSphereHit()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2393 _method_ `bool IsLssHit()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2402 _method_ `uint GetClusterID()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2410 _method_ `float3x3 GetTriangleObjectPositions()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2448-2448 _struct_ **`NvHitObjectMacroDummyPayloadType`** `struct NvHitObjectMacroDummyPayloadType` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+  - L2448 _member_ `int a;` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+
+#### Functions (194)
+
+- L53-63 _function_ `int NvShfl(int val, uint srcLane, int width = NV_WARP_SIZE)` — simple variant of SHFL instruction returns val from the specified lane optional width parameter must be a power of two and width <= 32
+- L65-70 _function_ `int2 NvShfl(int2 val, uint srcLane, int width = NV_WARP_SIZE)`
+- L72-79 _function_ `int4 NvShfl(int4 val, uint srcLane, int width = NV_WARP_SIZE)`
+- L84-92 _function_ `int NvShflUp(int val, uint delta, int width = NV_WARP_SIZE)` — Copy from a lane with lower ID relative to caller
+- L97-105 _function_ `int NvShflDown(int val, uint delta, int width = NV_WARP_SIZE)` — Copy from a lane with higher ID relative to caller
+- L110-118 _function_ `int NvShflXor(int val, uint laneMask, int width = NV_WARP_SIZE)` — Copy from a lane based on bitwise XOR of own lane ID
+- L126-132 _function_ `uint NvAny(int predicate)` — returns 0xFFFFFFFF if the predicate is true for any thread in the warp, returns 0 otherwise
+- L135-141 _function_ `uint NvAll(int predicate)` — returns 0xFFFFFFFF if the predicate is true for ALL threads in the warp, returns 0 otherwise
+- L144-150 _function_ `uint NvBallot(int predicate)` — returns a mask of all threads in the warp with bits set for threads that have predicate true
+- L158-163 _function_ `int NvGetLaneId()` — returns the lane index of the current thread (thread index in warp)
+- L166-169 _function_ `uint NvGetSpecial(uint subOpCode)` — returns value of special register - specify subopcode from any of NV_SPECIALOP_* specified in nvShaderExtnEnums.h - other opcodes undefined behavior
+- L180-183 _function_ `uint NvInterlockedAddFp16x2(RWByteAddressBuffer uav, uint byteAddress, uint fp16x2Val)`
+- L185-188 _function_ `uint NvInterlockedMinFp16x2(RWByteAddressBuffer uav, uint byteAddress, uint fp16x2Val)`
+- L190-193 _function_ `uint NvInterlockedMaxFp16x2(RWByteAddressBuffer uav, uint byteAddress, uint fp16x2Val)`
+- L197-200 _function_ `uint NvInterlockedAddFp16x2(RWByteAddressBuffer uav, uint byteAddress, float2 val)` — versions of the above functions taking two fp32 values (internally converted to fp16 values)
+- L202-205 _function_ `uint NvInterlockedMinFp16x2(RWByteAddressBuffer uav, uint byteAddress, float2 val)`
+- L207-210 _function_ `uint NvInterlockedMaxFp16x2(RWByteAddressBuffer uav, uint byteAddress, float2 val)`
+- L221-224 _function_ `uint NvInterlockedAddFp16x2(RWTexture1D<float2> uav, uint address, uint fp16x2Val)`
+- L226-229 _function_ `uint NvInterlockedMinFp16x2(RWTexture1D<float2> uav, uint address, uint fp16x2Val)`
+- L231-234 _function_ `uint NvInterlockedMaxFp16x2(RWTexture1D<float2> uav, uint address, uint fp16x2Val)`
+- L236-239 _function_ `uint NvInterlockedAddFp16x2(RWTexture2D<float2> uav, uint2 address, uint fp16x2Val)`
+- L241-244 _function_ `uint NvInterlockedMinFp16x2(RWTexture2D<float2> uav, uint2 address, uint fp16x2Val)`
+- L246-249 _function_ `uint NvInterlockedMaxFp16x2(RWTexture2D<float2> uav, uint2 address, uint fp16x2Val)`
+- L251-254 _function_ `uint NvInterlockedAddFp16x2(RWTexture3D<float2> uav, uint3 address, uint fp16x2Val)`
+- L256-259 _function_ `uint NvInterlockedMinFp16x2(RWTexture3D<float2> uav, uint3 address, uint fp16x2Val)`
+- L261-264 _function_ `uint NvInterlockedMaxFp16x2(RWTexture3D<float2> uav, uint3 address, uint fp16x2Val)`
+- L268-271 _function_ `uint NvInterlockedAddFp16x2(RWTexture1D<float2> uav, uint address, float2 val)` — versions taking two fp32 values (internally converted to fp16)
+- L273-276 _function_ `uint NvInterlockedMinFp16x2(RWTexture1D<float2> uav, uint address, float2 val)`
+- L278-281 _function_ `uint NvInterlockedMaxFp16x2(RWTexture1D<float2> uav, uint address, float2 val)`
+- L283-286 _function_ `uint NvInterlockedAddFp16x2(RWTexture2D<float2> uav, uint2 address, float2 val)`
+- L288-291 _function_ `uint NvInterlockedMinFp16x2(RWTexture2D<float2> uav, uint2 address, float2 val)`
+- L293-296 _function_ `uint NvInterlockedMaxFp16x2(RWTexture2D<float2> uav, uint2 address, float2 val)`
+- L298-301 _function_ `uint NvInterlockedAddFp16x2(RWTexture3D<float2> uav, uint3 address, float2 val)`
+- L303-306 _function_ `uint NvInterlockedMinFp16x2(RWTexture3D<float2> uav, uint3 address, float2 val)`
+- L308-311 _function_ `uint NvInterlockedMaxFp16x2(RWTexture3D<float2> uav, uint3 address, float2 val)`
+- L323-326 _function_ `uint2 NvInterlockedAddFp16x4(RWTexture1D<float4> uav, uint address, uint2 fp16x2Val)`
+- L328-331 _function_ `uint2 NvInterlockedMinFp16x4(RWTexture1D<float4> uav, uint address, uint2 fp16x2Val)`
+- L333-336 _function_ `uint2 NvInterlockedMaxFp16x4(RWTexture1D<float4> uav, uint address, uint2 fp16x2Val)`
+- L338-341 _function_ `uint2 NvInterlockedAddFp16x4(RWTexture2D<float4> uav, uint2 address, uint2 fp16x2Val)`
+- L343-346 _function_ `uint2 NvInterlockedMinFp16x4(RWTexture2D<float4> uav, uint2 address, uint2 fp16x2Val)`
+- L348-351 _function_ `uint2 NvInterlockedMaxFp16x4(RWTexture2D<float4> uav, uint2 address, uint2 fp16x2Val)`
+- L353-356 _function_ `uint2 NvInterlockedAddFp16x4(RWTexture3D<float4> uav, uint3 address, uint2 fp16x2Val)`
+- L358-361 _function_ `uint2 NvInterlockedMinFp16x4(RWTexture3D<float4> uav, uint3 address, uint2 fp16x2Val)`
+- L363-366 _function_ `uint2 NvInterlockedMaxFp16x4(RWTexture3D<float4> uav, uint3 address, uint2 fp16x2Val)`
+- L369-372 _function_ `uint2 NvInterlockedAddFp16x4(RWTexture1D<float4> uav, uint address, float4 val)` — versions taking four fp32 values (internally converted to fp16)
+- L374-377 _function_ `uint2 NvInterlockedMinFp16x4(RWTexture1D<float4> uav, uint address, float4 val)`
+- L379-382 _function_ `uint2 NvInterlockedMaxFp16x4(RWTexture1D<float4> uav, uint address, float4 val)`
+- L384-387 _function_ `uint2 NvInterlockedAddFp16x4(RWTexture2D<float4> uav, uint2 address, float4 val)`
+- L389-392 _function_ `uint2 NvInterlockedMinFp16x4(RWTexture2D<float4> uav, uint2 address, float4 val)`
+- L394-397 _function_ `uint2 NvInterlockedMaxFp16x4(RWTexture2D<float4> uav, uint2 address, float4 val)`
+- L399-402 _function_ `uint2 NvInterlockedAddFp16x4(RWTexture3D<float4> uav, uint3 address, float4 val)`
+- L404-407 _function_ `uint2 NvInterlockedMinFp16x4(RWTexture3D<float4> uav, uint3 address, float4 val)`
+- L409-412 _function_ `uint2 NvInterlockedMaxFp16x4(RWTexture3D<float4> uav, uint3 address, float4 val)`
+- L423-426 _function_ `float NvInterlockedAddFp32(RWByteAddressBuffer uav, uint byteAddress, float val)`
+- L435-438 _function_ `float NvInterlockedAddFp32(RWTexture1D<float> uav, uint address, float val)`
+- L440-443 _function_ `float NvInterlockedAddFp32(RWTexture2D<float> uav, uint2 address, float val)`
+- L445-448 _function_ `float NvInterlockedAddFp32(RWTexture3D<float> uav, uint3 address, float val)`
+- L460-463 _function_ `uint2 NvInterlockedAddUint64(RWByteAddressBuffer uav, uint byteAddress, uint2 value)`
+- L465-468 _function_ `uint2 NvInterlockedMaxUint64(RWByteAddressBuffer uav, uint byteAddress, uint2 value)`
+- L470-473 _function_ `uint2 NvInterlockedMinUint64(RWByteAddressBuffer uav, uint byteAddress, uint2 value)`
+- L475-478 _function_ `uint2 NvInterlockedAndUint64(RWByteAddressBuffer uav, uint byteAddress, uint2 value)`
+- L480-483 _function_ `uint2 NvInterlockedOrUint64(RWByteAddressBuffer uav, uint byteAddress, uint2 value)`
+- L485-488 _function_ `uint2 NvInterlockedXorUint64(RWByteAddressBuffer uav, uint byteAddress, uint2 value)`
+- L490-493 _function_ `uint2 NvInterlockedCompareExchangeUint64(RWByteAddressBuffer uav, uint byteAddress, uint2 compare_value, uint2 value)`
+- L495-498 _function_ `uint2 NvInterlockedExchangeUint64(RWByteAddressBuffer uav, uint byteAddress, uint2 value)`
+- L507-510 _function_ `uint2 NvInterlockedAddUint64(RWTexture1D<uint2> uav, uint address, uint2 value)`
+- L512-515 _function_ `uint2 NvInterlockedMaxUint64(RWTexture1D<uint2> uav, uint address, uint2 value)`
+- L517-520 _function_ `uint2 NvInterlockedMinUint64(RWTexture1D<uint2> uav, uint address, uint2 value)`
+- L522-525 _function_ `uint2 NvInterlockedAndUint64(RWTexture1D<uint2> uav, uint address, uint2 value)`
+- L527-530 _function_ `uint2 NvInterlockedOrUint64(RWTexture1D<uint2> uav, uint address, uint2 value)`
+- L532-535 _function_ `uint2 NvInterlockedXorUint64(RWTexture1D<uint2> uav, uint address, uint2 value)`
+- L537-540 _function_ `uint2 NvInterlockedCompareExchangeUint64(RWTexture1D<uint2> uav, uint address, uint2 compare_value, uint2 value)`
+- L542-545 _function_ `uint2 NvInterlockedExchangeUint64(RWTexture1D<uint2> uav, uint address, uint2 value)`
+- L547-550 _function_ `uint2 NvInterlockedAddUint64(RWTexture2D<uint2> uav, uint2 address, uint2 value)`
+- L552-555 _function_ `uint2 NvInterlockedMaxUint64(RWTexture2D<uint2> uav, uint2 address, uint2 value)`
+- L557-560 _function_ `uint2 NvInterlockedMinUint64(RWTexture2D<uint2> uav, uint2 address, uint2 value)`
+- L562-565 _function_ `uint2 NvInterlockedAndUint64(RWTexture2D<uint2> uav, uint2 address, uint2 value)`
+- L567-570 _function_ `uint2 NvInterlockedOrUint64(RWTexture2D<uint2> uav, uint2 address, uint2 value)`
+- L572-575 _function_ `uint2 NvInterlockedXorUint64(RWTexture2D<uint2> uav, uint2 address, uint2 value)`
+- L577-580 _function_ `uint2 NvInterlockedCompareExchangeUint64(RWTexture2D<uint2> uav, uint2 address, uint2 compare_value, uint2 value)`
+- L582-585 _function_ `uint2 NvInterlockedExchangeUint64(RWTexture2D<uint2> uav, uint2 address, uint2 value)`
+- L587-590 _function_ `uint2 NvInterlockedAddUint64(RWTexture3D<uint2> uav, uint3 address, uint2 value)`
+- L592-595 _function_ `uint2 NvInterlockedMaxUint64(RWTexture3D<uint2> uav, uint3 address, uint2 value)`
+- L597-600 _function_ `uint2 NvInterlockedMinUint64(RWTexture3D<uint2> uav, uint3 address, uint2 value)`
+- L602-605 _function_ `uint2 NvInterlockedAndUint64(RWTexture3D<uint2> uav, uint3 address, uint2 value)`
+- L607-610 _function_ `uint2 NvInterlockedOrUint64(RWTexture3D<uint2> uav, uint3 address, uint2 value)`
+- L612-615 _function_ `uint2 NvInterlockedXorUint64(RWTexture3D<uint2> uav, uint3 address, uint2 value)`
+- L617-620 _function_ `uint2 NvInterlockedCompareExchangeUint64(RWTexture3D<uint2> uav, uint3 address, uint2 compare_value, uint2 value)`
+- L622-625 _function_ `uint2 NvInterlockedExchangeUint64(RWTexture3D<uint2> uav, uint3 address, uint2 value)`
+- L632-642 _function_ `uint3 NvGetShadingRate()` — Returns the shading rate and the number of per-pixel shading passes for current VPRS pixel
+- L644-655 _function_ `float NvEvaluateAttributeAtSampleForVPRS(float attrib, uint sampleIndex, int2 pixelOffset)`
+- L657-669 _function_ `float2 NvEvaluateAttributeAtSampleForVPRS(float2 attrib, uint sampleIndex, int2 pixelOffset)`
+- L671-684 _function_ `float3 NvEvaluateAttributeAtSampleForVPRS(float3 attrib, uint sampleIndex, int2 pixelOffset)`
+- L686-700 _function_ `float4 NvEvaluateAttributeAtSampleForVPRS(float4 attrib, uint sampleIndex, int2 pixelOffset)`
+- L702-713 _function_ `int NvEvaluateAttributeAtSampleForVPRS(int attrib, uint sampleIndex, int2 pixelOffset)`
+- L715-727 _function_ `int2 NvEvaluateAttributeAtSampleForVPRS(int2 attrib, uint sampleIndex, int2 pixelOffset)`
+- L729-742 _function_ `int3 NvEvaluateAttributeAtSampleForVPRS(int3 attrib, uint sampleIndex, int2 pixelOffset)`
+- L744-758 _function_ `int4 NvEvaluateAttributeAtSampleForVPRS(int4 attrib, uint sampleIndex, int2 pixelOffset)`
+- L760-771 _function_ `uint NvEvaluateAttributeAtSampleForVPRS(uint attrib, uint sampleIndex, int2 pixelOffset)`
+- L773-785 _function_ `uint2 NvEvaluateAttributeAtSampleForVPRS(uint2 attrib, uint sampleIndex, int2 pixelOffset)`
+- L787-800 _function_ `uint3 NvEvaluateAttributeAtSampleForVPRS(uint3 attrib, uint sampleIndex, int2 pixelOffset)`
+- L802-816 _function_ `uint4 NvEvaluateAttributeAtSampleForVPRS(uint4 attrib, uint sampleIndex, int2 pixelOffset)`
+- L819-829 _function_ `float NvEvaluateAttributeSnappedForVPRS(float attrib, uint2 offset)`
+- L831-842 _function_ `float2 NvEvaluateAttributeSnappedForVPRS(float2 attrib, uint2 offset)`
+- L844-856 _function_ `float3 NvEvaluateAttributeSnappedForVPRS(float3 attrib, uint2 offset)`
+- L858-871 _function_ `float4 NvEvaluateAttributeSnappedForVPRS(float4 attrib, uint2 offset)`
+- L873-883 _function_ `int NvEvaluateAttributeSnappedForVPRS(int attrib, uint2 offset)`
+- L885-896 _function_ `int2 NvEvaluateAttributeSnappedForVPRS(int2 attrib, uint2 offset)`
+- L898-910 _function_ `int3 NvEvaluateAttributeSnappedForVPRS(int3 attrib, uint2 offset)`
+- L912-925 _function_ `int4 NvEvaluateAttributeSnappedForVPRS(int4 attrib, uint2 offset)`
+- L927-937 _function_ `uint NvEvaluateAttributeSnappedForVPRS(uint attrib, uint2 offset)`
+- L939-950 _function_ `uint2 NvEvaluateAttributeSnappedForVPRS(uint2 attrib, uint2 offset)`
+- L952-964 _function_ `uint3 NvEvaluateAttributeSnappedForVPRS(uint3 attrib, uint2 offset)`
+- L966-979 _function_ `uint4 NvEvaluateAttributeSnappedForVPRS(uint4 attrib, uint2 offset)`
+- L982-990 _function_ `uint NvWaveMatch(uint value)` — MATCH instruction variants
+- L992-1000 _function_ `uint NvWaveMatch(uint2 value)`
+- L1002-1010 _function_ `uint NvWaveMatch(uint4 value)`
+- L1012-1020 _function_ `uint NvWaveMatch(float value)`
+- L1022-1030 _function_ `uint NvWaveMatch(float2 value)`
+- L1032-1040 _function_ `uint NvWaveMatch(float4 value)`
+- L1052-1055 _function_ `uint4 NvFootprintFine(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, int3 offset = int3(0, 0, 0))`
+- L1057-1060 _function_ `uint4 NvFootprintCoarse(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, int3 offset = int3(0, 0, 0))`
+- L1064-1067 _function_ `uint4 NvFootprintFineBias(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float bias, int3 offset = int3(0, 0, 0))`
+- L1069-1072 _function_ `uint4 NvFootprintCoarseBias(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float bias, int3 offset = int3(0, 0, 0))`
+- L1076-1079 _function_ `uint4 NvFootprintFineLevel(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float lodLevel, int3 offset = int3(0, 0, 0))`
+- L1081-1084 _function_ `uint4 NvFootprintCoarseLevel(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float lodLevel, int3 offset = int3(0, 0, 0))`
+- L1088-1091 _function_ `uint4 NvFootprintFineGrad(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float3 ddx, float3 ddy, int3 offset = int3(0, 0, 0))`
+- L1093-1096 _function_ `uint4 NvFootprintCoarseGrad(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float3 ddx, float3 ddy, int3 offset = int3(0, 0, 0))`
+- L1098-1101 _function_ `uint NvFootprintExtractLOD(uint4 blob)`
+- L1103-1106 _function_ `uint NvFootprintExtractReturnGran(uint4 blob)`
+- L1108-1114 _function_ `uint2 NvFootprintExtractAnchorTileLoc2D(uint4 blob)`
+- L1116-1123 _function_ `uint3 NvFootprintExtractAnchorTileLoc3D(uint4 blob)`
+- L1125-1131 _function_ `uint2 NvFootprintExtractOffset2D(uint4 blob)`
+- L1133-1140 _function_ `uint3 NvFootprintExtractOffset3D(uint4 blob)`
+- L1142-1145 _function_ `uint2 NvFootprintExtractBitmask(uint4 blob)`
+- L1150-1155 _function_ `uint4 NvFootprintFine(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, out uint isSingleLod, int3 offset = int3(0, 0, 0))` — Variant of Footprint extensions which returns isSingleLod (out parameter) isSingleLod = true -> This footprint request touched the texels from only single LOD.
+- L1157-1162 _function_ `uint4 NvFootprintCoarse(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, out uint isSingleLod, int3 offset = int3(0, 0, 0))`
+- L1166-1171 _function_ `uint4 NvFootprintFineBias(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float bias, out uint isSingleLod, int3 offset = int3(0, 0, 0))`
+- L1173-1178 _function_ `uint4 NvFootprintCoarseBias(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float bias, out uint isSingleLod, int3 offset = int3(0, 0, 0))`
+- L1182-1187 _function_ `uint4 NvFootprintFineLevel(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float lodLevel, out uint isSingleLod, int3 offset = int3(0, 0, 0))`
+- L1189-1194 _function_ `uint4 NvFootprintCoarseLevel(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float lodLevel, out uint isSingleLod, int3 offset = int3(0, 0, 0))`
+- L1198-1203 _function_ `uint4 NvFootprintFineGrad(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float3 ddx, float3 ddy, out uint isSingleLod, int3 offset = int3(0, 0, 0))`
+- L1205-1210 _function_ `uint4 NvFootprintCoarseGrad(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint gran, float3 ddx, float3 ddy, out uint isSingleLod, int3 offset = int3(0, 0, 0))`
+- L1213-1216 _function_ `uint NvActiveThreads()`
+- L1237-1258 _function_ `uint NvWaveMultiPrefixInclusiveAdd(uint val, uint mask)` — Extensions for Add
+- L1260-1269 _function_ `uint NvWaveMultiPrefixExclusiveAdd(uint val, uint mask)`
+- L1271-1289 _function_ `uint2 NvWaveMultiPrefixInclusiveAdd(uint2 val, uint mask)`
+- L1291-1300 _function_ `uint2 NvWaveMultiPrefixExclusiveAdd(uint2 val, uint mask)`
+- L1302-1320 _function_ `uint4 NvWaveMultiPrefixInclusiveAdd(uint4 val, uint mask)`
+- L1322-1331 _function_ `uint4 NvWaveMultiPrefixExclusiveAdd(uint4 val, uint mask)`
+- L1334-1352 _function_ `uint NvWaveMultiPrefixInclusiveAnd(uint val, uint mask)` — MultiPrefix extensions for Bitand
+- L1354-1363 _function_ `uint NvWaveMultiPrefixExclusiveAnd(uint val, uint mask)`
+- L1365-1383 _function_ `uint2 NvWaveMultiPrefixInclusiveAnd(uint2 val, uint mask)`
+- L1385-1394 _function_ `uint2 NvWaveMultiPrefixExclusiveAnd(uint2 val, uint mask)`
+- L1397-1415 _function_ `uint4 NvWaveMultiPrefixInclusiveAnd(uint4 val, uint mask)`
+- L1417-1426 _function_ `uint4 NvWaveMultiPrefixExclusiveAnd(uint4 val, uint mask)`
+- L1430-1448 _function_ `uint NvWaveMultiPrefixInclusiveOr(uint val, uint mask)` — MultiPrefix extensions for BitOr
+- L1450-1459 _function_ `uint NvWaveMultiPrefixExclusiveOr(uint val, uint mask)`
+- L1461-1479 _function_ `uint2 NvWaveMultiPrefixInclusiveOr(uint2 val, uint mask)`
+- L1481-1490 _function_ `uint2 NvWaveMultiPrefixExclusiveOr(uint2 val, uint mask)`
+- L1493-1511 _function_ `uint4 NvWaveMultiPrefixInclusiveOr(uint4 val, uint mask)`
+- L1513-1522 _function_ `uint4 NvWaveMultiPrefixExclusiveOr(uint4 val, uint mask)`
+- L1526-1544 _function_ `uint NvWaveMultiPrefixInclusiveXOr(uint val, uint mask)` — MultiPrefix extensions for BitXOr
+- L1546-1555 _function_ `uint NvWaveMultiPrefixExclusiveXOr(uint val, uint mask)`
+- L1557-1575 _function_ `uint2 NvWaveMultiPrefixInclusiveXOr(uint2 val, uint mask)`
+- L1577-1586 _function_ `uint2 NvWaveMultiPrefixExclusiveXOr(uint2 val, uint mask)`
+- L1589-1607 _function_ `uint4 NvWaveMultiPrefixInclusiveXOr(uint4 val, uint mask)`
+- L1609-1618 _function_ `uint4 NvWaveMultiPrefixExclusiveXOr(uint4 val, uint mask)`
+- L1625-1641 _function_ `float3x3 NvRtTriangleObjectPositions()`
+- L1643-1659 _function_ `float3x3 NvRtMicroTriangleObjectPositions()`
+- L1661-1674 _function_ `float3x2 NvRtMicroTriangleBarycentrics()`
+- L1676-1682 _function_ `bool NvRtIsMicroTriangleHit()`
+- L1684-1690 _function_ `bool NvRtIsBackFacing()`
+- L1694-1713 _function_ `float3 NvRtMicroVertexObjectPosition(RaytracingAccelerationStructure AccelerationStructure, uint InstanceIndex, uint GeometryIndex, uint PrimitiveIndex, uint2 UV)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1715-1733 _function_ `float2 NvRtMicroVertexBarycentrics(RaytracingAccelerationStructure AccelerationStructure, uint InstanceIndex, uint GeometryIndex, uint PrimitiveIndex, uint2 UV)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L1743-1748 _function_ `uint NvRtGetClusterID()` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 3)]_
+- L1770-1781 _function_ `float4 NvRtSphereObjectPositionAndRadius()` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 3)]_
+- L1783-1798 _function_ `float2x4 NvRtLssObjectPositionsAndRadii()` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 3)]_
+- L1800-1806 _function_ `bool NvRtIsSphereHit()` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 3)]_
+- L1808-1814 _function_ `bool NvRtIsLssHit()` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 3)]_
+- L2060-2083 _function_ `template<typename T> NvHitObject NvTraceRayHitObject( RaytracingAccelerationStructure AccelerationStructure, uint RayFlags, uint InstanceInclusionMask, uint RayContributionToHitGroupIndex, uint MultiplierForGeometryContributionToHitGroupIndex, uint MissShaderIndex, RayDesc Ray, inout T Payload)` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2085-2121 _function_ `template <typename T> NvHitObject NvMakeHit( RaytracingAccelerationStructure AccelerationStructure, uint InstanceIndex, uint GeometryIndex, uint PrimitiveIndex, uint HitKind, uint RayContributionToHitGroupIndex, uint MultiplierForGeometryContributionToHitGroupIndex, RayDesc Ray, T Attributes)` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2123-2157 _function_ `template <typename T> NvHitObject NvMakeHitWithRecordIndex( uint HitGroupRecordIndex, RaytracingAccelerationStructure AccelerationStructure, uint InstanceIndex, uint GeometryIndex, uint PrimitiveIndex, uint HitKind, RayDesc Ray, T Attributes)` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2159-2179 _function_ `NvHitObject NvMakeMiss( uint MissShaderIndex, RayDesc Ray)` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2181-2190 _function_ `NvHitObject NvMakeNop()` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2192-2201 _function_ `void NvReorderThread(uint CoherenceHint, uint NumCoherenceHintBits)` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2203-2212 _function_ `void NvReorderThread(NvHitObject HitObj, uint CoherenceHint, uint NumCoherenceHintBits)` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2214-2217 _function_ `void NvReorderThread(NvHitObject HitObj)` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2219-2231 _function_ `template<typename T> void NvInvokeHitObject( RaytracingAccelerationStructure AccelerationStructure, NvHitObject HitObj, inout T Payload)` _[#if defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2500-2520 _function_ `NvHitObject NvMakeMiss( uint MissShaderIndex, RayDesc Ray)` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2522-2531 _function_ `NvHitObject NvMakeNop()` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2542-2551 _function_ `void NvReorderThread(uint CoherenceHint, uint NumCoherenceHintBits)` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2553-2562 _function_ `void NvReorderThread(NvHitObject HitObj, uint CoherenceHint, uint NumCoherenceHintBits)` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+- L2564-2567 _function_ `void NvReorderThread(NvHitObject HitObj)` _[#if !(defined(__HLSL_VERSION) && (__HLSL_VERSION >= 2021) && !defined(NV_HITOBJECT_USE_MACRO_API)) && defined(NV_HITOBJECT_USE_MACRO_API)]_
+
+### `Shaders/Shared/ThirdParty/NVIDIA/nvHLSLExtnsInternal.h` (Shared)
+
+- lines: 956; parse: all-branches
+- includes: L30 `nvShaderExtnEnums.h`
+
+#### Macros (#define, 8)
+
+- L286 `#define NV_EXTN_ATOM_AND 0`
+- L287 `#define NV_EXTN_ATOM_OR 1`
+- L288 `#define NV_EXTN_ATOM_XOR 2`
+- L290 `#define NV_EXTN_ATOM_ADD 3`
+- L291 `#define NV_EXTN_ATOM_MAX 6`
+- L292 `#define NV_EXTN_ATOM_MIN 7`
+- L294 `#define NV_EXTN_ATOM_SWAP 8`
+- L295 `#define NV_EXTN_ATOM_CAS 9`
+
+#### Structs / classes (1)
+
+- L32-51 _struct_ **`NvShaderExtnStruct`** `struct NvShaderExtnStruct`
+  - L34 _member_ `uint opcode;` — opcode
+  - L35 _member_ `uint rid;` — resource ID
+  - L36 _member_ `uint sid;` — sampler ID
+  - L38 _member_ `uint4 dst1u;` — destination operand 1 (for instructions that need extra destination operands)
+  - L39 _member_ `uint4 src3u;` — source operand 3
+  - L40 _member_ `uint4 src4u;` — source operand 4
+  - L41 _member_ `uint4 src5u;` — source operand 5
+  - L43 _member_ `uint4 src0u;` — uint source operand  0
+  - L44 _member_ `uint4 src1u;` — uint source operand  0
+  - L45 _member_ `uint4 src2u;` — uint source operand  0
+  - L46 _member_ `uint4 dst0u;` — uint destination operand
+  - L48 _member_ `uint markUavRef;` — the next store to UAV is fake and is used only to identify the uav slot
+  - L49 _member_ `uint numOutputsForIncCounter;` — Used for output to IncrementCounter
+  - L50 _member_ `float padding1[27];` — struct size: 256 bytes
+
+#### Functions (72)
+
+- L80-83 _function_ `int __NvGetShflMaskFromWidth(uint width)` — the exposed SHFL instructions accept a mask parameter in src2 To compute lane mask from width of segment: minLaneID : currentLaneId & src2[12:8] maxLaneID : minLaneId \| (src2[4:0] & ~src2[12:8]) where [minLaneId, maxLaneId] defines the segment where currentLaneId belongs we always set src2[4:0] to 11111 (0x1F), and set src2[12:8] as (32 - width)
+- L87-92 _function_ `void __NvReferenceUAVForOp(RWByteAddressBuffer uav)`
+- L94-99 _function_ `void __NvReferenceUAVForOp(RWTexture1D<float2> uav)`
+- L101-106 _function_ `void __NvReferenceUAVForOp(RWTexture2D<float2> uav)`
+- L108-113 _function_ `void __NvReferenceUAVForOp(RWTexture3D<float2> uav)`
+- L115-120 _function_ `void __NvReferenceUAVForOp(RWTexture1D<float4> uav)`
+- L122-127 _function_ `void __NvReferenceUAVForOp(RWTexture2D<float4> uav)`
+- L129-134 _function_ `void __NvReferenceUAVForOp(RWTexture3D<float4> uav)`
+- L136-141 _function_ `void __NvReferenceUAVForOp(RWTexture1D<float> uav)`
+- L143-148 _function_ `void __NvReferenceUAVForOp(RWTexture2D<float> uav)`
+- L150-155 _function_ `void __NvReferenceUAVForOp(RWTexture3D<float> uav)`
+- L158-163 _function_ `void __NvReferenceUAVForOp(RWTexture1D<uint2> uav)`
+- L165-170 _function_ `void __NvReferenceUAVForOp(RWTexture2D<uint2> uav)`
+- L172-177 _function_ `void __NvReferenceUAVForOp(RWTexture3D<uint2> uav)`
+- L179-184 _function_ `void __NvReferenceUAVForOp(RWTexture1D<uint4> uav)`
+- L186-191 _function_ `void __NvReferenceUAVForOp(RWTexture2D<uint4> uav)`
+- L193-198 _function_ `void __NvReferenceUAVForOp(RWTexture3D<uint4> uav)`
+- L200-205 _function_ `void __NvReferenceUAVForOp(RWTexture1D<uint> uav)`
+- L207-212 _function_ `void __NvReferenceUAVForOp(RWTexture2D<uint> uav)`
+- L214-219 _function_ `void __NvReferenceUAVForOp(RWTexture3D<uint> uav)`
+- L221-226 _function_ `void __NvReferenceUAVForOp(RWTexture1D<int2> uav)`
+- L228-233 _function_ `void __NvReferenceUAVForOp(RWTexture2D<int2> uav)`
+- L235-240 _function_ `void __NvReferenceUAVForOp(RWTexture3D<int2> uav)`
+- L242-247 _function_ `void __NvReferenceUAVForOp(RWTexture1D<int4> uav)`
+- L249-254 _function_ `void __NvReferenceUAVForOp(RWTexture2D<int4> uav)`
+- L256-261 _function_ `void __NvReferenceUAVForOp(RWTexture3D<int4> uav)`
+- L263-268 _function_ `void __NvReferenceUAVForOp(RWTexture1D<int> uav)`
+- L270-275 _function_ `void __NvReferenceUAVForOp(RWTexture2D<int> uav)`
+- L277-282 _function_ `void __NvReferenceUAVForOp(RWTexture3D<int> uav)`
+- L304-314 _function_ `uint __NvAtomicOpFP16x2(RWByteAddressBuffer uav, uint byteAddress, uint fp16x2Val, uint atomicOpType)` — performs Atomic operation on two consecutive fp16 values in the given UAV the uint paramater 'fp16x2Val' is treated as two fp16 values the passed sub-opcode 'op' should be an immediate constant byteAddress must be multiple of 4 the returned value are the two fp16 values packed into a single uint
+- L325-335 _function_ `uint __NvAtomicOpFP16x2(RWTexture1D<float2> uav, uint address, uint fp16x2Val, uint atomicOpType)`
+- L337-347 _function_ `uint __NvAtomicOpFP16x2(RWTexture2D<float2> uav, uint2 address, uint fp16x2Val, uint atomicOpType)`
+- L349-359 _function_ `uint __NvAtomicOpFP16x2(RWTexture3D<float2> uav, uint3 address, uint fp16x2Val, uint atomicOpType)`
+- L371-395 _function_ `uint2 __NvAtomicOpFP16x2(RWTexture1D<float4> uav, uint address, uint2 fp16x2Val, uint atomicOpType)`
+- L397-423 _function_ `uint2 __NvAtomicOpFP16x2(RWTexture2D<float4> uav, uint2 address, uint2 fp16x2Val, uint atomicOpType)`
+- L425-451 _function_ `uint2 __NvAtomicOpFP16x2(RWTexture3D<float4> uav, uint3 address, uint2 fp16x2Val, uint atomicOpType)`
+- L453-456 _function_ `uint __fp32x2Tofp16x2(float2 val)`
+- L458-461 _function_ `uint2 __fp32x4Tofp16x4(float4 val)`
+- L469-479 _function_ `float __NvAtomicAddFP32(RWByteAddressBuffer uav, uint byteAddress, float val)` — FP32 Atomic functions performs Atomic operation treating the uav as float (fp32) values the passed sub-opcode 'op' should be an immediate constant byteAddress must be multiple of 4
+- L481-491 _function_ `float __NvAtomicAddFP32(RWTexture1D<float> uav, uint address, float val)`
+- L493-503 _function_ `float __NvAtomicAddFP32(RWTexture2D<float> uav, uint2 address, float val)`
+- L505-515 _function_ `float __NvAtomicAddFP32(RWTexture3D<float> uav, uint3 address, float val)`
+- L525-537 _function_ `uint2 __NvAtomicCompareExchangeUINT64(RWByteAddressBuffer uav, uint byteAddress, uint2 compareValue, uint2 value)`
+- L539-550 _function_ `uint2 __NvAtomicOpUINT64(RWByteAddressBuffer uav, uint byteAddress, uint2 value, uint atomicOpType)`
+- L552-564 _function_ `uint2 __NvAtomicCompareExchangeUINT64(RWTexture1D<uint2> uav, uint address, uint2 compareValue, uint2 value)`
+- L566-577 _function_ `uint2 __NvAtomicOpUINT64(RWTexture1D<uint2> uav, uint address, uint2 value, uint atomicOpType)`
+- L579-591 _function_ `uint2 __NvAtomicCompareExchangeUINT64(RWTexture2D<uint2> uav, uint2 address, uint2 compareValue, uint2 value)`
+- L593-604 _function_ `uint2 __NvAtomicOpUINT64(RWTexture2D<uint2> uav, uint2 address, uint2 value, uint atomicOpType)`
+- L606-618 _function_ `uint2 __NvAtomicCompareExchangeUINT64(RWTexture3D<uint2> uav, uint3 address, uint2 compareValue, uint2 value)`
+- L620-631 _function_ `uint2 __NvAtomicOpUINT64(RWTexture3D<uint2> uav, uint3 address, uint2 value, uint atomicOpType)`
+- L634-657 _function_ `uint4 __NvFootprint(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint footprintmode, uint gran, int3 offset = int3(0, 0, 0))`
+- L659-683 _function_ `uint4 __NvFootprintBias(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint footprintmode, uint gran, float bias, int3 offset = int3(0, 0, 0))`
+- L685-709 _function_ `uint4 __NvFootprintLevel(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint footprintmode, uint gran, float lodLevel, int3 offset = int3(0, 0, 0))`
+- L711-735 _function_ `uint4 __NvFootprintGrad(uint texSpace, uint texIndex, uint smpSpace, uint smpIndex, uint texType, float3 location, uint footprintmode, uint gran, float3 ddx, float3 ddy, int3 offset = int3(0, 0, 0))`
+- L738-744 _function_ `uint __NvGetSpecial(uint subOpCode)` — returns value of special register - specify subopcode from any of NV_SPECIALOP_* specified in nvShaderExtnEnums.h - other opcodes undefined behavior
+- L747-758 _function_ `int __NvShflGeneric(int val, uint srcLane, uint maskClampVal, out uint laneValid)` — predicate is returned in laneValid indicating if srcLane is in range and val from specified lane is returned.
+- L766-772 _function_ `uint __NvRtGetCandidateClusterID(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L774-780 _function_ `uint __NvRtGetCommittedClusterID(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L782-799 _function_ `float3x3 __NvRtCandidateTriangleObjectPositions(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L801-818 _function_ `float3x3 __NvRtCommittedTriangleObjectPositions(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L820-827 _function_ `bool __NvRtCandidateIsNonOpaqueSphere(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L829-836 _function_ `bool __NvRtCandidateIsNonOpaqueLss(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L838-845 _function_ `float __NvRtCandidateLssHitParameter(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L847-859 _function_ `float4 __NvRtCandidateSphereObjectPositionAndRadius(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L861-877 _function_ `float2x4 __NvRtCandidateLssObjectPositionsAndRadii(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L879-886 _function_ `float __NvRtCandidateBuiltinPrimitiveRayT(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L888-895 _function_ `bool __NvRtCommittedIsSphere(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L897-904 _function_ `bool __NvRtCommittedIsLss(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L906-913 _function_ `float __NvRtCommittedLssHitParameter(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L915-927 _function_ `float4 __NvRtCommittedSphereObjectPositionAndRadius(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L929-945 _function_ `float2x4 __NvRtCommittedLssObjectPositionsAndRadii(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+- L947-953 _function_ `void __NvRtCommitNonOpaqueBuiltinPrimitiveHit(uint rqFlags)` _[#if __SHADER_TARGET_MAJOR > 6 \|\| (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 5)]_
+
+#### Prototypes (2)
+
+- L68 _prototype_ `RWStructuredBuffer<NvShaderExtnStruct> g_NvidiaExt : register( NV_SHADER_EXTN_SLOT, NV_SHADER_EXTN_REGISTER_SPACE )` _[#if defined(NV_SHADER_EXTN_REGISTER_SPACE)]_
+- L70 _prototype_ `RWStructuredBuffer<NvShaderExtnStruct> g_NvidiaExt : register( NV_SHADER_EXTN_SLOT )` _[#if !(defined(NV_SHADER_EXTN_REGISTER_SPACE))]_
+
+### `Shaders/Shared/ThirdParty/NVIDIA/nvShaderExtnEnums.h` (Shared)
+
+- lines: 180; parse: all-branches
+
+#### Macros (#define, 91)
+
+- L40 `#define NV_SHADER_EXTN_VERSION 1`
+- L45 `#define NV_WARP_SIZE 32`
+- L46 `#define NV_WARP_SIZE_LOG2 5`
+- L53 `#define NV_EXTN_OP_SHFL 1`
+- L54 `#define NV_EXTN_OP_SHFL_UP 2`
+- L55 `#define NV_EXTN_OP_SHFL_DOWN 3`
+- L56 `#define NV_EXTN_OP_SHFL_XOR 4`
+- L58 `#define NV_EXTN_OP_VOTE_ALL 5`
+- L59 `#define NV_EXTN_OP_VOTE_ANY 6`
+- L60 `#define NV_EXTN_OP_VOTE_BALLOT 7`
+- L62 `#define NV_EXTN_OP_GET_LANE_ID 8`
+- L63 `#define NV_EXTN_OP_FP16_ATOMIC 12`
+- L64 `#define NV_EXTN_OP_FP32_ATOMIC 13`
+- L66 `#define NV_EXTN_OP_GET_SPECIAL 19`
+- L68 `#define NV_EXTN_OP_UINT64_ATOMIC 20`
+- L70 `#define NV_EXTN_OP_MATCH_ANY 21`
+- L73 `#define NV_EXTN_OP_FOOTPRINT 28`
+- L74 `#define NV_EXTN_OP_FOOTPRINT_BIAS 29`
+- L76 `#define NV_EXTN_OP_GET_SHADING_RATE 30`
+- L79 `#define NV_EXTN_OP_FOOTPRINT_LEVEL 31`
+- L80 `#define NV_EXTN_OP_FOOTPRINT_GRAD 32`
+- L83 `#define NV_EXTN_OP_SHFL_GENERIC 33`
+- L85 `#define NV_EXTN_OP_VPRS_EVAL_ATTRIB_AT_SAMPLE 51`
+- L86 `#define NV_EXTN_OP_VPRS_EVAL_ATTRIB_SNAPPED 52`
+- L89 `#define NV_EXTN_OP_HIT_OBJECT_TRACE_RAY 67`
+- L90 `#define NV_EXTN_OP_HIT_OBJECT_MAKE_HIT 68`
+- L91 `#define NV_EXTN_OP_HIT_OBJECT_MAKE_HIT_WITH_RECORD_INDEX 69`
+- L92 `#define NV_EXTN_OP_HIT_OBJECT_MAKE_MISS 70`
+- L93 `#define NV_EXTN_OP_HIT_OBJECT_REORDER_THREAD 71`
+- L94 `#define NV_EXTN_OP_HIT_OBJECT_INVOKE 72`
+- L95 `#define NV_EXTN_OP_HIT_OBJECT_IS_MISS 73`
+- L96 `#define NV_EXTN_OP_HIT_OBJECT_GET_INSTANCE_ID 74`
+- L97 `#define NV_EXTN_OP_HIT_OBJECT_GET_INSTANCE_INDEX 75`
+- L98 `#define NV_EXTN_OP_HIT_OBJECT_GET_PRIMITIVE_INDEX 76`
+- L99 `#define NV_EXTN_OP_HIT_OBJECT_GET_GEOMETRY_INDEX 77`
+- L100 `#define NV_EXTN_OP_HIT_OBJECT_GET_HIT_KIND 78`
+- L101 `#define NV_EXTN_OP_HIT_OBJECT_GET_RAY_DESC 79`
+- L102 `#define NV_EXTN_OP_HIT_OBJECT_GET_ATTRIBUTES 80`
+- L103 `#define NV_EXTN_OP_HIT_OBJECT_GET_SHADER_TABLE_INDEX 81`
+- L104 `#define NV_EXTN_OP_HIT_OBJECT_LOAD_LOCAL_ROOT_TABLE_CONSTANT 82`
+- L105 `#define NV_EXTN_OP_HIT_OBJECT_IS_HIT 83`
+- L106 `#define NV_EXTN_OP_HIT_OBJECT_IS_NOP 84`
+- L107 `#define NV_EXTN_OP_HIT_OBJECT_MAKE_NOP 85`
+- L110 `#define NV_EXTN_OP_RT_TRIANGLE_OBJECT_POSITIONS 86`
+- L111 `#define NV_EXTN_OP_RT_MICRO_TRIANGLE_OBJECT_POSITIONS 87`
+- L112 `#define NV_EXTN_OP_RT_MICRO_TRIANGLE_BARYCENTRICS 88`
+- L113 `#define NV_EXTN_OP_RT_IS_MICRO_TRIANGLE_HIT 89`
+- L114 `#define NV_EXTN_OP_RT_IS_BACK_FACING 90`
+- L115 `#define NV_EXTN_OP_RT_MICRO_VERTEX_OBJECT_POSITION 91`
+- L116 `#define NV_EXTN_OP_RT_MICRO_VERTEX_BARYCENTRICS 92`
+- L119 `#define NV_EXTN_OP_RT_GET_CLUSTER_ID 93`
+- L120 `#define NV_EXTN_OP_RT_GET_CANDIDATE_CLUSTER_ID 94`
+- L121 `#define NV_EXTN_OP_RT_GET_COMMITTED_CLUSTER_ID 95`
+- L122 `#define NV_EXTN_OP_HIT_OBJECT_GET_CLUSTER_ID 96`
+- L123 `#define NV_EXTN_OP_RT_CANDIDATE_TRIANGLE_OBJECT_POSITIONS 97`
+- L124 `#define NV_EXTN_OP_RT_COMMITTED_TRIANGLE_OBJECT_POSITIONS 98`
+- L125 `#define NV_EXTN_OP_HIT_OBJECT_GET_TRIANGLE_OBJECT_POSITIONS 99`
+- L128 `#define NV_EXTN_OP_RT_SPHERE_OBJECT_POSITION_AND_RADIUS 100`
+- L129 `#define NV_EXTN_OP_RT_CANDIDATE_SPHERE_OBJECT_POSITION_AND_RADIUS 101`
+- L130 `#define NV_EXTN_OP_RT_COMMITTED_SPHERE_OBJECT_POSITION_AND_RADIUS 102`
+- L131 `#define NV_EXTN_OP_HIT_OBJECT_GET_SPHERE_OBJECT_POSITION_AND_RADIUS 103`
+- L132 `#define NV_EXTN_OP_RT_LSS_OBJECT_POSITIONS_AND_RADII 104`
+- L133 `#define NV_EXTN_OP_RT_CANDIDATE_LSS_OBJECT_POSITIONS_AND_RADII 105`
+- L134 `#define NV_EXTN_OP_RT_COMMITTED_LSS_OBJECT_POSITIONS_AND_RADII 106`
+- L135 `#define NV_EXTN_OP_HIT_OBJECT_GET_LSS_OBJECT_POSITIONS_AND_RADII 107`
+- L136 `#define NV_EXTN_OP_RT_IS_SPHERE_HIT 108`
+- L137 `#define NV_EXTN_OP_RT_CANDIDATE_IS_NONOPAQUE_SPHERE 109`
+- L138 `#define NV_EXTN_OP_RT_COMMITTED_IS_SPHERE 110`
+- L139 `#define NV_EXTN_OP_HIT_OBJECT_IS_SPHERE_HIT 111`
+- L140 `#define NV_EXTN_OP_RT_IS_LSS_HIT 112`
+- L141 `#define NV_EXTN_OP_RT_CANDIDATE_IS_NONOPAQUE_LSS 113`
+- L142 `#define NV_EXTN_OP_RT_COMMITTED_IS_LSS 114`
+- L143 `#define NV_EXTN_OP_HIT_OBJECT_IS_LSS_HIT 115`
+- L144 `#define NV_EXTN_OP_RT_CANDIDATE_LSS_HIT_PARAMETER 116`
+- L145 `#define NV_EXTN_OP_RT_COMMITTED_LSS_HIT_PARAMETER 117`
+- L146 `#define NV_EXTN_OP_RT_CANDIDATE_BUILTIN_PRIMITIVE_RAY_T 118`
+- L147 `#define NV_EXTN_OP_RT_COMMIT_NONOPAQUE_BUILTIN_PRIMITIVE_HIT 119`
+- L151 `#define NV_SPECIALOP_THREADLTMASK 4`
+- L152 `#define NV_SPECIALOP_FOOTPRINT_SINGLELOD_PRED 5`
+- L153 `#define NV_SPECIALOP_GLOBAL_TIMER_LO 9`
+- L154 `#define NV_SPECIALOP_GLOBAL_TIMER_HI 10`
+- L159 `#define NV_EXTN_TEXTURE_1D 2`
+- L160 `#define NV_EXTN_TEXTURE_1D_ARRAY 3`
+- L161 `#define NV_EXTN_TEXTURE_2D 4`
+- L162 `#define NV_EXTN_TEXTURE_2D_ARRAY 5`
+- L163 `#define NV_EXTN_TEXTURE_3D 6`
+- L164 `#define NV_EXTN_TEXTURE_CUBE 7`
+- L165 `#define NV_EXTN_TEXTURE_CUBE_ARRAY 8`
+- L171 `#define NV_EXTN_FOOTPRINT_MODE_FINE 0`
+- L172 `#define NV_EXTN_FOOTPRINT_MODE_COARSE 1`
+- L178 `#define NV_EXTN_CLUSTER_ID_INVALID 0xffffffff`

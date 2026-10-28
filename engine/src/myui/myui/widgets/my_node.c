@@ -28,10 +28,10 @@ typedef struct my_node_t {
   bool auto_h;          /**< height tracks the content (M21b) */
 } my_node_t;
 
-static const my_widget_vtable_t s_node_vtable;
+static const my_widget_vtable_t* node_vtable_get(void);
 
 bool my_node_is_instance(const my_widget_t* widget) {
-  return widget != NULL && widget->vtable == &s_node_vtable;
+  return widget != NULL && widget->vtable == node_vtable_get();
 }
 
 void my_node_detach_view(my_widget_t* node) {
@@ -365,6 +365,8 @@ static void node_on_measure(my_widget_t* widget) {
 static const my_widget_vtable_t s_node_vtable = {node_paint, node_event, NULL,
                                                  node_on_measure};
 
+static const my_widget_vtable_t* node_vtable_get(void) { return &s_node_vtable; }
+
 my_widget_t* my_node_create(const my_allocator_t* allocator,
                             my_widget_t* view, const char* id,
                             const char* title, const char* category) {
@@ -372,7 +374,7 @@ my_widget_t* my_node_create(const my_allocator_t* allocator,
   if (n == NULL) {
     return NULL;
   }
-  if (my_widget_init((my_widget_t*)n, allocator, &s_node_vtable, "node") !=
+  if (my_widget_init((my_widget_t*)n, allocator, node_vtable_get(), "node") !=
       MY_RET_OK) {
     my_mem_free(allocator, n);
     return NULL;

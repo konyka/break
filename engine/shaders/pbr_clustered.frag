@@ -61,8 +61,10 @@ layout(binding = 10) uniform samplerCube u_point_shadow_cubes[4];
  * the frame UBO's factor region (offsets 192+, uniform binding 0). */
 #ifdef CLUSTERED_ARR
 flat in uint vLayer;
-/* v_velocity is declared in the existing FORWARD_MRT block below (GL links
- * varyings by name — no location surgery needed for the arr variant). */
+/* v_velocity is declared in the existing FORWARD_MRT block below. vLayer and
+ * v_velocity link by name; vWorldPos/vNormal/vUV have explicit locations
+ * above, so every vertex variant must declare them at locations 0-2
+ * (pinned by test_shader_io gl_clustered_vertex_outputs_match_fragment_locations). */
 layout(std140, binding = 0) uniform ClusterArrFactors {
     mat4 _vert_header[3];     /*   0..192  — vert stage's matrices, unused here */
     vec4 u_factor_arr[64];    /* 192..1216 — x metallic, y roughness, z AO strength, w flag */

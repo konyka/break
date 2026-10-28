@@ -2013,7 +2013,7 @@ my_widget_t* my_ui_load_str(const my_allocator_t* allocator, my_pal_t* pal,
 my_widget_t* my_ui_load_str_ex(const my_allocator_t* allocator, my_pal_t* pal,
                                const char* yaml_str, uint32_t flags,
                                my_ui_error_t* err) {
-  size_t yaml_len;
+  size_t yaml_len = 0u;
   if (err != NULL) {
     memset(err, 0, sizeof(*err));
   }

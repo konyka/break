@@ -8,7 +8,9 @@
 #
 # Contents = the union of what the lanes install today, with the same pins
 # (cmake=3.28.*, libvulkan-dev=1.3.275.*, libshaderc-dev=2023.8*, see
-# engine/external/LOCKED_DEPENDENCIES.md). Rebuilt by
+# engine/external/LOCKED_DEPENDENCIES.md). libssl-dev (noble: OpenSSL 3.0.x)
+# is required by break_crypto / break_update / Snowflake TLS, all on by default
+# (BREAK_ENABLE_CRYPTO); without it every Linux configure fails. Rebuilt by
 # .github/workflows/ci-image.yml whenever this file changes.
 #
 # NOT in the image: wine / vkd3d (proton lane needs i386 multiarch and runs
@@ -30,6 +32,7 @@ RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https:
         libx11-dev libxrandr-dev \
         libgl1-mesa-dev libgl1-mesa-dri libegl1-mesa-dev libgles2-mesa-dev \
         libfreetype6-dev \
+        libssl-dev \
         libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
         mesa-vulkan-drivers vulkan-validationlayers vulkan-tools \
         xvfb x11-utils \

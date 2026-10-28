@@ -72,8 +72,7 @@ TEST(utf8_copy_handles_truncated_sequences)
 
 TEST(utf8_validate_rejects_malformed_bounded_payloads)
 {
-    const char valid[] = {'a', (char)0xE4, (char)0xB8, (char)0xAD};
-    ASSERT_TRUE(platform_utf8_validate(valid, sizeof(valid)));
+    ASSERT_TRUE(platform_utf8_validate("a" "\xE4" "\xB8" "\xAD", 4));
     ASSERT_TRUE(platform_utf8_validate("", 0));
     ASSERT_FALSE(platform_utf8_validate("\xC0\x80", 2));
     ASSERT_FALSE(platform_utf8_validate("\xED\xA0\x80", 3));

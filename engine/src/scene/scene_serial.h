@@ -173,6 +173,9 @@ typedef struct {
 bool scene_save_binary(const World *w, const Scene *s,
                        const char *path, const SerializeOptions *opts);
 bool scene_load_binary(World *w, Scene *s, const char *path);
+/* Memory form of the BSCN reader. The bytes are borrowed for the call;
+ * parsing and the fresh-world/Scene commit rules are identical to the file API. */
+bool scene_load_binary_memory(World *w, Scene *s, const void *data, usize size);
 /* R380: validate BSCN without mutating World — use before clear-on-load. */
 bool scene_probe_binary(const char *path);
 

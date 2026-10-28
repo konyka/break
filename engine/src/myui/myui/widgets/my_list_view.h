@@ -75,6 +75,12 @@ typedef struct my_list_view_t {
   bool syncing;
   bool syncing_scroll_bar;
   my_list_adapter_lease_t* adapter_lease; /**< owned lease, if installed */
+  int32_t layout_synced_height; /**< viewport height at the last on_layout
+                                 * row sync; guards against the sync's own
+                                 * child add/remove re-requesting layout
+                                 * forever (the window's prepare_layout pass
+                                 * never settled, so a painted window hosting
+                                 * a non-empty list_view never rendered) */
 } my_list_view_t;
 
 my_widget_t* my_list_view_create(const my_allocator_t* allocator);

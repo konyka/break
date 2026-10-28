@@ -1,5 +1,7 @@
 # 多后端 RHI 迁移设计规格（Vulkan / Metal / D3D12 / OpenGL 退役）
 
+> **2026-10-26 决定（取代下文关于 OpenGL 退役/删除的全部表述）**：OpenGL 长期保留，作为 `fallback_chain` 的最后一级降级方案和跨后端渲染效果对比基准，不再计划移除。下文 "退役/删除/兼容迁移期" 等措辞与 §6 删除条件保留为历史记录，不再是计划。当前策略与执行见 `docs/rhi_rollback_runbook.md` 与契约测试 `test_rhi_rollout_config_contract`、`test_rhi_golden_parity`。
+
 - 日期：2026-10-14
 - 状态：已批准（auto 模式，决策依据用户提供的完整目标方案）
 - 范围：PureCEngine 渲染硬件接口（RHI）从「编译期二选一（OpenGL/Vulkan）」迁移为「编译期多后端、每 runtime 单后端」，最终在新 major release 中删除 OpenGL。
@@ -150,7 +152,7 @@ renderer 中的 `#ifdef ENGINE_VULKAN` 分支逐步替换为 `RHICapabilities` �
 
 每个计划独立可交付、可测试；进入下一个计划前，前一个计划的 DoD（Definition of Done）必须全绿。
 
-## 6. OpenGL 删除条件（提交 `feat!: remove opengl backend` 的全部前置）
+## 6. OpenGL 删除条件（**已取消**：2026-10-26 决定长期保留 OpenGL；以下仅作历史记录，不是计划）
 
 1. Android/Linux/Steam Vulkan 已认证（GPU-runtime + benchmark-comparable 收据）；
 2. macOS/iOS 原生 Metal 已认证（真机 GPU-runtime，MoltenVK 证据不算）；

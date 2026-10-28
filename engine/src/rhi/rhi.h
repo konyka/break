@@ -328,8 +328,8 @@ typedef struct {
     RHIFormat   format;
     u32         mip_levels;
     /* R593: initial texel bytes in the format's NATIVE layout on both
-     * backends (RGBA8閳?B/px; RG16F閳?B/px f16 pairs; RGBA16F閳?B/px f16
-     * quads; R32F/D32F閳?B/px f32). NULL leaves the texture undefined. */
+     * backends (RGBA8→4B/px; RG16F→4B/px f16 pairs; RGBA16F→8B/px f16
+     * quads; R32F/D32F→4B/px f32). NULL leaves the texture undefined. */
     const void *data;
 } RHITextureDesc;
 
@@ -404,6 +404,11 @@ RHIResult  rhi_device_destroy_ex(RHIDevice *dev);
 void       rhi_device_attach_wsi(RHIDevice *dev, PlatformWsiSurface *wsi);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
 RHIDeviceStatus rhi_device_get_status(const RHIDevice *dev);
+/* Read-only diagnostics: resource slots in use and slot capacity, taken from
+ * the core free list (never touches the backend). Either out pointer may be
+ * NULL. False on a NULL device. */
+bool       rhi_device_resource_usage(const RHIDevice *dev, u32 *out_used,
+                                     u32 *out_capacity);
 bool       rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out);
 bool       rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out);
 bool       rhi_backend_cmd_build_blas_one_triangle(
@@ -532,7 +537,7 @@ void        rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe);
 RHITexture  rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc);
 void        rhi_texture_destroy(RHIDevice *dev, RHITexture tex);
 /* R441: 2D texture array (single mip, RGBA8/BGRA8) for the material-indirect
- * single-execute forward path 閳?the only dual-backend bindless substitute
+ * single-execute forward path — the only dual-backend bindless substitute
  * (GL here has no ARB_bindless_texture; VK needs zero new features). The
  * shared sampler descriptor layout accepts a 2D_ARRAY view for
  * sampler2DArray without any layout change. */
@@ -541,30 +546,30 @@ RHITexture  rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
 /* Upload one full layer (RGBA8, size >= w*h*4 of the array extent). */
 void        rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
                                            u32 layer, const void *rgba8, usize size);
-/* R441: size query + synchronous readback of mip 0 閳?used once at bake time
+/* R441: size query + synchronous readback of mip 0 — used once at bake time
  * to pack material albedos into a texture array (staging on VK, glGetTexImage
  * on GL; not a per-frame API). R631: the size query also accepts cubemap
  * handles (color cubes, and depth cubes on GL where they register as
- * RHI_RES_CUBEMAP) 閳?it reports the face extent; this completes the
+ * RHI_RES_CUBEMAP) — it reports the face extent; this completes the
  * size-query half of the R610/R624 cube readback contract. Byte semantics
- * follow the texture format on BOTH backends (R587/R593/R601/R602): RGBA8 閳?4B/px RGBA; BGRA8 閳?4B/px BGRA
- * order; RG16F 閳?4B/px f16 pairs; RGBA16F 閳?8B/px f16 quads; R32F 閳?4B/px
- * f32; D32 閳?4B/px f32 depth (R602: the last undefined format joined 閳?every
+ * follow the texture format on BOTH backends (R587/R593/R601/R602): RGBA8 → 4B/px RGBA; BGRA8 → 4B/px BGRA
+ * order; RG16F → 4B/px f16 pairs; RGBA16F → 8B/px f16 quads; R32F → 4B/px
+ * f32; D32 → 4B/px f32 depth (R602: the last undefined format joined — every
  * RHIFormat now has defined readback semantics). R608/R609/R610 extended the
  * same D32 semantics to FBO ATTACHMENT depths (offscreen/MRT/shadow-map);
  * R610 also defines the point-shadow depth CUBE: readback yields all six
  * faces face-major (+X,-X,+Y,-Y,+Z,-Z layer order), 4B f32 per texel, so the
  * caller buffer is w*h*4*6. VK: defined once every face has been rendered at
- * least once (unrendered faces keep undefined contents 閳?their layout was
+ * least once (unrendered faces keep undefined contents — their layout was
  * never transitioned out of UNDEFINED).
  * R624 defines the COLOR cubemap (rhi_cubemap_create): pass the RHICubemap
- * handle here 閳?readback yields all six faces face-major mip 0 in the
+ * handle here — readback yields all six faces face-major mip 0 in the
  * format's native bytes (RGBA8 4B/px RGBA; RGBA16F 8B/px f16 quads), so the
  * caller buffer is size*size*bpp*6. VK: defined while the cube is in
  * shader-read state (create and rhi_cubemap_transition_to_read both end
- * there; the copy restores SHADER_READ_ONLY 閳?non-destructive), face
+ * there; the copy restores SHADER_READ_ONLY — non-destructive), face
  * contents undefined until written. RGBA16F cube faces upload natively at
- * create (R625: f16 bytes, GL_HALF_FLOAT on GL / 8B staging on VK 閳?
+ * create (R625: f16 bytes, GL_HALF_FLOAT on GL / 8B staging on VK —
  * pre-R625 they were silently dropped on BOTH backends).
  * Plan E C-TEX-1: this byte table is the readback half of the closed
  * 7-format matrix — every real format round-trips its native bytes on both
@@ -599,7 +604,7 @@ void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd);
 void rhi_cmd_end_render_pass(RHICmdBuffer *cmd);
 void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe);
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset);
-/* is_u32=true 閳?UINT32 indices; false 閳?UINT16 (R224-A). */
+/* is_u32=true → UINT32 indices; false → UINT16 (R224-A). */
 void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, bool is_u32);
 /* min_depth/max_depth: Vulkan viewport depth range / GL glDepthRange (R225-A). */
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
@@ -654,7 +659,7 @@ void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v);
  * bound pipeline's declared push range (compute 128B / graphics clamped
  * range); an out-of-range write is dropped with a warning instead of being
  * silently truncated at flush. GL has no push-constant equivalent, so this is
- * a documented no-op there 閳?use the per-uniform setters above for
+ * a documented no-op there — use the per-uniform setters above for
  * GL-visible state. */
 void rhi_cmd_push_constants(RHICmdBuffer *cmd, u32 offset, const void *data, u32 size);
 /* R444: Shared bounds rule for the contract above, kept pure so it is
@@ -664,7 +669,7 @@ static inline bool rhi_push_range_fits(u32 offset, u32 size, u32 range_size) {
 }
 /* R552-B: Bounds rule for the legacy set_uniform_* helpers on VK, where
  * `location` is a byte offset into the push-constant block. The check is
- * against the pipeline's declared push range, not the 256B staging buffer 閳?
+ * against the pipeline's declared push range, not the 256B staging buffer —
  * writes into [declared_range, 256) used to be silently truncated at flush. */
 static inline bool rhi_push_helper_range_ok(i32 location, u32 size, u32 range_size) {
     return location >= 0 && rhi_push_range_fits((u32)location, size, range_size);
@@ -673,7 +678,7 @@ static inline bool rhi_push_helper_range_ok(i32 location, u32 size, u32 range_si
  * offset). Kept for compatibility; new code should call rhi_cmd_push_constants. */
 void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size);
 /* DEPRECATED（计划 E）：新代码用 rhi_pipeline_bindings_create/resolve。
- * 保留至全部调用点迁移完成（Task 8 grep gate 清零），随后随 OpenGL 退役删除。 */
+ * 保留至全部调用点迁移完成（Task 8 grep gate 清零），删除时机另行决定（OpenGL 长期保留，不再随其退役）。 */
 i32  rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name);
 
 /* ---- Plan E Task 5: reflection-driven pipeline bindings ---- */
@@ -700,7 +705,7 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height);
 void         rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm);
 /* R618 contract: binding a shadow map CLEARS its depth to 1.0 on both
  * backends (GL: explicit glClear under a forced depth mask; VK: the render
- * pass depth loadOp with clear value 1.0). There is no load/preserve twin 閳?
+ * pass depth loadOp with clear value 1.0). There is no load/preserve twin —
  * every bind starts the atlas fresh. This is the same "bind == fresh" half
  * of the R616/R617 MRT/offscreen semantic pair, audited consistent here and
  * pinned by the graphics roundtrip gate's shadow bind-clear phase. */
@@ -712,7 +717,7 @@ void rhi_cmd_clear_depth(RHICmdBuffer *cmd);
 typedef struct {
     u32         size;
     /* mip 0 per face. RGBA8: 4B/px bytes. RGBA16F (R625): native f16 quads
-     * (8B/px) 閳?the exact byte contract rhi_texture_read_pixels returns for
+     * (8B/px) — the exact byte contract rhi_texture_read_pixels returns for
      * the cube (R624), so upload and readback round-trip byte-exactly. */
     const void *faces[6];
     /* Optional. 0 (RHI_FORMAT_R8G8B8A8_UNORM) keeps the legacy RGBA8 behavior.
@@ -764,12 +769,12 @@ void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf
  *            a staging shadow (download on map, upload on unmap). */
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size);
 void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const void *data, usize size);
-/* R186: Host readback 閳?works for HOST_VISIBLE and DEVICE_LOCAL (staging). C-BUF-1/2. */
+/* R186: Host readback — works for HOST_VISIBLE and DEVICE_LOCAL (staging). C-BUF-1/2. */
 bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usize size);
 /* R171: Recorded GPU clear (recorded GPU buffer fill / glClearBufferSubData). Host
  * memcpy updates are NOT ordered between dispatches in the same Vulkan CB. */
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value);
-/* R183: Record a host閳墱PU buffer write into the command buffer (ordered vs
+/* R183: Record a host→GPU buffer write into the command buffer (ordered vs
  * later dispatches — C-BUF-3). Prefer over rhi_buffer_update when the same buffer is
  * rewritten multiple times in one CB (e.g. CSM cascade visibility). */
 void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
@@ -782,10 +787,10 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,
 
 /* Material + IBL textures: binds material (0-4) + occlusion (R583) + shadow
  * (1) + ssao (14) + brdf_lut/irradiance/prefilter (7-9) + point_shadow_cubes
- * (10-13). R583 occlusion slot: GL unit 15 / VK set 0 binding 9 閳?the only
+ * (10-13). R583 occlusion slot: GL unit 15 / VK set 0 binding 9 — the only
  * slots free in the G-Buffer pass on each backend (GL 5/6 are vertex-stage
  * texel-buffer units: joints/instances/light data; VK 5 is the ssao/pt-shadow
- * array). They coincide with the deferred LIGHTING pass's emissive slots 閳?
+ * array). They coincide with the deferred LIGHTING pass's emissive slots —
  * a different pass with its own descriptor set, so no conflict. Callers
  * resolve the white 1x1 fallback (no occlusion texture = 1.0 per glTF)
  * before calling. */
@@ -832,11 +837,11 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreen
 bool            rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,
                                                 const RHIOffscreenFBODesc *desc);
 void            rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo);
-/* R617: the bind pair's contract is unified on both backends 閳?
+/* R617: the bind pair's contract is unified on both backends —
  * bind = fresh target: clears color to {0.05, 0.05, 0.1, 1.0} and depth to
- * 1.0 (VK has always done it via the render-pass loadOp 閳?those exact
+ * 1.0 (VK has always done it via the render-pass loadOp — those exact
  * values are the portable contract; GL joins with explicit clears as of
- * R617 閳?before that GL preserved, which made GL's bind indistinguishable
+ * R617 — before that GL preserved, which made GL's bind indistinguishable
  * from bind_load).
  * bind_load = resume: preserves all attachment content (R196-A: tonemap/
  * cinematic reuse scene_fbo; a CLEAR bind would wipe depth needed by god
@@ -847,7 +852,7 @@ void            rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 sc
 /* R619: caller-owned bind clear color. Replaces the RHI-baked default
  * {0.05, 0.05, 0.1, 1.0} for THIS FBO's bind clear (both backends; MSAA
  * variants share the path). Depth clear stays 1.0 and bind_load never
- * clears 閳?only the bind color value is caller-owned. The default is
+ * clears — only the bind color value is caller-owned. The default is
  * installed at create, so existing callers see zero behavior change. */
 void            rhi_offscreen_fbo_set_clear_color(RHIDevice *dev,
                                                   RHIOffscreenFBO *fbo,
@@ -869,10 +874,10 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
 bool      rhi_mrt_desc_validate(u32 width, u32 height,
                                 const RHIFormat *formats, u32 attachment_count);
 void      rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo);
-/* R616: the bind pair's contract is unified on both backends 閳?
+/* R616: the bind pair's contract is unified on both backends —
  * bind = fresh target: clears every color attachment to (0,0,0,0) and depth
  * to 1.0 (VK has always done it via the render-pass loadOp; GL joins with
- * explicit clears as of R616 閳?before that GL preserved, which made GL's
+ * explicit clears as of R616 — before that GL preserved, which made GL's
  * bind indistinguishable from bind_load).
  * bind_load = resume: preserves all attachment content. */
 void      rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo);
@@ -891,7 +896,7 @@ void               rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepth
 /* Bind a single cubemap face for rendering (face 0..5 = +X,-X,+Y,-Y,+Z,-Z).
  * R618 contract: binding a face CLEARS that face's depth to 1.0 on both
  * backends (GL: glClear after the face re-attachment; VK: per-face render
- * pass depth loadOp). No load/preserve twin 閳?every face bind starts fresh,
+ * pass depth loadOp). No load/preserve twin — every face bind starts fresh,
  * matching rhi_cmd_bind_shadow_map. */
 void               rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo, u32 face);
 void               rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h);
@@ -934,7 +939,7 @@ void        rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
  * inside the drawable and `pixel_bytes` must be at least w*h*4. The call
  * waits for completion on Vulkan and returns false without touching pixels
  * when validation or backend readback fails.
- * R577: must be called while a swapchain image is acquired 閳?between
+ * R577: must be called while a swapchain image is acquired — between
  * rhi_frame_begin and rhi_present (in-frame or post-frame_end pre-present).
  * Post-present calls are a Vulkan spec violation (the image is owned by the
  * presentation engine again) and are refused (false + error log). The readback
@@ -962,7 +967,7 @@ RHIResult rhi_device_drain_ex(RHIDevice *dev);
  * VK_ERROR_DEVICE_LOST (or a fence unsignaled for 20 s); all blocking
  * waits then fail fast so callers wind down instead of hanging on a
  * post-TDR device (WDDM resets can leave fences permanently unsignaled).
- * GL: no asynchronous loss concept yet 閳?currently always false. */
+ * GL: no asynchronous loss concept yet — currently always false. */
 bool rhi_device_lost(RHIDevice *dev);
 
 #ifdef ENGINE_RHI_TEST

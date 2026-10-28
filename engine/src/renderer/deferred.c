@@ -560,8 +560,9 @@ void deferred_begin_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
      * full-target OFFSCREEN viewport (memory row 0 = NDC y -1, the convention
      * every other offscreen pass and the lighting pass's uv rely on).
      * rhi_cmd_set_viewport is the RHI's swapchain-oriented +Y-up viewport:
-     * on Vulkan and D3D12 it is the opposite height sign of the offscreen
-     * default, so it stored the G-Buffer upside down relative to the
+     * on D3D12 it is the opposite height sign of the offscreen default
+     * (Vulkan now keeps the offscreen convention for it on offscreen
+     * targets, see rhi_vk.c), so it stored the G-Buffer upside down relative to the
      * lighting pass and mirrored the winding -- D3D12 culled the whole
      * scene, Vulkan lit it from a flipped G-Buffer. GL sets the same
      * viewport in the bind (gl_set_fbo_pass_state), so it is unaffected. */

@@ -503,7 +503,20 @@ static my_ret_t lv_on_event(my_widget_t* widget, const my_event_t* event) {
 }
 
 static void lv_on_layout(my_widget_t* widget) {
-  lv_sync_rows((my_list_view_t*)widget);
+  my_list_view_t* lv = (my_list_view_t*)widget;
+  /* Re-sync only when the viewport height actually changed. Every other
+   * mutation entry point (set_adapter, refresh, set_scroll_offset,
+   * set_row_height, invalidate_row_height(s)) already syncs synchronously
+   * through lv_on_layout_changed, so the only thing a layout pass must
+   * catch is a layouter-driven resize. An unconditional sync here
+   * re-creates the row children, and add/remove_child re-request layout on
+   * the list itself: the enclosing window's prepare_layout then never
+   * settled (MY_WINDOW_LAYOUT_MAX_PASSES exhausted every frame) and the
+   * window never painted at all. */
+  if (lv->layout_synced_height != widget->rect.h) {
+    lv->layout_synced_height = widget->rect.h;
+    lv_sync_rows(lv);
+  }
 }
 
 static const my_widget_vtable_t s_lv_vtable = {lv_on_paint, lv_on_event,

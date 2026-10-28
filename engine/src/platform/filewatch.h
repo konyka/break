@@ -10,6 +10,7 @@ typedef struct {
     u32   last_modified;
     void (*callback)(const char *path, void *user);
     void *user;
+    bool  notify_missing; /* also report existing -> missing (opt-in) */
 #if defined(ENGINE_PLATFORM_LINUX)
     i32   inotify_wd;  /* inotify watch descriptor for this entry */
 #elif defined(ENGINE_PLATFORM_MACOS) || defined(__APPLE__)
@@ -33,6 +34,13 @@ void filewatch_init(FileWatcher *fw);
 void filewatch_shutdown(FileWatcher *fw);
 void filewatch_add(FileWatcher *fw, const char *path,
                    void (*callback)(const char *path, void *user), void *user);
+/* Like filewatch_add, but the callback also fires once when a file that
+ * existed is deleted (filewatch_add reports creation and modification only).
+ * Deletion is detected by the same mtime poll, so it shares the existing
+ * whole-second / same-second-replace limitations. */
+void filewatch_add_with_missing(FileWatcher *fw, const char *path,
+                                void (*callback)(const char *path, void *user),
+                                void *user);
 void filewatch_poll(FileWatcher *fw);
 
 /* ------------------------------------------------------------------

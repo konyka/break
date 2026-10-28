@@ -1,0 +1,1576 @@
+name	value	section	src	op	file	line	known
+Slate.CacheRenderData	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	67	no
+r.VSync	1	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	68	yes
+TaskGraph.EnablePowerSavingThreadPriorityReduction	1	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	70	no
+r.Vulkan.Depth24Bit	1	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	72	yes
+r.Forward.LightGridSizeZ	8	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	74	yes
+r.Forward.MaxCulledLightsPerCell	8	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	75	yes
+r.HairStrands.Simulation	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	76	yes
+r.HairStrands.Strands	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	77	yes
+r.HairStrands.Binding	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	78	yes
+r.Vulkan.MemoryBacktrace	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	80	yes
+r.Vulkan.Submission.AllowTimelineSemaphores	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	82	yes
+r.Vulkan.Submission.UseInterruptThread	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	84	yes
+r.Vulkan.Submission.UseSubmissionThread	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	85	yes
+r.Vulkan.RHIThread	1	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	86	yes
+r.Vulkan.UseMinimalSubmits	1	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	87	yes
+r.Vulkan.AllowAsyncCompute	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	89	yes
+r.Vulkan.AllowSplitBarriers	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	91	yes
+r.Vulkan.AllowDynamicRendering	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	93	yes
+r.Vulkan.DiagnosticBuffer	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	95	yes
+r.Vulkan.EnableTransientResourceAllocator	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	97	yes
+r.Vulkan.AllowSparseResidency	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	99	yes
+r.Vulkan.AllowUniformUpload	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	101	yes
+r.LightGridInjection.UseSpecializationConstants	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	103	yes
+r.Vulkan.CpuWaitForFence	0	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	105	yes
+s.StreamableStripDebugName	true	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	108	yes
+s.StreamableStripDebugNameInShipping	true	ConsoleVariables	ConsoleVariables		Config/Android/AndroidEngine.ini	109	yes
+QualityLevelMapping	"low"	SystemSettings	SystemSettings		Config/Android/AndroidEngine.ini	118	no
+fx.Niagara.QualityLevel.Min	0	SystemSettings	SystemSettings		Config/Android/AndroidEngine.ini	122	yes
+fx.Niagara.QualityLevel.Max	1	SystemSettings	SystemSettings		Config/Android/AndroidEngine.ini	123	yes
+foliage.DensityScale	0.5	FoliageQuality@0	scalability		Config/Android/AndroidScalability.ini	6	yes
+grass.DensityScale	0.5	FoliageQuality@0	scalability		Config/Android/AndroidScalability.ini	7	yes
+grass.densityScale	0.8	FoliageQuality@1	scalability		Config/Android/AndroidScalability.ini	10	yes
+grass.CullDistanceScale	0.8	FoliageQuality@1	scalability		Config/Android/AndroidScalability.ini	11	yes
+foliage.DensityScale	0.8	FoliageQuality@1	scalability		Config/Android/AndroidScalability.ini	12	yes
+grass.densityScale	1.0	FoliageQuality@2	scalability		Config/Android/AndroidScalability.ini	15	yes
+grass.CullDistanceScale	1.0	FoliageQuality@2	scalability		Config/Android/AndroidScalability.ini	16	yes
+foliage.DensityScale	1.0	FoliageQuality@2	scalability		Config/Android/AndroidScalability.ini	17	yes
+grass.densityScale	1.0	FoliageQuality@3	scalability		Config/Android/AndroidScalability.ini	20	yes
+grass.CullDistanceScale	1.0	FoliageQuality@3	scalability		Config/Android/AndroidScalability.ini	21	yes
+foliage.DensityScale	1.0	FoliageQuality@3	scalability		Config/Android/AndroidScalability.ini	22	yes
+r.ViewDistanceScale	0.70	ViewDistanceQuality@0	scalability		Config/Android/AndroidScalability.ini	29	yes
+r.NeverOcclusionTestDistance	200	ViewDistanceQuality@0	scalability		Config/Android/AndroidScalability.ini	30	yes
+r.ViewDistanceScale	1.0	ViewDistanceQuality@1	scalability		Config/Android/AndroidScalability.ini	33	yes
+r.NeverOcclusionTestDistance	200	ViewDistanceQuality@1	scalability		Config/Android/AndroidScalability.ini	34	yes
+r.ViewDistanceScale	1.0	ViewDistanceQuality@2	scalability		Config/Android/AndroidScalability.ini	37	yes
+r.NeverOcclusionTestDistance	200	ViewDistanceQuality@2	scalability		Config/Android/AndroidScalability.ini	38	yes
+r.ViewDistanceScale	1.0	ViewDistanceQuality@3	scalability		Config/Android/AndroidScalability.ini	41	yes
+r.NeverOcclusionTestDistance	200	ViewDistanceQuality@3	scalability		Config/Android/AndroidScalability.ini	42	yes
+r.ShadowQuality	0	ShadowQuality@0	scalability		Config/Android/AndroidScalability.ini	49	yes
+r.Shadow.MaxCSMResolution	1024	ShadowQuality@0	scalability		Config/Android/AndroidScalability.ini	50	yes
+r.Shadow.DistanceScale	0.5	ShadowQuality@0	scalability		Config/Android/AndroidScalability.ini	51	yes
+r.Shadow.CSM.MaxCascades	1	ShadowQuality@0	scalability		Config/Android/AndroidScalability.ini	52	yes
+r.Shadow.RadiusThreshold	0.06	ShadowQuality@0	scalability		Config/Android/AndroidScalability.ini	53	yes
+r.VolumetricFog	0	ShadowQuality@0	scalability		Config/Android/AndroidScalability.ini	54	yes
+r.ContactShadows	0	ShadowQuality@0	scalability		Config/Android/AndroidScalability.ini	55	yes
+r.DistanceFieldShadowing	0	ShadowQuality@0	scalability		Config/Android/AndroidScalability.ini	56	yes
+r.DFShadowQuality	0	ShadowQuality@0	scalability		Config/Android/AndroidScalability.ini	57	yes
+r.ShadowQuality	1	ShadowQuality@1	scalability		Config/Android/AndroidScalability.ini	60	yes
+r.Shadow.MaxCSMResolution	1024	ShadowQuality@1	scalability		Config/Android/AndroidScalability.ini	61	yes
+r.Shadow.DistanceScale	0.7	ShadowQuality@1	scalability		Config/Android/AndroidScalability.ini	62	yes
+r.Shadow.CSM.MaxCascades	1	ShadowQuality@1	scalability		Config/Android/AndroidScalability.ini	63	yes
+r.Shadow.RadiusThreshold	0.06	ShadowQuality@1	scalability		Config/Android/AndroidScalability.ini	64	yes
+r.VolumetricFog	0	ShadowQuality@1	scalability		Config/Android/AndroidScalability.ini	65	yes
+r.ContactShadows	0	ShadowQuality@1	scalability		Config/Android/AndroidScalability.ini	66	yes
+r.DistanceFieldShadowing	0	ShadowQuality@1	scalability		Config/Android/AndroidScalability.ini	67	yes
+r.DFShadowQuality	0	ShadowQuality@1	scalability		Config/Android/AndroidScalability.ini	68	yes
+r.ShadowQuality	2	ShadowQuality@2	scalability		Config/Android/AndroidScalability.ini	71	yes
+r.Shadow.MaxCSMResolution	2048	ShadowQuality@2	scalability		Config/Android/AndroidScalability.ini	72	yes
+r.Shadow.DistanceScale	1.0	ShadowQuality@2	scalability		Config/Android/AndroidScalability.ini	73	yes
+r.Shadow.CSM.MaxCascades	2	ShadowQuality@2	scalability		Config/Android/AndroidScalability.ini	74	yes
+r.Shadow.RadiusThreshold	0.06	ShadowQuality@2	scalability		Config/Android/AndroidScalability.ini	75	yes
+r.VolumetricFog	0	ShadowQuality@2	scalability		Config/Android/AndroidScalability.ini	76	yes
+r.ContactShadows	0	ShadowQuality@2	scalability		Config/Android/AndroidScalability.ini	77	yes
+r.DFShadowQuality	1	ShadowQuality@2	scalability		Config/Android/AndroidScalability.ini	78	yes
+r.Mobile.SupportInsetShadows	True	ShadowQuality@2	scalability		Config/Android/AndroidScalability.ini	79	yes
+r.ShadowQuality	2	ShadowQuality@3	scalability		Config/Android/AndroidScalability.ini	82	yes
+r.Shadow.MaxCSMResolution	2048	ShadowQuality@3	scalability		Config/Android/AndroidScalability.ini	83	yes
+r.Shadow.DistanceScale	1.0	ShadowQuality@3	scalability		Config/Android/AndroidScalability.ini	84	yes
+r.Shadow.CSM.MaxCascades	3	ShadowQuality@3	scalability		Config/Android/AndroidScalability.ini	85	yes
+r.Shadow.RadiusThreshold	0.06	ShadowQuality@3	scalability		Config/Android/AndroidScalability.ini	86	yes
+r.VolumetricFog	0	ShadowQuality@3	scalability		Config/Android/AndroidScalability.ini	87	yes
+r.ContactShadows	0	ShadowQuality@3	scalability		Config/Android/AndroidScalability.ini	88	yes
+r.DFShadowQuality	2	ShadowQuality@3	scalability		Config/Android/AndroidScalability.ini	89	yes
+r.Mobile.SupportInsetShadows	True	ShadowQuality@3	scalability		Config/Android/AndroidScalability.ini	90	yes
+r.SSR.Quality	0	ReflectionQuality@0	scalability		Config/Android/AndroidScalability.ini	95	yes
+r.SSR.Quality	0	ReflectionQuality@1	scalability		Config/Android/AndroidScalability.ini	98	yes
+r.SSR.Quality	0	ReflectionQuality@2	scalability		Config/Android/AndroidScalability.ini	101	yes
+r.SSR.Quality	2	ReflectionQuality@3	scalability		Config/Android/AndroidScalability.ini	104	yes
+r.SSR.Quality	2	ReflectionQuality@Cine	scalability		Config/Android/AndroidScalability.ini	107	yes
+r.Tonemapper.Quality	1	PostProcessQuality@0	scalability		Config/Android/AndroidScalability.ini	114	yes
+r.BloomQuality	0	PostProcessQuality@0	scalability		Config/Android/AndroidScalability.ini	115	yes
+r.DepthOfFieldQuality	0	PostProcessQuality@0	scalability		Config/Android/AndroidScalability.ini	116	yes
+r.LightShaftQuality	0	PostProcessQuality@0	scalability		Config/Android/AndroidScalability.ini	117	yes
+r.EyeAdaptationQuality	1	PostProcessQuality@0	scalability		Config/Android/AndroidScalability.ini	118	yes
+r.AmbientOcclusionLevels	0	PostProcessQuality@0	scalability		Config/Android/AndroidScalability.ini	119	yes
+r.LensFlareQuality	0	PostProcessQuality@0	scalability		Config/Android/AndroidScalability.ini	120	yes
+r.Tonemapper.Quality	2	PostProcessQuality@1	scalability		Config/Android/AndroidScalability.ini	123	yes
+r.BloomQuality	1	PostProcessQuality@1	scalability		Config/Android/AndroidScalability.ini	124	yes
+r.DepthOfFieldQuality	1	PostProcessQuality@1	scalability		Config/Android/AndroidScalability.ini	125	yes
+r.LightShaftQuality	1	PostProcessQuality@1	scalability		Config/Android/AndroidScalability.ini	126	yes
+r.EyeAdaptationQuality	1	PostProcessQuality@1	scalability		Config/Android/AndroidScalability.ini	127	yes
+r.AmbientOcclusionLevels	0	PostProcessQuality@1	scalability		Config/Android/AndroidScalability.ini	128	yes
+r.LensFlareQuality	1	PostProcessQuality@1	scalability		Config/Android/AndroidScalability.ini	129	yes
+r.Tonemapper.Quality	3	PostProcessQuality@2	scalability		Config/Android/AndroidScalability.ini	132	yes
+r.BloomQuality	2	PostProcessQuality@2	scalability		Config/Android/AndroidScalability.ini	133	yes
+r.DepthOfFieldQuality	1	PostProcessQuality@2	scalability		Config/Android/AndroidScalability.ini	134	yes
+r.LightShaftQuality	1	PostProcessQuality@2	scalability		Config/Android/AndroidScalability.ini	135	yes
+r.EyeAdaptationQuality	1	PostProcessQuality@2	scalability		Config/Android/AndroidScalability.ini	136	yes
+r.AmbientOcclusionLevels	1	PostProcessQuality@2	scalability		Config/Android/AndroidScalability.ini	137	yes
+r.LensFlareQuality	2	PostProcessQuality@2	scalability		Config/Android/AndroidScalability.ini	138	yes
+r.Tonemapper.Quality	3	PostProcessQuality@3	scalability		Config/Android/AndroidScalability.ini	141	yes
+r.BloomQuality	3	PostProcessQuality@3	scalability		Config/Android/AndroidScalability.ini	142	yes
+r.DepthOfFieldQuality	1	PostProcessQuality@3	scalability		Config/Android/AndroidScalability.ini	143	yes
+r.LightShaftQuality	1	PostProcessQuality@3	scalability		Config/Android/AndroidScalability.ini	144	yes
+r.EyeAdaptationQuality	1	PostProcessQuality@3	scalability		Config/Android/AndroidScalability.ini	145	yes
+r.AmbientOcclusionLevels	1	PostProcessQuality@3	scalability		Config/Android/AndroidScalability.ini	146	yes
+r.LensFlareQuality	2	PostProcessQuality@3	scalability		Config/Android/AndroidScalability.ini	147	yes
+r.Mobile.AntiAliasing	0	AntiAliasingQuality@0	scalability		Config/Android/AndroidScalability.ini	150	yes
+r.TemporalAA.Quality	0	AntiAliasingQuality@0	scalability		Config/Android/AndroidScalability.ini	151	yes
+r.FXAA.Quality	0	AntiAliasingQuality@0	scalability		Config/Android/AndroidScalability.ini	152	yes
+r.Mobile.AntiAliasing	1	AntiAliasingQuality@1	scalability		Config/Android/AndroidScalability.ini	155	yes
+r.TemporalAA.Quality	0	AntiAliasingQuality@1	scalability		Config/Android/AndroidScalability.ini	156	yes
+r.FXAA.Quality	0	AntiAliasingQuality@1	scalability		Config/Android/AndroidScalability.ini	157	yes
+r.Mobile.AntiAliasing	2	AntiAliasingQuality@2	scalability		Config/Android/AndroidScalability.ini	160	yes
+r.TemporalAA.Quality	0	AntiAliasingQuality@2	scalability		Config/Android/AndroidScalability.ini	161	yes
+r.FXAA.Quality	0	AntiAliasingQuality@2	scalability		Config/Android/AndroidScalability.ini	162	yes
+r.Mobile.AntiAliasing	2	AntiAliasingQuality@3	scalability		Config/Android/AndroidScalability.ini	165	yes
+r.TemporalAA.Quality	0	AntiAliasingQuality@3	scalability		Config/Android/AndroidScalability.ini	166	yes
+r.FXAA.Quality	0	AntiAliasingQuality@3	scalability		Config/Android/AndroidScalability.ini	167	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	174	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	1	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	175	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	4	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	176	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	177	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	1.0	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	178	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	8.0	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	179	yes
+r.SkyAtmosphere.FastSkyLUT.Width	96	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	180	yes
+r.SkyAtmosphere.FastSkyLUT.Height	50	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	181	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	1	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	182	yes
+r.RefractionQuality	0	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	183	yes
+fx.Niagara.QualityLevel	0	EffectsQuality@0	scalability		Config/Android/AndroidScalability.ini	184	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	187	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	1	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	188	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	4	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	189	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	190	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	1.0	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	191	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	8.0	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	192	yes
+r.SkyAtmosphere.FastSkyLUT.Width	96	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	193	yes
+r.SkyAtmosphere.FastSkyLUT.Height	50	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	194	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	1	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	195	yes
+r.RefractionQuality	0	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	196	yes
+fx.Niagara.QualityLevel	0	EffectsQuality@1	scalability		Config/Android/AndroidScalability.ini	197	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	200	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	1	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	201	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	4	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	202	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	203	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	1.0	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	204	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	8.0	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	205	yes
+r.SkyAtmosphere.FastSkyLUT.Width	96	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	206	yes
+r.SkyAtmosphere.FastSkyLUT.Height	50	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	207	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	1	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	208	yes
+r.RefractionQuality	1	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	209	yes
+fx.Niagara.QualityLevel	0	EffectsQuality@2	scalability		Config/Android/AndroidScalability.ini	210	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	213	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	1	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	214	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	4	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	215	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	216	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	1.0	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	217	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	8.0	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	218	yes
+r.SkyAtmosphere.FastSkyLUT.Width	96	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	219	yes
+r.SkyAtmosphere.FastSkyLUT.Height	50	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	220	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	1	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	221	yes
+r.RefractionQuality	1	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	222	yes
+fx.Niagara.QualityLevel	1	EffectsQuality@3	scalability		Config/Android/AndroidScalability.ini	223	yes
+r.MaxAnisotropy	1	TextureQuality@0	scalability		Config/Android/AndroidScalability.ini	230	yes
+r.MaxAnisotropy	1	TextureQuality@1	scalability		Config/Android/AndroidScalability.ini	233	yes
+r.MaxAnisotropy	2	TextureQuality@2	scalability		Config/Android/AndroidScalability.ini	236	yes
+r.MaxAnisotropy	4	TextureQuality@3	scalability		Config/Android/AndroidScalability.ini	239	yes
+UI.SlateSDFText.RasterizationMode	Msdf	GlobalDefaults DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	211	yes
+UI.SlateSDFText.ResolutionLevel	2	GlobalDefaults DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	212	yes
+UI.SlateSDFText.RasterizationMode	Msdf	Windows DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	218	yes
+UI.SlateSDFText.ResolutionLevel	2	Windows DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	219	yes
+AsyncTraceDelegateHitchThresholdMS	0.75	WindowsClient DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	229	yes
+AsyncTraceDelegateHitchThresholdMS	7.0	WindowsServer DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	234	yes
+s.AllowUnversionedContentInEditor	1	WindowsCookedEditor DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	239	yes
+cook.AllowCookedDataInEditorBuilds	1	WindowsCookedEditor DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	240	yes
+VA.AllowPkgVirtualization	0	WindowsCookedEditor DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	241	yes
+r.HZBOcclusion	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	352	yes
+r.HZB.BuildUseCompute	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	354	yes
+r.EarlyZPass	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	356	yes
+r.TranslucencyLightingVolume	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	358	yes
+r.AllowPointLightCubemapShadows	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	360	yes
+r.Decal.StencilSizeThreshold	-1	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	362	yes
+r.MorphTarget.Mode	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	363	yes
+r.DefaultBackBufferPixelFormat	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	365	yes
+r.Forward.LightLinkedListCulling	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	367	yes
+UI.SlateSDFText.RasterizationMode	SdfApproximation	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	369	yes
+UI.SlateSDFText.ResolutionLevel	1	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	370	yes
+AsyncTraceDelegateHitchThresholdMS	0.75	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	371	yes
+r.OcclusionFeedback.Enable	1	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	373	yes
+fx.GPUSimulationTextureSizeX	512	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	375	yes
+fx.GPUSimulationTextureSizeY	512	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	376	yes
+r.Streaming.MaxTempMemoryAllowed	25	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	377	yes
+r.LumenScene.Radiosity	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	379	yes
+r.RayTracing.Shadows	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	382	yes
+r.RayTracing.AmbientOcclusion	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	383	yes
+r.RayTracing.SkyLight	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	384	yes
+r.RayTracing.GlobalIllumination	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	385	no
+r.RayTracing.Translucency	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	386	yes
+r.RayTracing.Reflections	-1	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	387	no
+r.RayTracing.Reflections.ScreenPercentage	40	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	390	no
+r.SSR.Quality	2	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	392	yes
+r.SSR.Compute	2	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	393	yes
+r.Shadow.MaxResolution	1024	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	395	yes
+r.Shadow.MaxCSMResolution	1024	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	396	yes
+r.Shadow.WholeSceneShadowCacheMb	40	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	397	yes
+r.Shadow.CachedShadowsCastFromMovablePrimitives	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	398	yes
+r.Shadow.CSM.MaxCascades	2	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	399	yes
+r.Shadow.CSMShadowDistanceFadeoutMultiplier	2.5	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	400	yes
+r.Lumen.IrradianceFieldGather.GridResolution	48	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	402	yes
+r.LumenScene.GlobalSDF.Resolution	128	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	403	yes
+r.LumenScene.GlobalSDF.CoveredExpandSurfaceScale	.5	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	405	yes
+r.LocalExposure	0	IOS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	411	yes
+r.MobileContentScaleFactor	2	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	415	yes
+r.NumBufferedOcclusionQueries	2	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	416	yes
+sg.ViewDistanceQuality	0	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	417	yes
+sg.AntiAliasingQuality	0	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	418	yes
+sg.ShadowQuality	1	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	419	yes
+sg.GlobalIlluminationQuality	0	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	420	yes
+sg.ReflectionQuality	0	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	421	yes
+sg.PostProcessQuality	1	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	422	yes
+sg.TextureQuality	0	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	423	yes
+sg.EffectsQuality	0	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	424	yes
+sg.FoliageQuality	0	IOS_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	425	yes
+r.MobileContentScaleFactor	2	IOS_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	429	yes
+sg.ViewDistanceQuality	1	IOS_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	430	yes
+sg.AntiAliasingQuality	1	IOS_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	431	yes
+sg.ShadowQuality	1	IOS_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	432	yes
+sg.GlobalIlluminationQuality	1	IOS_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	433	yes
+sg.ReflectionQuality	1	IOS_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	434	yes
+sg.PostProcessQuality	1	IOS_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	435	yes
+sg.TextureQuality	1	IOS_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	436	yes
+sg.EffectsQuality	1	IOS_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	437	yes
+sg.FoliageQuality	1	IOS_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	438	yes
+r.MobileContentScaleFactor	2	IOS_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	442	yes
+sg.ViewDistanceQuality	2	IOS_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	443	yes
+sg.AntiAliasingQuality	2	IOS_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	444	yes
+sg.ShadowQuality	2	IOS_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	445	yes
+sg.GlobalIlluminationQuality	2	IOS_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	446	yes
+sg.ReflectionQuality	2	IOS_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	447	yes
+sg.PostProcessQuality	2	IOS_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	448	yes
+sg.TextureQuality	2	IOS_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	449	yes
+sg.EffectsQuality	2	IOS_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	450	yes
+sg.FoliageQuality	2	IOS_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	451	yes
+r.MobileContentScaleFactor	2	IOS_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	455	yes
+sg.ViewDistanceQuality	3	IOS_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	456	yes
+sg.AntiAliasingQuality	3	IOS_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	457	yes
+sg.ShadowQuality	3	IOS_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	458	yes
+sg.GlobalIlluminationQuality	3	IOS_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	459	yes
+sg.ReflectionQuality	3	IOS_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	460	yes
+sg.PostProcessQuality	3	IOS_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	461	yes
+sg.TextureQuality	3	IOS_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	462	yes
+sg.EffectsQuality	3	IOS_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	463	yes
+sg.FoliageQuality	3	IOS_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	464	yes
+ios.PhysicalScreenDensity	326	iPhone6S DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	469	yes
+ios.PhysicalScreenDensity	401	iPhone6SPlus DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	474	yes
+ios.PhysicalScreenDensity	326	iPhoneSE DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	479	yes
+ios.PhysicalScreenDensity	326	iPhone7 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	484	yes
+ios.PhysicalScreenDensity	401	iPhone7Plus DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	489	yes
+ios.PhysicalScreenDensity	326	iPhone8 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	494	yes
+ios.PhysicalScreenDensity	401	iPhone8Plus DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	499	yes
+ios.PhysicalScreenDensity	401	iPhoneX DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	504	yes
+r.CustomUnsafeZones	"(L:free[0,-15][812,15]);(P:fixed[83,0][206,30])"	iPhoneX DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	505	yes
+ios.PhysicalScreenDensity	401	iPhoneXS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	510	yes
+r.CustomUnsafeZones	"(L:free[0,-15][812,15]);(P:fixed[83,0][206,30])"	iPhoneXS DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	511	yes
+ios.PhysicalScreenDensity	401	iPhoneXSMax DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	516	yes
+r.CustomUnsafeZones	"(L:free[0,-15][896,15]);(P:fixed[104,0][206,30])"	iPhoneXSMax DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	517	yes
+ios.PhysicalScreenDensity	326	iPhoneXR DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	522	yes
+r.CustomUnsafeZones	"(L:free[0,-15][896,15]);(P:fixed[104,0][206,30])"	iPhoneXR DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	523	yes
+ios.PhysicalScreenDensity	326	iPhone11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	528	yes
+r.CustomUnsafeZones	"(L:free[0,-15][812,15]);(P:fixed[83,0][206,30])"	iPhone11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	529	yes
+ios.PhysicalScreenDensity	401	iPhone11Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	534	yes
+r.CustomUnsafeZones	"(L:free[0,-15][812,15]);(P:fixed[83,0][206,30])"	iPhone11Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	535	yes
+ios.PhysicalScreenDensity	401	iPhone11ProMax DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	540	yes
+r.CustomUnsafeZones	"(L:free[0,-15][812,15]);(P:fixed[83,0][206,30])"	iPhone11ProMax DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	541	yes
+ios.PhysicalScreenDensity	326	iPhoneSE2 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	546	yes
+ios.PhysicalScreenDensity	476	iPhone12Mini DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	551	yes
+ios.PhysicalScreenDensity	460	iPhone12 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	556	yes
+ios.PhysicalScreenDensity	460	iPhone12Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	561	yes
+ios.PhysicalScreenDensity	458	iPhone12ProMax DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	566	yes
+ios.PhysicalScreenDensity	476	iPhone13Mini DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	571	yes
+ios.PhysicalScreenDensity	460	iPhone13 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	576	yes
+ios.PhysicalScreenDensity	460	iPhone13Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	581	yes
+ios.PhysicalScreenDensity	458	iPhone13ProMax DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	586	yes
+ios.PhysicalScreenDensity	326	iPhoneSE3 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	591	yes
+ios.PhysicalScreenDensity	460	iPhone14 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	596	yes
+ios.PhysicalScreenDensity	458	iPhone14Plus DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	601	yes
+ios.PhysicalScreenDensity	460	iPhone14Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	606	yes
+ios.PhysicalScreenDensity	460	iPhone14ProMax DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	611	yes
+ios.PhysicalScreenDensity	460	iPhone15 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	616	yes
+ios.PhysicalScreenDensity	458	iPhone15Plus DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	621	yes
+ios.PhysicalScreenDensity	460	iPhone15Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	626	yes
+ios.PhysicalScreenDensity	460	iPhone15ProMax DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	631	yes
+ios.PhysicalScreenDensity	460	iPhone16 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	636	yes
+ios.PhysicalScreenDensity	460	iPhone16e DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	641	yes
+ios.PhysicalScreenDensity	460	iPhone16Plus DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	646	yes
+ios.PhysicalScreenDensity	460	iPhone16Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	651	yes
+ios.PhysicalScreenDensity	460	iPhone16ProMax DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	656	yes
+ios.PhysicalScreenDensity	460	iPhone17Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	661	yes
+ios.PhysicalScreenDensity	460	iPhone17ProMax DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	666	yes
+ios.PhysicalScreenDensity	460	iPhone17 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	671	yes
+ios.PhysicalScreenDensity	460	iPhoneAir DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	677	yes
+ios.PhysicalScreenDensity	326	iPodTouch7 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	682	yes
+ios.PhysicalScreenDensity	264	iPadAir2 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	687	yes
+ios.PhysicalScreenDensity	401	iPadMini4 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	692	yes
+ios.PhysicalScreenDensity	264	iPadPro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	697	yes
+r.MobileContentScaleFactor	1.5	iPadPro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	698	yes
+g.TimeoutForBlockOnRenderFence	3000000	iPadPro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	699	yes
+r.Decal.StencilSizeThreshold	0.1	iPadPro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	700	yes
+r.MetalComputeParameterSize	1024	iPadPro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	701	no
+r.EarlyZPass	3	iPadPro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	702	yes
+ios.PhysicalScreenDensity	401	iPadMini5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	763	yes
+ios.PhysicalScreenDensity	264	iPadPro3_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	769	yes
+r.MobileContentScaleFactor	1.5	iPadPro3_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	770	yes
+g.TimeoutForBlockOnRenderFence	3000000	iPadPro3_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	771	yes
+r.Decal.StencilSizeThreshold	0.1	iPadPro3_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	772	yes
+r.MetalComputeParameterSize	1024	iPadPro3_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	773	no
+r.EarlyZPass	3	iPadPro3_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	774	yes
+ios.PhysicalScreenDensity	264	iPadPro4_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	796	yes
+r.MobileContentScaleFactor	1.5	iPadPro4_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	797	yes
+g.TimeoutForBlockOnRenderFence	3000000	iPadPro4_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	798	yes
+r.Decal.StencilSizeThreshold	0.1	iPadPro4_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	799	yes
+r.MetalComputeParameterSize	1024	iPadPro4_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	800	no
+r.EarlyZPass	3	iPadPro4_11 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	801	yes
+ios.PhysicalScreenDensity	326	iPadMini6 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	818	yes
+ios.PhysicalScreenDensity	0	AppleTV DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	857	yes
+UI.SlateSDFText.RasterizationMode	SdfApproximation	AppleTV DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	858	yes
+UI.SlateSDFText.ResolutionLevel	1	AppleTV DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	859	yes
+ios.PhysicalScreenDensity	0	AppleTV4K DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	868	yes
+r.Mobile.XRMSAAMode	2	VisionPro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	877	yes
+xr.OpenXRLateUpdateDeviceLocationsAfterReflections	1	VisionPro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	878	yes
+xr.OpenXRLateUpdateDeviceLocationsAfterReflections	1	VisionProSimulator DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	883	yes
+r.MobileContentScaleFactor	1.0	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	992	yes
+r.Vulkan.RobustBufferAccess	1	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	995	yes
+r.Android.DisableVulkanSupport	1	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	997	yes
+r.Android.DisableVulkanSM5Support	1	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	998	yes
+r.DefaultBackBufferPixelFormat	0	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1000	yes
+r.Forward.LightLinkedListCulling	0	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1002	yes
+r.SkylightCapture.LODDistanceScale	2	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1004	yes
+UI.SlateSDFText.RasterizationMode	SdfApproximation	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1006	yes
+UI.SlateSDFText.ResolutionLevel	1	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1007	yes
+r.OcclusionFeedback.Enable	1	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1009	yes
+fx.GPUSimulationTextureSizeX	512	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1011	yes
+fx.GPUSimulationTextureSizeY	512	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1012	yes
+r.Streaming.MaxTempMemoryAllowed	25	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1013	yes
+r.HZB.BuildUseCompute	0	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1015	yes
+AsyncTraceDelegateHitchThresholdMS	1.5	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1019	yes
+r.LocalExposure	0	Android DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1021	yes
+FX.AllowGPUSorting	0	Android_Preview_OpenGL DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1027	yes
+r.MobileContentScaleFactor	0.8	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1036	yes
+sg.ViewDistanceQuality	0	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1038	yes
+sg.AntiAliasingQuality	0	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1039	yes
+sg.ShadowQuality	0	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1040	yes
+sg.GlobalIlluminationQuality	0	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1041	yes
+sg.ReflectionQuality	0	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1042	yes
+sg.PostProcessQuality	0	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1043	yes
+sg.TextureQuality	0	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1044	yes
+sg.EffectsQuality	0	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1045	yes
+sg.FoliageQuality	0	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1046	yes
+sg.LandscapeQuality	0	Android_Low DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1047	yes
+r.MobileContentScaleFactor	1.0	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1052	yes
+sg.ViewDistanceQuality	1	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1053	yes
+sg.AntiAliasingQuality	1	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1054	yes
+sg.ShadowQuality	1	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1055	yes
+sg.GlobalIlluminationQuality	1	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1056	yes
+sg.ReflectionQuality	1	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1057	yes
+sg.PostProcessQuality	1	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1058	yes
+sg.TextureQuality	1	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1059	yes
+sg.EffectsQuality	1	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1060	yes
+sg.FoliageQuality	1	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1061	yes
+sg.LandscapeQuality	1	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1062	yes
+UI.SlateSDFText.ResolutionLevel	2	Android_Mid DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1063	yes
+sg.ViewDistanceQuality	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1068	yes
+sg.AntiAliasingQuality	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1069	yes
+sg.ShadowQuality	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1070	yes
+sg.GlobalIlluminationQuality	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1071	yes
+sg.ReflectionQuality	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1072	yes
+sg.PostProcessQuality	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1073	yes
+sg.TextureQuality	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1074	yes
+sg.EffectsQuality	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1075	yes
+sg.FoliageQuality	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1076	yes
+sg.LandscapeQuality	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1077	yes
+r.MobileContentScaleFactor	1.0	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1078	yes
+UI.SlateSDFText.RasterizationMode	Msdf	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1079	yes
+UI.SlateSDFText.ResolutionLevel	2	Android_High DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1080	yes
+sg.ViewDistanceQuality	3	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1085	yes
+sg.AntiAliasingQuality	3	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1086	yes
+sg.ShadowQuality	3	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1087	yes
+sg.GlobalIlluminationQuality	3	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1088	yes
+sg.ReflectionQuality	3	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1089	yes
+sg.PostProcessQuality	3	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1090	yes
+sg.TextureQuality	3	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1091	yes
+sg.EffectsQuality	3	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1092	yes
+sg.FoliageQuality	3	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1093	yes
+sg.LandscapeQuality	3	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1094	yes
+r.MobileContentScaleFactor	1.0	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1095	yes
+UI.SlateSDFText.RasterizationMode	Msdf	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1096	yes
+UI.SlateSDFText.ResolutionLevel	2	Android_Epic DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1097	yes
+r.Android.DisableVulkanSupport	0	Android_Emulator DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1102	yes
+r.Vulkan.SupportsBCTextureFormats	1	Android_PC_Emulator DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1107	yes
+android.Vulkan.HasUnifiedMemory	0	Android_PC_Emulator DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1108	yes
+sg.ViewDistanceQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1118	yes
+sg.AntiAliasingQuality	1	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1119	yes
+sg.ShadowQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1120	yes
+sg.GlobalIlluminationQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1121	yes
+sg.ReflectionQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1122	yes
+sg.PostProcessQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1123	yes
+sg.TextureQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1124	yes
+sg.EffectsQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1125	yes
+sg.FoliageQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1126	yes
+sg.ShadingQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1127	yes
+sg.LandscapeQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1128	yes
+r.BloomQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1129	yes
+r.LightShaftQuality	1	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1130	yes
+r.Vulkan.SupportsBCTextureFormats	1	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1131	yes
+r.Shadow.MaxResolution	2048	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1133	yes
+r.Shadow.MaxCSMResolution	2048	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1134	yes
+r.Shadow.WholeSceneShadowCacheMb	40	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1135	yes
+r.Shadow.CachedShadowsCastFromMovablePrimitives	0	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1136	yes
+r.Shadow.MaxNumPointShadowCacheUpdatesPerFrame	1	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1137	yes
+r.Shadow.MaxNumSpotShadowCacheUpdatesPerFrame	1	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1138	yes
+r.Shadow.DistanceScale	1.0	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1139	yes
+r.Shadow.CSM.MaxCascades	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1140	yes
+r.ShadowQuality	2	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1141	yes
+r.Shadow.CSMShadowDistanceFadeoutMultiplier	2.5	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1142	yes
+r.SSS.Quality	0	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1143	yes
+r.SSS.Scale	0	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1144	yes
+r.SSR.Quality	0	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1145	yes
+r.Android.DisableVulkanSM5Support	0	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1146	yes
+r.Android.DisableVulkanSupport	0	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1147	yes
+r.Vulkan.RayTracing.AllowCompaction	0	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1148	yes
+r.Vulkan.RayTracing.TLASPreferFastTraceTLAS	0	Android_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1149	no
+r.Lumen.HardwareRayTracing	False	Android_Preview_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1154	yes
+r.RHICmd.MaxAccelerationStructureBuildScratchSize	0	Android_Mali_Vulkan_SM5 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1163	yes
+r.Android.GLESFlipYMethod	2	Android_Adreno4xx DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1175	yes
+r.Android.GLESFlipYMethod	2	Android_Adreno6xx DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1189	yes
+r.Android.DisableVulkanSupport	0	Android_Adreno6xx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1195	yes
+r.Android.DisableVulkanSupport	0	Android_Adreno7xx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1205	yes
+r.Android.DisableVulkanSupport	0	Android_Adreno8xx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1215	yes
+r.Android.DisableVulkanSupport	0	Android_Xclipse_5xx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1228	yes
+r.Android.DisableVulkanSupport	0	Android_Xclipse_9xx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1238	yes
+r.Vulkan.Depth24Bit	0	Android_Xclipse_9xx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1240	yes
+r.Android.DisableVulkanSupport	0	Android_Xclipse_xxx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1250	yes
+r.Vulkan.Depth24Bit	0	Android_Xclipse_xxx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1252	yes
+r.SkyAtmosphere.LUT32	1	Android_PowerVR_G6xxx DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1260	yes
+r.SkyAtmosphere.LUT32	1	Android_PowerVR_GT7xxx DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1265	yes
+r.SkyAtmosphere.LUT32	1	Android_PowerVR_GE8xxx DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1270	yes
+r.SkyAtmosphere.LUT32	1	Android_PowerVR_GM9xxx DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1275	yes
+r.Android.DisableVulkanSupport	0	Android_PowerVR_GM9xxx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1281	yes
+r.Android.DisableVulkanSupport	0	Android_PowerVR_Series_High_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1298	yes
+r.Android.DisableVulkanSupport	0	Android_PowerVR_Series_Mid_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1303	yes
+r.Android.DisableVulkanSupport	0	Android_PowerVR_Series_Low_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1308	yes
+r.Android.MaliMidgardIndexingBug	1	Android_Mali_T6xx DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1316	yes
+r.Android.MaliMidgardIndexingBug	1	Android_Mali_T7xx DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1321	yes
+r.Android.MaliMidgardIndexingBug	1	Android_Mali_T8xx DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1326	yes
+r.Android.DisableEarlyFragmentTests	1	Android_Mali_T8xx DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1328	yes
+r.Android.DisableVulkanSupport	0	Android_Mali_G72_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1342	yes
+r.Android.DisableVulkanSupport	0	Android_Mali_G76_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1352	yes
+r.Android.DisableVulkanSupport	0	Android_Mali_G77_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1362	yes
+r.Android.DisableVulkanSupport	0	Android_Mali_G78_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1372	yes
+r.Android.DisableVulkanSupport	0	Android_Mali_G710_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1382	yes
+r.Android.DisableVulkanSupport	0	Android_Mali_G7xx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1392	yes
+r.Android.DisableVulkanSupport	0	Android_Mali_G9xx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1402	yes
+r.Android.DisableVulkanSupport	0	Android_Mali_Gx_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1411	yes
+r.Android.DisableVulkanSupport	0	Android_Mali_Gx_Ultra_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1420	yes
+r.Android.DisableVulkanSupport	0	Android_Unknown_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1430	yes
+r.Android.DisableVulkanSupport	0	Android_OpenXR DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1435	yes
+vr.MobileMultiView	1	Android_OpenXR DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1436	yes
+r.ForceStartInVR	1	Android_OpenXR DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1437	yes
+xr.VRS.DynamicFoveation	1	Android_OpenXR DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1438	yes
+r.Vulkan.VRSFormat	3	Android_OpenXR DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1439	yes
+r.Vulkan.AllowFDMOffset	1	Android_OpenXR DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1440	yes
+sg.ShadowQuality	2	Android_OpenXR DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1441	yes
+r.Mobile.Oculus.ForceSymmetric	1	Meta_Quest_3 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1447	no
+r.OcclusionFeedback.Enable	0	Meta_Quest_3 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1448	yes
+r.Mobile.AdrenoOcclusionMode	1	Meta_Quest_3 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1449	yes
+r.Vulkan.UseChunkedPSOCache	0	Meta_Quest_3 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1450	yes
+r.Mobile.Oculus.ForceSymmetric	1	Meta_Quest_3S DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1455	no
+r.OcclusionFeedback.Enable	0	Meta_Quest_3S DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1456	yes
+r.Mobile.AdrenoOcclusionMode	1	Meta_Quest_3S DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1457	yes
+r.Vulkan.UseChunkedPSOCache	0	Meta_Quest_3S DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1458	yes
+r.Mobile.Oculus.ForceSymmetric	1	Meta_Quest_Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1463	no
+r.OcclusionFeedback.Enable	0	Meta_Quest_Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1464	yes
+r.Mobile.AdrenoOcclusionMode	1	Meta_Quest_Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1465	yes
+r.Vulkan.UseChunkedPSOCache	0	Meta_Quest_Pro DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1466	yes
+r.Mobile.Oculus.ForceSymmetric	1	Oculus_Quest2 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1471	no
+r.OcclusionFeedback.Enable	0	Oculus_Quest2 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1472	yes
+r.Mobile.AdrenoOcclusionMode	1	Oculus_Quest2 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1473	yes
+sg.ShadowQuality	1	Oculus_Quest2 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1474	yes
+r.Vulkan.UseChunkedPSOCache	0	Oculus_Quest2 DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1475	yes
+fx.NiagaraAllowGPUParticles	0	Oculus_Quest DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1481	yes
+FX.AllowGPUSorting	0	Oculus_Quest DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1482	yes
+sg.ShadowQuality	1	Oculus_Quest DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1483	yes
+r.Vulkan.UseChunkedPSOCache	0	Oculus_Quest DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1484	yes
+r.Shaders.ZeroInitialise	1	Mac DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1490	yes
+r.Shaders.BoundsChecking	1	Mac DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1491	yes
+UI.SlateSDFText.RasterizationMode	Msdf	Mac DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1492	yes
+UI.SlateSDFText.ResolutionLevel	2	Mac DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1493	yes
+UI.SlateSDFText.RasterizationMode	Msdf	Linux DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1513	yes
+UI.SlateSDFText.ResolutionLevel	2	Linux DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1514	yes
+AsyncTraceDelegateHitchThresholdMS	7.0	LinuxServer DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1541	yes
+AsyncTraceDelegateHitchThresholdMS	7.0	LinuxArm64Server DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1548	yes
+s.AllowUnversionedContentInEditor	1	LinuxCookedEditor DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1553	yes
+cook.AllowCookedDataInEditorBuilds	1	LinuxCookedEditor DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1554	yes
+VA.AllowPkgVirtualization	0	LinuxCookedEditor DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1555	yes
+r.Android.DisableVulkanSupport	0	MagicLeap_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1560	yes
+r.Vulkan.SupportsBCTextureFormats	1	MagicLeap_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1561	yes
+r.Vulkan.MaxBarriersPerBatch	128	MagicLeap_Vulkan DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1562	yes
+r.AllowOcclusionQueries	False	cv DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1569	yes
+r.DefaultBackBufferPixelFormat	0	cv DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1570	yes
+fx.Niagara.QualityLevel.Min	0	cv DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1571	yes
+fx.Niagara.QualityLevel.Max	3	cv DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1572	yes
+r.Mobile.UseHWsRGBEncoding	1	cv DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1573	yes
+r.RDG.transientallocator	0	cv DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1574	yes
+vr.MobileMultiView	1	cv DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1575	yes
+r.DistanceFields	0	cv DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1576	yes
+r.Vulkan.VRSFormat	3	cv DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1577	yes
+r.Vulkan.AllowFDMOffset	1	cv DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1578	yes
+r.Mobile.Oculus.ForceSymmetric	1	Valve_Frame_Lepton DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1584	no
+r.Mobile.AdrenoOcclusionMode	1	Valve_Frame_Lepton DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1586	yes
+r.DistanceFields	0	Valve_Frame_Lepton DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1587	yes
+r.shadow.CSM.MaxCascades	0	Valve_Frame_Lepton DeviceProfile	DeviceProfile +CVars	+	Config/BaseDeviceProfiles.ini	1588	yes
+SplineComponent.OnlyUpdateActiveSpline	0	ConsoleVariables	ConsoleVariables		Config/BaseEditor.ini	790	yes
+con.DebugEarlyDefault	True	SystemSettings	SystemSettings		Config/BaseEngine.ini	2469	yes
+con.DebugEarlyCheat	True	SystemSettings	SystemSettings		Config/BaseEngine.ini	2470	yes
+con.DebugLateDefault	True	SystemSettings	SystemSettings		Config/BaseEngine.ini	2471	yes
+con.DebugLateCheat	True	SystemSettings	SystemSettings		Config/BaseEngine.ini	2472	yes
+LogNamedEventFilters	ClearArray	SystemSettings	SystemSettings	!	Config/BaseEngine.ini	2474	no
+LogNamedEventFilters	"Frame *"	SystemSettings	SystemSettings	+	Config/BaseEngine.ini	2475	no
+r.VSync	0	SystemSettingsEditor	SystemSettingsEditor		Config/BaseEngine.ini	2481	yes
+r.FXAA.Quality	0	AntiAliasingQuality@0	scalability		Config/BaseScalability.ini	53	yes
+r.TemporalAA.Quality	0	AntiAliasingQuality@0	scalability		Config/BaseScalability.ini	54	yes
+r.TSR.History.R11G11B10	1	AntiAliasingQuality@0	scalability		Config/BaseScalability.ini	55	yes
+r.TSR.History.ScreenPercentage	100	AntiAliasingQuality@0	scalability		Config/BaseScalability.ini	56	yes
+r.TSR.History.UpdateQuality	0	AntiAliasingQuality@0	scalability		Config/BaseScalability.ini	57	yes
+r.TSR.ShadingRejection.Flickering	0	AntiAliasingQuality@0	scalability		Config/BaseScalability.ini	58	yes
+r.TSR.RejectionAntiAliasingQuality	0	AntiAliasingQuality@0	scalability		Config/BaseScalability.ini	59	yes
+r.TSR.ReprojectionField	0	AntiAliasingQuality@0	scalability		Config/BaseScalability.ini	60	yes
+r.TSR.Resurrection	0	AntiAliasingQuality@0	scalability		Config/BaseScalability.ini	61	yes
+r.FXAA.Quality	1	AntiAliasingQuality@1	scalability		Config/BaseScalability.ini	64	yes
+r.TemporalAA.Quality	1	AntiAliasingQuality@1	scalability		Config/BaseScalability.ini	65	yes
+r.TSR.History.R11G11B10	1	AntiAliasingQuality@1	scalability		Config/BaseScalability.ini	66	yes
+r.TSR.History.ScreenPercentage	100	AntiAliasingQuality@1	scalability		Config/BaseScalability.ini	67	yes
+r.TSR.History.UpdateQuality	1	AntiAliasingQuality@1	scalability		Config/BaseScalability.ini	68	yes
+r.TSR.ShadingRejection.Flickering	0	AntiAliasingQuality@1	scalability		Config/BaseScalability.ini	69	yes
+r.TSR.RejectionAntiAliasingQuality	1	AntiAliasingQuality@1	scalability		Config/BaseScalability.ini	70	yes
+r.TSR.ReprojectionField	0	AntiAliasingQuality@1	scalability		Config/BaseScalability.ini	71	yes
+r.TSR.Resurrection	1	AntiAliasingQuality@1	scalability		Config/BaseScalability.ini	72	yes
+r.FXAA.Quality	3	AntiAliasingQuality@2	scalability		Config/BaseScalability.ini	75	yes
+r.TemporalAA.Quality	1	AntiAliasingQuality@2	scalability		Config/BaseScalability.ini	76	yes
+r.TSR.History.R11G11B10	1	AntiAliasingQuality@2	scalability		Config/BaseScalability.ini	77	yes
+r.TSR.History.ScreenPercentage	100	AntiAliasingQuality@2	scalability		Config/BaseScalability.ini	78	yes
+r.TSR.History.UpdateQuality	2	AntiAliasingQuality@2	scalability		Config/BaseScalability.ini	79	yes
+r.TSR.ShadingRejection.Flickering	1	AntiAliasingQuality@2	scalability		Config/BaseScalability.ini	80	yes
+r.TSR.RejectionAntiAliasingQuality	1	AntiAliasingQuality@2	scalability		Config/BaseScalability.ini	81	yes
+r.TSR.ReprojectionField	1	AntiAliasingQuality@2	scalability		Config/BaseScalability.ini	82	yes
+r.TSR.Resurrection	1	AntiAliasingQuality@2	scalability		Config/BaseScalability.ini	83	yes
+r.FXAA.Quality	4	AntiAliasingQuality@3	scalability		Config/BaseScalability.ini	86	yes
+r.TemporalAA.Quality	2	AntiAliasingQuality@3	scalability		Config/BaseScalability.ini	87	yes
+r.TSR.History.R11G11B10	1	AntiAliasingQuality@3	scalability		Config/BaseScalability.ini	88	yes
+r.TSR.History.ScreenPercentage	200	AntiAliasingQuality@3	scalability		Config/BaseScalability.ini	89	yes
+r.TSR.History.UpdateQuality	3	AntiAliasingQuality@3	scalability		Config/BaseScalability.ini	90	yes
+r.TSR.ShadingRejection.Flickering	1	AntiAliasingQuality@3	scalability		Config/BaseScalability.ini	91	yes
+r.TSR.RejectionAntiAliasingQuality	2	AntiAliasingQuality@3	scalability		Config/BaseScalability.ini	92	yes
+r.TSR.ReprojectionField	1	AntiAliasingQuality@3	scalability		Config/BaseScalability.ini	93	yes
+r.TSR.Resurrection	1	AntiAliasingQuality@3	scalability		Config/BaseScalability.ini	94	yes
+r.FXAA.Quality	5	AntiAliasingQuality@Cine	scalability		Config/BaseScalability.ini	97	yes
+r.TemporalAA.Quality	2	AntiAliasingQuality@Cine	scalability		Config/BaseScalability.ini	98	yes
+r.TSR.History.R11G11B10	0	AntiAliasingQuality@Cine	scalability		Config/BaseScalability.ini	99	yes
+r.TSR.History.ScreenPercentage	200	AntiAliasingQuality@Cine	scalability		Config/BaseScalability.ini	100	yes
+r.TSR.History.UpdateQuality	3	AntiAliasingQuality@Cine	scalability		Config/BaseScalability.ini	101	yes
+r.TSR.ShadingRejection.Flickering	1	AntiAliasingQuality@Cine	scalability		Config/BaseScalability.ini	102	yes
+r.TSR.RejectionAntiAliasingQuality	2	AntiAliasingQuality@Cine	scalability		Config/BaseScalability.ini	103	yes
+r.TSR.ReprojectionField	1	AntiAliasingQuality@Cine	scalability		Config/BaseScalability.ini	104	yes
+r.TSR.Resurrection	1	AntiAliasingQuality@Cine	scalability		Config/BaseScalability.ini	105	yes
+r.SkeletalMeshLODBias	2	ViewDistanceQuality@0	scalability		Config/BaseScalability.ini	111	yes
+r.ViewDistanceScale	0.4	ViewDistanceQuality@0	scalability		Config/BaseScalability.ini	112	yes
+r.SkeletalMeshLODBias	1	ViewDistanceQuality@1	scalability		Config/BaseScalability.ini	115	yes
+r.ViewDistanceScale	0.6	ViewDistanceQuality@1	scalability		Config/BaseScalability.ini	116	yes
+r.SkeletalMeshLODBias	0	ViewDistanceQuality@2	scalability		Config/BaseScalability.ini	119	yes
+r.ViewDistanceScale	0.8	ViewDistanceQuality@2	scalability		Config/BaseScalability.ini	120	yes
+r.SkeletalMeshLODBias	0	ViewDistanceQuality@3	scalability		Config/BaseScalability.ini	123	yes
+r.ViewDistanceScale	1.0	ViewDistanceQuality@3	scalability		Config/BaseScalability.ini	124	yes
+r.SkeletalMeshLODBias	0	ViewDistanceQuality@Cine	scalability		Config/BaseScalability.ini	127	yes
+r.ViewDistanceScale	10.0	ViewDistanceQuality@Cine	scalability		Config/BaseScalability.ini	128	yes
+r.LightFunctionQuality	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	133	yes
+r.ShadowQuality	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	134	yes
+r.Shadow.CSM.MaxCascades	1	ShadowQuality@0	scalability		Config/BaseScalability.ini	135	yes
+r.Shadow.MaxResolution	512	ShadowQuality@0	scalability		Config/BaseScalability.ini	136	yes
+r.Shadow.MaxCSMResolution	512	ShadowQuality@0	scalability		Config/BaseScalability.ini	137	yes
+r.Shadow.RadiusThreshold	0.06	ShadowQuality@0	scalability		Config/BaseScalability.ini	138	yes
+r.Shadow.DistanceScale	0.6	ShadowQuality@0	scalability		Config/BaseScalability.ini	139	yes
+r.Shadow.CSM.TransitionScale	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	140	yes
+r.Shadow.PreShadowResolutionFactor	0.5	ShadowQuality@0	scalability		Config/BaseScalability.ini	141	yes
+r.DistanceFieldShadowing	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	142	yes
+r.VolumetricFog	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	143	yes
+r.LightMaxDrawDistanceScale	0.5	ShadowQuality@0	scalability		Config/BaseScalability.ini	144	yes
+r.CapsuleShadows	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	145	yes
+r.Shadow.Virtual.MaxPhysicalPages	512	ShadowQuality@0	scalability		Config/BaseScalability.ini	146	yes
+r.Shadow.Virtual.ResolutionLodBiasDirectional	0.0	ShadowQuality@0	scalability		Config/BaseScalability.ini	147	yes
+r.Shadow.Virtual.ResolutionLodBiasDirectionalMoving	0.0	ShadowQuality@0	scalability		Config/BaseScalability.ini	148	yes
+r.Shadow.Virtual.ResolutionLodBiasLocal	1.0	ShadowQuality@0	scalability		Config/BaseScalability.ini	149	yes
+r.Shadow.Virtual.ResolutionLodBiasLocalMoving	2.0	ShadowQuality@0	scalability		Config/BaseScalability.ini	150	yes
+r.Shadow.Virtual.SMRT.RayCountDirectional	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	151	yes
+r.Shadow.Virtual.SMRT.SamplesPerRayDirectional	2	ShadowQuality@0	scalability		Config/BaseScalability.ini	152	yes
+r.Shadow.Virtual.SMRT.RayCountLocal	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	153	yes
+r.Shadow.Virtual.SMRT.SamplesPerRayLocal	2	ShadowQuality@0	scalability		Config/BaseScalability.ini	154	yes
+r.Shadow.Virtual.MarkCoarsePagesLocal	2	ShadowQuality@0	scalability		Config/BaseScalability.ini	155	yes
+r.MegaLights.NumSamplesPerPixel	2	ShadowQuality@0	scalability		Config/BaseScalability.ini	156	yes
+r.MegaLights.DownsampleMode	2	ShadowQuality@0	scalability		Config/BaseScalability.ini	157	yes
+r.MegaLights.ScreenTraces.Quality	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	158	yes
+r.MegaLights.FrontLayerTranslucency.Allow	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	159	yes
+r.MegaLights.FrontLayerTranslucency.SpecularOnly	1	ShadowQuality@0	scalability		Config/BaseScalability.ini	160	yes
+r.MegaLights.FrontLayerTranslucency.SoftShadows	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	161	yes
+r.MegaLights.FrontLayerTranslucency.TexturedRectLights	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	162	yes
+r.MegaLights.Spatial.UseHistorySpatialVariance	0	ShadowQuality@0	scalability		Config/BaseScalability.ini	163	yes
+r.MegaLights.Volume.GridPixelSize	16	ShadowQuality@0	scalability		Config/BaseScalability.ini	164	yes
+r.MegaLights.Volume.GridSizeZ	64	ShadowQuality@0	scalability		Config/BaseScalability.ini	165	yes
+r.LightFunctionQuality	1	ShadowQuality@1	scalability		Config/BaseScalability.ini	168	yes
+r.ShadowQuality	3	ShadowQuality@1	scalability		Config/BaseScalability.ini	169	yes
+r.Shadow.CSM.MaxCascades	1	ShadowQuality@1	scalability		Config/BaseScalability.ini	170	yes
+r.Shadow.MaxResolution	1024	ShadowQuality@1	scalability		Config/BaseScalability.ini	171	yes
+r.Shadow.MaxCSMResolution	1024	ShadowQuality@1	scalability		Config/BaseScalability.ini	172	yes
+r.Shadow.RadiusThreshold	0.05	ShadowQuality@1	scalability		Config/BaseScalability.ini	173	yes
+r.Shadow.DistanceScale	0.7	ShadowQuality@1	scalability		Config/BaseScalability.ini	174	yes
+r.Shadow.CSM.TransitionScale	0.25	ShadowQuality@1	scalability		Config/BaseScalability.ini	175	yes
+r.Shadow.PreShadowResolutionFactor	0.5	ShadowQuality@1	scalability		Config/BaseScalability.ini	176	yes
+r.DistanceFieldShadowing	0	ShadowQuality@1	scalability		Config/BaseScalability.ini	177	yes
+r.VolumetricFog	0	ShadowQuality@1	scalability		Config/BaseScalability.ini	178	yes
+r.LightMaxDrawDistanceScale	0.5	ShadowQuality@1	scalability		Config/BaseScalability.ini	179	yes
+r.CapsuleShadows	1	ShadowQuality@1	scalability		Config/BaseScalability.ini	180	yes
+r.Shadow.Virtual.MaxPhysicalPages	512	ShadowQuality@1	scalability		Config/BaseScalability.ini	181	yes
+r.Shadow.Virtual.ResolutionLodBiasDirectional	0.0	ShadowQuality@1	scalability		Config/BaseScalability.ini	182	yes
+r.Shadow.Virtual.ResolutionLodBiasDirectionalMoving	0.0	ShadowQuality@1	scalability		Config/BaseScalability.ini	183	yes
+r.Shadow.Virtual.ResolutionLodBiasLocal	1.0	ShadowQuality@1	scalability		Config/BaseScalability.ini	184	yes
+r.Shadow.Virtual.ResolutionLodBiasLocalMoving	2.0	ShadowQuality@1	scalability		Config/BaseScalability.ini	185	yes
+r.Shadow.Virtual.SMRT.RayCountDirectional	4	ShadowQuality@1	scalability		Config/BaseScalability.ini	186	yes
+r.Shadow.Virtual.SMRT.SamplesPerRayDirectional	2	ShadowQuality@1	scalability		Config/BaseScalability.ini	187	yes
+r.Shadow.Virtual.SMRT.RayCountLocal	4	ShadowQuality@1	scalability		Config/BaseScalability.ini	188	yes
+r.Shadow.Virtual.SMRT.SamplesPerRayLocal	2	ShadowQuality@1	scalability		Config/BaseScalability.ini	189	yes
+r.Shadow.Virtual.MarkCoarsePagesLocal	2	ShadowQuality@1	scalability		Config/BaseScalability.ini	190	yes
+r.MegaLights.NumSamplesPerPixel	2	ShadowQuality@1	scalability		Config/BaseScalability.ini	191	yes
+r.MegaLights.DownsampleMode	2	ShadowQuality@1	scalability		Config/BaseScalability.ini	192	yes
+r.MegaLights.ScreenTraces.Quality	0	ShadowQuality@1	scalability		Config/BaseScalability.ini	193	yes
+r.MegaLights.FrontLayerTranslucency.Allow	0	ShadowQuality@1	scalability		Config/BaseScalability.ini	194	yes
+r.MegaLights.FrontLayerTranslucency.SpecularOnly	1	ShadowQuality@1	scalability		Config/BaseScalability.ini	195	yes
+r.MegaLights.FrontLayerTranslucency.SoftShadows	0	ShadowQuality@1	scalability		Config/BaseScalability.ini	196	yes
+r.MegaLights.FrontLayerTranslucency.TexturedRectLights	0	ShadowQuality@1	scalability		Config/BaseScalability.ini	197	yes
+r.MegaLights.Spatial.UseHistorySpatialVariance	0	ShadowQuality@1	scalability		Config/BaseScalability.ini	198	yes
+r.MegaLights.Volume.GridPixelSize	16	ShadowQuality@1	scalability		Config/BaseScalability.ini	199	yes
+r.MegaLights.Volume.GridSizeZ	64	ShadowQuality@1	scalability		Config/BaseScalability.ini	200	yes
+r.LightFunctionQuality	1	ShadowQuality@2	scalability		Config/BaseScalability.ini	203	yes
+r.ShadowQuality	5	ShadowQuality@2	scalability		Config/BaseScalability.ini	204	yes
+r.Shadow.CSM.MaxCascades	4	ShadowQuality@2	scalability		Config/BaseScalability.ini	205	yes
+r.Shadow.MaxResolution	1024	ShadowQuality@2	scalability		Config/BaseScalability.ini	206	yes
+r.Shadow.MaxCSMResolution	2048	ShadowQuality@2	scalability		Config/BaseScalability.ini	207	yes
+r.Shadow.RadiusThreshold	0.04	ShadowQuality@2	scalability		Config/BaseScalability.ini	208	yes
+r.Shadow.DistanceScale	0.85	ShadowQuality@2	scalability		Config/BaseScalability.ini	209	yes
+r.Shadow.CSM.TransitionScale	0.8	ShadowQuality@2	scalability		Config/BaseScalability.ini	210	yes
+r.Shadow.PreShadowResolutionFactor	0.5	ShadowQuality@2	scalability		Config/BaseScalability.ini	211	yes
+r.DistanceFieldShadowing	1	ShadowQuality@2	scalability		Config/BaseScalability.ini	212	yes
+r.VolumetricFog	1	ShadowQuality@2	scalability		Config/BaseScalability.ini	213	yes
+r.VolumetricFog.GridPixelSize	16	ShadowQuality@2	scalability		Config/BaseScalability.ini	214	yes
+r.VolumetricFog.GridSizeZ	64	ShadowQuality@2	scalability		Config/BaseScalability.ini	215	yes
+r.VolumetricFog.HistoryMissSupersampleCount	4	ShadowQuality@2	scalability		Config/BaseScalability.ini	216	yes
+r.LightMaxDrawDistanceScale	1	ShadowQuality@2	scalability		Config/BaseScalability.ini	217	yes
+r.CapsuleShadows	1	ShadowQuality@2	scalability		Config/BaseScalability.ini	218	yes
+r.Shadow.Virtual.MaxPhysicalPages	2048	ShadowQuality@2	scalability		Config/BaseScalability.ini	219	yes
+r.Shadow.Virtual.ResolutionLodBiasDirectional	0.0	ShadowQuality@2	scalability		Config/BaseScalability.ini	220	yes
+r.Shadow.Virtual.ResolutionLodBiasDirectionalMoving	0.0	ShadowQuality@2	scalability		Config/BaseScalability.ini	221	yes
+r.Shadow.Virtual.ResolutionLodBiasLocal	0.0	ShadowQuality@2	scalability		Config/BaseScalability.ini	222	yes
+r.Shadow.Virtual.ResolutionLodBiasLocalMoving	1.0	ShadowQuality@2	scalability		Config/BaseScalability.ini	223	yes
+r.Shadow.Virtual.SMRT.RayCountDirectional	8	ShadowQuality@2	scalability		Config/BaseScalability.ini	224	yes
+r.Shadow.Virtual.SMRT.SamplesPerRayDirectional	4	ShadowQuality@2	scalability		Config/BaseScalability.ini	225	yes
+r.Shadow.Virtual.SMRT.RayCountLocal	4	ShadowQuality@2	scalability		Config/BaseScalability.ini	226	yes
+r.Shadow.Virtual.SMRT.SamplesPerRayLocal	4	ShadowQuality@2	scalability		Config/BaseScalability.ini	227	yes
+r.Shadow.Virtual.MarkCoarsePagesLocal	2	ShadowQuality@2	scalability		Config/BaseScalability.ini	228	yes
+r.MegaLights.NumSamplesPerPixel	4	ShadowQuality@2	scalability		Config/BaseScalability.ini	229	yes
+r.MegaLights.DownsampleMode	2	ShadowQuality@2	scalability		Config/BaseScalability.ini	230	yes
+r.MegaLights.ScreenTraces.Quality	1	ShadowQuality@2	scalability		Config/BaseScalability.ini	231	yes
+r.MegaLights.FrontLayerTranslucency.Allow	1	ShadowQuality@2	scalability		Config/BaseScalability.ini	232	yes
+r.MegaLights.FrontLayerTranslucency.SpecularOnly	1	ShadowQuality@2	scalability		Config/BaseScalability.ini	233	yes
+r.MegaLights.FrontLayerTranslucency.SoftShadows	0	ShadowQuality@2	scalability		Config/BaseScalability.ini	234	yes
+r.MegaLights.FrontLayerTranslucency.TexturedRectLights	0	ShadowQuality@2	scalability		Config/BaseScalability.ini	235	yes
+r.MegaLights.Spatial.UseHistorySpatialVariance	1	ShadowQuality@2	scalability		Config/BaseScalability.ini	236	yes
+r.MegaLights.Volume.GridPixelSize	16	ShadowQuality@2	scalability		Config/BaseScalability.ini	237	yes
+r.MegaLights.Volume.GridSizeZ	64	ShadowQuality@2	scalability		Config/BaseScalability.ini	238	yes
+r.LightFunctionQuality	1	ShadowQuality@3	scalability		Config/BaseScalability.ini	241	yes
+r.ShadowQuality	5	ShadowQuality@3	scalability		Config/BaseScalability.ini	242	yes
+r.Shadow.CSM.MaxCascades	10	ShadowQuality@3	scalability		Config/BaseScalability.ini	243	yes
+r.Shadow.MaxResolution	2048	ShadowQuality@3	scalability		Config/BaseScalability.ini	244	yes
+r.Shadow.MaxCSMResolution	2048	ShadowQuality@3	scalability		Config/BaseScalability.ini	245	yes
+r.Shadow.RadiusThreshold	0.01	ShadowQuality@3	scalability		Config/BaseScalability.ini	246	yes
+r.Shadow.DistanceScale	1.0	ShadowQuality@3	scalability		Config/BaseScalability.ini	247	yes
+r.Shadow.CSM.TransitionScale	1.0	ShadowQuality@3	scalability		Config/BaseScalability.ini	248	yes
+r.Shadow.PreShadowResolutionFactor	1.0	ShadowQuality@3	scalability		Config/BaseScalability.ini	249	yes
+r.DistanceFieldShadowing	1	ShadowQuality@3	scalability		Config/BaseScalability.ini	250	yes
+r.VolumetricFog	1	ShadowQuality@3	scalability		Config/BaseScalability.ini	251	yes
+r.VolumetricFog.GridPixelSize	8	ShadowQuality@3	scalability		Config/BaseScalability.ini	252	yes
+r.VolumetricFog.GridSizeZ	128	ShadowQuality@3	scalability		Config/BaseScalability.ini	253	yes
+r.VolumetricFog.HistoryMissSupersampleCount	4	ShadowQuality@3	scalability		Config/BaseScalability.ini	254	yes
+r.LightMaxDrawDistanceScale	1	ShadowQuality@3	scalability		Config/BaseScalability.ini	255	yes
+r.CapsuleShadows	1	ShadowQuality@3	scalability		Config/BaseScalability.ini	256	yes
+r.Shadow.Virtual.MaxPhysicalPages	4096	ShadowQuality@3	scalability		Config/BaseScalability.ini	257	yes
+r.Shadow.Virtual.ResolutionLodBiasDirectional	-1.5	ShadowQuality@3	scalability		Config/BaseScalability.ini	258	yes
+r.Shadow.Virtual.ResolutionLodBiasDirectionalMoving	-1.5	ShadowQuality@3	scalability		Config/BaseScalability.ini	259	yes
+r.Shadow.Virtual.ResolutionLodBiasLocal	0.0	ShadowQuality@3	scalability		Config/BaseScalability.ini	260	yes
+r.Shadow.Virtual.ResolutionLodBiasLocalMoving	1.0	ShadowQuality@3	scalability		Config/BaseScalability.ini	261	yes
+r.Shadow.Virtual.SMRT.RayCountDirectional	8	ShadowQuality@3	scalability		Config/BaseScalability.ini	262	yes
+r.Shadow.Virtual.SMRT.SamplesPerRayDirectional	4	ShadowQuality@3	scalability		Config/BaseScalability.ini	263	yes
+r.Shadow.Virtual.SMRT.RayCountLocal	8	ShadowQuality@3	scalability		Config/BaseScalability.ini	264	yes
+r.Shadow.Virtual.SMRT.SamplesPerRayLocal	4	ShadowQuality@3	scalability		Config/BaseScalability.ini	265	yes
+r.Shadow.Virtual.MarkCoarsePagesLocal	1	ShadowQuality@3	scalability		Config/BaseScalability.ini	266	yes
+r.MegaLights.NumSamplesPerPixel	4	ShadowQuality@3	scalability		Config/BaseScalability.ini	267	yes
+r.MegaLights.DownsampleMode	2	ShadowQuality@3	scalability		Config/BaseScalability.ini	268	yes
+r.MegaLights.ScreenTraces.Quality	1	ShadowQuality@3	scalability		Config/BaseScalability.ini	269	yes
+r.MegaLights.FrontLayerTranslucency.Allow	1	ShadowQuality@3	scalability		Config/BaseScalability.ini	270	yes
+r.MegaLights.FrontLayerTranslucency.SpecularOnly	1	ShadowQuality@3	scalability		Config/BaseScalability.ini	271	yes
+r.MegaLights.FrontLayerTranslucency.SoftShadows	0	ShadowQuality@3	scalability		Config/BaseScalability.ini	272	yes
+r.MegaLights.FrontLayerTranslucency.TexturedRectLights	0	ShadowQuality@3	scalability		Config/BaseScalability.ini	273	yes
+r.MegaLights.Spatial.UseHistorySpatialVariance	1	ShadowQuality@3	scalability		Config/BaseScalability.ini	274	yes
+r.MegaLights.Volume.GridPixelSize	8	ShadowQuality@3	scalability		Config/BaseScalability.ini	275	yes
+r.MegaLights.Volume.GridSizeZ	128	ShadowQuality@3	scalability		Config/BaseScalability.ini	276	yes
+r.LightFunctionQuality	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	279	yes
+r.ShadowQuality	5	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	280	yes
+r.Shadow.CSM.MaxCascades	10	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	281	yes
+r.Shadow.MaxResolution	4096	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	282	yes
+r.Shadow.MaxCSMResolution	4096	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	283	yes
+r.Shadow.RadiusThreshold	0	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	284	yes
+r.Shadow.DistanceScale	1.0	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	285	yes
+r.Shadow.CSM.TransitionScale	1.0	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	286	yes
+r.Shadow.PreShadowResolutionFactor	1.0	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	287	yes
+r.DistanceFieldShadowing	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	288	yes
+r.VolumetricFog	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	289	yes
+r.VolumetricFog.GridPixelSize	4	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	290	yes
+r.VolumetricFog.GridSizeZ	128	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	291	yes
+r.VolumetricFog.HistoryMissSupersampleCount	16	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	292	yes
+r.LightMaxDrawDistanceScale	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	293	yes
+r.CapsuleShadows	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	294	yes
+r.Shadow.Virtual.MaxPhysicalPages	8192	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	295	yes
+r.Shadow.Virtual.ResolutionLodBiasDirectional	-1.5	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	296	yes
+r.Shadow.Virtual.ResolutionLodBiasDirectionalMoving	-1.5	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	297	yes
+r.Shadow.Virtual.ResolutionLodBiasLocal	0.0	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	298	yes
+r.Shadow.Virtual.ResolutionLodBiasLocalMoving	0.0	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	299	yes
+r.Shadow.Virtual.SMRT.RayCountDirectional	16	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	300	yes
+r.Shadow.Virtual.SMRT.SamplesPerRayDirectional	8	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	301	yes
+r.Shadow.Virtual.SMRT.RayCountLocal	16	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	302	yes
+r.Shadow.Virtual.SMRT.SamplesPerRayLocal	8	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	303	yes
+r.Shadow.Virtual.MarkCoarsePagesLocal	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	304	yes
+r.MegaLights.NumSamplesPerPixel	4	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	305	yes
+r.MegaLights.DownsampleMode	0	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	306	yes
+r.MegaLights.ScreenTraces.Quality	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	307	yes
+r.MegaLights.FrontLayerTranslucency.Allow	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	308	yes
+r.MegaLights.FrontLayerTranslucency.SpecularOnly	0	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	309	yes
+r.MegaLights.FrontLayerTranslucency.SoftShadows	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	310	yes
+r.MegaLights.FrontLayerTranslucency.TexturedRectLights	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	311	yes
+r.MegaLights.Spatial.UseHistorySpatialVariance	1	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	312	yes
+r.MegaLights.Volume.GridPixelSize	8	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	313	yes
+r.MegaLights.Volume.GridSizeZ	128	ShadowQuality@Cine	scalability		Config/BaseScalability.ini	314	yes
+r.AOQuality	0	GlobalIlluminationQuality@0	scalability		Config/BaseScalability.ini	320	yes
+r.DistanceFieldAO	0	GlobalIlluminationQuality@0	scalability		Config/BaseScalability.ini	321	yes
+r.SkylightIntensityMultiplier	0.8	GlobalIlluminationQuality@0	scalability		Config/BaseScalability.ini	322	yes
+r.Lumen.DiffuseIndirect.Allow	0	GlobalIlluminationQuality@0	scalability		Config/BaseScalability.ini	323	yes
+r.RayTracing.Scene.BuildMode	0	GlobalIlluminationQuality@0	scalability		Config/BaseScalability.ini	324	yes
+r.DistanceFieldAO	1	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	328	yes
+r.SkylightIntensityMultiplier	1.0	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	329	yes
+r.AOQuality	1	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	330	yes
+r.Lumen.DiffuseIndirect.Allow	1	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	331	yes
+r.Lumen.FinalGatherMethod	0	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	333	yes
+r.LumenScene.SurfaceCache.AtlasSize	2048	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	335	yes
+r.LumenScene.SurfaceCache.CardTexelDensityScale	50	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	337	yes
+r.LumenScene.SurfaceCache.CardMinResolution	2	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	339	yes
+r.LumenScene.SurfaceCache.CardMaxResolution	256	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	340	yes
+r.LumenScene.DirectLighting.MaxLightsPerTile	4	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	341	yes
+r.LumenScene.DirectLighting.UpdateFactor	128	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	342	yes
+r.LumenScene.Radiosity.UpdateFactor	128	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	343	yes
+r.LumenScene.Radiosity.ProbeSpacing	4	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	344	yes
+r.LumenScene.Radiosity.HemisphereProbeResolution	3	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	345	yes
+r.Lumen.TraceMeshSDFs.Allow	0	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	346	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor	1	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	348	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.SliceCount	1	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	349	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.BentNormal	0	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	350	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.HZB	1	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	351	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.ForegroundSampleRejectPower	1.5	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	352	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.FoliageOcclusionStrength	1	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	354	yes
+r.Lumen.TranslucencyVolume.GridPixelSize	128	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	355	yes
+r.Lumen.TranslucencyVolume.TraceFromVolume	0	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	356	yes
+r.Lumen.TranslucencyVolume.ShareRadianceCacheWithOpaque	1	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	358	yes
+r.Lumen.TranslucencyVolume.SpatialFilter	0	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	359	yes
+r.Lumen.TranslucencyVolume.RadianceCache.ProbeResolution	8	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	360	yes
+r.Lumen.TranslucencyVolume.RadianceCache.GridResolution	12	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	361	yes
+r.Lumen.TranslucencyVolume.RadianceCache.NumProbesToTraceBudget	30	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	362	yes
+r.Lumen.HardwareRayTracing.HitLighting.Allowed	0	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	363	yes
+r.RayTracing.Scene.BuildMode	0	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	364	yes
+r.RayTracing.Geometry.SkeletalMeshes	0	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	365	yes
+r.MeshCardRepresentation.SkeletalMesh	0	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	366	yes
+r.RayTracing.DynamicGeometry.MaxUpdatePrimitivesPerFrame	1000	GlobalIlluminationQuality@1	scalability		Config/BaseScalability.ini	367	yes
+r.DistanceFieldAO	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	371	yes
+r.SkylightIntensityMultiplier	1.0	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	372	yes
+r.AOQuality	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	373	yes
+r.Lumen.DiffuseIndirect.Allow	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	374	yes
+r.Lumen.FinalGatherMethod	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	376	yes
+r.LumenScene.SurfaceCache.AtlasSize	3584	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	377	yes
+r.LumenScene.SurfaceCache.CardTexelDensityScale	100	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	378	yes
+r.LumenScene.SurfaceCache.CardMinResolution	4	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	379	yes
+r.LumenScene.SurfaceCache.CardMaxResolution	512	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	380	yes
+r.LumenScene.DirectLighting.MaxLightsPerTile	4	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	381	yes
+r.LumenScene.DirectLighting.UpdateFactor	64	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	382	yes
+r.LumenScene.Radiosity.UpdateFactor	128	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	383	yes
+r.LumenScene.Radiosity.ProbeSpacing	8	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	384	yes
+r.LumenScene.Radiosity.HemisphereProbeResolution	3	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	385	yes
+r.Lumen.TraceMeshSDFs.Allow	0	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	386	yes
+r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution	16	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	387	yes
+r.Lumen.ScreenProbeGather.RadianceCache.NumProbesToTraceBudget	100	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	388	yes
+r.Lumen.ScreenProbeGather.DownsampleFactor	32	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	389	yes
+r.Lumen.ScreenProbeGather.NumAdaptiveProbes	16	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	390	yes
+r.Lumen.ScreenProbeGather.TracingOctahedronResolution	8	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	391	yes
+r.Lumen.ScreenProbeGather.IrradianceFormat	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	392	yes
+r.Lumen.ScreenProbeGather.StochasticInterpolation	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	393	yes
+r.Lumen.ScreenProbeGather.FullResolutionJitterWidth	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	394	yes
+r.Lumen.ScreenProbeGather.TwoSidedFoliageBackfaceDiffuse	0	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	395	yes
+r.Lumen.ScreenProbeGather.ScreenTraces.HZBTraversal.FullResDepth	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	396	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor	2	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	397	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.SliceCount	2	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	398	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.BentNormal	0	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	399	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.HZB	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	400	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.ForegroundSampleRejectPower	1.5	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	401	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.FoliageOcclusionStrength	.7	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	402	yes
+r.Lumen.TranslucencyVolume.GridPixelSize	64	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	403	yes
+r.Lumen.TranslucencyVolume.TraceFromVolume	0	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	404	yes
+r.Lumen.TranslucencyVolume.ShareRadianceCacheWithOpaque	0	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	405	yes
+r.Lumen.TranslucencyVolume.SpatialFilter	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	406	yes
+r.Lumen.TranslucencyVolume.RadianceCache.ProbeResolution	8	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	407	yes
+r.Lumen.TranslucencyVolume.RadianceCache.GridResolution	24	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	408	yes
+r.Lumen.TranslucencyVolume.RadianceCache.NumProbesToTraceBudget	70	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	409	yes
+r.Lumen.HardwareRayTracing.HitLighting.Allowed	0	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	410	yes
+r.RayTracing.Scene.BuildMode	0	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	411	yes
+r.RayTracing.Geometry.SkeletalMeshes	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	412	yes
+r.MeshCardRepresentation.SkeletalMesh	1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	413	yes
+r.RayTracing.DynamicGeometry.MaxUpdatePrimitivesPerFrame	-1	GlobalIlluminationQuality@2	scalability		Config/BaseScalability.ini	414	yes
+r.DistanceFieldAO	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	418	yes
+r.SkylightIntensityMultiplier	1.0	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	419	yes
+r.AOQuality	2	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	420	yes
+r.Lumen.DiffuseIndirect.Allow	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	421	yes
+r.Lumen.FinalGatherMethod	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	423	yes
+r.LumenScene.SurfaceCache.AtlasSize	4096	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	424	yes
+r.LumenScene.SurfaceCache.CardTexelDensityScale	100	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	425	yes
+r.LumenScene.SurfaceCache.CardMinResolution	2	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	426	yes
+r.LumenScene.SurfaceCache.CardMaxResolution	512	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	427	yes
+r.LumenScene.DirectLighting.MaxLightsPerTile	8	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	428	yes
+r.LumenScene.DirectLighting.UpdateFactor	32	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	429	yes
+r.LumenScene.Radiosity.UpdateFactor	64	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	430	yes
+r.LumenScene.Radiosity.ProbeSpacing	4	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	431	yes
+r.LumenScene.Radiosity.HemisphereProbeResolution	4	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	432	yes
+r.Lumen.TraceMeshSDFs.Allow	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	433	yes
+r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution	32	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	434	yes
+r.Lumen.ScreenProbeGather.RadianceCache.NumProbesToTraceBudget	150	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	435	yes
+r.Lumen.ScreenProbeGather.DownsampleFactor	16	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	436	yes
+r.Lumen.ScreenProbeGather.NumAdaptiveProbes	8	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	437	yes
+r.Lumen.ScreenProbeGather.TracingOctahedronResolution	8	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	438	yes
+r.Lumen.ScreenProbeGather.IrradianceFormat	0	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	439	yes
+r.Lumen.ScreenProbeGather.StochasticInterpolation	0	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	440	yes
+r.Lumen.ScreenProbeGather.FullResolutionJitterWidth	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	441	yes
+r.Lumen.ScreenProbeGather.TwoSidedFoliageBackfaceDiffuse	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	442	yes
+r.Lumen.ScreenProbeGather.ScreenTraces.HZBTraversal.FullResDepth	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	443	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	444	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.SliceCount	2	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	445	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.BentNormal	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	446	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.HZB	0	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	447	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.ForegroundSampleRejectPower	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	448	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.FoliageOcclusionStrength	.7	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	449	yes
+r.Lumen.TranslucencyVolume.GridPixelSize	32	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	450	yes
+r.Lumen.TranslucencyVolume.TraceFromVolume	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	451	yes
+r.Lumen.TranslucencyVolume.ShareRadianceCacheWithOpaque	0	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	452	yes
+r.Lumen.TranslucencyVolume.SpatialFilter	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	453	yes
+r.Lumen.TranslucencyVolume.TracingOctahedronResolution	3	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	454	yes
+r.Lumen.TranslucencyVolume.RadianceCache.ProbeResolution	8	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	455	yes
+r.Lumen.TranslucencyVolume.RadianceCache.GridResolution	24	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	456	yes
+r.Lumen.TranslucencyVolume.RadianceCache.NumProbesToTraceBudget	100	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	457	yes
+r.Lumen.HardwareRayTracing.HitLighting.Allowed	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	458	yes
+r.RayTracing.Scene.BuildMode	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	459	yes
+r.RayTracing.Geometry.SkeletalMeshes	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	460	yes
+r.MeshCardRepresentation.SkeletalMesh	1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	461	yes
+r.RayTracing.DynamicGeometry.MaxUpdatePrimitivesPerFrame	-1	GlobalIlluminationQuality@3	scalability		Config/BaseScalability.ini	462	yes
+r.DistanceFieldAO	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	466	yes
+r.SkylightIntensityMultiplier	1.0	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	467	yes
+r.AOQuality	2	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	468	yes
+r.Lumen.DiffuseIndirect.Allow	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	469	yes
+r.Lumen.FinalGatherMethod	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	471	yes
+r.LumenScene.SurfaceCache.AtlasSize	4096	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	472	yes
+r.LumenScene.SurfaceCache.CardTexelDensityScale	100	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	473	yes
+r.LumenScene.SurfaceCache.CardMinResolution	2	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	474	yes
+r.LumenScene.SurfaceCache.CardMaxResolution	512	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	475	yes
+r.LumenScene.DirectLighting.MaxLightsPerTile	8	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	476	yes
+r.LumenScene.DirectLighting.UpdateFactor	32	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	477	yes
+r.LumenScene.Radiosity.UpdateFactor	64	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	478	yes
+r.LumenScene.Radiosity.ProbeSpacing	4	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	479	yes
+r.LumenScene.Radiosity.HemisphereProbeResolution	4	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	480	yes
+r.Lumen.TraceMeshSDFs.Allow	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	481	yes
+r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution	32	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	482	yes
+r.Lumen.ScreenProbeGather.RadianceCache.NumProbesToTraceBudget	350	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	483	yes
+r.Lumen.ScreenProbeGather.DownsampleFactor	8	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	484	yes
+r.Lumen.ScreenProbeGather.NumAdaptiveProbes	4	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	485	yes
+r.Lumen.ScreenProbeGather.TracingOctahedronResolution	16	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	486	yes
+r.Lumen.ScreenProbeGather.IrradianceFormat	0	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	487	yes
+r.Lumen.ScreenProbeGather.StochasticInterpolation	0	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	488	yes
+r.Lumen.ScreenProbeGather.FullResolutionJitterWidth	.5	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	489	yes
+r.Lumen.ScreenProbeGather.TwoSidedFoliageBackfaceDiffuse	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	490	yes
+r.Lumen.ScreenProbeGather.ScreenTraces.HZBTraversal.FullResDepth	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	491	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	492	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.SliceCount	2	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	493	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.BentNormal	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	494	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.HZB	0	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	495	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.HorizonSearch.ForegroundSampleRejectPower	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	496	yes
+r.Lumen.ScreenProbeGather.ShortRangeAO.FoliageOcclusionStrength	.7	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	497	yes
+r.Lumen.TranslucencyVolume.GridPixelSize	32	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	498	yes
+r.Lumen.TranslucencyVolume.TraceFromVolume	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	499	yes
+r.Lumen.TranslucencyVolume.ShareRadianceCacheWithOpaque	0	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	500	yes
+r.Lumen.TranslucencyVolume.SpatialFilter	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	501	yes
+r.Lumen.TranslucencyVolume.TracingOctahedronResolution	4	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	502	yes
+r.Lumen.TranslucencyVolume.RadianceCache.ProbeResolution	16	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	503	yes
+r.Lumen.TranslucencyVolume.RadianceCache.GridResolution	24	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	504	yes
+r.Lumen.TranslucencyVolume.RadianceCache.NumProbesToTraceBudget	350	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	505	yes
+r.Lumen.HardwareRayTracing.HitLighting.Allowed	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	506	yes
+r.RayTracing.Scene.BuildMode	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	507	yes
+r.RayTracing.Geometry.SkeletalMeshes	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	508	yes
+r.MeshCardRepresentation.SkeletalMesh	1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	509	yes
+r.RayTracing.DynamicGeometry.MaxUpdatePrimitivesPerFrame	-1	GlobalIlluminationQuality@Cine	scalability		Config/BaseScalability.ini	510	yes
+r.SSR.Quality	0	ReflectionQuality@0	scalability		Config/BaseScalability.ini	515	yes
+r.SSR.HalfResSceneColor	1	ReflectionQuality@0	scalability		Config/BaseScalability.ini	516	yes
+r.Lumen.Reflections.Allow	0	ReflectionQuality@0	scalability		Config/BaseScalability.ini	517	yes
+r.SSR.Quality	2	ReflectionQuality@1	scalability		Config/BaseScalability.ini	520	yes
+r.SSR.HalfResSceneColor	1	ReflectionQuality@1	scalability		Config/BaseScalability.ini	521	yes
+r.Lumen.Reflections.Allow	0	ReflectionQuality@1	scalability		Config/BaseScalability.ini	522	yes
+r.SSR.Quality	2	ReflectionQuality@2	scalability		Config/BaseScalability.ini	525	yes
+r.SSR.HalfResSceneColor	1	ReflectionQuality@2	scalability		Config/BaseScalability.ini	526	yes
+r.Lumen.Reflections.Allow	1	ReflectionQuality@2	scalability		Config/BaseScalability.ini	527	yes
+r.Lumen.Reflections.DownsampleFactor	2	ReflectionQuality@2	scalability		Config/BaseScalability.ini	528	yes
+r.Lumen.Reflections.MaxRoughnessToTraceForFoliage	0.2	ReflectionQuality@2	scalability		Config/BaseScalability.ini	529	yes
+r.Lumen.ScreenProbeGather.MaxRoughnessToEvaluateRoughSpecularForFoliage	0.4	ReflectionQuality@2	scalability		Config/BaseScalability.ini	530	yes
+r.Lumen.Reflections.ScreenSpaceReconstruction.NumSamples	3	ReflectionQuality@2	scalability		Config/BaseScalability.ini	531	yes
+r.Lumen.Reflections.ScreenSpaceReconstruction.MinWeight	1	ReflectionQuality@2	scalability		Config/BaseScalability.ini	532	yes
+r.Lumen.TranslucencyReflections.FrontLayer.Allow	0	ReflectionQuality@2	scalability		Config/BaseScalability.ini	533	yes
+r.Lumen.TranslucencyReflections.FrontLayer.Enable	0	ReflectionQuality@2	scalability		Config/BaseScalability.ini	534	yes
+r.SSR.Quality	3	ReflectionQuality@3	scalability		Config/BaseScalability.ini	537	yes
+r.SSR.HalfResSceneColor	0	ReflectionQuality@3	scalability		Config/BaseScalability.ini	538	yes
+r.Lumen.Reflections.Allow	1	ReflectionQuality@3	scalability		Config/BaseScalability.ini	539	yes
+r.Lumen.Reflections.DownsampleFactor	1	ReflectionQuality@3	scalability		Config/BaseScalability.ini	540	yes
+r.Lumen.Reflections.MaxRoughnessToTraceForFoliage	0.4	ReflectionQuality@3	scalability		Config/BaseScalability.ini	541	yes
+r.Lumen.ScreenProbeGather.MaxRoughnessToEvaluateRoughSpecularForFoliage	0.8	ReflectionQuality@3	scalability		Config/BaseScalability.ini	542	yes
+r.Lumen.Reflections.ScreenSpaceReconstruction.NumSamples	5	ReflectionQuality@3	scalability		Config/BaseScalability.ini	543	yes
+r.Lumen.Reflections.ScreenSpaceReconstruction.MinWeight	0	ReflectionQuality@3	scalability		Config/BaseScalability.ini	544	yes
+r.Lumen.TranslucencyReflections.FrontLayer.Allow	1	ReflectionQuality@3	scalability		Config/BaseScalability.ini	545	yes
+r.Lumen.TranslucencyReflections.FrontLayer.Enable	0	ReflectionQuality@3	scalability		Config/BaseScalability.ini	546	yes
+r.SSR.Quality	4	ReflectionQuality@Cine	scalability		Config/BaseScalability.ini	549	yes
+r.SSR.HalfResSceneColor	0	ReflectionQuality@Cine	scalability		Config/BaseScalability.ini	550	yes
+r.Lumen.Reflections.Allow	1	ReflectionQuality@Cine	scalability		Config/BaseScalability.ini	551	yes
+r.Lumen.Reflections.DownsampleFactor	1	ReflectionQuality@Cine	scalability		Config/BaseScalability.ini	552	yes
+r.Lumen.Reflections.MaxRoughnessToTraceForFoliage	0.4	ReflectionQuality@Cine	scalability		Config/BaseScalability.ini	553	yes
+r.Lumen.ScreenProbeGather.MaxRoughnessToEvaluateRoughSpecularForFoliage	0.8	ReflectionQuality@Cine	scalability		Config/BaseScalability.ini	554	yes
+r.Lumen.Reflections.ScreenSpaceReconstruction.NumSamples	5	ReflectionQuality@Cine	scalability		Config/BaseScalability.ini	555	yes
+r.Lumen.Reflections.ScreenSpaceReconstruction.MinWeight	0	ReflectionQuality@Cine	scalability		Config/BaseScalability.ini	556	yes
+r.Lumen.TranslucencyReflections.FrontLayer.Allow	1	ReflectionQuality@Cine	scalability		Config/BaseScalability.ini	557	yes
+r.Lumen.TranslucencyReflections.FrontLayer.Enable	1	ReflectionQuality@Cine	scalability		Config/BaseScalability.ini	558	yes
+r.MotionBlurQuality	0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	565	yes
+r.MotionBlur.HalfResGather	1	PostProcessQuality@0	scalability		Config/BaseScalability.ini	566	yes
+r.AmbientOcclusionMipLevelFactor	1.0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	567	yes
+r.AmbientOcclusionMaxQuality	0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	568	yes
+r.AmbientOcclusionLevels	0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	569	yes
+r.AmbientOcclusionRadiusScale	1.2	PostProcessQuality@0	scalability		Config/BaseScalability.ini	570	yes
+r.DepthOfFieldQuality	0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	571	yes
+r.RenderTargetPoolMin	300	PostProcessQuality@0	scalability		Config/BaseScalability.ini	572	yes
+r.LensFlareQuality	0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	573	yes
+r.SceneColorFringeQuality	0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	574	yes
+r.EyeAdaptationQuality	2	PostProcessQuality@0	scalability		Config/BaseScalability.ini	575	yes
+r.BloomQuality	4	PostProcessQuality@0	scalability		Config/BaseScalability.ini	576	yes
+r.Bloom.ScreenPercentage	25.000	PostProcessQuality@0	scalability		Config/BaseScalability.ini	577	yes
+r.FastBlurThreshold	0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	578	yes
+r.Upscale.Quality	1	PostProcessQuality@0	scalability		Config/BaseScalability.ini	579	yes
+r.LightShaftQuality	0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	580	yes
+r.Filter.SizeScale	0.6	PostProcessQuality@0	scalability		Config/BaseScalability.ini	581	yes
+r.LUT.Shaper	0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	582	yes
+r.LUT.Size	32	PostProcessQuality@0	scalability		Config/BaseScalability.ini	583	yes
+r.Tonemapper.Quality	0	PostProcessQuality@0	scalability		Config/BaseScalability.ini	584	yes
+r.MotionBlurQuality	3	PostProcessQuality@1	scalability		Config/BaseScalability.ini	587	yes
+r.MotionBlur.HalfResGather	1	PostProcessQuality@1	scalability		Config/BaseScalability.ini	588	yes
+r.AmbientOcclusionMipLevelFactor	1.0	PostProcessQuality@1	scalability		Config/BaseScalability.ini	589	yes
+r.AmbientOcclusionMaxQuality	60	PostProcessQuality@1	scalability		Config/BaseScalability.ini	590	yes
+r.AmbientOcclusionLevels	-1	PostProcessQuality@1	scalability		Config/BaseScalability.ini	591	yes
+r.AmbientOcclusionRadiusScale	1.5	PostProcessQuality@1	scalability		Config/BaseScalability.ini	592	yes
+r.DepthOfFieldQuality	1	PostProcessQuality@1	scalability		Config/BaseScalability.ini	593	yes
+r.RenderTargetPoolMin	350	PostProcessQuality@1	scalability		Config/BaseScalability.ini	594	yes
+r.LensFlareQuality	0	PostProcessQuality@1	scalability		Config/BaseScalability.ini	595	yes
+r.SceneColorFringeQuality	0	PostProcessQuality@1	scalability		Config/BaseScalability.ini	596	yes
+r.EyeAdaptationQuality	2	PostProcessQuality@1	scalability		Config/BaseScalability.ini	597	yes
+r.BloomQuality	4	PostProcessQuality@1	scalability		Config/BaseScalability.ini	598	yes
+r.Bloom.ScreenPercentage	35.355	PostProcessQuality@1	scalability		Config/BaseScalability.ini	599	yes
+r.FastBlurThreshold	2	PostProcessQuality@1	scalability		Config/BaseScalability.ini	600	yes
+r.Upscale.Quality	2	PostProcessQuality@1	scalability		Config/BaseScalability.ini	601	yes
+r.LightShaftQuality	0	PostProcessQuality@1	scalability		Config/BaseScalability.ini	602	yes
+r.Filter.SizeScale	0.7	PostProcessQuality@1	scalability		Config/BaseScalability.ini	603	yes
+r.LUT.Shaper	0	PostProcessQuality@1	scalability		Config/BaseScalability.ini	604	yes
+r.LUT.Size	32	PostProcessQuality@1	scalability		Config/BaseScalability.ini	605	yes
+r.Tonemapper.Quality	2	PostProcessQuality@1	scalability		Config/BaseScalability.ini	606	yes
+r.DOF.Gather.ResolutionDivisor	2         ; lower gathering resolution	PostProcessQuality@1	scalability		Config/BaseScalability.ini	609	yes
+r.DOF.Gather.AccumulatorQuality	0        ; lower gathering accumulator quality	PostProcessQuality@1	scalability		Config/BaseScalability.ini	610	yes
+r.DOF.Gather.PostfilterMethod	2          ; Max3x3 postfilering method	PostProcessQuality@1	scalability		Config/BaseScalability.ini	611	yes
+r.DOF.Gather.EnableBokehSettings	0       ; no bokeh simulation when gathering	PostProcessQuality@1	scalability		Config/BaseScalability.ini	612	yes
+r.DOF.Gather.RingCount	3                 ; low number of samples when gathering	PostProcessQuality@1	scalability		Config/BaseScalability.ini	613	yes
+r.DOF.Scatter.ForegroundCompositing	0    ; no foreground scattering	PostProcessQuality@1	scalability		Config/BaseScalability.ini	614	yes
+r.DOF.Scatter.BackgroundCompositing	0    ; no foreground scattering	PostProcessQuality@1	scalability		Config/BaseScalability.ini	615	yes
+r.DOF.Recombine.Quality	0                ; no slight out of focus	PostProcessQuality@1	scalability		Config/BaseScalability.ini	616	yes
+r.DOF.TemporalAAQuality	0                ; faster temporal accumulation	PostProcessQuality@1	scalability		Config/BaseScalability.ini	617	yes
+r.DOF.Kernel.MaxForegroundRadius	0.006   ; required because low gathering and no scattering and not looking great at 1080p	PostProcessQuality@1	scalability		Config/BaseScalability.ini	618	yes
+r.DOF.Kernel.MaxBackgroundRadius	0.006   ; required because low gathering and no scattering and not looking great at 1080p	PostProcessQuality@1	scalability		Config/BaseScalability.ini	619	yes
+r.MotionBlurQuality	3	PostProcessQuality@2	scalability		Config/BaseScalability.ini	622	yes
+r.MotionBlur.HalfResGather	0	PostProcessQuality@2	scalability		Config/BaseScalability.ini	623	yes
+r.AmbientOcclusionMipLevelFactor	0.6	PostProcessQuality@2	scalability		Config/BaseScalability.ini	624	yes
+r.AmbientOcclusionMaxQuality	100	PostProcessQuality@2	scalability		Config/BaseScalability.ini	625	yes
+r.AmbientOcclusionLevels	-1	PostProcessQuality@2	scalability		Config/BaseScalability.ini	626	yes
+r.AmbientOcclusionRadiusScale	1.5	PostProcessQuality@2	scalability		Config/BaseScalability.ini	627	yes
+r.DepthOfFieldQuality	2	PostProcessQuality@2	scalability		Config/BaseScalability.ini	628	yes
+r.RenderTargetPoolMin	400	PostProcessQuality@2	scalability		Config/BaseScalability.ini	629	yes
+r.LensFlareQuality	2	PostProcessQuality@2	scalability		Config/BaseScalability.ini	630	yes
+r.SceneColorFringeQuality	1	PostProcessQuality@2	scalability		Config/BaseScalability.ini	631	yes
+r.EyeAdaptationQuality	2	PostProcessQuality@2	scalability		Config/BaseScalability.ini	632	yes
+r.BloomQuality	5	PostProcessQuality@2	scalability		Config/BaseScalability.ini	633	yes
+r.Bloom.ScreenPercentage	50.000	PostProcessQuality@2	scalability		Config/BaseScalability.ini	634	yes
+r.FastBlurThreshold	3	PostProcessQuality@2	scalability		Config/BaseScalability.ini	635	yes
+r.Upscale.Quality	2	PostProcessQuality@2	scalability		Config/BaseScalability.ini	636	yes
+r.LightShaftQuality	1	PostProcessQuality@2	scalability		Config/BaseScalability.ini	637	yes
+r.Filter.SizeScale	0.8	PostProcessQuality@2	scalability		Config/BaseScalability.ini	638	yes
+r.LUT.Shaper	0	PostProcessQuality@2	scalability		Config/BaseScalability.ini	639	yes
+r.LUT.Size	32	PostProcessQuality@2	scalability		Config/BaseScalability.ini	640	yes
+r.Tonemapper.Quality	5	PostProcessQuality@2	scalability		Config/BaseScalability.ini	641	yes
+r.DOF.Gather.ResolutionDivisor	2         ; lower gathering resolution	PostProcessQuality@2	scalability		Config/BaseScalability.ini	644	yes
+r.DOF.Gather.AccumulatorQuality	0        ; lower gathering accumulator quality	PostProcessQuality@2	scalability		Config/BaseScalability.ini	645	yes
+r.DOF.Gather.PostfilterMethod	2          ; Max3x3 postfilering method	PostProcessQuality@2	scalability		Config/BaseScalability.ini	646	yes
+r.DOF.Gather.EnableBokehSettings	0       ; no bokeh simulation when gathering	PostProcessQuality@2	scalability		Config/BaseScalability.ini	647	yes
+r.DOF.Gather.RingCount	4                 ; medium number of samples when gathering	PostProcessQuality@2	scalability		Config/BaseScalability.ini	648	yes
+r.DOF.Scatter.ForegroundCompositing	1    ; additive foreground scattering	PostProcessQuality@2	scalability		Config/BaseScalability.ini	649	yes
+r.DOF.Scatter.BackgroundCompositing	1    ; no background occlusion	PostProcessQuality@2	scalability		Config/BaseScalability.ini	650	yes
+r.DOF.Scatter.EnableBokehSettings	0      ; no bokeh simulation when scattering	PostProcessQuality@2	scalability		Config/BaseScalability.ini	651	yes
+r.DOF.Scatter.MaxSpriteRatio	0.04        ; only a maximum of 4% of scattered bokeh	PostProcessQuality@2	scalability		Config/BaseScalability.ini	652	yes
+r.DOF.Recombine.Quality	0                ; no slight out of focus	PostProcessQuality@2	scalability		Config/BaseScalability.ini	653	yes
+r.DOF.TemporalAAQuality	0                ; faster temporal accumulation	PostProcessQuality@2	scalability		Config/BaseScalability.ini	654	yes
+r.DOF.Kernel.MaxForegroundRadius	0.012   ; required because of AccumulatorQuality=0	PostProcessQuality@2	scalability		Config/BaseScalability.ini	655	yes
+r.DOF.Kernel.MaxBackgroundRadius	0.012   ; required because of AccumulatorQuality=0	PostProcessQuality@2	scalability		Config/BaseScalability.ini	656	yes
+r.MotionBlurQuality	4	PostProcessQuality@3	scalability		Config/BaseScalability.ini	659	yes
+r.MotionBlur.HalfResGather	0	PostProcessQuality@3	scalability		Config/BaseScalability.ini	660	yes
+r.AmbientOcclusionMipLevelFactor	0.4	PostProcessQuality@3	scalability		Config/BaseScalability.ini	661	yes
+r.AmbientOcclusionMaxQuality	100	PostProcessQuality@3	scalability		Config/BaseScalability.ini	662	yes
+r.AmbientOcclusionLevels	-1	PostProcessQuality@3	scalability		Config/BaseScalability.ini	663	yes
+r.AmbientOcclusionRadiusScale	1.0	PostProcessQuality@3	scalability		Config/BaseScalability.ini	664	yes
+r.DepthOfFieldQuality	2	PostProcessQuality@3	scalability		Config/BaseScalability.ini	665	yes
+r.RenderTargetPoolMin	400	PostProcessQuality@3	scalability		Config/BaseScalability.ini	666	yes
+r.LensFlareQuality	2	PostProcessQuality@3	scalability		Config/BaseScalability.ini	667	yes
+r.SceneColorFringeQuality	1	PostProcessQuality@3	scalability		Config/BaseScalability.ini	668	yes
+r.EyeAdaptationQuality	2	PostProcessQuality@3	scalability		Config/BaseScalability.ini	669	yes
+r.BloomQuality	5	PostProcessQuality@3	scalability		Config/BaseScalability.ini	670	yes
+r.Bloom.ScreenPercentage	50.000	PostProcessQuality@3	scalability		Config/BaseScalability.ini	671	yes
+r.FastBlurThreshold	100	PostProcessQuality@3	scalability		Config/BaseScalability.ini	672	yes
+r.Upscale.Quality	3	PostProcessQuality@3	scalability		Config/BaseScalability.ini	673	yes
+r.LightShaftQuality	1	PostProcessQuality@3	scalability		Config/BaseScalability.ini	674	yes
+r.Filter.SizeScale	1	PostProcessQuality@3	scalability		Config/BaseScalability.ini	675	yes
+r.LUT.Shaper	0	PostProcessQuality@3	scalability		Config/BaseScalability.ini	676	yes
+r.LUT.Size	32	PostProcessQuality@3	scalability		Config/BaseScalability.ini	677	yes
+r.Tonemapper.Quality	5	PostProcessQuality@3	scalability		Config/BaseScalability.ini	678	yes
+r.DOF.Gather.ResolutionDivisor	2         ; lower gathering resolution	PostProcessQuality@3	scalability		Config/BaseScalability.ini	681	yes
+r.DOF.Gather.AccumulatorQuality	1        ; higher gathering accumulator quality	PostProcessQuality@3	scalability		Config/BaseScalability.ini	682	yes
+r.DOF.Gather.PostfilterMethod	1          ; Median3x3 postfilering method	PostProcessQuality@3	scalability		Config/BaseScalability.ini	683	yes
+r.DOF.Gather.EnableBokehSettings	0       ; no bokeh simulation when gathering	PostProcessQuality@3	scalability		Config/BaseScalability.ini	684	yes
+r.DOF.Gather.RingCount	4                 ; medium number of samples when gathering	PostProcessQuality@3	scalability		Config/BaseScalability.ini	685	yes
+r.DOF.Scatter.ForegroundCompositing	1    ; additive foreground scattering	PostProcessQuality@3	scalability		Config/BaseScalability.ini	686	yes
+r.DOF.Scatter.BackgroundCompositing	2    ; additive background scattering	PostProcessQuality@3	scalability		Config/BaseScalability.ini	687	yes
+r.DOF.Scatter.EnableBokehSettings	1      ; bokeh simulation when scattering	PostProcessQuality@3	scalability		Config/BaseScalability.ini	688	yes
+r.DOF.Scatter.MaxSpriteRatio	0.1         ; only a maximum of 10% of scattered bokeh	PostProcessQuality@3	scalability		Config/BaseScalability.ini	689	yes
+r.DOF.Recombine.Quality	1                ; cheap slight out of focus	PostProcessQuality@3	scalability		Config/BaseScalability.ini	690	yes
+r.DOF.Recombine.EnableBokehSettings	0    ; no bokeh simulation on slight out of focus	PostProcessQuality@3	scalability		Config/BaseScalability.ini	691	yes
+r.DOF.TemporalAAQuality	1                ; more stable temporal accumulation	PostProcessQuality@3	scalability		Config/BaseScalability.ini	692	yes
+r.DOF.Kernel.MaxForegroundRadius	0.025	PostProcessQuality@3	scalability		Config/BaseScalability.ini	693	yes
+r.DOF.Kernel.MaxBackgroundRadius	0.025	PostProcessQuality@3	scalability		Config/BaseScalability.ini	694	yes
+r.MotionBlurQuality	4	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	698	yes
+r.MotionBlur.HalfResGather	0	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	699	yes
+r.AmbientOcclusionMipLevelFactor	0.4	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	700	yes
+r.AmbientOcclusionMaxQuality	100	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	701	yes
+r.AmbientOcclusionLevels	-1	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	702	yes
+r.AmbientOcclusionRadiusScale	1.0	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	703	yes
+r.GTAO.Numangles	4	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	704	yes
+r.DepthOfFieldQuality	4	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	705	yes
+r.RenderTargetPoolMin	1000	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	706	yes
+r.LensFlareQuality	3	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	707	yes
+r.SceneColorFringeQuality	1	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	708	yes
+r.EyeAdaptationQuality	2	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	709	yes
+r.BloomQuality	5	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	710	yes
+r.Bloom.ScreenPercentage	100	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	711	yes
+r.FastBlurThreshold	100	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	712	yes
+r.Upscale.Quality	3	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	713	yes
+r.LightShaftQuality	1	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	714	yes
+r.Filter.SizeScale	1	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	715	yes
+r.LUT.Shaper	1	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	716	yes
+r.LUT.Size	64	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	717	yes
+r.Tonemapper.Quality	5	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	718	yes
+r.DOF.Gather.ResolutionDivisor	1         ; do the gathering at full resolution	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	721	yes
+r.DOF.Gather.AccumulatorQuality	1        ; higher gathering accumulator quality	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	722	yes
+r.DOF.Gather.PostfilterMethod	1          ; Median3x3 postfilering method	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	723	yes
+r.DOF.Gather.EnableBokehSettings	1       ; bokeh simulation when gathering	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	724	yes
+r.DOF.Gather.RingCount	5                 ; high number of samples when gathering	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	725	yes
+r.DOF.Scatter.ForegroundCompositing	1    ; additive foreground scattering	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	726	yes
+r.DOF.Scatter.BackgroundCompositing	2    ; background scattering occlusion	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	727	yes
+r.DOF.Scatter.EnableBokehSettings	1      ; no bokeh simulation when scattering	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	728	yes
+r.DOF.Scatter.MaxSpriteRatio	0.25        ; only a maximum of 10% of scattered bokeh	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	729	yes
+r.DOF.Recombine.Quality	2                ; highest slight out of focus	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	730	yes
+r.DOF.Recombine.EnableBokehSettings	1    ; bokeh simulation on slight out of focus	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	731	yes
+r.DOF.TemporalAAQuality	1                ; more stable temporal accumulation	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	732	yes
+r.DOF.Kernel.MaxForegroundRadius	0.025	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	733	yes
+r.DOF.Kernel.MaxBackgroundRadius	0.025	PostProcessQuality@Cine	scalability		Config/BaseScalability.ini	734	yes
+r.Streaming.MipBias	16	TextureQuality@0	scalability		Config/BaseScalability.ini	742	yes
+r.Streaming.AmortizeCPUToGPUCopy	1	TextureQuality@0	scalability		Config/BaseScalability.ini	743	yes
+r.Streaming.MaxNumTexturesToStreamPerFrame	1	TextureQuality@0	scalability		Config/BaseScalability.ini	744	yes
+r.Streaming.Boost	0.3	TextureQuality@0	scalability		Config/BaseScalability.ini	745	yes
+r.MaxAnisotropy	1	TextureQuality@0	scalability		Config/BaseScalability.ini	746	yes
+r.VT.MaxAnisotropy	4	TextureQuality@0	scalability		Config/BaseScalability.ini	747	yes
+r.Streaming.LimitPoolSizeToVRAM	1	TextureQuality@0	scalability		Config/BaseScalability.ini	748	yes
+r.Streaming.PoolSize	400	TextureQuality@0	scalability		Config/BaseScalability.ini	749	yes
+r.Streaming.MaxEffectiveScreenSize	0f	TextureQuality@0	scalability		Config/BaseScalability.ini	750	yes
+r.Streaming.MipBias	1	TextureQuality@1	scalability		Config/BaseScalability.ini	753	yes
+r.Streaming.AmortizeCPUToGPUCopy	0	TextureQuality@1	scalability		Config/BaseScalability.ini	754	yes
+r.Streaming.MaxNumTexturesToStreamPerFrame	0	TextureQuality@1	scalability		Config/BaseScalability.ini	755	yes
+r.Streaming.Boost	1	TextureQuality@1	scalability		Config/BaseScalability.ini	756	yes
+r.MaxAnisotropy	2	TextureQuality@1	scalability		Config/BaseScalability.ini	757	yes
+r.VT.MaxAnisotropy	4	TextureQuality@1	scalability		Config/BaseScalability.ini	758	yes
+r.Streaming.LimitPoolSizeToVRAM	1	TextureQuality@1	scalability		Config/BaseScalability.ini	759	yes
+r.Streaming.PoolSize	600	TextureQuality@1	scalability		Config/BaseScalability.ini	760	yes
+r.Streaming.MaxEffectiveScreenSize	0	TextureQuality@1	scalability		Config/BaseScalability.ini	761	yes
+r.Streaming.MipBias	0	TextureQuality@2	scalability		Config/BaseScalability.ini	764	yes
+r.Streaming.AmortizeCPUToGPUCopy	0	TextureQuality@2	scalability		Config/BaseScalability.ini	765	yes
+r.Streaming.MaxNumTexturesToStreamPerFrame	0	TextureQuality@2	scalability		Config/BaseScalability.ini	766	yes
+r.Streaming.Boost	1	TextureQuality@2	scalability		Config/BaseScalability.ini	767	yes
+r.MaxAnisotropy	4	TextureQuality@2	scalability		Config/BaseScalability.ini	768	yes
+r.VT.MaxAnisotropy	8	TextureQuality@2	scalability		Config/BaseScalability.ini	769	yes
+r.Streaming.LimitPoolSizeToVRAM	1	TextureQuality@2	scalability		Config/BaseScalability.ini	770	yes
+r.Streaming.PoolSize	800	TextureQuality@2	scalability		Config/BaseScalability.ini	771	yes
+r.Streaming.MaxEffectiveScreenSize	0	TextureQuality@2	scalability		Config/BaseScalability.ini	772	yes
+r.Streaming.MipBias	0	TextureQuality@3	scalability		Config/BaseScalability.ini	775	yes
+r.Streaming.AmortizeCPUToGPUCopy	0	TextureQuality@3	scalability		Config/BaseScalability.ini	776	yes
+r.Streaming.MaxNumTexturesToStreamPerFrame	0	TextureQuality@3	scalability		Config/BaseScalability.ini	777	yes
+r.Streaming.Boost	1	TextureQuality@3	scalability		Config/BaseScalability.ini	778	yes
+r.MaxAnisotropy	8	TextureQuality@3	scalability		Config/BaseScalability.ini	779	yes
+r.VT.MaxAnisotropy	8	TextureQuality@3	scalability		Config/BaseScalability.ini	780	yes
+r.Streaming.LimitPoolSizeToVRAM	0	TextureQuality@3	scalability		Config/BaseScalability.ini	781	yes
+r.Streaming.PoolSize	1000	TextureQuality@3	scalability		Config/BaseScalability.ini	782	yes
+r.Streaming.MaxEffectiveScreenSize	0	TextureQuality@3	scalability		Config/BaseScalability.ini	783	yes
+r.Streaming.MipBias	0	TextureQuality@Cine	scalability		Config/BaseScalability.ini	786	yes
+r.Streaming.AmortizeCPUToGPUCopy	0	TextureQuality@Cine	scalability		Config/BaseScalability.ini	787	yes
+r.Streaming.MaxNumTexturesToStreamPerFrame	0	TextureQuality@Cine	scalability		Config/BaseScalability.ini	788	yes
+r.Streaming.Boost	1	TextureQuality@Cine	scalability		Config/BaseScalability.ini	789	yes
+r.MaxAnisotropy	8	TextureQuality@Cine	scalability		Config/BaseScalability.ini	790	yes
+r.VT.MaxAnisotropy	8	TextureQuality@Cine	scalability		Config/BaseScalability.ini	791	yes
+r.Streaming.LimitPoolSizeToVRAM	0	TextureQuality@Cine	scalability		Config/BaseScalability.ini	792	yes
+r.Streaming.PoolSize	3000	TextureQuality@Cine	scalability		Config/BaseScalability.ini	793	yes
+r.Streaming.MaxEffectiveScreenSize	0	TextureQuality@Cine	scalability		Config/BaseScalability.ini	794	yes
+r.TranslucencyLightingVolume.Dim	24	EffectsQuality@0	scalability		Config/BaseScalability.ini	799	yes
+r.RefractionQuality	0	EffectsQuality@0	scalability		Config/BaseScalability.ini	800	yes
+r.SceneColorFormat	3	EffectsQuality@0	scalability		Config/BaseScalability.ini	801	yes
+r.DetailMode	0	EffectsQuality@0	scalability		Config/BaseScalability.ini	802	yes
+r.TranslucencyLightingVolume.Blur	0	EffectsQuality@0	scalability		Config/BaseScalability.ini	803	yes
+r.MaterialQualityLevel	0 ; Low quality	EffectsQuality@0	scalability		Config/BaseScalability.ini	804	yes
+r.SSS.Scale	0	EffectsQuality@0	scalability		Config/BaseScalability.ini	805	yes
+r.SSS.SampleSet	0	EffectsQuality@0	scalability		Config/BaseScalability.ini	806	yes
+r.SSS.Quality	0	EffectsQuality@0	scalability		Config/BaseScalability.ini	807	yes
+r.SSS.HalfRes	1	EffectsQuality@0	scalability		Config/BaseScalability.ini	808	yes
+r.SSGI.Quality	0	EffectsQuality@0	scalability		Config/BaseScalability.ini	809	yes
+r.EmitterSpawnRateScale	0.125	EffectsQuality@0	scalability		Config/BaseScalability.ini	810	yes
+r.ParticleLightQuality	0	EffectsQuality@0	scalability		Config/BaseScalability.ini	811	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@0	scalability		Config/BaseScalability.ini	812	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	1	EffectsQuality@0	scalability		Config/BaseScalability.ini	813	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	8.0	EffectsQuality@0	scalability		Config/BaseScalability.ini	814	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@0	scalability		Config/BaseScalability.ini	815	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	2.0	EffectsQuality@0	scalability		Config/BaseScalability.ini	816	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	16.0	EffectsQuality@0	scalability		Config/BaseScalability.ini	817	yes
+r.SkyAtmosphere.SampleCountMin	2.0	EffectsQuality@0	scalability		Config/BaseScalability.ini	818	yes
+r.SkyAtmosphere.SampleCountMax	16.0	EffectsQuality@0	scalability		Config/BaseScalability.ini	819	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	1	EffectsQuality@0	scalability		Config/BaseScalability.ini	820	yes
+r.SkyAtmosphere.TransmittanceLUT.SampleCount	10.0	EffectsQuality@0	scalability		Config/BaseScalability.ini	821	yes
+r.SkyAtmosphere.MultiScatteringLUT.SampleCount	15.0	EffectsQuality@0	scalability		Config/BaseScalability.ini	822	yes
+r.Fog.SeparateComposition	0  ; Force fog separate composition disabled, forcing FSSS disabled for better performance	EffectsQuality@0	scalability		Config/BaseScalability.ini	823	yes
+fx.Niagara.QualityLevel	0	EffectsQuality@0	scalability		Config/BaseScalability.ini	824	yes
+r.HeterogeneousVolumes.Allowed	0	EffectsQuality@0	scalability		Config/BaseScalability.ini	825	yes
+r.TranslucencyLightingVolume.Dim	32	EffectsQuality@1	scalability		Config/BaseScalability.ini	828	yes
+r.RefractionQuality	0	EffectsQuality@1	scalability		Config/BaseScalability.ini	829	yes
+r.SceneColorFormat	3	EffectsQuality@1	scalability		Config/BaseScalability.ini	830	yes
+r.DetailMode	1	EffectsQuality@1	scalability		Config/BaseScalability.ini	831	yes
+r.TranslucencyLightingVolume.Blur	0	EffectsQuality@1	scalability		Config/BaseScalability.ini	832	yes
+r.MaterialQualityLevel	2 ; Medium quality	EffectsQuality@1	scalability		Config/BaseScalability.ini	833	yes
+r.SSS.Scale	0.75	EffectsQuality@1	scalability		Config/BaseScalability.ini	834	yes
+r.SSS.SampleSet	0	EffectsQuality@1	scalability		Config/BaseScalability.ini	835	yes
+r.SSS.Quality	0	EffectsQuality@1	scalability		Config/BaseScalability.ini	836	yes
+r.SSS.HalfRes	1	EffectsQuality@1	scalability		Config/BaseScalability.ini	837	yes
+r.SSGI.Quality	1	EffectsQuality@1	scalability		Config/BaseScalability.ini	838	yes
+r.EmitterSpawnRateScale	0.25	EffectsQuality@1	scalability		Config/BaseScalability.ini	839	yes
+r.ParticleLightQuality	0	EffectsQuality@1	scalability		Config/BaseScalability.ini	840	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@1	scalability		Config/BaseScalability.ini	841	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	1	EffectsQuality@1	scalability		Config/BaseScalability.ini	842	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	16.0	EffectsQuality@1	scalability		Config/BaseScalability.ini	843	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@1	scalability		Config/BaseScalability.ini	844	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	4.0	EffectsQuality@1	scalability		Config/BaseScalability.ini	845	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	32.0	EffectsQuality@1	scalability		Config/BaseScalability.ini	846	yes
+r.SkyAtmosphere.SampleCountMin	4.0	EffectsQuality@1	scalability		Config/BaseScalability.ini	847	yes
+r.SkyAtmosphere.SampleCountMax	32.0	EffectsQuality@1	scalability		Config/BaseScalability.ini	848	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	0	EffectsQuality@1	scalability		Config/BaseScalability.ini	849	yes
+r.SkyAtmosphere.TransmittanceLUT.SampleCount	10.0	EffectsQuality@1	scalability		Config/BaseScalability.ini	850	yes
+r.SkyAtmosphere.MultiScatteringLUT.SampleCount	15.0	EffectsQuality@1	scalability		Config/BaseScalability.ini	851	yes
+r.Fog.SeparateComposition	0  ; Force fog separate composition disabled, forcing FSSS disabled for better performance	EffectsQuality@1	scalability		Config/BaseScalability.ini	852	yes
+fx.Niagara.QualityLevel	1	EffectsQuality@1	scalability		Config/BaseScalability.ini	853	yes
+r.HeterogeneousVolumes.Allowed	0	EffectsQuality@1	scalability		Config/BaseScalability.ini	854	yes
+r.TranslucencyLightingVolume.Dim	48	EffectsQuality@2	scalability		Config/BaseScalability.ini	857	yes
+r.RefractionQuality	2	EffectsQuality@2	scalability		Config/BaseScalability.ini	858	yes
+r.SceneColorFormat	3	EffectsQuality@2	scalability		Config/BaseScalability.ini	859	yes
+r.DetailMode	1	EffectsQuality@2	scalability		Config/BaseScalability.ini	860	yes
+r.TranslucencyLightingVolume.Blur	1	EffectsQuality@2	scalability		Config/BaseScalability.ini	861	yes
+r.MaterialQualityLevel	1 ; High quality	EffectsQuality@2	scalability		Config/BaseScalability.ini	862	yes
+r.SSS.Scale	1	EffectsQuality@2	scalability		Config/BaseScalability.ini	863	yes
+r.SSS.SampleSet	1	EffectsQuality@2	scalability		Config/BaseScalability.ini	864	yes
+r.SSS.Quality	-1	EffectsQuality@2	scalability		Config/BaseScalability.ini	865	yes
+r.SSS.HalfRes	1	EffectsQuality@2	scalability		Config/BaseScalability.ini	866	yes
+r.SSGI.Quality	2	EffectsQuality@2	scalability		Config/BaseScalability.ini	867	yes
+r.EmitterSpawnRateScale	0.5	EffectsQuality@2	scalability		Config/BaseScalability.ini	868	yes
+r.ParticleLightQuality	1	EffectsQuality@2	scalability		Config/BaseScalability.ini	869	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@2	scalability		Config/BaseScalability.ini	870	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	2	EffectsQuality@2	scalability		Config/BaseScalability.ini	871	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	16.0	EffectsQuality@2	scalability		Config/BaseScalability.ini	872	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@2	scalability		Config/BaseScalability.ini	873	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	4.0	EffectsQuality@2	scalability		Config/BaseScalability.ini	874	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	64.0	EffectsQuality@2	scalability		Config/BaseScalability.ini	875	yes
+r.SkyAtmosphere.SampleCountMin	4.0	EffectsQuality@2	scalability		Config/BaseScalability.ini	876	yes
+r.SkyAtmosphere.SampleCountMax	64.0	EffectsQuality@2	scalability		Config/BaseScalability.ini	877	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	0	EffectsQuality@2	scalability		Config/BaseScalability.ini	878	yes
+r.SkyAtmosphere.TransmittanceLUT.SampleCount	10.0	EffectsQuality@2	scalability		Config/BaseScalability.ini	879	yes
+r.SkyAtmosphere.MultiScatteringLUT.SampleCount	15.0	EffectsQuality@2	scalability		Config/BaseScalability.ini	880	yes
+r.Fog.SeparateComposition	0  ; Force fog separate composition disabled, forcing FSSS disabled for better performance	EffectsQuality@2	scalability		Config/BaseScalability.ini	881	yes
+fx.Niagara.QualityLevel	2	EffectsQuality@2	scalability		Config/BaseScalability.ini	882	yes
+r.HeterogeneousVolumes.Allowed	1	EffectsQuality@2	scalability		Config/BaseScalability.ini	883	yes
+r.HeterogeneousVolumes.DownsampleFactor	2	EffectsQuality@2	scalability		Config/BaseScalability.ini	884	yes
+r.HeterogeneousVolumes.MaxStepCount	96	EffectsQuality@2	scalability		Config/BaseScalability.ini	885	yes
+r.HeterogeneousVolumes.Shadows.Resolution	256	EffectsQuality@2	scalability		Config/BaseScalability.ini	886	yes
+r.TranslucencyLightingVolume.Dim	64	EffectsQuality@3	scalability		Config/BaseScalability.ini	889	yes
+r.RefractionQuality	2	EffectsQuality@3	scalability		Config/BaseScalability.ini	890	yes
+r.SceneColorFormat	4	EffectsQuality@3	scalability		Config/BaseScalability.ini	891	yes
+r.DetailMode	3	EffectsQuality@3	scalability		Config/BaseScalability.ini	892	yes
+r.TranslucencyLightingVolume.Blur	1	EffectsQuality@3	scalability		Config/BaseScalability.ini	893	yes
+r.MaterialQualityLevel	1 ; High quality	EffectsQuality@3	scalability		Config/BaseScalability.ini	894	yes
+r.SSS.Scale	1	EffectsQuality@3	scalability		Config/BaseScalability.ini	895	yes
+r.SSS.SampleSet	2	EffectsQuality@3	scalability		Config/BaseScalability.ini	896	yes
+r.SSS.Quality	1	EffectsQuality@3	scalability		Config/BaseScalability.ini	897	yes
+r.SSS.HalfRes	0	EffectsQuality@3	scalability		Config/BaseScalability.ini	898	yes
+r.SSGI.Quality	3	EffectsQuality@3	scalability		Config/BaseScalability.ini	899	yes
+r.EmitterSpawnRateScale	1.0	EffectsQuality@3	scalability		Config/BaseScalability.ini	900	yes
+r.ParticleLightQuality	2	EffectsQuality@3	scalability		Config/BaseScalability.ini	901	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@3	scalability		Config/BaseScalability.ini	902	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	4	EffectsQuality@3	scalability		Config/BaseScalability.ini	903	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	16.0	EffectsQuality@3	scalability		Config/BaseScalability.ini	904	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@3	scalability		Config/BaseScalability.ini	905	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	4.0	EffectsQuality@3	scalability		Config/BaseScalability.ini	906	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	128.0	EffectsQuality@3	scalability		Config/BaseScalability.ini	907	yes
+r.SkyAtmosphere.SampleCountMin	4.0	EffectsQuality@3	scalability		Config/BaseScalability.ini	908	yes
+r.SkyAtmosphere.SampleCountMax	128.0	EffectsQuality@3	scalability		Config/BaseScalability.ini	909	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	0	EffectsQuality@3	scalability		Config/BaseScalability.ini	910	yes
+r.SkyAtmosphere.TransmittanceLUT.SampleCount	10.0	EffectsQuality@3	scalability		Config/BaseScalability.ini	911	yes
+r.SkyAtmosphere.MultiScatteringLUT.SampleCount	15.0	EffectsQuality@3	scalability		Config/BaseScalability.ini	912	yes
+r.Fog.SeparateComposition	-1 ; Allow fog separate composition when FSSS is enabled.	EffectsQuality@3	scalability		Config/BaseScalability.ini	913	yes
+fx.Niagara.QualityLevel	3	EffectsQuality@3	scalability		Config/BaseScalability.ini	914	yes
+r.Refraction.OffsetQuality	1	EffectsQuality@3	scalability		Config/BaseScalability.ini	915	yes
+r.HeterogeneousVolumes.Allowed	1	EffectsQuality@3	scalability		Config/BaseScalability.ini	916	yes
+r.HeterogeneousVolumes.DownsampleFactor	2	EffectsQuality@3	scalability		Config/BaseScalability.ini	917	yes
+r.HeterogeneousVolumes.MaxStepCount	256	EffectsQuality@3	scalability		Config/BaseScalability.ini	918	yes
+r.HeterogeneousVolumes.Shadows.Resolution	512	EffectsQuality@3	scalability		Config/BaseScalability.ini	919	yes
+r.HeterogeneousVolumes.Shadows.Precision	0	EffectsQuality@3	scalability		Config/BaseScalability.ini	920	yes
+r.HeterogeneousVolumes.UseExistenceMask	0	EffectsQuality@3	scalability		Config/BaseScalability.ini	921	yes
+r.TranslucencyLightingVolume.Dim	64	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	924	yes
+r.RefractionQuality	2	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	925	yes
+r.SceneColorFormat	4	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	926	yes
+r.DetailMode	3	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	927	yes
+r.TranslucencyLightingVolume.Blur	1	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	928	yes
+r.MaterialQualityLevel	1 ; High quality	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	929	yes
+r.SSS.Scale	1	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	930	yes
+r.SSS.SampleSet	2	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	931	yes
+r.SSS.Quality	1	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	932	yes
+r.SSS.HalfRes	0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	933	yes
+r.SSGI.Quality	4	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	934	yes
+r.EmitterSpawnRateScale	1.0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	935	yes
+r.ParticleLightQuality	2	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	936	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	937	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	8	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	938	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	32.0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	939	yes
+r.SkyAtmosphere.FastSkyLUT	0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	940	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	4.0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	941	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	256.0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	942	yes
+r.SkyAtmosphere.SampleCountMin	8.0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	943	yes
+r.SkyAtmosphere.SampleCountMax	256.0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	944	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	945	yes
+r.SkyAtmosphere.TransmittanceLUT.SampleCount	30.0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	946	yes
+r.SkyAtmosphere.MultiScatteringLUT.SampleCount	20.0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	947	yes
+r.Fog.SeparateComposition	-1 ; Allow fog separate composition when FSSS is enabled.	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	948	yes
+fx.Niagara.QualityLevel	4	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	949	yes
+r.Refraction.OffsetQuality	1	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	950	yes
+r.HeterogeneousVolumes.Allowed	1	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	951	yes
+r.HeterogeneousVolumes.ApplyFogInscattering	1	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	952	yes
+r.HeterogeneousVolumes.DownsampleFactor	1	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	953	yes
+r.HeterogeneousVolumes.MaxStepCount	1024	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	954	yes
+r.HeterogeneousVolumes.Shadows.Type	0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	955	yes
+r.HeterogeneousVolumes.Shadows.Resolution	1024	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	956	yes
+r.HeterogeneousVolumes.Shadows.MaxSampleCount	16	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	957	yes
+r.HeterogeneousVolumes.Shadows.Precision	1	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	958	yes
+r.HeterogeneousVolumes.UseExistenceMask	1	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	959	yes
+r.Translucency.HeterogeneousVolumes.Type	0	EffectsQuality@Cine	scalability		Config/BaseScalability.ini	960	yes
+foliage.DensityScale	0	FoliageQuality@0	scalability		Config/BaseScalability.ini	965	yes
+grass.DensityScale	0	FoliageQuality@0	scalability		Config/BaseScalability.ini	966	yes
+pcg.Quality	0	FoliageQuality@0	scalability		Config/BaseScalability.ini	967	yes
+foliage.DensityScale	0.4	FoliageQuality@1	scalability		Config/BaseScalability.ini	973	yes
+grass.DensityScale	0.4	FoliageQuality@1	scalability		Config/BaseScalability.ini	974	yes
+pcg.Quality	1	FoliageQuality@1	scalability		Config/BaseScalability.ini	975	yes
+foliage.DensityScale	0.8	FoliageQuality@2	scalability		Config/BaseScalability.ini	981	yes
+grass.DensityScale	0.8	FoliageQuality@2	scalability		Config/BaseScalability.ini	982	yes
+pcg.Quality	2	FoliageQuality@2	scalability		Config/BaseScalability.ini	983	yes
+foliage.DensityScale	1.0	FoliageQuality@3	scalability		Config/BaseScalability.ini	989	yes
+grass.DensityScale	1.0	FoliageQuality@3	scalability		Config/BaseScalability.ini	990	yes
+pcg.Quality	3	FoliageQuality@3	scalability		Config/BaseScalability.ini	991	yes
+foliage.DensityScale	1.0	FoliageQuality@Cine	scalability		Config/BaseScalability.ini	997	yes
+grass.DensityScale	1.0	FoliageQuality@Cine	scalability		Config/BaseScalability.ini	998	yes
+pcg.Quality	4	FoliageQuality@Cine	scalability		Config/BaseScalability.ini	999	yes
+r.HairStrands.SkyLighting.IntegrationType	2	ShadingQuality@0	scalability		Config/BaseScalability.ini	1007	yes
+r.HairStrands.SkyAO.SampleCount	4	ShadingQuality@0	scalability		Config/BaseScalability.ini	1008	yes
+r.HairStrands.Visibility.MSAA.SamplePerPixel	1	ShadingQuality@0	scalability		Config/BaseScalability.ini	1009	yes
+r.AnisotropicMaterials	0	ShadingQuality@0	scalability		Config/BaseScalability.ini	1010	yes
+r.HairStrands.SkyLighting.IntegrationType	2	ShadingQuality@1	scalability		Config/BaseScalability.ini	1013	yes
+r.HairStrands.SkyAO.SampleCount	4	ShadingQuality@1	scalability		Config/BaseScalability.ini	1014	yes
+r.HairStrands.Visibility.MSAA.SamplePerPixel	1	ShadingQuality@1	scalability		Config/BaseScalability.ini	1015	yes
+r.AnisotropicMaterials	0	ShadingQuality@1	scalability		Config/BaseScalability.ini	1016	yes
+r.HairStrands.SkyLighting.IntegrationType	2	ShadingQuality@2	scalability		Config/BaseScalability.ini	1019	yes
+r.HairStrands.SkyAO.SampleCount	4	ShadingQuality@2	scalability		Config/BaseScalability.ini	1020	yes
+r.HairStrands.Visibility.MSAA.SamplePerPixel	4	ShadingQuality@2	scalability		Config/BaseScalability.ini	1021	yes
+r.AnisotropicMaterials	1	ShadingQuality@2	scalability		Config/BaseScalability.ini	1022	yes
+r.HairStrands.SkyLighting.IntegrationType	2	ShadingQuality@3	scalability		Config/BaseScalability.ini	1025	yes
+r.HairStrands.SkyAO.SampleCount	4	ShadingQuality@3	scalability		Config/BaseScalability.ini	1026	yes
+r.HairStrands.Visibility.MSAA.SamplePerPixel	4	ShadingQuality@3	scalability		Config/BaseScalability.ini	1027	yes
+r.AnisotropicMaterials	1	ShadingQuality@3	scalability		Config/BaseScalability.ini	1028	yes
+r.HairStrands.SkyLighting.IntegrationType	1	ShadingQuality@Cine	scalability		Config/BaseScalability.ini	1031	yes
+r.HairStrands.SkyAO.SampleCount	8	ShadingQuality@Cine	scalability		Config/BaseScalability.ini	1032	yes
+r.HairStrands.Visibility.MSAA.SamplePerPixel	8	ShadingQuality@Cine	scalability		Config/BaseScalability.ini	1033	yes
+r.AnisotropicMaterials	1	ShadingQuality@Cine	scalability		Config/BaseScalability.ini	1034	yes
+p.chaos.AllowCreatePhysxBodies	1	Startup	Startup		Config/ConsoleVariables.ini	115	yes
+fx.SkipVectorVMBackendOptimizations	1	Startup	Startup		Config/ConsoleVariables.ini	118	yes
+Input.EnableNativeGestureRecognition	true	ConsoleVariables	ConsoleVariables		Config/IOS/BaseIOSEngine.ini	69	no
+Slate.CacheRenderData	0	ConsoleVariables	ConsoleVariables		Config/IOS/BaseIOSEngine.ini	70	no
+r.HairStrands.Simulation	0	ConsoleVariables	ConsoleVariables		Config/IOS/BaseIOSEngine.ini	71	yes
+r.HairStrands.Strands	0	ConsoleVariables	ConsoleVariables		Config/IOS/BaseIOSEngine.ini	72	yes
+r.HairStrands.Binding	0	ConsoleVariables	ConsoleVariables		Config/IOS/BaseIOSEngine.ini	73	yes
+r.Forward.LightGridSizeZ	8	ConsoleVariables	ConsoleVariables		Config/IOS/BaseIOSEngine.ini	74	yes
+r.Forward.MaxCulledLightsPerCell	8	ConsoleVariables	ConsoleVariables		Config/IOS/BaseIOSEngine.ini	75	yes
+s.StreamableStripDebugName	true	ConsoleVariables	ConsoleVariables		Config/IOS/BaseIOSEngine.ini	78	yes
+s.StreamableStripDebugNameInShipping	true	ConsoleVariables	ConsoleVariables		Config/IOS/BaseIOSEngine.ini	79	yes
+net.DisableIPv6	0	SystemSettings	SystemSettings		Config/IOS/BaseIOSEngine.ini	120	yes
+QualityLevelMapping	"low"	SystemSettings	SystemSettings		Config/IOS/BaseIOSEngine.ini	122	no
+fx.Niagara.QualityLevel.Min	0	SystemSettings	SystemSettings		Config/IOS/BaseIOSEngine.ini	126	yes
+fx.Niagara.QualityLevel.Max	1	SystemSettings	SystemSettings		Config/IOS/BaseIOSEngine.ini	127	yes
+foliage.DensityScale	0.5	FoliageQuality@0	scalability		Config/IOS/IOSScalability.ini	6	yes
+grass.DensityScale	0.5	FoliageQuality@0	scalability		Config/IOS/IOSScalability.ini	7	yes
+grass.densityScale	0.8	FoliageQuality@1	scalability		Config/IOS/IOSScalability.ini	10	yes
+grass.CullDistanceScale	0.8	FoliageQuality@1	scalability		Config/IOS/IOSScalability.ini	11	yes
+foliage.DensityScale	0.8	FoliageQuality@1	scalability		Config/IOS/IOSScalability.ini	12	yes
+grass.densityScale	1.0	FoliageQuality@2	scalability		Config/IOS/IOSScalability.ini	15	yes
+grass.CullDistanceScale	1.0	FoliageQuality@2	scalability		Config/IOS/IOSScalability.ini	16	yes
+foliage.DensityScale	1.0	FoliageQuality@2	scalability		Config/IOS/IOSScalability.ini	17	yes
+grass.densityScale	1.0	FoliageQuality@3	scalability		Config/IOS/IOSScalability.ini	20	yes
+grass.CullDistanceScale	1.0	FoliageQuality@3	scalability		Config/IOS/IOSScalability.ini	21	yes
+foliage.DensityScale	1.0	FoliageQuality@3	scalability		Config/IOS/IOSScalability.ini	22	yes
+r.ViewDistanceScale	0.70	ViewDistanceQuality@0	scalability		Config/IOS/IOSScalability.ini	29	yes
+r.NeverOcclusionTestDistance	200	ViewDistanceQuality@0	scalability		Config/IOS/IOSScalability.ini	30	yes
+r.ViewDistanceScale	1.0	ViewDistanceQuality@1	scalability		Config/IOS/IOSScalability.ini	33	yes
+r.NeverOcclusionTestDistance	200	ViewDistanceQuality@1	scalability		Config/IOS/IOSScalability.ini	34	yes
+r.ViewDistanceScale	1.0	ViewDistanceQuality@2	scalability		Config/IOS/IOSScalability.ini	37	yes
+r.NeverOcclusionTestDistance	200	ViewDistanceQuality@2	scalability		Config/IOS/IOSScalability.ini	38	yes
+r.ViewDistanceScale	1.0	ViewDistanceQuality@3	scalability		Config/IOS/IOSScalability.ini	41	yes
+r.NeverOcclusionTestDistance	200	ViewDistanceQuality@3	scalability		Config/IOS/IOSScalability.ini	42	yes
+r.ShadowQuality	0	ShadowQuality@0	scalability		Config/IOS/IOSScalability.ini	49	yes
+r.Shadow.MaxCSMResolution	1024	ShadowQuality@0	scalability		Config/IOS/IOSScalability.ini	50	yes
+r.Shadow.DistanceScale	0.5	ShadowQuality@0	scalability		Config/IOS/IOSScalability.ini	51	yes
+r.Shadow.CSM.MaxCascades	1	ShadowQuality@0	scalability		Config/IOS/IOSScalability.ini	52	yes
+r.Shadow.RadiusThreshold	0.06	ShadowQuality@0	scalability		Config/IOS/IOSScalability.ini	53	yes
+r.VolumetricFog	0	ShadowQuality@0	scalability		Config/IOS/IOSScalability.ini	54	yes
+r.ContactShadows	0	ShadowQuality@0	scalability		Config/IOS/IOSScalability.ini	55	yes
+r.DistanceFieldShadowing	0	ShadowQuality@0	scalability		Config/IOS/IOSScalability.ini	56	yes
+r.DFShadowQuality	0	ShadowQuality@0	scalability		Config/IOS/IOSScalability.ini	57	yes
+r.ShadowQuality	1	ShadowQuality@1	scalability		Config/IOS/IOSScalability.ini	60	yes
+r.Shadow.MaxCSMResolution	1024	ShadowQuality@1	scalability		Config/IOS/IOSScalability.ini	61	yes
+r.Shadow.DistanceScale	0.7	ShadowQuality@1	scalability		Config/IOS/IOSScalability.ini	62	yes
+r.Shadow.CSM.MaxCascades	1	ShadowQuality@1	scalability		Config/IOS/IOSScalability.ini	63	yes
+r.Shadow.RadiusThreshold	0.06	ShadowQuality@1	scalability		Config/IOS/IOSScalability.ini	64	yes
+r.VolumetricFog	0	ShadowQuality@1	scalability		Config/IOS/IOSScalability.ini	65	yes
+r.ContactShadows	0	ShadowQuality@1	scalability		Config/IOS/IOSScalability.ini	66	yes
+r.DistanceFieldShadowing	0	ShadowQuality@1	scalability		Config/IOS/IOSScalability.ini	67	yes
+r.DFShadowQuality	0	ShadowQuality@1	scalability		Config/IOS/IOSScalability.ini	68	yes
+r.ShadowQuality	2	ShadowQuality@2	scalability		Config/IOS/IOSScalability.ini	71	yes
+r.Shadow.MaxCSMResolution	2048	ShadowQuality@2	scalability		Config/IOS/IOSScalability.ini	72	yes
+r.Shadow.DistanceScale	1.0	ShadowQuality@2	scalability		Config/IOS/IOSScalability.ini	73	yes
+r.Shadow.CSM.MaxCascades	2	ShadowQuality@2	scalability		Config/IOS/IOSScalability.ini	74	yes
+r.Shadow.RadiusThreshold	0.06	ShadowQuality@2	scalability		Config/IOS/IOSScalability.ini	75	yes
+r.VolumetricFog	0	ShadowQuality@2	scalability		Config/IOS/IOSScalability.ini	76	yes
+r.ContactShadows	0	ShadowQuality@2	scalability		Config/IOS/IOSScalability.ini	77	yes
+r.DFShadowQuality	1	ShadowQuality@2	scalability		Config/IOS/IOSScalability.ini	78	yes
+r.Mobile.SupportInsetShadows	True	ShadowQuality@2	scalability		Config/IOS/IOSScalability.ini	79	yes
+r.ShadowQuality	2	ShadowQuality@3	scalability		Config/IOS/IOSScalability.ini	82	yes
+r.Shadow.MaxCSMResolution	2048	ShadowQuality@3	scalability		Config/IOS/IOSScalability.ini	83	yes
+r.Shadow.DistanceScale	1.0	ShadowQuality@3	scalability		Config/IOS/IOSScalability.ini	84	yes
+r.Shadow.CSM.MaxCascades	3	ShadowQuality@3	scalability		Config/IOS/IOSScalability.ini	85	yes
+r.Shadow.RadiusThreshold	0.06	ShadowQuality@3	scalability		Config/IOS/IOSScalability.ini	86	yes
+r.VolumetricFog	0	ShadowQuality@3	scalability		Config/IOS/IOSScalability.ini	87	yes
+r.ContactShadows	0	ShadowQuality@3	scalability		Config/IOS/IOSScalability.ini	88	yes
+r.DFShadowQuality	2	ShadowQuality@3	scalability		Config/IOS/IOSScalability.ini	89	yes
+r.Mobile.SupportInsetShadows	True	ShadowQuality@3	scalability		Config/IOS/IOSScalability.ini	90	yes
+r.SSR.Quality	0	ReflectionQuality@0	scalability		Config/IOS/IOSScalability.ini	95	yes
+r.SSR.Quality	0	ReflectionQuality@1	scalability		Config/IOS/IOSScalability.ini	98	yes
+r.SSR.Quality	0	ReflectionQuality@2	scalability		Config/IOS/IOSScalability.ini	101	yes
+r.SSR.Quality	2	ReflectionQuality@3	scalability		Config/IOS/IOSScalability.ini	104	yes
+r.SSR.Quality	2	ReflectionQuality@Cine	scalability		Config/IOS/IOSScalability.ini	107	yes
+r.Tonemapper.Quality	1	PostProcessQuality@0	scalability		Config/IOS/IOSScalability.ini	114	yes
+r.BloomQuality	0	PostProcessQuality@0	scalability		Config/IOS/IOSScalability.ini	115	yes
+r.DepthOfFieldQuality	0	PostProcessQuality@0	scalability		Config/IOS/IOSScalability.ini	116	yes
+r.LightShaftQuality	0	PostProcessQuality@0	scalability		Config/IOS/IOSScalability.ini	117	yes
+r.EyeAdaptationQuality	1	PostProcessQuality@0	scalability		Config/IOS/IOSScalability.ini	118	yes
+r.AmbientOcclusionLevels	0	PostProcessQuality@0	scalability		Config/IOS/IOSScalability.ini	119	yes
+r.LensFlareQuality	0	PostProcessQuality@0	scalability		Config/IOS/IOSScalability.ini	120	yes
+r.Tonemapper.Quality	2	PostProcessQuality@1	scalability		Config/IOS/IOSScalability.ini	123	yes
+r.BloomQuality	1	PostProcessQuality@1	scalability		Config/IOS/IOSScalability.ini	124	yes
+r.DepthOfFieldQuality	0	PostProcessQuality@1	scalability		Config/IOS/IOSScalability.ini	125	yes
+r.LightShaftQuality	0	PostProcessQuality@1	scalability		Config/IOS/IOSScalability.ini	126	yes
+r.EyeAdaptationQuality	1	PostProcessQuality@1	scalability		Config/IOS/IOSScalability.ini	127	yes
+r.AmbientOcclusionLevels	0	PostProcessQuality@1	scalability		Config/IOS/IOSScalability.ini	128	yes
+r.LensFlareQuality	1	PostProcessQuality@1	scalability		Config/IOS/IOSScalability.ini	129	yes
+r.Tonemapper.Quality	3	PostProcessQuality@2	scalability		Config/IOS/IOSScalability.ini	132	yes
+r.BloomQuality	2	PostProcessQuality@2	scalability		Config/IOS/IOSScalability.ini	133	yes
+r.DepthOfFieldQuality	0	PostProcessQuality@2	scalability		Config/IOS/IOSScalability.ini	134	yes
+r.LightShaftQuality	0	PostProcessQuality@2	scalability		Config/IOS/IOSScalability.ini	135	yes
+r.EyeAdaptationQuality	1	PostProcessQuality@2	scalability		Config/IOS/IOSScalability.ini	136	yes
+r.AmbientOcclusionLevels	1	PostProcessQuality@2	scalability		Config/IOS/IOSScalability.ini	137	yes
+r.LensFlareQuality	2	PostProcessQuality@2	scalability		Config/IOS/IOSScalability.ini	138	yes
+r.Tonemapper.Quality	3	PostProcessQuality@3	scalability		Config/IOS/IOSScalability.ini	141	yes
+r.BloomQuality	3	PostProcessQuality@3	scalability		Config/IOS/IOSScalability.ini	142	yes
+r.DepthOfFieldQuality	1	PostProcessQuality@3	scalability		Config/IOS/IOSScalability.ini	143	yes
+r.LightShaftQuality	1	PostProcessQuality@3	scalability		Config/IOS/IOSScalability.ini	144	yes
+r.EyeAdaptationQuality	1	PostProcessQuality@3	scalability		Config/IOS/IOSScalability.ini	145	yes
+r.AmbientOcclusionLevels	1	PostProcessQuality@3	scalability		Config/IOS/IOSScalability.ini	146	yes
+r.LensFlareQuality	2	PostProcessQuality@3	scalability		Config/IOS/IOSScalability.ini	147	yes
+r.Mobile.AntiAliasing	0	AntiAliasingQuality@0	scalability		Config/IOS/IOSScalability.ini	150	yes
+r.TemporalAA.Quality	0	AntiAliasingQuality@0	scalability		Config/IOS/IOSScalability.ini	151	yes
+r.FXAA.Quality	0	AntiAliasingQuality@0	scalability		Config/IOS/IOSScalability.ini	152	yes
+r.Mobile.AntiAliasing	1	AntiAliasingQuality@1	scalability		Config/IOS/IOSScalability.ini	155	yes
+r.TemporalAA.Quality	0	AntiAliasingQuality@1	scalability		Config/IOS/IOSScalability.ini	156	yes
+r.FXAA.Quality	0	AntiAliasingQuality@1	scalability		Config/IOS/IOSScalability.ini	157	yes
+r.Mobile.AntiAliasing	2	AntiAliasingQuality@2	scalability		Config/IOS/IOSScalability.ini	160	yes
+r.TemporalAA.Quality	0	AntiAliasingQuality@2	scalability		Config/IOS/IOSScalability.ini	161	yes
+r.FXAA.Quality	0	AntiAliasingQuality@2	scalability		Config/IOS/IOSScalability.ini	162	yes
+r.Mobile.AntiAliasing	2	AntiAliasingQuality@3	scalability		Config/IOS/IOSScalability.ini	165	yes
+r.TemporalAA.Quality	0	AntiAliasingQuality@3	scalability		Config/IOS/IOSScalability.ini	166	yes
+r.FXAA.Quality	0	AntiAliasingQuality@3	scalability		Config/IOS/IOSScalability.ini	167	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	174	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	1	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	175	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	4	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	176	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	177	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	1.0	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	178	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	8.0	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	179	yes
+r.SkyAtmosphere.FastSkyLUT.Width	96	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	180	yes
+r.SkyAtmosphere.FastSkyLUT.Height	50	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	181	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	1	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	182	yes
+r.RefractionQuality	0	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	183	yes
+fx.Niagara.QualityLevel	0	EffectsQuality@0	scalability		Config/IOS/IOSScalability.ini	184	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	187	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	1	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	188	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	4	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	189	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	190	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	1.0	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	191	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	8.0	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	192	yes
+r.SkyAtmosphere.FastSkyLUT.Width	96	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	193	yes
+r.SkyAtmosphere.FastSkyLUT.Height	50	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	194	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	1	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	195	yes
+r.RefractionQuality	0	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	196	yes
+fx.Niagara.QualityLevel	0	EffectsQuality@1	scalability		Config/IOS/IOSScalability.ini	197	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	200	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	1	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	201	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	4	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	202	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	203	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	1.0	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	204	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	8.0	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	205	yes
+r.SkyAtmosphere.FastSkyLUT.Width	96	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	206	yes
+r.SkyAtmosphere.FastSkyLUT.Height	50	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	207	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	1	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	208	yes
+r.RefractionQuality	1	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	209	yes
+fx.Niagara.QualityLevel	0	EffectsQuality@2	scalability		Config/IOS/IOSScalability.ini	210	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.FastApplyOnOpaque	1 ; Always have FastSkyLUT 1 in this case to avoid wrong sky	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	213	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.SampleCountMaxPerSlice	1	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	214	yes
+r.SkyAtmosphere.AerialPerspectiveLUT.DepthResolution	4	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	215	yes
+r.SkyAtmosphere.FastSkyLUT	1	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	216	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMin	1.0	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	217	yes
+r.SkyAtmosphere.FastSkyLUT.SampleCountMax	8.0	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	218	yes
+r.SkyAtmosphere.FastSkyLUT.Width	96	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	219	yes
+r.SkyAtmosphere.FastSkyLUT.Height	50	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	220	yes
+r.SkyAtmosphere.TransmittanceLUT.UseSmallFormat	1	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	221	yes
+r.RefractionQuality	1	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	222	yes
+fx.Niagara.QualityLevel	1	EffectsQuality@3	scalability		Config/IOS/IOSScalability.ini	223	yes
+r.MaxAnisotropy	1	TextureQuality@0	scalability		Config/IOS/IOSScalability.ini	230	yes
+r.MaxAnisotropy	1	TextureQuality@1	scalability		Config/IOS/IOSScalability.ini	233	yes
+r.MaxAnisotropy	2	TextureQuality@2	scalability		Config/IOS/IOSScalability.ini	236	yes
+r.MaxAnisotropy	4	TextureQuality@3	scalability		Config/IOS/IOSScalability.ini	239	yes
+r.setres	1280x720	SystemSettings	SystemSettings		Config/Linux/LinuxEngine.ini	6	yes
+fx.NiagaraAllowRuntimeScalabilityChanges	1	SystemSettings	SystemSettings		Config/Linux/LinuxEngine.ini	7	yes
+QualityLevelMapping	"high"	SystemSettings	SystemSettings		Config/Linux/LinuxEngine.ini	9	no
+r.Shadow.DetectVertexShaderLayerAtRuntime	1	SystemSettings	SystemSettings		Config/Linux/LinuxEngine.ini	10	yes
+g.TimeoutForBlockOnRenderFence	60000	ConsoleVariables	ConsoleVariables		Config/Linux/LinuxEngine.ini	21	yes
+memory.MemoryPressureCriticalThresholdPercent	10	ConsoleVariables	ConsoleVariables		Config/Linux/LinuxEngine.ini	22	yes
+r.setres	1280x720	SystemSettings	SystemSettings		Config/LinuxArm64/LinuxArm64Engine.ini	6	yes
+QualityLevelMapping	"low"	SystemSettings	SystemSettings		Config/LinuxArm64/LinuxArm64Engine.ini	8	no
+fx.Niagara.QualityLevel.Min	0	SystemSettings	SystemSettings		Config/LinuxArm64/LinuxArm64Engine.ini	12	yes
+fx.Niagara.QualityLevel.Max	0	SystemSettings	SystemSettings		Config/LinuxArm64/LinuxArm64Engine.ini	13	yes
+g.TimeoutForBlockOnRenderFence	60000	ConsoleVariables	ConsoleVariables		Config/LinuxArm64/LinuxArm64Engine.ini	24	yes
+r.setres	1280x720	SystemSettings	SystemSettings		Config/Mac/BaseMacEngine.ini	28	yes
+g.TimeoutForBlockOnRenderFence	300000	SystemSettings	SystemSettings		Config/Mac/BaseMacEngine.ini	29	yes
+framepro.ScopeMinTimeMicroseconds	10	SystemSettings	SystemSettings		Config/Mac/BaseMacEngine.ini	30	yes
+fx.NiagaraAllowRuntimeScalabilityChanges	1	SystemSettings	SystemSettings		Config/Mac/BaseMacEngine.ini	31	yes
+QualityLevelMapping	"high"	SystemSettings	SystemSettings		Config/Mac/BaseMacEngine.ini	33	no
+r.HairStrands.Visibility.MSAA.SamplePerPixel	1	ConsoleVariables	ConsoleVariables		Config/Mac/BaseMacEngine.ini	36	yes
+r.SceneCulling.ExplicitCellBounds	1	ConsoleVariables	ConsoleVariables		Config/Mac/BaseMacEngine.ini	37	no
+Slate.NoAnimationOnTabForegroundedEvent	True	ConsoleVariables	ConsoleVariables		Config/Mac/BaseMacEngine.ini	39	yes
+r.setres	1280x720	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	16	yes
+framepro.ScopeMinTimeMicroseconds	10	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	17	yes
+fx.NiagaraAllowRuntimeScalabilityChanges	1	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	18	yes
+QualityLevelMapping	"high"	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	20	no
+r.Occlusion.SingleRHIThreadStall	1	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	22	no
+r.Nanite.Streaming.ReservedResources	1	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	23	yes
+D3D12.Bindless.ResourceDescriptorHeapSize	32768	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	24	yes
+D3D12.Bindless.SamplerDescriptorHeapSize	2048	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	25	yes
+r.PSOPrecache.GlobalShaders	1	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	26	yes
+r.VRS.EnableSoftware	1	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	27	yes
+r.VRS.ContrastAdaptiveShading	1	SystemSettings	SystemSettings		Config/Windows/BaseWindowsEngine.ini	28	yes
+WindowsApplication.UseWorkerThreadForRawInput	False	ConsoleVariables	ConsoleVariables		Config/Windows/BaseWindowsEngine.ini	70	yes
+r.PSOPrecache.KeepInMemoryForActiveMaterials	1	ConsoleVariables	ConsoleVariables		Config/Windows/BaseWindowsEngine.ini	71	yes
+Interchange.FeatureFlags.Import.USD.ToLevel	1	ConsoleVariables	ConsoleVariables		Plugins/Experimental/USDPregen/Templates/PregenProject/Config/DefaultEngine.ini	42	yes
+USD.InstancingAwareTranslation	0	ConsoleVariables	ConsoleVariables		Plugins/Experimental/USDPregen/Templates/PregenProject/Config/DefaultEngine.ini	43	yes
+Interchange.FeatureFlags.Import.USDPregen.Enable	1	ConsoleVariables	ConsoleVariables		Plugins/Experimental/USDPregen/Templates/PregenProject/Config/DefaultEngine.ini	44	no
+r.CEFGPUAcceleration	true	ConsoleVariables	ConsoleVariables		Plugins/Fab/Config/Engine.ini	2	yes
+APT.DynamicRes.LockedScreenPercentage	60	SystemSettings	SystemSettings		Plugins/Performance/AutomatedPerfTesting/Config/Engine.ini	3	yes
+fx.UseShaderStages	1	Startup	Startup		Plugins/Runtime/HairStrands/Config/DefaultHairStrands.ini	3	no
+s.AllowUnversionedContentInEditor	1	SystemSettingsEditor	SystemSettingsEditor		Programs/ChaosVisualDebugger/Config/DefaultEngine.ini	7	yes
+cook.AllowCookedDataInEditorBuilds	1	SystemSettingsEditor	SystemSettingsEditor		Programs/ChaosVisualDebugger/Config/DefaultEngine.ini	8	yes
+s.EnforcePackageCompatibleVersionCheck	0	SystemSettingsEditor	SystemSettingsEditor		Programs/ChaosVisualDebugger/Config/DefaultEngine.ini	9	yes
+s.AllowUnversionedContentInEditor	1	SystemSettings	SystemSettings		Programs/ChaosVisualDebugger/Config/DefaultEngine.ini	12	yes
+cook.AllowCookedDataInEditorBuilds	1	SystemSettings	SystemSettings		Programs/ChaosVisualDebugger/Config/DefaultEngine.ini	13	yes
+s.EnforcePackageCompatibleVersionCheck	0	SystemSettings	SystemSettings		Programs/ChaosVisualDebugger/Config/DefaultEngine.ini	14	yes
+r.Nanite.ProjectEnabled	0	ConsoleVariables	ConsoleVariables		Programs/ChaosVisualDebugger/Config/DefaultEngine.ini	31	yes
+r.Shaders.Symbols	1	Startup	Startup		Source/Programs/GPUReshape/Resources/BuildConfig.ini	7	yes
+r.Shaders.Optimize	0	Startup	Startup		Source/Programs/GPUReshape/Resources/BuildConfig.ini	9	yes
+r.D3D.ForceDXC	1	Startup	Startup		Source/Programs/GPUReshape/Resources/BuildConfig.ini	11	yes
+gc.MaxTimeForFinishDestroyGC	1000	Startup	Startup		Source/Programs/GPUReshape/Resources/RuntimeConfig.ini	6	yes
+DetailsPanel.Style.EnableCardLayout	true	ConsoleVariables	ConsoleVariables		Source/Programs/LiveLinkHub/Config/DefaultEngine.ini	46	yes
+Slate.EnableGamepadEditorNavigation	false	ConsoleVariables	ConsoleVariables		Source/Programs/LiveLinkHub/Config/DefaultEngine.ini	47	yes
+LiveLinkHub.EnableStatusBar	false	ConsoleVariables	ConsoleVariables		Source/Programs/LiveLinkHub/Config/DefaultEngine.ini	48	yes

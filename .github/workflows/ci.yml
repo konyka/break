@@ -10,7 +10,7 @@ name: CI
 #   lane-proton            — 仅兼容验证，不计入 Windows D3D12 证据（周跑 + 手动）
 # 收据由 engine/tools/make_evidence_receipt.cmake 生成、engine/tests/test_evidence_receipt_schema.cmake
 # 校验（Task 8 台账消费 evidence-receipt-* artifact 链接）。
-# 保留的非 lane 命名 job：clean-room（task 2 交付）、wayland-gl（兼容期保留，task 6 删除）、
+# 保留的非 lane 命名 job：clean-room（task 2 交付）、wayland-gl（OpenGL 长期保留：最后降级 + 渲染对比基准）、
 # ios-metal-build（Simulator compile-only 证据）。
 
 on:
@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Configure
-        run: cmake -S engine -B build -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain-clang-linux.cmake" -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_IPO=ON
+        run: cmake -S engine -B build -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain-clang-linux.cmake" -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_IPO=ON -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build --parallel
@@ -87,7 +87,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON -DENGINE_BUILD_FUZZ_SMOKE=ON -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build --parallel
@@ -155,7 +155,7 @@ jobs:
         run: sudo sysctl -w vm.mmap_rnd_bits=28
 
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_TSAN=ON
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_TSAN=ON -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build --parallel
@@ -306,7 +306,7 @@ jobs:
         # R696: AddressSanitizer on Windows/clang — the runtime ships as
         # clang_rt.asan DLLs that the loader must find; the test step
         # copies them next to the executables after building.
-        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build-asan --parallel
@@ -363,6 +363,164 @@ jobs:
         if: always()
         with:
           name: evidence-receipt-headless-windows-asan
+          path: receipt.json
+
+  # MSVC 与 MinGW 没有别的 lane 覆盖；两者各自的编译器/链接器对同一份源码的诊断不同
+  # （MSVC /W4 /WX、GCC -Werror），在这里漂移过一次（见 docs/Implementation_Status.md）。
+  # 只跑 headless 套件，不宣称 GPU/窗口系统证据。
+  lane-headless-windows-msvc:
+    name: Windows + MSVC (headless)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # Same d3d12 selector-contract prerequisite as the windows-clang job.
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+
+      # cl.exe is not on PATH by default; this exports the x64 MSVC environment
+      # (INCLUDE/LIB/PATH) to the following steps.
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Keep Configure/Build on the default shell: with `shell: bash` the runner
+      # prepends /usr/bin, whose GNU `link` shadows MSVC's link.exe.
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # The fuzz targets are EXCLUDE_FROM_ALL; without building them the
+      # *_smoke tests report Not Run.
+      - name: Build fuzz targets
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf --parallel
+
+      - name: Test (headless suite)
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build -LE "graphics" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest.log" | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
+            done
+            exit 1
+          fi
+
+      - name: Emit evidence receipt
+        if: always()
+        shell: bash
+        run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics (MSVC)" -DBUILD_CONFIG=Debug \
+            -DGPU=unknown \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: evidence-receipt-headless-windows-msvc
+          path: receipt.json
+
+  lane-headless-windows-mingw:
+    name: Windows + MinGW GCC (headless)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # Same d3d12 selector-contract prerequisite as the windows-clang job.
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+
+      # The image ships a MinGW-w64 gcc, but its location is an image detail.
+      # Resolve it here and fail loudly rather than silently using another gcc.
+      - name: Locate MinGW-w64 GCC
+        shell: pwsh
+        run: |
+          $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+          if (-not $gcc) { Write-Error "gcc.exe not found on PATH"; exit 1 }
+          $target = & $gcc.Source -dumpmachine
+          Write-Output "gcc: $($gcc.Source)  target: $target"
+          if ($target -notmatch 'mingw') { Write-Error "gcc target is '$target', not MinGW"; exit 1 }
+          & $gcc.Source --version | Select-Object -First 1
+
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Build fuzz targets
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf --parallel
+
+      - name: Test (headless suite)
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build -LE "graphics" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest.log" | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
+            done
+            exit 1
+          fi
+
+      - name: Emit evidence receipt
+        if: always()
+        shell: bash
+        run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics (MinGW GCC)" -DBUILD_CONFIG=Debug \
+            -DGPU=unknown \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: evidence-receipt-headless-windows-mingw
           path: receipt.json
 
   # ---- lane: native-surface（真实 surface 创建/resize/销毁；evidence_level=NATIVE_SURFACE）----
@@ -458,7 +616,7 @@ jobs:
           path: receipt.json
 
   wayland-gl:
-    # DEPRECATED（task 6 删除）：兼容期保留的 Wayland+OpenGL lane；收据归
+    # OpenGL 长期保留（最后降级方案 + 渲染对比基准）的 Wayland+OpenGL lane；收据归
     # native-surface 类（test_platform_wayland_runtime 真实 surface 证据）。
     name: Linux Wayland + OpenGL (GCC)
     # R680: pinned like every other Linux lane -- ubuntu-latest moves to
@@ -474,7 +632,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Configure
-        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: |
@@ -750,8 +908,8 @@ jobs:
 
   # ---- lane: GPU-runtime（真实 GPU/软渲染 ICD 跑通帧；evidence_level=GPU_RUNTIME）----
   lane-gpu-runtime-linux-gl:
-    # DEPRECATED（task 6 删除）：兼容期保留的 X11+OpenGL lane（brief :121），
-    # 不再扩展；Xvfb + LIBGL_ALWAYS_SOFTWARE 下跑 X11/GL runtime。
+    # OpenGL 长期保留（最后降级方案 + 渲染对比基准）的 X11+OpenGL lane（brief :121），
+    # 不扩展新能力；Xvfb + LIBGL_ALWAYS_SOFTWARE 下跑 X11/GL runtime。
     name: Linux X11 + OpenGL (GCC)
     # R680: pinned like every other Linux lane -- ubuntu-latest moves to
     # Ubuntu 26 from 2026-10-19 (runner-images#14748).
@@ -766,7 +924,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Configure
-        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build --parallel
@@ -785,7 +943,7 @@ jobs:
 
       - name: Test X11/OpenGL runtime
         run: |
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb-gl.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb-gl.log 2>&1 &
           xvfb_pid=$!
           trap 'kill "$xvfb_pid"' EXIT
           export DISPLAY=:99
@@ -867,7 +1025,7 @@ jobs:
           test -x "$(command -v Xvfb)"
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
           xvfb_pid=$!
           trap 'kill "$xvfb_pid"' EXIT
           export DISPLAY=:99
@@ -1112,7 +1270,7 @@ jobs:
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
           export VK_ICD_FILENAMES="$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
           trap 'kill $!' EXIT
           export DISPLAY=:99
           until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
@@ -1179,7 +1337,7 @@ jobs:
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
           export VK_ICD_FILENAMES="$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
           trap 'kill $!' EXIT
           export DISPLAY=:99
           until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
@@ -1360,7 +1518,7 @@ jobs:
         run: brew install shaderc spirv-cross
 
       - name: Configure (iOS, metal)
-        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
+        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF -DBREAK_ENABLE_CRYPTO=OFF
 
       - name: Build (iOS Simulator destination)
         run: xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build

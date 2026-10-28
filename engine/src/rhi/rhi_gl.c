@@ -1,5 +1,8 @@
+#include "rhi/rhi_backend_namespace.h"
+
 #ifdef ENGINE_PLATFORM_WINDOWS
     #include <windows.h>
+    #include <platform/win_proc.h>
 #endif
 
 #include <glad.h>
@@ -588,8 +591,9 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     wglMakeCurrent(gl->hdc, temp_ctx);
 
     /* Get wglCreateContextAttribsARB */
-    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB =
-        (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
+    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB = NULL;
+    WIN_PROC_LOAD(wglCreateContextAttribsARB,
+                  wglGetProcAddress("wglCreateContextAttribsARB"));
 
     if (wglCreateContextAttribsARB) {
         /* Create OpenGL 4.5 Core Profile context */
@@ -1258,7 +1262,8 @@ static void gl_set_vsync(RHIDevice *dev, bool enabled) {
     GLBackend *gl = (GLBackend *)dev->backend_data;
 #ifdef ENGINE_PLATFORM_WINDOWS
     typedef BOOL (WINAPI *PFNWGLSWAPINTERVALEXTPROC)(int);
-    PFNWGLSWAPINTERVALEXTPROC fn = (PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
+    PFNWGLSWAPINTERVALEXTPROC fn = NULL;
+    WIN_PROC_LOAD(fn, wglGetProcAddress("wglSwapIntervalEXT"));
     if (fn) {
         fn(enabled ? 1 : 0);
     }
@@ -1451,12 +1456,14 @@ static void gl_cmd_clear_color(void *cmd, f32 r, f32 g, f32 b, f32 a) {
 
 /* 计划 E Task 2：编译期单后端入口——GL 实现转发到自身后端。
  * 双句柄约定（rhi.h）：GL 消费 window_native（Wayland 上为 wl_egl_window*）。 */
+#ifndef ENGINE_RHI_MULTI_BACKEND
 RHIDevice *rhi_device_create_compiled(void *window_native, void *surface_native,
                                       void *display_native, u32 w, u32 h) {
     (void)surface_native;
     return rhi_device_create(RHI_BACKEND_OPENGL, window_native,
                              display_native, w, h);
 }
+#endif /* multi-backend: rhi_runtime_backends.c owns the chain entry */
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
     if (backend != RHI_BACKEND_OPENGL || !rhi_drawable_dimensions_valid(w, h)) {

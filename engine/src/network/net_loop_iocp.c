@@ -193,7 +193,13 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
             if (loop->slot_cap == 0u) new_cap = 16u;
             else if (loop->slot_cap > UINT32_MAX / 2u) return false;
             else new_cap = loop->slot_cap * 2u;
-            if ((size_t)new_cap > (size_t)-1 / sizeof(*loop->slots)) return false;
+            {
+                /* Written against a local so a 64-bit size_t does not make the
+                 * comparison constant-false (-Werror=type-limits). */
+                size_t max_slots = (size_t)-1 / sizeof(*loop->slots);
+                if (max_slots < (size_t)UINT32_MAX &&
+                    (size_t)new_cap > max_slots) return false;
+            }
             NetLoopSlot **ns = realloc(loop->slots, new_cap * sizeof(*ns));
             if (!ns) return false;
             memset(ns + loop->slot_cap, 0,

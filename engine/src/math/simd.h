@@ -86,23 +86,26 @@ static inline int simd_ray_aabb_intersect_sse2(
     __m128 t_min = _mm_min_ps(t1, t2);
     __m128 t_max = _mm_max_ps(t1, t2);
     
-    /* Extract values for scalar reduction via shuffle — no stack store */
+    /* Extract values for scalar reduction via shuffle — no stack store.
+     * The splats must go into FRESH registers: overwriting t_min/t_max
+     * destroys the not-yet-extracted lanes (the lane-1 splat used to drop
+     * the z slab entirely, letting z-separated boxes false-positive). */
     f32 tmin = 0.0f;
     f32 tmax = max_t;
-    
+
     f32 v;
     v = _mm_cvtss_f32(t_min); if (v > tmin) tmin = v;
     v = _mm_cvtss_f32(t_max); if (v < tmax) tmax = v;
     if (tmin > tmax) return 0;
-    t_min = _mm_shuffle_ps(t_min, t_min, _MM_SHUFFLE(1,1,1,1));
-    t_max = _mm_shuffle_ps(t_max, t_max, _MM_SHUFFLE(1,1,1,1));
-    v = _mm_cvtss_f32(t_min); if (v > tmin) tmin = v;
-    v = _mm_cvtss_f32(t_max); if (v < tmax) tmax = v;
+    __m128 t_min1 = _mm_shuffle_ps(t_min, t_min, _MM_SHUFFLE(1,1,1,1));
+    __m128 t_max1 = _mm_shuffle_ps(t_max, t_max, _MM_SHUFFLE(1,1,1,1));
+    v = _mm_cvtss_f32(t_min1); if (v > tmin) tmin = v;
+    v = _mm_cvtss_f32(t_max1); if (v < tmax) tmax = v;
     if (tmin > tmax) return 0;
-    t_min = _mm_shuffle_ps(t_min, t_min, _MM_SHUFFLE(2,2,2,2));
-    t_max = _mm_shuffle_ps(t_max, t_max, _MM_SHUFFLE(2,2,2,2));
-    v = _mm_cvtss_f32(t_min); if (v > tmin) tmin = v;
-    v = _mm_cvtss_f32(t_max); if (v < tmax) tmax = v;
+    __m128 t_min2 = _mm_shuffle_ps(t_min, t_min, _MM_SHUFFLE(2,2,2,2));
+    __m128 t_max2 = _mm_shuffle_ps(t_max, t_max, _MM_SHUFFLE(2,2,2,2));
+    v = _mm_cvtss_f32(t_min2); if (v > tmin) tmin = v;
+    v = _mm_cvtss_f32(t_max2); if (v < tmax) tmax = v;
     if (tmin > tmax) return 0;
     
     *out_t = tmin;

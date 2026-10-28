@@ -27,6 +27,7 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 #include <platform/platform_size.h>
 #include <platform/input.h>
 #include <platform/platform_text.h>
+#include <platform/win_proc.h>
 #include <core/types.h>
 #include <core/log.h>
 #include "gamepad_linux.h"  /* shared gamepad API; Windows impl in gamepad_win.c */
@@ -570,8 +571,9 @@ Platform *platform_create(const PlatformConfig *cfg) {
     typedef BOOL (WINAPI *PFN_SetProcessDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
     HMODULE user32 = GetModuleHandleA("user32.dll");
     if (user32) {
-        PFN_SetProcessDpiAwarenessContext set_dpi_ctx =
-            (PFN_SetProcessDpiAwarenessContext)GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+        PFN_SetProcessDpiAwarenessContext set_dpi_ctx = NULL;
+        WIN_PROC_LOAD(set_dpi_ctx,
+                      GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
         if (set_dpi_ctx) {
             set_dpi_ctx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
@@ -827,7 +829,7 @@ f32 platform_get_dpi(Platform *p) {
     if (!resolved) {
         HMODULE user32 = GetModuleHandleA("user32.dll");
         if (user32)
-            fn_get_dpi = (PFN_GetDpiForWindow)GetProcAddress(user32, "GetDpiForWindow");
+            WIN_PROC_LOAD(fn_get_dpi, GetProcAddress(user32, "GetDpiForWindow"));
         resolved = true;
     }
     if (fn_get_dpi) {
@@ -887,12 +889,11 @@ static bool win_query_display_hdr(Platform *p, bool *out_known,
 
     user32 = GetModuleHandleA("user32.dll");
     if (user32 == NULL) return false;
-    get_buffer_sizes = (GetDisplayConfigBufferSizesFn)GetProcAddress(
-        user32, "GetDisplayConfigBufferSizes");
-    query_config = (QueryDisplayConfigFn)GetProcAddress(
-        user32, "QueryDisplayConfig");
-    get_device_info = (DisplayConfigGetDeviceInfoFn)GetProcAddress(
-        user32, "DisplayConfigGetDeviceInfo");
+    WIN_PROC_LOAD(get_buffer_sizes,
+                  GetProcAddress(user32, "GetDisplayConfigBufferSizes"));
+    WIN_PROC_LOAD(query_config, GetProcAddress(user32, "QueryDisplayConfig"));
+    WIN_PROC_LOAD(get_device_info,
+                  GetProcAddress(user32, "DisplayConfigGetDeviceInfo"));
     if (get_buffer_sizes == NULL || query_config == NULL ||
         get_device_info == NULL) {
         return false;
@@ -1091,8 +1092,8 @@ static BOOL CALLBACK monitor_enum_proc(HMONITOR hmon, HDC hdc, LPRECT rect, LPAR
     typedef HRESULT (WINAPI *PFN_GetDpiForMonitor)(HMONITOR, int, UINT *, UINT *);
     HMODULE shcore = LoadLibraryA("shcore.dll");
     if (shcore) {
-        PFN_GetDpiForMonitor fn =
-            (PFN_GetDpiForMonitor)GetProcAddress(shcore, "GetDpiForMonitor");
+        PFN_GetDpiForMonitor fn = NULL;
+        WIN_PROC_LOAD(fn, GetProcAddress(shcore, "GetDpiForMonitor"));
         if (fn) fn(hmon, 0 /* MDT_EFFECTIVE_DPI */, &dpi_x, &dpi_y);
         FreeLibrary(shcore);
     }
