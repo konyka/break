@@ -1522,7 +1522,7 @@ jobs:
         run: brew install shaderc spirv-cross
 
       - name: Configure (iOS, metal)
-        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
+        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF -DBREAK_ENABLE_CRYPTO=OFF
 
       - name: Build (iOS Simulator destination)
         run: xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build

@@ -556,7 +556,7 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
   的 pin 见 LOCKED_DEPENDENCIES.md 注记）；Windows SDK 10.0.26100.0。
 - D3D12 Agility SDK 1.619.6（runtime-shipped；`engine/external/d3d12/agility_sdk_lock.txt`
   以 SHA512 复核 nupkg 与 D3D12Core.dll）。
-- Linux CI 依赖（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`。自 R700 起这些包预装在容器镜像 `ghcr.io/konyka/break-ci-linux:latest` 里（`.github/docker/ci-linux.Dockerfile`，由 `.github/workflows/ci-image.yml` 构建发布），Linux lane 在镜像里运行，job 里不再执行 `apt-get install`。要改包或版本：改 Dockerfile，等 `ci-image` 工作流构建完成后再触发 CI。`lane-proton`（周跑，需要 i386 + wine）仍在 job 里 apt 安装。
+- Linux CI 依赖（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`；另需 `libssl-dev`（noble 为 OpenSSL 3.0.x，未钉小版本，随 apt 安全更新），`BREAK_ENABLE_CRYPTO` 默认开启时缺它整个 Linux configure 都会失败。自 R700 起这些包预装在容器镜像 `ghcr.io/konyka/break-ci-linux:latest` 里（`.github/docker/ci-linux.Dockerfile`，由 `.github/workflows/ci-image.yml` 构建发布），Linux lane 在镜像里运行，job 里不再执行 `apt-get install`。要改包或版本：改 Dockerfile，等 `ci-image` 工作流构建完成后再触发 CI。`lane-proton`（周跑，需要 i386 + wine）仍在 job 里 apt 安装。
 
 禁止使用 "latest" 或未钉版系统包构建 release。缺失依赖的平台在 CI/台账中标记 UNAVAILABLE，
 不得伪造证据。
