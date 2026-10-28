@@ -6,7 +6,7 @@
 - **根因**（逐层加日志确认）：fragment 请求准入失败时，attempt 立即取消已排队的 vertex 请求；若 worker 已读完该文件，它仍会向 owner 的提交队列（容量 4）发布一条提交命令，此时已是“死命令”，只能由 `break_runtime_reload_commit_owner` 跳过回收。但 `break_editor_shader_reload_tick` 只在 attempt 活跃时调用它，而准入即失败的 attempt 从不活跃，于是连续失败把队列塞满，下一次合法重载在 worker 发布时被判为提交溢出（`commit_overloads`=4，`failed_keep_old`）。只有 worker 在两次准入之间超过 owner 线程时才会发生，因此只在负载高的机器上出现。
 - **修复**：`editor_shader_reload.c` 每次 tick 都泵提交队列（attempt 之外没有活请求，只会回收死命令），失败只在 attempt 活跃时计入。
 - **测试**：新增 `shader_reload_dead_commit_commands_do_not_block_next_reload`，用仅测试构建可见的接缝 `break_editor_shader_reload_set_between_requests_for_test` 在两次准入之间让出时间，确定性地制造该交错：去掉修复 3/3 失败，加上修复通过；满载压测从 7/20 失败降到 0/40。
-- **验证**：合并 origin/master 后全量 ctest OpenGL 221/221、Vulkan 222/222、Snowflake 225/225、多后端 222/222、Release 226/226；图形 4/5/7/7 全通过（不含 x11_runtime）；满载下 `test_editor_shell` 40/40；ASan/TSan 下 `test_editor_shell` 各 3 次 106/106 零报告。未在 CI 上验证（需远端 Linux lane 重跑确认）。
+- **验证**：合并 origin/master 后全量 ctest OpenGL 221/221、Vulkan 222/222、Snowflake 225/225、多后端 222/222、Release 226/226；图形 4/5/7/7 全通过（不含 x11_runtime）；满载下 `test_editor_shell` 40/40；ASan/TSan 下 `test_editor_shell` 各 3 次 106/106 零报告。CI 运行 40655375019（`a647cc8e`）全部通过：Linux（X11/Wayland × OpenGL/Vulkan、Clang/LLD Release、GCC ASan+UBSan、GCC TSan、validation、lavapipe benchmark、clean-room）、Windows（MSVC、MinGW、Clang、Clang ASan、win32 native surface）、macOS（Metal、MoltenVK）、iOS 编译；`windows-d3d12` 与 `proton-d3d12` 工作流亦通过。Steam Deck 真机与 proton 兼容参考 lane 按配置跳过。
 
 ## 本轮更新：发布产物移除全部测试钩子（2026-10-28）
 
@@ -16,7 +16,7 @@
   - break_net/break_session（17 个）：全部测试入口、注入状态、`step_delay_ms_for_test` 字段与 auth 快照钩子放进 `BREAK_NET_TESTING`；新增测试变体库 `break_net_test`（同源码、`EXCLUDE_FROM_ALL`，仅 `ENGINE_BUILD_TESTS` 时定义），四个网络单测改链它；发布 `break_net` 中注入点以常量折叠掉。
 - **保留**：`BREAK_RHI_FAIL_VULKAN` 环境开关仍在发布产物中——它是回滚 runbook 记录的运维开关（强制走 OpenGL 降级），只能由本地环境设置。
 - **验证**：全量 ctest OpenGL 221/221、Vulkan 222/222、Snowflake 225/225、多后端 222/222、Release（GCC 16 `-O3`）226/226；图形 OpenGL 4/4、Vulkan 5/5、多后端 7/7、Release 7/7（均不含 x11_runtime）；`fuzz_editor_remote` 3000 次正常；ASan/TSan 下 `test_break_net_adapter` 42、`test_break_session` 35、`test_break_net_tls` 10、`test_break_replication` 7、`test_editor_shell` 105 全通过零报告。变异自检：把带钩子的 `test_editor_shell` 当作 editor 交给契约，报 13 个新钩子并失败。
-- **边界**：Windows/macOS 构建未运行（新增的 `#ifdef` 与 CMake 变体与平台无关，但未实测）。
+- **边界**：本机只在 Linux 上验证；CI 运行 40655375019 在 Windows（MSVC/MinGW/Clang）、macOS、iOS 上构建并通过（见上一条目）。
 
 ## 本轮更新：远程 170 个提交在 Windows 上的同步验证与修复（2026-10-28）
 
