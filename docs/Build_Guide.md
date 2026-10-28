@@ -670,6 +670,20 @@ Metal 全量 CTest **187/187**、graphics **5/5**、资源测试 **47/47**；Mol
 光照、材质与水面仍有差异，不宣称逐像素一致。远程新增 Win32、GL/myui 修复与本地
 iOS 改动均保留，未使用 force push。
 
+2026-10-28 同步与代码 review：本轮从 `@fb0eb120` 快进（`--ff-only`）到 `@e92ac1bc`，累计
+15 个远程提交（Windows Clang/MSVC/MinGW 构建修复、Release 配置的 shipped-binary 契约
+`test_release_config_contract`、Linux CI 镜像与 OpenSSL/libm 修复），无冲突。Metal 全量
+CTest **226/226**、graphics **5/5**，MoltenVK **227/227**（两者仅 D3D12 dependency gate
+按平台跳过）。review 发现并修复三处：(1) `sb_append`（`rule_engine/builtins.c`）新加的
+溢出判断在 `size == PTRDIFF_MAX` 时 `PTRDIFF_MAX - size - 1u` 回绕，放过了 `need`
+超过 `PTRDIFF_MAX` 的请求，改为 `size >= PTRDIFF_MAX` 先行拒绝；(2) 远程为 Linux 链接
+顺序给 `lua` 目标加的 `PUBLIC m` 在 macOS 上让每个链接 lua 的目标都出现
+`ld: ignoring duplicate libraries: '-lm'`，改为仅非 Apple 的 UNIX 添加（libSystem 自带
+数学函数）；(3) 仓库根目录的 `Testing/Temporary/*`（ctest 输出）被误跟踪，取消跟踪并
+加入 `.gitignore`。`editor` 目标自身的 `m engine ... engine` 重复链接仍会产生同类提示，
+属远程既有写法、无功能影响，本次未改。本轮无渲染代码变化，未重复实机截图，证据等级
+不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
