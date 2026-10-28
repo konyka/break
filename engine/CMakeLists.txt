@@ -1834,6 +1834,15 @@ endif()
 # resolves vfs_*/profiler_*/time_* from engine, so engine is repeated after it
 # for static-archive ordering.
 target_link_libraries(editor PRIVATE runtime_core engine)
+# Scripted input replay for live validation (docs/superpowers/specs/
+# 2026-10-28-editor-input-script-design.md). OFF by default: the shipped
+# editor carries no replay code (test_release_config_contract).
+option(BREAK_EDITOR_INPUT_SCRIPT "editor --input-script replay (validation builds)" OFF)
+if(BREAK_EDITOR_INPUT_SCRIPT)
+    target_sources(editor PRIVATE apps/editor/editor_input_script.c
+        apps/editor/editor_input_driver.c)
+    target_compile_definitions(editor PRIVATE BREAK_EDITOR_INPUT_SCRIPT=1)
+endif()
 engine_link_rhi_backend(editor)
 
 if(ENGINE_ENABLE_IPO)
