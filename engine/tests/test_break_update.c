@@ -417,10 +417,10 @@ TEST(signature_line_strictness) {
     buf[off++] = '\n'; buf[off] = '\0';
     ASSERT_FALSE(manifest_parses(buf));
     /* '=' not at the tail pad position */
-    snprintf(buf, sizeof(buf), "%ssignature: =%s\n", HDR, ZERO_SIG_B64 + 1);
+    snprintf(buf, sizeof(buf), "%ssignature: =%s\n", HDR, &ZERO_SIG_B64[1]);
     ASSERT_FALSE(manifest_parses(buf));
     /* non-base64 character */
-    snprintf(buf, sizeof(buf), "%ssignature: *%s\n", HDR, ZERO_SIG_B64 + 1);
+    snprintf(buf, sizeof(buf), "%ssignature: *%s\n", HDR, &ZERO_SIG_B64[1]);
     ASSERT_FALSE(manifest_parses(buf));
     /* missing pad (86 data chars, no "==") */
     snprintf(buf, sizeof(buf), "%ssignature: %.*sAA\n", HDR, 86, ZERO_SIG_B64);

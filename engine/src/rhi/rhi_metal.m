@@ -281,6 +281,8 @@ static void metal_apply_render_pipeline(RHICmdBuffer *cmd,
                                         struct MetalPipeline *pp,
                                         RHIPipeline pipe);
 
+#define METAL_REPLAY_SLOTS 32u
+
 enum {
     METAL_PASS_NONE = 0,
     METAL_PASS_SCREEN,
@@ -332,6 +334,17 @@ struct RHICmdBuffer {
      * (deferred G-Buffer: per-material factor update_buffer between draws
      * with no rebind), so the resume re-applies it. */
     RHIPipeline suspended_pipeline;
+    /* Encoder-bound resources recorded as they are bound (retained). Metal
+     * drops fragment textures/samplers and the vertex buffer with the
+     * encoder, while VK keeps them as command-buffer state across the
+     * compute/blit interlude (deferred G-Buffer: the per-material factor
+     * update_buffer sits between bind_material and the vertex bind), so the
+     * resume replays them. Cleared whenever a fresh pass opens. */
+    id<MTLTexture> frag_tex[METAL_REPLAY_SLOTS];
+    id<MTLSamplerState> frag_smp[METAL_REPLAY_SLOTS];
+    id<MTLBuffer> vtx_buf;
+    NSUInteger vtx_off;
+    bool resuming;
     u8 pass_kind;                 /* METAL_PASS_* while render_pass_open */
     RHIHandle pass_target;        /* fb handle of the bound target */
     MTLPixelFormat pass_color_format; /* color0 of the open pass (Invalid if none) */
@@ -357,6 +370,55 @@ struct RHICmdBuffer {
  * current_pipeline = NULL parity; review fix I1: a stale handle replayed
  * into a fresh encoder draws without a render pipeline state and trips
  * Metal validation). */
+static void metal_replay_clear(RHICmdBuffer *cmd) {
+    u32 i;
+    for (i = 0u; i < METAL_REPLAY_SLOTS; ++i) {
+        [cmd->frag_tex[i] release];
+        cmd->frag_tex[i] = nil;
+        [cmd->frag_smp[i] release];
+        cmd->frag_smp[i] = nil;
+    }
+    [cmd->vtx_buf release];
+    cmd->vtx_buf = nil;
+    cmd->vtx_off = 0u;
+}
+
+static void metal_set_frag_texture(RHICmdBuffer *cmd, id<MTLTexture> tex,
+                                   NSUInteger index) {
+    [cmd->render_encoder setFragmentTexture:tex atIndex:index];
+    if (index < METAL_REPLAY_SLOTS) {
+        [tex retain];
+        [cmd->frag_tex[index] release];
+        cmd->frag_tex[index] = tex;
+    }
+}
+
+static void metal_set_frag_sampler(RHICmdBuffer *cmd, id<MTLSamplerState> smp,
+                                   NSUInteger index) {
+    [cmd->render_encoder setFragmentSamplerState:smp atIndex:index];
+    if (index < METAL_REPLAY_SLOTS) {
+        [smp retain];
+        [cmd->frag_smp[index] release];
+        cmd->frag_smp[index] = smp;
+    }
+}
+
+static void metal_replay_encoder_state(RHICmdBuffer *cmd) {
+    u32 i;
+    for (i = 0u; i < METAL_REPLAY_SLOTS; ++i) {
+        if (cmd->frag_tex[i] != nil)
+            [cmd->render_encoder setFragmentTexture:cmd->frag_tex[i]
+                                            atIndex:(NSUInteger)i];
+        if (cmd->frag_smp[i] != nil)
+            [cmd->render_encoder setFragmentSamplerState:cmd->frag_smp[i]
+                                                 atIndex:(NSUInteger)i];
+    }
+    if (cmd->vtx_buf != nil)
+        [cmd->render_encoder setVertexBuffer:cmd->vtx_buf
+                                      offset:cmd->vtx_off
+                                     atIndex:0u];
+}
+
 static void metal_end_render_encoder(RHICmdBuffer *cmd) {
     if (cmd->render_encoder != nil) {
         [cmd->render_encoder endEncoding];
@@ -563,6 +625,7 @@ void rhi_device_destroy(RHIDevice *dev) {
             if (mb->frame_cmd != NULL) {
                 metal_end_encoders(mb->frame_cmd);
                 [mb->frame_cmd->cmd release];   /* nil between frames; no-op then */
+                metal_replay_clear(mb->frame_cmd);
                 free(mb->frame_cmd);
                 mb->frame_cmd = NULL;
             }
@@ -763,6 +826,8 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     cmd->suspended_target = RHI_HANDLE_NULL;
     cmd->suspended_w = cmd->suspended_h = cmd->suspended_face = 0u;
     cmd->suspended_pipeline = RHI_HANDLE_NULL;
+    cmd->resuming = false;
+    metal_replay_clear(cmd);
     /* A fresh drawable's contents are undefined, so the first pass of every
      * frame clears (default opaque black; rhi_cmd_clear_color overrides). */
     cmd->clear_color[0] = 0.0f;
@@ -2654,6 +2719,7 @@ static void metal_open_render_pass(RHICmdBuffer *cmd,
                                    u32 w, u32 h) {
     metal_end_encoders(cmd);   /* one-encoder rule: compute closes too */
     cmd->suspended_kind = METAL_PASS_NONE;   /* a fresh pass replaces any suspension */
+    if (!cmd->resuming) metal_replay_clear(cmd);
     cmd->render_encoder =
         [[cmd->cmd renderCommandEncoderWithDescriptor:pass] retain];
     if (cmd->render_encoder == nil) {
@@ -2851,7 +2917,9 @@ static void metal_apply_render_pipeline(RHICmdBuffer *cmd, MetalPipeline *pp,
 
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) {
     MetalBuffer *bb;
-    if (cmd == NULL || cmd->render_encoder == nil) return;
+    if (cmd == NULL) return;
+    metal_resume_render_pass_if_needed(cmd);
+    if (cmd->render_encoder == nil) return;
     bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf,
                                                RHI_RES_BUFFER);
     if (bb == NULL) return;
@@ -2860,6 +2928,10 @@ void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) 
     [cmd->render_encoder setVertexBuffer:bb->buffer
                                   offset:(NSUInteger)offset
                                  atIndex:0u];
+    [bb->buffer retain];
+    [cmd->vtx_buf release];
+    cmd->vtx_buf = bb->buffer;
+    cmd->vtx_off = (NSUInteger)offset;
 }
 
 void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, bool is_u32) {
@@ -3226,7 +3298,9 @@ void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r, f3
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
     MetalTexture *td;
     MetalSampler *sd;
-    if (cmd == NULL || cmd->render_encoder == nil) return;
+    if (cmd == NULL) return;
+    metal_resume_render_pass_if_needed(cmd);
+    if (cmd->render_encoder == nil) return;
     td = (MetalTexture *)rhi_get_resource_typed(g_current_device, tex,
                                                 RHI_RES_TEXTURE);
     sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
@@ -3234,10 +3308,8 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler,
     if (td == NULL || sd == NULL) return;
     /* Graphics material set = set 0; combined samplers flatten to
      * texture(unit)+sampler(unit) (Task 10 contract). */
-    [cmd->render_encoder setFragmentTexture:td->texture
-                                    atIndex:(NSUInteger)unit];
-    [cmd->render_encoder setFragmentSamplerState:sd->sampler
-                                         atIndex:(NSUInteger)unit];
+    metal_set_frag_texture(cmd, td->texture, (NSUInteger)unit);
+    metal_set_frag_sampler(cmd, sd->sampler, (NSUInteger)unit);
 }
 
 void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex, RHISampler sampler) {
@@ -4291,8 +4363,8 @@ void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, 
     sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
                                                 RHI_RES_SAMPLER);
     if (cd == NULL || sd == NULL) return;
-    [cmd->render_encoder setFragmentTexture:cd->texture atIndex:(NSUInteger)unit];
-    [cmd->render_encoder setFragmentSamplerState:sd->sampler atIndex:(NSUInteger)unit];
+    metal_set_frag_texture(cmd, cd->texture, (NSUInteger)unit);
+    metal_set_frag_sampler(cmd, sd->sampler, (NSUInteger)unit);
 }
 
 /* These calls are pipeline-state declarations on Metal too: skybox already
@@ -4593,7 +4665,9 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo, RHITex
     MetalSampler *sd;
     id<MTLTexture> views[9];
     u32 i;
-    if (cmd == NULL || cmd->render_encoder == nil) return;
+    if (cmd == NULL) return;
+    metal_resume_render_pass_if_needed(cmd);
+    if (cmd->render_encoder == nil) return;
     td_alb = (MetalTexture *)rhi_get_resource_typed(g_current_device, albedo,
                                                     RHI_RES_TEXTURE);
     sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
@@ -4625,10 +4699,8 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo, RHITex
     views[7] = td_alb->texture;
     views[8] = td_alb->texture;
     for (i = 0u; i < 9u; ++i) {
-        [cmd->render_encoder setFragmentTexture:views[i]
-                                        atIndex:(NSUInteger)i];
-        [cmd->render_encoder setFragmentSamplerState:sd->sampler
-                                             atIndex:(NSUInteger)i];
+        metal_set_frag_texture(cmd, views[i], (NSUInteger)i);
+        metal_set_frag_sampler(cmd, sd->sampler, (NSUInteger)i);
     }
 }
 
@@ -4675,22 +4747,22 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo, RH
         if (cube_fallback == NULL && points[i] != NULL) cube_fallback = points[i];
     }
     for (i = 0u; i < 7u; ++i)
-        [cmd->render_encoder setFragmentTexture:views[i] atIndex:(NSUInteger)i];
+        metal_set_frag_texture(cmd, views[i], (NSUInteger)i);
     /* Cube slots must never receive a 2D albedo fallback. If no real cube is
      * available, leave the optional slot unbound rather than violating the
      * shader's texturecube argument type. */
     if (cd_irr != NULL || cube_fallback != NULL)
-        [cmd->render_encoder setFragmentTexture:(cd_irr != NULL ? cd_irr : cube_fallback)->texture atIndex:7u];
+        metal_set_frag_texture(cmd, (cd_irr != NULL ? cd_irr : cube_fallback)->texture, 7u);
     if (cd_pref != NULL || cube_fallback != NULL)
-        [cmd->render_encoder setFragmentTexture:(cd_pref != NULL ? cd_pref : cube_fallback)->texture atIndex:8u];
-    [cmd->render_encoder setFragmentTexture:(td_occ != NULL ? td_occ : td_alb)->texture atIndex:9u];
+        metal_set_frag_texture(cmd, (cd_pref != NULL ? cd_pref : cube_fallback)->texture, 8u);
+    metal_set_frag_texture(cmd, (td_occ != NULL ? td_occ : td_alb)->texture, 9u);
     for (i = 0u; i < 4u; ++i) {
         MetalTexture *cd = points[i] != NULL ? points[i] : cube_fallback;
         if (cd != NULL)
-            [cmd->render_encoder setFragmentTexture:cd->texture atIndex:(NSUInteger)(10u + i)];
+            metal_set_frag_texture(cmd, cd->texture, (NSUInteger)(10u + i));
     }
     for (i = 0u; i < 14u; ++i)
-        [cmd->render_encoder setFragmentSamplerState:sd->sampler atIndex:(NSUInteger)i];
+        metal_set_frag_sampler(cmd, sd->sampler, (NSUInteger)i);
 }
 
 void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd, RHITexture albedo_metallic, RHITexture roughness_ao, RHITexture normal, RHITexture depth, RHITexture emissive, RHITexture shadow, RHITexture ssao, RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map, const RHITexture *point_shadow_cubes, u32 point_shadow_count, RHISampler cube_sampler) {
@@ -4745,20 +4817,20 @@ void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd, RHITexture albedo_me
     }
     for (i = 0u; i < 10u; ++i) {
         if (i == 7u || i == 8u) continue;
-        [cmd->render_encoder setFragmentTexture:views[i] atIndex:(NSUInteger)i];
+        metal_set_frag_texture(cmd, views[i], (NSUInteger)i);
     }
     /* Cube slots never receive a 2D fallback (texturecube argument type). */
     if (cd_irr != NULL || cube_fallback != NULL)
-        [cmd->render_encoder setFragmentTexture:(cd_irr != NULL ? cd_irr : cube_fallback)->texture atIndex:7u];
+        metal_set_frag_texture(cmd, (cd_irr != NULL ? cd_irr : cube_fallback)->texture, 7u);
     if (cd_pref != NULL || cube_fallback != NULL)
-        [cmd->render_encoder setFragmentTexture:(cd_pref != NULL ? cd_pref : cube_fallback)->texture atIndex:8u];
+        metal_set_frag_texture(cmd, (cd_pref != NULL ? cd_pref : cube_fallback)->texture, 8u);
     for (i = 0u; i < 4u; ++i) {
         MetalTexture *cd = points[i] != NULL ? points[i] : cube_fallback;
         if (cd != NULL)
-            [cmd->render_encoder setFragmentTexture:cd->texture atIndex:(NSUInteger)(10u + i)];
+            metal_set_frag_texture(cmd, cd->texture, (NSUInteger)(10u + i));
     }
     for (i = 0u; i < 14u; ++i)
-        [cmd->render_encoder setFragmentSamplerState:sd->sampler atIndex:(NSUInteger)i];
+        metal_set_frag_sampler(cmd, sd->sampler, (NSUInteger)i);
 }
 
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd, RHITexture *textures, int count, RHISampler sampler) {
@@ -4769,9 +4841,10 @@ void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd, RHITexture *textures, int co
      * ssr/dof/lens_flare/contact_shadow x2, motion_blur x3). A null texture
      * leaves its slot unbound (VK binds NULL_HANDLE; sampling it is the
      * caller's bug and Metal validation says so loudly). */
-    if (cmd == NULL || cmd->render_encoder == nil || textures == NULL ||
-        count <= 0 || count > 6)
+    if (cmd == NULL || textures == NULL || count <= 0 || count > 6)
         return;
+    metal_resume_render_pass_if_needed(cmd);
+    if (cmd->render_encoder == nil) return;
     sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
                                                 RHI_RES_SAMPLER);
     if (sd == NULL) return;
@@ -4779,10 +4852,8 @@ void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd, RHITexture *textures, int co
         MetalTexture *td = (MetalTexture *)rhi_get_resource_typed(
             g_current_device, textures[i], RHI_RES_TEXTURE);
         if (td == NULL) continue;
-        [cmd->render_encoder setFragmentTexture:td->texture
-                                        atIndex:(NSUInteger)i];
-        [cmd->render_encoder setFragmentSamplerState:sd->sampler
-                                             atIndex:(NSUInteger)i];
+        metal_set_frag_texture(cmd, td->texture, (NSUInteger)i);
+        metal_set_frag_sampler(cmd, sd->sampler, (NSUInteger)i);
     }
 }
 
@@ -5376,6 +5447,7 @@ static void metal_resume_render_pass_if_needed(RHICmdBuffer *cmd) {
     pipe = cmd->suspended_pipeline;
     cmd->suspended_kind = METAL_PASS_NONE;
     cmd->suspended_pipeline = RHI_HANDLE_NULL;
+    cmd->resuming = true;
     switch (kind) {
     case METAL_PASS_SCREEN:
         @autoreleasepool {
@@ -5453,7 +5525,9 @@ static void metal_resume_render_pass_if_needed(RHICmdBuffer *cmd) {
     default:
         break;
     }
+    cmd->resuming = false;
     if (!cmd->render_pass_open || cmd->render_encoder == nil) return;
+    metal_replay_encoder_state(cmd);
     pp = (MetalPipeline *)rhi_get_resource_typed(g_current_device, pipe,
                                                  RHI_RES_PIPELINE);
     if (pp != NULL && !pp->is_compute) metal_apply_render_pipeline(cmd, pp, pipe);

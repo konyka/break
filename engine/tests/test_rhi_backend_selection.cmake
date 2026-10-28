@@ -36,7 +36,7 @@ endif()
 # selector paths (ENGINE_PLATFORM STREQUAL "macos" branch), and brew's
 # MoltenVK keg ships libMoltenVK.dylib with no libvulkan.dylib, so
 # discovery fails without the explicit paths the outer lane resolved.
-foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
+foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR OPENSSL_ROOT_DIR)
     if(DEFINED ${cache_var} AND NOT "${${cache_var}}" STREQUAL "")
         list(APPEND configure_overrides "-D${cache_var}=${${cache_var}}")
     endif()

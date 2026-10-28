@@ -2019,12 +2019,23 @@ static int common_record_fields_fail(BreakCrashRecord *r, pid_t child_pid) {
     u64 regs[3] = {0, 0, 0};
     break_crash_record_registers(r, regs);
     if (break_crash_record_pid(r) != (u64)child_pid) failed = 1;
+#if defined(__APPLE__)
+    /* macOS thread ids are not pids, and register capture is Linux
+     * x86_64 only (see break_crash.c): require a real tid, skip regs. */
+    if (break_crash_record_tid(r) == 0) failed = 1;
+    (void)regs;
+#else
     if (break_crash_record_tid(r) != (u64)child_pid) failed = 1;
     if (regs[0] == 0) failed = 1;                              /* rip nonzero */
     if (regs[1] == 0) failed = 1;                              /* rsp nonzero */
+#endif
     if (strcmp(break_crash_record_build_id(r), expected_build_id()) != 0) failed = 1;
     u64 mods = break_crash_record_module_count(r);
+#if defined(__APPLE__)
+    /* Module capture parses /proc/self/maps (Linux only): empty on macOS. */
+#else
     if (mods < 1) failed = 1;
+#endif
     u64 i;
     for (i = 0; i < mods; i++) {
         const char *name = NULL;
@@ -2083,7 +2094,9 @@ TEST(crash_segv_captures_record) {
     ASSERT_FALSE(common_record_fields_fail(r, pid));
     const u8 *bytes = NULL;
     usize win = break_crash_record_stack_window(r, &bytes);
+#if !defined(__APPLE__) /* rsp (hence the window) is captured on Linux x86_64 only */
     ASSERT_TRUE(win > 0);                          /* stack window present */
+#endif
     ASSERT_TRUE(win <= BREAK_CRASH_STACK_WINDOW_MAX);
     break_crash_record_destroy(r);
     /* privacy-by-omission pin: the argv/env strings block at the top of the

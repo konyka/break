@@ -455,6 +455,11 @@ macOS 使用 Xcode Command Line Tools 提供系统框架；当前 Cocoa 渲染�
 MoltenVK/Vulkan、`shaderc_shared` 和 FreeType。文件监视模块额外链接 `CoreServices`
 与 `CoreFoundation`。
 
+`BREAK_ENABLE_CRYPTO` 默认开启，需要 OpenSSL（libcrypto）。macOS 没有系统自带的
+可链接版本；OpenSSL 不在 Homebrew 默认前缀时，配置时加
+`-DOPENSSL_ROOT_DIR=<openssl 前缀>`。契约测试的最小链接用例会用解析到的
+`OPENSSL_CRYPTO_LIBRARY`，嵌套配置（`test_rhi_backend_selection`）也会继承该前缀。
+
 ```bash
 cd engine
 cmake -B build-macos -G Xcode -DCMAKE_BUILD_TYPE=Debug

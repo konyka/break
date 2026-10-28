@@ -193,7 +193,11 @@ set(actual_symbols "")
 foreach(line IN LISTS nm_lines)
     # posix format: "<symbol> <type> <value>"; defined globals only (-g).
     if(line MATCHES "^([A-Za-z_][A-Za-z0-9_]*) ([A-Za-z]) ")
-        list(APPEND actual_symbols "${CMAKE_MATCH_1}")
+        set(sym "${CMAKE_MATCH_1}")
+        if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+            string(REGEX REPLACE "^_" "" sym "${sym}")
+        endif()
+        list(APPEND actual_symbols "${sym}")
     endif()
 endforeach()
 list(SORT actual_symbols)
@@ -318,6 +322,13 @@ int main(void) {
 }
 ")
 
+# macOS has no system libcrypto on the default search path: the outer lane
+# passes the resolved OpenSSL library; elsewhere plain -lcrypto is used.
+if(DEFINED UPDATE_CONTRACT_LIBCRYPTO AND NOT "${UPDATE_CONTRACT_LIBCRYPTO}" STREQUAL "")
+    set(update_contract_libcrypto "${UPDATE_CONTRACT_LIBCRYPTO}")
+else()
+    set(update_contract_libcrypto -lcrypto)
+endif()
 set(link_exe "${UPDATE_CONTRACT_WORK}/update_link_check")
 separate_arguments(update_contract_san_flags UNIX_COMMAND "${UPDATE_CONTRACT_SAN}")
 execute_process(
@@ -327,7 +338,7 @@ execute_process(
             "${link_main}"
             "${UPDATE_CONTRACT_INCLUDE}/platform/platform_fs.c"
             "${UPDATE_CONTRACT_ARCHIVE}" "${UPDATE_CONTRACT_CRYPTO_ARCHIVE}"
-            -lcrypto
+            ${update_contract_libcrypto}
             -o "${link_exe}"
     RESULT_VARIABLE link_rc
     OUTPUT_VARIABLE link_out

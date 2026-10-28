@@ -461,5 +461,18 @@ LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27
       `texel_buffers_replay_across_blit_interlude`、
       `compute_storage_bind_does_not_clobber_graphics_vbo`、
       `offscreen_viewport_stores_ndc_minus_y_in_row_zero`，修复前均失败。
-    - **未解决**：`BREAK_RENDER_PATH=deferred` 在 Metal 下仍整屏近黑（亮度 0.9，VK 为
-      37.9），日志无 ERROR。下一步查延迟光照 pass 的 push/UBO、G-Buffer 尺寸与合成。
+    - 延迟路径近黑已在第 12 条修复。
+12. **延迟渲染整屏近黑（2026-10-28 已修）**：G-Buffer 几何 pass 回读显示 92 万像素里
+    只写了约 1.7 千个，albedo 附件全为 0，光照 pass 本身没问题，只是无物可着色。
+    原因：`deferred_bind_gbuffer_factors` 在 `bind_material` 和 `bind_vertex_buffer`
+    之间调用 `rhi_cmd_update_buffer`，这在 Metal 上是 blit 插入，会结束渲染编码器并把
+    MRT pass 标记为挂起。随后的顶点缓冲、`bind_texture`、`bind_material_textures`、
+    `bind_textures_multi` 在 `render_encoder == nil` 时直接返回、没有恢复 pass，顶点缓冲
+    没绑上，绘制被丢弃。此外片元纹理/采样器和顶点缓冲在 Metal 是编码器状态，VK 是
+    命令缓冲状态，恢复 pass 时也没有被带回。
+    修复（`rhi_metal.m`）：上述四个绑定函数先调用 `metal_resume_render_pass_if_needed`；
+    片元纹理/采样器槽 0–31 与顶点缓冲在绑定时带 retain 记录，恢复 pass 时在重新应用
+    管线前重放；新开 pass、帧开始和设备销毁时清空（`resuming` 标志避免恢复路径清空）。
+    新增测试 `fragment_textures_and_vbo_replay_across_blit_interlude`，修复前失败。
+    结果：延迟路径亮度 0.7→37.3（VK 37.7），与 VK 的 mad 37.0→4.5；
+    默认 clustered 7.0、blinn 7.2，无回退。
