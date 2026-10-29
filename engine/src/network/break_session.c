@@ -1,6 +1,7 @@
 #include "network/break_session.h"
 #include "network/break_net_adapter.h"
 #include "network/break_net_message_registry.h"
+#include "network/break_msg_rate.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -35,6 +36,7 @@ typedef struct BreakSessionEntry {
     uint32_t ping_sequence;
     bool message_seen[BREAK_NET_REGISTRY_MAX_MESSAGES];
     uint32_t message_sequences[BREAK_NET_REGISTRY_MAX_MESSAGES];
+    BreakMsgRate rate;
 #ifdef BREAK_ENABLE_CRYPTO
     u8 server_nonce[16];
     bool server_nonce_valid;
@@ -57,6 +59,8 @@ struct BreakSessionManager {
     BreakSessionHandlerEntry handlers[BREAK_NET_MESSAGE_ID_MAX + 1u];
     BreakSessionApplyResult last_result;
     BreakSessionApplyStats stats;
+    bool rate_enabled;
+    BreakSessionMessageRateConfig rate_config;
 #ifdef BREAK_ENABLE_CRYPTO
     u32 max_age_seconds;
     bool auth_operation_active;
@@ -272,6 +276,18 @@ void break_session_manager_destroy(BreakSessionManager *manager)
     }
 }
 
+/* Every newly bound or reclaimed session starts with full buckets. */
+static void break_session_rate_reset(const BreakSessionManager *manager,
+                                     BreakSessionEntry *entry)
+{
+    if (manager->rate_enabled) {
+        const BreakSessionMessageRateConfig *rc = &manager->rate_config;
+        (void)break_msg_rate_init(&entry->rate, rc->msg_per_sec, rc->msg_burst,
+                                  rc->byte_per_sec, rc->byte_burst,
+                                  rc->clock(rc->clock_user));
+    }
+}
+
 bool break_session_manager_bind(BreakSessionManager *manager, BreakConnectionKey connection)
 {
     size_t i;
@@ -291,6 +307,7 @@ bool break_session_manager_bind(BreakSessionManager *manager, BreakConnectionKey
                 ++manager->next_id;
             }
             manager->entries[i].state = BREAK_SESSION_NEW;
+            break_session_rate_reset(manager, &manager->entries[i]);
             ++manager->count;
             return true;
         }
@@ -374,6 +391,7 @@ static bool break_session_record(BreakSessionManager *manager,
     case BREAK_SESSION_APPLY_PHASE_REJECTED: ++manager->stats.phase_rejected; break;
     case BREAK_SESSION_APPLY_DUPLICATE: ++manager->stats.duplicate; break;
     case BREAK_SESSION_APPLY_HANDLER_FAILED: ++manager->stats.handler_failed; break;
+    case BREAK_SESSION_APPLY_RATE_LIMITED: ++manager->stats.rate_limited; break;
     }
     return result == BREAK_SESSION_APPLY_OK;
 }
@@ -511,6 +529,7 @@ bool break_session_manager_apply_adapter_event(BreakSessionManager *manager,
             entry->connection = key;
             entry->id = manager->next_id++;
             entry->state = BREAK_SESSION_NEW;
+            break_session_rate_reset(manager, entry);
             handled = true;
 #ifdef BREAK_ENABLE_CRYPTO
             entry->server_nonce_valid = break_session_auth_configured_internal() &&
@@ -547,6 +566,13 @@ bool break_session_manager_apply_adapter_event(BreakSessionManager *manager,
         if (entry == NULL) return break_session_record(manager, BREAK_SESSION_APPLY_UNKNOWN);
         if (entry->state == BREAK_SESSION_CLOSING || entry->state == BREAK_SESSION_CLOSED) {
             return break_session_record(manager, BREAK_SESSION_APPLY_STALE);
+        }
+        if (manager->rate_enabled &&
+            break_msg_rate_admit(&entry->rate, (u32)event->message.size,
+                                 manager->rate_config.clock(
+                                     manager->rate_config.clock_user)) !=
+                BREAK_MSG_RATE_OK) {
+            return break_session_record(manager, BREAK_SESSION_APPLY_RATE_LIMITED);
         }
         definition = break_net_message_registry_lookup(
             manager->registry, event->message.message_id);
@@ -649,6 +675,26 @@ bool break_session_manager_set_message_handler(BreakSessionManager *manager,
     }
     manager->handlers[message_id].handler = handler;
     manager->handlers[message_id].user_data = user_data;
+    return true;
+}
+
+bool break_session_manager_set_message_rate(BreakSessionManager *manager,
+                                            const BreakSessionMessageRateConfig *config)
+{
+    if (manager == NULL || manager->count != 0u) {
+        return false;
+    }
+    if (config == NULL) {
+        manager->rate_enabled = false;
+        return true;
+    }
+    if (config->msg_per_sec == 0u || config->msg_burst == 0u ||
+        config->byte_per_sec == 0u || config->byte_burst == 0u ||
+        config->clock == NULL) {
+        return false;
+    }
+    manager->rate_config = *config;
+    manager->rate_enabled = true;
     return true;
 }
 

@@ -1086,6 +1086,7 @@ EDITOR_REMOTE_STATS_SAME(invalid);
 EDITOR_REMOTE_STATS_SAME(phase_rejected);
 EDITOR_REMOTE_STATS_SAME(duplicate);
 EDITOR_REMOTE_STATS_SAME(handler_failed);
+EDITOR_REMOTE_STATS_SAME(rate_limited);
 _Static_assert(sizeof(BreakEditorRemoteSessionStats) ==
                    sizeof(BreakSessionApplyStats),
                "BreakEditorRemoteSessionStats drifted: field count");
@@ -1110,6 +1111,7 @@ bool break_editor_remote_session_stats(const BreakEditorRemote *r,
     out->phase_rejected = st.phase_rejected;
     out->duplicate = st.duplicate;
     out->handler_failed = st.handler_failed;
+    out->rate_limited = st.rate_limited;
     return true;
 }
 

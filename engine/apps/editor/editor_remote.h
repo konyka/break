@@ -91,6 +91,7 @@ typedef struct BreakEditorRemoteSessionStats {
     uint64_t phase_rejected;
     uint64_t duplicate;
     uint64_t handler_failed;
+    uint64_t rate_limited;
 } BreakEditorRemoteSessionStats;
 /* Copies break_session_manager_apply_stats; false (and *out zeroed) when
  * the remote or its manager is absent. */

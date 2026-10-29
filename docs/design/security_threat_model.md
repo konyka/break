@@ -116,7 +116,7 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 | 版本/构建身份 `break_version` 0.1.0+buildid | **当前已有**（`engine/src/core/break_version.h/.c`，测试 `engine/tests/test_break_version.c`） |
 | 传输认证 / 密钥与会话生命周期 | **当前已有（库接缝，Phase D）**：TLS 模式 + CHALLENGE/AUTH-v2 + key_id 解析回调 + max_age；provisioning tooling/轮换编排未实现 |
 | 崩溃数据脱敏契约 | 本文交付（契约）；**crash 通路客户端执行点当前已有**（Phase C `break_crash`：捕获侧 privacy-by-omission + 上传前 redact pass + 有界 spool/恢复语义）；服务端符号化与真实上传传输未实现 |
-| 重放/限速 | **握手级重放论证 + admission 限速执行点当前已有**（Phase D）；应用消息级 replay window 与消息/字节级限速仍为模型声明，未实现 |
+| 重放/限速 | **握手级重放论证 + admission 限速执行点当前已有**（Phase D）；消息/字节级限速已在 break_session 接入（2026-10-30，默认关闭，`break_session_manager_set_message_rate`，见 transport_security.md）；应用消息级 replay window 已有库（`break_replay_window`）但未接入消息路径 |
 
 ## 10. 明确 NOT delivered 清单
 

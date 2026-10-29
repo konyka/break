@@ -64,7 +64,8 @@ typedef enum BreakSessionApplyResult {
     BREAK_SESSION_APPLY_INVALID,
     BREAK_SESSION_APPLY_PHASE_REJECTED,
     BREAK_SESSION_APPLY_DUPLICATE,
-    BREAK_SESSION_APPLY_HANDLER_FAILED
+    BREAK_SESSION_APPLY_HANDLER_FAILED,
+    BREAK_SESSION_APPLY_RATE_LIMITED
 } BreakSessionApplyResult;
 
 typedef struct BreakSessionApplyStats {
@@ -75,7 +76,22 @@ typedef struct BreakSessionApplyStats {
     uint64_t phase_rejected;
     uint64_t duplicate;
     uint64_t handler_failed;
+    uint64_t rate_limited;
 } BreakSessionApplyStats;
+
+/* Optional per-connection message/byte rate limit (break_msg_rate token
+ * buckets). clock returns monotonic milliseconds; it is called on the
+ * GameThread only. Over-limit messages are dropped before dispatch and
+ * recorded as RATE_LIMITED; the session stays open. */
+typedef u64 (*BreakSessionClockMsFn)(void *user);
+typedef struct BreakSessionMessageRateConfig {
+    u32 msg_per_sec;
+    u32 msg_burst;
+    u32 byte_per_sec;
+    u32 byte_burst;
+    BreakSessionClockMsFn clock;
+    void *clock_user;
+} BreakSessionMessageRateConfig;
 
 typedef bool (*BreakSessionMessageHandler)(BreakConnectionKey connection,
                                            const BreakNetOwnedMessage *message,
@@ -118,6 +134,11 @@ bool break_session_manager_set_message_handler(BreakSessionManager *manager,
                                                uint16_t message_id,
                                                BreakSessionMessageHandler handler,
                                                void *user_data);
+/* Enables (config) or disables (NULL) the limit. Only while no session is
+ * bound; all four limits and the clock must be set. Each newly bound session
+ * starts with full buckets. */
+bool break_session_manager_set_message_rate(BreakSessionManager *manager,
+                                            const BreakSessionMessageRateConfig *config);
 /* Polls the borrowed reactor on the GameThread and applies up to max_events. */
 size_t break_session_manager_poll_adapter(BreakSessionManager *manager,
                                            uint32_t max_events);

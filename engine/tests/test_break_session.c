@@ -450,6 +450,121 @@ TEST(break_session_ping_duplicate_is_idempotent_and_observable)
     break_session_manager_destroy(manager);
 }
 
+static u64 g_rate_clock_ms;
+static u64 break_test_rate_clock(void *user)
+{
+    (void)user;
+    return g_rate_clock_ms;
+}
+
+static bool break_test_send_ping(BreakSessionManager *manager,
+                                 BreakConnectionKey key, uint32_t sequence,
+                                 size_t size)
+{
+    static unsigned char payload[64];
+    BreakNetEvent event = {0};
+    BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_PING, 1u, sequence,
+                                payload, size};
+    bool ok;
+    if (break_net_message_copy(&event.message, &view) != BREAK_NET_MESSAGE_OK) {
+        return false;
+    }
+    event.type = BREAK_NET_EVENT_MESSAGE_RECEIVED;
+    event.connection_key = key;
+    ok = break_session_manager_apply_adapter_event(manager, &event);
+    break_net_event_release(&event);
+    return ok;
+}
+
+TEST(break_session_message_rate_limit_drops_excess_per_connection)
+{
+    BreakSessionConfig config = {0};
+    BreakSessionManager *manager = break_session_manager_create(&config);
+    BreakSessionMessageRateConfig rate = {0};
+    BreakNetEvent opened = {0};
+    BreakSessionApplyStats stats = {0};
+
+    ASSERT_NOT_NULL(manager);
+    /* invalid configurations are refused */
+    ASSERT_FALSE(break_session_manager_set_message_rate(NULL, &rate));
+    ASSERT_FALSE(break_session_manager_set_message_rate(manager, &rate));
+    rate.msg_per_sec = 10u;
+    rate.msg_burst = 2u;
+    rate.byte_per_sec = 1000u;
+    rate.byte_burst = 100u;
+    ASSERT_FALSE(break_session_manager_set_message_rate(manager, &rate)); /* no clock */
+    rate.clock = break_test_rate_clock;
+    g_rate_clock_ms = 1000u;
+    ASSERT_TRUE(break_session_manager_set_message_rate(manager, &rate));
+    ASSERT_TRUE(break_session_manager_set_message_handler(
+        manager, BREAK_NET_MESSAGE_ID_PING, break_test_auth_handler, NULL));
+    g_auth_dispatches = 0u;
+
+    opened.type = BREAK_NET_EVENT_CONNECTION_OPENED;
+    opened.connection_key = 0x701u;
+    ASSERT_TRUE(break_session_manager_apply_adapter_event(manager, &opened));
+    opened.connection_key = 0x702u;
+    ASSERT_TRUE(break_session_manager_apply_adapter_event(manager, &opened));
+    /* configuration is frozen once sessions exist */
+    ASSERT_FALSE(break_session_manager_set_message_rate(manager, &rate));
+
+    ASSERT_TRUE(break_test_send_ping(manager, 0x701u, 1u, 1u));
+    ASSERT_TRUE(break_test_send_ping(manager, 0x701u, 2u, 1u));
+    ASSERT_FALSE(break_test_send_ping(manager, 0x701u, 3u, 1u));
+    ASSERT_EQ(break_session_manager_last_result(manager),
+              BREAK_SESSION_APPLY_RATE_LIMITED);
+    /* dropped, not dispatched, and the session stays open */
+    ASSERT_EQ(g_auth_dispatches, 2u);
+    ASSERT_EQ(break_session_manager_state(manager, 0x701u), BREAK_SESSION_NEW);
+    /* buckets are per connection */
+    ASSERT_TRUE(break_test_send_ping(manager, 0x702u, 1u, 1u));
+    /* 100 ms refills one message token for 0x701 */
+    g_rate_clock_ms = 1100u;
+    ASSERT_TRUE(break_test_send_ping(manager, 0x701u, 4u, 1u));
+    /* byte bucket (100 B burst): one 64-byte ping fits, a second does not */
+    g_rate_clock_ms = 2000u;
+    ASSERT_TRUE(break_test_send_ping(manager, 0x702u, 2u, 64u));
+    ASSERT_FALSE(break_test_send_ping(manager, 0x702u, 3u, 64u));
+    ASSERT_EQ(break_session_manager_last_result(manager),
+              BREAK_SESSION_APPLY_RATE_LIMITED);
+    break_session_manager_apply_stats(manager, &stats);
+    ASSERT_EQ(stats.rate_limited, 2u);
+    ASSERT_EQ(g_auth_dispatches, 5u);
+    break_session_manager_destroy(manager);
+}
+
+TEST(break_session_message_rate_limit_resets_with_rebound_connection)
+{
+    BreakSessionConfig config = {0};
+    BreakSessionManager *manager = break_session_manager_create(&config);
+    BreakSessionMessageRateConfig rate = {1u, 1u, 1000u, 1000u,
+                                          break_test_rate_clock, NULL};
+    BreakNetEvent opened = {0};
+    BreakNetEvent closed = {0};
+
+    ASSERT_NOT_NULL(manager);
+    g_rate_clock_ms = 5u;
+    ASSERT_TRUE(break_session_manager_set_message_rate(manager, &rate));
+    ASSERT_TRUE(break_session_manager_set_message_handler(
+        manager, BREAK_NET_MESSAGE_ID_PING, break_test_auth_handler, NULL));
+    opened.type = BREAK_NET_EVENT_CONNECTION_OPENED;
+    opened.connection_key = 0x710u;
+    ASSERT_TRUE(break_session_manager_apply_adapter_event(manager, &opened));
+    ASSERT_TRUE(break_test_send_ping(manager, 0x710u, 1u, 1u));
+    ASSERT_FALSE(break_test_send_ping(manager, 0x710u, 2u, 1u));
+    /* passing NULL after sessions exist is also refused */
+    ASSERT_FALSE(break_session_manager_set_message_rate(manager, NULL));
+    closed.type = BREAK_NET_EVENT_CONNECTION_CLOSED;
+    closed.connection_key = 0x710u;
+    ASSERT_TRUE(break_session_manager_apply_adapter_event(manager, &closed));
+    (void)break_session_manager_poll(manager, 16u);
+    ASSERT_TRUE(break_session_manager_apply_adapter_event(manager, &opened));
+    ASSERT_EQ(break_session_manager_state(manager, 0x710u), BREAK_SESSION_NEW);
+    /* a rebound connection starts with a full bucket */
+    ASSERT_TRUE(break_test_send_ping(manager, 0x710u, 1u, 1u));
+    break_session_manager_destroy(manager);
+}
+
 TEST(break_session_uses_attached_registry_phase_and_duplicate_policy)
 {
     BreakNetMessageRegistry registry;
@@ -1486,6 +1601,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_session_reopen_on_closed_key_rebinds_with_fresh_id);
     RUN_TEST(break_session_auth_handler_failure_closes_without_authenticating);
     RUN_TEST(break_session_ping_duplicate_is_idempotent_and_observable);
+    RUN_TEST(break_session_message_rate_limit_drops_excess_per_connection);
+    RUN_TEST(break_session_message_rate_limit_resets_with_rebound_connection);
     RUN_TEST(break_session_uses_attached_registry_phase_and_duplicate_policy);
     RUN_TEST(break_session_default_registry_allows_auth_in_new_and_ping_pre_auth);
     RUN_TEST(break_session_rejects_public_registry_count_out_of_bounds);
