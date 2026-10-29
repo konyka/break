@@ -1402,7 +1402,16 @@ static void shader_source_include_body(void) {
 
     ASSERT_TRUE(break_editor_shader_source_expand(
         &source, top, strlen(top), &out, &out_len, deps, &ndeps));
-    ASSERT_STR_EQ(out, "#version 450\n// a\nB high\nA\nL\nvoid main(){}\n");
+    /* #line keeps compiler messages on the original files: an included
+     * file is source string k (its dependency index + 1) from line 1;
+     * after it the includer resumes on the line after the #include */
+    ASSERT_STR_EQ(out, "#version 450\n"
+                       "#line 1 1\n// a\n"
+                       "#line 1 2\nB high\n"
+                       "#line 3 1\nA\n"
+                       "#line 1 3\nL\n"
+                       "#line 5 1\n"
+                       "#line 3 0\nvoid main(){}\n");
     ASSERT_EQ(out_len, strlen(out));
     ASSERT_EQ(ndeps, 3u);
     ASSERT_STR_EQ(deps[0], "shaders/a.glsl");

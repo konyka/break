@@ -171,7 +171,8 @@ static bool include_name_safe(const char *name, usize n) {
     return seg > 0u;
 }
 
-static bool expand_text(ShaderExpand *x, const char *text, usize len);
+static bool expand_text(ShaderExpand *x, const char *text, usize len,
+                        u32 source);
 
 static bool expand_include(ShaderExpand *x, const char *name, usize n) {
     char logical[96];
@@ -182,13 +183,18 @@ static bool expand_include(ShaderExpand *x, const char *name, usize n) {
     memcpy(logical, "shaders/", 8u);
     memcpy(logical + 8u, name, n);
     logical[8u + n] = '\0';
+    u32 source = 0u; /* #line source string: dependency index + 1 */
     {
         bool seen = false;
         for (i = 0u; i < x->dep_count; i++) {
-            if (strcmp(x->deps[i], logical) == 0) seen = true;
+            if (strcmp(x->deps[i], logical) == 0) {
+                seen = true;
+                source = i + 1u;
+            }
         }
         if (!seen && x->dep_count < BREAK_EDITOR_SHADER_MAX_DEPS) {
             memcpy(x->deps[x->dep_count++], logical, 8u + n + 1u);
+            source = x->dep_count;
         }
     }
     for (i = 0u; i < x->depth; i++) {
@@ -214,8 +220,17 @@ static bool expand_include(ShaderExpand *x, const char *name, usize n) {
         if (data == NULL) {
             continue;
         }
+        {
+            char line[32];
+            int ln = snprintf(line, sizeof(line), "#line 1 %u\n",
+                              (unsigned)source);
+            if (ln <= 0 || !expand_put(x, line, (usize)ln)) {
+                free(data);
+                return false;
+            }
+        }
         x->stack[x->depth++] = logical;
-        ok = expand_text(x, data, size);
+        ok = expand_text(x, data, size, source);
         x->depth--;
         free(data);
         return ok;
@@ -223,11 +238,14 @@ static bool expand_include(ShaderExpand *x, const char *name, usize n) {
     return false;
 }
 
-static bool expand_text(ShaderExpand *x, const char *text, usize len) {
+static bool expand_text(ShaderExpand *x, const char *text, usize len,
+                        u32 source) {
     usize p = 0u;
+    u32 lineno = 0u;
     while (p < len) {
         usize e = p, q;
         while (e < len && text[e] != '\n') e++;
+        lineno++;
         q = p;
         while (q < e && (text[q] == ' ' || text[q] == '\t')) q++;
         if (e - q >= 8u && memcmp(text + q, "#include", 8u) == 0) {
@@ -242,6 +260,13 @@ static bool expand_text(ShaderExpand *x, const char *text, usize len) {
             if (x->len > 0u && x->buf[x->len - 1u] != '\n' &&
                 !expand_put(x, "\n", 1u)) {
                 return false;
+            }
+            {
+                /* back in this file: the line after the #include */
+                char line[40];
+                int ln = snprintf(line, sizeof(line), "#line %u %u\n",
+                                  (unsigned)(lineno + 1u), (unsigned)source);
+                if (ln <= 0 || !expand_put(x, line, (usize)ln)) return false;
             }
         } else if (!expand_put(x, text + p, e - p + (e < len ? 1u : 0u))) {
             return false;
@@ -264,7 +289,7 @@ bool break_editor_shader_source_expand(
     memset(&x, 0, sizeof(x));
     x.s = s;
     x.deps = deps;
-    if (!expand_put(&x, "", 0u) || !expand_text(&x, text, len)) {
+    if (!expand_put(&x, "", 0u) || !expand_text(&x, text, len, 0u)) {
         *dep_count = x.dep_count;
         free(x.buf);
         return false;
