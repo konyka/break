@@ -4935,7 +4935,9 @@ TEST(remote_protocol_ids_live_in_default_registry)
                {BREAK_EDITOR_MSG_SPAWN},    {BREAK_EDITOR_MSG_REMOVE},
                {BREAK_EDITOR_MSG_RENAME},   {BREAK_EDITOR_MSG_SET_FIELD},
                {BREAK_EDITOR_MSG_UNDO},     {BREAK_EDITOR_MSG_REDO},
-               {BREAK_EDITOR_MSG_EVAL},     {BREAK_EDITOR_MSG_RESULT}};
+               {BREAK_EDITOR_MSG_EVAL},     {BREAK_EDITOR_MSG_RESULT},
+               {BREAK_EDITOR_MSG_SAVE},     {BREAK_EDITOR_MSG_LOAD},
+               {BREAK_EDITOR_MSG_VIEW}};
     const BreakNetMessageRegistry *registry = break_net_message_registry_default();
     usize i;
     for (i = 0u; i < sizeof(ids) / sizeof(ids[0]); i++) {
@@ -5228,6 +5230,71 @@ TEST(remote_load_reverts_configured_path_and_refuses_when_dirty)
     remove(path);
     remove(sidecar);
     TEST_RMDIR(dir);
+}
+
+/* VIEW is view state only (grid, stats overlay, camera reset): it never
+ * touches the document or the undo stack. Request mask/u8 + value/u8;
+ * mask 0 is a pure query. Response grid/u8 stats/u8 then the camera as 7
+ * f32 (target xyz, yaw, pitch, distance, fov_y) after applying. */
+TEST(remote_view_toggles_view_state_without_touching_the_doc)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakEditorDoc *doc;
+    BreakEditorCamera *cam;
+    f32 distance;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_TRUE(break_editor_shell_grid_visible(shell));
+    ASSERT_TRUE(break_editor_shell_viewport_stats_visible(shell));
+
+    /* query */
+    remote_client_send(&c, BREAK_EDITOR_MSG_VIEW, (const u8[]){0u, 0u}, 2u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 2u + 7u * 4u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_VIEW);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[1], 1u);
+
+    /* grid off, stats untouched */
+    remote_client_send(&c, BREAK_EDITOR_MSG_VIEW, (const u8[]){0x01u, 0x00u}, 2u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 30u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 0u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[1], 1u);
+    ASSERT_FALSE(break_editor_shell_grid_visible(shell));
+    ASSERT_TRUE(break_editor_shell_viewport_stats_visible(shell));
+
+    /* stats off + camera reset */
+    cam = break_editor_shell_camera(shell);
+    cam->distance = 123.0f;
+    remote_client_send(&c, BREAK_EDITOR_MSG_VIEW, (const u8[]){0x06u, 0x00u}, 2u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 30u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[1], 0u);
+    ASSERT_FALSE(break_editor_shell_viewport_stats_visible(shell));
+    ASSERT_TRUE(cam->distance != 123.0f);
+    memcpy(&distance, (const u8 *)rsp.payload + 2u + 5u * 4u, 4u);
+    ASSERT_FLOAT_EQ(distance, cam->distance, 1e-6f);
+
+    /* view state is not a document edit */
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    remote_client_send(&c, BREAK_EDITOR_MSG_UNDO, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 0u);
+
+    /* unknown mask bits → RESULT invalid, nothing applied */
+    remote_client_send(&c, BREAK_EDITOR_MSG_VIEW, (const u8[]){0x09u, 0x01u}, 2u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_RESULT);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], BREAK_EDITOR_PROTO_STATUS_INVALID);
+    ASSERT_FALSE(break_editor_shell_grid_visible(shell));
+
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
 }
 
 TEST(remote_set_field_maps_component_and_field_names)
@@ -9078,6 +9145,7 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_spawn_then_remote_undo_redo);
     RUN_REMOTE_TEST(remote_save_writes_configured_path_only);
     RUN_REMOTE_TEST(remote_load_reverts_configured_path_and_refuses_when_dirty);
+    RUN_REMOTE_TEST(remote_view_toggles_view_state_without_touching_the_doc);
     RUN_REMOTE_TEST(remote_set_field_maps_component_and_field_names);
     RUN_REMOTE_TEST(remote_eval_runs_on_shell_thread_and_returns_console_tail);
     RUN_REMOTE_TEST(remote_eval_at_4096_boundary_and_len_mismatch_closes);

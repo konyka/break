@@ -310,6 +310,11 @@ static usize build_valid(const Harness *h, u16 id, u8 *out) {
         put32(out + off, bits);
         return off + 4u;
     }
+    case BREAK_EDITOR_MSG_VIEW:
+        /* mostly valid masks (bits 0..2), sometimes unknown bits */
+        out[0] = rnd_below(5u) == 0u ? (u8)rnd() : (u8)rnd_below(8u);
+        out[1] = (u8)rnd();
+        return 2u;
     case BREAK_EDITOR_MSG_EVAL: {
         const char *s = k_eval_snippets[rnd_below((unsigned)N_EVAL)];
         return put_str(out, s);
@@ -419,8 +424,8 @@ typedef struct Stats {
     unsigned max_entities;
     /* per editor id 4..13: messages that reached the session manager, and how
      * many the handler accepted (apply OK) */
-    unsigned reached[16];
-    unsigned accepted[16];
+    unsigned reached[17];
+    unsigned accepted[17];
     unsigned state_changing_ok; /* applied OK AND the document fingerprint moved */
 } Stats;
 
@@ -480,10 +485,10 @@ static bool feed(Harness *h, u16 id, u16 version, u32 sequence, const void *data
 static u16 pick_id(void) {
     unsigned r = rnd_below(16u);
     if (r < 12u) {
-        return (u16)(4u + rnd_below(12u)); /* 4..15 */
+        return (u16)(4u + rnd_below(13u)); /* 4..16 */
     }
     if (r == 12u) return (u16)rnd_below(4u);      /* 0..3 */
-    if (r == 13u) return (u16)(16u + rnd_below(8u));
+    if (r == 13u) return (u16)(17u + rnd_below(8u));
     if (r == 14u) return 0xFFFFu;
     return (u16)rnd();
 }
@@ -618,7 +623,7 @@ static int one_message(Harness *h, Stats *st, unsigned it) {
     }
 
     result = break_session_manager_last_result(h->manager);
-    if (last_id >= 4u && last_id <= 15u) {
+    if (last_id >= 4u && last_id <= 16u) {
         st->reached[last_id]++;
         if (result == BREAK_SESSION_APPLY_OK) {
             st->accepted[last_id]++;
@@ -712,12 +717,12 @@ int main(int argc, char **argv) {
            st.sessions, st.closed_by_message, st.session_table_stuck, st.evals,
            st.max_entities);
     {
-        static const char *const names[16] = {
+        static const char *const names[17] = {
             "", "", "", "", "DESCRIBE", "LIST", "SPAWN", "REMOVE", "RENAME",
-            "SET_FIELD", "UNDO", "REDO", "EVAL", "RESULT", "SAVE", "LOAD"};
+            "SET_FIELD", "UNDO", "REDO", "EVAL", "RESULT", "SAVE", "LOAD", "VIEW"};
         unsigned i;
         printf("per id (reached manager / handler accepted):");
-        for (i = 4u; i <= 15u; i++) {
+        for (i = 4u; i <= 16u; i++) {
             printf(" %s %u/%u", names[i], st.reached[i], st.accepted[i]);
         }
         printf("\naccepted messages that changed the document: %u\n",

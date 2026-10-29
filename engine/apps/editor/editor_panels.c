@@ -3199,6 +3199,32 @@ bool break_editor_shell_revert(BreakEditorShell *shell) {
     return editor_shell_load_scene(shell, path);
 }
 
+bool break_editor_shell_apply_view(BreakEditorShell *shell, u8 mask, u8 value) {
+    bool persist = false;
+    if (shell == NULL || (mask & (u8)~(BREAK_EDITOR_VIEW_GRID | BREAK_EDITOR_VIEW_STATS |
+                                       BREAK_EDITOR_VIEW_RESET_CAMERA)) != 0u) {
+        return false;
+    }
+    if ((mask & BREAK_EDITOR_VIEW_GRID) != 0u) {
+        shell_set_grid(shell, (value & BREAK_EDITOR_VIEW_GRID) != 0u);
+        persist = true;
+    }
+    if ((mask & BREAK_EDITOR_VIEW_STATS) != 0u) {
+        shell->stats = (value & BREAK_EDITOR_VIEW_STATS) != 0u;
+        persist = true;
+    }
+    if ((mask & BREAK_EDITOR_VIEW_RESET_CAMERA) != 0u) {
+        shell_reset_camera(shell);
+    }
+    if (mask != 0u && shell->viewport_widget != NULL) {
+        my_widget_invalidate(shell->viewport_widget, NULL);
+    }
+    if (persist) {
+        shell_settings_save(shell);
+    }
+    return true;
+}
+
 /* ---------------- Phase 2 Task 3: viewport panel ---------------- */
 
 struct my_widget_t *break_editor_shell_viewport_widget(

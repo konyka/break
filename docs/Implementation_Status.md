@@ -6,7 +6,8 @@
 - **测试**：`test_editor_shell` 新增 `remote_save_writes_configured_path_only`，覆盖未配置路径时返回 0 且不写文件、配置后写出 BSCN 和 sidecar 并清除 dirty。先红后绿：先因未定义而编译失败，再因 registry 缺 id 导致 create 返回 NULL，均已修复。`build-sdd-p4-final` 159/159；该树 ctest 237/238、默认树 233/234，唯一失败都是已知的 `test_platform_x11_runtime`。
 - **追加 LOAD**：新增 `BREAK_EDITOR_MSG_LOAD = 15`，调用新的 `break_editor_shell_revert`，从磁盘重新加载已配置的场景路径。文档有未保存修改时始终返回 0，不会丢弃改动，也没有“再发一次即确认”的机制。测试 `remote_load_reverts_configured_path_and_refuses_when_dirty` 先红后绿；`build-sdd-p4-final` 160/160，两棵树的 ctest 都只剩已知的 x11 失败。
 - **fuzz**：`fuzz_editor_remote` 的 id 范围扩到 4..15，并为 harness 配置了真实的场景路径；ASan 下 8 个 seed、每个 20000 条消息全部通过，SAVE/LOAD 各被接受约 400 次；`ctest -L fuzz` 6/6。
-- **未做**：remote 渲染控制。
+- **追加 VIEW**：新增 `BREAK_EDITOR_MSG_VIEW = 16`，调用 `break_editor_shell_apply_view`。可开关网格和统计叠层，也可复位相机；mask=0 为只读查询。响应返回网格、统计状态，以及 7 个 f32 的相机参数（LE）。只改视图状态，不产生 doc 编辑或 undo；未知位返回 INVALID。测试：`remote_view_toggles_view_state_without_touching_the_doc` 先红后绿，registry 测试覆盖 14/15/16 三个 id；`build-sdd-p4-final` 161/161。fuzz 扩到 4..16，ASan 下 8 个 seed、每个 20000 条消息全部通过（seed 1 中 VIEW 被接受 253 次），`ctest -L fuzz` 6/6。
+- **未做**：任意相机位姿、渲染设置的 remote 控制。
 
 ## 本轮更新：全仓数字文本与 locale 无关（2026-10-30）
 

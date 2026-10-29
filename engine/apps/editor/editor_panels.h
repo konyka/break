@@ -183,6 +183,15 @@ bool break_editor_shell_save(BreakEditorShell *shell);
  * unsaved changes: unlike the local Open flow there is no confirm-by-repeat,
  * so this can never discard work. */
 bool break_editor_shell_revert(BreakEditorShell *shell);
+/* View-state control (remote VIEW message). For each bit set in mask:
+ * BREAK_EDITOR_VIEW_GRID / _STATS take their on/off state from the same bit
+ * of value; BREAK_EDITOR_VIEW_RESET_CAMERA returns to the starting view.
+ * Grid/stats changes persist like the palette toggles. Never edits the
+ * document. false (nothing applied) for unknown mask bits. */
+#define BREAK_EDITOR_VIEW_GRID 0x01u
+#define BREAK_EDITOR_VIEW_STATS 0x02u
+#define BREAK_EDITOR_VIEW_RESET_CAMERA 0x04u
+bool break_editor_shell_apply_view(BreakEditorShell *shell, u8 mask, u8 value);
 
 /* Read-only inspection surface (borrowed results; used by the headless tests
  * and by editor_main for status plumbing). */

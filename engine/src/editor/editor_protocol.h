@@ -48,7 +48,8 @@ enum BreakEditorMessageId {
     BREAK_EDITOR_MSG_EVAL     = 12,  /* req: text_len/u16 + text (≤4096) → rsp: ok/u8 + lines (console ring tail, bounded) */
     BREAK_EDITOR_MSG_RESULT   = 13,  /* generic response wrapper: status/u8 (0 ok,1 invalid,2 failed) + payload */
     BREAK_EDITOR_MSG_SAVE     = 14   /* req: empty → rsp: saved/u8 — writes the shell's configured scene path (no path on the wire); 0 = no path or write failed */,
-    BREAK_EDITOR_MSG_LOAD    = 15   /* req: empty → rsp: loaded/u8 — reloads the configured scene path from disk; 0 = no path, unsaved changes (never discarded remotely), or load failed */
+    BREAK_EDITOR_MSG_LOAD    = 15   /* req: empty → rsp: loaded/u8 — reloads the configured scene path from disk; 0 = no path, unsaved changes (never discarded remotely), or load failed */,
+    BREAK_EDITOR_MSG_VIEW     = 16   /* req: mask/u8 + value/u8 (bit0 grid, bit1 stats overlay, bit2 reset camera; mask 0 = query) → rsp: grid/u8, stats/u8, camera 7×f32 (target xyz, yaw, pitch, distance, fov_y). View state only: no doc edit, no undo */
 };
 
 /* Response status values carried in the BREAK_EDITOR_MSG_RESULT wrapper. */
