@@ -715,6 +715,34 @@ static void vp_draw_box(BreakEditorViewport3D *vp, RHICmdBuffer *cmd,
     vp->last_draws++;
 }
 
+bool break_editor_viewport3d_proxy_color(const BreakEditorDoc *doc,
+                                         BreakEditorEntityId id, f32 out[4]) {
+    f32 c[3];
+    u32 k;
+    if (out == NULL) {
+        return false;
+    }
+    memcpy(out, k_proxy_color, sizeof(k_proxy_color));
+    if (doc == NULL ||
+        !break_editor_doc_has_component(doc, id, BREAK_EDITOR_COMPONENT_LIGHT)) {
+        return false;
+    }
+    for (k = 0u; k < 3u; k++) {
+        if (!break_editor_doc_get_field_f32(doc, id,
+                                            BREAK_EDITOR_COMPONENT_LIGHT, k,
+                                            &c[k]) ||
+            !isfinite(c[k])) {
+            return false;
+        }
+        c[k] = c[k] < 0.0f ? 0.0f : (c[k] > 1.0f ? 1.0f : c[k]);
+    }
+    out[0] = c[0];
+    out[1] = c[1];
+    out[2] = c[2];
+    out[3] = 1.0f;
+    return true;
+}
+
 static bool vp_entity_transform(const BreakEditorDoc *doc,
                                 BreakEditorEntityId id, f32 pos[3],
                                 f32 rot[3], f32 scale[3]) {
@@ -853,7 +881,9 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
             vp_draw_box(vp, cmd, &view_proj, model, k_selected_color);
             vp->last_tinted++;
         } else {
-            vp_draw_box(vp, cmd, &view_proj, model, k_proxy_color);
+            f32 color[4];
+            (void)break_editor_viewport3d_proxy_color(doc, id, color);
+            vp_draw_box(vp, cmd, &view_proj, model, color);
         }
     }
 

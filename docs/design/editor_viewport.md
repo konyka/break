@@ -196,3 +196,7 @@ GPU 路径证据 = 编译/链接 + 记录在案的 live smoke run（**非** GPU 
 ## 地面网格（2026-10-29）
 
 XZ 平面（y = 0）上从 -10 到 +10 每 1 单位一条线，共 42 条，以细长盒（截面 0.02）绘制，先于代理立方体、参与深度测试；过原点沿 X 的线为暗红、沿 Z 的线为暗蓝，其余灰色。几何由纯 CPU 的 `break_editor_viewport3d_grid_lines` 生成，统计 `grid_lines`。默认开启；命令面板“Toggle ground grid / 切换地面网格”开关，偏好文件 `grid=on|off`。编辑器相机默认俯仰改为 25°（原为 0°，视线贴着网格平面时网格只是一条线）；`break_editor_camera_init` 本身仍是 0°。未做：随距离自适应间距、无限网格、淡出。
+
+## 灯光实体的代理颜色（2026-10-30）
+
+有 Light 组件的实体，未选中时代理立方体用灯光的 color.r/g/b（夹到 [0, 1]，alpha 1）绘制；其他实体仍为默认石板灰，选中/多选的暖色高亮优先。任一通道非有限时回退默认色。这只是标记，viewport 不做任何光照着色。实现：`break_editor_viewport3d_proxy_color(doc, id, out)`（纯 CPU）；`test_editor_shell` `light_entities_draw_their_proxy_in_the_light_color`（默认白色、超范围夹紧、NaN 回退、NULL doc）。GPU 画面未做像素级验证。

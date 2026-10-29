@@ -6,6 +6,7 @@
  * undo pins. */
 #include "test_framework.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -1135,6 +1136,49 @@ TEST(viewport_shell_wrapper_records_no_device)
         break_editor_shell_viewport3d(shell), &st));
     ASSERT_STR_EQ(break_editor_viewport3d_skip_name(st.skipped), "no-device");
     break_editor_shell_destroy(shell);
+}
+
+/* Entities with a Light draw their proxy in the light's color (clamped to
+ * [0, 1]); others keep the slate default. Pure CPU, pinned headless. */
+TEST(light_entities_draw_their_proxy_in_the_light_color)
+{
+    BreakEditorDoc *doc = break_editor_doc_create();
+    BreakEditorEntityId plain, lamp;
+    f32 c[4];
+    ASSERT_NOT_NULL(doc);
+    plain = break_editor_doc_add_entity(doc, "plain");
+    lamp = break_editor_doc_add_entity(doc, "lamp");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, lamp,
+                                               BREAK_EDITOR_COMPONENT_LIGHT));
+    ASSERT_FALSE(break_editor_viewport3d_proxy_color(doc, plain, c));
+    ASSERT_FLOAT_EQ(c[0], 0.55f, 1e-6f);
+    ASSERT_FLOAT_EQ(c[3], 1.0f, 0.0f);
+    ASSERT_TRUE(break_editor_viewport3d_proxy_color(doc, lamp, c));
+    ASSERT_FLOAT_EQ(c[0], 1.0f, 0.0f); /* default light is white */
+    ASSERT_FLOAT_EQ(c[1], 1.0f, 0.0f);
+    ASSERT_FLOAT_EQ(c[2], 1.0f, 0.0f);
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, lamp,
+                                               BREAK_EDITOR_COMPONENT_LIGHT,
+                                               0u, 4.0f));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, lamp,
+                                               BREAK_EDITOR_COMPONENT_LIGHT,
+                                               1u, -1.0f));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, lamp,
+                                               BREAK_EDITOR_COMPONENT_LIGHT,
+                                               2u, 0.25f));
+    ASSERT_TRUE(break_editor_viewport3d_proxy_color(doc, lamp, c));
+    ASSERT_FLOAT_EQ(c[0], 1.0f, 0.0f); /* clamped */
+    ASSERT_FLOAT_EQ(c[1], 0.0f, 0.0f);
+    ASSERT_FLOAT_EQ(c[2], 0.25f, 0.0f);
+    ASSERT_FLOAT_EQ(c[3], 1.0f, 0.0f);
+    /* a NaN channel falls back to the default color */
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, lamp,
+                                               BREAK_EDITOR_COMPONENT_LIGHT,
+                                               2u, NAN));
+    ASSERT_FALSE(break_editor_viewport3d_proxy_color(doc, lamp, c));
+    ASSERT_FLOAT_EQ(c[0], 0.55f, 1e-6f);
+    ASSERT_FALSE(break_editor_viewport3d_proxy_color(NULL, lamp, c));
+    break_editor_doc_destroy(doc);
 }
 
 /* Selection outline geometry: the 12 edges of the unit proxy cube as thin
@@ -8652,6 +8696,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(viewport_shell_wrapper_records_no_device);
     RUN_TEST(model_matrix_known_answers);
     RUN_TEST(outline_edges_follow_the_proxy_box);
+    RUN_TEST(light_entities_draw_their_proxy_in_the_light_color);
     RUN_TEST(viewport_last_stats_report_skip_reasons_headless);
     RUN_TEST(shader_source_resolves_variant_paths_bytes_and_cleanup);
     RUN_TEST(shader_source_expands_includes_with_bounds);

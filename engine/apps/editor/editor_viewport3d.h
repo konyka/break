@@ -199,6 +199,14 @@ void break_editor_viewport3d_model_matrix(const f32 pos[3],
 u32 break_editor_viewport3d_outline_edges(const f32 model[16], f32 thickness,
                                           f32 out[12][16]);
 
+/* Unselected proxy color for `id`: an entity with a Light uses its
+ * color.r/g/b clamped to [0, 1] (alpha 1) and returns true; otherwise (no
+ * light, a non-finite channel, NULL doc) `out` gets the slate default and
+ * the call returns false. The selection tint still wins when selected.
+ * This is a marker, not lighting: the viewport does not shade anything. */
+bool break_editor_viewport3d_proxy_color(const BreakEditorDoc *doc,
+                                         BreakEditorEntityId id, f32 out[4]);
+
 /* Box (marquee) select drag in progress: true and, when out4 is non-NULL,
  * the viewport-local rect {x0, y0, x1, y1} (unordered corners). A left press
  * on empty space (no gizmo handle, no proxy) starts it; once the pointer

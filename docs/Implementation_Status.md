@@ -4,7 +4,8 @@
 
 - **交付**：`BREAK_EDITOR_COMPONENT_LIGHT`（id 65）/ `EditorLight`（color.r/g/b、intensity、range，f32×5，默认白色/1/10），在 doc create 时注册进注册表与 World。inspector、撤销/重做、复制、删除快照、BSCN 存取都走已有的通用路径，没有改面板代码。
 - **验证**：`test_editor_components` 21/21（新增 1 例；先因类型未定义而编译失败）；默认树全量 233/233（1 个 Windows-only skip）；Snowflake 树 editor/fuzz 16/16；ASan 树 `test_editor_components` 21/21、`test_editor_shell` 130/130。
-- **边界**：viewport 不渲染灯光（只编辑数据）；字段类型仍只有 f32。见 `docs/design/editor_phase1.md`。
+- **viewport 标记**：有 Light 的实体代理立方体用灯光颜色绘制（夹到 [0,1]，选中高亮优先，NaN 回退默认），`break_editor_viewport3d_proxy_color`；`test_editor_shell` 131/131，全量 233/233。
+- **边界**：viewport 不做光照着色（颜色只是标记）；字段类型仍只有 f32；GPU 画面未做像素验证。见 `docs/design/editor_phase1.md`。
 
 ## 本轮更新：ECS 新加组件零初始化（2026-10-30）
 
