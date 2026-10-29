@@ -1,4 +1,5 @@
-/* The Break RHI vgcanvas must honour the clip for text and images.
+/* The Break RHI vgcanvas must honour the clip for text and images, and
+ * keep painter's order between solids and images.
  *
  * The retained UI repaints only damaged rectangles: my_window clips to each
  * dirty rect and repaints the whole widget tree, so everything outside the
@@ -118,6 +119,57 @@ static void check(DrawKind kind) {
     ASSERT_TRUE(half > 0 && half < all);
 }
 
+/* Painter's order: a fill issued AFTER an image must cover it. The canvas
+ * used to flush every solid (fills, text) first and every image after, so
+ * an image (the editor's 3D viewport blit) covered UI painted later on top
+ * of it (the command palette). */
+TEST(later_fill_covers_an_earlier_image) {
+    static unsigned char px[W * H * 4];
+    static u8 white[8 * 8 * 4];
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO fbo;
+    my_vgcanvas_t *vg;
+    RHICmdBuffer *cmd;
+    const unsigned char *left, *right;
+    memset(&fd, 0, sizeof(fd));
+    fd.width = W;
+    fd.height = H;
+    fd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fd.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    vg = my_vgcanvas_break_rhi_create(NULL, g_dev, W, H);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb) && vg != NULL);
+    memset(white, 255, sizeof(white));
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_set_clear_color(g_dev, &fbo, 0.0f, 0.0f, 0.0f, 1.0f);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    my_vgcanvas_break_rhi_set_target(vg, &fbo);
+    my_vgcanvas_break_rhi_set_cmd(vg, cmd);
+    (void)my_vgcanvas_begin_frame(vg, NULL);
+    {
+        my_rectf_t all = {0.0f, 0.0f, (float)W, (float)H};
+        (void)my_vgcanvas_draw_image(vg, white, 8, 8, &all, NULL);
+    }
+    my_vgcanvas_set_fill_color(vg, my_color_rgba(255, 0, 0, 255));
+    (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, 0.0f, 32.0f, (float)H});
+    (void)my_vgcanvas_end_frame(vg);
+    rhi_offscreen_fbo_unbind(cmd, W, H);
+    rhi_frame_end(g_dev);
+    memset(px, 0, sizeof(px));
+    (void)rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px));
+    rhi_present(g_dev);
+    my_vgcanvas_break_rhi_set_cmd(vg, NULL);
+    my_vgcanvas_destroy(vg);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    left = &px[(12u * W + 8u) * 4u];
+    right = &px[(12u * W + 48u) * 4u];
+    printf("  order: left=%02x%02x%02x right=%02x%02x%02x\n", left[0], left[1],
+           left[2], right[0], right[1], right[2]);
+    ASSERT_TRUE(left[0] > 200u && left[1] < 50u && left[2] < 50u); /* fill */
+    ASSERT_TRUE(right[0] > 200u && right[1] > 200u && right[2] > 200u);
+}
+
 TEST(text_respects_the_clip_rect) {
     check(DRAW_TEXT);
 }
@@ -157,6 +209,7 @@ int main(void) {
         printf("  (no TrueType font found: text case skipped)\n");
     }
     RUN_TEST(image_respects_the_clip_rect);
+    RUN_TEST(later_fill_covers_an_earlier_image);
     if (g_font != NULL) my_font_destroy(g_font);
     rhi_device_destroy(g_dev);
     platform_destroy(g_platform);

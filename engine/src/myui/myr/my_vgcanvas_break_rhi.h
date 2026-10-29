@@ -5,7 +5,10 @@
  * The canvas records triangles in myui's font-vertex layout
  * (xy + uv + RGBA) and submits them through the Break RHI. Solid geometry
  * and glyphs share a single atlas-backed pipeline; images use a second
- * RGBA-texture pipeline. Path tessellation is delegated to my_vggeometry.
+ * RGBA-texture pipeline. Draws are replayed in issue order (consecutive
+ * solids, and consecutive images of one texture, share a draw), so later
+ * paint covers earlier paint across the two pipelines. Path tessellation is
+ * delegated to my_vggeometry.
  * The canvas borrows an optional Break RHI offscreen target. BreakUI owns the
  * target transaction; the canvas queues quality changes requested during a
  * paint callback and never destroys or replaces the active target itself.
@@ -65,8 +68,8 @@ my_ret_t my_vgcanvas_break_rhi_resize(my_vgcanvas_t *vg, u32 width,
  * my_vgcanvas_begin_frame/end_frame (typically from a widget on_paint) with
  * set_cmd() already pointing at a live command buffer. Bounded no-op errors
  * (nothing recorded): NULL/foreign canvas (not this backend), invalid
- * texture handle, non-finite or non-positive w/h, batch ring exhausted
- * (MY_RET_OOM, same bound as draw_image). */
+ * texture handle, non-finite or non-positive w/h, vertex or run storage
+ * allocation failure (MY_RET_OOM). */
 my_ret_t my_vgcanvas_break_rhi_blit_texture(my_vgcanvas_t *vg,
                                             RHITexture texture, float x,
                                             float y, float w, float h);

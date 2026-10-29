@@ -41,6 +41,11 @@ Reference values (JetBrains Int UI dark palette; approximations from the public 
 
 The outliner row bound to the selected entity carries style class `selected` (set in `editor_adapter_bind_row` and re-marked on a row click, which does not rebind), styled `#editor-outliner-row.selected` = selection tint `#2E436E`, white text. Pinned by `test_editor_shell` `outliner_highlights_the_selected_row`; live (Vulkan, `--input-script`) the clicked row samples `#2E436E` and the other `#1E1F22`.
 
+## 4b. Focus ring and draw order
+
+- myui edits paint the focused state from the hover slot (`my_edit.h`), so the sheet's `edit:hover` border is the accent `#3574F0` (focus ring). Pinned by `palette_paints_with_focused_edit_ring` (soft LCD).
+- Live, Ctrl+P showed no palette: the Break RHI canvas flushed every solid (fills, text) and then every image, so the 3D viewport blit covered the palette painted after it. The canvas now records runs in issue order and replays them (`later_fill_covers_an_earlier_image`, red before on Vulkan and OpenGL).
+
 ## 5. Not delivered
 
 Icons, tool-window tabs and gutters, light theme, theme switching UI, custom fonts (JetBrains Mono / Inter are not bundled; the existing font chain stays).

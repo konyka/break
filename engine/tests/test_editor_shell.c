@@ -1673,6 +1673,13 @@ TEST(shell_applies_the_new_ui_dark_theme)
     ASSERT_NOT_NULL(w);
     ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "fg_color", 0u),
               BREAK_EDITOR_THEME_TEXT_SECONDARY);
+    /* a focused edit borrows the HOVER slot (my_edit.h): accent border */
+    w = find(shell, "editor-palette-edit");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "border_color", 0u),
+              BREAK_EDITOR_THEME_BORDER_STRONG);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_HOVER, "border_color", 0u),
+              BREAK_EDITOR_THEME_ACCENT);
     /* labels sit on their panel: no light base-theme bg */
     w = find(shell, "editor-outliner-label");
     ASSERT_NOT_NULL(w);
@@ -1686,6 +1693,41 @@ TEST(shell_applies_the_new_ui_dark_theme)
     ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
               BREAK_EDITOR_THEME_ACCENT);
     ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    break_editor_shell_destroy(shell);
+}
+
+/* Ctrl+P paints the palette over the shell and its focused edit shows the
+ * accent focus ring (soft LCD, full-window repaint). */
+TEST(palette_paints_with_focused_edit_ring)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_window_t *win;
+    my_lcd_t *lcd;
+    const uint8_t *pixels;
+    uint32_t stride;
+    my_widget_t *edit;
+    int32_t gx = 0, gy = 0;
+    const uint8_t *p;
+    ASSERT_NOT_NULL(shell);
+    shell_paint(shell);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
+    shell_paint(shell);
+    win = break_editor_shell_window(shell);
+    lcd = my_pal_window_get_lcd(win->pal_window);
+    ASSERT_NOT_NULL(lcd);
+    pixels = my_lcd_mem_get_buffer(lcd);
+    stride = my_lcd_mem_get_stride(lcd);
+    edit = find(shell, "editor-palette-edit");
+    ASSERT_NOT_NULL(edit);
+    ASSERT_TRUE(edit->rect.w > 0 && edit->rect.h > 0);
+    my_widget_local_to_global(edit, &gx, &gy);
+    /* top border row, a quarter in from the left */
+    p = pixels + (uint32_t)gy * stride + (uint32_t)(gx + edit->rect.w / 4) * 4u;
+    printf("    (palette edit at %d,%d %dx%d top px %02x%02x%02x)\n", gx, gy,
+           edit->rect.w, edit->rect.h, p[0], p[1], p[2]);
+    ASSERT_TRUE((p[0] == 0x35u && p[1] == 0x74u && p[2] == 0xf0u) ||
+                (p[0] == 0xf0u && p[1] == 0x74u && p[2] == 0x35u));
     break_editor_shell_destroy(shell);
 }
 
@@ -6486,6 +6528,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(assets_panel_lists_fixture_root);
     RUN_TEST(shell_applies_the_new_ui_dark_theme);
     RUN_TEST(outliner_highlights_the_selected_row);
+    RUN_TEST(palette_paints_with_focused_edit_ring);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);

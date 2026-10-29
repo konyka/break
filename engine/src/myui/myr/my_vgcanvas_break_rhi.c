@@ -45,12 +45,16 @@ typedef struct {
   int32_t w, h;
 } break_rhi_image_t;
 
+/* One draw in issue order: solids (fills, strokes, text; atlas pipeline) or
+ * images (one texture + sampler). end_frame replays the runs in order so a
+ * fill issued after an image covers it (painter's order). */
 typedef struct {
+  bool is_image;
   RHITexture texture;
   RHISampler sampler;
   u32 offset;
   u32 count;
-} break_rhi_image_batch_t;
+} break_rhi_run_t;
 
 typedef struct my_vgcanvas_break_rhi_t {
   my_vgcanvas_t base;
@@ -76,8 +80,8 @@ typedef struct my_vgcanvas_break_rhi_t {
   size_t image_count, image_cap;
   RHIBuffer image_vbo[2];
   size_t image_vbo_cap;
-  break_rhi_image_batch_t image_batches[BREAK_RHI_MAX_IMAGES];
-  size_t image_batch_count;
+  break_rhi_run_t *runs;
+  size_t run_count, run_cap;
 
   RHIPipeline font_pipeline;
   RHIPipeline image_pipeline;
@@ -153,6 +157,35 @@ static void ndc_xy(my_vgcanvas_break_rhi_t *c, float x, float y, float *nx,
   *ny = 1.0f - 2.0f * y / (float)c->height;
 }
 
+/* Extends the last run when it is the same kind (and, for images, the same
+ * texture + sampler), else opens a new run at the current vertex offset.
+ * `count` vertices are accounted by the caller once they are written. */
+static my_ret_t open_run(my_vgcanvas_break_rhi_t *c, bool is_image,
+                         RHITexture tex, RHISampler sampler) {
+  break_rhi_run_t *last = c->run_count > 0 ? &c->runs[c->run_count - 1] : NULL;
+  my_ret_t ret;
+  if (last != NULL && last->is_image == is_image &&
+      (!is_image ||
+       (last->texture.index == tex.index &&
+        last->texture.generation == tex.generation &&
+        last->sampler.index == sampler.index &&
+        last->sampler.generation == sampler.generation))) {
+    return MY_RET_OK;
+  }
+  ret = grow_bytes(c->allocator, (void **)&c->runs, &c->run_cap,
+                   c->run_count + 1, sizeof(break_rhi_run_t));
+  if (ret != MY_RET_OK) {
+    return ret;
+  }
+  last = &c->runs[c->run_count++];
+  last->is_image = is_image;
+  last->texture = tex;
+  last->sampler = sampler;
+  last->offset = (u32)(is_image ? c->image_count : c->solid_count);
+  last->count = 0;
+  return MY_RET_OK;
+}
+
 static my_ret_t emit_solid_vertex(my_vgcanvas_break_rhi_t *c, float x, float y,
                                   float u, float v, my_color_t color) {
   break_ui_vertex_t *dst;
@@ -163,6 +196,11 @@ static my_ret_t emit_solid_vertex(my_vgcanvas_break_rhi_t *c, float x, float y,
   if (ret != MY_RET_OK) {
     return ret;
   }
+  ret = open_run(c, false, RHI_HANDLE_NULL, RHI_HANDLE_NULL);
+  if (ret != MY_RET_OK) {
+    return ret;
+  }
+  c->runs[c->run_count - 1].count++;
   ndc_xy(c, x, y, &nx, &ny);
   dst = &c->solid_verts[c->solid_count++];
   dst->x = nx;
@@ -650,33 +688,22 @@ static my_ret_t emit_texture_quad(my_vgcanvas_break_rhi_t *c, RHITexture tex,
   if (!clip_quad(c, &q)) {
     return MY_RET_OK; /* fully clipped: nothing to draw */
   }
-  if (c->image_batch_count == 0 ||
-      c->image_batches[c->image_batch_count - 1].texture.index != tex.index ||
-      c->image_batches[c->image_batch_count - 1].texture.generation !=
-          tex.generation ||
-      c->image_batches[c->image_batch_count - 1].sampler.index !=
-          image_sampler.index ||
-      c->image_batches[c->image_batch_count - 1].sampler.generation !=
-          image_sampler.generation) {
-    if (c->image_batch_count >= BREAK_RHI_MAX_IMAGES) {
-      return MY_RET_OOM;
-    }
-    c->image_batches[c->image_batch_count].texture = tex;
-    c->image_batches[c->image_batch_count].sampler = image_sampler;
-    c->image_batches[c->image_batch_count].offset = (u32)c->image_count;
-    c->image_batches[c->image_batch_count].count = 0;
-    c->image_batch_count++;
-  }
   {
-    my_ret_t ret;
+    size_t mark = c->image_count;
+    my_ret_t ret = open_run(c, true, tex, image_sampler);
+    if (ret != MY_RET_OK) return ret;
     ret = emit_image_triangle(c, q.x0, q.y0, q.u0, q.v0, q.x1, q.y0, q.u1,
                               q.v0, q.x0, q.y1, q.u0, q.v1);
-    if (ret != MY_RET_OK) return ret;
-    ret = emit_image_triangle(c, q.x1, q.y0, q.u1, q.v0, q.x1, q.y1, q.u1,
-                              q.v1, q.x0, q.y1, q.u0, q.v1);
-    if (ret != MY_RET_OK) return ret;
+    if (ret == MY_RET_OK) {
+      ret = emit_image_triangle(c, q.x1, q.y0, q.u1, q.v0, q.x1, q.y1, q.u1,
+                                q.v1, q.x0, q.y1, q.u0, q.v1);
+    }
+    if (ret != MY_RET_OK) {
+      c->image_count = mark; /* drop a partial quad: runs stay aligned */
+      return ret;
+    }
   }
-  c->image_batches[c->image_batch_count - 1].count += 6u;
+  c->runs[c->run_count - 1].count += 6u;
   return MY_RET_OK;
 }
 
@@ -717,7 +744,7 @@ static my_ret_t rhi_begin_frame(my_vgcanvas_t *vg, const my_rect_t *dirty) {
   (void)dirty;
   c->solid_count = 0;
   c->image_count = 0;
-  c->image_batch_count = 0;
+  c->run_count = 0;
   return MY_RET_OK;
 }
 
@@ -757,10 +784,6 @@ static my_ret_t rhi_end_frame(my_vgcanvas_t *vg) {
     }
     rhi_buffer_update(c->device, c->solid_vbo[slot], c->solid_verts,
                       c->solid_count * sizeof(break_ui_vertex_t));
-    rhi_cmd_bind_pipeline(c->cmd, c->font_pipeline);
-    rhi_cmd_bind_texture(c->cmd, c->atlas_texture, c->sampler, 0);
-    rhi_cmd_bind_vertex_buffer(c->cmd, c->solid_vbo[slot], 0);
-    rhi_cmd_draw(c->cmd, (u32)c->solid_count, 1);
   }
   if (c->image_count > 0) {
     if (ensure_vbo(c, c->image_vbo, &c->image_vbo_cap, c->image_count) !=
@@ -769,13 +792,31 @@ static my_ret_t rhi_end_frame(my_vgcanvas_t *vg) {
     }
     rhi_buffer_update(c->device, c->image_vbo[slot], c->image_verts,
                       c->image_count * sizeof(break_ui_vertex_t));
-    rhi_cmd_bind_pipeline(c->cmd, c->image_pipeline);
-    rhi_cmd_bind_vertex_buffer(c->cmd, c->image_vbo[slot], 0);
-    for (i = 0; i < c->image_batch_count; i++) {
-      rhi_cmd_bind_texture(c->cmd, c->image_batches[i].texture,
-                           c->image_batches[i].sampler, 0);
-      rhi_cmd_draw_base(c->cmd, c->image_batches[i].count, 1,
-                        c->image_batches[i].offset);
+  }
+  /* Replay in issue order; rebind only when the run kind changes. */
+  {
+    int bound = -1; /* -1 none, 0 solid, 1 image */
+    for (i = 0; i < c->run_count; i++) {
+      const break_rhi_run_t *r = &c->runs[i];
+      if (r->count == 0) {
+        continue;
+      }
+      if (!r->is_image) {
+        if (bound != 0) {
+          rhi_cmd_bind_pipeline(c->cmd, c->font_pipeline);
+          rhi_cmd_bind_texture(c->cmd, c->atlas_texture, c->sampler, 0);
+          rhi_cmd_bind_vertex_buffer(c->cmd, c->solid_vbo[slot], 0);
+          bound = 0;
+        }
+      } else {
+        if (bound != 1) {
+          rhi_cmd_bind_pipeline(c->cmd, c->image_pipeline);
+          rhi_cmd_bind_vertex_buffer(c->cmd, c->image_vbo[slot], 0);
+          bound = 1;
+        }
+        rhi_cmd_bind_texture(c->cmd, r->texture, r->sampler, 0);
+      }
+      rhi_cmd_draw_base(c->cmd, r->count, 1, r->offset);
     }
   }
   return MY_RET_OK;
@@ -1020,6 +1061,7 @@ static void rhi_destroy(my_vgcanvas_t *vg) {
   }
   my_mem_free(c->allocator, c->solid_verts);
   my_mem_free(c->allocator, c->image_verts);
+  my_mem_free(c->allocator, c->runs);
   my_mem_free(c->allocator, c->atlas_pixels);
   my_mem_free(c->allocator, c->stack);
   my_mem_free(c->allocator, c->glyphs);

@@ -36,7 +36,9 @@ static const char k_css[] =
     " color: #dfe1e5; }\n"
     "edit { background-color: #1e1f22; border-color: #4e5157;"
     " color: #dfe1e5; }\n"
-    "edit:hover { border-color: #5e6066; }\n"
+    /* myui edits paint their focused state from the hover slot (my_edit.h),
+     * so this is the focus ring: accent border */
+    "edit:hover { border-color: #3574f0; }\n"
     /* buttons: flat dark default, 4 px corners, 1 px border */
     "button { background-color: #2b2d30; border-color: #4e5157;"
     " border-width: 1px; border-radius: 4px; color: #dfe1e5;"

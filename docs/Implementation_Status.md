@@ -9,6 +9,8 @@
 - **环境注记**：本次实机期间本机 X（Xwayland + Mutter）的垂直同步 present 降到约 1.4 FPS（`glxgears` 同样），OpenGL 后端在 `glXSwapBuffers` 等待；`vblank_mode=0` 下两后端完整交互脚本全部通过。这不是代码回归（当天早些时候通过的 master 构建同样卡住）。
 - **验证**：全量 ctest OpenGL 224/224、Vulkan 225/225、Snowflake 228/228、多后端 225/225、Release 229/229；图形 OpenGL 5/5、Vulkan 6/6、多后端 8/8、Release 8/8（含新 `test_myui_break_rhi_clip`，不含 x11_runtime）；ASan/TSan `test_editor_shell` 各 3 次 112/112 零报告；满载 40/40。
 - **大纲选中行高亮**：选中实体对应的大纲行带 `selected` 类，显示选中色 `#2E436E`、白字；点击行或增删实体时随之移动或清除（`test_editor_shell` `outliner_highlights_the_selected_row`，修复前红；Vulkan 实机取色：被点行 `#2E436E`、其余 `#1E1F22`）。
+- **命令面板被 3D 视口盖住**：Break RHI 画布先画全部纯色/文字、再画全部图片，后画的面板反被视口贴图覆盖，Ctrl+P 实机看不到面板。改为按发出顺序回放（同类连续合批），`test_myui_break_rhi_clip` 新增 `later_fill_covers_an_earlier_image`（修复前红，Vulkan/OpenGL 修复后绿）；实机 Vulkan 面板可见。
+- **输入框焦点框**：myui 输入框获得焦点时用 hover 样式槽（`my_edit.h`），主题 `edit:hover` 边框改为强调色 `#3574F0`；`test_editor_shell` 新增 `palette_paints_with_focused_edit_ring`（软件画布取色），实机面板输入框 1px 蓝框。
 - **附带修复**：`test_break_crash_target_contract` 在同一构建树反复运行约 32 次后必然失败（rc=31）。原因是持久工作目录中 `discarded/` 已达 `BREAK_CRASH_SPOOL_KEEP` 上限，断言仍期望 `disc0 + 1`。自 `a30b4a2d` 起存在，属测试缺陷；现按上限饱和期望（第 31、52 号检查）。
 - **边界**：无图标、工具窗标签页、浅色主题与主题切换界面；未内置 JetBrains Mono/Inter 字体，沿用现有字体链；Windows/macOS 未实机运行。设计：`docs/superpowers/specs/2026-10-28-editor-text-and-clion-theme-design.md`。
 
