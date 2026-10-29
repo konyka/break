@@ -275,7 +275,7 @@ TEST(palette_opens_filters_and_escape_closes)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 19u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 20u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save"));
@@ -3765,6 +3765,38 @@ TEST(palette_open_loads_the_typed_path_with_the_guard)
     remove(scene);
     remove(side);
     TEST_RMDIR(dir);
+}
+
+/* Ctrl+N / palette "New scene": an empty untitled document, behind the
+ * unsaved-changes guard (first request warns, a repeat discards). */
+TEST(new_scene_starts_empty_and_guards_unsaved_changes)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    char path[256];
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    test_tmp(path, sizeof(path), "editor_new_scene.bscn");
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, path));
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'n', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u); /* warned only */
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell),
+                       "unsaved changes") != NULL);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'n', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), "");
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+    ASSERT_STR_EQ(break_editor_shell_window_title(shell),
+                  "Untitled - Break Scene Editor");
+    /* clean: palette entry acts at once */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "new scene"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    break_editor_shell_destroy(shell);
 }
 
 TEST(lua_panel_eval_routes_result_to_console_ring)
@@ -8174,7 +8206,7 @@ TEST(i18n_palette_switches_language_at_runtime)
 
     /* palette now lists and filters Chinese command names */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 19u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 20u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "保存"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "English"));
@@ -8612,6 +8644,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);
     RUN_TEST(palette_open_loads_the_typed_path_with_the_guard);
+    RUN_TEST(new_scene_starts_empty_and_guards_unsaved_changes);
     RUN_TEST(lua_panel_eval_routes_result_to_console_ring);
     RUN_TEST(lua_panel_spawn_updates_outliner_and_ctrl_z_reverts);
     RUN_TEST(lua_panel_history_up_down_recall);

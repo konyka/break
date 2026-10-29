@@ -52,7 +52,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_ROW_CTX_POOL 64u
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
-#define EDITOR_PALETTE_COMMAND_COUNT 19u
+#define EDITOR_PALETTE_COMMAND_COUNT 20u
 /* 25 degrees: the editor camera starts above the grid plane */
 #define EDITOR_DEFAULT_CAMERA_PITCH 0.43633231f
 /* "2": look along -X from the +X side (90 degrees) */
@@ -237,7 +237,8 @@ enum {
     PAL_TOGGLE_SNAP,
     PAL_TOGGLE_STATS,
     PAL_TOGGLE_GRID,
-    PAL_RESET_VIEW
+    PAL_RESET_VIEW,
+    PAL_NEW_SCENE
 };
 
 /* Current-language text of palette command `cmd` (bounded, never NULL). */
@@ -287,6 +288,9 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
     if (cmd == PAL_RESET_VIEW) {
         return break_editor_tr(BREAK_EDITOR_TR_CMD_RESET_VIEW);
     }
+    if (cmd == PAL_NEW_SCENE) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_NEW_SCENE);
+    }
     return "?";
 }
 
@@ -303,6 +307,7 @@ static int shell_extra_index(const BreakEditorShell *shell,
 static void shell_set_snap(BreakEditorShell *shell, bool on);
 static void shell_set_grid(BreakEditorShell *shell, bool on);
 static void shell_reset_camera(BreakEditorShell *shell);
+static void shell_do_new_scene(BreakEditorShell *shell);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
 
 /* Bounded console log: appends one <=127-byte line to the ring, dropping the
@@ -1528,6 +1533,9 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     case PAL_TOGGLE_SNAP:
         shell_set_snap(shell, !shell->snap);
         break;
+    case PAL_NEW_SCENE:
+        shell_do_new_scene(shell);
+        break;
     case PAL_RESET_VIEW:
         shell_reset_camera(shell);
         if (shell->viewport_widget != NULL) {
@@ -1606,6 +1614,7 @@ enum {
     ACT_VIEW_FRONT,
     ACT_VIEW_RIGHT,
     ACT_VIEW_TOP,
+    ACT_NEW_SCENE,
     ACT_HIDE_SELECTED,
     ACT_SHOW_ALL
 };
@@ -1636,6 +1645,7 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'1', MY_KEYMOD_NONE, ACT_VIEW_FRONT},
     {'2', MY_KEYMOD_NONE, ACT_VIEW_RIGHT},
     {'3', MY_KEYMOD_NONE, ACT_VIEW_TOP},
+    {'n', MY_KEYMOD_CTRL, ACT_NEW_SCENE},
     {'h', MY_KEYMOD_NONE, ACT_HIDE_SELECTED},
     {'h', MY_KEYMOD_ALT, ACT_SHOW_ALL},
     {MY_KEY_UP, MY_KEYMOD_NONE, ACT_SELECT_PREV},
@@ -1869,6 +1879,9 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
                 shell,
                 sc->action == ACT_SELECT_NEXT || sc->action == ACT_EXTEND_NEXT,
                 sc->action == ACT_EXTEND_PREV || sc->action == ACT_EXTEND_NEXT);
+            break;
+        case ACT_NEW_SCENE:
+            shell_do_new_scene(shell);
             break;
         case ACT_HIDE_SELECTED:
             shell_do_hide_selected(shell);
@@ -2952,29 +2965,65 @@ const char *break_editor_shell_scene_path(const BreakEditorShell *shell) {
     return shell != NULL && shell->scene_path_set ? shell->scene_path : "";
 }
 
-bool editor_shell_load_scene_guarded(BreakEditorShell *shell, const char *path) {
+/* Discard guard shared by load and new scene: with unsaved changes the
+ * first request for `key` warns (`warning`) and returns false; the same
+ * key again with no edit in between returns true. */
+static bool shell_discard_confirmed(BreakEditorShell *shell, const char *key,
+                                    BreakEditorTr warning) {
     u64 rev;
-    if (shell == NULL || path == NULL) {
-        return false;
+    if (!break_editor_doc_is_dirty(shell->doc)) {
+        shell->load_warned_rev = 0u;
+        shell->load_warned_path[0] = '\0';
+        return true;
     }
-    if (break_editor_doc_is_dirty(shell->doc)) {
-        rev = break_editor_cmd_stack_revision(break_editor_doc_stack(shell->doc)) + 1u;
-        if (shell->load_warned_rev != rev ||
-            strncmp(shell->load_warned_path, path,
-                    sizeof(shell->load_warned_path)) != 0) {
-            shell->load_warned_rev = rev;
-            (void)snprintf(shell->load_warned_path,
-                           sizeof(shell->load_warned_path), "%s", path);
-            editor_shell_log(shell, "%s",
-                             break_editor_tr(BREAK_EDITOR_TR_LOG_LOAD_UNSAVED));
-            (void)snprintf(shell->note, sizeof(shell->note), "%s",
-                           break_editor_tr(BREAK_EDITOR_TR_LOG_LOAD_UNSAVED));
-            shell_refresh_status(shell);
-            return false;
-        }
+    rev = break_editor_cmd_stack_revision(break_editor_doc_stack(shell->doc)) + 1u;
+    if (shell->load_warned_rev != rev ||
+        strncmp(shell->load_warned_path, key,
+                sizeof(shell->load_warned_path)) != 0) {
+        shell->load_warned_rev = rev;
+        (void)snprintf(shell->load_warned_path, sizeof(shell->load_warned_path),
+                       "%s", key);
+        editor_shell_log(shell, "%s", break_editor_tr(warning));
+        (void)snprintf(shell->note, sizeof(shell->note), "%s",
+                       break_editor_tr(warning));
+        shell_refresh_status(shell);
+        return false;
     }
     shell->load_warned_rev = 0u;
     shell->load_warned_path[0] = '\0';
+    return true;
+}
+
+/* Ctrl+N / "New scene": empty untitled document (no save target, no
+ * selection, nothing hidden, no scene watch). */
+static void shell_do_new_scene(BreakEditorShell *shell) {
+    /* NUL-led key cannot collide with a real path */
+    if (!shell_discard_confirmed(shell, "\x01new", BREAK_EDITOR_TR_LOG_NEW_UNSAVED)) {
+        return;
+    }
+    shell_end_gizmo_drag(shell);
+    if (!break_editor_doc_reset(shell->doc)) {
+        editor_shell_log(shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_NEW_FAILED));
+        return;
+    }
+    shell->scene_path[0] = '\0';
+    shell->scene_path_set = false;
+    (void)break_editor_hot_reload_set_scene(shell->hot_reload, NULL);
+    shell->selected = BREAK_EDITOR_ENTITY_NULL;
+    shell->extra_count = 0u;
+    shell->hidden_count = 0u;
+    break_editor_viewport3d_set_hidden(shell->vp3d, NULL, 0u);
+    editor_shell_log(shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_NEW_SCENE));
+    editor_shell_refresh_all(shell);
+}
+
+bool editor_shell_load_scene_guarded(BreakEditorShell *shell, const char *path) {
+    if (shell == NULL || path == NULL) {
+        return false;
+    }
+    if (!shell_discard_confirmed(shell, path, BREAK_EDITOR_TR_LOG_LOAD_UNSAVED)) {
+        return false;
+    }
     return editor_shell_load_scene(shell, path);
 }
 

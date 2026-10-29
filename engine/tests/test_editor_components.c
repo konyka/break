@@ -642,6 +642,33 @@ TEST(duplicate_entities_is_one_command) {
     break_editor_doc_destroy(doc);
 }
 
+/* reset: an empty, clean document with no history; components still work */
+TEST(reset_empties_the_document) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorEntityId a = break_editor_doc_add_entity(doc, "a");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, a,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)), 0u);
+    ASSERT_FALSE(break_editor_undo(doc));
+    /* the old id is gone; new entities and components behave normally */
+    ASSERT_FALSE(break_editor_doc_has_component(doc, a,
+                                                BREAK_EDITOR_COMPONENT_TRANSFORM));
+    BreakEditorEntityId b = break_editor_doc_add_entity(doc, "b");
+    ASSERT_TRUE(break_editor_entity_id_valid(b));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, b,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(
+        doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, 2.0f));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_FALSE(break_editor_doc_reset(NULL));
+    break_editor_doc_destroy(doc);
+}
+
 TEST(add_remove_component_bounded_failures) {
     BreakEditorDoc *doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
@@ -914,6 +941,7 @@ int main(void) {
     RUN_TEST(duplicate_entity_copies_components_in_one_command);
     RUN_TEST(remove_entities_is_one_command);
     RUN_TEST(duplicate_entities_is_one_command);
+    RUN_TEST(reset_empties_the_document);
     RUN_TEST(add_remove_component_bounded_failures);
     RUN_TEST(oom_component_command_alloc_fails_bounded);
     RUN_TEST(component_commands_describe);

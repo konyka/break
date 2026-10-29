@@ -59,6 +59,21 @@ BreakEditorDoc *break_editor_doc_create(void) {
     return doc;
 }
 
+bool break_editor_doc_reset(BreakEditorDoc *doc) {
+    if (!doc) return false;
+    World *fresh = world_create();
+    if (!fresh) return false;
+    world_destroy(doc->world);
+    doc->world = fresh;
+    break_editor_doc_kept_chunks_free(doc);
+    memset(doc->slots, 0, sizeof(BreakEditorNameSlot) * ECS_MAX_ENTITIES);
+    doc->named_count = 0;
+    break_editor_cmd_stack_clear(doc->stack);
+    break_editor_doc_init_components(doc);
+    doc->dirty = false;
+    return true;
+}
+
 void break_editor_doc_destroy(BreakEditorDoc *doc) {
     if (!doc) return;
     break_editor_cmd_stack_destroy(doc->stack);
