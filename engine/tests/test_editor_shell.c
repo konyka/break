@@ -2681,6 +2681,66 @@ TEST(outliner_shift_click_selects_a_range)
     break_editor_shell_destroy(shell);
 }
 
+/* With two entities selected (Ctrl+click), dragging the gizmo X handle
+ * moves both by the same amount; one Ctrl+Z puts both back. */
+TEST(gizmo_drag_moves_every_selected_entity)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId first, second;
+    my_widget_t *list, *vp;
+    BreakEditorGizmoHandle handles[4];
+    f32 local[2], center[3], x1 = 0.0f, x2 = 0.0f;
+    const char *unused = NULL;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    first = break_editor_doc_add_entity(doc, "first");
+    second = break_editor_doc_add_entity(doc, "second");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, first,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, second,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(
+        doc, second, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, 2.0f));
+    break_editor_shell_refresh(shell);
+    (void)unused;
+    shell_paint(shell);
+    list = find(shell, "editor-outliner");
+    pointer_click(shell, my_widget_get_child(list, 1u));
+    ctrl_click_row(shell, my_widget_get_child(list, 0u)); /* primary: first */
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 2u);
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), first));
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    vp = break_editor_shell_viewport_widget(shell);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'w', 0u));
+    ASSERT_EQ(break_editor_gizmo_handles(break_editor_shell_gizmo(shell),
+                                         handles, 4u), 4u);
+    for (int k = 0; k < 3; k++) {
+        center[k] = 0.5f * (handles[0].aabb_min[k] + handles[0].aabb_max[k]);
+    }
+    ASSERT_TRUE(project_to_viewport(shell, vp, center, local));
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, local[0], local[1], 1u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, local[0] + 40.0f, local[1],
+                     0u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, local[0] + 40.0f, local[1],
+                     1u, 0u, 0);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, first, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x1));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, second, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x2));
+    ASSERT_TRUE(x1 > 0.01f);
+    ASSERT_FLOAT_EQ(x2 - 2.0f, x1, 1e-5f);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, first, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x1));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, second, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x2));
+    ASSERT_FLOAT_EQ(x1, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(x2, 2.0f, 1e-6f);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -7503,6 +7563,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(close_request_guards_unsaved_changes);
     RUN_TEST(outliner_ctrl_click_multi_select_and_group_delete);
     RUN_TEST(outliner_shift_click_selects_a_range);
+    RUN_TEST(gizmo_drag_moves_every_selected_entity);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

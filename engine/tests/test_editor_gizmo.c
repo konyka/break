@@ -1288,6 +1288,75 @@ TEST(rotate_rings_lie_on_circles_around_the_pivot) {
     break_editor_doc_destroy(doc);
 }
 
+/* Followers (multi-select): a drag moves every follower by the same
+ * translate/rotate delta (scale: same factor) as the attached entity, and
+ * the whole drag is ONE undo step for all of them. */
+TEST(followers_move_with_the_drag_as_one_command) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    BreakEditorEntityId a = add_transformed(doc, "a", 0, 0, 0, 1, 1, 1);
+    BreakEditorEntityId b = add_transformed(doc, "b", 3, 1, 0, 1, 1, 1);
+    BreakEditorEntityId c = add_transformed(doc, "c", -2, 0, 5, 2, 2, 2);
+    BreakEditorGizmo *g = break_editor_gizmo_create();
+    BreakEditorCamera cam;
+    f32 ax, ay, bx, by, pos[3];
+    BreakEditorEntityId fol[2];
+    u32 depth;
+    ASSERT_NOT_NULL(g);
+    fol[0] = b;
+    fol[1] = c;
+    break_editor_gizmo_attach(g, doc, a);
+    ASSERT_TRUE(break_editor_gizmo_set_followers(g, fol, 2u));
+    break_editor_gizmo_set_mode(g, BREAK_EDITOR_GIZMO_TRANSLATE);
+    break_editor_camera_init(&cam);
+    ASSERT_TRUE(world_to_px(&cam, 0.4f, 0, 0, &ax, &ay));
+    ASSERT_TRUE(world_to_px(&cam, 0.9f, 0, 0, &bx, &by));
+    depth = stack_size(doc);
+    ASSERT_TRUE(break_editor_gizmo_begin_drag(g, &cam, ax, ay, VW, VH));
+    ASSERT_TRUE(break_editor_gizmo_drag(g, &cam, bx, by, VW, VH));
+    read_pos(doc, b, pos);
+    assert_vec3(pos[0], pos[1], pos[2], 3.5f, 1, 0, 1e-3f); /* live */
+    break_editor_gizmo_end_drag(g);
+    ASSERT_EQ(stack_size(doc), depth + 1u);
+    read_pos(doc, a, pos);
+    assert_vec3(pos[0], pos[1], pos[2], 0.5f, 0, 0, 1e-3f);
+    read_pos(doc, c, pos);
+    assert_vec3(pos[0], pos[1], pos[2], -1.5f, 0, 5, 1e-3f);
+    ASSERT_TRUE(break_editor_undo(doc));
+    read_pos(doc, b, pos);
+    assert_vec3(pos[0], pos[1], pos[2], 3, 1, 0, 1e-6f);
+    read_pos(doc, c, pos);
+    assert_vec3(pos[0], pos[1], pos[2], -2, 0, 5, 1e-6f);
+    read_pos(doc, a, pos);
+    assert_vec3(pos[0], pos[1], pos[2], 0, 0, 0, 1e-6f);
+    ASSERT_TRUE(break_editor_redo(doc));
+    read_pos(doc, c, pos);
+    assert_vec3(pos[0], pos[1], pos[2], -1.5f, 0, 5, 1e-3f);
+    /* scale X: factor applied to each follower's own scale */
+    break_editor_gizmo_set_mode(g, BREAK_EDITOR_GIZMO_SCALE);
+    ASSERT_TRUE(world_to_px(&cam, 0.5f + 0.4f, 0, 0, &ax, &ay));
+    ASSERT_TRUE(world_to_px(&cam, 0.5f + 1.4f, 0, 0, &bx, &by)); /* +1 = x2 */
+    ASSERT_TRUE(break_editor_gizmo_begin_drag(g, &cam, ax, ay, VW, VH));
+    ASSERT_TRUE(break_editor_gizmo_drag(g, &cam, bx, by, VW, VH));
+    break_editor_gizmo_end_drag(g);
+    {
+        f32 sa, sc;
+        ASSERT_TRUE(break_editor_doc_get_field_f32(
+            doc, a, BREAK_EDITOR_COMPONENT_TRANSFORM, 6u, &sa));
+        ASSERT_TRUE(break_editor_doc_get_field_f32(
+            doc, c, BREAK_EDITOR_COMPONENT_TRANSFORM, 6u, &sc));
+        ASSERT_FLOAT_EQ(sa, 2.0f, 1e-3f);
+        ASSERT_FLOAT_EQ(sc, 4.0f, 1e-3f);
+    }
+    /* the attached entity in the list, stale ids and repeats are ignored */
+    fol[0] = a;
+    fol[1] = BREAK_EDITOR_ENTITY_NULL;
+    ASSERT_TRUE(break_editor_gizmo_set_followers(g, fol, 2u));
+    ASSERT_FALSE(break_editor_gizmo_set_followers(NULL, fol, 2u));
+    ASSERT_TRUE(break_editor_gizmo_set_followers(g, NULL, 0u));
+    break_editor_gizmo_destroy(g);
+    break_editor_doc_destroy(doc);
+}
+
 TEST(oom_budget_sweeps) {
     /* create: single editor-owned allocation. */
     break_editor_test_set_alloc_budget(0);
@@ -1380,5 +1449,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(snap_rounds_translate_rotate_and_scale);
     RUN_TEST(set_mode_out_of_range_hides_the_gizmo);
     RUN_TEST(rotate_rings_lie_on_circles_around_the_pivot);
+    RUN_TEST(followers_move_with_the_drag_as_one_command);
     RUN_TEST(oom_budget_sweeps);
 TEST_MAIN_END()

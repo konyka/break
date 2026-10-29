@@ -177,5 +177,15 @@ void break_editor_gizmo_set_view(BreakEditorGizmo *g, const BreakEditorCamera *c
 BreakEditorGizmoPart break_editor_gizmo_hit(const BreakEditorGizmo *g, const BreakEditorCamera *cam, f32 x, f32 y, f32 w, f32 h);
 bool break_editor_gizmo_begin_drag(BreakEditorGizmo *g, const BreakEditorCamera *cam, f32 x, f32 y, f32 w, f32 h); /* false when no handle hit */
 bool break_editor_gizmo_drag(BreakEditorGizmo *g, const BreakEditorCamera *cam, f32 x, f32 y, f32 w, f32 h);      /* applies UNDOABLE doc commands */
+/* Multi-select followers: entities that move with the attached one. A drag
+ * applies the attached entity's per-field change to each follower (the
+ * same delta for translate/rotate, the same factor for scale) and commits
+ * everything as ONE undoable command. Invalid ids and repeats are dropped;
+ * the attached entity (if listed) and stale ids are skipped at drag time; NULL/0 clears. The list is copied (cap
+ * BREAK_EDITOR_GIZMO_MAX_FOLLOWERS). false only for a NULL gizmo. Ends a
+ * live drag first. */
+#define BREAK_EDITOR_GIZMO_MAX_FOLLOWERS 64u
+bool break_editor_gizmo_set_followers(BreakEditorGizmo *g,
+                                      const BreakEditorEntityId *ids, u32 count);
 void break_editor_gizmo_end_drag(BreakEditorGizmo *g);
 bool break_editor_gizmo_is_dragging(const BreakEditorGizmo *g); /* NULL: false */

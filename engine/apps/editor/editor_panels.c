@@ -109,6 +109,8 @@ struct BreakEditorShell {
     BreakEditorEntityId extra[EDITOR_EXTRA_SELECTION_MAX];
     u32 extra_count;
     usize anchor_index; /* outliner row of the last plain/Ctrl click */
+    BreakEditorEntityId published_extra[EDITOR_EXTRA_SELECTION_MAX];
+    u32 published_extra_count; /* last set handed to the gizmo */
     u32 tool; /* 0 select, 1 translate, 2 rotate, 3 scale */
 
     /* Phase 2 Task 3 viewport state (see editor_panels.h): the camera is
@@ -246,6 +248,7 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd);
 static void shell_tabs_retranslate(BreakEditorShell *shell);
 static void shell_settings_save(BreakEditorShell *shell);
 static void shell_end_gizmo_drag(BreakEditorShell *shell);
+static void shell_publish_extra(BreakEditorShell *shell);
 static void shell_outliner_mark_selection(BreakEditorShell *shell);
 static int shell_extra_index(const BreakEditorShell *shell,
                              BreakEditorEntityId id);
@@ -405,8 +408,7 @@ static bool shell_sync_selection(BreakEditorShell *shell) {
             }
         }
         shell->extra_count = k;
-        break_editor_viewport3d_set_extra_selection(shell->vp3d, shell->extra,
-                                                    shell->extra_count);
+        shell_publish_extra(shell);
     }
     shell_gizmo_reconcile(shell);
     return valid;
@@ -746,8 +748,7 @@ static bool shell_toggle_select_index(BreakEditorShell *shell, usize index) {
         shell->selected = id;
     }
     shell_outliner_mark_selection(shell);
-    break_editor_viewport3d_set_extra_selection(shell->vp3d, shell->extra,
-                                                shell->extra_count);
+    shell_publish_extra(shell);
     shell_rebuild_inspector(shell);
     shell_refresh_status(shell);
     return true;
@@ -789,8 +790,7 @@ static bool shell_select_range(BreakEditorShell *shell, usize anchor, usize to,
     }
     shell->selected = primary;
     shell_outliner_mark_selection(shell);
-    break_editor_viewport3d_set_extra_selection(shell->vp3d, shell->extra,
-                                                shell->extra_count);
+    shell_publish_extra(shell);
     shell_rebuild_inspector(shell);
     shell_refresh_status(shell);
     return true;
@@ -817,7 +817,7 @@ static void on_row_click(void *ctx, const char *event, void *data) {
         } else {
             rc->shell->anchor_index = rc->index;
             rc->shell->extra_count = 0u;
-            break_editor_viewport3d_set_extra_selection(rc->shell->vp3d, NULL, 0u);
+            shell_publish_extra(rc->shell);
             (void)break_editor_shell_select_index(rc->shell, rc->index);
         }
     } else {
@@ -1724,6 +1724,24 @@ static void shell_end_gizmo_drag(BreakEditorShell *shell) {
     if (shell != NULL && shell->gizmo != NULL &&
         break_editor_gizmo_is_dragging(shell->gizmo)) {
         break_editor_gizmo_end_drag(shell->gizmo);
+    }
+}
+
+/* Hands the extra selection to the viewport (tint) and to the gizmo
+ * (followers). The gizmo copy only changes when the set does, because
+ * set_followers ends a live drag and this runs on every refresh. */
+static void shell_publish_extra(BreakEditorShell *shell) {
+    if (shell == NULL) return;
+    break_editor_viewport3d_set_extra_selection(shell->vp3d, shell->extra,
+                                                shell->extra_count);
+    if (shell->published_extra_count != shell->extra_count ||
+        memcmp(shell->published_extra, shell->extra,
+               shell->extra_count * sizeof(shell->extra[0])) != 0) {
+        (void)break_editor_gizmo_set_followers(shell->gizmo, shell->extra,
+                                               shell->extra_count);
+        memcpy(shell->published_extra, shell->extra,
+               shell->extra_count * sizeof(shell->extra[0]));
+        shell->published_extra_count = shell->extra_count;
     }
 }
 

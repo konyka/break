@@ -39,6 +39,11 @@ typedef struct {
     u32 new_bits[3];                /* end_drag snapshot */
     char mode_name[12];             /* describe: "translate"/"rotate"/"scale" */
     char part_name[8];              /* describe: "x"/"y"/"z"/"center" */
+    /* followers: same field slots, their own begin/end bytes */
+    u32 follower_count;
+    BreakEditorEntityId follower[BREAK_EDITOR_GIZMO_MAX_FOLLOWERS];
+    u32 f_old[BREAK_EDITOR_GIZMO_MAX_FOLLOWERS][3];
+    u32 f_new[BREAK_EDITOR_GIZMO_MAX_FOLLOWERS][3];
 } BreakEditorGizmoCmd;
 
 struct BreakEditorGizmo {
@@ -61,6 +66,8 @@ struct BreakEditorGizmo {
     f32 snap_translate;
     f32 snap_rotate_deg;
     f32 snap_scale;
+    BreakEditorEntityId followers[BREAK_EDITOR_GIZMO_MAX_FOLLOWERS];
+    u32 follower_count;
 };
 
 static f32 eg_snap(f32 v, f32 step) {
@@ -255,24 +262,34 @@ static u8 *eg_transform_bytes(BreakEditorDoc *doc, BreakEditorEntityId id) {
                                             BREAK_EDITOR_COMPONENT_TRANSFORM);
 }
 
-static bool gizmo_cmd_apply(BreakEditorCmd *self, BreakEditorDoc *doc) {
-    BreakEditorGizmoCmd *c = (BreakEditorGizmoCmd *)self;
-    u8 *base = eg_transform_bytes(doc, self->id);
+static bool gizmo_cmd_write(BreakEditorGizmoCmd *c, BreakEditorDoc *doc,
+                            bool forward) {
+    u8 *base = eg_transform_bytes(doc, c->base.id);
     if (!base) return false; /* entity/component gone: bounded failure */
+    /* followers first, so a vanished one fails before anything is written */
+    for (u32 f = 0; f < c->follower_count; f++) {
+        if (!eg_transform_bytes(doc, c->follower[f])) return false;
+    }
     for (u32 i = 0; i < c->field_count; i++) {
-        memcpy(base + c->field_offset[i], &c->new_bits[i], sizeof(u32));
+        memcpy(base + c->field_offset[i],
+               forward ? &c->new_bits[i] : &c->old_bits[i], sizeof(u32));
+    }
+    for (u32 f = 0; f < c->follower_count; f++) {
+        u8 *fb = eg_transform_bytes(doc, c->follower[f]);
+        for (u32 i = 0; i < c->field_count; i++) {
+            memcpy(fb + c->field_offset[i],
+                   forward ? &c->f_new[f][i] : &c->f_old[f][i], sizeof(u32));
+        }
     }
     return true;
 }
 
+static bool gizmo_cmd_apply(BreakEditorCmd *self, BreakEditorDoc *doc) {
+    return gizmo_cmd_write((BreakEditorGizmoCmd *)self, doc, true);
+}
+
 static bool gizmo_cmd_revert(BreakEditorCmd *self, BreakEditorDoc *doc) {
-    BreakEditorGizmoCmd *c = (BreakEditorGizmoCmd *)self;
-    u8 *base = eg_transform_bytes(doc, self->id);
-    if (!base) return false;
-    for (u32 i = 0; i < c->field_count; i++) {
-        memcpy(base + c->field_offset[i], &c->old_bits[i], sizeof(u32));
-    }
-    return true;
+    return gizmo_cmd_write((BreakEditorGizmoCmd *)self, doc, false);
 }
 
 static void gizmo_cmd_destroy(BreakEditorCmd *self) {
@@ -502,6 +519,20 @@ bool break_editor_gizmo_begin_drag(BreakEditorGizmo *g,
         c->field_count = 0; /* ROTATE CENTER: defined no-op drag */
     }
 
+    /* snapshot every live follower's slots (stale ones are dropped) */
+    for (u32 f = 0; f < g->follower_count; f++) {
+        u8 *fb;
+        if (break_editor_entity_id_eq(g->followers[f], g->id)) continue;
+        fb = eg_transform_bytes(g->doc, g->followers[f]);
+        if (!fb) continue;
+        c->follower[c->follower_count] = g->followers[f];
+        for (u32 i = 0; i < c->field_count; i++) {
+            memcpy(&c->f_old[c->follower_count][i], fb + c->field_offset[i],
+                   sizeof(u32));
+        }
+        c->follower_count++;
+    }
+
     g->cmd = c;
     g->drag_part = part;
     g->dragging = true;
@@ -603,7 +634,46 @@ bool break_editor_gizmo_drag(BreakEditorGizmo *g,
             changed = true;
         }
     }
+    /* followers: the attached entity's change, per field (scale: factor) */
+    for (u32 f = 0; f < g->cmd->follower_count; f++) {
+        u8 *fb = eg_transform_bytes(g->doc, g->cmd->follower[f]);
+        if (!fb) continue;
+        for (u32 i = 0; i < g->cmd->field_count; i++) {
+            f32 old_main, old_f, v;
+            memcpy(&old_main, &g->cmd->old_bits[i], sizeof(f32));
+            memcpy(&old_f, &g->cmd->f_old[f][i], sizeof(f32));
+            if (g->mode == BREAK_EDITOR_GIZMO_SCALE) {
+                v = old_main > 0.0f ? old_f * (new_vals[i] / old_main) : old_f;
+                if (v < BREAK_EDITOR_GIZMO_SCALE_MIN) v = BREAK_EDITOR_GIZMO_SCALE_MIN;
+            } else {
+                v = old_f + (new_vals[i] - old_main);
+            }
+            if (isfinite(v)) {
+                memcpy(fb + g->cmd->field_offset[i], &v, sizeof(f32));
+                changed = true;
+            }
+        }
+    }
     if (changed) g->doc->dirty = true;
+    return true;
+}
+
+bool break_editor_gizmo_set_followers(BreakEditorGizmo *g,
+                                      const BreakEditorEntityId *ids, u32 count) {
+    if (!g) return false;
+    break_editor_gizmo_end_drag(g); /* a live drag keeps its own snapshot */
+    g->follower_count = 0;
+    for (u32 i = 0; ids && i < count; i++) {
+        /* the attached entity is skipped at drag time, not here: the
+         * shell may publish followers before it re-attaches the primary */
+        bool dup = !break_editor_entity_id_valid(ids[i]);
+        for (u32 k = 0; !dup && k < g->follower_count; k++) {
+            dup = break_editor_entity_id_eq(g->followers[k], ids[i]);
+        }
+        if (dup) continue;
+        if (g->follower_count >= BREAK_EDITOR_GIZMO_MAX_FOLLOWERS) break;
+        g->followers[g->follower_count++] = ids[i];
+    }
     return true;
 }
 
@@ -652,6 +722,20 @@ void break_editor_gizmo_end_drag(BreakEditorGizmo *g) {
         memcpy(&cur, base + c->field_offset[i], sizeof(u32));
         c->new_bits[i] = cur;
         if (cur != c->old_bits[i]) same = false;
+    }
+    {
+        u32 k = 0;
+        for (u32 f = 0; f < c->follower_count; f++) {
+            u8 *fb = eg_transform_bytes(g->doc, c->follower[f]);
+            if (!fb) continue; /* removed mid-drag: drop from the command */
+            c->follower[k] = c->follower[f];
+            memcpy(c->f_old[k], c->f_old[f], sizeof(c->f_old[k]));
+            for (u32 i = 0; i < c->field_count; i++) {
+                memcpy(&c->f_new[k][i], fb + c->field_offset[i], sizeof(u32));
+            }
+            k++;
+        }
+        c->follower_count = k;
     }
     if (same) {
         c->base.destroy(&c->base); /* bitwise-identical: no command */
