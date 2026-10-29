@@ -4294,6 +4294,13 @@ endif()
     add_test(NAME test_editor_scene COMMAND test_editor_scene)
     set_tests_properties(test_editor_scene PROPERTIES LABELS "headless;editor")
 
+    # Mutation fuzzer for the editor load + re-save path (kept game chunks are
+    # spliced back on save). Manual, like the other fuzz_* targets: build it
+    # in an ASan/UBSan tree and run `./fuzz_editor_scene 20000 <seed>`.
+    add_executable(fuzz_editor_scene EXCLUDE_FROM_ALL tests/fuzz_editor_scene.c)
+    target_include_directories(fuzz_editor_scene PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(fuzz_editor_scene PRIVATE break_editor_test)
+
     add_executable(test_editor_components tests/test_editor_components.c)
     target_include_directories(test_editor_components PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_editor_components PRIVATE BREAK_EDITOR_TESTING=1)
