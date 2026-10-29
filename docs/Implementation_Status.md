@@ -1,5 +1,10 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：资源浏览器列出 pak 包内容（2026-10-30）
+
+- **交付**：在 `apps/editor/editor_panel_assets.c` 中点击 `.pak` 文件，会把包内条目列到控制台，最多 16 行，超出部分汇总；包损坏时报错。新增 4 个 i18n 键，中英文都已填写。只读，不支持进入包内浏览。
+- **测试**：`test_editor_shell` 新增 `assets_panel_pak_activation_lists_entries`，覆盖 2 个条目的列表、20 个条目的截断、损坏的包，并确认文档未被修改；先红后绿，133/133。变异检查：上限改为 17 后变红。默认树 233/234，唯一失败是已知 flaky 的 x11 用例；`build-break-net-final` 的 `-R editor` 15/15。
+
 ## 本轮更新：remote SET_FIELD 支持 bool 字段（2026-10-30）
 
 - **交付**：`apps/editor/editor_remote.c` 按字段类型分派写入。线格式不变，仍用 f32 值：0 表示 false，其他有限值表示 true，非有限值返回 ok=0。

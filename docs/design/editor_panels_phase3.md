@@ -54,7 +54,13 @@ root（vertical）
   为空面板 + label 提示，不致命；`break_editor_shell_set_assets_root`
   换根（失败有界 false 且保留旧模型）。
   2026-10-30 补充：VFS 层已经提供 `vfs_enumerate_pak`（见
-  `docs/design/runtime_asset_streaming.md`），但面板还没有接入 pak 列表。
+  `docs/design/runtime_asset_streaming.md`），~~但面板还没有接入 pak 列表~~。
+  2026-10-30 再补充：在面板里点击 `.pak` 文件，会在控制台列出包内条目：
+  先输出一行“pak '<名称>': N entries”，然后最多 16 行“  <路径> (<字节> B)”，
+  超出部分汇总为一行“... K more”。这个操作只读：用私有 VFS 挂载后立即释放，
+  不进入包内导航，不加载场景，文档也不会变脏。包损坏时输出一行失败信息。
+  中英文均已翻译。测试：`test_editor_shell` 的
+  `assets_panel_pak_activation_lists_entries`。
 - **行模型**：行 0 恒为 `..`（root 处钳制 no-op）；行 1..N 绑定模型的
   过滤后快照（目录在前、逐字节序）；目录渲染带尾随 `/`。
 - **激活手势（决策）**：**单击**行即激活。myui list_view 没有双击/Enter
