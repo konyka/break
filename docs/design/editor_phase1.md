@@ -113,13 +113,13 @@ create 时把焦点设到 root，故快捷键只在焦点控件未消费该键�
 > `docs/design/editor_viewport.md`；本表其余各项仍为后续 phase 的设计-only
 > 意图。下文为 Phase 1 收口时的原始记录。
 
-- 3D viewport / gizmo / 相机（F 键只记意图）；真正的 focus 相机移动。
+- ~~3D viewport / gizmo / 相机~~：Phase 2 已交付（`editor_viewport.md`）。
 - save-as / open 文件对话框；菜单栏（my_menu 已可用，Phase 1 用 toolbar +
   调色板替代）。argv 加载：2026-10-29 已接（见 §2）。
-- 诊断面板（profiler、metrics）、Lua console、remote session。
-- asset browser（Stage 4 子项目 4 不在本 phase）。
-- selection 多选集（当前单选）；inspector 多组件类型编辑（注册表只有
-  EditorTransform）；非 f32 字段类型。
+- ~~诊断面板（profiler、metrics）、Lua console、remote session~~：均已交付（见 `editor_panels_phase3.md`、`editor_remote.md`、`editor_render_debugger.md`）。
+- ~~asset browser~~：已交付（Phase 3 + `editor_hot_reload.md`）。
+- ~~selection 多选集（当前单选）~~：已交付（outliner Shift 扩选、上/下键移动选择、Ctrl+D 复制所有选中实体为一次撤销、F2 重命名、H/Alt+H 隐藏/显示选中，见 `break_editor_shell_selection_count` 等）。
+- inspector 多组件类型编辑（注册表仍只有 EditorTransform）；非 f32 字段类型——2026-10-30 仍未做。
 - 另存为：2026-10-30 起命令面板输入 `save as <路径>` 只列出一条“Save scene as <路径>”，执行即保存并设为保存目标（无文件对话框）。
 - 新建：Ctrl+N / 命令面板“New scene”清空为未命名的空文档（无保存目标、无撤销历史、停止监视原场景文件），有未保存修改时第一次只提示、再按一次才放弃修改（`break_editor_doc_reset`）。
 - 最近的场景：成功加载或保存的场景记入偏好文件（`recent=<路径>` 行，最新在前，最多 5 个，去重，路径不超过 399 字节），命令面板列为“Open recent: <文件名>”，按文件名或完整路径过滤，执行即加载（有未保存修改时同样两步）。`open`/`save as` 的参数须像路径（含 `/` 或 `\` 或以 `.bscn` 结尾），否则只是普通过滤词（因此 `open recent` 是过滤而非打开名为 recent 的文件）。
