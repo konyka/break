@@ -736,6 +736,17 @@ gate 按平台跳过。
 命令面板列表及通过面板切换“主题：浅色”均渲染正常。FreeType 路径本机未构建，未验证；
 17 MB 字体入库对仓库体积的影响由维护者决定。证据等级不变。
 
+2026-10-29 第二次 review（远程无新提交）：读了上一轮合入的 `editor_settings` 与标签页代码，
+发现两处问题并修复。(1) `--input-script` 回放会读写真实的 `~/.config/break/editor.ini`，
+脚本里切主题会改掉用户偏好、也会被已有偏好影响截图；现在带脚本运行时默认不持久化，
+只有显式设置 `BREAK_EDITOR_SETTINGS` 才用（指向临时文件）。(2) `make_parents` 在任一级
+`platform_mkdir` 失败时整体返回失败，Windows 盘符前缀（`C:`）等不可创建的父级会让保存永远
+失败；改为忽略中间级失败，叶子目录缺失时由文件打开报错。实机（Metal，`INPUT_SCRIPT=ON`）：
+脚本切浅色后 `BREAK_EDITOR_SETTINGS` 指向的临时文件含 `theme=light`，再次启动（不带
+`--lang`）为浅色；不设该变量时 `~/.config/break` 不会被创建。Metal CTest **231/231**、
+graphics **6/6**，MoltenVK **232/232**，仅 D3D12 dependency gate 按平台跳过。Windows 的
+`%APPDATA%` 路径与盘符场景未在本机验证。证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
