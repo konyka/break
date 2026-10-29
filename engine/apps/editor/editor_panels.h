@@ -174,6 +174,13 @@ const char *break_editor_shell_tool_text(const BreakEditorShell *shell);
  * current look and returns false. Also in the command palette
  * ("Theme: Light" / "Theme: Dark"). */
 bool break_editor_shell_set_theme(BreakEditorShell *shell, bool light);
+/* Tool-window tab areas: 0 = bottom (Console, Lua), 1 = right diagnostics
+ * (Profiler, Network, Render). select_tab shows that page and hides the
+ * others (false for an unknown area/index); active_tab returns the shown
+ * index (0 for an unknown area). */
+bool break_editor_shell_select_tab(BreakEditorShell *shell, u32 area,
+                                   u32 index);
+u32 break_editor_shell_active_tab(const BreakEditorShell *shell, u32 area);
 bool break_editor_shell_set_language(BreakEditorShell *shell,
                                      BreakEditorLang lang);
 const char *break_editor_shell_status_text(const BreakEditorShell *shell);

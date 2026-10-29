@@ -52,4 +52,4 @@ The outliner row bound to the selected entity carries style class `selected` (se
 
 ## 5. Not delivered
 
-Icons, tool-window tabs and gutters, persisting the chosen theme. Fonts: **superseded 2026-10-29** — JetBrains Mono Regular 2.304 and Noto Sans SC are bundled at `engine/assets/fonts/` (OFL) and lead the font chain (see `docs/design/editor_i18n.md`).
+Icons and gutters, persisting the chosen theme. Tool-window tabs: delivered 2026-10-29 (`2026-10-29-editor-tool-window-tabs-design.md`). Fonts: **superseded 2026-10-29** — JetBrains Mono Regular 2.304 and Noto Sans SC are bundled at `engine/assets/fonts/` (OFL) and lead the font chain (see `docs/design/editor_i18n.md`).

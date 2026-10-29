@@ -66,7 +66,15 @@ static const char k_css[] =
     "#editor-outliner-row.selected, #editor-outliner-row.selected:hover {"
     " background-color: #2e436e; color: #ffffff; }\n"
     /* command palette popup */
-    "#editor-palette { background-color: #2b2d30; }\n";
+    "#editor-palette { background-color: #2b2d30; }\n"
+    /* tool-window tab strips: flat tabs on the window colour, the active
+     * one on the content colour with accent text */
+    "#editor-bottom-tabs, #editor-diag-tabs { background-color: #2b2d30; }\n"
+    "#editor-tab { background-color: #2b2d30; border-width: 0px;"
+    " border-radius: 0px; color: #9da0a8; font-size: 12px; }\n"
+    "#editor-tab:hover { background-color: #393b40; color: #dfe1e5; }\n"
+    "#editor-tab.active, #editor-tab.active:hover {"
+    " background-color: #1e1f22; color: #dfe1e5; }\n";
 
 static const char k_css_light[] =
     /* base */
@@ -125,7 +133,13 @@ static const char k_css_light[] =
     "#editor-outliner-row.selected, #editor-outliner-row.selected:hover {"
     " background-color: #d4e2ff; color: #1f1f1f; }\n"
     /* command palette popup */
-    "#editor-palette { background-color: #f7f8fa; }\n";
+    "#editor-palette { background-color: #f7f8fa; }\n"
+    "#editor-bottom-tabs, #editor-diag-tabs { background-color: #f7f8fa; }\n"
+    "#editor-tab { background-color: #f7f8fa; border-width: 0px;"
+    " border-radius: 0px; color: #6c707e; font-size: 12px; }\n"
+    "#editor-tab:hover { background-color: #dfe1e5; color: #1f1f1f; }\n"
+    "#editor-tab.active, #editor-tab.active:hover {"
+    " background-color: #ffffff; color: #1f1f1f; }\n";
 
 
 static bool g_light = false;
