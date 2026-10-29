@@ -52,7 +52,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_ROW_CTX_POOL 64u
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
-#define EDITOR_PALETTE_COMMAND_COUNT 18u
+#define EDITOR_PALETTE_COMMAND_COUNT 19u
 /* 25 degrees: the editor camera starts above the grid plane */
 #define EDITOR_DEFAULT_CAMERA_PITCH 0.43633231f
 /* F with nothing selected frames at most this many entities */
@@ -222,7 +222,8 @@ enum {
     PAL_DUPLICATE_SELECTED,
     PAL_TOGGLE_SNAP,
     PAL_TOGGLE_STATS,
-    PAL_TOGGLE_GRID
+    PAL_TOGGLE_GRID,
+    PAL_RESET_VIEW
 };
 
 /* Current-language text of palette command `cmd` (bounded, never NULL). */
@@ -263,6 +264,9 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
     if (cmd == PAL_TOGGLE_GRID) {
         return break_editor_tr(BREAK_EDITOR_TR_CMD_TOGGLE_GRID);
     }
+    if (cmd == PAL_RESET_VIEW) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_RESET_VIEW);
+    }
     return "?";
 }
 
@@ -276,6 +280,7 @@ static int shell_extra_index(const BreakEditorShell *shell,
                              BreakEditorEntityId id);
 static void shell_set_snap(BreakEditorShell *shell, bool on);
 static void shell_set_grid(BreakEditorShell *shell, bool on);
+static void shell_reset_camera(BreakEditorShell *shell);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
 
 /* Bounded console log: appends one <=127-byte line to the ring, dropping the
@@ -1406,6 +1411,12 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     case PAL_TOGGLE_SNAP:
         shell_set_snap(shell, !shell->snap);
         break;
+    case PAL_RESET_VIEW:
+        shell_reset_camera(shell);
+        if (shell->viewport_widget != NULL) {
+            my_widget_invalidate(shell->viewport_widget, NULL);
+        }
+        break;
     case PAL_TOGGLE_GRID:
         shell_set_grid(shell, !shell->grid);
         shell_settings_save(shell);
@@ -1473,7 +1484,8 @@ enum {
     ACT_SELECT_NEXT,
     ACT_EXTEND_PREV,
     ACT_EXTEND_NEXT,
-    ACT_RENAME
+    ACT_RENAME,
+    ACT_RESET_VIEW
 };
 
 typedef struct {
@@ -1498,6 +1510,7 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'a', MY_KEYMOD_CTRL, ACT_SELECT_ALL},
     {MY_KEY_ESCAPE, MY_KEYMOD_NONE, ACT_CLEAR_SELECTION},
     {MY_KEY_F2, MY_KEYMOD_NONE, ACT_RENAME},
+    {MY_KEY_HOME, MY_KEYMOD_NONE, ACT_RESET_VIEW},
     {MY_KEY_UP, MY_KEYMOD_NONE, ACT_SELECT_PREV},
     {MY_KEY_DOWN, MY_KEYMOD_NONE, ACT_SELECT_NEXT},
     {MY_KEY_UP, MY_KEYMOD_SHIFT, ACT_EXTEND_PREV},
@@ -1695,6 +1708,9 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
                 shell,
                 sc->action == ACT_SELECT_NEXT || sc->action == ACT_EXTEND_NEXT,
                 sc->action == ACT_EXTEND_PREV || sc->action == ACT_EXTEND_NEXT);
+            break;
+        case ACT_RESET_VIEW:
+            shell_execute_palette_command(shell, PAL_RESET_VIEW);
             break;
         case ACT_RENAME:
             shell_execute_palette_command(shell, PAL_RENAME_SELECTED);
@@ -2007,6 +2023,13 @@ static void shell_set_snap(BreakEditorShell *shell, bool on) {
                                       on ? EDITOR_SNAP_SCALE : 0.0f);
     shell_refresh_tool_label(shell);
     shell_settings_save(shell);
+}
+
+/* The editor's starting view: break_editor_camera_init looking down at the
+ * ground grid (Home and "Reset view" return here). */
+static void shell_reset_camera(BreakEditorShell *shell) {
+    break_editor_camera_init(&shell->camera);
+    shell->camera.pitch = EDITOR_DEFAULT_CAMERA_PITCH;
 }
 
 static void shell_set_grid(BreakEditorShell *shell, bool on) {
@@ -2372,9 +2395,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     }
     /* Phase 2 Task 3 owned viewport state (pure CPU here — vp3d has no GPU
      * objects until a first render with a live device) */
-    break_editor_camera_init(&shell->camera);
-    /* look down at the ground grid instead of along it */
-    shell->camera.pitch = EDITOR_DEFAULT_CAMERA_PITCH;
+    shell_reset_camera(shell);
     shell->stats = true;
     shell->grid = true;
     shell->gizmo = break_editor_gizmo_create();

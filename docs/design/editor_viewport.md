@@ -135,7 +135,7 @@ editor 可执行
   - 滚轮：zoom（指数，正 delta 拉近）。
 - **快捷键**：Q/W/E/R = gizmo 模式 NONE/TRANSLATE/ROTATE/SCALE + 工具
   标签（编号与 Phase 1 工具态 0..3 一致）；F = 对选中实体真实
-  `break_editor_camera_focus`（视图状态，不可撤销）；多选时 F 框住所有被选实体代理 AABB 的并集（`break_editor_camera_focus_many`，2026-10-29）；没有选中时 F 框住整个场景（所有带 Transform 的实体，最多 1024 个），场景里没有可聚焦的实体时只在控制台提示；Ctrl+S/Z/Y/P 不变；Ctrl+A 全选实体（文档顺序，第一个为主选）、Esc 清空选择（命令面板打开时 Esc 只关面板；文本框获得焦点时 Ctrl+A 仍是全选文字），2026-10-29。上/下方向键把选中移到大纲上一行/下一行（两端钳住；无选中时下键取首行、上键取末行），Shift+上/下从锚点扩展范围；多选时 Ctrl+D 复制全部被选实体（一个撤销步骤，复制品成为选择）；F2 重命名所选（等同命令面板“Rename Selected”，焦点移到名称输入框并全选原名）；命令面板打开或文本框（Lua 控制台、检查器字段）有焦点时方向键归它们。
+  `break_editor_camera_focus`（视图状态，不可撤销）；多选时 F 框住所有被选实体代理 AABB 的并集（`break_editor_camera_focus_many`，2026-10-29）；没有选中时 F 框住整个场景（所有带 Transform 的实体，最多 1024 个），场景里没有可聚焦的实体时只在控制台提示；Ctrl+S/Z/Y/P 不变；Ctrl+A 全选实体（文档顺序，第一个为主选）、Esc 清空选择（命令面板打开时 Esc 只关面板；文本框获得焦点时 Ctrl+A 仍是全选文字），2026-10-29。上/下方向键把选中移到大纲上一行/下一行（两端钳住；无选中时下键取首行、上键取末行），Shift+上/下从锚点扩展范围；多选时 Ctrl+D 复制全部被选实体（一个撤销步骤，复制品成为选择）；F2 重命名所选（等同命令面板“Rename Selected”，焦点移到名称输入框并全选原名）；Home / 命令面板“Reset view”把相机复位到启动时的视图（目标原点、距离 5、俯仰 25°、yaw 0；文本框里 Home 仍是行首）；命令面板打开或文本框（Lua 控制台、检查器字段）有焦点时方向键归它们。
   字母忽略 SHIFT，Ctrl/Alt 精确匹配（Phase 1 表不变）。
 - **gizmo 与选择的粘合**：shell reconcile（幂等——attach 恒先隐式
   end_drag，冗余 attach 会把中段拖拽提前提交，故以缓存 id 去重）；

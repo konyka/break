@@ -275,7 +275,7 @@ TEST(palette_opens_filters_and_escape_closes)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 18u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 19u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save"));
@@ -3273,6 +3273,32 @@ TEST(f2_renames_the_selected_entity)
     ASSERT_EQ(a, 0u);
     ASSERT_EQ(b, strlen(my_edit_get_text(edit)));
     ASSERT_TRUE(b > 0u);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(home_and_palette_reset_the_view)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorCamera *cam, start;
+    ASSERT_NOT_NULL(shell);
+    cam = break_editor_shell_camera(shell);
+    start = *cam;
+    ASSERT_TRUE(start.pitch > 0.0f);
+    break_editor_camera_orbit(cam, 40.0f, 10.0f);
+    break_editor_camera_pan(cam, 30.0f, 0.0f);
+    break_editor_camera_zoom(cam, 3.0f);
+    ASSERT_TRUE(cam->yaw != start.yaw);
+    dispatch_key_event(shell, MY_KEY_HOME);
+    ASSERT_TRUE(memcmp(cam, &start, sizeof(start)) == 0);
+    break_editor_camera_orbit(cam, 40.0f, 10.0f);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "reset view"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_TRUE(memcmp(cam, &start, sizeof(start)) == 0);
+    /* view state: nothing on the undo stack */
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(
+                  break_editor_doc_stack(break_editor_shell_doc(shell))), 0u);
     break_editor_shell_destroy(shell);
 }
 
@@ -7824,7 +7850,7 @@ TEST(i18n_palette_switches_language_at_runtime)
 
     /* palette now lists and filters Chinese command names */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 18u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 19u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "保存"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "English"));
@@ -8244,6 +8270,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ctrl_d_duplicates_every_selected_entity);
     RUN_TEST(focus_without_selection_frames_the_whole_scene);
     RUN_TEST(f2_renames_the_selected_entity);
+    RUN_TEST(home_and_palette_reset_the_view);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);
