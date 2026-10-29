@@ -1,5 +1,10 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：replay window 接线决策（2026-10-30）
+
+- **结论**：break_net 的流式传输不接入 `break_replay_window`。跨连接重放已被 AUTH v2 绑定 `server_nonce` 阻断，且有测试锁定；连接内重放由严格递增的信封序号阻断。这个窗口留给将来的乱序传输（UDP / 逐消息 AEAD），消息号格式定为“每会话 epoch + 64 位计数”。原先“协议选择未定”这一待办就此关闭。本轮只改文档，没有改代码。
+- **文档**：`docs/design/transport_security.md` §3、`docs/cross_engine/missing_capabilities.md`。
+
 ## 本轮更新：inspector 组件标题国际化（2026-10-30）
 
 - **交付**：新增 `BREAK_EDITOR_TR_COMPONENT_TRANSFORM` 和 `BREAK_EDITOR_TR_COMPONENT_LIGHT` 两个键，中英文都已填写；新增 `break_editor_tr_component(id, fallback)`。`apps/editor/editor_panels.c` 中组件存在和不存在两种行的标题都改为调用它。注册表 `display_name` 仍是英文，供 Lua 查找。
