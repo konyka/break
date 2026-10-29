@@ -197,6 +197,8 @@ struct BreakEditorShell {
     u64 close_warned_rev;
 
     char scene_path[BREAK_EDITOR_SCENE_PATH_CAPACITY];
+    char window_title[BREAK_EDITOR_SCENE_PATH_CAPACITY + 64];
+    u32 window_title_revision;
     bool scene_path_set;
 };
 
@@ -2786,6 +2788,34 @@ bool break_editor_shell_palette_is_open(const BreakEditorShell *shell) {
 
 usize break_editor_shell_palette_count(const BreakEditorShell *shell) {
     return shell != NULL ? (usize)shell->palette_match_count : 0u;
+}
+
+const char *break_editor_shell_window_title(BreakEditorShell *shell) {
+    char next[sizeof(shell->window_title)];
+    const char *name;
+    if (shell == NULL) {
+        return "";
+    }
+    name = shell->scene_path;
+    if (name[0] == '\0') {
+        name = break_editor_tr(BREAK_EDITOR_TR_UNTITLED);
+    } else {
+        const char *slash = strrchr(name, '/');
+        const char *back = strrchr(name, '\\');
+        if (back != NULL && (slash == NULL || back > slash)) slash = back;
+        if (slash != NULL) name = slash + 1;
+    }
+    (void)snprintf(next, sizeof(next), break_editor_tr(BREAK_EDITOR_TR_WINDOW_TITLE_FMT),
+                   break_editor_doc_is_dirty(shell->doc) ? "* " : "", name);
+    if (strcmp(next, shell->window_title) != 0) {
+        memcpy(shell->window_title, next, sizeof(next));
+        shell->window_title_revision++;
+    }
+    return shell->window_title;
+}
+
+u32 break_editor_shell_window_title_revision(const BreakEditorShell *shell) {
+    return shell != NULL ? shell->window_title_revision : 0u;
 }
 
 bool break_editor_shell_set_scene_path(BreakEditorShell *shell,

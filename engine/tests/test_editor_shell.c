@@ -3431,6 +3431,45 @@ TEST(hidden_entities_are_dimmed_in_the_outliner)
     break_editor_shell_destroy(shell);
 }
 
+TEST(window_title_names_the_scene_and_marks_unsaved_changes)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char path[256], want[512];
+    const char *base;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_STR_EQ(break_editor_shell_window_title(shell),
+                  "Untitled - Break Scene Editor");
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_STR_EQ(break_editor_shell_window_title(shell),
+                  "* Untitled - Break Scene Editor");
+    test_tmp(path, sizeof(path), "editor_title_scene.bscn");
+    remove(path);
+    base = strrchr(path, '/') != NULL ? strrchr(path, '/') + 1 : path;
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, path));
+    snprintf(want, sizeof(want), "* %s - Break Scene Editor", base);
+    ASSERT_STR_EQ(break_editor_shell_window_title(shell), want);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    ASSERT_STR_EQ(break_editor_shell_window_title(shell), want + 2);
+    /* translated with the UI */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    snprintf(want, sizeof(want), "%s - Break 场景编辑器", base);
+    ASSERT_STR_EQ(break_editor_shell_window_title(shell), want);
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    /* the counter only changes when the title does (the host retitles on it) */
+    {
+        u32 rev;
+        (void)break_editor_shell_window_title(shell);
+        rev = break_editor_shell_window_title_revision(shell);
+        (void)break_editor_shell_window_title(shell);
+        ASSERT_EQ(break_editor_shell_window_title_revision(shell), rev);
+        emit_click(find(shell, "editor-add-button"));
+        (void)break_editor_shell_window_title(shell);
+        ASSERT_TRUE(break_editor_shell_window_title_revision(shell) != rev);
+    }
+    remove(path);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8407,6 +8446,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(digit_keys_snap_to_front_right_top_views);
     RUN_TEST(h_hides_the_selection_alt_h_shows_all);
     RUN_TEST(hidden_entities_are_dimmed_in_the_outliner);
+    RUN_TEST(window_title_names_the_scene_and_marks_unsaved_changes);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

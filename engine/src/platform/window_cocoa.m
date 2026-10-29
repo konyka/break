@@ -535,6 +535,16 @@ void platform_cancel_close(Platform *p) {
     if (p != NULL) p->should_close = false;
 }
 
+bool platform_set_window_title(Platform *p, const char *utf8) {
+    if (p == NULL || utf8 == NULL || p->window == nil) return false;
+    @autoreleasepool {
+        NSString *title = [NSString stringWithUTF8String:utf8];
+        if (title == nil) return false; /* invalid UTF-8 */
+        [p->window setTitle:title];
+    }
+    return true;
+}
+
 PlatformEventResult platform_poll(Platform *p) {
     if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);

@@ -724,6 +724,23 @@ void platform_cancel_close(Platform *p) {
     if (p != NULL) p->close_requested = false;
 }
 
+bool platform_set_window_title(Platform *p, const char *utf8) {
+    int units;
+    wchar_t *wide;
+    bool ok;
+    if (p == NULL || utf8 == NULL || p->hwnd == NULL) return false;
+    units = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1,
+                                NULL, 0);
+    if (units <= 0) return false;
+    wide = malloc((size_t)units * sizeof(*wide));
+    if (wide == NULL) return false;
+    ok = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, wide,
+                             units) == units &&
+         SetWindowTextW(p->hwnd, wide) != 0;
+    free(wide);
+    return ok;
+}
+
 u32 platform_poll_text(Platform *p, PlatformTextEvent *out, u32 max_events) {
     return p != NULL ? platform_text_queue_pop(&p->text_queue, out, max_events)
                      : 0;

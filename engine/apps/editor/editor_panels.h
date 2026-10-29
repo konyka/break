@@ -166,6 +166,13 @@ bool break_editor_shell_open_scene(BreakEditorShell *shell, const char *path);
  * status bar; a second request with no edit in between returns true
  * (discard). Any document change re-arms the warning. */
 bool break_editor_shell_request_close(BreakEditorShell *shell);
+/* Window title for the host: "[* ]<scene file name> - Break Scene Editor"
+ * ("Untitled" without a save path; "* " while there are unsaved changes),
+ * in the UI language. The buffer is shell-owned and recomputed on each
+ * call; the revision changes only when the text does, so the host can
+ * retitle the OS window only then. */
+const char *break_editor_shell_window_title(BreakEditorShell *shell);
+u32 break_editor_shell_window_title_revision(const BreakEditorShell *shell);
 bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
                                        const char *path);
 

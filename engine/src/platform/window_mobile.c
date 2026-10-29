@@ -123,6 +123,9 @@ PlatformEventResult platform_poll(Platform *p) {
     return PLATFORM_EVENT_NONE;
 }
 void platform_cancel_close(Platform *p) { (void)p; }
+bool platform_set_window_title(Platform *p, const char *utf8) {
+    (void)p; (void)utf8; return false; /* no window title on mobile */
+}
 u32 platform_poll_text(Platform *p, PlatformTextEvent *out, u32 max_events) {
     (void)p; (void)out; (void)max_events; return 0u;
 }

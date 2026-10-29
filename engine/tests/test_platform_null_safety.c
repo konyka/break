@@ -13,6 +13,7 @@ TEST(null_platform_queries_are_safe)
 
     ASSERT_EQ(platform_poll(NULL), PLATFORM_EVENT_QUIT);
     platform_cancel_close(NULL); /* NULL: no-op */
+    ASSERT_FALSE(platform_set_window_title(NULL, "x"));
     ASSERT_EQ(platform_input(NULL), NULL);
     ASSERT_EQ(platform_window_native(NULL), NULL);
     ASSERT_EQ(platform_display_native(NULL), NULL);

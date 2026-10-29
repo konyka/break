@@ -1259,6 +1259,19 @@ void platform_cancel_close(Platform *p) {
     if (p != NULL) p->should_close = false;
 }
 
+bool platform_set_window_title(Platform *p, const char *utf8) {
+    if (p == NULL || utf8 == NULL || p->display == NULL) return false;
+    /* WM_NAME is Latin-1 by convention; EWMH window managers show the
+     * UTF-8 _NET_WM_NAME, so CJK titles survive */
+    XStoreName(p->display, p->window, utf8);
+    XChangeProperty(p->display, p->window,
+                    XInternAtom(p->display, "_NET_WM_NAME", False),
+                    p->utf8_string, 8, PropModeReplace,
+                    (const unsigned char *)utf8, (int)strlen(utf8));
+    XFlush(p->display);
+    return true;
+}
+
 PlatformEventResult platform_poll(Platform *p) {
     bool relative_motion_seen = false;
     i32 relative_prev_x;

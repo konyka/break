@@ -258,6 +258,7 @@ int main(int argc, char **argv) {
    * is a pure view over profiler_last_frame and never touches state). */
   profiler_set_enabled(true);
 
+  u32 title_revision = 0u; /* 0: the configured title is still up */
   for (;;) {
     RHICmdBuffer *cmd;
     if (platform_poll(platform) == PLATFORM_EVENT_QUIT) {
@@ -290,6 +291,15 @@ int main(int argc, char **argv) {
      * the live 3D view + gizmo/selection reconcile) BEFORE frame_begin's
      * skip decision, so the damage is visible to it. */
     break_editor_shell_tick(shell);
+    {
+      /* "[* ]<scene> - Break Scene Editor": retitle only when it changed */
+      const char *title = break_editor_shell_window_title(shell);
+      u32 rev = break_editor_shell_window_title_revision(shell);
+      if (rev != title_revision) {
+        (void)platform_set_window_title(platform, title);
+        title_revision = rev;
+      }
+    }
     platform_get_logical_size(platform, &lw, &lh);
     cmd = break_ui_frame_begin(ui, drawable_w, drawable_h, &skip, NULL);
     if (skip) {

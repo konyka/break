@@ -117,6 +117,9 @@ PlatformEventResult platform_poll(Platform *p);
  * app that refuses the close (unsaved changes). Display/connection errors
  * are not cancellable. NULL: no-op. */
 void                platform_cancel_close(Platform *p);
+/* Retitles the window (UTF-8). false for NULL arguments, invalid UTF-8 or
+ * a backend without a window title (mobile, QNX screen). */
+bool                platform_set_window_title(Platform *p, const char *utf8);
 u32                 platform_poll_text(Platform *p, PlatformTextEvent *out,
                                        u32 max_events);
 void                platform_ime_set_enabled(Platform *p, bool enabled);

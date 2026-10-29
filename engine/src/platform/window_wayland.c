@@ -2076,6 +2076,12 @@ void platform_cancel_close(Platform *p) {
     if (p != NULL) p->close_requested = false;
 }
 
+bool platform_set_window_title(Platform *p, const char *utf8) {
+    if (p == NULL || utf8 == NULL || p->toplevel == NULL) return false;
+    xdg_toplevel_set_title(p->toplevel, utf8);
+    return true;
+}
+
 u32 platform_poll_text(Platform *p, PlatformTextEvent *out, u32 max_events) {
     return p != NULL ? platform_text_queue_pop(&p->text_queue, out, max_events) : 0;
 }
