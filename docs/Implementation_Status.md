@@ -1,5 +1,10 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：packer/verify_pak 端到端测试 + 反向校验（2026-10-30）
+
+- **交付**：`tools/verify_pak.c` 增加孤儿条目检查，即包里有、源目录里没有的条目；`tests/test_packer_roundtrip.cmake` 是第一个真正运行 packer 和 verify_pak 的测试，之前这两个工具没有任何测试覆盖。
+- **测试**：先确认测试为红（verify_pak 不输出条目数，也抓不到孤儿条目），实现后转绿。变异检查：忽略孤儿检查的结果后测试变红。默认树 233/234，唯一失败是已知 flaky 的 x11 用例。
+
 ## 本轮更新：VFS pak 写入器（2026-10-30）
 
 - **交付**：`vfs_pak_write`（`engine/src/asset/vfs.{h,c}`）。~~此前仓库里没有任何生成 pak 的工具，只能在测试里手工拼字节。~~（2026-10-30 更正：这句话不对。仓库里早就有离线命令行工具 `engine/tools/packer.c`，用法是 `packer <out.pak> <dir|file>...`，配套的 `tools/verify_pak.c` 负责校验。`vfs_pak_write` 是进程内的库 API，用于测试和进程内工具链；它与 packer 写出的格式相同，区别是带“临时文件 + rename”的原子替换，而 packer 是直接写目标文件，失败时可能留下半个文件。）写入方式是临时文件加 rename；在 Windows 上，目标文件已存在时 rename 会失败，这一点写进了头注释。

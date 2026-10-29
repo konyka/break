@@ -2401,6 +2401,15 @@ target_include_directories(verify_pak PRIVATE
 if(ENGINE_PLATFORM STREQUAL "windows")
     target_compile_definitions(verify_pak PRIVATE _WIN32_WINNT=0x0601)
 endif()
+if(ENGINE_BUILD_TESTS)
+    add_test(NAME test_packer_roundtrip
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:packer>
+            -DVERIFY=$<TARGET_FILE:verify_pak>
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/packer-roundtrip
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_packer_roundtrip.cmake)
+    set_tests_properties(test_packer_roundtrip PROPERTIES LABELS "headless;asset")
+endif()
 
 # Strict, allocation-free verifier for Unicode LineBreakTest-compatible files.
 add_executable(verify_myui_line_break tools/verify_myui_line_break.c)

@@ -1,7 +1,9 @@
 /* verify_pak.c — Verify packer output is VFS-compatible
  *
  * Mounts a .pak file via VFS, reads each entry, and compares
- * against the original file on disk. */
+ * against the original file on disk. Then walks the pak's entries
+ * (vfs_enumerate_pak) and fails on any entry with no regular file at
+ * <source_dir>/<entry>, so a stale or extra entry is caught too. */
 #include <asset/vfs.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -199,6 +201,38 @@ static int verify_dir(VFS *vfs, const char *base_dir, const char *rel_prefix) {
     return all_ok;
 }
 
+typedef struct {
+    const char *src_dir;
+    unsigned    entries;
+    int         all_ok;
+} OrphanScan;
+
+static bool check_entry_has_source(void *user, const char *path, u32 size) {
+    OrphanScan *scan = (OrphanScan *)user;
+    char full[1024];
+    int ret = snprintf(full, sizeof(full), "%s/%s", scan->src_dir, path);
+    (void)size;
+    scan->entries++;
+    if (ret < 0 || (size_t)ret >= sizeof(full)) {
+        fprintf(stderr, "FAIL: path too long for pak entry '%s'\n", path);
+        scan->all_ok = 0;
+        return true;
+    }
+#ifdef _WIN32
+    DWORD attr = GetFileAttributesA(full);
+    bool is_file = attr != INVALID_FILE_ATTRIBUTES &&
+                   (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
+#else
+    struct stat st;
+    bool is_file = stat(full, &st) == 0 && S_ISREG(st.st_mode);
+#endif
+    if (!is_file) {
+        fprintf(stderr, "FAIL: pak entry '%s' has no source file\n", path);
+        scan->all_ok = 0;
+    }
+    return true;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <file.pak> <source_dir>\n", argv[0]);
@@ -216,6 +250,10 @@ int main(int argc, char **argv) {
     }
 
     int all_ok = verify_dir(vfs, src_dir, "");
+    OrphanScan scan = { src_dir, 0u, 1 };
+    (void)vfs_enumerate_pak(vfs, check_entry_has_source, &scan);
+    if (!scan.all_ok) all_ok = 0;
+    printf("%u pak entries\n", scan.entries);
 
     vfs_destroy(vfs);
 
