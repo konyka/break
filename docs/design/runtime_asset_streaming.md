@@ -39,6 +39,7 @@ Stage 2 的顺序是硬约束：先把网络复制和资源请求的 target、�
   - 2026-10-30 补充：`vfs_enumerate_pak(vfs, fn, user)` 会逐个访问每个 PAK 挂载里 `vfs_open` 能读到的条目，顺序是挂载顺序加归档内顺序。挂载时被拒的条目（名字越界、没有终止符、数据超出文件末尾）会在 entry 表中标记 `name_offset = UINT32_MAX` 并跳过。回调返回 false 时停止。测试：`test_vfs` 的 `vfs_enumerate_pak_lists_valid_entries_only`。
   - 2026-10-30 补充：`vfs_pak_write(path, sources, count)` 用来写出 `vfs_mount_pak` 可读的归档。写入流程是先写 `<path>.tmp`，flush 后再 rename，失败不会在 `path` 留下半成品。重名、空名、NULL 数据配非零 size、超过 4096 条、32 位偏移溢出都会被拒绝。零条目是合法的空归档。测试：`vfs_pak_write_round_trips_through_mount`、`vfs_pak_write_rejects_bad_input_without_leaving_a_file`。
   - 2026-10-30 补充：离线工具链是 `tools/packer`（目录→pak）加 `tools/verify_pak`。verify_pak 原来只做单向检查（源文件都在包里且字节一致），现在加了反向检查：用 `vfs_enumerate_pak` 遍历包内条目，源目录里没有对应文件就判失败，并输出 `N pak entries`。CTest `test_packer_roundtrip` 会真正跑这两个工具，覆盖新包通过、源文件删除后被抓到、内容修改后被抓到三种情况。
+  - 2026-10-30 补充：packer 加固了三处。(1) 两个输入映射成同一个 pak 名时直接报错退出；之前会写出重复条目，而 `vfs_open` 只会返回其中一个。(2) 超过 4096 个文件时报错退出；之前多余的文件会被静默丢弃。(3) 先写 `<out>.tmp`，flush 和 close 都成功后再 rename 覆盖（Windows 用 `MoveFileExA(REPLACE_EXISTING)`）；失败时删除临时文件，原有的 pak 保持不变。以上三点都写进了 `test_packer_roundtrip`。
 - `engine/src/asset/async_loader.h:38-87` 定义异步全文件、range、priority、texture decode 请求；完成 callback 由 `async_loader_tick()` 在主线程派发。
 - `engine/src/asset/async_loader.c:16-25` 当前 pending heap 为 256，request slot 为 1024，completion queue 为 1024；legacy compatibility loader 在队列满时会等待消费者，这是当前实现事实，不是 Runtime Core formal facade 合同。
 - `engine/src/asset/decode_pipeline.c:12-14,227-249` 当前有 2 个 decode worker 和 256 项输入队列；输入队列满时提交失败，调用方释放 raw bytes。

@@ -1,5 +1,10 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：packer 加固（2026-10-30）
+
+- **修复**：`tools/packer.c` 对重复 pak 名、超过 4096 个文件改为报错退出，不再静默写出错误的归档；输出改为“临时文件 + rename”，失败时不会损坏已有的 pak。fflush 失败时也会正常 fclose，不再泄漏文件句柄。
+- **测试**：`test_packer_roundtrip` 新增 3 段：重名被拒且不留文件、4097 个文件被拒、失败时保留旧输出且没有 `.tmp` 残留。先红后绿；变异检查：关掉重名检查后变红。默认树 233/234，唯一失败是已知 flaky 的 x11 用例。Windows 分支（`MoveFileExA`）只做了代码审读，没有在 Windows 上运行。
+
 ## 本轮更新：packer/verify_pak 端到端测试 + 反向校验（2026-10-30）
 
 - **交付**：`tools/verify_pak.c` 增加孤儿条目检查，即包里有、源目录里没有的条目；`tests/test_packer_roundtrip.cmake` 是第一个真正运行 packer 和 verify_pak 的测试，之前这两个工具没有任何测试覆盖。

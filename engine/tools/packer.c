@@ -101,7 +101,25 @@ static int is_regular_file(const char *path) {
 }
 
 static void add_file(const char *rel_path, const char *abs_path) {
-    if (g_entry_count >= MAX_ENTRIES) return;
+    /* More inputs than a pak can index, or two inputs mapping to the same pak
+     * name (vfs_open would only ever serve one of them), make the archive
+     * wrong; both abort the run instead of being dropped silently. */
+    if (g_entry_count >= MAX_ENTRIES) {
+        if (!g_path_error)
+            fprintf(stderr, "ERROR: more than %d files to pack\n", MAX_ENTRIES);
+        g_path_error = 1;
+        return;
+    }
+    u32 hash = fnv1a(rel_path);
+    for (u32 i = 0; i < g_entry_count; i++) {
+        if (g_entries[i].name_hash == hash &&
+            strcmp(g_names + g_entries[i].name_offset, rel_path) == 0) {
+            fprintf(stderr, "ERROR: duplicate pak name '%s' (%s and %s)\n",
+                    rel_path, g_paths[i], abs_path);
+            g_path_error = 1;
+            return;
+        }
+    }
 
     u64 sz;
     if (!get_file_size(abs_path, &sz)) return;
@@ -137,7 +155,7 @@ static void add_file(const char *rel_path, const char *abs_path) {
     memcpy(g_names + g_name_size, rel_path, name_len);
     g_name_size += name_len;
 
-    g_entries[idx].name_hash = fnv1a(rel_path);
+    g_entries[idx].name_hash = hash;
     g_entries[idx].name_offset = name_off;
     g_entries[idx].size = (u32)sz;
     g_entries[idx].data_offset = 0;
@@ -317,8 +335,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* R428: any path truncation during scanning means the pak would be
-     * incomplete or corrupt — abort instead of writing it. */
+    /* R428: any path truncation, duplicate name or entry overflow during
+     * scanning means the pak would be incomplete or corrupt — abort instead
+     * of writing it. */
     if (g_path_error) {
         fprintf(stderr, "ERROR: aborting due to path truncation errors above\n");
         return 1;
@@ -347,9 +366,16 @@ int main(int argc, char **argv) {
         total_offset += g_entries[i].size;
     }
 
-    FILE *out = fopen(output, "wb");
+    /* Write "<output>.tmp" and rename it over the output only when every
+     * byte made it, so a failed run never leaves a truncated pak behind or
+     * destroys the previous one. */
+    char tmp_path[MAX_PATH_LEN + 8];
+    if (!check_path_len(snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", output),
+                        sizeof(tmp_path), "output"))
+        return 1;
+    FILE *out = fopen(tmp_path, "wb");
     if (!out) {
-        fprintf(stderr, "ERROR: cannot create '%s'\n", output);
+        fprintf(stderr, "ERROR: cannot create '%s'\n", tmp_path);
         return 1;
     }
 
@@ -366,17 +392,34 @@ int main(int argc, char **argv) {
     if (!write_ok) {
         fprintf(stderr, "ERROR: failed to write PAK header (disk full?)\n");
         fclose(out);
+        remove(tmp_path);
         return 1;
     }
 
     for (u32 i = 0; i < g_entry_count; i++) {
         if (!write_file_data(g_paths[i], g_entries[i].size, out)) {
             fclose(out);
+            remove(tmp_path);
             return 1;
         }
     }
 
-    fclose(out);
+    int flush_rc = fflush(out);
+    int close_rc = fclose(out);
+    if (flush_rc != 0 || close_rc != 0) {
+        fprintf(stderr, "ERROR: failed to flush '%s' (disk full?)\n", tmp_path);
+        remove(tmp_path);
+        return 1;
+    }
+#ifdef _WIN32
+    if (!MoveFileExA(tmp_path, output, MOVEFILE_REPLACE_EXISTING)) {
+#else
+    if (rename(tmp_path, output) != 0) {
+#endif
+        fprintf(stderr, "ERROR: cannot replace '%s'\n", output);
+        remove(tmp_path);
+        return 1;
+    }
     printf("Packed %u files into '%s' (%llu bytes)\n",
            g_entry_count, output, (unsigned long long)total_offset);
     return 0;
