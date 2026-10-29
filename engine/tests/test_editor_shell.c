@@ -3216,6 +3216,39 @@ TEST(ctrl_d_duplicates_every_selected_entity)
     break_editor_shell_destroy(shell);
 }
 
+TEST(focus_without_selection_frames_the_whole_scene)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId a, b;
+    BreakEditorCamera *cam;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    cam = break_editor_shell_camera(shell);
+    /* empty scene: F says so and leaves the camera alone */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'f', 0u));
+    ASSERT_FLOAT_EQ(cam->target[0], 0.0f, 0.0f);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell),
+                       "nothing to focus") != NULL);
+    a = break_editor_doc_add_entity(doc, "a");
+    b = break_editor_doc_add_entity(doc, "b");
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "bare")));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, a, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, a, BREAK_EDITOR_COMPONENT_TRANSFORM, 2u, 6.0f));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, 2u, 10.0f));
+    break_editor_shell_refresh(shell);
+    (void)break_editor_shell_select_ids(shell, NULL, 0u, false);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'f', 0u));
+    ASSERT_FLOAT_EQ(cam->target[2], 8.0f, 1e-5f);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell),
+                       "focus scene") != NULL);
+    /* still nothing selected */
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8182,6 +8215,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ctrl_a_selects_all_and_escape_clears);
     RUN_TEST(arrow_keys_walk_the_outliner_selection);
     RUN_TEST(ctrl_d_duplicates_every_selected_entity);
+    RUN_TEST(focus_without_selection_frames_the_whole_scene);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

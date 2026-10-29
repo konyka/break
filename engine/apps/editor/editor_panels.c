@@ -55,6 +55,8 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_PALETTE_COMMAND_COUNT 18u
 /* 25 degrees: the editor camera starts above the grid plane */
 #define EDITOR_DEFAULT_CAMERA_PITCH 0.43633231f
+/* F with nothing selected frames at most this many entities */
+#define EDITOR_FOCUS_SCENE_MAX 1024u
 #define EDITOR_EXTRA_SELECTION_MAX 64u
 #define EDITOR_TEST_WINDOW_W 800
 #define EDITOR_TEST_WINDOW_H 480
@@ -1302,9 +1304,39 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
             my_widget_invalidate(shell->viewport_widget, NULL);
         }
     } else {
-        (void)snprintf(shell->note, sizeof(shell->note), "%s",
-                       break_editor_tr(BREAK_EDITOR_TR_LOG_FOCUS_NO_SELECTION));
-        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_FOCUS_NO_SELECTION));
+        /* nothing selected: frame the whole scene (every entity with a
+         * transform, first EDITOR_FOCUS_SCENE_MAX in document order) */
+        BreakEditorEntityId ids[EDITOR_FOCUS_SCENE_MAX];
+        usize i, n = break_editor_doc_entity_count(shell->doc);
+        u32 k = 0u;
+        for (i = 0u; i < n && k < EDITOR_FOCUS_SCENE_MAX; i++) {
+            const char *unused = NULL;
+            if (break_editor_doc_entity_at(shell->doc, i, &ids[k], &unused) &&
+                break_editor_doc_has_component(shell->doc, ids[k],
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM)) {
+                k++;
+            }
+        }
+        if (k > 0u) {
+            break_editor_camera_focus_many(&shell->camera, shell->doc, ids, k);
+        }
+        if (k > 0u) {
+            (void)snprintf(shell->note, sizeof(shell->note), "%s",
+                           break_editor_tr(BREAK_EDITOR_TR_NOTE_FOCUS_SCENE));
+            editor_shell_log(shell,
+                             break_editor_tr(BREAK_EDITOR_TR_LOG_FOCUS_SCENE_FMT),
+                             (unsigned)k, (double)shell->camera.target[0],
+                             (double)shell->camera.target[1],
+                             (double)shell->camera.target[2]);
+            if (shell->viewport_widget != NULL) {
+                my_widget_invalidate(shell->viewport_widget, NULL);
+            }
+        } else {
+            (void)snprintf(shell->note, sizeof(shell->note), "%s",
+                           break_editor_tr(BREAK_EDITOR_TR_LOG_FOCUS_NO_SELECTION));
+            editor_shell_log(shell, "%s",
+                             break_editor_tr(BREAK_EDITOR_TR_LOG_FOCUS_NO_SELECTION));
+        }
     }
     shell_refresh_status(shell);
 }
