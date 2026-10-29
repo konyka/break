@@ -155,6 +155,10 @@ typedef enum {
     BREAK_EDITOR_TR_PREVIEW_EMPTY,
     BREAK_EDITOR_TR_PREVIEW_LOADING,
     BREAK_EDITOR_TR_PREVIEW_FAILED,
+    BREAK_EDITOR_TR_LOG_PAK_HEADER_FMT,  /* %s file name, %u entries */
+    BREAK_EDITOR_TR_LOG_PAK_ENTRY_FMT,   /* %s entry path, %u bytes */
+    BREAK_EDITOR_TR_LOG_PAK_MORE_FMT,    /* %u entries not listed */
+    BREAK_EDITOR_TR_LOG_PAK_FAILED_FMT,  /* %s file name */
     /* inspector component headings */
     BREAK_EDITOR_TR_COMPONENT_TRANSFORM,
     BREAK_EDITOR_TR_COMPONENT_LIGHT,

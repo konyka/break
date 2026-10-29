@@ -31,6 +31,7 @@
 
 #include "editor_shell_internal.h"
 
+#include <asset/vfs.h>
 #include <editor/editor_i18n.h>
 
 #include <stdio.h>
@@ -241,6 +242,57 @@ static void assets_panel_refresh(EditorPanelAssets *panel) {
     }
 }
 
+
+/* Pak listing (2026-10-30): read-only; mounts the archive in a private VFS,
+ * logs at most EDITOR_PAK_LIST_MAX entry lines plus a "more" line, then
+ * drops the VFS. The current scene and document are untouched. */
+#define EDITOR_PAK_LIST_MAX 16u
+
+typedef struct {
+    BreakEditorShell *shell;
+    u32 total;
+} EditorPakList;
+
+static bool assets_pak_count(void *user, const char *path, u32 size) {
+    (void)path;
+    (void)size;
+    ((EditorPakList *)user)->total++;
+    return true;
+}
+
+static bool assets_pak_line(void *user, const char *path, u32 size) {
+    EditorPakList *l = (EditorPakList *)user;
+    editor_shell_log(l->shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PAK_ENTRY_FMT),
+                     path, (unsigned)size);
+    return ++l->total < EDITOR_PAK_LIST_MAX;
+}
+
+static void assets_list_pak(BreakEditorShell *shell, const char *path,
+                            const char *name) {
+    EditorPakList l;
+    u32 total;
+    VFS *vfs = vfs_create();
+    if (vfs == NULL || !vfs_mount_pak(vfs, path)) {
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PAK_FAILED_FMT),
+                         name);
+        vfs_destroy(vfs);
+        return;
+    }
+    l.shell = shell;
+    l.total = 0u;
+    (void)vfs_enumerate_pak(vfs, assets_pak_count, &l);
+    total = l.total;
+    editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PAK_HEADER_FMT),
+                     name, (unsigned)total);
+    l.total = 0u;
+    (void)vfs_enumerate_pak(vfs, assets_pak_line, &l);
+    if (total > l.total) {
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PAK_MORE_FMT),
+                         (unsigned)(total - l.total));
+    }
+    vfs_destroy(vfs);
+}
+
 static void on_assets_row_click(void *ctx, const char *event, void *data) {
     EditorAssetsRowCtx *rc = (EditorAssetsRowCtx *)ctx;
     EditorPanelAssets *panel;
@@ -287,6 +339,12 @@ static void on_assets_row_click(void *ctx, const char *event, void *data) {
                     /* world swap + undo-stack clear + scene path / watcher
                      * update, all in the shell helper */
                     (void)editor_shell_load_scene_guarded(shell, path);
+                }
+            } else if (len >= 4u && strcmp(name + len - 4u, ".pak") == 0) {
+                char path[BREAK_EDITOR_ASSETS_PATH_CAPACITY];
+                if (break_editor_assets_abs_path(panel->assets, ei, path,
+                                                 sizeof(path))) {
+                    assets_list_pak(shell, path, name);
                 }
             } else if (break_editor_image_is_supported_name(name)) {
                 char path[BREAK_EDITOR_ASSETS_PATH_CAPACITY];

@@ -56,6 +56,7 @@
 #include "myui/widgets/my_list_view.h"
 #include "myui/widgets/my_edit.h"
 #include "myui/widgets/my_checkbox.h"
+#include <asset/vfs.h>
 
 static void emit_click(my_widget_t *w) {
     ASSERT_NOT_NULL(w);
@@ -3707,6 +3708,78 @@ TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo)
 
 /* Loading a scene from the asset browser over unsaved changes asks first:
  * the first click only warns, a second click (no edit in between) loads. */
+/* Activating a .pak lists its servable entries in the console (read-only;
+ * nothing is mounted or loaded). */
+TEST(assets_panel_pak_activation_lists_entries)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char dir[512];
+    char pak[600];
+    const char *text;
+    my_widget_t *list;
+    my_widget_t *row;
+    BreakEditorDoc *doc;
+    static const VFSPakSource src[] = {
+        {"scenes/main.bscn", "SCENE", 5},
+        {"lua/init.lua", "return 1", 8},
+    };
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_pak");
+    TEST_MKDIR(dir);
+    snprintf(pak, sizeof(pak), "%s/content.pak", dir);
+    ASSERT_TRUE(vfs_pak_write(pak, src, 2u));
+    doc = break_editor_shell_doc(shell);
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    row = list_row_by_text(list, "content.pak");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    text = break_editor_shell_console_text(shell);
+    ASSERT_TRUE(strstr(text, "content.pak") != NULL);
+    ASSERT_TRUE(strstr(text, "2") != NULL);
+    ASSERT_TRUE(strstr(text, "scenes/main.bscn (5 B)") != NULL);
+    ASSERT_TRUE(strstr(text, "lua/init.lua (8 B)") != NULL);
+    ASSERT_TRUE(strstr(text, "not a .bscn") == NULL);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    /* long archives list 16 entries and summarize the rest */
+    {
+        VFSPakSource many[20];
+        char names[20][16];
+        u32 k;
+        for (k = 0u; k < 20u; k++) {
+            snprintf(names[k], sizeof(names[k]), "f%02u.txt", (unsigned)k);
+            many[k].name = names[k];
+            many[k].data = NULL;
+            many[k].size = 0u;
+        }
+        ASSERT_TRUE(vfs_pak_write(pak, many, 20u));
+        emit_click(list_row_by_text(find(shell, "editor-assets-list"),
+                                    "content.pak"));
+        text = break_editor_shell_console_text(shell);
+        ASSERT_TRUE(strstr(text, "20 entries") != NULL);
+        ASSERT_TRUE(strstr(text, "f15.txt") != NULL);
+        ASSERT_TRUE(strstr(text, "f16.txt") == NULL);
+        ASSERT_TRUE(strstr(last_console_line(text), "4 more") != NULL);
+    }
+    /* a corrupt pak reports a failure instead of a listing */
+    {
+        FILE *fp = fopen(pak, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_EQ(fwrite("JUNK", 1u, 4u, fp), (size_t)4u);
+        ASSERT_EQ(fclose(fp), 0);
+    }
+    emit_click(list_row_by_text(find(shell, "editor-assets-list"),
+                                "content.pak"));
+    ASSERT_TRUE(strstr(last_console_line(break_editor_shell_console_text(shell)),
+                       "content.pak") != NULL);
+    break_editor_shell_destroy(shell);
+    remove(pak);
+    TEST_RMDIR(dir);
+}
+
 TEST(assets_panel_load_guards_unsaved_changes)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8788,6 +8861,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(viewport_shader_candidate_failures_preserve_live_state);
     RUN_TEST(viewport_shader_initial_failure_recovers_through_explicit_reload);
     RUN_TEST(assets_panel_lists_fixture_root);
+    RUN_TEST(assets_panel_pak_activation_lists_entries);
     RUN_TEST(shell_applies_the_new_ui_dark_theme);
     RUN_TEST(outliner_highlights_the_selected_row);
     RUN_TEST(palette_paints_with_focused_edit_ring);
