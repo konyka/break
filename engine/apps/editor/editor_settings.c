@@ -168,7 +168,10 @@ bool break_editor_settings_load(BreakEditorSettings *s, const char *path) {
     return break_editor_settings_parse(s, buf, n);
 }
 
-/* mkdir -p for every parent of `path` (PAL mkdir is single level) */
+/* mkdir -p for every parent of `path` (PAL mkdir is single level). Failures
+ * of intermediate components are ignored on purpose: a drive prefix such as
+ * "C:" or a protected existing directory cannot be created but is not an
+ * error; if the leaf directory is really missing the file open fails. */
 static bool make_parents(const char *path) {
     char dir[1024];
     usize n = strlen(path), i;
@@ -180,9 +183,7 @@ static bool make_parents(const char *path) {
         if (dir[i] == '/' || dir[i] == '\\') {
             char c = dir[i];
             dir[i] = '\0';
-            if (!platform_mkdir(dir)) {
-                return false;
-            }
+            (void)platform_mkdir(dir);
             dir[i] = c;
         }
     }

@@ -31,6 +31,7 @@
  * view — the PRODUCER side lives here: the app enables the profiler and
  * pumps one frame region around the loop body so the panel has data. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "editor_fonts.h"
@@ -188,8 +189,17 @@ int main(int argc, char **argv) {
    * every change. No usable path (no HOME) just means no persistence. */
   {
     char settings_path[1024];
-    if (break_editor_settings_default_path(settings_path,
-                                           sizeof(settings_path))) {
+    bool persist = true;
+#ifdef BREAK_EDITOR_INPUT_SCRIPT
+    /* a replay must not read or overwrite the user's real preferences;
+     * BREAK_EDITOR_SETTINGS points it at a scratch file on purpose */
+    if (script != NULL) {
+      const char *env = getenv("BREAK_EDITOR_SETTINGS");
+      persist = env != NULL && env[0] != '\0';
+    }
+#endif
+    if (persist && break_editor_settings_default_path(settings_path,
+                                                      sizeof(settings_path))) {
       (void)break_editor_shell_use_settings(shell, settings_path,
                                             lang_explicit);
     }
