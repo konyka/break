@@ -20,9 +20,14 @@
  * scene_save_binary's scene chunks all handle NULL (emit empty payloads —
  * scene_serial.c:255-257, 275-277, 366-367) and scene_load_binary treats a
  * NULL Scene as "parse and discard" (scene_serial.c:1596-1598). The editor
- * document owns no render scene in Phase 1. CONSEQUENCE (documented Phase 1
- * limitation): loading a game-authored BSCN that HAS SCENE_NODES/RESOURCES
- * and re-saving it from the editor DROPS those chunks.
+ * document owns no render scene. Game-side chunks are still preserved
+ * (2026-10-29; previously dropped on re-save): load keeps every chunk the
+ * editor does not own (all but ENTITIES/COMPONENTS/HIERARCHY — so
+ * SCENE_NODES, RESOURCES, mesh/skin geometry, skeleton, anims and unknown
+ * future types) as exact bytes, and save splices them back after its own
+ * ENTITIES/COMPONENTS. They describe the game's render graph, not the
+ * editor's entities, so they are NOT re-indexed when entities are added or
+ * removed; a later phase that edits the render graph must take ownership.
  *
  * INDEX COMPACTION across save/load: the BSCN ENTITIES chunk stores entities
  * densely in ascending-index order WITHOUT the index value, and

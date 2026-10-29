@@ -1126,12 +1126,20 @@ TEST(entity_removed_mid_drag_discards) {
     break_editor_gizmo_end_drag(g);
     ASSERT_EQ(stack_size(doc), size0 + 1u);
 
-    /* Undoing the remove restores the entity (Phase 1 limitation: without
-     * its components) — the point here is that the stack stays coherent. */
+    /* Undoing the remove restores the entity with its transform (the
+     * remove command snapshots components, 2026-10-29): the bytes are the
+     * ones live at removal, i.e. the mid-drag position, since the discarded
+     * drag never committed a command of its own. The stack stays coherent. */
     ASSERT_TRUE(break_editor_undo(doc));
     ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
-    ASSERT_FALSE(break_editor_doc_has_component(
+    ASSERT_TRUE(break_editor_doc_has_component(
         doc, e, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    {
+        f32 x = 0.0f;
+        ASSERT_TRUE(break_editor_doc_get_field_f32(
+            doc, e, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x));
+        ASSERT_TRUE(x > 0.0f); /* moved along +X by the drag before removal */
+    }
 
     break_editor_gizmo_destroy(g);
     break_editor_doc_destroy(doc);

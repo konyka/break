@@ -63,6 +63,7 @@ void break_editor_doc_destroy(BreakEditorDoc *doc) {
     break_editor_cmd_stack_destroy(doc->stack);
     free(doc->slots);
     world_destroy(doc->world);
+    break_editor_doc_kept_chunks_free(doc);
     free(doc);
 }
 

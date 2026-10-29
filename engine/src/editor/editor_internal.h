@@ -106,6 +106,14 @@ struct BreakEditorDoc {
      * break_editor_doc_init_components. */
     BreakEditorComponentReg components[BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY];
     u32 component_count;
+    /* Game-side chunks of the last loaded BSCN that the editor does not
+     * model (every chunk except ENTITIES/COMPONENTS/HIERARCHY: SCENE_NODES,
+     * RESOURCES, mesh/skin geometry, skeleton, anims, future types). Kept
+     * as the exact {type, bytes} the file held and spliced back by save, so
+     * a re-save never drops them. NULL/0 = none. Owned (one allocation per
+     * payload + the table). */
+    struct BreakEditorKeptChunk *kept_chunks;
+    u32 kept_chunk_count;
 };
 
 struct BreakEditorCmdStack {
@@ -115,6 +123,9 @@ struct BreakEditorCmdStack {
     u32 undo_pos; /* [0, undo_pos) applied; [undo_pos, size) redoable */
     bool dropped_oldest;
 };
+
+/* editor_scene.c: releases doc->kept_chunks (safe when none). */
+void break_editor_doc_kept_chunks_free(BreakEditorDoc *doc);
 
 /* editor_doc.c internals shared with editor_cmd.c. */
 World *break_editor_doc_world_raw(BreakEditorDoc *doc);

@@ -422,6 +422,152 @@ static bool sidecar_apply(BreakEditorDoc *doc, const char *sidecar_path) {
 }
 
 /* ---------------------------------------------------------------- */
+/* Kept game chunks                                                 */
+/* ---------------------------------------------------------------- */
+
+/* The editor owns ENTITIES and COMPONENTS (rebuilt from its World on every
+ * save); HIERARCHY is derived from SCENE_NODES. Every other chunk belongs
+ * to the game side and is carried through byte-exact. */
+struct BreakEditorKeptChunk {
+    u32 type;
+    u32 size;
+    u8 *bytes;
+};
+
+static bool chunk_is_editor_owned(u32 type) {
+    return type == BSCN_CHUNK_ENTITIES || type == BSCN_CHUNK_COMPONENTS ||
+           type == BSCN_CHUNK_HIERARCHY;
+}
+
+static void kept_free(struct BreakEditorKeptChunk *k, u32 n) {
+    for (u32 i = 0; k && i < n; i++) free(k[i].bytes);
+    free(k);
+}
+
+void break_editor_doc_kept_chunks_free(BreakEditorDoc *doc) {
+    if (!doc) return;
+    kept_free(doc->kept_chunks, doc->kept_chunk_count);
+    doc->kept_chunks = NULL;
+    doc->kept_chunk_count = 0;
+}
+
+/* Copies the game-side chunks out of an already-validated BSCN image. A
+ * chunk that is empty in the editor's own output (SCENE_NODES/RESOURCES
+ * with count 0) is still kept: the bytes are what the game wrote. */
+static bool kept_collect(const u8 *data, usize size,
+                         struct BreakEditorKeptChunk **out, u32 *out_n) {
+    BscnHeader h;
+    struct BreakEditorKeptChunk *k;
+    u32 n = 0;
+    *out = NULL;
+    *out_n = 0;
+    if (size < sizeof(h)) return false;
+    memcpy(&h, data, sizeof(h));
+    if (h.chunk_count > 64u ||
+        sizeof(h) + (u64)h.chunk_count * sizeof(BscnChunkEntry) > size) {
+        return false;
+    }
+    k = calloc(h.chunk_count ? h.chunk_count : 1u, sizeof(*k));
+    if (!k) return false;
+    for (u32 i = 0; i < h.chunk_count; i++) {
+        BscnChunkEntry e;
+        memcpy(&e, data + sizeof(h) + (usize)i * sizeof(e), sizeof(e));
+        if (chunk_is_editor_owned(e.type)) continue;
+        if ((u64)e.offset + e.size > size) {
+            kept_free(k, n);
+            return false;
+        }
+        k[n].type = e.type;
+        k[n].size = e.size;
+        k[n].bytes = malloc(e.size ? e.size : 1u);
+        if (!k[n].bytes) {
+            kept_free(k, n);
+            return false;
+        }
+        memcpy(k[n].bytes, data + e.offset, e.size);
+        n++;
+    }
+    if (n == 0) {
+        free(k);
+        return true;
+    }
+    *out = k;
+    *out_n = n;
+    return true;
+}
+
+/* Rewrites the BSCN at `path` (just produced by scene_save_binary with a
+ * NULL Scene) so its editor-owned chunks are followed by the kept game
+ * chunks instead of the empty placeholders. Same table layout the writer
+ * uses: header, entry table, payloads back to back. */
+static bool kept_splice(const BreakEditorDoc *doc, const char *path) {
+    FILE *fp;
+    long fsz;
+    u8 *in = NULL;
+    BscnHeader h, oh;
+    BscnChunkEntry table[64 + 64];
+    const u8 *src[64 + 64];
+    u32 n = 0;
+    u64 total;
+    bool ok = false;
+    if (doc->kept_chunk_count == 0u) return true;
+    fp = fopen(path, "rb");
+    if (!fp) return false;
+    if (fseek(fp, 0, SEEK_END) != 0 || (fsz = ftell(fp)) < (long)sizeof(h) ||
+        fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return false;
+    }
+    in = malloc((usize)fsz);
+    if (!in || fread(in, 1, (usize)fsz, fp) != (usize)fsz) {
+        fclose(fp);
+        free(in);
+        return false;
+    }
+    fclose(fp);
+    memcpy(&h, in, sizeof(h));
+    if (h.chunk_count > 64u ||
+        sizeof(h) + (u64)h.chunk_count * sizeof(BscnChunkEntry) > (u64)fsz) {
+        goto done;
+    }
+    for (u32 i = 0; i < h.chunk_count; i++) {
+        BscnChunkEntry e;
+        memcpy(&e, in + sizeof(h) + (usize)i * sizeof(e), sizeof(e));
+        if (!chunk_is_editor_owned(e.type)) continue; /* replaced below */
+        if ((u64)e.offset + e.size > (u64)fsz) goto done;
+        table[n] = e;
+        src[n++] = in + e.offset;
+    }
+    for (u32 i = 0; i < doc->kept_chunk_count && n < 128u; i++) {
+        table[n].type = doc->kept_chunks[i].type;
+        table[n].size = doc->kept_chunks[i].size;
+        src[n++] = doc->kept_chunks[i].bytes;
+    }
+    if (n > 64u) goto done; /* the loader's own chunk-count cap */
+    total = sizeof(oh) + (u64)n * sizeof(BscnChunkEntry);
+    for (u32 i = 0; i < n; i++) {
+        table[i].offset = (u32)total;
+        total += table[i].size;
+        if (total > (u64)BSCN_MAX_FILE_BYTES) goto done;
+    }
+    oh = h;
+    oh.chunk_count = n;
+    fp = fopen(path, "wb");
+    if (!fp) goto done;
+    ok = fwrite(&oh, sizeof(oh), 1, fp) == 1 &&
+         fwrite(table, sizeof(BscnChunkEntry), n, fp) == n;
+    for (u32 i = 0; ok && i < n; i++) {
+        if (table[i].size && fwrite(src[i], 1, table[i].size, fp) != table[i].size) {
+            ok = false;
+        }
+    }
+    if (fclose(fp) != 0) ok = false;
+done:
+    free(in);
+    return ok;
+}
+
+/* ---------------------------------------------------------------- */
 /* Public API                                                       */
 /* ---------------------------------------------------------------- */
 
@@ -440,7 +586,8 @@ bool break_editor_doc_save(BreakEditorDoc *doc, const char *path) {
     }
     /* NULL Scene: verified tolerated by every emit_* chunk (header). The
      * 64 MiB cap is scene_serial's own gate on both write and read. */
-    if (!scene_save_binary(doc->world, NULL, bscn_tmp, NULL)) {
+    if (!scene_save_binary(doc->world, NULL, bscn_tmp, NULL) ||
+        !kept_splice(doc, bscn_tmp)) {
         remove(sidecar_tmp);
         remove(bscn_tmp);
         return false;
@@ -479,16 +626,26 @@ static bool doc_load_staged(BreakEditorDoc *doc, const char *path,
         u32 sz = doc->world->component_sizes[t];
         if (sz) world_register_component(staging, t, sz);
     }
-    /* NULL Scene: parse-and-discard (scene_serial.c:1596-1598). */
+    /* NULL Scene: parse-and-discard (scene_serial.c:1596-1598) — the
+     * game chunks are validated by that parse and then copied verbatim. */
     if (!scene_load_binary_memory(staging, NULL, data, size)) {
         world_destroy(staging);
         return false; /* doc fully unchanged: entities, names, stack, dirty */
+    }
+    struct BreakEditorKeptChunk *kept = NULL;
+    u32 kept_n = 0;
+    if (!kept_collect((const u8 *)data, size, &kept, &kept_n)) {
+        world_destroy(staging);
+        return false; /* OOM: doc unchanged */
     }
 
     /* Commit: swap worlds, reset names, clear the undo history (the recorded
      * commands reference the pre-load world, which no longer exists). */
     world_destroy(doc->world);
     doc->world = staging;
+    break_editor_doc_kept_chunks_free(doc);
+    doc->kept_chunks = kept;
+    doc->kept_chunk_count = kept_n;
     memset(doc->slots, 0, sizeof(BreakEditorNameSlot) * ECS_MAX_ENTITIES);
     doc->named_count = 0;
     break_editor_cmd_stack_clear(doc->stack);

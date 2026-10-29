@@ -696,6 +696,148 @@ TEST(memory_scene_load_rejects_bad_input_without_mutation) {
     break_editor_doc_destroy(doc);
 }
 
+/* A game-authored BSCN carries render chunks (SCENE_NODES, RESOURCES, ...)
+ * the editor does not model. Loading it and re-saving from the editor must
+ * keep those chunks byte-exact (was: dropped — Phase 1 limitation), while
+ * the ENTITIES/COMPONENTS the editor owns reflect the edits. */
+static bool chunk_bytes(const u8 *file, usize size, u32 type, const u8 **out,
+                        u32 *out_size) {
+    BscnHeader h;
+    if (size < sizeof(h)) return false;
+    memcpy(&h, file, sizeof(h));
+    for (u32 i = 0; i < h.chunk_count; i++) {
+        BscnChunkEntry e;
+        usize at = sizeof(h) + (usize)i * sizeof(e);
+        if (at + sizeof(e) > size) return false;
+        memcpy(&e, file + at, sizeof(e));
+        if (e.type == type) {
+            if ((u64)e.offset + e.size > size) return false;
+            *out = file + e.offset;
+            *out_size = e.size;
+            return true;
+        }
+    }
+    return false;
+}
+
+TEST(resave_keeps_game_render_chunks) {
+    char path[512], sidecar[600];
+    test_tmp(path, sizeof(path), "editor_scene_game.bscn");
+    sidecar_path_of(path, sidecar, sizeof(sidecar));
+    remove(sidecar);
+    /* author a "game" BSCN: one entity + two scene nodes + a resource */
+    World *gw = world_create();
+    ASSERT_NOT_NULL(gw);
+    world_register_component(gw, TEST_COMP_TRANSFORM, sizeof(TestTransform));
+    Entity ge = world_create_entity(gw);
+    ASSERT_TRUE(world_add_component(gw, ge, TEST_COMP_TRANSFORM) != NULL);
+    Scene gs;
+    memset(&gs, 0, sizeof(gs));
+    /* a resource manifest too: RESOURCES is re-derived from live meshes on
+     * save, so only a verbatim copy keeps a loaded manifest */
+    gs.mesh_count = 1;
+    gs.meshes = (Mesh *)calloc(1, sizeof(Mesh));
+    ASSERT_NOT_NULL(gs.meshes);
+    gs.meshes[0].index_count = 6;
+    gs.meshes[0].vertex_count = 4;
+    gs.node_count = 2;
+    gs.nodes = (SceneNode *)calloc(2, sizeof(SceneNode));
+    ASSERT_NOT_NULL(gs.nodes);
+    for (u32 i = 0; i < 2; i++) {
+        gs.nodes[i].local_transform = mat4_identity();
+        gs.nodes[i].world_transform = mat4_identity();
+        gs.nodes[i].local_transform.e[3][0] = 5.0f + (f32)i;
+        gs.nodes[i].parent_index = i == 0 ? UINT32_MAX : 0u;
+    }
+    {
+        SerializeOptions opts;
+        memset(&opts, 0, sizeof(opts));
+        opts.include_resources = true;
+        ASSERT_TRUE(scene_save_binary(gw, &gs, path, &opts));
+    }
+    free(gs.nodes);
+    free(gs.meshes);
+    world_destroy(gw);
+
+    usize orig_size = 0;
+    u8 *orig = read_file_bytes(path, &orig_size);
+    ASSERT_NOT_NULL(orig);
+    const u8 *orig_nodes = NULL;
+    u32 orig_nodes_size = 0;
+    ASSERT_TRUE(chunk_bytes(orig, orig_size, BSCN_CHUNK_SCENE_NODES,
+                            &orig_nodes, &orig_nodes_size));
+    ASSERT_TRUE(orig_nodes_size > 4u); /* count + 2 nodes */
+    const u8 *orig_res = NULL;
+    u32 orig_res_size = 0;
+    ASSERT_TRUE(chunk_bytes(orig, orig_size, BSCN_CHUNK_RESOURCES, &orig_res,
+                            &orig_res_size));
+    ASSERT_TRUE(orig_res_size > 4u); /* count + 1 mesh entry */
+
+    /* edit in the editor: load, add an entity with a transform, save */
+    BreakEditorDoc *doc = make_doc_with_transform();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(break_editor_doc_load(doc, path));
+    BreakEditorEntityId added = break_editor_doc_add_entity(doc, "added");
+    ASSERT_TRUE(break_editor_entity_id_valid(added));
+    ASSERT_TRUE(put_transform(doc, added, 2.0f));
+    ASSERT_TRUE(break_editor_doc_save(doc, path));
+    break_editor_doc_destroy(doc);
+
+    usize new_size = 0;
+    u8 *now = read_file_bytes(path, &new_size);
+    ASSERT_NOT_NULL(now);
+    const u8 *new_nodes = NULL;
+    u32 new_nodes_size = 0;
+    ASSERT_TRUE(chunk_bytes(now, new_size, BSCN_CHUNK_SCENE_NODES, &new_nodes,
+                            &new_nodes_size));
+    ASSERT_EQ(new_nodes_size, orig_nodes_size);
+    ASSERT_EQ(memcmp(new_nodes, orig_nodes, orig_nodes_size), 0);
+    {
+        const u8 *new_res = NULL;
+        u32 new_res_size = 0;
+        ASSERT_TRUE(chunk_bytes(now, new_size, BSCN_CHUNK_RESOURCES, &new_res,
+                                &new_res_size));
+        ASSERT_EQ(new_res_size, orig_res_size);
+        ASSERT_EQ(memcmp(new_res, orig_res, orig_res_size), 0);
+    }
+
+    /* the game side still loads it: nodes intact, both entities present */
+    {
+        World *w2 = world_create();
+        ASSERT_NOT_NULL(w2);
+        world_register_component(w2, TEST_COMP_TRANSFORM, sizeof(TestTransform));
+        Scene s2;
+        memset(&s2, 0, sizeof(s2));
+        ASSERT_TRUE(scene_load_binary(w2, &s2, path));
+        ASSERT_EQ(s2.node_count, 2u);
+        ASSERT_EQ(s2.resource_count, 1u);
+        ASSERT_TRUE(s2.nodes[1].local_transform.e[3][0] == 6.0f);
+        scene_serial_free(&s2);
+        world_destroy(w2);
+    }
+    /* and the editor reloads its edit */
+    doc = make_doc_with_transform();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(break_editor_doc_load(doc, path));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    break_editor_doc_destroy(doc);
+
+    /* a doc that never loaded a game file saves no render chunks content
+     * (empty SCENE_NODES, as before) */
+    doc = make_doc_with_transform();
+    ASSERT_TRUE(break_editor_doc_save(doc, path));
+    break_editor_doc_destroy(doc);
+    free(now);
+    now = read_file_bytes(path, &new_size);
+    ASSERT_TRUE(chunk_bytes(now, new_size, BSCN_CHUNK_SCENE_NODES, &new_nodes,
+                            &new_nodes_size));
+    ASSERT_EQ(new_nodes_size, 4u);
+    free(orig);
+    free(now);
+    remove(path);
+    remove(sidecar);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(save_load_round_trip_names_generations_components);
     RUN_TEST(round_trip_with_destroyed_hole_compacts_indices_but_keeps_names);
@@ -714,4 +856,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(empty_doc_round_trip);
     RUN_TEST(memory_scene_load_matches_file_load);
     RUN_TEST(memory_scene_load_rejects_bad_input_without_mutation);
+    RUN_TEST(resave_keeps_game_render_chunks);
 TEST_MAIN_END()
