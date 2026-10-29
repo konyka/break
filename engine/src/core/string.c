@@ -100,3 +100,19 @@ double break_strtod_c(const char *text, char **end) {
 float break_strtof_c(const char *text, char **end) {
     return (float)break_strtod_c(text, end);
 }
+
+void break_c_decimal(char *buf) {
+    const struct lconv *lc = localeconv();
+    const char *point;
+    usize point_len;
+    char *hit;
+    if (buf == NULL || lc == NULL || lc->decimal_point == NULL) return;
+    point = lc->decimal_point;
+    point_len = strlen(point);
+    if (point_len == 0 || (point_len == 1 && point[0] == '.')) return;
+    while ((hit = strstr(buf, point)) != NULL) {
+        *hit = '.';
+        if (point_len > 1) memmove(hit + 1, hit + point_len, strlen(hit + point_len) + 1);
+        buf = hit + 1;
+    }
+}

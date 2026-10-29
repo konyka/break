@@ -35,3 +35,7 @@ Str  str_copy(Str s, char *buf, usize buf_size);
  * into text after the consumed characters. A locale ',' is never accepted. */
 double break_strtod_c(const char *text, char **end);
 float  break_strtof_c(const char *text, char **end);
+
+/* Rewrites the locale decimal point that snprintf("%f"/"%g") wrote into the
+ * NUL-terminated buf back to '.', in place (every occurrence). */
+void break_c_decimal(char *buf);

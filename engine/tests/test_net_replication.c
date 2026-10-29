@@ -5,6 +5,7 @@
 #include "test_framework.h"
 #include <network/net_replication.h>
 #include <platform/time.h>
+#include <locale.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -1089,6 +1090,47 @@ TEST(peer_save_load)
     net_replicator_shutdown(&loaded);
 }
 
+/* Peer files are portable across hosts: a file written under the C locale
+ * loads identically under a comma-decimal LC_NUMERIC, and files written
+ * under that locale still use '.'. */
+TEST(peer_file_decimals_are_locale_independent)
+{
+    char path[128];
+    test_tmp(path, sizeof path, "test_netrep_locale.txt");
+    FILE *f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "# break netrep peers v1\ncount 1\npeer 127.0.0.1 20401 1.250 9.500 1 2 0\n");
+    fclose(f);
+
+    NetReplicator loaded = {0};
+    ASSERT_TRUE(net_replicator_init(&loaded, 0));
+    if (setlocale(LC_NUMERIC, "de_DE.UTF-8") == NULL &&
+        setlocale(LC_NUMERIC, "de_DE.utf8") == NULL)
+        printf("    (no comma-decimal locale installed; C locale only)\n");
+    bool ok = net_replicator_peer_load(&loaded, path);
+    bool saved = ok && net_replicator_peer_save(&loaded, path);
+    (void)setlocale(LC_NUMERIC, "C");
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(saved);
+    ASSERT_EQ(net_replicator_peer_count(&loaded), 1u);
+    const NetRepPeerStats *ps = net_replicator_peer_at(&loaded, 0u);
+    ASSERT_TRUE(ps != NULL);
+    ASSERT_FLOAT_EQ(ps->last_rtt_ms, 1.25f, 0.001f);
+    ASSERT_FLOAT_EQ(ps->roundtrip_ms, 9.5f, 0.001f);
+    ASSERT_EQ(ps->hb_rt_recv, 2u);
+
+    char text[256] = {0};
+    f = fopen(path, "r");
+    ASSERT_NOT_NULL(f);
+    size_t n = fread(text, 1, sizeof(text) - 1u, f);
+    fclose(f);
+    text[n] = '\0';
+    ASSERT_TRUE(strstr(text, " 1.250 9.500 ") != NULL);
+
+    remove(path);
+    net_replicator_shutdown(&loaded);
+}
+
 /* R480: a failed full-state save must report failure instead of claiming a
  * checkpoint exists; /dev/full reliably fails at stdio flush/close time. */
 TEST(peer_save_reports_write_failure)
@@ -2083,6 +2125,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_evict_stale);
     RUN_TEST(peer_lru_full);
     RUN_TEST(peer_save_load);
+    RUN_TEST(peer_file_decimals_are_locale_independent);
     RUN_TEST(peer_save_reports_write_failure);
     RUN_TEST(peer_load_reports_read_failure_preserves_existing_peers);
     RUN_TEST(peer_load_delta_reports_read_failure_preserves_existing_peers);

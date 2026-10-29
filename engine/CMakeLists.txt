@@ -4796,7 +4796,7 @@ endif()
 
     # test_net_replication: transform snapshot broadcast over UDP loopback
     add_executable(test_net_replication tests/test_net_replication.c
-        src/network/net_replication.c src/network/packet.c src/network/network.c
+        src/network/net_replication.c src/core/string.c src/network/packet.c src/network/network.c
         src/platform/time.c)
     target_include_directories(test_net_replication PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -4819,7 +4819,7 @@ endif()
     # Same usage as fuzz_scene_serial / fuzz_vfs_pak: EXCLUDE_FROM_ALL, build
     # explicitly and run by hand under ASan/UBSan.
     add_executable(fuzz_net_packet EXCLUDE_FROM_ALL tests/fuzz_net_packet.c
-        src/network/net_replication.c src/network/packet.c src/network/network.c
+        src/network/net_replication.c src/core/string.c src/network/packet.c src/network/network.c
         src/platform/time.c src/core/log.c)
     target_include_directories(fuzz_net_packet PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")

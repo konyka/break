@@ -1,6 +1,7 @@
 #include "net_replication.h"
 
 #include <platform/time.h>
+#include <core/string.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -234,9 +235,15 @@ static void net_repl_peer_update_rtt(NetReplicator *rep, const NetAddress *peer,
 }
 
 static void net_repl_peer_write_line(FILE *f, const NetRepPeerStats *p) {
-    fprintf(f, "peer %s %u %.3f %.3f %u %u %u\n",
-            p->addr.host, (u32)p->addr.port,
-            (f64)p->last_rtt_ms, (f64)p->roundtrip_ms,
+    /* Decimals are written with '.' whatever LC_NUMERIC is, so peer files
+     * stay portable between hosts. */
+    char rtt[48], rt[48];
+    snprintf(rtt, sizeof rtt, "%.3f", (f64)p->last_rtt_ms);
+    snprintf(rt, sizeof rt, "%.3f", (f64)p->roundtrip_ms);
+    break_c_decimal(rtt);
+    break_c_decimal(rt);
+    fprintf(f, "peer %s %u %s %s %u %u %u\n",
+            p->addr.host, (u32)p->addr.port, rtt, rt,
             p->hb_recv, p->hb_rt_recv, p->last_seen_ms);
 }
 
@@ -249,9 +256,21 @@ static bool net_repl_peer_apply_line(NetReplicator *rep, const char *line) {
     char host[256] = {0};
     u32 port = 0u, hb = 0u, hb_rt = 0u, seen = 0u;
     f32 rtt = 0.0f, rt = 0.0f;
-    if (sscanf(peer_line + 5, "%255s %u %f %f %u %u %u",
-               host, &port, &rtt, &rt, &hb, &hb_rt, &seen) < 7)
+    /* Split at the two decimal fields: sscanf %f follows LC_NUMERIC, so the
+     * floats go through break_strtod_c ('.' always). */
+    int head = 0;
+    if (sscanf(peer_line + 5, "%255s %u%n", host, &port, &head) < 2 || head <= 0)
         return false;
+    {
+        const char *cur = peer_line + 5 + head;
+        char *end = NULL;
+        rtt = (f32)break_strtod_c(cur, &end);
+        if (end == NULL || end == cur) return false;
+        cur = end;
+        rt = (f32)break_strtod_c(cur, &end);
+        if (end == NULL || end == cur) return false;
+        if (sscanf(end, "%u %u %u", &hb, &hb_rt, &seen) < 3) return false;
+    }
     /* R418: reject out-of-range ports instead of truncating into u16
      * (70000 silently wrapped to 4464, registering the wrong peer address). */
     if (port > 65535u || !isfinite(rtt) || !isfinite(rt))

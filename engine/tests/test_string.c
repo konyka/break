@@ -241,6 +241,18 @@ TEST(strtod_c_ignores_comma_locale)
     ASSERT_TRUE(end2 != NULL && strcmp(end2, ",5") == 0);
 }
 
+TEST(c_decimal_rewrites_locale_point)
+{
+    char buf[64];
+    bool comma = setlocale(LC_NUMERIC, "de_DE.UTF-8") != NULL ||
+                 setlocale(LC_NUMERIC, "de_DE.utf8") != NULL;
+    snprintf(buf, sizeof buf, "%.3f %.1f", 1.25, 9.5);
+    break_c_decimal(buf);
+    (void)setlocale(LC_NUMERIC, "C");
+    if (!comma) printf("    (no comma-decimal locale installed; C locale only)\n");
+    ASSERT_TRUE(strcmp(buf, "1.250 9.5") == 0);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(str_from_c_basic);
     RUN_TEST(str_from_c_empty);
@@ -271,4 +283,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(str_copy_null_data_zero_len);
     RUN_TEST(str_slice_null_data);
     RUN_TEST(strtod_c_ignores_comma_locale);
+    RUN_TEST(c_decimal_rewrites_locale_point);
 TEST_MAIN_END()
