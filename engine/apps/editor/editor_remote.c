@@ -68,7 +68,17 @@ typedef struct {
     bool active;  /* slot in use */
     u64 seen_us;  /* first observed (auth deadline origin) */
     bool transport_closed; /* break_net_reactor_close issued */
+    bool auth_key_known;   /* key id this session authenticated with */
+    u8 auth_key_id[8];
 } EditorRemoteConnRow;
+
+#define EDITOR_REMOTE_MAX_KEYS 8u
+
+typedef struct {
+    bool used;
+    u8 key_id[8];
+    u8 psk[32];
+} EditorRemoteKey;
 
 /* Eval output capture: the remote's console core logs every line BOTH into
  * the shell's shared console ring (via editor_shell_log, the panel
@@ -109,10 +119,9 @@ struct BreakEditorRemote {
     u32 auth_timeout_ms;
     u64 server_closes;
     u64 auth_timeouts;
-    bool has_psk;
+    bool has_psk;                   /* at least one key in the ring */
     bool auth_installed;            /* this remote owns the session auth domain */
-    u8 psk[32];
-    u8 key_id[8];
+    EditorRemoteKey keys[EDITOR_REMOTE_MAX_KEYS];
 };
 
 #ifdef BREAK_ENABLE_CRYPTO
@@ -123,38 +132,58 @@ struct BreakEditorRemote {
  * destroy wipes the slot and the callback then fails closed. */
 typedef struct {
     bool valid;
-    u8 psk[32];
-    u8 key_id[8];
+    EditorRemoteKey keys[EDITOR_REMOTE_MAX_KEYS];
+    bool last_resolved;            /* set by the callback on a key hit */
+    u8 last_key_id[8];
 } EditorRemoteAuthSlot;
 
 static EditorRemoteAuthSlot g_editor_remote_auth;
 
-static bool remote_auth_key(void *user, const u8 key_id[8], u8 out_psk[32]) {
-    const EditorRemoteAuthSlot *slot = (const EditorRemoteAuthSlot *)user;
+static void remote_wipe_slot(void) {
+    remote_wipe(&g_editor_remote_auth, sizeof(g_editor_remote_auth));
+}
+
+static bool remote_key_id_eq(const u8 a[8], const u8 b[8]) {
     u8 diff = 0u;
+    u32 i;
+    for (i = 0u; i < 8u; i++) {
+        diff |= (u8)(a[i] ^ b[i]);
+    }
+    return diff == 0u;
+}
+
+static bool remote_auth_key(void *user, const u8 key_id[8], u8 out_psk[32]) {
+    EditorRemoteAuthSlot *slot = (EditorRemoteAuthSlot *)user;
     u32 i;
     if (slot == NULL || !slot->valid) {
         return false;
     }
-    for (i = 0u; i < 8u; i++) {
-        diff |= (u8)(slot->key_id[i] ^ key_id[i]);
+    for (i = 0u; i < EDITOR_REMOTE_MAX_KEYS; i++) {
+        if (slot->keys[i].used && remote_key_id_eq(slot->keys[i].key_id, key_id)) {
+            memcpy(out_psk, slot->keys[i].psk, 32u);
+            memcpy(slot->last_key_id, key_id, 8u);
+            slot->last_resolved = true;
+            return true;
+        }
     }
-    if (diff != 0u) {
-        return false; /* unknown key id: fail closed */
+    return false; /* unknown or revoked key id: fail closed */
+}
+
+static void remote_auth_mirror(const BreakEditorRemote *r) {
+    if (r->auth_installed) {
+        memcpy(g_editor_remote_auth.keys, r->keys, sizeof(r->keys));
     }
-    memcpy(out_psk, slot->psk, 32u);
-    return true;
 }
 
 static bool remote_auth_install(BreakEditorRemote *r) {
     if (g_editor_remote_auth.valid) {
         return false; /* one auth domain per process */
     }
-    memcpy(g_editor_remote_auth.psk, r->psk, 32u);
-    memcpy(g_editor_remote_auth.key_id, r->key_id, 8u);
+    memcpy(g_editor_remote_auth.keys, r->keys, sizeof(r->keys));
+    g_editor_remote_auth.last_resolved = false;
     g_editor_remote_auth.valid = true;
     if (!break_session_set_auth(remote_auth_key, &g_editor_remote_auth)) {
-        memset(&g_editor_remote_auth, 0, sizeof(g_editor_remote_auth));
+        remote_wipe_slot();
         return false;
     }
     r->auth_installed = true;
@@ -165,7 +194,7 @@ static void remote_auth_uninstall(BreakEditorRemote *r) {
     if (!r->auth_installed) {
         return;
     }
-    memset(&g_editor_remote_auth, 0, sizeof(g_editor_remote_auth));
+    remote_wipe_slot();
     (void)break_session_set_auth(NULL, NULL);
     r->auth_installed = false;
 }
@@ -968,8 +997,7 @@ void break_editor_remote_destroy(BreakEditorRemote *r) {
     remote_auth_uninstall(r);
 #endif
     break_editor_lua_destroy(r->console);
-    remote_wipe(r->psk, sizeof(r->psk));
-    remote_wipe(r->key_id, sizeof(r->key_id));
+    remote_wipe(r->keys, sizeof(r->keys));
     free(r);
 }
 
@@ -993,8 +1021,11 @@ bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
     if (r == NULL || key_id == NULL || psk == NULL || r->started) {
         return false;
     }
-    memcpy(r->key_id, key_id, sizeof(r->key_id));
-    memcpy(r->psk, psk, sizeof(r->psk));
+    /* the CLI/dev key: replaces the whole ring with this one key */
+    remote_wipe(r->keys, sizeof(r->keys));
+    r->keys[0].used = true;
+    memcpy(r->keys[0].key_id, key_id, 8u);
+    memcpy(r->keys[0].psk, psk, 32u);
     r->has_psk = true;
     return true;
 #else
@@ -1002,6 +1033,93 @@ bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
     (void)key_id;
     (void)psk;
     return false; /* no AUTH-v2 without break_crypto: TLS start fails closed */
+#endif
+}
+
+bool break_editor_remote_add_key(BreakEditorRemote *r, const uint8_t key_id[8],
+                                 const uint8_t psk[32]) {
+#ifdef BREAK_ENABLE_CRYPTO
+    u32 i, free_slot = EDITOR_REMOTE_MAX_KEYS;
+    if (r == NULL || key_id == NULL || psk == NULL) {
+        return false;
+    }
+    for (i = 0u; i < EDITOR_REMOTE_MAX_KEYS; i++) {
+        if (r->keys[i].used && remote_key_id_eq(r->keys[i].key_id, key_id)) {
+            return false; /* duplicate key id */
+        }
+        if (!r->keys[i].used && free_slot == EDITOR_REMOTE_MAX_KEYS) {
+            free_slot = i;
+        }
+    }
+    if (free_slot == EDITOR_REMOTE_MAX_KEYS) {
+        return false;
+    }
+    if (r->started && !r->auth_installed) {
+        return false; /* running without auth (plaintext seam): no ring */
+    }
+    r->keys[free_slot].used = true;
+    memcpy(r->keys[free_slot].key_id, key_id, 8u);
+    memcpy(r->keys[free_slot].psk, psk, 32u);
+    r->has_psk = true;
+    remote_auth_mirror(r);
+    return true;
+#else
+    (void)r;
+    (void)key_id;
+    (void)psk;
+    return false;
+#endif
+}
+
+bool break_editor_remote_revoke_key(BreakEditorRemote *r,
+                                    const uint8_t key_id[8]) {
+#ifdef BREAK_ENABLE_CRYPTO
+    u32 i;
+    bool found = false;
+    if (r == NULL || key_id == NULL) {
+        return false;
+    }
+    for (i = 0u; i < EDITOR_REMOTE_MAX_KEYS; i++) {
+        if (r->keys[i].used && remote_key_id_eq(r->keys[i].key_id, key_id)) {
+            remote_wipe(&r->keys[i], sizeof(r->keys[i]));
+            found = true;
+        }
+    }
+    if (!found) {
+        return false;
+    }
+    remote_auth_mirror(r);
+    /* sessions that authenticated with the revoked key lose access now */
+    for (i = 0u; i < r->capacity; i++) {
+        EditorRemoteConnRow *row = &r->rows[i];
+        if (row->active && row->auth_key_known &&
+            remote_key_id_eq(row->auth_key_id, key_id)) {
+            (void)break_session_manager_close(r->manager, row->key, 0u);
+            remote_close_transport(r, row);
+            row->auth_key_known = false;
+        }
+    }
+    return true;
+#else
+    (void)r;
+    (void)key_id;
+    return false;
+#endif
+}
+
+uint32_t break_editor_remote_key_count(const BreakEditorRemote *r) {
+#ifdef BREAK_ENABLE_CRYPTO
+    u32 i, n = 0u;
+    if (r == NULL) {
+        return 0u;
+    }
+    for (i = 0u; i < EDITOR_REMOTE_MAX_KEYS; i++) {
+        n += r->keys[i].used ? 1u : 0u;
+    }
+    return n;
+#else
+    (void)r;
+    return 0u;
 #endif
 }
 
@@ -1107,11 +1225,29 @@ void break_editor_remote_tick(BreakEditorRemote *r) {
                  * NEW connection, so its deadline and close state restart */
                 row->seen_us = time_microseconds();
                 row->transport_closed = false;
+                row->auth_key_known = false;
             } else {
                 remote_row_add(r, event.connection_key);
             }
         }
+#ifdef BREAK_ENABLE_CRYPTO
+        g_editor_remote_auth.last_resolved = false;
+#endif
         (void)break_session_manager_apply_adapter_event(r->manager, &event);
+#ifdef BREAK_ENABLE_CRYPTO
+        /* attribute an AUTH that just succeeded to the key id the callback
+         * resolved, so revoking that key can close this session */
+        if (r->auth_installed && g_editor_remote_auth.last_resolved &&
+            break_session_manager_state(r->manager, event.connection_key) ==
+                BREAK_SESSION_AUTHENTICATED) {
+            EditorRemoteConnRow *row = remote_row_find(r, event.connection_key);
+            if (row != NULL && !row->auth_key_known) {
+                row->auth_key_known = true;
+                memcpy(row->auth_key_id, g_editor_remote_auth.last_key_id, 8u);
+            }
+        }
+        g_editor_remote_auth.last_resolved = false;
+#endif
         break_net_event_release(&event);
         processed++;
     }
@@ -1336,6 +1472,26 @@ bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
     (void)key_id;
     (void)psk;
     return false;
+}
+
+bool break_editor_remote_add_key(BreakEditorRemote *r, const uint8_t key_id[8],
+                                 const uint8_t psk[32]) {
+    (void)r;
+    (void)key_id;
+    (void)psk;
+    return false;
+}
+
+bool break_editor_remote_revoke_key(BreakEditorRemote *r,
+                                    const uint8_t key_id[8]) {
+    (void)r;
+    (void)key_id;
+    return false;
+}
+
+uint32_t break_editor_remote_key_count(const BreakEditorRemote *r) {
+    (void)r;
+    return 0u;
 }
 
 bool break_editor_remote_session_stats(const BreakEditorRemote *r,

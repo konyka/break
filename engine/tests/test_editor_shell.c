@@ -6664,6 +6664,71 @@ TEST(remote_tls_auth_v2_client_describe_and_spawn)
     break_editor_shell_destroy(shell);
 }
 
+/* Keyring: several per-device keys authenticate side by side; revoking one
+ * refuses new AUTH with it and closes the sessions that authenticated with
+ * it, while sessions on other keys stay up. */
+TEST(remote_tls_keyring_add_and_revoke)
+{
+    static const u8 k_dev2_id[8] = {'d', 'e', 'v', 'i', 'c', 'e', '0', '2'};
+    static const u8 k_dev2_psk[32] = {
+        0xa0u, 0xa1u, 0xa2u, 0xa3u, 0xa4u, 0xa5u, 0xa6u, 0xa7u,
+        0xa8u, 0xa9u, 0xaau, 0xabu, 0xacu, 0xadu, 0xaeu, 0xafu,
+        0xb0u, 0xb1u, 0xb2u, 0xb3u, 0xb4u, 0xb5u, 0xb6u, 0xb7u,
+        0xb8u, 0xb9u, 0xbau, 0xbbu, 0xbcu, 0xbdu, 0xbeu, 0xbfu};
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient a, b, c2;
+    BreakNetEnvelope rsp;
+    ASSERT_NOT_NULL(shell);
+    remote = tls_remote_start(shell);
+    ASSERT_NOT_NULL(remote);
+    /* a second device key added while running */
+    ASSERT_TRUE(break_editor_remote_add_key(remote, k_dev2_id, k_dev2_psk));
+    ASSERT_EQ(break_editor_remote_key_count(remote), 2u);
+    /* duplicate key id refused */
+    ASSERT_FALSE(break_editor_remote_add_key(remote, k_dev2_id, k_tls_psk));
+
+    ASSERT_TRUE(tls_client_open(&a, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    ASSERT_TRUE(tls_client_send_auth(&a, k_tls_key_id, k_tls_psk, false));
+    ASSERT_TRUE(tls_client_send(&a, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&a, &rsp));
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+
+    ASSERT_TRUE(tls_client_open(&b, shell, remote));
+    remote_wait_connection_count(remote, shell, 2u);
+    ASSERT_TRUE(tls_client_send_auth(&b, k_dev2_id, k_dev2_psk, false));
+    ASSERT_TRUE(tls_client_send(&b, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&b, &rsp));
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+
+    /* revoke device 2: its session is closed, device 1 keeps working */
+    ASSERT_TRUE(break_editor_remote_revoke_key(remote, k_dev2_id));
+    ASSERT_FALSE(break_editor_remote_revoke_key(remote, k_dev2_id));
+    ASSERT_EQ(break_editor_remote_key_count(remote), 1u);
+    ASSERT_TRUE(tls_client_wait_eof(&b));
+    remote_wait_connection_count(remote, shell, 1u);
+    ASSERT_TRUE(tls_client_send(&a, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&a, &rsp));
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+
+    /* a new connection with the revoked key is refused */
+    ASSERT_TRUE(tls_client_open(&c2, shell, remote));
+    remote_wait_connection_count(remote, shell, 2u);
+    ASSERT_TRUE(tls_client_send_auth(&c2, k_dev2_id, k_dev2_psk, false));
+    ASSERT_TRUE(tls_client_wait_eof(&c2));
+    ASSERT_EQ(snow_network_buffer_length(c2.plain), 0u);
+
+    tls_client_close(&c2);
+    tls_client_close(&b);
+    tls_client_close(&a);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
 static u32 rd32le(const u8 *p) {
     return (u32)p[0] | ((u32)p[1] << 8u) | ((u32)p[2] << 16u) |
            ((u32)p[3] << 24u);
@@ -9228,6 +9293,7 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(network_panel_refresh_never_mutates_remote_state);
 #ifdef BREAK_ENABLE_CRYPTO
     RUN_REMOTE_TEST(remote_tls_auth_v2_client_describe_and_spawn);
+    RUN_REMOTE_TEST(remote_tls_keyring_add_and_revoke);
     RUN_REMOTE_TEST(remote_tls_e2e_connect_auth_describe_spawn_undo_disconnect);
     RUN_REMOTE_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);
     RUN_REMOTE_TEST(remote_tls_auth_deadline_closes_idle_unauthenticated_client);

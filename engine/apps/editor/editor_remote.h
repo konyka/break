@@ -119,6 +119,19 @@ const char *break_editor_remote_state_name(uint32_t state);
 bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
                                  const uint8_t psk[32]);
 
+/* Keyring (2026-10-30): up to 8 per-device key_id -> PSK pairs. set_psk
+ * replaces the ring with its one key; add_key appends (also while running),
+ * refusing a duplicate key id or a full ring. revoke_key removes a key:
+ * new AUTH with it fails, and every session that authenticated with it is
+ * closed (session and transport) immediately; sessions on other keys are
+ * untouched. Key bytes are wiped on revoke and destroy. Provisioning
+ * (distributing keys to devices) stays outside the editor. */
+bool break_editor_remote_add_key(BreakEditorRemote *r, const uint8_t key_id[8],
+                                 const uint8_t psk[32]);
+bool break_editor_remote_revoke_key(BreakEditorRemote *r,
+                                    const uint8_t key_id[8]);
+uint32_t break_editor_remote_key_count(const BreakEditorRemote *r);
+
 /* ---------------- editor_main --remote flag plumbing ----------------
  * DEFAULT OFF: without --remote no remote is created and nothing listens.
  *   --remote                 enable (binds 127.0.0.1 — loopback only)
