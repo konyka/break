@@ -239,6 +239,7 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd);
 static void shell_tabs_retranslate(BreakEditorShell *shell);
 static void shell_settings_save(BreakEditorShell *shell);
+static void shell_end_gizmo_drag(BreakEditorShell *shell);
 static void shell_set_snap(BreakEditorShell *shell, bool on);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
 
@@ -429,6 +430,7 @@ static void on_name_edit_activate(void *ctx, const char *event, void *data) {
         !break_editor_entity_id_valid(shell->selected)) {
         return;
     }
+    shell_end_gizmo_drag(shell);
     if (break_editor_doc_rename_entity(shell->doc, shell->selected, text)) {
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_RENAME_FMT), text);
     } else {
@@ -451,6 +453,7 @@ static void on_field_edit_activate(void *ctx, const char *event, void *data) {
         editor_shell_refresh_all(fc->shell);
         return;
     }
+    shell_end_gizmo_drag(fc->shell);
     if (break_editor_doc_set_field_f32(fc->shell->doc, fc->shell->selected,
                                        fc->component_id, fc->field_index,
                                        value)) {
@@ -480,6 +483,7 @@ static void on_component_button_click(void *ctx, const char *event,
     }
     if (fc->field_index == 0u) {
         /* add button */
+        shell_end_gizmo_drag(shell);
         if (break_editor_doc_add_component(shell->doc, shell->selected,
                                            fc->component_id)) {
             editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_ADD_COMPONENT_FMT), (unsigned)fc->component_id);
@@ -488,6 +492,7 @@ static void on_component_button_click(void *ctx, const char *event,
                       (unsigned)fc->component_id);
         }
     } else {
+        shell_end_gizmo_drag(shell);
         if (break_editor_doc_remove_component(shell->doc, shell->selected,
                                               fc->component_id)) {
             editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_COMPONENT_FMT),
@@ -945,6 +950,7 @@ static void on_palette_edit_activate(void *ctx, const char *event,
 /* ---------------- actions (all doc mutations via commands) ---------------- */
 
 static void shell_do_add_entity(BreakEditorShell *shell) {
+    shell_end_gizmo_drag(shell);
     BreakEditorEntityId id = break_editor_doc_add_entity(shell->doc, NULL);
     if (break_editor_entity_id_valid(id)) {
         const char *name = shell_entity_name(shell, id);
@@ -961,6 +967,7 @@ static void shell_do_add_entity(BreakEditorShell *shell) {
 static void shell_do_duplicate_selected(BreakEditorShell *shell) {
     BreakEditorEntityId id = BREAK_EDITOR_ENTITY_NULL;
     if (break_editor_entity_id_valid(shell->selected)) {
+        shell_end_gizmo_drag(shell);
         id = break_editor_doc_duplicate_entity(shell->doc, shell->selected);
     }
     if (break_editor_entity_id_valid(id)) {
@@ -991,6 +998,7 @@ static void shell_do_remove_selected(BreakEditorShell *shell) {
         } else {
             name[0] = '\0';
         }
+        shell_end_gizmo_drag(shell);
         if (break_editor_doc_remove_entity(shell->doc, shell->selected)) {
             editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_ENTITY_FMT),
                       name[0] != '\0' ? name : "?");
@@ -1556,6 +1564,16 @@ u32 break_editor_shell_palette_cursor(const BreakEditorShell *shell) {
 
 u32 break_editor_shell_active_tab(const BreakEditorShell *shell, u32 area) {
     return shell != NULL && area < 2u ? shell->active_tab[area] : 0u;
+}
+
+/* Every shell-level doc mutation ends a live gizmo drag first, so the drag
+ * commits as its own command BEFORE the mutation (editor_viewport.md §10
+ * item 2) instead of interleaving with it. No-op without a drag. */
+static void shell_end_gizmo_drag(BreakEditorShell *shell) {
+    if (shell != NULL && shell->gizmo != NULL &&
+        break_editor_gizmo_is_dragging(shell->gizmo)) {
+        break_editor_gizmo_end_drag(shell->gizmo);
+    }
 }
 
 /* Gizmo snapping: defaults close to common DCC/engine steps. */

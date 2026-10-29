@@ -576,6 +576,10 @@ bool break_editor_gizmo_drag(BreakEditorGizmo *g,
     return true;
 }
 
+bool break_editor_gizmo_is_dragging(const BreakEditorGizmo *g) {
+    return g != NULL && g->dragging;
+}
+
 bool break_editor_gizmo_set_snap(BreakEditorGizmo *g, f32 translate_step,
                                  f32 rotate_deg, f32 scale_step) {
     if (!g || !isfinite(translate_step) || !isfinite(rotate_deg) ||

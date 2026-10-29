@@ -166,8 +166,8 @@ GPU 路径证据 = 编译/链接 + 记录在案的 live smoke run（**非** GPU 
 
 ## 10. 已知边界与 fast-follow（终审 2026-10-23 记录，均不阻塞合并）
 
-1. **多按钮按下覆盖拖拽态**：左键 gizmo 拖拽中再按右键，myui dispatcher 无条件改投 grab，`vp->drag_kind` 被覆盖导致 gizmo drag 泄漏为未提交状态；有界且自愈（Task 2 的隐式 commit 合同兜底），但下一次 Ctrl+Z 会先提交再撤销该泄漏拖拽。fast-follow：DOWN 处理器切换 drag_kind 前先结束活动 gizmo drag（1-2 行 + 一个 shell 测试）。
-2. **拖拽中经 Inspector 键盘编辑同一字段**：gizmo 命令的 old_bits 早于该编辑，撤销粒度会变浑（字节一致、LIFO 不破坏）。fast-follow：shell 层所有 doc 变更先经"结束活动拖拽"助手。
+1. ~~**多按钮按下覆盖拖拽态**~~ **已修复 2026-10-29**：视口 DOWN 处理器在切换 drag_kind 前先结束活动 gizmo drag（`test_editor_shell` `second_button_mid_gizmo_drag_commits_the_drag`，修复前红）。原问题：左键拖拽中再按右键会让 gizmo drag 泄漏为未提交状态，下一次 Ctrl+Z 先提交再撤销。
+2. ~~**拖拽中经 Inspector 键盘编辑同一字段**~~ **已修复 2026-10-29**：shell 层所有文档修改（改名、改字段、增删组件、增删/复制实体；撤销/重做原本就有）先经 `shell_end_gizmo_drag` 结束活动拖拽，拖拽与编辑成为两个先后有序的命令（`test_editor_shell` `inspector_edit_mid_gizmo_drag_ends_the_drag_first`，修复前红）。
 3. `vp_lazy_init` 部分失败泄漏至多一套 pipeline/bindings/vbo（仅在 GPU 已失败路径、一次性）；修复方向：先设 `vp->device` 再进 fallible 步骤。
 4. `vp_fbo_ensure` 创建失败后每帧重试（无粘性标志；无泄漏、有界）；可选加粘性标志并在本节记录重试策略。
 5. 文档小项：`editor_viewport.h` 相机结构注释的 distance/pitch 边界与实现钳制不一致（注释级别）；`set_mode` 对 >SCALE 枚举值缺 2 行钳制（调用方错误专用路径）。

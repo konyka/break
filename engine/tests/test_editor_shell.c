@@ -861,6 +861,125 @@ TEST(gizmo_drag_via_pointer_events_then_single_undo)
     break_editor_shell_destroy(shell);
 }
 
+/* editor_viewport.md §10 fast-follow 1: a second button pressed during a
+ * left gizmo drag used to overwrite the drag kind, leaving the gizmo drag
+ * uncommitted (the next Ctrl+Z first committed it, then undid it). Now the
+ * new press ends the gizmo drag first: exactly one command lands, and one
+ * Ctrl+Z reverts it. */
+TEST(second_button_mid_gizmo_drag_commits_the_drag)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId id;
+    my_widget_t *vp;
+    BreakEditorGizmoHandle handles[4];
+    f32 local[2], center[3], value = 0.0f;
+    u32 depth0;
+    ASSERT_NOT_NULL(shell);
+    add_transformed_entity(shell, 0.0f, 0.0f, 0.0f);
+    id = break_editor_shell_selected(shell);
+    doc = break_editor_shell_doc(shell);
+    shell_paint(shell);
+    vp = break_editor_shell_viewport_widget(shell);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'w', 0u));
+    ASSERT_EQ(break_editor_gizmo_handles(break_editor_shell_gizmo(shell),
+                                         handles, 4u), 4u);
+    for (int k = 0; k < 3; k++) {
+        center[k] = 0.5f * (handles[0].aabb_min[k] + handles[0].aabb_max[k]);
+    }
+    ASSERT_TRUE(project_to_viewport(shell, vp, center, local));
+    depth0 = break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc));
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, local[0], local[1], 1u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, local[0] + 40.0f, local[1],
+                     0u, 0u, 0);
+    /* right button joins mid-drag (orbit), then both go up */
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, local[0] + 40.0f, local[1],
+                     3u, 0u, 0);
+    ASSERT_FALSE(break_editor_gizmo_is_dragging(break_editor_shell_gizmo(shell)));
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)),
+              depth0 + 1u);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, local[0] + 80.0f, local[1],
+                     0u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, local[0] + 80.0f, local[1],
+                     3u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, local[0] + 80.0f, local[1],
+                     1u, 0u, 0);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)),
+              depth0 + 1u);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
+    ASSERT_TRUE(value > 0.01f);
+    /* one undo reverts exactly the drag */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
+    ASSERT_FLOAT_EQ(value, 0.0f, 1e-6f);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)),
+              depth0);
+    break_editor_shell_destroy(shell);
+}
+
+/* editor_viewport.md §10 fast-follow 2: an inspector edit while a gizmo
+ * drag is live must not interleave with it. The shell ends the drag first,
+ * so the drag and the edit are two separate, correctly ordered commands:
+ * undo reverts the edit, then the drag. */
+TEST(inspector_edit_mid_gizmo_drag_ends_the_drag_first)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId id;
+    my_widget_t *vp, *field;
+    BreakEditorGizmoHandle handles[4];
+    f32 local[2], center[3], x = 0.0f, dragged = 0.0f;
+    u32 depth0;
+    ASSERT_NOT_NULL(shell);
+    add_transformed_entity(shell, 0.0f, 0.0f, 0.0f);
+    id = break_editor_shell_selected(shell);
+    doc = break_editor_shell_doc(shell);
+    shell_paint(shell);
+    vp = break_editor_shell_viewport_widget(shell);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'w', 0u));
+    ASSERT_EQ(break_editor_gizmo_handles(break_editor_shell_gizmo(shell),
+                                         handles, 4u), 4u);
+    for (int k = 0; k < 3; k++) {
+        center[k] = 0.5f * (handles[0].aabb_min[k] + handles[0].aabb_max[k]);
+    }
+    ASSERT_TRUE(project_to_viewport(shell, vp, center, local));
+    depth0 = break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc));
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, local[0], local[1], 1u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, local[0] + 40.0f, local[1],
+                     0u, 0u, 0);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &dragged));
+    ASSERT_TRUE(dragged > 0.01f);
+    /* edit pos.y in the inspector while the drag is live */
+    field = find(shell, "editor-field-64-1");
+    ASSERT_NOT_NULL(field);
+    ASSERT_EQ(my_edit_set_text(field, "3"), MY_RET_OK);
+    emit_activate(field);
+    ASSERT_FALSE(break_editor_gizmo_is_dragging(break_editor_shell_gizmo(shell)));
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)),
+              depth0 + 2u);
+    /* undo #1: the edit (y back to 0, x keeps the drag) */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 1u, &x));
+    ASSERT_FLOAT_EQ(x, 0.0f, 1e-6f);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x));
+    ASSERT_FLOAT_EQ(x, dragged, 1e-6f);
+    /* undo #2: the drag */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x));
+    ASSERT_FLOAT_EQ(x, 0.0f, 1e-6f);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, local[0] + 40.0f, local[1],
+                     1u, 0u, 0);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)),
+              depth0);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(mid_drag_ctrl_z_commits_then_undoes_the_drag)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -7179,6 +7298,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(focus_key_moves_camera_target_to_selection);
     RUN_TEST(pointer_down_on_viewport_picks_entity);
     RUN_TEST(gizmo_drag_via_pointer_events_then_single_undo);
+    RUN_TEST(second_button_mid_gizmo_drag_commits_the_drag);
+    RUN_TEST(inspector_edit_mid_gizmo_drag_ends_the_drag_first);
     RUN_TEST(mid_drag_ctrl_z_commits_then_undoes_the_drag);
     RUN_TEST(camera_orbit_pan_zoom_via_pointer_and_wheel);
     RUN_TEST(viewport_render_without_device_is_bounded_noop);

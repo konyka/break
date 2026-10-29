@@ -168,3 +168,4 @@ BreakEditorGizmoPart break_editor_gizmo_hit(const BreakEditorGizmo *g, const Bre
 bool break_editor_gizmo_begin_drag(BreakEditorGizmo *g, const BreakEditorCamera *cam, f32 x, f32 y, f32 w, f32 h); /* false when no handle hit */
 bool break_editor_gizmo_drag(BreakEditorGizmo *g, const BreakEditorCamera *cam, f32 x, f32 y, f32 w, f32 h);      /* applies UNDOABLE doc commands */
 void break_editor_gizmo_end_drag(BreakEditorGizmo *g);
+bool break_editor_gizmo_is_dragging(const BreakEditorGizmo *g); /* NULL: false */

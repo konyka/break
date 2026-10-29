@@ -786,6 +786,12 @@ static my_ret_t viewport_on_event(my_widget_t *widget,
     case MY_EVENT_POINTER_DOWN: {
         u8 button = event->u.pointer.button;
         u8 mods = event->u.pointer.modifiers;
+        /* a second button during a gizmo drag: commit that drag first, or
+         * the switch below would orphan it uncommitted (§10 item 1) */
+        if (vp->drag_kind == VP_DRAG_GIZMO && gizmo != NULL) {
+            break_editor_gizmo_end_drag(gizmo);
+            break_editor_shell_refresh(shell);
+        }
         vp->last_x = lx;
         vp->last_y = ly;
         vp->drag_kind = VP_DRAG_NONE;
