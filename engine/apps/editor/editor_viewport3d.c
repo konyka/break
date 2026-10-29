@@ -834,6 +834,23 @@ static void viewport_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
             vg, tex, 0.0f, 0.0f, (float)widget->rect.w,
             (float)widget->rect.h);
     }
+    if (shell != NULL) {
+        const char *line = break_editor_shell_viewport_overlay_text(shell);
+        int32_t tw = 0, th = 0;
+        if (line[0] != '\0') {
+            my_vgcanvas_set_font(vg, NULL, 12);
+            if (my_vgcanvas_measure_text(vg, line, &tw, &th) == MY_RET_OK) {
+                my_vgcanvas_set_fill_color(vg,
+                                           my_color_from_rgba32(0x000000A0u));
+                (void)my_vgcanvas_fill_rect(
+                    vg, &(my_rectf_t){4.0f, 4.0f, (float)tw + 12.0f,
+                                      (float)th + 6.0f});
+                my_vgcanvas_set_fill_color(
+                    vg, my_color_from_rgba32(BREAK_EDITOR_THEME_TEXT));
+                (void)my_vgcanvas_draw_text(vg, line, 10.0f, 7.0f);
+            }
+        }
+    }
     {
         f32 r[4];
         if (break_editor_viewport3d_box_rect(vp, r)) {

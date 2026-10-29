@@ -173,7 +173,7 @@ GPU 路径证据 = 编译/链接 + 记录在案的 live smoke run（**非** GPU 
 - ~~选中高亮 **outline**~~（2026-10-29 已交付：所选代理立方体的 12 条棱以细长盒绘制为亮色描边 `#FFEB8C`，叠在暖色 tint 上；几何由纯 CPU 的 `break_editor_viewport3d_outline_edges` 生成并有已知答案测试；统计 `outline_edges`）、~~rotation rings 手柄可视化~~（2026-10-29 已交付：旋转模式下每轴一圈 48 个小立方体，半径 = 轴手柄远端，颜色同轴；只作可视化，命中仍用手柄 AABB；几何 `break_editor_gizmo_rings`，统计 `ring_segments`）
   可视化、~~多选的框选~~（大纲 Ctrl/Shift 多选、批量删除、多实体随 gizmo 一起拖动、视口框选均已于 2026-10-29 交付；框选按实体中心判定，不做与代理盒的相交）、场景保真渲染
   （mesh/材质/光照——代理立方体不声称游戏画面）、gizmo 局部坐标系模式、
-  ~~视口内导航键（flycam）~~（2026-10-29 已交付：按住右键 + WASD/QE）、视口 overlay 统计信息、pick 的增量 BVH refit
+  ~~视口内导航键（flycam）~~（2026-10-29 已交付：按住右键 + WASD/QE）、~~视口 overlay 统计信息~~（2026-10-29 已交付，见文末）、pick 的增量 BVH refit
   优化（当前每次调用重建，编辑器规模足够）。
 
 ## 10. 已知边界与 fast-follow（终审 2026-10-23 记录，均不阻塞合并）
@@ -188,3 +188,7 @@ GPU 路径证据 = 编译/链接 + 记录在案的 live smoke run（**非** GPU 
 ## 吸附（2026-10-29）
 
 `break_editor_gizmo_set_snap(g, translate_step, rotate_deg, scale_step)`：0 表示该类关闭；吸附结果值（不是增量），所以离网格的起点会落回网格；缩放不低于一个步长；负数或非有限值被拒绝并保留原设置。shell 侧 Ctrl+G / 命令面板切换（默认 0.25、15°、0.1），工具标签带“Snap”，偏好文件 `snap=on|off`。
+
+## 视口统计叠加（2026-10-29）
+
+视口左上角画一行统计：实体数、选中数（主选 + 多选）、上一帧的 draw call 数、FBO 尺寸，随 UI 语言翻译（`Entities 1  Selected 1  Draws 14  818x690` / `实体 1  选中 1  绘制 14  818x690`），12 px 浅色字、半透明黑底。默认开启；命令面板“Toggle viewport stats / 切换视口统计”开关，偏好文件 `stats=on|off`。文本由 `break_editor_shell_viewport_overlay_text` 生成（隐藏时为空串），draw/FBO 数取自 `break_editor_viewport3d_last_stats`，不做 GPU 回读。未做：帧时间（profiler 面板已有）。

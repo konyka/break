@@ -275,7 +275,7 @@ TEST(palette_opens_filters_and_escape_closes)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 16u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 17u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save"));
@@ -2457,6 +2457,51 @@ TEST(snap_toggle_sets_gizmo_steps_and_persists)
     break_editor_gizmo_get_snap(break_editor_shell_gizmo(shell), &t, &r, &sc);
     ASSERT_TRUE(t == 0.0f && r == 0.0f && sc == 0.0f);
     ASSERT_TRUE(strstr(break_editor_shell_tool_text(shell), "Snap") == NULL);
+    break_editor_shell_destroy(shell);
+    remove(path);
+}
+
+/* Viewport stats overlay: a short line (entities, selected, draws, FBO
+ * size) painted over the top-left of the viewport; the palette toggles it
+ * and the choice persists. */
+TEST(viewport_stats_overlay_text_toggles_and_persists)
+{
+    char path[256];
+    BreakEditorShell *shell;
+    const char *t;
+    test_tmp(path, sizeof(path), "editor_shell_stats.ini");
+    remove(path);
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, true));
+    ASSERT_TRUE(break_editor_shell_viewport_stats_visible(shell));
+    t = break_editor_shell_viewport_overlay_text(shell);
+    ASSERT_NOT_NULL(t);
+    ASSERT_TRUE(strstr(t, "Entities 0") != NULL);
+    ASSERT_TRUE(strstr(t, "Selected 0") != NULL);
+    ASSERT_TRUE(strstr(t, "Draws ") != NULL);
+    add_transformed_entity(shell, 0.0f, 0.0f, 0.0f);
+    t = break_editor_shell_viewport_overlay_text(shell);
+    ASSERT_TRUE(strstr(t, "Entities 1") != NULL);
+    ASSERT_TRUE(strstr(t, "Selected 1") != NULL);
+    /* translated with the UI */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    t = break_editor_shell_viewport_overlay_text(shell);
+    ASSERT_TRUE(strstr(t, "实体 1") != NULL);
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    /* the palette toggles it off; the text is empty then */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "viewport stats"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_FALSE(break_editor_shell_viewport_stats_visible(shell));
+    ASSERT_STR_EQ(break_editor_shell_viewport_overlay_text(shell), "");
+    break_editor_shell_destroy(shell);
+    /* the next shell comes back with it off */
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, true));
+    ASSERT_FALSE(break_editor_shell_viewport_stats_visible(shell));
     break_editor_shell_destroy(shell);
     remove(path);
 }
@@ -7285,7 +7330,7 @@ TEST(i18n_palette_switches_language_at_runtime)
 
     /* palette now lists and filters Chinese command names */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 16u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 17u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "保存"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "English"));
@@ -7697,6 +7742,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gizmo_drag_moves_every_selected_entity);
     RUN_TEST(viewport_box_drag_selects_entities_inside);
     RUN_TEST(viewport_right_drag_flies_with_wasd);
+    RUN_TEST(viewport_stats_overlay_text_toggles_and_persists);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

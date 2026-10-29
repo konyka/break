@@ -259,6 +259,13 @@ bool break_editor_shell_select_ids(BreakEditorShell *shell,
  * `seconds` (0 < s <= 1) of movement now; false when nothing moved. */
 void break_editor_shell_set_flying(BreakEditorShell *shell, bool on);
 bool break_editor_shell_fly_advance(BreakEditorShell *shell, f32 seconds);
+/* Viewport stats overlay (default on; palette "Toggle viewport stats";
+ * persisted as stats=on|off). overlay_text is the line the viewport paints
+ * at its top-left — entity count, selection count, draw calls and FBO size
+ * of the last render, in the UI language — or "" when hidden. The buffer
+ * is shell-owned and rewritten on every call. */
+bool break_editor_shell_viewport_stats_visible(const BreakEditorShell *shell);
+const char *break_editor_shell_viewport_overlay_text(BreakEditorShell *shell);
 /* True while a viewport box (marquee) drag is in progress. */
 bool break_editor_shell_viewport_box_active(BreakEditorShell *shell);
 /* Republish the status/inspector/outliner (viewport gizmo drags end here so

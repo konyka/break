@@ -16,6 +16,7 @@ void break_editor_settings_defaults(BreakEditorSettings *s) {
     }
     memset(s, 0, sizeof(*s));
     s->lang = BREAK_EDITOR_LANG_EN_US;
+    s->stats = true;
 }
 
 static void trim(const char **b, const char **e) {
@@ -74,6 +75,9 @@ static void apply_line(BreakEditorSettings *s, const char *b, const char *e) {
     } else if (span_eq(kb, ke, "snap")) {
         if (span_eq(vb, ve, "on")) s->snap = true;
         else if (span_eq(vb, ve, "off")) s->snap = false;
+    } else if (span_eq(kb, ke, "stats")) {
+        if (span_eq(vb, ve, "on")) s->stats = true;
+        else if (span_eq(vb, ve, "off")) s->stats = false;
     }
 }
 
@@ -108,14 +112,15 @@ usize break_editor_settings_serialize(const BreakEditorSettings *s, char *out,
                  "%s%s%s"
                  "bottom_tab=%u\n"
                  "diag_tab=%u\n"
-                 "snap=%s\n",
+                 "snap=%s\n"
+                 "stats=%s\n",
                  s->light_theme ? "light" : "dark",
                  s->has_lang ? "lang=" : "",
                  s->has_lang ? break_editor_i18n_lang_tag(s->lang) : "",
                  s->has_lang ? "\n" : "",
                  (unsigned)(s->bottom_tab < 2u ? s->bottom_tab : 0u),
                  (unsigned)(s->diag_tab < 3u ? s->diag_tab : 0u),
-                 s->snap ? "on" : "off");
+                 s->snap ? "on" : "off", s->stats ? "on" : "off");
     if (n < 0 || (usize)n >= cap) {
         out[0] = '\0';
         return 0u;
