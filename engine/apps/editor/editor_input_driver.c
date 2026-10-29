@@ -14,7 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "myui/my_event_dispatch.h"
 #include "myui/my_widget.h"
+#include "myui/my_window.h"
 #include "myui/widgets/my_button.h"
 
 #define DRIVER_MAX_SCRIPT_BYTES (64u * 1024u)
@@ -243,6 +245,19 @@ static void drv_screenshot(void *user, const char *file) {
     d->shot_pending = true;
 }
 
+/* Committed text to the window's focused widget, as an IME commit (the
+ * channel real typing uses for an IME-enabled edit). */
+static bool drv_type_text(void *user, const char *utf8) {
+    BreakEditorInputDriver *d = (BreakEditorInputDriver *)user;
+    my_window_t *win = break_editor_shell_window(d->shell);
+    my_event_t e;
+    if (win == NULL || win->dispatcher.focused == NULL) return false;
+    e = my_event_init(MY_EVENT_IME_COMMIT);
+    e.u.ime.text = utf8;
+    e.u.ime.cursor = 0;
+    return my_event_dispatch(&win->dispatcher, &e);
+}
+
 bool break_editor_input_driver_frame(BreakEditorInputDriver *d,
                                      Platform *platform,
                                      BreakEditorShell *shell) {
@@ -254,6 +269,7 @@ bool break_editor_input_driver_frame(BreakEditorInputDriver *d,
     hooks.locate = drv_locate;
     hooks.expect = drv_expect;
     hooks.screenshot = drv_screenshot;
+    hooks.type_text = drv_type_text;
     hooks.user = d;
     before = break_editor_input_script_failures(d->script);
     more = break_editor_input_script_step(d->script, platform_input(platform),

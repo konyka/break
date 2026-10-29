@@ -2,6 +2,8 @@
 
 #include "editor_input_script.h"
 
+#include "platform/platform_text.h"
+
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
@@ -26,6 +28,7 @@ typedef enum {
     CMD_KEYUP,
     CMD_CHORD,
     CMD_SCROLL,
+    CMD_TYPE,
     CMD_SCREENSHOT,
     CMD_EXPECT,
     CMD_QUIT
@@ -94,7 +97,8 @@ static i32 key_code(const char *name) {
         {"space", 32},       {"escape", 256}, {"enter", 257},
         {"tab", 259},        {"backspace", 260}, {"left", 261},
         {"right", 262},      {"up", 263},     {"down", 264},
-        {"delete", 288},     {"shift", SCRIPT_KEY_SHIFT},
+        {"delete", 288},     {"home", 285},   {"end", 286},
+        {"shift", SCRIPT_KEY_SHIFT},
         {"ctrl", SCRIPT_KEY_CTRL},
     };
     usize i;
@@ -256,6 +260,17 @@ static bool parse_line(char *line, u32 lineno, ScriptCmd *cmd, char *err,
             return false;
         }
         cmd->op = CMD_SCROLL;
+    } else if (strcmp(op, "type") == 0) {
+        /* any valid UTF-8 (quote it when it holds spaces); delivered as
+         * committed text, so case, symbols and CJK all work */
+        usize len = n == 2u ? strlen(tok[1]) : 0u;
+        if (len == 0u || len >= sizeof(cmd->arg) ||
+            !platform_utf8_validate(tok[1], len)) {
+            script_err(err, cap, lineno, "type <text (UTF-8, quoted if it has spaces)>");
+            return false;
+        }
+        memcpy(cmd->arg, tok[1], len + 1u);
+        cmd->op = CMD_TYPE;
     } else if (strcmp(op, "screenshot") == 0) {
         if (n != 2u || strlen(tok[1]) >= sizeof(cmd->arg)) {
             script_err(err, cap, lineno, "screenshot <file>");
@@ -409,6 +424,11 @@ static bool run(BreakEditorInputScript *s, const ScriptCmd *c, InputState *in,
         return true;
     case CMD_SCROLL:
         in->scroll_dy = c->y;
+        return true;
+    case CMD_TYPE:
+        if (h == NULL || h->type_text == NULL || !h->type_text(h->user, c->arg)) {
+            script_fail(s, c->line);
+        }
         return true;
     case CMD_SCREENSHOT:
         if (h == NULL || h->screenshot == NULL) {

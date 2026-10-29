@@ -2058,6 +2058,43 @@ TEST(settings_persist_theme_language_and_tabs_across_shells)
     remove(path);
 }
 
+/* Editing an inspector field with real input: click the field, move to the
+ * end of its text, type characters and press Enter — all through the event
+ * dispatcher. The value commits as one undoable set_field command. */
+TEST(inspector_field_edits_through_real_key_events)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *field;
+    f32 x = -1.0f;
+    const char *typed = "2.75";
+    ASSERT_NOT_NULL(shell);
+    emit_click(find(shell, "editor-add-button"));
+    emit_click(find(shell, "editor-component-add-64"));
+    shell_paint(shell);
+    field = find(shell, "editor-field-64-0");
+    ASSERT_NOT_NULL(field);
+    pointer_click(shell, field);
+    shell_paint(shell);
+    /* the field shows "0"; select-all is not implied, so clear it first */
+    dispatch_key_event(shell, MY_KEY_END);
+    dispatch_key_event(shell, MY_KEY_BACKSPACE);
+    for (const char *c = typed; *c != '\0'; c++) {
+        dispatch_key_event(shell, (u32)(unsigned char)*c);
+    }
+    ASSERT_STR_EQ(my_edit_get_text(field), typed);
+    dispatch_key_event(shell, MY_KEY_RETURN);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        break_editor_shell_doc(shell), break_editor_shell_selected(shell),
+        BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x));
+    ASSERT_TRUE(x == 2.75f);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        break_editor_shell_doc(shell), break_editor_shell_selected(shell),
+        BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x));
+    ASSERT_TRUE(x == 0.0f);
+    break_editor_shell_destroy(shell);
+}
+
 /* Ctrl+P paints the palette over the shell and its focused edit shows the
  * accent focus ring (soft LCD, full-window repaint). */
 TEST(palette_paints_with_focused_edit_ring)
@@ -6910,6 +6947,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_escape_via_event_dispatcher_closes);
     RUN_TEST(theme_switches_between_dark_and_light);
     RUN_TEST(tool_window_tabs_show_one_page_per_area);
+    RUN_TEST(inspector_field_edits_through_real_key_events);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);

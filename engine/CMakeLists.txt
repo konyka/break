@@ -4353,7 +4353,8 @@ endif()
     set_tests_properties(test_editor_i18n PROPERTIES LABELS "headless;editor")
 
     add_executable(test_editor_input_script tests/test_editor_input_script.c
-        apps/editor/editor_input_script.c src/platform/input.c)
+        apps/editor/editor_input_script.c src/platform/input.c
+        src/platform/platform_text.c)
     target_include_directories(test_editor_input_script PRIVATE
         ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
     add_test(NAME test_editor_input_script COMMAND test_editor_input_script)

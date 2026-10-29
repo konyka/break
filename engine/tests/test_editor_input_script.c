@@ -168,6 +168,55 @@ TEST(click_key_and_chord_produce_one_frame_edges) {
     break_editor_input_script_destroy(s);
 }
 
+/* type "<text>": one frame, delivered through the type_text hook as
+ * committed UTF-8 text (the channel real typing uses for an IME-enabled
+ * edit); a missing hook or a refusing receiver fails the step. */
+static char g_typed[64];
+static bool record_type(void *user, const char *utf8) {
+    (void)user;
+    snprintf(g_typed, sizeof(g_typed), "%s", utf8);
+    return true;
+}
+static bool refuse_type(void *user, const char *utf8) {
+    (void)user;
+    (void)utf8;
+    return false;
+}
+
+TEST(type_delivers_committed_text) {
+    char err[128];
+    InputState in;
+    Hooks h;
+    BreakEditorInputScriptHooks k;
+    BreakEditorInputScript *s =
+        parse("type \"2.75 Ab!\"\ntype \xE4\xB8\xAD\xE6\x96\x87\n", err);
+    ASSERT_NOT_NULL(s);
+    memset(&h, 0, sizeof(h));
+    k = hooks_for(&h);
+    k.type_text = record_type;
+    input_init(&in);
+    ASSERT_TRUE(frame(s, &in, &k));
+    ASSERT_STR_EQ(g_typed, "2.75 Ab!");
+    ASSERT_TRUE(frame(s, &in, &k));
+    ASSERT_STR_EQ(g_typed, "\xE4\xB8\xAD\xE6\x96\x87");
+    ASSERT_FALSE(frame(s, &in, &k));
+    ASSERT_EQ(break_editor_input_script_failures(s), 0u);
+    break_editor_input_script_destroy(s);
+    /* refused or missing receiver: the step fails */
+    s = parse("type x\ntype y\n", err);
+    ASSERT_NOT_NULL(s);
+    k.type_text = refuse_type;
+    ASSERT_TRUE(frame(s, &in, &k));
+    k.type_text = NULL;
+    ASSERT_TRUE(frame(s, &in, &k));
+    ASSERT_EQ(break_editor_input_script_failures(s), 2u);
+    break_editor_input_script_destroy(s);
+    /* bounds: empty, invalid UTF-8 */
+    ASSERT_TRUE(parse("type\n", err) == NULL);
+    ASSERT_TRUE(parse("type \"\"\n", err) == NULL);
+    ASSERT_TRUE(parse("type \"\xC3\x28\"\n", err) == NULL);
+}
+
 TEST(wait_move_to_scale_and_hooks) {
     char err[128];
     InputState in;
@@ -244,6 +293,7 @@ int main(void) {
     RUN_TEST(parse_errors_name_the_line);
     RUN_TEST(parse_rejects_too_many_commands);
     RUN_TEST(click_key_and_chord_produce_one_frame_edges);
+    RUN_TEST(type_delivers_committed_text);
     RUN_TEST(wait_move_to_scale_and_hooks);
     RUN_TEST(null_hooks_count_as_failures_not_crashes);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
