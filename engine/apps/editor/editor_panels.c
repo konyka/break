@@ -3225,6 +3225,34 @@ bool break_editor_shell_apply_view(BreakEditorShell *shell, u8 mask, u8 value) {
     return true;
 }
 
+bool break_editor_shell_set_camera_pose(BreakEditorShell *shell,
+                                        const BreakEditorCamera *pose) {
+    const f32 big = 1e6f;
+    const f32 fov_min = 0.017453292519943295f; /* 1 degree */
+    const f32 fov_max = 2.9670597283903604f;   /* 170 degrees */
+    usize i;
+    if (shell == NULL || pose == NULL) {
+        return false;
+    }
+    for (i = 0u; i < 3u; i++) {
+        if (!isfinite(pose->target[i]) || fabsf(pose->target[i]) > big) {
+            return false;
+        }
+    }
+    if (!isfinite(pose->yaw) || fabsf(pose->yaw) > big ||
+        !isfinite(pose->pitch) || fabsf(pose->pitch) > BREAK_EDITOR_CAMERA_PITCH_LIMIT ||
+        !isfinite(pose->distance) || pose->distance < BREAK_EDITOR_CAMERA_MIN_DISTANCE ||
+        pose->distance > BREAK_EDITOR_CAMERA_MAX_DISTANCE ||
+        !isfinite(pose->fov_y) || pose->fov_y < fov_min || pose->fov_y > fov_max) {
+        return false;
+    }
+    shell->camera = *pose;
+    if (shell->viewport_widget != NULL) {
+        my_widget_invalidate(shell->viewport_widget, NULL);
+    }
+    return true;
+}
+
 /* ---------------- Phase 2 Task 3: viewport panel ---------------- */
 
 struct my_widget_t *break_editor_shell_viewport_widget(

@@ -7,7 +7,8 @@
 - **追加 LOAD**：新增 `BREAK_EDITOR_MSG_LOAD = 15`，调用新的 `break_editor_shell_revert`，从磁盘重新加载已配置的场景路径。文档有未保存修改时始终返回 0，不会丢弃改动，也没有“再发一次即确认”的机制。测试 `remote_load_reverts_configured_path_and_refuses_when_dirty` 先红后绿；`build-sdd-p4-final` 160/160，两棵树的 ctest 都只剩已知的 x11 失败。
 - **fuzz**：`fuzz_editor_remote` 的 id 范围扩到 4..15，并为 harness 配置了真实的场景路径；ASan 下 8 个 seed、每个 20000 条消息全部通过，SAVE/LOAD 各被接受约 400 次；`ctest -L fuzz` 6/6。
 - **追加 VIEW**：新增 `BREAK_EDITOR_MSG_VIEW = 16`，调用 `break_editor_shell_apply_view`。可开关网格和统计叠层，也可复位相机；mask=0 为只读查询。响应返回网格、统计状态，以及 7 个 f32 的相机参数（LE）。只改视图状态，不产生 doc 编辑或 undo；未知位返回 INVALID。测试：`remote_view_toggles_view_state_without_touching_the_doc` 先红后绿，registry 测试覆盖 14/15/16 三个 id；`build-sdd-p4-final` 161/161。fuzz 扩到 4..16，ASan 下 8 个 seed、每个 20000 条消息全部通过（seed 1 中 VIEW 被接受 253 次），`ctest -L fuzz` 6/6。
-- **未做**：任意相机位姿、渲染设置的 remote 控制。
+- **追加 CAMERA_SET**：新增 `BREAK_EDITOR_MSG_CAMERA_SET = 17`，请求为 7 个 f32 的完整相机位姿。整体校验：需为有限值、pitch 不超过 89°、distance 在 [0.05, 1e4]、fov 在 [1°, 170°]；任一项不合法即返回 INVALID，相机保持不变。测试先红后绿，变异检查：删掉 pitch 校验后变红；`build-sdd-p4-final` 162/162。fuzz 扩到 4..17，ASan 下 8 个 seed 全部通过，seed 1 中 CAMERA_SET 被接受 266 次。
+- **未做**：渲染设置的 remote 控制。
 
 ## 本轮更新：全仓数字文本与 locale 无关（2026-10-30）
 

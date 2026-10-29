@@ -660,20 +660,12 @@ static bool remote_handle_load(BreakEditorRemote *r, u64 key, const u8 *p,
 }
 
 /* VIEW: viewport view state only; reports the resulting state. */
-static bool remote_handle_view(BreakEditorRemote *r, u64 key, const u8 *p,
-                               size_t size) {
+/* VIEW-layout response: grid/u8, stats/u8, camera 7 x f32 LE bits. */
+static bool remote_respond_view_state(BreakEditorRemote *r, u64 key, u16 id) {
     u8 rsp[2u + 7u * 4u];
-    const BreakEditorCamera *cam;
+    const BreakEditorCamera *cam = break_editor_shell_camera(r->shell);
     f32 cam_values[7];
     usize i;
-    if (size != 2u) {
-        return false;
-    }
-    if (!break_editor_shell_apply_view(r->shell, p[0], p[1])) {
-        return remote_respond(r, key, BREAK_EDITOR_MSG_RESULT,
-                              BREAK_EDITOR_PROTO_STATUS_INVALID, NULL, 0u);
-    }
-    cam = break_editor_shell_camera(r->shell);
     rsp[0] = break_editor_shell_grid_visible(r->shell) ? 1u : 0u;
     rsp[1] = break_editor_shell_viewport_stats_visible(r->shell) ? 1u : 0u;
     cam_values[0] = cam->target[0];
@@ -688,7 +680,47 @@ static bool remote_handle_view(BreakEditorRemote *r, u64 key, const u8 *p,
         memcpy(&bits, &cam_values[i], 4u);
         proto_put32(rsp + 2u + i * 4u, bits);
     }
-    return remote_respond(r, key, BREAK_EDITOR_MSG_VIEW, 0u, rsp, sizeof(rsp));
+    return remote_respond(r, key, id, 0u, rsp, sizeof(rsp));
+}
+
+/* VIEW: viewport view state only; reports the resulting state. */
+static bool remote_handle_view(BreakEditorRemote *r, u64 key, const u8 *p,
+                               size_t size) {
+    if (size != 2u) {
+        return false;
+    }
+    if (!break_editor_shell_apply_view(r->shell, p[0], p[1])) {
+        return remote_respond(r, key, BREAK_EDITOR_MSG_RESULT,
+                              BREAK_EDITOR_PROTO_STATUS_INVALID, NULL, 0u);
+    }
+    return remote_respond_view_state(r, key, BREAK_EDITOR_MSG_VIEW);
+}
+
+/* CAMERA_SET: a whole validated pose or nothing. */
+static bool remote_handle_camera_set(BreakEditorRemote *r, u64 key,
+                                     const u8 *p, size_t size) {
+    BreakEditorCamera pose;
+    f32 v[7];
+    usize i;
+    if (size != 28u) {
+        return false;
+    }
+    for (i = 0u; i < 7u; i++) {
+        u32 bits = proto_get32(p + i * 4u);
+        memcpy(&v[i], &bits, 4u);
+    }
+    pose.target[0] = v[0];
+    pose.target[1] = v[1];
+    pose.target[2] = v[2];
+    pose.yaw = v[3];
+    pose.pitch = v[4];
+    pose.distance = v[5];
+    pose.fov_y = v[6];
+    if (!break_editor_shell_set_camera_pose(r->shell, &pose)) {
+        return remote_respond(r, key, BREAK_EDITOR_MSG_RESULT,
+                              BREAK_EDITOR_PROTO_STATUS_INVALID, NULL, 0u);
+    }
+    return remote_respond_view_state(r, key, BREAK_EDITOR_MSG_CAMERA_SET);
 }
 
 static bool remote_handle_eval(BreakEditorRemote *r, u64 key, const u8 *p,
@@ -811,6 +843,8 @@ static bool remote_dispatch(BreakEditorRemote *r, BreakConnectionKey connection,
         return remote_handle_load(r, connection, p, size);
     case BREAK_EDITOR_MSG_VIEW:
         return remote_handle_view(r, connection, p, size);
+    case BREAK_EDITOR_MSG_CAMERA_SET:
+        return remote_handle_camera_set(r, connection, p, size);
     default:
         return false;
     }
@@ -830,7 +864,8 @@ BreakEditorRemote *break_editor_remote_create(
         BREAK_EDITOR_MSG_RENAME,   BREAK_EDITOR_MSG_SET_FIELD,
         BREAK_EDITOR_MSG_UNDO,     BREAK_EDITOR_MSG_REDO,
         BREAK_EDITOR_MSG_EVAL,     BREAK_EDITOR_MSG_SAVE,
-        BREAK_EDITOR_MSG_LOAD,     BREAK_EDITOR_MSG_VIEW};
+        BREAK_EDITOR_MSG_LOAD,     BREAK_EDITOR_MSG_VIEW,
+        BREAK_EDITOR_MSG_CAMERA_SET};
     usize i;
     if (shell == NULL || cfg == NULL ||
         cfg->max_connections > EDITOR_REMOTE_MAX_CONNECTIONS) {

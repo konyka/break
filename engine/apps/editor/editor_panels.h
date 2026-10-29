@@ -192,6 +192,12 @@ bool break_editor_shell_revert(BreakEditorShell *shell);
 #define BREAK_EDITOR_VIEW_STATS 0x02u
 #define BREAK_EDITOR_VIEW_RESET_CAMERA 0x04u
 bool break_editor_shell_apply_view(BreakEditorShell *shell, u8 mask, u8 value);
+/* Replace the viewport camera with `pose` after validating every field
+ * (finite; |target| and |yaw| <= 1e6; |pitch| <= BREAK_EDITOR_CAMERA_PITCH_LIMIT;
+ * distance within [MIN_DISTANCE, MAX_DISTANCE]; fov_y within [1°, 170°]).
+ * false = rejected, camera untouched. View state: no doc edit, no undo. */
+bool break_editor_shell_set_camera_pose(BreakEditorShell *shell,
+                                        const BreakEditorCamera *pose);
 
 /* Read-only inspection surface (borrowed results; used by the headless tests
  * and by editor_main for status plumbing). */

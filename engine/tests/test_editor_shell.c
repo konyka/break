@@ -4937,7 +4937,7 @@ TEST(remote_protocol_ids_live_in_default_registry)
                {BREAK_EDITOR_MSG_UNDO},     {BREAK_EDITOR_MSG_REDO},
                {BREAK_EDITOR_MSG_EVAL},     {BREAK_EDITOR_MSG_RESULT},
                {BREAK_EDITOR_MSG_SAVE},     {BREAK_EDITOR_MSG_LOAD},
-               {BREAK_EDITOR_MSG_VIEW}};
+               {BREAK_EDITOR_MSG_VIEW},     {BREAK_EDITOR_MSG_CAMERA_SET}};
     const BreakNetMessageRegistry *registry = break_net_message_registry_default();
     usize i;
     for (i = 0u; i < sizeof(ids) / sizeof(ids[0]); i++) {
@@ -5291,6 +5291,71 @@ TEST(remote_view_toggles_view_state_without_touching_the_doc)
     ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_RESULT);
     ASSERT_EQ(((const u8 *)rsp.payload)[0], BREAK_EDITOR_PROTO_STATUS_INVALID);
     ASSERT_FALSE(break_editor_shell_grid_visible(shell));
+
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+static void put_cam_f32(u8 *out, f32 v) {
+    u32 bits;
+    memcpy(&bits, &v, 4u);
+    wr32(out, bits);
+}
+
+/* CAMERA_SET takes the 7-f32 pose VIEW reports (target xyz, yaw, pitch,
+ * distance, fov_y). Out-of-range or non-finite values are rejected whole
+ * (RESULT invalid, camera untouched); a valid pose is applied exactly and
+ * echoed in the VIEW response layout. */
+TEST(remote_camera_set_applies_a_validated_pose)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakEditorCamera *cam;
+    BreakEditorCamera before;
+    const f32 pose[7] = {1.0f, 2.0f, -3.0f, 0.5f, -0.25f, 12.0f, 0.9f};
+    u8 req[28];
+    usize i;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    cam = break_editor_shell_camera(shell);
+
+    for (i = 0u; i < 7u; i++) put_cam_f32(req + i * 4u, pose[i]);
+    remote_client_send(&c, BREAK_EDITOR_MSG_CAMERA_SET, req, 28u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 30u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_CAMERA_SET);
+    ASSERT_FLOAT_EQ(cam->target[0], 1.0f, 0.0f);
+    ASSERT_FLOAT_EQ(cam->target[2], -3.0f, 0.0f);
+    ASSERT_FLOAT_EQ(cam->yaw, 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(cam->pitch, -0.25f, 0.0f);
+    ASSERT_FLOAT_EQ(cam->distance, 12.0f, 0.0f);
+    ASSERT_FLOAT_EQ(cam->fov_y, 0.9f, 0.0f);
+    ASSERT_TRUE(memcmp((const u8 *)rsp.payload + 2u, req, 28u) == 0);
+    ASSERT_FALSE(break_editor_doc_is_dirty(break_editor_shell_doc(shell)));
+
+    /* each invalid field alone is rejected and changes nothing */
+    {
+        const struct { usize slot; f32 v; } bad[] = {
+            {0u, NAN}, {3u, INFINITY}, {4u, 1.6f}, {5u, 0.0f},
+            {5u, 2e4f}, {6u, 0.0f}, {6u, 3.0f}, {1u, 2e6f}};
+        usize b;
+        for (b = 0u; b < sizeof(bad) / sizeof(bad[0]); b++) {
+            u8 r2[28];
+            memcpy(r2, req, 28u);
+            r2[0] ^= 0u;
+            put_cam_f32(r2 + bad[b].slot * 4u, bad[b].v);
+            before = *cam;
+            remote_client_send(&c, BREAK_EDITOR_MSG_CAMERA_SET, r2, 28u);
+            ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+            ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_RESULT);
+            ASSERT_EQ(((const u8 *)rsp.payload)[0], BREAK_EDITOR_PROTO_STATUS_INVALID);
+            ASSERT_TRUE(memcmp(&before, cam, sizeof(before)) == 0);
+        }
+    }
 
     remote_client_close(&c);
     break_editor_remote_destroy(remote);
@@ -9146,6 +9211,7 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_save_writes_configured_path_only);
     RUN_REMOTE_TEST(remote_load_reverts_configured_path_and_refuses_when_dirty);
     RUN_REMOTE_TEST(remote_view_toggles_view_state_without_touching_the_doc);
+    RUN_REMOTE_TEST(remote_camera_set_applies_a_validated_pose);
     RUN_REMOTE_TEST(remote_set_field_maps_component_and_field_names);
     RUN_REMOTE_TEST(remote_eval_runs_on_shell_thread_and_returns_console_tail);
     RUN_REMOTE_TEST(remote_eval_at_4096_boundary_and_len_mismatch_closes);
