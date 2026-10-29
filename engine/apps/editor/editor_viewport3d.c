@@ -65,6 +65,9 @@
  * selection highlight — a flat-color substitution, no outline pass). */
 static const f32 k_proxy_color[4] = {0.55f, 0.58f, 0.64f, 1.0f};
 static const f32 k_selected_color[4] = {1.0f, 0.62f, 0.18f, 1.0f};
+/* selection outline: bright edges around the selected proxy */
+static const f32 k_outline_color[4] = {1.0f, 0.92f, 0.55f, 1.0f};
+#define EDITOR_VIEWPORT_OUTLINE_THICKNESS 0.035f
 static const f32 k_gizmo_colors[5][4] = {
     {0.0f, 0.0f, 0.0f, 0.0f},                 /* PART_NONE (unused) */
     {0.90f, 0.25f, 0.25f, 1.0f},              /* X */
@@ -121,7 +124,7 @@ struct BreakEditorViewport3D {
 
     /* render debugger: last render() call (CPU counters only) */
     int last_skip;
-    u32 last_proxies, last_gizmo, last_draws;
+    u32 last_proxies, last_gizmo, last_draws, last_outline;
 
     /* widget interaction state (one viewport widget per shell) */
     int drag_kind;
@@ -153,6 +156,7 @@ bool break_editor_viewport3d_last_stats(const BreakEditorViewport3D *vp,
     }
     out->proxies = vp->last_proxies;
     out->gizmo_handles = vp->last_gizmo;
+    out->outline_edges = vp->last_outline;
     out->draws = vp->last_draws;
     return true;
 }
@@ -264,6 +268,35 @@ void break_editor_viewport3d_model_matrix(const f32 pos[3],
     m = mat4_mul(my, mat4_mul(mx, mat4_mul(mz, s)));
     m = mat4_mul(t, m);
     memcpy(out16, m.e, sizeof(m.e));
+}
+
+u32 break_editor_viewport3d_outline_edges(const f32 model[16], f32 thickness,
+                                          f32 out[12][16]) {
+    Mat4 m;
+    u32 n = 0u;
+    if (model == NULL || out == NULL || !isfinite(thickness) ||
+        !(thickness > 0.0f)) {
+        return 0u;
+    }
+    memcpy(&m, model, sizeof(m));
+    /* for each axis a: 4 edges at (+-0.5, +-0.5) on the other two axes */
+    for (u32 a = 0u; a < 3u; a++) {
+        u32 b = (a + 1u) % 3u, c = (a + 2u) % 3u;
+        for (u32 q = 0u; q < 4u; q++) {
+            f32 off[3] = {0.0f, 0.0f, 0.0f}, size[3];
+            Mat4 local, world;
+            off[b] = (q & 1u) ? 0.5f : -0.5f;
+            off[c] = (q & 2u) ? 0.5f : -0.5f;
+            size[a] = 1.0f + thickness;
+            size[b] = thickness;
+            size[c] = thickness;
+            local = mat4_mul(mat4_translation(off[0], off[1], off[2]),
+                             mat4_scaling(size[0], size[1], size[2]));
+            world = mat4_mul(m, local);
+            memcpy(out[n++], world.e, sizeof(world.e));
+        }
+    }
+    return n;
 }
 
 /* ---------------- transactional GPU init / shader replacement ---------------- */
@@ -595,7 +628,7 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
     if (vp == NULL) {
         return;
     }
-    vp->last_proxies = vp->last_gizmo = vp->last_draws = 0u;
+    vp->last_proxies = vp->last_gizmo = vp->last_draws = vp->last_outline = 0u;
     if (doc == NULL || dev == NULL || cmd == NULL) {
         vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_NO_DEVICE;
         return;
@@ -661,10 +694,18 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
         }
         break_editor_viewport3d_model_matrix(pos, rot, scale, model);
         vp->last_proxies++;
-        vp_draw_box(vp, cmd, &view_proj, model,
-                    break_editor_entity_id_eq(id, vp->selected)
-                        ? k_selected_color
-                        : k_proxy_color);
+        if (break_editor_entity_id_eq(id, vp->selected)) {
+            f32 edges[12][16];
+            u32 ne = break_editor_viewport3d_outline_edges(
+                model, EDITOR_VIEWPORT_OUTLINE_THICKNESS, edges);
+            vp_draw_box(vp, cmd, &view_proj, model, k_selected_color);
+            for (u32 e = 0u; e < ne; e++) {
+                vp_draw_box(vp, cmd, &view_proj, edges[e], k_outline_color);
+            }
+            vp->last_outline = ne;
+        } else {
+            vp_draw_box(vp, cmd, &view_proj, model, k_proxy_color);
+        }
     }
 
     /* Gizmo handles on top of the proxies (depth cleared first). */

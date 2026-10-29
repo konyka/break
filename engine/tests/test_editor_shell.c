@@ -1137,6 +1137,55 @@ TEST(viewport_shell_wrapper_records_no_device)
     break_editor_shell_destroy(shell);
 }
 
+/* Selection outline geometry: the 12 edges of the unit proxy cube as thin
+ * boxes in the entity's model space. Pure CPU, so pinned headless: with an
+ * identity model every edge box is centred on a cube edge, long along one
+ * axis and thin along the other two; a translated/scaled model moves and
+ * stretches them with the proxy. */
+TEST(outline_edges_follow_the_proxy_box)
+{
+    f32 model[16], edges[12][16];
+    u32 axis_count[3] = {0u, 0u, 0u};
+    break_editor_viewport3d_model_matrix((const f32[]){0, 0, 0},
+                                         (const f32[]){0, 0, 0},
+                                         (const f32[]){1, 1, 1}, model);
+    ASSERT_EQ(break_editor_viewport3d_outline_edges(model, 0.04f, edges), 12u);
+    for (u32 e = 0u; e < 12u; e++) {
+        const f32 *m = edges[e];
+        f32 len[3] = {m[0], m[5], m[10]}; /* axis-aligned: diagonal scale */
+        u32 longest = 0u, k;
+        u32 halves = 0u;
+        for (k = 1u; k < 3u; k++) {
+            if (len[k] > len[longest]) longest = k;
+        }
+        axis_count[longest]++;
+        ASSERT_TRUE(len[longest] > 1.0f);       /* overlaps the corners */
+        for (k = 0u; k < 3u; k++) {
+            if (k != longest) {
+                ASSERT_FLOAT_EQ(len[k], 0.04f, 1e-6f);
+                ASSERT_FLOAT_EQ(fabsf(m[12 + k]), 0.5f, 1e-6f); /* on the edge */
+                halves++;
+            } else {
+                ASSERT_FLOAT_EQ(m[12 + k], 0.0f, 1e-6f);        /* mid-edge */
+            }
+        }
+        ASSERT_EQ(halves, 2u);
+    }
+    ASSERT_EQ(axis_count[0], 4u);
+    ASSERT_EQ(axis_count[1], 4u);
+    ASSERT_EQ(axis_count[2], 4u);
+    /* moved + scaled proxy: edges move and stretch with it */
+    break_editor_viewport3d_model_matrix((const f32[]){10, 0, 0},
+                                         (const f32[]){0, 0, 0},
+                                         (const f32[]){2, 2, 2}, model);
+    ASSERT_EQ(break_editor_viewport3d_outline_edges(model, 0.04f, edges), 12u);
+    for (u32 e = 0u; e < 12u; e++) {
+        ASSERT_TRUE(edges[e][12] > 8.9f && edges[e][12] < 11.1f);
+    }
+    ASSERT_EQ(break_editor_viewport3d_outline_edges(NULL, 0.04f, edges), 0u);
+    ASSERT_EQ(break_editor_viewport3d_outline_edges(model, 0.0f, edges), 0u);
+}
+
 TEST(model_matrix_known_answers)
 {
     f32 m[16];
@@ -7305,6 +7354,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(viewport_render_without_device_is_bounded_noop);
     RUN_TEST(viewport_shell_wrapper_records_no_device);
     RUN_TEST(model_matrix_known_answers);
+    RUN_TEST(outline_edges_follow_the_proxy_box);
     RUN_TEST(viewport_last_stats_report_skip_reasons_headless);
     RUN_TEST(shader_source_resolves_variant_paths_bytes_and_cleanup);
     RUN_TEST(shader_source_empty_file_succeeds_and_missing_root_falls_back);

@@ -154,7 +154,8 @@ typedef struct BreakEditorViewport3DStats {
     u32 fbo_w, fbo_h; /* 0 when no FBO exists */
     u32 proxies;      /* entity proxy boxes drawn */
     u32 gizmo_handles;/* gizmo handle boxes drawn */
-    u32 draws;        /* draw calls recorded (proxies + handles) */
+    u32 draws;        /* draw calls recorded (proxies + handles + outline) */
+    u32 outline_edges;/* selection outline edge boxes drawn (0 or 12) */
 } BreakEditorViewport3DStats;
 
 /* False on NULL arguments. */
@@ -174,6 +175,13 @@ RHITexture break_editor_viewport3d_color_texture(
 void break_editor_viewport3d_model_matrix(const f32 pos[3],
                                           const f32 rot_deg[3],
                                           const f32 scale[3], f32 out16[16]);
+
+/* Selection outline: the 12 edges of the unit proxy cube as thin boxes
+ * (cross-section `thickness`, length 1 + thickness so the corners close)
+ * in the space of `model`, written as column-major matrices. Returns 12, or
+ * 0 for a NULL model / non-positive or non-finite thickness. Pure CPU. */
+u32 break_editor_viewport3d_outline_edges(const f32 model[16], f32 thickness,
+                                          f32 out[12][16]);
 
 /* Viewport panel widget (myui subclass: custom on_paint blit + pointer
  * routing into the CPU core). Borrows the shell; the tree owns the widget.
