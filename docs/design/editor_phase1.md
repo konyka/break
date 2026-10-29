@@ -120,6 +120,7 @@ create 时把焦点设到 root，故快捷键只在焦点控件未消费该键�
 - asset browser（Stage 4 子项目 4 不在本 phase）。
 - selection 多选集（当前单选）；inspector 多组件类型编辑（注册表只有
   EditorTransform）；非 f32 字段类型。
+- 另存为：2026-10-30 起命令面板输入 `save as <路径>` 只列出一条“Save scene as <路径>”，执行即保存并设为保存目标（无文件对话框）。
 - ~~窗口内 palette 的键盘上下导航~~：2026-10-29 已交付，上/下键移动高亮行（首尾循环、改过滤时复位），Enter 执行高亮行（`test_editor_shell` `palette_arrow_keys_move_the_highlight_and_enter_runs_it`）。
 - ~~undo `remove_entity` 不恢复组件~~：2026-10-29 已修复，删除命令构造时快照该实体全部已注册组件，撤销时按字节恢复（`test_editor_components` `remove_entity_undo_restores_components`）。
 - ~~editor 重保存丢游戏侧 BSCN 渲染 scene chunk~~：2026-10-29 已修复，加载时按原字节保留编辑器不负责的全部 chunk（SCENE_NODES、RESOURCES、网格/蒙皮几何、骨骼、动画及未知类型），保存时拼回（`test_editor_scene` `resave_keeps_game_render_chunks`）。这些 chunk 描述游戏渲染图，增删实体时不会重新编号。

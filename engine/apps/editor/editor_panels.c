@@ -178,7 +178,10 @@ struct BreakEditorShell {
     } tab_ctxs[5];
 
     bool palette_open;
-    u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT];
+    u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT + 1u];
+    /* "save as <path>" typed into the palette: the path of the dynamic
+     * PAL_SAVE_AS entry (empty: no such entry) */
+    char palette_save_as[BREAK_EDITOR_SCENE_PATH_CAPACITY];
     u32 palette_match_count;
     u32 palette_cursor; /* highlighted match (Up/Down), run by Enter */
 
@@ -238,6 +241,10 @@ enum {
 };
 
 /* Current-language text of palette command `cmd` (bounded, never NULL). */
+/* dynamic entry past the static table (only offered for "save as <path>") */
+#define PAL_SAVE_AS EDITOR_PALETTE_COMMAND_COUNT
+#define EDITOR_SAVE_AS_PREFIX "save as "
+
 static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
     static const BreakEditorTr plain[PAL_TOOL_SELECT] = {
         BREAK_EDITOR_TR_CMD_ADD_ENTITY, BREAK_EDITOR_TR_CMD_REMOVE_SELECTED,
@@ -282,6 +289,8 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
 }
 
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd);
+static const char *shell_palette_row_text(const BreakEditorShell *shell,
+                                          u32 cmd, char *buf, size_t cap);
 static void shell_tabs_retranslate(BreakEditorShell *shell);
 static void shell_settings_save(BreakEditorShell *shell);
 static void shell_end_gizmo_drag(BreakEditorShell *shell);
@@ -887,7 +896,8 @@ static void on_row_click(void *ctx, const char *event, void *data) {
             u32 cmd = shell->palette_matches[rc->index];
             char text[96];
             editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PALETTE_FMT),
-                             shell_palette_text(cmd, text, sizeof(text)));
+                             shell_palette_row_text(rc->shell, cmd, text,
+                                                    sizeof(text)));
             shell_execute_palette_command(shell, cmd);
         }
         shell_palette_set_open(shell, false);
@@ -1013,7 +1023,8 @@ static void editor_adapter_bind_row(my_list_adapter_t *adapter,
             bool hl = (u32)index == a->shell->palette_cursor;
             const char *cls = my_widget_get_style_class(row);
             (void)my_button_set_text(
-                row, shell_palette_text(a->shell->palette_matches[index], text,
+                row, shell_palette_row_text(a->shell,
+                                            a->shell->palette_matches[index], text,
                                         sizeof(text)));
             if (hl != (cls != NULL && strcmp(cls, "selected") == 0)) {
                 (void)my_widget_set_style_class(row, hl ? "selected" : NULL);
@@ -1089,6 +1100,25 @@ bool break_editor_shell_palette_set_filter(BreakEditorShell *shell,
     }
     shell->palette_match_count = 0u;
     shell->palette_cursor = 0u;
+    shell->palette_save_as[0] = '\0';
+    {
+        /* "save as <path>": one dynamic entry instead of the static list */
+        const usize plen = sizeof(EDITOR_SAVE_AS_PREFIX) - 1u;
+        const char *arg = text;
+        while (*arg == ' ') arg++;
+        if (strncmp(arg, EDITOR_SAVE_AS_PREFIX, plen) == 0) {
+            arg += plen;
+            while (*arg == ' ') arg++;
+            if (arg[0] != '\0' && strlen(arg) < sizeof(shell->palette_save_as)) {
+                memcpy(shell->palette_save_as, arg, strlen(arg) + 1u);
+                shell->palette_matches[shell->palette_match_count++] = PAL_SAVE_AS;
+            }
+            if (shell->palette_list != NULL) {
+                (void)my_list_view_refresh(shell->palette_list);
+            }
+            return true;
+        }
+    }
     for (i = 0u; i < EDITOR_PALETTE_COMMAND_COUNT; i++) {
         char cmd_text[96];
         if (editor_str_contains_casefold(
@@ -1387,8 +1417,25 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
     shell_refresh_status(shell);
 }
 
+static const char *shell_palette_row_text(const BreakEditorShell *shell,
+                                          u32 cmd, char *buf, size_t cap) {
+    if (cmd == PAL_SAVE_AS) {
+        (void)snprintf(buf, cap, break_editor_tr(BREAK_EDITOR_TR_CMD_SAVE_AS_FMT),
+                       shell != NULL ? shell->palette_save_as : "");
+        return buf;
+    }
+    return shell_palette_text(cmd, buf, cap);
+}
+
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
-    if (shell == NULL || cmd >= EDITOR_PALETTE_COMMAND_COUNT) {
+    if (shell == NULL || cmd > PAL_SAVE_AS) {
+        return;
+    }
+    if (cmd == PAL_SAVE_AS) {
+        if (shell->palette_save_as[0] != '\0' &&
+            break_editor_shell_set_scene_path(shell, shell->palette_save_as)) {
+            shell_do_save(shell);
+        }
         return;
     }    switch (cmd) {
     case PAL_ADD_ENTITY:
@@ -1483,7 +1530,7 @@ static void shell_execute_palette_first(BreakEditorShell *shell) {
                                              : 0u];
         char text[96];
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PALETTE_FMT),
-                         shell_palette_text(cmd, text, sizeof(text)));
+                         shell_palette_row_text(shell, cmd, text, sizeof(text)));
         shell_execute_palette_command(shell, cmd);
     }
     shell_palette_set_open(shell, false);

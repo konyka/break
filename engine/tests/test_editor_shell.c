@@ -3674,6 +3674,46 @@ TEST(assets_panel_load_guards_unsaved_changes)
     TEST_RMDIR(dir);
 }
 
+/* "save as <path>" typed into the command palette offers one entry that
+ * saves there and makes it the scene path (Ctrl+S without a path points
+ * the user at it). */
+TEST(palette_save_as_writes_the_typed_path)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char path[256], filter[300], side[300];
+    FILE *f;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(path, sizeof(path), "editor_save_as.bscn");
+    snprintf(side, sizeof(side), "%s" BREAK_EDITOR_SIDECAR_SUFFIX, path);
+    remove(path);
+    remove(side);
+    emit_click(find(shell, "editor-add-button"));
+    /* no path yet: Ctrl+S explains how to pick one */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell), "save as") != NULL);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    /* the plain filter "save" still lists the static entries only */
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save as"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 0u);
+    snprintf(filter, sizeof(filter), "save as %s", path);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, filter));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_FALSE(break_editor_shell_palette_is_open(shell));
+    f = fopen(path, "rb");
+    ASSERT_NOT_NULL(f);
+    fclose(f);
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), path);
+    ASSERT_FALSE(break_editor_doc_is_dirty(break_editor_shell_doc(shell)));
+    /* a later Ctrl+S goes to the same file */
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    ASSERT_FALSE(break_editor_doc_is_dirty(break_editor_shell_doc(shell)));
+    remove(path);
+    remove(side);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(lua_panel_eval_routes_result_to_console_ring)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8517,6 +8557,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
+    RUN_TEST(palette_save_as_writes_the_typed_path);
     RUN_TEST(lua_panel_eval_routes_result_to_console_ring);
     RUN_TEST(lua_panel_spawn_updates_outliner_and_ctrl_z_reverts);
     RUN_TEST(lua_panel_history_up_down_recall);
