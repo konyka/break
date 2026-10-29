@@ -59,8 +59,10 @@ root（vertical）
   惯例，outliner 先例即 click 激活；brief 的"Enter/双击"以单击落地。
   - `..` / 目录 → `break_editor_assets_up` / `enter`（模型做单段校验，
     逃逸 root 不可能——Task 1 契约）。
-  - `*.bscn`（逐字节后缀、大小写敏感）→ **无确认**
-    `break_editor_doc_load`：Phase 2 已文档化 world-swap + undo 栈清空；
+  - `*.bscn`（逐字节后缀、大小写敏感）→ 文档干净时直接
+    `break_editor_doc_load`；**有未保存修改时（2026-10-30 起）第一次点击只在
+    控制台与状态栏提示，未再修改的情况下再次点击同一场景才加载并放弃修改**
+    （`editor_shell_load_scene_guarded`，与关闭窗口的保护同一规则）：Phase 2 已文档化 world-swap + undo 栈清空；
     console 记 `load <path>` 行（失败记 `load failed <path>`）；加载后
     整壳 `editor_shell_refresh_all`（outliner/inspector/status 全部
     重发布，选择按现存 id 重新校验）。

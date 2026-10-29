@@ -3611,6 +3611,69 @@ TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo)
     TEST_RMDIR(dir);
 }
 
+/* Loading a scene from the asset browser over unsaved changes asks first:
+ * the first click only warns, a second click (no edit in between) loads. */
+TEST(assets_panel_load_guards_unsaved_changes)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    char dir[512], scene[600], sidecar[700];
+    my_widget_t *list, *row;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_guard");
+    TEST_MKDIR(dir);
+    snprintf(scene, sizeof(scene), "%s/scene.bscn", dir);
+    snprintf(sidecar, sizeof(sidecar), "%s" BREAK_EDITOR_SIDECAR_SUFFIX, scene);
+    save_fixture_scene(scene, 2u);
+    doc = break_editor_shell_doc(shell);
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    list = find(shell, "editor-assets-list");
+    row = list_row_by_text(list, "scene.bscn");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    /* warned, nothing loaded, the edit is still there */
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell),
+                       "unsaved changes") != NULL);
+    /* an edit in between re-arms the warning */
+    emit_click(find(shell, "editor-add-button"));
+    shell_paint(shell);
+    row = list_row_by_text(list, "scene.bscn");
+    emit_click(row);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_FALSE(break_editor_shell_scene_path(shell)[0] != '\0' &&
+                 strcmp(break_editor_shell_scene_path(shell), scene) == 0);
+    /* second click with nothing new: load */
+    row = list_row_by_text(list, "scene.bscn");
+    emit_click(row);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), scene);
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    /* a clean document loads on the first click */
+    {
+        char other[600], other_side[700];
+        snprintf(other, sizeof(other), "%s/other.bscn", dir);
+        snprintf(other_side, sizeof(other_side), "%s" BREAK_EDITOR_SIDECAR_SUFFIX, other);
+        save_fixture_scene(other, 3u);
+        ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+        shell_paint(shell);
+        row = list_row_by_text(list, "other.bscn");
+        ASSERT_NOT_NULL(row);
+        emit_click(row);
+        ASSERT_EQ(break_editor_doc_entity_count(doc), 3u);
+        remove(other);
+        remove(other_side);
+    }
+    break_editor_shell_destroy(shell);
+    remove(scene);
+    remove(sidecar);
+    TEST_RMDIR(dir);
+}
+
 TEST(lua_panel_eval_routes_result_to_console_ring)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8453,6 +8516,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
+    RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(lua_panel_eval_routes_result_to_console_ring);
     RUN_TEST(lua_panel_spawn_updates_outliner_and_ctrl_z_reverts);
     RUN_TEST(lua_panel_history_up_down_recall);

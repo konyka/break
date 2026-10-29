@@ -195,6 +195,8 @@ struct BreakEditorShell {
     /* close guard: revision at the last unsaved-changes warning (+1 so 0 =
      * never warned) */
     u64 close_warned_rev;
+    u64 load_warned_rev; /* asset-browser load guard: revision + 1 */
+    char load_warned_path[BREAK_EDITOR_SCENE_PATH_CAPACITY];
 
     char scene_path[BREAK_EDITOR_SCENE_PATH_CAPACITY];
     char window_title[BREAK_EDITOR_SCENE_PATH_CAPACITY + 64];
@@ -2872,6 +2874,32 @@ bool break_editor_shell_open_scene(BreakEditorShell *shell, const char *path) {
 
 const char *break_editor_shell_scene_path(const BreakEditorShell *shell) {
     return shell != NULL && shell->scene_path_set ? shell->scene_path : "";
+}
+
+bool editor_shell_load_scene_guarded(BreakEditorShell *shell, const char *path) {
+    u64 rev;
+    if (shell == NULL || path == NULL) {
+        return false;
+    }
+    if (break_editor_doc_is_dirty(shell->doc)) {
+        rev = break_editor_cmd_stack_revision(break_editor_doc_stack(shell->doc)) + 1u;
+        if (shell->load_warned_rev != rev ||
+            strncmp(shell->load_warned_path, path,
+                    sizeof(shell->load_warned_path)) != 0) {
+            shell->load_warned_rev = rev;
+            (void)snprintf(shell->load_warned_path,
+                           sizeof(shell->load_warned_path), "%s", path);
+            editor_shell_log(shell, "%s",
+                             break_editor_tr(BREAK_EDITOR_TR_LOG_LOAD_UNSAVED));
+            (void)snprintf(shell->note, sizeof(shell->note), "%s",
+                           break_editor_tr(BREAK_EDITOR_TR_LOG_LOAD_UNSAVED));
+            shell_refresh_status(shell);
+            return false;
+        }
+    }
+    shell->load_warned_rev = 0u;
+    shell->load_warned_path[0] = '\0';
+    return editor_shell_load_scene(shell, path);
 }
 
 bool editor_shell_load_scene(BreakEditorShell *shell, const char *path) {

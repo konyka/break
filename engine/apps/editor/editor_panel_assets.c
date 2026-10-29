@@ -286,7 +286,7 @@ static void on_assets_row_click(void *ctx, const char *event, void *data) {
                                                  sizeof(path))) {
                     /* world swap + undo-stack clear + scene path / watcher
                      * update, all in the shell helper */
-                    (void)editor_shell_load_scene(shell, path);
+                    (void)editor_shell_load_scene_guarded(shell, path);
                 }
             } else if (break_editor_image_is_supported_name(name)) {
                 char path[BREAK_EDITOR_ASSETS_PATH_CAPACITY];

@@ -42,6 +42,11 @@ void editor_shell_refresh_all(BreakEditorShell *shell);
  * path (Ctrl+S target) and hot-reload target. The scene path and watcher are
  * only changed when the load succeeds. Used by the asset browser. */
 bool editor_shell_load_scene(BreakEditorShell *shell, const char *path);
+/* The asset browser's load: with unsaved changes the first request for a
+ * path only warns (console + status); repeating it for the same path with
+ * no edit in between loads (discarding the changes). A clean document
+ * loads at once. Returns whether it loaded. */
+bool editor_shell_load_scene_guarded(BreakEditorShell *shell, const char *path);
 
 /* Hot-reload host wiring (editor_hot_reload.c): the shell calls these from
  * its destroy/attach paths. */
