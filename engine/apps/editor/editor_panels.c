@@ -50,7 +50,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_ROW_CTX_POOL 64u
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
-#define EDITOR_PALETTE_COMMAND_COUNT 14u
+#define EDITOR_PALETTE_COMMAND_COUNT 15u
 #define EDITOR_TEST_WINDOW_W 800
 #define EDITOR_TEST_WINDOW_H 480
 
@@ -192,7 +192,8 @@ enum {
     PAL_LANG_EN,
     PAL_LANG_ZH,
     PAL_THEME_LIGHT,
-    PAL_THEME_DARK
+    PAL_THEME_DARK,
+    PAL_DUPLICATE_SELECTED
 };
 
 /* Current-language text of palette command `cmd` (bounded, never NULL). */
@@ -220,6 +221,9 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
     }
     if (cmd == PAL_THEME_DARK) {
         return break_editor_tr(BREAK_EDITOR_TR_CMD_THEME_DARK);
+    }
+    if (cmd == PAL_DUPLICATE_SELECTED) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_DUPLICATE_SELECTED);
     }
     return "?";
 }
@@ -937,6 +941,25 @@ static void shell_do_add_entity(BreakEditorShell *shell) {
     editor_shell_refresh_all(shell);
 }
 
+/* Ctrl+D / palette: duplicate the selection (one undoable command) and
+ * select the copy. */
+static void shell_do_duplicate_selected(BreakEditorShell *shell) {
+    BreakEditorEntityId id = BREAK_EDITOR_ENTITY_NULL;
+    if (break_editor_entity_id_valid(shell->selected)) {
+        id = break_editor_doc_duplicate_entity(shell->doc, shell->selected);
+    }
+    if (break_editor_entity_id_valid(id)) {
+        const char *name = shell_entity_name(shell, id);
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_DUPLICATE_FMT),
+                         name != NULL ? name : "?");
+        shell->selected = id;
+    } else {
+        editor_shell_log(shell, "%s",
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_DUPLICATE_FAILED));
+    }
+    editor_shell_refresh_all(shell);
+}
+
 static void shell_do_remove_selected(BreakEditorShell *shell) {
     if (!break_editor_entity_id_valid(shell->selected)) {
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_NO_SELECTION));
@@ -1114,6 +1137,9 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     case PAL_THEME_DARK:
         (void)break_editor_shell_set_theme(shell, false);
         break;
+    case PAL_DUPLICATE_SELECTED:
+        shell_do_duplicate_selected(shell);
+        break;
     default:
         break;
     }
@@ -1160,7 +1186,9 @@ enum {
     ACT_SAVE,
     ACT_UNDO,
     ACT_REDO,
-    ACT_PALETTE_TOGGLE
+    ACT_PALETTE_TOGGLE,
+    ACT_DUPLICATE,
+    ACT_DELETE
 };
 
 typedef struct {
@@ -1179,6 +1207,8 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'z', MY_KEYMOD_CTRL, ACT_UNDO},
     {'y', MY_KEYMOD_CTRL, ACT_REDO},
     {'p', MY_KEYMOD_CTRL, ACT_PALETTE_TOGGLE},
+    {'d', MY_KEYMOD_CTRL, ACT_DUPLICATE},
+    {MY_KEY_DELETE, MY_KEYMOD_NONE, ACT_DELETE},
 };
 
 bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
@@ -1262,6 +1292,14 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
             break;
         case ACT_PALETTE_TOGGLE:
             shell_palette_set_open(shell, !shell->palette_open);
+            break;
+        case ACT_DUPLICATE:
+            shell_do_duplicate_selected(shell);
+            break;
+        case ACT_DELETE:
+            if (break_editor_entity_id_valid(shell->selected)) {
+                shell_do_remove_selected(shell);
+            }
             break;
         default:
             return false;

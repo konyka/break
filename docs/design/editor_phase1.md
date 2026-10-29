@@ -68,7 +68,10 @@ editor 可执行（engine/apps/editor/editor_main.c，薄 main）
 | Ctrl+S | Ctrl | 保存到 `break_editor_shell_set_scene_path` 配置的路径（未配置 = 有界 no-op + 日志） |
 | Ctrl+Z / Ctrl+Y | Ctrl | undo / redo（命令栈） |
 | Ctrl+P | Ctrl | 调色板开关 |
-| Esc / Return | 调色板打开时 | 关闭 / 执行首条匹配 |
+| Ctrl+D | Ctrl | 复制所选实体（含组件，选中副本；2026-10-29） |
+| Delete | 无 | 删除所选实体（2026-10-29） |
+| Ctrl+Shift+R | Ctrl+Shift | 视口着色器重载 |
+| Esc / Return / ↑ / ↓ | 调色板打开时 | 关闭 / 执行高亮行 / 移动高亮（2026-10-29 起） |
 
 真实窗口的按键路由：myui dispatcher 只把 KEY_DOWN 投给焦点控件并**向父级
 冒泡**（`my_event_dispatch.c`）；shell 在 root 容器上挂 "key_down" 监听并在

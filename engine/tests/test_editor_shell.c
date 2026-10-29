@@ -275,7 +275,7 @@ TEST(palette_opens_filters_and_escape_closes)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 14u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 15u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save"));
@@ -1788,12 +1788,9 @@ TEST(palette_row_click_via_pointer_switches_language)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    /* scroll the last command row into view (it is below the fold) */
-    {
-        my_widget_t *list = find(shell, "editor-palette-list");
-        ASSERT_NOT_NULL(list);
-        (void)my_list_view_set_scroll_offset(list, 100000);
-    }
+    /* filter so the target row is the first, fully visible one */
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "Chinese"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     shell_paint(shell);
     row = list_row_by_text(find(shell, "editor-palette-list"),
                            "Language: \xE4\xB8\xAD\xE6\x96\x87 (Chinese)");
@@ -2092,6 +2089,55 @@ TEST(inspector_field_edits_through_real_key_events)
         break_editor_shell_doc(shell), break_editor_shell_selected(shell),
         BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x));
     ASSERT_TRUE(x == 0.0f);
+    break_editor_shell_destroy(shell);
+}
+
+/* Delete removes the selected entity; Ctrl+D duplicates it (with its
+ * transform) and selects the copy. Both through the real key dispatcher
+ * with the shell root focused, and both undoable. */
+TEST(delete_and_ctrl_d_shortcuts)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorEntityId src, dup;
+    f32 x = 0.0f;
+    ASSERT_NOT_NULL(shell);
+    add_transformed_entity(shell, 1.25f, 0.0f, 0.0f);
+    src = break_editor_shell_selected(shell);
+    ASSERT_TRUE(break_editor_entity_id_valid(src));
+    my_event_dispatcher_set_focus(&break_editor_shell_window(shell)->dispatcher,
+                                  break_editor_shell_root(shell));
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        my_event_t ev = my_event_init(MY_EVENT_KEY_DOWN);
+        ev.u.key.key = 'd';
+        ev.u.key.modifiers = MY_KEYMOD_CTRL;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+    }
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 2u);
+    dup = break_editor_shell_selected(shell);
+    ASSERT_TRUE(break_editor_entity_id_valid(dup));
+    ASSERT_FALSE(break_editor_entity_id_eq(dup, src));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        break_editor_shell_doc(shell), dup, BREAK_EDITOR_COMPONENT_TRANSFORM,
+        0u, &x));
+    ASSERT_TRUE(x == 1.25f);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell), "duplicate") != NULL);
+    dispatch_key_event(shell, MY_KEY_DELETE);
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 1u);
+    ASSERT_FALSE(break_editor_entity_id_valid(break_editor_shell_selected(shell)));
+    /* nothing selected: Delete and Ctrl+D are bounded no-ops */
+    dispatch_key_event(shell, MY_KEY_DELETE);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'd', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 1u);
+    /* both undo */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 2u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 1u);
+    /* the palette lists it too */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "Duplicate"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     break_editor_shell_destroy(shell);
 }
 
@@ -6547,7 +6593,7 @@ TEST(i18n_palette_switches_language_at_runtime)
 
     /* palette now lists and filters Chinese command names */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 14u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 15u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "保存"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "English"));
@@ -6948,6 +6994,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(theme_switches_between_dark_and_light);
     RUN_TEST(tool_window_tabs_show_one_page_per_area);
     RUN_TEST(inspector_field_edits_through_real_key_events);
+    RUN_TEST(delete_and_ctrl_d_shortcuts);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
