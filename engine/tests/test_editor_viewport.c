@@ -539,6 +539,85 @@ TEST(pick_oom_budget_sweep) {
     break_editor_doc_destroy(doc);
 }
 
+TEST(box_select_center_inside_rect) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    /* Camera eye (0,0,5) looking -Z; 800x600 viewport. */
+    BreakEditorEntityId center = add_transformed(doc, "c", 0, 0, 0, 1, 1, 1);
+    BreakEditorEntityId right = add_transformed(doc, "r", 2, 0, 0, 1, 1, 1);
+    BreakEditorEntityId behind = add_transformed(doc, "b", 0, 0, 10, 1, 1, 1);
+    BreakEditorEntityId bare = break_editor_doc_add_entity(doc, "bare");
+    ASSERT_TRUE(break_editor_entity_id_valid(center));
+    ASSERT_TRUE(break_editor_entity_id_valid(right));
+    ASSERT_TRUE(break_editor_entity_id_valid(behind));
+    ASSERT_TRUE(break_editor_entity_id_valid(bare));
+    break_editor_doc_clear_dirty(doc);
+
+    BreakEditorCamera cam;
+    break_editor_camera_init(&cam);
+    BreakEditorEntityId ids[8];
+
+    /* Small box around the screen center: only the centered entity (the
+     * entity behind the eye projects to the center too but is culled). */
+    u32 n = break_editor_viewport_box_select(doc, &cam, 380, 280, 420, 320,
+                                             800, 600, ids, 8);
+    ASSERT_EQ(n, 1u);
+    ASSERT_TRUE(break_editor_entity_id_eq(ids[0], center));
+
+    /* Corners given in reverse order normalize; the wide box takes both
+     * in-front entities in document order. x=2 at depth 5 projects to
+     * 400 + 2/(5*tan30) * 300 ~= 607.8 px. */
+    n = break_editor_viewport_box_select(doc, &cam, 700, 350, 100, 250,
+                                         800, 600, ids, 8);
+    ASSERT_EQ(n, 2u);
+    ASSERT_TRUE(break_editor_entity_id_eq(ids[0], center));
+    ASSERT_TRUE(break_editor_entity_id_eq(ids[1], right));
+
+    /* Capacity bounds the output; the return is the stored count. */
+    n = break_editor_viewport_box_select(doc, &cam, 100, 250, 700, 350,
+                                         800, 600, ids, 1);
+    ASSERT_EQ(n, 1u);
+    ASSERT_TRUE(break_editor_entity_id_eq(ids[0], center));
+
+    /* Box that excludes the center but keeps the right entity. */
+    n = break_editor_viewport_box_select(doc, &cam, 590, 280, 630, 320,
+                                         800, 600, ids, 8);
+    ASSERT_EQ(n, 1u);
+    ASSERT_TRUE(break_editor_entity_id_eq(ids[0], right));
+
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    break_editor_doc_destroy(doc);
+}
+
+TEST(box_select_degenerate_bounded_zero) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(break_editor_entity_id_valid(
+        add_transformed(doc, "c", 0, 0, 0, 1, 1, 1)));
+    BreakEditorCamera cam;
+    break_editor_camera_init(&cam);
+    BreakEditorEntityId ids[4];
+    ASSERT_EQ(break_editor_viewport_box_select(NULL, &cam, 0, 0, 800, 600,
+                                               800, 600, ids, 4), 0u);
+    ASSERT_EQ(break_editor_viewport_box_select(doc, NULL, 0, 0, 800, 600,
+                                               800, 600, ids, 4), 0u);
+    ASSERT_EQ(break_editor_viewport_box_select(doc, &cam, 0, 0, 800, 600,
+                                               800, 600, NULL, 4), 0u);
+    ASSERT_EQ(break_editor_viewport_box_select(doc, &cam, 0, 0, 800, 600,
+                                               800, 600, ids, 0), 0u);
+    ASSERT_EQ(break_editor_viewport_box_select(doc, &cam, 0, 0, 800, 600,
+                                               0, 600, ids, 4), 0u);
+    ASSERT_EQ(break_editor_viewport_box_select(doc, &cam, NAN, 0, 800, 600,
+                                               800, 600, ids, 4), 0u);
+    cam.distance = 0.0f;
+    ASSERT_EQ(break_editor_viewport_box_select(doc, &cam, 0, 0, 800, 600,
+                                               800, 600, ids, 4), 0u);
+    break_editor_camera_init(&cam);
+    ASSERT_EQ(break_editor_viewport_box_select(doc, &cam, 0, 0, 800, 600,
+                                               800, 600, ids, 4), 1u);
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(camera_init_defaults);
     RUN_TEST(camera_view_known_answers);
@@ -556,4 +635,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pan_scales_with_distance);
     RUN_TEST(zoom_exponential_clamped);
     RUN_TEST(pick_oom_budget_sweep);
+    RUN_TEST(box_select_center_inside_rect);
+    RUN_TEST(box_select_degenerate_bounded_zero);
 TEST_MAIN_END()

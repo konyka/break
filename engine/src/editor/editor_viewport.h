@@ -138,6 +138,19 @@ typedef struct BreakEditorPickResult { BreakEditorEntityId id; f32 t; } BreakEdi
 bool break_editor_viewport_pick(BreakEditorDoc *doc, const BreakEditorCamera *cam,
     f32 x, f32 y, f32 w, f32 h, BreakEditorPickResult *out);
 
+/* Box (marquee) select: stores, in document iteration order, every entity
+ * whose EditorTransform pos projects strictly in front of the camera
+ * (clip w > near) to a screen point inside the rectangle spanned by
+ * (x0,y0)-(x1,y1) (logical px, top-left origin, corners in any order,
+ * edges inclusive) of a w x h viewport. Entities without a transform or
+ * with non-finite pos are skipped; the scan is bounded by
+ * BREAK_EDITOR_PICK_MAX_ENTITIES. Returns the stored count (<= cap);
+ * 0 on NULL arguments, cap 0, non-finite inputs, w/h <= 0 or a degenerate
+ * camera. Allocation-free, no document mutation. */
+u32 break_editor_viewport_box_select(BreakEditorDoc *doc,
+    const BreakEditorCamera *cam, f32 x0, f32 y0, f32 x1, f32 y1,
+    f32 w, f32 h, BreakEditorEntityId *out, u32 cap);
+
 void break_editor_camera_focus(BreakEditorCamera *cam, const BreakEditorDoc *doc, BreakEditorEntityId id); /* fits target+distance to the entity's proxy AABB, distance clamped [0.05, 1e4] */
 void break_editor_camera_orbit(BreakEditorCamera *cam, f32 dx_deg, f32 dy_deg);
 void break_editor_camera_pan(BreakEditorCamera *cam, f32 dx_px, f32 dy_px);   /* scaled by distance */

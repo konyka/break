@@ -243,6 +243,16 @@ BreakEditorGizmoMode break_editor_shell_gizmo_mode(
  * shell. Routes the refresh fan-out like a row click. */
 bool break_editor_shell_select_id(BreakEditorShell *shell,
                                   BreakEditorEntityId id);
+/* Replaces the selection with ids (ids[0] becomes the primary), or with
+ * `add` joins them to the current one with ids[0] as the new primary.
+ * Duplicates are folded; the extras cap applies. n == 0 without `add`
+ * clears. Used by viewport box select. false only for a NULL shell or a
+ * NULL ids with n > 0. */
+bool break_editor_shell_select_ids(BreakEditorShell *shell,
+                                   const BreakEditorEntityId *ids, u32 n,
+                                   bool add);
+/* True while a viewport box (marquee) drag is in progress. */
+bool break_editor_shell_viewport_box_active(BreakEditorShell *shell);
 /* Republish the status/inspector/outliner (viewport gizmo drags end here so
  * the status bar's last-command text tracks them). */
 void break_editor_shell_refresh(BreakEditorShell *shell);

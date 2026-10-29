@@ -188,6 +188,10 @@ static bool drv_expect(void *user, const char *what) {
         return strcmp(arg, "none") == 0 ? name == NULL
                                         : name != NULL && strcmp(name, arg) == 0;
     }
+    if (strcmp(key, "selected_count") == 0) {
+        return sscanf(arg, "%ld", &n) == 1 &&
+               (long)break_editor_shell_selection_count(shell) == n;
+    }
     if (strcmp(key, "tool") == 0) {
         BreakEditorGizmoMode m = break_editor_shell_gizmo_mode(shell);
         return (strcmp(arg, "none") == 0 && m == BREAK_EDITOR_GIZMO_NONE) ||

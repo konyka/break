@@ -190,6 +190,14 @@ void break_editor_viewport3d_model_matrix(const f32 pos[3],
 u32 break_editor_viewport3d_outline_edges(const f32 model[16], f32 thickness,
                                           f32 out[12][16]);
 
+/* Box (marquee) select drag in progress: true and, when out4 is non-NULL,
+ * the viewport-local rect {x0, y0, x1, y1} (unordered corners). A left press
+ * on empty space (no gizmo handle, no proxy) starts it; once the pointer
+ * moves more than a few pixels the release selects every proxy whose center
+ * projects inside (Ctrl adds to the selection). False otherwise. */
+bool break_editor_viewport3d_box_rect(const BreakEditorViewport3D *vp,
+                                      f32 out4[4]);
+
 /* Viewport panel widget (myui subclass: custom on_paint blit + pointer
  * routing into the CPU core). Borrows the shell; the tree owns the widget.
  * NULL on bounded allocation failure. */

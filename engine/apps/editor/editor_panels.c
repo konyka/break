@@ -2512,6 +2512,44 @@ bool break_editor_shell_select_id(BreakEditorShell *shell,
     return true;
 }
 
+bool break_editor_shell_select_ids(BreakEditorShell *shell,
+                                   const BreakEditorEntityId *ids, u32 n,
+                                   bool add) {
+    if (shell == NULL || (ids == NULL && n > 0u)) {
+        return false;
+    }
+    if (!add) {
+        shell->selected = BREAK_EDITOR_ENTITY_NULL;
+        shell->extra_count = 0u;
+    }
+    for (u32 i = 0u; i < n; i++) {
+        BreakEditorEntityId id = ids[i];
+        if (!break_editor_entity_id_valid(id) || shell_is_selected(shell, id)) {
+            continue;
+        }
+        if (break_editor_entity_id_valid(shell->selected)) {
+            if (shell->extra_count >= EDITOR_EXTRA_SELECTION_MAX) break;
+            shell->extra[shell->extra_count++] = shell->selected;
+        }
+        shell->selected = id;
+    }
+    if (n > 0u && break_editor_entity_id_valid(ids[0]) &&
+        !break_editor_entity_id_eq(shell->selected, ids[0])) {
+        int at = shell_extra_index(shell, ids[0]);
+        if (at >= 0) {
+            shell->extra[at] = shell->selected;
+            shell->selected = ids[0];
+        }
+    }
+    editor_shell_refresh_all(shell);
+    return true;
+}
+
+bool break_editor_shell_viewport_box_active(BreakEditorShell *shell) {
+    return shell != NULL &&
+           break_editor_viewport3d_box_rect(shell->vp3d, NULL);
+}
+
 void break_editor_shell_refresh(BreakEditorShell *shell) {
     editor_shell_refresh_all(shell);
 }

@@ -234,6 +234,66 @@ bool break_editor_viewport_pick(BreakEditorDoc *doc, const BreakEditorCamera *ca
     return hit;
 }
 
+u32 break_editor_viewport_box_select(BreakEditorDoc *doc,
+    const BreakEditorCamera *cam, f32 x0, f32 y0, f32 x1, f32 y1,
+    f32 w, f32 h, BreakEditorEntityId *out, u32 cap) {
+    if (!doc || !cam || !out || cap == 0) return 0;
+    if (!isfinite(x0) || !isfinite(y0) || !isfinite(x1) || !isfinite(y1) ||
+        !isfinite(w) || !isfinite(h)) {
+        return 0;
+    }
+    if (!(w > 0.0f) || !(h > 0.0f)) return 0;
+    if (!ed_camera_finite(cam)) return 0;
+    if (!(cam->fov_y > 0.0f) || !(cam->fov_y < ED_PI_F)) return 0;
+    if (!(cam->distance > 0.0f)) return 0;
+
+    f32 lo_x = x0 < x1 ? x0 : x1, hi_x = x0 < x1 ? x1 : x0;
+    f32 lo_y = y0 < y1 ? y0 : y1, hi_y = y0 < y1 ? y1 : y0;
+
+    f32 view16[16], proj16[16];
+    break_editor_camera_view(cam, view16);
+    break_editor_camera_proj(cam, w / h, proj16);
+    Mat4 view, proj;
+    memcpy(&view, view16, sizeof(view));
+    memcpy(&proj, proj16, sizeof(proj));
+    Mat4 vp = mat4_mul(proj, view);
+
+    usize total = break_editor_doc_entity_count(doc);
+    if (total > BREAK_EDITOR_PICK_MAX_ENTITIES) {
+        total = BREAK_EDITOR_PICK_MAX_ENTITIES;
+    }
+    u32 n = 0;
+    for (usize i = 0; i < total && n < cap; i++) {
+        BreakEditorEntityId id;
+        const char *name = NULL;
+        if (!break_editor_doc_entity_at(doc, i, &id, &name)) continue;
+        if (!break_editor_doc_has_component(doc, id,
+                                            BREAK_EDITOR_COMPONENT_TRANSFORM)) {
+            continue;
+        }
+        f32 p[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+        bool ok = true;
+        for (u32 k = 0; k < 3 && ok; k++) {
+            ok = break_editor_doc_get_field_f32(
+                     doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, k, &p[k]) &&
+                 isfinite(p[k]);
+        }
+        if (!ok) continue;
+        f32 clip[4];
+        ed_mat4_mul_vec4(&vp, p, clip);
+        if (!isfinite(clip[0]) || !isfinite(clip[1]) || !isfinite(clip[3]) ||
+            !(clip[3] > BREAK_EDITOR_VIEWPORT_NEAR)) {
+            continue;
+        }
+        f32 sx = (clip[0] / clip[3] + 1.0f) * 0.5f * w;
+        f32 sy = (1.0f - clip[1] / clip[3]) * 0.5f * h;
+        if (sx >= lo_x && sx <= hi_x && sy >= lo_y && sy <= hi_y) {
+            out[n++] = id;
+        }
+    }
+    return n;
+}
+
 void break_editor_camera_focus(BreakEditorCamera *cam, const BreakEditorDoc *doc,
                                BreakEditorEntityId id) {
     if (!cam || !doc || !break_editor_entity_id_valid(id)) return;

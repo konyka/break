@@ -114,7 +114,12 @@ editor 可执行
 - **路由（坐标恒为控件当前 rect 的本地逻辑像素）**：
   - 左键按下：gizmo `begin_drag` 命中 → 拖拽；命中手柄但 grab 退化 →
     保持选择（用户明显瞄准 gizmo，非空处）；否则 pick → 命中选中 /
-    miss 清空选择。
+    miss 清空选择并进入“待框选”（Ctrl 按住时不清空）。
+  - 左键在空白处按下后移动超过 4 逻辑像素：框选。拖动中画半透明强调色
+    矩形（`#3574F0`，1px 边）；松开时 `break_editor_viewport_box_select`
+    选中中心（Transform pos）投影落在矩形内（含边）且位于近平面前方的
+    实体，按文档顺序，第一个为主选；Ctrl 时加入当前选择且新框中第一个成为
+    主选。空框清空选择。框选是视图状态，不进撤销栈。单次最多 256 个。
   - 左键拖拽（gizmo 活动）：`gizmo_drag`；**中途返回 false = 拖拽已被
     外部提交结束（见 §6 的 Ctrl+Z 策略），控件自愈丢弃拖拽态**。
   - 右键 / Alt+左键拖拽：orbit（0.25°/px）。
@@ -159,7 +164,7 @@ GPU 路径证据 = 编译/链接 + 记录在案的 live smoke run（**非** GPU 
 ## 9. Phase 3+ 明确排除项（设计-only，本 phase 未交付）
 
 - ~~选中高亮 **outline**~~（2026-10-29 已交付：所选代理立方体的 12 条棱以细长盒绘制为亮色描边 `#FFEB8C`，叠在暖色 tint 上；几何由纯 CPU 的 `break_editor_viewport3d_outline_edges` 生成并有已知答案测试；统计 `outline_edges`）、~~rotation rings 手柄可视化~~（2026-10-29 已交付：旋转模式下每轴一圈 48 个小立方体，半径 = 轴手柄远端，颜色同轴；只作可视化，命中仍用手柄 AABB；几何 `break_editor_gizmo_rings`，统计 `ring_segments`）
-  可视化、多选的框选（大纲 Ctrl/Shift 多选、批量删除、多实体随 gizmo 一起拖动已于 2026-10-29 交付）、场景保真渲染
+  可视化、~~多选的框选~~（大纲 Ctrl/Shift 多选、批量删除、多实体随 gizmo 一起拖动、视口框选均已于 2026-10-29 交付；框选按实体中心判定，不做与代理盒的相交）、场景保真渲染
   （mesh/材质/光照——代理立方体不声称游戏画面）、gizmo 局部坐标系模式、
   视口内导航键（flycam）、视口 overlay 统计信息、pick 的增量 BVH refit
   优化（当前每次调用重建，编辑器规模足够）。

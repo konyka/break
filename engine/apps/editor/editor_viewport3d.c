@@ -6,7 +6,11 @@
  * logical px — the dispatcher delivers global coords, converted with
  * my_widget_global_to_local):
  *   left press            gizmo begin_drag when a handle is hit; otherwise
- *                         pick -> select (hit) / clear selection (miss)
+ *                         pick -> select (hit) / clear selection (miss;
+ *                         Ctrl keeps it) and arm a box select
+ *   left drag (empty)     past EDITOR_VIEWPORT_BOX_THRESHOLD px it becomes a
+ *                         box; release selects the centers inside
+ *                         (break_editor_viewport_box_select; Ctrl adds)
  *   left drag (gizmo)     break_editor_gizmo_drag; a false return mid-drag
  *                         means the drag vanished (external Ctrl+Z commit —
  *                         the documented Task 3 policy) and the widget drops
@@ -99,8 +103,14 @@ enum {
     VP_DRAG_NONE = 0,
     VP_DRAG_GIZMO,
     VP_DRAG_ORBIT,
-    VP_DRAG_PAN
+    VP_DRAG_PAN,
+    VP_DRAG_BOX_PENDING, /* left press on empty space, not moved yet */
+    VP_DRAG_BOX
 };
+
+/* pointer travel (logical px) before a press on empty space becomes a box */
+#define EDITOR_VIEWPORT_BOX_THRESHOLD 4.0f
+#define EDITOR_VIEWPORT_BOX_MAX 256u
 
 struct BreakEditorViewport3D {
     RHIDevice *device; /* borrowed; NULL until the first live render */
@@ -133,6 +143,8 @@ struct BreakEditorViewport3D {
     /* widget interaction state (one viewport widget per shell) */
     int drag_kind;
     f32 last_x, last_y;
+    f32 box[4];   /* box select: press x/y, current x/y (viewport-local) */
+    bool box_add; /* Ctrl held at press: add to the selection */
 };
 
 /* ---------------- creation / destruction ---------------- */
@@ -820,6 +832,36 @@ static void viewport_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
             vg, tex, 0.0f, 0.0f, (float)widget->rect.w,
             (float)widget->rect.h);
     }
+    {
+        f32 r[4];
+        if (break_editor_viewport3d_box_rect(vp, r)) {
+            float x0 = r[0] < r[2] ? r[0] : r[2];
+            float y0 = r[1] < r[3] ? r[1] : r[3];
+            float bw = fabsf(r[2] - r[0]), bh = fabsf(r[3] - r[1]);
+            u32 accent = BREAK_EDITOR_THEME_ACCENT;
+            my_vgcanvas_set_fill_color(
+                vg, my_color_from_rgba32((accent & 0xffffff00u) | 0x30u));
+            (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x0, y0, bw, bh});
+            my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(accent));
+            (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x0, y0, bw, 1.0f});
+            (void)my_vgcanvas_fill_rect(
+                vg, &(my_rectf_t){x0, y0 + bh - 1.0f, bw, 1.0f});
+            (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x0, y0, 1.0f, bh});
+            (void)my_vgcanvas_fill_rect(
+                vg, &(my_rectf_t){x0 + bw - 1.0f, y0, 1.0f, bh});
+        }
+    }
+}
+
+bool break_editor_viewport3d_box_rect(const BreakEditorViewport3D *vp,
+                                      f32 out4[4]) {
+    if (vp == NULL || vp->drag_kind != VP_DRAG_BOX) {
+        return false;
+    }
+    if (out4 != NULL) {
+        memcpy(out4, vp->box, sizeof(vp->box));
+    }
+    return true;
 }
 
 static void viewport_end_interaction(my_widget_t *widget,
@@ -829,6 +871,15 @@ static void viewport_end_interaction(my_widget_t *widget,
         break_editor_shell_gizmo(shell) != NULL) {
         break_editor_gizmo_end_drag(break_editor_shell_gizmo(shell));
         break_editor_shell_refresh(shell); /* status last= tracks the drag */
+    } else if (vp->drag_kind == VP_DRAG_BOX && vp->cam != NULL) {
+        BreakEditorEntityId ids[EDITOR_VIEWPORT_BOX_MAX];
+        u32 n = break_editor_viewport_box_select(
+            break_editor_shell_doc(shell), break_editor_shell_camera(shell),
+            vp->box[0], vp->box[1], vp->box[2], vp->box[3],
+            (f32)widget->rect.w, (f32)widget->rect.h, ids,
+            EDITOR_VIEWPORT_BOX_MAX);
+        vp->drag_kind = VP_DRAG_NONE;
+        (void)break_editor_shell_select_ids(shell, ids, n, vp->box_add);
     }
     vp->drag_kind = VP_DRAG_NONE;
     my_widget_invalidate(widget, NULL);
@@ -902,8 +953,16 @@ static my_ret_t viewport_on_event(my_widget_t *widget,
                                                cam, lx, ly, w, h, &pick)) {
                     (void)break_editor_shell_select_id(shell, pick.id);
                 } else {
-                    (void)break_editor_shell_select_id(
-                        shell, BREAK_EDITOR_ENTITY_NULL);
+                    /* empty space: maybe the start of a box select; a plain
+                     * press clears, Ctrl keeps the selection to add to */
+                    vp->drag_kind = VP_DRAG_BOX_PENDING;
+                    vp->box_add = (mods & MY_KEYMOD_CTRL) != 0u;
+                    vp->box[0] = vp->box[2] = lx;
+                    vp->box[1] = vp->box[3] = ly;
+                    if (!vp->box_add) {
+                        (void)break_editor_shell_select_id(
+                            shell, BREAK_EDITOR_ENTITY_NULL);
+                    }
                 }
             }
         }
@@ -926,6 +985,15 @@ static my_ret_t viewport_on_event(my_widget_t *widget,
             break_editor_camera_orbit(cam,
                                       dx * EDITOR_VIEWPORT_ORBIT_DEG_PER_PX,
                                       dy * EDITOR_VIEWPORT_ORBIT_DEG_PER_PX);
+        } else if (vp->drag_kind == VP_DRAG_BOX_PENDING ||
+                   vp->drag_kind == VP_DRAG_BOX) {
+            vp->box[2] = lx;
+            vp->box[3] = ly;
+            if (vp->drag_kind == VP_DRAG_BOX_PENDING &&
+                (fabsf(lx - vp->box[0]) > EDITOR_VIEWPORT_BOX_THRESHOLD ||
+                 fabsf(ly - vp->box[1]) > EDITOR_VIEWPORT_BOX_THRESHOLD)) {
+                vp->drag_kind = VP_DRAG_BOX;
+            }
         } else if (vp->drag_kind == VP_DRAG_PAN) {
             /* rescale so one dragged logical pixel moves one screen pixel
              * at the pivot plane for the CURRENT widget height */

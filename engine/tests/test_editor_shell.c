@@ -2741,6 +2741,72 @@ TEST(gizmo_drag_moves_every_selected_entity)
     break_editor_shell_destroy(shell);
 }
 
+TEST(viewport_box_drag_selects_entities_inside)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId a, b, c;
+    my_widget_t *vp;
+    f32 pa[2], pb[2], pc[2];
+    f32 wa[3] = {0.0f, 0.0f, 0.0f}, wb[3] = {1.0f, 0.0f, 0.0f};
+    f32 wc[3] = {0.0f, 1.2f, 0.0f};
+    f32 lo_x, lo_y, hi_x, hi_y;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    a = break_editor_doc_add_entity(doc, "a");
+    b = break_editor_doc_add_entity(doc, "b");
+    c = break_editor_doc_add_entity(doc, "c");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, a, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, c, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, 1.0f));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, c, BREAK_EDITOR_COMPONENT_TRANSFORM, 1u, 1.2f));
+    for (u32 k = 6u; k < 9u; k++) {
+        ASSERT_TRUE(break_editor_doc_set_field_f32(doc, a, BREAK_EDITOR_COMPONENT_TRANSFORM, k, 0.2f));
+        ASSERT_TRUE(break_editor_doc_set_field_f32(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, k, 0.2f));
+        ASSERT_TRUE(break_editor_doc_set_field_f32(doc, c, BREAK_EDITOR_COMPONENT_TRANSFORM, k, 0.2f));
+    }
+    break_editor_shell_refresh(shell);
+    shell_paint(shell);
+    vp = break_editor_shell_viewport_widget(shell);
+    ASSERT_NOT_NULL(vp);
+    ASSERT_TRUE(project_to_viewport(shell, vp, wa, pa));
+    ASSERT_TRUE(project_to_viewport(shell, vp, wb, pb));
+    ASSERT_TRUE(project_to_viewport(shell, vp, wc, pc));
+    /* a box around a and b that stops short of c (c sits above a) */
+    lo_x = pa[0] - 0.5f * (pb[0] - pa[0]);
+    hi_x = pb[0] + 0.5f * (pb[0] - pa[0]);
+    lo_y = pa[1] - 0.5f * (pa[1] - pc[1]);
+    hi_y = pa[1] + 0.5f * (pa[1] - pc[1]);
+    ASSERT_TRUE(lo_y > pc[1]);
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, hi_x, hi_y, 1u, 0u, 0);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, lo_x, lo_y, 0u, 0u, 0);
+    ASSERT_TRUE(break_editor_shell_viewport_box_active(shell));
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, lo_x, lo_y, 1u, 0u, 0);
+    ASSERT_FALSE(break_editor_shell_viewport_box_active(shell));
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 2u);
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), a));
+
+    /* Ctrl+box around c adds it; the earlier two stay selected */
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, pc[0] - 20.0f, pc[1] - 20.0f,
+                     1u, MY_KEYMOD_CTRL, 0);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 2u);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, pc[0] + 20.0f, lo_y - 1.0f,
+                     0u, MY_KEYMOD_CTRL, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, pc[0] + 20.0f, lo_y - 1.0f,
+                     1u, MY_KEYMOD_CTRL, 0);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 3u);
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), c));
+
+    /* a box over empty space selects nothing; a plain click clears too */
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, 2.0f, 2.0f, 1u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, 30.0f, 30.0f, 0u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, 30.0f, 30.0f, 1u, 0u, 0);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -7564,6 +7630,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(outliner_ctrl_click_multi_select_and_group_delete);
     RUN_TEST(outliner_shift_click_selects_a_range);
     RUN_TEST(gizmo_drag_moves_every_selected_entity);
+    RUN_TEST(viewport_box_drag_selects_entities_inside);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);
