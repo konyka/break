@@ -225,8 +225,7 @@ int main(int argc, char **argv) {
     break_editor_remote_cli_to_config(&remote_cli, &remote_cfg);
     remote = break_editor_remote_create(shell, &remote_cfg);
     if (remote == NULL ||
-        !break_editor_remote_set_psk(remote, remote_cli.key_id,
-                                     remote_cli.psk) ||
+        !break_editor_remote_cli_install_keys(&remote_cli, remote) ||
         !break_editor_remote_start(remote)) {
       break_editor_remote_cli_wipe(&remote_cli);
       break_editor_remote_destroy(remote);

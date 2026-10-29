@@ -159,6 +159,13 @@ typedef struct BreakEditorRemoteCli {
     bool has_psk;
     uint8_t psk[32];
     uint8_t key_id[8];
+    /* --remote-keyring-file: every key of the file (key_count > 0; the
+     * single psk/key_id fields are then unused). */
+    struct {
+        uint8_t key_id[8];
+        uint8_t psk[32];
+    } keys[8];
+    uint32_t key_count;
     const char *scene_path;                     /* borrowed from argv */
 } BreakEditorRemoteCli;
 
@@ -166,6 +173,10 @@ typedef struct BreakEditorRemoteCli {
 bool break_editor_remote_cli_parse(int argc, char **argv,
                                    BreakEditorRemoteCli *out, char *err,
                                    size_t err_cap);
+/* Hands the parsed key(s) to the remote: set_psk for --remote-psk-*, or
+ * set_psk(first) + add_key(rest) for --remote-keyring-file. */
+bool break_editor_remote_cli_install_keys(const BreakEditorRemoteCli *cli,
+                                          BreakEditorRemote *r);
 /* Wipes the parsed PSK (a volatile store the optimizer keeps); call it as
  * soon as the PSK has been handed to break_editor_remote_set_psk. */
 void break_editor_remote_cli_wipe(BreakEditorRemoteCli *cli);

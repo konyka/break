@@ -1599,11 +1599,109 @@ static bool remote_psk_file_read(const char *path, u8 out[32]) {
     return true;
 }
 
+/* Keyring file: one "<16 hex key id> <64 hex psk>" per line, '#' comments
+ * and blank lines skipped, at most 8 keys, no duplicate ids. Read
+ * unbuffered; every scratch copy of key bytes is wiped. */
+static bool remote_keyring_file_read(const char *path, BreakEditorRemoteCli *out) {
+    char text[2048];
+    size_t n;
+    size_t pos = 0u;
+    bool ok = true;
+    FILE *f = fopen(path, "rb");
+    out->key_count = 0u;
+    if (f == NULL) {
+        return false;
+    }
+    if (setvbuf(f, NULL, _IONBF, 0) != 0) {
+        fclose(f);
+        return false;
+    }
+    n = fread(text, 1u, sizeof(text) - 1u, f);
+    if (n == sizeof(text) - 1u && fgetc(f) != EOF) {
+        ok = false; /* oversize file */
+    }
+    fclose(f);
+    text[n] = '\0';
+    while (ok && pos < n) {
+        size_t end = pos;
+        size_t len;
+        char line[128];
+        while (end < n && text[end] != '\n') {
+            end++;
+        }
+        len = end - pos;
+        if (len > 0u && text[pos + len - 1u] == '\r') {
+            len--;
+        }
+        if (len == 0u || text[pos] == '#') {
+            pos = end + 1u;
+            continue;
+        }
+        if (len != 16u + 1u + 64u || text[pos + 16u] != ' ' ||
+            out->key_count >= 8u) {
+            ok = false;
+            break;
+        }
+        memcpy(line, text + pos, 16u);
+        line[16] = '\0';
+        if (!remote_hex_decode(line, out->keys[out->key_count].key_id, 8u)) {
+            ok = false;
+        }
+        memcpy(line, text + pos + 17u, 64u);
+        line[64] = '\0';
+        if (ok && !remote_hex_decode(line, out->keys[out->key_count].psk, 32u)) {
+            ok = false;
+        }
+        remote_wipe(line, sizeof(line));
+        if (ok) {
+            u32 k;
+            for (k = 0u; k < out->key_count; k++) {
+                if (memcmp(out->keys[k].key_id, out->keys[out->key_count].key_id,
+                           8u) == 0) {
+                    ok = false;
+                }
+            }
+        }
+        if (ok) {
+            out->key_count++;
+        }
+        pos = end + 1u;
+    }
+    remote_wipe(text, sizeof(text));
+    if (!ok || out->key_count == 0u) {
+        remote_wipe(out->keys, sizeof(out->keys));
+        out->key_count = 0u;
+        return false;
+    }
+    return true;
+}
+
+bool break_editor_remote_cli_install_keys(const BreakEditorRemoteCli *cli,
+                                          BreakEditorRemote *r) {
+    u32 i;
+    if (cli == NULL || r == NULL || !cli->has_psk) {
+        return false;
+    }
+    if (cli->key_count == 0u) {
+        return break_editor_remote_set_psk(r, cli->key_id, cli->psk);
+    }
+    if (!break_editor_remote_set_psk(r, cli->keys[0].key_id, cli->keys[0].psk)) {
+        return false;
+    }
+    for (i = 1u; i < cli->key_count; i++) {
+        if (!break_editor_remote_add_key(r, cli->keys[i].key_id,
+                                         cli->keys[i].psk)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool break_editor_remote_cli_parse(int argc, char **argv,
                                    BreakEditorRemoteCli *out, char *err,
                                    size_t err_cap) {
     bool saw_remote_option = false;
-    bool saw_psk_hex = false, saw_psk_file = false;
+    bool saw_psk_hex = false, saw_psk_file = false, saw_keyring = false;
     int i;
     if (out == NULL || (argc > 0 && argv == NULL)) {
         remote_cli_error(err, err_cap, "invalid arguments", NULL);
@@ -1636,6 +1734,7 @@ bool break_editor_remote_cli_parse(int argc, char **argv,
             strcmp(arg, "--remote-ca") != 0 &&
             strcmp(arg, "--remote-psk-hex") != 0 &&
             strcmp(arg, "--remote-psk-file") != 0 &&
+            strcmp(arg, "--remote-keyring-file") != 0 &&
             strcmp(arg, "--remote-key-id-hex") != 0) {
             /* never echo an inline "=value": it may be a PSK */
             const char *eq = strchr(arg, '=');
@@ -1682,6 +1781,15 @@ bool break_editor_remote_cli_parse(int argc, char **argv,
                 goto fail;
             }
             saw_psk_file = true;
+        } else if (strcmp(arg, "--remote-keyring-file") == 0) {
+            if (!remote_keyring_file_read(value, out)) {
+                remote_cli_error(err, err_cap,
+                                 "--remote-keyring-file: 1..8 lines of "
+                                 "\"<16 hex id> <64 hex psk>\", unique ids",
+                                 value);
+                goto fail;
+            }
+            saw_keyring = true;
         } else {
             if (!remote_hex_decode(value, out->key_id, sizeof(out->key_id))) {
                 remote_cli_error(err, err_cap,
@@ -1699,9 +1807,10 @@ bool break_editor_remote_cli_parse(int argc, char **argv,
         }
         return true;
     }
-    if (saw_psk_hex && saw_psk_file) {
+    if ((saw_psk_hex ? 1 : 0) + (saw_psk_file ? 1 : 0) + (saw_keyring ? 1 : 0) > 1) {
         remote_cli_error(err, err_cap,
-                         "use one of --remote-psk-hex / --remote-psk-file",
+                         "use one of --remote-psk-hex / --remote-psk-file / "
+                         "--remote-keyring-file",
                          NULL);
         goto fail;
     }
@@ -1711,7 +1820,7 @@ bool break_editor_remote_cli_parse(int argc, char **argv,
                          NULL);
         goto fail;
     }
-    if (!saw_psk_hex && !saw_psk_file) {
+    if (!saw_psk_hex && !saw_psk_file && !saw_keyring) {
         remote_cli_error(err, err_cap,
                          "--remote requires AUTH-v2: --remote-psk-hex or "
                          "--remote-psk-file",
@@ -1722,6 +1831,8 @@ bool break_editor_remote_cli_parse(int argc, char **argv,
     return true;
 fail:
     remote_wipe(out->psk, sizeof(out->psk));
+    remote_wipe(out->keys, sizeof(out->keys));
+    out->key_count = 0u;
     out->has_psk = false;
     out->enabled = false;
     return false;
@@ -1730,6 +1841,8 @@ fail:
 void break_editor_remote_cli_wipe(BreakEditorRemoteCli *cli) {
     if (cli != NULL) {
         remote_wipe(cli->psk, sizeof(cli->psk));
+        remote_wipe(cli->keys, sizeof(cli->keys));
+        cli->key_count = 0u;
         cli->has_psk = false;
     }
 }

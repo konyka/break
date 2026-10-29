@@ -4,7 +4,8 @@
 
 - **交付**：`break_editor_remote_add_key`、`revoke_key`、`key_count` 三个接口，最多 8 个 key_id→PSK。运行中可以继续添加，重复 id 或 keyring 已满时拒绝；单 key 的 `set_psk` 仍可用。AUTH 成功时，按回调解析出的 key_id 把会话归到对应的 key。吊销一个 key 后，用它的新 AUTH 会失败，已用它认证的会话立即关闭（会话和传输层都关），其他 key 的会话不受影响。key 字节在吊销和 destroy 时擦除。轮换的做法是：先加新 key，设备迁移后再吊销旧 key。
 - **测试**：`remote_tls_keyring_add_and_revoke` 走真实 TLS 和 AUTH-v2，用两个设备 key，覆盖重复 id 被拒、吊销后 B 收到 EOF 而 A 仍可用、被吊销的 key 新连接被拒；先红后绿。变异检查：不关闭会话时变红。`build-sdd-p4-final` 163/163，ASan 树 163/163，fuzz seed 1 无报告；两棵树的 ctest 都只剩已知的 x11 失败。
-- **未做**：向设备分发 key、持久化存储 key、CLI 管理多个 key。
+- **追加 CLI keyring 文件**：新增 `--remote-keyring-file F` 参数，与另外两种 PSK 参数互斥。文件每行一个 key，最多 8 行，id 不能重复，大小不超过 2047 B；读取时不缓冲，读完擦除。`break_editor_remote_cli_install_keys` 负责安装，`editor_main` 已改为调用它。测试：CLI 测试覆盖正常文件和 5 种坏文件（短 PSK、非 hex、重复 id、空文件、9 个 key）以及参数互斥；e2e 测试用文件中的第 2 个 key 完成 TLS 认证。变异检查：只安装第一个 key 时变红。`build-sdd-p4-final` 和 ASan 树均 164/164。
+- **未做**：向设备分发 key；运行中通过 CLI 吊销（文件只在启动时读一次）。
 
 ## 本轮更新：editor remote SAVE（2026-10-30）
 

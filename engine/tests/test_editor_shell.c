@@ -6292,6 +6292,66 @@ TEST(remote_cli_default_off_and_fail_closed_flags)
             ASSERT_FALSE(remote_cli(8, argv, &cli)); /* missing file */
         }
     }
+    {
+        /* --remote-keyring-file: one "<16 hex id> <64 hex psk>" per line,
+         * '#' comments and blank lines skipped, <= 8 keys, no duplicate
+         * ids; exclusive with --remote-psk-hex/--remote-psk-file */
+        static const char *k_ring = "editor_remote_cli_test.keyring";
+        static const char *k_good =
+            "# devices\n"
+            "6465766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n"
+            "\n"
+            "6465766963653032 ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100\n";
+        static const char *k_bad[] = {
+            "6465766963653031 0011\n",                       /* short psk */
+            "zz65766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
+            "6465766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n"
+            "6465766963653031 ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100\n",
+            "# empty ring\n"};
+        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                              "--remote-key", "k.pem", "--remote-keyring-file",
+                              k_ring};
+        FILE *f = fopen(k_ring, "wb");
+        usize b;
+        ASSERT_NOT_NULL(f);
+        fputs(k_good, f);
+        fclose(f);
+        ASSERT_TRUE(remote_cli(8, argv, &cli));
+        ASSERT_TRUE(cli.has_psk);
+        ASSERT_EQ(cli.key_count, 2u);
+        ASSERT_TRUE(memcmp(cli.keys[0].key_id, "device01", 8u) == 0);
+        ASSERT_TRUE(memcmp(cli.keys[1].key_id, "device02", 8u) == 0);
+        ASSERT_EQ(cli.keys[0].psk[1], 0x11u);
+        ASSERT_EQ(cli.keys[1].psk[31], 0x00u);
+        ASSERT_EQ(cli.keys[1].psk[0], 0xffu);
+        break_editor_remote_cli_wipe(&cli);
+        ASSERT_EQ(cli.key_count, 0u);
+        ASSERT_EQ(cli.keys[0].psk[1], 0u);
+        {
+            const char *both[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                                  "--remote-key", "k.pem", "--remote-keyring-file",
+                                  k_ring, "--remote-psk-hex",
+                                  "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"};
+            ASSERT_FALSE(remote_cli(10, both, &cli));
+        }
+        for (b = 0u; b < sizeof(k_bad) / sizeof(k_bad[0]); b++) {
+            f = fopen(k_ring, "wb");
+            ASSERT_NOT_NULL(f);
+            fputs(k_bad[b], f);
+            fclose(f);
+            ASSERT_FALSE(remote_cli(8, argv, &cli));
+            ASSERT_EQ(cli.key_count, 0u);
+        }
+        f = fopen(k_ring, "wb");
+        ASSERT_NOT_NULL(f);
+        for (b = 0u; b < 9u; b++) {
+            fprintf(f, "64657669636530%02x 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
+                    (unsigned)b);
+        }
+        fclose(f);
+        ASSERT_FALSE(remote_cli(8, argv, &cli)); /* 9 keys: over the ring */
+        remove(k_ring);
+    }
 }
 
 #ifdef BREAK_ENABLE_CRYPTO
@@ -6725,6 +6785,57 @@ TEST(remote_tls_keyring_add_and_revoke)
     tls_client_close(&c2);
     tls_client_close(&b);
     tls_client_close(&a);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+/* A keyring file parsed by the CLI installs every key: a device using the
+ * second key of the file authenticates. */
+TEST(remote_tls_cli_keyring_file_installs_all_keys)
+{
+    static const char *k_ring = "editor_remote_tls_test.keyring";
+    static const u8 k_second_id[8] = {'d', 'e', 'v', 'i', 'c', 'e', '0', '2'};
+    u8 second_psk[32];
+    char cert[512], key[512];
+    BreakEditorRemoteConfig cfg = tls_remote_config(cert, key, sizeof(cert));
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    BreakEditorRemoteCli cli;
+    TlsRemoteClient c;
+    BreakNetEnvelope rsp;
+    FILE *f;
+    usize i;
+    const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                          "--remote-key", "k.pem", "--remote-keyring-file",
+                          k_ring};
+    for (i = 0u; i < 32u; i++) second_psk[i] = (u8)(0xc0u + i);
+    f = fopen(k_ring, "wb");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "6564697430303031 ");
+    for (i = 0u; i < 32u; i++) fprintf(f, "%02x", k_tls_psk[i]);
+    fprintf(f, "\n6465766963653032 ");
+    for (i = 0u; i < 32u; i++) fprintf(f, "%02x", second_psk[i]);
+    fprintf(f, "\n");
+    fclose(f);
+    ASSERT_TRUE(break_editor_remote_cli_parse(8, (char **)argv, &cli, NULL, 0u));
+    remove(k_ring);
+    ASSERT_EQ(cli.key_count, 2u);
+    ASSERT_NOT_NULL(shell);
+    remote = break_editor_remote_create(shell, &cfg);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(break_editor_remote_cli_install_keys(&cli, remote));
+    break_editor_remote_cli_wipe(&cli);
+    ASSERT_EQ(break_editor_remote_key_count(remote), 2u);
+    ASSERT_TRUE(break_editor_remote_start(remote));
+    break_editor_shell_set_remote(shell, remote);
+    ASSERT_TRUE(tls_client_open(&c, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    ASSERT_TRUE(tls_client_send_auth(&c, k_second_id, second_psk, false));
+    ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&c, &rsp));
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+    tls_client_close(&c);
     break_editor_remote_destroy(remote);
     break_editor_shell_destroy(shell);
 }
@@ -9294,6 +9405,7 @@ TEST_MAIN_BEGIN()
 #ifdef BREAK_ENABLE_CRYPTO
     RUN_REMOTE_TEST(remote_tls_auth_v2_client_describe_and_spawn);
     RUN_REMOTE_TEST(remote_tls_keyring_add_and_revoke);
+    RUN_REMOTE_TEST(remote_tls_cli_keyring_file_installs_all_keys);
     RUN_REMOTE_TEST(remote_tls_e2e_connect_auth_describe_spawn_undo_disconnect);
     RUN_REMOTE_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);
     RUN_REMOTE_TEST(remote_tls_auth_deadline_closes_idle_unauthenticated_client);
