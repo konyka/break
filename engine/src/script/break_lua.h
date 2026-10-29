@@ -596,9 +596,9 @@ BreakLuaError break_lua_runtime_unref_function(BreakLuaRuntime *runtime,
  *  stored value as a Lua number. Values are clamped to [min, max] AT BIND
  *  TIME (initial out of range -> the clamped bound is stored), so script
  *  reads always observe an in-range value. Unknown or malformed keys return
- *  (nil, message); no script-visible failure raises. Dynamic host-side
- *  updates are out of scope for this task: bound values are fixed until
- *  destroy.
+ *  (nil, message); no script-visible failure raises. The host may change a
+ *  bound value later with break_lua_runtime_set_config (clamped the same
+ *  way); scripts see it on their next get.
  *
  *  ERROR SURFACES (all bounded; owner thread is checked FIRST, before any
  *  shape check, on every API):

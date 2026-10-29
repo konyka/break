@@ -91,7 +91,7 @@
 
 ## 3. 设计-only / 未实现
 
-- **batch 记录的真实 apply**：host drain 后如何施加到 ECS World 属后续集成任务（`break_lua` 内结构上无 World 指针）。
+- **batch 记录施加到运行时 ECS World**：`break_lua` 内结构上无 World 指针。已有的使用方是编辑器 Lua console（`editor_lua.c` `console_apply_records`）：eval 后 drain，SPAWN 变成一次可撤销的 `add_entity`，SET 写到已注册组件字段（失败回滚并报 `error:`）——这是施加到编辑器文档，不是游戏运行时的 ECS World；游戏侧的 apply 仍未做。
 - **LuaJIT**：Stage 3.5 延期项，本计划不交付（gating 条件见 roadmap）。
 - **engine/demo 集成**：未做；本文件全部条目是独立可选库证据。
 - **CLOSED/TIMEOUT 语义**：枚举保留，无 API 映射。
