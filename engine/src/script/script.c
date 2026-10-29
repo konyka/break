@@ -1,5 +1,6 @@
 #include <script/script.h>
 #include <core/log.h>
+#include <core/string.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,47 @@ static void script_engine_clear_content(ScriptEngine *se) {
     se->loaded = false;
 }
 
+/* Locale-independent replacement for sscanf "%f": skips whitespace, reads
+ * one float with '.' as the decimal point, advances *cursor past it. */
+static bool script_scan_f32(const char **cursor, f32 *out) {
+    char *end = NULL;
+    double v = break_strtod_c(*cursor, &end);
+    if (end == NULL || end == *cursor) return false;
+    *out = (f32)v;
+    *cursor = end;
+    return true;
+}
+
+/* Matches "<keyword> <name> [= ]<float>" (the shapes the old sscanf
+ * patterns accepted). */
+static bool script_scan_named_f32(const char *line, const char *keyword, bool want_eq,
+                                  char *name, usize name_cap, f32 *out) {
+    usize kw = strlen(keyword);
+    usize n = 0;
+    const char *c;
+    if (strncmp(line, keyword, kw) != 0) return false;
+    c = line + kw;
+    if (*c != ' ' && *c != '\t') return false;
+    while (*c == ' ' || *c == '\t') c++;
+    while (*c != '\0' && *c != ' ' && *c != '\t' && *c != '\n' && *c != '\r') {
+        if (n + 1 >= name_cap) return false;
+        name[n++] = *c++;
+    }
+    name[n] = '\0';
+    if (n == 0) return false;
+    if (want_eq) {
+        while (*c == ' ' || *c == '\t') c++;
+        if (*c != '=') return false;
+        c++;
+    }
+    return script_scan_f32(&c, out);
+}
+
+static bool script_scan_spawn(const char *c, f32 *args) {
+    return script_scan_f32(&c, &args[0]) && script_scan_f32(&c, &args[1]) &&
+           script_scan_f32(&c, &args[2]);
+}
+
 /* cur_func_valid tracks whether the function currently receiving ops was
  * itself accepted: when the SCRIPT_MAX_CALLBACKS cap rejects a `func` line,
  * the following op lines must be dropped rather than land in the previous
@@ -50,7 +92,7 @@ static bool script_parse_line(ScriptEngine *se, const char *line, bool *cur_func
     if (se->func_count == 0) {
         char var_name[64];
         f32 val;
-        if (sscanf(line, "var %63s = %f", var_name, &val) == 2) {
+        if (script_scan_named_f32(line, "var", true, var_name, sizeof var_name, &val)) {
             if (!isfinite(val)) return false;
             if (se->global_count < SCRIPT_MAX_GLOBALS) {
                 snprintf(se->globals[se->global_count].name, sizeof(se->globals[se->global_count].name), "%s", var_name);
@@ -86,17 +128,19 @@ static bool script_parse_line(ScriptEngine *se, const char *line, bool *cur_func
 
     char target[64] = {0};
     f32 val = 0;
-    if (sscanf(line, "set %63s %f", target, &val) == 2) {
+    if (script_scan_named_f32(line, "set", false, target, sizeof target, &val)) {
         if (!isfinite(val)) return false;
         op->type = SCRIPT_OP_SET;
         snprintf(op->target, sizeof(op->target), "%s", target);
         op->value = val;
-    } else if (sscanf(line, "add %63s %f", target, &val) == 2) {
+    } else if (script_scan_named_f32(line, "add", false, target, sizeof target, &val)) {
         if (!isfinite(val)) return false;
         op->type = SCRIPT_OP_ADD;
         snprintf(op->target, sizeof(op->target), "%s", target);
         op->value = val;
-    } else if (sscanf(line, "spawn %f %f %f", &op->args[0], &op->args[1], &op->args[2]) == 3) {
+    } else if (strncmp(line, "spawn", 5) == 0 &&
+               (line[5] == ' ' || line[5] == '\t') &&
+               script_scan_spawn(line + 5, op->args)) {
         if (!isfinite(op->args[0]) || !isfinite(op->args[1]) || !isfinite(op->args[2]))
             return false;
         op->type = SCRIPT_OP_SPAWN;

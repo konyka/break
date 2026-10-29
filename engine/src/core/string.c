@@ -1,4 +1,6 @@
 #include <core/string.h>
+#include <locale.h>
+#include <stdlib.h>
 #include <string.h>
 
 bool str_eq(Str a, Str b) {
@@ -48,4 +50,53 @@ Str str_copy(Str s, char *buf, usize buf_size) {
     if (len > 0) memcpy(buf, s.data, len);
     buf[len] = '\0';
     return (Str){buf, len};
+}
+
+double break_strtod_c(const char *text, char **end) {
+    char buf[256];
+    usize map[256];
+    char *buf_end = NULL;
+    const struct lconv *lc = localeconv();
+    const char *point = (lc != NULL && lc->decimal_point != NULL &&
+                         lc->decimal_point[0] != '\0') ? lc->decimal_point : ".";
+    usize point_len = strlen(point);
+    usize i = 0, o = 0;
+    double v;
+    if (text == NULL) {
+        if (end != NULL) *end = NULL;
+        return 0.0;
+    }
+    if (point_len == 1 && point[0] == '.') return strtod(text, end);
+    while ((text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r' ||
+            text[i] == '\f' || text[i] == '\v') && o + 1 < sizeof(buf)) {
+        map[o] = i;
+        buf[o++] = text[i++];
+    }
+    while (text[i] != '\0') {
+        char ch = text[i];
+        bool numeric = (ch >= '0' && ch <= '9') || ch == '.' || ch == '+' || ch == '-' ||
+                       (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+        usize need = ch == '.' ? point_len : 1;
+        if (!numeric || o + need >= sizeof(buf)) break;
+        if (ch == '.') {
+            memcpy(buf + o, point, point_len);
+            for (usize k = 0; k < point_len; k++) map[o + k] = i;
+            o += point_len;
+        } else {
+            map[o] = i;
+            buf[o++] = ch;
+        }
+        i++;
+    }
+    buf[o] = '\0';
+    v = strtod(buf, &buf_end);
+    if (end != NULL) {
+        usize used = (usize)(buf_end - buf);
+        *end = (char *)text + (used < o ? map[used] : i);
+    }
+    return v;
+}
+
+float break_strtof_c(const char *text, char **end) {
+    return (float)break_strtod_c(text, end);
 }

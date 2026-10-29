@@ -5137,7 +5137,7 @@ endif()
     add_test(NAME test_physics COMMAND test_physics)
 
     # test_script: needs script.c + log.c
-    add_executable(test_script tests/test_script.c src/script/script.c src/core/log.c)
+    add_executable(test_script tests/test_script.c src/script/script.c src/core/log.c src/core/string.c)
     target_include_directories(test_script PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_script PRIVATE m)
     add_test(NAME test_script COMMAND test_script)

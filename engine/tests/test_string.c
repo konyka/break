@@ -4,6 +4,8 @@
 
 #include "test_framework.h"
 #include <core/string.h>
+#include <locale.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ----------------------------------------------------------------------- */
@@ -222,6 +224,23 @@ TEST(str_slice_null_data)
 
 /* ----------------------------------------------------------------------- */
 
+TEST(strtod_c_ignores_comma_locale)
+{
+    char *end = NULL;
+    char *end2 = NULL;
+    double a, b;
+    if (setlocale(LC_NUMERIC, "de_DE.UTF-8") == NULL &&
+        setlocale(LC_NUMERIC, "de_DE.utf8") == NULL)
+        printf("    (no comma-decimal locale installed; C locale only)\n");
+    a = break_strtod_c("  -2.5e1 rest", &end);
+    b = break_strtod_c("1,5", &end2);
+    (void)setlocale(LC_NUMERIC, "C");
+    ASSERT_TRUE(a == -25.0);
+    ASSERT_TRUE(end != NULL && strcmp(end, " rest") == 0);
+    ASSERT_TRUE(b == 1.0);
+    ASSERT_TRUE(end2 != NULL && strcmp(end2, ",5") == 0);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(str_from_c_basic);
     RUN_TEST(str_from_c_empty);
@@ -251,4 +270,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(str_eq_null_empty_slices);
     RUN_TEST(str_copy_null_data_zero_len);
     RUN_TEST(str_slice_null_data);
+    RUN_TEST(strtod_c_ignores_comma_locale);
 TEST_MAIN_END()

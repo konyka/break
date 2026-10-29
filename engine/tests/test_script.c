@@ -4,6 +4,7 @@
 
 #include "test_framework.h"
 #include <script/script.h>
+#include <locale.h>
 #include <math.h>
 #include <stdio.h>
 
@@ -94,6 +95,33 @@ TEST(load_from_file)
 
     script_engine_shutdown(&se);
     remove(path); /* R444: was never removed; stale mtime made runs order-dependent */
+}
+
+TEST(load_decimals_are_locale_independent)
+{
+    char path[64];
+    bool ok;
+    test_tmp(path, sizeof path, "test_script_locale.script");
+    FILE *f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "var speed = 5.5\n");
+    fprintf(f, "func tick\n");
+    fprintf(f, "    add speed 0.25\n");
+    fclose(f);
+
+    ScriptEngine se = {0};
+    script_engine_init(&se);
+    if (setlocale(LC_NUMERIC, "de_DE.UTF-8") == NULL &&
+        setlocale(LC_NUMERIC, "de_DE.utf8") == NULL)
+        printf("    (no comma-decimal locale installed; C locale only)\n");
+    ok = script_load(&se, path);
+    (void)setlocale(LC_NUMERIC, "C");
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(fabsf(script_get_global(&se, "speed") - 5.5f) < 0.001f);
+    script_call(&se, "tick");
+    ASSERT_TRUE(fabsf(script_get_global(&se, "speed") - 5.75f) < 0.001f);
+    script_engine_shutdown(&se);
+    remove(path);
 }
 
 TEST(call_nonexistent_func)
@@ -410,4 +438,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(script_over_cap_function_ops_dropped);
     RUN_TEST(script_rejects_oversized_file);
     RUN_TEST(script_large_values);
+    RUN_TEST(load_decimals_are_locale_independent);
 TEST_MAIN_END()

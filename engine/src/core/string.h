@@ -28,3 +28,10 @@ u64  str_hash(Str s);
 
 /* Copy (caller provides buffer) */
 Str  str_copy(Str s, char *buf, usize buf_size);
+
+/* strtod/strtof that always use '.' as the decimal point, whatever
+ * LC_NUMERIC the host set. The number-shaped prefix of text (at most 255
+ * bytes; leading whitespace allowed) is parsed; *end, when non-NULL, points
+ * into text after the consumed characters. A locale ',' is never accepted. */
+double break_strtod_c(const char *text, char **end);
+float  break_strtof_c(const char *text, char **end);
