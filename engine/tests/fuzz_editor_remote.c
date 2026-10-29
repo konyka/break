@@ -46,6 +46,7 @@
 #include <editor/editor_components.h>
 #include <editor/editor_doc.h>
 #include <editor/editor_protocol.h>
+#include <editor/editor_scene.h>
 #include <network/break_net_envelope.h>
 #include <network/break_net_events.h>
 #include <network/break_net_message.h>
@@ -54,6 +55,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static unsigned long long rng_state = 0xED170ABCu;
 static unsigned rnd(void) {
@@ -125,6 +127,17 @@ static bool harness_open(Harness *h) {
         return false;
     }
     break_editor_shell_set_remote(h->shell, h->remote);
+    /* SAVE/LOAD (ids 14/15) act on the configured scene path: give the
+     * harness a real per-process file so both reach disk I/O. */
+    {
+        static char scene_path[256];
+        if (scene_path[0] == '\0') {
+            (void)snprintf(scene_path, sizeof(scene_path),
+                           "/tmp/break_fuzz_editor_remote_%ld.bscn",
+                           (long)getpid());
+        }
+        (void)break_editor_shell_set_scene_path(h->shell, scene_path);
+    }
     h->manager = (BreakSessionManager *)break_editor_remote_manager_for_test(
         h->remote);
     h->doc = break_editor_shell_doc(h->shell);
@@ -406,8 +419,8 @@ typedef struct Stats {
     unsigned max_entities;
     /* per editor id 4..13: messages that reached the session manager, and how
      * many the handler accepted (apply OK) */
-    unsigned reached[14];
-    unsigned accepted[14];
+    unsigned reached[16];
+    unsigned accepted[16];
     unsigned state_changing_ok; /* applied OK AND the document fingerprint moved */
 } Stats;
 
@@ -467,10 +480,10 @@ static bool feed(Harness *h, u16 id, u16 version, u32 sequence, const void *data
 static u16 pick_id(void) {
     unsigned r = rnd_below(16u);
     if (r < 12u) {
-        return (u16)(4u + rnd_below(10u)); /* 4..13 */
+        return (u16)(4u + rnd_below(12u)); /* 4..15 */
     }
     if (r == 12u) return (u16)rnd_below(4u);      /* 0..3 */
-    if (r == 13u) return (u16)(14u + rnd_below(8u));
+    if (r == 13u) return (u16)(16u + rnd_below(8u));
     if (r == 14u) return 0xFFFFu;
     return (u16)rnd();
 }
@@ -605,7 +618,7 @@ static int one_message(Harness *h, Stats *st, unsigned it) {
     }
 
     result = break_session_manager_last_result(h->manager);
-    if (last_id >= 4u && last_id <= 13u) {
+    if (last_id >= 4u && last_id <= 15u) {
         st->reached[last_id]++;
         if (result == BREAK_SESSION_APPLY_OK) {
             st->accepted[last_id]++;
@@ -699,12 +712,12 @@ int main(int argc, char **argv) {
            st.sessions, st.closed_by_message, st.session_table_stuck, st.evals,
            st.max_entities);
     {
-        static const char *const names[14] = {
+        static const char *const names[16] = {
             "", "", "", "", "DESCRIBE", "LIST", "SPAWN", "REMOVE", "RENAME",
-            "SET_FIELD", "UNDO", "REDO", "EVAL", "RESULT"};
+            "SET_FIELD", "UNDO", "REDO", "EVAL", "RESULT", "SAVE", "LOAD"};
         unsigned i;
         printf("per id (reached manager / handler accepted):");
-        for (i = 4u; i <= 13u; i++) {
+        for (i = 4u; i <= 15u; i++) {
             printf(" %s %u/%u", names[i], st.reached[i], st.accepted[i]);
         }
         printf("\naccepted messages that changed the document: %u\n",
@@ -714,5 +727,15 @@ int main(int argc, char **argv) {
            "duplicate %u handler_failed %u\n",
            st.result[0], st.result[1], st.result[2], st.result[3], st.result[4],
            st.result[5], st.result[6]);
+    {
+        char path[256];
+        (void)snprintf(path, sizeof(path), "/tmp/break_fuzz_editor_remote_%ld.bscn",
+                       (long)getpid());
+        (void)remove(path);
+        (void)snprintf(path, sizeof(path),
+                       "/tmp/break_fuzz_editor_remote_%ld.bscn" BREAK_EDITOR_SIDECAR_SUFFIX,
+                       (long)getpid());
+        (void)remove(path);
+    }
     return 0;
 }
