@@ -32,7 +32,8 @@ enum {
     BREAK_EDITOR_CMD_KIND_ADD_COMPONENT = 5,
     BREAK_EDITOR_CMD_KIND_REMOVE_COMPONENT = 6,
     BREAK_EDITOR_CMD_KIND_GIZMO_TRANSFORM = 7,
-    BREAK_EDITOR_CMD_KIND_DUPLICATE_ENTITY = 8
+    BREAK_EDITOR_CMD_KIND_DUPLICATE_ENTITY = 8,
+    BREAK_EDITOR_CMD_KIND_GROUP = 9
 };
 
 /* Concrete command: one bounded allocation per mutation. name/other_name
@@ -161,6 +162,12 @@ BreakEditorCmd *break_editor_cmd_add_entity_create(const char *name_or_null);
 BreakEditorCmd *break_editor_cmd_duplicate_entity_create(BreakEditorDoc *doc,
                                                          BreakEditorEntityId src,
                                                          const char *name);
+/* group: owns up to BREAK_EDITOR_GROUP_MAX already-built child commands;
+ * apply runs them in order (undoing the applied prefix on a failure),
+ * revert runs them in reverse. `children` is copied; on NULL (OOM) the
+ * caller still owns the children. */
+BreakEditorCmd *break_editor_cmd_group_create(BreakEditorCmd **children,
+                                              u32 count, const char *label);
 BreakEditorCmd *break_editor_cmd_remove_entity_create(BreakEditorDoc *doc,
                                                       BreakEditorEntityId id);
 BreakEditorCmd *break_editor_cmd_rename_entity_create(BreakEditorDoc *doc,

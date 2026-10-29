@@ -2554,6 +2554,87 @@ TEST(outliner_highlights_the_selected_row)
 /* The asset browser's filter box: typing extensions (CSV, case-folded by
  * the model) narrows the listing after Enter; directories and ".." stay;
  * an empty filter shows everything again. Real key events into the edit. */
+/* Multi-select: Ctrl+click on outliner rows toggles entities in and out of
+ * the selection (the last one clicked is the primary: gizmo + inspector);
+ * a plain click selects only that row. Every selected row carries the
+ * "selected" class. Delete removes all selected entities as ONE undo step;
+ * Ctrl+D duplicates the primary only. */
+static void ctrl_click_row(BreakEditorShell *shell, my_widget_t *row) {
+    my_window_t *win = break_editor_shell_window(shell);
+    int32_t gx = 0, gy = 0;
+    my_event_t ev;
+    my_widget_local_to_global(row, &gx, &gy);
+    gx += row->rect.w / 2;
+    gy += row->rect.h / 2;
+    ev = my_event_init(MY_EVENT_POINTER_DOWN);
+    ev.u.pointer.x = gx;
+    ev.u.pointer.y = gy;
+    ev.u.pointer.button = 1u;
+    ev.u.pointer.modifiers = MY_KEYMOD_CTRL;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+    ev = my_event_init(MY_EVENT_POINTER_UP);
+    ev.u.pointer.x = gx;
+    ev.u.pointer.y = gy;
+    ev.u.pointer.button = 1u;
+    ev.u.pointer.modifiers = MY_KEYMOD_CTRL;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+}
+
+TEST(outliner_ctrl_click_multi_select_and_group_delete)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *list;
+    u32 depth;
+    ASSERT_NOT_NULL(shell);
+    for (int i = 0; i < 4; i++) emit_click(find(shell, "editor-add-button"));
+    shell_paint(shell);
+    list = find(shell, "editor-outliner");
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 1u);
+    pointer_click(shell, my_widget_get_child(list, 0u));
+    /* rows 0..2 are fully visible in the 800x480 test window (row 3 is
+     * clipped by the list's height) */
+    ctrl_click_row(shell, my_widget_get_child(list, 1u));
+    ctrl_click_row(shell, my_widget_get_child(list, 2u));
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 3u);
+    ASSERT_EQ(outliner_selected_rows(list, NULL), 3u);
+    /* the last one clicked is primary */
+    {
+        BreakEditorEntityId id;
+        const char *name = NULL;
+        ASSERT_TRUE(break_editor_doc_entity_at(break_editor_shell_doc(shell), 2u,
+                                               &id, &name));
+        ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), id));
+    }
+    /* Ctrl+click again toggles one out */
+    ctrl_click_row(shell, my_widget_get_child(list, 1u));
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 2u);
+    ASSERT_EQ(outliner_selected_rows(list, NULL), 2u);
+    /* Delete: both (rows 0 and 2) go, one undo step brings both back */
+    depth = break_editor_cmd_stack_undo_count(
+        break_editor_doc_stack(break_editor_shell_doc(shell)));
+    my_event_dispatcher_set_focus(&break_editor_shell_window(shell)->dispatcher,
+                                  break_editor_shell_root(shell));
+    dispatch_key_event(shell, MY_KEY_DELETE);
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 2u);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(
+                  break_editor_doc_stack(break_editor_shell_doc(shell))),
+              depth + 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 4u);
+    /* a plain click resets to one */
+    shell_paint(shell);
+    ctrl_click_row(shell, my_widget_get_child(list, 0u));
+    ctrl_click_row(shell, my_widget_get_child(list, 1u));
+    pointer_click(shell, my_widget_get_child(list, 2u));
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 1u);
+    ASSERT_EQ(outliner_selected_rows(list, NULL), 1u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -7374,6 +7455,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(delete_and_ctrl_d_shortcuts);
     RUN_TEST(open_scene_loads_existing_and_targets_missing);
     RUN_TEST(close_request_guards_unsaved_changes);
+    RUN_TEST(outliner_ctrl_click_multi_select_and_group_delete);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

@@ -157,6 +157,9 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
  * target of a new document; a file that exists but does not load is NOT
  * made the save target (so Ctrl+S cannot overwrite it) and false is
  * returned. The outcome is logged to the console. */
+/* Selected entities: the primary (break_editor_shell_selected) plus any
+ * added with Ctrl+click in the outliner. 0 when nothing is selected. */
+u32 break_editor_shell_selection_count(const BreakEditorShell *shell);
 bool break_editor_shell_open_scene(BreakEditorShell *shell, const char *path);
 /* The host asks before closing the window. true = close now. With unsaved
  * changes the first request returns false and says so on the console and

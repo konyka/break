@@ -122,10 +122,13 @@ struct BreakEditorViewport3D {
     const BreakEditorCamera *cam; /* borrowed (shell-owned) */
     BreakEditorGizmo *gizmo;      /* borrowed (shell-owned) */
     BreakEditorEntityId selected;
+    const BreakEditorEntityId *extra; /* borrowed (shell) */
+    u32 extra_count;
 
     /* render debugger: last render() call (CPU counters only) */
     int last_skip;
-    u32 last_proxies, last_gizmo, last_draws, last_outline, last_ring;
+    u32 last_proxies, last_gizmo, last_draws, last_outline, last_ring,
+        last_tinted;
 
     /* widget interaction state (one viewport widget per shell) */
     int drag_kind;
@@ -159,6 +162,7 @@ bool break_editor_viewport3d_last_stats(const BreakEditorViewport3D *vp,
     out->gizmo_handles = vp->last_gizmo;
     out->outline_edges = vp->last_outline;
     out->ring_segments = vp->last_ring;
+    out->tinted = vp->last_tinted;
     out->draws = vp->last_draws;
     return true;
 }
@@ -204,6 +208,20 @@ bool break_editor_viewport3d_destroy(BreakEditorViewport3D *vp) {
     }
     free(vp);
     return true;
+}
+
+void break_editor_viewport3d_set_extra_selection(
+    BreakEditorViewport3D *vp, const BreakEditorEntityId *ids, u32 count) {
+    if (vp == NULL) return;
+    vp->extra = count > 0u ? ids : NULL;
+    vp->extra_count = ids != NULL ? count : 0u;
+}
+
+static bool vp_is_extra(const BreakEditorViewport3D *vp, BreakEditorEntityId id) {
+    for (u32 i = 0u; i < vp->extra_count; i++) {
+        if (break_editor_entity_id_eq(vp->extra[i], id)) return true;
+    }
+    return false;
 }
 
 void break_editor_viewport3d_set_view_state(BreakEditorViewport3D *vp,
@@ -631,7 +649,7 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
         return;
     }
     vp->last_proxies = vp->last_gizmo = vp->last_draws = vp->last_outline =
-        vp->last_ring = 0u;
+        vp->last_ring = vp->last_tinted = 0u;
     if (doc == NULL || dev == NULL || cmd == NULL) {
         vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_NO_DEVICE;
         return;
@@ -706,6 +724,10 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
                 vp_draw_box(vp, cmd, &view_proj, edges[e], k_outline_color);
             }
             vp->last_outline = ne;
+            vp->last_tinted++;
+        } else if (vp_is_extra(vp, id)) {
+            vp_draw_box(vp, cmd, &view_proj, model, k_selected_color);
+            vp->last_tinted++;
         } else {
             vp_draw_box(vp, cmd, &view_proj, model, k_proxy_color);
         }

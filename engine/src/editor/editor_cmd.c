@@ -354,6 +354,71 @@ BreakEditorCmd *break_editor_cmd_remove_entity_create(BreakEditorDoc *doc,
     return cmd;
 }
 
+/* ---- group ---- */
+
+typedef struct {
+    BreakEditorCmd base;
+    u32 count;
+    BreakEditorCmd *children[BREAK_EDITOR_GROUP_MAX];
+} BreakEditorGroupCmd;
+
+static bool group_apply(BreakEditorCmd *self, BreakEditorDoc *doc) {
+    BreakEditorGroupCmd *g = (BreakEditorGroupCmd *)self;
+    for (u32 i = 0; i < g->count; i++) {
+        if (!g->children[i]->apply(g->children[i], doc)) {
+            while (i > 0u) { /* all-or-nothing */
+                i--;
+                (void)g->children[i]->revert(g->children[i], doc);
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool group_revert(BreakEditorCmd *self, BreakEditorDoc *doc) {
+    BreakEditorGroupCmd *g = (BreakEditorGroupCmd *)self;
+    u32 i = g->count;
+    while (i > 0u) {
+        i--;
+        if (!g->children[i]->revert(g->children[i], doc)) {
+            for (u32 k = i + 1u; k < g->count; k++) { /* re-apply undone tail */
+                (void)g->children[k]->apply(g->children[k], doc);
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+static void group_destroy(BreakEditorCmd *self) {
+    BreakEditorGroupCmd *g = (BreakEditorGroupCmd *)self;
+    for (u32 i = 0; i < g->count; i++) g->children[i]->destroy(g->children[i]);
+    free(g);
+}
+
+static void group_describe(const BreakEditorCmd *self, char buf[128]) {
+    const BreakEditorGroupCmd *g = (const BreakEditorGroupCmd *)self;
+    snprintf(buf, 128, "%.64s (%u)", self->name, g->count);
+}
+
+BreakEditorCmd *break_editor_cmd_group_create(BreakEditorCmd **children,
+                                              u32 count, const char *label) {
+    if (!children || count == 0u || count > BREAK_EDITOR_GROUP_MAX) return NULL;
+    BreakEditorGroupCmd *g = break_editor_test_calloc(sizeof(*g));
+    if (!g) return NULL;
+    memcpy(g->children, children, (usize)count * sizeof(children[0]));
+    g->count = count;
+    g->base.apply = group_apply;
+    g->base.revert = group_revert;
+    g->base.destroy = group_destroy;
+    g->base.describe = group_describe;
+    g->base.kind = BREAK_EDITOR_CMD_KIND_GROUP;
+    g->base.id = BREAK_EDITOR_ENTITY_NULL;
+    break_editor_name_copy(g->base.name, label ? label : "group");
+    return &g->base;
+}
+
 /* ---- rename_entity ---- */
 
 static bool rename_apply(BreakEditorCmd *self, BreakEditorDoc *doc) {

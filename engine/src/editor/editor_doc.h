@@ -98,6 +98,13 @@ BreakEditorEntityId break_editor_doc_add_entity(BreakEditorDoc *doc,
                                                 const char *name);
 bool break_editor_doc_remove_entity(BreakEditorDoc *doc,
                                     BreakEditorEntityId id);
+/* Removes every live entity in ids[0..count) as ONE undoable command (undo
+ * restores all, with names and components). Stale and repeated ids are
+ * skipped. Returns how many were removed; 0 = nothing recorded (also for
+ * NULL arguments, OOM, or count above BREAK_EDITOR_GROUP_MAX). */
+#define BREAK_EDITOR_GROUP_MAX 256u
+u32 break_editor_doc_remove_entities(BreakEditorDoc *doc,
+                                     const BreakEditorEntityId *ids, u32 count);
 bool break_editor_doc_rename_entity(BreakEditorDoc *doc,
                                     BreakEditorEntityId id,
                                     const char *name);

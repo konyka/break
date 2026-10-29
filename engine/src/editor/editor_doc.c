@@ -157,6 +157,40 @@ bool break_editor_doc_remove_entity(BreakEditorDoc *doc,
     return true;
 }
 
+u32 break_editor_doc_remove_entities(BreakEditorDoc *doc,
+                                     const BreakEditorEntityId *ids, u32 count) {
+    BreakEditorCmd *kids[BREAK_EDITOR_GROUP_MAX];
+    u32 n = 0;
+    if (!doc || !ids || count == 0u || count > BREAK_EDITOR_GROUP_MAX) return 0;
+    for (u32 i = 0; i < count; i++) {
+        bool dup = false;
+        if (!break_editor_doc_has_entity(doc, ids[i])) continue;
+        for (u32 k = 0; k < i; k++) {
+            if (break_editor_entity_id_eq(ids[k], ids[i])) dup = true;
+        }
+        if (dup) continue;
+        BreakEditorCmd *c = break_editor_cmd_remove_entity_create(doc, ids[i]);
+        if (!c) {
+            for (u32 k = 0; k < n; k++) kids[k]->destroy(kids[k]);
+            return 0;
+        }
+        kids[n++] = c;
+    }
+    if (n == 0u) return 0;
+    BreakEditorCmd *g = break_editor_cmd_group_create(kids, n, "remove entities");
+    if (!g) {
+        for (u32 k = 0; k < n; k++) kids[k]->destroy(kids[k]);
+        return 0;
+    }
+    if (!g->apply(g, doc)) {
+        g->destroy(g);
+        return 0;
+    }
+    break_editor_cmd_stack_push_applied(doc, g);
+    doc->dirty = true;
+    return n;
+}
+
 bool break_editor_doc_rename_entity(BreakEditorDoc *doc,
                                     BreakEditorEntityId id,
                                     const char *name) {

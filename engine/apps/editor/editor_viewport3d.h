@@ -111,6 +111,11 @@ void break_editor_viewport3d_gpu_state_for_test(
 /* Borrowed view-state wiring (shell-owned camera/gizmo; selected entity for
  * the highlight tint). Call again whenever the selection changes; NULL
  * camera disables rendering (bounded no-op). */
+/* Entities selected in addition to the primary (multi-select): borrowed
+ * array, read during render; their proxies get the selection tint (the
+ * outline stays on the primary). NULL/0 clears. */
+void break_editor_viewport3d_set_extra_selection(
+    BreakEditorViewport3D *vp, const BreakEditorEntityId *ids, u32 count);
 void break_editor_viewport3d_set_view_state(BreakEditorViewport3D *vp,
                                             const BreakEditorCamera *cam,
                                             BreakEditorGizmo *gizmo,
@@ -156,6 +161,7 @@ typedef struct BreakEditorViewport3DStats {
     u32 gizmo_handles;/* gizmo handle boxes drawn */
     u32 draws;        /* draw calls recorded (proxies + handles + outline) */
     u32 outline_edges;/* selection outline edge boxes drawn (0 or 12) */
+    u32 tinted;       /* proxies drawn with the selection tint */
     u32 ring_segments;/* rotate-mode ring cubes drawn (0 or 3 * 48) */
 } BreakEditorViewport3DStats;
 

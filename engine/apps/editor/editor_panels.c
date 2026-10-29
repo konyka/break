@@ -51,6 +51,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
 #define EDITOR_PALETTE_COMMAND_COUNT 16u
+#define EDITOR_EXTRA_SELECTION_MAX 64u
 #define EDITOR_TEST_WINDOW_W 800
 #define EDITOR_TEST_WINDOW_H 480
 
@@ -103,6 +104,10 @@ struct BreakEditorShell {
     u32 field_ctx_count;
 
     BreakEditorEntityId selected;
+    /* Ctrl+click multi-select: entities selected in addition to the
+     * primary `selected` (never contains it). Pruned on every sync. */
+    BreakEditorEntityId extra[EDITOR_EXTRA_SELECTION_MAX];
+    u32 extra_count;
     u32 tool; /* 0 select, 1 translate, 2 rotate, 3 scale */
 
     /* Phase 2 Task 3 viewport state (see editor_panels.h): the camera is
@@ -240,6 +245,9 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd);
 static void shell_tabs_retranslate(BreakEditorShell *shell);
 static void shell_settings_save(BreakEditorShell *shell);
 static void shell_end_gizmo_drag(BreakEditorShell *shell);
+static void shell_outliner_mark_selection(BreakEditorShell *shell);
+static int shell_extra_index(const BreakEditorShell *shell,
+                             BreakEditorEntityId id);
 static void shell_set_snap(BreakEditorShell *shell, bool on);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
 
@@ -376,6 +384,28 @@ static bool shell_sync_selection(BreakEditorShell *shell) {
         if (!valid) {
             shell->selected = BREAK_EDITOR_ENTITY_NULL;
         }
+    }
+    {
+        u32 k = 0u;
+        for (u32 i = 0u; i < shell->extra_count; i++) {
+            BreakEditorEntityId id = shell->extra[i];
+            bool live = false;
+            for (usize j = 0u; j < break_editor_doc_entity_count(shell->doc); j++) {
+                BreakEditorEntityId e;
+                const char *unused = NULL;
+                if (break_editor_doc_entity_at(shell->doc, j, &e, &unused) &&
+                    break_editor_entity_id_eq(e, id)) {
+                    live = true;
+                    break;
+                }
+            }
+            if (live && !break_editor_entity_id_eq(id, shell->selected)) {
+                shell->extra[k++] = id;
+            }
+        }
+        shell->extra_count = k;
+        break_editor_viewport3d_set_extra_selection(shell->vp3d, shell->extra,
+                                                    shell->extra_count);
     }
     shell_gizmo_reconcile(shell);
     return valid;
@@ -689,15 +719,58 @@ static EditorRowCtx *shell_row_ctx_alloc(BreakEditorShell *shell,
     return NULL; /* bounded: rows still render, click is degraded */
 }
 
+/* Ctrl+click: toggle the row's entity in the selection. Adding makes it
+ * the primary (the previous primary joins the extras); removing the primary
+ * promotes the most recently added extra. */
+static bool shell_toggle_select_index(BreakEditorShell *shell, usize index) {
+    BreakEditorEntityId id;
+    const char *unused = NULL;
+    int at;
+    if (!break_editor_doc_entity_at(shell->doc, index, &id, &unused)) {
+        return false;
+    }
+    at = shell_extra_index(shell, id);
+    if (break_editor_entity_id_eq(id, shell->selected)) {
+        shell->selected = BREAK_EDITOR_ENTITY_NULL;
+        if (shell->extra_count > 0u) {
+            shell->selected = shell->extra[--shell->extra_count];
+        }
+    } else if (at >= 0) {
+        shell->extra[at] = shell->extra[--shell->extra_count];
+    } else {
+        if (break_editor_entity_id_valid(shell->selected)) {
+            if (shell->extra_count >= EDITOR_EXTRA_SELECTION_MAX) return false;
+            shell->extra[shell->extra_count++] = shell->selected;
+        }
+        shell->selected = id;
+    }
+    shell_outliner_mark_selection(shell);
+    break_editor_viewport3d_set_extra_selection(shell->vp3d, shell->extra,
+                                                shell->extra_count);
+    shell_rebuild_inspector(shell);
+    shell_refresh_status(shell);
+    return true;
+}
+
 static void on_row_click(void *ctx, const char *event, void *data) {
     EditorRowCtx *rc = (EditorRowCtx *)ctx;
     (void)event;
-    (void)data;
     if (rc == NULL || rc->shell == NULL) {
         return;
     }
     if (rc->kind == 0u) {
-        (void)break_editor_shell_select_index(rc->shell, rc->index);
+        const my_event_t *pe = (const my_event_t *)data;
+        bool ctrl = pe != NULL &&
+                    (pe->type == MY_EVENT_POINTER_UP ||
+                     pe->type == MY_EVENT_POINTER_DOWN) &&
+                    (pe->u.pointer.modifiers & MY_KEYMOD_CTRL) != 0u;
+        if (ctrl) {
+            (void)shell_toggle_select_index(rc->shell, rc->index);
+        } else {
+            rc->shell->extra_count = 0u;
+            break_editor_viewport3d_set_extra_selection(rc->shell->vp3d, NULL, 0u);
+            (void)break_editor_shell_select_index(rc->shell, rc->index);
+        }
     } else {
         BreakEditorShell *shell = rc->shell;
         if (rc->index < shell->palette_match_count) {
@@ -714,14 +787,28 @@ static void on_row_click(void *ctx, const char *event, void *data) {
 
 /* Outliner row selection class ("selected" → theme selection tint). Only
  * writes on change: set_style_class invalidates the row. */
+static int shell_extra_index(const BreakEditorShell *shell,
+                             BreakEditorEntityId id) {
+    for (u32 i = 0u; i < shell->extra_count; i++) {
+        if (break_editor_entity_id_eq(shell->extra[i], id)) return (int)i;
+    }
+    return -1;
+}
+
+static bool shell_is_selected(const BreakEditorShell *shell,
+                              BreakEditorEntityId id) {
+    return break_editor_entity_id_valid(id) &&
+           (break_editor_entity_id_eq(id, shell->selected) ||
+            shell_extra_index(shell, id) >= 0);
+}
+
 static void shell_row_mark_selected(BreakEditorShell *shell, my_widget_t *row,
                                     usize index) {
     BreakEditorEntityId id;
     const char *unused = NULL;
     const char *cls = my_widget_get_style_class(row);
-    bool want = break_editor_entity_id_valid(shell->selected) &&
-                break_editor_doc_entity_at(shell->doc, index, &id, &unused) &&
-                break_editor_entity_id_eq(id, shell->selected);
+    bool want = break_editor_doc_entity_at(shell->doc, index, &id, &unused) &&
+                shell_is_selected(shell, id);
     bool have = cls != NULL && strcmp(cls, "selected") == 0;
     if (want != have) {
         (void)my_widget_set_style_class(row, want ? "selected" : NULL);
@@ -983,6 +1070,21 @@ static void shell_do_duplicate_selected(BreakEditorShell *shell) {
 }
 
 static void shell_do_remove_selected(BreakEditorShell *shell) {
+    if (shell->extra_count > 0u) {
+        BreakEditorEntityId ids[EDITOR_EXTRA_SELECTION_MAX + 1u];
+        u32 n = 0u, removed;
+        if (break_editor_entity_id_valid(shell->selected)) {
+            ids[n++] = shell->selected;
+        }
+        for (u32 i = 0u; i < shell->extra_count; i++) ids[n++] = shell->extra[i];
+        shell_end_gizmo_drag(shell);
+        removed = break_editor_doc_remove_entities(shell->doc, ids, n);
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_MANY_FMT),
+                         (unsigned)removed);
+        shell->extra_count = 0u;
+        editor_shell_refresh_all(shell);
+        return;
+    }
     if (!break_editor_entity_id_valid(shell->selected)) {
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_NO_SELECTION));
         return;
@@ -2187,6 +2289,12 @@ const char *break_editor_shell_name_edit_text(const BreakEditorShell *shell) {
         return "";
     }
     return my_edit_get_text(shell->name_edit);
+}
+
+u32 break_editor_shell_selection_count(const BreakEditorShell *shell) {
+    if (shell == NULL) return 0u;
+    return (break_editor_entity_id_valid(shell->selected) ? 1u : 0u) +
+           shell->extra_count;
 }
 
 BreakEditorEntityId break_editor_shell_selected(const BreakEditorShell *shell) {
