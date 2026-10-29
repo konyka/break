@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：editor remote SAVE（2026-10-30）
+
+- **交付**：新增协议消息 `BREAK_EDITOR_MSG_SAVE = 14`，请求为空，响应为 `saved/u8`，已注册进 break_net 默认 registry。实现上调用新公开的 `break_editor_shell_save`，与 Ctrl+S 走同一条路径。协议里不带路径，远端只能写到本地配置的场景路径。
+- **测试**：`test_editor_shell` 新增 `remote_save_writes_configured_path_only`，覆盖未配置路径时返回 0 且不写文件、配置后写出 BSCN 和 sidecar 并清除 dirty。先红后绿：先因未定义而编译失败，再因 registry 缺 id 导致 create 返回 NULL，均已修复。`build-sdd-p4-final` 159/159；该树 ctest 237/238、默认树 233/234，唯一失败都是已知的 `test_platform_x11_runtime`。
+- **未做**：remote load，以及 remote 渲染控制。
+
 ## 本轮更新：全仓数字文本与 locale 无关（2026-10-30）
 
 - **交付**：在逗号小数 `LC_NUMERIC`（如 `de_DE`）下，读写的数字文本统一使用 `.`。具体改动：

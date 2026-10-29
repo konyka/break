@@ -1384,23 +1384,30 @@ static void shell_do_remove_selected(BreakEditorShell *shell) {
     editor_shell_refresh_all(shell);
 }
 
-static void shell_do_save(BreakEditorShell *shell) {
+static bool shell_do_save(BreakEditorShell *shell) {
+    bool saved = false;
     if (!shell->scene_path_set) {
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_SAVE_NO_PATH));
         (void)snprintf(shell->note, sizeof(shell->note), "save: no path");
         shell_refresh_status(shell);
-        return;
+        return false;
     }
     if (break_editor_doc_save(shell->doc, shell->scene_path)) {
         break_editor_hot_reload_note_saved(shell->hot_reload);
         shell_note_recent(shell, shell->scene_path);
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_SAVED_FMT), shell->scene_path);
         (void)snprintf(shell->note, sizeof(shell->note), "saved");
+        saved = true;
     } else {
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_SAVE_FAILED_FMT), shell->scene_path);
         (void)snprintf(shell->note, sizeof(shell->note), "save failed");
     }
     shell_refresh_status(shell);
+    return saved;
+}
+
+bool break_editor_shell_save(BreakEditorShell *shell) {
+    return shell != NULL && shell_do_save(shell);
 }
 
 static void shell_do_undo(BreakEditorShell *shell) {
@@ -1576,7 +1583,7 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     if (cmd == PAL_SAVE_AS) {
         if (shell->palette_save_as[0] != '\0' &&
             break_editor_shell_set_scene_path(shell, shell->palette_save_as)) {
-            shell_do_save(shell);
+            (void)shell_do_save(shell);
         }
         return;
     }    switch (cmd) {
@@ -1603,7 +1610,7 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
         }
         break;
     case PAL_SAVE:
-        shell_do_save(shell);
+        (void)shell_do_save(shell);
         break;
     case PAL_UNDO:
         shell_do_undo(shell);
@@ -1965,7 +1972,7 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
             shell_do_focus_selected(shell);
             break;
         case ACT_SAVE:
-            shell_do_save(shell);
+            (void)shell_do_save(shell);
             break;
         case ACT_UNDO:
             shell_do_undo(shell);

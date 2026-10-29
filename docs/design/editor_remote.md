@@ -28,6 +28,7 @@ Wire rules (pinned by tests):
 | 11 | REDO | empty | `applied/u8` | `break_editor_redo` |
 | 12 | EVAL | `text_len/u16 + text` | `ok/u8, line_count/u16`, then per line `{line_len/u16, bytes}` — newest tail of the eval's console output, ≤ 16 lines, each ≤ 127 B incl. the `lua| ` prefix, whole payload ≤ 4096 B | `break_editor_lua_eval` (same sandbox, budget, and 4096 B input cap as the local console) |
 | 13 | RESULT | — (server → client only) | `status/u8` + optional payload | generic failure wrapper. No host handler is registered for id 13: a client-sent RESULT gets no response and counts as `handler_failed`. It does **not** close the session (break_session auto-closes only a failed AUTH), which is the one exception to the close-on-protocol-error rule. |
+| 14 | SAVE | empty (a non-empty payload closes the connection) | `saved/u8` | `break_editor_shell_save` (2026-10-30) — the same path as Ctrl+S, including console and status notes. The wire carries **no path**: a remote client can only save to the scene path the local user configured, never choose where files go. 0 = no path configured, or the BSCN/sidecar write failed. Registered in the default registry as `BREAK_EDITOR_DEF(14u)`. Test: `remote_save_writes_configured_path_only`. |
 
 Every mutation maps 1:1 to an existing undoable doc command: a remote SPAWN is reverted by a local Ctrl+Z and by a remote UNDO (both test-pinned). No raw world pointer is reachable.
 

@@ -5109,6 +5109,54 @@ TEST(remote_spawn_then_remote_undo_redo)
     break_editor_shell_destroy(shell);
 }
 
+/* SAVE writes to the shell's configured scene path only (the wire carries
+ * no path, so a remote client cannot choose where files land); without a
+ * path it reports saved=0 and writes nothing. */
+TEST(remote_save_writes_configured_path_only)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakEditorDoc *doc;
+    char dir[512];
+    char path[600];
+    char sidecar[700];
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_remote_save");
+    TEST_MKDIR(dir);
+    snprintf(path, sizeof(path), "%s/scene.bscn", dir);
+    snprintf(sidecar, sizeof(sidecar), "%s" BREAK_EDITOR_SIDECAR_SUFFIX, path);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    doc = break_editor_shell_doc(shell);
+
+    remote_client_send(&c, BREAK_EDITOR_MSG_SAVE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_SAVE);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 0u);
+    ASSERT_FALSE(file_exists(path));
+
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, path));
+    remote_client_send(&c, BREAK_EDITOR_MSG_SPAWN, (const u8[]){0u, 0u}, 2u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 8u);
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+    remote_client_send(&c, BREAK_EDITOR_MSG_SAVE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+    ASSERT_TRUE(file_exists(path));
+    ASSERT_TRUE(file_exists(sidecar));
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+    remove(path);
+    remove(sidecar);
+    TEST_RMDIR(dir);
+}
+
 TEST(remote_set_field_maps_component_and_field_names)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8955,6 +9003,7 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_describe_returns_version_entity_count_dirty);
     RUN_REMOTE_TEST(remote_spawn_list_rename_remove_roundtrip_and_ctrl_z_pin);
     RUN_REMOTE_TEST(remote_spawn_then_remote_undo_redo);
+    RUN_REMOTE_TEST(remote_save_writes_configured_path_only);
     RUN_REMOTE_TEST(remote_set_field_maps_component_and_field_names);
     RUN_REMOTE_TEST(remote_eval_runs_on_shell_thread_and_returns_console_tail);
     RUN_REMOTE_TEST(remote_eval_at_4096_boundary_and_len_mismatch_closes);

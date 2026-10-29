@@ -49,7 +49,7 @@ bool break_net_message_definition_supports_version(
 
 const BreakNetMessageRegistry *break_net_message_registry_default(void)
 {
-    /* Editor wire protocol (Stage 4 scene editor Phase 4): ids 4..13 occupy
+    /* Editor wire protocol (Stage 4 scene editor Phase 4): ids 4..14 occupy
      * the free id space after AUTH/PING/CHALLENGE. The envelope codec only
      * consults this default registry, so the editor messages MUST be
      * registered here (docs/design/session_protocol.md:117 — the documented
@@ -89,12 +89,13 @@ const BreakNetMessageRegistry *break_net_message_registry_default(void)
             BREAK_EDITOR_DEF(10u), /* UNDO */
             BREAK_EDITOR_DEF(11u), /* REDO */
             BREAK_EDITOR_DEF(12u), /* EVAL */
-            BREAK_EDITOR_DEF(13u)  /* RESULT */
+            BREAK_EDITOR_DEF(13u), /* RESULT */
+            BREAK_EDITOR_DEF(14u)  /* SAVE */
         },
 #ifdef BREAK_ENABLE_CRYPTO
-        13u
+        14u
 #else
-        12u
+        13u
 #endif
     };
 #undef BREAK_EDITOR_DEF

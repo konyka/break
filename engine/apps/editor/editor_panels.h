@@ -175,6 +175,9 @@ const char *break_editor_shell_window_title(BreakEditorShell *shell);
 u32 break_editor_shell_window_title_revision(const BreakEditorShell *shell);
 bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
                                        const char *path);
+/* Ctrl+S equivalent (console/status notes included). true only when a scene
+ * path is configured and the BSCN + sidecar were written. */
+bool break_editor_shell_save(BreakEditorShell *shell);
 
 /* Read-only inspection surface (borrowed results; used by the headless tests
  * and by editor_main for status plumbing). */
