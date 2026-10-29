@@ -1354,8 +1354,14 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     case PAL_RENAME_SELECTED:
         if (break_editor_entity_id_valid(shell->selected) &&
             shell->name_edit != NULL && shell->win != NULL) {
+            my_event_t sel = my_event_init(MY_EVENT_KEY_DOWN);
             my_event_dispatcher_set_focus(&shell->win->dispatcher,
                                           shell->name_edit);
+            /* select the current name so typing replaces it (the edit's
+             * own Ctrl+A) */
+            sel.u.key.key = 'a';
+            sel.u.key.modifiers = MY_KEYMOD_CTRL;
+            (void)my_event_dispatch(&shell->win->dispatcher, &sel);
             editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_RENAME_HINT));
         } else {
             editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_RENAME_NO_SELECTION));
@@ -1466,7 +1472,8 @@ enum {
     ACT_SELECT_PREV,
     ACT_SELECT_NEXT,
     ACT_EXTEND_PREV,
-    ACT_EXTEND_NEXT
+    ACT_EXTEND_NEXT,
+    ACT_RENAME
 };
 
 typedef struct {
@@ -1490,6 +1497,7 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'g', MY_KEYMOD_CTRL, ACT_TOGGLE_SNAP},
     {'a', MY_KEYMOD_CTRL, ACT_SELECT_ALL},
     {MY_KEY_ESCAPE, MY_KEYMOD_NONE, ACT_CLEAR_SELECTION},
+    {MY_KEY_F2, MY_KEYMOD_NONE, ACT_RENAME},
     {MY_KEY_UP, MY_KEYMOD_NONE, ACT_SELECT_PREV},
     {MY_KEY_DOWN, MY_KEYMOD_NONE, ACT_SELECT_NEXT},
     {MY_KEY_UP, MY_KEYMOD_SHIFT, ACT_EXTEND_PREV},
@@ -1687,6 +1695,9 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
                 shell,
                 sc->action == ACT_SELECT_NEXT || sc->action == ACT_EXTEND_NEXT,
                 sc->action == ACT_EXTEND_PREV || sc->action == ACT_EXTEND_NEXT);
+            break;
+        case ACT_RENAME:
+            shell_execute_palette_command(shell, PAL_RENAME_SELECTED);
             break;
         case ACT_SELECT_ALL:
             shell_do_select_all(shell);

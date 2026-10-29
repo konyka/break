@@ -3249,6 +3249,33 @@ TEST(focus_without_selection_frames_the_whole_scene)
     break_editor_shell_destroy(shell);
 }
 
+TEST(f2_renames_the_selected_entity)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_window_t *win;
+    my_widget_t *edit;
+    size_t a = 0u, b = 0u;
+    ASSERT_NOT_NULL(shell);
+    win = break_editor_shell_window(shell);
+    /* nothing selected: F2 only logs */
+    dispatch_key_event(shell, MY_KEY_F2);
+    ASSERT_TRUE(win->dispatcher.focused == NULL ||
+                !my_edit_is_instance(win->dispatcher.focused));
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0u));
+    my_event_dispatcher_set_focus(&win->dispatcher, break_editor_shell_root(shell));
+    dispatch_key_event(shell, MY_KEY_F2);
+    edit = find(shell, "editor-name-edit");
+    ASSERT_NOT_NULL(edit);
+    ASSERT_TRUE(win->dispatcher.focused == edit);
+    /* the current name is selected, so typing replaces it */
+    my_edit_get_selection(edit, &a, &b);
+    ASSERT_EQ(a, 0u);
+    ASSERT_EQ(b, strlen(my_edit_get_text(edit)));
+    ASSERT_TRUE(b > 0u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8216,6 +8243,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(arrow_keys_walk_the_outliner_selection);
     RUN_TEST(ctrl_d_duplicates_every_selected_entity);
     RUN_TEST(focus_without_selection_frames_the_whole_scene);
+    RUN_TEST(f2_renames_the_selected_entity);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);
