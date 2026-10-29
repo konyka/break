@@ -835,7 +835,12 @@ void *world_add_component(World *w, Entity e, ComponentType id) {
     i32 new_comp_idx = archetype_find_component(dest, id);
     if (new_comp_idx < 0) return NULL;
     u32 sz = w->component_sizes[id];
-    return (u8 *)new_chunk + dest->offsets[new_comp_idx] + local_new * sz;
+    /* The added component is zero-initialized: chunk rows are recycled
+     * (swap-remove leaves the old bytes behind), so without this a new
+     * component would start with a destroyed entity's data. */
+    u8 *added = (u8 *)new_chunk + dest->offsets[new_comp_idx] + local_new * sz;
+    memset(added, 0, sz);
+    return added;
 }
 
 void *world_get_component(World *w, Entity e, ComponentType id) {

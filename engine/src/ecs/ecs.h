@@ -122,6 +122,8 @@ Entity world_create_entity(World *w);
 void   world_destroy_entity(World *w, Entity e);
 
 void  world_register_component(World *w, ComponentType id, u32 size);
+/* Returns the component data. A newly added component is zero-initialized;
+ * if the entity already has it, the existing data is returned unchanged. */
 void *world_add_component(World *w, Entity e, ComponentType id);
 void *world_get_component(World *w, Entity e, ComponentType id);
 void  world_remove_component(World *w, Entity e, ComponentType id);

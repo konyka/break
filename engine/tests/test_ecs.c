@@ -1331,6 +1331,50 @@ TEST(ecs_world_replace_rejects_malformed_edge_count) {
     world_destroy(source);
 }
 
+TEST(ecs_added_component_is_zeroed_on_reused_slot) {
+    typedef struct { f32 a, b, c; } Trio;
+    World *w = world_create();
+    Entity junk, e, f;
+    Trio *t;
+    ASSERT_NOT_NULL(w);
+    world_register_component(w, 1, sizeof(Trio));
+    world_register_component(w, 2, sizeof(u32));
+    /* leave non-zero bytes in the Trio column, then free the row */
+    junk = world_create_entity(w);
+    t = (Trio *)world_add_component(w, junk, 1);
+    ASSERT_NOT_NULL(t);
+    t->a = 11.0f; t->b = 22.0f; t->c = 33.0f;
+    world_destroy_entity(w, junk);
+    /* a new entity landing on the same row sees zeroed data */
+    e = world_create_entity(w);
+    t = (Trio *)world_add_component(w, e, 1);
+    ASSERT_NOT_NULL(t);
+    ASSERT_FLOAT_EQ(t->a, 0.0f, 0.0f);
+    ASSERT_FLOAT_EQ(t->b, 0.0f, 0.0f);
+    ASSERT_FLOAT_EQ(t->c, 0.0f, 0.0f);
+    /* migrating to a wider archetype: the new column is zeroed, the old
+     * component data is carried over */
+    t->a = 5.0f;
+    {
+        u32 *u = (u32 *)world_add_component(w, e, 2);
+        ASSERT_NOT_NULL(u);
+        ASSERT_EQ(*u, 0u);
+        *u = 0xdeadbeefu;
+    }
+    t = (Trio *)world_get_component(w, e, 1);
+    ASSERT_FLOAT_EQ(t->a, 5.0f, 0.0f);
+    world_destroy_entity(w, e);
+    f = world_create_entity(w);
+    ASSERT_NOT_NULL(world_add_component(w, f, 1));
+    ASSERT_EQ(*(u32 *)world_add_component(w, f, 2), 0u);
+    /* adding a component that is already present returns the live data */
+    t = (Trio *)world_get_component(w, f, 1);
+    t->b = 9.0f;
+    t = (Trio *)world_add_component(w, f, 1);
+    ASSERT_FLOAT_EQ(t->b, 9.0f, 0.0f);
+    world_destroy(w);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ecs_world_replace_rejects_malformed_query_without_consuming_replacement);
     RUN_TEST(ecs_world_replace_rejects_inline_query_pointer_mismatch);
@@ -1379,4 +1423,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ecs_query_exclude);
     RUN_TEST(ecs_query_optional);
     RUN_TEST(ecs_query_exclude_optional_combined);
+    RUN_TEST(ecs_added_component_is_zeroed_on_reused_slot);
 TEST_MAIN_END()

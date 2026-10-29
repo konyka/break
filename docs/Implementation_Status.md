@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：ECS 新加组件零初始化（2026-10-30）
+
+- **问题**：`world_add_component` 把实体迁移到新 archetype 时，新列取自复用的 chunk 行（swap-remove 后旧字节仍在），于是新加的组件带着之前被销毁实体的数据。写 Lua→World helper 的测试时发现。
+- **修复**：`ecs.c` 在返回新加组件前 `memset` 清零；已有组件的 add 仍返回原数据不变；`ecs.h` 写明此约定。
+- **验证**：`test_ecs` 新增 `ecs_added_component_is_zeroed_on_reused_slot`（修复前读到 11.0，失败），45/45；默认树全量 233 项仅 `test_platform_x11_runtime` 失败（桌面依赖，与本改动无关）。
+
 ## 本轮更新：Lua runtime 内存预算（2026-10-30）
 
 - **交付**：`BreakLuaRuntimeConfig.memory_budget`（0 = 不限）与 `break_lua_runtime_memory_in_use`。分配器统计 VM 持有的字节，超预算的增长请求被拒，Lua 报 LUA_ERRMEM，对外为 `BREAK_LUA_OOM`，VM 不 abort 且之后可继续使用；预算不足以打开标准库时 create 返回 NULL。
