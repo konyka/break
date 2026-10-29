@@ -371,3 +371,53 @@ usize vfs_enumerate_pak(VFS *vfs, VFSPakEntryFn fn, void *user) {
     }
     return visited;
 }
+
+bool vfs_pak_write(const char *path, const VFSPakSource *sources, u32 count) {
+    if (!path || (count > 0 && !sources) || count > VFS_MAX_PAK_ENTRIES) return false;
+    u64 names_size = 0;
+    u64 data_size = 0;
+    for (u32 i = 0; i < count; i++) {
+        const VFSPakSource *src = &sources[i];
+        if (!src->name || src->name[0] == '\0' || (!src->data && src->size > 0)) return false;
+        usize len = strlen(src->name);
+        if (len >= VFS_MAX_PATH) return false;
+        for (u32 j = 0; j < i; j++) {
+            if (strcmp(sources[j].name, src->name) == 0) return false;
+        }
+        names_size += (u64)len + 1u;
+        data_size += src->size;
+    }
+    u64 data_start = (u64)sizeof(PakHeader) + (u64)count * sizeof(PakEntry) + names_size;
+    if (data_start + data_size > UINT32_MAX) return false;
+
+    char tmp[VFS_MAX_PATH + 8];
+    int n = snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    if (n < 0 || (usize)n >= sizeof tmp) return false;
+    FILE *fp = fopen(tmp, "wb");
+    if (!fp) return false;
+
+    PakHeader hdr = { VFS_PAK_MAGIC, VFS_PAK_VERSION, count, (u32)names_size };
+    bool ok = fwrite(&hdr, sizeof hdr, 1, fp) == 1;
+    u32 name_off = 0;
+    u32 data_off = (u32)data_start;
+    for (u32 i = 0; ok && i < count; i++) {
+        PakEntry e = { fnv1a(sources[i].name), name_off, data_off, sources[i].size };
+        ok = fwrite(&e, sizeof e, 1, fp) == 1;
+        name_off += (u32)strlen(sources[i].name) + 1u;
+        data_off += sources[i].size;
+    }
+    for (u32 i = 0; ok && i < count; i++) {
+        usize len = strlen(sources[i].name) + 1u;
+        ok = fwrite(sources[i].name, 1, len, fp) == len;
+    }
+    for (u32 i = 0; ok && i < count; i++) {
+        if (sources[i].size > 0) {
+            ok = fwrite(sources[i].data, 1, sources[i].size, fp) == sources[i].size;
+        }
+    }
+    if (fflush(fp) != 0) ok = false;
+    if (fclose(fp) != 0) ok = false;
+    if (ok && rename(tmp, path) != 0) ok = false;
+    if (!ok) remove(tmp);
+    return ok;
+}

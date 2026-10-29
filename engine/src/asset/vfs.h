@@ -79,3 +79,20 @@ u8      *vfs_read_all(VFS *vfs, const char *path, usize *out_size);
  * Same thread rules as vfs_mount_*: do not mount concurrently. */
 typedef bool (*VFSPakEntryFn)(void *user, const char *path, u32 size);
 usize vfs_enumerate_pak(VFS *vfs, VFSPakEntryFn fn, void *user);
+
+/* One file to pack: `name` is the VFS path (non-empty, < VFS_MAX_PATH,
+ * unique within the call); `data` may be NULL only when size == 0. */
+typedef struct {
+    const char *name;
+    const void *data;
+    u32         size;
+} VFSPakSource;
+/* Writes a version-VFS_PAK_VERSION archive readable by vfs_mount_pak,
+ * entries in the given order. The archive is written to "<path>.tmp" and
+ * renamed over `path` only after every byte is flushed, so a failure never
+ * leaves a partial archive at `path`. false for NULL path, NULL sources with
+ * count > 0, count > VFS_MAX_PAK_ENTRIES, invalid/duplicate names, a total
+ * size that does not fit 32-bit offsets, or any I/O error. The replace is
+ * rename(); on Windows that fails when `path` already exists (remove it
+ * first there). */
+bool vfs_pak_write(const char *path, const VFSPakSource *sources, u32 count);

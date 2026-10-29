@@ -623,6 +623,64 @@ TEST(vfs_enumerate_pak_lists_valid_entries_only)
     vfs_destroy(vfs);
 }
 
+TEST(vfs_pak_write_round_trips_through_mount)
+{
+    const VFSPakSource src[] = {
+        { "scenes/main.bscn", "SCENE", 5 },
+        { "empty.txt", NULL, 0 },
+        { "lua/init.lua", "return 1", 8 },
+    };
+    ASSERT_TRUE(vfs_pak_write(TMP_PAK, src, 3));
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(vfs_mount_pak(vfs, TMP_PAK));
+    usize n = 0;
+    u8 *data = vfs_read_all(vfs, "lua/init.lua", &n);
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ(n, (usize)8);
+    ASSERT_TRUE(memcmp(data, "return 1", 8) == 0);
+    free(data);
+    VFSFile *f = vfs_open(vfs, "empty.txt");
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(vfs_size(f), (usize)0);
+    vfs_close(f);
+
+    PakEnumSeen seen;
+    memset(&seen, 0, sizeof seen);
+    ASSERT_EQ(vfs_enumerate_pak(vfs, pak_enum_collect, &seen), (usize)3);
+    ASSERT_STR_EQ(seen.names[0], "scenes/main.bscn");
+    ASSERT_STR_EQ(seen.names[2], "lua/init.lua");
+    ASSERT_EQ(seen.sizes[0], 5u);
+    vfs_destroy(vfs);
+}
+
+TEST(vfs_pak_write_rejects_bad_input_without_leaving_a_file)
+{
+    char path[512];
+    test_tmp(path, sizeof path, "vfs_pak_write_bad.pak");
+    remove(path);
+    const VFSPakSource dup[] = { { "a", "x", 1 }, { "a", "y", 1 } };
+    ASSERT_FALSE(vfs_pak_write(path, dup, 2));
+    const VFSPakSource empty_name[] = { { "", "x", 1 } };
+    ASSERT_FALSE(vfs_pak_write(path, empty_name, 1));
+    const VFSPakSource null_name[] = { { NULL, "x", 1 } };
+    ASSERT_FALSE(vfs_pak_write(path, null_name, 1));
+    const VFSPakSource null_data[] = { { "a", NULL, 3 } };
+    ASSERT_FALSE(vfs_pak_write(path, null_data, 1));
+    ASSERT_FALSE(vfs_pak_write(path, dup, VFS_MAX_PAK_ENTRIES + 1u));
+    ASSERT_FALSE(vfs_pak_write(NULL, dup, 1));
+    FILE *fp = fopen(path, "rb");
+    ASSERT_TRUE(fp == NULL);
+    /* zero entries is a valid, empty archive */
+    ASSERT_TRUE(vfs_pak_write(path, NULL, 0));
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(vfs_mount_pak(vfs, path));
+    vfs_destroy(vfs);
+    remove(path);
+}
+
 TEST(vfs_pak_bad_magic)
 {
     PakHeader hdr = { .magic = 0xDEADBEEF, .version = 1, .entry_count = 0, .name_table_size = 0 };
@@ -848,6 +906,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_dir_rejects_oversized_file);
     RUN_TEST(vfs_pak_format);
     RUN_TEST(vfs_enumerate_pak_lists_valid_entries_only);
+    RUN_TEST(vfs_pak_write_round_trips_through_mount);
+    RUN_TEST(vfs_pak_write_rejects_bad_input_without_leaving_a_file);
     RUN_TEST(vfs_pak_unterminated_name_is_miss);
     RUN_TEST(vfs_pak_name_table_size_overflow_rejected);
     RUN_TEST(vfs_pak_entry_count_bounded_by_file_size);
