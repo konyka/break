@@ -294,6 +294,27 @@ u32 break_editor_viewport_box_select(BreakEditorDoc *doc,
     return n;
 }
 
+static void ed_camera_fit_box(BreakEditorCamera *cam, const BVHAABB *box) {
+    /* Fit the box's bounding sphere vertically: distance =
+     * radius / tan(fov_y/2), clamped [0.05, 1e4]. yaw/pitch untouched. */
+    f32 half[3] = {
+        0.5f * (box->max.e[0] - box->min.e[0]),
+        0.5f * (box->max.e[1] - box->min.e[1]),
+        0.5f * (box->max.e[2] - box->min.e[2]),
+    };
+    f32 radius = sqrtf(half[0] * half[0] + half[1] * half[1] +
+                       half[2] * half[2]);
+    f32 t = tanf(cam->fov_y * 0.5f);
+    if (!(t > 1e-6f) || !isfinite(radius)) return;
+    f32 distance = radius / t;
+
+    cam->target[0] = 0.5f * (box->min.e[0] + box->max.e[0]);
+    cam->target[1] = 0.5f * (box->min.e[1] + box->max.e[1]);
+    cam->target[2] = 0.5f * (box->min.e[2] + box->max.e[2]);
+    cam->distance = ed_clampf(distance, BREAK_EDITOR_CAMERA_MIN_DISTANCE,
+                              BREAK_EDITOR_CAMERA_MAX_DISTANCE);
+}
+
 void break_editor_camera_focus(BreakEditorCamera *cam, const BreakEditorDoc *doc,
                                BreakEditorEntityId id) {
     if (!cam || !doc || !break_editor_entity_id_valid(id)) return;
@@ -302,25 +323,34 @@ void break_editor_camera_focus(BreakEditorCamera *cam, const BreakEditorDoc *doc
 
     BVHAABB box;
     if (!ed_entity_proxy_aabb(doc, id, &box)) return;
+    ed_camera_fit_box(cam, &box);
+}
 
-    /* Fit the proxy's bounding sphere vertically: distance =
-     * radius / tan(fov_y/2), clamped [0.05, 1e4]. yaw/pitch untouched. */
-    f32 half[3] = {
-        0.5f * (box.max.e[0] - box.min.e[0]),
-        0.5f * (box.max.e[1] - box.min.e[1]),
-        0.5f * (box.max.e[2] - box.min.e[2]),
-    };
-    f32 radius = sqrtf(half[0] * half[0] + half[1] * half[1] +
-                       half[2] * half[2]);
-    f32 t = tanf(cam->fov_y * 0.5f);
-    if (!(t > 1e-6f)) return;
-    f32 distance = radius / t;
+void break_editor_camera_focus_many(BreakEditorCamera *cam,
+                                    const BreakEditorDoc *doc,
+                                    const BreakEditorEntityId *ids, u32 n) {
+    if (!cam || !doc || !ids || n == 0u) return;
+    if (!ed_camera_finite(cam)) return;
+    if (!(cam->fov_y > 0.0f) || !(cam->fov_y < ED_PI_F)) return;
 
-    cam->target[0] = 0.5f * (box.min.e[0] + box.max.e[0]);
-    cam->target[1] = 0.5f * (box.min.e[1] + box.max.e[1]);
-    cam->target[2] = 0.5f * (box.min.e[2] + box.max.e[2]);
-    cam->distance = ed_clampf(distance, BREAK_EDITOR_CAMERA_MIN_DISTANCE,
-                              BREAK_EDITOR_CAMERA_MAX_DISTANCE);
+    BVHAABB acc, box;
+    bool any = false;
+    for (u32 i = 0u; i < n; i++) {
+        if (!break_editor_entity_id_valid(ids[i]) ||
+            !ed_entity_proxy_aabb(doc, ids[i], &box)) {
+            continue;
+        }
+        if (!any) {
+            acc = box;
+            any = true;
+            continue;
+        }
+        for (int k = 0; k < 3; k++) {
+            if (box.min.e[k] < acc.min.e[k]) acc.min.e[k] = box.min.e[k];
+            if (box.max.e[k] > acc.max.e[k]) acc.max.e[k] = box.max.e[k];
+        }
+    }
+    if (any) ed_camera_fit_box(cam, &acc);
 }
 
 void break_editor_camera_orbit(BreakEditorCamera *cam, f32 dx_deg, f32 dy_deg) {

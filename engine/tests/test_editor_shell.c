@@ -2917,6 +2917,44 @@ TEST(viewport_right_drag_flies_with_wasd)
     break_editor_shell_destroy(shell);
 }
 
+TEST(focus_key_frames_every_selected_entity)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId first, second;
+    BreakEditorCamera *cam;
+    my_widget_t *list;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    first = break_editor_doc_add_entity(doc, "first");
+    second = break_editor_doc_add_entity(doc, "second");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, first,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, second,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(
+        doc, first, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, -4.0f));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(
+        doc, second, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, 4.0f));
+    break_editor_shell_refresh(shell);
+    shell_paint(shell);
+    list = find(shell, "editor-outliner");
+    pointer_click(shell, my_widget_get_child(list, 0u));
+    ctrl_click_row(shell, my_widget_get_child(list, 1u));
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 2u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'f', 0u));
+    cam = break_editor_shell_camera(shell);
+    /* the pivot lands between the two, far enough back to see both */
+    ASSERT_FLOAT_EQ(cam->target[0], 0.0f, 1e-5f);
+    ASSERT_TRUE(cam->distance > 4.0f / 0.5773503f);
+    /* a single selection still frames just that entity */
+    pointer_click(shell, my_widget_get_child(list, 1u));
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'f', 0u));
+    ASSERT_FLOAT_EQ(cam->target[0], 4.0f, 1e-5f);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -7743,6 +7781,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(viewport_box_drag_selects_entities_inside);
     RUN_TEST(viewport_right_drag_flies_with_wasd);
     RUN_TEST(viewport_stats_overlay_text_toggles_and_persists);
+    RUN_TEST(focus_key_frames_every_selected_entity);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

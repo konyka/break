@@ -1251,8 +1251,17 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
      * state — deliberately NOT an undoable command). */
     if (break_editor_entity_id_valid(shell->selected)) {
         const char *name = shell_entity_name(shell, shell->selected);
-        break_editor_camera_focus(&shell->camera, shell->doc,
-                                  shell->selected);
+        if (shell->extra_count > 0u) {
+            BreakEditorEntityId ids[EDITOR_EXTRA_SELECTION_MAX + 1u];
+            ids[0] = shell->selected;
+            memcpy(&ids[1], shell->extra,
+                   shell->extra_count * sizeof(shell->extra[0]));
+            break_editor_camera_focus_many(&shell->camera, shell->doc, ids,
+                                           shell->extra_count + 1u);
+        } else {
+            break_editor_camera_focus(&shell->camera, shell->doc,
+                                      shell->selected);
+        }
         (void)snprintf(shell->note, sizeof(shell->note),
                        break_editor_tr(BREAK_EDITOR_TR_NOTE_FOCUS_FMT),
                        name != NULL ? name : "?");

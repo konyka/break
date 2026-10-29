@@ -663,6 +663,48 @@ TEST(fly_step_scales_with_distance) {
     ASSERT_FLOAT_EQ(break_editor_camera_fly_step(NULL), 0.0f, 0.0f);
 }
 
+TEST(focus_many_fits_the_union_of_proxies) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorEntityId a = add_transformed(doc, "a", -3, 0, 0, 1, 1, 1);
+    BreakEditorEntityId b = add_transformed(doc, "b", 3, 0, 0, 1, 1, 1);
+    BreakEditorEntityId bare = break_editor_doc_add_entity(doc, "bare");
+    ASSERT_TRUE(break_editor_entity_id_valid(a));
+    ASSERT_TRUE(break_editor_entity_id_valid(b));
+    BreakEditorEntityId ids[3] = { a, bare, b };
+
+    BreakEditorCamera cam;
+    break_editor_camera_init(&cam);
+    cam.yaw = ED_DEG2RAD(20.0);
+    break_editor_camera_focus_many(&cam, doc, ids, 3u);
+    /* union box x [-3.5, 3.5], y/z [-0.5, 0.5]: center origin, half
+     * extents (3.5, 0.5, 0.5); entities without a transform are ignored */
+    assert_vec3(cam.target[0], cam.target[1], cam.target[2], 0, 0, 0, 1e-6f);
+    f32 r = sqrtf(3.5f * 3.5f + 0.25f + 0.25f);
+    ASSERT_FLOAT_EQ(cam.distance, r / ED_TAN30, 1e-3f);
+    ASSERT_FLOAT_EQ(cam.yaw, ED_DEG2RAD(20.0), 1e-6f);
+
+    /* a single id matches break_editor_camera_focus */
+    BreakEditorCamera one;
+    break_editor_camera_init(&one);
+    break_editor_camera_init(&cam);
+    break_editor_camera_focus(&one, doc, b);
+    break_editor_camera_focus_many(&cam, doc, &b, 1u);
+    assert_vec3(cam.target[0], cam.target[1], cam.target[2],
+                one.target[0], one.target[1], one.target[2], 0.0f);
+    ASSERT_FLOAT_EQ(cam.distance, one.distance, 0.0f);
+
+    /* nothing focusable / bad args: untouched */
+    break_editor_camera_init(&cam);
+    break_editor_camera_focus_many(&cam, doc, &bare, 1u);
+    break_editor_camera_focus_many(&cam, doc, NULL, 2u);
+    break_editor_camera_focus_many(&cam, doc, ids, 0u);
+    break_editor_camera_focus_many(&cam, NULL, ids, 3u);
+    assert_vec3(cam.target[0], cam.target[1], cam.target[2], 0, 0, 0, 0.0f);
+    ASSERT_FLOAT_EQ(cam.distance, 5.0f, 0.0f);
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(camera_init_defaults);
     RUN_TEST(camera_view_known_answers);
@@ -684,4 +726,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(box_select_degenerate_bounded_zero);
     RUN_TEST(fly_moves_target_along_camera_axes);
     RUN_TEST(fly_step_scales_with_distance);
+    RUN_TEST(focus_many_fits_the_union_of_proxies);
 TEST_MAIN_END()

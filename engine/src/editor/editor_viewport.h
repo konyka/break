@@ -166,6 +166,13 @@ void break_editor_camera_fly(BreakEditorCamera *cam, f32 forward, f32 right,
 f32 break_editor_camera_fly_step(const BreakEditorCamera *cam);
 
 void break_editor_camera_focus(BreakEditorCamera *cam, const BreakEditorDoc *doc, BreakEditorEntityId id); /* fits target+distance to the entity's proxy AABB, distance clamped [0.05, 1e4] */
+/* focus over several entities: fits the bounding sphere of the union of
+ * their proxy AABBs (ids without a usable transform are skipped). With one
+ * focusable id it equals break_editor_camera_focus; with none, or NULL
+ * cam/doc/ids, or n == 0, the camera is untouched. */
+void break_editor_camera_focus_many(BreakEditorCamera *cam,
+                                    const BreakEditorDoc *doc,
+                                    const BreakEditorEntityId *ids, u32 n);
 void break_editor_camera_orbit(BreakEditorCamera *cam, f32 dx_deg, f32 dy_deg);
 void break_editor_camera_pan(BreakEditorCamera *cam, f32 dx_px, f32 dy_px);   /* scaled by distance */
 void break_editor_camera_zoom(BreakEditorCamera *cam, f32 wheel_delta);      /* exponential, clamped */
