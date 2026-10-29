@@ -94,6 +94,7 @@
 - `engine/src/script/break_lua_ecs_apply.{h,c}`：`break_lua_ecs_apply(world, schema, n, records, count, &report)`。host 用 schema 声明脚本可写的字段（组件名 + 字段名 → `ComponentType` + f32 偏移），drain 后调用。SPAWN → `world_create_entity`，成为本次调用中后续 SET 的目标；SET 写一个 f32 字段，实体缺该组件时先添加（零初始化；`world_add_component` 自 2026-10-30 起保证清零，见下）。值可为有限数、bool（1/0）或可完整解析为有限 f32 的字符串。以下情况记为 rejected 且不写入：本次调用里之前没有 SPAWN、schema 中无此组件/字段、组件未在 World 注册或尺寸放不下该字段、值无法转换、未知记录类型。不分配内存，不终止于单条失败。
 - 不属于 `break_lua` 目标（该库按契约不依赖 ECS）；host 自行把这个 TU 加入构建。编辑器 Lua console 仍走自己的文档路径（`console_apply_records`，可撤销）。
 - 测试：`test_break_lua_ecs_apply` 3 例（真实 Lua 模块 spawn/set 进 World，含 bool/字符串值和两次调用目标隔离；九类非法记录全部拒绝且不写入；复用 chunk 内存时新加组件被清零）。变异：去掉尺寸检查使一例变红；ASan 树 3/3。这条清零测试暴露了 ECS 本身的问题：`world_add_component` 返回的是复用行里被销毁实体的旧字节——已在 `ecs.c` 修复（新加组件 `memset` 清零），`test_ecs` 新增 `ecs_added_component_is_zeroed_on_reused_slot`（修复前失败：读到 11.0）。
+- 2026-10-30 补充（修复）：字符串值原来直接交给 `strtod`，结果受 `LC_NUMERIC` 影响：宿主切到 de_DE 等逗号小数点的 locale 后，`"-2.25"` 只能解析出前半段，会被拒绝。现在先按 C 语法 `[+-]digits[.digits][e[+-]digits]` 校验，再把 `.` 换成当前 locale 的小数点后交给 strtod。这样 `"1.5"` 在任何 locale 下结果都一样，`"1,5"` 一律拒绝；多字节小数点的 locale 下，字符串值直接判失败。测试 `string_values_parse_independently_of_the_locale` 在 de_DE.UTF-8 下运行，修复前为红；本机装有 de_DE，没有装逗号 locale 的机器只能覆盖 C locale。4/4，ASan 4/4。
 
 ## 3. 设计-only / 未实现
 

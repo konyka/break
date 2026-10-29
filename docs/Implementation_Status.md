@@ -1,5 +1,10 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：break_lua_ecs_apply 字符串解析与 locale 无关（2026-10-30）
+
+- **修复**：`engine/src/script/break_lua_ecs_apply.c` 原先用 strtod，受 LC_NUMERIC 影响，在 de_DE 下 `"-2.25"` 会被拒绝。现在先做 C 语法校验，再替换小数点，"1,5" 一律拒绝。
+- **测试**：新增 `string_values_parse_independently_of_the_locale`，先红后绿，4/4，ASan 4/4；默认树 233/234，唯一失败是已知 flaky 的 x11 用例。仓库中其他 strtod/atof 调用点（rule_engine、main.c 的环境变量解析）没有改动，也没有审计。
+
 ## 本轮更新：资源浏览器列出 pak 包内容（2026-10-30）
 
 - **交付**：在 `apps/editor/editor_panel_assets.c` 中点击 `.pak` 文件，会把包内条目列到控制台，最多 16 行，超出部分汇总；包损坏时报错。新增 4 个 i18n 键，中英文都已填写。只读，不支持进入包内浏览。

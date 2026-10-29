@@ -1,6 +1,7 @@
 #include "script/break_lua_ecs_apply.h"
 
 #include <float.h>
+#include <locale.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,62 @@ static const BreakLuaEcsField *find_field(const BreakLuaEcsField *schema,
     return NULL;
 }
 
+/* Accepts only [+-]? digits [. digits] [eE [+-] digits] and rewrites the
+ * '.' to the current LC_NUMERIC decimal point, so strtod reads "1.5" the
+ * same way under a comma locale and "1,5" is always rejected. The locale's
+ * point is a single byte on every libc this engine supports; a multi-byte
+ * point makes string values fail closed. */
+static bool c_decimal_to_locale(char *buf, usize len)
+{
+    const struct lconv *lc = localeconv();
+    char point = '.';
+    usize i = 0u;
+    usize dot_at = len;
+    bool digits = false;
+    if (lc != NULL && lc->decimal_point != NULL && lc->decimal_point[0] != '\0') {
+        if (lc->decimal_point[1] != '\0') {
+            return false;
+        }
+        point = lc->decimal_point[0];
+    }
+    if (buf[i] == '+' || buf[i] == '-') {
+        i++;
+    }
+    for (; i < len && ((buf[i] >= '0' && buf[i] <= '9') || buf[i] == '.'); i++) {
+        if (buf[i] == '.') {
+            if (dot_at != len) {
+                return false;
+            }
+            dot_at = i;
+        } else {
+            digits = true;
+        }
+    }
+    if (!digits) {
+        return false;
+    }
+    if (i < len && (buf[i] == 'e' || buf[i] == 'E')) {
+        bool exp_digits = false;
+        i++;
+        if (i < len && (buf[i] == '+' || buf[i] == '-')) {
+            i++;
+        }
+        for (; i < len && buf[i] >= '0' && buf[i] <= '9'; i++) {
+            exp_digits = true;
+        }
+        if (!exp_digits) {
+            return false;
+        }
+    }
+    if (i != len) {
+        return false;
+    }
+    if (dot_at != len) {
+        buf[dot_at] = point;
+    }
+    return true;
+}
+
 static bool to_f32(const BreakLuaEcsRecord *rec, f32 *out)
 {
     f64 v;
@@ -44,6 +101,9 @@ static bool to_f32(const BreakLuaEcsRecord *rec, f32 *out)
         }
         memcpy(buf, rec->value.s.data, len);
         buf[len] = '\0';
+        if (!c_decimal_to_locale(buf, len)) {
+            return false;
+        }
         v = strtod(buf, &end);
         if (end == NULL || *end != '\0') {
             return false;

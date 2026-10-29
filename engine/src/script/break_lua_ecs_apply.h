@@ -11,7 +11,9 @@
  *   SET   -> writes one f32 field of the current target. The component is
  *            added (zero-initialized) if the entity does not have it yet.
  *            Value: finite number, bool (1/0) or a string that parses fully
- *            as a finite f32.
+ *            as a finite f32 in C syntax ([+-]digits[.digits][e[+-]digits],
+ *            '.' only — independent of LC_NUMERIC; whitespace, ',', hex,
+ *            inf/nan are rejected).
  * A record is rejected (counted, nothing written) when: no SPAWN preceded
  * it in this call, the component/field pair is not in the schema, the
  * component is not registered in the World with a size that covers the

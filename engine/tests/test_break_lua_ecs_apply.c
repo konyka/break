@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L /* strdup */
 /* Applying break_lua ECS batch records to a runtime ECS World: an end-to-end
  * case through a real Lua module, plus the rejection rules. */
 #include "test_framework.h"
@@ -6,6 +7,7 @@
 #include <script/break_lua.h>
 #include <script/break_lua_ecs_apply.h>
 
+#include <locale.h>
 #include <math.h>
 #include <string.h>
 
@@ -177,8 +179,62 @@ TEST(added_component_is_zeroed_even_on_reused_chunk_memory)
     world_destroy(w);
 }
 
+static BreakLuaEcsRecord set_str(const char *c, const char *f, const char *v)
+{
+    BreakLuaEcsRecord r;
+    memset(&r, 0, sizeof(r));
+    r.kind = BREAK_LUA_ECS_RECORD_SET;
+    r.value_type = BREAK_LUA_ECS_VALUE_STRING;
+    strcpy(r.component, c);
+    strcpy(r.field, f);
+    r.value.s.len = (u32)strlen(v);
+    memcpy(r.value.s.data, v, r.value.s.len + 1u);
+    return r;
+}
+
+/* String values parse with '.' as the only decimal separator whatever the
+ * process locale is; a comma is never a separator. */
+TEST(string_values_parse_independently_of_the_locale)
+{
+    World *w = make_world();
+    BreakLuaEcsRecord recs[4];
+    BreakLuaEcsApplyReport rep;
+    char *saved = NULL;
+    const char *prev = setlocale(LC_NUMERIC, NULL);
+    TestPos *p;
+    bool have_comma_locale;
+    ASSERT_NOT_NULL(w);
+    if (prev != NULL) {
+        saved = strdup(prev);
+    }
+    have_comma_locale = setlocale(LC_NUMERIC, "de_DE.UTF-8") != NULL ||
+                        setlocale(LC_NUMERIC, "de_DE.utf8") != NULL ||
+                        setlocale(LC_NUMERIC, "fr_FR.UTF-8") != NULL;
+    if (!have_comma_locale) {
+        printf("    (no comma-decimal locale installed; C locale only)\n");
+    }
+    recs[0] = spawn_rec();
+    recs[1] = set_str("transform", "x", "-2.25");
+    recs[2] = set_str("transform", "y", "1,5");
+    recs[3] = set_str("transform", "z", "3e2");
+    ASSERT_TRUE(break_lua_ecs_apply(w, k_schema, SCHEMA_N, recs, 4u, &rep));
+    if (saved != NULL) {
+        (void)setlocale(LC_NUMERIC, saved);
+        free(saved);
+    }
+    ASSERT_EQ(rep.set, (usize)2);
+    ASSERT_EQ(rep.rejected, (usize)1);
+    p = (TestPos *)world_get_component(w, rep.last_spawned, COMP_POS);
+    ASSERT_NOT_NULL(p);
+    ASSERT_TRUE(p->x == -2.25f);
+    ASSERT_TRUE(p->y == 0.0f);
+    ASSERT_TRUE(p->z == 300.0f);
+    world_destroy(w);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(lua_script_spawns_and_sets_into_world);
     RUN_TEST(invalid_records_are_rejected_without_writes);
     RUN_TEST(added_component_is_zeroed_even_on_reused_chunk_memory);
+    RUN_TEST(string_values_parse_independently_of_the_locale);
 TEST_MAIN_END()
