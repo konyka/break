@@ -144,6 +144,58 @@ TEST(supported_names) {
     ASSERT_FALSE(break_editor_image_is_supported_name(NULL));
 }
 
+TEST(mip_chain_box_filters_down_to_one_pixel) {
+    /* 4x2: left half white, right half black */
+    u8 px[4 * 2 * 4];
+    for (u32 y = 0; y < 2; y++) {
+        for (u32 x = 0; x < 4; x++) {
+            u8 v = x < 2 ? 255 : 0;
+            u8 *p = px + (y * 4 + x) * 4;
+            p[0] = p[1] = p[2] = v;
+            p[3] = 255;
+        }
+    }
+    BreakEditorImage img = {4, 2, px};
+    ASSERT_EQ(break_editor_image_mip_count(4, 2), 3u);
+    ASSERT_EQ(break_editor_image_mip_count(1, 1), 1u);
+    ASSERT_EQ(break_editor_image_mip_count(4096, 1), 13u);
+    ASSERT_EQ(break_editor_image_mip_count(0, 4), 0u);
+    BreakEditorImageMips mips;
+    ASSERT_TRUE(break_editor_image_build_mips(&img, &mips));
+    ASSERT_EQ(mips.count, 3u);
+    ASSERT_EQ(mips.width[0], 4u);
+    ASSERT_EQ(mips.height[0], 2u);
+    ASSERT_TRUE(mips.level[0] == px);          /* level 0 is borrowed */
+    ASSERT_EQ(mips.width[1], 2u);
+    ASSERT_EQ(mips.height[1], 1u);
+    ASSERT_EQ(mips.level[1][0], 255u);         /* left 2x2 block: white */
+    ASSERT_EQ(mips.level[1][4], 0u);           /* right block: black */
+    ASSERT_EQ(mips.level[1][7], 255u);
+    ASSERT_EQ(mips.width[2], 1u);
+    ASSERT_EQ(mips.height[2], 1u);
+    ASSERT_TRUE(mips.level[2][0] >= 127u && mips.level[2][0] <= 128u);
+    ASSERT_EQ(mips.level[2][3], 255u);
+    break_editor_image_free_mips(&mips);
+    ASSERT_EQ(mips.count, 0u);
+    /* odd sizes clamp the 2x2 footprint at the edge */
+    {
+        u8 odd[3 * 3 * 4];
+        memset(odd, 200, sizeof(odd));
+        BreakEditorImage o = {3, 3, odd};
+        ASSERT_TRUE(break_editor_image_build_mips(&o, &mips));
+        ASSERT_EQ(mips.count, 2u);
+        ASSERT_EQ(mips.width[1], 1u);
+        ASSERT_EQ(mips.level[1][0], 200u);
+        break_editor_image_free_mips(&mips);
+    }
+    ASSERT_FALSE(break_editor_image_build_mips(NULL, &mips));
+    {
+        BreakEditorImage empty = {0, 0, NULL};
+        ASSERT_FALSE(break_editor_image_build_mips(&empty, &mips));
+        ASSERT_EQ(mips.count, 0u);
+    }
+}
+
 int main(void) {
     printf("=== Running Tests ===\n");
     RUN_TEST(decode_png_returns_size_and_pixels);
@@ -151,6 +203,7 @@ int main(void) {
     RUN_TEST(bad_input_fails_and_zeroes_output);
     RUN_TEST(oversized_dimensions_are_rejected_before_decode);
     RUN_TEST(supported_names);
+    RUN_TEST(mip_chain_box_filters_down_to_one_pixel);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
            g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;

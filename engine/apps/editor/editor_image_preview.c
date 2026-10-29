@@ -92,13 +92,26 @@ static bool preview_create_texture(BreakEditorImagePreview *p,
                                    const BreakEditorImage *img,
                                    RHITexture *out) {
     RHITextureDesc desc;
+    BreakEditorImageMips mips;
+    /* full mip chain so a large image shrunk into the preview area is
+     * filtered instead of aliasing; without the chain (OOM) the preview
+     * still works single-level */
+    bool chain = break_editor_image_build_mips(img, &mips);
     memset(&desc, 0, sizeof(desc));
     desc.width = img->width;
     desc.height = img->height;
     desc.format = RHI_FORMAT_R8G8B8A8_UNORM;
-    desc.mip_levels = 1u;
+    desc.mip_levels = chain ? mips.count : 1u;
     desc.data = img->rgba;
     *out = rhi_texture_create(p->device, &desc);
+    if (chain && rhi_handle_valid(*out)) {
+        for (u32 l = 1u; l < mips.count; l++) {
+            rhi_texture_upload_mip(p->device, *out, l, mips.width[l],
+                                   mips.height[l], mips.level[l],
+                                   (usize)mips.width[l] * mips.height[l] * 4u);
+        }
+    }
+    break_editor_image_free_mips(&mips);
     return rhi_handle_valid(*out);
 }
 

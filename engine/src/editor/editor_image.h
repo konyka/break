@@ -26,6 +26,23 @@ bool break_editor_image_probe(const void *bytes, usize size, u32 *out_width,
 bool break_editor_image_decode(const void *bytes, usize size,
                                BreakEditorImage *out);
 void break_editor_image_free(BreakEditorImage *image);
+/* Mip chain for an RGBA8 image: levels halve each side (rounding down,
+ * never below 1) to 1x1. mip_count(w, h) = floor(log2(max(w, h))) + 1, 0
+ * for a zero side. build_mips box-filters each level from the previous one
+ * (2x2 average, the footprint clamped at odd edges); level 0 borrows the
+ * image pixels, levels 1.. are owned and released by free_mips. On failure
+ * (NULL / empty image, OOM) *out is zeroed. */
+#define BREAK_EDITOR_IMAGE_MAX_MIPS 13u /* 4096 -> 1 */
+typedef struct BreakEditorImageMips {
+    u32 count;
+    u32 width[BREAK_EDITOR_IMAGE_MAX_MIPS];
+    u32 height[BREAK_EDITOR_IMAGE_MAX_MIPS];
+    u8 *level[BREAK_EDITOR_IMAGE_MAX_MIPS];
+} BreakEditorImageMips;
+u32 break_editor_image_mip_count(u32 width, u32 height);
+bool break_editor_image_build_mips(const BreakEditorImage *image,
+                                   BreakEditorImageMips *out);
+void break_editor_image_free_mips(BreakEditorImageMips *mips);
 /* Case-insensitive: .png .jpg .jpeg .bmp .tga. NULL -> false. */
 bool break_editor_image_is_supported_name(const char *name);
 

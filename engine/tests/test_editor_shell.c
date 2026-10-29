@@ -8110,6 +8110,10 @@ static void image_preview_load_reload_body(ImagePreviewFixture *fx) {
     editor_rhi_fake_stats(&fake);
     ASSERT_EQ(fake.texture_creates, 1u);
     ASSERT_EQ(fake.last_texture_w, 8u);
+    /* 8x4 -> 4x2 -> 2x1 -> 1x1: full chain, levels 1..3 uploaded */
+    ASSERT_EQ(fake.last_texture_mips, 4u);
+    ASSERT_EQ(fake.mip_uploads, 3u);
+    ASSERT_EQ(fake.mip_upload_rejects, 0u);
     first = break_editor_image_preview_texture(fx->preview);
     ASSERT_TRUE(editor_rhi_fake_texture_live(first));
 

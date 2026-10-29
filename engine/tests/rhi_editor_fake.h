@@ -11,6 +11,10 @@ typedef struct {
      * the size of the last successful create */
     u32 texture_creates, texture_destroys, live_textures;
     u32 last_texture_w, last_texture_h;
+    /* mip chain: levels of the last create, rhi_texture_upload_mip calls
+     * accepted for a live texture (level < levels, exact level extent),
+     * and those rejected */
+    u32 last_texture_mips, mip_uploads, mip_upload_rejects;
 } EditorRhiFakeStats;
 
 void editor_rhi_fake_reset(void);

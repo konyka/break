@@ -456,6 +456,8 @@ RHITexture rhi_texture_create(RHIDevice *d, const RHITextureDesc *desc) {
             g_editor_rhi_fake.stats.live_textures++;
             g_editor_rhi_fake.stats.last_texture_w = desc->width;
             g_editor_rhi_fake.stats.last_texture_h = desc->height;
+            g_editor_rhi_fake.stats.last_texture_mips =
+                desc->mip_levels > 0u ? desc->mip_levels : 1u;
         }
         return t;
     }
@@ -597,7 +599,26 @@ void rhi_cmd_dispatch(RHICmdBuffer *c, u32 x, u32 y, u32 z)            { (void)c
  * never called), so these are pure link satisfiers like the rest. */
 void rhi_texture_upload_mip(RHIDevice *d, RHITexture t, u32 mip, u32 w, u32 h,
                             const void *data, usize size) {
-    (void)d; (void)t; (void)mip; (void)w; (void)h; (void)data; (void)size;
+    (void)d;
+#ifdef BREAK_EDITOR_SHELL_TESTING
+    if (g_editor_rhi_fake.enabled) {
+        /* mirrors the real backends' checks against the LAST created
+         * texture's extent (the preview uploads right after its create) */
+        u32 mw = g_editor_rhi_fake.stats.last_texture_w >> mip;
+        u32 mh = g_editor_rhi_fake.stats.last_texture_h >> mip;
+        if (mw == 0u) mw = 1u;
+        if (mh == 0u) mh = 1u;
+        if (editor_rhi_fake_texture_live(t) && data != NULL &&
+            mip < g_editor_rhi_fake.stats.last_texture_mips && w == mw &&
+            h == mh && size >= (usize)w * h * 4u) {
+            g_editor_rhi_fake.stats.mip_uploads++;
+        } else {
+            g_editor_rhi_fake.stats.mip_upload_rejects++;
+        }
+        return;
+    }
+#endif
+    (void)t; (void)mip; (void)w; (void)h; (void)data; (void)size;
 }
 void rhi_offscreen_fbo_set_clear_color(RHIDevice *d, RHIOffscreenFBO *fbo,
                                        f32 r, f32 g, f32 b, f32 a) {
