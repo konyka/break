@@ -683,7 +683,10 @@ static void shell_rebuild_inspector(BreakEditorShell *shell) {
             }
             (void)my_widget_set_layouter(
                 row, my_layouter_linear_create(NULL, true, 4));
-            shell_add_child(row, my_label_create(NULL, info.display_name),
+            shell_add_child(row,
+                            my_label_create(NULL, break_editor_tr_component(
+                                                      info.component_id,
+                                                      info.display_name)),
                             "w:1f h:22");
             if (shell->field_ctx_count < EDITOR_FIELD_CTX_POOL) {
                 EditorFieldCtx *fc =
@@ -760,7 +763,10 @@ static void shell_rebuild_inspector(BreakEditorShell *shell) {
             }
             (void)my_widget_set_layouter(
                 row, my_layouter_linear_create(NULL, true, 4));
-            shell_add_child(row, my_label_create(NULL, info.display_name),
+            shell_add_child(row,
+                            my_label_create(NULL, break_editor_tr_component(
+                                                      info.component_id,
+                                                      info.display_name)),
                             "w:1f h:22");
             if (shell->field_ctx_count < EDITOR_FIELD_CTX_POOL) {
                 EditorFieldCtx *fc =

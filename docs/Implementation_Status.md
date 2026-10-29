@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：inspector 组件标题国际化（2026-10-30）
+
+- **交付**：新增 `BREAK_EDITOR_TR_COMPONENT_TRANSFORM` 和 `BREAK_EDITOR_TR_COMPONENT_LIGHT` 两个键，中英文都已填写；新增 `break_editor_tr_component(id, fallback)`。`apps/editor/editor_panels.c` 中组件存在和不存在两种行的标题都改为调用它。注册表 `display_name` 仍是英文，供 Lua 查找。
+- **测试**：`test_editor_i18n` 新增 `component_names_follow_language_and_fall_back_for_unknown_ids`，覆盖中英切换、未知 id 回退和 NULL 回退，8/8 通过。默认树 232/233，唯一失败是已知 flaky 的 `test_platform_x11_runtime`，它在 `Xwayland :97` 下 5/5 通过；`build-break-net-final` 的 `-R editor` 15/15 通过。
+- **文档**：`docs/design/editor_i18n.md` 已补充。
+
 ## 本轮更新：编辑器第二个可编辑组件类型 Light（2026-10-30）
 
 - **交付**：`BREAK_EDITOR_COMPONENT_LIGHT`（id 65）/ `EditorLight`（color.r/g/b、intensity、range，f32×5，默认白色/1/10），在 doc create 时注册进注册表与 World。inspector、撤销/重做、复制、删除快照、BSCN 存取都走已有的通用路径，没有改面板代码。

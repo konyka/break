@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L /* setenv/unsetenv/strdup */
 #include "test_framework.h"
 
+#include <editor/editor_components.h>
 #include <editor/editor_i18n.h>
 
 #include <stdlib.h>
@@ -264,6 +265,26 @@ TEST(lang_from_env_follows_priority_and_skips_unparseable)
 #endif
 }
 
+TEST(component_names_follow_language_and_fall_back_for_unknown_ids)
+{
+    BreakEditorLang saved = break_editor_i18n_lang();
+    ASSERT_TRUE(break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US));
+    ASSERT_STR_EQ(break_editor_tr_component(BREAK_EDITOR_COMPONENT_TRANSFORM,
+                                            "x"),
+                  "Transform");
+    ASSERT_STR_EQ(break_editor_tr_component(BREAK_EDITOR_COMPONENT_LIGHT, "x"),
+                  "Light");
+    ASSERT_TRUE(break_editor_i18n_set_lang(BREAK_EDITOR_LANG_ZH_CN));
+    ASSERT_STR_EQ(break_editor_tr_component(BREAK_EDITOR_COMPONENT_TRANSFORM,
+                                            "x"),
+                  "变换");
+    ASSERT_STR_EQ(break_editor_tr_component(BREAK_EDITOR_COMPONENT_LIGHT, "x"),
+                  "灯光");
+    ASSERT_STR_EQ(break_editor_tr_component(9999u, "Custom"), "Custom");
+    ASSERT_STR_EQ(break_editor_tr_component(9999u, NULL), "?");
+    ASSERT_TRUE(break_editor_i18n_set_lang(saved));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(every_language_fills_every_key_with_valid_utf8);
     RUN_TEST(chinese_table_is_actually_translated);
@@ -272,4 +293,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(language_tags_and_names);
     RUN_TEST(parse_lang_accepts_bcp47_and_posix_tags);
     RUN_TEST(lang_from_env_follows_priority_and_skips_unparseable);
+    RUN_TEST(component_names_follow_language_and_fall_back_for_unknown_ids);
 TEST_MAIN_END()

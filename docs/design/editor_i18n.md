@@ -31,6 +31,7 @@ If nothing is found the editor prints `no UI font found ...`; if no CJK face is 
 - Translated: all editor chrome and editor console messages, including scene and shader hot-reload messages.
 - Not translated: entity and component names (document data), file paths, Lua console echo/output (`lua| ...`), engine `LOG_*` output, remote protocol text. Console lines already written keep the language they were written in; the switch itself is logged in the new language.
 - The current language is one process-wide value used only on the editor UI thread.
+- 2026-10-30 补充：inspector 的组件标题现在会翻译（Transform→变换，Light→灯光）。做法是 `break_editor_tr_component(component_id, fallback)` 把内置组件 id 映射到 `BREAK_EDITOR_TR_COMPONENT_*` 键；没有键的 id 显示注册表里的英文 `display_name`。注册表名本身不变，因为 Lua 的 `set_record` 等接口按它查组件。上一条说的“组件名不翻译”只指注册表数据和 Lua，不包括 inspector 标题。
 
 ### Adding a language
 

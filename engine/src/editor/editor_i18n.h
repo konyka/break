@@ -11,7 +11,8 @@
  * (shell) thread. It is not synchronized; set it only on that thread.
  *
  * Not translated: engine LOG_* output, remote protocol text, entity and file
- * names, and console lines already written. */
+ * names, registry component names used by Lua, and console lines already
+ * written. Component headings in the inspector are translated. */
 
 #include <core/types.h>
 
@@ -154,6 +155,9 @@ typedef enum {
     BREAK_EDITOR_TR_PREVIEW_EMPTY,
     BREAK_EDITOR_TR_PREVIEW_LOADING,
     BREAK_EDITOR_TR_PREVIEW_FAILED,
+    /* inspector component headings */
+    BREAK_EDITOR_TR_COMPONENT_TRANSFORM,
+    BREAK_EDITOR_TR_COMPONENT_LIGHT,
     BREAK_EDITOR_TR_COUNT
 } BreakEditorTr;
 
@@ -162,6 +166,11 @@ typedef enum {
 const char *break_editor_tr(BreakEditorTr key);
 /* Text for `key` in `lang`; falls back to en-US, then "?". */
 const char *break_editor_tr_lang(BreakEditorLang lang, BreakEditorTr key);
+/* Inspector heading for an editor component id in the current language.
+ * Ids without a translation key return `fallback` (the registry's English
+ * display_name), or "?" when it is NULL. The registry name itself stays
+ * English because Lua looks components up by it. */
+const char *break_editor_tr_component(u32 component_id, const char *fallback);
 
 /* false (and no change) for an out-of-range language. */
 bool break_editor_i18n_set_lang(BreakEditorLang lang);

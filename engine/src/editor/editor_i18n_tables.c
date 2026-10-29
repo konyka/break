@@ -139,6 +139,8 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(PREVIEW_EMPTY, "Click an image to preview it"),
         T(PREVIEW_LOADING, "Loading image..."),
         T(PREVIEW_FAILED, "Image could not be loaded"),
+        T(COMPONENT_TRANSFORM, "Transform"),
+        T(COMPONENT_LIGHT, "Light"),
     },
     [BREAK_EDITOR_LANG_ZH_CN] = {
         T(ADD, "添加"),
@@ -268,5 +270,7 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(PREVIEW_EMPTY, "点击图片进行预览"),
         T(PREVIEW_LOADING, "正在加载图片……"),
         T(PREVIEW_FAILED, "无法加载图片"),
+        T(COMPONENT_TRANSFORM, "变换"),
+        T(COMPONENT_LIGHT, "灯光"),
     },
 };

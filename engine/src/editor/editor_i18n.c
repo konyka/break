@@ -2,6 +2,8 @@
 
 #include <editor/editor_i18n.h>
 
+#include <editor/editor_components.h>
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -32,6 +34,17 @@ const char *break_editor_tr_lang(BreakEditorLang lang, BreakEditorTr key) {
 
 const char *break_editor_tr(BreakEditorTr key) {
     return break_editor_tr_lang(s_lang, key);
+}
+
+const char *break_editor_tr_component(u32 component_id, const char *fallback) {
+    switch (component_id) {
+    case BREAK_EDITOR_COMPONENT_TRANSFORM:
+        return break_editor_tr(BREAK_EDITOR_TR_COMPONENT_TRANSFORM);
+    case BREAK_EDITOR_COMPONENT_LIGHT:
+        return break_editor_tr(BREAK_EDITOR_TR_COMPONENT_LIGHT);
+    default:
+        return fallback != NULL ? fallback : "?";
+    }
 }
 
 bool break_editor_i18n_set_lang(BreakEditorLang lang) {
