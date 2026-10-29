@@ -48,8 +48,8 @@ The outliner row bound to the selected entity carries style class `selected` (se
 
 ## 4c. Light theme and switching (2026-10-29)
 
-`editor_theme.c` holds a second sheet, JetBrains New UI light (window `#F7F8FA`, content `#FFFFFF`, text `#1F1F1F`, secondary `#6C707E`, borders `#D3D5DB`, selection `#D4E2FF`; accent `#3574F0` unchanged). `break_editor_shell_set_theme(shell, light)` or the palette commands `Theme: Light` / `Theme: Dark` (`主题：浅色` / `主题：深色`) apply it and repaint; self-painting widgets read `break_editor_theme_content_bg()`. Pinned by `theme_switches_between_dark_and_light`; live on Vulkan and OpenGL the top colours are `#FFFFFF`/`#F7F8FA`/`#D3D5DB` in light and return to `#1E1F22`/`#2B2D30`/`#393B40` with no light pixel left. Not persisted across runs.
+`editor_theme.c` holds a second sheet, JetBrains New UI light (window `#F7F8FA`, content `#FFFFFF`, text `#1F1F1F`, secondary `#6C707E`, borders `#D3D5DB`, selection `#D4E2FF`; accent `#3574F0` unchanged). `break_editor_shell_set_theme(shell, light)` or the palette commands `Theme: Light` / `Theme: Dark` (`主题：浅色` / `主题：深色`) apply it and repaint; self-painting widgets read `break_editor_theme_content_bg()`. Pinned by `theme_switches_between_dark_and_light`; live on Vulkan and OpenGL the top colours are `#FFFFFF`/`#F7F8FA`/`#D3D5DB` in light and return to `#1E1F22`/`#2B2D30`/`#393B40` with no light pixel left. Persisted since 2026-10-29 (see `editor_settings.h`).
 
 ## 5. Not delivered
 
-Icons and gutters, persisting the chosen theme. Tool-window tabs: delivered 2026-10-29 (`2026-10-29-editor-tool-window-tabs-design.md`). Fonts: **superseded 2026-10-29** — JetBrains Mono Regular 2.304 and Noto Sans SC are bundled at `engine/assets/fonts/` (OFL) and lead the font chain (see `docs/design/editor_i18n.md`).
+Icons and gutters. Persisting theme/language/tabs: delivered 2026-10-29 (`apps/editor/editor_settings.h`). Tool-window tabs: delivered 2026-10-29 (`2026-10-29-editor-tool-window-tabs-design.md`). Fonts: **superseded 2026-10-29** — JetBrains Mono Regular 2.304 and Noto Sans SC are bundled at `engine/assets/fonts/` (OFL) and lead the font chain (see `docs/design/editor_i18n.md`).

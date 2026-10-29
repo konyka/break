@@ -1930,6 +1930,57 @@ TEST(tool_window_tabs_show_one_page_per_area)
     break_editor_shell_destroy(shell);
 }
 
+/* UI preferences persist: theme, language and active tabs written by one
+ * shell are applied by the next (editor_settings.h). An explicit --lang
+ * (keep_current_lang) wins over the stored language. */
+TEST(settings_persist_theme_language_and_tabs_across_shells)
+{
+    char path[256];
+    BreakEditorShell *shell;
+    FILE *f;
+    test_tmp(path, sizeof(path), "editor_shell_settings.ini");
+    remove(path);
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, false));
+    /* missing file: defaults, nothing written yet */
+    ASSERT_FALSE(break_editor_theme_is_light());
+    f = fopen(path, "rb");
+    ASSERT_TRUE(f == NULL);
+    ASSERT_TRUE(break_editor_shell_set_theme(shell, true));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 1u, 2u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 1u));
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    break_editor_shell_destroy(shell);
+    /* reset process-global UI state like a fresh run */
+    (void)break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US);
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_set_theme(shell, false));
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, false));
+    ASSERT_TRUE(break_editor_theme_is_light());
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 1u), 2u);
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 0u), 1u);
+    ASSERT_EQ(break_editor_i18n_lang(), BREAK_EDITOR_LANG_ZH_CN);
+    ASSERT_TRUE(find(shell, "editor-render-panel")->visible);
+    break_editor_shell_destroy(shell);
+    /* --lang given: stored language ignored, the rest still applied */
+    (void)break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US);
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, true));
+    ASSERT_EQ(break_editor_i18n_lang(), BREAK_EDITOR_LANG_EN_US);
+    ASSERT_TRUE(break_editor_theme_is_light());
+    /* bounds */
+    ASSERT_FALSE(break_editor_shell_use_settings(shell, "", false));
+    ASSERT_FALSE(break_editor_shell_use_settings(shell, NULL, false));
+    ASSERT_FALSE(break_editor_shell_use_settings(NULL, path, false));
+    /* leave global state as the other cases expect */
+    ASSERT_TRUE(break_editor_shell_set_theme(shell, false));
+    break_editor_shell_destroy(shell);
+    remove(path);
+}
+
 /* Ctrl+P paints the palette over the shell and its focused edit shows the
  * accent focus ring (soft LCD, full-window repaint). */
 TEST(palette_paints_with_focused_edit_ring)
@@ -6781,6 +6832,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_escape_via_event_dispatcher_closes);
     RUN_TEST(theme_switches_between_dark_and_light);
     RUN_TEST(tool_window_tabs_show_one_page_per_area);
+    RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);

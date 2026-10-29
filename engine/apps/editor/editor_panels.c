@@ -8,6 +8,7 @@
 #include "editor_viewport3d.h"
 #include "editor_remote.h"
 #include "editor_hot_reload.h"
+#include "editor_settings.h"
 #include "editor_theme.h"
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
@@ -138,6 +139,9 @@ struct BreakEditorShell {
     /* tool-window tab areas (0 bottom, 1 diagnostics): active page index
      * and the click contexts of their tab buttons */
     u32 active_tab[2];
+    /* persisted UI preferences (editor_settings.h): saved after each
+     * theme / language / tab change once a path is set; empty = off */
+    char settings_path[1024];
     struct EditorTabCtx {
         BreakEditorShell *shell;
         u32 area, index;
@@ -221,6 +225,7 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
 
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd);
 static void shell_tabs_retranslate(BreakEditorShell *shell);
+static void shell_settings_save(BreakEditorShell *shell);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
 
 /* Bounded console log: appends one <=127-byte line to the ring, dropping the
@@ -1314,6 +1319,7 @@ bool break_editor_shell_set_language(BreakEditorShell *shell,
     shell_retranslate(shell);
     editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_LANGUAGE_FMT),
                      break_editor_i18n_lang_name(lang));
+    shell_settings_save(shell);
     return true;
 }
 
@@ -1447,11 +1453,57 @@ bool break_editor_shell_select_tab(BreakEditorShell *shell, u32 area,
     }
     shell->active_tab[area] = index;
     shell_tabs_apply(shell, area);
+    shell_settings_save(shell);
     return true;
 }
 
 u32 break_editor_shell_active_tab(const BreakEditorShell *shell, u32 area) {
     return shell != NULL && area < 2u ? shell->active_tab[area] : 0u;
+}
+
+/* Best-effort: a failed write is logged, never fatal (UI state only). */
+static void shell_settings_save(BreakEditorShell *shell) {
+    BreakEditorSettings st;
+    if (shell == NULL || shell->settings_path[0] == '\0') {
+        return;
+    }
+    break_editor_settings_defaults(&st);
+    st.light_theme = break_editor_theme_is_light();
+    st.has_lang = true;
+    st.lang = break_editor_i18n_lang();
+    st.bottom_tab = shell->active_tab[0];
+    st.diag_tab = shell->active_tab[1];
+    if (!break_editor_settings_save(&st, shell->settings_path)) {
+        editor_shell_log(shell, "settings: could not write %s",
+                         shell->settings_path);
+    }
+}
+
+bool break_editor_shell_use_settings(BreakEditorShell *shell, const char *path,
+                                     bool keep_current_lang) {
+    BreakEditorSettings st;
+    usize n;
+    if (shell == NULL || path == NULL) {
+        return false;
+    }
+    n = strlen(path);
+    if (n == 0u || n >= sizeof(shell->settings_path)) {
+        return false; /* never truncate a path we would write to */
+    }
+    break_editor_settings_defaults(&st);
+    (void)break_editor_settings_load(&st, path);
+    shell->settings_path[0] = '\0'; /* no saves while applying */
+    if (st.light_theme != break_editor_theme_is_light()) {
+        (void)break_editor_shell_set_theme(shell, st.light_theme);
+    }
+    if (st.has_lang && !keep_current_lang &&
+        st.lang != break_editor_i18n_lang()) {
+        (void)break_editor_shell_set_language(shell, st.lang);
+    }
+    (void)break_editor_shell_select_tab(shell, 0u, st.bottom_tab);
+    (void)break_editor_shell_select_tab(shell, 1u, st.diag_tab);
+    memcpy(shell->settings_path, path, n + 1u);
+    return true;
 }
 
 /* ---------------- widget tree build ---------------- */
@@ -1839,6 +1891,7 @@ bool break_editor_shell_set_theme(BreakEditorShell *shell, bool light) {
     }
     /* self-painting widgets (viewport surround, preview) read the mode */
     my_widget_invalidate((my_widget_t *)shell->win, NULL);
+    shell_settings_save(shell);
     return true;
 }
 

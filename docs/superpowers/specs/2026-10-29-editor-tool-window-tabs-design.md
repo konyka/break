@@ -24,4 +24,4 @@ API (shell): `break_editor_shell_select_tab(shell, area, index)` and `break_edit
 
 ## Not covered
 
-Drag-to-reorder, detaching tool windows, collapsing an area, persisting the active tab.
+Drag-to-reorder, detaching tool windows, collapsing an area. (The active tab is persisted since the same day, `editor_settings.h`.)
