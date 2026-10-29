@@ -460,6 +460,7 @@ static void sb_append_value(re_strbuf_t *sb, const re_facts_t *facts,
          * 40 bytes always suffice for %g, and the clamp keeps that bound
          * explicit. */
         n = snprintf(buf, sizeof(buf), "%g", value->as.double_value);
+        if (n >= 0 && (size_t)n < sizeof(buf)) n = (int)re_c_decimal(buf);
         sb_append_snprintf(sb, buf, sizeof(buf), n);
         break;
     case RE_VALUE_STRING:
@@ -701,6 +702,8 @@ static re_status_t call_format(re_engine_t *engine, re_facts_t *facts, const re_
                          * buffer holds - the would-be length is NOT the
                          * content length. */
                         n = snprintf(buf, sizeof(buf), "%f", dv);
+                        if (n >= 0 && (size_t)n < sizeof(buf)) n = (int)re_c_decimal(buf);
+                        else (void)re_c_decimal(buf);
                         sb_append_snprintf(&sb, buf, sizeof(buf), n);
                     } else {
                         status = value_to_string(engine, facts, v, arg_path(arg_fact_paths, cursor - 1u),

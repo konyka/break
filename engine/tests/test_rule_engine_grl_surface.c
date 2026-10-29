@@ -1,5 +1,7 @@
 #include "test_framework.h"
 #include <rule_engine/rule_engine.h>
+#include <locale.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1125,6 +1127,22 @@ TEST(builtin_format_percent_directives) {
     assert_string_fact(facts, "C", "1 %d");
     assert_string_fact(facts, "D", "");
     assert_string_fact(facts, "E", "a true");
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+/* Number-to-text is locale-independent: the same program yields the same
+ * strings under a comma-decimal LC_NUMERIC (upstream Rust always uses '.'). */
+TEST(builtin_format_decimals_are_locale_independent) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    if (setlocale(LC_NUMERIC, "de_DE.UTF-8") == NULL &&
+        setlocale(LC_NUMERIC, "de_DE.utf8") == NULL)
+        printf("    (no comma-decimal locale installed; C locale only)\n");
+    run_program(engine, facts,
+        "rule \"F\" { when true then A = format(\"%f|%s\", 1.5, 2.5); }");
+    (void)setlocale(LC_NUMERIC, "C");
+    assert_string_fact(facts, "A", "1.500000|2.5");
     re_facts_destroy(facts);
     re_engine_destroy(engine);
 }
@@ -2967,6 +2985,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(builtin_random_is_deterministic_per_engine_and_bounded);
     RUN_TEST(builtin_random_rejects_bad_max);
     RUN_TEST(builtin_format_percent_directives);
+    RUN_TEST(builtin_format_decimals_are_locale_independent);
     RUN_TEST(builtin_format_brace_placeholders);
     RUN_TEST(builtin_format_percent_f_huge_double_truncates_safely);
     RUN_TEST(builtin_length_count_share_condition_len_semantics);

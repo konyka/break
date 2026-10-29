@@ -45,6 +45,25 @@ double re_strtod_c(const char *text, char **end) {
     return v;
 }
 
+size_t re_c_decimal(char *buf) {
+    const struct lconv *lc = localeconv();
+    const char *point;
+    size_t point_len;
+    char *hit;
+    char *scan = buf;
+    if (buf == NULL) return 0u;
+    if (lc == NULL || lc->decimal_point == NULL) return strlen(buf);
+    point = lc->decimal_point;
+    point_len = strlen(point);
+    if (point_len == 0u || (point_len == 1u && point[0] == '.')) return strlen(buf);
+    while ((hit = strstr(scan, point)) != NULL) {
+        *hit = '.';
+        if (point_len > 1u) memmove(hit + 1, hit + point_len, strlen(hit + point_len) + 1u);
+        scan = hit + 1;
+    }
+    return strlen(buf);
+}
+
 #define RE_VALUE_MAX_DEPTH 64u
 
 static size_t value_depth(const re_value_handle_t *value) {

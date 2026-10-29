@@ -535,7 +535,10 @@ strings coerced by relational operators, `query` sides, backward-goal operands
 and the `f64` parse builtin all go through `re_strtod_c` (`values.c`), which
 treats `.` as the decimal point whatever `LC_NUMERIC` the host process set.
 The same program therefore behaves identically under `de_DE` or `fr_FR`;
-`decimal_parsing_is_independent_of_the_locale` locks this in.
+`decimal_parsing_is_independent_of_the_locale` locks this in. The reverse
+direction matches: `format`/`sprintf` `%f` and the display form of doubles
+(`%s`, string concatenation) rewrite the locale point back to `.` via
+`re_c_decimal`, locked by `builtin_format_decimals_are_locale_independent`.
 
 Transaction lifetime is explicit: commit/rollback release the cloned fact
 stores but retain an inactive handle for safe status checks. The caller then

@@ -419,6 +419,9 @@ int re_parse_date(const char *text, int64_t *out);
  * own point (e.g. ',' under de_DE) is never part of that prefix, so "1,5"
  * stops at the comma exactly as in the C locale. */
 double re_strtod_c(const char *text, char **end);
+/* Rewrites the locale decimal point snprintf("%f"/"%g") wrote into the
+ * NUL-terminated buf back to '.', in place; returns the new length. */
+size_t re_c_decimal(char *buf);
 int re_rule_active(const re_rule_t *rule, int64_t now);
 
 #define RE_AGENDA_MAX_PREMISES 8u
