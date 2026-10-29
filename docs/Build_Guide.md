@@ -715,6 +715,13 @@ Metal 与 VK 平均 RGB 为 145.3/148.6/142.4 对 145.2/148.5/142.3；`test_rhi_
 里两个读回用例的期望字节序同步改为 RGBA（修复前这两个用例对 RGBA 期望失败，已先验证
 红灯）。这只影响截图读回，不影响屏幕上的实际渲染，证据等级不变。
 
+2026-10-29 定时复核：从 `@37b87abd` 快进到 `@eed8c433`（2 个远程提交：BreakUI 画布按
+绘制顺序出图、编辑器输入框焦点环），无冲突、无本地改动。Metal CTest **230/230**、
+graphics **6/6**（含 5 个 fuzz 目标构建），MoltenVK **231/231**，仅 D3D12 dependency
+gate 按平台跳过。`engine_demo` 机位 `BREAK_CAM=0,9,16,0,-25 BREAK_UI=0
+BREAK_SCREENSHOT=60` 两后端截图目视确认：朝向正确、3D 场景与 UI 均可见，Metal 与
+MoltenVK 画面基本一致；未发现回归，本次无代码修改，证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
