@@ -55,6 +55,8 @@ struct BreakLuaRuntime {
     u32 max_values;
     usize max_module_bytes;
     u64 instruction_budget;
+    usize memory_budget;     /* 0 => unlimited */
+    usize memory_in_use;     /* bytes held by the Lua allocator */
     BreakLuaModule *modules; /* owned array of max_modules slots */
     u32 module_count;
     int op_ref;              /* registry ref to the protected op dispatch

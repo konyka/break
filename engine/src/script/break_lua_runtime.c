@@ -92,25 +92,41 @@ static bool registry_remove(const void *runtime)
 
 #endif /* BREAK_LUA_TESTING */
 
-/* Lua allocator. Production is plain realloc/free; the test variant routes
- * every growing request through the injection budget so lua_newstate /
- * luaL_openlibs allocation failures are exercisable. `ud` is the owning
- * runtime (unused while the runtime keeps no per-VM accounting; the
- * signature requires it). */
+/* Lua allocator. Counts the bytes held by the VM and refuses any growing
+ * request that would exceed runtime->memory_budget (0 = unlimited); Lua
+ * turns the refusal into LUA_ERRMEM. Shrinks and frees always succeed. The
+ * test variant also routes every growing request through the injection
+ * budget so lua_newstate / luaL_openlibs allocation failures are
+ * exercisable. When ptr is NULL, osize encodes a type tag, not a size. */
 static void *break_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 {
-    (void)ud;
-    (void)osize;
+    BreakLuaRuntime *runtime = (BreakLuaRuntime *)ud;
+    size_t old_size = ptr != NULL ? osize : 0u;
+    void *out;
     if (nsize == 0u) {
         free(ptr);
+        runtime->memory_in_use -= old_size;
         return NULL;
     }
+    if (nsize > old_size) {
+        size_t grow = nsize - old_size;
+        if (runtime->memory_budget != 0u &&
+            (grow > runtime->memory_budget ||
+             runtime->memory_in_use > runtime->memory_budget - grow)) {
+            return NULL;
+        }
 #if defined(BREAK_LUA_TESTING)
-    if (break_lua_test_alloc_should_fail()) {
+        if (break_lua_test_alloc_should_fail()) {
+            return NULL;
+        }
+#endif
+    }
+    out = realloc(ptr, nsize);
+    if (out == NULL) {
         return NULL;
     }
-#endif
-    return realloc(ptr, nsize);
+    runtime->memory_in_use = runtime->memory_in_use - old_size + nsize;
+    return out;
 }
 
 /* luaL_openlibs is not internally protected: an allocation failure inside it
@@ -158,6 +174,7 @@ BreakLuaRuntime *break_lua_runtime_create(const BreakLuaRuntimeConfig *config)
     u32 max_values = BREAK_LUA_MAX_VALUES;
     usize max_module_bytes = (usize)BREAK_LUA_MAX_MODULE_BYTES;
     u64 instruction_budget = 0u;
+    usize memory_budget = 0u;
 
     /* Fail-closed validation: caps above the hard ceilings are rejected,
      * never clamped (documented in break_lua.h). No arithmetic on the
@@ -178,6 +195,7 @@ BreakLuaRuntime *break_lua_runtime_create(const BreakLuaRuntimeConfig *config)
             max_module_bytes = config->max_module_bytes;
         }
         instruction_budget = config->instruction_budget;
+        memory_budget = config->memory_budget;
     }
 
     runtime = break_lua_test_calloc(sizeof(*runtime));
@@ -201,6 +219,8 @@ BreakLuaRuntime *break_lua_runtime_create(const BreakLuaRuntimeConfig *config)
     runtime->op_ref = LUA_NOREF;
     runtime->sandbox_ref = LUA_NOREF;
 
+    runtime->memory_budget = memory_budget;
+    runtime->memory_in_use = 0u;
     runtime->L = lua_newstate(break_lua_alloc, runtime);
     if (!runtime->L) {
         free(runtime->modules);
@@ -268,7 +288,16 @@ BreakLuaError break_lua_runtime_effective_config(
     out_config->max_values = runtime->max_values;
     out_config->max_module_bytes = runtime->max_module_bytes;
     out_config->instruction_budget = runtime->instruction_budget;
+    out_config->memory_budget = runtime->memory_budget;
     return BREAK_LUA_OK;
+}
+
+usize break_lua_runtime_memory_in_use(const BreakLuaRuntime *runtime)
+{
+    if (break_lua_runtime_check_owner(runtime) != BREAK_LUA_OK) {
+        return 0u;
+    }
+    return runtime->memory_in_use;
 }
 
 BreakLuaError break_lua_runtime_check_owner(const BreakLuaRuntime *runtime)

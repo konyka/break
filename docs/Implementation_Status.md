@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Lua runtime 内存预算（2026-10-30）
+
+- **交付**：`BreakLuaRuntimeConfig.memory_budget`（0 = 不限）与 `break_lua_runtime_memory_in_use`。分配器统计 VM 持有的字节，超预算的增长请求被拒，Lua 报 LUA_ERRMEM，对外为 `BREAK_LUA_OOM`，VM 不 abort 且之后可继续使用；预算不足以打开标准库时 create 返回 NULL。
+- **验证**：`test_break_lua_runtime` 9/9（新增 1 例），去掉预算判断后变红；ASan 树 `test_break_lua_{runtime,module,binding,value}` 全绿；默认树全量 ctest 仅 `test_platform_x11_runtime` 失败（依赖当前桌面的全屏行为，与本改动无关）。
+- **边界**：预算按 VM 计，不区分模块；编辑器 Lua console 暂未设置预算。设计见 `docs/design/lua_runtime.md` §2.7。
+
 ## 本轮更新：2026-10-29 同步后的 Windows 修复（编辑器设置/字体测试、fuzz_editor_scene）
 
 - **问题**：同步 23 个提交（编辑器 CLion 风格主题与字体、设置持久化、场景 fuzzer 等）后，Windows 上 `test_editor_fonts`、`test_editor_settings`、`fuzz_editor_scene` 编不过：用了 POSIX 的 `setenv`/`unsetenv`/`<unistd.h>`/`getpid`/写死的 `/tmp`。生产代码 `editor_settings.c` 本身有 `%APPDATA%` 分支，只是测试没跟上。

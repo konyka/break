@@ -77,6 +77,12 @@
 
 `break_lua_test` 变体编译同一批 TU 并加入：分配故障注入（单一 budget 同时覆盖 struct calloc 与 Lua allocator）、runtime 与 ECS batch 两个 double-destroy fail-stop registry（均按值查询、绝不先解引用）、类型擦除 VM accessor、module registry/env/state 探针、帧错误记录与 hooks-disabled 探针、`_test_reload_now` mid-frame reload binding。production `libbreak_lua.a` 经 nm 验证 0 个 test-hook 符号。
 
+### 2.7 内存预算（2026-10-30）
+
+- `BreakLuaRuntimeConfig.memory_budget`（字节，0 = 不限）：VM 分配器统计交给 Lua 的全部字节，任何会让总量超过预算的增长请求返回 NULL；Lua 先做一次紧急 GC，仍不够则抛 LUA_ERRMEM，load/reload/call/帧钩子因此以 `BREAK_LUA_OOM` 失败而不是 abort，垃圾回收后 VM 继续可用。缩小与释放总是成功。预算小到连标准库都打不开时 `create` 返回 NULL。
+- `break_lua_runtime_memory_in_use(rt)` 返回当前字节数（owner-only，NULL/非 owner 返回 0）；`effective_config` 回报 `memory_budget`。
+- 测试：`test_break_lua_runtime` 新增 `memory_budget_caps_vm_allocation_and_fails_closed`（默认不限、过小预算 create 失败、1 MiB 预算下小请求成功、10 万元素请求 OOM 且用量不超预算、之后 VM 仍可用）；去掉预算判断后该例变红；ASan 树下 4 个 break_lua 二进制全绿。
+
 ## 3. 设计-only / 未实现
 
 - **batch 记录的真实 apply**：host drain 后如何施加到 ECS World 属后续集成任务（`break_lua` 内结构上无 World 指针）。
@@ -84,10 +90,9 @@
 - **LuaJIT**：Stage 3.5 延期项，本计划不交付（gating 条件见 roadmap）。
 - **engine/demo 集成**：未做；本文件全部条目是独立可选库证据。
 - **CLOSED/TIMEOUT 语义**：枚举保留，无 API 映射。
-- **内存预算（memory budget）**：仅指令预算已交付（§2.5）；Lua 侧 allocator 级内存上限为设计-only，当前无任何代码承诺。
 
 ## 4. 验证证据索引
 
-- focused ctest：`test_break_lua_runtime`（8）+ `test_break_lua_module`（19）+ `test_break_lua_value`（27）+ `test_break_lua_binding`（22）+ `test_break_lua_target_contract` + 兼容层 `test_script_lua`，在 Task 5 closeout 干净树 `build-sdd-l5`（normal）、`build-sdd-l5-asan`（ASan+UBSan，零报告；per-task lane 曾抓到并已修复 batch double-destroy 的一例真实 UAF——registry 按值查询必须先于任何解引用）、`build-sdd-l5-tsan`（TSan，四个 break_lua 二进制各连跑 10 次零报告）三树各自 6/6 全绿；`ENGINE_BUILD_TESTS=OFF` 树（`build-sdd-l5-notests`）独立构建 `break_lua` 且 nm 验证 0 个 test-hook 导出符号（仅 26 个 `break_lua_*` production 导出）。
+- focused ctest：`test_break_lua_runtime`（9，含 §2.7 内存预算）+ `test_break_lua_module`（19）+ `test_break_lua_value`（27）+ `test_break_lua_binding`（22）+ `test_break_lua_target_contract` + 兼容层 `test_script_lua`，在 Task 5 closeout 干净树 `build-sdd-l5`（normal）、`build-sdd-l5-asan`（ASan+UBSan，零报告；per-task lane 曾抓到并已修复 batch double-destroy 的一例真实 UAF——registry 按值查询必须先于任何解引用）、`build-sdd-l5-tsan`（TSan，四个 break_lua 二进制各连跑 10 次零报告）三树各自 6/6 全绿；`ENGINE_BUILD_TESTS=OFF` 树（`build-sdd-l5-notests`）独立构建 `break_lua` 且 nm 验证 0 个 test-hook 导出符号（仅 26 个 `break_lua_*` production 导出）。
 - 全量套件（`ctest -LE 'graphics|fuzz'`，`build-sdd-l5`）：共 180 项，179 通过 + 1 项 platform-skip（`test_d3d12_dependency_gate`，Windows-only 门）、0 失败；兼容层 `engine/src/script/script_lua.c/.h` 与 `engine/tests/test_script_lua.c` 在 `master..HEAD` 全分支逐字节未动（diff 0 行）。
 - 任务报告：`.superpowers/sdd/2026-10-23-lua-runtime/task-{1,2,3,4,5}-report.md`。

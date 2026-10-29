@@ -231,6 +231,65 @@ TEST(create_allocation_failure_injection)
     }
 }
 
+TEST(memory_budget_caps_vm_allocation_and_fails_closed)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntimeConfig out;
+    BreakLuaRuntime *rt;
+    BreakLuaValue ret;
+    static const char hog[] =
+        "function grow(n)\n"
+        "  local t = {}\n"
+        "  for i = 1, n do t[i] = string.rep('x', 64) .. i end\n"
+        "  return #t\n"
+        "end\n";
+
+    /* default: unlimited, reported as 0 */
+    rt = break_lua_runtime_create(NULL);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_effective_config(rt, &out), BREAK_LUA_OK);
+    ASSERT_EQ(out.memory_budget, (usize)0u);
+    ASSERT_TRUE(break_lua_runtime_memory_in_use(rt) > 0u);
+    break_lua_runtime_destroy(rt);
+
+    /* too small to even open the libraries: create fails closed */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.memory_budget = 1024u;
+    ASSERT_TRUE(break_lua_runtime_create(&cfg) == NULL);
+
+    cfg.memory_budget = 1024u * 1024u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_effective_config(rt, &out), BREAK_LUA_OK);
+    ASSERT_EQ(out.memory_budget, (usize)(1024u * 1024u));
+    ASSERT_TRUE(break_lua_runtime_memory_in_use(rt) <= cfg.memory_budget);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "hog", hog, sizeof(hog) - 1u),
+              BREAK_LUA_OK);
+
+    /* a small request fits */
+    memset(&ret, 0, sizeof(ret));
+    {
+        BreakLuaValue arg;
+        memset(&arg, 0, sizeof(arg));
+        arg.type = BREAK_LUA_VALUE_NUMBER;
+        arg.as.n = 100.0;
+        ASSERT_EQ(break_lua_runtime_call(rt, "hog", "grow", &arg, 1u, &ret, 1u),
+                  BREAK_LUA_OK);
+        ASSERT_EQ(ret.as.n, 100.0);
+        /* one that needs far more than the budget fails as OOM, not abort */
+        arg.as.n = 100000.0;
+        ASSERT_EQ(break_lua_runtime_call(rt, "hog", "grow", &arg, 1u, &ret, 1u),
+                  BREAK_LUA_OOM);
+        ASSERT_TRUE(break_lua_runtime_memory_in_use(rt) <= cfg.memory_budget);
+        /* the VM stays usable after the garbage is collected */
+        arg.as.n = 100.0;
+        ASSERT_EQ(break_lua_runtime_call(rt, "hog", "grow", &arg, 1u, &ret, 1u),
+                  BREAK_LUA_OK);
+    }
+    ASSERT_EQ(break_lua_runtime_memory_in_use(NULL), (usize)0u);
+    break_lua_runtime_destroy(rt);
+}
+
 TEST(error_name_strings)
 {
     ASSERT_STR_EQ(break_lua_error_name(BREAK_LUA_OK), "OK");
@@ -253,5 +312,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(owner_thread_enforcement_probe);
     RUN_TEST(double_destroy_aborts_in_test_builds);
     RUN_TEST(create_allocation_failure_injection);
+    RUN_TEST(memory_budget_caps_vm_allocation_and_fails_closed);
     RUN_TEST(error_name_strings);
 TEST_MAIN_END()

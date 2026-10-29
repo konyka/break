@@ -78,6 +78,7 @@ typedef struct BreakLuaRuntimeConfig {
     u32 max_values;           /* per-call args/returns cap; 0 => 64 */
     usize max_module_bytes;   /* 0 => BREAK_LUA_MAX_MODULE_BYTES (1 MiB) */
     u64 instruction_budget;   /* per begin/end-frame hook budget; 0 => disabled */
+    usize memory_budget;      /* cap on bytes held by the VM allocator; 0 => unlimited */
 } BreakLuaRuntimeConfig;
 
 /* Creates a runtime owning one freshly opened lua_State (standard libraries
@@ -120,6 +121,17 @@ BreakLuaError break_lua_runtime_check_owner(const BreakLuaRuntime *runtime);
  * non-owner thread (bounded no-op; no error channel exists on a value
  * return). */
 u64 break_lua_runtime_budget_trip_count(const BreakLuaRuntime *runtime);
+
+/* MEMORY BUDGET (config.memory_budget, 0 = unlimited): the VM allocator
+ * counts every byte it hands to Lua and refuses a request that would push
+ * the total above the budget. Lua turns the refusal into LUA_ERRMEM after
+ * one emergency collection, so loads, reloads, calls and frame hooks fail
+ * with BREAK_LUA_OOM instead of aborting, and the VM stays usable once the
+ * garbage is collected. A budget too small to open the standard libraries
+ * makes create return NULL. Shrinking requests always succeed. */
+/* Bytes currently held by this runtime's Lua allocator. Owner-only query:
+ * 0 for NULL or from a non-owner thread. */
+usize break_lua_runtime_memory_in_use(const BreakLuaRuntime *runtime);
 
 /* Stable diagnostic name for each BreakLuaError ("OK", "INVALID", ...);
  * "UNKNOWN" for values outside the enum. */
