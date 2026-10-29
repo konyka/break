@@ -3073,6 +3073,60 @@ TEST(focus_key_frames_every_selected_entity)
     break_editor_shell_destroy(shell);
 }
 
+TEST(ctrl_a_selects_all_and_escape_clears)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *list;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "a")));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "b")));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "c")));
+    break_editor_shell_refresh(shell);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'a', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 3u);
+    list = find(shell, "editor-outliner");
+    ASSERT_EQ(outliner_selected_rows(list, NULL), 3u);
+    /* Delete after select-all removes everything as one undo step */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_DELETE, 0u));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 3u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'a', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 3u);
+    /* Escape (palette closed) clears the selection */
+    dispatch_key_event(shell, MY_KEY_ESCAPE);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+    ASSERT_EQ(outliner_selected_rows(list, NULL), 0u);
+    /* with the palette open Escape closes it and keeps the selection */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'a', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_ESCAPE, 0u));
+    ASSERT_FALSE(break_editor_shell_palette_is_open(shell));
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 3u);
+    /* Ctrl+A in a focused text field selects its text, not entities */
+    ASSERT_TRUE(break_editor_shell_select_ids(shell, NULL, 0u, false));
+    {
+        my_widget_t *edit = find(shell, "editor-assets-filter");
+        my_window_t *win = break_editor_shell_window(shell);
+        my_event_t ev = my_event_init(MY_EVENT_KEY_DOWN);
+        ASSERT_NOT_NULL(edit);
+        my_event_dispatcher_set_focus(&win->dispatcher, edit);
+        ev.u.key.key = 'a';
+        ev.u.key.modifiers = MY_KEYMOD_CTRL;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+        my_event_dispatcher_set_focus(&win->dispatcher,
+                                      break_editor_shell_root(shell));
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_EQ(break_editor_shell_selection_count(shell), 3u);
+    }
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -7956,6 +8010,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(viewport_right_drag_flies_with_wasd);
     RUN_TEST(viewport_stats_overlay_text_toggles_and_persists);
     RUN_TEST(focus_key_frames_every_selected_entity);
+    RUN_TEST(ctrl_a_selects_all_and_escape_clears);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

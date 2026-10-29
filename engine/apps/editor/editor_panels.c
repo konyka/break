@@ -1395,7 +1395,9 @@ enum {
     ACT_PALETTE_TOGGLE,
     ACT_DUPLICATE,
     ACT_DELETE,
-    ACT_TOGGLE_SNAP
+    ACT_TOGGLE_SNAP,
+    ACT_SELECT_ALL,
+    ACT_CLEAR_SELECTION
 };
 
 typedef struct {
@@ -1417,7 +1419,24 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'d', MY_KEYMOD_CTRL, ACT_DUPLICATE},
     {MY_KEY_DELETE, MY_KEYMOD_NONE, ACT_DELETE},
     {'g', MY_KEYMOD_CTRL, ACT_TOGGLE_SNAP},
+    {'a', MY_KEYMOD_CTRL, ACT_SELECT_ALL},
+    {MY_KEY_ESCAPE, MY_KEYMOD_NONE, ACT_CLEAR_SELECTION},
 };
+
+/* Ctrl+A: every entity, in document order; the first becomes the primary
+ * (bounded by the multi-select cap). */
+static void shell_do_select_all(BreakEditorShell *shell) {
+    BreakEditorEntityId ids[EDITOR_EXTRA_SELECTION_MAX + 1u];
+    usize i, n = break_editor_doc_entity_count(shell->doc);
+    u32 k = 0u;
+    for (i = 0u; i < n && k < EDITOR_EXTRA_SELECTION_MAX + 1u; i++) {
+        const char *unused = NULL;
+        if (break_editor_doc_entity_at(shell->doc, i, &ids[k], &unused)) {
+            k++;
+        }
+    }
+    (void)break_editor_shell_select_ids(shell, ids, k, false);
+}
 
 /* W A S D Q E -> fly key bits (forward, left, back, right, down, up) */
 static u32 shell_fly_key_bit(u32 key) {
@@ -1550,6 +1569,12 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
             break;
         case ACT_DUPLICATE:
             shell_do_duplicate_selected(shell);
+            break;
+        case ACT_SELECT_ALL:
+            shell_do_select_all(shell);
+            break;
+        case ACT_CLEAR_SELECTION:
+            (void)break_editor_shell_select_ids(shell, NULL, 0u, false);
             break;
         case ACT_TOGGLE_SNAP:
             shell_set_snap(shell, !shell->snap);
