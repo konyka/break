@@ -85,6 +85,8 @@ TEST(serialize_round_trips)
 TEST(default_path_follows_xdg_then_home)
 {
     char path[512];
+    /* the override must not leak in from the caller's environment */
+    ASSERT_EQ(unsetenv("BREAK_EDITOR_SETTINGS"), 0);
     ASSERT_EQ(setenv("XDG_CONFIG_HOME", "/tmp/xdg-test", 1), 0);
     ASSERT_TRUE(break_editor_settings_default_path(path, sizeof(path)));
     ASSERT_STR_EQ(path, "/tmp/xdg-test/break/editor.ini");
