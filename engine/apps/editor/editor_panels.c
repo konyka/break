@@ -55,6 +55,8 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_PALETTE_COMMAND_COUNT 19u
 /* 25 degrees: the editor camera starts above the grid plane */
 #define EDITOR_DEFAULT_CAMERA_PITCH 0.43633231f
+/* "2": look along -X from the +X side (90 degrees) */
+#define EDITOR_VIEW_RIGHT_YAW 1.57079633f
 /* F with nothing selected frames at most this many entities */
 #define EDITOR_FOCUS_SCENE_MAX 1024u
 #define EDITOR_EXTRA_SELECTION_MAX 64u
@@ -1485,7 +1487,10 @@ enum {
     ACT_EXTEND_PREV,
     ACT_EXTEND_NEXT,
     ACT_RENAME,
-    ACT_RESET_VIEW
+    ACT_RESET_VIEW,
+    ACT_VIEW_FRONT,
+    ACT_VIEW_RIGHT,
+    ACT_VIEW_TOP
 };
 
 typedef struct {
@@ -1511,6 +1516,9 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {MY_KEY_ESCAPE, MY_KEYMOD_NONE, ACT_CLEAR_SELECTION},
     {MY_KEY_F2, MY_KEYMOD_NONE, ACT_RENAME},
     {MY_KEY_HOME, MY_KEYMOD_NONE, ACT_RESET_VIEW},
+    {'1', MY_KEYMOD_NONE, ACT_VIEW_FRONT},
+    {'2', MY_KEYMOD_NONE, ACT_VIEW_RIGHT},
+    {'3', MY_KEYMOD_NONE, ACT_VIEW_TOP},
     {MY_KEY_UP, MY_KEYMOD_NONE, ACT_SELECT_PREV},
     {MY_KEY_DOWN, MY_KEYMOD_NONE, ACT_SELECT_NEXT},
     {MY_KEY_UP, MY_KEYMOD_SHIFT, ACT_EXTEND_PREV},
@@ -1709,6 +1717,19 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
                 sc->action == ACT_SELECT_NEXT || sc->action == ACT_EXTEND_NEXT,
                 sc->action == ACT_EXTEND_PREV || sc->action == ACT_EXTEND_NEXT);
             break;
+        case ACT_VIEW_FRONT:
+        case ACT_VIEW_RIGHT:
+        case ACT_VIEW_TOP:
+            /* orientation presets; pivot and distance stay */
+            shell->camera.yaw =
+                sc->action == ACT_VIEW_RIGHT ? EDITOR_VIEW_RIGHT_YAW : 0.0f;
+            shell->camera.pitch = sc->action == ACT_VIEW_TOP
+                                      ? BREAK_EDITOR_CAMERA_PITCH_LIMIT
+                                      : 0.0f;
+            if (shell->viewport_widget != NULL) {
+                my_widget_invalidate(shell->viewport_widget, NULL);
+            }
+            break;
         case ACT_RESET_VIEW:
             shell_execute_palette_command(shell, PAL_RESET_VIEW);
             break;
@@ -1746,7 +1767,8 @@ static void shell_on_root_key_down(void *ctx, const char *event, void *data) {
     if (shell != NULL && e != NULL && e->type == MY_EVENT_KEY_DOWN) {
         /* Up/Down typed into a text field (Lua console history, inspector
          * fields) belong to it; the outliner only walks from elsewhere */
-        if ((e->u.key.key == MY_KEY_UP || e->u.key.key == MY_KEY_DOWN) &&
+        if ((e->u.key.key == MY_KEY_UP || e->u.key.key == MY_KEY_DOWN ||
+             (e->u.key.key >= '0' && e->u.key.key <= '9')) &&
             !shell->palette_open && shell->win != NULL &&
             my_edit_is_instance(shell->win->dispatcher.focused)) {
             return;

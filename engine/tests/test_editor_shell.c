@@ -3302,6 +3302,41 @@ TEST(home_and_palette_reset_the_view)
     break_editor_shell_destroy(shell);
 }
 
+TEST(digit_keys_snap_to_front_right_top_views)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorCamera *cam;
+    f32 target[3] = {1.0f, 2.0f, 3.0f};
+    ASSERT_NOT_NULL(shell);
+    cam = break_editor_shell_camera(shell);
+    memcpy(cam->target, target, sizeof(target));
+    cam->distance = 7.0f;
+    cam->yaw = 0.3f;
+    cam->pitch = 0.2f;
+    dispatch_key_event(shell, '1');
+    ASSERT_FLOAT_EQ(cam->yaw, 0.0f, 0.0f);
+    ASSERT_FLOAT_EQ(cam->pitch, 0.0f, 0.0f);
+    dispatch_key_event(shell, '2');
+    ASSERT_FLOAT_EQ(cam->yaw, 1.5707963f, 1e-6f);
+    ASSERT_FLOAT_EQ(cam->pitch, 0.0f, 0.0f);
+    dispatch_key_event(shell, '3');
+    ASSERT_FLOAT_EQ(cam->yaw, 0.0f, 0.0f);
+    ASSERT_FLOAT_EQ(cam->pitch, BREAK_EDITOR_CAMERA_PITCH_LIMIT, 1e-6f);
+    /* orientation only: pivot and distance are kept */
+    ASSERT_TRUE(memcmp(cam->target, target, sizeof(target)) == 0);
+    ASSERT_FLOAT_EQ(cam->distance, 7.0f, 0.0f);
+    /* digits typed into a text field stay there */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        my_widget_t *edit = find(shell, "editor-lua-edit");
+        ASSERT_NOT_NULL(edit);
+        my_event_dispatcher_set_focus(&win->dispatcher, edit);
+        dispatch_key_event(shell, '1');
+        ASSERT_FLOAT_EQ(cam->pitch, BREAK_EDITOR_CAMERA_PITCH_LIMIT, 1e-6f);
+    }
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8271,6 +8306,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(focus_without_selection_frames_the_whole_scene);
     RUN_TEST(f2_renames_the_selected_entity);
     RUN_TEST(home_and_palette_reset_the_view);
+    RUN_TEST(digit_keys_snap_to_front_right_top_views);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);
