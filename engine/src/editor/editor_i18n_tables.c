@@ -148,7 +148,7 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(CMD_THEME_LIGHT, "主题：浅色"),
         T(CMD_THEME_DARK, "主题：深色"),
         T(TAB_CONSOLE, "控制台"),
-        T(TAB_LUA, "Lua"),
+        T(TAB_LUA, "Lua 控制台"),
         T(TAB_PROFILER, "性能分析"),
         T(TAB_NETWORK, "网络"),
         T(TAB_RENDER, "渲染"),
