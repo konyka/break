@@ -71,3 +71,11 @@ bool     vfs_eof(VFSFile *f);
 void     vfs_close(VFSFile *f);
 usize    vfs_size(VFSFile *f);
 u8      *vfs_read_all(VFS *vfs, const char *path, usize *out_size);
+
+/* Visits every entry of every PAK mount that vfs_open can serve (entries
+ * rejected at mount time are skipped), mounts in mount order, entries in
+ * archive order. `path` is borrowed for the call only. Return false from
+ * `fn` to stop. Returns the number of entries visited; 0 for NULL vfs/fn.
+ * Same thread rules as vfs_mount_*: do not mount concurrently. */
+typedef bool (*VFSPakEntryFn)(void *user, const char *path, u32 size);
+usize vfs_enumerate_pak(VFS *vfs, VFSPakEntryFn fn, void *user);

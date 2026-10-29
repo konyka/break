@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：VFS pak 条目枚举（2026-10-30）
+
+- **交付**：`vfs_enumerate_pak(vfs, fn, user)`（`engine/src/asset/vfs.{h,c}`）。只列出 `vfs_open` 能读到的条目。挂载时被拒的条目改为打上 `name_offset = UINT32_MAX` 标记，原先只是不放进哈希表，所以枚举不会访问越界的名字指针。
+- **测试**：`test_vfs` 新增 `vfs_enumerate_pak_lists_valid_entries_only`，覆盖有效条目和越界条目、重复挂载、提前停止、NULL 参数，34/34 通过；ASan 下同样 34/34。变异检查：去掉跳过标记后测试越界读并崩溃。默认树 232/233，唯一失败是已知 flaky 的 x11 用例。
+- **未做**：editor asset browser 还没有接入 pak 列表，它仍然只列 DIR 挂载，这是下一步。
+
 ## 本轮更新：replay window 接线决策（2026-10-30）
 
 - **结论**：break_net 的流式传输不接入 `break_replay_window`。跨连接重放已被 AUTH v2 绑定 `server_nonce` 阻断，且有测试锁定；连接内重放由严格递增的信封序号阻断。这个窗口留给将来的乱序传输（UDP / 逐消息 AEAD），消息号格式定为“每会话 epoch + 64 位计数”。原先“协议选择未定”这一待办就此关闭。本轮只改文档，没有改代码。

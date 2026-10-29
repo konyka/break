@@ -156,14 +156,20 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     for (u32 e = 0; e < hdr.entry_count; e++) {
         /* R160-A: Validate name_offset before inserting into hash table.
          * A malicious PAK could set name_offset >= name_table_size, causing an
-         * out-of-bounds read in vfs_open when computing the name pointer. */
-        if (entries[e].name_offset >= hdr.name_table_size) continue;
-        if (!has_name_nul || entries[e].name_offset > last_name_nul) continue;
-        /* R388: an entry's data range must lie inside the file. vfs_open sizes
+         * out-of-bounds read in vfs_open when computing the name pointer.
+         * R388: an entry's data range must lie inside the file. vfs_open sizes
          * its allocation from entry->size, so an entry claiming ~4 GiB would
          * make every open of that name attempt a 4 GiB calloc before the read
          * failed. Skipping the entry here makes the lie a lookup miss instead. */
-        if ((u64)entries[e].data_offset + (u64)entries[e].size > (u64)file_size) continue;
+        bool valid = entries[e].name_offset < hdr.name_table_size &&
+                     has_name_nul && entries[e].name_offset <= last_name_nul &&
+                     (u64)entries[e].data_offset + (u64)entries[e].size <= (u64)file_size;
+        if (!valid) {
+            /* Never reachable through the hash table; the sentinel lets
+             * vfs_enumerate_pak skip it too. */
+            entries[e].name_offset = UINT32_MAX;
+            continue;
+        }
         u32 slot = entries[e].name_hash & mask;
         while (table[slot] != UINT32_MAX) {
             slot = (slot + 1) & mask;
@@ -347,4 +353,21 @@ u8 *vfs_read_all(VFS *vfs, const char *path, usize *out_size) {
     }
     vfs_close(f);
     return data;
+}
+
+usize vfs_enumerate_pak(VFS *vfs, VFSPakEntryFn fn, void *user) {
+    usize visited = 0;
+    if (!vfs || !fn) return 0;
+    for (u32 mi = 0; mi < vfs->mount_count; mi++) {
+        if (vfs->mounts[mi].type != VFS_MOUNT_PAK) continue;
+        for (u32 e = 0; e < vfs->mounts[mi].pak_header.entry_count; e++) {
+            const PakEntry *pe = &vfs->mounts[mi].pak_entries[e];
+            if (pe->name_offset == UINT32_MAX) continue;
+            visited++;
+            if (!fn(user, vfs->mounts[mi].pak_names + pe->name_offset, pe->size)) {
+                return visited;
+            }
+        }
+    }
+    return visited;
 }

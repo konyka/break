@@ -53,6 +53,8 @@ root（vertical）
   不在范围）。默认 root 为进程 cwd（`.`）；create 失败（cwd 不可列）降级
   为空面板 + label 提示，不致命；`break_editor_shell_set_assets_root`
   换根（失败有界 false 且保留旧模型）。
+  2026-10-30 补充：VFS 层已经提供 `vfs_enumerate_pak`（见
+  `docs/design/runtime_asset_streaming.md`），但面板还没有接入 pak 列表。
 - **行模型**：行 0 恒为 `..`（root 处钳制 no-op）；行 1..N 绑定模型的
   过滤后快照（目录在前、逐字节序）；目录渲染带尾随 `/`。
 - **激活手势（决策）**：**单击**行即激活。myui list_view 没有双击/Enter

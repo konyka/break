@@ -36,6 +36,7 @@ Stage 2 的顺序是硬约束：先把网络复制和资源请求的 target、�
 现有接口和限制：
 
 - `engine/src/asset/vfs.h:5-12` 定义 16 个 mount、260 字节路径和 128 MiB `VFS_MAX_FILE_BYTES`；支持 DIR/PAK mount，PAK 共享文件游标由 `VFS::pak_lock` 串行化（`vfs.h:42-60`）。
+  - 2026-10-30 补充：`vfs_enumerate_pak(vfs, fn, user)` 会逐个访问每个 PAK 挂载里 `vfs_open` 能读到的条目，顺序是挂载顺序加归档内顺序。挂载时被拒的条目（名字越界、没有终止符、数据超出文件末尾）会在 entry 表中标记 `name_offset = UINT32_MAX` 并跳过。回调返回 false 时停止。测试：`test_vfs` 的 `vfs_enumerate_pak_lists_valid_entries_only`。
 - `engine/src/asset/async_loader.h:38-87` 定义异步全文件、range、priority、texture decode 请求；完成 callback 由 `async_loader_tick()` 在主线程派发。
 - `engine/src/asset/async_loader.c:16-25` 当前 pending heap 为 256，request slot 为 1024，completion queue 为 1024；legacy compatibility loader 在队列满时会等待消费者，这是当前实现事实，不是 Runtime Core formal facade 合同。
 - `engine/src/asset/decode_pipeline.c:12-14,227-249` 当前有 2 个 decode worker 和 256 项输入队列；输入队列满时提交失败，调用方释放 raw bytes。

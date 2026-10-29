@@ -555,6 +555,74 @@ TEST(vfs_pak_entry_data_past_eof_is_miss)
     vfs_destroy(vfs);
 }
 
+typedef struct {
+    char names[4][32];
+    u32  sizes[4];
+    int  count;
+    int  stop_after;
+} PakEnumSeen;
+
+static bool pak_enum_collect(void *user, const char *path, u32 size)
+{
+    PakEnumSeen *seen = (PakEnumSeen *)user;
+    if (seen->count < 4) {
+        snprintf(seen->names[seen->count], sizeof seen->names[0], "%s", path);
+        seen->sizes[seen->count] = size;
+    }
+    seen->count++;
+    return seen->stop_after == 0 || seen->count < seen->stop_after;
+}
+
+/* Two entries: "a.txt" valid, "bad.txt" claiming data past EOF. Enumeration
+ * lists only what vfs_open can actually serve, in entry order. */
+TEST(vfs_enumerate_pak_lists_valid_entries_only)
+{
+    const char names[] = "a.txt\0bad.txt\0";
+    u32 names_len = (u32)sizeof(names) - 1u;
+    const char *content = "AAAA";
+    u32 data_off = (u32)(sizeof(PakHeader) + 2u * sizeof(PakEntry)) + names_len;
+    PakHeader hdr = { .magic = VFS_PAK_MAGIC, .version = VFS_PAK_VERSION,
+                      .entry_count = 2, .name_table_size = names_len };
+    PakEntry e[2] = {
+        { .name_hash = test_fnv1a("a.txt"), .name_offset = 0,
+          .data_offset = data_off, .size = 4 },
+        { .name_hash = test_fnv1a("bad.txt"), .name_offset = 6,
+          .data_offset = data_off, .size = 4096 },
+    };
+    FILE *fp = fopen(TMP_PAK, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&hdr, sizeof hdr, 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(e, sizeof e[0], 2, fp), (usize)2);
+    ASSERT_EQ(fwrite(names, 1, names_len, fp), (usize)names_len);
+    ASSERT_EQ(fwrite(content, 1, 4, fp), (usize)4);
+    ASSERT_EQ(fclose(fp), 0);
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(vfs_mount_dir(vfs, TMP_DIR));
+    ASSERT_TRUE(vfs_mount_pak(vfs, TMP_PAK));
+
+    PakEnumSeen seen;
+    memset(&seen, 0, sizeof seen);
+    ASSERT_EQ(vfs_enumerate_pak(vfs, pak_enum_collect, &seen), (usize)1);
+    ASSERT_EQ(seen.count, 1);
+    ASSERT_STR_EQ(seen.names[0], "a.txt");
+    ASSERT_EQ(seen.sizes[0], 4u);
+    ASSERT_TRUE(vfs_open(vfs, "bad.txt") == NULL);
+
+    /* a second mount of the same pak: entries are visited per mount */
+    ASSERT_TRUE(vfs_mount_pak(vfs, TMP_PAK));
+    memset(&seen, 0, sizeof seen);
+    ASSERT_EQ(vfs_enumerate_pak(vfs, pak_enum_collect, &seen), (usize)2);
+    memset(&seen, 0, sizeof seen);
+    seen.stop_after = 1;
+    ASSERT_EQ(vfs_enumerate_pak(vfs, pak_enum_collect, &seen), (usize)1);
+
+    ASSERT_EQ(vfs_enumerate_pak(NULL, pak_enum_collect, &seen), (usize)0);
+    ASSERT_EQ(vfs_enumerate_pak(vfs, NULL, &seen), (usize)0);
+    vfs_destroy(vfs);
+}
+
 TEST(vfs_pak_bad_magic)
 {
     PakHeader hdr = { .magic = 0xDEADBEEF, .version = 1, .entry_count = 0, .name_table_size = 0 };
@@ -779,6 +847,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_mount_priority);
     RUN_TEST(vfs_dir_rejects_oversized_file);
     RUN_TEST(vfs_pak_format);
+    RUN_TEST(vfs_enumerate_pak_lists_valid_entries_only);
     RUN_TEST(vfs_pak_unterminated_name_is_miss);
     RUN_TEST(vfs_pak_name_table_size_overflow_rejected);
     RUN_TEST(vfs_pak_entry_count_bounded_by_file_size);
