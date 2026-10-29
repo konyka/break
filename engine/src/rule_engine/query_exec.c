@@ -162,7 +162,7 @@ static re_status_t query_side_value(re_facts_t *facts, re_string_t side, re_valu
             double number;
             memcpy(buffer, side.data, side.size);
             buffer[side.size] = '\0';
-            number = strtod(buffer, &end);
+            number = re_strtod_c(buffer, &end);
             if (end == buffer + side.size && end != buffer) {
                 out->type = RE_VALUE_DOUBLE; out->as.double_value = number;
                 return RE_STATUS_OK;

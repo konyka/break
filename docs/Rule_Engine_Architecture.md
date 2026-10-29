@@ -530,6 +530,13 @@ operation; and the optional C11 executor evaluates only read-only conditions
 in private workers, merging matches back on the engine thread for serial
 actions and callbacks.
 
+Number parsing is locale-independent. Decimal literals in GRL source, numeric
+strings coerced by relational operators, `query` sides, backward-goal operands
+and the `f64` parse builtin all go through `re_strtod_c` (`values.c`), which
+treats `.` as the decimal point whatever `LC_NUMERIC` the host process set.
+The same program therefore behaves identically under `de_DE` or `fr_FR`;
+`decimal_parsing_is_independent_of_the_locale` locks this in.
+
 Transaction lifetime is explicit: commit/rollback release the cloned fact
 stores but retain an inactive handle for safe status checks. The caller then
 calls `re_facts_txn_destroy`; this removes the handle from the retired list and

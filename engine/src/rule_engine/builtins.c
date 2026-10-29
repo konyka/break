@@ -1101,7 +1101,7 @@ static re_status_t rust_f64_parse(const re_allocator_impl_t *allocator, re_strin
     }
     if (!valid || i != text.size) return RE_STATUS_INVALID_ARGUMENT;
     if (out == NULL) return RE_STATUS_OK;
-    /* strtod needs a NUL-terminated copy. */
+    /* re_strtod_c needs a NUL-terminated copy. */
     {
         char stack_buf[64];
         char *buf = stack_buf;
@@ -1112,7 +1112,7 @@ static re_status_t rust_f64_parse(const re_allocator_impl_t *allocator, re_strin
         }
         memcpy(buf, text.data, text.size);
         buf[text.size] = '\0';
-        parsed = strtod(buf, NULL);
+        parsed = re_strtod_c(buf, NULL);
         if (buf != stack_buf) re_free(allocator, buf);
         *out = parsed;
     }

@@ -664,7 +664,7 @@ static re_status_t accumulate_condition_holds(const re_engine_t *engine, const r
         if (value_size == 0u || value_size >= sizeof(buffer)) return RE_STATUS_OK;
         memcpy(buffer, cond + value_start, value_size);
         buffer[value_size] = '\0';
-        parsed = strtod(buffer, &end);
+        parsed = re_strtod_c(buffer, &end);
         if (end != buffer + value_size) return RE_STATUS_OK;
         rhs.type = RE_VALUE_DOUBLE;
         rhs.as.double_value = parsed;

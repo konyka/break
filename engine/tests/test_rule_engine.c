@@ -1,6 +1,7 @@
 #include "test_framework.h"
 #include <rule_engine/rule_engine.h>
 #include "../src/rule_engine/re_internal.h"
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1183,6 +1184,38 @@ TEST(grl_arithmetic_mixes_int_and_double_as_double) {
     re_facts_destroy(facts); re_engine_destroy(engine);
 }
 
+/* Decimal literals and numeric strings use '.' whatever LC_NUMERIC says:
+ * the same program must behave identically under a comma-decimal locale. */
+static int set_comma_locale(void) {
+    return setlocale(LC_NUMERIC, "de_DE.UTF-8") != NULL ||
+           setlocale(LC_NUMERIC, "de_DE.utf8") != NULL ||
+           setlocale(LC_NUMERIC, "fr_FR.UTF-8") != NULL;
+}
+
+TEST(decimal_parsing_is_independent_of_the_locale) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t number = {RE_VALUE_DOUBLE, {.double_value = 2.5}};
+    re_value_t str = {RE_VALUE_STRING, {.string = {"2.5", 3u}}};
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    if (!set_comma_locale()) {
+        printf("    (no comma-decimal locale installed; C locale only)\n");
+    }
+    ASSERT_EQ(re_facts_set(facts, text("Number"), &number), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("Text"), &str), RE_STATUS_OK);
+    run_program(engine, facts,
+        "rule \"Lit\" { when 5 / 2.0 == 2.5 then Lit = 1.25; }"
+        "rule \"Str\" { when Text >= 2.5 and Text <= Number then StrHit = true; }"
+        "rule \"Cmp\" { when Text > 2.25 then CmpHit = true; }", NULL);
+    (void)setlocale(LC_NUMERIC, "C");
+    ASSERT_EQ(re_facts_get(facts, text("Lit"), &result), RE_STATUS_OK);
+    ASSERT_EQ(result.type, RE_VALUE_DOUBLE);
+    ASSERT_TRUE(result.as.double_value == 1.25);
+    ASSERT_EQ(re_facts_get(facts, text("StrHit"), &result), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("CmpHit"), &result), RE_STATUS_OK);
+    re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
 TEST(grl_arithmetic_rejects_malformed_and_zero_division) {
     re_program_t *program = NULL;
     ASSERT_EQ(re_program_load(NULL, text("rule \"Bad\" { when 1 + * 2 == 3 then X = 1; }"), NULL, &program), RE_STATUS_PARSE_ERROR);
@@ -2055,6 +2088,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(grl_arithmetic_supports_subtraction_and_division);
     RUN_TEST(grl_arithmetic_supports_negative_integer_multiplication);
     RUN_TEST(grl_arithmetic_mixes_int_and_double_as_double);
+    RUN_TEST(decimal_parsing_is_independent_of_the_locale);
     RUN_TEST(grl_arithmetic_rejects_malformed_and_zero_division);
     RUN_TEST(grl_in_supports_array_literals_and_structured_arrays);
     RUN_TEST(grl_matches_uses_wildcards);

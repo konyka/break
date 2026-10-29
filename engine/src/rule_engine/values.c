@@ -1,5 +1,49 @@
 #include "re_internal.h"
+#include <locale.h>
+#include <stdlib.h>
 #include <string.h>
+
+double re_strtod_c(const char *text, char **end) {
+    char buf[256];
+    size_t map[256];
+    char *buf_end = NULL;
+    const struct lconv *lc = localeconv();
+    const char *point = (lc != NULL && lc->decimal_point != NULL &&
+                         lc->decimal_point[0] != '\0') ? lc->decimal_point : ".";
+    size_t point_len = strlen(point);
+    size_t i = 0u;
+    size_t o = 0u;
+    double v;
+    if (point_len == 1u && point[0] == '.') return strtod(text, end);
+    /* Copy only the number-shaped prefix (sign, digits, '.', exponent,
+     * hex/inf/nan letters), bounded to the buffer; strtod never reads
+     * further than that anyway. */
+    while (text[i] != '\0') {
+        char ch = text[i];
+        int numeric = (ch >= '0' && ch <= '9') || ch == '.' || ch == '+' ||
+                      ch == '-' || (ch >= 'a' && ch <= 'z') ||
+                      (ch >= 'A' && ch <= 'Z');
+        size_t need = ch == '.' ? point_len : 1u;
+        if (!numeric || o + need >= sizeof(buf)) break;
+        if (ch == '.') {
+            size_t k;
+            memcpy(buf + o, point, point_len);
+            for (k = 0u; k < point_len; k++) map[o + k] = i;
+            o += point_len;
+        } else {
+            map[o] = i;
+            buf[o++] = ch;
+        }
+        i++;
+    }
+    buf[o] = '\0';
+    v = strtod(buf, &buf_end);
+    if (end != NULL) {
+        size_t used = (size_t)(buf_end - buf);
+        *end = (char *)text + (used < o ? map[used] : i);
+    }
+    return v;
+}
 
 #define RE_VALUE_MAX_DEPTH 64u
 

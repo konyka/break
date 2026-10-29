@@ -412,6 +412,13 @@ re_status_t re_program_push_agenda_focus(re_program_t *program, re_string_t grou
 int re_program_pop_agenda_focus(re_program_t *program);
 re_status_t re_program_set_clock(re_program_t *program, int64_t epoch_seconds);
 int re_parse_date(const char *text, int64_t *out);
+/* strtod with '.' as the decimal point whatever LC_NUMERIC is set to. The
+ * number-shaped prefix of `text` (ASCII letters, digits, '+', '-', '.'; at
+ * most 255 bytes) is copied with each '.' replaced by the locale's point,
+ * strtod runs on the copy, and *end is mapped back into `text`. The locale's
+ * own point (e.g. ',' under de_DE) is never part of that prefix, so "1,5"
+ * stops at the comma exactly as in the C locale. */
+double re_strtod_c(const char *text, char **end);
 int re_rule_active(const re_rule_t *rule, int64_t now);
 
 #define RE_AGENDA_MAX_PREMISES 8u

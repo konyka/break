@@ -142,7 +142,7 @@ static int value_to_number(const re_value_t *value, double *out) {
     if (isspace((unsigned char)value->as.string.data[0])) return 0;
     memcpy(buffer, value->as.string.data, value->as.string.size);
     buffer[value->as.string.size] = '\0';
-    *out = strtod(buffer, &end);
+    *out = re_strtod_c(buffer, &end);
     return end == buffer + value->as.string.size;
 }
 

@@ -338,7 +338,7 @@ static re_status_t operand_parse_atom(parser_t *p, operand_parse_frame_t *frame,
         errno = 0;
         out->kind = RE_OPERAND_LITERAL;
         if (has_dot) {
-            number = strtod(p->text + start, &end);
+            number = re_strtod_c(p->text + start, &end);
             if (errno == ERANGE || !isfinite(number) || (size_t)(end - p->text) != p->at)
                 return RE_STATUS_PARSE_ERROR;
             out->value.type = RE_VALUE_DOUBLE; out->value.as.double_value = number;

@@ -1350,7 +1350,7 @@ static re_status_t goal_call_operand(const re_allocator_impl_t *allocator, re_st
         double number;
         memcpy(buffer, token.data, token.size);
         buffer[token.size] = '\0';
-        number = strtod(buffer, &end);
+        number = re_strtod_c(buffer, &end);
         if (end == buffer + token.size && end != buffer) {
             out->kind = RE_OPERAND_LITERAL;
             out->value.type = RE_VALUE_DOUBLE;
