@@ -3789,6 +3789,50 @@ TEST(font_chain_keeps_zwj_sequence_on_one_face)
 #endif
 }
 
+
+/* The editor's bundled CLion face (JetBrains Mono Regular, OFL) must parse
+ * in this rasterizer: a path that resolves but a face that fails to load
+ * would silently fall back to the system font. */
+TEST(bundled_jetbrains_mono_loads_and_shapes_latin)
+{
+#ifdef BREAK_TEST_EDITOR_FONT_PATH
+  my_font_source_t src = {BREAK_TEST_EDITOR_FONT_PATH, 0};
+  my_font_t* font = my_font_create_chain_ex(NULL, &src, 1u, 64u);
+  my_glyph_t glyph;
+  int32_t w = 0, h = 0;
+  ASSERT_NOT_NULL(font);
+  ASSERT_EQ(my_font_measure(font, "Add entity", 13, &w, &h), MY_RET_OK);
+  printf("    (JetBrains Mono 13px \"Add entity\": %dx%d)\n", w, h);
+  ASSERT_TRUE(w > 0 && h > 0);
+  ASSERT_EQ(my_font_get_glyph(font, (uint32_t)'A', 13, &glyph), MY_RET_OK);
+  ASSERT_TRUE(glyph.bitmap != NULL && glyph.w > 0 && glyph.h > 0);
+  my_font_glyph_release(&glyph);
+  my_font_destroy(font);
+#endif
+}
+
+
+/* The bundled Chinese face (Noto Sans SC, the CLion Chinese language pack's
+ * family) must parse and rasterize CJK, so the editor renders Chinese with
+ * no host CJK font. */
+TEST(bundled_noto_sans_sc_loads_and_shapes_cjk)
+{
+#ifdef BREAK_TEST_EDITOR_CJK_FONT_PATH
+  my_font_source_t src = {BREAK_TEST_EDITOR_CJK_FONT_PATH, 0};
+  my_font_t* font = my_font_create_chain_ex(NULL, &src, 1u, 64u);
+  my_glyph_t glyph;
+  int32_t w = 0, h = 0;
+  ASSERT_NOT_NULL(font);
+  ASSERT_EQ(my_font_measure(font, "\xE6\xB7\xBB\xE5\x8A\xA0", 13, &w, &h), MY_RET_OK);
+  printf("    (Noto Sans SC 13px \"\\xE6\\xB7\\xBB\\xE5\\x8A\\xA0\": %dx%d)\n", w, h);
+  ASSERT_TRUE(w > 0 && h > 0);
+  ASSERT_EQ(my_font_get_glyph(font, 0x6DFBu, 13, &glyph), MY_RET_OK); /* 添 */
+  ASSERT_TRUE(glyph.bitmap != NULL && glyph.w > 0 && glyph.h > 0);
+  my_font_glyph_release(&glyph);
+  my_font_destroy(font);
+#endif
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(font_public_api_defaults_missing_metric_slots);
     RUN_TEST(font_glyph_wrappers_rollback_failed_provider_output);
@@ -3872,4 +3916,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(font_chain_keeps_combining_cluster_on_one_face);
     RUN_TEST(font_chain_measure_keeps_combining_cluster_width);
     RUN_TEST(font_chain_keeps_zwj_sequence_on_one_face);
+  RUN_TEST(bundled_jetbrains_mono_loads_and_shapes_latin);
+  RUN_TEST(bundled_noto_sans_sc_loads_and_shapes_cjk);
 TEST_MAIN_END()

@@ -48,4 +48,4 @@ The outliner row bound to the selected entity carries style class `selected` (se
 
 ## 5. Not delivered
 
-Icons, tool-window tabs and gutters, light theme, theme switching UI, custom fonts (JetBrains Mono / Inter are not bundled; the existing font chain stays).
+Icons, tool-window tabs and gutters, light theme, theme switching UI, light theme switching UI. **Superseded 2026-10-29**: JetBrains Mono Regular 2.304 is now bundled at `engine/assets/fonts/` (OFL) and leads the font chain for every language; CJK still falls through to the system faces.

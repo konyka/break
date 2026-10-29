@@ -52,6 +52,7 @@
 #include "myui/my_window.h"
 #include "myui/widgets/my_button.h"
 #include "myui/widgets/my_label.h"
+#include "myui/widgets/my_list_view.h"
 #include "myui/widgets/my_edit.h"
 
 static void emit_click(my_widget_t *w) {
@@ -1693,6 +1694,71 @@ TEST(shell_applies_the_new_ui_dark_theme)
     ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
               BREAK_EDITOR_THEME_ACCENT);
     ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    break_editor_shell_destroy(shell);
+}
+
+/* Real pointer input must reach the floating palette's rows: myui's hit
+ * test skips floating children with no on_event vtable slot, and the
+ * palette is a plain container, so row clicks used to land on the widgets
+ * underneath. */
+TEST(palette_row_click_via_pointer_switches_language)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_window_t *win;
+    my_widget_t *row;
+    int32_t gx = 0, gy = 0;
+    my_event_t ev;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    /* scroll the last command row into view (it is below the fold) */
+    {
+        my_widget_t *list = find(shell, "editor-palette-list");
+        ASSERT_NOT_NULL(list);
+        (void)my_list_view_set_scroll_offset(list, 100000);
+    }
+    shell_paint(shell);
+    row = list_row_by_text(find(shell, "editor-palette-list"),
+                           "Language: \xE4\xB8\xAD\xE6\x96\x87 (Chinese)");
+    ASSERT_NOT_NULL(row);
+    my_widget_local_to_global(row, &gx, &gy);
+    gx += row->rect.w / 2;
+    gy += row->rect.h / 2;
+    win = break_editor_shell_window(shell);
+    ev = my_event_init(MY_EVENT_POINTER_DOWN);
+    ev.u.pointer.x = gx;
+    ev.u.pointer.y = gy;
+    ev.u.pointer.button = 1u;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+    ev = my_event_init(MY_EVENT_POINTER_UP);
+    ev.u.pointer.x = gx;
+    ev.u.pointer.y = gy;
+    ev.u.pointer.button = 1u;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+    ASSERT_EQ(break_editor_i18n_lang(), BREAK_EDITOR_LANG_ZH_CN);
+    ASSERT_FALSE(break_editor_shell_palette_is_open(shell));
+    /* i18n is process-global: leave it in English for the later cases */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    break_editor_shell_destroy(shell);
+}
+
+/* Keys dispatched through the real event dispatcher must still reach the
+ * shell root while the palette is open: the palette consumes pointer events
+ * only. */
+TEST(palette_escape_via_event_dispatcher_closes)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_window_t *win;
+    my_event_t ev;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    shell_paint(shell);
+    ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
+    win = break_editor_shell_window(shell);
+    ev = my_event_init(MY_EVENT_KEY_DOWN);
+    ev.u.key.key = MY_KEY_ESCAPE;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+    ASSERT_FALSE(break_editor_shell_palette_is_open(shell));
     break_editor_shell_destroy(shell);
 }
 
@@ -6529,6 +6595,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shell_applies_the_new_ui_dark_theme);
     RUN_TEST(outliner_highlights_the_selected_row);
     RUN_TEST(palette_paints_with_focused_edit_ring);
+    RUN_TEST(palette_row_click_via_pointer_switches_language);
+    RUN_TEST(palette_escape_via_event_dispatcher_closes);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);

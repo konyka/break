@@ -3,7 +3,21 @@
 #include "editor_fonts.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#if defined(__linux__)
+#include <unistd.h>
+/* The engine compiles with _POSIX_C_SOURCE=199309L, where unistd.h does not
+ * declare readlink(2) (it needs >= 200112L). Declare it here. */
+extern ssize_t readlink(const char *path, char *buf, size_t bufsiz);
+#endif
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 #if defined(BREAK_EDITOR_FONTCONFIG)
 #include <fontconfig/fontconfig.h>
@@ -168,6 +182,129 @@ static void chain_add_script(BreakEditorFontChain *c, const char *root,
     }
 }
 
+#define BREAK_EDITOR_BUNDLED_FONT_REL "assets/fonts/JetBrainsMono-Regular.ttf"
+#define BREAK_EDITOR_BUNDLED_CJK_REL "assets/fonts/NotoSansSC-VF.ttf"
+
+/* Writes dir + '/' + rel into out; false when it does not fit. */
+static bool path_join(char *out, usize cap, const char *dir, usize dir_len,
+                      const char *rel) {
+    usize rel_len = strlen(rel);
+    if (dir_len == 0u || dir_len + 1u + rel_len >= cap) {
+        return false;
+    }
+    memcpy(out, dir, dir_len);
+    out[dir_len] = '/';
+    memcpy(out + dir_len + 1u, rel, rel_len + 1u);
+    return true;
+}
+
+/* Directory part of an absolute executable path, "" when unavailable. */
+static usize exe_dir(char *out, usize cap) {
+    usize n = 0u;
+#if defined(__linux__)
+    ssize_t r = readlink("/proc/self/exe", out, cap - 1u);
+    if (r <= 0 || (usize)r >= cap) {
+        return 0u;
+    }
+    n = (usize)r;
+#elif defined(__APPLE__)
+    uint32_t need = (uint32_t)cap;
+    if (_NSGetExecutablePath(out, &need) != 0) {
+        return 0u;
+    }
+    n = strlen(out);
+#elif defined(_WIN32)
+    DWORD r = GetModuleFileNameA(NULL, out, (DWORD)cap);
+    if (r == 0 || r >= (DWORD)cap) {
+        return 0u;
+    }
+    n = (usize)r;
+    for (usize i = 0u; i < n; i++) {
+        if (out[i] == '\\') out[i] = '/';
+    }
+#else
+    (void)cap;
+#endif
+    out[n] = '\0';
+    while (n > 0u && out[n - 1u] != '/') {
+        n--;
+    }
+    return n > 0u ? n - 1u : 0u;
+}
+
+/* Build-tree layouts: the exe sits in the build dir, assets live in
+ * <source>/engine; the editor's asset root is the cwd, so "engine/assets"
+ * and "assets" (cwd = source root or engine/) cover source runs. */
+static bool bundled_path(const char *rel, usize index, char *out, usize cap) {
+    const char *env;
+    char dir[BREAK_EDITOR_FONT_PATH_MAX];
+    usize n;
+    if (out == NULL || cap == 0u) {
+        return false;
+    }
+    out[0] = '\0';
+    if (index == 0u) {
+        env = getenv("BREAK_ASSET_DIR");
+        if (env == NULL || env[0] == '\0') {
+            return false;
+        }
+        return path_join(out, cap, env, strlen(env),
+                         rel);
+    }
+    if (index == 1u) {
+        n = exe_dir(dir, sizeof(dir));
+        if (n == 0u) {
+            return false;
+        }
+        /* <exe dir>/assets (installed, or engine/ as cwd of the exe dir) */
+        return path_join(out, cap, dir, n, rel);
+    }
+    if (index == 2u) {
+        /* repo layout: exe in <build>, assets in <repo>/engine */
+        n = exe_dir(dir, sizeof(dir));
+        if (n == 0u) {
+            return false;
+        }
+        /* strip the build dir: exe dir is <repo>/<build> or <repo> */
+        while (n > 0u && dir[n - 1u] != '/') {
+            n--;
+        }
+        if (n == 0u) {
+            return false;
+        }
+        {
+            char full[BREAK_EDITOR_FONT_PATH_MAX];
+            if (snprintf(full, sizeof(full), "engine/%s", rel) >=
+                (int)sizeof(full)) {
+                return false;
+            }
+            return path_join(out, cap, dir, n - 1u, full);
+        }
+    }
+    if (index == 3u) {
+        return path_join(out, cap, ".", 1u, rel);
+    }
+    if (index == 4u) {
+        {
+            char full[BREAK_EDITOR_FONT_PATH_MAX];
+            if (snprintf(full, sizeof(full), "engine/%s", rel) >=
+                (int)sizeof(full)) {
+                return false;
+            }
+            return path_join(out, cap, ".", 1u, full);
+        }
+    }
+    return false;
+}
+
+bool break_editor_bundled_font_path(usize index, char *out, usize cap) {
+    return bundled_path(BREAK_EDITOR_BUNDLED_FONT_REL, index, out, cap);
+}
+
+bool break_editor_bundled_cjk_font_path(usize index, char *out, usize cap) {
+    return bundled_path(BREAK_EDITOR_BUNDLED_CJK_REL, index, out, cap);
+}
+
 usize break_editor_font_candidates(BreakEditorLang lang, const char *root,
                                    bool use_fontconfig,
                                    BreakEditorFontChain *out) {
@@ -178,6 +315,27 @@ usize break_editor_font_candidates(BreakEditorLang lang, const char *root,
     memset(out, 0, sizeof(*out));
     if (root != NULL && root[0] == '\0') {
         root = NULL;
+    }
+    /* Bundled CLion face first (JetBrains Mono Regular, OFL; Latin and
+     * punctuation only — CJK still comes from the system chain below).
+     * Skipped when `root` is set: that form emulates a whole system tree
+     * for the table tests. */
+    if (root == NULL) {
+        for (usize i = 0u; i < BREAK_EDITOR_BUNDLED_FONT_PATHS; i++) {
+            char path[BREAK_EDITOR_FONT_PATH_MAX];
+            if (break_editor_bundled_font_path(i, path, sizeof(path))) {
+                chain_add(out, NULL, path, 0, false);
+            }
+        }
+        /* Bundled Chinese face (Noto Sans SC, the CLion Chinese language
+         * pack's family): second, so Latin keeps JetBrains Mono and CJK no
+         * longer depends on the host having any Chinese font installed. */
+        for (usize i = 0u; i < BREAK_EDITOR_BUNDLED_FONT_PATHS; i++) {
+            char path[BREAK_EDITOR_FONT_PATH_MAX];
+            if (break_editor_bundled_cjk_font_path(i, path, sizeof(path))) {
+                chain_add(out, NULL, path, 0, true);
+            }
+        }
     }
     chain_add_script(out, root, use_fontconfig, cjk_first);
     chain_add_script(out, root, use_fontconfig, !cjk_first);

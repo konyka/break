@@ -11,6 +11,10 @@
 - **大纲选中行高亮**：选中实体对应的大纲行带 `selected` 类，显示选中色 `#2E436E`、白字；点击行或增删实体时随之移动或清除（`test_editor_shell` `outliner_highlights_the_selected_row`，修复前红；Vulkan 实机取色：被点行 `#2E436E`、其余 `#1E1F22`）。
 - **命令面板被 3D 视口盖住**：Break RHI 画布先画全部纯色/文字、再画全部图片，后画的面板反被视口贴图覆盖，Ctrl+P 实机看不到面板。改为按发出顺序回放（同类连续合批），`test_myui_break_rhi_clip` 新增 `later_fill_covers_an_earlier_image`（修复前红，Vulkan/OpenGL 修复后绿）；实机 Vulkan 面板可见。
 - **输入框焦点框**：myui 输入框获得焦点时用 hover 样式槽（`my_edit.h`），主题 `edit:hover` 边框改为强调色 `#3574F0`；`test_editor_shell` 新增 `palette_paints_with_focused_edit_ring`（软件画布取色），实机面板输入框 1px 蓝框。
+- **内置 CLion 字体**：`engine/assets/fonts/JetBrainsMono-Regular.ttf`（JetBrains Mono 2.304，SIL OFL，附 `OFL.txt`/`AUTHORS.txt`）。字体链最前面固定为它，拉丁字母/数字/标点用它，中文仍落到系统 CJK 字体；查找顺序 `$BREAK_ASSET_DIR` → 可执行文件目录 → 其父目录+`engine/` → 当前目录 → 当前目录+`engine/`。测试：`test_editor_fonts` 新增链首与路径解析用例，`test_myui_font` 新增真实加载/整形用例（13px "Add entity" = 80x17）；实机验证：把 `$BREAK_ASSET_DIR` 指向换成 Droid Sans 的同名文件后两后端拉丁文本 25917 像素变化，证明编辑器确实使用内置字体；中文界面取色与之前一致，CJK 回退正常。
+- **内置 CLion 中文字体**：`engine/assets/fonts/NotoSansSC-VF.ttf`（Noto Sans SC，CLion 中文语言包使用的思源黑体系，SIL OFL，附 `NotoSansSC-OFL.txt`，约 17 MB）。字体链顺序固定为 JetBrains Mono → Noto Sans SC → 系统字体，中文不再依赖宿主安装 CJK 字体。
+- **中英文切换实测**：脚本 `Ctrl+P` → 点 `语言：English（英文）` → 英文界面 → `Ctrl+P` → 滚动后点 `Language: 中文 (Chinese)` → 回到中文，Vulkan/OpenGL 均 rc=0；切回中文后工具栏文字像素与初始中文完全一致（829），大纲标题中文 129 像素/英文 196 像素。把内置中文字体换成系统 Noto CJK 后 19746 像素变化，证明中文确实走内置字体。
+- **顺带修复：命令面板行点不中**。myui 命中测试跳过没有 on_event 的浮动容器，而命令面板正是浮动普通容器，行点击全部落到下面的控件上。给面板加上消费事件的 vtable 槽后修复；`test_editor_shell` 新增 `palette_row_click_via_pointer_switches_language`（真实指针分派，修复前红）。输入脚本解析支持双引号参数（英文行文本含空格）。初版让面板吞掉全部事件导致 Escape 失效（实机脚本抓到），已改为只消费指针事件，并补 `palette_escape_via_event_dispatcher_closes`。
 - **附带修复**：`test_break_crash_target_contract` 在同一构建树反复运行约 32 次后必然失败（rc=31）。原因是持久工作目录中 `discarded/` 已达 `BREAK_CRASH_SPOOL_KEEP` 上限，断言仍期望 `disc0 + 1`。自 `a30b4a2d` 起存在，属测试缺陷；现按上限饱和期望（第 31、52 号检查）。
 - **边界**：无图标、工具窗标签页、浅色主题与主题切换界面；未内置 JetBrains Mono/Inter 字体，沿用现有字体链；Windows/macOS 未实机运行。设计：`docs/superpowers/specs/2026-10-28-editor-text-and-clion-theme-design.md`。
 

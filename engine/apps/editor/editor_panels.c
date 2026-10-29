@@ -773,6 +773,18 @@ static const my_list_adapter_vtable_t k_editor_adapter_vtable = {
     editor_adapter_count, editor_adapter_create_row, editor_adapter_bind_row,
     NULL};
 
+static my_ret_t palette_on_event(my_widget_t *widget, const my_event_t *event) {
+    (void)widget;
+    /* Swallow only pointer events on the palette's own padding (they must not
+     * fall through to the viewport). Key events keep bubbling to the shell
+     * root: Escape/Ctrl+P close the palette from there. */
+    if (event != NULL && event->type >= MY_EVENT_POINTER_DOWN &&
+        event->type <= MY_EVENT_POINTER_WHEEL) {
+        return MY_RET_OK;
+    }
+    return MY_RET_NOT_SUPPORTED;
+}
+
 /* ---------------- command palette ---------------- */
 
 static bool editor_str_contains_casefold(const char *haystack,
@@ -1509,6 +1521,16 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     shell->palette = my_widget_create(NULL, "editor-palette");
     if (shell->palette == NULL) {
         return false;
+    }
+    /* Interactive floater: myui's hit test skips floating children whose
+     * vtable has no on_event (paint-only overlays). The palette is a plain
+     * container, so without this slot its rows never received a click — the
+     * pointer fell through to the widgets underneath. Consume events on the
+     * container itself (padding), rows still get theirs first. */
+    {
+        static const my_widget_vtable_t k_palette_vtable = {
+            NULL, palette_on_event, NULL, NULL};
+        shell->palette->vtable = &k_palette_vtable;
     }
     shell->palette->floating = true;
     (void)my_widget_set_layouter(shell->palette,

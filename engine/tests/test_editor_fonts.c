@@ -1,7 +1,9 @@
+#define _POSIX_C_SOURCE 200809L /* setenv/unsetenv */
 #include "test_framework.h"
 
 #include "editor_fonts.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -233,6 +235,46 @@ TEST(fonts_real_system_candidates_exist_and_are_unique)
     ASSERT_TRUE(n <= BREAK_EDITOR_FONT_MAX_CANDIDATES);
 }
 
+/* The bundled CLion face (JetBrains Mono, engine/assets/fonts) resolves
+ * through BREAK_ASSET_DIR and leads the chain for Latin UI languages.
+ * (The exe-relative candidates depend on where the build tree lives, so the
+ * test drives the env-var candidate instead.) */
+TEST(fonts_bundled_jetbrains_mono_leads_the_chain)
+{
+    BreakEditorFontChain c;
+    char path[BREAK_EDITOR_FONT_PATH_MAX];
+    usize n;
+    struct stat st;
+    ASSERT_EQ(setenv("BREAK_ASSET_DIR", BREAK_TEST_ENGINE_SOURCE_DIR, 1), 0);
+    ASSERT_TRUE(break_editor_bundled_font_path(0u, path, sizeof(path)));
+    ASSERT_EQ(stat(path, &st), 0);
+    ASSERT_TRUE(strstr(path, "assets/fonts/JetBrainsMono-Regular.ttf") != NULL);
+    /* out-of-range index and NULL storage are bounded */
+    ASSERT_FALSE(break_editor_bundled_font_path(99u, path, sizeof(path)));
+    ASSERT_FALSE(break_editor_bundled_font_path(2u, NULL, 0u));
+    n = break_editor_font_candidates(BREAK_EDITOR_LANG_EN_US, NULL, false, &c);
+    ASSERT_TRUE(n >= 1u);
+    ASSERT_TRUE(strstr(c.paths[0], "JetBrainsMono-Regular.ttf") != NULL);
+    for (usize i = 0u; i < n; i++) {
+        ASSERT_EQ(stat(c.paths[i], &st), 0);
+    }
+    /* bundled Chinese face: second in the chain, and it alone satisfies the
+     * CJK capability even with no host CJK font (use_fontconfig=false and a
+     * Latin-only host table is not needed — just check the chain itself) */
+    ASSERT_TRUE(break_editor_bundled_cjk_font_path(0u, path, sizeof(path)));
+    ASSERT_EQ(stat(path, &st), 0);
+    ASSERT_TRUE(strstr(path, "assets/fonts/NotoSansSC-VF.ttf") != NULL);
+    ASSERT_TRUE(n >= 2u);
+    ASSERT_TRUE(strstr(c.paths[1], "NotoSansSC-VF.ttf") != NULL);
+    ASSERT_TRUE(c.has_cjk);
+    n = break_editor_font_candidates(BREAK_EDITOR_LANG_ZH_CN, NULL, false, &c);
+    ASSERT_TRUE(n >= 2u);
+    ASSERT_TRUE(strstr(c.paths[0], "JetBrainsMono-Regular.ttf") != NULL);
+    ASSERT_TRUE(strstr(c.paths[1], "NotoSansSC-VF.ttf") != NULL);
+    ASSERT_TRUE(c.has_cjk);
+    ASSERT_EQ(unsetenv("BREAK_ASSET_DIR"), 0);
+}
+
 TEST(cli_take_lang_strips_option_and_keeps_other_arguments)
 {
     char a0[] = "editor", a1[] = "--lang", a2[] = "zh-CN", a3[] = "scene.bscn",
@@ -284,5 +326,6 @@ TEST_MAIN_BEGIN()
 #endif
     RUN_TEST(fonts_empty_root_finds_nothing_and_bad_args_are_bounded);
     RUN_TEST(fonts_real_system_candidates_exist_and_are_unique);
+    RUN_TEST(fonts_bundled_jetbrains_mono_leads_the_chain);
     RUN_TEST(cli_take_lang_strips_option_and_keeps_other_arguments);
 TEST_MAIN_END()

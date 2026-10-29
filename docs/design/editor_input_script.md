@@ -30,6 +30,8 @@ The first run clicked "Add" and nothing happened, on both backends. `break_ui_pu
 
 `smoke.txt` also covers the outliner row click, two toolbar adds with undo/redo, and `W`/`E`/`R` tool switching.
 
+Arguments are whitespace-separated; a token may be double-quoted to contain spaces, e.g. `move_to "editor-palette-list@Language: 中文 (Chinese)" 0.5 0.1` (needed for English palette row labels). A row whose centre is scrolled outside the list's visible rect cannot be clicked — use the fx/fy fractions to aim at the visible part.
+
 ## Notes
 
 If the X server's vsync present path stalls (seen on this host: `glxgears` at about 1.4 FPS), the OpenGL backend waits in `glXSwapBuffers` and a script times out; run with `vblank_mode=0`.

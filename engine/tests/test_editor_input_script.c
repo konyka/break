@@ -82,6 +82,14 @@ TEST(parse_errors_name_the_line) {
     ASSERT_TRUE(strstr(err, "line 2") != NULL);
     ASSERT_TRUE(parse("move 1\n", err) == NULL);
     ASSERT_TRUE(strstr(err, "line 1") != NULL);
+    /* quoted tokens keep spaces (English palette row labels) */
+    {
+        BreakEditorInputScript *qs =
+            parse("move_to \"editor-palette-list@Language: \xE4\xB8\xAD\xE6\x96\x87 (Chinese)\"\nquit\n", err);
+        ASSERT_NOT_NULL(qs);
+        ASSERT_EQ(break_editor_input_script_command_count(qs), 2u);
+        break_editor_input_script_destroy(qs);
+    }
     ASSERT_TRUE(parse("move 1 x\n", err) == NULL);
     ASSERT_TRUE(parse("move 99999 0\n", err) == NULL);
     ASSERT_TRUE(parse("wait 200000\n", err) == NULL);
@@ -92,6 +100,8 @@ TEST(parse_errors_name_the_line) {
     ASSERT_TRUE(parse("chord ctrl+shift+alt+meta+q\n", err) == NULL);
     ASSERT_TRUE(parse("move_to\n", err) == NULL);
     ASSERT_TRUE(parse("move_to a 2 0.5\n", err) == NULL);
+    ASSERT_TRUE(parse("move_to \"editor-palette-list@Language: \n", err) == NULL);
+    ASSERT_TRUE(parse("move_to \"row\"junk\n", err) == NULL);
     ASSERT_TRUE(parse("screenshot\n", err) == NULL);
     memset(big, 'a', sizeof(big) - 2u);
     big[0] = '#';

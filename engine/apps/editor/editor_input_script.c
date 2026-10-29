@@ -124,7 +124,9 @@ static i32 button_code(const char *name) {
     return -1;
 }
 
-/* Splits `line` in place on spaces/tabs; returns the token count (<= max). */
+/* Splits `line` in place on spaces/tabs; returns the token count (<= max).
+ * A token may be double-quoted to contain spaces (e.g. an English palette
+ * row label); the quotes are removed. */
 static u32 split(char *line, char **tok, u32 max) {
     u32 n = 0;
     char *p = line;
@@ -132,8 +134,21 @@ static u32 split(char *line, char **tok, u32 max) {
         while (*p == ' ' || *p == '\t') *p++ = '\0';
         if (*p == '\0') break;
         if (n == max) return max + 1u; /* too many tokens */
-        tok[n++] = p;
-        while (*p != '\0' && *p != ' ' && *p != '\t') p++;
+        if (*p == '"') {
+            char *dst = p;
+            p++; /* opening quote */
+            tok[n++] = dst;
+            while (*p != '\0' && *p != '"') *dst++ = *p++;
+            if (*p != '"') return max + 1u; /* unterminated quote */
+            *dst = '\0';
+            p++; /* closing quote */
+            if (*p != '\0' && *p != ' ' && *p != '\t') {
+                return max + 1u; /* junk after the closing quote */
+            }
+        } else {
+            tok[n++] = p;
+            while (*p != '\0' && *p != ' ' && *p != '\t') p++;
+        }
     }
     return n;
 }

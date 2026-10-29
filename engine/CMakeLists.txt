@@ -2927,6 +2927,9 @@ endif()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
     )
     target_link_libraries(test_myui_font PRIVATE myui_core m Threads::Threads)
+    target_compile_definitions(test_myui_font PRIVATE
+        BREAK_TEST_EDITOR_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/JetBrainsMono-Regular.ttf"
+        BREAK_TEST_EDITOR_CJK_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/NotoSansSC-VF.ttf")
     add_test(NAME test_myui_font COMMAND test_myui_font)
 
     add_executable(test_myui_chart tests/test_myui_chart.c)
@@ -4363,6 +4366,8 @@ endif()
         ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
     target_link_libraries(test_editor_fonts PRIVATE break_editor_test)
+    target_compile_definitions(test_editor_fonts PRIVATE
+        BREAK_TEST_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     if(BREAK_EDITOR_FONTCONFIG_FOUND)
         target_compile_definitions(test_editor_fonts PRIVATE BREAK_EDITOR_FONTCONFIG=1)
         target_link_libraries(test_editor_fonts PRIVATE PkgConfig::BREAK_EDITOR_FONTCONFIG)
