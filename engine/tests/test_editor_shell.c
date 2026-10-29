@@ -2343,6 +2343,60 @@ TEST(outliner_highlights_the_selected_row)
     break_editor_shell_destroy(shell);
 }
 
+/* The asset browser's filter box: typing extensions (CSV, case-folded by
+ * the model) narrows the listing after Enter; directories and ".." stay;
+ * an empty filter shows everything again. Real key events into the edit. */
+TEST(assets_panel_filter_box_narrows_the_listing)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char dir[512], sub[600], f1[700], f2[700], f3[700];
+    my_widget_t *box, *list;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_filter");
+    TEST_MKDIR(dir);
+    snprintf(sub, sizeof(sub), "%s/sub", dir);
+    TEST_MKDIR(sub);
+    snprintf(f1, sizeof(f1), "%s/a.bscn", dir);
+    snprintf(f2, sizeof(f2), "%s/b.png", dir);
+    snprintf(f3, sizeof(f3), "%s/c.txt", dir);
+    ASSERT_TRUE(write_text_file(f1, "a"));
+    ASSERT_TRUE(write_text_file(f2, "b"));
+    ASSERT_TRUE(write_text_file(f3, "c"));
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 5u);
+    shell_paint(shell);
+    box = find(shell, "editor-assets-filter");
+    ASSERT_NOT_NULL(box);
+    pointer_click(shell, box);
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        my_event_t ev = my_event_init(MY_EVENT_IME_COMMIT);
+        ev.u.ime.text = "bscn, PNG";
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+    }
+    dispatch_key_event(shell, MY_KEY_RETURN);
+    shell_paint(shell);
+    /* .. + sub/ + a.bscn + b.png */
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 4u);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list_row_by_text(list, "a.bscn"));
+    ASSERT_NOT_NULL(list_row_by_text(list, "b.png"));
+    ASSERT_TRUE(list_row_by_text(list, "c.txt") == NULL);
+    /* the filter survives navigation and the hot refresh */
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 4u);
+    /* clearing it shows everything */
+    ASSERT_EQ(my_edit_set_text(box, ""), MY_RET_OK);
+    emit_activate(box);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 5u);
+    break_editor_shell_destroy(shell);
+    remove(f1);
+    remove(f2);
+    remove(f3);
+    TEST_RMDIR(sub);
+    TEST_RMDIR(dir);
+}
+
 TEST(assets_panel_navigation_updates_rows)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -7110,6 +7164,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(open_scene_loads_existing_and_targets_missing);
     RUN_TEST(close_request_guards_unsaved_changes);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
+    RUN_TEST(assets_panel_filter_box_narrows_the_listing);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);

@@ -51,6 +51,7 @@
 #include "myc/my_emitter.h"
 #include "myui/my_layout.h"
 #include "myui/widgets/my_button.h"
+#include "myui/widgets/my_edit.h"
 #include "myui/widgets/my_label.h"
 #include "myui/widgets/my_list_view.h"
 
@@ -72,6 +73,8 @@ struct EditorPanelAssets {
     BreakEditorAssets *assets; /* owned (NULL when no root could be listed) */
     my_widget_t *list;         /* weak (owned by the window tree) */
     my_widget_t *path_label;   /* weak */
+    my_widget_t *filter_edit;  /* weak: extension CSV, applied on Enter */
+    char filter[128];          /* applied filter, re-applied after a re-root */
     EditorAssetsAdapter adapter;
     EditorAssetsRowCtx row_ctxs[EDITOR_ASSETS_ROW_CTX_POOL];
     /* hot refresh: throttled re-list of the CURRENT directory */
@@ -111,6 +114,10 @@ static void assets_panel_refresh(EditorPanelAssets *panel);
 static void assets_preview_sync(EditorPanelAssets *panel);
 
 void editor_panel_assets_retranslate(EditorPanelAssets *panel) {
+    if (panel != NULL && panel->filter_edit != NULL) {
+        (void)my_edit_set_hint(panel->filter_edit,
+                               break_editor_tr(BREAK_EDITOR_TR_ASSETS_FILTER_HINT));
+    }
     assets_panel_refresh(panel); /* path label + rows in the current language */
     if (panel != NULL) {
         panel->preview_shown_result = -1; /* force the label text */
@@ -401,6 +408,38 @@ void editor_panel_assets_destroy(EditorPanelAssets *panel) {
     free(panel);
 }
 
+/* Enter in the filter box: apply the extension CSV; empty shows everything.
+ * The model matches tokens byte-wise and case-sensitively, so the box
+ * normalises what a person types: ASCII lower case, spaces and a leading
+ * '.' dropped ("bscn, .PNG" -> "bscn,png"). Directories always stay. */
+static void on_assets_filter_activate(void *ctx, const char *event,
+                                      void *data) {
+    EditorPanelAssets *panel = (EditorPanelAssets *)ctx;
+    const char *text = (const char *)data;
+    (void)event;
+    if (panel == NULL || text == NULL) {
+        return;
+    }
+    {
+        usize o = 0u;
+        bool token_start = true;
+        for (const char *c = text; *c != '\0' && o + 1u < sizeof(panel->filter);
+             c++) {
+            char ch = *c;
+            if (ch == ' ' || ch == '\t') continue;
+            if (ch == '.' && token_start) continue;
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+            panel->filter[o++] = ch;
+            token_start = ch == ',';
+        }
+        panel->filter[o] = '\0';
+    }
+    if (panel->assets != NULL) {
+        break_editor_assets_set_filter(panel->assets, panel->filter);
+    }
+    assets_panel_refresh(panel);
+}
+
 bool editor_panel_assets_build(EditorPanelAssets *panel, my_widget_t *parent) {
     my_widget_t *section;
     if (panel == NULL || parent == NULL) {
@@ -424,6 +463,26 @@ bool editor_panel_assets_build(EditorPanelAssets *panel, my_widget_t *parent) {
         my_widget_unref(panel->path_label); /* tree holds its own reference */
     } else {
         my_widget_unref(panel->path_label);
+        my_widget_unref(section);
+        return false;
+    }
+    panel->filter_edit = my_edit_create(NULL);
+    if (panel->filter_edit == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(panel->filter_edit, "editor-assets-filter");
+    (void)my_edit_set_hint(panel->filter_edit,
+                           break_editor_tr(BREAK_EDITOR_TR_ASSETS_FILTER_HINT));
+    (void)my_edit_set_max_len(panel->filter_edit, sizeof(panel->filter) - 1u);
+    (void)my_widget_on(panel->filter_edit, "activate", on_assets_filter_activate,
+                       panel);
+    (void)my_widget_set_layout_params(panel->filter_edit, "w:100% h:24");
+    if (my_widget_add_child(section, panel->filter_edit) == MY_RET_OK) {
+        my_widget_unref(panel->filter_edit);
+    } else {
+        my_widget_unref(panel->filter_edit);
+        panel->filter_edit = NULL;
         my_widget_unref(section);
         return false;
     }
@@ -575,6 +634,9 @@ bool editor_panel_assets_set_root(EditorPanelAssets *panel,
     }
     break_editor_assets_destroy(panel->assets);
     panel->assets = fresh;
+    if (panel->filter[0] != '\0') {
+        break_editor_assets_set_filter(panel->assets, panel->filter);
+    }
     panel->primed = false;
     assets_panel_refresh(panel);
     return true;
