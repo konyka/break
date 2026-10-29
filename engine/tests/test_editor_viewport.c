@@ -618,6 +618,51 @@ TEST(box_select_degenerate_bounded_zero) {
     break_editor_doc_destroy(doc);
 }
 
+TEST(fly_moves_target_along_camera_axes) {
+    BreakEditorCamera cam;
+    break_editor_camera_init(&cam); /* eye (0,0,5), forward -Z, right +X */
+    break_editor_camera_fly(&cam, 1.0f, 0.0f, 0.0f);
+    assert_vec3(cam.target[0], cam.target[1], cam.target[2], 0, 0, -1, 1e-5f);
+    break_editor_camera_fly(&cam, 0.0f, 2.0f, 0.0f);
+    assert_vec3(cam.target[0], cam.target[1], cam.target[2], 2, 0, -1, 1e-5f);
+    break_editor_camera_fly(&cam, 0.0f, 0.0f, -0.5f);
+    assert_vec3(cam.target[0], cam.target[1], cam.target[2], 2, -0.5f, -1, 1e-5f);
+    /* the eye moves with the target: orientation and distance unchanged */
+    ASSERT_FLOAT_EQ(cam.yaw, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(cam.pitch, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(cam.distance, 5.0f, 1e-6f);
+
+    /* yawed 90 deg: eye on +X, forward -X, right -Z; pitched down keeps
+     * forward moves along the view direction (it has a Y part) */
+    break_editor_camera_init(&cam);
+    cam.yaw = ED_DEG2RAD(90);
+    break_editor_camera_fly(&cam, 1.0f, 1.0f, 0.0f);
+    assert_vec3(cam.target[0], cam.target[1], cam.target[2], -1, 0, -1, 1e-5f);
+    break_editor_camera_init(&cam);
+    cam.pitch = ED_DEG2RAD(30);
+    break_editor_camera_fly(&cam, 2.0f, 0.0f, 0.0f);
+    assert_vec3(cam.target[0], cam.target[1], cam.target[2],
+                0, -1.0f, -2.0f * 0.8660254f, 1e-5f);
+
+    /* bounded no-ops */
+    break_editor_camera_init(&cam);
+    break_editor_camera_fly(&cam, NAN, 0.0f, 0.0f);
+    break_editor_camera_fly(&cam, 0.0f, INFINITY, 0.0f);
+    break_editor_camera_fly(NULL, 1.0f, 0.0f, 0.0f);
+    assert_vec3(cam.target[0], cam.target[1], cam.target[2], 0, 0, 0, 0.0f);
+}
+
+TEST(fly_step_scales_with_distance) {
+    BreakEditorCamera cam;
+    break_editor_camera_init(&cam);
+    ASSERT_FLOAT_EQ(break_editor_camera_fly_step(&cam),
+                    5.0f * BREAK_EDITOR_CAMERA_FLY_STEP_FRACTION, 1e-6f);
+    cam.distance = BREAK_EDITOR_CAMERA_MIN_DISTANCE;
+    ASSERT_TRUE(break_editor_camera_fly_step(&cam) >=
+                BREAK_EDITOR_CAMERA_FLY_MIN_STEP);
+    ASSERT_FLOAT_EQ(break_editor_camera_fly_step(NULL), 0.0f, 0.0f);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(camera_init_defaults);
     RUN_TEST(camera_view_known_answers);
@@ -637,4 +682,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pick_oom_budget_sweep);
     RUN_TEST(box_select_center_inside_rect);
     RUN_TEST(box_select_degenerate_bounded_zero);
+    RUN_TEST(fly_moves_target_along_camera_axes);
+    RUN_TEST(fly_step_scales_with_distance);
 TEST_MAIN_END()

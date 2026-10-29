@@ -251,6 +251,14 @@ bool break_editor_shell_select_id(BreakEditorShell *shell,
 bool break_editor_shell_select_ids(BreakEditorShell *shell,
                                    const BreakEditorEntityId *ids, u32 n,
                                    bool add);
+/* Viewport fly. The viewport turns it on while its right button is held
+ * (and off on release, which also drops held keys). While on, W/A/S/D/Q/E
+ * without Ctrl/Alt are held movement keys (forward/left/back/right/down/up)
+ * instead of tool shortcuts; tick() moves the camera by elapsed time at
+ * break_editor_camera_fly_step units per second. fly_advance applies
+ * `seconds` (0 < s <= 1) of movement now; false when nothing moved. */
+void break_editor_shell_set_flying(BreakEditorShell *shell, bool on);
+bool break_editor_shell_fly_advance(BreakEditorShell *shell, f32 seconds);
 /* True while a viewport box (marquee) drag is in progress. */
 bool break_editor_shell_viewport_box_active(BreakEditorShell *shell);
 /* Republish the status/inspector/outliner (viewport gizmo drags end here so

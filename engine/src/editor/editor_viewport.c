@@ -371,3 +371,30 @@ void break_editor_camera_zoom(BreakEditorCamera *cam, f32 wheel_delta) {
     cam->distance = ed_clampf(d, BREAK_EDITOR_CAMERA_MIN_DISTANCE,
                               BREAK_EDITOR_CAMERA_MAX_DISTANCE);
 }
+
+void break_editor_camera_fly(BreakEditorCamera *cam, f32 forward, f32 right,
+                             f32 up) {
+    if (!cam || !isfinite(forward) || !isfinite(right) || !isfinite(up)) {
+        return;
+    }
+    if (!ed_camera_finite(cam)) return;
+    f32 cp = cosf(cam->pitch), sp = sinf(cam->pitch);
+    f32 cy = cosf(cam->yaw), sy = sinf(cam->yaw);
+    f32 fwd[3] = { -cp * sy, -sp, -cp * cy };
+    f32 rgt[3] = { cy, 0.0f, -sy };
+    f32 next[3];
+    for (int k = 0; k < 3; k++) {
+        next[k] = cam->target[k] + forward * fwd[k] + right * rgt[k] +
+                  (k == 1 ? up : 0.0f);
+    }
+    if (!ed_finite3(next)) return;
+    memcpy(cam->target, next, sizeof(next));
+}
+
+f32 break_editor_camera_fly_step(const BreakEditorCamera *cam) {
+    if (!cam || !isfinite(cam->distance)) return 0.0f;
+    f32 step = cam->distance * BREAK_EDITOR_CAMERA_FLY_STEP_FRACTION;
+    return step < BREAK_EDITOR_CAMERA_FLY_MIN_STEP
+               ? BREAK_EDITOR_CAMERA_FLY_MIN_STEP
+               : step;
+}

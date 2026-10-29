@@ -2807,6 +2807,71 @@ TEST(viewport_box_drag_selects_entities_inside)
     break_editor_shell_destroy(shell);
 }
 
+static void dispatch_key_up_event(BreakEditorShell *shell, u32 key) {
+    my_window_t *win = break_editor_shell_window(shell);
+    my_event_t ev = my_event_init(MY_EVENT_KEY_UP);
+    ev.u.key.key = key;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+}
+
+TEST(viewport_right_drag_flies_with_wasd)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorCamera *cam;
+    my_widget_t *vp;
+    f32 step, cx, cy;
+    ASSERT_NOT_NULL(shell);
+    shell_paint(shell);
+    vp = break_editor_shell_viewport_widget(shell);
+    cam = break_editor_shell_camera(shell);
+    ASSERT_NOT_NULL(vp);
+    ASSERT_NOT_NULL(cam);
+    step = break_editor_camera_fly_step(cam);
+    cx = 0.5f * (f32)vp->rect.w;
+    cy = 0.5f * (f32)vp->rect.h;
+
+    /* without the right button W is the translate tool and nothing flies */
+    dispatch_key_event(shell, 'w');
+    ASSERT_EQ(break_editor_shell_gizmo_mode(shell), BREAK_EDITOR_GIZMO_TRANSLATE);
+    dispatch_key_up_event(shell, 'w');
+    dispatch_key_event(shell, 'q');
+    dispatch_key_up_event(shell, 'q');
+    ASSERT_EQ(break_editor_shell_gizmo_mode(shell), BREAK_EDITOR_GIZMO_NONE);
+    break_editor_shell_fly_advance(shell, 1.0f);
+    ASSERT_FLOAT_EQ(cam->target[2], 0.0f, 0.0f);
+
+    /* right button held: W flies forward (-Z at yaw 0) and leaves the tool */
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, cx, cy, 3u, 0u, 0);
+    dispatch_key_event(shell, 'w');
+    ASSERT_EQ(break_editor_shell_gizmo_mode(shell), BREAK_EDITOR_GIZMO_NONE);
+    break_editor_shell_fly_advance(shell, 0.5f);
+    ASSERT_FLOAT_EQ(cam->target[2], -0.5f * step, 1e-5f);
+    /* D adds right (+X); both held move diagonally */
+    dispatch_key_event(shell, 'd');
+    break_editor_shell_fly_advance(shell, 0.5f);
+    ASSERT_FLOAT_EQ(cam->target[2], -1.0f * step, 1e-5f);
+    ASSERT_FLOAT_EQ(cam->target[0], 0.5f * step, 1e-5f);
+    dispatch_key_up_event(shell, 'w');
+    dispatch_key_up_event(shell, 'd');
+    /* E rises, Q sinks */
+    dispatch_key_event(shell, 'e');
+    break_editor_shell_fly_advance(shell, 1.0f);
+    ASSERT_FLOAT_EQ(cam->target[1], step, 1e-5f);
+    dispatch_key_up_event(shell, 'e');
+    break_editor_shell_fly_advance(shell, 1.0f);
+    ASSERT_FLOAT_EQ(cam->target[1], step, 1e-5f);
+    /* releasing the button drops any key still held */
+    dispatch_key_event(shell, 's');
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, cx, cy, 3u, 0u, 0);
+    break_editor_shell_fly_advance(shell, 1.0f);
+    ASSERT_FLOAT_EQ(cam->target[2], -1.0f * step, 1e-5f);
+    ASSERT_EQ(break_editor_shell_gizmo_mode(shell), BREAK_EDITOR_GIZMO_NONE);
+    /* flying is view state */
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(
+                  break_editor_doc_stack(break_editor_shell_doc(shell))), 0u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -7631,6 +7696,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(outliner_shift_click_selects_a_range);
     RUN_TEST(gizmo_drag_moves_every_selected_entity);
     RUN_TEST(viewport_box_drag_selects_entities_inside);
+    RUN_TEST(viewport_right_drag_flies_with_wasd);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

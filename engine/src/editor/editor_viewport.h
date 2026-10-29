@@ -151,6 +151,20 @@ u32 break_editor_viewport_box_select(BreakEditorDoc *doc,
     const BreakEditorCamera *cam, f32 x0, f32 y0, f32 x1, f32 y1,
     f32 w, f32 h, BreakEditorEntityId *out, u32 cap);
 
+/* Fly speed (world units per second) = distance * FRACTION, never below
+ * MIN_STEP, so a close-up camera still moves and a far one moves fast. */
+#define BREAK_EDITOR_CAMERA_FLY_STEP_FRACTION 1.0f
+#define BREAK_EDITOR_CAMERA_FLY_MIN_STEP 0.5f
+/* Fly (right-drag + WASD/QE in the viewport): moves the target — and with
+ * it the eye — by `forward` along the view direction (normalize(target -
+ * eye), pitch included), `right` along the camera's horizontal right axis
+ * (cos yaw, 0, -sin yaw) and `up` along world +Y. Yaw, pitch and distance
+ * are unchanged. Non-finite deltas, a NULL or non-finite camera: no-op. */
+void break_editor_camera_fly(BreakEditorCamera *cam, f32 forward, f32 right,
+                             f32 up);
+/* Units per second for break_editor_camera_fly; 0 for NULL. */
+f32 break_editor_camera_fly_step(const BreakEditorCamera *cam);
+
 void break_editor_camera_focus(BreakEditorCamera *cam, const BreakEditorDoc *doc, BreakEditorEntityId id); /* fits target+distance to the entity's proxy AABB, distance clamped [0.05, 1e4] */
 void break_editor_camera_orbit(BreakEditorCamera *cam, f32 dx_deg, f32 dy_deg);
 void break_editor_camera_pan(BreakEditorCamera *cam, f32 dx_px, f32 dy_px);   /* scaled by distance */

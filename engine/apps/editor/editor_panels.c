@@ -29,6 +29,8 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #include <editor/editor_components.h>
 #include <editor/editor_scene.h>
 
+#include "platform/time.h"
+
 #include "mypal/dummy/my_pal_dummy.h"
 #include "mypal/my_event.h"
 #include "mypal/my_pal.h"
@@ -112,6 +114,11 @@ struct BreakEditorShell {
     BreakEditorEntityId published_extra[EDITOR_EXTRA_SELECTION_MAX];
     u32 published_extra_count; /* last set handed to the gizmo */
     u32 tool; /* 0 select, 1 translate, 2 rotate, 3 scale */
+    /* viewport fly: while the right button is held in the viewport the
+     * W/A/S/D/Q/E keys are held movement keys (bit per key), not tools */
+    bool flying;
+    u32 fly_keys;
+    u64 fly_last_us; /* 0 = no previous tick to measure from */
 
     /* Phase 2 Task 3 viewport state (see editor_panels.h): the camera is
      * view state (never undoable); the gizmo is glued to the selection via
@@ -1390,6 +1397,45 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'g', MY_KEYMOD_CTRL, ACT_TOGGLE_SNAP},
 };
 
+/* W A S D Q E -> fly key bits (forward, left, back, right, down, up) */
+static u32 shell_fly_key_bit(u32 key) {
+    static const char k_fly[] = "wasdqe";
+    if (key >= 'A' && key <= 'Z') key = key - 'A' + 'a';
+    for (u32 i = 0u; k_fly[i] != '\0'; i++) {
+        if (key == (u32)(unsigned char)k_fly[i]) return 1u << i;
+    }
+    return 0u;
+}
+
+void break_editor_shell_set_flying(BreakEditorShell *shell, bool on) {
+    if (shell == NULL) return;
+    shell->flying = on;
+    shell->fly_keys = 0u;
+    shell->fly_last_us = 0u;
+}
+
+bool break_editor_shell_fly_advance(BreakEditorShell *shell, f32 seconds) {
+    f32 step, f = 0.0f, r = 0.0f, u = 0.0f;
+    u32 k;
+    if (shell == NULL || !shell->flying || shell->fly_keys == 0u ||
+        !(seconds > 0.0f) || seconds > 1.0f) {
+        return false;
+    }
+    k = shell->fly_keys;
+    if (k & 1u) f += 1.0f;
+    if (k & 4u) f -= 1.0f;
+    if (k & 8u) r += 1.0f;
+    if (k & 2u) r -= 1.0f;
+    if (k & 32u) u += 1.0f;
+    if (k & 16u) u -= 1.0f;
+    step = break_editor_camera_fly_step(&shell->camera) * seconds;
+    break_editor_camera_fly(&shell->camera, f * step, r * step, u * step);
+    if (shell->viewport_widget != NULL) {
+        my_widget_invalidate(shell->viewport_widget, NULL);
+    }
+    return true;
+}
+
 bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
                                      u32 modifiers) {
     size_t i;
@@ -1424,6 +1470,14 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
     /* ASCII letters fold to lowercase; the generic letter table ignores SHIFT */
     if (key >= 'A' && key <= 'Z') {
         key = key - 'A' + 'a';
+    }
+    if (shell->flying &&
+        (modifiers & (MY_KEYMOD_CTRL | MY_KEYMOD_ALT)) == 0u) {
+        u32 bit = shell_fly_key_bit(key);
+        if (bit != 0u) {
+            shell->fly_keys |= bit;
+            return true;
+        }
     }
     if (key == 'r' &&
         modifiers == (MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT)) {
@@ -1500,6 +1554,15 @@ static void shell_on_root_key_down(void *ctx, const char *event, void *data) {
     if (shell != NULL && e != NULL && e->type == MY_EVENT_KEY_DOWN) {
         (void)break_editor_shell_dispatch_key(shell, e->u.key.key,
                                               e->u.key.modifiers);
+    }
+}
+
+static void shell_on_root_key_up(void *ctx, const char *event, void *data) {
+    BreakEditorShell *shell = (BreakEditorShell *)ctx;
+    const my_event_t *e = (const my_event_t *)data;
+    (void)event;
+    if (shell != NULL && e != NULL && e->type == MY_EVENT_KEY_UP) {
+        shell->fly_keys &= ~shell_fly_key_bit(e->u.key.key);
     }
 }
 
@@ -2083,6 +2146,7 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
 
     /* shortcut route + initial focus */
     (void)my_widget_on(root, "key_down", shell_on_root_key_down, shell);
+    (void)my_widget_on(root, "key_up", shell_on_root_key_up, shell);
     shell_rebuild_inspector(shell);
     shell_refresh_tool_label(shell);
     shell_refresh_status(shell);
@@ -2565,6 +2629,16 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
         my_widget_invalidate(shell->viewport_widget, NULL);
     }
     (void)shell_sync_selection(shell); /* keeps the gizmo attach current */
+    if (shell->flying && shell->fly_keys != 0u) {
+        u64 now = time_microseconds();
+        if (shell->fly_last_us != 0u && now > shell->fly_last_us) {
+            (void)break_editor_shell_fly_advance(
+                shell, (f32)((f64)(now - shell->fly_last_us) / 1e6));
+        }
+        shell->fly_last_us = now;
+    } else {
+        shell->fly_last_us = 0u;
+    }
     /* Phase 3 Task 3: the profiler view snapshots profiler_last_frame at
      * <= 4 Hz (throttle documented in editor_panel_profiler.c); pure read,
      * never touches profiler state. */

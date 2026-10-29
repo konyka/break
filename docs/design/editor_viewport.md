@@ -123,6 +123,13 @@ editor 可执行
   - 左键拖拽（gizmo 活动）：`gizmo_drag`；**中途返回 false = 拖拽已被
     外部提交结束（见 §6 的 Ctrl+Z 策略），控件自愈丢弃拖拽态**。
   - 右键 / Alt+左键拖拽：orbit（0.25°/px）。
+  - 按住右键时飞行（2026-10-29）：W/A/S/D 前/左/后/右，Q/E 降/升（不带
+    Ctrl/Alt）。这期间这些键不再切换工具；松开右键即退出飞行并丢弃仍按着
+    的键。前进沿视线方向（含俯仰），左右沿相机水平右轴，升降沿世界 +Y；
+    移动的是 pivot（眼睛随之移动），yaw/pitch/distance 不变。速度 =
+    `distance` 单位/秒（至少 0.5），按 tick 间的真实时间积分，单次步长上限
+    1 秒。核心 `break_editor_camera_fly` / `_fly_step`，shell
+    `break_editor_shell_set_flying` / `_fly_advance`。视图状态，不进撤销栈。
   - 中键 / Shift+左键拖拽：pan（像素增量按当前控件高度重缩放，使一逻辑
     像素在 pivot 平面恰好平移一屏幕像素——核心 pan 的参考高度是 720）。
   - 滚轮：zoom（指数，正 delta 拉近）。
@@ -166,7 +173,7 @@ GPU 路径证据 = 编译/链接 + 记录在案的 live smoke run（**非** GPU 
 - ~~选中高亮 **outline**~~（2026-10-29 已交付：所选代理立方体的 12 条棱以细长盒绘制为亮色描边 `#FFEB8C`，叠在暖色 tint 上；几何由纯 CPU 的 `break_editor_viewport3d_outline_edges` 生成并有已知答案测试；统计 `outline_edges`）、~~rotation rings 手柄可视化~~（2026-10-29 已交付：旋转模式下每轴一圈 48 个小立方体，半径 = 轴手柄远端，颜色同轴；只作可视化，命中仍用手柄 AABB；几何 `break_editor_gizmo_rings`，统计 `ring_segments`）
   可视化、~~多选的框选~~（大纲 Ctrl/Shift 多选、批量删除、多实体随 gizmo 一起拖动、视口框选均已于 2026-10-29 交付；框选按实体中心判定，不做与代理盒的相交）、场景保真渲染
   （mesh/材质/光照——代理立方体不声称游戏画面）、gizmo 局部坐标系模式、
-  视口内导航键（flycam）、视口 overlay 统计信息、pick 的增量 BVH refit
+  ~~视口内导航键（flycam）~~（2026-10-29 已交付：按住右键 + WASD/QE）、视口 overlay 统计信息、pick 的增量 BVH refit
   优化（当前每次调用重建，编辑器规模足够）。
 
 ## 10. 已知边界与 fast-follow（终审 2026-10-23 记录，均不阻塞合并）

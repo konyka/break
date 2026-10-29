@@ -15,7 +15,9 @@
  *                         means the drag vanished (external Ctrl+Z commit —
  *                         the documented Task 3 policy) and the widget drops
  *                         its drag state (self-healing; the up is a no-op)
- *   right / alt-left drag orbit (EDITOR_VIEWPORT_ORBIT_DEG_PER_PX per px)
+ *   right / alt-left drag orbit (EDITOR_VIEWPORT_ORBIT_DEG_PER_PX per px);
+ *                         while the right button is held W/A/S/D/Q/E fly
+ *                         (break_editor_shell_set_flying)
  *   middle / shift-left   pan (pixel deltas rescaled so one logical pixel
  *                         pans one screen pixel at the CURRENT widget
  *                         height — camera_pan's reference height is 720)
@@ -871,6 +873,8 @@ static void viewport_end_interaction(my_widget_t *widget,
         break_editor_shell_gizmo(shell) != NULL) {
         break_editor_gizmo_end_drag(break_editor_shell_gizmo(shell));
         break_editor_shell_refresh(shell); /* status last= tracks the drag */
+    } else if (vp->drag_kind == VP_DRAG_ORBIT) {
+        break_editor_shell_set_flying(shell, false);
     } else if (vp->drag_kind == VP_DRAG_BOX && vp->cam != NULL) {
         BreakEditorEntityId ids[EDITOR_VIEWPORT_BOX_MAX];
         u32 n = break_editor_viewport_box_select(
@@ -929,6 +933,9 @@ static my_ret_t viewport_on_event(my_widget_t *widget,
         }
         vp->last_x = lx;
         vp->last_y = ly;
+        if (vp->drag_kind == VP_DRAG_ORBIT) {
+            break_editor_shell_set_flying(shell, false);
+        }
         vp->drag_kind = VP_DRAG_NONE;
         if (button == 2u || (button == 1u &&
                              (mods & MY_KEYMOD_SHIFT) != 0u)) {
@@ -936,6 +943,8 @@ static my_ret_t viewport_on_event(my_widget_t *widget,
         } else if (button == 3u ||
                    (button == 1u && (mods & MY_KEYMOD_ALT) != 0u)) {
             vp->drag_kind = VP_DRAG_ORBIT;
+            /* right button: look around and fly with WASD/QE */
+            break_editor_shell_set_flying(shell, button == 3u);
         } else if (button == 1u) {
             if (gizmo != NULL &&
                 break_editor_gizmo_begin_drag(gizmo, cam, lx, ly, w, h)) {
