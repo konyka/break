@@ -51,17 +51,18 @@ static const BreakEditorField k_transform_fields[9] = {
 static const EditorTransform k_transform_default = {
     {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}};
 
-static const BreakEditorField k_light_fields[5] = {
+static const BreakEditorField k_light_fields[6] = {
     { "color.r", offsetof(EditorLight, color) + 0u * sizeof(f32), 0u },
     { "color.g", offsetof(EditorLight, color) + 1u * sizeof(f32), 0u },
     { "color.b", offsetof(EditorLight, color) + 2u * sizeof(f32), 0u },
     { "intensity", offsetof(EditorLight, intensity), 0u },
     { "range", offsetof(EditorLight, range), 0u },
+    { "enabled", offsetof(EditorLight, enabled), BREAK_EDITOR_FIELD_BOOL },
 };
 
-static const EditorLight k_light_default = {{1.0f, 1.0f, 1.0f}, 1.0f, 10.0f};
+static const EditorLight k_light_default = {{1.0f, 1.0f, 1.0f}, 1.0f, 10.0f, 1u};
 
-_Static_assert(sizeof(EditorLight) == 20u, "EditorLight is five packed f32");
+_Static_assert(sizeof(EditorLight) == 24u, "EditorLight is six packed 4-byte fields");
 _Static_assert(sizeof(EditorLight) <= BREAK_EDITOR_COMPONENT_SNAPSHOT_CAPACITY,
                "light fits the command snapshot cap");
 
@@ -90,7 +91,7 @@ void break_editor_doc_init_components(BreakEditorDoc *doc) {
     memcpy(reg->display_name, "Light", sizeof("Light"));
     reg->size = (u32)sizeof(EditorLight);
     memcpy(reg->fields, k_light_fields, sizeof(k_light_fields));
-    reg->field_count = 5u;
+    reg->field_count = 6u;
     reg->default_bytes = (const u8 *)&k_light_default;
     doc->component_count = 2u;
 }
@@ -140,7 +141,7 @@ bool break_editor_doc_has_component(const BreakEditorDoc *doc,
 static const BreakEditorField *validate_field(const BreakEditorDoc *doc,
                                               BreakEditorEntityId id,
                                               u32 component_id,
-                                              u32 field_index,
+                                              u32 field_index, u8 want_type,
                                               const BreakEditorComponentReg **out_reg) {
     if (!doc || !break_editor_doc_has_entity(doc, id)) return NULL;
     const BreakEditorComponentReg *reg =
@@ -148,10 +149,11 @@ static const BreakEditorField *validate_field(const BreakEditorDoc *doc,
     if (!reg) return NULL;
     if (field_index >= reg->field_count) return NULL;
     const BreakEditorField *field = &reg->fields[field_index];
-    if (field->type != 0u) return NULL; /* only f32 fields exist in Phase 1 */
-    /* Defensive bound: the field must lie fully inside the component. */
+    if (field->type != want_type) return NULL;
+    /* Defensive bound: the field (4 bytes for every type) must lie fully
+     * inside the component. */
     if (field->offset > reg->size ||
-        (usize)field->offset + sizeof(f32) > (usize)reg->size) {
+        (usize)field->offset + sizeof(u32) > (usize)reg->size) {
         return NULL;
     }
     *out_reg = reg;
@@ -164,7 +166,8 @@ bool break_editor_doc_get_field_f32(const BreakEditorDoc *doc,
     if (!out) return false;
     const BreakEditorComponentReg *reg = NULL;
     const BreakEditorField *field =
-        validate_field(doc, id, component_id, field_index, &reg);
+        validate_field(doc, id, component_id, field_index,
+                       BREAK_EDITOR_FIELD_F32, &reg);
     if (!field) return false;
     const u8 *base = world_get_component(
         break_editor_doc_world_raw((BreakEditorDoc *)doc), ecs_id(id),
@@ -225,20 +228,25 @@ static void set_field_describe(const BreakEditorCmd *self, char buf[128]) {
              self->id.index, self->id.generation);
 }
 
-bool break_editor_doc_set_field_f32(BreakEditorDoc *doc,
-                                    BreakEditorEntityId id, u32 component_id,
-                                    u32 field_index, f32 value) {
-    const BreakEditorComponentReg *reg = NULL;
-    const BreakEditorField *field =
-        validate_field(doc, id, component_id, field_index, &reg);
-    if (!field) return false;
-    u8 *base = component_ptr(doc, id, component_id);
+static void set_field_bool_describe(const BreakEditorCmd *self, char buf[128]) {
+    const BreakEditorComponentCmd *c = (const BreakEditorComponentCmd *)self;
+    snprintf(buf, 128, "set %.24s.%.24s = %s -> %s (%u:%u)",
+             c->display_name, c->field_name, c->old_bits ? "true" : "false",
+             c->new_bits ? "true" : "false", self->id.index,
+             self->id.generation);
+}
+
+/* Records an undoable 4-byte field write. Bitwise-identical bits are a
+ * no-op success: no command, dirty unchanged. */
+static bool push_set_bits(BreakEditorDoc *doc, BreakEditorEntityId id,
+                          const BreakEditorComponentReg *reg,
+                          const BreakEditorField *field, u32 new_bits,
+                          void (*describe)(const BreakEditorCmd *, char[128])) {
+    u8 *base = component_ptr(doc, id, reg->component_id);
     if (!base) return false; /* entity lacks the component */
 
-    u32 old_bits, new_bits;
+    u32 old_bits;
     memcpy(&old_bits, base + field->offset, sizeof(u32));
-    memcpy(&new_bits, &value, sizeof(u32));
-    /* Bitwise-identical write: no-op success, no command, dirty unchanged. */
     if (old_bits == new_bits) return true;
 
     BreakEditorComponentCmd *c = break_editor_test_calloc(sizeof(*c));
@@ -246,10 +254,10 @@ bool break_editor_doc_set_field_f32(BreakEditorDoc *doc,
     c->base.apply = set_field_apply;
     c->base.revert = set_field_revert;
     c->base.destroy = component_cmd_destroy;
-    c->base.describe = set_field_describe;
+    c->base.describe = describe;
     c->base.kind = BREAK_EDITOR_CMD_KIND_SET_FIELD_F32;
     c->base.id = id;
-    c->component_id = component_id;
+    c->component_id = reg->component_id;
     c->field_offset = field->offset;
     c->old_bits = old_bits;
     c->new_bits = new_bits;
@@ -263,6 +271,59 @@ bool break_editor_doc_set_field_f32(BreakEditorDoc *doc,
     break_editor_cmd_stack_push_applied(doc, &c->base);
     doc->dirty = true;
     return true;
+}
+
+bool break_editor_doc_set_field_f32(BreakEditorDoc *doc,
+                                    BreakEditorEntityId id, u32 component_id,
+                                    u32 field_index, f32 value) {
+    const BreakEditorComponentReg *reg = NULL;
+    const BreakEditorField *field =
+        validate_field(doc, id, component_id, field_index,
+                       BREAK_EDITOR_FIELD_F32, &reg);
+    u32 bits;
+    if (!field) return false;
+    memcpy(&bits, &value, sizeof(bits));
+    return push_set_bits(doc, id, reg, field, bits, set_field_describe);
+}
+
+bool break_editor_doc_get_field_bool(const BreakEditorDoc *doc,
+                                     BreakEditorEntityId id, u32 component_id,
+                                     u32 field_index, bool *out) {
+    const BreakEditorComponentReg *reg = NULL;
+    const BreakEditorField *field;
+    const u8 *base;
+    u32 bits;
+    if (!out) return false;
+    field = validate_field(doc, id, component_id, field_index,
+                           BREAK_EDITOR_FIELD_BOOL, &reg);
+    if (!field) return false;
+    base = world_get_component(
+        break_editor_doc_world_raw((BreakEditorDoc *)doc), ecs_id(id),
+        component_id);
+    if (!base) return false;
+    memcpy(&bits, base + field->offset, sizeof(bits));
+    *out = bits != 0u;
+    return true;
+}
+
+bool break_editor_doc_set_field_bool(BreakEditorDoc *doc,
+                                     BreakEditorEntityId id, u32 component_id,
+                                     u32 field_index, bool value) {
+    const BreakEditorComponentReg *reg = NULL;
+    const BreakEditorField *field =
+        validate_field(doc, id, component_id, field_index,
+                       BREAK_EDITOR_FIELD_BOOL, &reg);
+    bool cur = false;
+    if (!field) return false;
+    /* An unchanged truth value records nothing, even if the stored bits are
+     * a nonzero other than 1. */
+    if (!break_editor_doc_get_field_bool(doc, id, component_id, field_index,
+                                         &cur)) {
+        return false;
+    }
+    if (cur == value) return true;
+    return push_set_bits(doc, id, reg, field, value ? 1u : 0u,
+                         set_field_bool_describe);
 }
 
 /* ---- add_component ---- */

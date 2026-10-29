@@ -407,6 +407,9 @@ static void console_apply_set(BreakEditorLuaConsole *c,
     usize i;
     u32 k;
     f32 value = 0.0f;
+    bool bvalue = false;
+    bool is_bool;
+    bool written;
     bool added = false;
 
     /* Component by registry display name (byte-wise, case-sensitive). */
@@ -440,8 +443,27 @@ static void console_apply_set(BreakEditorLuaConsole *c,
         return;
     }
     /* Value conversion BEFORE any mutation: a rejected value leaves the
-     * record (and the doc) untouched. */
-    switch ((BreakLuaEcsValueKind)rec->value_type) {
+     * record (and the doc) untouched. A bool field takes a Lua boolean or a
+     * finite number (nonzero = true); strings are rejected. */
+    is_bool = info.fields[field_index].type == BREAK_EDITOR_FIELD_BOOL;
+    if (is_bool) {
+        switch ((BreakLuaEcsValueKind)rec->value_type) {
+        case BREAK_LUA_ECS_VALUE_BOOL:
+            bvalue = rec->value.b;
+            break;
+        case BREAK_LUA_ECS_VALUE_NUMBER:
+            if (!isfinite(rec->value.n)) {
+                console_log(c, "error: ecs.set: non-finite value");
+                return;
+            }
+            bvalue = rec->value.n != 0.0;
+            break;
+        default:
+            console_log(c, "error: ecs.set: value for '%s' is not a bool",
+                        rec->field);
+            return;
+        }
+    } else switch ((BreakLuaEcsValueKind)rec->value_type) {
     case BREAK_LUA_ECS_VALUE_NUMBER:
         if (!isfinite(rec->value.n)) {
             console_log(c, "error: ecs.set: non-finite value");
@@ -473,8 +495,14 @@ static void console_apply_set(BreakEditorLuaConsole *c,
         }
         added = true;
     }
-    if (!break_editor_doc_set_field_f32(c->doc, target, info.component_id,
-                                        field_index, value)) {
+    written = is_bool
+                  ? break_editor_doc_set_field_bool(c->doc, target,
+                                                    info.component_id,
+                                                    field_index, bvalue)
+                  : break_editor_doc_set_field_f32(c->doc, target,
+                                                   info.component_id,
+                                                   field_index, value);
+    if (!written) {
         /* Never half-apply a record: roll back our own component add. */
         if (added) {
             (void)break_editor_undo(c->doc);

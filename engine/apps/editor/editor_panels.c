@@ -39,6 +39,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #include "myui/my_window.h"
 #include "myui/my_window_manager.h"
 #include "myui/widgets/my_button.h"
+#include "myui/widgets/my_checkbox.h"
 #include "myui/widgets/my_edit.h"
 #include "myui/widgets/my_label.h"
 #include "myui/widgets/my_list_view.h"
@@ -584,6 +585,38 @@ static void on_field_edit_activate(void *ctx, const char *event, void *data) {
     editor_shell_refresh_all(fc->shell);
 }
 
+static void on_field_check_changed(void *ctx, const char *event, void *data) {
+    EditorFieldCtx *fc = (EditorFieldCtx *)ctx;
+    my_widget_t *box;
+    char wname[64];
+    bool value;
+    (void)event;
+    (void)data;
+    if (fc == NULL || fc->shell == NULL) {
+        return;
+    }
+    (void)snprintf(wname, sizeof(wname), "editor-field-%u-%u",
+                   (unsigned)fc->component_id, (unsigned)fc->field_index);
+    box = my_widget_find_descendant(break_editor_shell_root(fc->shell), wname);
+    if (box == NULL || !my_checkbox_is_instance(box)) {
+        return;
+    }
+    value = my_checkbox_get_checked(box);
+    shell_end_gizmo_drag(fc->shell);
+    if (break_editor_doc_set_field_bool(fc->shell->doc, fc->shell->selected,
+                                        fc->component_id, fc->field_index,
+                                        value)) {
+        editor_shell_log(fc->shell,
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_SET_FIELD_FMT),
+                         "component", (unsigned)fc->field_index,
+                         value ? 1.0 : 0.0);
+    } else {
+        editor_shell_log(fc->shell,
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_SET_FIELD_FAILED));
+    }
+    editor_shell_refresh_all(fc->shell);
+}
+
 static void on_component_button_click(void *ctx, const char *event,
                                       void *data) {
     EditorFieldCtx *fc = (EditorFieldCtx *)ctx;
@@ -731,6 +764,32 @@ static void shell_rebuild_inspector(BreakEditorShell *shell) {
                         frow,
                         my_label_create(NULL, info.fields[fi].name),
                         "w:76 h:22");
+                    if (info.fields[fi].type == BREAK_EDITOR_FIELD_BOOL) {
+                        bool on = false;
+                        my_widget_t *box = my_checkbox_create(NULL, NULL);
+                        if (box == NULL) {
+                            shell_add_child(insp, frow, "w:100% h:26");
+                            continue;
+                        }
+                        (void)snprintf(wname, sizeof(wname),
+                                       "editor-field-%u-%u",
+                                       (unsigned)info.component_id,
+                                       (unsigned)fi);
+                        (void)my_widget_set_name(box, wname);
+                        (void)break_editor_doc_get_field_bool(
+                            shell->doc, shell->selected, info.component_id,
+                            fi, &on);
+                        (void)my_checkbox_set_checked(box, on);
+                        fc = &shell->field_ctxs[shell->field_ctx_count++];
+                        fc->shell = shell;
+                        fc->component_id = info.component_id;
+                        fc->field_index = fi;
+                        (void)my_widget_on(box, "changed",
+                                           on_field_check_changed, fc);
+                        shell_add_child(frow, box, "w:1f h:22");
+                        shell_add_child(insp, frow, "w:100% h:26");
+                        continue;
+                    }
                     (void)break_editor_doc_get_field_f32(
                         shell->doc, shell->selected, info.component_id, fi,
                         &cur);

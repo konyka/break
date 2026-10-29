@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：editor bool 字段类型（2026-10-30）
+
+- **交付**：组件字段新增 bool 类型。实现包括：`editor_components.{h,c}` 中的类型枚举和 `get/set_field_bool`，f32 写入与 bool 写入共用 `push_set_bits`；Light 增加 `enabled` 字段；inspector 以复选框显示（`apps/editor/editor_panels.c` `on_field_check_changed`）；Lua `ecs.set` 按字段类型转换取值（`src/editor/editor_lua.c`）。
+- **测试**：每项都先写测试并确认红。`test_editor_components` 新增 `bool_field_default_edit_undo_type_gate_and_save_load`，并更新 registry 字段表，22/22；`test_editor_lua` 新增 `set_record_writes_a_bool_field`，35/35；`test_editor_shell` 新增 `inspector_bool_field_is_a_checkbox_routed_through_undo`，132/132。ASan 下 components 22/22、lua 35/35。变异检查：去掉类型闸门后变红。默认树 233/234，唯一失败是已知 flaky 的 x11 用例；`build-break-net-final` 的 `-R editor` 15/15。
+- **兼容性**：在此之前保存的 BSCN 中，Light 是 20 字节，现在加载会被当作未知组件跳过，Light 数据丢失，Transform 不受影响。Light 本身是同一天才加入的类型，所以没有做迁移。
+
 ## 本轮更新：packer 加固（2026-10-30）
 
 - **修复**：`tools/packer.c` 对重复 pak 名、超过 4096 个文件改为报错退出，不再静默写出错误的归档；输出改为“临时文件 + rename”，失败时不会损坏已有的 pak。fflush 失败时也会正常 fclose，不再泄漏文件句柄。

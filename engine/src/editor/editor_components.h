@@ -101,19 +101,27 @@ typedef struct EditorTransform {
     f32 scale[3];
 } EditorTransform; /* 36 bytes */
 
-/* Editable light (fields color.r/g/b, intensity, range; all f32). A new
- * light is white, intensity 1, range 10. The editor stores and edits it;
- * the viewport does not render lights. */
+/* Editable light (f32 fields color.r/g/b, intensity, range; bool field
+ * enabled). A new light is white, intensity 1, range 10, enabled. The editor
+ * stores and edits it; the viewport does not render lights. */
 typedef struct EditorLight {
     f32 color[3];
     f32 intensity;
     f32 range;
-} EditorLight; /* 20 bytes */
+    u32 enabled; /* bool field, stored 0/1 (2026-10-30) */
+} EditorLight; /* 24 bytes */
+
+/* Field value types. A bool field is 4 bytes holding 0 or 1; any nonzero
+ * stored value reads as true. */
+enum {
+    BREAK_EDITOR_FIELD_F32 = 0,
+    BREAK_EDITOR_FIELD_BOOL = 1
+};
 
 typedef struct BreakEditorField {
     char name[32];
     u32 offset;
-    u8 type; /* 0=f32 */
+    u8 type; /* BREAK_EDITOR_FIELD_* */
 } BreakEditorField;
 typedef struct BreakEditorComponentInfo {
     u32 component_id;
@@ -149,6 +157,16 @@ bool break_editor_doc_get_field_f32(const BreakEditorDoc *doc,
 bool break_editor_doc_set_field_f32(BreakEditorDoc *doc,
                                     BreakEditorEntityId id, u32 component_id,
                                     u32 field_index, f32 value);
+
+/* Bool-field counterparts (2026-10-30): same bounds as the f32 pair, with
+ * the type gate reversed (an f32 field is rejected). set writes 0/1, is
+ * undoable, and an unchanged truth value is a no-op true (no command). */
+bool break_editor_doc_get_field_bool(const BreakEditorDoc *doc,
+                                     BreakEditorEntityId id, u32 component_id,
+                                     u32 field_index, bool *out);
+bool break_editor_doc_set_field_bool(BreakEditorDoc *doc,
+                                     BreakEditorEntityId id, u32 component_id,
+                                     u32 field_index, bool value);
 
 /* Undoable commands with the component bytes (<= 256) snapshotted into the
  * command. add yields the default bytes; remove's revert restores the snapshot

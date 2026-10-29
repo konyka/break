@@ -370,6 +370,37 @@ TEST(set_record_targets_the_light_component) {
     fixture_close(&f);
 }
 
+TEST(set_record_writes_a_bool_field) {
+    Fixture f;
+    BreakEditorEntityId id;
+    const char *nm = NULL;
+    bool on = true;
+    ASSERT_TRUE(fixture_open(&f));
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console,
+        "brk.ecs.spawn()\n"
+        "brk.ecs.set('Light', 'enabled', false)"));
+    ASSERT_TRUE(break_editor_doc_entity_at(f.doc, 0u, &id, &nm));
+    ASSERT_TRUE(break_editor_doc_get_field_bool(
+        f.doc, id, BREAK_EDITOR_COMPONENT_LIGHT, 5u, &on));
+    ASSERT_FALSE(on);
+    /* numbers: nonzero is true; strings are rejected for bool fields */
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console, "brk.ecs.spawn()\nbrk.ecs.set('Light', 'enabled', 2)"));
+    ASSERT_TRUE(break_editor_doc_entity_at(f.doc, 1u, &id, &nm));
+    ASSERT_TRUE(break_editor_doc_get_field_bool(
+        f.doc, id, BREAK_EDITOR_COMPONENT_LIGHT, 5u, &on));
+    ASSERT_TRUE(on);
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console,
+        "brk.ecs.spawn()\nbrk.ecs.set('Light', 'enabled', 'no')"));
+    ASSERT_TRUE(sink_find(&f.sink, "is not a bool") >= 0);
+    ASSERT_TRUE(break_editor_doc_entity_at(f.doc, 2u, &id, &nm));
+    ASSERT_FALSE(break_editor_doc_has_component(f.doc, id,
+                                                BREAK_EDITOR_COMPONENT_LIGHT));
+    fixture_close(&f);
+}
+
 TEST(set_record_number_string_bool_undoable) {
     Fixture f;
     ASSERT_TRUE(fixture_open(&f));
@@ -1165,6 +1196,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(spawn_multi_record_fifo);
     RUN_TEST(set_record_number_string_bool_undoable);
     RUN_TEST(set_record_targets_the_light_component);
+    RUN_TEST(set_record_writes_a_bool_field);
     RUN_TEST(set_record_existing_component_single_command);
     RUN_TEST(set_unknown_component_field_never_partial);
     RUN_TEST(failed_eval_discards_records);

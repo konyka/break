@@ -23,6 +23,7 @@
 #include <ecs/ecs.h>
 
 #include <float.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -129,15 +130,17 @@ TEST(registry_enumeration) {
     ASSERT_TRUE(break_editor_doc_component_info(doc, 1, &info));
     ASSERT_EQ(info.component_id, BREAK_EDITOR_COMPONENT_LIGHT);
     ASSERT_STR_EQ(info.display_name, "Light");
-    ASSERT_EQ(info.field_count, 5u);
+    ASSERT_EQ(info.field_count, 6u);
     {
-        static const char *const light_names[5] = {
-            "color.r", "color.g", "color.b", "intensity", "range",
+        static const char *const light_names[6] = {
+            "color.r", "color.g", "color.b", "intensity", "range", "enabled",
         };
-        for (u32 f = 0; f < 5; f++) {
+        for (u32 f = 0; f < 6; f++) {
             ASSERT_STR_EQ(info.fields[f].name, light_names[f]);
             ASSERT_EQ(info.fields[f].offset, (u32)(f * sizeof(f32)));
-            ASSERT_EQ(info.fields[f].type, 0u);
+            ASSERT_EQ(info.fields[f].type,
+                      f == 5u ? (u32)BREAK_EDITOR_FIELD_BOOL
+                              : (u32)BREAK_EDITOR_FIELD_F32);
         }
     }
 
@@ -897,7 +900,7 @@ TEST(light_component_default_edit_undo_and_save_load) {
     f32 v = 0.0f;
     ASSERT_NOT_NULL(doc);
     ASSERT_EQ(BREAK_EDITOR_COMPONENT_LIGHT, 65u);
-    ASSERT_EQ(sizeof(EditorLight), 20u);
+    ASSERT_EQ(sizeof(EditorLight), 24u);
     ASSERT_EQ(doc_world(doc)->component_sizes[BREAK_EDITOR_COMPONENT_LIGHT],
               (u32)sizeof(EditorLight));
     id = break_editor_doc_add_entity(doc, "lamp");
@@ -919,7 +922,7 @@ TEST(light_component_default_edit_undo_and_save_load) {
     ASSERT_TRUE(v == 10.0f);
     ASSERT_FALSE(break_editor_doc_get_field_f32(doc, id,
                                                 BREAK_EDITOR_COMPONENT_LIGHT,
-                                                5u, &v));
+                                                6u, &v));
     /* edit + undo */
     ASSERT_TRUE(break_editor_doc_set_field_f32(doc, id,
                                                BREAK_EDITOR_COMPONENT_LIGHT,
@@ -954,6 +957,91 @@ TEST(light_component_default_edit_undo_and_save_load) {
     ASSERT_TRUE(v == 2.5f);
     ASSERT_TRUE(break_editor_doc_has_component(doc, id,
                                                BREAK_EDITOR_COMPONENT_TRANSFORM));
+    break_editor_doc_destroy(doc);
+    (void)remove(path);
+    {
+        char side[600];
+        (void)snprintf(side, sizeof(side), "%s.editor.json", path);
+        (void)remove(side);
+    }
+}
+
+TEST(bool_field_default_edit_undo_type_gate_and_save_load) {
+    char path[512];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    BreakEditorEntityId id;
+    bool on = false;
+    f32 v = 0.0f;
+    ASSERT_NOT_NULL(doc);
+    id = break_editor_doc_add_entity(doc, "lamp");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT));
+    /* a new light is enabled */
+    ASSERT_TRUE(break_editor_doc_get_field_bool(doc, id,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, &on));
+    ASSERT_TRUE(on);
+    /* type gate both ways */
+    ASSERT_FALSE(break_editor_doc_get_field_f32(doc, id,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, &v));
+    ASSERT_FALSE(break_editor_doc_set_field_f32(doc, id,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, 0.0f));
+    ASSERT_FALSE(break_editor_doc_get_field_bool(doc, id,
+                                                 BREAK_EDITOR_COMPONENT_LIGHT,
+                                                 3u, &on));
+    ASSERT_FALSE(break_editor_doc_set_field_bool(doc, id,
+                                                 BREAK_EDITOR_COMPONENT_LIGHT,
+                                                 3u, false));
+    ASSERT_FALSE(break_editor_doc_get_field_bool(doc, id,
+                                                 BREAK_EDITOR_COMPONENT_LIGHT,
+                                                 5u, NULL));
+    /* same value: no command */
+    break_editor_doc_clear_dirty(doc);
+    ASSERT_TRUE(break_editor_doc_set_field_bool(doc, id,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, true));
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    /* edit, undo, redo */
+    ASSERT_TRUE(break_editor_doc_set_field_bool(doc, id,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, false));
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+    ASSERT_TRUE(break_editor_doc_get_field_bool(doc, id,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, &on));
+    ASSERT_FALSE(on);
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(break_editor_doc_get_field_bool(doc, id,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, &on));
+    ASSERT_TRUE(on);
+    ASSERT_TRUE(break_editor_redo(doc));
+    /* stored as u32 0/1 */
+    {
+        const u8 *raw = (const u8 *)world_get_component(
+            doc_world(doc), to_ecs(id), BREAK_EDITOR_COMPONENT_LIGHT);
+        u32 bits = 7u;
+        ASSERT_NOT_NULL(raw);
+        memcpy(&bits, raw + offsetof(EditorLight, enabled), sizeof(bits));
+        ASSERT_EQ(bits, 0u);
+    }
+    test_tmp(path, sizeof(path), "editor_components_bool.bscn");
+    ASSERT_TRUE(break_editor_doc_save(doc, path));
+    break_editor_doc_destroy(doc);
+    doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(break_editor_doc_load(doc, path));
+    {
+        const char *nm = NULL;
+        ASSERT_TRUE(break_editor_doc_entity_at(doc, 0u, &id, &nm));
+    }
+    on = true;
+    ASSERT_TRUE(break_editor_doc_get_field_bool(doc, id,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, &on));
+    ASSERT_FALSE(on);
     break_editor_doc_destroy(doc);
     (void)remove(path);
     {
@@ -1039,6 +1127,7 @@ int main(void) {
     RUN_TEST(parse_f32_rejects);
     RUN_TEST(component_bytes_survive_save_load);
     RUN_TEST(light_component_default_edit_undo_and_save_load);
+    RUN_TEST(bool_field_default_edit_undo_type_gate_and_save_load);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
            g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;
