@@ -1240,6 +1240,54 @@ TEST(set_mode_out_of_range_hides_the_gizmo) {
     break_editor_doc_destroy(doc);
 }
 
+/* Rotation rings (visual): in ROTATE mode each axis gets a ring of
+ * `segments` small boxes on the circle of radius gap + axis_len around the
+ * pivot, in the plane perpendicular to that axis. Other modes / detached /
+ * bad arguments yield 0. Pure CPU, same sizing source as the handles. */
+TEST(rotate_rings_lie_on_circles_around_the_pivot) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    BreakEditorEntityId e = add_transformed(doc, "box", 1, 2, 3, 1, 1, 1);
+    BreakEditorGizmo *g = break_editor_gizmo_create();
+    BreakEditorGizmoRingSeg seg[3 * 32];
+    BreakEditorCamera cam;
+    usize n;
+    break_editor_camera_init(&cam);
+    break_editor_gizmo_attach(g, doc, e);
+    break_editor_gizmo_set_mode(g, BREAK_EDITOR_GIZMO_TRANSLATE);
+    ASSERT_EQ(break_editor_gizmo_rings(g, 32u, seg, 3u * 32u), 0u);
+    break_editor_gizmo_set_mode(g, BREAK_EDITOR_GIZMO_ROTATE);
+    break_editor_gizmo_set_view(g, &cam);
+    n = break_editor_gizmo_rings(g, 32u, seg, 3u * 32u);
+    ASSERT_EQ(n, 96u);
+    {
+        f32 sb = 0.0f, radius;
+        BreakEditorGizmoHandle h[4];
+        ASSERT_EQ(break_editor_gizmo_handles(g, h, 4u), 4u);
+        /* radius = gap + axis_len = far end of the X handle - pivot.x */
+        radius = h[0].aabb_max[0] - 1.0f;
+        (void)sb;
+        for (usize i = 0; i < n; i++) {
+            u32 a = seg[i].axis;
+            f32 d[3] = {seg[i].center[0] - 1.0f, seg[i].center[1] - 2.0f,
+                        seg[i].center[2] - 3.0f};
+            ASSERT_TRUE(a < 3u);
+            ASSERT_FLOAT_EQ(d[a], 0.0f, 1e-5f); /* in the axis' plane */
+            ASSERT_FLOAT_EQ(sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]),
+                            radius, 1e-4f);
+            ASSERT_TRUE(seg[i].half_size > 0.0f);
+            ASSERT_EQ(a, (u32)(i / 32u)); /* X ring, then Y, then Z */
+        }
+    }
+    /* bounds */
+    ASSERT_EQ(break_editor_gizmo_rings(g, 32u, seg, 10u), 0u); /* too small */
+    ASSERT_EQ(break_editor_gizmo_rings(g, 2u, seg, 96u), 0u);  /* < 3 segs */
+    ASSERT_EQ(break_editor_gizmo_rings(NULL, 32u, seg, 96u), 0u);
+    break_editor_gizmo_attach(g, NULL, BREAK_EDITOR_ENTITY_NULL);
+    ASSERT_EQ(break_editor_gizmo_rings(g, 32u, seg, 96u), 0u);
+    break_editor_gizmo_destroy(g);
+    break_editor_doc_destroy(doc);
+}
+
 TEST(oom_budget_sweeps) {
     /* create: single editor-owned allocation. */
     break_editor_test_set_alloc_budget(0);
@@ -1331,5 +1379,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(entity_removed_mid_drag_discards);
     RUN_TEST(snap_rounds_translate_rotate_and_scale);
     RUN_TEST(set_mode_out_of_range_hides_the_gizmo);
+    RUN_TEST(rotate_rings_lie_on_circles_around_the_pivot);
     RUN_TEST(oom_budget_sweeps);
 TEST_MAIN_END()

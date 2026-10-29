@@ -68,6 +68,7 @@ static const f32 k_selected_color[4] = {1.0f, 0.62f, 0.18f, 1.0f};
 /* selection outline: bright edges around the selected proxy */
 static const f32 k_outline_color[4] = {1.0f, 0.92f, 0.55f, 1.0f};
 #define EDITOR_VIEWPORT_OUTLINE_THICKNESS 0.035f
+#define EDITOR_VIEWPORT_RING_SEGMENTS 48u
 static const f32 k_gizmo_colors[5][4] = {
     {0.0f, 0.0f, 0.0f, 0.0f},                 /* PART_NONE (unused) */
     {0.90f, 0.25f, 0.25f, 1.0f},              /* X */
@@ -124,7 +125,7 @@ struct BreakEditorViewport3D {
 
     /* render debugger: last render() call (CPU counters only) */
     int last_skip;
-    u32 last_proxies, last_gizmo, last_draws, last_outline;
+    u32 last_proxies, last_gizmo, last_draws, last_outline, last_ring;
 
     /* widget interaction state (one viewport widget per shell) */
     int drag_kind;
@@ -157,6 +158,7 @@ bool break_editor_viewport3d_last_stats(const BreakEditorViewport3D *vp,
     out->proxies = vp->last_proxies;
     out->gizmo_handles = vp->last_gizmo;
     out->outline_edges = vp->last_outline;
+    out->ring_segments = vp->last_ring;
     out->draws = vp->last_draws;
     return true;
 }
@@ -628,7 +630,8 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
     if (vp == NULL) {
         return;
     }
-    vp->last_proxies = vp->last_gizmo = vp->last_draws = vp->last_outline = 0u;
+    vp->last_proxies = vp->last_gizmo = vp->last_draws = vp->last_outline =
+        vp->last_ring = 0u;
     if (doc == NULL || dev == NULL || cmd == NULL) {
         vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_NO_DEVICE;
         return;
@@ -746,6 +749,24 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
                                                      model);
             }
             vp_draw_box(vp, cmd, &view_proj, model, color);
+        }
+        /* rotate mode: one ring of small cubes per axis (visual only; the
+         * handles above stay the hit targets) */
+        {
+            BreakEditorGizmoRingSeg ring[3u * EDITOR_VIEWPORT_RING_SEGMENTS];
+            usize nr = break_editor_gizmo_rings(
+                vp->gizmo, EDITOR_VIEWPORT_RING_SEGMENTS, ring,
+                3u * EDITOR_VIEWPORT_RING_SEGMENTS);
+            for (usize r = 0u; r < nr; r++) {
+                static const f32 zero_rot[3] = {0.0f, 0.0f, 0.0f};
+                f32 ext[3], model[16];
+                ext[0] = ext[1] = ext[2] = 2.0f * ring[r].half_size;
+                break_editor_viewport3d_model_matrix(ring[r].center, zero_rot,
+                                                     ext, model);
+                vp_draw_box(vp, cmd, &view_proj, model,
+                            k_gizmo_colors[1u + ring[r].axis]);
+            }
+            vp->last_ring = (u32)nr;
         }
     }
 

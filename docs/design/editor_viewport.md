@@ -158,7 +158,7 @@ GPU 路径证据 = 编译/链接 + 记录在案的 live smoke run（**非** GPU 
 
 ## 9. Phase 3+ 明确排除项（设计-only，本 phase 未交付）
 
-- ~~选中高亮 **outline**~~（2026-10-29 已交付：所选代理立方体的 12 条棱以细长盒绘制为亮色描边 `#FFEB8C`，叠在暖色 tint 上；几何由纯 CPU 的 `break_editor_viewport3d_outline_edges` 生成并有已知答案测试；统计 `outline_edges`）、rotation rings 手柄
+- ~~选中高亮 **outline**~~（2026-10-29 已交付：所选代理立方体的 12 条棱以细长盒绘制为亮色描边 `#FFEB8C`，叠在暖色 tint 上；几何由纯 CPU 的 `break_editor_viewport3d_outline_edges` 生成并有已知答案测试；统计 `outline_edges`）、~~rotation rings 手柄可视化~~（2026-10-29 已交付：旋转模式下每轴一圈 48 个小立方体，半径 = 轴手柄远端，颜色同轴；只作可视化，命中仍用手柄 AABB；几何 `break_editor_gizmo_rings`，统计 `ring_segments`）
   可视化、多选（框选/多实体拖拽）、场景保真渲染
   （mesh/材质/光照——代理立方体不声称游戏画面）、gizmo 局部坐标系模式、
   视口内导航键（flycam）、视口 overlay 统计信息、pick 的增量 BVH refit

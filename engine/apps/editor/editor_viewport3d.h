@@ -156,6 +156,7 @@ typedef struct BreakEditorViewport3DStats {
     u32 gizmo_handles;/* gizmo handle boxes drawn */
     u32 draws;        /* draw calls recorded (proxies + handles + outline) */
     u32 outline_edges;/* selection outline edge boxes drawn (0 or 12) */
+    u32 ring_segments;/* rotate-mode ring cubes drawn (0 or 3 * 48) */
 } BreakEditorViewport3DStats;
 
 /* False on NULL arguments. */

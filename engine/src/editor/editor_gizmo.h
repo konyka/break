@@ -147,10 +147,16 @@ void break_editor_gizmo_attach(BreakEditorGizmo *g, BreakEditorDoc *doc, BreakEd
 typedef struct BreakEditorGizmoHandle { BreakEditorGizmoPart part; f32 aabb_min[3]; f32 aabb_max[3]; } BreakEditorGizmoHandle;
 usize break_editor_gizmo_handles(const BreakEditorGizmo *g, BreakEditorGizmoHandle *out, usize capacity); /* ≤ 24 */
 
-/* Refreshes the screen-constant sizing cache from the given camera (the
- * Task 3 renderer calls this once per frame; hit/begin_drag/drag refresh it
- * too). No-op on NULL, degenerate camera, detached gizmo, or non-finite
- * pivot (the previous cache value is kept). */
+/* Rotation rings, VISUAL ONLY (hit-testing still uses the handles above):
+ * in ROTATE mode, for X, Y, Z in that order, `segments` points evenly
+ * spaced on the circle of radius gap + axis_len around the pivot in the
+ * plane perpendicular to the axis; the renderer draws a small cube of
+ * half-size `half_size` at each. Returns 3 * segments, or 0 when not in
+ * ROTATE mode, detached, segments < 3, or capacity < 3 * segments. */
+typedef struct BreakEditorGizmoRingSeg { u32 axis; f32 center[3]; f32 half_size; } BreakEditorGizmoRingSeg;
+usize break_editor_gizmo_rings(const BreakEditorGizmo *g, u32 segments,
+                               BreakEditorGizmoRingSeg *out, usize capacity);
+
 /* Snapping (0 = off per kind): translate results round to multiples of
  * `translate_step` world units, rotate to multiples of `rotate_deg`, scale
  * to multiples of `scale_step` and never below one step. The resulting
@@ -161,6 +167,10 @@ bool break_editor_gizmo_set_snap(BreakEditorGizmo *g, f32 translate_step,
                                  f32 rotate_deg, f32 scale_step);
 void break_editor_gizmo_get_snap(const BreakEditorGizmo *g, f32 *translate_step,
                                  f32 *rotate_deg, f32 *scale_step);
+/* Refreshes the screen-constant sizing cache from the given camera (the
+ * Task 3 renderer calls this once per frame; hit/begin_drag/drag refresh it
+ * too). No-op on NULL, degenerate camera, detached gizmo, or non-finite
+ * pivot (the previous cache value is kept). */
 void break_editor_gizmo_set_view(BreakEditorGizmo *g, const BreakEditorCamera *cam);
 
 /* Pointer drive (viewport-local logical px): */

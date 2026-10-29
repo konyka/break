@@ -359,6 +359,33 @@ usize break_editor_gizmo_handles(const BreakEditorGizmo *g,
     return n; /* <= 4 <= BREAK_EDITOR_GIZMO_MAX_HANDLES */
 }
 
+usize break_editor_gizmo_rings(const BreakEditorGizmo *g, u32 segments,
+                               BreakEditorGizmoRingSeg *out, usize capacity) {
+    f32 pivot[3], radius, half;
+    usize n = 0u;
+    if (!g || !out || segments < 3u || capacity < 3u * (usize)segments) return 0;
+    if (!g->doc || g->mode != BREAK_EDITOR_GIZMO_ROTATE) return 0;
+    if (!eg_pivot(g, pivot)) return 0;
+    /* the ring passes through the far end of each axis handle */
+    radius = (BREAK_EDITOR_GIZMO_AXIS_GAP_SCALE +
+              BREAK_EDITOR_GIZMO_AXIS_LEN_SCALE) * g->scale_base;
+    half = BREAK_EDITOR_GIZMO_AXIS_THICK_SCALE * g->scale_base * 0.5f;
+    if (!isfinite(radius) || !(radius > 0.0f)) return 0;
+    for (u32 a = 0u; a < 3u; a++) {
+        u32 b = (a + 1u) % 3u, c = (a + 2u) % 3u;
+        for (u32 k = 0u; k < segments; k++) {
+            f32 t = 6.28318530718f * (f32)k / (f32)segments;
+            BreakEditorGizmoRingSeg *sgm = &out[n++];
+            sgm->axis = a;
+            sgm->center[a] = pivot[a];
+            sgm->center[b] = pivot[b] + radius * cosf(t);
+            sgm->center[c] = pivot[c] + radius * sinf(t);
+            sgm->half_size = half;
+        }
+    }
+    return n;
+}
+
 BreakEditorGizmoPart break_editor_gizmo_hit(const BreakEditorGizmo *g,
                                             const BreakEditorCamera *cam,
                                             f32 x, f32 y, f32 w, f32 h) {
