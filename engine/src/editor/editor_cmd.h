@@ -48,6 +48,9 @@ u32  break_editor_cmd_stack_size(const BreakEditorCmdStack *stack);      /* appl
 u32  break_editor_cmd_stack_undo_count(const BreakEditorCmdStack *stack);
 u32  break_editor_cmd_stack_redo_count(const BreakEditorCmdStack *stack);
 bool break_editor_cmd_stack_dropped_oldest(const BreakEditorCmdStack *stack);
+/* Change counter: +1 on every push, successful undo and successful redo;
+ * never decreases (0 for a NULL stack). */
+u64  break_editor_cmd_stack_revision(const BreakEditorCmdStack *stack);
 
 /* Describes the command that the next undo would revert (status bar /
  * console). Bounded: writes at most 128 bytes incl. NUL, truncating long

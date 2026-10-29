@@ -2223,6 +2223,36 @@ TEST(open_scene_loads_existing_and_targets_missing)
     remove(corrupt);
 }
 
+/* Closing with unsaved changes: the first request is refused (a console
+ * line and the status bar say so); a second request discards. Any edit in
+ * between re-arms the guard; a clean document closes at once. */
+TEST(close_request_guards_unsaved_changes)
+{
+    char path[512], sidecar[600];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_request_close(shell)); /* clean */
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_FALSE(break_editor_shell_request_close(shell));
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell), "unsaved") != NULL);
+    ASSERT_TRUE(strstr(break_editor_shell_status_text(shell), "unsaved") != NULL);
+    /* an edit after the warning re-arms it */
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_FALSE(break_editor_shell_request_close(shell));
+    ASSERT_TRUE(break_editor_shell_request_close(shell)); /* second: discard */
+    /* saving clears the need */
+    test_tmp(path, sizeof(path), "editor_shell_close.bscn");
+    snprintf(sidecar, sizeof(sidecar), "%s.editor.json", path);
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, path));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_request_close(shell));
+    ASSERT_TRUE(break_editor_shell_request_close(NULL)); /* nothing to guard */
+    break_editor_shell_destroy(shell);
+    remove(path);
+    remove(sidecar);
+}
+
 /* Ctrl+P paints the palette over the shell and its focused edit shows the
  * accent focus ring (soft LCD, full-window repaint). */
 TEST(palette_paints_with_focused_edit_ring)
@@ -7078,6 +7108,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(inspector_field_edits_through_real_key_events);
     RUN_TEST(delete_and_ctrl_d_shortcuts);
     RUN_TEST(open_scene_loads_existing_and_targets_missing);
+    RUN_TEST(close_request_guards_unsaved_changes);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);

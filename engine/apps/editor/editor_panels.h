@@ -158,6 +158,11 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
  * made the save target (so Ctrl+S cannot overwrite it) and false is
  * returned. The outcome is logged to the console. */
 bool break_editor_shell_open_scene(BreakEditorShell *shell, const char *path);
+/* The host asks before closing the window. true = close now. With unsaved
+ * changes the first request returns false and says so on the console and
+ * status bar; a second request with no edit in between returns true
+ * (discard). Any document change re-arms the warning. */
+bool break_editor_shell_request_close(BreakEditorShell *shell);
 bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
                                        const char *path);
 

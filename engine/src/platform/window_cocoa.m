@@ -529,6 +529,12 @@ void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
     (void)p; (void)native_window; (void)width; (void)height;
 }
 
+/* windowShouldClose: returns NO and sets should_close, so clearing it is a
+ * complete cancel (the window stays open). */
+void platform_cancel_close(Platform *p) {
+    if (p != NULL) p->should_close = false;
+}
+
 PlatformEventResult platform_poll(Platform *p) {
     if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);

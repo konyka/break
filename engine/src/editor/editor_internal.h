@@ -123,6 +123,7 @@ struct BreakEditorCmdStack {
     u32 size;     /* applied + redoable commands currently held */
     u32 undo_pos; /* [0, undo_pos) applied; [undo_pos, size) redoable */
     bool dropped_oldest;
+    u64 revision; /* +1 per push / undo / redo (change signal) */
 };
 
 /* editor_scene.c: releases doc->kept_chunks (safe when none). */

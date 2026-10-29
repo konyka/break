@@ -414,6 +414,29 @@ TEST(mixed_sequence_undo_redo) {
     break_editor_doc_destroy(doc);
 }
 
+/* revision: strictly increases on every push, undo and redo (the doc's
+ * change signal — dirty alone cannot tell "changed again since I looked"),
+ * and stays put on failed undo/redo. */
+TEST(revision_counts_every_change) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorCmdStack *st = break_editor_doc_stack(doc);
+    u64 r0 = break_editor_cmd_stack_revision(st);
+    ASSERT_FALSE(break_editor_undo(doc));
+    ASSERT_EQ(break_editor_cmd_stack_revision(st), r0);
+    BreakEditorEntityId a = break_editor_doc_add_entity(doc, "a");
+    ASSERT_TRUE(break_editor_entity_id_valid(a));
+    u64 r1 = break_editor_cmd_stack_revision(st);
+    ASSERT_TRUE(r1 > r0);
+    ASSERT_TRUE(break_editor_undo(doc));
+    u64 r2 = break_editor_cmd_stack_revision(st);
+    ASSERT_TRUE(r2 > r1);
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_TRUE(break_editor_cmd_stack_revision(st) > r2);
+    ASSERT_EQ(break_editor_cmd_stack_revision(NULL), 0u);
+    break_editor_doc_destroy(doc);
+}
+
 int main(void) {
     printf("=== test_editor_cmd ===\n");
     RUN_TEST(stack_create_destroy);
@@ -430,6 +453,7 @@ int main(void) {
     RUN_TEST(describe_last_command);
     RUN_TEST(oom_command_alloc_leaves_stack_unchanged);
     RUN_TEST(mixed_sequence_undo_redo);
+    RUN_TEST(revision_counts_every_change);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
            g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;

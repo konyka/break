@@ -37,6 +37,7 @@ void break_editor_cmd_stack_destroy(BreakEditorCmdStack *stack) {
 
 void break_editor_cmd_stack_push_applied(BreakEditorDoc *doc,
                                          BreakEditorCmd *cmd) {
+    doc->stack->revision++;
     BreakEditorCmdStack *stack = doc->stack;
 
     /* New mutation clears the redo tail (this is what keeps revert/redo
@@ -69,6 +70,7 @@ bool break_editor_undo(BreakEditorDoc *doc) {
     BreakEditorCmd *cmd = stack->entries[stack->undo_pos - 1u];
     if (!cmd->revert(cmd, doc)) return false; /* cursor unchanged */
     stack->undo_pos--;
+    stack->revision++;
     doc->dirty = true;
     return true;
 }
@@ -80,6 +82,7 @@ bool break_editor_redo(BreakEditorDoc *doc) {
     BreakEditorCmd *cmd = stack->entries[stack->undo_pos];
     if (!cmd->apply(cmd, doc)) return false; /* cursor unchanged */
     stack->undo_pos++;
+    stack->revision++;
     doc->dirty = true;
     return true;
 }
@@ -109,6 +112,10 @@ u32 break_editor_cmd_stack_undo_count(const BreakEditorCmdStack *stack) {
 
 u32 break_editor_cmd_stack_redo_count(const BreakEditorCmdStack *stack) {
     return stack ? stack->size - stack->undo_pos : 0u;
+}
+
+u64 break_editor_cmd_stack_revision(const BreakEditorCmdStack *stack) {
+    return stack ? stack->revision : 0u;
 }
 
 bool break_editor_cmd_stack_dropped_oldest(const BreakEditorCmdStack *stack) {

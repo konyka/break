@@ -162,6 +162,9 @@ struct BreakEditorShell {
 
     char status_text[EDITOR_STATUS_BYTES];
     char note[EDITOR_CONSOLE_LINE_BYTES]; /* status-bar intent note */
+    /* close guard: revision at the last unsaved-changes warning (+1 so 0 =
+     * never warned) */
+    u64 close_warned_rev;
 
     char scene_path[BREAK_EDITOR_SCENE_PATH_CAPACITY];
     bool scene_path_set;
@@ -2176,6 +2179,23 @@ bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
     (void)break_editor_hot_reload_set_scene(shell->hot_reload,
                                             shell->scene_path);
     return true;
+}
+
+bool break_editor_shell_request_close(BreakEditorShell *shell) {
+    u64 rev;
+    if (shell == NULL || !break_editor_doc_is_dirty(shell->doc)) {
+        return true;
+    }
+    rev = break_editor_cmd_stack_revision(break_editor_doc_stack(shell->doc)) + 1u;
+    if (shell->close_warned_rev == rev) {
+        return true; /* second request with no edit since the warning */
+    }
+    shell->close_warned_rev = rev;
+    editor_shell_log(shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_CLOSE_UNSAVED));
+    (void)snprintf(shell->note, sizeof(shell->note), "%s",
+                   break_editor_tr(BREAK_EDITOR_TR_LOG_CLOSE_UNSAVED));
+    shell_refresh_status(shell);
+    return false;
 }
 
 bool break_editor_shell_open_scene(BreakEditorShell *shell, const char *path) {

@@ -210,6 +210,7 @@ PlatformEventResult platform_poll(Platform *p)
     return p->quit ? PLATFORM_EVENT_QUIT : PLATFORM_EVENT_NONE;
 }
 
+void platform_cancel_close(Platform *p) { (void)p; }
 u32 platform_poll_text(Platform *p, PlatformTextEvent *out, u32 max_events)
 {
     (void)p; (void)out; (void)max_events;
