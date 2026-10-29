@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：2026-10-29 同步后的 Windows 修复（编辑器设置/字体测试、fuzz_editor_scene）
+
+- **问题**：同步 23 个提交（编辑器 CLion 风格主题与字体、设置持久化、场景 fuzzer 等）后，Windows 上 `test_editor_fonts`、`test_editor_settings`、`fuzz_editor_scene` 编不过：用了 POSIX 的 `setenv`/`unsetenv`/`<unistd.h>`/`getpid`/写死的 `/tmp`。生产代码 `editor_settings.c` 本身有 `%APPDATA%` 分支，只是测试没跟上。
+- **修复**：`tests/test_framework.h` 新增 `TEST_SETENV`/`TEST_UNSETENV`（Windows 用 `_putenv_s`，空值即删除；POSIX 侧沿用原先 `test_editor_settings` 里的 `extern` 声明）；`test_editor_fonts`/`test_editor_settings` 改用它们并去掉各自的 `_POSIX_C_SOURCE`/`unistd.h`；`test_editor_settings` 的默认路径用例在 Windows 上断言 `%APPDATA%/break/editor.ini`（并断言无 `APPDATA` 时返回 false），存取用例改用 `test_tmp`；`fuzz_editor_scene` 照 `fuzz_scene_serial` 的 `fuzz_getpid` 写法处理。
+- **验证**（本机 Windows）：OpenGL 229/229、Vulkan 232/232、D3D12 237/237、ASan 225/225、MSVC 239（1 个 D3D12 依赖门 skip，构建 0 诊断）、MinGW 235/235（构建 0 警告）；ASan 树里 `fuzz_editor_scene 3000 7` 与 MinGW 下 `2000 3` 均正常结束（978/639 个变异被接受并重存）。
+- **边界**：Linux/macOS 上 `test_framework.h` 的 POSIX 分支本机无法编译验证，以远程 CI 为准；编辑器“命令面板点 `Theme: Light` → 设置写盘”这条端到端路径**没能**在 Windows 上用输入脚本跑通（脚本点击后面板没有关闭，设置文件没生成），无法区分是脚本驱动对列表行点击的限制还是真问题，所以主题切换与设置持久化的实机表现**未验证**，只有 `test_editor_settings` 单元测试（含文件存取）在 Windows 上通过。MinGW 全并行（`-j` 默认）构建曾因系统分页文件瞬时不足失败（`CreateProcess: The paging file is too small`），降到 `-j 4` 后通过，属环境资源问题。
+
 ## 本轮更新：编辑器文字重影修复 + JetBrains New UI 暗色主题（2026-10-28）
 
 - **文字重影（已修，根因）**：实机截图里同一段工具栏文字在无输入的情况下，第 3 帧到第 70 帧全黑像素从 348 增到 594，逐帧变粗变糊；同一画布单独画字形的 GPU 读回是干净的。原因：Break RHI vgcanvas 对矩形和路径执行裁剪，但字形四边形和纹理四边形（`draw_image`、`blit_texture`）不裁剪。保留式 UI 每帧只按脏矩形裁剪重绘整棵控件树，于是每次局部重绘都把所有文字再混合一遍叠在上一帧的字形上。修复：字形与纹理四边形按裁剪矩形切割并按比例调整 UV。新增 `test_myui_break_rhi_clip`（真实设备、离屏读回）：裁剪外不出字/图、半裁剪只留交集；修复前两例皆红，修复后 Vulkan 与 OpenGL 皆绿。实机：同一文字各帧完全一致（54 暗 / 479 中间灰，帧 3/6/70/悬停后相同），字形边缘为正常抗锯齿。

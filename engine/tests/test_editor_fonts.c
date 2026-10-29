@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L /* setenv/unsetenv */
 #include "test_framework.h"
 
 #include "editor_fonts.h"
@@ -245,7 +244,7 @@ TEST(fonts_bundled_jetbrains_mono_leads_the_chain)
     char path[BREAK_EDITOR_FONT_PATH_MAX];
     usize n;
     struct stat st;
-    ASSERT_EQ(setenv("BREAK_ASSET_DIR", BREAK_TEST_ENGINE_SOURCE_DIR, 1), 0);
+    ASSERT_EQ(TEST_SETENV("BREAK_ASSET_DIR", BREAK_TEST_ENGINE_SOURCE_DIR), 0);
     ASSERT_TRUE(break_editor_bundled_font_path(0u, path, sizeof(path)));
     ASSERT_EQ(stat(path, &st), 0);
     ASSERT_TRUE(strstr(path, "assets/fonts/JetBrainsMono-Regular.ttf") != NULL);
@@ -272,7 +271,7 @@ TEST(fonts_bundled_jetbrains_mono_leads_the_chain)
     ASSERT_TRUE(strstr(c.paths[0], "JetBrainsMono-Regular.ttf") != NULL);
     ASSERT_TRUE(strstr(c.paths[1], "NotoSansSC-VF.ttf") != NULL);
     ASSERT_TRUE(c.has_cjk);
-    ASSERT_EQ(unsetenv("BREAK_ASSET_DIR"), 0);
+    ASSERT_EQ(TEST_UNSETENV("BREAK_ASSET_DIR"), 0);
 }
 
 TEST(cli_take_lang_strips_option_and_keeps_other_arguments)

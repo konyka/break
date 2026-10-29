@@ -1,7 +1,3 @@
-#ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200809L /* setenv/unsetenv */
-#endif
-#include <unistd.h>
 #include "test_framework.h"
 
 #include "editor_settings.h"
@@ -10,10 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-
-/* engine builds at _POSIX_C_SOURCE=199309L, which hides these */
-extern int setenv(const char *, const char *, int);
-extern int unsetenv(const char *);
 
 /* parse: known keys, unknown keys ignored, bad values keep defaults */
 TEST(parse_reads_known_keys_and_ignores_the_rest)
@@ -81,25 +73,35 @@ TEST(serialize_round_trips)
     ASSERT_EQ(break_editor_settings_serialize(&a, buf, 8u), 0u);
 }
 
-/* default path: $XDG_CONFIG_HOME/break/editor.ini, else ~/.config/... */
+/* default path: $XDG_CONFIG_HOME/break/editor.ini, else ~/.config/...;
+ * on Windows %APPDATA%/break/editor.ini (and nothing without APPDATA) */
 TEST(default_path_follows_xdg_then_home)
 {
     char path[512];
     /* the override must not leak in from the caller's environment */
-    ASSERT_EQ(unsetenv("BREAK_EDITOR_SETTINGS"), 0);
-    ASSERT_EQ(setenv("XDG_CONFIG_HOME", "/tmp/xdg-test", 1), 0);
+    ASSERT_EQ(TEST_UNSETENV("BREAK_EDITOR_SETTINGS"), 0);
+#if defined(_WIN32)
+    ASSERT_EQ(TEST_SETENV("APPDATA", "C:/appdata-test"), 0);
+    ASSERT_TRUE(break_editor_settings_default_path(path, sizeof(path)));
+    ASSERT_STR_EQ(path, "C:/appdata-test/break/editor.ini");
+    ASSERT_FALSE(break_editor_settings_default_path(path, 8u));
+    ASSERT_EQ(TEST_UNSETENV("APPDATA"), 0);
+    ASSERT_FALSE(break_editor_settings_default_path(path, sizeof(path)));
+#else
+    ASSERT_EQ(TEST_SETENV("XDG_CONFIG_HOME", "/tmp/xdg-test"), 0);
     ASSERT_TRUE(break_editor_settings_default_path(path, sizeof(path)));
     ASSERT_STR_EQ(path, "/tmp/xdg-test/break/editor.ini");
-    ASSERT_EQ(unsetenv("XDG_CONFIG_HOME"), 0);
-    ASSERT_EQ(setenv("HOME", "/tmp/home-test", 1), 0);
+    ASSERT_EQ(TEST_UNSETENV("XDG_CONFIG_HOME"), 0);
+    ASSERT_EQ(TEST_SETENV("HOME", "/tmp/home-test"), 0);
     ASSERT_TRUE(break_editor_settings_default_path(path, sizeof(path)));
     ASSERT_STR_EQ(path, "/tmp/home-test/.config/break/editor.ini");
     ASSERT_FALSE(break_editor_settings_default_path(path, 8u));
+#endif
     /* BREAK_EDITOR_SETTINGS overrides everything (tests, portable installs) */
-    ASSERT_EQ(setenv("BREAK_EDITOR_SETTINGS", "/tmp/x/editor.ini", 1), 0);
+    ASSERT_EQ(TEST_SETENV("BREAK_EDITOR_SETTINGS", "/tmp/x/editor.ini"), 0);
     ASSERT_TRUE(break_editor_settings_default_path(path, sizeof(path)));
     ASSERT_STR_EQ(path, "/tmp/x/editor.ini");
-    ASSERT_EQ(unsetenv("BREAK_EDITOR_SETTINGS"), 0);
+    ASSERT_EQ(TEST_UNSETENV("BREAK_EDITOR_SETTINGS"), 0);
 }
 
 /* save creates the parent directory and writes atomically; load reads it
@@ -108,7 +110,7 @@ TEST(save_then_load_through_the_file_system)
 {
     char dir[256], path[320];
     BreakEditorSettings a, b;
-    snprintf(dir, sizeof(dir), "/tmp/break_editor_settings_%d", (int)getpid());
+    test_tmp(dir, sizeof(dir), "editor_settings");
     snprintf(path, sizeof(path), "%s/sub/editor.ini", dir);
     remove(path);
     break_editor_settings_defaults(&b);
@@ -127,8 +129,8 @@ TEST(save_then_load_through_the_file_system)
     {
         char sub[300];
         snprintf(sub, sizeof(sub), "%s/sub", dir);
-        rmdir(sub);
-        rmdir(dir);
+        TEST_RMDIR(sub);
+        TEST_RMDIR(dir);
     }
     ASSERT_FALSE(break_editor_settings_save(NULL, path));
     ASSERT_FALSE(break_editor_settings_load(&b, NULL));

@@ -18,7 +18,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <process.h>
+#define fuzz_getpid _getpid
+#else
 #include <unistd.h>
+#define fuzz_getpid getpid
+#endif
+
+/* pid-unique scratch path under the platform temp directory. */
+static void fuzz_tmp_path(char *out, size_t cap, const char *name) {
+#ifdef _WIN32
+    snprintf(out, cap, "fuzz_editor_scene_%d_%s", (int)fuzz_getpid(), name);
+#else
+    snprintf(out, cap, "/tmp/fuzz_editor_scene_%d_%s", (int)fuzz_getpid(), name);
+#endif
+}
 
 static unsigned long long g_rng = 0x9e3779b97f4a7c15ull;
 static unsigned rnd(void) {
@@ -94,10 +109,8 @@ int main(int argc, char **argv) {
     unsigned char *seed;
     unsigned long accepted = 0, resaved = 0;
     if (argc > 2) g_rng ^= strtoull(argv[2], NULL, 10);
-    snprintf(seed_path, sizeof(seed_path), "/tmp/fuzz_editor_scene_%d.bscn",
-             (int)getpid());
-    snprintf(out_path, sizeof(out_path), "/tmp/fuzz_editor_scene_%d_out.bscn",
-             (int)getpid());
+    fuzz_tmp_path(seed_path, sizeof(seed_path), "seed.bscn");
+    fuzz_tmp_path(out_path, sizeof(out_path), "out.bscn");
     snprintf(sidecar, sizeof(sidecar), "%s%s", out_path,
              BREAK_EDITOR_SIDECAR_SUFFIX);
     if (!build_seed(seed_path) || !(seed = read_all(seed_path, &seed_n))) {
