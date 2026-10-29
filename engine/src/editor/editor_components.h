@@ -42,9 +42,11 @@
  *     that stores the OLD 4 bytes; revert restores them byte-exact (NaN
  *     payloads and -0.0 survive). A bitwise-identical write is a no-op:
  *     returns true WITHOUT recording a command or setting dirty.
- *   - add_component: adds the component with all bytes ZEROED (the ECS
- *     reuses chunk rows, so world_add_component alone can return stale
- *     bytes) and snapshots the post-add bytes into the command; revert
+ *   - add_component: adds the component with its registered DEFAULT bytes
+ *     (EditorTransform: identity — pos 0, rot 0, scale 1; types without a
+ *     default are all zero; written explicitly because the ECS reuses chunk
+ *     rows, so world_add_component alone can return stale bytes) and
+ *     snapshots the post-add bytes into the command; revert
  *     removes; redo re-adds and restores the snapshot. Adding a component
  *     the entity already has is a bounded false.
  *   - remove_component: snapshots the current component bytes into the
@@ -136,7 +138,7 @@ bool break_editor_doc_set_field_f32(BreakEditorDoc *doc,
                                     u32 field_index, f32 value);
 
 /* Undoable commands with the component bytes (<= 256) snapshotted into the
- * command. add yields zeroed bytes; remove's revert restores the snapshot
+ * command. add yields the default bytes; remove's revert restores the snapshot
  * byte-exact. */
 bool break_editor_doc_add_component(BreakEditorDoc *doc,
                                     BreakEditorEntityId id, u32 component_id);

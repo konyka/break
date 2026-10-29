@@ -70,6 +70,8 @@ typedef struct {
     u32 size;                     /* byte size registered in the World */
     BreakEditorField fields[9];   /* matches BreakEditorComponentInfo cap */
     u32 field_count;
+    /* bytes a freshly added component starts with (NULL = all zero) */
+    const u8 *default_bytes;
 } BreakEditorComponentReg;
 
 /* Concrete component command payload (Task 3): one bounded allocation,

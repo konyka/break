@@ -46,6 +46,11 @@ static const BreakEditorField k_transform_fields[9] = {
     { "scale.z", offsetof(EditorTransform, scale) + 2u * sizeof(f32), 0u },
 };
 
+/* A new transform is the identity, not all-zero: a zero scale renders
+ * nothing and cannot be scaled up by the gizmo (its factor multiplies). */
+static const EditorTransform k_transform_default = {
+    {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}};
+
 void break_editor_doc_init_components(BreakEditorDoc *doc) {
     /* World registration is what makes the component survive save/load
      * (BSCN COMPONENTS chunk stores raw bytes per registered type, and the
@@ -61,6 +66,7 @@ void break_editor_doc_init_components(BreakEditorDoc *doc) {
     reg->size = (u32)sizeof(EditorTransform);
     memcpy(reg->fields, k_transform_fields, sizeof(k_transform_fields));
     reg->field_count = 9u;
+    reg->default_bytes = (const u8 *)&k_transform_default;
     doc->component_count = 1u;
 }
 
@@ -245,10 +251,17 @@ static bool add_component_apply(BreakEditorCmd *self, BreakEditorDoc *doc) {
     u8 *p = world_add_component(w, ecs_id(self->id), c->component_id);
     if (!p) return false; /* ECS cap/OOM: bounded failure */
     if (!c->snapshot_taken) {
-        /* First apply: deterministic zeroed add (the ECS reuses chunk rows,
-         * so world_add_component alone can hand back stale bytes), then
+        /* First apply: deterministic default bytes (the registry's
+         * default_bytes, else zero — the ECS reuses chunk rows, so
+         * world_add_component alone can hand back stale bytes), then
          * capture the post-add state for exact redo. */
-        memset(p, 0, c->snapshot_size);
+        const BreakEditorComponentReg *reg =
+            break_editor_doc_find_component(doc, c->component_id);
+        if (reg != NULL && reg->default_bytes != NULL) {
+            memcpy(p, reg->default_bytes, c->snapshot_size);
+        } else {
+            memset(p, 0, c->snapshot_size);
+        }
         memcpy(c->snapshot, p, c->snapshot_size);
         c->snapshot_taken = true;
     } else {

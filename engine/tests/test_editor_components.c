@@ -84,15 +84,16 @@ static bool fields_match(BreakEditorDoc *doc, BreakEditorEntityId id,
 }
 
 /* All 9 fields exactly +0.0f (the zeroed-add state). */
-static bool fields_zeroed(BreakEditorDoc *doc, BreakEditorEntityId id) {
+/* A freshly added transform: pos/rot exactly zero, scale exactly one. */
+static bool fields_default(BreakEditorDoc *doc, BreakEditorEntityId id) {
     for (u32 f = 0; f < 9; f++) {
-        f32 v = 1.0f;
+        f32 v = -1.0f;
         if (!break_editor_doc_get_field_f32(doc, id,
                                             BREAK_EDITOR_COMPONENT_TRANSFORM,
                                             f, &v)) {
             return false;
         }
-        if (f32_bits(v) != 0u) return false;
+        if (f < 6u ? f32_bits(v) != 0u : v != 1.0f) return false;
     }
     return true;
 }
@@ -153,7 +154,7 @@ TEST(transform_registered_in_world_at_create) {
     break_editor_doc_destroy(doc);
 }
 
-TEST(has_component_and_zeroed_add) {
+TEST(has_component_and_default_add) {
     BreakEditorDoc *doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
     BreakEditorEntityId id = break_editor_doc_add_entity(doc, "hero");
@@ -175,11 +176,17 @@ TEST(has_component_and_zeroed_add) {
     ASSERT_TRUE(break_editor_doc_has_component(doc, id,
                                                BREAK_EDITOR_COMPONENT_TRANSFORM));
 
-    /* Add yields zeroed bytes (deterministic: ECS reuses chunk rows). */
+    /* Add yields the registered DEFAULT bytes, deterministically (the ECS
+     * reuses chunk rows, so stale bytes must be overwritten). For
+     * EditorTransform that is the identity: pos 0, rot 0, scale 1 — a
+     * zeroed scale made every new proxy invisible and un-scalable. */
     const EditorTransform *t = raw_transform(doc, id);
     ASSERT_NOT_NULL(t);
-    for (u32 i = 0; i < 9; i++) {
+    for (u32 i = 0; i < 6; i++) {
         ASSERT_EQ(f32_bits(((const f32 *)t)[i]), 0u);
+    }
+    for (u32 i = 6; i < 9; i++) {
+        ASSERT_TRUE(((const f32 *)t)[i] == 1.0f);
     }
 
     break_editor_doc_destroy(doc);
@@ -193,7 +200,7 @@ TEST(get_set_fields_round_trip) {
     ASSERT_TRUE(break_editor_doc_add_component(doc, id,
                                                BREAK_EDITOR_COMPONENT_TRANSFORM));
 
-    ASSERT_TRUE(fields_zeroed(doc, id));
+    ASSERT_TRUE(fields_default(doc, id));
     ASSERT_TRUE(set_all_fields(doc, id, 100.0f));
     ASSERT_TRUE(fields_match(doc, id, 100.0f));
 
@@ -362,7 +369,7 @@ TEST(add_component_undo_redo_symmetric) {
     ASSERT_TRUE(break_editor_redo(doc));
     ASSERT_TRUE(break_editor_doc_has_component(doc, id,
                                                BREAK_EDITOR_COMPONENT_TRANSFORM));
-    ASSERT_TRUE(fields_zeroed(doc, id));
+    ASSERT_TRUE(fields_default(doc, id));
 
     /* Full chain: set field, undo set, undo add, redo add (zeroed), redo
      * set — every step exact. */
@@ -797,7 +804,7 @@ int main(void) {
     printf("=== test_editor_components ===\n");
     RUN_TEST(registry_enumeration);
     RUN_TEST(transform_registered_in_world_at_create);
-    RUN_TEST(has_component_and_zeroed_add);
+    RUN_TEST(has_component_and_default_add);
     RUN_TEST(get_set_fields_round_trip);
     RUN_TEST(set_field_undo_redo_byte_exact);
     RUN_TEST(set_field_same_value_records_no_command);
