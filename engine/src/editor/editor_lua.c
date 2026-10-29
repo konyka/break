@@ -244,6 +244,7 @@ static bool console_main_runtime_init(BreakEditorLuaConsole *c) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.max_modules = 8u;
     cfg.instruction_budget = BREAK_EDITOR_LUA_INSTRUCTION_BUDGET;
+    cfg.memory_budget = BREAK_EDITOR_LUA_MEMORY_BUDGET;
     c->runtime = break_lua_runtime_create(&cfg);
     if (!c->runtime) {
         return false;
@@ -269,6 +270,7 @@ static bool console_probe_runtime_init(BreakEditorLuaConsole *c) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.max_modules = 4u;
     cfg.instruction_budget = BREAK_EDITOR_LUA_INSTRUCTION_BUDGET;
+    cfg.memory_budget = BREAK_EDITOR_LUA_MEMORY_BUDGET;
     c->probe_runtime = break_lua_runtime_create(&cfg);
     if (!c->probe_runtime) {
         return false;

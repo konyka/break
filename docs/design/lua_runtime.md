@@ -82,6 +82,7 @@
 - `BreakLuaRuntimeConfig.memory_budget`（字节，0 = 不限）：VM 分配器统计交给 Lua 的全部字节，任何会让总量超过预算的增长请求返回 NULL；Lua 先做一次紧急 GC，仍不够则抛 LUA_ERRMEM，load/reload/call/帧钩子因此以 `BREAK_LUA_OOM` 失败而不是 abort，垃圾回收后 VM 继续可用。缩小与释放总是成功。预算小到连标准库都打不开时 `create` 返回 NULL。
 - `break_lua_runtime_memory_in_use(rt)` 返回当前字节数（owner-only，NULL/非 owner 返回 0）；`effective_config` 回报 `memory_budget`。
 - 测试：`test_break_lua_runtime` 新增 `memory_budget_caps_vm_allocation_and_fails_closed`（默认不限、过小预算 create 失败、1 MiB 预算下小请求成功、10 万元素请求 OOM 且用量不超预算、之后 VM 仍可用）；去掉预算判断后该例变红；ASan 树下 4 个 break_lua 二进制全绿。
+- 使用方：编辑器 Lua console 的两个 VM 各设 64 MiB（`BREAK_EDITOR_LUA_MEMORY_BUDGET`，`editor_lua.h`）。
 
 ## 3. 设计-only / 未实现
 

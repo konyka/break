@@ -222,6 +222,10 @@ typedef void (*BreakEditorLuaLogFn)(void *ctx, const char *line);
 /* Console instruction budget per eval (armed over the eval's frame-hook
  * dispatch AND over module staging/commit execution — see EVAL PIPELINE). */
 #define BREAK_EDITOR_LUA_INSTRUCTION_BUDGET 1000000u
+/* Memory cap per console Lua VM (break_lua memory_budget): an eval that
+ * would make the VM hold more fails as an error line instead of growing
+ * the editor process without bound. */
+#define BREAK_EDITOR_LUA_MEMORY_BUDGET (64u * 1024u * 1024u)
 
 /* NULL doc or NULL log_fn => NULL. Also NULL on allocation failure
  * (console struct, Lua runtimes, or batch — partial setup is fully torn

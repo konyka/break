@@ -243,6 +243,23 @@ TEST(eval_runtime_error_line_adjusted) {
     fixture_close(&f);
 }
 
+TEST(eval_memory_budget_bounds_allocation_storm) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+    /* Few instructions, lots of memory: string.rep asks for far more than
+     * the console memory budget in one go. */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console, "local s = string.rep('x', 512 * 1024 * 1024) return #s"));
+    ASSERT_TRUE(sink_has_prefix(&f.sink, "error:"));
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+
+    /* the console keeps working (possibly after a lazy re-init) */
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "6*7"));
+    ASSERT_TRUE(sink_find(&f.sink, "42") >= 0);
+    fixture_close(&f);
+}
+
 TEST(eval_budget_trip_console_survives) {
     Fixture f;
     ASSERT_TRUE(fixture_open(&f));
@@ -1113,6 +1130,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(eval_syntax_error_line_then_recover);
     RUN_TEST(eval_runtime_error_line_adjusted);
     RUN_TEST(eval_budget_trip_console_survives);
+    RUN_TEST(eval_memory_budget_bounds_allocation_storm);
     RUN_TEST(spawn_record_creates_entity_undoable);
     RUN_TEST(spawn_multi_record_fifo);
     RUN_TEST(set_record_number_string_bool_undoable);
