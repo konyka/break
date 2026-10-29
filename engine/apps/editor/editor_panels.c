@@ -1396,6 +1396,14 @@ void editor_shell_refresh_all(BreakEditorShell *shell) {
     shell_rebuild_inspector(shell);
     shell_refresh_status(shell);
     shell_refresh_tool_label(shell);
+    /* A rebind recycles the outliner rows and the inspector is rebuilt:
+     * when the focused widget was one of them, myui clears focus and every
+     * later key (Delete, Ctrl+D, Ctrl+Z...) would go nowhere. Hand it back
+     * to the shell root, where the shortcuts live. */
+    if (shell->win != NULL && shell->root != NULL &&
+        shell->win->dispatcher.focused == NULL) {
+        my_event_dispatcher_set_focus(&shell->win->dispatcher, shell->root);
+    }
 }
 
 /* ---------------- tool-window tabs ---------------- */

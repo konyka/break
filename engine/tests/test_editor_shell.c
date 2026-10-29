@@ -2134,6 +2134,29 @@ TEST(delete_and_ctrl_d_shortcuts)
     ASSERT_EQ(break_editor_shell_outliner_count(shell), 2u);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
     ASSERT_EQ(break_editor_shell_outliner_count(shell), 1u);
+    /* With focus on a clicked outliner row (real pointer), Ctrl+D then
+     * Delete must both reach the shell: the duplicate rebinds the list,
+     * and the recycled row must not take key focus out of the shell. */
+    {
+        my_widget_t *row;
+        my_window_t *win = break_editor_shell_window(shell);
+        my_event_t ev;
+        u32 before;
+        shell_paint(shell);
+        row = my_widget_get_child(find(shell, "editor-outliner"), 0u);
+        ASSERT_NOT_NULL(row);
+        pointer_click(shell, row);
+        ASSERT_TRUE(break_editor_entity_id_valid(break_editor_shell_selected(shell)));
+        before = (u32)break_editor_shell_outliner_count(shell);
+        ev = my_event_init(MY_EVENT_KEY_DOWN);
+        ev.u.key.key = 'd';
+        ev.u.key.modifiers = MY_KEYMOD_CTRL;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        shell_paint(shell);
+        ASSERT_EQ(break_editor_shell_outliner_count(shell), before + 1u);
+        dispatch_key_event(shell, MY_KEY_DELETE);
+        ASSERT_EQ(break_editor_shell_outliner_count(shell), before);
+    }
     /* the palette lists it too */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "Duplicate"));
