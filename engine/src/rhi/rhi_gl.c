@@ -2215,6 +2215,7 @@ void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment,
 static GLenum rhi_format_to_gl_internal(RHIFormat fmt) {
     switch (fmt) {
     case RHI_FORMAT_R8G8B8A8_UNORM: return GL_RGBA8;
+    case RHI_FORMAT_R8G8B8A8_SRGB:  return GL_SRGB8_ALPHA8;
     case RHI_FORMAT_B8G8R8A8_UNORM: return GL_RGBA8;
     case RHI_FORMAT_R16G16B16A16_SFLOAT: return GL_RGBA16F;
     case RHI_FORMAT_R16G16_SFLOAT: return GL_RG16F;
@@ -2227,6 +2228,7 @@ static GLenum rhi_format_to_gl_internal(RHIFormat fmt) {
 static GLenum rhi_format_to_gl_format(RHIFormat fmt) {
     switch (fmt) {
     case RHI_FORMAT_R8G8B8A8_UNORM: return GL_RGBA;
+    case RHI_FORMAT_R8G8B8A8_SRGB:  return GL_RGBA;
     case RHI_FORMAT_B8G8R8A8_UNORM: return GL_BGRA;
     case RHI_FORMAT_R16G16B16A16_SFLOAT: return GL_RGBA;
     case RHI_FORMAT_R16G16_SFLOAT: return GL_RG;

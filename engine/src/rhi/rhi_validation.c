@@ -71,7 +71,8 @@ bool rhi_texture_desc_validate(const RHITextureDesc *desc) {
         desc->width > RHI_MAX_DRAWABLE_DIMENSION ||
         desc->height > RHI_MAX_DRAWABLE_DIMENSION ||
         desc->format < RHI_FORMAT_R8G8B8A8_UNORM ||
-        desc->format > RHI_FORMAT_D32_FLOAT ||
+        (desc->format > RHI_FORMAT_D32_FLOAT &&
+         desc->format != RHI_FORMAT_R8G8B8A8_SRGB) ||
         desc->format == RHI_FORMAT_UNDEFINED ||
         desc->mip_levels > RHI_MAX_MIP_LEVELS) {
         return false;

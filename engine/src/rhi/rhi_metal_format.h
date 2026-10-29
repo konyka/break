@@ -12,11 +12,13 @@ typedef enum {
     RHI_METAL_FORMAT_RG16_FLOAT,        /* MTLPixelFormatRG16Float */
     RHI_METAL_FORMAT_R32_FLOAT,         /* MTLPixelFormatR32Float */
     RHI_METAL_FORMAT_DEPTH32_FLOAT,     /* MTLPixelFormatDepth32Float */
+    RHI_METAL_FORMAT_RGBA8_UNORM_SRGB,  /* MTLPixelFormatRGBA8Unorm_sRGB */
 } RHIMetalFormat;
 
 static inline RHIMetalFormat rhi_metal_format_from_rhi(RHIFormat f) {
     switch (f) {
         case RHI_FORMAT_R8G8B8A8_UNORM:      return RHI_METAL_FORMAT_RGBA8_UNORM;
+        case RHI_FORMAT_R8G8B8A8_SRGB:       return RHI_METAL_FORMAT_RGBA8_UNORM_SRGB;
         case RHI_FORMAT_B8G8R8A8_UNORM:      return RHI_METAL_FORMAT_BGRA8_UNORM;
         case RHI_FORMAT_R16G16B16A16_SFLOAT: return RHI_METAL_FORMAT_RGBA16_FLOAT;
         case RHI_FORMAT_R16G16_SFLOAT:       return RHI_METAL_FORMAT_RG16_FLOAT;
@@ -30,6 +32,7 @@ static inline RHIMetalFormat rhi_metal_format_from_rhi(RHIFormat f) {
 static inline u32 rhi_metal_format_bytes_per_pixel(RHIMetalFormat f) {
     switch (f) {
         case RHI_METAL_FORMAT_RGBA8_UNORM:   return 4u;
+        case RHI_METAL_FORMAT_RGBA8_UNORM_SRGB: return 4u;
         case RHI_METAL_FORMAT_BGRA8_UNORM:   return 4u;
         case RHI_METAL_FORMAT_RGBA16_FLOAT:  return 8u;
         case RHI_METAL_FORMAT_RG16_FLOAT:    return 4u;

@@ -101,6 +101,7 @@ static MTLPixelFormat rhi_metal_pixel_format(RHIMetalFormat f) {
         case RHI_METAL_FORMAT_RG16_FLOAT:    return MTLPixelFormatRG16Float;
         case RHI_METAL_FORMAT_R32_FLOAT:     return MTLPixelFormatR32Float;
         case RHI_METAL_FORMAT_DEPTH32_FLOAT: return MTLPixelFormatDepth32Float;
+        case RHI_METAL_FORMAT_RGBA8_UNORM_SRGB: return MTLPixelFormatRGBA8Unorm_sRGB;
         default:
             LOG_ERROR("rhi_metal: unmapped RHIMetalFormat %d", (int)f);
             return MTLPixelFormatInvalid;

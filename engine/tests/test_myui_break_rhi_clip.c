@@ -178,6 +178,71 @@ TEST(image_respects_the_clip_rect) {
     check(DRAW_IMAGE);
 }
 
+/* RHI_FORMAT_R8G8B8A8_SRGB: sampling decodes to linear light. A texture of
+ * byte 188 (sRGB for linear 0.5) blitted into a UNORM target reads back
+ * about 128; the same bytes in a UNORM texture read back 188. */
+static int blit_and_read(RHIFormat format, u8 value) {
+    static unsigned char px[W * H * 4];
+    static u8 texel[4 * 4 * 4];
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc td;
+    RHITexture tex;
+    my_vgcanvas_t *vg;
+    RHICmdBuffer *cmd;
+    int out;
+    memset(texel, value, sizeof(texel));
+    for (u32 i = 0u; i < 16u; i++) texel[i * 4u + 3u] = 255u;
+    memset(&td, 0, sizeof(td));
+    td.width = 4u;
+    td.height = 4u;
+    td.format = format;
+    td.mip_levels = 1u;
+    td.data = texel;
+    tex = rhi_texture_create(g_dev, &td);
+    if (!rhi_handle_valid(tex)) return -1;
+    memset(&fd, 0, sizeof(fd));
+    fd.width = W;
+    fd.height = H;
+    fd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fd.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    vg = my_vgcanvas_break_rhi_create(NULL, g_dev, W, H);
+    if (!rhi_handle_valid(fbo.fb) || vg == NULL) return -1;
+    cmd = rhi_frame_begin(g_dev);
+    if (cmd == NULL) return -1;
+    rhi_offscreen_fbo_set_clear_color(g_dev, &fbo, 0.0f, 0.0f, 0.0f, 1.0f);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    my_vgcanvas_break_rhi_set_target(vg, &fbo);
+    my_vgcanvas_break_rhi_set_cmd(vg, cmd);
+    (void)my_vgcanvas_begin_frame(vg, NULL);
+    (void)my_vgcanvas_break_rhi_blit_texture(vg, tex, 0.0f, 0.0f, (float)W,
+                                             (float)H);
+    (void)my_vgcanvas_end_frame(vg);
+    rhi_offscreen_fbo_unbind(cmd, W, H);
+    rhi_frame_end(g_dev);
+    memset(px, 0, sizeof(px));
+    (void)rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px));
+    rhi_present(g_dev);
+    out = px[((H / 2u) * W + W / 2u) * 4u];
+    my_vgcanvas_break_rhi_set_cmd(vg, NULL);
+    my_vgcanvas_destroy(vg);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, tex);
+    return out;
+}
+
+TEST(srgb_texture_samples_in_linear_light) {
+    int unorm = blit_and_read(RHI_FORMAT_R8G8B8A8_UNORM, 188u);
+    int srgb = blit_and_read(RHI_FORMAT_R8G8B8A8_SRGB, 188u);
+    printf("  unorm 188 -> %d, srgb 188 -> %d\n", unorm, srgb);
+    ASSERT_TRUE(unorm >= 186 && unorm <= 190);
+    ASSERT_TRUE(srgb >= 125 && srgb <= 131);
+    /* the end points stay put */
+    ASSERT_TRUE(blit_and_read(RHI_FORMAT_R8G8B8A8_SRGB, 255u) >= 253);
+    ASSERT_TRUE(blit_and_read(RHI_FORMAT_R8G8B8A8_SRGB, 0u) <= 2);
+}
+
 int main(void) {
     PlatformConfig pc;
     usize i;
@@ -210,6 +275,7 @@ int main(void) {
     }
     RUN_TEST(image_respects_the_clip_rect);
     RUN_TEST(later_fill_covers_an_earlier_image);
+    RUN_TEST(srgb_texture_samples_in_linear_light);
     if (g_font != NULL) my_font_destroy(g_font);
     rhi_device_destroy(g_dev);
     platform_destroy(g_platform);

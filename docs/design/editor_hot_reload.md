@@ -114,4 +114,6 @@ Mips (delivered 2026-10-30): the preview texture now carries a full mip chain (`
 
 sRGB-aware mips (2026-10-30): the chain treats RGB as sRGB-encoded and averages it in linear light (alpha as stored), so a shrunk black/white checkerboard comes out at sRGB 188 (linear 0.5) instead of the too-dark 128; a uniform image of every byte value round-trips exactly through every level (`srgb_round_trip_keeps_uniform_images_exact`). Live, both backends now show all 8836 preview pixels at 188. The texture itself is still `R8G8B8A8_UNORM` (the RHI has no sRGB formats), so sampling between texels and the blending of the preview into the UI stay in encoded space — the same as every other UI image.
 
-Not delivered: material or scene textures, sRGB texture formats in the RHI, more than one preview, decoding on the worker, Windows/macOS live runs.
+The RHI now has a sampled-only `RHI_FORMAT_R8G8B8A8_SRGB` (2026-10-30, see `Implementation_Status.md`). The preview deliberately stays `UNORM`: the UI target is not linear, so decoding to linear on sampling would darken the preview.
+
+Not delivered: material or scene textures, more than one preview, decoding on the worker, Windows/macOS live runs.

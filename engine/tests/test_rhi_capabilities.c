@@ -747,6 +747,14 @@ TEST(resource_descriptor_validation_is_bounded)
     texture_desc.mip_levels = 1u;
     texture_desc.width = RHI_MAX_DRAWABLE_DIMENSION + 1u;
     ASSERT_FALSE(rhi_texture_desc_validate(&texture_desc));
+    /* the sampled-only sRGB format is a valid texture format; values past
+     * it are not */
+    texture_desc.width = 4u;
+    texture_desc.height = 4u;
+    texture_desc.format = RHI_FORMAT_R8G8B8A8_SRGB;
+    ASSERT_TRUE(rhi_texture_desc_validate(&texture_desc));
+    texture_desc.format = (RHIFormat)(RHI_FORMAT_R8G8B8A8_SRGB + 1);
+    ASSERT_FALSE(rhi_texture_desc_validate(&texture_desc));
 }
 
 TEST(secondary_resource_creation_rejects_invalid_inputs)

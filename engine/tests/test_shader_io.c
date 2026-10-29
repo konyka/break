@@ -750,6 +750,11 @@ TEST(shader_abi_rhi_formats_mrt_resources_and_indirect)
     ASSERT_FALSE(rhi_format_is_color(RHI_FORMAT_D32_FLOAT));
     ASSERT_FALSE(rhi_format_is_color(RHI_FORMAT_UNDEFINED));
     ASSERT_FALSE(rhi_format_is_color((RHIFormat)99));
+    /* sRGB is a sampled-only texture format: not a render-target colour */
+    ASSERT_FALSE(rhi_format_is_color(RHI_FORMAT_R8G8B8A8_SRGB));
+    ASSERT_FALSE(rhi_mrt_formats_valid(
+        (const RHIFormat[]){ RHI_FORMAT_R8G8B8A8_SRGB }, 1u));
+
     ASSERT_TRUE(rhi_mrt_formats_valid(formats, 2u));
     ASSERT_FALSE(rhi_mrt_formats_valid(formats, 0u));
     ASSERT_TRUE(rhi_mrt_formats_valid(

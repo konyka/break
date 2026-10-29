@@ -185,6 +185,10 @@ typedef enum {
     RHI_FORMAT_R32_FLOAT,
     RHI_FORMAT_D32_FLOAT,
     RHI_FORMAT_UNDEFINED,
+    /* sampled-only 8-bit RGBA whose RGB is sRGB-encoded: sampling returns
+     * linear values (alpha is linear). Valid for rhi_texture_create; not a
+     * render-target / MRT / FBO format (rhi_format_is_color is false). */
+    RHI_FORMAT_R8G8B8A8_SRGB,
 } RHIFormat;
 
 typedef enum {

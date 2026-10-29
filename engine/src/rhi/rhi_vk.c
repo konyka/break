@@ -2990,6 +2990,7 @@ static void vk_shutdown(RHIDevice *dev) {
 static VkFormat vk_format_from_rhi(RHIFormat fmt) {
     switch (fmt) {
     case RHI_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_UNORM;
+    case RHI_FORMAT_R8G8B8A8_SRGB:  return VK_FORMAT_R8G8B8A8_SRGB;
     case RHI_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_UNORM;
     case RHI_FORMAT_R16G16B16A16_SFLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
     case RHI_FORMAT_R16G16_SFLOAT: return VK_FORMAT_R16G16_SFLOAT;
