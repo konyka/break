@@ -178,6 +178,11 @@ bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
 /* Ctrl+S equivalent (console/status notes included). true only when a scene
  * path is configured and the BSCN + sidecar were written. */
 bool break_editor_shell_save(BreakEditorShell *shell);
+/* Reload the configured scene path from disk. Refuses (false, document
+ * untouched) without a path, when the file is missing, or while there are
+ * unsaved changes: unlike the local Open flow there is no confirm-by-repeat,
+ * so this can never discard work. */
+bool break_editor_shell_revert(BreakEditorShell *shell);
 
 /* Read-only inspection surface (borrowed results; used by the headless tests
  * and by editor_main for status plumbing). */

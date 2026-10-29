@@ -3182,6 +3182,23 @@ bool editor_shell_load_scene(BreakEditorShell *shell, const char *path) {
     return true;
 }
 
+bool break_editor_shell_revert(BreakEditorShell *shell) {
+    FILE *f;
+    char path[sizeof(shell->scene_path)];
+    if (shell == NULL || !shell->scene_path_set ||
+        break_editor_doc_is_dirty(shell->doc)) {
+        return false;
+    }
+    f = fopen(shell->scene_path, "rb");
+    if (f == NULL) {
+        return false;
+    }
+    fclose(f);
+    /* load_scene copies its argument into scene_path: pass a copy */
+    memcpy(path, shell->scene_path, sizeof(path));
+    return editor_shell_load_scene(shell, path);
+}
+
 /* ---------------- Phase 2 Task 3: viewport panel ---------------- */
 
 struct my_widget_t *break_editor_shell_viewport_widget(

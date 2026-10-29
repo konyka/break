@@ -110,7 +110,7 @@
 
 ### Features not delivered (carried from earlier phases)
 
-- [ ] editor：remote load、remote render control（remote **save** 已于 2026-10-30 交付：`BREAK_EDITOR_MSG_SAVE`=14，只写本地配置的场景路径，见 `docs/design/editor_remote.md`；资源浏览器图片预览的纹理 hot reload 已于 2026-10-28 交付，见 `docs/design/editor_hot_reload.md` §8；材质/场景纹理 hot reload 未做；viewport shader hot reload 已于 2026-10-27 交付；render debugger 面板与场景 hot reload 已于 2026-10-26 交付，见 `docs/design/editor_render_debugger.md`、`docs/design/editor_hot_reload.md`）
+- [ ] editor：remote render control（remote **save/load** 已于 2026-10-30 交付：`BREAK_EDITOR_MSG_SAVE`=14、`LOAD`=15，只作用于本地配置的场景路径，LOAD 不丢弃未保存修改，见 `docs/design/editor_remote.md`；资源浏览器图片预览的纹理 hot reload 已于 2026-10-28 交付，见 `docs/design/editor_hot_reload.md` §8；材质/场景纹理 hot reload 未做；viewport shader hot reload 已于 2026-10-27 交付；render debugger 面板与场景 hot reload 已于 2026-10-26 交付，见 `docs/design/editor_render_debugger.md`、`docs/design/editor_hot_reload.md`）
 - [ ] editor remote：生产凭证系统（provisioning/轮换/吊销）、WAN/多客户端管理、remote undo-stack 共享（服务端 transport close 与认证 deadline 已于 2026-10-26 交付，见 `docs/design/editor_remote.md` 末节）
 - [ ] Lua：LuaJIT 可选后端评估（gating：baseline 合同稳定）
 - [ ] Security：server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling

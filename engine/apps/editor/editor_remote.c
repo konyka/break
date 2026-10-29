@@ -647,6 +647,18 @@ static bool remote_handle_save(BreakEditorRemote *r, u64 key, const u8 *p,
     return remote_respond(r, key, BREAK_EDITOR_MSG_SAVE, 0u, rsp, sizeof(rsp));
 }
 
+/* LOAD likewise carries no path and never discards unsaved changes. */
+static bool remote_handle_load(BreakEditorRemote *r, u64 key, const u8 *p,
+                               size_t size) {
+    u8 rsp[1];
+    if (size != 0u) {
+        return false;
+    }
+    (void)p;
+    rsp[0] = break_editor_shell_revert(r->shell) ? 1u : 0u;
+    return remote_respond(r, key, BREAK_EDITOR_MSG_LOAD, 0u, rsp, sizeof(rsp));
+}
+
 static bool remote_handle_eval(BreakEditorRemote *r, u64 key, const u8 *p,
                                size_t size) {
     u16 text_len;
@@ -763,6 +775,8 @@ static bool remote_dispatch(BreakEditorRemote *r, BreakConnectionKey connection,
         return remote_handle_eval(r, connection, p, size);
     case BREAK_EDITOR_MSG_SAVE:
         return remote_handle_save(r, connection, p, size);
+    case BREAK_EDITOR_MSG_LOAD:
+        return remote_handle_load(r, connection, p, size);
     default:
         return false;
     }
@@ -781,7 +795,8 @@ BreakEditorRemote *break_editor_remote_create(
         BREAK_EDITOR_MSG_SPAWN,    BREAK_EDITOR_MSG_REMOVE,
         BREAK_EDITOR_MSG_RENAME,   BREAK_EDITOR_MSG_SET_FIELD,
         BREAK_EDITOR_MSG_UNDO,     BREAK_EDITOR_MSG_REDO,
-        BREAK_EDITOR_MSG_EVAL,     BREAK_EDITOR_MSG_SAVE};
+        BREAK_EDITOR_MSG_EVAL,     BREAK_EDITOR_MSG_SAVE,
+        BREAK_EDITOR_MSG_LOAD};
     usize i;
     if (shell == NULL || cfg == NULL ||
         cfg->max_connections > EDITOR_REMOTE_MAX_CONNECTIONS) {
