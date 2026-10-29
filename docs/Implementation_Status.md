@@ -5,6 +5,7 @@
 - **交付**：`BreakLuaRuntimeConfig.memory_budget`（0 = 不限）与 `break_lua_runtime_memory_in_use`。分配器统计 VM 持有的字节，超预算的增长请求被拒，Lua 报 LUA_ERRMEM，对外为 `BREAK_LUA_OOM`，VM 不 abort 且之后可继续使用；预算不足以打开标准库时 create 返回 NULL。
 - **验证**：`test_break_lua_runtime` 9/9（新增 1 例），去掉预算判断后变红；ASan 树 `test_break_lua_{runtime,module,binding,value}` 全绿；默认树全量 ctest 仅 `test_platform_x11_runtime` 失败（依赖当前桌面的全屏行为，与本改动无关）。
 - **编辑器 Lua console 已接入**：两个 console VM（主 + probe）各设 64 MiB（`BREAK_EDITOR_LUA_MEMORY_BUDGET`）。`test_editor_lua` 新增 `eval_memory_budget_bounds_allocation_storm`：`string.rep` 申请 512 MiB 的 eval 以 `error:` 失败、之后 `6*7` 正常；改动前该 eval 真的分配成功（先红后绿）；33/33，ASan 树同样 33/33。
+- **host 侧 config 更新**：`break_lua_runtime_set_config(rt, key, value)`（夹紧到 bind 时的范围，未绑定 key → STALE），`test_break_lua_binding` 33/33（新增 1 例，去掉夹紧即红），ASan 同样 33/33；见 `lua_runtime.md` §2.8。
 - **边界**：预算按 VM 计，不区分模块。设计见 `docs/design/lua_runtime.md` §2.7。
 
 ## 本轮更新：2026-10-29 同步后的 Windows 修复（编辑器设置/字体测试、fuzz_editor_scene）

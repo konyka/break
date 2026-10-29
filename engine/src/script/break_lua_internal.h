@@ -45,7 +45,7 @@ typedef struct BreakLuaConfigSlot {
     char key[BREAK_LUA_MAX_CONFIG_KEY_BYTES]; /* NUL-terminated */
     double min_value;
     double max_value;
-    double value; /* clamped initial */
+    double value; /* clamped; host may update via break_lua_runtime_set_config */
 } BreakLuaConfigSlot;
 
 struct BreakLuaRuntime {

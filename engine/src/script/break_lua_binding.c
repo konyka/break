@@ -478,6 +478,38 @@ fail:
     return 2;
 }
 
+BreakLuaError break_lua_runtime_set_config(BreakLuaRuntime *runtime,
+                                           const char *key, double value)
+{
+    BreakLuaError owner = break_lua_runtime_check_owner(runtime);
+    usize key_len;
+    u32 i;
+    if (owner != BREAK_LUA_OK) {
+        return owner;
+    }
+    if (!key || isnan(value)) {
+        return BREAK_LUA_INVALID;
+    }
+    key_len = break_lua_name_len(key, BREAK_LUA_MAX_CONFIG_KEY_BYTES);
+    if (key_len == 0u || key_len >= BREAK_LUA_MAX_CONFIG_KEY_BYTES) {
+        return BREAK_LUA_INVALID;
+    }
+    for (i = 0u; runtime->configs && i < runtime->config_count; i++) {
+        BreakLuaConfigSlot *slot = &runtime->configs[i];
+        if (strcmp(slot->key, key) == 0) {
+            if (value < slot->min_value) {
+                value = slot->min_value;
+            }
+            if (value > slot->max_value) {
+                value = slot->max_value;
+            }
+            slot->value = value;
+            return BREAK_LUA_OK;
+        }
+    }
+    return BREAK_LUA_STALE;
+}
+
 static int break_lua_config_get_cb(lua_State *L)
 {
     BreakLuaRuntime *runtime = *(BreakLuaRuntime **)lua_getextraspace(L);

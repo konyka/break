@@ -949,6 +949,43 @@ TEST(config_get_returns_clamped_values)
     break_lua_runtime_destroy(rt);
 }
 
+TEST(set_config_updates_bound_value_clamped)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    BreakLuaConfigBinding entries[2] = {
+        { "fps", 0.0, 240.0, 60.0 },
+        { "volume", 0.0, 1.0, 0.5 },
+    };
+    ASSERT_NOT_NULL(rt);
+    /* nothing bound yet: unknown */
+    ASSERT_EQ(break_lua_runtime_set_config(rt, "fps", 30.0), BREAK_LUA_STALE);
+    ASSERT_EQ(break_lua_runtime_bind_config(rt, entries, 2u), BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "cfg", kChunkConfig,
+                                            chunk_len(kChunkConfig)),
+              BREAK_LUA_OK);
+
+    ASSERT_EQ(break_lua_runtime_set_config(rt, "fps", 999.0), BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_set_config(rt, "volume", 0.25), BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_call(rt, "cfg", "read_config", NULL, 0u, NULL,
+                                     0u),
+              BREAK_LUA_OK);
+    assert_state_number(rt, "cfg", "fps", 240.0);   /* clamped to max */
+    assert_state_number(rt, "cfg", "volume", 0.25); /* new value visible */
+
+    /* rejected updates leave the value unchanged */
+    ASSERT_EQ(break_lua_runtime_set_config(rt, "volume", NAN), BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_set_config(rt, NULL, 1.0), BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_set_config(rt, "", 1.0), BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_set_config(rt, "missing", 1.0), BREAK_LUA_STALE);
+    ASSERT_EQ(break_lua_runtime_set_config(NULL, "fps", 1.0), BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_call(rt, "cfg", "read_config", NULL, 0u, NULL,
+                                     0u),
+              BREAK_LUA_OK);
+    assert_state_number(rt, "cfg", "volume", 0.25);
+    assert_stack_balanced(rt);
+    break_lua_runtime_destroy(rt);
+}
+
 TEST(bind_config_allocation_failure_is_bounded)
 {
     BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
@@ -1453,6 +1490,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(stdlib_proxies_keep_modules_isolated);
     RUN_TEST(bind_config_validation);
     RUN_TEST(config_get_returns_clamped_values);
+    RUN_TEST(set_config_updates_bound_value_clamped);
     RUN_TEST(bind_config_allocation_failure_is_bounded);
     RUN_TEST(sandbox_pcall_still_catches_ordinary_errors);
     RUN_TEST(sandbox_xpcall_handler_runs_for_ordinary_errors);

@@ -84,10 +84,14 @@
 - 测试：`test_break_lua_runtime` 新增 `memory_budget_caps_vm_allocation_and_fails_closed`（默认不限、过小预算 create 失败、1 MiB 预算下小请求成功、10 万元素请求 OOM 且用量不超预算、之后 VM 仍可用）；去掉预算判断后该例变红；ASan 树下 4 个 break_lua 二进制全绿。
 - 使用方：编辑器 Lua console 的两个 VM 各设 64 MiB（`BREAK_EDITOR_LUA_MEMORY_BUDGET`，`editor_lua.h`）。
 
+### 2.8 host 侧 config 更新（2026-10-30）
+
+- `break_lua_runtime_set_config(rt, key, value)`：更新一个已绑定的 config 值，按该项 `[min, max]` 夹紧（与 bind 相同）；脚本下一次 `break.config.get` 即读到新值。owner-only（非 owner → REJECTED）；NULL runtime、NULL/空/超长 key、NaN → INVALID；未绑定的 key → STALE；失败不改动已存值。
+- 测试：`test_break_lua_binding` 新增 `set_config_updates_bound_value_clamped`；去掉上限夹紧后该例变红；ASan 树 33/33。
+
 ## 3. 设计-only / 未实现
 
 - **batch 记录的真实 apply**：host drain 后如何施加到 ECS World 属后续集成任务（`break_lua` 内结构上无 World 指针）。
-- **host 侧动态 config 更新**：bind 后值固定；后续任务可加显式更新 API。
 - **LuaJIT**：Stage 3.5 延期项，本计划不交付（gating 条件见 roadmap）。
 - **engine/demo 集成**：未做；本文件全部条目是独立可选库证据。
 - **CLOSED/TIMEOUT 语义**：枚举保留，无 API 映射。

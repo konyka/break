@@ -715,3 +715,11 @@ typedef struct BreakLuaConfigBinding {
 BreakLuaError break_lua_runtime_bind_config(
     BreakLuaRuntime *runtime, const BreakLuaConfigBinding *entries,
     usize entry_count);
+
+/* Host-side update of one bound config value; clamped to the entry's
+ * [min, max] like bind. Scripts see the new value on their next
+ * break.config.get. Owner-thread-only (REJECTED otherwise). NULL runtime,
+ * NULL/empty/over-long key or NaN value -> INVALID; a key that was never
+ * bound -> STALE. A failed update leaves the stored value unchanged. */
+BreakLuaError break_lua_runtime_set_config(
+    BreakLuaRuntime *runtime, const char *key, double value);
