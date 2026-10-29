@@ -340,6 +340,36 @@ TEST(spawn_multi_record_fifo) {
     fixture_close(&f);
 }
 
+TEST(set_record_targets_the_light_component) {
+    Fixture f;
+    BreakEditorEntityId id;
+    const char *nm = NULL;
+    f32 v = 0.0f;
+    ASSERT_TRUE(fixture_open(&f));
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console,
+        "brk.ecs.spawn()\n"
+        "brk.ecs.set('Light', 'intensity', 3)\n"
+        "brk.ecs.set('Light', 'color.g', 0.5)"));
+    ASSERT_TRUE(break_editor_doc_entity_at(f.doc, 0u, &id, &nm));
+    ASSERT_TRUE(break_editor_doc_has_component(f.doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        f.doc, id, BREAK_EDITOR_COMPONENT_LIGHT, 3u, &v)); /* intensity */
+    ASSERT_FLOAT_EQ(v, 3.0f, 0.0f);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        f.doc, id, BREAK_EDITOR_COMPONENT_LIGHT, 1u, &v)); /* color.g */
+    ASSERT_FLOAT_EQ(v, 0.5f, 0.0f);
+    /* fields not written keep the light default (range 10, color.r 1) */
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        f.doc, id, BREAK_EDITOR_COMPONENT_LIGHT, 4u, &v));
+    ASSERT_FLOAT_EQ(v, 10.0f, 0.0f);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        f.doc, id, BREAK_EDITOR_COMPONENT_LIGHT, 0u, &v));
+    ASSERT_FLOAT_EQ(v, 1.0f, 0.0f);
+    fixture_close(&f);
+}
+
 TEST(set_record_number_string_bool_undoable) {
     Fixture f;
     ASSERT_TRUE(fixture_open(&f));
@@ -1134,6 +1164,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(spawn_record_creates_entity_undoable);
     RUN_TEST(spawn_multi_record_fifo);
     RUN_TEST(set_record_number_string_bool_undoable);
+    RUN_TEST(set_record_targets_the_light_component);
     RUN_TEST(set_record_existing_component_single_command);
     RUN_TEST(set_unknown_component_field_never_partial);
     RUN_TEST(failed_eval_discards_records);
