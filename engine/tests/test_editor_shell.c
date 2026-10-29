@@ -3127,6 +3127,69 @@ TEST(ctrl_a_selects_all_and_escape_clears)
     break_editor_shell_destroy(shell);
 }
 
+TEST(arrow_keys_walk_the_outliner_selection)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId e[3];
+    my_widget_t *list;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    e[0] = break_editor_doc_add_entity(doc, "a");
+    e[1] = break_editor_doc_add_entity(doc, "b");
+    e[2] = break_editor_doc_add_entity(doc, "c");
+    break_editor_shell_refresh(shell);
+    shell_paint(shell);
+    list = find(shell, "editor-outliner");
+    /* nothing selected: Down picks the first row, Up the last */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_DOWN, 0u));
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[0]));
+    (void)break_editor_shell_select_ids(shell, NULL, 0u, false);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_UP, 0u));
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[2]));
+    /* walk and clamp at the ends */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_DOWN, 0u));
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[2]));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_UP, 0u));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_UP, 0u));
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[0]));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_UP, 0u));
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[0]));
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 1u);
+    ASSERT_EQ(outliner_selected_rows(list, NULL), 1u);
+    /* Shift extends from the anchor (row 0) */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_DOWN, MY_KEYMOD_SHIFT));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_DOWN, MY_KEYMOD_SHIFT));
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 3u);
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[2]));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_UP, MY_KEYMOD_SHIFT));
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 2u);
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[1]));
+    /* a plain arrow collapses back to one */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_DOWN, 0u));
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 1u);
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[2]));
+    /* arrows typed into a text field (Lua console history) stay there */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        my_widget_t *edit = find(shell, "editor-lua-edit");
+        ASSERT_NOT_NULL(edit);
+        my_event_dispatcher_set_focus(&win->dispatcher, edit);
+        dispatch_key_event(shell, MY_KEY_UP);
+        ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[2]));
+        my_event_dispatcher_set_focus(&win->dispatcher,
+                                      break_editor_shell_root(shell));
+        dispatch_key_event(shell, MY_KEY_UP);
+        ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[1]));
+        dispatch_key_event(shell, MY_KEY_DOWN);
+    }
+    /* the open palette keeps the arrows for itself */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_UP, 0u));
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), e[2]));
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8011,6 +8074,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(viewport_stats_overlay_text_toggles_and_persists);
     RUN_TEST(focus_key_frames_every_selected_entity);
     RUN_TEST(ctrl_a_selects_all_and_escape_clears);
+    RUN_TEST(arrow_keys_walk_the_outliner_selection);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

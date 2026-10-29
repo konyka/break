@@ -1397,7 +1397,11 @@ enum {
     ACT_DELETE,
     ACT_TOGGLE_SNAP,
     ACT_SELECT_ALL,
-    ACT_CLEAR_SELECTION
+    ACT_CLEAR_SELECTION,
+    ACT_SELECT_PREV,
+    ACT_SELECT_NEXT,
+    ACT_EXTEND_PREV,
+    ACT_EXTEND_NEXT
 };
 
 typedef struct {
@@ -1421,6 +1425,10 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'g', MY_KEYMOD_CTRL, ACT_TOGGLE_SNAP},
     {'a', MY_KEYMOD_CTRL, ACT_SELECT_ALL},
     {MY_KEY_ESCAPE, MY_KEYMOD_NONE, ACT_CLEAR_SELECTION},
+    {MY_KEY_UP, MY_KEYMOD_NONE, ACT_SELECT_PREV},
+    {MY_KEY_DOWN, MY_KEYMOD_NONE, ACT_SELECT_NEXT},
+    {MY_KEY_UP, MY_KEYMOD_SHIFT, ACT_EXTEND_PREV},
+    {MY_KEY_DOWN, MY_KEYMOD_SHIFT, ACT_EXTEND_NEXT},
 };
 
 /* Ctrl+A: every entity, in document order; the first becomes the primary
@@ -1436,6 +1444,42 @@ static void shell_do_select_all(BreakEditorShell *shell) {
         }
     }
     (void)break_editor_shell_select_ids(shell, ids, k, false);
+}
+
+/* Up/Down: move the selection one outliner row (clamped at the ends; with
+ * nothing selected Down takes the first row and Up the last). Shift extends
+ * a range from the anchor row instead. */
+static void shell_do_step_selection(BreakEditorShell *shell, bool down,
+                                    bool extend) {
+    usize n = break_editor_doc_entity_count(shell->doc), i, cur = n, to;
+    if (n == 0u) {
+        return;
+    }
+    for (i = 0u; i < n; i++) {
+        BreakEditorEntityId id;
+        const char *unused = NULL;
+        if (break_editor_doc_entity_at(shell->doc, i, &id, &unused) &&
+            break_editor_entity_id_eq(id, shell->selected)) {
+            cur = i;
+            break;
+        }
+    }
+    if (cur == n) {
+        to = down ? 0u : n - 1u;
+    } else if (down) {
+        to = cur + 1u < n ? cur + 1u : cur;
+    } else {
+        to = cur > 0u ? cur - 1u : 0u;
+    }
+    if (extend && cur != n) {
+        if (shell->anchor_index >= n) shell->anchor_index = cur;
+        (void)shell_select_range(shell, shell->anchor_index, to, false);
+        return;
+    }
+    shell->anchor_index = to;
+    shell->extra_count = 0u;
+    shell_publish_extra(shell);
+    (void)break_editor_shell_select_index(shell, to);
 }
 
 /* W A S D Q E -> fly key bits (forward, left, back, right, down, up) */
@@ -1570,6 +1614,15 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
         case ACT_DUPLICATE:
             shell_do_duplicate_selected(shell);
             break;
+        case ACT_SELECT_PREV:
+        case ACT_SELECT_NEXT:
+        case ACT_EXTEND_PREV:
+        case ACT_EXTEND_NEXT:
+            shell_do_step_selection(
+                shell,
+                sc->action == ACT_SELECT_NEXT || sc->action == ACT_EXTEND_NEXT,
+                sc->action == ACT_EXTEND_PREV || sc->action == ACT_EXTEND_NEXT);
+            break;
         case ACT_SELECT_ALL:
             shell_do_select_all(shell);
             break;
@@ -1599,6 +1652,13 @@ static void shell_on_root_key_down(void *ctx, const char *event, void *data) {
     const my_event_t *e = (const my_event_t *)data;
     (void)event;
     if (shell != NULL && e != NULL && e->type == MY_EVENT_KEY_DOWN) {
+        /* Up/Down typed into a text field (Lua console history, inspector
+         * fields) belong to it; the outliner only walks from elsewhere */
+        if ((e->u.key.key == MY_KEY_UP || e->u.key.key == MY_KEY_DOWN) &&
+            !shell->palette_open && shell->win != NULL &&
+            my_edit_is_instance(shell->win->dispatcher.focused)) {
+            return;
+        }
         (void)break_editor_shell_dispatch_key(shell, e->u.key.key,
                                               e->u.key.modifiers);
     }
