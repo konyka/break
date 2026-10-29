@@ -34,6 +34,8 @@ The first run clicked "Add" and nothing happened, on both backends. `break_ui_pu
 
 If the X server's vsync present path stalls (seen on this host: `glxgears` at about 1.4 FPS), the OpenGL backend waits in `glXSwapBuffers` and a script times out; run with `vblank_mode=0`.
 
+`expect log_contains` matches the translated console text, and the editor picks its language from the locale (`LANG` etc.). The scripts in the evidence directory expect English lines, so pass `--lang en-US` (checked: `full.txt` exits 0 under `LANG=zh_CN.UTF-8` with the flag, and fails at the `log_contains` step without it).
+
 ## Not covered
 
 IME text, typing into edit fields, drag-and-drop, right/middle-button camera drags (commands exist, not scripted yet), multi-window, recording scripts from real input, Windows/macOS. The window still needs a running display; this is a developer/live tool, not a CI lane.
