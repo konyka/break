@@ -102,8 +102,8 @@ TEST(registry_enumeration) {
     BreakEditorDoc *doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
 
-    /* Exactly one editable type registered at create: the transform. */
-    ASSERT_EQ(break_editor_doc_component_count(doc), 1u);
+    /* Two editable types registered at create: transform, then light. */
+    ASSERT_EQ(break_editor_doc_component_count(doc), 2u);
 
     BreakEditorComponentInfo info;
     memset(&info, 0xAB, sizeof(info));
@@ -124,9 +124,26 @@ TEST(registry_enumeration) {
         ASSERT_EQ(info.fields[f].type, 0u); /* 0 = f32 */
     }
 
+    /* The second type: the light. */
+    memset(&info, 0xAB, sizeof(info));
+    ASSERT_TRUE(break_editor_doc_component_info(doc, 1, &info));
+    ASSERT_EQ(info.component_id, BREAK_EDITOR_COMPONENT_LIGHT);
+    ASSERT_STR_EQ(info.display_name, "Light");
+    ASSERT_EQ(info.field_count, 5u);
+    {
+        static const char *const light_names[5] = {
+            "color.r", "color.g", "color.b", "intensity", "range",
+        };
+        for (u32 f = 0; f < 5; f++) {
+            ASSERT_STR_EQ(info.fields[f].name, light_names[f]);
+            ASSERT_EQ(info.fields[f].offset, (u32)(f * sizeof(f32)));
+            ASSERT_EQ(info.fields[f].type, 0u);
+        }
+    }
+
     /* Past the registered count: bounded false, out untouched. */
     memset(&info, 0xAB, sizeof(info));
-    ASSERT_FALSE(break_editor_doc_component_info(doc, 1, &info));
+    ASSERT_FALSE(break_editor_doc_component_info(doc, 2, &info));
     ASSERT_EQ((u8)info.component_id, 0xABu);
     ASSERT_FALSE(break_editor_doc_component_info(doc, 1000, &info));
     ASSERT_FALSE(break_editor_doc_component_info(doc, 0, NULL));
@@ -873,6 +890,79 @@ TEST(parse_f32_rejects) {
     ASSERT_FALSE(break_editor_parse_f32(max_input, &out));
 }
 
+TEST(light_component_default_edit_undo_and_save_load) {
+    char path[512];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    BreakEditorEntityId id;
+    f32 v = 0.0f;
+    ASSERT_NOT_NULL(doc);
+    ASSERT_EQ(BREAK_EDITOR_COMPONENT_LIGHT, 65u);
+    ASSERT_EQ(sizeof(EditorLight), 20u);
+    ASSERT_EQ(doc_world(doc)->component_sizes[BREAK_EDITOR_COMPONENT_LIGHT],
+              (u32)sizeof(EditorLight));
+    id = break_editor_doc_add_entity(doc, "lamp");
+    ASSERT_TRUE(break_editor_entity_id_valid(id));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT));
+    /* default: white, intensity 1, range 10 */
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT,
+                                               0u, &v));
+    ASSERT_TRUE(v == 1.0f);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT,
+                                               3u, &v));
+    ASSERT_TRUE(v == 1.0f);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT,
+                                               4u, &v));
+    ASSERT_TRUE(v == 10.0f);
+    ASSERT_FALSE(break_editor_doc_get_field_f32(doc, id,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, &v));
+    /* edit + undo */
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT,
+                                               3u, 2.5f));
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT,
+                                               3u, &v));
+    ASSERT_TRUE(v == 1.0f);
+    ASSERT_TRUE(break_editor_redo(doc));
+    /* transform and light coexist on one entity */
+    ASSERT_TRUE(break_editor_doc_add_component(doc, id,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_has_component(doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT));
+    /* save/load keeps the light bytes */
+    test_tmp(path, sizeof(path), "editor_components_light.bscn");
+    ASSERT_TRUE(break_editor_doc_save(doc, path));
+    break_editor_doc_destroy(doc);
+    doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(break_editor_doc_load(doc, path));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    {
+        const char *nm = NULL;
+        ASSERT_TRUE(break_editor_doc_entity_at(doc, 0u, &id, &nm));
+        ASSERT_STR_EQ(nm, "lamp");
+    }
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT,
+                                               3u, &v));
+    ASSERT_TRUE(v == 2.5f);
+    ASSERT_TRUE(break_editor_doc_has_component(doc, id,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    break_editor_doc_destroy(doc);
+    (void)remove(path);
+    {
+        char side[600];
+        (void)snprintf(side, sizeof(side), "%s.editor.json", path);
+        (void)remove(side);
+    }
+}
+
 TEST(component_bytes_survive_save_load) {
     char path[512];
     test_tmp(path, sizeof(path), "editor_components_rt.bscn");
@@ -905,7 +995,7 @@ TEST(component_bytes_survive_save_load) {
      * (Task 2 index-compaction contract). */
     doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
-    ASSERT_EQ(break_editor_doc_component_count(doc), 1u);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 2u);
     ASSERT_TRUE(break_editor_doc_load(doc, path));
     ASSERT_EQ(break_editor_doc_entity_count(doc), 3u);
 
@@ -948,6 +1038,7 @@ int main(void) {
     RUN_TEST(parse_f32_accepts);
     RUN_TEST(parse_f32_rejects);
     RUN_TEST(component_bytes_survive_save_load);
+    RUN_TEST(light_component_default_edit_undo_and_save_load);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
            g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;

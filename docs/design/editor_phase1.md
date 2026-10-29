@@ -119,7 +119,8 @@ create 时把焦点设到 root，故快捷键只在焦点控件未消费该键�
 - ~~诊断面板（profiler、metrics）、Lua console、remote session~~：均已交付（见 `editor_panels_phase3.md`、`editor_remote.md`、`editor_render_debugger.md`）。
 - ~~asset browser~~：已交付（Phase 3 + `editor_hot_reload.md`）。
 - ~~selection 多选集（当前单选）~~：已交付（outliner Shift 扩选、上/下键移动选择、Ctrl+D 复制所有选中实体为一次撤销、F2 重命名、H/Alt+H 隐藏/显示选中，见 `break_editor_shell_selection_count` 等）。
-- inspector 多组件类型编辑（注册表仍只有 EditorTransform）；非 f32 字段类型——2026-10-30 仍未做。
+- ~~inspector 多组件类型编辑~~：2026-10-30 注册表加入第二个类型 **Light**（id 65，`EditorLight` = color.r/g/b、intensity、range，五个 f32，默认白色、强度 1、范围 10）。inspector 按注册表枚举，因此无需改面板即可添加/编辑/移除；撤销、复制、删除快照和 BSCN 存取沿用通用路径。viewport 不渲染灯光。`test_editor_components` 新增 `light_component_default_edit_undo_and_save_load`，`registry_enumeration` 改为 2 个类型。
+- 非 f32 字段类型——仍未做。
 - 另存为：2026-10-30 起命令面板输入 `save as <路径>` 只列出一条“Save scene as <路径>”，执行即保存并设为保存目标（无文件对话框）。
 - 新建：Ctrl+N / 命令面板“New scene”清空为未命名的空文档（无保存目标、无撤销历史、停止监视原场景文件），有未保存修改时第一次只提示、再按一次才放弃修改（`break_editor_doc_reset`）。
 - 最近的场景：成功加载或保存的场景记入偏好文件（`recent=<路径>` 行，最新在前，最多 5 个，去重，路径不超过 399 字节），命令面板列为“Open recent: <文件名>”，按文件名或完整路径过滤，执行即加载（有未保存修改时同样两步）。`open`/`save as` 的参数须像路径（含 `/` 或 `\` 或以 `.bscn` 结尾），否则只是普通过滤词（因此 `open recent` 是过滤而非打开名为 recent 的文件）。

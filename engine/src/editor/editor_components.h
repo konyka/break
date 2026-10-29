@@ -6,8 +6,9 @@
  * BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY = 16). Each entry names an ECS
  * component id and describes up to 9 fields ({name[32], offset, type},
  * type 0 = f32) so the inspector can enumerate and edit components without
- * knowing their concrete C types. Phase 1 registers exactly ONE type at doc
- * create: the editor's own transform:
+ * knowing their concrete C types. doc create registers two types (the
+ * light was added 2026-10-30, id 65, see EditorLight); first the editor's
+ * own transform:
  *
  *   EditorTransform { f32 pos[3]; f32 rot[3]; f32 scale[3]; }  (36 bytes)
  *   component id BREAK_EDITOR_COMPONENT_TRANSFORM = 64
@@ -91,12 +92,23 @@
 /* Documented free ECS component id for the editor's transform (see the
  * header comment for the choice rationale). */
 #define BREAK_EDITOR_COMPONENT_TRANSFORM 64u
+/* Second editable type (2026-10-30): a point light description. */
+#define BREAK_EDITOR_COMPONENT_LIGHT 65u
 
 typedef struct EditorTransform {
     f32 pos[3];
     f32 rot[3];
     f32 scale[3];
 } EditorTransform; /* 36 bytes */
+
+/* Editable light (fields color.r/g/b, intensity, range; all f32). A new
+ * light is white, intensity 1, range 10. The editor stores and edits it;
+ * the viewport does not render lights. */
+typedef struct EditorLight {
+    f32 color[3];
+    f32 intensity;
+    f32 range;
+} EditorLight; /* 20 bytes */
 
 typedef struct BreakEditorField {
     char name[32];
@@ -114,7 +126,8 @@ typedef struct BreakEditorComponentInfo {
     u32 field_count;
 } BreakEditorComponentInfo;
 
-/* Number of registered editable component types (1 after doc create). */
+/* Number of registered editable component types (2 after doc create:
+ * Transform, Light). */
 usize break_editor_doc_component_count(const BreakEditorDoc *doc);
 /* Copies the i-th registry entry; bounded false for i >= count or NULL. */
 bool break_editor_doc_component_info(const BreakEditorDoc *doc, usize i,

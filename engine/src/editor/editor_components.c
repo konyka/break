@@ -51,6 +51,20 @@ static const BreakEditorField k_transform_fields[9] = {
 static const EditorTransform k_transform_default = {
     {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}};
 
+static const BreakEditorField k_light_fields[5] = {
+    { "color.r", offsetof(EditorLight, color) + 0u * sizeof(f32), 0u },
+    { "color.g", offsetof(EditorLight, color) + 1u * sizeof(f32), 0u },
+    { "color.b", offsetof(EditorLight, color) + 2u * sizeof(f32), 0u },
+    { "intensity", offsetof(EditorLight, intensity), 0u },
+    { "range", offsetof(EditorLight, range), 0u },
+};
+
+static const EditorLight k_light_default = {{1.0f, 1.0f, 1.0f}, 1.0f, 10.0f};
+
+_Static_assert(sizeof(EditorLight) == 20u, "EditorLight is five packed f32");
+_Static_assert(sizeof(EditorLight) <= BREAK_EDITOR_COMPONENT_SNAPSHOT_CAPACITY,
+               "light fits the command snapshot cap");
+
 void break_editor_doc_init_components(BreakEditorDoc *doc) {
     /* World registration is what makes the component survive save/load
      * (BSCN COMPONENTS chunk stores raw bytes per registered type, and the
@@ -67,7 +81,18 @@ void break_editor_doc_init_components(BreakEditorDoc *doc) {
     memcpy(reg->fields, k_transform_fields, sizeof(k_transform_fields));
     reg->field_count = 9u;
     reg->default_bytes = (const u8 *)&k_transform_default;
-    doc->component_count = 1u;
+
+    world_register_component(break_editor_doc_world_raw(doc),
+                             BREAK_EDITOR_COMPONENT_LIGHT,
+                             (u32)sizeof(EditorLight));
+    reg = &doc->components[1];
+    reg->component_id = BREAK_EDITOR_COMPONENT_LIGHT;
+    memcpy(reg->display_name, "Light", sizeof("Light"));
+    reg->size = (u32)sizeof(EditorLight);
+    memcpy(reg->fields, k_light_fields, sizeof(k_light_fields));
+    reg->field_count = 5u;
+    reg->default_bytes = (const u8 *)&k_light_default;
+    doc->component_count = 2u;
 }
 
 const BreakEditorComponentReg *break_editor_doc_find_component(

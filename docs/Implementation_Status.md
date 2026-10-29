@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：编辑器第二个可编辑组件类型 Light（2026-10-30）
+
+- **交付**：`BREAK_EDITOR_COMPONENT_LIGHT`（id 65）/ `EditorLight`（color.r/g/b、intensity、range，f32×5，默认白色/1/10），在 doc create 时注册进注册表与 World。inspector、撤销/重做、复制、删除快照、BSCN 存取都走已有的通用路径，没有改面板代码。
+- **验证**：`test_editor_components` 21/21（新增 1 例；先因类型未定义而编译失败）；默认树全量 233/233（1 个 Windows-only skip）；Snowflake 树 editor/fuzz 16/16；ASan 树 `test_editor_components` 21/21、`test_editor_shell` 130/130。
+- **边界**：viewport 不渲染灯光（只编辑数据）；字段类型仍只有 f32。见 `docs/design/editor_phase1.md`。
+
 ## 本轮更新：ECS 新加组件零初始化（2026-10-30）
 
 - **问题**：`world_add_component` 把实体迁移到新 archetype 时，新列取自复用的 chunk 行（swap-remove 后旧字节仍在），于是新加的组件带着之前被销毁实体的数据。写 Lua→World helper 的测试时发现。
