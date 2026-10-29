@@ -5889,8 +5889,8 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels, usiz
             return false;
         }
         blit = [cmd blitCommandEncoder];
-        /* Native byte order (BGRA8 swapchain -> B,G,R,A), same as VK's raw
-         * vkCmdCopyImageToBuffer of its BGRA image. */
+        /* Raw copy in the drawable's native order; swizzled to the rhi.h
+         * RGBA8 contract below when the swapchain is BGRA (VK parity). */
         [blit copyFromTexture:mb->drawable.texture
                   sourceSlice:0u
                   sourceLevel:0u
@@ -5908,6 +5908,16 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels, usiz
         /* Row-order contract (rhi.h): top-left origin, rows top-down on
          * every backend. Metal blit rows are already top-down. */
         memcpy(pixels, staging.contents, (usize)row_bytes * h);
+        if (mb->swapchain_format == RHI_FORMAT_B8G8R8A8_UNORM) {
+            /* rhi.h: the readback is RGBA8 on every backend (VK swizzles
+             * its BGRA swapchain copy the same way). */
+            usize i;
+            for (i = 0u; i < (usize)w * (usize)h; ++i) {
+                u8 t = pixels[i * 4u];
+                pixels[i * 4u] = pixels[i * 4u + 2u];
+                pixels[i * 4u + 2u] = t;
+            }
+        }
         [staging release];
         ok = true;
     }

@@ -701,6 +701,20 @@ CTest **226/226**、graphics **5/5**，MoltenVK **227/227**（两者仅 D3D12 de
 方向正确、日志不再有 `uniform resolve failed`；视口内是空场景的清屏深灰，3D 代理几何
 的像素级效果本轮未单独验证，证据等级不变。
 
+2026-10-29 同步与代码 review：从 `@e2bb5661` 快进到 `@8ab8700e`（7 个远程提交：BreakUI
+画布裁剪文字/图片、编辑器 JetBrains 暗色主题、大纲选中行高亮、crash 测试期望值饱和），
+无冲突。Metal CTest **230/230**、graphics **6/6**，MoltenVK **231/231**（仅 D3D12
+dependency gate 按平台跳过）。review 读完画布裁剪（`clip_quad` 的 UV 随裁剪缩放）、
+控件绘制与主题改动，未发现需要修的问题。实机截图（`BREAK_EDITOR_INPUT_SCRIPT=ON`
+编辑器加两个实体并选中）暴露一处 Metal 缺陷并已修复：`rhi_screenshot` 在 Metal 上返回
+drawable 原生 BGRA，而 `rhi.h` 约定 RGBA8（VK 对 BGRA swapchain 做交换），调用方
+（`main.c` 的 BMP、编辑器 PPM）再按 RGBA 处理一次，结果 Metal 截图红蓝互换：编辑器里
+蓝色“添加”按钮和选中行显示为橙色，`engine_demo` 的 Metal/VK 平均色在 R/B 上互换
+（142.4/145.3 对 145.2/142.3）。现在 Metal 在 BGRA 交换链上读回后交换 R/B，同一机位
+Metal 与 VK 平均 RGB 为 145.3/148.6/142.4 对 145.2/148.5/142.3；`test_rhi_metal_resources`
+里两个读回用例的期望字节序同步改为 RGBA（修复前这两个用例对 RGBA 期望失败，已先验证
+红灯）。这只影响截图读回，不影响屏幕上的实际渲染，证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。

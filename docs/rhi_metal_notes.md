@@ -305,8 +305,10 @@ acquire→present 窗口语义在 Metal 的等价实现：drawable 自 acquire r
 **present**（frame_end 不再提前释放），`rhi_screenshot` 先经 `metal_drain`
 有界 drain（绝不裸 waitUntilCompleted），再 blit drawable texture → shared
 staging → `metal_commit_wait`。present 后 drawable==nil → false + LOG。
-region 走共享 `rhi_screenshot_region_validate`。字节序 = drawable 原生 BGRA
-（VK 裸拷贝 BGRA swapchain 同）。前提：`layer.framebufferOnly=NO`（device
+region 走共享 `rhi_screenshot_region_validate`。字节序 = rhi.h 约定的 RGBA8：
+drawable 是 BGRA 时读回后交换 R/B（VK 对 BGRA swapchain 同样做 BGRA→RGBA）。
+2026-10-29 前 Metal 直接返回原生 BGRA，`main.c` 的截图再按 RGBA 交换一次，
+Metal 的 BMP 和 `BREAK_EDITOR_INPUT_SCRIPT` 的 PPM 都红蓝互换。前提：`layer.framebufferOnly=NO`（device
 create 时置位；默认 YES 禁止 blit 读回）。
 
 ### indirect
