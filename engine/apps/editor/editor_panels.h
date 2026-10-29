@@ -174,6 +174,20 @@ const char *break_editor_shell_tool_text(const BreakEditorShell *shell);
  * current look and returns false. Also in the command palette
  * ("Theme: Light" / "Theme: Dark"). */
 bool break_editor_shell_set_theme(BreakEditorShell *shell, bool light);
+/* Tool-window tab areas: 0 = bottom (Console, Lua), 1 = right diagnostics
+ * (Profiler, Network, Render). select_tab shows that page and hides the
+ * others (false for an unknown area/index); active_tab returns the shown
+ * index (0 for an unknown area). */
+bool break_editor_shell_select_tab(BreakEditorShell *shell, u32 area,
+                                   u32 index);
+u32 break_editor_shell_active_tab(const BreakEditorShell *shell, u32 area);
+/* Loads the UI preferences file at `path` (editor_settings.h), applies its
+ * theme, active tabs and — unless `keep_current_lang` (the user passed
+ * --lang) — its language, then saves every later theme/language/tab change
+ * back to `path`. A missing file applies defaults and is created on the
+ * first change. false for NULL/empty/over-long paths (nothing applied). */
+bool break_editor_shell_use_settings(BreakEditorShell *shell, const char *path,
+                                     bool keep_current_lang);
 bool break_editor_shell_set_language(BreakEditorShell *shell,
                                      BreakEditorLang lang);
 const char *break_editor_shell_status_text(const BreakEditorShell *shell);

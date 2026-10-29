@@ -39,6 +39,9 @@ root（vertical）
 └─ editor-status         h:22
 ```
 
+> **2026-10-29 更新（工具窗标签页）**：上面的平铺布局已改为标签页。右栏 inspector 之下是 `editor-diag-row`（h:45%，纵向）：标签条 `editor-diag-tabs`（Profiler / Network / Render）+ 三个页面 `editor-profiler-panel`、`editor-network-panel`、`editor-render-panel`，一次只显示一个，页面 `w:100% h:1f`。底部 `editor-bottom` 改为 h:160 纵向：标签条 `editor-bottom-tabs`（Console / Lua）+ 页面 `editor-console`、`editor-lua-panel`。设计见 `docs/superpowers/specs/2026-10-29-editor-tool-window-tabs-design.md`。
+
+
 坐标注意：myui `widget->rect` 在**父坐标系**（my_widget.h）。inspector
 嵌套进 `editor-right-panel` 后，`inspector->rect.x` 不再与 viewport 同一
 坐标空间——测试对"inspector 在 viewport 右侧"的断言改为对

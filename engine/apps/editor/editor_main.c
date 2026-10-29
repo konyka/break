@@ -37,6 +37,7 @@
 #include "editor_hot_reload.h"
 #include "editor_panels.h"
 #include "editor_remote.h"
+#include "editor_settings.h"
 #ifdef BREAK_EDITOR_INPUT_SCRIPT
 #include "editor_input_driver.h"
 #endif
@@ -61,6 +62,7 @@ int main(int argc, char **argv) {
   BreakEditorShell *shell;
   BreakEditorFontChain fonts;
   BreakEditorLang lang = BREAK_EDITOR_LANG_EN_US;
+  bool lang_explicit = false; /* --lang wins over the stored preference */
   char lang_err[96];
   u32 w = EDITOR_WIN_W, h = EDITOR_WIN_H;
   u32 drawable_w = EDITOR_WIN_W, drawable_h = EDITOR_WIN_H;
@@ -78,6 +80,12 @@ int main(int argc, char **argv) {
   /* --lang <tag> (or BREAK_LANG / LC_ALL / LC_MESSAGES / LANG) selects the
    * UI language; the option is removed before the remote/scene parser runs */
   lang_err[0] = '\0';
+  for (int i = 1; i < argc; i++) {
+    if (argv[i] != NULL && strncmp(argv[i], "--lang", 6u) == 0 &&
+        (argv[i][6] == '\0' || argv[i][6] == '=')) {
+      lang_explicit = true;
+    }
+  }
   if (!break_editor_cli_take_lang(&argc, argv, &lang, lang_err,
                                   sizeof(lang_err))) {
     fprintf(stderr, "editor: %s\n", lang_err);
@@ -176,6 +184,16 @@ int main(int argc, char **argv) {
   /* render debugger panel: borrowed device, detached before teardown. Shader
    * reload is viewport-owned; shell teardown stops it before device teardown. */
   break_editor_shell_set_render_device(shell, device);
+  /* UI preferences (theme, language, active tabs): applied now, saved on
+   * every change. No usable path (no HOME) just means no persistence. */
+  {
+    char settings_path[1024];
+    if (break_editor_settings_default_path(settings_path,
+                                           sizeof(settings_path))) {
+      (void)break_editor_shell_use_settings(shell, settings_path,
+                                            lang_explicit);
+    }
+  }
   /* asset hot reload: host-owned, shell-borrowed; attached BEFORE the scene
    * path so the watcher starts on it. A failure only disables hot reload. */
   hot_reload = break_editor_hot_reload_create(shell);

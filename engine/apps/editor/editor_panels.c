@@ -8,6 +8,7 @@
 #include "editor_viewport3d.h"
 #include "editor_remote.h"
 #include "editor_hot_reload.h"
+#include "editor_settings.h"
 #include "editor_theme.h"
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
@@ -135,6 +136,17 @@ struct BreakEditorShell {
     /* editor asset hot reload (BORROWED — host-owned, DEFAULT OFF) */
     BreakEditorHotReload *hot_reload;
 
+    /* tool-window tab areas (0 bottom, 1 diagnostics): active page index
+     * and the click contexts of their tab buttons */
+    u32 active_tab[2];
+    /* persisted UI preferences (editor_settings.h): saved after each
+     * theme / language / tab change once a path is set; empty = off */
+    char settings_path[1024];
+    struct EditorTabCtx {
+        BreakEditorShell *shell;
+        u32 area, index;
+    } tab_ctxs[5];
+
     bool palette_open;
     u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT];
     u32 palette_match_count;
@@ -212,6 +224,8 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
 }
 
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd);
+static void shell_tabs_retranslate(BreakEditorShell *shell);
+static void shell_settings_save(BreakEditorShell *shell);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
 
 /* Bounded console log: appends one <=127-byte line to the ring, dropping the
@@ -1285,6 +1299,7 @@ static void shell_retranslate(BreakEditorShell *shell) {
     editor_panel_profiler_retranslate(shell->profiler_panel);
     editor_panel_network_retranslate(shell->network_panel);
     editor_panel_render_retranslate(shell->render_panel);
+    shell_tabs_retranslate(shell);
     /* palette rows and filter follow the current language */
     if (shell->palette_open && shell->palette_edit != NULL) {
         (void)break_editor_shell_palette_set_filter(
@@ -1304,6 +1319,7 @@ bool break_editor_shell_set_language(BreakEditorShell *shell,
     shell_retranslate(shell);
     editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_LANGUAGE_FMT),
                      break_editor_i18n_lang_name(lang));
+    shell_settings_save(shell);
     return true;
 }
 
@@ -1318,6 +1334,176 @@ void editor_shell_refresh_all(BreakEditorShell *shell) {
     shell_rebuild_inspector(shell);
     shell_refresh_status(shell);
     shell_refresh_tool_label(shell);
+}
+
+/* ---------------- tool-window tabs ---------------- */
+
+/* Pages are looked up by name: each panel module owns its section and the
+ * tree holds the reference, so the shell keeps no widget pointers that a
+ * failed build could leave dangling. */
+static const char *const k_tab_pages[2][3] = {
+    {"editor-console", "editor-lua-panel", NULL},
+    {"editor-profiler-panel", "editor-network-panel", "editor-render-panel"}};
+static const BreakEditorTr k_tab_labels[2][3] = {
+    {BREAK_EDITOR_TR_TAB_CONSOLE, BREAK_EDITOR_TR_TAB_LUA, BREAK_EDITOR_TR_COUNT},
+    {BREAK_EDITOR_TR_TAB_PROFILER, BREAK_EDITOR_TR_TAB_NETWORK,
+     BREAK_EDITOR_TR_TAB_RENDER}};
+static const u32 k_tab_count[2] = {2u, 3u};
+static const char *const k_tab_strips[2] = {"editor-bottom-tabs",
+                                            "editor-diag-tabs"};
+
+static my_widget_t *shell_find(BreakEditorShell *shell, const char *name) {
+    return shell->root != NULL ? my_widget_find_descendant(shell->root, name)
+                               : NULL;
+}
+
+static void shell_tabs_apply(BreakEditorShell *shell, u32 area) {
+    my_widget_t *strip = shell_find(shell, k_tab_strips[area]);
+    u32 i;
+    for (i = 0u; i < k_tab_count[area]; i++) {
+        my_widget_t *page = shell_find(shell, k_tab_pages[area][i]);
+        bool on = i == shell->active_tab[area];
+        if (page != NULL) {
+            (void)my_widget_set_visible(page, on);
+        }
+        if (strip != NULL && i < my_widget_child_count(strip)) {
+            (void)my_widget_set_style_class(my_widget_get_child(strip, i),
+                                            on ? "active" : NULL);
+        }
+    }
+    if (strip != NULL && strip->parent != NULL) {
+        my_widget_invalidate(strip->parent, NULL);
+    }
+}
+
+static void shell_tabs_retranslate(BreakEditorShell *shell) {
+    u32 area, i;
+    for (area = 0u; area < 2u; area++) {
+        my_widget_t *strip = shell_find(shell, k_tab_strips[area]);
+        for (i = 0u; strip != NULL && i < k_tab_count[area] &&
+                     i < my_widget_child_count(strip);
+             i++) {
+            (void)my_button_set_text(my_widget_get_child(strip, i),
+                                     break_editor_tr(k_tab_labels[area][i]));
+        }
+    }
+}
+
+static void on_tab_click(void *ctx, const char *event, void *data) {
+    struct EditorTabCtx *tc = (struct EditorTabCtx *)ctx;
+    (void)event;
+    (void)data;
+    if (tc != NULL) {
+        (void)break_editor_shell_select_tab(tc->shell, tc->area, tc->index);
+    }
+}
+
+/* Adds the strip for `area` to `parent` (a vertical container). Call
+ * BEFORE the pages are added (myui appends children), then
+ * shell_tabs_finish once they are. Non-fatal: without a strip the pages
+ * stay tiled under their own layout params. */
+static void shell_tabs_build(BreakEditorShell *shell, my_widget_t *parent,
+                             u32 area, u32 ctx_base) {
+    my_widget_t *strip = my_widget_create(NULL, k_tab_strips[area]);
+    u32 i;
+    if (strip == NULL) {
+        return;
+    }
+    (void)my_widget_set_layouter(strip, my_layouter_linear_create(NULL, true, 0));
+    for (i = 0u; i < k_tab_count[area]; i++) {
+        my_widget_t *tab =
+            my_button_create(NULL, break_editor_tr(k_tab_labels[area][i]));
+        struct EditorTabCtx *tc = &shell->tab_ctxs[ctx_base + i];
+        if (tab == NULL) {
+            continue;
+        }
+        (void)my_widget_set_name(tab, "editor-tab");
+        tc->shell = shell;
+        tc->area = area;
+        tc->index = i;
+        (void)my_widget_on(tab, "click", on_tab_click, tc);
+        /* bottom strip is full width: fixed CLion-like tabs; the narrow
+         * diagnostics strip splits its width evenly */
+        shell_add_child(strip, tab, area == 0u ? "w:110 h:100%" : "w:1f h:100%");
+    }
+    shell_add_child(parent, strip, "w:100% h:26");
+}
+
+/* After the pages exist: each fills the area under the strip, only the
+ * active one is shown. */
+static void shell_tabs_finish(BreakEditorShell *shell, u32 area) {
+    u32 i;
+    if (shell_find(shell, k_tab_strips[area]) == NULL) {
+        return; /* no strip: keep the tiled fallback */
+    }
+    for (i = 0u; i < k_tab_count[area]; i++) {
+        my_widget_t *page = shell_find(shell, k_tab_pages[area][i]);
+        if (page != NULL) {
+            (void)my_widget_set_layout_params(page, "w:100% h:1f");
+        }
+    }
+    shell->active_tab[area] = 0u;
+    shell_tabs_apply(shell, area);
+}
+
+bool break_editor_shell_select_tab(BreakEditorShell *shell, u32 area,
+                                   u32 index) {
+    if (shell == NULL || area >= 2u || index >= k_tab_count[area]) {
+        return false;
+    }
+    shell->active_tab[area] = index;
+    shell_tabs_apply(shell, area);
+    shell_settings_save(shell);
+    return true;
+}
+
+u32 break_editor_shell_active_tab(const BreakEditorShell *shell, u32 area) {
+    return shell != NULL && area < 2u ? shell->active_tab[area] : 0u;
+}
+
+/* Best-effort: a failed write is logged, never fatal (UI state only). */
+static void shell_settings_save(BreakEditorShell *shell) {
+    BreakEditorSettings st;
+    if (shell == NULL || shell->settings_path[0] == '\0') {
+        return;
+    }
+    break_editor_settings_defaults(&st);
+    st.light_theme = break_editor_theme_is_light();
+    st.has_lang = true;
+    st.lang = break_editor_i18n_lang();
+    st.bottom_tab = shell->active_tab[0];
+    st.diag_tab = shell->active_tab[1];
+    if (!break_editor_settings_save(&st, shell->settings_path)) {
+        editor_shell_log(shell, "settings: could not write %s",
+                         shell->settings_path);
+    }
+}
+
+bool break_editor_shell_use_settings(BreakEditorShell *shell, const char *path,
+                                     bool keep_current_lang) {
+    BreakEditorSettings st;
+    usize n;
+    if (shell == NULL || path == NULL) {
+        return false;
+    }
+    n = strlen(path);
+    if (n == 0u || n >= sizeof(shell->settings_path)) {
+        return false; /* never truncate a path we would write to */
+    }
+    break_editor_settings_defaults(&st);
+    (void)break_editor_settings_load(&st, path);
+    shell->settings_path[0] = '\0'; /* no saves while applying */
+    if (st.light_theme != break_editor_theme_is_light()) {
+        (void)break_editor_shell_set_theme(shell, st.light_theme);
+    }
+    if (st.has_lang && !keep_current_lang &&
+        st.lang != break_editor_i18n_lang()) {
+        (void)break_editor_shell_set_language(shell, st.lang);
+    }
+    (void)break_editor_shell_select_tab(shell, 0u, st.bottom_tab);
+    (void)break_editor_shell_select_tab(shell, 1u, st.diag_tab);
+    memcpy(shell->settings_path, path, n + 1u);
+    return true;
 }
 
 /* ---------------- widget tree build ---------------- */
@@ -1458,23 +1644,17 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     (void)my_widget_set_layouter(
         shell->inspector, my_layouter_linear_create(NULL, false, 2));
     shell_add_child(right_panel, shell->inspector, "w:100% h:1f");
-    if (!editor_panel_profiler_build(shell->profiler_panel, right_panel)) {
-        my_widget_unref(right_panel);
-        my_widget_unref(middle);
-        return false;
-    }
-    /* Phase 4 Task 3: the right column doubles as the diagnostics area —
-     * network panel directly under the profiler (h:20%, set by the panel
-     * build; a build failure is non-fatal: no network widgets) */
-    /* the network and render debugger panels share ONE h:20% row (network
-     * left, render right) so the column's vertical split is unchanged;
-     * build failures are non-fatal (no widgets for that panel) */
+    /* Diagnostics tool window under the inspector (design
+     * 2026-10-29-editor-tool-window-tabs): a tab strip over the profiler,
+     * network and render debugger pages, one shown at a time. The profiler
+     * build is fatal as before; network/render build failures are not (no
+     * widgets for that page). */
     {
         my_widget_t *diag = my_widget_create(NULL, "editor-diag-row");
         if (diag != NULL) {
             (void)my_widget_set_layouter(
-                diag, my_layouter_linear_create(NULL, true, 2));
-            (void)my_widget_set_layout_params(diag, "w:100% h:20%");
+                diag, my_layouter_linear_create(NULL, false, 0));
+            (void)my_widget_set_layout_params(diag, "w:100% h:45%");
             /* Attach the empty row BEFORE building either panel. If this
              * append fails, the row dies empty and both weak list pointers
              * stay NULL; building first would leave them dangling. */
@@ -1488,15 +1668,30 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
             if (diag != NULL &&
                 my_widget_add_child(right_panel, diag) == MY_RET_OK) {
                 my_widget_unref(diag); /* tree holds its own reference */
+                shell_tabs_build(shell, diag, 1u, 2u);
+                if (!editor_panel_profiler_build(shell->profiler_panel, diag)) {
+                    my_widget_unref(middle);
+                    return false;
+                }
                 editor_panel_network_build(shell->network_panel, diag);
                 editor_panel_render_build(shell->render_panel, diag);
+                /* shell_tabs_finish(1) runs once `middle` is in the tree
+                 * (pages are looked up from the shell root) */
             } else if (diag != NULL) {
                 my_widget_unref(diag);
+                diag = NULL;
             }
+        }
+        if (diag == NULL &&
+            !editor_panel_profiler_build(shell->profiler_panel, right_panel)) {
+            my_widget_unref(right_panel);
+            my_widget_unref(middle);
+            return false;
         }
     }
     shell_add_child(middle, right_panel, "w:28% h:100%");
     shell_add_child(root, middle, "w:100% h:1f");
+    shell_tabs_finish(shell, 1u);
 
     /* Phase 3 Task 3: the bottom row is two columns — the console (existing
      * 64-entry log ring, read-only) left w:1f, the Lua console right w:40%
@@ -1505,8 +1700,10 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     if (bottom == NULL) {
         return false;
     }
+    /* Console / Lua tool window: tab strip over one page at a time */
     (void)my_widget_set_layouter(bottom,
-                                 my_layouter_linear_create(NULL, true, 2));
+                                 my_layouter_linear_create(NULL, false, 0));
+    shell_tabs_build(shell, bottom, 0u, 0u);
     shell->console_area = my_text_area_create(NULL);
     if (shell->console_area == NULL) {
         my_widget_unref(bottom);
@@ -1520,7 +1717,8 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
         my_widget_unref(bottom);
         return false;
     }
-    shell_add_child(root, bottom, "w:100% h:96");
+    shell_add_child(root, bottom, "w:100% h:160");
+    shell_tabs_finish(shell, 0u);
 
     /* status bar */
     shell->status_label = my_label_create(NULL, "");
@@ -1693,6 +1891,7 @@ bool break_editor_shell_set_theme(BreakEditorShell *shell, bool light) {
     }
     /* self-painting widgets (viewport surround, preview) read the mode */
     my_widget_invalidate((my_widget_t *)shell->win, NULL);
+    shell_settings_save(shell);
     return true;
 }
 

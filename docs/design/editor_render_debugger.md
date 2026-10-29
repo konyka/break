@@ -46,11 +46,11 @@ At most 4 refreshes per second from `break_editor_shell_tick` (250 000 us), firs
 
 ## 6. Layout
 
-The network and render debugger panels share one `h:20%` diagnostics row (`editor-diag-row`) in the right column: network on the left, render debugger on the right. This keeps the inspector/profiler vertical layout unchanged. Widget names `editor-render-panel`, `editor-render-label`, `editor-render-list`.
+The render debugger is one page of the diagnostics tool window (`editor-diag-row`, right column under the inspector) next to the profiler and network pages; a tab strip (`editor-diag-tabs`: Profiler / Network / Render) shows one page at a time (2026-10-29; previously network and render shared a `h:20%` row side by side). Widget names `editor-render-panel`, `editor-render-label`, `editor-render-list`.
 
 ## 7. Tests
 
-- Headless (dummy PAL, no device): one `render: no device` row; layout beside the network panel in the shared diagnostics row; row bounds; throttle; NULL safety; source scan (no mutating `rhi_*` calls).
+- Headless (dummy PAL, no device): one `render: no device` row; same page slot as the network panel in the diagnostics tool window; row bounds; throttle; NULL safety; source scan (no mutating `rhi_*` calls).
 - Headless with a fake device: `rhi_device_resource_usage` counts allocations and frees exactly (core-only test linked with `engine_rhi_headless`).
 - Viewport stats: counters after `break_editor_viewport3d_render` on the headless path are deterministic (render is a guarded no-op without a device → `skipped=no-device`).
 - Live (graphics, manual smoke): `editor` on Vulkan and on OpenGL (`BREAK_RHI_BACKEND=opengl`) — rows show the right backend, GPU name and non-zero draws; recorded as smoke evidence, not a ctest.

@@ -1816,6 +1816,171 @@ TEST(theme_switches_between_dark_and_light)
     break_editor_shell_destroy(shell);
 }
 
+/* Tool-window tabs (design 2026-10-29-editor-tool-window-tabs-design.md):
+ * the bottom area (Console / Lua) and the right diagnostics area
+ * (Profiler / Network / Render) each show one page at a time behind a tab
+ * strip. */
+static my_widget_t *tab_at(my_widget_t *strip, usize i) {
+    return strip != NULL && i < my_widget_child_count(strip)
+               ? my_widget_get_child(strip, i)
+               : NULL;
+}
+
+static bool tab_is_active(my_widget_t *tab) {
+    const char *cls = my_widget_get_style_class(tab);
+    return cls != NULL && strcmp(cls, "active") == 0;
+}
+
+static void pointer_click(BreakEditorShell *shell, my_widget_t *w) {
+    my_window_t *win = break_editor_shell_window(shell);
+    int32_t gx = 0, gy = 0;
+    my_event_t ev;
+    ASSERT_NOT_NULL(w);
+    my_widget_local_to_global(w, &gx, &gy);
+    gx += w->rect.w / 2;
+    gy += w->rect.h / 2;
+    ev = my_event_init(MY_EVENT_POINTER_DOWN);
+    ev.u.pointer.x = gx;
+    ev.u.pointer.y = gy;
+    ev.u.pointer.button = 1u;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+    ev = my_event_init(MY_EVENT_POINTER_UP);
+    ev.u.pointer.x = gx;
+    ev.u.pointer.y = gy;
+    ev.u.pointer.button = 1u;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+}
+
+TEST(tool_window_tabs_show_one_page_per_area)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *bottom_tabs, *diag_tabs, *console, *lua, *profiler, *network,
+        *render, *diag;
+    ASSERT_NOT_NULL(shell);
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    bottom_tabs = find(shell, "editor-bottom-tabs");
+    diag_tabs = find(shell, "editor-diag-tabs");
+    ASSERT_NOT_NULL(bottom_tabs);
+    ASSERT_NOT_NULL(diag_tabs);
+    ASSERT_EQ(my_widget_child_count(bottom_tabs), 2u);
+    ASSERT_EQ(my_widget_child_count(diag_tabs), 3u);
+    ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 0u))->text, "Console");
+    ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 1u))->text, "Lua");
+    ASSERT_STR_EQ(((const my_button_t *)tab_at(diag_tabs, 0u))->text, "Profiler");
+    ASSERT_STR_EQ(((const my_button_t *)tab_at(diag_tabs, 1u))->text, "Network");
+    ASSERT_STR_EQ(((const my_button_t *)tab_at(diag_tabs, 2u))->text, "Render");
+    console = find(shell, "editor-console");
+    lua = find(shell, "editor-lua-panel");
+    profiler = find(shell, "editor-profiler-panel");
+    network = find(shell, "editor-network-panel");
+    render = find(shell, "editor-render-panel");
+    diag = find(shell, "editor-diag-row");
+    ASSERT_TRUE(console && lua && profiler && network && render && diag);
+    /* defaults: Console, Profiler */
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 0u), 0u);
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 1u), 0u);
+    ASSERT_TRUE(console->visible && !lua->visible);
+    ASSERT_TRUE(profiler->visible && !network->visible && !render->visible);
+    ASSERT_TRUE(tab_is_active(tab_at(bottom_tabs, 0u)));
+    ASSERT_FALSE(tab_is_active(tab_at(bottom_tabs, 1u)));
+    /* themed: the active tab sits on the content colour, the others on the
+     * window colour */
+    ASSERT_EQ(my_widget_style_get_color(tab_at(bottom_tabs, 0u), MY_STATE_NORMAL,
+                                        "bg_color", 0u),
+              BREAK_EDITOR_THEME_BG_CONTENT);
+    ASSERT_EQ(my_widget_style_get_color(tab_at(bottom_tabs, 1u), MY_STATE_NORMAL,
+                                        "bg_color", 0u),
+              BREAK_EDITOR_THEME_BG_WINDOW);
+    /* the active page fills its area under the strip */
+    ASSERT_TRUE(profiler->rect.y >= diag_tabs->rect.y + diag_tabs->rect.h);
+    ASSERT_EQ(profiler->rect.w, diag->rect.w);
+    ASSERT_TRUE(profiler->rect.h >= diag->rect.h - diag_tabs->rect.h - 4);
+    ASSERT_TRUE(console->rect.h >= find(shell, "editor-bottom")->rect.h -
+                                       bottom_tabs->rect.h - 4);
+    /* real pointer click on a tab switches the page */
+    pointer_click(shell, tab_at(diag_tabs, 2u));
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 1u), 2u);
+    ASSERT_TRUE(render->visible && !profiler->visible && !network->visible);
+    ASSERT_TRUE(tab_is_active(tab_at(diag_tabs, 2u)));
+    ASSERT_FALSE(tab_is_active(tab_at(diag_tabs, 0u)));
+    ASSERT_EQ(render->rect.w, diag->rect.w);
+    pointer_click(shell, tab_at(bottom_tabs, 1u));
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 0u), 1u);
+    ASSERT_TRUE(lua->visible && !console->visible);
+    /* API, bounds */
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 1u, 1u));
+    ASSERT_TRUE(network->visible && !render->visible);
+    ASSERT_FALSE(break_editor_shell_select_tab(shell, 1u, 3u));
+    ASSERT_FALSE(break_editor_shell_select_tab(shell, 2u, 0u));
+    ASSERT_FALSE(break_editor_shell_select_tab(NULL, 0u, 0u));
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 1u), 1u);
+    /* hidden panels keep refreshing (weak lists stay valid) */
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_render_row_count(shell), 1u);
+    /* labels follow the language */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 0u))->text,
+                  "\xE6\x8E\xA7\xE5\x88\xB6\xE5\x8F\xB0"); /* 控制台 */
+    ASSERT_STR_EQ(((const my_button_t *)tab_at(diag_tabs, 1u))->text,
+                  "\xE7\xBD\x91\xE7\xBB\x9C"); /* 网络 */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    break_editor_shell_destroy(shell);
+}
+
+/* UI preferences persist: theme, language and active tabs written by one
+ * shell are applied by the next (editor_settings.h). An explicit --lang
+ * (keep_current_lang) wins over the stored language. */
+TEST(settings_persist_theme_language_and_tabs_across_shells)
+{
+    char path[256];
+    BreakEditorShell *shell;
+    FILE *f;
+    test_tmp(path, sizeof(path), "editor_shell_settings.ini");
+    remove(path);
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, false));
+    /* missing file: defaults, nothing written yet */
+    ASSERT_FALSE(break_editor_theme_is_light());
+    f = fopen(path, "rb");
+    ASSERT_TRUE(f == NULL);
+    ASSERT_TRUE(break_editor_shell_set_theme(shell, true));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 1u, 2u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 1u));
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    break_editor_shell_destroy(shell);
+    /* reset process-global UI state like a fresh run */
+    (void)break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US);
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_set_theme(shell, false));
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, false));
+    ASSERT_TRUE(break_editor_theme_is_light());
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 1u), 2u);
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 0u), 1u);
+    ASSERT_EQ(break_editor_i18n_lang(), BREAK_EDITOR_LANG_ZH_CN);
+    ASSERT_TRUE(find(shell, "editor-render-panel")->visible);
+    break_editor_shell_destroy(shell);
+    /* --lang given: stored language ignored, the rest still applied */
+    (void)break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US);
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, true));
+    ASSERT_EQ(break_editor_i18n_lang(), BREAK_EDITOR_LANG_EN_US);
+    ASSERT_TRUE(break_editor_theme_is_light());
+    /* bounds */
+    ASSERT_FALSE(break_editor_shell_use_settings(shell, "", false));
+    ASSERT_FALSE(break_editor_shell_use_settings(shell, NULL, false));
+    ASSERT_FALSE(break_editor_shell_use_settings(NULL, path, false));
+    /* leave global state as the other cases expect */
+    ASSERT_TRUE(break_editor_shell_set_theme(shell, false));
+    break_editor_shell_destroy(shell);
+    remove(path);
+}
+
 /* Ctrl+P paints the palette over the shell and its focused edit shows the
  * accent focus ring (soft LCD, full-window repaint). */
 TEST(palette_paints_with_focused_edit_ring)
@@ -2107,17 +2272,17 @@ TEST(phase3_layout_assets_lua_profiler_panels_present)
     ASSERT_NOT_NULL(find(shell, "editor-assets-path"));
     ASSERT_NOT_NULL(find(shell, "editor-lua-edit"));
     ASSERT_NOT_NULL(find(shell, "editor-profiler-list"));
-    /* bottom row = two columns: console ring left, lua panel right (~40%) */
+    /* bottom tool window (tabs, 2026-10-29): console and lua are pages of
+     * editor-bottom; the console page is shown and spans the full width */
     bottom = find(shell, "editor-bottom");
     console = find(shell, "editor-console");
     lua_panel = find(shell, "editor-lua-panel");
     ASSERT_NOT_NULL(bottom);
     ASSERT_NOT_NULL(console);
     ASSERT_NOT_NULL(lua_panel);
-    ASSERT_TRUE(console->rect.x < lua_panel->rect.x);
-    ASSERT_TRUE(lua_panel->rect.x >= console->rect.x + console->rect.w - 1);
-    ASSERT_TRUE(lua_panel->rect.w * 10 >= bottom->rect.w * 3);  /* >= 30% */
-    ASSERT_TRUE(lua_panel->rect.w * 10 <= bottom->rect.w * 5);  /* <= 50% */
+    ASSERT_TRUE(console->parent == bottom && lua_panel->parent == bottom);
+    ASSERT_TRUE(console->visible && !lua_panel->visible);
+    ASSERT_EQ(console->rect.w, bottom->rect.w);
     /* assets panel under the outliner; profiler panel under the inspector */
     outliner_panel = find(shell, "editor-outliner-panel");
     assets_panel = find(shell, "editor-assets-panel");
@@ -2130,9 +2295,11 @@ TEST(phase3_layout_assets_lua_profiler_panels_present)
     ASSERT_TRUE(assets_panel->rect.y > outliner_panel->rect.y);
     ASSERT_TRUE(assets_panel->rect.h * 10 >= outliner_panel->rect.h * 3);
     ASSERT_TRUE(assets_panel->rect.h * 10 <= outliner_panel->rect.h * 5);
+    /* profiler: first page of the diagnostics tool window under the
+     * inspector (tabs, 2026-10-29) */
     ASSERT_TRUE(profiler_panel->rect.y > inspector->rect.y);
     ASSERT_TRUE(profiler_panel->rect.h * 10 >= inspector->rect.h * 3);
-    ASSERT_TRUE(profiler_panel->rect.h * 10 <= inspector->rect.h * 7);
+    ASSERT_TRUE(profiler_panel->rect.h * 10 <= inspector->rect.h * 12);
     break_editor_shell_destroy(shell);
 }
 
@@ -2214,22 +2381,25 @@ TEST(network_panel_layout_in_diagnostics_column_under_profiler)
     ASSERT_NOT_NULL(profiler_panel);
     ASSERT_NOT_NULL(network_panel);
     ASSERT_NOT_NULL(right_panel);
-    /* diagnostics area: same right column as the profiler, directly below
-     * it (documented placement: inspector h:1f / profiler h:30% / network
-     * h:20%) */
-    /* network sits in the shared diagnostics row (with the render debugger)
-     * directly under the profiler; the row keeps the documented h:20% */
+    /* diagnostics tool window (tabs, 2026-10-29): profiler, network and
+     * render are pages of editor-diag-row under the inspector (h:45% of the
+     * right column); the network page fills the row width when shown */
     {
         my_widget_t *diag = find(shell, "editor-diag-row");
         ASSERT_NOT_NULL(diag);
         ASSERT_TRUE(diag->parent == right_panel);
         ASSERT_TRUE(network_panel->parent == diag);
-        ASSERT_TRUE(profiler_panel->parent == right_panel);
-        ASSERT_TRUE(diag->rect.y >= profiler_panel->rect.y + profiler_panel->rect.h);
-        ASSERT_TRUE(diag->rect.h * 10 >= right_panel->rect.h * 1);
-        ASSERT_TRUE(diag->rect.h * 10 <= right_panel->rect.h * 3);
-        ASSERT_EQ(network_panel->rect.h, diag->rect.h);
-        ASSERT_TRUE(network_panel->rect.w > 0);
+        ASSERT_TRUE(profiler_panel->parent == diag);
+        ASSERT_TRUE(diag->rect.h * 10 >= right_panel->rect.h * 3);
+        ASSERT_TRUE(diag->rect.h * 10 <= right_panel->rect.h * 6);
+        ASSERT_TRUE(break_editor_shell_select_tab(shell, 1u, 1u));
+        shell_paint(shell);
+        ASSERT_TRUE(network_panel->visible);
+        ASSERT_EQ(network_panel->rect.w, diag->rect.w);
+        /* page rects are relative to the tool window: below the strip */
+        ASSERT_TRUE(network_panel->rect.y >=
+                    find(shell, "editor-diag-tabs")->rect.y +
+                        find(shell, "editor-diag-tabs")->rect.h);
     }
     break_editor_shell_destroy(shell);
 }
@@ -2417,13 +2587,22 @@ TEST(render_panel_layout_beside_network_in_diagnostics_row)
     right_panel = find(shell, "editor-right-panel");
     ASSERT_NOT_NULL(network_panel);
     ASSERT_NOT_NULL(render_panel);
-    /* same diagnostics row as the network panel, to its right */
+    /* same diagnostics tool window as the network panel (a sibling page,
+     * tabs 2026-10-29): selecting the Render tab gives it the same slot */
     ASSERT_NOT_NULL(right_panel);
     ASSERT_TRUE(render_panel->parent == network_panel->parent);
-    ASSERT_EQ(render_panel->rect.y, network_panel->rect.y);
-    ASSERT_EQ(render_panel->rect.h, network_panel->rect.h);
-    ASSERT_TRUE(render_panel->rect.x >= network_panel->rect.x + network_panel->rect.w);
-    ASSERT_TRUE(render_panel->rect.w > 0);
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 1u, 1u));
+    shell_paint(shell);
+    {
+        my_rect_t net = network_panel->rect;
+        ASSERT_TRUE(break_editor_shell_select_tab(shell, 1u, 2u));
+        shell_paint(shell);
+        ASSERT_TRUE(render_panel->visible && !network_panel->visible);
+        ASSERT_EQ(render_panel->rect.y, net.y);
+        ASSERT_EQ(render_panel->rect.h, net.h);
+        ASSERT_EQ(render_panel->rect.w, net.w);
+        ASSERT_TRUE(render_panel->rect.w > 0);
+    }
     break_editor_shell_destroy(shell);
 }
 
@@ -6652,6 +6831,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_row_click_via_pointer_switches_language);
     RUN_TEST(palette_escape_via_event_dispatcher_closes);
     RUN_TEST(theme_switches_between_dark_and_light);
+    RUN_TEST(tool_window_tabs_show_one_page_per_area);
+    RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
