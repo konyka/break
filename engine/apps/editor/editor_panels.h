@@ -188,6 +188,9 @@ u32 break_editor_shell_active_tab(const BreakEditorShell *shell, u32 area);
  * first change. false for NULL/empty/over-long paths (nothing applied). */
 bool break_editor_shell_use_settings(BreakEditorShell *shell, const char *path,
                                      bool keep_current_lang);
+/* Index (within the current matches) of the palette row Up/Down highlight
+ * and Enter runs; 0 after open and after every filter change. */
+u32 break_editor_shell_palette_cursor(const BreakEditorShell *shell);
 bool break_editor_shell_set_language(BreakEditorShell *shell,
                                      BreakEditorLang lang);
 const char *break_editor_shell_status_text(const BreakEditorShell *shell);

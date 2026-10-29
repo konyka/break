@@ -292,6 +292,83 @@ TEST(palette_opens_filters_and_escape_closes)
     break_editor_shell_destroy(shell);
 }
 
+/* Up/Down move a highlighted row in the open palette; Enter (and the edit's
+ * activate) runs the highlighted command instead of always the first. The
+ * highlight is the "selected" row class (themed like the outliner's), wraps
+ * at both ends, resets to the first match on every filter change. Keys go
+ * through the real dispatcher with the palette edit focused. */
+static my_widget_t *palette_selected_row(BreakEditorShell *shell) {
+    my_widget_t *list = find(shell, "editor-palette-list");
+    usize i, n = list != NULL ? my_widget_child_count(list) : 0u;
+    my_widget_t *hit = NULL;
+    usize hits = 0u;
+    for (i = 0u; i < n; i++) {
+        my_widget_t *row = my_widget_get_child(list, i);
+        const char *cls = my_widget_get_style_class(row);
+        if (cls != NULL && strcmp(cls, "selected") == 0) {
+            hit = row;
+            hits++;
+        }
+    }
+    return hits == 1u ? hit : NULL;
+}
+
+static void dispatch_key_event(BreakEditorShell *shell, u32 key) {
+    my_window_t *win = break_editor_shell_window(shell);
+    my_event_t ev = my_event_init(MY_EVENT_KEY_DOWN);
+    ev.u.key.key = key;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+}
+
+TEST(palette_arrow_keys_move_the_highlight_and_enter_runs_it)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *row;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_palette_cursor(shell), 0u);
+    row = palette_selected_row(shell);
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(((const my_button_t *)row)->text, "Tool: Select");
+    dispatch_key_event(shell, MY_KEY_DOWN);
+    dispatch_key_event(shell, MY_KEY_DOWN);
+    ASSERT_EQ(break_editor_shell_palette_cursor(shell), 2u);
+    row = palette_selected_row(shell);
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(((const my_button_t *)row)->text, "Tool: Rotate");
+    ASSERT_EQ(my_widget_style_get_color(row, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_SELECTION);
+    /* wrap: Up from 0 goes to the last, Down from the last to 0 */
+    dispatch_key_event(shell, MY_KEY_UP);
+    dispatch_key_event(shell, MY_KEY_UP);
+    dispatch_key_event(shell, MY_KEY_UP);
+    ASSERT_EQ(break_editor_shell_palette_cursor(shell), 3u);
+    dispatch_key_event(shell, MY_KEY_DOWN);
+    ASSERT_EQ(break_editor_shell_palette_cursor(shell), 0u);
+    /* a filter change resets the highlight to the first match */
+    dispatch_key_event(shell, MY_KEY_DOWN);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool: s"));
+    ASSERT_EQ(break_editor_shell_palette_cursor(shell), 0u);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
+    dispatch_key_event(shell, MY_KEY_DOWN);
+    dispatch_key_event(shell, MY_KEY_DOWN);
+    /* Enter through the focused edit (activate) runs the highlighted row */
+    dispatch_key_event(shell, MY_KEY_RETURN);
+    ASSERT_FALSE(break_editor_shell_palette_is_open(shell));
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Rotate");
+    /* no matches: arrows are bounded no-ops, Enter just closes */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "zzz-none"));
+    dispatch_key_event(shell, MY_KEY_DOWN);
+    ASSERT_EQ(break_editor_shell_palette_cursor(shell), 0u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_FALSE(break_editor_shell_palette_is_open(shell));
+    break_editor_shell_destroy(shell);
+}
+
 TEST(palette_executes_tool_command_on_activate)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -6801,6 +6878,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(focus_key_records_intent_note);
     RUN_TEST(palette_opens_filters_and_escape_closes);
     RUN_TEST(palette_executes_tool_command_on_activate);
+    RUN_TEST(palette_arrow_keys_move_the_highlight_and_enter_runs_it);
     RUN_TEST(ctrl_s_saves_to_configured_path);
     RUN_TEST(outliner_row_click_selects);
     RUN_TEST(rename_then_undo_reverts_outliner_row_text);

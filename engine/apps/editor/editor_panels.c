@@ -150,6 +150,7 @@ struct BreakEditorShell {
     bool palette_open;
     u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT];
     u32 palette_match_count;
+    u32 palette_cursor; /* highlighted match (Up/Down), run by Enter */
 
     char console_ring[EDITOR_CONSOLE_CAPACITY][EDITOR_CONSOLE_LINE_BYTES];
     u32 console_head;  /* next write slot */
@@ -781,9 +782,14 @@ static void editor_adapter_bind_row(my_list_adapter_t *adapter,
     } else {
         if (index < a->shell->palette_match_count) {
             char text[96];
+            bool hl = (u32)index == a->shell->palette_cursor;
+            const char *cls = my_widget_get_style_class(row);
             (void)my_button_set_text(
                 row, shell_palette_text(a->shell->palette_matches[index], text,
                                         sizeof(text)));
+            if (hl != (cls != NULL && strcmp(cls, "selected") == 0)) {
+                (void)my_widget_set_style_class(row, hl ? "selected" : NULL);
+            }
         } else {
             (void)my_button_set_text(row,
                                      break_editor_tr(BREAK_EDITOR_TR_STALE_ROW));
@@ -854,6 +860,7 @@ bool break_editor_shell_palette_set_filter(BreakEditorShell *shell,
         return false;
     }
     shell->palette_match_count = 0u;
+    shell->palette_cursor = 0u;
     for (i = 0u; i < EDITOR_PALETTE_COMMAND_COUNT; i++) {
         char cmd_text[96];
         if (editor_str_contains_casefold(
@@ -1112,9 +1119,13 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     }
 }
 
+/* Runs the highlighted match (the first one unless Up/Down moved it). */
 static void shell_execute_palette_first(BreakEditorShell *shell) {
     if (shell->palette_match_count > 0u) {
-        u32 cmd = shell->palette_matches[0u];
+        u32 cmd = shell->palette_matches[shell->palette_cursor <
+                                                 shell->palette_match_count
+                                             ? shell->palette_cursor
+                                             : 0u];
         char text[96];
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PALETTE_FMT),
                          shell_palette_text(cmd, text, sizeof(text)));
@@ -1185,6 +1196,19 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
         }
         if (key == MY_KEY_RETURN) {
             shell_execute_palette_first(shell);
+            return true;
+        }
+        if (key == MY_KEY_UP || key == MY_KEY_DOWN) {
+            u32 n = shell->palette_match_count;
+            if (n > 0u) {
+                shell->palette_cursor =
+                    key == MY_KEY_DOWN
+                        ? (shell->palette_cursor + 1u) % n
+                        : (shell->palette_cursor + n - 1u) % n;
+                if (shell->palette_list != NULL) {
+                    (void)my_list_view_refresh(shell->palette_list);
+                }
+            }
             return true;
         }
     }
@@ -1455,6 +1479,10 @@ bool break_editor_shell_select_tab(BreakEditorShell *shell, u32 area,
     shell_tabs_apply(shell, area);
     shell_settings_save(shell);
     return true;
+}
+
+u32 break_editor_shell_palette_cursor(const BreakEditorShell *shell) {
+    return shell != NULL ? shell->palette_cursor : 0u;
 }
 
 u32 break_editor_shell_active_tab(const BreakEditorShell *shell, u32 area) {

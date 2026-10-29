@@ -30,9 +30,9 @@
  * mutation clears the redo tail) and forcibly restores the stored
  * generation — the same generation-restore mechanism scene_serial uses
  * (engine/src/scene/scene_serial.c:1056-1064). remove_entity revert uses
- * the same mechanism and restores the entity id + display name; component
- * bytes are NOT restored — component restoration lands with Task 3's
- * add/remove-component commands (plan Task 3). DEPENDENCY: this mechanism
+ * the same mechanism and restores the entity id, display name and every
+ * registered component (byte snapshot taken when the command is built).
+ * DEPENDENCY: this mechanism
  * relies on ecs.c free-stack internals (LIFO index reuse,
  * ecs.c:563-566/681, and the generation bump on destroy/create,
  * ecs.c:565/682). If ecs.c changes, re-verify the redo pins in

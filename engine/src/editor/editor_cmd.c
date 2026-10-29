@@ -209,6 +209,19 @@ BreakEditorCmd *break_editor_cmd_add_entity_create(const char *name_or_null) {
 
 /* ---- remove_entity ---- */
 
+/* The remove command carries a byte snapshot of every registered component
+ * the entity had (taken at construction), so undo brings the entity back
+ * whole. One bounded allocation: the base must stay the first member. */
+typedef struct {
+    BreakEditorCmd base;
+    u32 count;
+    struct {
+        u32 component_id;
+        u32 size;
+        u8 bytes[BREAK_EDITOR_COMPONENT_SNAPSHOT_CAPACITY];
+    } comps[BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY];
+} BreakEditorRemoveEntityCmd;
+
 static bool remove_apply(BreakEditorCmd *self, BreakEditorDoc *doc) {
     World *w = break_editor_doc_world_raw(doc);
     Entity e;
@@ -220,9 +233,23 @@ static bool remove_apply(BreakEditorCmd *self, BreakEditorDoc *doc) {
 }
 
 static bool remove_revert(BreakEditorCmd *self, BreakEditorDoc *doc) {
-    /* Task 1 restores the entity id + display name only; component bytes
-     * land with Task 3's add/remove-component commands. */
+    /* Restores the id, the display name and every component snapshotted at
+     * construction, byte-exact. */
+    BreakEditorRemoveEntityCmd *r = (BreakEditorRemoveEntityCmd *)self;
+    World *w = break_editor_doc_world_raw(doc);
+    Entity e;
     if (!recreate_with_stored_id(doc, self->id)) return false;
+    e.index = self->id.index;
+    e.generation = self->id.generation;
+    for (u32 i = 0; i < r->count; i++) {
+        u8 *p = world_add_component(w, e, r->comps[i].component_id);
+        if (!p) {
+            /* ECS cap/OOM: undo the partial restore, cursor unchanged */
+            world_destroy_entity(w, e);
+            return false;
+        }
+        memcpy(p, r->comps[i].bytes, r->comps[i].size);
+    }
     break_editor_doc_slot_set(doc, self->id.index, self->id.generation,
                               self->name);
     return true;
@@ -236,8 +263,22 @@ static void remove_describe(const BreakEditorCmd *self, char buf[128]) {
 BreakEditorCmd *break_editor_cmd_remove_entity_create(BreakEditorDoc *doc,
                                                       BreakEditorEntityId id) {
     if (!break_editor_doc_has_entity(doc, id)) return NULL;
-    BreakEditorCmd *cmd = break_editor_test_calloc(sizeof(*cmd));
-    if (!cmd) return NULL;
+    BreakEditorRemoveEntityCmd *r = break_editor_test_calloc(sizeof(*r));
+    if (!r) return NULL;
+    BreakEditorCmd *cmd = &r->base;
+    for (u32 i = 0; i < doc->component_count; i++) {
+        const BreakEditorComponentReg *reg = &doc->components[i];
+        const u8 *bytes =
+            break_editor_doc_component_bytes(doc, id, reg->component_id);
+        if (bytes == NULL ||
+            reg->size > BREAK_EDITOR_COMPONENT_SNAPSHOT_CAPACITY) {
+            continue; /* entity lacks it (sizes are capped at register) */
+        }
+        r->comps[r->count].component_id = reg->component_id;
+        r->comps[r->count].size = reg->size;
+        memcpy(r->comps[r->count].bytes, bytes, reg->size);
+        r->count++;
+    }
     cmd->apply = remove_apply;
     cmd->revert = remove_revert;
     cmd->destroy = cmd_destroy;

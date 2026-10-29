@@ -54,10 +54,9 @@
  *     byte-exact; redo removes again. Removing an absent component is a
  *     bounded false.
  *
- * Known limitation (Task 1 carry-over, unchanged in Task 3): undoing
- * remove_entity restores the entity id + display name only, not its
- * components; component lifecycle is owned by the dedicated add/remove
- * component commands (editor_doc.h header comment).
+ * remove_entity snapshots every registered component the entity has at
+ * construction; undo restores them byte-exact with the id and name
+ * (2026-10-29; previously id + name only).
  *
  * break_editor_parse_f32 — strict string->f32 for inspector edit fields.
  * Grammar (whole input must match; no leading/trailing whitespace):

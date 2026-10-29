@@ -114,10 +114,9 @@ create 时把焦点设到 root，故快捷键只在焦点控件未消费该键�
 - asset browser（Stage 4 子项目 4 不在本 phase）。
 - selection 多选集（当前单选）；inspector 多组件类型编辑（注册表只有
   EditorTransform）；非 f32 字段类型。
-- 窗口内 palette 的键盘上下导航（Phase 1：过滤 + Enter 执行首条 + 行点击）。
-- undo `remove_entity` 不恢复组件（Task 1 遗留限制，组件生命周期由专用
-  add/remove-component 命令持有）；editor 重保存丢游戏侧 BSCN 渲染 scene
-  chunk（Task 2 Phase 1 限制）。
+- ~~窗口内 palette 的键盘上下导航~~：2026-10-29 已交付，上/下键移动高亮行（首尾循环、改过滤时复位），Enter 执行高亮行（`test_editor_shell` `palette_arrow_keys_move_the_highlight_and_enter_runs_it`）。
+- ~~undo `remove_entity` 不恢复组件~~：2026-10-29 已修复，删除命令构造时快照该实体全部已注册组件，撤销时按字节恢复（`test_editor_components` `remove_entity_undo_restores_components`）。
+- editor 重保存丢游戏侧 BSCN 渲染 scene chunk（Task 2 Phase 1 限制）。
 
 ## 7. 验证摘要（Task 5 收口定稿；分任务细节见 task-{1..4}-report.md）
 

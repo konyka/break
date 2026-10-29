@@ -431,6 +431,52 @@ TEST(remove_component_undo_restores_byte_snapshot) {
     break_editor_doc_destroy(doc);
 }
 
+/* Undoing remove_entity restores the entity WITH its components, byte-exact
+ * (was: id + name only — the transform silently vanished on undo). Redo
+ * removes it again; a second undo restores the same bytes. */
+TEST(remove_entity_undo_restores_components) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorEntityId id = break_editor_doc_add_entity(doc, "hero");
+    ASSERT_TRUE(break_editor_entity_id_valid(id));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, id,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(set_all_fields(doc, id, 3.5f));
+    EditorTransform before;
+    const EditorTransform *t = raw_transform(doc, id);
+    ASSERT_NOT_NULL(t);
+    memcpy(&before, t, sizeof(before));
+
+    ASSERT_TRUE(break_editor_doc_remove_entity(doc, id));
+    ASSERT_FALSE(break_editor_doc_has_component(doc, id,
+                                                BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(break_editor_doc_has_component(doc, id,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    t = raw_transform(doc, id);
+    ASSERT_NOT_NULL(t);
+    ASSERT_EQ(memcmp(&before, t, sizeof(before)), 0);
+    ASSERT_TRUE(fields_match(doc, id, 3.5f));
+
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_FALSE(break_editor_doc_has_component(doc, id,
+                                                BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_undo(doc));
+    t = raw_transform(doc, id);
+    ASSERT_NOT_NULL(t);
+    ASSERT_EQ(memcmp(&before, t, sizeof(before)), 0);
+
+    /* an entity with no components still round-trips (nothing to restore) */
+    {
+        BreakEditorEntityId bare = break_editor_doc_add_entity(doc, "bare");
+        ASSERT_TRUE(break_editor_doc_remove_entity(doc, bare));
+        ASSERT_TRUE(break_editor_undo(doc));
+        ASSERT_FALSE(break_editor_doc_has_component(
+            doc, bare, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    }
+    break_editor_doc_destroy(doc);
+}
+
 TEST(add_remove_component_bounded_failures) {
     BreakEditorDoc *doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
@@ -699,6 +745,7 @@ int main(void) {
     RUN_TEST(set_field_bounded_failures_leave_doc_unchanged);
     RUN_TEST(add_component_undo_redo_symmetric);
     RUN_TEST(remove_component_undo_restores_byte_snapshot);
+    RUN_TEST(remove_entity_undo_restores_components);
     RUN_TEST(add_remove_component_bounded_failures);
     RUN_TEST(oom_component_command_alloc_fails_bounded);
     RUN_TEST(component_commands_describe);
