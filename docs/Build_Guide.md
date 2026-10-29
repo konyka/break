@@ -728,8 +728,10 @@ MoltenVK 画面基本一致；未发现回归，本次无代码修改，证据�
 `bundled_noto_sans_sc_loads_and_shapes_cjk`（`font is NULL`）。根因是本机没有 FreeType，
 走内置 STB 光栅器，`stb_validate_cmap` 把 platform 0 / encoding 5（format 14 变体选择符，
 不是字符映射）也当作必须支持的子表，且 stb_truetype 取最后一个 Unicode 记录会误选
-format 14。已修复（`my_font_stb.c`，新用例修复前失败即回归测试）。修复后 Metal CTest
-**230/230**、graphics **6/6**，MoltenVK **231/231**，仅 D3D12 dependency gate 按平台跳过。
+format 14。已修复（`my_font_stb.c`，新用例修复前失败即回归测试）。推送前远程又新增 4 个
+提交（工具窗口标签页、主题/语言/标签页持久化 `editor_settings`），无文件重叠，普通 merge 后
+重建：Metal CTest **231/231**、graphics **6/6**，MoltenVK **232/232**，仅 D3D12 dependency
+gate 按平台跳过。
 `BREAK_EDITOR_INPUT_SCRIPT=ON` 编辑器脚本截图目视确认：英文深色、中文深色（Noto Sans SC）、
 命令面板列表及通过面板切换“主题：浅色”均渲染正常。FreeType 路径本机未构建，未验证；
 17 MB 字体入库对仓库体积的影响由维护者决定。证据等级不变。
