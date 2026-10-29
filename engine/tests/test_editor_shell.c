@@ -1363,6 +1363,124 @@ TEST(shader_source_resolves_variant_paths_bytes_and_cleanup)
     shader_env_restore(&env);
 }
 
+/* #include "x" expands from shaders/x across the roots (highest priority
+ * first), nests, reports every dependency once, and fails on a missing file,
+ * a cycle, too deep a chain or an unsafe path. */
+static void shader_source_include_body(void) {
+    BreakEditorShaderSource source;
+    char root[512], shaders[600], low[512], low_shaders[600];
+    char a[700], b[700], c[700], cyc[700], low_b[700], low_only[700];
+    char *out = NULL;
+    usize out_len = 0u;
+    char deps[BREAK_EDITOR_SHADER_MAX_DEPS][96];
+    u32 ndeps = 0u;
+    const char *top = "#version 450\n#include \"a.glsl\"\nvoid main(){}\n";
+    test_tmp(root, sizeof(root), "editor_shader_include");
+    test_tmp(low, sizeof(low), "editor_shader_include_low");
+    snprintf(shaders, sizeof(shaders), "%s/shaders", root);
+    snprintf(low_shaders, sizeof(low_shaders), "%s/shaders", low);
+    snprintf(a, sizeof(a), "%s/a.glsl", shaders);
+    snprintf(b, sizeof(b), "%s/b.glsl", shaders);
+    snprintf(c, sizeof(c), "%s/c.glsl", shaders);
+    snprintf(cyc, sizeof(cyc), "%s/cyc.glsl", shaders);
+    snprintf(low_b, sizeof(low_b), "%s/b.glsl", low_shaders);
+    snprintf(low_only, sizeof(low_only), "%s/lowonly.glsl", low_shaders);
+    ASSERT_EQ(TEST_MKDIR(root), 0);
+    ASSERT_EQ(TEST_MKDIR(shaders), 0);
+    ASSERT_EQ(TEST_MKDIR(low), 0);
+    ASSERT_EQ(TEST_MKDIR(low_shaders), 0);
+    ASSERT_TRUE(write_text_file(a, "// a\n  #include \"b.glsl\"\nA\n#include \"lowonly.glsl\"\n"));
+    ASSERT_TRUE(write_text_file(b, "B high\n"));
+    ASSERT_TRUE(write_text_file(low_b, "B low\n"));
+    ASSERT_TRUE(write_text_file(low_only, "L\n"));
+    ASSERT_TRUE(write_text_file(cyc, "#include \"cyc.glsl\"\n"));
+    ASSERT_TRUE(shader_env_set(root));
+    ASSERT_TRUE(break_editor_shader_source_configure(&source,
+                                                     RHI_SHADER_VARIANT_GLSL));
+    source.root_count = 2u;
+    memcpy(source.roots[1], low, strlen(low) + 1u);
+
+    ASSERT_TRUE(break_editor_shader_source_expand(
+        &source, top, strlen(top), &out, &out_len, deps, &ndeps));
+    ASSERT_STR_EQ(out, "#version 450\n// a\nB high\nA\nL\nvoid main(){}\n");
+    ASSERT_EQ(out_len, strlen(out));
+    ASSERT_EQ(ndeps, 3u);
+    ASSERT_STR_EQ(deps[0], "shaders/a.glsl");
+    ASSERT_STR_EQ(deps[1], "shaders/b.glsl");
+    ASSERT_STR_EQ(deps[2], "shaders/lowonly.glsl");
+    free(out);
+    out = NULL;
+
+    /* text without includes comes back unchanged, no dependencies */
+    ASSERT_TRUE(break_editor_shader_source_expand(
+        &source, "plain\n", 6u, &out, &out_len, deps, &ndeps));
+    ASSERT_STR_EQ(out, "plain\n");
+    ASSERT_EQ(ndeps, 0u);
+    free(out);
+    out = NULL;
+
+    /* failures: missing, cycle, unsafe paths, malformed */
+    {
+        static const char *const bad[] = {
+            "#include \"missing.glsl\"\n",
+            "#include \"cyc.glsl\"\n",
+            "#include \"../secret.glsl\"\n",
+            "#include \"/etc/passwd\"\n",
+            "#include \"sub\\\\x.glsl\"\n",
+            "#include <a.glsl>\n",
+            "#include \"a.glsl\n",
+        };
+        for (usize i = 0u; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            out = (char *)0x1;
+            ASSERT_FALSE(break_editor_shader_source_expand(
+                &source, bad[i], strlen(bad[i]), &out, &out_len, deps,
+                &ndeps));
+            ASSERT_TRUE(out == NULL);
+        }
+    }
+    /* depth: c includes itself through a chain longer than the bound */
+    {
+        char chain[700];
+        for (int d = 0; d < 6; d++) {
+            char body[64];
+            snprintf(chain, sizeof(chain), "%s/d%d.glsl", shaders, d);
+            snprintf(body, sizeof(body), "#include \"d%d.glsl\"\n", d + 1);
+            ASSERT_TRUE(write_text_file(chain, body));
+        }
+        snprintf(chain, sizeof(chain), "%s/d6.glsl", shaders);
+        ASSERT_TRUE(write_text_file(chain, "end\n"));
+        ASSERT_FALSE(break_editor_shader_source_expand(
+            &source, "#include \"d0.glsl\"\n", 19u, &out, &out_len, deps,
+            &ndeps));
+        ASSERT_TRUE(out == NULL);
+        for (int d = 0; d <= 6; d++) {
+            snprintf(chain, sizeof(chain), "%s/d%d.glsl", shaders, d);
+            remove(chain);
+        }
+    }
+    ASSERT_FALSE(break_editor_shader_source_expand(NULL, top, strlen(top),
+                                                   &out, &out_len, deps,
+                                                   &ndeps));
+    remove(a);
+    remove(b);
+    remove(c);
+    remove(cyc);
+    remove(low_b);
+    remove(low_only);
+    TEST_RMDIR(shaders);
+    TEST_RMDIR(root);
+    TEST_RMDIR(low_shaders);
+    TEST_RMDIR(low);
+}
+
+TEST(shader_source_expands_includes_with_bounds)
+{
+    EditorShaderEnv env;
+    ASSERT_TRUE(shader_env_save(&env));
+    shader_source_include_body();
+    shader_env_restore(&env);
+}
+
 static void shader_source_empty_fallback_body(void) {
     static const char fallback_data[] = "REV=2 fallback vertex\n";
     BreakEditorShaderSource source;
@@ -6062,6 +6180,61 @@ static void shader_reload_watcher_body(ShaderReloadFixture *fx) {
                   "shader reload: watching busy=0 applied=2 failed=1");
 }
 
+/* Editing only an included file reloads the shader; the pipeline sees the
+ * expanded source (the fake reads REV= from it). */
+static void shader_reload_include_body(ShaderReloadFixture *fx) {
+    char common[700];
+    int cmd = 0;
+    shader_reload_fixture_open(fx, "editor_shader_reload_include",
+                               "REV=1 vertex\n", "REV=1 fragment\n");
+    snprintf(common, sizeof(common), "%s/common.glsl", fx->shaders);
+    ASSERT_NOT_NULL(fx->shell);
+    break_editor_viewport3d_render(
+        fx->vp, break_editor_shell_doc(fx->shell), &fx->device, &cmd, 800, 480);
+    shader_reload_assert_stage_revisions(fx, 1u, 1u);
+    ASSERT_TRUE(shader_reload_stats(fx).watching);
+
+    /* the fragment starts including common.glsl */
+    hr_write_text(common, "REV=2 fragment\n");
+    hr_write_text(fx->frag, "#include \"common.glsl\"\n");
+    hr_bump_mtime(fx->frag);
+    HR_WAIT(fx->shell, shader_reload_stats(fx).reloads == 1u);
+    ASSERT_EQ(shader_reload_stats(fx).reloads, 1u);
+    shader_reload_assert_stage_revisions(fx, 1u, 2u);
+
+    /* editing only the included file reloads */
+    hr_write_text(common, "REV=3 fragment\n");
+    hr_bump_mtime(common);
+    HR_WAIT(fx->shell, shader_reload_stats(fx).reloads == 2u);
+    ASSERT_EQ(shader_reload_stats(fx).reloads, 2u);
+    shader_reload_assert_stage_revisions(fx, 1u, 3u);
+
+    /* a missing include keeps the old pipeline, and recovers */
+    remove(common);
+    HR_WAIT(fx->shell, shader_reload_stats(fx).failed >= 1u);
+    ASSERT_TRUE(shader_reload_stats(fx).failed >= 1u);
+    shader_reload_assert_stage_revisions(fx, 1u, 3u);
+    hr_write_text(common, "REV=4 fragment\n");
+    hr_bump_mtime(common);
+    HR_WAIT(fx->shell, shader_reload_stats(fx).reloads == 3u);
+    shader_reload_assert_stage_revisions(fx, 1u, 4u);
+    remove(common);
+}
+
+TEST(shader_reload_follows_included_files)
+{
+    EditorShaderEnv env;
+    ShaderReloadFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    shader_reload_include_body(&fx);
+    shader_reload_fixture_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
 TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers)
 {
     EditorShaderEnv env;
@@ -7758,6 +7931,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(outline_edges_follow_the_proxy_box);
     RUN_TEST(viewport_last_stats_report_skip_reasons_headless);
     RUN_TEST(shader_source_resolves_variant_paths_bytes_and_cleanup);
+    RUN_TEST(shader_source_expands_includes_with_bounds);
     RUN_TEST(shader_source_empty_file_succeeds_and_missing_root_falls_back);
     RUN_TEST(shader_source_all_missing_returns_no_partial_bytes);
     RUN_TEST(shader_source_overlong_root_is_skipped_not_truncated);
@@ -7804,6 +7978,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(render_panel_source_is_read_only);
     RUN_TEST(shader_reload_ctrl_shift_r_queues_without_sync_rhi);
     RUN_TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers);
+    RUN_TEST(shader_reload_follows_included_files);
     RUN_TEST(shader_reload_initial_failure_recovers_without_implicit_retry);
     RUN_TEST(shader_reload_worker_stages_off_rhi_and_trailing_uses_latest);
     RUN_TEST(shader_reload_two_root_watch_promotes_and_delete_falls_back);

@@ -544,8 +544,32 @@ bool break_editor_viewport3d_prepare(BreakEditorViewport3D *vp,
                     &vp->shader_source, BREAK_EDITOR_SHADER_FRAGMENT));
         return false;
     }
-    ok = break_editor_viewport3d_reload_shader_source(
-        vp, vert.data, vert.size, frag.data, frag.size);
+    {
+        char *ev = NULL, *ef = NULL;
+        usize evn = 0u, efn = 0u;
+        char deps[BREAK_EDITOR_SHADER_MAX_DEPS][96];
+        u32 nd = 0u;
+        ok = break_editor_shader_source_expand(&vp->shader_source, vert.data,
+                                               vert.size, &ev, &evn, deps,
+                                               &nd);
+        break_editor_shader_reload_watch_deps(vp->shader_reload,
+                                              (const char (*)[96])deps, nd);
+        if (ok) {
+            ok = break_editor_shader_source_expand(&vp->shader_source,
+                                                   frag.data, frag.size, &ef,
+                                                   &efn, deps, &nd);
+            break_editor_shader_reload_watch_deps(
+                vp->shader_reload, (const char (*)[96])deps, nd);
+        }
+        if (ok) {
+            ok = break_editor_viewport3d_reload_shader_source(vp, ev, evn,
+                                                              ef, efn);
+        } else {
+            fprintf(stderr, "editor viewport3d: shader #include failed\n");
+        }
+        free(ev);
+        free(ef);
+    }
     break_editor_shader_source_destroy_bytes(&vert);
     break_editor_shader_source_destroy_bytes(&frag);
     return ok;

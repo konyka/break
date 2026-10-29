@@ -37,6 +37,14 @@ bool break_editor_shader_reload_shutdown(BreakEditorShaderReload *reload);
  * freeing state still referenced by a worker. */
 void break_editor_shader_reload_destroy(BreakEditorShaderReload *reload);
 void break_editor_shader_reload_tick(BreakEditorShaderReload *reload);
+/* Watches #include dependencies (logical "shaders/..." paths from
+ * break_editor_shader_source_expand) in every root, so editing, creating
+ * or deleting an included file starts a reload. Already-watched paths are
+ * skipped; at most BREAK_EDITOR_SHADER_MAX_DEPS distinct paths, and the
+ * watcher's own entry cap applies. Reload attempts call this themselves;
+ * the viewport calls it after the initial load. */
+void break_editor_shader_reload_watch_deps(BreakEditorShaderReload *reload,
+                                           const char deps[][96], u32 n);
 bool break_editor_shader_reload_request(BreakEditorShaderReload *reload);
 bool break_editor_shader_reload_stats(
     const BreakEditorShaderReload *reload, BreakEditorShaderReloadStats *out);

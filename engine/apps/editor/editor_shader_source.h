@@ -26,5 +26,22 @@ void break_editor_shader_source_destroy_bytes(BreakEditorShaderBytes *bytes);
 bool break_editor_shader_source_read(const BreakEditorShaderSource *s,
                                      BreakEditorShaderStage stage,
                                      BreakEditorShaderBytes *out);
+/* #include expansion. A line whose first non-blank text is
+ * `#include "name"` is replaced by the contents of shaders/<name>, taken from
+ * the first root that has it (same priority as the stage files). name is
+ * relative, made of [A-Za-z0-9_.-/], with no "..", no leading '/' and no
+ * empty segment. Includes nest up to BREAK_EDITOR_SHADER_MAX_INCLUDE_DEPTH;
+ * a cycle, a missing or unsafe file, `#include <...>`, an unterminated name
+ * or output above SHADER_MAX_FILE_BYTES fails. On success *out is a
+ * malloc'd NUL-terminated copy (caller frees). deps receives the logical
+ * paths ("shaders/<name>") of every include met, once each, in first-seen
+ * order (also filled as far as it got on failure, so a missing file can be
+ * watched); at most BREAK_EDITOR_SHADER_MAX_DEPS are kept. On failure *out
+ * is NULL. */
+#define BREAK_EDITOR_SHADER_MAX_INCLUDE_DEPTH 4u
+#define BREAK_EDITOR_SHADER_MAX_DEPS 16u
+bool break_editor_shader_source_expand(
+    const BreakEditorShaderSource *s, const char *text, usize len,
+    char **out, usize *out_len, char deps[][96], u32 *dep_count);
 const char *break_editor_shader_source_path(
     const BreakEditorShaderSource *s, BreakEditorShaderStage stage);

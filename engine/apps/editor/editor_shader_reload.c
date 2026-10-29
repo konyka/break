@@ -39,6 +39,11 @@ struct BreakEditorShaderReload {
     bool attempt_failed;
     bool commit_failed;
 
+    /* logical paths of #include dependencies already registered with the
+     * watcher (every root); grows only, bounded */
+    char dep_watched[BREAK_EDITOR_SHADER_MAX_DEPS][96];
+    u32 dep_watched_count;
+
     u32 shutdown_timeout_ms;
     BreakEditorShaderReloadStats stats;
 #ifdef BREAK_EDITOR_SHELL_TESTING
@@ -151,6 +156,52 @@ static void shader_on_file_changed(const char *path, void *user) {
     reload->stats.events++;
 }
 
+static void shader_watch_logical(BreakEditorShaderReload *reload,
+                                 const char *logical) {
+    u32 i;
+    usize logical_len = strlen(logical);
+    for (i = 0u; i < reload->source->root_count; i++) {
+        char path[1024];
+        usize root_len = strlen(reload->source->roots[i]);
+        usize path_len = root_len + 1u + logical_len;
+        u32 before;
+        if (path_len >= sizeof(path) ||
+            path_len >= (usize)FILEWATCH_MAX_PATH) {
+            continue;
+        }
+        memcpy(path, reload->source->roots[i], root_len);
+        path[root_len] = '/';
+        memcpy(path + root_len + 1u, logical, logical_len + 1u);
+        before = reload->watcher.count;
+        filewatch_add_with_missing(&reload->watcher, path,
+                                   shader_on_file_changed, reload);
+        if (reload->watcher.count > before) {
+            reload->watching = true;
+        }
+    }
+}
+
+void break_editor_shader_reload_watch_deps(BreakEditorShaderReload *reload,
+                                           const char deps[][96], u32 n) {
+    u32 i, j;
+    if (reload == NULL || deps == NULL || !reload->watcher_live ||
+        reload->stopped) {
+        return;
+    }
+    for (i = 0u; i < n; i++) {
+        bool known = false;
+        for (j = 0u; j < reload->dep_watched_count; j++) {
+            if (strcmp(reload->dep_watched[j], deps[i]) == 0) known = true;
+        }
+        if (known || reload->dep_watched_count >= BREAK_EDITOR_SHADER_MAX_DEPS) {
+            continue;
+        }
+        memcpy(reload->dep_watched[reload->dep_watched_count++], deps[i],
+               sizeof(reload->dep_watched[0]));
+        shader_watch_logical(reload, deps[i]);
+    }
+}
+
 static void shader_watch_candidates(BreakEditorShaderReload *reload) {
     u32 i;
     usize stage;
@@ -245,12 +296,32 @@ static void shader_finish_attempt(BreakEditorShaderReload *reload) {
         }
     }
     if (ok) {
-        ok = reload->apply(
-            reload->apply_user,
-            reload->staging[BREAK_EDITOR_SHADER_VERTEX].data,
-            reload->staging[BREAK_EDITOR_SHADER_VERTEX].size,
-            reload->staging[BREAK_EDITOR_SHADER_FRAGMENT].data,
-            reload->staging[BREAK_EDITOR_SHADER_FRAGMENT].size);
+        /* #include expansion on the owner thread: included files are read
+         * synchronously here (small, bounded by SHADER_MAX_FILE_BYTES); the
+         * dependencies are watched even when the expansion fails, so a
+         * missing include that reappears triggers the next attempt */
+        char *expanded[2] = {NULL, NULL};
+        usize expanded_len[2] = {0u, 0u};
+        char deps[BREAK_EDITOR_SHADER_MAX_DEPS][96];
+        u32 ndeps = 0u;
+        for (stage = 0u; stage < 2u && ok; stage++) {
+            ok = break_editor_shader_source_expand(
+                reload->source, reload->staging[stage].data,
+                reload->staging[stage].size, &expanded[stage],
+                &expanded_len[stage], deps, &ndeps);
+            break_editor_shader_reload_watch_deps(reload,
+                                                  (const char (*)[96])deps,
+                                                  ndeps);
+        }
+        if (ok) {
+            ok = reload->apply(reload->apply_user,
+                               expanded[BREAK_EDITOR_SHADER_VERTEX],
+                               expanded_len[BREAK_EDITOR_SHADER_VERTEX],
+                               expanded[BREAK_EDITOR_SHADER_FRAGMENT],
+                               expanded_len[BREAK_EDITOR_SHADER_FRAGMENT]);
+        }
+        free(expanded[0]);
+        free(expanded[1]);
     }
     if (ok) {
         reload->stats.reloads++;
