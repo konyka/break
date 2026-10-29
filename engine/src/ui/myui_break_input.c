@@ -68,5 +68,15 @@ i32 break_utf16_units_to_cp(const uint16_t* s, i32 units) {
 
 bool break_ui_key_slot_is_keyboard(u32 i) {
   if (i >= INPUT_MOUSE_LEFT && i <= INPUT_MOUSE_5) return false;
-  return i != 289u && i != 290u; /* Shift / Ctrl: modifiers only */
+  /* Shift / Ctrl / Alt: modifiers only */
+  return i != 289u && i != 290u && i != (u32)INPUT_KEY_ALT;
+}
+
+u32 break_ui_modifiers_from(bool (*key_down)(void *user, u32 key), void *user) {
+  u32 mods = 0u;
+  if (key_down == NULL) return 0u;
+  if (key_down(user, 289u)) mods |= MY_KEYMOD_SHIFT;
+  if (key_down(user, 290u)) mods |= MY_KEYMOD_CTRL;
+  if (key_down(user, (u32)INPUT_KEY_ALT)) mods |= MY_KEYMOD_ALT;
+  return mods;
 }

@@ -100,6 +100,7 @@ static i32 key_code(const char *name) {
         {"delete", 288},     {"home", 285},   {"end", 286},
         {"shift", SCRIPT_KEY_SHIFT},
         {"ctrl", SCRIPT_KEY_CTRL},
+        {"alt", 316},
     };
     usize i;
     if (name == NULL || name[0] == '\0') return -1;

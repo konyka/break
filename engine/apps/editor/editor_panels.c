@@ -60,6 +60,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 /* F with nothing selected frames at most this many entities */
 #define EDITOR_FOCUS_SCENE_MAX 1024u
 #define EDITOR_EXTRA_SELECTION_MAX 64u
+#define EDITOR_HIDDEN_MAX 256u
 #define EDITOR_TEST_WINDOW_W 800
 #define EDITOR_TEST_WINDOW_H 480
 
@@ -117,6 +118,10 @@ struct BreakEditorShell {
     BreakEditorEntityId extra[EDITOR_EXTRA_SELECTION_MAX];
     u32 extra_count;
     usize anchor_index; /* outliner row of the last plain/Ctrl click */
+    /* H: entities hidden in the viewport (view state, never saved);
+     * pruned of removed entities on every sync */
+    BreakEditorEntityId hidden[EDITOR_HIDDEN_MAX];
+    u32 hidden_count;
     BreakEditorEntityId published_extra[EDITOR_EXTRA_SELECTION_MAX];
     u32 published_extra_count; /* last set handed to the gizmo */
     u32 tool; /* 0 select, 1 translate, 2 rotate, 3 scale */
@@ -439,6 +444,28 @@ static bool shell_sync_selection(BreakEditorShell *shell) {
         }
         shell->extra_count = k;
         shell_publish_extra(shell);
+    }
+    {
+        u32 k = 0u;
+        for (u32 i = 0u; i < shell->hidden_count; i++) {
+            bool live = false;
+            for (usize j = 0u; j < break_editor_doc_entity_count(shell->doc); j++) {
+                BreakEditorEntityId e;
+                const char *unused = NULL;
+                if (break_editor_doc_entity_at(shell->doc, j, &e, &unused) &&
+                    break_editor_entity_id_eq(e, shell->hidden[i])) {
+                    live = true;
+                    break;
+                }
+            }
+            if (live) {
+                shell->hidden[k++] = shell->hidden[i];
+            }
+        }
+        if (k != shell->hidden_count) {
+            shell->hidden_count = k;
+            break_editor_viewport3d_set_hidden(shell->vp3d, shell->hidden, k);
+        }
     }
     shell_gizmo_reconcile(shell);
     return valid;
@@ -1319,6 +1346,7 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
         for (i = 0u; i < n && k < EDITOR_FOCUS_SCENE_MAX; i++) {
             const char *unused = NULL;
             if (break_editor_doc_entity_at(shell->doc, i, &ids[k], &unused) &&
+                !break_editor_viewport3d_is_hidden(shell->vp3d, ids[k]) &&
                 break_editor_doc_has_component(shell->doc, ids[k],
                                                BREAK_EDITOR_COMPONENT_TRANSFORM)) {
                 k++;
@@ -1490,7 +1518,9 @@ enum {
     ACT_RESET_VIEW,
     ACT_VIEW_FRONT,
     ACT_VIEW_RIGHT,
-    ACT_VIEW_TOP
+    ACT_VIEW_TOP,
+    ACT_HIDE_SELECTED,
+    ACT_SHOW_ALL
 };
 
 typedef struct {
@@ -1519,11 +1549,46 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'1', MY_KEYMOD_NONE, ACT_VIEW_FRONT},
     {'2', MY_KEYMOD_NONE, ACT_VIEW_RIGHT},
     {'3', MY_KEYMOD_NONE, ACT_VIEW_TOP},
+    {'h', MY_KEYMOD_NONE, ACT_HIDE_SELECTED},
+    {'h', MY_KEYMOD_ALT, ACT_SHOW_ALL},
     {MY_KEY_UP, MY_KEYMOD_NONE, ACT_SELECT_PREV},
     {MY_KEY_DOWN, MY_KEYMOD_NONE, ACT_SELECT_NEXT},
     {MY_KEY_UP, MY_KEYMOD_SHIFT, ACT_EXTEND_PREV},
     {MY_KEY_DOWN, MY_KEYMOD_SHIFT, ACT_EXTEND_NEXT},
 };
+
+static void shell_viewport_damage(BreakEditorShell *shell) {
+    if (shell->viewport_widget != NULL) {
+        my_widget_invalidate(shell->viewport_widget, NULL);
+    }
+}
+
+/* H: hide every selected entity in the viewport and drop them from the
+ * selection (a hidden entity cannot be picked, so it must not stay the
+ * gizmo target). */
+static void shell_do_hide_selected(BreakEditorShell *shell) {
+    BreakEditorEntityId ids[EDITOR_EXTRA_SELECTION_MAX + 1u];
+    u32 n = 0u, added = 0u;
+    if (break_editor_entity_id_valid(shell->selected)) {
+        ids[n++] = shell->selected;
+    }
+    for (u32 i = 0u; i < shell->extra_count; i++) ids[n++] = shell->extra[i];
+    for (u32 i = 0u; i < n && shell->hidden_count < EDITOR_HIDDEN_MAX; i++) {
+        if (!break_editor_viewport3d_is_hidden(shell->vp3d, ids[i])) {
+            shell->hidden[shell->hidden_count++] = ids[i];
+            break_editor_viewport3d_set_hidden(shell->vp3d, shell->hidden,
+                                               shell->hidden_count);
+            added++;
+        }
+    }
+    if (added > 0u) {
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_HIDE_FMT),
+                         (unsigned)added);
+        shell_end_gizmo_drag(shell);
+        (void)break_editor_shell_select_ids(shell, NULL, 0u, false);
+    }
+    shell_viewport_damage(shell);
+}
 
 /* Ctrl+A: every entity, in document order; the first becomes the primary
  * (bounded by the multi-select cap). */
@@ -1716,6 +1781,19 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
                 shell,
                 sc->action == ACT_SELECT_NEXT || sc->action == ACT_EXTEND_NEXT,
                 sc->action == ACT_EXTEND_PREV || sc->action == ACT_EXTEND_NEXT);
+            break;
+        case ACT_HIDE_SELECTED:
+            shell_do_hide_selected(shell);
+            break;
+        case ACT_SHOW_ALL:
+            if (shell->hidden_count > 0u) {
+                editor_shell_log(shell,
+                                 break_editor_tr(BREAK_EDITOR_TR_LOG_SHOW_ALL_FMT),
+                                 (unsigned)shell->hidden_count);
+            }
+            shell->hidden_count = 0u;
+            break_editor_viewport3d_set_hidden(shell->vp3d, NULL, 0u);
+            shell_viewport_damage(shell);
             break;
         case ACT_VIEW_FRONT:
         case ACT_VIEW_RIGHT:
@@ -2849,6 +2927,15 @@ bool break_editor_shell_select_ids(BreakEditorShell *shell,
     }
     editor_shell_refresh_all(shell);
     return true;
+}
+
+bool break_editor_shell_entity_hidden(const BreakEditorShell *shell,
+                                      BreakEditorEntityId id) {
+    return shell != NULL && break_editor_viewport3d_is_hidden(shell->vp3d, id);
+}
+
+u32 break_editor_shell_hidden_count(const BreakEditorShell *shell) {
+    return shell != NULL ? shell->hidden_count : 0u;
 }
 
 bool break_editor_shell_grid_visible(const BreakEditorShell *shell) {

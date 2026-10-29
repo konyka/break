@@ -705,6 +705,36 @@ TEST(focus_many_fits_the_union_of_proxies) {
     break_editor_doc_destroy(doc);
 }
 
+static bool skip_id(void *user, BreakEditorEntityId id) {
+    return break_editor_entity_id_eq(*(const BreakEditorEntityId *)user, id);
+}
+
+TEST(pick_and_box_select_honor_a_skip_filter) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorEntityId near_e = add_transformed(doc, "near", 0, 0, -5, 1, 1, 1);
+    BreakEditorEntityId far_e = add_transformed(doc, "far", 0, 0, -10, 1, 1, 1);
+    BreakEditorCamera cam;
+    break_editor_camera_init(&cam);
+    BreakEditorPickResult res;
+    /* skipping the near one picks through it */
+    ASSERT_TRUE(break_editor_viewport_pick_ex(doc, &cam, 400, 300, 800, 600,
+                                              skip_id, &near_e, &res));
+    ASSERT_TRUE(break_editor_entity_id_eq(res.id, far_e));
+    /* NULL filter = plain pick */
+    ASSERT_TRUE(break_editor_viewport_pick_ex(doc, &cam, 400, 300, 800, 600,
+                                              NULL, NULL, &res));
+    ASSERT_TRUE(break_editor_entity_id_eq(res.id, near_e));
+    BreakEditorEntityId ids[4];
+    ASSERT_EQ(break_editor_viewport_box_select_ex(doc, &cam, 300, 200, 500,
+                                                  400, 800, 600, skip_id,
+                                                  &far_e, ids, 4), 1u);
+    ASSERT_TRUE(break_editor_entity_id_eq(ids[0], near_e));
+    ASSERT_EQ(break_editor_viewport_box_select(doc, &cam, 300, 200, 500, 400,
+                                               800, 600, ids, 4), 2u);
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(camera_init_defaults);
     RUN_TEST(camera_view_known_answers);
@@ -727,4 +757,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(fly_moves_target_along_camera_axes);
     RUN_TEST(fly_step_scales_with_distance);
     RUN_TEST(focus_many_fits_the_union_of_proxies);
+    RUN_TEST(pick_and_box_select_honor_a_skip_filter);
 TEST_MAIN_END()

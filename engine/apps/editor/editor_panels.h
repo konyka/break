@@ -268,6 +268,13 @@ bool break_editor_shell_viewport_stats_visible(const BreakEditorShell *shell);
 /* Viewport ground grid (default on; palette "Toggle ground grid";
  * persisted as grid=on|off). */
 bool break_editor_shell_grid_visible(const BreakEditorShell *shell);
+/* H hides the selected entities in the viewport (not drawn, not pickable,
+ * skipped by F on the whole scene) and clears the selection; Alt+H shows
+ * everything again. View state: no undo, never saved, removed entities
+ * drop out. At most 256 hidden. */
+bool break_editor_shell_entity_hidden(const BreakEditorShell *shell,
+                                      BreakEditorEntityId id);
+u32 break_editor_shell_hidden_count(const BreakEditorShell *shell);
 const char *break_editor_shell_viewport_overlay_text(BreakEditorShell *shell);
 /* True while a viewport box (marquee) drag is in progress. */
 bool break_editor_shell_viewport_box_active(BreakEditorShell *shell);

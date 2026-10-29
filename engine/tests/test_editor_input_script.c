@@ -287,12 +287,33 @@ TEST(null_hooks_count_as_failures_not_crashes) {
     break_editor_input_script_destroy(NULL);
 }
 
+TEST(alt_chord_holds_the_alt_slot) {
+    char err[128];
+    InputState in;
+    Hooks h;
+    BreakEditorInputScriptHooks k;
+    BreakEditorInputScript *s = parse("chord alt+h\n", err);
+    ASSERT_NOT_NULL(s);
+    memset(&h, 0, sizeof(h));
+    k = hooks_for(&h);
+    input_init(&in);
+    ASSERT_TRUE(frame(s, &in, &k));
+    ASSERT_EQ(in.keys[INPUT_KEY_ALT], 3u);
+    ASSERT_TRUE(frame(s, &in, &k));
+    ASSERT_EQ(in.keys[INPUT_KEY_ALT], 2u);
+    ASSERT_EQ(in.keys['h'], 3u);
+    ASSERT_TRUE(frame(s, &in, &k));
+    ASSERT_EQ(in.keys[INPUT_KEY_ALT], 1u);
+    break_editor_input_script_destroy(s);
+}
+
 int main(void) {
     printf("=== Running Tests ===\n");
     RUN_TEST(parse_accepts_every_command);
     RUN_TEST(parse_errors_name_the_line);
     RUN_TEST(parse_rejects_too_many_commands);
     RUN_TEST(click_key_and_chord_produce_one_frame_edges);
+    RUN_TEST(alt_chord_holds_the_alt_slot);
     RUN_TEST(type_delivers_committed_text);
     RUN_TEST(wait_move_to_scale_and_hooks);
     RUN_TEST(null_hooks_count_as_failures_not_crashes);

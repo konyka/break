@@ -165,6 +165,17 @@ void break_editor_camera_fly(BreakEditorCamera *cam, f32 forward, f32 right,
 /* Units per second for break_editor_camera_fly; 0 for NULL. */
 f32 break_editor_camera_fly_step(const BreakEditorCamera *cam);
 
+/* Optional per-entity filter for pick/box select: return true to skip the
+ * entity (e.g. hidden in the editor). NULL = consider every entity. */
+typedef bool (*BreakEditorEntitySkipFn)(void *user, BreakEditorEntityId id);
+bool break_editor_viewport_pick_ex(BreakEditorDoc *doc,
+    const BreakEditorCamera *cam, f32 x, f32 y, f32 w, f32 h,
+    BreakEditorEntitySkipFn skip, void *skip_user, BreakEditorPickResult *out);
+u32 break_editor_viewport_box_select_ex(BreakEditorDoc *doc,
+    const BreakEditorCamera *cam, f32 x0, f32 y0, f32 x1, f32 y1,
+    f32 w, f32 h, BreakEditorEntitySkipFn skip, void *skip_user,
+    BreakEditorEntityId *out, u32 cap);
+
 void break_editor_camera_focus(BreakEditorCamera *cam, const BreakEditorDoc *doc, BreakEditorEntityId id); /* fits target+distance to the entity's proxy AABB, distance clamped [0.05, 1e4] */
 /* focus over several entities: fits the bounding sphere of the union of
  * their proxy AABBs (ids without a usable transform are skipped). With one

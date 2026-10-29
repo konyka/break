@@ -3337,6 +3337,59 @@ TEST(digit_keys_snap_to_front_right_top_views)
     break_editor_shell_destroy(shell);
 }
 
+TEST(h_hides_the_selection_alt_h_shows_all)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId a, b;
+    my_widget_t *vp;
+    f32 pa[2], wa[3] = {0.0f, 0.0f, 0.0f};
+    u32 depth;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    a = break_editor_doc_add_entity(doc, "a");
+    b = break_editor_doc_add_entity(doc, "b");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, a, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, 5.0f));
+    break_editor_shell_refresh(shell);
+    shell_paint(shell);
+    vp = break_editor_shell_viewport_widget(shell);
+    ASSERT_TRUE(project_to_viewport(shell, vp, wa, pa));
+    ASSERT_TRUE(break_editor_shell_select_id(shell, a));
+    break_editor_doc_clear_dirty(doc);
+    depth = break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'h', 0u));
+    ASSERT_TRUE(break_editor_shell_entity_hidden(shell, a));
+    /* view state: no command, document untouched */
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)), depth);
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    ASSERT_FALSE(break_editor_shell_entity_hidden(shell, b));
+    ASSERT_EQ(break_editor_shell_hidden_count(shell), 1u);
+    /* hiding drops it from the selection; a click where it was misses */
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, pa[0], pa[1], 1u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, pa[0], pa[1], 1u, 0u, 0);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 0u);
+    /* F with nothing selected frames only the visible entity */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'f', 0u));
+    ASSERT_FLOAT_EQ(break_editor_shell_camera(shell)->target[0], 5.0f, 1e-5f);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'h', MY_KEYMOD_ALT));
+    ASSERT_EQ(break_editor_shell_hidden_count(shell), 0u);
+    dispatch_key_event(shell, MY_KEY_HOME); /* F moved the camera */
+    ASSERT_TRUE(project_to_viewport(shell, vp, wa, pa));
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, pa[0], pa[1], 1u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, pa[0], pa[1], 1u, 0u, 0);
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), a));
+    /* a removed entity leaves the hidden set */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'h', 0u));
+    ASSERT_EQ(break_editor_shell_hidden_count(shell), 1u);
+    ASSERT_TRUE(break_editor_doc_remove_entity(doc, a));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_hidden_count(shell), 0u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8307,6 +8360,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(f2_renames_the_selected_entity);
     RUN_TEST(home_and_palette_reset_the_view);
     RUN_TEST(digit_keys_snap_to_front_right_top_views);
+    RUN_TEST(h_hides_the_selection_alt_h_shows_all);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

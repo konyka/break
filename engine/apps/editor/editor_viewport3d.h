@@ -116,6 +116,14 @@ void break_editor_viewport3d_gpu_state_for_test(
  * outline stays on the primary). NULL/0 clears. */
 void break_editor_viewport3d_set_extra_selection(
     BreakEditorViewport3D *vp, const BreakEditorEntityId *ids, u32 count);
+/* Entities hidden in the editor (H): borrowed array, read during render
+ * and picking; hidden proxies are neither drawn nor pickable/box-selected.
+ * NULL/0 clears. */
+void break_editor_viewport3d_set_hidden(BreakEditorViewport3D *vp,
+                                        const BreakEditorEntityId *ids,
+                                        u32 count);
+bool break_editor_viewport3d_is_hidden(const BreakEditorViewport3D *vp,
+                                       BreakEditorEntityId id);
 void break_editor_viewport3d_set_view_state(BreakEditorViewport3D *vp,
                                             const BreakEditorCamera *cam,
                                             BreakEditorGizmo *gizmo,

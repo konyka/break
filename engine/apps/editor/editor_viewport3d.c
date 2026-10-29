@@ -139,6 +139,8 @@ struct BreakEditorViewport3D {
     BreakEditorEntityId selected;
     const BreakEditorEntityId *extra; /* borrowed (shell) */
     u32 extra_count;
+    const BreakEditorEntityId *hidden; /* borrowed (shell): not drawn/picked */
+    u32 hidden_count;
 
     /* render debugger: last render() call (CPU counters only) */
     int last_skip;
@@ -235,6 +237,28 @@ void break_editor_viewport3d_set_extra_selection(
     if (vp == NULL) return;
     vp->extra = count > 0u ? ids : NULL;
     vp->extra_count = ids != NULL ? count : 0u;
+}
+
+void break_editor_viewport3d_set_hidden(BreakEditorViewport3D *vp,
+                                        const BreakEditorEntityId *ids,
+                                        u32 count) {
+    if (vp == NULL) return;
+    vp->hidden = count > 0u ? ids : NULL;
+    vp->hidden_count = ids != NULL ? count : 0u;
+}
+
+bool break_editor_viewport3d_is_hidden(const BreakEditorViewport3D *vp,
+                                       BreakEditorEntityId id) {
+    if (vp == NULL) return false;
+    for (u32 i = 0u; i < vp->hidden_count; i++) {
+        if (break_editor_entity_id_eq(vp->hidden[i], id)) return true;
+    }
+    return false;
+}
+
+static bool vp_skip_hidden(void *user, BreakEditorEntityId id) {
+    return break_editor_viewport3d_is_hidden((const BreakEditorViewport3D *)user,
+                                             id);
 }
 
 static bool vp_is_extra(const BreakEditorViewport3D *vp, BreakEditorEntityId id) {
@@ -809,7 +833,8 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
         if (!break_editor_doc_entity_at(doc, i, &id, &name)) {
             continue;
         }
-        if (!vp_entity_transform(doc, id, pos, rot, scale)) {
+        if (break_editor_viewport3d_is_hidden(vp, id) ||
+            !vp_entity_transform(doc, id, pos, rot, scale)) {
             continue;
         }
         break_editor_viewport3d_model_matrix(pos, rot, scale, model);
@@ -979,10 +1004,10 @@ static void viewport_end_interaction(my_widget_t *widget,
         break_editor_shell_set_flying(shell, false);
     } else if (vp->drag_kind == VP_DRAG_BOX && vp->cam != NULL) {
         BreakEditorEntityId ids[EDITOR_VIEWPORT_BOX_MAX];
-        u32 n = break_editor_viewport_box_select(
+        u32 n = break_editor_viewport_box_select_ex(
             break_editor_shell_doc(shell), break_editor_shell_camera(shell),
             vp->box[0], vp->box[1], vp->box[2], vp->box[3],
-            (f32)widget->rect.w, (f32)widget->rect.h, ids,
+            (f32)widget->rect.w, (f32)widget->rect.h, vp_skip_hidden, vp, ids,
             EDITOR_VIEWPORT_BOX_MAX);
         vp->drag_kind = VP_DRAG_NONE;
         (void)break_editor_shell_select_ids(shell, ids, n, vp->box_add);
@@ -1060,8 +1085,9 @@ static my_ret_t viewport_on_event(my_widget_t *widget,
             } else {
                 /* pick -> select; a miss clears the selection */
                 BreakEditorPickResult pick;
-                if (break_editor_viewport_pick(break_editor_shell_doc(shell),
-                                               cam, lx, ly, w, h, &pick)) {
+                if (break_editor_viewport_pick_ex(break_editor_shell_doc(shell),
+                                                  cam, lx, ly, w, h,
+                                                  vp_skip_hidden, vp, &pick)) {
                     (void)break_editor_shell_select_id(shell, pick.id);
                 } else {
                     /* empty space: maybe the start of a box select; a plain

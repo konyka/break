@@ -219,11 +219,12 @@ static void break_ui_invalidate_all_windows(my_window_manager_t *wm) {
   }
 }
 
+static bool break_input_key_down(void *user, u32 key) {
+  return input_key_down((InputState *)user, (i32)key);
+}
+
 static uint8_t break_modifiers(InputState *input) {
-  uint8_t mods = 0;
-  if (input_key_down(input, 289)) mods |= MY_KEYMOD_SHIFT;
-  if (input_key_down(input, 290)) mods |= MY_KEYMOD_CTRL;
-  return mods;
+  return (uint8_t)break_ui_modifiers_from(break_input_key_down, input);
 }
 
 static void send_event(BreakUI *ui, my_event_t event) {

@@ -167,6 +167,12 @@ bool break_editor_viewport_screen_ray(const BreakEditorCamera *cam,
 
 bool break_editor_viewport_pick(BreakEditorDoc *doc, const BreakEditorCamera *cam,
     f32 x, f32 y, f32 w, f32 h, BreakEditorPickResult *out) {
+    return break_editor_viewport_pick_ex(doc, cam, x, y, w, h, NULL, NULL, out);
+}
+
+bool break_editor_viewport_pick_ex(BreakEditorDoc *doc,
+    const BreakEditorCamera *cam, f32 x, f32 y, f32 w, f32 h,
+    BreakEditorEntitySkipFn skip, void *skip_user, BreakEditorPickResult *out) {
     if (!doc || !cam || !out) return false;
 
     f32 origin[3], dir[3];
@@ -205,6 +211,7 @@ bool break_editor_viewport_pick(BreakEditorDoc *doc, const BreakEditorCamera *ca
         BreakEditorEntityId id;
         const char *name = NULL;
         if (!break_editor_doc_entity_at(doc, i, &id, &name)) continue;
+        if (skip && skip(skip_user, id)) continue;
         if (!ed_entity_proxy_aabb(doc, id, &aabbs[n])) continue;
         ids[n] = id;
         n++;
@@ -237,6 +244,14 @@ bool break_editor_viewport_pick(BreakEditorDoc *doc, const BreakEditorCamera *ca
 u32 break_editor_viewport_box_select(BreakEditorDoc *doc,
     const BreakEditorCamera *cam, f32 x0, f32 y0, f32 x1, f32 y1,
     f32 w, f32 h, BreakEditorEntityId *out, u32 cap) {
+    return break_editor_viewport_box_select_ex(doc, cam, x0, y0, x1, y1, w, h,
+                                               NULL, NULL, out, cap);
+}
+
+u32 break_editor_viewport_box_select_ex(BreakEditorDoc *doc,
+    const BreakEditorCamera *cam, f32 x0, f32 y0, f32 x1, f32 y1,
+    f32 w, f32 h, BreakEditorEntitySkipFn skip, void *skip_user,
+    BreakEditorEntityId *out, u32 cap) {
     if (!doc || !cam || !out || cap == 0) return 0;
     if (!isfinite(x0) || !isfinite(y0) || !isfinite(x1) || !isfinite(y1) ||
         !isfinite(w) || !isfinite(h)) {
@@ -267,6 +282,7 @@ u32 break_editor_viewport_box_select(BreakEditorDoc *doc,
         BreakEditorEntityId id;
         const char *name = NULL;
         if (!break_editor_doc_entity_at(doc, i, &id, &name)) continue;
+        if (skip && skip(skip_user, id)) continue;
         if (!break_editor_doc_has_component(doc, id,
                                             BREAK_EDITOR_COMPONENT_TRANSFORM)) {
             continue;

@@ -1,5 +1,7 @@
 #include "test_framework.h"
 
+#include <string.h>
+
 #include "ui/myui_break_input.h"
 #include "mypal/my_event.h"
 #include "platform/input.h"
@@ -119,6 +121,31 @@ TEST(mouse_slots_map_to_myui_button_numbers) {
     ASSERT_EQ(break_ui_map_mouse_button('w'), 0u);
 }
 
+/* Alt was never translated: Alt+drag orbit and Alt+key shortcuts in the
+ * editor only worked through synthetic events. Shift 289, Ctrl 290, Alt
+ * INPUT_KEY_ALT (316) map to the myui modifier bits; Alt is a modifier,
+ * not a typed key. */
+static bool g_down[INPUT_MAX_KEYS];
+static bool fake_down(void *user, u32 key) {
+    (void)user;
+    return key < INPUT_MAX_KEYS && g_down[key];
+}
+
+TEST(shift_ctrl_alt_slots_map_to_modifier_bits) {
+    memset(g_down, 0, sizeof(g_down));
+    ASSERT_EQ(break_ui_modifiers_from(fake_down, NULL), 0u);
+    g_down[289] = true;
+    ASSERT_EQ(break_ui_modifiers_from(fake_down, NULL), (u32)MY_KEYMOD_SHIFT);
+    g_down[290] = true;
+    g_down[INPUT_KEY_ALT] = true;
+    ASSERT_EQ(break_ui_modifiers_from(fake_down, NULL),
+              (u32)(MY_KEYMOD_SHIFT | MY_KEYMOD_CTRL | MY_KEYMOD_ALT));
+    g_down[289] = g_down[290] = false;
+    ASSERT_EQ(break_ui_modifiers_from(fake_down, NULL), (u32)MY_KEYMOD_ALT);
+    ASSERT_FALSE(break_ui_key_slot_is_keyboard(INPUT_KEY_ALT));
+    ASSERT_EQ(break_ui_modifiers_from(NULL, NULL), 0u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ascii_identity);
     RUN_TEST(named_keys);
@@ -130,4 +157,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(utf16_offsets_are_codepoint_offsets);
     RUN_TEST(mouse_and_modifier_slots_are_not_keyboard_keys);
     RUN_TEST(mouse_slots_map_to_myui_button_numbers);
+    RUN_TEST(shift_ctrl_alt_slots_map_to_modifier_bits);
 TEST_MAIN_END()
