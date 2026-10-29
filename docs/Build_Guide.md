@@ -722,6 +722,18 @@ gate 按平台跳过。`engine_demo` 机位 `BREAK_CAM=0,9,16,0,-25 BREAK_UI=0
 BREAK_SCREENSHOT=60` 两后端截图目视确认：朝向正确、3D 场景与 UI 均可见，Metal 与
 MoltenVK 画面基本一致；未发现回归，本次无代码修改，证据等级不变。
 
+2026-10-29 同步后 review：从 `@8b0dc8a0` 快进到 `@70fecbca`（4 个远程提交：编辑器浅色
+主题与命令面板切换、自带 JetBrains Mono / Noto Sans SC 字体、面板点击修复、输入脚本带引号
+参数），无冲突。同步后两套全量测试各有 1 个失败：`test_myui_font` 的
+`bundled_noto_sans_sc_loads_and_shapes_cjk`（`font is NULL`）。根因是本机没有 FreeType，
+走内置 STB 光栅器，`stb_validate_cmap` 把 platform 0 / encoding 5（format 14 变体选择符，
+不是字符映射）也当作必须支持的子表，且 stb_truetype 取最后一个 Unicode 记录会误选
+format 14。已修复（`my_font_stb.c`，新用例修复前失败即回归测试）。修复后 Metal CTest
+**230/230**、graphics **6/6**，MoltenVK **231/231**，仅 D3D12 dependency gate 按平台跳过。
+`BREAK_EDITOR_INPUT_SCRIPT=ON` 编辑器脚本截图目视确认：英文深色、中文深色（Noto Sans SC）、
+命令面板列表及通过面板切换“主题：浅色”均渲染正常。FreeType 路径本机未构建，未验证；
+17 MB 字体入库对仓库体积的影响由维护者决定。证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
