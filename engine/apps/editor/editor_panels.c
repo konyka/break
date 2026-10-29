@@ -108,6 +108,7 @@ struct BreakEditorShell {
      * primary `selected` (never contains it). Pruned on every sync. */
     BreakEditorEntityId extra[EDITOR_EXTRA_SELECTION_MAX];
     u32 extra_count;
+    usize anchor_index; /* outliner row of the last plain/Ctrl click */
     u32 tool; /* 0 select, 1 translate, 2 rotate, 3 scale */
 
     /* Phase 2 Task 3 viewport state (see editor_panels.h): the camera is
@@ -752,6 +753,49 @@ static bool shell_toggle_select_index(BreakEditorShell *shell, usize index) {
     return true;
 }
 
+/* Shift+click: rows anchor..to (either order) become the selection, `to`
+ * the primary; with `add` (Shift+Ctrl) the range joins the current one. */
+static bool shell_select_range(BreakEditorShell *shell, usize anchor, usize to,
+                               bool add) {
+    usize lo = anchor < to ? anchor : to, hi = anchor < to ? to : anchor;
+    usize n = break_editor_doc_entity_count(shell->doc);
+    BreakEditorEntityId primary;
+    const char *unused = NULL;
+    if (hi >= n) hi = n == 0u ? 0u : n - 1u;
+    if (n == 0u || !break_editor_doc_entity_at(shell->doc, to, &primary, &unused)) {
+        return false;
+    }
+    if (!add) {
+        shell->extra_count = 0u;
+    } else if (break_editor_entity_id_valid(shell->selected) &&
+               !break_editor_entity_id_eq(shell->selected, primary) &&
+               shell_extra_index(shell, shell->selected) < 0 &&
+               shell->extra_count < EDITOR_EXTRA_SELECTION_MAX) {
+        shell->extra[shell->extra_count++] = shell->selected;
+    }
+    for (usize i = lo; i <= hi; i++) {
+        BreakEditorEntityId id;
+        if (!break_editor_doc_entity_at(shell->doc, i, &id, &unused) ||
+            break_editor_entity_id_eq(id, primary) ||
+            shell_extra_index(shell, id) >= 0) {
+            continue;
+        }
+        if (shell->extra_count >= EDITOR_EXTRA_SELECTION_MAX) break;
+        shell->extra[shell->extra_count++] = id;
+    }
+    {
+        int at = shell_extra_index(shell, primary);
+        if (at >= 0) shell->extra[at] = shell->extra[--shell->extra_count];
+    }
+    shell->selected = primary;
+    shell_outliner_mark_selection(shell);
+    break_editor_viewport3d_set_extra_selection(shell->vp3d, shell->extra,
+                                                shell->extra_count);
+    shell_rebuild_inspector(shell);
+    shell_refresh_status(shell);
+    return true;
+}
+
 static void on_row_click(void *ctx, const char *event, void *data) {
     EditorRowCtx *rc = (EditorRowCtx *)ctx;
     (void)event;
@@ -760,13 +804,18 @@ static void on_row_click(void *ctx, const char *event, void *data) {
     }
     if (rc->kind == 0u) {
         const my_event_t *pe = (const my_event_t *)data;
-        bool ctrl = pe != NULL &&
-                    (pe->type == MY_EVENT_POINTER_UP ||
-                     pe->type == MY_EVENT_POINTER_DOWN) &&
-                    (pe->u.pointer.modifiers & MY_KEYMOD_CTRL) != 0u;
-        if (ctrl) {
+        bool ptr = pe != NULL && (pe->type == MY_EVENT_POINTER_UP ||
+                                  pe->type == MY_EVENT_POINTER_DOWN);
+        bool ctrl = ptr && (pe->u.pointer.modifiers & MY_KEYMOD_CTRL) != 0u;
+        bool shift = ptr && (pe->u.pointer.modifiers & MY_KEYMOD_SHIFT) != 0u;
+        if (shift) {
+            (void)shell_select_range(rc->shell, rc->shell->anchor_index,
+                                     rc->index, ctrl);
+        } else if (ctrl) {
+            rc->shell->anchor_index = rc->index;
             (void)shell_toggle_select_index(rc->shell, rc->index);
         } else {
+            rc->shell->anchor_index = rc->index;
             rc->shell->extra_count = 0u;
             break_editor_viewport3d_set_extra_selection(rc->shell->vp3d, NULL, 0u);
             (void)break_editor_shell_select_index(rc->shell, rc->index);

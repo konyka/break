@@ -2559,7 +2559,12 @@ TEST(outliner_highlights_the_selected_row)
  * a plain click selects only that row. Every selected row carries the
  * "selected" class. Delete removes all selected entities as ONE undo step;
  * Ctrl+D duplicates the primary only. */
+static void mod_click_row(BreakEditorShell *shell, my_widget_t *row, u8 mods);
 static void ctrl_click_row(BreakEditorShell *shell, my_widget_t *row) {
+    mod_click_row(shell, row, MY_KEYMOD_CTRL);
+}
+
+static void mod_click_row(BreakEditorShell *shell, my_widget_t *row, u8 mods) {
     my_window_t *win = break_editor_shell_window(shell);
     int32_t gx = 0, gy = 0;
     my_event_t ev;
@@ -2570,13 +2575,13 @@ static void ctrl_click_row(BreakEditorShell *shell, my_widget_t *row) {
     ev.u.pointer.x = gx;
     ev.u.pointer.y = gy;
     ev.u.pointer.button = 1u;
-    ev.u.pointer.modifiers = MY_KEYMOD_CTRL;
+    ev.u.pointer.modifiers = mods;
     (void)my_event_dispatch(&win->dispatcher, &ev);
     ev = my_event_init(MY_EVENT_POINTER_UP);
     ev.u.pointer.x = gx;
     ev.u.pointer.y = gy;
     ev.u.pointer.button = 1u;
-    ev.u.pointer.modifiers = MY_KEYMOD_CTRL;
+    ev.u.pointer.modifiers = mods;
     (void)my_event_dispatch(&win->dispatcher, &ev);
 }
 
@@ -2632,6 +2637,47 @@ TEST(outliner_ctrl_click_multi_select_and_group_delete)
     shell_paint(shell);
     ASSERT_EQ(break_editor_shell_selection_count(shell), 1u);
     ASSERT_EQ(outliner_selected_rows(list, NULL), 1u);
+    break_editor_shell_destroy(shell);
+}
+
+/* Shift+click selects the contiguous outliner range from the anchor (the
+ * last plain or Ctrl click) to the clicked row, inclusive, in either
+ * direction; Shift+Ctrl adds the range to the current selection. */
+TEST(outliner_shift_click_selects_a_range)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *list;
+    ASSERT_NOT_NULL(shell);
+    for (int i = 0; i < 3; i++) emit_click(find(shell, "editor-add-button"));
+    shell_paint(shell);
+    list = find(shell, "editor-outliner");
+    pointer_click(shell, my_widget_get_child(list, 0u));
+    mod_click_row(shell, my_widget_get_child(list, 2u), MY_KEYMOD_SHIFT);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 3u);
+    ASSERT_EQ(outliner_selected_rows(list, NULL), 3u);
+    {
+        BreakEditorEntityId id;
+        const char *name = NULL;
+        ASSERT_TRUE(break_editor_doc_entity_at(break_editor_shell_doc(shell), 2u,
+                                               &id, &name));
+        ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), id));
+    }
+    /* backwards from a new anchor: a fresh range (not added to the old) */
+    pointer_click(shell, my_widget_get_child(list, 1u));
+    mod_click_row(shell, my_widget_get_child(list, 0u), MY_KEYMOD_SHIFT);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 2u);
+    /* Shift+Ctrl adds the range to the current selection */
+    pointer_click(shell, my_widget_get_child(list, 2u));
+    mod_click_row(shell, my_widget_get_child(list, 1u),
+                  MY_KEYMOD_SHIFT | MY_KEYMOD_CTRL);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 2u); /* {2} + {1,2} */
+    mod_click_row(shell, my_widget_get_child(list, 0u),
+                  MY_KEYMOD_SHIFT | MY_KEYMOD_CTRL);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 3u);
     break_editor_shell_destroy(shell);
 }
 
@@ -7456,6 +7502,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(open_scene_loads_existing_and_targets_missing);
     RUN_TEST(close_request_guards_unsaved_changes);
     RUN_TEST(outliner_ctrl_click_multi_select_and_group_delete);
+    RUN_TEST(outliner_shift_click_selects_a_range);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);
