@@ -178,9 +178,9 @@ struct BreakEditorShell {
     } tab_ctxs[5];
 
     bool palette_open;
-    u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT + 1u];
-    /* "save as <path>" typed into the palette: the path of the dynamic
-     * PAL_SAVE_AS entry (empty: no such entry) */
+    u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT + 2u];
+    /* "save as <path>" / "open <path>" typed into the palette: the path of
+     * the one dynamic entry (PAL_SAVE_AS or PAL_OPEN; empty: none) */
     char palette_save_as[BREAK_EDITOR_SCENE_PATH_CAPACITY];
     u32 palette_match_count;
     u32 palette_cursor; /* highlighted match (Up/Down), run by Enter */
@@ -243,7 +243,9 @@ enum {
 /* Current-language text of palette command `cmd` (bounded, never NULL). */
 /* dynamic entry past the static table (only offered for "save as <path>") */
 #define PAL_SAVE_AS EDITOR_PALETTE_COMMAND_COUNT
+#define PAL_OPEN (EDITOR_PALETTE_COMMAND_COUNT + 1u)
 #define EDITOR_SAVE_AS_PREFIX "save as "
+#define EDITOR_OPEN_PREFIX "open "
 
 static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
     static const BreakEditorTr plain[PAL_TOOL_SELECT] = {
@@ -1102,16 +1104,25 @@ bool break_editor_shell_palette_set_filter(BreakEditorShell *shell,
     shell->palette_cursor = 0u;
     shell->palette_save_as[0] = '\0';
     {
-        /* "save as <path>": one dynamic entry instead of the static list */
-        const usize plen = sizeof(EDITOR_SAVE_AS_PREFIX) - 1u;
+        /* "save as <path>" / "open <path>": one dynamic entry instead of
+         * the static list */
         const char *arg = text;
+        u32 kind = 0u;
         while (*arg == ' ') arg++;
-        if (strncmp(arg, EDITOR_SAVE_AS_PREFIX, plen) == 0) {
-            arg += plen;
+        if (strncmp(arg, EDITOR_SAVE_AS_PREFIX,
+                    sizeof(EDITOR_SAVE_AS_PREFIX) - 1u) == 0) {
+            kind = PAL_SAVE_AS;
+            arg += sizeof(EDITOR_SAVE_AS_PREFIX) - 1u;
+        } else if (strncmp(arg, EDITOR_OPEN_PREFIX,
+                           sizeof(EDITOR_OPEN_PREFIX) - 1u) == 0) {
+            kind = PAL_OPEN;
+            arg += sizeof(EDITOR_OPEN_PREFIX) - 1u;
+        }
+        if (kind != 0u) {
             while (*arg == ' ') arg++;
             if (arg[0] != '\0' && strlen(arg) < sizeof(shell->palette_save_as)) {
                 memcpy(shell->palette_save_as, arg, strlen(arg) + 1u);
-                shell->palette_matches[shell->palette_match_count++] = PAL_SAVE_AS;
+                shell->palette_matches[shell->palette_match_count++] = kind;
             }
             if (shell->palette_list != NULL) {
                 (void)my_list_view_refresh(shell->palette_list);
@@ -1419,8 +1430,11 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
 
 static const char *shell_palette_row_text(const BreakEditorShell *shell,
                                           u32 cmd, char *buf, size_t cap) {
-    if (cmd == PAL_SAVE_AS) {
-        (void)snprintf(buf, cap, break_editor_tr(BREAK_EDITOR_TR_CMD_SAVE_AS_FMT),
+    if (cmd == PAL_SAVE_AS || cmd == PAL_OPEN) {
+        (void)snprintf(buf, cap,
+                       break_editor_tr(cmd == PAL_OPEN
+                                           ? BREAK_EDITOR_TR_CMD_OPEN_FMT
+                                           : BREAK_EDITOR_TR_CMD_SAVE_AS_FMT),
                        shell != NULL ? shell->palette_save_as : "");
         return buf;
     }
@@ -1428,7 +1442,22 @@ static const char *shell_palette_row_text(const BreakEditorShell *shell,
 }
 
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
-    if (shell == NULL || cmd > PAL_SAVE_AS) {
+    if (shell == NULL || cmd > PAL_OPEN) {
+        return;
+    }
+    if (cmd == PAL_OPEN) {
+        if (shell->palette_save_as[0] != '\0') {
+            FILE *f = fopen(shell->palette_save_as, "rb");
+            if (f == NULL) {
+                /* not there yet: a new scene saved to that path */
+                (void)break_editor_shell_set_scene_path(shell,
+                                                        shell->palette_save_as);
+            } else {
+                fclose(f);
+                (void)editor_shell_load_scene_guarded(shell,
+                                                      shell->palette_save_as);
+            }
+        }
         return;
     }
     if (cmd == PAL_SAVE_AS) {

@@ -89,6 +89,7 @@ typedef enum {
     BREAK_EDITOR_TR_UNTITLED,
     BREAK_EDITOR_TR_LOG_LOAD_UNSAVED,
     BREAK_EDITOR_TR_CMD_SAVE_AS_FMT,          /* %s path */
+    BREAK_EDITOR_TR_CMD_OPEN_FMT,             /* %s path */
     BREAK_EDITOR_TR_WINDOW_TITLE_FMT,         /* %s dirty mark, %s name */
     BREAK_EDITOR_TR_LOG_SHOW_ALL_FMT,         /* %u */
     BREAK_EDITOR_TR_LOG_REMOVE_ENTITY_FAILED,

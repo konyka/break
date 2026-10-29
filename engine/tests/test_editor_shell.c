@@ -3714,6 +3714,59 @@ TEST(palette_save_as_writes_the_typed_path)
     break_editor_shell_destroy(shell);
 }
 
+/* "open <path>" in the command palette opens a scene the way the command
+ * line does, behind the same unsaved-changes guard as the asset browser. */
+TEST(palette_open_loads_the_typed_path_with_the_guard)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    char dir[512], scene[600], side[700], filter[700];
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    test_tmp(dir, sizeof(dir), "editor_palette_open");
+    TEST_MKDIR(dir);
+    snprintf(scene, sizeof(scene), "%s/two.bscn", dir);
+    snprintf(side, sizeof(side), "%s" BREAK_EDITOR_SIDECAR_SUFFIX, scene);
+    save_fixture_scene(scene, 2u);
+    snprintf(filter, sizeof(filter), "open %s", scene);
+    /* clean document: loads at once */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, filter));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), scene);
+    /* with an unsaved edit the first open only warns */
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 3u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, filter));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 3u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, filter));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    /* a missing file becomes the save target of a new, empty scene */
+    {
+        char fresh[700];
+        snprintf(fresh, sizeof(fresh), "open %s/new.bscn", dir);
+        ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+        ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, fresh));
+        ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+        ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+        ASSERT_TRUE(strstr(break_editor_shell_scene_path(shell), "new.bscn") != NULL);
+    }
+    /* "open" alone offers nothing */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "open "));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 0u);
+    break_editor_shell_destroy(shell);
+    remove(scene);
+    remove(side);
+    TEST_RMDIR(dir);
+}
+
 TEST(lua_panel_eval_routes_result_to_console_ring)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8558,6 +8611,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);
+    RUN_TEST(palette_open_loads_the_typed_path_with_the_guard);
     RUN_TEST(lua_panel_eval_routes_result_to_console_ring);
     RUN_TEST(lua_panel_spawn_updates_outliner_and_ctrl_z_reverts);
     RUN_TEST(lua_panel_history_up_down_recall);
