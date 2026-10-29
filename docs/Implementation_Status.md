@@ -1,5 +1,10 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：remote SET_FIELD 支持 bool 字段（2026-10-30）
+
+- **交付**：`apps/editor/editor_remote.c` 按字段类型分派写入。线格式不变，仍用 f32 值：0 表示 false，其他有限值表示 true，非有限值返回 ok=0。
+- **测试**：`test_editor_shell` 中 `remote_set_field_maps_component_and_field_names` 新增 0/2/NaN 三个用例，先红后绿；`build-break-net-final` 中 157/157，`-R editor` 15/15；默认树 233/234，唯一失败是已知 flaky 的 x11 用例。
+
 ## 本轮更新：关闭的灯在 viewport 中变暗（2026-10-30）
 
 - **交付**：`break_editor_viewport3d_proxy_color` 读取 `Light.enabled`，关闭时颜色乘 0.25。测试先红后绿（`test_editor_shell` 132/132）；默认树 233/234，唯一失败是已知 flaky 的 x11 用例。GPU 画面未做像素验证。

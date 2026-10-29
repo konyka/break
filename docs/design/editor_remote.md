@@ -23,7 +23,7 @@ Wire rules (pinned by tests):
 | 6 | SPAWN | `name_len/u16 + name` (0 = generated name) | `entity_id/u64` | `break_editor_doc_add_entity` |
 | 7 | REMOVE | `entity_id/u64` | `removed/u8` | `break_editor_doc_remove_entity` |
 | 8 | RENAME | `entity_id/u64 + name_len/u16 + name` | `ok/u8` | `break_editor_doc_rename_entity` |
-| 9 | SET_FIELD | `entity_id/u64 + comp_len/u16 + comp + field_len/u16 + field + value/f32` | `ok/u8` | `break_editor_doc_set_field_f32` (component/field names resolved through the registry, byte-wise case-sensitive) |
+| 9 | SET_FIELD | `entity_id/u64 + comp_len/u16 + comp + field_len/u16 + field + value/f32` | `ok/u8` | `break_editor_doc_set_field_f32` (component/field names resolved through the registry, byte-wise case-sensitive); 2026-10-30: for a bool field (`Light.enabled`) `break_editor_doc_set_field_bool` with 0 = false, other finite = true, NaN/Inf -> ok=0 |
 | 10 | UNDO | empty | `applied/u8` | `break_editor_undo` |
 | 11 | REDO | empty | `applied/u8` | `break_editor_redo` |
 | 12 | EVAL | `text_len/u16 + text` | `ok/u8, line_count/u16`, then per line `{line_len/u16, bytes}` — newest tail of the eval's console output, ≤ 16 lines, each ≤ 127 B incl. the `lua| ` prefix, whole payload ≤ 4096 B | `break_editor_lua_eval` (same sandbox, budget, and 4096 B input cap as the local console) |

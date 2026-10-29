@@ -5113,6 +5113,37 @@ TEST(remote_set_field_maps_component_and_field_names)
         doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
     ASSERT_FLOAT_EQ(value, 0.0f, 1e-6f);
 
+    /* A bool field takes the same f32 wire value: 0 = false, any other
+     * finite value = true, NaN rejected (ok=0). */
+    emit_click(find(shell, "editor-component-add-65"));
+    ASSERT_TRUE(break_editor_doc_has_component(doc, id,
+                                               BREAK_EDITOR_COMPONENT_LIGHT));
+    {
+        static const f32 wire[3] = {0.0f, 2.0f, NAN};
+        static const u8 want_ok[3] = {1u, 1u, 0u};
+        static const bool want_on[3] = {false, true, true};
+        u32 t;
+        for (t = 0u; t < 3u; t++) {
+            u8 req[8 + 2 + 5 + 2 + 7 + 4];
+            size_t n = 0u;
+            bool on = !want_on[t];
+            wr32(req + n, index); n += 4u;
+            wr32(req + n, generation); n += 4u;
+            wr16(req + n, 5u); n += 2u;
+            memcpy(req + n, "Light", 5u); n += 5u;
+            wr16(req + n, 7u); n += 2u;
+            memcpy(req + n, "enabled", 7u); n += 7u;
+            memcpy(req + n, &wire[t], 4u); n += 4u;
+            remote_client_send(&c, BREAK_EDITOR_MSG_SET_FIELD, req, n);
+            ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+            ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_SET_FIELD);
+            ASSERT_EQ(((const u8 *)rsp.payload)[0], want_ok[t]);
+            ASSERT_TRUE(break_editor_doc_get_field_bool(
+                doc, id, BREAK_EDITOR_COMPONENT_LIGHT, 5u, &on));
+            ASSERT_EQ(on, want_on[t]);
+        }
+    }
+
     /* unknown component name → RESULT invalid */
     {
         u8 req[8 + 2 + 3 + 2 + 5 + 4];

@@ -30,6 +30,7 @@
 #include "editor_remote.h"
 #include "editor_shell_internal.h"
 
+#include <math.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -522,6 +523,7 @@ static bool remote_handle_set_field(BreakEditorRemote *r, u64 key,
     u16 comp_len, field_len;
     usize comp_count, ci;
     u32 component_id = 0u, field_index = 0u;
+    u8 field_type = BREAK_EDITOR_FIELD_F32;
     bool comp_found = false, field_found = false;
     f32 value;
     u32 bits;
@@ -583,6 +585,7 @@ static bool remote_handle_set_field(BreakEditorRemote *r, u64 key,
             if (strcmp(info.fields[fi].name, field) == 0) {
                 field_found = true;
                 field_index = fi;
+                field_type = info.fields[fi].type;
                 break;
             }
         }
@@ -591,10 +594,21 @@ static bool remote_handle_set_field(BreakEditorRemote *r, u64 key,
         return remote_respond(r, key, BREAK_EDITOR_MSG_RESULT,
                               BREAK_EDITOR_PROTO_STATUS_INVALID, NULL, 0u);
     }
-    rsp[0] = break_editor_doc_set_field_f32(doc, id, component_id, field_index,
-                                            value)
-                 ? 1u
-                 : 0u;
+    /* A bool field reuses the f32 wire value: 0 = false, any other finite
+     * value = true, non-finite rejected. */
+    if (field_type == BREAK_EDITOR_FIELD_BOOL) {
+        rsp[0] = isfinite(value) &&
+                         break_editor_doc_set_field_bool(doc, id, component_id,
+                                                         field_index,
+                                                         value != 0.0f)
+                     ? 1u
+                     : 0u;
+    } else {
+        rsp[0] = break_editor_doc_set_field_f32(doc, id, component_id,
+                                                field_index, value)
+                     ? 1u
+                     : 0u;
+    }
     editor_shell_refresh_all(r->shell);
     return remote_respond(r, key, BREAK_EDITOR_MSG_SET_FIELD, 0u, rsp,
                           sizeof(rsp));
