@@ -6,6 +6,7 @@
 - **验证**：`test_break_lua_runtime` 9/9（新增 1 例），去掉预算判断后变红；ASan 树 `test_break_lua_{runtime,module,binding,value}` 全绿；默认树全量 ctest 仅 `test_platform_x11_runtime` 失败（依赖当前桌面的全屏行为，与本改动无关）。
 - **编辑器 Lua console 已接入**：两个 console VM（主 + probe）各设 64 MiB（`BREAK_EDITOR_LUA_MEMORY_BUDGET`）。`test_editor_lua` 新增 `eval_memory_budget_bounds_allocation_storm`：`string.rep` 申请 512 MiB 的 eval 以 `error:` 失败、之后 `6*7` 正常；改动前该 eval 真的分配成功（先红后绿）；33/33，ASan 树同样 33/33。
 - **host 侧 config 更新**：`break_lua_runtime_set_config(rt, key, value)`（夹紧到 bind 时的范围，未绑定 key → STALE），`test_break_lua_binding` 33/33（新增 1 例，去掉夹紧即红），ASan 同样 33/33；见 `lua_runtime.md` §2.8。
+- **Lua 记录施加到 ECS World**：`break_lua_ecs_apply`（`engine/src/script/break_lua_ecs_apply.{h,c}`），host 声明的 f32 字段 schema 内 SPAWN/SET 写进 World，非法记录计入 rejected 且不写；`test_break_lua_ecs_apply` 3/3（含真实 Lua 模块端到端），两处变异各使一例变红，ASan 3/3；默认树全量 233 项仅 `test_platform_x11_runtime` 失败（桌面依赖）。demo 未接入。见 `lua_runtime.md` §2.9。
 - **边界**：预算按 VM 计，不区分模块。设计见 `docs/design/lua_runtime.md` §2.7。
 
 ## 本轮更新：2026-10-29 同步后的 Windows 修复（编辑器设置/字体测试、fuzz_editor_scene）

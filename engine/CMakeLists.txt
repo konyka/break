@@ -4242,6 +4242,19 @@ endif()
     set_tests_properties(test_break_lua_binding PROPERTIES
         LABELS "headless;break_lua")
 
+    # test_break_lua_ecs_apply: drained Lua ECS records applied to a World.
+    add_executable(test_break_lua_ecs_apply tests/test_break_lua_ecs_apply.c
+        src/script/break_lua_ecs_apply.c src/ecs/ecs.c src/core/log.c)
+    target_include_directories(test_break_lua_ecs_apply PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_lua_ecs_apply PRIVATE break_lua_test)
+    if(NOT ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(test_break_lua_ecs_apply PRIVATE m)
+    endif()
+    add_test(NAME test_break_lua_ecs_apply COMMAND test_break_lua_ecs_apply)
+    set_tests_properties(test_break_lua_ecs_apply PROPERTIES
+        LABELS "headless;break_lua")
+
     add_test(NAME test_break_lua_target_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt

@@ -89,11 +89,16 @@
 - `break_lua_runtime_set_config(rt, key, value)`：更新一个已绑定的 config 值，按该项 `[min, max]` 夹紧（与 bind 相同）；脚本下一次 `break.config.get` 即读到新值。owner-only（非 owner → REJECTED）；NULL runtime、NULL/空/超长 key、NaN → INVALID；未绑定的 key → STALE；失败不改动已存值。
 - 测试：`test_break_lua_binding` 新增 `set_config_updates_bound_value_clamped`；去掉上限夹紧后该例变红；ASan 树 33/33。
 
+### 2.9 batch 记录施加到运行时 ECS World（2026-10-30）
+
+- `engine/src/script/break_lua_ecs_apply.{h,c}`：`break_lua_ecs_apply(world, schema, n, records, count, &report)`。host 用 schema 声明脚本可写的字段（组件名 + 字段名 → `ComponentType` + f32 偏移），drain 后调用。SPAWN → `world_create_entity`，成为本次调用中后续 SET 的目标；SET 写一个 f32 字段，实体缺该组件时先添加并清零（ECS 不清零复用的 chunk 内存）。值可为有限数、bool（1/0）或可完整解析为有限 f32 的字符串。以下情况记为 rejected 且不写入：本次调用里之前没有 SPAWN、schema 中无此组件/字段、组件未在 World 注册或尺寸放不下该字段、值无法转换、未知记录类型。不分配内存，不终止于单条失败。
+- 不属于 `break_lua` 目标（该库按契约不依赖 ECS）；host 自行把这个 TU 加入构建。编辑器 Lua console 仍走自己的文档路径（`console_apply_records`，可撤销）。
+- 测试：`test_break_lua_ecs_apply` 3 例（真实 Lua 模块 spawn/set 进 World，含 bool/字符串值和两次调用目标隔离；九类非法记录全部拒绝且不写入；复用 chunk 内存时新加组件被清零）。变异：去掉尺寸检查、去掉清零各使一例变红；ASan 树 3/3。
+
 ## 3. 设计-only / 未实现
 
-- **batch 记录施加到运行时 ECS World**：`break_lua` 内结构上无 World 指针。已有的使用方是编辑器 Lua console（`editor_lua.c` `console_apply_records`）：eval 后 drain，SPAWN 变成一次可撤销的 `add_entity`，SET 写到已注册组件字段（失败回滚并报 `error:`）——这是施加到编辑器文档，不是游戏运行时的 ECS World；游戏侧的 apply 仍未做。
 - **LuaJIT**：Stage 3.5 延期项，本计划不交付（gating 条件见 roadmap）。
-- **engine/demo 集成**：未做；本文件全部条目是独立可选库证据。
+- **engine/demo 集成**：未做（§2.9 提供了施加到 World 的 helper，但 demo 未接入）。
 - **CLOSED/TIMEOUT 语义**：枚举保留，无 API 映射。
 
 ## 4. 验证证据索引
