@@ -106,6 +106,19 @@ TEST(mouse_and_modifier_slots_are_not_keyboard_keys) {
     ASSERT_TRUE(break_ui_key_slot_is_keyboard(INPUT_MOUSE_5 + 1u));
 }
 
+/* Break mouse slots are LEFT=300, RIGHT=301, MIDDLE=302, 303/304 extra;
+ * myui numbers buttons 1 = left, 2 = middle, 3 = right (my_event.h). The
+ * bridge used slot offset + 1, which swapped right and middle: a right
+ * drag in the editor viewport panned instead of orbiting. */
+TEST(mouse_slots_map_to_myui_button_numbers) {
+    ASSERT_EQ(break_ui_map_mouse_button(INPUT_MOUSE_LEFT), 1u);
+    ASSERT_EQ(break_ui_map_mouse_button(INPUT_MOUSE_MIDDLE), 2u);
+    ASSERT_EQ(break_ui_map_mouse_button(INPUT_MOUSE_RIGHT), 3u);
+    ASSERT_EQ(break_ui_map_mouse_button(INPUT_MOUSE_4), 4u);
+    ASSERT_EQ(break_ui_map_mouse_button(INPUT_MOUSE_5), 5u);
+    ASSERT_EQ(break_ui_map_mouse_button('w'), 0u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ascii_identity);
     RUN_TEST(named_keys);
@@ -116,4 +129,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(invalid_utf8_always_makes_progress);
     RUN_TEST(utf16_offsets_are_codepoint_offsets);
     RUN_TEST(mouse_and_modifier_slots_are_not_keyboard_keys);
+    RUN_TEST(mouse_slots_map_to_myui_button_numbers);
 TEST_MAIN_END()

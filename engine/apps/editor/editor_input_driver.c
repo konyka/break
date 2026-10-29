@@ -8,8 +8,10 @@
 #include <editor/editor_cmd.h>
 #include <editor/editor_components.h>
 #include <editor/editor_doc.h>
+#include <editor/editor_viewport.h>
 #include <platform/input.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +28,9 @@ struct BreakEditorInputDriver {
     BreakEditorShell *shell; /* borrowed for the current frame */
     char shot[BREAK_EDITOR_INPUT_SCRIPT_MAX_ARG]; /* queued screenshot */
     bool shot_pending;
+    /* camera_mark snapshot compared by camera_moved */
+    BreakEditorCamera cam_mark;
+    bool cam_marked;
     u32 shot_failures;
 };
 
@@ -215,6 +220,37 @@ static bool drv_expect(void *user, const char *what) {
             return false;
         }
         return key[6] == 'a' ? (double)x > limit : (double)x < limit;
+    }
+    /* camera_mark: snapshot the viewport camera; camera_moved <what>: what
+     * in {yaw, pitch, distance, target} differs from the snapshot by more
+     * than a rounding error (orbit = yaw/pitch, pan = target, wheel =
+     * distance); camera_still <what>: it does not. */
+    if (strcmp(key, "camera_mark") == 0) {
+        const BreakEditorCamera *cam = break_editor_shell_camera(shell);
+        if (cam == NULL) return false;
+        d->cam_mark = *cam;
+        d->cam_marked = true;
+        return true;
+    }
+    if (strcmp(key, "camera_moved") == 0 || strcmp(key, "camera_still") == 0) {
+        const BreakEditorCamera *cam = break_editor_shell_camera(shell);
+        const BreakEditorCamera *m = &d->cam_mark;
+        bool moved;
+        if (cam == NULL || !d->cam_marked) return false;
+        if (strcmp(arg, "yaw") == 0) {
+            moved = fabsf(cam->yaw - m->yaw) > 1e-4f;
+        } else if (strcmp(arg, "pitch") == 0) {
+            moved = fabsf(cam->pitch - m->pitch) > 1e-4f;
+        } else if (strcmp(arg, "distance") == 0) {
+            moved = fabsf(cam->distance - m->distance) > 1e-4f;
+        } else if (strcmp(arg, "target") == 0) {
+            moved = fabsf(cam->target[0] - m->target[0]) > 1e-4f ||
+                    fabsf(cam->target[1] - m->target[1]) > 1e-4f ||
+                    fabsf(cam->target[2] - m->target[2]) > 1e-4f;
+        } else {
+            return false;
+        }
+        return key[7] == 'm' ? moved : !moved;
     }
     if (strcmp(key, "log_contains") == 0) {
         return arg[0] != '\0' &&
