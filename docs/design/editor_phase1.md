@@ -122,6 +122,7 @@ create 时把焦点设到 root，故快捷键只在焦点控件未消费该键�
   EditorTransform）；非 f32 字段类型。
 - 另存为：2026-10-30 起命令面板输入 `save as <路径>` 只列出一条“Save scene as <路径>”，执行即保存并设为保存目标（无文件对话框）。
 - 新建：Ctrl+N / 命令面板“New scene”清空为未命名的空文档（无保存目标、无撤销历史、停止监视原场景文件），有未保存修改时第一次只提示、再按一次才放弃修改（`break_editor_doc_reset`）。
+- 最近的场景：成功加载或保存的场景记入偏好文件（`recent=<路径>` 行，最新在前，最多 5 个，去重，路径不超过 399 字节），命令面板列为“Open recent: <文件名>”，按文件名或完整路径过滤，执行即加载（有未保存修改时同样两步）。`open`/`save as` 的参数须像路径（含 `/` 或 `\` 或以 `.bscn` 结尾），否则只是普通过滤词（因此 `open recent` 是过滤而非打开名为 recent 的文件）。
 - 打开：命令面板输入 `open <路径>` 只列出一条“Open scene <路径>”；文件存在时加载（有未保存修改时与资源浏览器相同：第一次只提示，再执行一次才加载），不存在时成为新场景的保存目标（与命令行参数相同）。
 - ~~窗口内 palette 的键盘上下导航~~：2026-10-29 已交付，上/下键移动高亮行（首尾循环、改过滤时复位），Enter 执行高亮行（`test_editor_shell` `palette_arrow_keys_move_the_highlight_and_enter_runs_it`）。
 - ~~undo `remove_entity` 不恢复组件~~：2026-10-29 已修复，删除命令构造时快照该实体全部已注册组件，撤销时按字节恢复（`test_editor_components` `remove_entity_undo_restores_components`）。

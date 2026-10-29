@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SETTINGS_MAX_BYTES 4096u
+#define SETTINGS_MAX_BYTES 8192u
 
 void break_editor_settings_defaults(BreakEditorSettings *s) {
     if (s == NULL) {
@@ -79,6 +79,21 @@ static void apply_line(BreakEditorSettings *s, const char *b, const char *e) {
     } else if (span_eq(kb, ke, "stats")) {
         if (span_eq(vb, ve, "on")) s->stats = true;
         else if (span_eq(vb, ve, "off")) s->stats = false;
+    } else if (span_eq(kb, ke, "recent")) {
+        /* file order is newest first: append unless full or a duplicate */
+        usize n = (usize)(ve - vb);
+        bool dup = false;
+        for (u32 i = 0u; i < s->recent_count; i++) {
+            if (strlen(s->recent[i]) == n && memcmp(s->recent[i], vb, n) == 0) {
+                dup = true;
+            }
+        }
+        if (n > 0u && n < BREAK_EDITOR_SETTINGS_RECENT_PATH && !dup &&
+            s->recent_count < BREAK_EDITOR_SETTINGS_RECENT_MAX) {
+            memcpy(s->recent[s->recent_count], vb, n);
+            s->recent[s->recent_count][n] = '\0';
+            s->recent_count++;
+        }
     } else if (span_eq(kb, ke, "grid")) {
         if (span_eq(vb, ve, "on")) s->grid = true;
         else if (span_eq(vb, ve, "off")) s->grid = false;
@@ -130,6 +145,14 @@ usize break_editor_settings_serialize(const BreakEditorSettings *s, char *out,
     if (n < 0 || (usize)n >= cap) {
         out[0] = '\0';
         return 0u;
+    }
+    for (u32 i = 0u; i < s->recent_count && i < BREAK_EDITOR_SETTINGS_RECENT_MAX; i++) {
+        int m = snprintf(out + n, cap - (usize)n, "recent=%s\n", s->recent[i]);
+        if (m < 0 || (usize)m >= cap - (usize)n) {
+            out[0] = '\0';
+            return 0u;
+        }
+        n += m;
     }
     return (usize)n;
 }
@@ -207,7 +230,7 @@ static bool make_parents(const char *path) {
 }
 
 bool break_editor_settings_save(const BreakEditorSettings *s, const char *path) {
-    char buf[512];
+    char buf[SETTINGS_MAX_BYTES];
     usize n;
     PlatformAtomicWriter *w;
     if (s == NULL || path == NULL) {
@@ -226,4 +249,26 @@ bool break_editor_settings_save(const BreakEditorSettings *s, const char *path) 
         return false;
     }
     return platform_atomic_writer_commit(w);
+}
+
+void break_editor_settings_note_recent(BreakEditorSettings *s, const char *path) {
+    usize n;
+    u32 i, k = 0u;
+    char keep[BREAK_EDITOR_SETTINGS_RECENT_MAX][BREAK_EDITOR_SETTINGS_RECENT_PATH];
+    if (s == NULL || path == NULL) return;
+    n = strlen(path);
+    if (n == 0u || n >= BREAK_EDITOR_SETTINGS_RECENT_PATH ||
+        memchr(path, '\n', n) != NULL) {
+        return;
+    }
+    for (i = 0u; i < s->recent_count && k + 1u < BREAK_EDITOR_SETTINGS_RECENT_MAX; i++) {
+        if (strcmp(s->recent[i], path) != 0) {
+            memcpy(keep[k++], s->recent[i], sizeof(keep[0]));
+        }
+    }
+    memcpy(s->recent[0], path, n + 1u);
+    for (i = 0u; i < k; i++) {
+        memcpy(s->recent[i + 1u], keep[i], sizeof(keep[0]));
+    }
+    s->recent_count = k + 1u;
 }

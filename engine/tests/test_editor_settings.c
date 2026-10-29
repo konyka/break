@@ -50,6 +50,54 @@ TEST(parse_bad_values_keep_defaults)
     ASSERT_FALSE(break_editor_settings_parse(&s, NULL, 1u));
 }
 
+/* recent scenes: newest first, at most BREAK_EDITOR_SETTINGS_RECENT_MAX,
+ * no duplicates, round-trip through the file; over-long or empty values are
+ * dropped on parse */
+TEST(recent_scenes_are_kept_newest_first_and_round_trip)
+{
+    BreakEditorSettings a, b;
+    char buf[2048];
+    usize n;
+    char longp[600];
+    break_editor_settings_defaults(&a);
+    ASSERT_EQ(a.recent_count, 0u);
+    break_editor_settings_note_recent(&a, "/s/one.bscn");
+    break_editor_settings_note_recent(&a, "/s/two.bscn");
+    break_editor_settings_note_recent(&a, "/s/one.bscn"); /* moves to front */
+    ASSERT_EQ(a.recent_count, 2u);
+    ASSERT_STR_EQ(a.recent[0], "/s/one.bscn");
+    ASSERT_STR_EQ(a.recent[1], "/s/two.bscn");
+    for (u32 i = 0u; i < 10u; i++) {
+        char p[32];
+        snprintf(p, sizeof(p), "/s/%u.bscn", i);
+        break_editor_settings_note_recent(&a, p);
+    }
+    ASSERT_EQ(a.recent_count, BREAK_EDITOR_SETTINGS_RECENT_MAX);
+    ASSERT_STR_EQ(a.recent[0], "/s/9.bscn");
+    memset(longp, 'x', sizeof(longp) - 1u);
+    longp[sizeof(longp) - 1u] = '\0';
+    break_editor_settings_note_recent(&a, longp); /* too long: ignored */
+    break_editor_settings_note_recent(&a, "");
+    break_editor_settings_note_recent(&a, NULL);
+    ASSERT_STR_EQ(a.recent[0], "/s/9.bscn");
+    n = break_editor_settings_serialize(&a, buf, sizeof(buf));
+    ASSERT_TRUE(n > 0u);
+    break_editor_settings_defaults(&b);
+    ASSERT_TRUE(break_editor_settings_parse(&b, buf, n));
+    ASSERT_EQ(b.recent_count, a.recent_count);
+    for (u32 i = 0u; i < a.recent_count; i++) {
+        ASSERT_STR_EQ(b.recent[i], a.recent[i]);
+    }
+    {
+        const char *t2 = "recent=\nrecent=/a.bscn\nrecent=/a.bscn\nrecent=/b.bscn\n";
+        break_editor_settings_defaults(&b);
+        ASSERT_TRUE(break_editor_settings_parse(&b, t2, strlen(t2)));
+        ASSERT_EQ(b.recent_count, 2u);
+        ASSERT_STR_EQ(b.recent[0], "/a.bscn");
+        ASSERT_STR_EQ(b.recent[1], "/b.bscn");
+    }
+}
+
 TEST(serialize_round_trips)
 {
     BreakEditorSettings a, b;
@@ -153,6 +201,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(parse_reads_known_keys_and_ignores_the_rest);
     RUN_TEST(parse_bad_values_keep_defaults);
     RUN_TEST(serialize_round_trips);
+    RUN_TEST(recent_scenes_are_kept_newest_first_and_round_trip);
     RUN_TEST(default_path_follows_xdg_then_home);
     RUN_TEST(save_then_load_through_the_file_system);
 TEST_MAIN_END()

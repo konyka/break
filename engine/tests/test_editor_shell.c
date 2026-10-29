@@ -3757,9 +3757,12 @@ TEST(palette_open_loads_the_typed_path_with_the_guard)
         ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
         ASSERT_TRUE(strstr(break_editor_shell_scene_path(shell), "new.bscn") != NULL);
     }
-    /* "open" alone offers nothing */
+    /* "open" without a path is an ordinary filter: it lists the recent
+     * scenes (two.bscn opened above), no "Open scene" entry */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "open "));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "open notapath"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 0u);
     break_editor_shell_destroy(shell);
     remove(scene);
@@ -3797,6 +3800,56 @@ TEST(new_scene_starts_empty_and_guards_unsaved_changes)
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
     ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
     break_editor_shell_destroy(shell);
+}
+
+/* Saved and loaded scenes are remembered in the settings file and listed in
+ * the palette as "Open recent: <file>"; running one loads it (guarded). */
+TEST(recent_scenes_are_listed_in_the_palette)
+{
+    char ini[256], dir[512], a[600], b[600], sa[700], sb[700];
+    BreakEditorShell *shell;
+    BreakEditorDoc *doc;
+    test_tmp(ini, sizeof(ini), "editor_recent.ini");
+    remove(ini);
+    test_tmp(dir, sizeof(dir), "editor_recent_dir");
+    TEST_MKDIR(dir);
+    snprintf(a, sizeof(a), "%s/alpha.bscn", dir);
+    snprintf(b, sizeof(b), "%s/beta.bscn", dir);
+    snprintf(sa, sizeof(sa), "%s" BREAK_EDITOR_SIDECAR_SUFFIX, a);
+    snprintf(sb, sizeof(sb), "%s" BREAK_EDITOR_SIDECAR_SUFFIX, b);
+    save_fixture_scene(a, 2u);
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, ini, true));
+    ASSERT_TRUE(break_editor_shell_open_scene(shell, a));
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, b));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    break_editor_shell_destroy(shell);
+
+    /* a fresh editor lists both, newest (beta) first */
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, ini, true));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "open recent"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 2u);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "alpha"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), a);
+    /* the plain list has the static commands plus the two recents */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, ""));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 22u);
+    break_editor_shell_destroy(shell);
+    remove(a);
+    remove(b);
+    remove(sa);
+    remove(sb);
+    remove(ini);
+    TEST_RMDIR(dir);
 }
 
 TEST(lua_panel_eval_routes_result_to_console_ring)
@@ -8645,6 +8698,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_save_as_writes_the_typed_path);
     RUN_TEST(palette_open_loads_the_typed_path_with_the_guard);
     RUN_TEST(new_scene_starts_empty_and_guards_unsaved_changes);
+    RUN_TEST(recent_scenes_are_listed_in_the_palette);
     RUN_TEST(lua_panel_eval_routes_result_to_console_ring);
     RUN_TEST(lua_panel_spawn_updates_outliner_and_ctrl_z_reverts);
     RUN_TEST(lua_panel_history_up_down_recall);

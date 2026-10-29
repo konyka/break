@@ -178,7 +178,11 @@ struct BreakEditorShell {
     } tab_ctxs[5];
 
     bool palette_open;
-    u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT + 2u];
+    u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT + 2u +
+                        BREAK_EDITOR_SETTINGS_RECENT_MAX];
+    /* recently opened/saved scenes (persisted with the UI settings) */
+    u32 recent_count;
+    char recent[BREAK_EDITOR_SETTINGS_RECENT_MAX][BREAK_EDITOR_SETTINGS_RECENT_PATH];
     /* "save as <path>" / "open <path>" typed into the palette: the path of
      * the one dynamic entry (PAL_SAVE_AS or PAL_OPEN; empty: none) */
     char palette_save_as[BREAK_EDITOR_SCENE_PATH_CAPACITY];
@@ -245,6 +249,7 @@ enum {
 /* dynamic entry past the static table (only offered for "save as <path>") */
 #define PAL_SAVE_AS EDITOR_PALETTE_COMMAND_COUNT
 #define PAL_OPEN (EDITOR_PALETTE_COMMAND_COUNT + 1u)
+#define PAL_RECENT_0 (EDITOR_PALETTE_COMMAND_COUNT + 2u) /* + index */
 #define EDITOR_SAVE_AS_PREFIX "save as "
 #define EDITOR_OPEN_PREFIX "open "
 
@@ -306,6 +311,7 @@ static int shell_extra_index(const BreakEditorShell *shell,
                              BreakEditorEntityId id);
 static void shell_set_snap(BreakEditorShell *shell, bool on);
 static void shell_set_grid(BreakEditorShell *shell, bool on);
+static void shell_note_recent(BreakEditorShell *shell, const char *path);
 static void shell_reset_camera(BreakEditorShell *shell);
 static void shell_do_new_scene(BreakEditorShell *shell);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
@@ -1125,6 +1131,15 @@ bool break_editor_shell_palette_set_filter(BreakEditorShell *shell,
         }
         if (kind != 0u) {
             while (*arg == ' ') arg++;
+            /* "open recent ..." and other words are filters, not paths: the
+             * argument must look like a scene path */
+            if (strchr(arg, '/') == NULL && strchr(arg, '\\') == NULL &&
+                !(strlen(arg) > 5u &&
+                  strcmp(arg + strlen(arg) - 5u, ".bscn") == 0)) {
+                kind = 0u;
+            }
+        }
+        if (kind != 0u) {
             if (arg[0] != '\0' && strlen(arg) < sizeof(shell->palette_save_as)) {
                 memcpy(shell->palette_save_as, arg, strlen(arg) + 1u);
                 shell->palette_matches[shell->palette_match_count++] = kind;
@@ -1140,6 +1155,15 @@ bool break_editor_shell_palette_set_filter(BreakEditorShell *shell,
         if (editor_str_contains_casefold(
                 shell_palette_text(i, cmd_text, sizeof(cmd_text)), text)) {
             shell->palette_matches[shell->palette_match_count++] = i;
+        }
+    }
+    for (i = 0u; i < shell->recent_count; i++) {
+        char row[BREAK_EDITOR_SETTINGS_RECENT_PATH + 64];
+        if (editor_str_contains_casefold(
+                shell_palette_row_text(shell, PAL_RECENT_0 + i, row, sizeof(row)),
+                text) ||
+            editor_str_contains_casefold(shell->recent[i], text)) {
+            shell->palette_matches[shell->palette_match_count++] = PAL_RECENT_0 + i;
         }
     }
     if (shell->palette_list != NULL) {
@@ -1304,6 +1328,7 @@ static void shell_do_save(BreakEditorShell *shell) {
     }
     if (break_editor_doc_save(shell->doc, shell->scene_path)) {
         break_editor_hot_reload_note_saved(shell->hot_reload);
+        shell_note_recent(shell, shell->scene_path);
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_SAVED_FMT), shell->scene_path);
         (void)snprintf(shell->note, sizeof(shell->note), "saved");
     } else {
@@ -1435,6 +1460,16 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
 
 static const char *shell_palette_row_text(const BreakEditorShell *shell,
                                           u32 cmd, char *buf, size_t cap) {
+    if (cmd >= PAL_RECENT_0 && shell != NULL &&
+        cmd - PAL_RECENT_0 < shell->recent_count) {
+        const char *path = shell->recent[cmd - PAL_RECENT_0];
+        const char *name = strrchr(path, '/');
+        const char *back = strrchr(path, '\\');
+        if (back != NULL && (name == NULL || back > name)) name = back;
+        (void)snprintf(buf, cap, break_editor_tr(BREAK_EDITOR_TR_CMD_OPEN_RECENT_FMT),
+                       name != NULL ? name + 1 : path);
+        return buf;
+    }
     if (cmd == PAL_SAVE_AS || cmd == PAL_OPEN) {
         (void)snprintf(buf, cap,
                        break_editor_tr(cmd == PAL_OPEN
@@ -1447,7 +1482,15 @@ static const char *shell_palette_row_text(const BreakEditorShell *shell,
 }
 
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
-    if (shell == NULL || cmd > PAL_OPEN) {
+    if (shell == NULL) {
+        return;
+    }
+    if (cmd >= PAL_RECENT_0) {
+        if (cmd - PAL_RECENT_0 < shell->recent_count) {
+            char path[BREAK_EDITOR_SETTINGS_RECENT_PATH];
+            memcpy(path, shell->recent[cmd - PAL_RECENT_0], sizeof(path));
+            (void)editor_shell_load_scene_guarded(shell, path);
+        }
         return;
     }
     if (cmd == PAL_OPEN) {
@@ -2242,6 +2285,17 @@ static void shell_set_grid(BreakEditorShell *shell, bool on) {
     }
 }
 
+static void shell_note_recent(BreakEditorShell *shell, const char *path) {
+    BreakEditorSettings tmp;
+    break_editor_settings_defaults(&tmp);
+    tmp.recent_count = shell->recent_count;
+    memcpy(tmp.recent, shell->recent, sizeof(tmp.recent));
+    break_editor_settings_note_recent(&tmp, path);
+    shell->recent_count = tmp.recent_count;
+    memcpy(shell->recent, tmp.recent, sizeof(shell->recent));
+    shell_settings_save(shell);
+}
+
 /* Best-effort: a failed write is logged, never fatal (UI state only). */
 static void shell_settings_save(BreakEditorShell *shell) {
     BreakEditorSettings st;
@@ -2257,6 +2311,8 @@ static void shell_settings_save(BreakEditorShell *shell) {
     st.snap = shell->snap;
     st.stats = shell->stats;
     st.grid = shell->grid;
+    st.recent_count = shell->recent_count;
+    memcpy(st.recent, shell->recent, sizeof(st.recent));
     if (!break_editor_settings_save(&st, shell->settings_path)) {
         editor_shell_log(shell, "settings: could not write %s",
                          shell->settings_path);
@@ -2289,6 +2345,8 @@ bool break_editor_shell_use_settings(BreakEditorShell *shell, const char *path,
     shell_set_snap(shell, st.snap);
     shell->stats = st.stats;
     shell_set_grid(shell, st.grid);
+    shell->recent_count = st.recent_count;
+    memcpy(shell->recent, st.recent, sizeof(shell->recent));
     memcpy(shell->settings_path, path, n + 1u);
     return true;
 }
@@ -3040,6 +3098,7 @@ bool editor_shell_load_scene(BreakEditorShell *shell, const char *path) {
         return false;
     }
     editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_LOAD_FMT), path);
+    shell_note_recent(shell, path);
     if (len > 0u && len + 1u <= sizeof(shell->scene_path)) {
         memcpy(shell->scene_path, path, len + 1u);
         shell->scene_path_set = true;
