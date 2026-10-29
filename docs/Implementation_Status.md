@@ -1,5 +1,24 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：全仓数字文本与 locale 无关（2026-10-30）
+
+- **交付**：在逗号小数 `LC_NUMERIC`（如 `de_DE`）下，读写的数字文本统一使用 `.`。具体改动：
+  - rule_engine：解析用 `re_strtod_c`，`format` 中的 `%f` 和 double 显示用 `re_c_decimal`；
+  - myui：myconf JSON/TOML/YAML 的读写、CSS、theme、layout、echarts 改用 `myc/my_str.h` 中的 `my_strtod_c`、`my_str_c_decimal`；
+  - core：新增 `break_strtod_c`、`break_c_decimal`（`core/string.h`），用于旧 script 解析器（代替 `sscanf %f`）、NetRep peer 文件读写，以及 `main.c` 的环境变量解析（代替 `atof`）。
+- **测试**：每个模块都在 `de_DE.utf8` 下先红后绿，新增用例：
+  - `decimal_parsing_is_independent_of_the_locale`
+  - `builtin_format_decimals_are_locale_independent`
+  - `conf_decimals_are_locale_independent`
+  - `css_decimal_values_are_locale_independent`
+  - `load_decimals_are_locale_independent`
+  - `peer_file_decimals_are_locale_independent`
+  - `strtod_c_ignores_comma_locale`
+  - `c_decimal_rewrites_locale_point`
+
+  默认树 233/234，唯一失败是已知的桌面 WM 用例 `test_platform_x11_runtime`，改动前同样失败。
+- **未改**：`break_lua_op_take_error` 对数字错误对象使用 `%.14g`，只影响错误消息文本，不会持久化，所以保留。
+
 ## 本轮更新：break_lua_ecs_apply 字符串解析与 locale 无关（2026-10-30）
 
 - **修复**：`engine/src/script/break_lua_ecs_apply.c` 原先用 strtod，受 LC_NUMERIC 影响，在 de_DE 下 `"-2.25"` 会被拒绝。现在先做 C 语法校验，再替换小数点，"1,5" 一律拒绝。

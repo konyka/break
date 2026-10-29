@@ -43,6 +43,7 @@
 #include <renderer/occlusion_cull.h>
 #include <scene/scene_serial.h>
 #include <scene/scene_state.h>
+#include <core/string.h>
 #include <core/shader_io.h>
 #include <renderer/indirect_draw.h>
 #include <renderer/gpucull.h>
@@ -5099,9 +5100,9 @@ int engine_demo_main(int argc, char **argv, const EngineConfig *host_config) {
     f32 model_view_scale = 0.0f;
     Vec3 model_view_min = vec3(0, 0, 0), model_view_max = vec3(0, 0, 0);
     { const char *e = getenv("BREAK_MODEL_VIEW");
-      if (e && e[0] && atof(e) > 0.0) {
+      if (e && e[0] && break_strtod_c(e, NULL) > 0.0) {
           if (demo_model_bounds(render.device, &scene, &model_view_min, &model_view_max)) {
-              model_view_scale = (f32)atof(e);
+              model_view_scale = break_strtof_c(e, NULL);
               LOG_INFO("BREAK_MODEL_VIEW: bounds (%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f), scale %.2f",
                        model_view_min.e[0], model_view_min.e[1], model_view_min.e[2],
                        model_view_max.e[0], model_view_max.e[1], model_view_max.e[2],
@@ -5337,13 +5338,13 @@ int engine_demo_main(int argc, char **argv, const EngineConfig *host_config) {
     f32 cam_dolly = 0.0f;
     { const char *e = getenv("BREAK_CAM_DOLLY");
       if (e && e[0]) {
-          cam_dolly = (f32)atof(e);
+          cam_dolly = break_strtof_c(e, NULL);
           if (cam_dolly != 0.0f) LOG_INFO("BREAK_CAM_DOLLY: %.3f m/frame", cam_dolly);
       } }
     f32 cam_spin_deg = 0.0f;
     { const char *e = getenv("BREAK_CAM_SPIN");
       if (e && e[0]) {
-          cam_spin_deg = (f32)atof(e);
+          cam_spin_deg = break_strtof_c(e, NULL);
           if (cam_spin_deg != 0.0f)
               LOG_INFO("BREAK_CAM_SPIN: %.2f deg/frame", cam_spin_deg);
       } }
@@ -5799,7 +5800,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
      * generate-only call and performs no cache file I/O. */
     lod_cache_init(&g_lod_cache, getenv("BREAK_LOD_CACHE"));
     { const char *e = getenv("BREAK_LOD_PIXEL_ERROR");
-      if (e && e[0]) { f32 v = (f32)atof(e); if (v > 0.0f) mega_lod_pixel_error = v; } }
+      if (e && e[0]) { f32 v = break_strtof_c(e, NULL); if (v > 0.0f) mega_lod_pixel_error = v; } }
     { const char *e = getenv("BREAK_LOD_SHADOW_BIAS");
       if (e && e[0]) { int v = atoi(e); mega_lod_shadow_bias = v > 0 ? (u32)v : 0u; } }
     { const char *e = getenv("BREAK_LOD_TRACE"); if (e && e[0]) mega_lod_trace_node = atoi(e); }
