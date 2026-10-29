@@ -66,6 +66,8 @@ static const char k_css[] =
     "#editor-outliner-row.selected, #editor-outliner-row.selected:hover,"
     " #editor-palette-row.selected, #editor-palette-row.selected:hover {"
     " background-color: #2e436e; color: #ffffff; }\n"
+    /* entities hidden in the viewport (H): dimmed text */
+    "#editor-outliner-row.hidden { color: #6f737a; }\n"
     /* command palette popup */
     "#editor-palette { background-color: #2b2d30; }\n"
     /* tool-window tab strips: flat tabs on the window colour, the active
@@ -134,6 +136,7 @@ static const char k_css_light[] =
     "#editor-outliner-row.selected, #editor-outliner-row.selected:hover,"
     " #editor-palette-row.selected, #editor-palette-row.selected:hover {"
     " background-color: #d4e2ff; color: #1f1f1f; }\n"
+    "#editor-outliner-row.hidden { color: #a8adbd; }\n"
     /* command palette popup */
     "#editor-palette { background-color: #f7f8fa; }\n"
     "#editor-bottom-tabs, #editor-diag-tabs { background-color: #f7f8fa; }\n"

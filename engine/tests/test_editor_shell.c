@@ -3390,6 +3390,38 @@ TEST(h_hides_the_selection_alt_h_shows_all)
     break_editor_shell_destroy(shell);
 }
 
+TEST(hidden_entities_are_dimmed_in_the_outliner)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *list, *r0, *r1;
+    const char *c0;
+    ASSERT_NOT_NULL(shell);
+    emit_click(find(shell, "editor-add-button"));
+    emit_click(find(shell, "editor-add-button"));
+    shell_paint(shell);
+    list = find(shell, "editor-outliner");
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0u));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'h', 0u));
+    shell_paint(shell);
+    r0 = my_widget_get_child(list, 0u);
+    r1 = my_widget_get_child(list, 1u);
+    c0 = my_widget_get_style_class(r0);
+    ASSERT_NOT_NULL(c0);
+    ASSERT_STR_EQ(c0, "hidden");
+    ASSERT_EQ(my_widget_style_get_color(r0, MY_STATE_NORMAL, "fg_color", 0u),
+              BREAK_EDITOR_THEME_TEXT_DISABLED);
+    ASSERT_TRUE(my_widget_get_style_class(r1) == NULL);
+    /* selecting a hidden row shows the selection; it dims again after */
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0u));
+    ASSERT_STR_EQ(my_widget_get_style_class(r0), "selected");
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 1u));
+    ASSERT_STR_EQ(my_widget_get_style_class(r0), "hidden");
+    /* Alt+H clears the mark */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'h', MY_KEYMOD_ALT));
+    ASSERT_TRUE(my_widget_get_style_class(r0) == NULL);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8361,6 +8393,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(home_and_palette_reset_the_view);
     RUN_TEST(digit_keys_snap_to_front_right_top_views);
     RUN_TEST(h_hides_the_selection_alt_h_shows_all);
+    RUN_TEST(hidden_entities_are_dimmed_in_the_outliner);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

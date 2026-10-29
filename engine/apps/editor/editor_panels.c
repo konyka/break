@@ -913,11 +913,18 @@ static void shell_row_mark_selected(BreakEditorShell *shell, my_widget_t *row,
     BreakEditorEntityId id;
     const char *unused = NULL;
     const char *cls = my_widget_get_style_class(row);
-    bool want = break_editor_doc_entity_at(shell->doc, index, &id, &unused) &&
-                shell_is_selected(shell, id);
-    bool have = cls != NULL && strcmp(cls, "selected") == 0;
-    if (want != have) {
-        (void)my_widget_set_style_class(row, want ? "selected" : NULL);
+    bool live = break_editor_doc_entity_at(shell->doc, index, &id, &unused);
+    /* selected wins over hidden: a hidden entity picked in the outliner
+     * shows as selected */
+    const char *want = !live ? NULL
+                       : shell_is_selected(shell, id) ? "selected"
+                       : break_editor_viewport3d_is_hidden(shell->vp3d, id)
+                           ? "hidden"
+                           : NULL;
+    bool same = (want == NULL && cls == NULL) ||
+                (want != NULL && cls != NULL && strcmp(cls, want) == 0);
+    if (!same) {
+        (void)my_widget_set_style_class(row, want);
     }
 }
 
@@ -1587,6 +1594,7 @@ static void shell_do_hide_selected(BreakEditorShell *shell) {
         shell_end_gizmo_drag(shell);
         (void)break_editor_shell_select_ids(shell, NULL, 0u, false);
     }
+    shell_outliner_mark_selection(shell);
     shell_viewport_damage(shell);
 }
 
@@ -1793,6 +1801,7 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
             }
             shell->hidden_count = 0u;
             break_editor_viewport3d_set_hidden(shell->vp3d, NULL, 0u);
+            shell_outliner_mark_selection(shell);
             shell_viewport_damage(shell);
             break;
         case ACT_VIEW_FRONT:
