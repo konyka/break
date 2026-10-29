@@ -163,6 +163,7 @@ typedef struct BreakEditorViewport3DStats {
     u32 outline_edges;/* selection outline edge boxes drawn (0 or 12) */
     u32 tinted;       /* proxies drawn with the selection tint */
     u32 ring_segments;/* rotate-mode ring cubes drawn (0 or 3 * 48) */
+    u32 grid_lines;   /* ground grid line boxes drawn (0 when hidden) */
 } BreakEditorViewport3DStats;
 
 /* False on NULL arguments. */
@@ -197,6 +198,18 @@ u32 break_editor_viewport3d_outline_edges(const f32 model[16], f32 thickness,
  * projects inside (Ctrl adds to the selection). False otherwise. */
 bool break_editor_viewport3d_box_rect(const BreakEditorViewport3D *vp,
                                       f32 out4[4]);
+
+/* Ground grid on the XZ plane (y = 0): lines every `spacing` from
+ * -half_extent to +half_extent along both axes, each a flat box
+ * 2*half_extent (+ thickness) long and `thickness` across, column-major
+ * into out[0..cap). Returns the count written (lines along X first, then
+ * along Z); 0 for NULL out, cap 0, or non-finite / non-positive inputs.
+ * Pure CPU. */
+u32 break_editor_viewport3d_grid_lines(f32 half_extent, f32 spacing,
+                                       f32 thickness, f32 (*out)[16],
+                                       u32 cap);
+/* Draws the ground grid (default on). */
+void break_editor_viewport3d_set_grid(BreakEditorViewport3D *vp, bool on);
 
 /* Viewport panel widget (myui subclass: custom on_paint blit + pointer
  * routing into the CPU core). Borrows the shell; the tree owns the widget.

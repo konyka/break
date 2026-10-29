@@ -63,6 +63,7 @@ TEST(serialize_round_trips)
     a.diag_tab = 2u;
     a.snap = true;
     a.stats = false;
+    a.grid = false;
     n = break_editor_settings_serialize(&a, buf, sizeof(buf));
     ASSERT_TRUE(n > 0u && n < sizeof(buf));
     break_editor_settings_defaults(&b);
@@ -73,6 +74,9 @@ TEST(serialize_round_trips)
     ASSERT_EQ(b.diag_tab, 2u);
     ASSERT_TRUE(b.snap);
     ASSERT_FALSE(b.stats);
+    ASSERT_FALSE(b.grid);
+    break_editor_settings_defaults(&b);
+    ASSERT_TRUE(b.grid);
     /* stats default on; "stats=off" turns it off */
     break_editor_settings_defaults(&b);
     ASSERT_TRUE(b.stats);

@@ -275,7 +275,7 @@ TEST(palette_opens_filters_and_escape_closes)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 17u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 18u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save"));
@@ -2989,6 +2989,7 @@ TEST(viewport_right_drag_flies_with_wasd)
     cam = break_editor_shell_camera(shell);
     ASSERT_NOT_NULL(vp);
     ASSERT_NOT_NULL(cam);
+    cam->pitch = 0.0f; /* level camera: forward is exactly -Z */
     step = break_editor_camera_fly_step(cam);
     cx = 0.5f * (f32)vp->rect.w;
     cy = 0.5f * (f32)vp->rect.h;
@@ -6377,6 +6378,86 @@ TEST(shader_reload_follows_included_files)
     shader_env_restore(&env);
 }
 
+TEST(grid_lines_cover_the_ground_plane)
+{
+    f32 lines[64][16];
+    u32 n, along_x = 0u, along_z = 0u;
+    /* half extent 2, spacing 1: x = -2..2 and z = -2..2 -> 5 + 5 lines */
+    n = break_editor_viewport3d_grid_lines(2.0f, 1.0f, 0.02f, lines, 64u);
+    ASSERT_EQ(n, 10u);
+    for (u32 i = 0u; i < n; i++) {
+        const f32 *m = lines[i];
+        /* flat boxes on y = 0, 4 units long, thin across */
+        ASSERT_FLOAT_EQ(m[13], 0.0f, 1e-6f);
+        ASSERT_FLOAT_EQ(m[5], 0.02f, 1e-6f);
+        if (m[0] > 1.0f) {
+            along_x++;
+            ASSERT_FLOAT_EQ(m[0], 4.0f + 0.02f, 1e-6f);
+            ASSERT_FLOAT_EQ(m[10], 0.02f, 1e-6f);
+            ASSERT_FLOAT_EQ(m[12], 0.0f, 1e-6f);
+            ASSERT_TRUE(fabsf(m[14] - roundf(m[14])) < 1e-6f);
+        } else {
+            along_z++;
+            ASSERT_FLOAT_EQ(m[10], 4.0f + 0.02f, 1e-6f);
+            ASSERT_FLOAT_EQ(m[14], 0.0f, 1e-6f);
+        }
+    }
+    ASSERT_EQ(along_x, 5u);
+    ASSERT_EQ(along_z, 5u);
+    /* capacity bounds the output; bad input gives nothing */
+    ASSERT_EQ(break_editor_viewport3d_grid_lines(2.0f, 1.0f, 0.02f, lines, 3u), 3u);
+    ASSERT_EQ(break_editor_viewport3d_grid_lines(2.0f, 0.0f, 0.02f, lines, 64u), 0u);
+    ASSERT_EQ(break_editor_viewport3d_grid_lines(-1.0f, 1.0f, 0.02f, lines, 64u), 0u);
+    ASSERT_EQ(break_editor_viewport3d_grid_lines(NAN, 1.0f, 0.02f, lines, 64u), 0u);
+    ASSERT_EQ(break_editor_viewport3d_grid_lines(2.0f, 1.0f, 0.02f, NULL, 64u), 0u);
+}
+
+/* The grid is on by default, drawn by the real render path (fake RHI), and
+ * the palette toggles it; the choice persists. */
+TEST(viewport_grid_renders_toggles_and_persists)
+{
+    EditorShaderEnv env;
+    ShaderReloadFixture fx;
+    BreakEditorViewport3DStats st;
+    char path[256];
+    int cmd = 0;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    test_tmp(path, sizeof(path), "editor_shell_grid.ini");
+    remove(path);
+    shader_reload_fixture_open(&fx, "editor_viewport_grid", "REV=1 vertex\n",
+                               "REV=1 fragment\n");
+    ASSERT_TRUE(break_editor_shell_use_settings(fx.shell, path, true));
+    break_editor_viewport3d_render(fx.vp, break_editor_shell_doc(fx.shell),
+                                   &fx.device, &cmd, 800, 480);
+    ASSERT_TRUE(break_editor_viewport3d_last_stats(fx.vp, &st));
+    ASSERT_EQ(st.skipped, BREAK_EDITOR_VIEWPORT3D_SKIP_NONE);
+    ASSERT_TRUE(st.grid_lines > 0u);
+    ASSERT_EQ(st.draws, st.grid_lines);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(fx.shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(fx.shell, "grid"));
+    ASSERT_EQ(break_editor_shell_palette_count(fx.shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(fx.shell, MY_KEY_RETURN, 0u));
+    break_editor_viewport3d_render(fx.vp, break_editor_shell_doc(fx.shell),
+                                   &fx.device, &cmd, 800, 480);
+    ASSERT_TRUE(break_editor_viewport3d_last_stats(fx.vp, &st));
+    ASSERT_EQ(st.grid_lines, 0u);
+    ASSERT_EQ(st.draws, 0u);
+    shader_reload_fixture_close(&fx);
+    {
+        BreakEditorShell *shell = break_editor_shell_create_for_test();
+        ASSERT_NOT_NULL(shell);
+        ASSERT_TRUE(break_editor_shell_use_settings(shell, path, true));
+        ASSERT_FALSE(break_editor_shell_grid_visible(shell));
+        break_editor_shell_destroy(shell);
+    }
+    remove(path);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
 TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers)
 {
     EditorShaderEnv env;
@@ -7683,7 +7764,7 @@ TEST(i18n_palette_switches_language_at_runtime)
 
     /* palette now lists and filters Chinese command names */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 17u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 18u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "保存"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "English"));
@@ -8124,6 +8205,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shader_reload_ctrl_shift_r_queues_without_sync_rhi);
     RUN_TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers);
     RUN_TEST(shader_reload_follows_included_files);
+    RUN_TEST(grid_lines_cover_the_ground_plane);
+    RUN_TEST(viewport_grid_renders_toggles_and_persists);
     RUN_TEST(shader_reload_initial_failure_recovers_without_implicit_retry);
     RUN_TEST(shader_reload_worker_stages_off_rhi_and_trailing_uses_latest);
     RUN_TEST(shader_reload_two_root_watch_promotes_and_delete_falls_back);

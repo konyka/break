@@ -52,7 +52,9 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_ROW_CTX_POOL 64u
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
-#define EDITOR_PALETTE_COMMAND_COUNT 17u
+#define EDITOR_PALETTE_COMMAND_COUNT 18u
+/* 25 degrees: the editor camera starts above the grid plane */
+#define EDITOR_DEFAULT_CAMERA_PITCH 0.43633231f
 #define EDITOR_EXTRA_SELECTION_MAX 64u
 #define EDITOR_TEST_WINDOW_W 800
 #define EDITOR_TEST_WINDOW_H 480
@@ -156,6 +158,7 @@ struct BreakEditorShell {
     u32 active_tab[2];
     bool snap; /* gizmo snapping on (EDITOR_SNAP_* steps) */
     bool stats; /* viewport stats overlay */
+    bool grid;  /* viewport ground grid */
     char overlay_text[160];
     /* persisted UI preferences (editor_settings.h): saved after each
      * theme / language / tab change once a path is set; empty = off */
@@ -216,7 +219,8 @@ enum {
     PAL_THEME_DARK,
     PAL_DUPLICATE_SELECTED,
     PAL_TOGGLE_SNAP,
-    PAL_TOGGLE_STATS
+    PAL_TOGGLE_STATS,
+    PAL_TOGGLE_GRID
 };
 
 /* Current-language text of palette command `cmd` (bounded, never NULL). */
@@ -254,6 +258,9 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
     if (cmd == PAL_TOGGLE_STATS) {
         return break_editor_tr(BREAK_EDITOR_TR_CMD_TOGGLE_STATS);
     }
+    if (cmd == PAL_TOGGLE_GRID) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_TOGGLE_GRID);
+    }
     return "?";
 }
 
@@ -266,6 +273,7 @@ static void shell_outliner_mark_selection(BreakEditorShell *shell);
 static int shell_extra_index(const BreakEditorShell *shell,
                              BreakEditorEntityId id);
 static void shell_set_snap(BreakEditorShell *shell, bool on);
+static void shell_set_grid(BreakEditorShell *shell, bool on);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
 
 /* Bounded console log: appends one <=127-byte line to the ring, dropping the
@@ -1360,6 +1368,10 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     case PAL_TOGGLE_SNAP:
         shell_set_snap(shell, !shell->snap);
         break;
+    case PAL_TOGGLE_GRID:
+        shell_set_grid(shell, !shell->grid);
+        shell_settings_save(shell);
+        break;
     case PAL_TOGGLE_STATS:
         shell->stats = !shell->stats;
         if (shell->viewport_widget != NULL) {
@@ -1954,6 +1966,14 @@ static void shell_set_snap(BreakEditorShell *shell, bool on) {
     shell_settings_save(shell);
 }
 
+static void shell_set_grid(BreakEditorShell *shell, bool on) {
+    shell->grid = on;
+    break_editor_viewport3d_set_grid(shell->vp3d, on);
+    if (shell->viewport_widget != NULL) {
+        my_widget_invalidate(shell->viewport_widget, NULL);
+    }
+}
+
 /* Best-effort: a failed write is logged, never fatal (UI state only). */
 static void shell_settings_save(BreakEditorShell *shell) {
     BreakEditorSettings st;
@@ -1968,6 +1988,7 @@ static void shell_settings_save(BreakEditorShell *shell) {
     st.diag_tab = shell->active_tab[1];
     st.snap = shell->snap;
     st.stats = shell->stats;
+    st.grid = shell->grid;
     if (!break_editor_settings_save(&st, shell->settings_path)) {
         editor_shell_log(shell, "settings: could not write %s",
                          shell->settings_path);
@@ -1999,6 +2020,7 @@ bool break_editor_shell_use_settings(BreakEditorShell *shell, const char *path,
     (void)break_editor_shell_select_tab(shell, 1u, st.diag_tab);
     shell_set_snap(shell, st.snap);
     shell->stats = st.stats;
+    shell_set_grid(shell, st.grid);
     memcpy(shell->settings_path, path, n + 1u);
     return true;
 }
@@ -2308,7 +2330,10 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     /* Phase 2 Task 3 owned viewport state (pure CPU here — vp3d has no GPU
      * objects until a first render with a live device) */
     break_editor_camera_init(&shell->camera);
+    /* look down at the ground grid instead of along it */
+    shell->camera.pitch = EDITOR_DEFAULT_CAMERA_PITCH;
     shell->stats = true;
+    shell->grid = true;
     shell->gizmo = break_editor_gizmo_create();
     shell->vp3d = break_editor_viewport3d_create();
     if (shell->gizmo == NULL || shell->vp3d == NULL) {
@@ -2738,6 +2763,10 @@ bool break_editor_shell_select_ids(BreakEditorShell *shell,
     }
     editor_shell_refresh_all(shell);
     return true;
+}
+
+bool break_editor_shell_grid_visible(const BreakEditorShell *shell) {
+    return shell != NULL && shell->grid;
 }
 
 bool break_editor_shell_viewport_stats_visible(const BreakEditorShell *shell) {

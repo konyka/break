@@ -265,6 +265,9 @@ bool break_editor_shell_fly_advance(BreakEditorShell *shell, f32 seconds);
  * of the last render, in the UI language — or "" when hidden. The buffer
  * is shell-owned and rewritten on every call. */
 bool break_editor_shell_viewport_stats_visible(const BreakEditorShell *shell);
+/* Viewport ground grid (default on; palette "Toggle ground grid";
+ * persisted as grid=on|off). */
+bool break_editor_shell_grid_visible(const BreakEditorShell *shell);
 const char *break_editor_shell_viewport_overlay_text(BreakEditorShell *shell);
 /* True while a viewport box (marquee) drag is in progress. */
 bool break_editor_shell_viewport_box_active(BreakEditorShell *shell);

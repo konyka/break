@@ -22,6 +22,7 @@ typedef struct {
     u32 diag_tab;   /* 0 Profiler, 1 Network, 2 Render */
     bool snap;      /* gizmo snapping on (default steps) */
     bool stats;     /* viewport stats overlay (default on) */
+    bool grid;      /* viewport ground grid (default on) */
 } BreakEditorSettings;
 
 void break_editor_settings_defaults(BreakEditorSettings *s);

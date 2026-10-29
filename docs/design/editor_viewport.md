@@ -192,3 +192,7 @@ GPU 路径证据 = 编译/链接 + 记录在案的 live smoke run（**非** GPU 
 ## 视口统计叠加（2026-10-29）
 
 视口左上角画一行统计：实体数、选中数（主选 + 多选）、上一帧的 draw call 数、FBO 尺寸，随 UI 语言翻译（`Entities 1  Selected 1  Draws 14  818x690` / `实体 1  选中 1  绘制 14  818x690`），12 px 浅色字、半透明黑底。默认开启；命令面板“Toggle viewport stats / 切换视口统计”开关，偏好文件 `stats=on|off`。文本由 `break_editor_shell_viewport_overlay_text` 生成（隐藏时为空串），draw/FBO 数取自 `break_editor_viewport3d_last_stats`，不做 GPU 回读。未做：帧时间（profiler 面板已有）。
+
+## 地面网格（2026-10-29）
+
+XZ 平面（y = 0）上从 -10 到 +10 每 1 单位一条线，共 42 条，以细长盒（截面 0.02）绘制，先于代理立方体、参与深度测试；过原点沿 X 的线为暗红、沿 Z 的线为暗蓝，其余灰色。几何由纯 CPU 的 `break_editor_viewport3d_grid_lines` 生成，统计 `grid_lines`。默认开启；命令面板“Toggle ground grid / 切换地面网格”开关，偏好文件 `grid=on|off`。编辑器相机默认俯仰改为 25°（原为 0°，视线贴着网格平面时网格只是一条线）；`break_editor_camera_init` 本身仍是 0°。未做：随距离自适应间距、无限网格、淡出。

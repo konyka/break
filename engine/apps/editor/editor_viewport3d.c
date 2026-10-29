@@ -113,6 +113,9 @@ enum {
 /* pointer travel (logical px) before a press on empty space becomes a box */
 #define EDITOR_VIEWPORT_BOX_THRESHOLD 4.0f
 #define EDITOR_VIEWPORT_BOX_MAX 256u
+/* ground grid: lines every unit from -HALF to +HALF on X and Z */
+#define EDITOR_VIEWPORT_GRID_HALF 10u
+#define EDITOR_VIEWPORT_GRID_THICKNESS 0.02f
 
 struct BreakEditorViewport3D {
     RHIDevice *device; /* borrowed; NULL until the first live render */
@@ -139,6 +142,7 @@ struct BreakEditorViewport3D {
 
     /* render debugger: last render() call (CPU counters only) */
     int last_skip;
+    u32 last_grid;
     u32 last_proxies, last_gizmo, last_draws, last_outline, last_ring,
         last_tinted;
 
@@ -147,6 +151,7 @@ struct BreakEditorViewport3D {
     f32 last_x, last_y;
     f32 box[4];   /* box select: press x/y, current x/y (viewport-local) */
     bool box_add; /* Ctrl held at press: add to the selection */
+    bool grid_off; /* ground grid hidden (default: drawn) */
 };
 
 /* ---------------- creation / destruction ---------------- */
@@ -176,6 +181,7 @@ bool break_editor_viewport3d_last_stats(const BreakEditorViewport3D *vp,
     out->gizmo_handles = vp->last_gizmo;
     out->outline_edges = vp->last_outline;
     out->ring_segments = vp->last_ring;
+    out->grid_lines = vp->last_grid;
     out->tinted = vp->last_tinted;
     out->draws = vp->last_draws;
     return true;
@@ -331,6 +337,38 @@ u32 break_editor_viewport3d_outline_edges(const f32 model[16], f32 thickness,
         }
     }
     return n;
+}
+
+u32 break_editor_viewport3d_grid_lines(f32 half_extent, f32 spacing,
+                                       f32 thickness, f32 (*out)[16],
+                                       u32 cap) {
+    u32 n = 0u, per_axis;
+    f32 len;
+    if (out == NULL || cap == 0u || !isfinite(half_extent) ||
+        !isfinite(spacing) || !isfinite(thickness) || !(half_extent > 0.0f) ||
+        !(spacing > 0.0f) || !(thickness > 0.0f)) {
+        return 0u;
+    }
+    per_axis = (u32)floorf(2.0f * half_extent / spacing + 1e-4f) + 1u;
+    len = 2.0f * half_extent + thickness;
+    for (u32 axis = 0u; axis < 2u; axis++) {
+        for (u32 k = 0u; k < per_axis && n < cap; k++) {
+            f32 at = -half_extent + (f32)k * spacing;
+            Mat4 m = axis == 0u
+                         ? mat4_mul(mat4_translation(0.0f, 0.0f, at),
+                                    mat4_scaling(len, thickness, thickness))
+                         : mat4_mul(mat4_translation(at, 0.0f, 0.0f),
+                                    mat4_scaling(thickness, thickness, len));
+            memcpy(out[n++], m.e, sizeof(m.e));
+        }
+    }
+    return n;
+}
+
+void break_editor_viewport3d_set_grid(BreakEditorViewport3D *vp, bool on) {
+    if (vp != NULL) {
+        vp->grid_off = !on;
+    }
 }
 
 /* ---------------- transactional GPU init / shader replacement ---------------- */
@@ -687,7 +725,7 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
         return;
     }
     vp->last_proxies = vp->last_gizmo = vp->last_draws = vp->last_outline =
-        vp->last_ring = vp->last_tinted = 0u;
+        vp->last_ring = vp->last_tinted = vp->last_grid = 0u;
     if (doc == NULL || dev == NULL || cmd == NULL) {
         vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_NO_DEVICE;
         return;
@@ -735,6 +773,29 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
     rhi_offscreen_fbo_bind(cmd, &vp->fbo); /* bind = clear (R617) */
     rhi_cmd_bind_pipeline(cmd, vp->pipeline);
     rhi_cmd_bind_vertex_buffer(cmd, vp->cube_vbo, 0u);
+
+    /* Ground grid first, under everything (depth-tested like the proxies);
+     * the lines through the origin take the X (red) / Z (blue) axis tint */
+    if (!vp->grid_off) {
+        static const f32 k_grid_color[4] = {0.30f, 0.31f, 0.34f, 1.0f};
+        static const f32 k_grid_x[4] = {0.55f, 0.24f, 0.24f, 1.0f};
+        static const f32 k_grid_z[4] = {0.24f, 0.33f, 0.60f, 1.0f};
+        f32 lines[2u * (2u * EDITOR_VIEWPORT_GRID_HALF + 1u)][16];
+        u32 nl = break_editor_viewport3d_grid_lines(
+            (f32)EDITOR_VIEWPORT_GRID_HALF, 1.0f,
+            EDITOR_VIEWPORT_GRID_THICKNESS, lines,
+            (u32)(sizeof(lines) / sizeof(lines[0])));
+        for (u32 g = 0u; g < nl; g++) {
+            const f32 *color = k_grid_color;
+            if (g == EDITOR_VIEWPORT_GRID_HALF) {
+                color = k_grid_x; /* along X through z = 0 */
+            } else if (g == 3u * EDITOR_VIEWPORT_GRID_HALF + 1u) {
+                color = k_grid_z; /* along Z through x = 0 */
+            }
+            vp_draw_box(vp, cmd, &view_proj, lines[g], color);
+        }
+        vp->last_grid = nl;
+    }
 
     /* Entity proxies: one unit cube per entity with an EditorTransform. */
     total = break_editor_doc_entity_count(doc);
