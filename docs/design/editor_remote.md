@@ -99,7 +99,7 @@ session AUTHENTICATED → editor commands 4..12 dispatched on the shell thread
   - `[0]` `reactor: running=<0|1> tls=<0|1> outbound=<n> denied=<n>`
   - `[1]` `session: applied=<n> unknown=<n> stale=<n>`
   - `[2]` `session: invalid=<n> phase_rejected=<n>`
-  - `[3]` `session: duplicate=<n> handler_failed=<n>`
+  - `[3]` `session: duplicate=<n> handler_failed=<n> rate_limited=<n>` (`rate_limited` counts messages dropped by the optional per-connection rate limit)
   - `[4]` `connections: <count>`
   - `[5..15]` `conn: key=<connection_key> state=<SESSION_STATE>` (at most 11 rows; the header row carries the full count)
 - The session counters are `break_session_manager_apply_stats` verbatim (the mirror struct is `static_assert`-checked field for field). Equality with the reactor accessors is pinned by `network_panel_rows_match_session_stats_and_reactor_accessors`.

@@ -24,7 +24,7 @@
  *     [0]  reactor: running=<0|1> tls=<0|1> outbound=<n> denied=<n>
  *     [1]  session: applied=<n> unknown=<n> stale=<n>
  *     [2]  session: invalid=<n> phase_rejected=<n>
- *     [3]  session: duplicate=<n> handler_failed=<n>
+ *     [3]  session: duplicate=<n> handler_failed=<n> rate_limited=<n>
  *     [4]  connections: <count>
  *     [5+] conn: key=<connection_key> state=<SESSION_STATE>
  *          (up to 11 rows; the header row carries the full count)
@@ -116,9 +116,11 @@ static void network_panel_refresh(BreakEditorPanelNetwork *panel) {
                        (unsigned long long)st.invalid,
                        (unsigned long long)st.phase_rejected);
         (void)snprintf(panel->rows[3], sizeof(panel->rows[3]),
-                       "session: duplicate=%llu handler_failed=%llu",
+                       "session: duplicate=%llu handler_failed=%llu "
+                       "rate_limited=%llu",
                        (unsigned long long)st.duplicate,
-                       (unsigned long long)st.handler_failed);
+                       (unsigned long long)st.handler_failed,
+                       (unsigned long long)st.rate_limited);
         (void)snprintf(panel->rows[4], sizeof(panel->rows[4]),
                        "connections: %u",
                        (unsigned)break_editor_remote_connection_count(remote));

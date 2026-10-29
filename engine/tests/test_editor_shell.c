@@ -5417,9 +5417,10 @@ static void net_expected_rows(BreakEditorRemote *remote,
                    (unsigned long long)st.invalid,
                    (unsigned long long)st.phase_rejected);
     (void)snprintf(out->rows[3], 96u,
-                   "session: duplicate=%llu handler_failed=%llu",
+                   "session: duplicate=%llu handler_failed=%llu rate_limited=%llu",
                    (unsigned long long)st.duplicate,
-                   (unsigned long long)st.handler_failed);
+                   (unsigned long long)st.handler_failed,
+                   (unsigned long long)st.rate_limited);
     (void)snprintf(out->rows[4], 96u, "connections: %u",
                    break_editor_remote_connection_count(remote));
     n = break_editor_remote_connections_snapshot(remote, keys, states, 32u);
