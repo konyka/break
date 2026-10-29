@@ -215,8 +215,11 @@ static bool stb_validate_cmap(const uint8_t* data, size_t offset,
     {
       uint16_t platform = stb_read_u16_be(data + record);
       uint16_t encoding = stb_read_u16_be(data + record + 2u);
+      /* Unicode encoding 5 is the format 14 variation-selector table, not a
+       * character map; fonts such as Noto Sans SC carry it next to the real
+       * BMP/full-range maps. */
       bool stb_selects_subtable =
-          platform == 0u ||
+          (platform == 0u && encoding != 5u) ||
           (platform == 3u && (encoding == 0u || encoding == 1u ||
                               encoding == 10u));
       if (stb_selects_subtable && !subtable_supported) return false;
@@ -1629,6 +1632,17 @@ static const my_font_vtable_t s_stb_vtable = {stb_measure, stb_get_glyph,
                                               stb_has_glyph, NULL, NULL, NULL,
                                               NULL, NULL};
 
+/* stb_truetype keeps the last Unicode cmap record it finds; require that it
+ * is a subtable stbtt_FindGlyphIndex can read, so a font whose last Unicode
+ * record is something else (format 14) fails to load instead of rendering
+ * every glyph as missing. */
+static bool stb_index_map_supported(const stbtt_fontinfo* info,
+                                    const uint8_t* data) {
+  uint16_t format = stb_read_u16_be(data + info->index_map);
+  return format == 0u || format == 4u || format == 6u || format == 12u ||
+         format == 13u;
+}
+
 my_font_t* my_font_stb_create_ex(const my_allocator_t* allocator,
                                  const char* path, int32_t face_index,
                                  size_t cache_capacity) {
@@ -1676,7 +1690,8 @@ my_font_t* my_font_stb_create_ex(const my_allocator_t* allocator,
     if (!stb_select_face(f->ttf_data, (size_t)size, face_index, &offset,
                          allocator) ||
         offset > (size_t)INT_MAX ||
-        !stbtt_InitFont(&f->info, f->ttf_data, (int)offset)) {
+        !stbtt_InitFont(&f->info, f->ttf_data, (int)offset) ||
+        !stb_index_map_supported(&f->info, f->ttf_data)) {
       my_mem_free(allocator, f->ttf_data);
       platform_mutex_destroy(&f->mutex);
       my_mem_free(allocator, f);

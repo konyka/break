@@ -1634,6 +1634,10 @@ TTF 的非零 index 会明确拒绝，避免无意加载 face 0。
 STB 文件读取还受 `MY_FONT_STB_MAX_FILE_BYTES`（64 MiB）限制，超限文件在 payload
 分配前拒绝；空文件和定位失败同样安全返回失败。构造期还会验证 sfnt/TTC 头、face
 目录和每张表的 payload 范围；截断 TTC 或越界表偏移会在第三方解析器读取前拒绝。
+cmap 校验跳过 platform 0 / encoding 5（format 14 变体选择符，不是字符映射），并要求
+`stbtt_InitFont()` 选中的 Unicode 子表是 format 0/4/6/12/13；否则带 format 14 记录的
+Noto Sans SC 会在无 FreeType 的构建上被拒绝（`test_myui_font` 的
+`bundled_noto_sans_sc_loads_and_shapes_cjk` 覆盖）。
 该校验覆盖 STB 实际使用的固定字段、cmap format 4 数组和索引范围，并对 TrueType
 复合 glyph 做组件索引、参数边界和组件图无环性检查；组件图使用显式帧栈按 O(V+E)
 遍历，避免深组件图返回父节点后重复扫描；但不覆盖完整表内 OpenType/CFF
