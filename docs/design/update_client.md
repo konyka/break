@@ -287,9 +287,18 @@ OK），open 之后初始为 OK；open 本身只以 NULL 报错（无客户端�
 
 1. **真实传输**：无 socket/HTTP/TLS/curl 代码；`BreakUpdateFetchFn` 是唯一
    接缝，仓库内仅以 in-process fake 测试（grep 门：无传输符号引入）。
-2. **灰度（gray rollout）客户端逻辑**：灰度是服务端策略——客户端唯一
-   旋钮是配置的 channel（经 `compatible()` 生效）；无分桶/百分比/白名单
-   客户端代码。
+2. **灰度（gray rollout）客户端逻辑**：~~无分桶/百分比客户端代码~~
+   **分桶已交付（2026-10-30）**：`break_update_rollout_bucket(device_id,
+   version)` = SHA-256("break-rollout-v1\n" + device_id + "\n" +
+   MAJOR.MINOR.PATCH) 前 4 字节（大端）mod 10000，同一设备在同一版本内
+   桶号固定、换版本重新洗牌；`break_update_rollout_admits(bucket,
+   percent_bp)` 以万分比判定（0 = 无人、10000 = 全部、超出钳住）。device_id
+   1..128 字节、由应用提供且只参与哈希。**仍未交付**：百分比的来源——
+   manifest v1 是签名的规范文本、没有该字段，加字段需要新的 manifest 版本
+   与签名工具链（第 4 项）；`stage` 未调用分桶；白名单。测试
+   `test_break_update` `rollout_bucket_is_deterministic_bounded_and_uniform`
+   （确定性、换版本重洗牌、1 万个设备 10 个十分位各在 ±10% 内、判定边界、
+   参数校验）。
 3. **服务端**：无更新服务端、无 manifest 分发、无版本协商。
 4. **签名之后的在线流程**：离线签名 tooling、密钥生成/保管/轮换/吊销、
    发布流水线均未定义（Phase B/C 范畴，

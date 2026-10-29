@@ -88,6 +88,25 @@ bool break_update_manifest_chunk_at(const BreakUpdateManifest *m, u64 index,
 bool break_update_manifest_compatible(const BreakUpdateManifest *m, const char *channel,
                                       const char *platform, u32 cur_major, u32 cur_minor, u32 cur_patch);
 
+/* Gray rollout (client half). The server publishes a release to a share of
+ * devices; the client decides deterministically whether it is in that
+ * share, without any server round-trip:
+ *   bucket = first 4 bytes (big-endian) of
+ *            SHA-256("break-rollout-v1\n" device_id "\n" MAJOR.MINOR.PATCH)
+ *            mod 10000
+ * so a device keeps its bucket for one release and is reshuffled for the
+ * next (no device is always first). device_id: 1..128 bytes, opaque (the
+ * app supplies a stable per-install id; it is hashed, never sent).
+ * admits(bucket, percent_bp): bucket < percent_bp, where percent_bp is the
+ * share in basis points (0 = nobody, 10000 = everyone; larger is clamped).
+ * The share itself must come from authenticated data (e.g. a signed field
+ * a later manifest version adds); nothing here trusts it. */
+#define BREAK_UPDATE_ROLLOUT_BUCKETS 10000u
+#define BREAK_UPDATE_ROLLOUT_DEVICE_ID_MAX 128u
+bool break_update_rollout_bucket(const char *device_id, const u32 version[3],
+                                 u32 *out_bucket);
+bool break_update_rollout_admits(u32 bucket, u32 percent_bp);
+
 /* Content-addressed store: <root>/chunks/<sha256hex>; manifest files via caller's own pathing.
  * put: name must be the sha256-hex of data (recomputed); atomic writer; size ≤ 128 MiB.
  * get: verify-on-read (re-hash before handing bytes out); caller-owned *out_buf (malloc). */

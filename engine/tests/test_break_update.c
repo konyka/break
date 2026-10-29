@@ -771,6 +771,64 @@ TEST(store_name_charset_rejected) {
     cleanup_store(root, NULL, 0);
 }
 
+/* Gray rollout bucket: deterministic per (device, version), uniform over
+ * 0..9999, admitted when bucket < percent in basis points. */
+TEST(rollout_bucket_is_deterministic_bounded_and_uniform)
+{
+    u32 b1 = 0u, b2 = 0u, counts[10] = {0};
+    const u32 v[3] = {1u, 2u, 3u};
+    const u32 v2[3] = {1u, 2u, 4u};
+    ASSERT_TRUE(break_update_rollout_bucket("device-0001", v, &b1));
+    ASSERT_TRUE(break_update_rollout_bucket("device-0001", v, &b2));
+    ASSERT_EQ(b1, b2);
+    ASSERT_TRUE(b1 < 10000u);
+    /* a new release reshuffles: across many devices the buckets differ */
+    {
+        u32 same = 0u;
+        for (u32 i = 0u; i < 200u; i++) {
+            char id[32];
+            u32 x, y;
+            snprintf(id, sizeof(id), "dev-%u", i);
+            ASSERT_TRUE(break_update_rollout_bucket(id, v, &x));
+            ASSERT_TRUE(break_update_rollout_bucket(id, v2, &y));
+            if (x == y) same++;
+        }
+        ASSERT_TRUE(same < 5u);
+    }
+    /* roughly uniform: 10000 devices into 10 deciles, each within 10% */
+    for (u32 i = 0u; i < 10000u; i++) {
+        char id[32];
+        u32 x;
+        snprintf(id, sizeof(id), "uniform-%u", i);
+        ASSERT_TRUE(break_update_rollout_bucket(id, v, &x));
+        ASSERT_TRUE(x < 10000u);
+        counts[x / 1000u]++;
+    }
+    for (u32 d = 0u; d < 10u; d++) {
+        ASSERT_TRUE(counts[d] > 900u && counts[d] < 1100u);
+    }
+    /* admission */
+    ASSERT_FALSE(break_update_rollout_admits(0u, 0u));      /* 0%: nobody */
+    ASSERT_TRUE(break_update_rollout_admits(9999u, 10000u)); /* 100%: all */
+    ASSERT_TRUE(break_update_rollout_admits(499u, 500u));    /* 5% */
+    ASSERT_FALSE(break_update_rollout_admits(500u, 500u));
+    ASSERT_FALSE(break_update_rollout_admits(10000u, 10000u)); /* bad bucket */
+    ASSERT_TRUE(break_update_rollout_admits(0u, 20000u));    /* clamped */
+    /* bad input */
+    ASSERT_FALSE(break_update_rollout_bucket(NULL, v, &b1));
+    ASSERT_FALSE(break_update_rollout_bucket("", v, &b1));
+    ASSERT_FALSE(break_update_rollout_bucket("x", NULL, &b1));
+    ASSERT_FALSE(break_update_rollout_bucket("x", v, NULL));
+    {
+        char longid[130];
+        memset(longid, 'a', sizeof(longid) - 1u);
+        longid[sizeof(longid) - 1u] = '\0';
+        ASSERT_FALSE(break_update_rollout_bucket(longid, v, &b1)); /* > 128 */
+        longid[128] = '\0';
+        ASSERT_TRUE(break_update_rollout_bucket(longid, v, &b1));
+    }
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(golden_parse_accessors_verify);
     RUN_TEST(tamper_body_verify_false);
@@ -791,4 +849,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(store_zero_byte_chunk);
     RUN_TEST(store_size_limit_and_bad_args);
     RUN_TEST(store_name_charset_rejected);
+    RUN_TEST(rollout_bucket_is_deterministic_bounded_and_uniform);
 TEST_MAIN_END()

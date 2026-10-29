@@ -557,3 +557,37 @@ bool break_update_store_get_chunk(BreakUpdateStore *s, const char *sha256_hex_na
     *out_len = size;
     return true;
 }
+
+bool break_update_rollout_bucket(const char *device_id, const u32 version[3],
+                                 u32 *out_bucket) {
+    char msg[32 + BREAK_UPDATE_ROLLOUT_DEVICE_ID_MAX + 48];
+    u8 digest[BREAK_CRYPTO_SHA256_SIZE];
+    usize id_len;
+    int n;
+    if (device_id == NULL || version == NULL || out_bucket == NULL) {
+        return false;
+    }
+    id_len = strlen(device_id);
+    if (id_len == 0u || id_len > BREAK_UPDATE_ROLLOUT_DEVICE_ID_MAX) {
+        return false;
+    }
+    n = snprintf(msg, sizeof(msg), "break-rollout-v1\n%s\n%u.%u.%u", device_id,
+                 (unsigned)version[0], (unsigned)version[1],
+                 (unsigned)version[2]);
+    if (n <= 0 || (usize)n >= sizeof(msg) ||
+        !break_crypto_sha256(msg, (usize)n, digest)) {
+        return false;
+    }
+    *out_bucket = (((u32)digest[0] << 24) | ((u32)digest[1] << 16) |
+                   ((u32)digest[2] << 8) | (u32)digest[3]) %
+                  BREAK_UPDATE_ROLLOUT_BUCKETS;
+    return true;
+}
+
+bool break_update_rollout_admits(u32 bucket, u32 percent_bp) {
+    if (bucket >= BREAK_UPDATE_ROLLOUT_BUCKETS) return false;
+    if (percent_bp > BREAK_UPDATE_ROLLOUT_BUCKETS) {
+        percent_bp = BREAK_UPDATE_ROLLOUT_BUCKETS;
+    }
+    return bucket < percent_bp;
+}
