@@ -1220,6 +1220,26 @@ TEST(snap_rounds_translate_rotate_and_scale) {
     break_editor_doc_destroy(doc);
 }
 
+/* An out-of-range mode (caller error) is clamped to NONE (hidden) instead of
+ * being stored: no handles, no drag. */
+TEST(set_mode_out_of_range_hides_the_gizmo) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    BreakEditorEntityId e = add_transformed(doc, "box", 0, 0, 0, 1, 1, 1);
+    BreakEditorGizmo *g = break_editor_gizmo_create();
+    BreakEditorGizmoHandle h[4];
+    BreakEditorCamera cam;
+    f32 ax, ay;
+    ASSERT_NOT_NULL(g);
+    break_editor_gizmo_attach(g, doc, e);
+    break_editor_gizmo_set_mode(g, (BreakEditorGizmoMode)42);
+    ASSERT_EQ(break_editor_gizmo_handles(g, h, 4u), 0u);
+    break_editor_camera_init(&cam);
+    ASSERT_TRUE(world_to_px(&cam, 0.4f, 0, 0, &ax, &ay));
+    ASSERT_FALSE(break_editor_gizmo_begin_drag(g, &cam, ax, ay, VW, VH));
+    break_editor_gizmo_destroy(g);
+    break_editor_doc_destroy(doc);
+}
+
 TEST(oom_budget_sweeps) {
     /* create: single editor-owned allocation. */
     break_editor_test_set_alloc_budget(0);
@@ -1310,5 +1330,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(begin_while_dragging_ends_previous);
     RUN_TEST(entity_removed_mid_drag_discards);
     RUN_TEST(snap_rounds_translate_rotate_and_scale);
+    RUN_TEST(set_mode_out_of_range_hides_the_gizmo);
     RUN_TEST(oom_budget_sweeps);
 TEST_MAIN_END()

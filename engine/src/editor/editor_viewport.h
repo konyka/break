@@ -117,8 +117,10 @@
 typedef struct BreakEditorCamera {
     f32 target[3];     /* orbit/focus pivot */
     f32 yaw;           /* radians, around +Y */
-    f32 pitch;         /* radians, clamped to (-89°, +89°) */
-    f32 distance;      /* > 0.01 */
+    f32 pitch;         /* radians, orbit clamps to [-89°, +89°]
+                          (BREAK_EDITOR_CAMERA_PITCH_LIMIT) */
+    f32 distance;      /* zoom/focus clamp to [BREAK_EDITOR_CAMERA_MIN_DISTANCE,
+                          BREAK_EDITOR_CAMERA_MAX_DISTANCE] = [0.05, 1e4] */
     f32 fov_y;         /* radians, default 60° */
 } BreakEditorCamera;
 

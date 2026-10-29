@@ -319,7 +319,11 @@ void break_editor_gizmo_set_mode(BreakEditorGizmo *g,
                                  BreakEditorGizmoMode mode) {
     if (!g) return;
     break_editor_gizmo_end_drag(g); /* documented implicit end+commit */
-    g->mode = mode;
+    /* out-of-range values (caller error) hide the gizmo rather than being
+     * stored and later read as "a mode that is not NONE" */
+    g->mode = (mode >= BREAK_EDITOR_GIZMO_NONE && mode <= BREAK_EDITOR_GIZMO_SCALE)
+                  ? mode
+                  : BREAK_EDITOR_GIZMO_NONE;
 }
 
 void break_editor_gizmo_attach(BreakEditorGizmo *g, BreakEditorDoc *doc,
