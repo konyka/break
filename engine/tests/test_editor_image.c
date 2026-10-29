@@ -173,7 +173,10 @@ TEST(mip_chain_box_filters_down_to_one_pixel) {
     ASSERT_EQ(mips.level[1][7], 255u);
     ASSERT_EQ(mips.width[2], 1u);
     ASSERT_EQ(mips.height[2], 1u);
-    ASSERT_TRUE(mips.level[2][0] >= 127u && mips.level[2][0] <= 128u);
+    /* colour is averaged in linear light (the bytes are sRGB-encoded):
+     * half white + half black is linear 0.5 = sRGB 188, not 128; alpha is
+     * linear already and averages directly */
+    ASSERT_TRUE(mips.level[2][0] >= 187u && mips.level[2][0] <= 188u);
     ASSERT_EQ(mips.level[2][3], 255u);
     break_editor_image_free_mips(&mips);
     ASSERT_EQ(mips.count, 0u);
@@ -196,6 +199,26 @@ TEST(mip_chain_box_filters_down_to_one_pixel) {
     }
 }
 
+TEST(srgb_round_trip_keeps_uniform_images_exact) {
+    /* a uniform image of every byte value stays that value at every level */
+    for (u32 v = 0u; v < 256u; v++) {
+        u8 px[2 * 2 * 4];
+        for (u32 i = 0u; i < 4u; i++) {
+            px[i * 4 + 0] = (u8)v;
+            px[i * 4 + 1] = (u8)v;
+            px[i * 4 + 2] = (u8)v;
+            px[i * 4 + 3] = (u8)(255u - v);
+        }
+        BreakEditorImage img = {2, 2, px};
+        BreakEditorImageMips mips;
+        ASSERT_TRUE(break_editor_image_build_mips(&img, &mips));
+        ASSERT_EQ(mips.count, 2u);
+        ASSERT_EQ(mips.level[1][0], (u8)v);
+        ASSERT_EQ(mips.level[1][3], (u8)(255u - v));
+        break_editor_image_free_mips(&mips);
+    }
+}
+
 int main(void) {
     printf("=== Running Tests ===\n");
     RUN_TEST(decode_png_returns_size_and_pixels);
@@ -204,6 +227,7 @@ int main(void) {
     RUN_TEST(oversized_dimensions_are_rejected_before_decode);
     RUN_TEST(supported_names);
     RUN_TEST(mip_chain_box_filters_down_to_one_pixel);
+    RUN_TEST(srgb_round_trip_keeps_uniform_images_exact);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
            g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;

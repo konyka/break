@@ -29,7 +29,8 @@ void break_editor_image_free(BreakEditorImage *image);
 /* Mip chain for an RGBA8 image: levels halve each side (rounding down,
  * never below 1) to 1x1. mip_count(w, h) = floor(log2(max(w, h))) + 1, 0
  * for a zero side. build_mips box-filters each level from the previous one
- * (2x2 average, the footprint clamped at odd edges); level 0 borrows the
+ * (2x2 average, the footprint clamped at odd edges; RGB is treated as
+ * sRGB-encoded and averaged in linear light, alpha averaged as stored); level 0 borrows the
  * image pixels, levels 1.. are owned and released by free_mips. On failure
  * (NULL / empty image, OOM) *out is zeroed. */
 #define BREAK_EDITOR_IMAGE_MAX_MIPS 13u /* 4096 -> 1 */

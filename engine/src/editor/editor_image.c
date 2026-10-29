@@ -4,6 +4,7 @@
 #include "editor/editor_test_hooks.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stb_image.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +102,21 @@ bool break_editor_image_is_supported_name(const char *name) {
     return false;
 }
 
+/* sRGB transfer (IEC 61966-2-1): colour channels are averaged in linear
+ * light, alpha as stored. */
+static f32 srgb_to_linear(u8 v) {
+    f32 c = (f32)v / 255.0f;
+    return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+}
+
+static u8 linear_to_srgb(f32 l) {
+    f32 c;
+    if (!(l > 0.0f)) return 0u;
+    if (l >= 1.0f) return 255u;
+    c = l <= 0.0031308f ? l * 12.92f : 1.055f * powf(l, 1.0f / 2.4f) - 0.055f;
+    return (u8)(c * 255.0f + 0.5f);
+}
+
 u32 break_editor_image_mip_count(u32 width, u32 height) {
     u32 m = width > height ? width : height, n = 0u;
     if (width == 0u || height == 0u) return 0u;
@@ -127,6 +143,8 @@ bool break_editor_image_build_mips(const BreakEditorImage *image,
     if (image == NULL || image->rgba == NULL) return false;
     n = break_editor_image_mip_count(image->width, image->height);
     if (n == 0u || n > BREAK_EDITOR_IMAGE_MAX_MIPS) return false;
+    f32 lin[256];
+    for (u32 v = 0u; v < 256u; v++) lin[v] = srgb_to_linear((u8)v);
     out->width[0] = image->width;
     out->height[0] = image->height;
     out->level[0] = image->rgba;
@@ -144,13 +162,17 @@ bool break_editor_image_build_mips(const BreakEditorImage *image,
             u32 y0 = y * 2u, y1 = y0 + 1u < ph ? y0 + 1u : y0;
             for (u32 x = 0u; x < w; x++) {
                 u32 x0 = x * 2u, x1 = x0 + 1u < pw ? x0 + 1u : x0;
-                for (u32 c = 0u; c < 4u; c++) {
-                    u32 sum = src[(y0 * pw + x0) * 4u + c] +
-                              src[(y0 * pw + x1) * 4u + c] +
-                              src[(y1 * pw + x0) * 4u + c] +
-                              src[(y1 * pw + x1) * 4u + c];
-                    dst[(y * w + x) * 4u + c] = (u8)((sum + 2u) / 4u);
+                const u8 *t[4] = {src + (y0 * pw + x0) * 4u,
+                                  src + (y0 * pw + x1) * 4u,
+                                  src + (y1 * pw + x0) * 4u,
+                                  src + (y1 * pw + x1) * 4u};
+                u8 *o = dst + (y * w + x) * 4u;
+                for (u32 c = 0u; c < 3u; c++) {
+                    f32 sum = lin[t[0][c]] + lin[t[1][c]] + lin[t[2][c]] +
+                              lin[t[3][c]];
+                    o[c] = linear_to_srgb(sum * 0.25f);
                 }
+                o[3] = (u8)((t[0][3] + t[1][3] + t[2][3] + t[3][3] + 2u) / 4u);
             }
         }
         out->width[l] = w;
