@@ -5457,6 +5457,13 @@ endif()
     add_test(NAME test_break_replay_window COMMAND test_break_replay_window)
     set_tests_properties(test_break_replay_window PROPERTIES LABELS "headless;network")
 
+    # test_break_msg_rate: per-connection message/byte token buckets.
+    add_executable(test_break_msg_rate tests/test_break_msg_rate.c
+        src/network/break_msg_rate.c)
+    target_include_directories(test_break_msg_rate PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_break_msg_rate COMMAND test_break_msg_rate)
+    set_tests_properties(test_break_msg_rate PROPERTIES LABELS "headless;network")
+
     # test_filewatch_backend: platform-agnostic backend selection policy.
     add_executable(test_filewatch_backend tests/test_filewatch_backend.c
         src/platform/filewatch_backend.c)
