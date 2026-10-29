@@ -4917,8 +4917,9 @@ endif()
         # test_platform_fs_write precedent — engine keeps sole production
         # ownership of that TU, exactly one definition per binary). The
         # contract ctest pins the target shape, the no-link rule, the nm
-        # export gate (exactly 28 public symbols since Phase B Task 3:
-        # 15 manifest/store + 13 client), and a minimal archive link test.
+        # export gate (exactly 30 public symbols: 15 manifest/store + 13
+        # client since Phase B Task 3, + 2 rollout since 2026-10-30), and a
+        # minimal archive link test.
         add_executable(test_break_update tests/test_break_update.c src/platform/platform_fs.c)
         target_include_directories(test_break_update PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_update PRIVATE break_update m)
@@ -5447,6 +5448,14 @@ endif()
     target_include_directories(test_input PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_input PRIVATE m)
     add_test(NAME test_input COMMAND test_input)
+
+    # test_break_replay_window: application-message anti-replay window
+    # (pure C; library code lives with break_net but has no dependency).
+    add_executable(test_break_replay_window tests/test_break_replay_window.c
+        src/network/break_replay_window.c)
+    target_include_directories(test_break_replay_window PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_break_replay_window COMMAND test_break_replay_window)
+    set_tests_properties(test_break_replay_window PROPERTIES LABELS "headless;network")
 
     # test_filewatch_backend: platform-agnostic backend selection policy.
     add_executable(test_filewatch_backend tests/test_filewatch_backend.c
