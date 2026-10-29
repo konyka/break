@@ -114,6 +114,14 @@ bool break_editor_doc_rename_entity(BreakEditorDoc *doc,
  * OOM (document unchanged). */
 BreakEditorEntityId break_editor_doc_duplicate_entity(BreakEditorDoc *doc,
                                                       BreakEditorEntityId id);
+/* Duplicates every live entity in ids[0..count) (same naming as
+ * duplicate_entity) as ONE undoable command; out[k] is the k-th copy, in
+ * input order, for the returned count. Stale and repeated ids are skipped.
+ * 0 = nothing recorded (also NULL arguments, OOM, count above
+ * BREAK_EDITOR_GROUP_MAX). */
+u32 break_editor_doc_duplicate_entities(BreakEditorDoc *doc,
+                                        const BreakEditorEntityId *ids,
+                                        u32 count, BreakEditorEntityId *out);
 
 usize break_editor_doc_entity_count(const BreakEditorDoc *doc);
 bool break_editor_doc_entity_at(const BreakEditorDoc *doc, usize i,

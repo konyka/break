@@ -1115,6 +1115,27 @@ static void shell_do_add_entity(BreakEditorShell *shell) {
  * select the copy. */
 static void shell_do_duplicate_selected(BreakEditorShell *shell) {
     BreakEditorEntityId id = BREAK_EDITOR_ENTITY_NULL;
+    if (shell->extra_count > 0u && break_editor_entity_id_valid(shell->selected)) {
+        BreakEditorEntityId ids[EDITOR_EXTRA_SELECTION_MAX + 1u];
+        BreakEditorEntityId out[EDITOR_EXTRA_SELECTION_MAX + 1u];
+        u32 n = 0u, made;
+        ids[n++] = shell->selected;
+        for (u32 i = 0u; i < shell->extra_count; i++) ids[n++] = shell->extra[i];
+        shell_end_gizmo_drag(shell);
+        made = break_editor_doc_duplicate_entities(shell->doc, ids, n, out);
+        if (made > 0u) {
+            editor_shell_log(shell,
+                             break_editor_tr(BREAK_EDITOR_TR_LOG_DUPLICATE_MANY_FMT),
+                             (unsigned)made);
+            /* the copies become the selection, the primary's copy first */
+            (void)break_editor_shell_select_ids(shell, out, made, false);
+        } else {
+            editor_shell_log(shell, "%s",
+                             break_editor_tr(BREAK_EDITOR_TR_LOG_DUPLICATE_FAILED));
+            editor_shell_refresh_all(shell);
+        }
+        return;
+    }
     if (break_editor_entity_id_valid(shell->selected)) {
         shell_end_gizmo_drag(shell);
         id = break_editor_doc_duplicate_entity(shell->doc, shell->selected);

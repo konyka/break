@@ -3190,6 +3190,31 @@ TEST(arrow_keys_walk_the_outliner_selection)
     break_editor_shell_destroy(shell);
 }
 
+TEST(ctrl_d_duplicates_every_selected_entity)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "a")));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "b")));
+    break_editor_shell_refresh(shell);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'a', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'd', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 4u);
+    /* the copies become the selection */
+    ASSERT_EQ(break_editor_shell_selection_count(shell), 2u);
+    {
+        BreakEditorEntityId id;
+        const char *name = NULL;
+        ASSERT_TRUE(break_editor_doc_entity_at(doc, 2u, &id, &name));
+        ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell), id));
+    }
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(assets_panel_filter_box_narrows_the_listing)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -8075,6 +8100,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(focus_key_frames_every_selected_entity);
     RUN_TEST(ctrl_a_selects_all_and_escape_clears);
     RUN_TEST(arrow_keys_walk_the_outliner_selection);
+    RUN_TEST(ctrl_d_duplicates_every_selected_entity);
     RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);

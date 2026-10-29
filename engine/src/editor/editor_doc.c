@@ -117,21 +117,24 @@ BreakEditorEntityId break_editor_doc_add_entity(BreakEditorDoc *doc,
     return cmd->id;
 }
 
+static void doc_copy_name(const BreakEditorDoc *doc, BreakEditorEntityId id,
+                          char name[BREAK_EDITOR_NAME_CAPACITY]) {
+    /* "<name> copy" when it fits, else the source name unchanged (never a
+     * truncated name) */
+    const char *src = doc->slots[id.index].name;
+    int n = snprintf(name, BREAK_EDITOR_NAME_CAPACITY, "%s copy", src);
+    if (n < 0 || (usize)n >= BREAK_EDITOR_NAME_CAPACITY) {
+        snprintf(name, BREAK_EDITOR_NAME_CAPACITY, "%s", src);
+    }
+}
+
 BreakEditorEntityId break_editor_doc_duplicate_entity(BreakEditorDoc *doc,
                                                       BreakEditorEntityId id) {
     char name[BREAK_EDITOR_NAME_CAPACITY];
     if (!doc || !break_editor_doc_has_entity(doc, id)) {
         return BREAK_EDITOR_ENTITY_NULL;
     }
-    /* "<name> copy" when it fits, else the source name unchanged (never a
-     * truncated name) */
-    {
-        const char *src = doc->slots[id.index].name;
-        int n = snprintf(name, sizeof(name), "%s copy", src);
-        if (n < 0 || (usize)n >= sizeof(name)) {
-            snprintf(name, sizeof(name), "%s", src);
-        }
-    }
+    doc_copy_name(doc, id, name);
     BreakEditorCmd *cmd = break_editor_cmd_duplicate_entity_create(doc, id, name);
     if (!cmd) return BREAK_EDITOR_ENTITY_NULL;
     if (!cmd->apply(cmd, doc)) {
@@ -141,6 +144,48 @@ BreakEditorEntityId break_editor_doc_duplicate_entity(BreakEditorDoc *doc,
     break_editor_cmd_stack_push_applied(doc, cmd);
     doc->dirty = true;
     return cmd->id;
+}
+
+u32 break_editor_doc_duplicate_entities(BreakEditorDoc *doc,
+                                        const BreakEditorEntityId *ids,
+                                        u32 count, BreakEditorEntityId *out) {
+    BreakEditorCmd *kids[BREAK_EDITOR_GROUP_MAX];
+    u32 n = 0;
+    if (!doc || !ids || !out || count == 0u || count > BREAK_EDITOR_GROUP_MAX) {
+        return 0;
+    }
+    for (u32 i = 0; i < count; i++) {
+        bool dup = false;
+        char name[BREAK_EDITOR_NAME_CAPACITY];
+        if (!break_editor_doc_has_entity(doc, ids[i])) continue;
+        for (u32 k = 0; k < i; k++) {
+            if (break_editor_entity_id_eq(ids[k], ids[i])) dup = true;
+        }
+        if (dup) continue;
+        doc_copy_name(doc, ids[i], name);
+        BreakEditorCmd *c =
+            break_editor_cmd_duplicate_entity_create(doc, ids[i], name);
+        if (!c) {
+            for (u32 k = 0; k < n; k++) kids[k]->destroy(kids[k]);
+            return 0;
+        }
+        kids[n++] = c;
+    }
+    if (n == 0u) return 0;
+    BreakEditorCmd *g =
+        break_editor_cmd_group_create(kids, n, "duplicate entities");
+    if (!g) {
+        for (u32 k = 0; k < n; k++) kids[k]->destroy(kids[k]);
+        return 0;
+    }
+    if (!g->apply(g, doc)) {
+        g->destroy(g);
+        return 0;
+    }
+    for (u32 k = 0; k < n; k++) out[k] = kids[k]->id;
+    break_editor_cmd_stack_push_applied(doc, g);
+    doc->dirty = true;
+    return n;
 }
 
 bool break_editor_doc_remove_entity(BreakEditorDoc *doc,

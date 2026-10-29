@@ -587,6 +587,61 @@ TEST(remove_entities_is_one_command) {
     break_editor_doc_destroy(doc);
 }
 
+/* Duplicating several entities is ONE undoable command; out[] receives the
+ * copies in input order. Stale and repeated ids are skipped. */
+TEST(duplicate_entities_is_one_command) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorEntityId a = break_editor_doc_add_entity(doc, "a");
+    BreakEditorEntityId b = break_editor_doc_add_entity(doc, "b");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, b,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_set_field_f32(
+        doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, 3.0f));
+    u32 depth = break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc));
+    BreakEditorEntityId ids[3] = {a, b, a};
+    BreakEditorEntityId out[3];
+    ASSERT_EQ(break_editor_doc_duplicate_entities(doc, ids, 3u, out), 2u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 4u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)),
+              depth + 1u);
+    {
+        BreakEditorEntityId id;
+        const char *name = NULL;
+        f32 x = 0.0f;
+        ASSERT_TRUE(break_editor_doc_entity_at(doc, 2u, &id, &name));
+        ASSERT_TRUE(break_editor_entity_id_eq(id, out[0]));
+        ASSERT_STR_EQ(name, "a copy");
+        ASSERT_TRUE(break_editor_doc_entity_at(doc, 3u, &id, &name));
+        ASSERT_TRUE(break_editor_entity_id_eq(id, out[1]));
+        ASSERT_STR_EQ(name, "b copy");
+        ASSERT_TRUE(break_editor_doc_get_field_f32(
+            doc, out[1], BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x));
+        ASSERT_TRUE(x == 3.0f);
+    }
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 4u);
+    {
+        f32 x = 0.0f;
+        ASSERT_TRUE(break_editor_doc_get_field_f32(
+            doc, out[1], BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x));
+        ASSERT_TRUE(x == 3.0f);
+    }
+    /* nothing to copy / bad args: no command */
+    depth = break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc));
+    {
+        BreakEditorEntityId none = BREAK_EDITOR_ENTITY_NULL;
+        ASSERT_EQ(break_editor_doc_duplicate_entities(doc, &none, 1u, out), 0u);
+    }
+    ASSERT_EQ(break_editor_doc_duplicate_entities(NULL, ids, 2u, out), 0u);
+    ASSERT_EQ(break_editor_doc_duplicate_entities(doc, NULL, 2u, out), 0u);
+    ASSERT_EQ(break_editor_doc_duplicate_entities(doc, ids, 2u, NULL), 0u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)), depth);
+    break_editor_doc_destroy(doc);
+}
+
 TEST(add_remove_component_bounded_failures) {
     BreakEditorDoc *doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
@@ -858,6 +913,7 @@ int main(void) {
     RUN_TEST(remove_entity_undo_restores_components);
     RUN_TEST(duplicate_entity_copies_components_in_one_command);
     RUN_TEST(remove_entities_is_one_command);
+    RUN_TEST(duplicate_entities_is_one_command);
     RUN_TEST(add_remove_component_bounded_failures);
     RUN_TEST(oom_component_command_alloc_fails_bounded);
     RUN_TEST(component_commands_describe);
