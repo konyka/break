@@ -2178,6 +2178,22 @@ bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
     return true;
 }
 
+bool break_editor_shell_open_scene(BreakEditorShell *shell, const char *path) {
+    FILE *f;
+    if (shell == NULL || path == NULL || path[0] == '\0') {
+        return false;
+    }
+    f = fopen(path, "rb");
+    if (f == NULL) {
+        /* new scene: nothing to load yet, saving creates it */
+        return break_editor_shell_set_scene_path(shell, path);
+    }
+    fclose(f);
+    /* existing file: load it; on failure keep it out of the save target so
+     * Ctrl+S cannot overwrite it with the (empty) current document */
+    return editor_shell_load_scene(shell, path);
+}
+
 const char *break_editor_shell_scene_path(const BreakEditorShell *shell) {
     return shell != NULL && shell->scene_path_set ? shell->scene_path : "";
 }

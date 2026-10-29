@@ -2164,6 +2164,65 @@ TEST(delete_and_ctrl_d_shortcuts)
     break_editor_shell_destroy(shell);
 }
 
+/* Opening a scene given on the command line: an existing file is LOADED
+ * (so a later Ctrl+S re-saves its content, not an empty document over
+ * it); a missing file only becomes the save target (new scene); a corrupt
+ * file is NOT made the save target, so Ctrl+S cannot clobber it. */
+TEST(open_scene_loads_existing_and_targets_missing)
+{
+    char path[512], sidecar[600], missing[512], corrupt[512];
+    BreakEditorShell *shell;
+    test_tmp(path, sizeof(path), "editor_shell_open.bscn");
+    snprintf(sidecar, sizeof(sidecar), "%s.editor.json", path);
+    test_tmp(missing, sizeof(missing), "editor_shell_open_missing.bscn");
+    test_tmp(corrupt, sizeof(corrupt), "editor_shell_open_corrupt.bscn");
+    remove(missing);
+    /* author a scene with two entities */
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    emit_click(find(shell, "editor-add-button"));
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, path));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    break_editor_shell_destroy(shell);
+
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_open_scene(shell, path));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 2u);
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), path);
+    break_editor_shell_destroy(shell);
+
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_open_scene(shell, missing));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 0u);
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), missing);
+    break_editor_shell_destroy(shell);
+
+    ASSERT_TRUE(write_text_file(corrupt, "not a scene"));
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_FALSE(break_editor_shell_open_scene(shell, corrupt));
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), "");
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    {
+        usize n = 0;
+        FILE *f = fopen(corrupt, "rb");
+        char buf[32];
+        ASSERT_NOT_NULL(f);
+        n = fread(buf, 1u, sizeof(buf), f);
+        fclose(f);
+        ASSERT_EQ(n, 11u); /* untouched */
+    }
+    ASSERT_FALSE(break_editor_shell_open_scene(NULL, path));
+    ASSERT_FALSE(break_editor_shell_open_scene(shell, NULL));
+    break_editor_shell_destroy(shell);
+    remove(path);
+    remove(sidecar);
+    remove(corrupt);
+}
+
 /* Ctrl+P paints the palette over the shell and its focused edit shows the
  * accent focus ring (soft LCD, full-window repaint). */
 TEST(palette_paints_with_focused_edit_ring)
@@ -7018,6 +7077,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(tool_window_tabs_show_one_page_per_area);
     RUN_TEST(inspector_field_edits_through_real_key_events);
     RUN_TEST(delete_and_ctrl_d_shortcuts);
+    RUN_TEST(open_scene_loads_existing_and_targets_missing);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);

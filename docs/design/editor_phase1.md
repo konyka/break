@@ -22,9 +22,11 @@ editor 可执行（engine/apps/editor/editor_main.c，薄 main）
 
 - `editor_main.c` 只做 platform_create → rhi_device_create → break_ui_* →
   `break_editor_shell_create(break_ui_get_window(ui))` → 主循环 → 逆序销毁
-  （`dxx_break_main.c` 先例）。argv[1] 可选：仅作为 Ctrl+S/调色板 save 的
-  目标路径（Phase 1 无 save-as 对话框；argv 加载有意不接——doc 层已支持
-  load，shell UI 的打开流程留给后续 phase）。
+  （`dxx_break_main.c` 先例）。argv[1] 可选：已存在的文件在启动时加载并作为保存目标；不存在的文件
+  只作为新场景的保存目标；存在但加载失败的文件不会成为保存目标（防止
+  Ctrl+S 用空文档覆盖它）。`break_editor_shell_open_scene`，2026-10-29；
+  此前 argv 只设保存路径、从不加载，打开已有场景后按 Ctrl+S 会用空文档
+  覆盖它。仍无 save-as/open 对话框。
 - `BreakEditorShell` 拥有恰好一个 `BreakEditorDoc` 与整棵面板控件树；两条
   窗口路径共享同一套 builder 与快捷键表：
   - **真实窗口**：`break_editor_shell_create(my_window_t*)`，窗口借用
@@ -111,8 +113,8 @@ create 时把焦点设到 root，故快捷键只在焦点控件未消费该键�
 > 意图。下文为 Phase 1 收口时的原始记录。
 
 - 3D viewport / gizmo / 相机（F 键只记意图）；真正的 focus 相机移动。
-- save-as / open 文件对话框；argv 加载；菜单栏（my_menu 已可用，Phase 1
-  用 toolbar + 调色板替代）。
+- save-as / open 文件对话框；菜单栏（my_menu 已可用，Phase 1 用 toolbar +
+  调色板替代）。argv 加载：2026-10-29 已接（见 §2）。
 - 诊断面板（profiler、metrics）、Lua console、remote session。
 - asset browser（Stage 4 子项目 4 不在本 phase）。
 - selection 多选集（当前单选）；inspector 多组件类型编辑（注册表只有

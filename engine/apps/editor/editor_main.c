@@ -212,10 +212,13 @@ int main(int argc, char **argv) {
   } else {
     break_editor_shell_set_hot_reload(shell, hot_reload);
   }
+  /* `editor <scene.bscn>`: an existing file is opened, a missing one is
+   * the save target of a new scene; a file that does not load is left
+   * alone (not made the save target) */
   if (remote_cli.scene_path != NULL &&
-      !break_editor_shell_set_scene_path(shell, remote_cli.scene_path)) {
-    fprintf(stderr, "editor: scene path rejected (cap %u bytes)\n",
-            BREAK_EDITOR_SCENE_PATH_CAPACITY);
+      !break_editor_shell_open_scene(shell, remote_cli.scene_path)) {
+    fprintf(stderr, "editor: could not open scene '%s' (not loaded and not "
+                    "used as the save target)\n", remote_cli.scene_path);
   }
   if (remote_cli.enabled) {
     BreakEditorRemoteConfig remote_cfg;
