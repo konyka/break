@@ -1,4 +1,5 @@
 #include "myui/echarts/my_echart_option_json.h"
+#include "myc/my_str.h"
 
 #include "myc/myconf/my_conf.h"
 
@@ -473,7 +474,7 @@ static bool grid_value(my_conf_node_t* n, double* out) {
   if (number(n, out)) return true;
   s = my_conf_as_str(n, NULL); if (s == NULL) return false; len = strlen(s);
   if (len < 2u || s[len - 1u] != '%') return false;
-  v = strtod(s, &end); if ((size_t)(end - s) != len - 1u || !isfinite(v)) return false;
+  v = my_strtod_c(s, &end); if ((size_t)(end - s) != len - 1u || !isfinite(v)) return false;
   *out = v / 100.0; return true;
 }
 

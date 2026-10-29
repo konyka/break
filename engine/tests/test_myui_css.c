@@ -1,6 +1,8 @@
 #include "test_framework.h"
 
+#include <locale.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -126,6 +128,29 @@ TEST(css_universal_selector_applies_to_any_widget)
   ASSERT_NOT_NULL(value);
   ASSERT_EQ(my_value_get_uint32(value), 0x112233FFu);
 
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+}
+
+TEST(css_decimal_values_are_locale_independent)
+{
+  const char* css = "* { line_spacing: 1.5; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* widget = my_widget_create(NULL, "any");
+  const my_value_t* value;
+  my_ret_t ret;
+
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(widget);
+  if (setlocale(LC_NUMERIC, "de_DE.UTF-8") == NULL &&
+      setlocale(LC_NUMERIC, "de_DE.utf8") == NULL)
+    printf("    (no comma-decimal locale installed; C locale only)\n");
+  ret = my_theme_load_css(theme, css);
+  (void)setlocale(LC_NUMERIC, "C");
+  ASSERT_EQ(ret, MY_RET_OK);
+  value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL, "line_spacing");
+  ASSERT_NOT_NULL(value);
+  ASSERT_TRUE(my_value_get_double(value) == 1.5);
   my_widget_unref(widget);
   my_theme_destroy(theme);
 }
@@ -10869,6 +10894,7 @@ TEST(theme_css_rejects_unterminated_input_with_bounded_scan)
 
 TEST_MAIN_BEGIN()
     RUN_TEST(css_universal_selector_applies_to_any_widget);
+    RUN_TEST(css_decimal_values_are_locale_independent);
     RUN_TEST(widget_local_style_write_invalidates_retained_pixels);
     RUN_TEST(widget_local_style_rejects_invalid_request_without_allocation);
     RUN_TEST(widget_local_style_oom_does_not_leave_empty_style);

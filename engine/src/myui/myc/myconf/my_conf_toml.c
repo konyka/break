@@ -390,7 +390,7 @@ static my_conf_node_t* t_number_or_special(toml_p_t* p) {
     }
     t_clean_num(p, buf, sizeof(buf), ds, p->pos);
     if (is_double) {
-      double d = strtod(buf, NULL);
+      double d = my_strtod_c(buf, NULL);
       if (!isfinite(d)) {
         toml_fail(p, "number is not finite");
         return NULL;
@@ -407,7 +407,7 @@ static my_conf_node_t* t_number_or_special(toml_p_t* p) {
       long long v = strtoll(buf, NULL, 10);
       if (errno == ERANGE) {
         /* keep the JSON codec's rule: overflow -> DOUBLE */
-        double d = strtod(buf, NULL);
+        double d = my_strtod_c(buf, NULL);
         if (!isfinite(d)) {
           toml_fail(p, "number is not finite");
           return NULL;

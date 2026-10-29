@@ -1,5 +1,13 @@
 # myui 集成与 Break RHI 后端
 
+## 数字解析与 locale 无关（2026-10-30）
+
+宿主进程即使设置了逗号小数点的 `LC_NUMERIC`（如 `de_DE`、`fr_FR`），myui 读写的配置与样式中的小数仍统一使用 `.`：
+
+- `myc/my_str.h` 提供 `my_strtod_c` / `my_strtof_c`（只把 `.` 当小数点，locale 的 `,` 永远不被接受）和 `my_str_c_decimal`（把 `snprintf` 写出的 locale 小数点改回 `.`）。
+- myconf 的 JSON/TOML/YAML 解析器、JSON 写出、CSS 数值/插值输出、theme、layout 规格和 ECharts option 解析都改用这些函数。
+- 回归测试：`conf_decimals_are_locale_independent`（test_myui_loader）与 `css_decimal_values_are_locale_independent`（test_myui_css）在 `de_DE.utf8` 下运行；未安装该 locale 时退化为 C locale 校验。
+
 ## Timer 取消性能契约（2026-09-08）
 
 PAL timer manager 以 deadline min-heap 处理唤醒，同时以私有 ID 索引定位活动 timer。删除一个

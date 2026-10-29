@@ -273,7 +273,7 @@ static bool css_number(css_p_t* p, double* out, bool* integral) {
   memcpy(token, p->s + start, n);
   token[n] = '\0';
   errno = 0;
-  *out = strtod(token, &end);
+  *out = my_strtod_c(token, &end);
   if (end == token || *end != '\0' || errno == ERANGE || !isfinite(*out)) {
     p->pos = start;
     return false;
@@ -855,7 +855,7 @@ static bool css_percent_length_value_ok(const char* text) {
    * scientific-notation prefix and rolls the WHOLE number back when
    * the exponent has no digits (exactly the "1.5em" shape). strtod
    * takes the longest valid prefix ("1.5"), leaving the suffix. */
-  number = strtod(probe.s + probe.pos, &endp);
+  number = my_strtod_c(probe.s + probe.pos, &endp);
   (void)number;
   if (endp == NULL || endp == probe.s + probe.pos) {
     return false;
@@ -6068,6 +6068,7 @@ static void css_interpolate_format(char* out, size_t cap, double value,
     snprintf(out, cap, "%lld%s", (long long)value, suffix);
   } else {
     snprintf(out, cap, "%.12g%s", value, suffix);
+    my_str_c_decimal(out);
   }
 }
 
@@ -7182,6 +7183,7 @@ static bool css_value_to_text(const my_value_t* v, char* buf, size_t cap) {
         snprintf(buf, cap, "%lld", (long long)d);
       } else {
         snprintf(buf, cap, "%.12g", d);
+        my_str_c_decimal(buf);
       }
       return true;
     }

@@ -5,6 +5,7 @@
  * recursive descent over pre-split lines; errors carry 1-based lines.
  */
 #include "myc/myconf/my_conf.h"
+#include "myc/my_str.h"
 
 #include <errno.h>
 #include <math.h>
@@ -348,7 +349,7 @@ static my_conf_node_t* yv_plain(yv_t* v, const char* s, size_t len) {
       memcpy(buf, s, len);
       buf[len] = '\0';
       if (dot || exp) {
-        double d = strtod(buf, NULL);
+        double d = my_strtod_c(buf, NULL);
         if (!isfinite(d)) {
           y_fail(v->p, v->lineno, 0, "number is not finite");
           return NULL;
@@ -359,7 +360,7 @@ static my_conf_node_t* yv_plain(yv_t* v, const char* s, size_t len) {
       {
         long long iv = strtoll(buf, NULL, 10);
         if (errno == ERANGE) {
-          double d = strtod(buf, NULL);
+          double d = my_strtod_c(buf, NULL);
           if (!isfinite(d)) {
             y_fail(v->p, v->lineno, 0, "number is not finite");
             return NULL;

@@ -5,6 +5,7 @@
  * compact/pretty serializer.
  */
 #include "myc/myconf/my_conf.h"
+#include "myc/my_str.h"
 
 #include <errno.h>
 #include <math.h>
@@ -278,7 +279,7 @@ static my_conf_node_t* json_number(json_p_t* p) {
   memcpy(buf, p->s + start, n);
   buf[n] = '\0';
   if (is_double) {
-    double d = strtod(buf, NULL);
+    double d = my_strtod_c(buf, NULL);
     if (!isfinite(d)) {
       json_fail(p, "number is not finite");
       return NULL;
@@ -293,7 +294,7 @@ static my_conf_node_t* json_number(json_p_t* p) {
     errno = 0;
     v = strtoll(buf, NULL, 10);
     if (errno == ERANGE) {
-      double d = strtod(buf, NULL);
+      double d = my_strtod_c(buf, NULL);
       if (!isfinite(d)) {
         json_fail(p, "number is not finite");
         return NULL;
@@ -624,6 +625,7 @@ static void jw_value(json_w_t* w, my_conf_node_t* node) {
       } else {
         snprintf(num, sizeof(num), "%.17g", d);
       }
+      my_str_c_decimal(num);
       jw_str(w, num);
       break;
     }

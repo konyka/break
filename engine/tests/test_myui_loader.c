@@ -1,6 +1,8 @@
 #include "test_framework.h"
 
+#include <locale.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -2477,6 +2479,51 @@ TEST(toml_parser_preserves_explicit_special_numbers)
   my_conf_destroy(root);
 }
 
+/* Config files always spell decimals with '.', whatever LC_NUMERIC the host
+ * set: parsing and JSON output must not change under a comma locale. */
+static int conf_set_comma_locale(void)
+{
+  return setlocale(LC_NUMERIC, "de_DE.UTF-8") != NULL ||
+         setlocale(LC_NUMERIC, "de_DE.utf8") != NULL ||
+         setlocale(LC_NUMERIC, "fr_FR.UTF-8") != NULL;
+}
+
+TEST(conf_decimals_are_locale_independent)
+{
+  const char* json = "{\"v\": 1.5}";
+  const char* toml = "v = 2.25\n";
+  const char* yaml = "v: 3.75";
+  my_conf_node_t* j;
+  my_conf_node_t* t;
+  my_conf_node_t* y;
+  char* out;
+  double half;
+  char* end = NULL;
+
+  if (!conf_set_comma_locale())
+    printf("    (no comma-decimal locale installed; C locale only)\n");
+  j = my_conf_parse_json(NULL, json, strlen(json), NULL);
+  t = my_conf_parse_toml(NULL, toml, strlen(toml), NULL);
+  y = my_conf_parse_yaml(NULL, yaml, strlen(yaml), NULL);
+  out = j != NULL ? my_conf_to_json_str(NULL, j, false) : NULL;
+  half = my_strtod_c("0.5px", &end);
+  (void)setlocale(LC_NUMERIC, "C");
+  ASSERT_NOT_NULL(j);
+  ASSERT_NOT_NULL(t);
+  ASSERT_NOT_NULL(y);
+  ASSERT_TRUE(my_conf_as_double(my_conf_get(j, "v"), 0.0) == 1.5);
+  ASSERT_TRUE(my_conf_as_double(my_conf_get(t, "v"), 0.0) == 2.25);
+  ASSERT_TRUE(my_conf_as_double(my_conf_get(y, "v"), 0.0) == 3.75);
+  ASSERT_NOT_NULL(out);
+  ASSERT_TRUE(strstr(out, "1.5") != NULL);
+  ASSERT_TRUE(half == 0.5);
+  ASSERT_TRUE(end != NULL && strcmp(end, "px") == 0);
+  my_mem_free(NULL, out);
+  my_conf_destroy(j);
+  my_conf_destroy(t);
+  my_conf_destroy(y);
+}
+
 TEST(json_writer_rejects_nonfinite_numbers)
 {
   const double invalid_values[] = {NAN, INFINITY, -INFINITY};
@@ -3527,6 +3574,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(yaml_parser_rejects_nonfinite_numbers);
     RUN_TEST(toml_parser_rejects_nonfinite_numbers);
     RUN_TEST(toml_parser_preserves_explicit_special_numbers);
+    RUN_TEST(conf_decimals_are_locale_independent);
     RUN_TEST(json_writer_rejects_nonfinite_numbers);
     RUN_TEST(json_writer_handles_large_finite_numbers);
     RUN_TEST(yaml_parser_rejects_excessive_nesting);

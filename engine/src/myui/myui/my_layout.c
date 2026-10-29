@@ -16,7 +16,7 @@
 static my_ret_t parse_axis_value(const char* spec, my_layout_mode_t* mode,
                                  float* value) {
   char* end = NULL;
-  float v = strtof(spec, &end);
+  float v = my_strtof_c(spec, &end);
   if (end == spec) {
     return MY_RET_INVALID_PARAMS;
   }

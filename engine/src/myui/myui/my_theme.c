@@ -1206,7 +1206,7 @@ static my_ret_t parse_value(const char* s, my_value_t* out) {
     return MY_RET_OK;
   }
   {
-    double d = strtod(s, &end);
+    double d = my_strtod_c(s, &end);
     if (end == s || *end != '\0') {
       /* not numeric: store as string */
       return my_value_set_str(out, s);
@@ -1531,7 +1531,7 @@ static bool theme_length_text(const char* text, double* number,
       *unit = THEME_LEN_EM;
       buf[copy - 2u] = '\0';
     }
-    *number = strtod(buf, &endp);
+    *number = my_strtod_c(buf, &endp);
     return endp != NULL && *endp == '\0' && endp != buf;
   }
 }
