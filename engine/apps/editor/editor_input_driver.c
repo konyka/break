@@ -8,13 +8,17 @@
 #include <editor/editor_cmd.h>
 #include <editor/editor_components.h>
 #include <editor/editor_doc.h>
+#include <editor/editor_viewport.h>
 #include <platform/input.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "myui/my_event_dispatch.h"
 #include "myui/my_widget.h"
+#include "myui/my_window.h"
 #include "myui/widgets/my_button.h"
 
 #define DRIVER_MAX_SCRIPT_BYTES (64u * 1024u)
@@ -24,6 +28,9 @@ struct BreakEditorInputDriver {
     BreakEditorShell *shell; /* borrowed for the current frame */
     char shot[BREAK_EDITOR_INPUT_SCRIPT_MAX_ARG]; /* queued screenshot */
     bool shot_pending;
+    /* camera_mark snapshot compared by camera_moved */
+    BreakEditorCamera cam_mark;
+    bool cam_marked;
     u32 shot_failures;
 };
 
@@ -214,6 +221,37 @@ static bool drv_expect(void *user, const char *what) {
         }
         return key[6] == 'a' ? (double)x > limit : (double)x < limit;
     }
+    /* camera_mark: snapshot the viewport camera; camera_moved <what>: what
+     * in {yaw, pitch, distance, target} differs from the snapshot by more
+     * than a rounding error (orbit = yaw/pitch, pan = target, wheel =
+     * distance); camera_still <what>: it does not. */
+    if (strcmp(key, "camera_mark") == 0) {
+        const BreakEditorCamera *cam = break_editor_shell_camera(shell);
+        if (cam == NULL) return false;
+        d->cam_mark = *cam;
+        d->cam_marked = true;
+        return true;
+    }
+    if (strcmp(key, "camera_moved") == 0 || strcmp(key, "camera_still") == 0) {
+        const BreakEditorCamera *cam = break_editor_shell_camera(shell);
+        const BreakEditorCamera *m = &d->cam_mark;
+        bool moved;
+        if (cam == NULL || !d->cam_marked) return false;
+        if (strcmp(arg, "yaw") == 0) {
+            moved = fabsf(cam->yaw - m->yaw) > 1e-4f;
+        } else if (strcmp(arg, "pitch") == 0) {
+            moved = fabsf(cam->pitch - m->pitch) > 1e-4f;
+        } else if (strcmp(arg, "distance") == 0) {
+            moved = fabsf(cam->distance - m->distance) > 1e-4f;
+        } else if (strcmp(arg, "target") == 0) {
+            moved = fabsf(cam->target[0] - m->target[0]) > 1e-4f ||
+                    fabsf(cam->target[1] - m->target[1]) > 1e-4f ||
+                    fabsf(cam->target[2] - m->target[2]) > 1e-4f;
+        } else {
+            return false;
+        }
+        return key[7] == 'm' ? moved : !moved;
+    }
     if (strcmp(key, "log_contains") == 0) {
         return arg[0] != '\0' &&
                strstr(break_editor_shell_console_text(shell), arg) != NULL;
@@ -243,6 +281,19 @@ static void drv_screenshot(void *user, const char *file) {
     d->shot_pending = true;
 }
 
+/* Committed text to the window's focused widget, as an IME commit (the
+ * channel real typing uses for an IME-enabled edit). */
+static bool drv_type_text(void *user, const char *utf8) {
+    BreakEditorInputDriver *d = (BreakEditorInputDriver *)user;
+    my_window_t *win = break_editor_shell_window(d->shell);
+    my_event_t e;
+    if (win == NULL || win->dispatcher.focused == NULL) return false;
+    e = my_event_init(MY_EVENT_IME_COMMIT);
+    e.u.ime.text = utf8;
+    e.u.ime.cursor = 0;
+    return my_event_dispatch(&win->dispatcher, &e);
+}
+
 bool break_editor_input_driver_frame(BreakEditorInputDriver *d,
                                      Platform *platform,
                                      BreakEditorShell *shell) {
@@ -254,6 +305,7 @@ bool break_editor_input_driver_frame(BreakEditorInputDriver *d,
     hooks.locate = drv_locate;
     hooks.expect = drv_expect;
     hooks.screenshot = drv_screenshot;
+    hooks.type_text = drv_type_text;
     hooks.user = d;
     before = break_editor_input_script_failures(d->script);
     more = break_editor_input_script_step(d->script, platform_input(platform),

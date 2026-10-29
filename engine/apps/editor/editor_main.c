@@ -212,10 +212,13 @@ int main(int argc, char **argv) {
   } else {
     break_editor_shell_set_hot_reload(shell, hot_reload);
   }
+  /* `editor <scene.bscn>`: an existing file is opened, a missing one is
+   * the save target of a new scene; a file that does not load is left
+   * alone (not made the save target) */
   if (remote_cli.scene_path != NULL &&
-      !break_editor_shell_set_scene_path(shell, remote_cli.scene_path)) {
-    fprintf(stderr, "editor: scene path rejected (cap %u bytes)\n",
-            BREAK_EDITOR_SCENE_PATH_CAPACITY);
+      !break_editor_shell_open_scene(shell, remote_cli.scene_path)) {
+    fprintf(stderr, "editor: could not open scene '%s' (not loaded and not "
+                    "used as the save target)\n", remote_cli.scene_path);
   }
   if (remote_cli.enabled) {
     BreakEditorRemoteConfig remote_cfg;
@@ -255,8 +258,16 @@ int main(int argc, char **argv) {
    * is a pure view over profiler_last_frame and never touches state). */
   profiler_set_enabled(true);
 
-  while (platform_poll(platform) != PLATFORM_EVENT_QUIT) {
+  for (;;) {
     RHICmdBuffer *cmd;
+    if (platform_poll(platform) == PLATFORM_EVENT_QUIT) {
+      /* unsaved changes: the first close is refused (console + status bar
+       * explain); closing again discards them */
+      if (break_editor_shell_request_close(shell)) {
+        break;
+      }
+      platform_cancel_close(platform);
+    }
     bool skip = false;
     u32 nw = 0, nh = 0;
     u32 lw = 0, lh = 0;

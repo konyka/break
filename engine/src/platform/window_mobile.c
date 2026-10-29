@@ -122,6 +122,7 @@ PlatformEventResult platform_poll(Platform *p) {
     input_new_frame(&p->input);
     return PLATFORM_EVENT_NONE;
 }
+void platform_cancel_close(Platform *p) { (void)p; }
 u32 platform_poll_text(Platform *p, PlatformTextEvent *out, u32 max_events) {
     (void)p; (void)out; (void)max_events; return 0u;
 }

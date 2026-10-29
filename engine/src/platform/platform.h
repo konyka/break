@@ -112,6 +112,11 @@ typedef struct {
 Platform           *platform_create(const PlatformConfig *cfg);
 void                platform_destroy(Platform *p);
 PlatformEventResult platform_poll(Platform *p);
+/* Undo a pending close request (the window's close button / WM delete) so
+ * the next platform_poll does not report PLATFORM_EVENT_QUIT again — for an
+ * app that refuses the close (unsaved changes). Display/connection errors
+ * are not cancellable. NULL: no-op. */
+void                platform_cancel_close(Platform *p);
 u32                 platform_poll_text(Platform *p, PlatformTextEvent *out,
                                        u32 max_events);
 void                platform_ime_set_enabled(Platform *p, bool enabled);

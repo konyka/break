@@ -39,6 +39,17 @@ uint32_t break_ui_map_key(i32 key) {
   }
 }
 
+uint8_t break_ui_map_mouse_button(u32 slot) {
+  switch (slot) {
+  case INPUT_MOUSE_LEFT: return 1u;
+  case INPUT_MOUSE_MIDDLE: return 2u;
+  case INPUT_MOUSE_RIGHT: return 3u;
+  case INPUT_MOUSE_4: return 4u;
+  case INPUT_MOUSE_5: return 5u;
+  default: return 0u;
+  }
+}
+
 bool break_ui_should_dispatch_key(i32 key, uint8_t modifiers,
                                   bool ime_enabled) {
   if (!ime_enabled || (modifiers & MY_KEYMOD_CTRL) != 0) {

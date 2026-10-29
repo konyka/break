@@ -12,6 +12,7 @@ TEST(null_platform_queries_are_safe)
     char *allocated = (char *)1;
 
     ASSERT_EQ(platform_poll(NULL), PLATFORM_EVENT_QUIT);
+    platform_cancel_close(NULL); /* NULL: no-op */
     ASSERT_EQ(platform_input(NULL), NULL);
     ASSERT_EQ(platform_window_native(NULL), NULL);
     ASSERT_EQ(platform_display_native(NULL), NULL);

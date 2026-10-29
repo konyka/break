@@ -152,6 +152,17 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
 
 /* Configures the Ctrl+S / palette-save target (bounded copy; false on NULL
  * shell/path or over-cap path, leaving the previous path unchanged). */
+/* Opens a scene the way `editor <path>` does: an existing file is loaded
+ * (and becomes the save target); a missing file just becomes the save
+ * target of a new document; a file that exists but does not load is NOT
+ * made the save target (so Ctrl+S cannot overwrite it) and false is
+ * returned. The outcome is logged to the console. */
+bool break_editor_shell_open_scene(BreakEditorShell *shell, const char *path);
+/* The host asks before closing the window. true = close now. With unsaved
+ * changes the first request returns false and says so on the console and
+ * status bar; a second request with no edit in between returns true
+ * (discard). Any document change re-arms the warning. */
+bool break_editor_shell_request_close(BreakEditorShell *shell);
 bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
                                        const char *path);
 

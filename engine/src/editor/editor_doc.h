@@ -101,6 +101,12 @@ bool break_editor_doc_remove_entity(BreakEditorDoc *doc,
 bool break_editor_doc_rename_entity(BreakEditorDoc *doc,
                                     BreakEditorEntityId id,
                                     const char *name);
+/* One undoable command: a new entity named "<name> copy" (the source name
+ * alone when the suffix would not fit) holding byte-exact copies of every
+ * registered component of `id`. NULL id on stale id / NULL doc / ECS cap /
+ * OOM (document unchanged). */
+BreakEditorEntityId break_editor_doc_duplicate_entity(BreakEditorDoc *doc,
+                                                      BreakEditorEntityId id);
 
 usize break_editor_doc_entity_count(const BreakEditorDoc *doc);
 bool break_editor_doc_entity_at(const BreakEditorDoc *doc, usize i,

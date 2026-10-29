@@ -162,7 +162,8 @@ struct Platform {
 
     InputState input;
     u32 width, height;
-    bool should_close;
+    bool should_close;     /* fatal: display/connection error */
+    bool close_requested;  /* the compositor's close (cancellable) */
     bool configured;
     PlatformWindowModeState window_mode;
     i32 scale;
@@ -905,7 +906,7 @@ static void xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *tl,
 static void xdg_toplevel_handle_close(void *data, struct xdg_toplevel *tl) {
     (void)tl;
     Platform *p = data;
-    p->should_close = true;
+    p->close_requested = true;
 }
 
 static const struct xdg_toplevel_listener xdg_toplevel_listener = {
@@ -2067,8 +2068,12 @@ PlatformEventResult platform_poll(Platform *p) {
     /* Pump gamepads (evdev) into the shared input state. */
     gamepad_poll(p->input.gamepads);
 
-    if (p->should_close) return PLATFORM_EVENT_QUIT;
+    if (p->should_close || p->close_requested) return PLATFORM_EVENT_QUIT;
     return PLATFORM_EVENT_NONE;
+}
+
+void platform_cancel_close(Platform *p) {
+    if (p != NULL) p->close_requested = false;
 }
 
 u32 platform_poll_text(Platform *p, PlatformTextEvent *out, u32 max_events) {

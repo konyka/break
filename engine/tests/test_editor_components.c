@@ -477,6 +477,65 @@ TEST(remove_entity_undo_restores_components) {
     break_editor_doc_destroy(doc);
 }
 
+/* Duplicate: one undoable command creates a new entity named "<name> copy"
+ * with byte-exact copies of every registered component. Undo removes the
+ * copy; redo restores the same id with the same bytes. */
+TEST(duplicate_entity_copies_components_in_one_command) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorEntityId src = break_editor_doc_add_entity(doc, "hero");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, src,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(set_all_fields(doc, src, 4.5f));
+    u32 depth = break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc));
+
+    BreakEditorEntityId dup = break_editor_doc_duplicate_entity(doc, src);
+    ASSERT_TRUE(break_editor_entity_id_valid(dup));
+    ASSERT_FALSE(break_editor_entity_id_eq(dup, src));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)),
+              depth + 1u);
+    ASSERT_TRUE(fields_match(doc, dup, 4.5f));
+    {
+        BreakEditorEntityId id;
+        const char *name = NULL;
+        ASSERT_TRUE(break_editor_doc_entity_at(doc, 1u, &id, &name));
+        ASSERT_TRUE(break_editor_entity_id_eq(id, dup));
+        ASSERT_STR_EQ(name, "hero copy");
+    }
+    /* the copy is independent of the source */
+    ASSERT_TRUE(break_editor_doc_set_field_f32(
+        doc, dup, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, 9.0f));
+    ASSERT_TRUE(fields_match(doc, src, 4.5f));
+    ASSERT_TRUE(break_editor_undo(doc)); /* the field edit */
+    ASSERT_TRUE(break_editor_undo(doc)); /* the duplicate */
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_TRUE(fields_match(doc, dup, 4.5f));
+
+    /* bounded: stale id, NULL doc; an over-long copy name still fits (the
+     * suffix is dropped rather than truncating the source name) */
+    ASSERT_FALSE(break_editor_entity_id_valid(
+        break_editor_doc_duplicate_entity(NULL, src)));
+    {
+        BreakEditorEntityId gone = break_editor_doc_add_entity(doc, "gone");
+        ASSERT_TRUE(break_editor_doc_remove_entity(doc, gone));
+        ASSERT_FALSE(break_editor_entity_id_valid(
+            break_editor_doc_duplicate_entity(doc, gone)));
+    }
+    {
+        char longname[BREAK_EDITOR_NAME_CAPACITY];
+        memset(longname, 'n', sizeof(longname) - 1u);
+        longname[sizeof(longname) - 1u] = '\0';
+        BreakEditorEntityId l = break_editor_doc_add_entity(doc, longname);
+        ASSERT_TRUE(break_editor_entity_id_valid(l));
+        BreakEditorEntityId lc = break_editor_doc_duplicate_entity(doc, l);
+        ASSERT_TRUE(break_editor_entity_id_valid(lc));
+    }
+    break_editor_doc_destroy(doc);
+}
+
 TEST(add_remove_component_bounded_failures) {
     BreakEditorDoc *doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
@@ -746,6 +805,7 @@ int main(void) {
     RUN_TEST(add_component_undo_redo_symmetric);
     RUN_TEST(remove_component_undo_restores_byte_snapshot);
     RUN_TEST(remove_entity_undo_restores_components);
+    RUN_TEST(duplicate_entity_copies_components_in_one_command);
     RUN_TEST(add_remove_component_bounded_failures);
     RUN_TEST(oom_component_command_alloc_fails_bounded);
     RUN_TEST(component_commands_describe);

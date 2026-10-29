@@ -31,7 +31,8 @@ enum {
     BREAK_EDITOR_CMD_KIND_SET_FIELD_F32 = 4,
     BREAK_EDITOR_CMD_KIND_ADD_COMPONENT = 5,
     BREAK_EDITOR_CMD_KIND_REMOVE_COMPONENT = 6,
-    BREAK_EDITOR_CMD_KIND_GIZMO_TRANSFORM = 7
+    BREAK_EDITOR_CMD_KIND_GIZMO_TRANSFORM = 7,
+    BREAK_EDITOR_CMD_KIND_DUPLICATE_ENTITY = 8
 };
 
 /* Concrete command: one bounded allocation per mutation. name/other_name
@@ -122,6 +123,7 @@ struct BreakEditorCmdStack {
     u32 size;     /* applied + redoable commands currently held */
     u32 undo_pos; /* [0, undo_pos) applied; [undo_pos, size) redoable */
     bool dropped_oldest;
+    u64 revision; /* +1 per push / undo / redo (change signal) */
 };
 
 /* editor_scene.c: releases doc->kept_chunks (safe when none). */
@@ -152,6 +154,11 @@ void break_editor_cmd_stack_clear(BreakEditorCmdStack *stack);
  * rename constructors also return NULL when the id is not a live named
  * entity of this document. Callers validate name lengths first. */
 BreakEditorCmd *break_editor_cmd_add_entity_create(const char *name_or_null);
+/* duplicate: an add_entity whose apply also installs byte copies of every
+ * registered component `src` has (snapshotted at construction). */
+BreakEditorCmd *break_editor_cmd_duplicate_entity_create(BreakEditorDoc *doc,
+                                                         BreakEditorEntityId src,
+                                                         const char *name);
 BreakEditorCmd *break_editor_cmd_remove_entity_create(BreakEditorDoc *doc,
                                                       BreakEditorEntityId id);
 BreakEditorCmd *break_editor_cmd_rename_entity_create(BreakEditorDoc *doc,

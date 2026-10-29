@@ -44,7 +44,8 @@ struct Platform {
     HDC         hdc;
     InputState  input;
     u32         width, height;
-    bool        should_close;
+    bool        should_close;     /* WM_QUIT: process exit */
+    bool        close_requested;  /* WM_CLOSE: the user's close (cancellable) */
     bool        mouse_relative;
     bool        mouse_visible;  /* R427: desired cursor visibility (ShowCursor is counter-based) */
     PlatformCursor cursor;
@@ -308,7 +309,7 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
     switch (msg) {
     case WM_CLOSE:
-        p->should_close = true;
+        p->close_requested = true;
         return 0;
 
     /* R368: match X11 FocusOut / Wayland keyboard_leave — release stuck keys. */
@@ -715,8 +716,12 @@ PlatformEventResult platform_poll(Platform *p) {
     /* Pump gamepads (XInput) into the shared input state. */
     gamepad_poll(p->input.gamepads);
 
-    if (p->should_close) return PLATFORM_EVENT_QUIT;
+    if (p->should_close || p->close_requested) return PLATFORM_EVENT_QUIT;
     return PLATFORM_EVENT_NONE;
+}
+
+void platform_cancel_close(Platform *p) {
+    if (p != NULL) p->close_requested = false;
 }
 
 u32 platform_poll_text(Platform *p, PlatformTextEvent *out, u32 max_events) {

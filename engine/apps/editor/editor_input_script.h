@@ -27,6 +27,10 @@ typedef struct {
     bool (*expect)(void *user, const char *what);
     /* screenshot: the file argument */
     void (*screenshot)(void *user, const char *file);
+    /* type: deliver `utf8` as committed text to the focused widget (the
+     * path real typing takes once an edit enables IME). false = no
+     * receiver (the step fails). */
+    bool (*type_text)(void *user, const char *utf8);
     void *user;
 } BreakEditorInputScriptHooks;
 

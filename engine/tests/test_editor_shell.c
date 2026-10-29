@@ -275,7 +275,7 @@ TEST(palette_opens_filters_and_escape_closes)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 14u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 15u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save"));
@@ -1788,12 +1788,9 @@ TEST(palette_row_click_via_pointer_switches_language)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    /* scroll the last command row into view (it is below the fold) */
-    {
-        my_widget_t *list = find(shell, "editor-palette-list");
-        ASSERT_NOT_NULL(list);
-        (void)my_list_view_set_scroll_offset(list, 100000);
-    }
+    /* filter so the target row is the first, fully visible one */
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "Chinese"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     shell_paint(shell);
     row = list_row_by_text(find(shell, "editor-palette-list"),
                            "Language: \xE4\xB8\xAD\xE6\x96\x87 (Chinese)");
@@ -2056,6 +2053,204 @@ TEST(settings_persist_theme_language_and_tabs_across_shells)
     ASSERT_TRUE(break_editor_shell_set_theme(shell, false));
     break_editor_shell_destroy(shell);
     remove(path);
+}
+
+/* Editing an inspector field with real input: click the field, move to the
+ * end of its text, type characters and press Enter — all through the event
+ * dispatcher. The value commits as one undoable set_field command. */
+TEST(inspector_field_edits_through_real_key_events)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *field;
+    f32 x = -1.0f;
+    const char *typed = "2.75";
+    ASSERT_NOT_NULL(shell);
+    emit_click(find(shell, "editor-add-button"));
+    emit_click(find(shell, "editor-component-add-64"));
+    shell_paint(shell);
+    field = find(shell, "editor-field-64-0");
+    ASSERT_NOT_NULL(field);
+    pointer_click(shell, field);
+    shell_paint(shell);
+    /* the field shows "0"; select-all is not implied, so clear it first */
+    dispatch_key_event(shell, MY_KEY_END);
+    dispatch_key_event(shell, MY_KEY_BACKSPACE);
+    for (const char *c = typed; *c != '\0'; c++) {
+        dispatch_key_event(shell, (u32)(unsigned char)*c);
+    }
+    ASSERT_STR_EQ(my_edit_get_text(field), typed);
+    dispatch_key_event(shell, MY_KEY_RETURN);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        break_editor_shell_doc(shell), break_editor_shell_selected(shell),
+        BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x));
+    ASSERT_TRUE(x == 2.75f);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        break_editor_shell_doc(shell), break_editor_shell_selected(shell),
+        BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &x));
+    ASSERT_TRUE(x == 0.0f);
+    break_editor_shell_destroy(shell);
+}
+
+/* Delete removes the selected entity; Ctrl+D duplicates it (with its
+ * transform) and selects the copy. Both through the real key dispatcher
+ * with the shell root focused, and both undoable. */
+TEST(delete_and_ctrl_d_shortcuts)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorEntityId src, dup;
+    f32 x = 0.0f;
+    ASSERT_NOT_NULL(shell);
+    add_transformed_entity(shell, 1.25f, 0.0f, 0.0f);
+    src = break_editor_shell_selected(shell);
+    ASSERT_TRUE(break_editor_entity_id_valid(src));
+    my_event_dispatcher_set_focus(&break_editor_shell_window(shell)->dispatcher,
+                                  break_editor_shell_root(shell));
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        my_event_t ev = my_event_init(MY_EVENT_KEY_DOWN);
+        ev.u.key.key = 'd';
+        ev.u.key.modifiers = MY_KEYMOD_CTRL;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+    }
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 2u);
+    dup = break_editor_shell_selected(shell);
+    ASSERT_TRUE(break_editor_entity_id_valid(dup));
+    ASSERT_FALSE(break_editor_entity_id_eq(dup, src));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        break_editor_shell_doc(shell), dup, BREAK_EDITOR_COMPONENT_TRANSFORM,
+        0u, &x));
+    ASSERT_TRUE(x == 1.25f);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell), "duplicate") != NULL);
+    dispatch_key_event(shell, MY_KEY_DELETE);
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 1u);
+    ASSERT_FALSE(break_editor_entity_id_valid(break_editor_shell_selected(shell)));
+    /* nothing selected: Delete and Ctrl+D are bounded no-ops */
+    dispatch_key_event(shell, MY_KEY_DELETE);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'd', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 1u);
+    /* both undo */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 2u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 1u);
+    /* With focus on a clicked outliner row (real pointer), Ctrl+D then
+     * Delete must both reach the shell: the duplicate rebinds the list,
+     * and the recycled row must not take key focus out of the shell. */
+    {
+        my_widget_t *row;
+        my_window_t *win = break_editor_shell_window(shell);
+        my_event_t ev;
+        u32 before;
+        shell_paint(shell);
+        row = my_widget_get_child(find(shell, "editor-outliner"), 0u);
+        ASSERT_NOT_NULL(row);
+        pointer_click(shell, row);
+        ASSERT_TRUE(break_editor_entity_id_valid(break_editor_shell_selected(shell)));
+        before = (u32)break_editor_shell_outliner_count(shell);
+        ev = my_event_init(MY_EVENT_KEY_DOWN);
+        ev.u.key.key = 'd';
+        ev.u.key.modifiers = MY_KEYMOD_CTRL;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        shell_paint(shell);
+        ASSERT_EQ(break_editor_shell_outliner_count(shell), before + 1u);
+        dispatch_key_event(shell, MY_KEY_DELETE);
+        ASSERT_EQ(break_editor_shell_outliner_count(shell), before);
+    }
+    /* the palette lists it too */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "Duplicate"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    break_editor_shell_destroy(shell);
+}
+
+/* Opening a scene given on the command line: an existing file is LOADED
+ * (so a later Ctrl+S re-saves its content, not an empty document over
+ * it); a missing file only becomes the save target (new scene); a corrupt
+ * file is NOT made the save target, so Ctrl+S cannot clobber it. */
+TEST(open_scene_loads_existing_and_targets_missing)
+{
+    char path[512], sidecar[600], missing[512], corrupt[512];
+    BreakEditorShell *shell;
+    test_tmp(path, sizeof(path), "editor_shell_open.bscn");
+    snprintf(sidecar, sizeof(sidecar), "%s.editor.json", path);
+    test_tmp(missing, sizeof(missing), "editor_shell_open_missing.bscn");
+    test_tmp(corrupt, sizeof(corrupt), "editor_shell_open_corrupt.bscn");
+    remove(missing);
+    /* author a scene with two entities */
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    emit_click(find(shell, "editor-add-button"));
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, path));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    break_editor_shell_destroy(shell);
+
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_open_scene(shell, path));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 2u);
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), path);
+    break_editor_shell_destroy(shell);
+
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_open_scene(shell, missing));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 0u);
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), missing);
+    break_editor_shell_destroy(shell);
+
+    ASSERT_TRUE(write_text_file(corrupt, "not a scene"));
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_FALSE(break_editor_shell_open_scene(shell, corrupt));
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), "");
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    {
+        usize n = 0;
+        FILE *f = fopen(corrupt, "rb");
+        char buf[32];
+        ASSERT_NOT_NULL(f);
+        n = fread(buf, 1u, sizeof(buf), f);
+        fclose(f);
+        ASSERT_EQ(n, 11u); /* untouched */
+    }
+    ASSERT_FALSE(break_editor_shell_open_scene(NULL, path));
+    ASSERT_FALSE(break_editor_shell_open_scene(shell, NULL));
+    break_editor_shell_destroy(shell);
+    remove(path);
+    remove(sidecar);
+    remove(corrupt);
+}
+
+/* Closing with unsaved changes: the first request is refused (a console
+ * line and the status bar say so); a second request discards. Any edit in
+ * between re-arms the guard; a clean document closes at once. */
+TEST(close_request_guards_unsaved_changes)
+{
+    char path[512], sidecar[600];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_request_close(shell)); /* clean */
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_FALSE(break_editor_shell_request_close(shell));
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell), "unsaved") != NULL);
+    ASSERT_TRUE(strstr(break_editor_shell_status_text(shell), "unsaved") != NULL);
+    /* an edit after the warning re-arms it */
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_FALSE(break_editor_shell_request_close(shell));
+    ASSERT_TRUE(break_editor_shell_request_close(shell)); /* second: discard */
+    /* saving clears the need */
+    test_tmp(path, sizeof(path), "editor_shell_close.bscn");
+    snprintf(sidecar, sizeof(sidecar), "%s.editor.json", path);
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, path));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_request_close(shell));
+    ASSERT_TRUE(break_editor_shell_request_close(NULL)); /* nothing to guard */
+    break_editor_shell_destroy(shell);
+    remove(path);
+    remove(sidecar);
 }
 
 /* Ctrl+P paints the palette over the shell and its focused edit shows the
@@ -6510,7 +6705,7 @@ TEST(i18n_palette_switches_language_at_runtime)
 
     /* palette now lists and filters Chinese command names */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 14u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 15u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "保存"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "English"));
@@ -6910,6 +7105,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_escape_via_event_dispatcher_closes);
     RUN_TEST(theme_switches_between_dark_and_light);
     RUN_TEST(tool_window_tabs_show_one_page_per_area);
+    RUN_TEST(inspector_field_edits_through_real_key_events);
+    RUN_TEST(delete_and_ctrl_d_shortcuts);
+    RUN_TEST(open_scene_loads_existing_and_targets_missing);
+    RUN_TEST(close_request_guards_unsaved_changes);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);

@@ -1255,6 +1255,10 @@ static void x11_collect_text(Platform *p, XKeyEvent *key) {
     if (utf8 != inline_text) free(utf8);
 }
 
+void platform_cancel_close(Platform *p) {
+    if (p != NULL) p->should_close = false;
+}
+
 PlatformEventResult platform_poll(Platform *p) {
     bool relative_motion_seen = false;
     i32 relative_prev_x;
@@ -1294,6 +1298,7 @@ PlatformEventResult platform_poll(Platform *p) {
         switch (ev.type) {
         case ClientMessage:
             if ((Atom)ev.xclient.data.l[0] == p->wm_delete) {
+                /* the user's close request: reported once, cancellable */
                 p->should_close = true;
                 return PLATFORM_EVENT_QUIT;
             }

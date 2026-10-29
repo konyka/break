@@ -19,6 +19,13 @@ uint32_t break_ui_map_key(i32 key);
  */
 bool break_ui_key_slot_is_keyboard(u32 i);
 
+/**
+ * @brief myui pointer button number (1 left, 2 middle, 3 right, 4/5 extra)
+ *        for a Break mouse key slot (INPUT_MOUSE_LEFT/RIGHT/MIDDLE/4/5);
+ *        0 for any other slot.
+ */
+uint8_t break_ui_map_mouse_button(u32 slot);
+
 /** @brief Whether a physical key should still be dispatched while IME is on. */
 bool break_ui_should_dispatch_key(i32 key, uint8_t modifiers,
                                   bool ime_enabled);

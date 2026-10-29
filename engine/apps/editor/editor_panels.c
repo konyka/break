@@ -50,7 +50,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_ROW_CTX_POOL 64u
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
-#define EDITOR_PALETTE_COMMAND_COUNT 14u
+#define EDITOR_PALETTE_COMMAND_COUNT 15u
 #define EDITOR_TEST_WINDOW_W 800
 #define EDITOR_TEST_WINDOW_H 480
 
@@ -162,6 +162,9 @@ struct BreakEditorShell {
 
     char status_text[EDITOR_STATUS_BYTES];
     char note[EDITOR_CONSOLE_LINE_BYTES]; /* status-bar intent note */
+    /* close guard: revision at the last unsaved-changes warning (+1 so 0 =
+     * never warned) */
+    u64 close_warned_rev;
 
     char scene_path[BREAK_EDITOR_SCENE_PATH_CAPACITY];
     bool scene_path_set;
@@ -192,7 +195,8 @@ enum {
     PAL_LANG_EN,
     PAL_LANG_ZH,
     PAL_THEME_LIGHT,
-    PAL_THEME_DARK
+    PAL_THEME_DARK,
+    PAL_DUPLICATE_SELECTED
 };
 
 /* Current-language text of palette command `cmd` (bounded, never NULL). */
@@ -220,6 +224,9 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
     }
     if (cmd == PAL_THEME_DARK) {
         return break_editor_tr(BREAK_EDITOR_TR_CMD_THEME_DARK);
+    }
+    if (cmd == PAL_DUPLICATE_SELECTED) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_DUPLICATE_SELECTED);
     }
     return "?";
 }
@@ -937,6 +944,25 @@ static void shell_do_add_entity(BreakEditorShell *shell) {
     editor_shell_refresh_all(shell);
 }
 
+/* Ctrl+D / palette: duplicate the selection (one undoable command) and
+ * select the copy. */
+static void shell_do_duplicate_selected(BreakEditorShell *shell) {
+    BreakEditorEntityId id = BREAK_EDITOR_ENTITY_NULL;
+    if (break_editor_entity_id_valid(shell->selected)) {
+        id = break_editor_doc_duplicate_entity(shell->doc, shell->selected);
+    }
+    if (break_editor_entity_id_valid(id)) {
+        const char *name = shell_entity_name(shell, id);
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_DUPLICATE_FMT),
+                         name != NULL ? name : "?");
+        shell->selected = id;
+    } else {
+        editor_shell_log(shell, "%s",
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_DUPLICATE_FAILED));
+    }
+    editor_shell_refresh_all(shell);
+}
+
 static void shell_do_remove_selected(BreakEditorShell *shell) {
     if (!break_editor_entity_id_valid(shell->selected)) {
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_NO_SELECTION));
@@ -1114,6 +1140,9 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     case PAL_THEME_DARK:
         (void)break_editor_shell_set_theme(shell, false);
         break;
+    case PAL_DUPLICATE_SELECTED:
+        shell_do_duplicate_selected(shell);
+        break;
     default:
         break;
     }
@@ -1160,7 +1189,9 @@ enum {
     ACT_SAVE,
     ACT_UNDO,
     ACT_REDO,
-    ACT_PALETTE_TOGGLE
+    ACT_PALETTE_TOGGLE,
+    ACT_DUPLICATE,
+    ACT_DELETE
 };
 
 typedef struct {
@@ -1179,6 +1210,8 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'z', MY_KEYMOD_CTRL, ACT_UNDO},
     {'y', MY_KEYMOD_CTRL, ACT_REDO},
     {'p', MY_KEYMOD_CTRL, ACT_PALETTE_TOGGLE},
+    {'d', MY_KEYMOD_CTRL, ACT_DUPLICATE},
+    {MY_KEY_DELETE, MY_KEYMOD_NONE, ACT_DELETE},
 };
 
 bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
@@ -1262,6 +1295,14 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
             break;
         case ACT_PALETTE_TOGGLE:
             shell_palette_set_open(shell, !shell->palette_open);
+            break;
+        case ACT_DUPLICATE:
+            shell_do_duplicate_selected(shell);
+            break;
+        case ACT_DELETE:
+            if (break_editor_entity_id_valid(shell->selected)) {
+                shell_do_remove_selected(shell);
+            }
             break;
         default:
             return false;
@@ -1358,6 +1399,14 @@ void editor_shell_refresh_all(BreakEditorShell *shell) {
     shell_rebuild_inspector(shell);
     shell_refresh_status(shell);
     shell_refresh_tool_label(shell);
+    /* A rebind recycles the outliner rows and the inspector is rebuilt:
+     * when the focused widget was one of them, myui clears focus and every
+     * later key (Delete, Ctrl+D, Ctrl+Z...) would go nowhere. Hand it back
+     * to the shell root, where the shortcuts live. */
+    if (shell->win != NULL && shell->root != NULL &&
+        shell->win->dispatcher.focused == NULL) {
+        my_event_dispatcher_set_focus(&shell->win->dispatcher, shell->root);
+    }
 }
 
 /* ---------------- tool-window tabs ---------------- */
@@ -2130,6 +2179,39 @@ bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
     (void)break_editor_hot_reload_set_scene(shell->hot_reload,
                                             shell->scene_path);
     return true;
+}
+
+bool break_editor_shell_request_close(BreakEditorShell *shell) {
+    u64 rev;
+    if (shell == NULL || !break_editor_doc_is_dirty(shell->doc)) {
+        return true;
+    }
+    rev = break_editor_cmd_stack_revision(break_editor_doc_stack(shell->doc)) + 1u;
+    if (shell->close_warned_rev == rev) {
+        return true; /* second request with no edit since the warning */
+    }
+    shell->close_warned_rev = rev;
+    editor_shell_log(shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_CLOSE_UNSAVED));
+    (void)snprintf(shell->note, sizeof(shell->note), "%s",
+                   break_editor_tr(BREAK_EDITOR_TR_LOG_CLOSE_UNSAVED));
+    shell_refresh_status(shell);
+    return false;
+}
+
+bool break_editor_shell_open_scene(BreakEditorShell *shell, const char *path) {
+    FILE *f;
+    if (shell == NULL || path == NULL || path[0] == '\0') {
+        return false;
+    }
+    f = fopen(path, "rb");
+    if (f == NULL) {
+        /* new scene: nothing to load yet, saving creates it */
+        return break_editor_shell_set_scene_path(shell, path);
+    }
+    fclose(f);
+    /* existing file: load it; on failure keep it out of the save target so
+     * Ctrl+S cannot overwrite it with the (empty) current document */
+    return editor_shell_load_scene(shell, path);
 }
 
 const char *break_editor_shell_scene_path(const BreakEditorShell *shell) {

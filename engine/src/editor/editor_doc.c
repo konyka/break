@@ -6,6 +6,7 @@
 #include <editor/editor_internal.h>
 #include <editor/editor_test_hooks.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -106,6 +107,32 @@ BreakEditorEntityId break_editor_doc_add_entity(BreakEditorDoc *doc,
         return BREAK_EDITOR_ENTITY_NULL; /* over-cap: rejected, no truncate */
     }
     BreakEditorCmd *cmd = break_editor_cmd_add_entity_create(name);
+    if (!cmd) return BREAK_EDITOR_ENTITY_NULL;
+    if (!cmd->apply(cmd, doc)) {
+        cmd->destroy(cmd);
+        return BREAK_EDITOR_ENTITY_NULL;
+    }
+    break_editor_cmd_stack_push_applied(doc, cmd);
+    doc->dirty = true;
+    return cmd->id;
+}
+
+BreakEditorEntityId break_editor_doc_duplicate_entity(BreakEditorDoc *doc,
+                                                      BreakEditorEntityId id) {
+    char name[BREAK_EDITOR_NAME_CAPACITY];
+    if (!doc || !break_editor_doc_has_entity(doc, id)) {
+        return BREAK_EDITOR_ENTITY_NULL;
+    }
+    /* "<name> copy" when it fits, else the source name unchanged (never a
+     * truncated name) */
+    {
+        const char *src = doc->slots[id.index].name;
+        int n = snprintf(name, sizeof(name), "%s copy", src);
+        if (n < 0 || (usize)n >= sizeof(name)) {
+            snprintf(name, sizeof(name), "%s", src);
+        }
+    }
+    BreakEditorCmd *cmd = break_editor_cmd_duplicate_entity_create(doc, id, name);
     if (!cmd) return BREAK_EDITOR_ENTITY_NULL;
     if (!cmd->apply(cmd, doc)) {
         cmd->destroy(cmd);

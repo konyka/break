@@ -305,7 +305,7 @@ static void pump_mouse(BreakUI *ui, InputState *input) {
                                              : MY_EVENT_POINTER_UP);
       e.u.pointer.x = (int32_t)mouse_x;
       e.u.pointer.y = (int32_t)mouse_y;
-      e.u.pointer.button = (uint8_t)(i + 1);
+      e.u.pointer.button = break_ui_map_mouse_button(key);
       e.u.pointer.modifiers = mods;
       send_event(ui, e);
     }
