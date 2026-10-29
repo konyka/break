@@ -2,7 +2,7 @@
 
 ## 本轮更新：VFS pak 写入器（2026-10-30）
 
-- **交付**：`vfs_pak_write`（`engine/src/asset/vfs.{h,c}`）。此前仓库里没有任何生成 pak 的工具，只能在测试里手工拼字节。写入方式是临时文件加 rename；在 Windows 上，目标文件已存在时 rename 会失败，这一点写进了头注释。
+- **交付**：`vfs_pak_write`（`engine/src/asset/vfs.{h,c}`）。~~此前仓库里没有任何生成 pak 的工具，只能在测试里手工拼字节。~~（2026-10-30 更正：这句话不对。仓库里早就有离线命令行工具 `engine/tools/packer.c`，用法是 `packer <out.pak> <dir|file>...`，配套的 `tools/verify_pak.c` 负责校验。`vfs_pak_write` 是进程内的库 API，用于测试和进程内工具链；它与 packer 写出的格式相同，区别是带“临时文件 + rename”的原子替换，而 packer 是直接写目标文件，失败时可能留下半个文件。）写入方式是临时文件加 rename；在 Windows 上，目标文件已存在时 rename 会失败，这一点写进了头注释。
 - **测试**：`test_vfs` 新增 2 例，覆盖“写入→挂载→读取→枚举”的往返，以及非法输入不留文件；36/36 通过，ASan 下同样 36/36。变异检查：去掉重名检查后变红。默认树 232/233，唯一失败是已知 flaky 的 x11 用例。
 
 ## 本轮更新：VFS pak 条目枚举（2026-10-30）
