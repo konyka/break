@@ -16,11 +16,21 @@
 #define TEST_GETPID() _getpid()
 #define TEST_MKDIR(path) _mkdir(path)
 #define TEST_RMDIR(path) _rmdir(path)
+/* Windows has no setenv/unsetenv; _putenv_s("NAME", "") deletes the variable.
+ * Both return 0 on success like their POSIX counterparts. */
+#define TEST_SETENV(name, value) _putenv_s((name), (value))
+#define TEST_UNSETENV(name) _putenv_s((name), "")
 #else
 #include <unistd.h>
 #define TEST_GETPID() getpid()
 #define TEST_MKDIR(path) mkdir(path, 0755)
 #define TEST_RMDIR(path) rmdir(path)
+/* The engine builds at _POSIX_C_SOURCE=199309L, which hides these on glibc;
+ * declare them so callers need no feature-test macro of their own. */
+extern int setenv(const char *, const char *, int);
+extern int unsetenv(const char *);
+#define TEST_SETENV(name, value) setenv((name), (value), 1)
+#define TEST_UNSETENV(name) unsetenv(name)
 #endif
 
 static inline const char *test_tmp(char *buf, size_t cap, const char *name) {
