@@ -151,6 +151,16 @@ usize break_editor_gizmo_handles(const BreakEditorGizmo *g, BreakEditorGizmoHand
  * Task 3 renderer calls this once per frame; hit/begin_drag/drag refresh it
  * too). No-op on NULL, degenerate camera, detached gizmo, or non-finite
  * pivot (the previous cache value is kept). */
+/* Snapping (0 = off per kind): translate results round to multiples of
+ * `translate_step` world units, rotate to multiples of `rotate_deg`, scale
+ * to multiples of `scale_step` and never below one step. The resulting
+ * value is snapped (not the delta). false for NULL or a negative /
+ * non-finite step (previous setting kept). Applies to drags begun later
+ * and to the current one from its next drag() call. */
+bool break_editor_gizmo_set_snap(BreakEditorGizmo *g, f32 translate_step,
+                                 f32 rotate_deg, f32 scale_step);
+void break_editor_gizmo_get_snap(const BreakEditorGizmo *g, f32 *translate_step,
+                                 f32 *rotate_deg, f32 *scale_step);
 void break_editor_gizmo_set_view(BreakEditorGizmo *g, const BreakEditorCamera *cam);
 
 /* Pointer drive (viewport-local logical px): */

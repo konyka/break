@@ -69,6 +69,7 @@ TEST(serialize_round_trips)
     a.lang = BREAK_EDITOR_LANG_ZH_CN;
     a.bottom_tab = 1u;
     a.diag_tab = 2u;
+    a.snap = true;
     n = break_editor_settings_serialize(&a, buf, sizeof(buf));
     ASSERT_TRUE(n > 0u && n < sizeof(buf));
     break_editor_settings_defaults(&b);
@@ -77,6 +78,7 @@ TEST(serialize_round_trips)
     ASSERT_TRUE(b.has_lang && b.lang == BREAK_EDITOR_LANG_ZH_CN);
     ASSERT_EQ(b.bottom_tab, 1u);
     ASSERT_EQ(b.diag_tab, 2u);
+    ASSERT_TRUE(b.snap);
     /* too-small buffer: nothing written, 0 returned */
     ASSERT_EQ(break_editor_settings_serialize(&a, buf, 8u), 0u);
 }

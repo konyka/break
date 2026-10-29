@@ -275,7 +275,7 @@ TEST(palette_opens_filters_and_escape_closes)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 15u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 16u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save"));
@@ -2251,6 +2251,46 @@ TEST(close_request_guards_unsaved_changes)
     break_editor_shell_destroy(shell);
     remove(path);
     remove(sidecar);
+}
+
+/* Snap toggle: Ctrl+G (and the palette's "Toggle snapping") flips the
+ * gizmo snap between off and the defaults (0.25 units, 15 degrees, 0.1
+ * scale); the tool label shows it; the choice is persisted. */
+TEST(snap_toggle_sets_gizmo_steps_and_persists)
+{
+    char path[256];
+    BreakEditorShell *shell;
+    f32 t = -1.0f, r = -1.0f, sc = -1.0f;
+    test_tmp(path, sizeof(path), "editor_shell_snap.ini");
+    remove(path);
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, true));
+    break_editor_gizmo_get_snap(break_editor_shell_gizmo(shell), &t, &r, &sc);
+    ASSERT_TRUE(t == 0.0f && r == 0.0f && sc == 0.0f);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'g', MY_KEYMOD_CTRL));
+    break_editor_gizmo_get_snap(break_editor_shell_gizmo(shell), &t, &r, &sc);
+    ASSERT_FLOAT_EQ(t, 0.25f, 0.0f);
+    ASSERT_FLOAT_EQ(r, 15.0f, 0.0f);
+    ASSERT_FLOAT_EQ(sc, 0.1f, 0.0f);
+    ASSERT_TRUE(strstr(break_editor_shell_tool_text(shell), "Snap") != NULL);
+    break_editor_shell_destroy(shell);
+    /* the next shell comes back with snapping on */
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, true));
+    break_editor_gizmo_get_snap(break_editor_shell_gizmo(shell), &t, &r, &sc);
+    ASSERT_FLOAT_EQ(t, 0.25f, 0.0f);
+    /* palette entry toggles it off */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "snapping"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    break_editor_gizmo_get_snap(break_editor_shell_gizmo(shell), &t, &r, &sc);
+    ASSERT_TRUE(t == 0.0f && r == 0.0f && sc == 0.0f);
+    ASSERT_TRUE(strstr(break_editor_shell_tool_text(shell), "Snap") == NULL);
+    break_editor_shell_destroy(shell);
+    remove(path);
 }
 
 /* Ctrl+P paints the palette over the shell and its focused edit shows the
@@ -6759,7 +6799,7 @@ TEST(i18n_palette_switches_language_at_runtime)
 
     /* palette now lists and filters Chinese command names */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 15u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 16u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "保存"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "English"));
@@ -7163,6 +7203,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(delete_and_ctrl_d_shortcuts);
     RUN_TEST(open_scene_loads_existing_and_targets_missing);
     RUN_TEST(close_request_guards_unsaved_changes);
+    RUN_TEST(snap_toggle_sets_gizmo_steps_and_persists);
     RUN_TEST(settings_persist_theme_language_and_tabs_across_shells);
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);
     RUN_TEST(assets_panel_navigation_updates_rows);

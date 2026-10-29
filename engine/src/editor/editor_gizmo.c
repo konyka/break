@@ -57,7 +57,15 @@ struct BreakEditorGizmo {
     f32 grab_s0;                    /* axis parameter at begin (translate/scale) */
     f32 plane_p0[3];                /* plane grab point at begin (CENTER) */
     f32 drag_x0;                    /* begin x pixel (rotate, CENTER scale) */
+    /* snapping steps, 0 = off (break_editor_gizmo_set_snap) */
+    f32 snap_translate;
+    f32 snap_rotate_deg;
+    f32 snap_scale;
 };
+
+static f32 eg_snap(f32 v, f32 step) {
+    return step > 0.0f ? roundf(v / step) * step : v;
+}
 
 /* ---- small math helpers ---- */
 
@@ -535,6 +543,17 @@ bool break_editor_gizmo_drag(BreakEditorGizmo *g,
             }
         }
     }
+    /* snap the resulting values (not the deltas) */
+    for (u32 i = 0; i < g->cmd->field_count; i++) {
+        if (g->mode == BREAK_EDITOR_GIZMO_TRANSLATE) {
+            new_vals[i] = eg_snap(new_vals[i], g->snap_translate);
+        } else if (g->mode == BREAK_EDITOR_GIZMO_ROTATE) {
+            new_vals[i] = eg_snap(new_vals[i], g->snap_rotate_deg);
+        } else if (g->snap_scale > 0.0f) {
+            new_vals[i] = eg_snap(new_vals[i], g->snap_scale);
+            if (new_vals[i] < g->snap_scale) new_vals[i] = g->snap_scale;
+        }
+    }
     for (u32 i = 0; i < g->cmd->field_count; i++) {
         if (!isfinite(new_vals[i])) return false; /* NaN/Inf guard: reject */
     }
@@ -555,6 +574,26 @@ bool break_editor_gizmo_drag(BreakEditorGizmo *g,
     }
     if (changed) g->doc->dirty = true;
     return true;
+}
+
+bool break_editor_gizmo_set_snap(BreakEditorGizmo *g, f32 translate_step,
+                                 f32 rotate_deg, f32 scale_step) {
+    if (!g || !isfinite(translate_step) || !isfinite(rotate_deg) ||
+        !isfinite(scale_step) || translate_step < 0.0f || rotate_deg < 0.0f ||
+        scale_step < 0.0f) {
+        return false;
+    }
+    g->snap_translate = translate_step;
+    g->snap_rotate_deg = rotate_deg;
+    g->snap_scale = scale_step;
+    return true;
+}
+
+void break_editor_gizmo_get_snap(const BreakEditorGizmo *g, f32 *translate_step,
+                                 f32 *rotate_deg, f32 *scale_step) {
+    if (translate_step) *translate_step = g ? g->snap_translate : 0.0f;
+    if (rotate_deg) *rotate_deg = g ? g->snap_rotate_deg : 0.0f;
+    if (scale_step) *scale_step = g ? g->snap_scale : 0.0f;
 }
 
 void break_editor_gizmo_end_drag(BreakEditorGizmo *g) {

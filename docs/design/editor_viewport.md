@@ -159,7 +159,7 @@ GPU 路径证据 = 编译/链接 + 记录在案的 live smoke run（**非** GPU 
 ## 9. Phase 3+ 明确排除项（设计-only，本 phase 未交付）
 
 - 选中高亮 **outline**/线框变体（当前为平涂 tint）、rotation rings 手柄
-  可视化、snap grid/步进、多选（框选/多实体拖拽）、场景保真渲染
+  可视化、多选（框选/多实体拖拽）、场景保真渲染
   （mesh/材质/光照——代理立方体不声称游戏画面）、gizmo 局部坐标系模式、
   视口内导航键（flycam）、视口 overlay 统计信息、pick 的增量 BVH refit
   优化（当前每次调用重建，编辑器规模足够）。
@@ -171,3 +171,8 @@ GPU 路径证据 = 编译/链接 + 记录在案的 live smoke run（**非** GPU 
 3. `vp_lazy_init` 部分失败泄漏至多一套 pipeline/bindings/vbo（仅在 GPU 已失败路径、一次性）；修复方向：先设 `vp->device` 再进 fallible 步骤。
 4. `vp_fbo_ensure` 创建失败后每帧重试（无粘性标志；无泄漏、有界）；可选加粘性标志并在本节记录重试策略。
 5. 文档小项：`editor_viewport.h` 相机结构注释的 distance/pitch 边界与实现钳制不一致（注释级别）；`set_mode` 对 >SCALE 枚举值缺 2 行钳制（调用方错误专用路径）。
+
+
+## 吸附（2026-10-29）
+
+`break_editor_gizmo_set_snap(g, translate_step, rotate_deg, scale_step)`：0 表示该类关闭；吸附结果值（不是增量），所以离网格的起点会落回网格；缩放不低于一个步长；负数或非有限值被拒绝并保留原设置。shell 侧 Ctrl+G / 命令面板切换（默认 0.25、15°、0.1），工具标签带“Snap”，偏好文件 `snap=on|off`。

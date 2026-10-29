@@ -72,6 +72,7 @@ editor 可执行（engine/apps/editor/editor_main.c，薄 main）
 | Ctrl+P | Ctrl | 调色板开关 |
 | Ctrl+D | Ctrl | 复制所选实体（含组件，选中副本；2026-10-29） |
 | Delete | 无 | 删除所选实体（2026-10-29） |
+| Ctrl+G | Ctrl | 切换 gizmo 吸附（2026-10-29） |
 | Ctrl+Shift+R | Ctrl+Shift | 视口着色器重载 |
 | Esc / Return / ↑ / ↓ | 调色板打开时 | 关闭 / 执行高亮行 / 移动高亮（2026-10-29 起） |
 

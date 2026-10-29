@@ -1145,6 +1145,81 @@ TEST(entity_removed_mid_drag_discards) {
     break_editor_doc_destroy(doc);
 }
 
+/* Snapping: translate/scale results round to the step, rotate to whole
+ * multiples of the degree step; 0 disables. The value is snapped, not the
+ * delta, so an off-grid start lands on the grid. Setters reject negative
+ * or non-finite steps (keep the previous setting). */
+TEST(snap_rounds_translate_rotate_and_scale) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorEntityId e = add_transformed(doc, "box", 0.1f, 0, 0, 1, 1, 1);
+    BreakEditorGizmo *g = break_editor_gizmo_create();
+    ASSERT_NOT_NULL(g);
+    break_editor_gizmo_attach(g, doc, e);
+    BreakEditorCamera cam;
+    break_editor_camera_init(&cam);
+    f32 ax, ay, bx, by, pos[3], v;
+
+    ASSERT_TRUE(break_editor_gizmo_set_snap(g, 0.25f, 15.0f, 0.5f));
+    {
+        f32 t, r, sc;
+        break_editor_gizmo_get_snap(g, &t, &r, &sc);
+        ASSERT_FLOAT_EQ(t, 0.25f, 0.0f);
+        ASSERT_FLOAT_EQ(r, 15.0f, 0.0f);
+        ASSERT_FLOAT_EQ(sc, 0.5f, 0.0f);
+    }
+    /* translate: 0.1 + 0.5 = 0.6 -> 0.5 */
+    break_editor_gizmo_set_mode(g, BREAK_EDITOR_GIZMO_TRANSLATE);
+    ASSERT_TRUE(world_to_px(&cam, 0.5f, 0, 0, &ax, &ay));
+    ASSERT_TRUE(world_to_px(&cam, 1.0f, 0, 0, &bx, &by));
+    ASSERT_TRUE(break_editor_gizmo_begin_drag(g, &cam, ax, ay, VW, VH));
+    ASSERT_TRUE(break_editor_gizmo_drag(g, &cam, bx, by, VW, VH));
+    read_pos(doc, e, pos);
+    ASSERT_FLOAT_EQ(pos[0], 0.5f, 1e-5f);
+    break_editor_gizmo_end_drag(g);
+    /* rotate: +100 px = +50 deg -> 45 */
+    break_editor_gizmo_set_mode(g, BREAK_EDITOR_GIZMO_ROTATE);
+    ASSERT_TRUE(world_to_px(&cam, 0.5f + 0.4f, 0, 0, &ax, &ay));
+    ASSERT_TRUE(break_editor_gizmo_begin_drag(g, &cam, ax, ay, VW, VH));
+    ASSERT_TRUE(break_editor_gizmo_drag(g, &cam, ax + 100.0f, ay, VW, VH));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, e, BREAK_EDITOR_COMPONENT_TRANSFORM, 3, &v));
+    ASSERT_FLOAT_EQ(v, 45.0f, 1e-4f);
+    break_editor_gizmo_end_drag(g);
+    /* scale never snaps below one step (a zero scale is not reachable) */
+    break_editor_gizmo_set_mode(g, BREAK_EDITOR_GIZMO_SCALE);
+    ASSERT_TRUE(world_to_px(&cam, 0.5f + 0.4f, 0, 0, &ax, &ay));
+    ASSERT_TRUE(world_to_px(&cam, 0.5f - 3.0f, 0, 0, &bx, &by));
+    ASSERT_TRUE(break_editor_gizmo_begin_drag(g, &cam, ax, ay, VW, VH));
+    ASSERT_TRUE(break_editor_gizmo_drag(g, &cam, bx, by, VW, VH));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, e, BREAK_EDITOR_COMPONENT_TRANSFORM, 6, &v));
+    ASSERT_FLOAT_EQ(v, 0.5f, 1e-5f);
+    break_editor_gizmo_end_drag(g);
+    /* off: unchanged behaviour (0.5 + 0.37 stays 0.87) */
+    ASSERT_TRUE(break_editor_gizmo_set_snap(g, 0.0f, 0.0f, 0.0f));
+    break_editor_gizmo_set_mode(g, BREAK_EDITOR_GIZMO_TRANSLATE);
+    ASSERT_TRUE(world_to_px(&cam, 0.9f, 0, 0, &ax, &ay));
+    ASSERT_TRUE(world_to_px(&cam, 1.27f, 0, 0, &bx, &by));
+    ASSERT_TRUE(break_editor_gizmo_begin_drag(g, &cam, ax, ay, VW, VH));
+    ASSERT_TRUE(break_editor_gizmo_drag(g, &cam, bx, by, VW, VH));
+    read_pos(doc, e, pos);
+    ASSERT_FLOAT_EQ(pos[0], 0.87f, 1e-3f);
+    break_editor_gizmo_end_drag(g);
+    /* bad steps rejected, setting kept */
+    ASSERT_TRUE(break_editor_gizmo_set_snap(g, 1.0f, 10.0f, 0.1f));
+    ASSERT_FALSE(break_editor_gizmo_set_snap(g, -1.0f, 10.0f, 0.1f));
+    ASSERT_FALSE(break_editor_gizmo_set_snap(g, NAN, 10.0f, 0.1f));
+    ASSERT_FALSE(break_editor_gizmo_set_snap(NULL, 1.0f, 1.0f, 1.0f));
+    {
+        f32 t, r, sc;
+        break_editor_gizmo_get_snap(g, &t, &r, &sc);
+        ASSERT_FLOAT_EQ(t, 1.0f, 0.0f);
+    }
+    break_editor_gizmo_destroy(g);
+    break_editor_doc_destroy(doc);
+}
+
 TEST(oom_budget_sweeps) {
     /* create: single editor-owned allocation. */
     break_editor_test_set_alloc_budget(0);
@@ -1234,5 +1309,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(destroy_mid_drag_commits);
     RUN_TEST(begin_while_dragging_ends_previous);
     RUN_TEST(entity_removed_mid_drag_discards);
+    RUN_TEST(snap_rounds_translate_rotate_and_scale);
     RUN_TEST(oom_budget_sweeps);
 TEST_MAIN_END()

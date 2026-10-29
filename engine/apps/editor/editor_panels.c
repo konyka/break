@@ -50,7 +50,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_ROW_CTX_POOL 64u
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
-#define EDITOR_PALETTE_COMMAND_COUNT 15u
+#define EDITOR_PALETTE_COMMAND_COUNT 16u
 #define EDITOR_TEST_WINDOW_W 800
 #define EDITOR_TEST_WINDOW_H 480
 
@@ -139,6 +139,7 @@ struct BreakEditorShell {
     /* tool-window tab areas (0 bottom, 1 diagnostics): active page index
      * and the click contexts of their tab buttons */
     u32 active_tab[2];
+    bool snap; /* gizmo snapping on (EDITOR_SNAP_* steps) */
     /* persisted UI preferences (editor_settings.h): saved after each
      * theme / language / tab change once a path is set; empty = off */
     char settings_path[1024];
@@ -196,7 +197,8 @@ enum {
     PAL_LANG_ZH,
     PAL_THEME_LIGHT,
     PAL_THEME_DARK,
-    PAL_DUPLICATE_SELECTED
+    PAL_DUPLICATE_SELECTED,
+    PAL_TOGGLE_SNAP
 };
 
 /* Current-language text of palette command `cmd` (bounded, never NULL). */
@@ -228,12 +230,16 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
     if (cmd == PAL_DUPLICATE_SELECTED) {
         return break_editor_tr(BREAK_EDITOR_TR_CMD_DUPLICATE_SELECTED);
     }
+    if (cmd == PAL_TOGGLE_SNAP) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_TOGGLE_SNAP);
+    }
     return "?";
 }
 
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd);
 static void shell_tabs_retranslate(BreakEditorShell *shell);
 static void shell_settings_save(BreakEditorShell *shell);
+static void shell_set_snap(BreakEditorShell *shell, bool on);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
 
 /* Bounded console log: appends one <=127-byte line to the ring, dropping the
@@ -306,9 +312,15 @@ static void shell_refresh_tool_label(BreakEditorShell *shell) {
     if (shell == NULL || shell->tool_label == NULL) {
         return;
     }
-    (void)snprintf(buf, sizeof(buf),
-                   break_editor_tr(BREAK_EDITOR_TR_TOOL_LABEL_FMT),
-                   shell_tool_name(shell->tool));
+    {
+        int n = snprintf(buf, sizeof(buf),
+                         break_editor_tr(BREAK_EDITOR_TR_TOOL_LABEL_FMT),
+                         shell_tool_name(shell->tool));
+        if (shell->snap && n > 0 && (usize)n < sizeof(buf)) {
+            (void)snprintf(buf + n, sizeof(buf) - (usize)n, "%s",
+                           break_editor_tr(BREAK_EDITOR_TR_SNAP_SUFFIX));
+        }
+    }
     (void)my_label_set_text(shell->tool_label, buf);
 }
 
@@ -1143,6 +1155,9 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     case PAL_DUPLICATE_SELECTED:
         shell_do_duplicate_selected(shell);
         break;
+    case PAL_TOGGLE_SNAP:
+        shell_set_snap(shell, !shell->snap);
+        break;
     default:
         break;
     }
@@ -1191,7 +1206,8 @@ enum {
     ACT_REDO,
     ACT_PALETTE_TOGGLE,
     ACT_DUPLICATE,
-    ACT_DELETE
+    ACT_DELETE,
+    ACT_TOGGLE_SNAP
 };
 
 typedef struct {
@@ -1212,6 +1228,7 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'p', MY_KEYMOD_CTRL, ACT_PALETTE_TOGGLE},
     {'d', MY_KEYMOD_CTRL, ACT_DUPLICATE},
     {MY_KEY_DELETE, MY_KEYMOD_NONE, ACT_DELETE},
+    {'g', MY_KEYMOD_CTRL, ACT_TOGGLE_SNAP},
 };
 
 bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
@@ -1298,6 +1315,9 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
             break;
         case ACT_DUPLICATE:
             shell_do_duplicate_selected(shell);
+            break;
+        case ACT_TOGGLE_SNAP:
+            shell_set_snap(shell, !shell->snap);
             break;
         case ACT_DELETE:
             if (break_editor_entity_id_valid(shell->selected)) {
@@ -1538,6 +1558,24 @@ u32 break_editor_shell_active_tab(const BreakEditorShell *shell, u32 area) {
     return shell != NULL && area < 2u ? shell->active_tab[area] : 0u;
 }
 
+/* Gizmo snapping: defaults close to common DCC/engine steps. */
+#define EDITOR_SNAP_TRANSLATE 0.25f
+#define EDITOR_SNAP_ROTATE_DEG 15.0f
+#define EDITOR_SNAP_SCALE 0.1f
+
+static void shell_set_snap(BreakEditorShell *shell, bool on) {
+    if (shell == NULL) {
+        return;
+    }
+    shell->snap = on;
+    (void)break_editor_gizmo_set_snap(shell->gizmo,
+                                      on ? EDITOR_SNAP_TRANSLATE : 0.0f,
+                                      on ? EDITOR_SNAP_ROTATE_DEG : 0.0f,
+                                      on ? EDITOR_SNAP_SCALE : 0.0f);
+    shell_refresh_tool_label(shell);
+    shell_settings_save(shell);
+}
+
 /* Best-effort: a failed write is logged, never fatal (UI state only). */
 static void shell_settings_save(BreakEditorShell *shell) {
     BreakEditorSettings st;
@@ -1550,6 +1588,7 @@ static void shell_settings_save(BreakEditorShell *shell) {
     st.lang = break_editor_i18n_lang();
     st.bottom_tab = shell->active_tab[0];
     st.diag_tab = shell->active_tab[1];
+    st.snap = shell->snap;
     if (!break_editor_settings_save(&st, shell->settings_path)) {
         editor_shell_log(shell, "settings: could not write %s",
                          shell->settings_path);
@@ -1579,6 +1618,7 @@ bool break_editor_shell_use_settings(BreakEditorShell *shell, const char *path,
     }
     (void)break_editor_shell_select_tab(shell, 0u, st.bottom_tab);
     (void)break_editor_shell_select_tab(shell, 1u, st.diag_tab);
+    shell_set_snap(shell, st.snap);
     memcpy(shell->settings_path, path, n + 1u);
     return true;
 }
