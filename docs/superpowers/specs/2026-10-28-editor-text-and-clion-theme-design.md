@@ -46,6 +46,10 @@ The outliner row bound to the selected entity carries style class `selected` (se
 - myui edits paint the focused state from the hover slot (`my_edit.h`), so the sheet's `edit:hover` border is the accent `#3574F0` (focus ring). Pinned by `palette_paints_with_focused_edit_ring` (soft LCD).
 - Live, Ctrl+P showed no palette: the Break RHI canvas flushed every solid (fills, text) and then every image, so the 3D viewport blit covered the palette painted after it. The canvas now records runs in issue order and replays them (`later_fill_covers_an_earlier_image`, red before on Vulkan and OpenGL).
 
+## 4c. Light theme and switching (2026-10-29)
+
+`editor_theme.c` holds a second sheet, JetBrains New UI light (window `#F7F8FA`, content `#FFFFFF`, text `#1F1F1F`, secondary `#6C707E`, borders `#D3D5DB`, selection `#D4E2FF`; accent `#3574F0` unchanged). `break_editor_shell_set_theme(shell, light)` or the palette commands `Theme: Light` / `Theme: Dark` (`主题：浅色` / `主题：深色`) apply it and repaint; self-painting widgets read `break_editor_theme_content_bg()`. Pinned by `theme_switches_between_dark_and_light`; live on Vulkan and OpenGL the top colours are `#FFFFFF`/`#F7F8FA`/`#D3D5DB` in light and return to `#1E1F22`/`#2B2D30`/`#393B40` with no light pixel left. Not persisted across runs.
+
 ## 5. Not delivered
 
-Icons, tool-window tabs and gutters, light theme, theme switching UI, light theme switching UI. **Superseded 2026-10-29**: JetBrains Mono Regular 2.304 is now bundled at `engine/assets/fonts/` (OFL) and leads the font chain for every language; CJK still falls through to the system faces.
+Icons, tool-window tabs and gutters, persisting the chosen theme. Fonts: **superseded 2026-10-29** — JetBrains Mono Regular 2.304 and Noto Sans SC are bundled at `engine/assets/fonts/` (OFL) and lead the font chain (see `docs/design/editor_i18n.md`).

@@ -24,8 +24,22 @@ struct my_window_t;
 #define BREAK_EDITOR_THEME_PRESSED 0x43454AFFu
 #define BREAK_EDITOR_THEME_SELECTION 0x2E436EFFu
 
+/* Light palette (JetBrains New UI light). */
+#define BREAK_EDITOR_THEME_LIGHT_BG_WINDOW 0xF7F8FAFFu
+#define BREAK_EDITOR_THEME_LIGHT_BG_CONTENT 0xFFFFFFFFu
+#define BREAK_EDITOR_THEME_LIGHT_TEXT 0x1F1F1FFFu
+#define BREAK_EDITOR_THEME_LIGHT_SELECTION 0xD4E2FFFFu
+
 /* The sheet (NUL-terminated, static). */
 const char *break_editor_theme_css(void);
 /* Applies the sheet to `win` (myui my_window_set_css_style). false when the
  * sheet does not parse (nothing changes). */
 bool break_editor_theme_apply(struct my_window_t *win);
+
+/* Applies the dark or light sheet; on success also records the mode used by
+ * break_editor_theme_content_bg(). On a parse failure nothing changes. */
+bool break_editor_theme_apply_mode(struct my_window_t *win, bool light);
+bool break_editor_theme_is_light(void);
+/* Content-surface colour of the current mode, for widgets that paint
+ * themselves (viewport surround, image preview). */
+uint32_t break_editor_theme_content_bg(void);

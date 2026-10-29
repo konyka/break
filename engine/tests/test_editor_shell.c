@@ -275,7 +275,7 @@ TEST(palette_opens_filters_and_escape_closes)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 12u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 14u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save"));
@@ -1759,6 +1759,60 @@ TEST(palette_escape_via_event_dispatcher_closes)
     ev.u.key.key = MY_KEY_ESCAPE;
     (void)my_event_dispatch(&win->dispatcher, &ev);
     ASSERT_FALSE(break_editor_shell_palette_is_open(shell));
+    break_editor_shell_destroy(shell);
+}
+
+/* Theme switch: the palette's "Theme: Light" applies the New UI light sheet
+ * through the real cascade and repaints; "Theme: Dark" restores it. The
+ * self-painting viewport surround follows the mode. */
+TEST(theme_switches_between_dark_and_light)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *w;
+    my_window_t *win;
+    my_lcd_t *lcd;
+    const uint8_t *pixels, *p;
+    uint32_t stride;
+    int32_t gx = 0, gy = 0;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_FALSE(break_editor_theme_is_light());
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "Theme: Light"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_TRUE(break_editor_theme_is_light());
+    w = find(shell, "editor-toolbar");
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_LIGHT_BG_WINDOW);
+    w = find(shell, "editor-console");
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_LIGHT_BG_CONTENT);
+    w = find(shell, "editor-remove-button");
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "fg_color", 0u),
+              BREAK_EDITOR_THEME_LIGHT_TEXT);
+    /* the accent button keeps its colour in both modes */
+    w = find(shell, "editor-add-button");
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_ACCENT);
+    /* painted: the viewport placeholder is the light content colour */
+    shell_paint(shell);
+    win = break_editor_shell_window(shell);
+    lcd = my_pal_window_get_lcd(win->pal_window);
+    pixels = my_lcd_mem_get_buffer(lcd);
+    stride = my_lcd_mem_get_stride(lcd);
+    w = find(shell, "editor-viewport");
+    ASSERT_NOT_NULL(w);
+    my_widget_local_to_global(w, &gx, &gy);
+    p = pixels + (uint32_t)(gy + w->rect.h / 2) * stride +
+        (uint32_t)(gx + w->rect.w / 2) * 4u;
+    ASSERT_TRUE(p[0] == 0xffu && p[1] == 0xffu && p[2] == 0xffu);
+    /* and back */
+    ASSERT_TRUE(break_editor_shell_set_theme(shell, false));
+    ASSERT_FALSE(break_editor_theme_is_light());
+    w = find(shell, "editor-toolbar");
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_BG_WINDOW);
+    ASSERT_FALSE(break_editor_shell_set_theme(NULL, true));
     break_editor_shell_destroy(shell);
 }
 
@@ -6200,7 +6254,7 @@ TEST(i18n_palette_switches_language_at_runtime)
 
     /* palette now lists and filters Chinese command names */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 12u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 14u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "保存"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "English"));
@@ -6597,6 +6651,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_paints_with_focused_edit_ring);
     RUN_TEST(palette_row_click_via_pointer_switches_language);
     RUN_TEST(palette_escape_via_event_dispatcher_closes);
+    RUN_TEST(theme_switches_between_dark_and_light);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);

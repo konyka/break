@@ -49,7 +49,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_ROW_CTX_POOL 64u
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
-#define EDITOR_PALETTE_COMMAND_COUNT 12u
+#define EDITOR_PALETTE_COMMAND_COUNT 14u
 #define EDITOR_TEST_WINDOW_W 800
 #define EDITOR_TEST_WINDOW_H 480
 
@@ -177,7 +177,9 @@ enum {
     PAL_TOOL_ROTATE,
     PAL_TOOL_SCALE,
     PAL_LANG_EN,
-    PAL_LANG_ZH
+    PAL_LANG_ZH,
+    PAL_THEME_LIGHT,
+    PAL_THEME_DARK
 };
 
 /* Current-language text of palette command `cmd` (bounded, never NULL). */
@@ -199,6 +201,12 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
     }
     if (cmd == PAL_LANG_ZH) {
         return break_editor_tr(BREAK_EDITOR_TR_CMD_LANG_ZH);
+    }
+    if (cmd == PAL_THEME_LIGHT) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_THEME_LIGHT);
+    }
+    if (cmd == PAL_THEME_DARK) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_THEME_DARK);
     }
     return "?";
 }
@@ -1079,6 +1087,12 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     case PAL_LANG_ZH:
         (void)break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN);
         break;
+    case PAL_THEME_LIGHT:
+        (void)break_editor_shell_set_theme(shell, true);
+        break;
+    case PAL_THEME_DARK:
+        (void)break_editor_shell_set_theme(shell, false);
+        break;
     default:
         break;
     }
@@ -1667,6 +1681,19 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     my_event_dispatcher_set_focus(&win->dispatcher, shell->root);
     editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_READY));
     return shell;
+}
+
+bool break_editor_shell_set_theme(BreakEditorShell *shell, bool light) {
+    if (shell == NULL || shell->win == NULL) {
+        return false;
+    }
+    if (!break_editor_theme_apply_mode(shell->win, light)) {
+        editor_shell_log(shell, "theme: the editor style sheet did not apply");
+        return false;
+    }
+    /* self-painting widgets (viewport surround, preview) read the mode */
+    my_widget_invalidate((my_widget_t *)shell->win, NULL);
+    return true;
 }
 
 BreakEditorShell *break_editor_shell_create(struct my_window_t *win) {

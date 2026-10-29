@@ -56,6 +56,8 @@ typedef enum {
     BREAK_EDITOR_TR_CMD_TOOL_FMT,     /* %s tool name */
     BREAK_EDITOR_TR_CMD_LANG_EN,
     BREAK_EDITOR_TR_CMD_LANG_ZH,
+    BREAK_EDITOR_TR_CMD_THEME_LIGHT,
+    BREAK_EDITOR_TR_CMD_THEME_DARK,
     /* console lines */
     BREAK_EDITOR_TR_LOG_READY,
     BREAK_EDITOR_TR_LOG_PALETTE_FMT,          /* %s */

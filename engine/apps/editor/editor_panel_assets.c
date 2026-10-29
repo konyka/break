@@ -171,7 +171,7 @@ static void assets_preview_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     }
     w = (float)widget->rect.w;
     h = (float)widget->rect.h;
-    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(BREAK_EDITOR_THEME_BG_CONTENT));
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_content_bg()));
     (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, 0.0f, w, h});
     panel = (EditorPanelAssets *)my_widget_get_user_data(widget);
     if (panel == NULL || panel->preview == NULL ||

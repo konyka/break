@@ -169,6 +169,11 @@ const char *break_editor_shell_tool_text(const BreakEditorShell *shell);
  * their language; the switch itself is logged in the new one. The palette
  * also offers "Language: English" / "语言：中文". false for a NULL shell or an
  * unknown language (nothing changes). Shell thread only. */
+/* Switches the editor look between JetBrains New UI dark (false) and light
+ * (true). The whole window repaints; a sheet that fails to parse keeps the
+ * current look and returns false. Also in the command palette
+ * ("Theme: Light" / "Theme: Dark"). */
+bool break_editor_shell_set_theme(BreakEditorShell *shell, bool light);
 bool break_editor_shell_set_language(BreakEditorShell *shell,
                                      BreakEditorLang lang);
 const char *break_editor_shell_status_text(const BreakEditorShell *shell);
