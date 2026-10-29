@@ -200,3 +200,5 @@ XZ 平面（y = 0）上从 -10 到 +10 每 1 单位一条线，共 42 条，以�
 ## 灯光实体的代理颜色（2026-10-30）
 
 有 Light 组件的实体，未选中时代理立方体用灯光的 color.r/g/b（夹到 [0, 1]，alpha 1）绘制；其他实体仍为默认石板灰，选中/多选的暖色高亮优先。任一通道非有限时回退默认色。这只是标记，viewport 不做任何光照着色。实现：`break_editor_viewport3d_proxy_color(doc, id, out)`（纯 CPU）；`test_editor_shell` `light_entities_draw_their_proxy_in_the_light_color`（默认白色、超范围夹紧、NaN 回退、NULL doc）。GPU 画面未做像素级验证。
+
+2026-10-30 补充：灯光的 `enabled` 为 false 时，代理颜色保持原色相，亮度乘 0.25，用来区分开灯和关灯。同一测试已覆盖。

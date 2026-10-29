@@ -1,5 +1,9 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：关闭的灯在 viewport 中变暗（2026-10-30）
+
+- **交付**：`break_editor_viewport3d_proxy_color` 读取 `Light.enabled`，关闭时颜色乘 0.25。测试先红后绿（`test_editor_shell` 132/132）；默认树 233/234，唯一失败是已知 flaky 的 x11 用例。GPU 画面未做像素验证。
+
 ## 本轮更新：editor bool 字段类型（2026-10-30）
 
 - **交付**：组件字段新增 bool 类型。实现包括：`editor_components.{h,c}` 中的类型枚举和 `get/set_field_bool`，f32 写入与 bool 写入共用 `push_set_bits`；Light 增加 `enabled` 字段；inspector 以复选框显示（`apps/editor/editor_panels.c` `on_field_check_changed`）；Lua `ecs.set` 按字段类型转换取值（`src/editor/editor_lua.c`）。

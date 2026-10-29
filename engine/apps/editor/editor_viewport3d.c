@@ -736,9 +736,18 @@ bool break_editor_viewport3d_proxy_color(const BreakEditorDoc *doc,
         }
         c[k] = c[k] < 0.0f ? 0.0f : (c[k] > 1.0f ? 1.0f : c[k]);
     }
-    out[0] = c[0];
-    out[1] = c[1];
-    out[2] = c[2];
+    {
+        /* A disabled light keeps its hue, dimmed to a quarter. */
+        bool enabled = true;
+        f32 k_dim;
+        (void)break_editor_doc_get_field_bool(doc, id,
+                                              BREAK_EDITOR_COMPONENT_LIGHT, 5u,
+                                              &enabled);
+        k_dim = enabled ? 1.0f : 0.25f;
+        out[0] = c[0] * k_dim;
+        out[1] = c[1] * k_dim;
+        out[2] = c[2] * k_dim;
+    }
     out[3] = 1.0f;
     return true;
 }

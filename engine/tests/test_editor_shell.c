@@ -1209,6 +1209,18 @@ TEST(light_entities_draw_their_proxy_in_the_light_color)
     ASSERT_FLOAT_EQ(c[1], 0.0f, 0.0f);
     ASSERT_FLOAT_EQ(c[2], 0.25f, 0.0f);
     ASSERT_FLOAT_EQ(c[3], 1.0f, 0.0f);
+    /* a disabled light keeps its hue at a quarter brightness */
+    ASSERT_TRUE(break_editor_doc_set_field_bool(doc, lamp,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, false));
+    ASSERT_TRUE(break_editor_viewport3d_proxy_color(doc, lamp, c));
+    ASSERT_FLOAT_EQ(c[0], 0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(c[1], 0.0f, 0.0f);
+    ASSERT_FLOAT_EQ(c[2], 0.0625f, 1e-6f);
+    ASSERT_FLOAT_EQ(c[3], 1.0f, 0.0f);
+    ASSERT_TRUE(break_editor_doc_set_field_bool(doc, lamp,
+                                                BREAK_EDITOR_COMPONENT_LIGHT,
+                                                5u, true));
     /* a NaN channel falls back to the default color */
     ASSERT_TRUE(break_editor_doc_set_field_f32(doc, lamp,
                                                BREAK_EDITOR_COMPONENT_LIGHT,

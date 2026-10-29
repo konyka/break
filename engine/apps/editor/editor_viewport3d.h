@@ -200,7 +200,8 @@ u32 break_editor_viewport3d_outline_edges(const f32 model[16], f32 thickness,
                                           f32 out[12][16]);
 
 /* Unselected proxy color for `id`: an entity with a Light uses its
- * color.r/g/b clamped to [0, 1] (alpha 1) and returns true; otherwise (no
+ * color.r/g/b clamped to [0, 1] (alpha 1; times 0.25 when the light's
+ * `enabled` field is false) and returns true; otherwise (no
  * light, a non-finite channel, NULL doc) `out` gets the slate default and
  * the call returns false. The selection tint still wins when selected.
  * This is a marker, not lighting: the viewport does not shade anything. */
