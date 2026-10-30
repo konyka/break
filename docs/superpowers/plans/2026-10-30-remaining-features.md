@@ -94,33 +94,41 @@ Findings from the independent reviewers (2026-10-30). Review 1 (tools) is in; re
 
 ## Workstream C: material / scene texture hot reload
 
-**Design:** the editor viewport renders flat-colour proxies; scene textures live in the BSCN RESOURCES chunk as `BSCN_RES_TEXTURE` entries with a source path (`SceneResource.path`, kept in `doc->kept_chunks`). Deliver: (1) a read-only "scene textures" model listing texture entries from the kept RESOURCES chunk (path, existence, dimensions via `break_editor_image_probe`); (2) a `BreakEditorSceneTextures` owner that reuses the image-preview machinery (`editor_image_preview.c`: VFS + Runtime Core reload + filewatch) for up to 8 scene textures at once, creating/replacing `RHITexture` (with mips) on change; (3) the viewport proxy of an entity whose material (from the kept MATERIAL descriptor, slot 0 albedo -> texture entry) has an albedo texture is drawn textured with that texture, so a changed file visibly changes the proxy. If the scene carries no RESOURCES chunk nothing changes.
+**Deviation found while reading the code (recorded 2026-10-30):** the original design drew entity proxies with their material's albedo texture. That is not derivable: the BSCN has no link from the editor's entities (ENTITIES/COMPONENTS chunks) to scene nodes or materials; `SCENE_NODES` carries `material_idx` per *node*, and nodes are a separate render graph that the editor keeps as opaque bytes. Mapping "the Nth entity to the Nth node" would be invented data, so it is NOT done. Delivered instead: a **Scene textures** view.
+
+**Design:** the kept RESOURCES chunk (raw game bytes preserved by the editor) lists `BSCN_RES_TEXTURE` entries (source uri in `path`, max 63 chars) and `BSCN_RES_MATERIAL` entries (`tex_slots[5]` = albedo, metallic-roughness, normal, emissive, occlusion -> texture `ref_index`, v3 files only). The editor (1) parses that into a read-only model, (2) resolves each texture path against the scene file's directory (relative paths only; absolute paths, `..`, and over-long or non-printable names are rejected, never probed), (3) loads up to 8 of them as RHI textures with the existing image-preview machinery (each gets its own Runtime Core reload + file watch, so editing a PNG on disk updates the thumbnail), and (4) shows them in the assets panel area as a list of `name  WxH  used by N materials  state`, with the selected row's thumbnail. No new shaders: thumbnails use the existing myui blit.
 
 **Files:**
-- Create: `engine/src/editor/editor_scene_textures.{h,c}` (pure CPU model: parse kept RESOURCES chunk into `{path, material albedo link}`), `engine/apps/editor/editor_scene_textures.{h,c}` (GPU owner built on `editor_image_preview`)
-- Modify: `engine/apps/editor/editor_viewport3d.c`, `engine/shaders/editor_textured.{vert,frag}` and `_vk` variants (new), `engine/apps/editor/editor_panels.c` (ownership/tick), `engine/CMakeLists.txt` (TUs in `break_editor`, `editor`, `test_editor_shell`), `docs/design/editor_hot_reload.md` (new §9)
-- Test: `engine/tests/test_editor_scene_textures.c` (new, CPU), `engine/tests/test_editor_shell.c`
+- Create: `engine/src/editor/editor_scene_textures.{h,c}` (pure CPU model, in `break_editor` + `break_editor_test`), `engine/apps/editor/editor_scene_textures.{h,c}` (owner of up to 8 `BreakEditorImagePreview`), `engine/tests/test_editor_scene_textures.c`
+- Modify: `engine/src/editor/editor_scene.{h,c}` (accessor for a kept chunk + the BSCN version it came from), `engine/src/editor/editor_internal.h` (`kept_version`), `engine/apps/editor/editor_panel_assets.c` and `editor_panels.c` (list + thumbnail, tick, device attach), i18n tables, `engine/CMakeLists.txt`, `docs/design/editor_hot_reload.md` (new section)
+- Test: `engine/tests/test_editor_scene_textures.c`, `engine/tests/test_editor_shell.c`, `engine/tests/test_editor_i18n.c`
 
-**Interfaces:**
-- Produces (CPU): `typedef struct { char path[256]; u32 ref_index; bool exists; u32 width, height; } BreakEditorSceneTexture;` `u32 break_editor_scene_textures_parse(const BreakEditorDoc *doc, BreakEditorSceneTexture *out, u32 cap);` `bool break_editor_scene_textures_albedo_for_material(const BreakEditorDoc *doc, u32 material_index, u32 *texture_ref_index);`
-- Produces (GPU owner): `BreakEditorSceneTextures *break_editor_scene_textures_create(void); void ..._set_device(BreakEditorSceneTextures*, void *rhi_device); bool ..._set_scene(BreakEditorSceneTextures*, const BreakEditorDoc*, const char *asset_root); void ..._tick(BreakEditorSceneTextures*); RHITexture ..._texture(const BreakEditorSceneTextures*, u32 ref_index); bool ..._shutdown(...); void ..._destroy(...);`
+**Interfaces (produces):**
 
-### Task C1: CPU model of scene textures (TDD, pure CPU)
+```c
+/* src/editor/editor_scene.h */
+bool break_editor_doc_kept_chunk(const BreakEditorDoc *doc, u32 chunk_type,
+                                 const u8 **bytes, u32 *size, u32 *bscn_version);
+/* src/editor/editor_scene_textures.h */
+#define BREAK_EDITOR_SCENE_TEXTURES_MAX 64u
+typedef struct { u32 ref_index; char path[64]; u32 used_by_materials; } BreakEditorSceneTexture;
+typedef struct { u32 ref_index; u32 slot_texture[5]; /* ~0u = none/unknown */ } BreakEditorSceneMaterial;
+u32 break_editor_scene_textures_parse(const BreakEditorDoc *doc, BreakEditorSceneTexture *out, u32 cap, BreakEditorSceneMaterial *mats, u32 mat_cap, u32 *mat_total);
+bool break_editor_scene_texture_path_ok(const char *path);
+bool break_editor_scene_texture_resolve(const char *scene_path, const char *uri, char *out, usize cap);
+```
 
-- [ ] Step 1: failing `test_editor_scene_textures.c`: build a BSCN in memory with `scene_save_binary` (two textures with uri `a.png`, `b.png`, one material linking albedo to texture 1) through the existing test helpers, load it with `break_editor_doc_load_bytes`, expect `parse` to return 2 entries with the right paths and `albedo_for_material(0)` -> texture ref of `b.png`; a doc without RESOURCES returns 0; a path with `..` or absolute path is reported with `exists=false` and never probed; cap smaller than count truncates without overflow.
-- [ ] Step 2: red; Step 3: implement over `doc->kept_chunks` (find type RESOURCES, walk `SceneResource` records, bounds-checked against chunk size, reject malformed); Step 4: green; Step 5: commit.
+### Task C1: CPU model
+- [ ] Failing `test_editor_scene_textures.c`: genuine BSCN from `scene_save_binary` (2 textures `a.png`/`b.png`, one material with albedo -> b), loaded with `break_editor_doc_load`; parse returns 2 textures with the right paths and `used_by_materials` 0/1, material slot 0 -> ref of b; v1/v2 layouts (hand-built chunk) parse without tex_slots and report slots as unknown; no RESOURCES chunk -> 0; truncated chunk / count larger than bytes -> 0 and no overflow; `path_ok` rejects empty, absolute, `..`, backslash, control bytes, > 63 chars; `resolve` joins against the scene file directory and rejects over-long results.
+- [ ] Implement, green on both trees, mutation (drop the `..` check), commit.
 
-### Task C2: GPU owner with hot reload
+### Task C2: owner with hot reload
+- [ ] Failing tests in `test_editor_shell.c` with the fake RHI: set doc + scene path with 2 textures -> 2 textures created; rewrite one PNG with a new size -> replaced, old destroyed after the new exists; garbage keeps the old (failed counter); a path with `..` is never opened; reloading another scene drops textures not in the new list and stops watching them; more than 8 textures -> first 8 loaded, rest reported `skipped`; bounded shutdown with a held worker.
+- [ ] Implement by composing `BreakEditorImagePreview` instances; green incl. ASan/TSan; commit.
 
-- [ ] Step 1: failing tests in `test_editor_shell.c` using the fake RHI that counts texture create/destroy: set scene with two textures in a temp dir; tick -> two textures created (with mip chain); rewrite `a.png` with a different size -> texture replaced, old destroyed after the new one exists; garbage bytes keep the old texture and count `failed`; deleting the file keeps the texture; `set_scene` to another doc drops textures not in the new list and stops watching their paths; shutdown with a held worker returns false and retains resources (same gate as `editor_image_preview`).
-- [ ] Step 2: red; Step 3: implement by composing up to 8 `BreakEditorImagePreview` instances (already bounded, already shutdown-safe) rather than a second reload architecture; Step 4: green incl. ASan and TSan `test_editor_shell`; Step 5: commit.
-
-### Task C3: textured proxy draw and live evidence
-
-- [ ] Step 1: failing viewport test (fake RHI): an entity with a material whose albedo texture is loaded issues a draw with the textured pipeline bound and that texture bound; replacing the texture file changes the bound texture handle; entity without material keeps the flat pipeline; wireframe mode unaffected.
-- [ ] Step 2: red; Step 3: implement textured shader pair (position + uv varyings; proxy cube vertex buffer gains uv, so extend the cube VBO from 3 to 5 floats and update the existing pipeline attribute layout - keep `editor_color` shaders working by ignoring the uv); Step 4: green; shader hot reload test still green.
-- [ ] Step 5: live run on this host (Xwayland, Vulkan and OpenGL, same method as `docs/design/editor_hot_reload.md` §7: gdb-driven, screenshot pixels change after a texture rewrite). Record the result or the exact reason it could not be run.
-- [ ] Step 6: docs (`editor_hot_reload.md` §9, `Implementation_Status.md`, ledger); commit and push.
+### Task C3: panel + docs
+- [ ] Failing shell test: panel rows text (`name WxH used by N` en + zh-CN), click selects a row and shows its thumbnail widget; i18n keys covered by `test_editor_i18n`.
+- [ ] Implement; live run on this host (Vulkan and OpenGL: edit a PNG on disk, thumbnail changes) or record the exact reason it could not run; docs (`editor_hot_reload.md` section, Implementation_Status, ledger); commit and push.
 
 ---
 
