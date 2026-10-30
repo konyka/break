@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：更新 manifest 离线签名工具（2026-10-30）
+
+- **交付**：`engine/tools/break_manifest_tool.c` 提供 keygen、build、sign 三个子命令，`engine/tools/break_manifest_verify.c` 调用客户端验证器做校验。签名工具直接链接 OpenSSL，不经过 break_crypto，后者仍只做验签。sign 之前按客户端语法复核正文，私钥独占创建、权限 0600。
+- **测试**：新增 `test_break_manifest_tool`（CMake 端到端），覆盖：正文逐字节符合预期；客户端用正确公钥验签通过，换公钥失败，篡改失败；非法输入被拒；私钥不覆盖、权限 0600。两项变异检查均变红。说明：第一次做“跳过复核”的变异时，变异体因 `-Werror` 未用函数编译失败，跑的其实是旧二进制，结论无效；改为保留调用后重做，确认变红。默认树 236/236 全过；final 树只剩已知的 x11 失败。
+- **未做**：密钥保管、轮换、吊销，以及发布流水线。
+
 ## 本轮更新：crash context 摘要构建器（2026-10-30）
 
 - **交付**：在 `src/crash/break_crash.{h,c}` 中新增 `BreakCrashSummary` 及 `break_crash_summary_init`、`break_crash_summary_set`、`break_crash_summary_format` 三个接口。内容为按段落分组的 `key=value` 文本，最多 16 段、64 条，值截断为 63 B，`=`、`/`、`\`、非可打印字符替换为 `_`。只输出完整行，且不超过 4 KiB 的 blob 上限。实现为纯函数，不分配内存。

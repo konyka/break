@@ -300,9 +300,25 @@ OK），open 之后初始为 OK；open 本身只以 NULL 报错（无客户端�
    （确定性、换版本重洗牌、1 万个设备 10 个十分位各在 ±10% 内、判定边界、
    参数校验）。
 3. **服务端**：无更新服务端、无 manifest 分发、无版本协商。
-4. **签名之后的在线流程**：离线签名 tooling、密钥生成/保管/轮换/吊销、
-   发布流水线均未定义（Phase B/C 范畴，
-   `security_threat_model.md` §11 密钥管理未决风险不变）。
+4. **签名之后的在线流程**：~~离线签名 tooling~~ **离线签名 tooling 已交付
+   （2026-10-30）**：`engine/tools/break_manifest_tool.c`，在发布机上运行，
+   直接链接 OpenSSL；`break_crypto` 仍只做验签，客户端不含签名能力：
+   - `keygen <priv> <pub hex>`：Ed25519 密钥对，私钥为 32 B 种子，独占创建、
+     权限 0600，绝不覆盖已有私钥；公钥为 64 位 hex，用于编进客户端作为信任
+     常量；
+   - `build <dir> <version> <channel> <platform> <min-version> <body>`：
+     遍历目录下的普通文件，生成按名排序的 chunk 行（sha256、大小、相对
+     路径），先按客户端语法校验字段再生成规范正文；
+   - `sign <priv> <body> <manifest>`：先按客户端语法复核正文，再追加 88
+     字符 base64 的签名行，不会签出客户端无法接受的 manifest。
+
+   另有 `break_manifest_verify <manifest> <pub hex>`，复用客户端的
+   `break_update_manifest_parse/verify`。端到端测试 `test_break_manifest_tool`
+   覆盖：生成的正文逐字节等于期望值；客户端用正确公钥验签通过，换公钥失败，
+   改动 1 字节失败；非法版本或 channel 被拒；非法正文拒签；私钥不被覆盖、
+   权限为 0600。两项变异检查（签名少签 1 字节、跳过正文复核）均使测试变红。
+   **仍未定义**：密钥保管、轮换、吊销，以及发布流水线
+   （`security_threat_model.md` §11 中密钥管理的未决风险不变）。
 5. **Win32 lane 未跑**：树删除只用既有 PAL 原语（无新 `_WIN32` 分支），
    Win32 编译形态按检视保持，首个 Windows lane 待办同 Phase A。
 6. **fuzz lane `Not Run`**（house 惯例）。
