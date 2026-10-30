@@ -30,9 +30,9 @@ Phase A 的实施计划是 `docs/superpowers/plans/2026-10-24-stage5-security-fo
 - 服务端不得因客户端"自称未被篡改"而放宽任何校验；
 - 本阶段**不实现**任何反篡改代码（属子项目 5，见 §10）；本文只交付该成本模型的语义地位声明。
 
-## 3. 服务端权威（设计目标枚举）
+## 3. 服务端权威（设计目标枚举 + 参考引擎）
 
-本仓库不含任何服务端实现；以下为**设计目标**级枚举，用于钉住"权威在服务端"的边界，供后续 Phase 与服务器侧计划引用：
+**2026-10-30 起库内有参考引擎 `break_authority`**（`docs/design/server_authority.md`）：意图进、服务端账本裁定、固定枚举裁决出；线上只有“买什么/买几个”和“打谁”，没有余额、价格、伤害或结果字段；会话身份来自认证传输而不是载荷；溢出、重放、间隔、限速都有检查，随机 10 万条意图的账本不变量测试通过。它不是游戏服务器：仍然没有服务端产品、网络前端、持久化、权威模拟，匹配仍只是设计目标。以下枚举保持原样：本仓库不含服务端产品；以下为**设计目标**级枚举，用于钉住"权威在服务端"的边界，供后续 Phase 与服务器侧计划引用：
 
 - **economy（经济）**：货币余额、交易、兑换比率只由服务端记账；客户端只能提交意图（intent），服务端按规则校验、限速、落账后下发结果；
 - **inventory（库存）**：物品增减、装备、消耗以服务端台账为准；客户端展示的是服务端快照的只读视图；
@@ -110,7 +110,8 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 | 项 | 状态 |
 | --- | --- |
 | 客户端信任边界 / 反篡改成本模型语义 | 本文交付（契约声明） |
-| 服务端权威枚举 | 设计目标 |
+| 服务端权威枚举 | 设计目标；**参考引擎已交付**（`break_authority`，2026-10-30，库 + 测试，未接线任何服务端） |
+| 客户端反篡改 | 成本模型语义；**信号库已交付**（`break_integrity`，2026-10-30：文件哈希、调试器、模块白名单；只报告、不决策，Linux 为主，未接入任何可执行文件） |
 | 更新信任链离线验证侧（签名 manifest 格式 + CAS chunk store + 密码学原语 + 原子写 PAL） | **当前已有**（Phase A Tasks 2-4） |
 | 更新客户端离线机制（分块下载/字节级续传/A-B activation/rollback/channel 策略） | **当前已有**（Phase B Tasks 1-4；真实传输/灰度客户端逻辑/服务端未实现） |
 | 版本/构建身份 `break_version` 0.1.0+buildid | **当前已有**（`engine/src/core/break_version.h/.c`，测试 `engine/tests/test_break_version.c`） |
@@ -125,7 +126,7 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 1. Stage 5 子项目 2 的**在线半侧**：真实传输接线（HTTP/TLS/range 映射）、灰度（gray rollout）客户端逻辑、服务端与签名后的在线流程——客户端离线机制（chunked download、byte-level resume、A/B activation、rollback、channel policy 经 `compatible()`）已由 Phase B 交付（`docs/design/update_client.md`），但传输只经调用方 `BreakUpdateFetchFn` 回调注入，仓库内无任何 socket/HTTP/TLS/curl 代码；
 2. Stage 5 子项目 3 的**服务端半侧与真实传输**：crash 符号化服务/聚类/回归统计、真实上传传输（HTTP/TLS/端点配置/认证）、GPU/RHI/网络/输入摘要捕获（app 经 context-blob 接缝的后续集成）、minidump/PE 格式、Windows SEH/VEH（`_WIN32` 为编译期 stub）——客户端半侧（capture/local spool/redaction 实现/upload seam/符号化契约）已由 Phase C 交付（`docs/design/crash_reporting.md`）；
 3. Stage 5 子项目 4 的**凭证体系半侧**：per-device key provisioning tooling、轮换/吊销编排、密钥托管——TLS 模式、CHALLENGE/AUTH-v2、key_id 解析接缝、max_age 已由 Phase D 交付（`docs/design/transport_security.md`），但在 app 侧 provisioning 落地前认证接缝不可投入真实凭证部署；
-4. Stage 5 子项目 5 的**剩余半侧**：server authority 实现（§3 仍全部是设计目标枚举，无服务端代码）、client anti-tamper 实现（§2 成本模型文档 only，无代码）、应用消息级 replay window（跨重连/应用消息——Phase D 交付的是握手级 + 每连接顺序性）、消息/字节级限速（Phase D 交付的是 admission 级）；
+4. Stage 5 子项目 5 的**剩余半侧**：server authority 的**产品化**（参考引擎 `break_authority` 与 client 信号库 `break_integrity` 已于 2026-10-30 交付，见 `server_authority.md`、`client_integrity.md`；仍无服务端产品、网络前端、持久化、权威模拟、匹配，两个库都没有接入任何可执行文件；integrity 在 Windows/macOS 上未实现）、应用消息级 replay window（跨重连/应用消息——Phase D 交付的是握手级 + 每连接顺序性）、消息/字节级限速（Phase D 交付的是 admission 级）；
 7. 任何服务端实现与 remote debug 通道（roadmap `:126`：release 无默认 remote debug 路径）；
 8. **运维用环境开关 `BREAK_RHI_FAIL_VULKAN` 仍在发布产物中**：它与 `BREAK_RHI_BACKEND`/`BREAK_RHI_NO_FALLBACK` 同属回滚 runbook 记录的运行时开关（强制走 OpenGL 降级路径），只能由本地环境设置，不构成远程入口。发布产物中的 `*_for_test` 测试钩子已于 2026-10-28 全部移出（`test_release_config_contract` 白名单为空）；
 9. **update client 本地 state 与槽内 `update-version` 标记的认证（MAC/签名）未交付**——它们只受 canonical 解析校验与跨字段不变量保护，**是解析校验、非认证**（§4 契约要点末节）；对 update root 的本地写权限已等价完全篡改，故这不构成新边界，但任何"本地状态可信"的推断都不成立。

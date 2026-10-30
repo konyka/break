@@ -568,6 +568,16 @@ if(BREAK_ENABLE_CRYPTO)
     target_include_directories(break_update PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(break_update PUBLIC break_crypto)
+
+    # Stage 5 subproject 5 — break_integrity: client-side tamper SIGNALS (file
+    # hashes, tracer, module allow-list). Observes and reports only; it never
+    # allows or denies anything and is not an authority input
+    # (docs/design/client_integrity.md). Needs break_crypto for SHA-256.
+    add_library(break_integrity STATIC src/integrity/break_integrity.c)
+    set_property(TARGET break_integrity PROPERTY C_STANDARD 11)
+    target_include_directories(break_integrity PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_integrity PUBLIC break_crypto)
 endif()
 
 # Stage 5 Phase C Tasks 1-3: break_crash — the crash record format (canonical
@@ -587,6 +597,20 @@ if(BREAK_ENABLE_CRASH)
     target_include_directories(break_crash PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
 endif()
+
+# Stage 5 subproject 5 — break_authority: the server-side reference engine for
+# server authority (intents in, server ledgers decide, fixed verdicts out;
+# docs/design/server_authority.md). Formal optional static library with no
+# external dependencies; it compiles the two small network TUs it reuses
+# (replay window, message rate) itself. engine, engine_demo, dxx_break and
+# editor never link it (pinned by test_break_authority_target_contract).
+add_library(break_authority STATIC
+    src/authority/break_authority.c
+    src/network/break_replay_window.c
+    src/network/break_msg_rate.c)
+set_property(TARGET break_authority PROPERTY C_STANDARD 11)
+target_include_directories(break_authority PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Formal optional replication libraries. These are intentionally independent of
 # engine and Snowflake: consumers opt in and own the transport/session boundary.
@@ -5525,6 +5549,32 @@ endif()
     set_tests_properties(test_break_replay_window PROPERTIES LABELS "headless;network")
 
     # test_break_msg_rate: per-connection message/byte token buckets.
+    if(BREAK_ENABLE_CRYPTO AND TARGET break_integrity)
+        add_executable(test_break_integrity tests/test_break_integrity.c)
+        target_include_directories(test_break_integrity PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_integrity PRIVATE break_integrity)
+        add_test(NAME test_break_integrity COMMAND test_break_integrity)
+        set_tests_properties(test_break_integrity PROPERTIES LABELS "headless;security")
+    endif()
+
+    add_executable(test_break_authority tests/test_break_authority.c)
+    target_include_directories(test_break_authority PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_authority PRIVATE break_authority)
+    add_test(NAME test_break_authority COMMAND test_break_authority)
+    set_tests_properties(test_break_authority PROPERTIES LABELS "headless;security")
+
+    if(BREAK_ENABLE_CRYPTO AND TARGET break_integrity)
+        add_test(NAME test_break_authority_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DAUTH_ARCHIVE=$<TARGET_FILE:break_authority>
+                -DINTEG_ARCHIVE=$<TARGET_FILE:break_integrity>
+                -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_authority_target_contract.cmake)
+        set_tests_properties(test_break_authority_target_contract PROPERTIES
+            LABELS "headless;security;platform_contract")
+    endif()
+
     add_executable(test_break_msg_rate tests/test_break_msg_rate.c
         src/network/break_msg_rate.c)
     target_include_directories(test_break_msg_rate PRIVATE ${TEST_INCLUDE_DIRS})
