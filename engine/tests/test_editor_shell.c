@@ -7746,6 +7746,11 @@ TEST(viewport_wireframe_draws_edges_toggles_and_persists)
     /* VIEW bit 3 turns it off again */
     ASSERT_TRUE(break_editor_shell_apply_view(fx.shell, BREAK_EDITOR_VIEW_WIREFRAME, 0u));
     ASSERT_FALSE(break_editor_shell_wireframe(fx.shell));
+    /* Z toggles it from the keyboard (Ctrl+Z stays undo) */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(fx.shell, 'z', 0u));
+    ASSERT_TRUE(break_editor_shell_wireframe(fx.shell));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(fx.shell, 'Z', MY_KEYMOD_SHIFT));
+    ASSERT_FALSE(break_editor_shell_wireframe(fx.shell));
     ASSERT_TRUE(break_editor_shell_apply_view(fx.shell, BREAK_EDITOR_VIEW_WIREFRAME,
                                               BREAK_EDITOR_VIEW_WIREFRAME));
     shader_reload_fixture_close(&fx);

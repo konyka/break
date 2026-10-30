@@ -205,4 +205,4 @@ XZ 平面（y = 0）上从 -10 到 +10 每 1 单位一条线，共 42 条，以�
 
 ## 线框显示（2026-10-30）
 
-开启后，每个代理立方体不再画实心盒，而是用 12 条边绘制。边是 `break_editor_viewport3d_outline_edges` 生成的细长盒，截面为选中描边的一半，颜色沿用代理原来的颜色。选中描边和多选高亮的规则不变。开关方式：命令面板“Toggle wireframe / 切换线框显示（wireframe）”，偏好文件 `wireframe=on|off`（默认关），remote VIEW bit 3（见 `editor_remote.md`）。属于视图状态，不产生 undo。统计字段 `wire_edges` 为本帧画出的边数，即每个代理 12 条。测试：`test_editor_shell` `viewport_wireframe_draws_edges_toggles_and_persists`（fake RHI 计数）。GPU 画面未做像素验证；也没有做真正的 GL/Vulkan 线框光栅（polygon mode），因为 RHI 目前没有这个接口。
+开启后，每个代理立方体不再画实心盒，而是用 12 条边绘制。边是 `break_editor_viewport3d_outline_edges` 生成的细长盒，截面为选中描边的一半，颜色沿用代理原来的颜色。选中描边和多选高亮的规则不变。开关方式：快捷键 Z（不带修饰键；Ctrl+Z 仍是撤销），命令面板“Toggle wireframe / 切换线框显示（wireframe）”，偏好文件 `wireframe=on|off`（默认关），remote VIEW bit 3（见 `editor_remote.md`）。属于视图状态，不产生 undo。统计字段 `wire_edges` 为本帧画出的边数，即每个代理 12 条。测试：`test_editor_shell` `viewport_wireframe_draws_edges_toggles_and_persists`（fake RHI 计数）。GPU 画面未做像素验证；也没有做真正的 GL/Vulkan 线框光栅（polygon mode），因为 RHI 目前没有这个接口。

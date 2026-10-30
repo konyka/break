@@ -57,6 +57,7 @@
  *             END+COMMIT the in-progress drag (Task 3 policy, pinned by
  *             mid_drag_ctrl_z_commits_then_undoes_the_drag) so the undo
  *             reverts exactly that one committed drag command
+ *   Z         toggle the viewport wireframe (view state; Ctrl+Z stays undo)
  *   Ctrl+P    toggle the command palette
  *   Escape    close the palette (while open)
  *   Return    execute the first filtered palette command (while open)

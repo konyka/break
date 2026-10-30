@@ -1740,6 +1740,7 @@ enum {
     ACT_VIEW_RIGHT,
     ACT_VIEW_TOP,
     ACT_NEW_SCENE,
+    ACT_TOGGLE_WIREFRAME,
     ACT_HIDE_SELECTED,
     ACT_SHOW_ALL
 };
@@ -1771,6 +1772,7 @@ static const EditorShortcut k_editor_shortcuts[] = {
     {'2', MY_KEYMOD_NONE, ACT_VIEW_RIGHT},
     {'3', MY_KEYMOD_NONE, ACT_VIEW_TOP},
     {'n', MY_KEYMOD_CTRL, ACT_NEW_SCENE},
+    {'z', MY_KEYMOD_NONE, ACT_TOGGLE_WIREFRAME},
     {'h', MY_KEYMOD_NONE, ACT_HIDE_SELECTED},
     {'h', MY_KEYMOD_ALT, ACT_SHOW_ALL},
     {MY_KEY_UP, MY_KEYMOD_NONE, ACT_SELECT_PREV},
@@ -2007,6 +2009,10 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
             break;
         case ACT_NEW_SCENE:
             shell_do_new_scene(shell);
+            break;
+        case ACT_TOGGLE_WIREFRAME:
+            shell_set_wireframe(shell, !shell->wireframe);
+            shell_settings_save(shell);
             break;
         case ACT_HIDE_SELECTED:
             shell_do_hide_selected(shell);

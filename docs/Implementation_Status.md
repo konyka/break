@@ -2,7 +2,7 @@
 
 ## 本轮更新：viewport 线框显示（2026-10-30）
 
-- **交付**：开启后每个 proxy 用 12 条边框绘制，不再画实心盒，选中描边不受影响。入口有三处：palette 命令“Toggle wireframe / 切换线框显示（wireframe）”，设置项 `wireframe=on|off`（会持久化），以及 remote VIEW 的 bit 3。属于视图状态，不产生 doc 编辑。新增接口 `break_editor_viewport3d_set_wireframe`、`break_editor_shell_wireframe`，stats 新增 `wire_edges` 字段。
+- **交付**：开启后每个 proxy 用 12 条边框绘制，不再画实心盒，选中描边不受影响。入口有三处：palette 命令“Toggle wireframe / 切换线框显示（wireframe）”，设置项 `wireframe=on|off`（会持久化），以及 remote VIEW 的 bit 3。另有快捷键 Z（不带修饰键，Ctrl+Z 仍为撤销），测试中已覆盖 Z/Shift+Z。属于视图状态，不产生 doc 编辑。新增接口 `break_editor_viewport3d_set_wireframe`、`break_editor_shell_wireframe`，stats 新增 `wire_edges` 字段。
 - **测试**：新增 `viewport_wireframe_draws_edges_toggles_and_persists`（fake RHI），验证实心模式下 1 个 proxy 时 `wire_edges` 为 0；切到线框后为 12，且 `draws` 等于实心时的值 −1+12；可通过 VIEW 关闭和重开，重启后读回设置；先红后绿。变异检查：忽略 wireframe 标志后变红。palette 命令数从 20 变为 21，三处计数断言随之更新；VIEW 测试中原本当作“未知位”探针的 0x09 改为 0x11。fuzz 的 VIEW 生成器扩到 bit 0..3，ASan 下 seed 3 无报告。默认树 `test_editor_shell` 134/134，final 树 167/167；两棵树的 ctest 都只剩已知的 x11 失败。
 - **边界**：视图只验证了 draw 计数，没有做 GPU 像素验证。
 
