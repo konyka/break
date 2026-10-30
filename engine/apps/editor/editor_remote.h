@@ -75,6 +75,12 @@ u64 break_editor_remote_session_id(const BreakEditorRemote *r, u64 connection_ke
 #ifdef BREAK_EDITOR_SHELL_TESTING
 /* Test-only accessor (test builds only). */
 void *break_editor_remote_manager_for_test(BreakEditorRemote *r);
+/* The undo origin the host holds for a connection key (0 = none). */
+uint32_t break_editor_remote_origin_for_test(BreakEditorRemote *r, uint64_t connection_key);
+/* Simulates snow handing a freed transport key to a NEW connection while the
+ * old row is still live (the OPENED-on-existing-row path). Returns false when
+ * the key has no row. */
+bool break_editor_remote_reopen_key_for_test(BreakEditorRemote *r, uint64_t connection_key);
 #endif
 
 /* Phase 4 Task 3: READ-ONLY diagnostics accessors for the network panel
@@ -137,6 +143,21 @@ uint32_t break_editor_remote_key_count(const BreakEditorRemote *r);
  * unchanged keys keep their sessions. A malformed or unreadable file
  * returns false and changes nothing. Shell thread only. */
 bool break_editor_remote_reload_keyring(BreakEditorRemote *r, const char *path);
+/* Keeps a keyring file in sync by CONTENT, not by change events. The editor
+ * watches the file's mtime, which has one-second resolution: a truncate and
+ * the rewrite that follows inside the same second produce ONE event, the
+ * reader sees the empty file, rejects it, and the finished write never fires
+ * again, so a revocation is silently lost. With this set, break_editor_remote_tick
+ * re-reads the file at most every `interval_ms` and applies it through
+ * break_editor_remote_reload_keyring (idempotent: unchanged keys keep their
+ * sessions). A rejected file leaves the ring as it is. The path is copied
+ * (at most 511 bytes). Console/stderr lines are written only when the state
+ * flips between accepted and rejected. interval_ms 0 turns it off. */
+bool break_editor_remote_watch_keyring(BreakEditorRemote *r, const char *path,
+                                       uint32_t interval_ms);
+/* How often the periodic re-read applied / rejected the file. */
+uint64_t break_editor_remote_keyring_checks(const BreakEditorRemote *r);
+uint64_t break_editor_remote_keyring_rejects(const BreakEditorRemote *r);
 
 /* ---------------- editor_main --remote flag plumbing ----------------
  * DEFAULT OFF: without --remote no remote is created and nothing listens.

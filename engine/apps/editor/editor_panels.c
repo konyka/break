@@ -3335,6 +3335,33 @@ bool break_editor_shell_set_camera_pose(BreakEditorShell *shell,
         !isfinite(pose->fov_y) || pose->fov_y < fov_min || pose->fov_y > fov_max) {
         return false;
     }
+    /* Range checks are not enough. The viewport places the eye at target +
+     * distance * direction in f32; next to a large coordinate a small offset
+     * is rounded to a multiple of that coordinate's f32 step, which can make
+     * the eye land ON the target (no look direction at all) or in a clearly
+     * different direction than the pose asks for. Compute the eye the way the
+     * viewport does (same operations, same order) and require the resulting
+     * offset to point within 10 degrees of the intended one. A pose that only
+     * has its DISTANCE quantised keeps its direction and passes. */
+    {
+        const f32 sp = sinf(pose->pitch), cp = cosf(pose->pitch);
+        const f32 cy = cosf(pose->yaw), sy = sinf(pose->yaw);
+        f32 want[3], got[3], dot = 0.0f, wl = 0.0f, gl = 0.0f;
+        want[0] = pose->distance * cp * sy;
+        want[1] = pose->distance * sp;
+        want[2] = pose->distance * cp * cy;
+        for (i = 0u; i < 3u; i++) {
+            got[i] = (pose->target[i] + want[i]) - pose->target[i];
+            dot += want[i] * got[i];
+            wl += want[i] * want[i];
+            gl += got[i] * got[i];
+        }
+        /* cos(10 deg)^2 = 0.9698; compare squared to avoid the square roots */
+        if (!(gl > 0.0f) || !(wl > 0.0f) || !(dot > 0.0f) ||
+            !(dot * dot >= 0.9698f * wl * gl)) {
+            return false;
+        }
+    }
     shell->camera = *pose;
     if (shell->viewport_widget != NULL) {
         my_widget_invalidate(shell->viewport_widget, NULL);

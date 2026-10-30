@@ -5379,6 +5379,72 @@ TEST(remote_camera_set_applies_a_validated_pose)
     break_editor_shell_destroy(shell);
 }
 
+/* A pose can pass every range check and still collapse the view: at a target
+ * 1e6 away, a distance of 0.05 is smaller than one f32 step (0.0625), so the
+ * eye rounds onto the target and the look-at has no direction. The pose is
+ * rejected whole, the camera untouched, and the same distance near the origin
+ * is still fine. */
+TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorCamera ok, bad, before;
+    ASSERT_NOT_NULL(shell);
+    memset(&ok, 0, sizeof(ok));
+    ok.distance = 0.05f;
+    ok.fov_y = 0.9f;
+    ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &ok));   /* near the origin: fine */
+
+    /* the reported case: every axis offset (0.0289) is below half an f32 step
+     * (0.03125) of 1e6, so the eye rounds onto the target */
+    bad = ok;
+    bad.target[0] = bad.target[1] = bad.target[2] = 1e6f;
+    bad.yaw = 0.7853982f;
+    bad.pitch = 0.6154797f;
+    before = *break_editor_shell_camera(shell);
+    ASSERT_FALSE(break_editor_shell_set_camera_pose(shell, &bad));
+    ASSERT_TRUE(memcmp(&before, break_editor_shell_camera(shell), sizeof(before)) == 0);
+
+    /* a distance that survives the rounding on every axis: accepted */
+    bad.distance = 5.0f;
+    ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &bad));
+
+    /* only the DISTANCE is quantised (0.05 becomes 0.0625 along X), the look
+     * direction is intact: accepted */
+    {
+        BreakEditorCamera along = ok;
+        along.target[0] = 1e6f;
+        along.yaw = 1.5707963f;      /* looks along X */
+        along.distance = 0.05f;
+        ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &along));
+    }
+
+    /* the direction is distorted: at 1e6 the f32 step is 0.0625, so X moves
+     * 0.05 (rounds UP to 0.0625) but Y moves 0.025 (rounds to 0). The eye is
+     * placed along X alone while the pose asked for a 26.6 degree climb
+     * (cos^2 of the angle between them = 0.8): rejected */
+    {
+        BreakEditorCamera tilt = ok;
+        tilt.target[0] = tilt.target[1] = tilt.target[2] = 1e6f;
+        tilt.yaw = 1.5707963f;
+        tilt.pitch = 0.4636476f;     /* atan(0.5) */
+        tilt.distance = 0.0559017f;
+        before = *break_editor_shell_camera(shell);
+        ASSERT_FALSE(break_editor_shell_set_camera_pose(shell, &tilt));
+        ASSERT_TRUE(memcmp(&before, break_editor_shell_camera(shell), sizeof(before)) == 0);
+    }
+
+    /* the same pose at a coordinate where f32 still resolves it: accepted */
+    {
+        BreakEditorCamera fine = ok;
+        fine.target[0] = fine.target[1] = fine.target[2] = 1e3f;
+        fine.yaw = 1.5707963f;
+        fine.pitch = 0.4636476f;
+        fine.distance = 0.0559017f;
+        ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &fine));
+    }
+    break_editor_shell_destroy(shell);
+}
+
 /* HISTORY reports the shared command stack read-only: undo/redo depth, the
  * change revision and the description of the command the next undo would
  * revert, so a remote client can see what UNDO/REDO will do before sending
@@ -5636,6 +5702,46 @@ TEST(remote_undo_own_never_touches_local_shell_edits_and_origin_resets)
     remote_client_send(&a, BREAK_EDITOR_MSG_UNDO_OWN, (const u8[]){1u}, 1u);
     remote_wait_connection_count(remote, shell, 0u);
 
+    remote_client_close(&a);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_undo_origin_is_renewed_when_the_transport_reuses_a_key)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient a;
+    BreakNetEnvelope rsp;
+    BreakEditorDoc *doc;
+    uint64_t keys[4];
+    uint32_t states[4];
+    u32 before, after;
+    u8 applied, blocked;
+    u64 e = 0u;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&a, shell, remote);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_EQ(break_editor_remote_connections_snapshot(remote, keys, states, 4u), 1u);
+    own_spawn(&a, "by-first-client", &e);
+    before = break_editor_remote_origin_for_test(remote, keys[0]);
+    ASSERT_TRUE(before != 0u);
+
+    /* the transport hands this key to a NEW connection while the row is live */
+    ASSERT_TRUE(break_editor_remote_reopen_key_for_test(remote, keys[0]));
+    after = break_editor_remote_origin_for_test(remote, keys[0]);
+    ASSERT_TRUE(after != 0u);
+    ASSERT_TRUE(after != before);
+
+    /* the newcomer must not be able to undo the previous client's command */
+    own_send(&a, BREAK_EDITOR_MSG_UNDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 0u);
+    ASSERT_EQ(blocked, 0u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_TRUE(own_has_name(doc, "by-first-client"));
+    (void)rsp;
     remote_client_close(&a);
     break_editor_remote_destroy(remote);
     break_editor_shell_destroy(shell);
@@ -7211,6 +7317,103 @@ TEST(remote_tls_keyring_reload_revokes_removed_keys)
     ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
     tls_client_close(&b);
     tls_client_close(&a);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+/* The keyring file watcher compares whole-second mtimes. A truncate followed by
+ * the finished rewrite inside one second raises ONE event, the reader sees the
+ * empty file, rejects it, and nothing ever looks again, so a revocation is
+ * lost. The periodic content re-read closes that: no change event is delivered
+ * in this test at all. */
+TEST(remote_tls_keyring_revocation_survives_a_missed_change_event)
+{
+    static const char *k_ring = "editor_remote_resync_test.keyring";
+    static const u8 k_two_id[8] = {'d', 'e', 'v', 'i', 'c', 'e', '0', '2'};
+    u8 two_psk[32];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient a, b;
+    BreakNetEnvelope rsp;
+    FILE *f;
+    usize i;
+    u64 checks0, rejects0;
+    for (i = 0u; i < 32u; i++) two_psk[i] = (u8)(0x40u + i);
+    ASSERT_NOT_NULL(shell);
+    remote = tls_remote_start(shell); /* key edit0001 */
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(break_editor_remote_add_key(remote, k_two_id, two_psk));
+    ASSERT_TRUE(tls_client_open(&a, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    ASSERT_TRUE(tls_client_send_auth(&a, k_tls_key_id, k_tls_psk, false));
+    ASSERT_TRUE(tls_client_send(&a, BREAK_EDITOR_MSG_DESCRIBE, BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&a, &rsp));
+    ASSERT_TRUE(tls_client_open(&b, shell, remote));
+    remote_wait_connection_count(remote, shell, 2u);
+    ASSERT_TRUE(tls_client_send_auth(&b, k_two_id, two_psk, false));
+    ASSERT_TRUE(tls_client_send(&b, BREAK_EDITOR_MSG_DESCRIBE, BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&b, &rsp));
+
+    /* the operator's editor truncated the file: it is empty for a moment */
+    f = fopen(k_ring, "wb");
+    ASSERT_NOT_NULL(f);
+    fclose(f);
+    ASSERT_TRUE(break_editor_remote_watch_keyring(remote, k_ring, 1u));
+    checks0 = break_editor_remote_keyring_checks(remote);
+    rejects0 = break_editor_remote_keyring_rejects(remote);
+    for (int n = 0; n < 40; n++) {
+        break_editor_shell_tick(shell);
+        time_sleep_us(2000u);
+    }
+    ASSERT_TRUE(break_editor_remote_keyring_checks(remote) > checks0);
+    ASSERT_TRUE(break_editor_remote_keyring_rejects(remote) > rejects0);   /* seen and refused */
+    ASSERT_EQ(break_editor_remote_key_count(remote), 2u);                 /* the ring is unchanged */
+
+    /* the write finishes: only edit0001 is left. No change event is raised here. */
+    f = fopen(k_ring, "wb");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "6564697430303031 ");
+    for (i = 0u; i < 32u; i++) fprintf(f, "%02x", k_tls_psk[i]);
+    fprintf(f, "\n");
+    fclose(f);
+    for (int n = 0; n < 200 && break_editor_remote_key_count(remote) != 1u; n++) {
+        break_editor_shell_tick(shell);
+        time_sleep_us(2000u);
+    }
+    remove(k_ring);
+    ASSERT_EQ(break_editor_remote_key_count(remote), 1u);
+    ASSERT_TRUE(tls_client_wait_eof(&b));            /* device02 was revoked and its session closed */
+    ASSERT_TRUE(tls_client_send(&a, BREAK_EDITOR_MSG_DESCRIBE, BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&a, &rsp));          /* edit0001 is still up */
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+    tls_client_close(&b);
+    tls_client_close(&a);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_keyring_watch_is_off_by_default_and_validates_its_arguments)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    char longp[600];
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_EQ(break_editor_remote_keyring_checks(remote), 0u);
+    for (int n = 0; n < 20; n++) {
+        break_editor_shell_tick(shell);
+        time_sleep_us(2000u);
+    }
+    ASSERT_EQ(break_editor_remote_keyring_checks(remote), 0u);      /* nothing is read unless asked */
+    ASSERT_FALSE(break_editor_remote_watch_keyring(NULL, "x", 10u));
+    memset(longp, 'a', sizeof(longp) - 1u);
+    longp[sizeof(longp) - 1u] = '\0';
+    ASSERT_FALSE(break_editor_remote_watch_keyring(remote, longp, 10u));  /* does not fit: refused, not cut */
+    ASSERT_TRUE(break_editor_remote_watch_keyring(remote, "x", 0u));      /* 0 turns it off */
+    ASSERT_TRUE(break_editor_remote_watch_keyring(remote, NULL, 10u));
+    ASSERT_EQ(break_editor_remote_keyring_checks(NULL), 0u);
+    ASSERT_EQ(break_editor_remote_keyring_rejects(NULL), 0u);
     break_editor_remote_destroy(remote);
     break_editor_shell_destroy(shell);
 }
@@ -10468,11 +10671,14 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_load_reverts_configured_path_and_refuses_when_dirty);
     RUN_REMOTE_TEST(remote_view_toggles_view_state_without_touching_the_doc);
     RUN_REMOTE_TEST(remote_camera_set_applies_a_validated_pose);
+    RUN_TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected);
     RUN_REMOTE_TEST(remote_history_reports_the_shared_undo_stack);
     RUN_REMOTE_TEST(remote_undo_own_only_reverts_this_clients_commands);
     RUN_REMOTE_TEST(remote_undo_own_is_blocked_by_another_clients_edit_of_the_same_entity);
     RUN_REMOTE_TEST(remote_undo_own_never_touches_local_shell_edits_and_origin_resets);
     RUN_REMOTE_TEST(remote_undo_own_origin_is_per_connection_not_per_slot);
+    RUN_REMOTE_TEST(remote_undo_origin_is_renewed_when_the_transport_reuses_a_key);
+    RUN_REMOTE_TEST(remote_keyring_watch_is_off_by_default_and_validates_its_arguments);
     RUN_REMOTE_TEST(remote_set_field_maps_component_and_field_names);
     RUN_REMOTE_TEST(remote_eval_runs_on_shell_thread_and_returns_console_tail);
     RUN_REMOTE_TEST(remote_eval_at_4096_boundary_and_len_mismatch_closes);
@@ -10492,6 +10698,7 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_tls_keyring_add_and_revoke);
     RUN_REMOTE_TEST(remote_tls_cli_keyring_file_installs_all_keys);
     RUN_REMOTE_TEST(remote_tls_keyring_reload_revokes_removed_keys);
+    RUN_REMOTE_TEST(remote_tls_keyring_revocation_survives_a_missed_change_event);
     RUN_REMOTE_TEST(remote_tls_keyring_attribution_does_not_leak_across_reused_slots);
     RUN_REMOTE_TEST(remote_tls_e2e_connect_auth_describe_spawn_undo_disconnect);
     RUN_REMOTE_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);

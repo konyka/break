@@ -58,7 +58,7 @@ A command that runs but does nothing (REMOVE of a stale id, UNDO with an empty s
 | Resource | Bound | Enforcement |
 |---|---|---|
 | Inbound payload | ≤ 4096 B per frame | default-registry `payload_limit` (codec rejects before any handler) + exact-layout handler checks |
-| Editor ids | 4..13 used of the free space 4..19 (≤ 16 definitions) | `break_net_message_registry_default` |
+| Editor ids | 4..20 used (17 definitions: DESCRIBE..REDO_OWN), 21 and above are not registered | `break_net_message_registry_default` |
 | EVAL input | ≤ 4096 B (`BREAK_EDITOR_LUA_INPUT_MAX_BYTES`) | larger → RESULT INVALID, connection stays up |
 | EVAL response | ≤ 16 lines × ≤ 127 B, ≤ 4096 B total | fixed capture buffer in the host |
 | Connection table | ≤ 32 rows (`max_connections`, 0 ⇒ 32; the CLI uses 4) | create rejects > 32; the reactor gets the same cap |
@@ -78,7 +78,7 @@ TLS (server-side acceptor; handshake failure closes)
         ▼
 CHALLENGE id=3 (16 B CSPRNG server nonce) → AUTH v2 id=1 (56 B, HMAC-SHA256 tag)
         ▼
-session AUTHENTICATED → editor commands 4..12 dispatched on the shell thread
+session AUTHENTICATED → editor commands 4..20 dispatched on the shell thread
 ```
 
 - **Default OFF.** The shell never creates a remote on its own. Without `--remote`, `editor` creates no reactor and nothing listens. Any `--remote-*` option without `--remote` fails the parse (exit 2). Pinned by `remote_cli_default_off_and_fail_closed_flags` and `remote_disabled_leaves_shell_untouched`. With no remote attached, the shell behaves exactly as in Phase 3 (the existing editor lane proves it).
@@ -118,7 +118,7 @@ session AUTHENTICATED → editor commands 4..12 dispatched on the shell thread
 
 ## 5. Codec boundary
 
-The envelope codec consults only `break_net_message_registry_default()` (`session_protocol.md`, codec-boundary note). A custom registry cannot admit ids the codec does not know, so the editor ids are registered **in the default registry**, in its free id space after AUTH(1)/PING(2)/CHALLENGE(3). Ids 4..13 are used and 14..19 stay reserved for the editor (≤ 16 definitions in total). The manager is created with `registry = NULL` (the default registry) so the manager and the codec see the same table. The consequence is documented rather than worked around: every `break_net` consumer in the process now recognizes ids 4..13 as valid frames (`PHASE_ANY`, `payload_limit` 4096). An application that hosts its own `break_session` manager without editor handlers would see such frames as unhandled. Pinned by `remote_protocol_ids_live_in_default_registry`.
+The envelope codec consults only `break_net_message_registry_default()` (`session_protocol.md`, codec-boundary note). A custom registry cannot admit ids the codec does not know, so the editor ids are registered **in the default registry**, in its free id space after AUTH(1)/PING(2)/CHALLENGE(3). Ids 4..20 are registered for the editor (17 definitions; the registry holds up to 64 in total). The manager is created with `registry = NULL` (the default registry) so the manager and the codec see the same table. The consequence is documented rather than worked around: every `break_net` consumer in the process now recognizes ids 4..20 as valid frames (`PHASE_ANY`, `payload_limit` 4096). An application that hosts its own `break_session` manager without editor handlers would see such frames as unhandled. Pinned by `remote_protocol_ids_live_in_default_registry`.
 
 ## 6. Lifecycle
 
@@ -147,17 +147,17 @@ Status values: every response was the per-id success response (no `RESULT` frame
 - **Auth deadline granularity:** checked once per editor frame against the monotonic clock; a peer that authenticates is never evicted later by it (sessions have no idle timeout after authentication).
 - **Process-wide auth domain:** one PSK-carrying remote per process (§2).
 - **Frame-cadence latency:** one reactor step and ≤ 32 events per frame (§3).
-- **Shared default registry:** ids 4..13 are visible to every `break_net` consumer in the process (§5).
+- **Shared default registry:** ids 4..20 are visible to every `break_net` consumer in the process (§5).
 - **Client-sent RESULT** counts as `handler_failed` without closing (§1).
 - **The EVAL console is separate from the panel console:** the remote owns its own `BreakEditorLuaConsole` core on the same doc and logs into the same shared ring. Lua module state is not shared with the local Lua panel, though doc effects are, since both go through one command stack.
 
 ## 9. NOT delivered
 
-- Remote load/save (load's world swap plus selection reconcile needs its own design; save is not exposed either).
+- Remote save/load to a path the CLIENT chooses. SAVE (14) and LOAD (15) exist but only act on the scene path the local user configured (no path on the wire), and LOAD never discards unsaved work (2026-10-30).
 - Remote render settings and backend switches. VIEW (16) covers grid/stats toggles, camera reset and readback; CAMERA_SET (17) sets a validated camera pose. The **render debugger panel** is delivered separately as a local pure view (`docs/design/editor_render_debugger.md`), not as a remote-control surface.
 - A production credential system: per-device key distribution, key storage, and CLI/config management of the keyring (the in-process keyring with add/revoke exists since 2026-10-30). The PSK is a dev path (`transport_security.md` §4).
 - WAN deployment and multi-client management (no user or role model, no per-client permissions, no session listing or kick control, no non-loopback bind flag).
-- Remote undo-stack sharing or collaboration semantics (remote and local commands share the one doc command stack; there is no per-client history, conflict handling, or change notification push).
+- Collaboration semantics beyond per-client undo: remote and local commands share the one doc command stack and UNDO_OWN/REDO_OWN (19/20, 2026-10-30) undo a client's own commands only when nothing newer touches the same entities, but there is no merge or conflict resolution, no change-notification push, and no per-client permissions.
 - Win32 runtime validation: the `editor` target only cross-compiles (see §10 follow-up evidence); no Windows binary has been run, and the Snowflake-ON Windows link is unverified. The repo's own fuzz smoke targets pass under ASan+UBSan (§10), and `fuzz_editor_remote` (§10, 2026-10-26) now exercises the plaintext-seam handler path in-process; it does not cover the TLS transport, the CHALLENGE/AUTH-v2 handshake, or the socket layer.
 
 ## 10. Evidence
@@ -183,7 +183,7 @@ Phase 4 Task 4 closeout, HEAD = `357be082` + the closeout commit (one added test
 `engine/tests/fuzz_editor_remote.c`, target `fuzz_editor_remote` (EXCLUDE_FROM_ALL, only defined with `BREAK_ENABLE_SNOWFLAKE=ON`; registered as `fuzz_editor_remote_smoke 600 29`, label `fuzz`, when `ENGINE_BUILD_FUZZ_SMOKE=ON`). Usage: `fuzz_editor_remote [iterations] [seed]`.
 
 - **What it drives.** No sockets. Mutated envelopes go through the real `break_net_envelope_decode`, then into the real `break_session_manager_apply_adapter_event`, which runs the registry/version/size checks, the host's authorization gate (`remote_on_message`) and the real `editor_remote.c` handlers against a live headless shell and document. The host is ticked after every message so responses are drained as in the editor. The document is re-created every 160 messages; sessions are recycled through a small key pool because the session manager only reclaims a CLOSED entry when its transport key opens again (fresh keys every time would exhaust the 8-entry table, a harness artifact, not a product finding).
-- **Message sources.** Valid requests for ids 4..13 are built from live entity ids/names and structurally mutated (byte writes, bit flips, boundary values on u16/u32 lanes, insert/delete/truncate, extension past the 4096 B bound); the encoded frame is damaged at wire level; and arbitrary id/version/length events are injected directly into the session manager. Every payload handed to the manager is an exact-size heap copy, so a handler over-read is an immediate ASan report. Sequences include in-order, replayed, zero and boundary values.
+- **Message sources.** Valid requests for ids 4..13 (the original set; ids 14..20 were added to the generator later, see the 2026-10-30 notes) are built from live entity ids/names and structurally mutated (byte writes, bit flips, boundary values on u16/u32 lanes, insert/delete/truncate, extension past the 4096 B bound); the encoded frame is damaged at wire level; and arbitrary id/version/length events are injected directly into the session manager. Every payload handed to the manager is an exact-size heap copy, so a handler over-read is an immediate ASan report. Sequences include in-order, replayed, zero and boundary values.
 - **Invariants checked after every message.** No sanitizer report; the document fingerprint (entity ids, names, dirty flag, undo/redo depth, every registered component field) is unchanged whenever the message was not applied OK (fail closed means zero document effect); names stay under their capacity and ids resolvable; the outliner row count equals the document; the connection table stays within its bound; the session table recovers (`table stuck 0`).
 - **2026-10-30, SAVE/LOAD coverage.** The fuzzer now picks ids 4..17 (VIEW, CAMERA_SET and HISTORY added the same day, with generators for mostly-valid masks and poses: seed 1 VIEW 727/253, CAMERA_SET 685/266; HISTORY 582/296 after ids 4..18) and gives the harness a real per-process scene path (`/tmp/break_fuzz_editor_remote_<pid>.bscn`, removed at exit), so SAVE and LOAD reach disk I/O. In `build-sdd-p4-asan`, 8 seeds x 20,000 messages all exit 0 with no ASan/UBSan reports; seed 1 shows SAVE 739/404 and LOAD 742/386 (reached / accepted). `ctest -L fuzz` 6/6.
 - **Evidence (ASan+UBSan, `build-sdd-p4-asan`).** 8 seeds x 20,000 messages and then 40 further seeds (100..139) x 20,000, i.e. about 960k messages, all exit 0 with zero reports. A typical 20,000-message run: 3,594 applied OK, 6,402 rejected at encode and 9,669 at decode, 5,579 sessions (6,251 closed by a message, none stuck), 930 EVAL messages, 1,333 accepted messages that changed the document; every id 4..13 reaches the manager about 900 times (accepted counts: DESCRIBE 490, LIST 484, SPAWN 310, REMOVE 338, RENAME 303, SET_FIELD 356, UNDO 522, REDO 485, EVAL 306, RESULT 0 since RESULT has no host handler). Also builds and runs on the normal Snowflake tree `build-sdd-p4-final`; `ctest -L fuzz` in the fuzz-enabled ASan tree registers and passes `fuzz_editor_remote_smoke`.

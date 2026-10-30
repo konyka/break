@@ -405,6 +405,17 @@ static bool break_session_auth_fail(BreakSessionManager *manager,
     return break_session_record(manager, result);
 }
 
+/* A plain memset on a buffer that is dead afterwards is deleted by the
+ * optimiser (the compiled break_session_auth_tag showed no store at all), so
+ * the key would stay on the stack. Writing through a volatile pointer cannot
+ * be elided. */
+static void break_session_wipe(void *p, size_t n) {
+    volatile unsigned char *v = (volatile unsigned char *)p;
+    while (n-- != 0u) {
+        *v++ = 0u;
+    }
+}
+
 static bool break_session_auth_tag(BreakNetAuthKeyFn fn, void *user,
                                    const u8 key_id[8], const u8 server_nonce[16],
                                    const u8 client_nonce[16], u8 out_tag[32])
@@ -417,8 +428,8 @@ static bool break_session_auth_tag(BreakNetAuthKeyFn fn, void *user,
     memcpy(context + 24u, client_nonce, 16u);
     ok = fn(user, key_id, psk) &&
          break_crypto_hmac_sha256(psk, sizeof(psk), context, sizeof(context), out_tag);
-    memset(psk, 0, sizeof(psk));
-    memset(context, 0, sizeof(context));
+    break_session_wipe(psk, sizeof(psk));
+    break_session_wipe(context, sizeof(context));
     return ok;
 }
 

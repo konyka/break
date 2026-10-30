@@ -269,6 +269,9 @@ int main(int argc, char **argv) {
       filewatch_add(&keyring_watch, remote_cli.keyring_path,
                     editor_keyring_changed, remote);
       keyring_watched = true;
+      /* the watcher's mtime has one-second resolution and can miss the end of
+       * a rewrite: also re-read by content, once a second */
+      (void)break_editor_remote_watch_keyring(remote, remote_cli.keyring_path, 1000u);
     }
     fprintf(stderr,
             "editor: remote session (DEV TOOL, TLS + AUTH-v2) listening on "

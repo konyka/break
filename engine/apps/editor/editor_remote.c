@@ -127,6 +127,11 @@ struct BreakEditorRemote {
     bool has_psk;                   /* at least one key in the ring */
     bool auth_installed;            /* this remote owns the session auth domain */
     u32 next_origin;                /* next undo origin to hand out (starts at 1) */
+    char keyring_path[512];         /* periodic re-read target ("" = off) */
+    u64 keyring_interval_us;
+    u64 keyring_last_us;
+    bool keyring_ok;                /* last periodic read was accepted */
+    u64 keyring_checks, keyring_rejects;
     EditorRemoteKey keys[EDITOR_REMOTE_MAX_KEYS];
 };
 
@@ -258,6 +263,27 @@ static EditorRemoteConnRow *remote_row_find(BreakEditorRemote *r, u64 key) {
     return NULL;
 }
 
+/* A fresh undo origin per connection: never 0 (the local shell) and never a
+ * value another live connection could still hold (a u32 counter that skips 0
+ * on wrap; 2^32 connections would be needed to repeat one). */
+static u32 remote_next_origin(BreakEditorRemote *r) {
+    r->next_origin++;
+    if (r->next_origin == 0u) {
+        r->next_origin = 1u;
+    }
+    return r->next_origin;
+}
+
+/* The transport reused a key for a NEW connection while its row was still
+ * live: the deadline, close state, key attribution AND undo origin all restart,
+ * so the newcomer inherits nothing from the previous client. */
+static void remote_reopen_row(BreakEditorRemote *r, EditorRemoteConnRow *row) {
+    row->seen_us = time_microseconds();
+    row->transport_closed = false;
+    row->auth_key_known = false;
+    row->origin = remote_next_origin(r);
+}
+
 static void remote_row_add(BreakEditorRemote *r, u64 key) {
     u32 i;
     if (key == 0u || remote_row_find(r, key) != NULL) {
@@ -271,14 +297,9 @@ static void remote_row_add(BreakEditorRemote *r, u64 key) {
             r->rows[i].seen_us = time_microseconds();
             r->rows[i].transport_closed = false;
             r->rows[i].auth_key_known = false; /* never inherit a freed row's key */
-            /* A fresh origin per connection, so a client never inherits the
-             * undo history of whoever used this row before. 0 is the local
-             * shell; skip it (and wrap) after 2^32 - 1 connections. */
-            r->next_origin++;
-            if (r->next_origin == 0u) {
-                r->next_origin = 1u;
-            }
-            r->rows[i].origin = r->next_origin;
+            /* a fresh origin, so a client never inherits the undo history of
+             * whoever used this row before */
+            r->rows[i].origin = remote_next_origin(r);
             r->conn_count++;
             return;
         }
@@ -1272,6 +1293,59 @@ bool break_editor_remote_reload_keyring(BreakEditorRemote *r, const char *path) 
 #endif
 }
 
+bool break_editor_remote_watch_keyring(BreakEditorRemote *r, const char *path,
+                                       uint32_t interval_ms) {
+    if (r == NULL) {
+        return false;
+    }
+    if (interval_ms == 0u || path == NULL || path[0] == '\0') {
+        r->keyring_path[0] = '\0';
+        r->keyring_interval_us = 0u;
+        return true;
+    }
+    if (strlen(path) >= sizeof(r->keyring_path)) {
+        return false;
+    }
+    memcpy(r->keyring_path, path, strlen(path) + 1u);
+    r->keyring_interval_us = (u64)interval_ms * 1000u;
+    r->keyring_last_us = time_microseconds();
+    r->keyring_ok = true;
+    return true;
+}
+
+uint64_t break_editor_remote_keyring_checks(const BreakEditorRemote *r) {
+    return r != NULL ? r->keyring_checks : 0u;
+}
+
+uint64_t break_editor_remote_keyring_rejects(const BreakEditorRemote *r) {
+    return r != NULL ? r->keyring_rejects : 0u;
+}
+
+/* Re-reads the keyring file when its interval is up (tick, shell thread). */
+static void remote_keyring_resync(BreakEditorRemote *r) {
+    u64 now;
+    bool ok;
+    if (r->keyring_interval_us == 0u || r->keyring_path[0] == '\0') {
+        return;
+    }
+    now = time_microseconds();
+    if (now - r->keyring_last_us < r->keyring_interval_us) {
+        return;
+    }
+    r->keyring_last_us = now;
+    r->keyring_checks++;
+    ok = break_editor_remote_reload_keyring(r, r->keyring_path);
+    if (!ok) {
+        r->keyring_rejects++;
+    }
+    if (ok != r->keyring_ok) {
+        fprintf(stderr, ok ? "editor: keyring file accepted again (%u keys)\n"
+                           : "editor: keyring file rejected; keeping the current keys\n",
+                (unsigned)break_editor_remote_key_count(r));
+        r->keyring_ok = ok;
+    }
+}
+
 bool break_editor_remote_start(BreakEditorRemote *r) {
     snow_endpoint_t *endpoint = NULL;
     snow_status_t status;
@@ -1372,9 +1446,7 @@ void break_editor_remote_tick(BreakEditorRemote *r) {
             if (row != NULL) {
                 /* transport key reuse (snow uids recycle slots): this is a
                  * NEW connection, so its deadline and close state restart */
-                row->seen_us = time_microseconds();
-                row->transport_closed = false;
-                row->auth_key_known = false;
+                remote_reopen_row(r, row);
             } else {
                 remote_row_add(r, event.connection_key);
             }
@@ -1408,6 +1480,7 @@ void break_editor_remote_tick(BreakEditorRemote *r) {
          * CLOSED entry never precedes an event still queued for it */
         (void)break_session_manager_poll(r->manager, 32u);
     }
+    remote_keyring_resync(r);
     remote_table_sync(r);
 }
 
@@ -1460,6 +1533,20 @@ u64 break_editor_remote_poll_count(const BreakEditorRemote *r) {
 #ifdef BREAK_EDITOR_SHELL_TESTING
 void *break_editor_remote_manager_for_test(BreakEditorRemote *r) {
     return r != NULL ? (void *)r->manager : NULL;
+}
+
+uint32_t break_editor_remote_origin_for_test(BreakEditorRemote *r, uint64_t connection_key) {
+    const EditorRemoteConnRow *row = r != NULL ? remote_row_find(r, connection_key) : NULL;
+    return row != NULL ? row->origin : 0u;
+}
+
+bool break_editor_remote_reopen_key_for_test(BreakEditorRemote *r, uint64_t connection_key) {
+    EditorRemoteConnRow *row = r != NULL ? remote_row_find(r, connection_key) : NULL;
+    if (row == NULL) {
+        return false;
+    }
+    remote_reopen_row(r, row);
+    return true;
 }
 #endif
 
@@ -1647,6 +1734,24 @@ bool break_editor_remote_reload_keyring(BreakEditorRemote *r, const char *path) 
     (void)r;
     (void)path;
     return false;
+}
+
+bool break_editor_remote_watch_keyring(BreakEditorRemote *r, const char *path,
+                                       uint32_t interval_ms) {
+    (void)r;
+    (void)path;
+    (void)interval_ms;
+    return false;
+}
+
+uint64_t break_editor_remote_keyring_checks(const BreakEditorRemote *r) {
+    (void)r;
+    return 0u;
+}
+
+uint64_t break_editor_remote_keyring_rejects(const BreakEditorRemote *r) {
+    (void)r;
+    return 0u;
 }
 
 bool break_editor_remote_session_stats(const BreakEditorRemote *r,
