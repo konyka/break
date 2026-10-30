@@ -18,7 +18,7 @@
   6. MSVC 报 C4310：`(u8)~(...)` 截断常量，改为先转 unsigned 再与掩码比较。
   7. Linux Clang/LLD Release 下 `test_runtime_io` 的 `io_request_double_release_aborts` 失败过一次（子进程未被信号终止）；前三次 CI 均通过，推测是偶发的子进程 setup 失败（exit 2），具体原因未确认。为此加了诊断输出，打印子进程退出码区分“setup 失败”和“未拒绝 double release”。
   本机还发现 /tmp 配额满导致 `test_runtime_io` 本地全红，属环境问题，已清理本仓库测试残留的 `break_*` 目录。
-- **验证**：本地默认树只剩已知的 x11 失败；本机没有 Windows 和 macOS 工具链，Windows/macOS 上的结果以下一次 CI 为准。
+- **验证**：CI run 40981311046（`411708c3`）全部 job 通过，覆盖 Windows MSVC/Clang/MinGW/ASan、macOS Metal/MoltenVK、Linux 各条通道；windows-d3d12（`fc8b3203`）通过。清理 /tmp 后本地默认树 236/236，x11 用例此次也通过。
 
 ## 本轮更新：灰度分桶接入 stage（2026-10-30）
 
