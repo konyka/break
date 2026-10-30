@@ -301,7 +301,14 @@ OK），open 之后初始为 OK；open 本身只以 NULL 报错（无客户端�
    分桶判定：不在灰度范围内返回 `ROLLOUT` 错误（新枚举值），0 次 fetch、
    0 次磁盘写入、状态不变；device_id 非法时返回 `INVALID`。百分比由调用方
    从发布服务获取。测试 `stage_rollout_gate_before_transport`；变异检查：
-   跳过判定后变红。导出符号合约从 30 个扩为 31 个。测试
+   跳过判定后变红。导出符号合约从 30 个扩为 31 个。**白名单（2026-10-30）**：
+   `break_update_rollout_listed(device_id, list, len, &listed)` 以 LF 分隔
+   设备 id，按整行逐字节精确匹配，忽略空行，总大小不超过 64 KiB。遇到 CR、
+   超长行或参数非法时整体拒绝，不会只应用一部分。名单内的设备调用
+   `stage_rollout(..., 10000, ...)` 即可越过比例限制。测试
+   `rollout_allow_list_exact_whole_line_match`；变异检查：去掉整行长度比较
+   （改为前缀匹配）后变红。导出符号增至 32 个。与百分比一样，名单也必须来自
+   经过认证的数据。测试
    `test_break_update` `rollout_bucket_is_deterministic_bounded_and_uniform`
    （确定性、换版本重洗牌、1 万个设备 10 个十分位各在 ±10% 内、判定边界、
    参数校验）。

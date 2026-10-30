@@ -16,7 +16,8 @@
 # gate pinned at contract level) plus no-staged activate/unstage refusals.
 # 2026-10-30: the gray-rollout bucket adds two pure functions
 # (break_update_rollout_bucket / _admits): the nm gate grows 28 → 30.
-# 2026-10-30: stage_rollout (gray-rollout gate before transport): 30 → 31.
+# 2026-10-30: stage_rollout (gray-rollout gate before transport): 30 → 31;
+# rollout allow-list (break_update_rollout_listed): 31 → 32.
 #
 # Pins (mirrors the test_break_crypto_target_contract.cmake shape):
 #   1. The break_update target lives inside the if(BREAK_ENABLE_CRYPTO)
@@ -28,7 +29,7 @@
 #   3. break_update links break_crypto PUBLIC.
 #   4. No-link pins: engine / engine_demo / dxx_break / editor never link
 #      break_update (their target_link_libraries calls are single-line).
-#   5. nm gate: the production archive exports exactly the 31 public
+#   5. nm gate: the production archive exports exactly the 32 public
 #      break_update_* symbols (zero OpenSSL/break_crypto symbols
 #      re-exported — a static archive only carries undefined references).
 #   6. Minimal archive link test: a tiny executable links ONLY
@@ -147,7 +148,7 @@ if(NOT cmake_text MATCHES "add_test\\(NAME test_break_update_target_contract")
     message(FATAL_ERROR "missing test_break_update_target_contract registration")
 endif()
 
-# --- 5. nm gate: exactly the 31 public symbols ------------------------------
+# --- 5. nm gate: exactly the 32 public symbols ------------------------------
 find_program(UPDATE_CONTRACT_NM NAMES nm llvm-nm)
 if(NOT UPDATE_CONTRACT_NM)
     message(FATAL_ERROR "nm not found (required for the break_update export gate)")
@@ -188,6 +189,7 @@ set(expected_symbols
     break_update_manifest_version
     break_update_rollout_admits
     break_update_rollout_bucket
+    break_update_rollout_listed
     break_update_store_destroy
     break_update_store_get_chunk
     break_update_store_has_chunk
@@ -218,7 +220,7 @@ set(expected_sorted ${expected_symbols})
 list(SORT expected_sorted)
 if(NOT actual_symbols STREQUAL expected_sorted)
     message(FATAL_ERROR
-        "libbreak_update.a must export exactly the 31 public symbols.\n"
+        "libbreak_update.a must export exactly the 32 public symbols.\n"
         "expected: ${expected_sorted}\nactual: ${actual_symbols}")
 endif()
 

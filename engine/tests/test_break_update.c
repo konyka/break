@@ -829,6 +829,41 @@ TEST(rollout_bucket_is_deterministic_bounded_and_uniform)
     }
 }
 
+/* Allow-list ("白名单"): a newline-separated list of device ids (LF, an
+ * optional trailing LF, blank lines ignored) admits a listed device ahead of
+ * the share. Matching is exact and whole-line; malformed lists (a line over
+ * the id cap, a CR, total over 64 KiB) are rejected, never half-read. */
+TEST(rollout_allow_list_exact_whole_line_match)
+{
+    static const char list[] = "qa-device-1\nbeta-tester-7\n\nlab-3";
+    bool listed = true;
+    char big[130];
+    ASSERT_TRUE(break_update_rollout_listed("beta-tester-7", list, sizeof(list) - 1u, &listed));
+    ASSERT_TRUE(listed);
+    ASSERT_TRUE(break_update_rollout_listed("lab-3", list, sizeof(list) - 1u, &listed));
+    ASSERT_TRUE(listed);
+    /* prefixes, suffixes and substrings do not match */
+    ASSERT_TRUE(break_update_rollout_listed("beta-tester", list, sizeof(list) - 1u, &listed));
+    ASSERT_FALSE(listed);
+    ASSERT_TRUE(break_update_rollout_listed("beta-tester-77", list, sizeof(list) - 1u, &listed));
+    ASSERT_FALSE(listed);
+    ASSERT_TRUE(break_update_rollout_listed("qa", list, sizeof(list) - 1u, &listed));
+    ASSERT_FALSE(listed);
+    /* empty list: valid, nobody listed */
+    ASSERT_TRUE(break_update_rollout_listed("lab-3", "", 0u, &listed));
+    ASSERT_FALSE(listed);
+    /* malformed: CR, over-long line, invalid device id */
+    ASSERT_FALSE(break_update_rollout_listed("lab-3", "lab-3\r\n", 7u, &listed));
+    memset(big, 'x', sizeof(big) - 1u);
+    big[sizeof(big) - 1u] = '\0';
+    ASSERT_FALSE(break_update_rollout_listed("lab-3", big, sizeof(big) - 1u, &listed));
+    ASSERT_FALSE(break_update_rollout_listed("", list, sizeof(list) - 1u, &listed));
+    ASSERT_FALSE(break_update_rollout_listed("lab-3", NULL, 4u, &listed));
+    ASSERT_FALSE(break_update_rollout_listed("lab-3", list, sizeof(list) - 1u, NULL));
+    ASSERT_FALSE(break_update_rollout_listed("lab-3", list,
+                                             BREAK_UPDATE_ROLLOUT_LIST_MAX + 1u, &listed));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(golden_parse_accessors_verify);
     RUN_TEST(tamper_body_verify_false);
@@ -850,4 +885,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(store_size_limit_and_bad_args);
     RUN_TEST(store_name_charset_rejected);
     RUN_TEST(rollout_bucket_is_deterministic_bounded_and_uniform);
+    RUN_TEST(rollout_allow_list_exact_whole_line_match);
 TEST_MAIN_END()

@@ -591,3 +591,28 @@ bool break_update_rollout_admits(u32 bucket, u32 percent_bp) {
     }
     return bucket < percent_bp;
 }
+
+bool break_update_rollout_listed(const char *device_id, const char *list, usize len,
+                                 bool *out_listed) {
+    usize id_len, pos = 0u;
+    bool found = false;
+    if (device_id == NULL || out_listed == NULL || (list == NULL && len > 0u) ||
+        len > BREAK_UPDATE_ROLLOUT_LIST_MAX) {
+        return false;
+    }
+    id_len = strlen(device_id);
+    if (id_len == 0u || id_len > BREAK_UPDATE_ROLLOUT_DEVICE_ID_MAX) return false;
+    /* validate the whole list first: a malformed list is never half-applied */
+    while (pos < len) {
+        usize end = pos;
+        while (end < len && list[end] != '\n') {
+            if (list[end] == '\r') return false;
+            end++;
+        }
+        if (end - pos > BREAK_UPDATE_ROLLOUT_DEVICE_ID_MAX) return false;
+        if (end - pos == id_len && memcmp(list + pos, device_id, id_len) == 0) found = true;
+        pos = end + 1u;
+    }
+    *out_listed = found;
+    return true;
+}

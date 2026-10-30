@@ -106,6 +106,17 @@ bool break_update_manifest_compatible(const BreakUpdateManifest *m, const char *
 bool break_update_rollout_bucket(const char *device_id, const u32 version[3],
                                  u32 *out_bucket);
 bool break_update_rollout_admits(u32 bucket, u32 percent_bp);
+/* Allow-list (QA / beta devices that take a release ahead of the share).
+ * list: LF-separated device ids (len bytes, NOT NUL-terminated; optional
+ * trailing LF; blank lines ignored; ≤ BREAK_UPDATE_ROLLOUT_LIST_MAX bytes).
+ * *out_listed = whether device_id equals one whole line, byte-exactly.
+ * false (out untouched) for an invalid device_id, NULL list with len > 0,
+ * NULL out, len over the cap, a CR anywhere, or a line longer than
+ * BREAK_UPDATE_ROLLOUT_DEVICE_ID_MAX — a malformed list is never
+ * half-applied. Like the share, the list must come from authenticated data. */
+#define BREAK_UPDATE_ROLLOUT_LIST_MAX (64u * 1024u)
+bool break_update_rollout_listed(const char *device_id, const char *list, usize len,
+                                 bool *out_listed);
 
 /* Content-addressed store: <root>/chunks/<sha256hex>; manifest files via caller's own pathing.
  * put: name must be the sha256-hex of data (recomputed); atomic writer; size ≤ 128 MiB.
