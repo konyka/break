@@ -747,6 +747,20 @@ gate 按平台跳过。
 graphics **6/6**，MoltenVK **232/232**，仅 D3D12 dependency gate 按平台跳过。Windows 的
 `%APPDATA%` 路径与盘符场景未在本机验证。证据等级不变。
 
+2026-10-30 定时复核：从 `@cb42e226` 快进到 `@a075088c`（108 个远程提交，177 个文件：编辑器
+多选/复制/框选/网格/视角快捷键/场景管理、`editor remote` 密钥环与 SAVE/LOAD/CAMERA_SET、
+更新清单与灰度、locale 无关的数字解析、跨平台 CI 修复等），无冲突、无本地改动。Metal CTest
+**237/237**、graphics **6/6**（含 5 个 fuzz 目标构建），MoltenVK **238/238**，仅 D3D12
+dependency gate 按平台跳过，构建无 error/warning（除已知的 duplicate libraries 提示）。
+`engine_demo` 机位 `BREAK_CAM=0,9,16,0,-25 BREAK_UI=0 BREAK_SCREENSHOT=60` 两后端截图目视
+确认：朝向正确、地形/角色/UI 均可见；同步前 `cb42e226` 的 MoltenVK 对照 mad **0.35**，
+Metal 与 MoltenVK 互相 mad **1.09**，平均 RGB 一致。`BREAK_EDITOR_INPUT_SCRIPT=ON` 编辑器
+脚本（Metal，`BREAK_EDITOR_SETTINGS` 指向临时文件）：添加两个实体、`Ctrl+A` 选中 2 个、
+`Ctrl+D` 复制为 4 个、`Home` 与 `1`，全部 expect 通过（退出码 0），截图中统计浮层
+（Entities 4 / Selected 2）、资源过滤框、工具窗口标签页、前视图均正常。未发现回归，本次无
+代码修改；`editor remote` 密钥环、更新清单工具等没有 macOS 实机场景，只有自动化测试覆盖。
+证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
