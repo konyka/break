@@ -73,11 +73,13 @@ static int kg_lower_eq(const char *a, const char *b, size_t n) {
 }
 
 /* Validates the existing keyring and counts keys; fails on a duplicate id. */
-static int kg_scan_ring(const char *path, const char *id, unsigned *count) {
+static int kg_scan_ring(const char *path, const char *id, unsigned *count,
+                        int *needs_lf) {
     char text[KG_MAX_RING + 2u];
     size_t n, pos = 0u;
     FILE *f = fopen(path, "rb");
     *count = 0u;
+    *needs_lf = 0;
     if (f == NULL) {
         return errno == ENOENT ? 1 : 0; /* missing = empty ring */
     }
@@ -88,6 +90,7 @@ static int kg_scan_ring(const char *path, const char *id, unsigned *count) {
         kg_wipe(text, sizeof(text));
         return 0;
     }
+    *needs_lf = n > 0u && text[n - 1u] != '\n';
     while (pos < n) {
         size_t end = pos, len;
         while (end < n && text[end] != '\n') end++;
@@ -133,6 +136,7 @@ int main(int argc, char **argv) {
     unsigned char psk[32];
     char line[16u + 1u + 64u + 1u];
     unsigned count = 0u;
+    int needs_lf = 0;
     int fd, ok;
     size_t i;
     if (argc != 4) {
@@ -144,7 +148,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "break_keygen: key id must be 16 hex digits\n");
         return 2;
     }
-    if (!kg_scan_ring(argv[1], argv[2], &count)) {
+    if (!kg_scan_ring(argv[1], argv[2], &count, &needs_lf)) {
         return 1;
     }
     if (!break_crypto_random(psk, sizeof(psk))) {
@@ -178,7 +182,10 @@ int main(int argc, char **argv) {
     line[81] = '\n';
     kg_wipe(psk, sizeof(psk));
     fd = KG_OPEN(argv[1], KG_APPEND, KG_MODE);
-    ok = fd >= 0 && kg_write_all(fd, line, sizeof(line));
+    /* a hand-edited ring may lack the final LF: terminate it first so the
+     * new key never merges into the previous line */
+    ok = fd >= 0 && (!needs_lf || kg_write_all(fd, "\n", 1u)) &&
+         kg_write_all(fd, line, sizeof(line));
     if (fd >= 0 && KG_CLOSE(fd) != 0) ok = 0;
     kg_wipe(line, sizeof(line));
     if (!ok) {

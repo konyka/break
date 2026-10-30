@@ -84,5 +84,16 @@ foreach(i 3 4 5 6 7 8)
     keygen(TRUE "${RING}" 646576696365300${i} "${WORK}/d${i}.psk")
 endforeach()
 keygen(FALSE "${RING}" 6465766963653039 "${WORK}/d9.psk")
+
+# a hand-edited keyring whose last line has no trailing LF must not merge
+# with the appended key
+set(RING2 "${WORK}/ring2.txt")
+file(WRITE "${RING2}" "6465766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+keygen(TRUE "${RING2}" 6465766963653032 "${WORK}/n2.psk")
+file(STRINGS "${RING2}" lines2)
+list(LENGTH lines2 n2)
+if(NOT n2 EQUAL 2)
+    message(FATAL_ERROR "append after a missing trailing LF merged lines: ${lines2}")
+endif()
 file(REMOVE_RECURSE "${WORK}")
 message(STATUS "break_keygen OK")
