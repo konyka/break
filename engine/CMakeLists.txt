@@ -624,6 +624,18 @@ set_property(TARGET break_authority PROPERTY C_STANDARD 11)
 target_include_directories(break_authority PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# Stage 5 subproject 3, server side — break_crash_symbolize: ELF symbol reading
+# and frame recovery for crash records (docs/design/crash_symbolization.md).
+# Server/dev tool library (reads symbol files from disk, treats them as hostile);
+# never linked into engine, engine_demo, dxx_break or editor. POSIX/Linux ELF only.
+if(BREAK_ENABLE_CRASH AND UNIX AND NOT APPLE)
+    add_library(break_crash_symbolize STATIC src/crash/break_crash_symbolize.c)
+    set_property(TARGET break_crash_symbolize PROPERTY C_STANDARD 11)
+    target_include_directories(break_crash_symbolize PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_crash_symbolize PUBLIC break_crash)
+endif()
+
 # Formal optional replication libraries. These are intentionally independent of
 # engine and Snowflake: consumers opt in and own the transport/session boundary.
 add_library(break_ecs_replication STATIC
@@ -5561,6 +5573,17 @@ endif()
     set_tests_properties(test_break_replay_window PROPERTIES LABELS "headless;network")
 
     # test_break_msg_rate: per-connection message/byte token buckets.
+    if(TARGET break_crash_symbolize)
+        add_executable(test_break_crash_symbolize tests/test_break_crash_symbolize.c
+            src/platform/platform_fs.c src/core/break_version.c)
+        target_include_directories(test_break_crash_symbolize PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_crash_symbolize PRIVATE BREAK_TEST_CC="${CMAKE_C_COMPILER}"
+            BREAK_TEST_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src" BREAK_BUILD_ID="${BREAK_BUILD_ID}")
+        target_link_libraries(test_break_crash_symbolize PRIVATE break_crash_symbolize)
+        add_test(NAME test_break_crash_symbolize COMMAND test_break_crash_symbolize)
+        set_tests_properties(test_break_crash_symbolize PROPERTIES LABELS "headless;security;crash" TIMEOUT 180)
+    endif()
+
     if(BREAK_ENABLE_CRYPTO AND TARGET break_http)
         add_executable(test_break_http tests/test_break_http.c)
         target_include_directories(test_break_http PRIVATE ${TEST_INCLUDE_DIRS})
