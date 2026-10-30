@@ -2411,12 +2411,13 @@ if(ENGINE_BUILD_TESTS)
     set_tests_properties(test_packer_roundtrip PROPERTIES LABELS "headless;asset")
 endif()
 
-# OFFLINE release tooling for signed update manifests (keygen/build/sign).
+# OFFLINE release tooling for signed update manifests (keygen/build/sign);
+# POSIX only (directory walk via dirent/lstat; the release machine is Unix).
 # The signing tool links OpenSSL directly — break_crypto stays verify-only
 # ("client verifies only", security_threat_model.md §4) — and never links
 # into a runtime binary. break_manifest_verify drives the CLIENT verifier
 # (break_update) so the end-to-end test proves tool output == client input.
-if(BREAK_ENABLE_CRYPTO AND TARGET break_update)
+if(BREAK_ENABLE_CRYPTO AND TARGET break_update AND NOT WIN32)
     add_executable(break_manifest_tool tools/break_manifest_tool.c)
     target_link_libraries(break_manifest_tool PRIVATE OpenSSL::Crypto)
     add_executable(break_manifest_verify tools/break_manifest_verify.c src/platform/platform_fs.c)

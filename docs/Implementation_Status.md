@@ -6,12 +6,14 @@
   1. `test_break_lua_ecs_apply` 使用了 `strdup`，在 Windows Clang 下触发 `-Werror` 弃用告警；
   2. MSVC 报 `editor_panels.c` 中的 C4456（内层 `i` 遮蔽外层）；
   3. MinGW 上 `vfs_pak_write` 用 ISO `rename()` 覆盖已有目标失败，`test_vfs` 和 `test_editor_shell` 中写 pak 的用例因此失败；
-  4. macOS 上 `test_break_keygen` 用了 GNU 独有的 `stat -c`。
+  4. macOS 上 `test_break_keygen` 用了 GNU 独有的 `stat -c`；
+  5. windows-d3d12 构建 `break_manifest_tool` 时缺少 `dirent.h`。
 - **修复**：
   1. 改用 malloc + memcpy 复制字符串；
   2. 内层循环变量改名为 `x` 和 `h`；
   3. `vfs_pak_write` 在 `_WIN32` 下改用 `MoveFileExA(..., MOVEFILE_REPLACE_EXISTING)`，与 packer 的写法一致；
-  4. keygen 和 manifest_tool 两个 CMake 测试改用 `ls -l` 匹配 `-rw-------`。
+  4. keygen 和 manifest_tool 两个 CMake 测试改用 `ls -l` 匹配 `-rw-------`；
+  5. manifest 工具改为只在非 Windows 平台构建（`NOT WIN32`）。
 - **验证**：本地默认树只剩已知的 x11 失败；本机没有 Windows 和 macOS 工具链，Windows/macOS 上的结果以下一次 CI 为准。
 
 ## 本轮更新：灰度分桶接入 stage（2026-10-30）
