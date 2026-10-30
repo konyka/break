@@ -34,6 +34,7 @@
 
 #include <editor/editor_i18n.h>
 #include "editor_viewport3d.h"
+#include "editor_scene_textures.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +47,7 @@
 #include "myui/widgets/my_label.h"
 #include "myui/widgets/my_list_view.h"
 
-#define EDITOR_RENDER_MAX_ROWS 16u
+#define EDITOR_RENDER_MAX_ROWS 32u
 #define EDITOR_RENDER_ROW_BYTES 96u
 #define EDITOR_RENDER_REFRESH_US 250000u /* 4 Hz */
 
@@ -121,8 +122,68 @@ static const char *init_name(int state) {
     }
 }
 
+static const char *texture_state_text(int state) {
+    switch (state) {
+    case BREAK_EDITOR_SCENE_TEXTURE_STATE_READY:
+        return break_editor_tr(BREAK_EDITOR_TR_TEXTURE_STATE_READY);
+    case BREAK_EDITOR_SCENE_TEXTURE_STATE_FAILED:
+        return break_editor_tr(BREAK_EDITOR_TR_TEXTURE_STATE_FAILED);
+    case BREAK_EDITOR_SCENE_TEXTURE_STATE_UNSAFE:
+        return break_editor_tr(BREAK_EDITOR_TR_TEXTURE_STATE_UNSAFE);
+    case BREAK_EDITOR_SCENE_TEXTURE_STATE_NO_BASE:
+        return break_editor_tr(BREAK_EDITOR_TR_TEXTURE_STATE_NO_BASE);
+    case BREAK_EDITOR_SCENE_TEXTURE_STATE_SKIPPED:
+        return break_editor_tr(BREAK_EDITOR_TR_TEXTURE_STATE_SKIPPED);
+    default:
+        return break_editor_tr(BREAK_EDITOR_TR_TEXTURE_STATE_PENDING);
+    }
+}
+
+/* Scene textures, appended after the fixed rows: a heading and one row per
+ * texture. Bounded by the row storage; names are cut to fit a row. */
+static void render_panel_append_textures(BreakEditorPanelRender *p,
+                                         const BreakEditorSceneTextures *textures) {
+    u32 count = break_editor_scene_textures_count(textures);
+    u32 i;
+    if (count == 0u) {
+        return;
+    }
+    if (p->row_count >= EDITOR_RENDER_MAX_ROWS) {
+        return;
+    }
+    if (count > BREAK_EDITOR_SCENE_TEXTURES_LOADED) {
+        (void)snprintf(p->rows[p->row_count++], EDITOR_RENDER_ROW_BYTES,
+                       break_editor_tr(BREAK_EDITOR_TR_TEXTURES_HEADER_MORE_FMT),
+                       (unsigned)count, (unsigned)BREAK_EDITOR_SCENE_TEXTURES_LOADED);
+    } else {
+        (void)snprintf(p->rows[p->row_count++], EDITOR_RENDER_ROW_BYTES,
+                       break_editor_tr(BREAK_EDITOR_TR_TEXTURES_HEADER_FMT),
+                       (unsigned)count);
+    }
+    for (i = 0u; i < count && p->row_count < EDITOR_RENDER_MAX_ROWS; i++) {
+        BreakEditorSceneTextureInfo info;
+        const char *state;
+        if (!break_editor_scene_textures_info(textures, i, &info)) {
+            break;
+        }
+        state = texture_state_text(info.state);
+        if (info.width != 0u && info.height != 0u) {
+            (void)snprintf(p->rows[p->row_count], EDITOR_RENDER_ROW_BYTES,
+                           break_editor_tr(BREAK_EDITOR_TR_TEXTURE_ROW_FMT),
+                           info.path, (unsigned)info.width, (unsigned)info.height,
+                           state);
+        } else {
+            (void)snprintf(p->rows[p->row_count], EDITOR_RENDER_ROW_BYTES,
+                           break_editor_tr(BREAK_EDITOR_TR_TEXTURE_ROW_NOSIZE_FMT),
+                           info.path, state);
+        }
+        p->row_count++;
+    }
+}
+
 static void render_panel_refresh(BreakEditorPanelRender *p,
-                                 const BreakEditorViewport3D *vp) {
+                                 const BreakEditorViewport3D *vp,
+                                 const BreakEditorSceneTextures *textures) {
     const BreakEditorRenderSource *s = p->source != NULL ? p->source : &k_rhi_source;
     RHIDeviceInfo info;
     RHICapabilities caps;
@@ -205,13 +266,15 @@ static void render_panel_refresh(BreakEditorPanelRender *p,
         }
         p->row_count = 9u;
     }
+    render_panel_append_textures(p, textures);
     if (p->list != NULL) {
         (void)my_list_view_refresh(p->list);
     }
 }
 
 void editor_panel_render_tick(BreakEditorPanelRender *p,
-                              const BreakEditorViewport3D *vp) {
+                              const BreakEditorViewport3D *vp,
+                              const BreakEditorSceneTextures *textures) {
     u64 now;
     if (p == NULL) {
         return;
@@ -220,7 +283,13 @@ void editor_panel_render_tick(BreakEditorPanelRender *p,
     if (p->force_refresh || now - p->last_refresh_us >= EDITOR_RENDER_REFRESH_US) {
         p->force_refresh = false;
         p->last_refresh_us = now;
-        render_panel_refresh(p, vp);
+        render_panel_refresh(p, vp, textures);
+    }
+}
+
+void editor_panel_render_invalidate(BreakEditorPanelRender *p) {
+    if (p != NULL) {
+        p->force_refresh = true;
     }
 }
 

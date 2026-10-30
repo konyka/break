@@ -401,12 +401,44 @@ TEST(malformed_resources_chunks_yield_nothing) {
     ASSERT_EQ(parse_raw(&b, BSCN_VERSION_V2, &mat_total), 0u);
 }
 
+TEST(make_absolute_joins_relative_scene_paths_with_the_working_directory) {
+    char out[128];
+    ASSERT_TRUE(break_editor_scene_texture_make_absolute("/abs/level.bscn", "/cwd", out, sizeof(out)));
+    ASSERT_STR_EQ(out, "/abs/level.bscn");
+    ASSERT_TRUE(break_editor_scene_texture_make_absolute("level.bscn", "/cwd", out, sizeof(out)));
+    ASSERT_STR_EQ(out, "/cwd/level.bscn");
+    ASSERT_TRUE(break_editor_scene_texture_make_absolute("./a/./level.bscn", "/cwd", out, sizeof(out)));
+    ASSERT_STR_EQ(out, "/cwd/a/./level.bscn"); /* only leading ./ are dropped */
+    ASSERT_TRUE(break_editor_scene_texture_make_absolute("level.bscn", "/cwd/", out, sizeof(out)));
+    ASSERT_STR_EQ(out, "/cwd/level.bscn");
+    ASSERT_TRUE(break_editor_scene_texture_make_absolute("../up/level.bscn", "/cwd/sub", out, sizeof(out)));
+    ASSERT_STR_EQ(out, "/cwd/sub/../up/level.bscn"); /* the scene path itself is trusted */
+    ASSERT_TRUE(break_editor_scene_texture_make_absolute("level.bscn", "/", out, sizeof(out)));
+    ASSERT_STR_EQ(out, "/level.bscn");
+    ASSERT_TRUE(break_editor_scene_texture_make_absolute("scenes/level.bscn", "/proj", out, sizeof(out)));
+    {
+        char tex[128];
+        ASSERT_TRUE(break_editor_scene_texture_resolve(out, "a.png", tex, sizeof(tex)));
+        ASSERT_STR_EQ(tex, "/proj/scenes/a.png");
+    }
+    ASSERT_FALSE(break_editor_scene_texture_make_absolute("level.bscn", "cwd", out, sizeof(out)));
+    ASSERT_FALSE(break_editor_scene_texture_make_absolute("level.bscn", "", out, sizeof(out)));
+    ASSERT_FALSE(break_editor_scene_texture_make_absolute("level.bscn", NULL, out, sizeof(out)));
+    ASSERT_FALSE(break_editor_scene_texture_make_absolute("", "/cwd", out, sizeof(out)));
+    ASSERT_FALSE(break_editor_scene_texture_make_absolute(NULL, "/cwd", out, sizeof(out)));
+    ASSERT_FALSE(break_editor_scene_texture_make_absolute("level.bscn", "/cwd", NULL, 0));
+    ASSERT_FALSE(break_editor_scene_texture_make_absolute("level.bscn", "/cwd", out, strlen("/cwd/level.bscn")));
+    ASSERT_TRUE(break_editor_scene_texture_make_absolute("level.bscn", "/cwd", out, strlen("/cwd/level.bscn") + 1u));
+    ASSERT_FALSE(break_editor_scene_texture_make_absolute("/abs/level.bscn", "/cwd", out, 4));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(parse_reads_textures_and_material_links_from_a_real_bscn);
     RUN_TEST(parse_without_resources_or_with_null_args_is_zero);
     RUN_TEST(parse_truncates_to_the_caller_capacity_without_overflow);
     RUN_TEST(path_ok_accepts_relative_names_and_rejects_everything_else);
     RUN_TEST(resolve_joins_against_the_scene_directory);
+    RUN_TEST(make_absolute_joins_relative_scene_paths_with_the_working_directory);
     RUN_TEST(older_layouts_parse_without_material_links);
     RUN_TEST(path_longer_than_63_is_cut_like_the_game_loader_and_stays_in_bounds);
     RUN_TEST(malformed_resources_chunks_yield_nothing);

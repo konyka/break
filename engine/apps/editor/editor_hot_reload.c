@@ -226,6 +226,7 @@ static BreakRuntimeError hr_commit(const char *path, const void *bytes,
     hr->known_hash = h;
     hr->stats.reloads++;
     hr->outcome = HR_OUT_APPLIED;
+    editor_shell_sync_scene_textures(shell);
     editor_shell_refresh_all(shell);
     hr_log(hr, break_editor_tr(BREAK_EDITOR_TR_LOG_HR_RELOADED_FMT), hr->name,
            (unsigned)break_editor_doc_entity_count(doc));

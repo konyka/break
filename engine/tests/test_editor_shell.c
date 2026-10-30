@@ -10137,6 +10137,182 @@ TEST(scene_textures_headless_then_device_and_bounded_shutdown)
     editor_rhi_fake_reset();
 }
 
+
+/* The render debugger lists the scene's textures after its fixed rows:
+ * "textures: N" (+ "(only the first 8 are loaded)" past the limit) and one
+ * row per texture: name WxH state, in the current language. */
+static u32 shell_row_index_of(BreakEditorShell *shell, const char *needle)
+{
+    u32 n = break_editor_shell_render_row_count(shell);
+    for (u32 i = 0u; i < n; i++) {
+        const char *t = break_editor_shell_render_row_text(shell, i);
+        if (t != NULL && strstr(t, needle) != NULL) return i;
+    }
+    return 0xffffffffu;
+}
+
+static void shell_textures_scratch_scene(SceneTexFixture *fx, const char *const *uris, u32 n)
+{
+    BreakEditorDoc *scratch = scenetex_make_doc(fx->scene, uris, n);
+    ASSERT_NOT_NULL(scratch);
+    break_editor_doc_destroy(scratch);
+}
+
+static void shell_textures_cleanup(SceneTexFixture *fx, const char *const *files, u32 nfiles)
+{
+    char side[820];
+    snprintf(side, sizeof(side), "%s.editor.json", fx->scene);
+    remove(side);
+    scenetex_close(fx, files, nfiles);
+}
+
+TEST(render_panel_lists_scene_textures_with_state_and_follows_hot_reload)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    SceneTexFixture fx;
+    static const char *const uris[2] = {"tex0.png", "../evil.png"};
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    ASSERT_NOT_NULL(shell);
+    scenetex_open(&fx, "editor_scene_textures_panel");
+    scenetex_png(&fx, "tex0.png", 4, 4, 40u);
+    shell_textures_scratch_scene(&fx, uris, 2u);
+    g_render_clock_us = UINT64_C(1000000);
+    break_editor_shell_set_render_clock_for_test(shell, render_test_clock, NULL);
+    break_editor_shell_set_render_source_for_test(shell, &k_render_fake_source);
+    break_editor_shell_set_render_device(shell, (RHIDevice *)&g_render_fake_device);
+    ASSERT_TRUE(break_editor_shell_open_scene(shell, fx.scene));
+    for (int i = 0; i < 400 && shell_row_index_of(shell, "tex0.png 4x4 ready") == 0xffffffffu; i++) {
+        break_editor_shell_tick(shell);
+        g_render_clock_us += 300000u;
+        time_sleep_us(2000u);
+    }
+    ASSERT_TRUE(shell_row_index_of(shell, "textures: 2") != 0xffffffffu);
+    ASSERT_TRUE(shell_row_index_of(shell, "tex0.png 4x4 ready") != 0xffffffffu);
+    ASSERT_TRUE(shell_row_index_of(shell, "../evil.png unsafe path") != 0xffffffffu);
+    for (u32 i = 0u; i < break_editor_shell_render_row_count(shell); i++) {
+        ASSERT_TRUE(strlen(break_editor_shell_render_row_text(shell, i)) < 96u);
+    }
+
+    /* editing the file updates the row */
+    scenetex_png(&fx, "tex0.png", 6, 6, 200u);
+    for (int i = 0; i < 400 && shell_row_index_of(shell, "tex0.png 6x6 ready") == 0xffffffffu; i++) {
+        break_editor_shell_tick(shell);
+        g_render_clock_us += 300000u;
+        time_sleep_us(2000u);
+    }
+    ASSERT_TRUE(shell_row_index_of(shell, "tex0.png 6x6 ready") != 0xffffffffu);
+
+    /* the language follows */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    g_render_clock_us += 300000u;
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(shell_row_index_of(shell, "纹理：2") != 0xffffffffu);
+    ASSERT_TRUE(shell_row_index_of(shell, "tex0.png 6x6（就绪）") != 0xffffffffu);
+    ASSERT_TRUE(shell_row_index_of(shell, "../evil.png（路径不安全）") != 0xffffffffu);
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+
+    break_editor_shell_set_render_device(shell, NULL);
+    break_editor_shell_destroy(shell);
+    shell_textures_cleanup(&fx, (const char *const[]){"tex0.png"}, 1u);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+/* A texture change refreshes the debugger rows on the very next tick, not
+ * after the 4 Hz timer: the clock is frozen, so only the revision signal can
+ * redraw them. */
+TEST(render_panel_texture_change_refreshes_without_waiting_for_the_timer)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    SceneTexFixture fx;
+    static const char *const uris[1] = {"tex0.png"};
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    ASSERT_NOT_NULL(shell);
+    scenetex_open(&fx, "editor_scene_textures_frozen");
+    scenetex_png(&fx, "tex0.png", 4, 4, 40u);
+    shell_textures_scratch_scene(&fx, uris, 1u);
+    g_render_clock_us = UINT64_C(5000000);
+    break_editor_shell_set_render_clock_for_test(shell, render_test_clock, NULL);
+    break_editor_shell_set_render_source_for_test(shell, &k_render_fake_source);
+    break_editor_shell_set_render_device(shell, (RHIDevice *)&g_render_fake_device);
+    ASSERT_TRUE(break_editor_shell_open_scene(shell, fx.scene));
+    for (int i = 0; i < 400 && shell_row_index_of(shell, "tex0.png 4x4 ready") == 0xffffffffu; i++) {
+        break_editor_shell_tick(shell);
+        time_sleep_us(2000u);
+    }
+    ASSERT_TRUE(shell_row_index_of(shell, "tex0.png 4x4 ready") != 0xffffffffu);
+    scenetex_png(&fx, "tex0.png", 7, 3, 99u);
+    for (int i = 0; i < 400 && shell_row_index_of(shell, "tex0.png 7x3 ready") == 0xffffffffu; i++) {
+        break_editor_shell_tick(shell);
+        time_sleep_us(2000u);
+    }
+    ASSERT_TRUE(shell_row_index_of(shell, "tex0.png 7x3 ready") != 0xffffffffu);
+    break_editor_shell_set_render_device(shell, NULL);
+    break_editor_shell_destroy(shell);
+    shell_textures_cleanup(&fx, (const char *const[]){"tex0.png"}, 1u);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+TEST(new_scene_drops_the_scene_textures)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    SceneTexFixture fx;
+    static const char *const uris[1] = {"tex0.png"};
+    EditorRhiFakeStats fake;
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    ASSERT_NOT_NULL(shell);
+    scenetex_open(&fx, "editor_scene_textures_newscene");
+    scenetex_png(&fx, "tex0.png", 4, 4, 40u);
+    shell_textures_scratch_scene(&fx, uris, 1u);
+    g_render_clock_us = UINT64_C(1000000);
+    break_editor_shell_set_render_clock_for_test(shell, render_test_clock, NULL);
+    break_editor_shell_set_render_source_for_test(shell, &k_render_fake_source);
+    break_editor_shell_set_render_device(shell, (RHIDevice *)&g_render_fake_device);
+    ASSERT_TRUE(break_editor_shell_open_scene(shell, fx.scene));
+    for (int i = 0; i < 400 && shell_row_index_of(shell, "tex0.png 4x4 ready") == 0xffffffffu; i++) {
+        break_editor_shell_tick(shell);
+        g_render_clock_us += 300000u;
+        time_sleep_us(2000u);
+    }
+    ASSERT_TRUE(shell_row_index_of(shell, "textures: 1") != 0xffffffffu);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.live_textures, 1u);
+    /* a scene loaded without a sidecar is dirty (generated names), so Ctrl+N
+     * warns first and a repeat discards, like the existing guard */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'n', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'n', MY_KEYMOD_CTRL));
+    g_render_clock_us += 300000u;
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(shell_row_index_of(shell, "textures:") == 0xffffffffu);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.live_textures, 0u);
+    break_editor_shell_set_render_device(shell, NULL);
+    break_editor_shell_destroy(shell);
+    shell_textures_cleanup(&fx, (const char *const[]){"tex0.png"}, 1u);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+TEST(render_panel_without_scene_textures_keeps_its_nine_rows)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    g_render_clock_us = UINT64_C(1000000);
+    g_render_fake_lost = 0;
+    break_editor_shell_set_render_clock_for_test(shell, render_test_clock, NULL);
+    break_editor_shell_set_render_source_for_test(shell, &k_render_fake_source);
+    break_editor_shell_set_render_device(shell, (RHIDevice *)&g_render_fake_device);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_render_row_count(shell), 9u);
+    ASSERT_TRUE(shell_row_index_of(shell, "textures:") == 0xffffffffu);
+    break_editor_shell_set_render_device(shell, NULL);
+    break_editor_shell_destroy(shell);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shell_create_and_destroy);
     RUN_TEST(scene_textures_load_list_and_hot_reload);
@@ -10146,6 +10322,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scene_textures_more_than_eight_are_listed_and_only_eight_load);
     RUN_TEST(scene_textures_set_scene_keeps_surviving_textures_and_drops_the_rest);
     RUN_TEST(scene_textures_headless_then_device_and_bounded_shutdown);
+    RUN_TEST(render_panel_lists_scene_textures_with_state_and_follows_hot_reload);
+    RUN_TEST(render_panel_texture_change_refreshes_without_waiting_for_the_timer);
+    RUN_TEST(new_scene_drops_the_scene_textures);
+    RUN_TEST(render_panel_without_scene_textures_keeps_its_nine_rows);
     RUN_TEST(i18n_shell_created_in_chinese_shows_chinese_text);
     RUN_TEST(i18n_palette_switches_language_at_runtime);
     RUN_TEST(i18n_set_language_api_is_bounded);

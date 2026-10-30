@@ -204,3 +204,37 @@ bool break_editor_scene_texture_resolve(const char *scene_path, const char *uri,
     memcpy(out + dir_len, uri, uri_len + 1u);
     return true;
 }
+
+bool break_editor_scene_texture_make_absolute(const char *path, const char *cwd,
+                                              char *out, usize cap) {
+    usize path_len, cwd_len;
+    if (!path || !out || cap == 0u || path[0] == '\0') return false;
+    if (path_is_absolute(path)) {
+        path_len = strlen(path);
+        if (path_len + 1u > cap) return false;
+        memcpy(out, path, path_len + 1u);
+        return true;
+    }
+    if (!cwd || cwd[0] == '\0' || !path_is_absolute(cwd)) return false;
+    while (path[0] == '.' && (path[1] == '/' || path[1] == '\\')) {
+        path += 2;
+        while (path[0] == '/' || path[0] == '\\') path++;
+    }
+    if (path[0] == '\0') return false;
+    path_len = strlen(path);
+    cwd_len = strlen(cwd);
+    while (cwd_len > 1u && (cwd[cwd_len - 1u] == '/' || cwd[cwd_len - 1u] == '\\')) {
+        cwd_len--; /* "/cwd/" -> "/cwd"; a bare "/" keeps its slash */
+    }
+    if (cwd_len == 1u && (cwd[0] == '/' || cwd[0] == '\\')) {
+        if (1u + path_len + 1u > cap) return false;
+        out[0] = cwd[0];
+        memcpy(out + 1, path, path_len + 1u);
+        return true;
+    }
+    if (cwd_len + 1u + path_len + 1u > cap) return false;
+    memcpy(out, cwd, cwd_len);
+    out[cwd_len] = '/';
+    memcpy(out + cwd_len + 1u, path, path_len + 1u);
+    return true;
+}

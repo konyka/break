@@ -9,6 +9,7 @@
 #include "editor_remote.h"
 #include "editor_hot_reload.h"
 #include "editor_settings.h"
+#include "editor_scene_textures.h"
 #include "editor_theme.h"
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
@@ -162,6 +163,10 @@ struct BreakEditorShell {
 
     /* editor asset hot reload (BORROWED — host-owned, DEFAULT OFF) */
     BreakEditorHotReload *hot_reload;
+
+    /* textures named by the loaded scene, followed on disk (owned) */
+    BreakEditorSceneTextures *scene_textures;
+    u64 scene_textures_rev; /* last revision reflected in the render panel */
 
     /* tool-window tab areas (0 bottom, 1 diagnostics): active page index
      * and the click contexts of their tab buttons */
@@ -2162,6 +2167,32 @@ bool break_editor_shell_set_language(BreakEditorShell *shell,
     return true;
 }
 
+#ifdef _WIN32
+#include <direct.h>
+#define SHELL_GETCWD _getcwd
+#else
+#include <unistd.h>
+#define SHELL_GETCWD getcwd
+#endif
+
+void editor_shell_sync_scene_textures(BreakEditorShell *shell) {
+    char abs_path[BREAK_EDITOR_SCENE_PATH_CAPACITY];
+    char cwd[BREAK_EDITOR_SCENE_PATH_CAPACITY];
+    const char *scene = NULL;
+    if (shell == NULL || shell->scene_textures == NULL) {
+        return;
+    }
+    cwd[0] = '\0';
+    if (shell->scene_path_set && SHELL_GETCWD(cwd, sizeof(cwd)) != NULL &&
+        break_editor_scene_texture_make_absolute(shell->scene_path, cwd, abs_path,
+                                                 sizeof(abs_path))) {
+        scene = abs_path;
+    }
+    (void)break_editor_scene_textures_set_scene(shell->scene_textures, shell->doc,
+                                                scene);
+    editor_panel_render_invalidate(shell->render_panel);
+}
+
 void editor_shell_refresh_all(BreakEditorShell *shell) {
     if (shell == NULL) {
         return;
@@ -2782,9 +2813,23 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
      * forwards later attaches to the panel */
     shell->network_panel = editor_panel_network_create(shell, NULL);
     shell->render_panel = editor_panel_render_create(shell);
+    shell->scene_textures = break_editor_scene_textures_create();
+    if (shell->scene_textures == NULL) {
+        editor_panel_render_destroy(shell->render_panel);
+        editor_panel_network_destroy(shell->network_panel);
+        editor_panel_profiler_destroy(shell->profiler_panel);
+        editor_panel_lua_destroy(shell->lua_panel);
+        editor_panel_assets_destroy(shell->assets_panel);
+        break_editor_viewport3d_destroy(shell->vp3d);
+        break_editor_gizmo_destroy(shell->gizmo);
+        break_editor_doc_destroy(shell->doc);
+        free(shell);
+        return NULL;
+    }
     if (shell->assets_panel == NULL || shell->lua_panel == NULL ||
         shell->profiler_panel == NULL || shell->network_panel == NULL ||
         shell->render_panel == NULL) {
+        break_editor_scene_textures_destroy(shell->scene_textures);
         editor_panel_render_destroy(shell->render_panel);
         editor_panel_network_destroy(shell->network_panel);
         editor_panel_profiler_destroy(shell->profiler_panel);
@@ -2805,6 +2850,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         if (shell->root != NULL) {
             (void)my_widget_remove_child(content, shell->root);
         }
+        break_editor_scene_textures_destroy(shell->scene_textures);
         editor_panel_render_destroy(shell->render_panel);
         editor_panel_network_destroy(shell->network_panel);
         editor_panel_profiler_destroy(shell->profiler_panel);
@@ -2911,6 +2957,15 @@ bool break_editor_shell_destroy(BreakEditorShell *shell) {
         return false;
     }
     shell->vp3d = NULL;
+    /* the scene-texture workers read files only, but their previews hold
+     * textures on the borrowed device: stop them with the other owners */
+    if (shell->scene_textures != NULL) {
+        if (!break_editor_scene_textures_shutdown(shell->scene_textures)) {
+            return false;
+        }
+        break_editor_scene_textures_destroy(shell->scene_textures);
+        shell->scene_textures = NULL;
+    }
     /* a still-attached remote (host destroyed the shell first) is orphaned
      * before anything is freed: it drops its back-pointer and its
      * doc-borrowing console, so its later destroy never reaches this shell */
@@ -3081,6 +3136,7 @@ bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
      * hot-reload object; the save target is still accepted */
     (void)break_editor_hot_reload_set_scene(shell->hot_reload,
                                             shell->scene_path);
+    editor_shell_sync_scene_textures(shell);
     return true;
 }
 
@@ -3169,6 +3225,7 @@ static void shell_do_new_scene(BreakEditorShell *shell) {
     shell->extra_count = 0u;
     shell->hidden_count = 0u;
     break_editor_viewport3d_set_hidden(shell->vp3d, NULL, 0u);
+    editor_shell_sync_scene_textures(shell);
     editor_shell_log(shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_NEW_SCENE));
     editor_shell_refresh_all(shell);
 }
@@ -3203,6 +3260,7 @@ bool editor_shell_load_scene(BreakEditorShell *shell, const char *path) {
         (void)break_editor_hot_reload_set_scene(shell->hot_reload,
                                                 shell->scene_path);
     }
+    editor_shell_sync_scene_textures(shell);
     /* world swap + undo-stack clear: refresh everything */
     editor_shell_refresh_all(shell);
     return true;
@@ -3436,13 +3494,22 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
      * before frame_begin, like the shader owner */
     break_editor_image_preview_tick(
         editor_panel_assets_preview(shell->assets_panel));
+    /* scene textures: same ordering rule; a change refreshes the debugger rows */
+    break_editor_scene_textures_tick(shell->scene_textures);
+    if (break_editor_scene_textures_revision(shell->scene_textures) !=
+        shell->scene_textures_rev) {
+        shell->scene_textures_rev =
+            break_editor_scene_textures_revision(shell->scene_textures);
+        editor_panel_render_invalidate(shell->render_panel);
+    }
     /* Phase 4 Task 3: the network view snapshots the attached remote at
      * <= 4 Hz (pure read — editor_panel_network.c); it runs BEFORE the
      * remote tick, so a refresh never observes a half-applied frame. */
     editor_panel_network_tick(shell->network_panel);
     /* render debugger: <= 4 Hz pure read of the borrowed device and the
      * viewport's last-render stats */
-    editor_panel_render_tick(shell->render_panel, shell->vp3d);
+    editor_panel_render_tick(shell->render_panel, shell->vp3d,
+                             shell->scene_textures);
     break_editor_viewport3d_tick(shell->vp3d);
     /* Phase 4 Task 1: the host-attached remote (DEFAULT OFF — the shell
      * never creates one; editor_main --remote / tests attach it via
@@ -3617,6 +3684,7 @@ void break_editor_shell_set_render_device(BreakEditorShell *shell,
     if (shell != NULL) {
         editor_panel_render_set_device(shell->render_panel, device);
         editor_panel_assets_set_device(shell->assets_panel, device);
+        break_editor_scene_textures_set_device(shell->scene_textures, device);
         if (device != NULL) {
             (void)break_editor_viewport3d_prepare(shell->vp3d, device);
         }

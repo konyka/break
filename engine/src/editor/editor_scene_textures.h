@@ -63,3 +63,11 @@ bool break_editor_scene_texture_path_ok(const char *path);
  * the result does not fit with its NUL. */
 bool break_editor_scene_texture_resolve(const char *scene_path, const char *uri,
                                         char *out, usize cap);
+
+/* Makes `path` absolute for resolve(): an absolute path is copied as is; a
+ * relative one is joined to `cwd` (which must itself be absolute), dropping
+ * leading "./" segments. The scene path comes from the user, so ".." in it
+ * is kept as typed. false when either is empty/NULL, cwd is not absolute, or
+ * the result does not fit with its NUL (nothing is truncated). */
+bool break_editor_scene_texture_make_absolute(const char *path, const char *cwd,
+                                              char *out, usize cap);

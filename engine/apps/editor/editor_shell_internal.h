@@ -37,6 +37,10 @@ typedef struct EditorPanelProfiler EditorPanelProfiler;
  * document mutation. */
 void editor_shell_log(BreakEditorShell *shell, const char *fmt, ...);
 void editor_shell_refresh_all(BreakEditorShell *shell);
+/* Re-points the scene-texture watcher at the document's RESOURCES chunk and
+ * the current scene path. Call after anything that replaces the document or
+ * changes where the scene lives (load, new, external reload, save-as). */
+void editor_shell_sync_scene_textures(BreakEditorShell *shell);
 
 /* Loads a .bscn scene file into the document and makes it the shell's scene
  * path (Ctrl+S target) and hot-reload target. The scene path and watcher are
@@ -133,8 +137,14 @@ struct BreakEditorViewport3D;
 BreakEditorPanelRender *editor_panel_render_create(BreakEditorShell *shell);
 void editor_panel_render_destroy(BreakEditorPanelRender *p);
 void editor_panel_render_build(BreakEditorPanelRender *p, my_widget_t *parent);
+struct BreakEditorSceneTextures;
+/* `textures` (optional) adds the scene-texture rows after the fixed ones;
+ * the panel only reads it. */
 void editor_panel_render_tick(BreakEditorPanelRender *p,
-                              const struct BreakEditorViewport3D *vp);
+                              const struct BreakEditorViewport3D *vp,
+                              const struct BreakEditorSceneTextures *textures);
+/* Marks the rows stale so the next tick rebuilds them (a texture changed). */
+void editor_panel_render_invalidate(BreakEditorPanelRender *p);
 void editor_panel_render_set_device(BreakEditorPanelRender *p, void *device);
 void editor_panel_render_set_source(BreakEditorPanelRender *p,
                                     const BreakEditorRenderSource *source);
