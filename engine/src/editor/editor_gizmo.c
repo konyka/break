@@ -46,6 +46,15 @@ typedef struct {
     u32 f_new[BREAK_EDITOR_GIZMO_MAX_FOLLOWERS][3];
 } BreakEditorGizmoCmd;
 
+static u32 gizmo_cmd_touched(const BreakEditorCmd *self, u32 *out, u32 cap) {
+    const BreakEditorGizmoCmd *c = (const BreakEditorGizmoCmd *)self;
+    u32 n = 0u;
+    if (cap < 1u + c->follower_count) return BREAK_EDITOR_TOUCH_ALL;
+    out[n++] = self->id.index;
+    for (u32 i = 0; i < c->follower_count; i++) out[n++] = c->follower[i].index;
+    return n;
+}
+
 struct BreakEditorGizmo {
     BreakEditorDoc *doc;            /* borrowed; NULL = detached */
     BreakEditorEntityId id;
@@ -478,6 +487,7 @@ bool break_editor_gizmo_begin_drag(BreakEditorGizmo *g,
     c->base.destroy = gizmo_cmd_destroy;
     c->base.describe = gizmo_cmd_describe;
     c->base.kind = BREAK_EDITOR_CMD_KIND_GIZMO_TRANSFORM;
+    c->base.touched = gizmo_cmd_touched;
     c->base.id = g->id;
     c->component_id = BREAK_EDITOR_COMPONENT_TRANSFORM;
 

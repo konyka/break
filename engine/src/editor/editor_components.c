@@ -256,6 +256,7 @@ static bool push_set_bits(BreakEditorDoc *doc, BreakEditorEntityId id,
     c->base.destroy = component_cmd_destroy;
     c->base.describe = describe;
     c->base.kind = BREAK_EDITOR_CMD_KIND_SET_FIELD_F32;
+    c->base.touched = break_editor_cmd_touch_base_id;
     c->base.id = id;
     c->component_id = reg->component_id;
     c->field_offset = field->offset;
@@ -391,6 +392,7 @@ bool break_editor_doc_add_component(BreakEditorDoc *doc,
     c->base.destroy = component_cmd_destroy;
     c->base.describe = add_component_describe;
     c->base.kind = BREAK_EDITOR_CMD_KIND_ADD_COMPONENT;
+    c->base.touched = break_editor_cmd_touch_base_id;
     c->base.id = id;
     c->component_id = component_id;
     c->snapshot_size = reg->size;
@@ -452,6 +454,7 @@ bool break_editor_doc_remove_component(BreakEditorDoc *doc,
     c->base.destroy = component_cmd_destroy;
     c->base.describe = remove_component_describe;
     c->base.kind = BREAK_EDITOR_CMD_KIND_REMOVE_COMPONENT;
+    c->base.touched = break_editor_cmd_touch_base_id;
     c->base.id = id;
     c->component_id = component_id;
     c->snapshot_size = reg->size;

@@ -59,8 +59,111 @@ void break_editor_cmd_stack_push_applied(BreakEditorDoc *doc,
         stack->dropped_oldest = true;
     }
 
+    cmd->origin = doc->origin;
     stack->entries[stack->size++] = cmd;
     stack->undo_pos++;
+}
+
+u32 break_editor_cmd_touch_base_id(const BreakEditorCmd *self, u32 *out, u32 cap) {
+    if (cap < 1u) return BREAK_EDITOR_TOUCH_ALL;
+    out[0] = self->id.index;
+    return 1u;
+}
+
+/* ---- origin-scoped undo/redo ---- */
+
+#define ORIGIN_TOUCH_MAX 512u /* group (256) and gizmo (1 + 64 followers) fit */
+
+/* true when `b` may touch something in a_set (or either side is unknown) */
+static bool origin_conflicts(const u32 *a_set, u32 a_n, const BreakEditorCmd *b) {
+    u32 b_set[ORIGIN_TOUCH_MAX];
+    u32 b_n;
+    if (a_n == BREAK_EDITOR_TOUCH_ALL || b->touched == NULL) return true;
+    b_n = b->touched(b, b_set, ORIGIN_TOUCH_MAX);
+    if (b_n == BREAK_EDITOR_TOUCH_ALL) return true;
+    for (u32 i = 0; i < a_n; i++) {
+        for (u32 k = 0; k < b_n; k++) {
+            if (a_set[i] == b_set[k]) return true;
+        }
+    }
+    return false;
+}
+
+static u32 origin_collect(const BreakEditorCmd *c, u32 *out) {
+    if (c->touched == NULL) return BREAK_EDITOR_TOUCH_ALL;
+    return c->touched(c, out, ORIGIN_TOUCH_MAX);
+}
+
+BreakEditorOriginResult break_editor_undo_origin(BreakEditorDoc *doc, u32 origin) {
+    if (!doc || !doc->stack) return BREAK_EDITOR_ORIGIN_NONE;
+    BreakEditorCmdStack *stack = doc->stack;
+    u32 i = stack->undo_pos;
+    while (i > 0u && stack->entries[i - 1u]->origin != origin) i--;
+    if (i == 0u) return BREAK_EDITOR_ORIGIN_NONE;
+    i--; /* newest applied command of this origin */
+    BreakEditorCmd *cmd = stack->entries[i];
+
+    u32 set[ORIGIN_TOUCH_MAX];
+    u32 n = origin_collect(cmd, set);
+    for (u32 j = i + 1u; j < stack->size; j++) {
+        const BreakEditorCmd *later = stack->entries[j];
+        if (later->origin == origin) continue; /* its own undone history */
+        if (origin_conflicts(set, n, later)) return BREAK_EDITOR_ORIGIN_BLOCKED;
+    }
+    if (!cmd->revert(cmd, doc)) return BREAK_EDITOR_ORIGIN_BLOCKED;
+    /* park it at the applied/undone edge */
+    memmove(&stack->entries[i], &stack->entries[i + 1u],
+            (usize)(stack->undo_pos - 1u - i) * sizeof(*stack->entries));
+    stack->entries[stack->undo_pos - 1u] = cmd;
+    stack->undo_pos--;
+    stack->revision++;
+    doc->dirty = true;
+    return BREAK_EDITOR_ORIGIN_APPLIED;
+}
+
+BreakEditorOriginResult break_editor_redo_origin(BreakEditorDoc *doc, u32 origin) {
+    if (!doc || !doc->stack) return BREAK_EDITOR_ORIGIN_NONE;
+    BreakEditorCmdStack *stack = doc->stack;
+    u32 j = stack->undo_pos;
+    while (j < stack->size && stack->entries[j]->origin != origin) j++;
+    if (j == stack->size) return BREAK_EDITOR_ORIGIN_NONE;
+    BreakEditorCmd *cmd = stack->entries[j];
+
+    u32 set[ORIGIN_TOUCH_MAX];
+    u32 n = origin_collect(cmd, set);
+    for (u32 k = stack->undo_pos; k < j; k++) {
+        if (origin_conflicts(set, n, stack->entries[k])) {
+            return BREAK_EDITOR_ORIGIN_BLOCKED;
+        }
+    }
+    if (!cmd->apply(cmd, doc)) return BREAK_EDITOR_ORIGIN_BLOCKED;
+    memmove(&stack->entries[stack->undo_pos + 1u], &stack->entries[stack->undo_pos],
+            (usize)(j - stack->undo_pos) * sizeof(*stack->entries));
+    stack->entries[stack->undo_pos] = cmd;
+    stack->undo_pos++;
+    stack->revision++;
+    doc->dirty = true;
+    return BREAK_EDITOR_ORIGIN_APPLIED;
+}
+
+u32 break_editor_cmd_stack_undo_count_origin(const BreakEditorCmdStack *stack,
+                                             u32 origin) {
+    u32 n = 0u;
+    if (!stack) return 0u;
+    for (u32 i = 0; i < stack->undo_pos; i++) {
+        if (stack->entries[i]->origin == origin) n++;
+    }
+    return n;
+}
+
+u32 break_editor_cmd_stack_redo_count_origin(const BreakEditorCmdStack *stack,
+                                             u32 origin) {
+    u32 n = 0u;
+    if (!stack) return 0u;
+    for (u32 i = stack->undo_pos; i < stack->size; i++) {
+        if (stack->entries[i]->origin == origin) n++;
+    }
+    return n;
 }
 
 bool break_editor_undo(BreakEditorDoc *doc) {
@@ -253,6 +356,7 @@ BreakEditorCmd *break_editor_cmd_add_entity_create(const char *name_or_null) {
     cmd->revert = add_revert;
     cmd->destroy = cmd_destroy;
     cmd->describe = add_describe;
+    cmd->touched = break_editor_cmd_touch_base_id;
     cmd->kind = BREAK_EDITOR_CMD_KIND_ADD_ENTITY;
     cmd->id = BREAK_EDITOR_ENTITY_NULL;
     cmd->reapply = false;
@@ -292,6 +396,7 @@ BreakEditorCmd *break_editor_cmd_duplicate_entity_create(BreakEditorDoc *doc,
     cmd->revert = add_revert;
     cmd->destroy = cmd_destroy;
     cmd->describe = dup_describe;
+    cmd->touched = break_editor_cmd_touch_base_id;
     cmd->kind = BREAK_EDITOR_CMD_KIND_DUPLICATE_ENTITY;
     cmd->id = BREAK_EDITOR_ENTITY_NULL;
     cmd->reapply = false;
@@ -347,6 +452,7 @@ BreakEditorCmd *break_editor_cmd_remove_entity_create(BreakEditorDoc *doc,
     cmd->revert = remove_revert;
     cmd->destroy = cmd_destroy;
     cmd->describe = remove_describe;
+    cmd->touched = break_editor_cmd_touch_base_id;
     cmd->kind = BREAK_EDITOR_CMD_KIND_REMOVE_ENTITY;
     cmd->id = id;
     const BreakEditorNameSlot *slot = &doc->slots[id.index];
@@ -397,6 +503,20 @@ static void group_destroy(BreakEditorCmd *self) {
     free(g);
 }
 
+static u32 group_touched(const BreakEditorCmd *self, u32 *out, u32 cap) {
+    const BreakEditorGroupCmd *g = (const BreakEditorGroupCmd *)self;
+    u32 n = 0u;
+    for (u32 i = 0; i < g->count; i++) {
+        const BreakEditorCmd *c = g->children[i];
+        u32 k;
+        if (c->touched == NULL || n >= cap) return BREAK_EDITOR_TOUCH_ALL;
+        k = c->touched(c, out + n, cap - n);
+        if (k == BREAK_EDITOR_TOUCH_ALL || k > cap - n) return BREAK_EDITOR_TOUCH_ALL;
+        n += k;
+    }
+    return n;
+}
+
 static void group_describe(const BreakEditorCmd *self, char buf[128]) {
     const BreakEditorGroupCmd *g = (const BreakEditorGroupCmd *)self;
     snprintf(buf, 128, "%.64s (%u)", self->name, g->count);
@@ -413,6 +533,7 @@ BreakEditorCmd *break_editor_cmd_group_create(BreakEditorCmd **children,
     g->base.revert = group_revert;
     g->base.destroy = group_destroy;
     g->base.describe = group_describe;
+    g->base.touched = group_touched;
     g->base.kind = BREAK_EDITOR_CMD_KIND_GROUP;
     g->base.id = BREAK_EDITOR_ENTITY_NULL;
     break_editor_name_copy(g->base.name, label ? label : "group");
@@ -453,6 +574,7 @@ BreakEditorCmd *break_editor_cmd_rename_entity_create(BreakEditorDoc *doc,
     cmd->revert = rename_revert;
     cmd->destroy = cmd_destroy;
     cmd->describe = rename_describe;
+    cmd->touched = break_editor_cmd_touch_base_id;
     cmd->kind = BREAK_EDITOR_CMD_KIND_RENAME_ENTITY;
     cmd->id = id;
     memcpy(cmd->name, doc->slots[id.index].name, BREAK_EDITOR_NAME_CAPACITY);

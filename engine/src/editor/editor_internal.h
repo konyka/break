@@ -49,12 +49,23 @@ struct BreakEditorCmd {
     bool (*revert)(BreakEditorCmd *self, BreakEditorDoc *doc);
     void (*destroy)(BreakEditorCmd *self);
     void (*describe)(const BreakEditorCmd *self, char buf[128]);
+    /* Entity INDICES (not ids: index reuse must count as a conflict) this
+     * command reads or writes, for origin-scoped undo. Writes at most `cap`
+     * values and returns how many; returns BREAK_EDITOR_TOUCH_ALL when it
+     * would exceed `cap` or cannot tell. A NULL pointer means the same: such
+     * a command conflicts with everything and is never moved past anything. */
+    u32 (*touched)(const BreakEditorCmd *self, u32 *out, u32 cap);
+    u32 origin; /* BreakEditorDoc origin at push time (0 = local shell) */
     u32 kind;
     BreakEditorEntityId id;
     bool reapply;
     char name[BREAK_EDITOR_NAME_CAPACITY];
     char other_name[BREAK_EDITOR_NAME_CAPACITY];
 };
+
+#define BREAK_EDITOR_TOUCH_ALL 0xffffffffu
+/* touched() for the common one-entity command: {base.id.index}. */
+u32 break_editor_cmd_touch_base_id(const BreakEditorCmd *self, u32 *out, u32 cap);
 
 /* Name slot: slot-per-entity-index storage, generation 0 = empty. */
 typedef struct {
@@ -104,6 +115,7 @@ struct BreakEditorDoc {
     BreakEditorNameSlot *slots; /* owned: ECS_MAX_ENTITIES slots */
     usize named_count;          /* live named entities == entity_count */
     bool dirty;
+    u32 origin; /* stamped on every pushed command; 0 = local shell */
     BreakEditorCmdStack *stack; /* owned */
     /* Task 3: bounded editable-component registry (cap 16). Phase 1 holds
      * exactly one entry (EditorTransform) installed at doc create by

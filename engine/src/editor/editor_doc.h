@@ -86,6 +86,12 @@ static inline bool break_editor_entity_id_eq(BreakEditorEntityId a,
 }
 
 BreakEditorDoc *break_editor_doc_create(void); /* owns an internal World */
+/* Origin stamped on every command pushed from now on (0 = the local shell,
+ * the default). The remote host sets one per connection around its handlers
+ * so undo can be scoped to a client (editor_cmd.h break_editor_undo_origin).
+ * NULL doc: no-op / 0. */
+void break_editor_doc_set_origin(BreakEditorDoc *doc, u32 origin);
+u32 break_editor_doc_origin(const BreakEditorDoc *doc);
 void break_editor_doc_destroy(BreakEditorDoc *doc); /* NULL is a no-op */
 /* Borrowed World* (shell-only). A successful break_editor_doc_load SWAPS the
  * internal World (editor_scene.h): any pointer borrowed before the load

@@ -12,11 +12,14 @@
 
 #include <editor/editor_doc.h>
 #include <editor/editor_cmd.h>
+#include <editor/editor_components.h>
+#include <editor/editor_internal.h>
 #include <editor/editor_test_hooks.h>
 
 #include <ecs/ecs.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static Entity to_ecs(BreakEditorEntityId id) {
@@ -437,6 +440,332 @@ TEST(revision_counts_every_change) {
     break_editor_doc_destroy(doc);
 }
 
+
+/* ---- origin-scoped undo/redo (per-client undo) ---- */
+
+static const char *name_of(BreakEditorDoc *doc, BreakEditorEntityId id) {
+    for (usize i = 0; i < break_editor_doc_entity_count(doc); i++) {
+        BreakEditorEntityId at;
+        const char *nm = NULL;
+        if (break_editor_doc_entity_at(doc, i, &at, &nm) &&
+            break_editor_entity_id_eq(at, id)) {
+            return nm;
+        }
+    }
+    return NULL;
+}
+
+TEST(origin_defaults_to_zero_and_is_settable) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_EQ(break_editor_doc_origin(doc), 0u);
+    break_editor_doc_set_origin(doc, 7u);
+    ASSERT_EQ(break_editor_doc_origin(doc), 7u);
+    break_editor_doc_set_origin(doc, 0u);
+    ASSERT_EQ(break_editor_doc_origin(doc), 0u);
+    ASSERT_EQ(break_editor_doc_origin(NULL), 0u);
+    break_editor_doc_set_origin(NULL, 3u); /* bounded no-op */
+    break_editor_doc_destroy(doc);
+}
+
+TEST(origin_undo_reverts_only_own_independent_command) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorCmdStack *st = break_editor_doc_stack(doc);
+    break_editor_doc_set_origin(doc, 1u);
+    BreakEditorEntityId a = break_editor_doc_add_entity(doc, "a");
+    break_editor_doc_set_origin(doc, 2u);
+    BreakEditorEntityId b = break_editor_doc_add_entity(doc, "b");
+    break_editor_doc_set_origin(doc, 0u);
+    ASSERT_TRUE(break_editor_entity_id_valid(a));
+    ASSERT_TRUE(break_editor_entity_id_valid(b));
+
+    ASSERT_EQ(break_editor_cmd_stack_undo_count_origin(st, 1u), 1u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count_origin(st, 2u), 1u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count_origin(st, 3u), 0u);
+
+    /* origin 1 undoes its own add even though origin 2 pushed after it */
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_FALSE(world_entity_exists(doc_world(doc), to_ecs(a)));
+    ASSERT_TRUE(world_entity_exists(doc_world(doc), to_ecs(b)));
+    ASSERT_STR_EQ(name_of(doc, b), "b");
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(st), 1u);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count(st), 1u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count_origin(st, 1u), 0u);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count_origin(st, 1u), 1u);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count_origin(st, 2u), 0u);
+
+    /* the global undo now reverts the one command left on the applied side */
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_FALSE(world_entity_exists(doc_world(doc), to_ecs(b)));
+    break_editor_doc_destroy(doc);
+}
+
+TEST(origin_undo_is_none_without_own_commands) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorCmdStack *st = break_editor_doc_stack(doc);
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 5u), (int)BREAK_EDITOR_ORIGIN_NONE);
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 5u), (int)BREAK_EDITOR_ORIGIN_NONE);
+    break_editor_doc_set_origin(doc, 1u);
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "a")));
+    break_editor_doc_set_origin(doc, 0u);
+    u64 rev = break_editor_cmd_stack_revision(st);
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 5u), (int)BREAK_EDITOR_ORIGIN_NONE);
+    ASSERT_EQ(break_editor_cmd_stack_revision(st), rev); /* nothing changed */
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_EQ((int)break_editor_undo_origin(NULL, 1u), (int)BREAK_EDITOR_ORIGIN_NONE);
+    ASSERT_EQ((int)break_editor_redo_origin(NULL, 1u), (int)BREAK_EDITOR_ORIGIN_NONE);
+    break_editor_doc_destroy(doc);
+}
+
+TEST(origin_undo_blocked_by_later_foreign_command_on_same_entity) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    break_editor_doc_set_origin(doc, 1u);
+    BreakEditorEntityId e = break_editor_doc_add_entity(doc, "e");
+    break_editor_doc_set_origin(doc, 2u);
+    ASSERT_TRUE(break_editor_doc_rename_entity(doc, e, "renamed"));
+    break_editor_doc_set_origin(doc, 0u);
+
+    /* origin 1 cannot pull its add out from under origin 2's rename */
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_BLOCKED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_STR_EQ(name_of(doc, e), "renamed");
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)), 2u);
+
+    /* origin 2 can undo its own rename (the add before it is origin 1's) */
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 2u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_STR_EQ(name_of(doc, e), "e");
+
+    /* ... but the undone rename still waits on the redo side and touches e,
+     * so origin 1 stays blocked until that command is gone */
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_BLOCKED);
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 2u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_STR_EQ(name_of(doc, e), "renamed");
+    break_editor_doc_destroy(doc);
+}
+
+TEST(origin_undo_redo_roundtrip_keeps_ids_and_other_clients_edits) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorCmdStack *st = break_editor_doc_stack(doc);
+    BreakEditorEntityId e1 = break_editor_doc_add_entity(doc, "one");
+    BreakEditorEntityId e2 = break_editor_doc_add_entity(doc, "two");
+    break_editor_doc_set_origin(doc, 1u);
+    ASSERT_TRUE(break_editor_doc_rename_entity(doc, e1, "one-by-1"));
+    break_editor_doc_set_origin(doc, 2u);
+    ASSERT_TRUE(break_editor_doc_rename_entity(doc, e2, "two-by-2"));
+    break_editor_doc_set_origin(doc, 0u);
+
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_STR_EQ(name_of(doc, e1), "one");
+    ASSERT_STR_EQ(name_of(doc, e2), "two-by-2"); /* the other client's edit stays */
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(st), 3u);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count(st), 1u);
+
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_STR_EQ(name_of(doc, e1), "one-by-1");
+    ASSERT_STR_EQ(name_of(doc, e2), "two-by-2");
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(st), 4u);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count(st), 0u);
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_NONE);
+
+    /* ids stayed exact through the move */
+    ASSERT_TRUE(world_entity_exists(doc_world(doc), to_ecs(e1)));
+    ASSERT_TRUE(world_entity_exists(doc_world(doc), to_ecs(e2)));
+    break_editor_doc_destroy(doc);
+}
+
+TEST(origin_undo_set_field_touches_only_that_entity) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorEntityId a = break_editor_doc_add_entity(doc, "a");
+    BreakEditorEntityId b = break_editor_doc_add_entity(doc, "b");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, a, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    break_editor_doc_set_origin(doc, 1u);
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, a, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, 5.0f));
+    break_editor_doc_set_origin(doc, 2u);
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, 9.0f));
+    break_editor_doc_set_origin(doc, 0u);
+
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    f32 v = -1.0f;
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, a, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &v));
+    ASSERT_TRUE(v == 0.0f);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &v));
+    ASSERT_TRUE(v == 9.0f);
+
+    /* a second edit by origin 2 on the SAME entity as origin 1's: blocked */
+    break_editor_doc_set_origin(doc, 1u);
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, 1u, 3.0f));
+    break_editor_doc_set_origin(doc, 2u);
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, 2u, 4.0f));
+    break_editor_doc_set_origin(doc, 0u);
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_BLOCKED);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, b, BREAK_EDITOR_COMPONENT_TRANSFORM, 1u, &v));
+    ASSERT_TRUE(v == 3.0f);
+    break_editor_doc_destroy(doc);
+}
+
+TEST(origin_is_inherited_by_group_commands_and_group_conflicts_are_checked) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorEntityId ids[2];
+    ids[0] = break_editor_doc_add_entity(doc, "g0");
+    ids[1] = break_editor_doc_add_entity(doc, "g1");
+    BreakEditorEntityId other = break_editor_doc_add_entity(doc, "other");
+
+    break_editor_doc_set_origin(doc, 3u);
+    ASSERT_EQ(break_editor_doc_remove_entities(doc, ids, 2u), 2u); /* one group command */
+    break_editor_doc_set_origin(doc, 4u);
+    ASSERT_TRUE(break_editor_doc_rename_entity(doc, other, "other2"));
+    break_editor_doc_set_origin(doc, 0u);
+
+    BreakEditorCmdStack *st = break_editor_doc_stack(doc);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count_origin(st, 3u), 1u);
+    /* independent of origin 4's rename of a different entity: both come back */
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 3u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 3u);
+    ASSERT_STR_EQ(name_of(doc, ids[0]), "g0");
+    ASSERT_STR_EQ(name_of(doc, ids[1]), "g1");
+    ASSERT_STR_EQ(name_of(doc, other), "other2");
+
+    /* now origin 4 renames a member of a group that origin 3 removes */
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 3u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    break_editor_doc_destroy(doc);
+
+    doc = break_editor_doc_create();
+    ids[0] = break_editor_doc_add_entity(doc, "m0");
+    ids[1] = break_editor_doc_add_entity(doc, "m1");
+    break_editor_doc_set_origin(doc, 3u);
+    ASSERT_EQ(break_editor_doc_duplicate_entities(doc, ids, 2u, (BreakEditorEntityId[2]){0}), 2u);
+    break_editor_doc_set_origin(doc, 4u);
+    ASSERT_TRUE(break_editor_doc_rename_entity(doc, ids[1], "m1-renamed"));
+    break_editor_doc_set_origin(doc, 0u);
+    /* origin 4's rename touches the SOURCE m1, not a duplicate: independent */
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 3u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    break_editor_doc_destroy(doc);
+}
+
+TEST(origin_redo_of_structural_commands_is_bounded_when_free_list_order_differs) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    break_editor_doc_set_origin(doc, 1u);
+    BreakEditorEntityId a = break_editor_doc_add_entity(doc, "A");
+    break_editor_doc_set_origin(doc, 2u);
+    BreakEditorEntityId b = break_editor_doc_add_entity(doc, "B");
+    break_editor_doc_set_origin(doc, 0u);
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 2u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+
+    /* The ECS hands indices back LIFO, so re-creating A's exact id first
+     * cannot work (B's index is on top). The attempt must fail bounded and
+     * leave the document and the stack as they were ... */
+    BreakEditorCmdStack *st = break_editor_doc_stack(doc);
+    u64 rev = break_editor_cmd_stack_revision(st);
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_BLOCKED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    ASSERT_EQ(break_editor_cmd_stack_revision(st), rev);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count(st), 2u);
+
+    /* ... and redoing in the order the free list allows restores both with
+     * their exact ids. */
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 2u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_TRUE(world_entity_exists(doc_world(doc), to_ecs(a)));
+    ASSERT_TRUE(world_entity_exists(doc_world(doc), to_ecs(b)));
+    ASSERT_STR_EQ(name_of(doc, a), "A");
+    ASSERT_STR_EQ(name_of(doc, b), "B");
+    break_editor_doc_destroy(doc);
+}
+
+TEST(origin_survives_drop_oldest_and_new_push_clears_the_redo_tail) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorCmdStack *st = break_editor_doc_stack(doc);
+    BreakEditorEntityId e = break_editor_doc_add_entity(doc, "e");
+    break_editor_doc_set_origin(doc, 1u);
+    ASSERT_TRUE(break_editor_doc_rename_entity(doc, e, "x1"));
+    break_editor_doc_set_origin(doc, 2u);
+    BreakEditorEntityId f = break_editor_doc_add_entity(doc, "f");
+    break_editor_doc_set_origin(doc, 0u);
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count_origin(st, 1u), 1u);
+    /* any new mutation clears the redo tail, including an origin's undone command */
+    break_editor_doc_set_origin(doc, 2u);
+    ASSERT_TRUE(break_editor_doc_rename_entity(doc, f, "f2"));
+    break_editor_doc_set_origin(doc, 0u);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count_origin(st, 1u), 0u);
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_NONE);
+    break_editor_doc_destroy(doc);
+}
+
+TEST(origin_redo_blocked_by_earlier_undone_foreign_command_on_same_entity) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorEntityId e = break_editor_doc_add_entity(doc, "e");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, e, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    break_editor_doc_set_origin(doc, 1u);
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, e, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, 5.0f));
+    break_editor_doc_set_origin(doc, 2u);
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, e, BREAK_EDITOR_COMPONENT_TRANSFORM, 1u, 6.0f));
+    break_editor_doc_set_origin(doc, 0u);
+    ASSERT_TRUE(break_editor_undo(doc)); /* origin 2's edit */
+    ASSERT_TRUE(break_editor_undo(doc)); /* origin 1's edit */
+    BreakEditorCmdStack *st = break_editor_doc_stack(doc);
+    u64 rev = break_editor_cmd_stack_revision(st);
+
+    /* origin 2 would jump over origin 1's undone edit of the same entity */
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 2u), (int)BREAK_EDITOR_ORIGIN_BLOCKED);
+    f32 v = -1.0f;
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, e, BREAK_EDITOR_COMPONENT_TRANSFORM, 1u, &v));
+    ASSERT_TRUE(v == 0.0f);
+    ASSERT_EQ(break_editor_cmd_stack_revision(st), rev);
+
+    /* in stack order it works */
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ((int)break_editor_redo_origin(doc, 2u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, e, BREAK_EDITOR_COMPONENT_TRANSFORM, 1u, &v));
+    ASSERT_TRUE(v == 6.0f);
+    break_editor_doc_destroy(doc);
+}
+
+static bool opaque_apply(BreakEditorCmd *self, BreakEditorDoc *doc) { (void)self; (void)doc; return true; }
+static void opaque_destroy(BreakEditorCmd *self) { free(self); }
+static void opaque_describe(const BreakEditorCmd *self, char buf[128]) { (void)self; snprintf(buf, 128, "opaque"); }
+
+TEST(origin_command_without_a_touch_set_conflicts_with_everything) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    break_editor_doc_set_origin(doc, 1u);
+    BreakEditorEntityId a = break_editor_doc_add_entity(doc, "a");
+    ASSERT_TRUE(break_editor_entity_id_valid(a));
+    /* a foreign command that cannot say what it touches (touched == NULL) */
+    BreakEditorCmd *opaque = calloc(1u, sizeof(*opaque));
+    ASSERT_NOT_NULL(opaque);
+    opaque->apply = opaque_apply;
+    opaque->revert = opaque_apply;
+    opaque->destroy = opaque_destroy;
+    opaque->describe = opaque_describe;
+    break_editor_doc_set_origin(doc, 2u);
+    break_editor_cmd_stack_push_applied(doc, opaque);
+    break_editor_doc_set_origin(doc, 0u);
+
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_BLOCKED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    /* and the opaque command itself can be undone by its own origin */
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 2u), (int)BREAK_EDITOR_ORIGIN_APPLIED);
+    ASSERT_EQ((int)break_editor_undo_origin(doc, 1u), (int)BREAK_EDITOR_ORIGIN_BLOCKED);
+    break_editor_doc_destroy(doc);
+}
+
 int main(void) {
     printf("=== test_editor_cmd ===\n");
     RUN_TEST(stack_create_destroy);
@@ -454,6 +783,17 @@ int main(void) {
     RUN_TEST(oom_command_alloc_leaves_stack_unchanged);
     RUN_TEST(mixed_sequence_undo_redo);
     RUN_TEST(revision_counts_every_change);
+    RUN_TEST(origin_defaults_to_zero_and_is_settable);
+    RUN_TEST(origin_undo_reverts_only_own_independent_command);
+    RUN_TEST(origin_undo_is_none_without_own_commands);
+    RUN_TEST(origin_undo_blocked_by_later_foreign_command_on_same_entity);
+    RUN_TEST(origin_undo_redo_roundtrip_keeps_ids_and_other_clients_edits);
+    RUN_TEST(origin_undo_set_field_touches_only_that_entity);
+    RUN_TEST(origin_is_inherited_by_group_commands_and_group_conflicts_are_checked);
+    RUN_TEST(origin_redo_of_structural_commands_is_bounded_when_free_list_order_differs);
+    RUN_TEST(origin_survives_drop_oldest_and_new_push_clears_the_redo_tail);
+    RUN_TEST(origin_redo_blocked_by_earlier_undone_foreign_command_on_same_entity);
+    RUN_TEST(origin_command_without_a_touch_set_conflicts_with_everything);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
            g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;

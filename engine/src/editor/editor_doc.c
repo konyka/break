@@ -115,6 +115,14 @@ void break_editor_doc_slot_clear(BreakEditorDoc *doc, u32 index) {
     doc->slots[index].name[0] = '\0';
 }
 
+void break_editor_doc_set_origin(BreakEditorDoc *doc, u32 origin) {
+    if (doc) doc->origin = origin;
+}
+
+u32 break_editor_doc_origin(const BreakEditorDoc *doc) {
+    return doc ? doc->origin : 0u;
+}
+
 BreakEditorEntityId break_editor_doc_add_entity(BreakEditorDoc *doc,
                                                 const char *name) {
     if (!doc) return BREAK_EDITOR_ENTITY_NULL;
