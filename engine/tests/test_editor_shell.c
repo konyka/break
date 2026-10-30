@@ -21,6 +21,10 @@
 
 #include "editor_hot_reload.h"
 #include "editor_image_preview.h"
+#include "editor_scene_textures.h"
+#include <asset/asset.h>
+#include <ecs/ecs.h>
+#include <scene/scene_serial.h>
 #include "editor_theme.h"
 #include <editor/editor_i18n.h>
 #include "editor_panels.h"
@@ -9737,8 +9741,411 @@ TEST(image_preview_headless_device_switch_and_bounded_shutdown)
     editor_rhi_fake_reset();
 }
 
+
+/* ---------------- scene textures: owner of up to 8 hot-reloading images ---- */
+
+typedef struct {
+    char root[512];
+    char scene[700];
+    BreakEditorSceneTextures *st;
+    BreakEditorDoc *doc;
+} SceneTexFixture;
+
+/* Saves a scene whose RESOURCES chunk names `n` textures (uris tex0.png ...)
+ * and returns the loaded doc. Texture i is the albedo of material i. */
+static BreakEditorDoc *scenetex_make_doc(const char *scene_path, const char *const *uris,
+                                         u32 n)
+{
+    World *w = world_create();
+    Scene sc;
+    SerializeOptions opts;
+    BreakEditorDoc *doc;
+    bool ok;
+    if (w == NULL) return NULL;
+    memset(&sc, 0, sizeof(sc));
+    sc.material_count = n;
+    sc.materials = (Material *)calloc(n ? n : 1u, sizeof(Material));
+    sc.texture_source_count = n;
+    sc.texture_sources = (SceneTextureSource *)calloc(n ? n : 1u, sizeof(SceneTextureSource));
+    if (sc.materials == NULL || sc.texture_sources == NULL) return NULL;
+    for (u32 i = 0; i < n; i++) {
+        sc.texture_sources[i].handle_index = 10u + i;
+        snprintf(sc.texture_sources[i].uri, sizeof(sc.texture_sources[i].uri), "%s", uris[i]);
+        sc.materials[i].albedo.index = 10u + i;
+        sc.materials[i].albedo.generation = 1u;
+        for (int k = 0; k < 4; k++) sc.materials[i].base_color[k] = 1.0f;
+        sc.materials[i].metallic_factor = sc.materials[i].roughness_factor = 1.0f;
+        sc.materials[i].occlusion_strength = 1.0f;
+        sc.materials[i].alpha_cutoff = 0.5f;
+    }
+    memset(&opts, 0, sizeof(opts));
+    opts.include_resources = true;
+    ok = scene_save_binary(w, &sc, scene_path, &opts);
+    free(sc.materials);
+    free(sc.texture_sources);
+    world_destroy(w);
+    if (!ok) return NULL;
+    doc = break_editor_doc_create();
+    if (doc != NULL && !break_editor_doc_load(doc, scene_path)) {
+        break_editor_doc_destroy(doc);
+        return NULL;
+    }
+    return doc;
+}
+
+static void scenetex_open(SceneTexFixture *fx, const char *name)
+{
+    memset(fx, 0, sizeof(*fx));
+    test_tmp(fx->root, sizeof(fx->root), name);
+    ASSERT_EQ(TEST_MKDIR(fx->root), 0);
+    snprintf(fx->scene, sizeof(fx->scene), "%s/level.bscn", fx->root);
+    fx->st = break_editor_scene_textures_create();
+    ASSERT_NOT_NULL(fx->st);
+}
+
+static void scenetex_close(SceneTexFixture *fx, const char *const *files, u32 nfiles)
+{
+    char p[800];
+    if (fx->st != NULL) {
+        break_editor_scene_textures_set_shutdown_timeout_for_test(fx->st, 2000u);
+        break_editor_scene_textures_destroy(fx->st);
+        fx->st = NULL;
+    }
+    if (fx->doc != NULL) {
+        break_editor_doc_destroy(fx->doc);
+        fx->doc = NULL;
+    }
+    for (u32 i = 0; i < nfiles; i++) {
+        snprintf(p, sizeof(p), "%s/%s", fx->root, files[i]);
+        remove(p);
+    }
+    remove(fx->scene);
+    snprintf(p, sizeof(p), "%s.editor.json", fx->scene);
+    remove(p);
+    TEST_RMDIR(fx->root);
+}
+
+static BreakEditorSceneTextureInfo scenetex_info(const SceneTexFixture *fx, u32 i)
+{
+    BreakEditorSceneTextureInfo info;
+    memset(&info, 0, sizeof(info));
+    info.state = -1;
+    (void)break_editor_scene_textures_info(fx->st, i, &info);
+    return info;
+}
+
+#define SCENETEX_WAIT(fx_, cond_)                                            \
+    do {                                                                     \
+        int st_i_;                                                           \
+        for (st_i_ = 0; st_i_ < 3000 && !(cond_); st_i_++) {                 \
+            break_editor_scene_textures_tick((fx_)->st);                     \
+            time_sleep_us(2000u);                                            \
+        }                                                                    \
+    } while (0)
+
+static void scenetex_png(const SceneTexFixture *fx, const char *name, int w, int h, u8 shade)
+{
+    char p[800];
+    snprintf(p, sizeof(p), "%s/%s", fx->root, name);
+    img_write_png(p, w, h, shade);
+}
+
+TEST(scene_textures_load_list_and_hot_reload)
+{
+    SceneTexFixture fx;
+    static const char *const uris[2] = {"tex0.png", "tex1.png"};
+    EditorRhiFakeStats fake;
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    scenetex_open(&fx, "editor_scene_textures_reload");
+    scenetex_png(&fx, "tex0.png", 4, 4, 40u);
+    scenetex_png(&fx, "tex1.png", 8, 2, 90u);
+    fx.doc = scenetex_make_doc(fx.scene, uris, 2u);
+    ASSERT_NOT_NULL(fx.doc);
+    break_editor_scene_textures_set_device(fx.st, img_fake_device());
+    ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, fx.doc, fx.scene));
+    ASSERT_EQ(break_editor_scene_textures_count(fx.st), 2u);
+    SCENETEX_WAIT(&fx, scenetex_info(&fx, 0).reloads == 1u && scenetex_info(&fx, 1).reloads == 1u);
+
+    {
+        BreakEditorSceneTextureInfo a = scenetex_info(&fx, 0), b = scenetex_info(&fx, 1);
+        ASSERT_STR_EQ(a.path, "tex0.png");
+        ASSERT_STR_EQ(b.path, "tex1.png");
+        ASSERT_EQ(a.state, BREAK_EDITOR_SCENE_TEXTURE_STATE_READY);
+        ASSERT_EQ(b.state, BREAK_EDITOR_SCENE_TEXTURE_STATE_READY);
+        ASSERT_EQ(a.width, 4u);
+        ASSERT_EQ(b.width, 8u);
+        ASSERT_EQ(b.height, 2u);
+        ASSERT_EQ(a.used_by_materials, 1u);
+        ASSERT_TRUE(rhi_handle_valid(break_editor_scene_textures_texture(fx.st, 0u)));
+        ASSERT_TRUE(rhi_handle_valid(break_editor_scene_textures_texture(fx.st, 1u)));
+    }
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.texture_creates, 2u);
+
+    /* editing tex0 on disk replaces its texture; tex1 is untouched */
+    {
+        u64 rev = break_editor_scene_textures_revision(fx.st);
+        RHITexture old0 = break_editor_scene_textures_texture(fx.st, 0u);
+        RHITexture old1 = break_editor_scene_textures_texture(fx.st, 1u);
+        scenetex_png(&fx, "tex0.png", 6, 6, 200u);
+        SCENETEX_WAIT(&fx, scenetex_info(&fx, 0).reloads == 2u);
+        ASSERT_EQ(scenetex_info(&fx, 0).width, 6u);
+        ASSERT_EQ(scenetex_info(&fx, 1).reloads, 1u);
+        ASSERT_FALSE(editor_rhi_fake_texture_live(old0));
+        ASSERT_TRUE(editor_rhi_fake_texture_live(old1));
+        ASSERT_TRUE(break_editor_scene_textures_revision(fx.st) > rev);
+    }
+
+    scenetex_close(&fx, uris, 2u);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.live_textures, 0u);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+TEST(scene_textures_bad_file_keeps_the_previous_image)
+{
+    SceneTexFixture fx;
+    static const char *const uris[1] = {"tex0.png"};
+    char path[800];
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    scenetex_open(&fx, "editor_scene_textures_badfile");
+    scenetex_png(&fx, "tex0.png", 4, 4, 40u);
+    fx.doc = scenetex_make_doc(fx.scene, uris, 1u);
+    ASSERT_NOT_NULL(fx.doc);
+    break_editor_scene_textures_set_device(fx.st, img_fake_device());
+    ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, fx.doc, fx.scene));
+    SCENETEX_WAIT(&fx, scenetex_info(&fx, 0).reloads == 1u);
+    {
+        RHITexture kept = break_editor_scene_textures_texture(fx.st, 0u);
+        snprintf(path, sizeof(path), "%s/tex0.png", fx.root);
+        hr_write_text(path, "this is not an image");
+        hr_bump_mtime(path);
+        SCENETEX_WAIT(&fx, scenetex_info(&fx, 0).failed == 1u);
+        ASSERT_EQ(scenetex_info(&fx, 0).failed, 1u);
+        ASSERT_EQ(scenetex_info(&fx, 0).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_FAILED);
+        ASSERT_EQ(scenetex_info(&fx, 0).width, 4u);        /* still the old size */
+        ASSERT_TRUE(editor_rhi_fake_texture_live(kept));   /* and the old texture */
+        ASSERT_TRUE(rhi_handle_valid(break_editor_scene_textures_texture(fx.st, 0u)));
+    }
+    /* a good file brings it back to READY */
+    scenetex_png(&fx, "tex0.png", 5, 5, 99u);
+    SCENETEX_WAIT(&fx, scenetex_info(&fx, 0).reloads == 2u);
+    ASSERT_EQ(scenetex_info(&fx, 0).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_READY);
+    ASSERT_EQ(scenetex_info(&fx, 0).width, 5u);
+    scenetex_close(&fx, uris, 1u);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+TEST(scene_textures_unsafe_paths_are_listed_but_never_opened)
+{
+    SceneTexFixture fx;
+    static const char *const uris[3] = {"../outside.png", "/etc/hostname", "ok.png"};
+    char outside[800];
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    scenetex_open(&fx, "editor_scene_textures_unsafe");
+    scenetex_png(&fx, "ok.png", 3, 3, 10u);
+    /* a real image just outside the scene directory: a '..' uri must not reach it */
+    snprintf(outside, sizeof(outside), "%s/../outside.png", fx.root);
+    img_write_png(outside, 7, 7, 77u);
+    fx.doc = scenetex_make_doc(fx.scene, uris, 3u);
+    ASSERT_NOT_NULL(fx.doc);
+    break_editor_scene_textures_set_device(fx.st, img_fake_device());
+    ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, fx.doc, fx.scene));
+    ASSERT_EQ(break_editor_scene_textures_count(fx.st), 3u);
+    SCENETEX_WAIT(&fx, scenetex_info(&fx, 2).reloads == 1u);
+    ASSERT_EQ(scenetex_info(&fx, 0).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_UNSAFE);
+    ASSERT_EQ(scenetex_info(&fx, 1).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_UNSAFE);
+    ASSERT_EQ(scenetex_info(&fx, 2).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_READY);
+    ASSERT_EQ(scenetex_info(&fx, 0).width, 0u);
+    ASSERT_FALSE(rhi_handle_valid(break_editor_scene_textures_texture(fx.st, 0u)));
+    ASSERT_FALSE(rhi_handle_valid(break_editor_scene_textures_texture(fx.st, 1u)));
+    {
+        EditorRhiFakeStats fake;
+        editor_rhi_fake_stats(&fake);
+        ASSERT_EQ(fake.texture_creates, 1u); /* only ok.png */
+    }
+    remove(outside);
+    scenetex_close(&fx, (const char *const[]){"ok.png"}, 1u);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+TEST(scene_textures_relative_scene_path_has_no_base)
+{
+    SceneTexFixture fx;
+    static const char *const uris[1] = {"tex0.png"};
+    editor_rhi_fake_reset();
+    scenetex_open(&fx, "editor_scene_textures_nobase");
+    fx.doc = scenetex_make_doc(fx.scene, uris, 1u);
+    ASSERT_NOT_NULL(fx.doc);
+    ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, fx.doc, "level.bscn"));
+    ASSERT_EQ(break_editor_scene_textures_count(fx.st), 1u);
+    ASSERT_EQ(scenetex_info(&fx, 0).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_NO_BASE);
+    ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, fx.doc, NULL));
+    ASSERT_EQ(scenetex_info(&fx, 0).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_NO_BASE);
+    scenetex_close(&fx, uris, 0u);
+}
+
+TEST(scene_textures_more_than_eight_are_listed_and_only_eight_load)
+{
+    SceneTexFixture fx;
+    static char names[10][16];
+    const char *uris[10];
+    EditorRhiFakeStats fake;
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    scenetex_open(&fx, "editor_scene_textures_limit");
+    for (u32 i = 0; i < 10u; i++) {
+        snprintf(names[i], sizeof(names[i]), "t%u.png", i);
+        uris[i] = names[i];
+        scenetex_png(&fx, names[i], 2, 2, (u8)(20u + i));
+    }
+    fx.doc = scenetex_make_doc(fx.scene, uris, 10u);
+    ASSERT_NOT_NULL(fx.doc);
+    break_editor_scene_textures_set_device(fx.st, img_fake_device());
+    ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, fx.doc, fx.scene));
+    ASSERT_EQ(break_editor_scene_textures_count(fx.st), 10u);
+    SCENETEX_WAIT(&fx, scenetex_info(&fx, 7).reloads == 1u);
+    for (u32 i = 0; i < 8u; i++) {
+        ASSERT_EQ(scenetex_info(&fx, i).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_READY);
+    }
+    ASSERT_EQ(scenetex_info(&fx, 8).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_SKIPPED);
+    ASSERT_EQ(scenetex_info(&fx, 9).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_SKIPPED);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.texture_creates, 8u);
+    ASSERT_EQ(fake.live_textures, 8u);
+    ASSERT_FALSE(break_editor_scene_textures_info(fx.st, 10u, &(BreakEditorSceneTextureInfo){0}));
+    scenetex_close(&fx, (const char *const *)uris, 10u);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+TEST(scene_textures_set_scene_keeps_surviving_textures_and_drops_the_rest)
+{
+    SceneTexFixture fx;
+    static const char *const first[3] = {"a.png", "b.png", "c.png"};
+    static const char *const second[2] = {"b.png", "d.png"};
+    BreakEditorDoc *doc2;
+    EditorRhiFakeStats fake;
+    RHITexture b_before;
+    char scene2[800];
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    scenetex_open(&fx, "editor_scene_textures_swap");
+    scenetex_png(&fx, "a.png", 2, 2, 11u);
+    scenetex_png(&fx, "b.png", 3, 3, 22u);
+    scenetex_png(&fx, "c.png", 4, 4, 33u);
+    scenetex_png(&fx, "d.png", 5, 5, 44u);
+    fx.doc = scenetex_make_doc(fx.scene, first, 3u);
+    ASSERT_NOT_NULL(fx.doc);
+    break_editor_scene_textures_set_device(fx.st, img_fake_device());
+    ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, fx.doc, fx.scene));
+    SCENETEX_WAIT(&fx, scenetex_info(&fx, 2).reloads == 1u && scenetex_info(&fx, 1).reloads == 1u && scenetex_info(&fx, 0).reloads == 1u);
+    b_before = break_editor_scene_textures_texture(fx.st, 1u);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.live_textures, 3u);
+
+    snprintf(scene2, sizeof(scene2), "%s/level2.bscn", fx.root);
+    doc2 = scenetex_make_doc(scene2, second, 2u);
+    ASSERT_NOT_NULL(doc2);
+    ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, doc2, scene2));
+    ASSERT_EQ(break_editor_scene_textures_count(fx.st), 2u);
+    ASSERT_STR_EQ(scenetex_info(&fx, 0).path, "b.png");
+    /* b.png survives with its texture; a and c are gone; d starts loading */
+    ASSERT_TRUE(editor_rhi_fake_texture_live(b_before));
+    ASSERT_TRUE(break_editor_scene_textures_texture(fx.st, 0u).index == b_before.index);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.live_textures, 1u);
+    SCENETEX_WAIT(&fx, scenetex_info(&fx, 1).reloads == 1u);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.live_textures, 2u);
+
+    /* NULL doc clears everything */
+    ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, NULL, fx.scene));
+    ASSERT_EQ(break_editor_scene_textures_count(fx.st), 0u);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.live_textures, 0u);
+    break_editor_doc_destroy(doc2);
+    remove(scene2);
+    {
+        char side[820];
+        snprintf(side, sizeof(side), "%s.editor.json", scene2);
+        remove(side);
+    }
+    scenetex_close(&fx, (const char *const[]){"a.png", "b.png", "c.png", "d.png"}, 4u);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+TEST(scene_textures_headless_then_device_and_bounded_shutdown)
+{
+    SceneTexFixture fx;
+    static const char *const uris[1] = {"tex0.png"};
+    EditorRhiFakeStats fake;
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    scenetex_open(&fx, "editor_scene_textures_headless");
+    scenetex_png(&fx, "tex0.png", 3, 5, 66u);
+    fx.doc = scenetex_make_doc(fx.scene, uris, 1u);
+    ASSERT_NOT_NULL(fx.doc);
+    /* no device: decodes and reports the size, creates nothing */
+    ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, fx.doc, fx.scene));
+    SCENETEX_WAIT(&fx, scenetex_info(&fx, 0).reloads == 1u);
+    ASSERT_EQ(scenetex_info(&fx, 0).width, 3u);
+    ASSERT_EQ(scenetex_info(&fx, 0).height, 5u);
+    ASSERT_FALSE(rhi_handle_valid(break_editor_scene_textures_texture(fx.st, 0u)));
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.texture_creates, 0u);
+    break_editor_scene_textures_set_device(fx.st, img_fake_device());
+    break_editor_scene_textures_tick(fx.st);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.texture_creates, 1u);
+    break_editor_scene_textures_set_device(fx.st, NULL);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.live_textures, 0u);
+
+    /* NULL owner is bounded */
+    ASSERT_FALSE(break_editor_scene_textures_set_scene(NULL, fx.doc, fx.scene));
+    ASSERT_EQ(break_editor_scene_textures_count(NULL), 0u);
+    ASSERT_FALSE(break_editor_scene_textures_info(NULL, 0u, &(BreakEditorSceneTextureInfo){0}));
+    ASSERT_FALSE(rhi_handle_valid(break_editor_scene_textures_texture(NULL, 0u)));
+    ASSERT_EQ(break_editor_scene_textures_revision(NULL), 0u);
+    break_editor_scene_textures_tick(NULL);
+    break_editor_scene_textures_destroy(NULL);
+
+    /* a held worker makes shutdown fail (everything kept), then it retries */
+    break_runtime_test_reload_set_gates(0u, 1u);
+    {
+        u64 popped = atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                          memory_order_acquire);
+        scenetex_png(&fx, "tex0.png", 4, 4, 70u);
+        SCENETEX_WAIT(&fx, atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                                memory_order_acquire) > popped);
+    }
+    break_editor_scene_textures_set_shutdown_timeout_for_test(fx.st, 50u);
+    ASSERT_FALSE(break_editor_scene_textures_shutdown(fx.st));
+    break_runtime_test_reload_set_gates(0u, 0u);
+    break_editor_scene_textures_set_shutdown_timeout_for_test(fx.st, 2000u);
+    ASSERT_TRUE(break_editor_scene_textures_shutdown(fx.st));
+    scenetex_close(&fx, uris, 1u);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shell_create_and_destroy);
+    RUN_TEST(scene_textures_load_list_and_hot_reload);
+    RUN_TEST(scene_textures_bad_file_keeps_the_previous_image);
+    RUN_TEST(scene_textures_unsafe_paths_are_listed_but_never_opened);
+    RUN_TEST(scene_textures_relative_scene_path_has_no_base);
+    RUN_TEST(scene_textures_more_than_eight_are_listed_and_only_eight_load);
+    RUN_TEST(scene_textures_set_scene_keeps_surviving_textures_and_drops_the_rest);
+    RUN_TEST(scene_textures_headless_then_device_and_bounded_shutdown);
     RUN_TEST(i18n_shell_created_in_chinese_shows_chinese_text);
     RUN_TEST(i18n_palette_switches_language_at_runtime);
     RUN_TEST(i18n_set_language_api_is_bounded);
