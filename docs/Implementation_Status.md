@@ -7,7 +7,7 @@
 - **测试**：`test_editor_scene_textures` 9 例（真实 BSCN、v1/v2 手工布局、各种截断和畸形 chunk、路径规则）；`test_editor_shell` 新增 11 例（所有者 7 例、面板 4 例），总数 183。先红后绿；变异检查覆盖路径规则、chunk 校验和全部接线点（不同步、不刷新、不 tick、新建场景不清理、设备不转发、不安全检查、8 张上限、保留存活预览），均使对应用例变红。final 树、ASan+UBSan、TSan 三棵树 183/183，无报告。
 - **实机**：X11（Xwayland）、NVK Vulkan 与 Mesa OpenGL 各跑一遍，中文再跑一遍 Vulkan：初始两行为就绪，把 `tex0.png` 改写为 16x48 后该行变为 `16x48 ready`，写入垃圾后变为 `failed` 且保留尺寸，删除 `tex1.png` 后变为 `failed`。依据是通过 gdb 在 shell tick 读取的行文本；本机无法查看截图像素，所以不声称画面正确。
 - **未做**：实体代理贴图（无数据链接）、这些纹理的缩略图控件、材质参数编辑、Windows/macOS 实机。详见 `docs/design/editor_hot_reload.md` §9。
-- **事故记录**：这一轮中途我误用 `git checkout -- .` 把当时尚未提交的 shell/面板改动整体回滚；子代理（LuaJIT 评估）对 `engine/tests/bench_lua_backends.c` 的未提交修改也被一并回退。shell/面板代码按已验证的内容重做并重新跑完全部变异检查后提交；子代理的那个文件需要它自己重新写。
+- **事故记录**：这一轮中途我误用 `git checkout -- .` 把当时尚未提交的 shell/面板改动整体回滚。当时后台的 LuaJIT 评估子代理也有未提交的改动；它之后仍在继续写 `engine/tests/bench_lua_backends.c`，该文件目前仍在被它修改，我没有碰它。shell/面板代码按已验证的内容重做并重新跑完全部变异检查后提交。
 
 ## 本轮更新：按客户端区分的 undo（2026-10-30）
 
