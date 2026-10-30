@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：editor remote HISTORY（2026-10-30）
+
+- **交付**：新增 `BREAK_EDITOR_MSG_HISTORY = 18`，只读返回共享命令栈的 undo/redo 深度、revision（u64），以及下一次 UNDO 会撤销的命令描述（不超过 127 B）。本地 shell 与所有 remote 客户端本来就共用同一个命令栈；新消息让客户端在发送 UNDO 前就能知道会撤销哪条命令，revision 变化也能反映本地的修改。
+- **测试**：新增 `remote_history_reports_the_shared_undo_stack`，覆盖：空栈；本地添加实体后 undo=1、revision 增大、带描述；remote UNDO 后 redo=1；带 payload 时会话关闭。先红后绿；final 树 168/168，ASan 树 168/168。fuzz id 扩到 4..18，ASan 下 4 个 seed、每个 20000 条消息全部通过，seed 1 中 HISTORY 被接受 296 次；`ctest -L fuzz` 6/6。两棵树的 ctest 都只剩已知的 x11 失败。
+- **未做**：按客户端区分的 undo（每个客户端只撤销自己的命令）。
+
 ## 本轮更新：viewport 线框显示（2026-10-30）
 
 - **交付**：开启后每个 proxy 用 12 条边框绘制，不再画实心盒，选中描边不受影响。入口有三处：palette 命令“Toggle wireframe / 切换线框显示（wireframe）”，设置项 `wireframe=on|off`（会持久化），以及 remote VIEW 的 bit 3。另有快捷键 Z（不带修饰键，Ctrl+Z 仍为撤销），测试中已覆盖 Z/Shift+Z。属于视图状态，不产生 doc 编辑。新增接口 `break_editor_viewport3d_set_wireframe`、`break_editor_shell_wireframe`，stats 新增 `wire_edges` 字段。

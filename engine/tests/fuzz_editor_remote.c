@@ -439,8 +439,8 @@ typedef struct Stats {
     unsigned max_entities;
     /* per editor id 4..13: messages that reached the session manager, and how
      * many the handler accepted (apply OK) */
-    unsigned reached[18];
-    unsigned accepted[18];
+    unsigned reached[19];
+    unsigned accepted[19];
     unsigned state_changing_ok; /* applied OK AND the document fingerprint moved */
 } Stats;
 
@@ -500,10 +500,10 @@ static bool feed(Harness *h, u16 id, u16 version, u32 sequence, const void *data
 static u16 pick_id(void) {
     unsigned r = rnd_below(16u);
     if (r < 12u) {
-        return (u16)(4u + rnd_below(14u)); /* 4..17 */
+        return (u16)(4u + rnd_below(15u)); /* 4..18 */
     }
     if (r == 12u) return (u16)rnd_below(4u);      /* 0..3 */
-    if (r == 13u) return (u16)(18u + rnd_below(8u));
+    if (r == 13u) return (u16)(19u + rnd_below(8u));
     if (r == 14u) return 0xFFFFu;
     return (u16)rnd();
 }
@@ -638,7 +638,7 @@ static int one_message(Harness *h, Stats *st, unsigned it) {
     }
 
     result = break_session_manager_last_result(h->manager);
-    if (last_id >= 4u && last_id <= 17u) {
+    if (last_id >= 4u && last_id <= 18u) {
         st->reached[last_id]++;
         if (result == BREAK_SESSION_APPLY_OK) {
             st->accepted[last_id]++;
@@ -732,12 +732,12 @@ int main(int argc, char **argv) {
            st.sessions, st.closed_by_message, st.session_table_stuck, st.evals,
            st.max_entities);
     {
-        static const char *const names[18] = {
+        static const char *const names[19] = {
             "", "", "", "", "DESCRIBE", "LIST", "SPAWN", "REMOVE", "RENAME",
-            "SET_FIELD", "UNDO", "REDO", "EVAL", "RESULT", "SAVE", "LOAD", "VIEW", "CAMERA_SET"};
+            "SET_FIELD", "UNDO", "REDO", "EVAL", "RESULT", "SAVE", "LOAD", "VIEW", "CAMERA_SET", "HISTORY"};
         unsigned i;
         printf("per id (reached manager / handler accepted):");
-        for (i = 4u; i <= 17u; i++) {
+        for (i = 4u; i <= 18u; i++) {
             printf(" %s %u/%u", names[i], st.reached[i], st.accepted[i]);
         }
         printf("\naccepted messages that changed the document: %u\n",

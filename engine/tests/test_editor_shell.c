@@ -4937,7 +4937,8 @@ TEST(remote_protocol_ids_live_in_default_registry)
                {BREAK_EDITOR_MSG_UNDO},     {BREAK_EDITOR_MSG_REDO},
                {BREAK_EDITOR_MSG_EVAL},     {BREAK_EDITOR_MSG_RESULT},
                {BREAK_EDITOR_MSG_SAVE},     {BREAK_EDITOR_MSG_LOAD},
-               {BREAK_EDITOR_MSG_VIEW},     {BREAK_EDITOR_MSG_CAMERA_SET}};
+               {BREAK_EDITOR_MSG_VIEW},     {BREAK_EDITOR_MSG_CAMERA_SET},
+               {BREAK_EDITOR_MSG_HISTORY}};
     const BreakNetMessageRegistry *registry = break_net_message_registry_default();
     usize i;
     for (i = 0u; i < sizeof(ids) / sizeof(ids[0]); i++) {
@@ -5356,6 +5357,66 @@ TEST(remote_camera_set_applies_a_validated_pose)
             ASSERT_TRUE(memcmp(&before, cam, sizeof(before)) == 0);
         }
     }
+
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+/* HISTORY reports the shared command stack read-only: undo/redo depth, the
+ * change revision and the description of the command the next undo would
+ * revert, so a remote client can see what UNDO/REDO will do before sending
+ * them (and notice local edits by the revision moving). */
+TEST(remote_history_reports_the_shared_undo_stack)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    const u8 *p;
+    u64 rev0, rev1;
+    u16 len;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+
+    remote_client_send(&c, BREAK_EDITOR_MSG_HISTORY, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 14u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_HISTORY);
+    p = (const u8 *)rsp.payload;
+    ASSERT_EQ(rd16(p), 0u);       /* undo */
+    ASSERT_EQ(rd16(p + 2u), 0u);  /* redo */
+    rev0 = (u64)rd16(p + 4u) | ((u64)rd16(p + 6u) << 16u) | ((u64)rd16(p + 8u) << 32u) |
+           ((u64)rd16(p + 10u) << 48u);
+    ASSERT_EQ(rd16(p + 12u), 0u); /* no last command */
+
+    /* a local edit shows up */
+    emit_click(find(shell, "editor-add-button"));
+    remote_client_send(&c, BREAK_EDITOR_MSG_HISTORY, NULL, 0u);
+    ASSERT_TRUE(remote_client_recv(&c, &rsp) > 14u);
+    p = (const u8 *)rsp.payload;
+    ASSERT_EQ(rd16(p), 1u);
+    ASSERT_EQ(rd16(p + 2u), 0u);
+    rev1 = (u64)rd16(p + 4u) | ((u64)rd16(p + 6u) << 16u) | ((u64)rd16(p + 8u) << 32u) |
+           ((u64)rd16(p + 10u) << 48u);
+    ASSERT_TRUE(rev1 > rev0);
+    len = rd16(p + 12u);
+    ASSERT_TRUE(len > 0u && len < 128u);
+    ASSERT_EQ(rsp.payload_size, 14u + (u32)len);
+
+    /* remote undo moves it to the redo side */
+    remote_client_send(&c, BREAK_EDITOR_MSG_UNDO, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    remote_client_send(&c, BREAK_EDITOR_MSG_HISTORY, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 14u);
+    p = (const u8 *)rsp.payload;
+    ASSERT_EQ(rd16(p), 0u);
+    ASSERT_EQ(rd16(p + 2u), 1u);
+
+    /* a payload is a protocol error: the session closes, no response */
+    remote_client_send(&c, BREAK_EDITOR_MSG_HISTORY, (const u8[]){1u}, 1u);
+    remote_wait_connection_count(remote, shell, 0u);
 
     remote_client_close(&c);
     break_editor_remote_destroy(remote);
@@ -9575,6 +9636,7 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_load_reverts_configured_path_and_refuses_when_dirty);
     RUN_REMOTE_TEST(remote_view_toggles_view_state_without_touching_the_doc);
     RUN_REMOTE_TEST(remote_camera_set_applies_a_validated_pose);
+    RUN_REMOTE_TEST(remote_history_reports_the_shared_undo_stack);
     RUN_REMOTE_TEST(remote_set_field_maps_component_and_field_names);
     RUN_REMOTE_TEST(remote_eval_runs_on_shell_thread_and_returns_console_tail);
     RUN_REMOTE_TEST(remote_eval_at_4096_boundary_and_len_mismatch_closes);
