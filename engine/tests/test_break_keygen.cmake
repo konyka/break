@@ -164,33 +164,31 @@ if(UNIX)
     # a short write (file size limit, SIGXFSZ ignored) must leave the ring
     # byte-identical and no device file behind
     set(RING7 "${WORK}/ring7.txt")
-    write_ring("${RING7}" 500)
-    file(READ "${RING7}" r7_before)
-    # The case needs the OS to enforce RLIMIT_FSIZE. Probe that first with a plain write well past
-    # the limit; where it is not enforced (observed on macOS CI) the case cannot say anything.
+    # `ulimit -f 1` is 512 bytes under bash-as-sh on Linux and 1024 on macOS, so measure the limit
+    # with a plain write and size the ring just under it: ring + one 82-byte line then crosses it.
+    # Where the limit is not enforced at all (probe wrote the whole 4096 bytes) the case says nothing.
     execute_process(COMMAND sh -c "trap '' XFSZ; ulimit -f 1; head -c 4096 /dev/zero > '${WORK}/fsize_probe' 2>/dev/null"
-                    RESULT_VARIABLE probe_rc OUTPUT_QUIET ERROR_QUIET)
+                    OUTPUT_QUIET ERROR_QUIET)
     file(SIZE "${WORK}/fsize_probe" probe_size)
     file(REMOVE "${WORK}/fsize_probe")
-    if(probe_size GREATER 1024)
-        message(STATUS "RLIMIT_FSIZE is not enforced here (probe wrote ${probe_size} bytes): skipping the short-write case")
-        set(fsize_enforced FALSE)
+    if(probe_size LESS 200 OR probe_size GREATER 1900)
+        message(STATUS "RLIMIT_FSIZE measured as ${probe_size} bytes: unusable here, skipping the short-write case")
     else()
-        set(fsize_enforced TRUE)
-    endif()
-    if(fsize_enforced)
-    execute_process(COMMAND sh -c "trap '' XFSZ; ulimit -f 1; exec '${KEYGEN}' '${RING7}' 6465766963653031 '${WORK}/f1.psk'"
-                    RESULT_VARIABLE rc7 OUTPUT_QUIET ERROR_QUIET)
-    if(rc7 EQUAL 0)
-        message(FATAL_ERROR "append beyond the file size limit unexpectedly succeeded")
-    endif()
-    file(READ "${RING7}" r7_after)
-    if(NOT r7_before STREQUAL r7_after)
-        message(FATAL_ERROR "a short write left a torn keyring")
-    endif()
-    if(EXISTS "${WORK}/f1.psk")
-        message(FATAL_ERROR "a failed append left its device file behind")
-    endif()
+        math(EXPR ring7_size "${probe_size} - 20")
+        write_ring("${RING7}" ${ring7_size})
+        file(READ "${RING7}" r7_before)
+        execute_process(COMMAND sh -c "trap '' XFSZ; ulimit -f 1; exec '${KEYGEN}' '${RING7}' 6465766963653031 '${WORK}/f1.psk'"
+                        RESULT_VARIABLE rc7 OUTPUT_QUIET ERROR_QUIET)
+        if(rc7 EQUAL 0)
+            message(FATAL_ERROR "append beyond the file size limit (${probe_size} bytes, ring ${ring7_size}) unexpectedly succeeded")
+        endif()
+        file(READ "${RING7}" r7_after)
+        if(NOT r7_before STREQUAL r7_after)
+            message(FATAL_ERROR "a short write left a torn keyring")
+        endif()
+        if(EXISTS "${WORK}/f1.psk")
+            message(FATAL_ERROR "a failed append left its device file behind")
+        endif()
     endif()
 
     # concurrent runs never exceed the ring size or tear a line
