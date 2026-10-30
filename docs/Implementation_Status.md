@@ -1,5 +1,19 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：修复 CI 跨平台失败（2026-10-30）
+
+- **起因**：GitHub CI（run 40978332942）在 Windows 和 macOS 上失败，原因有四个：
+  1. `test_break_lua_ecs_apply` 使用了 `strdup`，在 Windows Clang 下触发 `-Werror` 弃用告警；
+  2. MSVC 报 `editor_panels.c` 中的 C4456（内层 `i` 遮蔽外层）；
+  3. MinGW 上 `vfs_pak_write` 用 ISO `rename()` 覆盖已有目标失败，`test_vfs` 和 `test_editor_shell` 中写 pak 的用例因此失败；
+  4. macOS 上 `test_break_keygen` 用了 GNU 独有的 `stat -c`。
+- **修复**：
+  1. 改用 malloc + memcpy 复制字符串；
+  2. 内层循环变量改名为 `x` 和 `h`；
+  3. `vfs_pak_write` 在 `_WIN32` 下改用 `MoveFileExA(..., MOVEFILE_REPLACE_EXISTING)`，与 packer 的写法一致；
+  4. keygen 和 manifest_tool 两个 CMake 测试改用 `ls -l` 匹配 `-rw-------`。
+- **验证**：本地默认树只剩已知的 x11 失败；本机没有 Windows 和 macOS 工具链，Windows/macOS 上的结果以下一次 CI 为准。
+
 ## 本轮更新：灰度分桶接入 stage（2026-10-30）
 
 - **交付**：新增 `break_update_client_stage_rollout` 和错误码 `BREAK_UPDATE_CLIENT_ROLLOUT`。验签和兼容性检查之后、传输之前做分桶判定，不在范围内时零 fetch、零写盘；原 `stage` 的行为不变，二者共用内部的 `upc_stage`。百分比由调用方传入，因为 manifest v1 没有对应字段。

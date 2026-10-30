@@ -205,7 +205,10 @@ TEST(string_values_parse_independently_of_the_locale)
     bool have_comma_locale;
     ASSERT_NOT_NULL(w);
     if (prev != NULL) {
-        saved = strdup(prev);
+        /* portable copy (strdup is POSIX; MSVC deprecates the name) */
+        size_t len = strlen(prev) + 1u;
+        saved = (char *)malloc(len);
+        if (saved != NULL) memcpy(saved, prev, len);
     }
     have_comma_locale = setlocale(LC_NUMERIC, "de_DE.UTF-8") != NULL ||
                         setlocale(LC_NUMERIC, "de_DE.utf8") != NULL ||

@@ -3,6 +3,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 #include "async_loader_private.h" /* R255: AsyncMutex for concurrent PAK reads */
 
 static u32 fnv1a(const char *str) {
@@ -417,7 +423,13 @@ bool vfs_pak_write(const char *path, const VFSPakSource *sources, u32 count) {
     }
     if (fflush(fp) != 0) ok = false;
     if (fclose(fp) != 0) ok = false;
+    /* ISO rename() fails on Windows when the target exists; replace it
+     * explicitly there (the packer's MoveFileEx idiom). */
+#ifdef _WIN32
+    if (ok && !MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) ok = false;
+#else
     if (ok && rename(tmp, path) != 0) ok = false;
+#endif
     if (!ok) remove(tmp);
     return ok;
 }

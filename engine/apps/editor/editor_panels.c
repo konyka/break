@@ -453,8 +453,8 @@ static bool shell_sync_selection(BreakEditorShell *shell) {
     }
     {
         u32 k = 0u;
-        for (u32 i = 0u; i < shell->extra_count; i++) {
-            BreakEditorEntityId id = shell->extra[i];
+        for (u32 x = 0u; x < shell->extra_count; x++) {
+            BreakEditorEntityId id = shell->extra[x];
             bool live = false;
             for (usize j = 0u; j < break_editor_doc_entity_count(shell->doc); j++) {
                 BreakEditorEntityId e;
@@ -474,19 +474,19 @@ static bool shell_sync_selection(BreakEditorShell *shell) {
     }
     {
         u32 k = 0u;
-        for (u32 i = 0u; i < shell->hidden_count; i++) {
+        for (u32 h = 0u; h < shell->hidden_count; h++) {
             bool live = false;
             for (usize j = 0u; j < break_editor_doc_entity_count(shell->doc); j++) {
                 BreakEditorEntityId e;
                 const char *unused = NULL;
                 if (break_editor_doc_entity_at(shell->doc, j, &e, &unused) &&
-                    break_editor_entity_id_eq(e, shell->hidden[i])) {
+                    break_editor_entity_id_eq(e, shell->hidden[h])) {
                     live = true;
                     break;
                 }
             }
             if (live) {
-                shell->hidden[k++] = shell->hidden[i];
+                shell->hidden[k++] = shell->hidden[h];
             }
         }
         if (k != shell->hidden_count) {
