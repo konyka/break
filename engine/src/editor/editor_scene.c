@@ -449,6 +449,22 @@ void break_editor_doc_kept_chunks_free(BreakEditorDoc *doc) {
     kept_free(doc->kept_chunks, doc->kept_chunk_count);
     doc->kept_chunks = NULL;
     doc->kept_chunk_count = 0;
+    doc->kept_version = 0;
+}
+
+bool break_editor_doc_kept_chunk(const BreakEditorDoc *doc, u32 chunk_type,
+                                 const u8 **bytes, u32 *size,
+                                 u32 *bscn_version) {
+    if (!doc || !bytes || !size) return false;
+    for (u32 i = 0; i < doc->kept_chunk_count; i++) {
+        if (doc->kept_chunks[i].type == chunk_type) {
+            *bytes = doc->kept_chunks[i].bytes;
+            *size = doc->kept_chunks[i].size;
+            if (bscn_version) *bscn_version = doc->kept_version;
+            return true;
+        }
+    }
+    return false;
 }
 
 /* Copies the game-side chunks out of an already-validated BSCN image. A
@@ -646,6 +662,11 @@ static bool doc_load_staged(BreakEditorDoc *doc, const char *path,
     break_editor_doc_kept_chunks_free(doc);
     doc->kept_chunks = kept;
     doc->kept_chunk_count = kept_n;
+    {
+        BscnHeader loaded_header;
+        memcpy(&loaded_header, data, sizeof(loaded_header)); /* size >= header: kept_collect checked */
+        doc->kept_version = kept_n != 0u ? loaded_header.version : 0u;
+    }
     memset(doc->slots, 0, sizeof(BreakEditorNameSlot) * ECS_MAX_ENTITIES);
     doc->named_count = 0;
     break_editor_cmd_stack_clear(doc->stack);

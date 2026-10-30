@@ -130,6 +130,7 @@ struct BreakEditorDoc {
      * payload + the table). */
     struct BreakEditorKeptChunk *kept_chunks;
     u32 kept_chunk_count;
+    u32 kept_version; /* BSCN header version the kept chunks were read from (0 = none) */
 };
 
 struct BreakEditorCmdStack {

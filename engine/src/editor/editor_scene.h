@@ -122,3 +122,11 @@ bool break_editor_doc_load(BreakEditorDoc *doc, const char *path);
  * instead of re-reading path. sidecar_path is still read from path at commit. */
 bool break_editor_doc_load_bytes(BreakEditorDoc *doc, const char *path,
                                   const void *data, usize size);
+/* Read-only view of a game-side chunk the last load kept verbatim (e.g.
+ * BSCN_CHUNK_RESOURCES). The bytes are borrowed from the document and stay
+ * valid until the next load/reset/destroy. `bscn_version` (optional) is the
+ * BSCN header version of the file they came from. false when the document
+ * kept no such chunk. */
+bool break_editor_doc_kept_chunk(const BreakEditorDoc *doc, u32 chunk_type,
+                                 const u8 **bytes, u32 *size,
+                                 u32 *bscn_version);
