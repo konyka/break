@@ -6,8 +6,10 @@
  * backend at a time so the evaluation never adds LuaJIT to the repository.
  *
  *   Lua 5.4 (vendored):
+ *     gcc -std=c11 -O2 -w -DMAKE_LIB -I engine/external -c \
+ *         engine/external/lua/onelua.c -o lua54.o
  *     gcc -std=c11 -O2 -I engine/external engine/tests/bench_lua_backends.c \
- *         <liblua54.a | onelua.o> -lm -o bench_lua54
+ *         lua54.o -lm -o bench_lua54
  *   LuaJIT (scratch checkout, never committed):
  *     gcc -std=c11 -O2 -DBREAK_BENCH_LUAJIT -I /tmp/luajit-eval/src \
  *         engine/tests/bench_lua_backends.c /tmp/luajit-eval/src/libluajit.a \
@@ -17,13 +19,17 @@
  * and, when -DBREAK_LUAJIT_EVAL_DIR=<dir> is given, a second executable
  * compiled with BREAK_BENCH_LUAJIT that links <dir>/src/libluajit.a.
  *
- * Usage: bench [--runs N] [--jit on|off] [--only fib|table|string]
+ * Usage: bench [--runs N] [--jit on|off] [--hook] [--only fib|table|string]
  *   --jit only affects LuaJIT; "off" runs jit.off() before each benchmark
- *   (interpreter mode). Every run uses a fresh lua_State created through
+ *   (interpreter mode). --hook arms lua_sethook(LUA_MASKCOUNT, INT_MAX) with
+ *   a callback that errors if it ever fires, which is how break_lua arms its
+ *   instruction budget; the benchmark fails if the budget is exhausted.
+ *   Every run uses a fresh lua_State created through
  *   lua_newstate with a byte-counting allocator, so JIT warm-up and
  *   compilation are part of the measured time, and the allocator-accounted
  *   peak is reported per run. */
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,6 +74,12 @@ static void *bench_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
         a->peak = a->live;
     }
     return out;
+}
+
+static void bench_hook(lua_State *L, lua_Debug *ar)
+{
+    (void)ar;
+    luaL_error(L, "bench: instruction hook fired");
 }
 
 typedef struct {
@@ -130,7 +142,7 @@ static long vm_hwm_kb(void)
 
 #define MAX_RUNS 64
 
-static int run_case(const BenchCase *c, int runs, int jit_on)
+static int run_case(const BenchCase *c, int runs, int jit_on, int hook_on)
 {
     double ms[MAX_RUNS];
     size_t peaks[MAX_RUNS];
@@ -156,6 +168,9 @@ static int run_case(const BenchCase *c, int runs, int jit_on)
 #else
         (void)jit_on;
 #endif
+        if (hook_on) {
+            lua_sethook(L, bench_hook, LUA_MASKCOUNT, INT_MAX);
+        }
         t0 = now_ms();
         rc = luaL_loadstring(L, c->source) || lua_pcall(L, 0, 1, 0);
         ms[i] = now_ms() - t0;
@@ -166,9 +181,9 @@ static int run_case(const BenchCase *c, int runs, int jit_on)
         check = lua_tonumber(L, -1);
         lua_close(L);
         peaks[i] = alloc.peak;
-        printf("RUN %s %s %s run=%d ms=%.2f peak_bytes=%zu\n",
-               BENCH_BACKEND, BENCH_MODE(jit_on), c->name, i + 1, ms[i],
-               peaks[i]);
+        printf("RUN %s %s hook=%s %s run=%d ms=%.2f peak_bytes=%zu\n",
+               BENCH_BACKEND, BENCH_MODE(jit_on), hook_on ? "on" : "off",
+               c->name, i + 1, ms[i], peaks[i]);
     }
     {
         double sorted[MAX_RUNS];
@@ -183,10 +198,11 @@ static int run_case(const BenchCase *c, int runs, int jit_on)
                 peak_max = peaks[i];
             }
         }
-        printf("SUMMARY %s %s \"%s\" runs=%d median_ms=%.2f min_ms=%.2f "
-               "max_ms=%.2f spread_pct=%.1f alloc_peak_bytes=%zu "
+        printf("SUMMARY %s %s hook=%s \"%s\" runs=%d median_ms=%.2f "
+               "min_ms=%.2f max_ms=%.2f spread_pct=%.1f alloc_peak_bytes=%zu "
                "check=%.0f vm_hwm_kb=%ld\n",
-               BENCH_BACKEND, BENCH_MODE(jit_on), c->label, runs, median,
+               BENCH_BACKEND, BENCH_MODE(jit_on), hook_on ? "on" : "off",
+               c->label, runs, median,
                sorted[0], sorted[runs - 1],
                median > 0.0 ? 100.0 * (sorted[runs - 1] - sorted[0]) / median
                             : 0.0,
@@ -199,6 +215,7 @@ int main(int argc, char **argv)
 {
     int runs = 5;
     int jit_on = 1;
+    int hook_on = 0;
     const char *only = NULL;
     size_t i;
     int a;
@@ -207,11 +224,13 @@ int main(int argc, char **argv)
             runs = atoi(argv[++a]);
         } else if (strcmp(argv[a], "--jit") == 0 && a + 1 < argc) {
             jit_on = strcmp(argv[++a], "off") != 0;
+        } else if (strcmp(argv[a], "--hook") == 0) {
+            hook_on = 1;
         } else if (strcmp(argv[a], "--only") == 0 && a + 1 < argc) {
             only = argv[++a];
         } else {
             fprintf(stderr,
-                    "usage: %s [--runs N] [--jit on|off] [--only "
+                    "usage: %s [--runs N] [--jit on|off] [--hook] [--only "
                     "fib|table|string]\n",
                     argv[0]);
             return 2;
@@ -225,7 +244,7 @@ int main(int argc, char **argv)
         if (only && strcmp(only, kCases[i].name) != 0) {
             continue;
         }
-        if (run_case(&kCases[i], runs, jit_on) != 0) {
+        if (run_case(&kCases[i], runs, jit_on, hook_on) != 0) {
             return 1;
         }
     }

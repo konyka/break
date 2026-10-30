@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：LuaJIT 评估（2026-10-30）——已评估，不采纳
+
+- **结论**：不在 `break_lua` 里加 `BREAK_LUA_BACKEND=luajit`，不新增依赖。证据和全部数字在 `docs/design/luajit_evaluation.md`（LuaJIT `8ca762976ebc85ad9bde3e15f147a7e326e0dd01`，MIT，x86-64 Linux，gcc 16.2.1，GC64，单机单平台）。
+- **做法**：在 `/tmp` 里克隆并构建 LuaJIT（没有入库），写了一份 5.4 到 5.1 的 C API 垫片（只补 `lua_rotate`、`lua_pcallk`、`lua_absindex` 等缺的调用），用它把现有 `test_break_lua*` 合同测试针对 LuaJIT 编译运行；另写了 `engine/tests/bench_lua_backends.c`（EXCLUDE_FROM_ALL 风格的单文件基准，手工编译，不进 CMake）。
+- **数字**：合同测试在 `jit.off()` 下 103/104、1685/1695 条断言（99.4%）；stock JIT 开启时 93/104、94.6%，低于 95% 的门槛。性能相对 Lua 5.4.7（无钩子）：JIT 关 fib 1.39×、table 0.68×（更慢）、string 1.63×；JIT 开 8.18×、12.48×、4.42×。
+- **为什么不采纳**：（1）stock JIT 下指令预算失效：`while true do end` 永远走不到 `lua_sethook(LUA_MASKCOUNT)` 的钩子，9 个探测用例里 7 个挂到 alarm；让预算成立只有两条路，关 JIT（收益有限，table 反而更慢）或自编带 `LUAJIT_ENABLE_CHECKHOOK` 的 LuaJIT（挂着钩子时 fib 0.37×、table 0.20×，比 5.4 还慢，并且要自己维护一份构建）。我另外独立写了一个最小探测复现了这一条：JIT 开时被 alarm 杀掉（退出码 142），`jit.off()` 后钩子触发。（2）语言是 Lua 5.1 语义：没有整数子类型、位运算是 32 位（`1<<40` 得 256）、`//`、`<const>`、`utf8`、`string.pack` 缺失；垫片补不了语言，现有合同测试对这些是盲的，所以 99.4% 不能当作脚本可移植的证据。（3）JIT 机器码绕过 `memory_budget`（约 0.6 MiB）。（4）克隆里没有 release tag，采用要自己钉 commit。
+- **局限**：只有一台机器、一个平台、三个纯 Lua 微基准，机器有约 1.6 的背景负载，小于 10% 的差异不可靠；没有 ARM64、Windows、macOS、iOS；sanitizer 没有对 LuaJIT 跑；没有测 `maxmcode` 上限与协程相关行为。
+- **重新评估的前提**：产品层面决定脚本方言（Lua 5.1 子集还是放弃）、补覆盖语言语义的合同测试、决定指令预算的实现路径、决定机器码如何计入 `memory_budget`。
+
 ## 本轮更新：服务端权威参考引擎与客户端完整性信号（2026-10-30）
 
 - **交付**：两个可选静态库，都不链接进 `engine`、`engine_demo`、`dxx_break`、`editor`（契约 ctest 钉住）。

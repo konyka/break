@@ -99,6 +99,7 @@
 ## 3. 设计-only / 未实现
 
 - **LuaJIT**：Stage 3.5 延期项，本计划不交付（gating 条件见 roadmap）。
+- LuaJIT 评估结论（已评估，不采纳）：见 [`luajit_evaluation.md`](luajit_evaluation.md)。
 - **engine/demo 集成**：未做（§2.9 提供了施加到 World 的 helper，但 demo 未接入）。
 - **CLOSED/TIMEOUT 语义**：枚举保留，无 API 映射。
 
