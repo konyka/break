@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：在线更新的真实传输、参考服务端与端到端（2026-10-30）
+
+- **交付**（详见 `docs/design/update_transport.md`）：`break_http`（有界 HTTP/1.1 客户端，OpenSSL）、`break_update_server`（参考服务端，非生产）、`break_update_e2e` + `test_break_update_e2e`（真实发布工具、真实服务端、真实更新客户端）。三者都不链接进 `engine`、`engine_demo`、`dxx_break`、`editor`（契约 ctest 钉住）。
+- **传输规则**：https 必须给 CA 文件，不用系统信任库；TLS 1.2 以上；证书和主机名（或 IP）都校验，握手后再查一次验证结果；没有“不校验”的开关。明文 http 只在所有解析结果都是回环地址时允许。不跟随重定向。响应成帧严格：必须有规范的唯一 `Content-Length`，不支持 chunked 和读到关闭，拒绝 `Transfer-Encoding`、非 identity 的 `Content-Encoding`、1xx、裸 CR/LF、折行、超过 64 个头或 8 KiB 的头；声明长度之后多出字节算协议错误；体大于缓冲区在读体之前就报 `TOO_BIG`。Range 请求只接受恰好那个范围的 206（200 算 `RANGE` 错误）。连接超时和总 I/O 超时分开，慢滴服务器拖不过总预算。调用期间屏蔽 SIGPIPE。更新适配器只接受 64 位小写十六进制对象名。
+- **端到端**：正常安装与发布逐字节一致；灰度范围外的设备被拒，服务端日志里对象请求为 0；连接在块中途被切后失败为 fetch 错误、已装状态不变，重试从 65536 字节处续传（第一块只请求 1 次，第二块 2 次）；服务端上被篡改的块被哈希检查拒绝且不安装；manifest 被改一个字节时验签失败且对象请求为 0；没有 CA 时 https 在任何请求到达服务端之前被拒。
+- **测试**：`test_break_http` 37 例（脚本化的服务端线程：明文和 TLS；内存里生成的证书：对的名字、别的名字、已过期、未生效、不受信任的签发者），`test_break_update_e2e`，`test_break_http_target_contract`（导出恰好 6 个函数、无测试钩子和不安全开关、TLS 规则必须留在源码里、不进发布二进制的链接行）。先红后绿。变异检查：不校验对端、不看验证结果、不校验主机名、放开回环限制、去掉 CA 要求（5 项）；接受 chunked、重复 Content-Length、多余字节、读到关闭成帧、200 当作 range 成功、去掉 SIGPIPE 保护（6 项）；服务端忽略 Range、客户端忽略续传偏移、服务端截断错的请求（3 项）；契约 5 项。final、ASan+UBSan、TSan 三棵树全绿。
+- **过程中发现并修正的测试缺陷**：读到关闭的变异最初没被抓到，因为“多余字节”规则也会让该用例失败（头和体同时到达），改成头和体之间停顿 300 ms 后，只有成帧规则本身能让它失败；SIGPIPE 的变异最初没被抓到，因为没有真正触发 EPIPE（改成服务端先发 FIN 再带未读数据关闭，TLS 与明文各一例）；TSan 报了测试服务端线程的一个数据竞争（`saw_connection`），已改成原子变量，被测库本身无报告。`MSG_NOSIGNAL` 单独去掉不改变结果，因为信号屏蔽已覆盖，只算纵深防御。
+- **未做**：生产更新服务、HTTP/2、chunked、代理、重定向、证书吊销检查和钉扎、可中断的 DNS、Windows/macOS（两条 lane 没跑）、接入编辑器或游戏——目前没有任何发布二进制链接 `break_http`。
+
 ## 本轮更新：LuaJIT 评估（2026-10-30）——已评估，不采纳
 
 - **结论**：不在 `break_lua` 里加 `BREAK_LUA_BACKEND=luajit`，不新增依赖。证据和全部数字在 `docs/design/luajit_evaluation.md`（LuaJIT `8ca762976ebc85ad9bde3e15f147a7e326e0dd01`，MIT，x86-64 Linux，gcc 16.2.1，GC64，单机单平台）。

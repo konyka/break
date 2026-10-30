@@ -312,7 +312,7 @@ OK），open 之后初始为 OK；open 本身只以 NULL 报错（无客户端�
    `test_break_update` `rollout_bucket_is_deterministic_bounded_and_uniform`
    （确定性、换版本重洗牌、1 万个设备 10 个十分位各在 ±10% 内、判定边界、
    参数校验）。
-3. **服务端**：无更新服务端、无 manifest 分发、无版本协商。
+3. **服务端**：~~无更新服务端、无 manifest 分发~~ **2026-10-30 起有参考服务端和真实 HTTP/TLS 传输**（`break_update_server`、`break_http`、端到端测试 `test_break_update_e2e`，见 `update_transport.md`）：TLS 校验、Range 精确匹配、断点续传（第二个块被截断后重试，第一个块只请求一次）、灰度门在任何对象请求之前、被篡改的块与被改动的 manifest 都被拒绝。**仍无**：生产更新服务、版本协商、CDN、访问控制；百分比的来源是服务端 `/rollout`（`break_http_rollout_percent_bp`），仍属建议性输入，manifest 仍离线验签。
 4. **签名之后的在线流程**：~~离线签名 tooling~~ **离线签名 tooling 已交付
    （2026-10-30）**：`engine/tools/break_manifest_tool.c`，在发布机上运行，
    直接链接 OpenSSL；`break_crypto` 仍只做验签，客户端不含签名能力：

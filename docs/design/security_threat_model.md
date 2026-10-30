@@ -123,7 +123,7 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 
 以下各项**明确不在本阶段交付**，不得由本文任何设计目标推断为已有能力：
 
-1. Stage 5 子项目 2 的**在线半侧**：真实传输接线（HTTP/TLS/range 映射）、灰度（gray rollout）客户端逻辑、服务端与签名后的在线流程——客户端离线机制（chunked download、byte-level resume、A/B activation、rollback、channel policy 经 `compatible()`）已由 Phase B 交付（`docs/design/update_client.md`），但传输只经调用方 `BreakUpdateFetchFn` 回调注入，仓库内无任何 socket/HTTP/TLS/curl 代码；
+1. Stage 5 子项目 2 的**在线半侧**（**2026-10-30 起库内有 HTTP/TLS/range 传输 `break_http`、参考服务端 `break_update_server` 和端到端测试，见 `update_transport.md`；仍无生产更新服务，没有任何随发布二进制链接 `break_http`，Windows/macOS 未实现**）：真实传输接线（HTTP/TLS/range 映射）、灰度（gray rollout）客户端逻辑、服务端与签名后的在线流程——客户端离线机制（chunked download、byte-level resume、A/B activation、rollback、channel policy 经 `compatible()`）已由 Phase B 交付（`docs/design/update_client.md`），但传输只经调用方 `BreakUpdateFetchFn` 回调注入，仓库内无任何 socket/HTTP/TLS/curl 代码；
 2. Stage 5 子项目 3 的**服务端半侧与真实传输**：crash 符号化服务/聚类/回归统计、真实上传传输（HTTP/TLS/端点配置/认证）、GPU/RHI/网络/输入摘要捕获（app 经 context-blob 接缝的后续集成）、minidump/PE 格式、Windows SEH/VEH（`_WIN32` 为编译期 stub）——客户端半侧（capture/local spool/redaction 实现/upload seam/符号化契约）已由 Phase C 交付（`docs/design/crash_reporting.md`）；
 3. Stage 5 子项目 4 的**凭证体系半侧**：per-device key provisioning tooling、轮换/吊销编排、密钥托管——TLS 模式、CHALLENGE/AUTH-v2、key_id 解析接缝、max_age 已由 Phase D 交付（`docs/design/transport_security.md`），但在 app 侧 provisioning 落地前认证接缝不可投入真实凭证部署；
 4. Stage 5 子项目 5 的**剩余半侧**：server authority 的**产品化**（参考引擎 `break_authority` 与 client 信号库 `break_integrity` 已于 2026-10-30 交付，见 `server_authority.md`、`client_integrity.md`；仍无服务端产品、网络前端、持久化、权威模拟、匹配，两个库都没有接入任何可执行文件；integrity 在 Windows/macOS 上未实现）、应用消息级 replay window（跨重连/应用消息——Phase D 交付的是握手级 + 每连接顺序性）、消息/字节级限速（Phase D 交付的是 admission 级）；

@@ -569,6 +569,18 @@ if(BREAK_ENABLE_CRYPTO)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(break_update PUBLIC break_crypto)
 
+    # Stage 5 — break_http: a bounded HTTP/1.1 client over OpenSSL (TLS with an
+    # explicit CA file, loopback-only plain http, strict response framing; the
+    # transport behind BreakUpdateFetchFn and the crash uploader,
+    # docs/design/update_transport.md). POSIX sockets only.
+    if(NOT WIN32)
+        add_library(break_http STATIC src/net_http/break_http.c)
+        set_property(TARGET break_http PROPERTY C_STANDARD 11)
+        target_include_directories(break_http PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(break_http PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+
     # Stage 5 subproject 5 — break_integrity: client-side tamper SIGNALS (file
     # hashes, tracer, module allow-list). Observes and reports only; it never
     # allows or denies anything and is not an authority input
@@ -5549,6 +5561,45 @@ endif()
     set_tests_properties(test_break_replay_window PROPERTIES LABELS "headless;network")
 
     # test_break_msg_rate: per-connection message/byte token buckets.
+    if(BREAK_ENABLE_CRYPTO AND TARGET break_http)
+        add_executable(test_break_http tests/test_break_http.c)
+        target_include_directories(test_break_http PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_http PRIVATE
+            BREAK_TEST_SSL_FIXTURE_DIR="${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl")
+        target_link_libraries(test_break_http PRIVATE break_http pthread)
+        add_test(NAME test_break_http COMMAND test_break_http)
+        set_tests_properties(test_break_http PROPERTIES LABELS "headless;security;update" TIMEOUT 120)
+        add_test(NAME test_break_http_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DHTTP_ARCHIVE=$<TARGET_FILE:break_http>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_http_target_contract.cmake)
+        set_tests_properties(test_break_http_target_contract PROPERTIES
+            LABELS "headless;security;platform_contract")
+    endif()
+
+    if(BREAK_ENABLE_CRYPTO AND TARGET break_http AND TARGET break_update AND TARGET break_manifest_tool
+       AND TARGET break_manifest_verify)
+        # The reference server and the e2e client are test/dev tools: they are
+        # never linked into engine, engine_demo, dxx_break or editor.
+        add_executable(break_update_server tools/break_update_server.c)
+        target_link_libraries(break_update_server PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        add_executable(break_update_e2e tests/break_update_e2e.c src/platform/platform_fs.c)
+        target_include_directories(break_update_e2e PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(break_update_e2e PRIVATE break_http break_update)
+        add_test(NAME test_break_update_e2e
+            COMMAND ${CMAKE_COMMAND}
+                -DTOOL=$<TARGET_FILE:break_manifest_tool>
+                -DVERIFY=$<TARGET_FILE:break_manifest_verify>
+                -DSERVER=$<TARGET_FILE:break_update_server>
+                -DCLIENT=$<TARGET_FILE:break_update_e2e>
+                -DCERT=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem
+                -DKEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/break-update-e2e
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_update_e2e.cmake)
+        set_tests_properties(test_break_update_e2e PROPERTIES LABELS "headless;security;update" TIMEOUT 180)
+    endif()
+
     if(BREAK_ENABLE_CRYPTO AND TARGET break_integrity)
         add_executable(test_break_integrity tests/test_break_integrity.c)
         target_include_directories(test_break_integrity PRIVATE ${TEST_INCLUDE_DIRS})
