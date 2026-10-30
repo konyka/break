@@ -33,12 +33,25 @@ const char *__asan_default_options(void) {
 
 static volatile int *g_null;
 
-__attribute__((noinline)) static int leaf(int x) {
+/* The faulting path carries no sanitizer instrumentation: ASan's shadow checks and UBSan's
+ * null-store check must not intercept the fault before the break_crash handler runs, and the
+ * handler copies the 4 KiB of stack above the faulting rsp, which must not contain poisoned
+ * redzones of instrumented frames (the attributes test_break_crash.c uses for its children). */
+#define NOSAN __attribute__((noinline, no_sanitize("address"), no_sanitize("undefined"), no_sanitize("thread")))
+
+NOSAN static int leaf(int x) {
     *g_null = x;
     return x;
 }
-__attribute__((noinline)) static int mid(int x) { return leaf(x + 1) + 1; }
-__attribute__((noinline)) static int outer(int x) { return mid(x + 1) + 1; }
+NOSAN static int mid(int x) { return leaf(x + 1) + 1; }
+NOSAN static int outer(int x) { return mid(x + 1) + 1; }
+
+NOSAN static int crash_step(const char *spool) {
+    BreakCrashConfig cfg;
+    cfg.spool_root = spool;
+    if (!break_crash_install(&cfg)) return 1;
+    return outer(1);
+}
 
 static u8 *read_all(const char *path, usize *len) {
     FILE *f = fopen(path, "rb");
@@ -85,19 +98,13 @@ static void print_counts(BreakCrashSpool *s) {
            (unsigned long long)break_crash_spool_count(s, 1), (unsigned long long)break_crash_spool_count(s, 2));
 }
 
-int main(int argc, char **argv) {
+static int run_step(int argc, char **argv) {
     const char *step;
     if (argc < 2) return usage();
     step = argv[1];
     if (strcmp(step, "build-id") == 0 && argc == 2) {
         printf("%s\n", build_id());
         return 0;
-    }
-    if (strcmp(step, "crash") == 0 && argc == 3) {
-        BreakCrashConfig cfg;
-        cfg.spool_root = argv[2];
-        if (!break_crash_install(&cfg)) return 1;
-        return outer(1);
     }
     if (strcmp(step, "status") == 0 && argc == 3) {
         BreakCrashSpool *s = break_crash_spool_open(argv[2]);
@@ -197,4 +204,10 @@ int main(int argc, char **argv) {
         return n != 0u && write_all(argv[3], text, n) ? 0 : 1;
     }
     return usage();
+}
+
+/* main holds no locals, so the frame the crash handler reads above the fault is clean. */
+NOSAN int main(int argc, char **argv) {
+    if (argc == 3 && strcmp(argv[1], "crash") == 0) return crash_step(argv[2]);
+    return run_step(argc, argv);
 }
