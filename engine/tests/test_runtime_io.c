@@ -12,6 +12,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <signal.h>
 #endif
 
 /* Focused contract tests for the Runtime Core formal thread facade and the
@@ -1013,11 +1014,15 @@ TEST(io_request_double_release_aborts)
     {
         int status = 0;
         ASSERT_EQ(waitpid(pid, &status, 0), pid);
+        if (WIFSIGNALED(status) && WTERMSIG(status) != SIGABRT) {
+            printf("    FAIL-DETAIL: child killed by signal %d (expected SIGABRT)\n",
+                   WTERMSIG(status));
+        }
         if (WIFEXITED(status)) {
             /* 2 = the child's setup failed before the path under test (e.g.
              * shutdown timed out on a loaded runner); 0 = the double release
              * was NOT rejected. Print which, so CI failures are diagnosable. */
-            printf("    child exited %d (%s)\n", WEXITSTATUS(status),
+            printf("    FAIL-DETAIL: child exited %d (%s)\n", WEXITSTATUS(status),
                    WEXITSTATUS(status) == 0 ? "double release not rejected"
                                             : "setup failed before the test path");
         }
