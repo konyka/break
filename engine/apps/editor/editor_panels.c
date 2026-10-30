@@ -3201,8 +3201,9 @@ bool break_editor_shell_revert(BreakEditorShell *shell) {
 
 bool break_editor_shell_apply_view(BreakEditorShell *shell, u8 mask, u8 value) {
     bool persist = false;
-    if (shell == NULL || (mask & (u8)~(BREAK_EDITOR_VIEW_GRID | BREAK_EDITOR_VIEW_STATS |
-                                       BREAK_EDITOR_VIEW_RESET_CAMERA)) != 0u) {
+    const unsigned known = BREAK_EDITOR_VIEW_GRID | BREAK_EDITOR_VIEW_STATS |
+                           BREAK_EDITOR_VIEW_RESET_CAMERA;
+    if (shell == NULL || ((unsigned)mask & ~known) != 0u) {
         return false;
     }
     if ((mask & BREAK_EDITOR_VIEW_GRID) != 0u) {

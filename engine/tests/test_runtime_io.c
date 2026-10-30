@@ -1013,6 +1013,14 @@ TEST(io_request_double_release_aborts)
     {
         int status = 0;
         ASSERT_EQ(waitpid(pid, &status, 0), pid);
+        if (WIFEXITED(status)) {
+            /* 2 = the child's setup failed before the path under test (e.g.
+             * shutdown timed out on a loaded runner); 0 = the double release
+             * was NOT rejected. Print which, so CI failures are diagnosable. */
+            printf("    child exited %d (%s)\n", WEXITSTATUS(status),
+                   WEXITSTATUS(status) == 0 ? "double release not rejected"
+                                            : "setup failed before the test path");
+        }
         ASSERT_TRUE(WIFSIGNALED(status));
     }
 #endif
