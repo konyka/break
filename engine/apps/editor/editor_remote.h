@@ -131,6 +131,12 @@ bool break_editor_remote_add_key(BreakEditorRemote *r, const uint8_t key_id[8],
 bool break_editor_remote_revoke_key(BreakEditorRemote *r,
                                     const uint8_t key_id[8]);
 uint32_t break_editor_remote_key_count(const BreakEditorRemote *r);
+/* Re-reads a keyring file (same format as --remote-keyring-file) and
+ * applies the difference: keys not listed, or listed with a different
+ * secret, are revoked (their sessions closed); new keys are added;
+ * unchanged keys keep their sessions. A malformed or unreadable file
+ * returns false and changes nothing. Shell thread only. */
+bool break_editor_remote_reload_keyring(BreakEditorRemote *r, const char *path);
 
 /* ---------------- editor_main --remote flag plumbing ----------------
  * DEFAULT OFF: without --remote no remote is created and nothing listens.
@@ -166,6 +172,7 @@ typedef struct BreakEditorRemoteCli {
         uint8_t psk[32];
     } keys[8];
     uint32_t key_count;
+    const char *keyring_path;                   /* borrowed from argv */
     const char *scene_path;                     /* borrowed from argv */
 } BreakEditorRemoteCli;
 

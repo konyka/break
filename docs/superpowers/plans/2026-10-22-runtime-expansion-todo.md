@@ -111,7 +111,7 @@
 ### Features not delivered (carried from earlier phases)
 
 - [ ] editor：remote render control 的剩余部分（渲染设置；**VIEW**=16 已于 2026-10-30 交付：网格/统计开关、相机复位与回读；**CAMERA_SET**=17 同日交付：经校验的完整相机位姿；remote **save/load** 已于 2026-10-30 交付：`BREAK_EDITOR_MSG_SAVE`=14、`LOAD`=15，只作用于本地配置的场景路径，LOAD 不丢弃未保存修改，见 `docs/design/editor_remote.md`；资源浏览器图片预览的纹理 hot reload 已于 2026-10-28 交付，见 `docs/design/editor_hot_reload.md` §8；材质/场景纹理 hot reload 未做；viewport shader hot reload 已于 2026-10-27 交付；render debugger 面板与场景 hot reload 已于 2026-10-26 交付，见 `docs/design/editor_render_debugger.md`、`docs/design/editor_hot_reload.md`）
-- [ ] editor remote：生产凭证系统（provisioning/密钥存储；进程内 keyring 已于 2026-10-30 交付：最多 8 个设备密钥、运行时增加、吊销即关闭相关会话，见 `docs/design/editor_remote.md`）、WAN/多客户端管理、remote undo-stack 共享（服务端 transport close 与认证 deadline 已于 2026-10-26 交付，见 `docs/design/editor_remote.md` 末节）
+- [ ] editor remote：生产凭证系统（provisioning/密钥存储；进程内 keyring 已于 2026-10-30 交付：最多 8 个设备密钥、运行时增加、吊销即关闭相关会话；`--remote-keyring-file` 启动加载并在文件变更时热重载（删掉一行即吊销），见 `docs/design/editor_remote.md`）、WAN/多客户端管理、remote undo-stack 共享（服务端 transport close 与认证 deadline 已于 2026-10-26 交付，见 `docs/design/editor_remote.md` 末节）
 - [ ] Lua：LuaJIT 可选后端评估（gating：baseline 合同稳定）
 - [ ] Security：server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling
 - [ ] Update/crash：在线更新真实传输、灰度、服务端；crash 服务端符号化/聚类/回归统计、真实上传传输、GPU/RHI/网络/输入摘要捕获

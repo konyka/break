@@ -6789,6 +6789,71 @@ TEST(remote_tls_keyring_add_and_revoke)
     break_editor_shell_destroy(shell);
 }
 
+/* Reloading the keyring file applies the difference: keys no longer listed
+ * are revoked (their sessions closed), new keys are added, unchanged keys
+ * keep their sessions. A malformed file changes nothing. */
+TEST(remote_tls_keyring_reload_revokes_removed_keys)
+{
+    static const char *k_ring = "editor_remote_reload_test.keyring";
+    static const u8 k_two_id[8] = {'d', 'e', 'v', 'i', 'c', 'e', '0', '2'};
+    u8 two_psk[32];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient a, b;
+    BreakNetEnvelope rsp;
+    FILE *f;
+    usize i;
+    for (i = 0u; i < 32u; i++) two_psk[i] = (u8)(0x40u + i);
+    ASSERT_NOT_NULL(shell);
+    remote = tls_remote_start(shell); /* key edit0001 */
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(break_editor_remote_add_key(remote, k_two_id, two_psk));
+
+    ASSERT_TRUE(tls_client_open(&a, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    ASSERT_TRUE(tls_client_send_auth(&a, k_tls_key_id, k_tls_psk, false));
+    ASSERT_TRUE(tls_client_send(&a, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&a, &rsp));
+    ASSERT_TRUE(tls_client_open(&b, shell, remote));
+    remote_wait_connection_count(remote, shell, 2u);
+    ASSERT_TRUE(tls_client_send_auth(&b, k_two_id, two_psk, false));
+    ASSERT_TRUE(tls_client_send(&b, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&b, &rsp));
+
+    /* malformed file: rejected, both keys stay */
+    f = fopen(k_ring, "wb");
+    ASSERT_NOT_NULL(f);
+    fputs("not a key line\n", f);
+    fclose(f);
+    ASSERT_FALSE(break_editor_remote_reload_keyring(remote, k_ring));
+    ASSERT_EQ(break_editor_remote_key_count(remote), 2u);
+
+    /* the file now lists only edit0001 (same psk) plus a new device03 */
+    f = fopen(k_ring, "wb");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "6564697430303031 ");
+    for (i = 0u; i < 32u; i++) fprintf(f, "%02x", k_tls_psk[i]);
+    fprintf(f, "\n6465766963653033 ");
+    for (i = 0u; i < 32u; i++) fprintf(f, "%02x", (unsigned)(0x70u + i));
+    fprintf(f, "\n");
+    fclose(f);
+    ASSERT_TRUE(break_editor_remote_reload_keyring(remote, k_ring));
+    remove(k_ring);
+    ASSERT_EQ(break_editor_remote_key_count(remote), 2u);
+    ASSERT_TRUE(tls_client_wait_eof(&b)); /* device02 removed: closed */
+    remote_wait_connection_count(remote, shell, 1u);
+    ASSERT_TRUE(tls_client_send(&a, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&a, &rsp)); /* edit0001 unchanged: still up */
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+    tls_client_close(&b);
+    tls_client_close(&a);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
 /* A keyring file parsed by the CLI installs every key: a device using the
  * second key of the file authenticates. */
 TEST(remote_tls_cli_keyring_file_installs_all_keys)
@@ -9406,6 +9471,7 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_tls_auth_v2_client_describe_and_spawn);
     RUN_REMOTE_TEST(remote_tls_keyring_add_and_revoke);
     RUN_REMOTE_TEST(remote_tls_cli_keyring_file_installs_all_keys);
+    RUN_REMOTE_TEST(remote_tls_keyring_reload_revokes_removed_keys);
     RUN_REMOTE_TEST(remote_tls_e2e_connect_auth_describe_spawn_undo_disconnect);
     RUN_REMOTE_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);
     RUN_REMOTE_TEST(remote_tls_auth_deadline_closes_idle_unauthenticated_client);

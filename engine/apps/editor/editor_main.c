@@ -44,6 +44,7 @@
 #endif
 
 #include <core/profiler.h>
+#include <platform/filewatch.h>
 #include <editor/editor_scene.h>
 
 #include "myui/my_window.h"
@@ -54,6 +55,21 @@
 
 #define EDITOR_WIN_W 1280u
 #define EDITOR_WIN_H 800u
+
+/* --remote-keyring-file watcher: a malformed edit keeps the current ring. */
+static FileWatcher keyring_watch;
+static bool keyring_watched = false;
+
+static void editor_keyring_changed(const char *path, void *user) {
+  BreakEditorRemote *remote = (BreakEditorRemote *)user;
+  if (break_editor_remote_reload_keyring(remote, path)) {
+    fprintf(stderr, "editor: keyring reloaded (%u keys)\n",
+            (unsigned)break_editor_remote_key_count(remote));
+  } else {
+    fprintf(stderr, "editor: keyring file rejected; keeping the current "
+                    "keys\n");
+  }
+}
 
 int main(int argc, char **argv) {
   PlatformConfig cfg;
@@ -247,6 +263,13 @@ int main(int argc, char **argv) {
     }
     break_editor_remote_cli_wipe(&remote_cli);
     break_editor_shell_set_remote(shell, remote);
+    if (remote_cli.keyring_path != NULL) {
+      /* editing the keyring file revokes/adds keys while running */
+      filewatch_init(&keyring_watch);
+      filewatch_add(&keyring_watch, remote_cli.keyring_path,
+                    editor_keyring_changed, remote);
+      keyring_watched = true;
+    }
     fprintf(stderr,
             "editor: remote session (DEV TOOL, TLS + AUTH-v2) listening on "
             "127.0.0.1:%u\n",
@@ -290,6 +313,9 @@ int main(int argc, char **argv) {
      * the live 3D view + gizmo/selection reconcile) BEFORE frame_begin's
      * skip decision, so the damage is visible to it. */
     break_editor_shell_tick(shell);
+    if (keyring_watched) {
+      filewatch_poll(&keyring_watch);
+    }
     {
       /* "[* ]<scene> - Break Scene Editor": retitle only when it changed */
       const char *title = break_editor_shell_window_title(shell);
@@ -327,6 +353,9 @@ int main(int argc, char **argv) {
   script_exit = break_editor_input_driver_exit_code(script);
   break_editor_input_driver_destroy(script);
 #endif
+  if (keyring_watched) {
+    filewatch_shutdown(&keyring_watch);
+  }
   break_editor_remote_destroy(remote);
   break_editor_hot_reload_destroy(hot_reload);
   break_editor_shell_set_render_device(shell, NULL);

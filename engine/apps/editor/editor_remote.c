@@ -51,6 +51,8 @@ static void remote_wipe(void *p, size_t n) {
     }
 }
 
+static bool remote_keyring_file_read(const char *path, BreakEditorRemoteCli *out);
+
 #ifdef BREAK_ENABLE_SNOWFLAKE
 
 #include <network/break_net_adapter.h>
@@ -1123,6 +1125,59 @@ uint32_t break_editor_remote_key_count(const BreakEditorRemote *r) {
 #endif
 }
 
+bool break_editor_remote_reload_keyring(BreakEditorRemote *r, const char *path) {
+#ifdef BREAK_ENABLE_CRYPTO
+    BreakEditorRemoteCli file;
+    u32 i, k;
+    bool ok = true;
+    if (r == NULL || path == NULL || !r->has_psk) {
+        return false;
+    }
+    memset(&file, 0, sizeof(file));
+    if (!remote_keyring_file_read(path, &file)) {
+        return false; /* malformed or unreadable: the ring is unchanged */
+    }
+    /* revoke keys that are gone or whose secret changed */
+    for (i = 0u; i < EDITOR_REMOTE_MAX_KEYS; i++) {
+        bool keep = false;
+        u8 id[8];
+        if (!r->keys[i].used) {
+            continue;
+        }
+        for (k = 0u; k < file.key_count; k++) {
+            if (remote_key_id_eq(r->keys[i].key_id, file.keys[k].key_id) &&
+                memcmp(r->keys[i].psk, file.keys[k].psk, 32u) == 0) {
+                keep = true;
+            }
+        }
+        if (!keep) {
+            memcpy(id, r->keys[i].key_id, 8u);
+            (void)break_editor_remote_revoke_key(r, id);
+        }
+    }
+    /* add keys that are new (or re-keyed) */
+    for (k = 0u; k < file.key_count; k++) {
+        bool present = false;
+        for (i = 0u; i < EDITOR_REMOTE_MAX_KEYS; i++) {
+            if (r->keys[i].used &&
+                remote_key_id_eq(r->keys[i].key_id, file.keys[k].key_id)) {
+                present = true;
+            }
+        }
+        if (!present &&
+            !break_editor_remote_add_key(r, file.keys[k].key_id, file.keys[k].psk)) {
+            ok = false;
+        }
+    }
+    remote_wipe(&file, sizeof(file));
+    return ok;
+#else
+    (void)r;
+    (void)path;
+    return false;
+#endif
+}
+
 bool break_editor_remote_start(BreakEditorRemote *r) {
     snow_endpoint_t *endpoint = NULL;
     snow_status_t status;
@@ -1494,6 +1549,12 @@ uint32_t break_editor_remote_key_count(const BreakEditorRemote *r) {
     return 0u;
 }
 
+bool break_editor_remote_reload_keyring(BreakEditorRemote *r, const char *path) {
+    (void)r;
+    (void)path;
+    return false;
+}
+
 bool break_editor_remote_session_stats(const BreakEditorRemote *r,
                                        BreakEditorRemoteSessionStats *out) {
     (void)r;
@@ -1789,6 +1850,7 @@ bool break_editor_remote_cli_parse(int argc, char **argv,
                                  value);
                 goto fail;
             }
+            out->keyring_path = value;
             saw_keyring = true;
         } else {
             if (!remote_hex_decode(value, out->key_id, sizeof(out->key_id))) {
