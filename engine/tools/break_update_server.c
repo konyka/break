@@ -1,4 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE 1 /* O_NOFOLLOW */
+#endif
 /* break_update_server — a small REFERENCE server for the update client
  * (docs/design/update_transport.md). It exists so the whole path (signed
  * manifest -> TLS range downloads -> resume -> stage/activate) can be run end

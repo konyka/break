@@ -4,6 +4,9 @@
 #if defined(__linux__) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE 1 /* flock */
 #endif
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1 /* flock, O_NOFOLLOW */
+#endif
 /* break_keygen — provisions one per-device AUTH-v2 key for the editor
  * remote session (docs/design/editor_remote.md, "Keyring").
  *
@@ -97,13 +100,13 @@ static int kg_lower_eq(const char *a, const char *b, size_t n) {
  * run created it) not accessible by group/other. The lock is re-verified
  * against the path so a ring unlinked by a failing creator is retried. */
 static int kg_open_ring(const char *path, int *created) {
-    int attempt;
+    int attempt = 0;
     *created = 0;
-    for (attempt = 0; attempt < 8; attempt++) {
 #if defined(_WIN32)
-        (void)attempt;
-        return _open(path, _O_RDWR | _O_CREAT | _O_BINARY, KG_MODE); /* no lock or mode guard here */
+    (void)attempt;
+    return _open(path, _O_RDWR | _O_CREAT | _O_BINARY, KG_MODE); /* no lock or mode guard here */
 #else
+    for (attempt = 0; attempt < 8; attempt++) {
         struct stat fst, pst;
         int fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
         if (fd >= 0) {
@@ -132,9 +135,9 @@ static int kg_open_ring(const char *path, int *created) {
         }
         close(fd); /* unlinked or replaced while we waited for the lock: retry */
         *created = 0;
-#endif
     }
     return -1;
+#endif
 }
 
 /* Reads the whole ring through fd. Validates it and counts keys; fails on a

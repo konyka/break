@@ -21,8 +21,7 @@
 #endif
 
 static void tmp_path(char *out, usize cap, const char *name) {
-    const char *dir = getenv("TMPDIR");
-    snprintf(out, cap, "%s/%s_%d", dir && dir[0] ? dir : "/tmp", name, (int)getpid());
+    (void)test_tmp(out, cap, name);
 }
 
 static bool write_file(const char *path, const void *data, usize n) {
@@ -61,7 +60,7 @@ TEST(missing_or_unreadable_file_is_a_check_error_not_clean) {
     f.path = "/nonexistent/definitely/not/here.bin";
     ASSERT_EQ(break_integrity_check_files(&f, 1u), (u32)BINT_SIG_CHECK_ERROR);
     /* a directory is not a file */
-    f.path = "/tmp";
+    f.path = test_tmp_root();
     ASSERT_EQ(break_integrity_check_files(&f, 1u), (u32)BINT_SIG_CHECK_ERROR);
 }
 

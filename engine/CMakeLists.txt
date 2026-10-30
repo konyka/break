@@ -5621,7 +5621,7 @@ endif()
         add_executable(test_break_http tests/test_break_http.c)
         target_include_directories(test_break_http PRIVATE ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_break_http PRIVATE
-            BREAK_TEST_SSL_FIXTURE_DIR="${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl")
+            BREAK_TEST_SSL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl")
         target_link_libraries(test_break_http PRIVATE break_http pthread)
         add_test(NAME test_break_http COMMAND test_break_http)
         set_tests_properties(test_break_http PROPERTIES LABELS "headless;security;update" TIMEOUT 120)
@@ -5649,8 +5649,8 @@ endif()
                 -DVERIFY=$<TARGET_FILE:break_manifest_verify>
                 -DSERVER=$<TARGET_FILE:break_update_server>
                 -DCLIENT=$<TARGET_FILE:break_update_e2e>
-                -DCERT=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem
-                -DKEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
+                -DCERT=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl/break_test_cert.pem
+                -DKEY=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl/break_test_key.pem
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/break-update-e2e
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_update_e2e.cmake)
         set_tests_properties(test_break_update_e2e PROPERTIES LABELS "headless;security;update" TIMEOUT 180)
@@ -5702,8 +5702,8 @@ endif()
                 -DSERVER=$<TARGET_FILE:break_crash_server>
                 -DREPORT=$<TARGET_FILE:break_crash_report>
                 -DCLIENT=$<TARGET_FILE:break_crash_e2e>
-                -DCERT=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem
-                -DKEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
+                -DCERT=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl/break_test_cert.pem
+                -DKEY=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl/break_test_key.pem
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/break-crash-e2e
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crash_e2e.cmake)
         set_tests_properties(test_break_crash_e2e PROPERTIES LABELS "headless;security;crash" TIMEOUT 180)

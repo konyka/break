@@ -31,8 +31,8 @@
 #error "BREAK_TEST_SSL_FIXTURE_DIR is required"
 #endif
 
-#define CERT BREAK_TEST_SSL_FIXTURE_DIR "/snow_test_cert.pem"
-#define KEY BREAK_TEST_SSL_FIXTURE_DIR "/snow_test_key.pem"
+#define CERT BREAK_TEST_SSL_FIXTURE_DIR "/break_test_cert.pem"
+#define KEY BREAK_TEST_SSL_FIXTURE_DIR "/break_test_key.pem"
 
 /* What a finished test wants to know about the request the server saw. */
 typedef struct { char request[8192]; size_t request_len; } SeenRequest;
@@ -774,7 +774,7 @@ TEST(https_with_the_wrong_ca_is_a_tls_error) {
     u8 buf[16];
     u64 got = 0;
     /* a different self-signed certificate is not a trust anchor for this server */
-    ASSERT_EQ(tls_get("localhost", BREAK_TEST_SSL_FIXTURE_DIR "/snow_test_key.pem", true, buf, sizeof(buf), &got), BHTTP_ERR_TLS);
+    ASSERT_EQ(tls_get("localhost", KEY, true, buf, sizeof(buf), &got), BHTTP_ERR_TLS);
 }
 
 /* ---- in-process certificate generation (wrong name / expired) ---- */

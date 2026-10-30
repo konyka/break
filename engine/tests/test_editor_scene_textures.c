@@ -17,8 +17,7 @@
 #include <string.h>
 
 static void tmp_path(char *out, usize cap, const char *name) {
-    const char *dir = getenv("TMPDIR");
-    snprintf(out, cap, "%s/%s", dir && dir[0] ? dir : "/tmp", name);
+    snprintf(out, cap, "%s/%s", test_tmp_root(), name);
 }
 
 /* A scene with two textures (uris a.png / b.png) and two materials: material
