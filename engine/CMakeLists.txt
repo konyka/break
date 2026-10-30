@@ -2411,6 +2411,21 @@ if(ENGINE_BUILD_TESTS)
     set_tests_properties(test_packer_roundtrip PROPERTIES LABELS "headless;asset")
 endif()
 
+# editor remote key provisioning: generates a per-device AUTH-v2 key into a
+# --remote-keyring-file plus the device's raw PSK file (needs the CSPRNG).
+if(BREAK_ENABLE_CRYPTO AND TARGET break_crypto)
+    add_executable(break_keygen tools/break_keygen.c)
+    target_link_libraries(break_keygen PRIVATE break_crypto)
+    if(ENGINE_BUILD_TESTS)
+        add_test(NAME test_break_keygen
+            COMMAND ${CMAKE_COMMAND}
+                -DKEYGEN=$<TARGET_FILE:break_keygen>
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/break-keygen
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_keygen.cmake)
+        set_tests_properties(test_break_keygen PROPERTIES LABELS "headless;security")
+    endif()
+endif()
+
 # Strict, allocation-free verifier for Unicode LineBreakTest-compatible files.
 add_executable(verify_myui_line_break tools/verify_myui_line_break.c)
 target_include_directories(verify_myui_line_break PRIVATE

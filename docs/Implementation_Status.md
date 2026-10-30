@@ -6,7 +6,8 @@
 - **测试**：`remote_tls_keyring_add_and_revoke` 走真实 TLS 和 AUTH-v2，用两个设备 key，覆盖重复 id 被拒、吊销后 B 收到 EOF 而 A 仍可用、被吊销的 key 新连接被拒；先红后绿。变异检查：不关闭会话时变红。`build-sdd-p4-final` 163/163，ASan 树 163/163，fuzz seed 1 无报告；两棵树的 ctest 都只剩已知的 x11 失败。
 - **追加 CLI keyring 文件**：新增 `--remote-keyring-file F` 参数，与另外两种 PSK 参数互斥。文件每行一个 key，最多 8 行，id 不能重复，大小不超过 2047 B；读取时不缓冲，读完擦除。`break_editor_remote_cli_install_keys` 负责安装，`editor_main` 已改为调用它。测试：CLI 测试覆盖正常文件和 5 种坏文件（短 PSK、非 hex、重复 id、空文件、9 个 key）以及参数互斥；e2e 测试用文件中的第 2 个 key 完成 TLS 认证。变异检查：只安装第一个 key 时变红。`build-sdd-p4-final` 和 ASan 树均 164/164。
 - **追加 keyring 热重载**：新增 `break_editor_remote_reload_keyring`，读取文件后按差异处理：被删除或 PSK 变更的 key 吊销并关闭其会话，新增的 key 加入，未变的 key 及其会话保留；文件格式不对时保持原状。`editor_main` 通过 filewatch 监视 keyring 文件，变化时自动重载。测试 `remote_tls_keyring_reload_revokes_removed_keys` 先红后绿，165/165（final 树和 ASan 树）。在真实 editor 上手动验证：改成 2 个 key 后提示“reloaded (2 keys)”，写入乱码后提示“rejected”。
-- **未做**：向设备分发 key。
+- **追加 break_keygen 工具**：位于 `engine/tools/break_keygen.c`，用 CSPRNG 生成 32 B 密钥，追加一行到 keyring 文件，同时写出设备端的原始 PSK 文件（独占创建，权限 0600）。重复 id、错误 id、keyring 已满、keyring 格式错误、设备文件已存在时都会拒绝，失败时两个文件都不改动。测试 `test_break_keygen`（CMake 脚本）先红后绿；变异检查：关掉重名检查后变红。target 原名 `editor_keygen`，与 crypto target 合约的 `editor` 前缀正则冲突，因此改名 break_keygen。手动验证：在 editor 运行时执行 keygen，editor 提示“reloaded (2 keys)”。两棵树的 ctest 只剩已知的 x11 失败；默认树本次 235/235 全过。
+- **未做**：自动 enrolment，设备文件仍需手动拷贝。
 
 ## 本轮更新：editor remote SAVE（2026-10-30）
 
