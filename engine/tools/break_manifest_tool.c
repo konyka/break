@@ -16,7 +16,10 @@
  *       Appends the Ed25519 signature line over the body bytes. The body
  *       must already be a structurally valid manifest prefix: the tool
  *       re-parses body + signature with the client's grammar rules before
- *       writing, so it never emits a manifest the client would reject.
+ *       writing, so it never emits a manifest the client would reject. It is
+ *       deliberately a little stricter than the grammar: a chunk above the
+ *       client store limit (128 MiB) is refused, because the client could
+ *       never install it. Every body byte must be LF or printable ASCII.
  *
  * Exit 0 on success, 1 on failure, 2 on usage. Key bytes are wiped. */
 #define _POSIX_C_SOURCE 200809L
@@ -34,6 +37,7 @@
 #define MT_MAX_MANIFEST (1024u * 1024u)
 #define MT_MAX_FILES 4096u
 #define MT_MAX_NAME 128u
+#define MT_MAX_CHUNK (128ull * 1024ull * 1024ull) /* client store limit (break_update.c) */
 
 static void mt_wipe(void *p, size_t n) {
     volatile unsigned char *v = (volatile unsigned char *)p;
@@ -91,15 +95,18 @@ static int mt_keygen(const char *priv_path, const char *pub_path) {
     unsigned char seed[32], pub[32];
     size_t seed_len = sizeof(seed), pub_len = sizeof(pub), i;
     char pub_hex[65];
-    int fd, ok = 0;
-    FILE *f;
+    int fd, pub_created = 0, ok = 0;
+    if (strcmp(priv_path, pub_path) == 0) {
+        fprintf(stderr, "break_manifest_tool: the private and public key paths must differ\n");
+        return 1;
+    }
     if (ctx == NULL || EVP_PKEY_keygen_init(ctx) <= 0 || EVP_PKEY_keygen(ctx, &key) <= 0 ||
         EVP_PKEY_get_raw_private_key(key, seed, &seed_len) <= 0 || seed_len != 32u ||
         EVP_PKEY_get_raw_public_key(key, pub, &pub_len) <= 0 || pub_len != 32u) {
         fprintf(stderr, "break_manifest_tool: key generation failed\n");
         goto out;
     }
-    fd = open(priv_path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+    fd = open(priv_path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
     if (fd < 0) {
         fprintf(stderr, "break_manifest_tool: cannot create '%s' (an existing key is never overwritten)\n",
                 priv_path);
@@ -117,12 +124,17 @@ static int mt_keygen(const char *priv_path, const char *pub_path) {
         pub_hex[2u * i + 1u] = hex[pub[i] & 15u];
     }
     pub_hex[64] = '\0';
-    f = fopen(pub_path, "wb");
-    ok = f != NULL && fprintf(f, "%s\n", pub_hex) == 65;
-    if (f != NULL && fclose(f) != 0) ok = 0;
+    pub_hex[64] = '\n';
+    fd = open(pub_path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0644);
+    pub_created = fd >= 0;
+    ok = fd >= 0 && write(fd, pub_hex, 65u) == 65;
+    if (fd >= 0 && close(fd) != 0) ok = 0;
+    pub_hex[64] = '\0';
     if (!ok) {
         (void)remove(priv_path);
-        fprintf(stderr, "break_manifest_tool: writing the public key failed\n");
+        if (pub_created) (void)remove(pub_path);
+        fprintf(stderr, "break_manifest_tool: writing the public key failed (an existing file is "
+                        "never overwritten)\n");
         goto out;
     }
     printf("break_manifest_tool: public key %s\n", pub_hex);
@@ -190,18 +202,25 @@ static int mt_name_cmp(const void *a, const void *b) {
 static int mt_hash_file(const char *path, unsigned char out[32], unsigned long long *size) {
     unsigned char buf[65536];
     EVP_MD_CTX *md = EVP_MD_CTX_new();
-    FILE *f = fopen(path, "rb");
-    size_t n;
+    int fd = open(path, O_RDONLY | O_NOFOLLOW);
+    struct stat st;
+    ssize_t n;
     unsigned len = 0u;
-    int ok = md != NULL && f != NULL && EVP_DigestInit_ex(md, EVP_sha256(), NULL) == 1;
+    int ok = md != NULL && fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+             EVP_DigestInit_ex(md, EVP_sha256(), NULL) == 1;
     *size = 0u;
-    while (ok && (n = fread(buf, 1u, sizeof(buf), f)) > 0u) {
-        ok = EVP_DigestUpdate(md, buf, n) == 1;
-        *size += n;
+    while (ok && (n = read(fd, buf, sizeof(buf))) != 0) {
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ok = 0;
+            break;
+        }
+        ok = EVP_DigestUpdate(md, buf, (size_t)n) == 1;
+        *size += (unsigned long long)n;
+        if (*size > MT_MAX_CHUNK) ok = 0;
     }
-    if (ok && f != NULL && ferror(f)) ok = 0;
     if (ok) ok = EVP_DigestFinal_ex(md, out, &len) == 1 && len == 32u;
-    if (f != NULL) fclose(f);
+    if (fd >= 0) close(fd);
     EVP_MD_CTX_free(md);
     return ok;
 }
@@ -241,7 +260,9 @@ static int mt_build(char **a) {
         unsigned k;
         snprintf(path, sizeof(path), "%s/%s", dir, g_files[i].name);
         if (!mt_hash_file(path, digest, &size)) {
-            fprintf(stderr, "break_manifest_tool: cannot hash %s\n", path);
+            fprintf(stderr, "break_manifest_tool: cannot hash %s (not a regular file, unreadable, "
+                            "or above the %llu byte client chunk limit)\n",
+                    path, MT_MAX_CHUNK);
             ok = 0;
             break;
         }
@@ -289,6 +310,10 @@ static int mt_body_ok(const char *b, size_t n) {
     char prev[MT_MAX_NAME + 1u] = "";
     int have_prev = 0;
     if (n == 0u || b[n - 1u] != '\n' || n > MT_MAX_MANIFEST) return 0;
+    for (pos = 0u; pos < n; pos++) { /* LF or printable ASCII only: NUL/TAB/CR/high bytes never pass */
+        unsigned char c = (unsigned char)b[pos];
+        if (c != '\n' && (c < 0x20u || c > 0x7eu)) return 0;
+    }
     if (strncmp(b, "break-manifest-v1\n", 18u) != 0) return 0;
     pos = 18u;
     for (k = 0u; k < 4u; k++) {
@@ -320,13 +345,16 @@ static int mt_body_ok(const char *b, size_t n) {
         if (line[71] != ' ') return 0;
         {
             char *sp = strchr(line + 72, ' ');
+            size_t digits;
+            unsigned long long size_v = 0u;
             if (sp == NULL || sp == line + 72) return 0;
-            if (!(sp - (line + 72) == 1 && line[72] == '0')) {
-                char *q;
-                if (line[72] == '0') return 0;
-                for (q = line + 72; q < sp; q++)
-                    if (*q < '0' || *q > '9') return 0;
+            digits = (size_t)(sp - (line + 72));
+            if (digits > 10u || (digits > 1u && line[72] == '0')) return 0;
+            for (i = 0u; i < digits; i++) {
+                if (line[72 + i] < '0' || line[72 + i] > '9') return 0;
+                size_v = size_v * 10u + (unsigned)(line[72 + i] - '0');
             }
+            if (size_v > MT_MAX_CHUNK) return 0;
             if (strlen(sp + 1) > MT_MAX_NAME || !mt_name_ok(sp + 1)) return 0;
             memcpy(name, sp + 1, strlen(sp + 1) + 1u);
         }
@@ -346,13 +374,26 @@ static int mt_sign(const char *priv_path, const char *body_path, const char *out
     EVP_MD_CTX *md = NULL;
     FILE *f;
     int ok = 0;
-    f = fopen(priv_path, "rb");
-    if (f == NULL) {
-        fprintf(stderr, "break_manifest_tool: cannot open private key\n");
-        return 1;
+    {
+        struct stat kst;
+        int kfd = open(priv_path, O_RDONLY | O_NOFOLLOW);
+        if (kfd < 0 || fstat(kfd, &kst) != 0 || !S_ISREG(kst.st_mode)) {
+            if (kfd >= 0) close(kfd);
+            fprintf(stderr, "break_manifest_tool: cannot open private key\n");
+            return 1;
+        }
+        if ((kst.st_mode & 077) != 0) {
+            close(kfd);
+            fprintf(stderr, "break_manifest_tool: private key must not be accessible by group/other "
+                            "(chmod 600)\n");
+            return 1;
+        }
+        {
+            ssize_t r = read(kfd, seed, sizeof(seed));
+            seed_len = r < 0 ? 0u : (size_t)r;
+        }
+        close(kfd);
     }
-    seed_len = fread(seed, 1u, sizeof(seed), f);
-    fclose(f);
     if (seed_len != 32u) {
         fprintf(stderr, "break_manifest_tool: private key must be 32 raw bytes\n");
         goto out;
@@ -361,6 +402,11 @@ static int mt_sign(const char *priv_path, const char *body_path, const char *out
     f = body != NULL ? fopen(body_path, "rb") : NULL;
     if (f == NULL) goto out;
     n = fread(body, 1u, MT_MAX_MANIFEST + 1u, f);
+    if (ferror(f)) {
+        fclose(f);
+        fprintf(stderr, "break_manifest_tool: reading the body failed\n");
+        goto out;
+    }
     fclose(f);
     if (n + 11u + 88u + 1u > MT_MAX_MANIFEST || !mt_body_ok(body, n)) {
         fprintf(stderr, "break_manifest_tool: body is not a canonical unsigned manifest\n");
