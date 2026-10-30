@@ -55,7 +55,17 @@ function(exports archive outvar)
     set(actual "")
     foreach(line IN LISTS lines)
         if(line MATCHES "^([A-Za-z_][A-Za-z0-9_]*) [TDBR] ")
-            list(APPEND actual "${CMAKE_MATCH_1}")
+            set(sym "${CMAKE_MATCH_1}")
+            if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+                string(REGEX REPLACE "^_" "" sym "${sym}")
+            endif()
+            # UCRT <stdio.h> inline helpers are emitted as external definitions by clang
+            # on Windows; they are header artifacts, not library API.
+            if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows" AND sym MATCHES
+               "^(__local_stdio_printf_options|__local_stdio_scanf_options|_?v?s?n?printf|_?v?snprintf(_l)?|_vsprintf_l|_?sprintf|_vsscanf_l|_?sscanf)$")
+                continue()
+            endif()
+            list(APPEND actual "${sym}")
         endif()
     endforeach()
     list(SORT actual)
