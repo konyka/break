@@ -266,6 +266,7 @@ static void remote_row_add(BreakEditorRemote *r, u64 key) {
             r->rows[i].state = (u32)break_session_manager_state(r->manager, key);
             r->rows[i].seen_us = time_microseconds();
             r->rows[i].transport_closed = false;
+            r->rows[i].auth_key_known = false; /* never inherit a freed row's key */
             r->conn_count++;
             return;
         }
@@ -314,6 +315,7 @@ static void remote_table_sync(BreakEditorRemote *r) {
             row->active = false;
             row->key = 0u;
             row->state = 0u;
+            row->auth_key_known = false;
             r->conn_count--;
             continue;
         }

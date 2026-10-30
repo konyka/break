@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：修复 keyring 归属跨连接槽泄漏（2026-10-30，自审发现）
+
+- **问题**：连接断开后，连接表里的行被释放，但 `auth_key_known` 没有清零，`remote_row_add` 也不重置这个字段。下一个复用该行的连接认证后，会沿用上一个连接的 key 归属。结果是吊销上一个 key 会误关新连接，而吊销新连接真正使用的 key 反而关不掉它。
+- **修复**：`remote_row_add` 和 table sync 释放行时都清零 `auth_key_known`。
+- **测试**：新增 `remote_tls_keyring_attribution_does_not_leak_across_reused_slots`（真实 TLS）：A 用 key A 认证后断开，B 复用同一行并用 key B 认证；吊销 key A 时 B 不受影响，吊销 key B 时 B 被关闭。修复前测试失败（吊销 A 时 B 被误关），修复后通过。`build-sdd-p4-final` 166/166，ASan 166/166。
+- **同轮自审（无问题）**：`break_strtod_c` 输入超过 255 B 时只解析前 255 B，与文档一致；十六进制浮点和多个小数点的行为与 C locale 下的 strtod 相同。
+
 ## 本轮更新：修复 CI 跨平台失败（2026-10-30）
 
 - **起因**：GitHub CI（run 40978332942）在 Windows 和 macOS 上失败，原因有四个：

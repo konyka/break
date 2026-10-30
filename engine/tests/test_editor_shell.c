@@ -6789,6 +6789,57 @@ TEST(remote_tls_keyring_add_and_revoke)
     break_editor_shell_destroy(shell);
 }
 
+/* A connection slot freed by a disconnect must not carry its key
+ * attribution into the next connection: a new session on the same slot that
+ * authenticates with key B is closed when B is revoked, and revoking the
+ * first connection's key A leaves it alone. */
+TEST(remote_tls_keyring_attribution_does_not_leak_across_reused_slots)
+{
+    static const u8 k_b_id[8] = {'d', 'e', 'v', 'i', 'c', 'e', '0', 'b'};
+    u8 b_psk[32];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient a, b;
+    BreakNetEnvelope rsp;
+    usize i;
+    for (i = 0u; i < 32u; i++) b_psk[i] = (u8)(0x90u + i);
+    ASSERT_NOT_NULL(shell);
+    remote = tls_remote_start(shell); /* key A = edit0001 */
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(break_editor_remote_add_key(remote, k_b_id, b_psk));
+
+    /* connection 1 authenticates with key A, then disconnects */
+    ASSERT_TRUE(tls_client_open(&a, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    ASSERT_TRUE(tls_client_send_auth(&a, k_tls_key_id, k_tls_psk, false));
+    ASSERT_TRUE(tls_client_send(&a, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&a, &rsp));
+    tls_client_close(&a);
+    remote_wait_connection_count(remote, shell, 0u);
+
+    /* connection 2 reuses the freed slot and authenticates with key B */
+    ASSERT_TRUE(tls_client_open(&b, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    ASSERT_TRUE(tls_client_send_auth(&b, k_b_id, b_psk, false));
+    ASSERT_TRUE(tls_client_send(&b, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&b, &rsp));
+
+    /* revoking A must not touch connection 2 */
+    ASSERT_TRUE(break_editor_remote_revoke_key(remote, k_tls_key_id));
+    ASSERT_TRUE(tls_client_send(&b, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&b, &rsp));
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+    /* revoking B closes it */
+    ASSERT_TRUE(break_editor_remote_revoke_key(remote, k_b_id));
+    ASSERT_TRUE(tls_client_wait_eof(&b));
+    tls_client_close(&b);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
 /* Reloading the keyring file applies the difference: keys no longer listed
  * are revoked (their sessions closed), new keys are added, unchanged keys
  * keep their sessions. A malformed file changes nothing. */
@@ -9472,6 +9523,7 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_tls_keyring_add_and_revoke);
     RUN_REMOTE_TEST(remote_tls_cli_keyring_file_installs_all_keys);
     RUN_REMOTE_TEST(remote_tls_keyring_reload_revokes_removed_keys);
+    RUN_REMOTE_TEST(remote_tls_keyring_attribution_does_not_leak_across_reused_slots);
     RUN_REMOTE_TEST(remote_tls_e2e_connect_auth_describe_spawn_undo_disconnect);
     RUN_REMOTE_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);
     RUN_REMOTE_TEST(remote_tls_auth_deadline_closes_idle_unauthenticated_client);
