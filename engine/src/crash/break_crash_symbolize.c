@@ -242,7 +242,7 @@ bool break_elf_symbols_lookup(const BreakElfSymbols *s, u64 vaddr, char *out_nam
 
 typedef struct {
     char key[STORE_ROOT_MAX + 160u]; /* the path the entry was loaded from */
-    BreakElfSymbols *syms;           /* NULL = looked up and not usable (negative cache) */
+    BreakElfSymbols *syms;           /* a successfully loaded symbol file */
     bool used;
 } StoreEntry;
 
@@ -314,10 +314,15 @@ static BreakElfSymbols *store_get(BreakCrashSymbolStore *st, const char *build_i
         }
     }
     {
-        StoreEntry *e = &st->cache[st->next];
+        /* only successful loads are cached: a build's symbol file never changes once it is
+         * there, but it may not have arrived yet when the first crash of that build does */
+        BreakElfSymbols *loaded = break_elf_symbols_open(path);
+        StoreEntry *e;
+        if (loaded == NULL) return NULL;
+        e = &st->cache[st->next];
         st->next = (st->next + 1u) % STORE_CACHE;
         break_elf_symbols_destroy(e->syms);
-        e->syms = break_elf_symbols_open(path);
+        e->syms = loaded;
         e->used = true;
         memcpy(e->key, path, (usize)n + 1u);
         return e->syms;

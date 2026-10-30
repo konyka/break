@@ -965,6 +965,34 @@ TEST(the_store_refuses_names_that_could_leave_its_root_even_when_a_valid_file_is
     break_crash_symbol_store_destroy(st);
 }
 
+TEST(symbols_uploaded_after_a_miss_are_found_by_the_same_open_store) {
+    char root[400], cmd[CMD_CAP], fx[400];
+    char name[BREAK_CRASH_SYMBOLIZE_NAME_MAX];
+    u64 off = 0, addr = 0;
+    BreakCrashSymbolStore *st;
+    path_in(root, sizeof(root), "symroot3");
+    path_in(fx, sizeof(fx), "fixture");
+    ASSERT_TRUE(nm_addr(fx, "outer", &addr));
+    snprintf(cmd, sizeof(cmd), "rm -rf '%s'; mkdir -p '%s/late'", root, root);
+    ASSERT_TRUE(run(cmd));
+    st = break_crash_symbol_store_open(root);
+    ASSERT_NOT_NULL(st);
+    /* a long-running server sees the crash before the build's symbols arrive */
+    ASSERT_FALSE(break_crash_symbol_store_lookup(st, "late", "mod", addr, name, sizeof(name), &off));
+    snprintf(cmd, sizeof(cmd), "cp '%s' '%s/late/mod'", fx, root);
+    ASSERT_TRUE(run(cmd));
+    ASSERT_TRUE(break_crash_symbol_store_lookup(st, "late", "mod", addr, name, sizeof(name), &off));
+    ASSERT_STR_EQ(name, "outer");
+    /* a file that is not an ELF is a miss too, and fixing it later works */
+    snprintf(cmd, sizeof(cmd), "mkdir -p '%s/late2' && echo junk > '%s/late2/mod'", root, root);
+    ASSERT_TRUE(run(cmd));
+    ASSERT_FALSE(break_crash_symbol_store_lookup(st, "late2", "mod", addr, name, sizeof(name), &off));
+    snprintf(cmd, sizeof(cmd), "cp '%s' '%s/late2/mod'", fx, root);
+    ASSERT_TRUE(run(cmd));
+    ASSERT_TRUE(break_crash_symbol_store_lookup(st, "late2", "mod", addr, name, sizeof(name), &off));
+    break_crash_symbol_store_destroy(st);
+}
+
 static void cleanup(void) {
     char cmd[400];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
@@ -995,5 +1023,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_long_chain_is_cut_at_the_cap);
     RUN_TEST(a_hostile_build_id_or_module_name_cannot_reach_outside_the_symbol_root);
     RUN_TEST(the_store_refuses_names_that_could_leave_its_root_even_when_a_valid_file_is_there);
+    RUN_TEST(symbols_uploaded_after_a_miss_are_found_by_the_same_open_store);
     cleanup();
 TEST_MAIN_END()

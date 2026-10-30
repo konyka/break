@@ -735,6 +735,46 @@ TEST(the_report_orders_by_count_then_signature_and_flags_regressions) {
     break_crash_cluster_destroy(s);
 }
 
+TEST(a_signature_prefix_resolves_only_when_it_is_long_enough_and_unambiguous) {
+    BreakCrashClusterStore *s = fresh();
+    BreakCrashClusterOutcome o;
+    char full[65], sig_a[65], sig_b[65];
+    ASSERT_NOT_NULL(s);
+    ASSERT_TRUE(break_crash_cluster_register_build(s, "b1"));
+    memcpy(sig_a, hx('a'), 65u);
+    memcpy(sig_b, hx('a'), 65u);
+    sig_b[12] = 'b';                         /* shares the first 12 characters with sig_a */
+    ASSERT_TRUE(break_crash_cluster_add(s, hx('1'), sig_a, "b1", "x", &o));
+    ASSERT_TRUE(break_crash_cluster_add(s, hx('2'), sig_b, "b1", "x", &o));
+    ASSERT_TRUE(break_crash_cluster_add(s, hx('3'), hx('c'), "b1", "x", &o));
+    /* unique prefixes */
+    ASSERT_TRUE(break_crash_cluster_resolve_prefix(s, "cccccccc", full));
+    ASSERT_STR_EQ(full, hx('c'));
+    ASSERT_TRUE(break_crash_cluster_resolve_prefix(s, "aaaaaaaaaaaaa", full));    /* 13 chars: sig_b differs at 12 */
+    ASSERT_STR_EQ(full, sig_a);
+    ASSERT_TRUE(break_crash_cluster_resolve_prefix(s, sig_b, full));              /* the full signature */
+    ASSERT_STR_EQ(full, sig_b);
+    /* ambiguous: both start with 12 a's */
+    ASSERT_FALSE(break_crash_cluster_resolve_prefix(s, "aaaaaaaaaaaa", full));
+    ASSERT_FALSE(break_crash_cluster_resolve_prefix(s, "aaaaaaaa", full));
+    /* too short, not hex, uppercase, unknown, too long, NULL */
+    ASSERT_FALSE(break_crash_cluster_resolve_prefix(s, "ccccccc", full));
+    ASSERT_FALSE(break_crash_cluster_resolve_prefix(s, "", full));
+    ASSERT_FALSE(break_crash_cluster_resolve_prefix(s, "cccccccg", full));
+    ASSERT_FALSE(break_crash_cluster_resolve_prefix(s, "CCCCCCCC", full));
+    ASSERT_FALSE(break_crash_cluster_resolve_prefix(s, "dddddddd", full));
+    {
+        char longp[80];
+        memset(longp, 'c', 65u);
+        longp[65] = '\0';
+        ASSERT_FALSE(break_crash_cluster_resolve_prefix(s, longp, full));
+    }
+    ASSERT_FALSE(break_crash_cluster_resolve_prefix(s, NULL, full));
+    ASSERT_FALSE(break_crash_cluster_resolve_prefix(s, "cccccccc", NULL));
+    ASSERT_FALSE(break_crash_cluster_resolve_prefix(NULL, "cccccccc", full));
+    break_crash_cluster_destroy(s);
+}
+
 /* ----------------------------------------------------------------------- lock */
 
 TEST(the_lock_excludes_a_second_process_until_it_is_released) {
@@ -801,6 +841,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(the_build_list_is_bounded);
     RUN_TEST(a_hostile_symbol_name_is_neutralised_before_it_reaches_the_file);
     RUN_TEST(the_report_orders_by_count_then_signature_and_flags_regressions);
+    RUN_TEST(a_signature_prefix_resolves_only_when_it_is_long_enough_and_unambiguous);
     RUN_TEST(the_lock_excludes_a_second_process_until_it_is_released);
     cleanup();
 TEST_MAIN_END()

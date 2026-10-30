@@ -71,6 +71,10 @@ bool break_crash_cluster_mark_fixed(BreakCrashClusterStore *s, const char *signa
 
 bool break_crash_cluster_find(const BreakCrashClusterStore *s, const char *signature_hex, u64 *out_count,
                               bool *out_regressed);
+/* Expands a signature prefix (8..64 lowercase hex, as the report prints
+ * them) to the full signature. False when the prefix is shorter than 8,
+ * malformed, matches nothing, or matches more than one signature. */
+bool break_crash_cluster_resolve_prefix(const BreakCrashClusterStore *s, const char *prefix, char out_hex[65]);
 u32 break_crash_cluster_signature_count(const BreakCrashClusterStore *s);
 u32 break_crash_cluster_build_count(const BreakCrashClusterStore *s);
 

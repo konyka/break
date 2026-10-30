@@ -255,6 +255,27 @@ bool break_crash_cluster_find(const BreakCrashClusterStore *s, const char *signa
     return true;
 }
 
+bool break_crash_cluster_resolve_prefix(const BreakCrashClusterStore *s, const char *prefix, char out_hex[65]) {
+    usize n;
+    u32 hits = 0u, hit = 0u;
+    if (s == NULL || prefix == NULL || out_hex == NULL) return false;
+    n = strlen(prefix);
+    if (n < 8u || n > 64u) return false;
+    for (usize i = 0u; i < n; i++) {
+        char ch = prefix[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false;
+    }
+    for (u32 i = 0u; i < s->sig_count; i++) {
+        if (strncmp(s->sigs[i].sig, prefix, n) == 0) {
+            hits++;
+            hit = i;
+        }
+    }
+    if (hits != 1u) return false;
+    memcpy(out_hex, s->sigs[hit].sig, 65u);
+    return true;
+}
+
 u32 break_crash_cluster_signature_count(const BreakCrashClusterStore *s) {
     return s != NULL ? s->sig_count : 0u;
 }

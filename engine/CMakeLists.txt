@@ -648,6 +648,18 @@ if(BREAK_ENABLE_CRYPTO AND TARGET break_crash_symbolize)
     target_link_libraries(break_crash_cluster PUBLIC break_crash_symbolize break_crypto)
 endif()
 
+# break_crash_upload_http — the BreakCrashUploadFn that POSTs a redacted record
+# over break_http. Its own library so the break_crash archive stays free of
+# network symbols (pinned by test_break_crash_target_contract); never linked
+# into engine, engine_demo, dxx_break or editor.
+if(TARGET break_http AND TARGET break_crash)
+    add_library(break_crash_upload_http STATIC src/crash/break_crash_upload_http.c)
+    set_property(TARGET break_crash_upload_http PROPERTY C_STANDARD 11)
+    target_include_directories(break_crash_upload_http PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_crash_upload_http PUBLIC break_crash break_http)
+endif()
+
 # Formal optional replication libraries. These are intentionally independent of
 # engine and Snowflake: consumers opt in and own the transport/session boundary.
 add_library(break_ecs_replication STATIC
@@ -5642,6 +5654,59 @@ endif()
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/break-update-e2e
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_update_e2e.cmake)
         set_tests_properties(test_break_update_e2e PROPERTIES LABELS "headless;security;update" TIMEOUT 180)
+    endif()
+
+    if(TARGET break_crash_upload_http)
+        add_executable(test_break_crash_upload_http tests/test_break_crash_upload_http.c
+            src/platform/platform_fs.c src/core/break_version.c)
+        target_include_directories(test_break_crash_upload_http PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_crash_upload_http PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
+        target_link_libraries(test_break_crash_upload_http PRIVATE break_crash_upload_http pthread)
+        add_test(NAME test_break_crash_upload_http COMMAND test_break_crash_upload_http)
+        set_tests_properties(test_break_crash_upload_http PROPERTIES LABELS "headless;security;crash" TIMEOUT 120)
+    endif()
+
+    if(TARGET break_crash_cluster AND TARGET break_crash_upload_http AND TARGET break_crash_symbolize)
+        add_test(NAME test_break_crash_server_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DCRASH_ARCHIVE=$<TARGET_FILE:break_crash>
+                -DUPLOAD_ARCHIVE=$<TARGET_FILE:break_crash_upload_http>
+                -DCLUSTER_ARCHIVE=$<TARGET_FILE:break_crash_cluster>
+                -DSYMBOLIZE_ARCHIVE=$<TARGET_FILE:break_crash_symbolize>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crash_server_target_contract.cmake)
+        set_tests_properties(test_break_crash_server_target_contract PROPERTIES
+            LABELS "headless;security;platform_contract")
+    endif()
+
+    if(TARGET break_crash_cluster AND TARGET break_crash_upload_http AND TARGET break_http)
+        # Reference collector, report tool and the e2e client: dev/test tools,
+        # never linked into engine, engine_demo, dxx_break or editor.
+        add_executable(break_crash_server tools/break_crash_server.c
+            src/platform/platform_fs.c src/core/break_version.c)
+        target_compile_definitions(break_crash_server PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
+        target_link_libraries(break_crash_server PRIVATE break_crash_cluster OpenSSL::SSL OpenSSL::Crypto)
+        add_executable(break_crash_report tools/break_crash_report.c
+            src/platform/platform_fs.c src/core/break_version.c)
+        target_compile_definitions(break_crash_report PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
+        target_link_libraries(break_crash_report PRIVATE break_crash_cluster)
+        add_executable(break_crash_e2e tests/break_crash_e2e.c src/platform/platform_fs.c
+            src/core/break_version.c)
+        target_include_directories(break_crash_e2e PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(break_crash_e2e PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
+        # the faulting child needs frame pointers and no PIE so the walker and nm agree
+        target_compile_options(break_crash_e2e PRIVATE -fno-omit-frame-pointer -O0)
+        target_link_libraries(break_crash_e2e PRIVATE break_crash_upload_http)
+        add_test(NAME test_break_crash_e2e
+            COMMAND ${CMAKE_COMMAND}
+                -DSERVER=$<TARGET_FILE:break_crash_server>
+                -DREPORT=$<TARGET_FILE:break_crash_report>
+                -DCLIENT=$<TARGET_FILE:break_crash_e2e>
+                -DCERT=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem
+                -DKEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/break-crash-e2e
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crash_e2e.cmake)
+        set_tests_properties(test_break_crash_e2e PROPERTIES LABELS "headless;security;crash" TIMEOUT 180)
     endif()
 
     if(BREAK_ENABLE_CRYPTO AND TARGET break_integrity)
