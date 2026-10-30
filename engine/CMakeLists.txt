@@ -636,6 +636,18 @@ if(BREAK_ENABLE_CRASH AND UNIX AND NOT APPLE)
     target_link_libraries(break_crash_symbolize PUBLIC break_crash)
 endif()
 
+# break_crash_cluster — crash signatures, per-build counts and regression
+# tracking over symbolized frames (docs/design/crash_symbolization.md). Server/dev
+# tool library like break_crash_symbolize; hashes with break_crypto. Like
+# break_crash, callers link platform_fs.c (the atomic writer) themselves.
+if(BREAK_ENABLE_CRYPTO AND TARGET break_crash_symbolize)
+    add_library(break_crash_cluster STATIC src/crash/break_crash_cluster.c)
+    set_property(TARGET break_crash_cluster PROPERTY C_STANDARD 11)
+    target_include_directories(break_crash_cluster PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_crash_cluster PUBLIC break_crash_symbolize break_crypto)
+endif()
+
 # Formal optional replication libraries. These are intentionally independent of
 # engine and Snowflake: consumers opt in and own the transport/session boundary.
 add_library(break_ecs_replication STATIC
@@ -5582,6 +5594,15 @@ endif()
         target_link_libraries(test_break_crash_symbolize PRIVATE break_crash_symbolize)
         add_test(NAME test_break_crash_symbolize COMMAND test_break_crash_symbolize)
         set_tests_properties(test_break_crash_symbolize PROPERTIES LABELS "headless;security;crash" TIMEOUT 180)
+    endif()
+
+    if(TARGET break_crash_cluster)
+        add_executable(test_break_crash_cluster tests/test_break_crash_cluster.c src/platform/platform_fs.c
+            src/core/break_version.c)
+        target_include_directories(test_break_crash_cluster PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_crash_cluster PRIVATE break_crash_cluster)
+        add_test(NAME test_break_crash_cluster COMMAND test_break_crash_cluster)
+        set_tests_properties(test_break_crash_cluster PROPERTIES LABELS "headless;security;crash" TIMEOUT 120)
     endif()
 
     if(BREAK_ENABLE_CRYPTO AND TARGET break_http)
