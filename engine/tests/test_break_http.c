@@ -1,4 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE 1 /* INADDR_LOOPBACK */
+#endif
 /* break_http: bounded HTTP/1.1 client. A scripted server thread (plain or TLS,
  * one connection per script) lets each test dictate the exact bytes the client
  * sees, so framing, range, TLS and timeout rules are exercised for real. */

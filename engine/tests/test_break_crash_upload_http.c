@@ -1,4 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE 1 /* INADDR_LOOPBACK */
+#endif
 #define _DEFAULT_SOURCE
 #include "test_framework.h"
 
