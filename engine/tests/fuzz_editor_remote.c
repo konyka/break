@@ -311,8 +311,8 @@ static usize build_valid(const Harness *h, u16 id, u8 *out) {
         return off + 4u;
     }
     case BREAK_EDITOR_MSG_VIEW:
-        /* mostly valid masks (bits 0..2), sometimes unknown bits */
-        out[0] = rnd_below(5u) == 0u ? (u8)rnd() : (u8)rnd_below(8u);
+        /* mostly valid masks (bits 0..3), sometimes unknown bits */
+        out[0] = rnd_below(5u) == 0u ? (u8)rnd() : (u8)rnd_below(16u);
         out[1] = (u8)rnd();
         return 2u;
     case BREAK_EDITOR_MSG_CAMERA_SET: {

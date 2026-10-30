@@ -172,6 +172,7 @@ typedef struct BreakEditorViewport3DStats {
     u32 tinted;       /* proxies drawn with the selection tint */
     u32 ring_segments;/* rotate-mode ring cubes drawn (0 or 3 * 48) */
     u32 grid_lines;   /* ground grid line boxes drawn (0 when hidden) */
+    u32 wire_edges;   /* proxy edge boxes drawn in wireframe mode (12 per proxy) */
 } BreakEditorViewport3DStats;
 
 /* False on NULL arguments. */
@@ -227,6 +228,10 @@ u32 break_editor_viewport3d_grid_lines(f32 half_extent, f32 spacing,
                                        u32 cap);
 /* Draws the ground grid (default on). */
 void break_editor_viewport3d_set_grid(BreakEditorViewport3D *vp, bool on);
+/* Wireframe view (default off): every proxy is drawn as its 12 outline edges
+ * (break_editor_viewport3d_outline_edges) in its own color instead of a
+ * solid box; the selection outline is unchanged. */
+void break_editor_viewport3d_set_wireframe(BreakEditorViewport3D *vp, bool on);
 
 /* Viewport panel widget (myui subclass: custom on_paint blit + pointer
  * routing into the CPU core). Borrows the shell; the tree owns the widget.

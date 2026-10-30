@@ -97,6 +97,9 @@ static void apply_line(BreakEditorSettings *s, const char *b, const char *e) {
     } else if (span_eq(kb, ke, "grid")) {
         if (span_eq(vb, ve, "on")) s->grid = true;
         else if (span_eq(vb, ve, "off")) s->grid = false;
+    } else if (span_eq(kb, ke, "wireframe")) {
+        if (span_eq(vb, ve, "on")) s->wireframe = true;
+        else if (span_eq(vb, ve, "off")) s->wireframe = false;
     }
 }
 
@@ -133,7 +136,8 @@ usize break_editor_settings_serialize(const BreakEditorSettings *s, char *out,
                  "diag_tab=%u\n"
                  "snap=%s\n"
                  "stats=%s\n"
-                 "grid=%s\n",
+                 "grid=%s\n"
+                 "wireframe=%s\n",
                  s->light_theme ? "light" : "dark",
                  s->has_lang ? "lang=" : "",
                  s->has_lang ? break_editor_i18n_lang_tag(s->lang) : "",
@@ -141,7 +145,7 @@ usize break_editor_settings_serialize(const BreakEditorSettings *s, char *out,
                  (unsigned)(s->bottom_tab < 2u ? s->bottom_tab : 0u),
                  (unsigned)(s->diag_tab < 3u ? s->diag_tab : 0u),
                  s->snap ? "on" : "off", s->stats ? "on" : "off",
-                 s->grid ? "on" : "off");
+                 s->grid ? "on" : "off", s->wireframe ? "on" : "off");
     if (n < 0 || (usize)n >= cap) {
         out[0] = '\0';
         return 0u;

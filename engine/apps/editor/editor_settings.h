@@ -26,6 +26,7 @@ typedef struct {
     bool snap;      /* gizmo snapping on (default steps) */
     bool stats;     /* viewport stats overlay (default on) */
     bool grid;      /* viewport ground grid (default on) */
+    bool wireframe; /* viewport wireframe proxies (default off) */
     /* recently opened/saved scenes, newest first (recent=<path> lines) */
     u32 recent_count;
     char recent[BREAK_EDITOR_SETTINGS_RECENT_MAX][BREAK_EDITOR_SETTINGS_RECENT_PATH];

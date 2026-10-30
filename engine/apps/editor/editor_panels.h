@@ -191,6 +191,7 @@ bool break_editor_shell_revert(BreakEditorShell *shell);
 #define BREAK_EDITOR_VIEW_GRID 0x01u
 #define BREAK_EDITOR_VIEW_STATS 0x02u
 #define BREAK_EDITOR_VIEW_RESET_CAMERA 0x04u
+#define BREAK_EDITOR_VIEW_WIREFRAME 0x08u
 bool break_editor_shell_apply_view(BreakEditorShell *shell, u8 mask, u8 value);
 /* Replace the viewport camera with `pose` after validating every field
  * (finite; |target| and |yaw| <= 1e6; |pitch| <= BREAK_EDITOR_CAMERA_PITCH_LIMIT;
@@ -298,6 +299,9 @@ bool break_editor_shell_viewport_stats_visible(const BreakEditorShell *shell);
 /* Viewport ground grid (default on; palette "Toggle ground grid";
  * persisted as grid=on|off). */
 bool break_editor_shell_grid_visible(const BreakEditorShell *shell);
+/* Viewport wireframe proxies (default off; palette "Toggle wireframe";
+ * persisted as wireframe=on|off; remote VIEW bit 3). */
+bool break_editor_shell_wireframe(const BreakEditorShell *shell);
 /* H hides the selected entities in the viewport (not drawn, not pickable,
  * skipped by F on the whole scene) and clears the selection; Alt+H shows
  * everything again. View state: no undo, never saved, removed entities

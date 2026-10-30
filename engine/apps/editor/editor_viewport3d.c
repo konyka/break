@@ -145,6 +145,8 @@ struct BreakEditorViewport3D {
     /* render debugger: last render() call (CPU counters only) */
     int last_skip;
     u32 last_grid;
+    u32 last_wire;
+    bool wireframe;
     u32 last_proxies, last_gizmo, last_draws, last_outline, last_ring,
         last_tinted;
 
@@ -184,6 +186,7 @@ bool break_editor_viewport3d_last_stats(const BreakEditorViewport3D *vp,
     out->outline_edges = vp->last_outline;
     out->ring_segments = vp->last_ring;
     out->grid_lines = vp->last_grid;
+    out->wire_edges = vp->last_wire;
     out->tinted = vp->last_tinted;
     out->draws = vp->last_draws;
     return true;
@@ -387,6 +390,12 @@ u32 break_editor_viewport3d_grid_lines(f32 half_extent, f32 spacing,
         }
     }
     return n;
+}
+
+void break_editor_viewport3d_set_wireframe(BreakEditorViewport3D *vp, bool on) {
+    if (vp != NULL) {
+        vp->wireframe = on;
+    }
 }
 
 void break_editor_viewport3d_set_grid(BreakEditorViewport3D *vp, bool on) {
@@ -715,6 +724,23 @@ static void vp_draw_box(BreakEditorViewport3D *vp, RHICmdBuffer *cmd,
     vp->last_draws++;
 }
 
+/* A proxy: the solid unit box, or its 12 edges in wireframe mode. */
+static void vp_draw_proxy(BreakEditorViewport3D *vp, RHICmdBuffer *cmd,
+                          const Mat4 *view_proj, const f32 model[16],
+                          const f32 color[4]) {
+    if (vp->wireframe) {
+        f32 edges[12][16];
+        u32 ne = break_editor_viewport3d_outline_edges(
+            model, EDITOR_VIEWPORT_OUTLINE_THICKNESS * 0.5f, edges);
+        for (u32 e = 0u; e < ne; e++) {
+            vp_draw_box(vp, cmd, view_proj, edges[e], color);
+        }
+        vp->last_wire += ne;
+        return;
+    }
+    vp_draw_box(vp, cmd, view_proj, model, color);
+}
+
 bool break_editor_viewport3d_proxy_color(const BreakEditorDoc *doc,
                                          BreakEditorEntityId id, f32 out[4]) {
     f32 c[3];
@@ -786,7 +812,7 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
         return;
     }
     vp->last_proxies = vp->last_gizmo = vp->last_draws = vp->last_outline =
-        vp->last_ring = vp->last_tinted = vp->last_grid = 0u;
+        vp->last_ring = vp->last_tinted = vp->last_grid = vp->last_wire = 0u;
     if (doc == NULL || dev == NULL || cmd == NULL) {
         vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_NO_DEVICE;
         return;
@@ -880,19 +906,19 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
             f32 edges[12][16];
             u32 ne = break_editor_viewport3d_outline_edges(
                 model, EDITOR_VIEWPORT_OUTLINE_THICKNESS, edges);
-            vp_draw_box(vp, cmd, &view_proj, model, k_selected_color);
+            vp_draw_proxy(vp, cmd, &view_proj, model, k_selected_color);
             for (u32 e = 0u; e < ne; e++) {
                 vp_draw_box(vp, cmd, &view_proj, edges[e], k_outline_color);
             }
             vp->last_outline = ne;
             vp->last_tinted++;
         } else if (vp_is_extra(vp, id)) {
-            vp_draw_box(vp, cmd, &view_proj, model, k_selected_color);
+            vp_draw_proxy(vp, cmd, &view_proj, model, k_selected_color);
             vp->last_tinted++;
         } else {
             f32 color[4];
             (void)break_editor_viewport3d_proxy_color(doc, id, color);
-            vp_draw_box(vp, cmd, &view_proj, model, color);
+            vp_draw_proxy(vp, cmd, &view_proj, model, color);
         }
     }
 

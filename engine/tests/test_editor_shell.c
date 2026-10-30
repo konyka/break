@@ -278,7 +278,7 @@ TEST(palette_opens_filters_and_escape_closes)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 20u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 21u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save"));
@@ -4009,7 +4009,7 @@ TEST(recent_scenes_are_listed_in_the_palette)
     /* the plain list has the static commands plus the two recents */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, ""));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 22u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 23u);
     break_editor_shell_destroy(shell);
     remove(a);
     remove(b);
@@ -5286,7 +5286,7 @@ TEST(remote_view_toggles_view_state_without_touching_the_doc)
     ASSERT_EQ(((const u8 *)rsp.payload)[0], 0u);
 
     /* unknown mask bits → RESULT invalid, nothing applied */
-    remote_client_send(&c, BREAK_EDITOR_MSG_VIEW, (const u8[]){0x09u, 0x01u}, 2u);
+    remote_client_send(&c, BREAK_EDITOR_MSG_VIEW, (const u8[]){0x11u, 0x01u}, 2u);
     ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
     ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_RESULT);
     ASSERT_EQ(((const u8 *)rsp.payload)[0], BREAK_EDITOR_PROTO_STATUS_INVALID);
@@ -7697,6 +7697,71 @@ TEST(viewport_grid_renders_toggles_and_persists)
     shader_env_restore(&env);
 }
 
+/* Wireframe view: each proxy is drawn as its 12 outline edges instead of a
+ * solid box. View state like the grid: palette toggle, persisted, remote
+ * VIEW bit 3; never a document edit. */
+TEST(viewport_wireframe_draws_edges_toggles_and_persists)
+{
+    EditorShaderEnv env;
+    ShaderReloadFixture fx;
+    BreakEditorViewport3DStats st;
+    char path[256];
+    int cmd = 0;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    test_tmp(path, sizeof(path), "editor_shell_wire.ini");
+    remove(path);
+    shader_reload_fixture_open(&fx, "editor_viewport_wire", "REV=1 vertex\n",
+                               "REV=1 fragment\n");
+    ASSERT_TRUE(break_editor_shell_use_settings(fx.shell, path, true));
+    ASSERT_TRUE(break_editor_shell_apply_view(fx.shell, BREAK_EDITOR_VIEW_GRID, 0u));
+    emit_click(find(fx.shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_select_index(fx.shell, 0u));
+    emit_click(find(fx.shell, "editor-component-add-64"));
+    ASSERT_FALSE(break_editor_shell_wireframe(fx.shell));
+
+    /* solid: one box per proxy (plus the selection outline when selected) */
+    break_editor_viewport3d_render(fx.vp, break_editor_shell_doc(fx.shell),
+                                   &fx.device, &cmd, 800, 480);
+    ASSERT_TRUE(break_editor_viewport3d_last_stats(fx.vp, &st));
+    ASSERT_EQ(st.proxies, 1u);
+    ASSERT_EQ(st.wire_edges, 0u);
+    {
+        u32 solid_draws = st.draws;
+        /* palette toggle → wireframe */
+        ASSERT_TRUE(break_editor_shell_dispatch_key(fx.shell, 'p', MY_KEYMOD_CTRL));
+        ASSERT_TRUE(break_editor_shell_palette_set_filter(fx.shell, "wireframe"));
+        ASSERT_EQ(break_editor_shell_palette_count(fx.shell), 1u);
+        ASSERT_TRUE(break_editor_shell_dispatch_key(fx.shell, MY_KEY_RETURN, 0u));
+        ASSERT_TRUE(break_editor_shell_wireframe(fx.shell));
+        break_editor_viewport3d_render(fx.vp, break_editor_shell_doc(fx.shell),
+                                       &fx.device, &cmd, 800, 480);
+        ASSERT_TRUE(break_editor_viewport3d_last_stats(fx.vp, &st));
+        ASSERT_EQ(st.proxies, 1u);
+        ASSERT_EQ(st.wire_edges, 12u);
+        /* the solid box is replaced by 12 edges */
+        ASSERT_EQ(st.draws, solid_draws - 1u + 12u);
+    }
+    /* VIEW bit 3 turns it off again */
+    ASSERT_TRUE(break_editor_shell_apply_view(fx.shell, BREAK_EDITOR_VIEW_WIREFRAME, 0u));
+    ASSERT_FALSE(break_editor_shell_wireframe(fx.shell));
+    ASSERT_TRUE(break_editor_shell_apply_view(fx.shell, BREAK_EDITOR_VIEW_WIREFRAME,
+                                              BREAK_EDITOR_VIEW_WIREFRAME));
+    shader_reload_fixture_close(&fx);
+    {
+        BreakEditorShell *shell = break_editor_shell_create_for_test();
+        ASSERT_NOT_NULL(shell);
+        ASSERT_TRUE(break_editor_shell_use_settings(shell, path, true));
+        ASSERT_TRUE(break_editor_shell_wireframe(shell));
+        break_editor_shell_destroy(shell);
+    }
+    remove(path);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
 TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers)
 {
     EditorShaderEnv env;
@@ -9003,7 +9068,7 @@ TEST(i18n_palette_switches_language_at_runtime)
 
     /* palette now lists and filters Chinese command names */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 20u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 21u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "保存"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "English"));
@@ -9465,6 +9530,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shader_reload_follows_included_files);
     RUN_TEST(grid_lines_cover_the_ground_plane);
     RUN_TEST(viewport_grid_renders_toggles_and_persists);
+    RUN_TEST(viewport_wireframe_draws_edges_toggles_and_persists);
     RUN_TEST(shader_reload_initial_failure_recovers_without_implicit_retry);
     RUN_TEST(shader_reload_worker_stages_off_rhi_and_trailing_uses_latest);
     RUN_TEST(shader_reload_two_root_watch_promotes_and_delete_falls_back);

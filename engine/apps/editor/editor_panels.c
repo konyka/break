@@ -53,7 +53,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_ROW_CTX_POOL 64u
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
-#define EDITOR_PALETTE_COMMAND_COUNT 20u
+#define EDITOR_PALETTE_COMMAND_COUNT 21u
 /* 25 degrees: the editor camera starts above the grid plane */
 #define EDITOR_DEFAULT_CAMERA_PITCH 0.43633231f
 /* "2": look along -X from the +X side (90 degrees) */
@@ -169,6 +169,7 @@ struct BreakEditorShell {
     bool snap; /* gizmo snapping on (EDITOR_SNAP_* steps) */
     bool stats; /* viewport stats overlay */
     bool grid;  /* viewport ground grid */
+    bool wireframe; /* viewport wireframe proxies */
     char overlay_text[160];
     /* persisted UI preferences (editor_settings.h): saved after each
      * theme / language / tab change once a path is set; empty = off */
@@ -243,7 +244,8 @@ enum {
     PAL_TOGGLE_STATS,
     PAL_TOGGLE_GRID,
     PAL_RESET_VIEW,
-    PAL_NEW_SCENE
+    PAL_NEW_SCENE,
+    PAL_TOGGLE_WIREFRAME
 };
 
 /* Current-language text of palette command `cmd` (bounded, never NULL). */
@@ -297,6 +299,9 @@ static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
     if (cmd == PAL_NEW_SCENE) {
         return break_editor_tr(BREAK_EDITOR_TR_CMD_NEW_SCENE);
     }
+    if (cmd == PAL_TOGGLE_WIREFRAME) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_TOGGLE_WIREFRAME);
+    }
     return "?";
 }
 
@@ -312,6 +317,7 @@ static int shell_extra_index(const BreakEditorShell *shell,
                              BreakEditorEntityId id);
 static void shell_set_snap(BreakEditorShell *shell, bool on);
 static void shell_set_grid(BreakEditorShell *shell, bool on);
+static void shell_set_wireframe(BreakEditorShell *shell, bool on);
 static void shell_note_recent(BreakEditorShell *shell, const char *path);
 static void shell_reset_camera(BreakEditorShell *shell);
 static void shell_do_new_scene(BreakEditorShell *shell);
@@ -1661,6 +1667,10 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
         shell_set_grid(shell, !shell->grid);
         shell_settings_save(shell);
         break;
+    case PAL_TOGGLE_WIREFRAME:
+        shell_set_wireframe(shell, !shell->wireframe);
+        shell_settings_save(shell);
+        break;
     case PAL_TOGGLE_STATS:
         shell->stats = !shell->stats;
         if (shell->viewport_widget != NULL) {
@@ -2349,6 +2359,14 @@ static void shell_reset_camera(BreakEditorShell *shell) {
     shell->camera.pitch = EDITOR_DEFAULT_CAMERA_PITCH;
 }
 
+static void shell_set_wireframe(BreakEditorShell *shell, bool on) {
+    shell->wireframe = on;
+    break_editor_viewport3d_set_wireframe(shell->vp3d, on);
+    if (shell->viewport_widget != NULL) {
+        my_widget_invalidate(shell->viewport_widget, NULL);
+    }
+}
+
 static void shell_set_grid(BreakEditorShell *shell, bool on) {
     shell->grid = on;
     break_editor_viewport3d_set_grid(shell->vp3d, on);
@@ -2383,6 +2401,7 @@ static void shell_settings_save(BreakEditorShell *shell) {
     st.snap = shell->snap;
     st.stats = shell->stats;
     st.grid = shell->grid;
+    st.wireframe = shell->wireframe;
     st.recent_count = shell->recent_count;
     memcpy(st.recent, shell->recent, sizeof(st.recent));
     if (!break_editor_settings_save(&st, shell->settings_path)) {
@@ -2417,6 +2436,7 @@ bool break_editor_shell_use_settings(BreakEditorShell *shell, const char *path,
     shell_set_snap(shell, st.snap);
     shell->stats = st.stats;
     shell_set_grid(shell, st.grid);
+    shell_set_wireframe(shell, st.wireframe);
     shell->recent_count = st.recent_count;
     memcpy(shell->recent, st.recent, sizeof(shell->recent));
     memcpy(shell->settings_path, path, n + 1u);
@@ -3202,7 +3222,7 @@ bool break_editor_shell_revert(BreakEditorShell *shell) {
 bool break_editor_shell_apply_view(BreakEditorShell *shell, u8 mask, u8 value) {
     bool persist = false;
     const unsigned known = BREAK_EDITOR_VIEW_GRID | BREAK_EDITOR_VIEW_STATS |
-                           BREAK_EDITOR_VIEW_RESET_CAMERA;
+                           BREAK_EDITOR_VIEW_RESET_CAMERA | BREAK_EDITOR_VIEW_WIREFRAME;
     if (shell == NULL || ((unsigned)mask & ~known) != 0u) {
         return false;
     }
@@ -3216,6 +3236,10 @@ bool break_editor_shell_apply_view(BreakEditorShell *shell, u8 mask, u8 value) {
     }
     if ((mask & BREAK_EDITOR_VIEW_RESET_CAMERA) != 0u) {
         shell_reset_camera(shell);
+    }
+    if ((mask & BREAK_EDITOR_VIEW_WIREFRAME) != 0u) {
+        shell_set_wireframe(shell, (value & BREAK_EDITOR_VIEW_WIREFRAME) != 0u);
+        persist = true;
     }
     if (mask != 0u && shell->viewport_widget != NULL) {
         my_widget_invalidate(shell->viewport_widget, NULL);
@@ -3335,6 +3359,10 @@ u32 break_editor_shell_hidden_count(const BreakEditorShell *shell) {
 
 bool break_editor_shell_grid_visible(const BreakEditorShell *shell) {
     return shell != NULL && shell->grid;
+}
+
+bool break_editor_shell_wireframe(const BreakEditorShell *shell) {
+    return shell != NULL && shell->wireframe;
 }
 
 bool break_editor_shell_viewport_stats_visible(const BreakEditorShell *shell) {
