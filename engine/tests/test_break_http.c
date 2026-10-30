@@ -527,7 +527,13 @@ TEST(loopback_ipv6_and_the_127_block_are_allowed_for_plain_http) {
     /* nothing listens on port 1: the answer is CONNECT, which proves the URL
      * and loopback rules let it through */
     ASSERT_EQ(break_http_get(&cfg, "http://127.0.0.1:1/x", buf, sizeof(buf), &got), BHTTP_ERR_CONNECT);
-    ASSERT_EQ(break_http_get(&cfg, "http://127.5.6.7:1/x", buf, sizeof(buf), &got), BHTTP_ERR_CONNECT);
+    {
+        /* Linux routes all of 127/8 to the loopback, so the answer is a refused connection; macOS
+         * only configures 127.0.0.1, so the same attempt can run into the connect budget. Either
+         * proves the policy let the address through; what it must never be is a URL error. */
+        BreakHttpError e = break_http_get(&cfg, "http://127.5.6.7:1/x", buf, sizeof(buf), &got);
+        ASSERT_TRUE(e == BHTTP_ERR_CONNECT || e == BHTTP_ERR_TIMEOUT);
+    }
     ASSERT_EQ(break_http_get(&cfg, "http://[::1]:1/x", buf, sizeof(buf), &got), BHTTP_ERR_CONNECT);
     ASSERT_EQ(break_http_get(&cfg, "http://localhost:1/x", buf, sizeof(buf), &got), BHTTP_ERR_CONNECT);
 }

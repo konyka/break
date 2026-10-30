@@ -166,6 +166,19 @@ if(UNIX)
     set(RING7 "${WORK}/ring7.txt")
     write_ring("${RING7}" 500)
     file(READ "${RING7}" r7_before)
+    # The case needs the OS to enforce RLIMIT_FSIZE. Probe that first with a plain write well past
+    # the limit; where it is not enforced (observed on macOS CI) the case cannot say anything.
+    execute_process(COMMAND sh -c "trap '' XFSZ; ulimit -f 1; head -c 4096 /dev/zero > '${WORK}/fsize_probe' 2>/dev/null"
+                    RESULT_VARIABLE probe_rc OUTPUT_QUIET ERROR_QUIET)
+    file(SIZE "${WORK}/fsize_probe" probe_size)
+    file(REMOVE "${WORK}/fsize_probe")
+    if(probe_size GREATER 1024)
+        message(STATUS "RLIMIT_FSIZE is not enforced here (probe wrote ${probe_size} bytes): skipping the short-write case")
+        set(fsize_enforced FALSE)
+    else()
+        set(fsize_enforced TRUE)
+    endif()
+    if(fsize_enforced)
     execute_process(COMMAND sh -c "trap '' XFSZ; ulimit -f 1; exec '${KEYGEN}' '${RING7}' 6465766963653031 '${WORK}/f1.psk'"
                     RESULT_VARIABLE rc7 OUTPUT_QUIET ERROR_QUIET)
     if(rc7 EQUAL 0)
@@ -177,6 +190,7 @@ if(UNIX)
     endif()
     if(EXISTS "${WORK}/f1.psk")
         message(FATAL_ERROR "a failed append left its device file behind")
+    endif()
     endif()
 
     # concurrent runs never exceed the ring size or tear a line
