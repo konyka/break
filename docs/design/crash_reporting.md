@@ -206,9 +206,16 @@ build-id + 模块表 + siginfo。Windows 记录格式不在本阶段（§9）。
 1. **服务端**：符号化服务、聚类、回归统计、记录接收端——全部 Phase D+；
 2. **真实上传传输**：HTTP/TLS/端点配置/认证——app 集成 + Phase D 传输；
    仓库内只有调用方回调接缝（§6）；
-3. **GPU/RHI/网络/输入摘要捕获**：属 app 侧经 context-blob 接缝发布摘要
-   的后续集成（engine 集成是独立任务；break_crash 不进
-   engine/demos/editor 链接闭包——契约 ctest 钉住）；
+3. **GPU/RHI/网络/输入摘要的自动采集**：2026-10-30 起库内已有摘要构建器
+   `BreakCrashSummary`（`break_crash_summary_init/set/format`）：按
+   `[section]` 分组的 `key=value` 文本，最多 16 段、64 条，值截断为 63 B；
+   非可打印字符、`=`、`/`、`\` 一律替换为 `_`，因此不会携带路径或换行，
+   §6 脱敏义务由构造保证。只输出完整行，不超过 4 KiB，与
+   `break_crash_set_context_blob` 直接对接。测试
+   `context_summary_sections_bounded_and_sanitized`；变异检查：去掉 `/`
+   替换后变红。导出符号合约随之从 36 个扩为 39 个。**仍未交付**：各子系统
+   自动填写摘要（break_crash 不进 engine/demos/editor 链接闭包，由契约
+   ctest 钉住，因此只能由 app 侧集成）；
 4. **minidump/PE 格式**：本记录格式 = canonical 文本 break-crash-v1，非
    minidump；Windows 侧的 PE/minidump 生态不接；
 5. **Windows SEH/VEH**：`_WIN32` 为文档化编译期 stub（`break_crash_install`

@@ -2287,6 +2287,50 @@ TEST(crash_recovery_upload_end_to_end) {
 
 /* -------------------------------------------------------------------------- */
 
+/* Context summary: "key=value" lines grouped by section, deterministic and
+ * bounded to the 4 KiB blob. Values are sanitized (printable ASCII except
+ * '\n', '=' and path separators become '_'; over-long values are cut), so
+ * the blob never carries a path or a line break an app did not intend. */
+TEST(context_summary_sections_bounded_and_sanitized)
+{
+    BreakCrashSummary sum;
+    char out[BREAK_CRASH_CONTEXT_BLOB_MAX + 1];
+    usize n;
+    u32 i;
+    break_crash_summary_init(&sum);
+    ASSERT_TRUE(break_crash_summary_set(&sum, "rhi", "backend", "vulkan"));
+    ASSERT_TRUE(break_crash_summary_set(&sum, "rhi", "gpu", "Intel UHD"));
+    ASSERT_TRUE(break_crash_summary_set(&sum, "net", "sessions", "3"));
+    ASSERT_TRUE(break_crash_summary_set(&sum, "input", "last_key", "C:\\x/y=z\nw"));
+    /* replacing a key keeps its position */
+    ASSERT_TRUE(break_crash_summary_set(&sum, "rhi", "backend", "opengl"));
+    /* invalid section/key names */
+    ASSERT_FALSE(break_crash_summary_set(&sum, "", "k", "v"));
+    ASSERT_FALSE(break_crash_summary_set(&sum, "rhi", "bad key", "v"));
+    ASSERT_FALSE(break_crash_summary_set(&sum, NULL, "k", "v"));
+    n = break_crash_summary_format(&sum, out, sizeof(out));
+    out[n] = '\0';
+    ASSERT_STR_EQ(out,
+                  "[rhi]\nbackend=opengl\ngpu=Intel UHD\n"
+                  "[net]\nsessions=3\n"
+                  "[input]\nlast_key=C:_x_y_z_w\n");
+    /* a flood of entries stays within the blob bound */
+    for (i = 0u; i < 200u; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "k%u", i);
+        (void)break_crash_summary_set(&sum, "app", key,
+            "0123456789012345678901234567890123456789012345678901234567890123456789");
+    }
+    n = break_crash_summary_format(&sum, out, sizeof(out));
+    ASSERT_TRUE(n <= BREAK_CRASH_CONTEXT_BLOB_MAX);
+    ASSERT_TRUE(n > 0u && out[n - 1u] == '\n'); /* never a torn line */
+    /* small capacity: only whole lines */
+    n = break_crash_summary_format(&sum, out, 20u);
+    out[n] = '\0';
+    ASSERT_STR_EQ(out, "[rhi]\n");
+    ASSERT_EQ(break_crash_summary_format(NULL, out, sizeof(out)), 0u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(roundtrip_golden_bytes);
     RUN_TEST(defaults_minimal_record);
@@ -2324,4 +2368,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(crash_double_install_refused);
     RUN_TEST(crash_uninstall_no_record);
     RUN_TEST(crash_recovery_upload_end_to_end);
+    RUN_TEST(context_summary_sections_bounded_and_sanitized);
 TEST_MAIN_END()

@@ -13,7 +13,7 @@
 #      break_crash (their target_link_libraries calls are single-line).
 #   4. Focused test registration pins (inline platform_fs.c +
 #      break_version.c precedent).
-#   5. nm gate: the production archive exports exactly the 36 public
+#   5. nm gate: the production archive exports exactly the 39 public
 #      break_crash_* symbols (14 record + 10 builder + 8 spool + 4 capture).
 #   6. Minimal archive link test: a tiny executable links ONLY
 #      libbreak_crash.a (plus the PAL TU src/platform/platform_fs.c and the
@@ -112,7 +112,7 @@ if(NOT cmake_text MATCHES "add_test\\(NAME test_break_crash_target_contract")
     message(FATAL_ERROR "missing test_break_crash_target_contract registration")
 endif()
 
-# --- 5. nm gate: exactly the 36 public symbols ------------------------------
+# --- 5. nm gate: exactly the 39 public symbols ------------------------------
 find_program(CRASH_CONTRACT_NM NAMES nm llvm-nm)
 if(NOT CRASH_CONTRACT_NM)
     message(FATAL_ERROR "nm not found (required for the break_crash export gate)")
@@ -162,6 +162,9 @@ set(expected_symbols
     break_crash_spool_put_pending
     break_crash_spool_read_pending
     break_crash_spool_upload_pending
+    break_crash_summary_format
+    break_crash_summary_init
+    break_crash_summary_set
     break_crash_uninstall)
 
 string(REPLACE "\n" ";" nm_lines "${nm_out}")
@@ -188,7 +191,7 @@ set(expected_sorted ${expected_symbols})
 list(SORT expected_sorted)
 if(NOT actual_symbols STREQUAL expected_sorted)
     message(FATAL_ERROR
-        "libbreak_crash.a must export exactly the 36 public symbols.\n"
+        "libbreak_crash.a must export exactly the 39 public symbols.\n"
         "expected: ${expected_sorted}\nactual: ${actual_symbols}")
 endif()
 

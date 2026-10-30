@@ -367,5 +367,39 @@ bool break_crash_is_installed(void);
 /* Publishes an app-owned recent-events snapshot, COPIED NOW into the preallocated slot
  * (≤4KiB clamp). The app pre-redacts it (threat-model obligation). Safe pre-crash only. */
 void break_crash_set_context_blob(const void *data, usize len);
+
+/* ---- Context summary (2026-10-30) -------------------------------------
+ * A small fixed-size builder for the context blob: "[section]\nkey=value\n"
+ * text so subsystems (rhi, net, input, ...) can each publish a few facts.
+ * Sections keep first-set order; keys keep first-set order within a
+ * section; setting an existing key replaces its value in place.
+ * Names: section/key 1..15 chars of [0-9A-Za-z_.-]; invalid → false.
+ * Values: cut to 63 bytes; every byte outside printable ASCII, and '=',
+ * '/', '\\' are replaced by '_' (no paths, no line breaks — the §6
+ * redaction obligation stays satisfied by construction).
+ * At most 16 sections and 64 entries in total (false past the cap).
+ * format writes whole lines only, never more than capacity-1 bytes nor
+ * BREAK_CRASH_CONTEXT_BLOB_MAX, and returns the byte count (no NUL
+ * counted; out is NUL-terminated when capacity > 0). Pure, no allocation.
+ * Typical use: set facts, format, break_crash_set_context_blob. */
+#define BREAK_CRASH_SUMMARY_NAME_MAX 15u
+#define BREAK_CRASH_SUMMARY_VALUE_MAX 63u
+#define BREAK_CRASH_SUMMARY_MAX_SECTIONS 16u
+#define BREAK_CRASH_SUMMARY_MAX_ENTRIES 64u
+typedef struct BreakCrashSummary {
+    u32 section_count;
+    u32 entry_count;
+    char sections[BREAK_CRASH_SUMMARY_MAX_SECTIONS][BREAK_CRASH_SUMMARY_NAME_MAX + 1u];
+    struct {
+        u32 section;
+        char key[BREAK_CRASH_SUMMARY_NAME_MAX + 1u];
+        char value[BREAK_CRASH_SUMMARY_VALUE_MAX + 1u];
+    } entries[BREAK_CRASH_SUMMARY_MAX_ENTRIES];
+} BreakCrashSummary;
+void break_crash_summary_init(BreakCrashSummary *s);
+bool break_crash_summary_set(BreakCrashSummary *s, const char *section,
+                             const char *key, const char *value);
+usize break_crash_summary_format(const BreakCrashSummary *s, char *out,
+                                 usize capacity);
 /* Restores previous handlers; spool intact; inbox fd closed. */
 void break_crash_uninstall(void);

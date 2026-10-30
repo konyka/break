@@ -1712,3 +1712,96 @@ void break_crash_uninstall(void) {
 }
 
 #endif
+
+/* ---- context summary (platform-independent, pure) ---------------------- */
+
+static bool bc_summary_name_ok(const char *n) {
+    usize i = 0;
+    if (n == NULL || n[0] == '\0') return false;
+    for (; n[i] != '\0'; i++) {
+        char c = n[i];
+        if (i >= BREAK_CRASH_SUMMARY_NAME_MAX) return false;
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') || c == '_' || c == '.' || c == '-'))
+            return false;
+    }
+    return true;
+}
+
+void break_crash_summary_init(BreakCrashSummary *s) {
+    if (s != NULL) memset(s, 0, sizeof(*s));
+}
+
+bool break_crash_summary_set(BreakCrashSummary *s, const char *section,
+                             const char *key, const char *value) {
+    u32 sec, i;
+    usize v;
+    if (s == NULL || !bc_summary_name_ok(section) || !bc_summary_name_ok(key))
+        return false;
+    for (sec = 0; sec < s->section_count; sec++) {
+        if (strcmp(s->sections[sec], section) == 0) break;
+    }
+    for (i = 0; i < s->entry_count; i++) {
+        if (s->entries[i].section == sec && sec < s->section_count &&
+            strcmp(s->entries[i].key, key) == 0) break;
+    }
+    if (i == s->entry_count) {
+        if (s->entry_count >= BREAK_CRASH_SUMMARY_MAX_ENTRIES) return false;
+        if (sec == s->section_count) {
+            if (s->section_count >= BREAK_CRASH_SUMMARY_MAX_SECTIONS) return false;
+            memcpy(s->sections[sec], section, strlen(section) + 1u);
+            s->section_count++;
+        }
+        s->entries[i].section = sec;
+        memcpy(s->entries[i].key, key, strlen(key) + 1u);
+        s->entry_count++;
+    }
+    for (v = 0; value != NULL && value[v] != '\0' && v < BREAK_CRASH_SUMMARY_VALUE_MAX; v++) {
+        unsigned char c = (unsigned char)value[v];
+        s->entries[i].value[v] =
+            (c < 0x20u || c > 0x7Eu || c == '=' || c == '/' || c == '\\') ? '_' : (char)c;
+    }
+    s->entries[i].value[v] = '\0';
+    return true;
+}
+
+static bool bc_summary_append(char *out, usize limit, usize *pos, const char *a,
+                              const char *b, const char *c) {
+    usize la = strlen(a), lb = b ? strlen(b) : 0u, lc = c ? strlen(c) : 0u;
+    if (*pos + la + lb + lc > limit) return false;
+    memcpy(out + *pos, a, la);
+    if (lb) memcpy(out + *pos + la, b, lb);
+    if (lc) memcpy(out + *pos + la + lb, c, lc);
+    *pos += la + lb + lc;
+    return true;
+}
+
+usize break_crash_summary_format(const BreakCrashSummary *s, char *out,
+                                 usize capacity) {
+    usize limit, pos = 0;
+    u32 sec, i;
+    char line[BREAK_CRASH_SUMMARY_NAME_MAX + BREAK_CRASH_SUMMARY_VALUE_MAX + 4u];
+    if (out == NULL || capacity == 0) return 0;
+    out[0] = '\0';
+    if (s == NULL) return 0;
+    limit = capacity - 1u;
+    if (limit > BREAK_CRASH_CONTEXT_BLOB_MAX) limit = BREAK_CRASH_CONTEXT_BLOB_MAX;
+    for (sec = 0; sec < s->section_count; sec++) {
+        if (!bc_summary_append(out, limit, &pos, "[", s->sections[sec], "]\n")) goto done;
+        for (i = 0; i < s->entry_count; i++) {
+            usize kl, vl;
+            if (s->entries[i].section != sec) continue;
+            kl = strlen(s->entries[i].key);
+            vl = strlen(s->entries[i].value);
+            memcpy(line, s->entries[i].key, kl);
+            line[kl] = '=';
+            memcpy(line + kl + 1u, s->entries[i].value, vl);
+            line[kl + 1u + vl] = '\n';
+            line[kl + 2u + vl] = '\0';
+            if (!bc_summary_append(out, limit, &pos, line, NULL, NULL)) goto done;
+        }
+    }
+done:
+    out[pos] = '\0';
+    return pos;
+}

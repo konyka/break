@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：crash context 摘要构建器（2026-10-30）
+
+- **交付**：在 `src/crash/break_crash.{h,c}` 中新增 `BreakCrashSummary` 及 `break_crash_summary_init`、`break_crash_summary_set`、`break_crash_summary_format` 三个接口。内容为按段落分组的 `key=value` 文本，最多 16 段、64 条，值截断为 63 B，`=`、`/`、`\`、非可打印字符替换为 `_`。只输出完整行，且不超过 4 KiB 的 blob 上限。实现为纯函数，不分配内存。
+- **测试**：`test_break_crash` 新增 `context_summary_sections_bounded_and_sanitized`，先红后绿，37/37。变异检查：去掉 `/` 的替换后变红。`test_break_crash_target_contract` 的导出符号清单从 36 个扩为 39 个，随后转绿。两棵树的 ctest 只剩已知的 x11 失败。
+- **未做**：子系统自动填写摘要，需要在 app 侧接入；editor 和 engine 按合约不链接 break_crash。
+
 ## 本轮更新：editor remote 多设备 keyring 与吊销（2026-10-30）
 
 - **交付**：`break_editor_remote_add_key`、`revoke_key`、`key_count` 三个接口，最多 8 个 key_id→PSK。运行中可以继续添加，重复 id 或 keyring 已满时拒绝；单 key 的 `set_psk` 仍可用。AUTH 成功时，按回调解析出的 key_id 把会话归到对应的 key。吊销一个 key 后，用它的新 AUTH 会失败，已用它认证的会话立即关闭（会话和传输层都关），其他 key 的会话不受影响。key 字节在吊销和 destroy 时擦除。轮换的做法是：先加新 key，设备迁移后再吊销旧 key。
