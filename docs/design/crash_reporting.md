@@ -186,6 +186,10 @@ context-blob 直通（**app 预脱敏义务**——白名单字段义务见 §6.
 
 ## 8. 符号化契约（客户端永不符号化）
 
+> 服务端消费这些输入的参考实现见 `crash_symbolization.md`（2026-10-30）：
+> 对非 PIE 可执行文件用 `RIP` 本身、对共享库与 PIE 用 `RIP − load bias`
+> 查符号，并沿保存的 RBP 链从栈窗口恢复最多 32 帧（帧指针展开，不是 DWARF）。
+
 **客户端永不符号化**——无符号表、无 backtrace 展开、无调试路径读取。
 记录携带的符号化输入（服务端消费）：
 
@@ -203,9 +207,12 @@ build-id + 模块表 + siginfo。Windows 记录格式不在本阶段（§9）。
 
 以下各项**明确不在本 Phase 交付**，不得由本文任何契约推断为已有能力：
 
-1. **服务端**：符号化服务、聚类、回归统计、记录接收端——全部 Phase D+；
-2. **真实上传传输**：HTTP/TLS/端点配置/认证——app 集成 + Phase D 传输；
-   仓库内只有调用方回调接缝（§6）；
+1. **服务端**：**2026-10-30 起库内有参考实现**（符号化、聚类、回归统计、
+   记录接收端 `break_crash_server`，见 `crash_symbolization.md`）；仍然没有
+   生产服务（无上传者认证、无按客户端限速、不保存记录本身、无保留策略）；
+2. **真实上传传输**：**2026-10-30 起有 `break_crash_upload_http`**（经
+   `break_http` 的 TLS POST，实现 §6 的回调接缝，`crash_symbolization.md`
+   §5）；它是独立的库，**没有任何发布二进制链接它**，应用侧尚未接入；
 3. **GPU/RHI/网络/输入摘要的自动采集**：2026-10-30 起库内已有摘要构建器
    `BreakCrashSummary`（`break_crash_summary_init/set/format`）：按
    `[section]` 分组的 `key=value` 文本，最多 16 段、64 条，值截断为 63 B；
@@ -234,6 +241,9 @@ build-id + 模块表 + siginfo。Windows 记录格式不在本阶段（§9）。
   含端到端验收、Task 4 三钉）。
 - `docs/design/security_threat_model.md` §6：脱敏契约（本文为其客户端执行
   点）；§10 NOT-delivered 同步。
+- 服务端半侧（2026-10-30）：`docs/design/crash_symbolization.md`；
+  `engine/src/crash/break_crash_{symbolize,cluster,upload_http}.*`、
+  `engine/tools/break_crash_{server,report}.c`、`engine/tests/test_break_crash_{symbolize,cluster,upload_http,e2e}`。
 - 计划与台账：`docs/superpowers/plans/2026-10-24-stage5-crash-reporting.md`；
   `.superpowers/sdd/2026-10-24-stage5-crash-reporting/progress.md` 与
   task-{1..4}-report.md。

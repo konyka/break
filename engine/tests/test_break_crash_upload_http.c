@@ -71,6 +71,15 @@ static bool fake_start(Fake *f, const char *answer, int *port) {
 }
 
 static void fake_stop(Fake *f) {
+    /* a connection the adapter never made would leave the thread blocked in accept(): make one,
+     * so a refusal that happens before connecting ends the test with a failure, not a hang */
+    struct sockaddr_in a;
+    socklen_t al = sizeof(a);
+    int poke = socket(AF_INET, SOCK_STREAM, 0);
+    if (poke >= 0 && getsockname(f->listen_fd, (struct sockaddr *)&a, &al) == 0) {
+        (void)connect(poke, (struct sockaddr *)&a, sizeof(a));
+    }
+    if (poke >= 0) close(poke);
     pthread_join(f->th, NULL);
     close(f->listen_fd);
 }
@@ -176,9 +185,8 @@ TEST(bad_arguments_are_refused_before_any_connection) {
 static bool refused_without_contact(const char *base_suffix, const void *rec, size_t len) {
     static Fake f;
     BreakCrashUploadHttp c;
-    int port = 0, poke;
+    int port = 0;
     bool r;
-    struct sockaddr_in a;
     if (!fake_start(&f, OK200, &port)) return false;
     ctx_for(&c, port);
     if (base_suffix != NULL) {
@@ -186,14 +194,6 @@ static bool refused_without_contact(const char *base_suffix, const void *rec, si
         snprintf(c.base_url + used, sizeof(c.base_url) - used, "%s", base_suffix);
     }
     r = break_crash_upload_http(&c, rec, len);
-    /* release the fake's accept() so it can be joined, then see whether anything had arrived */
-    poke = socket(AF_INET, SOCK_STREAM, 0);
-    memset(&a, 0, sizeof(a));
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    a.sin_port = htons((unsigned short)port);
-    (void)connect(poke, (struct sockaddr *)&a, sizeof(a));
-    close(poke);
     fake_stop(&f);
     return !r && f.got_len == 0u;
 }

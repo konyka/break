@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：崩溃符号化、聚类、回归统计与上传（2026-10-30）
+
+- **交付**（详见 `docs/design/crash_symbolization.md`）：`break_crash_symbolize`（读 ELF 符号表，沿保存的 RBP 链从记录的栈窗口恢复最多 32 帧）、`break_crash_cluster`（签名、按构建计数、已修复与回归、规范文本统计文件）、`break_crash_upload_http`（`BreakCrashUploadFn` 的 HTTP 实现）、`break_crash_server`（参考收集服务）、`break_crash_report`（运维工具）、`break_crash_e2e` + `test_break_crash_e2e`。三个库都不链接进 `engine`、`engine_demo`、`dxx_break`、`editor`，`break_crash` 归档里没有网络符号（`test_break_crash_server_target_contract` 钉住，并钉住三个库各自的导出清单）。
+- **符号读取与帧恢复**：记录和 ELF 都按不可信输入处理；任何区段声称的字节在文件之外就整体拒绝；文件超过 256 MiB 拒绝；构建 id 和模块名在拼路径前重新校验。固定地址可执行文件用 `RIP` 查符号，共享库和 PIE 用 `RIP − load bias`。链必须严格向高地址增长，两个字必须完整落在窗口内，返回地址为 0 或达到 32 帧就停；没有符号文件的模块保留模块名和偏移，不编造符号。
+- **聚类**：签名是信号编号加前三帧（已解析写模块和符号，未解析写模块和偏移）的 SHA-256，不含 pid、tid、地址和构建 id。统计文件是规范文本，解析器只接受序列化器逐字节会产生的内容，打不开的文件不会被当作空库重置。构建按登记顺序排序；修复之后更晚的构建再出现才算回归，旧构建继续崩溃不算。重复上传按记录哈希去重，所以应答丢失后的重试只计一次。
+- **服务**：TLS 必须（明文只有 `--insecure-loopback` 且绑定回环）；`POST /crash` 的 200/400/404/405/409/411/413/415/500 各有测试；拒绝应答前先读掉声明的请求体；统计文件无法读写时答 500 且不被覆盖。
+- **测试**：`test_break_crash_symbolize` 23 例、`test_break_crash_cluster` 26 例、`test_break_crash_upload_http` 8 例、`test_break_crash_e2e` 11 个场景、契约 1 例。先红后绿，变异检查见设计文档 §6。final、ASan+UBSan、TSan 三棵树的 `crash` 测试 7/7。
+- **过程中发现并修复的缺陷**：（1）非 PIE 可执行文件的第 0 帧解析不出来（符号地址是绝对地址，我却减了加载偏移），被真实崩溃子进程的测试抓到；（2）符号库缓存了"没找到"，长期运行的服务在符号文件迟到后永远解析不出该构建；（3）服务在读完请求体之前就应答 413，客户端看到的是 TLS 错误而不是 413；（4）`mark_fixed` 对已有更晚构建报告过的签名没有立即置为回归，被存取往返和报告排序两个测试抓到（回归标记丢失）；修复后补了专门的 `marking_fixed_after_a_later_build_already_reported_it_is_a_regression_at_once`，这个专门用例没有单独见过红。
+- **未做、局限**：不用 DWARF CFI，无帧指针的代码（大多数发布版和系统库）只得到很短甚至错误的调用栈，第 0 帧可信、其后是推测；没有 minidump/PE、Windows SEH、macOS Mach-O；没有生产服务（无上传者认证、无按客户端限速、不保存记录、无保留策略、串行处理）；没有任何发布二进制链接上传适配器，GPU/RHI/网络/输入摘要仍需应用接入；Windows/macOS 两条 lane 没跑。聚类里有 3 个变异（计数溢出检查、首次构建下标范围检查、`save` 忽略写失败）改动后测试仍绿，分析后判定为被其他检查覆盖的冗余防线，没有单独的测试钉住。窗口读的 `off > len` 前置检查只有 ASan 树能抓到。ASan 构建的**游戏**里，崩溃处理器复制栈窗口时可能碰到被毒化的红区而被 ASan 拦下，这是 `break_crash` 预先存在的行为，我只在测试里绕开，没有改处理器。以 root 运行时，端到端里"不可写统计文件"场景被跳过，"忽略保存失败"这一项就没有保护。
+
 ## 本轮更新：独立评审（2026-10-30）
 
 两位评审者（只读子代理）分别审了当天的新代码：工具（`break_manifest_tool`、`break_keygen`、`break_manifest_verify`、灰度白名单）和 editor remote（keyring、撤销、SAVE/LOAD/VIEW/CAMERA_SET/HISTORY、`break_msg_rate`）。**这是一次只读评审，不是完整的独立代码评审**：评审者没有构建、没有运行测试，第二位评审者在 2 小时上限处被打断，强制出报告后才交出结果；本次评审没有覆盖 EVAL 与 SPAWN 处理器的深度、测试代码、以及 `break_keygen.c`（第二位评审者未读到）。
