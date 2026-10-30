@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：场景纹理列表与热重载（2026-10-30）
+
+- **交付**：编辑器现在读取已加载 BSCN 里保留的 RESOURCES chunk，列出其中的纹理（uri、尺寸、被几个材质引用、状态），最多同时加载 8 张，磁盘上的文件变化会自动重载。每张纹理复用 `BreakEditorImagePreview`（独立的 Runtime Core 工作线程、文件监视、事务式 GPU 交换、mip 链），所以坏文件保留旧图、旧纹理在新纹理建好后才销毁、关闭有时限。uri 来自文件，不可信：只接受 1 到 63 个可打印 ASCII 字符的相对路径，没有 `..`、反斜杠、`:`，并且只相对场景文件所在目录解析；不合格的显示“路径不安全”且不会被打开，场景没有路径时显示“场景没有路径”。渲染调试面板在 9 条固定行之后追加 `textures: N` 和每张纹理一行，中英文都有，纹理变化后下一帧刷新（不等 4 Hz 定时器）。
+- **与原设计的偏差**：原计划是把材质的 albedo 贴到实体代理上。BSCN 里没有从编辑器实体到节点或材质的链接（`SCENE_NODES` 的 `material_idx` 属于渲染节点，而编辑器只把节点当作不透明字节保留），按序号硬配对等于编造数据，所以没有做。代理仍是纯色。
+- **测试**：`test_editor_scene_textures` 9 例（真实 BSCN、v1/v2 手工布局、各种截断和畸形 chunk、路径规则）；`test_editor_shell` 新增 11 例（所有者 7 例、面板 4 例），总数 183。先红后绿；变异检查覆盖路径规则、chunk 校验和全部接线点（不同步、不刷新、不 tick、新建场景不清理、设备不转发、不安全检查、8 张上限、保留存活预览），均使对应用例变红。final 树、ASan+UBSan、TSan 三棵树 183/183，无报告。
+- **实机**：X11（Xwayland）、NVK Vulkan 与 Mesa OpenGL 各跑一遍，中文再跑一遍 Vulkan：初始两行为就绪，把 `tex0.png` 改写为 16x48 后该行变为 `16x48 ready`，写入垃圾后变为 `failed` 且保留尺寸，删除 `tex1.png` 后变为 `failed`。依据是通过 gdb 在 shell tick 读取的行文本；本机无法查看截图像素，所以不声称画面正确。
+- **未做**：实体代理贴图（无数据链接）、这些纹理的缩略图控件、材质参数编辑、Windows/macOS 实机。详见 `docs/design/editor_hot_reload.md` §9。
+- **事故记录**：这一轮中途我误用 `git checkout -- .` 把当时尚未提交的 shell/面板改动整体回滚；子代理（LuaJIT 评估）对 `engine/tests/bench_lua_backends.c` 的未提交修改也被一并回退。shell/面板代码按已验证的内容重做并重新跑完全部变异检查后提交；子代理的那个文件需要它自己重新写。
+
 ## 本轮更新：按客户端区分的 undo（2026-10-30）
 
 - **交付**：命令栈仍然共用，全局 UNDO/REDO/HISTORY 不变。每条命令记录入栈时文档的 origin（本地 shell 为 0；remote 主机给每个连接一个递增且不复用的 origin，并在每个 handler 前后设置/复位）。新增 `break_editor_undo_origin` / `break_editor_redo_origin`、两个按 origin 计数的查询，以及线协议 `UNDO_OWN`=19、`REDO_OWN`=20（响应 `applied/u8, blocked/u8`）。客户端只撤销自己发出的最新命令，即使别的客户端的命令更新；只有当它要越过的命令（含已撤销的）没有碰到同一实体索引时才执行，否则 `blocked=1`，文档、revision 都不变。每个命令声明自己碰到的实体索引（组命令取子命令并集，gizmo 拖动含 followers，说不清的算碰所有）。执行后命令被移到已应用/已撤销的边界，所以“新 push 清空整个 redo 尾部”“drop-oldest”“id 精确恢复”的既有不变量都保持。
