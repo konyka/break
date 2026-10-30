@@ -761,6 +761,18 @@ Metal 与 MoltenVK 互相 mad **1.09**，平均 RGB 一致。`BREAK_EDITOR_INPUT
 代码修改；`editor remote` 密钥环、更新清单工具等没有 macOS 实机场景，只有自动化测试覆盖。
 证据等级不变。
 
+2026-10-30 第二次 review：从 `@f0347bed` 快进到 `@f1a88780`（5 个远程提交：视口线框模式
+`Z`/命令面板/`wireframe=` 设置/远程 VIEW bit 3、`editor remote` HISTORY（消息 18）、
+`test_runtime_io` 双重释放子进程信号诊断），无冲突、无本地改动。读了全部代码 diff：线框模式
+把每个代理画成 12 条边并保留选中描边，设置序列化新增键在 8 KiB 缓冲内，HISTORY 响应长度
+与 127 字节描述上限一致，消息注册表与 fuzz id 范围同步到 4..18；`Z` 与既有单键快捷键走同
+一分发路径，`Ctrl+Z` 仍是撤销。未发现需要修复的问题，本次无代码修改。Metal CTest
+**237/237**、graphics **6/6**，MoltenVK **238/238**，仅 D3D12 dependency gate 按平台
+跳过，构建无 error/warning。`BREAK_EDITOR_INPUT_SCRIPT=ON` 编辑器脚本（Metal）：添加实体与
+Transform 后按 `Z`，视口只剩 12 条边且可透过看到网格线，再按 `Z` 回到实心立方体，`Z` 三次
+后设置文件含 `wireframe=on`。远程 HISTORY 与 VIEW bit 3 只有自动化测试覆盖，无 macOS 实机
+场景。证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
