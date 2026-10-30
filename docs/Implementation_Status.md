@@ -1,5 +1,10 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：灰度分桶接入 stage（2026-10-30）
+
+- **交付**：新增 `break_update_client_stage_rollout` 和错误码 `BREAK_UPDATE_CLIENT_ROLLOUT`。验签和兼容性检查之后、传输之前做分桶判定，不在范围内时零 fetch、零写盘；原 `stage` 的行为不变，二者共用内部的 `upc_stage`。百分比由调用方传入，因为 manifest v1 没有对应字段。
+- **测试**：新增 `stage_rollout_gate_before_transport`，覆盖：恰好在桶号以下被拒且零副作用、device_id 为空被拒、错误公钥时仍先报 VERIFY、在范围内正常 stage；先红后绿，44/44。变异检查：跳过判定后变红。update target 合约的导出符号从 30 个扩为 31 个。默认树只剩已知的 x11 失败。
+
 ## 本轮更新：更新 manifest 离线签名工具（2026-10-30）
 
 - **交付**：`engine/tools/break_manifest_tool.c` 提供 keygen、build、sign 三个子命令，`engine/tools/break_manifest_verify.c` 调用客户端验证器做校验。签名工具直接链接 OpenSSL，不经过 break_crypto，后者仍只做验签。sign 之前按客户端语法复核正文，私钥独占创建、权限 0600。

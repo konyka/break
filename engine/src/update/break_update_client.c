@@ -1025,10 +1025,11 @@ out:
     return ok;
 }
 
-bool break_update_client_stage(BreakUpdateClient *c, const BreakUpdateManifest *m,
-                               const u8 pubkey[32], const char *channel,
-                               const char *platform, BreakUpdateFetchFn fetch,
-                               void *user) {
+/* Shared stage pipeline; device_id == NULL means no rollout gate. */
+static bool upc_stage(BreakUpdateClient *c, const BreakUpdateManifest *m,
+                      const u8 pubkey[32], const char *channel,
+                      const char *platform, const char *device_id,
+                      u32 percent_bp, BreakUpdateFetchFn fetch, void *user) {
     u32 cur[3] = {0, 0, 0};
     char target;
     UpcState next;
@@ -1053,6 +1054,21 @@ bool break_update_client_stage(BreakUpdateClient *c, const BreakUpdateManifest *
                                           cur[2])) {
         c->last_error = BREAK_UPDATE_CLIENT_POLICY;
         return false;
+    }
+    /* Gray rollout (stage_rollout only): after signature + policy, before
+     * any transport or disk effect. */
+    if (device_id != NULL) {
+        u32 version[3];
+        u32 bucket = 0u;
+        break_update_manifest_version(m, version);
+        if (!break_update_rollout_bucket(device_id, version, &bucket)) {
+            c->last_error = BREAK_UPDATE_CLIENT_INVALID;
+            return false;
+        }
+        if (!break_update_rollout_admits(bucket, percent_bp)) {
+            c->last_error = BREAK_UPDATE_CLIENT_ROLLOUT;
+            return false;
+        }
     }
     /* unstage is the ONLY non-activating way to clear a staged slot (plan
      * verbatim) — re-staging is unstage + stage, never implicit. */
@@ -1079,6 +1095,24 @@ bool break_update_client_stage(BreakUpdateClient *c, const BreakUpdateManifest *
     c->st = next;
     c->last_error = BREAK_UPDATE_CLIENT_OK;
     return true;
+}
+
+bool break_update_client_stage(BreakUpdateClient *c, const BreakUpdateManifest *m,
+                               const u8 pubkey[32], const char *channel,
+                               const char *platform, BreakUpdateFetchFn fetch,
+                               void *user) {
+    return upc_stage(c, m, pubkey, channel, platform, NULL, 0u, fetch, user);
+}
+
+bool break_update_client_stage_rollout(BreakUpdateClient *c, const BreakUpdateManifest *m,
+                                       const u8 pubkey[32], const char *channel,
+                                       const char *platform, const char *device_id,
+                                       u32 percent_bp, BreakUpdateFetchFn fetch, void *user) {
+    if (c != NULL && device_id == NULL) {
+        c->last_error = BREAK_UPDATE_CLIENT_INVALID;
+        return false;
+    }
+    return upc_stage(c, m, pubkey, channel, platform, device_id, percent_bp, fetch, user);
 }
 
 bool break_update_client_activate(BreakUpdateClient *c) {

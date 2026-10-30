@@ -114,7 +114,7 @@
 - [ ] editor remote：生产凭证系统（provisioning/密钥存储；进程内 keyring 已于 2026-10-30 交付：最多 8 个设备密钥、运行时增加、吊销即关闭相关会话；`--remote-keyring-file` 启动加载并在文件变更时热重载（删掉一行即吊销）；`break_keygen` 工具生成设备密钥，见 `docs/design/editor_remote.md`）、WAN/多客户端管理、remote undo-stack 共享（服务端 transport close 与认证 deadline 已于 2026-10-26 交付，见 `docs/design/editor_remote.md` 末节）
 - [ ] Lua：LuaJIT 可选后端评估（gating：baseline 合同稳定）
 - [ ] Security：server authority 实现；client anti-tamper 代码（应用消息级 replay window 库已交付，流式传输上按决策不接线，触发条件见 `docs/design/transport_security.md` §3；消息/字节级限速库 `break_msg_rate` 与 per-device key provisioning tooling `break_keygen` + editor keyring 已交付，2026-10-30）
-- [ ] Update/crash：在线更新真实传输、灰度百分比来源（manifest v2）、服务端（离线签名工具 `break_manifest_tool` 已于 2026-10-30 交付）；crash 服务端符号化/聚类/回归统计、真实上传传输、GPU/RHI/网络/输入摘要的 app 侧接入（摘要构建器 `BreakCrashSummary` 已于 2026-10-30 交付）
+- [ ] Update/crash：在线更新真实传输、灰度百分比来源（manifest v2；客户端分桶判定已通过 `stage_rollout` 接入，百分比暂由调用方传入）、服务端（离线签名工具 `break_manifest_tool` 已于 2026-10-30 交付）；crash 服务端符号化/聚类/回归统计、真实上传传输、GPU/RHI/网络/输入摘要的 app 侧接入（摘要构建器 `BreakCrashSummary` 已于 2026-10-30 交付）
 - [ ] Stage 6：各图形后端（Vulkan/D3D12/Metal/headless）缺口计划、逐后端证据（OpenGL 废弃门已取消，见 Stage 6 OpenGL policy）
 - [ ] X11 全屏在有窗口管理器的会话下不稳定：`test_platform_x11_runtime` 在 GNOME Xwayland（Mutter）上间歇失败，原因与调查记录见 `docs/Implementation_Status.md` 2026-10-28 条目；CI（Xvfb，无 WM）不受影响
 - [ ] Final independent code review

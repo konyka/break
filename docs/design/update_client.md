@@ -295,7 +295,13 @@ OK），open 之后初始为 OK；open 本身只以 NULL 报错（无客户端�
    percent_bp)` 以万分比判定（0 = 无人、10000 = 全部、超出钳住）。device_id
    1..128 字节、由应用提供且只参与哈希。**仍未交付**：百分比的来源——
    manifest v1 是签名的规范文本、没有该字段，加字段需要新的 manifest 版本
-   与签名工具链（第 4 项）；`stage` 未调用分桶；白名单。测试
+   与签名工具链（第 4 项）；白名单。**接入 stage（2026-10-30）**：
+   新增 `break_update_client_stage_rollout(..., device_id, percent_bp, ...)`，
+   流程与 `stage` 相同，只是在验签和兼容性检查之后、任何传输之前按设备
+   分桶判定：不在灰度范围内返回 `ROLLOUT` 错误（新枚举值），0 次 fetch、
+   0 次磁盘写入、状态不变；device_id 非法时返回 `INVALID`。百分比由调用方
+   从发布服务获取。测试 `stage_rollout_gate_before_transport`；变异检查：
+   跳过判定后变红。导出符号合约从 30 个扩为 31 个。测试
    `test_break_update` `rollout_bucket_is_deterministic_bounded_and_uniform`
    （确定性、换版本重洗牌、1 万个设备 10 个十分位各在 ±10% 内、判定边界、
    参数校验）。

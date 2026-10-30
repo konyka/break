@@ -2904,6 +2904,63 @@ TEST(stage_null_args) {
     cleanup_root(root);
 }
 
+/* stage_rollout: same pipeline as stage, plus the gray-rollout gate after
+ * signature + policy and BEFORE any transport. A device outside the
+ * published share gets ROLLOUT with zero fetch calls and an untouched disk;
+ * an admitted device stages normally. Invalid device ids are INVALID. */
+TEST(stage_rollout_gate_before_transport) {
+    fill_fx_a();
+    BreakUpdateManifest *m = manifest_a();
+    char root[512];
+    u32 version[3];
+    u32 bucket = 0u;
+    FakeFetch f;
+    test_tmp(root, sizeof(root), "upc_st_rollout");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+    break_update_manifest_version(m, version);
+    ASSERT_TRUE(break_update_rollout_bucket("device-42", version, &bucket));
+
+    /* share just below this device's bucket: refused, zero effect */
+    ASSERT_FALSE(break_update_client_stage_rollout(c, m, stage_pubkey(), "stable",
+                                                   "linux-x86-64", "device-42", bucket,
+                                                   fake_fetch, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_ROLLOUT);
+    ASSERT_EQ(f.total_calls, (u64)0);
+    ASSERT_TRUE(disk_pristine(root, INITIAL_STATE));
+
+    /* invalid device id */
+    ASSERT_FALSE(break_update_client_stage_rollout(c, m, stage_pubkey(), "stable",
+                                                   "linux-x86-64", "", 10000u,
+                                                   fake_fetch, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_INVALID);
+    ASSERT_EQ(f.total_calls, (u64)0);
+
+    /* signature still comes first: a wrong key is VERIFY even when admitted */
+    {
+        u8 wrong[32];
+        memcpy(wrong, stage_pubkey(), 32);
+        wrong[0] ^= 0x01;
+        ASSERT_FALSE(break_update_client_stage_rollout(c, m, wrong, "stable",
+                                                       "linux-x86-64", "device-42",
+                                                       10000u, fake_fetch, &f));
+        ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_VERIFY);
+    }
+
+    /* share just above the bucket: admitted, stages slot A */
+    ASSERT_TRUE(break_update_client_stage_rollout(c, m, stage_pubkey(), "stable",
+                                                  "linux-x86-64", "device-42", bucket + 1u,
+                                                  fake_fetch, &f));
+    ASSERT_TRUE(f.total_calls > 0u);
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A'));
+
+    break_update_manifest_destroy(m);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fresh_open_layout_and_initial_state);
     RUN_TEST(reopen_roundtrip);
@@ -2948,4 +3005,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(restage_cycle_a_b_a);
     RUN_TEST(crash_between_stage_and_activate_reopen);
     RUN_TEST(stage_null_args);
+    RUN_TEST(stage_rollout_gate_before_transport);
 TEST_MAIN_END()

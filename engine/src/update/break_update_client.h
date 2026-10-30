@@ -91,7 +91,8 @@ void break_update_client_destroy(BreakUpdateClient *c);
 typedef enum BreakUpdateClientError {  /* fixed enum; no attacker-controlled strings */
     BREAK_UPDATE_CLIENT_OK = 0, BREAK_UPDATE_CLIENT_INVALID, BREAK_UPDATE_CLIENT_IO,
     BREAK_UPDATE_CLIENT_PARSE, BREAK_UPDATE_CLIENT_POLICY, BREAK_UPDATE_CLIENT_FETCH,
-    BREAK_UPDATE_CLIENT_VERIFY, BREAK_UPDATE_CLIENT_STATE
+    BREAK_UPDATE_CLIENT_VERIFY, BREAK_UPDATE_CLIENT_STATE,
+    BREAK_UPDATE_CLIENT_ROLLOUT  /* stage_rollout: device outside the published share */
 } BreakUpdateClientError;
 BreakUpdateClientError break_update_client_last_error(const BreakUpdateClient *c);
 
@@ -197,6 +198,18 @@ bool break_update_client_fetch_all(BreakUpdateClient *c, const BreakUpdateManife
 bool break_update_client_stage(BreakUpdateClient *c, const BreakUpdateManifest *m,
                                const u8 pubkey[32], const char *channel, const char *platform,
                                BreakUpdateFetchFn fetch, void *user);
+/* Gray-rollout stage (2026-10-30): exactly stage, plus — after the
+ * signature and policy checks and BEFORE any transport — the client half
+ * of gray rollout: bucket = break_update_rollout_bucket(device_id, manifest
+ * version); the device stages only when break_update_rollout_admits(bucket,
+ * percent_bp). percent_bp (basis points, 0..10000, clamped) is supplied by
+ * the caller from its release service: manifest v1 carries no share field.
+ * Outside the share → false + ROLLOUT with zero fetch calls, zero disk
+ * writes and zero state changes; an invalid device_id → INVALID. */
+bool break_update_client_stage_rollout(BreakUpdateClient *c, const BreakUpdateManifest *m,
+                                       const u8 pubkey[32], const char *channel,
+                                       const char *platform, const char *device_id,
+                                       u32 percent_bp, BreakUpdateFetchFn fetch, void *user);
 /* Atomically flip current → staged slot, pending=yes, confirmed=no, previous-* recorded.
  * Persists state BEFORE the flip becomes visible. False when no staged slot. */
 bool break_update_client_activate(BreakUpdateClient *c);
