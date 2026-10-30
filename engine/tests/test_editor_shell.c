@@ -4701,8 +4701,10 @@ static void remote_client_close(RemoteClient *c) {
     }
 }
 
-static void remote_client_connect(RemoteClient *c, BreakEditorShell *shell,
-                                  BreakEditorRemote *remote) {
+/* Connects the `nth` client (1-based) and waits until the host tracks `nth`
+ * connections and every one of them completed the plaintext-seam auth. */
+static void remote_client_connect_nth(RemoteClient *c, BreakEditorShell *shell,
+                                      BreakEditorRemote *remote, u32 nth) {
     struct sockaddr_in address;
     u64 deadline;
     memset(c, 0, sizeof(*c));
@@ -4722,12 +4724,12 @@ static void remote_client_connect(RemoteClient *c, BreakEditorShell *shell,
     /* wait until the host tracks the connection */
     deadline = remote_monotonic_us() + UINT64_C(3000000);
     while (remote_monotonic_us() < deadline) {
-        if (break_editor_remote_connection_count(remote) >= 1u) {
+        if (break_editor_remote_connection_count(remote) >= nth) {
             break;
         }
         remote_client_pump(c, 5);
     }
-    ASSERT_TRUE(break_editor_remote_connection_count(remote) >= 1u);
+    ASSERT_TRUE(break_editor_remote_connection_count(remote) >= nth);
     /* let the plaintext-seam auto-auth complete before the first request
      * leaves: remote_table_sync transitions NEW → AUTHENTICATED on the tick
      * after the OPENED event is adopted, and a request arriving while the
@@ -4737,16 +4739,25 @@ static void remote_client_connect(RemoteClient *c, BreakEditorShell *shell,
         uint64_t keys[4];
         uint32_t states[4];
         uint32_t n = 0u;
+        bool all_auth = false;
         while (remote_monotonic_us() < auth_deadline) {
             n = break_editor_remote_connections_snapshot(remote, keys, states, 4u);
-            if (n >= 1u && states[0] == 2u /* BREAK_SESSION_AUTHENTICATED */) {
+            all_auth = n >= nth;
+            for (uint32_t i = 0u; all_auth && i < nth && i < 4u; i++) {
+                all_auth = states[i] == 2u /* BREAK_SESSION_AUTHENTICATED */;
+            }
+            if (all_auth) {
                 break;
             }
             remote_client_pump(c, 5);
         }
-        ASSERT_TRUE(n >= 1u);
-        ASSERT_EQ(states[0], 2u);
+        ASSERT_TRUE(all_auth);
     }
+}
+
+static void remote_client_connect(RemoteClient *c, BreakEditorShell *shell,
+                                  BreakEditorRemote *remote) {
+    remote_client_connect_nth(c, shell, remote, 1u);
 }
 
 /* Encodes + sends one request envelope (payload may be NULL with size 0).
@@ -4938,7 +4949,8 @@ TEST(remote_protocol_ids_live_in_default_registry)
                {BREAK_EDITOR_MSG_EVAL},     {BREAK_EDITOR_MSG_RESULT},
                {BREAK_EDITOR_MSG_SAVE},     {BREAK_EDITOR_MSG_LOAD},
                {BREAK_EDITOR_MSG_VIEW},     {BREAK_EDITOR_MSG_CAMERA_SET},
-               {BREAK_EDITOR_MSG_HISTORY}};
+               {BREAK_EDITOR_MSG_HISTORY},  {BREAK_EDITOR_MSG_UNDO_OWN},
+               {BREAK_EDITOR_MSG_REDO_OWN}};
     const BreakNetMessageRegistry *registry = break_net_message_registry_default();
     usize i;
     for (i = 0u; i < sizeof(ids) / sizeof(ids[0]); i++) {
@@ -4949,8 +4961,8 @@ TEST(remote_protocol_ids_live_in_default_registry)
         ASSERT_EQ(def->maximum_version, 1u);
         ASSERT_EQ(def->payload_limit, (size_t)BREAK_EDITOR_PROTO_MAX_PAYLOAD);
     }
-    /* 4..19 free space is claimed, not beyond */
-    ASSERT_TRUE(break_net_message_registry_lookup(registry, 20u) == NULL);
+    /* 4..20 free space is claimed, not beyond */
+    ASSERT_TRUE(break_net_message_registry_lookup(registry, 21u) == NULL);
 }
 
 TEST(remote_describe_returns_version_entity_count_dirty)
@@ -5419,6 +5431,239 @@ TEST(remote_history_reports_the_shared_undo_stack)
     remote_wait_connection_count(remote, shell, 0u);
 
     remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+
+/* UNDO_OWN / REDO_OWN (19/20): per-client undo. Response: applied/u8,
+ * blocked/u8. The local shell is origin 0; every connection gets its own
+ * origin; commands of other origins are never touched. */
+static void own_send(RemoteClient *c, u16 id, u8 *applied, u8 *blocked)
+{
+    BreakNetEnvelope rsp;
+    remote_client_send(c, id, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(c, &rsp), 2u);
+    ASSERT_EQ(rsp.message_id, id);
+    *applied = ((const u8 *)rsp.payload)[0];
+    *blocked = ((const u8 *)rsp.payload)[1];
+}
+
+static void own_spawn(RemoteClient *c, const char *name, u64 *out)
+{
+    BreakNetEnvelope rsp;
+    u8 req[2 + 16];
+    size_t n = strlen(name);
+    wr16(req, (u16)n);
+    memcpy(req + 2u, name, n);
+    remote_client_send(c, BREAK_EDITOR_MSG_SPAWN, req, 2u + n);
+    ASSERT_EQ(remote_client_recv(c, &rsp), 8u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_SPAWN);
+    {
+        const u8 *p = (const u8 *)rsp.payload;
+        *out = (u64)p[0] | ((u64)p[1] << 8u) | ((u64)p[2] << 16u) |
+               ((u64)p[3] << 24u) | ((u64)p[4] << 32u) | ((u64)p[5] << 40u) |
+               ((u64)p[6] << 48u) | ((u64)p[7] << 56u);
+    }
+}
+
+static void own_rename(RemoteClient *c, u64 id, const char *name)
+{
+    BreakNetEnvelope rsp;
+    u8 req[10 + 16];
+    size_t n = strlen(name);
+    wr32(req, (u32)id);
+    wr32(req + 4u, (u32)(id >> 32u));
+    wr16(req + 8u, (u16)n);
+    memcpy(req + 10u, name, n);
+    remote_client_send(c, BREAK_EDITOR_MSG_RENAME, req, 10u + n);
+    ASSERT_EQ(remote_client_recv(c, &rsp), 1u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+}
+
+static bool own_has_name(BreakEditorDoc *doc, const char *name)
+{
+    for (usize i = 0u; i < break_editor_doc_entity_count(doc); i++) {
+        BreakEditorEntityId id;
+        const char *nm = NULL;
+        if (break_editor_doc_entity_at(doc, i, &id, &nm) && strcmp(nm, name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+TEST(remote_undo_own_only_reverts_this_clients_commands)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient a, b;
+    BreakEditorDoc *doc;
+    u8 applied, blocked;
+    u64 e = 0u;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect_nth(&a, shell, remote, 1u);
+    remote_client_connect_nth(&b, shell, remote, 2u);
+    doc = break_editor_shell_doc(shell);
+
+    own_spawn(&a, "from-a", &e);
+    own_spawn(&b, "from-b", &e);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+
+    /* A undoes ITS spawn although B's command is newer */
+    own_send(&a, BREAK_EDITOR_MSG_UNDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 1u);
+    ASSERT_EQ(blocked, 0u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_FALSE(own_has_name(doc, "from-a"));
+    ASSERT_TRUE(own_has_name(doc, "from-b"));
+
+    /* nothing more of A's to undo; B has nothing undone to redo */
+    own_send(&a, BREAK_EDITOR_MSG_UNDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 0u);
+    ASSERT_EQ(blocked, 0u);
+    own_send(&b, BREAK_EDITOR_MSG_REDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 0u);
+    ASSERT_EQ(blocked, 0u);
+
+    /* A redoes its own */
+    own_send(&a, BREAK_EDITOR_MSG_REDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 1u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_TRUE(own_has_name(doc, "from-a"));
+    ASSERT_TRUE(own_has_name(doc, "from-b"));
+
+    remote_client_close(&a);
+    remote_client_close(&b);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_undo_own_is_blocked_by_another_clients_edit_of_the_same_entity)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient a, b;
+    BreakEditorDoc *doc;
+    u8 applied, blocked;
+    u64 e;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect_nth(&a, shell, remote, 1u);
+    remote_client_connect_nth(&b, shell, remote, 2u);
+    doc = break_editor_shell_doc(shell);
+
+    own_spawn(&a, "shared", &e);
+    own_rename(&b, e, "renamed-by-b");
+
+    own_send(&a, BREAK_EDITOR_MSG_UNDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 0u);
+    ASSERT_EQ(blocked, 1u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_TRUE(own_has_name(doc, "renamed-by-b"));
+
+    /* B undoes its rename; A is still blocked while that rename waits on
+     * the redo side, then freed once B redoes and nobody touches it ... */
+    own_send(&b, BREAK_EDITOR_MSG_UNDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 1u);
+    ASSERT_TRUE(own_has_name(doc, "shared"));
+    own_send(&a, BREAK_EDITOR_MSG_UNDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 0u);
+    ASSERT_EQ(blocked, 1u);
+    /* the global UNDO is unchanged: it reverts the newest command, whoever's */
+    remote_client_send(&a, BREAK_EDITOR_MSG_REDO, NULL, 0u);
+    {
+        BreakNetEnvelope rsp;
+        ASSERT_EQ(remote_client_recv(&a, &rsp), 1u);
+        ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+    }
+    ASSERT_TRUE(own_has_name(doc, "renamed-by-b"));
+
+    remote_client_close(&a);
+    remote_client_close(&b);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_undo_own_never_touches_local_shell_edits_and_origin_resets)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient a;
+    BreakEditorDoc *doc;
+    const BreakEditorCmdStack *st;
+    u8 applied, blocked;
+    u64 e = 0u;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&a, shell, remote);
+    doc = break_editor_shell_doc(shell);
+    st = break_editor_doc_stack(doc);
+
+    emit_click(find(shell, "editor-add-button")); /* local edit, origin 0 */
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count_origin(st, 0u), 1u);
+
+    /* the remote has no commands of its own: UNDO_OWN is a no-op */
+    own_send(&a, BREAK_EDITOR_MSG_UNDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 0u);
+    ASSERT_EQ(blocked, 0u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+
+    /* after a remote command ran, the doc origin is back to the shell's 0:
+     * a following local edit is a local command */
+    own_spawn(&a, "remote", &e);
+    ASSERT_EQ(break_editor_doc_origin(doc), 0u);
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_EQ(break_editor_cmd_stack_undo_count_origin(st, 0u), 2u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 3u);
+
+    /* UNDO_OWN removes exactly the remote's entity */
+    own_send(&a, BREAK_EDITOR_MSG_UNDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 1u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_FALSE(own_has_name(doc, "remote"));
+
+    /* a payload is a protocol error: the session closes */
+    remote_client_send(&a, BREAK_EDITOR_MSG_UNDO_OWN, (const u8[]){1u}, 1u);
+    remote_wait_connection_count(remote, shell, 0u);
+
+    remote_client_close(&a);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_undo_own_origin_is_per_connection_not_per_slot)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient a, b;
+    BreakEditorDoc *doc;
+    u8 applied, blocked;
+    u64 e = 0u;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&a, shell, remote);
+    doc = break_editor_shell_doc(shell);
+    own_spawn(&a, "left-behind", &e);
+    remote_client_close(&a);
+    remote_wait_connection_count(remote, shell, 0u);
+
+    /* the next connection reuses the host's table row (and likely the same
+     * slot) but is a different client: it must not inherit A's history */
+    remote_client_connect(&b, shell, remote);
+    own_send(&b, BREAK_EDITOR_MSG_UNDO_OWN, &applied, &blocked);
+    ASSERT_EQ(applied, 0u);
+    ASSERT_EQ(blocked, 0u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_TRUE(own_has_name(doc, "left-behind"));
+
+    remote_client_close(&b);
     break_editor_remote_destroy(remote);
     break_editor_shell_destroy(shell);
 }
@@ -9637,6 +9882,10 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_view_toggles_view_state_without_touching_the_doc);
     RUN_REMOTE_TEST(remote_camera_set_applies_a_validated_pose);
     RUN_REMOTE_TEST(remote_history_reports_the_shared_undo_stack);
+    RUN_REMOTE_TEST(remote_undo_own_only_reverts_this_clients_commands);
+    RUN_REMOTE_TEST(remote_undo_own_is_blocked_by_another_clients_edit_of_the_same_entity);
+    RUN_REMOTE_TEST(remote_undo_own_never_touches_local_shell_edits_and_origin_resets);
+    RUN_REMOTE_TEST(remote_undo_own_origin_is_per_connection_not_per_slot);
     RUN_REMOTE_TEST(remote_set_field_maps_component_and_field_names);
     RUN_REMOTE_TEST(remote_eval_runs_on_shell_thread_and_returns_console_tail);
     RUN_REMOTE_TEST(remote_eval_at_4096_boundary_and_len_mismatch_closes);

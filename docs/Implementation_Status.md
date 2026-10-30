@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：按客户端区分的 undo（2026-10-30）
+
+- **交付**：命令栈仍然共用，全局 UNDO/REDO/HISTORY 不变。每条命令记录入栈时文档的 origin（本地 shell 为 0；remote 主机给每个连接一个递增且不复用的 origin，并在每个 handler 前后设置/复位）。新增 `break_editor_undo_origin` / `break_editor_redo_origin`、两个按 origin 计数的查询，以及线协议 `UNDO_OWN`=19、`REDO_OWN`=20（响应 `applied/u8, blocked/u8`）。客户端只撤销自己发出的最新命令，即使别的客户端的命令更新；只有当它要越过的命令（含已撤销的）没有碰到同一实体索引时才执行，否则 `blocked=1`，文档、revision 都不变。每个命令声明自己碰到的实体索引（组命令取子命令并集，gizmo 拖动含 followers，说不清的算碰所有）。执行后命令被移到已应用/已撤销的边界，所以“新 push 清空整个 redo 尾部”“drop-oldest”“id 精确恢复”的既有不变量都保持。
+- **测试**：`test_editor_cmd` 由 15 例增至 26 例（独立撤销、同实体被挡、已撤销命令挡 redo、说不清的命令挡一切、组命令、free list 顺序不同导致 redo 失败后原样保留等）；`test_editor_shell` 新增 4 例（两个客户端各撤销各的、同实体被另一客户端改过则 blocked、本地编辑不受影响且 origin 复位、origin 按连接而非按行槽）。先红后绿。变异检查共 6 项：去掉 undo 方向的独立性检查、去掉 redo 方向的检查、把“说不清”当作“不冲突”、所有连接共用一个 origin、handler 后不复位 origin、不再递增 origin，均使对应用例变红。final 树 `test_editor_shell` 172/172、ASan+UBSan 树同样全绿；fuzz id 扩到 4..20，ASan 下 4 个 seed、每个 20000 条消息零报告，UNDO_OWN/REDO_OWN 各被接受约 290 次。消息注册表容量从 18 增至 20 项（`test_editor_shell` 中“注册表只占到 20”的旧断言随之改为 21）。
+- **边界**：独立性判断按实体索引，偏保守（被后续 add 复用的索引算冲突）；没有实体间依赖分析；重载文档会清栈，origin 随之失效；WAN/多客户端的会话管理、按客户端的权限未做。
+
 ## 本轮更新：editor remote HISTORY（2026-10-30）
 
 - **交付**：新增 `BREAK_EDITOR_MSG_HISTORY = 18`，只读返回共享命令栈的 undo/redo 深度、revision（u64），以及下一次 UNDO 会撤销的命令描述（不超过 127 B）。本地 shell 与所有 remote 客户端本来就共用同一个命令栈；新消息让客户端在发送 UNDO 前就能知道会撤销哪条命令，revision 变化也能反映本地的修改。

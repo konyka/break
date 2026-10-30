@@ -72,6 +72,9 @@ typedef struct {
     bool transport_closed; /* break_net_reactor_close issued */
     bool auth_key_known;   /* key id this session authenticated with */
     u8 auth_key_id[8];
+    u32 origin;    /* undo origin of this connection: unique per accepted
+                    * connection for the lifetime of the host, never reused
+                    * with the row (0 = the local shell, never handed out) */
 } EditorRemoteConnRow;
 
 #define EDITOR_REMOTE_MAX_KEYS 8u
@@ -123,6 +126,7 @@ struct BreakEditorRemote {
     u64 auth_timeouts;
     bool has_psk;                   /* at least one key in the ring */
     bool auth_installed;            /* this remote owns the session auth domain */
+    u32 next_origin;                /* next undo origin to hand out (starts at 1) */
     EditorRemoteKey keys[EDITOR_REMOTE_MAX_KEYS];
 };
 
@@ -267,6 +271,14 @@ static void remote_row_add(BreakEditorRemote *r, u64 key) {
             r->rows[i].seen_us = time_microseconds();
             r->rows[i].transport_closed = false;
             r->rows[i].auth_key_known = false; /* never inherit a freed row's key */
+            /* A fresh origin per connection, so a client never inherits the
+             * undo history of whoever used this row before. 0 is the local
+             * shell; skip it (and wrap) after 2^32 - 1 connections. */
+            r->next_origin++;
+            if (r->next_origin == 0u) {
+                r->next_origin = 1u;
+            }
+            r->rows[i].origin = r->next_origin;
             r->conn_count++;
             return;
         }
@@ -316,6 +328,7 @@ static void remote_table_sync(BreakEditorRemote *r) {
             row->key = 0u;
             row->state = 0u;
             row->auth_key_known = false;
+            row->origin = 0u;
             r->conn_count--;
             continue;
         }
@@ -667,6 +680,37 @@ static bool remote_handle_undo_redo(BreakEditorRemote *r, u64 key,
                           0u, rsp, sizeof(rsp));
 }
 
+/* UNDO_OWN / REDO_OWN: per-client undo. The command stack is shared (the
+ * local shell and every client edit through it); these act only on the
+ * newest command THIS connection issued and refuse, with blocked=1 and no
+ * change, when a command of another origin touches the same entities
+ * (editor_cmd.h break_editor_undo_origin). Response: applied/u8, blocked/u8. */
+static bool remote_handle_undo_redo_own(BreakEditorRemote *r, u64 key,
+                                        const u8 *p, size_t size, bool is_undo) {
+    BreakEditorDoc *doc = break_editor_shell_doc(r->shell);
+    const EditorRemoteConnRow *row = remote_row_find(r, key);
+    BreakEditorOriginResult result;
+    u8 rsp[2];
+    if (size != 0u) {
+        return false;
+    }
+    (void)p;
+    if (row == NULL || row->origin == 0u) {
+        return false; /* no origin for this connection: fail closed */
+    }
+    result = is_undo ? break_editor_undo_origin(doc, row->origin)
+                     : break_editor_redo_origin(doc, row->origin);
+    rsp[0] = result == BREAK_EDITOR_ORIGIN_APPLIED ? 1u : 0u;
+    rsp[1] = result == BREAK_EDITOR_ORIGIN_BLOCKED ? 1u : 0u;
+    if (result == BREAK_EDITOR_ORIGIN_APPLIED) {
+        editor_shell_refresh_all(r->shell);
+    }
+    return remote_respond(r, key,
+                          is_undo ? BREAK_EDITOR_MSG_UNDO_OWN
+                                  : BREAK_EDITOR_MSG_REDO_OWN,
+                          0u, rsp, sizeof(rsp));
+}
+
 /* SAVE carries no path: the remote can only persist to the scene path the
  * local user configured, never choose a destination. */
 static bool remote_handle_save(BreakEditorRemote *r, u64 key, const u8 *p,
@@ -868,8 +912,17 @@ static bool remote_on_message(BreakConnectionKey connection,
      * failure, closes the session: the manager only auto-closes a failed
      * AUTH handler, so the close is explicit here (fail closed). */
     ok = break_session_manager_state(r->manager, connection) ==
-             BREAK_SESSION_AUTHENTICATED &&
-         remote_dispatch(r, connection, message);
+         BREAK_SESSION_AUTHENTICATED;
+    if (ok) {
+        /* Every command a handler pushes carries this connection's origin;
+         * the shell thread runs one handler at a time, and the origin goes
+         * back to the local shell's 0 before anything else can push. */
+        const EditorRemoteConnRow *row = remote_row_find(r, connection);
+        BreakEditorDoc *doc = break_editor_shell_doc(r->shell);
+        break_editor_doc_set_origin(doc, row != NULL ? row->origin : 0u);
+        ok = remote_dispatch(r, connection, message);
+        break_editor_doc_set_origin(doc, 0u);
+    }
     if (!ok) {
         (void)break_session_manager_close(r->manager, connection, 0u);
     }
@@ -912,6 +965,10 @@ static bool remote_dispatch(BreakEditorRemote *r, BreakConnectionKey connection,
         return remote_handle_camera_set(r, connection, p, size);
     case BREAK_EDITOR_MSG_HISTORY:
         return remote_handle_history(r, connection, p, size);
+    case BREAK_EDITOR_MSG_UNDO_OWN:
+        return remote_handle_undo_redo_own(r, connection, p, size, true);
+    case BREAK_EDITOR_MSG_REDO_OWN:
+        return remote_handle_undo_redo_own(r, connection, p, size, false);
     default:
         return false;
     }
@@ -932,7 +989,8 @@ BreakEditorRemote *break_editor_remote_create(
         BREAK_EDITOR_MSG_UNDO,     BREAK_EDITOR_MSG_REDO,
         BREAK_EDITOR_MSG_EVAL,     BREAK_EDITOR_MSG_SAVE,
         BREAK_EDITOR_MSG_LOAD,     BREAK_EDITOR_MSG_VIEW,
-        BREAK_EDITOR_MSG_CAMERA_SET, BREAK_EDITOR_MSG_HISTORY};
+        BREAK_EDITOR_MSG_CAMERA_SET, BREAK_EDITOR_MSG_HISTORY,
+        BREAK_EDITOR_MSG_UNDO_OWN, BREAK_EDITOR_MSG_REDO_OWN};
     usize i;
     if (shell == NULL || cfg == NULL ||
         cfg->max_connections > EDITOR_REMOTE_MAX_CONNECTIONS) {
