@@ -82,6 +82,14 @@ static void *server_main(void *arg) {
     SSL *ssl = NULL;
     size_t sent = 0;
     if (fd < 0) return NULL;
+#if defined(SO_NOSIGPIPE)
+    {
+        /* macOS raises SIGPIPE for the whole process rather than the writing thread, so the
+         * thread mask above does not protect the test's main thread there; the socket flag does */
+        int one = 1;
+        (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+    }
+#endif
     atomic_store(&s->saw_connection, true);
     if (s->tls) {
         ssl = SSL_new(s->ctx);
