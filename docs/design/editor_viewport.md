@@ -202,3 +202,7 @@ XZ 平面（y = 0）上从 -10 到 +10 每 1 单位一条线，共 42 条，以�
 有 Light 组件的实体，未选中时代理立方体用灯光的 color.r/g/b（夹到 [0, 1]，alpha 1）绘制；其他实体仍为默认石板灰，选中/多选的暖色高亮优先。任一通道非有限时回退默认色。这只是标记，viewport 不做任何光照着色。实现：`break_editor_viewport3d_proxy_color(doc, id, out)`（纯 CPU）；`test_editor_shell` `light_entities_draw_their_proxy_in_the_light_color`（默认白色、超范围夹紧、NaN 回退、NULL doc）。GPU 画面未做像素级验证。
 
 2026-10-30 补充：灯光的 `enabled` 为 false 时，代理颜色保持原色相，亮度乘 0.25，用来区分开灯和关灯。同一测试已覆盖。
+
+## 线框显示（2026-10-30）
+
+开启后，每个代理立方体不再画实心盒，而是用 12 条边绘制。边是 `break_editor_viewport3d_outline_edges` 生成的细长盒，截面为选中描边的一半，颜色沿用代理原来的颜色。选中描边和多选高亮的规则不变。开关方式：命令面板“Toggle wireframe / 切换线框显示（wireframe）”，偏好文件 `wireframe=on|off`（默认关），remote VIEW bit 3（见 `editor_remote.md`）。属于视图状态，不产生 undo。统计字段 `wire_edges` 为本帧画出的边数，即每个代理 12 条。测试：`test_editor_shell` `viewport_wireframe_draws_edges_toggles_and_persists`（fake RHI 计数）。GPU 画面未做像素验证；也没有做真正的 GL/Vulkan 线框光栅（polygon mode），因为 RHI 目前没有这个接口。
