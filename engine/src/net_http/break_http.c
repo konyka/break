@@ -427,7 +427,11 @@ static BreakHttpError tls_handshake(Conn *c, const Url *u) {
         }
     } else {
         (void)SSL_set_tlsext_host_name(c->ssl, u->host);
+#if defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 4
+        if (SSL_set1_dnsname(c->ssl, u->host) != 1) return BHTTP_ERR_TLS;
+#else
         if (SSL_set1_host(c->ssl, u->host) != 1) return BHTTP_ERR_TLS;
+#endif
         SSL_set_hostflags(c->ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
     }
     for (;;) {

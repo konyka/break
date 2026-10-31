@@ -819,9 +819,12 @@ static bool gen_cert(const char *cert_path, const char *key_path, const char *sa
     X509_gmtime_adj(X509_getm_notBefore(x), from_days * 24L * 3600L);
     X509_gmtime_adj(X509_getm_notAfter(x), to_days * 24L * 3600L);
     X509_set_pubkey(x, pkey);
-    name = X509_get_subject_name(x);
+    name = X509_NAME_new();
+    if (name == NULL) goto out;
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (const unsigned char *)san, -1, -1, 0);
+    X509_set_subject_name(x, name);
     X509_set_issuer_name(x, name);
+    X509_NAME_free(name);
     X509V3_set_ctx_nodb(&v3);
     X509V3_set_ctx(&v3, x, x, NULL, NULL, 0);
     snprintf(conf, sizeof(conf), "DNS:%s", san);
