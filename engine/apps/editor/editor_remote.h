@@ -53,6 +53,13 @@ typedef struct BreakEditorRemoteConfig {
      * seen is closed (transport included). 0 = no deadline (tests only;
      * --remote always sets BREAK_EDITOR_REMOTE_DEFAULT_AUTH_TIMEOUT_MS). */
     uint32_t auth_timeout_ms;
+    /* Per-connection message budget, applied to every message after the transport accepts it
+     * (AUTH included): token buckets of msg_per_sec (burst msg_burst) messages and byte_per_sec
+     * (burst byte_burst) payload bytes. A message over budget is dropped before any handler and
+     * counted in the session stats as rate_limited; the connection stays open. All four 0 = no
+     * limit (tests); a partial setting is refused by create. --remote always sets the
+     * BREAK_EDITOR_REMOTE_DEFAULT_MSG_* / _BYTE_* values. */
+    uint32_t msg_per_sec, msg_burst, byte_per_sec, byte_burst;
 } BreakEditorRemoteConfig;
 
 /* NULL shell or invalid config (over-cap max_connections) => NULL. */
@@ -81,6 +88,9 @@ uint32_t break_editor_remote_origin_for_test(BreakEditorRemote *r, uint64_t conn
  * old row is still live (the OPENED-on-existing-row path). Returns false when
  * the key has no row. */
 bool break_editor_remote_reopen_key_for_test(BreakEditorRemote *r, uint64_t connection_key);
+/* Marks every free row as taken by a key no transport uses, so the next new connection finds
+ * the table full. Returns the number of rows filled. The fake rows vanish at the next sync. */
+uint32_t break_editor_remote_fill_table_for_test(BreakEditorRemote *r);
 #endif
 
 /* Phase 4 Task 3: READ-ONLY diagnostics accessors for the network panel
@@ -108,6 +118,8 @@ bool break_editor_remote_is_tls(const BreakEditorRemote *r);  /* reactor TLS mod
  * auth-deadline evictions), and how many of them were auth-deadline
  * evictions. 0 for NULL. */
 u64 break_editor_remote_server_closes(const BreakEditorRemote *r);
+/* New connections refused because every connection-table row was taken (closed, never served). */
+u64 break_editor_remote_table_full_refusals(const BreakEditorRemote *r);
 u64 break_editor_remote_auth_timeouts(const BreakEditorRemote *r);
 u64 break_editor_remote_outbound_count(const BreakEditorRemote *r); /* queued sends */
 /* Static name for a BreakSessionState value ("AUTHENTICATED", ...);
@@ -172,12 +184,19 @@ uint64_t break_editor_remote_keyring_rejects(const BreakEditorRemote *r);
  * The first non --remote* argument stays the optional scene path.
  * Default admission rate limits: global 20 accepts/s (burst 40), 120 accepts
  * per source IP per minute. A connection that has not authenticated within
- * 10 s is closed. */
+ * 10 s is closed. Each connection may then send 50 messages/s (burst 200) and
+ * 256 KiB/s of payload (burst 1 MiB); excess messages are dropped. */
 #define BREAK_EDITOR_REMOTE_DEFAULT_PORT 47700u
 #define BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_SEC 20u
 #define BREAK_EDITOR_REMOTE_DEFAULT_RATE_BURST 40u
 #define BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_IP_PER_MIN 120u
 #define BREAK_EDITOR_REMOTE_DEFAULT_AUTH_TIMEOUT_MS 10000u
+/* Per connection: 50 messages/s with bursts of 200 (a scripted client replaying a batch of edits),
+ * 256 KiB/s of payload with bursts of 1 MiB (well above one 4 KiB message). */
+#define BREAK_EDITOR_REMOTE_DEFAULT_MSG_PER_SEC 50u
+#define BREAK_EDITOR_REMOTE_DEFAULT_MSG_BURST 200u
+#define BREAK_EDITOR_REMOTE_DEFAULT_BYTE_PER_SEC (256u * 1024u)
+#define BREAK_EDITOR_REMOTE_DEFAULT_BYTE_BURST (1024u * 1024u)
 
 typedef struct BreakEditorRemoteCli {
     bool enabled;

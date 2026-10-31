@@ -124,6 +124,7 @@ struct BreakEditorRemote {
     u32 auth_timeout_ms;
     u64 server_closes;
     u64 auth_timeouts;
+    u64 table_full_refusals;
     bool has_psk;                   /* at least one key in the ring */
     bool auth_installed;            /* this remote owns the session auth domain */
     u32 next_origin;                /* next undo origin to hand out (starts at 1) */
@@ -251,6 +252,12 @@ static u32 proto_get32(const u8 *p) {
  * version 1 matches the default registry's editor definitions; the host's
  * remote_on_message gate enforces AUTHENTICATED (and closes otherwise). */
 
+/* Monotonic milliseconds for the per-connection message budget. */
+static u64 remote_rate_clock_ms(void *user) {
+    (void)user;
+    return time_microseconds() / 1000u;
+}
+
 /* ---------------- connection table ---------------- */
 
 static EditorRemoteConnRow *remote_row_find(BreakEditorRemote *r, u64 key) {
@@ -284,10 +291,16 @@ static void remote_reopen_row(BreakEditorRemote *r, EditorRemoteConnRow *row) {
     row->origin = remote_next_origin(r);
 }
 
-static void remote_row_add(BreakEditorRemote *r, u64 key) {
+/* Adopts a key into the table. False when it has no row: the key is 0 or every row is taken.
+ * A connection without a row has no auth deadline and no undo origin of its own (0 would be
+ * the local shell), so callers close it instead of serving it. */
+static bool remote_row_add(BreakEditorRemote *r, u64 key) {
     u32 i;
-    if (key == 0u || remote_row_find(r, key) != NULL) {
-        return;
+    if (key == 0u) {
+        return false;
+    }
+    if (remote_row_find(r, key) != NULL) {
+        return true;
     }
     for (i = 0u; i < r->capacity; i++) {
         if (!r->rows[i].active) {
@@ -301,11 +314,14 @@ static void remote_row_add(BreakEditorRemote *r, u64 key) {
              * whoever used this row before */
             r->rows[i].origin = remote_next_origin(r);
             r->conn_count++;
-            return;
+            return true;
         }
     }
-    /* table full: the reactor's own max_connections cap (same bound) makes
-     * this unreachable; fail closed is the manager/reactor's job. */
+    /* Table full. The reactor's max_connections cap (same bound) should make this unreachable,
+     * but a row is freed only once the manager reports the session CLOSED, so it is not proven
+     * that a new transport can never arrive first. Fail closed here rather than rely on it. */
+    r->table_full_refusals++;
+    return false;
 }
 
 /* A session the host or the manager closed (fail closed, auth failure,
@@ -923,7 +939,11 @@ static bool remote_on_message(BreakConnectionKey connection,
                               void *user_data) {
     BreakEditorRemote *r = (BreakEditorRemote *)user_data;
     bool ok;
-    remote_row_add(r, connection); /* first dispatch discovers the key */
+    if (!remote_row_add(r, connection)) { /* first dispatch discovers the key */
+        (void)break_session_manager_close(r->manager, connection, 0u);
+        (void)break_net_reactor_close(r->reactor, connection);
+        return false;
+    }
     if (remote_auto_auth(r)) {
         remote_plaintext_auth(r, connection);
     }
@@ -1017,6 +1037,16 @@ BreakEditorRemote *break_editor_remote_create(
         cfg->max_connections > EDITOR_REMOTE_MAX_CONNECTIONS) {
         return NULL;
     }
+    {
+        /* the message budget is all four limits or none: a partial setting is a config error */
+        const bool any = cfg->msg_per_sec != 0u || cfg->msg_burst != 0u ||
+                         cfg->byte_per_sec != 0u || cfg->byte_burst != 0u;
+        const bool all = cfg->msg_per_sec != 0u && cfg->msg_burst != 0u &&
+                         cfg->byte_per_sec != 0u && cfg->byte_burst != 0u;
+        if (any && !all) {
+            return NULL;
+        }
+    }
     r = (BreakEditorRemote *)calloc(1u, sizeof(*r));
     if (r == NULL) {
         return NULL;
@@ -1079,6 +1109,20 @@ BreakEditorRemote *break_editor_remote_create(
         !break_session_manager_attach_reactor(r->manager, r->reactor)) {
         break_editor_remote_destroy(r);
         return NULL;
+    }
+    if (cfg->msg_per_sec != 0u) {
+        BreakSessionMessageRateConfig rate;
+        memset(&rate, 0, sizeof(rate));
+        rate.msg_per_sec = cfg->msg_per_sec;
+        rate.msg_burst = cfg->msg_burst;
+        rate.byte_per_sec = cfg->byte_per_sec;
+        rate.byte_burst = cfg->byte_burst;
+        rate.clock = remote_rate_clock_ms;
+        rate.clock_user = NULL;
+        if (!break_session_manager_set_message_rate(r->manager, &rate)) {
+            break_editor_remote_destroy(r);
+            return NULL;
+        }
     }
     for (i = 0u; i < sizeof(k_handler_ids) / sizeof(k_handler_ids[0]); i++) {
         if (!break_session_manager_set_message_handler(
@@ -1447,8 +1491,13 @@ void break_editor_remote_tick(BreakEditorRemote *r) {
                 /* transport key reuse (snow uids recycle slots): this is a
                  * NEW connection, so its deadline and close state restart */
                 remote_reopen_row(r, row);
-            } else {
-                remote_row_add(r, event.connection_key);
+            } else if (!remote_row_add(r, event.connection_key)) {
+                /* no row: close the transport now; the manager never sees the connection
+                 * open, so it cannot be authenticated or served */
+                (void)break_net_reactor_close(r->reactor, event.connection_key);
+                break_net_event_release(&event);
+                processed++;
+                continue;
             }
         }
 #ifdef BREAK_ENABLE_CRYPTO
@@ -1540,6 +1589,26 @@ uint32_t break_editor_remote_origin_for_test(BreakEditorRemote *r, uint64_t conn
     return row != NULL ? row->origin : 0u;
 }
 
+uint32_t break_editor_remote_fill_table_for_test(BreakEditorRemote *r) {
+    u32 i, n = 0u;
+    if (r == NULL) {
+        return 0u;
+    }
+    for (i = 0u; i < r->capacity; i++) {
+        if (!r->rows[i].active) {
+            /* keys no transport will ever use; the session manager has never heard of them, so
+             * the next table sync drops them again (call between ticks) */
+            r->rows[i].active = true;
+            r->rows[i].key = UINT64_C(0xF111000000000000) | (u64)(i + 1u);
+            r->rows[i].seen_us = time_microseconds();
+            r->rows[i].origin = remote_next_origin(r);
+            r->conn_count++;
+            n++;
+        }
+    }
+    return n;
+}
+
 bool break_editor_remote_reopen_key_for_test(BreakEditorRemote *r, uint64_t connection_key) {
     EditorRemoteConnRow *row = r != NULL ? remote_row_find(r, connection_key) : NULL;
     if (row == NULL) {
@@ -1607,6 +1676,10 @@ bool break_editor_remote_is_tls(const BreakEditorRemote *r) {
 
 u64 break_editor_remote_server_closes(const BreakEditorRemote *r) {
     return r != NULL ? r->server_closes : 0u;
+}
+
+u64 break_editor_remote_table_full_refusals(const BreakEditorRemote *r) {
+    return r != NULL ? r->table_full_refusals : 0u;
 }
 
 u64 break_editor_remote_auth_timeouts(const BreakEditorRemote *r) {
@@ -2121,6 +2194,10 @@ void break_editor_remote_cli_to_config(const BreakEditorRemoteCli *cli,
     out->rate_global_burst = BREAK_EDITOR_REMOTE_DEFAULT_RATE_BURST;
     out->rate_per_ip_per_minute = BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_IP_PER_MIN;
     out->auth_timeout_ms = BREAK_EDITOR_REMOTE_DEFAULT_AUTH_TIMEOUT_MS;
+    out->msg_per_sec = BREAK_EDITOR_REMOTE_DEFAULT_MSG_PER_SEC;
+    out->msg_burst = BREAK_EDITOR_REMOTE_DEFAULT_MSG_BURST;
+    out->byte_per_sec = BREAK_EDITOR_REMOTE_DEFAULT_BYTE_PER_SEC;
+    out->byte_burst = BREAK_EDITOR_REMOTE_DEFAULT_BYTE_BURST;
     if (cli != NULL) {
         out->bind_port = cli->port;
         out->tls_cert_file = cli->cert_file;

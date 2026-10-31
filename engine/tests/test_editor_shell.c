@@ -6893,10 +6893,11 @@ static bool tls_client_send(TlsRemoteClient *c, u16 id, u16 version,
 }
 
 /* Reads one decrypted envelope; payload copied into the static buffer. */
-static bool tls_client_recv(TlsRemoteClient *c, BreakNetEnvelope *out_env) {
+static bool tls_client_recv_timeout(TlsRemoteClient *c, BreakNetEnvelope *out_env,
+                                    u32 timeout_ms) {
     static u8 frame[BREAK_NET_ENVELOPE_HEADER_SIZE +
                     BREAK_EDITOR_PROTO_MAX_PAYLOAD];
-    u64 deadline = remote_monotonic_us() + UINT64_C(5000000);
+    u64 deadline = remote_monotonic_us() + (u64)timeout_ms * UINT64_C(1000);
     while (remote_monotonic_us() < deadline) {
         size_t have = snow_network_buffer_length(c->plain);
         if (have >= BREAK_NET_ENVELOPE_HEADER_SIZE) {
@@ -6932,6 +6933,10 @@ static bool tls_client_recv(TlsRemoteClient *c, BreakNetEnvelope *out_env) {
         }
     }
     return false;
+}
+
+static bool tls_client_recv(TlsRemoteClient *c, BreakNetEnvelope *out_env) {
+    return tls_client_recv_timeout(c, out_env, 5000u);
 }
 
 /* TCP connect + TLS handshake + CHALLENGE receive (server nonce captured). */
@@ -7779,6 +7784,154 @@ TEST(remote_tls_rate_limit_denials_observable)
     remote_wait_connection_count(remote, shell, 0u);
     break_editor_remote_destroy(remote);
     break_editor_shell_destroy(shell);
+}
+
+TEST(remote_tls_message_rate_limits_an_authenticated_flood)
+{
+    /* Admission limits only count connects; a client that is already in can still send as fast
+     * as it likes. The per-connection message budget bounds that: with a burst of 4 and 1/s, a
+     * flood of 20 DESCRIBEs gets about 4 answers and the rest are dropped before any handler. */
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char cert[512], key[512];
+    BreakEditorRemoteConfig cfg;
+    BreakEditorRemote *remote;
+    BreakEditorRemoteSessionStats st;
+    TlsRemoteClient c;
+    BreakNetEnvelope rsp;
+    u32 answered = 0u;
+    u64 deadline;
+    int i;
+    ASSERT_NOT_NULL(shell);
+    cfg = tls_remote_config(cert, key, sizeof(cert));
+    cfg.msg_per_sec = 1u;
+    cfg.msg_burst = 4u;
+    cfg.byte_per_sec = 4096u;
+    cfg.byte_burst = 65536u;
+    remote = break_editor_remote_create(shell, &cfg);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(break_editor_remote_set_psk(remote, k_tls_key_id, k_tls_psk));
+    ASSERT_TRUE(break_editor_remote_start(remote));
+    break_editor_shell_set_remote(shell, remote);
+    ASSERT_TRUE(tls_client_open(&c, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    /* AUTH itself is a message and spends one token */
+    ASSERT_TRUE(tls_client_send_auth(&c, k_tls_key_id, k_tls_psk, false));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_AUTHENTICATED));
+    for (i = 0; i < 20; i++) {
+        ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    }
+    deadline = remote_monotonic_us() + UINT64_C(2000000);
+    while (remote_monotonic_us() < deadline) {
+        ASSERT_TRUE(break_editor_remote_session_stats(remote, &st));
+        if (st.rate_limited + answered >= 16u) break;
+        break_editor_shell_tick(shell);
+        {
+            struct timespec ts = {0, 1000000L};
+            nanosleep(&ts, NULL);
+        }
+    }
+    ASSERT_TRUE(break_editor_remote_session_stats(remote, &st));
+    ASSERT_TRUE(st.rate_limited >= 14u);           /* most of the flood never reached a handler */
+    while (tls_client_recv_timeout(&c, &rsp, 200u)) {
+        ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+        answered++;
+    }
+    ASSERT_TRUE(answered >= 1u && answered <= 5u);  /* the burst (minus AUTH), plus at most one refill */
+    ASSERT_EQ((u64)answered + st.rate_limited, 20u);
+    tls_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_a_connection_without_a_table_row_is_refused_not_served_as_the_local_shell)
+{
+    /* With every row taken, a newly seen key has no auth deadline and no undo origin of its own
+     * (origin 0 is the local shell). Such a connection must be closed, never served. The
+     * reactor's own cap normally keeps this from happening; the hook makes it happen. */
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient c;
+    struct sockaddr_in address;
+    int fd;
+    u64 deadline;
+    bool closed = false;
+    ASSERT_NOT_NULL(shell);
+    remote = tls_remote_start(shell);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_EQ(break_editor_remote_fill_table_for_test(remote), (u32)8u);   /* tls_remote_config: 8 rows */
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_TRUE(fd >= 0);
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(break_editor_remote_port(remote));
+    ASSERT_EQ(connect(fd, (const struct sockaddr *)&address, sizeof(address)), 0);
+    deadline = remote_monotonic_us() + UINT64_C(3000000);
+    while (remote_monotonic_us() < deadline && !closed) {
+        struct pollfd pfd = {fd, POLLIN, 0};
+        break_editor_shell_tick(shell);
+        if (poll(&pfd, 1, 5) > 0) {
+            u8 sink[256];
+            ssize_t n = read(fd, sink, sizeof(sink));
+            if (n <= 0) closed = true;               /* EOF or reset: the server let go */
+        }
+    }
+    ASSERT_TRUE(closed);
+    ASSERT_TRUE(break_editor_remote_table_full_refusals(remote) >= 1u);
+    ASSERT_EQ(break_editor_doc_entity_count(break_editor_shell_doc(shell)), 0u);
+    close(fd);
+    /* the fake rows are gone after the sync, and a real client is served again */
+    ASSERT_TRUE(tls_client_open(&c, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    tls_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_message_rate_is_off_unless_configured_and_on_by_default_under_the_cli)
+{
+    BreakEditorRemoteConfig cfg;
+    BreakEditorRemoteCli cli;
+    memset(&cli, 0, sizeof(cli));
+    break_editor_remote_cli_to_config(&cli, &cfg);
+    ASSERT_EQ(cfg.msg_per_sec, BREAK_EDITOR_REMOTE_DEFAULT_MSG_PER_SEC);
+    ASSERT_EQ(cfg.msg_burst, BREAK_EDITOR_REMOTE_DEFAULT_MSG_BURST);
+    ASSERT_EQ(cfg.byte_per_sec, BREAK_EDITOR_REMOTE_DEFAULT_BYTE_PER_SEC);
+    ASSERT_EQ(cfg.byte_burst, BREAK_EDITOR_REMOTE_DEFAULT_BYTE_BURST);
+    ASSERT_TRUE(BREAK_EDITOR_REMOTE_DEFAULT_MSG_BURST > 0u && BREAK_EDITOR_REMOTE_DEFAULT_MSG_PER_SEC > 0u);
+    /* a burst no larger than one full-size message would refuse legal traffic */
+    ASSERT_TRUE(BREAK_EDITOR_REMOTE_DEFAULT_BYTE_BURST >= BREAK_EDITOR_PROTO_MAX_PAYLOAD);
+    /* half a configuration is refused rather than silently ignored */
+    {
+        BreakEditorShell *shell = break_editor_shell_create_for_test();
+        BreakEditorRemoteConfig half;
+        ASSERT_NOT_NULL(shell);
+        memset(&half, 0, sizeof(half));
+        half.max_connections = 2u;
+        half.msg_per_sec = 5u;                       /* the other three left at 0 */
+        ASSERT_TRUE(break_editor_remote_create(shell, &half) == NULL);
+        /* only the message rate left out: create must not quietly run without a limit */
+        memset(&half, 0, sizeof(half));
+        half.max_connections = 2u;
+        half.msg_burst = 5u;
+        half.byte_per_sec = 5u;
+        half.byte_burst = 5u;
+        ASSERT_TRUE(break_editor_remote_create(shell, &half) == NULL);
+        half.msg_per_sec = 5u;                       /* now all four are set */
+        {
+            BreakEditorRemote *r = break_editor_remote_create(shell, &half);
+            ASSERT_NOT_NULL(r);
+            break_editor_remote_destroy(r);
+        }
+        memset(&half, 0, sizeof(half));
+        half.max_connections = 2u;                   /* all four 0: no limit, still valid */
+        {
+            BreakEditorRemote *r = break_editor_remote_create(shell, &half);
+            ASSERT_NOT_NULL(r);
+            break_editor_remote_destroy(r);
+        }
+        break_editor_shell_destroy(shell);
+    }
 }
 
 #endif /* BREAK_ENABLE_CRYPTO */
@@ -10706,6 +10859,9 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_tls_auth_deadline_spares_authenticated_client);
     RUN_REMOTE_TEST(remote_tls_start_fails_closed_on_missing_certs_or_auth);
     RUN_REMOTE_TEST(remote_tls_rate_limit_denials_observable);
+    RUN_REMOTE_TEST(remote_tls_message_rate_limits_an_authenticated_flood);
+    RUN_REMOTE_TEST(remote_a_connection_without_a_table_row_is_refused_not_served_as_the_local_shell);
+    RUN_REMOTE_TEST(remote_message_rate_is_off_unless_configured_and_on_by_default_under_the_cli);
 #endif
 #endif
 TEST_MAIN_END()
