@@ -773,6 +773,21 @@ Transform 后按 `Z`，视口只剩 12 条边且可透过看到网格线，再�
 后设置文件含 `wireframe=on`。远程 HISTORY 与 VIEW bit 3 只有自动化测试覆盖，无 macOS 实机
 场景。证据等级不变。
 
+2026-10-31 定时复核：从 `@5af634ad` 快进到 `@91b85ea7`（26 个远程提交，81 个文件：按来源的
+撤销/重做与 `UNDO_OWN`/`REDO_OWN`、场景纹理视图、`break_http` HTTP/TLS 传输与参考更新服务器、
+`break_authority`/`break_integrity`、崩溃符号化/聚类/上传、keygen 与 manifest 工具加固、
+macOS 测试适配等），无冲突、无本地改动。**发现并修复 1 个构建回归**：本机 OpenSSL 4.0.3 下
+`break_http.c` 的 `SSL_set1_host`（4.0 起弃用）与 `test_break_http.c` 里
+`X509_get_subject_name` 返回 const 都在 `-Werror` 下编译失败，导致 Metal 和 MoltenVK 两套
+全量构建都过不了。改为 `OPENSSL_VERSION_MAJOR >= 4` 时用 `SSL_set1_dnsname`、3.x 保持
+`SSL_set1_host`，测试证书生成改用 `X509_NAME_new()` + `X509_set_subject_name()`；修复前两处
+报错已用 stash 复现。修复后 Metal CTest **245/245**、graphics **6/6**（含 5 个 fuzz 目标
+构建），MoltenVK **246/246**，仅 D3D12 dependency gate 按平台跳过。`engine_demo` 文档机位
+两后端截图目视确认：地形/角色/UI 正常。`BREAK_EDITOR_INPUT_SCRIPT=ON` 编辑器（Metal）：添加
+两个实体、`Ctrl+Z`/`Ctrl+Y` 在新命令栈下 expect 全过，Render 标签正常。OpenSSL 3.x 路径
+（`SSL_set1_host`）本机没有 3.x，未编译验证；`break_http` 的 TLS 端到端测试在本机通过，
+崩溃上传、更新服务器等没有 macOS 实机场景。证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
