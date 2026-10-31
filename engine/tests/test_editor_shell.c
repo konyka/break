@@ -10199,6 +10199,15 @@ static BreakEditorSceneTextureInfo scenetex_info(const SceneTexFixture *fx, u32 
         }                                                                    \
     } while (0)
 
+/* True once the first n slots have each completed one load. */
+static bool scenetex_all_loaded(const SceneTexFixture *fx, u32 n)
+{
+    for (u32 i = 0; i < n; i++) {
+        if (scenetex_info(fx, i).reloads < 1u) return false;
+    }
+    return true;
+}
+
 static void scenetex_png(const SceneTexFixture *fx, const char *name, int w, int h, u8 shade)
 {
     char p[800];
@@ -10366,7 +10375,8 @@ TEST(scene_textures_more_than_eight_are_listed_and_only_eight_load)
     break_editor_scene_textures_set_device(fx.st, img_fake_device());
     ASSERT_TRUE(break_editor_scene_textures_set_scene(fx.st, fx.doc, fx.scene));
     ASSERT_EQ(break_editor_scene_textures_count(fx.st), 10u);
-    SCENETEX_WAIT(&fx, scenetex_info(&fx, 7).reloads == 1u);
+    /* each of the eight previews loads on its own worker, in no fixed order: wait for all */
+    SCENETEX_WAIT(&fx, scenetex_all_loaded(&fx, 8u));
     for (u32 i = 0; i < 8u; i++) {
         ASSERT_EQ(scenetex_info(&fx, i).state, BREAK_EDITOR_SCENE_TEXTURE_STATE_READY);
     }
