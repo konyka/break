@@ -33,10 +33,11 @@ const char *__asan_default_options(void) {
 
 static volatile int *g_null;
 
-/* The faulting path carries no sanitizer instrumentation: ASan's shadow checks and UBSan's
- * null-store check must not intercept the fault before the break_crash handler runs, and the
- * handler copies the 4 KiB of stack above the faulting rsp, which must not contain poisoned
- * redzones of instrumented frames (the attributes test_break_crash.c uses for its children). */
+/* The faulting store must not be instrumented. UBSan's null-store check reports and ends the
+ * process before the break_crash handler runs, so there would be no record; ASan's shadow check
+ * would do the same. Verified by building the variants: with UBSan on, an unattributed leaf leaves
+ * nothing in the spool, with the attribute the record is written. (An ASan-instrumented frame with
+ * a stack array above the fault, raising SIGSEGV, did not disturb the handler: no redzone report.) */
 #define NOSAN __attribute__((noinline, no_sanitize("address"), no_sanitize("undefined"), no_sanitize("thread")))
 
 NOSAN static int leaf(int x) {
