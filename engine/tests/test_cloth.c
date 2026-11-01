@@ -124,6 +124,46 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     ASSERT_FALSE(cloth_create(&blocked, hooks, vec3(0, 2, 0), 0.5f, 2, 2, 0.2f));
     ASSERT_EQ(hooks->count, hooked);
     physics_world_destroy(hooks);
+
+    PhysicsWorld *many = physics_world_create(48);
+    Cloth sheets[8];
+    for (u32 i = 0; i < 8u; i++) {
+        memset(&sheets[i], 0, sizeof(sheets[i]));
+        ASSERT_TRUE(cloth_create(&sheets[i], many, vec3((f32)i * 3.0f, 2.0f, 0.0f), 0.5f, 2u, 2u, 0.2f));
+    }
+    ASSERT_EQ(many->post_step_count, 8u);
+    physics_world_destroy(many);
+
+    PhysicsWorld *fifth = physics_world_create(40);
+    Cloth small[4];
+    for (u32 i = 0; i < 4u; i++) {
+        memset(&small[i], 0, sizeof(small[i]));
+        ASSERT_TRUE(cloth_create(&small[i], fifth, vec3((f32)i * 3.0f, 4.0f, 0.0f), 0.5f, 2u, 2u, 0.2f));
+    }
+    Cloth big;
+    memset(&big, 0, sizeof(big));
+    ASSERT_TRUE(cloth_create(&big, fifth, vec3(0, 3, 0), 0.5f, 3u, 3u, 0.2f));
+    ASSERT_EQ(fifth->post_step_count, 5u);
+    u32 late_left = big.nodes[3];
+    u32 late_right = big.nodes[5];
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) physics_constraint_remove(fifth, i);
+    for (u32 i = 0; i < fifth->count; i++) {
+        fifth->bodies[i].acceleration = vec3(0, 0, 0);
+        fifth->bodies[i].velocity = vec3(0, 0, 0);
+        if (i == late_left || i == late_right) continue;
+        fifth->bodies[i].position = vec3(0.0f, 30.0f + (f32)i, 0.0f);
+    }
+    fifth->bodies[late_left].radius = 0.0f;
+    fifth->bodies[late_right].radius = 0.0f;
+    fifth->bodies[late_left].position = vec3(0, 1, 0);
+    fifth->bodies[late_right].position = vec3(0, 1, 0);
+    physics_step(fifth, 0.016f);
+    dx = fifth->bodies[late_left].position.e[0] - fifth->bodies[late_right].position.e[0];
+    dy = fifth->bodies[late_left].position.e[1] - fifth->bodies[late_right].position.e[1];
+    dz = fifth->bodies[late_left].position.e[2] - fifth->bodies[late_right].position.e[2];
+    apart = sqrtf(dx * dx + dy * dy + dz * dz);
+    ASSERT_TRUE(apart > 0.15f);
+    physics_world_destroy(fifth);
 }
 
 TEST_MAIN_BEGIN()

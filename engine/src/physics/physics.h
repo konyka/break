@@ -54,7 +54,7 @@ typedef void (*PhysicsContactFn)(const Contact *c, void *user);
 typedef struct PhysicsWorld PhysicsWorld;
 /* Runs after contacts, constraints, and the kill floor. */
 typedef void (*PhysicsPostStepFn)(PhysicsWorld *pw, void *user);
-#define PHYSICS_MAX_POST_STEPS 4u
+#define PHYSICS_MAX_POST_STEPS 16u
 
 /* R435: distance constraint — fixed-capacity array embedded in PhysicsWorld
  * (same style as bodies; no per-step allocation). Position-projected only. */
@@ -138,7 +138,7 @@ void          physics_push_body(PhysicsWorld *pw, u32 body_id, Vec3 normal, f32 
 void          physics_body_park(PhysicsWorld *pw, u32 pid);
 void          physics_body_revive(RigidBody *rb, f32 mass, bool is_static, u32 frame);
 void          physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn, void *user);
-/* Returns false when the list is full or fn is null. The same world holds 4. */
+/* Returns false when the list is full or fn is null. The same world holds 16. */
 bool          physics_add_post_step(PhysicsWorld *pw, PhysicsPostStepFn fn, void *user);
 /* R435: distance constraints. add returns UINT32_MAX when the fixed array is
  * full or a body id is invalid (R352 convention); remove is idempotent. */

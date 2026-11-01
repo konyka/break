@@ -16,7 +16,7 @@ typedef struct Cloth {
  * and down; both diagonals are shear links at spacing * sqrt(2).
  * `width` and `height` are at least 2 and at most 8. Returns false without
  * creating bodies when the world cannot hold the nodes and their links, or
- * when the world already has 4 post-step callbacks. A created cloth registers
+ * when the world already has 16 post-step callbacks. A created cloth registers
  * itself and self-collides at the end of physics_step. */
 bool cloth_create(Cloth *cloth, PhysicsWorld *pw, Vec3 origin, f32 spacing,
                   u32 width, u32 height, f32 node_mass);
