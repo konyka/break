@@ -1,3 +1,9 @@
+## 本轮更新：贴花、体素、道路收成顶点缓冲描述（2026-11-01）
+
+- **交付**：`MeshBuffer` 最多装 256 个顶点。三种来源各自打包进去。`mesh_buffer_upload_desc` 填顶点用途、字节数和 `initial_data`，描述能通过 `rhi_buffer_desc_validate`。`mesh_buffer_draw_desc` 给出顶点数和 28 字节步长。空缓冲两个描述都拒绝。
+- **测试**：`test_mesh_buffer` 在 normal、ASan+UBSan、TSan 上通过。
+- **未做**：不调用 `rhi_buffer_create`，不提交命令缓冲。headless 后端本身会拒绝设备缓冲。
+
 ## 本轮更新：流式块是版本化的顶点网格（2026-11-01）
 
 - **交付**：`tile_<x>_<z>.bin` 以魔数 `TIL1`、版本 1、顶点个数开头，后面是同样个数的 `MeshStageVertex`。个数为 1 到 64，文件长度必须刚好盖住这些顶点。魔数不对、版本不对、截断、超过 64 个顶点都拒绝，并且不创建实体。通过的网格写在组件 120 上，带块坐标。重复加载不会再建实体。

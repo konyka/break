@@ -852,6 +852,7 @@ add_library(engine STATIC
     src/renderer/voxel.c
     src/renderer/road.c
     src/renderer/mesh_stage.c
+    src/renderer/mesh_buffer.c
 src/renderer/water.c
     src/renderer/lighting.c
     src/renderer/post_process.c
@@ -4350,6 +4351,13 @@ endif()
     target_link_libraries(test_mesh_stage PRIVATE m)
     add_test(NAME test_mesh_stage COMMAND test_mesh_stage)
     set_tests_properties(test_mesh_stage PROPERTIES LABELS "headless;world")
+
+    add_executable(test_mesh_buffer tests/test_mesh_buffer.c
+        src/renderer/mesh_buffer.c src/renderer/mesh_stage.c src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_mesh_buffer PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_mesh_buffer PRIVATE m)
+    add_test(NAME test_mesh_buffer COMMAND test_mesh_buffer)
+    set_tests_properties(test_mesh_buffer PROPERTIES LABELS "headless;world")
 
     add_executable(test_rope tests/test_rope.c
         src/physics/rope.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
