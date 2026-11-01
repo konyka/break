@@ -72,6 +72,14 @@ TEST(slider_kills_perpendicular_offset_and_respects_the_limit) {
         if (twist < 0.0f) crossed = true;
     }
     ASSERT_TRUE(crossed);
+
+    physics_constraint_set_slider_stiffness(pw, id, 400.0f);
+    pose.orientation = quat_from_axis_angle(vec3(0, 1, 0), 0.4f);
+    pose.angular_velocity = vec3(0, 0, 0);
+    physics_body_set_pose(pw, b, &pose);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    physics_step(pw, 0.02f);
+    ASSERT_TRUE(fabsf(pw->bodies[b].angular_velocity.e[1]) > 2.0f);
     physics_world_destroy(pw);
 
     PhysicsWorld *full = physics_world_create(4);

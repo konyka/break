@@ -348,6 +348,7 @@ u32 physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc) {
             pw->constraints[i].limit_max = desc->limit_max;
             pw->constraints[i].slider_torsion = 1.0f;
             pw->constraints[i].slider_damping = 1.0f;
+            pw->constraints[i].slider_stiffness = 100.0f;
             pw->constraints[i].active = true;
             pw->constraint_count++;
             return i;
@@ -372,6 +373,14 @@ void physics_constraint_set_slider_damping(PhysicsWorld *pw, u32 constraint_id, 
     if (damping < 0.0f) damping = 0.0f;
     if (damping > 1.0f) damping = 1.0f;
     pw->constraints[constraint_id].slider_damping = damping;
+}
+
+void physics_constraint_set_slider_stiffness(PhysicsWorld *pw, u32 constraint_id, f32 stiffness) {
+    if (!pw || constraint_id >= PHYSICS_MAX_CONSTRAINTS) return;
+    if (!pw->constraints[constraint_id].active || !pw->constraints[constraint_id].is_slider) return;
+    if (!isfinite(stiffness) || stiffness < 0.0f) return;
+    if (stiffness > 1.0e6f) stiffness = 1.0e6f;
+    pw->constraints[constraint_id].slider_stiffness = stiffness;
 }
 
 static Quat rigid_orientation(const RigidBody *b) {
@@ -1314,7 +1323,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         if (c->slider_damping >= 1.0f) {
             b->angular_velocity = vec3_add(b->angular_velocity, vec3_scale(axis, target_w - along));
         } else {
-            f32 k = torsion * 100.0f;
+            f32 k = c->slider_stiffness * torsion;
             f32 damp = c->slider_damping < 0.0f ? 0.0f : c->slider_damping;
             f32 alpha = -k * angle - damp * 2.0f * sqrtf(k) * along;
             b->angular_velocity = vec3_add(b->angular_velocity, vec3_scale(axis, alpha * dt));
