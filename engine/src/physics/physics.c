@@ -346,12 +346,22 @@ u32 physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc) {
             pw->constraints[i].hinge_axis = vec3_scale(desc->axis_local_a, inv);
             pw->constraints[i].limit_min = desc->limit_min;
             pw->constraints[i].limit_max = desc->limit_max;
+            pw->constraints[i].slider_torsion = 1.0f;
             pw->constraints[i].active = true;
             pw->constraint_count++;
             return i;
         }
     }
     return UINT32_MAX;
+}
+
+void physics_constraint_set_slider_torsion(PhysicsWorld *pw, u32 constraint_id, f32 torsion) {
+    if (!pw || constraint_id >= PHYSICS_MAX_CONSTRAINTS) return;
+    if (!pw->constraints[constraint_id].active || !pw->constraints[constraint_id].is_slider) return;
+    if (!isfinite(torsion)) return;
+    if (torsion < 0.0f) torsion = 0.0f;
+    if (torsion > 1.0f) torsion = 1.0f;
+    pw->constraints[constraint_id].slider_torsion = torsion;
 }
 
 static Quat rigid_orientation(const RigidBody *b) {
@@ -465,11 +475,6 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                     if (inv_a > 0.0f) a->position = vec3_add(a->position, vec3_scale(along_corr, inv_a));
                     if (inv_b > 0.0f) b->position = vec3_sub(b->position, vec3_scale(along_corr, inv_b));
                 }
-                /* A prismatic joint also locks relative rotation. */
-                if (inv_b > 0.0f) {
-                    b->orientation = rigid_orientation(a);
-                    b->angular_velocity = a->angular_velocity;
-                }
                 continue;
             }
             if (c->is_ball || c->is_hinge) {
@@ -510,6 +515,20 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                 b->rest_frames = 0;
             }
         }
+    }
+    for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
+        DistanceConstraint *c = &pw->constraints[ci];
+        if (!c->active || !c->is_slider) continue;
+        if (c->body_a >= pw->count || c->body_b >= pw->count) continue;
+        RigidBody *a = &pw->bodies[c->body_a];
+        RigidBody *b = &pw->bodies[c->body_b];
+        if (physics_body_is_parked(a) || physics_body_is_parked(b) || b->inv_mass <= 0.0f) continue;
+        f32 torsion = c->slider_torsion;
+        if (torsion < 0.0f) torsion = 0.0f;
+        if (torsion > 1.0f) torsion = 1.0f;
+        b->orientation = quat_nlerp(rigid_orientation(b), rigid_orientation(a), torsion);
+        b->angular_velocity = vec3_add(vec3_scale(b->angular_velocity, 1.0f - torsion),
+                                       vec3_scale(a->angular_velocity, torsion));
     }
 }
 

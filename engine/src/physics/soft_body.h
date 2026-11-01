@@ -3,7 +3,7 @@
 #include <math/math.h>
 #include <physics/physics.h>
 
-#define SOFT_BODY_MAX 8u
+#define SOFT_BODY_MAX 16u
 
 typedef struct SoftBody {
     u32 nodes[SOFT_BODY_MAX];
@@ -17,8 +17,8 @@ typedef struct SoftBody {
 /* Four spheres around `center`. Rest offsets average to zero.
  * volume_stiffness starts at 0. */
 bool soft_body_create(SoftBody *body, PhysicsWorld *pw, Vec3 center, f32 radius, f32 mass, f32 stiffness);
-/* `count` is 4..8. Extra points lie on the axes and are recentered so the
- * rest offsets still average to zero. */
+/* `count` is 4..16. Points sit on a circle with alternating height and are
+ * recentered so the rest offsets still average to zero. */
 bool soft_body_create_count(SoftBody *body, PhysicsWorld *pw, Vec3 center, f32 radius,
                             f32 mass, f32 stiffness, f32 volume_stiffness, u32 count);
 /* Position-match, then scale about the centroid to restore the rest bulk. */

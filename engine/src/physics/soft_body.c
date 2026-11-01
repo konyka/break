@@ -1,4 +1,5 @@
 #include <physics/soft_body.h>
+#include <math.h>
 
 static f32 mean_radius_sq(const SoftBody *body) {
     f32 sum = 0.0f;
@@ -13,16 +14,12 @@ bool soft_body_create_count(SoftBody *body, PhysicsWorld *pw, Vec3 center, f32 r
     if (!isfinite(volume_stiffness) || volume_stiffness < 0.0f || volume_stiffness > 1.0f) return false;
     if (count < 4u || count > SOFT_BODY_MAX) return false;
     if (pw->count + count > pw->capacity) return false;
-    Vec3 offsets[SOFT_BODY_MAX] = {
-        vec3(radius, radius, radius),
-        vec3(radius, -radius, -radius),
-        vec3(-radius, radius, -radius),
-        vec3(-radius, -radius, radius),
-        vec3(radius, 0, 0),
-        vec3(-radius, 0, 0),
-        vec3(0, radius, 0),
-        vec3(0, -radius, 0)
-    };
+    Vec3 offsets[SOFT_BODY_MAX];
+    for (u32 i = 0; i < count; i++) {
+        f32 ang = (f32)i * 6.2831853f / (f32)count;
+        f32 lift = (i & 1u) ? radius : -radius;
+        offsets[i] = vec3(cosf(ang) * radius, lift * 0.5f, sinf(ang) * radius);
+    }
     Vec3 mean = vec3(0, 0, 0);
     for (u32 i = 0; i < count; i++) mean = vec3_add(mean, offsets[i]);
     mean = vec3_scale(mean, 1.0f / (f32)count);

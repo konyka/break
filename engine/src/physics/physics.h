@@ -73,8 +73,10 @@ typedef struct {
     bool is_hinge;
     bool is_slider;
     Vec3 hinge_axis;  /* local to body A, unit length. Also the slider axis. */
-    f32  limit_min;   /* radians; min == max == 0 means unlimited */
+    f32  limit_min;   /* radians for a hinge; along-axis distance for a slider.
+                       * min == max == 0 means unlimited */
     f32  limit_max;
+    f32  slider_torsion; /* 0 leaves rotation free, 1 locks it to body A */
 } DistanceConstraint;
 
 typedef struct {
@@ -168,6 +170,8 @@ typedef struct SliderDesc {
 } SliderDesc;
 
 u32           physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc);
+/* torsion is clamped to [0, 1]. Ignored unless the slot is a slider. */
+void          physics_constraint_set_slider_torsion(PhysicsWorld *pw, u32 constraint_id, f32 torsion);
 void          physics_constraint_remove(PhysicsWorld *pw, u32 constraint_id);
 u32           physics_constraint_count(const PhysicsWorld *pw);
 void          physics_step(PhysicsWorld *pw, f32 dt);
