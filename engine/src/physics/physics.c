@@ -465,6 +465,11 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                     if (inv_a > 0.0f) a->position = vec3_add(a->position, vec3_scale(along_corr, inv_a));
                     if (inv_b > 0.0f) b->position = vec3_sub(b->position, vec3_scale(along_corr, inv_b));
                 }
+                /* A prismatic joint also locks relative rotation. */
+                if (inv_b > 0.0f) {
+                    b->orientation = rigid_orientation(a);
+                    b->angular_velocity = a->angular_velocity;
+                }
                 continue;
             }
             if (c->is_ball || c->is_hinge) {

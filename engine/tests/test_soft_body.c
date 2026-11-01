@@ -27,6 +27,41 @@ TEST(soft_body_restores_offsets_when_stiff) {
     soft_body_step(&floppy, loose);
     ASSERT_FLOAT_EQ(loose->bodies[floppy.nodes[0]].position.e[0], moved, 1e-5);
     physics_world_destroy(loose);
+
+    PhysicsWorld *bulk = physics_world_create(8);
+    SoftBody inflated;
+    memset(&inflated, 0, sizeof(inflated));
+    ASSERT_TRUE(soft_body_create_count(&inflated, bulk, vec3(0, 0, 0), 0.5f, 1.0f, 0.0f, 1.0f, 4u));
+    Vec3 bulk_com = vec3(0, 0, 0);
+    for (u32 i = 0; i < inflated.count; i++) bulk_com = vec3_add(bulk_com, bulk->bodies[inflated.nodes[i]].position);
+    bulk_com = vec3_scale(bulk_com, 0.25f);
+    f32 before = 0.0f;
+    for (u32 i = 0; i < inflated.count; i++) {
+        Vec3 from = vec3_sub(bulk->bodies[inflated.nodes[i]].position, bulk_com);
+        before += vec3_len_sq(from);
+        bulk->bodies[inflated.nodes[i]].position = vec3_add(bulk_com, vec3_scale(from, 2.0f));
+    }
+    before *= 0.25f;
+    soft_body_step(&inflated, bulk);
+    Vec3 after_com = vec3(0, 0, 0);
+    for (u32 i = 0; i < inflated.count; i++) after_com = vec3_add(after_com, bulk->bodies[inflated.nodes[i]].position);
+    after_com = vec3_scale(after_com, 0.25f);
+    f32 after = 0.0f;
+    for (u32 i = 0; i < inflated.count; i++) {
+        after += vec3_len_sq(vec3_sub(bulk->bodies[inflated.nodes[i]].position, after_com));
+    }
+    after *= 0.25f;
+    ASSERT_FLOAT_EQ(after, before, before * 0.05f + 1e-4f);
+
+    PhysicsWorld *wide = physics_world_create(12);
+    SoftBody six;
+    memset(&six, 0, sizeof(six));
+    ASSERT_TRUE(soft_body_create_count(&six, wide, vec3(1, 1, 1), 0.4f, 2.0f, 1.0f, 0.0f, 6u));
+    ASSERT_EQ(six.count, 6u);
+    ASSERT_FALSE(soft_body_create_count(&six, wide, vec3(0, 0, 0), 0.2f, 1.0f, 1.0f, 0.0f, 3u));
+    ASSERT_FALSE(soft_body_create_count(&six, wide, vec3(0, 0, 0), 0.2f, 1.0f, 1.0f, 0.0f, 9u));
+    physics_world_destroy(wide);
+    physics_world_destroy(bulk);
     physics_world_destroy(pw);
 }
 

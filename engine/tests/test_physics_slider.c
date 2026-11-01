@@ -30,6 +30,17 @@ TEST(slider_kills_perpendicular_offset_and_respects_the_limit) {
     }
     along = pw->bodies[b].position.e[0] - pw->bodies[a].position.e[0];
     ASSERT_TRUE(along <= 0.2f + 1e-3f);
+
+    PhysicsPose pose;
+    pose.orientation = QUAT_IDENTITY;
+    pose.angular_velocity = vec3(0, 3, 0);
+    pose.inertia_diag = vec3(1, 1, 1);
+    physics_body_set_pose(pw, b, &pose);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    physics_step(pw, 0.05f);
+    Quat spun = pw->bodies[b].orientation;
+    f32 twist = 2.0f * atan2f(spun.e[1], spun.e[3]);
+    ASSERT_TRUE(fabsf(twist) < 1e-3f);
     physics_world_destroy(pw);
 
     PhysicsWorld *full = physics_world_create(4);
