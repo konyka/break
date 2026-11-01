@@ -902,6 +902,7 @@ src/renderer/lens_effects.c
     src/physics/rope.c
     src/physics/cloth.c
     src/physics/destructible.c
+    src/physics/soft_body.c
     src/physics/bvh.c
     src/physics/character.c
     src/audio/audio.c
@@ -4361,6 +4362,20 @@ endif()
     target_link_libraries(test_destructible PRIVATE m)
     add_test(NAME test_destructible COMMAND test_destructible)
     set_tests_properties(test_destructible PROPERTIES LABELS "headless;physics")
+
+    add_executable(test_physics_slider tests/test_physics_slider.c
+        src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
+    target_include_directories(test_physics_slider PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_physics_slider PRIVATE m)
+    add_test(NAME test_physics_slider COMMAND test_physics_slider)
+    set_tests_properties(test_physics_slider PROPERTIES LABELS "headless;physics")
+
+    add_executable(test_soft_body tests/test_soft_body.c
+        src/physics/soft_body.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
+    target_include_directories(test_soft_body PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_soft_body PRIVATE m)
+    add_test(NAME test_soft_body COMMAND test_soft_body)
+    set_tests_properties(test_soft_body PROPERTIES LABELS "headless;physics")
 
     add_executable(test_world_stream_job tests/test_world_stream_job.c
         src/renderer/world_stream_job.c src/renderer/world_stream.c src/task/task.c src/core/log.c)

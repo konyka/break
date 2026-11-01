@@ -237,6 +237,7 @@ u32 physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 body_b, f3
             pw->constraints[i].offset_b = vec3(0, 0, 0);
             pw->constraints[i].is_ball = false;
             pw->constraints[i].is_hinge = false;
+            pw->constraints[i].is_slider = false;
             pw->constraints[i].active = true;
             pw->constraint_count++;
             return i;
@@ -267,6 +268,7 @@ u32 physics_constraint_add_ball(PhysicsWorld *pw, u32 body_a, u32 body_b, Vec3 a
             pw->constraints[i].offset_b = anchor_b;
             pw->constraints[i].is_ball = true;
             pw->constraints[i].is_hinge = false;
+            pw->constraints[i].is_slider = false;
             pw->constraints[i].active = true;
             pw->constraint_count++;
             return i;
@@ -306,6 +308,41 @@ u32 physics_constraint_add_hinge(PhysicsWorld *pw, const HingeDesc *desc) {
             pw->constraints[i].offset_b = desc->anchor_local_b;
             pw->constraints[i].is_ball = false;
             pw->constraints[i].is_hinge = true;
+            pw->constraints[i].is_slider = false;
+            pw->constraints[i].hinge_axis = vec3_scale(desc->axis_local_a, inv);
+            pw->constraints[i].limit_min = desc->limit_min;
+            pw->constraints[i].limit_max = desc->limit_max;
+            pw->constraints[i].active = true;
+            pw->constraint_count++;
+            return i;
+        }
+    }
+    return UINT32_MAX;
+}
+
+u32 physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc) {
+    if (!pw || !desc) return UINT32_MAX;
+    if (desc->body_a >= pw->count || desc->body_b >= pw->count) return UINT32_MAX;
+    if (desc->body_a == desc->body_b) return UINT32_MAX;
+    if (!(desc->limit_min <= desc->limit_max)) return UINT32_MAX;
+    f32 axis_len2 = vec3_dot(desc->axis_local_a, desc->axis_local_a);
+    if (!(axis_len2 > 1e-8f)) return UINT32_MAX;
+    for (int i = 0; i < 3; i++) {
+        if (!isfinite(desc->anchor_local_a.e[i]) || !isfinite(desc->anchor_local_b.e[i]) ||
+            !isfinite(desc->axis_local_a.e[i])) return UINT32_MAX;
+    }
+    if (!isfinite(desc->limit_min) || !isfinite(desc->limit_max)) return UINT32_MAX;
+    f32 inv = 1.0f / sqrtf(axis_len2);
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
+        if (!pw->constraints[i].active) {
+            pw->constraints[i].body_a = desc->body_a;
+            pw->constraints[i].body_b = desc->body_b;
+            pw->constraints[i].rest_length = 0.0f;
+            pw->constraints[i].offset_a = desc->anchor_local_a;
+            pw->constraints[i].offset_b = desc->anchor_local_b;
+            pw->constraints[i].is_ball = false;
+            pw->constraints[i].is_hinge = false;
+            pw->constraints[i].is_slider = true;
             pw->constraints[i].hinge_axis = vec3_scale(desc->axis_local_a, inv);
             pw->constraints[i].limit_min = desc->limit_min;
             pw->constraints[i].limit_max = desc->limit_max;
@@ -405,6 +442,31 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
              * distance and ball constraints keep their previous world offsets. */
             Vec3 pa = vec3_add(a->position, quat_rotate_vec3(rigid_orientation(a), c->offset_a));
             Vec3 pb = vec3_add(b->position, quat_rotate_vec3(rigid_orientation(b), c->offset_b));
+            if (c->is_slider) {
+                Vec3 axis = quat_rotate_vec3(rigid_orientation(a), c->hinge_axis);
+                Vec3 delta = vec3_sub(pb, pa);
+                f32 along = vec3_dot(delta, axis);
+                Vec3 perp = vec3_sub(delta, vec3_scale(axis, along));
+                Vec3 corr = vec3_scale(perp, 1.0f / inv_total);
+                if (inv_a > 0.0f) {
+                    a->position = vec3_add(a->position, vec3_scale(corr, inv_a));
+                    a->rest_frames = 0;
+                }
+                if (inv_b > 0.0f) {
+                    b->position = vec3_sub(b->position, vec3_scale(corr, inv_b));
+                    b->rest_frames = 0;
+                }
+                if (!(c->limit_min == 0.0f && c->limit_max == 0.0f)) {
+                    f32 target = along;
+                    if (target < c->limit_min) target = c->limit_min;
+                    if (target > c->limit_max) target = c->limit_max;
+                    f32 err = along - target;
+                    Vec3 along_corr = vec3_scale(axis, err / inv_total);
+                    if (inv_a > 0.0f) a->position = vec3_add(a->position, vec3_scale(along_corr, inv_a));
+                    if (inv_b > 0.0f) b->position = vec3_sub(b->position, vec3_scale(along_corr, inv_b));
+                }
+                continue;
+            }
             if (c->is_ball || c->is_hinge) {
                 /* R443: ball joint — pull the anchors to coincidence with a
                  * full 3-axis vector correction (no axis normalization, so
@@ -484,6 +546,17 @@ static void solve_distance_constraint_velocities(PhysicsWorld *pw) {
         f32 inv_b = b->inv_mass;
         f32 inv_total = inv_a + inv_b;
         if (inv_total <= 0.0f) continue; /* both static: nothing can move */
+        if (c->is_slider) {
+            Vec3 axis = quat_rotate_vec3(rigid_orientation(a), c->hinge_axis);
+            Vec3 rel = vec3_sub(b->velocity, a->velocity);
+            f32 along = vec3_dot(rel, axis);
+            Vec3 perp = vec3_sub(rel, vec3_scale(axis, along));
+            Vec3 j = vec3_scale(perp, 1.0f / inv_total);
+            if (inv_a > 0.0f) a->velocity = vec3_add(a->velocity, vec3_scale(j, inv_a));
+            if (inv_b > 0.0f) b->velocity = vec3_sub(b->velocity, vec3_scale(j, inv_b));
+            (void)along;
+            continue;
+        }
         if (c->is_ball || c->is_hinge) {
             /* R443: a ball joint pins two POINTS together, so it constrains
              * all 3 translational axes — unlike the distance constraint,

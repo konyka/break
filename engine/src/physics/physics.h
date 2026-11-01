@@ -71,7 +71,8 @@ typedef struct {
     Vec3 offset_b;
     bool is_ball;     /* false: 1-axis distance solve; true: 3-axis ball solve */
     bool is_hinge;
-    Vec3 hinge_axis;  /* local to body A, unit length */
+    bool is_slider;
+    Vec3 hinge_axis;  /* local to body A, unit length. Also the slider axis. */
     f32  limit_min;   /* radians; min == max == 0 means unlimited */
     f32  limit_max;
 } DistanceConstraint;
@@ -155,6 +156,18 @@ typedef struct HingeDesc {
 } HingeDesc;
 
 u32           physics_constraint_add_hinge(PhysicsWorld *pw, const HingeDesc *desc);
+
+typedef struct SliderDesc {
+    u32 body_a;
+    u32 body_b;
+    Vec3 anchor_local_a;
+    Vec3 anchor_local_b;
+    Vec3 axis_local_a;
+    f32 limit_min; /* along the axis; min == max == 0 means unlimited */
+    f32 limit_max;
+} SliderDesc;
+
+u32           physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc);
 void          physics_constraint_remove(PhysicsWorld *pw, u32 constraint_id);
 u32           physics_constraint_count(const PhysicsWorld *pw);
 void          physics_step(PhysicsWorld *pw, f32 dt);
