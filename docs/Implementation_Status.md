@@ -1,3 +1,9 @@
+## 本轮更新：流式块提交进 World（2026-11-01）
+
+- **交付**：`world_stream_commit` 在调用线程上处理 `StreamWant`。范围内的加载为该块创建一个实体；已经活着的块不会再建一个。卸载销毁实体并把槽写成 `ENTITY_NULL`。越界块计入 rejected，不改槽。
+- **测试**：`test_world_stream_world` 在 normal、ASan+UBSan、TSan 上通过。
+- **未做**：不读 VFS，实体上没有地形或网格。贴花、体素、道路仍没有 GPU。
+
 ## 本轮更新：Cry 式计划的完成定义已经满足（2026-11-01）
 
 - **交付**：`docs/superpowers/plans/2026-11-01-cry-style-gameplay.md` 的步骤勾选与仓库一致。阶段 A–F、D、E 的 25 个 focused 测试在 normal、ASan+UBSan、TSan 上通过。设计文档第 1 节已写明原型交付、`break_game` / `break_ai` 未链入 `engine`。第 11 节的范围外项仍不做。

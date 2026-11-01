@@ -847,6 +847,7 @@ add_library(engine STATIC
     src/renderer/visarea.c
     src/renderer/world_stream.c
     src/renderer/world_stream_job.c
+    src/renderer/world_stream_world.c
     src/renderer/decal.c
     src/renderer/voxel.c
     src/renderer/road.c
@@ -4391,6 +4392,21 @@ endif()
     endif()
     add_test(NAME test_world_stream_job COMMAND test_world_stream_job)
     set_tests_properties(test_world_stream_job PROPERTIES LABELS "headless;world")
+
+    add_executable(test_world_stream_world tests/test_world_stream_world.c
+        src/renderer/world_stream_world.c src/ecs/ecs.c src/core/log.c)
+    target_include_directories(test_world_stream_world PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_world_stream_world PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_world_stream_world PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_world_stream_world PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_world_stream_world PRIVATE kernel32)
+    else()
+        target_link_libraries(test_world_stream_world PRIVATE m)
+    endif()
+    add_test(NAME test_world_stream_world COMMAND test_world_stream_world)
+    set_tests_properties(test_world_stream_world PROPERTIES LABELS "headless;world")
 
     # Focused ECS snapshot/schema/delta/AoI API coverage links the formal
     # non-Snowflake library. Fault injection remains test-target-only.
