@@ -853,6 +853,7 @@ add_library(engine STATIC
     src/renderer/road.c
     src/renderer/mesh_stage.c
     src/renderer/mesh_buffer.c
+    src/renderer/mesh_gpu.c
 src/renderer/water.c
     src/renderer/lighting.c
     src/renderer/post_process.c
@@ -2957,6 +2958,14 @@ if(ENGINE_BUILD_TESTS)
             add_test(NAME test_rhi_x11_runtime COMMAND test_rhi_x11_runtime)
             set_tests_properties(test_rhi_x11_runtime PROPERTIES
                 LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
+
+            add_executable(test_mesh_gpu_gl tests/test_mesh_gpu_gl.c)
+            target_include_directories(test_mesh_gpu_gl PRIVATE ${TEST_INCLUDE_DIRS})
+            target_link_libraries(test_mesh_gpu_gl PRIVATE engine m)
+            engine_link_rhi_backend(test_mesh_gpu_gl)
+            add_test(NAME test_mesh_gpu_gl COMMAND test_mesh_gpu_gl)
+            set_tests_properties(test_mesh_gpu_gl PROPERTIES
+                LABELS "graphics;world" SKIP_RETURN_CODE 77)
         endif()
     endif()
 
@@ -4358,6 +4367,14 @@ endif()
     target_link_libraries(test_mesh_buffer PRIVATE m)
     add_test(NAME test_mesh_buffer COMMAND test_mesh_buffer)
     set_tests_properties(test_mesh_buffer PROPERTIES LABELS "headless;world")
+
+    add_executable(test_mesh_gpu tests/test_mesh_gpu.c
+        src/renderer/mesh_gpu.c src/renderer/mesh_buffer.c src/renderer/mesh_stage.c
+        src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_mesh_gpu PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_mesh_gpu PRIVATE engine_rhi_headless m)
+    add_test(NAME test_mesh_gpu COMMAND test_mesh_gpu)
+    set_tests_properties(test_mesh_gpu PROPERTIES LABELS "headless;world")
 
     add_executable(test_rope tests/test_rope.c
         src/physics/rope.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
