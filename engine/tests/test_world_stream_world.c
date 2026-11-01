@@ -52,15 +52,58 @@ TEST(stream_commit_spawns_and_removes_tile_entities) {
     world_destroy(world);
 }
 
-TEST(stream_commit_vfs_copies_tile_bytes_onto_the_entity) {
+TEST(stream_commit_vfs_loads_a_versioned_mesh) {
     remove("/tmp/break-stream-tile-test/tile_1_0.bin");
+    remove("/tmp/break-stream-tile-test/tile_0_0.bin");
+    remove("/tmp/break-stream-tile-test/tile_0_1.bin");
+    remove("/tmp/break-stream-tile-test/tile_1_1.bin");
     rmdir("/tmp/break-stream-tile-test");
     ASSERT_EQ(mkdir("/tmp/break-stream-tile-test", 0700), 0);
-    char file_path[] = "/tmp/break-stream-tile-test/tile_1_0.bin";
-    FILE *out = fopen(file_path, "wb");
+
+    MeshStageVertex vert;
+    memset(&vert, 0, sizeof(vert));
+    vert.px = 4.0f;
+    vert.py = 5.0f;
+    vert.pz = 6.0f;
+    vert.ny = 1.0f;
+    vert.material = 3;
+    char ok_path[] = "/tmp/break-stream-tile-test/tile_1_0.bin";
+    FILE *out = fopen(ok_path, "wb");
     ASSERT_NOT_NULL(out);
-    u8 payload[4] = {1, 2, 3, 4};
-    ASSERT_EQ(fwrite(payload, 1, 4, out), 4u);
+    u32 magic = STREAM_TILE_MAGIC;
+    u32 version = STREAM_TILE_VERSION;
+    u32 vcount = 1;
+    ASSERT_EQ(fwrite(&magic, 4, 1, out), 1u);
+    ASSERT_EQ(fwrite(&version, 4, 1, out), 1u);
+    ASSERT_EQ(fwrite(&vcount, 4, 1, out), 1u);
+    ASSERT_EQ(fwrite(&vert, sizeof(vert), 1, out), 1u);
+    fclose(out);
+
+    char bad_path[] = "/tmp/break-stream-tile-test/tile_0_0.bin";
+    out = fopen(bad_path, "wb");
+    ASSERT_NOT_NULL(out);
+    u32 bad_magic = 1;
+    ASSERT_EQ(fwrite(&bad_magic, 4, 1, out), 1u);
+    ASSERT_EQ(fwrite(&version, 4, 1, out), 1u);
+    ASSERT_EQ(fwrite(&vcount, 4, 1, out), 1u);
+    ASSERT_EQ(fwrite(&vert, sizeof(vert), 1, out), 1u);
+    fclose(out);
+
+    char short_path[] = "/tmp/break-stream-tile-test/tile_0_1.bin";
+    out = fopen(short_path, "wb");
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ(fwrite(&magic, 4, 1, out), 1u);
+    ASSERT_EQ(fwrite(&version, 4, 1, out), 1u);
+    ASSERT_EQ(fwrite(&vcount, 4, 1, out), 1u);
+    fclose(out);
+
+    char over_path[] = "/tmp/break-stream-tile-test/tile_1_1.bin";
+    out = fopen(over_path, "wb");
+    ASSERT_NOT_NULL(out);
+    u32 too_many = STREAM_TILE_MAX_VERTS + 1u;
+    ASSERT_EQ(fwrite(&magic, 4, 1, out), 1u);
+    ASSERT_EQ(fwrite(&version, 4, 1, out), 1u);
+    ASSERT_EQ(fwrite(&too_many, 4, 1, out), 1u);
     fclose(out);
 
     VFS *vfs = vfs_create();
@@ -83,9 +126,9 @@ TEST(stream_commit_vfs_copies_tile_bytes_onto_the_entity) {
     ASSERT_NOT_NULL(tile);
     ASSERT_EQ(tile->x, 1u);
     ASSERT_EQ(tile->z, 0u);
-    ASSERT_EQ(tile->size, 4u);
-    ASSERT_EQ(tile->bytes[0], 1u);
-    ASSERT_EQ(tile->bytes[3], 4u);
+    ASSERT_EQ(tile->vertex_count, 1u);
+    ASSERT_FLOAT_EQ(tile->verts[0].px, 4.0f, 1e-4);
+    ASSERT_EQ(tile->verts[0].material, 3u);
     Entity first = slots[1];
     u32 count = world->entity_count;
 
@@ -94,14 +137,32 @@ TEST(stream_commit_vfs_copies_tile_bytes_onto_the_entity) {
     ASSERT_EQ(slots[1].generation, first.generation);
     ASSERT_EQ(world->entity_count, count);
 
-    StreamWant missing;
-    missing.tile_x = 0;
-    missing.tile_z = 1;
-    missing.resident = true;
-    applied = world_stream_commit_vfs(world, vfs, &missing, 1, slots, 2, 2, &rejected);
+    StreamWant bad;
+    bad.tile_x = 0;
+    bad.tile_z = 0;
+    bad.resident = true;
+    applied = world_stream_commit_vfs(world, vfs, &bad, 1, slots, 2, 2, &rejected);
+    ASSERT_EQ(applied, 0u);
+    ASSERT_EQ(rejected, 1u);
+    ASSERT_FALSE(entity_valid(slots[0]));
+
+    StreamWant trunc;
+    trunc.tile_x = 0;
+    trunc.tile_z = 1;
+    trunc.resident = true;
+    applied = world_stream_commit_vfs(world, vfs, &trunc, 1, slots, 2, 2, &rejected);
     ASSERT_EQ(applied, 0u);
     ASSERT_EQ(rejected, 1u);
     ASSERT_FALSE(entity_valid(slots[2]));
+
+    StreamWant over;
+    over.tile_x = 1;
+    over.tile_z = 1;
+    over.resident = true;
+    applied = world_stream_commit_vfs(world, vfs, &over, 1, slots, 2, 2, &rejected);
+    ASSERT_EQ(applied, 0u);
+    ASSERT_EQ(rejected, 1u);
+    ASSERT_FALSE(entity_valid(slots[3]));
 
     StreamWant unload;
     unload.tile_x = 1;
@@ -114,11 +175,14 @@ TEST(stream_commit_vfs_copies_tile_bytes_onto_the_entity) {
 
     world_destroy(world);
     vfs_destroy(vfs);
-    remove(file_path);
+    remove(ok_path);
+    remove(bad_path);
+    remove(short_path);
+    remove(over_path);
     rmdir("/tmp/break-stream-tile-test");
 }
 
 TEST_MAIN_BEGIN()
     RUN_TEST(stream_commit_spawns_and_removes_tile_entities);
-    RUN_TEST(stream_commit_vfs_copies_tile_bytes_onto_the_entity);
+    RUN_TEST(stream_commit_vfs_loads_a_versioned_mesh);
 TEST_MAIN_END()

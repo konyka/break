@@ -39,6 +39,24 @@ u32 world_stream_commit(World *world, const StreamWant *wants, u32 count,
     return applied;
 }
 
+static bool stream_tile_parse(const u8 *data, usize file_size, StreamTileData *tile, u32 x, u32 z) {
+    if (!data || file_size < 12u) return false;
+    u32 magic = 0, version = 0, vcount = 0;
+    memcpy(&magic, data, 4);
+    memcpy(&version, data + 4, 4);
+    memcpy(&vcount, data + 8, 4);
+    if (magic != STREAM_TILE_MAGIC || version != STREAM_TILE_VERSION) return false;
+    if (vcount == 0u || vcount > STREAM_TILE_MAX_VERTS) return false;
+    usize need = 12u + (usize)vcount * sizeof(MeshStageVertex);
+    if (file_size != need) return false;
+    memset(tile, 0, sizeof *tile);
+    tile->x = x;
+    tile->z = z;
+    tile->vertex_count = vcount;
+    memcpy(tile->verts, data + 12, (usize)vcount * sizeof(MeshStageVertex));
+    return true;
+}
+
 u32 world_stream_commit_vfs(World *world, VFS *vfs, const StreamWant *wants, u32 count,
                             Entity *slots, u32 tile_count_x, u32 tile_count_z,
                             u32 *rejected) {
@@ -77,28 +95,23 @@ u32 world_stream_commit_vfs(World *world, VFS *vfs, const StreamWant *wants, u32
         }
         usize file_size = 0;
         u8 *data = vfs_read_all(vfs, path, &file_size);
-        if (!data || file_size == 0) {
+        StreamTileData parsed;
+        if (!stream_tile_parse(data, file_size, &parsed, x, z)) {
             free(data);
             bad++;
             continue;
         }
+        free(data);
         Entity created = world_create_entity(world);
         StreamTileData *tile = entity_valid(created)
             ? (StreamTileData *)world_add_component(world, created, STREAM_TILE_COMPONENT)
             : NULL;
         if (!tile) {
             if (entity_valid(created)) world_destroy_entity(world, created);
-            free(data);
             bad++;
             continue;
         }
-        u32 stored = file_size > STREAM_TILE_BYTES ? STREAM_TILE_BYTES : (u32)file_size;
-        memset(tile, 0, sizeof *tile);
-        tile->x = x;
-        tile->z = z;
-        tile->size = stored;
-        memcpy(tile->bytes, data, stored);
-        free(data);
+        *tile = parsed;
         *slot = created;
         applied++;
     }
