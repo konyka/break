@@ -1,3 +1,9 @@
+## 本轮更新：贴花贴到高度图，流式意图交给任务系统（2026-11-01）
+
+- **交付**：`decal_place_on_heightfield` 把贴花的 xz 吸到高度图上，并用法线差分写出朝向；落在网格外的贴花计入 dropped。`world_stream_apply` 把 `StreamWant` 提交给现有 `TaskSystem`，等它写完驻留位再返回。越界的块计入 rejected，不改网格。
+- **测试**：`test_decal`、`test_world_stream_job` 在 normal、ASan+UBSan、TSan 上通过。`test_world_stream` 仍通过。
+- **未做**：贴花没有进 GPU。流式任务只改一块布尔网格，不读 VFS、不创建实体，也不等于网络 AOI。体素地形、道路、绳索、布料、软体、可破坏物仍然没有。
+
 ## 本轮更新：2026-10-31 同步（OpenSSL 4 修复、编辑器远程预算、场景纹理预览等待）与其后的 Windows 显示驱动恢复
 
 - **同步**：6 个提交（`fix(net_http): build against OpenSSL 4 without deprecated host-name APIs`、编辑器远程每连接消息预算、场景纹理预览等待全部 8 张等）。Windows 侧代码无需改动即通过；`break_http` 及其崩溃上传/端到端测试是 POSIX-only，Windows 不编译也不注册（上游有意为之），**这批 HTTP/TLS 功能在 Windows 上未被验证**。
@@ -11,7 +17,7 @@
 
 - **交付**：`test_cry_style_prototype` 把玩家移动、绕墙寻路、行为树位移、一维速度混合和触发区串在一个 headless 关卡里。没有 GPU、声音或网络。植被实例、昼夜光照参数、VisArea/Portal 可见集、地形块驻留意图是 CPU 函数。刚体增加朝向、角速度和局部锚点；铰链、布娃娃和射线载具在 `physics`。`break_game` 与 `break_ai` 仍不链入 `engine`、`engine_demo`、`dxx_break`。
 - **测试**：normal、ASan+UBSan、TSan 上 `test_cry_style_prototype`、`test_vegetation`、`test_time_of_day`、`test_visarea`、`test_world_stream`、`test_physics_hinge`、`test_ragdoll`、`test_vehicle` 通过。既有 `test_physics` 与 `test_character` 仍通过。
-- **未做、局限**：这些 CPU 测试不证明植被画面或驾驶手感。贴花、体素地形、道路、绳索、布料、软体、可破坏物没有做。流式只算出要加载或卸载的块，没有交给任务系统，也不等于网络 AOI。载具没有轮子刚体。零惯性轴不积分角速度；零四元数在求解时当作单位四元数，不写回刚体。
+- **未做、局限**：这些 CPU 测试不证明植被画面或驾驶手感。体素地形、道路、绳索、布料、软体、可破坏物没有做。载具没有轮子刚体。零惯性轴不积分角速度；零四元数在求解时当作单位四元数，不写回刚体。贴花和任务系统上的驻留写入见更晚的条目。
 
 ## 本轮更新：Cry 式游戏能力的前三段（2026-11-01）
 

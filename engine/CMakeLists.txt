@@ -846,6 +846,8 @@ add_library(engine STATIC
     src/renderer/time_of_day.c
     src/renderer/visarea.c
     src/renderer/world_stream.c
+    src/renderer/world_stream_job.c
+    src/renderer/decal.c
 src/renderer/water.c
     src/renderer/lighting.c
     src/renderer/post_process.c
@@ -4315,6 +4317,27 @@ endif()
         add_test(NAME test_${world_test} COMMAND test_${world_test})
         set_tests_properties(test_${world_test} PROPERTIES LABELS "headless;world")
     endforeach()
+
+    add_executable(test_decal tests/test_decal.c src/renderer/decal.c src/math/math.c)
+    target_include_directories(test_decal PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_decal PRIVATE m)
+    add_test(NAME test_decal COMMAND test_decal)
+    set_tests_properties(test_decal PROPERTIES LABELS "headless;world")
+
+    add_executable(test_world_stream_job tests/test_world_stream_job.c
+        src/renderer/world_stream_job.c src/renderer/world_stream.c src/task/task.c src/core/log.c)
+    target_include_directories(test_world_stream_job PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_world_stream_job PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_world_stream_job PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_world_stream_job PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_world_stream_job PRIVATE kernel32)
+    else()
+        target_link_libraries(test_world_stream_job PRIVATE m)
+    endif()
+    add_test(NAME test_world_stream_job COMMAND test_world_stream_job)
+    set_tests_properties(test_world_stream_job PROPERTIES LABELS "headless;world")
 
     # Focused ECS snapshot/schema/delta/AoI API coverage links the formal
     # non-Snowflake library. Fault injection remains test-target-only.

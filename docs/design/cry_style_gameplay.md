@@ -21,7 +21,7 @@
 
 | 模块 | 结论 | 已有、后续直接复用 | 本路线要补的部分 |
 |---|---|---|---|
-| 3D 引擎 | 部分 | [`engine/src/renderer/terrain.c`](../../engine/src/renderer/terrain.c) 高度图、雕刻、侵蚀；水面、粒子、遮挡剔除、LOD 生成与缓存、体积雾、天空盒；SSAO/SSR/TAA/DOF 等后处理 | 植被、贴花、昼夜、体素地形、道路/绳索、VisArea/Portal、对象流式、地形分块驻留 |
+| 3D 引擎 | 部分 | 地形、水面、粒子、遮挡剔除、LOD、体积雾、天空盒、后处理；植被实例、昼夜参数、VisArea、块驻留意图、贴花吸附、任务系统写回驻留位 | 贴花 GPU、体素地形、道路/绳索、把流式块读进 `World` |
 | 动画 | 部分，且小 | [`engine/src/animation/animation.h`](../../engine/src/animation/animation.h)：8 层混合、淡入淡出、64 位骨骼遮罩、两骨 IK、动画事件。骨架上限 128 关节（[`skeleton.h`](../../engine/src/animation/skeleton.h)） | 一维参数混合、挂点、瞄准/注视 IK。变形、面部、压缩、布娃娃驱动放到明确的后续阶段 |
 | 物理 | 部分，且小 | [`engine/src/physics/physics.h`](../../engine/src/physics/physics.h)：盒/球/胶囊、CCD、距离与球铰、射线、BVH；[`character.h`](../../engine/src/physics/character.h) 角色控制器。`RigidBody` 没有朝向和角速度 | 朝向与铰链（布娃娃和载具的前置）、布娃娃、射线载具。布料、绳索、软体、可破坏物、滑轨留在范围外 |
 | 游戏框架 | 基本没有 | [`scene_serial`](../../docs/Engine_Modules.md) 场景存取；规则引擎是事实/推理引擎，不承担关卡脚本 | Actor、关卡加载、ActionMap、Area。物品/武器/背包只做组件形状，Flow Graph 不做 |
@@ -160,11 +160,11 @@ Actor 不是 C++ 类层次。一个 Actor 是一个 `Entity` 加上类注册表�
 
 ### 8.4 流式
 
-对象按 64 m 的块记录在清单里。摄像机周围 Chebyshev 距离 ≤ 1 的块为驻留，距离 ≥ 3 的块卸载。加载通过现有任务系统提交，完成回调在 Game 线程提交进 `World`。地形按同样的块半径保留高度图窗口；窗口外的格子不在 GPU 缓冲里。
+对象按 64 m 的块记录在清单里。摄像机周围 Chebyshev 距离 ≤ 1 的块为驻留，距离 ≥ 3 的块卸载。`world_stream_apply` 把这些意图提交给现有任务系统，由一个任务写回驻留位图，调用方在 `task_wait` 返回后看到结果。它不读 VFS，也不把块提交进 `World`。地形窗口外的格子不在这份 CPU 合同里进 GPU 缓冲。
 
 这不是服务端 Cell，也不改网络 AOI。AOI 仍只决定谁的状态要复制。
 
-贴花、体素地形、道路和绳索不在本阶段。
+贴花可以吸到高度图上（`decal_place_on_heightfield`），没有进 GPU。体素地形、道路和绳索不在本阶段。
 
 ## 9. 阶段 E — 布娃娃与载具
 
@@ -204,7 +204,7 @@ D 和 E 另有自己的测试，不作为本切片的门槛。
 
 - Flow Graph 与可视化节点编辑器。Actor 脚本用现有 Lua 模块。
 - 武器数值、背包网格、物品数据库。阶段 A 只保留“类可以声明额外组件”的口子。
-- 变形、面部、动画压缩、布料、绳索、软体、可破坏物、体素地形、道路、贴花。
+- 变形、面部、动画压缩、布料、绳索、软体、可破坏物、体素地形、道路。贴花的 CPU 吸附已交付，GPU 贴花没有。
 - 导航群组、智能对象、动态网格雕刻。
 - 大厅、匹配、NAT、语音、aspect 式复制压缩。
 - 脚本断点调试器、Cry ScriptTable 式全表绑定。
