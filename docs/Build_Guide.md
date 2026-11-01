@@ -344,6 +344,22 @@ cmake --build build-ubsan
   `sprintf`/`_snprintf` 等头文件产物；最小链接用例使用与树一致的 CRT（MSVC 下 `/MD` 或 `/MDd`，
   Clang ASan 树附带 `-D_DLL -D_MT --dependent-lib=msvcrt`）。
 
+#### 本机显示驱动故障会让图形测试假失败（2026-10-31 记录）
+
+显示驱动更新后如果没重启，两个显示适配器可能停在 `CM_PROB_FAILED_POST_START`
+（`Get-PnpDevice -Class Display` 可见，`nvidia-smi` 会报“权限不足”）。这时 OpenGL
+上下文退回 `1.1.0 (Microsoft Corporation / GDI Generic)` 软件渲染，引擎需要 GL 1.3+，
+于是 `test_vulkan`、`rhi_swapchain_bench`、`test_myui_break_rhi_clip` 段错误，
+demo 仍能跑但帧时间会离谱地抖动（实测 35–600 ms，恢复后 32–40 ms）。
+
+排查顺序：先看 demo 日志里的 OpenGL 版本号是不是 `4.x NVIDIA`；不是就查适配器状态。
+恢复不用重启整机（要管理员；UAC 为 `ConsentPromptBehaviorAdmin=0` 时
+`Start-Process -Verb RunAs` 不弹提示）：
+
+```powershell
+pnputil /restart-device "PCI\VEN_10DE&DEV_....&....&0&0009"   # 实例 ID 取自 Get-PnpDevice
+```
+
 #### Windows + Clang 验证
 
 本机已验证 Clang 22 + Ninja 原生构建；无 GPU 的 CI 仅运行非 `graphics` CTest：

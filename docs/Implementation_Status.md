@@ -1,4 +1,11 @@
-# Break 引擎 — 实现状态矩阵（唯一事实来源）
+## 本轮更新：2026-10-31 同步（OpenSSL 4 修复、编辑器远程预算、场景纹理预览等待）与其后的 Windows 显示驱动恢复
+
+- **同步**：6 个提交（`fix(net_http): build against OpenSSL 4 without deprecated host-name APIs`、编辑器远程每连接消息预算、场景纹理预览等待全部 8 张等）。Windows 侧代码无需改动即通过；`break_http` 及其崩溃上传/端到端测试是 POSIX-only，Windows 不编译也不注册（上游有意为之），**这批 HTTP/TLS 功能在 Windows 上未被验证**。
+- **OpenSSL 4 修复的编译级验证**：`break_http.c` 与 `test_break_http.c` 是 POSIX-only，CI 的 Linux 镜像用 OpenSSL 3.x，因此 `OPENSSL_VERSION_MAJOR >= 4` 分支在 CI 里没有被走到。本机 OpenSSL 正是 4.0.1：用 MSYS2 的 msys 环境（gcc 15.3，带 `arpa/inet.h`/`poll.h` 等 POSIX 头）配合本机 OpenSSL 4 头文件**编译**这两个 TU 通过（预处理输出确认 `SSL_set1_dnsname` 分支被选中），用 MSYS2 自带 OpenSSL 3.x 再编一次也通过，说明两条路径都成立。
+- **发现并修复了一个本机显示驱动故障（不是代码问题）**：`test_myui_break_rhi_clip`、`test_vulkan`、`rhi_swapchain_bench` 三个图形测试段错误。原因是 OpenGL 上下文退回了 `OpenGL 1.1.0 (Microsoft Corporation / GDI Generic)`——两个显示适配器（NVIDIA 4060 Laptop 与 AMD 核显）都处于 `CM_PROB_FAILED_POST_START`（显示驱动更新后需要重启的典型状态），`nvidia-smi` 同时报“权限不足”。用旧提交（`5af634ad`）单独构建的 demo 当时**同样**是 GDI Generic，证明与这批提交无关。恢复方式：`pnputil /restart-device <实例 ID>`（需要管理员；本机 UAC 为 `ConsentPromptBehaviorAdmin=0`，`Start-Process -Verb RunAs` 可静默提升），两个适配器都回到 `CM_PROB_NONE`，OpenGL 重新是 `4.5.0 NVIDIA 621.01`。
+- **解释了此前几轮查不出原因的帧时间波动**：OpenGL 窗口切换后 5 帧内最大帧时间在 GPU 故障期间读数 35–600 ms 不等（旧提交对照同样如此），GPU 恢复后稳定在重建 15–22 ms、最大帧 32–40 ms；D3D12 稳定在重建 56–65 ms、最大帧 77–92 ms。那不是代码回归，是驱动故障下的软件渲染。
+- **验证**（本机 Windows，GPU 恢复后，六棵树全量）：OpenGL 238/238、Vulkan 241/241、D3D12 246/246、ASan 234/234、MSVC 248（1 个 D3D12 依赖门 skip，构建 0 诊断）、MinGW 244/244（构建 0 警告）。`break_authority`(14)、`break_integrity`(4)、编辑器场景纹理(9)、`editor_cmd`(26) 单独跑过。demo 三后端全屏/标题栏切换正常，Vulkan validation 消息 0。
+- **补上此前未验证的编辑器路径**：输入脚本在 Windows 上点 Add、选中实体、切平移工具、Ctrl+D 复制、Ctrl+Z 撤销、按 Z 切线框，断言全过；设置文件确实写出且含 `wireframe=on`（设置是“改动即存”，脚本没有改设置时就不会写文件，这解释了早前一次“文件没生成”的现象）。
 
 ## 本轮更新：崩溃符号化、聚类、回归统计与上传（2026-10-30）
 
