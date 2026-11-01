@@ -1,3 +1,9 @@
+## 本轮更新：贴花、体素、道路带索引（2026-11-01）
+
+- **交付**：贴花和凑满 4 个顶点的体素面写成 6 个索引，两个三角形是 0,1,2 和 0,2,3。道路相邻两对点写成 0,1,3 和 0,3,2。不成对的道路点、凑不满 4 个的体素顶点没有索引。`mesh_buffer_index_desc` 是索引用途，长度是索引数乘 4。绘制描述里的 `index_count` 为 0 表示不走索引。
+- **测试**：`test_mesh_buffer` 在 normal、ASan+UBSan、TSan 上通过。
+- **未做**：不调用 `rhi_buffer_create`，不提交命令缓冲。
+
 ## 本轮更新：贴花、体素、道路收成顶点缓冲描述（2026-11-01）
 
 - **交付**：`MeshBuffer` 最多装 256 个顶点。三种来源各自打包进去。`mesh_buffer_upload_desc` 填顶点用途、字节数和 `initial_data`，描述能通过 `rhi_buffer_desc_validate`。`mesh_buffer_draw_desc` 给出顶点数和 28 字节步长。空缓冲两个描述都拒绝。
