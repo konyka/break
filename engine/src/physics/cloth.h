@@ -11,8 +11,9 @@ typedef struct Cloth {
     u32 height;
 } Cloth;
 
-/* Grid in the XY plane. Row 0 is static. `width` and `height` are at least 2
- * and at most 8. Returns false without creating bodies when the world cannot
- * hold the nodes and their distance links. */
+/* Grid in the XY plane. Row 0 is static. Structural links run to the right
+ * and down; both diagonals are shear links at spacing * sqrt(2).
+ * `width` and `height` are at least 2 and at most 8. Returns false without
+ * creating bodies when the world cannot hold the nodes and their links. */
 bool cloth_create(Cloth *cloth, PhysicsWorld *pw, Vec3 origin, f32 spacing,
                   u32 width, u32 height, f32 node_mass);

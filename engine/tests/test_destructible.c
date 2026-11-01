@@ -34,6 +34,23 @@ TEST(destructible_breaks_only_past_the_threshold) {
     ASSERT_FALSE(stuck.broken);
     ASSERT_FALSE(physics_body_is_parked(&tiny->bodies[stuck.root]));
     physics_world_destroy(tiny);
+
+    PhysicsWorld *deep = physics_world_create(80);
+    physics_body_create(deep, vec3(0, -2, 0), vec3(4, 0.2f, 4), 0, true, 0);
+    Destructible again;
+    memset(&again, 0, sizeof(again));
+    ASSERT_TRUE(destructible_create(&again, deep, vec3(0, 3, 0), vec3(1, 1, 1), 8.0f, 4.0f));
+    destructible_apply_impulse(&again, deep, 4.0f);
+    ASSERT_EQ(again.fragment_count, 8u);
+    destructible_apply_impulse(&again, deep, 1.0f);
+    ASSERT_EQ(again.fragment_count, 8u);
+    u32 parent = again.fragments[0];
+    destructible_apply_impulse(&again, deep, 4.0f);
+    ASSERT_EQ(again.generation, 2u);
+    ASSERT_EQ(again.fragment_count, 64u);
+    ASSERT_TRUE(physics_body_is_parked(&deep->bodies[parent]));
+    ASSERT_FLOAT_EQ(deep->bodies[again.fragments[0]].half_extent.e[0], 0.25f, 1e-4);
+    physics_world_destroy(deep);
 }
 
 TEST_MAIN_BEGIN()

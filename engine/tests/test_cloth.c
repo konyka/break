@@ -9,7 +9,15 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     ASSERT_EQ(cloth.width, 3u);
     ASSERT_TRUE(pw->bodies[cloth.nodes[0]].is_static);
     ASSERT_FALSE(pw->bodies[cloth.nodes[8]].is_static);
-    ASSERT_EQ(physics_constraint_count(pw), 12u);
+    ASSERT_EQ(physics_constraint_count(pw), 20u);
+    bool saw_diag = false;
+    f32 diag = 0.5f * 1.41421356f;
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
+        if (!pw->constraints[i].active) continue;
+        f32 rest = pw->constraints[i].rest_length;
+        if (rest > diag - 0.02f && rest < diag + 0.02f) saw_diag = true;
+    }
+    ASSERT_TRUE(saw_diag);
 
     u32 corner = cloth.nodes[8];
     u32 above = cloth.nodes[5];
@@ -20,6 +28,19 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     f32 after = pw->bodies[above].position.e[1] - pw->bodies[corner].position.e[1];
     if (after < 0) after = -after;
     ASSERT_TRUE(after < stretched);
+
+    u32 left = cloth.nodes[3];
+    u32 right = cloth.nodes[5];
+    pw->bodies[left].position = vec3(0, 1, 0);
+    pw->bodies[right].position = vec3(0, 1, 0);
+    pw->bodies[left].velocity = vec3(0, 0, 0);
+    pw->bodies[right].velocity = vec3(0, 0, 0);
+    physics_step(pw, 0.016f);
+    f32 dx = pw->bodies[left].position.e[0] - pw->bodies[right].position.e[0];
+    f32 dy = pw->bodies[left].position.e[1] - pw->bodies[right].position.e[1];
+    f32 dz = pw->bodies[left].position.e[2] - pw->bodies[right].position.e[2];
+    f32 apart = sqrtf(dx * dx + dy * dy + dz * dz);
+    ASSERT_TRUE(apart > 0.05f);
     physics_world_destroy(pw);
 
     PhysicsWorld *full = physics_world_create(32);

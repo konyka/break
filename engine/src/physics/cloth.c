@@ -15,7 +15,9 @@ bool cloth_create(Cloth *cloth, PhysicsWorld *pw, Vec3 origin, f32 spacing,
     }
     if (!(spacing > 0.0f) || !(node_mass > 0.0f)) return false;
     u32 nodes = width * height;
-    u32 links = (width - 1u) * height + width * (height - 1u);
+    u32 structural = (width - 1u) * height + width * (height - 1u);
+    u32 shear = (width - 1u) * (height - 1u) * 2u;
+    u32 links = structural + shear;
     if (cloth_free_constraints(pw) < links) return false;
     if (pw->count + nodes > pw->capacity) return false;
     u32 before = pw->count;
@@ -52,6 +54,20 @@ bool cloth_create(Cloth *cloth, PhysicsWorld *pw, Vec3 origin, f32 spacing,
             if (y + 1u < height) {
                 u32 below = cloth->nodes[(y + 1u) * width + x];
                 if (physics_constraint_add_distance(pw, id, below, spacing) == UINT32_MAX) {
+                    for (u32 k = before; k < pw->count; k++) {
+                        if (k != 0u) physics_body_park(pw, k);
+                    }
+                    cloth->width = 0;
+                    return false;
+                }
+            }
+            if (x + 1u < width && y + 1u < height) {
+                f32 diag = spacing * 1.41421356f;
+                u32 down_right = cloth->nodes[(y + 1u) * width + x + 1u];
+                u32 down_left = cloth->nodes[(y + 1u) * width + x];
+                u32 right = cloth->nodes[y * width + x + 1u];
+                if (physics_constraint_add_distance(pw, id, down_right, diag) == UINT32_MAX ||
+                    physics_constraint_add_distance(pw, right, down_left, diag) == UINT32_MAX) {
                     for (u32 k = before; k < pw->count; k++) {
                         if (k != 0u) physics_body_park(pw, k);
                     }
