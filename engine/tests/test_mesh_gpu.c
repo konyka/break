@@ -20,6 +20,9 @@ TEST(mesh_gpu_rejects_a_null_device_and_command) {
     ASSERT_FALSE(rhi_handle_valid(gpu.vertex));
     ASSERT_FALSE(rhi_handle_valid(gpu.index));
     ASSERT_FALSE(mesh_gpu_draw(NULL, &mesh, &gpu));
+    MeshPipeline pipe;
+    ASSERT_FALSE(mesh_pipeline_create(NULL, &pipe));
+    ASSERT_FALSE(rhi_handle_valid(pipe.pipeline));
     ASSERT_FALSE(mesh_gpu_upload(NULL, NULL, &gpu));
 }
 

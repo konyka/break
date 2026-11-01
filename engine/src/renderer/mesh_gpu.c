@@ -1,4 +1,5 @@
 #include <renderer/mesh_gpu.h>
+#include <string.h>
 
 bool mesh_gpu_upload(RHIDevice *dev, const MeshBuffer *mesh, MeshGpu *out) {
     if (out) {
@@ -49,4 +50,71 @@ bool mesh_gpu_draw(RHICmdBuffer *cmd, const MeshBuffer *mesh, const MeshGpu *gpu
         rhi_cmd_draw(cmd, mesh->count, 1u);
     }
     return true;
+}
+
+static const char MESH_VERT[] =
+    "#version 450 core\n"
+    "layout(location = 0) in vec3 a_pos;\n"
+    "layout(location = 1) in vec3 a_normal;\n"
+    "layout(location = 2) in uint a_material;\n"
+    "out vec3 v_normal;\n"
+    "flat out uint v_material;\n"
+    "void main() {\n"
+    "    v_normal = a_normal;\n"
+    "    v_material = a_material;\n"
+    "    gl_Position = vec4(a_pos.x, a_pos.z, 0.0, 1.0);\n"
+    "}\n";
+
+static const char MESH_FRAG[] =
+    "#version 450 core\n"
+    "in vec3 v_normal;\n"
+    "flat in uint v_material;\n"
+    "layout(location = 0) out vec4 FragColor;\n"
+    "void main() {\n"
+    "    FragColor = vec4(v_normal.y, float(v_material) / 255.0, 0.0, 1.0);\n"
+    "}\n";
+
+bool mesh_pipeline_create(RHIDevice *dev, MeshPipeline *out) {
+    if (out) {
+        out->vert = RHI_HANDLE_NULL;
+        out->frag = RHI_HANDLE_NULL;
+        out->pipeline = RHI_HANDLE_NULL;
+    }
+    if (!dev || !out) return false;
+    out->vert = rhi_shader_create(dev, MESH_VERT, sizeof(MESH_VERT) - 1u, false);
+    out->frag = rhi_shader_create(dev, MESH_FRAG, sizeof(MESH_FRAG) - 1u, true);
+    if (!rhi_handle_valid(out->vert) || !rhi_handle_valid(out->frag)) {
+        mesh_pipeline_destroy(dev, out);
+        return false;
+    }
+    RHIPipelineDesc desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = out->vert;
+    desc.frag = out->frag;
+    desc.vertex_stride = (u32)sizeof(MeshStageVertex);
+    desc.mesh_stage_vertex = true;
+    desc.disable_culling = true;
+    out->pipeline = rhi_pipeline_create(dev, &desc);
+    if (!rhi_handle_valid(out->pipeline)) {
+        mesh_pipeline_destroy(dev, out);
+        return false;
+    }
+    return true;
+}
+
+void mesh_pipeline_destroy(RHIDevice *dev, MeshPipeline *pipe) {
+    if (!dev || !pipe) return;
+    if (rhi_handle_valid(pipe->pipeline)) rhi_pipeline_destroy(dev, pipe->pipeline);
+    if (rhi_handle_valid(pipe->frag)) rhi_shader_destroy(dev, pipe->frag);
+    if (rhi_handle_valid(pipe->vert)) rhi_shader_destroy(dev, pipe->vert);
+    pipe->vert = RHI_HANDLE_NULL;
+    pipe->frag = RHI_HANDLE_NULL;
+    pipe->pipeline = RHI_HANDLE_NULL;
+}
+
+bool mesh_gpu_draw_with_pipeline(RHICmdBuffer *cmd, const MeshPipeline *pipe,
+                                 const MeshBuffer *mesh, const MeshGpu *gpu) {
+    if (!cmd || !pipe || !rhi_handle_valid(pipe->pipeline)) return false;
+    rhi_cmd_bind_pipeline(cmd, pipe->pipeline);
+    return mesh_gpu_draw(cmd, mesh, gpu);
 }

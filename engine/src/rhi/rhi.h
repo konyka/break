@@ -324,6 +324,9 @@ typedef struct {
      * rhi_mrt_formats_valid 既有校验钉死。 */
     u32       mrt_attachment_count;
     RHIFormat mrt_formats[RHI_MRT_MAX_ATTACHMENTS];
+    /* 28-byte vertex: vec3 position, vec3 normal, uint material.
+     * Default false keeps the existing stride layouts. */
+    bool      mesh_stage_vertex;
 } RHIPipelineDesc;
 
 typedef struct {

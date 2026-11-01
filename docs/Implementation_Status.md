@@ -1,3 +1,9 @@
+## 本轮更新：网格管线画到窗口上（2026-11-01）
+
+- **交付**：`mesh_pipeline_create` 用 28 字节顶点布局编译着色器。位置映射到裁剪空间的 xz。片段 R 取法线 Y，G 取材质除以 255。`mesh_gpu_draw_with_pipeline` 先绑这条管线再画。OpenGL 上贴花盖住 64×64 窗口中心，截图像素 R 大于 200。空设备不创建管线。
+- **测试**：`test_mesh_gpu` 在 normal、ASan+UBSan、TSan 上通过。`test_mesh_gpu_gl` 在 normal 和 ASan+UBSan 上通过。
+- **未做**：没有光照，没有材质贴图。headless 后端仍然拒绝设备和管线。
+
 ## 本轮更新：网格上传到设备缓冲并绘制（2026-11-01）
 
 - **交付**：`mesh_gpu_upload` 调用 `rhi_buffer_create`。有索引时顶点缓冲和索引缓冲都要成功，否则销毁已创建的句柄并返回失败。`mesh_gpu_draw` 绑定后按索引或按顶点画。空设备不创建句柄。OpenGL 窗口上贴花四边形的两个缓冲都有效，并在一帧里画完。
