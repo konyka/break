@@ -4394,7 +4394,7 @@ endif()
     set_tests_properties(test_world_stream_job PROPERTIES LABELS "headless;world")
 
     add_executable(test_world_stream_world tests/test_world_stream_world.c
-        src/renderer/world_stream_world.c src/ecs/ecs.c src/core/log.c)
+        src/renderer/world_stream_world.c src/ecs/ecs.c src/asset/vfs.c src/core/log.c)
     target_include_directories(test_world_stream_world PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_world_stream_world PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
