@@ -76,7 +76,9 @@ typedef struct {
     f32  limit_min;   /* radians for a hinge; along-axis distance for a slider.
                        * min == max == 0 means unlimited */
     f32  limit_max;
-    f32  slider_torsion; /* 0 leaves rotation free, 1 locks it to body A */
+    f32  slider_torsion; /* 0 leaves rotation free, 1 is the stiffest spring */
+    f32  slider_damping; /* 1 replaces the error-axis spin each step.
+                            Below 1, torsion is a spring and this is the damping ratio. */
 } DistanceConstraint;
 
 typedef struct {
@@ -172,6 +174,7 @@ typedef struct SliderDesc {
 u32           physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc);
 /* torsion is clamped to [0, 1]. Ignored unless the slot is a slider. */
 void          physics_constraint_set_slider_torsion(PhysicsWorld *pw, u32 constraint_id, f32 torsion);
+void          physics_constraint_set_slider_damping(PhysicsWorld *pw, u32 constraint_id, f32 damping);
 void          physics_constraint_remove(PhysicsWorld *pw, u32 constraint_id);
 u32           physics_constraint_count(const PhysicsWorld *pw);
 void          physics_step(PhysicsWorld *pw, f32 dt);
