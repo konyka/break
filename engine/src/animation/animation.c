@@ -587,3 +587,23 @@ void anim_ik_solve(IKSystem *ik, Vec3 *positions, Quat *rotations,
             quat_normalize(quat_mul(mid_w,  rotations[T->chain_mid]));
     }
 }
+
+void anim_ik_set_slot(IKSystem *ik, AnimIkSlot slot,
+                      u32 root, u32 mid, u32 tip,
+                      Vec3 target, Vec3 pole, f32 weight) {
+    if (!ik || (slot != ANIM_IK_SLOT_AIM && slot != ANIM_IK_SLOT_LOOK)) {
+        return;
+    }
+    if (root >= 64u || mid >= 64u || tip >= 64u) {
+        return;
+    }
+    u32 index = (u32)slot;
+    anim_ik_set_target(ik, index, root, mid, tip, target, pole);
+    if (weight < 0.0f) {
+        weight = 0.0f;
+    } else if (weight > 1.0f) {
+        weight = 1.0f;
+    }
+    ik->targets[index].weight = weight;
+    ik->targets[index].active = weight > 0.0f;
+}

@@ -675,6 +675,40 @@ if(NOT ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(break_ecs_replication PUBLIC m)
 endif()
 
+# Gameplay kernel (actor classes, action map, level sidecar, trigger areas).
+# Formal optional static library: built regardless of ENGINE_BUILD_TESTS and
+# not linked into engine, engine_demo, or dxx_break. ECS comes from
+# break_ecs_replication so this target does not compile a second ecs.c.
+add_library(break_game STATIC
+    src/game/break_game.c
+    src/game/break_game_actor.c
+    src/game/break_game_actions.c
+    src/game/break_game_move.c
+    src/game/break_game_level.c
+    src/game/break_game_area.c)
+set_property(TARGET break_game PROPERTY C_STANDARD 11)
+target_include_directories(break_game PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_game PUBLIC break_ecs_replication)
+if(ENGINE_PLATFORM STREQUAL "linux")
+    target_link_libraries(break_game PUBLIC pthread)
+endif()
+
+# Navigation and a small behavior tree. Heightfields are plain CPU buffers;
+# this library does not include the renderer. Not linked into engine,
+# engine_demo, or dxx_break.
+add_library(break_ai STATIC
+    src/ai/break_nav_bake.c
+    src/ai/break_nav_query.c
+    src/ai/break_nav_follow.c
+    src/ai/break_perception.c
+    src/ai/break_behavior.c
+    src/ai/break_steer.c)
+set_property(TARGET break_ai PROPERTY C_STANDARD 11)
+target_include_directories(break_ai PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if(NOT ENGINE_PLATFORM STREQUAL "windows")
+    target_link_libraries(break_ai PUBLIC m)
+endif()
+
 add_library(break_replication_core STATIC
     src/network/break_aoi.c
     src/network/break_replication.c
@@ -808,6 +842,10 @@ add_library(engine STATIC
     src/renderer/skybox.c
     src/renderer/particles.c
     src/renderer/terrain.c
+    src/renderer/vegetation.c
+    src/renderer/time_of_day.c
+    src/renderer/visarea.c
+    src/renderer/world_stream.c
 src/renderer/water.c
     src/renderer/lighting.c
     src/renderer/post_process.c
@@ -855,12 +893,16 @@ src/renderer/lens_effects.c
     src/ecs/ecs_system.c
     src/task/task.c
     src/physics/physics.c
+    src/physics/ragdoll.c
+    src/physics/vehicle.c
     src/physics/bvh.c
     src/physics/character.c
     src/audio/audio.c
     src/audio/audio_stream.c
     src/animation/skeleton.c
+    src/animation/skeleton_socket.c
     src/animation/animation.c
+    src/animation/anim_locomotion.c
     src/script/script.c
     src/script/script_lua.c
     src/network/network.c
@@ -4218,6 +4260,62 @@ endif()
     endif()
     add_test(NAME test_ecs COMMAND test_ecs)
 
+    foreach(game_test IN ITEMS actor actions move level area)
+        add_executable(test_break_game_${game_test} tests/test_break_game_${game_test}.c)
+        target_include_directories(test_break_game_${game_test} PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_game_${game_test} PRIVATE break_game)
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(test_break_game_${game_test} PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+            target_link_libraries(test_break_game_${game_test} PRIVATE pthread m)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_game_${game_test} PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_game_${game_test} PRIVATE kernel32)
+        endif()
+        add_test(NAME test_break_game_${game_test} COMMAND test_break_game_${game_test})
+        set_tests_properties(test_break_game_${game_test} PROPERTIES LABELS "headless;break_game")
+    endforeach()
+    add_test(NAME test_break_game_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_game_target_contract.cmake)
+    set_tests_properties(test_break_game_target_contract PROPERTIES
+        LABELS "headless;break_game;platform_contract")
+
+    foreach(ai_test IN ITEMS nav_bake nav_query nav_follow perception behavior steer)
+        add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
+        target_include_directories(test_break_${ai_test} PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_${ai_test} PRIVATE break_ai)
+        add_test(NAME test_break_${ai_test} COMMAND test_break_${ai_test})
+        set_tests_properties(test_break_${ai_test} PROPERTIES LABELS "headless;break_ai")
+    endforeach()
+    add_test(NAME test_break_ai_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_ai_target_contract.cmake)
+    set_tests_properties(test_break_ai_target_contract PROPERTIES
+        LABELS "headless;break_ai;platform_contract")
+
+    add_executable(test_cry_style_prototype tests/test_cry_style_prototype.c
+        src/physics/character.c src/physics/physics.c src/physics/bvh.c
+        src/math/math.c src/core/log.c
+        src/animation/anim_locomotion.c src/animation/animation.c)
+    target_include_directories(test_cry_style_prototype PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_cry_style_prototype PRIVATE break_game break_ai m)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_link_libraries(test_cry_style_prototype PRIVATE pthread)
+    endif()
+    add_test(NAME test_cry_style_prototype COMMAND test_cry_style_prototype)
+    set_tests_properties(test_cry_style_prototype PROPERTIES LABELS "headless;break_game;break_ai")
+
+    foreach(world_test IN ITEMS vegetation time_of_day visarea world_stream)
+        add_executable(test_${world_test} tests/test_${world_test}.c src/renderer/${world_test}.c src/math/math.c)
+        target_include_directories(test_${world_test} PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_${world_test} PRIVATE m)
+        add_test(NAME test_${world_test} COMMAND test_${world_test})
+        set_tests_properties(test_${world_test} PROPERTIES LABELS "headless;world")
+    endforeach()
+
     # Focused ECS snapshot/schema/delta/AoI API coverage links the formal
     # non-Snowflake library. Fault injection remains test-target-only.
     add_library(break_ecs_replication_test STATIC
@@ -5252,6 +5350,28 @@ endif()
     target_link_libraries(test_physics PRIVATE m)
     add_test(NAME test_physics COMMAND test_physics)
 
+    add_executable(test_physics_hinge tests/test_physics_hinge.c
+        src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
+    target_include_directories(test_physics_hinge PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_physics_hinge PRIVATE m)
+    add_test(NAME test_physics_hinge COMMAND test_physics_hinge)
+    set_tests_properties(test_physics_hinge PROPERTIES LABELS "headless;physics")
+
+    add_executable(test_ragdoll tests/test_ragdoll.c
+        src/physics/ragdoll.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
+    target_include_directories(test_ragdoll PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_ragdoll PRIVATE m)
+    add_test(NAME test_ragdoll COMMAND test_ragdoll)
+    set_tests_properties(test_ragdoll PROPERTIES LABELS "headless;physics")
+
+    add_executable(test_vehicle tests/test_vehicle.c
+        src/physics/vehicle.c src/physics/character.c src/physics/physics.c src/physics/bvh.c
+        src/math/math.c src/core/log.c)
+    target_include_directories(test_vehicle PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_vehicle PRIVATE m)
+    add_test(NAME test_vehicle COMMAND test_vehicle)
+    set_tests_properties(test_vehicle PROPERTIES LABELS "headless;physics")
+
     # test_script: needs script.c + log.c
     add_executable(test_script tests/test_script.c src/script/script.c src/core/log.c src/core/string.c)
     target_include_directories(test_script PRIVATE ${TEST_INCLUDE_DIRS})
@@ -5286,6 +5406,27 @@ endif()
     target_include_directories(test_animation PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_animation PRIVATE m)
     add_test(NAME test_animation COMMAND test_animation)
+
+    add_executable(test_anim_locomotion tests/test_anim_locomotion.c
+        src/animation/anim_locomotion.c src/animation/animation.c src/math/math.c src/core/log.c)
+    target_include_directories(test_anim_locomotion PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_anim_locomotion PRIVATE m)
+    add_test(NAME test_anim_locomotion COMMAND test_anim_locomotion)
+    set_tests_properties(test_anim_locomotion PROPERTIES LABELS "headless;animation")
+
+    add_executable(test_skeleton_socket tests/test_skeleton_socket.c
+        src/animation/skeleton_socket.c)
+    target_include_directories(test_skeleton_socket PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_skeleton_socket PRIVATE m)
+    add_test(NAME test_skeleton_socket COMMAND test_skeleton_socket)
+    set_tests_properties(test_skeleton_socket PROPERTIES LABELS "headless;animation")
+
+    add_executable(test_anim_aim tests/test_anim_aim.c
+        src/animation/animation.c src/math/math.c src/core/log.c)
+    target_include_directories(test_anim_aim PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_anim_aim PRIVATE m)
+    add_test(NAME test_anim_aim COMMAND test_anim_aim)
+    set_tests_properties(test_anim_aim PROPERTIES LABELS "headless;animation")
 
     # test_scene_serial: needs scene_serial.c + ecs.c + log.c + math.c
     add_executable(test_scene_serial tests/test_scene_serial.c

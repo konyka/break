@@ -8,6 +8,14 @@
 #define SKELETON_MAX_KEYFRAMES 256
 #define SKELETON_MAX_EVENTS 32
 #define SKELETON_MAX_EVENT_NAME 32
+#define SKELETON_MAX_SOCKETS 32
+
+typedef struct SkeletonSocket {
+    char name[32];
+    u32 joint;
+    Vec3 local_offset;
+    bool used;
+} SkeletonSocket;
 
 typedef struct {
     u32   joint_count;
@@ -24,6 +32,8 @@ typedef struct {
      * in-flight safety while the vertex shader fetches both generations. */
     RHIBuffer joint_buf[2];
     RHIDevice *device;
+    SkeletonSocket sockets[SKELETON_MAX_SOCKETS];
+    u32 socket_count;
 } Skeleton;
 
 typedef enum {
@@ -77,6 +87,9 @@ void skeleton_compute_world_transforms(Skeleton *sk,
                                        const Vec3 *local_pos, const Quat *local_rot, const Vec3 *local_scale,
                                        Mat4 *out_world);
 void skeleton_upload(Skeleton *sk);
+
+bool skeleton_socket_set(Skeleton *sk, const char *name, u32 joint, Vec3 local_offset);
+bool skeleton_socket_get(const Skeleton *sk, const char *name, Vec3 *out_world);
 
 /* Current-frame joint texel buffer (rhi_frame_index & 1). */
 RHIBuffer skeleton_joint_slot(const Skeleton *sk);

@@ -117,6 +117,32 @@ void anim_ik_set_active(IKSystem *ik, u32 index, bool active);
 void anim_ik_solve(IKSystem *ik, Vec3 *positions, Quat *rotations,
                    const Mat4 *world_transforms, u32 bone_count);
 
+typedef enum AnimIkSlot {
+    ANIM_IK_SLOT_AIM = 0,
+    ANIM_IK_SLOT_LOOK = 1
+} AnimIkSlot;
+
+void anim_ik_set_slot(IKSystem *ik, AnimIkSlot slot,
+                      u32 root, u32 mid, u32 tip,
+                      Vec3 target, Vec3 pole, f32 weight);
+
+#define ANIM_LOCO_SAMPLES 4
+
+typedef struct AnimLocoSample {
+    f32 speed;
+    u32 clip_index;
+} AnimLocoSample;
+
+typedef struct AnimLoco1D {
+    AnimLocoSample samples[ANIM_LOCO_SAMPLES];
+    u32 count;
+    u32 layer;
+} AnimLoco1D;
+
+bool anim_loco1d_init(AnimLoco1D *loco, u32 layer,
+                      const AnimLocoSample *samples, u32 count);
+void anim_loco1d_apply(const AnimLoco1D *loco, AnimBlendState *state, f32 speed);
+
 /*
  * Two-Bone IK analytic solver. Outputs world-space rotation deltas to
  * apply to the root and mid joints so that the tip reaches `target`.

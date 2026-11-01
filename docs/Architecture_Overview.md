@@ -542,6 +542,7 @@ cmake -B build-asan -DENGINE_USE_ASAN=ON && make -C build-asan
 | [Phase5B_ClusteredLighting.md](Phase5B_ClusteredLighting.md) | Clustered Lighting 技术方案 |
 | [BW191_Architecture.md](BW191_Architecture.md) | BW191 架构参考 |
 | [CryENGINE_Architecture.md](CryENGINE_Architecture.md) | CryENGINE 架构分析 |
+| [design/cry_style_gameplay.md](design/cry_style_gameplay.md) | 补齐 Cry 式游戏能力的设计合同（设计-only，2026-11-01） |
 | [GEFS_Architecture.md](GEFS_Architecture.md) | GEFS 架构参考 |
 | [T3DGameR1_Architecture.md](T3DGameR1_Architecture.md) | T3D 游戏引擎架构参考 |
 

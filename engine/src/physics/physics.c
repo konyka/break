@@ -171,6 +171,9 @@ init:
     b->radius = 0.0f;
     b->half_height = 0.0f;
     b->ccd = false;
+    b->orientation = (Quat){{0, 0, 0, 0}};
+    b->angular_velocity = vec3(0, 0, 0);
+    b->inertia_diag = vec3(0, 0, 0);
     pw->bvh_dirty = true;
     return id;
 }
@@ -233,6 +236,7 @@ u32 physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 body_b, f3
             pw->constraints[i].offset_a = vec3(0, 0, 0);
             pw->constraints[i].offset_b = vec3(0, 0, 0);
             pw->constraints[i].is_ball = false;
+            pw->constraints[i].is_hinge = false;
             pw->constraints[i].active = true;
             pw->constraint_count++;
             return i;
@@ -262,12 +266,98 @@ u32 physics_constraint_add_ball(PhysicsWorld *pw, u32 body_a, u32 body_b, Vec3 a
             pw->constraints[i].offset_a = anchor_a;
             pw->constraints[i].offset_b = anchor_b;
             pw->constraints[i].is_ball = true;
+            pw->constraints[i].is_hinge = false;
             pw->constraints[i].active = true;
             pw->constraint_count++;
             return i;
         }
     }
     return UINT32_MAX;
+}
+
+void physics_body_set_pose(PhysicsWorld *pw, u32 body_id, const PhysicsPose *pose) {
+    if (!pw || !pose || body_id >= pw->count) return;
+    RigidBody *b = &pw->bodies[body_id];
+    if (physics_body_is_parked(b)) return;
+    b->orientation = pose->orientation;
+    b->angular_velocity = pose->angular_velocity;
+    b->inertia_diag = pose->inertia_diag;
+}
+
+u32 physics_constraint_add_hinge(PhysicsWorld *pw, const HingeDesc *desc) {
+    if (!pw || !desc) return UINT32_MAX;
+    if (desc->body_a >= pw->count || desc->body_b >= pw->count) return UINT32_MAX;
+    if (desc->body_a == desc->body_b) return UINT32_MAX;
+    if (!(desc->limit_min <= desc->limit_max)) return UINT32_MAX;
+    f32 axis_len2 = vec3_dot(desc->axis_local_a, desc->axis_local_a);
+    if (!(axis_len2 > 1e-8f)) return UINT32_MAX;
+    for (int i = 0; i < 3; i++) {
+        if (!isfinite(desc->anchor_local_a.e[i]) || !isfinite(desc->anchor_local_b.e[i]) ||
+            !isfinite(desc->axis_local_a.e[i])) return UINT32_MAX;
+    }
+    if (!isfinite(desc->limit_min) || !isfinite(desc->limit_max)) return UINT32_MAX;
+    f32 inv = 1.0f / sqrtf(axis_len2);
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
+        if (!pw->constraints[i].active) {
+            pw->constraints[i].body_a = desc->body_a;
+            pw->constraints[i].body_b = desc->body_b;
+            pw->constraints[i].rest_length = 0.0f;
+            pw->constraints[i].offset_a = desc->anchor_local_a;
+            pw->constraints[i].offset_b = desc->anchor_local_b;
+            pw->constraints[i].is_ball = false;
+            pw->constraints[i].is_hinge = true;
+            pw->constraints[i].hinge_axis = vec3_scale(desc->axis_local_a, inv);
+            pw->constraints[i].limit_min = desc->limit_min;
+            pw->constraints[i].limit_max = desc->limit_max;
+            pw->constraints[i].active = true;
+            pw->constraint_count++;
+            return i;
+        }
+    }
+    return UINT32_MAX;
+}
+
+static Quat rigid_orientation(const RigidBody *b) {
+    f32 l2 = b->orientation.e[0] * b->orientation.e[0] + b->orientation.e[1] * b->orientation.e[1] +
+             b->orientation.e[2] * b->orientation.e[2] + b->orientation.e[3] * b->orientation.e[3];
+    if (l2 <= 1e-12f) return QUAT_IDENTITY;
+    return quat_normalize(b->orientation);
+}
+
+static void integrate_orientation(RigidBody *b, f32 dt) {
+    if (!b || b->is_static) return;
+    Vec3 w = b->angular_velocity;
+    if (b->inertia_diag.e[0] == 0.0f) w.e[0] = 0.0f;
+    if (b->inertia_diag.e[1] == 0.0f) w.e[1] = 0.0f;
+    if (b->inertia_diag.e[2] == 0.0f) w.e[2] = 0.0f;
+    f32 wlen = vec3_len(w);
+    if (wlen <= 1e-8f) return;
+    Quat dq = quat_from_axis_angle(w, wlen * dt);
+    b->orientation = quat_normalize(quat_mul(dq, rigid_orientation(b)));
+}
+
+static f32 hinge_twist(Quat qa, Quat qb, Vec3 axis_local) {
+    Quat rel = quat_mul(quat_inverse(qa), qb);
+    f32 dot = rel.e[0] * axis_local.e[0] + rel.e[1] * axis_local.e[1] + rel.e[2] * axis_local.e[2];
+    return 2.0f * atan2f(dot, rel.e[3]);
+}
+
+static void clamp_hinge(RigidBody *a, RigidBody *b, const DistanceConstraint *c) {
+    if (c->limit_min == 0.0f && c->limit_max == 0.0f) return;
+    if (b->inv_mass <= 0.0f) return;
+    Quat qa = rigid_orientation(a);
+    Quat qb = rigid_orientation(b);
+    f32 angle = hinge_twist(qa, qb, c->hinge_axis);
+    f32 limited = angle;
+    if (limited > c->limit_max) limited = c->limit_max;
+    if (limited < c->limit_min) limited = c->limit_min;
+    if (limited == angle) return;
+    b->orientation = quat_normalize(quat_mul(qa, quat_from_axis_angle(c->hinge_axis, limited)));
+    Vec3 axis_w = quat_rotate_vec3(qa, c->hinge_axis);
+    f32 along = vec3_dot(b->angular_velocity, axis_w);
+    if ((angle > c->limit_max && along > 0.0f) || (angle < c->limit_min && along < 0.0f)) {
+        b->angular_velocity = vec3_sub(b->angular_velocity, vec3_scale(axis_w, along));
+    }
 }
 
 void physics_constraint_remove(PhysicsWorld *pw, u32 constraint_id) {
@@ -311,9 +401,11 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
             /* R443: constraints bind at anchor points, not centroids. For
              * distance constraints the offsets are zero, so pa/pb ARE the
              * centroids and the math below is unchanged from R435. */
-            Vec3 pa = vec3_add(a->position, c->offset_a);
-            Vec3 pb = vec3_add(b->position, c->offset_b);
-            if (c->is_ball) {
+            /* Anchors are local. A zero orientation is identity, so existing
+             * distance and ball constraints keep their previous world offsets. */
+            Vec3 pa = vec3_add(a->position, quat_rotate_vec3(rigid_orientation(a), c->offset_a));
+            Vec3 pb = vec3_add(b->position, quat_rotate_vec3(rigid_orientation(b), c->offset_b));
+            if (c->is_ball || c->is_hinge) {
                 /* R443: ball joint — pull the anchors to coincidence with a
                  * full 3-axis vector correction (no axis normalization, so
                  * coincident anchors are not a degenerate case). The
@@ -331,6 +423,7 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                     b->position = vec3_sub(b->position, vec3_scale(corr, inv_b));
                     b->rest_frames = 0;
                 }
+                if (c->is_hinge) clamp_hinge(a, b, c);
                 continue;
             }
             Vec3 d = vec3_sub(pb, pa);
@@ -391,7 +484,7 @@ static void solve_distance_constraint_velocities(PhysicsWorld *pw) {
         f32 inv_b = b->inv_mass;
         f32 inv_total = inv_a + inv_b;
         if (inv_total <= 0.0f) continue; /* both static: nothing can move */
-        if (c->is_ball) {
+        if (c->is_ball || c->is_hinge) {
             /* R443: a ball joint pins two POINTS together, so it constrains
              * all 3 translational axes — unlike the distance constraint,
              * which only removes the relative velocity along its single axis
@@ -1144,6 +1237,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
 
         /* Position integration: p += v * dt */
         simd_vec3_add_scaled_sse2(b->position.e, b->position.e, b->velocity.e, dt);
+        integrate_orientation(b, dt);
 
         /* Rest detection using SIMD dot product */
         f32 spd2 = simd_vec3_dot_sse2(b->velocity.e, b->velocity.e);
@@ -1170,6 +1264,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         b->position.e[0] += b->velocity.e[0] * dt;
         b->position.e[1] += b->velocity.e[1] * dt;
         b->position.e[2] += b->velocity.e[2] * dt;
+        integrate_orientation(b, dt);
 
         f32 spd2 = b->velocity.e[0]*b->velocity.e[0] + b->velocity.e[1]*b->velocity.e[1] + b->velocity.e[2]*b->velocity.e[2];
         if (spd2 < 0.0025f && !vec3_moved(b->position, oldp)) b->rest_frames++;

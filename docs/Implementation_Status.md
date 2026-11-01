@@ -7,6 +7,18 @@
 - **验证**（本机 Windows，GPU 恢复后，六棵树全量）：OpenGL 238/238、Vulkan 241/241、D3D12 246/246、ASan 234/234、MSVC 248（1 个 D3D12 依赖门 skip，构建 0 诊断）、MinGW 244/244（构建 0 警告）。`break_authority`(14)、`break_integrity`(4)、编辑器场景纹理(9)、`editor_cmd`(26) 单独跑过。demo 三后端全屏/标题栏切换正常，Vulkan validation 消息 0。
 - **补上此前未验证的编辑器路径**：输入脚本在 Windows 上点 Add、选中实体、切平移工具、Ctrl+D 复制、Ctrl+Z 撤销、按 Z 切线框，断言全过；设置文件确实写出且含 `wireframe=on`（设置是“改动即存”，脚本没有改设置时就不会写文件，这解释了早前一次“文件没生成”的现象）。
 
+## 本轮更新：Cry 式可玩原型、世界表现与载具物理（2026-11-01）
+
+- **交付**：`test_cry_style_prototype` 把玩家移动、绕墙寻路、行为树位移、一维速度混合和触发区串在一个 headless 关卡里。没有 GPU、声音或网络。植被实例、昼夜光照参数、VisArea/Portal 可见集、地形块驻留意图是 CPU 函数。刚体增加朝向、角速度和局部锚点；铰链、布娃娃和射线载具在 `physics`。`break_game` 与 `break_ai` 仍不链入 `engine`、`engine_demo`、`dxx_break`。
+- **测试**：normal、ASan+UBSan、TSan 上 `test_cry_style_prototype`、`test_vegetation`、`test_time_of_day`、`test_visarea`、`test_world_stream`、`test_physics_hinge`、`test_ragdoll`、`test_vehicle` 通过。既有 `test_physics` 与 `test_character` 仍通过。
+- **未做、局限**：这些 CPU 测试不证明植被画面或驾驶手感。贴花、体素地形、道路、绳索、布料、软体、可破坏物没有做。流式只算出要加载或卸载的块，没有交给任务系统，也不等于网络 AOI。载具没有轮子刚体。零惯性轴不积分角速度；零四元数在求解时当作单位四元数，不写回刚体。
+
+## 本轮更新：Cry 式游戏能力的前三段（2026-11-01）
+
+- **交付**：`break_game`（Actor 类、生成与 tick、ActionMap、移动合成、关卡侧车、触发区）和 `break_ai`（高度图导航网格、A*、跟随、视野、小型行为树、胶囊侧向避障）是正式可选静态库，不链入 `engine`、`engine_demo`、`dxx_break`。动画侧增加一维速度混合、骨架挂点、瞄准/注视 IK 槽。合同见 `docs/design/cry_style_gameplay.md`，计划见 `docs/superpowers/plans/2026-11-01-cry-style-gameplay.md`。
+- **测试**：normal、ASan+UBSan、TSan 三棵树上，`test_break_game_*`、`test_break_nav_*`、`test_break_perception`、`test_break_behavior`、`test_break_steer`、`test_anim_locomotion`、`test_skeleton_socket`、`test_anim_aim` 通过。既有 `test_animation` 仍通过。
+- **未做**：阶段 F 的 headless 可玩原型还没把这三层串起来。植被、昼夜、VisArea、流式、刚体朝向、布娃娃、载具都没有开始。两个新库没有接到 demo。Lua 模块名只保存，不执行。导航网格不在运行时雕刻。
+
 ## 本轮更新：崩溃符号化、聚类、回归统计与上传（2026-10-30）
 
 - **交付**（详见 `docs/design/crash_symbolization.md`）：`break_crash_symbolize`（读 ELF 符号表，沿保存的 RBP 链从记录的栈窗口恢复最多 32 帧）、`break_crash_cluster`（签名、按构建计数、已修复与回归、规范文本统计文件）、`break_crash_upload_http`（`BreakCrashUploadFn` 的 HTTP 实现）、`break_crash_server`（参考收集服务）、`break_crash_report`（运维工具）、`break_crash_e2e` + `test_break_crash_e2e`。三个库都不链接进 `engine`、`engine_demo`、`dxx_break`、`editor`，`break_crash` 归档里没有网络符号（`test_break_crash_server_target_contract` 钉住，并钉住三个库各自的导出清单）。

@@ -34,6 +34,11 @@ typedef struct {
     f32   half_height;    /* capsule: half segment length along Y (excludes caps) */
     bool  ccd;            /* continuous collision detection: swept vs static
                            * AABBs and (R435, conservative) dynamic bodies */
+    /* Zero orientation is identity. A zero inertia axis is infinite and
+     * does not integrate. Static bodies ignore angular velocity. */
+    Quat  orientation;
+    Vec3  angular_velocity;
+    Vec3  inertia_diag;
 } RigidBody;
 
 typedef struct {
@@ -65,6 +70,10 @@ typedef struct {
     Vec3 offset_a;
     Vec3 offset_b;
     bool is_ball;     /* false: 1-axis distance solve; true: 3-axis ball solve */
+    bool is_hinge;
+    Vec3 hinge_axis;  /* local to body A, unit length */
+    f32  limit_min;   /* radians; min == max == 0 means unlimited */
+    f32  limit_max;
 } DistanceConstraint;
 
 typedef struct {
@@ -126,6 +135,26 @@ u32           physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 
  * rejection conventions as add_distance (full array / invalid ids /
  * self-constraint / NaN anchor component -> UINT32_MAX). */
 u32           physics_constraint_add_ball(PhysicsWorld *pw, u32 body_a, u32 body_b, Vec3 anchor_a, Vec3 anchor_b);
+
+typedef struct PhysicsPose {
+    Quat orientation;
+    Vec3 angular_velocity;
+    Vec3 inertia_diag;
+} PhysicsPose;
+
+void          physics_body_set_pose(PhysicsWorld *pw, u32 body_id, const PhysicsPose *pose);
+
+typedef struct HingeDesc {
+    u32 body_a;
+    u32 body_b;
+    Vec3 anchor_local_a;
+    Vec3 anchor_local_b;
+    Vec3 axis_local_a;
+    f32 limit_min;
+    f32 limit_max;
+} HingeDesc;
+
+u32           physics_constraint_add_hinge(PhysicsWorld *pw, const HingeDesc *desc);
 void          physics_constraint_remove(PhysicsWorld *pw, u32 constraint_id);
 u32           physics_constraint_count(const PhysicsWorld *pw);
 void          physics_step(PhysicsWorld *pw, f32 dt);
