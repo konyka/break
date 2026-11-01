@@ -1,3 +1,9 @@
+## 本轮更新：体素表面、道路条带和绳索（2026-11-01）
+
+- **交付**：`voxel_build_faces` 给非空体素的外露面发四边形，相邻实心体素不发共享面。`road_build_ribbon` 把折线吸到高度图上，并按路宽展开左右顶点。`rope_create` 用静态起点和一串球，以及现有距离约束，拉出一条绳；约束或刚体放不下时不创建。
+- **测试**：`test_voxel`、`test_road`、`test_rope` 在 normal、ASan+UBSan、TSan 上通过。
+- **未做**：体素和道路都没有进 GPU。绳索没有弯折角度限制，也不是软体。布料、可破坏物仍然没有。
+
 ## 本轮更新：贴花贴到高度图，流式意图交给任务系统（2026-11-01）
 
 - **交付**：`decal_place_on_heightfield` 把贴花的 xz 吸到高度图上，并用法线差分写出朝向；落在网格外的贴花计入 dropped。`world_stream_apply` 把 `StreamWant` 提交给现有 `TaskSystem`，等它写完驻留位再返回。越界的块计入 rejected，不改网格。

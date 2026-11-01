@@ -848,6 +848,8 @@ add_library(engine STATIC
     src/renderer/world_stream.c
     src/renderer/world_stream_job.c
     src/renderer/decal.c
+    src/renderer/voxel.c
+    src/renderer/road.c
 src/renderer/water.c
     src/renderer/lighting.c
     src/renderer/post_process.c
@@ -897,6 +899,7 @@ src/renderer/lens_effects.c
     src/physics/physics.c
     src/physics/ragdoll.c
     src/physics/vehicle.c
+    src/physics/rope.c
     src/physics/bvh.c
     src/physics/character.c
     src/audio/audio.c
@@ -4323,6 +4326,25 @@ endif()
     target_link_libraries(test_decal PRIVATE m)
     add_test(NAME test_decal COMMAND test_decal)
     set_tests_properties(test_decal PROPERTIES LABELS "headless;world")
+
+    add_executable(test_voxel tests/test_voxel.c src/renderer/voxel.c src/math/math.c)
+    target_include_directories(test_voxel PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_voxel PRIVATE m)
+    add_test(NAME test_voxel COMMAND test_voxel)
+    set_tests_properties(test_voxel PROPERTIES LABELS "headless;world")
+
+    add_executable(test_road tests/test_road.c src/renderer/road.c src/math/math.c)
+    target_include_directories(test_road PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_road PRIVATE m)
+    add_test(NAME test_road COMMAND test_road)
+    set_tests_properties(test_road PROPERTIES LABELS "headless;world")
+
+    add_executable(test_rope tests/test_rope.c
+        src/physics/rope.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
+    target_include_directories(test_rope PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rope PRIVATE m)
+    add_test(NAME test_rope COMMAND test_rope)
+    set_tests_properties(test_rope PROPERTIES LABELS "headless;physics")
 
     add_executable(test_world_stream_job tests/test_world_stream_job.c
         src/renderer/world_stream_job.c src/renderer/world_stream.c src/task/task.c src/core/log.c)
