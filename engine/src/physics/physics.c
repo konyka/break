@@ -217,6 +217,14 @@ void physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn, void *u
     pw->contact_user = user;
 }
 
+bool physics_add_post_step(PhysicsWorld *pw, PhysicsPostStepFn fn, void *user) {
+    if (!pw || !fn || pw->post_step_count >= PHYSICS_MAX_POST_STEPS) return false;
+    pw->post_step_fn[pw->post_step_count] = fn;
+    pw->post_step_user[pw->post_step_count] = user;
+    pw->post_step_count++;
+    return true;
+}
+
 /* ---- R435: distance constraints (position projection) ---- */
 
 u32 physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 body_b, f32 rest_length) {
@@ -1442,6 +1450,9 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
             b->velocity.e[1] = -b->velocity.e[1] * b->restitution;
             pw->respawn_count++;
         }
+    }
+    for (u32 s = 0; s < pw->post_step_count; s++) {
+        pw->post_step_fn[s](pw, pw->post_step_user[s]);
     }
 }
 

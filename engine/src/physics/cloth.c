@@ -1,6 +1,8 @@
 #include <physics/cloth.h>
 #include <math.h>
 
+static void cloth_post_step(PhysicsWorld *pw, void *user);
+
 static u32 cloth_free_constraints(const PhysicsWorld *pw) {
     u32 free_slots = 0;
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
@@ -15,6 +17,7 @@ bool cloth_create(Cloth *cloth, PhysicsWorld *pw, Vec3 origin, f32 spacing,
         return false;
     }
     if (!(spacing > 0.0f) || !(node_mass > 0.0f)) return false;
+    if (pw->post_step_count >= PHYSICS_MAX_POST_STEPS) return false;
     u32 nodes = width * height;
     u32 structural = (width - 1u) * height + width * (height - 1u);
     u32 shear = (width - 1u) * (height - 1u) * 2u;
@@ -81,7 +84,18 @@ bool cloth_create(Cloth *cloth, PhysicsWorld *pw, Vec3 origin, f32 spacing,
     cloth->width = width;
     cloth->height = height;
     cloth->spacing = spacing;
+    if (!physics_add_post_step(pw, cloth_post_step, cloth)) {
+        for (u32 k = before; k < pw->count; k++) {
+            if (k != 0u) physics_body_park(pw, k);
+        }
+        cloth->width = 0;
+        return false;
+    }
     return true;
+}
+
+static void cloth_post_step(PhysicsWorld *pw, void *user) {
+    cloth_collide((Cloth *)user, pw);
 }
 
 static bool cloth_pair_linked(const PhysicsWorld *pw, u32 a, u32 b) {

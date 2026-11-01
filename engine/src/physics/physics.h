@@ -51,6 +51,10 @@ typedef struct {
 
 /* Per-contact callback invoked during physics_step for every resolved pair. */
 typedef void (*PhysicsContactFn)(const Contact *c, void *user);
+typedef struct PhysicsWorld PhysicsWorld;
+/* Runs after contacts, constraints, and the kill floor. */
+typedef void (*PhysicsPostStepFn)(PhysicsWorld *pw, void *user);
+#define PHYSICS_MAX_POST_STEPS 4u
 
 /* R435: distance constraint — fixed-capacity array embedded in PhysicsWorld
  * (same style as bodies; no per-step allocation). Position-projected only. */
@@ -82,7 +86,7 @@ typedef struct {
     f32  slider_stiffness; /* rad/s^2 per radian. Default 100. */
 } DistanceConstraint;
 
-typedef struct {
+typedef struct PhysicsWorld {
     RigidBody *bodies;
     u32        count;
     u32        capacity;
@@ -107,6 +111,10 @@ typedef struct {
     /* R435: fixed-capacity distance constraints (embedded, calloc-zeroed) */
     DistanceConstraint constraints[PHYSICS_MAX_CONSTRAINTS];
     u32                constraint_count;   /* active slots */
+    /* Called at the end of physics_step. Cloth registers self-collision here. */
+    PhysicsPostStepFn  post_step_fn[PHYSICS_MAX_POST_STEPS];
+    void              *post_step_user[PHYSICS_MAX_POST_STEPS];
+    u32                post_step_count;
 } PhysicsWorld;
 
 /* R376/R377: Del parks with spawn_frame=UINT32_MAX (tombstone for create reuse). */
@@ -130,6 +138,8 @@ void          physics_push_body(PhysicsWorld *pw, u32 body_id, Vec3 normal, f32 
 void          physics_body_park(PhysicsWorld *pw, u32 pid);
 void          physics_body_revive(RigidBody *rb, f32 mass, bool is_static, u32 frame);
 void          physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn, void *user);
+/* Returns false when the list is full or fn is null. The same world holds 4. */
+bool          physics_add_post_step(PhysicsWorld *pw, PhysicsPostStepFn fn, void *user);
 /* R435: distance constraints. add returns UINT32_MAX when the fixed array is
  * full or a body id is invalid (R352 convention); remove is idempotent. */
 u32           physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 body_b, f32 rest_length);

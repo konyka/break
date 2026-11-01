@@ -1,6 +1,11 @@
 #include "test_framework.h"
 #include <physics/cloth.h>
 
+static void cloth_test_post_step(PhysicsWorld *pw, void *user) {
+    (void)pw;
+    (void)user;
+}
+
 TEST(cloth_pins_the_top_row_and_pulls_back) {
     PhysicsWorld *pw = physics_world_create(24);
     Cloth cloth;
@@ -74,6 +79,25 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     dz = pw->bodies[left].position.e[2] - pw->bodies[mid].position.e[2];
     apart = sqrtf(dx * dx + dy * dy + dz * dz);
     ASSERT_TRUE(apart < 0.02f);
+
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) physics_constraint_remove(pw, i);
+    for (u32 i = 0; i < 9u; i++) {
+        u32 id = cloth.nodes[i];
+        pw->bodies[id].acceleration = vec3(0, 0, 0);
+        pw->bodies[id].velocity = vec3(0, 0, 0);
+        if (id == left || id == right) continue;
+        pw->bodies[id].position = vec3(0.0f, 40.0f + (f32)i, 0.0f);
+    }
+    pw->bodies[left].radius = 0.0f;
+    pw->bodies[right].radius = 0.0f;
+    pw->bodies[left].position = vec3(0, 1, 0);
+    pw->bodies[right].position = vec3(0, 1, 0);
+    physics_step(pw, 0.016f);
+    dx = pw->bodies[left].position.e[0] - pw->bodies[right].position.e[0];
+    dy = pw->bodies[left].position.e[1] - pw->bodies[right].position.e[1];
+    dz = pw->bodies[left].position.e[2] - pw->bodies[right].position.e[2];
+    apart = sqrtf(dx * dx + dy * dy + dz * dz);
+    ASSERT_TRUE(apart > 0.15f);
     physics_world_destroy(pw);
 
     PhysicsWorld *full = physics_world_create(32);
@@ -88,6 +112,18 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     ASSERT_FALSE(cloth_create(&refused, full, vec3(0, 2, 0), 0.5f, 2, 2, 0.2f));
     ASSERT_EQ(full->count, count);
     physics_world_destroy(full);
+
+    PhysicsWorld *hooks = physics_world_create(16);
+    for (u32 i = 0; i < PHYSICS_MAX_POST_STEPS; i++) {
+        ASSERT_TRUE(physics_add_post_step(hooks, cloth_test_post_step, NULL));
+    }
+    ASSERT_FALSE(physics_add_post_step(hooks, cloth_test_post_step, NULL));
+    u32 hooked = hooks->count;
+    Cloth blocked;
+    memset(&blocked, 0, sizeof(blocked));
+    ASSERT_FALSE(cloth_create(&blocked, hooks, vec3(0, 2, 0), 0.5f, 2, 2, 0.2f));
+    ASSERT_EQ(hooks->count, hooked);
+    physics_world_destroy(hooks);
 }
 
 TEST_MAIN_BEGIN()
