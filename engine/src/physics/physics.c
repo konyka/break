@@ -516,20 +516,6 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
             }
         }
     }
-    for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
-        DistanceConstraint *c = &pw->constraints[ci];
-        if (!c->active || !c->is_slider) continue;
-        if (c->body_a >= pw->count || c->body_b >= pw->count) continue;
-        RigidBody *a = &pw->bodies[c->body_a];
-        RigidBody *b = &pw->bodies[c->body_b];
-        if (physics_body_is_parked(a) || physics_body_is_parked(b) || b->inv_mass <= 0.0f) continue;
-        f32 torsion = c->slider_torsion;
-        if (torsion < 0.0f) torsion = 0.0f;
-        if (torsion > 1.0f) torsion = 1.0f;
-        b->orientation = quat_nlerp(rigid_orientation(b), rigid_orientation(a), torsion);
-        b->angular_velocity = vec3_add(vec3_scale(b->angular_velocity, 1.0f - torsion),
-                                       vec3_scale(a->angular_velocity, torsion));
-    }
 }
 
 /* R440: velocity-level pass for distance constraints, run ONCE per step
@@ -1294,6 +1280,29 @@ static void physics_ensure_bvh(const PhysicsWorld *pw) {
 void physics_step(PhysicsWorld *pw, f32 dt) {
     if (!pw) return;
     pw->collision_count = 0;
+    if (!(dt > 1e-6f)) dt = 1e-6f;
+    for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
+        DistanceConstraint *c = &pw->constraints[ci];
+        if (!c->active || !c->is_slider) continue;
+        if (c->body_a >= pw->count || c->body_b >= pw->count) continue;
+        RigidBody *a = &pw->bodies[c->body_a];
+        RigidBody *b = &pw->bodies[c->body_b];
+        if (physics_body_is_parked(a) || physics_body_is_parked(b) || b->inv_mass <= 0.0f) continue;
+        f32 torsion = c->slider_torsion;
+        if (torsion < 0.0f) torsion = 0.0f;
+        if (torsion > 1.0f) torsion = 1.0f;
+        if (torsion == 0.0f) continue;
+        Quat qa = rigid_orientation(a);
+        Quat qb = rigid_orientation(b);
+        Quat rel = quat_mul(quat_inverse(qa), qb);
+        Vec3 imag = vec3(rel.e[0], rel.e[1], rel.e[2]);
+        f32 vlen = vec3_len(imag);
+        f32 angle = 2.0f * atan2f(vlen, rel.e[3]);
+        Vec3 axis = vlen > 1e-8f ? quat_rotate_vec3(qa, vec3_scale(imag, 1.0f / vlen)) : vec3(0, 1, 0);
+        f32 target_w = -torsion * angle / dt;
+        f32 along = vec3_dot(b->angular_velocity, axis);
+        b->angular_velocity = vec3_add(b->angular_velocity, vec3_scale(axis, target_w - along));
+    }
 
     /* BVH broadphase: rebuild/refit BEFORE integration so CCD can query it */
     bool bvh_rebuilt = pw->bvh_dirty;

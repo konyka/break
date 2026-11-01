@@ -59,12 +59,12 @@ TEST(soft_body_restores_offsets_when_stiff) {
     ASSERT_TRUE(soft_body_create_count(&six, wide, vec3(1, 1, 1), 0.4f, 2.0f, 1.0f, 0.0f, 6u));
     ASSERT_EQ(six.count, 6u);
     ASSERT_FALSE(soft_body_create_count(&six, wide, vec3(0, 0, 0), 0.2f, 1.0f, 1.0f, 0.0f, 3u));
-    PhysicsWorld *many = physics_world_create(20);
+    PhysicsWorld *many = physics_world_create(40);
     SoftBody dozen;
     memset(&dozen, 0, sizeof(dozen));
-    ASSERT_TRUE(soft_body_create_count(&dozen, many, vec3(0, 2, 0), 0.3f, 1.0f, 1.0f, 0.0f, 12u));
-    ASSERT_EQ(dozen.count, 12u);
-    ASSERT_FALSE(soft_body_create_count(&dozen, many, vec3(0, 0, 0), 0.2f, 1.0f, 1.0f, 0.0f, 17u));
+    ASSERT_TRUE(soft_body_create_count(&dozen, many, vec3(0, 2, 0), 0.3f, 1.0f, 1.0f, 0.0f, 24u));
+    ASSERT_EQ(dozen.count, 24u);
+    ASSERT_FALSE(soft_body_create_count(&dozen, many, vec3(0, 0, 0), 0.2f, 1.0f, 1.0f, 0.0f, 33u));
     physics_world_destroy(many);
     physics_world_destroy(wide);
     physics_world_destroy(bulk);

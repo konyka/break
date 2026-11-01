@@ -43,11 +43,15 @@ TEST(slider_kills_perpendicular_offset_and_respects_the_limit) {
     ASSERT_TRUE(fabsf(twist) < 1e-3f);
 
     physics_constraint_set_slider_torsion(pw, id, 0.5f);
-    pose.orientation = QUAT_IDENTITY;
-    pose.angular_velocity = vec3(0, 2, 0);
+    pose.orientation = quat_from_axis_angle(vec3(0, 1, 0), 0.2f);
+    pose.angular_velocity = vec3(0, 0, 0);
     pose.inertia_diag = vec3(1, 1, 1);
     physics_body_set_pose(pw, b, &pose);
     pw->bodies[b].acceleration = vec3(0, 0, 0);
+    physics_step(pw, 0.05f);
+    spun = pw->bodies[b].orientation;
+    twist = 2.0f * atan2f(spun.e[1], spun.e[3]);
+    ASSERT_TRUE(twist > 0.07f && twist < 0.13f);
     physics_step(pw, 0.05f);
     spun = pw->bodies[b].orientation;
     twist = 2.0f * atan2f(spun.e[1], spun.e[3]);
