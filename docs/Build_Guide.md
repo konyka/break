@@ -357,7 +357,7 @@ demo 仍能跑但帧时间会离谱地抖动（实测 35–600 ms，恢复后 32
 `Start-Process -Verb RunAs` 不弹提示）：
 
 ```powershell
-pnputil /restart-device "PCI\VEN_10DE&DEV_....&....&0&0009"   # 实例 ID 取自 Get-PnpDevice
+pnputil /restart-device "PCI\VEN_10DE&DEV_28A0&SUBSYS_13021D05&REV_A1\<instance-id>"   # instance id from Get-PnpDevice
 ```
 
 #### Windows + Clang 验证
