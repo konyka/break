@@ -50,7 +50,28 @@ TEST(destructible_breaks_only_past_the_threshold) {
     ASSERT_EQ(again.fragment_count, 64u);
     ASSERT_TRUE(physics_body_is_parked(&deep->bodies[parent]));
     ASSERT_FLOAT_EQ(deep->bodies[again.fragments[0]].half_extent.e[0], 0.25f, 1e-4);
+    destructible_apply_impulse(&again, deep, 4.0f);
+    ASSERT_EQ(again.generation, 2u);
+    ASSERT_EQ(again.fragment_count, 64u);
     physics_world_destroy(deep);
+
+    PhysicsWorld *third = physics_world_create(600);
+    physics_body_create(third, vec3(0, -2, 0), vec3(4, 0.2f, 4), 0, true, 0);
+    Destructible fine;
+    memset(&fine, 0, sizeof(fine));
+    ASSERT_TRUE(destructible_create(&fine, third, vec3(0, 3, 0), vec3(1, 1, 1), 8.0f, 4.0f));
+    destructible_apply_impulse(&fine, third, 4.0f);
+    destructible_apply_impulse(&fine, third, 4.0f);
+    ASSERT_EQ(fine.generation, 2u);
+    u32 mid = fine.fragments[0];
+    destructible_apply_impulse(&fine, third, 1.0f);
+    ASSERT_EQ(fine.fragment_count, 64u);
+    destructible_apply_impulse(&fine, third, 4.0f);
+    ASSERT_EQ(fine.generation, 3u);
+    ASSERT_EQ(fine.fragment_count, 512u);
+    ASSERT_TRUE(physics_body_is_parked(&third->bodies[mid]));
+    ASSERT_FLOAT_EQ(third->bodies[fine.fragments[0]].half_extent.e[0], 0.125f, 1e-4);
+    physics_world_destroy(third);
 }
 
 TEST_MAIN_BEGIN()

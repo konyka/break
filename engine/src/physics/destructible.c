@@ -59,13 +59,39 @@ void destructible_apply_impulse(Destructible *d, PhysicsWorld *pw, f32 impulse) 
         d->generation = 1;
         return;
     }
-    if (d->generation != 1u || d->fragment_count != DESTRUCTIBLE_FRAGMENTS) return;
+    if (d->generation == 1u && d->fragment_count == DESTRUCTIBLE_FRAGMENTS) {
+        if (pw->count + DESTRUCTIBLE_GEN2_PIECES > pw->capacity) return;
+        u32 parents[DESTRUCTIBLE_FRAGMENTS];
+        for (u32 i = 0; i < DESTRUCTIBLE_FRAGMENTS; i++) parents[i] = d->fragments[i];
+        u32 next[DESTRUCTIBLE_GEN2_PIECES];
+        u32 before = pw->count;
+        for (u32 p = 0; p < DESTRUCTIBLE_FRAGMENTS; p++) {
+            RigidBody *parent = &pw->bodies[parents[p]];
+            Vec3 center = parent->position;
+            Vec3 half = parent->half_extent;
+            f32 mass = parent->mass;
+            u32 created[DESTRUCTIBLE_FRAGMENTS];
+            if (!split_box(pw, center, half, mass, created)) {
+                for (u32 k = before; k < pw->count; k++) {
+                    if (k != 0u) physics_body_park(pw, k);
+                }
+                return;
+            }
+            for (u32 c = 0; c < DESTRUCTIBLE_FRAGMENTS; c++) next[p * DESTRUCTIBLE_FRAGMENTS + c] = created[c];
+        }
+        for (u32 p = 0; p < DESTRUCTIBLE_FRAGMENTS; p++) physics_body_park(pw, parents[p]);
+        for (u32 i = 0; i < DESTRUCTIBLE_GEN2_PIECES; i++) d->fragments[i] = next[i];
+        d->fragment_count = DESTRUCTIBLE_GEN2_PIECES;
+        d->generation = 2;
+        return;
+    }
+    if (d->generation != 2u || d->fragment_count != DESTRUCTIBLE_GEN2_PIECES) return;
     if (pw->count + DESTRUCTIBLE_MAX_PIECES > pw->capacity) return;
-    u32 parents[DESTRUCTIBLE_FRAGMENTS];
-    for (u32 i = 0; i < DESTRUCTIBLE_FRAGMENTS; i++) parents[i] = d->fragments[i];
+    u32 parents[DESTRUCTIBLE_GEN2_PIECES];
+    for (u32 i = 0; i < DESTRUCTIBLE_GEN2_PIECES; i++) parents[i] = d->fragments[i];
     u32 next[DESTRUCTIBLE_MAX_PIECES];
     u32 before = pw->count;
-    for (u32 p = 0; p < DESTRUCTIBLE_FRAGMENTS; p++) {
+    for (u32 p = 0; p < DESTRUCTIBLE_GEN2_PIECES; p++) {
         RigidBody *parent = &pw->bodies[parents[p]];
         Vec3 center = parent->position;
         Vec3 half = parent->half_extent;
@@ -79,8 +105,8 @@ void destructible_apply_impulse(Destructible *d, PhysicsWorld *pw, f32 impulse) 
         }
         for (u32 c = 0; c < DESTRUCTIBLE_FRAGMENTS; c++) next[p * DESTRUCTIBLE_FRAGMENTS + c] = created[c];
     }
-    for (u32 p = 0; p < DESTRUCTIBLE_FRAGMENTS; p++) physics_body_park(pw, parents[p]);
+    for (u32 p = 0; p < DESTRUCTIBLE_GEN2_PIECES; p++) physics_body_park(pw, parents[p]);
     for (u32 i = 0; i < DESTRUCTIBLE_MAX_PIECES; i++) d->fragments[i] = next[i];
     d->fragment_count = DESTRUCTIBLE_MAX_PIECES;
-    d->generation = 2;
+    d->generation = 3;
 }

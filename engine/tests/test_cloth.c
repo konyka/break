@@ -41,6 +41,39 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     f32 dz = pw->bodies[left].position.e[2] - pw->bodies[right].position.e[2];
     f32 apart = sqrtf(dx * dx + dy * dy + dz * dz);
     ASSERT_TRUE(apart > 0.05f);
+
+    for (u32 i = 0; i < 9u; i++) {
+        u32 id = cloth.nodes[i];
+        if (id == left || id == right) continue;
+        pw->bodies[id].position = vec3(0.0f, 40.0f + (f32)i, 0.0f);
+    }
+    pw->bodies[left].radius = 0.0f;
+    pw->bodies[right].radius = 0.0f;
+    pw->bodies[left].half_extent = vec3(0, 0, 0);
+    pw->bodies[right].half_extent = vec3(0, 0, 0);
+    pw->bodies[left].position = vec3(0, 1, 0);
+    pw->bodies[right].position = vec3(0, 1, 0);
+    cloth_collide(&cloth, pw);
+    dx = pw->bodies[left].position.e[0] - pw->bodies[right].position.e[0];
+    dy = pw->bodies[left].position.e[1] - pw->bodies[right].position.e[1];
+    dz = pw->bodies[left].position.e[2] - pw->bodies[right].position.e[2];
+    apart = sqrtf(dx * dx + dy * dy + dz * dz);
+    ASSERT_TRUE(apart > 0.15f);
+
+    u32 mid = cloth.nodes[4];
+    for (u32 i = 0; i < 9u; i++) {
+        u32 id = cloth.nodes[i];
+        if (id == left || id == mid) continue;
+        pw->bodies[id].position = vec3(0.0f, 40.0f + (f32)i, 0.0f);
+    }
+    pw->bodies[left].position = vec3(2, 1, 0);
+    pw->bodies[mid].position = vec3(2, 1, 0);
+    cloth_collide(&cloth, pw);
+    dx = pw->bodies[left].position.e[0] - pw->bodies[mid].position.e[0];
+    dy = pw->bodies[left].position.e[1] - pw->bodies[mid].position.e[1];
+    dz = pw->bodies[left].position.e[2] - pw->bodies[mid].position.e[2];
+    apart = sqrtf(dx * dx + dy * dy + dz * dz);
+    ASSERT_TRUE(apart < 0.02f);
     physics_world_destroy(pw);
 
     PhysicsWorld *full = physics_world_create(32);

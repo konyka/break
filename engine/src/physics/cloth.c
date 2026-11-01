@@ -1,4 +1,5 @@
 #include <physics/cloth.h>
+#include <math.h>
 
 static u32 cloth_free_constraints(const PhysicsWorld *pw) {
     u32 free_slots = 0;
@@ -79,5 +80,45 @@ bool cloth_create(Cloth *cloth, PhysicsWorld *pw, Vec3 origin, f32 spacing,
     }
     cloth->width = width;
     cloth->height = height;
+    cloth->spacing = spacing;
     return true;
+}
+
+static bool cloth_pair_linked(const PhysicsWorld *pw, u32 a, u32 b) {
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
+        const DistanceConstraint *c = &pw->constraints[i];
+        if (!c->active) continue;
+        if ((c->body_a == a && c->body_b == b) || (c->body_a == b && c->body_b == a)) return true;
+    }
+    return false;
+}
+
+void cloth_collide(Cloth *cloth, PhysicsWorld *pw) {
+    if (!cloth || !pw || cloth->width < 2u || cloth->height < 2u) return;
+    f32 thickness = cloth->spacing * 0.4f;
+    if (!(thickness > 0.0f)) return;
+    u32 n = cloth->width * cloth->height;
+    for (u32 i = 0; i < n; i++) {
+        for (u32 j = i + 1u; j < n; j++) {
+            u32 a = cloth->nodes[i];
+            u32 b = cloth->nodes[j];
+            if (a >= pw->count || b >= pw->count) continue;
+            if (cloth_pair_linked(pw, a, b)) continue;
+            RigidBody *ba = &pw->bodies[a];
+            RigidBody *bb = &pw->bodies[b];
+            if (physics_body_is_parked(ba) || physics_body_is_parked(bb)) continue;
+            if (ba->is_static && bb->is_static) continue;
+            Vec3 delta = vec3_sub(bb->position, ba->position);
+            f32 dist = sqrtf(vec3_len_sq(delta));
+            if (dist >= thickness) continue;
+            Vec3 axis = dist > 1.0e-6f ? vec3_scale(delta, 1.0f / dist) : vec3(1.0f, 0.0f, 0.0f);
+            f32 gap = thickness - dist;
+            f32 wa = ba->is_static ? 0.0f : ba->inv_mass;
+            f32 wb = bb->is_static ? 0.0f : bb->inv_mass;
+            f32 sum = wa + wb;
+            if (!(sum > 0.0f)) continue;
+            ba->position = vec3_sub(ba->position, vec3_scale(axis, gap * (wa / sum)));
+            bb->position = vec3_add(bb->position, vec3_scale(axis, gap * (wb / sum)));
+        }
+    }
 }
