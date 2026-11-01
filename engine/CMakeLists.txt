@@ -851,6 +851,7 @@ add_library(engine STATIC
     src/renderer/decal.c
     src/renderer/voxel.c
     src/renderer/road.c
+    src/renderer/mesh_stage.c
 src/renderer/water.c
     src/renderer/lighting.c
     src/renderer/post_process.c
@@ -4342,6 +4343,13 @@ endif()
     target_link_libraries(test_road PRIVATE m)
     add_test(NAME test_road COMMAND test_road)
     set_tests_properties(test_road PROPERTIES LABELS "headless;world")
+
+    add_executable(test_mesh_stage tests/test_mesh_stage.c
+        src/renderer/mesh_stage.c src/math/math.c)
+    target_include_directories(test_mesh_stage PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_mesh_stage PRIVATE m)
+    add_test(NAME test_mesh_stage COMMAND test_mesh_stage)
+    set_tests_properties(test_mesh_stage PROPERTIES LABELS "headless;world")
 
     add_executable(test_rope tests/test_rope.c
         src/physics/rope.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
