@@ -687,7 +687,8 @@ add_library(break_game STATIC
     src/game/break_game_actions.c
     src/game/break_game_move.c
     src/game/break_game_level.c
-    src/game/break_game_area.c)
+    src/game/break_game_area.c
+    src/game/break_game_flow.c)
 set_property(TARGET break_game PROPERTY C_STANDARD 11)
 target_include_directories(break_game PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_game PUBLIC break_ecs_replication)
@@ -4292,7 +4293,7 @@ endif()
     endif()
     add_test(NAME test_ecs COMMAND test_ecs)
 
-    foreach(game_test IN ITEMS actor items weapons actions move level area)
+    foreach(game_test IN ITEMS actor items weapons actions move level area flow)
         add_executable(test_break_game_${game_test} tests/test_break_game_${game_test}.c)
         target_include_directories(test_break_game_${game_test} PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_game_${game_test} PRIVATE break_game)

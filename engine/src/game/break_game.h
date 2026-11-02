@@ -61,6 +61,21 @@ typedef struct BreakGameFireIntent {
     u64 sequence;          /* from 1, monotonic across BreakGame */
 } BreakGameFireIntent;
 
+#define BREAK_GAME_MAX_ENTITY_ACTIONS 4096u
+
+typedef enum BreakGameEntityActionType {
+    BREAK_GAME_ENTITY_SET_POSITION = 1,
+    BREAK_GAME_ENTITY_INVENTORY_ADD = 2
+} BreakGameEntityActionType;
+
+typedef struct BreakGameEntityAction {
+    BreakGameEntityActionType type;
+    Entity entity;
+    Vec3 position;
+    u32 item_id;
+    u32 count;
+} BreakGameEntityAction;
+
 typedef struct BreakGameClassDesc {
     const char *name;                /* 1..63 bytes, no whitespace */
     const ComponentType *components; /* may be NULL when count is 0 */
@@ -157,6 +172,9 @@ BreakGameError break_game_inventory_count(BreakGame *game, Entity entity,
 BreakGameError break_game_inventory_transfer(BreakGame *game,
                                              Entity from, Entity to,
                                              u32 item_id, u32 count);
+BreakGameError break_game_entity_actions_apply(BreakGame *game,
+                                               const BreakGameEntityAction *actions,
+                                               u32 count);
 
 BreakGameError break_game_weapon_define(BreakGame *game,
                                         const BreakGameWeaponDesc *desc);
