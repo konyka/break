@@ -97,6 +97,12 @@ BreakNavError break_ai_agent_remove(BreakAiRuntime *runtime, Entity entity) {
             }
         }
     }
+    for (u32 i = 0; i < runtime->max_smart_objects; i++) {
+        if (runtime->smart_objects[i].live &&
+            entity_equal(runtime->smart_objects[i].owner, entity)) {
+            return BREAK_NAV_REJECTED;
+        }
+    }
     runtime->agents[index].live = false;
     return BREAK_NAV_OK;
 }

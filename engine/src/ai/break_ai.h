@@ -219,3 +219,22 @@ BreakNavError break_ai_formation_slots(BreakAiRuntime *runtime,
 BreakNavError break_ai_formation_tick(BreakAiRuntime *runtime,
                                       BreakAiFormationHandle handle, f32 dt,
                                       Vec3 *out_velocities, u32 cap, u32 *out_count);
+
+typedef struct BreakAiSmartObjectHandle {
+    u32 index;
+    u32 generation;
+} BreakAiSmartObjectHandle;
+
+BreakNavError break_ai_smart_object_add(BreakAiRuntime *runtime, Vec3 position,
+                                        BreakAiSmartObjectHandle *out);
+BreakNavError break_ai_smart_object_remove(BreakAiRuntime *runtime,
+                                           BreakAiSmartObjectHandle handle);
+BreakNavError break_ai_smart_object_reserve(BreakAiRuntime *runtime,
+                                            BreakAiSmartObjectHandle handle,
+                                            Entity agent);
+BreakNavError break_ai_smart_object_release(BreakAiRuntime *runtime,
+                                            BreakAiSmartObjectHandle handle,
+                                            Entity agent);
+BreakNavError break_ai_smart_object_owner(BreakAiRuntime *runtime,
+                                          BreakAiSmartObjectHandle handle,
+                                          Entity *out_owner);

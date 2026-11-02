@@ -707,6 +707,7 @@ add_library(break_ai STATIC
     src/ai/break_ai_query.c
     src/ai/break_ai_agent.c
     src/ai/break_ai_formation.c
+    src/ai/break_ai_smart_object.c
     src/ai/break_steer_velocity.c
     src/ai/break_nav_follow.c
     src/ai/break_perception.c
@@ -4312,7 +4313,7 @@ endif()
     set_tests_properties(test_break_game_target_contract PROPERTIES
         LABELS "headless;break_game;platform_contract")
 
-    foreach(ai_test IN ITEMS nav_bake nav_query nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation)
+    foreach(ai_test IN ITEMS nav_bake nav_query nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
         target_include_directories(test_break_${ai_test} PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_${ai_test} PRIVATE break_ai)

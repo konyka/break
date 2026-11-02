@@ -24,6 +24,7 @@ BreakAiRuntime *break_ai_runtime_create(BreakNavMesh *mesh, const BreakAiRuntime
     runtime->max_cached_paths = desc->max_cached_paths;
     runtime->max_agents = desc->max_agents;
     runtime->max_formations = desc->max_formations;
+    runtime->max_smart_objects = desc->max_smart_objects;
     runtime->workspace = break_nav_workspace_create(mesh->poly_count);
     if (mesh->poly_count > 0) {
         runtime->blocked_counts = (u32 *)calloc(mesh->poly_count, sizeof(u32));
@@ -44,11 +45,16 @@ BreakAiRuntime *break_ai_runtime_create(BreakNavMesh *mesh, const BreakAiRuntime
         runtime->formations = (BreakAiFormationSlot *)calloc(desc->max_formations,
                                                              sizeof(BreakAiFormationSlot));
     }
+    if (desc->max_smart_objects > 0) {
+        runtime->smart_objects = (BreakAiSmartObjectSlot *)calloc(desc->max_smart_objects,
+                                                                  sizeof(BreakAiSmartObjectSlot));
+    }
     if (!runtime->workspace || (mesh->poly_count > 0 && !runtime->blocked_counts) ||
         (desc->max_obstacles > 0 && !runtime->obstacles) ||
         (desc->max_cached_paths > 0 && !runtime->cache) ||
         (desc->max_agents > 0 && !runtime->agents) ||
-        (desc->max_formations > 0 && !runtime->formations)) {
+        (desc->max_formations > 0 && !runtime->formations) ||
+        (desc->max_smart_objects > 0 && !runtime->smart_objects)) {
         break_ai_runtime_destroy(runtime);
         return NULL;
     }
@@ -65,6 +71,7 @@ void break_ai_runtime_destroy(BreakAiRuntime *runtime) {
     free(runtime->cache);
     free(runtime->agents);
     free(runtime->formations);
+    free(runtime->smart_objects);
     free(runtime);
 }
 
