@@ -696,7 +696,8 @@ if(ENGINE_PLATFORM STREQUAL "linux")
 endif()
 
 add_library(break_flow STATIC
-    src/game/break_flow_graph.c)
+    src/game/break_flow_graph.c
+    src/game/break_flow_serial.c)
 set_property(TARGET break_flow PROPERTY C_STANDARD 11)
 target_include_directories(break_flow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_flow PUBLIC break_game)
@@ -4307,19 +4308,21 @@ endif()
         set_tests_properties(test_break_game_${game_test} PROPERTIES LABELS "headless;break_game")
     endforeach()
 
-    add_executable(test_break_flow_graph tests/test_break_flow_graph.c)
-    target_include_directories(test_break_flow_graph PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_break_flow_graph PRIVATE break_flow)
-    if(ENGINE_PLATFORM STREQUAL "linux")
-        target_compile_definitions(test_break_flow_graph PRIVATE
-            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
-        target_link_libraries(test_break_flow_graph PRIVATE pthread m)
-    elseif(ENGINE_PLATFORM STREQUAL "windows")
-        target_compile_definitions(test_break_flow_graph PRIVATE ENGINE_PLATFORM_WINDOWS=1)
-        target_link_libraries(test_break_flow_graph PRIVATE kernel32)
-    endif()
-    add_test(NAME test_break_flow_graph COMMAND test_break_flow_graph)
-    set_tests_properties(test_break_flow_graph PROPERTIES LABELS "headless;break_flow")
+    foreach(flow_test IN ITEMS graph serial)
+        add_executable(test_break_flow_${flow_test} tests/test_break_flow_${flow_test}.c)
+        target_include_directories(test_break_flow_${flow_test} PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_flow_${flow_test} PRIVATE break_flow)
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(test_break_flow_${flow_test} PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+            target_link_libraries(test_break_flow_${flow_test} PRIVATE pthread m)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_flow_${flow_test} PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_flow_${flow_test} PRIVATE kernel32)
+        endif()
+        add_test(NAME test_break_flow_${flow_test} COMMAND test_break_flow_${flow_test})
+        set_tests_properties(test_break_flow_${flow_test} PROPERTIES LABELS "headless;break_flow")
+    endforeach()
 
     add_test(NAME test_break_game_target_contract
         COMMAND ${CMAKE_COMMAND}

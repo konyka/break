@@ -116,3 +116,10 @@ BreakFlowError break_flow_link_get(const BreakFlowGraph *graph, u32 id,
                                    BreakFlowLinkDesc *out_desc);
 BreakFlowError break_flow_link_at(const BreakFlowGraph *graph, u32 ordinal,
                                   u32 *out_id, BreakFlowLinkDesc *out_desc);
+
+BreakFlowError break_flow_serialized_size(const BreakFlowGraph *graph,
+                                          usize *out_size);
+BreakFlowError break_flow_serialize(const BreakFlowGraph *graph, void *out,
+                                    usize capacity, usize *out_written);
+BreakFlowError break_flow_deserialize(const void *bytes, usize length,
+                                      BreakFlowGraph **out_graph);
