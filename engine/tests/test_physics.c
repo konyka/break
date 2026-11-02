@@ -1352,6 +1352,64 @@ TEST(body_create_clamps_nonpositive_extents)
     physics_world_destroy(pw);
 }
 
+TEST(body_sleeps_and_impulse_wakes) {
+    PhysicsWorld *pw = physics_world_create(4);
+    u32 id = physics_body_create(pw, vec3(0, 2, 0), vec3(0, 0, 0), 1, false, 0);
+    pw->bodies[id].acceleration = vec3(0, 0, 0);
+    PhysicsPose pose;
+    pose.orientation = QUAT_IDENTITY;
+    pose.angular_velocity = vec3(0, 0, 0);
+    pose.inertia_diag = vec3(1, 1, 1);
+    physics_body_set_pose(pw, id, &pose);
+    for (int i = 0; i < 60; i++) physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->bodies[id].sleeping);
+    Vec3 asleep = pw->bodies[id].position;
+    for (int i = 0; i < 4; i++) physics_step(pw, 1.0f / 60.0f);
+    ASSERT_FLOAT_EQ(pw->bodies[id].position.e[1], asleep.e[1], 1e-6f);
+
+    physics_body_apply_impulse(pw, id, vec3(1, 0, 0));
+    ASSERT_FALSE(pw->bodies[id].sleeping);
+    ASSERT_FLOAT_EQ(pw->bodies[id].velocity.e[0], 1.0f, 1e-6f);
+    physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->bodies[id].position.e[0] > asleep.e[0]);
+    physics_world_destroy(pw);
+}
+
+TEST(body_wake_entry_points_clear_sleep) {
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 explicit_id = physics_body_create(pw, vec3(0, 2, 0), vec3(0, 0, 0), 1, false, 0);
+    u32 posed = physics_body_create(pw, vec3(4, 2, 0), vec3(0, 0, 0), 1, false, 0);
+    u32 pushed = physics_body_create(pw, vec3(8, 2, 0), vec3(0, 0, 0), 1, false, 0);
+    u32 support = physics_body_create(pw, vec3(12, 2, 0), vec3(1, 1, 1), 0, true, 0);
+    u32 ids[3] = { explicit_id, posed, pushed };
+    for (int i = 0; i < 3; i++) pw->bodies[ids[i]].acceleration = vec3(0, 0, 0);
+    for (int frame = 0; frame < 60; frame++) physics_step(pw, 1.0f / 60.0f);
+    for (int i = 0; i < 3; i++) ASSERT_TRUE(pw->bodies[ids[i]].sleeping);
+
+    pw->bodies[explicit_id].velocity = vec3(1, 0, 0);
+    physics_body_wake(pw, explicit_id);
+    ASSERT_FALSE(pw->bodies[explicit_id].sleeping);
+    physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->bodies[explicit_id].position.e[0] > 0.0f);
+
+    PhysicsPose pose;
+    pose.orientation = QUAT_IDENTITY;
+    pose.angular_velocity = vec3(0, 0, 0);
+    pose.inertia_diag = vec3(1, 1, 1);
+    physics_body_set_pose(pw, posed, &pose);
+    ASSERT_FALSE(pw->bodies[posed].sleeping);
+    physics_push_body(pw, pushed, vec3(1, 0, 0), 0.5f);
+    ASSERT_FALSE(pw->bodies[pushed].sleeping);
+    ASSERT_FLOAT_EQ(pw->bodies[pushed].position.e[0], 8.5f, 1e-6f);
+
+    pw->bodies[pushed].velocity = vec3(0, 0, 0);
+    for (int frame = 0; frame < 60; frame++) physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->bodies[pushed].sleeping);
+    physics_body_park(pw, support);
+    ASSERT_FALSE(pw->bodies[pushed].sleeping);
+    physics_world_destroy(pw);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -1432,4 +1490,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(raycast_hit_before_first_step);
     RUN_TEST(null_world_api_guards);
     RUN_TEST(body_create_clamps_nonpositive_extents);
+    RUN_TEST(body_sleeps_and_impulse_wakes);
+    RUN_TEST(body_wake_entry_points_clear_sleep);
 TEST_MAIN_END()

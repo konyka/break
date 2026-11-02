@@ -192,10 +192,28 @@ TEST(cone_twist_rejects_invalid_and_reuses_capacity) {
     physics_world_destroy(pw);
 }
 
+TEST(cone_twist_limit_wakes_sleeping_body) {
+    PhysicsWorld *pw = physics_world_create(4);
+    u32 a = physics_body_create(pw, vec3(0, 3, 0), vec3(0, 0, 0), 0, true, 0);
+    u32 b = physics_body_create(pw, vec3(0, 3, 0), vec3(0, 0, 0), 1, false, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    ConeTwistDesc d = cone_desc(a, b, vec3(1, 0, 0));
+    d.swing_max = PI / 6.0f;
+    ASSERT_TRUE(physics_constraint_add_cone_twist(pw, &d) != UINT32_MAX);
+    set_pose(pw, b, quat_from_axis_angle(vec3(0, 0, 1), PI / 3.0f), vec3(0, 0, 0), vec3(1, 1, 1));
+    pw->bodies[b].sleeping = true;
+    pw->bodies[b].rest_frames = 60;
+    physics_step(pw, 0.016f);
+    ASSERT_FALSE(pw->bodies[b].sleeping);
+    ASSERT_FLOAT_EQ(angle_x(pw->bodies[b].orientation), PI / 6.0f, 2e-3f);
+    physics_world_destroy(pw);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(cone_twist_enforces_swing_limits_and_free_range);
     RUN_TEST(cone_twist_enforces_twist_limits_and_outward_velocity);
     RUN_TEST(cone_twist_solves_anchors_and_dynamic_pair);
     RUN_TEST(cone_twist_zero_inertia_is_stable);
     RUN_TEST(cone_twist_rejects_invalid_and_reuses_capacity);
+    RUN_TEST(cone_twist_limit_wakes_sleeping_body);
 TEST_MAIN_END()

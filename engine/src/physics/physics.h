@@ -27,6 +27,7 @@ typedef struct {
     u32   spawn_frame;
     Vec3  spawn_pos;
     u32   rest_frames;
+    bool  sleeping;
     u32   collision_count;
     /* --- shape (Round 6) --- */
     ShapeType shape;      /* box / sphere / capsule */
@@ -134,6 +135,7 @@ u32           physics_body_create_sphere(PhysicsWorld *pw, Vec3 pos, f32 radius,
 u32           physics_body_create_capsule(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 half_height, f32 mass, bool is_static, u32 frame);
 void          physics_body_set_ccd(PhysicsWorld *pw, u32 body_id, bool enable);
 void          physics_body_apply_impulse(PhysicsWorld *pw, u32 body_id, Vec3 impulse);
+void          physics_body_wake(PhysicsWorld *pw, u32 body_id);
 /* R436: position-only shove of a dynamic body along `normal` by `depth`
  * (used by the character controller, which is an infinite-mass KCC and never
  * yields). No-op for invalid ids, static and parked bodies. Clears
