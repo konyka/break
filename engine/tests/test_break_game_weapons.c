@@ -187,6 +187,68 @@ TEST(reload_without_reserve_rejects_and_failed_deduction_can_retry) {
     destroy_game(game, world);
 }
 
+TEST(fire_rejects_during_reload_with_round_and_expired_cooldown) {
+    World *world = make_world();
+    BreakGame *game = make_game(world, 1);
+    ASSERT_NOT_NULL(game);
+    Entity actor = spawn_pawn(game);
+    ASSERT_TRUE(entity_valid(actor));
+    ASSERT_TRUE(define_standard_weapon(game));
+    ASSERT_EQ(break_game_weapon_equip(game, actor, WEAPON_ID), BREAK_GAME_OK);
+    BreakGameFireIntent fire;
+    ASSERT_EQ(break_game_weapon_fire(game, actor, &fire), BREAK_GAME_OK);
+    ASSERT_EQ(fire.sequence, 1u);
+    ASSERT_EQ(break_game_weapon_tick(game, actor, 2u), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_inventory_add(game, actor, AMMO_ID, 2u), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_weapon_begin_reload(game, actor), BREAK_GAME_OK);
+    u32 slot = break_game_actor_slot(game, actor);
+    ASSERT_NEQ(slot, UINT32_MAX);
+    ASSERT_EQ(game->actors[slot].magazine, 1u);
+    ASSERT_EQ(game->actors[slot].now_tick, 2u);
+    ASSERT_EQ(game->actors[slot].next_fire_tick, 2u);
+    ASSERT_TRUE(game->actors[slot].reloading);
+    u32 reload_finish = game->actors[slot].reload_finish_tick;
+
+    fire = sentinel_intent();
+    BreakGameFireIntent before = fire;
+    ASSERT_EQ(break_game_weapon_fire(game, actor, &fire), BREAK_GAME_REJECTED);
+    ASSERT_TRUE(memcmp(&fire, &before, sizeof(fire)) == 0);
+    ASSERT_EQ(game->actors[slot].weapon_id, WEAPON_ID);
+    ASSERT_EQ(game->actors[slot].magazine, 1u);
+    ASSERT_EQ(game->actors[slot].now_tick, 2u);
+    ASSERT_EQ(game->actors[slot].next_fire_tick, 2u);
+    ASSERT_EQ(game->actors[slot].reload_finish_tick, reload_finish);
+    ASSERT_TRUE(game->actors[slot].reloading);
+    ASSERT_EQ(game->fire_sequence, 1u);
+    destroy_game(game, world);
+}
+
+TEST(fire_with_unknown_equipped_weapon_is_stale_and_atomic) {
+    World *world = make_world();
+    BreakGame *game = make_game(world, 1);
+    ASSERT_NOT_NULL(game);
+    Entity actor = spawn_pawn(game);
+    ASSERT_TRUE(entity_valid(actor));
+    ASSERT_TRUE(define_standard_weapon(game));
+    ASSERT_EQ(break_game_weapon_equip(game, actor, WEAPON_ID), BREAK_GAME_OK);
+    u32 slot = break_game_actor_slot(game, actor);
+    ASSERT_NEQ(slot, UINT32_MAX);
+    game->actors[slot].weapon_id = 2u;
+    BreakGameFireIntent fire = sentinel_intent();
+    BreakGameFireIntent before = fire;
+
+    ASSERT_EQ(break_game_weapon_fire(game, actor, &fire), BREAK_GAME_STALE);
+    ASSERT_TRUE(memcmp(&fire, &before, sizeof(fire)) == 0);
+    ASSERT_EQ(game->actors[slot].weapon_id, 2u);
+    ASSERT_EQ(game->actors[slot].magazine, 2u);
+    ASSERT_EQ(game->actors[slot].now_tick, 0u);
+    ASSERT_EQ(game->actors[slot].next_fire_tick, 0u);
+    ASSERT_EQ(game->actors[slot].reload_finish_tick, 0u);
+    ASSERT_FALSE(game->actors[slot].reloading);
+    ASSERT_EQ(game->fire_sequence, 0u);
+    destroy_game(game, world);
+}
+
 TEST(unequip_returns_magazine_atomically_and_rolls_back_capacity_failure) {
     World *world = make_world();
     BreakGame *game = make_game(world, 2);
@@ -227,6 +289,46 @@ TEST(unequip_returns_magazine_atomically_and_rolls_back_capacity_failure) {
     ASSERT_EQ(break_game_weapon_unequip(game, actor), BREAK_GAME_REJECTED);
     ASSERT_EQ(break_game_inventory_count(game, actor, AMMO_ID, &reserve), BREAK_GAME_OK);
     ASSERT_EQ(reserve, 2u);
+    destroy_game(game, world);
+}
+
+TEST(unequip_capacity_failure_preserves_reload_and_cooldown) {
+    World *world = make_world();
+    BreakGame *game = make_game(world, 2);
+    ASSERT_NOT_NULL(game);
+    Entity actor = spawn_pawn(game);
+    Entity other = spawn_pawn(game);
+    ASSERT_TRUE(entity_valid(actor));
+    ASSERT_TRUE(entity_valid(other));
+    ASSERT_TRUE(define_standard_weapon(game));
+    ASSERT_EQ(break_game_weapon_equip(game, actor, WEAPON_ID), BREAK_GAME_OK);
+    BreakGameFireIntent fire;
+    ASSERT_EQ(break_game_weapon_fire(game, actor, &fire), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_weapon_tick(game, actor, 2u), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_inventory_add(game, actor, AMMO_ID, 30u), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_weapon_begin_reload(game, actor), BREAK_GAME_OK);
+    u32 slot = break_game_actor_slot(game, actor);
+    ASSERT_NEQ(slot, UINT32_MAX);
+    ASSERT_EQ(game->actors[slot].now_tick, 2u);
+    ASSERT_EQ(game->actors[slot].next_fire_tick, 2u);
+    ASSERT_EQ(game->actors[slot].reload_finish_tick, 5u);
+    ASSERT_TRUE(game->actors[slot].reloading);
+
+    ASSERT_EQ(break_game_weapon_unequip(game, actor), BREAK_GAME_OVERLOAD);
+    ASSERT_EQ(game->actors[slot].weapon_id, WEAPON_ID);
+    ASSERT_EQ(game->actors[slot].magazine, 1u);
+    ASSERT_EQ(game->actors[slot].now_tick, 2u);
+    ASSERT_EQ(game->actors[slot].next_fire_tick, 2u);
+    ASSERT_EQ(game->actors[slot].reload_finish_tick, 5u);
+    ASSERT_TRUE(game->actors[slot].reloading);
+    ASSERT_EQ(game->fire_sequence, 1u);
+    u32 reserve = 0;
+    ASSERT_EQ(break_game_inventory_count(game, actor, AMMO_ID, &reserve), BREAK_GAME_OK);
+    ASSERT_EQ(reserve, 30u);
+    ASSERT_EQ(break_game_inventory_transfer(game, actor, other, AMMO_ID, 30u), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_weapon_unequip(game, actor), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_inventory_count(game, actor, AMMO_ID, &reserve), BREAK_GAME_OK);
+    ASSERT_EQ(reserve, 1u);
     destroy_game(game, world);
 }
 
@@ -281,6 +383,11 @@ TEST(definition_and_equipment_validate_descriptors_and_state) {
     ASSERT_EQ(break_game_weapon_equip(game, actor, 2), BREAK_GAME_STALE);
     ASSERT_EQ(break_game_weapon_equip(game, actor, WEAPON_ID), BREAK_GAME_OK);
     ASSERT_EQ(break_game_weapon_equip(game, actor, WEAPON_ID), BREAK_GAME_REJECTED);
+    ASSERT_EQ(break_game_weapon_equip(game, actor, 64u), BREAK_GAME_REJECTED);
+    u32 equipped_slot = break_game_actor_slot(game, actor);
+    ASSERT_NEQ(equipped_slot, UINT32_MAX);
+    ASSERT_EQ(game->actors[equipped_slot].weapon_id, WEAPON_ID);
+    ASSERT_EQ(game->actors[equipped_slot].magazine, 2u);
     ASSERT_EQ(break_game_weapon_begin_reload(game, actor), BREAK_GAME_REJECTED);
     u32 magazine = 0;
     ASSERT_EQ(break_game_weapon_ammo(game, actor, &magazine), BREAK_GAME_OK);
@@ -301,6 +408,8 @@ TEST(stale_handles_and_invalid_arguments_leave_weapon_state_unchanged) {
     BreakGameFireIntent fire = sentinel_intent();
     BreakGameFireIntent before = fire;
     u32 magazine = 99u;
+    u32 slot = break_game_actor_slot(game, actor);
+    ASSERT_NEQ(slot, UINT32_MAX);
 
     ASSERT_EQ(break_game_weapon_equip(game, stale, WEAPON_ID), BREAK_GAME_STALE);
     ASSERT_EQ(break_game_weapon_unequip(game, stale), BREAK_GAME_STALE);
@@ -310,17 +419,26 @@ TEST(stale_handles_and_invalid_arguments_leave_weapon_state_unchanged) {
     ASSERT_TRUE(memcmp(&fire, &before, sizeof(fire)) == 0);
     ASSERT_EQ(break_game_weapon_ammo(game, stale, &magazine), BREAK_GAME_STALE);
     ASSERT_EQ(magazine, 99u);
+    ASSERT_EQ(break_game_weapon_equip(NULL, actor, WEAPON_ID), BREAK_GAME_INVALID);
+    ASSERT_EQ(break_game_weapon_unequip(NULL, actor), BREAK_GAME_INVALID);
+    ASSERT_EQ(break_game_weapon_begin_reload(NULL, actor), BREAK_GAME_INVALID);
     ASSERT_EQ(break_game_weapon_fire(game, actor, NULL), BREAK_GAME_INVALID);
     ASSERT_EQ(break_game_weapon_ammo(game, actor, NULL), BREAK_GAME_INVALID);
+    ASSERT_EQ(game->actors[slot].weapon_id, WEAPON_ID);
+    ASSERT_EQ(game->actors[slot].magazine, 2u);
+    ASSERT_EQ(game->actors[slot].now_tick, 0u);
+    ASSERT_EQ(game->actors[slot].next_fire_tick, 0u);
+    ASSERT_EQ(game->actors[slot].reload_finish_tick, 0u);
+    ASSERT_FALSE(game->actors[slot].reloading);
+    ASSERT_EQ(game->fire_sequence, 0u);
     ASSERT_EQ(break_game_weapon_tick(NULL, actor, 1u), BREAK_GAME_INVALID);
     ASSERT_EQ(break_game_weapon_fire(NULL, actor, &fire), BREAK_GAME_INVALID);
+    ASSERT_TRUE(memcmp(&fire, &before, sizeof(fire)) == 0);
     ASSERT_EQ(break_game_weapon_ammo(NULL, actor, &magazine), BREAK_GAME_INVALID);
+    ASSERT_EQ(magazine, 99u);
 
-    u32 slot = break_game_actor_slot(game, actor);
-    ASSERT_NEQ(slot, UINT32_MAX);
-    u32 now = game->actors[slot].now_tick;
     ASSERT_EQ(break_game_weapon_tick(game, actor, 0), BREAK_GAME_INVALID);
-    ASSERT_EQ(game->actors[slot].now_tick, now);
+    ASSERT_EQ(game->actors[slot].now_tick, 0u);
     ASSERT_EQ(break_game_weapon_fire(game, actor, &fire), BREAK_GAME_OK);
     ASSERT_EQ(fire.sequence, 1u);
     ASSERT_EQ(break_game_weapon_ammo(game, actor, &magazine), BREAK_GAME_OK);
@@ -331,6 +449,8 @@ TEST(stale_handles_and_invalid_arguments_leave_weapon_state_unchanged) {
 typedef struct {
     BreakGame *game;
     Entity actor;
+    Entity equip_actor;
+    Entity reload_actor;
     BreakGameWeaponDesc desc;
     BreakGameError errors[7];
     BreakGameFireIntent fire;
@@ -340,9 +460,9 @@ typedef struct {
 static PLATFORM_THREAD_RET weapon_calls_off_thread(PLATFORM_THREAD_ARG arg) {
     ThreadProbe *probe = (ThreadProbe *)arg;
     probe->errors[0] = break_game_weapon_define(probe->game, &probe->desc);
-    probe->errors[1] = break_game_weapon_equip(probe->game, probe->actor, WEAPON_ID);
+    probe->errors[1] = break_game_weapon_equip(probe->game, probe->equip_actor, WEAPON_ID);
     probe->errors[2] = break_game_weapon_unequip(probe->game, probe->actor);
-    probe->errors[3] = break_game_weapon_begin_reload(probe->game, probe->actor);
+    probe->errors[3] = break_game_weapon_begin_reload(probe->game, probe->reload_actor);
     probe->errors[4] = break_game_weapon_tick(probe->game, probe->actor, 1u);
     probe->errors[5] = break_game_weapon_fire(probe->game, probe->actor, &probe->fire);
     probe->errors[6] = break_game_weapon_ammo(probe->game, probe->actor, &probe->magazine);
@@ -351,15 +471,30 @@ static PLATFORM_THREAD_RET weapon_calls_off_thread(PLATFORM_THREAD_ARG arg) {
 
 TEST(all_public_calls_reject_non_owner_without_mutating_state) {
     World *world = make_world();
-    BreakGame *game = make_game(world, 1);
+    BreakGame *game = make_game(world, 3);
     ASSERT_NOT_NULL(game);
     Entity actor = spawn_pawn(game);
+    Entity equip_actor = spawn_pawn(game);
+    Entity reload_actor = spawn_pawn(game);
     ASSERT_TRUE(entity_valid(actor));
+    ASSERT_TRUE(entity_valid(equip_actor));
+    ASSERT_TRUE(entity_valid(reload_actor));
     ASSERT_TRUE(define_standard_weapon(game));
     ASSERT_EQ(break_game_weapon_equip(game, actor, WEAPON_ID), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_weapon_equip(game, reload_actor, WEAPON_ID), BREAK_GAME_OK);
+    BreakGameFireIntent setup_fire;
+    ASSERT_EQ(break_game_weapon_fire(game, reload_actor, &setup_fire), BREAK_GAME_OK);
+    ASSERT_EQ(setup_fire.sequence, 1u);
+    ASSERT_EQ(break_game_inventory_add(game, reload_actor, AMMO_ID, 5u), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_weapon_begin_reload(game, reload_actor), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_inventory_transfer(game, reload_actor, actor, AMMO_ID, 5u), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_weapon_tick(game, reload_actor, 3u), BREAK_GAME_OVERLOAD);
+    ASSERT_EQ(break_game_inventory_add(game, reload_actor, AMMO_ID, 5u), BREAK_GAME_OK);
     ThreadProbe probe;
     probe.game = game;
     probe.actor = actor;
+    probe.equip_actor = equip_actor;
+    probe.reload_actor = reload_actor;
     probe.desc.weapon_id = 2;
     probe.desc.ammo_item_id = AMMO_ID;
     probe.desc.damage = 9;
@@ -377,13 +512,29 @@ TEST(all_public_calls_reject_non_owner_without_mutating_state) {
     }
     ASSERT_TRUE(memcmp(&probe.fire, &before, sizeof(probe.fire)) == 0);
     ASSERT_EQ(probe.magazine, 99u);
+    u32 magazine = 77u;
+    ASSERT_EQ(break_game_weapon_ammo(game, equip_actor, &magazine), BREAK_GAME_REJECTED);
+    ASSERT_EQ(magazine, 77u);
+    ASSERT_EQ(break_game_weapon_equip(game, equip_actor, WEAPON_ID), BREAK_GAME_OK);
+    u32 reload_slot = break_game_actor_slot(game, reload_actor);
+    ASSERT_NEQ(reload_slot, UINT32_MAX);
+    ASSERT_EQ(game->actors[reload_slot].magazine, 1u);
+    ASSERT_EQ(game->actors[reload_slot].now_tick, 3u);
+    ASSERT_EQ(game->actors[reload_slot].reload_finish_tick, 3u);
+    ASSERT_TRUE(game->actors[reload_slot].reloading);
+    u32 reserve = 0;
+    ASSERT_EQ(break_game_inventory_count(game, reload_actor, AMMO_ID, &reserve), BREAK_GAME_OK);
+    ASSERT_EQ(reserve, 5u);
+    ASSERT_EQ(break_game_weapon_begin_reload(game, reload_actor), BREAK_GAME_OK);
+    ASSERT_EQ(game->actors[reload_slot].magazine, 2u);
+    ASSERT_EQ(break_game_inventory_count(game, reload_actor, AMMO_ID, &reserve), BREAK_GAME_OK);
+    ASSERT_EQ(reserve, 4u);
     ASSERT_EQ(break_game_weapon_define(game, &probe.desc), BREAK_GAME_OK);
-    u32 magazine = 0;
     ASSERT_EQ(break_game_weapon_ammo(game, actor, &magazine), BREAK_GAME_OK);
     ASSERT_EQ(magazine, 2u);
     BreakGameFireIntent fire;
     ASSERT_EQ(break_game_weapon_fire(game, actor, &fire), BREAK_GAME_OK);
-    ASSERT_EQ(fire.sequence, 1u);
+    ASSERT_EQ(fire.sequence, 2u);
     destroy_game(game, world);
 }
 
@@ -539,7 +690,10 @@ TEST(despawn_clears_weapon_state_and_generation_reuse_starts_clean) {
 TEST_MAIN_BEGIN()
     RUN_TEST(fire_cooldown_reload_and_intent_follow_authoritative_state);
     RUN_TEST(reload_without_reserve_rejects_and_failed_deduction_can_retry);
+    RUN_TEST(fire_rejects_during_reload_with_round_and_expired_cooldown);
+    RUN_TEST(fire_with_unknown_equipped_weapon_is_stale_and_atomic);
     RUN_TEST(unequip_returns_magazine_atomically_and_rolls_back_capacity_failure);
+    RUN_TEST(unequip_capacity_failure_preserves_reload_and_cooldown);
     RUN_TEST(definition_and_equipment_validate_descriptors_and_state);
     RUN_TEST(stale_handles_and_invalid_arguments_leave_weapon_state_unchanged);
     RUN_TEST(all_public_calls_reject_non_owner_without_mutating_state);

@@ -2,7 +2,7 @@
 
 - **交付**：`break_game` 支持 64 种宿主定义武器，每 Actor 保存弹匣、tick、冷却与装填状态。装备、退弹、装填、tick、弹药查询和开火均检查创建线程与 Entity generation；开火只输出带 shooter、weapon_id、damage 和全局单调 sequence 的权威 intent，不选择目标、不检测命中、不扣生命。
 - **事务与边界**：装填完成时按缺少弹量原子扣备弹，失败保持装填可重试；unequip 先验证背包容量再退弹，失败完整回滚；开火拒绝不改弹药、序号或输出。tick、装填完成时刻、冷却和序号运算均检查溢出，despawn 清空武器状态，槽与 generation 复用不继承。
-- **验证**：新增真实状态机测试 9/9；normal `break_game|cry_style` 9/9，ASan+UBSan 与 TSan 的 Actor/items/weapons/Cry focused 均 4/4，无 sanitizer 报告。跳过装填扣弹变异为 6/8、移除冷却判断变异为 7/8，均按预期变红；恢复后三树再次全绿。
+- **验证**：新增真实状态机测试 12/12；normal `break_game|cry_style` 9/9，ASan+UBSan 与 TSan 的 Actor/items/weapons/Cry focused 均 4/4，无 sanitizer 报告。跳过装填扣弹变异为 6/8、移除冷却判断变异为 7/8，均按预期变红；恢复后三树再次全绿。
 - **未做**：命中、弹道、目标生命/死亡、网络复制、客户端裁决、背包网格、物品数据库与 Flow Graph 仍不在本切片。
 
 ## 本轮更新：Actor 物品定义与事务式背包（2026-11-02）

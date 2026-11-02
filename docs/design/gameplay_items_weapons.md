@@ -65,7 +65,7 @@ BreakGameError break_game_weapon_ammo(const BreakGame *game, Entity entity,
 
 ## 验证
 
-测试位于 `engine/tests/test_break_game_weapons.c`，共 9 个真实状态机测试，覆盖定义边界、开火与冷却、装填精确时刻、部分备弹不足时的原子回滚与重试、有限背包空间下的退弹回滚、owner/generation、完整溢出状态、最大 tick 重试、despawn 槽复用和 intent 内容。
+测试位于 `engine/tests/test_break_game_weapons.c`，共 12 个真实状态机测试，覆盖定义边界、开火与冷却、非空弹匣装填中开火、未知已装备 weapon id、装填精确时刻、部分备弹不足时的原子回滚与重试、有限背包空间及非零装填/冷却下的退弹回滚、owner/generation、NULL 参数、完整溢出状态、最大 tick 重试、despawn 槽复用和 intent 内容。
 
 TDD RED 先看到新增类型/API 缺失的编译失败；最小声明和桩加入后，有效开火断言在 `test_break_game_weapons.c:85` 失败，8/8 测试失败。实现后首次 GREEN 为 8/8。
 
@@ -78,7 +78,7 @@ cmake --build build-cry-final -j6 --target test_break_game_weapons
 ctest --test-dir build-cry-final -R 'break_game|cry_style' --output-on-failure
 ```
 
-结果为武器 9/9，focused 9/9。
+结果为武器 12/12，focused 9/9。
 
 ASan+UBSan 与 TSan 树均运行 Actor、物品、武器和 Cry 原型四个 focused 测试：
 
