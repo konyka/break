@@ -1,6 +1,5 @@
 #include <ai/break_nav_internal.h>
 #include <math.h>
-#include <stdlib.h>
 #include <string.h>
 
 static f32 dist_xz(Vec3 a, Vec3 b) {
@@ -53,8 +52,12 @@ static u32 heap_pop(u32 *heap, f32 *fscore, u32 *heap_n) {
     return root;
 }
 
-BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end, BreakNavPath *out) {
-    if (!mesh || !out) {
+BreakNavError break_nav_find_path_workspace(const BreakNavMesh *mesh,
+                                            BreakNavWorkspace *workspace,
+                                            const u32 *blocked_counts,
+                                            Vec3 start, Vec3 end,
+                                            BreakNavPath *out) {
+    if (!mesh || !workspace || !out || workspace->poly_count != mesh->poly_count) {
         return BREAK_NAV_INVALID;
     }
     u32 start_poly = 0;
@@ -62,29 +65,22 @@ BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end
     if (!break_nav_locate(mesh, start, &start_poly) || !break_nav_locate(mesh, end, &end_poly)) {
         return BREAK_NAV_FAILED;
     }
-    if (mesh->polys[start_poly].component != mesh->polys[end_poly].component) {
+    if (mesh->polys[start_poly].component != mesh->polys[end_poly].component ||
+        (blocked_counts && (blocked_counts[start_poly] != 0 || blocked_counts[end_poly] != 0))) {
         return BREAK_NAV_FAILED;
     }
     u32 npoly = mesh->poly_count;
-    f32 *gscore = (f32 *)malloc(sizeof(f32) * npoly);
-    f32 *fscore = (f32 *)malloc(sizeof(f32) * npoly);
-    u32 *came = (u32 *)malloc(sizeof(u32) * npoly);
-    u8 *closed = (u8 *)calloc(npoly, 1);
-    u32 *heap = (u32 *)malloc(sizeof(u32) * npoly);
-    u32 *chain = (u32 *)malloc(sizeof(u32) * npoly);
-    if (!gscore || !fscore || !came || !closed || !heap || !chain) {
-        free(gscore);
-        free(fscore);
-        free(came);
-        free(closed);
-        free(heap);
-        free(chain);
-        return BREAK_NAV_OVERLOAD;
-    }
+    f32 *gscore = workspace->gscore;
+    f32 *fscore = workspace->fscore;
+    u32 *came = workspace->came;
+    u8 *closed = workspace->closed;
+    u32 *heap = workspace->heap;
+    u32 *chain = workspace->chain;
     for (u32 i = 0; i < npoly; i++) {
         gscore[i] = 1.0e30f;
         fscore[i] = 1.0e30f;
         came[i] = UINT32_MAX;
+        closed[i] = 0;
     }
     gscore[start_poly] = 0.0f;
     fscore[start_poly] = dist_xz(mesh->polys[start_poly].center, mesh->polys[end_poly].center);
@@ -103,7 +99,7 @@ BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end
         }
         for (u32 i = 0; i < mesh->polys[cur].neighbor_count; i++) {
             u32 nb = mesh->polys[cur].neighbors[i];
-            if (closed[nb]) {
+            if (closed[nb] || (blocked_counts && blocked_counts[nb] != 0)) {
                 continue;
             }
             f32 step = dist_xz(mesh->polys[cur].center, mesh->polys[nb].center);
@@ -113,12 +109,6 @@ BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end
                 gscore[nb] = tentative;
                 fscore[nb] = tentative + dist_xz(mesh->polys[nb].center, mesh->polys[end_poly].center);
                 if (heap_n >= npoly) {
-                    free(gscore);
-                    free(fscore);
-                    free(came);
-                    free(closed);
-                    free(heap);
-                    free(chain);
                     return BREAK_NAV_OVERLOAD;
                 }
                 heap_push(heap, fscore, &heap_n, nb);
@@ -126,12 +116,6 @@ BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end
         }
     }
     if (!found) {
-        free(gscore);
-        free(fscore);
-        free(came);
-        free(closed);
-        free(heap);
-        free(chain);
         return BREAK_NAV_FAILED;
     }
     u32 chain_n = 0;
@@ -149,12 +133,6 @@ BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end
     points[count++] = start;
     for (u32 i = chain_n; i-- > 0;) {
         if (count >= BREAK_NAV_MAX_POINTS) {
-            free(gscore);
-            free(fscore);
-            free(came);
-            free(closed);
-            free(heap);
-            free(chain);
             return BREAK_NAV_OVERLOAD;
         }
         Vec3 center = mesh->polys[chain[i]].center;
@@ -170,8 +148,6 @@ BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end
             if (cross < 1.0e-3f && cross > -1.0e-3f) {
                 corner = false;
             }
-        } else if (count == 1) {
-            corner = true;
         }
         if (!corner) {
             points[count - 1] = center;
@@ -180,22 +156,17 @@ BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end
         }
     }
     if (count >= BREAK_NAV_MAX_POINTS) {
-        free(gscore);
-        free(fscore);
-        free(came);
-        free(closed);
-        free(heap);
-        free(chain);
         return BREAK_NAV_OVERLOAD;
     }
     points[count++] = end;
-    free(gscore);
-    free(fscore);
-    free(came);
-    free(closed);
-    free(heap);
-    free(chain);
     memcpy(out->points, points, sizeof(Vec3) * count);
     out->count = count;
     return BREAK_NAV_OK;
+}
+
+BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end, BreakNavPath *out) {
+    if (!mesh) {
+        return BREAK_NAV_INVALID;
+    }
+    return break_nav_find_path_workspace(mesh, mesh->workspace, NULL, start, end, out);
 }

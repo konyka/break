@@ -700,6 +700,7 @@ endif()
 # engine_demo, or dxx_break.
 add_library(break_ai STATIC
     src/ai/break_nav_bake.c
+    src/ai/break_nav_workspace.c
     src/ai/break_nav_query.c
     src/ai/break_nav_follow.c
     src/ai/break_perception.c
@@ -4316,6 +4317,12 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_ai_target_contract.cmake)
     set_tests_properties(test_break_ai_target_contract PROPERTIES
+        LABELS "headless;break_ai;platform_contract")
+    add_test(NAME test_break_ai_hot_path_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/ai
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_ai_hot_path_contract.cmake)
+    set_tests_properties(test_break_ai_hot_path_contract PROPERTIES
         LABELS "headless;break_ai;platform_contract")
 
     add_executable(test_cry_style_prototype tests/test_cry_style_prototype.c

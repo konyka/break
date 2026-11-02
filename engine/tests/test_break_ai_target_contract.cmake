@@ -16,6 +16,7 @@ endif()
 
 foreach(src IN ITEMS
         src/ai/break_nav_bake.c
+        src/ai/break_nav_workspace.c
         src/ai/break_nav_query.c
         src/ai/break_nav_follow.c
         src/ai/break_perception.c

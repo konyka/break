@@ -36,6 +36,7 @@ void break_nav_mesh_destroy(BreakNavMesh *mesh) {
     if (!mesh) {
         return;
     }
+    break_nav_workspace_destroy(mesh->workspace);
     free(mesh->cell_poly);
     free(mesh->polys);
     free(mesh);
@@ -199,6 +200,11 @@ BreakNavMesh *break_nav_bake_heightfield(const BreakNavHeightfield *field,
     mesh->cell_poly = cell_poly;
     mesh->polys = polys;
     mesh->poly_count = poly_count;
+    mesh->workspace = break_nav_workspace_create(poly_count);
+    if (!mesh->workspace) {
+        break_nav_mesh_destroy(mesh);
+        return NULL;
+    }
     return mesh;
 }
 
