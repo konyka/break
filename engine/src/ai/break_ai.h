@@ -174,3 +174,30 @@ typedef struct BreakSteerNeighbor {
 
 Vec3 break_steer_avoid(Vec3 self, f32 self_radius, Vec3 wish,
                        const BreakSteerNeighbor *neighbors, u32 count);
+
+typedef struct BreakSteerAgent {
+    Vec3 position;
+    Vec3 velocity;
+    f32 radius;
+} BreakSteerAgent;
+
+typedef struct BreakAiAgentDesc {
+    Vec3 position;
+    Vec3 velocity;
+    f32 radius;
+    f32 max_speed;
+} BreakAiAgentDesc;
+
+BreakNavError break_steer_avoid_velocity(Vec3 self, Vec3 self_velocity,
+                                         f32 self_radius, f32 max_speed,
+                                         Vec3 desired_velocity,
+                                         const BreakSteerAgent *neighbors,
+                                         u32 count, f32 horizon, Vec3 *out_velocity);
+BreakNavError break_ai_agent_add(BreakAiRuntime *runtime, Entity entity,
+                                 const BreakAiAgentDesc *desc);
+BreakNavError break_ai_agent_update(BreakAiRuntime *runtime, Entity entity,
+                                    const BreakAiAgentDesc *desc);
+BreakNavError break_ai_agent_remove(BreakAiRuntime *runtime, Entity entity);
+BreakNavError break_ai_agent_avoid(BreakAiRuntime *runtime, Entity self,
+                                   Vec3 desired_velocity, f32 horizon,
+                                   Vec3 *out_velocity);

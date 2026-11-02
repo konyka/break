@@ -16,6 +16,12 @@ typedef struct BreakAiCacheEntry {
     bool valid;
 } BreakAiCacheEntry;
 
+typedef struct BreakAiAgentSlot {
+    Entity entity;
+    BreakAiAgentDesc desc;
+    bool live;
+} BreakAiAgentSlot;
+
 struct BreakAiRuntime {
     BreakNavMesh *mesh;
     PlatformThreadId owner;
@@ -27,6 +33,9 @@ struct BreakAiRuntime {
     BreakAiCacheEntry *cache;
     u32 max_cached_paths;
     u32 cache_next;
+    BreakAiAgentSlot *agents;
+    u32 max_agents;
 };
 
 bool break_ai_is_owner(const BreakAiRuntime *runtime);
+u32 break_ai_agent_index(const BreakAiRuntime *runtime, Entity entity);
