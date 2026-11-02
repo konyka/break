@@ -2,7 +2,6 @@
 #include <renderer/world_stream_world.h>
 #include <stdio.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 TEST(stream_commit_spawns_and_removes_tile_entities) {
     World *world = world_create();
@@ -53,10 +52,14 @@ TEST(stream_commit_spawns_and_removes_tile_entities) {
 }
 
 TEST(stream_commit_vfs_copies_tile_bytes_onto_the_entity) {
-    remove("/tmp/break-stream-tile-test/tile_1_0.bin");
-    rmdir("/tmp/break-stream-tile-test");
-    ASSERT_EQ(mkdir("/tmp/break-stream-tile-test", 0700), 0);
-    char file_path[] = "/tmp/break-stream-tile-test/tile_1_0.bin";
+    char dir_path[512];
+    test_tmp(dir_path, sizeof(dir_path), "stream-tile-test");
+    char file_path[560];
+    int file_n = snprintf(file_path, sizeof(file_path), "%s/tile_1_0.bin", dir_path);
+    ASSERT_TRUE(file_n > 0 && (usize)file_n < sizeof(file_path));
+    remove(file_path);
+    TEST_RMDIR(dir_path);
+    ASSERT_EQ(TEST_MKDIR(dir_path), 0);
     FILE *out = fopen(file_path, "wb");
     ASSERT_NOT_NULL(out);
     u8 payload[4] = {1, 2, 3, 4};
@@ -65,7 +68,7 @@ TEST(stream_commit_vfs_copies_tile_bytes_onto_the_entity) {
 
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    ASSERT_TRUE(vfs_mount_dir(vfs, "/tmp/break-stream-tile-test"));
+    ASSERT_TRUE(vfs_mount_dir(vfs, dir_path));
     World *world = world_create();
     ASSERT_NOT_NULL(world);
     Entity slots[4];
@@ -115,7 +118,7 @@ TEST(stream_commit_vfs_copies_tile_bytes_onto_the_entity) {
     world_destroy(world);
     vfs_destroy(vfs);
     remove(file_path);
-    rmdir("/tmp/break-stream-tile-test");
+    TEST_RMDIR(dir_path);
 }
 
 TEST_MAIN_BEGIN()

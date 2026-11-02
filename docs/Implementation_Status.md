@@ -1,3 +1,11 @@
+## 本轮更新：2026-11-02 Windows 同步、流式测试跨平台修复与实机验证
+
+- **同步与修复**：从 `4ddc1916` 快进 18 个提交到 `5db84314`，无冲突。新加入的 `test_world_stream_world` 使用 `unistd.h`、固定 `/tmp` 路径和双参数 `mkdir`，导致 Clang/MSVC 缺少头文件、MinGW 的 `mkdir` 签名不匹配；本机四个构建树均在编译期复现，远程 CI 的 Windows Clang/MSVC/MinGW/ASan 与 windows-d3d12 通道也同样失败。测试改用 `test_tmp` 的每进程目录及 `TEST_MKDIR`/`TEST_RMDIR`，增加路径长度检查；保留真实 VFS、实体创建/销毁、字节复制与拒绝缺失文件的全部断言。生产代码无修改，没有放宽 `/WX`、`-Werror` 或测试断言。
+- **六棵 Windows 构建树**：Clang/OpenGL 273/273、Clang/Vulkan 276/276、Clang/D3D12 281/281、Clang ASan+UBSan 269/269（`ASAN_OPTIONS=detect_leaks=0`，排除 graphics）、MSVC 282 通过加 1 个按设计跳过的 `test_d3d12_dependency_gate`、MinGW 279/279。Clang、MSVC 和 MinGW 的构建均未发现 error/warning 诊断。
+- **三后端实机**：OpenGL 4.5 NVIDIA 621.01、Vulkan、D3D12 均完成 70 帧；第 10/40 帧进出无标题栏全屏，第 50/60 帧隐藏/恢复标题栏，日志确认实际后端、窗口模式和标题栏状态，进程退出码均为 0；Vulkan validation 消息为 0。本轮同时运行多树测试，切换耗时不作为性能基线。
+- **编辑器实机**：OpenGL 下通过真实 `InputState` 输入脚本完成添加与选中实体、平移工具、Ctrl+D、Ctrl+Z、Z 线框切换，随后通过命令面板切到浅色、再切回深色，全部断言通过。截图确认浅色/深色实际绘制；`BREAK_EDITOR_SETTINGS` 指定的临时文件含 `theme=light`，新进程截图确认浅色主题已恢复。第一次点击失败是 `Theme: Light` 行中心落在列表可见区域之外，先用 `type` 过滤为第一行后鼠标点击成功，不是引擎输入缺陷。macOS 原生执行本轮未验证。
+- **边界**：新增 Cry 式游戏、AI、物理、世界表现和流式功能已覆盖 Windows CPU/headless 测试，但贴花、体素和道路主机字节仍没有设备缓冲或绘制，`break_game`/`break_ai` 仍不链入 `engine`；这些测试不证明植被画面、驾驶手感或完整运行时集成。POSIX-only 的 `break_http`、崩溃上传和端到端测试仍不在 Windows 构建/注册范围内，不能说成 Windows 运行时通过。Linux/macOS 结果以对应远程 CI 为准。
+
 ## 本轮更新：贴花、体素、道路打成主机侧顶点字节（2026-11-01）
 
 - **交付**：`decal_stage_quads` 把每个贴花打成法线平面上的四个角，半边长是 `size / 2`。朝上的贴花在 +Y 法线时切线是 +X、副切线是 +Z。`voxel_stage_vertices` 和 `road_stage_ribbon` 按同样的 28 字节顶点布局打包。放不下一整块（贴花 4 顶点、道路一对点）就整块丢弃并计数。
@@ -377,7 +385,7 @@
 - **问题**：同步 23 个提交（编辑器 CLion 风格主题与字体、设置持久化、场景 fuzzer 等）后，Windows 上 `test_editor_fonts`、`test_editor_settings`、`fuzz_editor_scene` 编不过：用了 POSIX 的 `setenv`/`unsetenv`/`<unistd.h>`/`getpid`/写死的 `/tmp`。生产代码 `editor_settings.c` 本身有 `%APPDATA%` 分支，只是测试没跟上。
 - **修复**：`tests/test_framework.h` 新增 `TEST_SETENV`/`TEST_UNSETENV`（Windows 用 `_putenv_s`，空值即删除；POSIX 侧沿用原先 `test_editor_settings` 里的 `extern` 声明）；`test_editor_fonts`/`test_editor_settings` 改用它们并去掉各自的 `_POSIX_C_SOURCE`/`unistd.h`；`test_editor_settings` 的默认路径用例在 Windows 上断言 `%APPDATA%/break/editor.ini`（并断言无 `APPDATA` 时返回 false），存取用例改用 `test_tmp`；`fuzz_editor_scene` 照 `fuzz_scene_serial` 的 `fuzz_getpid` 写法处理。
 - **验证**（本机 Windows）：OpenGL 229/229、Vulkan 232/232、D3D12 237/237、ASan 225/225、MSVC 239（1 个 D3D12 依赖门 skip，构建 0 诊断）、MinGW 235/235（构建 0 警告）；ASan 树里 `fuzz_editor_scene 3000 7` 与 MinGW 下 `2000 3` 均正常结束（978/639 个变异被接受并重存）。
-- **边界**：Linux/macOS 上 `test_framework.h` 的 POSIX 分支本机无法编译验证，以远程 CI 为准；编辑器“命令面板点 `Theme: Light` → 设置写盘”这条端到端路径**没能**在 Windows 上用输入脚本跑通（脚本点击后面板没有关闭，设置文件没生成），无法区分是脚本驱动对列表行点击的限制还是真问题，所以主题切换与设置持久化的实机表现**未验证**，只有 `test_editor_settings` 单元测试（含文件存取）在 Windows 上通过。MinGW 全并行（`-j` 默认）构建曾因系统分页文件瞬时不足失败（`CreateProcess: The paging file is too small`），降到 `-j 4` 后通过，属环境资源问题。
+- **边界**：Linux/macOS 上 `test_framework.h` 的 POSIX 分支本机无法编译验证，以远程 CI 为准；编辑器“命令面板点 `Theme: Light` → 设置写盘”这条端到端路径**没能**在 Windows 上用输入脚本跑通（脚本点击后面板没有关闭，设置文件没生成），无法区分是脚本驱动对列表行点击的限制还是真问题，所以当时主题切换与设置持久化的实机表现**未验证**，只有 `test_editor_settings` 单元测试（含文件存取）在 Windows 上通过。2026-11-02 已查明是脚本点击了列表裁剪区；过滤到首行后鼠标/键盘切换和设置恢复均通过，见顶部记录。MinGW 全并行（`-j` 默认）构建曾因系统分页文件瞬时不足失败（`CreateProcess: The paging file is too small`），降到 `-j 4` 后通过，属环境资源问题。
 
 ## 本轮更新：编辑器文字重影修复 + JetBrains New UI 暗色主题（2026-10-28）
 

@@ -383,6 +383,18 @@ configure 时真实探测 `GLES2/gl2.h` 与导入库，stock Windows 无 SDK 时
 该用例的剪贴板回归检查会改写系统剪贴板，并使用真实 CF_UNICODETEXT 验证无 NUL 终止输入的
 边界；运行前请保存需要保留的剪贴板内容。远程桌面剪贴板同步可能短时占用全局剪贴板，
 首次 `OpenClipboard` 最多重试约 5 秒；持续不可用仍判失败，不跳过检查。
+
+跨平台测试写临时文件时，使用 `test_framework.h` 的 `test_tmp(buf, cap, name)` 和
+`TEST_MKDIR`/`TEST_RMDIR`，不要在共享测试里直接使用 `unistd.h`、固定 `/tmp` 名称或
+`mkdir(path, mode)`：`unistd.h` 不能由 Clang/MSVC 直接包含，MinGW 的 `_mkdir` 只有一个
+参数，固定名称还会让并行构建树互相删除文件。`test_world_stream_world` 在 2026-11-02
+按此约定修复，真实 VFS 和文件内容断言不变。
+
+编辑器 `--input-script` 的 `move_to <list>@<row>` 定位的是控件行，不会把列表视口外的
+部分裁掉为可点击区域。目标行没有完全可见时，先 `type <filter>` 将它过滤为第一行，再
+执行 `move_to ...` 和 `click left`；不能把被裁剪行的中心当作可点击位置。Windows/OpenGL
+已于 2026-11-02 通过此路径验证命令面板的主题切换和设置持久化。
+
 `test_vulkan` 与 `test_myui_gl_desktop_runtime` 需要真实 WGL/GPU 环境，因此保留 `graphics`
 标签并从 headless CI 中排除。
 
