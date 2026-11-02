@@ -22,6 +22,7 @@ foreach(src IN ITEMS
         src/ai/break_ai_obstacle.c
         src/ai/break_ai_query.c
         src/ai/break_ai_agent.c
+        src/ai/break_ai_formation.c
         src/ai/break_steer_velocity.c
         src/ai/break_nav_follow.c
         src/ai/break_perception.c

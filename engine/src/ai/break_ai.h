@@ -201,3 +201,21 @@ BreakNavError break_ai_agent_remove(BreakAiRuntime *runtime, Entity entity);
 BreakNavError break_ai_agent_avoid(BreakAiRuntime *runtime, Entity self,
                                    Vec3 desired_velocity, f32 horizon,
                                    Vec3 *out_velocity);
+
+typedef struct BreakAiFormationHandle {
+    u32 index;
+    u32 generation;
+} BreakAiFormationHandle;
+
+BreakNavError break_ai_formation_create(BreakAiRuntime *runtime, const Entity *members,
+                                        u32 member_count, f32 spacing,
+                                        BreakAiFormationHandle *out);
+BreakNavError break_ai_formation_destroy(BreakAiRuntime *runtime,
+                                         BreakAiFormationHandle handle);
+BreakNavError break_ai_formation_slots(BreakAiRuntime *runtime,
+                                       BreakAiFormationHandle handle,
+                                       Vec3 leader_position, Vec3 leader_forward,
+                                       Vec3 *out_slots, u32 cap, u32 *out_count);
+BreakNavError break_ai_formation_tick(BreakAiRuntime *runtime,
+                                      BreakAiFormationHandle handle, f32 dt,
+                                      Vec3 *out_velocities, u32 cap, u32 *out_count);

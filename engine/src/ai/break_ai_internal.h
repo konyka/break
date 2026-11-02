@@ -22,6 +22,14 @@ typedef struct BreakAiAgentSlot {
     bool live;
 } BreakAiAgentSlot;
 
+typedef struct BreakAiFormationSlot {
+    Entity members[BREAK_AI_MAX_FORMATION_MEMBERS];
+    u32 member_count;
+    f32 spacing;
+    u32 generation;
+    bool live;
+} BreakAiFormationSlot;
+
 struct BreakAiRuntime {
     BreakNavMesh *mesh;
     PlatformThreadId owner;
@@ -35,6 +43,8 @@ struct BreakAiRuntime {
     u32 cache_next;
     BreakAiAgentSlot *agents;
     u32 max_agents;
+    BreakAiFormationSlot *formations;
+    u32 max_formations;
 };
 
 bool break_ai_is_owner(const BreakAiRuntime *runtime);

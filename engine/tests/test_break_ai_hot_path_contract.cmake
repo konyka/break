@@ -7,6 +7,7 @@ foreach(source IN ITEMS
         break_ai_obstacle.c
         break_ai_query.c
         break_ai_agent.c
+        break_ai_formation.c
         break_steer_velocity.c)
     file(READ "${AI_SOURCE_DIR}/${source}" source_text)
     if(source_text MATCHES "(malloc|calloc|realloc|free)[ \t\r\n]*\\(")
