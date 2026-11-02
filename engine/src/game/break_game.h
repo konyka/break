@@ -45,6 +45,22 @@ typedef struct BreakGameItemDesc {
     u32 stack_limit; /* 1..1000000 */
 } BreakGameItemDesc;
 
+typedef struct BreakGameWeaponDesc {
+    u32 weapon_id;         /* 1..64 */
+    u32 ammo_item_id;      /* defined item */
+    u32 damage;            /* 1..10000, host configured */
+    u32 magazine_capacity; /* 1..1000 */
+    u32 fire_interval_ticks;
+    u32 reload_ticks;      /* >= 1 */
+} BreakGameWeaponDesc;
+
+typedef struct BreakGameFireIntent {
+    Entity shooter;
+    u32 weapon_id;
+    u32 damage;
+    u64 sequence;          /* from 1, monotonic across BreakGame */
+} BreakGameFireIntent;
+
 typedef struct BreakGameClassDesc {
     const char *name;                /* 1..63 bytes, no whitespace */
     const ComponentType *components; /* may be NULL when count is 0 */
@@ -141,6 +157,19 @@ BreakGameError break_game_inventory_count(BreakGame *game, Entity entity,
 BreakGameError break_game_inventory_transfer(BreakGame *game,
                                              Entity from, Entity to,
                                              u32 item_id, u32 count);
+
+BreakGameError break_game_weapon_define(BreakGame *game,
+                                        const BreakGameWeaponDesc *desc);
+BreakGameError break_game_weapon_equip(BreakGame *game, Entity entity,
+                                       u32 weapon_id);
+BreakGameError break_game_weapon_unequip(BreakGame *game, Entity entity);
+BreakGameError break_game_weapon_begin_reload(BreakGame *game, Entity entity);
+BreakGameError break_game_weapon_tick(BreakGame *game, Entity entity,
+                                      u32 elapsed_ticks);
+BreakGameError break_game_weapon_fire(BreakGame *game, Entity entity,
+                                      BreakGameFireIntent *out_intent);
+BreakGameError break_game_weapon_ammo(const BreakGame *game, Entity entity,
+                                      u32 *out_magazine);
 
 BreakGameError break_game_bind_actions(BreakGame *game,
                                        const BreakGameActionDesc *actions,

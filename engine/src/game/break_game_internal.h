@@ -17,6 +17,12 @@ typedef struct BreakGameActor {
     Entity entity;
     u32 class_id;
     bool alive;
+    u32 weapon_id;
+    u32 magazine;
+    u32 now_tick;
+    u32 next_fire_tick;
+    u32 reload_finish_tick;
+    bool reloading;
 } BreakGameActor;
 
 typedef struct BreakGameAction {
@@ -45,6 +51,8 @@ struct BreakGame {
     u32 class_count;
     BreakGameActor *actors;
     BreakGameItemDesc items[BREAK_GAME_MAX_ITEMS + 1u];
+    BreakGameWeaponDesc weapons[BREAK_GAME_MAX_ITEMS + 1u];
+    u64 fire_sequence;
     u32 *inventories; /* actor_slot * (BREAK_GAME_MAX_ITEMS + 1) + item_id */
     u32 *free_stack;
     u32 free_top;
@@ -68,5 +76,10 @@ bool break_game_copy_name(const char *src, char *dst, bool allow_empty);
 
 void break_game_area_on_despawn(BreakGame *game, u32 slot, Entity entity);
 void break_game_items_on_despawn(BreakGame *game, u32 slot);
+void break_game_weapons_on_despawn(BreakGame *game, u32 slot);
+BreakGameError break_game_items_add_slot(BreakGame *game, u32 slot,
+                                         u32 item_id, u32 count);
+BreakGameError break_game_items_remove_slot(BreakGame *game, u32 slot,
+                                            u32 item_id, u32 count);
 
 BreakGameError break_game_adopt(BreakGame *game, Entity entity, u32 class_id);

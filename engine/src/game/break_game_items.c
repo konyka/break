@@ -43,6 +43,41 @@ BreakGameError break_game_item_define(BreakGame *game, const BreakGameItemDesc *
     return BREAK_GAME_OK;
 }
 
+BreakGameError break_game_items_add_slot(BreakGame *game, u32 slot, u32 item_id, u32 count) {
+    if (!game || slot >= game->max_actors || count == 0) {
+        return BREAK_GAME_INVALID;
+    }
+    BreakGameError item = item_error(game, item_id);
+    if (item != BREAK_GAME_OK) {
+        return item;
+    }
+    size_t index = inventory_index(slot, item_id);
+    u32 old_count = game->inventories[index];
+    u32 limit = game->items[item_id].stack_limit;
+    if (old_count > limit || count > limit - old_count) {
+        return BREAK_GAME_OVERLOAD;
+    }
+    game->inventories[index] = old_count + count;
+    return BREAK_GAME_OK;
+}
+
+BreakGameError break_game_items_remove_slot(BreakGame *game, u32 slot, u32 item_id, u32 count) {
+    if (!game || slot >= game->max_actors || count == 0) {
+        return BREAK_GAME_INVALID;
+    }
+    BreakGameError item = item_error(game, item_id);
+    if (item != BREAK_GAME_OK) {
+        return item;
+    }
+    size_t index = inventory_index(slot, item_id);
+    u32 old_count = game->inventories[index];
+    if (old_count < count) {
+        return BREAK_GAME_OVERLOAD;
+    }
+    game->inventories[index] = old_count - count;
+    return BREAK_GAME_OK;
+}
+
 BreakGameError break_game_inventory_add(BreakGame *game, Entity entity, u32 item_id, u32 count) {
     if (!game || count == 0) {
         return BREAK_GAME_INVALID;
@@ -58,14 +93,7 @@ BreakGameError break_game_inventory_add(BreakGame *game, Entity entity, u32 item
     if (slot == UINT32_MAX) {
         return BREAK_GAME_STALE;
     }
-    size_t index = inventory_index(slot, item_id);
-    u32 old_count = game->inventories[index];
-    u32 limit = game->items[item_id].stack_limit;
-    if (old_count > limit || count > limit - old_count) {
-        return BREAK_GAME_OVERLOAD;
-    }
-    game->inventories[index] = old_count + count;
-    return BREAK_GAME_OK;
+    return break_game_items_add_slot(game, slot, item_id, count);
 }
 
 BreakGameError break_game_inventory_count(BreakGame *game, Entity entity, u32 item_id, u32 *out_count) {

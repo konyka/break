@@ -108,6 +108,7 @@ BreakGameError break_game_despawn(BreakGame *game, Entity entity) {
         return BREAK_GAME_STALE;
     }
     break_game_area_on_despawn(game, slot, entity);
+    break_game_weapons_on_despawn(game, slot);
     break_game_items_on_despawn(game, slot);
     world_destroy_entity(game->world, entity);
     game->actors[slot].alive = false;
