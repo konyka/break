@@ -45,7 +45,7 @@ BreakGameError break_game_weapon_ammo(const BreakGame *game, Entity entity,
 
 ## 状态与时序
 
-每个 Actor 保存当前武器、弹匣、本地 tick、下次可开火 tick、装填完成 tick 和装填标志。装备会重置这些状态并把弹匣置为配置容量；这一步不扣背包备弹。已装备时重复装备返回 `REJECTED`。
+每个 Actor 保存当前武器、弹匣、本地 tick、下次可开火 tick、装填完成 tick 和装填标志。equip 只选择武器并把弹匣置为 0，不赠送弹药；Actor 的 `now_tick` 和 `next_fire_tick` 在 unequip/equip 间保留。已装备时重复装备返回 `REJECTED`。
 
 开火只在未装填、弹匣非空且 `now_tick >= next_fire_tick` 时成功。成功后弹匣减一，下一开火时刻为 `now_tick + fire_interval_ticks`，并输出 shooter、weapon_id、damage 和 sequence。序号从 1 开始，在整个 `BreakGame` 上单调递增；未装备、冷却、空弹匣、装填中或过期句柄造成的拒绝都不消耗弹药、不推进序号，也不改输出。
 
@@ -55,17 +55,17 @@ BreakGameError break_game_weapon_ammo(const BreakGame *game, Entity entity,
 
 1. `begin_reload` 要求弹匣未满、当前不在装填且备弹非零；此时只设置完成 tick，不扣备弹。
 2. 完成 tick 之前，tick 只推进时间，弹匣不变。
-3. 到达完成 tick 后，内部按槽事务助手一次性扣除 `capacity - magazine` 发备弹，再把弹匣填满并清除装填状态。
-4. 如果备弹在开始装填后被转走，扣减返回 `OVERLOAD`，弹匣、备弹和装填状态不变；已经推进的本地 tick 保留。补入备弹后再次 tick 即可重试，不会部分扣弹。
+3. 到达完成 tick 后，先构造候选 `now_tick`，内部按槽事务助手一次性扣除 `capacity - magazine` 发备弹；所有可能失败的操作成功后才提交时间、弹匣和装填状态。
+4. 如果备弹在开始装填后被转走，扣减返回 `OVERLOAD`，武器全部字段和 inventory 都保持调用前原值，包括 `now_tick`。补入备弹后从原时刻再次 tick 即可重试，不会部分扣弹或部分推进时间。
 5. 开始时装填没有备弹返回 `REJECTED`。弹匣已满或尚未到期的重复 begin 也返回 `REJECTED`。已到期装填再次调用 begin 会复用同一原子完成路径，因此即使 `now_tick == UINT32_MAX`、正数 tick 已无法推进，也能在补弹后通过 begin 重试。
 
-退弹时，unequip 先把当前弹匣余弹加入同一 Actor 的背包。背包容量不足返回 `OVERLOAD`，装备、弹匣、装填和背包全部保持原值；容量足够才提交并清空武器状态。成功 unequip 会取消未完成的装填。despawn 清空武器状态和该槽背包，Entity generation 复用不会继承装备、冷却或装填；全局开火序号不随 Actor 重置。
+退弹时，unequip 先把当前弹匣余弹加入同一 Actor 的背包。背包容量不足返回 `OVERLOAD`，装备、弹匣、装填和背包全部保持原值；容量足够才提交。成功 unequip 取消装备和未完成的装填，但保留 Actor 的 `now_tick/next_fire_tick`；re-equip 仍为 0 弹匣，必须重新开始装填。despawn 才清空全部武器状态和该槽背包，Entity generation 复用不会继承装备、冷却或装填；全局开火序号不随 Actor 重置。
 
 内部物品助手只接受正的 `u32` 数量，分别执行按槽增加与扣减。武器代码不以负数调用公开 `break_game_inventory_add`，也不绕过物品 id、堆叠上限或余量校验。
 
 ## 验证
 
-测试位于 `engine/tests/test_break_game_weapons.c`，共 12 个真实状态机测试，覆盖定义边界、开火与冷却、非空弹匣装填中开火、未知已装备 weapon id、装填精确时刻、部分备弹不足时的原子回滚与重试、有限背包空间及非零装填/冷却下的退弹回滚、owner/generation、NULL 参数、完整溢出状态、最大 tick 重试、despawn 槽复用和 intent 内容。
+测试位于 `engine/tests/test_break_game_weapons.c`，共 16 个真实状态机测试，覆盖定义边界、开火与冷却、非空弹匣装填中开火、未知已装备 weapon id、装填精确时刻、失败时完整 tick/inventory 回滚与重试、装备循环弹药守恒、跨装备冷却保留、装填中重装不赠弹、有限背包空间及非零装填/冷却下的退弹回滚、owner/generation、NULL 参数、完整溢出状态、最大 tick 重试、despawn 槽复用和 intent 内容。
 
 TDD RED 先看到新增类型/API 缺失的编译失败；最小声明和桩加入后，有效开火断言在 `test_break_game_weapons.c:85` 失败，8/8 测试失败。实现后首次 GREEN 为 8/8。
 
@@ -78,7 +78,7 @@ cmake --build build-cry-final -j6 --target test_break_game_weapons
 ctest --test-dir build-cry-final -R 'break_game|cry_style' --output-on-failure
 ```
 
-结果为武器 12/12，focused 9/9。
+结果为武器 16/16，focused 9/9。
 
 ASan+UBSan 与 TSan 树均运行 Actor、物品、武器和 Cry 原型四个 focused 测试：
 

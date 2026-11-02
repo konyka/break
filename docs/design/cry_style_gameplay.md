@@ -111,7 +111,7 @@ Actor 不是 C++ 类层次。一个 Actor 是一个 `Entity` 加上类注册表�
 
 固定物品表和事务式背包已经落地；武器增量复用同一 Actor 槽与背包存储。每种武器由宿主定义弹药物品、伤害、弹匣容量、开火间隔和装填 tick。装备、冷却、装填、退弹与 despawn 清理由 `break_game` 状态机处理，所有公开操作检查 owner 和 Entity generation。
 
-装填完成时原子扣备弹，失败保持装填可重试；unequip 容量不足不改装备或物品。开火只输出 `BreakGameFireIntent`，其中伤害来自服务端配置、序号全 `BreakGame` 单调。命中、目标生命和客户端裁决仍未交付。API、事务与测试命令见 [`gameplay_items_weapons.md`](gameplay_items_weapons.md)，行为测试为 `test_break_game_items` 和 `test_break_game_weapons`。
+equip 只选择武器且弹匣从 0 开始，Actor 时钟/冷却跨 unequip/equip 保留。装填完成时原子扣备弹，失败时武器状态和 inventory 完整回滚并可重试；unequip 容量不足不改装备或物品。开火只输出 `BreakGameFireIntent`，其中伤害来自服务端配置、序号全 `BreakGame` 单调。命中、目标生命和客户端裁决仍未交付。API、事务与测试命令见 [`gameplay_items_weapons.md`](gameplay_items_weapons.md)，行为测试为 `test_break_game_items` 和 `test_break_game_weapons`。
 
 ## 6. 阶段 B — 导航与行为
 

@@ -35,6 +35,13 @@ static void clear_weapon(BreakGameActor *actor) {
     actor->reloading = false;
 }
 
+static void clear_equipment(BreakGameActor *actor) {
+    actor->weapon_id = 0;
+    actor->magazine = 0;
+    actor->reload_finish_tick = 0;
+    actor->reloading = false;
+}
+
 void break_game_weapons_on_despawn(BreakGame *game, u32 slot) {
     if (!game || !game->actors || slot >= game->max_actors) {
         return;
@@ -85,9 +92,9 @@ BreakGameError break_game_weapon_equip(BreakGame *game, Entity entity, u32 weapo
     if (actor->weapon_id != 0) {
         return BREAK_GAME_REJECTED;
     }
-    clear_weapon(actor);
+    clear_equipment(actor);
     actor->weapon_id = weapon_id;
-    actor->magazine = game->weapons[weapon_id].magazine_capacity;
+    actor->magazine = 0;
     return BREAK_GAME_OK;
 }
 
@@ -111,15 +118,16 @@ BreakGameError break_game_weapon_unequip(BreakGame *game, Entity entity) {
             return added;
         }
     }
-    clear_weapon(actor);
+    clear_equipment(actor);
     return BREAK_GAME_OK;
 }
 
-static BreakGameError complete_reload(BreakGame *game, u32 slot) {
+static BreakGameError complete_reload(BreakGame *game, u32 slot, u32 now_tick) {
     BreakGameActor *actor = &game->actors[slot];
     const BreakGameWeaponDesc *weapon = &game->weapons[actor->weapon_id];
     u32 needed = weapon->magazine_capacity - actor->magazine;
     if (needed == 0) {
+        actor->now_tick = now_tick;
         actor->reloading = false;
         actor->reload_finish_tick = 0;
         return BREAK_GAME_OK;
@@ -128,6 +136,7 @@ static BreakGameError complete_reload(BreakGame *game, u32 slot) {
     if (removed != BREAK_GAME_OK) {
         return removed;
     }
+    actor->now_tick = now_tick;
     actor->magazine += needed;
     actor->reloading = false;
     actor->reload_finish_tick = 0;
@@ -152,7 +161,7 @@ BreakGameError break_game_weapon_begin_reload(BreakGame *game, Entity entity) {
         if (actor->now_tick < actor->reload_finish_tick) {
             return BREAK_GAME_REJECTED;
         }
-        return complete_reload(game, slot);
+        return complete_reload(game, slot, actor->now_tick);
     }
     if (actor->magazine >= weapon->magazine_capacity) {
         return BREAK_GAME_REJECTED;
@@ -189,11 +198,12 @@ BreakGameError break_game_weapon_tick(BreakGame *game, Entity entity, u32 elapse
     if (elapsed_ticks > UINT32_MAX - actor->now_tick) {
         return BREAK_GAME_OVERLOAD;
     }
-    actor->now_tick += elapsed_ticks;
-    if (!actor->reloading || actor->now_tick < actor->reload_finish_tick) {
+    u32 now_tick = actor->now_tick + elapsed_ticks;
+    if (!actor->reloading || now_tick < actor->reload_finish_tick) {
+        actor->now_tick = now_tick;
         return BREAK_GAME_OK;
     }
-    return complete_reload(game, slot);
+    return complete_reload(game, slot, now_tick);
 }
 
 BreakGameError break_game_weapon_fire(BreakGame *game, Entity entity, BreakGameFireIntent *out_intent) {
