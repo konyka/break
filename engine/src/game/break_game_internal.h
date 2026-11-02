@@ -44,6 +44,8 @@ struct BreakGame {
     BreakGameClass *classes; /* index 0 unused; ids are 1..max_classes */
     u32 class_count;
     BreakGameActor *actors;
+    BreakGameItemDesc items[BREAK_GAME_MAX_ITEMS + 1u];
+    u32 *inventories; /* actor_slot * (BREAK_GAME_MAX_ITEMS + 1) + item_id */
     u32 *free_stack;
     u32 free_top;
     u32 live_count;
@@ -65,5 +67,6 @@ u32 break_game_actor_slot(const BreakGame *game, Entity entity);
 bool break_game_copy_name(const char *src, char *dst, bool allow_empty);
 
 void break_game_area_on_despawn(BreakGame *game, u32 slot, Entity entity);
+void break_game_items_on_despawn(BreakGame *game, u32 slot);
 
 BreakGameError break_game_adopt(BreakGame *game, Entity entity, u32 class_id);

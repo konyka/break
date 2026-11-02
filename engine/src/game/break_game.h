@@ -19,6 +19,7 @@
 #define BREAK_GAME_POSITION_COMPONENT ((ComponentType)0)
 #define BREAK_GAME_AREA_EVENT_CAP   64u
 #define BREAK_GAME_AREA_HYSTERESIS  0.25f
+#define BREAK_GAME_MAX_ITEMS        64u
 
 typedef enum BreakGameError {
     BREAK_GAME_OK = 0,
@@ -38,6 +39,11 @@ typedef struct BreakGameConfig {
     u32 max_classes; /* 0 => 64, hard cap 64 */
     u32 max_actors;  /* 0 => 4096, hard cap 4096 */
 } BreakGameConfig;
+
+typedef struct BreakGameItemDesc {
+    u32 item_id;     /* 1..64 */
+    u32 stack_limit; /* 1..1000000 */
+} BreakGameItemDesc;
 
 typedef struct BreakGameClassDesc {
     const char *name;                /* 1..63 bytes, no whitespace */
@@ -125,6 +131,16 @@ BreakGameError break_game_spawn(BreakGame *game, const BreakGameSpawn *spawn, En
 BreakGameError break_game_despawn(BreakGame *game, Entity entity);
 void           break_game_set_tick(BreakGame *game, u32 class_id, BreakGameTickFn fn, void *user);
 void           break_game_tick(BreakGame *game, f32 dt);
+
+BreakGameError break_game_item_define(BreakGame *game,
+                                      const BreakGameItemDesc *desc);
+BreakGameError break_game_inventory_add(BreakGame *game, Entity entity,
+                                        u32 item_id, u32 count);
+BreakGameError break_game_inventory_count(BreakGame *game, Entity entity,
+                                          u32 item_id, u32 *out_count);
+BreakGameError break_game_inventory_transfer(BreakGame *game,
+                                             Entity from, Entity to,
+                                             u32 item_id, u32 count);
 
 BreakGameError break_game_bind_actions(BreakGame *game,
                                        const BreakGameActionDesc *actions,

@@ -682,6 +682,7 @@ endif()
 add_library(break_game STATIC
     src/game/break_game.c
     src/game/break_game_actor.c
+    src/game/break_game_items.c
     src/game/break_game_actions.c
     src/game/break_game_move.c
     src/game/break_game_level.c
@@ -4280,7 +4281,7 @@ endif()
     endif()
     add_test(NAME test_ecs COMMAND test_ecs)
 
-    foreach(game_test IN ITEMS actor actions move level area)
+    foreach(game_test IN ITEMS actor items actions move level area)
         add_executable(test_break_game_${game_test} tests/test_break_game_${game_test}.c)
         target_include_directories(test_break_game_${game_test} PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_game_${game_test} PRIVATE break_game)

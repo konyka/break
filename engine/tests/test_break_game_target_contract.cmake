@@ -27,6 +27,7 @@ endif()
 foreach(src IN ITEMS
         src/game/break_game.c
         src/game/break_game_actor.c
+        src/game/break_game_items.c
         src/game/break_game_actions.c
         src/game/break_game_move.c
         src/game/break_game_level.c

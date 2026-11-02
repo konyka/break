@@ -49,6 +49,7 @@ static void break_game_free(BreakGame *game) {
     }
     free(game->classes);
     free(game->actors);
+    free(game->inventories);
     free(game->free_stack);
     free(game->slot_of);
     free(game->tick_snapshot);
@@ -75,6 +76,15 @@ BreakGame *break_game_create(World *world, const BreakGameConfig *config) {
         return NULL;
     }
 
+    size_t inventory_stride = (size_t)BREAK_GAME_MAX_ITEMS + 1u;
+    if ((size_t)max_actors > SIZE_MAX / inventory_stride) {
+        return NULL;
+    }
+    size_t inventory_count = (size_t)max_actors * inventory_stride;
+    if (inventory_count > SIZE_MAX / sizeof(u32)) {
+        return NULL;
+    }
+
     BreakGame *game = (BreakGame *)calloc(1, sizeof(BreakGame));
     if (!game) {
         return NULL;
@@ -85,12 +95,13 @@ BreakGame *break_game_create(World *world, const BreakGameConfig *config) {
     game->max_actors = max_actors;
     game->classes = (BreakGameClass *)calloc((size_t)max_classes + 1u, sizeof(BreakGameClass));
     game->actors = (BreakGameActor *)calloc(max_actors, sizeof(BreakGameActor));
+    game->inventories = (u32 *)calloc(inventory_count, sizeof(u32));
     game->free_stack = (u32 *)calloc(max_actors, sizeof(u32));
     game->slot_of = (u32 *)malloc(sizeof(u32) * ECS_MAX_ENTITIES);
     game->tick_snapshot = (u32 *)calloc(max_actors, sizeof(u32));
     game->inside = (u8 *)calloc((size_t)BREAK_GAME_HARD_MAX_AREAS * (size_t)max_actors, 1);
-    if (!game->classes || !game->actors || !game->free_stack || !game->slot_of ||
-        !game->tick_snapshot || !game->inside) {
+    if (!game->classes || !game->actors || !game->inventories || !game->free_stack ||
+        !game->slot_of || !game->tick_snapshot || !game->inside) {
         break_game_free(game);
         return NULL;
     }

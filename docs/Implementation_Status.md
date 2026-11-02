@@ -1,3 +1,9 @@
+## 本轮更新：Actor 物品定义与事务式背包（2026-11-02）
+
+- **交付**：`break_game` 支持 64 种物品（id 1..64），每种堆叠上限为 1..1000000。创建时按 `max_actors * 65` 个 `u32` 做溢出检查并分配背包，销毁时释放；物品操作不分配内存。
+- **事务语义**：添加和转移先验证物品、数量、Actor index/generation、来源余量与接收上限，全部成功后才写入；任何失败都不改双方数量，查询不改游戏状态。`from == to` 和数量 0 被拒绝。Actor despawn 清零该槽全部 65 项，槽复用不会继承物品。
+- **验证**：物品测试 5/5、Actor 测试 6/6、`break_game|cry_style` focused 8/8 在 normal、ASan+UBSan、TSan 三棵树通过，无 sanitizer 报告。临时移除 transfer 接收上限检查后，目标上限/回滚测试按预期变红；恢复后普通树 focused 测试再次全绿。
+
 ## 本轮更新：流式块测试临时目录跨平台（2026-11-02）
 
 - **根因**：GitHub Actions run `41276867563` 中，Windows Clang/MSVC 因 `test_world_stream_world.c` 直接包含 `unistd.h` 编译失败，MinGW 因双参数 `mkdir` 编译失败。这是测试 fixture 引入的 POSIX 依赖，不是生产流式实现缺陷。
