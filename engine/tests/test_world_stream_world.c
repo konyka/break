@@ -2,7 +2,6 @@
 #include <renderer/world_stream_world.h>
 #include <stdio.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 TEST(stream_commit_spawns_and_removes_tile_entities) {
     World *world = world_create();
@@ -53,12 +52,26 @@ TEST(stream_commit_spawns_and_removes_tile_entities) {
 }
 
 TEST(stream_commit_vfs_loads_a_versioned_mesh) {
-    remove("/tmp/break-stream-tile-test/tile_1_0.bin");
-    remove("/tmp/break-stream-tile-test/tile_0_0.bin");
-    remove("/tmp/break-stream-tile-test/tile_0_1.bin");
-    remove("/tmp/break-stream-tile-test/tile_1_1.bin");
-    rmdir("/tmp/break-stream-tile-test");
-    ASSERT_EQ(mkdir("/tmp/break-stream-tile-test", 0700), 0);
+    char root[512];
+    char ok_path[560];
+    char bad_path[560];
+    char short_path[560];
+    char over_path[560];
+    ASSERT_NOT_NULL(test_tmp(root, sizeof(root), "break-stream-tile-test"));
+    int n = snprintf(ok_path, sizeof(ok_path), "%s/tile_1_0.bin", root);
+    ASSERT_TRUE(n > 0 && (usize)n < sizeof(ok_path));
+    n = snprintf(bad_path, sizeof(bad_path), "%s/tile_0_0.bin", root);
+    ASSERT_TRUE(n > 0 && (usize)n < sizeof(bad_path));
+    n = snprintf(short_path, sizeof(short_path), "%s/tile_0_1.bin", root);
+    ASSERT_TRUE(n > 0 && (usize)n < sizeof(short_path));
+    n = snprintf(over_path, sizeof(over_path), "%s/tile_1_1.bin", root);
+    ASSERT_TRUE(n > 0 && (usize)n < sizeof(over_path));
+    remove(ok_path);
+    remove(bad_path);
+    remove(short_path);
+    remove(over_path);
+    TEST_RMDIR(root);
+    ASSERT_EQ(TEST_MKDIR(root), 0);
 
     MeshStageVertex vert;
     memset(&vert, 0, sizeof(vert));
@@ -67,7 +80,6 @@ TEST(stream_commit_vfs_loads_a_versioned_mesh) {
     vert.pz = 6.0f;
     vert.ny = 1.0f;
     vert.material = 3;
-    char ok_path[] = "/tmp/break-stream-tile-test/tile_1_0.bin";
     FILE *out = fopen(ok_path, "wb");
     ASSERT_NOT_NULL(out);
     u32 magic = STREAM_TILE_MAGIC;
@@ -79,7 +91,6 @@ TEST(stream_commit_vfs_loads_a_versioned_mesh) {
     ASSERT_EQ(fwrite(&vert, sizeof(vert), 1, out), 1u);
     fclose(out);
 
-    char bad_path[] = "/tmp/break-stream-tile-test/tile_0_0.bin";
     out = fopen(bad_path, "wb");
     ASSERT_NOT_NULL(out);
     u32 bad_magic = 1;
@@ -89,7 +100,6 @@ TEST(stream_commit_vfs_loads_a_versioned_mesh) {
     ASSERT_EQ(fwrite(&vert, sizeof(vert), 1, out), 1u);
     fclose(out);
 
-    char short_path[] = "/tmp/break-stream-tile-test/tile_0_1.bin";
     out = fopen(short_path, "wb");
     ASSERT_NOT_NULL(out);
     ASSERT_EQ(fwrite(&magic, 4, 1, out), 1u);
@@ -97,7 +107,6 @@ TEST(stream_commit_vfs_loads_a_versioned_mesh) {
     ASSERT_EQ(fwrite(&vcount, 4, 1, out), 1u);
     fclose(out);
 
-    char over_path[] = "/tmp/break-stream-tile-test/tile_1_1.bin";
     out = fopen(over_path, "wb");
     ASSERT_NOT_NULL(out);
     u32 too_many = STREAM_TILE_MAX_VERTS + 1u;
@@ -108,7 +117,7 @@ TEST(stream_commit_vfs_loads_a_versioned_mesh) {
 
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    ASSERT_TRUE(vfs_mount_dir(vfs, "/tmp/break-stream-tile-test"));
+    ASSERT_TRUE(vfs_mount_dir(vfs, root));
     World *world = world_create();
     ASSERT_NOT_NULL(world);
     Entity slots[4];
@@ -179,7 +188,7 @@ TEST(stream_commit_vfs_loads_a_versioned_mesh) {
     remove(bad_path);
     remove(short_path);
     remove(over_path);
-    rmdir("/tmp/break-stream-tile-test");
+    TEST_RMDIR(root);
 }
 
 TEST_MAIN_BEGIN()
