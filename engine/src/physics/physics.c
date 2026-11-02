@@ -365,6 +365,52 @@ u32 physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc) {
     return UINT32_MAX;
 }
 
+static Quat rigid_orientation(const RigidBody *b);
+
+u32 physics_constraint_add_cone_twist(PhysicsWorld *pw, const ConeTwistDesc *desc) {
+    const f32 pi = 3.14159265358979323846f;
+    if (!pw || !desc) return UINT32_MAX;
+    if (desc->body_a >= pw->count || desc->body_b >= pw->count) return UINT32_MAX;
+    if (desc->body_a == desc->body_b) return UINT32_MAX;
+    for (int i = 0; i < 3; i++) {
+        if (!isfinite(desc->anchor_local_a.e[i]) || !isfinite(desc->anchor_local_b.e[i]) ||
+            !isfinite(desc->axis_local_a.e[i]) || !isfinite(desc->axis_local_b.e[i]))
+            return UINT32_MAX;
+    }
+    if (!isfinite(desc->swing_min) || !isfinite(desc->swing_max) ||
+        !isfinite(desc->twist_min) || !isfinite(desc->twist_max)) return UINT32_MAX;
+    if (desc->swing_min < 0.0f || desc->swing_min > desc->swing_max || desc->swing_max > pi)
+        return UINT32_MAX;
+    if (desc->twist_min < -pi || desc->twist_min > desc->twist_max || desc->twist_max > pi)
+        return UINT32_MAX;
+    f32 len_a = vec3_dot(desc->axis_local_a, desc->axis_local_a);
+    f32 len_b = vec3_dot(desc->axis_local_b, desc->axis_local_b);
+    if (!(len_a > 1e-8f) || !(len_b > 1e-8f)) return UINT32_MAX;
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
+        if (pw->constraints[i].active) continue;
+        DistanceConstraint c;
+        memset(&c, 0, sizeof(c));
+        c.body_a = desc->body_a;
+        c.body_b = desc->body_b;
+        c.offset_a = desc->anchor_local_a;
+        c.offset_b = desc->anchor_local_b;
+        c.is_cone_twist = true;
+        c.hinge_axis = vec3_scale(desc->axis_local_a, 1.0f / sqrtf(len_a));
+        c.cone_axis_b = vec3_scale(desc->axis_local_b, 1.0f / sqrtf(len_b));
+        c.reference_a = rigid_orientation(&pw->bodies[desc->body_a]);
+        c.reference_b = rigid_orientation(&pw->bodies[desc->body_b]);
+        c.swing_min = desc->swing_min;
+        c.swing_max = desc->swing_max;
+        c.twist_min = desc->twist_min;
+        c.twist_max = desc->twist_max;
+        c.active = true;
+        pw->constraints[i] = c;
+        pw->constraint_count++;
+        return i;
+    }
+    return UINT32_MAX;
+}
+
 void physics_constraint_set_slider_torsion(PhysicsWorld *pw, u32 constraint_id, f32 torsion) {
     if (!pw || constraint_id >= PHYSICS_MAX_CONSTRAINTS) return;
     if (!pw->constraints[constraint_id].active || !pw->constraints[constraint_id].is_slider) return;
@@ -434,10 +480,104 @@ static void clamp_hinge(RigidBody *a, RigidBody *b, const DistanceConstraint *c)
     }
 }
 
+static f32 cone_angular_weight(const RigidBody *b, Vec3 axis_w) {
+    if (b->inv_mass <= 0.0f) return 0.0f;
+    Quat q = rigid_orientation(b);
+    Vec3 n = quat_rotate_vec3(quat_inverse(q), axis_w);
+    f32 weight = 0.0f;
+    for (int i = 0; i < 3; i++) {
+        if (b->inertia_diag.e[i] > 0.0f)
+            weight += n.e[i] * n.e[i] / b->inertia_diag.e[i];
+    }
+    return weight;
+}
+
+static void cone_clip_outward_velocity(RigidBody *a, RigidBody *b, Vec3 axis) {
+    f32 wa = cone_angular_weight(a, axis);
+    f32 wb = cone_angular_weight(b, axis);
+    f32 total = wa + wb;
+    if (total <= 1e-12f) return;
+    Vec3 rel = vec3_sub(b->angular_velocity, a->angular_velocity);
+    f32 speed = vec3_dot(rel, axis);
+    if (speed >= 0.0f) return;
+    if (wa > 0.0f)
+        a->angular_velocity = vec3_add(a->angular_velocity, vec3_scale(axis, speed * wa / total));
+    if (wb > 0.0f)
+        b->angular_velocity = vec3_sub(b->angular_velocity, vec3_scale(axis, speed * wb / total));
+}
+
+static void cone_apply_angular_delta(RigidBody *a, RigidBody *b, Vec3 axis, f32 angle) {
+    if (!(angle > 1e-8f)) return;
+    f32 wa = cone_angular_weight(a, axis);
+    f32 wb = cone_angular_weight(b, axis);
+    f32 total = wa + wb;
+    if (total <= 1e-12f) return;
+    cone_clip_outward_velocity(a, b, axis);
+    if (wa > 0.0f) {
+        Quat q = rigid_orientation(a);
+        Quat delta = quat_from_axis_angle(axis, -angle * wa / total);
+        a->orientation = quat_normalize(quat_mul(delta, q));
+        a->rest_frames = 0;
+    }
+    if (wb > 0.0f) {
+        Quat q = rigid_orientation(b);
+        Quat delta = quat_from_axis_angle(axis, angle * wb / total);
+        b->orientation = quat_normalize(quat_mul(delta, q));
+        b->rest_frames = 0;
+    }
+}
+
+static Vec3 cone_perpendicular(Vec3 axis) {
+    Vec3 helper = fabsf(axis.e[0]) < 0.9f ? vec3(1, 0, 0) : vec3(0, 1, 0);
+    return vec3_normalize(vec3_cross(axis, helper));
+}
+
+static Quat cone_relative_twist(const DistanceConstraint *c, Quat qa, Quat qb) {
+    Quat da = quat_mul(qa, quat_inverse(c->reference_a));
+    Quat db = quat_mul(qb, quat_inverse(c->reference_b));
+    Quat rel = quat_mul(quat_inverse(da), db);
+    if (rel.e[3] < 0.0f) {
+        for (int i = 0; i < 4; i++) rel.e[i] = -rel.e[i];
+    }
+    return rel;
+}
+
+static void clamp_cone_twist(RigidBody *a, RigidBody *b, const DistanceConstraint *c) {
+    const f32 pi = 3.14159265358979323846f;
+    Quat qa = rigid_orientation(a);
+    Quat qb = rigid_orientation(b);
+    Vec3 axis_a = quat_rotate_vec3(qa, c->hinge_axis);
+    Vec3 axis_b = quat_rotate_vec3(qb, c->cone_axis_b);
+    Vec3 cross = vec3_cross(axis_b, axis_a);
+    f32 sine = vec3_len(cross);
+    f32 angle = atan2f(sine, vec3_dot(axis_a, axis_b));
+    if (angle > c->swing_max) {
+        Vec3 axis = sine > 1e-8f ? vec3_scale(cross, 1.0f / sine) : cone_perpendicular(axis_a);
+        cone_apply_angular_delta(a, b, axis, angle - c->swing_max);
+    } else if (angle < c->swing_min) {
+        Vec3 axis = sine > 1e-8f ? vec3_scale(cross, -1.0f / sine) : cone_perpendicular(axis_a);
+        cone_apply_angular_delta(a, b, axis, c->swing_min - angle);
+    }
+
+    qa = rigid_orientation(a);
+    qb = rigid_orientation(b);
+    axis_a = quat_rotate_vec3(qa, c->hinge_axis);
+    Quat rel = cone_relative_twist(c, qa, qb);
+    Vec3 imag = vec3(rel.e[0], rel.e[1], rel.e[2]);
+    f32 twist = 2.0f * atan2f(vec3_dot(imag, axis_a), rel.e[3]);
+    if (twist > pi) twist -= 2.0f * pi;
+    if (twist < -pi) twist += 2.0f * pi;
+    if (twist > c->twist_max) {
+        cone_apply_angular_delta(a, b, vec3_scale(axis_a, -1.0f), twist - c->twist_max);
+    } else if (twist < c->twist_min) {
+        cone_apply_angular_delta(a, b, axis_a, c->twist_min - twist);
+    }
+}
+
 void physics_constraint_remove(PhysicsWorld *pw, u32 constraint_id) {
     if (!pw || constraint_id >= PHYSICS_MAX_CONSTRAINTS) return;
     if (pw->constraints[constraint_id].active) {
-        pw->constraints[constraint_id].active = false;
+        memset(&pw->constraints[constraint_id], 0, sizeof(pw->constraints[constraint_id]));
         pw->constraint_count--;
     }
 }
@@ -446,11 +586,9 @@ u32 physics_constraint_count(const PhysicsWorld *pw) {
     return pw ? pw->constraint_count : 0u;
 }
 
-/* R435: Gauss-Seidel position projection with a small fixed iteration count.
- * The correction is split by inverse mass exactly like resolve_contact, so
- * static bodies (inv_mass 0) never move. This pass touches positions only;
- * the matching velocity-level pass is solve_distance_constraint_velocities
- * (R440), called once per step right after this one. */
+/* Gauss-Seidel projection with a small fixed iteration count. Linear correction
+ * is split by inverse mass; cone-twist angular correction uses effective inverse
+ * inertia. The translational velocity pass runs once after this pass. */
 static void solve_distance_constraints(PhysicsWorld *pw) {
     if (pw->constraint_count == 0) return;
     for (int iter = 0; iter < 4; iter++) {
@@ -504,14 +642,10 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                 }
                 continue;
             }
-            if (c->is_ball || c->is_hinge) {
-                /* R443: ball joint — pull the anchors to coincidence with a
-                 * full 3-axis vector correction (no axis normalization, so
-                 * coincident anchors are not a degenerate case). The
-                 * correction is split by inverse mass and applied to the
-                 * CENTROIDS: RigidBody has no orientation/angular velocity,
-                 * so an offset anchor creates no lever arm and no torque —
-                 * the entire correction is linear. */
+            if (c->is_ball || c->is_hinge || c->is_cone_twist) {
+                /* Pull anchors to coincidence with a full 3-axis correction.
+                 * The centroid correction is linear; hinge and cone-twist
+                 * angular limits are applied separately below. */
                 Vec3 err = vec3_sub(pb, pa);
                 Vec3 corr = vec3_scale(err, 1.0f / inv_total);
                 if (inv_a > 0.0f) {
@@ -523,6 +657,7 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                     b->rest_frames = 0;
                 }
                 if (c->is_hinge) clamp_hinge(a, b, c);
+                if (c->is_cone_twist) clamp_cone_twist(a, b, c);
                 continue;
             }
             Vec3 d = vec3_sub(pb, pa);
@@ -594,17 +729,10 @@ static void solve_distance_constraint_velocities(PhysicsWorld *pw) {
             (void)along;
             continue;
         }
-        if (c->is_ball || c->is_hinge) {
-            /* R443: a ball joint pins two POINTS together, so it constrains
-             * all 3 translational axes — unlike the distance constraint,
-             * which only removes the relative velocity along its single axis
-             * and leaves swinging (tangential) motion alone. Here the FULL
-             * relative velocity vector rel = vb - va must vanish, split by
-             * inverse mass exactly like the axial impulse above:
-             *     va += rel * inv_a / inv_total;  vb -= rel * inv_b / inv_total
-             * gives vb - va = rel - rel = 0. No anchor positions are needed:
-             * with no angular velocity in the body model, an anchor's
-             * velocity equals its centroid's velocity. */
+        if (c->is_ball || c->is_hinge || c->is_cone_twist) {
+            /* Ball-like joints remove the full relative centroid velocity,
+             * split by inverse mass. Cone-twist limit velocities are clipped
+             * by the angular projection above. */
             Vec3 rel = vec3_sub(b->velocity, a->velocity);
             Vec3 j = vec3_scale(rel, 1.0f / inv_total);
             if (inv_a > 0.0f) a->velocity = vec3_add(a->velocity, vec3_scale(j, inv_a));

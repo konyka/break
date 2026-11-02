@@ -5484,6 +5484,13 @@ endif()
     add_test(NAME test_physics_hinge COMMAND test_physics_hinge)
     set_tests_properties(test_physics_hinge PROPERTIES LABELS "headless;physics")
 
+    add_executable(test_physics_cone_twist tests/test_physics_cone_twist.c
+        src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
+    target_include_directories(test_physics_cone_twist PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_physics_cone_twist PRIVATE m)
+    add_test(NAME test_physics_cone_twist COMMAND test_physics_cone_twist)
+    set_tests_properties(test_physics_cone_twist PROPERTIES LABELS "headless;physics")
+
     add_executable(test_ragdoll tests/test_ragdoll.c
         src/physics/ragdoll.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
     target_include_directories(test_ragdoll PRIVATE ${TEST_INCLUDE_DIRS})

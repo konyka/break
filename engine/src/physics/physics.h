@@ -56,8 +56,8 @@ typedef struct PhysicsWorld PhysicsWorld;
 typedef void (*PhysicsPostStepFn)(PhysicsWorld *pw, void *user);
 #define PHYSICS_MAX_POST_STEPS 16u
 
-/* R435: distance constraint — fixed-capacity array embedded in PhysicsWorld
- * (same style as bodies; no per-step allocation). Position-projected only. */
+/* Fixed-capacity constraints embedded in PhysicsWorld; no per-step allocation.
+ * Linear anchors are position-projected and angular joint limits use body poses. */
 #define PHYSICS_MAX_CONSTRAINTS 64
 
 typedef struct {
@@ -65,12 +65,9 @@ typedef struct {
     u32  body_b;
     f32  rest_length;
     bool active;      /* slot occupied (world calloc zero-init = free) */
-    /* R443: generalized to cover ball (point-to-point) joints. The solver
-     * attaches at anchor points pa = pos_a + offset_a, pb = pos_b + offset_b
-     * instead of the centroids. RigidBody has no orientation, so the offsets
-     * are fixed world-space vectors (no local->world transform). Distance
-     * constraints are the zero-offset special case; a ball joint is
-     * rest_length = 0 with a full 3-axis solve. */
+    /* Anchors are body-local and rotated by each body's current orientation.
+     * Distance constraints are the zero-offset special case; ball-like joints
+     * use rest_length = 0 with a full 3-axis linear solve. */
     Vec3 offset_a;
     Vec3 offset_b;
     bool is_ball;     /* false: 1-axis distance solve; true: 3-axis ball solve */
@@ -84,6 +81,14 @@ typedef struct {
     f32  slider_damping; /* 1 replaces the error-axis spin each step.
                             Below 1, stiffness is a spring and this is the damping ratio. */
     f32  slider_stiffness; /* rad/s^2 per radian. Default 100. */
+    bool is_cone_twist;
+    Vec3 cone_axis_b;
+    Quat reference_a;
+    Quat reference_b;
+    f32  swing_min;
+    f32  swing_max;
+    f32  twist_min;
+    f32  twist_max;
 } DistanceConstraint;
 
 typedef struct PhysicsWorld {
@@ -143,13 +148,9 @@ bool          physics_add_post_step(PhysicsWorld *pw, PhysicsPostStepFn fn, void
 /* R435: distance constraints. add returns UINT32_MAX when the fixed array is
  * full or a body id is invalid (R352 convention); remove is idempotent. */
 u32           physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 body_b, f32 rest_length);
-/* R443: ball (point-to-point) joint. anchor_a/anchor_b are world-space
- * offsets from each body's centroid (RigidBody has no orientation, so a
- * "local" anchor is a fixed offset). The solver pulls the two anchor points
- * to coincidence — equivalent to a rest_length=0 distance constraint whose
- * attachment points may be offset from the centroids. Same R352/R435
- * rejection conventions as add_distance (full array / invalid ids /
- * self-constraint / NaN anchor component -> UINT32_MAX). */
+/* Ball joint anchors are body-local offsets rotated by the current pose.
+ * The solver pulls the two anchor points to coincidence. Invalid ids,
+ * self-constraints, NaN anchors and a full array return UINT32_MAX. */
 u32           physics_constraint_add_ball(PhysicsWorld *pw, u32 body_a, u32 body_b, Vec3 anchor_a, Vec3 anchor_b);
 
 typedef struct PhysicsPose {
@@ -183,6 +184,21 @@ typedef struct SliderDesc {
 } SliderDesc;
 
 u32           physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc);
+
+typedef struct ConeTwistDesc {
+    u32 body_a;
+    u32 body_b;
+    Vec3 anchor_local_a;
+    Vec3 anchor_local_b;
+    Vec3 axis_local_a;
+    Vec3 axis_local_b;
+    f32 swing_min;
+    f32 swing_max;
+    f32 twist_min;
+    f32 twist_max;
+} ConeTwistDesc;
+
+u32           physics_constraint_add_cone_twist(PhysicsWorld *pw, const ConeTwistDesc *desc);
 /* torsion is clamped to [0, 1]. Ignored unless the slot is a slider. */
 void          physics_constraint_set_slider_torsion(PhysicsWorld *pw, u32 constraint_id, f32 torsion);
 void          physics_constraint_set_slider_damping(PhysicsWorld *pw, u32 constraint_id, f32 damping);
