@@ -4438,6 +4438,20 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
         vertex_input.pVertexBindingDescriptions = &binding;
         vertex_input.vertexAttributeDescriptionCount = 5;
         vertex_input.pVertexAttributeDescriptions = attrs;
+    } else if (desc->mesh_stage_vertex) {
+        stride = desc->vertex_stride == 36u ? 36u : 28u;
+        binding = vk_binding(stride);
+        attrs[0] = vk_attr(0, 0, VK_FORMAT_R32G32B32_SFLOAT);
+        attrs[1] = vk_attr(1, 3 * sizeof(f32), VK_FORMAT_R32G32B32_SFLOAT);
+        attrs[2] = vk_attr(2, 6 * sizeof(f32), VK_FORMAT_R32_UINT);
+        vertex_input.vertexBindingDescriptionCount = 1;
+        vertex_input.pVertexBindingDescriptions = &binding;
+        vertex_input.vertexAttributeDescriptionCount = 3;
+        if (stride == 36u) {
+            attrs[3] = vk_attr(3, 7 * sizeof(f32), VK_FORMAT_R32G32_SFLOAT);
+            vertex_input.vertexAttributeDescriptionCount = 4;
+        }
+        vertex_input.pVertexAttributeDescriptions = attrs;
     } else if (desc->is_shadow_depth) {
         /* R440: shadow-depth vertex shaders (depth_only.vert,
          * point_shadow_depth_vk.vert) consume only location 0. Declaring the

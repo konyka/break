@@ -12,6 +12,18 @@ typedef struct MeshStageVertex {
     u32 material;
 } MeshStageVertex;
 
+typedef struct MeshVertex {
+    f32 px, py, pz;
+    f32 nx, ny, nz;
+    u32 material;
+    f32 u, v;
+} MeshVertex;
+
+/* Migrate the legacy 28-byte layout without changing its stored ABI. UVs are
+ * planar on the dominant normal axis. The output is untouched on failure. */
+bool mesh_vertices_migrate(const MeshStageVertex *in, u32 count,
+                           MeshVertex *out, u32 cap);
+
 /* Four corners of each decal, in the plane of its normal. A decal that
  * does not fit as a whole quad is counted in *dropped and is not written.
  * Returns the number of bytes written. */

@@ -9,7 +9,7 @@
  * would take. No device is allocated here, and nothing is submitted to a
  * command buffer. */
 typedef struct MeshBuffer {
-    MeshStageVertex verts[MESH_BUFFER_MAX_VERTS];
+    MeshVertex verts[MESH_BUFFER_MAX_VERTS];
     u32 indices[MESH_BUFFER_MAX_INDICES];
     u32 count;
     u32 index_count;
@@ -23,6 +23,7 @@ typedef struct MeshDrawDesc {
 
 /* Pack into b->verts. Vertices past MESH_BUFFER_MAX_VERTS are dropped.
  * Returns false when b is null. */
+bool mesh_buffer_from_legacy(MeshBuffer *b, const MeshStageVertex *in, u32 count, u32 *dropped);
 bool mesh_buffer_from_decals(MeshBuffer *b, const Decal *in, u32 count, u32 *dropped);
 bool mesh_buffer_from_voxels(MeshBuffer *b, const VoxelVertex *in, u32 count, u32 *dropped);
 bool mesh_buffer_from_road(MeshBuffer *b, const Vec3 *points, u32 point_count, u32 *dropped);

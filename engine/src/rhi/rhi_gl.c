@@ -1843,7 +1843,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         glVertexAttribBinding(3, 0);
         glVertexAttribBinding(4, 0);
     } else if (desc->mesh_stage_vertex) {
-        stride = 28u;
+        stride = desc->vertex_stride == 36u ? 36u : 28u;
         glEnableVertexAttribArray(0);
         glEnableVertexAttribArray(1);
         glEnableVertexAttribArray(2);
@@ -1853,6 +1853,11 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         glVertexAttribBinding(0, 0);
         glVertexAttribBinding(1, 0);
         glVertexAttribBinding(2, 0);
+        if (stride == 36u) {
+            glEnableVertexAttribArray(3);
+            glVertexAttribFormat(3, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(f32));
+            glVertexAttribBinding(3, 0);
+        }
     } else if (stride == 12) {
         glEnableVertexAttribArray(0);
         glVertexAttribFormat(0, 3, GL_FLOAT, GL_FALSE, 0);

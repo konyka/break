@@ -91,7 +91,7 @@ bool mesh_pipeline_create(RHIDevice *dev, MeshPipeline *out) {
     memset(&desc, 0, sizeof(desc));
     desc.vert = out->vert;
     desc.frag = out->frag;
-    desc.vertex_stride = (u32)sizeof(MeshStageVertex);
+    desc.vertex_stride = (u32)sizeof(MeshVertex);
     desc.mesh_stage_vertex = true;
     desc.disable_culling = true;
     out->pipeline = rhi_pipeline_create(dev, &desc);

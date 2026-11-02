@@ -16,7 +16,7 @@ typedef struct MeshPipeline {
  * A null device or a rejected create leaves both handles null and returns false. */
 bool mesh_gpu_upload(RHIDevice *dev, const MeshBuffer *mesh, MeshGpu *out);
 void mesh_gpu_destroy(RHIDevice *dev, MeshGpu *gpu);
-/* Position, normal, and material shader for a 28-byte mesh vertex. */
+/* Position, normal, and material shader for a migrated 36-byte mesh vertex. */
 bool mesh_pipeline_create(RHIDevice *dev, MeshPipeline *out);
 void mesh_pipeline_destroy(RHIDevice *dev, MeshPipeline *pipe);
 /* Bind and draw. Indexed when both the mesh and the gpu index buffer are live. */
