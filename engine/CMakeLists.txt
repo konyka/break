@@ -702,12 +702,16 @@ add_library(break_ai STATIC
     src/ai/break_nav_bake.c
     src/ai/break_nav_workspace.c
     src/ai/break_nav_query.c
+    src/ai/break_ai_runtime.c
+    src/ai/break_ai_obstacle.c
+    src/ai/break_ai_query.c
     src/ai/break_nav_follow.c
     src/ai/break_perception.c
     src/ai/break_behavior.c
     src/ai/break_steer.c)
 set_property(TARGET break_ai PROPERTY C_STANDARD 11)
 target_include_directories(break_ai PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_ai PUBLIC Threads::Threads)
 if(NOT ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(break_ai PUBLIC m)
 endif()
@@ -4305,7 +4309,7 @@ endif()
     set_tests_properties(test_break_game_target_contract PROPERTIES
         LABELS "headless;break_game;platform_contract")
 
-    foreach(ai_test IN ITEMS nav_bake nav_query nav_follow perception behavior steer)
+    foreach(ai_test IN ITEMS nav_bake nav_query nav_follow perception behavior steer ai_dynamic)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
         target_include_directories(test_break_${ai_test} PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_${ai_test} PRIVATE break_ai)

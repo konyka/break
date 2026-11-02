@@ -40,8 +40,56 @@ typedef enum BreakNavError {
     BREAK_NAV_OK = 0,
     BREAK_NAV_INVALID,
     BREAK_NAV_OVERLOAD,
-    BREAK_NAV_FAILED
+    BREAK_NAV_FAILED,
+    BREAK_NAV_STALE,
+    BREAK_NAV_REJECTED
 } BreakNavError;
+
+#define BREAK_AI_MAX_OBSTACLES 4096u
+#define BREAK_AI_MAX_AGENTS 1024u
+#define BREAK_AI_MAX_CACHED_PATHS 256u
+#define BREAK_AI_MAX_SMART_OBJECTS 1024u
+#define BREAK_AI_MAX_FORMATIONS 256u
+#define BREAK_AI_MAX_FORMATION_MEMBERS 32u
+
+typedef struct BreakAiRuntime BreakAiRuntime;
+
+typedef struct BreakAiRuntimeDesc {
+    u32 max_obstacles;
+    u32 max_agents;
+    u32 max_cached_paths;
+    u32 max_smart_objects;
+    u32 max_formations;
+} BreakAiRuntimeDesc;
+
+typedef struct BreakAiObstacleHandle {
+    u32 index;
+    u32 generation;
+} BreakAiObstacleHandle;
+
+typedef struct BreakAiObstacleDesc {
+    f32 min_x;
+    f32 min_z;
+    f32 max_x;
+    f32 max_z;
+} BreakAiObstacleDesc;
+
+typedef struct BreakAiPath {
+    BreakNavPath path;
+    u32 nav_version;
+} BreakAiPath;
+
+BreakAiRuntime *break_ai_runtime_create(BreakNavMesh *mesh, const BreakAiRuntimeDesc *desc);
+void break_ai_runtime_destroy(BreakAiRuntime *runtime);
+BreakNavError break_ai_obstacle_add(BreakAiRuntime *runtime, const BreakAiObstacleDesc *desc,
+                                    BreakAiObstacleHandle *out);
+BreakNavError break_ai_obstacle_update(BreakAiRuntime *runtime, BreakAiObstacleHandle handle,
+                                       const BreakAiObstacleDesc *desc);
+BreakNavError break_ai_obstacle_remove(BreakAiRuntime *runtime, BreakAiObstacleHandle handle);
+u32 break_ai_nav_version(const BreakAiRuntime *runtime);
+BreakNavError break_ai_find_path(BreakAiRuntime *runtime, Vec3 start, Vec3 end,
+                                 u32 expected_version, BreakAiPath *out);
+bool break_ai_path_is_current(const BreakAiRuntime *runtime, const BreakAiPath *path);
 
 BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end,
                                   BreakNavPath *out);
