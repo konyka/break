@@ -78,7 +78,8 @@ myui 新增底部 `Flow` 标签页，采用有界节点列表而非另造画布�
 - Add Event / Add Sequence / Delete 按钮修改图。
 - 名称与常用属性通过 `my_edit` 的 activate 提交；非法输入不产生命令。
 - source node/port、target node/port 与 EXEC/VALUE 选择通过有界数值输入建立连接；按连接 id 断开。
-- 列表和状态随命令栈 revision 刷新，Ctrl+Z/Y 继续走现有全局 undo/redo。
+- 列表和状态随命令栈 revision 与图实例身份刷新，new/reset 替换图时不留旧行；Ctrl+Z/Y 继续走现有全局 undo/redo。
+- Flow 是底部 tab index 2，设置解析与序列化持久化该页；连接草稿只在 Connect/Disconnect 时提交命令。
 
 headless dummy-PAL 测试直接对真实 widget emitter 发送 click/activate，验证 UI → 图修改 → undo → redo，而不是只测试面板辅助函数。
 

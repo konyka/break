@@ -320,7 +320,7 @@ git commit -m "flow: execute events math and entity actions"
 
 - [ ] **Step 1: 添加延迟/预算/原子失败测试**
 
-测试 delay=2 时前两次 tick 不动作、第三次到期；预算=1 时每帧最多一个节点且动作最终完成。构造合法 SET_POSITION 后接 ADD_ITEM 聚合溢出，断言 tick 返回错误、队列/sequence/tick 与起始相同、World 不变。用 `platform_thread` 在另一线程调用 post/tick/reset 并断言 `REJECTED`。
+测试 delay=2 时前两次 tick 不动作、第三次到期；预算=2 时每帧最多两个节点/纯值求值步骤且动作最终跨三帧完成。构造合法 SET_POSITION 后接 ADD_ITEM 聚合溢出，断言 tick 返回错误、队列/sequence/tick 与起始相同、World 不变。用 `platform_thread` 在另一线程调用 post/tick/reset 并断言 `REJECTED`。
 
 - [ ] **Step 2: 运行确认 RED**
 
@@ -333,7 +333,7 @@ cmake --build build-flow-normal --target test_break_flow_runtime -j3
 
 - [ ] **Step 3: 实现节点级与 tick 级快照**
 
-tick 起点复制队列到预分配 backup；节点完成前不移除当前队列项。节点内新增项只追加到尾部，预算/求值失败时恢复 `queue_count` 和 `action_count`，因此当前项可重试。真正执行失败时恢复整个 tick 快照；预算停止则提交已完成前缀并保留余队。
+tick 起点复制队列到预分配 backup；当前项先按值复制并出队以释放容量，节点内新增项只追加到尾部。预算停止时按保存的交换位置恢复当前项、移除其新入队项并还原 `action_count`，因此当前项可重试且满容量队列也能推进。真正执行失败时恢复整个 tick 快照；预算停止则提交已完成前缀并保留余队。
 
 - [ ] **Step 4: GREEN**
 
