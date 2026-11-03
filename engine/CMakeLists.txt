@@ -3204,6 +3204,13 @@ endif()
     target_link_libraries(test_myui_vgcanvas_backend PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_vgcanvas_backend COMMAND test_myui_vgcanvas_backend)
 
+    if(ENGINE_USE_ASAN AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND MYUI_VULKAN_ENABLED)
+        # Keep NVIDIA's unloaded ICDs named for the test-local default
+        # suppressions in test_vulkan_lsan.h; all other tests/options stay intact.
+        set_tests_properties(test_myui_window_manager test_myui_vgcanvas_backend
+            PROPERTIES ENVIRONMENT "VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING=1")
+    endif()
+
     # Win32 headless contract for the desktop GL WGL pointer resolution.
     if(ENGINE_PLATFORM STREQUAL "windows")
         add_executable(test_myui_gl_desktop_win32
