@@ -140,6 +140,11 @@ TEST(stream_tile_uses_the_same_migrated_mesh_path) {
     MeshDrawDesc desc;
     ASSERT_TRUE(mesh_buffer_draw_desc(&mesh, &desc));
     ASSERT_EQ(desc.stride, 36u);
+
+    MeshBuffer before = mesh;
+    tile.verts[0].px = NAN;
+    ASSERT_FALSE(world_presentation_stream_mesh(&tile, vec3(5, 6, 7), &mesh));
+    ASSERT_EQ(memcmp(&mesh, &before, sizeof(mesh)), 0);
 }
 
 TEST(snapshot_overflow_and_invalid_input_are_atomic) {
@@ -169,6 +174,18 @@ TEST(snapshot_overflow_and_invalid_input_are_atomic) {
     f.visibility.outdoor_ids = too_many;
     f.visibility.outdoor_count = WORLD_PRESENT_MAX_OBJECTS + 1u;
     ASSERT_EQ(world_presentation_snapshot(&f.input, &out), WORLD_PRESENTATION_OVERLOAD);
+    ASSERT_EQ(memcmp(&out, &before, sizeof(out)), 0);
+
+    fixture_init(&f);
+    f.visibility.rooms = NULL;
+    f.visibility.room_count = 1u;
+    ASSERT_EQ(world_presentation_snapshot(&f.input, &out), WORLD_PRESENTATION_INVALID);
+    ASSERT_EQ(memcmp(&out, &before, sizeof(out)), 0);
+
+    fixture_init(&f);
+    f.visibility.outdoor_ids = NULL;
+    f.visibility.outdoor_count = 1u;
+    ASSERT_EQ(world_presentation_snapshot(&f.input, &out), WORLD_PRESENTATION_INVALID);
     ASSERT_EQ(memcmp(&out, &before, sizeof(out)), 0);
 
     fixture_init(&f);

@@ -105,11 +105,25 @@ WorldPresentationStatus world_presentation_snapshot(const WorldPresentationInput
     u32 visible[WORLD_PRESENT_MAX_OBJECTS];
     u32 visible_count = input->object_count;
     if (input->visibility) {
+        const VisQuery *query = input->visibility;
+        if (query->room_count > VISAREA_MAX_ROOMS ||
+            query->outdoor_count > WORLD_PRESENT_MAX_OBJECTS) return WORLD_PRESENTATION_OVERLOAD;
+        if ((query->room_count > 0u && !query->rooms) ||
+            (query->outdoor_count > 0u && !query->outdoor_ids)) return WORLD_PRESENTATION_INVALID;
+        for (u32 i = 0; i < query->room_count; i++) {
+            const VisRoom *room = &query->rooms[i];
+            if (room->object_count > VISAREA_MAX_OBJECTS || room->portal_count > 8u)
+                return WORLD_PRESENTATION_OVERLOAD;
+            if (room->object_count > 0u && !room->object_ids) return WORLD_PRESENTATION_INVALID;
+        }
+        VisRoom empty_room;
+        VisQuery safe_query = *query;
+        if (safe_query.room_count == 0u && !safe_query.rooms) safe_query.rooms = &empty_room;
         u32 dropped = 0u;
-        visible_count = visarea_visible(input->visibility, visible,
+        visible_count = visarea_visible(&safe_query, visible,
                                         WORLD_PRESENT_MAX_OBJECTS, &dropped);
-        if (dropped > 0u) return WORLD_PRESENTATION_OVERLOAD;
-        if (visible_count > WORLD_PRESENT_MAX_OBJECTS) return WORLD_PRESENTATION_OVERLOAD;
+        if (dropped > 0u || visible_count > WORLD_PRESENT_MAX_OBJECTS)
+            return WORLD_PRESENTATION_OVERLOAD;
     }
 
     u32 instance_mesh[WORLD_PRESENT_MAX_INSTANCES];
@@ -187,6 +201,14 @@ bool world_presentation_stream_mesh(const StreamTileData *tile, Vec3 translation
                                     MeshBuffer *out) {
     if (!tile || !out || tile->vertex_count == 0u ||
         tile->vertex_count > STREAM_TILE_MAX_VERTS || !finite_vec3(translation)) return false;
+    for (u32 i = 0; i < tile->vertex_count; i++) {
+        const MeshStageVertex *vertex = &tile->verts[i];
+        if (!finite_float(vertex->px) || !finite_float(vertex->py) || !finite_float(vertex->pz) ||
+            !finite_float(vertex->nx) || !finite_float(vertex->ny) || !finite_float(vertex->nz) ||
+            !finite_float(vertex->px + translation.e[0]) ||
+            !finite_float(vertex->py + translation.e[1]) ||
+            !finite_float(vertex->pz + translation.e[2])) return false;
+    }
     if (!mesh_buffer_from_legacy(out, tile->verts, tile->vertex_count, NULL)) return false;
     for (u32 i = 0; i < out->count; i++) {
         out->verts[i].px += translation.e[0];

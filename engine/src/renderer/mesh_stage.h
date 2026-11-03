@@ -4,8 +4,8 @@
 #include <renderer/decal.h>
 #include <renderer/voxel.h>
 
-/* Host copy of the bytes a vertex buffer would receive. This does not
- * create a device buffer and does not draw. */
+/* Legacy 28-byte host staging data. Migrate to MeshVertex before upload;
+ * these functions do not create a device buffer or draw. */
 typedef struct MeshStageVertex {
     f32 px, py, pz;
     f32 nx, ny, nz;

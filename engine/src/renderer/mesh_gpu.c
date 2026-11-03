@@ -190,12 +190,11 @@ static bool world_shader_source(char *out, usize cap, bool fragment,
             "#define u_ambient pc.u_ambient\n"
             "#define u_camera_pos pc.u_camera_pos\n"
             "#define u_base_color pc.u_base_color\n";
-        wrote = snprintf(out, cap, "#version 450 core\n%s%s%s%s%s",
+        wrote = snprintf(out, cap, "#version 450 core\n%s%s%s%s",
                          vulkan ? WORLD_PUSH : gl_uniforms,
                          vulkan ? vk_aliases : "",
-                         vulkan ? "layout(binding = 0) uniform sampler2D u_albedo;\n"
-                                : "layout(binding = 0) uniform sampler2D u_albedo;\n",
-                         "", WORLD_FRAGMENT_BODY);
+                         "layout(binding = 0) uniform sampler2D u_albedo;\n",
+                         WORLD_FRAGMENT_BODY);
     } else {
         const char *gl_uniforms =
             "uniform mat4 u_view;\n"

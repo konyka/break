@@ -163,7 +163,8 @@ Expected: 5/5 PASS。
 ### Task 4: RHI 实例资源与共享提交路径
 
 **Files:**
-- Modify: `engine/src/renderer/world_presentation.h`, `engine/src/renderer/world_presentation.c`
+- Modify: `engine/src/renderer/world_presentation.h`
+- Create: `engine/src/renderer/world_presenter.c`
 - Create: `engine/tests/test_world_presenter_fake.c`
 - Modify: `engine/CMakeLists.txt`
 
@@ -205,14 +206,14 @@ Expected: 2/2 PASS。
 - Consumes: Task 1–4 全部公共 API。
 - Produces: 同一测试源码的 `test_world_presentation_vk` 与 `test_world_presentation_gl` 图形目标；无 display/device 返回 77。
 
-- [ ] **Step 1: 先注册并运行像素 RED**
+- [ ] **Step 1: 注册像素合同并以变异验证 RED**
 
-测试以 128x128 绘制：左下普通红色 quad、右下 V1 流式绿色 quad、上方两个蓝色实例 quad；VisArea 排除黄色全屏 quad。断言 RGB 三色的像素数均超过阈值、黄色为 0。随后提交 sun_color=0 且低 ambient 的夜晚帧，断言同一区域亮度显著下降。先以未实现提交路径运行，应得到缺色/失败而非 skip 冒充通过。
+测试以 128x128 绘制：左下普通 quad 使用红/品红双色纹理，右下为 V1 流式绿色 quad，上方为两个蓝色实例 quad；VisArea 排除黄色全屏 quad。断言红/绿/蓝/品红像素均超过阈值、黄色为 0，并比较实际 `time_of_day_eval` 正午/午夜帧的亮度。像素测试是在核心实现后添加的，初次运行即绿，没有独立前置 RED；临时跳过流式 draw 后绿色计数为 0，得到明确 RED，恢复后再转绿。
 
-- [ ] **Step 2: 在可用后端确认 RED/GREEN**
+- [ ] **Step 2: 在可用后端确认最终 GREEN**
 
 Run: `cmake --build build-world-vk --target test_world_presentation_vk test_world_presentation_gl -j3 && ctest --test-dir build-world-vk -R 'test_world_presentation_(vk|gl)$' --output-on-failure`
-Expected: 设备可用时先 RED，接入实现后两者 PASS；若设备不可用，逐项记录 77 和原因，不写“画面通过”。
+Expected: 设备可用时两者 PASS；若设备不可用，逐项记录 77 和原因，不写“画面通过”。
 
 - [ ] **Step 3: 检查真实证据**
 

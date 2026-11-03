@@ -52,11 +52,11 @@ RHI 的 `mesh_stage_vertex` 布局同时支持 28 字节旧布局和 36 字节�
 
 ## 测试与变异
 
-严格先添加会失败的测试，再实现：
+CPU/fake 合同严格先添加会失败的测试，再实现：
 
 - CPU：28→36 迁移和 UV、V1 流式块迁移、VisArea 过滤、LOD 近远选择/分桶、容量溢出、非法材质与失败原子性、昼夜数值。
 - fake RHI：纹理/sampler 与实际 base color/lighting/fog 写入；普通与流式使用同一管线；可见对象之外的 mesh 不提交；植被批次 instance count、LOD mesh 和实例 matrix 正确；创建失败完整清理。
-- 真实图形：同一帧用不同颜色绘制普通网格、V1 流式块和至少两株实例植被，VisArea 排除的高亮全屏网格不得出现；昼夜两帧必须有显著明暗差。Vulkan 和 OpenGL 可创建设备时分别执行并保存像素统计；无 display/device 返回既有 skip code，并在报告标为缺证。
-- 回归：focused normal、ASan+UBSan、TSan 均使用 `-j3`；运行现有 mesh/world/RHI 测试和可用 graphics 测试。
+- 真实图形：同一帧用不同颜色绘制普通网格、V1 流式块和至少两株由 `vegetation_build` 生成的实例植被；普通网格使用双色纹理验证 UV，VisArea 排除的高亮全屏网格不得出现，昼夜两帧必须有显著明暗差。Vulkan 和 OpenGL 可创建设备时分别执行并保存像素统计；无 display/device 返回既有 skip code，并在报告标为缺证。本次像素测试在核心实现后添加，初次即绿；这一例外和后续流式变异 RED 必须在报告中明示。
+- 回归：focused normal、ASan+UBSan、TSan 的构建均使用 `-j3`；运行现有 mesh/world/RHI 测试和可用 graphics 测试。
 
 至少对材质光照、可见性过滤、LOD 选择和流式同源提交做变异检查：临时破坏实现，确认对应测试变红，再恢复并重新变绿。报告记录每条命令、结果、图形设备/跳过原因和未验证平台。

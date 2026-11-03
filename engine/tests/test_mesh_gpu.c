@@ -1,6 +1,12 @@
 #include "test_framework.h"
 #include <renderer/mesh_gpu.h>
 
+bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
+    (void)dev;
+    (void)out;
+    return false;
+}
+
 TEST(mesh_gpu_rejects_a_null_device_and_command) {
     Decal decal;
     memset(&decal, 0, sizeof(decal));
