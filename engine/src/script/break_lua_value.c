@@ -25,6 +25,12 @@
 
 #define BREAK_LUA_HANDLE_METATABLE "break_lua.host_handle"
 
+static int break_lua_handle_tostring(lua_State *L)
+{
+    lua_pushliteral(L, BREAK_LUA_HANDLE_METATABLE);
+    return 1;
+}
+
 /* Pushes one argument value. Allocation (string interning/userdata) is safe
  * here: the impl runs under the dispatch pcall. */
 BreakLuaError break_lua_push_value(lua_State *L,
@@ -61,6 +67,8 @@ BreakLuaError break_lua_push_value(lua_State *L,
         *handle = value->as.handle;
         fresh = luaL_newmetatable(L, BREAK_LUA_HANDLE_METATABLE);
         if (fresh) {
+            lua_pushcfunction(L, break_lua_handle_tostring);
+            lua_setfield(L, -2, "__tostring");
             lua_pushboolean(L, 0);
             lua_setfield(L, -2, "__metatable");
         }

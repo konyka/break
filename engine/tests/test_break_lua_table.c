@@ -33,6 +33,14 @@ static const char kBadReturns[] =
     "end\n"
     "function unsupported()\n"
     "    return {callback = function() end}\n"
+    "end\n"
+    "function shared()\n"
+    "    local child = {value = 7}\n"
+    "    return {a = child, b = child}\n"
+    "end\n"
+    "function shared_over_limit()\n"
+    "    local child = {value = 7}\n"
+    "    return {a = child, b = child, extra = '123456789'}\n"
     "end\n";
 
 static BreakLuaTableValue table_value(void)
@@ -267,9 +275,70 @@ TEST(table_output_limits_and_cycles_preserve_previous_output)
     break_lua_runtime_destroy(rt);
 }
 
+TEST(table_shared_references_expand_independently_and_followup_failure_is_atomic)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    BreakLuaTable *input = break_lua_table_create(1u, 1u, 1u);
+    BreakLuaTable *output = break_lua_table_create(6u, 2u, 8u);
+    BreakLuaTableNodeInfo a_info;
+    BreakLuaTableNodeInfo b_info;
+    BreakLuaTableNodeInfo value_info;
+    BreakLuaTableValue extra;
+    u32 root;
+    u32 a;
+    u32 b;
+    u32 a_value;
+    u32 b_value;
+    u32 added = 0u;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_NOT_NULL(input);
+    ASSERT_NOT_NULL(output);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "bad", kBadReturns,
+                                            strlen(kBadReturns)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_call_table(rt, "bad", "shared", input, output),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_table_count(output), 5u);
+    root = break_lua_table_root(output);
+    a = named_child(output, root, "a");
+    b = named_child(output, root, "b");
+    ASSERT_TRUE(a != UINT32_MAX && b != UINT32_MAX);
+    ASSERT_TRUE(a != b);
+    ASSERT_EQ(break_lua_table_node(output, a, &a_info), BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_table_node(output, b, &b_info), BREAK_LUA_OK);
+    a_value = a_info.first_child;
+    b_value = b_info.first_child;
+    ASSERT_TRUE(a_value != b_value);
+    ASSERT_EQ(break_lua_table_node(output, a_value, &value_info), BREAK_LUA_OK);
+    ASSERT_FLOAT_EQ(value_info.value.as.n, 7.0, 1e-12);
+    ASSERT_EQ(break_lua_table_node(output, b_value, &value_info), BREAK_LUA_OK);
+    ASSERT_FLOAT_EQ(value_info.value.as.n, 7.0, 1e-12);
+
+    ASSERT_EQ(break_lua_runtime_call_table(rt, "bad", "shared_over_limit",
+                                           input, output),
+              BREAK_LUA_OVERLOAD);
+    ASSERT_EQ(break_lua_table_count(output), 5u);
+    ASSERT_EQ(break_lua_table_node(output, a_value, &value_info), BREAK_LUA_OK);
+    ASSERT_FLOAT_EQ(value_info.value.as.n, 7.0, 1e-12);
+    ASSERT_EQ(break_lua_table_node(output, b_value, &value_info), BREAK_LUA_OK);
+    ASSERT_FLOAT_EQ(value_info.value.as.n, 7.0, 1e-12);
+
+    extra = number_value(9.0);
+    ASSERT_EQ(break_lua_table_add(output, a, "only_a", 6u, &extra, &added),
+              BREAK_LUA_OK);
+    ASSERT_TRUE(named_child(output, a, "only_a") != UINT32_MAX);
+    ASSERT_EQ(named_child(output, b, "only_a"), UINT32_MAX);
+    ASSERT_EQ(break_lua_table_count(output), 6u);
+    ASSERT_EQ(lua_gettop((lua_State *)break_lua_test_lua_state(rt)), 0);
+    break_lua_table_destroy(output);
+    break_lua_table_destroy(input);
+    break_lua_runtime_destroy(rt);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(table_create_validates_hard_limits);
     RUN_TEST(table_builder_enforces_depth_node_and_string_bounds_atomically);
     RUN_TEST(table_call_round_trips_nested_values_keys_and_host_handle);
     RUN_TEST(table_output_limits_and_cycles_preserve_previous_output);
+    RUN_TEST(table_shared_references_expand_independently_and_followup_failure_is_atomic);
 TEST_MAIN_END()

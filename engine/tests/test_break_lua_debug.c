@@ -212,6 +212,47 @@ TEST(debug_step_out_pauses_in_the_caller)
     run_step_case(BREAK_LUA_DEBUG_STEP_OUT, 0u, false);
 }
 
+static void run_cross_call_step_case(BreakLuaDebugStep action,
+                                     u32 expected_line)
+{
+    BreakLuaRuntime *runtime = make_runtime(0u);
+    BreakLuaDebug *debug;
+    DebugProbe probe;
+    BreakLuaValue result;
+    u32 id = 0u;
+    ASSERT_NOT_NULL(runtime);
+    memset(&probe, 0, sizeof(probe));
+    probe.action = action;
+    debug = break_lua_debug_create(runtime, pause_callback, &probe);
+    ASSERT_NOT_NULL(debug);
+    ASSERT_EQ(break_lua_debug_breakpoint_set(debug, "debuggee", 7u, &id),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_debug_set_enabled(debug, true), BREAK_LUA_OK);
+    ASSERT_EQ(call_outer(runtime, &result), BREAK_LUA_OK);
+    ASSERT_EQ(probe.breakpoint_hits, 1u);
+    ASSERT_EQ(probe.step_hits, 1u);
+    ASSERT_EQ(probe.hits, 2u);
+    ASSERT_EQ(probe.lines[0], 7u);
+    ASSERT_EQ(probe.lines[1], expected_line);
+    if (action == BREAK_LUA_DEBUG_STEP_INTO) {
+        ASSERT_TRUE(probe.depths[1] > probe.depths[0]);
+    } else {
+        ASSERT_EQ(probe.depths[1], probe.depths[0]);
+    }
+    break_lua_debug_destroy(debug);
+    break_lua_runtime_destroy(runtime);
+}
+
+TEST(debug_step_into_crosses_from_outer_call_into_inner)
+{
+    run_cross_call_step_case(BREAK_LUA_DEBUG_STEP_INTO, 2u);
+}
+
+TEST(debug_step_over_skips_inner_and_stops_at_outer_next_line)
+{
+    run_cross_call_step_case(BREAK_LUA_DEBUG_STEP_OVER, 8u);
+}
+
 TEST(debug_hook_preserves_budget_and_restores_line_hook)
 {
     BreakLuaRuntime *runtime = make_runtime(10000u);
@@ -290,6 +331,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(debug_step_into_pauses_on_next_line);
     RUN_TEST(debug_step_over_does_not_enter_a_deeper_frame);
     RUN_TEST(debug_step_out_pauses_in_the_caller);
+    RUN_TEST(debug_step_into_crosses_from_outer_call_into_inner);
+    RUN_TEST(debug_step_over_skips_inner_and_stops_at_outer_next_line);
     RUN_TEST(debug_hook_preserves_budget_and_restores_line_hook);
     RUN_TEST(enabling_debug_does_not_open_sandbox_libraries);
     RUN_TEST(debug_host_can_request_step_into_without_a_breakpoint);

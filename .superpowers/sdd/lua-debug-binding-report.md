@@ -61,3 +61,51 @@
 - 指令预算按 Lua VM 指令计数，单个 C 标准库调用内部循环不计入；既有内存预算继续提供分配上限。
 - 既有 test-only mid-frame reloader 的嵌套 count 覆盖限制仍按源码注释保留；生产沙箱没有 reload 绑定。普通模块执行、直接调用和 frame hook 的预算/调试组合已由测试覆盖。
 - 固定上限是有意合同：64 live host handles/runtime、32 breakpoints、32 captured Lua frames、256 table nodes、16 表深度、127 字节字符串；超限返回错误而非增长或静默截断。
+
+## Fix round 1：评审地址泄露与覆盖补强
+
+### 修复与新增覆盖
+
+- `break_lua_value.c` 在 host-handle metatable 初次创建时安装受控 `__tostring`，只返回固定文本 `break_lua.host_handle`。没有使用 `lua_topointer`；`__metatable=false`、userdata 中的 slot/generation、registry 校验和 stale 语义均未改变。
+- `test_break_lua_handle.c` 新增 `host_handle_tostring_and_print_do_not_expose_an_address`，真实模块同时执行 `print(handle)` 和 `tostring(handle)`，并继续断言 `debug/package` 缺席。
+- `test_break_lua_debug.c` 新增 outer line 7 断点：INTO 必须在 inner line 2 暂停且栈更深，OVER 必须在 outer line 8 暂停且深度不变。
+- `test_break_lua_table.c` 新增 `{a=shared,b=shared}`：根加两个独立子树共 5 节点，两个 value 节点不同且都为 7；后续 9 字节字符串超限保持这 5 节点，向 a 添加 `only_a` 不影响 b。
+
+### RED、GREEN 与变异输出
+
+handle 回归在安装 `__tostring` 前实际输出 Lua 堆地址：
+
+```text
+host_handle_tostring_and_print_do_not_expose_an_address ... break_lua.host_handle: 0x1efa41f0
+FAIL: "break_lua.host_handle: 0x1efa41f0" != "break_lua.host_handle"
+Results: 3 passed, 1 failed, 4 total
+```
+
+最小修复后，同一真实调用输出固定文本，4/4 通过；原有 release/reuse/stale 测试保持通过：
+
+```text
+host_handle_tostring_and_print_do_not_expose_an_address ... break_lua.host_handle
+OK
+Results: 4 passed, 0 failed, 4 total
+```
+
+跨层级步进和共享表属于评审确认的“实现已正确、覆盖不足”，新增测试在原实现上分别为 9/9 和 5/5，不伪造功能缺失 RED。随后用变异证明覆盖有效：
+
+- INTO 改成 OVER 的深度判断：跨层级 INTO 的 `probe.lines[1]` 断言 RED，宿主主动 INTO 也 RED；OVER 改成总是命中后，跨层级 OVER 行号断言 RED。恢复后 9/9。
+- 跳过第二棵共享子树展开：新共享表用例在 `count == 5` 处 RED。移除失败时的 scratch 交换/count 恢复后，新共享用例在失败后续调用仍应为 5 节点处 RED，既有输出原子性用例也 RED。恢复后 5/5。
+
+### focused 命令与结果
+
+所有增量构建均为 `cmake --build <tree> -j3 --target test_break_lua_handle test_break_lua_debug test_break_lua_table`，然后执行：
+
+```bash
+ctest --test-dir build-p9-lua -R 'test_break_lua|test_break_game|test_cry_style_prototype|test_script_lua' --output-on-failure
+ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+  ctest --test-dir build-p9-lua-asan -R 'test_break_lua|test_break_game|test_cry_style_prototype|test_script_lua' --output-on-failure
+TSAN_OPTIONS=halt_on_error=1 \
+  ctest --test-dir build-p9-lua-tsan -R 'test_break_lua|test_break_game|test_cry_style_prototype|test_script_lua' --output-on-failure
+```
+
+三棵树均输出 `100% tests passed, 0 tests failed out of 20`，ASan+UBSan/TSan 无诊断。`build-p9-lua-notests` 中 `break_lua`、`break_lua_debug`、`break_game_lua` 也以 `-j3` 重建成功。`git diff --check` 无输出、退出码 0。
+
+验证限制同前：仅当前 Linux/GCC focused 范围，未执行 Windows 或全仓库套件；没有远程调试入口。

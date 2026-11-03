@@ -9,6 +9,10 @@
 static const char kEcho[] =
     "function echo(value)\n"
     "    return value\n"
+    "end\n"
+    "function describe(value)\n"
+    "    print(value)\n"
+    "    return tostring(value), debug == nil and package == nil\n"
     "end\n";
 
 static const char kSpin[] =
@@ -118,8 +122,33 @@ TEST(direct_module_call_obeys_instruction_budget_and_recovers)
     break_lua_runtime_destroy(rt);
 }
 
+TEST(host_handle_tostring_and_print_do_not_expose_an_address)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    BreakLuaHostHandle handle = {0u, 0u};
+    BreakLuaValue arg;
+    BreakLuaValue ret[2];
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "handles", kEcho, strlen(kEcho)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_host_handle_acquire(rt, 55u, &handle), BREAK_LUA_OK);
+    memset(&arg, 0, sizeof(arg));
+    arg.type = BREAK_LUA_VALUE_HOST_HANDLE;
+    arg.as.handle = handle;
+    ASSERT_EQ(break_lua_runtime_call(rt, "handles", "describe", &arg, 1u,
+                                     ret, 2u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(ret[0].type, BREAK_LUA_VALUE_STRING);
+    ASSERT_STR_EQ(ret[0].as.s.data, "break_lua.host_handle");
+    ASSERT_EQ(ret[1].type, BREAK_LUA_VALUE_BOOL);
+    ASSERT_TRUE(ret[1].as.b);
+    ASSERT_EQ(break_lua_host_handle_release(rt, handle), BREAK_LUA_OK);
+    break_lua_runtime_destroy(rt);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(host_handle_release_and_slot_reuse_reject_stale_generation);
     RUN_TEST(host_handle_round_trips_through_lua_without_exposing_a_pointer);
     RUN_TEST(direct_module_call_obeys_instruction_budget_and_recovers);
+    RUN_TEST(host_handle_tostring_and_print_do_not_expose_an_address);
 TEST_MAIN_END()
