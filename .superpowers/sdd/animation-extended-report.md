@@ -92,7 +92,7 @@
 1. **Facial 重复时间**：新增 `facial_repeated_times_select_later_key`，同一曲线覆盖首、中、尾重复。修复前结果为 `5 passed, 1 failed`，首重复返回 0.1 而非后键 0.2；将首前判断从 `time <= times[0]` 改为严格 `<` 后 `6/6` 通过。
 2. **Facial 有限时间溢出**：新增 `facial_extreme_finite_curve_uses_wide_interpolation`，在 `[-FLT_MAX, FLT_MAX]` 上以 `FLT_MAX/2` 求值。修复前 `isfinite(weight)` 失败，`6 passed, 1 failed`；span、分子和插值改用 double 后结果有限且为 0.75，`7/7` 通过。
 3. **Header 完整性**：新增 `codec_rejects_every_stream_byte_corruption`，逐字节翻转整个流并要求输出不变。修复前 header flags 翻转被接受，`8 passed, 1 failed`。编码格式升为 v2，CRC 覆盖 header `[0,28)` 加 payload `[32,end)`，CRC 字段自身四字节排除；测试中的语义损坏修复器同步该规则后 `9/9` 通过。
-4. **量化中间舍入**：`codec_uses_wide_quantization_at_half_step_boundaries` 先得到 `10 passed, 1 failed`。双精度归一化/仿射量化后，评审 time 反例精确解为 `16.186769485473633f`，scalar 反例精确解为 `-37.1595344543457f`。
+4. **量化中间舍入**：`codec_uses_wide_quantization_at_half_step_boundaries` 先得到 `10 passed, 1 failed`。时间/仿射量化改用双精度中间计算后，评审 time 反例精确解为 `16.186769485473633f`，scalar 反例精确解为 `-37.1595344543457f`。
 5. **最终 f32 舍入误差界**：双精度量化使 `codec_published_bounds_include_final_f32_rounding` 单独 RED（`10 passed, 1 failed`）：一个 range=0.1 的合法值仍比基础半步界多约 `7.3e-12` 误差。公共界改为量化半步加 `M*2^-23+2^-149`，再 `nextafterf(...,+INFINITY)`；修复后 `11/11` 通过。该项不是放宽测试 epsilon，而是同时改变量化实现并给出保守数值上界。
 6. **Morph 初始化原子性**：`morph_invalid_init_preserves_existing_object_bytes` 用 0xA5 sentinel 覆盖零顶点与超容量，修复前 `9 passed, 1 failed`；先验证再 memset 后 `10/10` 通过。
 7. **枚举 ABI**：普通 GCC 的负枚举测试本来就通过，因此没有伪造普通 RED。在隔离副本将 `AnimPathType` 改成 signed-int ABI 后，`codec_rejects_negative_source_enums_before_writing` 真实失败；path/interp 改显式白名单后，同一 ABI 变体全套通过，随后恢复头文件链接并由普通构建复验。

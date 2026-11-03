@@ -66,7 +66,7 @@ flags 仅定义 loop 与 playing 位，其余位必须为零。CRC32 依次覆�
 
 ### 4.2 量化规则与误差上界
 
-时间使用 clip duration 全局仿射量化到 `0..65535`。每个 translation/scale channel 按分量使用该 channel 的 min/max 仿射量化；零范围分量精确保留。rotation 先归一化，再将每个 `[-1,1]` 分量量化到 `0..65535`，解码后归一化。归一化、量化比例和解压仿射运算使用 double 中间值，避免 f32 中间舍入越过量化半步边界；最终资源值仍按 f32 输出。
+时间使用 clip duration 全局仿射量化到 `0..65535`。每个 translation/scale channel 按分量使用该 channel 的 min/max 仿射量化；零范围分量精确保留。rotation 先归一化，再将每个 `[-1,1]` 分量量化到 `0..65535`，解码后归一化。时间/仿射量化比例及对应解压仿射运算使用 double 中间值，避免 f32 中间舍入越过量化半步边界；四元数归一化仍使用 f32，最终资源值按 f32 输出。
 
 令 `Q(d) = d / (2 * 65535)`，`R(M) = M * 2^-23 + 2^-149`，`B(d,M) = nextafterf(Q(d) + R(M), +infinity)`。公共辅助函数返回以下保守上界，包含 double 中间运算的微小误差、最终 f32 舍入和 subnormal 情况：
 
