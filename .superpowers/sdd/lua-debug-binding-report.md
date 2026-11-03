@@ -109,3 +109,50 @@ TSAN_OPTIONS=halt_on_error=1 \
 三棵树均输出 `100% tests passed, 0 tests failed out of 20`，ASan+UBSan/TSan 无诊断。`build-p9-lua-notests` 中 `break_lua`、`break_lua_debug`、`break_game_lua` 也以 `-j3` 重建成功。`git diff --check` 无输出、退出码 0。
 
 验证限制同前：仅当前 Linux/GCC focused 范围，未执行 Windows 或全仓库套件；没有远程调试入口。
+
+## 主树集成追加修复：editor host-handle 结果
+
+### 根因与行为合同
+
+P9 给 `BreakLuaValueType` 增加 `BREAK_LUA_VALUE_HOST_HANDLE` 后，`editor_lua.c` 的结果 switch 缺少对应 case，完整构建在既有 `-Werror=switch` 下失败。没有关闭或绕过警告。
+
+编辑器没有脚本侧 host-handle 生产入口。新增 test-only `break_editor_test_lua_runtime` 访问器，测试经公开 reload/call 在 console 持久 `state.pending_handle` 安装真实句柄，然后执行 `return state.pending_handle`。该访问器位于 `#if defined(BREAK_EDITOR_TESTING)`，不进入生产 `break_editor`。
+
+选择既有不可表示结果语义：chunk/eval 本身成功，唯一日志是有界 `error: console: result not representable`。不把句柄当数值 0，不显示 userdata 地址，不改变沙箱或 generation 语义。
+
+### RED / GREEN
+
+先复现构建回归：
+
+```text
+editor_lua.c:824:13: error: switch 没有处理枚举值‘BREAK_LUA_VALUE_HOST_HANDLE’ [-Werror=switch]
+cc1: all warnings being treated as errors
+gmake: *** [break_editor] Error 2
+```
+
+写好真实 eval 测试后，以空 `HOST_HANDLE` case 使测试可构建，观察到明确行为 RED：eval 成功但没有任何结果日志，`f.sink.count != 1u`，结果 `35 passed, 1 failed, 36 total`。加入有界拒绝后，新用例和全部 editor Lua 测试通过：`36 passed, 0 failed, 36 total`。
+
+### 构建与 focused 输出
+
+```bash
+cmake --build build-p9-lua -j3 --target engine break_editor
+# [100%] Built target engine
+# [100%] Built target break_editor
+
+cmake --build build-p9-lua -j3 --target \
+  test_break_lua_runtime test_break_lua_module test_break_lua_value \
+  test_break_lua_binding test_break_lua_handle test_break_lua_table \
+  test_break_lua_debug test_break_lua_ecs_apply \
+  test_editor_doc test_editor_cmd test_editor_scene test_editor_components \
+  test_editor_viewport test_editor_gizmo test_editor_assets test_editor_i18n \
+  test_editor_input_script test_editor_image test_editor_scene_textures \
+  test_editor_fonts test_editor_settings test_editor_lua test_editor_shell \
+  test_script_lua
+
+ctest --test-dir build-p9-lua \
+  -R 'test_break_lua|test_editor|test_break_editor|test_script_lua' \
+  --output-on-failure
+# 100% tests passed, 0 tests failed out of 26
+```
+
+覆盖包含新 `eval_host_handle_result_is_explicitly_rejected`、全部 break_lua、editor Lua 36 例、editor CPU/shell 回归、editor target contract 和兼容 `test_script_lua`。本次只运行上述 normal 集成构建/focused；未重复 claim 新增 ASan+UBSan/TSan 证据，也未执行 Windows 或全仓库套件。
