@@ -572,6 +572,7 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
 static AudioResult voice_start(AudioExtended *ext, u32 slot, u32 event_index,
                                bool new_generation, Vec3 position,
                                AudioVoiceHandle *out) {
+    if (!voice_command_space(&ext->voices[slot])) return AUDIO_OVERLOAD;
     AudioEvent *event = &ext->events[event_index];
     f32 spatial_gain = event_spatial_gain(ext, &event->desc, position);
     return voice_start_pcm(ext, slot, event->desc.clip, &event->desc,

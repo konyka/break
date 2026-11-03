@@ -1,3 +1,10 @@
+## 本轮更新：P10 音乐、DSP、遮挡与声音事件（2026-11-03）
+
+- **交付**：在同一 `AudioSystem`/miniaudio engine 内新增固定容量 clip、命名事件和 32 个预建 PCM voice（30 事件 + 2 音乐）。事件支持 ALLOW/RESTART/IGNORE 与 REJECT/STEAL_OLDEST，voice handle 带 generation；音乐支持 16 轨 playlist、loop、零淡化切轨和逐样本交叉淡化。四级 DSP 包含低通、反馈延迟和固定 tap 混响。射线仅在 GameThread 的 trigger/position/listener 路径执行，回调消费预分配命令/PCM 和原子增益快照，不做文件 I/O、网络、游戏逻辑或热分配。详细合同见 `docs/design/audio_extended.md`，TDD 台账见 `.superpowers/sdd/audio-extended-report.md`。
+- **Legacy 边界**：`audio_play`、`audio_play_3d` 和兼容命名的 `audio_play_streamed` 现在打开时完整解码，不再由混音回调读取文件。`AudioStreamManager` API 保留；大文件打开成本和解码内存由调用方承担。
+- **验证**：`test_audio_extended` 21/21、`test_audio_dsp` 5/5、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan 的 audio focused（含 realtime contract）均 4/4，无 sanitizer 报告。normal 正式 `engine` 构建成功。逐项 RED/GREEN 与六组变异恢复证据已记录，包括 clip 失败原子、voice generation、delay feedback、交叉淡化、遮挡 ray 和禁止 legacy 文件流。
+- **限制**：只接受 48 kHz f32 mono/stereo；无实际听测、真实声卡、Windows/macOS、重采样或物理声学验证。固定容量满返回错误；legacy 文件打开会同步完整解码。
+
 ## 本轮更新：武器状态机与权威开火意图（2026-11-02）
 
 - **交付**：`break_game` 支持 64 种宿主定义武器，每 Actor 保存弹匣、tick、冷却与装填状态。装备、退弹、装填、tick、弹药查询和开火均检查创建线程与 Entity generation；开火只输出带 shooter、weapon_id、damage 和全局单调 sequence 的权威 intent，不选择目标、不检测命中、不扣生命。

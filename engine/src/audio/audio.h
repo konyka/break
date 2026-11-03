@@ -77,8 +77,8 @@ void         audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32
 void         audio_stop(AudioSystem *as, u32 source_id);
 void         audio_set_listener(AudioSystem *as, Vec3 pos, Vec3 forward, Vec3 up);
 
-/* ---- Streaming playback (miniaudio MA_SOUND_FLAG_STREAM) ----
- * Decodes from disk on the fly instead of loading the whole file. */
+/* ---- Compatibility file playback ----
+ * The complete file is decoded when opened; the audio callback reads PCM only. */
 u32          audio_play_streamed(AudioSystem *as, const char *path, f32 volume,
                                  bool looping, bool spatial, Vec3 position);
 

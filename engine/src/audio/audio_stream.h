@@ -6,10 +6,9 @@
 /*
  * Audio Streaming System
  *
- * Streams large audio files (WAV/OGG/MP3) straight from disk via miniaudio's
- * MA_SOUND_FLAG_STREAM instead of decoding the whole file into memory. Each
- * stream is a spatializable source so the demo can place sounds in the world
- * and let distance attenuation roll off naturally.
+ * Compatibility API for long sounds. Files are fully decoded at open so the
+ * audio callback consumes PCM without file I/O. Each stream is spatializable
+ * and uses the same miniaudio inverse-distance attenuation as the demo.
  */
 
 #define AUDIO_STREAM_MAX_SOURCES    16
@@ -61,7 +60,7 @@ void audio_stream_pause(AudioStreamManager *mgr, i32 stream_idx);
 void audio_stream_stop(AudioStreamManager *mgr, i32 stream_idx);
 void audio_stream_set_position(AudioStreamManager *mgr, i32 stream_idx, Vec3 position);
 
-/* Update: poll playback state each frame (miniaudio refills internally). */
+/* Update: poll playback state each frame (miniaudio owns decoded playback). */
 void audio_stream_update(AudioStreamManager *mgr);
 
 /* Get state */

@@ -516,6 +516,155 @@ TEST(extended_voice_uses_bus_and_master_gain)
     audio_system_destroy(as);
 }
 
+static void wav_u16(u8 *out, u32 value) {
+    out[0] = (u8)value;
+    out[1] = (u8)(value >> 8);
+}
+
+static void wav_u32(u8 *out, u32 value) {
+    wav_u16(out, value & 0xFFFFu);
+    wav_u16(out + 2, value >> 16);
+}
+
+static bool write_pcm_wav(const char *path) {
+    u8 header[44] = {0};
+    memcpy(header, "RIFF", 4);
+    wav_u32(header + 4, 44);
+    memcpy(header + 8, "WAVEfmt ", 8);
+    wav_u32(header + 16, 16);
+    wav_u16(header + 20, 1);
+    wav_u16(header + 22, 1);
+    wav_u32(header + 24, 48000);
+    wav_u32(header + 28, 96000);
+    wav_u16(header + 32, 2);
+    wav_u16(header + 34, 16);
+    memcpy(header + 36, "data", 4);
+    wav_u32(header + 40, 8);
+    const i16 samples[] = {8192, 16384, -16384, 32767};
+    FILE *file = fopen(path, "wb");
+    if (!file) return false;
+    bool ok = fwrite(header, 1, sizeof(header), file) == sizeof(header) &&
+              fwrite(samples, sizeof(samples[0]), 4, file) == 4;
+    fclose(file);
+    return ok;
+}
+
+TEST(legacy_file_apis_render_predecoded_pcm)
+{
+    char path[512];
+    test_tmp(path, sizeof(path), "audio-legacy.pcm");
+    ASSERT_TRUE(write_pcm_wav(path));
+    for (u32 mode = 0; mode < 2; ++mode) {
+        AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+        ASSERT_NOT_NULL(as);
+        u32 voice = mode == 0 ? audio_play(as, path, 1.0f, false) :
+            audio_play_streamed(as, path, 1.0f, false, false, vec3(0, 0, 0));
+        ASSERT_NEQ(voice, 0u);
+        f32 output[8];
+        ASSERT_EQ(audio_system_render(as, output, 4), AUDIO_OK);
+        const f32 expected[] = {0.25f, 0.5f, -0.5f, 32767.0f / 32768.0f};
+        for (u32 i = 0; i < 4; ++i) {
+            ASSERT_FLOAT_EQ(output[2*i], expected[i], 1e-5f);
+            ASSERT_FLOAT_EQ(output[2*i+1], expected[i], 1e-5f);
+        }
+        audio_stop(as, voice);
+        audio_system_destroy(as);
+    }
+    ASSERT_EQ(remove(path), 0);
+}
+
+static void render_dsp_fixture(f32 output[16]) {
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    if (!as) return;
+    const f32 samples[] = {1, 0, 0, 0, 0, 0, 0, 0};
+    AudioClipHandle clip = register_ramp(as, samples, 8);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.dsp.stage_count = 2;
+    desc.dsp.stages[0].type = AUDIO_DSP_FILTER;
+    desc.dsp.stages[0].cutoff_hz = 1000.0f;
+    desc.dsp.stages[1].type = AUDIO_DSP_DELAY;
+    desc.dsp.stages[1].delay_frames = 2;
+    desc.dsp.stages[1].mix = 1.0f;
+    if (audio_event_register(as, "fixture", &desc) == AUDIO_OK) {
+        AudioVoiceHandle voice;
+        if (audio_event_trigger(as, "fixture", vec3(0, 0, 0), &voice) == AUDIO_OK) {
+            memset(output, 0, 16 * sizeof(f32));
+            audio_system_render(as, output, 8);
+        }
+    }
+    audio_system_destroy(as);
+}
+
+TEST(fake_backend_pcm_is_bit_exact_across_instances)
+{
+    f32 first[16], second[16];
+    render_dsp_fixture(first);
+    render_dsp_fixture(second);
+    ASSERT_EQ(memcmp(first, second, sizeof(first)), 0);
+    ASSERT_TRUE(first[4] != 0.0f);
+}
+
+TEST(null_backend_accepts_concurrent_command_lifecycle)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    f32 samples[4800];
+    for (u32 i = 0; i < 4800; ++i) samples[i] = 0.1f;
+    AudioClipHandle clip = register_named_pcm(as, "null-loop", samples, 4800);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.looping = true;
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "null-event", &desc), AUDIO_OK);
+    AudioClipHandle tracks[] = {clip, clip};
+    AudioMusicPlaylistDesc playlist;
+    memset(&playlist, 0, sizeof(playlist));
+    playlist.tracks = tracks;
+    playlist.track_count = 2;
+    playlist.loop = true;
+    playlist.crossfade_frames = 16;
+    playlist.volume = 0.5f;
+    ASSERT_EQ(audio_music_set_playlist(as, &playlist), AUDIO_OK);
+    ASSERT_EQ(audio_music_play(as), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    for (u32 i = 0; i < 64; ++i) {
+        AudioResult triggered = audio_event_trigger(as, "null-event",
+            vec3((f32)(i % 4), 0, 0), &voice);
+        ASSERT_TRUE(triggered == AUDIO_OK || triggered == AUDIO_OVERLOAD);
+        audio_system_update(as, vec3((f32)(i % 3), 0, 0),
+                            vec3(0, 0, -1), vec3(0, 1, 0));
+        ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+    }
+    if (voice) (void)audio_voice_stop(as, voice);
+    (void)audio_music_stop(as);
+    audio_system_destroy(as);
+}
+
+TEST(event_overload_does_not_run_spatial_ray)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 sample = 0.5f;
+    AudioClipHandle clip = register_ramp(as, &sample, 1);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "full-commands", &desc), AUDIO_OK);
+    FakeRay ray;
+    memset(&ray, 0, sizeof(ray));
+    audio_set_occlusion_ray_callback(as, fake_occlusion_ray, &ray);
+    AudioVoiceHandle voice = 0;
+    for (u32 i = 0; i < 16; ++i) {
+        ASSERT_EQ(audio_event_trigger(as, "full-commands", vec3(1, 0, 0), &voice),
+                  AUDIO_OK);
+    }
+    ASSERT_EQ(ray.calls, 16u);
+    ASSERT_EQ(audio_event_trigger(as, "full-commands", vec3(1, 0, 0), &voice),
+              AUDIO_OVERLOAD);
+    ASSERT_EQ(ray.calls, 16u);
+    ASSERT_EQ(voice, 0u);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -534,4 +683,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(spatial_event_combines_distance_and_ray_occlusion);
     RUN_TEST(nonspatial_event_never_casts_ray);
     RUN_TEST(extended_voice_uses_bus_and_master_gain);
+    RUN_TEST(legacy_file_apis_render_predecoded_pcm);
+    RUN_TEST(fake_backend_pcm_is_bit_exact_across_instances);
+    RUN_TEST(null_backend_accepts_concurrent_command_lifecycle);
+    RUN_TEST(event_overload_does_not_run_spatial_ray);
 TEST_MAIN_END()

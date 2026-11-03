@@ -5429,6 +5429,15 @@ endif()
     target_link_libraries(test_audio_dsp PRIVATE m)
     add_test(NAME test_audio_dsp COMMAND test_audio_dsp)
 
+    add_test(NAME test_audio_realtime_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DAUDIO_EXTENDED=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_extended.c
+            -DAUDIO_DSP=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_dsp.c
+            -DAUDIO_LEGACY=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_realtime_contract.cmake)
+    set_tests_properties(test_audio test_audio_extended test_audio_dsp
+        test_audio_realtime_contract PROPERTIES LABELS "headless;audio")
+
     # test_vulkan: full backend integration + golden-image regression (VK + GL).
     # Runs from the source dir so it can find shaders/ and committed golden images.
     # Only registered where it exercises the compiled backend: on metal/d3d12
