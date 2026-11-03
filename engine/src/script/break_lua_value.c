@@ -23,11 +23,11 @@
  * control; the wrapper's pcall unwinds anything they do not. The tests
  * assert lua_gettop == 0 after calls and frame dispatches alike. */
 
-/* Pushes one argument value. Allocation (string interning) is safe here:
- * the impl runs under the dispatch pcall. STRING values with an over-cap
- * len fail bounded (OVERLOAD) before any byte is read from data; unknown
- * tags are malformed (INVALID). */
-static BreakLuaError break_lua_push_value(lua_State *L,
+#define BREAK_LUA_HANDLE_METATABLE "break_lua.host_handle"
+
+/* Pushes one argument value. Allocation (string interning/userdata) is safe
+ * here: the impl runs under the dispatch pcall. */
+BreakLuaError break_lua_push_value(lua_State *L,
                                           const BreakLuaValue *value)
 {
     switch (value->type) {
@@ -46,16 +46,35 @@ static BreakLuaError break_lua_push_value(lua_State *L,
         }
         lua_pushlstring(L, value->as.s.data, (size_t)value->as.s.len);
         return BREAK_LUA_OK;
+    case BREAK_LUA_VALUE_HOST_HANDLE: {
+        BreakLuaRuntime *runtime = *(BreakLuaRuntime **)lua_getextraspace(L);
+        BreakLuaHostHandle *handle;
+        u64 token;
+        BreakLuaError err = break_lua_host_handle_resolve(
+            runtime, value->as.handle, &token);
+        int fresh;
+        if (err != BREAK_LUA_OK) {
+            return err;
+        }
+        handle = (BreakLuaHostHandle *)lua_newuserdatauv(
+            L, sizeof(*handle), 0);
+        *handle = value->as.handle;
+        fresh = luaL_newmetatable(L, BREAK_LUA_HANDLE_METATABLE);
+        if (fresh) {
+            lua_pushboolean(L, 0);
+            lua_setfield(L, -2, "__metatable");
+        }
+        lua_setmetatable(L, -2);
+        return BREAK_LUA_OK;
+    }
     default:
         return BREAK_LUA_INVALID;
     }
 }
 
 /* Marshals the Lua value at stack index `idx` into `out`. `out` is zeroed
- * first, so any failure leaves it NIL. Over-long strings are a bounded
- * OVERLOAD (no copy is attempted); types outside the value model are
- * FAILED, never silently coerced. */
-static BreakLuaError break_lua_take_value(lua_State *L, int idx,
+ * first, so any failure leaves it NIL. */
+BreakLuaError break_lua_take_value(lua_State *L, int idx,
                                           BreakLuaValue *out)
 {
     memset(out, 0, sizeof(*out));
@@ -81,6 +100,34 @@ static BreakLuaError break_lua_take_value(lua_State *L, int idx,
         out->as.s.data[len] = '\0';
         out->as.s.len = (u32)len;
         out->type = BREAK_LUA_VALUE_STRING;
+        return BREAK_LUA_OK;
+    }
+    case LUA_TUSERDATA: {
+        BreakLuaRuntime *runtime = *(BreakLuaRuntime **)lua_getextraspace(L);
+        BreakLuaHostHandle handle;
+        u64 token;
+        bool matches;
+        idx = lua_absindex(L, idx);
+        luaL_getmetatable(L, BREAK_LUA_HANDLE_METATABLE);
+        if (!lua_getmetatable(L, idx)) {
+            lua_pop(L, 1);
+            return BREAK_LUA_FAILED;
+        }
+        matches = lua_rawequal(L, -1, -2) != 0;
+        lua_pop(L, 2);
+        if (!matches) {
+            return BREAK_LUA_FAILED;
+        }
+        memcpy(&handle, lua_touserdata(L, idx), sizeof(handle));
+        {
+            BreakLuaError err = break_lua_host_handle_resolve(runtime, handle,
+                                                               &token);
+            if (err != BREAK_LUA_OK) {
+                return err;
+            }
+        }
+        out->type = BREAK_LUA_VALUE_HOST_HANDLE;
+        out->as.handle = handle;
         return BREAK_LUA_OK;
     }
     default:
@@ -122,7 +169,22 @@ void break_lua_call_impl(lua_State *L, BreakLuaCallOpCtx *ctx)
     /* Exactly return_capacity wanted results: Lua nil-pads shortfalls and
      * discards extras, so the buffer is always fully written and the stack
      * shape stays deterministic. */
-    status = lua_pcall(L, (int)ctx->arg_count, (int)ctx->return_capacity, 0);
+    {
+        BreakLuaRuntime *runtime = *(BreakLuaRuntime **)lua_getextraspace(L);
+        const bool armed = runtime->instruction_budget != 0u;
+        if (armed) {
+            const int count = runtime->instruction_budget > (u64)INT_MAX
+                                  ? INT_MAX
+                                  : (int)runtime->instruction_budget;
+            runtime->budget_tripped = false;
+            break_lua_execution_hook_arm(runtime, count);
+        }
+        status = lua_pcall(L, (int)ctx->arg_count,
+                           (int)ctx->return_capacity, 0);
+        if (armed) {
+            break_lua_execution_hook_disarm(runtime);
+        }
+    }
     if (status != LUA_OK) {
         ctx->hdr.status = (status == LUA_ERRMEM) ? BREAK_LUA_OOM
                                                  : BREAK_LUA_FAILED;
@@ -236,7 +298,22 @@ void break_lua_call_ref_impl(lua_State *L, BreakLuaCallRefOpCtx *ctx)
     /* Exactly return_capacity wanted results: Lua nil-pads shortfalls and
      * discards extras, so the buffer is always fully written and the stack
      * shape stays deterministic. */
-    status = lua_pcall(L, (int)ctx->arg_count, (int)ctx->return_capacity, 0);
+    {
+        BreakLuaRuntime *runtime = *(BreakLuaRuntime **)lua_getextraspace(L);
+        const bool armed = runtime->instruction_budget != 0u;
+        if (armed) {
+            const int count = runtime->instruction_budget > (u64)INT_MAX
+                                  ? INT_MAX
+                                  : (int)runtime->instruction_budget;
+            runtime->budget_tripped = false;
+            break_lua_execution_hook_arm(runtime, count);
+        }
+        status = lua_pcall(L, (int)ctx->arg_count,
+                           (int)ctx->return_capacity, 0);
+        if (armed) {
+            break_lua_execution_hook_disarm(runtime);
+        }
+    }
     if (status != LUA_OK) {
         ctx->hdr.status = (status == LUA_ERRMEM) ? BREAK_LUA_OOM
                                                  : BREAK_LUA_FAILED;
@@ -300,6 +377,88 @@ BreakLuaError break_lua_runtime_call_ref(BreakLuaRuntime *runtime, u32 ref,
     ctx.returns = returns;
     ctx.return_capacity = return_capacity;
     return break_lua_op_run(runtime, &ctx.hdr);
+}
+
+static BreakLuaHostSlot *break_lua_host_slot(BreakLuaRuntime *runtime,
+                                              BreakLuaHostHandle handle)
+{
+    BreakLuaHostSlot *slot;
+    if (handle.slot >= BREAK_LUA_MAX_HOST_HANDLES || handle.generation == 0u) {
+        return NULL;
+    }
+    slot = &runtime->host_slots[handle.slot];
+    if (!slot->used || slot->generation != handle.generation) {
+        return NULL;
+    }
+    return slot;
+}
+
+BreakLuaError break_lua_host_handle_acquire(BreakLuaRuntime *runtime,
+                                             u64 token,
+                                             BreakLuaHostHandle *out_handle)
+{
+    BreakLuaError owner = break_lua_runtime_check_owner(runtime);
+    u32 i;
+    if (owner != BREAK_LUA_OK) {
+        return owner;
+    }
+    if (!out_handle) {
+        return BREAK_LUA_INVALID;
+    }
+    for (i = 0u; i < BREAK_LUA_MAX_HOST_HANDLES; i++) {
+        BreakLuaHostSlot *slot = &runtime->host_slots[i];
+        if (!slot->used && slot->generation != UINT32_MAX) {
+            if (slot->generation == 0u) {
+                slot->generation = 1u;
+            }
+            slot->token = token;
+            slot->used = true;
+            out_handle->slot = i;
+            out_handle->generation = slot->generation;
+            return BREAK_LUA_OK;
+        }
+    }
+    return BREAK_LUA_OVERLOAD;
+}
+
+BreakLuaError break_lua_host_handle_resolve(BreakLuaRuntime *runtime,
+                                             BreakLuaHostHandle handle,
+                                             u64 *out_token)
+{
+    BreakLuaError owner = break_lua_runtime_check_owner(runtime);
+    BreakLuaHostSlot *slot;
+    if (owner != BREAK_LUA_OK) {
+        return owner;
+    }
+    if (!out_token) {
+        return BREAK_LUA_INVALID;
+    }
+    slot = break_lua_host_slot(runtime, handle);
+    if (!slot) {
+        return BREAK_LUA_STALE;
+    }
+    *out_token = slot->token;
+    return BREAK_LUA_OK;
+}
+
+BreakLuaError break_lua_host_handle_release(BreakLuaRuntime *runtime,
+                                             BreakLuaHostHandle handle)
+{
+    BreakLuaError owner = break_lua_runtime_check_owner(runtime);
+    BreakLuaHostSlot *slot;
+    if (owner != BREAK_LUA_OK) {
+        return owner;
+    }
+    slot = break_lua_host_slot(runtime, handle);
+    if (!slot) {
+        return BREAK_LUA_STALE;
+    }
+    slot->used = false;
+    slot->token = 0u;
+    if (slot->generation < UINT32_MAX) {
+        slot->generation++;
+    }
+    return BREAK_LUA_OK;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -375,6 +534,73 @@ void break_lua_budget_hook(lua_State *L, lua_Debug *ar)
     (void)lua_error(L);
 }
 
+static void break_lua_combined_hook(lua_State *L, lua_Debug *ar)
+{
+    BreakLuaRuntime *runtime = *(BreakLuaRuntime **)lua_getextraspace(L);
+    if (!runtime) {
+        return;
+    }
+    if (ar->event == LUA_HOOKCOUNT) {
+        if (runtime->execution_budget_count > 0) {
+            break_lua_budget_hook(L, ar);
+        }
+        return;
+    }
+    if (ar->event == LUA_HOOKLINE && runtime->execution_observer_enabled &&
+        runtime->execution_observer) {
+        runtime->execution_observer(L, ar, runtime->execution_observer_user);
+    }
+}
+
+static void break_lua_execution_hook_refresh(BreakLuaRuntime *runtime)
+{
+    int mask = 0;
+    if (runtime->execution_budget_count > 0) {
+        mask |= LUA_MASKCOUNT;
+    }
+    if (runtime->execution_observer_enabled && runtime->execution_observer) {
+        mask |= LUA_MASKLINE;
+    }
+    lua_sethook(runtime->L, mask != 0 ? break_lua_combined_hook : NULL,
+                mask, runtime->execution_budget_count);
+}
+
+void break_lua_execution_observer_set(BreakLuaRuntime *runtime,
+    void (*observer)(lua_State *, lua_Debug *, void *), void *user)
+{
+    if (!runtime) {
+        return;
+    }
+    runtime->execution_observer = observer;
+    runtime->execution_observer_user = user;
+    if (!observer) {
+        runtime->execution_observer_enabled = false;
+    }
+    break_lua_execution_hook_refresh(runtime);
+}
+
+void break_lua_execution_observer_enable(BreakLuaRuntime *runtime, bool enabled)
+{
+    if (!runtime) {
+        return;
+    }
+    runtime->execution_observer_enabled = enabled;
+    break_lua_execution_hook_refresh(runtime);
+}
+
+void break_lua_execution_hook_arm(BreakLuaRuntime *runtime, int budget_count)
+{
+    runtime->execution_budget_count = budget_count;
+    runtime->budget_tripped = false;
+    break_lua_execution_hook_refresh(runtime);
+}
+
+void break_lua_execution_hook_disarm(BreakLuaRuntime *runtime)
+{
+    runtime->execution_budget_count = 0;
+    break_lua_execution_hook_refresh(runtime);
+}
+
 void break_lua_frame_impl(lua_State *L, BreakLuaRuntime *runtime,
                           BreakLuaFrameOpCtx *ctx)
 {
@@ -446,13 +672,13 @@ void break_lua_frame_impl(lua_State *L, BreakLuaRuntime *runtime,
         }
         if (budget_enabled) {
             runtime->budget_tripped = false;
-            lua_sethook(L, break_lua_budget_hook, LUA_MASKCOUNT,
+            break_lua_execution_hook_arm(runtime,
                         budget_count);
         }
         hook_status = lua_pcall(
             L, ctx->phase == BREAK_LUA_FRAME_PHASE_BEGIN ? 1 : 0, 0, 0);
         if (budget_enabled) {
-            lua_sethook(L, NULL, 0, 0);
+            break_lua_execution_hook_disarm(runtime);
         }
         if (hook_status == LUA_OK) {
             continue;
