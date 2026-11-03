@@ -5,6 +5,7 @@
 
 #include <editor/editor_internal.h>
 #include <editor/editor_test_hooks.h>
+#include <game/break_flow.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,14 @@ BreakEditorDoc *break_editor_doc_create(void) {
         free(doc);
         return NULL;
     }
+    doc->flow_graph = break_flow_graph_create(NULL);
+    if (!doc->flow_graph) {
+        break_editor_cmd_stack_destroy(doc->stack);
+        free(doc->slots);
+        world_destroy(doc->world);
+        free(doc);
+        return NULL;
+    }
 
     /* Task 3: editable-component registry + World registration (no
      * allocation, never fails). */
@@ -63,8 +72,15 @@ bool break_editor_doc_reset(BreakEditorDoc *doc) {
     if (!doc) return false;
     World *fresh = world_create();
     if (!fresh) return false;
+    BreakFlowGraph *fresh_flow = break_flow_graph_create(NULL);
+    if (!fresh_flow) {
+        world_destroy(fresh);
+        return false;
+    }
     world_destroy(doc->world);
     doc->world = fresh;
+    break_flow_graph_destroy(doc->flow_graph);
+    doc->flow_graph = fresh_flow;
     break_editor_doc_kept_chunks_free(doc);
     memset(doc->slots, 0, sizeof(BreakEditorNameSlot) * ECS_MAX_ENTITIES);
     doc->named_count = 0;
@@ -77,6 +93,7 @@ bool break_editor_doc_reset(BreakEditorDoc *doc) {
 void break_editor_doc_destroy(BreakEditorDoc *doc) {
     if (!doc) return;
     break_editor_cmd_stack_destroy(doc->stack);
+    break_flow_graph_destroy(doc->flow_graph);
     free(doc->slots);
     world_destroy(doc->world);
     break_editor_doc_kept_chunks_free(doc);

@@ -1501,11 +1501,12 @@ target_link_libraries(break_lua PUBLIC lua)
 # engine target (its platform siblings live there) and the editor
 # executable resolves platform_list_dir from libengine.a; editor tests
 # compile the TU inline instead (test_editor_assets).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c)
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
 target_link_libraries(break_editor PUBLIC break_lua)
+target_link_libraries(break_editor PUBLIC break_flow)
 target_link_libraries(break_editor PRIVATE stb_image)
 
 # Vendored stb single-header implementations are shared by the engine asset
@@ -4638,7 +4639,7 @@ endif()
     # Stage 4 scene editor Phase 1 Task 1+2+3 + Phase 2 Task 1+2 + Phase 3
     # Task 1+2 focused
     # tests. The test-only
-    # break_editor_test variant compiles the same eleven translation units
+    # break_editor_test variant compiles the same production translation units
     # with BREAK_EDITOR_TESTING=1 hooks (allocation failure injection
     # covering every editor-owned allocation: doc struct, name-slot block,
     # stack struct, stack entry array, command objects — including the
@@ -4651,13 +4652,14 @@ endif()
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break. The variant links break_lua_test (not
     # break_lua) so console-core tests share the Lua-side injection hooks.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1)
     target_link_libraries(break_editor_test PUBLIC break_ecs_replication)
     target_link_libraries(break_editor_test PUBLIC break_lua_test)
+    target_link_libraries(break_editor_test PUBLIC break_flow)
     target_link_libraries(break_editor_test PRIVATE stb_image)
 
     add_executable(test_editor_doc tests/test_editor_doc.c)
@@ -4673,6 +4675,13 @@ endif()
     target_link_libraries(test_editor_cmd PRIVATE break_editor_test)
     add_test(NAME test_editor_cmd COMMAND test_editor_cmd)
     set_tests_properties(test_editor_cmd PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_flow tests/test_editor_flow.c)
+    target_include_directories(test_editor_flow PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_flow PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_flow PRIVATE break_editor_test)
+    add_test(NAME test_editor_flow COMMAND test_editor_flow)
+    set_tests_properties(test_editor_flow PROPERTIES LABELS "headless;editor")
 
     add_executable(test_editor_scene tests/test_editor_scene.c)
     target_include_directories(test_editor_scene PRIVATE ${TEST_INCLUDE_DIRS})

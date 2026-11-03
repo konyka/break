@@ -1,7 +1,7 @@
 #pragma once
 /* Library-internal shared state for break_editor (Task 1). Not part of the
- * public editor API — only editor_doc.c, editor_cmd.c, editor_components.c
- * (Task 3), editor_viewport.c/editor_gizmo.c (Phase 2) include this. */
+ * public editor API — editor_doc.c, editor_cmd.c, editor_components.c,
+ * editor_viewport.c/editor_gizmo.c and editor_flow.c include this. */
 
 #include <editor/editor_cmd.h>
 #include <editor/editor_components.h>
@@ -33,7 +33,8 @@ enum {
     BREAK_EDITOR_CMD_KIND_REMOVE_COMPONENT = 6,
     BREAK_EDITOR_CMD_KIND_GIZMO_TRANSFORM = 7,
     BREAK_EDITOR_CMD_KIND_DUPLICATE_ENTITY = 8,
-    BREAK_EDITOR_CMD_KIND_GROUP = 9
+    BREAK_EDITOR_CMD_KIND_GROUP = 9,
+    BREAK_EDITOR_CMD_KIND_FLOW_GRAPH = 10
 };
 
 /* Concrete command: one bounded allocation per mutation. name/other_name
@@ -117,6 +118,7 @@ struct BreakEditorDoc {
     bool dirty;
     u32 origin; /* stamped on every pushed command; 0 = local shell */
     BreakEditorCmdStack *stack; /* owned */
+    struct BreakFlowGraph *flow_graph; /* owned; replaced by flow commands */
     /* Task 3: bounded editable-component registry (cap 16). Phase 1 holds
      * exactly one entry (EditorTransform) installed at doc create by
      * break_editor_doc_init_components. */
