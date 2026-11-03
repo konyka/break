@@ -57,7 +57,7 @@ BreakGameError break_game_weapon_ammo(const BreakGame *game, Entity entity,
 2. 完成 tick 之前，tick 只推进时间，弹匣不变。
 3. 到达完成 tick 后，先构造候选 `now_tick`，内部按槽事务助手一次性扣除 `capacity - magazine` 发备弹；所有可能失败的操作成功后才提交时间、弹匣和装填状态。
 4. 如果备弹在开始装填后被转走，扣减返回 `OVERLOAD`，武器全部字段和 inventory 都保持调用前原值，包括 `now_tick`。补入备弹后从原时刻再次 tick 即可重试，不会部分扣弹或部分推进时间。
-5. 开始时装填没有备弹返回 `REJECTED`。弹匣已满或尚未到期的重复 begin 也返回 `REJECTED`。已到期装填再次调用 begin 会复用同一原子完成路径，因此即使 `now_tick == UINT32_MAX`、正数 tick 已无法推进，也能在补弹后通过 begin 重试。
+5. 开始时装填没有备弹返回 `REJECTED`。弹匣已满、装填尚未到期或已经处于装填状态时，重复 begin 均返回 `REJECTED`。到达完成 tick 后如果扣弹失败，武器和背包均回滚到原时刻；补弹后应从原时刻再次调用 tick 完成装填，而不是用 begin 绕过既定装填时序。
 
 退弹时，unequip 先把当前弹匣余弹加入同一 Actor 的背包。背包容量不足返回 `OVERLOAD`，装备、弹匣、装填和背包全部保持原值；容量足够才提交。成功 unequip 取消装备和未完成的装填，但保留 Actor 的 `now_tick/next_fire_tick`；re-equip 仍为 0 弹匣，必须重新开始装填。despawn 才清空全部武器状态和该槽背包，Entity generation 复用不会继承装备、冷却或装填；全局开火序号不随 Actor 重置。
 
