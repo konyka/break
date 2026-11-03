@@ -28,6 +28,7 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <platform/win_proc.h>
+#include <platform/win32_touch.h>
 #include <platform/time.h>
 #include <core/types.h>
 #include <core/log.h>
@@ -318,14 +319,14 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     /* R368: match X11 FocusOut / Wayland keyboard_leave — release stuck keys. */
     case WM_KILLFOCUS:
         input_release_all(&p->input);
-        (void)input_extended_cancel_all(&p->input_extended,
-                                        time_microseconds() / 1000u);
+        (void)win32_touch_cancel(&p->input_extended,
+                                   time_microseconds() / 1000u);
         p->pending_high_surrogate = 0;
         return 0;
 
     case WM_CAPTURECHANGED:
-        (void)input_extended_cancel_all(&p->input_extended,
-                                        time_microseconds() / 1000u);
+        (void)win32_touch_cancel(&p->input_extended,
+                                   time_microseconds() / 1000u);
         return 0;
 
     case WM_SETFOCUS:
@@ -472,31 +473,16 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         HTOUCHINPUT handle = (HTOUCHINPUT)lParam;
         TOUCHINPUT inputs[INPUT_MAX_TOUCH_EVENTS];
         POINT origin = {0, 0};
-        u64 time_ms = time_microseconds() / 1000u;
-        if (count > INPUT_MAX_TOUCH_EVENTS) {
-            input_extended_note_overload(&p->input_extended);
-            CloseTouchInputHandle(handle);
-            return 0;
+        BOOL query_ok = FALSE;
+        BOOL origin_ok = FALSE;
+        if (count > 0u && count <= INPUT_MAX_TOUCH_EVENTS) {
+            query_ok = GetTouchInputInfo(handle, count, inputs,
+                                         sizeof(TOUCHINPUT)) != 0;
+            if (query_ok) origin_ok = ClientToScreen(hwnd, &origin) != 0;
         }
-        if (count == 0u ||
-            GetTouchInputInfo(handle, count, inputs, sizeof(TOUCHINPUT)) == 0 ||
-            ClientToScreen(hwnd, &origin) == 0) {
-            CloseTouchInputHandle(handle);
-            return 0;
-        }
-        for (UINT i = 0; i < count; i++) {
-            const TOUCHINPUT *touch = &inputs[i];
-            InputTouchPhase phase;
-            f32 x = (f32)touch->x / 100.0f - (f32)origin.x;
-            f32 y = (f32)touch->y / 100.0f - (f32)origin.y;
-            if ((touch->dwFlags & TOUCHEVENTF_DOWN) != 0) phase = INPUT_TOUCH_PRESS;
-            else if ((touch->dwFlags & TOUCHEVENTF_UP) != 0) phase = INPUT_TOUCH_RELEASE;
-            else if ((touch->dwFlags & TOUCHEVENTF_MOVE) != 0) phase = INPUT_TOUCH_MOVE;
-            else continue;
-            (void)input_extended_touch_pixels(&p->input_extended, phase,
-                                              (i64)touch->dwID, x, y,
-                                              p->width, p->height, time_ms, NULL);
-        }
+        (void)win32_touch_message(&p->input_extended, p->width, p->height,
+                                  count, inputs, query_ok, origin, origin_ok,
+                                  time_microseconds() / 1000u);
         CloseTouchInputHandle(handle);
         return 0;
     }

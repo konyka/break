@@ -17,8 +17,16 @@ static DWORD WINAPI fake_set_state(DWORD pad, XINPUT_VIBRATION *vibration)
 
 #include "../src/platform/gamepad_win.c"
 
+#ifdef GAMEPAD_WIN_PORTABLE_TEST
+static u64 fake_now_us;
+u64 time_microseconds(void) { return fake_now_us; }
+#endif
+
 static void reset_fake(void)
 {
+#ifdef GAMEPAD_WIN_PORTABLE_TEST
+    fake_now_us = 1000000u;
+#endif
     memset(&g_pad, 0, sizeof(g_pad));
     g_pad.initialized = true;
     g_pad.set_state = fake_set_state;
@@ -67,8 +75,10 @@ TEST(xinput_no_feedback_and_disconnect_degrade_without_retry_storm)
     ASSERT_EQ(fake_set_calls, 1u);
     ASSERT_EQ(input_extended_haptic_result(&input, id), INPUT_EXT_DISCONNECTED);
     ASSERT_FALSE(g_pad.connected[0]);
-    ASSERT_EQ(input_extended_request_haptic(&input, 0, 0.5f, 0.5f, 100, NULL),
+    ASSERT_EQ(input_extended_request_haptic(&input, 0, 0.5f, 0.5f, 100, &id),
               INPUT_EXT_DISCONNECTED);
+    ASSERT_EQ(input_extended_request_haptic(&input, 0, 0.5f, 0.5f, 100, NULL),
+              INPUT_EXT_INVALID);
 }
 
 TEST(xinput_zero_duration_stops_motors)

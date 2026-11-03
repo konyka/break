@@ -2138,6 +2138,7 @@ if(ENGINE_PLATFORM STREQUAL "linux")
 
         target_sources(engine PRIVATE
             src/platform/window_wayland.c
+            src/platform/wayland_touch.c
             src/platform/gamepad_linux.c
             ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c
             ${CMAKE_CURRENT_BINARY_DIR}/relative-pointer-unstable-v1-protocol.c
@@ -2161,6 +2162,7 @@ if(ENGINE_PLATFORM STREQUAL "linux")
         )
         target_include_directories(engine PRIVATE ${X11_INCLUDE_DIRS})
         if(ENGINE_X11_XINPUT2)
+            target_sources(engine PRIVATE src/platform/x11_touch.c)
             target_compile_definitions(engine PRIVATE ENGINE_X11_XINPUT2=1)
         endif()
     endif()
@@ -2193,6 +2195,7 @@ elseif(ENGINE_PLATFORM STREQUAL "windows")
     target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_WINDOWS=1 _WIN32_WINNT=0x0601)
     target_sources(engine PRIVATE
         src/platform/window_win32.c
+        src/platform/win32_touch.c
         src/platform/gamepad_win.c
     )
 
@@ -5887,6 +5890,54 @@ endif()
         target_link_libraries(test_gamepad_win_feedback PRIVATE kernel32)
         add_test(NAME test_gamepad_win_feedback COMMAND test_gamepad_win_feedback)
         set_tests_properties(test_gamepad_win_feedback PROPERTIES LABELS "headless;platform_contract")
+    else()
+        add_executable(test_gamepad_win_feedback_portable tests/test_gamepad_win_feedback.c
+            src/platform/input_extended.c src/core/log.c)
+        target_include_directories(test_gamepad_win_feedback_portable PRIVATE
+            ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_windows)
+        target_compile_definitions(test_gamepad_win_feedback_portable PRIVATE
+            ENGINE_PLATFORM_WINDOWS=1 GAMEPAD_WIN_PORTABLE_TEST=1)
+        target_link_libraries(test_gamepad_win_feedback_portable PRIVATE m)
+        add_test(NAME test_gamepad_win_feedback_portable COMMAND test_gamepad_win_feedback_portable)
+        set_tests_properties(test_gamepad_win_feedback_portable PROPERTIES LABELS "headless;platform_contract")
+    endif()
+
+    if(ENGINE_X11_XINPUT2)
+        add_executable(test_x11_touch tests/test_x11_touch.c
+            src/platform/x11_touch.c src/platform/input_extended.c)
+        target_include_directories(test_x11_touch PRIVATE
+            ${TEST_INCLUDE_DIRS} ${X11_INCLUDE_DIRS})
+        target_compile_definitions(test_x11_touch PRIVATE ENGINE_X11_XINPUT2=1)
+        target_link_libraries(test_x11_touch PRIVATE m)
+        add_test(NAME test_x11_touch COMMAND test_x11_touch)
+        set_tests_properties(test_x11_touch PROPERTIES LABELS "headless;platform_contract")
+    endif()
+
+    add_executable(test_win32_touch tests/test_win32_touch.c
+        src/platform/win32_touch.c src/platform/input_extended.c)
+    target_include_directories(test_win32_touch PRIVATE ${TEST_INCLUDE_DIRS})
+    if(NOT ENGINE_PLATFORM STREQUAL "windows")
+        target_include_directories(test_win32_touch PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_windows)
+    endif()
+    target_link_libraries(test_win32_touch PRIVATE m)
+    add_test(NAME test_win32_touch COMMAND test_win32_touch)
+    set_tests_properties(test_win32_touch PROPERTIES LABELS "headless;platform_contract")
+
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(INPUT_TOUCH_WAYLAND QUIET wayland-client)
+        endif()
+        if(INPUT_TOUCH_WAYLAND_FOUND)
+            add_executable(test_wayland_touch tests/test_wayland_touch.c
+                src/platform/wayland_touch.c src/platform/input_extended.c)
+            target_include_directories(test_wayland_touch PRIVATE
+                ${TEST_INCLUDE_DIRS} ${INPUT_TOUCH_WAYLAND_INCLUDE_DIRS})
+            target_link_libraries(test_wayland_touch PRIVATE m ${INPUT_TOUCH_WAYLAND_LIBRARIES})
+            add_test(NAME test_wayland_touch COMMAND test_wayland_touch)
+            set_tests_properties(test_wayland_touch PROPERTIES LABELS "headless;platform_contract")
+        endif()
     endif()
 
     # test_break_replay_window: application-message anti-replay window

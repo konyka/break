@@ -55,15 +55,15 @@ A result remains in its slot until `input_extended_haptic_result()` retrieves it
 
 ### X11
 
-When XInput2 2.2 or newer is available, select `XI_TouchBegin`, `XI_TouchUpdate`, and `XI_TouchEnd` on the window. Translate `XIDeviceEvent.detail`, `event_x/event_y`, and `time` into the sidecar. XI2 has no portable `XI_TouchCancel` event, so focus loss and `XI_HierarchyChanged` cancel all touches. Servers without XI2 touch retain existing keyboard/mouse behavior and report no touches.
+When XInput2 2.2 or newer is available, select `XI_TouchBegin`, `XI_TouchUpdate`, and `XI_TouchEnd` on the window. Combine `sourceid` and `detail` into the source identity so two devices can reuse a detail value safely. Begin/update normalize `event_x/event_y`; end always uses the last valid coordinates through `input_extended_touch_end`, even when the final native position is outside the window. All events use dispatch-time `time_microseconds()/1000`, the same monotonic epoch as gesture updates, rather than the wrapping XI2 `time`. XI2 has no portable `XI_TouchCancel` event, so focus loss and `XI_HierarchyChanged` cancel all touches. Servers without XI2 touch retain existing keyboard/mouse behavior and report no touches.
 
 ### Wayland
 
-Create/destroy `wl_touch` with seat touch capability. Down/motion use surface-local fixed-point coordinates and the event time. Up uses the last known coordinates. `wl_touch.cancel`, capability removal, and seat removal cancel every active touch. Ignore downs for another surface and release the object during every teardown path.
+Create/destroy `wl_touch` with seat touch capability. Down/motion normalize surface-local fixed-point coordinates; up uses the last known coordinates. Native `time` is not compared with the local clock: down/motion/up all use dispatch-time `time_microseconds()/1000`, so the wrapping u32 Wayland timestamp cannot distort tap, long-press, or swipe durations. `wl_touch.cancel`, capability removal, and seat removal cancel every active touch through one shared handler. Ignore downs for another surface and release the object during every teardown path.
 
 ### Win32
 
-Register the HWND for `WM_TOUCH`. Convert each `TOUCHINPUT` screen position in hundredths of a pixel to client coordinates and normalize with the current client size. Down/move/up map to the same sidecar functions. Focus or capture loss cancels all touches. Batches larger than the fixed local batch are rejected and counted instead of being silently truncated.
+Register the HWND for `WM_TOUCH`. Convert each `TOUCHINPUT` screen position in hundredths of a pixel to client coordinates and normalize with the current client size. Down/move validate their coordinates; up always uses the last valid coordinates so an out-of-window or negative final position cannot leave a stuck touch. Oversize batches, `GetTouchInputInfo` failure, and client-origin conversion failure cancel every active touch before the handle is closed; oversize also retains its overload count. Focus or capture loss cancels all touches without releasing unrelated held keys.
 
 ### Linux evdev haptics
 
@@ -81,8 +81,8 @@ The sidecar uses `INPUT_EXT_OK`, `INVALID`, `OVERLOAD`, `STALE`, `DISCONNECTED`,
 
 Tests use `test_framework.h` and deterministic timestamps. They cover press/move/release/cancel, same-frame id reuse and generations, normalized/pixel range rejection, active/event/gesture capacities, tap/long-press/swipe/pinch/rotation, stale ids, no-feedback and disconnect degradation, stale commands after reconnect, result-slot reuse, and multithreaded producers with a deterministic fake executor.
 
-Each feature group is compiled and run before implementation to capture RED, then run after the minimal implementation for GREEN. Focused suites run in normal, ASan+UBSan, and TSan builds with `-j3`. X11 and Wayland engine builds compile the real wiring. The existing Windows runtime test target remains registered and gains sidecar coverage. A real `zig cc -target x86_64-windows-gnu` cross build compiles the Windows engine, XInput fake tests, and Win32 runtime tests; the resulting executables still require a Windows runtime and are not claimed as executed when that lane is unavailable.
+Each feature group is compiled and run before implementation to capture RED, then run after the minimal implementation for GREEN. Focused suites run in normal, ASan+UBSan, and TSan builds with `-j3`. Native `XIDeviceEvent`, `wl_fixed_t`/`wl_surface`, and `TOUCHINPUT` fixtures inject down/move/up/cancel, out-of-window positions, id reuse, rejected batches, two XI2 devices, and wrapping OS timestamps into the same production handlers called by each event loop. A portable direct-source build also executes the real XInput backend against a deterministic fake on non-Windows hosts, while the native Windows targets remain registered. A real `zig cc -target x86_64-windows-gnu` cross build compiles the Windows engine, XInput fake tests, WM_TOUCH tests, and Win32 runtime tests; the resulting executables still require a Windows runtime and are not claimed as executed when that lane is unavailable.
 
-Mutation checks deliberately break cancel, id generation, coordinate range checks, disconnect handling, and haptic capacity in separate build-tree copies. Each focused suite must fail for the intended reason. These mutations never enter the committed source.
+Mutation checks deliberately break cancel, id generation, coordinate range checks, disconnect handling, haptic capacity, terminal UP cleanup, rejected-batch cleanup, dispatch-time selection, and XI2 source identity in separate build-tree copies. Each focused suite must fail for the intended reason. These mutations never enter the committed source.
 
 Completion evidence distinguishes real implementation and fake/device tests from physical touchscreen, vibration feel, and Windows runtime validation, none of which is implied by unit-test success.

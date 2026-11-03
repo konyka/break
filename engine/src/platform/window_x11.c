@@ -5,6 +5,7 @@
 #include <platform/monitor_selection.h>
 #include <platform/window_mode.h>
 #include <platform/platform_display_media.h>
+#include <platform/x11_touch.h>
 #include <platform/time.h>
 #include <core/log.h>
 #include "gamepad_linux.h"
@@ -1309,22 +1310,16 @@ PlatformEventResult platform_poll(Platform *p) {
             ev.xcookie.extension == p->xinput_opcode) {
             if (XGetEventData(p->display, &ev.xcookie)) {
                 if (ev.xcookie.evtype == XI_HierarchyChanged) {
-                    (void)input_extended_cancel_all(&p->input_extended,
-                                                    time_microseconds() / 1000u);
+                    (void)x11_touch_cancel(&p->input_extended,
+                                           time_microseconds() / 1000u);
                     x11_refresh_media_context(p);
                 } else if (ev.xcookie.evtype == XI_TouchBegin ||
                            ev.xcookie.evtype == XI_TouchUpdate ||
                            ev.xcookie.evtype == XI_TouchEnd) {
-                    const XIDeviceEvent *touch = (const XIDeviceEvent *)ev.xcookie.data;
-                    if (touch->event == p->window) {
-                        InputTouchPhase phase = INPUT_TOUCH_PRESS;
-                        if (ev.xcookie.evtype == XI_TouchUpdate) phase = INPUT_TOUCH_MOVE;
-                        else if (ev.xcookie.evtype == XI_TouchEnd) phase = INPUT_TOUCH_RELEASE;
-                        (void)input_extended_touch_pixels(
-                            &p->input_extended, phase, (i64)touch->detail,
-                            (f32)touch->event_x, (f32)touch->event_y,
-                            p->width, p->height, (u64)touch->time, NULL);
-                    }
+                    (void)x11_touch_event(
+                        &p->input_extended, p->width, p->height, p->window,
+                        ev.xcookie.evtype, (const XIDeviceEvent *)ev.xcookie.data,
+                        time_microseconds() / 1000u);
                 }
                 XFreeEventData(p->display, &ev.xcookie);
             }
@@ -1471,8 +1466,8 @@ PlatformEventResult platform_poll(Platform *p) {
              * KeyRelease to an unfocused window) can't leave a key stuck down
              * and keep driving WASD/camera once focus returns. */
             input_release_all(&p->input);
-            (void)input_extended_cancel_all(&p->input_extended,
-                                            time_microseconds() / 1000u);
+            (void)x11_touch_cancel(&p->input_extended,
+                                   time_microseconds() / 1000u);
             p->has_focus = false;
             if (p->xic != NULL) XUnsetICFocus(p->xic);
             break;

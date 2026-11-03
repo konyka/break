@@ -5,6 +5,7 @@
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <platform/window_mode.h>
+#include <platform/wayland_touch.h>
 #include <platform/time.h>
 #include <core/log.h>
 #include "gamepad_linux.h"
@@ -1152,11 +1153,10 @@ static void touch_down(void *data, struct wl_touch *touch, u32 serial, u32 time,
     Platform *p = data;
     (void)touch;
     (void)serial;
-    if (p == NULL || surface != p->surface) return;
-    (void)input_extended_touch_pixels(&p->input_extended, INPUT_TOUCH_PRESS, id,
-                                      (f32)wl_fixed_to_double(x),
-                                      (f32)wl_fixed_to_double(y),
-                                      p->width, p->height, time, NULL);
+    if (p == NULL) return;
+    (void)wayland_touch_down(&p->input_extended, p->width, p->height,
+                             p->surface, surface, id, x, y, time,
+                             time_microseconds() / 1000u);
 }
 
 static void touch_up(void *data, struct wl_touch *touch, u32 serial, u32 time, i32 id) {
@@ -1164,7 +1164,8 @@ static void touch_up(void *data, struct wl_touch *touch, u32 serial, u32 time, i
     (void)touch;
     (void)serial;
     if (p != NULL)
-        (void)input_extended_touch_end(&p->input_extended, id, false, time);
+        (void)wayland_touch_up(&p->input_extended, id, time,
+                               time_microseconds() / 1000u);
 }
 
 static void touch_motion(void *data, struct wl_touch *touch, u32 time, i32 id,
@@ -1172,10 +1173,8 @@ static void touch_motion(void *data, struct wl_touch *touch, u32 time, i32 id,
     Platform *p = data;
     (void)touch;
     if (p == NULL) return;
-    (void)input_extended_touch_pixels(&p->input_extended, INPUT_TOUCH_MOVE, id,
-                                      (f32)wl_fixed_to_double(x),
-                                      (f32)wl_fixed_to_double(y),
-                                      p->width, p->height, time, NULL);
+    (void)wayland_touch_motion(&p->input_extended, p->width, p->height,
+                               id, x, y, time, time_microseconds() / 1000u);
 }
 
 static void touch_frame(void *data, struct wl_touch *touch) {
@@ -1187,8 +1186,8 @@ static void touch_cancel(void *data, struct wl_touch *touch) {
     Platform *p = data;
     (void)touch;
     if (p != NULL)
-        (void)input_extended_cancel_all(&p->input_extended,
-                                        time_microseconds() / 1000u);
+        (void)wayland_touch_cancel(&p->input_extended,
+                                   time_microseconds() / 1000u);
 }
 
 static void touch_shape(void *data, struct wl_touch *touch, i32 id,
@@ -1249,7 +1248,7 @@ static void seat_capabilities(void *data, struct wl_seat *seat, u32 caps) {
         p->touch = wl_seat_get_touch(seat);
         if (p->touch != NULL) wl_touch_add_listener(p->touch, &touch_listener, p);
     } else if (!(caps & WL_SEAT_CAPABILITY_TOUCH) && p->touch != NULL) {
-        (void)input_extended_cancel_all(&p->input_extended,
+        (void)wayland_touch_cancel(&p->input_extended,
                                         time_microseconds() / 1000u);
         wl_touch_destroy(p->touch);
         p->touch = NULL;
@@ -1698,7 +1697,7 @@ static void registry_global_remove(void *data, struct wl_registry *reg, u32 name
             p->pointer = NULL;
         }
         if (p->touch != NULL) {
-            (void)input_extended_cancel_all(&p->input_extended,
+            (void)wayland_touch_cancel(&p->input_extended,
                                             time_microseconds() / 1000u);
             wl_touch_destroy(p->touch);
             p->touch = NULL;
