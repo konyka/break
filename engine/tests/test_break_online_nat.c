@@ -601,6 +601,49 @@ TEST(nat_captured_valid_hello_replay_from_other_socket_is_rejected)
     nat_fixture_dispose(&fixture);
 }
 
+TEST(nat_pair_close_resets_connected_and_allows_repair)
+{
+    NatFixture fixture;
+    BreakOnlineHandle pair;
+    BreakOnlineHandle replacement;
+    u32 i;
+    ASSERT_TRUE(nat_fixture_init(&fixture, 2u, 1u));
+    ASSERT_TRUE(register_and_pair(&fixture, &pair, 55u, 1000u));
+    ASSERT_TRUE(nat_pump_until_connected(&fixture, pair));
+    ASSERT_EQ(break_nat_coordinator_pair_close(fixture.coordinator, pair), BREAK_RUNTIME_OK);
+    for (i = 0u; i < 8u; ++i) nat_pump_once(&fixture);
+    ASSERT_FALSE(break_nat_endpoint_connected(fixture.a, pair));
+    ASSERT_FALSE(break_nat_endpoint_connected(fixture.b, pair));
+    ASSERT_FALSE(break_nat_endpoint_armed(fixture.a, pair));
+    ASSERT_FALSE(break_nat_endpoint_armed(fixture.b, pair));
+    send_test_punch(&fixture, pair, 55u, 1000u, 1u);
+    (void)break_nat_endpoint_receive_socket(fixture.a, 1u);
+    (void)break_nat_endpoint_poll(fixture.a, 1u);
+    ASSERT_FALSE(break_nat_endpoint_armed(fixture.a, pair));
+    ASSERT_TRUE(register_and_pair(&fixture, &replacement, 66u, 1000u));
+    ASSERT_NEQ(replacement.generation, pair.generation);
+    ASSERT_TRUE(nat_pump_until_connected(&fixture, replacement));
+    nat_fixture_dispose(&fixture);
+}
+
+TEST(nat_close_before_punch_blocks_late_punch)
+{
+    NatFixture fixture;
+    BreakOnlineHandle pair;
+    u32 i;
+    ASSERT_TRUE(nat_fixture_init(&fixture, 2u, 1u));
+    ASSERT_TRUE(register_and_pair(&fixture, &pair, 77u, 1000u));
+    ASSERT_EQ(break_nat_coordinator_pair_close(fixture.coordinator, pair), BREAK_RUNTIME_OK);
+    for (i = 0u; i < 8u; ++i) nat_pump_once(&fixture);
+    ASSERT_FALSE(break_nat_endpoint_armed(fixture.a, pair));
+    ASSERT_FALSE(break_nat_endpoint_armed(fixture.b, pair));
+    send_test_punch(&fixture, pair, 77u, 1000u, 1u);
+    (void)break_nat_endpoint_receive_socket(fixture.a, 1u);
+    (void)break_nat_endpoint_poll(fixture.a, 1u);
+    ASSERT_FALSE(break_nat_endpoint_armed(fixture.a, pair));
+    nat_fixture_dispose(&fixture);
+}
+
 TEST(network_subsystem_initializes)
 {
     ASSERT_TRUE(net_init());
@@ -620,5 +663,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(nat_conflicting_punch_does_not_replace_connected);
     RUN_TEST(nat_tampered_punch_mac_is_rejected);
     RUN_TEST(nat_captured_valid_hello_replay_from_other_socket_is_rejected);
+    RUN_TEST(nat_pair_close_resets_connected_and_allows_repair);
+    RUN_TEST(nat_close_before_punch_blocks_late_punch);
     net_shutdown();
 TEST_MAIN_END()
