@@ -1465,10 +1465,20 @@ endif()
 # or dxx_break; consumers opt in explicitly in later tasks. Links the
 # vendored Lua 5.4 target PUBLIC so consumers inherit its external/ include
 # dir; the public header itself only needs src/.
-add_library(break_lua STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c)
+add_library(break_lua STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c src/script/break_lua_table.c)
 set_property(TARGET break_lua PROPERTY C_STANDARD 11)
 target_include_directories(break_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_lua PUBLIC lua)
+
+add_library(break_lua_debug STATIC src/script/break_lua_debug.c)
+set_property(TARGET break_lua_debug PROPERTY C_STANDARD 11)
+target_include_directories(break_lua_debug PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_lua_debug PUBLIC break_lua)
+
+add_library(break_game_lua STATIC src/game/break_game_lua.c)
+set_property(TARGET break_game_lua PROPERTY C_STANDARD 11)
+target_include_directories(break_game_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_game_lua PUBLIC break_game break_lua)
 
 # Formal optional Stage 4 scene editor core library: the document model
 # (one owned ECS World, bounded entity name map, dirty flag), the bounded
@@ -4518,7 +4528,7 @@ endif()
     # Task 3: value marshalling, module calls, frame lifecycle with a stable
     # registry snapshot, bounded hook error records, and an opt-in
     # instruction budget; Task 4: bounded ECS batch + config host bindings
-    # and the whitelisted module sandbox)
+    # and the whitelisted module sandbox; P9: host handles and bounded tables)
     # focused tests. The test-only break_lua_test variant compiles the same
     # sources with BREAK_LUA_TESTING=1 hooks (allocation failure injection
     # covering the struct calloc AND the Lua allocator, double-destroy
@@ -4529,7 +4539,7 @@ endif()
     # BREAK_RUNTIME_TESTING pattern; the production break_lua target
     # (top-level, defined independent of ENGINE_BUILD_TESTS) stays hook-free
     # and is never linked into engine, engine_demo, or dxx_break.
-    add_library(break_lua_test STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c)
+    add_library(break_lua_test STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c src/script/break_lua_table.c)
     set_property(TARGET break_lua_test PROPERTY C_STANDARD 11)
     target_include_directories(break_lua_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -4607,6 +4617,86 @@ endif()
     add_test(NAME test_break_lua_binding COMMAND test_break_lua_binding)
     set_tests_properties(test_break_lua_binding PROPERTIES
         LABELS "headless;break_lua")
+
+    add_executable(test_break_lua_handle tests/test_break_lua_handle.c)
+    target_include_directories(test_break_lua_handle PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_handle PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_handle PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_handle PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_handle PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_handle PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_handle PRIVATE break_lua_test)
+    add_test(NAME test_break_lua_handle COMMAND test_break_lua_handle)
+    set_tests_properties(test_break_lua_handle PROPERTIES
+        LABELS "headless;break_lua")
+
+    add_executable(test_break_lua_table tests/test_break_lua_table.c)
+    target_include_directories(test_break_lua_table PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_table PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_table PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_table PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_table PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_table PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_table PRIVATE break_lua_test)
+    add_test(NAME test_break_lua_table COMMAND test_break_lua_table)
+    set_tests_properties(test_break_lua_table PROPERTIES
+        LABELS "headless;break_lua")
+
+    add_library(break_lua_debug_test STATIC src/script/break_lua_debug.c)
+    set_property(TARGET break_lua_debug_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_lua_debug_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_lua_debug_test PRIVATE BREAK_LUA_TESTING=1)
+    target_link_libraries(break_lua_debug_test PUBLIC break_lua_test)
+
+    add_executable(test_break_lua_debug tests/test_break_lua_debug.c)
+    target_include_directories(test_break_lua_debug PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_debug PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_debug PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_debug PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_debug PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_debug PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_debug PRIVATE break_lua_debug_test)
+    add_test(NAME test_break_lua_debug COMMAND test_break_lua_debug)
+    set_tests_properties(test_break_lua_debug PROPERTIES
+        LABELS "headless;break_lua")
+
+    add_library(break_game_lua_test STATIC src/game/break_game_lua.c)
+    set_property(TARGET break_game_lua_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_game_lua_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_game_lua_test PUBLIC break_game break_lua_test)
+
+    add_executable(test_break_game_lua tests/test_break_game_lua.c)
+    target_include_directories(test_break_game_lua PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_game_lua PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_game_lua PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_game_lua PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_game_lua PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_game_lua PRIVATE break_game_lua_test)
+    add_test(NAME test_break_game_lua COMMAND test_break_game_lua)
+    set_tests_properties(test_break_game_lua PROPERTIES
+        LABELS "headless;break_game;break_lua")
 
     # test_break_lua_ecs_apply: drained Lua ECS records applied to a World.
     add_executable(test_break_lua_ecs_apply tests/test_break_lua_ecs_apply.c

@@ -68,6 +68,8 @@ struct BreakGame {
     u8 *inside; /* area_count stride is max_actors */
     BreakGameAreaFn area_fn;
     void *area_user;
+    BreakGameScriptBridge script_bridge;
+    bool script_bridge_used;
 };
 
 bool break_game_is_owner(const BreakGame *game);

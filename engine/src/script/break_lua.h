@@ -244,12 +244,12 @@ BreakLuaError break_lua_runtime_reload_module(
  *  environment's chunk-defined functions.
  *
  *  VALUE MODEL: BreakLuaValue is a bounded tagged union: nil, bool, f64
- *  number, or a string of at most BREAK_LUA_VALUE_STRING_CAPACITY - 1 bytes
- *  plus its NUL terminator (len counts the payload bytes, excluding the
- *  terminator). Produced strings are always NUL-terminated at data[len].
- *  Lua values outside this model (tables, functions, userdata, threads)
- *  are unrepresentable and fail the call bounded (see below) rather than
- *  being silently coerced.
+ *  number, a string of at most BREAK_LUA_VALUE_STRING_CAPACITY - 1 bytes, or
+ *  a generation-checked BreakLuaHostHandle. Produced strings are always
+ *  NUL-terminated at data[len]. Handles contain no C address and are checked
+ *  against the runtime registry on both marshal directions. Tables use the
+ *  separate bounded break_lua_table.h API. Functions, arbitrary userdata and
+ *  threads remain unrepresentable and fail rather than being coerced.
  *
  *  CALL CONTRACT (break_lua_runtime_call): the target function must be a
  *  RAW field of the module's live environment (i.e. defined by the chunk
@@ -334,8 +334,8 @@ BreakLuaError break_lua_runtime_reload_module(
  *    - the commit-path on_unload hook: a trip is an on_unload failure —
  *      the reload is vetoed (bounded), the old version stays live;
  *    - module functions invoked through break_lua_runtime_call /
- *      break_lua_runtime_call_ref remain UNARMED (documented — hosts
- *      needing a budget there dispatch through frame hooks instead).
+ *      break_lua_runtime_call_ref use the same per-invocation budget; a trip
+ *      fails that call without setting the frame-hook runaway mark.
  *  TRIP VALUE AND CATCHABILITY (fix round 4, NEW-C4): the trip raises a
  *  host-owned SENTINEL value (a lightuserdata naming a runtime field),
  *  never a string. Scripts cannot construct, obtain, or compare it — no
@@ -381,6 +381,23 @@ BreakLuaError break_lua_runtime_reload_module(
  *  ignore the call (no-op). NULL runtime is a no-op for begin/end_frame.
  * ========================================================================== */
 
+/* Stable, generation-checked host identity. The token is host-defined and
+ * must not contain a C address. */
+#define BREAK_LUA_MAX_HOST_HANDLES 64u
+typedef struct BreakLuaHostHandle {
+    u32 slot;
+    u32 generation;
+} BreakLuaHostHandle;
+
+BreakLuaError break_lua_host_handle_acquire(BreakLuaRuntime *runtime,
+                                             u64 token,
+                                             BreakLuaHostHandle *out_handle);
+BreakLuaError break_lua_host_handle_resolve(BreakLuaRuntime *runtime,
+                                             BreakLuaHostHandle handle,
+                                             u64 *out_token);
+BreakLuaError break_lua_host_handle_release(BreakLuaRuntime *runtime,
+                                             BreakLuaHostHandle handle);
+
 /* Bounded payload capacity of a BreakLuaValue string INCLUDING its NUL
  * terminator: the largest representable payload is 127 bytes. */
 #define BREAK_LUA_VALUE_STRING_CAPACITY 128u
@@ -389,12 +406,18 @@ typedef enum BreakLuaValueType {
     BREAK_LUA_VALUE_NIL = 0,
     BREAK_LUA_VALUE_BOOL,
     BREAK_LUA_VALUE_NUMBER,   /* f64 */
-    BREAK_LUA_VALUE_STRING    /* bounded copy, NUL-terminated */
+    BREAK_LUA_VALUE_STRING,   /* bounded copy, NUL-terminated */
+    BREAK_LUA_VALUE_HOST_HANDLE
 } BreakLuaValueType;
 
 typedef struct BreakLuaValue {
     BreakLuaValueType type;
-    union { bool b; f64 n; struct { char data[128]; u32 len; } s; } as;
+    union {
+        bool b;
+        f64 n;
+        struct { char data[128]; u32 len; } s;
+        BreakLuaHostHandle handle;
+    } as;
 } BreakLuaValue;
 
 /* Calls the chunk-defined function `function_name` of the live module
@@ -457,9 +480,9 @@ void break_lua_runtime_end_frame(BreakLuaRuntime *runtime);
  *      over-cap counts and over-long strings, FAILED for Lua errors and
  *      unrepresentable returns, OOM for Lua-side allocation failure; the
  *      returns buffer is NIL-prefilled once admission passes).
- *      call_ref is — like break_lua_runtime_call — NOT armed with the
- *      instruction budget (the budget covers frame-hook dispatches and
- *      module staging/commit); pin and call only host-trusted functions.
+ *      call_ref is — like break_lua_runtime_call — armed with the
+ *      per-invocation instruction budget; a trip fails the call without
+ *      setting the frame-hook runaway mark.
  *    - unref_function: NULL runtime -> INVALID; non-owner -> REJECTED;
  *      handle >= cap or naming a free slot (including a double unref) ->
  *      INVALID, bounded, no fail-stop.

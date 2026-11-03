@@ -48,6 +48,12 @@ typedef struct BreakLuaConfigSlot {
     double value; /* clamped; host may update via break_lua_runtime_set_config */
 } BreakLuaConfigSlot;
 
+typedef struct BreakLuaHostSlot {
+    u64 token;
+    u32 generation;
+    bool used;
+} BreakLuaHostSlot;
+
 struct BreakLuaRuntime {
     lua_State *L;
     PlatformThreadId owner;
@@ -91,7 +97,18 @@ struct BreakLuaRuntime {
      * wholesale. */
     int fn_refs[BREAK_LUA_MAX_FN_REFS];
     bool fn_ref_used[BREAK_LUA_MAX_FN_REFS];
+    BreakLuaHostSlot host_slots[BREAK_LUA_MAX_HOST_HANDLES];
+    void (*execution_observer)(lua_State *, lua_Debug *, void *);
+    void *execution_observer_user;
+    int execution_budget_count;
+    bool execution_observer_enabled;
 };
+
+void break_lua_execution_observer_set(BreakLuaRuntime *runtime,
+    void (*observer)(lua_State *, lua_Debug *, void *), void *user);
+void break_lua_execution_observer_enable(BreakLuaRuntime *runtime, bool enabled);
+void break_lua_execution_hook_arm(BreakLuaRuntime *runtime, int budget_count);
+void break_lua_execution_hook_disarm(BreakLuaRuntime *runtime);
 
 /* Protected op dispatch (shared by module load/reload, calls, and frame
  * hooks). Every op ctx struct EMBEDS BreakLuaOpHeader first; the dispatch
@@ -105,6 +122,7 @@ struct BreakLuaRuntime {
 #define BREAK_LUA_OP_REF_FN 5
 #define BREAK_LUA_OP_UNREF_FN 6
 #define BREAK_LUA_OP_CALL_REF 7
+#define BREAK_LUA_OP_CALL_TABLE 9
 #if defined(BREAK_LUA_TESTING)
 #define BREAK_LUA_OP_TEST_RELOADER 8
 #endif
@@ -168,6 +186,19 @@ typedef struct BreakLuaCallRefOpCtx {
     BreakLuaValue *returns;    /* borrowed caller buffer, NIL-prefilled */
     usize return_capacity;
 } BreakLuaCallRefOpCtx;
+
+typedef struct BreakLuaTable BreakLuaTable;
+typedef struct BreakLuaTableOpCtx {
+    BreakLuaOpHeader hdr;
+    int env_ref;
+    const char *function_name;
+    const BreakLuaTable *argument;
+    BreakLuaTable *result;
+} BreakLuaTableOpCtx;
+
+BreakLuaError break_lua_push_value(lua_State *L, const BreakLuaValue *value);
+BreakLuaError break_lua_take_value(lua_State *L, int idx, BreakLuaValue *out);
+void break_lua_table_call_impl(lua_State *L, BreakLuaTableOpCtx *ctx);
 
 #if defined(BREAK_LUA_TESTING)
 typedef struct BreakLuaTestReloaderOpCtx {

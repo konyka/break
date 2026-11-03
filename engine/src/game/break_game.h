@@ -70,6 +70,15 @@ typedef struct BreakGameClassDesc {
 
 typedef void (*BreakGameTickFn)(BreakGame *game, Entity entity, f32 dt, void *user);
 
+typedef struct BreakGameScriptBridge {
+    void *user;
+    void (*actor_tick)(void *user, const char *module, Entity entity, f32 dt);
+    void (*actor_despawn)(void *user, Entity entity);
+} BreakGameScriptBridge;
+
+BreakGameError break_game_set_script_bridge(
+    BreakGame *game, const BreakGameScriptBridge *bridge);
+
 typedef struct BreakGameSpawn {
     u32 class_id;
     Vec3 position;
