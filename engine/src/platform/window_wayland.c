@@ -5,6 +5,7 @@
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <platform/window_mode.h>
+#include <platform/time.h>
 #include <core/log.h>
 #include "gamepad_linux.h"
 
@@ -83,6 +84,7 @@ struct Platform {
     u32                   seat_global_name;
     struct wl_keyboard   *keyboard;
     struct wl_pointer    *pointer;
+    struct wl_touch      *touch;
     bool                  seat_has_touch;
     struct wl_data_device_manager *data_device_manager;
     struct wl_data_device *data_device;
@@ -161,6 +163,7 @@ struct Platform {
     struct xkb_state    *xkb_state;
 
     InputState input;
+    InputExtended input_extended;
     u32 width, height;
     bool should_close;     /* fatal: display/connection error */
     bool close_requested;  /* the compositor's close (cancellable) */
@@ -1141,6 +1144,73 @@ static const struct zwp_relative_pointer_v1_listener relative_pointer_listener =
     .relative_motion = relative_pointer_motion,
 };
 
+/* ---- Touch listener ---- */
+
+static void touch_down(void *data, struct wl_touch *touch, u32 serial, u32 time,
+                       struct wl_surface *surface, i32 id,
+                       wl_fixed_t x, wl_fixed_t y) {
+    Platform *p = data;
+    (void)touch;
+    (void)serial;
+    if (p == NULL || surface != p->surface) return;
+    (void)input_extended_touch_pixels(&p->input_extended, INPUT_TOUCH_PRESS, id,
+                                      (f32)wl_fixed_to_double(x),
+                                      (f32)wl_fixed_to_double(y),
+                                      p->width, p->height, time, NULL);
+}
+
+static void touch_up(void *data, struct wl_touch *touch, u32 serial, u32 time, i32 id) {
+    Platform *p = data;
+    (void)touch;
+    (void)serial;
+    if (p != NULL)
+        (void)input_extended_touch_end(&p->input_extended, id, false, time);
+}
+
+static void touch_motion(void *data, struct wl_touch *touch, u32 time, i32 id,
+                         wl_fixed_t x, wl_fixed_t y) {
+    Platform *p = data;
+    (void)touch;
+    if (p == NULL) return;
+    (void)input_extended_touch_pixels(&p->input_extended, INPUT_TOUCH_MOVE, id,
+                                      (f32)wl_fixed_to_double(x),
+                                      (f32)wl_fixed_to_double(y),
+                                      p->width, p->height, time, NULL);
+}
+
+static void touch_frame(void *data, struct wl_touch *touch) {
+    (void)data;
+    (void)touch;
+}
+
+static void touch_cancel(void *data, struct wl_touch *touch) {
+    Platform *p = data;
+    (void)touch;
+    if (p != NULL)
+        (void)input_extended_cancel_all(&p->input_extended,
+                                        time_microseconds() / 1000u);
+}
+
+static void touch_shape(void *data, struct wl_touch *touch, i32 id,
+                        wl_fixed_t major, wl_fixed_t minor) {
+    (void)data; (void)touch; (void)id; (void)major; (void)minor;
+}
+
+static void touch_orientation(void *data, struct wl_touch *touch, i32 id,
+                              wl_fixed_t orientation) {
+    (void)data; (void)touch; (void)id; (void)orientation;
+}
+
+static const struct wl_touch_listener touch_listener = {
+    .down = touch_down,
+    .up = touch_up,
+    .motion = touch_motion,
+    .frame = touch_frame,
+    .cancel = touch_cancel,
+    .shape = touch_shape,
+    .orientation = touch_orientation,
+};
+
 /* ---- Seat listener ---- */
 
 static void seat_capabilities(void *data, struct wl_seat *seat, u32 caps) {
@@ -1174,6 +1244,15 @@ static void seat_capabilities(void *data, struct wl_seat *seat, u32 caps) {
         wl_pointer_destroy(p->pointer);
         p->pointer = NULL;
         p->pointer_enter_serial = 0;
+    }
+    if ((caps & WL_SEAT_CAPABILITY_TOUCH) && p->touch == NULL) {
+        p->touch = wl_seat_get_touch(seat);
+        if (p->touch != NULL) wl_touch_add_listener(p->touch, &touch_listener, p);
+    } else if (!(caps & WL_SEAT_CAPABILITY_TOUCH) && p->touch != NULL) {
+        (void)input_extended_cancel_all(&p->input_extended,
+                                        time_microseconds() / 1000u);
+        wl_touch_destroy(p->touch);
+        p->touch = NULL;
     }
     if (had_pointer != (p->pointer != NULL) || had_touch != p->seat_has_touch) {
         p->media_context_valid = false;
@@ -1618,6 +1697,13 @@ static void registry_global_remove(void *data, struct wl_registry *reg, u32 name
             wl_pointer_destroy(p->pointer);
             p->pointer = NULL;
         }
+        if (p->touch != NULL) {
+            (void)input_extended_cancel_all(&p->input_extended,
+                                            time_microseconds() / 1000u);
+            wl_touch_destroy(p->touch);
+            p->touch = NULL;
+        }
+        p->seat_has_touch = false;
         if (p->seat != NULL) wl_seat_destroy(p->seat);
         p->seat = NULL;
         p->seat_global_name = 0;
@@ -1770,6 +1856,7 @@ static void wayland_create_fail(Platform *p) {
     if (p->toplevel)     xdg_toplevel_destroy(p->toplevel);
     if (p->xdg_surface)  xdg_surface_destroy(p->xdg_surface);
     if (p->surface)      wl_surface_destroy(p->surface);
+    if (p->touch)        wl_touch_destroy(p->touch);
     if (p->keyboard)     wl_keyboard_destroy(p->keyboard);
     if (p->pointer)      wl_pointer_destroy(p->pointer);
     if (p->xdg_wm_base)  xdg_wm_base_destroy(p->xdg_wm_base);
@@ -1804,6 +1891,8 @@ Platform *platform_create(const PlatformConfig *cfg) {
     }
     Platform *p = calloc(1, sizeof(Platform));
     if (!p) { LOG_FATAL("Failed to allocate Platform"); return NULL; }
+    input_init(&p->input);
+    input_extended_init(&p->input_extended);
     p->media_generation = 1u;
 
     p->width  = cfg->width;
@@ -1916,7 +2005,6 @@ Platform *platform_create(const PlatformConfig *cfg) {
         wl_display_roundtrip(p->display);
     }
 
-    input_init(&p->input);
     gamepad_init();
 
     /* R443: extra roundtrip so wl_output/xdg-output initial events (bound
@@ -1962,6 +2050,7 @@ void platform_destroy(Platform *p) {
     if (p->cursor_theme)   wl_cursor_theme_destroy(p->cursor_theme);
 
     if (p->egl_window)   wl_egl_window_destroy(p->egl_window);
+    if (p->touch)        wl_touch_destroy(p->touch);
     if (p->keyboard)     wl_keyboard_destroy(p->keyboard);
     if (p->pointer)      wl_pointer_destroy(p->pointer);
     if (p->toplevel)     xdg_toplevel_destroy(p->toplevel);
@@ -2025,6 +2114,7 @@ void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
 PlatformEventResult platform_poll(Platform *p) {
     if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
+    input_extended_new_frame(&p->input_extended);
 
     if (wl_display_dispatch_pending(p->display) < 0) {
         LOG_ERROR("Wayland display error");
@@ -2065,8 +2155,10 @@ PlatformEventResult platform_poll(Platform *p) {
     wayland_clipboard_drain(p);
     wayland_clipboard_drain_writes(p);
 
+    input_extended_update(&p->input_extended, time_microseconds() / 1000u);
     /* Pump gamepads (evdev) into the shared input state. */
     gamepad_poll(p->input.gamepads);
+    gamepad_feedback_poll(&p->input_extended);
 
     if (p->should_close || p->close_requested) return PLATFORM_EVENT_QUIT;
     return PLATFORM_EVENT_NONE;
@@ -2115,6 +2207,10 @@ void platform_ime_set_spot(Platform *p, i32 x, i32 y) {
 
 InputState *platform_input(Platform *p) {
     return p != NULL ? &p->input : NULL;
+}
+
+InputExtended *platform_input_extended(Platform *p) {
+    return p != NULL ? &p->input_extended : NULL;
 }
 
 void *platform_window_native(Platform *p) {

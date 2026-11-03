@@ -28,6 +28,7 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <platform/win_proc.h>
+#include <platform/time.h>
 #include <core/types.h>
 #include <core/log.h>
 #include "gamepad_linux.h"  /* shared gamepad API; Windows impl in gamepad_win.c */
@@ -43,6 +44,8 @@ struct Platform {
     HWND        hwnd;
     HDC         hdc;
     InputState  input;
+    InputExtended input_extended;
+    bool        touch_registered;
     u32         width, height;
     bool        should_close;     /* WM_QUIT: process exit */
     bool        close_requested;  /* WM_CLOSE: the user's close (cancellable) */
@@ -315,7 +318,14 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     /* R368: match X11 FocusOut / Wayland keyboard_leave — release stuck keys. */
     case WM_KILLFOCUS:
         input_release_all(&p->input);
+        (void)input_extended_cancel_all(&p->input_extended,
+                                        time_microseconds() / 1000u);
         p->pending_high_surrogate = 0;
+        return 0;
+
+    case WM_CAPTURECHANGED:
+        (void)input_extended_cancel_all(&p->input_extended,
+                                        time_microseconds() / 1000u);
         return 0;
 
     case WM_SETFOCUS:
@@ -457,6 +467,40 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (p->media_generation != UINT64_MAX) p->media_generation++;
         break;
 
+    case WM_TOUCH: {
+        UINT count = (UINT)LOWORD(wParam);
+        HTOUCHINPUT handle = (HTOUCHINPUT)lParam;
+        TOUCHINPUT inputs[INPUT_MAX_TOUCH_EVENTS];
+        POINT origin = {0, 0};
+        u64 time_ms = time_microseconds() / 1000u;
+        if (count > INPUT_MAX_TOUCH_EVENTS) {
+            input_extended_note_overload(&p->input_extended);
+            CloseTouchInputHandle(handle);
+            return 0;
+        }
+        if (count == 0u ||
+            GetTouchInputInfo(handle, count, inputs, sizeof(TOUCHINPUT)) == 0 ||
+            ClientToScreen(hwnd, &origin) == 0) {
+            CloseTouchInputHandle(handle);
+            return 0;
+        }
+        for (UINT i = 0; i < count; i++) {
+            const TOUCHINPUT *touch = &inputs[i];
+            InputTouchPhase phase;
+            f32 x = (f32)touch->x / 100.0f - (f32)origin.x;
+            f32 y = (f32)touch->y / 100.0f - (f32)origin.y;
+            if ((touch->dwFlags & TOUCHEVENTF_DOWN) != 0) phase = INPUT_TOUCH_PRESS;
+            else if ((touch->dwFlags & TOUCHEVENTF_UP) != 0) phase = INPUT_TOUCH_RELEASE;
+            else if ((touch->dwFlags & TOUCHEVENTF_MOVE) != 0) phase = INPUT_TOUCH_MOVE;
+            else continue;
+            (void)input_extended_touch_pixels(&p->input_extended, phase,
+                                              (i64)touch->dwID, x, y,
+                                              p->width, p->height, time_ms, NULL);
+        }
+        CloseTouchInputHandle(handle);
+        return 0;
+    }
+
     case WM_MOUSEMOVE:
         /* R423: GET_*_LPARAM sign-extends — LOWORD/HIWORD are unsigned, so
          * negative coords (secondary monitor left of / above the primary)
@@ -550,6 +594,8 @@ Platform *platform_create(const PlatformConfig *cfg) {
     int title_units;
     wchar_t *title;
     if (!p) { LOG_FATAL("Failed to allocate Platform"); return NULL; }
+    input_init(&p->input);
+    input_extended_init(&p->input_extended);
     p->media_generation = 1u;
 
     p->hinstance = GetModuleHandleW(NULL);
@@ -635,6 +681,9 @@ Platform *platform_create(const PlatformConfig *cfg) {
     }
 
     SetWindowLongPtrW(p->hwnd, GWLP_USERDATA, (LONG_PTR)p);
+    p->touch_registered = RegisterTouchWindow(p->hwnd, 0) != 0;
+    if (!p->touch_registered)
+        LOG_WARN("Win32 touch registration failed; touch input unavailable");
 
     p->hdc = GetDC(p->hwnd);
 
@@ -652,7 +701,6 @@ Platform *platform_create(const PlatformConfig *cfg) {
         UpdateWindow(p->hwnd);
     }
 
-    input_init(&p->input);
     gamepad_init();
 
     LOG_INFO("Platform initialized: %ux%u \"%s\"", cfg->width, cfg->height, cfg->title);
@@ -665,6 +713,7 @@ void platform_destroy(Platform *p) {
     gamepad_shutdown();
     platform_text_queue_destroy(&p->text_queue);
     if (p->hdc) ReleaseDC(p->hwnd, p->hdc);
+    if (p->hwnd && p->touch_registered) (void)UnregisterTouchWindow(p->hwnd);
     if (p->hwnd) DestroyWindow(p->hwnd);
     UnregisterClassW(L"BreakEngine", p->hinstance);
     free(p);
@@ -700,6 +749,7 @@ void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
 PlatformEventResult platform_poll(Platform *p) {
     if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
+    input_extended_new_frame(&p->input_extended);
 
     MSG msg;
     while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -713,8 +763,10 @@ PlatformEventResult platform_poll(Platform *p) {
         DispatchMessageW(&msg);
     }
 
+    input_extended_update(&p->input_extended, time_microseconds() / 1000u);
     /* Pump gamepads (XInput) into the shared input state. */
     gamepad_poll(p->input.gamepads);
+    gamepad_feedback_poll(&p->input_extended);
 
     if (p->should_close || p->close_requested) return PLATFORM_EVENT_QUIT;
     return PLATFORM_EVENT_NONE;
@@ -803,6 +855,10 @@ void platform_ime_set_spot(Platform *p, i32 x, i32 y) {
 
 InputState *platform_input(Platform *p) {
     return p != NULL ? &p->input : NULL;
+}
+
+InputExtended *platform_input_extended(Platform *p) {
+    return p != NULL ? &p->input_extended : NULL;
 }
 
 void *platform_window_native(Platform *p) {

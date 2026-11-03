@@ -20,6 +20,7 @@
 
 #include <platform/input.h>
 #include <platform/win_proc.h>
+#include <platform/time.h>
 #include <core/types.h>
 #include <core/log.h>
 
@@ -31,13 +32,26 @@
 #endif
 
 typedef DWORD (WINAPI *PFN_XInputGetState)(DWORD, XINPUT_STATE *);
+typedef DWORD (WINAPI *PFN_XInputSetState)(DWORD, XINPUT_VIBRATION *);
+typedef DWORD (WINAPI *PFN_XInputGetCapabilities)(DWORD, DWORD, XINPUT_CAPABILITIES *);
+
+#ifndef XINPUT_CAPS_FFB_SUPPORTED
+#define XINPUT_CAPS_FFB_SUPPORTED 0x0001
+#endif
 
 typedef struct {
-    HMODULE            dll;
-    PFN_XInputGetState get_state;
-    bool               initialized;
-    bool               connected[INPUT_MAX_GAMEPADS];
-    DWORD              last_packet[INPUT_MAX_GAMEPADS];
+    HMODULE                   dll;
+    PFN_XInputGetState        get_state;
+    PFN_XInputSetState        set_state;
+    PFN_XInputGetCapabilities get_capabilities;
+    bool                      initialized;
+    bool                      connected[INPUT_MAX_GAMEPADS];
+    bool                      feedback_available[INPUT_MAX_GAMEPADS];
+    bool                      vibration_active[INPUT_MAX_GAMEPADS];
+    u64                       stop_deadline_us[INPUT_MAX_GAMEPADS];
+    u32                       connection_serial[INPUT_MAX_GAMEPADS];
+    u32                       next_serial;
+    DWORD                     last_packet[INPUT_MAX_GAMEPADS];
 } GamepadSystemWin;
 
 static GamepadSystemWin g_pad;
@@ -111,6 +125,10 @@ void gamepad_init(void) {
             WIN_PROC_LOAD(g_pad.get_state,
                           GetProcAddress(g_pad.dll, "XInputGetState"));
             if (g_pad.get_state) {
+                WIN_PROC_LOAD(g_pad.set_state,
+                              GetProcAddress(g_pad.dll, "XInputSetState"));
+                WIN_PROC_LOAD(g_pad.get_capabilities,
+                              GetProcAddress(g_pad.dll, "XInputGetCapabilities"));
                 LOG_INFO("gamepad: XInput backend loaded (%s)", dlls[i]);
                 break;
             }
@@ -123,6 +141,19 @@ void gamepad_init(void) {
         LOG_WARN("gamepad: XInput unavailable — no gamepads");
     }
     g_pad.initialized = true;
+}
+
+static void win_query_feedback(u32 pad) {
+    bool available = g_pad.set_state != NULL;
+    if (g_pad.get_capabilities != NULL) {
+        XINPUT_CAPABILITIES capabilities;
+        memset(&capabilities, 0, sizeof(capabilities));
+        if (g_pad.get_capabilities(pad, 0, &capabilities) == ERROR_SUCCESS) {
+            available = available &&
+                        (capabilities.Flags & XINPUT_CAPS_FFB_SUPPORTED) != 0;
+        }
+    }
+    g_pad.feedback_available[pad] = available;
 }
 
 void gamepad_poll(GamepadState *out_pads) {
@@ -146,6 +177,8 @@ void gamepad_poll(GamepadState *out_pads) {
                 s->connected = false;
                 s->name[0]   = 0;
                 g_pad.connected[i] = false;
+                g_pad.feedback_available[i] = false;
+                g_pad.vibration_active[i] = false;
                 LOG_INFO("gamepad: disconnected slot=%d", i);
             }
             continue;
@@ -153,9 +186,14 @@ void gamepad_poll(GamepadState *out_pads) {
 
         if (!g_pad.connected[i]) {
             g_pad.connected[i] = true;
+            g_pad.next_serial++;
+            if (g_pad.next_serial == 0u) g_pad.next_serial++;
+            g_pad.connection_serial[i] = g_pad.next_serial;
+            win_query_feedback((u32)i);
             s->connected = true;
             snprintf(s->name, sizeof(s->name), "XInput Controller %d", i);
-            LOG_INFO("gamepad: connected slot=%d name=\"%s\"", i, s->name);
+            LOG_INFO("gamepad: connected slot=%d name=\"%s\" feedback=%d",
+                     i, s->name, g_pad.feedback_available[i] ? 1 : 0);
         }
 
         const XINPUT_GAMEPAD *gp = &st.Gamepad;
@@ -173,8 +211,79 @@ void gamepad_poll(GamepadState *out_pads) {
     }
 }
 
+static InputExtResult win_execute_haptic(void *context,
+                                         const InputHapticCommand *command) {
+    XINPUT_VIBRATION vibration;
+    DWORD result;
+    u32 pad;
+    (void)context;
+    if (command == NULL || command->pad >= INPUT_MAX_GAMEPADS)
+        return INPUT_EXT_INVALID;
+    pad = command->pad;
+    if (!g_pad.connected[pad]) return INPUT_EXT_DISCONNECTED;
+    if (!g_pad.feedback_available[pad] || g_pad.set_state == NULL)
+        return INPUT_EXT_UNSUPPORTED;
+    vibration.wLeftMotorSpeed = (WORD)(command->low * 65535.0f + 0.5f);
+    vibration.wRightMotorSpeed = (WORD)(command->high * 65535.0f + 0.5f);
+    result = g_pad.set_state(pad, &vibration);
+    if (result == ERROR_SUCCESS) {
+        g_pad.vibration_active[pad] = command->duration_ms != 0u;
+        g_pad.stop_deadline_us[pad] = command->duration_ms == 0u
+            ? 0u : time_microseconds() + (u64)command->duration_ms * 1000u;
+        return INPUT_EXT_OK;
+    }
+    if (result == ERROR_DEVICE_NOT_CONNECTED) {
+        g_pad.connected[pad] = false;
+        g_pad.feedback_available[pad] = false;
+        g_pad.vibration_active[pad] = false;
+        return INPUT_EXT_DISCONNECTED;
+    }
+    return INPUT_EXT_FAILED;
+}
+
+static void win_haptic_tick(u64 now_us) {
+    for (u32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
+        XINPUT_VIBRATION stop;
+        if (!g_pad.vibration_active[i] || now_us < g_pad.stop_deadline_us[i])
+            continue;
+        stop.wLeftMotorSpeed = 0;
+        stop.wRightMotorSpeed = 0;
+        if (g_pad.connected[i] && g_pad.set_state != NULL &&
+            g_pad.set_state(i, &stop) == ERROR_DEVICE_NOT_CONNECTED) {
+            g_pad.connected[i] = false;
+            g_pad.feedback_available[i] = false;
+        }
+        g_pad.vibration_active[i] = false;
+        g_pad.stop_deadline_us[i] = 0;
+    }
+}
+
+static void win_sync_haptic_pads(InputExtended *extended) {
+    for (u32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
+        input_extended_backend_pad(extended, i, g_pad.connected[i],
+                                   g_pad.feedback_available[i],
+                                   g_pad.connection_serial[i]);
+    }
+}
+
+void gamepad_feedback_poll(InputExtended *extended) {
+    if (!g_pad.initialized || extended == NULL) return;
+    win_sync_haptic_pads(extended);
+    (void)input_extended_haptic_pump(extended, win_execute_haptic, NULL);
+    win_haptic_tick(time_microseconds());
+    win_sync_haptic_pads(extended);
+}
+
 void gamepad_shutdown(void) {
     if (!g_pad.initialized) return;
+    for (u32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
+        if (g_pad.vibration_active[i] && g_pad.connected[i] && g_pad.set_state != NULL) {
+            XINPUT_VIBRATION stop;
+            stop.wLeftMotorSpeed = 0;
+            stop.wRightMotorSpeed = 0;
+            (void)g_pad.set_state(i, &stop);
+        }
+    }
     if (g_pad.dll) FreeLibrary(g_pad.dll);
     memset(&g_pad, 0, sizeof(g_pad));
 }

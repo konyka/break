@@ -826,6 +826,7 @@ add_library(engine STATIC
     src/core/string.c
     src/core/profiler.c
     src/platform/input.c
+    src/platform/input_extended.c
     src/platform/platform_config.c
     src/platform/platform_display_media.c
     src/platform/platform_vk_surface.c
@@ -1031,12 +1032,14 @@ if(ENGINE_BUILD_TESTS)
             tests/test_platform_screen_simulated.c
             src/platform/window_screen.c
             src/platform/input.c
+            src/platform/input_extended.c
             src/platform/platform_config.c)
         target_include_directories(test_platform_screen_simulated PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_qnx_screen)
         target_compile_definitions(test_platform_screen_simulated PRIVATE
             ENGINE_PLATFORM_QNX=1 ENGINE_QNX_SCREEN=1)
+        target_link_libraries(test_platform_screen_simulated PRIVATE m)
         add_test(NAME test_platform_screen_simulated
             COMMAND test_platform_screen_simulated)
         set_tests_properties(test_platform_screen_simulated PROPERTIES
@@ -2887,6 +2890,7 @@ if(ENGINE_BUILD_TESTS)
             tests/test_platform_mobile.c
             src/platform/window_mobile.c
             src/platform/input.c
+            src/platform/input_extended.c
             src/platform/platform_config.c)
         target_include_directories(test_platform_mobile_layer_${_mobile_lower}
             PRIVATE ${TEST_INCLUDE_DIRS})
@@ -2903,6 +2907,7 @@ if(ENGINE_BUILD_TESTS)
         src/core/log.c
         src/platform/window_mobile.c
         src/platform/input.c
+        src/platform/input_extended.c
         src/platform/platform_config.c)
     target_include_directories(test_engine_mobile_host PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_engine_mobile_host PRIVATE ENGINE_PLATFORM_IOS=1)
@@ -5855,6 +5860,34 @@ endif()
     target_include_directories(test_input PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_input PRIVATE m)
     add_test(NAME test_input COMMAND test_input)
+
+    add_executable(test_input_extended tests/test_input_extended.c
+        src/platform/input_extended.c)
+    target_include_directories(test_input_extended PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_input_extended PRIVATE m Threads::Threads)
+    add_test(NAME test_input_extended COMMAND test_input_extended)
+    set_tests_properties(test_input_extended PROPERTIES LABELS "headless;platform_contract")
+
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        add_executable(test_gamepad_linux_feedback tests/test_gamepad_linux_feedback.c
+            src/platform/input_extended.c src/core/log.c)
+        target_include_directories(test_gamepad_linux_feedback PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_gamepad_linux_feedback PRIVATE ENGINE_PLATFORM_LINUX=1)
+        target_link_libraries(test_gamepad_linux_feedback PRIVATE m)
+        add_test(NAME test_gamepad_linux_feedback COMMAND test_gamepad_linux_feedback)
+        set_tests_properties(test_gamepad_linux_feedback PROPERTIES LABELS "headless;platform_contract")
+    endif()
+
+    if(ENGINE_PLATFORM STREQUAL "windows")
+        add_executable(test_gamepad_win_feedback tests/test_gamepad_win_feedback.c
+            src/platform/input_extended.c src/platform/time.c src/core/log.c)
+        target_include_directories(test_gamepad_win_feedback PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_gamepad_win_feedback PRIVATE
+            ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_gamepad_win_feedback PRIVATE kernel32)
+        add_test(NAME test_gamepad_win_feedback COMMAND test_gamepad_win_feedback)
+        set_tests_properties(test_gamepad_win_feedback PROPERTIES LABELS "headless;platform_contract")
+    endif()
 
     # test_break_replay_window: application-message anti-replay window
     # (pure C; library code lives with break_net but has no dependency).

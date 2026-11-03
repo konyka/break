@@ -10,6 +10,7 @@
  */
 
 #include <platform/input.h>
+#include <platform/input_extended.h>
 
 /* Initialize the gamepad subsystem. Safe to call exactly once during
  * platform startup. Failures (missing /dev/input, permission denied,
@@ -22,6 +23,9 @@ void gamepad_init(void);
  *
  * Designed to be called once per frame after input_new_frame(). */
 void gamepad_poll(GamepadState *out_pads);
+
+/* Executes queued feedback only on the platform polling thread. */
+void gamepad_feedback_poll(InputExtended *extended);
 
 /* Tear down the gamepad subsystem and release every owned descriptor. */
 void gamepad_shutdown(void);

@@ -35,6 +35,9 @@
 typedef struct {
     int  fd;
     bool connected;
+    bool feedback_available;
+    int  effect_id;
+    u32  connection_serial;
     char name[128];
     char path[288];
     /* Per-axis calibration. We only really need the codes used by gamepads,
@@ -50,6 +53,7 @@ typedef struct {
     GamepadDevice devices[INPUT_MAX_GAMEPADS];
     int           inotify_fd;
     int           inotify_wd;
+    u32           next_serial;
     bool          initialized;
 } GamepadSystem;
 
@@ -140,6 +144,17 @@ static void device_query_axes(GamepadDevice *d) {
     }
 }
 
+static void device_query_haptic(GamepadDevice *d, bool writable) {
+    unsigned long evbits[NLONGS(EV_CNT)] = {0};
+    unsigned long ffbits[NLONGS(FF_CNT)] = {0};
+    d->feedback_available = false;
+    if (!writable) return;
+    if (ioctl(d->fd, EVIOCGBIT(0, sizeof(evbits)), evbits) < 0 ||
+        !TEST_BIT(evbits, EV_FF)) return;
+    if (ioctl(d->fd, EVIOCGBIT(EV_FF, sizeof(ffbits)), ffbits) < 0) return;
+    d->feedback_available = TEST_BIT(ffbits, FF_RUMBLE) != 0;
+}
+
 static i32 find_free_slot(void) {
     for (i32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
         if (!g_gamepad_sys.devices[i].connected) return i;
@@ -158,9 +173,15 @@ static i32 find_slot_by_path(const char *path) {
 }
 
 static bool try_open_device(const char *path) {
+    bool writable = false;
     if (find_slot_by_path(path) >= 0) return false;
 
-    int fd = open(path, O_RDONLY | O_NONBLOCK);
+    int fd = open(path, O_RDWR | O_NONBLOCK);
+    if (fd >= 0) {
+        writable = true;
+    } else {
+        fd = open(path, O_RDONLY | O_NONBLOCK);
+    }
     if (fd < 0) {
         /* Permission denied is the common case for non-input-group users. */
         if (errno != EACCES && errno != ENOENT) {
@@ -185,6 +206,10 @@ static bool try_open_device(const char *path) {
     memset(d, 0, sizeof(*d));
     d->fd        = fd;
     d->connected = true;
+    d->effect_id = -1;
+    g_gamepad_sys.next_serial++;
+    if (g_gamepad_sys.next_serial == 0u) g_gamepad_sys.next_serial++;
+    d->connection_serial = g_gamepad_sys.next_serial;
     snprintf(d->path, sizeof(d->path), "%s", path);
 
     char name[128] = {0};
@@ -195,9 +220,10 @@ static bool try_open_device(const char *path) {
     }
 
     device_query_axes(d);
+    device_query_haptic(d, writable);
 
-    LOG_INFO("gamepad: connected slot=%d path=%s name=\"%s\"",
-             slot, d->path, d->name);
+    LOG_INFO("gamepad: connected slot=%d path=%s name=\"%s\" feedback=%d",
+             slot, d->path, d->name, d->feedback_available ? 1 : 0);
     return true;
 }
 
@@ -208,9 +234,12 @@ static void close_device(i32 slot) {
     LOG_INFO("gamepad: disconnected slot=%d path=%s name=\"%s\"",
              slot, d->path, d->name);
 
+    if (d->fd >= 0 && d->effect_id >= 0)
+        (void)ioctl(d->fd, EVIOCRMFF, d->effect_id);
     if (d->fd >= 0) close(d->fd);
     memset(d, 0, sizeof(*d));
     d->fd = -1;
+    d->effect_id = -1;
 }
 
 /* ---------------------------------------------------------------- */
@@ -412,6 +441,66 @@ void gamepad_poll(GamepadState *out_pads) {
 
         process_device_events(i, s);
     }
+}
+
+static InputExtResult linux_haptic_error(void) {
+    return errno == ENODEV ? INPUT_EXT_DISCONNECTED : INPUT_EXT_FAILED;
+}
+
+static InputExtResult linux_device_haptic(GamepadDevice *d,
+                                          const InputHapticCommand *command) {
+    struct input_event event;
+    ssize_t written;
+    if (d == NULL || command == NULL) return INPUT_EXT_INVALID;
+    if (!d->connected) return INPUT_EXT_DISCONNECTED;
+    if (!d->feedback_available) return INPUT_EXT_UNSUPPORTED;
+    if (command->duration_ms == 0u && d->effect_id < 0) return INPUT_EXT_OK;
+
+    if (command->duration_ms != 0u) {
+        struct ff_effect effect;
+        memset(&effect, 0, sizeof(effect));
+        effect.type = FF_RUMBLE;
+        effect.id = d->effect_id;
+        effect.replay.length = (u16)command->duration_ms;
+        effect.u.rumble.strong_magnitude = (u16)(command->low * 65535.0f + 0.5f);
+        effect.u.rumble.weak_magnitude = (u16)(command->high * 65535.0f + 0.5f);
+        if (ioctl(d->fd, EVIOCSFF, &effect) < 0) return linux_haptic_error();
+        d->effect_id = effect.id;
+    }
+
+    memset(&event, 0, sizeof(event));
+    event.type = EV_FF;
+    event.code = (u16)d->effect_id;
+    event.value = command->duration_ms == 0u ? 0 : 1;
+    written = write(d->fd, &event, sizeof(event));
+    if (written == (ssize_t)sizeof(event)) return INPUT_EXT_OK;
+    if (written < 0) return linux_haptic_error();
+    return INPUT_EXT_FAILED;
+}
+
+static InputExtResult linux_execute_haptic(void *context,
+                                           const InputHapticCommand *command) {
+    InputExtResult result;
+    (void)context;
+    if (command->pad >= INPUT_MAX_GAMEPADS) return INPUT_EXT_INVALID;
+    result = linux_device_haptic(&g_gamepad_sys.devices[command->pad], command);
+    if (result == INPUT_EXT_DISCONNECTED) close_device((i32)command->pad);
+    return result;
+}
+
+static void sync_haptic_pads(InputExtended *extended) {
+    for (u32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
+        const GamepadDevice *d = &g_gamepad_sys.devices[i];
+        input_extended_backend_pad(extended, i, d->connected,
+                                   d->feedback_available, d->connection_serial);
+    }
+}
+
+void gamepad_feedback_poll(InputExtended *extended) {
+    if (!g_gamepad_sys.initialized || extended == NULL) return;
+    sync_haptic_pads(extended);
+    (void)input_extended_haptic_pump(extended, linux_execute_haptic, NULL);
+    sync_haptic_pads(extended);
 }
 
 void gamepad_shutdown(void) {
