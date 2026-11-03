@@ -56,7 +56,7 @@
 ### Task 6：实时边界、legacy、null/fake 和 sanitizers
 
 - RED：legacy WAV 测试在动态解码/流式路径下为 17/18，首个 0.25 样本缺失。
-- 修复：`audio_play`、`audio_play_3d`、`audio_play_streamed` 改为打开时 `DECODE | NO_PITCH`；兼容 API 名称不变，移除回调文件流。
+- 修复：`audio_play`、`audio_play_3d`、`audio_play_streamed` 改为打开时 DECODE；兼容 API 名称不变，移除回调文件流。初轮短期加入的 NO_PITCH 已在 fix round 1 移除，Doppler 回归见 `.superpowers/sdd/audio-fix-round1-report.md`。
 - GREEN：legacy 18/18；加入 bit-exact 与 null 命令生命周期后 20/20。
 - 自审补充 RED：填满 16 项命令环后，overload 仍多调用一次 ray，结果 20/21；把队列空间检查移到 ray 之前后 21/21。此处为差异自审，本会话没有独立 reviewer 工具，未声称独立评审。
 - 实时契约变异：把 legacy flags 改回 `MA_SOUND_FLAG_STREAM`，`test_audio_realtime_contract` 明确失败“legacy playback must not stream from the audio callback”；恢复后通过。

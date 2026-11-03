@@ -35,7 +35,7 @@ P10 在现有 `AudioSystem` 和同一个 miniaudio `ma_engine` 内实现。新�
 
 `audio_extended_init` 在创建期把 32 个 custom data source 直接接到现有 engine node graph 的 `ma_data_source_node`。没有使用 `ma_sound` 的扩展 PCM 路径，因为其实现会预读固定大小的 processing cache，短 clip 会在小渲染请求下被提前消费。直接 node graph 路径按请求帧数读取，测试覆盖了这一点。
 
-GameThread 是唯一命令生产者。START、STOP、RAMP 都是值命令，携带稳定内部 PCM 指针、serial 和预计算配置；head/tail 用 C11 release/acquire 原子发布。音频回调是唯一消费者。listener、位置、遮挡和 bus 变化发布为原子 f32-bit POD 快照；自然结束用 `completed_serial` 与当前 serial 匹配后才能回收 voice。
+GameThread 是唯一命令生产者。START、STOP、RAMP 都是值命令，携带稳定内部 PCM 指针、公共 serial、独立内部 epoch 和预计算配置；head/tail 用 C11 release/acquire 原子发布。每次 START 都递增 epoch，公共 RESTART handle 不变；STOP/RAMP 只作用于对应 epoch，旧完成不能回收新播放。音频回调是唯一消费者，只有消费 START 时才归零 cursor 并发布该代际初始 spatial gain。listener、位置、遮挡和 bus 变化发布为原子 f32-bit POD 快照；自然结束用 `completed_epoch` 与当前 epoch 匹配后才能回收 voice。enqueue 成功前不改主线程簿记，失败保持原状态。
 
 PCM 回调只做以下工作：
 
@@ -45,7 +45,7 @@ PCM 回调只做以下工作：
 
 回调不分配或释放内存，不访问文件、网络、World、游戏对象或射线 callback，不做 playlist 决策。`test_audio_realtime_contract` 对这些函数体做源级约束；实际 PCM 与 TSan 测试补充运行证据。
 
-遮挡射线只从 event trigger、`audio_voice_set_position` 和 listener 实际变化的 `audio_system_update` 调用。非空间事件不发射线，空间增益在 GameThread 计算后写入原子快照。
+遮挡射线只从 event trigger、`audio_voice_set_position` 和 listener 实际变化的 `audio_system_update` 调用。listener 的 NaN/Inf 在更新前拒绝，距离和增益先验证再 ray/发布；stop-pending voice 不再发射线或重定位。非空间事件不发射线，空间增益在 GameThread 计算后写入原子快照。
 
 ## 失败原子与生命周期
 
@@ -55,7 +55,7 @@ RESTART 保留 handle 并从头播放；STEAL_OLDEST 提升 generation，使旧 
 
 ## Legacy 文件 API
 
-`audio_play`、`audio_play_3d` 和兼容命名的 `audio_play_streamed` 都使用 `MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_NO_PITCH` 在打开时完整解码。`AudioStreamManager` 的公共 API 保留，但不再从音频回调读取文件或补 decoder 数据。代价是打开大文件会阻塞调用线程并占用对应解码内存；实时安全的扩展路径要求使用预解码 clip。
+`audio_play`、`audio_play_3d` 和兼容命名的 `audio_play_streamed` 都使用 `MA_SOUND_FLAG_DECODE` 在打开时完整解码，不再禁用 pitch/Doppler。`AudioStreamManager` 的公共 API 保留，但不再从音频回调读取文件或补 decoder 数据。代价是打开大文件会阻塞调用线程并占用对应解码内存；实时安全的扩展路径要求使用预解码 clip。decoded `audio_play_3d` 的源速度 Doppler 由真实 PCM 回归覆盖。
 
 ## 验证与限制
 

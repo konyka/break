@@ -1,3 +1,9 @@
+## 本轮更新：P10 fix round 1（2026-11-03）
+
+- **修复**：每次 START 使用独立 64-bit epoch，旧 STOP/RAMP/自然完成不能回收 RESTART 后 voice；cursor 只在回调消费 START 时归零，初始增益随命令发布，enqueue 失败不改簿记。listener/距离先验证再 ray，stop-pending 不再 ray；bus 统一拒绝非有限值，stale clip 返回 STALE。legacy 移除 NO_PITCH 恢复 Doppler。DSP 使用宽索引并补 stereo/链顺序/完整回调扫描。
+- **验证**：独立评审所有 Critical/Important/Minor 均有实现和覆盖。`test_audio_extended` 30/30、`test_audio_dsp` 8/8、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。STOP→RESTART、serial 回收变异、宽索引契约及 configure_dsp 分配变异均有 RED/恢复证据；`git diff --check e82dae38..HEAD` 通过。
+- **证据与限制**：命令输出和逐项结果见 `.superpowers/sdd/audio-fix-round1-report.md`。仍未做真实声卡/听测、Windows/macOS 或第二轮独立评审。
+
 ## 本轮更新：P10 音乐、DSP、遮挡与声音事件（2026-11-03）
 
 - **交付**：在同一 `AudioSystem`/miniaudio engine 内新增固定容量 clip、命名事件和 32 个预建 PCM voice（30 事件 + 2 音乐）。事件支持 ALLOW/RESTART/IGNORE 与 REJECT/STEAL_OLDEST，voice handle 带 generation；音乐支持 16 轨 playlist、loop、零淡化切轨和逐样本交叉淡化。四级 DSP 包含低通、反馈延迟和固定 tap 混响。射线仅在 GameThread 的 trigger/position/listener 路径执行，回调消费预分配命令/PCM 和原子增益快照，不做文件 I/O、网络、游戏逻辑或热分配。详细合同见 `docs/design/audio_extended.md`，TDD 台账见 `.superpowers/sdd/audio-extended-report.md`。
