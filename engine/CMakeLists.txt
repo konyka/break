@@ -592,6 +592,15 @@ if(BREAK_ENABLE_CRYPTO)
     target_link_libraries(break_integrity PUBLIC break_crypto)
 endif()
 
+# P11 system extensions remain an opt-in library; the engine never links it.
+if(TARGET break_integrity)
+    add_library(break_system STATIC src/system/break_cvar.c)
+    set_property(TARGET break_system PROPERTY C_STANDARD 11)
+    target_include_directories(break_system PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_system PUBLIC break_integrity)
+endif()
+
 # Stage 5 Phase C Tasks 1-3: break_crash — the crash record format (canonical
 # text "break-crash-v1") + bounded on-disk spool + async-signal-safe capture
 # (install/handler) + redaction + the caller-supplied upload seam. Formal optional
@@ -5204,6 +5213,15 @@ endif()
     target_link_libraries(test_platform_fs_write PRIVATE m)
     add_test(NAME test_platform_fs_write COMMAND test_platform_fs_write)
     set_tests_properties(test_platform_fs_write PROPERTIES LABELS "headless;platform")
+
+    if(TARGET break_system)
+        add_executable(test_break_cvar tests/test_break_cvar.c
+            src/platform/platform_fs.c)
+        target_include_directories(test_break_cvar PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_cvar PRIVATE break_system)
+        add_test(NAME test_break_cvar COMMAND test_break_cvar)
+        set_tests_properties(test_break_cvar PROPERTIES LABELS "headless;system")
+    endif()
 
     # Stage 5 Phase A Task 2: break_crypto known-answer/misuse tests link the
     # formal library; the contract ctest pins the target shape, the
