@@ -448,10 +448,10 @@ TEST(spatial_event_combines_distance_and_ray_occlusion)
     ASSERT_EQ(audio_event_trigger(as, "spatial", vec3(2, 0, 0), &voice), AUDIO_OK);
     ASSERT_EQ(ray.calls, 1u);
     ASSERT_FLOAT_EQ(ray.source.e[0], 2.0f, 0.0f);
-    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), 0.5f, 1e-6f);
     f32 output[2];
     ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
     ASSERT_FLOAT_EQ(output[0], 0.5f, 1e-6f);
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), 0.5f, 1e-6f);
 
     ray.blocked = true;
     ASSERT_EQ(audio_voice_set_position(as, voice, vec3(2, 0, 0)), AUDIO_OK);
@@ -665,6 +665,98 @@ TEST(event_overload_does_not_run_spatial_ray)
     audio_system_destroy(as);
 }
 
+TEST(stop_then_restart_before_drain_keeps_new_epoch_live)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {0.1f, 0.2f, 0.3f, 0.4f};
+    AudioClipHandle clip = register_ramp(as, samples, 4);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "stop-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0, restarted = 0;
+    ASSERT_EQ(audio_event_trigger(as, "stop-restart", vec3(0, 0, 0), &voice), AUDIO_OK);
+    f32 output[8];
+    ASSERT_EQ(audio_system_render(as, output, 2), AUDIO_OK);
+    ASSERT_EQ(audio_voice_stop(as, voice), AUDIO_OK);
+    ASSERT_EQ(audio_event_trigger(as, "stop-restart", vec3(0, 0, 0), &restarted), AUDIO_OK);
+    ASSERT_EQ(restarted, voice);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.1f, 1e-6f);
+    u32 count = 0, cursor = 0;
+    ASSERT_EQ(audio_event_active_count(as, "stop-restart", &count), AUDIO_OK);
+    ASSERT_EQ(count, 1u);
+    ASSERT_EQ(audio_voice_cursor(as, restarted, &cursor), AUDIO_OK);
+    ASSERT_EQ(cursor, 1u);
+    audio_system_destroy(as);
+}
+
+TEST(natural_end_then_restart_issues_live_generation)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {0.1f, 0.2f};
+    AudioClipHandle clip = register_ramp(as, samples, 2);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "natural-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0, restarted = 0;
+    ASSERT_EQ(audio_event_trigger(as, "natural-restart", vec3(0, 0, 0), &voice), AUDIO_OK);
+    f32 output[4];
+    ASSERT_EQ(audio_system_render(as, output, 2), AUDIO_OK);
+    ASSERT_EQ(audio_event_trigger(as, "natural-restart", vec3(0, 0, 0), &restarted), AUDIO_OK);
+    ASSERT_NEQ(restarted, voice);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.1f, 1e-6f);
+    u32 count = 0;
+    ASSERT_EQ(audio_event_active_count(as, "natural-restart", &count), AUDIO_OK);
+    ASSERT_EQ(count, 1u);
+    audio_system_destroy(as);
+}
+
+TEST(restart_defers_cursor_reset_until_start_is_consumed)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f};
+    AudioClipHandle clip = register_ramp(as, samples, 6);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "cursor-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "cursor-restart", vec3(0, 0, 0), &voice), AUDIO_OK);
+    f32 output[4];
+    ASSERT_EQ(audio_system_render(as, output, 2), AUDIO_OK);
+    ASSERT_EQ(audio_event_trigger(as, "cursor-restart", vec3(0, 0, 0), &voice), AUDIO_OK);
+    u32 cursor = 0;
+    ASSERT_EQ(audio_voice_cursor(as, voice, &cursor), AUDIO_OK);
+    ASSERT_EQ(cursor, 2u);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.1f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(restart_spatial_gain_changes_with_start_epoch)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1.0f, 1.0f};
+    AudioClipHandle clip = register_ramp(as, samples, 2);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    desc.spatial = true;
+    ASSERT_EQ(audio_event_register(as, "gain-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "gain-restart", vec3(2, 0, 0), &voice), AUDIO_OK);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_EQ(audio_event_trigger(as, "gain-restart", vec3(4, 0, 0), &voice), AUDIO_OK);
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), 0.5f, 1e-6f);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.25f, 1e-6f);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -687,4 +779,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_pcm_is_bit_exact_across_instances);
     RUN_TEST(null_backend_accepts_concurrent_command_lifecycle);
     RUN_TEST(event_overload_does_not_run_spatial_ray);
+    RUN_TEST(stop_then_restart_before_drain_keeps_new_epoch_live);
+    RUN_TEST(natural_end_then_restart_issues_live_generation);
+    RUN_TEST(restart_defers_cursor_reset_until_start_is_consumed);
+    RUN_TEST(restart_spatial_gain_changes_with_start_epoch);
 TEST_MAIN_END()

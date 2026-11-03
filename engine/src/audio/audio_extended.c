@@ -27,11 +27,13 @@ typedef enum {
 typedef struct {
     AudioCommandType type;
     u32 serial;
+    u64 epoch;
     const f32 *samples;
     u32 frame_count;
     u32 channels;
     f32 dsp_alpha[AUDIO_DSP_MAX_STAGES];
     f32 initial_gain;
+    f32 spatial_gain;
     f32 ramp_target;
     u32 ramp_frames;
     bool stop_after_ramp;
@@ -46,11 +48,11 @@ typedef struct {
     atomic_uint head;
     atomic_uint tail;
     atomic_uint cursor;
-    atomic_uint completed_serial;
+    atomic_uint_least64_t completed_epoch;
     const f32 *samples;
     u32 frame_count;
     u32 channels;
-    u32 playing_serial;
+    u64 playing_epoch;
     bool playing;
     bool looping;
     f32 volume;
@@ -68,6 +70,7 @@ typedef struct {
     Vec3 position;
     u32 bus;
     u32 serial;
+    u64 epoch;
     bool claimed;
     bool stop_pending;
     i32 owner_event;
@@ -150,9 +153,9 @@ static bool voice_dequeue(AudioVoice *voice, AudioCommand *command) {
     return true;
 }
 
-static void voice_finish(AudioVoice *voice, u32 serial) {
+static void voice_finish(AudioVoice *voice, u64 epoch) {
     voice->playing = false;
-    atomic_store_explicit(&voice->completed_serial, serial, memory_order_release);
+    atomic_store_explicit(&voice->completed_epoch, epoch, memory_order_release);
 }
 
 static void voice_configure_dsp(AudioVoice *voice,
@@ -182,7 +185,7 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->samples = command.samples;
             voice->frame_count = command.frame_count;
             voice->channels = command.channels;
-            voice->playing_serial = command.serial;
+            voice->playing_epoch = command.epoch;
             voice->looping = command.desc.looping;
             voice->volume = command.desc.volume;
             voice->bus = command.desc.bus;
@@ -193,12 +196,17 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->fade_remaining = command.ramp_frames;
             voice->fade_total = command.ramp_frames;
             voice->fade_stop = command.stop_after_ramp;
+            atomic_store_explicit(&voice->spatial_gain,
+                gain_to_bits(command.spatial_gain), memory_order_release);
             voice_configure_dsp(voice, &command);
             voice->playing = true;
             atomic_store_explicit(&voice->cursor, 0u, memory_order_release);
         } else if (command.type == AUDIO_COMMAND_STOP) {
-            voice_finish(voice, command.serial);
+            if (command.epoch == voice->playing_epoch) {
+                voice_finish(voice, command.epoch);
+            }
         } else if (command.type == AUDIO_COMMAND_RAMP) {
+            if (command.epoch != voice->playing_epoch) continue;
             voice->fade_start = voice->fade_gain;
             voice->fade_target = command.ramp_target;
             voice->fade_remaining = command.ramp_frames;
@@ -206,7 +214,7 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->fade_stop = command.stop_after_ramp;
             if (command.ramp_frames == 0) {
                 voice->fade_gain = command.ramp_target;
-                if (command.stop_after_ramp) voice_finish(voice, command.serial);
+                if (command.stop_after_ramp) voice_finish(voice, command.epoch);
             }
         }
     }
@@ -220,7 +228,7 @@ static void voice_advance_fade(AudioVoice *voice) {
                        (voice->fade_target - voice->fade_start) * t;
     voice->fade_remaining--;
     if (voice->fade_remaining == 0 && voice->fade_stop) {
-        voice_finish(voice, voice->playing_serial);
+        voice_finish(voice, voice->playing_epoch);
     }
 }
 
@@ -236,7 +244,7 @@ static ma_result voice_read(ma_data_source *source, void *output,
             voice_advance_fade(voice);
             u32 cursor = atomic_load_explicit(&voice->cursor, memory_order_relaxed);
             if (cursor >= voice->frame_count) {
-                voice_finish(voice, voice->playing_serial);
+                voice_finish(voice, voice->playing_epoch);
             } else {
                 u64 sample = (u64)cursor * voice->channels;
                 f32 bus_gain = voice->bus == AUDIO_BUS_MASTER ? 1.0f :
@@ -254,7 +262,7 @@ static ma_result voice_read(ma_data_source *source, void *output,
                 cursor++;
                 if (cursor == voice->frame_count) {
                     if (voice->looping) cursor = 0;
-                    else voice_finish(voice, voice->playing_serial);
+                    else voice_finish(voice, voice->playing_epoch);
                 }
                 atomic_store_explicit(&voice->cursor, cursor, memory_order_release);
             }
@@ -321,7 +329,7 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         atomic_init(&voice->head, 0);
         atomic_init(&voice->tail, 0);
         atomic_init(&voice->cursor, 0);
-        atomic_init(&voice->completed_serial, 0);
+        atomic_init(&voice->completed_epoch, 0);
         atomic_init(&voice->spatial_gain, gain_to_bits(1.0f));
         ma_data_source_config config = ma_data_source_config_init();
         config.vtable = &AUDIO_VOICE_VTABLE;
@@ -470,8 +478,8 @@ AudioResult audio_event_register(AudioSystem *as, const char *name,
 static void reap_voices(AudioExtended *ext) {
     for (u32 i = 0; i < AUDIO_MAX_VOICES; ++i) {
         AudioVoice *voice = &ext->voices[i];
-        if (voice->claimed && atomic_load_explicit(&voice->completed_serial,
-                memory_order_acquire) == voice->serial) {
+        if (voice->claimed && atomic_load_explicit(&voice->completed_epoch,
+                memory_order_acquire) == voice->epoch) {
             voice->claimed = false;
             voice->owner_event = -1;
             voice->stop_pending = false;
@@ -537,14 +545,17 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
     if (!clip) return AUDIO_STALE;
 
     u32 serial = new_generation ? (voice->serial + 1u) & 0xFFFFFFu : voice->serial;
+    u64 epoch = voice->epoch + 1u;
     AudioCommand command;
     memset(&command, 0, sizeof(command));
     command.type = AUDIO_COMMAND_START;
     command.serial = serial;
+    command.epoch = epoch;
     command.samples = &ext->pcm[clip->sample_offset];
     command.frame_count = clip->frame_count;
     command.channels = clip->channels;
     command.initial_gain = initial_gain;
+    command.spatial_gain = spatial_gain;
     command.ramp_target = 1.0f;
     command.ramp_frames = ramp_frames;
     command.desc = *desc;
@@ -555,16 +566,14 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
         }
     }
 
+    if (!voice_enqueue(voice, &command)) return AUDIO_OVERLOAD;
     voice->serial = serial;
+    voice->epoch = epoch;
     voice->claimed = true;
     voice->owner_event = owner;
     voice->order = ++ext->next_order;
     voice->stop_pending = false;
     voice->position = position;
-    atomic_store_explicit(&voice->spatial_gain, gain_to_bits(spatial_gain),
-                          memory_order_release);
-    atomic_store_explicit(&voice->cursor, 0u, memory_order_release);
-    if (!voice_enqueue(voice, &command)) return AUDIO_OVERLOAD;
     if (out) *out = voice_handle(slot, serial);
     return AUDIO_OK;
 }
@@ -635,6 +644,7 @@ AudioResult audio_voice_stop(AudioSystem *as, AudioVoiceHandle handle) {
     memset(&command, 0, sizeof(command));
     command.type = AUDIO_COMMAND_STOP;
     command.serial = voice->serial;
+    command.epoch = voice->epoch;
     voice->stop_pending = true;
     if (!voice_enqueue(voice, &command)) return AUDIO_OVERLOAD;
     return AUDIO_OK;
@@ -726,8 +736,8 @@ static AudioEventDesc music_event_desc(const AudioExtended *ext) {
 static bool music_voice_done(const AudioExtended *ext, u32 slot) {
     if (slot == UINT32_MAX) return true;
     const AudioVoice *voice = &ext->voices[slot];
-    return !voice->claimed || atomic_load_explicit(&voice->completed_serial,
-        memory_order_acquire) == voice->serial;
+    return !voice->claimed || atomic_load_explicit(&voice->completed_epoch,
+        memory_order_acquire) == voice->epoch;
 }
 
 static void music_clear(AudioExtended *ext) {
@@ -743,6 +753,7 @@ static AudioResult music_ramp_out(AudioExtended *ext, u32 slot, u32 frames) {
     memset(&command, 0, sizeof(command));
     command.type = AUDIO_COMMAND_RAMP;
     command.serial = voice->serial;
+    command.epoch = voice->epoch;
     command.ramp_target = 0.0f;
     command.ramp_frames = frames;
     command.stop_after_ramp = true;
@@ -772,6 +783,7 @@ static AudioResult music_start_next(AudioExtended *ext, u32 next_index) {
             memset(&command, 0, sizeof(command));
             command.type = AUDIO_COMMAND_STOP;
             command.serial = ext->voices[old_slot].serial;
+            command.epoch = ext->voices[old_slot].epoch;
             result = voice_enqueue(&ext->voices[old_slot], &command) ?
                      AUDIO_OK : AUDIO_OVERLOAD;
         }
@@ -841,6 +853,7 @@ AudioResult audio_music_stop(AudioSystem *as) {
         memset(&command, 0, sizeof(command));
         command.type = AUDIO_COMMAND_STOP;
         command.serial = ext->voices[slots[i]].serial;
+        command.epoch = ext->voices[slots[i]].epoch;
         if (!voice_enqueue(&ext->voices[slots[i]], &command)) return AUDIO_OVERLOAD;
     }
     ext->music_state = AUDIO_MUSIC_STOPPING;
