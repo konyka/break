@@ -2,7 +2,7 @@
 
 #include <animation/skeleton.h>
 
-#define ANIM_CODEC_VERSION 1u
+#define ANIM_CODEC_VERSION 2u
 #define ANIM_CODEC_QUANT_STEPS 65535u
 #define ANIM_CODEC_HEADER_BYTES 32u
 #define ANIM_CODEC_CHANNEL_HEADER_BYTES 40u

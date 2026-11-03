@@ -85,15 +85,16 @@ bool anim_facial_evaluate(const AnimFacialLibrary *library,
         u32 target = resolved_targets[c];
         u32 key = 0u;
         while (key + 1u < curve->keyframe_count && curve->times[key + 1u] <= time) ++key;
-        if (time <= curve->times[0]) {
+        if (time < curve->times[0]) {
             out_weights[target] = curve->values[0];
         } else if (key + 1u >= curve->keyframe_count) {
             out_weights[target] = curve->values[key];
         } else {
-            f32 span = curve->times[key + 1u] - curve->times[key];
-            f32 fraction = span > 0.0f ? (time - curve->times[key]) / span : 1.0f;
-            out_weights[target] = curve->values[key] +
-                (curve->values[key + 1u] - curve->values[key]) * fraction;
+            double span = (double)curve->times[key + 1u] - (double)curve->times[key];
+            double fraction = span > 0.0 ?
+                ((double)time - (double)curve->times[key]) / span : 1.0;
+            out_weights[target] = (f32)((double)curve->values[key] +
+                ((double)curve->values[key + 1u] - (double)curve->values[key]) * fraction);
         }
     }
     return true;

@@ -35,24 +35,30 @@ static void write_f32(u8 *p, f32 value) {
     write_u32(p, bits);
 }
 
-static u32 codec_crc32(const u8 *data, usize size) {
-    u32 crc = UINT32_MAX;
+static u32 codec_crc32_update(u32 crc, const u8 *data, usize size) {
     for (usize i = 0; i < size; ++i) {
         crc ^= data[i];
         for (u32 bit = 0; bit < 8u; ++bit)
             crc = (crc >> 1) ^ (0xEDB88320u & (u32)-(i32)(crc & 1u));
     }
+    return crc;
+}
+
+static u32 codec_stream_crc32(const u8 *data, usize size) {
+    u32 crc = codec_crc32_update(UINT32_MAX, data, 28u);
+    crc = codec_crc32_update(crc, data + ANIM_CODEC_HEADER_BYTES,
+                             size - ANIM_CODEC_HEADER_BYTES);
     return ~crc;
 }
 
-static u16 quantize_unit(f32 value) {
-    if (value <= 0.0f) return 0u;
-    if (value >= 1.0f) return ANIM_CODEC_QUANT_STEPS;
-    return (u16)floorf(value * (f32)ANIM_CODEC_QUANT_STEPS + 0.5f);
+static u16 quantize_unit(double value) {
+    if (value <= 0.0) return 0u;
+    if (value >= 1.0) return ANIM_CODEC_QUANT_STEPS;
+    return (u16)floor(value * (double)ANIM_CODEC_QUANT_STEPS + 0.5);
 }
 
-static f32 dequantize_unit(u16 value) {
-    return (f32)value / (f32)ANIM_CODEC_QUANT_STEPS;
+static double dequantize_unit(u16 value) {
+    return (double)value / (double)ANIM_CODEC_QUANT_STEPS;
 }
 
 static bool normalize_quaternion(const f32 input[4], f32 output[4]) {
@@ -72,10 +78,14 @@ static AnimCodecResult source_layout(const AnimClip *clip, u32 joint_count,
     usize size = ANIM_CODEC_HEADER_BYTES;
     for (u32 c = 0; c < clip->channel_count; ++c) {
         const AnimChannel *channel = &clip->channels[c];
+        bool path_valid = channel->path == ANIM_PATH_TRANSLATION ||
+                          channel->path == ANIM_PATH_ROTATION ||
+                          channel->path == ANIM_PATH_SCALE;
+        bool interp_valid = channel->interp == ANIM_INTERP_LINEAR ||
+                            channel->interp == ANIM_INTERP_STEP;
         if (channel->joint_index >= joint_count ||
             channel->keyframe_count > SKELETON_MAX_KEYFRAMES ||
-            channel->path > ANIM_PATH_SCALE || channel->interp > ANIM_INTERP_STEP)
-            return ANIM_CODEC_INVALID;
+            !path_valid || !interp_valid) return ANIM_CODEC_INVALID;
         u32 components = channel->path == ANIM_PATH_ROTATION ? 4u : 3u;
         f32 min_value[3] = {0.0f, 0.0f, 0.0f};
         f32 max_value[3] = {0.0f, 0.0f, 0.0f};
@@ -164,25 +174,25 @@ AnimCodecResult anim_codec_encode(const AnimClip *clip, u32 joint_count,
         }
         cursor += ANIM_CODEC_CHANNEL_HEADER_BYTES;
         for (u32 k = 0; k < channel->keyframe_count; ++k) {
-            f32 time_unit = clip->duration > 0.0f ?
-                            channel->times[k] / clip->duration : 0.0f;
+            double time_unit = clip->duration > 0.0f ?
+                               (double)channel->times[k] / (double)clip->duration : 0.0;
             write_u16(cursor, quantize_unit(time_unit));
             cursor += 2;
             f32 quaternion[4];
             if (channel->path == ANIM_PATH_ROTATION &&
                 !normalize_quaternion(channel->values[k], quaternion)) return ANIM_CODEC_INVALID;
             for (u32 a = 0; a < components; ++a) {
-                f32 value = channel->path == ANIM_PATH_ROTATION ?
-                            quaternion[a] : channel->values[k][a];
-                f32 range = max_value[a] - min_value[a];
-                f32 unit = range > 0.0f ? (value - min_value[a]) / range : 0.0f;
+                double value = channel->path == ANIM_PATH_ROTATION ?
+                               (double)quaternion[a] : (double)channel->values[k][a];
+                double range = (double)max_value[a] - (double)min_value[a];
+                double unit = range > 0.0 ?
+                              (value - (double)min_value[a]) / range : 0.0;
                 write_u16(cursor, quantize_unit(unit));
                 cursor += 2;
             }
         }
     }
-    write_u32(out + 28, codec_crc32(out + ANIM_CODEC_HEADER_BYTES,
-                                    required - ANIM_CODEC_HEADER_BYTES));
+    write_u32(out + 28, codec_stream_crc32(out, required));
     return ANIM_CODEC_OK;
 }
 
@@ -195,8 +205,7 @@ static AnimCodecResult decode_pass(const u8 *data, usize size, AnimClip *out, bo
         read_u32(data + 8) != size ||
         read_u32(data + 24) != size - ANIM_CODEC_HEADER_BYTES)
         return ANIM_CODEC_CORRUPT;
-    if (codec_crc32(data + ANIM_CODEC_HEADER_BYTES,
-                    size - ANIM_CODEC_HEADER_BYTES) != read_u32(data + 28))
+    if (codec_stream_crc32(data, size) != read_u32(data + 28))
         return ANIM_CODEC_CORRUPT;
     u32 joint_count = read_u16(data + 12);
     u32 channel_count = read_u16(data + 14);
@@ -251,12 +260,13 @@ static AnimCodecResult decode_pass(const u8 *data, usize size, AnimClip *out, bo
             u16 quantized_time = read_u16(cursor);
             if (k > 0u && quantized_time < previous_time) return ANIM_CODEC_CORRUPT;
             previous_time = quantized_time;
-            f32 time = duration * dequantize_unit(quantized_time);
+            f32 time = (f32)((double)duration * dequantize_unit(quantized_time));
             cursor += 2;
             f32 values[4] = {0.0f, 0.0f, 0.0f, 0.0f};
             for (u32 a = 0; a < components; ++a) {
-                values[a] = min_value[a] + (max_value[a] - min_value[a]) *
-                            dequantize_unit(read_u16(cursor));
+                values[a] = (f32)((double)min_value[a] +
+                    ((double)max_value[a] - (double)min_value[a]) *
+                    dequantize_unit(read_u16(cursor)));
                 cursor += 2;
             }
             if (path == ANIM_PATH_ROTATION) {
@@ -283,10 +293,18 @@ AnimCodecResult anim_codec_decode(const void *data, usize size, AnimClip *out) {
     return decode_pass((const u8 *)data, size, out, true);
 }
 
+static f32 codec_error_bound(double quantization_step, double magnitude) {
+    double bound = quantization_step / (2.0 * (double)ANIM_CODEC_QUANT_STEPS) +
+                   fabs(magnitude) * 0x1p-23 + 0x1p-149;
+    return nextafterf((f32)bound, INFINITY);
+}
+
 f32 anim_codec_time_error_bound(f32 duration) {
-    return duration / (2.0f * (f32)ANIM_CODEC_QUANT_STEPS);
+    return codec_error_bound(fabs((double)duration), fabs((double)duration));
 }
 
 f32 anim_codec_scalar_error_bound(f32 min_value, f32 max_value) {
-    return (max_value - min_value) / (2.0f * (f32)ANIM_CODEC_QUANT_STEPS);
+    double range = fabs((double)max_value - (double)min_value);
+    double magnitude = fmax(fabs((double)min_value), fabs((double)max_value));
+    return codec_error_bound(range, magnitude);
 }

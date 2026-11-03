@@ -2,9 +2,8 @@
 #include <string.h>
 
 bool anim_morph_init(AnimMorphSet *set, u32 vertex_count) {
-    if (!set) return false;
+    if (!set || vertex_count == 0u || vertex_count > ANIM_MORPH_MAX_VERTICES) return false;
     memset(set, 0, sizeof(*set));
-    if (vertex_count == 0u || vertex_count > ANIM_MORPH_MAX_VERTICES) return false;
     set->vertex_count = vertex_count;
     return true;
 }

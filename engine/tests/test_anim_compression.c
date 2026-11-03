@@ -45,14 +45,20 @@ static void test_write_f32(u8 *p, f32 value) {
     test_write_u32(p, bits);
 }
 
-static void test_repair_crc(u8 *bytes) {
-    usize size = test_read_u32(bytes + 8);
-    u32 crc = UINT32_MAX;
-    for (usize i = ANIM_CODEC_HEADER_BYTES; i < size; ++i) {
-        crc ^= bytes[i];
+static u32 test_crc32_update(u32 crc, const u8 *data, usize size) {
+    for (usize i = 0; i < size; ++i) {
+        crc ^= data[i];
         for (u32 bit = 0; bit < 8u; ++bit)
             crc = (crc >> 1) ^ (0xEDB88320u & (u32)-(i32)(crc & 1u));
     }
+    return crc;
+}
+
+static void test_repair_crc(u8 *bytes) {
+    usize size = test_read_u32(bytes + 8);
+    u32 crc = test_crc32_update(UINT32_MAX, bytes, 28u);
+    crc = test_crc32_update(crc, bytes + ANIM_CODEC_HEADER_BYTES,
+                            size - ANIM_CODEC_HEADER_BYTES);
     test_write_u32(bytes + 28, ~crc);
 }
 
@@ -267,6 +273,87 @@ TEST(codec_rejects_negative_source_enums_before_writing) {
     }
 }
 
+TEST(codec_rejects_every_stream_byte_corruption) {
+    make_round_trip_clip();
+    usize size = 0u;
+    ASSERT_EQ(anim_codec_encode(&g_source, 4u, g_bytes, sizeof(g_bytes), &size),
+              ANIM_CODEC_OK);
+    for (usize i = 0; i < size; ++i) {
+        g_decoded.duration = 123.0f;
+        g_decoded.channel_count = 7u;
+        g_bytes[i] ^= 0x80u;
+        AnimCodecResult result = anim_codec_decode(g_bytes, size, &g_decoded);
+        g_bytes[i] ^= 0x80u;
+        ASSERT_NEQ(result, ANIM_CODEC_OK);
+        ASSERT_FLOAT_EQ(g_decoded.duration, 123.0f, 0.0f);
+        ASSERT_EQ(g_decoded.channel_count, 7u);
+    }
+}
+
+TEST(codec_uses_wide_quantization_at_half_step_boundaries) {
+    anim_clip_init(&g_source, 64.0f, false);
+    const f32 times[3] = {0.0f, 16.187257766723633f, 64.0f};
+    const f32 values[3][4] = {
+        {-50.0f, 0.0f, 0.0f, 0.0f},
+        {-37.15877151489258f, 0.0f, 0.0f, 0.0f},
+        {50.0f, 0.0f, 0.0f, 0.0f}
+    };
+    anim_clip_add_channel(&g_source, 0u, ANIM_PATH_TRANSLATION, 3u,
+                          times, (const f32 *)values);
+    usize size = 0u;
+    ASSERT_EQ(anim_codec_encode(&g_source, 1u, g_bytes, sizeof(g_bytes), &size),
+              ANIM_CODEC_OK);
+    ASSERT_EQ(anim_codec_decode(g_bytes, size, &g_decoded), ANIM_CODEC_OK);
+    ASSERT_FLOAT_EQ(g_decoded.channels[0].times[1], 16.186769485473633f, 0.0f);
+    ASSERT_FLOAT_EQ(g_decoded.channels[0].values[1][0], -37.1595344543457f, 0.0f);
+}
+
+TEST(codec_published_bounds_include_final_f32_rounding) {
+    anim_clip_init(&g_source, 0.1f, false);
+    const f32 times[3] = {0.0f, 0.03603341802954674f, 0.1f};
+    const f32 values[3][4] = {
+        {0.0f, 0.0f, 0.0f, 0.0f},
+        {0.03603341802954674f, 0.0f, 0.0f, 0.0f},
+        {0.1f, 0.0f, 0.0f, 0.0f}
+    };
+    anim_clip_add_channel(&g_source, 0u, ANIM_PATH_TRANSLATION, 3u,
+                          times, (const f32 *)values);
+    usize size = 0u;
+    ASSERT_EQ(anim_codec_encode(&g_source, 1u, g_bytes, sizeof(g_bytes), &size),
+              ANIM_CODEC_OK);
+    ASSERT_EQ(anim_codec_decode(g_bytes, size, &g_decoded), ANIM_CODEC_OK);
+    f32 time_error = fabsf(g_decoded.channels[0].times[1] - times[1]);
+    f32 value_error = fabsf(g_decoded.channels[0].values[1][0] - values[1][0]);
+    ASSERT_TRUE(time_error <= anim_codec_time_error_bound(g_source.duration));
+    ASSERT_TRUE(value_error <= anim_codec_scalar_error_bound(
+        values[0][0], values[2][0]));
+}
+
+TEST(codec_rejects_events_before_writing) {
+    make_round_trip_clip();
+    anim_clip_add_event(&g_source, 0.5f, "event");
+    memset(g_bytes, 0x5a, 64u);
+    usize size = 0u;
+    ASSERT_EQ(anim_codec_encode(&g_source, 4u, g_bytes, sizeof(g_bytes), &size),
+              ANIM_CODEC_INVALID);
+    for (u32 i = 0; i < 64u; ++i) ASSERT_EQ(g_bytes[i], 0x5a);
+}
+
+TEST(codec_zero_channel_clip_round_trips) {
+    anim_clip_init(&g_source, 0.0f, true);
+    g_source.playing = false;
+    usize size = 0u;
+    ASSERT_EQ(anim_codec_encode(&g_source, 1u, g_bytes, sizeof(g_bytes), &size),
+              ANIM_CODEC_OK);
+    ASSERT_EQ(size, ANIM_CODEC_HEADER_BYTES);
+    ASSERT_EQ(anim_codec_decode(g_bytes, size, &g_decoded), ANIM_CODEC_OK);
+    ASSERT_EQ(g_decoded.channel_count, 0u);
+    ASSERT_EQ(g_decoded.event_count, 0u);
+    ASSERT_FLOAT_EQ(g_decoded.duration, 0.0f, 0.0f);
+    ASSERT_TRUE(g_decoded.loop);
+    ASSERT_FALSE(g_decoded.playing);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(codec_round_trip_stays_within_explicit_bounds);
     RUN_TEST(codec_rejects_payload_corruption_without_touching_output);
@@ -276,4 +363,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(codec_rejects_bad_version_joints_channels_and_paths);
     RUN_TEST(codec_reports_capacity_and_rejects_wrong_lengths);
     RUN_TEST(codec_rejects_negative_source_enums_before_writing);
+    RUN_TEST(codec_rejects_every_stream_byte_corruption);
+    RUN_TEST(codec_uses_wide_quantization_at_half_step_boundaries);
+    RUN_TEST(codec_published_bounds_include_final_f32_rounding);
+    RUN_TEST(codec_rejects_events_before_writing);
+    RUN_TEST(codec_zero_channel_clip_round_trips);
 TEST_MAIN_END()

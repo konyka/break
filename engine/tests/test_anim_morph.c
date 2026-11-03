@@ -141,6 +141,17 @@ TEST(morphed_vertex_is_consumed_by_existing_skinner) {
     ASSERT_FLOAT_EQ(skinned_xyz[2], 0.0f, 1e-6f);
 }
 
+TEST(morph_invalid_init_preserves_existing_object_bytes) {
+    AnimMorphSet set;
+    AnimMorphSet sentinel;
+    memset(&sentinel, 0xA5, sizeof(sentinel));
+    memcpy(&set, &sentinel, sizeof(set));
+    ASSERT_FALSE(anim_morph_init(&set, 0u));
+    ASSERT_EQ(memcmp(&set, &sentinel, sizeof(set)), 0);
+    ASSERT_FALSE(anim_morph_init(&set, ANIM_MORPH_MAX_VERTICES + 1u));
+    ASSERT_EQ(memcmp(&set, &sentinel, sizeof(set)), 0);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(morph_evaluates_bounded_weight_sum);
     RUN_TEST(morph_empty_set_copies_base);
@@ -151,4 +162,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(morph_target_rejects_nonfinite_delta_atomically);
     RUN_TEST(morph_target_capacity_is_hard_bounded);
     RUN_TEST(morphed_vertex_is_consumed_by_existing_skinner);
+    RUN_TEST(morph_invalid_init_preserves_existing_object_bytes);
 TEST_MAIN_END()

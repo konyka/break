@@ -51,7 +51,7 @@ TEST(morph_evaluates_bounded_weight_sum) {
 
 - [ ] **Step 2: Run RED**
 
-Run: `cmake --build build-animation-normal --target test_anim_morph -j3 && ./build-animation-normal/test_anim_morph`  
+Run: `cmake --build build-animation-normal --target test_anim_morph -j3 && ./build-animation-normal/test_anim_morph`
 Expected: compile/link failure because the new API and implementation do not exist; after the API skeleton exists, the weighted assertion must fail rather than being hard-coded green.
 
 - [ ] **Step 3: Implement the minimal fixed-capacity weighted sum**
@@ -101,7 +101,7 @@ Run the focused test after each added behavior. Expected RED is the missing reje
 
 - [ ] **Step 5: Run normal focused regression**
 
-Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_morph|test_animation)$'`  
+Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_morph|test_animation)$'`
 Expected: both pass with no warnings or sanitizer diagnostics.
 
 ---
@@ -136,7 +136,7 @@ TEST(morphed_vertex_is_consumed_by_existing_skinner) {
 
 - [ ] **Step 2: Run RED**
 
-Run: `cmake --build build-animation-normal --target test_anim_morph -j3 && ./build-animation-normal/test_anim_morph`  
+Run: `cmake --build build-animation-normal --target test_anim_morph -j3 && ./build-animation-normal/test_anim_morph`
 Expected: missing adapter symbol, then an incorrect skinned xyz if a stub only copies input.
 
 - [ ] **Step 3: Implement the packed 64-byte adapter**
@@ -151,7 +151,7 @@ Validate `out_bytes >= vertex_count * 64` with overflow checks. Use `memcpy` for
 
 - [ ] **Step 4: Run GREEN and regressions**
 
-Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_morph|test_animation|test_lod_skin)$'`  
+Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_morph|test_animation|test_lod_skin)$'`
 Expected: all pass; the integration assertion fails if morph is skipped or joint/weight bytes are destroyed.
 
 ---
@@ -185,7 +185,7 @@ TEST(facial_curve_holds_endpoints_and_empty_expression_zeroes) {
 
 - [ ] **Step 2: Run RED**
 
-Run: `cmake --build build-animation-normal --target test_anim_facial -j3 && ./build-animation-normal/test_anim_facial`  
+Run: `cmake --build build-animation-normal --target test_anim_facial -j3 && ./build-animation-normal/test_anim_facial`
 Expected: missing facial implementation, followed by assertion failures for any non-interpolating stub.
 
 - [ ] **Step 3: Implement bounded libraries and linear curves**
@@ -208,7 +208,7 @@ Test missing expression/target, NaN time, unchanged output on failure, duplicate
 
 - [ ] **Step 5: Run focused GREEN**
 
-Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_facial|test_anim_morph|test_animation)$'`  
+Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_facial|test_anim_morph|test_animation)$'`
 Expected: all pass.
 
 ---
@@ -232,17 +232,18 @@ TEST(codec_round_trip_stays_within_explicit_bounds) {
     /* Static AnimClip with translation xyz in different ranges, scale, a
        normalized non-trivial quaternion, one zero-key channel, loop=true.
        Encode/decode and compare every key. Time/scalar tolerance is the
-       documented range/(2*65535)+1e-6; rotation uses quaternion angle <=
-       0.0001 rad. Empty channels and loop/playing flags must survive. */
+       documented quantization half-step plus the conservative final-f32
+       rounding margin; rotation uses quaternion angle <= 0.0001 rad.
+       Empty channels and loop/playing flags must survive. */
 }
 ```
 
 - [ ] **Step 2: Run RED**
 
-Run: `cmake --build build-animation-normal --target test_anim_compression -j3 && ./build-animation-normal/test_anim_compression`  
+Run: `cmake --build build-animation-normal --target test_anim_compression -j3 && ./build-animation-normal/test_anim_compression`
 Expected: missing codec implementation; no production codec is written before observing this failure.
 
-- [ ] **Step 3: Implement v1 validation and quantization**
+- [ ] **Step 3: Implement v2 validation and quantization**
 
 ```c
 AnimCodecResult anim_codec_encode(const AnimClip *clip, u32 joint_count,
@@ -250,7 +251,7 @@ AnimCodecResult anim_codec_encode(const AnimClip *clip, u32 joint_count,
 AnimCodecResult anim_codec_decode(const void *data, usize size, AnimClip *out);
 ```
 
-Write the 32-byte header and 40-byte channel headers explicitly as little-endian. Quantize times globally, xyz per channel, normalized quaternions in `[-1,1]`. Use CRC32 over payload. Validate the entire source and compute the exact size before writing; reject events explicitly.
+Write the 32-byte header and 40-byte channel headers explicitly as little-endian. Quantize times globally, xyz per channel, normalized quaternions in `[-1,1]`, using double intermediates. Use CRC32 over header bytes `[0,28)` plus the payload, excluding the CRC field itself. Validate the entire source and compute the exact size before writing; reject events explicitly.
 
 - [ ] **Step 4: Implement two-pass transactional decode**
 
@@ -258,7 +259,7 @@ First pass checks magic/version/sizes/CRC/counts/enums/joints/min-max/times and 
 
 - [ ] **Step 5: Run round-trip GREEN and legacy animation tests**
 
-Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_compression|test_animation)$'`  
+Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_compression|test_animation)$'`
 Expected: all pass, with measured errors no greater than the hand-computed bounds.
 
 ---
@@ -294,7 +295,7 @@ Cover NaN/Inf duration, time and value; zero-norm quaternion; out-of-range joint
 
 - [ ] **Step 3: Run focused normal suite**
 
-Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_(morph|facial|compression)|test_animation|test_lod_skin)$'`  
+Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_(morph|facial|compression)|test_animation|test_lod_skin)$'`
 Expected: all pass.
 
 - [ ] **Step 4: Kill actual production mutants**

@@ -83,3 +83,68 @@
 - 未实现自动 glTF morph 导入；target delta 和顶点存储由调用方持有。
 - v1 不压缩事件，含事件输入返回 `ANIM_CODEC_INVALID`；播放游标不属于资源格式。
 - IK 互斥是动画侧真实求解闸门，不是布娃娃驱动。GameThread 所有者必须传入当前 `Ragdoll.active`；刚体姿态写回与物理集成仍由物理代理负责。
+
+
+## 8. 评审修复第 1 轮（2026-11-03）
+
+### 8.1 修复与独立 RED/GREEN
+
+1. **Facial 重复时间**：新增 `facial_repeated_times_select_later_key`，同一曲线覆盖首、中、尾重复。修复前结果为 `5 passed, 1 failed`，首重复返回 0.1 而非后键 0.2；将首前判断从 `time <= times[0]` 改为严格 `<` 后 `6/6` 通过。
+2. **Facial 有限时间溢出**：新增 `facial_extreme_finite_curve_uses_wide_interpolation`，在 `[-FLT_MAX, FLT_MAX]` 上以 `FLT_MAX/2` 求值。修复前 `isfinite(weight)` 失败，`6 passed, 1 failed`；span、分子和插值改用 double 后结果有限且为 0.75，`7/7` 通过。
+3. **Header 完整性**：新增 `codec_rejects_every_stream_byte_corruption`，逐字节翻转整个流并要求输出不变。修复前 header flags 翻转被接受，`8 passed, 1 failed`。编码格式升为 v2，CRC 覆盖 header `[0,28)` 加 payload `[32,end)`，CRC 字段自身四字节排除；测试中的语义损坏修复器同步该规则后 `9/9` 通过。
+4. **量化中间舍入**：`codec_uses_wide_quantization_at_half_step_boundaries` 先得到 `10 passed, 1 failed`。双精度归一化/仿射量化后，评审 time 反例精确解为 `16.186769485473633f`，scalar 反例精确解为 `-37.1595344543457f`。
+5. **最终 f32 舍入误差界**：双精度量化使 `codec_published_bounds_include_final_f32_rounding` 单独 RED（`10 passed, 1 failed`）：一个 range=0.1 的合法值仍比基础半步界多约 `7.3e-12` 误差。公共界改为量化半步加 `M*2^-23+2^-149`，再 `nextafterf(...,+INFINITY)`；修复后 `11/11` 通过。该项不是放宽测试 epsilon，而是同时改变量化实现并给出保守数值上界。
+6. **Morph 初始化原子性**：`morph_invalid_init_preserves_existing_object_bytes` 用 0xA5 sentinel 覆盖零顶点与超容量，修复前 `9 passed, 1 failed`；先验证再 memset 后 `10/10` 通过。
+7. **枚举 ABI**：普通 GCC 的负枚举测试本来就通过，因此没有伪造普通 RED。在隔离副本将 `AnimPathType` 改成 signed-int ABI 后，`codec_rejects_negative_source_enums_before_writing` 真实失败；path/interp 改显式白名单后，同一 ABI 变体全套通过，随后恢复头文件链接并由普通构建复验。
+8. **Minor 覆盖**：17-key 检查移到空 expression，避免曲线已满提前返回；新增事件拒绝且输出不变、零 channel 往返。最终单元数为 facial 8/8、codec 13/13、morph 10/10。
+
+### 8.2 本轮可编译变异
+
+以下均在 `build-animation-mutants` 隔离源码副本中成功编译，退出码 1，并由指定测试杀死：
+
+| Mutant | 预期失败测试 |
+| --- | --- |
+| 首前判断恢复 `<=` | `facial_repeated_times_select_later_key` |
+| facial span/分子恢复 f32 | `facial_extreme_finite_curve_uses_wide_interpolation` |
+| CRC 排除受保护 header | `codec_rejects_every_stream_byte_corruption` |
+| 量化乘法恢复 f32 | `codec_uses_wide_quantization_at_half_step_boundaries` |
+| 删除最终舍入余量 | `codec_published_bounds_include_final_f32_rounding` |
+| morph 初始化先 memset | `morph_invalid_init_preserves_existing_object_bytes` |
+| 绕过 path/interp 白名单 | `codec_rejects_negative_source_enums_before_writing` |
+| 绕过 facial keyframe 容量 | `facial_rejects_seventeenth_key_before_insertion` |
+
+删除舍入余量的第一次写法因未使用参数触发 `-Werror`，不计为证据；改为可编译的 `fabs(magnitude)*0.0` 后才记录 killed。
+
+### 8.3 最终命令与输出
+
+Normal（同时成功构建 `engine`）：
+
+```bash
+cmake -S engine -B build-animation-normal -DENGINE_RHI_BACKEND=opengl -DENGINE_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-animation-normal --target engine test_anim_morph test_anim_facial test_anim_compression test_anim_pose_authority test_animation test_anim_locomotion test_anim_aim test_lod_skin -j3
+ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_(morph|facial|compression|pose_authority|locomotion|aim)|test_animation|test_lod_skin)$'
+```
+
+输出：`100% tests passed, 0 tests failed out of 8`。
+
+ASan+UBSan：
+
+```bash
+cmake -S engine -B build-animation-asan -DENGINE_RHI_BACKEND=opengl -DENGINE_BUILD_TESTS=ON -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-animation-asan --target test_anim_morph test_anim_facial test_anim_compression test_anim_pose_authority test_animation test_anim_locomotion test_anim_aim test_lod_skin -j3
+ctest --test-dir build-animation-asan --output-on-failure -R '^(test_anim_(morph|facial|compression|pose_authority|locomotion|aim)|test_animation|test_lod_skin)$'
+```
+
+输出：`100% tests passed, 0 tests failed out of 8`，无 ASan/UBSan 诊断。
+
+TSan：
+
+```bash
+cmake -S engine -B build-animation-tsan -DENGINE_RHI_BACKEND=opengl -DENGINE_BUILD_TESTS=ON -DENGINE_USE_TSAN=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-animation-tsan --target test_anim_morph test_anim_facial test_anim_compression test_anim_pose_authority test_animation test_anim_locomotion test_anim_aim test_lod_skin -j3
+ctest --test-dir build-animation-tsan --output-on-failure -R '^(test_anim_(morph|facial|compression|pose_authority|locomotion|aim)|test_animation|test_lod_skin)$'
+```
+
+输出：`100% tests passed, 0 tests failed out of 8`，无 TSan 诊断。
+
+文档同步后及最终暂存前均执行 `git diff --check`。v2 不兼容 v1 的 CRC 语义是明确版本升级：旧流返回 `ANIM_CODEC_VERSION_UNSUPPORTED`，不会静默按新规则解释。其余行为边界、GameThread 所有权、固定容量和热路径不分配约束不变。
