@@ -52,7 +52,8 @@ static BreakFlowError normalize_node(const BreakFlowGraph *graph, u32 id,
     }
     if ((input->type == BREAK_FLOW_NODE_ENTITY_SET_POSITION ||
          input->type == BREAK_FLOW_NODE_ENTITY_ADD_ITEM) &&
-        !entity_valid(input->entity)) {
+        (!entity_valid(input->entity) || input->entity.index == 0u ||
+         input->entity.index >= ECS_MAX_ENTITIES)) {
         return BREAK_FLOW_INVALID;
     }
     if (input->type == BREAK_FLOW_NODE_ENTITY_ADD_ITEM &&

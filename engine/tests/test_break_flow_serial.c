@@ -203,6 +203,20 @@ TEST(node_records_validate_identity_names_types_and_ranges) {
     break_flow_graph_destroy(delay_graph);
 }
 
+TEST(entity_handle_indices_are_range_validated) {
+    BreakFlowGraph *g = break_flow_graph_create(NULL);
+    u32 action = 0u;
+    ASSERT_TRUE(add(g, BREAK_FLOW_NODE_ENTITY_SET_POSITION, &action));
+    u8 bytes[512];
+    usize len = 0u;
+    ASSERT_EQ(break_flow_serialize(g, bytes, sizeof(bytes), &len), BREAK_FLOW_OK);
+    put32(bytes + HEADER_SIZE + 48u, 0u);
+    expect_invalid(bytes, len);
+    put32(bytes + HEADER_SIZE + 48u, ECS_MAX_ENTITIES);
+    expect_invalid(bytes, len);
+    break_flow_graph_destroy(g);
+}
+
 TEST(link_references_ports_and_cycles_are_rejected) {
     BreakFlowGraph *original = NULL;
     u8 bytes[512];
@@ -238,5 +252,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(serialization_capacity_is_checked_without_success_length);
     RUN_TEST(header_length_version_count_and_truncation_are_rejected);
     RUN_TEST(node_records_validate_identity_names_types_and_ranges);
+    RUN_TEST(entity_handle_indices_are_range_validated);
     RUN_TEST(link_references_ports_and_cycles_are_rejected);
 TEST_MAIN_END()
