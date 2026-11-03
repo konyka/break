@@ -1,14 +1,45 @@
-# P2 Flow Graph 交付与 fix round 1 报告
+# P2 Flow Graph 交付与 fix rounds 报告
 
 日期：2026-11-03
 分支：`cry-wave1-flow-ai`
-基线：`48e64a2a`；fix round 1 起点：`7a7964cf`
+基线：`48e64a2a`；fix round 1 起点：`7a7964cf`；fix round 2 起点：`42bf7353`
 
 ## 1. 状态
 
-P2 与 reviewer agent-181 的 fix round 1 已完成。Flow Graph 是独立 C11 生产实现，不是 `rule_engine` 改名或接口桩。运行时、版本化序列化、实体原子动作、编辑器命令和真实 myui 控件均已接线。未 push、未创建 PR、未修改 master 或其他 P 子项目。
+P2 与 fix round 1 已完成。fix round 2 的 redo 覆盖已修复并全量验证；但 reviewer 要求把 sequence 期望改成 5/6 与当前生产调度合同不符，故本轮按 BLOCKED 如实记录，不能把该断言伪改为必然失败后再声称 GREEN。未 push、未创建 PR、未修改 master 或其他 P 子项目。
 
-本报告随 fix round 1 一并提交。
+本报告随 fix round 2 提交，包含实际命令输出摘要和不一致根因。
+
+## 1A. fix round 2 核实与处理
+
+### redo 缺口
+
+`test_editor_shell.c` 的 a/b/c 三个阶段现在在每次 `break_editor_redo` 后立即调用 `break_flow_node_get`，分别断言 a=7、b=8、c=9，再继续下一项编辑。production 无需修改。
+
+### sequence 计数争议
+
+当前 `delay_continuations_preserve_fifo_with_following_events` 的实际调用链为：
+
+1. 两个 post 分配 sequence 1、2，next=3。
+2. 两个 EVENT 的 EXEC 边各入队一个 DELAY 节点，分配 3、4。
+3. 两个 DELAY 初次执行各入队一个 continuation，分配 5、6，因此 next=7。
+4. 第三个 post 分配 7，因此 next=8。
+
+`engine/src/game/break_flow_runtime.c` 的 `enqueue` 在每次入队时执行 `event->sequence = runtime->next_sequence++`；EVENT 经 `fire` 入队 DELAY，DELAY 再经 `enqueue(..., true, ...)` 入队 continuation。故 reviewer 的 5/6 算术漏掉了第 2 步的两个 DELAY 节点，而不是此前测试输出被伪造。当前二进制直接运行 7/8 断言通过；改成 5/6 才必然失败。测试已加入短注释说明该计数，生产调度未修改。
+
+此前不一致的根因是审查模型漏计 EXEC 目标节点入队，而不是测试套件存在未执行或输出捏造。修复过程曾出现手算期望偏差，已通过直接诊断和实际运行纠正，未保留那些错误期望。
+
+### 重新取得的变异证据
+
+- 反转 sequence 比较：10/12，预算顺序与重试 FIFO 用例失败；恢复后 12/12。
+- 将两处 sequence 恢复改为 `backup+1`：10/12，重试和错误事件来源用例失败；恢复后 12/12。
+
+### fix round 2 实际最终测试输出
+
+- normal：19/19 CTest，0 失败；shell 内 147/147。
+- ASan+UBSan：7/7 CTest，0 失败，无 sanitizer 报告。
+- TSan：3/3 CTest，0 失败，无竞态报告。
+- 所有构建使用 `-j3`，均实际执行测试而非仅编译；`git diff --check` 通过。
 
 ## 2. 已交付行为
 
@@ -140,6 +171,12 @@ TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-flow-tsan \
 
 ## 6. 文件范围
 
+fix round 2 修改：
+
+- `engine/tests/test_break_flow_runtime.c`：补充 EXEC/DELAY 两级入队计数说明，不改生产调度。
+- `engine/tests/test_editor_shell.c`：a/b/c redo 后立即读取并断言。
+- `.superpowers/sdd/flow-graph-report.md`
+
 fix round 1 修改：
 
 - `engine/src/game/break_flow_graph.c`：逐字段零配置默认值。
@@ -173,7 +210,8 @@ fix round 1 修改：
 - `04ddef3b` editor: add myui flow graph panel
 - `6e426e65` flow: harden editor state and entity bounds
 - `7a7964cf` docs: align flow graph design with verified behavior
-- fix round 1：本报告所在 HEAD 提交。
+- `42bf7353` flow: address review coverage and config defaults
+- fix round 2：本报告所在 HEAD 提交（redo 修复与 sequence 争议说明）。
 
 ## 8. 审查与限制
 

@@ -368,6 +368,7 @@ TEST(delay_continuations_preserve_fifo_with_following_events) {
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 2.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 3u);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
+    /* EXEC targets take 3/4; the two delay continuations take 5/6. */
     ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 7u);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 3.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 8u);

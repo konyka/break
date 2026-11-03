@@ -10794,6 +10794,8 @@ TEST(flow_panel_delay_and_action_properties_emit_undo_and_redo)
     ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
     ASSERT_FLOAT_EQ(action.a, 0.0f, 0.0f);
     ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(action.a, 7.0f, 0.0f);
     edit = find(shell, "editor-flow-b");
     ASSERT_EQ(my_edit_set_text(edit, "8"), MY_RET_OK);
     emit_activate(edit);
@@ -10803,6 +10805,8 @@ TEST(flow_panel_delay_and_action_properties_emit_undo_and_redo)
     ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
     ASSERT_FLOAT_EQ(action.b, 0.0f, 0.0f);
     ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(action.b, 8.0f, 0.0f);
     edit = find(shell, "editor-flow-c");
     ASSERT_EQ(my_edit_set_text(edit, "9"), MY_RET_OK);
     emit_activate(edit);
@@ -10812,6 +10816,8 @@ TEST(flow_panel_delay_and_action_properties_emit_undo_and_redo)
     ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
     ASSERT_FLOAT_EQ(action.c, 0.0f, 0.0f);
     ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(action.c, 9.0f, 0.0f);
     edit = find(shell, "editor-flow-entity");
     ASSERT_EQ(my_edit_set_text(edit, "56:78"), MY_RET_OK);
     emit_activate(edit);
