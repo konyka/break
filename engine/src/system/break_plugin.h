@@ -53,3 +53,8 @@ BreakPluginStatus break_plugin_release(BreakPluginManager *manager,
 BreakPluginStatus break_plugin_unload(BreakPluginManager *manager,
                                       BreakPluginHandle handle);
 BreakPluginStatus break_plugin_unload_all(BreakPluginManager *manager);
+
+#if defined(BREAK_SYSTEM_TESTING)
+void break_plugin_test_set_generation(BreakPluginManager *manager,
+                                      u32 index, u32 generation);
+#endif

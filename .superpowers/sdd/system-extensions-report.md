@@ -1,7 +1,7 @@
 # P11 System Extensions 交付报告
 
-日期：2026-11-03  
-工作树：`/home/timeshift/opensource/break/.worktrees/cry-system`  
+日期：2026-11-03
+工作树：`/home/timeshift/opensource/break/.worktrees/cry-system`
 分支：`cry-wave2-system`（base `a0bfeb95`，未 push）
 
 ## 状态与提交
@@ -81,15 +81,63 @@ cmake -S engine -B build-system-no-tests -DENGINE_BUILD_TESTS=OFF -DCMAKE_BUILD_
 cmake --build build-system-no-tests -j6 --target break_system
 ```
 
-结果：成功产出 `libbreak_system.a`。`test_break_system_target_contract` 同时钉住 C11、源清单、真实 SHARED fixture、integrity/dl 链接及核心目标 no-link。
+结果：成功产出 `libbreak_system.a`。`test_break_system_target_contract` 同时钉住 C11、源清单、真实 SHARED fixture、crypto/dl 链接及核心目标 no-link。
 
 最终 `git diff --check` 无输出；未提交源文件在交付提交后复核。所有变异均已恢复，未提交变异体。
 
 ## 限制与未声称事项
 
-- 插件哈希 allowlist 只证明目标文件与预期 SHA-256 相同；不是签名、发布者认证、sandbox 或权限边界。path 在哈希与加载之间可能被替换；依赖库未逐项哈希；共享库和构造函数仍拥有进程原生权限。
+- 插件哈希 allowlist 只证明验证对象与预期 SHA-256 相同；不是签名、发布者认证、sandbox 或权限边界。依赖库未逐项哈希；共享库和构造函数仍拥有进程原生权限。
 - CVar 回调和插件 register/unregister 的外部副作用不由库回滚。插件 register 返回 false 时必须已自行清理部分外部注册；manager 保证自身槽/顺序和库句柄不遗留。
 - Linux 上验证了 POSIX PAL。Win32 `LoadLibraryA/GetProcAddress/FreeLibrary` 分支已提供但未在本机 Windows 编译或运行，不声称 Windows 验收通过。
 - 全量验证是 headless；本任务无图形路径，未运行图形/真机测试。默认关闭的独立 fuzz smoke 开关未另行开启。
 - XML 是受限结构化子集；注释/处理指令不进入树，不做词法级无损保留。场景权威/完整格式仍是既有 BSCN/JSON。
 - `platform_fs.c` 仍由 `engine` 唯一生产持有；独立 CVar 文件 API 消费者须按现有约定提供一次该 PAL，避免重复链接定义。
+
+## 独立评审 fix round 1（起始 HEAD `7286dd25`）
+
+### 根因与 RED → GREEN
+
+- **Critical：验证对象与加载对象不同。** 新 constructor fixture 在测试专用 post-verify/pre-open 钩子中替换路径。旧实现第 9 项插件测试 RED：`file_exists(BREAK_TEST_ATTACKER_MARK_PATH) is true`，证明未批准 constructor 已运行。PAL 改为 `platform_dynamic_open_verified`：Linux sealed memfd + `/proc/self/fd`，Windows 禁止写/删除共享的句柄 + final path；其它平台失败关闭，无原路径 fallback。初次 GREEN 后 A→B 回归发现验证 fd 早关导致路径复用，改为库句柄持有 fd 到卸载。最终插件 10/10，竞态加载批准 A（事件 11），攻击标记不存在。
+- **Important：CVar callback destroy UAF。** 新增 set/load 两项回调销毁测试；修复前 ASan 在 `break_cvar_set` 回调返回后的 registry 写报 `heap-use-after-free`。改为 `destroy_pending` 并在最外层通知结束释放，load 完成剩余通知。最终 CVar 12/12，ASan 无报告。
+- **Important：generation 回绕。** 测试把槽推进到 `UINT32_MAX-1`，第三次加载旧实现没有返回 `OVERLOAD`，generation 回到 1。改为永久退休耗尽槽，第三次返回 `OVERLOAD`，最老 handle 为 `STALE`。
+- **Important：CVar 字符串。** 旧实现接受 leading-space 注册值，RED 为预期 `INVALID` 实际 `OK`；现拒绝首尾空格，空串和中间空格 save/load 往返成功。get→offset pointer→set 旧实现被 ASan 以 `memcpy-param-overlap` 捕获，改用 `memmove` 后得到 `cdef`。
+- **Important：scene 属性闭包。** 683 实体旧 writer 返回 `OK` 而非 `OVERLOAD`。现 682 实体写出→解析→读回成功，683 在输出修改前返回 `OVERLOAD`，`out_size=0` 且首字节 sentinel 不变。
+- **Minor。** U+FFFE 文本与 U+FFFF 属性曾通过解析；现按 XML 1.0 码点闭包拒绝且旧文档保留，U+FFFD 仍合法。源码 contract 对递归 serializer 调用 RED；改为父索引迭代后，64 层输出逐字一致且 contract 通过。报告原第 3–4 行 trailing whitespace 已删除。
+
+### 关键变异
+
+- `dlopen(verified_path)` 临时改回 `dlopen(path)`：插件 9/10，攻击 constructor 标记再次出现。
+- generation 临时回绕到 1：插件 9/10，身份耗尽测试失败。
+- scene 上限临时放宽一个：XML 12/13，683 被错误接受。
+- 回调内 destroy 临时立即释放：ASan 再次报 `heap-use-after-free`。
+- 所有变异均立即恢复并重新验证，未提交变异体。
+
+### 最终命令与输出
+
+三棵树执行：
+
+```bash
+ctest --test-dir <tree> -R 'break_(cvar|xml|plugin|system)|break_integrity|platform_fs_write|scene_serial' --output-on-failure
+```
+
+normal、ASan+UBSan、TSan 分别得到 `100% tests passed, 0 tests failed out of 7`。随后三棵树完整构建并执行：
+
+```bash
+ctest --test-dir <tree> -L headless --output-on-failure -j<6或4>
+```
+
+三棵树分别得到 `100% tests passed, 0 tests failed out of 129`，ASan+UBSan/TSan 无 sanitizer 报告。`cmake --build build-system-no-tests -j6 --target break_system` 成功。
+
+Win32 分支验证命令：
+
+```text
+clang-cl /c /W4 /WX /I engine/src engine/src/platform/platform_dynamic.c /Fobuild-system-normal/platform_dynamic_windows.obj
+engine/src/platform/platform_dynamic.c(9,10): fatal error: 'stdio.h' file not found
+```
+
+本机缺 Windows CRT/SDK，因此不声称 Win32 编译或运行通过；没有以 Linux 头文件或不安全 loader 绕过。最终 `git diff --check a0bfeb95..HEAD` 在交付提交后执行并记录。
+
+### 当前真实限制
+
+验证对象机制关闭了原路径替换窗口，但依赖库未逐项 allowlist 校验，哈希也不是签名认证。Linux memfd 的 `$ORIGIN`/依赖搜索语义与原目录不同，宿主必须显式管理。其它非 Linux/Windows 平台失败关闭而非加载。constructor 和回调外部副作用仍不属于事务回滚范围。

@@ -236,7 +236,9 @@ git commit -m "system: add bounded XML scene sidecars"
 
 ```c
 typedef struct PlatformDynamicLibrary PlatformDynamicLibrary;
-PlatformDynamicLibrary *platform_dynamic_open(const char *path);
+PlatformDynamicOpenStatus platform_dynamic_open_verified(
+    const char *path, const u8 expected_sha256[32],
+    PlatformDynamicLibrary **out_library);
 void *platform_dynamic_symbol(PlatformDynamicLibrary *library, const char *name);
 void platform_dynamic_close(PlatformDynamicLibrary *library);
 
@@ -295,7 +297,7 @@ Expected: 真实 `.so` 已由 CMake 编译；最小 manager 实现未满足 ABI/
 
 - [x] **Step 3: 实现 PAL 与事务式管理器**
 
-POSIX 使用 `dlopen(path, RTLD_NOW|RTLD_LOCAL)`、`dlsym`、`dlclose`；Windows 使用 `LoadLibraryA`、`GetProcAddress`、`FreeLibrary`。符号经 `memcpy` 转为函数指针并检查表示大小。load 先验证参数、空槽、重复 path、哈希，再 open/entry/descriptor/build/name，最后调用 register 并提交 slot 与 load-order；任何失败关闭库且 out handle 清零。slot generation 单调非零，引用溢出/零下溢均拒绝。unload_all 在任何 unregister 前检查所有引用，然后逆序卸载；destroy 只对无引用管理器执行 unload_all 并释放，否则返回 `REJECTED`。
+PAL 以同一 `platform_dynamic_open_verified` 原语验证并加载：Linux 使用 sealed memfd 的 `/proc/self/fd` 对象，Windows 在禁止写/删除共享的源句柄上哈希并通过最终路径 `LoadLibraryA`；其它平台失败关闭。符号经 `memcpy` 转为函数指针并检查表示大小。manager 先验证参数、空槽和重复 path，再调用 PAL、检查 entry/descriptor/build/name，最后调用 register 并提交 slot 与 load-order；任何失败关闭库且 out handle 清零。slot generation 单调非零且耗尽后永久退休，引用溢出/零下溢均拒绝。unload_all 在任何 unregister 前检查所有引用，然后逆序卸载；destroy 只对无引用管理器执行 unload_all 并释放，否则返回 `REJECTED`。
 
 - [x] **Step 4: 验证 GREEN、真实库变异与 target contract**
 
@@ -343,3 +345,37 @@ Expected: 无 whitespace 错误、无未提交源文件；报告含每个 RED→
 git add docs .superpowers/sdd/system-extensions-report.md
 git commit -m "docs: record P11 system extension evidence"
 ```
+
+---
+
+### Task 5: Independent review fix round 1
+
+**Files:**
+- Modify: `engine/src/platform/platform_dynamic.{h,c}`
+- Modify: `engine/src/system/break_{cvar,xml,plugin}.{c,h}`
+- Modify: `engine/tests/test_break_{cvar,xml,plugin}.c`
+- Modify: `engine/tests/fixtures/break_system_test_plugin.c`
+- Modify: `engine/tests/test_break_system_target_contract.cmake`
+- Modify: `docs/design/system_extensions.md`
+- Modify: `docs/Implementation_Status.md`
+- Modify: `.superpowers/sdd/system-extensions-report.md`
+
+- [x] **Step 1: Close the verified-object replacement race**
+
+RED: a test-only post-verify/pre-open hook replaced the path; the old loader executed the attack library constructor and `file_exists(marker)` failed the test. GREEN: PAL hashes into sealed memfd and loads only that object on Linux; Windows hashes and loads under a no-write/no-delete-share handle and final path, other platforms fail closed. The verified fd stays alive until unload after existing A→B tests exposed path reuse. The race now loads approved code and never creates the attack marker.
+
+- [x] **Step 2: Fix CVar lifetime and string ownership**
+
+RED: ASan reported set-callback destroy UAF and `memcpy-param-overlap`; normal tests accepted a leading-space string that could not roundtrip. GREEN: defer destroy to outer notification end, allow both set/load callback destruction, reject leading/trailing spaces while preserving empty/internal-space strings, and use `memmove` for aliased current-value pointers.
+
+- [x] **Step 3: Retire exhausted plugin identities**
+
+RED: a bounded `UINT32_MAX-1` fixture let the third load wrap to generation 1 instead of returning `OVERLOAD`. GREEN: permanently retire the exhausted slot and prove the oldest handle stays `STALE`.
+
+- [x] **Step 4: Close XML output, character and traversal contracts**
+
+RED: 683 entities were serialized despite exceeding the parser's global attribute cap; U+FFFE was accepted; source contract found recursive serializer calls. GREEN: 682 roundtrips and 683 fails before output mutation, XML 1.0 codepoint validation rejects U+FFFE/U+FFFF atomically, parent-index iterative serialization preserves depth-64 output, and report trailing whitespace is removed.
+
+- [x] **Step 5: Run final regression and commit**
+
+Run normal/ASan+UBSan/TSan focused and full headless suites, no-tests target build, `git diff --check a0bfeb95..HEAD`, then commit the implementation and evidence without pushing.

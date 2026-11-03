@@ -1,6 +1,5 @@
 #include <system/break_plugin.h>
 
-#include <integrity/break_integrity.h>
 #include <platform/platform_dynamic.h>
 
 #include <stdlib.h>
@@ -8,6 +7,7 @@
 
 typedef struct BreakPluginSlot {
     bool used;
+    bool retired;
     PlatformDynamicLibrary *library;
     BreakPluginUnregisterFn unregister_fn;
     char name[BREAK_PLUGIN_NAME_CAPACITY];
@@ -63,8 +63,19 @@ static BreakPluginSlot *plugin_slot_for_handle(BreakPluginManager *manager,
 }
 
 static void plugin_next_generation(BreakPluginSlot *slot) {
-    slot->generation = slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
+    if (slot->generation == UINT32_MAX)
+        slot->retired = true;
+    else
+        slot->generation++;
 }
+
+#if defined(BREAK_SYSTEM_TESTING)
+void break_plugin_test_set_generation(BreakPluginManager *manager,
+                                      u32 index, u32 generation) {
+    if (manager && index < manager->capacity && manager->slots[index].used)
+        manager->slots[index].generation = generation;
+}
+#endif
 
 BreakPluginManager *break_plugin_create(u32 capacity, void *plugin_user) {
     BreakPluginManager *manager;
@@ -92,8 +103,7 @@ BreakPluginStatus break_plugin_load(BreakPluginManager *manager,
     BreakPluginStatus status = BREAK_PLUGIN_FAILED;
     BreakPluginSlot *slot = NULL;
     PlatformDynamicLibrary *library = NULL;
-    BreakIntegrityFile integrity_file;
-    BreakIntegritySignals signals;
+    PlatformDynamicOpenStatus open_status;
     void *symbol;
     BreakPluginEntryFn entry = NULL;
     const BreakPluginDescriptor *descriptor;
@@ -119,7 +129,7 @@ BreakPluginStatus break_plugin_load(BreakPluginManager *manager,
         }
     }
     for (u32 i = 0u; i < manager->capacity; i++) {
-        if (!manager->slots[i].used) {
+        if (!manager->slots[i].used && !manager->slots[i].retired) {
             slot = &manager->slots[i];
             break;
         }
@@ -128,19 +138,12 @@ BreakPluginStatus break_plugin_load(BreakPluginManager *manager,
         status = BREAK_PLUGIN_OVERLOAD;
         goto done;
     }
-    integrity_file.path = path;
-    memcpy(integrity_file.sha256, expected_sha256, 32u);
-    signals = break_integrity_check_files(&integrity_file, 1u);
-    if ((signals & BINT_SIG_CHECK_ERROR) != 0u) {
-        status = BREAK_PLUGIN_FAILED;
-        goto done;
-    }
-    if ((signals & BINT_SIG_FILE_MISMATCH) != 0u) {
+    open_status = platform_dynamic_open_verified(path, expected_sha256, &library);
+    if (open_status == PLATFORM_DYNAMIC_OPEN_MISMATCH) {
         status = BREAK_PLUGIN_REJECTED;
         goto done;
     }
-    library = platform_dynamic_open(path);
-    if (!library) {
+    if (open_status != PLATFORM_DYNAMIC_OPEN_OK) {
         status = BREAK_PLUGIN_FAILED;
         goto done;
     }

@@ -230,10 +230,96 @@ TEST(scene_sidecar_read_capacity_is_transactional) {
     break_xml_destroy(doc);
 }
 
+TEST(xml_serializes_max_depth_without_changing_structure) {
+    char input[1024];
+    char output[1024];
+    usize used = 0u;
+    usize written = 0u;
+    BreakXmlLimits deep = limits();
+    BreakXmlDocument *doc;
+    for (u32 i = 0u; i < 63u; i++) {
+        memcpy(input + used, "<n>", 3u);
+        used += 3u;
+    }
+    memcpy(input + used, "<n/>", 4u);
+    used += 4u;
+    for (u32 i = 0u; i < 63u; i++) {
+        memcpy(input + used, "</n>", 4u);
+        used += 4u;
+    }
+    input[used] = '\0';
+    deep.max_depth = BREAK_XML_HARD_MAX_DEPTH;
+    deep.max_nodes = 64u;
+    doc = break_xml_create(&deep);
+    ASSERT_NOT_NULL(doc);
+    ASSERT_EQ(break_xml_parse(doc, input, used), BREAK_XML_OK);
+    ASSERT_EQ(break_xml_serialize(doc, output, sizeof(output), &written), BREAK_XML_OK);
+    ASSERT_EQ(written, used);
+    ASSERT_STR_EQ(output, input);
+    break_xml_destroy(doc);
+}
+
+TEST(xml_rejects_noncharacters_without_replacing_old_document) {
+    const char *old = "<old/>";
+    const char *text = "<new>\xEF\xBF\xBE</new>";
+    const char *attribute = "<new a=\"\xEF\xBF\xBF\"/>";
+    const char *valid = "<new>\xEF\xBF\xBD</new>";
+    BreakXmlDocument *doc = create_default();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_EQ(break_xml_parse(doc, old, strlen(old)), BREAK_XML_OK);
+    ASSERT_EQ(break_xml_parse(doc, text, strlen(text)), BREAK_XML_INVALID);
+    ASSERT_STR_EQ(break_xml_name(doc, break_xml_root(doc)), "old");
+    ASSERT_EQ(break_xml_parse(doc, attribute, strlen(attribute)), BREAK_XML_INVALID);
+    ASSERT_STR_EQ(break_xml_name(doc, break_xml_root(doc)), "old");
+    ASSERT_EQ(break_xml_parse(doc, valid, strlen(valid)), BREAK_XML_OK);
+    break_xml_destroy(doc);
+}
+
+TEST(scene_writer_matches_global_attribute_closure) {
+    const u32 max_entities = 682u;
+    BreakSceneXmlEntity *entities = (BreakSceneXmlEntity *)calloc(683u, sizeof(*entities));
+    BreakSceneXmlEntity *loaded = (BreakSceneXmlEntity *)calloc(682u, sizeof(*loaded));
+    char *xml = (char *)malloc(131072u);
+    BreakXmlLimits large = limits();
+    BreakXmlDocument *doc;
+    usize written = 99u;
+    u32 count = 0u;
+    ASSERT_NOT_NULL(entities);
+    ASSERT_NOT_NULL(loaded);
+    ASSERT_NOT_NULL(xml);
+    for (u32 i = 0u; i < 683u; i++) {
+        entities[i].index = i + 1u;
+        entities[i].generation = i + 11u;
+        memcpy(entities[i].class_name, "P", 2u);
+    }
+    large.max_input_bytes = 131072u;
+    large.max_nodes = BREAK_XML_HARD_MAX_NODES;
+    large.max_attributes = BREAK_XML_HARD_MAX_ATTRIBUTES;
+    large.max_text_bytes = 131072u;
+    doc = break_xml_create(&large);
+    ASSERT_NOT_NULL(doc);
+    xml[0] = (char)0x5a;
+    ASSERT_EQ(break_scene_xml_write(entities, 683u, xml, 131072u, &written), BREAK_XML_OVERLOAD);
+    ASSERT_EQ(written, 0u);
+    ASSERT_EQ((u8)xml[0], 0x5au);
+    ASSERT_EQ(break_scene_xml_write(entities, max_entities, xml, 131072u, &written), BREAK_XML_OK);
+    ASSERT_EQ(break_xml_parse(doc, xml, written), BREAK_XML_OK);
+    ASSERT_EQ(break_scene_xml_read(doc, loaded, max_entities, &count), BREAK_XML_OK);
+    ASSERT_EQ(count, max_entities);
+    ASSERT_EQ(loaded[681].index, 682u);
+    ASSERT_EQ(loaded[681].generation, 692u);
+    break_xml_destroy(doc);
+    free(xml);
+    free(loaded);
+    free(entities);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(xml_parses_tree_entities_utf8_and_roundtrips);
     RUN_TEST(xml_rejects_dtd_and_entity_expansion);
     RUN_TEST(xml_rejects_invalid_utf8_and_forbidden_characters);
+    RUN_TEST(xml_serializes_max_depth_without_changing_structure);
+    RUN_TEST(xml_rejects_noncharacters_without_replacing_old_document);
     RUN_TEST(xml_rejects_malformed_markup);
     RUN_TEST(xml_enforces_every_configured_bound);
     RUN_TEST(failed_parse_preserves_previous_document);
@@ -241,4 +327,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scene_sidecar_roundtrip_uses_versioned_schema);
     RUN_TEST(scene_sidecar_rejects_unknown_or_ambiguous_data);
     RUN_TEST(scene_sidecar_read_capacity_is_transactional);
+    RUN_TEST(scene_writer_matches_global_attribute_closure);
 TEST_MAIN_END()

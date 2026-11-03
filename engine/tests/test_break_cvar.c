@@ -296,6 +296,93 @@ TEST(config_io_failures_do_not_replace_values) {
     break_cvar_destroy(r);
 }
 
+TEST(string_roundtrip_preserves_empty_and_internal_spaces) {
+    char path[256];
+    BreakCVarRegistry *source = break_cvar_create(3u);
+    BreakCVarRegistry *loaded = break_cvar_create(3u);
+    BreakCVarValue value;
+    ASSERT_NOT_NULL(source);
+    ASSERT_NOT_NULL(loaded);
+    ASSERT_EQ(add_string(source, "leading", " leading", 0u), BREAK_CVAR_INVALID);
+    ASSERT_EQ(add_string(source, "empty", "", 0u), BREAK_CVAR_OK);
+    ASSERT_EQ(add_string(source, "spaced", "two words", 0u), BREAK_CVAR_OK);
+    value.string = "trailing ";
+    ASSERT_EQ(break_cvar_set(source, "spaced", value, false), BREAK_CVAR_INVALID);
+    ASSERT_EQ(break_cvar_get(source, "spaced", BREAK_CVAR_STRING, &value), BREAK_CVAR_OK);
+    ASSERT_STR_EQ(value.string, "two words");
+    ASSERT_EQ(add_string(loaded, "empty", "not empty", 0u), BREAK_CVAR_OK);
+    ASSERT_EQ(add_string(loaded, "spaced", "different", 0u), BREAK_CVAR_OK);
+    test_tmp(path, sizeof(path), "cvar_string_roundtrip.cfg");
+    ASSERT_EQ(break_cvar_save(source, path), BREAK_CVAR_OK);
+    ASSERT_EQ(break_cvar_load(loaded, path, false), BREAK_CVAR_OK);
+    ASSERT_EQ(break_cvar_get(loaded, "empty", BREAK_CVAR_STRING, &value), BREAK_CVAR_OK);
+    ASSERT_STR_EQ(value.string, "");
+    ASSERT_EQ(break_cvar_get(loaded, "spaced", BREAK_CVAR_STRING, &value), BREAK_CVAR_OK);
+    ASSERT_STR_EQ(value.string, "two words");
+    break_cvar_destroy(source);
+    break_cvar_destroy(loaded);
+    remove(path);
+}
+
+TEST(string_set_accepts_pointer_into_current_value) {
+    BreakCVarRegistry *r = break_cvar_create(1u);
+    BreakCVarValue value;
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ(add_string(r, "name", "abcdef", 0u), BREAK_CVAR_OK);
+    ASSERT_EQ(break_cvar_get(r, "name", BREAK_CVAR_STRING, &value), BREAK_CVAR_OK);
+    value.string += 2;
+    ASSERT_EQ(break_cvar_set(r, "name", value, false), BREAK_CVAR_OK);
+    ASSERT_EQ(break_cvar_get(r, "name", BREAK_CVAR_STRING, &value), BREAK_CVAR_OK);
+    ASSERT_STR_EQ(value.string, "cdef");
+    break_cvar_destroy(r);
+}
+
+static void destroy_changed(const char *name, void *user) {
+    (void)name;
+    break_cvar_destroy((BreakCVarRegistry *)user);
+}
+
+TEST(set_callback_can_defer_destroy_until_notification_ends) {
+    BreakCVarRegistry *r = break_cvar_create(1u);
+    BreakCVarDesc d = desc("speed", BREAK_CVAR_INT);
+    BreakCVarValue value = { .integer = 1 };
+    ASSERT_NOT_NULL(r);
+    d.default_value.integer = 0;
+    d.min_integer = 0;
+    d.max_integer = 2;
+    d.changed = destroy_changed;
+    d.changed_user = r;
+    ASSERT_EQ(break_cvar_register(r, &d), BREAK_CVAR_OK);
+    ASSERT_EQ(break_cvar_set(r, "speed", value, false), BREAK_CVAR_OK);
+}
+
+TEST(load_callback_destroy_still_finishes_outer_notification) {
+    char path[256];
+    BreakCVarRegistry *r = break_cvar_create(2u);
+    BreakCVarDesc first = desc("first", BREAK_CVAR_INT);
+    BreakCVarDesc second = desc("second", BREAK_CVAR_INT);
+    u32 second_calls = 0u;
+    const char *config = "first=1\nsecond=2\n";
+    ASSERT_NOT_NULL(r);
+    first.default_value.integer = 0;
+    first.min_integer = 0;
+    first.max_integer = 2;
+    first.changed = destroy_changed;
+    first.changed_user = r;
+    second.default_value.integer = 0;
+    second.min_integer = 0;
+    second.max_integer = 2;
+    second.changed = changed;
+    second.changed_user = &second_calls;
+    ASSERT_EQ(break_cvar_register(r, &first), BREAK_CVAR_OK);
+    ASSERT_EQ(break_cvar_register(r, &second), BREAK_CVAR_OK);
+    test_tmp(path, sizeof(path), "cvar_callback_destroy.cfg");
+    ASSERT_TRUE(write_bytes(path, config, strlen(config)));
+    ASSERT_EQ(break_cvar_load(r, path, false), BREAK_CVAR_OK);
+    ASSERT_EQ(second_calls, 1u);
+    remove(path);
+}
+
 TEST_MAIN_BEGIN()
     callback_count = 0u;
     RUN_TEST(register_and_read_all_types);
@@ -306,4 +393,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(failed_config_load_is_atomic);
     RUN_TEST(config_rejects_nul_and_excessive_size);
     RUN_TEST(config_io_failures_do_not_replace_values);
+    RUN_TEST(string_roundtrip_preserves_empty_and_internal_spaces);
+    RUN_TEST(string_set_accepts_pointer_into_current_value);
+    RUN_TEST(set_callback_can_defer_destroy_until_notification_ends);
+    RUN_TEST(load_callback_destroy_still_finishes_outer_notification);
 TEST_MAIN_END()

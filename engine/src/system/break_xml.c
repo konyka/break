@@ -111,11 +111,38 @@ void break_xml_destroy(BreakXmlDocument *document) {
     free(document);
 }
 
+static u32 xml_utf8_codepoint(const u8 *data, usize *out_length) {
+    if (data[0] < 0x80u) {
+        *out_length = 1u;
+        return data[0];
+    }
+    if (data[0] < 0xE0u) {
+        *out_length = 2u;
+        return ((u32)(data[0] & 0x1Fu) << 6u) | (u32)(data[1] & 0x3Fu);
+    }
+    if (data[0] < 0xF0u) {
+        *out_length = 3u;
+        return ((u32)(data[0] & 0x0Fu) << 12u) |
+               ((u32)(data[1] & 0x3Fu) << 6u) | (u32)(data[2] & 0x3Fu);
+    }
+    *out_length = 4u;
+    return ((u32)(data[0] & 0x07u) << 18u) |
+           ((u32)(data[1] & 0x3Fu) << 12u) |
+           ((u32)(data[2] & 0x3Fu) << 6u) | (u32)(data[3] & 0x3Fu);
+}
+
 static bool xml_input_characters_valid(const u8 *data, usize size) {
+    usize offset = 0u;
     if (!break_system_utf8_valid((const char *)data, size)) return false;
-    for (usize i = 0u; i < size; i++) {
-        if (data[i] == 0u || (data[i] < 0x20u && data[i] != 0x09u &&
-                              data[i] != 0x0Au && data[i] != 0x0Du)) return false;
+    while (offset < size) {
+        usize length;
+        u32 codepoint = xml_utf8_codepoint(data + offset, &length);
+        if (!((codepoint >= 0x20u && codepoint <= 0xD7FFu) ||
+              (codepoint >= 0xE000u && codepoint <= 0xFFFDu) ||
+              (codepoint >= 0x10000u && codepoint <= 0x10FFFFu) ||
+              codepoint == 0x09u || codepoint == 0x0Au || codepoint == 0x0Du))
+            return false;
+        offset += length;
     }
     return true;
 }
@@ -525,49 +552,57 @@ static void xml_write_escaped(BreakXmlWriter *writer, const char *text) {
     }
 }
 
-static void xml_serialize_node(const BreakXmlDocument *document, u32 index,
+static void xml_serialize_tree(const BreakXmlDocument *document,
                                BreakXmlWriter *writer) {
-    const BreakXmlNode *node = xml_node(document, index);
-    if (!node) {
-        writer->status = BREAK_XML_INVALID;
-        return;
-    }
-    if (node->kind == BREAK_XML_TEXT) {
-        xml_write_escaped(writer, document->active->text + node->text);
-        return;
-    }
-    if (node->kind != BREAK_XML_ELEMENT) {
-        writer->status = BREAK_XML_INVALID;
-        return;
-    }
-    xml_write_string(writer, "<");
-    xml_write_string(writer, document->active->text + node->name);
-    for (u32 i = 0u; i < node->attribute_count; i++) {
-        const BreakXmlAttribute *attribute =
-            &document->active->attributes[node->first_attribute + i];
-        xml_write_string(writer, " ");
-        xml_write_string(writer, document->active->text + attribute->name);
-        xml_write_string(writer, "=\"");
-        xml_write_escaped(writer, document->active->text + attribute->value);
-        xml_write_string(writer, "\"");
-    }
-    if (node->first_child == BREAK_XML_NONE) {
-        xml_write_string(writer, "/>");
-        return;
-    }
-    xml_write_string(writer, ">");
-    for (u32 child = node->first_child; child != BREAK_XML_NONE;) {
-        const BreakXmlNode *child_node = xml_node(document, child);
-        if (!child_node) {
+    u32 current = document->active->root;
+    while (current != BREAK_XML_NONE && writer->status == BREAK_XML_OK) {
+        const BreakXmlNode *node = xml_node(document, current);
+        if (!node) {
             writer->status = BREAK_XML_INVALID;
             return;
         }
-        xml_serialize_node(document, child, writer);
-        child = child_node->next_sibling;
+        if (node->kind == BREAK_XML_TEXT) {
+            xml_write_escaped(writer, document->active->text + node->text);
+        } else if (node->kind == BREAK_XML_ELEMENT) {
+            xml_write_string(writer, "<");
+            xml_write_string(writer, document->active->text + node->name);
+            for (u32 i = 0u; i < node->attribute_count; i++) {
+                const BreakXmlAttribute *attribute =
+                    &document->active->attributes[node->first_attribute + i];
+                xml_write_string(writer, " ");
+                xml_write_string(writer, document->active->text + attribute->name);
+                xml_write_string(writer, "=\"");
+                xml_write_escaped(writer, document->active->text + attribute->value);
+                xml_write_string(writer, "\"");
+            }
+            if (node->first_child != BREAK_XML_NONE) {
+                xml_write_string(writer, ">");
+                current = node->first_child;
+                continue;
+            }
+            xml_write_string(writer, "/>");
+        } else {
+            writer->status = BREAK_XML_INVALID;
+            return;
+        }
+        for (;;) {
+            u32 next = node->next_sibling;
+            if (next != BREAK_XML_NONE) {
+                current = next;
+                break;
+            }
+            current = node->parent;
+            if (current == BREAK_XML_NONE) break;
+            node = xml_node(document, current);
+            if (!node) {
+                writer->status = BREAK_XML_INVALID;
+                return;
+            }
+            xml_write_string(writer, "</");
+            xml_write_string(writer, document->active->text + node->name);
+            xml_write_string(writer, ">");
+        }
     }
-    xml_write_string(writer, "</");
-    xml_write_string(writer, document->active->text + node->name);
-    xml_write_string(writer, ">");
 }
 
 static BreakXmlStatus xml_writer_finish(BreakXmlWriter *writer, usize *out_size) {
@@ -596,7 +631,7 @@ BreakXmlStatus break_xml_serialize(const BreakXmlDocument *document,
     writer.capacity = capacity;
     writer.size = 0u;
     writer.status = BREAK_XML_OK;
-    xml_serialize_node(document, document->active->root, &writer);
+    xml_serialize_tree(document, &writer);
     return xml_writer_finish(&writer, out_size);
 }
 
@@ -732,7 +767,7 @@ BreakXmlStatus break_scene_xml_write(const BreakSceneXmlEntity *entities,
     if (!out_size) return BREAK_XML_INVALID;
     *out_size = 0u;
     if (!out || (count > 0u && !entities)) return BREAK_XML_INVALID;
-    if (count >= BREAK_XML_HARD_MAX_NODES) return BREAK_XML_OVERLOAD;
+    if (count > BREAK_SCENE_XML_HARD_MAX_ENTITIES) return BREAK_XML_OVERLOAD;
     for (u32 i = 0u; i < count; i++) {
         if (entities[i].index == 0u || entities[i].generation == 0u ||
             !scene_class_valid(entities[i].class_name)) return BREAK_XML_INVALID;

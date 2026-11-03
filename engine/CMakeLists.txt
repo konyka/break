@@ -602,7 +602,7 @@ if(TARGET break_integrity)
     set_property(TARGET break_system PROPERTY C_STANDARD 11)
     target_include_directories(break_system PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(break_system PUBLIC break_integrity ${CMAKE_DL_LIBS})
+    target_link_libraries(break_system PUBLIC break_crypto ${CMAKE_DL_LIBS})
 endif()
 
 # Stage 5 Phase C Tasks 1-3: break_crash — the crash record format (canonical
@@ -5259,26 +5259,36 @@ endif()
             BREAK_TEST_REGISTER_RESULT=0)
         break_system_add_test_plugin(break_system_test_plugin_no_entry
             BREAK_TEST_NO_ENTRY=1)
+        break_system_add_test_plugin(break_system_test_plugin_attacker
+            BREAK_TEST_PLUGIN_NAME="system-test-a"
+            BREAK_TEST_PLUGIN_BUILD_ID="system-test-a"
+            BREAK_TEST_PLUGIN_EVENT=99
+            BREAK_TEST_CONSTRUCTOR_MARK_PATH="${CMAKE_CURRENT_BINARY_DIR}/break-system-attacker-constructor.marker")
 
-        add_executable(test_break_plugin tests/test_break_plugin.c)
+        add_executable(test_break_plugin tests/test_break_plugin.c
+            src/system/break_plugin.c src/platform/platform_dynamic.c)
         target_include_directories(test_break_plugin PRIVATE ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_break_plugin PRIVATE
+            BREAK_SYSTEM_TESTING=1
             BREAK_TEST_PLUGIN_A_PATH="$<TARGET_FILE:break_system_test_plugin_a>"
             BREAK_TEST_PLUGIN_B_PATH="$<TARGET_FILE:break_system_test_plugin_b>"
             BREAK_TEST_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:break_system_test_plugin_bad_abi>"
             BREAK_TEST_PLUGIN_REGISTER_FAIL_PATH="$<TARGET_FILE:break_system_test_plugin_register_fail>"
-            BREAK_TEST_PLUGIN_NO_ENTRY_PATH="$<TARGET_FILE:break_system_test_plugin_no_entry>")
+            BREAK_TEST_PLUGIN_NO_ENTRY_PATH="$<TARGET_FILE:break_system_test_plugin_no_entry>"
+            BREAK_TEST_PLUGIN_ATTACKER_PATH="$<TARGET_FILE:break_system_test_plugin_attacker>"
+            BREAK_TEST_ATTACKER_MARK_PATH="${CMAKE_CURRENT_BINARY_DIR}/break-system-attacker-constructor.marker")
         add_dependencies(test_break_plugin
             break_system_test_plugin_a break_system_test_plugin_b
             break_system_test_plugin_bad_abi break_system_test_plugin_register_fail
-            break_system_test_plugin_no_entry)
-        target_link_libraries(test_break_plugin PRIVATE break_system)
+            break_system_test_plugin_no_entry break_system_test_plugin_attacker)
+        target_link_libraries(test_break_plugin PRIVATE break_crypto ${CMAKE_DL_LIBS})
         add_test(NAME test_break_plugin COMMAND test_break_plugin)
         set_tests_properties(test_break_plugin PROPERTIES LABELS "headless;system")
 
         add_test(NAME test_break_system_target_contract
             COMMAND ${CMAKE_COMMAND}
                 -DENGINE_CMAKE=${CMAKE_CURRENT_LIST_FILE}
+                -DXML_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/system/break_xml.c
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_system_target_contract.cmake)
         set_tests_properties(test_break_system_target_contract PROPERTIES
             LABELS "headless;system")

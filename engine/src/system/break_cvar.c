@@ -34,6 +34,7 @@ struct BreakCVarRegistry {
     BreakCVarEntry *scratch;
     char *config;
     bool notifying;
+    bool destroy_pending;
 };
 
 static bool cvar_name_valid(const char *name) {
@@ -58,6 +59,7 @@ static bool cvar_string_valid(const char *string, usize *out_length) {
     length = strlen(string);
     if (length >= BREAK_CVAR_STRING_CAPACITY ||
         !break_system_utf8_valid(string, length)) return false;
+    if (length > 0u && (string[0] == ' ' || string[length - 1u] == ' ')) return false;
     for (usize i = 0u; i < length; i++) {
         u8 c = (u8)string[i];
         if (c < 0x20u || c == 0x7Fu) return false;
@@ -127,7 +129,7 @@ static BreakCVarStatus cvar_apply(BreakCVarEntry *entry, BreakCVarValue value,
     if (status != BREAK_CVAR_OK) return status;
     if (entry->type == BREAK_CVAR_STRING) {
         size_t length = strlen(value.string);
-        memcpy(entry->string, value.string, length + 1u);
+        memmove(entry->string, value.string, length + 1u);
         entry->value.string = entry->string;
     } else {
         entry->value = value;
@@ -151,12 +153,20 @@ BreakCVarRegistry *break_cvar_create(u32 capacity) {
     return registry;
 }
 
-void break_cvar_destroy(BreakCVarRegistry *registry) {
-    if (!registry) return;
+static void cvar_destroy_now(BreakCVarRegistry *registry) {
     free(registry->config);
     free(registry->scratch);
     free(registry->entries);
     free(registry);
+}
+
+void break_cvar_destroy(BreakCVarRegistry *registry) {
+    if (!registry) return;
+    if (registry->notifying) {
+        registry->destroy_pending = true;
+        return;
+    }
+    cvar_destroy_now(registry);
 }
 
 BreakCVarStatus break_cvar_register(BreakCVarRegistry *registry,
@@ -232,6 +242,7 @@ BreakCVarStatus break_cvar_set(BreakCVarRegistry *registry, const char *name,
         registry->notifying = true;
         entry->changed(entry->name, entry->changed_user);
         registry->notifying = false;
+        if (registry->destroy_pending) break_cvar_destroy(registry);
     }
     return BREAK_CVAR_OK;
 }
@@ -366,6 +377,7 @@ BreakCVarStatus break_cvar_load(BreakCVarRegistry *registry, const char *path,
             entry->changed(entry->name, entry->changed_user);
     }
     registry->notifying = false;
+    if (registry->destroy_pending) break_cvar_destroy(registry);
     return BREAK_CVAR_OK;
 }
 

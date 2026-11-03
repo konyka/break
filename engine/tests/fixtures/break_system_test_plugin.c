@@ -1,6 +1,8 @@
 #include <system/break_plugin.h>
 #include "break_system_test_plugin.h"
 
+#include <stdio.h>
+
 #ifndef BREAK_TEST_PLUGIN_NAME
 #define BREAK_TEST_PLUGIN_NAME "system-test"
 #endif
@@ -48,4 +50,30 @@ __declspec(dllexport)
 const BreakPluginDescriptor *break_plugin_entry(void) {
     return &descriptor;
 }
+#endif
+
+#if defined(BREAK_TEST_CONSTRUCTOR_MARK_PATH)
+static void test_constructor_mark(void) {
+    FILE *file = fopen(BREAK_TEST_CONSTRUCTOR_MARK_PATH, "ab");
+    if (file) {
+        fputc(0x5a, file);
+        fclose(file);
+    }
+}
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved) {
+    (void)instance;
+    (void)reserved;
+    if (reason == DLL_PROCESS_ATTACH) test_constructor_mark();
+    return TRUE;
+}
+#else
+__attribute__((constructor)) static void test_constructor_entry(void) {
+    test_constructor_mark();
+}
+#endif
 #endif
