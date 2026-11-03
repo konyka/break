@@ -245,10 +245,44 @@ TEST(aspect_schema_validation_and_output_capacity_are_atomic)
     break_aspect_store_destroy(store);
 }
 
+TEST(aspect_remote_destroy_then_gen2_create_and_adopt_works)
+{
+    AspectPair pair;
+    BreakOnlineHandle gen2;
+    u8 baseline[256];
+    usize baseline_size = 0u;
+    u32 health = 0u;
+    ASSERT_TRUE(make_pair(&pair));
+    ASSERT_EQ(break_aspect_set_u32(pair.authoritative, pair.object, 2u, 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object,
+                                  break_aspect_active_mask(pair.authoritative, pair.object),
+                                  BREAK_ASPECT_BASELINE,
+                                  baseline, sizeof(baseline), &baseline_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_apply(pair.remote, baseline, baseline_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_object_destroy(pair.authoritative, pair.object), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_object_destroy(pair.remote, pair.object), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_object_create(pair.authoritative, &gen2), BREAK_RUNTIME_OK);
+    ASSERT_EQ(gen2.index, pair.object.index);
+    ASSERT_EQ(gen2.generation, 2u);
+    ASSERT_EQ(break_aspect_object_adopt(pair.remote, gen2), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_set_u32(pair.authoritative, gen2, 2u, 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, gen2,
+                                  break_aspect_active_mask(pair.authoritative, gen2),
+                                  BREAK_ASPECT_BASELINE,
+                                  baseline, sizeof(baseline), &baseline_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_apply(pair.remote, baseline, baseline_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_get_u32(pair.remote, gen2, 2u, &health), BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 2u);
+    ASSERT_EQ(break_aspect_object_adopt(pair.remote, pair.object), BREAK_RUNTIME_REJECTED);
+    destroy_pair(&pair);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(aspect_health_delta_has_hand_derived_mask_and_varint);
     RUN_TEST(aspect_malformed_delta_never_partially_mutates_remote);
     RUN_TEST(aspect_stale_object_handle_cannot_access_reused_slot);
     RUN_TEST(aspect_signed_float_bytes_and_same_value_rules);
     RUN_TEST(aspect_schema_validation_and_output_capacity_are_atomic);
+    RUN_TEST(aspect_remote_destroy_then_gen2_create_and_adopt_works);
 TEST_MAIN_END()

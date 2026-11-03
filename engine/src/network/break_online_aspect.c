@@ -339,7 +339,7 @@ BreakRuntimeError break_aspect_object_adopt(BreakAspectStore *store,
     }
     object = &store->objects[remote.index];
     if (object->used) return BREAK_RUNTIME_REJECTED;
-    if (object->generation != 0u && remote.generation <= object->generation) {
+    if (object->generation != 0u && remote.generation < object->generation) {
         return BREAK_RUNTIME_STALE;
     }
     memset(object, 0, sizeof(*object));
