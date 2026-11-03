@@ -727,10 +727,11 @@ add_library(break_online STATIC
     src/network/break_online_inbox.c
     src/network/break_online_nat.c
     src/network/break_online_voice.c
-    src/network/break_online_aspect.c)
+    src/network/break_online_aspect.c
+    src/network/break_online_aspect_replication.c)
 set_property(TARGET break_online PROPERTY C_STANDARD 11)
 target_include_directories(break_online PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(break_online PUBLIC Threads::Threads)
+target_link_libraries(break_online PUBLIC Threads::Threads break_replication_core)
 
 # Formal optional Runtime Core library: unified error/lifecycle types, the
 # single-owner lifecycle coordinator, the formal message/queue/task facade,
@@ -5059,6 +5060,15 @@ endif()
     target_link_libraries(test_break_online_aspect PRIVATE break_online m)
     add_test(NAME test_break_online_aspect COMMAND test_break_online_aspect)
     set_tests_properties(test_break_online_aspect PROPERTIES
+        TIMEOUT 20 LABELS "network;online;aspect;replication")
+
+    add_executable(test_break_online_aspect_replication
+        tests/test_break_online_aspect_replication.c)
+    target_include_directories(test_break_online_aspect_replication PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_aspect_replication PRIVATE
+        break_online break_replication_core m)
+    add_test(NAME test_break_online_aspect_replication COMMAND test_break_online_aspect_replication)
+    set_tests_properties(test_break_online_aspect_replication PROPERTIES
         TIMEOUT 20 LABELS "network;online;aspect;replication")
 
     # Focused fragmentation coverage links the formal non-Snowflake core.
