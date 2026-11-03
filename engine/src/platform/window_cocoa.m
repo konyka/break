@@ -29,6 +29,7 @@ struct Platform {
     BreakView  *view;
     CAMetalLayer *layer;
     InputState  input;
+    InputExtended input_extended;
     u32         width, height;
     bool        should_close;
     PlatformWindowModeState window_mode;
@@ -480,6 +481,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
         }
 
         input_init(&p->input);
+        input_extended_init(&p->input_extended);
 
 #if defined(ENGINE_RHI_BACKEND_METAL)
         LOG_INFO("Platform initialized (Cocoa/Metal): %ux%u \"%s\"",
@@ -548,6 +550,7 @@ bool platform_set_window_title(Platform *p, const char *utf8) {
 PlatformEventResult platform_poll(Platform *p) {
     if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
+    input_extended_new_frame(&p->input_extended);
     @autoreleasepool {
         NSEvent *e;
         while ((e = [NSApp nextEventMatchingMask:NSEventMaskAny
@@ -593,6 +596,7 @@ void platform_ime_set_spot(Platform *p, i32 x, i32 y) {
 }
 
 InputState *platform_input(Platform *p)        { return p != NULL ? &p->input : NULL; }
+InputExtended *platform_input_extended(Platform *p) { return p != NULL ? &p->input_extended : NULL; }
 void *platform_window_native(Platform *p)      { return p != NULL ? (void *)p->layer : NULL; }
 void *platform_display_native(Platform *p)     { (void)p; return NULL; }
 void *platform_surface_native(Platform *p)     { return p != NULL ? (void *)p->layer : NULL; }

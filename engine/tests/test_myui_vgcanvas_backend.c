@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_vulkan_lsan.h"
 
 #include <math.h>
 #include <stdatomic.h>

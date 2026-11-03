@@ -107,6 +107,9 @@ BreakGameError break_game_despawn(BreakGame *game, Entity entity) {
     if (slot == UINT32_MAX) {
         return BREAK_GAME_STALE;
     }
+    if (game->script_bridge_used && game->script_bridge.actor_despawn) {
+        game->script_bridge.actor_despawn(game->script_bridge.user, entity);
+    }
     break_game_area_on_despawn(game, slot, entity);
     break_game_weapons_on_despawn(game, slot);
     break_game_items_on_despawn(game, slot);
@@ -132,6 +135,30 @@ void break_game_set_tick(BreakGame *game, u32 class_id, BreakGameTickFn fn, void
     game->classes[class_id].tick_user = user;
 }
 
+BreakGameError break_game_set_script_bridge(
+    BreakGame *game, const BreakGameScriptBridge *bridge) {
+    if (!game) {
+        return BREAK_GAME_INVALID;
+    }
+    if (!break_game_is_owner(game)) {
+        return BREAK_GAME_REJECTED;
+    }
+    if (!bridge) {
+        memset(&game->script_bridge, 0, sizeof(game->script_bridge));
+        game->script_bridge_used = false;
+        return BREAK_GAME_OK;
+    }
+    if (!bridge->actor_tick) {
+        return BREAK_GAME_INVALID;
+    }
+    if (game->script_bridge_used) {
+        return BREAK_GAME_REJECTED;
+    }
+    game->script_bridge = *bridge;
+    game->script_bridge_used = true;
+    return BREAK_GAME_OK;
+}
+
 void break_game_tick(BreakGame *game, f32 dt) {
     if (!game || !break_game_is_owner(game)) {
         return;
@@ -149,8 +176,15 @@ void break_game_tick(BreakGame *game, f32 dt) {
         }
         BreakGameActor *actor = &game->actors[slot];
         BreakGameClass *cls = &game->classes[actor->class_id];
+        Entity entity = actor->entity;
         if (cls->tick) {
-            cls->tick(game, actor->entity, dt, cls->tick_user);
+            cls->tick(game, entity, dt, cls->tick_user);
+        }
+        if (break_game_actor_slot(game, entity) == slot &&
+            cls->lua_module[0] != '\0' && game->script_bridge_used &&
+            game->script_bridge.actor_tick) {
+            game->script_bridge.actor_tick(game->script_bridge.user,
+                                           cls->lua_module, entity, dt);
         }
     }
 }

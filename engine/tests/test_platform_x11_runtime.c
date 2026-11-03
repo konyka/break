@@ -41,6 +41,13 @@ TEST(x11_window_create_resize_and_destroy)
         runtime_failure("platform_create returned NULL");
         return;
     }
+    if (platform_input_extended(platform) == NULL ||
+        platform_input_extended(platform)->abi_version != INPUT_EXTENDED_ABI_VERSION ||
+        platform_input_extended(platform)->touch_count != 0u) {
+        runtime_failure("X11 extended input sidecar is missing or not initialized");
+        ok = false;
+        goto cleanup;
+    }
     display = (Display *)platform_display_native(platform);
     window = (Window)(uintptr_t)platform_window_native(platform);
     if (display == NULL) {

@@ -9,7 +9,8 @@
  * unknown component/field and missing target → error line, record skipped,
  * no partial application; failed eval discards enqueued records;
  * pending_records == 0 after eval; input length bound (4096/4097);
- * unrepresentable result type; OOM create sweeps (editor hook + lua hook);
+ * unrepresentable result type (including explicit host-handle rejection);
+ * OOM create sweeps (editor hook + lua hook);
  * owner-thread rejection probe (eval/pending/destroy from a worker). */
 
 #include "test_framework.h"
@@ -1184,7 +1185,39 @@ TEST(on_unload_veto_plus_trip_recovers_via_cleanup_pin) {
     fixture_close(&f);
 }
 
+TEST(eval_host_handle_result_is_explicitly_rejected) {
+    static const char installer[] =
+        "function install_handle(value) state.pending_handle = value end";
+    Fixture f;
+    BreakLuaRuntime *runtime;
+    BreakLuaHostHandle handle = {0u, 0u};
+    BreakLuaValue argument;
+    ASSERT_TRUE(fixture_open(&f));
+    runtime = break_editor_test_lua_runtime(f.console);
+    ASSERT_NOT_NULL(runtime);
+    ASSERT_EQ(break_lua_host_handle_acquire(runtime, 77u, &handle),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_reload_module(runtime, "console", installer,
+                                              sizeof(installer) - 1u, NULL),
+              BREAK_LUA_OK);
+    memset(&argument, 0, sizeof(argument));
+    argument.type = BREAK_LUA_VALUE_HOST_HANDLE;
+    argument.as.handle = handle;
+    ASSERT_EQ(break_lua_runtime_call(runtime, "console", "install_handle",
+                                     &argument, 1u, NULL, 0u),
+              BREAK_LUA_OK);
+
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "return state.pending_handle"));
+    ASSERT_EQ(f.sink.count, 1u);
+    ASSERT_STR_EQ(f.sink.lines[0], "error: console: result not representable");
+    ASSERT_TRUE(sink_find(&f.sink, "0x") < 0);
+    ASSERT_FALSE(f.sink.overlong);
+    ASSERT_EQ(break_lua_host_handle_release(runtime, handle), BREAK_LUA_OK);
+    fixture_close(&f);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(eval_host_handle_result_is_explicitly_rejected);
     RUN_TEST(eval_arithmetic_result_logged);
     RUN_TEST(eval_result_string_truncated_and_unrepresentable);
     RUN_TEST(eval_print_multiline_bounded);

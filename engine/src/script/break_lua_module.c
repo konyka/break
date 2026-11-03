@@ -30,13 +30,12 @@
  * own lua_pcall inside the commit operation because a hook failure must
  * discard the staged environment (unref) rather than unwind past it.
  *
- * NESTED ARMING LIMITATION (documented, production-unreachable): the
- * staging and commit budget arming uses lua_sethook on the main coroutine,
- * which REPLACES whatever hook is currently armed and whose disarm then
- * clears it. A reload triggered from INSIDE a budget-armed frame hook would
- * therefore destroy the outer hook's arming mid-flight (the outer hook's
- * remainder runs unbudgeted, and the nested staging runs with a fresh full
- * count). The production `break.*` surface deliberately exposes no reload
+ * NESTED ARMING LIMITATION (documented, production-unreachable): staging and
+ * commit use the shared execution-hook combinator. The single saved count is
+ * replaced by a nested operation and cleared on its return (the optional line
+ * observer is preserved). A reload triggered from INSIDE a budget-armed frame
+ * hook would therefore lose the outer count mid-flight. The production
+ * `break.*` surface deliberately exposes no reload
  * binding, so this nesting is reachable only through the BREAK_LUA_TESTING
  * reloader test binding; the test that exercises mid-dispatch reload
  * (frame_mid_dispatch_reload_serves_pinned_old_environment) runs with the
@@ -228,9 +227,9 @@ static void break_lua_stage_impl(lua_State *L, BreakLuaRuntime *runtime,
                 ? INT_MAX
                 : (int)runtime->instruction_budget;
         int run_status;
-        lua_sethook(L, break_lua_budget_hook, LUA_MASKCOUNT, budget_count);
+        break_lua_execution_hook_arm(runtime, budget_count);
         run_status = lua_pcall(L, 0, 0, 0); /* [state env] or [state env e] */
-        lua_sethook(L, NULL, 0, 0);
+        break_lua_execution_hook_disarm(runtime);
         if (run_status != LUA_OK) {
             ctx->hdr.status = (run_status == LUA_ERRMEM) ? BREAK_LUA_OOM
                                                          : BREAK_LUA_FAILED;
@@ -272,12 +271,12 @@ static void break_lua_commit_impl(lua_State *L, BreakLuaRuntime *runtime,
                 (runtime->instruction_budget > (u64)INT_MAX)
                     ? INT_MAX
                     : (int)runtime->instruction_budget;
-            lua_sethook(L, break_lua_budget_hook, LUA_MASKCOUNT,
+            break_lua_execution_hook_arm(runtime,
                         budget_count);
         }
         hook_status = lua_pcall(L, 0, 0, 0);       /* [env] or [env errmsg] */
         if (armed) {
-            lua_sethook(L, NULL, 0, 0);
+            break_lua_execution_hook_disarm(runtime);
         }
         if (hook_status != LUA_OK) {
             ctx->hdr.status = (hook_status == LUA_ERRMEM) ? BREAK_LUA_OOM
@@ -351,6 +350,9 @@ static int break_lua_op_dispatch(lua_State *L)
         break;
     case BREAK_LUA_OP_CALL_REF:
         break_lua_call_ref_impl(L, (BreakLuaCallRefOpCtx *)hdr);
+        break;
+    case BREAK_LUA_OP_CALL_TABLE:
+        break_lua_table_call_impl(L, (BreakLuaTableOpCtx *)hdr);
         break;
     case BREAK_LUA_OP_FRAME:
         break_lua_frame_impl(L, runtime, (BreakLuaFrameOpCtx *)hdr);

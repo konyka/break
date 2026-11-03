@@ -10,6 +10,36 @@ static void write_vert(MeshStageVertex *v, Vec3 p, Vec3 n, u32 material) {
     v->material = material;
 }
 
+bool mesh_vertices_migrate(const MeshStageVertex *in, u32 count,
+                           MeshVertex *out, u32 cap) {
+    if (count > cap || (count > 0u && (!in || !out))) return false;
+    for (u32 i = 0; i < count; i++) {
+        MeshStageVertex src = in[i];
+        MeshVertex *dst = &out[i];
+        dst->px = src.px;
+        dst->py = src.py;
+        dst->pz = src.pz;
+        dst->nx = src.nx;
+        dst->ny = src.ny;
+        dst->nz = src.nz;
+        dst->material = src.material;
+        f32 ax = fabsf(src.nx);
+        f32 ay = fabsf(src.ny);
+        f32 az = fabsf(src.nz);
+        if (ay >= ax && ay >= az) {
+            dst->u = src.px;
+            dst->v = src.pz;
+        } else if (ax >= az) {
+            dst->u = src.pz;
+            dst->v = src.py;
+        } else {
+            dst->u = src.px;
+            dst->v = src.py;
+        }
+    }
+    return true;
+}
+
 static void decal_axes(Vec3 normal, Vec3 *tangent, Vec3 *bitangent) {
     if (fabsf(normal.e[1]) > 0.9f) {
         *tangent = vec3(1.0f, 0.0f, 0.0f);

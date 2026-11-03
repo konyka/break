@@ -13,6 +13,7 @@ struct Platform {
     void *native_window;
     void *native_display;
     InputState input;
+    InputExtended input_extended;
     u32 width, height;
     u32 logical_width, logical_height;
     f32 content_scale;
@@ -60,6 +61,7 @@ Platform *platform_create(const PlatformConfig *cfg)
                      PLATFORM_MEDIA_KNOWN_ANY_POINTER |
                      PLATFORM_MEDIA_KNOWN_COLOR_GAMUT;
     input_init(&p->input);
+    input_extended_init(&p->input_extended);
     return p;
 }
 
@@ -120,6 +122,7 @@ void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
 PlatformEventResult platform_poll(Platform *p) {
     if (!p) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
+    input_extended_new_frame(&p->input_extended);
     return PLATFORM_EVENT_NONE;
 }
 void platform_cancel_close(Platform *p) { (void)p; }
@@ -134,6 +137,7 @@ bool platform_ime_is_enabled(Platform *p) { return p && p->ime_enabled; }
 void platform_ime_set_surrounding(Platform *p, const char *s, i32 c, i32 a) { (void)p; (void)s; (void)c; (void)a; }
 void platform_ime_set_spot(Platform *p, i32 x, i32 y) { (void)p; (void)x; (void)y; }
 InputState *platform_input(Platform *p) { return p ? &p->input : NULL; }
+InputExtended *platform_input_extended(Platform *p) { return p ? &p->input_extended : NULL; }
 void *platform_window_native(Platform *p) { return p ? p->native_window : NULL; }
 void *platform_display_native(Platform *p) { return p ? p->native_display : NULL; }
 void *platform_surface_native(Platform *p) { return p ? p->native_window : NULL; }

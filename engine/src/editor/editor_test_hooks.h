@@ -23,6 +23,11 @@
 
 extern _Atomic u64 g_break_editor_test_alloc_budget;
 
+struct BreakEditorLuaConsole;
+struct BreakLuaRuntime;
+struct BreakLuaRuntime *break_editor_test_lua_runtime(
+    struct BreakEditorLuaConsole *console);
+
 static inline void break_editor_test_set_alloc_budget(u64 budget) {
     atomic_store_explicit(&g_break_editor_test_alloc_budget, budget,
                           memory_order_relaxed);

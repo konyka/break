@@ -687,7 +687,8 @@ add_library(break_game STATIC
     src/game/break_game_actions.c
     src/game/break_game_move.c
     src/game/break_game_level.c
-    src/game/break_game_area.c)
+    src/game/break_game_area.c
+    src/game/break_game_flow.c)
 set_property(TARGET break_game PROPERTY C_STANDARD 11)
 target_include_directories(break_game PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_game PUBLIC break_ecs_replication)
@@ -695,18 +696,38 @@ if(ENGINE_PLATFORM STREQUAL "linux")
     target_link_libraries(break_game PUBLIC pthread)
 endif()
 
+add_library(break_flow STATIC
+    src/game/break_flow_graph.c
+    src/game/break_flow_serial.c
+    src/game/break_flow_runtime.c)
+set_property(TARGET break_flow PROPERTY C_STANDARD 11)
+target_include_directories(break_flow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_flow PUBLIC break_game)
+if(NOT ENGINE_PLATFORM STREQUAL "windows")
+    target_link_libraries(break_flow PUBLIC m)
+endif()
+
 # Navigation and a small behavior tree. Heightfields are plain CPU buffers;
 # this library does not include the renderer. Not linked into engine,
 # engine_demo, or dxx_break.
 add_library(break_ai STATIC
     src/ai/break_nav_bake.c
+    src/ai/break_nav_workspace.c
     src/ai/break_nav_query.c
+    src/ai/break_ai_runtime.c
+    src/ai/break_ai_obstacle.c
+    src/ai/break_ai_query.c
+    src/ai/break_ai_agent.c
+    src/ai/break_ai_formation.c
+    src/ai/break_ai_smart_object.c
+    src/ai/break_steer_velocity.c
     src/ai/break_nav_follow.c
     src/ai/break_perception.c
     src/ai/break_behavior.c
     src/ai/break_steer.c)
 set_property(TARGET break_ai PROPERTY C_STANDARD 11)
 target_include_directories(break_ai PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_ai PUBLIC Threads::Threads)
 if(NOT ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(break_ai PUBLIC m)
 endif()
@@ -826,6 +847,7 @@ add_library(engine STATIC
     src/core/string.c
     src/core/profiler.c
     src/platform/input.c
+    src/platform/input_extended.c
     src/platform/platform_config.c
     src/platform/platform_display_media.c
     src/platform/platform_vk_surface.c
@@ -856,6 +878,8 @@ add_library(engine STATIC
     src/renderer/mesh_stage.c
     src/renderer/mesh_buffer.c
     src/renderer/mesh_gpu.c
+    src/renderer/world_presentation.c
+    src/renderer/world_presenter.c
 src/renderer/water.c
     src/renderer/lighting.c
     src/renderer/post_process.c
@@ -917,6 +941,9 @@ src/renderer/lens_effects.c
     src/animation/skeleton_socket.c
     src/animation/animation.c
     src/animation/anim_locomotion.c
+    src/animation/morph.c
+    src/animation/facial.c
+    src/animation/anim_compression.c
     src/script/script.c
     src/script/script_lua.c
     src/network/network.c
@@ -1031,12 +1058,14 @@ if(ENGINE_BUILD_TESTS)
             tests/test_platform_screen_simulated.c
             src/platform/window_screen.c
             src/platform/input.c
+            src/platform/input_extended.c
             src/platform/platform_config.c)
         target_include_directories(test_platform_screen_simulated PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_qnx_screen)
         target_compile_definitions(test_platform_screen_simulated PRIVATE
             ENGINE_PLATFORM_QNX=1 ENGINE_QNX_SCREEN=1)
+        target_link_libraries(test_platform_screen_simulated PRIVATE m)
         add_test(NAME test_platform_screen_simulated
             COMMAND test_platform_screen_simulated)
         set_tests_properties(test_platform_screen_simulated PROPERTIES
@@ -1456,10 +1485,20 @@ endif()
 # or dxx_break; consumers opt in explicitly in later tasks. Links the
 # vendored Lua 5.4 target PUBLIC so consumers inherit its external/ include
 # dir; the public header itself only needs src/.
-add_library(break_lua STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c)
+add_library(break_lua STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c src/script/break_lua_table.c)
 set_property(TARGET break_lua PROPERTY C_STANDARD 11)
 target_include_directories(break_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_lua PUBLIC lua)
+
+add_library(break_lua_debug STATIC src/script/break_lua_debug.c)
+set_property(TARGET break_lua_debug PROPERTY C_STANDARD 11)
+target_include_directories(break_lua_debug PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_lua_debug PUBLIC break_lua)
+
+add_library(break_game_lua STATIC src/game/break_game_lua.c)
+set_property(TARGET break_game_lua PROPERTY C_STANDARD 11)
+target_include_directories(break_game_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_game_lua PUBLIC break_game break_lua)
 
 # Formal optional Stage 4 scene editor core library: the document model
 # (one owned ECS World, bounded entity name map, dirty flag), the bounded
@@ -1489,11 +1528,12 @@ target_link_libraries(break_lua PUBLIC lua)
 # engine target (its platform siblings live there) and the editor
 # executable resolves platform_list_dir from libengine.a; editor tests
 # compile the TU inline instead (test_editor_assets).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c)
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
 target_link_libraries(break_editor PUBLIC break_lua)
+target_link_libraries(break_editor PUBLIC break_flow)
 target_link_libraries(break_editor PRIVATE stb_image)
 
 # Vendored stb single-header implementations are shared by the engine asset
@@ -1930,7 +1970,7 @@ engine_link_rhi_backend(dxx_break)
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
     apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-    apps/editor/editor_panel_profiler.c
+    apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
     apps/editor/editor_fonts.c
@@ -2135,6 +2175,7 @@ if(ENGINE_PLATFORM STREQUAL "linux")
 
         target_sources(engine PRIVATE
             src/platform/window_wayland.c
+            src/platform/wayland_touch.c
             src/platform/gamepad_linux.c
             ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c
             ${CMAKE_CURRENT_BINARY_DIR}/relative-pointer-unstable-v1-protocol.c
@@ -2158,6 +2199,7 @@ if(ENGINE_PLATFORM STREQUAL "linux")
         )
         target_include_directories(engine PRIVATE ${X11_INCLUDE_DIRS})
         if(ENGINE_X11_XINPUT2)
+            target_sources(engine PRIVATE src/platform/x11_touch.c)
             target_compile_definitions(engine PRIVATE ENGINE_X11_XINPUT2=1)
         endif()
     endif()
@@ -2190,6 +2232,7 @@ elseif(ENGINE_PLATFORM STREQUAL "windows")
     target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_WINDOWS=1 _WIN32_WINNT=0x0601)
     target_sources(engine PRIVATE
         src/platform/window_win32.c
+        src/platform/win32_touch.c
         src/platform/gamepad_win.c
     )
 
@@ -2887,6 +2930,7 @@ if(ENGINE_BUILD_TESTS)
             tests/test_platform_mobile.c
             src/platform/window_mobile.c
             src/platform/input.c
+            src/platform/input_extended.c
             src/platform/platform_config.c)
         target_include_directories(test_platform_mobile_layer_${_mobile_lower}
             PRIVATE ${TEST_INCLUDE_DIRS})
@@ -2903,6 +2947,7 @@ if(ENGINE_BUILD_TESTS)
         src/core/log.c
         src/platform/window_mobile.c
         src/platform/input.c
+        src/platform/input_extended.c
         src/platform/platform_config.c)
     target_include_directories(test_engine_mobile_host PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_engine_mobile_host PRIVATE ENGINE_PLATFORM_IOS=1)
@@ -2969,6 +3014,35 @@ if(ENGINE_BUILD_TESTS)
             set_tests_properties(test_mesh_gpu_gl PROPERTIES
                 LABELS "graphics;world" SKIP_RETURN_CODE 77)
         endif()
+
+        set(world_gpu_variants)
+        if(ENGINE_VULKAN)
+            list(APPEND world_gpu_variants vulkan)
+        endif()
+        if(NOT ENGINE_VULKAN OR ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+            list(APPEND world_gpu_variants opengl)
+        endif()
+        foreach(world_gpu_variant IN LISTS world_gpu_variants)
+            if(world_gpu_variant STREQUAL "vulkan")
+                set(world_gpu_suffix vk)
+                set(world_gpu_backend RHI_BACKEND_VULKAN)
+            else()
+                set(world_gpu_suffix gl)
+                set(world_gpu_backend RHI_BACKEND_OPENGL)
+            endif()
+            set(world_gpu_target test_world_presentation_${world_gpu_suffix})
+            add_executable(${world_gpu_target} tests/test_world_presentation_gpu.c)
+            target_include_directories(${world_gpu_target} PRIVATE ${TEST_INCLUDE_DIRS})
+            target_compile_definitions(${world_gpu_target} PRIVATE WORLD_GPU_BACKEND=${world_gpu_backend})
+            if(world_gpu_variant STREQUAL "vulkan")
+                target_compile_definitions(${world_gpu_target} PRIVATE ENGINE_VK_VALIDATION=1)
+            endif()
+            target_link_libraries(${world_gpu_target} PRIVATE engine m)
+            engine_link_rhi_backend(${world_gpu_target})
+            add_test(NAME ${world_gpu_target} COMMAND ${world_gpu_target})
+            set_tests_properties(${world_gpu_target} PROPERTIES
+                LABELS "graphics;world" SKIP_RETURN_CODE 77)
+        endforeach()
     endif()
 
     if(ENGINE_PLATFORM STREQUAL "linux" AND ENGINE_ENABLE_WAYLAND)
@@ -3194,6 +3268,13 @@ endif()
     )
     target_link_libraries(test_myui_vgcanvas_backend PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_vgcanvas_backend COMMAND test_myui_vgcanvas_backend)
+
+    if(ENGINE_USE_ASAN AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND MYUI_VULKAN_ENABLED)
+        # Keep NVIDIA's unloaded ICDs named for the test-local default
+        # suppressions in test_vulkan_lsan.h; all other tests/options stay intact.
+        set_tests_properties(test_myui_window_manager test_myui_vgcanvas_backend
+            PROPERTIES ENVIRONMENT "VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING=1")
+    endif()
 
     # Win32 headless contract for the desktop GL WGL pointer resolution.
     if(ENGINE_PLATFORM STREQUAL "windows")
@@ -4282,7 +4363,7 @@ endif()
     endif()
     add_test(NAME test_ecs COMMAND test_ecs)
 
-    foreach(game_test IN ITEMS actor items weapons actions move level area)
+    foreach(game_test IN ITEMS actor items weapons actions move level area flow)
         add_executable(test_break_game_${game_test} tests/test_break_game_${game_test}.c)
         target_include_directories(test_break_game_${game_test} PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_game_${game_test} PRIVATE break_game)
@@ -4297,6 +4378,23 @@ endif()
         add_test(NAME test_break_game_${game_test} COMMAND test_break_game_${game_test})
         set_tests_properties(test_break_game_${game_test} PROPERTIES LABELS "headless;break_game")
     endforeach()
+
+    foreach(flow_test IN ITEMS graph serial runtime)
+        add_executable(test_break_flow_${flow_test} tests/test_break_flow_${flow_test}.c)
+        target_include_directories(test_break_flow_${flow_test} PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_flow_${flow_test} PRIVATE break_flow)
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(test_break_flow_${flow_test} PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+            target_link_libraries(test_break_flow_${flow_test} PRIVATE pthread m)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_flow_${flow_test} PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_flow_${flow_test} PRIVATE kernel32)
+        endif()
+        add_test(NAME test_break_flow_${flow_test} COMMAND test_break_flow_${flow_test})
+        set_tests_properties(test_break_flow_${flow_test} PROPERTIES LABELS "headless;break_flow")
+    endforeach()
+
     add_test(NAME test_break_game_target_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
@@ -4304,7 +4402,7 @@ endif()
     set_tests_properties(test_break_game_target_contract PROPERTIES
         LABELS "headless;break_game;platform_contract")
 
-    foreach(ai_test IN ITEMS nav_bake nav_query nav_follow perception behavior steer)
+    foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
         target_include_directories(test_break_${ai_test} PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_${ai_test} PRIVATE break_ai)
@@ -4316,6 +4414,12 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_ai_target_contract.cmake)
     set_tests_properties(test_break_ai_target_contract PROPERTIES
+        LABELS "headless;break_ai;platform_contract")
+    add_test(NAME test_break_ai_hot_path_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/ai
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_ai_hot_path_contract.cmake)
+    set_tests_properties(test_break_ai_hot_path_contract PROPERTIES
         LABELS "headless;break_ai;platform_contract")
 
     add_executable(test_cry_style_prototype tests/test_cry_style_prototype.c
@@ -4377,6 +4481,31 @@ endif()
     target_link_libraries(test_mesh_gpu PRIVATE engine_rhi_headless m)
     add_test(NAME test_mesh_gpu COMMAND test_mesh_gpu)
     set_tests_properties(test_mesh_gpu PROPERTIES LABELS "headless;world")
+
+    add_executable(test_world_mesh_fake tests/test_world_mesh_fake.c tests/world_fake_rhi.c
+        src/renderer/mesh_gpu.c src/renderer/mesh_buffer.c src/renderer/mesh_stage.c
+        src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_world_mesh_fake PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_mesh_fake PRIVATE m)
+    add_test(NAME test_world_mesh_fake COMMAND test_world_mesh_fake)
+    set_tests_properties(test_world_mesh_fake PROPERTIES LABELS "headless;world;fake_rhi")
+
+    add_executable(test_world_presentation tests/test_world_presentation.c
+        src/renderer/world_presentation.c src/renderer/mesh_buffer.c src/renderer/mesh_stage.c src/renderer/visarea.c
+        src/renderer/vegetation.c src/renderer/time_of_day.c src/renderer/lod.c
+        src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_world_presentation PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_presentation PRIVATE m)
+    add_test(NAME test_world_presentation COMMAND test_world_presentation)
+    set_tests_properties(test_world_presentation PROPERTIES LABELS "headless;world")
+
+    add_executable(test_world_presenter_fake tests/test_world_presenter_fake.c tests/world_fake_rhi.c
+        src/renderer/world_presenter.c src/renderer/mesh_gpu.c src/renderer/mesh_buffer.c src/renderer/mesh_stage.c
+        src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_world_presenter_fake PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_presenter_fake PRIVATE m)
+    add_test(NAME test_world_presenter_fake COMMAND test_world_presenter_fake)
+    set_tests_properties(test_world_presenter_fake PROPERTIES LABELS "headless;world;fake_rhi")
 
     add_executable(test_rope tests/test_rope.c
         src/physics/rope.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
@@ -4496,7 +4625,7 @@ endif()
     # Task 3: value marshalling, module calls, frame lifecycle with a stable
     # registry snapshot, bounded hook error records, and an opt-in
     # instruction budget; Task 4: bounded ECS batch + config host bindings
-    # and the whitelisted module sandbox)
+    # and the whitelisted module sandbox; P9: host handles and bounded tables)
     # focused tests. The test-only break_lua_test variant compiles the same
     # sources with BREAK_LUA_TESTING=1 hooks (allocation failure injection
     # covering the struct calloc AND the Lua allocator, double-destroy
@@ -4507,7 +4636,7 @@ endif()
     # BREAK_RUNTIME_TESTING pattern; the production break_lua target
     # (top-level, defined independent of ENGINE_BUILD_TESTS) stays hook-free
     # and is never linked into engine, engine_demo, or dxx_break.
-    add_library(break_lua_test STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c)
+    add_library(break_lua_test STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c src/script/break_lua_table.c)
     set_property(TARGET break_lua_test PROPERTY C_STANDARD 11)
     target_include_directories(break_lua_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -4586,6 +4715,86 @@ endif()
     set_tests_properties(test_break_lua_binding PROPERTIES
         LABELS "headless;break_lua")
 
+    add_executable(test_break_lua_handle tests/test_break_lua_handle.c)
+    target_include_directories(test_break_lua_handle PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_handle PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_handle PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_handle PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_handle PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_handle PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_handle PRIVATE break_lua_test)
+    add_test(NAME test_break_lua_handle COMMAND test_break_lua_handle)
+    set_tests_properties(test_break_lua_handle PROPERTIES
+        LABELS "headless;break_lua")
+
+    add_executable(test_break_lua_table tests/test_break_lua_table.c)
+    target_include_directories(test_break_lua_table PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_table PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_table PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_table PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_table PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_table PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_table PRIVATE break_lua_test)
+    add_test(NAME test_break_lua_table COMMAND test_break_lua_table)
+    set_tests_properties(test_break_lua_table PROPERTIES
+        LABELS "headless;break_lua")
+
+    add_library(break_lua_debug_test STATIC src/script/break_lua_debug.c)
+    set_property(TARGET break_lua_debug_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_lua_debug_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_lua_debug_test PRIVATE BREAK_LUA_TESTING=1)
+    target_link_libraries(break_lua_debug_test PUBLIC break_lua_test)
+
+    add_executable(test_break_lua_debug tests/test_break_lua_debug.c)
+    target_include_directories(test_break_lua_debug PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_debug PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_debug PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_debug PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_debug PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_debug PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_debug PRIVATE break_lua_debug_test)
+    add_test(NAME test_break_lua_debug COMMAND test_break_lua_debug)
+    set_tests_properties(test_break_lua_debug PROPERTIES
+        LABELS "headless;break_lua")
+
+    add_library(break_game_lua_test STATIC src/game/break_game_lua.c)
+    set_property(TARGET break_game_lua_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_game_lua_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_game_lua_test PUBLIC break_game break_lua_test)
+
+    add_executable(test_break_game_lua tests/test_break_game_lua.c)
+    target_include_directories(test_break_game_lua PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_game_lua PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_game_lua PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_game_lua PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_game_lua PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_game_lua PRIVATE break_game_lua_test)
+    add_test(NAME test_break_game_lua COMMAND test_break_game_lua)
+    set_tests_properties(test_break_game_lua PROPERTIES
+        LABELS "headless;break_game;break_lua")
+
     # test_break_lua_ecs_apply: drained Lua ECS records applied to a World.
     add_executable(test_break_lua_ecs_apply tests/test_break_lua_ecs_apply.c
         src/script/break_lua_ecs_apply.c src/ecs/ecs.c src/core/log.c)
@@ -4609,7 +4818,7 @@ endif()
     # Stage 4 scene editor Phase 1 Task 1+2+3 + Phase 2 Task 1+2 + Phase 3
     # Task 1+2 focused
     # tests. The test-only
-    # break_editor_test variant compiles the same eleven translation units
+    # break_editor_test variant compiles the same production translation units
     # with BREAK_EDITOR_TESTING=1 hooks (allocation failure injection
     # covering every editor-owned allocation: doc struct, name-slot block,
     # stack struct, stack entry array, command objects — including the
@@ -4622,13 +4831,14 @@ endif()
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break. The variant links break_lua_test (not
     # break_lua) so console-core tests share the Lua-side injection hooks.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1)
     target_link_libraries(break_editor_test PUBLIC break_ecs_replication)
     target_link_libraries(break_editor_test PUBLIC break_lua_test)
+    target_link_libraries(break_editor_test PUBLIC break_flow)
     target_link_libraries(break_editor_test PRIVATE stb_image)
 
     add_executable(test_editor_doc tests/test_editor_doc.c)
@@ -4644,6 +4854,13 @@ endif()
     target_link_libraries(test_editor_cmd PRIVATE break_editor_test)
     add_test(NAME test_editor_cmd COMMAND test_editor_cmd)
     set_tests_properties(test_editor_cmd PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_flow tests/test_editor_flow.c)
+    target_include_directories(test_editor_flow PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_flow PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_flow PRIVATE break_editor_test)
+    add_test(NAME test_editor_flow COMMAND test_editor_flow)
+    set_tests_properties(test_editor_flow PROPERTIES LABELS "headless;editor")
 
     add_executable(test_editor_scene tests/test_editor_scene.c)
     target_include_directories(test_editor_scene PRIVATE ${TEST_INCLUDE_DIRS})
@@ -4818,7 +5035,7 @@ endif()
     add_executable(test_editor_shell tests/test_editor_shell.c
         apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-        apps/editor/editor_panel_profiler.c
+        apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c
         apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
         src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
@@ -5534,6 +5751,35 @@ endif()
     target_link_libraries(test_animation PRIVATE m)
     add_test(NAME test_animation COMMAND test_animation)
 
+    add_executable(test_anim_pose_authority tests/test_anim_pose_authority.c
+        src/animation/animation.c src/math/math.c src/core/log.c)
+    target_include_directories(test_anim_pose_authority PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_anim_pose_authority PRIVATE m)
+    add_test(NAME test_anim_pose_authority COMMAND test_anim_pose_authority)
+    set_tests_properties(test_anim_pose_authority PROPERTIES LABELS "headless;animation")
+
+    add_executable(test_anim_morph tests/test_anim_morph.c src/animation/morph.c
+        src/renderer/lod_skin.c src/renderer/lod_cache.c src/renderer/lod_gen.c
+        src/math/math.c)
+    target_include_directories(test_anim_morph PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_anim_morph PRIVATE meshopt_c m)
+    add_test(NAME test_anim_morph COMMAND test_anim_morph)
+    set_tests_properties(test_anim_morph PROPERTIES LABELS "headless;animation")
+
+    add_executable(test_anim_facial tests/test_anim_facial.c
+        src/animation/facial.c src/animation/morph.c)
+    target_include_directories(test_anim_facial PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_anim_facial PRIVATE m)
+    add_test(NAME test_anim_facial COMMAND test_anim_facial)
+    set_tests_properties(test_anim_facial PROPERTIES LABELS "headless;animation")
+
+    add_executable(test_anim_compression tests/test_anim_compression.c
+        src/animation/anim_compression.c src/animation/skeleton.c src/math/math.c)
+    target_include_directories(test_anim_compression PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_anim_compression PRIVATE m)
+    add_test(NAME test_anim_compression COMMAND test_anim_compression)
+    set_tests_properties(test_anim_compression PROPERTIES LABELS "headless;animation")
+
     add_executable(test_anim_locomotion tests/test_anim_locomotion.c
         src/animation/anim_locomotion.c src/animation/animation.c src/math/math.c src/core/log.c)
     target_include_directories(test_anim_locomotion PRIVATE ${TEST_INCLUDE_DIRS})
@@ -5855,6 +6101,82 @@ endif()
     target_include_directories(test_input PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_input PRIVATE m)
     add_test(NAME test_input COMMAND test_input)
+
+    add_executable(test_input_extended tests/test_input_extended.c
+        src/platform/input_extended.c)
+    target_include_directories(test_input_extended PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_input_extended PRIVATE m Threads::Threads)
+    add_test(NAME test_input_extended COMMAND test_input_extended)
+    set_tests_properties(test_input_extended PROPERTIES LABELS "headless;platform_contract")
+
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        add_executable(test_gamepad_linux_feedback tests/test_gamepad_linux_feedback.c
+            src/platform/input_extended.c src/core/log.c)
+        target_include_directories(test_gamepad_linux_feedback PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_gamepad_linux_feedback PRIVATE ENGINE_PLATFORM_LINUX=1)
+        target_link_libraries(test_gamepad_linux_feedback PRIVATE m)
+        add_test(NAME test_gamepad_linux_feedback COMMAND test_gamepad_linux_feedback)
+        set_tests_properties(test_gamepad_linux_feedback PROPERTIES LABELS "headless;platform_contract")
+    endif()
+
+    if(ENGINE_PLATFORM STREQUAL "windows")
+        add_executable(test_gamepad_win_feedback tests/test_gamepad_win_feedback.c
+            src/platform/input_extended.c src/platform/time.c src/core/log.c)
+        target_include_directories(test_gamepad_win_feedback PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_gamepad_win_feedback PRIVATE
+            ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_gamepad_win_feedback PRIVATE kernel32)
+        add_test(NAME test_gamepad_win_feedback COMMAND test_gamepad_win_feedback)
+        set_tests_properties(test_gamepad_win_feedback PROPERTIES LABELS "headless;platform_contract")
+    else()
+        add_executable(test_gamepad_win_feedback_portable tests/test_gamepad_win_feedback.c
+            src/platform/input_extended.c src/core/log.c)
+        target_include_directories(test_gamepad_win_feedback_portable PRIVATE
+            ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_windows)
+        target_compile_definitions(test_gamepad_win_feedback_portable PRIVATE
+            ENGINE_PLATFORM_WINDOWS=1 GAMEPAD_WIN_PORTABLE_TEST=1)
+        target_link_libraries(test_gamepad_win_feedback_portable PRIVATE m)
+        add_test(NAME test_gamepad_win_feedback_portable COMMAND test_gamepad_win_feedback_portable)
+        set_tests_properties(test_gamepad_win_feedback_portable PROPERTIES LABELS "headless;platform_contract")
+    endif()
+
+    if(ENGINE_X11_XINPUT2)
+        add_executable(test_x11_touch tests/test_x11_touch.c
+            src/platform/x11_touch.c src/platform/input_extended.c)
+        target_include_directories(test_x11_touch PRIVATE
+            ${TEST_INCLUDE_DIRS} ${X11_INCLUDE_DIRS})
+        target_compile_definitions(test_x11_touch PRIVATE ENGINE_X11_XINPUT2=1)
+        target_link_libraries(test_x11_touch PRIVATE m)
+        add_test(NAME test_x11_touch COMMAND test_x11_touch)
+        set_tests_properties(test_x11_touch PROPERTIES LABELS "headless;platform_contract")
+    endif()
+
+    add_executable(test_win32_touch tests/test_win32_touch.c
+        src/platform/win32_touch.c src/platform/input_extended.c)
+    target_include_directories(test_win32_touch PRIVATE ${TEST_INCLUDE_DIRS})
+    if(NOT ENGINE_PLATFORM STREQUAL "windows")
+        target_include_directories(test_win32_touch PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_windows)
+    endif()
+    target_link_libraries(test_win32_touch PRIVATE m)
+    add_test(NAME test_win32_touch COMMAND test_win32_touch)
+    set_tests_properties(test_win32_touch PROPERTIES LABELS "headless;platform_contract")
+
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(INPUT_TOUCH_WAYLAND QUIET wayland-client)
+        endif()
+        if(INPUT_TOUCH_WAYLAND_FOUND)
+            add_executable(test_wayland_touch tests/test_wayland_touch.c
+                src/platform/wayland_touch.c src/platform/input_extended.c)
+            target_include_directories(test_wayland_touch PRIVATE
+                ${TEST_INCLUDE_DIRS} ${INPUT_TOUCH_WAYLAND_INCLUDE_DIRS})
+            target_link_libraries(test_wayland_touch PRIVATE m ${INPUT_TOUCH_WAYLAND_LIBRARIES})
+            add_test(NAME test_wayland_touch COMMAND test_wayland_touch)
+            set_tests_properties(test_wayland_touch PROPERTIES LABELS "headless;platform_contract")
+        endif()
+    endif()
 
     # test_break_replay_window: application-message anti-replay window
     # (pure C; library code lives with break_net but has no dependency).

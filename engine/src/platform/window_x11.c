@@ -5,6 +5,8 @@
 #include <platform/monitor_selection.h>
 #include <platform/window_mode.h>
 #include <platform/platform_display_media.h>
+#include <platform/x11_touch.h>
+#include <platform/time.h>
 #include <core/log.h>
 #include "gamepad_linux.h"
 #include <X11/Xlib.h>
@@ -42,6 +44,7 @@ struct Platform {
     Atom        clipboard_property;
     Atom        incr;
     InputState  input;
+    InputExtended input_extended;
     u32         width;
     u32         height;
     bool        should_close;
@@ -941,7 +944,7 @@ static void x11_refresh_media_context(Platform *p) {
     PlatformMediaContext next;
 #ifdef ENGINE_X11_XINPUT2
     int xi_major = 2;
-    int xi_minor = 0;
+    int xi_minor = 2;
     int device_count = 0;
     XIDeviceInfo *devices = NULL;
     bool has_fine_pointer = false;
@@ -1090,6 +1093,21 @@ Platform *platform_create(const PlatformConfig *cfg) {
                  ButtonPressMask | ButtonReleaseMask |
                  PointerMotionMask | StructureNotifyMask | FocusChangeMask |
                  PropertyChangeMask);
+#ifdef ENGINE_X11_XINPUT2
+    if (p->xinput_opcode != 0) {
+        int xi_major = 2;
+        int xi_minor = 2;
+        if (XIQueryVersion(p->display, &xi_major, &xi_minor) == Success &&
+            (xi_major > 2 || (xi_major == 2 && xi_minor >= 2))) {
+            unsigned char mask[XIMaskLen(XI_LASTEVENT)] = {0};
+            XIEventMask event_mask = {XIAllDevices, sizeof(mask), mask};
+            XISetMask(mask, XI_TouchBegin);
+            XISetMask(mask, XI_TouchUpdate);
+            XISetMask(mask, XI_TouchEnd);
+            XISelectEvents(p->display, p->window, &event_mask, 1);
+        }
+    }
+#endif
 
     platform_window_mode_init(&p->window_mode, PLATFORM_WINDOW_MODE_WINDOWED);
     x11_query_monitors(p);
@@ -1158,6 +1176,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
     p->cursor = PLATFORM_CURSOR_ARROW;
 
     input_init(&p->input);
+    input_extended_init(&p->input_extended);
     gamepad_init();
 
     x11_update_active_monitor(p);
@@ -1278,6 +1297,7 @@ PlatformEventResult platform_poll(Platform *p) {
     i32 relative_prev_y;
     if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
+    input_extended_new_frame(&p->input_extended);
     relative_prev_x = (i32)(p->width / 2);
     relative_prev_y = (i32)(p->height / 2);
 
@@ -1289,8 +1309,18 @@ PlatformEventResult platform_poll(Platform *p) {
         if (ev.type == GenericEvent &&
             ev.xcookie.extension == p->xinput_opcode) {
             if (XGetEventData(p->display, &ev.xcookie)) {
-                if (ev.xcookie.evtype == XI_HierarchyChanged)
+                if (ev.xcookie.evtype == XI_HierarchyChanged) {
+                    (void)x11_touch_cancel(&p->input_extended,
+                                           time_microseconds() / 1000u);
                     x11_refresh_media_context(p);
+                } else if (ev.xcookie.evtype == XI_TouchBegin ||
+                           ev.xcookie.evtype == XI_TouchUpdate ||
+                           ev.xcookie.evtype == XI_TouchEnd) {
+                    (void)x11_touch_event(
+                        &p->input_extended, p->width, p->height, p->window,
+                        ev.xcookie.evtype, (const XIDeviceEvent *)ev.xcookie.data,
+                        time_microseconds() / 1000u);
+                }
                 XFreeEventData(p->display, &ev.xcookie);
             }
             continue;
@@ -1436,6 +1466,8 @@ PlatformEventResult platform_poll(Platform *p) {
              * KeyRelease to an unfocused window) can't leave a key stuck down
              * and keep driving WASD/camera once focus returns. */
             input_release_all(&p->input);
+            (void)x11_touch_cancel(&p->input_extended,
+                                   time_microseconds() / 1000u);
             p->has_focus = false;
             if (p->xic != NULL) XUnsetICFocus(p->xic);
             break;
@@ -1454,8 +1486,10 @@ PlatformEventResult platform_poll(Platform *p) {
         XFlush(p->display);
     }
 
+    input_extended_update(&p->input_extended, time_microseconds() / 1000u);
     /* Pump gamepads (evdev) into the shared input state. */
     gamepad_poll(p->input.gamepads);
+    gamepad_feedback_poll(&p->input_extended);
 
     return PLATFORM_EVENT_NONE;
 }
@@ -1502,6 +1536,10 @@ void platform_ime_set_surrounding(Platform *p, const char *utf8, i32 cursor,
 
 InputState *platform_input(Platform *p) {
     return p != NULL ? &p->input : NULL;
+}
+
+InputExtended *platform_input_extended(Platform *p) {
+    return p != NULL ? &p->input_extended : NULL;
 }
 
 void *platform_window_native(Platform *p) {

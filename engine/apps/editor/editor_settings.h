@@ -21,7 +21,7 @@ typedef struct {
     bool light_theme;
     bool has_lang; /* false: language comes from --lang / the environment */
     BreakEditorLang lang;
-    u32 bottom_tab; /* 0 Console, 1 Lua */
+    u32 bottom_tab; /* 0 Console, 1 Lua, 2 Flow */
     u32 diag_tab;   /* 0 Profiler, 1 Network, 2 Render */
     bool snap;      /* gizmo snapping on (default steps) */
     bool stats;     /* viewport stats overlay (default on) */

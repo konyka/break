@@ -317,6 +317,23 @@ cmake -B build-asan -DENGINE_USE_ASAN=ON
 cmake --build build-asan
 ```
 
+#### Linux NVIDIA Vulkan ICD 的 LSan 归属
+NVIDIA Vulkan ICD 与 GL 共用 `libGLX_nvidia.so`。本机证据表明，loader 扫描/创建/销毁
+instance 后，`libnvidia-glcore.so` 和 `libnvidia-glsi.so` 的进程生命周期缓存会被
+LeakSanitizer 报告；这些分配不经过本仓库的 allocator，也没有可由仓库调用的公共关闭
+接口。`test_myui_window_manager` 和 `test_myui_vgcanvas_backend` 因而只在 ASan/Linux
+且实际启用 Vulkan 时由 CTest 设置 `VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING=1`，
+保留模块名供 LSan 归因；`engine/tests/test_vulkan_lsan.h` 只在这两个测试二进制中
+suppress 上述两个 NVIDIA 模块。它不 suppress libdbus、其他库或项目分配，也不关闭
+ASan/LSan。
+
+直跑这两个测试时使用与 CTest 相同的环境（不带该环境的裸直跑仍可能报告第三方缓存）：
+```bash
+VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING=1 ./build-asan/test_myui_window_manager
+VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING=1 ./build-asan/test_myui_vgcanvas_backend
+```
+如果报告包含项目帧或新的第三方库，应先重新做归属调查，不要扩大这两条 suppression。
+
 #### UndefinedBehaviorSanitizer 版本
 `ENGINE_USE_UBSAN` 默认为 OFF；GCC/Clang 开启后使用 `-fsanitize=undefined`，不改变默认构建：
 ```bash

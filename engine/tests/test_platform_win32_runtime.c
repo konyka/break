@@ -51,6 +51,13 @@ TEST(real_window_preserves_title_size_and_destroys_cleanly)
         return;
     }
 
+    if (platform_input_extended(platform) == NULL ||
+        platform_input_extended(platform)->abi_version != INPUT_EXTENDED_ABI_VERSION ||
+        platform_input_extended(platform)->touch_count != 0u) {
+        record_failure("Win32 extended input sidecar is missing or not initialized");
+        ok = false;
+        goto cleanup;
+    }
     hwnd = (HWND)platform_window_native(platform);
     if (hwnd == NULL) {
         record_failure("platform_window_native returned NULL");
