@@ -85,6 +85,45 @@ BreakReplicationFragmentResult break_replication_fragment_payload(
     return BREAK_REPLICATION_FRAGMENT_OK;
 }
 
+BreakReplicationFragmentResult break_replication_fragment_payload_into(
+    uint64_t delta_id, uint64_t base_id, const void *payload, size_t payload_size,
+    size_t fragment_payload_size, BreakReplicationFragment *out_fragments,
+    size_t fragment_capacity, size_t *out_fragment_count)
+{
+    const uint8_t *bytes = (const uint8_t *)payload;
+    size_t numerator;
+    size_t count;
+    size_t i;
+    if (!out_fragment_count) return BREAK_REPLICATION_FRAGMENT_INVALID;
+    *out_fragment_count = 0u;
+    if (!out_fragments || !fragment_payload_size ||
+        (payload_size && !payload) || payload_size == 0u)
+        return BREAK_REPLICATION_FRAGMENT_INVALID;
+    if (payload_size > BREAK_REPLICATION_MAX_REASSEMBLY_SIZE ||
+        fragment_payload_size > BREAK_NET_MAX_PAYLOAD_SIZE)
+        return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
+    if (!checked_add_size(payload_size, fragment_payload_size - 1u, &numerator))
+        return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
+    count = numerator / fragment_payload_size;
+    if (!count || count > UINT32_MAX || count > FRAGMENT_MAX_COUNT)
+        return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
+    if (fragment_capacity < count) return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
+    for (i = 0u; i < count; ++i) {
+        size_t offset = i * fragment_payload_size;
+        size_t size = payload_size - offset;
+        if (size > fragment_payload_size) size = fragment_payload_size;
+        out_fragments[i].delta_id = delta_id;
+        out_fragments[i].base_id = base_id;
+        out_fragments[i].fragment_index = (uint32_t)i;
+        out_fragments[i].fragment_count = (uint32_t)count;
+        out_fragments[i].data = bytes + offset;
+        out_fragments[i].size = size;
+        out_fragments[i].checksum = checksum_bytes(out_fragments[i].data, size);
+    }
+    *out_fragment_count = count;
+    return BREAK_REPLICATION_FRAGMENT_OK;
+}
+
 void break_replication_fragments_free(BreakReplicationFragment *fragments, size_t fragment_count)
 {
     (void)fragment_count;

@@ -248,6 +248,79 @@ TEST(reassembler_repeated_fragment_after_complete_starts_new_state)
     break_replication_fragments_free(fragments, count);
 }
 
+TEST(fragment_into_caller_storage_matches_allocating_api_and_reassembles)
+{
+    const uint8_t payload[] = {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u};
+    BreakReplicationFragment expected[3];
+    BreakReplicationFragment *allocated = NULL;
+    size_t allocated_count = 0u;
+    size_t count = 0u;
+    size_t i;
+    BreakReplicationReassembler *reassembler;
+    uint8_t *assembled = NULL;
+    size_t assembled_size = 0u;
+
+    ASSERT_EQ(break_replication_fragment_payload(41u, 9u, payload, sizeof(payload),
+                                                 4u, &allocated, &allocated_count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    memcpy(expected, allocated, sizeof(expected));
+    ASSERT_EQ(break_replication_fragment_payload_into(
+                  41u, 9u, payload, sizeof(payload), 4u,
+                  expected, 3u, &count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(count, 3u);
+    for (i = 0u; i < 3u; ++i) {
+        ASSERT_EQ(expected[i].delta_id, allocated[i].delta_id);
+        ASSERT_EQ(expected[i].base_id, allocated[i].base_id);
+        ASSERT_EQ(expected[i].fragment_index, i);
+        ASSERT_EQ(expected[i].fragment_count, 3u);
+        ASSERT_EQ(expected[i].checksum, allocated[i].checksum);
+        ASSERT_EQ(expected[i].size, allocated[i].size);
+        ASSERT_TRUE(memcmp(expected[i].data, allocated[i].data,
+                           allocated[i].size) == 0);
+    }
+    ASSERT_EQ(expected[0].size, 4u);
+    ASSERT_EQ(expected[1].size, 4u);
+    ASSERT_EQ(expected[2].size, 2u);
+    reassembler = break_replication_reassembler_create(9u);
+    ASSERT_NOT_NULL(reassembler);
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &expected[2],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &expected[1],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &expected[0],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_COMPLETE);
+    ASSERT_EQ(assembled_size, sizeof(payload));
+    ASSERT_TRUE(memcmp(assembled, payload, sizeof(payload)) == 0);
+    break_replication_reassembly_free(assembled);
+    break_replication_reassembler_destroy(reassembler);
+    break_replication_fragments_free(allocated, allocated_count);
+}
+
+TEST(fragment_into_rejects_short_capacity_before_writing)
+{
+    const uint8_t payload[] = {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u};
+    BreakReplicationFragment fragments[2];
+    size_t count = 99u;
+    memset(fragments, 0x5a, sizeof(fragments));
+    fragments[0].delta_id = UINT64_C(0x12345678);
+    ASSERT_EQ(break_replication_fragment_payload_into(
+                  1u, 1u, payload, sizeof(payload), 4u,
+                  fragments, 0u, &count),
+              BREAK_REPLICATION_FRAGMENT_OVER_LIMIT);
+    ASSERT_EQ(count, 0u);
+    count = 99u;
+    ASSERT_EQ(break_replication_fragment_payload_into(
+                  1u, 1u, payload, sizeof(payload), 4u,
+                  fragments, 2u, &count),
+              BREAK_REPLICATION_FRAGMENT_OVER_LIMIT);
+    ASSERT_EQ(count, 0u);
+    ASSERT_EQ(fragments[0].delta_id, UINT64_C(0x12345678));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fragment_round_trip_reordered_and_checksum);
     RUN_TEST(fragment_rejects_duplicates_conflicts_loss_and_base_mismatch);
@@ -256,4 +329,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(reassembler_rejects_oversized_fragment_and_reset_is_recoverable);
     RUN_TEST(fragment_and_reassembler_reject_payload_budget);
     RUN_TEST(reassembler_repeated_fragment_after_complete_starts_new_state);
+    RUN_TEST(fragment_into_caller_storage_matches_allocating_api_and_reassembles);
+    RUN_TEST(fragment_into_rejects_short_capacity_before_writing);
 TEST_MAIN_END()
