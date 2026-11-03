@@ -726,7 +726,8 @@ add_library(break_online STATIC
     src/network/break_online_lobby.c
     src/network/break_online_inbox.c
     src/network/break_online_nat.c
-    src/network/break_online_voice.c)
+    src/network/break_online_voice.c
+    src/network/break_online_aspect.c)
 set_property(TARGET break_online PROPERTY C_STANDARD 11)
 target_include_directories(break_online PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_online PUBLIC Threads::Threads)
@@ -5052,6 +5053,13 @@ endif()
     add_test(NAME test_break_online_voice COMMAND test_break_online_voice)
     set_tests_properties(test_break_online_voice PROPERTIES
         TIMEOUT 20 LABELS "network;online;voice")
+
+    add_executable(test_break_online_aspect tests/test_break_online_aspect.c)
+    target_include_directories(test_break_online_aspect PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_aspect PRIVATE break_online m)
+    add_test(NAME test_break_online_aspect COMMAND test_break_online_aspect)
+    set_tests_properties(test_break_online_aspect PROPERTIES
+        TIMEOUT 20 LABELS "network;online;aspect;replication")
 
     # Focused fragmentation coverage links the formal non-Snowflake core.
     add_executable(test_break_replication_fragment tests/test_break_replication_fragment.c)
