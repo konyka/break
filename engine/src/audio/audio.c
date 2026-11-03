@@ -101,15 +101,19 @@ struct AudioImpl {
     bool context_initialized;
 };
 
+bool audio_extended_init(AudioSystem *as, ma_engine *engine);
+void audio_extended_destroy(AudioSystem *as, void *extended);
+
 /* The AudioImpl offset formula below (mirrored in audio_system_destroy) aligns
  * the trailing impl block with _Alignof(long double); pin that this satisfies
  * ma_engine's alignment. */
 _Static_assert(_Alignof(long double) >= 8,
                "AudioImpl alignment relies on _Alignof(long double) >= 8");
 
-AudioSystem *audio_system_create(void) {
-    /* Single alloc: AudioSystem + AudioImpl (impl aligned to
-     * _Alignof(long double); destroy recomputes the same offset) */
+AudioSystem *audio_system_create_ex(AudioBackend backend) {
+    if (backend < AUDIO_BACKEND_DEFAULT || backend > AUDIO_BACKEND_FAKE) {
+        return NULL;
+    }
     usize as_sz  = sizeof(AudioSystem);
     usize align  = _Alignof(long double);
     usize as_off = (as_sz + align - 1) & ~(align - 1);
@@ -121,22 +125,36 @@ AudioSystem *audio_system_create(void) {
     AudioSystem *as  = (AudioSystem *)audio_block;
     struct AudioImpl *impl = (struct AudioImpl *)(audio_block + as_off);
     const ma_engine_config *engine_config_ptr = NULL;
+    ma_engine_config engine_config;
     ma_result result;
+    bool use_null = backend == AUDIO_BACKEND_NULL;
 
 #if defined(AUDIO_SIMULATOR_NULL_BACKEND)
-    ma_backend backend = ma_backend_null;
-    ma_engine_config engine_config;
-    result = ma_context_init(&backend, 1, NULL, &impl->context);
-    if (result != MA_SUCCESS) {
-        LOG_ERROR("Failed to init iOS Simulator null audio context (%d)", result);
-        free(as);
-        return NULL;
-    }
-    impl->context_initialized = true;
-    engine_config = ma_engine_config_init();
-    engine_config.pContext = &impl->context;
-    engine_config_ptr = &engine_config;
+    if (backend == AUDIO_BACKEND_DEFAULT) use_null = true;
 #endif
+
+    if (backend != AUDIO_BACKEND_DEFAULT) {
+        engine_config = ma_engine_config_init();
+        engine_config.channels = 2;
+        engine_config.sampleRate = 48000;
+        engine_config.noDevice = backend == AUDIO_BACKEND_FAKE ? MA_TRUE : MA_FALSE;
+        engine_config_ptr = &engine_config;
+    }
+    if (use_null) {
+        ma_backend null_backend = ma_backend_null;
+        result = ma_context_init(&null_backend, 1, NULL, &impl->context);
+        if (result != MA_SUCCESS) {
+            LOG_ERROR("Failed to init null audio context (%d)", result);
+            free(as);
+            return NULL;
+        }
+        impl->context_initialized = true;
+        if (backend == AUDIO_BACKEND_DEFAULT) {
+            engine_config = ma_engine_config_init();
+            engine_config_ptr = &engine_config;
+        }
+        engine_config.pContext = &impl->context;
+    }
 
     result = ma_engine_init(engine_config_ptr, &impl->engine);
     if (result != MA_SUCCESS) {
@@ -147,7 +165,9 @@ AudioSystem *audio_system_create(void) {
     }
 
     as->engine = impl;
-    as->source_cap = 32;
+    as->backend = use_null && backend == AUDIO_BACKEND_DEFAULT ?
+                  AUDIO_BACKEND_NULL : backend;
+    as->source_cap = AUDIO_MAX_SOURCES;
     as->sources = calloc(as->source_cap, sizeof(AudioSource));
     if (!as->sources) {
         LOG_ERROR("Audio: sources allocation failed");
@@ -159,14 +179,33 @@ AudioSystem *audio_system_create(void) {
     as->source_count = 0;
     as->listener_forward = vec3(0, 0, -1);
     as->listener_up = vec3(0, 1, 0);
-    audio_bus_table_reset(as); /* R435: master bus exists from birth */
+    audio_bus_table_reset(as);
+    if (!audio_extended_init(as, &impl->engine)) {
+        LOG_ERROR("Audio: fixed voice pool initialization failed");
+        free(as->sources);
+        ma_engine_uninit(&impl->engine);
+        if (impl->context_initialized) ma_context_uninit(&impl->context);
+        free(as);
+        return NULL;
+    }
 
-#if defined(AUDIO_SIMULATOR_NULL_BACKEND)
-    LOG_WARN("Audio system initialized with iOS Simulator null backend (silent)");
-#else
-    LOG_INFO("Audio system initialized");
-#endif
+    if (use_null) LOG_WARN("Audio system initialized with null backend (silent)");
+    else LOG_INFO("Audio system initialized");
     return as;
+}
+
+AudioSystem *audio_system_create(void) {
+    return audio_system_create_ex(AUDIO_BACKEND_DEFAULT);
+}
+
+AudioResult audio_system_render(AudioSystem *as, f32 *stereo_out, u32 frames) {
+    if (!as || !as->engine || !stereo_out || frames == 0) return AUDIO_INVALID;
+    if (as->backend != AUDIO_BACKEND_FAKE) return AUDIO_REJECTED;
+    struct AudioImpl *impl = as->engine;
+    ma_result result = ma_engine_read_pcm_frames(&impl->engine, stereo_out,
+                                                 frames, NULL);
+    if (result != MA_SUCCESS) return AUDIO_FAILED;
+    return AUDIO_OK;
 }
 
 void audio_system_destroy(AudioSystem *as) {
@@ -177,6 +216,7 @@ void audio_system_destroy(AudioSystem *as) {
     usize as_off = (as_sz + align - 1) & ~(align - 1);
     struct AudioImpl *impl = (struct AudioImpl *)((u8 *)as + as_off);
 
+    audio_extended_destroy(as, as->extended);
     for (u32 i = 0; i < as->source_count; i++) {
         if (as->sources[i].active) {
             ma_sound_uninit(&as->sources[i].sound);

@@ -5,6 +5,21 @@
 #define AUDIO_MAX_DEVICES 16
 #define AUDIO_MAX_SOURCES 32
 
+typedef enum {
+    AUDIO_OK = 0,
+    AUDIO_INVALID,
+    AUDIO_STALE,
+    AUDIO_OVERLOAD,
+    AUDIO_REJECTED,
+    AUDIO_FAILED
+} AudioResult;
+
+typedef enum {
+    AUDIO_BACKEND_DEFAULT = 0,
+    AUDIO_BACKEND_NULL,
+    AUDIO_BACKEND_FAKE
+} AudioBackend;
+
 /* R435: fixed-size mixing bus table. Slot 0 is the master bus and always
  * exists; AUDIO_BUS_INVALID is the error sentinel for audio_bus_create
  * (same UINT32_MAX convention as audio_acquire_slot). */
@@ -27,6 +42,8 @@ typedef struct {
 
 typedef struct {
     void       *engine;
+    void       *extended;
+    AudioBackend backend;
     AudioSource *sources;
     u32         source_count;
     u32         source_cap;
@@ -51,6 +68,7 @@ typedef struct {
 } AudioSystem;
 
 AudioSystem *audio_system_create(void);
+AudioSystem *audio_system_create_ex(AudioBackend backend);
 void         audio_system_destroy(AudioSystem *as);
 void         audio_system_update(AudioSystem *as, Vec3 listener_pos, Vec3 forward, Vec3 up);
 
