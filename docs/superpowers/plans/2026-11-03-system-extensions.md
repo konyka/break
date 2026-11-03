@@ -1,6 +1,6 @@
 # System Extensions Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 交付 P11 的固定容量注册式 CVar、有界 XML 与明确场景侧车，以及经 PAL 加载、哈希 allowlist 控制的真实动态插件生命周期。
 
@@ -74,7 +74,7 @@ BreakCVarStatus break_cvar_save(const BreakCVarRegistry *registry,
                                 const char *path);
 ```
 
-- [ ] **Step 1: 注册 CMake 行为测试并写 RED**
+- [x] **Step 1: 注册 CMake 行为测试并写 RED**
 
 注册四种类型，覆盖重复/非法名字、容量满、默认值越界、非有限浮点、字符串过长；覆盖 int/float 范围、类型不匹配、readonly、cheat 权限和变更回调恰好一次。核心断言：
 
@@ -90,16 +90,16 @@ ASSERT_EQ(callback_count, 1u);
 
 先让目标编译但链接缺少实现，再提供最小声明/空实现以观察上述运行期断言失败。
 
-- [ ] **Step 2: 运行 CVar RED**
+- [x] **Step 2: 运行 CVar RED**
 
 Run: `cmake -S engine -B build-system-normal -DENGINE_BUILD_TESTS=ON && cmake --build build-system-normal -j6 --target test_break_cvar && ./build-system-normal/test_break_cvar`
 Expected: 首次链接失败；最小实现落地后测试运行并因范围、权限或回调行为不满足而 FAIL，记录实际断言。
 
-- [ ] **Step 3: 实现固定容量注册、校验、存取与回调**
+- [x] **Step 3: 实现固定容量注册、校验、存取与回调**
 
 创建时一次分配两个 `BreakCVarEntry[capacity]` 和 64 KiB+1 配置缓冲；entry 内嵌名字和字符串值。所有字符串用有界长度检查。注册完整验证 desc 后才占槽。set 先找项、校验类型/权限/范围/UTF-8 与字符串容量，成功后写值并同步调用回调；回调期间拒绝重入写。get 的字符串指针只保证到下一次写或 destroy。
 
-- [ ] **Step 4: 为配置原子性写第二个 RED→GREEN 循环**
+- [x] **Step 4: 为配置原子性写第二个 RED→GREEN 循环**
 
 配置语法为每行 `name=value`，允许空行与以 `#` 开头的注释；trim 名字和值两侧 ASCII 空白，重复/未知名字、readonly 项、无权限 cheat、非法值、NUL、超过 64 KiB 或超过一行的缓冲边界均失败。保存跳过 readonly，使用 `PlatformAtomicWriter`，canonical 格式为 bool `true/false`、int 十进制、float `%.17g`、string 原始单行值。
 
@@ -112,7 +112,7 @@ ASSERT_EQ(value.integer, 11);
 ASSERT_EQ(callback_count, 0u);
 ```
 
-- [ ] **Step 5: 验证 GREEN、变异并提交**
+- [x] **Step 5: 验证 GREEN、变异并提交**
 
 Run: `./build-system-normal/test_break_cvar && ctest --test-dir build-system-normal -R 'break_cvar|platform_fs_write' --output-on-failure`
 Expected: 全通过。临时删除 int 范围检查，确认越界与失败原子断言变红；恢复后复测。再临时让 load 直接写主表，确认中途失败留下 20 的测试变红；恢复复测。
@@ -177,7 +177,7 @@ BreakXmlStatus break_scene_xml_write(const BreakSceneXmlEntity *entities,
                                      usize *out_size);
 ```
 
-- [ ] **Step 1: 写 XML 语法、安全边界和原子性 RED**
+- [x] **Step 1: 写 XML 语法、安全边界和原子性 RED**
 
 用小 limits 创建真实 document。解析 `<root a="1"><child/>text &amp; more</root>`，检查树、属性、文本和 serialize→parse 往返。分别拒绝 DTD、`<!ENTITY`、未知实体、数值实体、非法/截断/过长 UTF-8、surrogate、NUL、重复属性、多根、未闭合/错配标签、深度+1、输入+1、节点+1、属性+1、arena+1。先成功解析 old 文档，再失败解析新文档，root 仍必须指向 old。
 
@@ -187,16 +187,16 @@ ASSERT_EQ(break_xml_parse(doc, bad, sizeof(bad) - 1u), BREAK_XML_INVALID);
 ASSERT_STR_EQ(break_xml_name(doc, break_xml_root(doc)), "old");
 ```
 
-- [ ] **Step 2: 运行 XML RED**
+- [x] **Step 2: 运行 XML RED**
 
 Run: `cmake --build build-system-normal -j6 --target test_break_xml && ./build-system-normal/test_break_xml`
 Expected: 最小空实现下往返/拒绝断言运行期失败；不能只记录头文件或符号缺失。
 
-- [ ] **Step 3: 实现非递归有界解析与序列化**
+- [x] **Step 3: 实现非递归有界解析与序列化**
 
 创建时为主/暂存 storage 分配 node、attribute、字符 arena。UTF-8 validator 覆盖 overlong、surrogate、>U+10FFFF 与截断序列；XML 字符检查拒绝 NUL 和除 TAB/LF/CR 外 C0 控制字符。解析只接受单/双引号属性、五个预定义实体、注释和 `<?...?>`；其它 `<!...` 拒绝。当前 element 索引提供父栈，close tag 与当前名字精确比较，不用递归。所有复制先检查 arena 与 NUL 空间；成功后交换 active/scratch。serializer 对 `& < > " '` 正确转义，容量不足返回 `OVERLOAD` 且 `out_size=0`。
 
-- [ ] **Step 4: 写场景侧车 RED→GREEN**
+- [x] **Step 4: 写场景侧车 RED→GREEN**
 
 `break-scene` v1 只含 `<entity index="positive-decimal" generation="positive-decimal" class="..."/>`。class 为 1..63 字节 ASCII 标识符 `[A-Za-z_][A-Za-z0-9_.-]*`；拒绝未知元素/属性、非空 entity 内容、零/溢出整数和重复 `(index,generation)`。read 先验证整份再写 out；`out_count` 是总量，超过 cap 返回 `OVERLOAD` 且不改 out。write 产生上述 canonical XML，并可由通用 parser + sidecar reader 读回。
 
@@ -209,7 +209,7 @@ ASSERT_EQ(count, 2u);
 ASSERT_STR_EQ(loaded[1].class_name, "Enemy.Grunt");
 ```
 
-- [ ] **Step 5: 验证 GREEN、变异并提交**
+- [x] **Step 5: 验证 GREEN、变异并提交**
 
 Run: `./build-system-normal/test_break_xml && ctest --test-dir build-system-normal -R 'break_xml|scene_serial' --output-on-failure`
 Expected: 全通过，BSCN 既有测试不回归。分别删除 DTD 拒绝与 UTF-8 检查，确认对应测试变红；恢复后复测。再临时移除解析成功才交换，确认旧文档保持测试变红。
@@ -274,7 +274,7 @@ BreakPluginStatus break_plugin_unload_all(BreakPluginManager *manager);
 
 插件导出 `const BreakPluginDescriptor *break_plugin_entry(void)`。`struct_size` 必须精确等于当前描述符大小；名字 1..63、build id 1..63 字节且与 allowlist 项精确相等；register/unregister 可为空，但 register 存在时返回 false 表示它已自行清理，manager 不保留槽或库。管理器只由创建线程使用。
 
-- [ ] **Step 1: 构建真实 SHARED fixture 并写插件 RED**
+- [x] **Step 1: 构建真实 SHARED fixture 并写插件 RED**
 
 CMake 从同一 C fixture 生成 A、B、bad-ABI、register-fail、no-entry 等真实共享库；A/B 通过编译定义拥有不同名字、build id 与事件 id。fixture 回调向宿主固定数组追加事件。测试运行时用 `break_crypto_sha256` 读取并哈希目标文件，构造 allowlist；错误 hash 和篡改副本必须在 `dlopen` 前拒绝。bad ABI/build id/缺 entry/register fail 均不保留活动槽。加载 A→B 后事件为 register A/B，acquire A 后 unload A 返回 `REJECTED` 且无 unregister；release 后成功，stale handle 返回 `STALE`。`unload_all` 必须预检全部引用并严格按 load 逆序产生 unregister B/A。
 
@@ -288,16 +288,16 @@ ASSERT_EQ(break_plugin_unload(manager, a), BREAK_PLUGIN_OK);
 ASSERT_EQ(break_plugin_unload(manager, a), BREAK_PLUGIN_STALE);
 ```
 
-- [ ] **Step 2: 运行真实插件 RED**
+- [x] **Step 2: 运行真实插件 RED**
 
 Run: `cmake --build build-system-normal -j6 --target test_break_plugin && ./build-system-normal/test_break_plugin`
 Expected: 真实 `.so` 已由 CMake 编译；最小 manager 实现未满足 ABI/hash/ref/order 时相应运行期断言失败。保留构建日志和失败断言作为 RED，不用伪造 dlopen。
 
-- [ ] **Step 3: 实现 PAL 与事务式管理器**
+- [x] **Step 3: 实现 PAL 与事务式管理器**
 
 POSIX 使用 `dlopen(path, RTLD_NOW|RTLD_LOCAL)`、`dlsym`、`dlclose`；Windows 使用 `LoadLibraryA`、`GetProcAddress`、`FreeLibrary`。符号经 `memcpy` 转为函数指针并检查表示大小。load 先验证参数、空槽、重复 path、哈希，再 open/entry/descriptor/build/name，最后调用 register 并提交 slot 与 load-order；任何失败关闭库且 out handle 清零。slot generation 单调非零，引用溢出/零下溢均拒绝。unload_all 在任何 unregister 前检查所有引用，然后逆序卸载；destroy 只对无引用管理器执行 unload_all 并释放，否则返回 `REJECTED`。
 
-- [ ] **Step 4: 验证 GREEN、真实库变异与 target contract**
+- [x] **Step 4: 验证 GREEN、真实库变异与 target contract**
 
 Run: `./build-system-normal/test_break_plugin && ./build-system-normal/test_break_system_target_contract`
 Expected: 真实共享库加载/卸载全通过。临时跳过哈希比较调用，确认错误 digest 测试变红；恢复。临时删除引用检查，确认被引用卸载测试变红并恢复。临时把 unload_all 改为正序，确认事件序列断言变红并恢复。contract 检查 `break_system` 独立、C11、源清单、crypto/integrity 链接、focused 注册与核心目标 no-link。
@@ -320,21 +320,21 @@ git commit -m "system: load allowlisted plugins through PAL"
 - Consumes: Task 1–3 的公开 API、CTest 结果、真实变异日志。
 - Produces: 可复核的 P11 交付说明、测试证据、提交列表与限制；不虚称签名认证、Windows 运行、无损 BSCN 或热卸载被引用插件。
 
-- [ ] **Step 1: 更新设计、状态和计划勾选**
+- [x] **Step 1: 更新设计、状态和计划勾选**
 
 `system_extensions.md` 写明配置文法、XML 子集与硬上限、场景 schema、ABI/哈希/生命周期、线程归属、PAL 链接所有权和安全边界。`cry_style_gameplay.md` 将 P11 从待办改为已交付并链接设计；`Implementation_Status.md` 顶部追加真实测试数量与限制。只勾选已执行的步骤。
 
-- [ ] **Step 2: 配置并运行 normal / ASan+UBSan / TSan focused**
+- [x] **Step 2: 配置并运行 normal / ASan+UBSan / TSan focused**
 
 Run: 三棵树分别构建 `test_break_cvar test_break_xml test_break_plugin test_break_system_target_contract`，再运行 `ctest -R 'break_(cvar|xml|plugin|system)|scene_serial|platform_fs_write|break_integrity' --output-on-failure`。
 Expected: 三树全通过，无 ASan/UBSan/TSan 报告；真实 SHARED fixture 在每棵树重新编译并加载。
 
-- [ ] **Step 3: 运行全量相关非图形回归**
+- [x] **Step 3: 运行全量相关非图形回归**
 
 Run: 三棵树 `ctest -L headless --output-on-failure -j6`；若某项依赖本机外部可选源码或图形环境，保留原始失败并用相同 base 对照，不把它掩盖为通过。另跑 `test_scene_serial` 与 target no-tests 构建 `cmake -S engine -B build-system-no-tests -DENGINE_BUILD_TESTS=OFF && cmake --build build-system-no-tests --target break_system`。
 Expected: 新增与既有相关回归全通过；no-tests 树仍产出 `break_system`，且不链入核心目标。
 
-- [ ] **Step 4: 最终审计与提交**
+- [x] **Step 4: 最终审计与提交**
 
 Run: `git diff --check && git status --short --branch && git log --oneline a0bfeb95..HEAD`。
 Expected: 无 whitespace 错误、无未提交源文件；报告含每个 RED→GREEN、变异、命令/通过数、每个提交 hash、未运行平台和安全限制。文档与报告单独提交：

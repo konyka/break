@@ -1,3 +1,10 @@
+## 本轮更新：P11 CVar、XML 场景侧车与受控插件（2026-11-03）
+
+- **交付**：独立 `break_system` 提供固定容量 CVar（bool/int64/finite double/UTF-8 string、范围、readonly/Cheat、变化回调、事务式配置存取）；有界 XML 严格拒绝 DTD、自定义/数值实体、非法 UTF-8 和所有配置上限，`break-scene` v1 只保存实体 index/generation/class，不替代 BSCN；PAL 动态插件在 `dlopen`/`LoadLibrary` 前复用现有 SHA-256 文件完整性检查，再校验 ABI、build id 和描述符，使用 generation 句柄、引用计数和逆序卸载。
+- **失败原子**：CVar load 完整验证后才交换主/暂存表；XML parse 成功才替换旧树；插件注册失败关闭真实共享库且不保留槽；单个或批量卸载遇到任何非零引用都在回调前拒绝。回调自身的外部副作用由调用方/插件负责，不由管理器虚称回滚。
+- **验证**：CVar 8 项、XML 10 项、真实 SHARED 插件 8 项及 target contract；normal、ASan+UBSan、TSan focused 均 7/7（另含 BSCN、integrity、platform_fs），三树全量 headless 均 129/129，no-tests 树仍构建 `break_system`。CVar 范围/提前提交、XML DTD/UTF-8/提前交换、插件哈希/引用/正序卸载变异均按预期变红并恢复全绿。
+- **限制**：哈希 allowlist 不是签名认证或 sandbox；存在路径哈希后替换竞态，依赖库未逐项验证。Windows PAL 仅有实现未在本机运行；XML 不保留注释/处理指令，场景权威格式仍是 BSCN。设计细节见 `docs/design/system_extensions.md`，完整回归与报告见 `.superpowers/sdd/system-extensions-report.md`。
+
 ## 本轮更新：武器状态机与权威开火意图（2026-11-02）
 
 - **交付**：`break_game` 支持 64 种宿主定义武器，每 Actor 保存弹匣、tick、冷却与装填状态。装备、退弹、装填、tick、弹药查询和开火均检查创建线程与 Entity generation；开火只输出带 shooter、weapon_id、damage 和全局单调 sequence 的权威 intent，不选择目标、不检测命中、不扣生命。
