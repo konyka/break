@@ -77,6 +77,7 @@ typedef struct {
 typedef struct {
     IKTarget targets[ANIM_MAX_IK_TARGETS];
     u32      target_count;
+    bool     physics_suspended;
 } IKSystem;
 
 /* ---- Blend state lifecycle ---- */
@@ -107,6 +108,7 @@ void anim_ik_set_target(IKSystem *ik, u32 index,
                         Vec3 target, Vec3 pole);
 void anim_ik_set_weight(IKSystem *ik, u32 index, f32 weight);
 void anim_ik_set_active(IKSystem *ik, u32 index, bool active);
+void anim_ik_set_physics_suspended(IKSystem *ik, bool suspended);
 
 /*
  * Apply all active IK targets. `world_transforms` provides the current

@@ -107,7 +107,7 @@ void physics_world_destroy(PhysicsWorld *pw) {
 }
 
 void physics_body_park(PhysicsWorld *pw, u32 pid) {
-    if (!pw || pid == 0 || pid >= pw->count) return;
+    if (!pw || pid >= pw->count) return;
     RigidBody *pb = &pw->bodies[pid];
     pb->is_static = true;
     pb->inv_mass = 0.0f;
@@ -145,9 +145,9 @@ u32 physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, boo
     for (int i = 0; i < 3; i++) {
         if (!(half_ext.e[i] >= 0.0f)) half_ext.e[i] = 0.0f;
     }
-    /* R376/R377: Del parks with spawn_frame=UINT32_MAX (no destroy/free_stack).
-     * Reuse those slots so E/] cannot permanently exhaust capacity. Skip 0 (ground). */
-    for (id = 1; id < pw->count; id++) {
+    /* Reuse every parked tombstone, including slot 0 when its prior occupant
+     * was explicitly destroyed. */
+    for (id = 0; id < pw->count; id++) {
         RigidBody *cand = &pw->bodies[id];
         if (physics_body_is_parked(cand)) {
             b = cand;
