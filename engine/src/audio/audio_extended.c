@@ -446,8 +446,8 @@ static i32 event_find(AudioExtended *ext, const char *name) {
 AudioResult audio_event_register(AudioSystem *as, const char *name,
                                  const AudioEventDesc *desc) {
     AudioExtended *ext = audio_extended(as);
-    if (!ext || !valid_name(name) || !desc ||
-        !clip_resolve(ext, desc->clip) || desc->max_instances == 0 ||
+    if (!ext || !valid_name(name) || !desc || desc->clip == 0 ||
+        desc->max_instances == 0 ||
         desc->max_instances > AUDIO_EVENT_MAX_VOICES ||
         desc->retrigger < AUDIO_RETRIGGER_ALLOW ||
         desc->retrigger > AUDIO_RETRIGGER_IGNORE ||
@@ -461,6 +461,7 @@ AudioResult audio_event_register(AudioSystem *as, const char *name,
         desc->occluded_gain > 1.0f || desc->bus >= as->bus_count) {
         return AUDIO_INVALID;
     }
+    if (!clip_resolve(ext, desc->clip)) return AUDIO_STALE;
     AudioResult dsp_result = audio_dsp_chain_validate(&desc->dsp,
                                                        AUDIO_PCM_SAMPLE_RATE);
     if (dsp_result != AUDIO_OK) return dsp_result;
@@ -522,17 +523,38 @@ static AudioVoiceHandle voice_handle(u32 slot, u32 serial) {
     return ((serial & 0xFFFFFFu) << 8) | (slot + 1u);
 }
 
-static f32 event_spatial_gain(AudioExtended *ext, const AudioEventDesc *desc,
-                              Vec3 position) {
-    if (!desc->spatial) return 1.0f;
-    Vec3 delta = vec3_sub(position, ext->owner->listener_pos);
-    f32 distance = vec3_len(delta);
-    f32 gain = audio_attenuation_gain(distance, desc->min_distance,
-                                      desc->max_distance, desc->rolloff);
-    if (ext->ray && ext->ray(ext->ray_user, ext->owner->listener_pos, position)) {
+static AudioResult event_spatial_gain(AudioExtended *ext,
+    const AudioEventDesc *desc, Vec3 position, f32 *out_gain) {
+    if (!out_gain) return AUDIO_INVALID;
+    if (!desc->spatial) {
+        *out_gain = 1.0f;
+        return AUDIO_OK;
+    }
+    Vec3 listener = ext->owner->listener_pos;
+    for (u32 i = 0; i < 3; ++i) {
+        if (!isfinite(listener.e[i]) || !isfinite(position.e[i])) {
+            return AUDIO_INVALID;
+        }
+    }
+    double dx = (double)position.e[0] - listener.e[0];
+    double dy = (double)position.e[1] - listener.e[1];
+    double dz = (double)position.e[2] - listener.e[2];
+    double distance = sqrt(dx * dx + dy * dy + dz * dz);
+    double minimum = desc->min_distance;
+    double maximum = desc->max_distance;
+    double clamped = distance < minimum ? minimum :
+                     (distance > maximum ? maximum : distance);
+    double denominator = minimum + desc->rolloff * (clamped - minimum);
+    double gain = minimum / denominator;
+    if (!isfinite(distance) || !isfinite(gain)) return AUDIO_INVALID;
+    if (gain < 0.0f) gain = 0.0f;
+    if (gain > 1.0f) gain = 1.0f;
+    if (ext->ray && ext->ray(ext->ray_user, listener, position)) {
         gain *= desc->occluded_gain;
     }
-    return gain;
+    if (!isfinite(gain)) return AUDIO_INVALID;
+    *out_gain = (f32)gain;
+    return isfinite(*out_gain) ? AUDIO_OK : AUDIO_INVALID;
 }
 
 static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
@@ -583,7 +605,10 @@ static AudioResult voice_start(AudioExtended *ext, u32 slot, u32 event_index,
                                AudioVoiceHandle *out) {
     if (!voice_command_space(&ext->voices[slot])) return AUDIO_OVERLOAD;
     AudioEvent *event = &ext->events[event_index];
-    f32 spatial_gain = event_spatial_gain(ext, &event->desc, position);
+    f32 spatial_gain = 0.0f;
+    AudioResult spatial_result = event_spatial_gain(ext, &event->desc,
+                                                    position, &spatial_gain);
+    if (spatial_result != AUDIO_OK) return spatial_result;
     return voice_start_pcm(ext, slot, event->desc.clip, &event->desc,
         (i32)event_index, new_generation, 1.0f, 0, position, spatial_gain, out);
 }
@@ -677,8 +702,11 @@ AudioResult audio_voice_set_position(AudioSystem *as,
     reap_voices(ext);
     AudioVoice *voice = voice_resolve(ext, handle, NULL);
     if (!voice || voice->owner_event < 0) return AUDIO_STALE;
-    f32 gain = event_spatial_gain(ext, &ext->events[voice->owner_event].desc,
-                                  position);
+    if (voice->stop_pending) return AUDIO_REJECTED;
+    f32 gain = 0.0f;
+    AudioResult result = event_spatial_gain(ext,
+        &ext->events[voice->owner_event].desc, position, &gain);
+    if (result != AUDIO_OK) return result;
     voice->position = position;
     atomic_store_explicit(&voice->spatial_gain, gain_to_bits(gain),
                           memory_order_release);
@@ -696,13 +724,18 @@ f32 audio_voice_spatial_gain(AudioSystem *as, AudioVoiceHandle handle) {
 void audio_extended_listener_update(AudioSystem *as) {
     AudioExtended *ext = audio_extended(as);
     if (!ext) return;
+    reap_voices(ext);
     for (u32 i = 2; i < AUDIO_MAX_VOICES; ++i) {
         AudioVoice *voice = &ext->voices[i];
-        if (!voice->claimed || voice->owner_event < 0) continue;
-        f32 gain = event_spatial_gain(ext,
-            &ext->events[voice->owner_event].desc, voice->position);
-        atomic_store_explicit(&voice->spatial_gain, gain_to_bits(gain),
-                              memory_order_release);
+        if (!voice->claimed || voice->owner_event < 0 || voice->stop_pending) {
+            continue;
+        }
+        f32 gain = 0.0f;
+        if (event_spatial_gain(ext, &ext->events[voice->owner_event].desc,
+                               voice->position, &gain) == AUDIO_OK) {
+            atomic_store_explicit(&voice->spatial_gain, gain_to_bits(gain),
+                                  memory_order_release);
+        }
     }
 }
 

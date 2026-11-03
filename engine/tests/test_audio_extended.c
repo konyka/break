@@ -1,6 +1,7 @@
 #include "test_framework.h"
 #include <core/log.h>
 #include <audio/audio_extended.h>
+#include <float.h>
 
 void log_write(LogLevel level, const char *file, int line, const char *fmt, ...) {
     (void)level; (void)file; (void)line; (void)fmt;
@@ -757,6 +758,103 @@ TEST(restart_spatial_gain_changes_with_start_epoch)
     audio_system_destroy(as);
 }
 
+TEST(nonfinite_listener_preserves_previous_spatial_state)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1, 1, 1, 1};
+    AudioClipHandle clip = register_ramp(as, samples, 4);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    ASSERT_EQ(audio_event_register(as, "listener-guard", &desc), AUDIO_OK);
+    FakeRay ray;
+    memset(&ray, 0, sizeof(ray));
+    audio_set_occlusion_ray_callback(as, fake_occlusion_ray, &ray);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "listener-guard", vec3(2, 0, 0), &voice), AUDIO_OK);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_EQ(ray.calls, 1u);
+    audio_system_update(as, vec3(NAN, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_EQ(ray.calls, 1u);
+    ASSERT_FLOAT_EQ(as->listener_pos.e[0], 0.0f, 0.0f);
+    audio_system_update(as, vec3(INFINITY, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_EQ(ray.calls, 1u);
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), 0.5f, 1e-6f);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 1e-6f);
+
+    audio_system_update(as, vec3(FLT_MAX, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_EQ(ray.calls, 2u);
+    ASSERT_TRUE(isfinite(audio_voice_spatial_gain(as, voice)));
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), 0.01f, 1e-6f);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.01f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(stop_pending_voice_does_not_ray_or_reposition)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1, 1};
+    AudioClipHandle clip = register_ramp(as, samples, 2);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    ASSERT_EQ(audio_event_register(as, "stop-ray", &desc), AUDIO_OK);
+    FakeRay ray;
+    memset(&ray, 0, sizeof(ray));
+    audio_set_occlusion_ray_callback(as, fake_occlusion_ray, &ray);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "stop-ray", vec3(2, 0, 0), &voice), AUDIO_OK);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_EQ(audio_voice_stop(as, voice), AUDIO_OK);
+    ASSERT_EQ(ray.calls, 1u);
+    audio_system_update(as, vec3(1, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_EQ(ray.calls, 1u);
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(3, 0, 0)), AUDIO_REJECTED);
+    ASSERT_EQ(ray.calls, 1u);
+    audio_system_destroy(as);
+}
+
+TEST(bus_nonfinite_gain_is_rejected_consistently)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1, 1};
+    AudioClipHandle clip = register_ramp(as, samples, 2);
+    u32 bus = audio_bus_create(as, "finite-bus");
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.bus = bus;
+    ASSERT_EQ(audio_event_register(as, "finite-bus-event", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "finite-bus-event", vec3(0, 0, 0), &voice), AUDIO_OK);
+    audio_bus_set_gain(as, bus, 0.5f);
+    audio_bus_set_gain(as, bus, NAN);
+    audio_bus_set_gain(as, bus, INFINITY);
+    audio_bus_set_gain(as, bus, -INFINITY);
+    ASSERT_FLOAT_EQ(audio_bus_gain(as, bus), 0.5f, 0.0f);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(event_registration_distinguishes_stale_clip)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(999);
+    ASSERT_EQ(audio_event_register(as, "stale-clip", &desc), AUDIO_STALE);
+    desc.clip = 0;
+    ASSERT_EQ(audio_event_register(as, "invalid-clip", &desc), AUDIO_INVALID);
+    AudioVoiceHandle voice = 1;
+    ASSERT_EQ(audio_event_trigger(as, "stale-clip", vec3(0, 0, 0), &voice), AUDIO_INVALID);
+    ASSERT_EQ(voice, 0u);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -783,4 +881,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(natural_end_then_restart_issues_live_generation);
     RUN_TEST(restart_defers_cursor_reset_until_start_is_consumed);
     RUN_TEST(restart_spatial_gain_changes_with_start_epoch);
+    RUN_TEST(nonfinite_listener_preserves_previous_spatial_state);
+    RUN_TEST(stop_pending_voice_does_not_ray_or_reposition);
+    RUN_TEST(bus_nonfinite_gain_is_rejected_consistently);
+    RUN_TEST(event_registration_distinguishes_stale_clip);
 TEST_MAIN_END()

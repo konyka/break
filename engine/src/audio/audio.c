@@ -1,5 +1,6 @@
 #include <audio/audio.h>
 #include <core/log.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -224,6 +225,10 @@ void audio_system_destroy(AudioSystem *as) {
 
 void audio_system_update(AudioSystem *as, Vec3 listener_pos, Vec3 forward, Vec3 up) {
     if (!as || !as->engine) return;
+    for (u32 i = 0; i < 3; ++i) {
+        if (!isfinite(listener_pos.e[i]) || !isfinite(forward.e[i]) ||
+            !isfinite(up.e[i])) return;
+    }
 
     /* Dirty check: skip 3 miniaudio calls when listener hasn't moved */
     bool moved = (as->listener_pos.e[0] != listener_pos.e[0] ||
@@ -454,7 +459,7 @@ u32 audio_bus_create(AudioSystem *as, const char *name) {
 }
 
 void audio_bus_set_gain(AudioSystem *as, u32 bus, f32 gain) {
-    if (!audio_bus_valid(as, bus)) return; /* R435: invalid id — refuse */
+    if (!audio_bus_valid(as, bus) || !isfinite(gain)) return;
     if (gain < 0.0f) gain = 0.0f;          /* R435: clamp non-negative */
     as->buses[bus].gain = gain;
     audio_extended_set_bus_gain(as, bus, gain);
