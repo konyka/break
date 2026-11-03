@@ -249,6 +249,28 @@ TEST(event_registry_rejects_invalid_and_overflow_without_trigger)
     audio_system_destroy(as);
 }
 
+TEST(event_dsp_delay_changes_real_engine_pcm)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1, 0, 0, 0};
+    AudioClipHandle clip = register_ramp(as, samples, 4);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.dsp.stage_count = 1;
+    desc.dsp.stages[0].type = AUDIO_DSP_DELAY;
+    desc.dsp.stages[0].delay_frames = 2;
+    desc.dsp.stages[0].feedback = 0.0f;
+    desc.dsp.stages[0].mix = 1.0f;
+    ASSERT_EQ(audio_event_register(as, "delayed", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "delayed", vec3(0, 0, 0), &voice), AUDIO_OK);
+    f32 output[8];
+    ASSERT_EQ(audio_system_render(as, output, 4), AUDIO_OK);
+    const f32 expected[] = {0, 0, 1, 0};
+    for (u32 i = 0; i < 4; ++i) ASSERT_FLOAT_EQ(output[2*i], expected[i], 1e-6f);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -259,4 +281,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(event_capacity_reject_preserves_cursor_and_steal_invalidates_old_handle);
     RUN_TEST(event_global_voice_capacity_and_natural_completion);
     RUN_TEST(event_registry_rejects_invalid_and_overflow_without_trigger);
+    RUN_TEST(event_dsp_delay_changes_real_engine_pcm);
 TEST_MAIN_END()

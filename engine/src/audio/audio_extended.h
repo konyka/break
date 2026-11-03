@@ -1,6 +1,7 @@
 #pragma once
 
 #include <audio/audio.h>
+#include <audio/audio_dsp.h>
 
 #define AUDIO_MAX_CLIPS 48u
 #define AUDIO_PCM_MAX_SAMPLES 1048576u
@@ -45,6 +46,7 @@ typedef struct {
     f32 rolloff;
     f32 occluded_gain;
     u32 bus;
+    AudioDspChainDesc dsp;
 } AudioEventDesc;
 
 AudioResult audio_event_register(AudioSystem *as, const char *name,

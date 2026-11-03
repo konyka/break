@@ -29,6 +29,7 @@ typedef struct {
     const f32 *samples;
     u32 frame_count;
     u32 channels;
+    f32 dsp_alpha[AUDIO_DSP_MAX_STAGES];
     AudioEventDesc desc;
 } AudioCommand;
 
@@ -48,6 +49,9 @@ typedef struct {
     bool playing;
     bool looping;
     f32 volume;
+    AudioDspChain dsp;
+    f32 dsp_delay_storage[AUDIO_DSP_MAX_STAGES *
+                          AUDIO_DSP_MAX_DELAY_FRAMES * 2u];
     u32 serial;
     bool claimed;
     bool stop_pending;
@@ -110,6 +114,26 @@ static void voice_finish(AudioVoice *voice, u32 serial) {
     atomic_store_explicit(&voice->completed_serial, serial, memory_order_release);
 }
 
+static void voice_configure_dsp(AudioVoice *voice,
+                                const AudioCommand *command) {
+    memset(&voice->dsp, 0, sizeof(voice->dsp));
+    voice->dsp.stage_count = command->desc.dsp.stage_count;
+    voice->dsp.sample_rate = AUDIO_PCM_SAMPLE_RATE;
+    u32 delay_stage = 0;
+    for (u32 i = 0; i < command->desc.dsp.stage_count; ++i) {
+        AudioDspStage *stage = &voice->dsp.stages[i];
+        stage->desc = command->desc.dsp.stages[i];
+        stage->alpha = command->dsp_alpha[i];
+        if (stage->desc.type != AUDIO_DSP_FILTER) {
+            stage->delay_line = voice->dsp_delay_storage +
+                delay_stage * AUDIO_DSP_MAX_DELAY_FRAMES * 2u;
+            memset(stage->delay_line, 0,
+                   AUDIO_DSP_MAX_DELAY_FRAMES * 2u * sizeof(f32));
+            delay_stage++;
+        }
+    }
+}
+
 static void voice_drain_commands(AudioVoice *voice) {
     AudioCommand command;
     while (voice_dequeue(voice, &command)) {
@@ -120,6 +144,7 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->playing_serial = command.serial;
             voice->looping = command.desc.looping;
             voice->volume = command.desc.volume;
+            voice_configure_dsp(voice, &command);
             voice->playing = true;
             atomic_store_explicit(&voice->cursor, 0u, memory_order_release);
         } else if (command.type == AUDIO_COMMAND_STOP) {
@@ -153,9 +178,11 @@ static ma_result voice_read(ma_data_source *source, void *output,
                 atomic_store_explicit(&voice->cursor, cursor, memory_order_release);
             }
         }
+        f32 rendered[2] = {left, right};
+        audio_dsp_chain_process(&voice->dsp, rendered, 1, 2);
         if (out) {
-            out[frame * 2u] = left;
-            out[frame * 2u + 1u] = right;
+            out[frame * 2u] = rendered[0];
+            out[frame * 2u + 1u] = rendered[1];
         }
     }
     if (frames_read) *frames_read = frames;
@@ -338,6 +365,9 @@ AudioResult audio_event_register(AudioSystem *as, const char *name,
         desc->occluded_gain > 1.0f || desc->bus >= as->bus_count) {
         return AUDIO_INVALID;
     }
+    AudioResult dsp_result = audio_dsp_chain_validate(&desc->dsp,
+                                                       AUDIO_PCM_SAMPLE_RATE);
+    if (dsp_result != AUDIO_OK) return dsp_result;
     if (event_find(ext, name) >= 0) return AUDIO_REJECTED;
     if (ext->event_count >= AUDIO_MAX_EVENTS) return AUDIO_OVERLOAD;
 
@@ -413,6 +443,12 @@ static AudioResult voice_start(AudioExtended *ext, u32 slot, u32 event_index,
     command.frame_count = clip->frame_count;
     command.channels = clip->channels;
     command.desc = event->desc;
+    for (u32 i = 0; i < command.desc.dsp.stage_count; ++i) {
+        if (command.desc.dsp.stages[i].type == AUDIO_DSP_FILTER) {
+            command.dsp_alpha[i] = audio_dsp_filter_alpha(
+                command.desc.dsp.stages[i].cutoff_hz, AUDIO_PCM_SAMPLE_RATE);
+        }
+    }
 
     voice->serial = serial;
     voice->claimed = true;

@@ -912,7 +912,7 @@ src/renderer/lens_effects.c
     src/physics/bvh.c
     src/physics/character.c
     src/audio/audio.c
-    src/audio/audio_extended.c
+    src/audio/audio_extended.c src/audio/audio_dsp.c
     src/audio/audio_stream.c
     src/animation/skeleton.c
     src/animation/skeleton_socket.c
@@ -5410,19 +5410,24 @@ endif()
     add_test(NAME test_mipmap_stream COMMAND test_mipmap_stream)
 
     # test_audio: 3D distance attenuation model (headless, inline-only, no device)
-    add_executable(test_audio tests/test_audio.c src/audio/audio_extended.c)
+    add_executable(test_audio tests/test_audio.c src/audio/audio_extended.c src/audio/audio_dsp.c)
     target_include_directories(test_audio PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio PRIVATE m)
     add_test(NAME test_audio COMMAND test_audio)
 
     add_executable(test_audio_extended tests/test_audio_extended.c
-        src/audio/audio.c src/audio/audio_extended.c)
+        src/audio/audio.c src/audio/audio_extended.c src/audio/audio_dsp.c)
     target_include_directories(test_audio_extended PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio_extended PRIVATE m)
     if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "qnx")
         target_compile_definitions(test_audio_extended PRIVATE _POSIX_C_SOURCE=199309L)
     endif()
     add_test(NAME test_audio_extended COMMAND test_audio_extended)
+
+    add_executable(test_audio_dsp tests/test_audio_dsp.c src/audio/audio_dsp.c)
+    target_include_directories(test_audio_dsp PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_audio_dsp PRIVATE m)
+    add_test(NAME test_audio_dsp COMMAND test_audio_dsp)
 
     # test_vulkan: full backend integration + golden-image regression (VK + GL).
     # Runs from the source dir so it can find shaders/ and committed golden images.
