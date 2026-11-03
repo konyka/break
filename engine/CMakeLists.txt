@@ -594,7 +594,9 @@ endif()
 
 # P11 system extensions remain an opt-in library; the engine never links it.
 if(TARGET break_integrity)
-    add_library(break_system STATIC src/system/break_cvar.c)
+    add_library(break_system STATIC
+        src/system/break_cvar.c
+        src/system/break_xml.c)
     set_property(TARGET break_system PROPERTY C_STANDARD 11)
     target_include_directories(break_system PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -5221,6 +5223,12 @@ endif()
         target_link_libraries(test_break_cvar PRIVATE break_system)
         add_test(NAME test_break_cvar COMMAND test_break_cvar)
         set_tests_properties(test_break_cvar PROPERTIES LABELS "headless;system")
+
+        add_executable(test_break_xml tests/test_break_xml.c)
+        target_include_directories(test_break_xml PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_xml PRIVATE break_system)
+        add_test(NAME test_break_xml COMMAND test_break_xml)
+        set_tests_properties(test_break_xml PROPERTIES LABELS "headless;system")
     endif()
 
     # Stage 5 Phase A Task 2: break_crypto known-answer/misuse tests link the
