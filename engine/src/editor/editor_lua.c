@@ -833,6 +833,9 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
             case BREAK_LUA_VALUE_STRING:
                 console_log(console, "%s", single.as.s.data);
                 break;
+            case BREAK_LUA_VALUE_HOST_HANDLE:
+                console_log(console, "error: console: result not representable");
+                break;
             }
         }
     }
@@ -884,3 +887,9 @@ usize break_editor_lua_pending_records(const BreakEditorLuaConsole *console) {
     }
     return total;
 }
+
+#if defined(BREAK_EDITOR_TESTING)
+BreakLuaRuntime *break_editor_test_lua_runtime(BreakEditorLuaConsole *console) {
+    return console ? console->runtime : NULL;
+}
+#endif
