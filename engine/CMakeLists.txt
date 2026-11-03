@@ -856,6 +856,8 @@ add_library(engine STATIC
     src/renderer/mesh_stage.c
     src/renderer/mesh_buffer.c
     src/renderer/mesh_gpu.c
+    src/renderer/world_presentation.c
+    src/renderer/world_presenter.c
 src/renderer/water.c
     src/renderer/lighting.c
     src/renderer/post_process.c
@@ -4377,6 +4379,31 @@ endif()
     target_link_libraries(test_mesh_gpu PRIVATE engine_rhi_headless m)
     add_test(NAME test_mesh_gpu COMMAND test_mesh_gpu)
     set_tests_properties(test_mesh_gpu PROPERTIES LABELS "headless;world")
+
+    add_executable(test_world_mesh_fake tests/test_world_mesh_fake.c tests/world_fake_rhi.c
+        src/renderer/mesh_gpu.c src/renderer/mesh_buffer.c src/renderer/mesh_stage.c
+        src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_world_mesh_fake PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_mesh_fake PRIVATE m)
+    add_test(NAME test_world_mesh_fake COMMAND test_world_mesh_fake)
+    set_tests_properties(test_world_mesh_fake PROPERTIES LABELS "headless;world;fake_rhi")
+
+    add_executable(test_world_presentation tests/test_world_presentation.c
+        src/renderer/world_presentation.c src/renderer/mesh_buffer.c src/renderer/mesh_stage.c src/renderer/visarea.c
+        src/renderer/vegetation.c src/renderer/time_of_day.c src/renderer/lod.c
+        src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_world_presentation PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_presentation PRIVATE m)
+    add_test(NAME test_world_presentation COMMAND test_world_presentation)
+    set_tests_properties(test_world_presentation PROPERTIES LABELS "headless;world")
+
+    add_executable(test_world_presenter_fake tests/test_world_presenter_fake.c tests/world_fake_rhi.c
+        src/renderer/world_presenter.c src/renderer/mesh_gpu.c src/renderer/mesh_buffer.c src/renderer/mesh_stage.c
+        src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_world_presenter_fake PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_presenter_fake PRIVATE m)
+    add_test(NAME test_world_presenter_fake COMMAND test_world_presenter_fake)
+    set_tests_properties(test_world_presenter_fake PROPERTIES LABELS "headless;world;fake_rhi")
 
     add_executable(test_rope tests/test_rope.c
         src/physics/rope.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)

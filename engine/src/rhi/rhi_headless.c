@@ -36,6 +36,12 @@ bool rhi_device_idle(RHIDevice *dev) { (void)dev; return false; }
  * reporting lost forces callers to wind down instead of spinning. */
 bool rhi_device_lost(RHIDevice *dev) { (void)dev; return true; }
 
+bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
+    (void)dev;
+    if (out) memset(out, 0, sizeof(*out));
+    return false;
+}
+
 /* ---- backend native interop (declared in rhi_native_vulkan.h) ---- */
 bool rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
     (void)dev; (void)out; return false;
