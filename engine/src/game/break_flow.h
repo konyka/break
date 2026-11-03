@@ -123,3 +123,20 @@ BreakFlowError break_flow_serialize(const BreakFlowGraph *graph, void *out,
                                     usize capacity, usize *out_written);
 BreakFlowError break_flow_deserialize(const void *bytes, usize length,
                                       BreakFlowGraph **out_graph);
+
+typedef struct BreakFlowRuntimeConfig {
+    u32 max_events;
+    u32 max_actions;
+    u32 node_budget;
+} BreakFlowRuntimeConfig;
+
+BreakFlowRuntime *break_flow_runtime_create(BreakFlowGraph *graph, BreakGame *game,
+                                            const BreakFlowRuntimeConfig *config);
+void break_flow_runtime_destroy(BreakFlowRuntime *runtime);
+BreakFlowError break_flow_runtime_check_owner(const BreakFlowRuntime *runtime);
+BreakFlowError break_flow_runtime_reset(BreakFlowRuntime *runtime);
+BreakFlowError break_flow_runtime_post(BreakFlowRuntime *runtime, u32 event_key,
+                                       Entity entity, f32 value);
+BreakFlowError break_flow_runtime_tick(BreakFlowRuntime *runtime);
+u32 break_flow_runtime_pending_count(const BreakFlowRuntime *runtime);
+u64 break_flow_runtime_now_tick(const BreakFlowRuntime *runtime);

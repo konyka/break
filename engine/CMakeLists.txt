@@ -698,7 +698,8 @@ endif()
 
 add_library(break_flow STATIC
     src/game/break_flow_graph.c
-    src/game/break_flow_serial.c)
+    src/game/break_flow_serial.c
+    src/game/break_flow_runtime.c)
 set_property(TARGET break_flow PROPERTY C_STANDARD 11)
 target_include_directories(break_flow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_flow PUBLIC break_game)
@@ -4309,7 +4310,7 @@ endif()
         set_tests_properties(test_break_game_${game_test} PROPERTIES LABELS "headless;break_game")
     endforeach()
 
-    foreach(flow_test IN ITEMS graph serial)
+    foreach(flow_test IN ITEMS graph serial runtime)
         add_executable(test_break_flow_${flow_test} tests/test_break_flow_${flow_test}.c)
         target_include_directories(test_break_flow_${flow_test} PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_flow_${flow_test} PRIVATE break_flow)
