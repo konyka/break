@@ -26,10 +26,13 @@ typedef struct BreakOnlineIdentity {
 
 typedef bool (*BreakOnlineAuthenticateFn)(void *user, u64 session,
                                           BreakOnlineIdentity *out_identity);
+typedef bool (*BreakOnlineSessionKeyFn)(void *user, u64 session,
+                                        u8 out_key[32]);
 
 typedef struct BreakOnlineAuthSource {
     void *user;
     BreakOnlineAuthenticateFn authenticate;
+    BreakOnlineSessionKeyFn session_key;
 } BreakOnlineAuthSource;
 
 static inline bool break_online_handle_valid(BreakOnlineHandle handle)

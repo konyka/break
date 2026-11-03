@@ -728,10 +728,15 @@ add_library(break_online STATIC
     src/network/break_online_nat.c
     src/network/break_online_voice.c
     src/network/break_online_aspect.c
-    src/network/break_online_aspect_replication.c)
+    src/network/break_online_aspect_replication.c
+    src/network/break_replay_window.c)
 set_property(TARGET break_online PROPERTY C_STANDARD 11)
 target_include_directories(break_online PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_online PUBLIC Threads::Threads break_replication_core)
+if(BREAK_ENABLE_CRYPTO)
+    target_compile_definitions(break_online PUBLIC BREAK_ENABLE_CRYPTO=1)
+    target_link_libraries(break_online PUBLIC break_crypto)
+endif()
 
 # Formal optional Runtime Core library: unified error/lifecycle types, the
 # single-owner lifecycle coordinator, the formal message/queue/task facade,
@@ -5027,6 +5032,9 @@ endif()
         src/network/network.c src/platform/time.c)
     target_include_directories(test_break_online_nat PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_break_online_nat PRIVATE break_online Threads::Threads)
+    if(BREAK_ENABLE_CRYPTO)
+        target_link_libraries(test_break_online_nat PRIVATE break_crypto)
+    endif()
     if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
        ENGINE_PLATFORM STREQUAL "harmonyos")
         target_compile_definitions(test_break_online_nat PRIVATE

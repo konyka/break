@@ -26,6 +26,8 @@ typedef struct BreakNatCoordinatorConfig {
 typedef struct BreakNatEndpointConfig {
     u64 session;
     u32 queue_capacity;
+    BreakOnlineSessionKeyFn session_key;
+    void *session_key_user;
     BreakNatClockMsFn clock;
     void *clock_user;
 } BreakNatEndpointConfig;
