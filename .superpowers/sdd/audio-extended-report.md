@@ -1,8 +1,8 @@
 # P10 扩展音频交付报告
 
-日期：2026-11-03  
-工作树：`.worktrees/cry-audio`  
-分支：`cry-wave2-audio`（base `a0bfeb95`）  
+日期：2026-11-03
+工作树：`.worktrees/cry-audio`
+分支：`cry-wave2-audio`（base `a0bfeb95`）
 计划：`docs/superpowers/plans/2026-11-03-audio-extended.md`
 
 ## 交付状态
