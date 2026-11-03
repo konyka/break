@@ -82,9 +82,10 @@ void audio_dsp_chain_process(AudioDspChain *chain, f32 *interleaved,
                              u32 frames, u32 channels) {
     if (!chain || !interleaved || (channels != 1 && channels != 2)) return;
     for (u32 frame = 0; frame < frames; ++frame) {
+        usize base = (usize)frame * channels;
         f32 sample[2];
-        sample[0] = interleaved[frame * channels];
-        sample[1] = channels == 2 ? interleaved[frame * channels + 1u] : sample[0];
+        sample[0] = interleaved[base];
+        sample[1] = channels == 2 ? interleaved[base + 1u] : sample[0];
         for (u32 i = 0; i < chain->stage_count; ++i) {
             AudioDspStage *stage = &chain->stages[i];
             if (stage->desc.type == AUDIO_DSP_FILTER) {
@@ -124,7 +125,7 @@ void audio_dsp_chain_process(AudioDspChain *chain, f32 *interleaved,
                                       AUDIO_DSP_REVERB_FRAMES;
             }
         }
-        interleaved[frame * channels] = sample[0];
-        if (channels == 2) interleaved[frame * channels + 1u] = sample[1];
+        interleaved[base] = sample[0];
+        if (channels == 2) interleaved[base + 1u] = sample[1];
     }
 }

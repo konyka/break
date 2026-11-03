@@ -26,11 +26,27 @@ function(assert_callback_clean path begin_marker end_marker)
     endforeach()
 endfunction()
 
+assert_callback_clean("${AUDIO_EXTENDED}" "static bool voice_dequeue"
+                      "static void voice_finish")
+assert_callback_clean("${AUDIO_EXTENDED}" "static void voice_finish"
+                      "static void voice_configure_dsp")
+assert_callback_clean("${AUDIO_EXTENDED}" "static void voice_configure_dsp"
+                      "static void voice_drain_commands")
 assert_callback_clean("${AUDIO_EXTENDED}" "static void voice_drain_commands"
                       "static void voice_advance_fade")
+assert_callback_clean("${AUDIO_EXTENDED}" "static void voice_advance_fade"
+                      "static ma_result voice_read")
 assert_callback_clean("${AUDIO_EXTENDED}" "static ma_result voice_read"
                       "static ma_result voice_seek")
+assert_callback_clean("${AUDIO_DSP}" "static u32 reverb_delay"
+                      "void audio_dsp_chain_process")
 assert_callback_clean("${AUDIO_DSP}" "void audio_dsp_chain_process" "__EOF__")
+
+file(READ "${AUDIO_DSP}" dsp_source)
+string(FIND "${dsp_source}" "usize base = (usize)frame * channels;" wide_index)
+if(wide_index EQUAL -1)
+    message(FATAL_ERROR "DSP frame indexing must widen before multiplication")
+endif()
 
 file(READ "${AUDIO_LEGACY}" legacy)
 string(FIND "${legacy}" "MA_SOUND_FLAG_STREAM" stream_flag)
@@ -40,4 +56,8 @@ endif()
 string(FIND "${legacy}" "MA_SOUND_FLAG_DECODE" decode_flag)
 if(decode_flag EQUAL -1)
     message(FATAL_ERROR "legacy file playback must decode before mixing")
+endif()
+string(FIND "${legacy}" "MA_SOUND_FLAG_NO_PITCH" no_pitch)
+if(NOT no_pitch EQUAL -1)
+    message(FATAL_ERROR "legacy decoded playback must retain pitch and Doppler")
 endif()
