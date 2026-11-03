@@ -596,11 +596,13 @@ endif()
 if(TARGET break_integrity)
     add_library(break_system STATIC
         src/system/break_cvar.c
-        src/system/break_xml.c)
+        src/system/break_xml.c
+        src/system/break_plugin.c
+        src/platform/platform_dynamic.c)
     set_property(TARGET break_system PROPERTY C_STANDARD 11)
     target_include_directories(break_system PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(break_system PUBLIC break_integrity)
+    target_link_libraries(break_system PUBLIC break_integrity ${CMAKE_DL_LIBS})
 endif()
 
 # Stage 5 Phase C Tasks 1-3: break_crash — the crash record format (canonical
@@ -5229,6 +5231,57 @@ endif()
         target_link_libraries(test_break_xml PRIVATE break_system)
         add_test(NAME test_break_xml COMMAND test_break_xml)
         set_tests_properties(test_break_xml PROPERTIES LABELS "headless;system")
+
+        function(break_system_add_test_plugin target_name)
+            add_library(${target_name} SHARED tests/fixtures/break_system_test_plugin.c)
+            target_include_directories(${target_name} PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures)
+            target_compile_definitions(${target_name} PRIVATE ${ARGN})
+        endfunction()
+        break_system_add_test_plugin(break_system_test_plugin_a
+            BREAK_TEST_PLUGIN_NAME="system-test-a"
+            BREAK_TEST_PLUGIN_BUILD_ID="system-test-a"
+            BREAK_TEST_PLUGIN_EVENT=11)
+        break_system_add_test_plugin(break_system_test_plugin_b
+            BREAK_TEST_PLUGIN_NAME="system-test-b"
+            BREAK_TEST_PLUGIN_BUILD_ID="system-test-b"
+            BREAK_TEST_PLUGIN_EVENT=22)
+        break_system_add_test_plugin(break_system_test_plugin_bad_abi
+            BREAK_TEST_PLUGIN_NAME="system-test-bad-abi"
+            BREAK_TEST_PLUGIN_BUILD_ID="system-test-bad-abi"
+            BREAK_TEST_PLUGIN_EVENT=33
+            BREAK_TEST_PLUGIN_ABI=99u)
+        break_system_add_test_plugin(break_system_test_plugin_register_fail
+            BREAK_TEST_PLUGIN_NAME="system-test-register-fail"
+            BREAK_TEST_PLUGIN_BUILD_ID="system-test-register-fail"
+            BREAK_TEST_PLUGIN_EVENT=44
+            BREAK_TEST_REGISTER_RESULT=0)
+        break_system_add_test_plugin(break_system_test_plugin_no_entry
+            BREAK_TEST_NO_ENTRY=1)
+
+        add_executable(test_break_plugin tests/test_break_plugin.c)
+        target_include_directories(test_break_plugin PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_plugin PRIVATE
+            BREAK_TEST_PLUGIN_A_PATH="$<TARGET_FILE:break_system_test_plugin_a>"
+            BREAK_TEST_PLUGIN_B_PATH="$<TARGET_FILE:break_system_test_plugin_b>"
+            BREAK_TEST_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:break_system_test_plugin_bad_abi>"
+            BREAK_TEST_PLUGIN_REGISTER_FAIL_PATH="$<TARGET_FILE:break_system_test_plugin_register_fail>"
+            BREAK_TEST_PLUGIN_NO_ENTRY_PATH="$<TARGET_FILE:break_system_test_plugin_no_entry>")
+        add_dependencies(test_break_plugin
+            break_system_test_plugin_a break_system_test_plugin_b
+            break_system_test_plugin_bad_abi break_system_test_plugin_register_fail
+            break_system_test_plugin_no_entry)
+        target_link_libraries(test_break_plugin PRIVATE break_system)
+        add_test(NAME test_break_plugin COMMAND test_break_plugin)
+        set_tests_properties(test_break_plugin PROPERTIES LABELS "headless;system")
+
+        add_test(NAME test_break_system_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_LIST_FILE}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_system_target_contract.cmake)
+        set_tests_properties(test_break_system_target_contract PROPERTIES
+            LABELS "headless;system")
     endif()
 
     # Stage 5 Phase A Task 2: break_crypto known-answer/misuse tests link the
