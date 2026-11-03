@@ -1,3 +1,28 @@
+## 本轮更新：P11 独立评审 fix round 3（2026-11-03）
+
+- **修复**：`BREAK_SYSTEM_TEST_UNSUPPORTED` 现在同时保护 Windows loader 实现和 dispatcher，unsupported Windows 编译不再包含 `platform_open_windows`，公共分支返回 `FAILED`、零输出 handle 和零副作用。target contract 先因缺少两处保护变红，修复后通过。
+- **Windows 编译证据**：zig 0.16.0 `x86_64-windows-gnu` 以 C11、`-Wall -Wextra -Werror -pedantic` 编译 production 与 `BREAK_SYSTEM_TESTING + BREAK_SYSTEM_TEST_UNSUPPORTED` 两个真实 Windows 对象成功。production 符号表含 `platform_open_windows t`，unsupported 符号表不含该函数；公共 fail-closed 探针成功链接为 Windows `.exe`，且无需 crypto 未定义符号。
+- **验证与限制**：Linux normal、ASan+UBSan、TSan focused 均 8/8，无 sanitizer 报告。没有 Windows 运行时，未执行生成的对象/探针，未声称 Windows 运行验收。证据见 `.superpowers/sdd/system-extensions-report.md`。
+
+## 本轮更新：P11 独立评审 fix round 2（2026-11-03）
+
+- **修复**：PAL 新增 `PLATFORM_DYNAMIC_OPEN_OVERLOAD`，Linux/Windows 初始文件大小与累计读取超过 64 MiB 均映射为 `BREAK_PLUGIN_OVERLOAD`；普通 I/O 仍 `FAILED`。CTest 仅在 Linux/Windows 注册成功加载 fixture，并新增所有主机都运行的 `test_break_plugin_unsupported`，强制生产 fail-closed 分支，断言零输出 handle、零注册和零 constructor 副作用。
+- **验证**：超限 sparse 文件先 RED（旧为 `FAILED`）后 GREEN；unsupported 变体先 RED（攻击 constructor 标记出现）后 GREEN。normal、ASan+UBSan、TSan focused 均 8/8，包含 CVar 12 项、XML 13 项、插件 11 项、unsupported 1 项及 contract/相关回归。
+- **限制**：其它平台仍不加载插件；Win32 分支尚未在本机编译/运行验证。完整命令和输出见 `.superpowers/sdd/system-extensions-report.md`。
+
+## 本轮更新：P11 独立评审 fix round 1（2026-11-03）
+
+- **根因修复**：PAL 不再先哈希后按路径加载。Linux 将哈希字节写入 sealed memfd 并由库句柄持有验证 fd 到卸载；Windows 在禁止写/删除共享的源句柄上哈希并用最终路径加载，其它平台失败关闭。constructor 竞态 fixture 证明替换路径的攻击代码从未执行。CVar 回调 destroy 延迟到最外层通知结束；字符串首尾空格拒绝且空串/中间空格可往返，别名写入使用 `memmove`。插件 generation 耗尽永久退休，场景 writer 与属性容量统一为 682 实体，XML 完整执行 XML 1.0 码点校验且 serializer 改为父索引迭代。
+- **验证**：新增/更新后 CVar 12 项、XML 13 项、真实 SHARED 插件 10 项。normal、ASan+UBSan、TSan focused 均 7/7，全量 headless 均 129/129，no-tests 构建通过。路径加载、generation 回绕、scene 放宽、立即 destroy 变异分别被 constructor/身份/闭包/ASan 测试杀死；全部恢复后复测通过。
+- **限制**：依赖库未逐项哈希，allowlist 不是签名或 sandbox；Win32 安全原语已实现但本机 `clang-cl` 因缺少 CRT `stdio.h` 无法编译验证，未声称 Windows 运行通过。Linux memfd 的依赖搜索/`$ORIGIN` 语义需宿主显式管理。证据见 `.superpowers/sdd/system-extensions-report.md`。
+
+## 本轮更新：P11 CVar、XML 场景侧车与受控插件（2026-11-03）
+
+- **交付**：独立 `break_system` 提供固定容量 CVar（bool/int64/finite double/UTF-8 string、范围、readonly/Cheat、变化回调、事务式配置存取）；有界 XML 严格拒绝 DTD、自定义/数值实体、非法 UTF-8 和所有配置上限，`break-scene` v1 只保存实体 index/generation/class，不替代 BSCN；PAL 动态插件在 `dlopen`/`LoadLibrary` 前复用现有 SHA-256 文件完整性检查，再校验 ABI、build id 和描述符，使用 generation 句柄、引用计数和逆序卸载。
+- **失败原子**：CVar load 完整验证后才交换主/暂存表；XML parse 成功才替换旧树；插件注册失败关闭真实共享库且不保留槽；单个或批量卸载遇到任何非零引用都在回调前拒绝。回调自身的外部副作用由调用方/插件负责，不由管理器虚称回滚。
+- **验证**：CVar 8 项、XML 10 项、真实 SHARED 插件 8 项及 target contract；normal、ASan+UBSan、TSan focused 均 7/7（另含 BSCN、integrity、platform_fs），三树全量 headless 均 129/129，no-tests 树仍构建 `break_system`。CVar 范围/提前提交、XML DTD/UTF-8/提前交换、插件哈希/引用/正序卸载变异均按预期变红并恢复全绿。
+- **限制**：哈希 allowlist 不是签名认证或 sandbox；依赖库未逐项验证。Windows PAL 仅有实现未在本机运行；XML 不保留注释/处理指令，场景权威格式仍是 BSCN。设计细节见 `docs/design/system_extensions.md`，完整回归与报告见 `.superpowers/sdd/system-extensions-report.md`。
+
 ## 本轮更新：武器状态机与权威开火意图（2026-11-02）
 
 - **交付**：`break_game` 支持 64 种宿主定义武器，每 Actor 保存弹匣、tick、冷却与装填状态。装备、退弹、装填、tick、弹药查询和开火均检查创建线程与 Entity generation；开火只输出带 shooter、weapon_id、damage 和全局单调 sequence 的权威 intent，不选择目标、不检测命中、不扣生命。
