@@ -165,7 +165,7 @@ BreakNavError break_ai_smart_object_owner(BreakAiRuntime *,
 - 预约竞争、同者幂等、错误释放、释放后重新预约和生命周期冲突。
 - 源合同确认查询/避障/编组/预约热文件没有分配调用，`break_ai` 不包含 RHI，也未链入核心消费者。
 
-至少在 normal 树上做四项临时变异并看到对应测试变红：忽略导航 expected version；让动态 A* 不检查阻挡计数；竞争 reserve 直接覆盖 owner；容量检查失败后仍写槽。变异后立即恢复并重跑。normal、ASan+UBSan、TSan 均用 `-j3` 构建并运行所有 `break_ai` focused 测试及旧 Cry 原型测试。最终由只读 reviewer 检查，修复 Critical/Important 后再提交报告。
+至少在 normal 树上做四项临时变异并看到对应测试变红：忽略导航 expected version；让动态 A* 不检查阻挡计数；竞争 reserve 直接覆盖 owner；容量满错误被改成其他状态。变异后立即恢复并重跑。normal、ASan+UBSan、TSan 均用 `-j3` 构建并运行所有 `break_ai` focused 测试及旧 Cry 原型测试。最终进行只读评审或自审，修复 Critical/Important 后再提交报告。
 
 ## 10. 限制
 
