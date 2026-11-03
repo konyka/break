@@ -416,6 +416,106 @@ TEST(music_zero_fade_advances_and_stops)
     audio_system_destroy(as);
 }
 
+typedef struct {
+    bool blocked;
+    u32 calls;
+    Vec3 listener;
+    Vec3 source;
+} FakeRay;
+
+static bool fake_occlusion_ray(void *user, Vec3 listener, Vec3 source) {
+    FakeRay *ray = (FakeRay *)user;
+    ray->calls++;
+    ray->listener = listener;
+    ray->source = source;
+    return ray->blocked;
+}
+
+TEST(spatial_event_combines_distance_and_ray_occlusion)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1, 1, 1, 1};
+    AudioClipHandle clip = register_ramp(as, samples, 4);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.occluded_gain = 0.25f;
+    ASSERT_EQ(audio_event_register(as, "spatial", &desc), AUDIO_OK);
+    FakeRay ray;
+    memset(&ray, 0, sizeof(ray));
+    audio_set_occlusion_ray_callback(as, fake_occlusion_ray, &ray);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "spatial", vec3(2, 0, 0), &voice), AUDIO_OK);
+    ASSERT_EQ(ray.calls, 1u);
+    ASSERT_FLOAT_EQ(ray.source.e[0], 2.0f, 0.0f);
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), 0.5f, 1e-6f);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 1e-6f);
+
+    ray.blocked = true;
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(2, 0, 0)), AUDIO_OK);
+    ASSERT_EQ(ray.calls, 2u);
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), 0.125f, 1e-6f);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.125f, 1e-6f);
+
+    audio_system_update(as, vec3(1, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_EQ(ray.calls, 3u);
+    ASSERT_FLOAT_EQ(ray.listener.e[0], 1.0f, 0.0f);
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), 0.25f, 1e-6f);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.25f, 1e-6f);
+    audio_system_update(as, vec3(1, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_EQ(ray.calls, 3u);
+
+    f32 before = audio_voice_spatial_gain(as, voice);
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(NAN, 0, 0)), AUDIO_INVALID);
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), before, 0.0f);
+    ASSERT_EQ(audio_voice_set_position(as, 0, vec3(0, 0, 0)), AUDIO_STALE);
+    audio_system_destroy(as);
+}
+
+TEST(nonspatial_event_never_casts_ray)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 sample = 1.0f;
+    AudioClipHandle clip = register_ramp(as, &sample, 1);
+    AudioEventDesc desc = make_event_desc(clip);
+    ASSERT_EQ(audio_event_register(as, "flat", &desc), AUDIO_OK);
+    FakeRay ray;
+    memset(&ray, 0, sizeof(ray));
+    ray.blocked = true;
+    audio_set_occlusion_ray_callback(as, fake_occlusion_ray, &ray);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "flat", vec3(100, 0, 0), &voice), AUDIO_OK);
+    ASSERT_EQ(ray.calls, 0u);
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), 1.0f, 0.0f);
+    audio_system_destroy(as);
+}
+
+TEST(extended_voice_uses_bus_and_master_gain)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 sample = 1.0f;
+    AudioClipHandle clip = register_ramp(as, &sample, 1);
+    u32 bus = audio_bus_create(as, "extended-sfx");
+    ASSERT_NEQ(bus, AUDIO_BUS_INVALID);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.bus = bus;
+    ASSERT_EQ(audio_event_register(as, "bused", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "bused", vec3(0, 0, 0), &voice), AUDIO_OK);
+    audio_bus_set_gain(as, bus, 0.5f);
+    audio_bus_set_gain(as, AUDIO_BUS_MASTER, 0.5f);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.25f, 1e-6f);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -431,4 +531,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(music_loop_crossfade_wraps_to_first_track);
     RUN_TEST(music_playlist_validation_is_atomic_and_running_replacement_rejected);
     RUN_TEST(music_zero_fade_advances_and_stops);
+    RUN_TEST(spatial_event_combines_distance_and_ray_occlusion);
+    RUN_TEST(nonspatial_event_never_casts_ray);
+    RUN_TEST(extended_voice_uses_bus_and_master_gain);
 TEST_MAIN_END()

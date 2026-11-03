@@ -56,6 +56,12 @@ AudioResult audio_event_trigger(AudioSystem *as, const char *name, Vec3 pos,
 AudioResult audio_voice_stop(AudioSystem *as, AudioVoiceHandle voice);
 AudioResult audio_voice_cursor(AudioSystem *as, AudioVoiceHandle voice,
                                u32 *out_frame);
+typedef bool (*AudioOcclusionRayFn)(void *user, Vec3 listener, Vec3 source);
+void audio_set_occlusion_ray_callback(AudioSystem *as,
+    AudioOcclusionRayFn fn, void *user);
+AudioResult audio_voice_set_position(AudioSystem *as,
+    AudioVoiceHandle voice, Vec3 position);
+f32 audio_voice_spatial_gain(AudioSystem *as, AudioVoiceHandle voice);
 AudioResult audio_event_active_count(AudioSystem *as, const char *name,
                                      u32 *out_count);
 

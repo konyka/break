@@ -103,6 +103,8 @@ struct AudioImpl {
 
 bool audio_extended_init(AudioSystem *as, ma_engine *engine);
 void audio_extended_destroy(AudioSystem *as, void *extended);
+void audio_extended_listener_update(AudioSystem *as);
+void audio_extended_set_bus_gain(AudioSystem *as, u32 bus, f32 gain);
 
 /* The AudioImpl offset formula below (mirrored in audio_system_destroy) aligns
  * the trailing impl block with _Alignof(long double); pin that this satisfies
@@ -246,6 +248,7 @@ void audio_system_update(AudioSystem *as, Vec3 listener_pos, Vec3 forward, Vec3 
         forward.e[0], forward.e[1], forward.e[2]);
     ma_engine_listener_set_world_up(&impl->engine, 0,
         up.e[0], up.e[1], up.e[2]);
+    audio_extended_listener_update(as);
 }
 
 /* Acquire a source slot: free-list first, then bump-allocate */
@@ -452,6 +455,7 @@ void audio_bus_set_gain(AudioSystem *as, u32 bus, f32 gain) {
     if (!audio_bus_valid(as, bus)) return; /* R435: invalid id — refuse */
     if (gain < 0.0f) gain = 0.0f;          /* R435: clamp non-negative */
     as->buses[bus].gain = gain;
+    audio_extended_set_bus_gain(as, bus, gain);
     /* Master participates in every route; regular buses only affect members. */
     for (u32 i = 0; i < as->source_count; i++) {
         AudioSource *src = &as->sources[i];

@@ -63,6 +63,10 @@ typedef struct {
     AudioDspChain dsp;
     f32 dsp_delay_storage[AUDIO_DSP_MAX_STAGES *
                           AUDIO_DSP_MAX_DELAY_FRAMES * 2u];
+    atomic_uint spatial_gain;
+    atomic_uint *bus_gains;
+    Vec3 position;
+    u32 bus;
     u32 serial;
     bool claimed;
     bool stop_pending;
@@ -98,6 +102,9 @@ typedef struct {
     u32 music_index;
     u32 music_current;
     u32 music_previous;
+    AudioOcclusionRayFn ray;
+    void *ray_user;
+    atomic_uint bus_gains[AUDIO_MAX_BUSES];
 } AudioExtended;
 
 static AudioExtended *audio_extended(AudioSystem *as) {
@@ -106,6 +113,18 @@ static AudioExtended *audio_extended(AudioSystem *as) {
 
 static const AudioExtended *audio_extended_const(const AudioSystem *as) {
     return as ? (const AudioExtended *)as->extended : NULL;
+}
+
+static u32 gain_to_bits(f32 gain) {
+    u32 bits;
+    memcpy(&bits, &gain, sizeof(bits));
+    return bits;
+}
+
+static f32 gain_from_bits(u32 bits) {
+    f32 gain;
+    memcpy(&gain, &bits, sizeof(gain));
+    return gain;
 }
 
 static bool voice_command_space(const AudioVoice *voice) {
@@ -166,6 +185,7 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->playing_serial = command.serial;
             voice->looping = command.desc.looping;
             voice->volume = command.desc.volume;
+            voice->bus = command.desc.bus;
             voice->fade_gain = command.initial_gain;
             voice->fade_start = command.initial_gain;
             voice->fade_target = command.ramp_frames > 0 ?
@@ -219,7 +239,15 @@ static ma_result voice_read(ma_data_source *source, void *output,
                 voice_finish(voice, voice->playing_serial);
             } else {
                 u64 sample = (u64)cursor * voice->channels;
-                f32 gain = voice->volume * voice->fade_gain;
+                f32 bus_gain = voice->bus == AUDIO_BUS_MASTER ? 1.0f :
+                    gain_from_bits(atomic_load_explicit(
+                        &voice->bus_gains[voice->bus], memory_order_relaxed));
+                f32 master_gain = gain_from_bits(atomic_load_explicit(
+                    &voice->bus_gains[AUDIO_BUS_MASTER], memory_order_relaxed));
+                f32 spatial_gain = gain_from_bits(atomic_load_explicit(
+                    &voice->spatial_gain, memory_order_relaxed));
+                f32 gain = voice->volume * voice->fade_gain * bus_gain *
+                           master_gain * spatial_gain;
                 left = voice->samples[sample] * gain;
                 right = voice->channels == 2 ?
                         voice->samples[sample + 1u] * gain : left;
@@ -282,14 +310,19 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
     ext->engine = engine;
     ext->music_current = UINT32_MAX;
     ext->music_previous = UINT32_MAX;
+    for (u32 i = 0; i < AUDIO_MAX_BUSES; ++i) {
+        atomic_init(&ext->bus_gains[i], gain_to_bits(1.0f));
+    }
 
     for (u32 i = 0; i < AUDIO_MAX_VOICES; ++i) {
         AudioVoice *voice = &ext->voices[i];
         voice->owner_event = -1;
+        voice->bus_gains = ext->bus_gains;
         atomic_init(&voice->head, 0);
         atomic_init(&voice->tail, 0);
         atomic_init(&voice->cursor, 0);
         atomic_init(&voice->completed_serial, 0);
+        atomic_init(&voice->spatial_gain, gain_to_bits(1.0f));
         ma_data_source_config config = ma_data_source_config_init();
         config.vtable = &AUDIO_VOICE_VTABLE;
         if (ma_data_source_init(&config, &voice->base) != MA_SUCCESS) {
@@ -481,10 +514,23 @@ static AudioVoiceHandle voice_handle(u32 slot, u32 serial) {
     return ((serial & 0xFFFFFFu) << 8) | (slot + 1u);
 }
 
+static f32 event_spatial_gain(AudioExtended *ext, const AudioEventDesc *desc,
+                              Vec3 position) {
+    if (!desc->spatial) return 1.0f;
+    Vec3 delta = vec3_sub(position, ext->owner->listener_pos);
+    f32 distance = vec3_len(delta);
+    f32 gain = audio_attenuation_gain(distance, desc->min_distance,
+                                      desc->max_distance, desc->rolloff);
+    if (ext->ray && ext->ray(ext->ray_user, ext->owner->listener_pos, position)) {
+        gain *= desc->occluded_gain;
+    }
+    return gain;
+}
+
 static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
     AudioClipHandle clip_handle, const AudioEventDesc *desc, i32 owner,
     bool new_generation, f32 initial_gain, u32 ramp_frames,
-    AudioVoiceHandle *out) {
+    Vec3 position, f32 spatial_gain, AudioVoiceHandle *out) {
     AudioVoice *voice = &ext->voices[slot];
     if (!voice_command_space(voice)) return AUDIO_OVERLOAD;
     AudioClip *clip = clip_resolve(ext, clip_handle);
@@ -514,6 +560,9 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
     voice->owner_event = owner;
     voice->order = ++ext->next_order;
     voice->stop_pending = false;
+    voice->position = position;
+    atomic_store_explicit(&voice->spatial_gain, gain_to_bits(spatial_gain),
+                          memory_order_release);
     atomic_store_explicit(&voice->cursor, 0u, memory_order_release);
     if (!voice_enqueue(voice, &command)) return AUDIO_OVERLOAD;
     if (out) *out = voice_handle(slot, serial);
@@ -521,10 +570,12 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
 }
 
 static AudioResult voice_start(AudioExtended *ext, u32 slot, u32 event_index,
-                               bool new_generation, AudioVoiceHandle *out) {
+                               bool new_generation, Vec3 position,
+                               AudioVoiceHandle *out) {
     AudioEvent *event = &ext->events[event_index];
+    f32 spatial_gain = event_spatial_gain(ext, &event->desc, position);
     return voice_start_pcm(ext, slot, event->desc.clip, &event->desc,
-                           (i32)event_index, new_generation, 1.0f, 0, out);
+        (i32)event_index, new_generation, 1.0f, 0, position, spatial_gain, out);
 }
 
 AudioResult audio_event_trigger(AudioSystem *as, const char *name, Vec3 pos,
@@ -543,7 +594,8 @@ AudioResult audio_event_trigger(AudioSystem *as, const char *name, Vec3 pos,
     }
     if (desc->retrigger == AUDIO_RETRIGGER_RESTART && count > 0) {
         i32 newest = event_voice_by_order(ext, (u32)event_index, false);
-        return voice_start(ext, (u32)newest, (u32)event_index, false, out_voice);
+        return voice_start(ext, (u32)newest, (u32)event_index, false,
+                           pos, out_voice);
     }
 
     i32 selected = -1;
@@ -554,7 +606,8 @@ AudioResult audio_event_trigger(AudioSystem *as, const char *name, Vec3 pos,
         return AUDIO_OVERLOAD;
     }
     if (selected < 0) return AUDIO_OVERLOAD;
-    return voice_start(ext, (u32)selected, (u32)event_index, true, out_voice);
+    return voice_start(ext, (u32)selected, (u32)event_index, true,
+                       pos, out_voice);
 }
 
 static AudioVoice *voice_resolve(AudioExtended *ext, AudioVoiceHandle handle,
@@ -595,6 +648,58 @@ AudioResult audio_voice_cursor(AudioSystem *as, AudioVoiceHandle handle,
     if (!voice) return AUDIO_STALE;
     *out_frame = atomic_load_explicit(&voice->cursor, memory_order_acquire);
     return AUDIO_OK;
+}
+
+void audio_set_occlusion_ray_callback(AudioSystem *as,
+    AudioOcclusionRayFn fn, void *user) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext) return;
+    ext->ray = fn;
+    ext->ray_user = user;
+}
+
+AudioResult audio_voice_set_position(AudioSystem *as,
+    AudioVoiceHandle handle, Vec3 position) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext || !isfinite(position.e[0]) || !isfinite(position.e[1]) ||
+        !isfinite(position.e[2])) return AUDIO_INVALID;
+    reap_voices(ext);
+    AudioVoice *voice = voice_resolve(ext, handle, NULL);
+    if (!voice || voice->owner_event < 0) return AUDIO_STALE;
+    f32 gain = event_spatial_gain(ext, &ext->events[voice->owner_event].desc,
+                                  position);
+    voice->position = position;
+    atomic_store_explicit(&voice->spatial_gain, gain_to_bits(gain),
+                          memory_order_release);
+    return AUDIO_OK;
+}
+
+f32 audio_voice_spatial_gain(AudioSystem *as, AudioVoiceHandle handle) {
+    AudioExtended *ext = audio_extended(as);
+    AudioVoice *voice = voice_resolve(ext, handle, NULL);
+    if (!voice) return 0.0f;
+    return gain_from_bits(atomic_load_explicit(&voice->spatial_gain,
+                                               memory_order_acquire));
+}
+
+void audio_extended_listener_update(AudioSystem *as) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext) return;
+    for (u32 i = 2; i < AUDIO_MAX_VOICES; ++i) {
+        AudioVoice *voice = &ext->voices[i];
+        if (!voice->claimed || voice->owner_event < 0) continue;
+        f32 gain = event_spatial_gain(ext,
+            &ext->events[voice->owner_event].desc, voice->position);
+        atomic_store_explicit(&voice->spatial_gain, gain_to_bits(gain),
+                              memory_order_release);
+    }
+}
+
+void audio_extended_set_bus_gain(AudioSystem *as, u32 bus, f32 gain) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext || bus >= AUDIO_MAX_BUSES || !isfinite(gain)) return;
+    atomic_store_explicit(&ext->bus_gains[bus], gain_to_bits(gain),
+                          memory_order_release);
 }
 
 AudioResult audio_event_active_count(AudioSystem *as, const char *name,
@@ -656,7 +761,7 @@ static AudioResult music_start_next(AudioExtended *ext, u32 next_index) {
     f32 initial_gain = ext->playlist_fade > 0 ? 0.0f : 1.0f;
     AudioResult result = voice_start_pcm(ext, new_slot,
         ext->playlist[next_index], &desc, -2, true, initial_gain,
-        ext->playlist_fade, NULL);
+        ext->playlist_fade, vec3(0, 0, 0), 1.0f, NULL);
     if (result != AUDIO_OK) return result;
     if (old_slot != UINT32_MAX && ext->voices[old_slot].claimed) {
         if (ext->playlist_fade > 0) {
@@ -710,7 +815,7 @@ AudioResult audio_music_play(AudioSystem *as) {
     reap_voices(ext);
     AudioEventDesc desc = music_event_desc(ext);
     AudioResult result = voice_start_pcm(ext, 0, ext->playlist[0], &desc,
-                                         -2, true, 1.0f, 0, NULL);
+        -2, true, 1.0f, 0, vec3(0, 0, 0), 1.0f, NULL);
     if (result != AUDIO_OK) return result;
     ext->music_current = 0;
     ext->music_previous = UINT32_MAX;
