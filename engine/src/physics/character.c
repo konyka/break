@@ -286,8 +286,9 @@ bool character_is_grounded(const CharacterController *cc) {
     return cc->grounded;
 }
 
-bool physics_sweep_test(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
-                         u32 ignore_body, Vec3 *out_hit_pos, f32 *out_t) {
+bool physics_sweep_test_ex(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
+                            u32 ignore_body, Vec3 *out_hit_pos, f32 *out_t,
+                            u32 *out_body, Vec3 *out_normal) {
     if (!pw) return false;
     /* Reject non-finite queries (NaN/Inf): NaN comparisons pass every slab
      * test and report a phantom hit at t=0. Same policy as physics_raycast. */
@@ -296,6 +297,7 @@ bool physics_sweep_test(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
     }
 
     f32 best_t = 1.0f;
+    u32 best_body = UINT32_MAX;
     bool hit = false;
 
     /* Compute swept AABB for BVH broadphase; fall back if BVH not built */
@@ -362,17 +364,41 @@ bool physics_sweep_test(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
          * sweep direction — not the first forward contact in [0,1]. */
         if (valid && tmin >= 0.0f && tmin < best_t) {
             best_t = tmin;
+            best_body = i;
             hit = true;
         }
     }
 
     if (hit) {
+        Vec3 point = vec3_add(origin, vec3_scale(delta, best_t));
         if (out_t) *out_t = best_t;
-        if (out_hit_pos) {
-            out_hit_pos->e[0] = origin.e[0] + delta.e[0] * best_t;
-            out_hit_pos->e[1] = origin.e[1] + delta.e[1] * best_t;
-            out_hit_pos->e[2] = origin.e[2] + delta.e[2] * best_t;
+        if (out_hit_pos) *out_hit_pos = point;
+        if (out_body) *out_body = best_body;
+        if (out_normal) {
+            AABB box = aabb_from_body(&pw->bodies[best_body]);
+            f32 nearest = 1e30f;
+            *out_normal = vec3(0, 0, 0);
+            for (int axis = 0; axis < 3; axis++) {
+                f32 low = fabsf(point.e[axis] - box.min.e[axis]);
+                f32 high = fabsf(box.max.e[axis] - point.e[axis]);
+                if (low < nearest) {
+                    nearest = low;
+                    *out_normal = vec3(0, 0, 0);
+                    out_normal->e[axis] = -1.0f;
+                }
+                if (high < nearest) {
+                    nearest = high;
+                    *out_normal = vec3(0, 0, 0);
+                    out_normal->e[axis] = 1.0f;
+                }
+            }
         }
     }
     return hit;
+}
+
+bool physics_sweep_test(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
+                         u32 ignore_body, Vec3 *out_hit_pos, f32 *out_t) {
+    return physics_sweep_test_ex(pw, origin, delta, ignore_body,
+                                  out_hit_pos, out_t, NULL, NULL);
 }

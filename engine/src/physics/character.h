@@ -26,3 +26,6 @@ bool    character_is_grounded(const CharacterController *cc);
 
 bool    physics_sweep_test(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
                             u32 ignore_body, Vec3 *out_hit_pos, f32 *out_t);
+bool    physics_sweep_test_ex(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
+                               u32 ignore_body, Vec3 *out_hit_pos, f32 *out_t,
+                               u32 *out_body, Vec3 *out_normal);
