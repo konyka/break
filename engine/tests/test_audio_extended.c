@@ -2,6 +2,7 @@
 #include <core/log.h>
 #include <audio/audio_extended.h>
 #include <float.h>
+#include "../src/audio/audio.c"
 
 void log_write(LogLevel level, const char *file, int line, const char *fmt, ...) {
     (void)level; (void)file; (void)line; (void)fmt;
@@ -558,19 +559,77 @@ TEST(legacy_file_apis_render_predecoded_pcm)
     for (u32 mode = 0; mode < 2; ++mode) {
         AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
         ASSERT_NOT_NULL(as);
-        u32 voice = mode == 0 ? audio_play(as, path, 1.0f, false) :
-            audio_play_streamed(as, path, 1.0f, false, false, vec3(0, 0, 0));
+        u32 voice = mode == 0 ? audio_play(as, path, 1.0f, true) :
+            audio_play_streamed(as, path, 1.0f, true, false, vec3(0, 0, 0));
         ASSERT_NEQ(voice, 0u);
-        f32 output[8];
-        ASSERT_EQ(audio_system_render(as, output, 4), AUDIO_OK);
+        f32 output[10];
+        ASSERT_EQ(audio_system_render(as, output, 5), AUDIO_OK);
+        ASSERT_FLOAT_EQ(output[0], 0.0f, 0.0f);
+        ASSERT_FLOAT_EQ(output[1], 0.0f, 0.0f);
         const f32 expected[] = {0.25f, 0.5f, -0.5f, 32767.0f / 32768.0f};
         for (u32 i = 0; i < 4; ++i) {
-            ASSERT_FLOAT_EQ(output[2*i], expected[i], 1e-5f);
-            ASSERT_FLOAT_EQ(output[2*i+1], expected[i], 1e-5f);
+            ASSERT_FLOAT_EQ(output[2*(i+1)], expected[i], 1e-5f);
+            ASSERT_FLOAT_EQ(output[2*(i+1)+1], expected[i], 1e-5f);
         }
         audio_stop(as, voice);
         audio_system_destroy(as);
     }
+    ASSERT_EQ(remove(path), 0);
+}
+
+static bool write_sine_wav(const char *path) {
+    u8 header[44] = {0};
+    memcpy(header, "RIFF", 4);
+    wav_u32(header + 4, 96036);
+    memcpy(header + 8, "WAVEfmt ", 8);
+    wav_u32(header + 16, 16);
+    wav_u16(header + 20, 1);
+    wav_u16(header + 22, 1);
+    wav_u32(header + 24, 48000);
+    wav_u32(header + 28, 96000);
+    wav_u16(header + 32, 2);
+    wav_u16(header + 34, 16);
+    memcpy(header + 36, "data", 4);
+    wav_u32(header + 40, 96000);
+    FILE *file = fopen(path, "wb");
+    if (!file) return false;
+    bool ok = fwrite(header, 1, sizeof(header), file) == sizeof(header);
+    for (u32 i = 0; i < 48000 && ok; ++i) {
+        f32 phase = 2.0f * 3.14159265358979323846f * 1000.0f *
+                    (f32)i / 48000.0f;
+        i16 sample = (i16)(sinf(phase) * 8192.0f);
+        ok = fwrite(&sample, sizeof(sample), 1, file) == 1;
+    }
+    fclose(file);
+    return ok;
+}
+
+TEST(legacy_decoded_play_3d_doppler_changes_pcm)
+{
+    char path[512];
+    test_tmp(path, sizeof(path), "audio-doppler.pcm");
+    ASSERT_TRUE(write_sine_wav(path));
+    AudioSystem *slow = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    AudioSystem *fast = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(slow);
+    ASSERT_NOT_NULL(fast);
+    audio_play_3d(slow, path, vec3(1, 0, 0), 1.0f, true);
+    audio_play_3d(fast, path, vec3(1, 0, 0), 1.0f, true);
+    ASSERT_EQ(slow->source_count, 1u);
+    ASSERT_EQ(fast->source_count, 1u);
+    ASSERT_TRUE(slow->sources[0].active);
+    ASSERT_TRUE(fast->sources[0].active);
+    ma_sound_set_velocity(&slow->sources[0].sound, 0, 0, 0);
+    ma_sound_set_velocity(&fast->sources[0].sound, 100, 0, 0);
+    static f32 slow_pcm[9600];
+    static f32 fast_pcm[9600];
+    ASSERT_EQ(audio_system_render(slow, slow_pcm, 4800), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(fast, fast_pcm, 4800), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(slow, slow_pcm, 4800), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(fast, fast_pcm, 4800), AUDIO_OK);
+    ASSERT_NEQ(memcmp(slow_pcm, fast_pcm, sizeof(slow_pcm)), 0);
+    audio_system_destroy(slow);
+    audio_system_destroy(fast);
     ASSERT_EQ(remove(path), 0);
 }
 
@@ -885,4 +944,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(stop_pending_voice_does_not_ray_or_reposition);
     RUN_TEST(bus_nonfinite_gain_is_rejected_consistently);
     RUN_TEST(event_registration_distinguishes_stale_clip);
+    RUN_TEST(legacy_decoded_play_3d_doppler_changes_pcm);
 TEST_MAIN_END()

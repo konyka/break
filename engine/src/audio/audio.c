@@ -290,8 +290,8 @@ u32 audio_play(AudioSystem *as, const char *path, f32 volume, bool looping) {
      * MA_SOUND_FLAG_NO_SPATIALIZATION when !spatial); mirror it here so 2D
      * sounds stay 2D. audio_play_3d re-enables spatialization explicitly. */
     ma_result result = ma_sound_init_from_file(&impl->engine, path,
-        MA_SOUND_FLAG_NO_SPATIALIZATION | MA_SOUND_FLAG_DECODE |
-        MA_SOUND_FLAG_NO_PITCH, NULL, NULL, &src->sound);
+        MA_SOUND_FLAG_NO_SPATIALIZATION | MA_SOUND_FLAG_DECODE,
+        NULL, NULL, &src->sound);
     if (result != MA_SUCCESS) {
         LOG_WARN("Failed to load sound: %s (%d)", path, result);
         /* Return slot to free-list */
@@ -326,7 +326,7 @@ void audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume,
      * through audio_play() started the sound 2D at the origin and only then
      * re-spatialized it, so the first mixing quantum could play unspatialized. */
     ma_result result = ma_sound_init_from_file(&impl->engine, path,
-        MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_NO_PITCH,
+        MA_SOUND_FLAG_DECODE,
         NULL, NULL, &src->sound);
     if (result != MA_SUCCESS) {
         LOG_WARN("Failed to load sound: %s (%d)", path, result);
@@ -383,7 +383,7 @@ u32 audio_play_streamed(AudioSystem *as, const char *path, f32 volume,
     struct AudioImpl *impl = as->engine;
     AudioSource *src = &as->sources[id];
 
-    ma_uint32 flags = MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_NO_PITCH;
+    ma_uint32 flags = MA_SOUND_FLAG_DECODE;
     if (!spatial) flags |= MA_SOUND_FLAG_NO_SPATIALIZATION;
 
     ma_result result = ma_sound_init_from_file(&impl->engine, path, flags, NULL, NULL, &src->sound);
