@@ -124,8 +124,8 @@ AudioSystem *audio_system_create_ex(AudioBackend backend) {
     }
     AudioSystem *as  = (AudioSystem *)audio_block;
     struct AudioImpl *impl = (struct AudioImpl *)(audio_block + as_off);
-    const ma_engine_config *engine_config_ptr = NULL;
-    ma_engine_config engine_config;
+    ma_engine_config engine_config = ma_engine_config_init();
+    const ma_engine_config *engine_config_ptr = &engine_config;
     ma_result result;
     bool use_null = backend == AUDIO_BACKEND_NULL;
 
@@ -133,13 +133,9 @@ AudioSystem *audio_system_create_ex(AudioBackend backend) {
     if (backend == AUDIO_BACKEND_DEFAULT) use_null = true;
 #endif
 
-    if (backend != AUDIO_BACKEND_DEFAULT) {
-        engine_config = ma_engine_config_init();
-        engine_config.channels = 2;
-        engine_config.sampleRate = 48000;
-        engine_config.noDevice = backend == AUDIO_BACKEND_FAKE ? MA_TRUE : MA_FALSE;
-        engine_config_ptr = &engine_config;
-    }
+    engine_config.channels = 2;
+    engine_config.sampleRate = 48000;
+    engine_config.noDevice = backend == AUDIO_BACKEND_FAKE ? MA_TRUE : MA_FALSE;
     if (use_null) {
         ma_backend null_backend = ma_backend_null;
         result = ma_context_init(&null_backend, 1, NULL, &impl->context);
@@ -149,10 +145,6 @@ AudioSystem *audio_system_create_ex(AudioBackend backend) {
             return NULL;
         }
         impl->context_initialized = true;
-        if (backend == AUDIO_BACKEND_DEFAULT) {
-            engine_config = ma_engine_config_init();
-            engine_config_ptr = &engine_config;
-        }
         engine_config.pContext = &impl->context;
     }
 
