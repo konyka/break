@@ -720,6 +720,14 @@ target_include_directories(break_replication_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 
+# Optional online-session/gameplay network capabilities. Socket symbols remain
+# owned by engine/network.c and resolve at the consumer's final link.
+add_library(break_online STATIC
+    src/network/break_online_lobby.c)
+set_property(TARGET break_online PROPERTY C_STANDARD 11)
+target_include_directories(break_online PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_online PUBLIC Threads::Threads)
+
 # Formal optional Runtime Core library: unified error/lifecycle types, the
 # single-owner lifecycle coordinator, the formal message/queue/task facade,
 # the formal thread + IO/VFS facades, and the reload coordinator + profiler
@@ -5003,6 +5011,13 @@ endif()
     endif()
     add_test(NAME test_network COMMAND test_network)
 
+    add_executable(test_break_online_lobby tests/test_break_online_lobby.c)
+    target_include_directories(test_break_online_lobby PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_lobby PRIVATE break_online Threads::Threads)
+    add_test(NAME test_break_online_lobby COMMAND test_break_online_lobby)
+    set_tests_properties(test_break_online_lobby PROPERTIES
+        TIMEOUT 20 LABELS "network;online;lobby")
+
     # Focused fragmentation coverage links the formal non-Snowflake core.
     add_executable(test_break_replication_fragment tests/test_break_replication_fragment.c)
     target_include_directories(test_break_replication_fragment PRIVATE
@@ -5038,7 +5053,7 @@ endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
             target_compile_options(test_break_session PRIVATE -Wno-type-limits -Wno-maybe-uninitialized)
         endif()
-        target_link_libraries(test_break_session PRIVATE break_net_test)
+        target_link_libraries(test_break_session PRIVATE break_net_test break_online)
         add_test(NAME test_break_session COMMAND test_break_session)
         set_tests_properties(test_break_session PROPERTIES
             TIMEOUT 20 LABELS "network;snowflake;session")

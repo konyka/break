@@ -4,6 +4,8 @@
 #include <network/break_net_message_registry.h>
 #include <network/break_net_events.h>
 #include <network/break_session.h>
+#include <network/break_online_lobby.h>
+#include <network/break_online_session.h>
 #ifdef BREAK_ENABLE_CRYPTO
 #include <crypto/break_crypto.h>
 #endif
@@ -1584,6 +1586,43 @@ TEST(break_session_reopen_on_closed_key_rebinds_with_fresh_id)
     break_session_manager_destroy(manager);
 }
 
+TEST(break_online_session_adapter_accepts_only_authenticated_identity)
+{
+    BreakSessionConfig session_config = {0};
+    BreakSessionManager *manager = break_session_manager_create(&session_config);
+    BreakLobbyConfig lobby_config = {1u, 2u};
+    BreakLobby *lobby = NULL;
+    BreakLobbyAuth auth;
+    BreakLobbyRoomDesc desc = {"authenticated", 1u, 1u, 2u, true};
+    BreakOnlineHandle room = {99u, 99u};
+    BreakOnlineMemberHandle member = {{99u, 99u}, {99u, 99u}};
+    BreakLobbyRoomInfo info;
+    BreakSessionId session_id;
+
+    ASSERT_NOT_NULL(manager);
+    ASSERT_EQ(break_lobby_create(&lobby_config, &lobby), BREAK_RUNTIME_OK);
+    auth.session = 0x717u;
+    auth.source = break_online_session_auth(manager);
+    ASSERT_TRUE(break_session_manager_bind(manager, auth.session));
+    ASSERT_EQ(break_lobby_room_create(lobby, &auth, &desc, &room, &member),
+              BREAK_RUNTIME_REJECTED);
+    ASSERT_TRUE(break_session_manager_begin_auth(manager, auth.session));
+    ASSERT_EQ(break_lobby_room_create(lobby, &auth, &desc, &room, &member),
+              BREAK_RUNTIME_REJECTED);
+    ASSERT_TRUE(break_session_manager_auth_succeeded(manager, auth.session));
+    session_id = break_session_manager_session_id(manager, auth.session);
+    ASSERT_EQ(break_lobby_room_create(lobby, &auth, &desc, &room, &member),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_lobby_room_info(lobby, room, &info), BREAK_RUNTIME_OK);
+    ASSERT_EQ(info.host.session_id, session_id);
+    ASSERT_EQ(info.host.player_id, session_id);
+    ASSERT_TRUE(break_session_manager_close(manager, auth.session, 0u));
+    ASSERT_EQ(break_lobby_disconnect(lobby, auth.session), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_lobby_room_count(lobby), 0u);
+    break_lobby_destroy(lobby);
+    break_session_manager_destroy(manager);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(break_envelope_round_trip_preserves_fields);
     RUN_TEST(break_envelope_uses_little_endian_wire_order);
@@ -1624,4 +1663,5 @@ TEST_MAIN_BEGIN()
 #endif
     RUN_TEST(break_session_public_registry_version_rejection_closes);
     RUN_TEST(break_session_public_registry_over_limit_closes_authenticating);
+    RUN_TEST(break_online_session_adapter_accepts_only_authenticated_identity);
 TEST_MAIN_END()
