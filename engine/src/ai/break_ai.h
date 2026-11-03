@@ -40,8 +40,56 @@ typedef enum BreakNavError {
     BREAK_NAV_OK = 0,
     BREAK_NAV_INVALID,
     BREAK_NAV_OVERLOAD,
-    BREAK_NAV_FAILED
+    BREAK_NAV_FAILED,
+    BREAK_NAV_STALE,
+    BREAK_NAV_REJECTED
 } BreakNavError;
+
+#define BREAK_AI_MAX_OBSTACLES 4096u
+#define BREAK_AI_MAX_AGENTS 1024u
+#define BREAK_AI_MAX_CACHED_PATHS 256u
+#define BREAK_AI_MAX_SMART_OBJECTS 1024u
+#define BREAK_AI_MAX_FORMATIONS 256u
+#define BREAK_AI_MAX_FORMATION_MEMBERS 32u
+
+typedef struct BreakAiRuntime BreakAiRuntime;
+
+typedef struct BreakAiRuntimeDesc {
+    u32 max_obstacles;
+    u32 max_agents;
+    u32 max_cached_paths;
+    u32 max_smart_objects;
+    u32 max_formations;
+} BreakAiRuntimeDesc;
+
+typedef struct BreakAiObstacleHandle {
+    u32 index;
+    u32 generation;
+} BreakAiObstacleHandle;
+
+typedef struct BreakAiObstacleDesc {
+    f32 min_x;
+    f32 min_z;
+    f32 max_x;
+    f32 max_z;
+} BreakAiObstacleDesc;
+
+typedef struct BreakAiPath {
+    BreakNavPath path;
+    u32 nav_version;
+} BreakAiPath;
+
+BreakAiRuntime *break_ai_runtime_create(BreakNavMesh *mesh, const BreakAiRuntimeDesc *desc);
+void break_ai_runtime_destroy(BreakAiRuntime *runtime);
+BreakNavError break_ai_obstacle_add(BreakAiRuntime *runtime, const BreakAiObstacleDesc *desc,
+                                    BreakAiObstacleHandle *out);
+BreakNavError break_ai_obstacle_update(BreakAiRuntime *runtime, BreakAiObstacleHandle handle,
+                                       const BreakAiObstacleDesc *desc);
+BreakNavError break_ai_obstacle_remove(BreakAiRuntime *runtime, BreakAiObstacleHandle handle);
+u32 break_ai_nav_version(const BreakAiRuntime *runtime);
+BreakNavError break_ai_find_path(BreakAiRuntime *runtime, Vec3 start, Vec3 end,
+                                 u32 expected_version, BreakAiPath *out);
+bool break_ai_path_is_current(const BreakAiRuntime *runtime, const BreakAiPath *path);
 
 BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end,
                                   BreakNavPath *out);
@@ -126,3 +174,67 @@ typedef struct BreakSteerNeighbor {
 
 Vec3 break_steer_avoid(Vec3 self, f32 self_radius, Vec3 wish,
                        const BreakSteerNeighbor *neighbors, u32 count);
+
+typedef struct BreakSteerAgent {
+    Vec3 position;
+    Vec3 velocity;
+    f32 radius;
+} BreakSteerAgent;
+
+typedef struct BreakAiAgentDesc {
+    Vec3 position;
+    Vec3 velocity;
+    f32 radius;
+    f32 max_speed;
+} BreakAiAgentDesc;
+
+BreakNavError break_steer_avoid_velocity(Vec3 self, Vec3 self_velocity,
+                                         f32 self_radius, f32 max_speed,
+                                         Vec3 desired_velocity,
+                                         const BreakSteerAgent *neighbors,
+                                         u32 count, f32 horizon, Vec3 *out_velocity);
+BreakNavError break_ai_agent_add(BreakAiRuntime *runtime, Entity entity,
+                                 const BreakAiAgentDesc *desc);
+BreakNavError break_ai_agent_update(BreakAiRuntime *runtime, Entity entity,
+                                    const BreakAiAgentDesc *desc);
+BreakNavError break_ai_agent_remove(BreakAiRuntime *runtime, Entity entity);
+BreakNavError break_ai_agent_avoid(BreakAiRuntime *runtime, Entity self,
+                                   Vec3 desired_velocity, f32 horizon,
+                                   Vec3 *out_velocity);
+
+typedef struct BreakAiFormationHandle {
+    u32 index;
+    u32 generation;
+} BreakAiFormationHandle;
+
+BreakNavError break_ai_formation_create(BreakAiRuntime *runtime, const Entity *members,
+                                        u32 member_count, f32 spacing,
+                                        BreakAiFormationHandle *out);
+BreakNavError break_ai_formation_destroy(BreakAiRuntime *runtime,
+                                         BreakAiFormationHandle handle);
+BreakNavError break_ai_formation_slots(BreakAiRuntime *runtime,
+                                       BreakAiFormationHandle handle,
+                                       Vec3 leader_position, Vec3 leader_forward,
+                                       Vec3 *out_slots, u32 cap, u32 *out_count);
+BreakNavError break_ai_formation_tick(BreakAiRuntime *runtime,
+                                      BreakAiFormationHandle handle, f32 dt,
+                                      Vec3 *out_velocities, u32 cap, u32 *out_count);
+
+typedef struct BreakAiSmartObjectHandle {
+    u32 index;
+    u32 generation;
+} BreakAiSmartObjectHandle;
+
+BreakNavError break_ai_smart_object_add(BreakAiRuntime *runtime, Vec3 position,
+                                        BreakAiSmartObjectHandle *out);
+BreakNavError break_ai_smart_object_remove(BreakAiRuntime *runtime,
+                                           BreakAiSmartObjectHandle handle);
+BreakNavError break_ai_smart_object_reserve(BreakAiRuntime *runtime,
+                                            BreakAiSmartObjectHandle handle,
+                                            Entity agent);
+BreakNavError break_ai_smart_object_release(BreakAiRuntime *runtime,
+                                            BreakAiSmartObjectHandle handle,
+                                            Entity agent);
+BreakNavError break_ai_smart_object_owner(BreakAiRuntime *runtime,
+                                          BreakAiSmartObjectHandle handle,
+                                          Entity *out_owner);

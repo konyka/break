@@ -700,13 +700,22 @@ endif()
 # engine_demo, or dxx_break.
 add_library(break_ai STATIC
     src/ai/break_nav_bake.c
+    src/ai/break_nav_workspace.c
     src/ai/break_nav_query.c
+    src/ai/break_ai_runtime.c
+    src/ai/break_ai_obstacle.c
+    src/ai/break_ai_query.c
+    src/ai/break_ai_agent.c
+    src/ai/break_ai_formation.c
+    src/ai/break_ai_smart_object.c
+    src/ai/break_steer_velocity.c
     src/ai/break_nav_follow.c
     src/ai/break_perception.c
     src/ai/break_behavior.c
     src/ai/break_steer.c)
 set_property(TARGET break_ai PROPERTY C_STANDARD 11)
 target_include_directories(break_ai PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_ai PUBLIC Threads::Threads)
 if(NOT ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(break_ai PUBLIC m)
 endif()
@@ -4304,7 +4313,7 @@ endif()
     set_tests_properties(test_break_game_target_contract PROPERTIES
         LABELS "headless;break_game;platform_contract")
 
-    foreach(ai_test IN ITEMS nav_bake nav_query nav_follow perception behavior steer)
+    foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
         target_include_directories(test_break_${ai_test} PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_${ai_test} PRIVATE break_ai)
@@ -4316,6 +4325,12 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_ai_target_contract.cmake)
     set_tests_properties(test_break_ai_target_contract PROPERTIES
+        LABELS "headless;break_ai;platform_contract")
+    add_test(NAME test_break_ai_hot_path_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/ai
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_ai_hot_path_contract.cmake)
+    set_tests_properties(test_break_ai_hot_path_contract PROPERTIES
         LABELS "headless;break_ai;platform_contract")
 
     add_executable(test_cry_style_prototype tests/test_cry_style_prototype.c
