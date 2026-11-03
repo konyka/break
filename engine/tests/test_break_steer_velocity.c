@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <ai/break_ai.h>
+#include <float.h>
 
 static f32 speed(Vec3 value) {
     return sqrtf(value.e[0] * value.e[0] + value.e[2] * value.e[2]);
@@ -101,9 +102,34 @@ TEST(velocity_avoidance_validates_limits_without_touching_output) {
     ASSERT_TRUE(speed(output) <= 2.0f + 1.0e-5f);
 }
 
+TEST(extreme_finite_velocity_keeps_direction) {
+    Vec3 output;
+    ASSERT_EQ(break_steer_avoid_velocity(vec3(0, 0, 0), vec3(0, 0, 0), 0.5f, 2.0f,
+                                         vec3(FLT_MAX, 0, FLT_MAX), NULL, 0, 1.0f, &output),
+              BREAK_NAV_OK);
+    ASSERT_TRUE(output.e[0] > 1.0f);
+    ASSERT_TRUE(output.e[2] > 1.0f);
+    ASSERT_TRUE(speed(output) <= 2.0f + 1.0e-5f);
+}
+
+TEST(extreme_finite_max_speed_still_clamps_diagonal) {
+    Vec3 output;
+    ASSERT_EQ(break_steer_avoid_velocity(vec3(0, 0, 0), vec3(0, 0, 0), 0.5f, FLT_MAX,
+                                         vec3(FLT_MAX, 0, FLT_MAX), NULL, 0, 1.0f, &output),
+              BREAK_NAV_OK);
+    f32 peak = fmaxf(fabsf(output.e[0]), fabsf(output.e[2]));
+    ASSERT_TRUE(peak > 0.0f);
+    f32 scaled_x = output.e[0] / peak;
+    f32 scaled_z = output.e[2] / peak;
+    f32 speed_ratio = (peak / FLT_MAX) * sqrtf(scaled_x * scaled_x + scaled_z * scaled_z);
+    ASSERT_TRUE(speed_ratio <= 1.0f + 1.0e-6f);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(head_on_velocity_avoidance_is_bounded_and_deterministic);
     RUN_TEST(moving_neighbor_changes_the_avoidance_decision);
     RUN_TEST(reciprocal_agents_integrate_without_overlap);
     RUN_TEST(velocity_avoidance_validates_limits_without_touching_output);
+    RUN_TEST(extreme_finite_velocity_keeps_direction);
+    RUN_TEST(extreme_finite_max_speed_still_clamps_diagonal);
 TEST_MAIN_END()

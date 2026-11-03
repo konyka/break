@@ -165,8 +165,15 @@ BreakNavError break_nav_find_path_workspace(const BreakNavMesh *mesh,
 }
 
 BreakNavError break_nav_find_path(const BreakNavMesh *mesh, Vec3 start, Vec3 end, BreakNavPath *out) {
-    if (!mesh) {
+    if (!mesh || !out) {
         return BREAK_NAV_INVALID;
     }
-    return break_nav_find_path_workspace(mesh, mesh->workspace, NULL, start, end, out);
+    u32 slot = 0;
+    BreakNavWorkspace *workspace = break_nav_workspace_pool_acquire(mesh, &slot);
+    if (!workspace) {
+        return mesh->workspace_pool ? BREAK_NAV_OVERLOAD : BREAK_NAV_INVALID;
+    }
+    BreakNavError status = break_nav_find_path_workspace(mesh, workspace, NULL, start, end, out);
+    break_nav_workspace_pool_release(mesh, slot);
+    return status;
 }

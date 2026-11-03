@@ -121,6 +121,9 @@ BreakNavError break_ai_smart_object_release(BreakAiRuntime *runtime,
     if (status != BREAK_NAV_OK) {
         return status;
     }
+    if (break_ai_agent_index(runtime, agent) == UINT32_MAX) {
+        return BREAK_NAV_STALE;
+    }
     BreakAiSmartObjectSlot *object = &runtime->smart_objects[index];
     if (!entity_valid(object->owner) || !smart_entity_equal(object->owner, agent)) {
         return BREAK_NAV_REJECTED;

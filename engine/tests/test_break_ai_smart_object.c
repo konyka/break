@@ -125,7 +125,28 @@ TEST(smart_object_capacity_and_invalid_add_do_not_consume_slots) {
     smart_fixture_destroy(&fixture);
 }
 
+TEST(smart_object_release_validates_agent_before_owner_comparison) {
+    SmartFixture fixture;
+    ASSERT_TRUE(smart_fixture_init(&fixture, 1));
+    Entity owner = smart_entity(1);
+    BreakAiSmartObjectHandle object;
+    ASSERT_EQ(break_ai_smart_object_add(fixture.ai, vec3(2, 0, 2), &object), BREAK_NAV_OK);
+    ASSERT_EQ(break_ai_smart_object_reserve(fixture.ai, object, owner), BREAK_NAV_OK);
+    Entity unknown = smart_entity(9);
+    Entity stale = owner;
+    stale.generation = 2;
+    BreakNavError unknown_status = break_ai_smart_object_release(fixture.ai, object, unknown);
+    BreakNavError stale_status = break_ai_smart_object_release(fixture.ai, object, stale);
+    BreakNavError registered_status = break_ai_smart_object_release(fixture.ai, object, smart_entity(2));
+    ASSERT_EQ(unknown_status, BREAK_NAV_STALE);
+    ASSERT_EQ(stale_status, BREAK_NAV_STALE);
+    ASSERT_EQ(registered_status, BREAK_NAV_REJECTED);
+    assert_owner(fixture.ai, object, owner);
+    smart_fixture_destroy(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(smart_object_competition_release_and_stale_generation);
     RUN_TEST(smart_object_capacity_and_invalid_add_do_not_consume_slots);
+    RUN_TEST(smart_object_release_validates_agent_before_owner_comparison);
 TEST_MAIN_END()

@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <ai/break_ai.h>
+#include <float.h>
 
 typedef struct FormationFixture {
     f32 heights[16];
@@ -191,8 +192,49 @@ TEST(formation_validation_capacity_and_lifecycle_are_atomic) {
     formation_fixture_destroy(&fixture);
 }
 
+TEST(formation_slots_normalize_extreme_finite_forward) {
+    FormationFixture fixture;
+    ASSERT_TRUE(formation_fixture_init(&fixture, 3, 1));
+    add_three_agents(&fixture);
+    BreakAiFormationHandle handle = create_three(&fixture);
+    ASSERT_NEQ(handle.generation, UINT32_MAX);
+    Vec3 slots[3];
+    u32 count = 0;
+    ASSERT_EQ(break_ai_formation_slots(fixture.ai, handle, vec3(0, 0, 0),
+                                       vec3(FLT_MAX, 0, 0), slots, 3, &count), BREAK_NAV_OK);
+    ASSERT_EQ(count, 3u);
+    ASSERT_FLOAT_EQ(slots[1].e[0], -2.0f, 1.0e-6);
+    ASSERT_FLOAT_EQ(slots[1].e[2], -2.0f, 1.0e-6);
+    ASSERT_FLOAT_EQ(slots[2].e[0], -2.0f, 1.0e-6);
+    ASSERT_FLOAT_EQ(slots[2].e[2], 2.0f, 1.0e-6);
+    formation_fixture_destroy(&fixture);
+}
+
+TEST(formation_rejects_33_members_without_consuming_a_slot) {
+    FormationFixture fixture;
+    ASSERT_TRUE(formation_fixture_init(&fixture, 33, 1));
+    Entity members[33];
+    for (u32 i = 0; i < 33; i++) {
+        members[i] = formation_entity(i + 1);
+        BreakAiAgentDesc desc = formation_agent(vec3((f32)i, 0, 0), vec3(0, 0, 0));
+        ASSERT_EQ(break_ai_agent_add(fixture.ai, members[i], &desc), BREAK_NAV_OK);
+    }
+    BreakAiFormationHandle output;
+    memset(&output, 0x64, sizeof(output));
+    BreakAiFormationHandle before = output;
+    ASSERT_EQ(break_ai_formation_create(fixture.ai, members, 33, 2.0f, &output),
+              BREAK_NAV_OVERLOAD);
+    ASSERT_EQ(memcmp(&output, &before, sizeof(output)), 0);
+    ASSERT_EQ(break_ai_formation_create(fixture.ai, members, 1, 2.0f, &output), BREAK_NAV_OK);
+    ASSERT_EQ(output.index, 0u);
+    ASSERT_EQ(output.generation, 1u);
+    formation_fixture_destroy(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(formation_slots_are_stable_wedge_positions);
     RUN_TEST(formation_tick_replays_and_followers_converge_within_speed_limit);
     RUN_TEST(formation_validation_capacity_and_lifecycle_are_atomic);
+    RUN_TEST(formation_slots_normalize_extreme_finite_forward);
+    RUN_TEST(formation_rejects_33_members_without_consuming_a_slot);
 TEST_MAIN_END()

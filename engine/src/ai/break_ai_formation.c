@@ -24,13 +24,16 @@ static BreakNavError formation_slot_at(const BreakAiRuntime *runtime,
 static void formation_compute_slots(const BreakAiFormationSlot *formation,
                                     Vec3 leader_position, Vec3 leader_forward,
                                     Vec3 *out_slots) {
-    f32 length_sq = leader_forward.e[0] * leader_forward.e[0] +
-                    leader_forward.e[2] * leader_forward.e[2];
     Vec3 forward = vec3(1, 0, 0);
-    if (length_sq > 1.0e-12f) {
-        f32 inverse_length = 1.0f / sqrtf(length_sq);
-        forward.e[0] = leader_forward.e[0] * inverse_length;
-        forward.e[2] = leader_forward.e[2] * inverse_length;
+    f32 max_component = fmaxf(fabsf(leader_forward.e[0]), fabsf(leader_forward.e[2]));
+    if (max_component > 0.0f) {
+        f32 scaled_x = leader_forward.e[0] / max_component;
+        f32 scaled_z = leader_forward.e[2] / max_component;
+        f32 scaled_length = sqrtf(scaled_x * scaled_x + scaled_z * scaled_z);
+        if (max_component > 1.0e-6f / scaled_length) {
+            forward.e[0] = scaled_x / scaled_length;
+            forward.e[2] = scaled_z / scaled_length;
+        }
     }
     Vec3 right = vec3(-forward.e[2], 0.0f, forward.e[0]);
     out_slots[0] = leader_position;

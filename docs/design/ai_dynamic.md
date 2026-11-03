@@ -12,7 +12,7 @@
 
 ## 2. 方案取舍
 
-采用“预分配 runtime 侧车 + 同一 A* 核心”。基础 mesh 和 runtime 各有一份创建时分配的 A* 工作区，动态查询额外接收每个 base poly 的阻挡计数。A* 的堆、评分、前驱和路径压缩逻辑仍由 `break_nav_query.c` 提供，旧 `break_nav_find_path` 也改为无热路径分配。
+采用“预分配 runtime 侧车 + 同一 A* 核心”。基础 mesh 在 bake 时分配四个 A* 工作区组成有限池，runtime 另有一份创建时分配的工作区；动态查询额外接收每个 base poly 的阻挡计数。A* 的堆、评分、前驱和路径压缩逻辑仍由 `break_nav_query.c` 提供，旧 `break_nav_find_path` 通过原子 lease 使用池槽且不在热路径分配。
 
 不采用“每次变化重新烘焙高度图”：它会在 GameThread 分配大块内存，使障碍更新代价与整图大小耦合，也不能自然表达重叠障碍的独立生命周期。
 
@@ -83,7 +83,7 @@ BreakNavError break_nav_find_path_workspace(const BreakNavMesh *mesh,
                                             BreakNavPath *out);
 ```
 
-旧公共查询传入 mesh 自有工作区和 `NULL` 阻挡表；动态查询传入 runtime 工作区和计数表。查询过程只使用调用栈上的定长数组和已分配工作区，不调用 `malloc/calloc/realloc/free`。
+旧公共查询以 acquire/release 内存序从 mesh 的四槽工作区池取得 lease，并传入 `NULL` 阻挡表；每个槽同时只服务一个调用，支持有界并发与重入。池耗尽立即返回 `OVERLOAD`，不等待、不写输出；所有查询返回路径都释放 lease。动态查询仍使用 GameThread runtime 的独立工作区和计数表。查询过程只使用调用栈上的定长数组和已分配工作区，不调用 `malloc/calloc/realloc/free`。
 
 ## 6. 带速度的有界局部避障与 agent
 

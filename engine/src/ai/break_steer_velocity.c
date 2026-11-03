@@ -10,9 +10,15 @@ static bool steer_vec_ok(Vec3 value) {
 
 static Vec3 steer_clamp(Vec3 value, f32 max_speed) {
     value.e[1] = 0.0f;
-    f32 length_sq = value.e[0] * value.e[0] + value.e[2] * value.e[2];
-    if (length_sq > max_speed * max_speed && length_sq > 1.0e-20f) {
-        f32 scale = max_speed / sqrtf(length_sq);
+    f32 max_component = fmaxf(fabsf(value.e[0]), fabsf(value.e[2]));
+    if (max_component == 0.0f) {
+        return value;
+    }
+    f32 scaled_x = value.e[0] / max_component;
+    f32 scaled_z = value.e[2] / max_component;
+    f32 scaled_length = sqrtf(scaled_x * scaled_x + scaled_z * scaled_z);
+    if (max_component > max_speed / scaled_length) {
+        f32 scale = (max_speed / max_component) / scaled_length;
         value.e[0] *= scale;
         value.e[2] *= scale;
     }

@@ -140,3 +140,104 @@ cmake --build build-ai-notests -j3 --target break_ai
 - 智能对象为单预约者，不含等待队列。
 - 本轮按 focused 范围验证，未运行全仓所有非图形测试、Windows 构建或真机图形测试。
 - 未进行独立 reviewer 评审；原因是当前工具集无 Agent，不能将此限制描述为评审已通过。
+
+## 独立评审修复第 1 轮
+
+基线为 `c96310fa`。逐项保留原功能并先取得回归 RED，再做最小修复；没有把 GameThread runtime owner 限制加到旧公共并发入口。
+
+### 1. 公共 A* 查询 workspace 并发/重入
+
+覆盖测试：`engine/tests/test_break_nav_query_concurrent.c`。
+
+- 初始普通 RED：同 mesh 四线程查询 0/1，worker 返回非 OK。
+- 初始 TSan RED：实际执行 `TSAN_OPTIONS=halt_on_error=1 ./build-ai-tsan/test_break_nav_query_concurrent`，报告 `break_nav_query.c:80` 的跨线程写竞争，退出码 66。
+- 占池测试在最小 acquire 桩上 RED：套件 0/2，首个 lease 为 NULL。
+- 修复：bake 创建四个完整 workspace；`atomic_uint` 的 acquire exchange/release store 独占槽位。旧公共签名不变，无热路径分配；所有返回路径释放 lease，池满立即 `OVERLOAD` 且输出不变。动态 runtime 继续使用自己的 owner 工作区。
+- 测试调试期间，256×256 对角线在单线程前置查询也返回 `OVERLOAD`，确认触发既有 A* 堆容量限制；改为已有导航套件覆盖的直线可导航场景，没有放宽线程数、状态或端点断言。
+- GREEN：普通与 `TSAN_OPTIONS=halt_on_error=1` 直接运行均为 2/2；池耗尽和释放恢复均通过，TSan 无竞争报告。
+
+### 2. 极大有限浮点数学
+
+覆盖测试：`engine/tests/test_break_steer_velocity.c`、`engine/tests/test_break_ai_formation.c`。
+
+- 避障 RED：两个独立极值测试分别因方向归零、对角速度超过 `FLT_MAX` 失败，套件为 4/6 通过、2/6 失败。
+- 编组 RED：`FLT_MAX` forward 的槽位留在原点，套件为 3/4 通过、1/4 失败。
+- 修复：先除最大绝对 XZ 分量，再计算缩放下长度；限速比较和缩放按避免中间平方/分母溢出的顺序执行，并保留原小向量 fallback 阈值。
+- GREEN：legacy steer、velocity steer、formation 三个 focused 测试全部通过，包括原有确定性和双体积分避碰。
+
+### 3. 智能对象 release 身份
+
+覆盖测试：`engine/tests/test_break_ai_smart_object.c`。
+
+- RED：未知 Entity release 返回非 `STALE`，套件 2/3 通过、1/3 失败；未知、旧 generation、已注册非拥有者三种调用均在断言前真实执行。
+- 修复：release 在 owner 比较前验证 agent 注册。未知/旧 generation 返回 `STALE`，已注册非拥有者仍 `REJECTED`，owner 不变。
+- GREEN：智能对象 3/3。
+
+### 4. 编组 33 成员容量
+
+覆盖测试：`engine/tests/test_break_ai_formation.c`。
+
+- 原 guard 已存在，因此用安全错误合同变异验证测试缺口：临时将 33 成员的 `OVERLOAD` 改为 `STALE`，测试在容量断言 RED，套件 4/5 通过、1/5 失败。未执行越界写入变异。
+- 恢复 guard 后 GREEN：编组 5/5；输出句柄保持 sentinel，随后单成员创建使用 slot 0/generation 1，证明失败未消耗槽。
+
+### 修复轮次最终命令与结果
+
+Normal：
+
+```bash
+cmake --build build-ai -j3 --target \
+  test_break_nav_bake test_break_nav_query test_break_nav_query_concurrent \
+  test_break_nav_follow test_break_perception test_break_behavior \
+  test_break_steer test_break_ai_dynamic test_break_steer_velocity \
+  test_break_ai_agents test_break_ai_formation test_break_ai_smart_object \
+  test_cry_style_prototype
+ctest --test-dir build-ai \
+  -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_cry_style_prototype' \
+  --output-on-failure
+```
+
+实际输出：`100% tests passed, 0 tests failed out of 15`。
+
+ASan+UBSan：
+
+```bash
+cmake -S engine -B build-ai-asan -DCMAKE_BUILD_TYPE=Debug \
+  -DENGINE_ENABLE_IPO=OFF -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
+cmake --build build-ai-asan -j3 --target \
+  test_break_nav_bake test_break_nav_query test_break_nav_query_concurrent \
+  test_break_nav_follow test_break_perception test_break_behavior \
+  test_break_steer test_break_ai_dynamic test_break_steer_velocity \
+  test_break_ai_agents test_break_ai_formation test_break_ai_smart_object \
+  test_cry_style_prototype
+ctest --test-dir build-ai-asan \
+  -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_cry_style_prototype' \
+  --output-on-failure
+```
+
+实际输出：`100% tests passed, 0 tests failed out of 15`，无 ASan/UBSan 报告。
+
+TSan（包含真实四线程用例）：
+
+```bash
+cmake -S engine -B build-ai-tsan -DCMAKE_BUILD_TYPE=Debug \
+  -DENGINE_ENABLE_IPO=OFF -DENGINE_USE_TSAN=ON
+cmake --build build-ai-tsan -j3 --target \
+  test_break_nav_bake test_break_nav_query test_break_nav_query_concurrent \
+  test_break_nav_follow test_break_perception test_break_behavior \
+  test_break_steer test_break_ai_dynamic test_break_steer_velocity \
+  test_break_ai_agents test_break_ai_formation test_break_ai_smart_object \
+  test_cry_style_prototype
+TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-ai-tsan \
+  -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_cry_style_prototype' \
+  --output-on-failure
+```
+
+实际输出：`100% tests passed, 0 tests failed out of 15`；`test_break_nav_query_concurrent` 为 3/15，实际执行并通过，无 TSan 报告。
+
+另执行 `cmake --build build-ai-notests -j3 --target break_ai`，生产库重建成功；`git diff --check` 通过。
+
+### 修复轮次剩余风险
+
+- 公共 mesh 查询池固定为四槽；第五个同时/嵌套查询按合同得到 `OVERLOAD`，调用方必须处理，池不等待。每 mesh 的工作区内存随池槽数增加。
+- mesh 销毁仍必须与所有借用它的查询完成外部生命周期同步；本修复不承诺 destroy 与活跃查询并发。
+- 既有 A* 在长路径/特定开放区域对角查询上可能因堆重复项达到 `OVERLOAD`，本轮没有改写算法或掩盖该既有行为。
