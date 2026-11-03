@@ -183,6 +183,51 @@ TEST(comparison_and_branch_select_true_then_false) {
     fixture_destroy(&f);
 }
 
+TEST(equal_and_greater_comparisons_cover_true_and_false_branches) {
+    const struct {
+        BreakFlowNodeType type;
+        f32 value;
+        f32 expected;
+    } cases[4] = {
+        {BREAK_FLOW_NODE_COMPARE_EQUAL, 5.0f, 7.0f},
+        {BREAK_FLOW_NODE_COMPARE_EQUAL, 6.0f, 9.0f},
+        {BREAK_FLOW_NODE_COMPARE_GREATER, 6.0f, 7.0f},
+        {BREAK_FLOW_NODE_COMPARE_GREATER, 5.0f, 9.0f}
+    };
+    for (u32 i = 0u; i < 4u; i++) {
+        Fixture f;
+        ASSERT_TRUE(fixture_make(&f));
+        u32 event = add(&f, node(BREAK_FLOW_NODE_EVENT));
+        BreakFlowNodeDesc d = node(cases[i].type);
+        d.b = 5.0f;
+        u32 compare = add(&f, d);
+        u32 branch = add(&f, node(BREAK_FLOW_NODE_BRANCH));
+        d = node(BREAK_FLOW_NODE_ENTITY_SET_POSITION);
+        d.entity = f.actor;
+        d.a = 7.0f;
+        u32 yes = add(&f, d);
+        d.a = 9.0f;
+        u32 no = add(&f, d);
+        ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, event, BREAK_FLOW_EVENT_EXEC_OUT,
+                         branch, BREAK_FLOW_EXEC_IN));
+        ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_VALUE, event, BREAK_FLOW_EVENT_VALUE_OUT,
+                         compare, BREAK_FLOW_MATH_INPUT_A));
+        ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_VALUE, compare, BREAK_FLOW_MATH_VALUE_OUT,
+                         branch, BREAK_FLOW_BRANCH_CONDITION));
+        ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, branch, BREAK_FLOW_BRANCH_TRUE_OUT,
+                         yes, BREAK_FLOW_EXEC_IN));
+        ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, branch, BREAK_FLOW_BRANCH_FALSE_OUT,
+                         no, BREAK_FLOW_EXEC_IN));
+        BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+        ASSERT_NOT_NULL(runtime);
+        ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, cases[i].value), BREAK_FLOW_OK);
+        ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
+        ASSERT_FLOAT_EQ(position(&f).e[0], cases[i].expected, 0.0f);
+        break_flow_runtime_destroy(runtime);
+        fixture_destroy(&f);
+    }
+}
+
 TEST(delay_waits_two_ticks_and_event_queue_is_bounded) {
     Fixture f;
     ASSERT_TRUE(fixture_make(&f));
@@ -301,6 +346,135 @@ TEST(divide_by_zero_is_atomic_and_returns_failure) {
     fixture_destroy(&f);
 }
 
+TEST(delay_continuations_preserve_fifo_with_following_events) {
+    Fixture f;
+    ASSERT_TRUE(fixture_make(&f));
+    u32 event = add(&f, node(BREAK_FLOW_NODE_EVENT));
+    BreakFlowNodeDesc d = node(BREAK_FLOW_NODE_DELAY);
+    d.delay_ticks = 1u;
+    u32 delay = add(&f, d);
+    d = node(BREAK_FLOW_NODE_ENTITY_SET_POSITION);
+    d.entity = f.actor;
+    u32 set = add(&f, d);
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, event, BREAK_FLOW_EVENT_EXEC_OUT,
+                     delay, BREAK_FLOW_EXEC_IN));
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, delay, BREAK_FLOW_DELAY_EXEC_OUT,
+                     set, BREAK_FLOW_EXEC_IN));
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_VALUE, event, BREAK_FLOW_EVENT_VALUE_OUT,
+                     set, BREAK_FLOW_ACTION_INPUT_X));
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    ASSERT_NOT_NULL(runtime);
+    ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 1.0f), BREAK_FLOW_OK);
+    ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 2.0f), BREAK_FLOW_OK);
+    ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 3u);
+    ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
+    ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 7u);
+    ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 3.0f), BREAK_FLOW_OK);
+    ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 8u);
+    ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(position(&f).e[0], 2.0f, 0.0f);
+    ASSERT_EQ(break_flow_runtime_pending_count(runtime), 1u);
+    u64 after_second = break_flow_runtime_next_sequence(runtime);
+    ASSERT_TRUE(after_second > 8u);
+    ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(position(&f).e[0], 3.0f, 0.0f);
+    ASSERT_EQ(break_flow_runtime_pending_count(runtime), 0u);
+    ASSERT_EQ(break_flow_runtime_now_tick(runtime), 3u);
+    ASSERT_TRUE(break_flow_runtime_next_sequence(runtime) > after_second);
+    break_flow_runtime_destroy(runtime);
+    fixture_destroy(&f);
+}
+
+TEST(failed_sequence_restores_sequence_and_retry_has_no_duplicates_or_loss) {
+    Fixture f;
+    ASSERT_TRUE(fixture_make(&f));
+    u32 event = add(&f, node(BREAK_FLOW_NODE_EVENT));
+    u32 sequence = add(&f, node(BREAK_FLOW_NODE_SEQUENCE));
+    BreakFlowNodeDesc d = node(BREAK_FLOW_NODE_ENTITY_ADD_ITEM);
+    d.entity = f.actor;
+    d.item_id = 3u;
+    d.a = 1.0f;
+    u32 add_item = add(&f, d);
+    d = node(BREAK_FLOW_NODE_ENTITY_SET_POSITION);
+    d.entity = f.actor;
+    u32 set = add(&f, d);
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, event, BREAK_FLOW_EVENT_EXEC_OUT,
+                     sequence, BREAK_FLOW_EXEC_IN));
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, sequence, BREAK_FLOW_SEQUENCE_OUT_0,
+                     add_item, BREAK_FLOW_EXEC_IN));
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, sequence, BREAK_FLOW_SEQUENCE_OUT_1,
+                     set, BREAK_FLOW_EXEC_IN));
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_VALUE, event, BREAK_FLOW_EVENT_VALUE_OUT,
+                     set, BREAK_FLOW_ACTION_INPUT_X));
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    ASSERT_NOT_NULL(runtime);
+    ASSERT_EQ(break_game_inventory_add(f.game, f.actor, 3u, 10u), BREAK_GAME_OK);
+    ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 1.0f), BREAK_FLOW_OK);
+    ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 2.0f), BREAK_FLOW_OK);
+    ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OVERLOAD);
+    u32 count = 0u;
+    ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
+    ASSERT_EQ(count, 10u);
+    ASSERT_EQ(break_flow_runtime_pending_count(runtime), 2u);
+    ASSERT_EQ(break_flow_runtime_now_tick(runtime), 0u);
+    ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 3u);
+
+    BreakGameSpawn spawn = {1u, {{0.0f, 0.0f, 0.0f}}};
+    Entity other = ENTITY_NULL;
+    ASSERT_EQ(break_game_spawn(f.game, &spawn, &other), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_inventory_transfer(f.game, f.actor, other, 3u, 5u), BREAK_GAME_OK);
+    ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 3.0f), BREAK_FLOW_OK);
+    ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 4u);
+    ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
+    ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
+    ASSERT_EQ(count, 8u);
+    ASSERT_FLOAT_EQ(position(&f).e[0], 3.0f, 0.0f);
+    ASSERT_EQ(break_flow_runtime_pending_count(runtime), 0u);
+    ASSERT_EQ(break_flow_runtime_now_tick(runtime), 1u);
+    ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 13u);
+    break_flow_runtime_destroy(runtime);
+    fixture_destroy(&f);
+}
+
+TEST(invalid_event_value_source_rolls_back_entire_tick) {
+    Fixture f;
+    ASSERT_TRUE(fixture_make(&f));
+    u32 event_a = add(&f, node(BREAK_FLOW_NODE_EVENT));
+    BreakFlowNodeDesc d = node(BREAK_FLOW_NODE_EVENT);
+    d.event_key = 7u;
+    u32 event_b = add(&f, d);
+    u32 sequence = add(&f, node(BREAK_FLOW_NODE_SEQUENCE));
+    d = node(BREAK_FLOW_NODE_ENTITY_ADD_ITEM);
+    d.entity = f.actor;
+    d.item_id = 3u;
+    d.a = 1.0f;
+    u32 add_item = add(&f, d);
+    d = node(BREAK_FLOW_NODE_ENTITY_SET_POSITION);
+    d.entity = f.actor;
+    u32 set = add(&f, d);
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, event_a, BREAK_FLOW_EVENT_EXEC_OUT,
+                     sequence, BREAK_FLOW_EXEC_IN));
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, sequence, BREAK_FLOW_SEQUENCE_OUT_0,
+                     add_item, BREAK_FLOW_EXEC_IN));
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, sequence, BREAK_FLOW_SEQUENCE_OUT_1,
+                     set, BREAK_FLOW_EXEC_IN));
+    ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_VALUE, event_b, BREAK_FLOW_EVENT_VALUE_OUT,
+                     set, BREAK_FLOW_ACTION_INPUT_X));
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    ASSERT_NOT_NULL(runtime);
+    ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 8.0f), BREAK_FLOW_OK);
+    ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_FAILED);
+    u32 count = 99u;
+    ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
+    ASSERT_EQ(count, 0u);
+    ASSERT_FLOAT_EQ(position(&f).e[0], 1.0f, 0.0f);
+    ASSERT_EQ(break_flow_runtime_pending_count(runtime), 1u);
+    ASSERT_EQ(break_flow_runtime_now_tick(runtime), 0u);
+    ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 2u);
+    break_flow_runtime_destroy(runtime);
+    fixture_destroy(&f);
+}
+
 typedef struct {
     BreakFlowRuntime *runtime;
     Entity actor;
@@ -342,9 +516,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(event_math_and_sequence_drive_real_entity_actions);
     RUN_TEST(all_arithmetic_nodes_produce_hand_computed_results);
     RUN_TEST(comparison_and_branch_select_true_then_false);
+    RUN_TEST(equal_and_greater_comparisons_cover_true_and_false_branches);
     RUN_TEST(delay_waits_two_ticks_and_event_queue_is_bounded);
     RUN_TEST(node_budget_resumes_across_frames_without_partial_node_actions);
     RUN_TEST(action_failure_restores_world_queue_tick_and_graph_edit_requires_reset);
     RUN_TEST(divide_by_zero_is_atomic_and_returns_failure);
+    RUN_TEST(delay_continuations_preserve_fifo_with_following_events);
+    RUN_TEST(failed_sequence_restores_sequence_and_retry_has_no_duplicates_or_loss);
+    RUN_TEST(invalid_event_value_source_rolls_back_entire_tick);
     RUN_TEST(non_owner_thread_cannot_mutate_runtime);
 TEST_MAIN_END()

@@ -408,3 +408,7 @@ u32 break_flow_runtime_pending_count(const BreakFlowRuntime *runtime) {
 u64 break_flow_runtime_now_tick(const BreakFlowRuntime *runtime) {
     return runtime ? runtime->now_tick : 0u;
 }
+
+u64 break_flow_runtime_next_sequence(const BreakFlowRuntime *runtime) {
+    return runtime ? runtime->next_sequence : 0u;
+}

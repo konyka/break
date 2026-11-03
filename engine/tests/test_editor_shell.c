@@ -10747,7 +10747,91 @@ TEST(flow_panel_emitters_edit_connections_properties_and_undo)
     break_editor_shell_destroy(shell);
 }
 
+TEST(flow_panel_delay_and_action_properties_emit_undo_and_redo)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 2u));
+    BreakEditorDoc *doc = break_editor_shell_doc(shell);
+    BreakFlowNodeDesc delay;
+    memset(&delay, 0, sizeof(delay));
+    delay.type = BREAK_FLOW_NODE_DELAY;
+    delay.delay_ticks = 2u;
+    u32 delay_id = 0u;
+    ASSERT_EQ(break_editor_flow_add_node(doc, &delay, &delay_id), BREAK_FLOW_OK);
+    BreakFlowNodeDesc action;
+    memset(&action, 0, sizeof(action));
+    action.type = BREAK_FLOW_NODE_ENTITY_SET_POSITION;
+    action.entity.index = 12u;
+    action.entity.generation = 34u;
+    u32 action_id = 0u;
+    ASSERT_EQ(break_editor_flow_add_node(doc, &action, &action_id), BREAK_FLOW_OK);
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    my_widget_t *list = find(shell, "editor-flow-list");
+    ASSERT_NOT_NULL(list);
+    ASSERT_TRUE(my_widget_child_count(list) >= 2u);
+    emit_click(my_widget_get_child(list, 0u));
+    my_widget_t *edit = find(shell, "editor-flow-delay");
+    ASSERT_EQ(my_edit_set_text(edit, "5"), MY_RET_OK);
+    emit_activate(edit);
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), delay_id, &delay), BREAK_FLOW_OK);
+    ASSERT_EQ(delay.delay_ticks, 5u);
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), delay_id, &delay), BREAK_FLOW_OK);
+    ASSERT_EQ(delay.delay_ticks, 2u);
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), delay_id, &delay), BREAK_FLOW_OK);
+    ASSERT_EQ(delay.delay_ticks, 5u);
+
+    emit_click(my_widget_get_child(list, 1u));
+    edit = find(shell, "editor-flow-a");
+    ASSERT_EQ(my_edit_set_text(edit, "7"), MY_RET_OK);
+    emit_activate(edit);
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(action.a, 7.0f, 0.0f);
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(action.a, 0.0f, 0.0f);
+    ASSERT_TRUE(break_editor_redo(doc));
+    edit = find(shell, "editor-flow-b");
+    ASSERT_EQ(my_edit_set_text(edit, "8"), MY_RET_OK);
+    emit_activate(edit);
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(action.b, 8.0f, 0.0f);
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(action.b, 0.0f, 0.0f);
+    ASSERT_TRUE(break_editor_redo(doc));
+    edit = find(shell, "editor-flow-c");
+    ASSERT_EQ(my_edit_set_text(edit, "9"), MY_RET_OK);
+    emit_activate(edit);
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(action.c, 9.0f, 0.0f);
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_FLOAT_EQ(action.c, 0.0f, 0.0f);
+    ASSERT_TRUE(break_editor_redo(doc));
+    edit = find(shell, "editor-flow-entity");
+    ASSERT_EQ(my_edit_set_text(edit, "56:78"), MY_RET_OK);
+    emit_activate(edit);
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_EQ(action.entity.index, 56u);
+    ASSERT_EQ(action.entity.generation, 78u);
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_EQ(action.entity.index, 12u);
+    ASSERT_EQ(action.entity.generation, 34u);
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_flow_node_get(break_editor_doc_flow_graph(doc), action_id, &action), BREAK_FLOW_OK);
+    ASSERT_EQ(action.entity.index, 56u);
+    ASSERT_EQ(action.entity.generation, 78u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)), 7u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(flow_panel_delay_and_action_properties_emit_undo_and_redo);
     RUN_TEST(flow_panel_emitters_edit_connections_properties_and_undo);
     RUN_TEST(shell_create_and_destroy);
     RUN_TEST(scene_textures_load_list_and_hot_reload);

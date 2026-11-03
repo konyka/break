@@ -172,8 +172,9 @@ static bool dfs_visit(const BreakFlowGraph *graph, u32 id, u8 *state) {
 BreakFlowGraph *break_flow_graph_create(const BreakFlowConfig *config) {
     BreakFlowConfig effective = {BREAK_FLOW_HARD_MAX_NODES, BREAK_FLOW_HARD_MAX_LINKS};
     if (config) effective = *config;
-    if (!effective.max_nodes || !effective.max_links ||
-        effective.max_nodes > BREAK_FLOW_HARD_MAX_NODES ||
+    if (effective.max_nodes == 0u) effective.max_nodes = BREAK_FLOW_HARD_MAX_NODES;
+    if (effective.max_links == 0u) effective.max_links = BREAK_FLOW_HARD_MAX_LINKS;
+    if (effective.max_nodes > BREAK_FLOW_HARD_MAX_NODES ||
         effective.max_links > BREAK_FLOW_HARD_MAX_LINKS) return NULL;
     BreakFlowGraph *g = (BreakFlowGraph *)calloc(1u, sizeof(*g));
     if (!g) return NULL;

@@ -167,7 +167,101 @@ TEST(capacities_and_input_ranges_fail_closed) {
     break_flow_graph_destroy(g);
 }
 
+TEST(zero_config_fields_use_independent_defaults) {
+    BreakFlowConfig both_zero = {0u, 0u};
+    BreakFlowGraph *g = break_flow_graph_create(&both_zero);
+    ASSERT_NOT_NULL(g);
+    u32 id = add_node(g, BREAK_FLOW_NODE_SEQUENCE);
+    ASSERT_EQ(id, 1u);
+    break_flow_graph_destroy(g);
+
+    BreakFlowConfig nodes_default = {0u, 1u};
+    g = break_flow_graph_create(&nodes_default);
+    ASSERT_NOT_NULL(g);
+    break_flow_graph_destroy(g);
+    BreakFlowConfig links_default = {1u, 0u};
+    g = break_flow_graph_create(&links_default);
+    ASSERT_NOT_NULL(g);
+    id = add_node(g, BREAK_FLOW_NODE_SEQUENCE);
+    ASSERT_EQ(id, 1u);
+    BreakFlowNodeDesc d = node_desc(BREAK_FLOW_NODE_SEQUENCE);
+    ASSERT_EQ(break_flow_node_add(g, &d, &id), BREAK_FLOW_OVERLOAD);
+    break_flow_graph_destroy(g);
+
+    BreakFlowConfig bad_nodes = {0u, BREAK_FLOW_HARD_MAX_LINKS + 1u};
+    ASSERT_TRUE(break_flow_graph_create(&bad_nodes) == NULL);
+    BreakFlowConfig bad_links = {BREAK_FLOW_HARD_MAX_NODES + 1u, 0u};
+    ASSERT_TRUE(break_flow_graph_create(&bad_links) == NULL);
+}
+
+TEST(link_capacity_overflow_preserves_count_revision_and_next_id) {
+    BreakFlowConfig cfg = {4u, 2u};
+    BreakFlowGraph *g = break_flow_graph_create(&cfg);
+    ASSERT_NOT_NULL(g);
+    BreakFlowNodeDesc event = node_desc(BREAK_FLOW_NODE_EVENT);
+    u32 first_event = 0u, second_event = 0u;
+    ASSERT_EQ(break_flow_node_add(g, &event, &first_event), BREAK_FLOW_OK);
+    event.event_key = 2u;
+    ASSERT_EQ(break_flow_node_add(g, &event, &second_event), BREAK_FLOW_OK);
+    u32 first_sequence = add_node(g, BREAK_FLOW_NODE_SEQUENCE);
+    u32 second_sequence = add_node(g, BREAK_FLOW_NODE_SEQUENCE);
+    BreakFlowLinkDesc d = link_desc(BREAK_FLOW_PORT_EXEC, first_event,
+        BREAK_FLOW_EVENT_EXEC_OUT, first_sequence, BREAK_FLOW_EXEC_IN);
+    u32 id = 0u;
+    ASSERT_EQ(break_flow_link_add(g, &d, &id), BREAK_FLOW_OK);
+    ASSERT_EQ(id, 1u);
+    d = link_desc(BREAK_FLOW_PORT_EXEC, second_event,
+        BREAK_FLOW_EVENT_EXEC_OUT, second_sequence, BREAK_FLOW_EXEC_IN);
+    ASSERT_EQ(break_flow_link_add(g, &d, &id), BREAK_FLOW_OK);
+    ASSERT_EQ(id, 2u);
+    u64 revision = break_flow_graph_revision(g);
+    u8 before[1024], after[1024];
+    usize before_len = 0u, after_len = 0u;
+    ASSERT_EQ(break_flow_serialize(g, before, sizeof(before), &before_len), BREAK_FLOW_OK);
+    d = link_desc(BREAK_FLOW_PORT_EXEC, first_sequence,
+        BREAK_FLOW_SEQUENCE_OUT_0, second_sequence, BREAK_FLOW_EXEC_IN);
+    id = 777u;
+    ASSERT_EQ(break_flow_link_add(g, &d, &id), BREAK_FLOW_OVERLOAD);
+    ASSERT_EQ(id, 777u);
+    ASSERT_EQ(break_flow_graph_link_count(g), 2u);
+    ASSERT_EQ(break_flow_graph_revision(g), revision);
+    ASSERT_EQ(break_flow_serialize(g, after, sizeof(after), &after_len), BREAK_FLOW_OK);
+    ASSERT_EQ(after_len, before_len);
+    ASSERT_TRUE(memcmp(before, after, before_len) == 0);
+    break_flow_graph_destroy(g);
+}
+
+TEST(deepest_value_chain_validates_and_rejects_cycle_atomically) {
+    BreakFlowGraph *g = break_flow_graph_create(NULL);
+    ASSERT_NOT_NULL(g);
+    for (u32 i = 0u; i < BREAK_FLOW_HARD_MAX_NODES; i++) {
+        ASSERT_EQ(add_node(g, BREAK_FLOW_NODE_MATH_ADD), i + 1u);
+    }
+    for (u32 i = 2u; i <= BREAK_FLOW_HARD_MAX_NODES; i++) {
+        BreakFlowLinkDesc d = link_desc(BREAK_FLOW_PORT_VALUE, i - 1u,
+            BREAK_FLOW_MATH_VALUE_OUT, i, BREAK_FLOW_MATH_INPUT_A);
+        u32 id = 0u;
+        ASSERT_EQ(break_flow_link_add(g, &d, &id), BREAK_FLOW_OK);
+    }
+    ASSERT_EQ(break_flow_graph_node_count(g), BREAK_FLOW_HARD_MAX_NODES);
+    ASSERT_EQ(break_flow_graph_link_count(g), BREAK_FLOW_HARD_MAX_NODES - 1u);
+    ASSERT_EQ(break_flow_graph_validate(g), BREAK_FLOW_OK);
+    u64 revision = break_flow_graph_revision(g);
+    BreakFlowLinkDesc cycle = link_desc(BREAK_FLOW_PORT_VALUE,
+        BREAK_FLOW_HARD_MAX_NODES, BREAK_FLOW_MATH_VALUE_OUT,
+        1u, BREAK_FLOW_MATH_INPUT_A);
+    u32 id = 999u;
+    ASSERT_EQ(break_flow_link_add(g, &cycle, &id), BREAK_FLOW_REJECTED);
+    ASSERT_EQ(id, 999u);
+    ASSERT_EQ(break_flow_graph_link_count(g), BREAK_FLOW_HARD_MAX_NODES - 1u);
+    ASSERT_EQ(break_flow_graph_revision(g), revision);
+    break_flow_graph_destroy(g);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(link_capacity_overflow_preserves_count_revision_and_next_id);
+    RUN_TEST(deepest_value_chain_validates_and_rejects_cycle_atomically);
+    RUN_TEST(zero_config_fields_use_independent_defaults);
     RUN_TEST(stable_ids_survive_delete_and_iteration_is_sorted);
     RUN_TEST(explicit_ports_reject_bad_direction_kind_and_duplicate_input);
     RUN_TEST(cycle_rejection_is_atomic_for_exec_and_value_edges);

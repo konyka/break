@@ -153,6 +153,15 @@ TEST(header_length_version_count_and_truncation_are_rejected) {
     put32(bad + 28u, BREAK_FLOW_HARD_MAX_NODES + 1u);
     expect_invalid(bad, len);
     memcpy(bad, bytes, len);
+    put32(bad + 32u, BREAK_FLOW_HARD_MAX_LINKS + 1u);
+    expect_invalid(bad, len);
+    memcpy(bad, bytes, len);
+    put32(bad + 36u, 1u);
+    expect_invalid(bad, len);
+    memcpy(bad, bytes, len);
+    put32(bad + 40u, 1u);
+    expect_invalid(bad, len);
+    memcpy(bad, bytes, len);
     put32(bad + 36u, 1u);
     expect_invalid(bad, len);
     memcpy(bad, bytes, len);
@@ -225,10 +234,16 @@ TEST(link_references_ports_and_cycles_are_rejected) {
     const usize links = HEADER_SIZE + 3u * NODE_SIZE;
     u8 bad[512];
     memcpy(bad, bytes, len);
+    put32(bad + links + 8u, 99u);
+    expect_invalid(bad, len);
+    memcpy(bad, bytes, len);
     put32(bad + links + 16u, 99u);
     expect_invalid(bad, len);
     memcpy(bad, bytes, len);
     put32(bad + links + 20u, 99u);
+    expect_invalid(bad, len);
+    memcpy(bad, bytes, len);
+    put32(bad + links + LINK_SIZE, 1u);
     expect_invalid(bad, len);
     break_flow_graph_destroy(original);
 

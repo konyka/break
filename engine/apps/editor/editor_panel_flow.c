@@ -435,6 +435,7 @@ bool editor_panel_flow_build(EditorPanelFlow *panel, my_widget_t *parent) {
     if (!section) return false;
     (void)my_widget_set_layouter(section, my_layouter_linear_create(NULL, true, 2));
     panel->list = my_list_view_create(NULL);
+    if (panel->list) (void)my_widget_set_name(panel->list, "editor-flow-list");
     if (!panel->list || my_list_view_set_adapter(panel->list, &panel->adapter.base) != MY_RET_OK ||
         !add_child(section, panel->list, "w:25% h:100%")) {
         my_widget_unref(section);

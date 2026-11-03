@@ -140,3 +140,4 @@ BreakFlowError break_flow_runtime_post(BreakFlowRuntime *runtime, u32 event_key,
 BreakFlowError break_flow_runtime_tick(BreakFlowRuntime *runtime);
 u32 break_flow_runtime_pending_count(const BreakFlowRuntime *runtime);
 u64 break_flow_runtime_now_tick(const BreakFlowRuntime *runtime);
+u64 break_flow_runtime_next_sequence(const BreakFlowRuntime *runtime);
