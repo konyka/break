@@ -5,6 +5,7 @@
 #include "test_framework.h"
 #include <physics/physics.h>
 #include <math.h>
+#include <float.h>
 #include <stdint.h>
 
 /* ----------------------------------------------------------------------- */
@@ -1344,10 +1345,9 @@ TEST(null_world_api_guards)
 
 TEST(body_create_clamps_nonpositive_extents)
 {
-    /* Negative/NaN extents built an inverted AABB (min > max) that never
-     * overlapped anything: a permanent broadphase ghost. Clamped to 0. */
+    /* Negative finite extents are clamped to avoid inverted AABBs. */
     PhysicsWorld *pw = physics_world_create(8);
-    PhysicsBodyHandle b = physics_body_create(pw, vec3(0, 0, 0), vec3(-2, 1, NAN), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(0, 0, 0), vec3(-2, 1, -3), 1.0f, false, 0);
     ASSERT_TRUE(physics_body_handle_is_valid(b));
     ASSERT_TRUE(pw->bodies[b.index].half_extent.e[0] == 0.0f);
     ASSERT_TRUE(pw->bodies[b.index].half_extent.e[2] == 0.0f);
@@ -1421,6 +1421,92 @@ TEST(body_wake_entry_points_clear_sleep) {
     ASSERT_TRUE(pw->bodies[pushed.index].sleeping);
     physics_body_park(pw, support);
     ASSERT_FALSE(pw->bodies[pushed.index].sleeping);
+    physics_world_destroy(pw);
+}
+
+TEST(nonfinite_step_is_atomic) {
+    PhysicsWorld *pw = physics_world_create(4);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(1, 2, 3), vec3(0.5f, 0.5f, 0.5f), 2, false, 0);
+    pw->bodies[id.index].velocity = vec3(0.25f, 0.5f, 0.75f);
+    PhysicsWorld before = *pw;
+    RigidBody body_before = pw->bodies[id.index];
+    f32 invalid[] = { NAN, INFINITY, -INFINITY };
+    for (u32 i = 0; i < 3; i++) {
+        physics_step(pw, invalid[i]);
+        ASSERT_EQ(memcmp(pw, &before, sizeof(before)), 0);
+        ASSERT_EQ(memcmp(&pw->bodies[id.index], &body_before, sizeof(body_before)), 0);
+    }
+    physics_world_destroy(pw);
+}
+
+TEST(nonfinite_body_create_is_atomic) {
+    PhysicsWorld *pw = physics_world_create(8);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(1, 2, 3), vec3(0.5f, 0.5f, 0.5f), 2, false, 0);
+    (void)id;
+    PhysicsWorld before = *pw;
+    RigidBody bodies_before[8];
+    memcpy(bodies_before, pw->bodies, sizeof(bodies_before));
+    f32 invalid[] = { NAN, INFINITY, -INFINITY };
+    for (u32 i = 0; i < 3; i++) {
+        ASSERT_FALSE(physics_body_handle_is_valid(
+            physics_body_create(pw, vec3(invalid[i], 0, 0), vec3(1, 1, 1), 1, false, 0)));
+        ASSERT_FALSE(physics_body_handle_is_valid(
+            physics_body_create(pw, vec3(0, 0, 0), vec3(1, 1, 1), invalid[i], false, 0)));
+        ASSERT_FALSE(physics_body_handle_is_valid(
+            physics_body_create(pw, vec3(0, 0, 0), vec3(1, invalid[i], 1), 1, false, 0)));
+        ASSERT_FALSE(physics_body_handle_is_valid(
+            physics_body_create_sphere(pw, vec3(0, 0, 0), invalid[i], 1, false, 0)));
+        ASSERT_FALSE(physics_body_handle_is_valid(
+            physics_body_create_capsule(pw, vec3(0, 0, 0), 0.5f, invalid[i], 1, false, 0)));
+        ASSERT_EQ(memcmp(pw, &before, sizeof(before)), 0);
+        ASSERT_EQ(memcmp(pw->bodies, bodies_before, sizeof(bodies_before)), 0);
+    }
+    physics_world_destroy(pw);
+}
+
+TEST(nonfinite_pose_impulse_and_push_are_atomic) {
+    PhysicsWorld *pw = physics_world_create(4);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(1, 2, 3), vec3(0.5f, 0.5f, 0.5f), 2, false, 0);
+    PhysicsPose pose;
+    pose.orientation = QUAT_IDENTITY;
+    pose.angular_velocity = vec3(0, 0, 0);
+    pose.inertia_diag = vec3(1, 1, 1);
+    physics_body_set_pose(pw, id, &pose);
+    RigidBody before = pw->bodies[id.index];
+    f32 total_impulse = pw->total_impulse_applied;
+    f32 invalid[] = { NAN, INFINITY, -INFINITY };
+    for (u32 i = 0; i < 3; i++) {
+        pose.orientation.e[i] = invalid[i];
+        physics_body_set_pose(pw, id, &pose);
+        ASSERT_EQ(memcmp(&pw->bodies[id.index], &before, sizeof(before)), 0);
+        pose.orientation.e[i] = QUAT_IDENTITY.e[i];
+        pose.angular_velocity.e[i] = invalid[i];
+        physics_body_set_pose(pw, id, &pose);
+        ASSERT_EQ(memcmp(&pw->bodies[id.index], &before, sizeof(before)), 0);
+        pose.angular_velocity.e[i] = 0.0f;
+        pose.inertia_diag.e[i] = invalid[i];
+        physics_body_set_pose(pw, id, &pose);
+        ASSERT_EQ(memcmp(&pw->bodies[id.index], &before, sizeof(before)), 0);
+        pose.inertia_diag.e[i] = 1.0f;
+        physics_body_apply_impulse(pw, id, vec3(invalid[i], 0, 0));
+        ASSERT_EQ(memcmp(&pw->bodies[id.index], &before, sizeof(before)), 0);
+        ASSERT_FLOAT_EQ(pw->total_impulse_applied, total_impulse, 0.0f);
+        physics_push_body(pw, id, vec3(invalid[i], 0, 0), 1.0f);
+        ASSERT_EQ(memcmp(&pw->bodies[id.index], &before, sizeof(before)), 0);
+        physics_push_body(pw, id, vec3(1, 0, 0), invalid[i]);
+        ASSERT_EQ(memcmp(&pw->bodies[id.index], &before, sizeof(before)), 0);
+    }
+    physics_world_destroy(pw);
+}
+
+TEST(finite_extreme_inputs_stay_finite) {
+    PhysicsWorld *pw = physics_world_create(4);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(1, 2, 3), vec3(0.5f, 0.5f, 0.5f), FLT_MAX, false, 0);
+    ASSERT_TRUE(physics_body_handle_is_valid(id));
+    physics_step(pw, FLT_MIN);
+    ASSERT_TRUE(isfinite(pw->bodies[id.index].position.e[0]));
+    ASSERT_TRUE(isfinite(pw->bodies[id.index].velocity.e[1]));
+    ASSERT_TRUE(isfinite(pw->bodies[id.index].inv_mass));
     physics_world_destroy(pw);
 }
 
@@ -1506,4 +1592,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(body_create_clamps_nonpositive_extents);
     RUN_TEST(body_sleeps_and_impulse_wakes);
     RUN_TEST(body_wake_entry_points_clear_sleep);
+    RUN_TEST(nonfinite_step_is_atomic);
+    RUN_TEST(nonfinite_body_create_is_atomic);
+    RUN_TEST(nonfinite_pose_impulse_and_push_are_atomic);
+    RUN_TEST(finite_extreme_inputs_stay_finite);
 TEST_MAIN_END()

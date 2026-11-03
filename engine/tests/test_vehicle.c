@@ -141,6 +141,21 @@ TEST(vehicle_stale_destroy_preserves_reused_chassis) {
     physics_world_destroy(pw);
 }
 
+TEST(vehicle_create_rejects_nonfinite_position_atomically) {
+    PhysicsWorld *pw = physics_world_create(4);
+    PhysicsWorld world_before = *pw;
+    Vehicle untouched;
+    memset(&untouched, 0x5a, sizeof(untouched));
+    Vehicle before = untouched;
+    Vec3 invalid[] = { {{NAN, 0, 0}}, {{INFINITY, 0, 0}}, {{-INFINITY, 0, 0}} };
+    for (u32 i = 0; i < 3; i++) {
+        ASSERT_FALSE(vehicle_create(&untouched, pw, invalid[i]));
+        ASSERT_EQ(memcmp(&untouched, &before, sizeof(untouched)), 0);
+        ASSERT_EQ(memcmp(pw, &world_before, sizeof(world_before)), 0);
+    }
+    physics_world_destroy(pw);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(vehicle_suspends_drives_and_blocks_exit);
     RUN_TEST(vehicle_records_independent_wheel_contacts);
@@ -148,4 +163,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vehicle_control_is_persistent_and_rejects_nonfinite);
     RUN_TEST(vehicle_create_failure_is_atomic_and_destroy_recycles);
     RUN_TEST(vehicle_stale_destroy_preserves_reused_chassis);
+    RUN_TEST(vehicle_create_rejects_nonfinite_position_atomically);
 TEST_MAIN_END()

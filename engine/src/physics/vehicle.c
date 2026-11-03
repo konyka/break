@@ -3,6 +3,10 @@
 #include <math.h>
 #include <string.h>
 
+static bool vehicle_vec3_finite(Vec3 v) {
+    return isfinite(v.e[0]) && isfinite(v.e[1]) && isfinite(v.e[2]);
+}
+
 static Quat chassis_quat(const RigidBody *b) {
     f32 l2 = b->orientation.e[0] * b->orientation.e[0] + b->orientation.e[1] * b->orientation.e[1] +
              b->orientation.e[2] * b->orientation.e[2] + b->orientation.e[3] * b->orientation.e[3];
@@ -11,7 +15,7 @@ static Quat chassis_quat(const RigidBody *b) {
 }
 
 bool vehicle_create(Vehicle *v, PhysicsWorld *pw, Vec3 position) {
-    if (!v || !pw) return false;
+    if (!v || !pw || !vehicle_vec3_finite(position)) return false;
     Vehicle next;
     memset(&next, 0, sizeof(next));
     PhysicsBodyHandle id = physics_body_create(pw, position, vec3(0.9f, 0.35f, 1.8f), 800.0f, false, 0);
@@ -50,7 +54,9 @@ void vehicle_destroy(Vehicle *v, PhysicsWorld *pw) {
 void vehicle_step(Vehicle *v, PhysicsWorld *pw, const VehicleInput *in, f32 dt) {
     if (!v || !pw || !in) return;
     if (!isfinite(dt) || !(dt > 0.0f) || !isfinite(in->throttle) ||
-        !isfinite(in->steer) || !isfinite(in->brake)) return;
+        !isfinite(in->steer) || !isfinite(in->brake) ||
+        !isfinite(v->suspension_rest) || !isfinite(v->wheel_radius) || !isfinite(v->stiffness)) return;
+    for (u32 i = 0; i < 4; i++) if (!vehicle_vec3_finite(v->wheel_local[i])) return;
     RigidBody *b = physics_body_resolve(pw, v->chassis);
     if (!b || b->inv_mass <= 0.0f) return;
 

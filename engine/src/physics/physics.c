@@ -7,6 +7,14 @@
 
 /* SSE detection and fast_rsqrt provided by math.h via simd.h */
 
+static bool physics_vec3_finite(Vec3 v) {
+    return isfinite(v.e[0]) && isfinite(v.e[1]) && isfinite(v.e[2]);
+}
+
+static bool physics_quat_finite(Quat q) {
+    return isfinite(q.e[0]) && isfinite(q.e[1]) && isfinite(q.e[2]) && isfinite(q.e[3]);
+}
+
 AABB aabb_from_body(const RigidBody *b) {
     Vec3 ext;
     switch (b->shape) {
@@ -170,7 +178,7 @@ void physics_body_park(PhysicsWorld *pw, PhysicsBodyHandle body) {
 }
 
 PhysicsBodyHandle physics_body_revive(PhysicsWorld *pw, PhysicsBodyHandle body, f32 mass, bool is_static, u32 frame) {
-    if (!pw || !physics_body_handle_is_valid(body) || body.index >= pw->count)
+    if (!pw || !physics_body_handle_is_valid(body) || body.index >= pw->count || !isfinite(mass))
         return PHYSICS_BODY_HANDLE_INVALID;
     RigidBody *rb = &pw->bodies[body.index];
     if (!physics_body_is_parked(rb) && rb->generation != body.generation)
@@ -188,7 +196,8 @@ PhysicsBodyHandle physics_body_revive(PhysicsWorld *pw, PhysicsBodyHandle body, 
 PhysicsBodyHandle physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame) {
     u32 id;
     RigidBody *b;
-    if (!pw) return PHYSICS_BODY_HANDLE_INVALID;
+    if (!pw || !physics_vec3_finite(pos) || !physics_vec3_finite(half_ext) || !isfinite(mass))
+        return PHYSICS_BODY_HANDLE_INVALID;
     for (int i = 0; i < 3; i++) {
         if (!(half_ext.e[i] >= 0.0f)) half_ext.e[i] = 0.0f;
     }
@@ -233,7 +242,7 @@ init:
 }
 
 PhysicsBodyHandle physics_body_create_sphere(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 mass, bool is_static, u32 frame) {
-    if (!pw) return PHYSICS_BODY_HANDLE_INVALID;
+    if (!pw || !isfinite(radius)) return PHYSICS_BODY_HANDLE_INVALID;
     if (!(radius >= 0.0f)) radius = 0.0f;
     PhysicsBodyHandle id = physics_body_create(pw, pos, vec3(radius, radius, radius), mass, is_static, frame);
     if (physics_body_handle_is_valid(id)) {
@@ -245,7 +254,7 @@ PhysicsBodyHandle physics_body_create_sphere(PhysicsWorld *pw, Vec3 pos, f32 rad
 }
 
 PhysicsBodyHandle physics_body_create_capsule(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 half_height, f32 mass, bool is_static, u32 frame) {
-    if (!pw) return PHYSICS_BODY_HANDLE_INVALID;
+    if (!pw || !isfinite(radius) || !isfinite(half_height)) return PHYSICS_BODY_HANDLE_INVALID;
     if (!(radius >= 0.0f)) radius = 0.0f;
     if (!(half_height >= 0.0f)) half_height = 0.0f;
     PhysicsBodyHandle id = physics_body_create(pw, pos, vec3(radius, half_height + radius, radius), mass, is_static, frame);
@@ -281,7 +290,7 @@ bool physics_add_post_step(PhysicsWorld *pw, PhysicsPostStepFn fn, void *user) {
 
 PhysicsConstraintHandle physics_constraint_add_distance(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, f32 rest_length) {
     if (!pw || !physics_body_resolve(pw, body_a) || !physics_body_resolve(pw, body_b) ||
-        physics_body_handle_equal(body_a, body_b) || !(rest_length >= 0.0f))
+        physics_body_handle_equal(body_a, body_b) || !isfinite(rest_length) || rest_length < 0.0f)
         return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
         if (pw->constraints[i].active) continue;
@@ -303,10 +312,8 @@ PhysicsConstraintHandle physics_constraint_add_distance(PhysicsWorld *pw, Physic
 PhysicsConstraintHandle physics_constraint_add_ball(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, Vec3 anchor_a, Vec3 anchor_b) {
     if (!pw || !physics_body_resolve(pw, body_a) || !physics_body_resolve(pw, body_b) ||
         physics_body_handle_equal(body_a, body_b)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
-    for (int i = 0; i < 3; i++) {
-        if (!(anchor_a.e[i] == anchor_a.e[i]) || !(anchor_b.e[i] == anchor_b.e[i]))
-            return PHYSICS_CONSTRAINT_HANDLE_INVALID;
-    }
+    if (!physics_vec3_finite(anchor_a) || !physics_vec3_finite(anchor_b))
+        return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
         if (pw->constraints[i].active) continue;
         DistanceConstraint c;
@@ -327,7 +334,8 @@ PhysicsConstraintHandle physics_constraint_add_ball(PhysicsWorld *pw, PhysicsBod
 }
 
 void physics_body_set_pose(PhysicsWorld *pw, PhysicsBodyHandle body, const PhysicsPose *pose) {
-    if (!pose) return;
+    if (!pose || !physics_quat_finite(pose->orientation) ||
+        !physics_vec3_finite(pose->angular_velocity) || !physics_vec3_finite(pose->inertia_diag)) return;
     RigidBody *b = physics_body_resolve(pw, body);
     if (!b) return;
     physics_body_wake(pw, body);
@@ -808,6 +816,7 @@ void physics_body_wake(PhysicsWorld *pw, PhysicsBodyHandle body) {
 }
 
 void physics_body_apply_impulse(PhysicsWorld *pw, PhysicsBodyHandle body, Vec3 impulse) {
+    if (!physics_vec3_finite(impulse)) return;
     RigidBody *b = physics_body_resolve(pw, body);
     if (!b || b->is_static || b->inv_mass <= 0.0f) return;
     physics_body_wake(pw, body);
@@ -818,6 +827,7 @@ void physics_body_apply_impulse(PhysicsWorld *pw, PhysicsBodyHandle body, Vec3 i
 }
 
 void physics_push_body(PhysicsWorld *pw, PhysicsBodyHandle body, Vec3 normal, f32 depth) {
+    if (!physics_vec3_finite(normal) || !isfinite(depth)) return;
     RigidBody *b = physics_body_resolve(pw, body);
     if (!b || b->inv_mass <= 0.0f) return;
     b->position.e[0] += normal.e[0] * depth;
@@ -1499,7 +1509,7 @@ static void physics_ensure_bvh(const PhysicsWorld *pw) {
 }
 
 void physics_step(PhysicsWorld *pw, f32 dt) {
-    if (!pw) return;
+    if (!pw || !isfinite(dt)) return;
     pw->collision_count = 0;
     if (!(dt > 1e-6f)) dt = 1e-6f;
     for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
