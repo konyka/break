@@ -481,6 +481,8 @@ static void clamp_hinge(RigidBody *a, RigidBody *b, const DistanceConstraint *c)
     if (limited > c->limit_max) limited = c->limit_max;
     if (limited < c->limit_min) limited = c->limit_min;
     if (limited == angle) return;
+    b->sleeping = false;
+    b->rest_frames = 0;
     b->orientation = quat_normalize(quat_mul(qa, quat_from_axis_angle(c->hinge_axis, limited)));
     Vec3 axis_w = quat_rotate_vec3(qa, c->hinge_axis);
     f32 along = vec3_dot(b->angular_velocity, axis_w);
@@ -632,11 +634,12 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                 f32 along = vec3_dot(delta, axis);
                 Vec3 perp = vec3_sub(delta, vec3_scale(axis, along));
                 Vec3 corr = vec3_scale(perp, 1.0f / inv_total);
-                if (inv_a > 0.0f) {
+                bool moved = vec3_dot(perp, perp) > 1e-16f;
+                if (inv_a > 0.0f && moved) {
                     a->position = vec3_add(a->position, vec3_scale(corr, inv_a));
                     a->sleeping = false; a->rest_frames = 0;
                 }
-                if (inv_b > 0.0f) {
+                if (inv_b > 0.0f && moved) {
                     b->position = vec3_sub(b->position, vec3_scale(corr, inv_b));
                     b->sleeping = false; b->rest_frames = 0;
                 }
@@ -646,8 +649,15 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                     if (target > c->limit_max) target = c->limit_max;
                     f32 err = along - target;
                     Vec3 along_corr = vec3_scale(axis, err / inv_total);
-                    if (inv_a > 0.0f) a->position = vec3_add(a->position, vec3_scale(along_corr, inv_a));
-                    if (inv_b > 0.0f) b->position = vec3_sub(b->position, vec3_scale(along_corr, inv_b));
+                    moved = fabsf(err) > 1e-8f;
+                    if (inv_a > 0.0f && moved) {
+                        a->position = vec3_add(a->position, vec3_scale(along_corr, inv_a));
+                        a->sleeping = false; a->rest_frames = 0;
+                    }
+                    if (inv_b > 0.0f && moved) {
+                        b->position = vec3_sub(b->position, vec3_scale(along_corr, inv_b));
+                        b->sleeping = false; b->rest_frames = 0;
+                    }
                 }
                 continue;
             }
@@ -657,11 +667,12 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                  * angular limits are applied separately below. */
                 Vec3 err = vec3_sub(pb, pa);
                 Vec3 corr = vec3_scale(err, 1.0f / inv_total);
-                if (inv_a > 0.0f) {
+                bool moved = vec3_dot(err, err) > 1e-16f;
+                if (inv_a > 0.0f && moved) {
                     a->position = vec3_add(a->position, vec3_scale(corr, inv_a));
                     a->sleeping = false; a->rest_frames = 0;
                 }
-                if (inv_b > 0.0f) {
+                if (inv_b > 0.0f && moved) {
                     b->position = vec3_sub(b->position, vec3_scale(corr, inv_b));
                     b->sleeping = false; b->rest_frames = 0;
                 }
@@ -676,12 +687,13 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
             f32 err = len - c->rest_length;
             Vec3 n = vec3_scale(d, 1.0f / len);
             f32 corr = err / inv_total;
-            if (inv_a > 0.0f) {
+            bool moved = fabsf(err) > 1e-8f;
+            if (inv_a > 0.0f && moved) {
                 a->position = vec3_add(a->position, vec3_scale(n, corr * inv_a));
                 a->sleeping = false; a->rest_frames = 0; /* R432 pattern: we moved it, so the BVH
                                      * refit passes must not skip its AABB. */
             }
-            if (inv_b > 0.0f) {
+            if (inv_b > 0.0f && moved) {
                 b->position = vec3_sub(b->position, vec3_scale(n, corr * inv_b));
                 b->sleeping = false; b->rest_frames = 0;
             }
@@ -1487,6 +1499,8 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         Vec3 axis = vlen > 1e-8f ? quat_rotate_vec3(qa, vec3_scale(imag, 1.0f / vlen)) : vec3(0, 1, 0);
         f32 target_w = -torsion * angle / dt;
         f32 along = vec3_dot(b->angular_velocity, axis);
+        if (fabsf(angle) <= 1e-8f && fabsf(along) <= 1e-8f) continue;
+        physics_body_wake(pw, c->body_b);
         if (c->slider_damping >= 1.0f) {
             b->angular_velocity = vec3_add(b->angular_velocity, vec3_scale(axis, target_w - along));
         } else {

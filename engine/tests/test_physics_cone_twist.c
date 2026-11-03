@@ -209,6 +209,25 @@ TEST(cone_twist_limit_wakes_sleeping_body) {
     physics_world_destroy(pw);
 }
 
+TEST(cone_twist_at_rest_allows_sleep) {
+    PhysicsWorld *pw = physics_world_create(4);
+    u32 a = physics_body_create(pw, vec3(0, 3, 0), vec3(0, 0, 0), 0, true, 0);
+    u32 b = physics_body_create(pw, vec3(0, 3, 0), vec3(0, 0, 0), 1, false, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    set_pose(pw, b, QUAT_IDENTITY, vec3(0, 0, 0), vec3(1, 1, 1));
+    ConeTwistDesc d = cone_desc(a, b, vec3(1, 0, 0));
+    ASSERT_TRUE(physics_constraint_add_cone_twist(pw, &d) != UINT32_MAX);
+    for (int i = 0; i < 60; i++) physics_step(pw, 0.016f);
+    ASSERT_TRUE(pw->bodies[b].sleeping);
+    Vec3 position = pw->bodies[b].position;
+    for (int i = 0; i < 4; i++) physics_step(pw, 0.016f);
+    ASSERT_TRUE(pw->bodies[b].sleeping);
+    ASSERT_TRUE(pw->bodies[b].position.e[0] == position.e[0] &&
+                pw->bodies[b].position.e[1] == position.e[1] &&
+                pw->bodies[b].position.e[2] == position.e[2]);
+    physics_world_destroy(pw);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(cone_twist_enforces_swing_limits_and_free_range);
     RUN_TEST(cone_twist_enforces_twist_limits_and_outward_velocity);
@@ -216,4 +235,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(cone_twist_zero_inertia_is_stable);
     RUN_TEST(cone_twist_rejects_invalid_and_reuses_capacity);
     RUN_TEST(cone_twist_limit_wakes_sleeping_body);
+    RUN_TEST(cone_twist_at_rest_allows_sleep);
 TEST_MAIN_END()
