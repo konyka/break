@@ -70,7 +70,7 @@ static void apply_line(BreakEditorSettings *s, const char *b, const char *e) {
             }
         }
     } else if (span_eq(kb, ke, "bottom_tab")) {
-        (void)parse_small(vb, ve, 2u, &s->bottom_tab);
+        (void)parse_small(vb, ve, 3u, &s->bottom_tab);
     } else if (span_eq(kb, ke, "diag_tab")) {
         (void)parse_small(vb, ve, 3u, &s->diag_tab);
     } else if (span_eq(kb, ke, "snap")) {
@@ -142,7 +142,7 @@ usize break_editor_settings_serialize(const BreakEditorSettings *s, char *out,
                  s->has_lang ? "lang=" : "",
                  s->has_lang ? break_editor_i18n_lang_tag(s->lang) : "",
                  s->has_lang ? "\n" : "",
-                 (unsigned)(s->bottom_tab < 2u ? s->bottom_tab : 0u),
+                 (unsigned)(s->bottom_tab < 3u ? s->bottom_tab : 0u),
                  (unsigned)(s->diag_tab < 3u ? s->diag_tab : 0u),
                  s->snap ? "on" : "off", s->stats ? "on" : "off",
                  s->grid ? "on" : "off", s->wireframe ? "on" : "off");

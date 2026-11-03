@@ -687,12 +687,24 @@ add_library(break_game STATIC
     src/game/break_game_actions.c
     src/game/break_game_move.c
     src/game/break_game_level.c
-    src/game/break_game_area.c)
+    src/game/break_game_area.c
+    src/game/break_game_flow.c)
 set_property(TARGET break_game PROPERTY C_STANDARD 11)
 target_include_directories(break_game PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_game PUBLIC break_ecs_replication)
 if(ENGINE_PLATFORM STREQUAL "linux")
     target_link_libraries(break_game PUBLIC pthread)
+endif()
+
+add_library(break_flow STATIC
+    src/game/break_flow_graph.c
+    src/game/break_flow_serial.c
+    src/game/break_flow_runtime.c)
+set_property(TARGET break_flow PROPERTY C_STANDARD 11)
+target_include_directories(break_flow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_flow PUBLIC break_game)
+if(NOT ENGINE_PLATFORM STREQUAL "windows")
+    target_link_libraries(break_flow PUBLIC m)
 endif()
 
 # Navigation and a small behavior tree. Heightfields are plain CPU buffers;
@@ -1516,11 +1528,12 @@ target_link_libraries(break_game_lua PUBLIC break_game break_lua)
 # engine target (its platform siblings live there) and the editor
 # executable resolves platform_list_dir from libengine.a; editor tests
 # compile the TU inline instead (test_editor_assets).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c)
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
 target_link_libraries(break_editor PUBLIC break_lua)
+target_link_libraries(break_editor PUBLIC break_flow)
 target_link_libraries(break_editor PRIVATE stb_image)
 
 # Vendored stb single-header implementations are shared by the engine asset
@@ -1957,7 +1970,7 @@ engine_link_rhi_backend(dxx_break)
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
     apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-    apps/editor/editor_panel_profiler.c
+    apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
     apps/editor/editor_fonts.c
@@ -4350,7 +4363,7 @@ endif()
     endif()
     add_test(NAME test_ecs COMMAND test_ecs)
 
-    foreach(game_test IN ITEMS actor items weapons actions move level area)
+    foreach(game_test IN ITEMS actor items weapons actions move level area flow)
         add_executable(test_break_game_${game_test} tests/test_break_game_${game_test}.c)
         target_include_directories(test_break_game_${game_test} PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_game_${game_test} PRIVATE break_game)
@@ -4365,6 +4378,23 @@ endif()
         add_test(NAME test_break_game_${game_test} COMMAND test_break_game_${game_test})
         set_tests_properties(test_break_game_${game_test} PROPERTIES LABELS "headless;break_game")
     endforeach()
+
+    foreach(flow_test IN ITEMS graph serial runtime)
+        add_executable(test_break_flow_${flow_test} tests/test_break_flow_${flow_test}.c)
+        target_include_directories(test_break_flow_${flow_test} PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_flow_${flow_test} PRIVATE break_flow)
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(test_break_flow_${flow_test} PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+            target_link_libraries(test_break_flow_${flow_test} PRIVATE pthread m)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_flow_${flow_test} PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_flow_${flow_test} PRIVATE kernel32)
+        endif()
+        add_test(NAME test_break_flow_${flow_test} COMMAND test_break_flow_${flow_test})
+        set_tests_properties(test_break_flow_${flow_test} PROPERTIES LABELS "headless;break_flow")
+    endforeach()
+
     add_test(NAME test_break_game_target_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
@@ -4788,7 +4818,7 @@ endif()
     # Stage 4 scene editor Phase 1 Task 1+2+3 + Phase 2 Task 1+2 + Phase 3
     # Task 1+2 focused
     # tests. The test-only
-    # break_editor_test variant compiles the same eleven translation units
+    # break_editor_test variant compiles the same production translation units
     # with BREAK_EDITOR_TESTING=1 hooks (allocation failure injection
     # covering every editor-owned allocation: doc struct, name-slot block,
     # stack struct, stack entry array, command objects — including the
@@ -4801,13 +4831,14 @@ endif()
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break. The variant links break_lua_test (not
     # break_lua) so console-core tests share the Lua-side injection hooks.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1)
     target_link_libraries(break_editor_test PUBLIC break_ecs_replication)
     target_link_libraries(break_editor_test PUBLIC break_lua_test)
+    target_link_libraries(break_editor_test PUBLIC break_flow)
     target_link_libraries(break_editor_test PRIVATE stb_image)
 
     add_executable(test_editor_doc tests/test_editor_doc.c)
@@ -4823,6 +4854,13 @@ endif()
     target_link_libraries(test_editor_cmd PRIVATE break_editor_test)
     add_test(NAME test_editor_cmd COMMAND test_editor_cmd)
     set_tests_properties(test_editor_cmd PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_flow tests/test_editor_flow.c)
+    target_include_directories(test_editor_flow PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_flow PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_flow PRIVATE break_editor_test)
+    add_test(NAME test_editor_flow COMMAND test_editor_flow)
+    set_tests_properties(test_editor_flow PROPERTIES LABELS "headless;editor")
 
     add_executable(test_editor_scene tests/test_editor_scene.c)
     target_include_directories(test_editor_scene PRIVATE ${TEST_INCLUDE_DIRS})
@@ -4997,7 +5035,7 @@ endif()
     add_executable(test_editor_shell tests/test_editor_shell.c
         apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-        apps/editor/editor_panel_profiler.c
+        apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c
         apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
         src/platform/platform_fs.c src/core/profiler.c src/platform/time.c

@@ -107,7 +107,7 @@ TEST(serialize_round_trips)
     a.light_theme = true;
     a.has_lang = true;
     a.lang = BREAK_EDITOR_LANG_ZH_CN;
-    a.bottom_tab = 1u;
+    a.bottom_tab = 2u;
     a.diag_tab = 2u;
     a.snap = true;
     a.stats = false;
@@ -118,7 +118,7 @@ TEST(serialize_round_trips)
     ASSERT_TRUE(break_editor_settings_parse(&b, buf, n));
     ASSERT_TRUE(b.light_theme);
     ASSERT_TRUE(b.has_lang && b.lang == BREAK_EDITOR_LANG_ZH_CN);
-    ASSERT_EQ(b.bottom_tab, 1u);
+    ASSERT_EQ(b.bottom_tab, 2u);
     ASSERT_EQ(b.diag_tab, 2u);
     ASSERT_TRUE(b.snap);
     ASSERT_FALSE(b.stats);

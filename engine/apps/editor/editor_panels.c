@@ -149,6 +149,7 @@ struct BreakEditorShell {
      * under the inspector. */
     EditorPanelAssets *assets_panel;
     EditorPanelLua *lua_panel;
+    EditorPanelFlow *flow_panel;
     EditorPanelProfiler *profiler_panel;
     /* Phase 4 Task 3: network diagnostics (pure view over `remote` below;
      * diagnostics column, under the profiler). */
@@ -182,7 +183,7 @@ struct BreakEditorShell {
     struct EditorTabCtx {
         BreakEditorShell *shell;
         u32 area, index;
-    } tab_ctxs[5];
+    } tab_ctxs[6];
 
     bool palette_open;
     u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT + 2u +
@@ -2140,6 +2141,7 @@ static void shell_retranslate(BreakEditorShell *shell) {
     }
     editor_panel_assets_retranslate(shell->assets_panel);
     editor_panel_lua_retranslate(shell->lua_panel);
+    editor_panel_flow_retranslate(shell->flow_panel);
     editor_panel_profiler_retranslate(shell->profiler_panel);
     editor_panel_network_retranslate(shell->network_panel);
     editor_panel_render_retranslate(shell->render_panel);
@@ -2220,13 +2222,13 @@ void editor_shell_refresh_all(BreakEditorShell *shell) {
  * tree holds the reference, so the shell keeps no widget pointers that a
  * failed build could leave dangling. */
 static const char *const k_tab_pages[2][3] = {
-    {"editor-console", "editor-lua-panel", NULL},
+    {"editor-console", "editor-lua-panel", "editor-flow-panel"},
     {"editor-profiler-panel", "editor-network-panel", "editor-render-panel"}};
 static const BreakEditorTr k_tab_labels[2][3] = {
-    {BREAK_EDITOR_TR_TAB_CONSOLE, BREAK_EDITOR_TR_TAB_LUA, BREAK_EDITOR_TR_COUNT},
+    {BREAK_EDITOR_TR_TAB_CONSOLE, BREAK_EDITOR_TR_TAB_LUA, BREAK_EDITOR_TR_TAB_FLOW},
     {BREAK_EDITOR_TR_TAB_PROFILER, BREAK_EDITOR_TR_TAB_NETWORK,
      BREAK_EDITOR_TR_TAB_RENDER}};
-static const u32 k_tab_count[2] = {2u, 3u};
+static const u32 k_tab_count[2] = {3u, 3u};
 static const char *const k_tab_strips[2] = {"editor-bottom-tabs",
                                             "editor-diag-tabs"};
 
@@ -2642,7 +2644,7 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
             if (diag != NULL &&
                 my_widget_add_child(right_panel, diag) == MY_RET_OK) {
                 my_widget_unref(diag); /* tree holds its own reference */
-                shell_tabs_build(shell, diag, 1u, 2u);
+                shell_tabs_build(shell, diag, 1u, 3u);
                 if (!editor_panel_profiler_build(shell->profiler_panel, diag)) {
                     my_widget_unref(middle);
                     return false;
@@ -2687,7 +2689,8 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     (void)my_text_area_set_readonly(shell->console_area, true);
     (void)my_text_area_set_hint(shell->console_area, "console");
     shell_add_child(bottom, shell->console_area, "w:1f h:100%");
-    if (!editor_panel_lua_build(shell->lua_panel, bottom)) {
+    if (!editor_panel_lua_build(shell->lua_panel, bottom) ||
+        !editor_panel_flow_build(shell->flow_panel, bottom)) {
         my_widget_unref(bottom);
         return false;
     }
@@ -2808,6 +2811,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
      * error lines instead). */
     shell->assets_panel = editor_panel_assets_create(shell);
     shell->lua_panel = editor_panel_lua_create(shell);
+    shell->flow_panel = editor_panel_flow_create(shell);
     shell->profiler_panel = editor_panel_profiler_create(shell);
     /* no remote at create (DEFAULT OFF): break_editor_shell_set_remote
      * forwards later attaches to the panel */
@@ -2818,6 +2822,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         editor_panel_render_destroy(shell->render_panel);
         editor_panel_network_destroy(shell->network_panel);
         editor_panel_profiler_destroy(shell->profiler_panel);
+        editor_panel_flow_destroy(shell->flow_panel);
         editor_panel_lua_destroy(shell->lua_panel);
         editor_panel_assets_destroy(shell->assets_panel);
         break_editor_viewport3d_destroy(shell->vp3d);
@@ -2827,12 +2832,13 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         return NULL;
     }
     if (shell->assets_panel == NULL || shell->lua_panel == NULL ||
-        shell->profiler_panel == NULL || shell->network_panel == NULL ||
-        shell->render_panel == NULL) {
+        shell->flow_panel == NULL || shell->profiler_panel == NULL ||
+        shell->network_panel == NULL || shell->render_panel == NULL) {
         break_editor_scene_textures_destroy(shell->scene_textures);
         editor_panel_render_destroy(shell->render_panel);
         editor_panel_network_destroy(shell->network_panel);
         editor_panel_profiler_destroy(shell->profiler_panel);
+        editor_panel_flow_destroy(shell->flow_panel);
         editor_panel_lua_destroy(shell->lua_panel);
         editor_panel_assets_destroy(shell->assets_panel);
         break_editor_viewport3d_destroy(shell->vp3d);
@@ -2854,6 +2860,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         editor_panel_render_destroy(shell->render_panel);
         editor_panel_network_destroy(shell->network_panel);
         editor_panel_profiler_destroy(shell->profiler_panel);
+        editor_panel_flow_destroy(shell->flow_panel);
         editor_panel_lua_destroy(shell->lua_panel);
         editor_panel_assets_destroy(shell->assets_panel);
         break_editor_viewport3d_destroy(shell->vp3d);
@@ -2998,6 +3005,7 @@ bool break_editor_shell_destroy(BreakEditorShell *shell) {
     editor_panel_render_destroy(shell->render_panel);
     editor_panel_network_destroy(shell->network_panel);
     editor_panel_profiler_destroy(shell->profiler_panel);
+    editor_panel_flow_destroy(shell->flow_panel);
     editor_panel_lua_destroy(shell->lua_panel);
     editor_panel_assets_destroy(shell->assets_panel);
     break_editor_gizmo_destroy(shell->gizmo);
@@ -3514,6 +3522,7 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
      * <= 4 Hz (throttle documented in editor_panel_profiler.c); pure read,
      * never touches profiler state. */
     editor_panel_profiler_tick(shell->profiler_panel);
+    editor_panel_flow_tick(shell->flow_panel);
     /* asset browser: throttled re-list of the current directory so files
      * created/removed by external tools appear without navigating */
     editor_panel_assets_tick(shell->assets_panel);
@@ -3624,6 +3633,15 @@ usize break_editor_shell_lua_history_count(const BreakEditorShell *shell) {
     return shell != NULL
                ? editor_panel_lua_history_count(shell->lua_panel)
                : 0u;
+}
+
+usize break_editor_shell_flow_row_count(const BreakEditorShell *shell) {
+    return shell ? editor_panel_flow_row_count(shell->flow_panel) : 0u;
+}
+
+const char *break_editor_shell_flow_row_text(const BreakEditorShell *shell,
+                                             usize i) {
+    return shell ? editor_panel_flow_row_text(shell->flow_panel, i) : NULL;
 }
 
 usize break_editor_shell_profiler_row_count(const BreakEditorShell *shell) {

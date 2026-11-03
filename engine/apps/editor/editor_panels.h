@@ -357,6 +357,11 @@ bool break_editor_shell_image_preview_stats(const BreakEditorShell *shell,
  * recall, so the panel owns it — Up/Down set_text). */
 usize break_editor_shell_lua_history_count(const BreakEditorShell *shell);
 
+/* Flow Graph node rows, refreshed from the shared command-stack revision. */
+usize break_editor_shell_flow_row_count(const BreakEditorShell *shell);
+const char *break_editor_shell_flow_row_text(const BreakEditorShell *shell,
+                                             usize i);
+
 /* Profiler panel snapshot rows (top-N by duration, N <= 16, refreshed from
  * profiler_last_frame at <= 4 Hz from break_editor_shell_tick; the panel is
  * a pure view and NEVER mutates profiler state). row_text returns a borrowed

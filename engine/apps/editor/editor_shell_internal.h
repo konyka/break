@@ -30,6 +30,7 @@
 typedef struct EditorPanelAssets EditorPanelAssets;
 typedef struct EditorPanelLua EditorPanelLua;
 typedef struct EditorPanelProfiler EditorPanelProfiler;
+typedef struct EditorPanelFlow EditorPanelFlow;
 
 /* Shared shell services implemented in editor_panels.c. editor_shell_log
  * appends one bounded (<=127 visible bytes) line to the shared console ring;
@@ -87,6 +88,14 @@ EditorPanelLua *editor_panel_lua_create(BreakEditorShell *shell);
 void editor_panel_lua_destroy(EditorPanelLua *panel);
 bool editor_panel_lua_build(EditorPanelLua *panel, my_widget_t *parent);
 usize editor_panel_lua_history_count(const EditorPanelLua *panel);
+
+EditorPanelFlow *editor_panel_flow_create(BreakEditorShell *shell);
+void editor_panel_flow_destroy(EditorPanelFlow *panel);
+bool editor_panel_flow_build(EditorPanelFlow *panel, my_widget_t *parent);
+void editor_panel_flow_tick(EditorPanelFlow *panel);
+usize editor_panel_flow_row_count(const EditorPanelFlow *panel);
+const char *editor_panel_flow_row_text(const EditorPanelFlow *panel, usize i);
+void editor_panel_flow_retranslate(EditorPanelFlow *panel);
 
 /* Profiler panel — PURE VIEW over profiler_last_frame(); never mutates
  * profiler state (no enable/begin/push/pop calls). */

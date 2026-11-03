@@ -3,11 +3,12 @@
  * undo/redo core).
  *
  * A document owns exactly one ECS World (world_create at doc create,
- * world_destroy at doc destroy; engine/src/ecs/ecs.h:118-119) plus a
- * bounded entity name map and one bounded command stack. ALL document
- * mutations route through command objects
- * {apply, revert, destroy, describe(char buf[128])} pushed onto the stack,
- * so undo/redo is exact and snapshot-free (plan Global Constraints).
+ * world_destroy at doc destroy; engine/src/ecs/ecs.h:118-119), one bounded
+ * Flow Graph, a bounded entity name map and one bounded command stack. ALL
+ * document mutations route through command objects
+ * {apply, revert, destroy, describe(char buf[128])} pushed onto the stack.
+ * Entity commands are snapshot-free; Flow Graph commands carry bounded
+ * validated before/after bytes so ids, links and next-id counters are exact.
  *
  * Entity names: ECS has no entity names, so the doc owns a slot-per-index
  * name map (cap = ECS_MAX_ENTITIES entries, key = {index, generation};
