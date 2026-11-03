@@ -116,6 +116,10 @@ void anim_ik_set_active(IKSystem *ik, u32 index, bool active);
  */
 void anim_ik_solve(IKSystem *ik, Vec3 *positions, Quat *rotations,
                    const Mat4 *world_transforms, u32 bone_count);
+/* Returns false without changing TRS when ragdoll owns the pose or input is invalid. */
+bool anim_ik_solve_unless_ragdoll(IKSystem *ik, Vec3 *positions, Quat *rotations,
+                                  const Mat4 *world_transforms, u32 bone_count,
+                                  bool ragdoll_active);
 
 typedef enum AnimIkSlot {
     ANIM_IK_SLOT_AIM = 0,

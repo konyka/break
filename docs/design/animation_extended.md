@@ -12,7 +12,7 @@
 - 版本化 TRS 动画量化、解压、损坏输入校验及可证明的往返误差上界；
 - C11、固定容量、求值/编解码热路径不分配，失败不留下部分输出。
 
-布娃娃、刚体姿态写回、IK/布娃娃互斥由物理代理负责，本设计不修改 `ragdoll` 或 `physics`。不修改既有 `animation.h`、`skeleton.h` 的 API，也不把固定容量的参数与 TRS 实现称为完整 CryAnimation 等价。v1 编解码器只覆盖 `AnimClip` 的静态 TRS 数据与 loop/playing 标志；含事件的 clip 会明确拒绝，避免静默丢失事件，播放游标不作为资源数据保存。
+布娃娃驱动与刚体姿态写回仍由物理代理负责，本设计不修改 `ragdoll` 或 `physics`。动画侧新增 `anim_ik_solve_unless_ragdoll` 互斥闸门：`ragdoll_active=true` 时返回 `false` 且不改局部 TRS，释放后复用既有真实 IK 求解器。不改变既有函数签名或公共结构布局，也不把固定容量的参数与 TRS 实现称为完整 CryAnimation 等价。v1 编解码器只覆盖 `AnimClip` 的静态 TRS 数据与 loop/playing 标志；含事件的 clip 会明确拒绝，避免静默丢失事件，播放游标不作为资源数据保存。
 
 ## 2. 方案取舍
 

@@ -313,7 +313,41 @@ Restore/rebuild the unmodified sources and rerun GREEN. Record exact mutant/test
 
 ---
 
-### Task 6: Sanitizers, independent review, report, and commit
+### Task 6: Animation-side IK/ragdoll exclusion
+
+**Files:**
+- Modify: `engine/src/animation/animation.h` (additive declaration only)
+- Modify: `engine/src/animation/animation.c`
+- Create: `engine/tests/test_anim_pose_authority.c`
+- Modify: `engine/CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: existing `IKSystem`, local TRS, world matrices, and the current `ragdoll_active` boolean supplied by the GameThread owner.
+- Produces: `bool anim_ik_solve_unless_ragdoll(IKSystem *, Vec3 *, Quat *, const Mat4 *, u32, bool ragdoll_active)`.
+
+- [ ] **Step 1: Write the failing exclusion test**
+
+```c
+TEST(ragdoll_blocks_ik_without_mutating_local_pose) {
+    /* Build the existing three-joint two-bone fixture. An enabled ragdoll
+       must return false with rotations byte-identical; after release the
+       guarded result must equal a direct anim_ik_solve result. */
+}
+```
+
+- [ ] **Step 2: Run RED, then implement the minimal gate**
+
+Run: `cmake --build build-animation-normal --target test_anim_pose_authority -j3 && ./build-animation-normal/test_anim_pose_authority`
+Expected RED: missing symbol, then false return from a stub. GREEN implementation returns false before any solver call when ragdoll is active; otherwise it invokes `anim_ik_solve` and returns true. Null/empty invalid input returns false without mutation.
+
+- [ ] **Step 3: Verify exclusion and existing animation regressions**
+
+Run: `ctest --test-dir build-animation-normal --output-on-failure -R '^(test_anim_pose_authority|test_animation)$'`
+Expected: both pass. No ragdoll/physics source or header is modified.
+
+---
+
+### Task 7: Sanitizers, self review, report, and commit
 
 **Files:**
 - Create: `.superpowers/sdd/animation-extended-report.md`
