@@ -589,9 +589,9 @@ static Vec3 cone_perpendicular(Vec3 axis) {
 }
 
 static Quat cone_relative_twist(const DistanceConstraint *c, Quat qa, Quat qb) {
-    Quat da = quat_mul(qa, quat_inverse(c->reference_a));
-    Quat db = quat_mul(qb, quat_inverse(c->reference_b));
-    Quat rel = quat_mul(quat_inverse(da), db);
+    Quat current = quat_mul(quat_inverse(qa), qb);
+    Quat reference = quat_mul(quat_inverse(c->reference_a), c->reference_b);
+    Quat rel = quat_mul(current, quat_inverse(reference));
     if (rel.e[3] < 0.0f) {
         for (int i = 0; i < 4; i++) rel.e[i] = -rel.e[i];
     }
@@ -620,7 +620,7 @@ static void clamp_cone_twist(RigidBody *a, RigidBody *b, const DistanceConstrain
     axis_a = quat_rotate_vec3(qa, c->hinge_axis);
     Quat rel = cone_relative_twist(c, qa, qb);
     Vec3 imag = vec3(rel.e[0], rel.e[1], rel.e[2]);
-    f32 twist = 2.0f * atan2f(vec3_dot(imag, axis_a), rel.e[3]);
+    f32 twist = 2.0f * atan2f(vec3_dot(imag, c->hinge_axis), rel.e[3]);
     if (twist > pi) twist -= 2.0f * pi;
     if (twist < -pi) twist += 2.0f * pi;
     if (twist > c->twist_max) {

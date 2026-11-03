@@ -228,6 +228,58 @@ TEST(cone_twist_at_rest_allows_sleep) {
     physics_world_destroy(pw);
 }
 
+TEST(cone_twist_dynamic_a_uses_one_relative_frame) {
+    PhysicsWorld *pw = physics_world_create(4);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 3, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(0, 3, 0), vec3(0, 0, 0), 1, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    set_pose(pw, a, QUAT_IDENTITY, vec3(0, 0, 0), vec3(1, 1, 1));
+    set_pose(pw, b, QUAT_IDENTITY, vec3(0, 0, 0), vec3(1, 1, 1));
+    ConeTwistDesc d = cone_desc(a, b, vec3(1, 0, 0));
+    d.swing_max = PI / 2.0f;
+    d.twist_min = -PI / 9.0f;
+    d.twist_max = PI / 9.0f;
+    ASSERT_TRUE(physics_constraint_handle_is_valid(physics_constraint_add_cone_twist(pw, &d)));
+
+    Quat qa = quat_from_axis_angle(vec3(0, 0, 1), PI / 2.0f);
+    Quat world_twist = quat_from_axis_angle(vec3(0, 1, 0), PI / 4.0f);
+    Quat qb = quat_normalize(quat_mul(world_twist, qa));
+    set_pose(pw, a, qa, vec3(0, 0, 0), vec3(1, 1, 1));
+    set_pose(pw, b, qb, vec3(0, 5, 0), vec3(1, 1, 1));
+    physics_step(pw, 0.016f);
+
+    Quat relative = quat_mul(quat_inverse(pw->bodies[a.index].orientation),
+                             pw->bodies[b.index].orientation);
+    f32 twist = 2.0f * atan2f(relative.e[0], relative.e[3]);
+    ASSERT_FLOAT_EQ(twist, PI / 9.0f, 4e-3f);
+    Vec3 axis = quat_rotate_vec3(pw->bodies[a.index].orientation, vec3(1, 0, 0));
+    Vec3 relative_omega = vec3_sub(pw->bodies[b.index].angular_velocity,
+                                   pw->bodies[a.index].angular_velocity);
+    ASSERT_TRUE(vec3_dot(relative_omega, axis) <= 1e-4f);
+    ASSERT_TRUE(body_finite(&pw->bodies[a.index]));
+    ASSERT_TRUE(body_finite(&pw->bodies[b.index]));
+
+    qa = pw->bodies[a.index].orientation;
+    Quat combined = quat_mul(qa, quat_mul(
+        quat_from_axis_angle(vec3(0, 0, 1), PI / 12.0f),
+        quat_from_axis_angle(vec3(1, 0, 0), PI / 4.0f)));
+    set_pose(pw, b, combined, vec3(0, 5, 0), vec3(1, 1, 1));
+    pw->constraints[0].swing_max = PI / 18.0f;
+    physics_step(pw, 0.016f);
+    qa = pw->bodies[a.index].orientation;
+    Vec3 axis_a = quat_rotate_vec3(qa, vec3(1, 0, 0));
+    Vec3 axis_b = quat_rotate_vec3(pw->bodies[b.index].orientation, vec3(1, 0, 0));
+    f32 swing = atan2f(vec3_len(vec3_cross(axis_a, axis_b)), vec3_dot(axis_a, axis_b));
+    ASSERT_TRUE(swing <= PI / 18.0f + 4e-3f);
+    relative = quat_mul(quat_inverse(qa), pw->bodies[b.index].orientation);
+    twist = 2.0f * atan2f(relative.e[0], relative.e[3]);
+    ASSERT_TRUE(fabsf(twist) <= PI / 9.0f + 6e-3f);
+    ASSERT_TRUE(body_finite(&pw->bodies[a.index]));
+    ASSERT_TRUE(body_finite(&pw->bodies[b.index]));
+    physics_world_destroy(pw);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(cone_twist_enforces_swing_limits_and_free_range);
     RUN_TEST(cone_twist_enforces_twist_limits_and_outward_velocity);
@@ -236,4 +288,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(cone_twist_rejects_invalid_and_reuses_capacity);
     RUN_TEST(cone_twist_limit_wakes_sleeping_body);
     RUN_TEST(cone_twist_at_rest_allows_sleep);
+    RUN_TEST(cone_twist_dynamic_a_uses_one_relative_frame);
 TEST_MAIN_END()
