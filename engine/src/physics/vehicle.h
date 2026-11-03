@@ -20,14 +20,14 @@ typedef struct VehicleWheel {
     Vec3 world_position;
     Vec3 contact_point;
     Vec3 contact_normal;
-    u32 ground_body;
+    PhysicsBodyHandle ground_body;
     f32 compression;
     f32 suspension_force;
     bool grounded;
 } VehicleWheel;
 
 typedef struct Vehicle {
-    u32 chassis;
+    PhysicsBodyHandle chassis;
     f32 wheel_radius;
     Vec3 wheel_local[4];
     VehicleWheel wheels[4];

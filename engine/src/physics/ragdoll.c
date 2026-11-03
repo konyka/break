@@ -95,11 +95,11 @@ static bool validate_hierarchy(const Skeleton *sk) {
 
 static void ragdoll_rollback(Ragdoll *rd, PhysicsWorld *pw) {
     for (u32 i = 0; i < rd->bone_count; i++) {
-        if (rd->bones[i].constraint_id != UINT32_MAX)
+        if (physics_constraint_handle_is_valid(rd->bones[i].constraint_id))
             physics_constraint_remove(pw, rd->bones[i].constraint_id);
     }
     for (u32 i = 0; i < rd->bone_count; i++) {
-        if (rd->bones[i].body_id != UINT32_MAX)
+        if (physics_body_handle_is_valid(rd->bones[i].body_id))
             physics_body_park(pw, rd->bones[i].body_id);
     }
 }
@@ -143,8 +143,8 @@ bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSyste
     next.bone_count = n;
     for (u32 j = 0; j < n; j++) {
         next.bones[j].joint = j;
-        next.bones[j].body_id = UINT32_MAX;
-        next.bones[j].constraint_id = UINT32_MAX;
+        next.bones[j].body_id = PHYSICS_BODY_HANDLE_INVALID;
+        next.bones[j].constraint_id = PHYSICS_CONSTRAINT_HANDLE_INVALID;
         next.bones[j].parent_bone = sk->joint_parents[j];
         next.bones[j].local_scale = local_scale[j];
     }
@@ -159,8 +159,8 @@ bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSyste
             if (half_h < 0.01f) half_h = 0.01f;
             body_p = vec3_scale(vec3_add(world_p[j], world_p[parent]), 0.5f);
         }
-        u32 id = physics_body_create_capsule(pw, body_p, 0.05f, half_h, 1.0f, false, 0);
-        if (id == UINT32_MAX) {
+        PhysicsBodyHandle id = physics_body_create_capsule(pw, body_p, 0.05f, half_h, 1.0f, false, 0);
+        if (!physics_body_handle_is_valid(id)) {
             ragdoll_rollback(&next, pw);
             return false;
         }
@@ -179,8 +179,8 @@ bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSyste
     for (u32 j = 0; j < n; j++) {
         u32 parent = sk->joint_parents[j];
         if (parent == UINT32_MAX) continue;
-        RigidBody *a = &pw->bodies[next.bones[parent].body_id];
-        RigidBody *b = &pw->bodies[next.bones[j].body_id];
+        RigidBody *a = &pw->bodies[next.bones[parent].body_id.index];
+        RigidBody *b = &pw->bodies[next.bones[j].body_id.index];
         Quat qa = body_quat(a);
         Quat qb = body_quat(b);
         Vec3 direction = vec3_sub(world_p[j], world_p[parent]);
@@ -197,8 +197,8 @@ bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSyste
         desc.swing_max = 1.2f;
         desc.twist_min = -0.6f;
         desc.twist_max = 0.6f;
-        u32 constraint = physics_constraint_add_cone_twist(pw, &desc);
-        if (constraint == UINT32_MAX) {
+        PhysicsConstraintHandle constraint = physics_constraint_add_cone_twist(pw, &desc);
+        if (!physics_constraint_handle_is_valid(constraint)) {
             ragdoll_rollback(&next, pw);
             return false;
         }
@@ -234,9 +234,10 @@ bool ragdoll_write_local_trs(const Ragdoll *rd, const PhysicsWorld *pw,
     Vec3 local_s[RAGDOLL_MAX_BONES];
     for (u32 j = 0; j < n; j++) {
         const RagdollBone *bone = &rd->bones[j];
-        if (bone->joint != j || bone->body_id >= pw->count) return false;
-        const RigidBody *b = &pw->bodies[bone->body_id];
-        if (physics_body_is_parked(b)) return false;
+        if (bone->joint != j || !physics_body_handle_is_valid(bone->body_id) ||
+            bone->body_id.index >= pw->count) return false;
+        const RigidBody *b = &pw->bodies[bone->body_id.index];
+        if (physics_body_is_parked(b) || b->generation != bone->body_id.generation) return false;
         Quat q = body_quat(b);
         world_q[j] = quat_normalize(quat_mul(q, bone->body_to_joint_rot));
         world_p[j] = vec3_add(b->position, quat_rotate_vec3(q, bone->body_to_joint_pos));

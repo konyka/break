@@ -13,7 +13,7 @@ CharacterController character_create(Vec3 pos, f32 radius, f32 height) {
     cc.step_height = 0.3f;
     cc.grounded = false;
     cc.jump_requested = false;
-    cc.ground_body = UINT32_MAX;  /* R437: unsupported until first update */
+    cc.ground_body = PHYSICS_BODY_HANDLE_INVALID;
     return cc;
 }
 
@@ -107,7 +107,7 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
                          * body out instead. The push fully separates the
                          * pair, so the body does not feed this iteration
                          * loop (no re-detection, no jitter). */
-                        physics_push_body(pw, i, ct.normal, ct.depth);
+                        physics_push_body(pw, (PhysicsBodyHandle){i, pw->bodies[i].generation}, ct.normal, ct.depth);
                     }
                     continue;
                 }
@@ -137,7 +137,7 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
                             any = true;
                         }
                     } else {
-                        physics_push_body(pw, i, ct.normal, ct.depth);
+                        physics_push_body(pw, (PhysicsBodyHandle){i, pw->bodies[i].generation}, ct.normal, ct.depth);
                     }
                     continue;
                 }
@@ -222,9 +222,9 @@ void character_update(CharacterController *cc, PhysicsWorld *pw, f32 dt,
      * char_slide_resolve never records them as support, and parking sets
      * is_static, which this check rejects. */
     Vec3 pos = start;
-    if (cc->grounded && cc->ground_body != UINT32_MAX &&
-        !pw->bodies[cc->ground_body].is_static) {
-        pos = vec3_add(pos, vec3_scale(pw->bodies[cc->ground_body].velocity, dt));
+    RigidBody *support = physics_body_resolve(pw, cc->ground_body);
+    if (cc->grounded && support && !support->is_static) {
+        pos = vec3_add(pos, vec3_scale(support->velocity, dt));
     }
 
     /* 1) Vertical move (gravity / jump) + landing resolve. */
@@ -236,7 +236,9 @@ void character_update(CharacterController *cc, PhysicsWorld *pw, f32 dt,
     /* R437: record this frame's support for next frame's inheritance.
      * Static supports are recorded too; the inheritance check above
      * excludes them via is_static. */
-    cc->ground_body = grounded_v ? ground_body : UINT32_MAX;
+    cc->ground_body = grounded_v
+        ? (PhysicsBodyHandle){ground_body, pw->bodies[ground_body].generation}
+        : PHYSICS_BODY_HANDLE_INVALID;
 
     /* 2) Horizontal move + wall slide.
      * Compute horiz_len and inv_len together: avoids redundant fast_rsqrt call.
@@ -287,8 +289,8 @@ bool character_is_grounded(const CharacterController *cc) {
 }
 
 bool physics_sweep_test_ex(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
-                            u32 ignore_body, Vec3 *out_hit_pos, f32 *out_t,
-                            u32 *out_body, Vec3 *out_normal) {
+                            PhysicsBodyHandle ignore_body, Vec3 *out_hit_pos, f32 *out_t,
+                            PhysicsBodyHandle *out_body, Vec3 *out_normal) {
     if (!pw) return false;
     /* Reject non-finite queries (NaN/Inf): NaN comparisons pass every slab
      * test and report a phantom hit at t=0. Same policy as physics_raycast. */
@@ -335,7 +337,7 @@ bool physics_sweep_test_ex(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
 
     for (u32 ci = 0; ci < total; ci++) {
         u32 i = use_bvh ? candidates[ci] : ci;
-        if (i == ignore_body) continue;
+        if (i == ignore_body.index) continue;
         AABB box = aabb_from_body(&pw->bodies[i]);
 
         f32 tmin = 0.0f, tmax = best_t;
@@ -373,7 +375,7 @@ bool physics_sweep_test_ex(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
         Vec3 point = vec3_add(origin, vec3_scale(delta, best_t));
         if (out_t) *out_t = best_t;
         if (out_hit_pos) *out_hit_pos = point;
-        if (out_body) *out_body = best_body;
+        if (out_body) *out_body = (PhysicsBodyHandle){best_body, pw->bodies[best_body].generation};
         if (out_normal) {
             AABB box = aabb_from_body(&pw->bodies[best_body]);
             f32 nearest = 1e30f;
@@ -398,7 +400,7 @@ bool physics_sweep_test_ex(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
 }
 
 bool physics_sweep_test(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
-                         u32 ignore_body, Vec3 *out_hit_pos, f32 *out_t) {
+                         PhysicsBodyHandle ignore_body, Vec3 *out_hit_pos, f32 *out_t) {
     return physics_sweep_test_ex(pw, origin, delta, ignore_body,
                                   out_hit_pos, out_t, NULL, NULL);
 }

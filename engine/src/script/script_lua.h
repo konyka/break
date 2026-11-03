@@ -32,6 +32,10 @@ typedef struct {
     void *world;     /* World*        */
     void *physics;   /* PhysicsWorld* */
     void *input;     /* InputState*   */
+
+    u32 *body_serial;
+    u32 *body_generation;
+    u32 body_map_capacity;
 } LuaScript;
 
 /* Create the lua_State and register the `engine` table. Returns false on OOM. */

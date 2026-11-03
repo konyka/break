@@ -14,8 +14,8 @@ bool vehicle_create(Vehicle *v, PhysicsWorld *pw, Vec3 position) {
     if (!v || !pw) return false;
     Vehicle next;
     memset(&next, 0, sizeof(next));
-    u32 id = physics_body_create(pw, position, vec3(0.9f, 0.35f, 1.8f), 800.0f, false, 0);
-    if (id == UINT32_MAX) return false;
+    PhysicsBodyHandle id = physics_body_create(pw, position, vec3(0.9f, 0.35f, 1.8f), 800.0f, false, 0);
+    if (!physics_body_handle_is_valid(id)) return false;
     next.chassis = id;
     next.wheel_radius = 0.35f;
     next.suspension_rest = 0.35f;
@@ -31,7 +31,7 @@ bool vehicle_create(Vehicle *v, PhysicsWorld *pw, Vec3 position) {
     physics_body_set_pose(pw, id, &pose);
     for (u32 i = 0; i < 4; i++) {
         next.wheels[i].local_position = next.wheel_local[i];
-        next.wheels[i].ground_body = UINT32_MAX;
+        next.wheels[i].ground_body = PHYSICS_BODY_HANDLE_INVALID;
     }
     *v = next;
     return true;
@@ -39,21 +39,20 @@ bool vehicle_create(Vehicle *v, PhysicsWorld *pw, Vec3 position) {
 
 void vehicle_destroy(Vehicle *v, PhysicsWorld *pw) {
     if (!v) return;
-    if (pw && v->chassis < pw->count && !physics_body_is_parked(&pw->bodies[v->chassis]))
-        physics_body_park(pw, v->chassis);
-    v->chassis = UINT32_MAX;
+    if (pw && physics_body_resolve(pw, v->chassis)) physics_body_park(pw, v->chassis);
+    v->chassis = PHYSICS_BODY_HANDLE_INVALID;
     v->occupied = false;
     memset(&v->control, 0, sizeof(v->control));
     memset(v->wheels, 0, sizeof(v->wheels));
-    for (u32 i = 0; i < 4; i++) v->wheels[i].ground_body = UINT32_MAX;
+    for (u32 i = 0; i < 4; i++) v->wheels[i].ground_body = PHYSICS_BODY_HANDLE_INVALID;
 }
 
 void vehicle_step(Vehicle *v, PhysicsWorld *pw, const VehicleInput *in, f32 dt) {
-    if (!v || !pw || !in || v->chassis >= pw->count) return;
+    if (!v || !pw || !in) return;
     if (!isfinite(dt) || !(dt > 0.0f) || !isfinite(in->throttle) ||
         !isfinite(in->steer) || !isfinite(in->brake)) return;
-    RigidBody *b = &pw->bodies[v->chassis];
-    if (physics_body_is_parked(b) || b->inv_mass <= 0.0f) return;
+    RigidBody *b = physics_body_resolve(pw, v->chassis);
+    if (!b || b->inv_mass <= 0.0f) return;
 
     VehicleControlState control;
     control.throttle = in->throttle;
@@ -84,7 +83,7 @@ void vehicle_step(Vehicle *v, PhysicsWorld *pw, const VehicleInput *in, f32 dt) 
         wheel->world_position = vec3_add(b->position, quat_rotate_vec3(q, wheel->local_position));
         wheel->contact_point = vec3(0, 0, 0);
         wheel->contact_normal = vec3(0, 0, 0);
-        wheel->ground_body = UINT32_MAX;
+        wheel->ground_body = PHYSICS_BODY_HANDLE_INVALID;
         wheel->compression = 0.0f;
         wheel->suspension_force = 0.0f;
         wheel->grounded = false;
@@ -93,7 +92,7 @@ void vehicle_step(Vehicle *v, PhysicsWorld *pw, const VehicleInput *in, f32 dt) 
         f32 t = 1.0f;
         Vec3 hit;
         Vec3 normal;
-        u32 ground_body;
+        PhysicsBodyHandle ground_body;
         if (!physics_sweep_test_ex(pw, wheel->world_position, delta, v->chassis,
                                    &hit, &t, &ground_body, &normal)) continue;
         f32 compression = reach * (1.0f - t);
@@ -150,8 +149,9 @@ bool vehicle_enter(Vehicle *v) {
 }
 
 bool vehicle_exit(Vehicle *v, PhysicsWorld *pw, Vec3 *out_feet) {
-    if (!v || !pw || !out_feet || !v->occupied || v->chassis >= pw->count) return false;
-    RigidBody *b = &pw->bodies[v->chassis];
+    if (!v || !pw || !out_feet || !v->occupied) return false;
+    RigidBody *b = physics_body_resolve(pw, v->chassis);
+    if (!b) return false;
     Quat q = chassis_quat(b);
     Vec3 right = quat_rotate_vec3(q, vec3(1, 0, 0));
     Vec3 origin = vec3_add(b->position, vec3_scale(right, 0.2f));

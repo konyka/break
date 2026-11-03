@@ -42,8 +42,8 @@ static void set_joint_world(Skeleton *sk, u32 joint, Vec3 p, Quat q) {
     sk->current_pose[joint] = trs(p, q, vec3(1, 1, 1));
 }
 
-static void set_body_pose(PhysicsWorld *pw, u32 id, Vec3 p, Quat q) {
-    RigidBody *b = &pw->bodies[id];
+static void set_body_pose(PhysicsWorld *pw, PhysicsBodyHandle id, Vec3 p, Quat q) {
+    RigidBody *b = &pw->bodies[id.index];
     b->position = p;
     b->acceleration = vec3(0, 0, 0);
     PhysicsPose pose;
@@ -70,8 +70,8 @@ static bool mat4_near(Mat4 a, Mat4 b, f32 eps) {
 
 TEST(ragdoll_world_bodies_convert_to_local_trs) {
     PhysicsWorld *pw = physics_world_create(4);
-    u32 root_body = physics_body_create(pw, vec3(0, 0, 0), vec3(0, 0, 0), 1, false, 0);
-    u32 child_body = physics_body_create(pw, vec3(0, 0, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle root_body = physics_body_create(pw, vec3(0, 0, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle child_body = physics_body_create(pw, vec3(0, 0, 0), vec3(0, 0, 0), 1, false, 0);
     Quat root_q = quat_from_axis_angle(vec3(0, 0, 1), PI / 2.0f);
     Quat child_local_q = quat_from_axis_angle(vec3(0, 1, 0), PI / 2.0f);
     Quat child_world_q = quat_normalize(quat_mul(root_q, child_local_q));
@@ -119,8 +119,8 @@ TEST(ragdoll_world_bodies_convert_to_local_trs) {
 
 TEST(ragdoll_local_translation_removes_parent_scale) {
     PhysicsWorld *pw = physics_world_create(4);
-    u32 root_body = physics_body_create(pw, vec3(0, 0, 0), vec3(0, 0, 0), 1, false, 0);
-    u32 child_body = physics_body_create(pw, vec3(0, 0, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle root_body = physics_body_create(pw, vec3(0, 0, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle child_body = physics_body_create(pw, vec3(0, 0, 0), vec3(0, 0, 0), 1, false, 0);
     Quat root_q = quat_from_axis_angle(vec3(0, 0, 1), PI / 2.0f);
     set_body_pose(pw, root_body, vec3(1, 2, 3), root_q);
     set_body_pose(pw, child_body, vec3(-1, 2, 3), root_q);
@@ -164,8 +164,8 @@ TEST(ragdoll_activation_preserves_bind_pose_and_recycles) {
     ASSERT_TRUE(ragdoll_activate(&rd, pw, &sk, NULL));
     ASSERT_EQ(rd.bone_count, 2u);
     ASSERT_EQ(physics_constraint_count(pw), 1u);
-    u32 root_body = rd.bones[0].body_id;
-    u32 child_body = rd.bones[1].body_id;
+    PhysicsBodyHandle root_body = rd.bones[0].body_id;
+    PhysicsBodyHandle child_body = rd.bones[1].body_id;
     Vec3 local_p[2];
     Quat local_q[2];
     Vec3 local_s[2];
@@ -181,10 +181,14 @@ TEST(ragdoll_activation_preserves_bind_pose_and_recycles) {
     ASSERT_FALSE(rd.active);
     ASSERT_EQ(rd.bone_count, 0u);
     ASSERT_EQ(physics_constraint_count(pw), 0u);
-    ASSERT_TRUE(physics_body_is_parked(&pw->bodies[root_body]));
-    ASSERT_TRUE(physics_body_is_parked(&pw->bodies[child_body]));
-    ASSERT_EQ(physics_body_create(pw, vec3(0, 8, 0), vec3(1, 1, 1), 1, false, 0), root_body);
-    ASSERT_EQ(physics_body_create(pw, vec3(1, 8, 0), vec3(1, 1, 1), 1, false, 0), child_body);
+    ASSERT_TRUE(physics_body_is_parked(&pw->bodies[root_body.index]));
+    ASSERT_TRUE(physics_body_is_parked(&pw->bodies[child_body.index]));
+    PhysicsBodyHandle reused_root = physics_body_create(pw, vec3(0, 8, 0), vec3(1, 1, 1), 1, false, 0);
+    PhysicsBodyHandle reused_child = physics_body_create(pw, vec3(1, 8, 0), vec3(1, 1, 1), 1, false, 0);
+    ASSERT_EQ(reused_root.index, root_body.index);
+    ASSERT_EQ(reused_child.index, child_body.index);
+    ASSERT_NEQ(reused_root.generation, root_body.generation);
+    ASSERT_NEQ(reused_child.generation, child_body.generation);
     ragdoll_deactivate(&rd, pw);
     physics_world_destroy(pw);
 }
@@ -204,8 +208,8 @@ TEST(ragdoll_uses_real_parent_indices) {
     ASSERT_EQ(rd.bones[1].parent_bone, UINT32_MAX);
     ASSERT_EQ(rd.bones[2].parent_bone, 1u);
     ASSERT_EQ(physics_constraint_count(pw), 1u);
-    ASSERT_EQ(pw->constraints[0].body_a, rd.bones[1].body_id);
-    ASSERT_EQ(pw->constraints[0].body_b, rd.bones[2].body_id);
+    ASSERT_TRUE(physics_body_handle_equal(pw->constraints[0].body_a, rd.bones[1].body_id));
+    ASSERT_TRUE(physics_body_handle_equal(pw->constraints[0].body_b, rd.bones[2].body_id));
     ragdoll_deactivate(&rd, pw);
     ASSERT_EQ(physics_constraint_count(pw), 0u);
     physics_world_destroy(pw);
@@ -251,9 +255,9 @@ TEST(ragdoll_failures_preserve_world_and_destination) {
     for (u32 i = 0; i < 3; i++) set_joint_world(&sk, i, vec3(0, (f32)i, 0), QUAT_IDENTITY);
 
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(10, 0, 0), vec3(0, 0, 0), 1, false, 0);
-    u32 b = physics_body_create(pw, vec3(12, 0, 0), vec3(0, 0, 0), 1, false, 0);
-    for (u32 i = 0; i < 63; i++) ASSERT_TRUE(physics_constraint_add_distance(pw, a, b, 2) != UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(10, 0, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(12, 0, 0), vec3(0, 0, 0), 1, false, 0);
+    for (u32 i = 0; i < 63; i++) ASSERT_TRUE(physics_constraint_handle_is_valid(physics_constraint_add_distance(pw, a, b, 2)));
     DistanceConstraint constraints_before[PHYSICS_MAX_CONSTRAINTS];
     RigidBody bodies_before[8];
     memcpy(constraints_before, pw->constraints, sizeof(constraints_before));
@@ -296,6 +300,30 @@ TEST(ragdoll_failures_preserve_world_and_destination) {
     physics_world_destroy(pw);
 }
 
+TEST(ragdoll_stale_deactivate_preserves_reused_resources) {
+    Skeleton sk;
+    skeleton_fixture(&sk, 2);
+    sk.joint_parents[1] = 0;
+    set_joint_world(&sk, 0, vec3(0, 0, 0), QUAT_IDENTITY);
+    set_joint_world(&sk, 1, vec3(0, 1, 0), QUAT_IDENTITY);
+    PhysicsWorld *pw = physics_world_create(6);
+    Ragdoll rd;
+    memset(&rd, 0, sizeof(rd));
+    ASSERT_TRUE(ragdoll_activate(&rd, pw, &sk, NULL));
+    Ragdoll stale = rd;
+    ragdoll_deactivate(&rd, pw);
+    PhysicsBodyHandle new_a = physics_body_create(pw, vec3(10, 0, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle new_b = physics_body_create(pw, vec3(12, 0, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsConstraintHandle new_constraint = physics_constraint_add_distance(pw, new_a, new_b, 2.0f);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(new_constraint));
+    ragdoll_deactivate(&stale, pw);
+    ASSERT_FALSE(physics_body_is_parked(&pw->bodies[new_a.index]));
+    ASSERT_FALSE(physics_body_is_parked(&pw->bodies[new_b.index]));
+    ASSERT_TRUE(pw->constraints[new_constraint.index].active);
+    ASSERT_EQ(physics_constraint_count(pw), 1u);
+    physics_world_destroy(pw);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ragdoll_world_bodies_convert_to_local_trs);
     RUN_TEST(ragdoll_local_translation_removes_parent_scale);
@@ -303,4 +331,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ragdoll_uses_real_parent_indices);
     RUN_TEST(ragdoll_suspends_and_restores_ik);
     RUN_TEST(ragdoll_failures_preserve_world_and_destination);
+    RUN_TEST(ragdoll_stale_deactivate_preserves_reused_resources);
 TEST_MAIN_END()

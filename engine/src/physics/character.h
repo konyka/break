@@ -12,10 +12,9 @@ typedef struct {
     f32   step_height;
     bool  grounded;
     bool  jump_requested;
-    /* R437: body that supported the character in the last character_update
-     * vertical resolve (static supports reported too — check
-     * pw->bodies[ground_body].is_static), UINT32_MAX when unsupported. */
-    u32   ground_body;
+    /* Generation-carrying support from the last vertical resolve; invalid
+     * when unsupported. Resolve with physics_body_resolve before use. */
+    PhysicsBodyHandle ground_body;
 } CharacterController;
 
 CharacterController character_create(Vec3 pos, f32 radius, f32 height);
@@ -25,7 +24,7 @@ Vec3    character_get_position(const CharacterController *cc);
 bool    character_is_grounded(const CharacterController *cc);
 
 bool    physics_sweep_test(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
-                            u32 ignore_body, Vec3 *out_hit_pos, f32 *out_t);
+                            PhysicsBodyHandle ignore_body, Vec3 *out_hit_pos, f32 *out_t);
 bool    physics_sweep_test_ex(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
-                               u32 ignore_body, Vec3 *out_hit_pos, f32 *out_t,
-                               u32 *out_body, Vec3 *out_normal);
+                               PhysicsBodyHandle ignore_body, Vec3 *out_hit_pos, f32 *out_t,
+                               PhysicsBodyHandle *out_body, Vec3 *out_normal);

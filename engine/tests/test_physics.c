@@ -63,8 +63,8 @@ TEST(world_create_destroy)
 TEST(body_create)
 {
     PhysicsWorld *pw = physics_world_create(64);
-    u32 id = physics_body_create(pw, vec3(0,5,0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0);
-    ASSERT_EQ(id, 0u);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(0,5,0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0);
+    ASSERT_EQ(id.index, 0u);
     ASSERT_EQ(pw->count, 1u);
     ASSERT_TRUE(fabsf(pw->bodies[0].position.e[1] - 5.0f) < 0.001f);
     ASSERT_TRUE(!pw->bodies[0].is_static);
@@ -73,11 +73,13 @@ TEST(body_create)
 
 TEST(body_create_full_returns_invalid)
 {
-    /* R352: capacity exhausted must return UINT32_MAX, not pw->count. */
     PhysicsWorld *pw = physics_world_create(2);
-    ASSERT_EQ(physics_body_create(pw, vec3(0,0,0), vec3(1,1,1), 1.0f, false, 0), 0u);
-    ASSERT_EQ(physics_body_create(pw, vec3(1,0,0), vec3(1,1,1), 1.0f, false, 0), 1u);
-    ASSERT_EQ(physics_body_create(pw, vec3(2,0,0), vec3(1,1,1), 1.0f, false, 0), UINT32_MAX);
+    PhysicsBodyHandle first = physics_body_create(pw, vec3(0,0,0), vec3(1,1,1), 1.0f, false, 0);
+    PhysicsBodyHandle second = physics_body_create(pw, vec3(1,0,0), vec3(1,1,1), 1.0f, false, 0);
+    ASSERT_EQ(first.index, 0u);
+    ASSERT_EQ(second.index, 1u);
+    ASSERT_FALSE(physics_body_handle_is_valid(
+        physics_body_create(pw, vec3(2,0,0), vec3(1,1,1), 1.0f, false, 0)));
     ASSERT_EQ(pw->count, 2u);
     physics_world_destroy(pw);
 }
@@ -86,8 +88,10 @@ TEST(body_create_reuses_del_parked_slot)
 {
     /* R376/R377: Del parks with spawn_frame=UINT32_MAX; create must reuse. */
     PhysicsWorld *pw = physics_world_create(2);
-    ASSERT_EQ(physics_body_create(pw, vec3(0,-2,0), vec3(20,0.5f,20), 0.0f, true, 0), 0u);
-    ASSERT_EQ(physics_body_create(pw, vec3(1,5,0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0), 1u);
+    PhysicsBodyHandle ground = physics_body_create(pw, vec3(0,-2,0), vec3(20,0.5f,20), 0.0f, true, 0);
+    PhysicsBodyHandle dynamic = physics_body_create(pw, vec3(1,5,0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0);
+    ASSERT_EQ(ground.index, 0u);
+    ASSERT_EQ(dynamic.index, 1u);
     RigidBody *park = &pw->bodies[1];
     park->is_static = true;
     park->mass = 0.0f;
@@ -95,8 +99,8 @@ TEST(body_create_reuses_del_parked_slot)
     park->position = vec3(0, -1000.0f, 0);
     park->spawn_frame = UINT32_MAX;
     ASSERT_TRUE(physics_body_is_parked(park));
-    u32 id = physics_body_create(pw, vec3(2, 8, 0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 1);
-    ASSERT_EQ(id, 1u);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(2, 8, 0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 1);
+    ASSERT_EQ(id.index, 1u);
     ASSERT_EQ(pw->count, 2u);
     ASSERT_TRUE(!pw->bodies[1].is_static);
     ASSERT_TRUE(pw->bodies[1].mass == 1.0f);
@@ -108,8 +112,8 @@ TEST(body_create_reuses_del_parked_slot)
 TEST(body_static)
 {
     PhysicsWorld *pw = physics_world_create(64);
-    u32 id = physics_body_create(pw, vec3(0,0,0), vec3(10,0.1f,10), 0.0f, true, 0);
-    ASSERT_EQ(id, 0u);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(0,0,0), vec3(10,0.1f,10), 0.0f, true, 0);
+    ASSERT_EQ(id.index, 0u);
     ASSERT_TRUE(pw->bodies[0].is_static);
     ASSERT_TRUE(pw->bodies[0].mass == 0.0f);
     physics_world_destroy(pw);
@@ -132,19 +136,19 @@ TEST(gravity_fall)
 TEST(impulse)
 {
     PhysicsWorld *pw = physics_world_create(64);
-    u32 id = physics_body_create(pw, vec3(0,0,0), vec3(0.5f,0.5f,0.5f), 2.0f, false, 0);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(0,0,0), vec3(0.5f,0.5f,0.5f), 2.0f, false, 0);
     /* Apply upward impulse: F=20N, mass=2kg -> dv=10 m/s */
     physics_body_apply_impulse(pw, id, vec3(0, 20.0f, 0));
-    ASSERT_TRUE(pw->bodies[id].velocity.e[1] > 9.0f);
+    ASSERT_TRUE(pw->bodies[id.index].velocity.e[1] > 9.0f);
     physics_world_destroy(pw);
 }
 
 TEST(impulse_static_ignored)
 {
     PhysicsWorld *pw = physics_world_create(64);
-    u32 id = physics_body_create(pw, vec3(0,0,0), vec3(1,1,1), 0.0f, true, 0);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(0,0,0), vec3(1,1,1), 0.0f, true, 0);
     physics_body_apply_impulse(pw, id, vec3(100, 100, 100));
-    ASSERT_TRUE(fabsf(pw->bodies[id].velocity.e[0]) < 0.001f);
+    ASSERT_TRUE(fabsf(pw->bodies[id.index].velocity.e[0]) < 0.001f);
     physics_world_destroy(pw);
 }
 
@@ -168,18 +172,18 @@ TEST(collision_resolves_approach_velocity)
      * impulse. Before the fix the inverted guard skipped the impulse whenever the
      * bodies were approaching, leaving the closing velocity untouched. */
     PhysicsWorld *pw = physics_world_create(64);
-    u32 a = physics_body_create(pw, vec3(-0.9f, 0, 0), vec3(1,1,1), 1.0f, false, 0);
-    u32 b = physics_body_create(pw, vec3( 0.9f, 0, 0), vec3(1,1,1), 1.0f, false, 0);
-    pw->bodies[a].velocity = vec3( 5, 0, 0);  /* A moving +X toward B */
-    pw->bodies[b].velocity = vec3(-5, 0, 0);  /* B moving -X toward A */
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(-0.9f, 0, 0), vec3(1,1,1), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3( 0.9f, 0, 0), vec3(1,1,1), 1.0f, false, 0);
+    pw->bodies[a.index].velocity = vec3( 5, 0, 0);  /* A moving +X toward B */
+    pw->bodies[b.index].velocity = vec3(-5, 0, 0);  /* B moving -X toward A */
 
     physics_step(pw, 1.0f/60.0f);
 
     ASSERT_TRUE(pw->collision_count > 0);
     /* A was closing at +4.9 (post-damping). Resolved it must no longer race
      * toward B; with restitution 0.3 it reverses to ~-1.5. Buggy code left ~+4.9. */
-    ASSERT_TRUE(pw->bodies[a].velocity.e[0] < 1.0f);
-    ASSERT_TRUE(pw->bodies[b].velocity.e[0] > -1.0f);
+    ASSERT_TRUE(pw->bodies[a.index].velocity.e[0] < 1.0f);
+    ASSERT_TRUE(pw->bodies[b.index].velocity.e[0] > -1.0f);
     physics_world_destroy(pw);
 }
 
@@ -190,12 +194,12 @@ TEST(same_frame_contact_no_tunnel)
      * frame's motion; pre-fix the pair query used the pre-integration tree and
      * registered the contact a frame late. */
     PhysicsWorld *pw = physics_world_create(64);
-    u32 a = physics_body_create(pw, vec3(-1.0f, 0, 0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0);
-    u32 b = physics_body_create(pw, vec3( 1.0f, 0, 0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0);
-    pw->bodies[a].acceleration = vec3(0, 0, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    pw->bodies[a].velocity = vec3( 12, 0, 0);  /* A moving +X toward B */
-    pw->bodies[b].velocity = vec3(-12, 0, 0);  /* B moving -X toward A */
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(-1.0f, 0, 0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3( 1.0f, 0, 0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[a.index].velocity = vec3( 12, 0, 0);  /* A moving +X toward B */
+    pw->bodies[b.index].velocity = vec3(-12, 0, 0);  /* B moving -X toward A */
 
     /* ~0.19 m/frame each: frames 1-2 still leave a gap, frame 3 carries the
      * boxes into overlap and must register the contact in that same step. */
@@ -206,7 +210,7 @@ TEST(same_frame_contact_no_tunnel)
     physics_step(pw, 1.0f/60.0f);
     ASSERT_TRUE(pw->collision_count > 0);
     /* Contact resolved same-frame — the boxes did not pass through each other. */
-    ASSERT_TRUE(pw->bodies[a].position.e[0] < pw->bodies[b].position.e[0]);
+    ASSERT_TRUE(pw->bodies[a.index].position.e[0] < pw->bodies[b.index].position.e[0]);
     physics_world_destroy(pw);
 }
 
@@ -217,15 +221,15 @@ TEST(low_speed_landing_does_not_bounce)
      * rebound left over. Before, restitution 0.3 gave a 0.3x rebound on every
      * contact, so slow landings re-bounced several times. */
     PhysicsWorld *pw = physics_world_create(64);
-    u32 floor_id = physics_body_create(pw, vec3(0, -1.5f, 0), vec3(5, 0.5f, 5), 0.0f, true, 0);
-    u32 box = physics_body_create(pw, vec3(0, -0.48f, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle floor_id = physics_body_create(pw, vec3(0, -1.5f, 0), vec3(5, 0.5f, 5), 0.0f, true, 0);
+    PhysicsBodyHandle box = physics_body_create(pw, vec3(0, -0.48f, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
     (void)floor_id;
-    pw->bodies[box].acceleration = vec3(0, 0, 0);
-    pw->bodies[box].velocity = vec3(0, -2.0f, 0);
+    pw->bodies[box.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[box.index].velocity = vec3(0, -2.0f, 0);
     physics_step(pw, 1.0f/60.0f);
     ASSERT_TRUE(pw->collision_count > 0);
-    ASSERT_TRUE(pw->bodies[box].velocity.e[1] <= 0.0f);
-    ASSERT_TRUE(pw->bodies[box].velocity.e[1] > -0.5f);
+    ASSERT_TRUE(pw->bodies[box.index].velocity.e[1] <= 0.0f);
+    ASSERT_TRUE(pw->bodies[box.index].velocity.e[1] > -0.5f);
     physics_world_destroy(pw);
 }
 
@@ -234,12 +238,12 @@ TEST(high_speed_landing_still_bounces)
     /* R696: above the threshold the contact keeps its restitution. */
     PhysicsWorld *pw = physics_world_create(64);
     physics_body_create(pw, vec3(0, -1.5f, 0), vec3(5, 0.5f, 5), 0.0f, true, 0);
-    u32 box = physics_body_create(pw, vec3(0, -0.46f, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    pw->bodies[box].acceleration = vec3(0, 0, 0);
-    pw->bodies[box].velocity = vec3(0, -8.0f, 0);
+    PhysicsBodyHandle box = physics_body_create(pw, vec3(0, -0.46f, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[box.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[box.index].velocity = vec3(0, -8.0f, 0);
     physics_step(pw, 1.0f/60.0f);
     ASSERT_TRUE(pw->collision_count > 0);
-    ASSERT_TRUE(pw->bodies[box].velocity.e[1] > 1.0f);
+    ASSERT_TRUE(pw->bodies[box.index].velocity.e[1] > 1.0f);
     physics_world_destroy(pw);
 }
 
@@ -262,11 +266,11 @@ TEST(raycast_hit)
     /* Force BVH rebuild */
     physics_step(pw, 0.001f);
 
-    u32 hit_body = 0;
+    PhysicsBodyHandle hit_body = {0};
     f32 hit_t = 0;
     bool hit = physics_raycast(pw, vec3(0,0,0), vec3(1,0,0), 100.0f, &hit_body, &hit_t);
     ASSERT_TRUE(hit);
-    ASSERT_EQ(hit_body, 0u);
+    ASSERT_EQ(hit_body.index, 0u);
     ASSERT_TRUE(hit_t > 0.0f);
     physics_world_destroy(pw);
 }
@@ -511,12 +515,12 @@ TEST(physics_empty_world_raycast)
 TEST(physics_zero_velocity_body)
 {
     PhysicsWorld *pw = physics_world_create(64);
-    u32 id = physics_body_create(pw, vec3(0,0,0), vec3(1,1,1), 1.0f, false, 0);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(0,0,0), vec3(1,1,1), 1.0f, false, 0);
 
     /* Body with zero velocity should not move without forces */
-    Vec3 pos0 = pw->bodies[id].position;
+    Vec3 pos0 = pw->bodies[id.index].position;
     physics_step(pw, 1.0f/60.0f);
-    Vec3 pos1 = pw->bodies[id].position;
+    Vec3 pos1 = pw->bodies[id.index].position;
 
     /* Position should change due to gravity */
     ASSERT_TRUE(pos1.e[1] < pos0.e[1]);
@@ -548,11 +552,11 @@ TEST(physics_body_at_origin_raycast)
     physics_body_create(pw, vec3(0,0,0), vec3(1,1,1), 1.0f, false, 0);
     physics_step(pw, 0.001f);
 
-    u32 hit_body = 999;
+    PhysicsBodyHandle hit_body = {999, 1};
     f32 hit_t = -1.0f;
     bool hit = physics_raycast(pw, vec3(-5,0,0), vec3(1,0,0), 100.0f, &hit_body, &hit_t);
     ASSERT_TRUE(hit);
-    ASSERT_EQ(hit_body, 0u);
+    ASSERT_EQ(hit_body.index, 0u);
     physics_world_destroy(pw);
 }
 
@@ -572,12 +576,12 @@ TEST(physics_very_large_mass)
 {
     PhysicsWorld *pw = physics_world_create(64);
     /* Very large mass body */
-    u32 id = physics_body_create(pw, vec3(0,0,0), vec3(1,1,1), 1e10f, false, 0);
-    ASSERT_EQ(id, 0u);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(0,0,0), vec3(1,1,1), 1e10f, false, 0);
+    ASSERT_EQ(id.index, 0u);
 
     /* Apply small impulse to very heavy body - should barely move */
     physics_body_apply_impulse(pw, id, vec3(1.0f, 0.0f, 0.0f));
-    ASSERT_TRUE(fabsf(pw->bodies[id].velocity.e[0]) < 1e-6f);
+    ASSERT_TRUE(fabsf(pw->bodies[id.index].velocity.e[0]) < 1e-6f);
     physics_world_destroy(pw);
 }
 
@@ -763,33 +767,33 @@ TEST(contact_shove_resets_rest_frames)
     physics_set_contact_callback(pw, test_on_contact_pair, NULL);
 
     /* A: dynamic, no gravity, starts at rest away from everything. */
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
     /* B: static shover, parked far away until the shove. */
-    u32 b = physics_body_create(pw, vec3(50, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(50, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
     /* C: dynamic probe, no gravity, parked far away. */
-    u32 c = physics_body_create(pw, vec3(60, 0, 0), vec3(0.25f, 0.25f, 0.25f), 1.0f, false, 0);
-    pw->bodies[a].acceleration = vec3(0, 0, 0);
-    pw->bodies[c].acceleration = vec3(0, 0, 0);
+    PhysicsBodyHandle c = physics_body_create(pw, vec3(60, 0, 0), vec3(0.25f, 0.25f, 0.25f), 1.0f, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[c.index].acceleration = vec3(0, 0, 0);
 
     /* Let A (and C) settle into deep rest: rest_frames > 2. */
     for (int i = 0; i < 4; i++) physics_step(pw, 1.0f / 60.0f);
-    ASSERT_TRUE(pw->bodies[a].rest_frames > 2);
+    ASSERT_TRUE(pw->bodies[a.index].rest_frames > 2);
 
     /* Shove: teleport static B into A (overlap depth 0.4) and rebuild so B's
      * own AABB is current. The contact position-corrects A out of the way. */
-    pw->bodies[b].position = vec3(0.6f, 0, 0);
+    pw->bodies[b.index].position = vec3(0.6f, 0, 0);
     pw->bvh_dirty = true;
     physics_step(pw, 1.0f / 60.0f);
-    ASSERT_TRUE(pw->bodies[a].position.e[0] < -0.1f);  /* actually moved */
-    ASSERT_EQ(pw->bodies[a].rest_frames, 0u);           /* the R432 fix */
+    ASSERT_TRUE(pw->bodies[a.index].position.e[0] < -0.1f);  /* actually moved */
+    ASSERT_EQ(pw->bodies[a.index].rest_frames, 0u);           /* the R432 fix */
 
     /* Probe at A's NEW position: C's box [-1.05,-0.55] overlaps A's new box
      * [-0.9,0.1] but not A's stale box [-0.5,0.5] — the pair is only detected
      * if the refit pass tracked A to its new spot. */
-    pw->bodies[c].position = vec3(-0.8f, 0, 0);
-    pw->bodies[c].velocity = vec3(0, 0, 0);
-    pw->bodies[c].rest_frames = 0; /* teleported: let the refit track C */
-    g_pair_a = a; g_pair_b = c; g_pair_hits = 0;
+    pw->bodies[c.index].position = vec3(-0.8f, 0, 0);
+    pw->bodies[c.index].velocity = vec3(0, 0, 0);
+    pw->bodies[c.index].rest_frames = 0; /* teleported: let the refit track C */
+    g_pair_a = a.index; g_pair_b = c.index; g_pair_hits = 0;
     physics_step(pw, 1.0f / 60.0f);
     ASSERT_TRUE(g_pair_hits > 0);
 
@@ -802,13 +806,13 @@ TEST(ccd_prevents_tunnel)
     /* Thin static wall at x=5 (left face x=4.9). */
     physics_body_create(pw, vec3(5, 0, 0), vec3(0.1f, 5, 5), 0.0f, true, 0);
     /* Fast sphere headed straight at it with CCD on. */
-    u32 id = physics_body_create_sphere(pw, vec3(0, 0, 0), 0.5f, 1.0f, false, 0);
+    PhysicsBodyHandle id = physics_body_create_sphere(pw, vec3(0, 0, 0), 0.5f, 1.0f, false, 0);
     physics_body_set_ccd(pw, id, true);
-    pw->bodies[id].velocity = vec3(1000, 0, 0);
+    pw->bodies[id.index].velocity = vec3(1000, 0, 0);
 
     physics_step(pw, 0.1f); /* would advance ~98 units without CCD */
     /* CCD must stop the body before passing through the wall. */
-    ASSERT_TRUE(pw->bodies[id].position.e[0] < 5.0f);
+    ASSERT_TRUE(pw->bodies[id.index].position.e[0] < 5.0f);
     physics_world_destroy(pw);
 }
 
@@ -816,11 +820,11 @@ TEST(no_ccd_tunnels)
 {
     PhysicsWorld *pw = physics_world_create(64);
     physics_body_create(pw, vec3(5, 0, 0), vec3(0.1f, 5, 5), 0.0f, true, 0);
-    u32 id = physics_body_create_sphere(pw, vec3(0, 0, 0), 0.5f, 1.0f, false, 0);
+    PhysicsBodyHandle id = physics_body_create_sphere(pw, vec3(0, 0, 0), 0.5f, 1.0f, false, 0);
     /* CCD disabled (default): single big step tunnels through the thin wall. */
-    pw->bodies[id].velocity = vec3(1000, 0, 0);
+    pw->bodies[id.index].velocity = vec3(1000, 0, 0);
     physics_step(pw, 0.1f);
-    ASSERT_TRUE(pw->bodies[id].position.e[0] > 5.0f);
+    ASSERT_TRUE(pw->bodies[id.index].position.e[0] > 5.0f);
     physics_world_destroy(pw);
 }
 
@@ -834,16 +838,16 @@ TEST(ccd_capsule_axis_no_tunnel)
     /* Thin horizontal static ceiling spanning y in [9.9, 10.1]. */
     physics_body_create(pw, vec3(0, 10, 0), vec3(5, 0.1f, 5), 0.0f, true, 0);
     /* Upright capsule: half_height 1.0, radius 0.5 -> cap tip 1.5 above center. */
-    u32 id = physics_body_create_capsule(pw, vec3(0, 0, 0), 0.5f, 1.0f, 1.0f, false, 0);
+    PhysicsBodyHandle id = physics_body_create_capsule(pw, vec3(0, 0, 0), 0.5f, 1.0f, 1.0f, false, 0);
     physics_body_set_ccd(pw, id, true);
-    pw->bodies[id].velocity = vec3(0, 1000, 0); /* ~100 units up in one step */
+    pw->bodies[id.index].velocity = vec3(0, 1000, 0); /* ~100 units up in one step */
 
     physics_step(pw, 0.1f);
 
     /* Cap tip must stay below the ceiling. With the old radius-only bound the
      * center stopped at ~9.3 and the tip reached ~10.8 (through the ceiling);
      * with half_height+radius it stops at ~8.3 and the tip rests near 9.8. */
-    f32 tip = pw->bodies[id].position.e[1] + 1.0f + 0.5f;
+    f32 tip = pw->bodies[id.index].position.e[1] + 1.0f + 0.5f;
     ASSERT_TRUE(tip < 10.0f);
     physics_world_destroy(pw);
 }
@@ -858,15 +862,15 @@ TEST(ccd_dynamic_no_tunnel)
      * ccd_prevents_tunnel with the static wall replaced by a free (currently
      * stationary) dynamic thin box. */
     PhysicsWorld *pw = physics_world_create(64);
-    u32 wall = physics_body_create(pw, vec3(5, 0, 0), vec3(0.1f, 5, 5), 1.0f, false, 0);
-    pw->bodies[wall].acceleration = vec3(0, 0, 0);
-    u32 id = physics_body_create_sphere(pw, vec3(0, 0, 0), 0.5f, 1.0f, false, 0);
-    pw->bodies[id].acceleration = vec3(0, 0, 0);
+    PhysicsBodyHandle wall = physics_body_create(pw, vec3(5, 0, 0), vec3(0.1f, 5, 5), 1.0f, false, 0);
+    pw->bodies[wall.index].acceleration = vec3(0, 0, 0);
+    PhysicsBodyHandle id = physics_body_create_sphere(pw, vec3(0, 0, 0), 0.5f, 1.0f, false, 0);
+    pw->bodies[id.index].acceleration = vec3(0, 0, 0);
     physics_body_set_ccd(pw, id, true);
-    pw->bodies[id].velocity = vec3(1000, 0, 0);
+    pw->bodies[id.index].velocity = vec3(1000, 0, 0);
 
     physics_step(pw, 0.1f); /* would advance ~98 units without CCD */
-    ASSERT_TRUE(pw->bodies[id].position.e[0] < 5.0f);
+    ASSERT_TRUE(pw->bodies[id.index].position.e[0] < 5.0f);
     physics_world_destroy(pw);
 }
 
@@ -877,16 +881,16 @@ TEST(ccd_dynamic_head_on_no_tunnel)
      * crossing even though the mover starts INSIDE the opponent's swept AABB
      * (handled as a t=0 touch: the mover holds position this frame). */
     PhysicsWorld *pw = physics_world_create(64);
-    u32 a = physics_body_create_sphere(pw, vec3(-10, 0, 0), 0.5f, 1.0f, false, 0);
-    u32 b = physics_body_create_sphere(pw, vec3(10, 0, 0), 0.5f, 1.0f, false, 0);
-    pw->bodies[a].acceleration = vec3(0, 0, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    PhysicsBodyHandle a = physics_body_create_sphere(pw, vec3(-10, 0, 0), 0.5f, 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create_sphere(pw, vec3(10, 0, 0), 0.5f, 1.0f, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
     physics_body_set_ccd(pw, a, true);
-    pw->bodies[a].velocity = vec3(200, 0, 0);
-    pw->bodies[b].velocity = vec3(-200, 0, 0);
+    pw->bodies[a.index].velocity = vec3(200, 0, 0);
+    pw->bodies[b.index].velocity = vec3(-200, 0, 0);
 
     physics_step(pw, 0.1f); /* without CCD they swap: a -> ~9.6, b -> ~-9.6 */
-    ASSERT_TRUE(pw->bodies[a].position.e[0] < 5.0f);
+    ASSERT_TRUE(pw->bodies[a.index].position.e[0] < 5.0f);
     physics_world_destroy(pw);
 }
 
@@ -895,19 +899,19 @@ TEST(constraint_distance_pulls_to_rest)
     /* R435: two free bodies pulled apart are position-projected back to the
      * constraint's rest length (split by inverse mass). */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    pw->bodies[a].acceleration = vec3(0, 0, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
-    ASSERT_TRUE(c != UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    PhysicsConstraintHandle c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(c));
     ASSERT_EQ(physics_constraint_count(pw), 1u);
 
     /* Pull apart to distance 10. */
-    pw->bodies[b].position = vec3(10, 0, 0);
+    pw->bodies[b.index].position = vec3(10, 0, 0);
     physics_step(pw, 1.0f / 60.0f);
 
-    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    Vec3 d = vec3_sub(pw->bodies[b.index].position, pw->bodies[a.index].position);
     ASSERT_FLOAT_EQ(vec3_len(d), 2.0f, 0.05f);
     physics_world_destroy(pw);
 }
@@ -916,17 +920,17 @@ TEST(constraint_static_end_stays_put)
 {
     /* R435: with one static end (inv_mass 0) only the free end moves. */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
-    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
-    ASSERT_TRUE(c != UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    PhysicsConstraintHandle c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(c));
 
-    pw->bodies[b].position = vec3(10, 0, 0);
+    pw->bodies[b.index].position = vec3(10, 0, 0);
     physics_step(pw, 1.0f / 60.0f);
 
-    ASSERT_FLOAT_EQ(pw->bodies[a].position.e[0], 0.0f, 1e-6f);
-    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    ASSERT_FLOAT_EQ(pw->bodies[a.index].position.e[0], 0.0f, 1e-6f);
+    Vec3 d = vec3_sub(pw->bodies[b.index].position, pw->bodies[a.index].position);
     ASSERT_FLOAT_EQ(vec3_len(d), 2.0f, 0.05f);
     physics_world_destroy(pw);
 }
@@ -935,20 +939,20 @@ TEST(constraint_remove_disables)
 {
     /* R435: a removed constraint no longer projects. */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    pw->bodies[a].acceleration = vec3(0, 0, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
-    ASSERT_TRUE(c != UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    PhysicsConstraintHandle c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(c));
     ASSERT_EQ(physics_constraint_count(pw), 1u);
     physics_constraint_remove(pw, c);
     ASSERT_EQ(physics_constraint_count(pw), 0u);
 
-    pw->bodies[b].position = vec3(10, 0, 0);
+    pw->bodies[b.index].position = vec3(10, 0, 0);
     physics_step(pw, 1.0f / 60.0f);
 
-    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    Vec3 d = vec3_sub(pw->bodies[b.index].position, pw->bodies[a.index].position);
     ASSERT_TRUE(vec3_len(d) > 9.5f);
     physics_world_destroy(pw);
 }
@@ -958,12 +962,12 @@ TEST(constraint_full_returns_invalid)
     /* R435/R352: the fixed array holds PHYSICS_MAX_CONSTRAINTS; the next add
      * must fail with UINT32_MAX (not a plausible-looking valid id). */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
     for (int i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
-        ASSERT_TRUE(physics_constraint_add_distance(pw, a, b, 1.0f) != UINT32_MAX);
+        ASSERT_TRUE(physics_constraint_handle_is_valid(physics_constraint_add_distance(pw, a, b, 1.0f)));
     }
-    ASSERT_EQ(physics_constraint_add_distance(pw, a, b, 1.0f), UINT32_MAX);
+    ASSERT_FALSE(physics_constraint_handle_is_valid(physics_constraint_add_distance(pw, a, b, 1.0f)));
     ASSERT_EQ(physics_constraint_count(pw), (u32)PHYSICS_MAX_CONSTRAINTS);
     physics_world_destroy(pw);
 }
@@ -973,9 +977,11 @@ TEST(constraint_invalid_body_rejected)
     /* R435: out-of-range body ids are rejected with UINT32_MAX and consume
      * no slot. */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    ASSERT_EQ(physics_constraint_add_distance(pw, a, 999u, 1.0f), UINT32_MAX);
-    ASSERT_EQ(physics_constraint_add_distance(pw, 999u, a, 1.0f), UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    ASSERT_FALSE(physics_constraint_handle_is_valid(
+        physics_constraint_add_distance(pw, a, (PhysicsBodyHandle){999u, 1u}, 1.0f)));
+    ASSERT_FALSE(physics_constraint_handle_is_valid(
+        physics_constraint_add_distance(pw, (PhysicsBodyHandle){999u, 1u}, a, 1.0f)));
     ASSERT_EQ(physics_constraint_count(pw), 0u);
     physics_world_destroy(pw);
 }
@@ -990,23 +996,23 @@ TEST(constraint_velocity_removes_separating_speed)
      * velocity ALONG the constraint axis must be eliminated — position
      * projection alone leaves it intact (R435 leftover drift/jitter). */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    pw->bodies[a].acceleration = vec3(0, 0, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
-    ASSERT_TRUE(c != UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    PhysicsConstraintHandle c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(c));
 
     /* Separating along the axis (a -> -x, b -> +x). */
-    pw->bodies[a].velocity = vec3(-5, 0, 0);
-    pw->bodies[b].velocity = vec3(5, 0, 0);
+    pw->bodies[a.index].velocity = vec3(-5, 0, 0);
+    pw->bodies[b.index].velocity = vec3(5, 0, 0);
     physics_step(pw, 1.0f / 60.0f);
 
-    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    Vec3 d = vec3_sub(pw->bodies[b.index].position, pw->bodies[a.index].position);
     f32 len = vec3_len(d);
     ASSERT_TRUE(len > 1e-6f);
     Vec3 n = vec3_scale(d, 1.0f / len);
-    Vec3 dv = vec3_sub(pw->bodies[b].velocity, pw->bodies[a].velocity);
+    Vec3 dv = vec3_sub(pw->bodies[b.index].velocity, pw->bodies[a.index].velocity);
     ASSERT_FLOAT_EQ(vec3_dot(dv, n), 0.0f, 1e-3f);
     physics_world_destroy(pw);
 }
@@ -1016,30 +1022,30 @@ TEST(constraint_velocity_allows_perp_motion)
     /* R440: velocity PERPENDICULAR to the constraint axis is unconstrained —
      * the solve must not damp swinging/tangential motion. */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    pw->bodies[a].acceleration = vec3(0, 0, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
-    ASSERT_TRUE(c != UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    PhysicsConstraintHandle c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(c));
 
     /* Purely perpendicular velocity on b; the pair starts exactly at rest
      * length so no axial impulse is needed at t=0. */
-    pw->bodies[b].velocity = vec3(0, 3, 0);
+    pw->bodies[b.index].velocity = vec3(0, 3, 0);
     physics_step(pw, 1.0f / 60.0f);
 
     /* Integration applies the global 0.98 damping; the constraint solve must
      * leave the tangential component alone (any coupling through the axis
      * tilted by this step's swing is second-order, < 1e-3 here). */
-    ASSERT_FLOAT_EQ(pw->bodies[b].velocity.e[1], 3.0f * 0.98f, 2e-3f);
+    ASSERT_FLOAT_EQ(pw->bodies[b.index].velocity.e[1], 3.0f * 0.98f, 2e-3f);
     /* The swing stretches the rod slightly during integration; the velocity
      * pass removes exactly the axial relative velocity that creates — and
      * must not remove more. */
-    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    Vec3 d = vec3_sub(pw->bodies[b.index].position, pw->bodies[a.index].position);
     f32 len = vec3_len(d);
     ASSERT_TRUE(len > 1e-6f);
     Vec3 n = vec3_scale(d, 1.0f / len);
-    Vec3 dv = vec3_sub(pw->bodies[b].velocity, pw->bodies[a].velocity);
+    Vec3 dv = vec3_sub(pw->bodies[b.index].velocity, pw->bodies[a.index].velocity);
     ASSERT_FLOAT_EQ(vec3_dot(dv, n), 0.0f, 1e-3f);
     physics_world_destroy(pw);
 }
@@ -1049,27 +1055,27 @@ TEST(constraint_velocity_static_anchor)
     /* R440: with a static anchor (inv_mass 0) the free end's axial velocity
      * is zeroed while its tangential velocity survives. */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
-    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
-    ASSERT_TRUE(c != UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    PhysicsConstraintHandle c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(c));
 
-    pw->bodies[b].velocity = vec3(4, 2, 0); /* axial + tangential */
+    pw->bodies[b.index].velocity = vec3(4, 2, 0); /* axial + tangential */
     physics_step(pw, 1.0f / 60.0f);
 
     /* Axis stays ~+x (position projection pulls b back to rest length). */
-    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    Vec3 d = vec3_sub(pw->bodies[b.index].position, pw->bodies[a.index].position);
     f32 len = vec3_len(d);
     ASSERT_TRUE(len > 1e-6f);
     Vec3 n = vec3_scale(d, 1.0f / len);
     /* Free end's axial velocity is fully absorbed (anchor has inv_mass 0). */
-    ASSERT_FLOAT_EQ(vec3_dot(pw->bodies[b].velocity, n), 0.0f, 1e-3f);
+    ASSERT_FLOAT_EQ(vec3_dot(pw->bodies[b.index].velocity, n), 0.0f, 1e-3f);
     /* Tangential velocity survives. The impulse acts along the axis tilted
      * by this step's motion, so a second-order fraction
      * (~v_axial * v_tan * dt / len ~= 0.067) of vy is legitimately removed;
      * the bound below is loose on purpose, the point is "not damped out". */
-    ASSERT_FLOAT_EQ(pw->bodies[b].velocity.e[1], 2.0f * 0.98f, 0.1f);
+    ASSERT_FLOAT_EQ(pw->bodies[b.index].velocity.e[1], 2.0f * 0.98f, 0.1f);
     physics_world_destroy(pw);
 }
 
@@ -1084,22 +1090,22 @@ TEST(constraint_ball_anchors_coincide)
      * difference, which is what distinguishes a ball joint from a
      * rest_length=0 distance constraint. */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    u32 b = physics_body_create(pw, vec3(5, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    pw->bodies[a].acceleration = vec3(0, 0, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    u32 c = physics_constraint_add_ball(pw, a, b, vec3(1, 0, 0), vec3(-1, 0, 0));
-    ASSERT_TRUE(c != UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(5, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    PhysicsConstraintHandle c = physics_constraint_add_ball(pw, a, b, vec3(1, 0, 0), vec3(-1, 0, 0));
+    ASSERT_TRUE(physics_constraint_handle_is_valid(c));
     ASSERT_EQ(physics_constraint_count(pw), 1u);
 
     physics_step(pw, 1.0f / 60.0f);
 
-    Vec3 pa = vec3_add(pw->bodies[a].position, vec3(1, 0, 0));
-    Vec3 pb = vec3_add(pw->bodies[b].position, vec3(-1, 0, 0));
+    Vec3 pa = vec3_add(pw->bodies[a.index].position, vec3(1, 0, 0));
+    Vec3 pb = vec3_add(pw->bodies[b.index].position, vec3(-1, 0, 0));
     ASSERT_FLOAT_EQ(vec3_len(vec3_sub(pb, pa)), 0.0f, 1e-3f);
     /* Centroids are NOT coincident: the offset difference (2 along x) is
      * preserved exactly. A centroid-to-centroid projection would fail this. */
-    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    Vec3 d = vec3_sub(pw->bodies[b.index].position, pw->bodies[a.index].position);
     ASSERT_FLOAT_EQ(d.e[0], 2.0f, 0.05f);
     ASSERT_FLOAT_EQ(d.e[1], 0.0f, 1e-3f);
     ASSERT_FLOAT_EQ(d.e[2], 0.0f, 1e-3f);
@@ -1111,20 +1117,20 @@ TEST(constraint_ball_static_end_stays_put)
     /* R443: with one static end (inv_mass 0) only the free body's centroid
      * moves, until its anchor coincides with the static anchor. */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
-    u32 b = physics_body_create(pw, vec3(5, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    u32 c = physics_constraint_add_ball(pw, a, b, vec3(1, 0, 0), vec3(-1, 0, 0));
-    ASSERT_TRUE(c != UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(5, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    PhysicsConstraintHandle c = physics_constraint_add_ball(pw, a, b, vec3(1, 0, 0), vec3(-1, 0, 0));
+    ASSERT_TRUE(physics_constraint_handle_is_valid(c));
 
     physics_step(pw, 1.0f / 60.0f);
 
-    ASSERT_FLOAT_EQ(pw->bodies[a].position.e[0], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(pw->bodies[a.index].position.e[0], 0.0f, 1e-6f);
     /* Free centroid ends at (2,0,0) so both anchors sit at world (1,0,0). */
-    Vec3 pa = vec3_add(pw->bodies[a].position, vec3(1, 0, 0));
-    Vec3 pb = vec3_add(pw->bodies[b].position, vec3(-1, 0, 0));
+    Vec3 pa = vec3_add(pw->bodies[a.index].position, vec3(1, 0, 0));
+    Vec3 pb = vec3_add(pw->bodies[b.index].position, vec3(-1, 0, 0));
     ASSERT_FLOAT_EQ(vec3_len(vec3_sub(pb, pa)), 0.0f, 1e-3f);
-    ASSERT_FLOAT_EQ(pw->bodies[b].position.e[0], 2.0f, 0.05f);
+    ASSERT_FLOAT_EQ(pw->bodies[b.index].position.e[0], 2.0f, 0.05f);
     physics_world_destroy(pw);
 }
 
@@ -1135,17 +1141,17 @@ TEST(constraint_ball_velocity_full_vector)
      * axis (which constraint_velocity_allows_perp_motion proves a distance
      * constraint leaves untouched) must be fully eliminated here. */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    pw->bodies[a].acceleration = vec3(0, 0, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    u32 c = physics_constraint_add_ball(pw, a, b, vec3(0, 0, 0), vec3(0, 0, 0));
-    ASSERT_TRUE(c != UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    PhysicsConstraintHandle c = physics_constraint_add_ball(pw, a, b, vec3(0, 0, 0), vec3(0, 0, 0));
+    ASSERT_TRUE(physics_constraint_handle_is_valid(c));
 
-    pw->bodies[b].velocity = vec3(0, 3, 0); /* perpendicular to the +x axis */
+    pw->bodies[b.index].velocity = vec3(0, 3, 0); /* perpendicular to the +x axis */
     physics_step(pw, 1.0f / 60.0f);
 
-    Vec3 dv = vec3_sub(pw->bodies[b].velocity, pw->bodies[a].velocity);
+    Vec3 dv = vec3_sub(pw->bodies[b.index].velocity, pw->bodies[a.index].velocity);
     ASSERT_FLOAT_EQ(vec3_len(dv), 0.0f, 1e-3f);
     physics_world_destroy(pw);
 }
@@ -1156,13 +1162,18 @@ TEST(constraint_ball_invalid_rejected)
      * and NaN anchor components are rejected with UINT32_MAX and consume no
      * slot. */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
-    ASSERT_EQ(physics_constraint_add_ball(pw, a, 999u, vec3(0, 0, 0), vec3(0, 0, 0)), UINT32_MAX);
-    ASSERT_EQ(physics_constraint_add_ball(pw, 999u, a, vec3(0, 0, 0), vec3(0, 0, 0)), UINT32_MAX);
-    ASSERT_EQ(physics_constraint_add_ball(pw, a, a, vec3(0, 0, 0), vec3(0, 0, 0)), UINT32_MAX);
-    ASSERT_EQ(physics_constraint_add_ball(pw, a, b, vec3(NAN, 0, 0), vec3(0, 0, 0)), UINT32_MAX);
-    ASSERT_EQ(physics_constraint_add_ball(pw, a, b, vec3(0, 0, 0), vec3(0, NAN, 0)), UINT32_MAX);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    ASSERT_FALSE(physics_constraint_handle_is_valid(
+        physics_constraint_add_ball(pw, a, (PhysicsBodyHandle){999u, 1u}, vec3(0, 0, 0), vec3(0, 0, 0))));
+    ASSERT_FALSE(physics_constraint_handle_is_valid(
+        physics_constraint_add_ball(pw, (PhysicsBodyHandle){999u, 1u}, a, vec3(0, 0, 0), vec3(0, 0, 0))));
+    ASSERT_FALSE(physics_constraint_handle_is_valid(
+        physics_constraint_add_ball(pw, a, a, vec3(0, 0, 0), vec3(0, 0, 0))));
+    ASSERT_FALSE(physics_constraint_handle_is_valid(
+        physics_constraint_add_ball(pw, a, b, vec3(NAN, 0, 0), vec3(0, 0, 0))));
+    ASSERT_FALSE(physics_constraint_handle_is_valid(
+        physics_constraint_add_ball(pw, a, b, vec3(0, 0, 0), vec3(0, NAN, 0))));
     ASSERT_EQ(physics_constraint_count(pw), 0u);
     physics_world_destroy(pw);
 }
@@ -1235,18 +1246,18 @@ TEST(slow_creep_body_keeps_bvh_refit)
     physics_set_contact_callback(pw, test_on_contact_pair, NULL);
 
     /* Static wall ahead: spans x in [0.6, 0.8]. */
-    u32 w = physics_body_create(pw, vec3(0.7f, 0, 0), vec3(0.1f, 5, 5), 0.0f, true, 0);
+    PhysicsBodyHandle w = physics_body_create(pw, vec3(0.7f, 0, 0), vec3(0.1f, 5, 5), 0.0f, true, 0);
     /* Slow-creeping dynamic body: speed 0.04 m/s < 0.05 rest threshold. */
-    u32 b = physics_body_create(pw, vec3(0, 0, 0), vec3(0.25f, 0.25f, 0.25f), 1.0f, false, 0);
-    pw->bodies[b].acceleration = vec3(0, 0, 0);
-    g_pair_a = w; g_pair_b = b; g_pair_hits = 0;
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(0, 0, 0), vec3(0.25f, 0.25f, 0.25f), 1.0f, false, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    g_pair_a = w.index; g_pair_b = b.index; g_pair_hits = 0;
 
     const f32 dt = 1.0f / 60.0f;
     u32 max_rest = 0;
     for (int i = 0; i < 1500; i++) {
-        pw->bodies[b].velocity = vec3(0.04f, 0, 0); /* sustained creep */
+        pw->bodies[b.index].velocity = vec3(0.04f, 0, 0); /* sustained creep */
         physics_step(pw, dt);
-        if (pw->bodies[b].rest_frames > max_rest) max_rest = pw->bodies[b].rest_frames;
+        if (pw->bodies[b.index].rest_frames > max_rest) max_rest = pw->bodies[b.index].rest_frames;
     }
 
     /* The body moved every frame, so it must never reach deep rest. */
@@ -1254,7 +1265,7 @@ TEST(slow_creep_body_keeps_bvh_refit)
     /* ... so the wall contact still fires and the body does not ghost through
      * (old code: leaf frozen near x=0, no pair, body sailed to x ~ 1.0). */
     ASSERT_TRUE(g_pair_hits > 0);
-    ASSERT_TRUE(pw->bodies[b].position.e[0] < 0.6f);
+    ASSERT_TRUE(pw->bodies[b.index].position.e[0] < 0.6f);
     physics_world_destroy(pw);
 }
 
@@ -1303,10 +1314,10 @@ TEST(raycast_hit_before_first_step)
     PhysicsWorld *pw = physics_world_create(4);
     physics_body_create(pw, vec3(5, 0, 0), vec3(1, 1, 1), 0.0f, true, 0);
 
-    u32 hit_body = 999;
+    PhysicsBodyHandle hit_body = {999, 1};
     f32 hit_t = -1.0f;
     ASSERT_TRUE(physics_raycast(pw, vec3(0, 0, 0), vec3(1, 0, 0), 100.0f, &hit_body, &hit_t));
-    ASSERT_EQ(hit_body, 0u);
+    ASSERT_EQ(hit_body.index, 0u);
     ASSERT_FLOAT_EQ(hit_t, 4.0f, 0.01f);
     physics_world_destroy(pw);
 }
@@ -1317,11 +1328,14 @@ TEST(null_world_api_guards)
     physics_world_destroy(NULL);
     physics_step(NULL, 1.0f / 60.0f);
     ASSERT_TRUE(!physics_raycast(NULL, vec3(0, 0, 0), vec3(1, 0, 0), 1.0f, NULL, NULL));
-    physics_body_apply_impulse(NULL, 0, vec3(1, 0, 0));
-    physics_body_set_ccd(NULL, 0, true);
-    ASSERT_EQ(physics_body_create(NULL, vec3(0, 0, 0), vec3(1, 1, 1), 1.0f, false, 0), UINT32_MAX);
-    ASSERT_EQ(physics_body_create_sphere(NULL, vec3(0, 0, 0), 1.0f, 1.0f, false, 0), UINT32_MAX);
-    ASSERT_EQ(physics_body_create_capsule(NULL, vec3(0, 0, 0), 0.5f, 1.0f, 1.0f, false, 0), UINT32_MAX);
+    physics_body_apply_impulse(NULL, PHYSICS_BODY_HANDLE_INVALID, vec3(1, 0, 0));
+    physics_body_set_ccd(NULL, PHYSICS_BODY_HANDLE_INVALID, true);
+    ASSERT_FALSE(physics_body_handle_is_valid(
+        physics_body_create(NULL, vec3(0, 0, 0), vec3(1, 1, 1), 1.0f, false, 0)));
+    ASSERT_FALSE(physics_body_handle_is_valid(
+        physics_body_create_sphere(NULL, vec3(0, 0, 0), 1.0f, 1.0f, false, 0)));
+    ASSERT_FALSE(physics_body_handle_is_valid(
+        physics_body_create_capsule(NULL, vec3(0, 0, 0), 0.5f, 1.0f, 1.0f, false, 0)));
 }
 
 /* ----------------------------------------------------------------------- */
@@ -1333,80 +1347,80 @@ TEST(body_create_clamps_nonpositive_extents)
     /* Negative/NaN extents built an inverted AABB (min > max) that never
      * overlapped anything: a permanent broadphase ghost. Clamped to 0. */
     PhysicsWorld *pw = physics_world_create(8);
-    u32 b = physics_body_create(pw, vec3(0, 0, 0), vec3(-2, 1, NAN), 1.0f, false, 0);
-    ASSERT_TRUE(b != UINT32_MAX);
-    ASSERT_TRUE(pw->bodies[b].half_extent.e[0] == 0.0f);
-    ASSERT_TRUE(pw->bodies[b].half_extent.e[2] == 0.0f);
-    AABB a = aabb_from_body(&pw->bodies[b]);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(0, 0, 0), vec3(-2, 1, NAN), 1.0f, false, 0);
+    ASSERT_TRUE(physics_body_handle_is_valid(b));
+    ASSERT_TRUE(pw->bodies[b.index].half_extent.e[0] == 0.0f);
+    ASSERT_TRUE(pw->bodies[b.index].half_extent.e[2] == 0.0f);
+    AABB a = aabb_from_body(&pw->bodies[b.index]);
     for (int i = 0; i < 3; i++) ASSERT_TRUE(a.min.e[i] <= a.max.e[i]);
 
-    u32 s = physics_body_create_sphere(pw, vec3(0, 0, 0), -1.0f, 1.0f, false, 0);
-    ASSERT_TRUE(s != UINT32_MAX);
-    ASSERT_TRUE(pw->bodies[s].radius == 0.0f);
-    ASSERT_TRUE(pw->bodies[s].shape == SHAPE_SPHERE);
+    PhysicsBodyHandle s = physics_body_create_sphere(pw, vec3(0, 0, 0), -1.0f, 1.0f, false, 0);
+    ASSERT_TRUE(physics_body_handle_is_valid(s));
+    ASSERT_TRUE(pw->bodies[s.index].radius == 0.0f);
+    ASSERT_TRUE(pw->bodies[s.index].shape == SHAPE_SPHERE);
 
-    u32 c = physics_body_create_capsule(pw, vec3(0, 0, 0), -0.5f, -2.0f, 1.0f, false, 0);
-    ASSERT_TRUE(c != UINT32_MAX);
-    ASSERT_TRUE(pw->bodies[c].radius == 0.0f);
-    ASSERT_TRUE(pw->bodies[c].half_height == 0.0f);
+    PhysicsBodyHandle c = physics_body_create_capsule(pw, vec3(0, 0, 0), -0.5f, -2.0f, 1.0f, false, 0);
+    ASSERT_TRUE(physics_body_handle_is_valid(c));
+    ASSERT_TRUE(pw->bodies[c.index].radius == 0.0f);
+    ASSERT_TRUE(pw->bodies[c.index].half_height == 0.0f);
     physics_world_destroy(pw);
 }
 
 TEST(body_sleeps_and_impulse_wakes) {
     PhysicsWorld *pw = physics_world_create(4);
-    u32 id = physics_body_create(pw, vec3(0, 2, 0), vec3(0, 0, 0), 1, false, 0);
-    pw->bodies[id].acceleration = vec3(0, 0, 0);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(0, 2, 0), vec3(0, 0, 0), 1, false, 0);
+    pw->bodies[id.index].acceleration = vec3(0, 0, 0);
     PhysicsPose pose;
     pose.orientation = QUAT_IDENTITY;
     pose.angular_velocity = vec3(0, 0, 0);
     pose.inertia_diag = vec3(1, 1, 1);
     physics_body_set_pose(pw, id, &pose);
     for (int i = 0; i < 60; i++) physics_step(pw, 1.0f / 60.0f);
-    ASSERT_TRUE(pw->bodies[id].sleeping);
-    Vec3 asleep = pw->bodies[id].position;
+    ASSERT_TRUE(pw->bodies[id.index].sleeping);
+    Vec3 asleep = pw->bodies[id.index].position;
     for (int i = 0; i < 4; i++) physics_step(pw, 1.0f / 60.0f);
-    ASSERT_FLOAT_EQ(pw->bodies[id].position.e[1], asleep.e[1], 1e-6f);
+    ASSERT_FLOAT_EQ(pw->bodies[id.index].position.e[1], asleep.e[1], 1e-6f);
 
     physics_body_apply_impulse(pw, id, vec3(1, 0, 0));
-    ASSERT_FALSE(pw->bodies[id].sleeping);
-    ASSERT_FLOAT_EQ(pw->bodies[id].velocity.e[0], 1.0f, 1e-6f);
+    ASSERT_FALSE(pw->bodies[id.index].sleeping);
+    ASSERT_FLOAT_EQ(pw->bodies[id.index].velocity.e[0], 1.0f, 1e-6f);
     physics_step(pw, 1.0f / 60.0f);
-    ASSERT_TRUE(pw->bodies[id].position.e[0] > asleep.e[0]);
+    ASSERT_TRUE(pw->bodies[id.index].position.e[0] > asleep.e[0]);
     physics_world_destroy(pw);
 }
 
 TEST(body_wake_entry_points_clear_sleep) {
     PhysicsWorld *pw = physics_world_create(8);
-    u32 explicit_id = physics_body_create(pw, vec3(0, 2, 0), vec3(0, 0, 0), 1, false, 0);
-    u32 posed = physics_body_create(pw, vec3(4, 2, 0), vec3(0, 0, 0), 1, false, 0);
-    u32 pushed = physics_body_create(pw, vec3(8, 2, 0), vec3(0, 0, 0), 1, false, 0);
-    u32 support = physics_body_create(pw, vec3(12, 2, 0), vec3(1, 1, 1), 0, true, 0);
-    u32 ids[3] = { explicit_id, posed, pushed };
-    for (int i = 0; i < 3; i++) pw->bodies[ids[i]].acceleration = vec3(0, 0, 0);
+    PhysicsBodyHandle explicit_id = physics_body_create(pw, vec3(0, 2, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle posed = physics_body_create(pw, vec3(4, 2, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle pushed = physics_body_create(pw, vec3(8, 2, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle support = physics_body_create(pw, vec3(12, 2, 0), vec3(1, 1, 1), 0, true, 0);
+    PhysicsBodyHandle ids[3] = { explicit_id, posed, pushed };
+    for (int i = 0; i < 3; i++) pw->bodies[ids[i].index].acceleration = vec3(0, 0, 0);
     for (int frame = 0; frame < 60; frame++) physics_step(pw, 1.0f / 60.0f);
-    for (int i = 0; i < 3; i++) ASSERT_TRUE(pw->bodies[ids[i]].sleeping);
+    for (int i = 0; i < 3; i++) ASSERT_TRUE(pw->bodies[ids[i].index].sleeping);
 
-    pw->bodies[explicit_id].velocity = vec3(1, 0, 0);
+    pw->bodies[explicit_id.index].velocity = vec3(1, 0, 0);
     physics_body_wake(pw, explicit_id);
-    ASSERT_FALSE(pw->bodies[explicit_id].sleeping);
+    ASSERT_FALSE(pw->bodies[explicit_id.index].sleeping);
     physics_step(pw, 1.0f / 60.0f);
-    ASSERT_TRUE(pw->bodies[explicit_id].position.e[0] > 0.0f);
+    ASSERT_TRUE(pw->bodies[explicit_id.index].position.e[0] > 0.0f);
 
     PhysicsPose pose;
     pose.orientation = QUAT_IDENTITY;
     pose.angular_velocity = vec3(0, 0, 0);
     pose.inertia_diag = vec3(1, 1, 1);
     physics_body_set_pose(pw, posed, &pose);
-    ASSERT_FALSE(pw->bodies[posed].sleeping);
+    ASSERT_FALSE(pw->bodies[posed.index].sleeping);
     physics_push_body(pw, pushed, vec3(1, 0, 0), 0.5f);
-    ASSERT_FALSE(pw->bodies[pushed].sleeping);
-    ASSERT_FLOAT_EQ(pw->bodies[pushed].position.e[0], 8.5f, 1e-6f);
+    ASSERT_FALSE(pw->bodies[pushed.index].sleeping);
+    ASSERT_FLOAT_EQ(pw->bodies[pushed.index].position.e[0], 8.5f, 1e-6f);
 
-    pw->bodies[pushed].velocity = vec3(0, 0, 0);
+    pw->bodies[pushed.index].velocity = vec3(0, 0, 0);
     for (int frame = 0; frame < 60; frame++) physics_step(pw, 1.0f / 60.0f);
-    ASSERT_TRUE(pw->bodies[pushed].sleeping);
+    ASSERT_TRUE(pw->bodies[pushed.index].sleeping);
     physics_body_park(pw, support);
-    ASSERT_FALSE(pw->bodies[pushed].sleeping);
+    ASSERT_FALSE(pw->bodies[pushed.index].sleeping);
     physics_world_destroy(pw);
 }
 

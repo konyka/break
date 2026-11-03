@@ -299,7 +299,8 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
         if (ld_ok && live && pos.e[1] > -999.0f) {
             RigidBody *rb = &ctx->physics->bodies[si];
             if (!v2 && rb->mass > 0.0f) mass = rb->mass;
-            physics_body_revive(rb, mass, is_st != 0, ctx->frame_count);
+            (void)physics_body_revive(ctx->physics,
+                (PhysicsBodyHandle){si, rb->generation}, mass, is_st != 0, ctx->frame_count);
             rb->position = pos;
             rb->velocity = vel;
             if (v3) {
@@ -308,7 +309,8 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
             }
         } else if (ld_ok && !live && si > 0 &&
                    !physics_body_is_parked(&ctx->physics->bodies[si])) {
-            physics_body_park(ctx->physics, si);
+            physics_body_park(ctx->physics,
+                (PhysicsBodyHandle){si, ctx->physics->bodies[si].generation});
         }
     }
 

@@ -8,6 +8,32 @@ typedef struct {
     Vec3 max;
 } AABB;
 
+typedef struct PhysicsBodyHandle {
+    u32 index;
+    u32 generation;
+} PhysicsBodyHandle;
+
+typedef struct PhysicsConstraintHandle {
+    u32 index;
+    u32 generation;
+} PhysicsConstraintHandle;
+
+#define PHYSICS_BODY_HANDLE_INVALID ((PhysicsBodyHandle){UINT32_MAX, 0u})
+#define PHYSICS_CONSTRAINT_HANDLE_INVALID ((PhysicsConstraintHandle){UINT32_MAX, 0u})
+
+static inline bool physics_body_handle_is_valid(PhysicsBodyHandle h) {
+    return h.index != UINT32_MAX && h.generation != 0u;
+}
+static inline bool physics_constraint_handle_is_valid(PhysicsConstraintHandle h) {
+    return h.index != UINT32_MAX && h.generation != 0u;
+}
+static inline bool physics_body_handle_equal(PhysicsBodyHandle a, PhysicsBodyHandle b) {
+    return a.index == b.index && a.generation == b.generation;
+}
+static inline bool physics_constraint_handle_equal(PhysicsConstraintHandle a, PhysicsConstraintHandle b) {
+    return a.index == b.index && a.generation == b.generation;
+}
+
 /* Collision shape. Default 0 = box (backward compatible with {0} init). */
 typedef enum {
     SHAPE_BOX     = 0,
@@ -19,69 +45,61 @@ typedef struct {
     Vec3  position;
     Vec3  velocity;
     Vec3  acceleration;
-    Vec3  half_extent;   /* box: half-size; also used for broadphase */
+    Vec3  half_extent;
     f32   mass;
-    f32   inv_mass;       /* pre-computed 1/mass (0 for static) */
+    f32   inv_mass;
     f32   restitution;
     bool  is_static;
     u32   spawn_frame;
+    u32   generation;
     Vec3  spawn_pos;
     u32   rest_frames;
     bool  sleeping;
     u32   collision_count;
-    /* --- shape (Round 6) --- */
-    ShapeType shape;      /* box / sphere / capsule */
-    f32   radius;         /* sphere & capsule radius */
-    f32   half_height;    /* capsule: half segment length along Y (excludes caps) */
-    bool  ccd;            /* continuous collision detection: swept vs static
-                           * AABBs and (R435, conservative) dynamic bodies */
+    ShapeType shape;
+    f32   radius;
+    f32   half_height;
+    bool  ccd;
     /* Zero orientation is identity. A zero inertia axis is infinite and
      * does not integrate. Static bodies ignore angular velocity. */
     Quat  orientation;
     Vec3  angular_velocity;
     Vec3  inertia_diag;
+    Vec3  step_start_position;
 } RigidBody;
 
+/* Slot indices in a Contact are valid only for the current physics_step. */
 typedef struct {
     Vec3  point;
-    Vec3  normal;   /* from body_a toward body_b */
+    Vec3  normal;
     f32   depth;
     u32   body_a;
     u32   body_b;
 } Contact;
 
-/* Per-contact callback invoked during physics_step for every resolved pair. */
 typedef void (*PhysicsContactFn)(const Contact *c, void *user);
 typedef struct PhysicsWorld PhysicsWorld;
-/* Runs after contacts, constraints, and the kill floor. */
 typedef void (*PhysicsPostStepFn)(PhysicsWorld *pw, void *user);
 #define PHYSICS_MAX_POST_STEPS 16u
-
-/* Fixed-capacity constraints embedded in PhysicsWorld; no per-step allocation.
- * Linear anchors are position-projected and angular joint limits use body poses. */
 #define PHYSICS_MAX_CONSTRAINTS 64
 
 typedef struct {
-    u32  body_a;
-    u32  body_b;
+    PhysicsBodyHandle body_a;
+    PhysicsBodyHandle body_b;
+    u32  generation;
     f32  rest_length;
-    bool active;      /* slot occupied (world calloc zero-init = free) */
-    /* Anchors are body-local and rotated by each body's current orientation.
-     * Distance constraints are the zero-offset special case; ball-like joints
-     * use rest_length = 0 with a full 3-axis linear solve. */
+    bool active;
     Vec3 offset_a;
     Vec3 offset_b;
-    bool is_ball;     /* false: 1-axis distance solve; true: 3-axis ball solve */
+    bool is_ball;
     bool is_hinge;
     bool is_slider;
-    Vec3 hinge_axis;  /* local to body A, unit length. Also the slider axis. */
-    f32  limit_min;   /* radians for a hinge; along-axis distance for a slider.
-                       * min == max == 0 means unlimited */
+    Vec3 hinge_axis;
+    f32  limit_min;
     f32  limit_max;
-    f32  slider_torsion; /* 0 leaves rotation free, 1 is the stiffest spring */
-    f32  slider_damping; /* 1 replaces the error-axis spin each step.
-                            Below 1, stiffness is a spring and this is the damping ratio. */
-    f32  slider_stiffness; /* rad/s^2 per radian. Default 100. */
+    f32  slider_torsion;
+    f32  slider_damping;
+    f32  slider_stiffness;
     bool is_cone_twist;
     Vec3 cone_axis_b;
     Quat reference_a;
@@ -103,7 +121,7 @@ typedef struct PhysicsWorld {
     u32        hot_pair_a;
     u32        hot_pair_b;
     u32        hot_pair_count;
-    f32        total_collision_speed;     /* RMS impact speed (read via sqrt) */
+    f32        total_collision_speed;
     Vec3       collision_center;
     u32        collision_center_count;
     Vec3       total_impulse_axis;
@@ -111,49 +129,36 @@ typedef struct PhysicsWorld {
     bool       bvh_dirty;
     PhysicsContactFn on_contact;
     void            *contact_user;
-    /* Persistent BVH staging buffer (avoids per-step malloc) */
     BVHAABB        *_bvh_staging;
     u32             _bvh_staging_cap;
-    /* R435: fixed-capacity distance constraints (embedded, calloc-zeroed) */
     DistanceConstraint constraints[PHYSICS_MAX_CONSTRAINTS];
-    u32                constraint_count;   /* active slots */
-    /* Called at the end of physics_step. Cloth registers self-collision here. */
+    u32                constraint_count;
     PhysicsPostStepFn  post_step_fn[PHYSICS_MAX_POST_STEPS];
     void              *post_step_user[PHYSICS_MAX_POST_STEPS];
     u32                post_step_count;
+    u32                transaction_depth;
 } PhysicsWorld;
 
-/* R376/R377: Del parks with spawn_frame=UINT32_MAX (tombstone for create reuse). */
 static inline bool physics_body_is_parked(const RigidBody *b) {
     return b && b->spawn_frame == UINT32_MAX;
 }
 
 PhysicsWorld *physics_world_create(u32 max_bodies);
 void          physics_world_destroy(PhysicsWorld *pw);
-u32           physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame);
-u32           physics_body_create_sphere(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 mass, bool is_static, u32 frame);
-u32           physics_body_create_capsule(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 half_height, f32 mass, bool is_static, u32 frame);
-void          physics_body_set_ccd(PhysicsWorld *pw, u32 body_id, bool enable);
-void          physics_body_apply_impulse(PhysicsWorld *pw, u32 body_id, Vec3 impulse);
-void          physics_body_wake(PhysicsWorld *pw, u32 body_id);
-/* R436: position-only shove of a dynamic body along `normal` by `depth`
- * (used by the character controller, which is an infinite-mass KCC and never
- * yields). No-op for invalid ids, static and parked bodies. Clears
- * rest_frames (R432 contract) so BVH refits cannot skip the moved AABB. */
-void          physics_push_body(PhysicsWorld *pw, u32 body_id, Vec3 normal, f32 depth);
-/* R376/R379/R380: park/revive tombstone slots (Del/N-clear). Used by main and scene_state. */
-void          physics_body_park(PhysicsWorld *pw, u32 pid);
-void          physics_body_revive(RigidBody *rb, f32 mass, bool is_static, u32 frame);
+PhysicsBodyHandle physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame);
+PhysicsBodyHandle physics_body_create_sphere(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 mass, bool is_static, u32 frame);
+PhysicsBodyHandle physics_body_create_capsule(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 half_height, f32 mass, bool is_static, u32 frame);
+void          physics_body_set_ccd(PhysicsWorld *pw, PhysicsBodyHandle body, bool enable);
+void          physics_body_apply_impulse(PhysicsWorld *pw, PhysicsBodyHandle body, Vec3 impulse);
+void          physics_body_wake(PhysicsWorld *pw, PhysicsBodyHandle body);
+void          physics_push_body(PhysicsWorld *pw, PhysicsBodyHandle body, Vec3 normal, f32 depth);
+void          physics_body_park(PhysicsWorld *pw, PhysicsBodyHandle body);
+PhysicsBodyHandle physics_body_revive(PhysicsWorld *pw, PhysicsBodyHandle body, f32 mass, bool is_static, u32 frame);
+RigidBody    *physics_body_resolve(PhysicsWorld *pw, PhysicsBodyHandle body);
 void          physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn, void *user);
-/* Returns false when the list is full or fn is null. The same world holds 16. */
 bool          physics_add_post_step(PhysicsWorld *pw, PhysicsPostStepFn fn, void *user);
-/* R435: distance constraints. add returns UINT32_MAX when the fixed array is
- * full or a body id is invalid (R352 convention); remove is idempotent. */
-u32           physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 body_b, f32 rest_length);
-/* Ball joint anchors are body-local offsets rotated by the current pose.
- * The solver pulls the two anchor points to coincidence. Invalid ids,
- * self-constraints, NaN anchors and a full array return UINT32_MAX. */
-u32           physics_constraint_add_ball(PhysicsWorld *pw, u32 body_a, u32 body_b, Vec3 anchor_a, Vec3 anchor_b);
+PhysicsConstraintHandle physics_constraint_add_distance(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, f32 rest_length);
+PhysicsConstraintHandle physics_constraint_add_ball(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, Vec3 anchor_a, Vec3 anchor_b);
 
 typedef struct PhysicsPose {
     Quat orientation;
@@ -161,11 +166,11 @@ typedef struct PhysicsPose {
     Vec3 inertia_diag;
 } PhysicsPose;
 
-void          physics_body_set_pose(PhysicsWorld *pw, u32 body_id, const PhysicsPose *pose);
+void          physics_body_set_pose(PhysicsWorld *pw, PhysicsBodyHandle body, const PhysicsPose *pose);
 
 typedef struct HingeDesc {
-    u32 body_a;
-    u32 body_b;
+    PhysicsBodyHandle body_a;
+    PhysicsBodyHandle body_b;
     Vec3 anchor_local_a;
     Vec3 anchor_local_b;
     Vec3 axis_local_a;
@@ -173,23 +178,23 @@ typedef struct HingeDesc {
     f32 limit_max;
 } HingeDesc;
 
-u32           physics_constraint_add_hinge(PhysicsWorld *pw, const HingeDesc *desc);
+PhysicsConstraintHandle physics_constraint_add_hinge(PhysicsWorld *pw, const HingeDesc *desc);
 
 typedef struct SliderDesc {
-    u32 body_a;
-    u32 body_b;
+    PhysicsBodyHandle body_a;
+    PhysicsBodyHandle body_b;
     Vec3 anchor_local_a;
     Vec3 anchor_local_b;
     Vec3 axis_local_a;
-    f32 limit_min; /* along the axis; min == max == 0 means unlimited */
+    f32 limit_min;
     f32 limit_max;
 } SliderDesc;
 
-u32           physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc);
+PhysicsConstraintHandle physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc);
 
 typedef struct ConeTwistDesc {
-    u32 body_a;
-    u32 body_b;
+    PhysicsBodyHandle body_a;
+    PhysicsBodyHandle body_b;
     Vec3 anchor_local_a;
     Vec3 anchor_local_b;
     Vec3 axis_local_a;
@@ -200,21 +205,16 @@ typedef struct ConeTwistDesc {
     f32 twist_max;
 } ConeTwistDesc;
 
-u32           physics_constraint_add_cone_twist(PhysicsWorld *pw, const ConeTwistDesc *desc);
-/* torsion is clamped to [0, 1]. Ignored unless the slot is a slider. */
-void          physics_constraint_set_slider_torsion(PhysicsWorld *pw, u32 constraint_id, f32 torsion);
-void          physics_constraint_set_slider_damping(PhysicsWorld *pw, u32 constraint_id, f32 damping);
-/* stiffness is rad/s^2 per radian, clamped to [0, 1e6]. Ignored unless the slot is a slider. */
-void          physics_constraint_set_slider_stiffness(PhysicsWorld *pw, u32 constraint_id, f32 stiffness);
-void          physics_constraint_remove(PhysicsWorld *pw, u32 constraint_id);
+PhysicsConstraintHandle physics_constraint_add_cone_twist(PhysicsWorld *pw, const ConeTwistDesc *desc);
+void          physics_constraint_set_slider_torsion(PhysicsWorld *pw, PhysicsConstraintHandle constraint, f32 torsion);
+void          physics_constraint_set_slider_damping(PhysicsWorld *pw, PhysicsConstraintHandle constraint, f32 damping);
+void          physics_constraint_set_slider_stiffness(PhysicsWorld *pw, PhysicsConstraintHandle constraint, f32 stiffness);
+void          physics_constraint_remove(PhysicsWorld *pw, PhysicsConstraintHandle constraint);
 u32           physics_constraint_count(const PhysicsWorld *pw);
 void          physics_step(PhysicsWorld *pw, f32 dt);
-bool          physics_raycast(const PhysicsWorld *pw, Vec3 origin, Vec3 dir, f32 max_dist, u32 *out_body, f32 *out_t);
+bool          physics_raycast(const PhysicsWorld *pw, Vec3 origin, Vec3 dir, f32 max_dist, PhysicsBodyHandle *out_body, f32 *out_t);
 
-/* Narrowphase: compute contact (normal from a->b, depth, point) between any two
- * shapes. Returns false if not overlapping. */
 bool          physics_collide(const RigidBody *a, const RigidBody *b, Contact *out);
-
 AABB  aabb_from_body(const RigidBody *b);
 bool  aabb_overlap(AABB a, AABB b);
 Vec3  aabb_overlap_depth(AABB a, AABB b);

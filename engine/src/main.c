@@ -176,7 +176,7 @@ enum {
 };
 
 typedef struct { f32 pos[3]; } CTransform;
-typedef struct { u32 physics_id; } CRigidBody;
+typedef struct { PhysicsBodyHandle physics_id; } CRigidBody;
 typedef struct { u32 mesh_index; } CMeshRef;
 
 /* R600: mirrors the unconditional ForwardTemporal block the blinn_phong family
@@ -303,12 +303,12 @@ static void sys_sync_transform_from_physics(EcsChunkView *v, void *user) {
     CRigidBody *rs = (CRigidBody *)ecs_chunk_column(v, COMP_RIGID_BODY);
     if (!xs || !rs) return;
     for (u32 i = 0; i < v->count; i++) {
-        u32 pid = rs[i].physics_id;
-        if (pid > 0 && pid < physics->count) {
-            Vec3 cur = physics->bodies[pid].position;
+        PhysicsBodyHandle pid = rs[i].physics_id;
+        if (physics_body_handle_is_valid(pid) && pid.index < physics->count) {
+            Vec3 cur = physics->bodies[pid.index].position;
             Vec3 shown = cur;
-            if (g_phys_prev_pos && pid < g_phys_prev_count)
-                shown = vec3_lerp(g_phys_prev_pos[pid], cur, g_phys_alpha);
+            if (g_phys_prev_pos && pid.index < g_phys_prev_count)
+                shown = vec3_lerp(g_phys_prev_pos[pid.index], cur, g_phys_alpha);
             xs[i].pos[0] = shown.e[0];
             xs[i].pos[1] = shown.e[1];
             xs[i].pos[2] = shown.e[2];
@@ -4219,7 +4219,7 @@ static bool demo_scene_push_node(Scene *s, u32 mesh_idx, u32 mat_idx,
 
 /* R445: one ECS-rendered dynamic body (CTransform + CRigidBody + CMeshRef);
  * the physics->transform sync system animates it every frame. */
-static void demo_showcase_entity(World *world, u32 mesh_index, u32 physics_id,
+static void demo_showcase_entity(World *world, u32 mesh_index, PhysicsBodyHandle physics_id,
                                  f32 x, f32 y, f32 z) {
     Entity e = world_create_entity(world);
     CTransform *t = world_add_component(world, e, COMP_TRANSFORM);
@@ -4635,8 +4635,8 @@ static void demo_build_lod_stress_skin(RHIDevice *dev, Scene *scene, const Terra
 
 static void demo_build_showcase(RHIDevice *dev, Scene *scene, PhysicsWorld *physics,
                                 World *world, const Terrain *terrain,
-                                u32 *out_elevator_body) {
-    *out_elevator_body = UINT32_MAX;
+                                PhysicsBodyHandle *out_elevator_body) {
+    *out_elevator_body = PHYSICS_BODY_HANDLE_INVALID;
     if (!dev || !scene || !physics || !world) return;
 
     /* ---- meshes (shared geometry; the bake duplicates per node) ---- */
@@ -4728,20 +4728,20 @@ static void demo_build_showcase(RHIDevice *dev, Scene *scene, PhysicsWorld *phys
         f32 cx = -5.0f, cz = -3.0f;
         f32 ty = terrain ? terrain_get_height(terrain, cx, cz) : 0.0f;
         f32 ya = ty + 3.6f;
-        u32 anchor = physics_body_create(physics, vec3(cx, ya, cz),
+        PhysicsBodyHandle anchor = physics_body_create(physics, vec3(cx, ya, cz),
                                          vec3(0.4f, 0.1f, 0.4f), 0.0f, true, 0);
         demo_scene_push_node(scene, mesh_anchor, mat_anchor, cx, ya, cz);
-        u32 prev = anchor;
+        PhysicsBodyHandle prev = anchor;
         f32 ly = ya - 0.1f - 0.25f; /* first link hangs from the anchor's bottom face */
         for (u32 i = 0; i < 3; i++) {
             f32 mass = (i == 2) ? 4.0f : 1.0f; /* heavy end weight */
-            u32 link = physics_body_create(physics, vec3(cx, ly, cz),
+            PhysicsBodyHandle link = physics_body_create(physics, vec3(cx, ly, cz),
                                            vec3(0.25f, 0.25f, 0.25f), mass, false, 0);
             demo_showcase_entity(world, mesh_chain, link, cx, ly, cz);
             f32 top_off = (i == 0) ? -0.1f : -0.25f;
-            u32 jc = physics_constraint_add_ball(physics, prev, link,
+            PhysicsConstraintHandle jc = physics_constraint_add_ball(physics, prev, link,
                                                  vec3(0, top_off, 0), vec3(0, 0.25f, 0));
-            if (jc == UINT32_MAX) LOG_WARN("R445: chain joint %u rejected", i);
+            if (!physics_constraint_handle_is_valid(jc)) LOG_WARN("R445: chain joint %u rejected", i);
             prev = link;
             ly -= 0.5f;
         }
@@ -4755,15 +4755,15 @@ static void demo_build_showcase(RHIDevice *dev, Scene *scene, PhysicsWorld *phys
     {
         f32 wx = 5.0f, wz = -3.0f;
         f32 wy = (terrain ? terrain_get_height(terrain, wx, wz) : 0.0f) + 1.0f;
-        u32 wall = physics_body_create(physics, vec3(wx, wy, wz),
+        PhysicsBodyHandle wall = physics_body_create(physics, vec3(wx, wy, wz),
                                        vec3(0.75f, 1.0f, 0.05f), 0.0f, true, 0);
         (void)wall;
         demo_scene_push_node(scene, mesh_wall, mat_wall, wx, wy, wz);
-        u32 ball = physics_body_create_sphere(physics, vec3(wx, wy, wz + 4.5f),
+        PhysicsBodyHandle ball = physics_body_create_sphere(physics, vec3(wx, wy, wz + 4.5f),
                                               0.5f, 1.0f, false, 0);
         physics_body_set_ccd(physics, ball, true);
-        if (ball < physics->count)
-            physics->bodies[ball].velocity = vec3(0, 0, -60.0f);
+        if (physics_body_handle_is_valid(ball))
+            physics->bodies[ball.index].velocity = vec3(0, 0, -60.0f);
         demo_showcase_entity(world, mesh_sphere, ball, wx, wy, wz + 4.5f);
     }
 
@@ -4774,7 +4774,7 @@ static void demo_build_showcase(RHIDevice *dev, Scene *scene, PhysicsWorld *phys
     {
         f32 ex = 0.0f, ez = -6.0f;
         f32 ey = (terrain ? terrain_get_height(terrain, ex, ez) : 0.0f) + 1.5f;
-        u32 elev = physics_body_create(physics, vec3(ex, ey, ez),
+        PhysicsBodyHandle elev = physics_body_create(physics, vec3(ex, ey, ez),
                                        vec3(1.2f, 0.15f, 1.2f), 8.0f, false, 0);
         *out_elevator_body = elev;
         demo_showcase_entity(world, mesh_platform, elev, ex, ey, ez);
@@ -5125,7 +5125,7 @@ int engine_demo_main(int argc, char **argv, const EngineConfig *host_config) {
     world_register_component(world, COMP_MESH_REF, sizeof(CMeshRef));
 
     PhysicsWorld *physics = physics_world_create(256);
-    u32 ground = physics_body_create(physics, vec3(0, -2, 0), vec3(20, 0.5f, 20), 0, true, 0);
+    PhysicsBodyHandle ground = physics_body_create(physics, vec3(0, -2, 0), vec3(20, 0.5f, 20), 0, true, 0);
 
     for (u32 i = 0; i < (model_view ? 0u : 10u); i++) {
         Entity e = world_create_entity(world);
@@ -5155,7 +5155,7 @@ int engine_demo_main(int argc, char **argv, const EngineConfig *host_config) {
      * before the one-shot mega bake) + physics playground (ball-joint chain,
      * CCD wall, scripted-velocity elevator). Must run after asset_load_gltf
      * and before scene_compute_world_transforms / the bake. */
-    u32 showcase_elevator_body = UINT32_MAX;
+    PhysicsBodyHandle showcase_elevator_body = PHYSICS_BODY_HANDLE_INVALID;
     if (!model_view)
         demo_build_showcase(render.device, &scene, physics, world, &terrain,
                             &showcase_elevator_body);
@@ -7652,13 +7652,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                 CRigidBody *rr = world_get_component(world, re, COMP_RIGID_BODY);
                                 CTransform *rt = world_get_component(world, re, COMP_TRANSFORM);
                                 if (!rr || !rt) continue;
-                                if (rr->physics_id > 0 && rr->physics_id < physics->count)
+                                if (physics_body_handle_is_valid(rr->physics_id) &&
+                                    rr->physics_id.index < physics->count)
                                     continue;
-                                u32 nid = physics_body_create(physics,
+                                PhysicsBodyHandle nid = physics_body_create(physics,
                                     vec3(rt->pos[0], rt->pos[1], rt->pos[2]),
                                     vec3(0.5f, 0.5f, 0.5f), 1.0f, false,
                                     (u32)engine.frame_count);
-                                if (nid != UINT32_MAX) rr->physics_id = nid;
+                                if (physics_body_handle_is_valid(nid)) rr->physics_id = nid;
                             }
                             c = c->next;
                         }
@@ -7681,9 +7682,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             for (u32 ci = 0; ci < c->count; ci++) {
                                 Entity re = world->entities[ents[ci]];
                                 CRigidBody *rr = world_get_component(world, re, COMP_RIGID_BODY);
-                                if (rr && rr->physics_id > 0 && rr->physics_id < 256 &&
-                                    rr->physics_id < physics->count)
-                                    body_live[rr->physics_id] = true;
+                                if (rr && physics_body_handle_is_valid(rr->physics_id) &&
+                                    rr->physics_id.index < 256u && rr->physics_id.index < physics->count)
+                                    body_live[rr->physics_id.index] = true;
                             }
                             c = c->next;
                         }
@@ -7725,12 +7726,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                 Entity re = world->entities[ents[ci]];
                                 CRigidBody *rr = world_get_component(world, re, COMP_RIGID_BODY);
                                 CTransform *rt = world_get_component(world, re, COMP_TRANSFORM);
-                                if (!rr || !rt || rr->physics_id == 0 || rr->physics_id >= physics->count)
+                                if (!rr || !rt || !physics_body_handle_is_valid(rr->physics_id) ||
+                                    rr->physics_id.index >= physics->count)
                                     continue;
-                                RigidBody *rb = &physics->bodies[rr->physics_id];
+                                RigidBody *rb = &physics->bodies[rr->physics_id.index];
                                 if (!physics_body_is_parked(rb)) continue;
                                 /* Fallback when no V2 state: keep mass, default dynamic. */
-                                physics_body_revive(rb, rb->mass, false, (u32)engine.frame_count);
+                                rr->physics_id = physics_body_revive(physics, rr->physics_id,
+                                    rb->mass, false, (u32)engine.frame_count);
                                 rb->position = vec3(rt->pos[0], rt->pos[1], rt->pos[2]);
                                 rb->velocity = vec3(0, 0, 0);
                                 physics->bvh_dirty = true;
@@ -7752,8 +7755,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * gravity zeroed, velocity = 1.5*sin(1.2t) on Y. The R437 platform
          * carrying reads the support body's velocity, so a character standing
          * on the platform rides it up and down. */
-        if (showcase_elevator_body < physics->count) {
-            RigidBody *eb = &physics->bodies[showcase_elevator_body];
+        if (showcase_elevator_body.index < physics->count) {
+            RigidBody *eb = &physics->bodies[showcase_elevator_body.index];
             eb->acceleration = vec3(0, 0, 0);
             eb->velocity = vec3(0, 1.5f * sinf((f32)total_time * 1.2f), 0);
         }
@@ -8579,10 +8582,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     f32 dist = vec3_len(diff);
                     debug_ui_text(&ui, "  dist=%.1f", dist);
                 }
-                if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                    Vec3 v = physics->bodies[sr->physics_id].velocity;
+                if (sr && physics_body_handle_is_valid(sr->physics_id) && sr->physics_id.index < physics->count) {
+                    Vec3 v = physics->bodies[sr->physics_id.index].velocity;
                     f32 spd = vec3_len(v);
-                    debug_ui_text(&ui, "  vel=(%.1f, %.1f, %.1f) speed=%.1f  KE=%.1fJ", v.e[0], v.e[1], v.e[2], spd, 0.5f * physics->bodies[sr->physics_id].mass * spd * spd);
+                    debug_ui_text(&ui, "  vel=(%.1f, %.1f, %.1f) speed=%.1f  KE=%.1fJ", v.e[0], v.e[1], v.e[2], spd, 0.5f * physics->bodies[sr->physics_id.index].mass * spd * spd);
                     if (spd > 0.1f) {
                         char arrow = '>';
                         f32 ax = fabsf(v.e[0]), az = fabsf(v.e[2]);
@@ -8592,7 +8595,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         debug_ui_text(&ui, "  dir=[%c] hat=(%.2f,%.2f,%.2f)", arrow, v.e[0]/spd, v.e[1]/spd, v.e[2]/spd);
                         debug_ui_text(&ui, "  pred=(%.1f,%.1f,%.1f) in 1s", st->pos[0]+v.e[0], st->pos[1]+v.e[1], st->pos[2]+v.e[2]);
                     }
-                    RigidBody *pb = &physics->bodies[sr->physics_id];
+                    RigidBody *pb = &physics->bodies[sr->physics_id.index];
                     debug_ui_text(&ui, "  size=(%.1f,%.1f,%.1f) r=%.2f mass=%.1f rest=%.1f%s", pb->half_extent.e[0], pb->half_extent.e[1], pb->half_extent.e[2], vec3_len(pb->half_extent), pb->mass, pb->restitution, pb->is_static ? " [STATIC]" : "");
                 }
             }
@@ -9731,8 +9734,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         Vec3 spawn_pos = vec3_add(vec3_add(camera.position, vec3_scale(ecam_fwd, 2.0f)), offset);
                         Vec3 half_ext = vec3(0.5f, 0.5f, 0.5f);
                         /* R376: create may reuse Del-parked slots even when count==capacity. */
-                        u32 new_body = physics_body_create(physics, spawn_pos, half_ext, 1.0f, false, (u32)engine.frame_count);
-                        if (new_body == UINT32_MAX) {
+                        PhysicsBodyHandle new_body = physics_body_create(physics, spawn_pos, half_ext, 1.0f, false, (u32)engine.frame_count);
+                        if (!physics_body_handle_is_valid(new_body)) {
                             LOG_INFO("Physics body cap reached (%u)", physics->capacity);
                             break;
                         }
@@ -9796,7 +9799,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         f32 force = fmaxf(0.0f, 20.0f - dist * 2.0f);
                         Vec3 imp = vec3_scale(vec3_scale(dir, 1.0f/dist), force);
                         imp.e[1] += force * 0.5f;
-                        physics_body_apply_impulse(physics, bi, imp);
+                        physics_body_apply_impulse(physics, (PhysicsBodyHandle){bi, physics->bodies[bi].generation}, imp);
                     }
                     LOG_INFO("EXPLOSION at (%.1f,%.1f,%.1f)", epicenter.e[0], epicenter.e[1], epicenter.e[2]);
                 }
@@ -9808,7 +9811,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         f32 dist = vec3_len(dir);
                         if (dist < 0.01f) dist = 0.01f;
                         f32 force = 10.0f / (1.0f + dist * 0.5f);
-                        physics_body_apply_impulse(physics, bi, vec3_scale(vec3_scale(dir, 1.0f/dist), force));
+                        physics_body_apply_impulse(physics, (PhysicsBodyHandle){bi, physics->bodies[bi].generation}, vec3_scale(vec3_scale(dir, 1.0f/dist), force));
                     }
                     LOG_INFO("MAGNET: pulling %u bodies", physics->count > 1 ? physics->count - 1 : 0);
                 }
@@ -9840,8 +9843,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             st->pos[0] = old_cam.e[0];
                             st->pos[1] = old_cam.e[1];
                             st->pos[2] = old_cam.e[2];
-                            if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                                RigidBody *sb = &physics->bodies[sr->physics_id];
+                            if (sr && physics_body_handle_is_valid(sr->physics_id) && sr->physics_id.index < physics->count) {
+                                RigidBody *sb = &physics->bodies[sr->physics_id.index];
                                 sb->position = old_cam;
                                 sb->velocity = vec3(0, 0, 0);
                                 /* R375: resting dynamic also skips BVH refit — not only static. */
@@ -9856,12 +9859,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     if (selected_entity_count > 0 && selected_entity_id > 0) {
                         Entity se = world->entities[selected_entity_id];
                         CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
-                        if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
+                        if (sr && physics_body_handle_is_valid(sr->physics_id) && sr->physics_id.index < physics->count) {
                             static const f32 masses[] = {0.5f, 1.0f, 5.0f, 20.0f, 100.0f};
                             static const char *mn[] = {"light","normal","heavy","very heavy","immovable"};
                             static u32 mi = 1;
                             mi = (mi + 1) % 5;
-                            RigidBody *mb = &physics->bodies[sr->physics_id];
+                            RigidBody *mb = &physics->bodies[sr->physics_id.index];
                             mb->mass = masses[mi];
                             /* R373: impulse uses inv_mass — keep in sync with create path. */
                             mb->inv_mass = (mb->is_static || mb->mass <= 0.0f) ? 0.0f : (1.0f / mb->mass);
@@ -9887,8 +9890,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             st->pos[1] = camera.position.e[1];
                             st->pos[2] = camera.position.e[2];
                         }
-                        if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                            RigidBody *tb = &physics->bodies[sr->physics_id];
+                        if (sr && physics_body_handle_is_valid(sr->physics_id) && sr->physics_id.index < physics->count) {
+                            RigidBody *tb = &physics->bodies[sr->physics_id.index];
                             tb->position = camera.position;
                             tb->velocity = vec3(0, 0, 0);
                             /* R375: resting dynamic also skips BVH refit — not only static. */
@@ -9902,7 +9905,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     if (selected_entity_count > 0 && selected_entity_id > 0) {
                         Entity se = world->entities[selected_entity_id];
                         CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
-                        if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
+                        if (sr && physics_body_handle_is_valid(sr->physics_id) && sr->physics_id.index < physics->count) {
                             physics_body_apply_impulse(physics, sr->physics_id, vec3_scale(cam_fwd, 15.0f));
                             LOG_INFO("THREW entity %u forward", selected_entity_id);
                         }
@@ -9922,8 +9925,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     if (selected_entity_count > 0 && selected_entity_id > 0) {
                         Entity se = world->entities[selected_entity_id];
                         CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
-                        if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                            RigidBody *fb = &physics->bodies[sr->physics_id];
+                        if (sr && physics_body_handle_is_valid(sr->physics_id) && sr->physics_id.index < physics->count) {
+                            RigidBody *fb = &physics->bodies[sr->physics_id.index];
                             fb->is_static = !fb->is_static;
                             /* R373: resolve_contact uses inv_mass; static BVH skips refit. */
                             if (fb->is_static) {
@@ -9942,12 +9945,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     if (selected_entity_count > 0 && selected_entity_id > 0) {
                         Entity se = world->entities[selected_entity_id];
                         CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
-                        if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
+                        if (sr && physics_body_handle_is_valid(sr->physics_id) && sr->physics_id.index < physics->count) {
                             static const f32 sizes[] = {0.25f, 0.5f, 1.0f, 2.0f, 4.0f};
                             static const char *sn[] = {"tiny","small","normal","large","huge"};
                             static u32 si = 1;
                             si = (si + 1) % 5;
-                            RigidBody *sb = &physics->bodies[sr->physics_id];
+                            RigidBody *sb = &physics->bodies[sr->physics_id.index];
                             sb->half_extent = vec3(sizes[si], sizes[si], sizes[si]);
                             /* R373: resting bodies skip BVH refit — force rebuild on size change. */
                             sb->rest_frames = 0;
@@ -10037,8 +10040,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                     }
                                     /* R372: sync via physics_id — old path only wrote bodies 1..10. */
                                     CRigidBody *lr = world_get_component(world, le, COMP_RIGID_BODY);
-                                    if (lr && lr->physics_id > 0 && lr->physics_id < physics->count) {
-                                        RigidBody *lb = &physics->bodies[lr->physics_id];
+                                    if (lr && physics_body_handle_is_valid(lr->physics_id) && lr->physics_id.index < physics->count) {
+                                        RigidBody *lb = &physics->bodies[lr->physics_id.index];
                                         lb->position = vec3(lt->pos[0], lt->pos[1], lt->pos[2]);
                                         lb->velocity = vec3(0, 0, 0);
                                         lb->rest_frames = 0;
@@ -10068,11 +10071,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     } else if (selected_entity_id > 0) {
                         Entity se = world->entities[selected_entity_id];
                         CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
-                        if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                            Vec3 v = physics->bodies[sr->physics_id].velocity;
+                        if (sr && physics_body_handle_is_valid(sr->physics_id) && sr->physics_id.index < physics->count) {
+                            Vec3 v = physics->bodies[sr->physics_id.index].velocity;
                             f32 spd = vec3_len(v);
                             if (spd > 2.0f) {
-                                physics->bodies[sr->physics_id].velocity = vec3(0, 0, 0);
+                                physics->bodies[sr->physics_id.index].velocity = vec3(0, 0, 0);
                                 LOG_INFO("Entity %u STOPPED (was %.1f m/s)", selected_entity_id, spd);
                             } else {
                                 physics_body_apply_impulse(physics, sr->physics_id, vec3(0, 8.0f, 0));
@@ -10129,7 +10132,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     particles.emit_pos[2] = camera.position.e[2];
                     particles.emit_rate = 2000.0f;
                     for (u32 bi = 1; bi < physics->count; bi++) {
-                        physics_body_apply_impulse(physics, bi, vec3(0, 15.0f, 0));
+                        physics_body_apply_impulse(physics, (PhysicsBodyHandle){bi, physics->bodies[bi].generation}, vec3(0, 15.0f, 0));
                     }
                     LOG_INFO("Boom! Particles + impulse at camera");
                     screen_shake = 1.0f;
@@ -10237,22 +10240,23 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 CTransform *nt = world_add_component(world, ne, COMP_TRANSFORM);
                 if (nt && st) { nt->pos[0] = st->pos[0] + 1.5f; nt->pos[1] = st->pos[1]; nt->pos[2] = st->pos[2]; }
                 if (sm) { CMeshRef *nm = world_add_component(world, ne, COMP_MESH_REF); if (nm) *nm = *sm; }
-                if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                    RigidBody *src = &physics->bodies[sr->physics_id];
+                if (sr && physics_body_handle_is_valid(sr->physics_id) &&
+                    sr->physics_id.index < physics->count) {
+                    RigidBody *src = &physics->bodies[sr->physics_id.index];
                     Vec3 dpos = vec3(st ? st->pos[0] + 1.5f : src->position.e[0] + 1.5f,
                                      st ? st->pos[1] : src->position.e[1],
                                      st ? st->pos[2] : src->position.e[2]);
                     /* R374: copy half_extent/mass/static — was hardcoded 0.5³ / mass 1. */
                     /* R376: create reuses Del-parked slots when count==capacity. */
                     f32 clone_mass = src->mass > 0.0f ? src->mass : 1.0f;
-                    u32 nid = physics_body_create(physics, dpos, src->half_extent, clone_mass,
+                    PhysicsBodyHandle nid = physics_body_create(physics, dpos, src->half_extent, clone_mass,
                                                   src->is_static, (u32)engine.frame_count);
-                    if (nid != UINT32_MAX) {
-                        physics->bodies[nid].restitution = src->restitution;
+                    if (physics_body_handle_is_valid(nid)) {
+                        physics->bodies[nid.index].restitution = src->restitution;
                         /* R378: create(is_static) zeroes mass — keep mass for later `6` unfreeze. */
                         if (src->is_static) {
-                            physics->bodies[nid].mass = clone_mass;
-                            physics->bodies[nid].inv_mass = 0.0f;
+                            physics->bodies[nid.index].mass = clone_mass;
+                            physics->bodies[nid.index].inv_mass = 0.0f;
                         }
                         CRigidBody *nr = world_add_component(world, ne, COMP_RIGID_BODY);
                         if (nr) nr->physics_id = nid;
@@ -10295,8 +10299,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         if (input_key_down(inp, 283)) st->pos[1] += ms;
                         if (input_key_down(inp, 284)) st->pos[1] -= ms;
                         CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
-                        if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                            RigidBody *mb = &physics->bodies[sr->physics_id];
+                        if (sr && physics_body_handle_is_valid(sr->physics_id) && sr->physics_id.index < physics->count) {
+                            RigidBody *mb = &physics->bodies[sr->physics_id.index];
                             mb->position = vec3(st->pos[0], st->pos[1], st->pos[2]);
                             mb->velocity = vec3(0, 0, 0);
                             /* R375: resting dynamic also skips BVH refit — not only static. */

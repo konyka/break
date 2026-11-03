@@ -5,9 +5,9 @@
 
 typedef struct RagdollBone {
     u32 joint;
-    u32 body_id;
+    PhysicsBodyHandle body_id;
     u32 parent_bone;
-    u32 constraint_id;
+    PhysicsConstraintHandle constraint_id;
     Vec3 body_to_joint_pos;
     Quat body_to_joint_rot;
     Vec3 local_scale;
