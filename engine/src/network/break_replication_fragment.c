@@ -201,6 +201,9 @@ BreakReplicationReassemblyResult break_replication_reassembler_push(
         return BREAK_REPLICATION_REASSEMBLY_BASE_MISMATCH;
     if (checksum_bytes(fragment->data, fragment->size) != fragment->checksum)
         return BREAK_REPLICATION_REASSEMBLY_CHECKSUM_MISMATCH;
+    if (reassembler->fragments && fragment->delta_id > reassembler->delta_id) {
+        clear_reassembly(reassembler);
+    }
     if (!reassembler->fragments) {
         size_t array_bytes;
         size_t pointer_bytes;

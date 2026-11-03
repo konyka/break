@@ -18,6 +18,8 @@ typedef struct SendSink {
     usize count;
     u64 fail_connection;
     u32 failures;
+    u32 calls;
+    u32 fail_at_call;
 } SendSink;
 
 static BreakRuntimeError record_send(void *user, u64 connection,
@@ -25,6 +27,11 @@ static BreakRuntimeError record_send(void *user, u64 connection,
 {
     SendSink *sink = (SendSink *)user;
     RecordedFragment *record;
+    sink->calls++;
+    if (sink->fail_at_call != 0u && sink->calls == sink->fail_at_call) {
+        sink->failures++;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
     if (sink->fail_connection == connection) {
         sink->fail_connection = 0u;
         sink->failures++;
@@ -389,8 +396,72 @@ TEST(aspect_replication_fragments_leave_and_disconnect)
     fixture_dispose(&fixture);
 }
 
+TEST(aspect_replication_second_fragment_failure_completes_persistent_reassembler)
+{
+    ReplFixture fixture;
+    BreakOnlineHandle object;
+    BreakAoIResult aoi = {0};
+    BreakWitness witness;
+    RecordedFragment first;
+    BreakReplicationReassembler *reassembler;
+    BreakReplicationReassemblyResult result;
+    u8 payload[220];
+    u8 *packet = NULL;
+    usize packet_size = 0u;
+    usize i;
+    ASSERT_TRUE(fixture_init(&fixture));
+    object = register_object(&fixture, 5u, BREAK_AOI_OBJECT_ALWAYS_RELEVANT);
+    ASSERT_TRUE(adopt_remote(fixture.remote_a, object));
+    for (i = 0u; i < sizeof(payload); ++i) payload[i] = (u8)i;
+    ASSERT_EQ(break_aspect_replication_set_bytes(fixture.replication, object, 3u,
+                                                 payload, sizeof(payload)), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_connection_open(fixture.replication, 1u, 1024u, 32u),
+              BREAK_RUNTIME_OK);
+    memset(&witness, 0, sizeof(witness));
+    witness.radius = 10.0f;
+    witness.connection_id = 1u;
+    ASSERT_TRUE(break_aoi_compute(fixture.index, &witness, 1u, NULL, &aoi));
+    fixture.sink.fail_at_call = 2u;
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(fixture.sink.count, 1u);
+    first = fixture.sink.records[0];
+    reassembler = break_replication_reassembler_create(first.meta.base_id);
+    ASSERT_NOT_NULL(reassembler);
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &first.meta,
+                                                 &packet, &packet_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    sink_reset(&fixture.sink);
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OK);
+    ASSERT_TRUE(fixture.sink.count > 0u);
+    result = BREAK_REPLICATION_REASSEMBLY_INCOMPLETE;
+    for (i = 0u; i < fixture.sink.count; ++i) {
+        result = break_replication_reassembler_push(reassembler,
+            &fixture.sink.records[i].meta, &packet, &packet_size);
+        if (result == BREAK_REPLICATION_REASSEMBLY_COMPLETE) break;
+        ASSERT_EQ(result, BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    }
+    ASSERT_EQ(result, BREAK_REPLICATION_REASSEMBLY_COMPLETE);
+    ASSERT_EQ(break_aspect_apply(fixture.remote_a, packet, packet_size), BREAK_RUNTIME_OK);
+    {
+        u8 remote_payload[220];
+        u32 remote_size = 0u;
+        ASSERT_EQ(break_aspect_get_bytes(fixture.remote_a, object, 3u,
+                                         remote_payload, sizeof(remote_payload), &remote_size),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(remote_size, sizeof(payload));
+        ASSERT_TRUE(memcmp(remote_payload, payload, sizeof(payload)) == 0);
+    }
+    break_replication_reassembly_free(packet);
+    break_replication_reassembler_destroy(reassembler);
+    break_aoi_result_clear(&aoi);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(aspect_replication_baselines_and_per_connection_dirty_masks);
     RUN_TEST(aspect_replication_budget_priority_and_send_failure_retry);
     RUN_TEST(aspect_replication_fragments_leave_and_disconnect);
+    RUN_TEST(aspect_replication_second_fragment_failure_completes_persistent_reassembler);
 TEST_MAIN_END()
