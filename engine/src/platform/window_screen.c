@@ -48,6 +48,7 @@ struct Platform {
     screen_window_t  win;
     screen_event_t   ev;
     InputState       input;
+    InputExtended    input_extended;
     u32              width, height;
     bool             quit;
     u64              media_generation;
@@ -103,6 +104,7 @@ Platform *platform_create(const PlatformConfig *cfg)
     p->media.known = PLATFORM_MEDIA_KNOWN_POINTER |
                      PLATFORM_MEDIA_KNOWN_COLOR_GAMUT;
     input_init(&p->input);
+    input_extended_init(&p->input_extended);
     return p;
 }
 
@@ -184,6 +186,7 @@ PlatformEventResult platform_poll(Platform *p)
 {
     if (!p) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
+    input_extended_new_frame(&p->input_extended);
     for (;;) {
         if (screen_get_event(p->ctx, p->ev, 0ULL) != 0) break;
         int type = SCREEN_EVENT_NONE;
@@ -228,6 +231,7 @@ void platform_ime_set_surrounding(Platform *p, const char *s, i32 c, i32 a)
 }
 void platform_ime_set_spot(Platform *p, i32 x, i32 y) { (void)p; (void)x; (void)y; }
 InputState *platform_input(Platform *p) { return p ? &p->input : NULL; }
+InputExtended *platform_input_extended(Platform *p) { return p ? &p->input_extended : NULL; }
 
 /* WSI consumers pair the window with the Screen context: Vulkan's
  * vkCreateScreenSurfaceQNX takes (screen_context, screen_window). */

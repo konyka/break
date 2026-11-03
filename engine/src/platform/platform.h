@@ -1,6 +1,7 @@
 #pragma once
 #include <core/types.h>
 #include <platform/input.h>
+#include <platform/input_extended.h>
 #include <platform/platform_wsi.h>
 
 typedef struct Platform Platform;
@@ -128,6 +129,8 @@ void                platform_ime_set_surrounding(Platform *p, const char *utf8,
                                                   i32 cursor, i32 anchor);
 void                platform_ime_set_spot(Platform *p, i32 x, i32 y);
 InputState         *platform_input(Platform *p);
+/* Versioned touch/gesture/feedback sidecar; InputState layout is unchanged. */
+InputExtended      *platform_input_extended(Platform *p);
 /* OpenGL native target (for example wl_egl_window on Wayland). */
 void               *platform_window_native(Platform *p);
 void               *platform_display_native(Platform *p);
