@@ -169,6 +169,7 @@ TEST(aspect_stale_object_handle_cannot_access_reused_slot)
     ASSERT_EQ(break_aspect_schema_register(store, &late), BREAK_RUNTIME_REJECTED);
     ASSERT_EQ(break_aspect_set_u32(store, first, 2u, 1u), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_aspect_object_destroy(store, first), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_object_adopt(store, first), BREAK_RUNTIME_STALE);
     ASSERT_EQ(break_aspect_set_u32(store, first, 2u, 2u), BREAK_RUNTIME_STALE);
     ASSERT_EQ(break_aspect_object_create(store, &second), BREAK_RUNTIME_OK);
     ASSERT_EQ(first.index, second.index);
