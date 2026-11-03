@@ -1,7 +1,7 @@
 # P10 fix round 1 报告
 
-日期：2026-11-03  
-基线：`e82dae38`  
+日期：2026-11-03
+基线：`e82dae38`
 评审输入：`.superpowers/sdd/review-findings.md` 全部条目
 
 ## 修复与提交
