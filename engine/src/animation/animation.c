@@ -588,6 +588,15 @@ void anim_ik_solve(IKSystem *ik, Vec3 *positions, Quat *rotations,
     }
 }
 
+bool anim_ik_solve_unless_ragdoll(IKSystem *ik, Vec3 *positions, Quat *rotations,
+                                  const Mat4 *world_transforms, u32 bone_count,
+                                  bool ragdoll_active) {
+    if (ragdoll_active || !ik || !positions || !rotations ||
+        !world_transforms || bone_count == 0u) return false;
+    anim_ik_solve(ik, positions, rotations, world_transforms, bone_count);
+    return true;
+}
+
 void anim_ik_set_slot(IKSystem *ik, AnimIkSlot slot,
                       u32 root, u32 mid, u32 tip,
                       Vec3 target, Vec3 pole, f32 weight) {

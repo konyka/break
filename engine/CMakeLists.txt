@@ -926,6 +926,9 @@ src/renderer/lens_effects.c
     src/animation/skeleton_socket.c
     src/animation/animation.c
     src/animation/anim_locomotion.c
+    src/animation/morph.c
+    src/animation/facial.c
+    src/animation/anim_compression.c
     src/script/script.c
     src/script/script_lua.c
     src/network/network.c
@@ -5645,6 +5648,35 @@ endif()
     target_include_directories(test_animation PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_animation PRIVATE m)
     add_test(NAME test_animation COMMAND test_animation)
+
+    add_executable(test_anim_pose_authority tests/test_anim_pose_authority.c
+        src/animation/animation.c src/math/math.c src/core/log.c)
+    target_include_directories(test_anim_pose_authority PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_anim_pose_authority PRIVATE m)
+    add_test(NAME test_anim_pose_authority COMMAND test_anim_pose_authority)
+    set_tests_properties(test_anim_pose_authority PROPERTIES LABELS "headless;animation")
+
+    add_executable(test_anim_morph tests/test_anim_morph.c src/animation/morph.c
+        src/renderer/lod_skin.c src/renderer/lod_cache.c src/renderer/lod_gen.c
+        src/math/math.c)
+    target_include_directories(test_anim_morph PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_anim_morph PRIVATE meshopt_c m)
+    add_test(NAME test_anim_morph COMMAND test_anim_morph)
+    set_tests_properties(test_anim_morph PROPERTIES LABELS "headless;animation")
+
+    add_executable(test_anim_facial tests/test_anim_facial.c
+        src/animation/facial.c src/animation/morph.c)
+    target_include_directories(test_anim_facial PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_anim_facial PRIVATE m)
+    add_test(NAME test_anim_facial COMMAND test_anim_facial)
+    set_tests_properties(test_anim_facial PROPERTIES LABELS "headless;animation")
+
+    add_executable(test_anim_compression tests/test_anim_compression.c
+        src/animation/anim_compression.c src/animation/skeleton.c src/math/math.c)
+    target_include_directories(test_anim_compression PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_anim_compression PRIVATE m)
+    add_test(NAME test_anim_compression COMMAND test_anim_compression)
+    set_tests_properties(test_anim_compression PROPERTIES LABELS "headless;animation")
 
     add_executable(test_anim_locomotion tests/test_anim_locomotion.c
         src/animation/anim_locomotion.c src/animation/animation.c src/math/math.c src/core/log.c)
