@@ -15,6 +15,30 @@ static bool physics_quat_finite(Quat q) {
     return isfinite(q.e[0]) && isfinite(q.e[1]) && isfinite(q.e[2]) && isfinite(q.e[3]);
 }
 
+#ifdef PHYSICS_TEST_HOOKS
+static i32 body_failure_countdown = -1;
+static i32 constraint_failure_countdown = -1;
+void fail_after(i32 body, i32 constraint) {
+    body_failure_countdown = body;
+    constraint_failure_countdown = constraint;
+}
+static bool physics_test_fail_body(void) {
+    if (body_failure_countdown < 0) return false;
+    if (body_failure_countdown == 0) return true;
+    body_failure_countdown--;
+    return false;
+}
+static bool physics_test_fail_constraint(void) {
+    if (constraint_failure_countdown < 0) return false;
+    if (constraint_failure_countdown == 0) return true;
+    constraint_failure_countdown--;
+    return false;
+}
+#else
+static bool physics_test_fail_body(void) { return false; }
+static bool physics_test_fail_constraint(void) { return false; }
+#endif
+
 AABB aabb_from_body(const RigidBody *b) {
     Vec3 ext;
     switch (b->shape) {
@@ -196,8 +220,8 @@ PhysicsBodyHandle physics_body_revive(PhysicsWorld *pw, PhysicsBodyHandle body, 
 PhysicsBodyHandle physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame) {
     u32 id;
     RigidBody *b;
-    if (!pw || !physics_vec3_finite(pos) || !physics_vec3_finite(half_ext) || !isfinite(mass))
-        return PHYSICS_BODY_HANDLE_INVALID;
+    if (!pw || !physics_vec3_finite(pos) || !physics_vec3_finite(half_ext) || !isfinite(mass) ||
+        physics_test_fail_body()) return PHYSICS_BODY_HANDLE_INVALID;
     for (int i = 0; i < 3; i++) {
         if (!(half_ext.e[i] >= 0.0f)) half_ext.e[i] = 0.0f;
     }
@@ -289,6 +313,7 @@ bool physics_add_post_step(PhysicsWorld *pw, PhysicsPostStepFn fn, void *user) {
 /* ---- R435: distance constraints (position projection) ---- */
 
 PhysicsConstraintHandle physics_constraint_add_distance(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, f32 rest_length) {
+    if (physics_test_fail_constraint()) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     if (!pw || !physics_body_resolve(pw, body_a) || !physics_body_resolve(pw, body_b) ||
         physics_body_handle_equal(body_a, body_b) || !isfinite(rest_length) || rest_length < 0.0f)
         return PHYSICS_CONSTRAINT_HANDLE_INVALID;
@@ -310,6 +335,7 @@ PhysicsConstraintHandle physics_constraint_add_distance(PhysicsWorld *pw, Physic
 }
 
 PhysicsConstraintHandle physics_constraint_add_ball(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, Vec3 anchor_a, Vec3 anchor_b) {
+    if (physics_test_fail_constraint()) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     if (!pw || !physics_body_resolve(pw, body_a) || !physics_body_resolve(pw, body_b) ||
         physics_body_handle_equal(body_a, body_b)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     if (!physics_vec3_finite(anchor_a) || !physics_vec3_finite(anchor_b))
@@ -345,6 +371,7 @@ void physics_body_set_pose(PhysicsWorld *pw, PhysicsBodyHandle body, const Physi
 }
 
 PhysicsConstraintHandle physics_constraint_add_hinge(PhysicsWorld *pw, const HingeDesc *desc) {
+    if (physics_test_fail_constraint()) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     if (!pw || !desc) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     if (!physics_body_resolve(pw, desc->body_a) || !physics_body_resolve(pw, desc->body_b))
         return PHYSICS_CONSTRAINT_HANDLE_INVALID;
@@ -381,6 +408,7 @@ PhysicsConstraintHandle physics_constraint_add_hinge(PhysicsWorld *pw, const Hin
 }
 
 PhysicsConstraintHandle physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc) {
+    if (physics_test_fail_constraint()) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     if (!pw || !desc) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     if (!physics_body_resolve(pw, desc->body_a) || !physics_body_resolve(pw, desc->body_b))
         return PHYSICS_CONSTRAINT_HANDLE_INVALID;
@@ -422,6 +450,7 @@ PhysicsConstraintHandle physics_constraint_add_slider(PhysicsWorld *pw, const Sl
 static Quat rigid_orientation(const RigidBody *b);
 
 PhysicsConstraintHandle physics_constraint_add_cone_twist(PhysicsWorld *pw, const ConeTwistDesc *desc) {
+    if (physics_test_fail_constraint()) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     const f32 pi = 3.14159265358979323846f;
     if (!pw || !desc) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     if (!physics_body_resolve(pw, desc->body_a) || !physics_body_resolve(pw, desc->body_b))

@@ -104,6 +104,61 @@ static void ragdoll_rollback(Ragdoll *rd, PhysicsWorld *pw) {
     }
 }
 
+typedef struct RagdollTxn {
+    u32 old_count;
+    u32 old_constraint_count;
+    bool old_bvh_dirty;
+    u32 body_slots[RAGDOLL_MAX_BONES];
+    RigidBody body_before[RAGDOLL_MAX_BONES];
+    u32 body_slot_count;
+    u32 constraint_slots[RAGDOLL_MAX_BONES];
+    DistanceConstraint constraint_before[RAGDOLL_MAX_BONES];
+    u32 constraint_slot_count;
+} RagdollTxn;
+
+static u32 ragdoll_next_body_slot(const PhysicsWorld *pw) {
+    for (u32 i = 0; i < pw->count; i++)
+        if (physics_body_is_parked(&pw->bodies[i])) return i;
+    return pw->count;
+}
+
+static u32 ragdoll_next_constraint_slot(const PhysicsWorld *pw) {
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++)
+        if (!pw->constraints[i].active) return i;
+    return PHYSICS_MAX_CONSTRAINTS;
+}
+
+static void ragdoll_txn_begin(RagdollTxn *txn, const PhysicsWorld *pw) {
+    memset(txn, 0, sizeof(*txn));
+    txn->old_count = pw->count;
+    txn->old_constraint_count = pw->constraint_count;
+    txn->old_bvh_dirty = pw->bvh_dirty;
+}
+
+static void ragdoll_txn_body(RagdollTxn *txn, const PhysicsWorld *pw) {
+    u32 slot = ragdoll_next_body_slot(pw);
+    u32 n = txn->body_slot_count++;
+    txn->body_slots[n] = slot;
+    if (slot < pw->count) txn->body_before[n] = pw->bodies[slot];
+}
+
+static void ragdoll_txn_constraint(RagdollTxn *txn, const PhysicsWorld *pw) {
+    u32 slot = ragdoll_next_constraint_slot(pw);
+    u32 n = txn->constraint_slot_count++;
+    txn->constraint_slots[n] = slot;
+    if (slot < PHYSICS_MAX_CONSTRAINTS) txn->constraint_before[n] = pw->constraints[slot];
+}
+
+static void ragdoll_txn_abort(RagdollTxn *txn, PhysicsWorld *pw) {
+    for (u32 i = 0; i < txn->body_slot_count; i++)
+        pw->bodies[txn->body_slots[i]] = txn->body_before[i];
+    for (u32 i = 0; i < txn->constraint_slot_count; i++)
+        pw->constraints[txn->constraint_slots[i]] = txn->constraint_before[i];
+    pw->count = txn->old_count;
+    pw->constraint_count = txn->old_constraint_count;
+    pw->bvh_dirty = txn->old_bvh_dirty;
+}
+
 bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSystem *ik) {
     if (!rd || !pw || !sk || rd->active || sk->joint_count == 0 ||
         sk->joint_count > RAGDOLL_MAX_BONES) return false;
@@ -138,6 +193,8 @@ bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSyste
         if (physics_body_is_parked(&pw->bodies[i])) available_bodies++;
     if (available_bodies < n) return false;
 
+    RagdollTxn txn;
+    ragdoll_txn_begin(&txn, pw);
     Ragdoll next;
     memset(&next, 0, sizeof(next));
     next.bone_count = n;
@@ -159,9 +216,10 @@ bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSyste
             if (half_h < 0.01f) half_h = 0.01f;
             body_p = vec3_scale(vec3_add(world_p[j], world_p[parent]), 0.5f);
         }
+        ragdoll_txn_body(&txn, pw);
         PhysicsBodyHandle id = physics_body_create_capsule(pw, body_p, 0.05f, half_h, 1.0f, false, 0);
         if (!physics_body_handle_is_valid(id)) {
-            ragdoll_rollback(&next, pw);
+            ragdoll_txn_abort(&txn, pw);
             return false;
         }
         PhysicsPose pose;
@@ -197,9 +255,10 @@ bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSyste
         desc.swing_max = 1.2f;
         desc.twist_min = -0.6f;
         desc.twist_max = 0.6f;
+        ragdoll_txn_constraint(&txn, pw);
         PhysicsConstraintHandle constraint = physics_constraint_add_cone_twist(pw, &desc);
         if (!physics_constraint_handle_is_valid(constraint)) {
-            ragdoll_rollback(&next, pw);
+            ragdoll_txn_abort(&txn, pw);
             return false;
         }
         next.bones[j].constraint_id = constraint;

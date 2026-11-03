@@ -5502,6 +5502,7 @@ endif()
         src/physics/ragdoll.c src/physics/physics.c src/physics/bvh.c
         src/animation/animation.c src/animation/skeleton.c src/math/math.c src/core/log.c)
     target_include_directories(test_ragdoll PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_ragdoll PRIVATE PHYSICS_TEST_HOOKS=1)
     target_link_libraries(test_ragdoll PRIVATE m)
     add_test(NAME test_ragdoll COMMAND test_ragdoll)
     set_tests_properties(test_ragdoll PROPERTIES LABELS "headless;physics")
