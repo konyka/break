@@ -1,13 +1,6 @@
 #include <renderer/mesh_buffer.h>
 #include <string.h>
 
-static u32 take_bytes(MeshBuffer *b, u32 bytes) {
-    u32 n = bytes / (u32)sizeof(MeshStageVertex);
-    if (n > MESH_BUFFER_MAX_VERTS) n = MESH_BUFFER_MAX_VERTS;
-    b->count = n;
-    return n;
-}
-
 static void index_quads(MeshBuffer *b) {
     u32 quads = b->count / 4u;
     u32 limit = MESH_BUFFER_MAX_INDICES / 6u;
@@ -46,29 +39,36 @@ static void index_ribbon(MeshBuffer *b) {
     }
 }
 
-bool mesh_buffer_from_decals(MeshBuffer *b, const Decal *in, u32 count, u32 *dropped) {
-    if (!b) return false;
+bool mesh_buffer_from_legacy(MeshBuffer *b, const MeshStageVertex *in, u32 count, u32 *dropped) {
+    if (!b || (count > 0u && !in)) return false;
     memset(b, 0, sizeof *b);
-    u32 bytes = decal_stage_quads(in, count, b->verts, MESH_BUFFER_MAX_VERTS, dropped);
-    take_bytes(b, bytes);
+    u32 n = count < MESH_BUFFER_MAX_VERTS ? count : MESH_BUFFER_MAX_VERTS;
+    if (!mesh_vertices_migrate(in, n, b->verts, MESH_BUFFER_MAX_VERTS)) return false;
+    b->count = n;
+    if (dropped) *dropped = count - n;
     index_quads(b);
     return true;
+}
+
+bool mesh_buffer_from_decals(MeshBuffer *b, const Decal *in, u32 count, u32 *dropped) {
+    if (!b) return false;
+    MeshStageVertex legacy[MESH_BUFFER_MAX_VERTS];
+    u32 bytes = decal_stage_quads(in, count, legacy, MESH_BUFFER_MAX_VERTS, dropped);
+    return mesh_buffer_from_legacy(b, legacy, bytes / (u32)sizeof(MeshStageVertex), NULL);
 }
 
 bool mesh_buffer_from_voxels(MeshBuffer *b, const VoxelVertex *in, u32 count, u32 *dropped) {
     if (!b) return false;
-    memset(b, 0, sizeof *b);
-    u32 bytes = voxel_stage_vertices(in, count, b->verts, MESH_BUFFER_MAX_VERTS, dropped);
-    take_bytes(b, bytes);
-    index_quads(b);
-    return true;
+    MeshStageVertex legacy[MESH_BUFFER_MAX_VERTS];
+    u32 bytes = voxel_stage_vertices(in, count, legacy, MESH_BUFFER_MAX_VERTS, dropped);
+    return mesh_buffer_from_legacy(b, legacy, bytes / (u32)sizeof(MeshStageVertex), NULL);
 }
 
 bool mesh_buffer_from_road(MeshBuffer *b, const Vec3 *points, u32 point_count, u32 *dropped) {
     if (!b) return false;
-    memset(b, 0, sizeof *b);
-    u32 bytes = road_stage_ribbon(points, point_count, b->verts, MESH_BUFFER_MAX_VERTS, dropped);
-    take_bytes(b, bytes);
+    MeshStageVertex legacy[MESH_BUFFER_MAX_VERTS];
+    u32 bytes = road_stage_ribbon(points, point_count, legacy, MESH_BUFFER_MAX_VERTS, dropped);
+    if (!mesh_buffer_from_legacy(b, legacy, bytes / (u32)sizeof(MeshStageVertex), NULL)) return false;
     index_ribbon(b);
     return true;
 }
@@ -76,7 +76,7 @@ bool mesh_buffer_from_road(MeshBuffer *b, const Vec3 *points, u32 point_count, u
 bool mesh_buffer_upload_desc(const MeshBuffer *b, RHIBufferDesc *out) {
     if (!b || !out || b->count == 0u) return false;
     out->usage = RHI_BUFFER_USAGE_VERTEX;
-    out->size = (usize)b->count * sizeof(MeshStageVertex);
+    out->size = (usize)b->count * sizeof(MeshVertex);
     out->initial_data = b->verts;
     return true;
 }
@@ -92,7 +92,7 @@ bool mesh_buffer_index_desc(const MeshBuffer *b, RHIBufferDesc *out) {
 bool mesh_buffer_draw_desc(const MeshBuffer *b, MeshDrawDesc *out) {
     if (!b || !out || b->count == 0u) return false;
     out->vertex_count = b->count;
-    out->stride = (u32)sizeof(MeshStageVertex);
+    out->stride = (u32)sizeof(MeshVertex);
     out->index_count = b->index_count;
     return true;
 }

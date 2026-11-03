@@ -865,6 +865,8 @@ add_library(engine STATIC
     src/renderer/mesh_stage.c
     src/renderer/mesh_buffer.c
     src/renderer/mesh_gpu.c
+    src/renderer/world_presentation.c
+    src/renderer/world_presenter.c
 src/renderer/water.c
     src/renderer/lighting.c
     src/renderer/post_process.c
@@ -2991,6 +2993,35 @@ if(ENGINE_BUILD_TESTS)
             set_tests_properties(test_mesh_gpu_gl PROPERTIES
                 LABELS "graphics;world" SKIP_RETURN_CODE 77)
         endif()
+
+        set(world_gpu_variants)
+        if(ENGINE_VULKAN)
+            list(APPEND world_gpu_variants vulkan)
+        endif()
+        if(NOT ENGINE_VULKAN OR ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+            list(APPEND world_gpu_variants opengl)
+        endif()
+        foreach(world_gpu_variant IN LISTS world_gpu_variants)
+            if(world_gpu_variant STREQUAL "vulkan")
+                set(world_gpu_suffix vk)
+                set(world_gpu_backend RHI_BACKEND_VULKAN)
+            else()
+                set(world_gpu_suffix gl)
+                set(world_gpu_backend RHI_BACKEND_OPENGL)
+            endif()
+            set(world_gpu_target test_world_presentation_${world_gpu_suffix})
+            add_executable(${world_gpu_target} tests/test_world_presentation_gpu.c)
+            target_include_directories(${world_gpu_target} PRIVATE ${TEST_INCLUDE_DIRS})
+            target_compile_definitions(${world_gpu_target} PRIVATE WORLD_GPU_BACKEND=${world_gpu_backend})
+            if(world_gpu_variant STREQUAL "vulkan")
+                target_compile_definitions(${world_gpu_target} PRIVATE ENGINE_VK_VALIDATION=1)
+            endif()
+            target_link_libraries(${world_gpu_target} PRIVATE engine m)
+            engine_link_rhi_backend(${world_gpu_target})
+            add_test(NAME ${world_gpu_target} COMMAND ${world_gpu_target})
+            set_tests_properties(${world_gpu_target} PROPERTIES
+                LABELS "graphics;world" SKIP_RETURN_CODE 77)
+        endforeach()
     endif()
 
     if(ENGINE_PLATFORM STREQUAL "linux" AND ENGINE_ENABLE_WAYLAND)
@@ -4412,6 +4443,31 @@ endif()
     target_link_libraries(test_mesh_gpu PRIVATE engine_rhi_headless m)
     add_test(NAME test_mesh_gpu COMMAND test_mesh_gpu)
     set_tests_properties(test_mesh_gpu PROPERTIES LABELS "headless;world")
+
+    add_executable(test_world_mesh_fake tests/test_world_mesh_fake.c tests/world_fake_rhi.c
+        src/renderer/mesh_gpu.c src/renderer/mesh_buffer.c src/renderer/mesh_stage.c
+        src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_world_mesh_fake PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_mesh_fake PRIVATE m)
+    add_test(NAME test_world_mesh_fake COMMAND test_world_mesh_fake)
+    set_tests_properties(test_world_mesh_fake PROPERTIES LABELS "headless;world;fake_rhi")
+
+    add_executable(test_world_presentation tests/test_world_presentation.c
+        src/renderer/world_presentation.c src/renderer/mesh_buffer.c src/renderer/mesh_stage.c src/renderer/visarea.c
+        src/renderer/vegetation.c src/renderer/time_of_day.c src/renderer/lod.c
+        src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_world_presentation PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_presentation PRIVATE m)
+    add_test(NAME test_world_presentation COMMAND test_world_presentation)
+    set_tests_properties(test_world_presentation PROPERTIES LABELS "headless;world")
+
+    add_executable(test_world_presenter_fake tests/test_world_presenter_fake.c tests/world_fake_rhi.c
+        src/renderer/world_presenter.c src/renderer/mesh_gpu.c src/renderer/mesh_buffer.c src/renderer/mesh_stage.c
+        src/math/math.c src/rhi/rhi_validation.c)
+    target_include_directories(test_world_presenter_fake PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_presenter_fake PRIVATE m)
+    add_test(NAME test_world_presenter_fake COMMAND test_world_presenter_fake)
+    set_tests_properties(test_world_presenter_fake PROPERTIES LABELS "headless;world;fake_rhi")
 
     add_executable(test_rope tests/test_rope.c
         src/physics/rope.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
