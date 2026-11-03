@@ -725,7 +725,8 @@ target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 add_library(break_online STATIC
     src/network/break_online_lobby.c
     src/network/break_online_inbox.c
-    src/network/break_online_nat.c)
+    src/network/break_online_nat.c
+    src/network/break_online_voice.c)
 set_property(TARGET break_online PROPERTY C_STANDARD 11)
 target_include_directories(break_online PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_online PUBLIC Threads::Threads)
@@ -5035,6 +5036,22 @@ endif()
     add_test(NAME test_break_online_nat COMMAND test_break_online_nat)
     set_tests_properties(test_break_online_nat PROPERTIES
         TIMEOUT 30 LABELS "network;online;nat")
+
+    add_executable(test_break_online_voice tests/test_break_online_voice.c
+        src/network/network.c)
+    target_include_directories(test_break_online_voice PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_voice PRIVATE break_online Threads::Threads)
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+       ENGINE_PLATFORM STREQUAL "harmonyos")
+        target_compile_definitions(test_break_online_voice PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_online_voice PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_online_voice PRIVATE ws2_32)
+    endif()
+    add_test(NAME test_break_online_voice COMMAND test_break_online_voice)
+    set_tests_properties(test_break_online_voice PROPERTIES
+        TIMEOUT 20 LABELS "network;online;voice")
 
     # Focused fragmentation coverage links the formal non-Snowflake core.
     add_executable(test_break_replication_fragment tests/test_break_replication_fragment.c)
