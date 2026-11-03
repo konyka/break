@@ -1,3 +1,9 @@
+## 本轮更新：P11 独立评审 fix round 3（2026-11-03）
+
+- **修复**：`BREAK_SYSTEM_TEST_UNSUPPORTED` 现在同时保护 Windows loader 实现和 dispatcher，unsupported Windows 编译不再包含 `platform_open_windows`，公共分支返回 `FAILED`、零输出 handle 和零副作用。target contract 先因缺少两处保护变红，修复后通过。
+- **Windows 编译证据**：zig 0.16.0 `x86_64-windows-gnu` 以 C11、`-Wall -Wextra -Werror -pedantic` 编译 production 与 `BREAK_SYSTEM_TESTING + BREAK_SYSTEM_TEST_UNSUPPORTED` 两个真实 Windows 对象成功。production 符号表含 `platform_open_windows t`，unsupported 符号表不含该函数；公共 fail-closed 探针成功链接为 Windows `.exe`，且无需 crypto 未定义符号。
+- **验证与限制**：Linux normal、ASan+UBSan、TSan focused 均 8/8，无 sanitizer 报告。没有 Windows 运行时，未执行生成的对象/探针，未声称 Windows 运行验收。证据见 `.superpowers/sdd/system-extensions-report.md`。
+
 ## 本轮更新：P11 独立评审 fix round 2（2026-11-03）
 
 - **修复**：PAL 新增 `PLATFORM_DYNAMIC_OPEN_OVERLOAD`，Linux/Windows 初始文件大小与累计读取超过 64 MiB 均映射为 `BREAK_PLUGIN_OVERLOAD`；普通 I/O 仍 `FAILED`。CTest 仅在 Linux/Windows 注册成功加载 fixture，并新增所有主机都运行的 `test_break_plugin_unsupported`，强制生产 fail-closed 分支，断言零输出 handle、零注册和零 constructor 副作用。

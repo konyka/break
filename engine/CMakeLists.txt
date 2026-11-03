@@ -5311,6 +5311,7 @@ endif()
             COMMAND ${CMAKE_COMMAND}
                 -DENGINE_CMAKE=${CMAKE_CURRENT_LIST_FILE}
                 -DXML_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/system/break_xml.c
+                -DDYNAMIC_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform_dynamic.c
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_system_target_contract.cmake)
         set_tests_properties(test_break_system_target_contract PROPERTIES
             LABELS "headless;system")

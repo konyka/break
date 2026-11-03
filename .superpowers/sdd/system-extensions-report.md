@@ -165,3 +165,28 @@ ctest --test-dir <tree> -R 'break_(cvar|xml|plugin|system)|break_integrity|platf
 - TSan：`100% tests passed, 0 tests failed out of 8`，无 sanitizer 报告。
 
 这 8 项包括 CVar、XML、正常插件、unsupported、target contract、BSCN、integrity 和 platform_fs。本轮未重复声称新增全量 headless 结果；round 1 的 129/129 记录保持为其对应提交的证据。`git diff --check` 在交付提交后执行。
+
+## 独立评审 fix round 3（起始 HEAD `17012de0`）
+
+### Windows unsupported 预处理缺陷
+
+新增 `DYNAMIC_SOURCE` target contract，要求 Windows loader 和 dispatcher 两处都包含 `!BREAK_SYSTEM_TEST_UNSUPPORTED`。修复前合同 RED：`Windows loader and dispatcher must both be excluded by BREAK_SYSTEM_TEST_UNSUPPORTED`。仅将两个 `#elif defined(_WIN32)` 改为带保护的版本后合同 GREEN，Linux unsupported 运行时断言仍通过。
+
+### zig Windows 编译证据
+
+本机 zig 版本为 0.16.0。production 编译：
+
+```bash
+zig cc -target x86_64-windows-gnu -std=c11 -Wall -Wextra -Werror -pedantic -Iengine/src -c engine/src/platform/platform_dynamic.c -o build-system-windows/platform_dynamic.obj
+```
+
+unsupported 使用同一参数并加入 `-DBREAK_SYSTEM_TESTING=1 -DBREAK_SYSTEM_TEST_UNSUPPORTED=1`，同样编译成功。`llvm-nm --defined-only --format=posix` 结果：
+
+- production 包含 `platform_open_windows t 180 0`。
+- unsupported 不包含 `platform_open_windows`，只保留公共 API 和测试钩子；因此未引用的静态 Windows loader 确实被预处理排除。
+
+另将检查公共 `FAILED` 与 NULL 输出的 `unsupported_probe.c` 同 unsupported 对象链接，成功生成 `build-system-windows/unsupported_probe.exe`；无需 crypto 未定义符号。未在 Windows 运行时执行该 `.exe`，不声称 Windows 运行通过。
+
+### Linux 三 lane focused
+
+normal、ASan+UBSan、TSan 均运行同一 focused CTest 正则，分别得到 `100% tests passed, 0 tests failed out of 8`，无 sanitizer 报告。`git diff --check a0bfeb95..HEAD` 在交付提交后执行。

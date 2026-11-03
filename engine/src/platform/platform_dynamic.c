@@ -143,7 +143,7 @@ done:
     return status;
 }
 
-#elif defined(_WIN32)
+#elif defined(_WIN32) && !defined(BREAK_SYSTEM_TEST_UNSUPPORTED)
 
 static PlatformDynamicOpenStatus platform_open_windows(PlatformDynamicLibrary *library,
                                                        const char *path,
@@ -218,7 +218,7 @@ PlatformDynamicOpenStatus platform_dynamic_open_verified(
 #if defined(__linux__) && !defined(BREAK_SYSTEM_TEST_UNSUPPORTED)
     library->verified_fd = -1;
     status = platform_open_linux(library, path, expected_sha256);
-#elif defined(_WIN32)
+#elif defined(_WIN32) && !defined(BREAK_SYSTEM_TEST_UNSUPPORTED)
     status = platform_open_windows(library, path, expected_sha256);
 #else
     (void)path;

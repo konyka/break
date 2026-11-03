@@ -57,7 +57,7 @@ PAL：`engine/src/platform/platform_dynamic.{h,c}`。管理器：`engine/src/sys
 
 - Linux：打开源对象后把字节流式复制到 memfd，同时用现有 `break_crypto` 计算 SHA-256；添加 WRITE/GROW/SHRINK/SEAL seals，digest 匹配后只从 `/proc/self/fd/<fd>` `dlopen`。验证 fd 由库句柄持有到卸载，避免 fd/path 复用把不同库误认为同一对象。
 - Windows：源句柄只允许 `FILE_SHARE_READ`，不允许写或删除共享，并拒绝 reparse point；在同一受保护句柄上哈希，digest 匹配后用 `GetFinalPathNameByHandleA` 取得最终路径并在句柄仍打开时 `LoadLibraryA`。该共享模式同时阻止验证后修改、删除和 rename；没有退回不受保护路径的分支。
-- 其它平台当前返回 `FAILED`，不执行不受验证对象约束的 loader。符号解析和卸载仍使用 PAL 的 `dlsym`/`GetProcAddress` 与 `dlclose`/`FreeLibrary`。
+- 其它平台当前返回 `FAILED`，不执行不受验证对象约束的 loader。测试宏 `BREAK_SYSTEM_TEST_UNSUPPORTED` 在 Linux/Windows loader 实现和 dispatcher 都排除平台分支，因此 Windows 静态 loader 也不会进入编译产物，测试统一覆盖公共零输出句柄/零副作用路径。符号解析和卸载仍使用 PAL 的 `dlsym`/`GetProcAddress` 与 `dlclose`/`FreeLibrary`。
 
 ### 加载门与 ABI
 

@@ -395,3 +395,19 @@ RED: a simulated unsupported target loaded the attack library and created its co
 - [x] **Step 3: Verify and document**
 
 normal/ASan+UBSan/TSan focused suites each pass 8/8. Design, status and report describe overload mapping, platform gating and exact evidence. Run `git diff --check` and commit without pushing.
+
+---
+
+### Task 7: Independent review fix round 3
+
+- [x] **Step 1: Pin both Windows preprocessor gates**
+
+RED: `DYNAMIC_SOURCE` contract found the Windows loader and dispatcher lacked `!BREAK_SYSTEM_TEST_UNSUPPORTED`. GREEN: only those two `#elif` branches now carry the guard.
+
+- [x] **Step 2: Cross-compile real Windows objects**
+
+zig 0.16.0 `x86_64-windows-gnu` compiles production and test-unsupported objects with warnings as errors. production nm contains `platform_open_windows`; unsupported nm omits it. A public fail-closed probe links as a Windows executable. No Windows runtime was available or claimed.
+
+- [x] **Step 3: Verify and document**
+
+Linux normal/ASan+UBSan/TSan focused suites each pass 8/8. Update design, status, plan and report; run `git diff --check` and commit without pushing.
