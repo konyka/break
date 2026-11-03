@@ -1,3 +1,10 @@
+## 本轮更新：P8 在线会话与游戏网络能力（2026-11-03）
+
+- **交付**：新增正式可选 `break_online`，不链入 `engine`/demo/编辑器。认证大厅支持固定容量目录、加入离开、主机迁移、断连清理、分页和服务端匹配；身份只能经认证提供方解析，`break_online_session.h` 直接适配真实 `BreakSessionManager`。UDP NAT 实现 HELLO/WELCOME/PUNCH/PING/ACK、observed address、generation 和 TTL；语音实现固定 PCM 帧、序号、jitter、重复/迟到拒绝和零填充丢帧；aspect 实现 schema hash、稀疏变化掩码、varint/zigzag 编码、事务 apply，以及复用真实 AOI、固定分片和安全传输回调的按连接复制。
+- **线程与失败语义**：新容器 create 时固定分配，网络接收只校验界限并入有界队列，协议/播放/复制由创建线程处理。房间/对象使用 generation 句柄，malformed aspect 不部分提交，预算或发送失败保留 dirty 供重试。计划与合同见 `docs/superpowers/plans/2026-11-03-online-gameplay-network.md`、`docs/design/online_gameplay_network.md`。
+- **验证**：新直接测试 lobby 10/10、NAT 7/7、voice 8/8、aspect 5/5、AOI 调度 3/3、固定分片 9/9；另有真实 Session 适配。normal 无 Snowflake focused 11/11；使用钉住 Snowflake 的 normal、ASan+UBSan、TSan 均为网络/复制/Session 标签 13/13 加基础网络 5/5，无 sanitizer 报告。NAT 与语音在每个 lane 都跑真实 UDP loopback；主机迁移、错误来源、丢帧、短容量、trailing-byte、dirty 重试均有实际变异变红后恢复证据。
+- **限制**：仅证明本机 Linux focused 行为，不是全平台或外部部署证明。不承诺任意 NAT/防火墙穿透、可靠送达、主观听感、账号后端、预测/回滚；分片 checksum 不是认证。完整命令和 RED/GREEN 见 `.superpowers/sdd/online-gameplay-network-report.md`。
+
 ## 本轮更新：武器状态机与权威开火意图（2026-11-02）
 
 - **交付**：`break_game` 支持 64 种宿主定义武器，每 Actor 保存弹匣、tick、冷却与装填状态。装备、退弹、装填、tick、弹药查询和开火均检查创建线程与 Entity generation；开火只输出带 shooter、weapon_id、damage 和全局单调 sequence 的权威 intent，不选择目标、不检测命中、不扣生命。
