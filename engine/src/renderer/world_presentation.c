@@ -130,16 +130,32 @@ WorldPresentationStatus world_presentation_snapshot(const WorldPresentationInput
     u32 instance_order[WORLD_PRESENT_MAX_INSTANCES];
     u32 bucket_offsets[WORLD_PRESENT_MAX_BATCHES + 1u];
     u8 instance_level[WORLD_PRESENT_MAX_INSTANCES];
+    f32 instance_distance[WORLD_PRESENT_MAX_INSTANCES];
     f32 projection_factor = lod_screen_proj_factor(input->fov, input->screen_height);
+    if (!finite_float(projection_factor) || projection_factor <= 0.0f ||
+        !finite_float(input->pixel_error * (1.0f + LOD_SCREEN_HYSTERESIS)))
+        return WORLD_PRESENTATION_INVALID;
     for (u32 i = 0; i < vegetation_count; i++) {
         const VegetationInstance *instance = &input->vegetation->instances[i];
         const WorldVegetationPrototype *prototype = &input->prototypes[instance->prototype];
         Vec3 delta = vec3_sub(instance->position, input->camera);
         f32 distance = vec3_len(delta) - prototype->bounding_radius;
+        if (!finite_float(distance)) return WORLD_PRESENTATION_INVALID;
+        f32 clamped_distance = distance > LOD_SCREEN_MIN_DIST ? distance : LOD_SCREEN_MIN_DIST;
+        f32 pixels_per_unit = projection_factor / clamped_distance;
+        if (!finite_float(pixels_per_unit)) return WORLD_PRESENTATION_INVALID;
+        for (u32 l = 0; l < prototype->lod_count; l++)
+            if (!finite_float(prototype->errors[l] * pixels_per_unit))
+                return WORLD_PRESENTATION_INVALID;
+        instance_distance[i] = distance;
         instance_mesh[i] = instance->prototype;
+    }
+    for (u32 i = 0; i < vegetation_count; i++) {
+        const VegetationInstance *instance = &input->vegetation->instances[i];
+        const WorldVegetationPrototype *prototype = &input->prototypes[instance->prototype];
         instance_level[i] = (u8)lod_instance_select(input->lod_state, i, instance->prototype + 1u,
                                                     prototype->errors, prototype->lod_count,
-                                                    distance, projection_factor,
+                                                    instance_distance[i], projection_factor,
                                                     input->pixel_error, NULL);
     }
     memset(bucket_offsets, 0, sizeof(bucket_offsets));

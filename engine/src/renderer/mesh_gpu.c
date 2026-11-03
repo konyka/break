@@ -273,7 +273,7 @@ bool mesh_pipeline_create_lit(RHIDevice *dev, MeshPipeline *out, bool instanced)
     if (out->loc_view < 0 || out->loc_proj < 0 || out->loc_sun_dir < 0 ||
         out->loc_sun_color < 0 || out->loc_ambient < 0 || out->loc_fog < 0 ||
         out->loc_camera < 0 || out->loc_base_color < 0 || out->loc_roughness < 0 ||
-        (instanced && out->loc_instance_offset < 0)) {
+        (!vulkan && out->loc_albedo < 0) || (instanced && out->loc_instance_offset < 0)) {
         mesh_pipeline_destroy(dev, out);
         return false;
     }

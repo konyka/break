@@ -55,6 +55,66 @@ static MeshMaterial make_material(RHITexture texture, RHISampler sampler) {
     return material;
 }
 
+static bool check_mesh_stride_contract(RHIDevice *dev, const MeshPipeline *pipeline,
+                                       const char *backend_name) {
+    static const u32 legal[] = {0u, 28u, 36u};
+    static const u32 illegal[] = {12u, 32u, 64u};
+    static const char vert_source[] =
+        "#version 450 core\n"
+        "layout(location = 0) in vec3 a_pos;\n"
+        "layout(location = 1) in vec3 a_normal;\n"
+        "layout(location = 2) in uint a_material;\n"
+        "layout(location = 0) out vec3 v_normal;\n"
+        "layout(location = 1) flat out uint v_material;\n"
+        "void main() { v_normal = a_normal; v_material = a_material; gl_Position = vec4(a_pos, 1.0); }\n";
+    static const char uv_vert_source[] =
+        "#version 450 core\n"
+        "layout(location = 0) in vec3 a_pos;\n"
+        "layout(location = 1) in vec3 a_normal;\n"
+        "layout(location = 2) in uint a_material;\n"
+        "layout(location = 3) in vec2 a_uv;\n"
+        "layout(location = 0) out vec3 v_normal;\n"
+        "layout(location = 1) flat out uint v_material;\n"
+        "layout(location = 2) out vec2 v_uv;\n"
+        "void main() { v_normal = a_normal; v_material = a_material; v_uv = a_uv; gl_Position = vec4(a_pos, 1.0); }\n";
+    static const char frag_source[] =
+        "#version 450 core\n"
+        "layout(location = 0) in vec3 v_normal;\n"
+        "layout(location = 1) flat in uint v_material;\n"
+        "layout(location = 0) out vec4 color;\n"
+        "void main() { color = vec4(v_normal * float(v_material), 1.0); }\n";
+    (void)pipeline;
+    bool ok = false;
+    RHIShader vert = rhi_shader_create(dev, vert_source, sizeof(vert_source) - 1u, false);
+    RHIShader uv_vert = rhi_shader_create(dev, uv_vert_source, sizeof(uv_vert_source) - 1u, false);
+    RHIShader frag = rhi_shader_create(dev, frag_source, sizeof(frag_source) - 1u, true);
+    if (!rhi_handle_valid(vert) || !rhi_handle_valid(uv_vert) || !rhi_handle_valid(frag)) goto done;
+    for (u32 i = 0; i < 6u; i++) {
+        u32 stride = i < 3u ? legal[i] : illegal[i - 3u];
+        RHIPipelineDesc desc;
+        memset(&desc, 0, sizeof(desc));
+        desc.vert = i == 2u ? uv_vert : vert;
+        desc.frag = frag;
+        desc.vertex_stride = stride;
+        desc.mesh_stage_vertex = true;
+        desc.disable_culling = true;
+        RHIPipeline handle = rhi_pipeline_create(dev, &desc);
+        bool accepted = rhi_handle_valid(handle);
+        if (rhi_handle_valid(handle)) rhi_pipeline_destroy(dev, handle);
+        if ((i < 3u && !accepted) || (i >= 3u && accepted)) {
+            printf("FAIL: %s mesh stride %u had accepted=%d\n", backend_name, stride, accepted ? 1 : 0);
+            goto done;
+        }
+    }
+    printf("WORLD STRIDE backend=%s legal=0,28,36 illegal=12,32,64 rejected\n", backend_name);
+    ok = true;
+done:
+    if (rhi_handle_valid(frag)) rhi_shader_destroy(dev, frag);
+    if (rhi_handle_valid(uv_vert)) rhi_shader_destroy(dev, uv_vert);
+    if (rhi_handle_valid(vert)) rhi_shader_destroy(dev, vert);
+    return ok;
+}
+
 static bool render_snapshot(RHIDevice *dev, WorldPresenter *presenter,
                             const WorldFrameSnapshot *snapshot, u8 shot[SHOT_BYTES],
                             WorldSubmitStats *last_stats) {
@@ -159,6 +219,7 @@ int main(void) {
         printf("FAIL: presenter creation/shader compilation failed\n");
         goto cleanup;
     }
+    if (!check_mesh_stride_contract(dev, &presenter.object_pipeline, backend_name)) goto cleanup;
     MeshDrawDesc static_draw, hidden_draw, stream_draw, vegetation_draw;
     if (!upload_quad(dev, -0.5f, -0.5f, 0.15f, &static_gpu, &static_draw) ||
         !upload_quad(dev, 0.0f, 0.0f, 1.0f, &hidden_gpu, &hidden_draw) ||

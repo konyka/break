@@ -133,8 +133,54 @@ TEST(presenter_creation_failure_cleans_partial_resources) {
     ASSERT_EQ(g_world_fake.live_samplers, 0u);
 }
 
+TEST(presenter_accepts_exact_65536_byte_instance_upload) {
+    world_fake_reset(false);
+    RHIDevice *dev = (RHIDevice *)1;
+    WorldPresenter presenter;
+    ASSERT_TRUE(world_presenter_create(dev, &presenter));
+    static WorldFrameSnapshot snapshot;
+    snapshot_init(&snapshot);
+    snapshot.instance_count = WORLD_PRESENT_MAX_INSTANCES;
+    snapshot.batches[0].count = WORLD_PRESENT_MAX_INSTANCES;
+    for (u32 i = 0; i < WORLD_PRESENT_MAX_INSTANCES; i++)
+        snapshot.instances[i].model = mat4_translation((f32)i, 0, 0);
+    WorldSubmitStats stats;
+    ASSERT_EQ(world_presenter_submit((RHICmdBuffer *)1, &presenter, &snapshot, &stats),
+              WORLD_PRESENTATION_OK);
+    ASSERT_EQ(stats.instance_count, WORLD_PRESENT_MAX_INSTANCES);
+    ASSERT_EQ(g_world_fake.update_count, 1u);
+    ASSERT_EQ(g_world_fake.update_size, 65536u);
+    ASSERT_EQ(g_world_fake.draws[2].instance_count, WORLD_PRESENT_MAX_INSTANCES);
+    ASSERT_EQ(memcmp(g_world_fake.instance_data + 1023u * sizeof(Mat4),
+                     &snapshot.instances[1023], sizeof(Mat4)), 0);
+    world_presenter_destroy(dev, &presenter);
+}
+
+TEST(presenter_rejects_1025_instances_before_any_command) {
+    world_fake_reset(true);
+    RHIDevice *dev = (RHIDevice *)1;
+    WorldPresenter presenter;
+    ASSERT_TRUE(world_presenter_create(dev, &presenter));
+    static WorldFrameSnapshot snapshot;
+    snapshot_init(&snapshot);
+    snapshot.instance_count = WORLD_PRESENT_MAX_INSTANCES + 1u;
+    snapshot.batches[0].count = WORLD_PRESENT_MAX_INSTANCES + 1u;
+    WorldSubmitStats stats;
+    memset(&stats, 0xa5, sizeof(stats));
+    WorldSubmitStats before = stats;
+    ASSERT_EQ(world_presenter_submit((RHICmdBuffer *)1, &presenter, &snapshot, &stats),
+              WORLD_PRESENTATION_OVERLOAD);
+    ASSERT_EQ(memcmp(&stats, &before, sizeof(stats)), 0);
+    ASSERT_EQ(g_world_fake.draw_count, 0u);
+    ASSERT_EQ(g_world_fake.update_count, 0u);
+    ASSERT_EQ(g_world_fake.update_size, 0u);
+    world_presenter_destroy(dev, &presenter);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(presenter_submits_stream_like_objects_and_instances_vegetation);
     RUN_TEST(presenter_batch_offsets_and_invalid_snapshot_are_checked);
     RUN_TEST(presenter_creation_failure_cleans_partial_resources);
+    RUN_TEST(presenter_accepts_exact_65536_byte_instance_upload);
+    RUN_TEST(presenter_rejects_1025_instances_before_any_command);
 TEST_MAIN_END()

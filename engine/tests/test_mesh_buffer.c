@@ -128,7 +128,18 @@ TEST(mesh_buffer_migrates_legacy_vertices_with_planar_uvs) {
     ASSERT_EQ(buf.indices[5], 3u);
 }
 
+TEST(mesh_buffer_legacy_invalid_input_preserves_entire_output) {
+    MeshBuffer buf;
+    memset(&buf, 0xa5, sizeof(buf));
+    MeshBuffer before = buf;
+    u32 dropped = 17u;
+    ASSERT_FALSE(mesh_buffer_from_legacy(&buf, NULL, 1u, &dropped));
+    ASSERT_EQ(memcmp(&buf, &before, sizeof(buf)), 0);
+    ASSERT_EQ(dropped, 17u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(mesh_buffer_describes_a_vertex_upload_and_draw);
     RUN_TEST(mesh_buffer_migrates_legacy_vertices_with_planar_uvs);
+    RUN_TEST(mesh_buffer_legacy_invalid_input_preserves_entire_output);
 TEST_MAIN_END()

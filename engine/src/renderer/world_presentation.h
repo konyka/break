@@ -103,8 +103,11 @@ typedef struct WorldSubmitStats {
     u32 instance_count;
 } WorldSubmitStats;
 
-/* RenderThread only. Creation is transactional; submitted snapshots and their
- * referenced GPU resources must remain alive for the whole submission. */
+/* RenderThread only. Creation is transactional. After submission, the snapshot
+ * remains immutable: its storage and every referenced GPU handle must stay
+ * alive until all in-flight frames using them complete. Do not reuse snapshot
+ * storage, destroy referenced handles, or destroy the presenter during that
+ * interval. */
 bool world_presenter_create(RHIDevice *dev, WorldPresenter *out);
 void world_presenter_destroy(RHIDevice *dev, WorldPresenter *presenter);
 WorldPresentationStatus world_presenter_submit(RHICmdBuffer *cmd,

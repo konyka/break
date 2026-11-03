@@ -4685,6 +4685,9 @@ static void vk_pipeline_merge_push(VKPipelineData *pd, const VKShaderData *sd) {
 
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     if (!dev || !desc) return RHI_HANDLE_NULL;
+    if (desc->mesh_stage_vertex && desc->vertex_stride != 0u &&
+        desc->vertex_stride != 28u && desc->vertex_stride != 36u)
+        return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
 
     u32 requested_samples = desc->sample_count == 0u ? 1u : desc->sample_count;

@@ -246,3 +246,14 @@ Expected: 所有非图形 PASS；图形单独记录，不用正则跳过后来�
 
 Run: `git diff --check && git status --short`
 Expected: 无 whitespace error，无测试生成物进入提交。报告列出每个提交、RED/GREEN/变异证据、normal/ASan+UBSan/TSan/graphics 命令及结果、设备限制和未验证平台；最终提交到 `cry-wave2-world`，不 push/PR。
+
+## Fix round 1：agent-179 独立评审
+
+- [x] `mesh_buffer_from_legacy` 在输出写入前验证空输入；整个对象 sentinel 先 RED 后 GREEN。
+- [x] GL/VK `rhi_pipeline_create` 在 GPU 分配前仅接受 mesh stride 0/28/36；真实后端合同覆盖合法 0/28/36 和非法 12/32/64，先 RED 后 GREEN。
+- [x] GL 缺失 albedo location 创建失败并清理；Vulkan sampler 无 push offset 仍合法。fake 同时覆盖两条路径和资源计数。
+- [x] LOD 在修改 state 前验证 projection factor、距离、pixels-per-unit 和误差乘积；两个极端有限输入用例先 RED 后 GREEN。
+- [x] 公共注释明确快照存储、GPU 句柄和 presenter 销毁必须等待对应 in-flight 帧完成。
+- [x] fake 覆盖 1024 实例/65536 字节成功与 1025 实例 pre-command OVERLOAD。该行为原本已正确；以临时少写 64 字节的变异获得真实 RED，再恢复正确实现取得 GREEN，不把变异称为生产 bug。
+
+最终验证沿用本计划的 normal/ASan+UBSan/TSan focused 命令，并重新运行真实 `test_world_presentation_vk`、`test_world_presentation_gl` 与 GL-only 像素目标。

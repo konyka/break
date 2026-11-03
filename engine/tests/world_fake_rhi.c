@@ -81,7 +81,7 @@ void rhi_pipeline_bindings_destroy(RHIDevice *dev, RHIPipelineBindings *bindings
 }
 
 static i32 binding_slot(const char *name, bool vulkan) {
-    if (!name) return -1;
+    if (!name || (g_world_fake.missing_albedo && strcmp(name, "u_albedo") == 0)) return -1;
     if (vulkan) {
         if (strcmp(name, "u_view") == 0) return 0;
         if (strcmp(name, "u_proj") == 0) return 64;

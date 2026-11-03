@@ -196,8 +196,46 @@ TEST(snapshot_overflow_and_invalid_input_are_atomic) {
     ASSERT_EQ(f.tags[1], 0u);
 }
 
+TEST(snapshot_rejects_infinite_projection_factor_atomically) {
+    SnapshotFixture f;
+    fixture_init(&f);
+    static WorldFrameSnapshot out;
+    static WorldFrameSnapshot before;
+    memset(&out, 0x5a, sizeof(out));
+    before = out;
+    f.input.fov = 1.17549435e-38f;
+    f.input.screen_height = 3.40282346e38f;
+    f.levels[0] = 2u;
+    f.tags[0] = 7u;
+    WorldPresentationStatus status = world_presentation_snapshot(&f.input, &out);
+    bool atomic = memcmp(&out, &before, sizeof(out)) == 0 &&
+                  f.levels[0] == 2u && f.tags[0] == 7u && f.tags[1] == 0u;
+    ASSERT_EQ(status, WORLD_PRESENTATION_INVALID);
+    ASSERT_TRUE(atomic);
+}
+
+TEST(snapshot_rejects_infinite_lod_distance_atomically) {
+    SnapshotFixture f;
+    fixture_init(&f);
+    static WorldFrameSnapshot out;
+    static WorldFrameSnapshot before;
+    memset(&out, 0x5a, sizeof(out));
+    before = out;
+    f.instances[0].position = vec3(3.40282346e38f, 3.40282346e38f, 3.40282346e38f);
+    f.input.camera = vec3(-3.40282346e38f, 0, 0);
+    f.levels[0] = 2u;
+    f.tags[0] = 7u;
+    WorldPresentationStatus status = world_presentation_snapshot(&f.input, &out);
+    bool atomic = memcmp(&out, &before, sizeof(out)) == 0 &&
+                  f.levels[0] == 2u && f.tags[0] == 7u && f.tags[1] == 0u;
+    ASSERT_EQ(status, WORLD_PRESENTATION_INVALID);
+    ASSERT_TRUE(atomic);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(snapshot_filters_visibility_and_selects_vegetation_lod);
     RUN_TEST(stream_tile_uses_the_same_migrated_mesh_path);
     RUN_TEST(snapshot_overflow_and_invalid_input_are_atomic);
+    RUN_TEST(snapshot_rejects_infinite_projection_factor_atomically);
+    RUN_TEST(snapshot_rejects_infinite_lod_distance_atomically);
 TEST_MAIN_END()

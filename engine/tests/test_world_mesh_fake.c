@@ -84,7 +84,32 @@ TEST(lit_mesh_supports_vulkan_instance_bindings_and_fails_atomically) {
     ASSERT_EQ(g_world_fake.live_shaders, 0u);
 }
 
+TEST(gl_missing_albedo_fails_and_cleans_resources) {
+    world_fake_reset(false);
+    g_world_fake.missing_albedo = true;
+    MeshPipeline pipe;
+    ASSERT_FALSE(mesh_pipeline_create_lit((RHIDevice *)1, &pipe, false));
+    ASSERT_FALSE(rhi_handle_valid(pipe.pipeline));
+    ASSERT_EQ(g_world_fake.live_pipelines, 0u);
+    ASSERT_EQ(g_world_fake.live_bindings, 0u);
+    ASSERT_EQ(g_world_fake.live_shaders, 0u);
+}
+
+TEST(vulkan_push_reflection_does_not_require_albedo_offset) {
+    world_fake_reset(true);
+    g_world_fake.missing_albedo = true;
+    MeshPipeline pipe;
+    ASSERT_TRUE(mesh_pipeline_create_lit((RHIDevice *)1, &pipe, false));
+    ASSERT_EQ(pipe.loc_albedo, -1);
+    mesh_pipeline_destroy((RHIDevice *)1, &pipe);
+    ASSERT_EQ(g_world_fake.live_pipelines, 0u);
+    ASSERT_EQ(g_world_fake.live_bindings, 0u);
+    ASSERT_EQ(g_world_fake.live_shaders, 0u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(lit_mesh_binds_material_and_time_of_day);
     RUN_TEST(lit_mesh_supports_vulkan_instance_bindings_and_fails_atomically);
+    RUN_TEST(gl_missing_albedo_fails_and_cleans_resources);
+    RUN_TEST(vulkan_push_reflection_does_not_require_albedo_offset);
 TEST_MAIN_END()

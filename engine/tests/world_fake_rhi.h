@@ -37,6 +37,7 @@ typedef struct WorldFakeRhi {
     u32 pipeline_fail_on_call;
     u32 pipeline_create_calls;
     bool fail_bindings;
+    bool missing_albedo;
     u32 next_handle;
     u32 live_shaders;
     u32 live_pipelines;

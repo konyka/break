@@ -1757,6 +1757,9 @@ static void gl_pipeline_merge_reflect_names(GLPipelineData *pd, const GLShaderDa
 
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     if (dev == NULL || desc == NULL) return RHI_HANDLE_NULL;
+    if (desc->mesh_stage_vertex && desc->vertex_stride != 0u &&
+        desc->vertex_stride != 28u && desc->vertex_stride != 36u)
+        return RHI_HANDLE_NULL;
     if (desc->is_compute) {
         GLShaderData *cs = (GLShaderData *)rhi_get_resource_typed(dev, desc->frag, RHI_RES_SHADER);
         if (!cs) return RHI_HANDLE_NULL;

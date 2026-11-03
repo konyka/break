@@ -40,9 +40,8 @@ static void index_ribbon(MeshBuffer *b) {
 }
 
 bool mesh_buffer_from_legacy(MeshBuffer *b, const MeshStageVertex *in, u32 count, u32 *dropped) {
-    if (!b) return false;
+    if (!b || (count > 0u && !in)) return false;
     memset(b, 0, sizeof *b);
-    if (count > 0u && !in) return false;
     u32 n = count < MESH_BUFFER_MAX_VERTS ? count : MESH_BUFFER_MAX_VERTS;
     if (!mesh_vertices_migrate(in, n, b->verts, MESH_BUFFER_MAX_VERTS)) return false;
     b->count = n;

@@ -131,6 +131,80 @@ ctest --test-dir build-world-gl -R 'test_(mesh_gpu_gl|world_presentation_gl)$' \
 
 未发现遗留 Critical/Important。
 
+## Fix round 1：agent-179 独立评审
+
+评审来源：`.superpowers/sdd/review-findings.md`。本轮三个 Important 和三个 Minor 均处理，未修改评审原始记录。
+
+### Important 1：legacy 失败原子
+
+新增 `mesh_buffer_legacy_invalid_input_preserves_entire_output`，对整个 `MeshBuffer` 做 sentinel 比较，并检查 dropped 不被改写。
+
+```sh
+cmake --build build-world-normal --target test_mesh_buffer -j3
+./build-world-normal/test_mesh_buffer
+```
+
+RED：`memcmp(&buf, &before, sizeof(buf)) != 0`，确认空输入在验证前清空旧输出。将 `count > 0 && !in` 检查移到 `memset` 前，GREEN：3/3 tests passed。
+
+### Important 2：双后端 mesh stride
+
+真实像素测试新增 `check_mesh_stride_contract`，使用合法完整 shader I/O 避免遮蔽 validation，分别创建 0/28/36 和 12/32/64 mesh pipeline。
+
+```sh
+cmake --build build-world-vk --target test_world_presentation_vk test_world_presentation_gl -j3
+ctest --test-dir build-world-vk -R 'test_world_presentation_(vk|gl)$' --output-on-failure -j1
+```
+
+RED：Vulkan 和 OpenGL 均报告 `accepted illegal mesh stride 12 as 28`。在两个 `rhi_pipeline_create` 的 GPU 资源分配前加入 0/28/36 白名单。最终重新直接运行两后端，输出均为：
+
+```text
+WORLD STRIDE backend=<backend> legal=0,28,36 illegal=12,32,64 rejected
+WORLD PIXELS backend=<backend> red=200 green=400 blue=800 magenta=200 yellow=0 day_luma=462000 night_luma=18200
+```
+
+Vulkan 同次运行 `validation_messages=0`，OpenGL 同次运行也通过。
+
+### Important 3：GL albedo 必需绑定
+
+fake 新增 `missing_albedo`，分别模拟 GL uniform 缺失和 Vulkan push reflection 不含 sampler offset。
+
+RED：`gl_missing_albedo_fails_and_cleans_resources` 中 `mesh_pipeline_create_lit(...)=true`。最小修复为仅对 `!vulkan && loc_albedo < 0` 拒绝并走既有清理。
+
+```sh
+cmake --build build-world-normal --target test_world_mesh_fake -j3
+./build-world-normal/test_world_mesh_fake
+```
+
+GREEN：4/4 tests passed；GL 创建失败时 pipelines/bindings/shaders live counts 全为 0，Vulkan `loc_albedo=-1` 仍创建成功并完整清理。
+
+### Minor 1：LOD 派生非有限值与状态原子
+
+新增 projection factor 溢出、坐标差/距离溢出两个独立用例，均检查返回 `WORLD_PRESENTATION_INVALID` 且整个输出、LOD level/tag 不变。
+
+RED：两个用例均为 `status != WORLD_PRESENTATION_INVALID`。实现改为先计算并验证 projection factor、距离、pixels-per-unit、pixel-error 上界和 LOD error 乘积，再进入修改状态的 LOD pass。
+
+```sh
+cmake --build build-world-normal --target test_world_presentation -j3
+./build-world-normal/test_world_presentation
+```
+
+GREEN：5/5 tests passed。
+
+### Minor 2/3：生命周期和实例边界
+
+`world_presentation.h` 现在明确要求快照存储、被引用 GPU 句柄和 presenter 销毁均等待对应 in-flight 帧完成；这是文档合同强化，不伪装成运行时 RED。
+
+fake 新增 1024 实例/65536 字节成功和 1025 实例 pre-command OVERLOAD 用例。当前生产边界原本正确，因此采用明示的临时上传长度变异验证新测试，而不声称存在第三个生产 bug：少写 64 字节时首次运行 RED，既有双实例测试与 1024 用例均报告 `update_size` 不符；1025 用例同时正确保持零 draw/update。恢复正确长度后 GREEN：5/5 tests passed，1024 上传恰为 65536 字节，1025 返回 OVERLOAD 且 stats 不变、无命令。
+
+### 最终回归
+
+- `cmake --build build-world-normal -j3`，随后执行本报告 focused normal 正则：44/44 PASS。
+- ASan+UBSan 使用上述 13 个 focused targets 和相同正则重新构建运行：13/13 PASS，无报告。
+- TSan 使用相同 targets/正则重新构建运行：13/13 PASS，无报告。
+- 重新构建并直接运行 `test_world_presentation_vk` 和 `test_world_presentation_gl`，不是解析旧 PPM；两后端 stride、像素和 Vulkan validation 结果见上。
+- GL-only 重新运行 `test_(mesh_gpu_gl|world_presentation_gl)`：2/2 PASS。
+- `git diff --check` 通过，报告随本轮源码一起提交，未 push。
+
 ## 限制
 
 - 仅验证 Linux X11 的 Vulkan/OpenGL；未验证 Windows/D3D12、Metal、Wayland 或真实多 GPU 切换。

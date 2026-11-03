@@ -16,11 +16,11 @@
 
 ## 顶点、材质与着色
 
-`MeshStageVertex` 保持 28 字节 ABI：position/normal/material。`MeshBuffer` 使用新的 36 字节 `MeshVertex`，在末尾增加 `vec2 uv`。`mesh_buffer_from_legacy` 完整迁移旧数据，按主法线轴生成确定性的平面 UV； decal/voxel/road 的现有 staging 入口也经过该迁移。V1 流式块因此无需改写磁盘格式即可进入新路径。后续新格式可显式提供 UV，不改变 V1 的含义。
+`MeshStageVertex` 保持 28 字节 ABI：position/normal/material。`MeshBuffer` 使用新的 36 字节 `MeshVertex`，在末尾增加 `vec2 uv`。`mesh_buffer_from_legacy` 完整迁移旧数据，按主法线轴生成确定性的平面 UV； decal/voxel/road 的现有 staging 入口也经过该迁移。输入验证先于任何输出写入，失败保持整个旧 `MeshBuffer` 不变。V1 流式块因此无需改写磁盘格式即可进入新路径。后续新格式可显式提供 UV，不改变 V1 的含义。
 
-RHI 的 `mesh_stage_vertex` 布局同时支持 28 字节旧布局和 36 字节迁移布局：location 0/1/2 保持 position/normal/material，36 字节时增加 location 3 UV。OpenGL 与 Vulkan 使用相同stride和偏移；Vulkan 补齐此前缺失的专用分支。
+RHI 的 `mesh_stage_vertex` 布局同时支持 28 字节旧布局和 36 字节迁移布局：location 0/1/2 保持 position/normal/material，36 字节时增加 location 3 UV。OpenGL 与 Vulkan 使用相同 stride 和偏移；两个 `rhi_pipeline_create` 入口在分配 GPU 资源前只接受 stride 0/28/36，0 保持 28 字节默认值，其他值直接拒绝。
 
-`MeshMaterial` 包含 base color、roughness、albedo texture 和 sampler。材质无纹理时由呈现器绑定自有的 1x1 白色 fallback；base color 始终参与着色。新受光管线支持普通与实例两个变体，使用同一组参数：view/projection、sun direction/color、ambient、fog、camera position、base color、roughness，以及实例批偏移。Vulkan 使用反射后的 push-constant 偏移，OpenGL 使用同名 uniform location；创建时缺少必需绑定会失败，不静默黑屏。
+`MeshMaterial` 包含 base color、roughness、albedo texture 和 sampler。材质无纹理时由呈现器绑定自有的 1x1 白色 fallback；base color 始终参与着色。新受光管线支持普通与实例两个变体，使用同一组参数：view/projection、sun direction/color、ambient、fog、camera position、base color、roughness，以及实例批偏移。Vulkan 使用反射后的 push-constant 偏移，OpenGL 使用同名 uniform location；创建时缺少必需绑定会失败，不静默黑屏。OpenGL 的 albedo location 是必需项，缺失会清理已创建资源；Vulkan 的 push reflection 不为 sampler 提供偏移，`loc_albedo == -1` 属于正常情况。
 
 片元颜色为 `base_color * texture(albedo, uv)`，再做法线方向光、受 roughness 控制的低强度高光、环境光及距离雾。`time_of_day_eval` 的结果由快照逐值传入这些 uniform，而不是仅保留 CPU 参数。
 
@@ -31,12 +31,12 @@ RHI 的 `mesh_stage_vertex` 布局同时支持 28 字节旧布局和 36 字节�
 - `frame_id`、相机 view/projection、FOV/screen height/pixel error 和 `TimeOfDayLighting` 均按值复制。
 - 普通/流式对象记录包含稳定 object id、`MeshGpu` 句柄、`MeshDrawDesc`、材质和来源标记。GPU 资源由 RenderThread 资源所有者管理；快照不拥有或销毁它们。
 - 若提供 `VisQuery`，构建器调用 `visarea_visible`，只复制可见 id 对应的对象。可见集溢出是 `OVERLOAD`，不是截断后继续。
-- 植被输入只在构建期间读取。每个实例的 prototype 和位置被复制，并生成 unit-scale matrix；LOD 由现有 `lod_instance_select`/`lod_select_by_screen_error` 计算，再由 `lod_bucket_instances` 按 prototype/level 排序。快照保存排序后的 4x4 model matrix 和有界批次，不保存 `VegetationBuild` 或 prototype 数组指针。
+- 植被输入只在构建期间读取。每个实例的 prototype 和位置被复制，并生成 unit-scale matrix；LOD 由现有 `lod_instance_select`/`lod_select_by_screen_error` 计算，再由 `lod_bucket_instances` 按 prototype/level 排序。调用 LOD 前先以独立 pass 验证 projection factor、距离、pixels-per-unit 和误差乘积均为有限值，溢出时旧输出和 LOD state 均不变。快照保存排序后的 4x4 model matrix 和有界批次，不保存 `VegetationBuild` 或 prototype 数组指针。
 - `world_presentation_stream_mesh` 将 `StreamTileData` 的 V1 顶点通过同一个 `mesh_buffer_from_legacy` 迁移，并在 CPU 阶段烘焙块平移。之后的 upload、材质和提交与普通网格完全相同。
 
 容量固定为 512 个普通/流式对象、1024 个植被实例、8 个 prototype、每 prototype 最多 4 个 LOD、最多 32 个实例批次。所有输入、句柄、draw stride/count、材质数值、prototype 引用和非递减 LOD error 在写入输出前验证。失败返回 `INVALID` 或 `OVERLOAD` 且保持旧输出及 LOD 状态不变；成功才替换整个快照。热路径无动态分配。
 
-快照提交后即视为不可变。GameThread 不得继续写该帧存储；RenderThread 只读快照。调用者以 frame 生命周期或双缓冲保证存储复用晚于提交完成，GPU 句柄的销毁晚于引用它们的 in-flight 帧。此边界不使用原子指针掩盖数据竞争。
+快照提交后即视为不可变。GameThread 不得继续写该帧存储；RenderThread 只读快照。调用者以 frame 生命周期或双缓冲保证快照存储复用、被引用 GPU 句柄销毁及 presenter 销毁都晚于所有引用它们的 in-flight 帧完成。此边界不使用原子指针掩盖数据竞争。
 
 ## RenderThread 提交
 
