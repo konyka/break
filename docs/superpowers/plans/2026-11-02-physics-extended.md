@@ -216,9 +216,10 @@ Expected: 局部 TRS、IK 屏蔽和回滚断言失败；`test_animation` 继续�
 out_q[j] = quat_normalize(quat_mul(quat_inverse(world_q[parent]), world_q[j]));
 out_p[j] = quat_rotate_vec3(quat_inverse(world_q[parent]),
                             vec3_sub(world_p[j], world_p[parent]));
+for (int k = 0; k < 3; k++) out_p[j].e[k] /= parent_world_s.e[k];
 ```
 
-根输出世界 p/q，scale 使用绑定值。`ragdoll_write_pose` 复用固定 32 项栈数组和 `skeleton_apply_local_trs`。deactivate 只移除自己的约束、停放自己的骨体、恢复 IK 原挂起状态并清零 `Ragdoll`。
+`parent_world_s` 是父链绑定局部缩放的逐分量乘积。根输出世界 p/q，scale 使用绑定值。`ragdoll_write_pose` 复用固定 32 项栈数组和 `skeleton_apply_local_trs`。deactivate 只移除自己的约束、停放自己的骨体、恢复 IK 原挂起状态并清零 `Ragdoll`。
 
 - [ ] **Step 4: 转绿并做姿态/回滚变异**
 

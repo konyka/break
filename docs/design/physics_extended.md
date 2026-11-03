@@ -92,9 +92,9 @@ void ragdoll_write_pose(const Ragdoll *rd, const PhysicsWorld *pw, Skeleton *sk)
 随后对根直接输出世界 TRS，对子关节使用：
 
 - `local_q = inverse(parent_world_q) * joint_q`
-- `local_p = inverse(parent_world_q) * (joint_p - parent_world_p)`
+- `local_p = component_divide(inverse(parent_world_q) * (joint_p - parent_world_p), parent_world_s)`
 
-缩放保留激活时绑定局部缩放。`ragdoll_write_pose` 调用上述接口后复用 `skeleton_apply_local_trs`，因此 `current_pose` 最终仍是正确的 `world * inverse_bind` 蒙皮矩阵。
+`parent_world_s` 是父链绑定局部缩放的逐分量乘积；零或非有限缩放拒绝写出。每个关节的局部缩放保留激活时绑定值。`ragdoll_write_pose` 调用上述接口后复用 `skeleton_apply_local_trs`，因此 `current_pose` 最终仍是正确的 `world * inverse_bind` 蒙皮矩阵。
 
 ## 4. 稳定求解与数据流
 
