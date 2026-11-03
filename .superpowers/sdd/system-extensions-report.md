@@ -141,3 +141,27 @@ engine/src/platform/platform_dynamic.c(9,10): fatal error: 'stdio.h' file not fo
 ### 当前真实限制
 
 验证对象机制关闭了原路径替换窗口，但依赖库未逐项 allowlist 校验，哈希也不是签名认证。Linux memfd 的 `$ORIGIN`/依赖搜索语义与原目录不同，宿主必须显式管理。其它非 Linux/Windows 平台失败关闭而非加载。constructor 和回调外部副作用仍不属于事务回滚范围。
+
+## 独立评审 fix round 2（起始 HEAD `98ce9ae0`）
+
+### Minor 1：明确的容量错误
+
+新增 64 MiB+1 sparse 文件测试。修复前 `break_plugin_load` 返回 `BREAK_PLUGIN_FAILED`，测试 10/11；新增 `PLATFORM_DYNAMIC_OPEN_OVERLOAD` 后，Linux 的 `st_size`/累计 `total` 和 Windows 的 `GetFileSizeEx`/累计 `total` 超限都返回该状态，manager 映射为 `BREAK_PLUGIN_OVERLOAD`。输出 handle 保持 `(0,0)`，注册计数为零；不存在文件仍返回 `BREAK_PLUGIN_FAILED`。最终插件 11/11。
+
+### Minor 2：不支持平台的安全测试与门控
+
+成功 fixture 现在只在 `ENGINE_PLATFORM=linux/windows` 时注册 `test_break_plugin`。新增 `test_break_plugin_unsupported`，在所有主机运行并以 `BREAK_SYSTEM_TEST_UNSUPPORTED` 强制生产 fail-closed 分支。修复前该变体在 Linux 仍加载攻击库，`file_exists(BREAK_TEST_ATTACKER_MARK_PATH) is true`，0/1；修复后返回 `BREAK_PLUGIN_FAILED`，handle index/generation 均为 0、注册计数为 0、constructor 标记不存在，1/1。正常成功 fixture 未被削弱，仍 11/11。
+
+### 三 lane focused
+
+三棵树均执行：
+
+```bash
+ctest --test-dir <tree> -R 'break_(cvar|xml|plugin|system)|break_integrity|platform_fs_write|scene_serial' --output-on-failure
+```
+
+- normal：`100% tests passed, 0 tests failed out of 8`。
+- ASan+UBSan：`100% tests passed, 0 tests failed out of 8`，无 sanitizer 报告。
+- TSan：`100% tests passed, 0 tests failed out of 8`，无 sanitizer 报告。
+
+这 8 项包括 CVar、XML、正常插件、unsupported、target contract、BSCN、integrity 和 platform_fs。本轮未重复声称新增全量 headless 结果；round 1 的 129/129 记录保持为其对应提交的证据。`git diff --check` 在交付提交后执行。

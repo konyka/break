@@ -5282,8 +5282,30 @@ endif()
             break_system_test_plugin_bad_abi break_system_test_plugin_register_fail
             break_system_test_plugin_no_entry break_system_test_plugin_attacker)
         target_link_libraries(test_break_plugin PRIVATE break_crypto ${CMAKE_DL_LIBS})
-        add_test(NAME test_break_plugin COMMAND test_break_plugin)
-        set_tests_properties(test_break_plugin PROPERTIES LABELS "headless;system")
+        if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "windows")
+            add_test(NAME test_break_plugin COMMAND test_break_plugin)
+            set_tests_properties(test_break_plugin PROPERTIES LABELS "headless;system")
+        endif()
+
+        add_executable(test_break_plugin_unsupported tests/test_break_plugin.c
+            src/system/break_plugin.c src/platform/platform_dynamic.c)
+        target_include_directories(test_break_plugin_unsupported PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_plugin_unsupported PRIVATE
+            BREAK_SYSTEM_TESTING=1 BREAK_SYSTEM_TEST_UNSUPPORTED=1
+            BREAK_TEST_PLUGIN_A_PATH="$<TARGET_FILE:break_system_test_plugin_a>"
+            BREAK_TEST_PLUGIN_B_PATH="$<TARGET_FILE:break_system_test_plugin_b>"
+            BREAK_TEST_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:break_system_test_plugin_bad_abi>"
+            BREAK_TEST_PLUGIN_REGISTER_FAIL_PATH="$<TARGET_FILE:break_system_test_plugin_register_fail>"
+            BREAK_TEST_PLUGIN_NO_ENTRY_PATH="$<TARGET_FILE:break_system_test_plugin_no_entry>"
+            BREAK_TEST_PLUGIN_ATTACKER_PATH="$<TARGET_FILE:break_system_test_plugin_attacker>"
+            BREAK_TEST_ATTACKER_MARK_PATH="${CMAKE_CURRENT_BINARY_DIR}/break-system-attacker-constructor.marker")
+        add_dependencies(test_break_plugin_unsupported
+            break_system_test_plugin_a break_system_test_plugin_b
+            break_system_test_plugin_bad_abi break_system_test_plugin_register_fail
+            break_system_test_plugin_no_entry break_system_test_plugin_attacker)
+        target_link_libraries(test_break_plugin_unsupported PRIVATE break_crypto ${CMAKE_DL_LIBS})
+        add_test(NAME test_break_plugin_unsupported COMMAND test_break_plugin_unsupported)
+        set_tests_properties(test_break_plugin_unsupported PROPERTIES LABELS "headless;system")
 
         add_test(NAME test_break_system_target_contract
             COMMAND ${CMAKE_COMMAND}

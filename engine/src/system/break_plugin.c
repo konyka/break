@@ -139,6 +139,10 @@ BreakPluginStatus break_plugin_load(BreakPluginManager *manager,
         goto done;
     }
     open_status = platform_dynamic_open_verified(path, expected_sha256, &library);
+    if (open_status == PLATFORM_DYNAMIC_OPEN_OVERLOAD) {
+        status = BREAK_PLUGIN_OVERLOAD;
+        goto done;
+    }
     if (open_status == PLATFORM_DYNAMIC_OPEN_MISMATCH) {
         status = BREAK_PLUGIN_REJECTED;
         goto done;

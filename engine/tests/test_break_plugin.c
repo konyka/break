@@ -9,6 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if (defined(__linux__) || defined(_WIN32)) && !defined(BREAK_SYSTEM_TEST_UNSUPPORTED)
+#define BREAK_TEST_PLUGIN_SUPPORTED 1
+#else
+#define BREAK_TEST_PLUGIN_SUPPORTED 0
+#endif
+
 static bool hash_file(const char *path, u8 out[32]) {
     FILE *file = fopen(path, "rb");
     BreakCryptoSha256Ctx *ctx = NULL;
@@ -32,6 +38,14 @@ static bool hash_file(const char *path, u8 out[32]) {
     return ok;
 }
 
+static bool file_exists(const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    fclose(file);
+    return true;
+}
+
+#if BREAK_TEST_PLUGIN_SUPPORTED
 static bool copy_with_extra_byte(const char *source, const char *target) {
     FILE *in = fopen(source, "rb");
     FILE *out = fopen(target, "wb");
@@ -107,6 +121,37 @@ TEST(hash_allowlist_rejects_wrong_digest_and_tampered_file) {
                                 "system-test-a", digest, &handle), BREAK_PLUGIN_FAILED);
     ASSERT_EQ(break_plugin_destroy(manager), BREAK_PLUGIN_OK);
     remove(tampered);
+}
+
+static bool write_oversized_file(const char *path) {
+    FILE *file = fopen(path, "wb");
+    bool ok = file != NULL;
+    if (ok && fseek(file, (long)PLATFORM_DYNAMIC_MAX_FILE_BYTES, SEEK_SET) != 0) ok = false;
+    if (ok && fputc(0x5a, file) == EOF) ok = false;
+    if (file && fclose(file) != 0) ok = false;
+    return ok;
+}
+
+TEST(oversized_file_is_overload_not_io_failure) {
+    BreakSystemTestPluginLog log;
+    BreakPluginManager *manager;
+    BreakPluginHandle handle;
+    u8 digest[32] = {0};
+    char path[512];
+    memset(&log, 0, sizeof(log));
+    test_tmp(path, sizeof(path), "system_plugin_oversized.so");
+    ASSERT_TRUE(write_oversized_file(path));
+    manager = break_plugin_create(1u, &log);
+    ASSERT_NOT_NULL(manager);
+    ASSERT_EQ(break_plugin_load(manager, path, "system-test-a", digest, &handle),
+              BREAK_PLUGIN_OVERLOAD);
+    ASSERT_EQ(handle.index, 0u);
+    ASSERT_EQ(handle.generation, 0u);
+    ASSERT_EQ(log.count, 0u);
+    ASSERT_EQ(break_plugin_load(manager, "/definitely/not/a/plugin.so",
+                                "system-test-a", digest, &handle), BREAK_PLUGIN_FAILED);
+    ASSERT_EQ(break_plugin_destroy(manager), BREAK_PLUGIN_OK);
+    remove(path);
 }
 
 TEST(abi_build_entry_and_registration_fail_closed) {
@@ -296,13 +341,6 @@ typedef struct BreakTestRace {
     bool replaced;
 } BreakTestRace;
 
-static bool file_exists(const char *path) {
-    FILE *file = fopen(path, "rb");
-    if (!file) return false;
-    fclose(file);
-    return true;
-}
-
 static void replace_verified_path(void *user) {
     BreakTestRace *race = (BreakTestRace *)user;
     race->called = true;
@@ -351,9 +389,35 @@ TEST(path_replacement_never_runs_unapproved_constructor) {
     remove(BREAK_TEST_ATTACKER_MARK_PATH);
 }
 
+#else
+TEST(unsupported_platform_fails_closed_without_constructor_side_effect) {
+    BreakSystemTestPluginLog log;
+    BreakPluginManager *manager;
+    BreakPluginHandle handle = { 9u, 9u };
+    BreakPluginStatus status;
+    u8 digest[32];
+    memset(&log, 0, sizeof(log));
+    ASSERT_TRUE(hash_file(BREAK_TEST_PLUGIN_ATTACKER_PATH, digest));
+    remove(BREAK_TEST_ATTACKER_MARK_PATH);
+    manager = break_plugin_create(1u, &log);
+    ASSERT_NOT_NULL(manager);
+    status = break_plugin_load(manager, BREAK_TEST_PLUGIN_ATTACKER_PATH,
+                               "system-test-a", digest, &handle);
+    ASSERT_FALSE(file_exists(BREAK_TEST_ATTACKER_MARK_PATH));
+    ASSERT_EQ(status, BREAK_PLUGIN_FAILED);
+    ASSERT_EQ(handle.index, 0u);
+    ASSERT_EQ(handle.generation, 0u);
+    ASSERT_EQ(log.count, 0u);
+    ASSERT_EQ(break_plugin_destroy(manager), BREAK_PLUGIN_OK);
+    remove(BREAK_TEST_ATTACKER_MARK_PATH);
+}
+#endif
+
 TEST_MAIN_BEGIN()
+#if BREAK_TEST_PLUGIN_SUPPORTED
     RUN_TEST(real_library_load_and_reference_lifetime);
     RUN_TEST(hash_allowlist_rejects_wrong_digest_and_tampered_file);
+    RUN_TEST(oversized_file_is_overload_not_io_failure);
     RUN_TEST(abi_build_entry_and_registration_fail_closed);
     RUN_TEST(unload_all_is_reverse_load_order);
     RUN_TEST(unload_all_preflights_every_reference);
@@ -362,4 +426,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(manager_arguments_and_capacity_are_validated);
     RUN_TEST(exhausted_generation_retires_slot_without_reviving_oldest_handle);
     RUN_TEST(path_replacement_never_runs_unapproved_constructor);
+#else
+    RUN_TEST(unsupported_platform_fails_closed_without_constructor_side_effect);
+#endif
 TEST_MAIN_END()

@@ -379,3 +379,19 @@ RED: 683 entities were serialized despite exceeding the parser's global attribut
 - [x] **Step 5: Run final regression and commit**
 
 Run normal/ASan+UBSan/TSan focused and full headless suites, no-tests target build, `git diff --check a0bfeb95..HEAD`, then commit the implementation and evidence without pushing.
+
+---
+
+### Task 6: Independent review fix round 2
+
+- [x] **Step 1: Distinguish overload from I/O failure**
+
+RED: a 64 MiB+1 sparse file returned `BREAK_PLUGIN_FAILED` instead of `BREAK_PLUGIN_OVERLOAD`. GREEN: `PLATFORM_DYNAMIC_OPEN_OVERLOAD` covers initial and cumulative size overflow on Linux/Windows and maps to `BREAK_PLUGIN_OVERLOAD`; missing files remain `FAILED`.
+
+- [x] **Step 2: Exercise unsupported platforms without weakening assertions**
+
+RED: a simulated unsupported target loaded the attack library and created its constructor marker. GREEN: successful fixtures register only on Linux/Windows, while `test_break_plugin_unsupported` always asserts `FAILED`, zero output handle, zero registration and zero constructor side effects.
+
+- [x] **Step 3: Verify and document**
+
+normal/ASan+UBSan/TSan focused suites each pass 8/8. Design, status and report describe overload mapping, platform gating and exact evidence. Run `git diff --check` and commit without pushing.

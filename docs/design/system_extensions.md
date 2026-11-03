@@ -53,7 +53,7 @@ root 只有 `version="1"`；entity 只有非零 decimal `index`、非零 decimal
 
 PAL：`engine/src/platform/platform_dynamic.{h,c}`。管理器：`engine/src/system/break_plugin.{h,c}`。真实共享库测试：`test_break_plugin`。
 
-`platform_dynamic_open_verified` 把验证和原生加载收在同一 PAL 原语中，不提供先哈希再按路径打开的替代 API，文件上限 64 MiB：
+`platform_dynamic_open_verified` 把验证和原生加载收在同一 PAL 原语中，不提供先哈希再按路径打开的替代 API，文件上限 64 MiB。初始大小或累计读取超限返回 `PLATFORM_DYNAMIC_OPEN_OVERLOAD`，由 manager 映射为 `BREAK_PLUGIN_OVERLOAD`；普通打开/读取/写入/哈希失败仍为 `FAILED`，不匹配仍为 `REJECTED`。
 
 - Linux：打开源对象后把字节流式复制到 memfd，同时用现有 `break_crypto` 计算 SHA-256；添加 WRITE/GROW/SHRINK/SEAL seals，digest 匹配后只从 `/proc/self/fd/<fd>` `dlopen`。验证 fd 由库句柄持有到卸载，避免 fd/path 复用把不同库误认为同一对象。
 - Windows：源句柄只允许 `FILE_SHARE_READ`，不允许写或删除共享，并拒绝 reparse point；在同一受保护句柄上哈希，digest 匹配后用 `GetFinalPathNameByHandleA` 取得最终路径并在句柄仍打开时 `LoadLibraryA`。该共享模式同时阻止验证后修改、删除和 rename；没有退回不受保护路径的分支。
@@ -81,7 +81,7 @@ PAL：`engine/src/platform/platform_dynamic.{h,c}`。管理器：`engine/src/sys
 
 ## 4. 验证入口
 
-- focused：`test_break_cvar`、`test_break_xml`、`test_break_plugin`、`test_break_system_target_contract`。
+- focused：`test_break_cvar`、`test_break_xml`、`test_break_plugin`、`test_break_plugin_unsupported`、`test_break_system_target_contract`。成功加载 fixture 只在 Linux/Windows 注册；`test_break_plugin_unsupported` 在所有主机运行，以测试宏强制走生产 fail-closed 分支，断言 `FAILED`、零输出 handle、零注册和零 constructor 副作用，不跳过安全断言。
 - 相关既有回归：`test_platform_fs_write`、`test_scene_serial`、`test_break_integrity`。
-- 六套真实 CMake `SHARED` fixture 分别覆盖正常 A/B、bad ABI、register failure、no entry 和 constructor 攻击体。替换竞态 fixture 在验证后、加载前替换输入路径，断言攻击 constructor 标记从未出现且加载的是原批准对象。
+- 六套真实 CMake `SHARED` fixture 分别覆盖正常 A/B、bad ABI、register failure、no entry 和 constructor 攻击体。替换竞态 fixture 在验证后、加载前替换输入路径，断言攻击 constructor 标记从未出现且加载的是原批准对象；64 MiB+1 sparse 文件验证超限状态。
 - normal、ASan+UBSan、TSan 命令与最终通过数见 `.superpowers/sdd/system-extensions-report.md`。Linux 之外的 PAL 分支尚未在本机执行；Windows 结果不提前声称。

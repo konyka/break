@@ -1,3 +1,9 @@
+## 本轮更新：P11 独立评审 fix round 2（2026-11-03）
+
+- **修复**：PAL 新增 `PLATFORM_DYNAMIC_OPEN_OVERLOAD`，Linux/Windows 初始文件大小与累计读取超过 64 MiB 均映射为 `BREAK_PLUGIN_OVERLOAD`；普通 I/O 仍 `FAILED`。CTest 仅在 Linux/Windows 注册成功加载 fixture，并新增所有主机都运行的 `test_break_plugin_unsupported`，强制生产 fail-closed 分支，断言零输出 handle、零注册和零 constructor 副作用。
+- **验证**：超限 sparse 文件先 RED（旧为 `FAILED`）后 GREEN；unsupported 变体先 RED（攻击 constructor 标记出现）后 GREEN。normal、ASan+UBSan、TSan focused 均 8/8，包含 CVar 12 项、XML 13 项、插件 11 项、unsupported 1 项及 contract/相关回归。
+- **限制**：其它平台仍不加载插件；Win32 分支尚未在本机编译/运行验证。完整命令和输出见 `.superpowers/sdd/system-extensions-report.md`。
+
 ## 本轮更新：P11 独立评审 fix round 1（2026-11-03）
 
 - **根因修复**：PAL 不再先哈希后按路径加载。Linux 将哈希字节写入 sealed memfd 并由库句柄持有验证 fd 到卸载；Windows 在禁止写/删除共享的源句柄上哈希并用最终路径加载，其它平台失败关闭。constructor 竞态 fixture 证明替换路径的攻击代码从未执行。CVar 回调 destroy 延迟到最外层通知结束；字符串首尾空格拒绝且空串/中间空格可往返，别名写入使用 `memmove`。插件 generation 耗尽永久退休，场景 writer 与属性容量统一为 682 实体，XML 完整执行 XML 1.0 码点校验且 serializer 改为父索引迭代。

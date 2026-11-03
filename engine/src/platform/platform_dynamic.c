@@ -1,4 +1,4 @@
-#if defined(__linux__)
+#if defined(__linux__) && !defined(BREAK_SYSTEM_TEST_UNSUPPORTED)
 #define _GNU_SOURCE
 #endif
 
@@ -32,7 +32,7 @@ struct PlatformDynamicLibrary {
 #else
     void *handle;
 #endif
-#if defined(__linux__)
+#if defined(__linux__) && !defined(BREAK_SYSTEM_TEST_UNSUPPORTED)
     int verified_fd;
 #endif
 };
@@ -53,7 +53,7 @@ static bool platform_dynamic_path_valid(const char *path) {
     return length > 0u && length < 1024u;
 }
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(BREAK_SYSTEM_TEST_UNSUPPORTED)
 
 static bool platform_write_all(int fd, const u8 *data, usize size) {
     while (size > 0u) {
@@ -83,8 +83,11 @@ static PlatformDynamicOpenStatus platform_open_linux(PlatformDynamicLibrary *lib
     struct stat st;
     source = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (source < 0) goto done;
-    if (fstat(source, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
-        (u64)st.st_size > PLATFORM_DYNAMIC_MAX_FILE_BYTES) goto done;
+    if (fstat(source, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0) goto done;
+    if ((u64)st.st_size > PLATFORM_DYNAMIC_MAX_FILE_BYTES) {
+        status = PLATFORM_DYNAMIC_OPEN_OVERLOAD;
+        goto done;
+    }
     verified = memfd_create("break-verified-plugin", MFD_CLOEXEC | MFD_ALLOW_SEALING);
     if (verified < 0) goto done;
     ctx = break_crypto_sha256_ctx_create();
@@ -99,8 +102,12 @@ static PlatformDynamicOpenStatus platform_open_linux(PlatformDynamicLibrary *lib
         }
         if (count == 0) break;
         total += (u64)count;
-        if (total > PLATFORM_DYNAMIC_MAX_FILE_BYTES ||
-            !break_crypto_sha256_update(ctx, buffer, (usize)count) ||
+        if (total > PLATFORM_DYNAMIC_MAX_FILE_BYTES) {
+            status = PLATFORM_DYNAMIC_OPEN_OVERLOAD;
+            copied = false;
+            break;
+        }
+        if (!break_crypto_sha256_update(ctx, buffer, (usize)count) ||
             !platform_write_all(verified, buffer, (usize)count)) {
             copied = false;
             break;
@@ -157,8 +164,11 @@ static PlatformDynamicOpenStatus platform_open_windows(PlatformDynamicLibrary *l
     if (!GetFileInformationByHandle(source, &info) ||
         (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
         (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
-        !GetFileSizeEx(source, &size) || size.QuadPart < 0 ||
-        (u64)size.QuadPart > PLATFORM_DYNAMIC_MAX_FILE_BYTES) goto done;
+        !GetFileSizeEx(source, &size) || size.QuadPart < 0) goto done;
+    if ((u64)size.QuadPart > PLATFORM_DYNAMIC_MAX_FILE_BYTES) {
+        status = PLATFORM_DYNAMIC_OPEN_OVERLOAD;
+        goto done;
+    }
     ctx = break_crypto_sha256_ctx_create();
     if (!ctx) goto done;
     for (;;) {
@@ -166,8 +176,11 @@ static PlatformDynamicOpenStatus platform_open_windows(PlatformDynamicLibrary *l
         if (!ReadFile(source, buffer, (DWORD)sizeof(buffer), &count, NULL)) goto done;
         if (count == 0u) break;
         total += (u64)count;
-        if (total > PLATFORM_DYNAMIC_MAX_FILE_BYTES ||
-            !break_crypto_sha256_update(ctx, buffer, count)) goto done;
+        if (total > PLATFORM_DYNAMIC_MAX_FILE_BYTES) {
+            status = PLATFORM_DYNAMIC_OPEN_OVERLOAD;
+            goto done;
+        }
+        if (!break_crypto_sha256_update(ctx, buffer, count)) goto done;
     }
     if (!break_crypto_sha256_final(ctx, digest)) goto done;
     if (memcmp(digest, expected, 32u) != 0) {
@@ -202,7 +215,7 @@ PlatformDynamicOpenStatus platform_dynamic_open_verified(
         return PLATFORM_DYNAMIC_OPEN_INVALID;
     library = (PlatformDynamicLibrary *)calloc(1u, sizeof(*library));
     if (!library) return PLATFORM_DYNAMIC_OPEN_FAILED;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(BREAK_SYSTEM_TEST_UNSUPPORTED)
     library->verified_fd = -1;
     status = platform_open_linux(library, path, expected_sha256);
 #elif defined(_WIN32)
@@ -242,7 +255,7 @@ void platform_dynamic_close(PlatformDynamicLibrary *library) {
 #else
     (void)dlclose(library->handle);
 #endif
-#if defined(__linux__)
+#if defined(__linux__) && !defined(BREAK_SYSTEM_TEST_UNSUPPORTED)
     if (library->verified_fd >= 0) close(library->verified_fd);
 #endif
     free(library);

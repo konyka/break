@@ -10,7 +10,8 @@ typedef enum PlatformDynamicOpenStatus {
     PLATFORM_DYNAMIC_OPEN_OK = 0,
     PLATFORM_DYNAMIC_OPEN_INVALID,
     PLATFORM_DYNAMIC_OPEN_MISMATCH,
-    PLATFORM_DYNAMIC_OPEN_FAILED
+    PLATFORM_DYNAMIC_OPEN_FAILED,
+    PLATFORM_DYNAMIC_OPEN_OVERLOAD
 } PlatformDynamicOpenStatus;
 
 PlatformDynamicOpenStatus platform_dynamic_open_verified(

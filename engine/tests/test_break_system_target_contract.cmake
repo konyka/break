@@ -55,7 +55,7 @@ foreach(plugin IN ITEMS a b bad_abi register_fail no_entry attacker)
     endif()
 endforeach()
 
-foreach(test_name IN ITEMS test_break_cvar test_break_xml test_break_plugin test_break_system_target_contract)
+foreach(test_name IN ITEMS test_break_cvar test_break_xml test_break_plugin test_break_plugin_unsupported test_break_system_target_contract)
     if(NOT cmake_text MATCHES "add_test\\(NAME ${test_name}")
         message(FATAL_ERROR "missing ${test_name} registration")
     endif()
