@@ -20,7 +20,8 @@ typedef struct {
 
 typedef enum {
     AUDIO_COMMAND_START = 1,
-    AUDIO_COMMAND_STOP
+    AUDIO_COMMAND_STOP,
+    AUDIO_COMMAND_RAMP
 } AudioCommandType;
 
 typedef struct {
@@ -30,6 +31,10 @@ typedef struct {
     u32 frame_count;
     u32 channels;
     f32 dsp_alpha[AUDIO_DSP_MAX_STAGES];
+    f32 initial_gain;
+    f32 ramp_target;
+    u32 ramp_frames;
+    bool stop_after_ramp;
     AudioEventDesc desc;
 } AudioCommand;
 
@@ -49,6 +54,12 @@ typedef struct {
     bool playing;
     bool looping;
     f32 volume;
+    f32 fade_gain;
+    f32 fade_start;
+    f32 fade_target;
+    u32 fade_remaining;
+    u32 fade_total;
+    bool fade_stop;
     AudioDspChain dsp;
     f32 dsp_delay_storage[AUDIO_DSP_MAX_STAGES *
                           AUDIO_DSP_MAX_DELAY_FRAMES * 2u];
@@ -76,6 +87,17 @@ typedef struct {
     u32 event_count;
     AudioVoice voices[AUDIO_MAX_VOICES];
     u64 next_order;
+    AudioClipHandle playlist[AUDIO_MUSIC_MAX_TRACKS];
+    u32 playlist_count;
+    bool playlist_loop;
+    u32 playlist_fade;
+    f32 playlist_volume;
+    u32 playlist_bus;
+    bool playlist_set;
+    AudioMusicState music_state;
+    u32 music_index;
+    u32 music_current;
+    u32 music_previous;
 } AudioExtended;
 
 static AudioExtended *audio_extended(AudioSystem *as) {
@@ -144,12 +166,41 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->playing_serial = command.serial;
             voice->looping = command.desc.looping;
             voice->volume = command.desc.volume;
+            voice->fade_gain = command.initial_gain;
+            voice->fade_start = command.initial_gain;
+            voice->fade_target = command.ramp_frames > 0 ?
+                                 command.ramp_target : command.initial_gain;
+            voice->fade_remaining = command.ramp_frames;
+            voice->fade_total = command.ramp_frames;
+            voice->fade_stop = command.stop_after_ramp;
             voice_configure_dsp(voice, &command);
             voice->playing = true;
             atomic_store_explicit(&voice->cursor, 0u, memory_order_release);
         } else if (command.type == AUDIO_COMMAND_STOP) {
             voice_finish(voice, command.serial);
+        } else if (command.type == AUDIO_COMMAND_RAMP) {
+            voice->fade_start = voice->fade_gain;
+            voice->fade_target = command.ramp_target;
+            voice->fade_remaining = command.ramp_frames;
+            voice->fade_total = command.ramp_frames;
+            voice->fade_stop = command.stop_after_ramp;
+            if (command.ramp_frames == 0) {
+                voice->fade_gain = command.ramp_target;
+                if (command.stop_after_ramp) voice_finish(voice, command.serial);
+            }
         }
+    }
+}
+
+static void voice_advance_fade(AudioVoice *voice) {
+    if (voice->fade_remaining == 0) return;
+    u32 done = voice->fade_total - voice->fade_remaining + 1u;
+    f32 t = (f32)done / (f32)voice->fade_total;
+    voice->fade_gain = voice->fade_start +
+                       (voice->fade_target - voice->fade_start) * t;
+    voice->fade_remaining--;
+    if (voice->fade_remaining == 0 && voice->fade_stop) {
+        voice_finish(voice, voice->playing_serial);
     }
 }
 
@@ -162,14 +213,16 @@ static ma_result voice_read(ma_data_source *source, void *output,
         f32 left = 0.0f;
         f32 right = 0.0f;
         if (voice->playing) {
+            voice_advance_fade(voice);
             u32 cursor = atomic_load_explicit(&voice->cursor, memory_order_relaxed);
             if (cursor >= voice->frame_count) {
                 voice_finish(voice, voice->playing_serial);
             } else {
                 u64 sample = (u64)cursor * voice->channels;
-                left = voice->samples[sample] * voice->volume;
+                f32 gain = voice->volume * voice->fade_gain;
+                left = voice->samples[sample] * gain;
                 right = voice->channels == 2 ?
-                        voice->samples[sample + 1u] * voice->volume : left;
+                        voice->samples[sample + 1u] * gain : left;
                 cursor++;
                 if (cursor == voice->frame_count) {
                     if (voice->looping) cursor = 0;
@@ -227,6 +280,8 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
     if (!ext) return false;
     ext->owner = as;
     ext->engine = engine;
+    ext->music_current = UINT32_MAX;
+    ext->music_previous = UINT32_MAX;
 
     for (u32 i = 0; i < AUDIO_MAX_VOICES; ++i) {
         AudioVoice *voice = &ext->voices[i];
@@ -426,12 +481,13 @@ static AudioVoiceHandle voice_handle(u32 slot, u32 serial) {
     return ((serial & 0xFFFFFFu) << 8) | (slot + 1u);
 }
 
-static AudioResult voice_start(AudioExtended *ext, u32 slot, u32 event_index,
-                               bool new_generation, AudioVoiceHandle *out) {
+static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
+    AudioClipHandle clip_handle, const AudioEventDesc *desc, i32 owner,
+    bool new_generation, f32 initial_gain, u32 ramp_frames,
+    AudioVoiceHandle *out) {
     AudioVoice *voice = &ext->voices[slot];
     if (!voice_command_space(voice)) return AUDIO_OVERLOAD;
-    AudioEvent *event = &ext->events[event_index];
-    AudioClip *clip = clip_resolve(ext, event->desc.clip);
+    AudioClip *clip = clip_resolve(ext, clip_handle);
     if (!clip) return AUDIO_STALE;
 
     u32 serial = new_generation ? (voice->serial + 1u) & 0xFFFFFFu : voice->serial;
@@ -442,7 +498,10 @@ static AudioResult voice_start(AudioExtended *ext, u32 slot, u32 event_index,
     command.samples = &ext->pcm[clip->sample_offset];
     command.frame_count = clip->frame_count;
     command.channels = clip->channels;
-    command.desc = event->desc;
+    command.initial_gain = initial_gain;
+    command.ramp_target = 1.0f;
+    command.ramp_frames = ramp_frames;
+    command.desc = *desc;
     for (u32 i = 0; i < command.desc.dsp.stage_count; ++i) {
         if (command.desc.dsp.stages[i].type == AUDIO_DSP_FILTER) {
             command.dsp_alpha[i] = audio_dsp_filter_alpha(
@@ -452,13 +511,20 @@ static AudioResult voice_start(AudioExtended *ext, u32 slot, u32 event_index,
 
     voice->serial = serial;
     voice->claimed = true;
-    voice->owner_event = (i32)event_index;
+    voice->owner_event = owner;
     voice->order = ++ext->next_order;
     voice->stop_pending = false;
     atomic_store_explicit(&voice->cursor, 0u, memory_order_release);
     if (!voice_enqueue(voice, &command)) return AUDIO_OVERLOAD;
-    *out = voice_handle(slot, serial);
+    if (out) *out = voice_handle(slot, serial);
     return AUDIO_OK;
+}
+
+static AudioResult voice_start(AudioExtended *ext, u32 slot, u32 event_index,
+                               bool new_generation, AudioVoiceHandle *out) {
+    AudioEvent *event = &ext->events[event_index];
+    return voice_start_pcm(ext, slot, event->desc.clip, &event->desc,
+                           (i32)event_index, new_generation, 1.0f, 0, out);
 }
 
 AudioResult audio_event_trigger(AudioSystem *as, const char *name, Vec3 pos,
@@ -540,5 +606,192 @@ AudioResult audio_event_active_count(AudioSystem *as, const char *name,
     if (!ext || event_index < 0) return AUDIO_INVALID;
     reap_voices(ext);
     *out_count = event_voice_count(ext, (u32)event_index);
+    return AUDIO_OK;
+}
+
+static AudioEventDesc music_event_desc(const AudioExtended *ext) {
+    AudioEventDesc desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.volume = ext->playlist_volume;
+    desc.bus = ext->playlist_bus;
+    return desc;
+}
+
+static bool music_voice_done(const AudioExtended *ext, u32 slot) {
+    if (slot == UINT32_MAX) return true;
+    const AudioVoice *voice = &ext->voices[slot];
+    return !voice->claimed || atomic_load_explicit(&voice->completed_serial,
+        memory_order_acquire) == voice->serial;
+}
+
+static void music_clear(AudioExtended *ext) {
+    ext->music_state = AUDIO_MUSIC_STOPPED;
+    ext->music_current = UINT32_MAX;
+    ext->music_previous = UINT32_MAX;
+    ext->music_index = 0;
+}
+
+static AudioResult music_ramp_out(AudioExtended *ext, u32 slot, u32 frames) {
+    AudioVoice *voice = &ext->voices[slot];
+    AudioCommand command;
+    memset(&command, 0, sizeof(command));
+    command.type = AUDIO_COMMAND_RAMP;
+    command.serial = voice->serial;
+    command.ramp_target = 0.0f;
+    command.ramp_frames = frames;
+    command.stop_after_ramp = true;
+    if (!voice_enqueue(voice, &command)) return AUDIO_OVERLOAD;
+    return AUDIO_OK;
+}
+
+static AudioResult music_start_next(AudioExtended *ext, u32 next_index) {
+    u32 old_slot = ext->music_current;
+    u32 new_slot = old_slot == 0 ? 1u : 0u;
+    if (ext->voices[new_slot].claimed) return AUDIO_OVERLOAD;
+    if (!voice_command_space(&ext->voices[new_slot])) return AUDIO_OVERLOAD;
+    if (old_slot != UINT32_MAX && ext->voices[old_slot].claimed &&
+        !voice_command_space(&ext->voices[old_slot])) return AUDIO_OVERLOAD;
+
+    AudioEventDesc desc = music_event_desc(ext);
+    f32 initial_gain = ext->playlist_fade > 0 ? 0.0f : 1.0f;
+    AudioResult result = voice_start_pcm(ext, new_slot,
+        ext->playlist[next_index], &desc, -2, true, initial_gain,
+        ext->playlist_fade, NULL);
+    if (result != AUDIO_OK) return result;
+    if (old_slot != UINT32_MAX && ext->voices[old_slot].claimed) {
+        if (ext->playlist_fade > 0) {
+            result = music_ramp_out(ext, old_slot, ext->playlist_fade);
+        } else {
+            AudioCommand command;
+            memset(&command, 0, sizeof(command));
+            command.type = AUDIO_COMMAND_STOP;
+            command.serial = ext->voices[old_slot].serial;
+            result = voice_enqueue(&ext->voices[old_slot], &command) ?
+                     AUDIO_OK : AUDIO_OVERLOAD;
+        }
+        if (result != AUDIO_OK) return result;
+    }
+    ext->music_previous = ext->playlist_fade > 0 ? old_slot : UINT32_MAX;
+    ext->music_current = new_slot;
+    ext->music_index = next_index;
+    ext->music_state = ext->playlist_fade > 0 ?
+                       AUDIO_MUSIC_CROSSFADING : AUDIO_MUSIC_PLAYING;
+    return AUDIO_OK;
+}
+
+AudioResult audio_music_set_playlist(AudioSystem *as,
+    const AudioMusicPlaylistDesc *desc) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext || !desc || !desc->tracks || desc->track_count == 0 ||
+        !isfinite(desc->volume) || desc->volume < 0.0f ||
+        desc->bus >= as->bus_count) return AUDIO_INVALID;
+    if (ext->music_state != AUDIO_MUSIC_STOPPED) return AUDIO_REJECTED;
+    if (desc->track_count > AUDIO_MUSIC_MAX_TRACKS) return AUDIO_OVERLOAD;
+    for (u32 i = 0; i < desc->track_count; ++i) {
+        AudioClip *clip = clip_resolve(ext, desc->tracks[i]);
+        if (!clip) return AUDIO_STALE;
+        if (desc->crossfade_frames > clip->frame_count) return AUDIO_INVALID;
+    }
+    memcpy(ext->playlist, desc->tracks,
+           desc->track_count * sizeof(ext->playlist[0]));
+    ext->playlist_count = desc->track_count;
+    ext->playlist_loop = desc->loop;
+    ext->playlist_fade = desc->crossfade_frames;
+    ext->playlist_volume = desc->volume;
+    ext->playlist_bus = desc->bus;
+    ext->playlist_set = true;
+    return AUDIO_OK;
+}
+
+AudioResult audio_music_play(AudioSystem *as) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext || !ext->playlist_set) return AUDIO_INVALID;
+    if (ext->music_state != AUDIO_MUSIC_STOPPED) return AUDIO_REJECTED;
+    reap_voices(ext);
+    AudioEventDesc desc = music_event_desc(ext);
+    AudioResult result = voice_start_pcm(ext, 0, ext->playlist[0], &desc,
+                                         -2, true, 1.0f, 0, NULL);
+    if (result != AUDIO_OK) return result;
+    ext->music_current = 0;
+    ext->music_previous = UINT32_MAX;
+    ext->music_index = 0;
+    ext->music_state = AUDIO_MUSIC_PLAYING;
+    return AUDIO_OK;
+}
+
+AudioResult audio_music_stop(AudioSystem *as) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext) return AUDIO_INVALID;
+    if (ext->music_state == AUDIO_MUSIC_STOPPED) return AUDIO_OK;
+    reap_voices(ext);
+    u32 slots[2] = {ext->music_current, ext->music_previous};
+    for (u32 i = 0; i < 2; ++i) {
+        if (slots[i] != UINT32_MAX && ext->voices[slots[i]].claimed &&
+            !voice_command_space(&ext->voices[slots[i]])) return AUDIO_OVERLOAD;
+    }
+    for (u32 i = 0; i < 2; ++i) {
+        if (slots[i] == UINT32_MAX || !ext->voices[slots[i]].claimed) continue;
+        AudioCommand command;
+        memset(&command, 0, sizeof(command));
+        command.type = AUDIO_COMMAND_STOP;
+        command.serial = ext->voices[slots[i]].serial;
+        if (!voice_enqueue(&ext->voices[slots[i]], &command)) return AUDIO_OVERLOAD;
+    }
+    ext->music_state = AUDIO_MUSIC_STOPPING;
+    if (music_voice_done(ext, ext->music_current) &&
+        music_voice_done(ext, ext->music_previous)) music_clear(ext);
+    return AUDIO_OK;
+}
+
+AudioResult audio_music_update(AudioSystem *as) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext) return AUDIO_INVALID;
+    reap_voices(ext);
+    if (ext->music_state == AUDIO_MUSIC_STOPPED) return AUDIO_OK;
+    if (ext->music_state == AUDIO_MUSIC_STOPPING) {
+        if (music_voice_done(ext, ext->music_current) &&
+            music_voice_done(ext, ext->music_previous)) music_clear(ext);
+        return AUDIO_OK;
+    }
+    if (ext->music_state == AUDIO_MUSIC_CROSSFADING) {
+        if (music_voice_done(ext, ext->music_previous)) {
+            ext->music_previous = UINT32_MAX;
+            ext->music_state = AUDIO_MUSIC_PLAYING;
+        }
+        return AUDIO_OK;
+    }
+
+    AudioClip *clip = clip_resolve(ext, ext->playlist[ext->music_index]);
+    if (!clip) return AUDIO_STALE;
+    u32 cursor = atomic_load_explicit(
+        &ext->voices[ext->music_current].cursor, memory_order_acquire);
+    if (cursor < clip->frame_count - ext->playlist_fade) return AUDIO_OK;
+    bool has_next = ext->music_index + 1u < ext->playlist_count ||
+                    ext->playlist_loop;
+    if (!has_next) {
+        if (ext->playlist_fade > 0 && !music_voice_done(ext, ext->music_current)) {
+            if (!voice_command_space(&ext->voices[ext->music_current])) {
+                return AUDIO_OVERLOAD;
+            }
+            AudioResult result = music_ramp_out(ext, ext->music_current,
+                                                 ext->playlist_fade);
+            if (result != AUDIO_OK) return result;
+            ext->music_state = AUDIO_MUSIC_STOPPING;
+        } else if (music_voice_done(ext, ext->music_current)) {
+            music_clear(ext);
+        }
+        return AUDIO_OK;
+    }
+    u32 next = ext->music_index + 1u < ext->playlist_count ?
+               ext->music_index + 1u : 0u;
+    return music_start_next(ext, next);
+}
+
+AudioResult audio_music_state(AudioSystem *as, AudioMusicState *out_state,
+                              u32 *out_track_index) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext || (!out_state && !out_track_index)) return AUDIO_INVALID;
+    if (out_state) *out_state = ext->music_state;
+    if (out_track_index) *out_track_index = ext->music_index;
     return AUDIO_OK;
 }

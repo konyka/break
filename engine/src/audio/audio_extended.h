@@ -59,6 +59,32 @@ AudioResult audio_voice_cursor(AudioSystem *as, AudioVoiceHandle voice,
 AudioResult audio_event_active_count(AudioSystem *as, const char *name,
                                      u32 *out_count);
 
+#define AUDIO_MUSIC_MAX_TRACKS 16u
+
+typedef enum {
+    AUDIO_MUSIC_STOPPED = 0,
+    AUDIO_MUSIC_PLAYING,
+    AUDIO_MUSIC_CROSSFADING,
+    AUDIO_MUSIC_STOPPING
+} AudioMusicState;
+
+typedef struct {
+    const AudioClipHandle *tracks;
+    u32 track_count;
+    bool loop;
+    u32 crossfade_frames;
+    f32 volume;
+    u32 bus;
+} AudioMusicPlaylistDesc;
+
+AudioResult audio_music_set_playlist(AudioSystem *as,
+    const AudioMusicPlaylistDesc *desc);
+AudioResult audio_music_play(AudioSystem *as);
+AudioResult audio_music_stop(AudioSystem *as);
+AudioResult audio_music_update(AudioSystem *as);
+AudioResult audio_music_state(AudioSystem *as, AudioMusicState *out_state,
+                              u32 *out_track_index);
+
 AudioResult audio_clip_register(AudioSystem *as, const char *name,
                                 const AudioPcmDesc *pcm,
                                 AudioClipHandle *out_handle);

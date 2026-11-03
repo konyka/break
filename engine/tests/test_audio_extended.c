@@ -271,6 +271,151 @@ TEST(event_dsp_delay_changes_real_engine_pcm)
     audio_system_destroy(as);
 }
 
+static AudioClipHandle register_named_pcm(AudioSystem *as, const char *name,
+                                          const f32 *samples, u32 frames) {
+    AudioPcmDesc pcm = mono_pcm(samples, frames);
+    AudioClipHandle clip = 0;
+    if (audio_clip_register(as, name, &pcm, &clip) != AUDIO_OK) return 0;
+    return clip;
+}
+
+TEST(music_crossfade_mixes_exact_pcm)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 a[8] = {0.25f, 0.25f, 0.25f, 0.25f, 0.25f, 0.25f, 0.25f, 0.25f};
+    const f32 b[8] = {0.75f, 0.75f, 0.75f, 0.75f, 0.75f, 0.75f, 0.75f, 0.75f};
+    AudioClipHandle tracks[] = {
+        register_named_pcm(as, "music-a", a, 8),
+        register_named_pcm(as, "music-b", b, 8)
+    };
+    AudioMusicPlaylistDesc playlist;
+    memset(&playlist, 0, sizeof(playlist));
+    playlist.tracks = tracks;
+    playlist.track_count = 2;
+    playlist.crossfade_frames = 4;
+    playlist.volume = 1.0f;
+    ASSERT_EQ(audio_music_set_playlist(as, &playlist), AUDIO_OK);
+    ASSERT_EQ(audio_music_play(as), AUDIO_OK);
+    const f32 expected[] = {0.25f, 0.25f, 0.25f, 0.25f,
+                            0.375f, 0.5f, 0.625f, 0.75f};
+    for (u32 i = 0; i < 8; ++i) {
+        ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+        f32 output[2];
+        ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+        ASSERT_FLOAT_EQ(output[0], expected[i], 1e-6f);
+        ASSERT_FLOAT_EQ(output[1], expected[i], 1e-6f);
+        ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+    }
+    AudioMusicState state;
+    u32 index = 99;
+    ASSERT_EQ(audio_music_state(as, &state, &index), AUDIO_OK);
+    ASSERT_EQ(state, AUDIO_MUSIC_PLAYING);
+    ASSERT_EQ(index, 1u);
+    audio_system_destroy(as);
+}
+
+TEST(music_loop_crossfade_wraps_to_first_track)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 a[] = {0.25f, 0.25f, 0.25f, 0.25f};
+    const f32 b[] = {0.75f, 0.75f, 0.75f, 0.75f};
+    AudioClipHandle tracks[] = {
+        register_named_pcm(as, "loop-a", a, 4),
+        register_named_pcm(as, "loop-b", b, 4)
+    };
+    AudioMusicPlaylistDesc playlist;
+    memset(&playlist, 0, sizeof(playlist));
+    playlist.tracks = tracks;
+    playlist.track_count = 2;
+    playlist.loop = true;
+    playlist.crossfade_frames = 2;
+    playlist.volume = 1.0f;
+    ASSERT_EQ(audio_music_set_playlist(as, &playlist), AUDIO_OK);
+    ASSERT_EQ(audio_music_play(as), AUDIO_OK);
+    const f32 expected[] = {0.25f, 0.25f, 0.5f, 0.75f, 0.5f, 0.25f};
+    for (u32 i = 0; i < 6; ++i) {
+        ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+        f32 output[2];
+        ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+        ASSERT_FLOAT_EQ(output[0], expected[i], 1e-6f);
+        ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+    }
+    AudioMusicState state;
+    u32 index = 99;
+    ASSERT_EQ(audio_music_state(as, &state, &index), AUDIO_OK);
+    ASSERT_EQ(state, AUDIO_MUSIC_PLAYING);
+    ASSERT_EQ(index, 0u);
+    audio_system_destroy(as);
+}
+
+TEST(music_playlist_validation_is_atomic_and_running_replacement_rejected)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 a[] = {0.25f, 0.25f, 0.25f, 0.25f};
+    const f32 b[] = {0.75f, 0.75f, 0.75f, 0.75f};
+    AudioClipHandle tracks[] = {
+        register_named_pcm(as, "atomic-a", a, 4),
+        register_named_pcm(as, "atomic-b", b, 4)
+    };
+    AudioMusicPlaylistDesc playlist;
+    memset(&playlist, 0, sizeof(playlist));
+    playlist.tracks = tracks;
+    playlist.track_count = 2;
+    playlist.crossfade_frames = 1;
+    playlist.volume = 1.0f;
+    ASSERT_EQ(audio_music_set_playlist(as, &playlist), AUDIO_OK);
+    AudioMusicPlaylistDesc invalid = playlist;
+    invalid.crossfade_frames = 5;
+    ASSERT_EQ(audio_music_set_playlist(as, &invalid), AUDIO_INVALID);
+    AudioClipHandle stale[] = {999};
+    invalid = playlist;
+    invalid.tracks = stale;
+    invalid.track_count = 1;
+    ASSERT_EQ(audio_music_set_playlist(as, &invalid), AUDIO_STALE);
+    ASSERT_EQ(audio_music_play(as), AUDIO_OK);
+    ASSERT_EQ(audio_music_set_playlist(as, &playlist), AUDIO_REJECTED);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.25f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(music_zero_fade_advances_and_stops)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 a[] = {0.25f, 0.25f};
+    const f32 b[] = {0.75f, 0.75f};
+    AudioClipHandle tracks[] = {
+        register_named_pcm(as, "zero-a", a, 2),
+        register_named_pcm(as, "zero-b", b, 2)
+    };
+    AudioMusicPlaylistDesc playlist;
+    memset(&playlist, 0, sizeof(playlist));
+    playlist.tracks = tracks;
+    playlist.track_count = 2;
+    playlist.volume = 1.0f;
+    ASSERT_EQ(audio_music_set_playlist(as, &playlist), AUDIO_OK);
+    ASSERT_EQ(audio_music_play(as), AUDIO_OK);
+    f32 output[4];
+    ASSERT_EQ(audio_system_render(as, output, 2), AUDIO_OK);
+    ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+    AudioMusicState state;
+    u32 index = 99;
+    ASSERT_EQ(audio_music_state(as, &state, &index), AUDIO_OK);
+    ASSERT_EQ(state, AUDIO_MUSIC_PLAYING);
+    ASSERT_EQ(index, 1u);
+    ASSERT_EQ(audio_system_render(as, output, 2), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.75f, 1e-6f);
+    ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+    ASSERT_EQ(audio_music_state(as, &state, &index), AUDIO_OK);
+    ASSERT_EQ(state, AUDIO_MUSIC_STOPPED);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -282,4 +427,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(event_global_voice_capacity_and_natural_completion);
     RUN_TEST(event_registry_rejects_invalid_and_overflow_without_trigger);
     RUN_TEST(event_dsp_delay_changes_real_engine_pcm);
+    RUN_TEST(music_crossfade_mixes_exact_pcm);
+    RUN_TEST(music_loop_crossfade_wraps_to_first_track);
+    RUN_TEST(music_playlist_validation_is_atomic_and_running_replacement_rejected);
+    RUN_TEST(music_zero_fade_advances_and_stops);
 TEST_MAIN_END()
