@@ -28,6 +28,7 @@ typedef struct AspectGhost {
     bool baseline_sent;
     u64 sent_revision;
     u64 dirty_mask;
+    u8 pending_leave;
 } AspectGhost;
 
 struct BreakAspectReplication {
@@ -438,6 +439,19 @@ BreakRuntimeError break_aspect_replication_sync(
         aoi->leave_count > replication->max_objects) return BREAK_RUNTIME_INVALID;
     result = find_connection(replication, connection_id, &connection_index, &connection);
     if (result != BREAK_RUNTIME_OK) return result;
+    for (i = 0u; i < replication->max_objects; ++i) {
+        AspectGhost *ghost = ghost_at(replication, connection_index, (u32)i);
+        if (ghost->pending_leave) {
+            if (!replication->objects[i].used) {
+                memset(ghost, 0, sizeof(*ghost));
+                continue;
+            }
+            result = sync_record(replication, connection_index, connection,
+                                 &replication->objects[i], (u32)i, ghost,
+                                 ghost->pending_leave, 0u, &bandwidth_budget);
+            if (result != BREAK_RUNTIME_OK) return result;
+        }
+    }
     for (i = 0u; i < aoi->enter_count; ++i) {
         u32 real_index;
         AspectReal *real = find_real_id(replication, aoi->enter[i], &real_index);
@@ -488,6 +502,7 @@ BreakRuntimeError break_aspect_replication_sync(
         }
         kind = (real->object.flags & BREAK_AOI_OBJECT_DORMANT)
             ? BREAK_ASPECT_DORMANT : BREAK_ASPECT_DESTROY;
+        ghost->pending_leave = kind;
         result = sync_record(replication, connection_index, connection,
                              real, real_index, ghost, kind, 0u, &bandwidth_budget);
         if (result != BREAK_RUNTIME_OK) return result;

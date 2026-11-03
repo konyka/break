@@ -191,6 +191,39 @@ static bool consume_all(SendSink *sink, u64 connection, BreakAspectStore *remote
     return true;
 }
 
+static bool prepare_pending_leave(ReplFixture *fixture, BreakOnlineHandle *object,
+                                  BreakAoIScope *scope, BreakAoIResult *aoi)
+{
+    BreakWitness witness;
+    BreakAoIEntityId id;
+    if (!fixture_init(fixture)) return false;
+    *object = register_object(fixture, 5u, BREAK_AOI_OBJECT_ALWAYS_RELEVANT);
+    if (object->index == UINT32_MAX || !adopt_remote(fixture->remote_a, *object) ||
+        break_aspect_replication_set_u32(fixture->replication, *object, 2u, 1u) != BREAK_RUNTIME_OK ||
+        break_aspect_connection_open(fixture->replication, 1u, 1024u, 32u) != BREAK_RUNTIME_OK) {
+        return false;
+    }
+    memset(&witness, 0, sizeof(witness));
+    witness.radius = 10.0f;
+    witness.connection_id = 1u;
+    if (!break_aoi_compute(fixture->index, &witness, 1u, NULL, aoi) ||
+        break_aspect_replication_sync(fixture->replication, 1u, aoi, 1024u) != BREAK_RUNTIME_OK ||
+        !consume_all(&fixture->sink, 1u, fixture->remote_a)) return false;
+    sink_reset(&fixture->sink);
+    id = break_aspect_aoi_id(*object);
+    if (!break_aoi_scope_assign(scope, &id, 1u) ||
+        break_aspect_replication_set_flags(fixture->replication, *object,
+            BREAK_AOI_OBJECT_ALWAYS_RELEVANT | BREAK_AOI_OBJECT_DORMANT) != BREAK_RUNTIME_OK) {
+        return false;
+    }
+    break_aoi_result_clear(aoi);
+    memset(&witness, 0, sizeof(witness));
+    witness.radius = 10.0f;
+    witness.connection_id = 1u;
+    return break_aoi_compute(fixture->index, &witness, 1u, scope, aoi) &&
+           aoi->leave_count == 1u;
+}
+
 TEST(aspect_replication_baselines_and_per_connection_dirty_masks)
 {
     ReplFixture fixture;
@@ -459,9 +492,58 @@ TEST(aspect_replication_second_fragment_failure_completes_persistent_reassembler
     fixture_dispose(&fixture);
 }
 
+TEST(aspect_replication_leave_retries_with_empty_aoi_after_budget)
+{
+    ReplFixture fixture;
+    BreakOnlineHandle object;
+    BreakAoIScope scope = {0};
+    BreakAoIResult aoi = {0};
+    usize offset;
+    u8 kind = 0u;
+    ASSERT_TRUE(prepare_pending_leave(&fixture, &object, &scope, &aoi));
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 0u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(fixture.sink.count, 0u);
+    break_aoi_result_clear(&aoi);
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(fixture.sink.count, 1u);
+    offset = 0u;
+    ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, &kind));
+    ASSERT_EQ(kind, BREAK_ASPECT_DORMANT);
+    break_aoi_scope_clear(&scope);
+    fixture_dispose(&fixture);
+}
+
+TEST(aspect_replication_leave_retries_with_empty_aoi_after_send_failure)
+{
+    ReplFixture fixture;
+    BreakOnlineHandle object;
+    BreakAoIScope scope = {0};
+    BreakAoIResult aoi = {0};
+    usize offset;
+    u8 kind = 0u;
+    ASSERT_TRUE(prepare_pending_leave(&fixture, &object, &scope, &aoi));
+    fixture.sink.fail_connection = 1u;
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(fixture.sink.count, 0u);
+    break_aoi_result_clear(&aoi);
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(fixture.sink.count, 1u);
+    offset = 0u;
+    ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, &kind));
+    ASSERT_EQ(kind, BREAK_ASPECT_DORMANT);
+    break_aoi_scope_clear(&scope);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(aspect_replication_baselines_and_per_connection_dirty_masks);
     RUN_TEST(aspect_replication_budget_priority_and_send_failure_retry);
     RUN_TEST(aspect_replication_fragments_leave_and_disconnect);
     RUN_TEST(aspect_replication_second_fragment_failure_completes_persistent_reassembler);
+    RUN_TEST(aspect_replication_leave_retries_with_empty_aoi_after_budget);
+    RUN_TEST(aspect_replication_leave_retries_with_empty_aoi_after_send_failure);
 TEST_MAIN_END()
