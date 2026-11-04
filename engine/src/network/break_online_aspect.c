@@ -691,13 +691,29 @@ BreakRuntimeError break_aspect_apply(BreakAspectStore *store,
             return BREAK_RUNTIME_INVALID;
         }
     }
-    if (kind != BREAK_ASPECT_BASELINE && kind != BREAK_ASPECT_DIRTY) {
+    if (kind != BREAK_ASPECT_BASELINE && kind != BREAK_ASPECT_DIRTY &&
+        kind != BREAK_ASPECT_DESTROY && kind != BREAK_ASPECT_DORMANT) {
         return BREAK_RUNTIME_INVALID;
     }
     handle.index = (u32)object_id;
     handle.generation = (u32)(object_id >> 32u);
     result = find_object(store, handle, &object);
     if (result != BREAK_RUNTIME_OK) return result;
+    if (kind == BREAK_ASPECT_DESTROY || kind == BREAK_ASPECT_DORMANT) {
+        if (mask) return BREAK_RUNTIME_INVALID;
+        if (revision < object->revision) return BREAK_RUNTIME_STALE;
+        if (reader.position != reader.capacity) return BREAK_RUNTIME_INVALID;
+        if (kind == BREAK_ASPECT_DESTROY) {
+            object->used = false;
+            object->generation = retire_generation(object->generation);
+            object->active_mask = 0u;
+            object->revision = 0u;
+        } else {
+            object->active_mask = 0u;
+            object->revision = revision;
+        }
+        return BREAK_RUNTIME_OK;
+    }
     if (revision <= object->revision || (kind == BREAK_ASPECT_DIRTY && !mask)) {
         return BREAK_RUNTIME_STALE;
     }

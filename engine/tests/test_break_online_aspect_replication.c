@@ -165,11 +165,7 @@ static bool consume_one_packet(SendSink *sink, u64 connection, usize *offset,
         } while (byte & 0x80u);
         if (position >= packet_size) goto done;
         kind = packet[position];
-        if (kind == BREAK_ASPECT_BASELINE || kind == BREAK_ASPECT_DIRTY) {
-            ok = break_aspect_apply(remote, packet, packet_size) == BREAK_RUNTIME_OK;
-        } else {
-            ok = true;
-        }
+        ok = break_aspect_apply(remote, packet, packet_size) == BREAK_RUNTIME_OK;
         if (out_kind) *out_kind = kind;
     }
 done:
@@ -421,6 +417,7 @@ TEST(aspect_replication_fragments_leave_and_disconnect)
     offset = 0u;
     ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, &kind));
     ASSERT_EQ(kind, BREAK_ASPECT_DORMANT);
+    ASSERT_EQ(break_aspect_active_mask(fixture.remote_a, object), 0u);
     ASSERT_EQ(break_aspect_replication_disconnect(fixture.replication, 1u), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_aspect_replication_connection_count(fixture.replication), 0u);
     ASSERT_EQ(break_aspect_replication_disconnect(fixture.replication, 1u), BREAK_RUNTIME_STALE);

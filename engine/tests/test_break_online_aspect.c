@@ -278,6 +278,38 @@ TEST(aspect_remote_destroy_then_gen2_create_and_adopt_works)
     destroy_pair(&pair);
 }
 
+TEST(aspect_dormant_and_destroy_apply_changes_ghost_state)
+{
+    AspectPair pair;
+    u8 baseline[256];
+    u8 control[64];
+    usize baseline_size = 0u;
+    usize control_size = 0u;
+    u32 health = 0u;
+    ASSERT_TRUE(make_pair(&pair));
+    ASSERT_EQ(break_aspect_set_u32(pair.authoritative, pair.object, 2u, 9u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object,
+                                  break_aspect_active_mask(pair.authoritative, pair.object),
+                                  BREAK_ASPECT_BASELINE,
+                                  baseline, sizeof(baseline), &baseline_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_apply(pair.remote, baseline, baseline_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DORMANT,
+                                  control, sizeof(control), &control_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_apply(pair.remote, control, control_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_active_mask(pair.remote, pair.object), 0u);
+    ASSERT_EQ(break_aspect_get_u32(pair.remote, pair.object, 2u, &health),
+              BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DESTROY,
+                                  control, sizeof(control), &control_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_apply(pair.remote, control, control_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_get_u32(pair.remote, pair.object, 2u, &health),
+              BREAK_RUNTIME_STALE);
+    destroy_pair(&pair);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(aspect_health_delta_has_hand_derived_mask_and_varint);
     RUN_TEST(aspect_malformed_delta_never_partially_mutates_remote);
@@ -285,4 +317,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aspect_signed_float_bytes_and_same_value_rules);
     RUN_TEST(aspect_schema_validation_and_output_capacity_are_atomic);
     RUN_TEST(aspect_remote_destroy_then_gen2_create_and_adopt_works);
+    RUN_TEST(aspect_dormant_and_destroy_apply_changes_ghost_state);
 TEST_MAIN_END()
