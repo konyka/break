@@ -173,6 +173,8 @@ typedef struct NatFixture {
     BreakNatEndpoint *b;
     AuthDirectory auth;
     u64 now;
+    u64 a_now;
+    u64 b_now;
 } NatFixture;
 
 static bool nat_fixture_init(NatFixture *fixture, u32 max_peers, u32 max_pairs)
@@ -217,11 +219,12 @@ static bool nat_fixture_init(NatFixture *fixture, u32 max_peers, u32 max_pairs)
     endpoint_config.session_key = directory_key;
     endpoint_config.session_key_user = &fixture->auth;
     endpoint_config.clock = fake_clock;
-    endpoint_config.clock_user = &fixture->now;
+    endpoint_config.clock_user = &fixture->a_now;
     endpoint_config.session = 11u;
     if (break_nat_endpoint_create(fixture->a_socket, &fixture->coordinator_address,
                                   &endpoint_config, &fixture->a) != BREAK_RUNTIME_OK) return false;
     endpoint_config.session = 22u;
+    endpoint_config.clock_user = &fixture->b_now;
     if (break_nat_endpoint_create(fixture->b_socket, &fixture->coordinator_address,
                                   &endpoint_config, &fixture->b) != BREAK_RUNTIME_OK) return false;
     return true;
@@ -358,6 +361,8 @@ TEST(nat_expires_unconfirmed_pair_and_late_punch)
     ASSERT_TRUE(nat_fixture_init(&fixture, 2u, 1u));
     ASSERT_TRUE(register_and_pair(&fixture, &pair, UINT64_C(0x55), 10u));
     fixture.now = 11u;
+    fixture.a_now = 11u;
+    fixture.b_now = 11u;
     ASSERT_EQ(break_nat_coordinator_poll(fixture.coordinator, 1u), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_nat_coordinator_pair_ack_mask(fixture.coordinator, pair, &ack_mask),
               BREAK_RUNTIME_STALE);
@@ -644,6 +649,19 @@ TEST(nat_close_before_punch_blocks_late_punch)
     nat_fixture_dispose(&fixture);
 }
 
+TEST(nat_punch_ttl_uses_each_endpoint_local_clock)
+{
+    NatFixture fixture;
+    BreakOnlineHandle pair;
+    ASSERT_TRUE(nat_fixture_init(&fixture, 2u, 1u));
+    fixture.now = 10u;
+    fixture.a_now = 100000u;
+    fixture.b_now = 100020u;
+    ASSERT_TRUE(register_and_pair(&fixture, &pair, 88u, 1000u));
+    ASSERT_TRUE(nat_pump_until_connected(&fixture, pair));
+    nat_fixture_dispose(&fixture);
+}
+
 TEST(network_subsystem_initializes)
 {
     ASSERT_TRUE(net_init());
@@ -665,5 +683,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(nat_captured_valid_hello_replay_from_other_socket_is_rejected);
     RUN_TEST(nat_pair_close_resets_connected_and_allows_repair);
     RUN_TEST(nat_close_before_punch_blocks_late_punch);
+    RUN_TEST(nat_punch_ttl_uses_each_endpoint_local_clock);
     net_shutdown();
 TEST_MAIN_END()

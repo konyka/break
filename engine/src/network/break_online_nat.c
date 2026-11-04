@@ -100,6 +100,7 @@ struct BreakNatEndpoint {
     NetAddress peer_address;
     u64 nonce;
     u64 expires_at;
+    u64 punch_ttl;
     u64 punch_sequence;
     bool closed_pair_valid;
     BreakOnlineHandle closed_pair;
@@ -575,6 +576,9 @@ BreakRuntimeError break_nat_coordinator_receive_socket(
     return receive_datagrams(coordinator->socket, coordinator->inbox, max_datagrams);
 }
 
+static BreakRuntimeError send_close(BreakNatCoordinator *coordinator,
+                                    NatPeer *recipient, BreakOnlineHandle pair);
+
 BreakRuntimeError break_nat_coordinator_poll(BreakNatCoordinator *coordinator,
                                              u32 max_messages)
 {
@@ -591,6 +595,13 @@ BreakRuntimeError break_nat_coordinator_poll(BreakNatCoordinator *coordinator,
         NatPair *pair = &coordinator->pairs[i];
         if (pair->used && pair->ack_mask != 3u &&
             coordinator->clock(coordinator->clock_user) >= pair->expires_at) {
+            BreakRuntimeError close_result = send_close(
+                coordinator, &coordinator->peers[pair->a],
+                (BreakOnlineHandle){i, pair->generation});
+            if (close_result != BREAK_RUNTIME_OK) return close_result;
+            close_result = send_close(coordinator, &coordinator->peers[pair->b],
+                (BreakOnlineHandle){i, pair->generation});
+            if (close_result != BREAK_RUNTIME_OK) return close_result;
             retire_pair(coordinator, pair);
         }
     }
@@ -657,7 +668,7 @@ BreakRuntimeError break_nat_coordinator_peer_observed(
 
 static BreakRuntimeError send_punch(BreakNatCoordinator *coordinator,
                                     NatPeer *recipient, const NetAddress *to,
-                                    BreakOnlineHandle pair, u64 nonce, u64 expires_at,
+                                    BreakOnlineHandle pair, u64 nonce, u64 ttl_ms,
                                     const NetAddress *peer_address)
 {
     u8 packet[NAT_PUNCH_SIZE];
@@ -675,7 +686,7 @@ static BreakRuntimeError send_punch(BreakNatCoordinator *coordinator,
     }
     put_u64(packet + 24u, recipient->session);
     put_u64(packet + 32u, nonce);
-    put_u64(packet + 40u, expires_at);
+    put_u64(packet + 40u, ttl_ms);
     put_u64(packet + 48u, recipient->next_control_sequence);
     memcpy(packet + 56u, peer_address->host, host_size);
     put_u16(packet + 72u, peer_address->port);
@@ -722,10 +733,10 @@ BreakRuntimeError break_nat_coordinator_pair(
     expires_at = now + ttl_ms;
     handle.index = i;
     handle.generation = initial_generation(pair->generation);
-    result = send_punch(coordinator, a_peer, &a_peer->observed, handle, nonce, expires_at,
+    result = send_punch(coordinator, a_peer, &a_peer->observed, handle, nonce, (u64)ttl_ms,
                         &b_peer->observed);
     if (result != BREAK_RUNTIME_OK) return result;
-    result = send_punch(coordinator, b_peer, &b_peer->observed, handle, nonce, expires_at,
+    result = send_punch(coordinator, b_peer, &b_peer->observed, handle, nonce, (u64)ttl_ms,
                         &a_peer->observed);
     if (result != BREAK_RUNTIME_OK) return result;
     memset(pair, 0, sizeof(*pair));
@@ -921,7 +932,7 @@ static BreakRuntimeError endpoint_punch(BreakNatEndpoint *endpoint,
     BreakOnlineHandle recipient = get_handle(datagram->bytes + 16u);
     u64 session = get_u64(datagram->bytes + 24u);
     u64 nonce = get_u64(datagram->bytes + 32u);
-    u64 expires_at = get_u64(datagram->bytes + 40u);
+    u64 ttl_ms = get_u64(datagram->bytes + 40u);
     u64 sequence = get_u64(datagram->bytes + 48u);
     NetAddress peer_address;
     BreakRuntimeError result;
@@ -929,8 +940,8 @@ static BreakRuntimeError endpoint_punch(BreakNatEndpoint *endpoint,
         recipient.index != endpoint->peer.index ||
         recipient.generation != endpoint->peer.generation ||
         !net_address_equal(&datagram->source, &endpoint->coordinator) ||
-        !break_online_handle_valid(pair) || !nonce || !sequence ||
-        endpoint->clock(endpoint->clock_user) >= expires_at ||
+        !break_online_handle_valid(pair) || !nonce || !sequence || !ttl_ms ||
+        endpoint->clock(endpoint->clock_user) > UINT64_MAX - ttl_ms ||
         !decode_address(datagram->bytes + 56u, &peer_address) ||
         !nat_verify(endpoint->session_key, endpoint->session_key_user,
                     endpoint->session, datagram->bytes, 74u)) {
@@ -938,7 +949,7 @@ static BreakRuntimeError endpoint_punch(BreakNatEndpoint *endpoint,
     }
     if (endpoint->active && endpoint->pair.index == pair.index &&
         endpoint->pair.generation == pair.generation) {
-        if (endpoint->nonce == nonce && endpoint->expires_at == expires_at &&
+        if (endpoint->nonce == nonce && endpoint->punch_ttl == ttl_ms &&
             endpoint->punch_sequence == sequence &&
             net_address_equal(&endpoint->peer_address, &peer_address)) {
             return BREAK_RUNTIME_OK;
@@ -966,7 +977,8 @@ static BreakRuntimeError endpoint_punch(BreakNatEndpoint *endpoint,
     endpoint->pair = pair;
     endpoint->peer_address = peer_address;
     endpoint->nonce = nonce;
-    endpoint->expires_at = expires_at;
+    endpoint->punch_ttl = ttl_ms;
+    endpoint->expires_at = endpoint->clock(endpoint->clock_user) + ttl_ms;
     endpoint->punch_sequence = sequence;
     return BREAK_RUNTIME_OK;
 }
@@ -1043,6 +1055,7 @@ static BreakRuntimeError endpoint_close(BreakNatEndpoint *endpoint,
     endpoint->ping_sent = false;
     endpoint->nonce = 0u;
     endpoint->expires_at = 0u;
+    endpoint->punch_ttl = 0u;
     endpoint->punch_sequence = 0u;
     memset(&endpoint->peer_address, 0, sizeof(endpoint->peer_address));
     endpoint->closed_pair_valid = true;
