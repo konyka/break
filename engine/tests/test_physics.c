@@ -1424,6 +1424,58 @@ TEST(body_wake_entry_points_clear_sleep) {
     physics_world_destroy(pw);
 }
 
+TEST(constraint_remove_wakes_supported_body) {
+    PhysicsWorld *pw = physics_world_create(4);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 3, 0), vec3(0, 0, 0), 0, true, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 3, 0), vec3(0, 0, 0), 1, false, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    PhysicsConstraintHandle c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(c));
+    for (int i = 0; i < 60; i++) physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->bodies[b.index].sleeping);
+    pw->bodies[b.index].acceleration = vec3(0, -9.81f, 0);
+    f32 before = pw->bodies[b.index].position.e[1];
+    physics_constraint_remove(pw, c);
+    ASSERT_FALSE(pw->bodies[b.index].sleeping);
+    physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->bodies[b.index].position.e[1] < before);
+    physics_world_destroy(pw);
+}
+
+TEST(ground_contact_allows_sleep_and_moving_contact_wakes) {
+    PhysicsWorld *pw = physics_world_create(8);
+    physics_body_create(pw, vec3(0, -0.5f, 0), vec3(20, 0.5f, 20), 0, true, 0);
+    PhysicsBodyHandle box = physics_body_create(pw, vec3(0, 0.5f, 0), vec3(0.5f, 0.5f, 0.5f), 1, false, 0);
+    pw->bodies[box.index].restitution = 0.0f;
+    for (int i = 0; i < 120; i++) physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->bodies[box.index].sleeping);
+    ASSERT_TRUE(fabsf(pw->bodies[box.index].position.e[1] - 0.5f) < 0.02f);
+    ASSERT_TRUE(fabsf(pw->bodies[box.index].velocity.e[1]) < 0.01f);
+
+    PhysicsBodyHandle mover = physics_body_create(pw, vec3(0.75f, 0.5f, 0), vec3(0.5f, 0.5f, 0.5f), 1, false, 0);
+    pw->bodies[mover.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[mover.index].velocity = vec3(-5, 0, 0);
+    physics_step(pw, 1.0f / 60.0f);
+    ASSERT_FALSE(pw->bodies[box.index].sleeping);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_velocity_wake_does_not_require_position_error) {
+    PhysicsWorld *pw = physics_world_create(4);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 3, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 3, 0), vec3(0, 0, 0), 1, false, 0);
+    pw->bodies[a.index].acceleration = vec3(0, 0, 0);
+    pw->bodies[b.index].acceleration = vec3(0, 0, 0);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(physics_constraint_add_distance(pw, a, b, 2.0f)));
+    for (int i = 0; i < 60; i++) physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->bodies[a.index].sleeping && pw->bodies[b.index].sleeping);
+    pw->bodies[a.index].velocity = vec3(5, 0, 0);
+    physics_step(pw, 1.0f / 60.0f);
+    ASSERT_FALSE(pw->bodies[a.index].sleeping);
+    ASSERT_FALSE(pw->bodies[b.index].sleeping);
+    physics_world_destroy(pw);
+}
+
 TEST(nonfinite_step_is_atomic) {
     PhysicsWorld *pw = physics_world_create(4);
     PhysicsBodyHandle id = physics_body_create(pw, vec3(1, 2, 3), vec3(0.5f, 0.5f, 0.5f), 2, false, 0);
@@ -1596,4 +1648,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(nonfinite_body_create_is_atomic);
     RUN_TEST(nonfinite_pose_impulse_and_push_are_atomic);
     RUN_TEST(finite_extreme_inputs_stay_finite);
+    RUN_TEST(constraint_remove_wakes_supported_body);
+    RUN_TEST(ground_contact_allows_sleep_and_moving_contact_wakes);
+    RUN_TEST(constraint_velocity_wake_does_not_require_position_error);
 TEST_MAIN_END()

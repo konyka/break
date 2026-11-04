@@ -55,6 +55,9 @@ typedef struct {
     Vec3  spawn_pos;
     u32   rest_frames;
     bool  sleeping;
+    bool  contact_active;
+    Vec3  contact_normal;
+    f32   contact_speed2;
     u32   collision_count;
     ShapeType shape;
     f32   radius;

@@ -251,6 +251,7 @@ init:
     b->spawn_frame = frame;
     b->spawn_pos = pos;
     b->sleeping = false;
+    b->contact_active = false;
     b->rest_frames = 0;
     b->collision_count = 0;
     b->shape = SHAPE_BOX;
@@ -662,6 +663,16 @@ static void clamp_cone_twist(RigidBody *a, RigidBody *b, const DistanceConstrain
 void physics_constraint_remove(PhysicsWorld *pw, PhysicsConstraintHandle constraint) {
     DistanceConstraint *c = physics_constraint_resolve(pw, constraint);
     if (!c) return;
+    RigidBody *a = physics_body_resolve(pw, c->body_a);
+    RigidBody *b = physics_body_resolve(pw, c->body_b);
+    if (a && a->inv_mass > 0.0f) {
+        a->sleeping = false;
+        a->rest_frames = 0;
+    }
+    if (b && b->inv_mass > 0.0f) {
+        b->sleeping = false;
+        b->rest_frames = 0;
+    }
     u32 generation = physics_next_generation(c->generation);
     memset(c, 0, sizeof(*c));
     c->generation = generation;
@@ -790,9 +801,14 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
  * axis etc.) are removed here; external forces re-enter on the next step's
  * integration, which is the standard sequential-impulse semantic.
  *
- * Only velocities change, so rest_frames is not touched (no BVH refit
- * concern). Same defensive skips as the position pass: parked tombstones,
- * out-of-range ids, both-static pairs, coincident bodies. */
+ * Nonzero corrections wake sleeping endpoints. Stable supported contacts may
+ * sleep after the unified end-of-step evaluation. */
+static void wake_if_sleeping(RigidBody *b) {
+    if (!b->sleeping) return;
+    b->sleeping = false;
+    b->rest_frames = 0;
+}
+
 static void solve_distance_constraint_velocities(PhysicsWorld *pw) {
     if (pw->constraint_count == 0) return;
     for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
@@ -804,34 +820,36 @@ static void solve_distance_constraint_velocities(PhysicsWorld *pw) {
         f32 inv_a = a->inv_mass;
         f32 inv_b = b->inv_mass;
         f32 inv_total = inv_a + inv_b;
-        if (inv_total <= 0.0f) continue; /* both static: nothing can move */
+        if (inv_total <= 0.0f) continue;
         if (c->is_slider) {
             Vec3 axis = quat_rotate_vec3(rigid_orientation(a), c->hinge_axis);
             Vec3 rel = vec3_sub(b->velocity, a->velocity);
             f32 along = vec3_dot(rel, axis);
             Vec3 perp = vec3_sub(rel, vec3_scale(axis, along));
             Vec3 j = vec3_scale(perp, 1.0f / inv_total);
+            if (inv_a > 0.0f && vec3_dot(j, j) > 1e-16f) wake_if_sleeping(a);
+            if (inv_b > 0.0f && vec3_dot(j, j) > 1e-16f) wake_if_sleeping(b);
             if (inv_a > 0.0f) a->velocity = vec3_add(a->velocity, vec3_scale(j, inv_a));
             if (inv_b > 0.0f) b->velocity = vec3_sub(b->velocity, vec3_scale(j, inv_b));
-            (void)along;
             continue;
         }
         if (c->is_ball || c->is_hinge || c->is_cone_twist) {
-            /* Ball-like joints remove the full relative centroid velocity,
-             * split by inverse mass. Cone-twist limit velocities are clipped
-             * by the angular projection above. */
             Vec3 rel = vec3_sub(b->velocity, a->velocity);
             Vec3 j = vec3_scale(rel, 1.0f / inv_total);
+            if (inv_a > 0.0f && vec3_dot(j, j) > 1e-16f) wake_if_sleeping(a);
+            if (inv_b > 0.0f && vec3_dot(j, j) > 1e-16f) wake_if_sleeping(b);
             if (inv_a > 0.0f) a->velocity = vec3_add(a->velocity, vec3_scale(j, inv_a));
             if (inv_b > 0.0f) b->velocity = vec3_sub(b->velocity, vec3_scale(j, inv_b));
             continue;
         }
         Vec3 d = vec3_sub(b->position, a->position);
         f32 len2 = vec3_dot(d, d);
-        if (len2 < 1e-12f) continue;     /* coincident: no defined axis */
+        if (len2 < 1e-12f) continue;
         Vec3 n = vec3_scale(d, 1.0f / sqrtf(len2));
         f32 rel = vec3_dot(vec3_sub(b->velocity, a->velocity), n);
         f32 j = -rel / inv_total;
+        if (inv_a > 0.0f && fabsf(j) > 1e-8f) wake_if_sleeping(a);
+        if (inv_b > 0.0f && fabsf(j) > 1e-8f) wake_if_sleeping(b);
         if (inv_a > 0.0f) a->velocity = vec3_sub(a->velocity, vec3_scale(n, j * inv_a));
         if (inv_b > 0.0f) b->velocity = vec3_add(b->velocity, vec3_scale(n, j * inv_b));
     }
@@ -876,28 +894,27 @@ static void resolve_contact(RigidBody *a, RigidBody *b, Vec3 normal, f32 depth) 
     f32 inv_b = b->inv_mass;
     f32 total_inv_mass = inv_a + inv_b;
     if (total_inv_mass <= 0.0f) return;
+    Vec3 initial_rel = vec3_sub(a->velocity, b->velocity);
+    if (vec3_dot(initial_rel, initial_rel) <= 1e-12f &&
+        ((a->sleeping && b->is_static) || (b->sleeping && a->is_static) ||
+         (a->sleeping && b->sleeping))) return;
 
     /* Precompute reciprocal to replace 3 divisions with multiplications. */
     f32 inv_total = 1.0f / total_inv_mass;
 
     if (inv_a > 0.0f) {
+        wake_if_sleeping(a);
         f32 ratio = inv_a * inv_total;
         a->position.e[0] -= normal.e[0] * depth * ratio;
         a->position.e[1] -= normal.e[1] * depth * ratio;
         a->position.e[2] -= normal.e[2] * depth * ratio;
-        /* R432: the contact just shoved this body — clear its rest counter so
-         * the BVH refit passes (which skip rest_frames > 2) update its AABB at
-         * the new position. A resting body pushed below the 0.0025 rest
-         * threshold otherwise kept its stale BVH AABB indefinitely and
-         * broadphase missed it at the new spot. */
-        a->sleeping = false; a->rest_frames = 0;
     }
     if (inv_b > 0.0f) {
+        wake_if_sleeping(b);
         f32 ratio = inv_b * inv_total;
         b->position.e[0] += normal.e[0] * depth * ratio;
         b->position.e[1] += normal.e[1] * depth * ratio;
         b->position.e[2] += normal.e[2] * depth * ratio;
-        b->sleeping = false; b->rest_frames = 0; /* R432: see above */
     }
 
     Vec3 rel_vel = vec3_sub(a->velocity, b->velocity);
@@ -949,7 +966,8 @@ static void resolve_contact(RigidBody *a, RigidBody *b, Vec3 normal, f32 depth) 
  * bit-unchanged this step; that also makes the recomputed AABB bit-identical,
  * so the refit skip is exact rather than heuristic. Truly idle bodies still
  * reach rest: damping (0.98/frame) shrinks v*dt below the float ulp of the
- * position, at which point p stops changing. */
+ * position, at which point p stops changing. Supported contacts also require
+ * near-zero final speed; non-support contacts with pre-contact motion stay awake. */
 static bool vec3_moved(Vec3 a, Vec3 b) {
     return (a.e[0] != b.e[0]) || (a.e[1] != b.e[1]) || (a.e[2] != b.e[2]);
 }
@@ -957,7 +975,11 @@ static bool vec3_moved(Vec3 a, Vec3 b) {
 static void update_sleep_state(RigidBody *b, Vec3 old_position) {
     f32 speed2 = vec3_dot(b->velocity, b->velocity);
     f32 spin2 = vec3_dot(b->angular_velocity, b->angular_velocity);
-    if (speed2 < 0.0025f && spin2 < 0.0025f && !vec3_moved(b->position, old_position)) {
+    bool supported = b->contact_active && vec3_dot(b->acceleration, b->contact_normal) > 1e-8f;
+    bool moving_contact = b->contact_active && !supported && b->contact_speed2 > 1e-8f;
+    f32 speed_limit = supported ? 1e-8f : 0.0025f;
+    if (!moving_contact && speed2 < speed_limit && spin2 < 0.0025f &&
+        !vec3_moved(b->position, old_position)) {
         b->rest_frames++;
         if (b->rest_frames >= 60u) {
             b->sleeping = true;
@@ -1287,6 +1309,13 @@ static void physics_collision_callback(u32 i, u32 j, void *ctx) {
     if (!physics_collide(a, b, &contact)) return;
     contact.body_a = i;
     contact.body_b = j;
+    a->contact_active = true;
+    b->contact_active = true;
+    Vec3 relative_velocity = vec3_sub(a->velocity, b->velocity);
+    a->contact_speed2 = vec3_dot(relative_velocity, relative_velocity);
+    b->contact_speed2 = a->contact_speed2;
+    a->contact_normal = contact.normal;
+    b->contact_normal = vec3_scale(contact.normal, -1.0f);
 
     Vec3 normal = contact.normal;
     f32 abs_depth = contact.depth;
@@ -1500,6 +1529,7 @@ static bool ccd_sweep(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta,
 static void integrate_body_ccd(PhysicsWorld *pw, u32 idx, f32 dt) {
     RigidBody *b = &pw->bodies[idx];
     Vec3 oldp = b->position;
+    b->step_start_position = oldp;
 
     b->velocity = vec3_add(b->velocity, vec3_scale(b->acceleration, dt));
     b->velocity = vec3_scale(b->velocity, 0.98f);
@@ -1515,8 +1545,6 @@ static void integrate_body_ccd(PhysicsWorld *pw, u32 idx, f32 dt) {
         if (vn < 0.0f) b->velocity = vec3_sub(b->velocity, vec3_scale(n, vn));
     }
     b->position = newp;
-
-    update_sleep_state(b, oldp);
 }
 
 /* Build the BVH when it is dirty. physics_step calls this every frame, and
@@ -1539,6 +1567,7 @@ static void physics_ensure_bvh(const PhysicsWorld *pw) {
 
 void physics_step(PhysicsWorld *pw, f32 dt) {
     if (!pw || !isfinite(dt)) return;
+    for (u32 i = 0; i < pw->count; i++) pw->bodies[i].contact_active = false;
     pw->collision_count = 0;
     if (!(dt > 1e-6f)) dt = 1e-6f;
     for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
@@ -1600,7 +1629,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         if (b->is_static || b->sleeping) continue;
         if (b->ccd) { integrate_body_ccd(pw, i, dt); continue; }
 
-        Vec3 oldp = b->position;
+        b->step_start_position = b->position;
 
         /* Velocity integration: v += a * dt */
         simd_vec3_add_scaled_sse2(b->velocity.e, b->velocity.e, b->acceleration.e, dt);
@@ -1611,7 +1640,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         /* Position integration: p += v * dt */
         simd_vec3_add_scaled_sse2(b->position.e, b->position.e, b->velocity.e, dt);
         integrate_orientation(b, dt);
-        update_sleep_state(b, oldp);
+
     }
 #else
     for (u32 i = 0; i < pw->count; i++) {
@@ -1619,7 +1648,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         if (b->is_static || b->sleeping) continue;
         if (b->ccd) { integrate_body_ccd(pw, i, dt); continue; }
 
-        Vec3 oldp = b->position;
+        b->step_start_position = b->position;
 
         b->velocity.e[0] += b->acceleration.e[0] * dt;
         b->velocity.e[1] += b->acceleration.e[1] * dt;
@@ -1634,7 +1663,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         b->position.e[1] += b->velocity.e[1] * dt;
         b->position.e[2] += b->velocity.e[2] * dt;
         integrate_orientation(b, dt);
-        update_sleep_state(b, oldp);
+
     }
 #endif
 
@@ -1676,6 +1705,10 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
             b->velocity.e[1] = -b->velocity.e[1] * b->restitution;
             pw->respawn_count++;
         }
+    }
+    for (u32 i = 0; i < pw->count; i++) {
+        RigidBody *b = &pw->bodies[i];
+        if (!b->is_static && !b->sleeping) update_sleep_state(b, b->step_start_position);
     }
     for (u32 s = 0; s < pw->post_step_count; s++) {
         pw->post_step_fn[s](pw, pw->post_step_user[s]);
