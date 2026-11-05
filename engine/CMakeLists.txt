@@ -5028,24 +5028,44 @@ endif()
     set_tests_properties(test_break_online_lobby PROPERTIES
         TIMEOUT 20 LABELS "network;online;lobby")
 
-    add_executable(test_break_online_nat tests/test_break_online_nat.c
-        src/network/network.c src/platform/time.c)
-    target_include_directories(test_break_online_nat PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_break_online_nat PRIVATE break_online Threads::Threads)
     if(BREAK_ENABLE_CRYPTO)
-        target_link_libraries(test_break_online_nat PRIVATE break_crypto)
+        add_executable(test_break_online_nat tests/test_break_online_nat.c
+            src/network/network.c src/platform/time.c)
+        target_include_directories(test_break_online_nat PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_online_nat PRIVATE
+            break_online Threads::Threads break_crypto)
+        if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+           ENGINE_PLATFORM STREQUAL "harmonyos")
+            target_compile_definitions(test_break_online_nat PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_online_nat PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_online_nat PRIVATE ws2_32)
+        endif()
+        add_test(NAME test_break_online_nat COMMAND test_break_online_nat)
+        set_tests_properties(test_break_online_nat PROPERTIES
+            TIMEOUT 30 LABELS "network;online;nat")
     endif()
-    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
-       ENGINE_PLATFORM STREQUAL "harmonyos")
-        target_compile_definitions(test_break_online_nat PRIVATE
-            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
-    elseif(ENGINE_PLATFORM STREQUAL "windows")
-        target_compile_definitions(test_break_online_nat PRIVATE ENGINE_PLATFORM_WINDOWS=1)
-        target_link_libraries(test_break_online_nat PRIVATE ws2_32)
+
+    if(NOT BREAK_ENABLE_CRYPTO)
+        add_executable(test_break_online_nat_nocrypto
+            tests/test_break_online_nat_nocrypto.c src/network/network.c)
+        target_include_directories(test_break_online_nat_nocrypto PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_online_nat_nocrypto PRIVATE
+            break_online Threads::Threads)
+        if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+           ENGINE_PLATFORM STREQUAL "harmonyos")
+            target_compile_definitions(test_break_online_nat_nocrypto PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_online_nat_nocrypto PRIVATE
+                ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_online_nat_nocrypto PRIVATE ws2_32)
+        endif()
+        add_test(NAME test_break_online_nat_nocrypto COMMAND test_break_online_nat_nocrypto)
+        set_tests_properties(test_break_online_nat_nocrypto PROPERTIES
+            TIMEOUT 20 LABELS "network;online;nat;no_crypto")
     endif()
-    add_test(NAME test_break_online_nat COMMAND test_break_online_nat)
-    set_tests_properties(test_break_online_nat PROPERTIES
-        TIMEOUT 30 LABELS "network;online;nat")
 
     add_executable(test_break_online_voice tests/test_break_online_voice.c
         src/network/network.c)

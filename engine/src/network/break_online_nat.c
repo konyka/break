@@ -487,8 +487,6 @@ BreakRuntimeError break_nat_coordinator_create(
     NetSocket *socket, const BreakNatCoordinatorConfig *config,
     BreakNatCoordinator **out)
 {
-    BreakNatCoordinator *coordinator;
-    BreakRuntimeError result;
     u32 i;
     bool key_nonzero = false;
     if (!out) return BREAK_RUNTIME_INVALID;
@@ -506,6 +504,8 @@ BreakRuntimeError break_nat_coordinator_create(
 #ifndef BREAK_ENABLE_CRYPTO
     return BREAK_RUNTIME_REJECTED;
 #else
+    BreakNatCoordinator *coordinator;
+    BreakRuntimeError result;
     coordinator = (BreakNatCoordinator *)calloc(1u, sizeof(*coordinator));
     if (!coordinator) return BREAK_RUNTIME_OOM;
     coordinator->peers = (NatPeer *)calloc(config->max_peers, sizeof(*coordinator->peers));
@@ -781,8 +781,6 @@ BreakRuntimeError break_nat_endpoint_create(
     NetSocket *socket, const NetAddress *coordinator,
     const BreakNatEndpointConfig *config, BreakNatEndpoint **out)
 {
-    BreakNatEndpoint *endpoint;
-    BreakRuntimeError result;
     if (!out) return BREAK_RUNTIME_INVALID;
     *out = NULL;
     if (!socket || !coordinator || !coordinator->port || !config ||
@@ -792,6 +790,8 @@ BreakRuntimeError break_nat_endpoint_create(
 #ifndef BREAK_ENABLE_CRYPTO
     return BREAK_RUNTIME_REJECTED;
 #else
+    BreakNatEndpoint *endpoint;
+    BreakRuntimeError result;
     endpoint = (BreakNatEndpoint *)calloc(1u, sizeof(*endpoint));
     if (!endpoint) return BREAK_RUNTIME_OOM;
     result = break_online_inbox_create(config->queue_capacity, &endpoint->inbox);
