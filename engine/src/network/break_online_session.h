@@ -29,6 +29,7 @@ static inline BreakOnlineAuthSource break_online_session_auth(
     BreakOnlineAuthSource source;
     source.user = manager;
     source.authenticate = break_online_session_authenticate;
+    source.session_key = NULL;
     return source;
 }
 

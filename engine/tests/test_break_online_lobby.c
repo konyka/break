@@ -40,6 +40,7 @@ static BreakLobbyAuth make_auth(FakeAuth *auth)
     result.session = auth->session;
     result.source.user = auth;
     result.source.authenticate = fake_authenticate;
+    result.source.session_key = NULL;
     return result;
 }
 
@@ -122,7 +123,7 @@ TEST(lobby_create_join_and_room_info_use_authenticated_identity)
     room = create_room(lobby, &host, &desc, &host_member);
     ASSERT_NEQ(room.index, UINT32_MAX);
     ASSERT_EQ(host_member.member.generation, 1u);
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate, NULL}},
                                room, &guest_member), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_lobby_room_info(lobby, room, &info), BREAK_RUNTIME_OK);
     ASSERT_EQ(info.member_count, 2u);
@@ -149,17 +150,17 @@ TEST(lobby_rejects_duplicate_player_and_over_capacity_atomically)
     BreakLobbyRoomInfo before;
     BreakLobbyRoomInfo after;
     ASSERT_NEQ(room.index, UINT32_MAX);
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate, NULL}},
                                room, &member), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_lobby_room_info(lobby, room, &before), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){3u, {&duplicate, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){3u, {&duplicate, fake_authenticate, NULL}},
                                room, &member), BREAK_RUNTIME_REJECTED);
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){4u, {&third, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){4u, {&third, fake_authenticate, NULL}},
                                room, &member), BREAK_RUNTIME_OVERLOAD);
     ASSERT_EQ(break_lobby_room_info(lobby, room, &after), BREAK_RUNTIME_OK);
     ASSERT_EQ(after.member_count, before.member_count);
     ASSERT_EQ(after.host_epoch, before.host_epoch);
-    ASSERT_EQ(break_lobby_room_create(lobby, &(BreakLobbyAuth){4u, {&third, fake_authenticate}},
+    ASSERT_EQ(break_lobby_room_create(lobby, &(BreakLobbyAuth){4u, {&third, fake_authenticate, NULL}},
                                       &desc, &room, &member), BREAK_RUNTIME_OVERLOAD);
     ASSERT_EQ(break_lobby_room_count(lobby), 1u);
     break_lobby_destroy(lobby);
@@ -177,25 +178,25 @@ TEST(lobby_stale_member_and_room_handles_cannot_mutate_reused_slots)
     BreakOnlineMemberHandle new_member;
     BreakOnlineHandle room = create_room(lobby, &host, &desc, &host_member);
     BreakOnlineHandle old_room;
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate, NULL}},
                                room, &old_member), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_lobby_leave(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate}},
+    ASSERT_EQ(break_lobby_leave(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate, NULL}},
                                 old_member), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){3u, {&replacement, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){3u, {&replacement, fake_authenticate, NULL}},
                                room, &new_member), BREAK_RUNTIME_OK);
     ASSERT_EQ(old_member.member.index, new_member.member.index);
     ASSERT_NEQ(old_member.member.generation, new_member.member.generation);
-    ASSERT_EQ(break_lobby_leave(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate}},
+    ASSERT_EQ(break_lobby_leave(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate, NULL}},
                                 old_member), BREAK_RUNTIME_STALE);
-    ASSERT_EQ(break_lobby_leave(lobby, &(BreakLobbyAuth){3u, {&replacement, fake_authenticate}},
+    ASSERT_EQ(break_lobby_leave(lobby, &(BreakLobbyAuth){3u, {&replacement, fake_authenticate, NULL}},
                                 new_member), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_lobby_leave(lobby, &(BreakLobbyAuth){1u, {&host, fake_authenticate}},
+    ASSERT_EQ(break_lobby_leave(lobby, &(BreakLobbyAuth){1u, {&host, fake_authenticate, NULL}},
                                 host_member), BREAK_RUNTIME_OK);
     old_room = room;
     room = create_room(lobby, &host, &desc, &host_member);
     ASSERT_EQ(old_room.index, room.index);
     ASSERT_NEQ(old_room.generation, room.generation);
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate, NULL}},
                                old_room, &old_member), BREAK_RUNTIME_STALE);
     ASSERT_EQ(break_lobby_room_count(lobby), 1u);
     break_lobby_destroy(lobby);
@@ -212,11 +213,11 @@ TEST(lobby_host_leave_and_disconnect_migrate_to_oldest_member)
     BreakOnlineMemberHandle member;
     BreakOnlineHandle room = create_room(lobby, &host, &desc, &host_member);
     BreakLobbyRoomInfo info;
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&second, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&second, fake_authenticate, NULL}},
                                room, &member), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){3u, {&third, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){3u, {&third, fake_authenticate, NULL}},
                                room, &member), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_lobby_leave(lobby, &(BreakLobbyAuth){1u, {&host, fake_authenticate}},
+    ASSERT_EQ(break_lobby_leave(lobby, &(BreakLobbyAuth){1u, {&host, fake_authenticate, NULL}},
                                 host_member), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_lobby_room_info(lobby, room, &info), BREAK_RUNTIME_OK);
     ASSERT_EQ(info.host.player_id, 200u);
@@ -240,7 +241,7 @@ TEST(lobby_disconnect_removes_every_session_membership)
     BreakOnlineHandle first = create_room(lobby, &host, &desc, &member);
     BreakOnlineHandle second = create_room(lobby, &host, &desc, &member);
     BreakLobbyRoomInfo info;
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate, NULL}},
                                second, &member), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_lobby_disconnect(lobby, 1u), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_lobby_room_info(lobby, first, &info), BREAK_RUNTIME_STALE);
@@ -266,19 +267,19 @@ TEST(lobby_match_selects_fullest_then_lowest_generation_handle)
     BreakOnlineHandle b = create_room(lobby, &host, &desc, &member);
     BreakOnlineHandle matched = {99u, 99u};
     BreakLobbyRoomInfo info;
-    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate}},
+    ASSERT_EQ(break_lobby_join(lobby, &(BreakLobbyAuth){2u, {&guest, fake_authenticate, NULL}},
                                b, &member), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_lobby_match(lobby, &(BreakLobbyAuth){3u, {&matcher, fake_authenticate}},
+    ASSERT_EQ(break_lobby_match(lobby, &(BreakLobbyAuth){3u, {&matcher, fake_authenticate, NULL}},
                                 &query, &matched, &member), BREAK_RUNTIME_OK);
     ASSERT_EQ(matched.index, b.index);
     ASSERT_EQ(matched.generation, b.generation);
     ASSERT_EQ(break_lobby_room_info(lobby, b, &info), BREAK_RUNTIME_OK);
     ASSERT_EQ(info.member_count, 3u);
-    ASSERT_EQ(break_lobby_match(lobby, &(BreakLobbyAuth){4u, {&second_matcher, fake_authenticate}},
+    ASSERT_EQ(break_lobby_match(lobby, &(BreakLobbyAuth){4u, {&second_matcher, fake_authenticate, NULL}},
                                 &query, &matched, &member), BREAK_RUNTIME_OK);
     ASSERT_EQ(matched.index, a.index);
     query.mode = 99u;
-    ASSERT_EQ(break_lobby_match(lobby, &(BreakLobbyAuth){5u, {&third_matcher, fake_authenticate}},
+    ASSERT_EQ(break_lobby_match(lobby, &(BreakLobbyAuth){5u, {&third_matcher, fake_authenticate, NULL}},
                                 &query, &matched, &member), BREAK_RUNTIME_FAILED);
     break_lobby_destroy(lobby);
 }
@@ -362,11 +363,11 @@ TEST(lobby_validates_create_arguments_without_outputs_or_slots)
     ASSERT_EQ(lobby, NULL);
     lobby = make_lobby(1u, 2u);
     ASSERT_NOT_NULL(lobby);
-    ASSERT_EQ(break_lobby_room_create(lobby, &(BreakLobbyAuth){1u, {&host, fake_authenticate}},
+    ASSERT_EQ(break_lobby_room_create(lobby, &(BreakLobbyAuth){1u, {&host, fake_authenticate, NULL}},
                                       &desc, &room, &member), BREAK_RUNTIME_INVALID);
     desc.name = "valid";
     desc.max_members = 3u;
-    ASSERT_EQ(break_lobby_room_create(lobby, &(BreakLobbyAuth){1u, {&host, fake_authenticate}},
+    ASSERT_EQ(break_lobby_room_create(lobby, &(BreakLobbyAuth){1u, {&host, fake_authenticate, NULL}},
                                       &desc, &room, &member), BREAK_RUNTIME_INVALID);
     ASSERT_EQ(room.index, 8u);
     ASSERT_EQ(member.member.index, 8u);
