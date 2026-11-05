@@ -30,6 +30,8 @@ struct BreakReplicationReassembler {
     BreakReplicationFragment *fragments;
     uint8_t **owned_data;
     uint8_t *received;
+    uint64_t highest_delta_id;
+    bool highest_valid;
 };
 
 static uint32_t checksum_bytes(const uint8_t *data, size_t size)
@@ -185,12 +187,75 @@ static BreakReplicationReassemblyResult assemble_if_complete(
     return BREAK_REPLICATION_REASSEMBLY_COMPLETE;
 }
 
+static BreakReplicationReassemblyResult start_stream(
+    BreakReplicationReassembler *reassembler,
+    const BreakReplicationFragment *fragment, uint8_t **payload, size_t *payload_size)
+{
+    size_t array_bytes;
+    size_t pointer_bytes;
+    size_t bitmap_bytes;
+    size_t metadata_bytes;
+    BreakReplicationFragment *new_fragments = NULL;
+    uint8_t **new_owned = NULL;
+    uint8_t *new_received = NULL;
+    uint8_t *new_data = NULL;
+    uint8_t *complete = NULL;
+    if (reassembler->highest_valid && fragment->delta_id < reassembler->highest_delta_id) {
+        return BREAK_REPLICATION_REASSEMBLY_CONFLICT;
+    }
+    if (!checked_mul_size((size_t)fragment->fragment_count, sizeof(*new_fragments), &array_bytes) ||
+        !checked_mul_size((size_t)fragment->fragment_count, sizeof(*new_owned), &pointer_bytes) ||
+        !checked_mul_size((size_t)fragment->fragment_count, sizeof(*new_received), &bitmap_bytes) ||
+        !checked_add_size(array_bytes, pointer_bytes, &metadata_bytes) ||
+        !checked_add_size(metadata_bytes, bitmap_bytes, &metadata_bytes) ||
+        metadata_bytes > BREAK_REPLICATION_MAX_REASSEMBLY_SIZE) {
+        return BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT;
+    }
+    new_fragments = (BreakReplicationFragment *)calloc(1u, array_bytes);
+    new_owned = (uint8_t **)calloc(1u, pointer_bytes);
+    new_received = (uint8_t *)calloc(1u, bitmap_bytes);
+    if (!new_fragments || !new_owned || !new_received) goto oom;
+    new_data = (uint8_t *)malloc(fragment->size);
+    if (!new_data) goto oom;
+    memcpy(new_data, fragment->data, fragment->size);
+    if (fragment->fragment_count == 1u) {
+        complete = (uint8_t *)malloc(fragment->size);
+        if (!complete) goto oom;
+        memcpy(complete, fragment->data, fragment->size);
+    }
+    clear_reassembly(reassembler);
+    reassembler->fragments = new_fragments;
+    reassembler->owned_data = new_owned;
+    reassembler->received = new_received;
+    reassembler->delta_id = fragment->delta_id;
+    reassembler->fragment_count = fragment->fragment_count;
+    reassembler->fragments[fragment->fragment_index] = *fragment;
+    reassembler->fragments[fragment->fragment_index].data = new_data;
+    new_owned[fragment->fragment_index] = new_data;
+    new_received[fragment->fragment_index] = 1u;
+    reassembler->received_count = 1u;
+    reassembler->total_size = fragment->size;
+    reassembler->highest_delta_id = fragment->delta_id;
+    reassembler->highest_valid = true;
+    if (fragment->fragment_count > 1u) return BREAK_REPLICATION_REASSEMBLY_INCOMPLETE;
+    if (payload) *payload = complete; else free(complete);
+    if (payload_size) *payload_size = fragment->size;
+    clear_reassembly(reassembler);
+    return BREAK_REPLICATION_REASSEMBLY_COMPLETE;
+oom:
+    free(complete);
+    free(new_data);
+    free(new_received);
+    free(new_owned);
+    free(new_fragments);
+    return BREAK_REPLICATION_REASSEMBLY_OUT_OF_MEMORY;
+}
+
 BreakReplicationReassemblyResult break_replication_reassembler_push(
     BreakReplicationReassembler *reassembler, const BreakReplicationFragment *fragment,
     uint8_t **payload, size_t *payload_size)
 {
     BreakReplicationFragment *copy;
-    uint8_t *received;
     if (payload) *payload = NULL;
     if (payload_size) *payload_size = 0u;
     if (!reassembler || !fragment || !fragment->data || !fragment->size ||
@@ -203,45 +268,11 @@ BreakReplicationReassemblyResult break_replication_reassembler_push(
         return BREAK_REPLICATION_REASSEMBLY_BASE_MISMATCH;
     if (checksum_bytes(fragment->data, fragment->size) != fragment->checksum)
         return BREAK_REPLICATION_REASSEMBLY_CHECKSUM_MISMATCH;
-    if (reassembler->fragments && fragment->delta_id > reassembler->delta_id) {
-        clear_reassembly(reassembler);
+    if (!reassembler->fragments || fragment->delta_id > reassembler->delta_id) {
+        return start_stream(reassembler, fragment, payload, payload_size);
     }
-    if (!reassembler->fragments) {
-        size_t array_bytes;
-        size_t pointer_bytes;
-        size_t bitmap_bytes;
-        size_t metadata_bytes;
-        if (!checked_mul_size((size_t)fragment->fragment_count, sizeof(*copy), &array_bytes) ||
-            !checked_mul_size((size_t)fragment->fragment_count, sizeof(*reassembler->owned_data), &pointer_bytes) ||
-            !checked_mul_size((size_t)fragment->fragment_count, sizeof(*reassembler->received), &bitmap_bytes) ||
-            !checked_add_size(array_bytes, pointer_bytes, &metadata_bytes) ||
-            !checked_add_size(metadata_bytes, bitmap_bytes, &metadata_bytes) ||
-            metadata_bytes > BREAK_REPLICATION_MAX_REASSEMBLY_SIZE)
-            return BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT;
-        reassembler->delta_id = fragment->delta_id;
-        reassembler->fragment_count = fragment->fragment_count;
-        copy = (BreakReplicationFragment *)calloc(1u, array_bytes);
-        if (!checked_mul_size((size_t)fragment->fragment_count, sizeof(*reassembler->owned_data), &array_bytes)) {
-            free(copy);
-            return BREAK_REPLICATION_REASSEMBLY_OUT_OF_MEMORY;
-        }
-        reassembler->owned_data = (uint8_t **)calloc(1u, pointer_bytes);
-        received = (uint8_t *)calloc(1u, bitmap_bytes);
-        if (!copy || !reassembler->owned_data || !received) {
-            free(copy);
-            free(reassembler->owned_data);
-            free(received);
-            reassembler->fragments = NULL;
-            reassembler->owned_data = NULL;
-            reassembler->received = NULL;
-            reassembler->fragment_count = 0u;
-            reassembler->received_count = 0u;
-            reassembler->total_size = 0u;
-            return BREAK_REPLICATION_REASSEMBLY_OUT_OF_MEMORY;
-        }
-        reassembler->fragments = copy;
-        reassembler->received = received;
-    } else if (fragment->delta_id != reassembler->delta_id || fragment->fragment_count != reassembler->fragment_count) {
+    if (fragment->delta_id != reassembler->delta_id ||
+        fragment->fragment_count != reassembler->fragment_count) {
         return BREAK_REPLICATION_REASSEMBLY_CONFLICT;
     }
     if (reassembler->received[fragment->fragment_index]) {
@@ -286,5 +317,9 @@ void break_replication_reassembly_free(void *payload)
 
 void break_replication_reassembler_reset(BreakReplicationReassembler *reassembler)
 {
-    if (reassembler) clear_reassembly(reassembler);
+    if (reassembler) {
+        clear_reassembly(reassembler);
+        reassembler->highest_delta_id = 0u;
+        reassembler->highest_valid = false;
+    }
 }

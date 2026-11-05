@@ -360,6 +360,84 @@ TEST(reassembler_newer_delta_supersedes_incomplete_and_rejects_old)
     break_replication_fragments_free(old_fragments, old_count);
 }
 
+TEST(reassembler_completed_high_water_rejects_older_restart)
+{
+    const uint8_t payload[] = {'x', 'y'};
+    BreakReplicationFragment *old_fragments = NULL;
+    BreakReplicationFragment *new_fragments = NULL;
+    size_t old_count = 0u;
+    size_t new_count = 0u;
+    BreakReplicationReassembler *reassembler = break_replication_reassembler_create(1u);
+    uint8_t *assembled = NULL;
+    size_t assembled_size = 0u;
+
+    ASSERT_EQ(break_replication_fragment_payload(10u, 1u, payload, sizeof(payload),
+        1u, &old_fragments, &old_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(break_replication_fragment_payload(11u, 1u, payload, sizeof(payload),
+        1u, &new_fragments, &new_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &old_fragments[0],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &old_fragments[1],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_COMPLETE);
+    break_replication_reassembly_free(assembled);
+    assembled = NULL;
+    assembled_size = 0u;
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &new_fragments[0],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &new_fragments[1],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_COMPLETE);
+    break_replication_reassembly_free(assembled);
+    assembled = NULL;
+    assembled_size = 0u;
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &old_fragments[0],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_CONFLICT);
+    break_replication_reassembly_free(assembled);
+    break_replication_reassembler_destroy(reassembler);
+    break_replication_fragments_free(new_fragments, new_count);
+    break_replication_fragments_free(old_fragments, old_count);
+}
+
+TEST(reassembler_failed_supersession_preserves_old_stream)
+{
+    const uint8_t old_payload[] = {'o', 'l', 'd', '!'};
+    const uint8_t new_payload[] = {'n'};
+    BreakReplicationFragment *old_fragments = NULL;
+    BreakReplicationFragment *new_fragments = NULL;
+    size_t old_count = 0u;
+    size_t new_count = 0u;
+    BreakReplicationReassembler *reassembler = break_replication_reassembler_create(1u);
+    BreakReplicationFragment oversized;
+    uint8_t *assembled = NULL;
+    size_t assembled_size = 0u;
+
+    ASSERT_EQ(break_replication_fragment_payload(10u, 1u, old_payload,
+        sizeof(old_payload), 2u, &old_fragments, &old_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(break_replication_fragment_payload(11u, 1u, new_payload,
+        sizeof(new_payload), 1u, &new_fragments, &new_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &old_fragments[0],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    oversized = new_fragments[0];
+    oversized.fragment_count = 1048576u;
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &oversized,
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT);
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &old_fragments[1],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_COMPLETE);
+    ASSERT_EQ(assembled_size, sizeof(old_payload));
+    ASSERT_TRUE(memcmp(assembled, old_payload, sizeof(old_payload)) == 0);
+    break_replication_reassembly_free(assembled);
+    break_replication_reassembler_destroy(reassembler);
+    break_replication_fragments_free(new_fragments, new_count);
+    break_replication_fragments_free(old_fragments, old_count);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fragment_round_trip_reordered_and_checksum);
     RUN_TEST(fragment_rejects_duplicates_conflicts_loss_and_base_mismatch);
@@ -371,4 +449,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(fragment_into_caller_storage_matches_allocating_api_and_reassembles);
     RUN_TEST(fragment_into_rejects_short_capacity_before_writing);
     RUN_TEST(reassembler_newer_delta_supersedes_incomplete_and_rejects_old);
+    RUN_TEST(reassembler_completed_high_water_rejects_older_restart);
+    RUN_TEST(reassembler_failed_supersession_preserves_old_stream);
 TEST_MAIN_END()
