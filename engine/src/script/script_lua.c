@@ -32,9 +32,9 @@ typedef struct {
 } LuaBodyIdPlan;
 
 static bool lua_body_map_ready(const LuaScript *ls, const PhysicsWorld *pw) {
-    return ls && pw && ls->body_map_epoch != 0u && ls->body_map_capacity == pw->capacity &&
-           ls->body_map_capacity != 0u && ls->body_serial && ls->body_generation &&
-           ls->body_epoch && ls->body_retired;
+    return ls && pw && ls->body_map_epoch != 0u && ls->body_map_epoch != UINT32_MAX &&
+           ls->body_map_capacity == pw->capacity && ls->body_map_capacity != 0u &&
+           ls->body_serial && ls->body_generation && ls->body_epoch && ls->body_retired;
 }
 
 static bool lua_body_id_plan(LuaScript *ls, PhysicsWorld *pw, LuaBodyIdPlan *plan) {
@@ -47,7 +47,7 @@ static bool lua_body_id_plan(LuaScript *ls, PhysicsWorld *pw, LuaBodyIdPlan *pla
     if (slot == pw->count && pw->count >= pw->capacity) return false;
     if (slot >= pw->capacity || pw->bodies[slot].retired || ls->body_retired[slot]) return false;
 
-    u32 serial = ls->body_serial[slot];
+    u64 serial = ls->body_serial[slot];
     if (serial == UINT32_MAX) {
         if (ls->body_epoch[slot] != 0u) {
             ls->body_retired[slot] = 1u;
@@ -57,13 +57,22 @@ static bool lua_body_id_plan(LuaScript *ls, PhysicsWorld *pw, LuaBodyIdPlan *pla
     } else {
         serial++;
     }
-    u64 id = (u64)serial * (u64)ls->body_map_capacity + (u64)slot + 1u;
+    u64 id = serial * (u64)ls->body_map_capacity + (u64)slot + 1u;
+    if (id <= ls->body_public_cursor) {
+        serial = (ls->body_public_cursor - (u64)slot - 1u) /
+                 (u64)ls->body_map_capacity + 1u;
+        if (serial > UINT32_MAX) {
+            ls->body_retired[slot] = 1u;
+            return false;
+        }
+        id = serial * (u64)ls->body_map_capacity + (u64)slot + 1u;
+    }
     if (id > 0x1FFFFFFFFFFFFFu) {
         ls->body_retired[slot] = 1u;
         return false;
     }
     plan->slot = slot;
-    plan->serial = serial;
+    plan->serial = (u32)serial;
     plan->public_id = (lua_Integer)id;
     return true;
 }
@@ -72,6 +81,7 @@ static lua_Integer lua_body_id(LuaScript *ls, PhysicsBodyHandle body, const LuaB
     ls->body_serial[plan->slot] = plan->serial;
     ls->body_generation[plan->slot] = body.generation;
     ls->body_epoch[plan->slot] = ls->body_map_epoch;
+    ls->body_public_cursor = (u64)plan->public_id;
     return plan->public_id;
 }
 
@@ -304,7 +314,7 @@ void lua_script_bind_host(LuaScript *ls, void *world, void *physics, void *input
         ls->input = input;
         return;
     }
-    ls->body_map_epoch++;
+    if (ls->body_map_epoch != UINT32_MAX) ls->body_map_epoch++;
     free(ls->body_serial);
     free(ls->body_generation);
     free(ls->body_epoch);
@@ -317,7 +327,7 @@ void lua_script_bind_host(LuaScript *ls, void *world, void *physics, void *input
     ls->world = world;
     ls->physics = physics;
     ls->input = input;
-    if (!pw || pw->capacity == 0u) return;
+    if (ls->body_map_epoch == UINT32_MAX || !pw || pw->capacity == 0u) return;
 #if SIZE_MAX < UINT64_MAX
     if ((u64)pw->capacity > (u64)SIZE_MAX / (4u * sizeof(u32))) return;
 #endif

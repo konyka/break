@@ -419,6 +419,49 @@ TEST(ragdoll_mid_create_failures_restore_entire_world) {
     }
 }
 
+TEST(ragdoll_retired_slots_preserve_failure_rollback) {
+    Skeleton sk;
+    skeleton_fixture(&sk, 3);
+    sk.joint_parents[1] = 0;
+    sk.joint_parents[2] = 1;
+    for (u32 i = 0; i < 3; i++) set_joint_world(&sk, i, vec3(0, (f32)i, 0), QUAT_IDENTITY);
+    for (i32 body_failure = -1; body_failure < 3; body_failure++) {
+        for (i32 constraint_failure = -1; constraint_failure < 2; constraint_failure++) {
+            if ((body_failure >= 0) == (constraint_failure >= 0)) continue;
+            PhysicsWorld *pw = physics_world_create(8);
+            PhysicsBodyHandle a = physics_body_create(pw, vec3(8, 8, 8), vec3(0, 0, 0), 0, true, 0);
+            PhysicsBodyHandle b = physics_body_create(pw, vec3(12, 8, 8), vec3(0, 0, 0), 1, false, 0);
+            PhysicsBodyHandle tomb = physics_body_create(pw, vec3(2, 2, 2), vec3(0, 0, 0), 1, false, 0);
+            pw->bodies[tomb.index].generation = UINT32_MAX;
+            physics_body_park(pw, (PhysicsBodyHandle){tomb.index, UINT32_MAX});
+            ASSERT_TRUE(pw->bodies[tomb.index].retired);
+            ASSERT_TRUE(physics_constraint_handle_is_valid(physics_constraint_add_distance(pw, a, b, 4.0f)));
+            PhysicsConstraintHandle retired = physics_constraint_add_distance(pw, a, b, 4.0f);
+            pw->constraints[retired.index].generation = UINT32_MAX;
+            physics_constraint_remove(pw, (PhysicsConstraintHandle){retired.index, UINT32_MAX});
+            ASSERT_TRUE(pw->constraints[retired.index].retired);
+
+            PhysicsWorld world_before;
+            RigidBody bodies_before[8];
+            ragdoll_world_snapshot(pw, &world_before, bodies_before);
+            Ragdoll rd;
+            memset(&rd, 0x5a, sizeof(rd));
+            rd.active = false;
+            rd.bone_count = 77;
+            Ragdoll rd_before = rd;
+            IKSystem ik;
+            anim_ik_init(&ik);
+            fail_after(body_failure, constraint_failure);
+            ASSERT_FALSE(ragdoll_activate(&rd, pw, &sk, &ik));
+            fail_after(-1, -1);
+            ragdoll_assert_world_snapshot(pw, &world_before, bodies_before);
+            ASSERT_EQ(memcmp(&rd, &rd_before, sizeof(rd)), 0);
+            ASSERT_FALSE(ik.physics_suspended);
+            physics_world_destroy(pw);
+        }
+    }
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ragdoll_world_bodies_convert_to_local_trs);
     RUN_TEST(ragdoll_local_translation_removes_parent_scale);
@@ -428,5 +471,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ragdoll_failures_preserve_world_and_destination);
     RUN_TEST(ragdoll_stale_deactivate_preserves_reused_resources);
     RUN_TEST(ragdoll_mid_create_failures_restore_entire_world);
+    RUN_TEST(ragdoll_retired_slots_preserve_failure_rollback);
     RUN_TEST(ragdoll_shared_ik_is_owned_until_last_deactivation);
 TEST_MAIN_END()

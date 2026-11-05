@@ -195,12 +195,22 @@ bool scene_state_save(const char *path, const SceneStateCtx *ctx) {
     return sv_ok;
 }
 
+bool scene_state_commit_body_handle(PhysicsBodyHandle *owner, PhysicsBodyHandle before,
+                                    PhysicsBodyHandle restored) {
+    if (!owner || !physics_body_handle_is_valid(before) ||
+        !physics_body_handle_is_valid(restored) || before.index != restored.index ||
+        !physics_body_handle_equal(*owner, before)) return false;
+    *owner = restored;
+    return true;
+}
+
 bool scene_state_load(const char *path, SceneStateCtx *ctx) {
     if (!path || !ctx || !ctx->camera || !ctx->physics ||
         !ctx->sun_azimuth || !ctx->sun_elevation || !ctx->exposure ||
         !ctx->render_scale || !ctx->water_y || !ctx->water_enabled)
         return false;
 
+    PhysicsBodyHandle restored[SCENE_STATE_BODY_LIVE_MAX] = {0};
     FILE *lf = fopen(path, "rb");
     if (!lf) return false;
 
@@ -299,14 +309,29 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
         if (ld_ok && live && pos.e[1] > -999.0f) {
             RigidBody *rb = &ctx->physics->bodies[si];
             if (!v2 && rb->mass > 0.0f) mass = rb->mass;
-            (void)physics_body_revive(ctx->physics,
-                (PhysicsBodyHandle){si, rb->generation}, mass, is_st != 0, ctx->frame_count);
+            PhysicsBodyHandle restored_id = {si, rb->generation};
+            if (physics_body_is_parked(rb)) {
+                restored_id = physics_body_revive(ctx->physics, restored_id,
+                                                  mass, is_st != 0, ctx->frame_count);
+                if (!physics_body_handle_is_valid(restored_id)) {
+                    ld_ok = false;
+                    break;
+                }
+            } else {
+                rb->mass = (mass > 0.0f) ? mass : 1.0f;
+                rb->is_static = is_st != 0;
+                rb->inv_mass = (rb->is_static || rb->mass <= 0.0f) ? 0.0f : (1.0f / rb->mass);
+                rb->spawn_frame = ctx->frame_count;
+                rb->sleeping = false;
+                rb->rest_frames = 0;
+            }
             rb->position = pos;
             rb->velocity = vel;
             if (v3) {
                 rb->half_extent = hext;
                 rb->restitution = rest;
             }
+            if (physics_body_handle_is_valid(restored_id)) restored[si] = restored_id;
         } else if (ld_ok && !live && si > 0 &&
                    !physics_body_is_parked(&ctx->physics->bodies[si])) {
             physics_body_park(ctx->physics,
@@ -335,6 +360,8 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
     if (!ld_ok) LOG_WARN("Scene state load: partial read failure");
     else LOG_INFO("Runtime state restored (%u bodies)", pc);
 
+    if (ld_ok && ctx->body_restored)
+        memcpy(ctx->body_restored, restored, sizeof(restored));
     if (!ld_ok)
         scene_state_restore(ctx, &backup);
     scene_state_backup_free(&backup);

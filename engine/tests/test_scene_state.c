@@ -438,6 +438,47 @@ TEST(scene_state_rejects_noncanonical_water_flag)
     remove(TMP_STATE);
 }
 
+typedef struct { f32 pos[3]; } CTransform;
+typedef struct { PhysicsBodyHandle physics_id; } CRigidBody;
+
+TEST(scene_state_live_restore_preserves_main_consumer) {
+    Camera cam = {0};
+    f32 sun_a = 0.5f, sun_e = 0.25f, exp = 1.0f, scale = 1.0f;
+    f32 wy = -2.0f;
+    bool wen = true;
+    PhysicsWorld *pw = physics_world_create(4);
+    physics_body_create(pw, vec3(0, -1, 0), vec3(10, 0.5f, 10), 0, true, 0);
+    PhysicsBodyHandle old = physics_body_create(pw, vec3(3, 4, 5), vec3(0.5f, 0.5f, 0.5f), 2, false, 0);
+    SceneStateCtx sctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    ASSERT_TRUE(scene_state_save(TMP_STATE, &sctx));
+
+    CRigidBody owner = { old };
+    CRigidBody stale = {{ old.index, old.generation + 1u }};
+    CTransform transform = {{0}};
+    PhysicsBodyHandle restored_ids[SCENE_STATE_BODY_LIVE_MAX] = {0};
+    bool live[SCENE_STATE_BODY_LIVE_MAX] = {0};
+    live[old.index] = true;
+    SceneStateCtx lctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    lctx.body_live = live;
+    lctx.body_restored = restored_ids;
+    lctx.frame_count = 42u;
+    lctx.water_pipeline_valid = true;
+    ASSERT_TRUE(scene_state_load(TMP_STATE, &lctx));
+    ASSERT_TRUE(scene_state_commit_body_handle(&owner.physics_id, old, restored_ids[old.index]));
+    ASSERT_FALSE(scene_state_commit_body_handle(&stale.physics_id, old, restored_ids[old.index]));
+    ASSERT_TRUE(physics_body_resolve(pw, stale.physics_id) == NULL);
+    RigidBody *restored = physics_body_resolve(pw, owner.physics_id);
+    if (restored) {
+        transform.pos[0] = restored->position.e[0];
+        transform.pos[1] = restored->position.e[1];
+        transform.pos[2] = restored->position.e[2];
+    }
+    ASSERT_FLOAT_EQ(transform.pos[0], 3.0f, 1e-4f);
+    ASSERT_FLOAT_EQ(transform.pos[1], 4.0f, 1e-4f);
+    physics_world_destroy(pw);
+    remove(TMP_STATE);
+}
+
 TEST(scene_state_restores_current_tombstone_identity) {
     Camera cam = {0};
     f32 sun_a = 0.5f, sun_e = 0.25f, exp = 1.0f, scale = 1.0f;
@@ -450,15 +491,22 @@ TEST(scene_state_restores_current_tombstone_identity) {
     ASSERT_TRUE(scene_state_save(TMP_STATE, &sctx));
 
     physics_body_park(pw, old);
+    PhysicsBodyHandle before = { old.index, pw->bodies[old.index].generation };
+    CRigidBody owner = { before };
+    CRigidBody stale = { old };
+    PhysicsBodyHandle restored_ids[SCENE_STATE_BODY_LIVE_MAX] = {0};
     bool live[SCENE_STATE_BODY_LIVE_MAX] = {0};
     live[old.index] = true;
     SceneStateCtx lctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
     lctx.body_live = live;
+    lctx.body_restored = restored_ids;
     lctx.frame_count = 42u;
     lctx.water_pipeline_valid = true;
     ASSERT_TRUE(scene_state_load(TMP_STATE, &lctx));
-    RigidBody *restored = physics_body_resolve(pw,
-        (PhysicsBodyHandle){old.index, pw->bodies[old.index].generation});
+    ASSERT_TRUE(scene_state_commit_body_handle(&owner.physics_id, before, restored_ids[old.index]));
+    ASSERT_FALSE(scene_state_commit_body_handle(&stale.physics_id, before, restored_ids[old.index]));
+    ASSERT_TRUE(physics_body_resolve(pw, stale.physics_id) == NULL);
+    RigidBody *restored = physics_body_resolve(pw, owner.physics_id);
     ASSERT_NOT_NULL(restored);
     ASSERT_FALSE(physics_body_is_parked(restored));
     ASSERT_FLOAT_EQ(restored->position.e[0], 3.0f, 1e-4f);
@@ -478,5 +526,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_rejects_nonfinite_values);
     RUN_TEST(scene_state_save_rejects_nonfinite_values);
     RUN_TEST(scene_state_rejects_noncanonical_water_flag);
+    RUN_TEST(scene_state_live_restore_preserves_main_consumer);
     RUN_TEST(scene_state_restores_current_tombstone_identity);
 TEST_MAIN_END()

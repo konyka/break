@@ -54,6 +54,16 @@ TEST(revive_rejects_stale_tombstone_handle) {
     physics_world_destroy(pw);
 }
 
+TEST(revive_rejects_live_body_without_changing_identity) {
+    PhysicsWorld *pw = physics_world_create(2);
+    PhysicsBodyHandle live = physics_body_create(pw, vec3(0, 2, 0), vec3(0.5f, 0.5f, 0.5f), 1, false, 0);
+    RigidBody before = pw->bodies[live.index];
+    PhysicsBodyHandle rejected = physics_body_revive(pw, live, 2, false, 10);
+    ASSERT_FALSE(physics_body_handle_is_valid(rejected));
+    ASSERT_EQ(memcmp(&pw->bodies[live.index], &before, sizeof(before)), 0);
+    physics_world_destroy(pw);
+}
+
 TEST(generation_exhaustion_retires_slots_permanently) {
     PhysicsWorld *pw = physics_world_create(1);
     PhysicsBodyHandle old = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1, false, 0);
@@ -85,5 +95,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(stale_constraint_remove_preserves_reused_slot);
     RUN_TEST(parked_body_cannot_rebind_old_constraint_to_new_occupant);
     RUN_TEST(revive_rejects_stale_tombstone_handle);
+    RUN_TEST(revive_rejects_live_body_without_changing_identity);
     RUN_TEST(generation_exhaustion_retires_slots_permanently);
 TEST_MAIN_END()

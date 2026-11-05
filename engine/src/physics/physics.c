@@ -205,7 +205,7 @@ PhysicsBodyHandle physics_body_revive(PhysicsWorld *pw, PhysicsBodyHandle body, 
     if (!pw || !physics_body_handle_is_valid(body) || body.index >= pw->count || !isfinite(mass))
         return PHYSICS_BODY_HANDLE_INVALID;
     RigidBody *rb = &pw->bodies[body.index];
-    if (rb->retired || rb->generation != body.generation)
+    if (rb->retired || !physics_body_is_parked(rb) || rb->generation != body.generation)
         return PHYSICS_BODY_HANDLE_INVALID;
     rb->generation = physics_next_generation(rb->generation);
     rb->mass = (mass > 0.0f) ? mass : 1.0f;

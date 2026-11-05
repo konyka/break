@@ -7668,6 +7668,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
             /* Build live physics_id set after BSCN (stack-sized; demo cap 256). */
             bool body_live[256];
+            PhysicsBodyHandle body_before[256] = {0};
+            PhysicsBodyHandle body_restored[256] = {0};
             memset(body_live, 0, sizeof(body_live));
             {
                 ComponentType rv_types[] = { COMP_RIGID_BODY };
@@ -7682,8 +7684,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                 Entity re = world->entities[ents[ci]];
                                 CRigidBody *rr = world_get_component(world, re, COMP_RIGID_BODY);
                                 if (rr && physics_body_resolve(physics, rr->physics_id) &&
-                                    rr->physics_id.index < 256u)
+                                    rr->physics_id.index < 256u) {
                                     body_live[rr->physics_id.index] = true;
+                                    body_before[rr->physics_id.index] = rr->physics_id;
+                                }
                             }
                             c = c->next;
                         }
@@ -7704,6 +7708,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     .physics = physics,
                     .frame_count = (u32)engine.frame_count,
                     .body_live = body_live,
+                    .body_restored = body_restored,
                     .water_y = &water.water_y,
                     .water_enabled = &water.enabled,
                     .water_pipeline_valid = rhi_handle_valid(water.pipeline),
@@ -7711,7 +7716,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 if (!scene_state_load("scene_state.bin", &lctx))
                     LOG_WARN("Scene state: failed to load scene_state.bin (companion ignored)");
             }
-            /* R379: rebind parked slots only when a live entity still references them. */
+            /* R379: commit scene handles; fallback rebinds only current parked tombstones. */
             {
                 ComponentType rv_types[] = { COMP_TRANSFORM, COMP_RIGID_BODY };
                 Query *rq = world_query(world, rv_types, 2);
@@ -7728,12 +7733,19 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                 if (!rr || !rt || !physics_body_handle_is_valid(rr->physics_id) ||
                                     rr->physics_id.index >= physics->count)
                                     continue;
-                                RigidBody *rb = &physics->bodies[rr->physics_id.index];
-                                if (!physics_body_is_parked(rb) || rb->generation == 0u) continue;
-                                PhysicsBodyHandle restore = {rr->physics_id.index, rb->generation};
+                                u32 slot = rr->physics_id.index;
+                                if (slot < 256u && scene_state_commit_body_handle(
+                                        &rr->physics_id, body_before[slot], body_restored[slot]))
+                                    continue;
+                                RigidBody *rb = &physics->bodies[slot];
+                                if (!physics_body_is_parked(rb) || rb->generation == 0u ||
+                                    rr->physics_id.generation != rb->generation) continue;
+                                PhysicsBodyHandle restore = {slot, rb->generation};
                                 /* Fallback when no V2 state: keep mass, default dynamic. */
-                                rr->physics_id = physics_body_revive(physics, restore,
+                                PhysicsBodyHandle revived = physics_body_revive(physics, restore,
                                     rb->mass, false, (u32)engine.frame_count);
+                                if (!physics_body_handle_is_valid(revived)) continue;
+                                rr->physics_id = revived;
                                 rb->position = vec3(rt->pos[0], rt->pos[1], rt->pos[2]);
                                 rb->velocity = vec3(0, 0, 0);
                                 physics->bvh_dirty = true;

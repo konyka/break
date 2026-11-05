@@ -118,13 +118,13 @@ typedef struct RagdollTxn {
 
 static u32 ragdoll_next_body_slot(const PhysicsWorld *pw) {
     for (u32 i = 0; i < pw->count; i++)
-        if (physics_body_is_parked(&pw->bodies[i])) return i;
+        if (physics_body_is_parked(&pw->bodies[i]) && !pw->bodies[i].retired) return i;
     return pw->count;
 }
 
 static u32 ragdoll_next_constraint_slot(const PhysicsWorld *pw) {
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++)
-        if (!pw->constraints[i].active) return i;
+        if (!pw->constraints[i].active && !pw->constraints[i].retired) return i;
     return PHYSICS_MAX_CONSTRAINTS;
 }
 
@@ -186,11 +186,11 @@ bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSyste
 
     u32 free_constraints = 0;
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++)
-        if (!pw->constraints[i].active) free_constraints++;
+        if (!pw->constraints[i].active && !pw->constraints[i].retired) free_constraints++;
     if (free_constraints < required_constraints) return false;
     u32 available_bodies = pw->capacity - pw->count;
     for (u32 i = 0; i < pw->count; i++)
-        if (physics_body_is_parked(&pw->bodies[i])) available_bodies++;
+        if (physics_body_is_parked(&pw->bodies[i]) && !pw->bodies[i].retired) available_bodies++;
     if (available_bodies < n) return false;
 
     RagdollTxn txn;
