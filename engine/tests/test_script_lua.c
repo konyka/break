@@ -179,10 +179,9 @@ TEST(engine_id_zero_is_invalid)
 
 TEST(engine_out_of_range_body_id_is_invalid)
 {
-    /* R465: Lua integers are wider than u32 on supported hosts. A body id of
-     * 2^32+1 used to truncate to 1 before the 1-based conversion, mutating
-     * body 0 through every body binding. */
-    PhysicsWorld *pw = physics_world_create(64);
+    /* R465: Lua integers are wider than u32 on supported hosts. At capacity 1,
+     * 2^32+1 must not truncate its serial to 0 and rebind body 0. */
+    PhysicsWorld *pw = physics_world_create(1);
     physics_body_create(pw, vec3(1, 2, 3), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
     pw->bodies[0].velocity = vec3(4, 5, 6);
     pw->bodies[0].ccd = false;
@@ -571,6 +570,192 @@ TEST(engine_bindings_reject_nonfinite)
     physics_world_destroy(pw);
 }
 
+static void script_world_snapshot(PhysicsWorld *pw, PhysicsWorld *world, RigidBody *bodies) {
+    *world = *pw;
+    memcpy(bodies, pw->bodies, pw->capacity * sizeof(*bodies));
+}
+
+static void script_assert_world_snapshot(PhysicsWorld *pw, const PhysicsWorld *world,
+                                         const RigidBody *bodies) {
+    ASSERT_EQ(memcmp(pw, world, sizeof(*world)), 0);
+    ASSERT_EQ(memcmp(pw->bodies, bodies, pw->capacity * sizeof(*bodies)), 0);
+}
+
+TEST(lua_rebind_does_not_reaccept_raw_ids) {
+    PhysicsWorld *pw = physics_world_create(4);
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls, "id = engine.spawn(1, 2, 3, 1)", "t"));
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "id", 0), 1.0, 1e-9);
+
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls, "engine.set_pos(1, 4, 5, 6)", "t"));
+    ASSERT_FLOAT_EQ(pw->bodies[0].position.e[0], 4.0f, 1e-6f);
+
+    PhysicsWorld *other = physics_world_create(4);
+    physics_body_create(other, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1, false, 0);
+    lua_script_bind_host(&ls, NULL, other, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls, "engine.set_pos(1, 9, 9, 9)", "t"));
+    ASSERT_FLOAT_EQ(other->bodies[0].position.e[0], 0.0f, 1e-6f);
+
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls, "engine.set_pos(1, 8, 9, 9)", "t"));
+    ASSERT_FLOAT_EQ(pw->bodies[0].position.e[0], 4.0f, 1e-6f);
+    lua_script_shutdown(&ls);
+    physics_world_destroy(other);
+    physics_world_destroy(pw);
+}
+
+TEST(lua_failed_rebind_does_not_restore_raw_ids) {
+    PhysicsWorld *pw = physics_world_create(4);
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls, "id = engine.spawn(1, 2, 3, 1)", "t"));
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "id", 0), 1.0, 1e-9);
+
+    lua_script_bind_host(&ls, NULL, NULL, NULL);
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls, "engine.set_pos(1, 9, 9, 9)", "t"));
+    ASSERT_FLOAT_EQ(pw->bodies[0].position.e[0], 1.0f, 1e-6f);
+    lua_script_shutdown(&ls);
+    physics_world_destroy(pw);
+}
+
+TEST(lua_rebind_spawn_does_not_reactivate_old_ids) {
+    PhysicsWorld *pw = physics_world_create(4);
+    PhysicsWorld *other = physics_world_create(4);
+    PhysicsWorld *smaller = physics_world_create(2);
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls, "old_id = engine.spawn(1, 2, 3, 1)", "t"));
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "old_id", 0), 1.0, 1e-9);
+
+    lua_script_bind_host(&ls, NULL, other, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls,
+        "new_id = engine.spawn(5, 0, 0, 1)\n"
+        "engine.set_pos(old_id, 9, 9, 9)", "t"));
+    ASSERT_FLOAT_EQ(other->bodies[0].position.e[0], 5.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "new_id", 0), 5.0, 1e-9);
+    ASSERT_TRUE(lua_script_load_string(&ls, "engine.set_pos(new_id, 4, 5, 6)", "t"));
+    ASSERT_FLOAT_EQ(other->bodies[0].position.e[0], 4.0f, 1e-6f);
+
+    lua_script_bind_host(&ls, NULL, smaller, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls,
+        "smaller_id = engine.spawn(7, 0, 0, 1)\n"
+        "engine.set_pos(old_id, 9, 9, 9)", "t"));
+    ASSERT_FLOAT_EQ(smaller->bodies[0].position.e[0], 7.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "smaller_id", 0), 7.0, 1e-9);
+    ASSERT_TRUE(lua_script_load_string(&ls, "engine.set_pos(smaller_id, 8, 5, 6)", "t"));
+    ASSERT_FLOAT_EQ(smaller->bodies[0].position.e[0], 8.0f, 1e-6f);
+
+    lua_script_shutdown(&ls);
+    physics_world_destroy(smaller);
+    physics_world_destroy(other);
+    physics_world_destroy(pw);
+}
+
+TEST(lua_map_epoch_exhaustion_retires_mapping) {
+    PhysicsWorld *pw = physics_world_create(1);
+    PhysicsWorld *other = physics_world_create(1);
+    physics_body_create(other, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1, false, 0);
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls, "old_id = engine.spawn(1, 2, 3, 1)", "t"));
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "old_id", 0), 1.0, 1e-9);
+
+    ls.body_map_epoch = UINT32_MAX - 1u;
+    lua_script_bind_host(&ls, NULL, other, NULL);
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    lua_script_bind_host(&ls, NULL, other, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls, "engine.set_pos(old_id, 9, 9, 9)", "t"));
+    ASSERT_FLOAT_EQ(other->bodies[0].position.e[0], 0.0f, 1e-6f);
+
+    PhysicsWorld before;
+    RigidBody bodies[1];
+    script_world_snapshot(other, &before, bodies);
+    ASSERT_TRUE(lua_script_load_string(&ls, "id = engine.spawn(5, 0, 0, 1)", "t"));
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "id", 0), 0.0, 1e-9);
+    script_assert_world_snapshot(other, &before, bodies);
+    ASSERT_EQ(ls.body_map_epoch, UINT32_MAX);
+
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    lua_script_bind_host(&ls, NULL, other, NULL);
+    ASSERT_EQ(ls.body_map_epoch, UINT32_MAX);
+    ASSERT_TRUE(lua_script_load_string(&ls, "engine.set_pos(old_id, 8, 8, 8)", "t"));
+    ASSERT_FLOAT_EQ(other->bodies[0].position.e[0], 0.0f, 1e-6f);
+    lua_script_shutdown(&ls);
+    physics_world_destroy(other);
+    physics_world_destroy(pw);
+}
+
+TEST(lua_serial_exhaustion_is_atomic) {
+    PhysicsWorld *pw = physics_world_create(1);
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    ls.body_serial[0] = UINT32_MAX - 1u;
+    ASSERT_TRUE(lua_script_load_string(&ls, "id = engine.spawn(1, 2, 3, 1)", "t"));
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "id", 0), 4294967296.0, 1e-9);
+    PhysicsBodyHandle first = { 0u, pw->bodies[0].generation };
+    physics_body_park(pw, first);
+    PhysicsWorld before;
+    RigidBody bodies[1];
+    script_world_snapshot(pw, &before, bodies);
+    ASSERT_TRUE(lua_script_load_string(&ls, "id = engine.spawn(1, 2, 3, 1)", "t"));
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "id", 0), 0.0, 1e-9);
+    script_assert_world_snapshot(pw, &before, bodies);
+    ASSERT_EQ(ls.body_retired[0], 1u);
+    lua_script_shutdown(&ls);
+    physics_world_destroy(pw);
+}
+
+TEST(lua_unavailable_mapping_is_atomic) {
+    PhysicsWorld *pw = physics_world_create(4);
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    PhysicsWorld before;
+    RigidBody bodies[4];
+    ls.body_map_capacity = 0;
+    script_world_snapshot(pw, &before, bodies);
+    ASSERT_TRUE(lua_script_load_string(&ls, "id = engine.spawn(1, 2, 3, 1)", "t"));
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "id", 0), 0.0, 1e-9);
+    script_assert_world_snapshot(pw, &before, bodies);
+    lua_script_shutdown(&ls);
+    physics_world_destroy(pw);
+}
+
+TEST(lua_public_id_exhaustion_is_atomic) {
+    const u32 capacity = (1u << 21) + 1u;
+    PhysicsWorld *pw = physics_world_create(capacity);
+    ASSERT_NOT_NULL(pw);
+    if (!pw) return;
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    ls.body_serial[0] = UINT32_MAX - 1u;
+    RigidBody *bodies = (RigidBody *)malloc(capacity * sizeof(*bodies));
+    ASSERT_NOT_NULL(bodies);
+    if (!bodies) {
+        lua_script_shutdown(&ls);
+        physics_world_destroy(pw);
+        return;
+    }
+    PhysicsWorld before;
+    script_world_snapshot(pw, &before, bodies);
+    ASSERT_TRUE(lua_script_load_string(&ls, "id = engine.spawn(1, 2, 3, 1)", "t"));
+    ASSERT_FLOAT_EQ(lua_script_get_number(&ls, "id", 0), 0.0, 1e-9);
+    script_assert_world_snapshot(pw, &before, bodies);
+    ASSERT_EQ(ls.body_retired[0], 1u);
+    free(bodies);
+    lua_script_shutdown(&ls);
+    physics_world_destroy(pw);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(init_shutdown);
     RUN_TEST(run_string_sets_global);
@@ -597,4 +782,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lua_load_rejects_oversized_file);
     RUN_TEST(engine_set_pos_wakes_resting_body);
     RUN_TEST(engine_bindings_reject_nonfinite);
+    RUN_TEST(lua_rebind_does_not_reaccept_raw_ids);
+    RUN_TEST(lua_failed_rebind_does_not_restore_raw_ids);
+    RUN_TEST(lua_rebind_spawn_does_not_reactivate_old_ids);
+    RUN_TEST(lua_map_epoch_exhaustion_retires_mapping);
+    RUN_TEST(lua_serial_exhaustion_is_atomic);
+    RUN_TEST(lua_unavailable_mapping_is_atomic);
+    RUN_TEST(lua_public_id_exhaustion_is_atomic);
 TEST_MAIN_END()

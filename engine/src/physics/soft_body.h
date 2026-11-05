@@ -6,7 +6,7 @@
 #define SOFT_BODY_MAX 128u
 
 typedef struct SoftBody {
-    u32 nodes[SOFT_BODY_MAX];
+    PhysicsBodyHandle nodes[SOFT_BODY_MAX];
     Vec3 rest[SOFT_BODY_MAX];
     u32 count;
     f32 stiffness;       /* 0 keeps the current shape, 1 restores the rest offsets */

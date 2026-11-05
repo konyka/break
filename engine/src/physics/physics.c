@@ -7,6 +7,38 @@
 
 /* SSE detection and fast_rsqrt provided by math.h via simd.h */
 
+static bool physics_vec3_finite(Vec3 v) {
+    return isfinite(v.e[0]) && isfinite(v.e[1]) && isfinite(v.e[2]);
+}
+
+static bool physics_quat_finite(Quat q) {
+    return isfinite(q.e[0]) && isfinite(q.e[1]) && isfinite(q.e[2]) && isfinite(q.e[3]);
+}
+
+#ifdef PHYSICS_TEST_HOOKS
+static i32 body_failure_countdown = -1;
+static i32 constraint_failure_countdown = -1;
+void fail_after(i32 body, i32 constraint) {
+    body_failure_countdown = body;
+    constraint_failure_countdown = constraint;
+}
+static bool physics_test_fail_body(void) {
+    if (body_failure_countdown < 0) return false;
+    if (body_failure_countdown == 0) return true;
+    body_failure_countdown--;
+    return false;
+}
+static bool physics_test_fail_constraint(void) {
+    if (constraint_failure_countdown < 0) return false;
+    if (constraint_failure_countdown == 0) return true;
+    constraint_failure_countdown--;
+    return false;
+}
+#else
+static bool physics_test_fail_body(void) { return false; }
+static bool physics_test_fail_constraint(void) { return false; }
+#endif
+
 AABB aabb_from_body(const RigidBody *b) {
     Vec3 ext;
     switch (b->shape) {
@@ -106,55 +138,110 @@ void physics_world_destroy(PhysicsWorld *pw) {
     free(pw);
 }
 
-void physics_body_park(PhysicsWorld *pw, u32 pid) {
-    if (!pw || pid == 0 || pid >= pw->count) return;
-    RigidBody *pb = &pw->bodies[pid];
+static u32 physics_next_generation(u32 generation) {
+    return generation == UINT32_MAX ? 0u : generation + 1u;
+}
+
+static PhysicsBodyHandle physics_body_handle_from_slot(const PhysicsWorld *pw, u32 index) {
+    PhysicsBodyHandle h = PHYSICS_BODY_HANDLE_INVALID;
+    if (!pw || index >= pw->count) return h;
+    h.index = index;
+    h.generation = pw->bodies[index].generation;
+    return h;
+}
+
+static PhysicsConstraintHandle physics_constraint_handle_from_slot(const PhysicsWorld *pw, u32 index) {
+    PhysicsConstraintHandle h = PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!pw || index >= PHYSICS_MAX_CONSTRAINTS) return h;
+    h.index = index;
+    h.generation = pw->constraints[index].generation;
+    return h;
+}
+
+RigidBody *physics_body_resolve(PhysicsWorld *pw, PhysicsBodyHandle body) {
+    if (!pw || !physics_body_handle_is_valid(body) || body.index >= pw->count) return NULL;
+    RigidBody *b = &pw->bodies[body.index];
+    if (b->generation != body.generation || b->retired || physics_body_is_parked(b)) return NULL;
+    return b;
+}
+
+static DistanceConstraint *physics_constraint_resolve(PhysicsWorld *pw, PhysicsConstraintHandle handle) {
+    if (!pw || !physics_constraint_handle_is_valid(handle) || handle.index >= PHYSICS_MAX_CONSTRAINTS)
+        return NULL;
+    DistanceConstraint *c = &pw->constraints[handle.index];
+    return c->active && !c->retired && c->generation == handle.generation ? c : NULL;
+}
+
+void physics_body_park(PhysicsWorld *pw, PhysicsBodyHandle body) {
+    RigidBody *pb = physics_body_resolve(pw, body);
+    if (!pb) return;
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
+        DistanceConstraint *c = &pw->constraints[i];
+        if (!c->active) continue;
+        if (physics_body_handle_equal(c->body_a, body) || physics_body_handle_equal(c->body_b, body))
+            physics_constraint_remove(pw, physics_constraint_handle_from_slot(pw, i));
+    }
+    pb->generation = physics_next_generation(pb->generation);
+    pb->retired = pb->generation == 0u;
     pb->is_static = true;
     pb->inv_mass = 0.0f;
     pb->velocity = vec3(0, 0, 0);
+    pb->angular_velocity = vec3(0, 0, 0);
     pb->position = vec3(0, -1000.0f, 0);
     pb->spawn_frame = UINT32_MAX;
+    pb->rest_frames = 0;
+    pb->sleeping = true;
+    if (pw->transaction_depth == 0u) {
+        for (u32 i = 0; i < pw->count; i++) {
+            RigidBody *other = &pw->bodies[i];
+            if (!other->is_static && !physics_body_is_parked(other))
+                physics_body_wake(pw, physics_body_handle_from_slot(pw, i));
+        }
+    }
     pw->bvh_dirty = true;
 }
 
-void physics_body_revive(RigidBody *rb, f32 mass, bool is_static, u32 frame) {
-    if (!rb) return;
+PhysicsBodyHandle physics_body_revive(PhysicsWorld *pw, PhysicsBodyHandle body, f32 mass, bool is_static, u32 frame) {
+    if (!pw || !physics_body_handle_is_valid(body) || body.index >= pw->count || !isfinite(mass))
+        return PHYSICS_BODY_HANDLE_INVALID;
+    RigidBody *rb = &pw->bodies[body.index];
+    if (rb->retired || !physics_body_is_parked(rb) || rb->generation != body.generation)
+        return PHYSICS_BODY_HANDLE_INVALID;
+    rb->generation = physics_next_generation(rb->generation);
     rb->mass = (mass > 0.0f) ? mass : 1.0f;
     rb->is_static = is_static;
     rb->inv_mass = (is_static || rb->mass <= 0.0f) ? 0.0f : (1.0f / rb->mass);
-    rb->spawn_frame = frame;
+    rb->retired = rb->generation == 0u;
+    rb->spawn_frame = rb->retired ? UINT32_MAX : frame;
+    rb->sleeping = rb->retired;
     rb->rest_frames = 0;
+    return physics_body_handle_from_slot(pw, body.index);
 }
 
-u32 physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame) {
+PhysicsBodyHandle physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame) {
     u32 id;
     RigidBody *b;
-    if (!pw) return UINT32_MAX;
-    /* Clamp negative/NaN extents to 0: an inverted AABB (min > max) never
-     * overlaps anything, making the body a permanent broadphase ghost.
-     * !(x >= 0) catches both negative and NaN (same convention as the R435
-     * rest_length guard below). */
+    if (!pw || !physics_vec3_finite(pos) || !physics_vec3_finite(half_ext) || !isfinite(mass) ||
+        physics_test_fail_body()) return PHYSICS_BODY_HANDLE_INVALID;
     for (int i = 0; i < 3; i++) {
         if (!(half_ext.e[i] >= 0.0f)) half_ext.e[i] = 0.0f;
     }
-    /* R376/R377: Del parks with spawn_frame=UINT32_MAX (no destroy/free_stack).
-     * Reuse those slots so E/] cannot permanently exhaust capacity. Skip 0 (ground). */
-    for (id = 1; id < pw->count; id++) {
+    for (id = 0; id < pw->count; id++) {
         RigidBody *cand = &pw->bodies[id];
-        if (physics_body_is_parked(cand)) {
+        if (physics_body_is_parked(cand) && !cand->retired) {
             b = cand;
             goto init;
         }
     }
     if (pw->count >= pw->capacity) {
         LOG_WARN("Physics body limit reached");
-        /* R352: returning count looked like a valid id (0..count-1 is live);
-         * UINT32_MAX fails id < count checks in create_sphere/capsule/Lua. */
-        return UINT32_MAX;
+        return PHYSICS_BODY_HANDLE_INVALID;
     }
     id = pw->count++;
     b = &pw->bodies[id];
 init:
+    if (b->generation == 0u) b->generation = 1u;
+    b->retired = false;
     b->position = pos;
     b->velocity = vec3(0, 0, 0);
     b->acceleration = vec3(0, -9.81f, 0);
@@ -165,6 +252,8 @@ init:
     b->is_static = is_static;
     b->spawn_frame = frame;
     b->spawn_pos = pos;
+    b->sleeping = false;
+    b->contact_active = false;
     b->rest_frames = 0;
     b->collision_count = 0;
     b->shape = SHAPE_BOX;
@@ -174,41 +263,40 @@ init:
     b->orientation = (Quat){{0, 0, 0, 0}};
     b->angular_velocity = vec3(0, 0, 0);
     b->inertia_diag = vec3(0, 0, 0);
+    b->step_start_position = pos;
     pw->bvh_dirty = true;
-    return id;
+    return physics_body_handle_from_slot(pw, id);
 }
 
-u32 physics_body_create_sphere(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 mass, bool is_static, u32 frame) {
-    if (!pw) return UINT32_MAX;
-    if (!(radius >= 0.0f)) radius = 0.0f; /* negative/NaN -> 0 (see body_create) */
-    u32 id = physics_body_create(pw, pos, vec3(radius, radius, radius), mass, is_static, frame);
-    if (id < pw->count) {
-        RigidBody *b = &pw->bodies[id];
-        b->shape  = SHAPE_SPHERE;
+PhysicsBodyHandle physics_body_create_sphere(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 mass, bool is_static, u32 frame) {
+    if (!pw || !isfinite(radius)) return PHYSICS_BODY_HANDLE_INVALID;
+    if (!(radius >= 0.0f)) radius = 0.0f;
+    PhysicsBodyHandle id = physics_body_create(pw, pos, vec3(radius, radius, radius), mass, is_static, frame);
+    if (physics_body_handle_is_valid(id)) {
+        RigidBody *b = &pw->bodies[id.index];
+        b->shape = SHAPE_SPHERE;
         b->radius = radius;
     }
     return id;
 }
 
-u32 physics_body_create_capsule(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 half_height, f32 mass, bool is_static, u32 frame) {
-    if (!pw) return UINT32_MAX;
-    /* Clamp negative/NaN shape parameters: a negative radius or half_height
-     * produced an inverted AABB -> permanent ghost body. */
+PhysicsBodyHandle physics_body_create_capsule(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 half_height, f32 mass, bool is_static, u32 frame) {
+    if (!pw || !isfinite(radius) || !isfinite(half_height)) return PHYSICS_BODY_HANDLE_INVALID;
     if (!(radius >= 0.0f)) radius = 0.0f;
     if (!(half_height >= 0.0f)) half_height = 0.0f;
-    u32 id = physics_body_create(pw, pos, vec3(radius, half_height + radius, radius), mass, is_static, frame);
-    if (id < pw->count) {
-        RigidBody *b = &pw->bodies[id];
-        b->shape       = SHAPE_CAPSULE;
-        b->radius      = radius;
+    PhysicsBodyHandle id = physics_body_create(pw, pos, vec3(radius, half_height + radius, radius), mass, is_static, frame);
+    if (physics_body_handle_is_valid(id)) {
+        RigidBody *b = &pw->bodies[id.index];
+        b->shape = SHAPE_CAPSULE;
+        b->radius = radius;
         b->half_height = half_height;
     }
     return id;
 }
 
-void physics_body_set_ccd(PhysicsWorld *pw, u32 body_id, bool enable) {
-    if (!pw || body_id >= pw->count) return;
-    pw->bodies[body_id].ccd = enable;
+void physics_body_set_ccd(PhysicsWorld *pw, PhysicsBodyHandle body, bool enable) {
+    RigidBody *b = physics_body_resolve(pw, body);
+    if (b) b->ccd = enable;
 }
 
 void physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn, void *user) {
@@ -227,88 +315,81 @@ bool physics_add_post_step(PhysicsWorld *pw, PhysicsPostStepFn fn, void *user) {
 
 /* ---- R435: distance constraints (position projection) ---- */
 
-u32 physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 body_b, f32 rest_length) {
-    if (!pw) return UINT32_MAX;
-    /* R352 convention: invalid ids / full capacity return UINT32_MAX, which
-     * fails the id < count style checks instead of looking like a live slot. */
-    if (body_a >= pw->count || body_b >= pw->count) return UINT32_MAX;
-    if (body_a == body_b) return UINT32_MAX;      /* self-constraint is a no-op */
-    if (!(rest_length >= 0.0f)) return UINT32_MAX; /* rejects negative and NaN */
+PhysicsConstraintHandle physics_constraint_add_distance(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, f32 rest_length) {
+    if (physics_test_fail_constraint()) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!pw || !physics_body_resolve(pw, body_a) || !physics_body_resolve(pw, body_b) ||
+        physics_body_handle_equal(body_a, body_b) || !isfinite(rest_length) || rest_length < 0.0f)
+        return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
-        if (!pw->constraints[i].active) {
-            pw->constraints[i].body_a = body_a;
-            pw->constraints[i].body_b = body_b;
-            pw->constraints[i].rest_length = rest_length;
-            /* R443: a distance constraint is the zero-offset, 1-axis special
-             * case of the generalized constraint slot. */
-            pw->constraints[i].offset_a = vec3(0, 0, 0);
-            pw->constraints[i].offset_b = vec3(0, 0, 0);
-            pw->constraints[i].is_ball = false;
-            pw->constraints[i].is_hinge = false;
-            pw->constraints[i].is_slider = false;
-            pw->constraints[i].active = true;
-            pw->constraint_count++;
-            return i;
-        }
+        if (pw->constraints[i].active || pw->constraints[i].retired) continue;
+        DistanceConstraint c;
+        memset(&c, 0, sizeof(c));
+        c.body_a = body_a;
+        c.body_b = body_b;
+        c.generation = pw->constraints[i].generation;
+        if (c.generation == 0u) c.generation = 1u;
+        c.rest_length = rest_length;
+        c.active = true;
+        pw->constraints[i] = c;
+        pw->constraint_count++;
+        return physics_constraint_handle_from_slot(pw, i);
     }
-    return UINT32_MAX;
+    return PHYSICS_CONSTRAINT_HANDLE_INVALID;
 }
 
-/* R443: ball (point-to-point) joint — rest_length 0 with anchors offset from
- * the centroids. Reuses the same fixed-capacity slot array as distance
- * constraints (same R352/R435 rejection conventions). */
-u32 physics_constraint_add_ball(PhysicsWorld *pw, u32 body_a, u32 body_b, Vec3 anchor_a, Vec3 anchor_b) {
-    if (!pw) return UINT32_MAX;
-    if (body_a >= pw->count || body_b >= pw->count) return UINT32_MAX;
-    if (body_a == body_b) return UINT32_MAX;      /* self-constraint is a no-op */
-    /* Reject NaN anchor components the same way add_distance rejects NaN
-     * rest_length (x == x is false only for NaN). */
-    for (int i = 0; i < 3; i++) {
-        if (!(anchor_a.e[i] == anchor_a.e[i])) return UINT32_MAX;
-        if (!(anchor_b.e[i] == anchor_b.e[i])) return UINT32_MAX;
-    }
+PhysicsConstraintHandle physics_constraint_add_ball(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, Vec3 anchor_a, Vec3 anchor_b) {
+    if (physics_test_fail_constraint()) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!pw || !physics_body_resolve(pw, body_a) || !physics_body_resolve(pw, body_b) ||
+        physics_body_handle_equal(body_a, body_b)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!physics_vec3_finite(anchor_a) || !physics_vec3_finite(anchor_b))
+        return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
-        if (!pw->constraints[i].active) {
-            pw->constraints[i].body_a = body_a;
-            pw->constraints[i].body_b = body_b;
-            pw->constraints[i].rest_length = 0.0f; /* anchors coincide */
-            pw->constraints[i].offset_a = anchor_a;
-            pw->constraints[i].offset_b = anchor_b;
-            pw->constraints[i].is_ball = true;
-            pw->constraints[i].is_hinge = false;
-            pw->constraints[i].is_slider = false;
-            pw->constraints[i].active = true;
-            pw->constraint_count++;
-            return i;
-        }
+        if (pw->constraints[i].active || pw->constraints[i].retired) continue;
+        DistanceConstraint c;
+        memset(&c, 0, sizeof(c));
+        c.body_a = body_a;
+        c.body_b = body_b;
+        c.generation = pw->constraints[i].generation;
+        if (c.generation == 0u) c.generation = 1u;
+        c.offset_a = anchor_a;
+        c.offset_b = anchor_b;
+        c.is_ball = true;
+        c.active = true;
+        pw->constraints[i] = c;
+        pw->constraint_count++;
+        return physics_constraint_handle_from_slot(pw, i);
     }
-    return UINT32_MAX;
+    return PHYSICS_CONSTRAINT_HANDLE_INVALID;
 }
 
-void physics_body_set_pose(PhysicsWorld *pw, u32 body_id, const PhysicsPose *pose) {
-    if (!pw || !pose || body_id >= pw->count) return;
-    RigidBody *b = &pw->bodies[body_id];
-    if (physics_body_is_parked(b)) return;
+void physics_body_set_pose(PhysicsWorld *pw, PhysicsBodyHandle body, const PhysicsPose *pose) {
+    if (!pose || !physics_quat_finite(pose->orientation) ||
+        !physics_vec3_finite(pose->angular_velocity) || !physics_vec3_finite(pose->inertia_diag)) return;
+    RigidBody *b = physics_body_resolve(pw, body);
+    if (!b) return;
+    physics_body_wake(pw, body);
     b->orientation = pose->orientation;
     b->angular_velocity = pose->angular_velocity;
     b->inertia_diag = pose->inertia_diag;
 }
 
-u32 physics_constraint_add_hinge(PhysicsWorld *pw, const HingeDesc *desc) {
-    if (!pw || !desc) return UINT32_MAX;
-    if (desc->body_a >= pw->count || desc->body_b >= pw->count) return UINT32_MAX;
-    if (desc->body_a == desc->body_b) return UINT32_MAX;
-    if (!(desc->limit_min <= desc->limit_max)) return UINT32_MAX;
+PhysicsConstraintHandle physics_constraint_add_hinge(PhysicsWorld *pw, const HingeDesc *desc) {
+    if (physics_test_fail_constraint()) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!pw || !desc) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!physics_body_resolve(pw, desc->body_a) || !physics_body_resolve(pw, desc->body_b))
+        return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (physics_body_handle_equal(desc->body_a, desc->body_b)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!(desc->limit_min <= desc->limit_max)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     f32 axis_len2 = vec3_dot(desc->axis_local_a, desc->axis_local_a);
-    if (!(axis_len2 > 1e-8f)) return UINT32_MAX;
+    if (!(axis_len2 > 1e-8f)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     for (int i = 0; i < 3; i++) {
         if (!isfinite(desc->anchor_local_a.e[i]) || !isfinite(desc->anchor_local_b.e[i]) ||
-            !isfinite(desc->axis_local_a.e[i])) return UINT32_MAX;
+            !isfinite(desc->axis_local_a.e[i])) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     }
-    if (!isfinite(desc->limit_min) || !isfinite(desc->limit_max)) return UINT32_MAX;
+    if (!isfinite(desc->limit_min) || !isfinite(desc->limit_max)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     f32 inv = 1.0f / sqrtf(axis_len2);
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
-        if (!pw->constraints[i].active) {
+        if (!pw->constraints[i].active && !pw->constraints[i].retired) {
             pw->constraints[i].body_a = desc->body_a;
             pw->constraints[i].body_b = desc->body_b;
             pw->constraints[i].rest_length = 0.0f;
@@ -320,29 +401,32 @@ u32 physics_constraint_add_hinge(PhysicsWorld *pw, const HingeDesc *desc) {
             pw->constraints[i].hinge_axis = vec3_scale(desc->axis_local_a, inv);
             pw->constraints[i].limit_min = desc->limit_min;
             pw->constraints[i].limit_max = desc->limit_max;
+            if (pw->constraints[i].generation == 0u) pw->constraints[i].generation = 1u;
             pw->constraints[i].active = true;
             pw->constraint_count++;
-            return i;
+            return physics_constraint_handle_from_slot(pw, i);
         }
     }
-    return UINT32_MAX;
+    return PHYSICS_CONSTRAINT_HANDLE_INVALID;
 }
 
-u32 physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc) {
-    if (!pw || !desc) return UINT32_MAX;
-    if (desc->body_a >= pw->count || desc->body_b >= pw->count) return UINT32_MAX;
-    if (desc->body_a == desc->body_b) return UINT32_MAX;
-    if (!(desc->limit_min <= desc->limit_max)) return UINT32_MAX;
+PhysicsConstraintHandle physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc) {
+    if (physics_test_fail_constraint()) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!pw || !desc) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!physics_body_resolve(pw, desc->body_a) || !physics_body_resolve(pw, desc->body_b))
+        return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (physics_body_handle_equal(desc->body_a, desc->body_b)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!(desc->limit_min <= desc->limit_max)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     f32 axis_len2 = vec3_dot(desc->axis_local_a, desc->axis_local_a);
-    if (!(axis_len2 > 1e-8f)) return UINT32_MAX;
+    if (!(axis_len2 > 1e-8f)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     for (int i = 0; i < 3; i++) {
         if (!isfinite(desc->anchor_local_a.e[i]) || !isfinite(desc->anchor_local_b.e[i]) ||
-            !isfinite(desc->axis_local_a.e[i])) return UINT32_MAX;
+            !isfinite(desc->axis_local_a.e[i])) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     }
-    if (!isfinite(desc->limit_min) || !isfinite(desc->limit_max)) return UINT32_MAX;
+    if (!isfinite(desc->limit_min) || !isfinite(desc->limit_max)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     f32 inv = 1.0f / sqrtf(axis_len2);
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
-        if (!pw->constraints[i].active) {
+        if (!pw->constraints[i].active && !pw->constraints[i].retired) {
             pw->constraints[i].body_a = desc->body_a;
             pw->constraints[i].body_b = desc->body_b;
             pw->constraints[i].rest_length = 0.0f;
@@ -357,38 +441,86 @@ u32 physics_constraint_add_slider(PhysicsWorld *pw, const SliderDesc *desc) {
             pw->constraints[i].slider_torsion = 1.0f;
             pw->constraints[i].slider_damping = 1.0f;
             pw->constraints[i].slider_stiffness = 100.0f;
+            if (pw->constraints[i].generation == 0u) pw->constraints[i].generation = 1u;
             pw->constraints[i].active = true;
             pw->constraint_count++;
-            return i;
+            return physics_constraint_handle_from_slot(pw, i);
         }
     }
-    return UINT32_MAX;
+    return PHYSICS_CONSTRAINT_HANDLE_INVALID;
 }
 
-void physics_constraint_set_slider_torsion(PhysicsWorld *pw, u32 constraint_id, f32 torsion) {
-    if (!pw || constraint_id >= PHYSICS_MAX_CONSTRAINTS) return;
-    if (!pw->constraints[constraint_id].active || !pw->constraints[constraint_id].is_slider) return;
-    if (!isfinite(torsion)) return;
+static Quat rigid_orientation(const RigidBody *b);
+
+PhysicsConstraintHandle physics_constraint_add_cone_twist(PhysicsWorld *pw, const ConeTwistDesc *desc) {
+    if (physics_test_fail_constraint()) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    const f32 pi = 3.14159265358979323846f;
+    if (!pw || !desc) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (!physics_body_resolve(pw, desc->body_a) || !physics_body_resolve(pw, desc->body_b))
+        return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (physics_body_handle_equal(desc->body_a, desc->body_b)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    for (int i = 0; i < 3; i++) {
+        if (!isfinite(desc->anchor_local_a.e[i]) || !isfinite(desc->anchor_local_b.e[i]) ||
+            !isfinite(desc->axis_local_a.e[i]) || !isfinite(desc->axis_local_b.e[i]))
+            return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    }
+    if (!isfinite(desc->swing_min) || !isfinite(desc->swing_max) ||
+        !isfinite(desc->twist_min) || !isfinite(desc->twist_max)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (desc->swing_min < 0.0f || desc->swing_min > desc->swing_max || desc->swing_max > pi)
+        return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    if (desc->twist_min < -pi || desc->twist_min > desc->twist_max || desc->twist_max > pi)
+        return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    f32 len_a = vec3_dot(desc->axis_local_a, desc->axis_local_a);
+    f32 len_b = vec3_dot(desc->axis_local_b, desc->axis_local_b);
+    if (!(len_a > 1e-8f) || !(len_b > 1e-8f)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
+        if (pw->constraints[i].active || pw->constraints[i].retired) continue;
+        DistanceConstraint c;
+        memset(&c, 0, sizeof(c));
+        c.body_a = desc->body_a;
+        c.body_b = desc->body_b;
+        c.generation = pw->constraints[i].generation;
+        if (c.generation == 0u) c.generation = 1u;
+        c.offset_a = desc->anchor_local_a;
+        c.offset_b = desc->anchor_local_b;
+        c.is_cone_twist = true;
+        c.hinge_axis = vec3_scale(desc->axis_local_a, 1.0f / sqrtf(len_a));
+        c.cone_axis_b = vec3_scale(desc->axis_local_b, 1.0f / sqrtf(len_b));
+        c.reference_a = rigid_orientation(&pw->bodies[desc->body_a.index]);
+        c.reference_b = rigid_orientation(&pw->bodies[desc->body_b.index]);
+        c.swing_min = desc->swing_min;
+        c.swing_max = desc->swing_max;
+        c.twist_min = desc->twist_min;
+        c.twist_max = desc->twist_max;
+        c.active = true;
+        pw->constraints[i] = c;
+        pw->constraint_count++;
+        return physics_constraint_handle_from_slot(pw, i);
+    }
+    return PHYSICS_CONSTRAINT_HANDLE_INVALID;
+}
+
+void physics_constraint_set_slider_torsion(PhysicsWorld *pw, PhysicsConstraintHandle constraint, f32 torsion) {
+    DistanceConstraint *c = physics_constraint_resolve(pw, constraint);
+    if (!c || !c->is_slider || !isfinite(torsion)) return;
     if (torsion < 0.0f) torsion = 0.0f;
     if (torsion > 1.0f) torsion = 1.0f;
-    pw->constraints[constraint_id].slider_torsion = torsion;
+    c->slider_torsion = torsion;
 }
 
-void physics_constraint_set_slider_damping(PhysicsWorld *pw, u32 constraint_id, f32 damping) {
-    if (!pw || constraint_id >= PHYSICS_MAX_CONSTRAINTS) return;
-    if (!pw->constraints[constraint_id].active || !pw->constraints[constraint_id].is_slider) return;
-    if (!isfinite(damping)) return;
+void physics_constraint_set_slider_damping(PhysicsWorld *pw, PhysicsConstraintHandle constraint, f32 damping) {
+    DistanceConstraint *c = physics_constraint_resolve(pw, constraint);
+    if (!c || !c->is_slider || !isfinite(damping)) return;
     if (damping < 0.0f) damping = 0.0f;
     if (damping > 1.0f) damping = 1.0f;
-    pw->constraints[constraint_id].slider_damping = damping;
+    c->slider_damping = damping;
 }
 
-void physics_constraint_set_slider_stiffness(PhysicsWorld *pw, u32 constraint_id, f32 stiffness) {
-    if (!pw || constraint_id >= PHYSICS_MAX_CONSTRAINTS) return;
-    if (!pw->constraints[constraint_id].active || !pw->constraints[constraint_id].is_slider) return;
-    if (!isfinite(stiffness) || stiffness < 0.0f) return;
+void physics_constraint_set_slider_stiffness(PhysicsWorld *pw, PhysicsConstraintHandle constraint, f32 stiffness) {
+    DistanceConstraint *c = physics_constraint_resolve(pw, constraint);
+    if (!c || !c->is_slider || !isfinite(stiffness) || stiffness < 0.0f) return;
     if (stiffness > 1.0e6f) stiffness = 1.0e6f;
-    pw->constraints[constraint_id].slider_stiffness = stiffness;
+    c->slider_stiffness = stiffness;
 }
 
 static Quat rigid_orientation(const RigidBody *b) {
@@ -400,10 +532,12 @@ static Quat rigid_orientation(const RigidBody *b) {
 
 static void integrate_orientation(RigidBody *b, f32 dt) {
     if (!b || b->is_static) return;
-    Vec3 w = b->angular_velocity;
-    if (b->inertia_diag.e[0] == 0.0f) w.e[0] = 0.0f;
-    if (b->inertia_diag.e[1] == 0.0f) w.e[1] = 0.0f;
-    if (b->inertia_diag.e[2] == 0.0f) w.e[2] = 0.0f;
+    Quat q = rigid_orientation(b);
+    Vec3 local = quat_rotate_vec3(quat_inverse(q), b->angular_velocity);
+    if (b->inertia_diag.e[0] == 0.0f) local.e[0] = 0.0f;
+    if (b->inertia_diag.e[1] == 0.0f) local.e[1] = 0.0f;
+    if (b->inertia_diag.e[2] == 0.0f) local.e[2] = 0.0f;
+    Vec3 w = quat_rotate_vec3(q, local);
     f32 wlen = vec3_len(w);
     if (wlen <= 1e-8f) return;
     Quat dq = quat_from_axis_angle(w, wlen * dt);
@@ -426,6 +560,8 @@ static void clamp_hinge(RigidBody *a, RigidBody *b, const DistanceConstraint *c)
     if (limited > c->limit_max) limited = c->limit_max;
     if (limited < c->limit_min) limited = c->limit_min;
     if (limited == angle) return;
+    b->sleeping = false;
+    b->rest_frames = 0;
     b->orientation = quat_normalize(quat_mul(qa, quat_from_axis_angle(c->hinge_axis, limited)));
     Vec3 axis_w = quat_rotate_vec3(qa, c->hinge_axis);
     f32 along = vec3_dot(b->angular_velocity, axis_w);
@@ -434,40 +570,136 @@ static void clamp_hinge(RigidBody *a, RigidBody *b, const DistanceConstraint *c)
     }
 }
 
-void physics_constraint_remove(PhysicsWorld *pw, u32 constraint_id) {
-    if (!pw || constraint_id >= PHYSICS_MAX_CONSTRAINTS) return;
-    if (pw->constraints[constraint_id].active) {
-        pw->constraints[constraint_id].active = false;
-        pw->constraint_count--;
+static f32 cone_angular_weight(const RigidBody *b, Vec3 axis_w) {
+    if (b->inv_mass <= 0.0f) return 0.0f;
+    Quat q = rigid_orientation(b);
+    Vec3 n = quat_rotate_vec3(quat_inverse(q), axis_w);
+    f32 weight = 0.0f;
+    for (int i = 0; i < 3; i++) {
+        if (b->inertia_diag.e[i] > 0.0f)
+            weight += n.e[i] * n.e[i] / b->inertia_diag.e[i];
     }
+    return weight;
+}
+
+static void cone_clip_outward_velocity(RigidBody *a, RigidBody *b, Vec3 axis) {
+    f32 wa = cone_angular_weight(a, axis);
+    f32 wb = cone_angular_weight(b, axis);
+    f32 total = wa + wb;
+    if (total <= 1e-12f) return;
+    Vec3 rel = vec3_sub(b->angular_velocity, a->angular_velocity);
+    f32 speed = vec3_dot(rel, axis);
+    if (speed >= 0.0f) return;
+    if (wa > 0.0f)
+        a->angular_velocity = vec3_add(a->angular_velocity, vec3_scale(axis, speed * wa / total));
+    if (wb > 0.0f)
+        b->angular_velocity = vec3_sub(b->angular_velocity, vec3_scale(axis, speed * wb / total));
+}
+
+static void cone_apply_angular_delta(RigidBody *a, RigidBody *b, Vec3 axis, f32 angle) {
+    if (!(angle > 1e-8f)) return;
+    f32 wa = cone_angular_weight(a, axis);
+    f32 wb = cone_angular_weight(b, axis);
+    f32 total = wa + wb;
+    if (total <= 1e-12f) return;
+    cone_clip_outward_velocity(a, b, axis);
+    if (wa > 0.0f) {
+        Quat q = rigid_orientation(a);
+        Quat delta = quat_from_axis_angle(axis, -angle * wa / total);
+        a->orientation = quat_normalize(quat_mul(delta, q));
+        a->sleeping = false; a->rest_frames = 0;
+    }
+    if (wb > 0.0f) {
+        Quat q = rigid_orientation(b);
+        Quat delta = quat_from_axis_angle(axis, angle * wb / total);
+        b->orientation = quat_normalize(quat_mul(delta, q));
+        b->sleeping = false; b->rest_frames = 0;
+    }
+}
+
+static Vec3 cone_perpendicular(Vec3 axis) {
+    Vec3 helper = fabsf(axis.e[0]) < 0.9f ? vec3(1, 0, 0) : vec3(0, 1, 0);
+    return vec3_normalize(vec3_cross(axis, helper));
+}
+
+static Quat cone_relative_twist(const DistanceConstraint *c, Quat qa, Quat qb) {
+    Quat current = quat_mul(quat_inverse(qa), qb);
+    Quat reference = quat_mul(quat_inverse(c->reference_a), c->reference_b);
+    Quat rel = quat_mul(current, quat_inverse(reference));
+    if (rel.e[3] < 0.0f) {
+        for (int i = 0; i < 4; i++) rel.e[i] = -rel.e[i];
+    }
+    return rel;
+}
+
+static void clamp_cone_twist(RigidBody *a, RigidBody *b, const DistanceConstraint *c) {
+    const f32 pi = 3.14159265358979323846f;
+    Quat qa = rigid_orientation(a);
+    Quat qb = rigid_orientation(b);
+    Vec3 axis_a = quat_rotate_vec3(qa, c->hinge_axis);
+    Vec3 axis_b = quat_rotate_vec3(qb, c->cone_axis_b);
+    Vec3 cross = vec3_cross(axis_b, axis_a);
+    f32 sine = vec3_len(cross);
+    f32 angle = atan2f(sine, vec3_dot(axis_a, axis_b));
+    if (angle > c->swing_max) {
+        Vec3 axis = sine > 1e-8f ? vec3_scale(cross, 1.0f / sine) : cone_perpendicular(axis_a);
+        cone_apply_angular_delta(a, b, axis, angle - c->swing_max);
+    } else if (angle < c->swing_min) {
+        Vec3 axis = sine > 1e-8f ? vec3_scale(cross, -1.0f / sine) : cone_perpendicular(axis_a);
+        cone_apply_angular_delta(a, b, axis, c->swing_min - angle);
+    }
+
+    qa = rigid_orientation(a);
+    qb = rigid_orientation(b);
+    axis_a = quat_rotate_vec3(qa, c->hinge_axis);
+    Quat rel = cone_relative_twist(c, qa, qb);
+    Vec3 imag = vec3(rel.e[0], rel.e[1], rel.e[2]);
+    f32 twist = 2.0f * atan2f(vec3_dot(imag, c->hinge_axis), rel.e[3]);
+    if (twist > pi) twist -= 2.0f * pi;
+    if (twist < -pi) twist += 2.0f * pi;
+    if (twist > c->twist_max) {
+        cone_apply_angular_delta(a, b, vec3_scale(axis_a, -1.0f), twist - c->twist_max);
+    } else if (twist < c->twist_min) {
+        cone_apply_angular_delta(a, b, axis_a, c->twist_min - twist);
+    }
+}
+
+void physics_constraint_remove(PhysicsWorld *pw, PhysicsConstraintHandle constraint) {
+    DistanceConstraint *c = physics_constraint_resolve(pw, constraint);
+    if (!c) return;
+    RigidBody *a = physics_body_resolve(pw, c->body_a);
+    RigidBody *b = physics_body_resolve(pw, c->body_b);
+    if (a && a->inv_mass > 0.0f) {
+        a->sleeping = false;
+        a->rest_frames = 0;
+    }
+    if (b && b->inv_mass > 0.0f) {
+        b->sleeping = false;
+        b->rest_frames = 0;
+    }
+    u32 generation = physics_next_generation(c->generation);
+    memset(c, 0, sizeof(*c));
+    c->generation = generation;
+    c->retired = generation == 0u;
+    pw->constraint_count--;
 }
 
 u32 physics_constraint_count(const PhysicsWorld *pw) {
     return pw ? pw->constraint_count : 0u;
 }
 
-/* R435: Gauss-Seidel position projection with a small fixed iteration count.
- * The correction is split by inverse mass exactly like resolve_contact, so
- * static bodies (inv_mass 0) never move. This pass touches positions only;
- * the matching velocity-level pass is solve_distance_constraint_velocities
- * (R440), called once per step right after this one. */
+/* Gauss-Seidel projection with a small fixed iteration count. Linear correction
+ * is split by inverse mass; cone-twist angular correction uses effective inverse
+ * inertia. The translational velocity pass runs once after this pass. */
 static void solve_distance_constraints(PhysicsWorld *pw) {
     if (pw->constraint_count == 0) return;
     for (int iter = 0; iter < 4; iter++) {
         for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
             DistanceConstraint *c = &pw->constraints[ci];
             if (!c->active) continue;
-            /* Body slots outlive their occupants (R376/R377 park/revive
-             * tombstones): a parked body sits at (0,-1000,0) with inv_mass 0
-             * and would drag its partner into the void, so skip pairs that
-             * touch a tombstone. If a parked slot is later REUSED, the
-             * constraint binds to the new occupant — callers despawn bodies
-             * with physics_body_park and should remove their constraints
-             * first (matching the engine's "no destroy" slot semantics). */
-            if (c->body_a >= pw->count || c->body_b >= pw->count) continue;
-            RigidBody *a = &pw->bodies[c->body_a];
-            RigidBody *b = &pw->bodies[c->body_b];
-            if (physics_body_is_parked(a) || physics_body_is_parked(b)) continue;
+            RigidBody *a = physics_body_resolve(pw, c->body_a);
+            RigidBody *b = physics_body_resolve(pw, c->body_b);
+            if (!a || !b) continue;
             f32 inv_a = a->inv_mass;
             f32 inv_b = b->inv_mass;
             f32 inv_total = inv_a + inv_b;
@@ -485,13 +717,14 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                 f32 along = vec3_dot(delta, axis);
                 Vec3 perp = vec3_sub(delta, vec3_scale(axis, along));
                 Vec3 corr = vec3_scale(perp, 1.0f / inv_total);
-                if (inv_a > 0.0f) {
+                bool moved = vec3_dot(perp, perp) > 1e-16f;
+                if (inv_a > 0.0f && moved) {
                     a->position = vec3_add(a->position, vec3_scale(corr, inv_a));
-                    a->rest_frames = 0;
+                    a->sleeping = false; a->rest_frames = 0;
                 }
-                if (inv_b > 0.0f) {
+                if (inv_b > 0.0f && moved) {
                     b->position = vec3_sub(b->position, vec3_scale(corr, inv_b));
-                    b->rest_frames = 0;
+                    b->sleeping = false; b->rest_frames = 0;
                 }
                 if (!(c->limit_min == 0.0f && c->limit_max == 0.0f)) {
                     f32 target = along;
@@ -499,30 +732,35 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                     if (target > c->limit_max) target = c->limit_max;
                     f32 err = along - target;
                     Vec3 along_corr = vec3_scale(axis, err / inv_total);
-                    if (inv_a > 0.0f) a->position = vec3_add(a->position, vec3_scale(along_corr, inv_a));
-                    if (inv_b > 0.0f) b->position = vec3_sub(b->position, vec3_scale(along_corr, inv_b));
+                    moved = fabsf(err) > 1e-8f;
+                    if (inv_a > 0.0f && moved) {
+                        a->position = vec3_add(a->position, vec3_scale(along_corr, inv_a));
+                        a->sleeping = false; a->rest_frames = 0;
+                    }
+                    if (inv_b > 0.0f && moved) {
+                        b->position = vec3_sub(b->position, vec3_scale(along_corr, inv_b));
+                        b->sleeping = false; b->rest_frames = 0;
+                    }
                 }
                 continue;
             }
-            if (c->is_ball || c->is_hinge) {
-                /* R443: ball joint — pull the anchors to coincidence with a
-                 * full 3-axis vector correction (no axis normalization, so
-                 * coincident anchors are not a degenerate case). The
-                 * correction is split by inverse mass and applied to the
-                 * CENTROIDS: RigidBody has no orientation/angular velocity,
-                 * so an offset anchor creates no lever arm and no torque —
-                 * the entire correction is linear. */
+            if (c->is_ball || c->is_hinge || c->is_cone_twist) {
+                /* Pull anchors to coincidence with a full 3-axis correction.
+                 * The centroid correction is linear; hinge and cone-twist
+                 * angular limits are applied separately below. */
                 Vec3 err = vec3_sub(pb, pa);
                 Vec3 corr = vec3_scale(err, 1.0f / inv_total);
-                if (inv_a > 0.0f) {
+                bool moved = vec3_dot(err, err) > 1e-16f;
+                if (inv_a > 0.0f && moved) {
                     a->position = vec3_add(a->position, vec3_scale(corr, inv_a));
-                    a->rest_frames = 0;
+                    a->sleeping = false; a->rest_frames = 0;
                 }
-                if (inv_b > 0.0f) {
+                if (inv_b > 0.0f && moved) {
                     b->position = vec3_sub(b->position, vec3_scale(corr, inv_b));
-                    b->rest_frames = 0;
+                    b->sleeping = false; b->rest_frames = 0;
                 }
                 if (c->is_hinge) clamp_hinge(a, b, c);
+                if (c->is_cone_twist) clamp_cone_twist(a, b, c);
                 continue;
             }
             Vec3 d = vec3_sub(pb, pa);
@@ -532,14 +770,15 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
             f32 err = len - c->rest_length;
             Vec3 n = vec3_scale(d, 1.0f / len);
             f32 corr = err / inv_total;
-            if (inv_a > 0.0f) {
+            bool moved = fabsf(err) > 1e-8f;
+            if (inv_a > 0.0f && moved) {
                 a->position = vec3_add(a->position, vec3_scale(n, corr * inv_a));
-                a->rest_frames = 0; /* R432 pattern: we moved it, so the BVH
+                a->sleeping = false; a->rest_frames = 0; /* R432 pattern: we moved it, so the BVH
                                      * refit passes must not skip its AABB. */
             }
-            if (inv_b > 0.0f) {
+            if (inv_b > 0.0f && moved) {
                 b->position = vec3_sub(b->position, vec3_scale(n, corr * inv_b));
-                b->rest_frames = 0;
+                b->sleeping = false; b->rest_frames = 0;
             }
         }
     }
@@ -567,84 +806,88 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
  * axis etc.) are removed here; external forces re-enter on the next step's
  * integration, which is the standard sequential-impulse semantic.
  *
- * Only velocities change, so rest_frames is not touched (no BVH refit
- * concern). Same defensive skips as the position pass: parked tombstones,
- * out-of-range ids, both-static pairs, coincident bodies. */
+ * Nonzero corrections wake sleeping endpoints. Stable supported contacts may
+ * sleep after the unified end-of-step evaluation. */
+static void wake_if_sleeping(RigidBody *b) {
+    if (!b->sleeping) return;
+    b->sleeping = false;
+    b->rest_frames = 0;
+}
+
 static void solve_distance_constraint_velocities(PhysicsWorld *pw) {
     if (pw->constraint_count == 0) return;
     for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
         DistanceConstraint *c = &pw->constraints[ci];
         if (!c->active) continue;
-        if (c->body_a >= pw->count || c->body_b >= pw->count) continue;
-        RigidBody *a = &pw->bodies[c->body_a];
-        RigidBody *b = &pw->bodies[c->body_b];
-        if (physics_body_is_parked(a) || physics_body_is_parked(b)) continue;
+        RigidBody *a = physics_body_resolve(pw, c->body_a);
+        RigidBody *b = physics_body_resolve(pw, c->body_b);
+        if (!a || !b) continue;
         f32 inv_a = a->inv_mass;
         f32 inv_b = b->inv_mass;
         f32 inv_total = inv_a + inv_b;
-        if (inv_total <= 0.0f) continue; /* both static: nothing can move */
+        if (inv_total <= 0.0f) continue;
         if (c->is_slider) {
             Vec3 axis = quat_rotate_vec3(rigid_orientation(a), c->hinge_axis);
             Vec3 rel = vec3_sub(b->velocity, a->velocity);
             f32 along = vec3_dot(rel, axis);
             Vec3 perp = vec3_sub(rel, vec3_scale(axis, along));
             Vec3 j = vec3_scale(perp, 1.0f / inv_total);
+            if (inv_a > 0.0f && vec3_dot(j, j) > 1e-16f) wake_if_sleeping(a);
+            if (inv_b > 0.0f && vec3_dot(j, j) > 1e-16f) wake_if_sleeping(b);
             if (inv_a > 0.0f) a->velocity = vec3_add(a->velocity, vec3_scale(j, inv_a));
             if (inv_b > 0.0f) b->velocity = vec3_sub(b->velocity, vec3_scale(j, inv_b));
-            (void)along;
             continue;
         }
-        if (c->is_ball || c->is_hinge) {
-            /* R443: a ball joint pins two POINTS together, so it constrains
-             * all 3 translational axes — unlike the distance constraint,
-             * which only removes the relative velocity along its single axis
-             * and leaves swinging (tangential) motion alone. Here the FULL
-             * relative velocity vector rel = vb - va must vanish, split by
-             * inverse mass exactly like the axial impulse above:
-             *     va += rel * inv_a / inv_total;  vb -= rel * inv_b / inv_total
-             * gives vb - va = rel - rel = 0. No anchor positions are needed:
-             * with no angular velocity in the body model, an anchor's
-             * velocity equals its centroid's velocity. */
+        if (c->is_ball || c->is_hinge || c->is_cone_twist) {
             Vec3 rel = vec3_sub(b->velocity, a->velocity);
             Vec3 j = vec3_scale(rel, 1.0f / inv_total);
+            if (inv_a > 0.0f && vec3_dot(j, j) > 1e-16f) wake_if_sleeping(a);
+            if (inv_b > 0.0f && vec3_dot(j, j) > 1e-16f) wake_if_sleeping(b);
             if (inv_a > 0.0f) a->velocity = vec3_add(a->velocity, vec3_scale(j, inv_a));
             if (inv_b > 0.0f) b->velocity = vec3_sub(b->velocity, vec3_scale(j, inv_b));
             continue;
         }
         Vec3 d = vec3_sub(b->position, a->position);
         f32 len2 = vec3_dot(d, d);
-        if (len2 < 1e-12f) continue;     /* coincident: no defined axis */
+        if (len2 < 1e-12f) continue;
         Vec3 n = vec3_scale(d, 1.0f / sqrtf(len2));
         f32 rel = vec3_dot(vec3_sub(b->velocity, a->velocity), n);
         f32 j = -rel / inv_total;
+        if (inv_a > 0.0f && fabsf(j) > 1e-8f) wake_if_sleeping(a);
+        if (inv_b > 0.0f && fabsf(j) > 1e-8f) wake_if_sleeping(b);
         if (inv_a > 0.0f) a->velocity = vec3_sub(a->velocity, vec3_scale(n, j * inv_a));
         if (inv_b > 0.0f) b->velocity = vec3_add(b->velocity, vec3_scale(n, j * inv_b));
     }
 }
 
-void physics_body_apply_impulse(PhysicsWorld *pw, u32 body_id, Vec3 impulse) {
-    if (!pw || body_id >= pw->count) return;
-    RigidBody *b = &pw->bodies[body_id];
-    if (b->is_static || b->inv_mass <= 0.0f) return;
+void physics_body_wake(PhysicsWorld *pw, PhysicsBodyHandle body) {
+    RigidBody *b = physics_body_resolve(pw, body);
+    if (!b) return;
+    b->sleeping = false;
+    b->rest_frames = 0;
+}
+
+void physics_body_apply_impulse(PhysicsWorld *pw, PhysicsBodyHandle body, Vec3 impulse) {
+    if (!physics_vec3_finite(impulse)) return;
+    RigidBody *b = physics_body_resolve(pw, body);
+    if (!b || b->is_static || b->inv_mass <= 0.0f) return;
+    physics_body_wake(pw, body);
     b->velocity.e[0] += impulse.e[0] * b->inv_mass;
     b->velocity.e[1] += impulse.e[1] * b->inv_mass;
     b->velocity.e[2] += impulse.e[2] * b->inv_mass;
     pw->total_impulse_applied += vec3_len(impulse);
 }
 
-void physics_push_body(PhysicsWorld *pw, u32 body_id, Vec3 normal, f32 depth) {
-    /* R436: position-only shove for an immovable pusher (character capsule,
-     * inv_mass 0). Mirrors resolve_contact's "all separation on the movable
-     * side" split: the body moves by the full normal*depth. */
-    if (!pw || body_id >= pw->count) return;
-    RigidBody *b = &pw->bodies[body_id];
-    if (b->inv_mass <= 0.0f || physics_body_is_parked(b)) return;
+void physics_push_body(PhysicsWorld *pw, PhysicsBodyHandle body, Vec3 normal, f32 depth) {
+    if (!physics_vec3_finite(normal) || !isfinite(depth)) return;
+    RigidBody *b = physics_body_resolve(pw, body);
+    if (!b || b->inv_mass <= 0.0f) return;
     b->position.e[0] += normal.e[0] * depth;
     b->position.e[1] += normal.e[1] * depth;
     b->position.e[2] += normal.e[2] * depth;
     /* R432 contract: we moved it, so the BVH refit passes (which skip
      * rest_frames > 2) must not keep its stale AABB. */
-    b->rest_frames = 0;
+    b->sleeping = false; b->rest_frames = 0;
 }
 
 /* Approach speed (m/s, along the contact normal) below which a contact does
@@ -656,28 +899,27 @@ static void resolve_contact(RigidBody *a, RigidBody *b, Vec3 normal, f32 depth) 
     f32 inv_b = b->inv_mass;
     f32 total_inv_mass = inv_a + inv_b;
     if (total_inv_mass <= 0.0f) return;
+    Vec3 initial_rel = vec3_sub(a->velocity, b->velocity);
+    if (vec3_dot(initial_rel, initial_rel) <= 1e-12f &&
+        ((a->sleeping && b->is_static) || (b->sleeping && a->is_static) ||
+         (a->sleeping && b->sleeping))) return;
 
     /* Precompute reciprocal to replace 3 divisions with multiplications. */
     f32 inv_total = 1.0f / total_inv_mass;
 
     if (inv_a > 0.0f) {
+        wake_if_sleeping(a);
         f32 ratio = inv_a * inv_total;
         a->position.e[0] -= normal.e[0] * depth * ratio;
         a->position.e[1] -= normal.e[1] * depth * ratio;
         a->position.e[2] -= normal.e[2] * depth * ratio;
-        /* R432: the contact just shoved this body — clear its rest counter so
-         * the BVH refit passes (which skip rest_frames > 2) update its AABB at
-         * the new position. A resting body pushed below the 0.0025 rest
-         * threshold otherwise kept its stale BVH AABB indefinitely and
-         * broadphase missed it at the new spot. */
-        a->rest_frames = 0;
     }
     if (inv_b > 0.0f) {
+        wake_if_sleeping(b);
         f32 ratio = inv_b * inv_total;
         b->position.e[0] += normal.e[0] * depth * ratio;
         b->position.e[1] += normal.e[1] * depth * ratio;
         b->position.e[2] += normal.e[2] * depth * ratio;
-        b->rest_frames = 0; /* R432: see above */
     }
 
     Vec3 rel_vel = vec3_sub(a->velocity, b->velocity);
@@ -729,9 +971,30 @@ static void resolve_contact(RigidBody *a, RigidBody *b, Vec3 normal, f32 depth) 
  * bit-unchanged this step; that also makes the recomputed AABB bit-identical,
  * so the refit skip is exact rather than heuristic. Truly idle bodies still
  * reach rest: damping (0.98/frame) shrinks v*dt below the float ulp of the
- * position, at which point p stops changing. */
+ * position, at which point p stops changing. Supported contacts also require
+ * near-zero final speed; non-support contacts with pre-contact motion stay awake. */
 static bool vec3_moved(Vec3 a, Vec3 b) {
     return (a.e[0] != b.e[0]) || (a.e[1] != b.e[1]) || (a.e[2] != b.e[2]);
+}
+
+static void update_sleep_state(RigidBody *b, Vec3 old_position) {
+    f32 speed2 = vec3_dot(b->velocity, b->velocity);
+    f32 spin2 = vec3_dot(b->angular_velocity, b->angular_velocity);
+    bool supported = b->contact_active && vec3_dot(b->acceleration, b->contact_normal) > 1e-8f;
+    bool moving_contact = b->contact_active && !supported && b->contact_speed2 > 1e-8f;
+    f32 speed_limit = supported ? 1e-8f : 0.0025f;
+    if (!moving_contact && speed2 < speed_limit && spin2 < 0.0025f &&
+        !vec3_moved(b->position, old_position)) {
+        b->rest_frames++;
+        if (b->rest_frames >= 60u) {
+            b->sleeping = true;
+            b->velocity = vec3(0, 0, 0);
+            b->angular_velocity = vec3(0, 0, 0);
+        }
+    } else {
+        b->sleeping = false;
+        b->rest_frames = 0;
+    }
 }
 
 static f32 clampf01(f32 v) {
@@ -1051,6 +1314,13 @@ static void physics_collision_callback(u32 i, u32 j, void *ctx) {
     if (!physics_collide(a, b, &contact)) return;
     contact.body_a = i;
     contact.body_b = j;
+    a->contact_active = true;
+    b->contact_active = true;
+    Vec3 relative_velocity = vec3_sub(a->velocity, b->velocity);
+    a->contact_speed2 = vec3_dot(relative_velocity, relative_velocity);
+    b->contact_speed2 = a->contact_speed2;
+    a->contact_normal = contact.normal;
+    b->contact_normal = vec3_scale(contact.normal, -1.0f);
 
     Vec3 normal = contact.normal;
     f32 abs_depth = contact.depth;
@@ -1264,6 +1534,7 @@ static bool ccd_sweep(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta,
 static void integrate_body_ccd(PhysicsWorld *pw, u32 idx, f32 dt) {
     RigidBody *b = &pw->bodies[idx];
     Vec3 oldp = b->position;
+    b->step_start_position = oldp;
 
     b->velocity = vec3_add(b->velocity, vec3_scale(b->acceleration, dt));
     b->velocity = vec3_scale(b->velocity, 0.98f);
@@ -1279,11 +1550,6 @@ static void integrate_body_ccd(PhysicsWorld *pw, u32 idx, f32 dt) {
         if (vn < 0.0f) b->velocity = vec3_sub(b->velocity, vec3_scale(n, vn));
     }
     b->position = newp;
-
-    /* Rest = slow AND stationary: see vec3_moved above the narrowphase helpers. */
-    f32 spd2 = vec3_dot(b->velocity, b->velocity);
-    if (spd2 < 0.0025f && !vec3_moved(b->position, oldp)) b->rest_frames++;
-    else b->rest_frames = 0;
 }
 
 /* Build the BVH when it is dirty. physics_step calls this every frame, and
@@ -1305,16 +1571,16 @@ static void physics_ensure_bvh(const PhysicsWorld *pw) {
 }
 
 void physics_step(PhysicsWorld *pw, f32 dt) {
-    if (!pw) return;
+    if (!pw || !isfinite(dt)) return;
+    for (u32 i = 0; i < pw->count; i++) pw->bodies[i].contact_active = false;
     pw->collision_count = 0;
     if (!(dt > 1e-6f)) dt = 1e-6f;
     for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
         DistanceConstraint *c = &pw->constraints[ci];
         if (!c->active || !c->is_slider) continue;
-        if (c->body_a >= pw->count || c->body_b >= pw->count) continue;
-        RigidBody *a = &pw->bodies[c->body_a];
-        RigidBody *b = &pw->bodies[c->body_b];
-        if (physics_body_is_parked(a) || physics_body_is_parked(b) || b->inv_mass <= 0.0f) continue;
+        RigidBody *a = physics_body_resolve(pw, c->body_a);
+        RigidBody *b = physics_body_resolve(pw, c->body_b);
+        if (!a || !b || b->inv_mass <= 0.0f) continue;
         f32 torsion = c->slider_torsion;
         if (torsion < 0.0f) torsion = 0.0f;
         if (torsion > 1.0f) torsion = 1.0f;
@@ -1328,6 +1594,8 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         Vec3 axis = vlen > 1e-8f ? quat_rotate_vec3(qa, vec3_scale(imag, 1.0f / vlen)) : vec3(0, 1, 0);
         f32 target_w = -torsion * angle / dt;
         f32 along = vec3_dot(b->angular_velocity, axis);
+        if (fabsf(angle) <= 1e-8f && fabsf(along) <= 1e-8f) continue;
+        physics_body_wake(pw, c->body_b);
         if (c->slider_damping >= 1.0f) {
             b->angular_velocity = vec3_add(b->angular_velocity, vec3_scale(axis, target_w - along));
         } else {
@@ -1360,14 +1628,13 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
 #if SIMD_SSE2
     /* SIMD-optimized integration loop */
     const f32 damping = 0.98f;
-    const f32 rest_threshold = 0.0025f;
-    
+
     for (u32 i = 0; i < pw->count; i++) {
         RigidBody *b = &pw->bodies[i];
-        if (b->is_static) continue;
+        if (b->is_static || b->sleeping) continue;
         if (b->ccd) { integrate_body_ccd(pw, i, dt); continue; }
 
-        Vec3 oldp = b->position;
+        b->step_start_position = b->position;
 
         /* Velocity integration: v += a * dt */
         simd_vec3_add_scaled_sse2(b->velocity.e, b->velocity.e, b->acceleration.e, dt);
@@ -1379,18 +1646,14 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         simd_vec3_add_scaled_sse2(b->position.e, b->position.e, b->velocity.e, dt);
         integrate_orientation(b, dt);
 
-        /* Rest detection using SIMD dot product */
-        f32 spd2 = simd_vec3_dot_sse2(b->velocity.e, b->velocity.e);
-        if (spd2 < rest_threshold && !vec3_moved(b->position, oldp)) b->rest_frames++;
-        else b->rest_frames = 0;
     }
 #else
     for (u32 i = 0; i < pw->count; i++) {
         RigidBody *b = &pw->bodies[i];
-        if (b->is_static) continue;
+        if (b->is_static || b->sleeping) continue;
         if (b->ccd) { integrate_body_ccd(pw, i, dt); continue; }
 
-        Vec3 oldp = b->position;
+        b->step_start_position = b->position;
 
         b->velocity.e[0] += b->acceleration.e[0] * dt;
         b->velocity.e[1] += b->acceleration.e[1] * dt;
@@ -1406,9 +1669,6 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         b->position.e[2] += b->velocity.e[2] * dt;
         integrate_orientation(b, dt);
 
-        f32 spd2 = b->velocity.e[0]*b->velocity.e[0] + b->velocity.e[1]*b->velocity.e[1] + b->velocity.e[2]*b->velocity.e[2];
-        if (spd2 < 0.0025f && !vec3_moved(b->position, oldp)) b->rest_frames++;
-        else b->rest_frames = 0;
     }
 #endif
 
@@ -1444,19 +1704,23 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
 
     for (u32 i = 0; i < pw->count; i++) {
         RigidBody *b = &pw->bodies[i];
-        if (b->is_static) continue;
+        if (b->is_static || b->sleeping) continue;
         if (b->position.e[1] - b->half_extent.e[1] < -10.0f) {
             b->position.e[1] = -10.0f + b->half_extent.e[1];
             b->velocity.e[1] = -b->velocity.e[1] * b->restitution;
             pw->respawn_count++;
         }
     }
+    for (u32 i = 0; i < pw->count; i++) {
+        RigidBody *b = &pw->bodies[i];
+        if (!b->is_static && !b->sleeping) update_sleep_state(b, b->step_start_position);
+    }
     for (u32 s = 0; s < pw->post_step_count; s++) {
         pw->post_step_fn[s](pw, pw->post_step_user[s]);
     }
 }
 
-bool physics_raycast(const PhysicsWorld *pw, Vec3 origin, Vec3 dir, f32 max_dist, u32 *out_body, f32 *out_t) {
+bool physics_raycast(const PhysicsWorld *pw, Vec3 origin, Vec3 dir, f32 max_dist, PhysicsBodyHandle *out_body, f32 *out_t) {
     if (!pw) return false;
     /* Reject non-finite queries (NaN/Inf): comparisons against NaN pass every
      * slab test and report a phantom hit at t=0. Same NaN-reject policy as
@@ -1467,7 +1731,7 @@ bool physics_raycast(const PhysicsWorld *pw, Vec3 origin, Vec3 dir, f32 max_dist
     physics_ensure_bvh(pw); /* first query may precede the first step */
     BVHRayHit hit;
     if (bvh_raycast(&pw->bvh, origin, dir, max_dist, &hit)) {
-        if (out_body) *out_body = hit.object_index;
+        if (out_body) *out_body = physics_body_handle_from_slot(pw, hit.object_index);
         if (out_t) *out_t = hit.t;
         return true;
     }

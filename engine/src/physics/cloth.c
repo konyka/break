@@ -11,11 +11,15 @@ static u32 cloth_free_constraints(const PhysicsWorld *pw) {
     return free_slots;
 }
 
+static void cloth_rollback(Cloth *cloth, PhysicsWorld *pw, u32 created) {
+    for (u32 i = 0; i < created; i++) physics_body_park(pw, cloth->nodes[i]);
+    cloth->width = 0;
+}
+
 bool cloth_create(Cloth *cloth, PhysicsWorld *pw, Vec3 origin, f32 spacing,
                   u32 width, u32 height, f32 node_mass) {
-    if (!cloth || !pw || width < 2u || height < 2u || width > CLOTH_MAX_SIDE || height > CLOTH_MAX_SIDE) {
+    if (!cloth || !pw || width < 2u || height < 2u || width > CLOTH_MAX_SIDE || height > CLOTH_MAX_SIDE)
         return false;
-    }
     if (!(spacing > 0.0f) || !(node_mass > 0.0f)) return false;
     if (pw->post_step_count >= PHYSICS_MAX_POST_STEPS) return false;
     u32 nodes = width * height;
@@ -24,58 +28,47 @@ bool cloth_create(Cloth *cloth, PhysicsWorld *pw, Vec3 origin, f32 spacing,
     u32 links = structural + shear;
     if (cloth_free_constraints(pw) < links) return false;
     if (pw->count + nodes > pw->capacity) return false;
-    u32 before = pw->count;
+    u32 created = 0;
     for (u32 y = 0; y < height; y++) {
         for (u32 x = 0; x < width; x++) {
             Vec3 pos = vec3(origin.e[0] + (f32)x * spacing,
                             origin.e[1] - (f32)y * spacing,
                             origin.e[2]);
             bool pinned = y == 0u;
-            u32 id = physics_body_create_sphere(pw, pos, spacing * 0.2f,
-                                               pinned ? 0.0f : node_mass, pinned, 0);
-            if (id == UINT32_MAX) {
-                for (u32 k = before; k < pw->count; k++) {
-                    if (k != 0u) physics_body_park(pw, k);
-                }
+            PhysicsBodyHandle id = physics_body_create_sphere(pw, pos, spacing * 0.2f,
+                                                               pinned ? 0.0f : node_mass, pinned, 0);
+            if (!physics_body_handle_is_valid(id)) {
+                cloth_rollback(cloth, pw, created);
                 return false;
             }
-            cloth->nodes[y * width + x] = id;
+            cloth->nodes[created++] = id;
         }
     }
     for (u32 y = 0; y < height; y++) {
         for (u32 x = 0; x < width; x++) {
-            u32 id = cloth->nodes[y * width + x];
+            PhysicsBodyHandle id = cloth->nodes[y * width + x];
             if (x + 1u < width) {
-                u32 right = cloth->nodes[y * width + x + 1u];
-                if (physics_constraint_add_distance(pw, id, right, spacing) == UINT32_MAX) {
-                    for (u32 k = before; k < pw->count; k++) {
-                        if (k != 0u) physics_body_park(pw, k);
-                    }
-                    cloth->width = 0;
+                PhysicsBodyHandle right = cloth->nodes[y * width + x + 1u];
+                if (!physics_constraint_handle_is_valid(physics_constraint_add_distance(pw, id, right, spacing))) {
+                    cloth_rollback(cloth, pw, created);
                     return false;
                 }
             }
             if (y + 1u < height) {
-                u32 below = cloth->nodes[(y + 1u) * width + x];
-                if (physics_constraint_add_distance(pw, id, below, spacing) == UINT32_MAX) {
-                    for (u32 k = before; k < pw->count; k++) {
-                        if (k != 0u) physics_body_park(pw, k);
-                    }
-                    cloth->width = 0;
+                PhysicsBodyHandle below = cloth->nodes[(y + 1u) * width + x];
+                if (!physics_constraint_handle_is_valid(physics_constraint_add_distance(pw, id, below, spacing))) {
+                    cloth_rollback(cloth, pw, created);
                     return false;
                 }
             }
             if (x + 1u < width && y + 1u < height) {
                 f32 diag = spacing * 1.41421356f;
-                u32 down_right = cloth->nodes[(y + 1u) * width + x + 1u];
-                u32 down_left = cloth->nodes[(y + 1u) * width + x];
-                u32 right = cloth->nodes[y * width + x + 1u];
-                if (physics_constraint_add_distance(pw, id, down_right, diag) == UINT32_MAX ||
-                    physics_constraint_add_distance(pw, right, down_left, diag) == UINT32_MAX) {
-                    for (u32 k = before; k < pw->count; k++) {
-                        if (k != 0u) physics_body_park(pw, k);
-                    }
-                    cloth->width = 0;
+                PhysicsBodyHandle down_right = cloth->nodes[(y + 1u) * width + x + 1u];
+                PhysicsBodyHandle down_left = cloth->nodes[(y + 1u) * width + x];
+                PhysicsBodyHandle right = cloth->nodes[y * width + x + 1u];
+                if (!physics_constraint_handle_is_valid(physics_constraint_add_distance(pw, id, down_right, diag)) ||
+                    !physics_constraint_handle_is_valid(physics_constraint_add_distance(pw, right, down_left, diag))) {
+                    cloth_rollback(cloth, pw, created);
                     return false;
                 }
             }
@@ -85,10 +78,7 @@ bool cloth_create(Cloth *cloth, PhysicsWorld *pw, Vec3 origin, f32 spacing,
     cloth->height = height;
     cloth->spacing = spacing;
     if (!physics_add_post_step(pw, cloth_post_step, cloth)) {
-        for (u32 k = before; k < pw->count; k++) {
-            if (k != 0u) physics_body_park(pw, k);
-        }
-        cloth->width = 0;
+        cloth_rollback(cloth, pw, created);
         return false;
     }
     return true;
@@ -98,11 +88,12 @@ static void cloth_post_step(PhysicsWorld *pw, void *user) {
     cloth_collide((Cloth *)user, pw);
 }
 
-static bool cloth_pair_linked(const PhysicsWorld *pw, u32 a, u32 b) {
+static bool cloth_pair_linked(const PhysicsWorld *pw, PhysicsBodyHandle a, PhysicsBodyHandle b) {
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
         const DistanceConstraint *c = &pw->constraints[i];
         if (!c->active) continue;
-        if ((c->body_a == a && c->body_b == b) || (c->body_a == b && c->body_b == a)) return true;
+        if ((physics_body_handle_equal(c->body_a, a) && physics_body_handle_equal(c->body_b, b)) ||
+            (physics_body_handle_equal(c->body_a, b) && physics_body_handle_equal(c->body_b, a))) return true;
     }
     return false;
 }
@@ -114,14 +105,12 @@ void cloth_collide(Cloth *cloth, PhysicsWorld *pw) {
     u32 n = cloth->width * cloth->height;
     for (u32 i = 0; i < n; i++) {
         for (u32 j = i + 1u; j < n; j++) {
-            u32 a = cloth->nodes[i];
-            u32 b = cloth->nodes[j];
-            if (a >= pw->count || b >= pw->count) continue;
+            PhysicsBodyHandle a = cloth->nodes[i];
+            PhysicsBodyHandle b = cloth->nodes[j];
             if (cloth_pair_linked(pw, a, b)) continue;
-            RigidBody *ba = &pw->bodies[a];
-            RigidBody *bb = &pw->bodies[b];
-            if (physics_body_is_parked(ba) || physics_body_is_parked(bb)) continue;
-            if (ba->is_static && bb->is_static) continue;
+            RigidBody *ba = physics_body_resolve(pw, a);
+            RigidBody *bb = physics_body_resolve(pw, b);
+            if (!ba || !bb || (ba->is_static && bb->is_static)) continue;
             Vec3 delta = vec3_sub(bb->position, ba->position);
             f32 dist = sqrtf(vec3_len_sq(delta));
             if (dist >= thickness) continue;

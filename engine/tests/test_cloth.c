@@ -12,8 +12,8 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     memset(&cloth, 0, sizeof(cloth));
     ASSERT_TRUE(cloth_create(&cloth, pw, vec3(0, 3, 0), 0.5f, 3, 3, 0.2f));
     ASSERT_EQ(cloth.width, 3u);
-    ASSERT_TRUE(pw->bodies[cloth.nodes[0]].is_static);
-    ASSERT_FALSE(pw->bodies[cloth.nodes[8]].is_static);
+    ASSERT_TRUE(pw->bodies[cloth.nodes[0].index].is_static);
+    ASSERT_FALSE(pw->bodies[cloth.nodes[8].index].is_static);
     ASSERT_EQ(physics_constraint_count(pw), 20u);
     bool saw_diag = false;
     f32 diag = 0.5f * 1.41421356f;
@@ -24,87 +24,87 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     }
     ASSERT_TRUE(saw_diag);
 
-    u32 corner = cloth.nodes[8];
-    u32 above = cloth.nodes[5];
-    pw->bodies[corner].position.e[1] -= 1.0f;
-    f32 stretched = pw->bodies[above].position.e[1] - pw->bodies[corner].position.e[1];
+    PhysicsBodyHandle corner = cloth.nodes[8];
+    PhysicsBodyHandle above = cloth.nodes[5];
+    pw->bodies[corner.index].position.e[1] -= 1.0f;
+    f32 stretched = pw->bodies[above.index].position.e[1] - pw->bodies[corner.index].position.e[1];
     if (stretched < 0) stretched = -stretched;
     for (int i = 0; i < 12; i++) physics_step(pw, 0.016f);
-    f32 after = pw->bodies[above].position.e[1] - pw->bodies[corner].position.e[1];
+    f32 after = pw->bodies[above.index].position.e[1] - pw->bodies[corner.index].position.e[1];
     if (after < 0) after = -after;
     ASSERT_TRUE(after < stretched);
 
-    u32 left = cloth.nodes[3];
-    u32 right = cloth.nodes[5];
-    pw->bodies[left].position = vec3(0, 1, 0);
-    pw->bodies[right].position = vec3(0, 1, 0);
-    pw->bodies[left].velocity = vec3(0, 0, 0);
-    pw->bodies[right].velocity = vec3(0, 0, 0);
+    PhysicsBodyHandle left = cloth.nodes[3];
+    PhysicsBodyHandle right = cloth.nodes[5];
+    pw->bodies[left.index].position = vec3(0, 1, 0);
+    pw->bodies[right.index].position = vec3(0, 1, 0);
+    pw->bodies[left.index].velocity = vec3(0, 0, 0);
+    pw->bodies[right.index].velocity = vec3(0, 0, 0);
     physics_step(pw, 0.016f);
-    f32 dx = pw->bodies[left].position.e[0] - pw->bodies[right].position.e[0];
-    f32 dy = pw->bodies[left].position.e[1] - pw->bodies[right].position.e[1];
-    f32 dz = pw->bodies[left].position.e[2] - pw->bodies[right].position.e[2];
+    f32 dx = pw->bodies[left.index].position.e[0] - pw->bodies[right.index].position.e[0];
+    f32 dy = pw->bodies[left.index].position.e[1] - pw->bodies[right.index].position.e[1];
+    f32 dz = pw->bodies[left.index].position.e[2] - pw->bodies[right.index].position.e[2];
     f32 apart = sqrtf(dx * dx + dy * dy + dz * dz);
     ASSERT_TRUE(apart > 0.05f);
 
     for (u32 i = 0; i < 9u; i++) {
-        u32 id = cloth.nodes[i];
-        if (id == left || id == right) continue;
-        pw->bodies[id].position = vec3(0.0f, 40.0f + (f32)i, 0.0f);
+        PhysicsBodyHandle id = cloth.nodes[i];
+        if (physics_body_handle_equal(id, left) || physics_body_handle_equal(id, right)) continue;
+        pw->bodies[id.index].position = vec3(0.0f, 40.0f + (f32)i, 0.0f);
     }
-    pw->bodies[left].radius = 0.0f;
-    pw->bodies[right].radius = 0.0f;
-    pw->bodies[left].half_extent = vec3(0, 0, 0);
-    pw->bodies[right].half_extent = vec3(0, 0, 0);
-    pw->bodies[left].position = vec3(0, 1, 0);
-    pw->bodies[right].position = vec3(0, 1, 0);
+    pw->bodies[left.index].radius = 0.0f;
+    pw->bodies[right.index].radius = 0.0f;
+    pw->bodies[left.index].half_extent = vec3(0, 0, 0);
+    pw->bodies[right.index].half_extent = vec3(0, 0, 0);
+    pw->bodies[left.index].position = vec3(0, 1, 0);
+    pw->bodies[right.index].position = vec3(0, 1, 0);
     cloth_collide(&cloth, pw);
-    dx = pw->bodies[left].position.e[0] - pw->bodies[right].position.e[0];
-    dy = pw->bodies[left].position.e[1] - pw->bodies[right].position.e[1];
-    dz = pw->bodies[left].position.e[2] - pw->bodies[right].position.e[2];
+    dx = pw->bodies[left.index].position.e[0] - pw->bodies[right.index].position.e[0];
+    dy = pw->bodies[left.index].position.e[1] - pw->bodies[right.index].position.e[1];
+    dz = pw->bodies[left.index].position.e[2] - pw->bodies[right.index].position.e[2];
     apart = sqrtf(dx * dx + dy * dy + dz * dz);
     ASSERT_TRUE(apart > 0.15f);
 
-    u32 mid = cloth.nodes[4];
+    PhysicsBodyHandle mid = cloth.nodes[4];
     for (u32 i = 0; i < 9u; i++) {
-        u32 id = cloth.nodes[i];
-        if (id == left || id == mid) continue;
-        pw->bodies[id].position = vec3(0.0f, 40.0f + (f32)i, 0.0f);
+        PhysicsBodyHandle id = cloth.nodes[i];
+        if (physics_body_handle_equal(id, left) || physics_body_handle_equal(id, mid)) continue;
+        pw->bodies[id.index].position = vec3(0.0f, 40.0f + (f32)i, 0.0f);
     }
-    pw->bodies[left].position = vec3(2, 1, 0);
-    pw->bodies[mid].position = vec3(2, 1, 0);
+    pw->bodies[left.index].position = vec3(2, 1, 0);
+    pw->bodies[mid.index].position = vec3(2, 1, 0);
     cloth_collide(&cloth, pw);
-    dx = pw->bodies[left].position.e[0] - pw->bodies[mid].position.e[0];
-    dy = pw->bodies[left].position.e[1] - pw->bodies[mid].position.e[1];
-    dz = pw->bodies[left].position.e[2] - pw->bodies[mid].position.e[2];
+    dx = pw->bodies[left.index].position.e[0] - pw->bodies[mid.index].position.e[0];
+    dy = pw->bodies[left.index].position.e[1] - pw->bodies[mid.index].position.e[1];
+    dz = pw->bodies[left.index].position.e[2] - pw->bodies[mid.index].position.e[2];
     apart = sqrtf(dx * dx + dy * dy + dz * dz);
     ASSERT_TRUE(apart < 0.02f);
 
-    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) physics_constraint_remove(pw, i);
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) physics_constraint_remove(pw, (PhysicsConstraintHandle){i, pw->constraints[i].generation});
     for (u32 i = 0; i < 9u; i++) {
-        u32 id = cloth.nodes[i];
-        pw->bodies[id].acceleration = vec3(0, 0, 0);
-        pw->bodies[id].velocity = vec3(0, 0, 0);
-        if (id == left || id == right) continue;
-        pw->bodies[id].position = vec3(0.0f, 40.0f + (f32)i, 0.0f);
+        PhysicsBodyHandle id = cloth.nodes[i];
+        pw->bodies[id.index].acceleration = vec3(0, 0, 0);
+        pw->bodies[id.index].velocity = vec3(0, 0, 0);
+        if (physics_body_handle_equal(id, left) || physics_body_handle_equal(id, right)) continue;
+        pw->bodies[id.index].position = vec3(0.0f, 40.0f + (f32)i, 0.0f);
     }
-    pw->bodies[left].radius = 0.0f;
-    pw->bodies[right].radius = 0.0f;
-    pw->bodies[left].position = vec3(0, 1, 0);
-    pw->bodies[right].position = vec3(0, 1, 0);
+    pw->bodies[left.index].radius = 0.0f;
+    pw->bodies[right.index].radius = 0.0f;
+    pw->bodies[left.index].position = vec3(0, 1, 0);
+    pw->bodies[right.index].position = vec3(0, 1, 0);
     physics_step(pw, 0.016f);
-    dx = pw->bodies[left].position.e[0] - pw->bodies[right].position.e[0];
-    dy = pw->bodies[left].position.e[1] - pw->bodies[right].position.e[1];
-    dz = pw->bodies[left].position.e[2] - pw->bodies[right].position.e[2];
+    dx = pw->bodies[left.index].position.e[0] - pw->bodies[right.index].position.e[0];
+    dy = pw->bodies[left.index].position.e[1] - pw->bodies[right.index].position.e[1];
+    dz = pw->bodies[left.index].position.e[2] - pw->bodies[right.index].position.e[2];
     apart = sqrtf(dx * dx + dy * dy + dz * dz);
     ASSERT_TRUE(apart > 0.15f);
     physics_world_destroy(pw);
 
     PhysicsWorld *full = physics_world_create(32);
-    u32 a = physics_body_create(full, vec3(0, 0, 0), vec3(0.1f, 0.1f, 0.1f), 1, false, 0);
-    u32 b = physics_body_create(full, vec3(1, 0, 0), vec3(0.1f, 0.1f, 0.1f), 1, false, 0);
+    PhysicsBodyHandle a = physics_body_create(full, vec3(0, 0, 0), vec3(0.1f, 0.1f, 0.1f), 1, false, 0);
+    PhysicsBodyHandle b = physics_body_create(full, vec3(1, 0, 0), vec3(0.1f, 0.1f, 0.1f), 1, false, 0);
     for (u32 i = 0; i < 64; i++) {
-        ASSERT_TRUE(physics_constraint_add_distance(full, a, b, 1.0f) != UINT32_MAX);
+        ASSERT_TRUE(physics_constraint_handle_is_valid(physics_constraint_add_distance(full, a, b, 1.0f)));
     }
     u32 count = full->count;
     Cloth refused;
@@ -144,23 +144,24 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     memset(&big, 0, sizeof(big));
     ASSERT_TRUE(cloth_create(&big, fifth, vec3(0, 3, 0), 0.5f, 3u, 3u, 0.2f));
     ASSERT_EQ(fifth->post_step_count, 5u);
-    u32 late_left = big.nodes[3];
-    u32 late_right = big.nodes[5];
-    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) physics_constraint_remove(fifth, i);
+    PhysicsBodyHandle late_left = big.nodes[3];
+    PhysicsBodyHandle late_right = big.nodes[5];
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++)
+        physics_constraint_remove(fifth, (PhysicsConstraintHandle){i, fifth->constraints[i].generation});
     for (u32 i = 0; i < fifth->count; i++) {
         fifth->bodies[i].acceleration = vec3(0, 0, 0);
         fifth->bodies[i].velocity = vec3(0, 0, 0);
-        if (i == late_left || i == late_right) continue;
+        if (i == late_left.index || i == late_right.index) continue;
         fifth->bodies[i].position = vec3(0.0f, 30.0f + (f32)i, 0.0f);
     }
-    fifth->bodies[late_left].radius = 0.0f;
-    fifth->bodies[late_right].radius = 0.0f;
-    fifth->bodies[late_left].position = vec3(0, 1, 0);
-    fifth->bodies[late_right].position = vec3(0, 1, 0);
+    fifth->bodies[late_left.index].radius = 0.0f;
+    fifth->bodies[late_right.index].radius = 0.0f;
+    fifth->bodies[late_left.index].position = vec3(0, 1, 0);
+    fifth->bodies[late_right.index].position = vec3(0, 1, 0);
     physics_step(fifth, 0.016f);
-    dx = fifth->bodies[late_left].position.e[0] - fifth->bodies[late_right].position.e[0];
-    dy = fifth->bodies[late_left].position.e[1] - fifth->bodies[late_right].position.e[1];
-    dz = fifth->bodies[late_left].position.e[2] - fifth->bodies[late_right].position.e[2];
+    dx = fifth->bodies[late_left.index].position.e[0] - fifth->bodies[late_right.index].position.e[0];
+    dy = fifth->bodies[late_left.index].position.e[1] - fifth->bodies[late_right.index].position.e[1];
+    dz = fifth->bodies[late_left.index].position.e[2] - fifth->bodies[late_right.index].position.e[2];
     apart = sqrtf(dx * dx + dy * dy + dz * dz);
     ASSERT_TRUE(apart > 0.15f);
     physics_world_destroy(fifth);

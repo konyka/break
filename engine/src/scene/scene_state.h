@@ -29,6 +29,7 @@ typedef struct {
     PhysicsWorld  *physics;
     u32            frame_count;
     const bool    *body_live; /* SCENE_STATE_BODY_LIVE_MAX entries */
+    PhysicsBodyHandle *body_restored; /* output: authoritative restored handles */
     f32           *water_y;
     bool          *water_enabled;
     bool           water_pipeline_valid;
@@ -36,3 +37,5 @@ typedef struct {
 
 bool scene_state_save(const char *path, const SceneStateCtx *ctx);
 bool scene_state_load(const char *path, SceneStateCtx *ctx);
+bool scene_state_commit_body_handle(PhysicsBodyHandle *owner, PhysicsBodyHandle before,
+                                    PhysicsBodyHandle restored);
