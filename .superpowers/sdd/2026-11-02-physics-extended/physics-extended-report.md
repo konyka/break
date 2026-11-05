@@ -192,3 +192,70 @@ CTest 选择：
 - 轮子仍为射线接触实体，不是独立刚体；不含高级轮胎、轮体侧壁或转动惯量模型，sweep 精度沿用现有 AABB 查询。
 - 布娃娃最多 32 骨，假定可分解、非剪切 TRS 绑定；没有自动人体骨生成或专用自碰撞过滤组。
 - 证据范围为 Linux/GCC focused 非图形测试及真实 `engine_demo` 构建；未运行全仓测试，未做 Windows、真机 GPU 或交互视觉验收。
+
+---
+
+# P5 fix round 3 完整修复报告
+
+- 日期：2026-11-05
+- 基线：`1ae66ede`
+- 关键实现提交：`5fbe0ab1`（`physics: preserve restored identities and rollback slots`）
+- 范围：`review-fix2-findings.md` 的 scene/main 持久恢复、Lua 跨 world 发号与 epoch 耗尽、ragdoll retired slot 事务回归；保留 round 1/2 已解决项，未 push。
+
+## scene/main 权威恢复句柄与 live revive
+
+文件：`engine/src/scene/scene_state.[ch]`、`engine/src/main.c`、`engine/src/physics/physics.c`、`engine/tests/test_scene_state.c`、`engine/tests/test_physics_identity.c`。
+
+- RED：live revive 测试为 identity `4 passed, 1 failed`，匹配 generation 的 live body 被再次 revive；scene 为 `10 passed, 2 failed`，live 与 parked 两条恢复链都使持久 `CRigidBody.physics_id` 无法 resolve，live transform 同步停在零点。
+- `physics_body_revive` 现在只接受当前 parked tombstone；live 调用返回 invalid 且 body 逐字节不变。
+- scene 对 live body 直接恢复 mass/static/pose 等状态，不推进 generation；parked body 才 revive，并检查返回句柄，失败走既有完整备份恢复。
+- `SceneStateCtx.body_restored` 在成功 load 后输出每个 slot 的权威恢复句柄。main 保存恢复前映射，并通过 `scene_state_commit_body_handle` 只更新句柄仍精确匹配恢复前身份、slot 一致且新句柄有效的所有者；同 slot 的 stale 所有者不得采用。
+- 无 companion 的 parked fallback 也要求 `CRigidBody` generation 等于当前 tombstone，成功 revive 后才提交返回的新 handle，不再采用任意 stale generation。
+- 测试覆盖 scene→持久 `CRigidBody`→`physics_body_resolve`→transform 的消费者链，而非只从当前 slot 临时构造 id；live/parked 均覆盖匹配所有者和 stale 拒绝。
+- GREEN：identity `5/5`、scene `12/12`。
+
+## Lua 跨 world 发号与 map epoch 耗尽
+
+文件：`engine/src/script/script_lua.[ch]`、`engine/tests/test_script_lua.c`。
+
+- RED：`30 passed, 2 failed`。换 world 后第一次 spawn 重发 id 1，旧变量随即修改新 occupant；epoch 连续跨越 max/0/1 后，旧 raw id 也重新被 adoption。
+- 新增持久 `body_public_cursor`，只在 body 创建和映射提交都成功后推进。分配时先满足当前 slot serial，再保证候选 public id 严格大于历史最大 id；不同 world 和不同 capacity 都不重新发行旧数字。
+- 初始 world 的 1、2、3 ABI 保持不变；测试手算并验证 4→4 capacity 换 world 后 id 5、再换到 capacity 2 后 id 7，旧 id 1 均不能操作新 occupant，新 id 可正常使用。
+- `body_map_epoch == UINT32_MAX` 是永久终止状态：释放映射、拒绝 body API/spawn，后续 rebind 不再自增，不能回到 0/1。终止后 spawn 的完整 `PhysicsWorld` 与 body 数组快照不变。
+- round 2 的 serial/public id 创建前预检与退休策略保留；历史游标也在 plan 阶段检查，不在创建后新增失败路径。
+- GREEN：Lua `32/32`。
+
+## ragdoll retired slot 事务预测
+
+文件：`engine/src/physics/ragdoll.c`、`engine/tests/test_ragdoll.c`。
+
+- RED：注入首个 body tombstone 和首个空闲 constraint 均为 retired 后，逐阶段失败产生 `9 passed, 4 failed`；第二/第三 body 与两个 constraint 阶段出现完整世界/body 数组快照差异，实际创建 slot 未被回滚。
+- body 预测从“首个 parked”改为“首个 parked 且非 retired”；constraint 预测从“首个 inactive”改为“首个 inactive 且非 retired”。available body/free constraint 预检使用同一规则，与真实 create 一致。
+- 测试同时比较完整 `PhysicsWorld`（含内嵌 constraints/count/bvh_dirty）、整个 body 数组、目标 `Ragdoll` 和 IK 状态。
+- GREEN：ragdoll `10/10`，普通 tombstone 回滚与共享 IK 回归继续通过。
+
+## 本轮生产变异
+
+变异均临时修改生产代码、实际构建运行并恢复，未提交变异体。
+
+- scene 提交忽略恢复前身份匹配：scene `10 passed, 2 failed`，live/parked 的 stale 所有者均被错误接受。
+- Lua 游标比较从 `id <= cursor` 改为 `<`：Lua `31 passed, 1 failed`，换 world 后旧 id 再次命中新 occupant。
+- epoch 恢复直接 `u32` 自增：Lua `31 passed, 1 failed`，回绕后 raw id 被重新采用。
+- ragdoll 两个 next-slot 预测移除 retired 判定：ragdoll `9 passed, 4 failed`，四类世界快照差异复现。
+
+恢复后执行下述三 lane 与 `engine_demo` 验证。
+
+## 三 lane、构建与格式验证
+
+所有构建和 CTest 均使用 `-j3`，focused 目标与 round 2 相同并继续包含 `test_scene_state`。
+
+- `build-physics-normal`：focused `15/15`，0 失败；`engine_demo` 编译链接成功。
+- `build-physics-asan`（ASan+UBSan）：focused `15/15`，0 失败，无 ASan/LSan/UBSan 报告；`engine_demo` 编译链接成功。
+- `build-physics-tsan`：focused `15/15`，0 失败，无 ThreadSanitizer 报告；`engine_demo` 编译链接成功。
+- `git diff --check` 无错误；最终提交和工作树状态见交付回报。
+
+## 限制
+
+- 轮子仍为射线接触实体，不是独立刚体；不含高级轮胎、轮体侧壁或转动惯量模型，sweep 精度沿用现有 AABB 查询。
+- 布娃娃最多 32 骨，假定可分解、非剪切 TRS 绑定；没有自动人体骨生成或专用自碰撞过滤组。
+- 证据范围为 Linux/GCC focused 非图形测试及真实 `engine_demo` 构建；scene 测试使用生产恢复提交函数驱动持久消费者链，不构成交互图形验收。未运行全仓测试，未做 Windows、真机 GPU 或交互视觉验收。

@@ -301,3 +301,10 @@ Expected: 全部通过，无 ThreadSanitizer 报告。若宿主机 TSan 运行�
 - Lua 同一世界重绑保留 serial/generation/epoch/retired 映射；不同世界或失败重绑使旧 raw id 失效，超出 `u32` 的输入 serial 在截断前拒绝，耗尽后不再回绕。
 - Lua spawn 在 body 创建前完成 slot、映射、serial 和 public id 预检，成功后只提交映射；映射不可用及两类耗尽均以完整 `PhysicsWorld` 和 body 数组快照验证原子性。
 - `test_physics_identity` 为 `4/4`、`test_scene_state` 为 `11/11`、`test_script_lua` 为 `30/30`；normal、ASan+UBSan、TSan focused 均 `15/15`，三棵树分别构建 `engine_demo` 成功。RED、四项生产变异和限制详见上述报告。
+
+## Fix round 3 执行补充
+
+- `physics_body_revive` 只接受当前 parked tombstone，live 调用原子拒绝。scene live 恢复不再推进 generation；parked 恢复通过 `body_restored` 输出权威新句柄，main 用恢复前映射逐个提交匹配的 `CRigidBody`，stale 所有者不得采用。
+- Lua 增加跨 rebind 持久的 `body_public_cursor`，public id 在不同 world/capacity 下仍严格单调且不复用；初始 1、2、3 ABI 保持不变。map epoch 到 `UINT32_MAX` 后永久退休，后续 rebind 不回绕。
+- ragdoll 的 body/constraint 事务预测与容量预检均排除 retired slot，与真实 create 一致；首个 tombstone/空约束槽退休时，各创建阶段失败仍恢复完整世界。
+- `test_physics_identity` 为 `5/5`、`test_scene_state` 为 `12/12`、`test_script_lua` 为 `32/32`、`test_ragdoll` 为 `10/10`；normal、ASan+UBSan、TSan focused 均 `15/15`，三棵树分别构建 `engine_demo` 成功。逐项 RED/GREEN、四项生产变异和限制详见上述报告。
