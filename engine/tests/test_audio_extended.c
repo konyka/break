@@ -3,6 +3,8 @@
 #include <audio/audio_extended.h>
 #include <float.h>
 static void test_spatial_interleave(void *voice);
+static void test_voice_read_interleave(void *voice);
+static void test_listener_start_interleave(void *voice);
 #include "../src/audio/audio.c"
 #include "../src/audio/audio_extended.c"
 
@@ -13,6 +15,49 @@ static void test_spatial_interleave(void *opaque) {
     test_interleave_armed = false;
     AudioVoice *voice = (AudioVoice *)opaque;
     (void)spatial_publish(voice, voice->epoch, test_interleave_gain);
+}
+
+static bool test_read_interleave_armed;
+static AudioSystem *test_read_interleave_system;
+static AudioVoice *test_read_interleave_voice;
+static AudioVoiceHandle test_read_interleave_handle;
+static AudioResult test_read_interleave_trigger_result;
+static AudioResult test_read_interleave_position_result;
+static void test_voice_read_interleave(void *opaque) {
+    if (!test_read_interleave_armed || opaque != test_read_interleave_voice) return;
+    test_read_interleave_armed = false;
+    test_read_interleave_trigger_result = audio_event_trigger(
+        test_read_interleave_system, "read-interleave", vec3(4, 0, 0),
+        &test_read_interleave_handle);
+    test_read_interleave_position_result = audio_voice_set_position(
+        test_read_interleave_system, test_read_interleave_handle, vec3(8, 0, 0));
+}
+
+static bool test_listener_interleave_armed;
+static bool test_listener_interleave_applied;
+static AudioVoice *test_listener_interleave_voice;
+static void test_listener_start_interleave(void *opaque) {
+    if (!test_listener_interleave_armed || opaque != test_listener_interleave_voice) {
+        return;
+    }
+    test_listener_interleave_armed = false;
+    AudioVoice *voice = (AudioVoice *)opaque;
+    u32 tail = atomic_load_explicit(&voice->tail, memory_order_relaxed);
+    u32 head = atomic_load_explicit(&voice->head, memory_order_acquire);
+    for (u32 cursor = tail; cursor != head; ++cursor) {
+        const AudioCommand *command =
+            &voice->commands[cursor & (AUDIO_COMMAND_CAPACITY - 1u)];
+        if (command->type != AUDIO_COMMAND_START || command->epoch != voice->epoch) {
+            continue;
+        }
+        u64 before = atomic_load_explicit(&voice->spatial_snapshot, memory_order_acquire);
+        voice_apply_initial_spatial(voice, command);
+        u64 after = atomic_load_explicit(&voice->spatial_snapshot, memory_order_acquire);
+        test_listener_interleave_applied = before != after &&
+            spatial_revision_of(after) == command->spatial_revision &&
+            gain_to_bits(spatial_gain_of(after)) == gain_to_bits(command->spatial_gain);
+        return;
+    }
 }
 
 void log_write(LogLevel level, const char *file, int line, const char *fmt, ...) {
@@ -1129,6 +1174,68 @@ TEST(restart_new_epoch_does_not_modulate_held_old_pcm)
     audio_system_destroy(as);
 }
 
+TEST(restart_between_epoch_and_snapshot_loads_keeps_old_pcm_gain)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1.0f, 1.0f};
+    AudioClipHandle clip = register_ramp(as, samples, 2);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "read-interleave", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    ASSERT_EQ(audio_event_trigger(as, "read-interleave", vec3(2, 0, 0), &handle), AUDIO_OK);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 1e-6f);
+
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    test_read_interleave_system = as;
+    test_read_interleave_voice = &ext->voices[(handle & 0xFFu) - 1u];
+    test_read_interleave_handle = handle;
+    test_read_interleave_armed = true;
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_TRUE(!test_read_interleave_armed);
+    ASSERT_EQ(test_read_interleave_trigger_result, AUDIO_OK);
+    ASSERT_EQ(test_read_interleave_position_result, AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 1e-6f);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.125f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(listener_start_cas_loss_republishes_same_listener)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1.0f, 1.0f};
+    AudioClipHandle clip = register_ramp(as, samples, 2);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "listener-cas", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    ASSERT_EQ(audio_event_trigger(as, "listener-cas", vec3(2, 0, 0), &handle), AUDIO_OK);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 1e-6f);
+    ASSERT_EQ(audio_event_trigger(as, "listener-cas", vec3(4, 0, 0), &handle), AUDIO_OK);
+
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    test_listener_interleave_voice = &ext->voices[(handle & 0xFFu) - 1u];
+    test_listener_interleave_applied = false;
+    test_listener_interleave_armed = true;
+    audio_system_update(as, vec3(12, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_TRUE(!test_listener_interleave_armed);
+    ASSERT_TRUE(test_listener_interleave_applied);
+    audio_system_update(as, vec3(12, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, handle), 0.125f, 1e-6f);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.125f, 1e-6f);
+    audio_system_destroy(as);
+}
+
 TEST(revision_max_is_atomic_and_retires_spatial_starts)
 {
     AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
@@ -1205,5 +1312,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(extended_stereo_clip_preserves_interleaved_pcm);
     RUN_TEST(start_initial_gain_cas_preserves_interleaved_revision);
     RUN_TEST(restart_new_epoch_does_not_modulate_held_old_pcm);
+    RUN_TEST(restart_between_epoch_and_snapshot_loads_keeps_old_pcm_gain);
+    RUN_TEST(listener_start_cas_loss_republishes_same_listener);
     RUN_TEST(revision_max_is_atomic_and_retires_spatial_starts);
 TEST_MAIN_END()

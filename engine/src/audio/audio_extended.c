@@ -296,10 +296,16 @@ static ma_result voice_read(ma_data_source *source, void *output,
                     &voice->bus_gains[AUDIO_BUS_MASTER], memory_order_relaxed));
                 u64 spatial_epoch = atomic_load_explicit(&voice->spatial_epoch,
                                                          memory_order_acquire);
+#ifdef AUDIO_VOICE_READ_TEST_HOOK
+                AUDIO_VOICE_READ_TEST_HOOK(voice);
+#endif
                 u64 snapshot = atomic_load_explicit(&voice->spatial_snapshot,
                                                     memory_order_acquire);
+                u64 verified_epoch = atomic_load_explicit(&voice->spatial_epoch,
+                                                          memory_order_acquire);
                 u32 revision = spatial_revision_of(snapshot);
-                if (spatial_epoch == voice->playing_epoch &&
+                if (spatial_epoch == verified_epoch &&
+                    spatial_epoch == voice->playing_epoch &&
                     revision > voice->applied_spatial_revision) {
                     voice->applied_spatial_revision = revision;
                     voice->applied_spatial_gain = spatial_gain_of(snapshot);
@@ -612,24 +618,28 @@ static AudioResult event_spatial_gain(AudioExtended *ext,
 }
 
 static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain) {
-    if (epoch == 0 || voice->epoch != epoch ||
-        atomic_load_explicit(&voice->spatial_epoch, memory_order_acquire) != epoch) {
-        return AUDIO_STALE;
+    for (;;) {
+        if (epoch == 0 || voice->epoch != epoch ||
+            atomic_load_explicit(&voice->spatial_epoch, memory_order_acquire) != epoch) {
+            return AUDIO_STALE;
+        }
+        if (voice->spatial_revision == UINT32_MAX) return AUDIO_OVERLOAD;
+        u64 expected = atomic_load_explicit(&voice->spatial_snapshot,
+                                            memory_order_acquire);
+        if (spatial_revision_of(expected) != voice->spatial_revision) {
+            return AUDIO_OVERLOAD;
+        }
+        u32 revision = voice->spatial_revision + 1u;
+        u64 desired = spatial_pack(revision, gain);
+#ifdef AUDIO_SPATIAL_PUBLISH_TEST_HOOK
+        AUDIO_SPATIAL_PUBLISH_TEST_HOOK(voice);
+#endif
+        if (atomic_compare_exchange_strong_explicit(&voice->spatial_snapshot,
+                &expected, desired, memory_order_release, memory_order_acquire)) {
+            voice->spatial_revision = revision;
+            return AUDIO_OK;
+        }
     }
-    if (voice->spatial_revision == UINT32_MAX) return AUDIO_OVERLOAD;
-    u64 expected = atomic_load_explicit(&voice->spatial_snapshot,
-                                        memory_order_acquire);
-    if (spatial_revision_of(expected) != voice->spatial_revision) {
-        return AUDIO_OVERLOAD;
-    }
-    u32 revision = voice->spatial_revision + 1u;
-    u64 desired = spatial_pack(revision, gain);
-    if (!atomic_compare_exchange_strong_explicit(&voice->spatial_snapshot,
-            &expected, desired, memory_order_release, memory_order_acquire)) {
-        return AUDIO_OVERLOAD;
-    }
-    voice->spatial_revision = revision;
-    return AUDIO_OK;
 }
 
 static AudioResult spatial_begin_start(AudioVoice *voice, u64 epoch,
