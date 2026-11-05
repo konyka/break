@@ -337,6 +337,7 @@ ctest --test-dir build-p8-nocrypto-tsan --output-on-failure \
 | 提交 | 修复 |
 |---|---|
 | `c90e0fa5` | 只读 epoch 编码、value revision/record epoch 分离、每次实际发送尝试分配新 epoch |
+| `a610f858` | 第三轮实际协议/状态文档与追加报告 |
 
 ## 16. 第三轮 RED -> GREEN 与生产变异
 
@@ -405,3 +406,75 @@ ctest --test-dir build-p8-nocrypto-tsan --output-on-failure \
 - `challenge_key` 与每 session 密钥仍由应用 provision/rotation；本切片不提供密钥生命周期服务。
 - record epoch 只提供进程内单对象记录顺序和重复/冲突检测，不是跨进程持久去重，也不保证可靠送达。
 - 仅本机 Linux focused 验证；不承诺任意 NAT、防火墙穿透、公网部署、Windows/macOS/移动原生验证或可靠送达。
+
+---
+
+# P8 fix round 4 追加报告
+
+## 19. 评审范围与修复提交
+
+第四轮只处理 `.superpowers/sdd/review-fix3-findings.md` 的唯一开放 Important：公开兼容 `break_aspect_encode()` 没有持久 epoch 分配来源，导致连续控制同 epoch 冲突以及 DORMANT 后同值 baseline 回退。scheduler/high-water/challenge/reassembly/no-crypto 等已 ADDRESSED 项未重做。round3 文档提交已在上表补记为实际 `a610f858`。
+
+| 提交 | 修复 |
+|---|---|
+| `d3027a01ce6ffe133d0185894ad392308a5e065e` | 独立每对象自动 encoder epoch/hash、失败原子、冲突/耗尽保护和直接 API 回归 |
+
+本轮最终文档提交 hash 在交付 handoff 中给出；报告中不保留无法自引用的“最终文档提交”占位。
+
+## 20. 第四轮 RED -> GREEN 与生产变异
+
+### 直接兼容 API 连续控制与同值唤醒
+
+- 将 round3 绕过问题的显式 epoch 控制测试恢复为真实 `break_aspect_encode()`，直接执行 baseline→DORMANT→DESTROY 并 apply；另加 baseline→DORMANT→同值 baseline，且每一步检查 wire epoch。初始 RED 为 **8 passed, 2 failed, 10 total**：DESTROY 仍使用 epoch 2 而不是 3，同值唤醒仍使用 epoch 1 而不是 3。
+- 加入自动/显式同 epoch 冲突和最大 record epoch 负例后，扩展 RED 为 **7 passed, 4 failed, 11 total**。同 epoch 相同字节仍可显式重编码，较小 epoch 或同 epoch 不同 kind/hash 返回 STALE，输出 sentinel 和对象状态不变。
+- 实现 `AspectObject.encoder_epoch/encoder_hash` 后，自动 API 首次成功使用 1，之后每次成功加一；编码不再读取 value revision 分配 epoch，也不写 value revision、active mask 或 apply `record_epoch/record_hash`。显式编码同时对照 record 与 encoder high-water/hash，保持只读。最终 aspect **12/12**，scheduler **9/9**。
+
+### 预算失败与 epoch 耗尽
+
+- 短输出容量在 baseline、DORMANT、同值唤醒前分别返回 OVERLOAD，`out_size` 和 sentinel 不变；随后成功输出仍分别使用 epoch 1、2、3，证明失败没有消耗自动序号。远端最终恢复 active mask 和相同 health=9，本地 value revision 保持 1。
+- 手工合法 `UINT64_MAX` record 包验证重复同文幂等、同 epoch 不同文 STALE，随后自动编码返回 OVERLOAD。独立 `break_online_aspect_test` 变体提供测试专用 encoder 耗尽钩子，实际自动编码同样返回 OVERLOAD，输出/value revision/health 不变。生产 `break_online` flags 只有 `BREAK_ENABLE_CRYPTO=1`，没有 `BREAK_ASPECT_TESTING`；钩子不进入生产库。
+- 生产变异一：临时把自动 epoch 改回 value revision 推导，aspect **10 passed, 2 failed, 12 total**，连续控制和预算/唤醒用例变红；恢复后 **12/12**。
+- 生产变异二：临时删除 `encoder_epoch == UINT64_MAX` guard，epoch 回绕导致耗尽用例失败，aspect **11 passed, 1 failed, 12 total**；恢复后 **12/12**。
+
+## 21. 第四轮 focused 验证
+
+所有 lane 在独立 aspect 测试变体 refactor 后重新运行；不是只复用 refactor 前结果。
+
+### crypto ON/OFF normal
+
+```bash
+ctest --test-dir build-p8-normal --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+ctest --test-dir build-p8-nocrypto --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat_nocrypto|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+```
+
+两树均 **11/11 passed**。no-crypto 仅执行独立 fail-closed NAT 合约，不运行 HMAC 成功路径。
+
+### 钉住 Snowflake normal / ASan+UBSan / TSan
+
+Snowflake 源码实测 HEAD 为 `0fceed6d885bb8578743d82cc4a5d7ab2f6b0620`，工作树无修改。三棵树均运行：
+
+```bash
+ctest --test-dir <对应构建树> --output-on-failure \
+  -L 'network|replication|fragmentation|session'
+ctest --test-dir <对应构建树> --output-on-failure \
+  -R '^(test_network|test_net_loop|test_net_loop_qnx|test_packet|test_ecs_replication)$'
+```
+
+- `build-p8-snow` normal：**13/13 + 5/5 passed**。
+- `build-p8-snow-asan` ASan+UBSan：**13/13 + 5/5 passed**，`detect_leaks=1/halt_on_error=1` 下无 sanitizer 报告。
+- `build-p8-snow-tsan` TSan：**13/13 + 5/5 passed**，`halt_on_error=1` 下无 race 报告。
+
+### no-crypto ASan+UBSan / TSan
+
+`build-p8-nocrypto-asan` 与 `build-p8-nocrypto-tsan` 使用与 no-crypto normal 相同的 11 项 focused regex，分别 **11/11 passed**，无 ASan/UBSan 或 TSan 报告。crypto-enabled lane 保留真实 UDP NAT/语音 loopback和有效 MAC captured replay。
+
+最终直接行为为 lobby **10/10**、NAT **23/23**、voice **8/8**、aspect **12/12**、AOI 调度 **9/9**、固定分片 **12/12**、真实 Session **38/38**。提交前 `git diff --check` 通过；最终工作树状态在 handoff 中给出。
+
+## 22. 第四轮公开兼容限制
+
+- 自动 encoder 状态是 store 内、对象生命周期内的 attempt high-water，不是跨进程持久序号。新 create/adopt 从零开始；需要跨进程恢复或自行持久分配时必须全程使用显式 epoch。
+- 同一对象必须有单一 epoch owner。自动转显式须从大于最后自动 epoch 的值开始并继续使用显式 API；显式较大 epoch 不推进自动 high-water，之后不能切回自动包装器。scheduler 继续使用自己的显式 per-attempt high-water。
+- 同一 attempt 的传输重试必须复用原字节；再次调用自动 API 会分配新 epoch。自动或 apply record epoch 耗尽后，自动编码 fail-closed，不能回绕。
+- 其余限制不变：密钥由应用 provision/rotation；仅本机 Linux focused 与攻击 loopback，不承诺任意 NAT、防火墙穿透、公网部署、跨平台原生、可靠送达或跨进程去重。

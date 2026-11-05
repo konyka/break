@@ -1,3 +1,10 @@
+## 本轮更新：P8 fix round 4（2026-11-05）
+
+- **兼容自动 epoch**：`break_aspect_encode` 改为独立的每对象 encoder epoch/hash，不再从 value revision 推导顺序。仅成功输出后推进；连续 baseline/DORMANT/DESTROY 和同值唤醒均单调递增，短输出预算失败不消耗 epoch，耗尽返回 OVERLOAD。显式编码和 apply 仍不写自动 encoder 状态，value revision 与 record high-water 语义不变。
+- **公开边界**：同一对象必须选择单一 epoch owner；自动转显式须使用更大 epoch 并保持显式，不能在较大显式 epoch 后切回自动包装器。自动状态仅限当前 store 的对象生命周期，不是跨进程持久序号；同一 attempt 的传输重试复用原字节。耗尽注入仅在独立 `break_online_aspect_test` 变体中，生产库无测试宏。
+- **验证**：直接 aspect 12/12、AOI 调度 9/9；crypto ON/OFF normal 均 11/11，钉住 Snowflake normal/ASan+UBSan/TSan 均 13/13 + 5/5，no-crypto normal/ASan+UBSan/TSan 均 11/11，无 sanitizer/race 报告。自动序号回退变异为 10/12、删除耗尽 guard 变异为 11/12，均恢复 12/12。完整证据见 `.superpowers/sdd/online-gameplay-network-report.md` round4。
+- **限制**：challenge/session 密钥仍由应用 provision/rotation；仅本机 Linux focused 验证，不承诺任意 NAT、公网部署、跨平台原生、跨进程 epoch 去重或可靠送达。
+
 ## 本轮更新：P8 fix round 3（2026-11-05）
 
 - **失败重试顺序**：修复完整 aspect 包已交付但 callback 返回失败后，修改值并以同 epoch 重试造成永久 STALE 的问题。每次实际发送尝试在预算/分片预检通过后、首个 datagram 前分配新 record epoch；失败保留 attempt high-water 和 dirty，只有完整成功才清 dirty，零预算未发送不推进 epoch。
