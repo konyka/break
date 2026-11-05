@@ -116,7 +116,7 @@ The mutation each test must catch is respectively: trusting unauthenticated iden
 
 Run:
 ```bash
-cmake -S engine -B build-p8-normal -DENGINE_RHI_BACKEND=opengl -DBREAK_ENABLE_SNOWFLAKE=OFF -DBREAK_ENABLE_CRYPTO=OFF -DBREAK_ENABLE_CRASH=OFF
+cmake -S engine -B build-p8-normal -DENGINE_RHI_BACKEND=opengl -DBREAK_ENABLE_SNOWFLAKE=OFF -DBREAK_ENABLE_CRYPTO=ON -DBREAK_ENABLE_CRASH=OFF
 cmake --build build-p8-normal -j6 --target test_break_online_lobby
 ```
 Expected initial RED: missing `network/break_online_lobby.h`. Add the public declarations, target, and functions returning `BREAK_RUNTIME_FAILED`; rebuild and run `./build-p8-normal/test_break_online_lobby`. Expected behavioral RED: authenticated create does not return `BREAK_RUNTIME_OK`, with room count still zero.
@@ -516,14 +516,25 @@ Run all five new executables directly so their individual behavior totals are ca
 - [x] **Step 2: Configure ASan+UBSan and TSan independently**
 
 ```bash
-cmake -S engine -B build-p8-asan -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON -DBREAK_ENABLE_SNOWFLAKE=OFF -DBREAK_ENABLE_CRYPTO=OFF -DBREAK_ENABLE_CRASH=OFF
-cmake -S engine -B build-p8-tsan -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl -DENGINE_USE_TSAN=ON -DBREAK_ENABLE_SNOWFLAKE=OFF -DBREAK_ENABLE_CRYPTO=OFF -DBREAK_ENABLE_CRASH=OFF
+cmake -S engine -B build-p8-asan -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON -DBREAK_ENABLE_SNOWFLAKE=OFF -DBREAK_ENABLE_CRYPTO=ON -DBREAK_ENABLE_CRASH=OFF
+cmake -S engine -B build-p8-tsan -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl -DENGINE_USE_TSAN=ON -DBREAK_ENABLE_SNOWFLAKE=OFF -DBREAK_ENABLE_CRYPTO=ON -DBREAK_ENABLE_CRASH=OFF
 cmake --build build-p8-asan -j6 --target test_break_online_lobby test_break_online_nat test_break_online_voice test_break_online_aspect test_break_online_aspect_replication test_break_replication_fragment test_network test_net_loop test_net_loop_qnx test_ecs_replication
 cmake --build build-p8-tsan -j6 --target test_break_online_lobby test_break_online_nat test_break_online_voice test_break_online_aspect test_break_online_aspect_replication test_break_replication_fragment test_network test_net_loop test_net_loop_qnx test_ecs_replication
 ctest --test-dir build-p8-asan --output-on-failure -L 'network|replication|fragmentation|session'
 ctest --test-dir build-p8-tsan --output-on-failure -L 'network|replication|fragmentation|session'
 ```
-Expected: zero failures and zero sanitizer reports. Run a real UDP loopback in each lane, not just pure codec tests.
+
+Also configure independent crypto OFF fail-closed lanes (no HMAC success-path target):
+
+```bash
+cmake -S engine -B build-p8-nocrypto -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl -DBREAK_ENABLE_SNOWFLAKE=OFF -DBREAK_ENABLE_CRYPTO=OFF -DBREAK_ENABLE_CRASH=OFF
+cmake -S engine -B build-p8-nocrypto-asan -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON -DBREAK_ENABLE_SNOWFLAKE=OFF -DBREAK_ENABLE_CRYPTO=OFF -DBREAK_ENABLE_CRASH=OFF
+cmake -S engine -B build-p8-nocrypto-tsan -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl -DENGINE_USE_TSAN=ON -DBREAK_ENABLE_SNOWFLAKE=OFF -DBREAK_ENABLE_CRYPTO=OFF -DBREAK_ENABLE_CRASH=OFF
+cmake --build <lane> -j6 --target test_break_online_lobby test_break_online_nat_nocrypto test_break_online_voice test_break_online_aspect test_break_online_aspect_replication test_break_replication_fragment test_network test_net_loop test_net_loop_qnx test_ecs_replication
+ctest --test-dir <lane> --output-on-failure -R '^(test_break_online_lobby|test_break_online_nat_nocrypto|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+```
+
+Expected: zero failures and zero sanitizer reports. Run a real UDP loopback in each crypto-enabled lane, not just pure codec tests. The no-crypto lane verifies only coordinator/endpoint create `REJECTED` with null outputs; it never runs HMAC success paths.
 
 - [x] **Step 3: Self-review and repository hygiene**
 

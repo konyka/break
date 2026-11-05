@@ -1,3 +1,11 @@
+## 本轮更新：P8 fix round 2（2026-11-05）
+
+- **持久防重放与可用性**：endpoint 持久 control high-water 覆盖 PUNCH/CLOSE、TTL 和连续 re-pair；旧 CLOSE 不能回退。stateless 来源绑定 challenge 不再被伪造 DISCOVER 占槽，合法注册仍能完成。
+- **复制原子性**：reassembler 完成后仍拒绝旧 delta，新流全部分配成功后才淘汰旧流，失败保留旧流。aspect 使用 record epoch 统一 baseline/dirty/control 顺序，普通 AOI leave 与 DORMANT 后可用同一 handle 重入，旧 control 被 stale 拒绝；永久 object_destroy 仍退休 generation。
+- **构建契约**：完整 HMAC NAT 测试仅在 crypto ON 构建。no-crypto 有独立无 API 引用合约，create 均 REJECTED 且输出为空，其余测试继续运行。
+- **验证**：NAT 23/23、aspect 8/8、AOI 调度 7/7、分片 12/12。crypto ON 无 Snowflake normal 11/11；钉住 Snowflake normal/ASan+UBSan/TSan 均 13/13 + 5/5；no-crypto normal/ASan+UBSan/TSan 均 11/11。high-water 与 record epoch 生产变异均实际变红并恢复，完整证据见 `.superpowers/sdd/online-gameplay-network-report.md` round2。
+- **限制**：challenge/session 密钥仍由应用 provision/rotation；本机 loopback 不证明任意 NAT、公网部署或可靠送达，未做跨平台原生验证。
+
 ## 本轮更新：P8 fix round 1（2026-11-05）
 
 - **安全修复**：NAT 控制面改为 challenge + 每 session HMAC-SHA256 + 有界 replay window，绑定 recipient/registered/来源并处理精确 duplicate 与冲突重放。PUNCH 使用相对 TTL，CLOSE 使 endpoint 失效并支持新 generation re-pair。有效 MAC captured HELLO 跨 socket 重放、篡改 MAC、未知 nonce、四 endpoint 容量和跨时钟均有真实 UDP 测试。

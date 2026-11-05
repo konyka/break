@@ -156,7 +156,7 @@ ctest --test-dir <对应构建树> --output-on-failure \
 | `4dab29fc` | nonce、pair capacity、stale peer、revision overflow、MPSC overload 负例 |
 | `48819035` | 分配式/固定存储分片 API 共用 planner/fill |
 | `6ab22850` | 可选 session_key 完整初始化，修复大厅 `-Werror` 构建 |
-| 最终文档提交 | 本报告和实际协议/状态文档；最终 HEAD hash 在交付手-off 中给出 |
+| `3e04dc23` | 本报告和实际协议/状态文档 |
 
 ## 8. RED -> GREEN 证据
 
@@ -227,3 +227,99 @@ ctest --test-dir <对应构建树> --output-on-failure \
 - 新 delta supersession 只解决未完成旧流的单调重试，不是可靠传输、全局去重或跨重连持久去重；reassembler 仍需上层 bounded lifetime。
 - 相对 TTL 从 endpoint 接受 PUNCH 的本地时钟计算，coordinator 自行管理期限并发送 CLOSE；仍不承诺任意 NAT、公网部署、防火墙穿透或可靠送达。
 - 未运行 Windows/macOS/移动原生 lane、外部 NAT 设备或听感测试；本报告仅覆盖本机 Linux focused 与攻击 loopback。
+
+---
+
+# P8 fix round 2 追加报告
+
+## 11. 评审与修复提交
+
+第二轮评审全文见 `.superpowers/sdd/review-fix1-findings.md`。保留其已 ADDRESSED 项，只处理五个开放 Important。原 round1 文档 hash 已明确填写为 `3e04dc23`，不再保留“最终文档提交”占位。
+
+| 提交 | 修复 |
+|---|---|
+| `e539c61a` | endpoint 持久 control high-water，覆盖 TTL、连续 CLOSE 和 re-pair |
+| `92af5a71` | stateless 来源绑定 challenge，伪造 DISCOVER 不再占槽 |
+| `58406c95` | reassembler 持久 high-water 与全分配成功后的原子淘汰 |
+| `9bfb44d7` | 每对象 record epoch、DORMANT/普通 leave 重入和旧 control 拒绝 |
+| `1d2487c0` | crypto OFF 的独立 fail-closed 构建与合约测试 |
+
+## 12. 第二轮 RED -> GREEN
+
+### 持久控制序号与 CLOSE
+
+- 本地 TTL 后有效 MAC captured PUNCH 可重新 arm，**19 passed, 3 failed, 22 total**；另两项在连续 CLOSE 消费后证实最早 PUNCH 和旧 CLOSE 乱序可复活。
+- 持久 high-water 后 22/22；合法更大 generation/sequence re-pair 仍通过。临时删除 PUNCH high-water 检查后 **20 passed, 2 failed, 22 total**，恢复后 22/22。
+
+### DISCOVER 生命周期
+
+- 伪造 8 个 session 在容量 2 的 coordinator 刷槽，合法注册五秒超时，**22 passed, 1 failed, 23 total**。
+- stateless 来源绑定 nonce 后伪造刷量不占状态，合法两端注册成功，23/23。challenge expiry 对 endpoint 是不透明字段，只有 coordinator 在自己的时钟上验证，避免跨 epoch 误判。
+
+### Reassembler high-water 与原子淘汰
+
+- 完成后旧 delta 可重新开始、超大新 delta 淘汰失败后旧流丢失，**10 passed, 2 failed, 12 total**。
+- 新流元数据、首片和结果分配全部成功后才替换旧流，完成后旧 delta 冲突、失败淘汰保留旧流，12/12；显式 reset 才开启新 epoch。删除 high-water 检查后 **11 passed, 1 failed, 12 total**，恢复后 12/12。
+
+### DORMANT 与普通 AOI 重入
+
+- direct DESTROY 仍错误退休 generation，**7 passed, 1 failed, 8 total**；普通 AOI leave 后同 handle 重入失败，**6 passed, 1 failed, 7 total**。
+- 引入 record epoch 后，普通 leave/DORMANT 仅去激活，后续更高 epoch baseline 可重入，旧 control 被拒绝。最终 aspect 8/8、scheduler 7/7。临时不提交 scheduler record epoch 后 **1 passed, 6 failed, 7 total**，恢复后 7/7。
+
+### Crypto OFF
+
+- 初次真实 configure/build 在 crypto OFF 下因 `#else` 分支未使用变量 `-Werror` 失败，完整 HMAC 目标也不适合该配置。
+- crypto-only 声明与成功路径测试改为 `if(BREAK_ENABLE_CRYPTO)`，新增无 crypto API 引用的 `test_break_online_nat_nocrypto` 后，create 均 REJECTED 且输出为空，其余测试继续通过，11/11。
+
+## 13. 第二轮最终验证
+
+### crypto ON 无 Snowflake normal
+
+```bash
+cmake --build build-p8-normal -j6 --target \
+  test_break_online_lobby test_break_online_nat test_break_online_voice \
+  test_break_online_aspect test_break_online_aspect_replication \
+  test_break_replication_fragment test_network test_net_loop test_net_loop_qnx \
+  test_packet test_ecs_replication
+ctest --test-dir build-p8-normal --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+```
+
+结果：**11/11 passed**。
+
+### 钉住 Snowflake normal / ASan+UBSan / TSan
+
+三棵树均运行：
+
+```bash
+ctest --test-dir <对应构建树> --output-on-failure \
+  -L 'network|replication|fragmentation|session'
+ctest --test-dir <对应构建树> --output-on-failure \
+  -R '^(test_network|test_net_loop|test_net_loop_qnx|test_packet|test_ecs_replication)$'
+```
+
+- `build-p8-snow`：**13/13 + 5/5 passed**。
+- `build-p8-snow-asan`：**13/13 + 5/5 passed**，无 ASan/UBSan 报告。
+- `build-p8-snow-tsan`：**13/13 + 5/5 passed**，无 race 报告。
+
+### no-crypto normal / ASan+UBSan / TSan
+
+```bash
+ctest --test-dir build-p8-nocrypto --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat_nocrypto|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+ctest --test-dir build-p8-nocrypto-asan --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat_nocrypto|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+ctest --test-dir build-p8-nocrypto-tsan --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat_nocrypto|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+```
+
+三棵树均 **11/11 passed**，无 sanitizer/race 报告。no-crypto 只运行独立 fail-closed 合约，不执行 HMAC 成功路径；crypto-enabled lane 均保留真实 UDP NAT/语音 loopback和有效 MAC captured replay。
+
+最终直接行为总数为 lobby 10/10、NAT 23/23、voice 8/8、aspect 8/8、AOI 调度 7/7、固定分片 12/12、真实 Session 38/38。最终提交前执行 `git diff --check a0bfeb95..HEAD` 和工作树状态检查；结果在交付手-off 中给出。
+
+## 14. 第二轮新增限制
+
+- `challenge_key` 与每 session 密钥仍由应用 provision/rotation。stateless challenge 消除的是认证前槽位占用，不是公网洪泛防护或速率限制。
+- 持久 high-water 防止 endpoint 控制重放，不等于可靠传输、跨进程持久去重或全局 NAT 穿透保证。
+- record epoch 只提供单对象记录顺序；显式 `break_aspect_object_destroy` 才退休 generation，普通 AOI leave 只去激活。
+- 本报告仍仅覆盖本机 Linux focused 与攻击 loopback，未运行 Windows/macOS/移动原生、外部 NAT 设备、公网服务或听感测试。

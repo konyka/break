@@ -30,20 +30,20 @@ P8 的正式可选静态库是 `break_online`，源码位于 `engine/src/network
 | 类型 | 完整字节数 | 行为 |
 |---|---:|---|
 | DISCOVER | 16 | endpoint 请求公开 registration challenge |
-| CHALLENGE | 24 | coordinator 返回有期限的随机 nonce |
-| HELLO | 64 | session、challenge、序号和 32 字节 HMAC |
+| CHALLENGE | 32 | 来源绑定的 nonce、coordinator 绝对期限，由本地 challenge key 派生 |
+| HELLO | 72 | session、nonce、期限、序号和 32 字节 HMAC |
 | WELCOME | 56 | 带 MAC 的 generation peer handle |
 | PUNCH | 106 | recipient peer/session、pair、nonce、相对 TTL、序号、对端地址和 MAC |
 | PING | 24 | 两端向 observed address 发送打洞包 |
 | ACK / CLOSE | 72 / 72 | 带 recipient 和 MAC 的确认或 pair 关闭 |
 
-控制面使用 `break_crypto_hmac_sha256`（既有 OpenSSL EVP 包装）和每 session 的 32 字节密钥。NAT 配置必须同时提供认证回调与 `session_key`；`break_online_session.h` 的大厅身份适配不自动提供密钥，应用仍负责会话密钥 provision/rotation。HELLO 的 challenge 绑定请求来源，认证后才登记 observed address，64 项 replay window 和精确 duplicate 记录保证幂等且不接受重放。WELCOME/PUNCH/ACK/CLOSE 都验证 recipient、registered 状态和 MAC；PUNCH 还必须匹配 peer/session。完全相同的 PUNCH 是幂等的，冲突 nonce/TTL/地址/序号或篡改 MAC 不会覆盖 connected。
+控制面使用 `break_crypto_hmac_sha256`（既有 OpenSSL EVP 包装）和每 session 的 32 字节密钥。NAT 配置必须同时提供认证回调、`session_key` 和 coordinator 本地 `challenge_key`；应用负责密钥 provision/rotation。challenge 是 stateless 的：coordinator 不为未认证 DISCOVER 分配每 session 状态，伪造 session 刷量不能占满槽位。nonce 由 session、来源和到期窗口计算，endpoint 只转发不透明的 challenge expiry，coordinator 在自己的时钟上验证期限。HELLO 的 challenge 绑定请求来源，认证后才登记 observed address，64 项 replay window 和精确 duplicate 记录保证幂等且不接受重放。WELCOME/PUNCH/ACK/CLOSE 都验证 recipient、registered 状态和 MAC；PUNCH 还必须匹配 peer/session。完全相同的 PUNCH 是幂等的，冲突 nonce/TTL/地址/序号或篡改 MAC 不会覆盖 connected。
 
-coordinator 硬上限为 64 个 peer 和 32 个未关闭 pair；每个 endpoint 同时只跟踪一个 pair。peer 容量是 coordinator 生命周期内的固定表容量，当前没有 peer 回收 API；pair 可关闭或使未确认 pair 过期。PUNCH 只携带相对 TTL，coordinator 用自己的时钟计算期限，endpoint 用各自本地时钟计算 deadline，不比较不同 epoch。显式关闭和过期都会发送认证 CLOSE；endpoint 清理 active/connected/ping/nonce/address，并保留 tombstone 拒绝同 generation 的迟到 PUNCH，随后可用新 generation re-pair。
+coordinator 硬上限为 64 个 peer 和 32 个未关闭 pair；每个 endpoint 同时只跟踪一个 pair。peer 容量是 coordinator 生命周期内的固定表容量，当前没有 peer 回收 API；pair 可关闭或使未确认 pair 过期。PUNCH 只携带相对 TTL，coordinator 用自己的时钟计算期限，endpoint 用各自本地时钟计算 deadline，不比较不同 epoch。显式关闭和过期都会发送认证 CLOSE。endpoint 保存持久 control high-water，inactive 时序号不高于 high-water 的 PUNCH/CLOSE 都拒绝；只有 active pair 的完全相同 PUNCH 或完全相同 CLOSE 可幂等。较旧 CLOSE 不能回退 high-water，合法更大 generation/sequence 的 re-pair 仍可接受。
 
-PING 必须匹配 armed pair、generation、nonce 和期望源地址，否则不会把 endpoint 标为 connected。PUNCH 先发失败时本地不发布半创建 pair；已经交给 OS 的报文无法召回。所有新容器仍 create 时固定分配，网络接收只校验界限并入队。
+PING 必须匹配 armed pair、generation、nonce 和期望源地址，否则不会把 endpoint 标为 connected。PUNCH 先发失败时本地不发布半创建 pair；已经交给 OS 的报文无法召回。所有新容器仍 create 时固定分配，网络接收只校验界限并入队。`BREAK_ENABLE_CRYPTO=OFF` 时完整 HMAC 测试不构建，独立 `test_break_online_nat_nocrypto` 只验证 coordinator/endpoint create 返回 REJECTED 且输出为空，成功路径不运行。
 
-测试 19/19 使用真实 UDP socket 完成注册、双向 PUNCH/PING、ACK/CLOSE 和 observed-address 验证；另含有效 HMAC captured HELLO 跨 socket 重放、未注册 PUNCH、重复/冲突 PUNCH、篡改 MAC、未知 pair/nonce、四 endpoint pair 容量、close-before/after-connect、re-pair 和跨时钟 epoch。**该证据只证明本机 IPv4 loopback 的协调、认证和打洞行为，不证明任意 NAT、防火墙、公网部署、对称/限制锥 NAT 或可靠送达。**
+测试 23/23 使用真实 UDP socket 完成注册、双向 PUNCH/PING、ACK/CLOSE 和 observed-address 验证；另含有效 HMAC captured HELLO 跨 socket 重放、伪造 DISCOVER 刷槽、本地 TTL 后重放、连续 CLOSE 后最早 PUNCH、旧 CLOSE 乱序、未注册 PUNCH、重复/冲突 PUNCH、篡改 MAC、未知 pair/nonce、四 endpoint pair 容量、close-before/after-connect、re-pair 和跨时钟 epoch。**该证据只证明本机 IPv4 loopback 的协调、认证和打洞行为，不证明任意 NAT、防火墙、公网部署、对称/限制锥 NAT 或可靠送达。**
 
 ## 4. 有界 PCM 语音与抖动播放
 
@@ -73,7 +73,7 @@ revision:varuint || kind:u8 || aspect_mask:varuint || values...
 
 kind 为 BASELINE、DIRTY、DESTROY 或 DORMANT。baseline 携带当前全部 active aspect，dirty 只携带 mask 指定的变化 aspect；控制记录的 mask 必须为 0。值按 aspect id 升序编码：U32 使用 LEB128，I32 使用 zigzag LEB128，F32 使用 4 字节 little-endian 并拒绝非有限值，BYTES 使用 varint 长度和精确字节。仅变化字段进入包，因此小整数和稀疏变化不会发送整个对象。
 
-apply 要求相同 schema hash 和 live generation；baseline/dirty 需要更新的 revision，控制记录不允许更旧 revision。全部 mask、varint、类型、长度及精确包结束先验证，再在 staging 暂存，最后一次性提交。DORMANT 清空 active mask 但保留对象供后续 baseline 唤醒，DESTROY 退休 generation 并使旧句柄失效。任何失败都保留原对象值和 revision；相同值 setter 不增加 revision，达到 `UINT64_MAX` 后 setter 返回 OVERLOAD 且值不变。测试 8/8 包含手工 `health=300` 的字节证据、baseline/dirty 往返、gen2 重建、控制消费、负值/浮点/字节、stale handle、revision 上限、输出容量及 malformed 无部分提交。
+apply 要求相同 schema hash、live generation 和递增的每对象 record epoch；值 revision 不再兼任控制顺序。全部 mask、varint、类型、长度及精确包结束先验证，再在 staging 暂存，最后一次性提交。DORMANT/DESTROY 都只是去激活并清 active mask，后续更高 epoch 的 baseline 可用同一 handle 唤醒；永久销毁仍由显式 `break_aspect_object_destroy` 退休 generation。相同包的重复 apply 可幂等，旧 control 或同 epoch 不同 hash 返回 STALE。任何失败都保留原对象值和 revision；相同值 setter 不增加 revision，达到 `UINT64_MAX` 后 setter 返回 OVERLOAD 且值不变。测试 8/8 包含手工 `health=300` 的字节证据、baseline/dirty 往返、gen2 重建、控制消费、负值/浮点/字节、stale handle、revision 上限、输出容量及 malformed 无部分提交。
 
 ## 6. AOI 驱动复制与复用边界
 
@@ -84,14 +84,14 @@ apply 要求相同 schema hash 和 live generation；baseline/dirty 需要更新
 - leave：按对象 flags 发送 DESTROY 或 DORMANT，并保存 pending_leave/kind；即使下一轮 AOI 为空也优先重试，只有全部片段成功后才清理 ghost。
 - disconnect：清理该连接全部 ghost；重连必须重新 baseline。
 
-每个包经 `break_replication_fragment_payload_into` 使用调用方固定元数据切片；分配式与固定存储 API 共用同一 planner/fill，避免 wire 漂移。片段字节预算在首次发送前检查，不足则保留 dirty 供后续重试。所有片段经 `BreakAspectSendFn` 成功交付后才清 dirty/更新 ghost；回调失败保留状态，重试使用新 delta id。持久 reassembler 以单调更大的 delta 淘汰未完成旧 delta，迟到旧 delta 被拒绝，因此第二/N 片失败后的新流可以完成而不与旧流冲突。已发出的片段无法召回，但接收方可利用 duplicate/conflict/checksum 检查。
+每个包经 `break_replication_fragment_payload_into` 使用调用方固定元数据切片；分配式与固定存储 API 共用同一 planner/fill，避免 wire 漂移。片段字节预算在首次发送前检查，不足则保留 dirty 供后续重试。所有片段经 `BreakAspectSendFn` 成功交付后才清 dirty/更新 ghost并推进 record epoch；回调失败保留原 epoch 和 dirty，重试使用新 delta id 但相同 record epoch。reassembler 保存持久 delta high-water，完成后更旧 delta 也返回 CONFLICT；新流元数据、首片和结果分配全部成功后才淘汰旧流，OVER_LIMIT/OOM 不改变旧流。显式 reset 才开启新 epoch。已发出的片段无法召回，但接收方可利用 duplicate/conflict/checksum 检查。
 
 `BreakAspectSendFn` 是接入现有认证 Session/`BreakNetReactor` 或其他安全传输的明确边界；本模块不直接把 connection id 当作认证证明。**FNV 校验和只是完整性检查，不是认证；本切片没有新增可靠传输、客户端预测、回滚或 authority handoff。**
 
-调度测试 6/6 使用真实 AOI、两个独立接收端、预算优先级、发送失败重试、第二片失败后的持久重组、空 AOI pending leave、dormant 和断连。固定分片测试 10/10 另覆盖 4/4/2 切片、短容量不发布部分元数据以及新 delta 淘汰旧流。
+调度测试 7/7 使用真实 AOI、两个独立接收端、预算优先级、发送失败重试、第二片失败后的持久重组、空 AOI pending leave、普通 leave 重入、DORMANT 唤醒、旧 control 乱序和断连。固定分片测试 12/12 另覆盖 4/4/2 切片、短容量不发布部分元数据、完成后旧 delta 拒绝以及失败淘汰保留旧流。
 
 ## 7. 验证与限制
 
-最终源码上，Linux/GCC 16.2.1 的无 Snowflake normal focused 为 11/11。使用仓库钉住的 Snowflake `0fceed6d885bb8578743d82cc4a5d7ab2f6b0620` 时，normal、ASan+UBSan、TSan 的网络/复制/Session 标签均为 13/13，基础网络补充均为 5/5；无 sanitizer 报告。每个 lane 均运行 NAT 和语音真实 UDP loopback。各项 RED/GREEN 和变异输出见 `.superpowers/sdd/online-gameplay-network-report.md`。
+最终源码上，Linux/GCC 16.2.1 的 crypto ON 无 Snowflake normal focused 为 11/11；使用仓库钉住的 Snowflake `0fceed6d885bb8578743d82cc4a5d7ab2f6b0620` 时，normal、ASan+UBSan、TSan 的网络/复制/Session 标签均为 13/13，基础网络补充均为 5/5。no-crypto normal/ASan+UBSan/TSan 的独立 fail-closed focused 也均为 11/11；无 sanitizer 报告。每个 crypto-enabled lane 均运行 NAT 和语音真实 UDP loopback。no-crypto lane 只运行独立 fail-closed 合约，不执行 HMAC 成功路径。各项 RED/GREEN 和变异输出见 `.superpowers/sdd/online-gameplay-network-report.md`。
 
 这些结果是 focused 网络验证，不是全仓库、全平台或外部部署证明。Windows/macOS/移动原生 lane、任意 NAT、公网服务、主观听感、可靠传输、预测回滚和生产账号后端均未在本切片声称完成。
