@@ -35,7 +35,10 @@ typedef struct {
 
     u32 *body_serial;
     u32 *body_generation;
+    u32 *body_epoch;
+    u8  *body_retired;
     u32 body_map_capacity;
+    u32 body_map_epoch;
 } LuaScript;
 
 /* Create the lua_State and register the `engine` table. Returns false on OOM. */

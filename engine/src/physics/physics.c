@@ -139,8 +139,7 @@ void physics_world_destroy(PhysicsWorld *pw) {
 }
 
 static u32 physics_next_generation(u32 generation) {
-    generation++;
-    return generation == 0u ? 1u : generation;
+    return generation == UINT32_MAX ? 0u : generation + 1u;
 }
 
 static PhysicsBodyHandle physics_body_handle_from_slot(const PhysicsWorld *pw, u32 index) {
@@ -162,7 +161,7 @@ static PhysicsConstraintHandle physics_constraint_handle_from_slot(const Physics
 RigidBody *physics_body_resolve(PhysicsWorld *pw, PhysicsBodyHandle body) {
     if (!pw || !physics_body_handle_is_valid(body) || body.index >= pw->count) return NULL;
     RigidBody *b = &pw->bodies[body.index];
-    if (b->generation != body.generation || physics_body_is_parked(b)) return NULL;
+    if (b->generation != body.generation || b->retired || physics_body_is_parked(b)) return NULL;
     return b;
 }
 
@@ -170,7 +169,7 @@ static DistanceConstraint *physics_constraint_resolve(PhysicsWorld *pw, PhysicsC
     if (!pw || !physics_constraint_handle_is_valid(handle) || handle.index >= PHYSICS_MAX_CONSTRAINTS)
         return NULL;
     DistanceConstraint *c = &pw->constraints[handle.index];
-    return c->active && c->generation == handle.generation ? c : NULL;
+    return c->active && !c->retired && c->generation == handle.generation ? c : NULL;
 }
 
 void physics_body_park(PhysicsWorld *pw, PhysicsBodyHandle body) {
@@ -183,6 +182,7 @@ void physics_body_park(PhysicsWorld *pw, PhysicsBodyHandle body) {
             physics_constraint_remove(pw, physics_constraint_handle_from_slot(pw, i));
     }
     pb->generation = physics_next_generation(pb->generation);
+    pb->retired = pb->generation == 0u;
     pb->is_static = true;
     pb->inv_mass = 0.0f;
     pb->velocity = vec3(0, 0, 0);
@@ -205,14 +205,15 @@ PhysicsBodyHandle physics_body_revive(PhysicsWorld *pw, PhysicsBodyHandle body, 
     if (!pw || !physics_body_handle_is_valid(body) || body.index >= pw->count || !isfinite(mass))
         return PHYSICS_BODY_HANDLE_INVALID;
     RigidBody *rb = &pw->bodies[body.index];
-    if (!physics_body_is_parked(rb) && rb->generation != body.generation)
+    if (rb->retired || rb->generation != body.generation)
         return PHYSICS_BODY_HANDLE_INVALID;
     rb->generation = physics_next_generation(rb->generation);
     rb->mass = (mass > 0.0f) ? mass : 1.0f;
     rb->is_static = is_static;
     rb->inv_mass = (is_static || rb->mass <= 0.0f) ? 0.0f : (1.0f / rb->mass);
-    rb->spawn_frame = frame;
-    rb->sleeping = false;
+    rb->retired = rb->generation == 0u;
+    rb->spawn_frame = rb->retired ? UINT32_MAX : frame;
+    rb->sleeping = rb->retired;
     rb->rest_frames = 0;
     return physics_body_handle_from_slot(pw, body.index);
 }
@@ -227,7 +228,7 @@ PhysicsBodyHandle physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext,
     }
     for (id = 0; id < pw->count; id++) {
         RigidBody *cand = &pw->bodies[id];
-        if (physics_body_is_parked(cand)) {
+        if (physics_body_is_parked(cand) && !cand->retired) {
             b = cand;
             goto init;
         }
@@ -240,6 +241,7 @@ PhysicsBodyHandle physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext,
     b = &pw->bodies[id];
 init:
     if (b->generation == 0u) b->generation = 1u;
+    b->retired = false;
     b->position = pos;
     b->velocity = vec3(0, 0, 0);
     b->acceleration = vec3(0, -9.81f, 0);
@@ -319,7 +321,7 @@ PhysicsConstraintHandle physics_constraint_add_distance(PhysicsWorld *pw, Physic
         physics_body_handle_equal(body_a, body_b) || !isfinite(rest_length) || rest_length < 0.0f)
         return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
-        if (pw->constraints[i].active) continue;
+        if (pw->constraints[i].active || pw->constraints[i].retired) continue;
         DistanceConstraint c;
         memset(&c, 0, sizeof(c));
         c.body_a = body_a;
@@ -342,7 +344,7 @@ PhysicsConstraintHandle physics_constraint_add_ball(PhysicsWorld *pw, PhysicsBod
     if (!physics_vec3_finite(anchor_a) || !physics_vec3_finite(anchor_b))
         return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
-        if (pw->constraints[i].active) continue;
+        if (pw->constraints[i].active || pw->constraints[i].retired) continue;
         DistanceConstraint c;
         memset(&c, 0, sizeof(c));
         c.body_a = body_a;
@@ -387,7 +389,7 @@ PhysicsConstraintHandle physics_constraint_add_hinge(PhysicsWorld *pw, const Hin
     if (!isfinite(desc->limit_min) || !isfinite(desc->limit_max)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     f32 inv = 1.0f / sqrtf(axis_len2);
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
-        if (!pw->constraints[i].active) {
+        if (!pw->constraints[i].active && !pw->constraints[i].retired) {
             pw->constraints[i].body_a = desc->body_a;
             pw->constraints[i].body_b = desc->body_b;
             pw->constraints[i].rest_length = 0.0f;
@@ -424,7 +426,7 @@ PhysicsConstraintHandle physics_constraint_add_slider(PhysicsWorld *pw, const Sl
     if (!isfinite(desc->limit_min) || !isfinite(desc->limit_max)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     f32 inv = 1.0f / sqrtf(axis_len2);
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
-        if (!pw->constraints[i].active) {
+        if (!pw->constraints[i].active && !pw->constraints[i].retired) {
             pw->constraints[i].body_a = desc->body_a;
             pw->constraints[i].body_b = desc->body_b;
             pw->constraints[i].rest_length = 0.0f;
@@ -472,7 +474,7 @@ PhysicsConstraintHandle physics_constraint_add_cone_twist(PhysicsWorld *pw, cons
     f32 len_b = vec3_dot(desc->axis_local_b, desc->axis_local_b);
     if (!(len_a > 1e-8f) || !(len_b > 1e-8f)) return PHYSICS_CONSTRAINT_HANDLE_INVALID;
     for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
-        if (pw->constraints[i].active) continue;
+        if (pw->constraints[i].active || pw->constraints[i].retired) continue;
         DistanceConstraint c;
         memset(&c, 0, sizeof(c));
         c.body_a = desc->body_a;
@@ -678,6 +680,7 @@ void physics_constraint_remove(PhysicsWorld *pw, PhysicsConstraintHandle constra
     u32 generation = physics_next_generation(c->generation);
     memset(c, 0, sizeof(*c));
     c->generation = generation;
+    c->retired = generation == 0u;
     pw->constraint_count--;
 }
 

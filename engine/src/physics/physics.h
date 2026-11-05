@@ -52,6 +52,7 @@ typedef struct {
     bool  is_static;
     u32   spawn_frame;
     u32   generation;
+    bool  retired;
     Vec3  spawn_pos;
     u32   rest_frames;
     bool  sleeping;
@@ -90,6 +91,7 @@ typedef struct {
     PhysicsBodyHandle body_a;
     PhysicsBodyHandle body_b;
     u32  generation;
+    bool retired;
     f32  rest_length;
     bool active;
     Vec3 offset_a;

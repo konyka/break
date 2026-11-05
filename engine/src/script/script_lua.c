@@ -25,33 +25,74 @@ static LuaScript *ls_from_state(lua_State *L) {
     return ls;
 }
 
-static lua_Integer lua_body_id(LuaScript *ls, PhysicsBodyHandle body) {
-    if (!ls || body.index >= ls->body_map_capacity) return 0;
-    u32 serial = ls->body_serial[body.index];
-    if (serial == UINT32_MAX) serial = 0;
-    else serial++;
-    u64 id = (u64)serial * (u64)ls->body_map_capacity + (u64)body.index + 1u;
-    if (id > 0x1FFFFFFFFFFFFFu) return 0;
-    ls->body_serial[body.index] = serial;
-    ls->body_generation[body.index] = body.generation;
-    return (lua_Integer)id;
+typedef struct {
+    u32 slot;
+    u32 serial;
+    lua_Integer public_id;
+} LuaBodyIdPlan;
+
+static bool lua_body_map_ready(const LuaScript *ls, const PhysicsWorld *pw) {
+    return ls && pw && ls->body_map_epoch != 0u && ls->body_map_capacity == pw->capacity &&
+           ls->body_map_capacity != 0u && ls->body_serial && ls->body_generation &&
+           ls->body_epoch && ls->body_retired;
+}
+
+static bool lua_body_id_plan(LuaScript *ls, PhysicsWorld *pw, LuaBodyIdPlan *plan) {
+    if (!plan || !lua_body_map_ready(ls, pw)) return false;
+    u32 slot = 0;
+    for (; slot < pw->count; slot++) {
+        RigidBody *candidate = &pw->bodies[slot];
+        if (physics_body_is_parked(candidate) && !candidate->retired) break;
+    }
+    if (slot == pw->count && pw->count >= pw->capacity) return false;
+    if (slot >= pw->capacity || pw->bodies[slot].retired || ls->body_retired[slot]) return false;
+
+    u32 serial = ls->body_serial[slot];
+    if (serial == UINT32_MAX) {
+        if (ls->body_epoch[slot] != 0u) {
+            ls->body_retired[slot] = 1u;
+            return false;
+        }
+        serial = 0u;
+    } else {
+        serial++;
+    }
+    u64 id = (u64)serial * (u64)ls->body_map_capacity + (u64)slot + 1u;
+    if (id > 0x1FFFFFFFFFFFFFu) {
+        ls->body_retired[slot] = 1u;
+        return false;
+    }
+    plan->slot = slot;
+    plan->serial = serial;
+    plan->public_id = (lua_Integer)id;
+    return true;
+}
+
+static lua_Integer lua_body_id(LuaScript *ls, PhysicsBodyHandle body, const LuaBodyIdPlan *plan) {
+    ls->body_serial[plan->slot] = plan->serial;
+    ls->body_generation[plan->slot] = body.generation;
+    ls->body_epoch[plan->slot] = ls->body_map_epoch;
+    return plan->public_id;
 }
 
 static bool checked_body_handle(lua_State *L, PhysicsWorld *pw, int arg, PhysicsBodyHandle *out) {
     LuaScript *ls = ls_from_state(L);
-    if (!pw || !ls || ls->body_map_capacity != pw->capacity || ls->body_map_capacity == 0u) return false;
+    if (!lua_body_map_ready(ls, pw)) return false;
     lua_Integer packed = luaL_checkinteger(L, arg);
     if (packed <= 0) return false;
     u64 id = (u64)packed - 1u;
     u32 slot = (u32)(id % ls->body_map_capacity);
-    u32 serial = (u32)(id / ls->body_map_capacity);
-    if (slot >= pw->count) return false;
-    if (ls->body_serial[slot] == UINT32_MAX && serial == 0u) {
+    u64 serial_wide = id / ls->body_map_capacity;
+    if (serial_wide > UINT32_MAX) return false;
+    u32 serial = (u32)serial_wide;
+    if (slot >= pw->count || ls->body_retired[slot]) return false;
+    if (ls->body_map_epoch == 1u && ls->body_serial[slot] == UINT32_MAX &&
+        ls->body_epoch[slot] == 0u && serial == 0u) {
         ls->body_serial[slot] = 0u;
         ls->body_generation[slot] = pw->bodies[slot].generation;
+        ls->body_epoch[slot] = ls->body_map_epoch;
     }
-    if (ls->body_serial[slot] != serial) return false;
-    ls->body_serial[slot] = serial;
+    if (ls->body_serial[slot] != serial || ls->body_epoch[slot] != ls->body_map_epoch) return false;
     out->index = slot;
     out->generation = ls->body_generation[slot];
     return physics_body_resolve(pw, *out) != NULL;
@@ -177,9 +218,13 @@ static int l_spawn(lua_State *L) {
         lua_pushinteger(L, 0);
         return 1;
     }
+    LuaBodyIdPlan plan;
+    if (!lua_body_id_plan(ls, pw, &plan)) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
     PhysicsBodyHandle id = physics_body_create(pw, pos, vec3(0.5f, 0.5f, 0.5f), mass, false, 0);
-    lua_Integer public_id = physics_body_handle_is_valid(id) ? lua_body_id(ls, id) : 0;
-    if (physics_body_handle_is_valid(id) && public_id == 0) physics_body_park(pw, id);
+    lua_Integer public_id = physics_body_handle_is_valid(id) ? lua_body_id(ls, id, &plan) : 0;
     lua_pushinteger(L, public_id);
     return 1;
 }
@@ -245,34 +290,53 @@ void lua_script_shutdown(LuaScript *ls) {
     if (ls->L) lua_close(ls->L);
     free(ls->body_serial);
     free(ls->body_generation);
+    free(ls->body_epoch);
+    free(ls->body_retired);
     memset(ls, 0, sizeof(*ls));
 }
 
 void lua_script_bind_host(LuaScript *ls, void *world, void *physics, void *input) {
     if (!ls) return;
+    PhysicsWorld *pw = (PhysicsWorld *)physics;
+    if (ls->physics == physics && pw && ls->body_map_capacity == pw->capacity &&
+        ls->body_serial && ls->body_generation && ls->body_epoch && ls->body_retired) {
+        ls->world = world;
+        ls->input = input;
+        return;
+    }
+    ls->body_map_epoch++;
     free(ls->body_serial);
     free(ls->body_generation);
+    free(ls->body_epoch);
+    free(ls->body_retired);
     ls->body_serial = NULL;
     ls->body_generation = NULL;
+    ls->body_epoch = NULL;
+    ls->body_retired = NULL;
     ls->body_map_capacity = 0;
     ls->world = world;
     ls->physics = physics;
     ls->input = input;
-    PhysicsWorld *pw = (PhysicsWorld *)physics;
     if (!pw || pw->capacity == 0u) return;
 #if SIZE_MAX < UINT64_MAX
-    if ((u64)pw->capacity > (u64)SIZE_MAX / (2u * sizeof(u32))) return;
+    if ((u64)pw->capacity > (u64)SIZE_MAX / (4u * sizeof(u32))) return;
 #endif
     u32 *serial = (u32 *)malloc(pw->capacity * sizeof(u32));
     u32 *generation = (u32 *)malloc(pw->capacity * sizeof(u32));
-    if (!serial || !generation) {
+    u32 *epoch = (u32 *)calloc(pw->capacity, sizeof(u32));
+    u8 *retired = (u8 *)calloc(pw->capacity, sizeof(u8));
+    if (!serial || !generation || !epoch || !retired) {
         free(serial);
         free(generation);
+        free(epoch);
+        free(retired);
         return;
     }
     for (u32 i = 0; i < pw->capacity; i++) serial[i] = UINT32_MAX;
     ls->body_serial = serial;
     ls->body_generation = generation;
+    ls->body_epoch = epoch;
+    ls->body_retired = retired;
     ls->body_map_capacity = pw->capacity;
 }
 

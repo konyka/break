@@ -438,6 +438,35 @@ TEST(scene_state_rejects_noncanonical_water_flag)
     remove(TMP_STATE);
 }
 
+TEST(scene_state_restores_current_tombstone_identity) {
+    Camera cam = {0};
+    f32 sun_a = 0.5f, sun_e = 0.25f, exp = 1.0f, scale = 1.0f;
+    f32 wy = -2.0f;
+    bool wen = true;
+    PhysicsWorld *pw = physics_world_create(4);
+    physics_body_create(pw, vec3(0, -1, 0), vec3(10, 0.5f, 10), 0, true, 0);
+    PhysicsBodyHandle old = physics_body_create(pw, vec3(3, 4, 5), vec3(0.5f, 0.5f, 0.5f), 2, false, 0);
+    SceneStateCtx sctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    ASSERT_TRUE(scene_state_save(TMP_STATE, &sctx));
+
+    physics_body_park(pw, old);
+    bool live[SCENE_STATE_BODY_LIVE_MAX] = {0};
+    live[old.index] = true;
+    SceneStateCtx lctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    lctx.body_live = live;
+    lctx.frame_count = 42u;
+    lctx.water_pipeline_valid = true;
+    ASSERT_TRUE(scene_state_load(TMP_STATE, &lctx));
+    RigidBody *restored = physics_body_resolve(pw,
+        (PhysicsBodyHandle){old.index, pw->bodies[old.index].generation});
+    ASSERT_NOT_NULL(restored);
+    ASSERT_FALSE(physics_body_is_parked(restored));
+    ASSERT_FLOAT_EQ(restored->position.e[0], 3.0f, 1e-4f);
+    ASSERT_NEQ(restored->generation, old.generation);
+    physics_world_destroy(pw);
+    remove(TMP_STATE);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_roundtrip);
     RUN_TEST(scene_state_save_reports_close_failure);
@@ -449,4 +478,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_rejects_nonfinite_values);
     RUN_TEST(scene_state_save_rejects_nonfinite_values);
     RUN_TEST(scene_state_rejects_noncanonical_water_flag);
+    RUN_TEST(scene_state_restores_current_tombstone_identity);
 TEST_MAIN_END()

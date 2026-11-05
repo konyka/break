@@ -39,7 +39,51 @@ TEST(parked_body_cannot_rebind_old_constraint_to_new_occupant) {
     physics_world_destroy(pw);
 }
 
+TEST(revive_rejects_stale_tombstone_handle) {
+    PhysicsWorld *pw = physics_world_create(2);
+    PhysicsBodyHandle old = physics_body_create(pw, vec3(0, 2, 0), vec3(0.5f, 0.5f, 0.5f), 1, false, 0);
+    physics_body_park(pw, old);
+    PhysicsBodyHandle current = {old.index, pw->bodies[old.index].generation};
+    ASSERT_NEQ(current.generation, old.generation);
+    PhysicsBodyHandle rejected = physics_body_revive(pw, old, 1, false, 1);
+    ASSERT_FALSE(physics_body_handle_is_valid(rejected));
+    ASSERT_TRUE(physics_body_is_parked(&pw->bodies[old.index]));
+    PhysicsBodyHandle revived = physics_body_revive(pw, current, 1, false, 1);
+    ASSERT_TRUE(physics_body_handle_is_valid(revived));
+    ASSERT_NOT_NULL(physics_body_resolve(pw, revived));
+    physics_world_destroy(pw);
+}
+
+TEST(generation_exhaustion_retires_slots_permanently) {
+    PhysicsWorld *pw = physics_world_create(1);
+    PhysicsBodyHandle old = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1, false, 0);
+    pw->bodies[old.index].generation = UINT32_MAX;
+    physics_body_park(pw, (PhysicsBodyHandle){old.index, UINT32_MAX});
+    ASSERT_TRUE(pw->bodies[old.index].retired);
+    ASSERT_FALSE(physics_body_handle_is_valid(
+        physics_body_create(pw, vec3(1, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1, false, 0)));
+    ASSERT_EQ(pw->count, 1u);
+    ASSERT_TRUE(physics_body_resolve(pw, old) == NULL);
+    physics_world_destroy(pw);
+
+    pw = physics_world_create(4);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 0, 0), vec3(0, 0, 0), 0, true, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(2, 0, 0), vec3(0, 0, 0), 1, false, 0);
+    PhysicsConstraintHandle old_constraint = physics_constraint_add_distance(pw, a, b, 2.0f);
+    pw->constraints[old_constraint.index].generation = UINT32_MAX;
+    physics_constraint_remove(pw, (PhysicsConstraintHandle){old_constraint.index, UINT32_MAX});
+    ASSERT_TRUE(pw->constraints[old_constraint.index].retired);
+    PhysicsConstraintHandle fresh = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(fresh));
+    ASSERT_NEQ(fresh.index, old_constraint.index);
+    physics_constraint_remove(pw, old_constraint);
+    ASSERT_TRUE(pw->constraints[fresh.index].active);
+    physics_world_destroy(pw);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(stale_constraint_remove_preserves_reused_slot);
     RUN_TEST(parked_body_cannot_rebind_old_constraint_to_new_occupant);
+    RUN_TEST(revive_rejects_stale_tombstone_handle);
+    RUN_TEST(generation_exhaustion_retires_slots_permanently);
 TEST_MAIN_END()
