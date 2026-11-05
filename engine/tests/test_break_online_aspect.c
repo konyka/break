@@ -299,21 +299,126 @@ TEST(aspect_dormant_and_destroy_apply_changes_ghost_state)
                                   break_aspect_active_mask(pair.authoritative, pair.object),
                                   BREAK_ASPECT_BASELINE,
                                   baseline, sizeof(baseline), &baseline_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(baseline[20], 1u);
     ASSERT_EQ(break_aspect_apply(pair.remote, baseline, baseline_size), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_aspect_encode_with_epoch(pair.authoritative, pair.object, 0u,
-                                  BREAK_ASPECT_DORMANT, 2u,
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DORMANT,
                                   control, sizeof(control), &control_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(control[20], 2u);
     ASSERT_EQ(break_aspect_apply(pair.remote, control, control_size), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_aspect_active_mask(pair.remote, pair.object), 0u);
     ASSERT_EQ(break_aspect_get_u32(pair.remote, pair.object, 2u, &health),
               BREAK_RUNTIME_FAILED);
-    ASSERT_EQ(break_aspect_encode_with_epoch(pair.authoritative, pair.object, 0u,
-                                  BREAK_ASPECT_DESTROY, 3u,
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DESTROY,
                                   control, sizeof(control), &control_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(control[20], 3u);
     ASSERT_EQ(break_aspect_apply(pair.remote, control, control_size), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_aspect_active_mask(pair.remote, pair.object), 0u);
     ASSERT_EQ(break_aspect_get_u32(pair.remote, pair.object, 2u, &health),
               BREAK_RUNTIME_FAILED);
+    destroy_pair(&pair);
+}
+
+TEST(aspect_automatic_epochs_survive_budget_retry_and_same_value_wakeup)
+{
+    AspectPair pair;
+    u8 packet[256];
+    u8 short_output[4] = {9u, 8u, 7u, 6u};
+    usize packet_size = 0u;
+    usize short_size = 88u;
+    u32 health = 0u;
+    ASSERT_TRUE(make_pair(&pair));
+    ASSERT_EQ(break_aspect_set_u32(pair.authoritative, pair.object, 2u, 9u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object,
+                                  break_aspect_active_mask(pair.authoritative, pair.object),
+                                  BREAK_ASPECT_BASELINE, short_output,
+                                  sizeof(short_output), &short_size), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(short_size, 88u);
+    ASSERT_EQ(short_output[0], 9u);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object,
+                                  break_aspect_active_mask(pair.authoritative, pair.object),
+                                  BREAK_ASPECT_BASELINE,
+                                  packet, sizeof(packet), &packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(packet[20], 1u);
+    ASSERT_EQ(break_aspect_apply(pair.remote, packet, packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DORMANT, short_output,
+                                  sizeof(short_output), &short_size), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(short_size, 88u);
+    ASSERT_EQ(short_output[0], 9u);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DORMANT,
+                                  packet, sizeof(packet), &packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(packet[20], 2u);
+    ASSERT_EQ(break_aspect_apply(pair.remote, packet, packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_active_mask(pair.remote, pair.object), 0u);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object,
+                                  break_aspect_active_mask(pair.authoritative, pair.object),
+                                  BREAK_ASPECT_BASELINE, short_output,
+                                  sizeof(short_output), &short_size), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(short_size, 88u);
+    ASSERT_EQ(short_output[0], 9u);
+    ASSERT_EQ(break_aspect_object_revision(pair.authoritative, pair.object), 1u);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object,
+                                  break_aspect_active_mask(pair.authoritative, pair.object),
+                                  BREAK_ASPECT_BASELINE,
+                                  packet, sizeof(packet), &packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(packet[20], 3u);
+    ASSERT_EQ(break_aspect_apply(pair.remote, packet, packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_active_mask(pair.remote, pair.object), UINT64_C(1) << 1u);
+    ASSERT_EQ(break_aspect_get_u32(pair.remote, pair.object, 2u, &health), BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 9u);
+    destroy_pair(&pair);
+}
+
+TEST(aspect_automatic_epoch_replay_and_conflict_are_atomic)
+{
+    AspectPair pair;
+    u8 baseline[256];
+    u8 packet[256];
+    u8 small[64] = {9u, 8u, 7u, 6u};
+    usize baseline_size = 0u;
+    usize packet_size = 0u;
+    usize small_size = 88u;
+    ASSERT_TRUE(make_pair(&pair));
+    ASSERT_EQ(break_aspect_set_u32(pair.authoritative, pair.object, 2u, 9u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object,
+                                  break_aspect_active_mask(pair.authoritative, pair.object),
+                                  BREAK_ASPECT_BASELINE,
+                                  baseline, sizeof(baseline), &baseline_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode_with_epoch(pair.authoritative, pair.object,
+                                  break_aspect_active_mask(pair.authoritative, pair.object),
+                                  BREAK_ASPECT_BASELINE, 1u,
+                                  packet, sizeof(packet), &packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(packet_size, baseline_size);
+    ASSERT_TRUE(memcmp(packet, baseline, baseline_size) == 0);
+    ASSERT_EQ(break_aspect_encode_with_epoch(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DORMANT, 1u,
+                                  small, sizeof(small), &small_size), BREAK_RUNTIME_STALE);
+    ASSERT_EQ(small_size, 88u);
+    ASSERT_EQ(small[0], 9u);
+    ASSERT_EQ(break_aspect_apply(pair.remote, baseline, baseline_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DORMANT,
+                                  packet, sizeof(packet), &packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(packet[20], 2u);
+    ASSERT_EQ(break_aspect_apply(pair.remote, packet, packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode_with_epoch(pair.authoritative, pair.object,
+                                  break_aspect_active_mask(pair.authoritative, pair.object),
+                                  BREAK_ASPECT_BASELINE, 1u,
+                                  small, sizeof(small), &small_size), BREAK_RUNTIME_STALE);
+    ASSERT_EQ(small_size, 88u);
+    ASSERT_EQ(small[0], 9u);
+    ASSERT_EQ(break_aspect_encode_with_epoch(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DESTROY, 2u,
+                                  small, sizeof(small), &small_size), BREAK_RUNTIME_STALE);
+    ASSERT_EQ(small_size, 88u);
+    ASSERT_EQ(small[0], 9u);
+    ASSERT_EQ(break_aspect_object_revision(pair.authoritative, pair.object), 1u);
+    ASSERT_EQ(break_aspect_active_mask(pair.authoritative, pair.object), UINT64_C(1) << 1u);
     destroy_pair(&pair);
 }
 
@@ -322,6 +427,8 @@ TEST(aspect_revision_overflow_preserves_previous_value)
     BreakAspectStore *store = make_store(1u);
     BreakOnlineHandle object;
     u8 packet[34] = {0};
+    u8 small[4] = {9u, 8u, 7u, 6u};
+    usize small_size = 88u;
     u32 health = 0u;
     ASSERT_NOT_NULL(store);
     ASSERT_TRUE(register_defaults(store));
@@ -336,11 +443,44 @@ TEST(aspect_revision_overflow_preserves_previous_value)
     packet[32] = 0xacu;
     packet[33] = 0x02u;
     ASSERT_EQ(break_aspect_apply(store, packet, sizeof(packet)), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_apply(store, packet, sizeof(packet)), BREAK_RUNTIME_OK);
+    packet[32] = 0xadu;
+    ASSERT_EQ(break_aspect_apply(store, packet, sizeof(packet)), BREAK_RUNTIME_STALE);
+    packet[32] = 0xacu;
     ASSERT_EQ(break_aspect_object_revision(store, object), 0u);
     ASSERT_EQ(break_aspect_set_u32(store, object, 2u, 2u), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(break_aspect_encode(store, object,
+                                  break_aspect_active_mask(store, object),
+                                  BREAK_ASPECT_BASELINE,
+                                  small, sizeof(small), &small_size), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(small_size, 88u);
+    ASSERT_EQ(small[0], 9u);
     ASSERT_EQ(break_aspect_get_u32(store, object, 2u, &health), BREAK_RUNTIME_OK);
     ASSERT_EQ(health, 300u);
     ASSERT_EQ(break_aspect_object_revision(store, object), 0u);
+    break_aspect_store_destroy(store);
+}
+
+TEST(aspect_automatic_epoch_exhaustion_is_atomic)
+{
+    BreakAspectStore *store = make_store(1u);
+    BreakOnlineHandle object;
+    u8 packet[64] = {9u, 8u, 7u, 6u};
+    usize packet_size = 88u;
+    u32 health = 0u;
+    ASSERT_NOT_NULL(store);
+    ASSERT_TRUE(register_defaults(store));
+    ASSERT_EQ(break_aspect_object_create(store, &object), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_set_u32(store, object, 2u, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_test_exhaust_encoder(store, object), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode(store, object, UINT64_C(1) << 1u,
+                                  BREAK_ASPECT_DIRTY,
+                                  packet, sizeof(packet), &packet_size), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(packet_size, 88u);
+    ASSERT_EQ(packet[0], 9u);
+    ASSERT_EQ(break_aspect_object_revision(store, object), 1u);
+    ASSERT_EQ(break_aspect_get_u32(store, object, 2u, &health), BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 1u);
     break_aspect_store_destroy(store);
 }
 
@@ -378,6 +518,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aspect_schema_validation_and_output_capacity_are_atomic);
     RUN_TEST(aspect_remote_destroy_then_gen2_create_and_adopt_works);
     RUN_TEST(aspect_dormant_and_destroy_apply_changes_ghost_state);
+    RUN_TEST(aspect_automatic_epochs_survive_budget_retry_and_same_value_wakeup);
+    RUN_TEST(aspect_automatic_epoch_replay_and_conflict_are_atomic);
     RUN_TEST(aspect_revision_overflow_preserves_previous_value);
+    RUN_TEST(aspect_automatic_epoch_exhaustion_is_atomic);
     RUN_TEST(aspect_smaller_epoch_is_rejected_without_revision_writeback);
 TEST_MAIN_END()

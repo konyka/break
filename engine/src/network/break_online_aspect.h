@@ -77,6 +77,9 @@ BreakRuntimeError break_aspect_get_bytes(const BreakAspectStore *store,
                                          BreakOnlineHandle object, u32 aspect_id,
                                          void *out, u32 capacity, u32 *out_size);
 
+/* Automatic encoding advances per-object encoder state only after success.
+ * After using a larger explicit epoch, keep using explicit epochs for that
+ * object; explicit encoding does not advance the automatic high-water. */
 BreakRuntimeError break_aspect_encode(BreakAspectStore *store,
                                       BreakOnlineHandle object, u64 mask, u8 kind,
                                       u8 *out, usize capacity, usize *out_size);
@@ -86,6 +89,11 @@ BreakRuntimeError break_aspect_encode_with_epoch(BreakAspectStore *store,
                                       usize *out_size);
 BreakRuntimeError break_aspect_apply(BreakAspectStore *store,
                                      const u8 *packet, usize size);
+
+#ifdef BREAK_ASPECT_TESTING
+BreakRuntimeError break_aspect_test_exhaust_encoder(BreakAspectStore *store,
+                                                    BreakOnlineHandle object);
+#endif
 
 #ifdef __cplusplus
 }

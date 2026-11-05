@@ -14,6 +14,8 @@ typedef struct AspectObject {
     u64 revision;
     u64 record_epoch;
     u64 record_hash;
+    u64 encoder_epoch;
+    u64 encoder_hash;
 } AspectObject;
 
 struct BreakAspectStore {
@@ -591,13 +593,16 @@ BreakRuntimeError break_aspect_encode_with_epoch(BreakAspectStore *store,
     AspectObject *object;
     BreakRuntimeError result;
     AspectWriter writer;
+    u64 packet_hash;
     u32 aspect_id;
     if (!aspect_owner(store)) return BREAK_RUNTIME_REJECTED;
     if (!out || !out_size || !record_epoch || kind < BREAK_ASPECT_BASELINE ||
         kind > BREAK_ASPECT_DORMANT) return BREAK_RUNTIME_INVALID;
     result = find_object(store, handle, &object);
     if (result != BREAK_RUNTIME_OK) return result;
-    if (record_epoch < object->record_epoch) return BREAK_RUNTIME_STALE;
+    if (record_epoch < object->record_epoch || record_epoch < object->encoder_epoch) {
+        return BREAK_RUNTIME_STALE;
+    }
     if ((kind == BREAK_ASPECT_BASELINE && mask != object->active_mask) ||
         (kind == BREAK_ASPECT_DIRTY &&
          (!mask || (mask & object->active_mask) != mask)) ||
@@ -626,8 +631,9 @@ BreakRuntimeError break_aspect_encode_with_epoch(BreakAspectStore *store,
         }
     }
     if (capacity < writer.position) return BREAK_RUNTIME_OVERLOAD;
-    if (record_epoch == object->record_epoch &&
-        object->record_hash != hash_packet(writer.data, writer.position)) {
+    packet_hash = hash_packet(writer.data, writer.position);
+    if ((record_epoch == object->record_epoch && object->record_hash != packet_hash) ||
+        (record_epoch == object->encoder_epoch && object->encoder_hash != packet_hash)) {
         return BREAK_RUNTIME_STALE;
     }
     memcpy(out, writer.data, writer.position);
@@ -645,15 +651,33 @@ BreakRuntimeError break_aspect_encode(BreakAspectStore *store,
     if (!aspect_owner(store)) return BREAK_RUNTIME_REJECTED;
     result = find_object(store, handle, &object);
     if (result != BREAK_RUNTIME_OK) return result;
-    if (kind == BREAK_ASPECT_DESTROY || kind == BREAK_ASPECT_DORMANT) {
-        if (object->revision == UINT64_MAX) return BREAK_RUNTIME_OVERLOAD;
-        epoch = object->revision + 1u;
-    } else {
-        epoch = object->revision;
+    if (object->encoder_epoch == UINT64_MAX || object->record_epoch == UINT64_MAX) {
+        return BREAK_RUNTIME_OVERLOAD;
     }
-    return break_aspect_encode_with_epoch(store, handle, mask, kind, epoch,
-                                          out, capacity, out_size);
+    epoch = object->encoder_epoch + 1u;
+    result = break_aspect_encode_with_epoch(store, handle, mask, kind, epoch,
+                                            out, capacity, out_size);
+    if (result == BREAK_RUNTIME_OK) {
+        object->encoder_epoch = epoch;
+        object->encoder_hash = hash_packet(out, *out_size);
+    }
+    return result;
 }
+
+#ifdef BREAK_ASPECT_TESTING
+BreakRuntimeError break_aspect_test_exhaust_encoder(BreakAspectStore *store,
+                                                    BreakOnlineHandle handle)
+{
+    AspectObject *object;
+    BreakRuntimeError result;
+    if (!aspect_owner(store)) return BREAK_RUNTIME_REJECTED;
+    result = find_object(store, handle, &object);
+    if (result != BREAK_RUNTIME_OK) return result;
+    object->encoder_epoch = UINT64_MAX;
+    object->encoder_hash = 0u;
+    return BREAK_RUNTIME_OK;
+}
+#endif
 
 static bool decode_aspect(BreakAspectStore *store, AspectReader *reader,
                           BreakOnlineHandle handle, u32 aspect_id)
