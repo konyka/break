@@ -5416,7 +5416,7 @@ endif()
     add_test(NAME test_audio COMMAND test_audio)
 
     add_executable(test_audio_extended tests/test_audio_extended.c
-        src/audio/audio_extended.c src/audio/audio_dsp.c)
+        src/audio/audio_dsp.c)
     target_include_directories(test_audio_extended PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio_extended PRIVATE m)
     if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "qnx")

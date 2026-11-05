@@ -134,6 +134,10 @@ TEST(dsp_rejects_nonfinite_parameters)
         desc.stages[0].mix = 1.0f;
         ASSERT_EQ(audio_dsp_chain_init(&chain, &desc, storage,
             AUDIO_DSP_MAX_DELAY_FRAMES * 2, 48000), AUDIO_INVALID);
+        desc.stages[0].room = 0.5f;
+        desc.stages[0].mix = invalid[i];
+        ASSERT_EQ(audio_dsp_chain_init(&chain, &desc, storage,
+            AUDIO_DSP_MAX_DELAY_FRAMES * 2, 48000), AUDIO_INVALID);
     }
     ASSERT_EQ(chain.stage_count, 0u);
 }
@@ -182,6 +186,51 @@ TEST(dsp_filter_delay_order_has_reference_pcm)
     }
 }
 
+TEST(dsp_delay_stereo_state_is_independent)
+{
+    AudioDspChainDesc desc = {0};
+    desc.stage_count = 1;
+    desc.stages[0] = delay_stage(2, 0.5f, 1.0f);
+    f32 storage[AUDIO_DSP_MAX_DELAY_FRAMES * 2];
+    AudioDspChain chain;
+    ASSERT_EQ(audio_dsp_chain_init(&chain, &desc, storage,
+        AUDIO_DSP_MAX_DELAY_FRAMES * 2, 48000), AUDIO_OK);
+    f32 pcm[] = {1, 0.5f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const f32 expected[] = {0, 0, 0, 0, 1, 0.5f, 0, 0, 0.5f, 0.25f, 0, 0};
+    audio_dsp_chain_process(&chain, pcm, 6, 2);
+    for (u32 i = 0; i < 12; ++i) ASSERT_FLOAT_EQ(pcm[i], expected[i], 1e-6f);
+}
+
+TEST(dsp_reverb_stereo_state_is_independent)
+{
+    AudioDspChainDesc desc = {0};
+    desc.stage_count = 1;
+    desc.stages[0].type = AUDIO_DSP_REVERB;
+    desc.stages[0].mix = 1.0f;
+    desc.stages[0].room = 0.0f;
+    f32 storage[AUDIO_DSP_MAX_DELAY_FRAMES * 2];
+    AudioDspChain chain;
+    ASSERT_EQ(audio_dsp_chain_init(&chain, &desc, storage,
+        AUDIO_DSP_MAX_DELAY_FRAMES * 2, 48000), AUDIO_OK);
+    f32 pcm[2000] = {0};
+    pcm[0] = 1.0f;
+    pcm[1] = 0.5f;
+    audio_dsp_chain_process(&chain, pcm, 1000, 2);
+    const u32 taps[] = {149, 311, 587, 997};
+    u32 tap = 0;
+    for (u32 frame = 0; frame < 1000; ++frame) {
+        if (tap < 4 && frame == taps[tap]) {
+            ASSERT_FLOAT_EQ(pcm[frame*2], 0.25f, 1e-6f);
+            ASSERT_FLOAT_EQ(pcm[frame*2+1], 0.125f, 1e-6f);
+            tap++;
+        } else {
+            ASSERT_FLOAT_EQ(pcm[frame*2], 0.0f, 1e-6f);
+            ASSERT_FLOAT_EQ(pcm[frame*2+1], 0.0f, 1e-6f);
+        }
+    }
+    ASSERT_EQ(tap, 4u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(filter_step_response_matches_one_pole_reference);
     RUN_TEST(delay_impulse_has_exact_tap_and_feedback);
@@ -191,4 +240,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(dsp_rejects_nonfinite_parameters);
     RUN_TEST(dsp_stereo_filter_state_is_independent);
     RUN_TEST(dsp_filter_delay_order_has_reference_pcm);
+    RUN_TEST(dsp_delay_stereo_state_is_independent);
+    RUN_TEST(dsp_reverb_stereo_state_is_independent);
 TEST_MAIN_END()

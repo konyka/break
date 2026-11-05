@@ -3,6 +3,7 @@
 #include <audio/audio_extended.h>
 #include <float.h>
 #include "../src/audio/audio.c"
+#include "../src/audio/audio_extended.c"
 
 void log_write(LogLevel level, const char *file, int line, const char *fmt, ...) {
     (void)level; (void)file; (void)line; (void)fmt;
@@ -914,6 +915,157 @@ TEST(event_registration_distinguishes_stale_clip)
     audio_system_destroy(as);
 }
 
+TEST(trigger_position_before_first_drain_uses_latest_revision)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 sample = 1.0f;
+    AudioClipHandle clip = register_ramp(as, &sample, 1);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    ASSERT_EQ(audio_event_register(as, "revision-trigger", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "revision-trigger", vec3(2, 0, 0), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(4, 0, 0)), AUDIO_OK);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(output[1], 0.25f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(listener_before_first_drain_uses_latest_revision)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 sample = 1.0f;
+    AudioClipHandle clip = register_ramp(as, &sample, 1);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    ASSERT_EQ(audio_event_register(as, "revision-listener", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "revision-listener", vec3(2, 0, 0), &voice), AUDIO_OK);
+    audio_system_update(as, vec3(1, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 1.0f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(restart_position_before_drain_uses_latest_revision)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1.0f, 1.0f};
+    AudioClipHandle clip = register_ramp(as, samples, 2);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "revision-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "revision-restart", vec3(2, 0, 0), &voice), AUDIO_OK);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_EQ(audio_event_trigger(as, "revision-restart", vec3(4, 0, 0), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(8, 0, 0)), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.125f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(music_zero_fade_replay_update_waits_for_start)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 a[] = {0.25f, 0.25f};
+    const f32 b[] = {0.75f, 0.75f};
+    AudioClipHandle tracks[] = {
+        register_named_pcm(as, "revision-music-a", a, 2),
+        register_named_pcm(as, "revision-music-b", b, 2)
+    };
+    AudioMusicPlaylistDesc playlist;
+    memset(&playlist, 0, sizeof(playlist));
+    playlist.tracks = tracks;
+    playlist.track_count = 2;
+    playlist.loop = true;
+    playlist.volume = 1.0f;
+    ASSERT_EQ(audio_music_set_playlist(as, &playlist), AUDIO_OK);
+    ASSERT_EQ(audio_music_play(as), AUDIO_OK);
+    f32 output[4];
+    ASSERT_EQ(audio_system_render(as, output, 2), AUDIO_OK);
+    ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+    AudioMusicState state;
+    u32 index = 99;
+    ASSERT_EQ(audio_music_state(as, &state, &index), AUDIO_OK);
+    ASSERT_EQ(index, 1u);
+    ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+    ASSERT_EQ(audio_music_state(as, &state, &index), AUDIO_OK);
+    ASSERT_EQ(state, AUDIO_MUSIC_PLAYING);
+    ASSERT_EQ(index, 1u);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.75f, 1e-6f);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+    ASSERT_EQ(audio_music_state(as, &state, &index), AUDIO_OK);
+    ASSERT_EQ(index, 0u);
+    ASSERT_EQ(audio_music_update(as), AUDIO_OK);
+    ASSERT_EQ(audio_music_state(as, &state, &index), AUDIO_OK);
+    ASSERT_EQ(state, AUDIO_MUSIC_PLAYING);
+    ASSERT_EQ(index, 0u);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.25f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(epoch_max_retires_voice_without_wrapping_to_zero)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 sample = 1.0f;
+    AudioClipHandle clip = register_ramp(as, &sample, 1);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "epoch-boundary", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "epoch-boundary", vec3(0, 0, 0), &voice), AUDIO_OK);
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    u32 slot = (voice & 0xFFu) - 1u;
+    ASSERT_EQ(ext->voices[slot].epoch, 1u);
+    ext->voices[slot].epoch = UINT64_MAX - 1u;
+    ASSERT_EQ(audio_event_trigger(as, "epoch-boundary", vec3(0, 0, 0), &voice), AUDIO_OK);
+    ASSERT_EQ(ext->voices[slot].epoch, UINT64_MAX);
+    u64 snapshot = atomic_load(&ext->voices[slot].spatial_snapshot);
+    u32 serial = ext->voices[slot].serial;
+    u64 order = ext->voices[slot].order;
+    ASSERT_EQ(audio_event_trigger(as, "epoch-boundary", vec3(0, 0, 0), &voice),
+              AUDIO_OVERLOAD);
+    ASSERT_EQ(ext->voices[slot].epoch, UINT64_MAX);
+    ASSERT_EQ(ext->voices[slot].serial, serial);
+    ASSERT_EQ(ext->voices[slot].order, order);
+    ASSERT_EQ(atomic_load(&ext->voices[slot].spatial_snapshot), snapshot);
+    ASSERT_EQ(voice, 0u);
+    audio_system_destroy(as);
+}
+
+TEST(extended_stereo_clip_preserves_interleaved_pcm)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {0.25f, -0.5f, 0.75f, -1.0f};
+    AudioPcmDesc pcm = mono_pcm(samples, 2);
+    pcm.channels = 2;
+    AudioClipHandle clip = 0;
+    ASSERT_EQ(audio_clip_register(as, "stereo-clip", &pcm, &clip), AUDIO_OK);
+    AudioEventDesc desc = make_event_desc(clip);
+    ASSERT_EQ(audio_event_register(as, "stereo-event", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "stereo-event", vec3(0, 0, 0), &voice), AUDIO_OK);
+    f32 output[4];
+    ASSERT_EQ(audio_system_render(as, output, 2), AUDIO_OK);
+    for (u32 i = 0; i < 4; ++i) ASSERT_FLOAT_EQ(output[i], samples[i], 1e-6f);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -945,4 +1097,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bus_nonfinite_gain_is_rejected_consistently);
     RUN_TEST(event_registration_distinguishes_stale_clip);
     RUN_TEST(legacy_decoded_play_3d_doppler_changes_pcm);
+    RUN_TEST(trigger_position_before_first_drain_uses_latest_revision);
+    RUN_TEST(listener_before_first_drain_uses_latest_revision);
+    RUN_TEST(restart_position_before_drain_uses_latest_revision);
+    RUN_TEST(music_zero_fade_replay_update_waits_for_start);
+    RUN_TEST(epoch_max_retires_voice_without_wrapping_to_zero);
+    RUN_TEST(extended_stereo_clip_preserves_interleaved_pcm);
 TEST_MAIN_END()
