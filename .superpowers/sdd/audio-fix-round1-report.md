@@ -190,3 +190,94 @@ git diff --check df8fc32e..HEAD
 ## 限制
 
 没有真实声卡或实际听测证据，也没有 Windows/macOS 或第三轮独立评审。测试使用 fake 确定性 PCM 和真实 miniaudio null 后端生命周期；退休与 revision 边界采用测试 TU 内注入，不是等待自然 64-bit 回绕。
+
+
+# P10 fix round 3
+
+日期：2026-11-05
+基线：`12fefa2e`
+复审输入：`.superpowers/sdd/review-fix2-findings.md` 全部条目
+
+## 修复
+
+提交：`e2157bf4` `audio: make spatial snapshot updates atomic`
+
+- START 初始 gain 改为单次整快照 `atomic_compare_exchange_strong`。expected 同时验证 revision 和 spatial_epoch；GameThread 在 load 与 CAS 之间发布新 revision 时 CAS 失败，不重试、不写旧 START。
+- GameThread 的 START 与 position 发布也使用整快照 CAS，避免 callback/GameThread 双向丢失更新。
+- 新增 `spatial_epoch`。voice_read 只在它等于 `playing_epoch` 时采用新快照，否则保留 callback 私有的 `applied_spatial_gain`，所以 RESTART 待消费期间，新 epoch position/listener 不会立即调制旧 PCM。
+- revision 在 voice 生命周期内单调递增，不再随 epoch 重置。达到 UINT32_MAX 后 position 和新 START 均返回 `AUDIO_OVERLOAD`，不回绕。epoch 0/max 退休政策保持不变。
+- `test_audio_extended` 专用编译钩子可在 load 与 CAS 之间确定性注入 revision 更新；正式 engine 不包含该钩子。
+
+## RED / GREEN / 变异
+
+- 受控 CAS 交错、held-command 旧 epoch PCM、revision max 三项首次结果为 36/39。修复后 39/39。
+- revision 注入最初只改主线程 revision，CAS 正确拒绝不一致快照；测试改为同时注入匹配 snapshot 后，验证 max-1→max 成功、max 后 position/START 拒绝且 snapshot/epoch 不变。
+- 将初始 CAS 退化为 store 的生产变异为 38/39，受控 CAS 交错再次覆盖旧 gain；恢复后通过。
+- 移除 voice_read epoch 匹配的变异为 38/39，held old PCM 再次使用新 epoch 增益；恢复后通过。
+- 最终既有 `test_audio` 17/17、`test_audio_extended` 39/39、`test_audio_dsp` 10/10。
+
+## 命令与真实输出
+
+normal：
+
+```bash
+cmake --build build-p10-audio -j6 --target test_audio test_audio_extended test_audio_dsp engine
+ctest --test-dir build-p10-audio -R 'test_audio' --output-on-failure
+```
+
+```text
+1/4 test_audio ....................... Passed    0.00 sec
+2/4 test_audio_extended .............. Passed    0.05 sec
+3/4 test_audio_dsp ................... Passed    0.00 sec
+4/4 test_audio_realtime_contract ..... Passed    0.01 sec
+100% tests passed, 0 tests failed out of 4
+engine: Built target engine
+```
+
+ASan+UBSan：
+
+```bash
+cmake -S engine -B build-p10-audio-asan -DENGINE_RHI_BACKEND=opengl -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
+cmake --build build-p10-audio-asan -j6 --target test_audio test_audio_extended test_audio_dsp
+ctest --test-dir build-p10-audio-asan -R 'test_audio' --output-on-failure
+```
+
+```text
+1/4 test_audio ....................... Passed    0.01 sec
+2/4 test_audio_extended .............. Passed    0.11 sec
+3/4 test_audio_dsp ................... Passed    0.01 sec
+4/4 test_audio_realtime_contract ..... Passed    0.01 sec
+100% tests passed, 0 tests failed out of 4
+```
+
+无 ASan/UBSan 报告。
+
+TSan：
+
+```bash
+cmake -S engine -B build-p10-audio-tsan -DENGINE_RHI_BACKEND=opengl -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_TSAN=ON
+cmake --build build-p10-audio-tsan -j6 --target test_audio test_audio_extended test_audio_dsp
+ctest --test-dir build-p10-audio-tsan -R 'test_audio' --output-on-failure
+```
+
+```text
+1/4 test_audio ....................... Passed    0.01 sec
+2/4 test_audio_extended .............. Passed    0.40 sec
+3/4 test_audio_dsp ................... Passed    0.01 sec
+4/4 test_audio_realtime_contract ..... Passed    0.01 sec
+100% tests passed, 0 tests failed out of 4
+```
+
+无 TSan 报告。受控交错行为断言不依赖 TSan 发现逻辑竞态。
+
+差异检查：
+
+```bash
+git diff --check 12fefa2e..HEAD
+```
+
+通过，无输出。未 push。
+
+## 限制
+
+没有真实设备、实际听测、Windows/macOS 或第四轮独立评审证据。CAS/epoch 交错由测试 TU 内受控注入验证，边界同样通过注入覆盖，不是依赖概率性线程调度。

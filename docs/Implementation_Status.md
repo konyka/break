@@ -1,3 +1,9 @@
+## 本轮更新：P10 fix round 3（2026-11-05）
+
+- **修复**：START 初始空间增益和 GameThread 发布均使用整快照 CAS，load/CAS 间的新 revision 不会被旧 START 覆盖。新增 spatial_epoch 与 callback 私有 applied gain，RESTART 待消费时旧 PCM 不采用新 epoch 快照。revision 单调递增，max 后 position/START 拒绝；epoch 0/max 退休政策不变。
+- **验证**：`test_audio_extended` 39/39、`test_audio_dsp` 10/10、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。受控 CAS/epoch 交错先 RED，两个生产变异均 38/39 后恢复；revision 边界真实注入通过。提交 `e2157bf4`，`git diff --check 12fefa2e..HEAD` 通过。
+- **证据与限制**：真实输出已追加到 `.superpowers/sdd/audio-fix-round1-report.md` 的 round 3 部分。未做真实设备/听测、Windows/macOS 或第四轮独立评审。
+
 ## 本轮更新：P10 fix round 2（2026-11-05）
 
 - **修复**：空间快照以单原子 64-bit revision+gain 防止旧 START 覆盖较新 position/listener；回调发布 started_epoch，音乐 update 未确认当前 START 已消费前不读旧 cursor。epoch 0 保留为无效，max-1→max 允许，max 后 voice 退休并返回 OVERLOAD，不绕回或复用完成身份。补 reverb.mix 非有限、delay/reverb stereo 和 extended stereo clip PCM。
