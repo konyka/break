@@ -34,10 +34,14 @@ Arguments are whitespace-separated; a token may be double-quoted to contain spac
 
 ## Notes
 
+A located list row may extend beyond the list viewport. Its centre can therefore be outside the clickable area even though `move_to` resolves it. Filter the target into the first fully visible row before clicking. On Windows, clicking an unfiltered `Theme: Light` row near the clipped bottom failed; `type "Theme: Light"` followed by `move_to "editor-palette-list@Theme: Light" 0.5 0.5` succeeded. This was a script targeting error, not an engine input defect.
+
 If the X server's vsync present path stalls (seen on this host: `glxgears` at about 1.4 FPS), the OpenGL backend waits in `glXSwapBuffers` and a script times out; run with `vblank_mode=0`.
 
 `expect log_contains` matches the translated console text, and the editor picks its language from the locale (`LANG` etc.). The scripts in the evidence directory expect English lines, so pass `--lang en-US` (checked: `full.txt` exits 0 under `LANG=zh_CN.UTF-8` with the flag, and fails at the `log_contains` step without it).
 
+Windows/OpenGL evidence (2026-11-02, NVIDIA 621.01): the real input path adds and selects an entity, switches tools, duplicates, undoes and toggles wireframe. Mouse selection of a filtered palette row switches to the light theme; keyboard activation switches back to dark. The screenshots show both modes, the scratch settings file records `theme=light`, and a fresh process restores it. All script expectations pass.
+
 ## Not covered
 
-IME preedit/composition, drag-and-drop, multi-window, recording scripts from real input, Windows/macOS. The window still needs a running display; this is a developer/live tool, not a CI lane.
+IME preedit/composition, drag-and-drop, multi-window, recording scripts from real input, native macOS execution. The window still needs a running display; this is a developer/live tool, not a CI lane.
