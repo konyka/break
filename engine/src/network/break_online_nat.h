@@ -21,6 +21,7 @@ typedef struct BreakNatCoordinatorConfig {
     BreakOnlineAuthSource auth;
     BreakNatClockMsFn clock;
     void *clock_user;
+    u8 challenge_key[32];
 } BreakNatCoordinatorConfig;
 
 typedef struct BreakNatEndpointConfig {

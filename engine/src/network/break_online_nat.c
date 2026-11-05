@@ -11,8 +11,8 @@
 #include <string.h>
 
 #define NAT_DISCOVER_SIZE 16u
-#define NAT_CHALLENGE_SIZE 24u
-#define NAT_HELLO_SIZE 64u
+#define NAT_CHALLENGE_SIZE 32u
+#define NAT_HELLO_SIZE 72u
 #define NAT_WELCOME_SIZE 56u
 #define NAT_PUNCH_SIZE 106u
 #define NAT_PING_SIZE 24u
@@ -30,14 +30,6 @@ typedef enum NatMessageKind {
     NAT_CHALLENGE = 7,
     NAT_CLOSE = 8
 } NatMessageKind;
-
-typedef struct NatChallenge {
-    bool used;
-    u64 session;
-    u64 nonce;
-    u64 expires_at;
-    NetAddress source;
-} NatChallenge;
 
 typedef struct NatPeer {
     bool used;
@@ -71,7 +63,7 @@ struct BreakNatCoordinator {
     BreakNatClockMsFn clock;
     void *clock_user;
     BreakOnlineInbox *inbox;
-    NatChallenge *challenges;
+    u8 challenge_key[32];
     NatPeer *peers;
     NatPair *pairs;
     u32 max_peers;
@@ -223,19 +215,34 @@ static bool nat_mac(BreakOnlineSessionKeyFn key_fn, void *key_user, u64 session,
 #endif
 }
 
-static bool nat_random(u8 out[8])
+static bool nat_mac_key(const u8 key[32], const u8 *data, usize size, u8 out[32])
 {
 #ifdef BREAK_ENABLE_CRYPTO
-    u32 attempt;
-    for (attempt = 0u; attempt < 4u; ++attempt) {
-        if (!break_crypto_random(out, 8u)) return false;
-        if (get_u64(out) != 0u) return true;
-    }
-    return false;
+    return break_crypto_hmac_sha256(key, 32u, data, size, out);
 #else
-    (void)out;
+    (void)key; (void)data; (void)size; (void)out;
     return false;
 #endif
+}
+
+static bool nat_challenge_nonce(const BreakNatCoordinator *coordinator,
+                                u64 session, const NetAddress *source,
+                                u64 expires_at, u8 out[8])
+{
+    u8 material[34];
+    u8 tag[32];
+    usize host_size = strlen(source->host);
+    bool ok;
+    if (!host_size || host_size >= NAT_HOST_SIZE || !source->port) return false;
+    memset(material, 0, sizeof(material));
+    put_u64(material, session);
+    memcpy(material + 8u, source->host, host_size);
+    put_u16(material + 24u, source->port);
+    put_u64(material + 26u, expires_at);
+    ok = nat_mac_key(coordinator->challenge_key, material, sizeof(material), tag);
+    if (ok) memcpy(out, tag, 8u);
+    nat_wipe(tag, sizeof(tag));
+    return ok && get_u64(out) != 0u;
 }
 
 static bool nat_tag_equal(const u8 left[32], const u8 right[32])
@@ -326,50 +333,21 @@ static BreakRuntimeError coordinator_discover(BreakNatCoordinator *coordinator,
                                               const BreakOnlineDatagram *datagram)
 {
     u64 session = get_u64(datagram->bytes + 8u);
-    u32 i;
-    NatChallenge *challenge = NULL;
+    u64 now;
+    u64 expires_at;
+    u64 nonce;
     u8 packet[NAT_CHALLENGE_SIZE];
     if (!session) return BREAK_RUNTIME_REJECTED;
-    for (i = 0u; i < coordinator->max_peers; ++i) {
-        if (coordinator->challenges[i].used &&
-            coordinator->challenges[i].session == session) {
-            challenge = &coordinator->challenges[i];
-            break;
-        }
-    }
-    if (!challenge) {
-        for (i = 0u; i < coordinator->max_peers; ++i) {
-            if (!coordinator->challenges[i].used) {
-                challenge = &coordinator->challenges[i];
-                break;
-            }
-        }
-    }
-    if (!challenge) return BREAK_RUNTIME_OVERLOAD;
-    if (!challenge->used) {
-        u64 nonce;
-        u64 now = coordinator->clock(coordinator->clock_user);
-        if (!nat_random((u8 *)&nonce) || now > UINT64_MAX - NAT_CHALLENGE_TTL_MS) {
-            return BREAK_RUNTIME_FAILED;
-        }
-        make_header(packet, NAT_CHALLENGE);
-        put_u64(packet + 8u, session);
-        put_u64(packet + 16u, nonce);
-        {
-            BreakRuntimeError result = send_datagram(coordinator->socket,
-                &datagram->source, packet, sizeof(packet));
-            if (result != BREAK_RUNTIME_OK) return result;
-        }
-        challenge->used = true;
-        challenge->session = session;
-        challenge->nonce = nonce;
-        challenge->source = datagram->source;
-        challenge->expires_at = now + NAT_CHALLENGE_TTL_MS;
-        return BREAK_RUNTIME_OK;
-    }
+    now = coordinator->clock(coordinator->clock_user);
+    if (now > UINT64_MAX - NAT_CHALLENGE_TTL_MS) return BREAK_RUNTIME_FAILED;
+    expires_at = (now / NAT_CHALLENGE_TTL_MS) * NAT_CHALLENGE_TTL_MS +
+                 NAT_CHALLENGE_TTL_MS;
+    if (!nat_challenge_nonce(coordinator, session, &datagram->source,
+                             expires_at, (u8 *)&nonce)) return BREAK_RUNTIME_FAILED;
     make_header(packet, NAT_CHALLENGE);
     put_u64(packet + 8u, session);
-    put_u64(packet + 16u, challenge->nonce);
+    put_u64(packet + 16u, nonce);
+    put_u64(packet + 24u, expires_at);
     return send_datagram(coordinator->socket, &datagram->source,
                          packet, sizeof(packet));
 }
@@ -380,7 +358,7 @@ static bool exact_hello_duplicate(const NatPeer *peer,
 {
     return peer->hello_challenge == challenge && peer->hello_sequence == sequence &&
            net_address_equal(&peer->hello_source, &datagram->source) &&
-           memcmp(peer->hello_tag, datagram->bytes + 32u, 32u) == 0;
+           memcmp(peer->hello_tag, datagram->bytes + 40u, 32u) == 0;
 }
 
 static BreakRuntimeError coordinator_hello(BreakNatCoordinator *coordinator,
@@ -388,18 +366,23 @@ static BreakRuntimeError coordinator_hello(BreakNatCoordinator *coordinator,
 {
     u64 session = get_u64(datagram->bytes + 8u);
     u64 challenge_nonce = get_u64(datagram->bytes + 16u);
-    u64 sequence = get_u64(datagram->bytes + 24u);
+    u64 expires_at = get_u64(datagram->bytes + 24u);
+    u64 sequence = get_u64(datagram->bytes + 32u);
     BreakOnlineIdentity identity;
-    NatChallenge *challenge = NULL;
     NatPeer *peer = NULL;
     BreakReplayWindow window;
+    u8 expected_nonce[8];
     u32 i;
     bool new_challenge;
-    if (!session || !challenge_nonce || !sequence ||
+    if (!session || !challenge_nonce || !expires_at || !sequence ||
+        coordinator->clock(coordinator->clock_user) >= expires_at ||
+        !nat_challenge_nonce(coordinator, session, &datagram->source,
+                             expires_at, expected_nonce) ||
+        memcmp(expected_nonce, &challenge_nonce, sizeof(expected_nonce)) != 0 ||
         !coordinator->auth.authenticate(coordinator->auth.user, session, &identity) ||
         !identity.session_id || !identity.player_id ||
         !nat_verify(coordinator->auth.session_key, coordinator->auth.user, session,
-                    datagram->bytes, 32u)) {
+                    datagram->bytes, 40u)) {
         return BREAK_RUNTIME_REJECTED;
     }
     for (i = 0u; i < coordinator->max_peers; ++i) {
@@ -412,16 +395,7 @@ static BreakRuntimeError coordinator_hello(BreakNatCoordinator *coordinator,
         BreakOnlineHandle handle = {i, peer->generation};
         return send_welcome(coordinator, &datagram->source, session, handle);
     }
-    for (i = 0u; i < coordinator->max_peers; ++i) {
-        if (coordinator->challenges[i].used &&
-            coordinator->challenges[i].session == session) {
-            challenge = &coordinator->challenges[i];
-            break;
-        }
-    }
-    if (!challenge || challenge->nonce != challenge_nonce ||
-        !net_address_equal(&challenge->source, &datagram->source) ||
-        (peer && peer->paired && !net_address_equal(&peer->observed, &datagram->source))) {
+    if (peer && peer->paired && !net_address_equal(&peer->observed, &datagram->source)) {
         return BREAK_RUNTIME_REJECTED;
     }
     new_challenge = !peer || peer->hello_challenge != challenge_nonce;
@@ -468,8 +442,7 @@ static BreakRuntimeError coordinator_hello(BreakNatCoordinator *coordinator,
         peer->hello_challenge = challenge_nonce;
         peer->hello_sequence = sequence;
         peer->hello_source = datagram->source;
-        memcpy(peer->hello_tag, datagram->bytes + 32u, 32u);
-        challenge->used = false;
+        memcpy(peer->hello_tag, datagram->bytes + 40u, 32u);
     }
     return BREAK_RUNTIME_OK;
 }
@@ -516,6 +489,8 @@ BreakRuntimeError break_nat_coordinator_create(
 {
     BreakNatCoordinator *coordinator;
     BreakRuntimeError result;
+    u32 i;
+    bool key_nonzero = false;
     if (!out) return BREAK_RUNTIME_INVALID;
     *out = NULL;
     if (!socket || !config || !config->max_peers || !config->max_pairs ||
@@ -524,19 +499,20 @@ BreakRuntimeError break_nat_coordinator_create(
         !config->auth.authenticate || !config->auth.session_key || !config->clock) {
         return BREAK_RUNTIME_INVALID;
     }
+    for (i = 0u; i < 32u; ++i) {
+        if (config->challenge_key[i] != 0u) key_nonzero = true;
+    }
+    if (!key_nonzero) return BREAK_RUNTIME_INVALID;
 #ifndef BREAK_ENABLE_CRYPTO
     return BREAK_RUNTIME_REJECTED;
 #else
     coordinator = (BreakNatCoordinator *)calloc(1u, sizeof(*coordinator));
     if (!coordinator) return BREAK_RUNTIME_OOM;
-    coordinator->challenges = (NatChallenge *)calloc(config->max_peers,
-                                                      sizeof(*coordinator->challenges));
     coordinator->peers = (NatPeer *)calloc(config->max_peers, sizeof(*coordinator->peers));
     coordinator->pairs = (NatPair *)calloc(config->max_pairs, sizeof(*coordinator->pairs));
-    if (!coordinator->challenges || !coordinator->peers || !coordinator->pairs) {
+    if (!coordinator->peers || !coordinator->pairs) {
         free(coordinator->pairs);
         free(coordinator->peers);
-        free(coordinator->challenges);
         free(coordinator);
         return BREAK_RUNTIME_OOM;
     }
@@ -544,7 +520,6 @@ BreakRuntimeError break_nat_coordinator_create(
     if (result != BREAK_RUNTIME_OK) {
         free(coordinator->pairs);
         free(coordinator->peers);
-        free(coordinator->challenges);
         free(coordinator);
         return result;
     }
@@ -555,6 +530,8 @@ BreakRuntimeError break_nat_coordinator_create(
     coordinator->clock_user = config->clock_user;
     coordinator->max_peers = config->max_peers;
     coordinator->max_pairs = config->max_pairs;
+    memcpy(coordinator->challenge_key, config->challenge_key,
+           sizeof(coordinator->challenge_key));
     *out = coordinator;
     return BREAK_RUNTIME_OK;
 #endif
@@ -566,7 +543,6 @@ void break_nat_coordinator_destroy(BreakNatCoordinator *coordinator)
     break_online_inbox_destroy(coordinator->inbox);
     free(coordinator->pairs);
     free(coordinator->peers);
-    free(coordinator->challenges);
     free(coordinator);
 }
 
@@ -586,12 +562,6 @@ BreakRuntimeError break_nat_coordinator_poll(BreakNatCoordinator *coordinator,
     u32 i;
     u32 processed = 0u;
     if (!coordinator_owner(coordinator)) return BREAK_RUNTIME_REJECTED;
-    for (i = 0u; i < coordinator->max_peers; ++i) {
-        if (coordinator->challenges[i].used &&
-            coordinator->clock(coordinator->clock_user) >= coordinator->challenges[i].expires_at) {
-            coordinator->challenges[i].used = false;
-        }
-    }
     for (i = 0u; i < coordinator->max_pairs; ++i) {
         NatPair *pair = &coordinator->pairs[i];
         if (pair->used && pair->ack_mask != 3u &&
@@ -888,17 +858,18 @@ static BreakRuntimeError endpoint_challenge(BreakNatEndpoint *endpoint,
 {
     u8 packet[NAT_HELLO_SIZE];
     BreakRuntimeError result;
+    u64 expires_at = get_u64(datagram->bytes + 24u);
     if (endpoint->registered ||
         !net_address_equal(&datagram->source, &endpoint->coordinator) ||
-        get_u64(datagram->bytes + 8u) != endpoint->session) {
+        get_u64(datagram->bytes + 8u) != endpoint->session || !expires_at) {
         return BREAK_RUNTIME_REJECTED;
     }
     make_header(packet, NAT_HELLO);
     put_u64(packet + 8u, endpoint->session);
-    memcpy(packet + 16u, datagram->bytes + 16u, 8u);
-    put_u64(packet + 24u, 1u);
+    memcpy(packet + 16u, datagram->bytes + 16u, 16u);
+    put_u64(packet + 32u, 1u);
     if (!nat_mac(endpoint->session_key, endpoint->session_key_user, endpoint->session,
-                 packet, 32u, packet + 32u)) return BREAK_RUNTIME_FAILED;
+                 packet, 40u, packet + 40u)) return BREAK_RUNTIME_FAILED;
     result = send_datagram(endpoint->socket, &endpoint->coordinator,
                            packet, sizeof(packet));
     return result;

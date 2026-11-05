@@ -224,6 +224,7 @@ static bool nat_fixture_init(NatFixture *fixture, u32 max_peers, u32 max_pairs)
 {
     BreakNatCoordinatorConfig coordinator_config;
     BreakNatEndpointConfig endpoint_config;
+    u32 i;
     memset(fixture, 0, sizeof(*fixture));
     fixture->coordinator_socket = net_udp_create(0);
     fixture->a_socket = net_udp_create(0);
@@ -258,6 +259,7 @@ static bool nat_fixture_init(NatFixture *fixture, u32 max_peers, u32 max_pairs)
     fixture->auth.identities[3] = 1044u;
     fixture->auth.count = 4u;
     memset(&coordinator_config, 0, sizeof(coordinator_config));
+    for (i = 0u; i < 32u; ++i) coordinator_config.challenge_key[i] = (u8)(i * 7u + 3u);
     coordinator_config.max_peers = max_peers;
     coordinator_config.max_pairs = max_pairs;
     coordinator_config.queue_capacity = 32u;
@@ -694,8 +696,8 @@ TEST(nat_captured_valid_hello_replay_from_other_socket_is_rejected)
     NetAddress observed;
     NetAddress source;
     u8 discover[16] = {0};
-    u8 challenge[24];
-    u8 hello[64] = {0};
+    u8 challenge[32];
+    u8 hello[72] = {0};
     u8 key[32];
     i32 size;
     ASSERT_TRUE(nat_fixture_init(&fixture, 2u, 1u));
@@ -713,10 +715,10 @@ TEST(nat_captured_valid_hello_replay_from_other_socket_is_rejected)
     memcpy(hello, "BRN1", 4u);
     hello[4] = 1u;
     put_test_u64(hello + 8u, 11u);
-    memcpy(hello + 16u, challenge + 16u, 8u);
-    put_test_u64(hello + 24u, 1u);
+    memcpy(hello + 16u, challenge + 16u, 16u);
+    put_test_u64(hello + 32u, 1u);
     ASSERT_TRUE(directory_key(&fixture.auth, 11u, key));
-    ASSERT_TRUE(break_crypto_hmac_sha256(key, sizeof(key), hello, 32u, hello + 32u));
+    ASSERT_TRUE(break_crypto_hmac_sha256(key, sizeof(key), hello, 40u, hello + 40u));
     ASSERT_EQ(net_sendto(fixture.a_socket, hello, sizeof(hello),
                          &fixture.coordinator_address), (i32)sizeof(hello));
     (void)break_nat_coordinator_receive_socket(fixture.coordinator, 1u);
@@ -897,6 +899,28 @@ TEST(nat_older_close_cannot_rollback_high_water)
     nat_fixture_dispose(&fixture);
 }
 
+TEST(nat_forged_discover_flood_does_not_block_legitimate_registration)
+{
+    NatFixture fixture;
+    u8 discover[16] = {0};
+    u32 i;
+    ASSERT_TRUE(nat_fixture_init(&fixture, 2u, 1u));
+    memcpy(discover, "BRN1", 4u);
+    discover[4] = 6u;
+    for (i = 0u; i < 8u; ++i) {
+        put_test_u64(discover + 8u, 1000u + i);
+        ASSERT_EQ(net_sendto(fixture.attacker_socket, discover, sizeof(discover),
+                             &fixture.coordinator_address), (i32)sizeof(discover));
+    }
+    (void)break_nat_coordinator_receive_socket(fixture.coordinator, 32u);
+    (void)break_nat_coordinator_poll(fixture.coordinator, 32u);
+    ASSERT_EQ(break_nat_peer_hello(fixture.a), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_nat_peer_hello(fixture.b), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(nat_pump_until_registered(&fixture));
+    ASSERT_EQ(break_nat_coordinator_peer_count(fixture.coordinator), 2u);
+    nat_fixture_dispose(&fixture);
+}
+
 TEST(network_subsystem_initializes)
 {
     ASSERT_TRUE(net_init());
@@ -925,5 +949,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(nat_captured_punch_after_local_expiry_cannot_rearm);
     RUN_TEST(nat_two_close_cycles_reject_oldest_punch);
     RUN_TEST(nat_older_close_cannot_rollback_high_water);
+    RUN_TEST(nat_forged_discover_flood_does_not_block_legitimate_registration);
     net_shutdown();
 TEST_MAIN_END()
