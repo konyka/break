@@ -108,11 +108,13 @@ void ragdoll_write_pose(const Ragdoll *rd, const PhysicsWorld *pw, Skeleton *sk)
 ## 5. 错误、容量与生命周期
 
 - 约束满、骨体容量不足、非法描述、非法父关系均失败，不静默截断。
-- 持久 body/constraint 身份均为 `{index,generation}`。park 递增 body generation 并解绑关联约束；constraint remove 递增 slot generation 并唤醒有效动态端点。求解、remove、write、revive、deactivate 都校验 generation，旧所有者不能操作复用后的新对象。
+- 持久 body/constraint 身份均为 `{index,generation}`。park 递增 body generation 并解绑关联约束；constraint remove 递增 slot generation 并唤醒有效动态端点。求解、remove、write、revive、deactivate 及 main 的持久消费者都校验 generation，旧所有者不能操作复用后的新对象；main 对 stale 身份明确重建或跳过。revive 只接受当前 generation，scene/main 恢复时显式构造当前 tombstone 句柄。
+- body/constraint generation 到达 `UINT32_MAX` 后不再回绕：slot 永久标记 `retired`，创建跳过，resolve/revive/remove 拒绝退休身份，避免最早句柄再次有效。
 - 布娃娃创建按“新增槽 + 可复用 tombstone”计算可用容量；中途失败直接恢复受影响 slot 原值和计数，不用 park 代替完整回滚。
 - `physics_step` 的 dt、body create/revive 的 position/extent/mass/shape、pose、impulse、push、vehicle create/step 输入在任意写入前验证有限性，NaN/±Inf 原子拒绝；负有限 extent 继续既有 clamp。
 - 约束/骨体销毁幂等；布娃娃停用只移除自己拥有的约束，不影响世界中已有约束。
-- 载具和布娃娃热路径均无 `malloc/calloc/realloc/free`；世界创建/销毁维持现有分配边界。Lua 绑定在 bind/shutdown 分配固定容量 serial/generation 映射，保留既有数字 id ABI。
+- 载具和布娃娃热路径均无 `malloc/calloc/realloc/free`；世界创建/销毁维持现有分配边界。Lua 在 bind/shutdown 管理固定容量 serial/generation/epoch/retired 映射，保留既有数字 id ABI；同一世界重绑保留映射，换世界或失败重绑后不再把未登记 serial 0 的 raw id 自动绑定到当前 occupant。
+- Lua spawn 在 `physics_body_create` 前镜像其 slot 选择并验证映射、serial 和 public id 可分配；serial/public id 耗尽退休映射 slot。预检成功后只提交确定性映射，不在创建失败后用 park 回滚，因此分配失败不改变物理世界。
 - GameThread 独占所有可变状态。
 
 ## 6. 验证与变异

@@ -119,3 +119,76 @@ CTest 选择：
 - 布娃娃最多 32 骨，假定可分解、非剪切 TRS 绑定；没有自动人体骨生成或专用自碰撞过滤组。
 - 线性约束速度仍使用现有质心速度模型，不是完整接触/关节耦合张量求解器。
 - 证据范围为 Linux/GCC focused 非图形测试，未声称全仓、Windows、真机 GPU 或交互视觉验收。
+
+---
+
+# P5 fix round 2 完整修复报告
+
+- 日期：2026-11-05
+- 基线：`b71f1571`
+- 关键实现提交：`a8bf403f`（`physics: close identity and Lua allocation gaps`）
+范围：`review-fix1-findings.md` 的全部开放项；round 1 已 ADDRESSED 的七项由同一 focused 套件回归，未 push。
+
+## main 持久身份与真实编译阻断
+
+- RED：`cmake --build build-physics-normal -j3 --target engine_demo` 在 `main.c:317-323` 失败，`PhysicsBodyHandle` 被直接用作数组下标并与整数比较，真实复现 reviewer 的 New Critical 1。
+- transform 同步改为先 `physics_body_resolve`，只通过解析后的 body 和 `pid.index` 访问派生插值数组；stale 身份跳过。
+- dangling 创建、live-set、elevator、编辑/调试/布局/克隆等持久消费者统一 resolve。dangling 路径明确重建，live-set 只收录可解析身份，其余 stale 路径跳过；最终复核还修正了克隆路径 resolve 后未检查空指针的问题。
+- GREEN：normal、ASan+UBSan、TSan 三棵树的 `engine_demo` 均实际编译并链接成功，不再只构建不含 `main.c` 的 `engine` 库。
+
+## revive、scene 与 generation 耗尽
+
+文件：`engine/src/physics/physics.[ch]`、`engine/src/main.c`、`engine/tests/test_physics_identity.c`、`engine/tests/test_scene_state.c`。
+
+- `physics_body_revive` 对 live 和 parked tombstone 统一要求 generation 完全一致，删除 parked 的 stale 旁路。
+- scene/main 恢复显式从当前 tombstone 构造 `{index,current_generation}`；若 slot 已有新 occupant 或已退休则跳过，不借旧所有者身份恢复。
+- body/constraint generation 到达 `UINT32_MAX` 后返回退休标记而不是 1；`retired` slot 不参与创建复用，resolve/revive/remove 拒绝退休身份，旧 `{slot,1}` 不会因回绕重新有效。
+- RED/变异证据：恢复 parked 任意 generation 旁路时 identity `3 passed, 1 failed`，旧 handle 被错误接受；把耗尽后的 generation 改回 1 时同样 `3 passed, 1 failed`，退休断言失败。
+- GREEN：`test_physics_identity` `4/4`，覆盖旧 tombstone 拒绝、当前 tombstone 可恢复及 body/constraint 近上限退休。`test_scene_state` `11/11`，覆盖当前 tombstone 的正常场景恢复；scene 原本已显式使用当前 generation，因此该项是既有正确行为的表征测试，不虚构独立 RED。
+
+## Lua rebind、serial 与 spawn 原子性
+
+文件：`engine/src/script/script_lua.[ch]`、`engine/tests/test_script_lua.c`。
+
+最终夹具 RED：`test_script_lua` 为 `24 passed, 7 failed, 30 total`，实际覆盖：
+
+- 容量 1 时 `2^32+1` 的 serial 截断为 0 后错误操作 body 0。
+- 不同 world rebind 和 NULL/失败 rebind 后，serial 0 raw id 被重新采用；同一 world 重绑则必须继续有效。
+- serial 到 `UINT32_MAX` 后回绕并返回旧 id 1。
+- 映射不可用及 public id 超过 `0x1FFFFFFFFFFFFF` 时，创建后 park 改变完整世界快照。
+
+实现：
+
+- 同一 world/capacity 且映射完整时，rebind 保留 serial/generation/epoch/retired 数组。换 world、解绑或失败重绑会重建映射并推进 map epoch；只有 epoch 1 的初始映射允许未登记 serial 0 的 legacy raw id adoption，之后必须由当前映射显式发号。
+- 所有 body API 同时检查 serial、map epoch 和底层 generation；输入 serial 先以 `u64` 检查，超过 `UINT32_MAX` 直接拒绝，不能截断回绕。
+- spawn 在 `physics_body_create` 前镜像其“首个可复用 parked slot，否则 `pw->count`”选择，检查四个映射数组、容量、物理/映射退休状态、serial 和 public id 上限。
+- 未登记 serial 从 0 开始，已登记 serial 到 `UINT32_MAX` 后退休映射 slot；public id 超限时同样退休并返回 0，均在 body 创建前结束。
+- 预检成功后只进行确定性 serial/generation/epoch 提交；`physics_body_create` 自身失败返回 0，不再用 park 充当回滚。
+- 原子测试比较完整 `PhysicsWorld` 和整个 body 数组。public id 边界使用真实 `capacity = 2^21+1`，避免把 51 位 serial 截断为 `u32` 后形成假测试。
+- GREEN：`test_script_lua` `30/30`；shutdown 释放全部四个映射数组。
+
+## 本轮生产变异
+
+变异均临时修改生产代码、实际构建运行并恢复，未提交变异体。
+
+- 删除“只有首次映射可 adoption”门禁：Lua `28 passed, 2 failed`，不同 world 与失败 rebind 均重新接受 raw id。
+- 删除已登记 serial 耗尽检查：Lua `29 passed, 1 failed`，第二次分配返回旧 id 1。
+- generation 耗尽改回 1：identity `3 passed, 1 failed`。
+- revive 恢复 parked generation 旁路：identity `3 passed, 1 failed`。
+
+恢复后执行下述三 lane 和 `engine_demo` 验证。
+
+## 三 lane 与 engine_demo 最终验证
+
+所有构建和 CTest 均使用 `-j3`。在 round 1 的 14 个目标外加入 `test_scene_state`，CTest 正则额外包含 `test_scene_state$`；每个 lane 还单独执行对应目录的 `cmake --build ... -j3 --target engine_demo`。
+
+- `build-physics-normal`：focused `15/15`，0 失败；`engine_demo` 编译链接成功。
+- `build-physics-asan`（ASan+UBSan）：focused `15/15`，0 失败，无 ASan/LSan/UBSan 报告；`engine_demo` 编译链接成功。
+- `build-physics-tsan`：focused `15/15`，0 失败，无 ThreadSanitizer 报告；`engine_demo` 编译链接成功。
+- `git diff --check` 无错误。最终提交和工作树状态见本节之后的提交记录/交付回报。
+
+## 限制
+
+- 轮子仍为射线接触实体，不是独立刚体；不含高级轮胎、轮体侧壁或转动惯量模型，sweep 精度沿用现有 AABB 查询。
+- 布娃娃最多 32 骨，假定可分解、非剪切 TRS 绑定；没有自动人体骨生成或专用自碰撞过滤组。
+- 证据范围为 Linux/GCC focused 非图形测试及真实 `engine_demo` 构建；未运行全仓测试，未做 Windows、真机 GPU 或交互视觉验收。

@@ -292,3 +292,12 @@ Expected: 全部通过，无 ThreadSanitizer 报告。若宿主机 TSan 运行�
 - cone twist 使用当前 A-local 相对坐标；休眠在接触和约束求解后统一评估。
 - 载具使用 chassis up/forward 和有效逆惯性；共享 IK 使用 acquire/release 所有权计数。
 - 最终证据与变异输出见 `.superpowers/sdd/2026-11-02-physics-extended/physics-extended-report.md`。
+
+## Fix round 2 执行补充
+
+- main 的 transform 同步、dangling 重建、live-set、elevator、编辑/调试/布局/克隆路径统一通过 `physics_body_resolve`；stale 身份明确重建或跳过，真实 `engine_demo` 构建覆盖 `main.c`。
+- revive 对 live/tombstone 统一校验当前 generation；scene/main 显式使用当前 tombstone generation，旧 tombstone 句柄不能恢复新身份。
+- body/constraint generation 在 `UINT32_MAX` 后永久退休 slot，所有创建和解析路径拒绝退休身份，不回绕产生 ABA。
+- Lua 同一世界重绑保留 serial/generation/epoch/retired 映射；不同世界或失败重绑使旧 raw id 失效，超出 `u32` 的输入 serial 在截断前拒绝，耗尽后不再回绕。
+- Lua spawn 在 body 创建前完成 slot、映射、serial 和 public id 预检，成功后只提交映射；映射不可用及两类耗尽均以完整 `PhysicsWorld` 和 body 数组快照验证原子性。
+- `test_physics_identity` 为 `4/4`、`test_scene_state` 为 `11/11`、`test_script_lua` 为 `30/30`；normal、ASan+UBSan、TSan focused 均 `15/15`，三棵树分别构建 `engine_demo` 成功。RED、四项生产变异和限制详见上述报告。
