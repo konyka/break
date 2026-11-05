@@ -157,7 +157,7 @@ TEST(aspect_malformed_delta_never_partially_mutates_remote)
     ASSERT_EQ(break_aspect_apply(pair.remote, delta, delta_size), BREAK_RUNTIME_INVALID);
     ASSERT_EQ(break_aspect_get_u32(pair.remote, pair.object, 2u, &health), BREAK_RUNTIME_OK);
     ASSERT_EQ(health, 300u);
-    ASSERT_EQ(break_aspect_object_revision(pair.remote, pair.object), 2u);
+    ASSERT_EQ(break_aspect_object_revision(pair.remote, pair.object), 0u);
     destroy_pair(&pair);
 }
 
@@ -300,15 +300,15 @@ TEST(aspect_dormant_and_destroy_apply_changes_ghost_state)
                                   BREAK_ASPECT_BASELINE,
                                   baseline, sizeof(baseline), &baseline_size), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_aspect_apply(pair.remote, baseline, baseline_size), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object, 0u,
-                                  BREAK_ASPECT_DORMANT,
+    ASSERT_EQ(break_aspect_encode_with_epoch(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DORMANT, 2u,
                                   control, sizeof(control), &control_size), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_aspect_apply(pair.remote, control, control_size), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_aspect_active_mask(pair.remote, pair.object), 0u);
     ASSERT_EQ(break_aspect_get_u32(pair.remote, pair.object, 2u, &health),
               BREAK_RUNTIME_FAILED);
-    ASSERT_EQ(break_aspect_encode(pair.authoritative, pair.object, 0u,
-                                  BREAK_ASPECT_DESTROY,
+    ASSERT_EQ(break_aspect_encode_with_epoch(pair.authoritative, pair.object, 0u,
+                                  BREAK_ASPECT_DESTROY, 3u,
                                   control, sizeof(control), &control_size), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_aspect_apply(pair.remote, control, control_size), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_aspect_active_mask(pair.remote, pair.object), 0u);
@@ -336,11 +336,37 @@ TEST(aspect_revision_overflow_preserves_previous_value)
     packet[32] = 0xacu;
     packet[33] = 0x02u;
     ASSERT_EQ(break_aspect_apply(store, packet, sizeof(packet)), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_aspect_object_revision(store, object), UINT64_MAX);
+    ASSERT_EQ(break_aspect_object_revision(store, object), 0u);
     ASSERT_EQ(break_aspect_set_u32(store, object, 2u, 2u), BREAK_RUNTIME_OVERLOAD);
     ASSERT_EQ(break_aspect_get_u32(store, object, 2u, &health), BREAK_RUNTIME_OK);
     ASSERT_EQ(health, 300u);
-    ASSERT_EQ(break_aspect_object_revision(store, object), UINT64_MAX);
+    ASSERT_EQ(break_aspect_object_revision(store, object), 0u);
+    break_aspect_store_destroy(store);
+}
+
+TEST(aspect_smaller_epoch_is_rejected_without_revision_writeback)
+{
+    BreakAspectStore *store = make_store(1u);
+    BreakOnlineHandle object;
+    u8 packet[64];
+    u8 small[4] = {9u, 8u, 7u, 6u};
+    usize packet_size = 0u;
+    usize small_size = 88u;
+    ASSERT_NOT_NULL(store);
+    ASSERT_TRUE(register_defaults(store));
+    ASSERT_EQ(break_aspect_object_create(store, &object), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_set_u32(store, object, 2u, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_encode_with_epoch(store, object, UINT64_C(1) << 1u,
+        BREAK_ASPECT_DIRTY, 4u, packet, sizeof(packet), &packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_apply(store, packet, packet_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_object_revision(store, object), 1u);
+    ASSERT_EQ(break_aspect_encode_with_epoch(store, object, UINT64_C(1) << 1u,
+        BREAK_ASPECT_DIRTY, 3u, small, sizeof(small), &small_size), BREAK_RUNTIME_STALE);
+    ASSERT_EQ(small_size, 88u);
+    ASSERT_EQ(small[0], 9u);
+    ASSERT_EQ(break_aspect_object_revision(store, object), 1u);
+    ASSERT_EQ(break_aspect_encode_with_epoch(store, object, UINT64_C(1) << 1u,
+        BREAK_ASPECT_DIRTY, 5u, packet, sizeof(packet), &packet_size), BREAK_RUNTIME_OK);
     break_aspect_store_destroy(store);
 }
 
@@ -353,4 +379,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aspect_remote_destroy_then_gen2_create_and_adopt_works);
     RUN_TEST(aspect_dormant_and_destroy_apply_changes_ghost_state);
     RUN_TEST(aspect_revision_overflow_preserves_previous_value);
+    RUN_TEST(aspect_smaller_epoch_is_rejected_without_revision_writeback);
 TEST_MAIN_END()

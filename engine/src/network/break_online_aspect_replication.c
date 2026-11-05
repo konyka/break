@@ -392,13 +392,13 @@ static BreakRuntimeError publish(BreakAspectReplication *replication,
     }
     if (total_size > *budget) return BREAK_RUNTIME_OK;
     replication->next_delta_id = delta_id;
+    real->record_epoch = epoch;
     for (i = 0u; i < fragment_count; ++i) {
         result = replication->send(replication->send_user, connection->id,
                                    &replication->fragments[i]);
         if (result != BREAK_RUNTIME_OK) return result;
     }
     *budget -= total_size;
-    real->record_epoch = epoch;
     *out_sent = true;
     return BREAK_RUNTIME_OK;
 }

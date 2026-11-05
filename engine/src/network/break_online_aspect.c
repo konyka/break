@@ -430,7 +430,9 @@ static BreakRuntimeError set_encoded(BreakAspectStore *store,
         (type != BREAK_ASPECT_BYTES && size != 4u)) return BREAK_RUNTIME_INVALID;
     result = find_object(store, handle, &object);
     if (result != BREAK_RUNTIME_OK) return result;
-    if (object->revision == UINT64_MAX) return BREAK_RUNTIME_OVERLOAD;
+    if (object->revision == UINT64_MAX || object->record_epoch == UINT64_MAX) {
+        return BREAK_RUNTIME_OVERLOAD;
+    }
     destination = value_at(store, handle.index, aspect_id);
     if ((object->active_mask & aspect_bit(aspect_id)) != 0u &&
         store->sizes[value_index(handle.index, aspect_id)] == size &&
@@ -595,6 +597,7 @@ BreakRuntimeError break_aspect_encode_with_epoch(BreakAspectStore *store,
         kind > BREAK_ASPECT_DORMANT) return BREAK_RUNTIME_INVALID;
     result = find_object(store, handle, &object);
     if (result != BREAK_RUNTIME_OK) return result;
+    if (record_epoch < object->record_epoch) return BREAK_RUNTIME_STALE;
     if ((kind == BREAK_ASPECT_BASELINE && mask != object->active_mask) ||
         (kind == BREAK_ASPECT_DIRTY &&
          (!mask || (mask & object->active_mask) != mask)) ||
@@ -623,9 +626,11 @@ BreakRuntimeError break_aspect_encode_with_epoch(BreakAspectStore *store,
         }
     }
     if (capacity < writer.position) return BREAK_RUNTIME_OVERLOAD;
+    if (record_epoch == object->record_epoch &&
+        object->record_hash != hash_packet(writer.data, writer.position)) {
+        return BREAK_RUNTIME_STALE;
+    }
     memcpy(out, writer.data, writer.position);
-    object->record_epoch = record_epoch;
-    object->record_hash = hash_packet(writer.data, writer.position);
     *out_size = writer.position;
     return BREAK_RUNTIME_OK;
 }
@@ -640,9 +645,9 @@ BreakRuntimeError break_aspect_encode(BreakAspectStore *store,
     if (!aspect_owner(store)) return BREAK_RUNTIME_REJECTED;
     result = find_object(store, handle, &object);
     if (result != BREAK_RUNTIME_OK) return result;
-    if (object->record_epoch != 0u) {
-        if (object->record_epoch == UINT64_MAX) return BREAK_RUNTIME_OVERLOAD;
-        epoch = object->record_epoch + 1u;
+    if (kind == BREAK_ASPECT_DESTROY || kind == BREAK_ASPECT_DORMANT) {
+        if (object->revision == UINT64_MAX) return BREAK_RUNTIME_OVERLOAD;
+        epoch = object->revision + 1u;
     } else {
         epoch = object->revision;
     }
@@ -745,7 +750,6 @@ BreakRuntimeError break_aspect_apply(BreakAspectStore *store,
         if (reader.position != reader.capacity) return BREAK_RUNTIME_INVALID;
         object->active_mask = 0u;
         object->dormant = true;
-        object->revision = revision;
         object->record_epoch = revision;
         object->record_hash = packet_hash;
         return BREAK_RUNTIME_OK;
@@ -778,7 +782,6 @@ BreakRuntimeError break_aspect_apply(BreakAspectStore *store,
     new_active = kind == BREAK_ASPECT_BASELINE ? mask : object->active_mask | mask;
     object->dormant = false;
     object->active_mask = new_active;
-    object->revision = revision;
     object->record_epoch = revision;
     object->record_hash = packet_hash;
     return BREAK_RUNTIME_OK;

@@ -20,6 +20,7 @@ typedef struct SendSink {
     u32 failures;
     u32 calls;
     u32 fail_at_call;
+    u32 fail_after_record_call;
 } SendSink;
 
 static BreakRuntimeError record_send(void *user, u64 connection,
@@ -45,6 +46,11 @@ static BreakRuntimeError record_send(void *user, u64 connection,
     record->meta = *fragment;
     record->meta.data = record->bytes;
     memcpy(record->bytes, fragment->data, fragment->size);
+    if (sink->fail_after_record_call != 0u &&
+        sink->calls == sink->fail_after_record_call) {
+        sink->failures++;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
     return BREAK_RUNTIME_OK;
 }
 
@@ -626,6 +632,82 @@ TEST(aspect_replication_leave_reentry_and_out_of_order_control)
     fixture_dispose(&fixture);
 }
 
+TEST(aspect_replication_post_delivery_failure_retry_uses_new_epoch)
+{
+    ReplFixture fixture;
+    BreakOnlineHandle object;
+    BreakAoIResult aoi = {0};
+    BreakWitness witness;
+    usize offset;
+    u32 health = 0u;
+    ASSERT_TRUE(fixture_init(&fixture));
+    object = register_object(&fixture, 5u, BREAK_AOI_OBJECT_ALWAYS_RELEVANT);
+    ASSERT_TRUE(adopt_remote(fixture.remote_a, object));
+    ASSERT_EQ(break_aspect_replication_set_u32(fixture.replication, object, 2u, 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_connection_open(fixture.replication, 1u, 1024u, 512u),
+              BREAK_RUNTIME_OK);
+    memset(&witness, 0, sizeof(witness));
+    witness.radius = 10.0f;
+    witness.connection_id = 1u;
+    ASSERT_TRUE(break_aoi_compute(fixture.index, &witness, 1u, NULL, &aoi));
+    fixture.sink.fail_after_record_call = 1u;
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(fixture.sink.count, 1u);
+    offset = 0u;
+    ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, NULL));
+    ASSERT_EQ(break_aspect_get_u32(fixture.remote_a, object, 2u, &health), BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 1u);
+    ASSERT_EQ(break_aspect_replication_set_u32(fixture.replication, object, 2u, 2u),
+              BREAK_RUNTIME_OK);
+    sink_reset(&fixture.sink);
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(fixture.sink.count, 1u);
+    offset = 0u;
+    ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, NULL));
+    ASSERT_EQ(break_aspect_get_u32(fixture.remote_a, object, 2u, &health), BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 2u);
+    break_aoi_result_clear(&aoi);
+    fixture_dispose(&fixture);
+}
+
+TEST(aspect_replication_budget_failure_keeps_value_dirty_without_attempt)
+{
+    ReplFixture fixture;
+    BreakOnlineHandle object;
+    BreakAoIResult aoi = {0};
+    BreakWitness witness;
+    usize offset;
+    u32 health = 0u;
+    ASSERT_TRUE(fixture_init(&fixture));
+    object = register_object(&fixture, 5u, BREAK_AOI_OBJECT_ALWAYS_RELEVANT);
+    ASSERT_TRUE(adopt_remote(fixture.remote_a, object));
+    ASSERT_EQ(break_aspect_replication_set_u32(fixture.replication, object, 2u, 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_connection_open(fixture.replication, 1u, 1024u, 512u),
+              BREAK_RUNTIME_OK);
+    memset(&witness, 0, sizeof(witness));
+    witness.radius = 10.0f;
+    witness.connection_id = 1u;
+    ASSERT_TRUE(break_aoi_compute(fixture.index, &witness, 1u, NULL, &aoi));
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 0u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(fixture.sink.count, 0u);
+    ASSERT_EQ(break_aspect_replication_set_u32(fixture.replication, object, 2u, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(fixture.sink.count, 1u);
+    offset = 0u;
+    ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, NULL));
+    ASSERT_EQ(break_aspect_get_u32(fixture.remote_a, object, 2u, &health), BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 2u);
+    break_aoi_result_clear(&aoi);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(aspect_replication_baselines_and_per_connection_dirty_masks);
     RUN_TEST(aspect_replication_budget_priority_and_send_failure_retry);
@@ -634,4 +716,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aspect_replication_leave_retries_with_empty_aoi_after_budget);
     RUN_TEST(aspect_replication_leave_retries_with_empty_aoi_after_send_failure);
     RUN_TEST(aspect_replication_leave_reentry_and_out_of_order_control);
+    RUN_TEST(aspect_replication_post_delivery_failure_retry_uses_new_epoch);
+    RUN_TEST(aspect_replication_budget_failure_keeps_value_dirty_without_attempt);
 TEST_MAIN_END()
