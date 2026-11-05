@@ -80,6 +80,10 @@ BreakRuntimeError break_aspect_get_bytes(const BreakAspectStore *store,
 BreakRuntimeError break_aspect_encode(BreakAspectStore *store,
                                       BreakOnlineHandle object, u64 mask, u8 kind,
                                       u8 *out, usize capacity, usize *out_size);
+BreakRuntimeError break_aspect_encode_with_epoch(BreakAspectStore *store,
+                                      BreakOnlineHandle object, u64 mask, u8 kind,
+                                      u64 record_epoch, u8 *out, usize capacity,
+                                      usize *out_size);
 BreakRuntimeError break_aspect_apply(BreakAspectStore *store,
                                      const u8 *packet, usize size);
 

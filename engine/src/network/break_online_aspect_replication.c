@@ -14,6 +14,7 @@ typedef struct AspectReal {
     bool used;
     BreakOnlineHandle handle;
     BreakReplicationObject object;
+    u64 record_epoch;
 } AspectReal;
 
 typedef struct AspectConnection {
@@ -196,6 +197,8 @@ BreakRuntimeError break_aspect_object_register(
     replication->objects[handle.index].used = true;
     replication->objects[handle.index].handle = handle;
     replication->objects[handle.index].object = object;
+    replication->objects[handle.index].record_epoch =
+        break_aspect_object_revision(replication->store, handle);
     *out = handle;
     return BREAK_RUNTIME_OK;
 }
@@ -362,10 +365,13 @@ static BreakRuntimeError publish(BreakAspectReplication *replication,
     usize total_size = 0u;
     usize i;
     u64 delta_id;
+    u64 epoch;
     (void)connection_index;
     *out_sent = false;
-    result = break_aspect_encode(replication->store, real->handle, mask, kind,
-                                 replication->packet, replication->packet_capacity,
+    if (real->record_epoch == UINT64_MAX) return BREAK_RUNTIME_OVERLOAD;
+    epoch = real->record_epoch + 1u;
+    result = break_aspect_encode_with_epoch(replication->store, real->handle, mask, kind,
+                                 epoch, replication->packet, replication->packet_capacity,
                                  &packet_size);
     if (result != BREAK_RUNTIME_OK) return result;
     if (replication->next_delta_id == UINT64_MAX) return BREAK_RUNTIME_OVERLOAD;
@@ -392,6 +398,7 @@ static BreakRuntimeError publish(BreakAspectReplication *replication,
         if (result != BREAK_RUNTIME_OK) return result;
     }
     *budget -= total_size;
+    real->record_epoch = epoch;
     *out_sent = true;
     return BREAK_RUNTIME_OK;
 }

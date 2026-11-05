@@ -8,9 +8,12 @@
 
 typedef struct AspectObject {
     bool used;
+    bool dormant;
     u32 generation;
     u64 active_mask;
     u64 revision;
+    u64 record_epoch;
+    u64 record_hash;
 } AspectObject;
 
 struct BreakAspectStore {
@@ -215,6 +218,14 @@ static u64 hash_u32(u64 hash, u32 value)
 {
     u32 i;
     for (i = 0u; i < 4u; ++i) hash = hash_byte(hash, (u8)(value >> (i * 8u)));
+    return hash;
+}
+
+static u64 hash_packet(const u8 *packet, usize size)
+{
+    u64 hash = UINT64_C(14695981039346656037);
+    usize i;
+    for (i = 0u; i < size; ++i) hash = hash_byte(hash, packet[i]);
     return hash;
 }
 
@@ -570,16 +581,17 @@ static bool encode_aspect(BreakAspectStore *store, AspectWriter *writer,
     }
 }
 
-BreakRuntimeError break_aspect_encode(BreakAspectStore *store,
+BreakRuntimeError break_aspect_encode_with_epoch(BreakAspectStore *store,
                                       BreakOnlineHandle handle, u64 mask, u8 kind,
-                                      u8 *out, usize capacity, usize *out_size)
+                                      u64 record_epoch, u8 *out, usize capacity,
+                                      usize *out_size)
 {
     AspectObject *object;
     BreakRuntimeError result;
     AspectWriter writer;
     u32 aspect_id;
     if (!aspect_owner(store)) return BREAK_RUNTIME_REJECTED;
-    if (!out || !out_size || kind < BREAK_ASPECT_BASELINE ||
+    if (!out || !out_size || !record_epoch || kind < BREAK_ASPECT_BASELINE ||
         kind > BREAK_ASPECT_DORMANT) return BREAK_RUNTIME_INVALID;
     result = find_object(store, handle, &object);
     if (result != BREAK_RUNTIME_OK) return result;
@@ -600,7 +612,7 @@ BreakRuntimeError break_aspect_encode(BreakAspectStore *store,
     if (!write_bytes(&writer, "BRA1", 4u) ||
         !write_u64(&writer, break_aspect_schema_hash(store)) ||
         !write_u64(&writer, break_aspect_aoi_id(handle)) ||
-        !write_varint(&writer, object->revision) || !write_u8(&writer, kind) ||
+        !write_varint(&writer, record_epoch) || !write_u8(&writer, kind) ||
         !write_varint(&writer, mask)) return BREAK_RUNTIME_OVERLOAD;
     if (kind == BREAK_ASPECT_BASELINE || kind == BREAK_ASPECT_DIRTY) {
         for (aspect_id = 1u; aspect_id <= BREAK_ASPECT_MAX_SCHEMAS; ++aspect_id) {
@@ -612,8 +624,30 @@ BreakRuntimeError break_aspect_encode(BreakAspectStore *store,
     }
     if (capacity < writer.position) return BREAK_RUNTIME_OVERLOAD;
     memcpy(out, writer.data, writer.position);
+    object->record_epoch = record_epoch;
+    object->record_hash = hash_packet(writer.data, writer.position);
     *out_size = writer.position;
     return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_aspect_encode(BreakAspectStore *store,
+                                      BreakOnlineHandle handle, u64 mask, u8 kind,
+                                      u8 *out, usize capacity, usize *out_size)
+{
+    AspectObject *object;
+    BreakRuntimeError result;
+    u64 epoch;
+    if (!aspect_owner(store)) return BREAK_RUNTIME_REJECTED;
+    result = find_object(store, handle, &object);
+    if (result != BREAK_RUNTIME_OK) return result;
+    if (object->record_epoch != 0u) {
+        if (object->record_epoch == UINT64_MAX) return BREAK_RUNTIME_OVERLOAD;
+        epoch = object->record_epoch + 1u;
+    } else {
+        epoch = object->revision;
+    }
+    return break_aspect_encode_with_epoch(store, handle, mask, kind, epoch,
+                                          out, capacity, out_size);
 }
 
 static bool decode_aspect(BreakAspectStore *store, AspectReader *reader,
@@ -673,6 +707,7 @@ BreakRuntimeError break_aspect_apply(BreakAspectStore *store,
     u64 revision;
     u64 mask;
     u64 new_active;
+    u64 packet_hash;
     u8 kind;
     u32 aspect_id;
     if (!aspect_owner(store)) return BREAK_RUNTIME_REJECTED;
@@ -699,24 +734,23 @@ BreakRuntimeError break_aspect_apply(BreakAspectStore *store,
     handle.generation = (u32)(object_id >> 32u);
     result = find_object(store, handle, &object);
     if (result != BREAK_RUNTIME_OK) return result;
-    if (kind == BREAK_ASPECT_DESTROY || kind == BREAK_ASPECT_DORMANT) {
-        if (mask) return BREAK_RUNTIME_INVALID;
-        if (revision < object->revision) return BREAK_RUNTIME_STALE;
-        if (reader.position != reader.capacity) return BREAK_RUNTIME_INVALID;
-        if (kind == BREAK_ASPECT_DESTROY) {
-            object->used = false;
-            object->generation = retire_generation(object->generation);
-            object->active_mask = 0u;
-            object->revision = 0u;
-        } else {
-            object->active_mask = 0u;
-            object->revision = revision;
-        }
-        return BREAK_RUNTIME_OK;
-    }
-    if (revision <= object->revision || (kind == BREAK_ASPECT_DIRTY && !mask)) {
+    packet_hash = hash_packet(packet, size);
+    if (revision < object->record_epoch) return BREAK_RUNTIME_STALE;
+    if (revision == object->record_epoch) {
+        if (object->record_hash == packet_hash) return BREAK_RUNTIME_OK;
         return BREAK_RUNTIME_STALE;
     }
+    if (kind == BREAK_ASPECT_DESTROY || kind == BREAK_ASPECT_DORMANT) {
+        if (mask) return BREAK_RUNTIME_INVALID;
+        if (reader.position != reader.capacity) return BREAK_RUNTIME_INVALID;
+        object->active_mask = 0u;
+        object->dormant = true;
+        object->revision = revision;
+        object->record_epoch = revision;
+        object->record_hash = packet_hash;
+        return BREAK_RUNTIME_OK;
+    }
+    if (kind == BREAK_ASPECT_DIRTY && !mask) return BREAK_RUNTIME_STALE;
     for (aspect_id = 1u; aspect_id <= BREAK_ASPECT_MAX_SCHEMAS; ++aspect_id) {
         if ((mask & aspect_bit(aspect_id)) != 0u && !store->schema_used[aspect_id - 1u]) {
             return BREAK_RUNTIME_INVALID;
@@ -742,7 +776,10 @@ BreakRuntimeError break_aspect_apply(BreakAspectStore *store,
         }
     }
     new_active = kind == BREAK_ASPECT_BASELINE ? mask : object->active_mask | mask;
+    object->dormant = false;
     object->active_mask = new_active;
     object->revision = revision;
+    object->record_epoch = revision;
+    object->record_hash = packet_hash;
     return BREAK_RUNTIME_OK;
 }

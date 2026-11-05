@@ -311,8 +311,9 @@ TEST(aspect_dormant_and_destroy_apply_changes_ghost_state)
                                   BREAK_ASPECT_DESTROY,
                                   control, sizeof(control), &control_size), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_aspect_apply(pair.remote, control, control_size), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_active_mask(pair.remote, pair.object), 0u);
     ASSERT_EQ(break_aspect_get_u32(pair.remote, pair.object, 2u, &health),
-              BREAK_RUNTIME_STALE);
+              BREAK_RUNTIME_FAILED);
     destroy_pair(&pair);
 }
 

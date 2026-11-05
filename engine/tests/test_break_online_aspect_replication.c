@@ -536,6 +536,96 @@ TEST(aspect_replication_leave_retries_with_empty_aoi_after_send_failure)
     fixture_dispose(&fixture);
 }
 
+TEST(aspect_replication_leave_reentry_and_out_of_order_control)
+{
+    ReplFixture fixture;
+    BreakOnlineHandle object;
+    BreakAoIScope scope = {0};
+    BreakAoIResult aoi = {0};
+    BreakWitness witness;
+    BreakAoIEntityId id;
+    usize offset;
+    u8 kind = 0u;
+    u8 old_control[64];
+    usize old_control_size = 0u;
+    u32 health = 0u;
+    ASSERT_TRUE(fixture_init(&fixture));
+    object = register_object(&fixture, 5u, BREAK_AOI_OBJECT_ALWAYS_RELEVANT);
+    ASSERT_TRUE(adopt_remote(fixture.remote_a, object));
+    ASSERT_EQ(break_aspect_replication_set_u32(fixture.replication, object, 2u, 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_connection_open(fixture.replication, 1u, 1024u, 32u),
+              BREAK_RUNTIME_OK);
+    memset(&witness, 0, sizeof(witness));
+    witness.radius = 10.0f;
+    witness.connection_id = 1u;
+    ASSERT_TRUE(break_aoi_compute(fixture.index, &witness, 1u, NULL, &aoi));
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OK);
+    offset = 0u;
+    ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, &kind));
+    ASSERT_EQ(kind, BREAK_ASPECT_BASELINE);
+    id = break_aspect_aoi_id(object);
+    ASSERT_TRUE(break_aoi_scope_assign(&scope, &id, 1u));
+    ASSERT_EQ(break_aspect_replication_set_flags(fixture.replication, object, 0u),
+              BREAK_RUNTIME_OK);
+    witness.position[0] = 100.0f;
+    witness.radius = 0.0f;
+    break_aoi_result_clear(&aoi);
+    ASSERT_TRUE(break_aoi_compute(fixture.index, &witness, 1u, &scope, &aoi));
+    ASSERT_EQ(aoi.leave_count, 1u);
+    witness.position[0] = 0.0f;
+    witness.radius = 10.0f;
+    sink_reset(&fixture.sink);
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OK);
+    offset = 0u;
+    ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, &kind));
+    ASSERT_EQ(kind, BREAK_ASPECT_DESTROY);
+    ASSERT_EQ(break_aspect_replication_set_flags(fixture.replication, object,
+                                                 BREAK_AOI_OBJECT_ALWAYS_RELEVANT),
+              BREAK_RUNTIME_OK);
+    break_aoi_result_clear(&aoi);
+    ASSERT_TRUE(break_aoi_compute(fixture.index, &witness, 1u, &scope, &aoi));
+    sink_reset(&fixture.sink);
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OK);
+    offset = 0u;
+    ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, &kind));
+    ASSERT_EQ(kind, BREAK_ASPECT_BASELINE);
+    ASSERT_EQ(break_aspect_replication_set_flags(fixture.replication, object,
+        BREAK_AOI_OBJECT_ALWAYS_RELEVANT | BREAK_AOI_OBJECT_DORMANT), BREAK_RUNTIME_OK);
+    break_aoi_result_clear(&aoi);
+    ASSERT_TRUE(break_aoi_compute(fixture.index, &witness, 1u, &scope, &aoi));
+    sink_reset(&fixture.sink);
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OK);
+    offset = 0u;
+    ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, &kind));
+    ASSERT_EQ(kind, BREAK_ASPECT_DORMANT);
+    ASSERT_EQ(break_aspect_replication_set_flags(fixture.replication, object,
+                                                 BREAK_AOI_OBJECT_ALWAYS_RELEVANT),
+              BREAK_RUNTIME_OK);
+    break_aoi_result_clear(&aoi);
+    ASSERT_TRUE(break_aoi_compute(fixture.index, &witness, 1u, &scope, &aoi));
+    sink_reset(&fixture.sink);
+    ASSERT_EQ(break_aspect_replication_sync(fixture.replication, 1u, &aoi, 1024u),
+              BREAK_RUNTIME_OK);
+    offset = 0u;
+    ASSERT_TRUE(consume_one_packet(&fixture.sink, 1u, &offset, fixture.remote_a, &kind));
+    ASSERT_EQ(kind, BREAK_ASPECT_BASELINE);
+    ASSERT_EQ(break_aspect_get_u32(fixture.remote_a, object, 2u, &health), BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 1u);
+    ASSERT_EQ(break_aspect_encode_with_epoch(fixture.store, object, 0u, BREAK_ASPECT_DORMANT,
+                                  2u, old_control, sizeof(old_control), &old_control_size),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_apply(fixture.remote_a, old_control, old_control_size),
+              BREAK_RUNTIME_STALE);
+    break_aoi_scope_clear(&scope);
+    break_aoi_result_clear(&aoi);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(aspect_replication_baselines_and_per_connection_dirty_masks);
     RUN_TEST(aspect_replication_budget_priority_and_send_failure_retry);
@@ -543,4 +633,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aspect_replication_second_fragment_failure_completes_persistent_reassembler);
     RUN_TEST(aspect_replication_leave_retries_with_empty_aoi_after_budget);
     RUN_TEST(aspect_replication_leave_retries_with_empty_aoi_after_send_failure);
+    RUN_TEST(aspect_replication_leave_reentry_and_out_of_order_control);
 TEST_MAIN_END()
