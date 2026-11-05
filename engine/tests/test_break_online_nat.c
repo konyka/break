@@ -160,21 +160,64 @@ TEST(inbox_supports_concurrent_producers_with_owner_consumer)
     break_online_inbox_destroy(inbox);
 }
 
+TEST(inbox_concurrent_overload_accounting_is_exact)
+{
+    BreakOnlineInbox *inbox = NULL;
+    InboxProducer producers[2];
+    PlatformThread threads[2];
+    BreakOnlineInboxStats stats;
+    BreakOnlineDatagram datagram;
+    u32 received = 0u;
+    u32 i;
+    ASSERT_EQ(break_online_inbox_create(64u, &inbox), BREAK_RUNTIME_OK);
+    memset(producers, 0, sizeof(producers));
+    for (i = 0u; i < 2u; ++i) {
+        producers[i].inbox = inbox;
+        strcpy(producers[i].source.host, "127.0.0.1");
+        producers[i].source.port = (u16)(200u + i);
+        producers[i].start = (u32)(i * 64u);
+        producers[i].count = 64u;
+        ASSERT_TRUE(platform_thread_create(&threads[i], inbox_produce, &producers[i]));
+    }
+    for (i = 0u; i < 2u; ++i) platform_thread_join(threads[i]);
+    ASSERT_EQ(producers[0].accepted + producers[1].accepted, 64u);
+    ASSERT_EQ(break_online_inbox_stats(inbox, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.accepted, 64u);
+    ASSERT_EQ(stats.overload_rejects, 64u);
+    ASSERT_EQ(stats.high_water, 64u);
+    while (true) {
+        bool ready = false;
+        ASSERT_EQ(break_online_inbox_poll(inbox, &datagram, &ready), BREAK_RUNTIME_OK);
+        if (!ready) break;
+        ++received;
+    }
+    ASSERT_EQ(received, 64u);
+    break_online_inbox_destroy(inbox);
+}
+
 typedef struct NatFixture {
     NetSocket *coordinator_socket;
     NetSocket *a_socket;
     NetSocket *b_socket;
+    NetSocket *c_socket;
+    NetSocket *d_socket;
     NetSocket *attacker_socket;
     NetAddress coordinator_address;
     NetAddress a_address;
     NetAddress b_address;
+    NetAddress c_address;
+    NetAddress d_address;
     BreakNatCoordinator *coordinator;
     BreakNatEndpoint *a;
     BreakNatEndpoint *b;
+    BreakNatEndpoint *c;
+    BreakNatEndpoint *d;
     AuthDirectory auth;
     u64 now;
     u64 a_now;
     u64 b_now;
+    u64 c_now;
+    u64 d_now;
 } NatFixture;
 
 static bool nat_fixture_init(NatFixture *fixture, u32 max_peers, u32 max_pairs)
@@ -185,23 +228,35 @@ static bool nat_fixture_init(NatFixture *fixture, u32 max_peers, u32 max_pairs)
     fixture->coordinator_socket = net_udp_create(0);
     fixture->a_socket = net_udp_create(0);
     fixture->b_socket = net_udp_create(0);
+    fixture->c_socket = net_udp_create(0);
+    fixture->d_socket = net_udp_create(0);
     fixture->attacker_socket = net_udp_create(0);
     if (!fixture->coordinator_socket || !fixture->a_socket ||
-        !fixture->b_socket || !fixture->attacker_socket) return false;
+        !fixture->b_socket || !fixture->c_socket || !fixture->d_socket ||
+        !fixture->attacker_socket) return false;
     net_set_nonblocking(fixture->coordinator_socket, true);
     net_set_nonblocking(fixture->a_socket, true);
     net_set_nonblocking(fixture->b_socket, true);
+    net_set_nonblocking(fixture->c_socket, true);
+    net_set_nonblocking(fixture->d_socket, true);
     net_set_nonblocking(fixture->attacker_socket, true);
     fixture->coordinator_address = loopback_address(fixture->coordinator_socket);
     fixture->a_address = loopback_address(fixture->a_socket);
     fixture->b_address = loopback_address(fixture->b_socket);
+    fixture->c_address = loopback_address(fixture->c_socket);
+    fixture->d_address = loopback_address(fixture->d_socket);
     if (!fixture->coordinator_address.port || !fixture->a_address.port ||
-        !fixture->b_address.port) return false;
+        !fixture->b_address.port || !fixture->c_address.port ||
+        !fixture->d_address.port) return false;
     fixture->auth.sessions[0] = 11u;
     fixture->auth.sessions[1] = 22u;
+    fixture->auth.sessions[2] = 33u;
+    fixture->auth.sessions[3] = 44u;
     fixture->auth.identities[0] = 1011u;
     fixture->auth.identities[1] = 1022u;
-    fixture->auth.count = 2u;
+    fixture->auth.identities[2] = 1033u;
+    fixture->auth.identities[3] = 1044u;
+    fixture->auth.count = 4u;
     memset(&coordinator_config, 0, sizeof(coordinator_config));
     coordinator_config.max_peers = max_peers;
     coordinator_config.max_pairs = max_pairs;
@@ -227,6 +282,14 @@ static bool nat_fixture_init(NatFixture *fixture, u32 max_peers, u32 max_pairs)
     endpoint_config.clock_user = &fixture->b_now;
     if (break_nat_endpoint_create(fixture->b_socket, &fixture->coordinator_address,
                                   &endpoint_config, &fixture->b) != BREAK_RUNTIME_OK) return false;
+    endpoint_config.session = 33u;
+    endpoint_config.clock_user = &fixture->c_now;
+    if (break_nat_endpoint_create(fixture->c_socket, &fixture->coordinator_address,
+                                  &endpoint_config, &fixture->c) != BREAK_RUNTIME_OK) return false;
+    endpoint_config.session = 44u;
+    endpoint_config.clock_user = &fixture->d_now;
+    if (break_nat_endpoint_create(fixture->d_socket, &fixture->coordinator_address,
+                                  &endpoint_config, &fixture->d) != BREAK_RUNTIME_OK) return false;
     return true;
 }
 
@@ -234,10 +297,14 @@ static void nat_fixture_dispose(NatFixture *fixture)
 {
     break_nat_endpoint_destroy(fixture->a);
     break_nat_endpoint_destroy(fixture->b);
+    break_nat_endpoint_destroy(fixture->c);
+    break_nat_endpoint_destroy(fixture->d);
     break_nat_coordinator_destroy(fixture->coordinator);
     net_close(fixture->coordinator_socket);
     net_close(fixture->a_socket);
     net_close(fixture->b_socket);
+    net_close(fixture->c_socket);
+    net_close(fixture->d_socket);
     net_close(fixture->attacker_socket);
 }
 
@@ -246,9 +313,13 @@ static void nat_pump_once(NatFixture *fixture)
     (void)break_nat_coordinator_receive_socket(fixture->coordinator, 32u);
     (void)break_nat_endpoint_receive_socket(fixture->a, 32u);
     (void)break_nat_endpoint_receive_socket(fixture->b, 32u);
+    (void)break_nat_endpoint_receive_socket(fixture->c, 32u);
+    (void)break_nat_endpoint_receive_socket(fixture->d, 32u);
     (void)break_nat_coordinator_poll(fixture->coordinator, 32u);
     (void)break_nat_endpoint_poll(fixture->a, 32u);
     (void)break_nat_endpoint_poll(fixture->b, 32u);
+    (void)break_nat_endpoint_poll(fixture->c, 32u);
+    (void)break_nat_endpoint_poll(fixture->d, 32u);
 }
 
 static bool nat_pump_until_registered(NatFixture *fixture)
@@ -345,6 +416,45 @@ TEST(nat_rejects_ping_from_unexpected_source)
     packet[15] = (u8)(pair.generation >> 24u);
     packet[16] = 0x99u;
     ASSERT_EQ(net_sendto(fixture.attacker_socket, packet, sizeof(packet),
+                         &fixture.a_address), (i32)sizeof(packet));
+    (void)break_nat_endpoint_receive_socket(fixture.a, 32u);
+    (void)break_nat_endpoint_poll(fixture.a, 32u);
+    ASSERT_FALSE(break_nat_endpoint_connected(fixture.a, pair));
+    ASSERT_TRUE(nat_pump_until_connected(&fixture, pair));
+    nat_fixture_dispose(&fixture);
+}
+
+TEST(nat_rejects_unknown_pair_and_nonce_from_expected_peer)
+{
+    NatFixture fixture;
+    BreakOnlineHandle pair;
+    u8 packet[24] = {0};
+    u64 deadline;
+    ASSERT_TRUE(nat_fixture_init(&fixture, 2u, 1u));
+    ASSERT_TRUE(register_and_pair(&fixture, &pair, UINT64_C(0x99), 1000u));
+    deadline = time_microseconds() + UINT64_C(5000000);
+    while (!break_nat_endpoint_armed(fixture.a, pair) && time_microseconds() < deadline) {
+        (void)break_nat_endpoint_receive_socket(fixture.a, 32u);
+        (void)break_nat_endpoint_poll(fixture.a, 32u);
+        platform_thread_yield();
+    }
+    ASSERT_TRUE(break_nat_endpoint_armed(fixture.a, pair));
+    memcpy(packet, "BRN1", 4u);
+    packet[4] = 4u;
+    packet[8] = (u8)pair.index;
+    packet[9] = (u8)(pair.index >> 8u);
+    packet[10] = (u8)(pair.index >> 16u);
+    packet[11] = (u8)(pair.index >> 24u);
+    packet[12] = (u8)pair.generation;
+    packet[13] = (u8)(pair.generation >> 8u);
+    packet[14] = (u8)(pair.generation >> 16u);
+    packet[15] = (u8)(pair.generation >> 24u);
+    packet[16] = 0x98u;
+    ASSERT_EQ(net_sendto(fixture.b_socket, packet, sizeof(packet),
+                         &fixture.a_address), (i32)sizeof(packet));
+    packet[16] = 0x99u;
+    packet[12] = (u8)(pair.generation + 1u);
+    ASSERT_EQ(net_sendto(fixture.b_socket, packet, sizeof(packet),
                          &fixture.a_address), (i32)sizeof(packet));
     (void)break_nat_endpoint_receive_socket(fixture.a, 32u);
     (void)break_nat_endpoint_poll(fixture.a, 32u);
@@ -662,6 +772,44 @@ TEST(nat_punch_ttl_uses_each_endpoint_local_clock)
     nat_fixture_dispose(&fixture);
 }
 
+TEST(nat_pair_capacity_and_stale_peer_are_rejected)
+{
+    NatFixture fixture;
+    BreakOnlineHandle peers[4];
+    BreakOnlineHandle pair;
+    BreakOnlineHandle stale;
+    u64 deadline;
+    ASSERT_TRUE(nat_fixture_init(&fixture, 4u, 1u));
+    ASSERT_EQ(break_nat_peer_hello(fixture.a), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_nat_peer_hello(fixture.b), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_nat_peer_hello(fixture.c), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_nat_peer_hello(fixture.d), BREAK_RUNTIME_OK);
+    deadline = time_microseconds() + UINT64_C(5000000);
+    while (time_microseconds() < deadline) {
+        nat_pump_once(&fixture);
+        if (break_nat_coordinator_peer_count(fixture.coordinator) == 4u &&
+            break_nat_endpoint_registered(fixture.a) &&
+            break_nat_endpoint_registered(fixture.b) &&
+            break_nat_endpoint_registered(fixture.c) &&
+            break_nat_endpoint_registered(fixture.d)) break;
+        platform_thread_yield();
+    }
+    ASSERT_EQ(break_nat_coordinator_peer_count(fixture.coordinator), 4u);
+    ASSERT_EQ(break_nat_coordinator_peer_for_session(fixture.coordinator, 11u, &peers[0]), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_nat_coordinator_peer_for_session(fixture.coordinator, 22u, &peers[1]), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_nat_coordinator_peer_for_session(fixture.coordinator, 33u, &peers[2]), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_nat_coordinator_peer_for_session(fixture.coordinator, 44u, &peers[3]), BREAK_RUNTIME_OK);
+    stale = peers[0];
+    stale.generation++;
+    ASSERT_EQ(break_nat_coordinator_pair(fixture.coordinator, stale, peers[1],
+                                         10u, 1000u, &pair), BREAK_RUNTIME_STALE);
+    ASSERT_EQ(break_nat_coordinator_pair(fixture.coordinator, peers[0], peers[1],
+                                         11u, 1000u, &pair), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_nat_coordinator_pair(fixture.coordinator, peers[2], peers[3],
+                                         12u, 1000u, &pair), BREAK_RUNTIME_OVERLOAD);
+    nat_fixture_dispose(&fixture);
+}
+
 TEST(network_subsystem_initializes)
 {
     ASSERT_TRUE(net_init());
@@ -670,9 +818,11 @@ TEST(network_subsystem_initializes)
 TEST_MAIN_BEGIN()
     RUN_TEST(inbox_is_bounded_fifo_and_counts_rejections);
     RUN_TEST(inbox_supports_concurrent_producers_with_owner_consumer);
+    RUN_TEST(inbox_concurrent_overload_accounting_is_exact);
     RUN_TEST(network_subsystem_initializes);
     RUN_TEST(nat_real_udp_loopback_registers_punches_and_acknowledges);
     RUN_TEST(nat_rejects_ping_from_unexpected_source);
+    RUN_TEST(nat_rejects_unknown_pair_and_nonce_from_expected_peer);
     RUN_TEST(nat_expires_unconfirmed_pair_and_late_punch);
     RUN_TEST(nat_rejects_malformed_datagrams_and_beyond_peer_capacity);
     RUN_TEST(nat_pre_pair_cross_socket_hello_replay_cannot_move_observed);
@@ -684,5 +834,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(nat_pair_close_resets_connected_and_allows_repair);
     RUN_TEST(nat_close_before_punch_blocks_late_punch);
     RUN_TEST(nat_punch_ttl_uses_each_endpoint_local_clock);
+    RUN_TEST(nat_pair_capacity_and_stale_peer_are_rejected);
     net_shutdown();
 TEST_MAIN_END()

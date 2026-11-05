@@ -5,6 +5,12 @@
 #include <stdint.h>
 #include <string.h>
 
+static void put_aspect_u64(u8 *out, u64 value)
+{
+    u32 i;
+    for (i = 0u; i < 8u; ++i) out[i] = (u8)(value >> (i * 8u));
+}
+
 static BreakAspectStore *make_store(u32 max_objects)
 {
     BreakAspectStoreConfig config;
@@ -310,6 +316,33 @@ TEST(aspect_dormant_and_destroy_apply_changes_ghost_state)
     destroy_pair(&pair);
 }
 
+TEST(aspect_revision_overflow_preserves_previous_value)
+{
+    BreakAspectStore *store = make_store(1u);
+    BreakOnlineHandle object;
+    u8 packet[34] = {0};
+    u32 health = 0u;
+    ASSERT_NOT_NULL(store);
+    ASSERT_TRUE(register_defaults(store));
+    ASSERT_EQ(break_aspect_object_create(store, &object), BREAK_RUNTIME_OK);
+    memcpy(packet, "BRA1", 4u);
+    put_aspect_u64(packet + 4u, break_aspect_schema_hash(store));
+    put_aspect_u64(packet + 12u, break_aspect_aoi_id(object));
+    memset(packet + 20u, 0xff, 9u);
+    packet[29] = 0x01u;
+    packet[30] = BREAK_ASPECT_BASELINE;
+    packet[31] = 2u;
+    packet[32] = 0xacu;
+    packet[33] = 0x02u;
+    ASSERT_EQ(break_aspect_apply(store, packet, sizeof(packet)), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_object_revision(store, object), UINT64_MAX);
+    ASSERT_EQ(break_aspect_set_u32(store, object, 2u, 2u), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(break_aspect_get_u32(store, object, 2u, &health), BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 300u);
+    ASSERT_EQ(break_aspect_object_revision(store, object), UINT64_MAX);
+    break_aspect_store_destroy(store);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(aspect_health_delta_has_hand_derived_mask_and_varint);
     RUN_TEST(aspect_malformed_delta_never_partially_mutates_remote);
@@ -318,4 +351,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aspect_schema_validation_and_output_capacity_are_atomic);
     RUN_TEST(aspect_remote_destroy_then_gen2_create_and_adopt_works);
     RUN_TEST(aspect_dormant_and_destroy_apply_changes_ghost_state);
+    RUN_TEST(aspect_revision_overflow_preserves_previous_value);
 TEST_MAIN_END()
