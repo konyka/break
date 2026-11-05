@@ -281,3 +281,93 @@ git diff --check 12fefa2e..HEAD
 ## 限制
 
 没有真实设备、实际听测、Windows/macOS 或第四轮独立评审证据。CAS/epoch 交错由测试 TU 内受控注入验证，边界同样通过注入覆盖，不是依赖概率性线程调度。
+
+
+# P10 fix round 4
+
+日期：2026-11-05
+基线：`9cf01634`
+复审输入：`.superpowers/sdd/review-fix3-findings.md` 两项开放 Important
+
+## 修复
+
+代码提交：`6c1149ff` `audio: validate spatial snapshots across interleavings`
+
+- `voice_read` 在 acquire-load 空间 snapshot 后再次 acquire-load `spatial_epoch`。只有前后 epoch 相同且等于 `playing_epoch` 才采用 snapshot，RESTART→position/listener 落入原两次 load 间隙时，旧 PCM 保留原增益；新 START 消费后再采用新 epoch 快照。
+- GameThread `spatial_publish` 的 CAS 失败路径重新验证非零/当前 epoch、revision 上限、主线程 revision 与当前 snapshot，再以新 position/listener 增益 CAS。callback START 先改变同级 revision 的 gain bits 时，listener 不再静默丢失，也不需要 listener 再次移动。`voice->spatial_revision` 仍只在成功后提交。
+- START 初始增益仍是单次整快照 strong CAS，没有重试旧 START。固定容量、热路径不分配、epoch 0/max 退休和 revision max 拒绝政策未改；既有边界与 START CAS 测试继续通过。
+- 新增两个测试编译钩子仅属于 `test_audio_extended`，正式 engine 不定义。钩子位于生产 load/CAS 间隙并调用真实 trigger/position/listener/START 路径，不是概率线程测试或另写状态模型。
+
+## RED / GREEN / 变异
+
+- `restart_between_epoch_and_snapshot_loads_keeps_old_pcm_gain`：在 epoch load 与 snapshot load 之间完成真实 RESTART(pos=4)→position(pos=8)。未修复时注入当帧旧 PCM 从应有 0.5 变为 0.125，结果 39/40；加入后读 epoch 复核后 40/40，下一帧新 epoch PCM 为 0.125。
+- `listener_start_cas_loss_republishes_same_listener`：listener CAS 前，从真实命令环取出当前 START 并调用生产 `voice_apply_initial_spatial`，确认 snapshot 确实从旧 gain 0.5 变为 START gain 0.25。未修复时相同 listener 再 update 仍滞留 0.25 而非目标 0.125，结果 40/41；重新验证并重发后 41/41，真实 PCM 也为 0.125。
+- 生产变异一：把第二次 epoch load 改为复用第一次局部值，可编译运行，结果 40/41，只有 epoch/snapshot 间隙用例失败（0.125 而非 0.5）；恢复后通过。
+- 生产变异二：把 GameThread CAS 失败恢复为立即 `AUDIO_OVERLOAD`，可编译运行，结果 40/41，只有 listener 反向交错用例失败（0.25 而非 0.125）；恢复后通过。
+- 最终 `test_audio_extended` 41/41；既有 `test_audio`、`test_audio_dsp` 和实时回调源码契约均在下列 focused CTest 中通过。
+
+## 命令与真实输出
+
+normal：
+
+```bash
+cmake --build build-p10-audio -j6 --target test_audio test_audio_extended test_audio_dsp engine
+./build-p10-audio/test_audio_extended
+ctest --test-dir build-p10-audio -R 'test_audio' --output-on-failure
+```
+
+```text
+=== Results: 41 passed, 0 failed, 41 total ===
+1/4 test_audio ....................... Passed    0.00 sec
+2/4 test_audio_extended .............. Passed    0.05 sec
+3/4 test_audio_dsp ................... Passed    0.00 sec
+4/4 test_audio_realtime_contract ..... Passed    0.01 sec
+100% tests passed, 0 tests failed out of 4
+engine: Built target engine
+```
+
+ASan+UBSan（cache 确认 `ENGINE_USE_ASAN=ON`、`ENGINE_USE_UBSAN=ON`）：
+
+```bash
+cmake --build build-p10-audio-asan -j6 --target test_audio test_audio_extended test_audio_dsp
+ctest --test-dir build-p10-audio-asan -R 'test_audio' --output-on-failure
+```
+
+```text
+1/4 test_audio ....................... Passed    0.01 sec
+2/4 test_audio_extended .............. Passed    0.10 sec
+3/4 test_audio_dsp ................... Passed    0.01 sec
+4/4 test_audio_realtime_contract ..... Passed    0.01 sec
+100% tests passed, 0 tests failed out of 4
+```
+
+无 ASan/UBSan 报告。
+
+TSan（cache 确认 `ENGINE_USE_TSAN=ON`）：
+
+```bash
+cmake --build build-p10-audio-tsan -j6 --target test_audio test_audio_extended test_audio_dsp
+ctest --test-dir build-p10-audio-tsan -R 'test_audio' --output-on-failure
+```
+
+```text
+1/4 test_audio ....................... Passed    0.01 sec
+2/4 test_audio_extended .............. Passed    0.40 sec
+3/4 test_audio_dsp ................... Passed    0.01 sec
+4/4 test_audio_realtime_contract ..... Passed    0.01 sec
+100% tests passed, 0 tests failed out of 4
+```
+
+无 TSan 报告。受控交错的行为断言不依赖 TSan 发现逻辑竞态。
+
+差异检查：
+
+```bash
+git diff --check 9cf01634..HEAD
+```
+
+通过，无输出。未 push。
+
+## 限制
+
+没有真实声卡、实际听测、Windows/macOS、跨采样率或第四轮独立评审证据。两个新交错均由测试 TU 内生产路径钩子确定性覆盖；TSan 是额外检查，不作为交错命中证据。

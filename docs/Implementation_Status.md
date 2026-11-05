@@ -1,3 +1,9 @@
+## 本轮更新：P10 fix round 4（2026-11-05）
+
+- **修复**：voice_read 在空间快照前后复核 spatial_epoch，阻断 RESTART+position/listener 落入两次 load 间隙时旧 PCM 错用新 epoch 增益。GameThread spatial_publish 在 CAS 失败后重新验证 epoch、revision 和当前快照再发布新增益；START 仍是不重试的整快照 CAS，revision/epoch 边界与固定容量政策不变。
+- **验证**：`test_audio_extended` 41/41；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。两个确定性交错均先 RED，去掉第二次 epoch load 或恢复 listener CAS 失败即返回的生产变异分别为 40/41，恢复后通过。代码提交 `6c1149ff`，`git diff --check 9cf01634..HEAD` 通过。
+- **证据与限制**：真实输出已追加到 `.superpowers/sdd/audio-fix-round1-report.md` 的 round 4 部分。未做真实声卡/实际听测、Windows/macOS 或第四轮独立评审；交错由测试 TU 内受控注入验证，不依赖概率调度或 TSan 发现逻辑竞态。
+
 ## 本轮更新：P10 fix round 3（2026-11-05）
 
 - **修复**：START 初始空间增益和 GameThread 发布均使用整快照 CAS，load/CAS 间的新 revision 不会被旧 START 覆盖。新增 spatial_epoch 与 callback 私有 applied gain，RESTART 待消费时旧 PCM 不采用新 epoch 快照。revision 单调递增，max 后 position/START 拒绝；epoch 0/max 退休政策不变。
