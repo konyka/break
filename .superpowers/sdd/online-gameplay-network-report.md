@@ -25,7 +25,7 @@
 | `1c1ed6b3` | aspect schema/store/变化掩码编码和事务 apply |
 | `461bf3af` | AOI 驱动的按连接 aspect 复制调度 |
 | `8b408cb5` | 自审修复：禁止 adopt 旧 generation |
-| 最终文档提交 | 本报告、实际设计/实施状态与计划完成记录；最终 HEAD hash 在交付手-off 中给出 |
+| `3746a3ee` | 本报告、实际设计/实施状态与计划完成记录 |
 
 ## 3. 逐行为 RED -> GREEN
 
@@ -135,3 +135,95 @@ ctest --test-dir <对应构建树> --output-on-failure \
 - `BreakAspectSendFn` 的调用方必须提供认证/安全传输；FNV 分片 checksum 不是认证。没有新增可靠传输、客户端预测、回滚或 authority handoff。
 - 内置 Session 身份是 session 域 id，不是跨重连账号系统；coordinator peer 表当前没有回收 API，受固定容量约束。
 - 本报告不声称生产账号后端、全 CryNetwork 私有行为兼容或全平台完成。
+
+---
+
+# P8 fix round 1 追加报告
+
+## 7. 评审与修复提交
+
+独立评审全文见 `.superpowers/sdd/review-findings.md`。本轮按 Critical、Important、Minor 逐项做真实 RED 后修复，未以合法 loopback 代替攻击测试。
+
+| 提交 | 修复 |
+|---|---|
+| `32dc37ff` | NAT challenge、session-key HMAC、replay window、recipient 和冲突/重复控制 |
+| `af74bee8` | 允许合法下一代 aspect adopt，旧 generation 仍拒绝 |
+| `ef228f19` | 新 delta 淘汰未完成旧 delta，迟到旧 delta 拒绝 |
+| `bef21aa3` | pending_leave/kind 在空 AOI 优先重试 |
+| `35fa4be9` | 认证 CLOSE、endpoint reset、tombstone 和 re-pair |
+| `f7b40a7a` | wire 相对 TTL，endpoint 本地时钟 deadline，过期 CLOSE |
+| `df8394bd` | DESTROY/DORMANT 真实 ghost 消费 |
+| `4dab29fc` | nonce、pair capacity、stale peer、revision overflow、MPSC overload 负例 |
+| `48819035` | 分配式/固定存储分片 API 共用 planner/fill |
+| `6ab22850` | 可选 session_key 完整初始化，修复大厅 `-Werror` 构建 |
+| 最终文档提交 | 本报告和实际协议/状态文档；最终 HEAD hash 在交付手-off 中给出 |
+
+## 8. RED -> GREEN 证据
+
+### NAT 控制面认证与重放
+
+- 当前合法旧报文先复现三项漏洞：**7 passed, 3 failed, 10 total**：跨 socket HELLO 改变 observed address、未注册 PUNCH 被接受、重复 PUNCH 重置 connected。
+- 加入独立有效 HMAC captured HELLO 后为 **7 passed, 4 failed, 11 total**，其中新测试收不到 challenge。
+- 实现后首轮 **13/13**，包含 captured HELLO 跨 socket 重放、pre-registration、精确/冲突 PUNCH 和篡改 MAC。最终加入 CLOSE/TTL/容量等回归后为 **19/19**。
+- 变异：删除 PUNCH MAC 校验后 tampered PUNCH 被接受，**12 passed, 1 failed, 13 total**；恢复后 13/13。
+
+### Aspect adopt / 持久重组 / pending leave
+
+- gen2：authoritative+remote 双销毁后 create/adopt gen2 失败，**5 passed, 1 failed, 6 total**；修复后 6/6，旧 gen1 仍拒绝。
+- 持久重组：新 delta supersession 单测为 **9 passed, 1 failed, 10 total**；调度端第二片失败为 **3 passed, 1 failed, 4 total**，均因旧 reassembler 冲突。允许单调新 delta 淘汰旧未完成流后分别为 10/10、4/4；迟到旧 delta 仍返回 `CONFLICT`。
+- pending leave：预算耗尽和发送失败后空 AOI 均不发控制记录，**4 passed, 2 failed, 6 total**；保存 pending_leave/kind 并优先重试后 6/6。
+
+### CLOSE / 相对 TTL / 控制消费
+
+- CLOSE：after-connect 未 reset、close-before-PUNCH 仍可 arm，**13 passed, 2 failed, 15 total**；认证 CLOSE 和 tombstone 后 15/15，含 late PUNCH 拒绝和新 generation re-pair。
+- 相对 TTL：端点时钟大于 coordinator 时，旧绝对 deadline 导致五秒连接超时，**15 passed, 1 failed, 16 total**。wire 改相对 TTL 后 16/16；coordinator 过期仍发认证 CLOSE，避免迟到 PUNCH 被重新接受。
+- 控制消费：direct DESTROY/DORMANT **6 passed, 1 failed, 7 total**，scheduler **3 passed, 3 failed, 6 total**，均因 `break_aspect_apply` 返回 INVALID。实现后分别 7/7、6/6；DORMANT 清 active mask，DESTROY 使旧句柄失效。
+
+### 必要负例与共享 planner
+
+- 新负例当前实现均通过：NAT 19/19、aspect 8/8、并发 overload accepted=64/overload=64/high-water=64。它们属于既有 guard 的补充证明，不冒充独立功能 RED。
+- nonce 变异：删除 nonce 检查后 **18 passed, 1 failed, 19 total**，错误 nonce 被接受；恢复后 19/19。
+- pair capacity：仅删除第一个容量比较仍被第二道空槽 guard 拦截，没有假报 RED；临时把第二道 guard 改为复用槽位后 **18 passed, 1 failed, 19 total**，恢复两道 guard 后 19/19。
+- aspect revision：删除 `UINT64_MAX` 上限检查后 **7 passed, 1 failed, 8 total**，旧值和 revision 保护测试失败；恢复后 8/8。
+- 共享 planner/fill 后固定分片 **10/10**、AOI 调度 **6/6**，分配式与固定存储 API 的 wire、短容量、重试均未漂移。
+- 全量构建还发现 `session_key` 新字段使大厅复合字面量触发 `-Werror=missing-field-initializers`；显式初始化可选回调后恢复，不屏蔽告警。
+
+## 9. 最终 focused 命令与输出
+
+normal 无 Snowflake：
+
+```bash
+cmake --build build-p8-normal -j6 --target \
+  test_break_online_lobby test_break_online_nat test_break_online_voice \
+  test_break_online_aspect test_break_online_aspect_replication \
+  test_break_replication_fragment test_network test_net_loop test_net_loop_qnx \
+  test_packet test_ecs_replication
+ctest --test-dir build-p8-normal --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+```
+
+结果：**11/11 passed, 0 failed**。
+
+钉住 Snowflake `0fceed6d885bb8578743d82cc4a5d7ab2f6b0620` 的 normal、ASan+UBSan、TSan 三棵树均运行：
+
+```bash
+ctest --test-dir <对应构建树> --output-on-failure \
+  -L 'network|replication|fragmentation|session'
+ctest --test-dir <对应构建树> --output-on-failure \
+  -R '^(test_network|test_net_loop|test_net_loop_qnx|test_packet|test_ecs_replication)$'
+```
+
+- `build-p8-snow`：**13/13 + 5/5 passed**。
+- `build-p8-snow-asan`：**13/13 + 5/5 passed**，无 ASan/UBSan 报告。
+- `build-p8-snow-tsan`：**13/13 + 5/5 passed**，无 race 报告。
+
+所有 lane 均保留真实 UDP NAT/语音 loopback；安全套件包含有效 MAC captured HELLO 跨 socket replay，不是仅拒绝旧格式。最终直接行为总数为 lobby 10/10、NAT 19/19、voice 8/8、aspect 8/8、AOI 调度 6/6、固定分片 10/10，真实 Session 38/38。
+
+最终提交前执行 `git diff --check a0bfeb95..HEAD` 和工作树状态检查；结果在交付手-off 中给出。
+
+## 10. 本轮新增限制
+
+- 每 session 的 32 字节密钥 provision、rotation 和 endpoint/coordinator 配套存储仍由应用负责；`break_online_session.h` 不自动提供 NAT 密钥。没有密钥时 NAT 创建 fail-closed。
+- 新 delta supersession 只解决未完成旧流的单调重试，不是可靠传输、全局去重或跨重连持久去重；reassembler 仍需上层 bounded lifetime。
+- 相对 TTL 从 endpoint 接受 PUNCH 的本地时钟计算，coordinator 自行管理期限并发送 CLOSE；仍不承诺任意 NAT、公网部署、防火墙穿透或可靠送达。
+- 未运行 Windows/macOS/移动原生 lane、外部 NAT 设备或听感测试；本报告仅覆盖本机 Linux focused 与攻击 loopback。

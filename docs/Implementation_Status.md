@@ -1,3 +1,10 @@
+## 本轮更新：P8 fix round 1（2026-11-05）
+
+- **安全修复**：NAT 控制面改为 challenge + 每 session HMAC-SHA256 + 有界 replay window，绑定 recipient/registered/来源并处理精确 duplicate 与冲突重放。PUNCH 使用相对 TTL，CLOSE 使 endpoint 失效并支持新 generation re-pair。有效 MAC captured HELLO 跨 socket 重放、篡改 MAC、未知 nonce、四 endpoint 容量和跨时钟均有真实 UDP 测试。
+- **复制修复**：合法 gen2 adopt 恢复；持久 reassembler 以新 delta 淘汰未完成旧 delta并拒绝迟到旧流；pending_leave 在空 AOI 也重试；DESTROY/DORMANT 真正消费；分片两个 API 共用 planner/fill，revision 上限保持失败原子。补齐 nonce、pair capacity、MPSC overload 等负例。
+- **验证**：NAT 19/19、aspect 8/8、AOI 调度 6/6、固定分片 10/10；normal 无 Snowflake 11/11，钉住 Snowflake 的 normal/ASan+UBSan/TSan 均 13/13 + 5/5，无 sanitizer/race 报告。nonce、pair 容量、revision、MAC 变异均实际变红并恢复，完整证据追加到 `.superpowers/sdd/online-gameplay-network-report.md`。
+- **限制**：会话密钥 provision/rotation 仍由应用负责；本机 loopback 不证明任意 NAT、公网部署或可靠送达，未做跨平台原生验证。
+
 ## 本轮更新：P8 在线会话与游戏网络能力（2026-11-03）
 
 - **交付**：新增正式可选 `break_online`，不链入 `engine`/demo/编辑器。认证大厅支持固定容量目录、加入离开、主机迁移、断连清理、分页和服务端匹配；身份只能经认证提供方解析，`break_online_session.h` 直接适配真实 `BreakSessionManager`。UDP NAT 实现 HELLO/WELCOME/PUNCH/PING/ACK、observed address、generation 和 TTL；语音实现固定 PCM 帧、序号、jitter、重复/迟到拒绝和零填充丢帧；aspect 实现 schema hash、稀疏变化掩码、varint/zigzag 编码、事务 apply，以及复用真实 AOI、固定分片和安全传输回调的按连接复制。

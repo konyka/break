@@ -16,7 +16,7 @@ Stage 5 Phase D（2026-10-24，branch `sdd/stage5-transport-security`）起本�
 - 不透明的 `BreakSessionManager` 及其 GameThread 侧状态迁移 API；
 - TLS 传输模式、CHALLENGE/AUTH-v2 认证握手、出站单调序号、准入限速（Stage 5 Phase D，见下文专节与 `docs/design/transport_security.md`）；
 - CTest 覆盖 envelope、little-endian 字节序、长度/ID/版本/序列错误、payload 拷贝、队列 FIFO、会话状态迁移和关闭后的拒绝行为；真实 loopback 覆盖 AUTH 入站、Session poll、handler dispatch、PING response、client close、`CLOSED` 和 stale 事件；TLS loopback 覆盖握手/加密往返/mTLS/负例。
-- P8 的 `break_online_session.h` 只把 `AUTHENTICATED` Session 映射为在线大厅/NAT 的 session 域身份，未认证状态不能创建或加入；真实适配测试包含在 `test_break_session` 中。大厅、NAT、语音和 aspect 的实际合同见 `docs/design/online_gameplay_network.md`。
+- P8 的 `break_online_session.h` 只把 `AUTHENTICATED` Session 映射为在线大厅/NAT 的 session 域身份，未认证状态不能创建或加入；真实适配测试包含在 `test_break_session` 中。NAT 控制面另要求应用提供每 session 的 `session_key` 用于 challenge+HMAC-SHA256/replay window，不能把该身份映射本身当作报文新鲜性证明。大厅、NAT、语音和 aspect 的实际合同见 `docs/design/online_gameplay_network.md`。
 
 当前仍没有：
 
