@@ -3672,7 +3672,10 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
     # macOS 上 engine configure 恒要求 shaderc+Vulkan（molten-vk 无
     # libvulkan.dylib，自动发现必败），把外层已解析的路径透传给嵌套
-    # configure；其他平台这些变量未定义/为空时不传。
+    # configure；其他平台这些变量未定义/为空时不传。BREAK_ENABLE_CRYPTO
+    # 同样透传：无 OpenSSL 的主机外层以 =OFF 配置，嵌套 configure 沿用，
+    # 否则会在 find_package(OpenSSL REQUIRED) 处失败，与被测的后端选择
+    # 契约无关。
     set(_rhi_selector_toolchain_defs)
     foreach(_rhi_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR OPENSSL_ROOT_DIR)
         if(DEFINED ${_rhi_def} AND NOT "${${_rhi_def}}" STREQUAL "")
@@ -3685,6 +3688,7 @@ endif()
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/rhi-selector-contract
             -DENGINE_ENABLE_WAYLAND=${ENGINE_ENABLE_WAYLAND}
+            -DBREAK_ENABLE_CRYPTO=${BREAK_ENABLE_CRYPTO}
             ${_rhi_selector_toolchain_defs}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_selection.cmake)
     add_test(NAME test_locked_dependencies

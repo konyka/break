@@ -41,6 +41,14 @@ foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_
         list(APPEND configure_overrides "-D${cache_var}=${${cache_var}}")
     endif()
 endforeach()
+# The Stage 5 crypto gate is orthogonal to backend selection. A host without
+# OpenSSL (e.g. macOS has no system linkable OpenSSL and brew openssl is not
+# installed) configures the outer build with BREAK_ENABLE_CRYPTO=OFF; the
+# nested configures must follow the same setting, otherwise they die in
+# find_package(OpenSSL REQUIRED) before the selector logic under test runs.
+if(DEFINED BREAK_ENABLE_CRYPTO)
+    list(APPEND configure_overrides "-DBREAK_ENABLE_CRYPTO:BOOL=${BREAK_ENABLE_CRYPTO}")
+endif()
 # A MoltenVK-free metal lane has no Vulkan SDK anywhere, yet the nested
 # auto/opengl macOS configures hit find_package(Vulkan REQUIRED) in the
 # non-metal branch. The contract under test here is selector *resolution*

@@ -503,7 +503,9 @@ MoltenVK/Vulkan、`shaderc_shared` 和 FreeType。文件监视模块额外链接
 `BREAK_ENABLE_CRYPTO` 默认开启，需要 OpenSSL（libcrypto）。macOS 没有系统自带的
 可链接版本；OpenSSL 不在 Homebrew 默认前缀时，配置时加
 `-DOPENSSL_ROOT_DIR=<openssl 前缀>`。契约测试的最小链接用例会用解析到的
-`OPENSSL_CRYPTO_LIBRARY`，嵌套配置（`test_rhi_backend_selection`）也会继承该前缀。
+`OPENSSL_CRYPTO_LIBRARY`，嵌套配置（`test_rhi_backend_selection`）也会继承该前缀；
+无 OpenSSL 的主机可整体以 `-DBREAK_ENABLE_CRYPTO=OFF` 配置，嵌套配置同样继承
+该开关（后端选择契约与 crypto 无关）。
 `break_http` 在 `-Werror` 下同时支持 OpenSSL 3.x 与 4.x：4.0 起主机名校验用
 `SSL_set1_dnsname`（`SSL_set1_host` 已弃用），按 `OPENSSL_VERSION_MAJOR` 选择。
 
