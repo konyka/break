@@ -43,60 +43,13 @@ static uint32_t checksum_bytes(const uint8_t *data, size_t size)
     return hash;
 }
 
-BreakReplicationFragmentResult break_replication_fragment_payload(
-    uint64_t delta_id, uint64_t base_id, const void *payload, size_t payload_size,
-    size_t fragment_payload_size, BreakReplicationFragment **fragments, size_t *fragment_count)
+static BreakReplicationFragmentResult fragment_plan(
+    const void *payload, size_t payload_size, size_t fragment_payload_size,
+    uint32_t *out_count)
 {
-    BreakReplicationFragment *result;
-    uint32_t count;
-    size_t i;
-    const uint8_t *bytes = (const uint8_t *)payload;
-    size_t numerator;
-    size_t result_bytes;
-    if (!fragments || !fragment_count || !fragment_payload_size ||
-        (payload_size && !payload) || payload_size == 0u) return BREAK_REPLICATION_FRAGMENT_INVALID;
-    if (payload_size > BREAK_REPLICATION_MAX_REASSEMBLY_SIZE)
-        return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
-    if (fragment_payload_size > BREAK_NET_MAX_PAYLOAD_SIZE)
-        return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
-    if (!checked_add_size(payload_size, fragment_payload_size - 1u, &numerator))
-        return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
-    if (numerator / fragment_payload_size > UINT32_MAX) return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
-    count = (uint32_t)(numerator / fragment_payload_size);
-    if (!count || count > FRAGMENT_MAX_COUNT ||
-        !checked_mul_size((size_t)count, sizeof(*result), &result_bytes))
-        return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
-    result = (BreakReplicationFragment *)calloc(1u, result_bytes);
-    if (!result) return BREAK_REPLICATION_FRAGMENT_OUT_OF_MEMORY;
-    for (i = 0u; i < count; ++i) {
-        size_t offset = i * fragment_payload_size;
-        size_t size = payload_size - offset;
-        if (size > fragment_payload_size) size = fragment_payload_size;
-        result[i].delta_id = delta_id;
-        result[i].base_id = base_id;
-        result[i].fragment_index = (uint32_t)i;
-        result[i].fragment_count = count;
-        result[i].data = bytes + offset;
-        result[i].size = size;
-        result[i].checksum = checksum_bytes(result[i].data, size);
-    }
-    *fragments = result;
-    *fragment_count = count;
-    return BREAK_REPLICATION_FRAGMENT_OK;
-}
-
-BreakReplicationFragmentResult break_replication_fragment_payload_into(
-    uint64_t delta_id, uint64_t base_id, const void *payload, size_t payload_size,
-    size_t fragment_payload_size, BreakReplicationFragment *out_fragments,
-    size_t fragment_capacity, size_t *out_fragment_count)
-{
-    const uint8_t *bytes = (const uint8_t *)payload;
     size_t numerator;
     size_t count;
-    size_t i;
-    if (!out_fragment_count) return BREAK_REPLICATION_FRAGMENT_INVALID;
-    *out_fragment_count = 0u;
-    if (!out_fragments || !fragment_payload_size ||
+    if (!out_count || !fragment_payload_size ||
         (payload_size && !payload) || payload_size == 0u)
         return BREAK_REPLICATION_FRAGMENT_INVALID;
     if (payload_size > BREAK_REPLICATION_MAX_REASSEMBLY_SIZE ||
@@ -107,19 +60,68 @@ BreakReplicationFragmentResult break_replication_fragment_payload_into(
     count = numerator / fragment_payload_size;
     if (!count || count > UINT32_MAX || count > FRAGMENT_MAX_COUNT)
         return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
-    if (fragment_capacity < count) return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
+    *out_count = (uint32_t)count;
+    return BREAK_REPLICATION_FRAGMENT_OK;
+}
+
+static void fragment_fill(uint64_t delta_id, uint64_t base_id,
+                          const void *payload, size_t payload_size,
+                          size_t fragment_payload_size,
+                          BreakReplicationFragment *out, uint32_t count)
+{
+    const uint8_t *bytes = (const uint8_t *)payload;
+    uint32_t i;
     for (i = 0u; i < count; ++i) {
-        size_t offset = i * fragment_payload_size;
+        size_t offset = (size_t)i * fragment_payload_size;
         size_t size = payload_size - offset;
         if (size > fragment_payload_size) size = fragment_payload_size;
-        out_fragments[i].delta_id = delta_id;
-        out_fragments[i].base_id = base_id;
-        out_fragments[i].fragment_index = (uint32_t)i;
-        out_fragments[i].fragment_count = (uint32_t)count;
-        out_fragments[i].data = bytes + offset;
-        out_fragments[i].size = size;
-        out_fragments[i].checksum = checksum_bytes(out_fragments[i].data, size);
+        out[i].delta_id = delta_id;
+        out[i].base_id = base_id;
+        out[i].fragment_index = i;
+        out[i].fragment_count = count;
+        out[i].data = bytes + offset;
+        out[i].size = size;
+        out[i].checksum = checksum_bytes(out[i].data, size);
     }
+}
+
+BreakReplicationFragmentResult break_replication_fragment_payload(
+    uint64_t delta_id, uint64_t base_id, const void *payload, size_t payload_size,
+    size_t fragment_payload_size, BreakReplicationFragment **fragments, size_t *fragment_count)
+{
+    BreakReplicationFragment *result;
+    BreakReplicationFragmentResult plan;
+    uint32_t count;
+    size_t result_bytes;
+    if (!fragments || !fragment_count) return BREAK_REPLICATION_FRAGMENT_INVALID;
+    plan = fragment_plan(payload, payload_size, fragment_payload_size, &count);
+    if (plan != BREAK_REPLICATION_FRAGMENT_OK) return plan;
+    if (!checked_mul_size((size_t)count, sizeof(*result), &result_bytes))
+        return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
+    result = (BreakReplicationFragment *)calloc(1u, result_bytes);
+    if (!result) return BREAK_REPLICATION_FRAGMENT_OUT_OF_MEMORY;
+    fragment_fill(delta_id, base_id, payload, payload_size, fragment_payload_size,
+                  result, count);
+    *fragments = result;
+    *fragment_count = count;
+    return BREAK_REPLICATION_FRAGMENT_OK;
+}
+
+BreakReplicationFragmentResult break_replication_fragment_payload_into(
+    uint64_t delta_id, uint64_t base_id, const void *payload, size_t payload_size,
+    size_t fragment_payload_size, BreakReplicationFragment *out_fragments,
+    size_t fragment_capacity, size_t *out_fragment_count)
+{
+    BreakReplicationFragmentResult plan;
+    uint32_t count;
+    if (!out_fragment_count) return BREAK_REPLICATION_FRAGMENT_INVALID;
+    *out_fragment_count = 0u;
+    if (!out_fragments) return BREAK_REPLICATION_FRAGMENT_INVALID;
+    plan = fragment_plan(payload, payload_size, fragment_payload_size, &count);
+    if (plan != BREAK_REPLICATION_FRAGMENT_OK) return plan;
+    if (fragment_capacity < count) return BREAK_REPLICATION_FRAGMENT_OVER_LIMIT;
+    fragment_fill(delta_id, base_id, payload, payload_size, fragment_payload_size,
+                  out_fragments, count);
     *out_fragment_count = count;
     return BREAK_REPLICATION_FRAGMENT_OK;
 }
