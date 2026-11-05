@@ -530,10 +530,12 @@ static Quat rigid_orientation(const RigidBody *b) {
 
 static void integrate_orientation(RigidBody *b, f32 dt) {
     if (!b || b->is_static) return;
-    Vec3 w = b->angular_velocity;
-    if (b->inertia_diag.e[0] == 0.0f) w.e[0] = 0.0f;
-    if (b->inertia_diag.e[1] == 0.0f) w.e[1] = 0.0f;
-    if (b->inertia_diag.e[2] == 0.0f) w.e[2] = 0.0f;
+    Quat q = rigid_orientation(b);
+    Vec3 local = quat_rotate_vec3(quat_inverse(q), b->angular_velocity);
+    if (b->inertia_diag.e[0] == 0.0f) local.e[0] = 0.0f;
+    if (b->inertia_diag.e[1] == 0.0f) local.e[1] = 0.0f;
+    if (b->inertia_diag.e[2] == 0.0f) local.e[2] = 0.0f;
+    Vec3 w = quat_rotate_vec3(q, local);
     f32 wlen = vec3_len(w);
     if (wlen <= 1e-8f) return;
     Quat dq = quat_from_axis_angle(w, wlen * dt);

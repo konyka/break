@@ -14,6 +14,16 @@ static Quat chassis_quat(const RigidBody *b) {
     return quat_normalize(b->orientation);
 }
 
+static f32 vehicle_inverse_inertia(const RigidBody *b, Vec3 axis_w) {
+    Vec3 local = quat_rotate_vec3(quat_inverse(chassis_quat(b)), axis_w);
+    f32 weight = 0.0f;
+    for (int i = 0; i < 3; i++) {
+        if (b->inertia_diag.e[i] > 0.0f)
+            weight += local.e[i] * local.e[i] / b->inertia_diag.e[i];
+    }
+    return weight;
+}
+
 bool vehicle_create(Vehicle *v, PhysicsWorld *pw, Vec3 position) {
     if (!v || !pw || !vehicle_vec3_finite(position)) return false;
     Vehicle next;
@@ -136,14 +146,17 @@ void vehicle_step(Vehicle *v, PhysicsWorld *pw, const VehicleInput *in, f32 dt) 
         b->velocity = vec3_add(b->velocity, grip_delta);
         f32 keep = 1.0f - control.brake * 8.0f * dt;
         if (keep < 0.0f) keep = 0.0f;
-        b->velocity.e[0] *= keep;
-        b->velocity.e[2] *= keep;
-        if (b->inertia_diag.e[1] > 0.0f) {
-            f32 speed = vec3_dot(b->velocity, forward);
+        f32 speed = vec3_dot(b->velocity, forward);
+        Vec3 forward_velocity = vec3_scale(forward, speed);
+        b->velocity = vec3_add(vec3_sub(b->velocity, forward_velocity),
+                               vec3_scale(forward_velocity, keep));
+        if (vehicle_inverse_inertia(b, up) > 1e-12f) {
             f32 target_yaw = control.steer * speed * tanf(0.55f) / 2.4f;
+            f32 yaw = vec3_dot(b->angular_velocity, up);
             f32 blend = 8.0f * dt;
             if (blend > 1.0f) blend = 1.0f;
-            b->angular_velocity.e[1] += (target_yaw - b->angular_velocity.e[1]) * blend;
+            b->angular_velocity = vec3_add(b->angular_velocity,
+                vec3_scale(up, (target_yaw - yaw) * blend));
         }
     }
 }

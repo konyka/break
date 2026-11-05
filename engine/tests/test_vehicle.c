@@ -156,6 +156,52 @@ TEST(vehicle_create_rejects_nonfinite_position_atomically) {
     physics_world_destroy(pw);
 }
 
+static void vehicle_set_rotated_chassis(Vehicle *car, PhysicsWorld *pw, Vec3 inertia) {
+    const f32 pi = 3.14159265358979323846f;
+    PhysicsPose pose;
+    pose.orientation = quat_from_axis_angle(vec3(1, 0, 0), pi / 2.0f);
+    pose.angular_velocity = vec3(0, 0, 0);
+    pose.inertia_diag = inertia;
+    physics_body_set_pose(pw, car->chassis, &pose);
+    pw->bodies[car->chassis.index].position = vec3(0, 0, 0.5f);
+}
+
+TEST(vehicle_steering_brake_and_grip_follow_chassis_frame) {
+    PhysicsWorld *pw = physics_world_create(8);
+    physics_body_create(pw, vec3(0, 0, -0.5f), vec3(20, 20, 0.5f), 0, true, 0);
+    Vehicle car;
+    ASSERT_TRUE(vehicle_create(&car, pw, vec3(0, 0, 0)));
+    vehicle_set_rotated_chassis(&car, pw, vec3(0, 1, 0));
+    RigidBody *chassis = &pw->bodies[car.chassis.index];
+    Vec3 up = quat_rotate_vec3(chassis->orientation, vec3(0, 1, 0));
+    Vec3 forward = quat_rotate_vec3(chassis->orientation, vec3(0, 0, 1));
+    Vec3 right = quat_rotate_vec3(chassis->orientation, vec3(1, 0, 0));
+    chassis->velocity = vec3_add(vec3_scale(forward, 4.0f), vec3_scale(right, 3.0f));
+    VehicleInput input = {0, 1, 1};
+    vehicle_step(&car, pw, &input, 0.1f);
+    ASSERT_TRUE(car.wheels[0].grounded);
+    ASSERT_TRUE(vec3_dot(chassis->angular_velocity, up) > 0.01f);
+    ASSERT_FLOAT_EQ(chassis->angular_velocity.e[1], 0.0f, 1e-5f);
+    ASSERT_TRUE(vec3_dot(chassis->velocity, forward) < 4.0f);
+    ASSERT_TRUE(fabsf(vec3_dot(chassis->velocity, right)) < 3.0f);
+    physics_world_destroy(pw);
+}
+
+TEST(vehicle_zero_effective_yaw_inertia_locks_steering) {
+    PhysicsWorld *pw = physics_world_create(8);
+    physics_body_create(pw, vec3(0, 0, -0.5f), vec3(20, 20, 0.5f), 0, true, 0);
+    Vehicle car;
+    ASSERT_TRUE(vehicle_create(&car, pw, vec3(0, 0, 0)));
+    vehicle_set_rotated_chassis(&car, pw, vec3(1, 0, 1));
+    RigidBody *chassis = &pw->bodies[car.chassis.index];
+    Vec3 up = quat_rotate_vec3(chassis->orientation, vec3(0, 1, 0));
+    chassis->velocity = vec3_scale(quat_rotate_vec3(chassis->orientation, vec3(0, 0, 1)), 4.0f);
+    VehicleInput input = {0, 1, 0};
+    vehicle_step(&car, pw, &input, 0.1f);
+    ASSERT_FLOAT_EQ(vec3_dot(chassis->angular_velocity, up), 0.0f, 1e-6f);
+    physics_world_destroy(pw);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(vehicle_suspends_drives_and_blocks_exit);
     RUN_TEST(vehicle_records_independent_wheel_contacts);
@@ -164,4 +210,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vehicle_create_failure_is_atomic_and_destroy_recycles);
     RUN_TEST(vehicle_stale_destroy_preserves_reused_chassis);
     RUN_TEST(vehicle_create_rejects_nonfinite_position_atomically);
+    RUN_TEST(vehicle_steering_brake_and_grip_follow_chassis_frame);
+    RUN_TEST(vehicle_zero_effective_yaw_inertia_locks_steering);
 TEST_MAIN_END()
