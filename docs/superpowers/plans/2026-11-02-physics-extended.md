@@ -283,3 +283,12 @@ Expected: 全部通过，无 ThreadSanitizer 报告。若宿主机 TSan 运行�
 - [ ] **Step 5: 只读评审和交付**
 
 派只读 reviewer 检查正确性、事务、容量、数值稳定、热路径和测试有效性；修复全部 Critical/Important 并对每项修复先加回归测试。运行 `git diff --check`，检查状态中没有测试临时产物。报告写明 RED/GREEN/变异命令和结果、三树证据、提交 id、评审结果及射线轮/32 骨等限制，最后提交报告和剩余修复。
+
+
+## Fix round 1 执行补充
+
+- body/constraint 公共身份改为 `{index,generation}`；旧裸 id 变更入口已迁移，不保留兼容旁路。
+- 非有限 dt/body/vehicle 输入在任意写入前拒绝；ragdoll 中途失败直接恢复受影响 slot 原值。
+- cone twist 使用当前 A-local 相对坐标；休眠在接触和约束求解后统一评估。
+- 载具使用 chassis up/forward 和有效逆惯性；共享 IK 使用 acquire/release 所有权计数。
+- 最终证据与变异输出见 `.superpowers/sdd/2026-11-02-physics-extended/physics-extended-report.md`。

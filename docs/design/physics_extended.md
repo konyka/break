@@ -35,40 +35,41 @@
 
 ```c
 typedef struct ConeTwistDesc {
-    u32 body_a, body_b;
+    PhysicsBodyHandle body_a, body_b;
     Vec3 anchor_local_a, anchor_local_b;
     Vec3 axis_local_a, axis_local_b;
     f32 swing_min, swing_max; /* 弧度，0 <= min <= max <= PI */
     f32 twist_min, twist_max; /* 弧度，-PI <= min <= max <= PI */
 } ConeTwistDesc;
 
-u32 physics_constraint_add_cone_twist(PhysicsWorld *pw, const ConeTwistDesc *desc);
+PhysicsConstraintHandle physics_constraint_add_cone_twist(
+    PhysicsWorld *pw, const ConeTwistDesc *desc);
 ```
 
-创建时保存两端参考姿态。零/零范围表示锁在参考姿态，不沿用铰链的“零/零无限制”特例。非法刚体、自连接、非有限值、退化轴和非法范围返回 `UINT32_MAX`，不得消耗槽。容量仍共享 `PHYSICS_MAX_CONSTRAINTS`。
+创建时保存两端参考姿态。零/零范围表示锁在参考姿态，不沿用铰链的“零/零无限制”特例。非法刚体、自连接、非有限值、退化轴和非法范围返回 `PHYSICS_CONSTRAINT_HANDLE_INVALID`，不得消耗槽。容量仍共享 `PHYSICS_MAX_CONSTRAINTS`。相对旋转与 twist 投影统一在当前 A-local 坐标系计算，世界轴只用于施加修正。
 
 ### 3.2 休眠与唤醒
 
-`RigidBody` 增加 `sleeping`。位置与姿态连续静止达到固定帧阈值后进入休眠；休眠刚体不积分，但仍参与碰撞查询。`physics_body_wake`、`physics_body_set_pose`、冲量、位置推动、有效轮接触力和约束修正会唤醒相关动态刚体。销毁静态支撑时唤醒世界中的动态刚体，避免悬空休眠。
+`RigidBody` 增加 `sleeping`。休眠在接触和约束求解后统一评估：稳定支撑接触允许休眠，非支撑方向的运动接触、非零约束速度、约束删除、冲量、姿态推动和实际位置/角度修正都会唤醒。休眠刚体不积分，但仍参与碰撞查询；持续低速运动不会因接触将速度消零而误睡。
 
 零惯性轴表示该局部轴不可转动。角约束按局部轴投影计算有效逆惯性；全零惯性或两端均不可绕修正轴转动时跳过该角修正，不除零、不写 NaN，也不靠强行把惯性改成 1 冒充解锁。
 
 ### 3.3 载具轮接触实体
 
-`Vehicle` 内嵌四个 `VehicleWheel` 和规范化后的 `VehicleControlState`。每个轮记录局部/世界位置、接地刚体、接触点/法线、压缩量和悬挂力；无独立刚体 id，这是明确的射线轮接触模型。控制输入先拒绝非有限值并夹到 `[-1,1]`（制动为 `[0,1]`），再保存本帧状态。
+`Vehicle` 内嵌四个 `VehicleWheel` 和规范化后的 `VehicleControlState`。每个轮记录局部/世界位置、接地 `PhysicsBodyHandle`、接触点/法线、压缩量和悬挂力；无独立刚体 id，这是明确的射线轮接触模型。控制输入先拒绝非有限值并夹到 `[-1,1]`（制动为 `[0,1]`），再保存本帧状态。
 
 每次 `vehicle_step` 独立投射四道悬挂射线：
 
 1. 由命中距离得到压缩量，由底盘线速度和轮臂角速度得到悬挂阻尼力；只保留非负支撑力。
 2. 接地轮才贡献驱动、制动和侧向抓地，空中控制输入不能制造水平加速度。
-3. 前轮方向按转向角偏转，横摆响应随前进速度和轴距变化；零横摆惯性时保持不可转。
+3. 前轮方向按转向角偏转，横摆绕当前 chassis up 轴并按该轴有效逆惯性响应；零有效横摆惯性时保持不可转，制动使用 chassis forward 方向，抓地按各轮右向计算。
 4. 汇总力写回同一个底盘刚体，不逐轮创建临时对象或分配内存。
 
 `vehicle_destroy` 回收底盘并清空控制/轮状态；创建失败保持调用者原对象不变。原有 `vehicle_create`、`vehicle_step`、`vehicle_enter`、`vehicle_exit` 保持可用。
 
 ### 3.4 布娃娃局部 TRS 与 IK 互斥
 
-`RagdollBone` 增加所拥有约束 id、关节相对刚体的绑定平移/旋转和局部绑定缩放。激活参数增加可选 `IKSystem *ik`：
+`RagdollBone` 保存所拥有的 `PhysicsBodyHandle`、`PhysicsConstraintHandle`、关节相对刚体的绑定平移/旋转和局部绑定缩放。激活参数增加可选 `IKSystem *ik`：
 
 ```c
 bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw,
@@ -80,9 +81,9 @@ bool ragdoll_write_local_trs(const Ragdoll *rd, const PhysicsWorld *pw,
 void ragdoll_write_pose(const Ragdoll *rd, const PhysicsWorld *pw, Skeleton *sk);
 ```
 
-`IKSystem` 增加物理驱动挂起状态和对应 setter；`anim_ik_solve` 在挂起时立即返回。布娃娃激活成功后保存并设置挂起状态，停用后恢复原状态。挂起期间即使调用方新增 IK target，求解仍被屏蔽。
+`IKSystem` 同时支持手动挂起和 ragdoll 所有权计数。每次成功激活 acquire，停用 release；任一 ragdoll 存活时 `anim_ik_solve` 都被屏蔽，只有最后一个所有者停用才恢复，因此两种停用顺序均正确。
 
-激活先在临时 `Ragdoll` 中验证骨架和容量，再创建骨体与锥 twist 约束。父关系使用 `Skeleton.joint_parents`，不假定父索引为 `j-1`。任一失败移除本次全部约束、停放本次全部骨体，并保持 `rd` 和 IK 状态不变。
+激活先在临时 `Ragdoll` 中验证骨架和容量，再创建骨体与锥 twist 约束。父关系使用 `Skeleton.joint_parents`，不假定父索引为 `j-1`。创建事务记录受影响 body/constraint slot 的原值、count 和 `bvh_dirty`；任一中途失败直接恢复快照，包括 tombstone generation，不靠 park/remove 造成二次副作用，并保持 `rd` 和 IK 状态不变。
 
 写出时先由刚体姿态和绑定偏移恢复每个关节的世界位置/旋转：
 
@@ -107,10 +108,12 @@ void ragdoll_write_pose(const Ragdoll *rd, const PhysicsWorld *pw, Skeleton *sk)
 ## 5. 错误、容量与生命周期
 
 - 约束满、骨体容量不足、非法描述、非法父关系均失败，不静默截断。
-- 布娃娃创建按“新增槽 + 可复用 tombstone”计算可用容量；回滚只撤销本次创建的约束和刚体。
+- 持久 body/constraint 身份均为 `{index,generation}`。park 递增 body generation 并解绑关联约束；constraint remove 递增 slot generation 并唤醒有效动态端点。求解、remove、write、revive、deactivate 都校验 generation，旧所有者不能操作复用后的新对象。
+- 布娃娃创建按“新增槽 + 可复用 tombstone”计算可用容量；中途失败直接恢复受影响 slot 原值和计数，不用 park 代替完整回滚。
+- `physics_step` 的 dt、body create/revive 的 position/extent/mass/shape、pose、impulse、push、vehicle create/step 输入在任意写入前验证有限性，NaN/±Inf 原子拒绝；负有限 extent 继续既有 clamp。
 - 约束/骨体销毁幂等；布娃娃停用只移除自己拥有的约束，不影响世界中已有约束。
-- 载具和布娃娃热路径均无 `malloc/calloc/realloc/free`；世界创建/销毁维持现有分配边界。
-- 本轮不引入跨线程句柄系统；调用方仍须在 GameThread 内保证对象未并发销毁或复用。
+- 载具和布娃娃热路径均无 `malloc/calloc/realloc/free`；世界创建/销毁维持现有分配边界。Lua 绑定在 bind/shutdown 分配固定容量 serial/generation 映射，保留既有数字 id ABI。
+- GameThread 独占所有可变状态。
 
 ## 6. 验证与变异
 
