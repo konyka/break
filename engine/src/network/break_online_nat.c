@@ -105,6 +105,7 @@ struct BreakNatEndpoint {
     bool closed_pair_valid;
     BreakOnlineHandle closed_pair;
     u64 closed_sequence;
+    u64 control_high_water;
 };
 
 static bool coordinator_owner(const BreakNatCoordinator *coordinator)
@@ -936,12 +937,13 @@ static BreakRuntimeError endpoint_punch(BreakNatEndpoint *endpoint,
     u64 sequence = get_u64(datagram->bytes + 48u);
     NetAddress peer_address;
     BreakRuntimeError result;
+    u64 now = endpoint->clock(endpoint->clock_user);
     if (!endpoint->registered || session != endpoint->session ||
         recipient.index != endpoint->peer.index ||
         recipient.generation != endpoint->peer.generation ||
         !net_address_equal(&datagram->source, &endpoint->coordinator) ||
         !break_online_handle_valid(pair) || !nonce || !sequence || !ttl_ms ||
-        endpoint->clock(endpoint->clock_user) > UINT64_MAX - ttl_ms ||
+        now > UINT64_MAX - ttl_ms ||
         !decode_address(datagram->bytes + 56u, &peer_address) ||
         !nat_verify(endpoint->session_key, endpoint->session_key_user,
                     endpoint->session, datagram->bytes, 74u)) {
@@ -957,6 +959,7 @@ static BreakRuntimeError endpoint_punch(BreakNatEndpoint *endpoint,
         return BREAK_RUNTIME_REJECTED;
     }
     if (endpoint->active) return BREAK_RUNTIME_REJECTED;
+    if (sequence <= endpoint->control_high_water) return BREAK_RUNTIME_REJECTED;
     if (endpoint->closed_pair_valid && endpoint->closed_pair.index == pair.index &&
         endpoint->closed_pair.generation == pair.generation &&
         sequence <= endpoint->closed_sequence) {
@@ -978,8 +981,9 @@ static BreakRuntimeError endpoint_punch(BreakNatEndpoint *endpoint,
     endpoint->peer_address = peer_address;
     endpoint->nonce = nonce;
     endpoint->punch_ttl = ttl_ms;
-    endpoint->expires_at = endpoint->clock(endpoint->clock_user) + ttl_ms;
+    endpoint->expires_at = now + ttl_ms;
     endpoint->punch_sequence = sequence;
+    endpoint->control_high_water = sequence;
     return BREAK_RUNTIME_OK;
 }
 
@@ -1038,17 +1042,18 @@ static BreakRuntimeError endpoint_close(BreakNatEndpoint *endpoint,
                     endpoint->session, datagram->bytes, 40u)) {
         return BREAK_RUNTIME_REJECTED;
     }
+    if (endpoint->closed_pair_valid && endpoint->closed_pair.index == pair.index &&
+        endpoint->closed_pair.generation == pair.generation &&
+        sequence == endpoint->closed_sequence) {
+        return BREAK_RUNTIME_OK;
+    }
+    if (sequence <= endpoint->control_high_water) return BREAK_RUNTIME_REJECTED;
     if (endpoint->active &&
         (endpoint->pair.index != pair.index || endpoint->pair.generation != pair.generation)) {
         return BREAK_RUNTIME_REJECTED;
     }
     if (endpoint->active && sequence <= endpoint->punch_sequence) {
         return BREAK_RUNTIME_REJECTED;
-    }
-    if (endpoint->closed_pair_valid && endpoint->closed_pair.index == pair.index &&
-        endpoint->closed_pair.generation == pair.generation) {
-        if (sequence == endpoint->closed_sequence) return BREAK_RUNTIME_OK;
-        if (sequence < endpoint->closed_sequence) return BREAK_RUNTIME_REJECTED;
     }
     endpoint->active = false;
     endpoint->connected = false;
@@ -1061,6 +1066,7 @@ static BreakRuntimeError endpoint_close(BreakNatEndpoint *endpoint,
     endpoint->closed_pair_valid = true;
     endpoint->closed_pair = pair;
     endpoint->closed_sequence = sequence;
+    endpoint->control_high_water = sequence;
     return BREAK_RUNTIME_OK;
 }
 
