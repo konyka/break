@@ -71,9 +71,9 @@ magic[4] || schema_hash:u64le || object_id:u64le ||
 revision:varuint || kind:u8 || aspect_mask:varuint || values...
 ```
 
-kind 为 BASELINE、DIRTY、DESTROY 或 DORMANT。baseline 携带当前全部 active aspect，dirty 只携带 mask 指定的变化 aspect；控制记录的 mask 必须为 0。值按 aspect id 升序编码：U32 使用 LEB128，I32 使用 zigzag LEB128，F32 使用 4 字节 little-endian 并拒绝非有限值，BYTES 使用 varint 长度和精确字节。仅变化字段进入包，因此小整数和稀疏变化不会发送整个对象。
+kind 为 BASELINE、DIRTY、DESTROY 或 DORMANT。baseline 携带当前全部 active aspect，dirty 只携带 mask 指定的变化 aspect；控制记录的 mask 必须为 0。wire 中沿用历史名称的 `revision:varuint` 字段实际承载 record epoch，不是公共 value revision。值按 aspect id 升序编码：U32 使用 LEB128，I32 使用 zigzag LEB128，F32 使用 4 字节 little-endian 并拒绝非有限值，BYTES 使用 varint 长度和精确字节。仅变化字段进入包，因此小整数和稀疏变化不会发送整个对象。
 
-apply 要求相同 schema hash、live generation 和递增的每对象 record epoch；值 revision 不再兼任控制顺序。全部 mask、varint、类型、长度及精确包结束先验证，再在 staging 暂存，最后一次性提交。DORMANT/DESTROY 都只是去激活并清 active mask，后续更高 epoch 的 baseline 可用同一 handle 唤醒；永久销毁仍由显式 `break_aspect_object_destroy` 退休 generation。相同包的重复 apply 可幂等，旧 control 或同 epoch 不同 hash 返回 STALE。任何失败都保留原对象值和 revision；相同值 setter 不增加 revision，达到 `UINT64_MAX` 后 setter 返回 OVERLOAD 且值不变。测试 8/8 包含手工 `health=300` 的字节证据、baseline/dirty 往返、gen2 重建、控制消费、负值/浮点/字节、stale handle、revision 上限、输出容量及 malformed 无部分提交。
+`break_aspect_encode_with_epoch` 只读编码，不改 store 的 record epoch/hash；较小 epoch 或同 epoch 不同 packet hash 返回 STALE。apply 要求相同 schema hash、live generation 和递增的每对象 record epoch，成功时只更新 record epoch/hash，不把 record epoch 写回公共 value revision；公共 value revision 只表示本地值变更，不再兼任控制顺序。全部 mask、varint、类型、长度及精确包结束先验证，再在 staging 暂存，最后一次性提交。DORMANT/DESTROY 都只是去激活并清 active mask，后续更高 epoch 的 baseline 可用同一 handle 唤醒；永久销毁仍由显式 `break_aspect_object_destroy` 退休 generation。相同包的重复 apply 可幂等，旧 control 或同 epoch 不同 hash 返回 STALE。任何失败都保留原对象值、value revision 和 record epoch；相同值 setter 不增加 value revision，value revision 或 record epoch 达到 `UINT64_MAX` 后 setter 返回 OVERLOAD 且值不变。测试 9/9 包含手工 `health=300` 的字节证据、baseline/dirty 往返、gen2 重建、控制消费、负值/浮点/字节、stale handle、revision 上限、较小 epoch、输出容量及 malformed 无部分提交。
 
 ## 6. AOI 驱动复制与复用边界
 
@@ -84,11 +84,11 @@ apply 要求相同 schema hash、live generation 和递增的每对象 record ep
 - leave：按对象 flags 发送 DESTROY 或 DORMANT，并保存 pending_leave/kind；即使下一轮 AOI 为空也优先重试，只有全部片段成功后才清理 ghost。
 - disconnect：清理该连接全部 ghost；重连必须重新 baseline。
 
-每个包经 `break_replication_fragment_payload_into` 使用调用方固定元数据切片；分配式与固定存储 API 共用同一 planner/fill，避免 wire 漂移。片段字节预算在首次发送前检查，不足则保留 dirty 供后续重试。所有片段经 `BreakAspectSendFn` 成功交付后才清 dirty/更新 ghost并推进 record epoch；回调失败保留原 epoch 和 dirty，重试使用新 delta id 但相同 record epoch。reassembler 保存持久 delta high-water，完成后更旧 delta 也返回 CONFLICT；新流元数据、首片和结果分配全部成功后才淘汰旧流，OVER_LIMIT/OOM 不改变旧流。显式 reset 才开启新 epoch。已发出的片段无法召回，但接收方可利用 duplicate/conflict/checksum 检查。
+每个包经 `break_replication_fragment_payload_into` 使用调用方固定元数据切片；分配式与固定存储 API 共用同一 planner/fill，避免 wire 漂移。编码、分片和片段字节预算均在首个 datagram 前预检，预算不足不推进 record epoch，并保留 dirty 供后续重试。预检通过后、首个 datagram 前，publish 把 Real 的 record epoch 推进到本次实际发送尝试的 epoch；即使完整包已交付后 callback 才返回失败，也保留这个 attempt high-water 和 dirty。后续尝试使用新的 record epoch 与 delta id，因此接收端不会把修改后的值误判为同 epoch 冲突。只有全部片段经 `BreakAspectSendFn` 成功交付后才清 dirty/更新 ghost。reassembler 保存持久 delta high-water，完成后更旧 delta 也返回 CONFLICT；新流元数据、首片和结果分配全部成功后才淘汰旧流，OVER_LIMIT/OOM 不改变旧流。显式 reset 才开启新 epoch。已发出的片段无法召回，但接收方可利用 duplicate/conflict/checksum 检查。
 
 `BreakAspectSendFn` 是接入现有认证 Session/`BreakNetReactor` 或其他安全传输的明确边界；本模块不直接把 connection id 当作认证证明。**FNV 校验和只是完整性检查，不是认证；本切片没有新增可靠传输、客户端预测、回滚或 authority handoff。**
 
-调度测试 7/7 使用真实 AOI、两个独立接收端、预算优先级、发送失败重试、第二片失败后的持久重组、空 AOI pending leave、普通 leave 重入、DORMANT 唤醒、旧 control 乱序和断连。固定分片测试 12/12 另覆盖 4/4/2 切片、短容量不发布部分元数据、完成后旧 delta 拒绝以及失败淘汰保留旧流。
+调度测试 9/9 使用真实 AOI、两个独立接收端、预算优先级、零预算不推进 epoch、完整包交付后 callback 失败并修改值的重试、第二片失败后的持久重组、空 AOI pending leave、普通 leave 重入、DORMANT 唤醒、旧 control 乱序和断连。固定分片测试 12/12 另覆盖 4/4/2 切片、短容量不发布部分元数据、完成后旧 delta 拒绝以及失败淘汰保留旧流。
 
 ## 7. 验证与限制
 

@@ -243,6 +243,7 @@ ctest --test-dir <对应构建树> --output-on-failure \
 | `58406c95` | reassembler 持久 high-water 与全分配成功后的原子淘汰 |
 | `9bfb44d7` | 每对象 record epoch、DORMANT/普通 leave 重入和旧 control 拒绝 |
 | `1d2487c0` | crypto OFF 的独立 fail-closed 构建与合约测试 |
+| `7b33bd0d` | 第二轮实际协议/状态文档与本报告 |
 
 ## 12. 第二轮 RED -> GREEN
 
@@ -323,3 +324,84 @@ ctest --test-dir build-p8-nocrypto-tsan --output-on-failure \
 - 持久 high-water 防止 endpoint 控制重放，不等于可靠传输、跨进程持久去重或全局 NAT 穿透保证。
 - record epoch 只提供单对象记录顺序；显式 `break_aspect_object_destroy` 才退休 generation，普通 AOI leave 只去激活。
 - 本报告仍仅覆盖本机 Linux focused 与攻击 loopback，未运行 Windows/macOS/移动原生、外部 NAT 设备、公网服务或听感测试。
+
+
+---
+
+# P8 fix round 3 追加报告
+
+## 15. 评审与修复提交
+
+第三轮只处理“完整包已交付但 callback 失败，随后修改值并重试”导致的同 epoch 不同内容永久 STALE；round2 其余项保持 ADDRESSED，未重做 NAT/reassembler 工作。round2 文档提交已在上表补记为实际提交 `7b33bd0d`。
+
+| 提交 | 修复 |
+|---|---|
+| `c90e0fa5` | 只读 epoch 编码、value revision/record epoch 分离、每次实际发送尝试分配新 epoch |
+
+## 16. 第三轮 RED -> GREEN 与生产变异
+
+### 完整交付后的 callback 失败
+
+- 新 sink 在 `fail_after_record_call` 中先保存完整包，再返回 `OVERLOAD`。远端成功应用 A 后，authoritative setter 把值改为 B；旧实现以相同 record epoch 重试不同 packet hash，永久返回 STALE。RED 为 **8 passed, 1 failed, 9 total**。
+- `publish()` 在编码、分片和预算预检通过后、首个 datagram 前提交 `real->record_epoch = epoch`。callback 失败保留这个 attempt high-water 和 dirty；后续实际尝试使用更高 epoch，修改后的 B 因而可作为新记录应用。只有全部片段成功才清 dirty/更新 ghost。
+- 预算为 0 时预检在首包前返回，不推进 record epoch；提高预算后修改值并重试成功。GREEN：aspect **9/9**、AOI 调度 **9/9**。
+- 生产变异：把 attempt high-water 移回 callback 成功之后，交付后失败测试为 **8 passed, 1 failed, 9 total**；恢复后 **9/9**。
+
+### 只读编码与 value revision 分离
+
+- `break_aspect_encode_with_epoch()` 不再写 store 的 record epoch/hash；较小 epoch 返回 `BREAK_RUNTIME_STALE`，同 epoch 不同 hash 也拒绝。较小 epoch 负例初次 RED 为 **8 passed, 1 failed, 9 total**。
+- `break_aspect_apply()` 成功只更新 record epoch/hash，不再把 wire record epoch 写回公共 value revision。公共 value revision 只表示本地值变更；value revision 或 record epoch 为 `UINT64_MAX` 时 setter 返回 OVERLOAD。
+- 直接连续控制记录显式使用 DORMANT epoch 2、DESTROY epoch 3，不依赖 value revision 隐式分配唯一 epoch。普通 AOI leave/DORMANT 仍只去激活，只有永久 `break_aspect_object_destroy` 退休 generation。
+- 生产变异：删除较小 epoch 检查后 aspect 为 **8 passed, 1 failed, 9 total**；恢复后 **9/9**。
+
+## 17. 第三轮 focused 验证
+
+### crypto ON 无 Snowflake normal
+
+```bash
+cmake --build build-p8-normal -j6 --target \
+  test_break_online_lobby test_break_online_nat test_break_online_voice \
+  test_break_online_aspect test_break_online_aspect_replication \
+  test_break_replication_fragment test_network test_net_loop test_net_loop_qnx \
+  test_packet test_ecs_replication
+ctest --test-dir build-p8-normal --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+```
+
+结果：**11/11 passed**。
+
+### 钉住 Snowflake normal / ASan+UBSan / TSan
+
+测试源码仍使用本机已有 Snowflake 仓库的钉住提交 `0fceed6d885bb8578743d82cc4a5d7ab2f6b0620`，未修改外部仓库或新增依赖。三棵树均运行：
+
+```bash
+ctest --test-dir <对应构建树> --output-on-failure \
+  -L 'network|replication|fragmentation|session'
+ctest --test-dir <对应构建树> --output-on-failure \
+  -R '^(test_network|test_net_loop|test_net_loop_qnx|test_packet|test_ecs_replication)$'
+```
+
+- `build-p8-snow` normal：**13/13 + 5/5 passed**。
+- `build-p8-snow-asan` ASan+UBSan：**13/13 + 5/5 passed**，无 sanitizer 报告。
+- `build-p8-snow-tsan` TSan：**13/13 + 5/5 passed**，无 race 报告。
+
+### no-crypto normal / ASan+UBSan / TSan
+
+```bash
+ctest --test-dir build-p8-nocrypto --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat_nocrypto|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+ctest --test-dir build-p8-nocrypto-asan --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat_nocrypto|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+ctest --test-dir build-p8-nocrypto-tsan --output-on-failure \
+  -R '^(test_break_online_lobby|test_break_online_nat_nocrypto|test_break_online_voice|test_break_online_aspect|test_break_online_aspect_replication|test_network|test_net_loop|test_net_loop_qnx|test_packet|test_break_replication_fragment|test_ecs_replication)$'
+```
+
+三棵树均 **11/11 passed**，ASan+UBSan 无 sanitizer 报告，TSan 无 race 报告。no-crypto 只运行独立 fail-closed 合约，不执行 HMAC 成功路径；crypto-enabled lane 保留真实 UDP NAT/语音 loopback和有效 MAC captured replay。
+
+最终直接行为为 NAT **23/23**、voice **8/8**、aspect **9/9**、AOI 调度 **9/9**、固定分片 **12/12**、真实 Session **38/38**。最终提交前执行 `git diff --check a0bfeb95..HEAD` 和工作树状态检查；结果在交付 handoff 中给出。
+
+## 18. 第三轮限制
+
+- `challenge_key` 与每 session 密钥仍由应用 provision/rotation；本切片不提供密钥生命周期服务。
+- record epoch 只提供进程内单对象记录顺序和重复/冲突检测，不是跨进程持久去重，也不保证可靠送达。
+- 仅本机 Linux focused 验证；不承诺任意 NAT、防火墙穿透、公网部署、Windows/macOS/移动原生验证或可靠送达。

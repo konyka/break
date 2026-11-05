@@ -1,3 +1,10 @@
+## 本轮更新：P8 fix round 3（2026-11-05）
+
+- **失败重试顺序**：修复完整 aspect 包已交付但 callback 返回失败后，修改值并以同 epoch 重试造成永久 STALE 的问题。每次实际发送尝试在预算/分片预检通过后、首个 datagram 前分配新 record epoch；失败保留 attempt high-water 和 dirty，只有完整成功才清 dirty，零预算未发送不推进 epoch。
+- **只读与 revision 分离**：`break_aspect_encode_with_epoch` 不再写 store epoch/hash，较小 epoch 和同 epoch 不同 hash 均拒绝。apply 只更新 record epoch/hash，不覆盖公共 value revision；后者只表示本地值变更。value revision 或 record epoch 达到 `UINT64_MAX` 时 setter fail-closed。
+- **验证**：aspect 9/9、AOI 调度 9/9、NAT 23/23、voice 8/8、分片 12/12、真实 Session 38/38。crypto ON 无 Snowflake normal 11/11；钉住 Snowflake normal/ASan+UBSan/TSan 均 13/13 + 5/5；no-crypto normal/ASan+UBSan/TSan 均 11/11，无 sanitizer/race 报告。交付后失败与较小 epoch 的生产变异均实际变红并恢复，完整证据见 `.superpowers/sdd/online-gameplay-network-report.md` round3。
+- **限制**：challenge/session 密钥由应用 provision/rotation；仅本机 Linux focused 验证，不承诺任意 NAT、公网部署、跨平台原生或可靠送达；record epoch 是进程内记录顺序，不是跨进程持久去重。
+
 ## 本轮更新：P8 fix round 2（2026-11-05）
 
 - **持久防重放与可用性**：endpoint 持久 control high-water 覆盖 PUNCH/CLOSE、TTL 和连续 re-pair；旧 CLOSE 不能回退。stateless 来源绑定 challenge 不再被伪造 DISCOVER 占槽，合法注册仍能完成。
