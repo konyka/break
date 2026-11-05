@@ -266,8 +266,10 @@ bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSyste
 
     next.active = true;
     next.ik = ik;
-    next.ik_was_suspended = ik ? ik->physics_suspended : false;
-    if (ik) anim_ik_set_physics_suspended(ik, true);
+    if (ik && !anim_ik_physics_acquire(ik)) {
+        ragdoll_txn_abort(&txn, pw);
+        return false;
+    }
     *rd = next;
     return true;
 }
@@ -275,7 +277,7 @@ bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSyste
 void ragdoll_deactivate(Ragdoll *rd, PhysicsWorld *pw) {
     if (!rd || !rd->active) return;
     if (pw) ragdoll_rollback(rd, pw);
-    if (rd->ik) anim_ik_set_physics_suspended(rd->ik, rd->ik_was_suspended);
+    if (rd->ik) anim_ik_physics_release(rd->ik);
     memset(rd, 0, sizeof(*rd));
 }
 

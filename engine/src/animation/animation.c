@@ -481,6 +481,17 @@ void anim_ik_set_physics_suspended(IKSystem *ik, bool suspended) {
     ik->physics_suspended = suspended;
 }
 
+bool anim_ik_physics_acquire(IKSystem *ik) {
+    if (!ik || ik->physics_ragdoll_count == UINT32_MAX) return false;
+    ik->physics_ragdoll_count++;
+    return true;
+}
+
+void anim_ik_physics_release(IKSystem *ik) {
+    if (!ik || ik->physics_ragdoll_count == 0u) return;
+    ik->physics_ragdoll_count--;
+}
+
 static Vec3 mat4_get_translation(const Mat4 *m) {
     return (Vec3){{m->e[3][0], m->e[3][1], m->e[3][2]}};
 }
@@ -562,7 +573,8 @@ void anim_ik_two_bone(Vec3 root_pos, Vec3 mid_pos, Vec3 tip_pos,
 void anim_ik_solve(IKSystem *ik, Vec3 *positions, Quat *rotations,
                    const Mat4 *world_transforms, u32 bone_count) {
     (void)positions;
-    if (!ik || !rotations || !world_transforms || bone_count == 0u || ik->physics_suspended) return;
+    if (!ik || !rotations || !world_transforms || bone_count == 0u ||
+        ik->physics_suspended || ik->physics_ragdoll_count > 0u) return;
 
     for (u32 i = 0; i < ik->target_count && i < ANIM_MAX_IK_TARGETS; i++) {
         IKTarget *T = &ik->targets[i];

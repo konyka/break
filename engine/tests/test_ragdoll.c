@@ -324,6 +324,49 @@ TEST(ragdoll_stale_deactivate_preserves_reused_resources) {
     physics_world_destroy(pw);
 }
 
+static void assert_ik_changes(Quat *rotations, const Quat *before) {
+    ASSERT_FALSE(quat_near(rotations[0], before[0]) && quat_near(rotations[1], before[1]));
+}
+
+TEST(ragdoll_shared_ik_is_owned_until_last_deactivation) {
+    for (u32 order = 0; order < 2; order++) {
+        Skeleton sk;
+        skeleton_fixture(&sk, 3);
+        sk.joint_parents[1] = 0;
+        sk.joint_parents[2] = 1;
+        Mat4 worlds[3];
+        Vec3 positions[3] = {0};
+        Quat rotations[3];
+        for (u32 i = 0; i < 3; i++) {
+            Vec3 p = vec3(0, (f32)i, 0);
+            set_joint_world(&sk, i, p, QUAT_IDENTITY);
+            worlds[i] = trs(p, QUAT_IDENTITY, vec3(1, 1, 1));
+            rotations[i] = QUAT_IDENTITY;
+        }
+        IKSystem ik;
+        anim_ik_init(&ik);
+        anim_ik_set_target(&ik, 0, 0, 1, 2, vec3(1, 1.5f, 0), vec3(1, 0, 0));
+        anim_ik_set_weight(&ik, 0, 1.0f);
+        PhysicsWorld *pw = physics_world_create(12);
+        Ragdoll a, b;
+        memset(&a, 0, sizeof(a));
+        memset(&b, 0, sizeof(b));
+        ASSERT_TRUE(ragdoll_activate(&a, pw, &sk, &ik));
+        ASSERT_TRUE(ragdoll_activate(&b, pw, &sk, &ik));
+        Ragdoll *first = order == 0 ? &a : &b;
+        Ragdoll *second = order == 0 ? &b : &a;
+        Quat before[3];
+        memcpy(before, rotations, sizeof(rotations));
+        ragdoll_deactivate(first, pw);
+        anim_ik_solve(&ik, positions, rotations, worlds, 3);
+        ASSERT_EQ(memcmp(before, rotations, sizeof(rotations)), 0);
+        ragdoll_deactivate(second, pw);
+        anim_ik_solve(&ik, positions, rotations, worlds, 3);
+        assert_ik_changes(rotations, before);
+        physics_world_destroy(pw);
+    }
+}
+
 void fail_after(i32 body, i32 constraint);
 
 static void ragdoll_world_snapshot(PhysicsWorld *pw, PhysicsWorld *world, RigidBody *bodies) {
@@ -385,4 +428,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ragdoll_failures_preserve_world_and_destination);
     RUN_TEST(ragdoll_stale_deactivate_preserves_reused_resources);
     RUN_TEST(ragdoll_mid_create_failures_restore_entire_world);
+    RUN_TEST(ragdoll_shared_ik_is_owned_until_last_deactivation);
 TEST_MAIN_END()

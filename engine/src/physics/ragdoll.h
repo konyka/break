@@ -18,7 +18,6 @@ typedef struct Ragdoll {
     u32 bone_count;
     bool active;
     IKSystem *ik;
-    bool ik_was_suspended;
 } Ragdoll;
 
 bool ragdoll_activate(Ragdoll *rd, PhysicsWorld *pw, const Skeleton *sk, IKSystem *ik);
