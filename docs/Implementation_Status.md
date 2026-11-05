@@ -1,3 +1,9 @@
+## 本轮更新：P10 fix round 2（2026-11-05）
+
+- **修复**：空间快照以单原子 64-bit revision+gain 防止旧 START 覆盖较新 position/listener；回调发布 started_epoch，音乐 update 未确认当前 START 已消费前不读旧 cursor。epoch 0 保留为无效，max-1→max 允许，max 后 voice 退休并返回 OVERLOAD，不绕回或复用完成身份。补 reverb.mix 非有限、delay/reverb stereo 和 extended stereo clip PCM。
+- **验证**：`test_audio_extended` 36/36、`test_audio_dsp` 10/10、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。空间 revision、started gate、extended/DSP 双声道变异均先红后恢复；`git diff --check df8fc32e..HEAD` 通过。提交 `8ff137c1`，真实输出追加于 `.superpowers/sdd/audio-fix-round1-report.md` 的 round 2 部分。
+- **限制**：未做真实声卡/听测、Windows/macOS 或第三轮独立评审。边界通过测试 TU 注入验证，并非自然等待回绕。
+
 ## 本轮更新：P10 fix round 1（2026-11-03）
 
 - **修复**：每次 START 使用独立 64-bit epoch，旧 STOP/RAMP/自然完成不能回收 RESTART 后 voice；cursor 只在回调消费 START 时归零，初始增益随命令发布，enqueue 失败不改簿记。listener/距离先验证再 ray，stop-pending 不再 ray；bus 统一拒绝非有限值，stale clip 返回 STALE。legacy 移除 NO_PITCH 恢复 Doppler。DSP 使用宽索引并补 stereo/链顺序/完整回调扫描。

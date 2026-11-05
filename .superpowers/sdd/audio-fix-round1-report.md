@@ -97,3 +97,96 @@ git diff --check e82dae38..HEAD
 - 未做真实声卡、实际听测、Windows/macOS 或跨采样率验证。
 - legacy 单发音源存在 miniaudio resampler EOF 冲刷语义；PCM fixture 使用循环源验证解码内容，Doppler 使用两个处理块验证实际 pitch 应用。
 - 本轮依据独立评审逐项修复并做差异自审，未进行第二轮独立评审。
+
+
+# P10 fix round 2
+
+日期：2026-11-05
+基线：`df8fc32e`
+复审输入：`.superpowers/sdd/review-fix1-findings.md` 全部条目
+
+## 修复
+
+提交：`8ff137c1` `audio: version spatial snapshots and playback starts`
+
+- 空间快照使用一个 C11 `atomic_uint_least64_t`：高 32 位 revision，低 32 位 f32 gain bits。START 只在 snapshot revision 仍等于命令 revision 时应用初始 gain；position/listener 只在当前 epoch 匹配时递增 revision 并发布，因此旧 START 不会覆盖较新的位置。
+- 回调消费 START 后发布独立 `started_epoch`，并在 cursor 归零之后 release-store。`audio_music_update` 仅在 `started_epoch == voice->epoch` 时读取 cursor，未消费的新播放不会依据旧 cursor 跳轨。
+- epoch 0 保留为未启动/无效值。允许 max-1→max；达到 UINT64_MAX 后 voice 永久退休，后续 START 返回 `AUDIO_OVERLOAD`，不绕回、不重置、不与旧完成身份重合。revision 达到 UINT32_MAX 时 position/listener 停止发布；新 epoch 从 revision 1 开始。
+- 快照字段有 `sizeof(u32) == sizeof(f32) == 4` 和 `sizeof(u64) == 8` 的 C11 静态断言。原子类型不要求 lock-free，仅依赖标准原子语义；Linux normal/ASan+UBSan/TSan 已验证，Windows/macOS 未验证。
+- 补 reverb.mix NaN/Inf、delay/reverb stereo 独立状态和 extended stereo clip PCM 覆盖。
+
+## RED / GREEN / 变异
+
+- 空间 trigger→position、trigger→listener、RESTART→position 和音乐 replay 用例首次执行时，空间三项失败；音乐首次用例只经过未使用 voice，扩展到第二次 replay 后也失败。四项共同结果为 30/34；修复后 34/34。
+- epoch 边界注入在 max 后仍返回成功并绕回 0，结果 34/35；加入退休政策后 35/35，且 serial/order/snapshot 不变。
+- START revision 可编译变异为 33/36，三个空间顺序用例全部重新失败；恢复后 36/36。
+- 移除 started_epoch gate 的变异为 35/36，第二次零淡化 replay 再次跳轨；恢复后通过。
+- extended 右声道复制左声道变异为 35/36，stereo clip 断言失败；恢复后通过。
+- DSP 右声道复制左声道变异为 7/10，filter/delay/reverb 三个 stereo 测试均失败；恢复后 10/10。
+- 最终既有 `test_audio` 17/17、`test_audio_extended` 36/36、`test_audio_dsp` 10/10。
+
+## 命令与真实输出
+
+normal：
+
+```bash
+cmake --build build-p10-audio -j6 --target test_audio test_audio_extended test_audio_dsp engine
+ctest --test-dir build-p10-audio -R 'test_audio' --output-on-failure
+```
+
+```text
+1/4 test_audio ....................... Passed    0.00 sec
+2/4 test_audio_extended .............. Passed    0.05 sec
+3/4 test_audio_dsp ................... Passed    0.00 sec
+4/4 test_audio_realtime_contract ..... Passed    0.01 sec
+100% tests passed, 0 tests failed out of 4
+engine: Built target engine
+```
+
+ASan+UBSan：
+
+```bash
+cmake -S engine -B build-p10-audio-asan -DENGINE_RHI_BACKEND=opengl -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
+cmake --build build-p10-audio-asan -j6 --target test_audio test_audio_extended test_audio_dsp
+ctest --test-dir build-p10-audio-asan -R 'test_audio' --output-on-failure
+```
+
+```text
+1/4 test_audio ....................... Passed    0.01 sec
+2/4 test_audio_extended .............. Passed    0.10 sec
+3/4 test_audio_dsp ................... Passed    0.01 sec
+4/4 test_audio_realtime_contract ..... Passed    0.01 sec
+100% tests passed, 0 tests failed out of 4
+```
+
+无 ASan/UBSan 报告。
+
+TSan：
+
+```bash
+cmake -S engine -B build-p10-audio-tsan -DENGINE_RHI_BACKEND=opengl -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_TSAN=ON
+cmake --build build-p10-audio-tsan -j6 --target test_audio test_audio_extended test_audio_dsp
+ctest --test-dir build-p10-audio-tsan -R 'test_audio' --output-on-failure
+```
+
+```text
+1/4 test_audio ....................... Passed    0.01 sec
+2/4 test_audio_extended .............. Passed    0.39 sec
+3/4 test_audio_dsp ................... Passed    0.01 sec
+4/4 test_audio_realtime_contract ..... Passed    0.01 sec
+100% tests passed, 0 tests failed out of 4
+```
+
+无 TSan 报告。
+
+差异检查：
+
+```bash
+git diff --check df8fc32e..HEAD
+```
+
+通过，无输出。未 push。
+
+## 限制
+
+没有真实声卡或实际听测证据，也没有 Windows/macOS 或第三轮独立评审。测试使用 fake 确定性 PCM 和真实 miniaudio null 后端生命周期；退休与 revision 边界采用测试 TU 内注入，不是等待自然 64-bit 回绕。

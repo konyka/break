@@ -35,7 +35,9 @@ P10 在现有 `AudioSystem` 和同一个 miniaudio `ma_engine` 内实现。新�
 
 `audio_extended_init` 在创建期把 32 个 custom data source 直接接到现有 engine node graph 的 `ma_data_source_node`。没有使用 `ma_sound` 的扩展 PCM 路径，因为其实现会预读固定大小的 processing cache，短 clip 会在小渲染请求下被提前消费。直接 node graph 路径按请求帧数读取，测试覆盖了这一点。
 
-GameThread 是唯一命令生产者。START、STOP、RAMP 都是值命令，携带稳定内部 PCM 指针、公共 serial、独立内部 epoch 和预计算配置；head/tail 用 C11 release/acquire 原子发布。每次 START 都递增 epoch，公共 RESTART handle 不变；STOP/RAMP 只作用于对应 epoch，旧完成不能回收新播放。音频回调是唯一消费者，只有消费 START 时才归零 cursor 并发布该代际初始 spatial gain。listener、位置、遮挡和 bus 变化发布为原子 f32-bit POD 快照；自然结束用 `completed_epoch` 与当前 epoch 匹配后才能回收 voice。enqueue 成功前不改主线程簿记，失败保持原状态。
+GameThread 是唯一命令生产者。START、STOP、RAMP 都是值命令，携带稳定内部 PCM 指针、公共 serial、独立内部 epoch 和预计算配置；head/tail 用 C11 release/acquire 原子发布。每次 START 都递增 epoch，公共 RESTART handle 不变；STOP/RAMP 只作用于对应 epoch，旧完成不能回收新播放。空间快照在单个 64-bit 原子值中打包 32-bit revision 和 32-bit gain bits，START 只应用仍是最新 revision 的初始 gain，position/listener 只修改匹配 epoch 的 revision。回调只有在消费 START 时才归零 cursor、发布初始空间快照并发布 `started_epoch`；音乐 update 仅在 `started_epoch == voice->epoch` 时读取 cursor。自然结束用 `completed_epoch` 与当前 epoch 匹配后才能回收 voice。队列空间预检后才发布，失败保持原状态。
+
+epoch 0 保留为未启动/无效值；max-1→max 可以启动，达到 UINT64_MAX 后该 voice 退休，后续 START 返回 `AUDIO_OVERLOAD`，不绕回或重置。revision 达到 UINT32_MAX 后 position/listener 停止发布，新 epoch 从 revision 1 开始。快照字段大小由 C11 静态断言约束，原子类型不要求 lock-free。
 
 PCM 回调只做以下工作：
 
