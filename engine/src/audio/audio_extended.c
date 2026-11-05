@@ -67,7 +67,10 @@ typedef struct {
     f32 dsp_delay_storage[AUDIO_DSP_MAX_STAGES *
                           AUDIO_DSP_MAX_DELAY_FRAMES * 2u];
     atomic_uint_least64_t spatial_snapshot;
+    atomic_uint_least64_t spatial_epoch;
     atomic_uint_least64_t started_epoch;
+    u32 applied_spatial_revision;
+    f32 applied_spatial_gain;
     atomic_uint *bus_gains;
     Vec3 position;
     u32 bus;
@@ -196,6 +199,26 @@ static void voice_configure_dsp(AudioVoice *voice,
     }
 }
 
+static void voice_apply_initial_spatial(AudioVoice *voice,
+                                        const AudioCommand *command) {
+    u64 expected = atomic_load_explicit(&voice->spatial_snapshot,
+                                        memory_order_acquire);
+    u64 epoch = atomic_load_explicit(&voice->spatial_epoch,
+                                     memory_order_acquire);
+#ifdef AUDIO_SPATIAL_TEST_HOOK
+    AUDIO_SPATIAL_TEST_HOOK(voice);
+#endif
+    if (epoch != command->epoch ||
+        spatial_revision_of(expected) != command->spatial_revision) return;
+    u64 desired = spatial_pack(command->spatial_revision,
+                               command->spatial_gain);
+    if (atomic_compare_exchange_strong_explicit(&voice->spatial_snapshot,
+            &expected, desired, memory_order_release, memory_order_acquire)) {
+        voice->applied_spatial_revision = command->spatial_revision;
+        voice->applied_spatial_gain = command->spatial_gain;
+    }
+}
+
 static void voice_drain_commands(AudioVoice *voice) {
     AudioCommand command;
     while (voice_dequeue(voice, &command)) {
@@ -214,13 +237,7 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->fade_remaining = command.ramp_frames;
             voice->fade_total = command.ramp_frames;
             voice->fade_stop = command.stop_after_ramp;
-            u64 snapshot = atomic_load_explicit(&voice->spatial_snapshot,
-                                                memory_order_acquire);
-            if (spatial_revision_of(snapshot) == command.spatial_revision) {
-                atomic_store_explicit(&voice->spatial_snapshot,
-                    spatial_pack(command.spatial_revision, command.spatial_gain),
-                    memory_order_release);
-            }
+            voice_apply_initial_spatial(voice, &command);
             voice_configure_dsp(voice, &command);
             voice->playing = true;
             atomic_store_explicit(&voice->cursor, 0u, memory_order_release);
@@ -277,8 +294,17 @@ static ma_result voice_read(ma_data_source *source, void *output,
                         &voice->bus_gains[voice->bus], memory_order_relaxed));
                 f32 master_gain = gain_from_bits(atomic_load_explicit(
                     &voice->bus_gains[AUDIO_BUS_MASTER], memory_order_relaxed));
-                f32 spatial_gain = spatial_gain_of(atomic_load_explicit(
-                    &voice->spatial_snapshot, memory_order_relaxed));
+                u64 spatial_epoch = atomic_load_explicit(&voice->spatial_epoch,
+                                                         memory_order_acquire);
+                u64 snapshot = atomic_load_explicit(&voice->spatial_snapshot,
+                                                    memory_order_acquire);
+                u32 revision = spatial_revision_of(snapshot);
+                if (spatial_epoch == voice->playing_epoch &&
+                    revision > voice->applied_spatial_revision) {
+                    voice->applied_spatial_revision = revision;
+                    voice->applied_spatial_gain = spatial_gain_of(snapshot);
+                }
+                f32 spatial_gain = voice->applied_spatial_gain;
                 f32 gain = voice->volume * voice->fade_gain * bus_gain *
                            master_gain * spatial_gain;
                 left = voice->samples[sample] * gain;
@@ -356,7 +382,9 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         atomic_init(&voice->cursor, 0);
         atomic_init(&voice->completed_epoch, 0);
         atomic_init(&voice->spatial_snapshot, spatial_pack(0, 1.0f));
+        atomic_init(&voice->spatial_epoch, 0);
         atomic_init(&voice->started_epoch, 0);
+        voice->applied_spatial_gain = 1.0f;
         ma_data_source_config config = ma_data_source_config_init();
         config.vtable = &AUDIO_VOICE_VTABLE;
         if (ma_data_source_init(&config, &voice->base) != MA_SUCCESS) {
@@ -584,12 +612,40 @@ static AudioResult event_spatial_gain(AudioExtended *ext,
 }
 
 static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain) {
-    if (epoch == 0 || voice->epoch != epoch) return AUDIO_STALE;
+    if (epoch == 0 || voice->epoch != epoch ||
+        atomic_load_explicit(&voice->spatial_epoch, memory_order_acquire) != epoch) {
+        return AUDIO_STALE;
+    }
     if (voice->spatial_revision == UINT32_MAX) return AUDIO_OVERLOAD;
+    u64 expected = atomic_load_explicit(&voice->spatial_snapshot,
+                                        memory_order_acquire);
+    if (spatial_revision_of(expected) != voice->spatial_revision) {
+        return AUDIO_OVERLOAD;
+    }
     u32 revision = voice->spatial_revision + 1u;
+    u64 desired = spatial_pack(revision, gain);
+    if (!atomic_compare_exchange_strong_explicit(&voice->spatial_snapshot,
+            &expected, desired, memory_order_release, memory_order_acquire)) {
+        return AUDIO_OVERLOAD;
+    }
     voice->spatial_revision = revision;
-    atomic_store_explicit(&voice->spatial_snapshot,
-                          spatial_pack(revision, gain), memory_order_release);
+    return AUDIO_OK;
+}
+
+static AudioResult spatial_begin_start(AudioVoice *voice, u64 epoch,
+                                       u32 revision) {
+    u64 expected = atomic_load_explicit(&voice->spatial_snapshot,
+                                        memory_order_acquire);
+    if (spatial_revision_of(expected) != voice->spatial_revision) {
+        return AUDIO_OVERLOAD;
+    }
+    u64 desired = spatial_pack(revision, spatial_gain_of(expected));
+    if (!atomic_compare_exchange_strong_explicit(&voice->spatial_snapshot,
+            &expected, desired, memory_order_release, memory_order_acquire)) {
+        return AUDIO_OVERLOAD;
+    }
+    voice->spatial_revision = revision;
+    atomic_store_explicit(&voice->spatial_epoch, epoch, memory_order_release);
     return AUDIO_OK;
 }
 
@@ -598,7 +654,9 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
     bool new_generation, f32 initial_gain, u32 ramp_frames,
     Vec3 position, f32 spatial_gain, AudioVoiceHandle *out) {
     AudioVoice *voice = &ext->voices[slot];
-    if (voice->epoch == UINT64_MAX) return AUDIO_OVERLOAD;
+    if (voice->epoch == UINT64_MAX || voice->spatial_revision == UINT32_MAX) {
+        return AUDIO_OVERLOAD;
+    }
     if (!voice_command_space(voice)) return AUDIO_OVERLOAD;
     AudioClip *clip = clip_resolve(ext, clip_handle);
     if (!clip) return AUDIO_STALE;
@@ -615,7 +673,7 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
     command.channels = clip->channels;
     command.initial_gain = initial_gain;
     command.spatial_gain = spatial_gain;
-    command.spatial_revision = 1;
+    command.spatial_revision = voice->spatial_revision + 1u;
     command.ramp_target = 1.0f;
     command.ramp_frames = ramp_frames;
     command.desc = *desc;
@@ -626,11 +684,9 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
         }
     }
 
-    f32 previous_gain = spatial_gain_of(atomic_load_explicit(
-        &voice->spatial_snapshot, memory_order_relaxed));
-    voice->spatial_revision = 1;
-    atomic_store_explicit(&voice->spatial_snapshot,
-                          spatial_pack(1, previous_gain), memory_order_release);
+    AudioResult spatial_result = spatial_begin_start(voice, epoch,
+                                                      command.spatial_revision);
+    if (spatial_result != AUDIO_OK) return spatial_result;
     (void)voice_enqueue(voice, &command);
     voice->serial = serial;
     voice->epoch = epoch;
@@ -646,7 +702,8 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
 static AudioResult voice_start(AudioExtended *ext, u32 slot, u32 event_index,
                                bool new_generation, Vec3 position,
                                AudioVoiceHandle *out) {
-    if (ext->voices[slot].epoch == UINT64_MAX) return AUDIO_OVERLOAD;
+    if (ext->voices[slot].epoch == UINT64_MAX ||
+        ext->voices[slot].spatial_revision == UINT32_MAX) return AUDIO_OVERLOAD;
     if (!voice_command_space(&ext->voices[slot])) return AUDIO_OVERLOAD;
     AudioEvent *event = &ext->events[event_index];
     f32 spatial_gain = 0.0f;

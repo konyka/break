@@ -5419,6 +5419,8 @@ endif()
         src/audio/audio_dsp.c)
     target_include_directories(test_audio_extended PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio_extended PRIVATE m)
+    target_compile_definitions(test_audio_extended PRIVATE
+        AUDIO_SPATIAL_TEST_HOOK=test_spatial_interleave)
     if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "qnx")
         target_compile_definitions(test_audio_extended PRIVATE _POSIX_C_SOURCE=199309L)
     endif()

@@ -2,8 +2,18 @@
 #include <core/log.h>
 #include <audio/audio_extended.h>
 #include <float.h>
+static void test_spatial_interleave(void *voice);
 #include "../src/audio/audio.c"
 #include "../src/audio/audio_extended.c"
+
+static bool test_interleave_armed;
+static f32 test_interleave_gain;
+static void test_spatial_interleave(void *opaque) {
+    if (!test_interleave_armed) return;
+    test_interleave_armed = false;
+    AudioVoice *voice = (AudioVoice *)opaque;
+    (void)spatial_publish(voice, voice->epoch, test_interleave_gain);
+}
 
 void log_write(LogLevel level, const char *file, int line, const char *fmt, ...) {
     (void)level; (void)file; (void)line; (void)fmt;
@@ -1066,6 +1076,96 @@ TEST(extended_stereo_clip_preserves_interleaved_pcm)
     audio_system_destroy(as);
 }
 
+TEST(start_initial_gain_cas_preserves_interleaved_revision)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 sample = 1.0f;
+    AudioClipHandle clip = register_ramp(as, &sample, 1);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    ASSERT_EQ(audio_event_register(as, "cas-interleave", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "cas-interleave", vec3(2, 0, 0), &voice), AUDIO_OK);
+    test_interleave_gain = 0.25f;
+    test_interleave_armed = true;
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(output[1], 0.25f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+static void render_with_held_commands(AudioVoice *voice, f32 output[2]) {
+    u32 tail = atomic_load(&voice->tail);
+    u32 head = atomic_load(&voice->head);
+    atomic_store(&voice->tail, head);
+    (void)voice_read(&voice->base, output, 1, NULL);
+    atomic_store(&voice->tail, tail);
+}
+
+TEST(restart_new_epoch_does_not_modulate_held_old_pcm)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1.0f, 1.0f};
+    AudioClipHandle clip = register_ramp(as, samples, 2);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "held-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    ASSERT_EQ(audio_event_trigger(as, "held-restart", vec3(2, 0, 0), &handle), AUDIO_OK);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_EQ(audio_event_trigger(as, "held-restart", vec3(4, 0, 0), &handle), AUDIO_OK);
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(8, 0, 0)), AUDIO_OK);
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    AudioVoice *voice = &ext->voices[(handle & 0xFFu) - 1u];
+    render_with_held_commands(voice, output);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 1e-6f);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.125f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(revision_max_is_atomic_and_retires_spatial_starts)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[] = {1.0f, 1.0f};
+    AudioClipHandle clip = register_ramp(as, samples, 2);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "revision-boundary", &desc), AUDIO_OK);
+    FakeRay ray;
+    memset(&ray, 0, sizeof(ray));
+    audio_set_occlusion_ray_callback(as, fake_occlusion_ray, &ray);
+    AudioVoiceHandle handle = 0;
+    ASSERT_EQ(audio_event_trigger(as, "revision-boundary", vec3(2, 0, 0), &handle), AUDIO_OK);
+    f32 output[2];
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    AudioVoice *voice = &ext->voices[(handle & 0xFFu) - 1u];
+    voice->spatial_revision = UINT32_MAX - 1u;
+    atomic_store(&voice->spatial_snapshot,
+        spatial_pack(UINT32_MAX - 1u, spatial_gain_of(
+            atomic_load(&voice->spatial_snapshot))));
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(4, 0, 0)), AUDIO_OK);
+    ASSERT_EQ(voice->spatial_revision, UINT32_MAX);
+    u64 snapshot = atomic_load(&voice->spatial_snapshot);
+    u64 epoch = voice->epoch;
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(8, 0, 0)), AUDIO_OVERLOAD);
+    ASSERT_EQ(ray.calls, 2u);
+    ASSERT_EQ(atomic_load(&voice->spatial_snapshot), snapshot);
+    ASSERT_EQ(audio_event_trigger(as, "revision-boundary", vec3(4, 0, 0), &handle),
+              AUDIO_OVERLOAD);
+    ASSERT_EQ(voice->epoch, epoch);
+    ASSERT_EQ(atomic_load(&voice->spatial_snapshot), snapshot);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -1103,4 +1203,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(music_zero_fade_replay_update_waits_for_start);
     RUN_TEST(epoch_max_retires_voice_without_wrapping_to_zero);
     RUN_TEST(extended_stereo_clip_preserves_interleaved_pcm);
+    RUN_TEST(start_initial_gain_cas_preserves_interleaved_revision);
+    RUN_TEST(restart_new_epoch_does_not_modulate_held_old_pcm);
+    RUN_TEST(revision_max_is_atomic_and_retires_spatial_starts);
 TEST_MAIN_END()
