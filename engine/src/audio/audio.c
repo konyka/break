@@ -1,5 +1,6 @@
 #include <audio/audio.h>
 #include <core/log.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,15 +102,21 @@ struct AudioImpl {
     bool context_initialized;
 };
 
+bool audio_extended_init(AudioSystem *as, ma_engine *engine);
+void audio_extended_destroy(AudioSystem *as, void *extended);
+void audio_extended_listener_update(AudioSystem *as);
+void audio_extended_set_bus_gain(AudioSystem *as, u32 bus, f32 gain);
+
 /* The AudioImpl offset formula below (mirrored in audio_system_destroy) aligns
  * the trailing impl block with _Alignof(long double); pin that this satisfies
  * ma_engine's alignment. */
 _Static_assert(_Alignof(long double) >= 8,
                "AudioImpl alignment relies on _Alignof(long double) >= 8");
 
-AudioSystem *audio_system_create(void) {
-    /* Single alloc: AudioSystem + AudioImpl (impl aligned to
-     * _Alignof(long double); destroy recomputes the same offset) */
+AudioSystem *audio_system_create_ex(AudioBackend backend) {
+    if (backend < AUDIO_BACKEND_DEFAULT || backend > AUDIO_BACKEND_FAKE) {
+        return NULL;
+    }
     usize as_sz  = sizeof(AudioSystem);
     usize align  = _Alignof(long double);
     usize as_off = (as_sz + align - 1) & ~(align - 1);
@@ -120,23 +127,29 @@ AudioSystem *audio_system_create(void) {
     }
     AudioSystem *as  = (AudioSystem *)audio_block;
     struct AudioImpl *impl = (struct AudioImpl *)(audio_block + as_off);
-    const ma_engine_config *engine_config_ptr = NULL;
+    ma_engine_config engine_config = ma_engine_config_init();
+    const ma_engine_config *engine_config_ptr = &engine_config;
     ma_result result;
+    bool use_null = backend == AUDIO_BACKEND_NULL;
 
 #if defined(AUDIO_SIMULATOR_NULL_BACKEND)
-    ma_backend backend = ma_backend_null;
-    ma_engine_config engine_config;
-    result = ma_context_init(&backend, 1, NULL, &impl->context);
-    if (result != MA_SUCCESS) {
-        LOG_ERROR("Failed to init iOS Simulator null audio context (%d)", result);
-        free(as);
-        return NULL;
-    }
-    impl->context_initialized = true;
-    engine_config = ma_engine_config_init();
-    engine_config.pContext = &impl->context;
-    engine_config_ptr = &engine_config;
+    if (backend == AUDIO_BACKEND_DEFAULT) use_null = true;
 #endif
+
+    engine_config.channels = 2;
+    engine_config.sampleRate = 48000;
+    engine_config.noDevice = backend == AUDIO_BACKEND_FAKE ? MA_TRUE : MA_FALSE;
+    if (use_null) {
+        ma_backend null_backend = ma_backend_null;
+        result = ma_context_init(&null_backend, 1, NULL, &impl->context);
+        if (result != MA_SUCCESS) {
+            LOG_ERROR("Failed to init null audio context (%d)", result);
+            free(as);
+            return NULL;
+        }
+        impl->context_initialized = true;
+        engine_config.pContext = &impl->context;
+    }
 
     result = ma_engine_init(engine_config_ptr, &impl->engine);
     if (result != MA_SUCCESS) {
@@ -147,7 +160,9 @@ AudioSystem *audio_system_create(void) {
     }
 
     as->engine = impl;
-    as->source_cap = 32;
+    as->backend = use_null && backend == AUDIO_BACKEND_DEFAULT ?
+                  AUDIO_BACKEND_NULL : backend;
+    as->source_cap = AUDIO_MAX_SOURCES;
     as->sources = calloc(as->source_cap, sizeof(AudioSource));
     if (!as->sources) {
         LOG_ERROR("Audio: sources allocation failed");
@@ -159,14 +174,33 @@ AudioSystem *audio_system_create(void) {
     as->source_count = 0;
     as->listener_forward = vec3(0, 0, -1);
     as->listener_up = vec3(0, 1, 0);
-    audio_bus_table_reset(as); /* R435: master bus exists from birth */
+    audio_bus_table_reset(as);
+    if (!audio_extended_init(as, &impl->engine)) {
+        LOG_ERROR("Audio: fixed voice pool initialization failed");
+        free(as->sources);
+        ma_engine_uninit(&impl->engine);
+        if (impl->context_initialized) ma_context_uninit(&impl->context);
+        free(as);
+        return NULL;
+    }
 
-#if defined(AUDIO_SIMULATOR_NULL_BACKEND)
-    LOG_WARN("Audio system initialized with iOS Simulator null backend (silent)");
-#else
-    LOG_INFO("Audio system initialized");
-#endif
+    if (use_null) LOG_WARN("Audio system initialized with null backend (silent)");
+    else LOG_INFO("Audio system initialized");
     return as;
+}
+
+AudioSystem *audio_system_create(void) {
+    return audio_system_create_ex(AUDIO_BACKEND_DEFAULT);
+}
+
+AudioResult audio_system_render(AudioSystem *as, f32 *stereo_out, u32 frames) {
+    if (!as || !as->engine || !stereo_out || frames == 0) return AUDIO_INVALID;
+    if (as->backend != AUDIO_BACKEND_FAKE) return AUDIO_REJECTED;
+    struct AudioImpl *impl = as->engine;
+    ma_result result = ma_engine_read_pcm_frames(&impl->engine, stereo_out,
+                                                 frames, NULL);
+    if (result != MA_SUCCESS) return AUDIO_FAILED;
+    return AUDIO_OK;
 }
 
 void audio_system_destroy(AudioSystem *as) {
@@ -177,6 +211,7 @@ void audio_system_destroy(AudioSystem *as) {
     usize as_off = (as_sz + align - 1) & ~(align - 1);
     struct AudioImpl *impl = (struct AudioImpl *)((u8 *)as + as_off);
 
+    audio_extended_destroy(as, as->extended);
     for (u32 i = 0; i < as->source_count; i++) {
         if (as->sources[i].active) {
             ma_sound_uninit(&as->sources[i].sound);
@@ -190,6 +225,10 @@ void audio_system_destroy(AudioSystem *as) {
 
 void audio_system_update(AudioSystem *as, Vec3 listener_pos, Vec3 forward, Vec3 up) {
     if (!as || !as->engine) return;
+    for (u32 i = 0; i < 3; ++i) {
+        if (!isfinite(listener_pos.e[i]) || !isfinite(forward.e[i]) ||
+            !isfinite(up.e[i])) return;
+    }
 
     /* Dirty check: skip 3 miniaudio calls when listener hasn't moved */
     bool moved = (as->listener_pos.e[0] != listener_pos.e[0] ||
@@ -214,6 +253,7 @@ void audio_system_update(AudioSystem *as, Vec3 listener_pos, Vec3 forward, Vec3 
         forward.e[0], forward.e[1], forward.e[2]);
     ma_engine_listener_set_world_up(&impl->engine, 0,
         up.e[0], up.e[1], up.e[2]);
+    audio_extended_listener_update(as);
 }
 
 /* Acquire a source slot: free-list first, then bump-allocate */
@@ -250,8 +290,8 @@ u32 audio_play(AudioSystem *as, const char *path, f32 volume, bool looping) {
      * MA_SOUND_FLAG_NO_SPATIALIZATION when !spatial); mirror it here so 2D
      * sounds stay 2D. audio_play_3d re-enables spatialization explicitly. */
     ma_result result = ma_sound_init_from_file(&impl->engine, path,
-                                               MA_SOUND_FLAG_NO_SPATIALIZATION,
-                                               NULL, NULL, &src->sound);
+        MA_SOUND_FLAG_NO_SPATIALIZATION | MA_SOUND_FLAG_DECODE,
+        NULL, NULL, &src->sound);
     if (result != MA_SUCCESS) {
         LOG_WARN("Failed to load sound: %s (%d)", path, result);
         /* Return slot to free-list */
@@ -280,12 +320,14 @@ void audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume,
     struct AudioImpl *impl = as->engine;
     AudioSource *src = &as->sources[id];
 
-    /* Spatial variant of audio_play() (miniaudio spatializes by default, so
-     * flags=0). Spatialization state and the world position are set BEFORE
+    /* Spatial variant of audio_play(); miniaudio spatializes unless explicitly
+     * disabled. Spatialization state and the world position are set BEFORE
      * ma_sound_start, mirroring audio_play_streamed's spatial init — routing
      * through audio_play() started the sound 2D at the origin and only then
      * re-spatialized it, so the first mixing quantum could play unspatialized. */
-    ma_result result = ma_sound_init_from_file(&impl->engine, path, 0, NULL, NULL, &src->sound);
+    ma_result result = ma_sound_init_from_file(&impl->engine, path,
+        MA_SOUND_FLAG_DECODE,
+        NULL, NULL, &src->sound);
     if (result != MA_SUCCESS) {
         LOG_WARN("Failed to load sound: %s (%d)", path, result);
         /* Return slot to free-list */
@@ -341,7 +383,7 @@ u32 audio_play_streamed(AudioSystem *as, const char *path, f32 volume,
     struct AudioImpl *impl = as->engine;
     AudioSource *src = &as->sources[id];
 
-    ma_uint32 flags = MA_SOUND_FLAG_STREAM;
+    ma_uint32 flags = MA_SOUND_FLAG_DECODE;
     if (!spatial) flags |= MA_SOUND_FLAG_NO_SPATIALIZATION;
 
     ma_result result = ma_sound_init_from_file(&impl->engine, path, flags, NULL, NULL, &src->sound);
@@ -417,9 +459,10 @@ u32 audio_bus_create(AudioSystem *as, const char *name) {
 }
 
 void audio_bus_set_gain(AudioSystem *as, u32 bus, f32 gain) {
-    if (!audio_bus_valid(as, bus)) return; /* R435: invalid id — refuse */
+    if (!audio_bus_valid(as, bus) || !isfinite(gain)) return;
     if (gain < 0.0f) gain = 0.0f;          /* R435: clamp non-negative */
     as->buses[bus].gain = gain;
+    audio_extended_set_bus_gain(as, bus, gain);
     /* Master participates in every route; regular buses only affect members. */
     for (u32 i = 0; i < as->source_count; i++) {
         AudioSource *src = &as->sources[i];

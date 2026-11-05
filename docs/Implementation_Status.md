@@ -23,6 +23,37 @@
 - **验证**：CVar 8 项、XML 10 项、真实 SHARED 插件 8 项及 target contract；normal、ASan+UBSan、TSan focused 均 7/7（另含 BSCN、integrity、platform_fs），三树全量 headless 均 129/129，no-tests 树仍构建 `break_system`。CVar 范围/提前提交、XML DTD/UTF-8/提前交换、插件哈希/引用/正序卸载变异均按预期变红并恢复全绿。
 - **限制**：哈希 allowlist 不是签名认证或 sandbox；依赖库未逐项验证。Windows PAL 仅有实现未在本机运行；XML 不保留注释/处理指令，场景权威格式仍是 BSCN。设计细节见 `docs/design/system_extensions.md`，完整回归与报告见 `.superpowers/sdd/system-extensions-report.md`。
 
+## 本轮更新：P10 fix round 4（2026-11-05）
+
+- **修复**：voice_read 在空间快照前后复核 spatial_epoch，阻断 RESTART+position/listener 落入两次 load 间隙时旧 PCM 错用新 epoch 增益。GameThread spatial_publish 在 CAS 失败后重新验证 epoch、revision 和当前快照再发布新增益；START 仍是不重试的整快照 CAS，revision/epoch 边界与固定容量政策不变。
+- **验证**：`test_audio_extended` 41/41；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。两个确定性交错均先 RED，去掉第二次 epoch load 或恢复 listener CAS 失败即返回的生产变异分别为 40/41，恢复后通过。代码提交 `6c1149ff`，`git diff --check 9cf01634..HEAD` 通过。
+- **证据与限制**：真实输出已追加到 `.superpowers/sdd/audio-fix-round1-report.md` 的 round 4 部分；第四轮独立复审结论为 Spec ADDRESSED、质量 Approved、可合并。未做真实声卡/实际听测或 Windows/macOS；交错由测试 TU 内受控注入验证，不依赖概率调度或 TSan 发现逻辑竞态。
+
+## 本轮更新：P10 fix round 3（2026-11-05）
+
+- **修复**：START 初始空间增益和 GameThread 发布均使用整快照 CAS，load/CAS 间的新 revision 不会被旧 START 覆盖。新增 spatial_epoch 与 callback 私有 applied gain，RESTART 待消费时旧 PCM 不采用新 epoch 快照。revision 单调递增，max 后 position/START 拒绝；epoch 0/max 退休政策不变。
+- **验证**：`test_audio_extended` 39/39、`test_audio_dsp` 10/10、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。受控 CAS/epoch 交错先 RED，两个生产变异均 38/39 后恢复；revision 边界真实注入通过。提交 `e2157bf4`，`git diff --check 12fefa2e..HEAD` 通过。
+- **证据与限制**：真实输出已追加到 `.superpowers/sdd/audio-fix-round1-report.md` 的 round 3 部分。未做真实设备/听测、Windows/macOS 或第四轮独立评审。
+
+## 本轮更新：P10 fix round 2（2026-11-05）
+
+- **修复**：空间快照以单原子 64-bit revision+gain 防止旧 START 覆盖较新 position/listener；回调发布 started_epoch，音乐 update 未确认当前 START 已消费前不读旧 cursor。epoch 0 保留为无效，max-1→max 允许，max 后 voice 退休并返回 OVERLOAD，不绕回或复用完成身份。补 reverb.mix 非有限、delay/reverb stereo 和 extended stereo clip PCM。
+- **验证**：`test_audio_extended` 36/36、`test_audio_dsp` 10/10、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。空间 revision、started gate、extended/DSP 双声道变异均先红后恢复；`git diff --check df8fc32e..HEAD` 通过。提交 `8ff137c1`，真实输出追加于 `.superpowers/sdd/audio-fix-round1-report.md` 的 round 2 部分。
+- **限制**：未做真实声卡/听测、Windows/macOS 或第三轮独立评审。边界通过测试 TU 注入验证，并非自然等待回绕。
+
+## 本轮更新：P10 fix round 1（2026-11-03）
+
+- **修复**：每次 START 使用独立 64-bit epoch，旧 STOP/RAMP/自然完成不能回收 RESTART 后 voice；cursor 只在回调消费 START 时归零，初始增益随命令发布，enqueue 失败不改簿记。listener/距离先验证再 ray，stop-pending 不再 ray；bus 统一拒绝非有限值，stale clip 返回 STALE。legacy 移除 NO_PITCH 恢复 Doppler。DSP 使用宽索引并补 stereo/链顺序/完整回调扫描。
+- **验证**：独立评审所有 Critical/Important/Minor 均有实现和覆盖。`test_audio_extended` 30/30、`test_audio_dsp` 8/8、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。STOP→RESTART、serial 回收变异、宽索引契约及 configure_dsp 分配变异均有 RED/恢复证据；`git diff --check e82dae38..HEAD` 通过。
+- **证据与限制**：命令输出和逐项结果见 `.superpowers/sdd/audio-fix-round1-report.md`。仍未做真实声卡/听测、Windows/macOS 或第二轮独立评审。
+
+## 本轮更新：P10 音乐、DSP、遮挡与声音事件（2026-11-03）
+
+- **交付**：在同一 `AudioSystem`/miniaudio engine 内新增固定容量 clip、命名事件和 32 个预建 PCM voice（30 事件 + 2 音乐）。事件支持 ALLOW/RESTART/IGNORE 与 REJECT/STEAL_OLDEST，voice handle 带 generation；音乐支持 16 轨 playlist、loop、零淡化切轨和逐样本交叉淡化。四级 DSP 包含低通、反馈延迟和固定 tap 混响。射线仅在 GameThread 的 trigger/position/listener 路径执行，回调消费预分配命令/PCM 和原子增益快照，不做文件 I/O、网络、游戏逻辑或热分配。详细合同见 `docs/design/audio_extended.md`，TDD 台账见 `.superpowers/sdd/audio-extended-report.md`。
+- **Legacy 边界**：`audio_play`、`audio_play_3d` 和兼容命名的 `audio_play_streamed` 现在打开时完整解码，不再由混音回调读取文件。`AudioStreamManager` API 保留；大文件打开成本和解码内存由调用方承担。
+- **验证**：`test_audio_extended` 21/21、`test_audio_dsp` 5/5、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan 的 audio focused（含 realtime contract）均 4/4，无 sanitizer 报告。normal 正式 `engine` 构建成功。逐项 RED/GREEN 与六组变异恢复证据已记录，包括 clip 失败原子、voice generation、delay feedback、交叉淡化、遮挡 ray 和禁止 legacy 文件流。
+- **限制**：只接受 48 kHz f32 mono/stereo；无实际听测、真实声卡、Windows/macOS、重采样或物理声学验证。固定容量满返回错误；legacy 文件打开会同步完整解码。
+
 ## 本轮更新：武器状态机与权威开火意图（2026-11-02）
 
 - **交付**：`break_game` 支持 64 种宿主定义武器，每 Actor 保存弹匣、tick、冷却与装填状态。装备、退弹、装填、tick、弹药查询和开火均检查创建线程与 Entity generation；开火只输出带 shooter、weapon_id、damage 和全局单调 sequence 的权威 intent，不选择目标、不检测命中、不扣生命。
