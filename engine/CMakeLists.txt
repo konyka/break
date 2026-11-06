@@ -767,14 +767,6 @@ add_library(break_online STATIC
 set_property(TARGET break_online PROPERTY C_STANDARD 11)
 target_include_directories(break_online PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_online PUBLIC Threads::Threads break_replication_core)
-if(ENGINE_BUILD_TESTS)
-    add_library(break_online_aspect_test STATIC src/network/break_online_aspect.c)
-    set_property(TARGET break_online_aspect_test PROPERTY C_STANDARD 11)
-    target_include_directories(break_online_aspect_test PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_compile_definitions(break_online_aspect_test PUBLIC BREAK_ASPECT_TESTING=1)
-    target_link_libraries(break_online_aspect_test PUBLIC
-        Threads::Threads break_replication_core)
-endif()
 if(BREAK_ENABLE_CRYPTO)
     target_compile_definitions(break_online PUBLIC BREAK_ENABLE_CRYPTO=1)
     target_link_libraries(break_online PUBLIC break_crypto)
@@ -5321,6 +5313,13 @@ endif()
     add_test(NAME test_break_online_voice COMMAND test_break_online_voice)
     set_tests_properties(test_break_online_voice PROPERTIES
         TIMEOUT 20 LABELS "network;online;voice")
+
+    add_library(break_online_aspect_test STATIC src/network/break_online_aspect.c)
+    set_property(TARGET break_online_aspect_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_online_aspect_test PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_online_aspect_test PUBLIC BREAK_ASPECT_TESTING=1)
+    target_link_libraries(break_online_aspect_test PUBLIC
+        Threads::Threads break_replication_core)
 
     add_executable(test_break_online_aspect tests/test_break_online_aspect.c)
     target_include_directories(test_break_online_aspect PRIVATE ${TEST_INCLUDE_DIRS})
