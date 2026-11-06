@@ -1,3 +1,39 @@
+## 本轮更新：P8 fix round 4（2026-11-05）
+
+- **兼容自动 epoch**：`break_aspect_encode` 改为独立的每对象 encoder epoch/hash，不再从 value revision 推导顺序。仅成功输出后推进；连续 baseline/DORMANT/DESTROY 和同值唤醒均单调递增，短输出预算失败不消耗 epoch，耗尽返回 OVERLOAD。显式编码和 apply 仍不写自动 encoder 状态，value revision 与 record high-water 语义不变。
+- **公开边界**：同一对象必须选择单一 epoch owner；自动转显式须使用更大 epoch 并保持显式，不能在较大显式 epoch 后切回自动包装器。自动状态仅限当前 store 的对象生命周期，不是跨进程持久序号；同一 attempt 的传输重试复用原字节。耗尽注入仅在独立 `break_online_aspect_test` 变体中，生产库无测试宏。
+- **验证**：直接 aspect 12/12、AOI 调度 9/9；crypto ON/OFF normal 均 11/11，钉住 Snowflake normal/ASan+UBSan/TSan 均 13/13 + 5/5，no-crypto normal/ASan+UBSan/TSan 均 11/11，无 sanitizer/race 报告。自动序号回退变异为 10/12、删除耗尽 guard 变异为 11/12，均恢复 12/12。完整证据见 `.superpowers/sdd/online-gameplay-network-report.md` round4。
+- **限制**：challenge/session 密钥仍由应用 provision/rotation；仅本机 Linux focused 验证，不承诺任意 NAT、公网部署、跨平台原生、跨进程 epoch 去重或可靠送达。
+
+## 本轮更新：P8 fix round 3（2026-11-05）
+
+- **失败重试顺序**：修复完整 aspect 包已交付但 callback 返回失败后，修改值并以同 epoch 重试造成永久 STALE 的问题。每次实际发送尝试在预算/分片预检通过后、首个 datagram 前分配新 record epoch；失败保留 attempt high-water 和 dirty，只有完整成功才清 dirty，零预算未发送不推进 epoch。
+- **只读与 revision 分离**：`break_aspect_encode_with_epoch` 不再写 store epoch/hash，较小 epoch 和同 epoch 不同 hash 均拒绝。apply 只更新 record epoch/hash，不覆盖公共 value revision；后者只表示本地值变更。value revision 或 record epoch 达到 `UINT64_MAX` 时 setter fail-closed。
+- **验证**：aspect 9/9、AOI 调度 9/9、NAT 23/23、voice 8/8、分片 12/12、真实 Session 38/38。crypto ON 无 Snowflake normal 11/11；钉住 Snowflake normal/ASan+UBSan/TSan 均 13/13 + 5/5；no-crypto normal/ASan+UBSan/TSan 均 11/11，无 sanitizer/race 报告。交付后失败与较小 epoch 的生产变异均实际变红并恢复，完整证据见 `.superpowers/sdd/online-gameplay-network-report.md` round3。
+- **限制**：challenge/session 密钥由应用 provision/rotation；仅本机 Linux focused 验证，不承诺任意 NAT、公网部署、跨平台原生或可靠送达；record epoch 是进程内记录顺序，不是跨进程持久去重。
+
+## 本轮更新：P8 fix round 2（2026-11-05）
+
+- **持久防重放与可用性**：endpoint 持久 control high-water 覆盖 PUNCH/CLOSE、TTL 和连续 re-pair；旧 CLOSE 不能回退。stateless 来源绑定 challenge 不再被伪造 DISCOVER 占槽，合法注册仍能完成。
+- **复制原子性**：reassembler 完成后仍拒绝旧 delta，新流全部分配成功后才淘汰旧流，失败保留旧流。aspect 使用 record epoch 统一 baseline/dirty/control 顺序，普通 AOI leave 与 DORMANT 后可用同一 handle 重入，旧 control 被 stale 拒绝；永久 object_destroy 仍退休 generation。
+- **构建契约**：完整 HMAC NAT 测试仅在 crypto ON 构建。no-crypto 有独立无 API 引用合约，create 均 REJECTED 且输出为空，其余测试继续运行。
+- **验证**：NAT 23/23、aspect 8/8、AOI 调度 7/7、分片 12/12。crypto ON 无 Snowflake normal 11/11；钉住 Snowflake normal/ASan+UBSan/TSan 均 13/13 + 5/5；no-crypto normal/ASan+UBSan/TSan 均 11/11。high-water 与 record epoch 生产变异均实际变红并恢复，完整证据见 `.superpowers/sdd/online-gameplay-network-report.md` round2。
+- **限制**：challenge/session 密钥仍由应用 provision/rotation；本机 loopback 不证明任意 NAT、公网部署或可靠送达，未做跨平台原生验证。
+
+## 本轮更新：P8 fix round 1（2026-11-05）
+
+- **安全修复**：NAT 控制面改为 challenge + 每 session HMAC-SHA256 + 有界 replay window，绑定 recipient/registered/来源并处理精确 duplicate 与冲突重放。PUNCH 使用相对 TTL，CLOSE 使 endpoint 失效并支持新 generation re-pair。有效 MAC captured HELLO 跨 socket 重放、篡改 MAC、未知 nonce、四 endpoint 容量和跨时钟均有真实 UDP 测试。
+- **复制修复**：合法 gen2 adopt 恢复；持久 reassembler 以新 delta 淘汰未完成旧 delta并拒绝迟到旧流；pending_leave 在空 AOI 也重试；DESTROY/DORMANT 真正消费；分片两个 API 共用 planner/fill，revision 上限保持失败原子。补齐 nonce、pair capacity、MPSC overload 等负例。
+- **验证**：NAT 19/19、aspect 8/8、AOI 调度 6/6、固定分片 10/10；normal 无 Snowflake 11/11，钉住 Snowflake 的 normal/ASan+UBSan/TSan 均 13/13 + 5/5，无 sanitizer/race 报告。nonce、pair 容量、revision、MAC 变异均实际变红并恢复，完整证据追加到 `.superpowers/sdd/online-gameplay-network-report.md`。
+- **限制**：会话密钥 provision/rotation 仍由应用负责；本机 loopback 不证明任意 NAT、公网部署或可靠送达，未做跨平台原生验证。
+
+## 本轮更新：P8 在线会话与游戏网络能力（2026-11-03）
+
+- **交付**：新增正式可选 `break_online`，不链入 `engine`/demo/编辑器。认证大厅支持固定容量目录、加入离开、主机迁移、断连清理、分页和服务端匹配；身份只能经认证提供方解析，`break_online_session.h` 直接适配真实 `BreakSessionManager`。UDP NAT 实现 HELLO/WELCOME/PUNCH/PING/ACK、observed address、generation 和 TTL；语音实现固定 PCM 帧、序号、jitter、重复/迟到拒绝和零填充丢帧；aspect 实现 schema hash、稀疏变化掩码、varint/zigzag 编码、事务 apply，以及复用真实 AOI、固定分片和安全传输回调的按连接复制。
+- **线程与失败语义**：新容器 create 时固定分配，网络接收只校验界限并入有界队列，协议/播放/复制由创建线程处理。房间/对象使用 generation 句柄，malformed aspect 不部分提交，预算或发送失败保留 dirty 供重试。计划与合同见 `docs/superpowers/plans/2026-11-03-online-gameplay-network.md`、`docs/design/online_gameplay_network.md`。
+- **验证**：新直接测试 lobby 10/10、NAT 7/7、voice 8/8、aspect 5/5、AOI 调度 3/3、固定分片 9/9；另有真实 Session 适配。normal 无 Snowflake focused 11/11；使用钉住 Snowflake 的 normal、ASan+UBSan、TSan 均为网络/复制/Session 标签 13/13 加基础网络 5/5，无 sanitizer 报告。NAT 与语音在每个 lane 都跑真实 UDP loopback；主机迁移、错误来源、丢帧、短容量、trailing-byte、dirty 重试均有实际变异变红后恢复证据。
+- **限制**：仅证明本机 Linux focused 行为，不是全平台或外部部署证明。不承诺任意 NAT/防火墙穿透、可靠送达、主观听感、账号后端、预测/回滚；分片 checksum 不是认证。完整命令和 RED/GREEN 见 `.superpowers/sdd/online-gameplay-network-report.md`。
+
 ## 本轮更新：P11 独立评审 fix round 3（2026-11-03）
 
 - **修复**：`BREAK_SYSTEM_TEST_UNSUPPORTED` 现在同时保护 Windows loader 实现和 dispatcher，unsupported Windows 编译不再包含 `platform_open_windows`，公共分支返回 `FAILED`、零输出 handle 和零副作用。target contract 先因缺少两处保护变红，修复后通过。

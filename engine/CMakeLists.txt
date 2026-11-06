@@ -754,6 +754,32 @@ target_include_directories(break_replication_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 
+# Optional online-session/gameplay network capabilities. Socket symbols remain
+# owned by engine/network.c and resolve at the consumer's final link.
+add_library(break_online STATIC
+    src/network/break_online_lobby.c
+    src/network/break_online_inbox.c
+    src/network/break_online_nat.c
+    src/network/break_online_voice.c
+    src/network/break_online_aspect.c
+    src/network/break_online_aspect_replication.c
+    src/network/break_replay_window.c)
+set_property(TARGET break_online PROPERTY C_STANDARD 11)
+target_include_directories(break_online PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_online PUBLIC Threads::Threads break_replication_core)
+if(ENGINE_BUILD_TESTS)
+    add_library(break_online_aspect_test STATIC src/network/break_online_aspect.c)
+    set_property(TARGET break_online_aspect_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_online_aspect_test PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_online_aspect_test PUBLIC BREAK_ASPECT_TESTING=1)
+    target_link_libraries(break_online_aspect_test PUBLIC
+        Threads::Threads break_replication_core)
+endif()
+if(BREAK_ENABLE_CRYPTO)
+    target_compile_definitions(break_online PUBLIC BREAK_ENABLE_CRYPTO=1)
+    target_link_libraries(break_online PUBLIC break_crypto)
+endif()
+
 # Formal optional Runtime Core library: unified error/lifecycle types, the
 # single-owner lifecycle coordinator, the formal message/queue/task facade,
 # the formal thread + IO/VFS facades, and the reload coordinator + profiler
@@ -5234,6 +5260,84 @@ endif()
     endif()
     add_test(NAME test_network COMMAND test_network)
 
+    add_executable(test_break_online_lobby tests/test_break_online_lobby.c)
+    target_include_directories(test_break_online_lobby PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_lobby PRIVATE break_online Threads::Threads)
+    add_test(NAME test_break_online_lobby COMMAND test_break_online_lobby)
+    set_tests_properties(test_break_online_lobby PROPERTIES
+        TIMEOUT 20 LABELS "network;online;lobby")
+
+    if(BREAK_ENABLE_CRYPTO)
+        add_executable(test_break_online_nat tests/test_break_online_nat.c
+            src/network/network.c src/platform/time.c)
+        target_include_directories(test_break_online_nat PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_online_nat PRIVATE
+            break_online Threads::Threads break_crypto)
+        if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+           ENGINE_PLATFORM STREQUAL "harmonyos")
+            target_compile_definitions(test_break_online_nat PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_online_nat PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_online_nat PRIVATE ws2_32)
+        endif()
+        add_test(NAME test_break_online_nat COMMAND test_break_online_nat)
+        set_tests_properties(test_break_online_nat PROPERTIES
+            TIMEOUT 30 LABELS "network;online;nat")
+    endif()
+
+    if(NOT BREAK_ENABLE_CRYPTO)
+        add_executable(test_break_online_nat_nocrypto
+            tests/test_break_online_nat_nocrypto.c src/network/network.c)
+        target_include_directories(test_break_online_nat_nocrypto PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_online_nat_nocrypto PRIVATE
+            break_online Threads::Threads)
+        if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+           ENGINE_PLATFORM STREQUAL "harmonyos")
+            target_compile_definitions(test_break_online_nat_nocrypto PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_online_nat_nocrypto PRIVATE
+                ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_online_nat_nocrypto PRIVATE ws2_32)
+        endif()
+        add_test(NAME test_break_online_nat_nocrypto COMMAND test_break_online_nat_nocrypto)
+        set_tests_properties(test_break_online_nat_nocrypto PROPERTIES
+            TIMEOUT 20 LABELS "network;online;nat;no_crypto")
+    endif()
+
+    add_executable(test_break_online_voice tests/test_break_online_voice.c
+        src/network/network.c)
+    target_include_directories(test_break_online_voice PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_voice PRIVATE break_online Threads::Threads)
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+       ENGINE_PLATFORM STREQUAL "harmonyos")
+        target_compile_definitions(test_break_online_voice PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_online_voice PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_online_voice PRIVATE ws2_32)
+    endif()
+    add_test(NAME test_break_online_voice COMMAND test_break_online_voice)
+    set_tests_properties(test_break_online_voice PROPERTIES
+        TIMEOUT 20 LABELS "network;online;voice")
+
+    add_executable(test_break_online_aspect tests/test_break_online_aspect.c)
+    target_include_directories(test_break_online_aspect PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_aspect PRIVATE break_online_aspect_test m)
+    add_test(NAME test_break_online_aspect COMMAND test_break_online_aspect)
+    set_tests_properties(test_break_online_aspect PROPERTIES
+        TIMEOUT 20 LABELS "network;online;aspect;replication")
+
+    add_executable(test_break_online_aspect_replication
+        tests/test_break_online_aspect_replication.c)
+    target_include_directories(test_break_online_aspect_replication PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_aspect_replication PRIVATE
+        break_online break_replication_core m)
+    add_test(NAME test_break_online_aspect_replication COMMAND test_break_online_aspect_replication)
+    set_tests_properties(test_break_online_aspect_replication PROPERTIES
+        TIMEOUT 20 LABELS "network;online;aspect;replication")
+
     # Focused fragmentation coverage links the formal non-Snowflake core.
     add_executable(test_break_replication_fragment tests/test_break_replication_fragment.c)
     target_include_directories(test_break_replication_fragment PRIVATE
@@ -5269,7 +5373,7 @@ endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
             target_compile_options(test_break_session PRIVATE -Wno-type-limits -Wno-maybe-uninitialized)
         endif()
-        target_link_libraries(test_break_session PRIVATE break_net_test)
+        target_link_libraries(test_break_session PRIVATE break_net_test break_online)
         add_test(NAME test_break_session COMMAND test_break_session)
         set_tests_properties(test_break_session PROPERTIES
             TIMEOUT 20 LABELS "network;snowflake;session")
