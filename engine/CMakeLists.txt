@@ -1542,6 +1542,11 @@ target_link_libraries(cry_game_core PUBLIC
 add_executable(cry_game apps/cry_game/main.c)
 target_link_libraries(cry_game PRIVATE cry_game_core m)
 engine_link_rhi_backend(cry_game)
+if(CRY_GAME_ENABLE_NETWORK)
+    target_compile_definitions(cry_game PRIVATE CRY_GAME_ENABLE_NETWORK=1)
+else()
+    target_compile_definitions(cry_game PRIVATE CRY_GAME_ENABLE_NETWORK=0)
+endif()
 
 # Formal optional Stage 4 scene editor core library: the document model
 # (one owned ECS World, bounded entity name map, dirty flag), the bounded
@@ -4445,14 +4450,38 @@ endif()
     set_tests_properties(test_break_game_target_contract PROPERTIES
         LABELS "headless;break_game;platform_contract")
 
+    set(_cry_nm_capable FALSE)
+    if(CMAKE_NM AND (NOT WIN32 OR MINGW))
+        set(_cry_nm_capable TRUE)
+    endif()
     add_test(NAME test_cry_game_target_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DCRY_GAME=$<TARGET_FILE:cry_game>
+            -DNETWORK_ENABLED=${CRY_GAME_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/cry_game_contract_main
             -DNM=${CMAKE_NM}
+            -DNM_CAPABLE=${_cry_nm_capable}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cry_game_target_contract.cmake)
-    set_tests_properties(test_cry_game_target_contract PROPERTIES
-        LABELS "headless;cry_game;platform_contract")
+    add_test(NAME test_cry_game_nm_missing
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DCRY_GAME=$<TARGET_FILE:cry_game>
+            -DNETWORK_ENABLED=${CRY_GAME_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/cry_game_contract_nm_missing
+            -DNM= -DNM_CAPABLE=FALSE
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cry_game_target_contract.cmake)
+    add_test(NAME test_cry_game_nm_unsupported
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DCRY_GAME=$<TARGET_FILE:cry_game>
+            -DNETWORK_ENABLED=${CRY_GAME_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/cry_game_contract_nm_unsupported
+            -DNM=${CMAKE_COMMAND} -DNM_CAPABLE=TRUE
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cry_game_target_contract.cmake)
+    set_tests_properties(test_cry_game_target_contract test_cry_game_nm_missing
+        test_cry_game_nm_unsupported PROPERTIES
+        LABELS "headless;cry_game;platform_contract" SKIP_RETURN_CODE 77)
 
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
@@ -6650,4 +6679,39 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_size_contract.cmake)
     set_tests_properties(test_platform_size_contract PROPERTIES
         LABELS "platform_contract")
+endif()
+
+foreach(_cry_required_target IN ITEMS cry_game_core cry_game)
+    if(NOT TARGET ${_cry_required_target})
+        message(FATAL_ERROR "${_cry_required_target} must be defined outside ENGINE_BUILD_TESTS")
+    endif()
+endforeach()
+get_target_property(_cry_core_links cry_game_core LINK_LIBRARIES)
+set(_cry_core_expected
+    "engine;break_game;break_ai;break_flow;break_lua;break_game_lua;runtime_core")
+if(NOT "${_cry_core_links}" STREQUAL "${_cry_core_expected}")
+    message(FATAL_ERROR "cry_game_core LINK_LIBRARIES changed: ${_cry_core_links}")
+endif()
+get_target_property(_cry_app_links cry_game LINK_LIBRARIES)
+list(FIND _cry_app_links cry_game_core _cry_core_link_index)
+if(_cry_core_link_index LESS 0)
+    message(FATAL_ERROR "cry_game does not link cry_game_core")
+endif()
+foreach(_cry_legacy IN ITEMS engine engine_demo dxx_break)
+    get_target_property(_cry_legacy_links ${_cry_legacy} LINK_LIBRARIES)
+    foreach(_cry_link IN LISTS _cry_legacy_links)
+        if("${_cry_link}" MATCHES "break_game|break_flow|break_ai|break_lua|runtime_core|cry_game")
+            message(FATAL_ERROR "${_cry_legacy} links a P12 integration library: ${_cry_link}")
+        endif()
+    endforeach()
+endforeach()
+get_target_property(_cry_network_definitions cry_game COMPILE_DEFINITIONS)
+if(CRY_GAME_ENABLE_NETWORK)
+    if(NOT "CRY_GAME_ENABLE_NETWORK=1" IN_LIST _cry_network_definitions)
+        message(FATAL_ERROR "CRY_GAME_ENABLE_NETWORK=ON is not propagated to cry_game")
+    endif()
+else()
+    if(NOT "CRY_GAME_ENABLE_NETWORK=0" IN_LIST _cry_network_definitions)
+        message(FATAL_ERROR "CRY_GAME_ENABLE_NETWORK=OFF is not propagated to cry_game")
+    endif()
 endif()

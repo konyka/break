@@ -62,7 +62,9 @@ static bool parse_audio(const char *value, CryAudioMode *out) {
 static bool parse_frames(const char *value, u32 *out) {
     char *end = NULL;
     unsigned long long parsed;
-    if (value[0] == '-') return false;
+    for (const char *p = value; *p != '\0'; ++p) {
+        if (*p < '0' || *p > '9') return false;
+    }
     parsed = strtoull(value, &end, 10);
     if (end == value || *end != '\0' || parsed == 0u || parsed > UINT32_MAX)
         return false;
@@ -116,7 +118,7 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--require-device") == 0) {
             config.require_device = true;
         } else if (strcmp(argv[i], "--network") == 0) {
-#if defined(CRY_GAME_ENABLE_NETWORK)
+#if CRY_GAME_ENABLE_NETWORK
             config.network = true;
 #else
             return cli_error("--network is unavailable in this build");
