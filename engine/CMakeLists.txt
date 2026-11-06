@@ -1532,6 +1532,17 @@ set_property(TARGET break_game_lua PROPERTY C_STANDARD 11)
 target_include_directories(break_game_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_game_lua PUBLIC break_game break_lua)
 
+option(CRY_GAME_ENABLE_NETWORK "Enable the optional authenticated Snowflake channel" OFF)
+add_library(cry_game_core STATIC
+    apps/cry_game/cry_game.c)
+set_property(TARGET cry_game_core PROPERTY C_STANDARD 11)
+target_include_directories(cry_game_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(cry_game_core PUBLIC
+    engine break_game break_ai break_flow break_lua break_game_lua runtime_core)
+add_executable(cry_game apps/cry_game/main.c)
+target_link_libraries(cry_game PRIVATE cry_game_core m)
+engine_link_rhi_backend(cry_game)
+
 # Formal optional Stage 4 scene editor core library: the document model
 # (one owned ECS World, bounded entity name map, dirty flag), the bounded
 # command-based undo/redo stack, BSCN + sidecar scene save/load, the
@@ -4433,6 +4444,15 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_game_target_contract.cmake)
     set_tests_properties(test_break_game_target_contract PROPERTIES
         LABELS "headless;break_game;platform_contract")
+
+    add_test(NAME test_cry_game_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DCRY_GAME=$<TARGET_FILE:cry_game>
+            -DNM=${CMAKE_NM}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cry_game_target_contract.cmake)
+    set_tests_properties(test_cry_game_target_contract PROPERTIES
+        LABELS "headless;cry_game;platform_contract")
 
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
