@@ -214,8 +214,8 @@ D 和 E 另有自己的测试，不作为本切片的门槛。
 - P3：导航群组、智能对象、动态导航更新。
 - P8：大厅、匹配、NAT、语音、aspect 式复制编码。
 - P9：脚本断点调试器、受界限表绑定和 Actor Lua 接线。
-- P10：音乐、DSP、混响、声音遮挡、声音事件工程。
-- P11：全局控制台 / CVar、XML 场景侧车、插件动态加载框架。
+- P10 已交付：命名声音事件、并发/重触发、音乐 playlist/交叉淡化、滤波/延迟/混响 DSP、射线遮挡与距离衰减；固定 PCM 回调和 null/fake 验证见 `docs/design/audio_extended.md`。真实听测、跨采样率和真机验证仍未做。
+- P11 已交付注册式 CVar、有界 XML 与 `break-scene` v1 侧车、PAL 动态插件生命周期；合同、限制和测试入口见 [`system_extensions.md`](system_extensions.md)。XML 不替代 BSCN，哈希 allowlist 不是签名认证，仍被引用的插件不能卸载。
 - P7：手柄振动、触摸。
 - P12：以上能力的真实生命周期集成与验收。
 
@@ -228,4 +228,4 @@ D 和 E 另有自己的测试，不作为本切片的门槛。
 - 新静态库的 target contract：`ENGINE_BUILD_TESTS=OFF` 时仍生成，且不出现在 `engine`、`engine_demo`、`dxx_break` 的链接行上。
 - `docs/Implementation_Status.md` 顶部追加一条，写明已交付行为和未交付边界。设计文档在对应阶段落地后把状态从“设计-only”改成“已交付”并指向测试名。
 
-未跑的平台（Windows 执行、macOS、真实 GPU 截图）保持未交付，不由 Linux CPU 测试推断。
+Windows 执行已于 2026-11-02 验证：Clang/OpenGL、Vulkan、D3D12、ASan+UBSan 及 MSVC、MinGW 构建树均包含本计划的 focused 测试并通过；测试的临时目录兼容性问题由 `test_world_stream_world` 修复，见 `docs/Implementation_Status.md` 同日期条目。macOS 和这些新增世界表现的真实 GPU 截图仍未验证。上述证据只覆盖 CPU/headless 合同，不把 `break_game`/`break_ai` 说成已接入 `engine`，也不把主机侧顶点字节说成设备缓冲或画面。

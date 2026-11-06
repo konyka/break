@@ -26,8 +26,8 @@ bool soft_body_create_count(SoftBody *body, PhysicsWorld *pw, Vec3 center, f32 r
     f32 node_mass = mass / (f32)count;
     for (u32 i = 0; i < count; i++) {
         Vec3 rest = vec3_sub(offsets[i], mean);
-        u32 id = physics_body_create_sphere(pw, vec3_add(center, rest), radius * 0.25f, node_mass, false, 0);
-        if (id == UINT32_MAX) return false;
+        PhysicsBodyHandle id = physics_body_create_sphere(pw, vec3_add(center, rest), radius * 0.25f, node_mass, false, 0);
+        if (!physics_body_handle_is_valid(id)) return false;
         body->nodes[i] = id;
         body->rest[i] = rest;
     }
@@ -47,19 +47,17 @@ void soft_body_step(SoftBody *body, PhysicsWorld *pw) {
     Vec3 com = vec3(0, 0, 0);
     u32 live = 0;
     for (u32 i = 0; i < body->count; i++) {
-        u32 id = body->nodes[i];
-        if (id >= pw->count || physics_body_is_parked(&pw->bodies[id])) continue;
-        com = vec3_add(com, pw->bodies[id].position);
+        RigidBody *node = physics_body_resolve(pw, body->nodes[i]);
+        if (!node) continue;
+        com = vec3_add(com, node->position);
         live++;
     }
     if (live == 0) return;
     com = vec3_scale(com, 1.0f / (f32)live);
     f32 k = body->stiffness;
     for (u32 i = 0; i < body->count; i++) {
-        u32 id = body->nodes[i];
-        if (id >= pw->count || physics_body_is_parked(&pw->bodies[id])) continue;
-        RigidBody *node = &pw->bodies[id];
-        if (node->is_static) continue;
+        RigidBody *node = physics_body_resolve(pw, body->nodes[i]);
+        if (!node || node->is_static) continue;
         Vec3 goal = vec3_add(com, body->rest[i]);
         node->position = vec3_add(node->position, vec3_scale(vec3_sub(goal, node->position), k));
         node->rest_frames = 0;
@@ -68,28 +66,26 @@ void soft_body_step(SoftBody *body, PhysicsWorld *pw) {
     com = vec3(0, 0, 0);
     live = 0;
     for (u32 i = 0; i < body->count; i++) {
-        u32 id = body->nodes[i];
-        if (id >= pw->count || physics_body_is_parked(&pw->bodies[id])) continue;
-        com = vec3_add(com, pw->bodies[id].position);
+        RigidBody *node = physics_body_resolve(pw, body->nodes[i]);
+        if (!node) continue;
+        com = vec3_add(com, node->position);
         live++;
     }
     if (live == 0) return;
     com = vec3_scale(com, 1.0f / (f32)live);
     f32 r2 = 0.0f;
     for (u32 i = 0; i < body->count; i++) {
-        u32 id = body->nodes[i];
-        if (id >= pw->count || physics_body_is_parked(&pw->bodies[id])) continue;
-        r2 += vec3_len_sq(vec3_sub(pw->bodies[id].position, com));
+        RigidBody *node = physics_body_resolve(pw, body->nodes[i]);
+        if (!node) continue;
+        r2 += vec3_len_sq(vec3_sub(node->position, com));
     }
     r2 /= (f32)live;
     if (!(r2 > 1e-8f)) return;
     f32 scale = sqrtf(body->rest_radius_sq / r2);
     f32 blend = 1.0f + (scale - 1.0f) * body->volume_stiffness;
     for (u32 i = 0; i < body->count; i++) {
-        u32 id = body->nodes[i];
-        if (id >= pw->count || physics_body_is_parked(&pw->bodies[id])) continue;
-        RigidBody *node = &pw->bodies[id];
-        if (node->is_static) continue;
+        RigidBody *node = physics_body_resolve(pw, body->nodes[i]);
+        if (!node || node->is_static) continue;
         Vec3 from = vec3_sub(node->position, com);
         node->position = vec3_add(com, vec3_scale(from, blend));
     }

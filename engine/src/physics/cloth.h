@@ -6,7 +6,7 @@
 #define CLOTH_MAX_SIDE 8u
 
 typedef struct Cloth {
-    u32 nodes[CLOTH_MAX_SIDE * CLOTH_MAX_SIDE];
+    PhysicsBodyHandle nodes[CLOTH_MAX_SIDE * CLOTH_MAX_SIDE];
     u32 width;
     u32 height;
     f32 spacing;

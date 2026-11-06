@@ -30,6 +30,10 @@ typedef struct BreakReplicationFragment {
 BreakReplicationFragmentResult break_replication_fragment_payload(
     uint64_t delta_id, uint64_t base_id, const void *payload, size_t payload_size,
     size_t fragment_payload_size, BreakReplicationFragment **fragments, size_t *fragment_count);
+BreakReplicationFragmentResult break_replication_fragment_payload_into(
+    uint64_t delta_id, uint64_t base_id, const void *payload, size_t payload_size,
+    size_t fragment_payload_size, BreakReplicationFragment *out_fragments,
+    size_t fragment_capacity, size_t *out_fragment_count);
 /* Delta payloads are non-empty and every fragment is at most the transport limit. */
 void break_replication_fragments_free(BreakReplicationFragment *fragments, size_t fragment_count);
 

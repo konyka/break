@@ -592,6 +592,19 @@ if(BREAK_ENABLE_CRYPTO)
     target_link_libraries(break_integrity PUBLIC break_crypto)
 endif()
 
+# P11 system extensions remain an opt-in library; the engine never links it.
+if(TARGET break_integrity)
+    add_library(break_system STATIC
+        src/system/break_cvar.c
+        src/system/break_xml.c
+        src/system/break_plugin.c
+        src/platform/platform_dynamic.c)
+    set_property(TARGET break_system PROPERTY C_STANDARD 11)
+    target_include_directories(break_system PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_system PUBLIC break_crypto ${CMAKE_DL_LIBS})
+endif()
+
 # Stage 5 Phase C Tasks 1-3: break_crash — the crash record format (canonical
 # text "break-crash-v1") + bounded on-disk spool + async-signal-safe capture
 # (install/handler) + redaction + the caller-supplied upload seam. Formal optional
@@ -740,6 +753,24 @@ set_property(TARGET break_replication_core PROPERTY C_STANDARD 11)
 target_include_directories(break_replication_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
+
+# Optional online-session/gameplay network capabilities. Socket symbols remain
+# owned by engine/network.c and resolve at the consumer's final link.
+add_library(break_online STATIC
+    src/network/break_online_lobby.c
+    src/network/break_online_inbox.c
+    src/network/break_online_nat.c
+    src/network/break_online_voice.c
+    src/network/break_online_aspect.c
+    src/network/break_online_aspect_replication.c
+    src/network/break_replay_window.c)
+set_property(TARGET break_online PROPERTY C_STANDARD 11)
+target_include_directories(break_online PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_online PUBLIC Threads::Threads break_replication_core)
+if(BREAK_ENABLE_CRYPTO)
+    target_compile_definitions(break_online PUBLIC BREAK_ENABLE_CRYPTO=1)
+    target_link_libraries(break_online PUBLIC break_crypto)
+endif()
 
 # Formal optional Runtime Core library: unified error/lifecycle types, the
 # single-owner lifecycle coordinator, the formal message/queue/task facade,
@@ -936,6 +967,7 @@ src/renderer/lens_effects.c
     src/physics/bvh.c
     src/physics/character.c
     src/audio/audio.c
+    src/audio/audio_extended.c src/audio/audio_dsp.c
     src/audio/audio_stream.c
     src/animation/skeleton.c
     src/animation/skeleton_socket.c
@@ -5220,6 +5252,91 @@ endif()
     endif()
     add_test(NAME test_network COMMAND test_network)
 
+    add_executable(test_break_online_lobby tests/test_break_online_lobby.c)
+    target_include_directories(test_break_online_lobby PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_lobby PRIVATE break_online Threads::Threads)
+    add_test(NAME test_break_online_lobby COMMAND test_break_online_lobby)
+    set_tests_properties(test_break_online_lobby PROPERTIES
+        TIMEOUT 20 LABELS "network;online;lobby")
+
+    if(BREAK_ENABLE_CRYPTO)
+        add_executable(test_break_online_nat tests/test_break_online_nat.c
+            src/network/network.c src/platform/time.c)
+        target_include_directories(test_break_online_nat PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_online_nat PRIVATE
+            break_online Threads::Threads break_crypto)
+        if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+           ENGINE_PLATFORM STREQUAL "harmonyos")
+            target_compile_definitions(test_break_online_nat PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_online_nat PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_online_nat PRIVATE ws2_32)
+        endif()
+        add_test(NAME test_break_online_nat COMMAND test_break_online_nat)
+        set_tests_properties(test_break_online_nat PROPERTIES
+            TIMEOUT 30 LABELS "network;online;nat")
+    endif()
+
+    if(NOT BREAK_ENABLE_CRYPTO)
+        add_executable(test_break_online_nat_nocrypto
+            tests/test_break_online_nat_nocrypto.c src/network/network.c)
+        target_include_directories(test_break_online_nat_nocrypto PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_online_nat_nocrypto PRIVATE
+            break_online Threads::Threads)
+        if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+           ENGINE_PLATFORM STREQUAL "harmonyos")
+            target_compile_definitions(test_break_online_nat_nocrypto PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_online_nat_nocrypto PRIVATE
+                ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_online_nat_nocrypto PRIVATE ws2_32)
+        endif()
+        add_test(NAME test_break_online_nat_nocrypto COMMAND test_break_online_nat_nocrypto)
+        set_tests_properties(test_break_online_nat_nocrypto PROPERTIES
+            TIMEOUT 20 LABELS "network;online;nat;no_crypto")
+    endif()
+
+    add_executable(test_break_online_voice tests/test_break_online_voice.c
+        src/network/network.c)
+    target_include_directories(test_break_online_voice PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_voice PRIVATE break_online Threads::Threads)
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+       ENGINE_PLATFORM STREQUAL "harmonyos")
+        target_compile_definitions(test_break_online_voice PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_online_voice PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_online_voice PRIVATE ws2_32)
+    endif()
+    add_test(NAME test_break_online_voice COMMAND test_break_online_voice)
+    set_tests_properties(test_break_online_voice PROPERTIES
+        TIMEOUT 20 LABELS "network;online;voice")
+
+    add_library(break_online_aspect_test STATIC src/network/break_online_aspect.c)
+    set_property(TARGET break_online_aspect_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_online_aspect_test PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_online_aspect_test PUBLIC BREAK_ASPECT_TESTING=1)
+    target_link_libraries(break_online_aspect_test PUBLIC
+        Threads::Threads break_replication_core)
+
+    add_executable(test_break_online_aspect tests/test_break_online_aspect.c)
+    target_include_directories(test_break_online_aspect PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_aspect PRIVATE break_online_aspect_test m)
+    add_test(NAME test_break_online_aspect COMMAND test_break_online_aspect)
+    set_tests_properties(test_break_online_aspect PROPERTIES
+        TIMEOUT 20 LABELS "network;online;aspect;replication")
+
+    add_executable(test_break_online_aspect_replication
+        tests/test_break_online_aspect_replication.c)
+    target_include_directories(test_break_online_aspect_replication PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_online_aspect_replication PRIVATE
+        break_online break_replication_core m)
+    add_test(NAME test_break_online_aspect_replication COMMAND test_break_online_aspect_replication)
+    set_tests_properties(test_break_online_aspect_replication PROPERTIES
+        TIMEOUT 20 LABELS "network;online;aspect;replication")
+
     # Focused fragmentation coverage links the formal non-Snowflake core.
     add_executable(test_break_replication_fragment tests/test_break_replication_fragment.c)
     target_include_directories(test_break_replication_fragment PRIVATE
@@ -5255,7 +5372,7 @@ endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
             target_compile_options(test_break_session PRIVATE -Wno-type-limits -Wno-maybe-uninitialized)
         endif()
-        target_link_libraries(test_break_session PRIVATE break_net_test)
+        target_link_libraries(test_break_session PRIVATE break_net_test break_online)
         add_test(NAME test_break_session COMMAND test_break_session)
         set_tests_properties(test_break_session PROPERTIES
             TIMEOUT 20 LABELS "network;snowflake;session")
@@ -5421,6 +5538,105 @@ endif()
     target_link_libraries(test_platform_fs_write PRIVATE m)
     add_test(NAME test_platform_fs_write COMMAND test_platform_fs_write)
     set_tests_properties(test_platform_fs_write PROPERTIES LABELS "headless;platform")
+
+    if(TARGET break_system)
+        add_executable(test_break_cvar tests/test_break_cvar.c
+            src/platform/platform_fs.c)
+        target_include_directories(test_break_cvar PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_cvar PRIVATE break_system)
+        add_test(NAME test_break_cvar COMMAND test_break_cvar)
+        set_tests_properties(test_break_cvar PROPERTIES LABELS "headless;system")
+
+        add_executable(test_break_xml tests/test_break_xml.c)
+        target_include_directories(test_break_xml PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_xml PRIVATE break_system)
+        add_test(NAME test_break_xml COMMAND test_break_xml)
+        set_tests_properties(test_break_xml PROPERTIES LABELS "headless;system")
+
+        function(break_system_add_test_plugin target_name)
+            add_library(${target_name} SHARED tests/fixtures/break_system_test_plugin.c)
+            target_include_directories(${target_name} PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures)
+            target_compile_definitions(${target_name} PRIVATE ${ARGN})
+        endfunction()
+        break_system_add_test_plugin(break_system_test_plugin_a
+            BREAK_TEST_PLUGIN_NAME="system-test-a"
+            BREAK_TEST_PLUGIN_BUILD_ID="system-test-a"
+            BREAK_TEST_PLUGIN_EVENT=11)
+        break_system_add_test_plugin(break_system_test_plugin_b
+            BREAK_TEST_PLUGIN_NAME="system-test-b"
+            BREAK_TEST_PLUGIN_BUILD_ID="system-test-b"
+            BREAK_TEST_PLUGIN_EVENT=22)
+        break_system_add_test_plugin(break_system_test_plugin_bad_abi
+            BREAK_TEST_PLUGIN_NAME="system-test-bad-abi"
+            BREAK_TEST_PLUGIN_BUILD_ID="system-test-bad-abi"
+            BREAK_TEST_PLUGIN_EVENT=33
+            BREAK_TEST_PLUGIN_ABI=99u)
+        break_system_add_test_plugin(break_system_test_plugin_register_fail
+            BREAK_TEST_PLUGIN_NAME="system-test-register-fail"
+            BREAK_TEST_PLUGIN_BUILD_ID="system-test-register-fail"
+            BREAK_TEST_PLUGIN_EVENT=44
+            BREAK_TEST_REGISTER_RESULT=0)
+        break_system_add_test_plugin(break_system_test_plugin_no_entry
+            BREAK_TEST_NO_ENTRY=1)
+        break_system_add_test_plugin(break_system_test_plugin_attacker
+            BREAK_TEST_PLUGIN_NAME="system-test-a"
+            BREAK_TEST_PLUGIN_BUILD_ID="system-test-a"
+            BREAK_TEST_PLUGIN_EVENT=99
+            BREAK_TEST_CONSTRUCTOR_MARK_PATH="${CMAKE_CURRENT_BINARY_DIR}/break-system-attacker-constructor.marker")
+
+        add_executable(test_break_plugin tests/test_break_plugin.c
+            src/system/break_plugin.c src/platform/platform_dynamic.c)
+        target_include_directories(test_break_plugin PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_plugin PRIVATE
+            BREAK_SYSTEM_TESTING=1
+            BREAK_TEST_PLUGIN_A_PATH="$<TARGET_FILE:break_system_test_plugin_a>"
+            BREAK_TEST_PLUGIN_B_PATH="$<TARGET_FILE:break_system_test_plugin_b>"
+            BREAK_TEST_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:break_system_test_plugin_bad_abi>"
+            BREAK_TEST_PLUGIN_REGISTER_FAIL_PATH="$<TARGET_FILE:break_system_test_plugin_register_fail>"
+            BREAK_TEST_PLUGIN_NO_ENTRY_PATH="$<TARGET_FILE:break_system_test_plugin_no_entry>"
+            BREAK_TEST_PLUGIN_ATTACKER_PATH="$<TARGET_FILE:break_system_test_plugin_attacker>"
+            BREAK_TEST_ATTACKER_MARK_PATH="${CMAKE_CURRENT_BINARY_DIR}/break-system-attacker-constructor.marker")
+        add_dependencies(test_break_plugin
+            break_system_test_plugin_a break_system_test_plugin_b
+            break_system_test_plugin_bad_abi break_system_test_plugin_register_fail
+            break_system_test_plugin_no_entry break_system_test_plugin_attacker)
+        target_link_libraries(test_break_plugin PRIVATE break_crypto ${CMAKE_DL_LIBS})
+        if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "windows")
+            add_test(NAME test_break_plugin COMMAND test_break_plugin)
+            set_tests_properties(test_break_plugin PROPERTIES LABELS "headless;system")
+        endif()
+
+        add_executable(test_break_plugin_unsupported tests/test_break_plugin.c
+            src/system/break_plugin.c src/platform/platform_dynamic.c)
+        target_include_directories(test_break_plugin_unsupported PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_plugin_unsupported PRIVATE
+            BREAK_SYSTEM_TESTING=1 BREAK_SYSTEM_TEST_UNSUPPORTED=1
+            BREAK_TEST_PLUGIN_A_PATH="$<TARGET_FILE:break_system_test_plugin_a>"
+            BREAK_TEST_PLUGIN_B_PATH="$<TARGET_FILE:break_system_test_plugin_b>"
+            BREAK_TEST_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:break_system_test_plugin_bad_abi>"
+            BREAK_TEST_PLUGIN_REGISTER_FAIL_PATH="$<TARGET_FILE:break_system_test_plugin_register_fail>"
+            BREAK_TEST_PLUGIN_NO_ENTRY_PATH="$<TARGET_FILE:break_system_test_plugin_no_entry>"
+            BREAK_TEST_PLUGIN_ATTACKER_PATH="$<TARGET_FILE:break_system_test_plugin_attacker>"
+            BREAK_TEST_ATTACKER_MARK_PATH="${CMAKE_CURRENT_BINARY_DIR}/break-system-attacker-constructor.marker")
+        add_dependencies(test_break_plugin_unsupported
+            break_system_test_plugin_a break_system_test_plugin_b
+            break_system_test_plugin_bad_abi break_system_test_plugin_register_fail
+            break_system_test_plugin_no_entry break_system_test_plugin_attacker)
+        target_link_libraries(test_break_plugin_unsupported PRIVATE break_crypto ${CMAKE_DL_LIBS})
+        add_test(NAME test_break_plugin_unsupported COMMAND test_break_plugin_unsupported)
+        set_tests_properties(test_break_plugin_unsupported PROPERTIES LABELS "headless;system")
+
+        add_test(NAME test_break_system_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_LIST_FILE}
+                -DXML_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/system/break_xml.c
+                -DDYNAMIC_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform_dynamic.c
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_system_target_contract.cmake)
+        set_tests_properties(test_break_system_target_contract PROPERTIES
+            LABELS "headless;system")
+    endif()
 
     # Stage 5 Phase A Task 2: break_crypto known-answer/misuse tests link the
     # formal library; the contract ctest pins the target shape, the
@@ -5626,10 +5842,37 @@ endif()
     add_test(NAME test_mipmap_stream COMMAND test_mipmap_stream)
 
     # test_audio: 3D distance attenuation model (headless, inline-only, no device)
-    add_executable(test_audio tests/test_audio.c)
+    add_executable(test_audio tests/test_audio.c src/audio/audio_extended.c src/audio/audio_dsp.c)
     target_include_directories(test_audio PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio PRIVATE m)
     add_test(NAME test_audio COMMAND test_audio)
+
+    add_executable(test_audio_extended tests/test_audio_extended.c
+        src/audio/audio_dsp.c)
+    target_include_directories(test_audio_extended PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_audio_extended PRIVATE m)
+    target_compile_definitions(test_audio_extended PRIVATE
+        AUDIO_SPATIAL_TEST_HOOK=test_spatial_interleave
+        AUDIO_VOICE_READ_TEST_HOOK=test_voice_read_interleave
+        AUDIO_SPATIAL_PUBLISH_TEST_HOOK=test_listener_start_interleave)
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_audio_extended PRIVATE _POSIX_C_SOURCE=199309L)
+    endif()
+    add_test(NAME test_audio_extended COMMAND test_audio_extended)
+
+    add_executable(test_audio_dsp tests/test_audio_dsp.c src/audio/audio_dsp.c)
+    target_include_directories(test_audio_dsp PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_audio_dsp PRIVATE m)
+    add_test(NAME test_audio_dsp COMMAND test_audio_dsp)
+
+    add_test(NAME test_audio_realtime_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DAUDIO_EXTENDED=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_extended.c
+            -DAUDIO_DSP=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_dsp.c
+            -DAUDIO_LEGACY=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_realtime_contract.cmake)
+    set_tests_properties(test_audio test_audio_extended test_audio_dsp
+        test_audio_realtime_contract PROPERTIES LABELS "headless;audio")
 
     # test_vulkan: full backend integration + golden-image regression (VK + GL).
     # Runs from the source dir so it can find shaders/ and committed golden images.
@@ -5701,9 +5944,25 @@ endif()
     add_test(NAME test_physics_hinge COMMAND test_physics_hinge)
     set_tests_properties(test_physics_hinge PROPERTIES LABELS "headless;physics")
 
+    add_executable(test_physics_cone_twist tests/test_physics_cone_twist.c
+        src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
+    target_include_directories(test_physics_cone_twist PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_physics_cone_twist PRIVATE m)
+    add_test(NAME test_physics_cone_twist COMMAND test_physics_cone_twist)
+    set_tests_properties(test_physics_cone_twist PROPERTIES LABELS "headless;physics")
+
+    add_executable(test_physics_identity tests/test_physics_identity.c
+        src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
+    target_include_directories(test_physics_identity PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_physics_identity PRIVATE m)
+    add_test(NAME test_physics_identity COMMAND test_physics_identity)
+    set_tests_properties(test_physics_identity PROPERTIES LABELS "headless;physics")
+
     add_executable(test_ragdoll tests/test_ragdoll.c
-        src/physics/ragdoll.c src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
+        src/physics/ragdoll.c src/physics/physics.c src/physics/bvh.c
+        src/animation/animation.c src/animation/skeleton.c src/math/math.c src/core/log.c)
     target_include_directories(test_ragdoll PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_ragdoll PRIVATE PHYSICS_TEST_HOOKS=1)
     target_link_libraries(test_ragdoll PRIVATE m)
     add_test(NAME test_ragdoll COMMAND test_ragdoll)
     set_tests_properties(test_ragdoll PROPERTIES LABELS "headless;physics")

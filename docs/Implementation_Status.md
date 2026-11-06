@@ -1,3 +1,95 @@
+## 本轮更新：P8 fix round 4（2026-11-05）
+
+- **兼容自动 epoch**：`break_aspect_encode` 改为独立的每对象 encoder epoch/hash，不再从 value revision 推导顺序。仅成功输出后推进；连续 baseline/DORMANT/DESTROY 和同值唤醒均单调递增，短输出预算失败不消耗 epoch，耗尽返回 OVERLOAD。显式编码和 apply 仍不写自动 encoder 状态，value revision 与 record high-water 语义不变。
+- **公开边界**：同一对象必须选择单一 epoch owner；自动转显式须使用更大 epoch 并保持显式，不能在较大显式 epoch 后切回自动包装器。自动状态仅限当前 store 的对象生命周期，不是跨进程持久序号；同一 attempt 的传输重试复用原字节。耗尽注入仅在独立 `break_online_aspect_test` 变体中，生产库无测试宏。
+- **验证**：直接 aspect 12/12、AOI 调度 9/9；crypto ON/OFF normal 均 11/11，钉住 Snowflake normal/ASan+UBSan/TSan 均 13/13 + 5/5，no-crypto normal/ASan+UBSan/TSan 均 11/11，无 sanitizer/race 报告。自动序号回退变异为 10/12、删除耗尽 guard 变异为 11/12，均恢复 12/12。完整证据见 `.superpowers/sdd/online-gameplay-network-report.md` round4。
+- **限制**：challenge/session 密钥仍由应用 provision/rotation；仅本机 Linux focused 验证，不承诺任意 NAT、公网部署、跨平台原生、跨进程 epoch 去重或可靠送达。
+
+## 本轮更新：P8 fix round 3（2026-11-05）
+
+- **失败重试顺序**：修复完整 aspect 包已交付但 callback 返回失败后，修改值并以同 epoch 重试造成永久 STALE 的问题。每次实际发送尝试在预算/分片预检通过后、首个 datagram 前分配新 record epoch；失败保留 attempt high-water 和 dirty，只有完整成功才清 dirty，零预算未发送不推进 epoch。
+- **只读与 revision 分离**：`break_aspect_encode_with_epoch` 不再写 store epoch/hash，较小 epoch 和同 epoch 不同 hash 均拒绝。apply 只更新 record epoch/hash，不覆盖公共 value revision；后者只表示本地值变更。value revision 或 record epoch 达到 `UINT64_MAX` 时 setter fail-closed。
+- **验证**：aspect 9/9、AOI 调度 9/9、NAT 23/23、voice 8/8、分片 12/12、真实 Session 38/38。crypto ON 无 Snowflake normal 11/11；钉住 Snowflake normal/ASan+UBSan/TSan 均 13/13 + 5/5；no-crypto normal/ASan+UBSan/TSan 均 11/11，无 sanitizer/race 报告。交付后失败与较小 epoch 的生产变异均实际变红并恢复，完整证据见 `.superpowers/sdd/online-gameplay-network-report.md` round3。
+- **限制**：challenge/session 密钥由应用 provision/rotation；仅本机 Linux focused 验证，不承诺任意 NAT、公网部署、跨平台原生或可靠送达；record epoch 是进程内记录顺序，不是跨进程持久去重。
+
+## 本轮更新：P8 fix round 2（2026-11-05）
+
+- **持久防重放与可用性**：endpoint 持久 control high-water 覆盖 PUNCH/CLOSE、TTL 和连续 re-pair；旧 CLOSE 不能回退。stateless 来源绑定 challenge 不再被伪造 DISCOVER 占槽，合法注册仍能完成。
+- **复制原子性**：reassembler 完成后仍拒绝旧 delta，新流全部分配成功后才淘汰旧流，失败保留旧流。aspect 使用 record epoch 统一 baseline/dirty/control 顺序，普通 AOI leave 与 DORMANT 后可用同一 handle 重入，旧 control 被 stale 拒绝；永久 object_destroy 仍退休 generation。
+- **构建契约**：完整 HMAC NAT 测试仅在 crypto ON 构建。no-crypto 有独立无 API 引用合约，create 均 REJECTED 且输出为空，其余测试继续运行。
+- **验证**：NAT 23/23、aspect 8/8、AOI 调度 7/7、分片 12/12。crypto ON 无 Snowflake normal 11/11；钉住 Snowflake normal/ASan+UBSan/TSan 均 13/13 + 5/5；no-crypto normal/ASan+UBSan/TSan 均 11/11。high-water 与 record epoch 生产变异均实际变红并恢复，完整证据见 `.superpowers/sdd/online-gameplay-network-report.md` round2。
+- **限制**：challenge/session 密钥仍由应用 provision/rotation；本机 loopback 不证明任意 NAT、公网部署或可靠送达，未做跨平台原生验证。
+
+## 本轮更新：P8 fix round 1（2026-11-05）
+
+- **安全修复**：NAT 控制面改为 challenge + 每 session HMAC-SHA256 + 有界 replay window，绑定 recipient/registered/来源并处理精确 duplicate 与冲突重放。PUNCH 使用相对 TTL，CLOSE 使 endpoint 失效并支持新 generation re-pair。有效 MAC captured HELLO 跨 socket 重放、篡改 MAC、未知 nonce、四 endpoint 容量和跨时钟均有真实 UDP 测试。
+- **复制修复**：合法 gen2 adopt 恢复；持久 reassembler 以新 delta 淘汰未完成旧 delta并拒绝迟到旧流；pending_leave 在空 AOI 也重试；DESTROY/DORMANT 真正消费；分片两个 API 共用 planner/fill，revision 上限保持失败原子。补齐 nonce、pair capacity、MPSC overload 等负例。
+- **验证**：NAT 19/19、aspect 8/8、AOI 调度 6/6、固定分片 10/10；normal 无 Snowflake 11/11，钉住 Snowflake 的 normal/ASan+UBSan/TSan 均 13/13 + 5/5，无 sanitizer/race 报告。nonce、pair 容量、revision、MAC 变异均实际变红并恢复，完整证据追加到 `.superpowers/sdd/online-gameplay-network-report.md`。
+- **限制**：会话密钥 provision/rotation 仍由应用负责；本机 loopback 不证明任意 NAT、公网部署或可靠送达，未做跨平台原生验证。
+
+## 本轮更新：P8 在线会话与游戏网络能力（2026-11-03）
+
+- **交付**：新增正式可选 `break_online`，不链入 `engine`/demo/编辑器。认证大厅支持固定容量目录、加入离开、主机迁移、断连清理、分页和服务端匹配；身份只能经认证提供方解析，`break_online_session.h` 直接适配真实 `BreakSessionManager`。UDP NAT 实现 HELLO/WELCOME/PUNCH/PING/ACK、observed address、generation 和 TTL；语音实现固定 PCM 帧、序号、jitter、重复/迟到拒绝和零填充丢帧；aspect 实现 schema hash、稀疏变化掩码、varint/zigzag 编码、事务 apply，以及复用真实 AOI、固定分片和安全传输回调的按连接复制。
+- **线程与失败语义**：新容器 create 时固定分配，网络接收只校验界限并入有界队列，协议/播放/复制由创建线程处理。房间/对象使用 generation 句柄，malformed aspect 不部分提交，预算或发送失败保留 dirty 供重试。计划与合同见 `docs/superpowers/plans/2026-11-03-online-gameplay-network.md`、`docs/design/online_gameplay_network.md`。
+- **验证**：新直接测试 lobby 10/10、NAT 7/7、voice 8/8、aspect 5/5、AOI 调度 3/3、固定分片 9/9；另有真实 Session 适配。normal 无 Snowflake focused 11/11；使用钉住 Snowflake 的 normal、ASan+UBSan、TSan 均为网络/复制/Session 标签 13/13 加基础网络 5/5，无 sanitizer 报告。NAT 与语音在每个 lane 都跑真实 UDP loopback；主机迁移、错误来源、丢帧、短容量、trailing-byte、dirty 重试均有实际变异变红后恢复证据。
+- **限制**：仅证明本机 Linux focused 行为，不是全平台或外部部署证明。不承诺任意 NAT/防火墙穿透、可靠送达、主观听感、账号后端、预测/回滚；分片 checksum 不是认证。完整命令和 RED/GREEN 见 `.superpowers/sdd/online-gameplay-network-report.md`。
+
+## 本轮更新：P11 独立评审 fix round 3（2026-11-03）
+
+- **修复**：`BREAK_SYSTEM_TEST_UNSUPPORTED` 现在同时保护 Windows loader 实现和 dispatcher，unsupported Windows 编译不再包含 `platform_open_windows`，公共分支返回 `FAILED`、零输出 handle 和零副作用。target contract 先因缺少两处保护变红，修复后通过。
+- **Windows 编译证据**：zig 0.16.0 `x86_64-windows-gnu` 以 C11、`-Wall -Wextra -Werror -pedantic` 编译 production 与 `BREAK_SYSTEM_TESTING + BREAK_SYSTEM_TEST_UNSUPPORTED` 两个真实 Windows 对象成功。production 符号表含 `platform_open_windows t`，unsupported 符号表不含该函数；公共 fail-closed 探针成功链接为 Windows `.exe`，且无需 crypto 未定义符号。
+- **验证与限制**：Linux normal、ASan+UBSan、TSan focused 均 8/8，无 sanitizer 报告。没有 Windows 运行时，未执行生成的对象/探针，未声称 Windows 运行验收。证据见 `.superpowers/sdd/system-extensions-report.md`。
+
+## 本轮更新：P11 独立评审 fix round 2（2026-11-03）
+
+- **修复**：PAL 新增 `PLATFORM_DYNAMIC_OPEN_OVERLOAD`，Linux/Windows 初始文件大小与累计读取超过 64 MiB 均映射为 `BREAK_PLUGIN_OVERLOAD`；普通 I/O 仍 `FAILED`。CTest 仅在 Linux/Windows 注册成功加载 fixture，并新增所有主机都运行的 `test_break_plugin_unsupported`，强制生产 fail-closed 分支，断言零输出 handle、零注册和零 constructor 副作用。
+- **验证**：超限 sparse 文件先 RED（旧为 `FAILED`）后 GREEN；unsupported 变体先 RED（攻击 constructor 标记出现）后 GREEN。normal、ASan+UBSan、TSan focused 均 8/8，包含 CVar 12 项、XML 13 项、插件 11 项、unsupported 1 项及 contract/相关回归。
+- **限制**：其它平台仍不加载插件；Win32 分支尚未在本机编译/运行验证。完整命令和输出见 `.superpowers/sdd/system-extensions-report.md`。
+
+## 本轮更新：P11 独立评审 fix round 1（2026-11-03）
+
+- **根因修复**：PAL 不再先哈希后按路径加载。Linux 将哈希字节写入 sealed memfd 并由库句柄持有验证 fd 到卸载；Windows 在禁止写/删除共享的源句柄上哈希并用最终路径加载，其它平台失败关闭。constructor 竞态 fixture 证明替换路径的攻击代码从未执行。CVar 回调 destroy 延迟到最外层通知结束；字符串首尾空格拒绝且空串/中间空格可往返，别名写入使用 `memmove`。插件 generation 耗尽永久退休，场景 writer 与属性容量统一为 682 实体，XML 完整执行 XML 1.0 码点校验且 serializer 改为父索引迭代。
+- **验证**：新增/更新后 CVar 12 项、XML 13 项、真实 SHARED 插件 10 项。normal、ASan+UBSan、TSan focused 均 7/7，全量 headless 均 129/129，no-tests 构建通过。路径加载、generation 回绕、scene 放宽、立即 destroy 变异分别被 constructor/身份/闭包/ASan 测试杀死；全部恢复后复测通过。
+- **限制**：依赖库未逐项哈希，allowlist 不是签名或 sandbox；Win32 安全原语已实现但本机 `clang-cl` 因缺少 CRT `stdio.h` 无法编译验证，未声称 Windows 运行通过。Linux memfd 的依赖搜索/`$ORIGIN` 语义需宿主显式管理。证据见 `.superpowers/sdd/system-extensions-report.md`。
+
+## 本轮更新：P11 CVar、XML 场景侧车与受控插件（2026-11-03）
+
+- **交付**：独立 `break_system` 提供固定容量 CVar（bool/int64/finite double/UTF-8 string、范围、readonly/Cheat、变化回调、事务式配置存取）；有界 XML 严格拒绝 DTD、自定义/数值实体、非法 UTF-8 和所有配置上限，`break-scene` v1 只保存实体 index/generation/class，不替代 BSCN；PAL 动态插件在 `dlopen`/`LoadLibrary` 前复用现有 SHA-256 文件完整性检查，再校验 ABI、build id 和描述符，使用 generation 句柄、引用计数和逆序卸载。
+- **失败原子**：CVar load 完整验证后才交换主/暂存表；XML parse 成功才替换旧树；插件注册失败关闭真实共享库且不保留槽；单个或批量卸载遇到任何非零引用都在回调前拒绝。回调自身的外部副作用由调用方/插件负责，不由管理器虚称回滚。
+- **验证**：CVar 8 项、XML 10 项、真实 SHARED 插件 8 项及 target contract；normal、ASan+UBSan、TSan focused 均 7/7（另含 BSCN、integrity、platform_fs），三树全量 headless 均 129/129，no-tests 树仍构建 `break_system`。CVar 范围/提前提交、XML DTD/UTF-8/提前交换、插件哈希/引用/正序卸载变异均按预期变红并恢复全绿。
+- **限制**：哈希 allowlist 不是签名认证或 sandbox；依赖库未逐项验证。Windows PAL 仅有实现未在本机运行；XML 不保留注释/处理指令，场景权威格式仍是 BSCN。设计细节见 `docs/design/system_extensions.md`，完整回归与报告见 `.superpowers/sdd/system-extensions-report.md`。
+
+## 本轮更新：P10 fix round 4（2026-11-05）
+
+- **修复**：voice_read 在空间快照前后复核 spatial_epoch，阻断 RESTART+position/listener 落入两次 load 间隙时旧 PCM 错用新 epoch 增益。GameThread spatial_publish 在 CAS 失败后重新验证 epoch、revision 和当前快照再发布新增益；START 仍是不重试的整快照 CAS，revision/epoch 边界与固定容量政策不变。
+- **验证**：`test_audio_extended` 41/41；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。两个确定性交错均先 RED，去掉第二次 epoch load 或恢复 listener CAS 失败即返回的生产变异分别为 40/41，恢复后通过。代码提交 `6c1149ff`，`git diff --check 9cf01634..HEAD` 通过。
+- **证据与限制**：真实输出已追加到 `.superpowers/sdd/audio-fix-round1-report.md` 的 round 4 部分；第四轮独立复审结论为 Spec ADDRESSED、质量 Approved、可合并。未做真实声卡/实际听测或 Windows/macOS；交错由测试 TU 内受控注入验证，不依赖概率调度或 TSan 发现逻辑竞态。
+
+## 本轮更新：P10 fix round 3（2026-11-05）
+
+- **修复**：START 初始空间增益和 GameThread 发布均使用整快照 CAS，load/CAS 间的新 revision 不会被旧 START 覆盖。新增 spatial_epoch 与 callback 私有 applied gain，RESTART 待消费时旧 PCM 不采用新 epoch 快照。revision 单调递增，max 后 position/START 拒绝；epoch 0/max 退休政策不变。
+- **验证**：`test_audio_extended` 39/39、`test_audio_dsp` 10/10、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。受控 CAS/epoch 交错先 RED，两个生产变异均 38/39 后恢复；revision 边界真实注入通过。提交 `e2157bf4`，`git diff --check 12fefa2e..HEAD` 通过。
+- **证据与限制**：真实输出已追加到 `.superpowers/sdd/audio-fix-round1-report.md` 的 round 3 部分。未做真实设备/听测、Windows/macOS 或第四轮独立评审。
+
+## 本轮更新：P10 fix round 2（2026-11-05）
+
+- **修复**：空间快照以单原子 64-bit revision+gain 防止旧 START 覆盖较新 position/listener；回调发布 started_epoch，音乐 update 未确认当前 START 已消费前不读旧 cursor。epoch 0 保留为无效，max-1→max 允许，max 后 voice 退休并返回 OVERLOAD，不绕回或复用完成身份。补 reverb.mix 非有限、delay/reverb stereo 和 extended stereo clip PCM。
+- **验证**：`test_audio_extended` 36/36、`test_audio_dsp` 10/10、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。空间 revision、started gate、extended/DSP 双声道变异均先红后恢复；`git diff --check df8fc32e..HEAD` 通过。提交 `8ff137c1`，真实输出追加于 `.superpowers/sdd/audio-fix-round1-report.md` 的 round 2 部分。
+- **限制**：未做真实声卡/听测、Windows/macOS 或第三轮独立评审。边界通过测试 TU 注入验证，并非自然等待回绕。
+
+## 本轮更新：P10 fix round 1（2026-11-03）
+
+- **修复**：每次 START 使用独立 64-bit epoch，旧 STOP/RAMP/自然完成不能回收 RESTART 后 voice；cursor 只在回调消费 START 时归零，初始增益随命令发布，enqueue 失败不改簿记。listener/距离先验证再 ray，stop-pending 不再 ray；bus 统一拒绝非有限值，stale clip 返回 STALE。legacy 移除 NO_PITCH 恢复 Doppler。DSP 使用宽索引并补 stereo/链顺序/完整回调扫描。
+- **验证**：独立评审所有 Critical/Important/Minor 均有实现和覆盖。`test_audio_extended` 30/30、`test_audio_dsp` 8/8、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan focused 均 4/4，无 sanitizer 报告，normal `engine` 构建成功。STOP→RESTART、serial 回收变异、宽索引契约及 configure_dsp 分配变异均有 RED/恢复证据；`git diff --check e82dae38..HEAD` 通过。
+- **证据与限制**：命令输出和逐项结果见 `.superpowers/sdd/audio-fix-round1-report.md`。仍未做真实声卡/听测、Windows/macOS 或第二轮独立评审。
+
+## 本轮更新：P10 音乐、DSP、遮挡与声音事件（2026-11-03）
+
+- **交付**：在同一 `AudioSystem`/miniaudio engine 内新增固定容量 clip、命名事件和 32 个预建 PCM voice（30 事件 + 2 音乐）。事件支持 ALLOW/RESTART/IGNORE 与 REJECT/STEAL_OLDEST，voice handle 带 generation；音乐支持 16 轨 playlist、loop、零淡化切轨和逐样本交叉淡化。四级 DSP 包含低通、反馈延迟和固定 tap 混响。射线仅在 GameThread 的 trigger/position/listener 路径执行，回调消费预分配命令/PCM 和原子增益快照，不做文件 I/O、网络、游戏逻辑或热分配。详细合同见 `docs/design/audio_extended.md`，TDD 台账见 `.superpowers/sdd/audio-extended-report.md`。
+- **Legacy 边界**：`audio_play`、`audio_play_3d` 和兼容命名的 `audio_play_streamed` 现在打开时完整解码，不再由混音回调读取文件。`AudioStreamManager` API 保留；大文件打开成本和解码内存由调用方承担。
+- **验证**：`test_audio_extended` 21/21、`test_audio_dsp` 5/5、既有 `test_audio` 17/17；normal/ASan+UBSan/TSan 的 audio focused（含 realtime contract）均 4/4，无 sanitizer 报告。normal 正式 `engine` 构建成功。逐项 RED/GREEN 与六组变异恢复证据已记录，包括 clip 失败原子、voice generation、delay feedback、交叉淡化、遮挡 ray 和禁止 legacy 文件流。
+- **限制**：只接受 48 kHz f32 mono/stereo；无实际听测、真实声卡、Windows/macOS、重采样或物理声学验证。固定容量满返回错误；legacy 文件打开会同步完整解码。
+
 ## 本轮更新：武器状态机与权威开火意图（2026-11-02）
 
 - **交付**：`break_game` 支持 64 种宿主定义武器，每 Actor 保存弹匣、tick、冷却与装填状态。装备、退弹、装填、tick、弹药查询和开火均检查创建线程与 Entity generation；开火只输出带 shooter、weapon_id、damage 和全局单调 sequence 的权威 intent，不选择目标、不检测命中、不扣生命。
@@ -47,6 +139,14 @@
 - **交付**：`tile_<x>_<z>.bin` 以魔数 `TIL1`、版本 1、顶点个数开头，后面是同样个数的 `MeshStageVertex`。个数为 1 到 64，文件长度必须刚好盖住这些顶点。魔数不对、版本不对、截断、超过 64 个顶点都拒绝，并且不创建实体。通过的网格写在组件 120 上，带块坐标。重复加载不会再建实体。
 - **测试**：`test_world_stream_world` 在 normal、ASan+UBSan、TSan 上通过。
 - **未做**：没有设备缓冲，没有绘制。超过 64 个顶点的块整份拒绝，不截断保存。
+
+## 本轮更新：2026-11-02 Windows 同步、流式测试跨平台修复与实机验证
+
+- **同步与修复**：从 `4ddc1916` 快进 18 个提交到 `5db84314`，无冲突。新加入的 `test_world_stream_world` 使用 `unistd.h`、固定 `/tmp` 路径和双参数 `mkdir`，导致 Clang/MSVC 缺少头文件、MinGW 的 `mkdir` 签名不匹配；本机四个构建树均在编译期复现，远程 CI 的 Windows Clang/MSVC/MinGW/ASan 与 windows-d3d12 通道也同样失败。测试改用 `test_tmp` 的每进程目录及 `TEST_MKDIR`/`TEST_RMDIR`，增加路径长度检查；保留真实 VFS、实体创建/销毁、字节复制与拒绝缺失文件的全部断言。生产代码无修改，没有放宽 `/WX`、`-Werror` 或测试断言。
+- **六棵 Windows 构建树**：Clang/OpenGL 273/273、Clang/Vulkan 276/276、Clang/D3D12 281/281、Clang ASan+UBSan 269/269（`ASAN_OPTIONS=detect_leaks=0`，排除 graphics）、MSVC 282 通过加 1 个按设计跳过的 `test_d3d12_dependency_gate`、MinGW 279/279。Clang、MSVC 和 MinGW 的构建均未发现 error/warning 诊断。
+- **三后端实机**：OpenGL 4.5 NVIDIA 621.01、Vulkan、D3D12 均完成 70 帧；第 10/40 帧进出无标题栏全屏，第 50/60 帧隐藏/恢复标题栏，日志确认实际后端、窗口模式和标题栏状态，进程退出码均为 0；Vulkan validation 消息为 0。本轮同时运行多树测试，切换耗时不作为性能基线。
+- **编辑器实机**：OpenGL 下通过真实 `InputState` 输入脚本完成添加与选中实体、平移工具、Ctrl+D、Ctrl+Z、Z 线框切换，随后通过命令面板切到浅色、再切回深色，全部断言通过。截图确认浅色/深色实际绘制；`BREAK_EDITOR_SETTINGS` 指定的临时文件含 `theme=light`，新进程截图确认浅色主题已恢复。第一次点击失败是 `Theme: Light` 行中心落在列表可见区域之外，先用 `type` 过滤为第一行后鼠标点击成功，不是引擎输入缺陷。macOS 原生执行本轮未验证。
+- **边界**：新增 Cry 式游戏、AI、物理、世界表现和流式功能已覆盖 Windows CPU/headless 测试，但贴花、体素和道路主机字节仍没有设备缓冲或绘制，`break_game`/`break_ai` 仍不链入 `engine`；这些测试不证明植被画面、驾驶手感或完整运行时集成。POSIX-only 的 `break_http`、崩溃上传和端到端测试仍不在 Windows 构建/注册范围内，不能说成 Windows 运行时通过。Linux/macOS 结果以对应远程 CI 为准。
 
 ## 本轮更新：贴花、体素、道路打成主机侧顶点字节（2026-11-01）
 
@@ -427,7 +527,7 @@
 - **问题**：同步 23 个提交（编辑器 CLion 风格主题与字体、设置持久化、场景 fuzzer 等）后，Windows 上 `test_editor_fonts`、`test_editor_settings`、`fuzz_editor_scene` 编不过：用了 POSIX 的 `setenv`/`unsetenv`/`<unistd.h>`/`getpid`/写死的 `/tmp`。生产代码 `editor_settings.c` 本身有 `%APPDATA%` 分支，只是测试没跟上。
 - **修复**：`tests/test_framework.h` 新增 `TEST_SETENV`/`TEST_UNSETENV`（Windows 用 `_putenv_s`，空值即删除；POSIX 侧沿用原先 `test_editor_settings` 里的 `extern` 声明）；`test_editor_fonts`/`test_editor_settings` 改用它们并去掉各自的 `_POSIX_C_SOURCE`/`unistd.h`；`test_editor_settings` 的默认路径用例在 Windows 上断言 `%APPDATA%/break/editor.ini`（并断言无 `APPDATA` 时返回 false），存取用例改用 `test_tmp`；`fuzz_editor_scene` 照 `fuzz_scene_serial` 的 `fuzz_getpid` 写法处理。
 - **验证**（本机 Windows）：OpenGL 229/229、Vulkan 232/232、D3D12 237/237、ASan 225/225、MSVC 239（1 个 D3D12 依赖门 skip，构建 0 诊断）、MinGW 235/235（构建 0 警告）；ASan 树里 `fuzz_editor_scene 3000 7` 与 MinGW 下 `2000 3` 均正常结束（978/639 个变异被接受并重存）。
-- **边界**：Linux/macOS 上 `test_framework.h` 的 POSIX 分支本机无法编译验证，以远程 CI 为准；编辑器“命令面板点 `Theme: Light` → 设置写盘”这条端到端路径**没能**在 Windows 上用输入脚本跑通（脚本点击后面板没有关闭，设置文件没生成），无法区分是脚本驱动对列表行点击的限制还是真问题，所以主题切换与设置持久化的实机表现**未验证**，只有 `test_editor_settings` 单元测试（含文件存取）在 Windows 上通过。MinGW 全并行（`-j` 默认）构建曾因系统分页文件瞬时不足失败（`CreateProcess: The paging file is too small`），降到 `-j 4` 后通过，属环境资源问题。
+- **边界**：Linux/macOS 上 `test_framework.h` 的 POSIX 分支本机无法编译验证，以远程 CI 为准；编辑器“命令面板点 `Theme: Light` → 设置写盘”这条端到端路径**没能**在 Windows 上用输入脚本跑通（脚本点击后面板没有关闭，设置文件没生成），无法区分是脚本驱动对列表行点击的限制还是真问题，所以当时主题切换与设置持久化的实机表现**未验证**，只有 `test_editor_settings` 单元测试（含文件存取）在 Windows 上通过。2026-11-02 已查明是脚本点击了列表裁剪区；过滤到首行后鼠标/键盘切换和设置恢复均通过，见顶部记录。MinGW 全并行（`-j` 默认）构建曾因系统分页文件瞬时不足失败（`CreateProcess: The paging file is too small`），降到 `-j 4` 后通过，属环境资源问题。
 
 ## 本轮更新：编辑器文字重影修复 + JetBrains New UI 暗色主题（2026-10-28）
 

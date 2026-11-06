@@ -10,6 +10,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -24,25 +25,93 @@ static LuaScript *ls_from_state(lua_State *L) {
     return ls;
 }
 
-/* Validate a 1-based Lua body id (C index = id-1) before narrowing it to the
- * engine's u32 handle. */
-static bool checked_body_index(lua_State *L, PhysicsWorld *pw, int arg, u32 *out_idx) {
-    if (!pw) return false;
-    lua_Integer id = luaL_checkinteger(L, arg);
-    if (id <= 0 || (u64)id > (u64)UINT32_MAX) return false;
-    u32 idx = (u32)id - 1u;
-    if (idx >= pw->count) return false;
-    *out_idx = idx;
+typedef struct {
+    u32 slot;
+    u32 serial;
+    lua_Integer public_id;
+} LuaBodyIdPlan;
+
+static bool lua_body_map_ready(const LuaScript *ls, const PhysicsWorld *pw) {
+    return ls && pw && ls->body_map_epoch != 0u && ls->body_map_epoch != UINT32_MAX &&
+           ls->body_map_capacity == pw->capacity && ls->body_map_capacity != 0u &&
+           ls->body_serial && ls->body_generation && ls->body_epoch && ls->body_retired;
+}
+
+static bool lua_body_id_plan(LuaScript *ls, PhysicsWorld *pw, LuaBodyIdPlan *plan) {
+    if (!plan || !lua_body_map_ready(ls, pw)) return false;
+    u32 slot = 0;
+    for (; slot < pw->count; slot++) {
+        RigidBody *candidate = &pw->bodies[slot];
+        if (physics_body_is_parked(candidate) && !candidate->retired) break;
+    }
+    if (slot == pw->count && pw->count >= pw->capacity) return false;
+    if (slot >= pw->capacity || pw->bodies[slot].retired || ls->body_retired[slot]) return false;
+
+    u64 serial = ls->body_serial[slot];
+    if (serial == UINT32_MAX) {
+        if (ls->body_epoch[slot] != 0u) {
+            ls->body_retired[slot] = 1u;
+            return false;
+        }
+        serial = 0u;
+    } else {
+        serial++;
+    }
+    u64 id = serial * (u64)ls->body_map_capacity + (u64)slot + 1u;
+    if (id <= ls->body_public_cursor) {
+        serial = (ls->body_public_cursor - (u64)slot - 1u) /
+                 (u64)ls->body_map_capacity + 1u;
+        if (serial > UINT32_MAX) {
+            ls->body_retired[slot] = 1u;
+            return false;
+        }
+        id = serial * (u64)ls->body_map_capacity + (u64)slot + 1u;
+    }
+    if (id > 0x1FFFFFFFFFFFFFu) {
+        ls->body_retired[slot] = 1u;
+        return false;
+    }
+    plan->slot = slot;
+    plan->serial = (u32)serial;
+    plan->public_id = (lua_Integer)id;
     return true;
 }
 
-/* Returns NULL without raising when out of range or no physics world is bound.
- * R354: previously treated id as a C index while rejecting id<=0, so bodies[0]
- * was unreachable and spawn's 0-based return conflicted with "0 = invalid". */
+static lua_Integer lua_body_id(LuaScript *ls, PhysicsBodyHandle body, const LuaBodyIdPlan *plan) {
+    ls->body_serial[plan->slot] = plan->serial;
+    ls->body_generation[plan->slot] = body.generation;
+    ls->body_epoch[plan->slot] = ls->body_map_epoch;
+    ls->body_public_cursor = (u64)plan->public_id;
+    return plan->public_id;
+}
+
+static bool checked_body_handle(lua_State *L, PhysicsWorld *pw, int arg, PhysicsBodyHandle *out) {
+    LuaScript *ls = ls_from_state(L);
+    if (!lua_body_map_ready(ls, pw)) return false;
+    lua_Integer packed = luaL_checkinteger(L, arg);
+    if (packed <= 0) return false;
+    u64 id = (u64)packed - 1u;
+    u32 slot = (u32)(id % ls->body_map_capacity);
+    u64 serial_wide = id / ls->body_map_capacity;
+    if (serial_wide > UINT32_MAX) return false;
+    u32 serial = (u32)serial_wide;
+    if (slot >= pw->count || ls->body_retired[slot]) return false;
+    if (ls->body_map_epoch == 1u && ls->body_serial[slot] == UINT32_MAX &&
+        ls->body_epoch[slot] == 0u && serial == 0u) {
+        ls->body_serial[slot] = 0u;
+        ls->body_generation[slot] = pw->bodies[slot].generation;
+        ls->body_epoch[slot] = ls->body_map_epoch;
+    }
+    if (ls->body_serial[slot] != serial || ls->body_epoch[slot] != ls->body_map_epoch) return false;
+    out->index = slot;
+    out->generation = ls->body_generation[slot];
+    return physics_body_resolve(pw, *out) != NULL;
+}
+
 static RigidBody *checked_body(lua_State *L, PhysicsWorld *pw, int arg) {
-    u32 idx;
-    if (!checked_body_index(L, pw, arg, &idx)) return NULL;
-    return &pw->bodies[idx];
+    PhysicsBodyHandle body;
+    if (!checked_body_handle(L, pw, arg, &body)) return NULL;
+    return physics_body_resolve(pw, body);
 }
 
 /* NaN/Inf guard for vector components handed to physics: a single nonfinite
@@ -135,8 +204,8 @@ static int l_set_vel(lua_State *L) {
 static int l_apply_impulse(lua_State *L) {
     LuaScript *ls = ls_from_state(L);
     PhysicsWorld *pw = ls ? (PhysicsWorld *)ls->physics : NULL;
-    u32 idx;
-    if (!checked_body_index(L, pw, 1, &idx)) return 0;
+    PhysicsBodyHandle idx;
+    if (!checked_body_handle(L, pw, 1, &idx)) return 0;
     Vec3 imp = vec3((f32)luaL_checknumber(L, 2),
                     (f32)luaL_checknumber(L, 3),
                     (f32)luaL_checknumber(L, 4));
@@ -159,17 +228,22 @@ static int l_spawn(lua_State *L) {
         lua_pushinteger(L, 0);
         return 1;
     }
-    u32 id = physics_body_create(pw, pos, vec3(0.5f, 0.5f, 0.5f), mass, false, 0);
-    /* R352/R354: UINT32_MAX → 0 (invalid); else 1-based Lua id = C index + 1. */
-    lua_pushinteger(L, (id == UINT32_MAX) ? 0 : (lua_Integer)(id + 1u));
+    LuaBodyIdPlan plan;
+    if (!lua_body_id_plan(ls, pw, &plan)) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    PhysicsBodyHandle id = physics_body_create(pw, pos, vec3(0.5f, 0.5f, 0.5f), mass, false, 0);
+    lua_Integer public_id = physics_body_handle_is_valid(id) ? lua_body_id(ls, id, &plan) : 0;
+    lua_pushinteger(L, public_id);
     return 1;
 }
 
 static int l_body_set_ccd(lua_State *L) {
     LuaScript *ls = ls_from_state(L);
     PhysicsWorld *pw = ls ? (PhysicsWorld *)ls->physics : NULL;
-    u32 idx;
-    if (!checked_body_index(L, pw, 1, &idx)) return 0;
+    PhysicsBodyHandle idx;
+    if (!checked_body_handle(L, pw, 1, &idx)) return 0;
     bool on = lua_toboolean(L, 2);
     physics_body_set_ccd(pw, idx, on);
     return 0;
@@ -224,14 +298,56 @@ bool lua_script_init(LuaScript *ls) {
 void lua_script_shutdown(LuaScript *ls) {
     if (!ls) return;
     if (ls->L) lua_close(ls->L);
+    free(ls->body_serial);
+    free(ls->body_generation);
+    free(ls->body_epoch);
+    free(ls->body_retired);
     memset(ls, 0, sizeof(*ls));
 }
 
 void lua_script_bind_host(LuaScript *ls, void *world, void *physics, void *input) {
     if (!ls) return;
+    PhysicsWorld *pw = (PhysicsWorld *)physics;
+    if (ls->physics == physics && pw && ls->body_map_capacity == pw->capacity &&
+        ls->body_serial && ls->body_generation && ls->body_epoch && ls->body_retired) {
+        ls->world = world;
+        ls->input = input;
+        return;
+    }
+    if (ls->body_map_epoch != UINT32_MAX) ls->body_map_epoch++;
+    free(ls->body_serial);
+    free(ls->body_generation);
+    free(ls->body_epoch);
+    free(ls->body_retired);
+    ls->body_serial = NULL;
+    ls->body_generation = NULL;
+    ls->body_epoch = NULL;
+    ls->body_retired = NULL;
+    ls->body_map_capacity = 0;
     ls->world = world;
     ls->physics = physics;
     ls->input = input;
+    if (ls->body_map_epoch == UINT32_MAX || !pw || pw->capacity == 0u) return;
+#if SIZE_MAX < UINT64_MAX
+    if ((u64)pw->capacity > (u64)SIZE_MAX / (4u * sizeof(u32))) return;
+#endif
+    u32 *serial = (u32 *)malloc(pw->capacity * sizeof(u32));
+    u32 *generation = (u32 *)malloc(pw->capacity * sizeof(u32));
+    u32 *epoch = (u32 *)calloc(pw->capacity, sizeof(u32));
+    u8 *retired = (u8 *)calloc(pw->capacity, sizeof(u8));
+    if (!serial || !generation || !epoch || !retired) {
+        free(serial);
+        free(generation);
+        free(epoch);
+        free(retired);
+        return;
+    }
+    for (u32 i = 0; i < pw->capacity; i++) serial[i] = UINT32_MAX;
+    ls->body_serial = serial;
+    ls->body_generation = generation;
+    ls->body_epoch = epoch;
+    ls->body_retired = retired;
+    ls->body_map_capacity = pw->capacity;
 }
 
 static void refresh_hooks(LuaScript *ls) {

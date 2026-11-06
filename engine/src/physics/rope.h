@@ -6,7 +6,7 @@
 #define ROPE_MAX_SEGMENTS 16u
 
 typedef struct Rope {
-    u32 nodes[ROPE_MAX_SEGMENTS + 1u];
+    PhysicsBodyHandle nodes[ROPE_MAX_SEGMENTS + 1u];
     u32 count; /* nodes, including the static start */
 } Rope;
 

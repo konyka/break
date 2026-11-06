@@ -5,12 +5,11 @@
 #include <string.h>
 
 /*
- * Real streaming playback: each AudioStream wraps a miniaudio source created
- * with MA_SOUND_FLAG_STREAM (see audio_play_streamed). miniaudio decodes and
- * refills from disk on its mixing thread, so this layer only manages stream
- * slots, 3D placement and playback state. Distance attenuation is applied by
- * miniaudio's inverse model; audio_stream_attenuation mirrors that gain for
- * tooling/diagnostics.
+ * Compatibility stream manager: each AudioStream owns a fully decoded
+ * miniaudio source opened by audio_play_streamed. File I/O and decoding finish
+ * before playback starts; the mixing callback reads PCM only. This layer
+ * manages slots, 3D placement and playback state. Distance attenuation uses
+ * miniaudio's inverse model; audio_stream_attenuation mirrors it for tooling.
  */
 
 static bool stream_idx_valid(AudioStreamManager *mgr, i32 idx) {
@@ -159,7 +158,7 @@ void audio_stream_update(AudioStreamManager *mgr) {
     for (u32 i = 0; i < AUDIO_STREAM_MAX_SOURCES; i++) {
         AudioStream *s = &mgr->streams[i];
         if (!s->active || s->state != AUDIO_STREAM_PLAYING) continue;
-        /* miniaudio handles refill/looping; we only detect natural end. */
+        /* miniaudio handles decoded playback/looping; we only detect natural end. */
         if (!s->looping && audio_source_at_end(mgr->audio, s->source_id)) {
             s->state = AUDIO_STREAM_END_OF_FILE;
         }

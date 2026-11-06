@@ -157,7 +157,7 @@ TEST(sweep_test_hit)
 
     Vec3 hit_pos;
     f32 t;
-    bool hit = physics_sweep_test(pw, vec3(0, 0, 0), vec3(10, 0, 0), 999, &hit_pos, &t);
+    bool hit = physics_sweep_test(pw, vec3(0, 0, 0), vec3(10, 0, 0), PHYSICS_BODY_HANDLE_INVALID, &hit_pos, &t);
     ASSERT_TRUE(hit);
     ASSERT_TRUE(t > 0.0f && t < 1.0f);
     physics_world_destroy(pw);
@@ -170,7 +170,7 @@ TEST(sweep_test_miss)
     physics_step(pw, 0.001f);
 
     /* Sweep in opposite direction */
-    bool hit = physics_sweep_test(pw, vec3(0, 0, 0), vec3(-10, 0, 0), 999, NULL, NULL);
+    bool hit = physics_sweep_test(pw, vec3(0, 0, 0), vec3(-10, 0, 0), PHYSICS_BODY_HANDLE_INVALID, NULL, NULL);
     ASSERT_TRUE(!hit);
     physics_world_destroy(pw);
 }
@@ -178,7 +178,7 @@ TEST(sweep_test_miss)
 TEST(sweep_test_ignore_body)
 {
     PhysicsWorld *pw = physics_world_create(16);
-    u32 id = physics_body_create(pw, vec3(5, 0, 0), vec3(1, 1, 1), 0.0f, true, 0);
+    PhysicsBodyHandle id = physics_body_create(pw, vec3(5, 0, 0), vec3(1, 1, 1), 0.0f, true, 0);
     physics_step(pw, 0.001f);
 
     /* Ignore the only body */
@@ -197,7 +197,7 @@ TEST(sweep_test_empty_world)
     physics_step(pw, 0.001f);
 
     /* Sweep in empty world should not crash and return false */
-    bool hit = physics_sweep_test(pw, vec3(0, 0, 0), vec3(10, 0, 0), 999, NULL, NULL);
+    bool hit = physics_sweep_test(pw, vec3(0, 0, 0), vec3(10, 0, 0), PHYSICS_BODY_HANDLE_INVALID, NULL, NULL);
     ASSERT_TRUE(!hit);
     physics_world_destroy(pw);
 }
@@ -246,7 +246,7 @@ TEST(sweep_test_zero_movement)
     physics_step(pw, 0.001f);
 
     /* Zero-length sweep should not hit anything */
-    bool hit = physics_sweep_test(pw, vec3(0, 0, 0), vec3(0, 0, 0), 999, NULL, NULL);
+    bool hit = physics_sweep_test(pw, vec3(0, 0, 0), vec3(0, 0, 0), PHYSICS_BODY_HANDLE_INVALID, NULL, NULL);
     ASSERT_TRUE(!hit);
     physics_world_destroy(pw);
 }
@@ -361,14 +361,14 @@ TEST(character_pushes_dynamic_box)
     /* Floor, top at y=0 */
     physics_body_create(pw, vec3(0, -0.5f, 0), vec3(20, 0.5f, 20), 0.0f, true, 0);
     /* Dynamic box directly ahead: x in [2.5, 3.5], resting on the floor */
-    u32 box = physics_body_create(pw, vec3(3.0f, 0.5f, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle box = physics_body_create(pw, vec3(3.0f, 0.5f, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
 
     CharacterController cc = character_create(vec3(0, 0.0f, 0), 0.4f, 1.8f);
     for (int i = 0; i < 200; i++) {
         character_update(&cc, pw, 1.0f/60.0f, vec3(1, 0, 0), false);
     }
     /* The box must have been pushed away from its spawn position. */
-    ASSERT_TRUE(pw->bodies[box].position.e[0] > 3.5f);
+    ASSERT_TRUE(pw->bodies[box.index].position.e[0] > 3.5f);
     /* Infinite-mass semantics: the character kept walking past the box's
      * original left face (2.5) instead of stopping in front of it. */
     ASSERT_TRUE(cc.position.e[0] > 2.5f);
@@ -403,26 +403,26 @@ TEST(character_grounded_on_dynamic_box)
 TEST(physics_push_body_invalid_safe)
 {
     PhysicsWorld *pw = physics_world_create(16);
-    u32 stat = physics_body_create(pw, vec3(0, 0, 0), vec3(1, 1, 1), 0.0f, true, 0);
-    u32 dyn  = physics_body_create(pw, vec3(5, 0, 0), vec3(1, 1, 1), 1.0f, false, 0);
+    PhysicsBodyHandle stat = physics_body_create(pw, vec3(0, 0, 0), vec3(1, 1, 1), 0.0f, true, 0);
+    PhysicsBodyHandle dyn  = physics_body_create(pw, vec3(5, 0, 0), vec3(1, 1, 1), 1.0f, false, 0);
 
     /* Out-of-range id: no crash, no effect. */
-    physics_push_body(pw, 999, vec3(1, 0, 0), 1.0f);
+    physics_push_body(pw, PHYSICS_BODY_HANDLE_INVALID, vec3(1, 0, 0), 1.0f);
     /* Static body: not movable. */
     physics_push_body(pw, stat, vec3(1, 0, 0), 1.0f);
-    ASSERT_TRUE(pw->bodies[stat].position.e[0] == 0.0f);
+    ASSERT_TRUE(pw->bodies[stat.index].position.e[0] == 0.0f);
     /* Parked tombstone (moved to (0,-1000,0) by park): push must not move it. */
     physics_body_park(pw, dyn);
     physics_push_body(pw, dyn, vec3(1, 0, 0), 1.0f);
-    ASSERT_TRUE(pw->bodies[dyn].position.e[1] == -1000.0f);
+    ASSERT_TRUE(pw->bodies[dyn.index].position.e[1] == -1000.0f);
 
     /* Valid push: full normal*depth separation (capsule side is immovable),
      * rest_frames cleared so the BVH refit cannot skip the stale AABB. */
-    u32 dyn2 = physics_body_create(pw, vec3(9, 0, 0), vec3(1, 1, 1), 1.0f, false, 0);
-    pw->bodies[dyn2].rest_frames = 5;
+    PhysicsBodyHandle dyn2 = physics_body_create(pw, vec3(9, 0, 0), vec3(1, 1, 1), 1.0f, false, 0);
+    pw->bodies[dyn2.index].rest_frames = 5;
     physics_push_body(pw, dyn2, vec3(1, 0, 0), 0.5f);
-    ASSERT_TRUE(fabsf(pw->bodies[dyn2].position.e[0] - 9.5f) < 1e-4f);
-    ASSERT_TRUE(pw->bodies[dyn2].rest_frames == 0);
+    ASSERT_TRUE(fabsf(pw->bodies[dyn2.index].position.e[0] - 9.5f) < 1e-4f);
+    ASSERT_TRUE(pw->bodies[dyn2.index].rest_frames == 0);
     physics_world_destroy(pw);
 }
 
@@ -433,11 +433,11 @@ TEST(physics_push_body_invalid_safe)
 /* Tests do not run physics_step, so a "kinematic" platform is moved by
  * integrating position manually and clearing rest_frames (BVH-refit contract),
  * with velocity set for the controller to inherit. */
-static void r437_move_platform(PhysicsWorld *pw, u32 plat, Vec3 v, f32 dt) {
-    pw->bodies[plat].velocity = v;
-    pw->bodies[plat].position = vec3_add(pw->bodies[plat].position,
+static void r437_move_platform(PhysicsWorld *pw, PhysicsBodyHandle plat, Vec3 v, f32 dt) {
+    pw->bodies[plat.index].velocity = v;
+    pw->bodies[plat.index].position = vec3_add(pw->bodies[plat.index].position,
                                          vec3_scale(v, dt));
-    pw->bodies[plat].rest_frames = 0;
+    pw->bodies[plat.index].rest_frames = 0;
 }
 
 /* A character standing on a horizontally moving dynamic platform is carried
@@ -449,7 +449,7 @@ TEST(character_rides_moving_platform)
     /* Floor, top at y=0 */
     physics_body_create(pw, vec3(0, -0.5f, 0), vec3(20, 0.5f, 20), 0.0f, true, 0);
     /* Dynamic platform, top at y=1.0, 4x4 m so the character stays aboard */
-    u32 plat = physics_body_create(pw, vec3(0, 0.5f, 0), vec3(2.0f, 0.5f, 2.0f), 1.0f, false, 0);
+    PhysicsBodyHandle plat = physics_body_create(pw, vec3(0, 0.5f, 0), vec3(2.0f, 0.5f, 2.0f), 1.0f, false, 0);
 
     CharacterController cc = character_create(vec3(0, 1.2f, 0), 0.4f, 1.8f);
     const f32 dt = 1.0f/60.0f;
@@ -480,7 +480,7 @@ TEST(character_rides_descending_platform)
 {
     PhysicsWorld *pw = physics_world_create(16);
     /* No floor: the platform is the only support. Top at y=1.0. */
-    u32 plat = physics_body_create(pw, vec3(0, 0.5f, 0), vec3(2.0f, 0.5f, 2.0f), 1.0f, false, 0);
+    PhysicsBodyHandle plat = physics_body_create(pw, vec3(0, 0.5f, 0), vec3(2.0f, 0.5f, 2.0f), 1.0f, false, 0);
 
     CharacterController cc = character_create(vec3(0, 1.2f, 0), 0.4f, 1.8f);
     const f32 dt = 1.0f/60.0f;
@@ -493,7 +493,7 @@ TEST(character_rides_descending_platform)
         r437_move_platform(pw, plat, vec3(0, vy, 0), dt);
         character_update(&cc, pw, dt, vec3(0,0,0), false);
     }
-    const f32 top = pw->bodies[plat].position.e[1] + 0.5f;
+    const f32 top = pw->bodies[plat.index].position.e[1] + 0.5f;
     ASSERT_TRUE(fabsf(cc.position.e[1] - top) < 0.05f);
     ASSERT_TRUE(cc.grounded);
     physics_world_destroy(pw);
@@ -505,7 +505,7 @@ TEST(character_stationary_platform_no_carry)
 {
     PhysicsWorld *pw = physics_world_create(16);
     physics_body_create(pw, vec3(0, -0.5f, 0), vec3(20, 0.5f, 20), 0.0f, true, 0);
-    u32 plat = physics_body_create(pw, vec3(0, 0.5f, 0), vec3(2.0f, 0.5f, 2.0f), 1.0f, false, 0);
+    PhysicsBodyHandle plat = physics_body_create(pw, vec3(0, 0.5f, 0), vec3(2.0f, 0.5f, 2.0f), 1.0f, false, 0);
 
     CharacterController cc = character_create(vec3(0, 1.2f, 0), 0.4f, 1.8f);
     const f32 dt = 1.0f/60.0f;
@@ -564,10 +564,10 @@ TEST(sweep_test_rejects_nan)
     physics_step(pw, 0.001f);
 
     /* NaN origin/delta used to pass every slab comparison -> phantom hit t=0. */
-    ASSERT_TRUE(!physics_sweep_test(pw, vec3(NAN, 0, 0), vec3(10, 0, 0), 999, NULL, NULL));
-    ASSERT_TRUE(!physics_sweep_test(pw, vec3(0, 0, 0), vec3(10, NAN, 0), 999, NULL, NULL));
+    ASSERT_TRUE(!physics_sweep_test(pw, vec3(NAN, 0, 0), vec3(10, 0, 0), PHYSICS_BODY_HANDLE_INVALID, NULL, NULL));
+    ASSERT_TRUE(!physics_sweep_test(pw, vec3(0, 0, 0), vec3(10, NAN, 0), PHYSICS_BODY_HANDLE_INVALID, NULL, NULL));
     /* Sane sweep still hits. */
-    ASSERT_TRUE(physics_sweep_test(pw, vec3(0, 0, 0), vec3(10, 0, 0), 999, NULL, NULL));
+    ASSERT_TRUE(physics_sweep_test(pw, vec3(0, 0, 0), vec3(10, 0, 0), PHYSICS_BODY_HANDLE_INVALID, NULL, NULL));
     physics_world_destroy(pw);
 }
 
