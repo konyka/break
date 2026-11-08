@@ -14,6 +14,11 @@
 
 #include <core/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 typedef enum BreakMsgRateResult {
     BREAK_MSG_RATE_OK = 0,
     BREAK_MSG_RATE_MESSAGES, /* message bucket empty */
@@ -35,3 +40,7 @@ bool break_msg_rate_init(BreakMsgRate *r, u32 msg_per_sec, u32 msg_burst,
 BreakMsgRateResult break_msg_rate_admit(BreakMsgRate *r, u32 bytes, u64 now_ms);
 u32 break_msg_rate_messages_available(const BreakMsgRate *r);
 u64 break_msg_rate_denied(const BreakMsgRate *r);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+

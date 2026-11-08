@@ -8,6 +8,11 @@
 #include <ecs/ecs.h>
 #include <math/math.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define BREAK_NAV_MAX_POINTS 256u
 #define BREAK_SIGHT_MAX_TARGETS 8u
 #define BREAK_STEER_MAX_NEIGHBORS 16u
@@ -126,3 +131,7 @@ typedef struct BreakSteerNeighbor {
 
 Vec3 break_steer_avoid(Vec3 self, f32 self_radius, Vec3 wish,
                        const BreakSteerNeighbor *neighbors, u32 count);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+

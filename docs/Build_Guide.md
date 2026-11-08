@@ -4,8 +4,8 @@
 
 ### 1.1 编译器
 - `engine/` 是严格 C11 项目；CMake 会选择 GCC、Clang/AppleClang 或 MSVC 的 C 编译器，并启用严格警告。仓库没有在 CMake 中声明 GCC 11 或 Clang 14 的最低版本，因此具体工具链仍需能编译 C11 原子和项目依赖。
-- `framework/` 的 `common` 目标使用 C++11；仓库根 CMake 项目要求 CMake 3.25+。
-- `engine/` 的 CMake 最低版本是 3.20+。Linux Clang Release 的 IPO/LTO 配置还需要 `lld`。
+- **双语言策略（2026-11-08 起）**：引擎保持纯 C11；所有 C++ TU（`framework/`、应用胶水层、C++ 封装头）一律按 **C++20** 构建（根项目与 `engine/` 的 `CMAKE_CXX_STANDARD` 均为 20，`engine/` 现在启用 `LANGUAGES C CXX`）。公开的 `break_*.h` 模块 API 头文件必须可被 C++20 消费（`extern "C"` 守卫 + 无 C-only 构造；`core/types.h` 提供 `BREAK_AGG(T)` / `BREAK_STATIC_ASSERT` 双语拼写宏），由 `test_public_api_cpp20` 钉住。有意边界：`engine.h` 及以下的 runtime 头（platform/math/ecs/renderer 内部）保持 C-only。新增公共功能时 C API 与 C++20 封装同步交付。
+- `engine/` 的 CMake 最低版本是 3.20+，仓库根 CMake 项目要求 CMake 3.25+。Linux Clang Release 的 IPO/LTO 配置还需要 `lld`。
 
 #### 编译器支持矩阵
 

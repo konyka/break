@@ -25,32 +25,35 @@ static inline f32 fast_rsqrt(f32 x) {
 #endif
 }
 
+/* Bilingual init/assert spellings come from core/types.h (BREAK_AGG,
+ * BREAK_STATIC_ASSERT). */
+
 typedef struct { f32 e[2]; } Vec2;
 typedef struct { f32 e[3]; } Vec3;
 typedef struct { f32 e[4]; } Vec4;
 typedef struct { f32 e[4][4]; } Mat4;
 typedef struct { f32 e[4]; } Quat;
 
-_Static_assert(sizeof(Vec4) == 16, "Vec4 must be 16 bytes");
-_Static_assert(sizeof(Mat4) == 64, "Mat4 must be 64 bytes");
+BREAK_STATIC_ASSERT(sizeof(Vec4) == 16, "Vec4 must be 16 bytes");
+BREAK_STATIC_ASSERT(sizeof(Mat4) == 64, "Mat4 must be 64 bytes");
 
-static inline Vec3 vec3(f32 x, f32 y, f32 z) { return (Vec3){{x, y, z}}; }
-static inline Vec4 vec4(f32 x, f32 y, f32 z, f32 w) { return (Vec4){{x, y, z, w}}; }
+static inline Vec3 vec3(f32 x, f32 y, f32 z) { return BREAK_AGG(Vec3){{x, y, z}}; }
+static inline Vec4 vec4(f32 x, f32 y, f32 z, f32 w) { return BREAK_AGG(Vec4){{x, y, z, w}}; }
 
 static inline Vec3 vec3_add(Vec3 a, Vec3 b) {
-    return (Vec3){{a.e[0]+b.e[0], a.e[1]+b.e[1], a.e[2]+b.e[2]}};
+    return BREAK_AGG(Vec3){{a.e[0]+b.e[0], a.e[1]+b.e[1], a.e[2]+b.e[2]}};
 }
 static inline Vec3 vec3_sub(Vec3 a, Vec3 b) {
-    return (Vec3){{a.e[0]-b.e[0], a.e[1]-b.e[1], a.e[2]-b.e[2]}};
+    return BREAK_AGG(Vec3){{a.e[0]-b.e[0], a.e[1]-b.e[1], a.e[2]-b.e[2]}};
 }
 static inline Vec3 vec3_scale(Vec3 v, f32 s) {
-    return (Vec3){{v.e[0]*s, v.e[1]*s, v.e[2]*s}};
+    return BREAK_AGG(Vec3){{v.e[0]*s, v.e[1]*s, v.e[2]*s}};
 }
 static inline f32 vec3_dot(Vec3 a, Vec3 b) {
     return a.e[0]*b.e[0] + a.e[1]*b.e[1] + a.e[2]*b.e[2];
 }
 static inline Vec3 vec3_cross(Vec3 a, Vec3 b) {
-    return (Vec3){{
+    return BREAK_AGG(Vec3){{
         a.e[1]*b.e[2] - a.e[2]*b.e[1],
         a.e[2]*b.e[0] - a.e[0]*b.e[2],
         a.e[0]*b.e[1] - a.e[1]*b.e[0],
@@ -66,7 +69,7 @@ static inline Vec3 vec3_normalize(Vec3 v) {
     return l2 > 1e-12f ? vec3_scale(v, fast_rsqrt(l2)) : vec3(0,0,0);
 }
 static inline Vec3 vec3_lerp(Vec3 a, Vec3 b, f32 t) {
-    return (Vec3){{
+    return BREAK_AGG(Vec3){{
         a.e[0] + (b.e[0] - a.e[0]) * t,
         a.e[1] + (b.e[1] - a.e[1]) * t,
         a.e[2] + (b.e[2] - a.e[2]) * t,
@@ -77,7 +80,7 @@ static inline f32 vec3_distance(Vec3 a, Vec3 b) {
 }
 
 /* ---- Quaternion helpers ---- */
-#define QUAT_IDENTITY ((Quat){{0.0f, 0.0f, 0.0f, 1.0f}})
+#define QUAT_IDENTITY (BREAK_AGG(Quat){{0.0f, 0.0f, 0.0f, 1.0f}})
 
 static inline Quat quat_identity(void) { return QUAT_IDENTITY; }
 
@@ -92,14 +95,14 @@ static inline Quat quat_mul(Quat a, Quat b) {
 
 static inline Quat quat_inverse(Quat q) {
     /* Assumes unit quaternion: conjugate equals inverse. */
-    return (Quat){{-q.e[0], -q.e[1], -q.e[2], q.e[3]}};
+    return BREAK_AGG(Quat){{-q.e[0], -q.e[1], -q.e[2], q.e[3]}};
 }
 
 static inline Quat quat_normalize(Quat q) {
     f32 l2 = q.e[0]*q.e[0] + q.e[1]*q.e[1] + q.e[2]*q.e[2] + q.e[3]*q.e[3];
     if (l2 <= 1e-12f) return QUAT_IDENTITY;
     f32 inv = fast_rsqrt(l2);
-    return (Quat){{q.e[0]*inv, q.e[1]*inv, q.e[2]*inv, q.e[3]*inv}};
+    return BREAK_AGG(Quat){{q.e[0]*inv, q.e[1]*inv, q.e[2]*inv, q.e[3]*inv}};
 }
 
 /* Normalized linear interpolation (nlerp) — fast approximation replacing slerp.
@@ -149,11 +152,11 @@ static inline Quat quat_from_axis_angle(Vec3 axis, f32 angle) {
     f32 inv = 1.0f / l;
     f32 half = angle * 0.5f;
     f32 s = sinf(half);
-    return (Quat){{axis.e[0]*inv*s, axis.e[1]*inv*s, axis.e[2]*inv*s, cosf(half)}};
+    return BREAK_AGG(Quat){{axis.e[0]*inv*s, axis.e[1]*inv*s, axis.e[2]*inv*s, cosf(half)}};
 }
 
 static inline Vec3 quat_rotate_vec3(Quat q, Vec3 v) {
-    Vec3 qv = (Vec3){{q.e[0], q.e[1], q.e[2]}};
+    Vec3 qv = BREAK_AGG(Vec3){{q.e[0], q.e[1], q.e[2]}};
     Vec3 t = vec3_scale(vec3_cross(qv, v), 2.0f);
     return vec3_add(vec3_add(v, vec3_scale(t, q.e[3])), vec3_cross(qv, t));
 }

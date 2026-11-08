@@ -2,6 +2,11 @@
 #include <core/types.h>
 #include <platform/platform.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 typedef struct Engine Engine;
 
 typedef struct {
@@ -41,3 +46,8 @@ struct Engine {
 bool engine_init(Engine *e, const EngineConfig *cfg);
 void engine_shutdown(Engine *e);
 bool engine_frame(Engine *e);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+

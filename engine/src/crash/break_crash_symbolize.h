@@ -19,6 +19,11 @@
 
 #include <core/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define BREAK_CRASH_SYMBOLIZE_MAX_FRAMES 32u
 #define BREAK_CRASH_SYMBOLIZE_NAME_MAX 128u
 
@@ -99,4 +104,8 @@ void break_crash_symbolize_address(BreakCrashSymbolStore *st, const BreakCrashRe
  * instruction of a function is attributed to the caller). */
 u32 break_crash_symbolize_record(BreakCrashSymbolStore *st, const BreakCrashRecord *r,
                                  BreakCrashFrame *frames, u32 cap);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
 

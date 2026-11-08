@@ -36,6 +36,11 @@
 
 #include <core/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define BREAK_AUTHORITY_MAX_SESSIONS 4096u
 #define BREAK_AUTHORITY_MAX_ITEMS 64u         /* item ids 1..64 */
 #define BREAK_AUTHORITY_MAX_QTY 100u          /* per intent */
@@ -103,3 +108,7 @@ bool break_authority_decode_intent(const u8 *p, usize n, BreakAuthIntent *out);
 /* Applies a decoded intent for `session_id` (the transport's identity). */
 BreakAuthVerdict break_authority_apply(BreakAuthority *a, u64 session_id,
                                        const BreakAuthIntent *intent, u64 now_us);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+

@@ -36,6 +36,11 @@
 
 #include <core/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define BREAK_HTTP_DEFAULT_CONNECT_MS 5000u
 #define BREAK_HTTP_DEFAULT_IO_MS 10000u
 #define BREAK_HTTP_MAX_IO_MS 600000u
@@ -104,3 +109,7 @@ bool break_http_update_fetch(void *user, const char *object_name, u64 offset,
  * break_update_client_stage_rollout; a manifest is still verified offline. */
 bool break_http_rollout_percent_bp(const BreakHttpConfig *cfg, const char *base_url,
                                    u32 *out_bp);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+

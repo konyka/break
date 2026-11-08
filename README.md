@@ -8,7 +8,11 @@ native-surface (wayland, win32, cocoa) / GPU-runtime (linux vk lavapipe, macOS M
 validation (KHRONOS_validation + D3D12 debug) / benchmark (receipt artifacts) / proton (参考，周跑)。
 证据收据: 每个 lane 上传 `evidence-receipt-*` artifact，schema 见 docs/rhi_benchmark_receipt_schema.md。
 
-Pure C11 3D rendering engine with a separate C++11 application framework.
+Pure C11 3D rendering engine with a C++20 application framework. Dual-language
+policy: the engine stays pure C11 while every C++ TU builds as C++20, and the
+public `break_*.h` API headers are C++20-consumable (`extern "C"` guards, gated
+by `test_public_api_cpp20`). New public features ship the C API and the C++20
+wrapper together. See `docs/Build_Guide.md` §1.1.
 
 ## Quick Start
 

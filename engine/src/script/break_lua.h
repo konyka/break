@@ -2,6 +2,11 @@
 
 #include <core/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 /* ==========================================================================
  *  break_lua — Stage 3 formal optional Lua runtime facade (skeleton).
  *
@@ -723,3 +728,7 @@ BreakLuaError break_lua_runtime_bind_config(
  * bound -> STALE. A failed update leaves the stored value unchanged. */
 BreakLuaError break_lua_runtime_set_config(
     BreakLuaRuntime *runtime, const char *key, double value);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+

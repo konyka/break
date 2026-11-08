@@ -20,6 +20,11 @@
 #include <core/types.h>
 #include <net_http/break_http.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define BREAK_CRASH_UPLOAD_HTTP_CONTENT_TYPE "application/x-break-crash"
 #define BREAK_CRASH_UPLOAD_HTTP_MAX_BYTES 65536u
 
@@ -31,3 +36,7 @@ typedef struct BreakCrashUploadHttp {
 /* Matches BreakCrashUploadFn (crash/break_crash.h); `user` is a
  * const BreakCrashUploadHttp *. */
 bool break_crash_upload_http(void *user, const void *record_bytes, usize len);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+

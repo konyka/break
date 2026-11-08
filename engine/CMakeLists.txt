@@ -3,7 +3,12 @@ cmake_minimum_required(VERSION 3.20)
 #   major = 破坏性变更（OpenGL 已决定长期保留，不占用 major 版号）；
 #   minor = 新后端/新能力；patch = 修复。版本唯一来源本 project() VERSION；
 #   tag 名 v<x.y.z> 与之严格相等（契约测试比对；tag 由 maintainer 发布时创建）。
-project(PureCEngine VERSION 1.9.0 LANGUAGES C)
+project(PureCEngine VERSION 1.9.0 LANGUAGES C CXX)
+# Dual-language policy: engine code is C11; C++ TUs (tests, wrappers, the
+# Windows-only DLSS adapter) build as C++20. Public C API headers must stay
+# C++20-consumable (extern "C" guards); test_public_api_cpp20 pins this.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -2698,6 +2703,17 @@ if(ENGINE_BUILD_TESTS)
     add_executable(test_rule_engine tests/test_rule_engine.c)
     set_property(TARGET test_rule_engine PROPERTY C_STANDARD 99)
     target_include_directories(test_rule_engine PRIVATE ${TEST_INCLUDE_DIRS})
+
+    # Dual-language gate (docs/Build_Guide.md): the public C API headers must
+    # compile and link from a C++20 TU. Links engine for the platform macros
+    # and one live cross-language call.
+    add_executable(test_public_api_cpp20 tests/test_public_api_cpp20.cpp)
+    set_property(TARGET test_public_api_cpp20 PROPERTY CXX_STANDARD 20)
+    set_property(TARGET test_public_api_cpp20 PROPERTY CXX_STANDARD_REQUIRED ON)
+    target_include_directories(test_public_api_cpp20 PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_public_api_cpp20 PRIVATE engine)
+    add_test(NAME test_public_api_cpp20 COMMAND test_public_api_cpp20)
+    set_tests_properties(test_public_api_cpp20 PROPERTIES LABELS "headless;platform_contract")
     target_link_libraries(test_rule_engine PRIVATE rule_engine_core)
     if(RULE_ENGINE_ENABLE_REDIS AND RULE_ENGINE_HAS_HIREDIS)
         target_compile_definitions(test_rule_engine PRIVATE RE_HAS_HIREDIS)
