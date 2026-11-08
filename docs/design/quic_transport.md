@@ -1,6 +1,6 @@
 # QUIC Transport — break_net_quic over Snowflake ngtcp2 adapter
 
-Status: **delivered as a library seam with loopback evidence** (v1, 2026-11-08; Snowflake pin `5fab267e`).
+Status: **delivered as a library seam with loopback evidence** (v1, 2026-11-08; Snowflake pin `696a1ec5`).
 This document is the contract record for the first QUIC slice. It is honest
 about what exists: a client/server channel module driven by the caller's
 thread, exercised over real UDP loopback — not a reactor-integrated transport,
@@ -79,9 +79,28 @@ application traffic for v1. Messages are length-prefixed frames:
 - A frame header claiming more than the cap is a protocol error: the
   connection is closed (fail-closed), counted, and no partial message is
   delivered.
-- Message semantics (request/response, broadcast, reliability classes) are
-  application-side. Mapping break_net envelopes (`break_net_envelope`) onto
-  frames is the documented next slice, not v1 (§9).
+- The length word `0xFFFFFFFF` is the reserved READY marker (no payload):
+  the pinned adapter refuses sends on streams it has never seen, so the
+  module client emits READY the moment its stream opens, materializing the
+  stream server-side and unblocking the server's CHALLENGE. Markers are
+  consumed by the module and never reach the app.
+- Session layer (delivered, same change): frames carry serialized
+  `break_net_envelope` messages — outbound sequence assigned per direction
+  from 1 (monotonic, saturating), inbound checked strictly increasing via
+  `decode_with_context`, exactly the TCP adapter's discipline. Envelope
+  payloads are capped at 65514 (frame budget minus the 18-byte header).
+- CHALLENGE/AUTH-v2 runs as the first envelope exchange (same wire format
+  as transport_security.md section 3): with `break_net_quic_server_set_auth`
+  configured, the server issues CHALLENGE once the client's READY
+  materializes the stream; the client answers with
+  `break_net_quic_client_authenticate`; wrong tag, unknown key, pre-auth
+  noise, or a timeout all close the connection fail-closed
+  (DISCONNECT_AUTH). Verified sessions raise EVENT_AUTHENTICATED; per-server
+  key resolution (not process-global like the TCP seam).
+- Flow control note: the pinned snow adapter advertises 256 KiB stream and
+  connection windows (raised upstream in `696a1ec5` from the 64 KiB
+  default — one full-size frame preceded by the READY marker otherwise
+  deadlocked against ngtcp2's MAX_STREAM_DATA emission throttle).
 
 Why not QUIC datagrams (RFC 9221): the pinned ngtcp2 adapter v1 surface is
 stream-oriented; datagram support lands with the replay-window wiring
@@ -212,8 +231,6 @@ same loopback echo (dual-language policy, Build_Guide §1.1).
 
 ## 9. NOT delivered
 
-- break_net envelope/session mapping onto QUIC frames (next slice: envelopes
-  ride §3 frames; CHALLENGE/AUTH-v2 runs as the first framed exchange).
 - `snow_quic_udp_server_t` listener migration (§6), Retry policy wiring,
   stateless reset secrets.
 - QUIC datagrams + `break_replay_window` wiring (§3).
@@ -244,20 +261,22 @@ ctest --test-dir build-quic -R break_net_quic --output-on-failure
 ## 11. Evidence index
 
 - Implementation: `engine/src/network/break_net_quic.{h,c}`.
-- Tests: `engine/tests/test_break_net_quic.c` 8/8 — config validation
+- Tests: `engine/tests/test_break_net_quic.c` 12/12 — config validation
   matrix, handshake + framed echo round trip, sequential-message ordering,
   cap boundary (65532 accepted / 65533 refused at the API), wrong-ALPN and
   wrong-server-name fail-closed, slot-table-full rejection with drop
-  counter, graceful close events on both sides. Plus
-  `test_break_net_quic_cpp20` (same echo through the C++20 wrapper).
-  All over real UDP loopback, port-0 binds, deadline-bounded condition
-  polling; 5/5 repeated runs green; the full non-graphics suite reads
-  281/281 with the suite included.
+  counter, graceful close events on both sides, and the session layer:
+  auth round trip (CHALLENGE/AUTH-v2 + post-auth envelope echo with
+  per-direction sequence checks), wrong-PSK fail-closed, pre-auth noise
+  fail-closed, auth timeout. Plus `test_break_net_quic_cpp20` (echo +
+  auth through the C++20 wrapper). All over real UDP loopback, port-0
+  binds, deadline-bounded condition polling; 5/5 repeated runs green; the
+  full non-graphics suite reads 281/281 with the suite included.
 - Fixtures: `engine/tests/fixtures/ssl/` (CN=localhost, 2020–2049), same
   trust model as break_http's tests (transport_security.md §7).
-- Snowflake pin: moved to `5fab267e` in the same change (the pin tracks
-  snowflake main per policy; this move also carried the Google-style API
-  rename migration and the ALPN fail-closed fix upstream).
+- Snowflake pin: `696a1ec5` (tracks main per policy; the integration also
+  carried the Google-style API rename migration, the ALPN fail-closed fix
+  `5fab267e`, and the 256 KiB window fix `696a1ec5` upstream).
 - Environment evidence: macOS arm64 + OpenSSL 4.0.3 (self-built,
   `-DOPENSSL_ROOT_DIR`), QUICv1 / TLS_AES_256_GCM_SHA384 loopback verified
   via raw OpenSSL 4.x API (2026-11-08 smoke) and via the snow adapter

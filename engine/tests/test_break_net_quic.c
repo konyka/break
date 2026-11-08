@@ -394,6 +394,158 @@ static bool test_graceful_close_events(void) {
     return true;
 }
 
+/* ---- session layer: envelopes + CHALLENGE/AUTH-v2 ------------------------- */
+
+static const u8 k_test_psk[32] = {
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+};
+static const u8 k_test_key_id[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+static bool test_key_fn(void *user, const u8 key_id[8], u8 out_psk[32]) {
+    const u8 *psk = (const u8 *)user;
+    if (memcmp(key_id, k_test_key_id, 8u) != 0) {
+        return false;
+    }
+    memcpy(out_psk, psk, 32u);
+    return true;
+}
+
+/* make_pair with server-side auth required */
+static Pair make_auth_pair(u32 auth_timeout_ms) {
+    Pair p = make_pair(kAlpn, "localhost", 0u);
+    if (p.server != NULL) {
+        if (!break_net_quic_server_set_auth(p.server, test_key_fn,
+                                            (void *)k_test_psk,
+                                            auth_timeout_ms)) {
+            free_pair(&p);
+        }
+    }
+    return p;
+}
+
+static bool cond_server_event_auth(Pair *p); /* fwd */
+
+/* pump until the server posts an event of `type`; captured in the pair */
+static u8 g_want_event;
+static bool cond_server_event_auth(Pair *p) {
+    BreakNetQuicEvent ev;
+    if (p->has_first_event) {
+        return true;
+    }
+    while (break_net_quic_server_poll_event(p->server, &ev)) {
+        if (ev.type == g_want_event) {
+            p->first_event = ev;
+            p->has_first_event = true;
+        }
+    }
+    return p->has_first_event;
+}
+
+static bool test_auth_roundtrip(void) {
+    Pair p = make_auth_pair(0u);
+    ASSERT_TRUE(p.server != NULL && p.client != NULL);
+    ASSERT_TRUE(pump_until(&p, cond_handshake, 5000u));
+    /* the CHALLENGE must land in the client inbox */
+    bool challenged = false;
+    for (u32 i = 0u; i < 2500u && !challenged; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+        challenged = break_net_quic_client_authenticate(p.client,
+                                                        k_test_key_id,
+                                                        k_test_psk);
+    }
+    ASSERT_TRUE(challenged);
+    /* server verifies and posts AUTHENTICATED */
+    g_want_event = BREAK_NET_QUIC_EVENT_AUTHENTICATED;
+    ASSERT_TRUE(pump_until(&p, cond_server_event_auth, 5000u));
+    BreakNetQuicEvent ev = p.first_event;
+    p.has_first_event = false;
+    BreakNetQuicConn *conn = break_net_quic_server_conn(p.server, ev.conn_id);
+    ASSERT_TRUE(conn != NULL);
+
+    /* post-auth envelope echo with sequences: server reads seq 2 (AUTH was
+     * seq 1 on the client direction) */
+    const char *hello = "hello";
+    ASSERT_TRUE(break_net_quic_client_send_message(
+        p.client, 4u, 1u, 0u, (const u8 *)hello, 5u));
+    bool got = false;
+    u16 mid = 0u, ver = 0u;
+    u32 seq = 0u, len = 0u;
+    u8 buf[64];
+    for (u32 i = 0u; i < 2500u && !got; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+        BreakNetQuicEvent dev;
+        while (break_net_quic_server_poll_event(p.server, &dev)) {
+        }
+        if (break_net_quic_conn_recv_message(p.server, conn, &mid, &ver, &seq,
+                                             buf, sizeof(buf), &len)) {
+            got = true;
+        }
+    }
+    ASSERT_TRUE(got);
+    ASSERT_EQ_U(mid, 4u);
+    ASSERT_EQ_U(ver, 1u);
+    ASSERT_EQ_U(seq, 2u); /* AUTH consumed sequence 1 on this direction */
+    ASSERT_EQ_U(len, 5u);
+    ASSERT_TRUE(memcmp(buf, "hello", 5u) == 0);
+    free_pair(&p);
+    return true;
+}
+
+static bool test_auth_wrong_psk_fails_closed(void) {
+    Pair p = make_auth_pair(0u);
+    ASSERT_TRUE(p.server != NULL && p.client != NULL);
+    ASSERT_TRUE(pump_until(&p, cond_handshake, 5000u));
+    u8 wrong_psk[32];
+    memset(wrong_psk, 0x24, sizeof(wrong_psk));
+    bool answered = false;
+    for (u32 i = 0u; i < 2500u && !answered; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+        answered = break_net_quic_client_authenticate(p.client, k_test_key_id,
+                                                      wrong_psk);
+    }
+    ASSERT_TRUE(answered);
+    /* the server must close the connection; both sides observe DISCONNECT
+     * with AUTH reason on the server side */
+    g_want_event = BREAK_NET_QUIC_EVENT_DISCONNECT;
+    ASSERT_TRUE(pump_until(&p, cond_server_event_auth, 5000u));
+    ASSERT_EQ_U(p.first_event.reason, BREAK_NET_QUIC_DISCONNECT_AUTH);
+    free_pair(&p);
+    return true;
+}
+
+static bool test_auth_preauth_noise_fails_closed(void) {
+    Pair p = make_auth_pair(0u);
+    ASSERT_TRUE(p.server != NULL && p.client != NULL);
+    ASSERT_TRUE(pump_until(&p, cond_handshake, 5000u));
+    /* skip the CHALLENGE and send an application message instead */
+    const char *noise = "noise";
+    ASSERT_TRUE(break_net_quic_client_send_message(p.client, 4u, 1u, 0u,
+                                                   (const u8 *)noise, 5u));
+    g_want_event = BREAK_NET_QUIC_EVENT_DISCONNECT;
+    ASSERT_TRUE(pump_until(&p, cond_server_event_auth, 5000u));
+    ASSERT_EQ_U(p.first_event.reason, BREAK_NET_QUIC_DISCONNECT_AUTH);
+    free_pair(&p);
+    return true;
+}
+
+static bool test_auth_timeout(void) {
+    Pair p = make_auth_pair(300u); /* 300 ms auth budget */
+    ASSERT_TRUE(p.server != NULL && p.client != NULL);
+    ASSERT_TRUE(pump_until(&p, cond_handshake, 5000u));
+    /* never authenticate: the server must close with AUTH reason */
+    g_want_event = BREAK_NET_QUIC_EVENT_DISCONNECT;
+    ASSERT_TRUE(pump_until(&p, cond_server_event_auth, 5000u));
+    ASSERT_EQ_U(p.first_event.reason, BREAK_NET_QUIC_DISCONNECT_AUTH);
+    free_pair(&p);
+    return true;
+}
+
 /* ---- runner --------------------------------------------------------------- */
 
 typedef bool (*TestFn)(void);
@@ -412,6 +564,10 @@ int main(void) {
         {"wrong_server_name_fails_closed", test_wrong_server_name_fails_closed},
         {"slot_table_full", test_slot_table_full},
         {"graceful_close_events", test_graceful_close_events},
+        {"auth_roundtrip", test_auth_roundtrip},
+        {"auth_wrong_psk_fails_closed", test_auth_wrong_psk_fails_closed},
+        {"auth_preauth_noise_fails_closed", test_auth_preauth_noise_fails_closed},
+        {"auth_timeout", test_auth_timeout},
     };
     size_t passed = 0;
     size_t total = sizeof(tests) / sizeof(tests[0]);

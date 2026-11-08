@@ -149,15 +149,16 @@ What this library gives you is TLS transport with `verify_peer` support — **no
 - Server product / server authority (economy/inventory/damage/matchmaking remain design-target enumerations in threat model §3 — no server code exists).
 - Per-device key provisioning tooling, rotation/revocation orchestration (§4).
 - Client anti-tamper code: the anti-tamper position remains a **cost-model document** (threat model §2 — signals are at most a server-side risk input, never a trust basis); no implementation exists or is claimed.
-- DTLS. ~~QUIC~~ QUIC v1 delivered as an opt-in channel module over the
+- DTLS. ~~QUIC~~ QUIC delivered as an opt-in channel module over the
   pinned Snowflake ngtcp2 adapter (`break_net_quic`, gate
   `BREAK_ENABLE_QUIC`): client/server handshake with mandatory server
-  verification, one framed bidi stream per connection, bounded slots and
-  queues — see `docs/design/quic_transport.md` for the contract, its
-  limitations (no mTLS at the QUIC layer, no Retry policy wired, IPv4/POSIX
-  only), and the NOT-delivered list that continues it (envelope/session
-  mapping, listener migration, datagrams). UDP beyond that module is
-  untouched by this phase.
+  verification, one framed bidi stream per connection carrying break_net
+  envelopes, and the CHALLENGE/AUTH-v2 handshake with per-server key
+  resolution — see `docs/design/quic_transport.md` for the contract, its
+  limitations (no client-cert verification at the QUIC layer, no Retry
+  policy wired, IPv4/POSIX only), and the NOT-delivered list that
+  continues it (listener migration, datagrams, 0-RTT). UDP beyond that
+  module is untouched by this phase.
 - Session resumption, TLS shutdown/close_notify plumbing (§8).
 - Remote debug channel, Lua remote session (still gated on a fuller security/transport contract).
 - Replay protection beyond the handshake + per-connection sequence scope (§3).

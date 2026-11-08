@@ -399,7 +399,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
     # configure time. The pin below is mirrored by the snowflake entry in
     # engine/external/locked_dependencies.json and the pin policy in
     # docs/design/snowflake_c11_adapter.md; all three move in one commit.
-    set(BREAK_SNOWFLAKE_PIN "5fab267e49d2879f0ab3ca5c26ea191de742857c")  # snowflake main HEAD 2026-11-08 (ALPN fail-closed)
+    set(BREAK_SNOWFLAKE_PIN "696a1ec57163f91d7c2795debc8cab3a359cef44")  # snowflake main HEAD 2026-11-08
     execute_process(
         COMMAND git -C "${SNOWFLAKE_SOURCE_DIR}" rev-parse HEAD
         RESULT_VARIABLE _break_snowflake_rev_result
@@ -536,7 +536,11 @@ if(BREAK_ENABLE_QUIC)
     set_property(TARGET break_net_quic PROPERTY C_STANDARD 11)
     target_include_directories(break_net_quic PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(break_net_quic PUBLIC snow_quic_ngtcp2_adapter)
+    # break_net supplies the envelope codec (no duplication), break_crypto the
+    # HMAC/CSPRNG for CHALLENGE/AUTH-v2; both are guaranteed present by the
+    # gate above (QUIC requires SNOWFLAKE + CRYPTO).
+    target_link_libraries(break_net_quic PUBLIC snow_quic_ngtcp2_adapter
+        break_net break_crypto)
 endif()
 
 # Windows non-MSVC toolchains (Clang, MinGW GCC): FindOpenSSL only searches the

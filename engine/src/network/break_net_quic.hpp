@@ -4,6 +4,8 @@
 // ownership, std types at the boundary. Header-only; the C module carries
 // all behavior, so the two languages can never drift.
 
+#include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -18,6 +20,14 @@ using EventType = BreakNetQuicEventType;
 using DisconnectReason = BreakNetQuicDisconnectReason;
 
 inline constexpr std::size_t kMaxMessage = BREAK_NET_QUIC_MAX_MESSAGE;
+
+/* One decoded envelope message (the session-layer read result). */
+struct Message {
+    u16 id = 0;
+    u16 version = 0;
+    u32 sequence = 0;
+    std::vector<u8> payload;
+};
 
 class Server;
 
@@ -46,6 +56,31 @@ class Conn {
         return server_ != nullptr && conn_ != nullptr &&
                break_net_quic_conn_send(server_, conn_, data.data(),
                                         static_cast<u32>(data.size()));
+    }
+
+    /* Session layer (envelope framing + strict inbound sequence). */
+    [[nodiscard]] bool SendMessage(u16 id, u16 version, u16 flags,
+                                   std::span<const u8> payload) {
+        return server_ != nullptr && conn_ != nullptr &&
+               break_net_quic_conn_send_message(
+                   server_, conn_, id, version, flags, payload.data(),
+                   static_cast<u32>(payload.size()));
+    }
+
+    [[nodiscard]] std::optional<Message> RecvMessage() {
+        if (server_ == nullptr || conn_ == nullptr) {
+            return std::nullopt;
+        }
+        Message m;
+        m.payload.resize(kMaxMessage);
+        u32 len = 0;
+        if (!break_net_quic_conn_recv_message(
+                server_, conn_, &m.id, &m.version, &m.sequence,
+                m.payload.data(), static_cast<u32>(m.payload.size()), &len)) {
+            return std::nullopt;
+        }
+        m.payload.resize(len);
+        return m;
     }
 
     void Close() {
@@ -127,9 +162,23 @@ class Server {
         return break_net_quic_server_events_overflow(raw_);
     }
 
+    /* CHALLENGE/AUTH-v2 requirement (transport_security.md section 3 wire
+     * format). The callback resolves key_id -> PSK with app-side custody.
+     * Call right after Create, before any Step. */
+    using AuthKeyFn = std::function<bool(const u8 key_id[8], u8 out_psk[32])>;
+    [[nodiscard]] bool SetAuth(AuthKeyFn fn, u32 auth_timeout_ms = 0) {
+        auth_fn_ = std::make_unique<AuthKeyFn>(std::move(fn));
+        return break_net_quic_server_set_auth(raw_, &Server::AuthTrampoline,
+                                              auth_fn_.get(), auth_timeout_ms);
+    }
+
   private:
     explicit Server(BreakNetQuicServer *raw) : raw_(raw) {}
+    static bool AuthTrampoline(void *user, const u8 key_id[8], u8 out[32]) {
+        return (*static_cast<AuthKeyFn *>(user))(key_id, out);
+    }
     BreakNetQuicServer *raw_ = nullptr;
+    std::unique_ptr<AuthKeyFn> auth_fn_; /* heap-stable across Server moves */
 };
 
 class Client {
@@ -203,6 +252,31 @@ class Client {
             return std::nullopt;
         }
         return ev;
+    }
+
+    /* Answers the pending CHALLENGE with AUTH v2 (consumes it). */
+    [[nodiscard]] bool Authenticate(const u8 key_id[8], const u8 psk[32]) {
+        return break_net_quic_client_authenticate(raw_, key_id, psk);
+    }
+
+    [[nodiscard]] bool SendMessage(u16 id, u16 version, u16 flags,
+                                   std::span<const u8> payload) {
+        return break_net_quic_client_send_message(
+            raw_, id, version, flags, payload.data(),
+            static_cast<u32>(payload.size()));
+    }
+
+    [[nodiscard]] std::optional<Message> RecvMessage() {
+        Message m;
+        m.payload.resize(kMaxMessage);
+        u32 len = 0;
+        if (!break_net_quic_client_recv_message(
+                raw_, &m.id, &m.version, &m.sequence, m.payload.data(),
+                static_cast<u32>(m.payload.size()), &len)) {
+            return std::nullopt;
+        }
+        m.payload.resize(len);
+        return m;
     }
 
     void Close() { break_net_quic_client_close(raw_); }

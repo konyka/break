@@ -5,6 +5,8 @@
 
 #include "network/break_net_quic.h"
 
+#include "crypto/break_crypto.h"
+
 #include <snow/quic_ngtcp2.h>
 
 #include <errno.h>
@@ -82,6 +84,23 @@ struct BreakNetQuicConn {
     bool close_reported; /* adapter terminal, DISCONNECT not yet consumed */
     u8 close_reason;
 
+    /* The pinned adapter refuses sends on streams it has never seen
+     * (SnowQuicNgtcp2SendStreamEx returns SNOW_ERR_PROTO), so a server cannot
+     * speak first: the module client emits a frame-level READY marker
+     * (length word 0xFFFFFFFF, no payload, never reaches the app) the moment
+     * its stream opens, and the server learns the stream from that first
+     * inbound data. stream_ready gates every send. */
+    bool stream_ready;
+    bool ready_sent;
+
+    /* session layer: envelope sequences per direction + auth state */
+    u32 tx_seq; /* next outbound envelope sequence (from 1, saturating) */
+    BreakNetEnvelopeContext rx_ctx; /* inbound strict-sequence check */
+    u8 auth_state; /* 0 = none/open, 1 = challenged, 2 = authenticated */
+    u8 server_nonce[16];
+    u64 auth_deadline_ns;
+    bool rx_msg_event_posted; /* MESSAGE event issued for the ready inbox */
+
     struct BreakNetQuicServer *server; /* back-pointer (server side) */
 };
 
@@ -156,6 +175,7 @@ static SnowStatus bnq_recv_stream(int64_t stream_id, u32 flags, u64 offset,
                                   void *userdata) {
     (void)flags;
     BreakNetQuicConn *conn = (BreakNetQuicConn *)userdata;
+    conn->stream_ready = true; /* inbound data materialized the stream */
     if (conn->stream_id < 0) {
         conn->stream_id = stream_id; /* client-opened stream, learned here */
     }
@@ -173,13 +193,26 @@ static SnowStatus bnq_recv_stream(int64_t stream_id, u32 flags, u64 offset,
 
 /* Extract complete frames; stop when the inbox is occupied (flow-control
  * credit is only returned on app read, so a conforming peer cannot overrun). */
-static void bnq_extract(BreakNetQuicConn *conn, BnqEventQueue *events) {
+/* Fills the single-message inbox; event posting is the caller's decision
+ * (the server's auth gate consumes AUTH envelopes without app events). */
+static void bnq_extract(BreakNetQuicConn *conn) {
     for (;;) {
         if (conn->rx_msg_ready || conn->rx_len < 4u) {
             return;
         }
         u32 len = ((u32)conn->rx[0] << 24) | ((u32)conn->rx[1] << 16) |
                   ((u32)conn->rx[2] << 8) | (u32)conn->rx[3];
+        if (len == UINT32_MAX) {
+            /* READY marker: consume and keep extracting (a real frame may
+             * follow in the same burst). Credit is consumed on read — but
+             * markers are 4 header bytes with no payload, consumed here. */
+            u32 rest = conn->rx_len - 4u;
+            memmove(conn->rx, conn->rx + 4u, rest);
+            conn->rx_len = rest;
+            SnowQuicNgtcp2ConsumeStream(conn->adapter, conn->stream_id, 4u,
+                                        bnq_now_ns(NULL));
+            continue;
+        }
         if (len > BREAK_NET_QUIC_MAX_MESSAGE) {
             conn->close_reason = BREAK_NET_QUIC_DISCONNECT_PROTOCOL;
             SnowQuicNgtcp2Close(conn->adapter);
@@ -190,7 +223,6 @@ static void bnq_extract(BreakNetQuicConn *conn, BnqEventQueue *events) {
         }
         conn->rx_msg_len = len;
         conn->rx_msg_ready = true;
-        bnq_event_post(events, BREAK_NET_QUIC_EVENT_MESSAGE, 0u, conn->conn_id);
         return;
     }
 }
@@ -211,6 +243,7 @@ static bool bnq_conn_read(BreakNetQuicConn *conn, u8 *out, u32 cap,
     conn->rx_len = rest;
     conn->rx_msg_ready = false;
     conn->rx_msg_len = 0u;
+    conn->rx_msg_event_posted = false;
     SnowQuicNgtcp2ConsumeStream(conn->adapter, conn->stream_id, frame,
                                 bnq_now_ns(NULL));
     return true;
@@ -235,7 +268,7 @@ static bool bnq_conn_send(BreakNetQuicConn *conn, const u8 *data, u32 len) {
 
 static void bnq_conn_drain_tx(BreakNetQuicConn *conn) {
     while (conn->tx_off < conn->tx_len && conn->stream_id >= 0 &&
-           conn->handshake_done) {
+           conn->handshake_done && conn->stream_ready) {
         size_t accepted = 0u;
         SnowStatus st = SnowQuicNgtcp2SendStreamEx(
             conn->adapter, conn->stream_id, conn->tx + conn->tx_off,
@@ -245,6 +278,94 @@ static void bnq_conn_drain_tx(BreakNetQuicConn *conn) {
         }
         conn->tx_off += (u32)accepted;
     }
+}
+
+/* Encodes one envelope (sequence auto-assigned from 1, saturating) and
+ * queues it as a frame. False on oversize payload or busy tx buffer. */
+static bool bnq_conn_send_message(BreakNetQuicConn *conn, u16 message_id,
+                                  u16 version, u16 flags, const u8 *payload,
+                                  u32 len) {
+    if (len > BREAK_NET_QUIC_MAX_ENVELOPE_PAYLOAD ||
+        (len > 0u && payload == NULL)) {
+        return false;
+    }
+    /* Encode straight into the tx pending buffer after the 4-byte frame
+     * length: one buffer, zero extra copies. */
+    if (conn->tx_off < conn->tx_len) {
+        return false; /* previous frame still draining */
+    }
+    u32 seq = conn->tx_seq;
+    if (conn->tx_seq < UINT32_MAX) {
+        conn->tx_seq++;
+    }
+    BreakNetEnvelope env;
+    env.protocol_version = version;
+    env.message_id = message_id;
+    env.flags = flags;
+    env.sequence = seq;
+    env.payload = payload;
+    env.payload_size = len;
+    size_t encoded = 0u;
+    if (break_net_envelope_encode(&env, conn->tx + 4u,
+                                  BREAK_NET_QUIC_MAX_MESSAGE, &encoded) !=
+            BREAK_NET_ENVELOPE_OK ||
+        encoded > BREAK_NET_QUIC_MAX_MESSAGE) {
+        return false;
+    }
+    u32 total = (u32)encoded;
+    conn->tx[0] = (u8)(total >> 24);
+    conn->tx[1] = (u8)(total >> 16);
+    conn->tx[2] = (u8)(total >> 8);
+    conn->tx[3] = (u8)total;
+    conn->tx_off = 0u;
+    conn->tx_len = 4u + total;
+    return true;
+}
+
+/* Reads the inbox as an envelope with the strict inbound sequence check. */
+static bool bnq_conn_recv_message(BreakNetQuicConn *conn, u16 *out_id,
+                                  u16 *out_version, u32 *out_seq, u8 *out,
+                                  u32 cap, u32 *out_len) {
+    if (!conn->rx_msg_ready) {
+        return false;
+    }
+    BreakNetEnvelope env;
+    if (break_net_envelope_decode_with_context(&conn->rx_ctx, conn->rx + 4u,
+                                               conn->rx_msg_len, &env) !=
+        BREAK_NET_ENVELOPE_OK) {
+        conn->close_reason = BREAK_NET_QUIC_DISCONNECT_PROTOCOL;
+        SnowQuicNgtcp2Close(conn->adapter);
+        return false;
+    }
+    if (env.payload_size > cap) {
+        return false;
+    }
+    if (env.payload_size > 0u) {
+        memcpy(out, env.payload, env.payload_size);
+    }
+    if (out_id != NULL) {
+        *out_id = env.message_id;
+    }
+    if (out_version != NULL) {
+        *out_version = env.protocol_version;
+    }
+    if (out_seq != NULL) {
+        *out_seq = env.sequence;
+    }
+    if (out_len != NULL) {
+        *out_len = (u32)env.payload_size;
+    }
+    /* consume the frame exactly like a raw read */
+    u32 frame = 4u + conn->rx_msg_len;
+    u32 rest = conn->rx_len - frame;
+    memmove(conn->rx, conn->rx + frame, rest);
+    conn->rx_len = rest;
+    conn->rx_msg_ready = false;
+    conn->rx_msg_len = 0u;
+    conn->rx_msg_event_posted = false;
+    SnowQuicNgtcp2ConsumeStream(conn->adapter, conn->stream_id, frame,
+                                bnq_now_ns(NULL));
+    return true;
 }
 
 static void bnq_conn_free(BreakNetQuicConn *conn) {
@@ -279,6 +400,11 @@ struct BreakNetQuicServer {
     u32 next_conn_id;
     u64 dropped;
     BnqEventQueue events;
+
+    BreakNetQuicAuthKeyFn auth_fn; /* NULL = open connections (v1 default) */
+    void *auth_user;
+    u64 auth_timeout_ns;
+    u32 accepted_count; /* set_auth is only legal before the first accept */
 };
 
 /* ------------------------------------------------------------------ client */
@@ -485,8 +611,13 @@ static void bnq_server_accept(BreakNetQuicServer *s,
     conn->fd = s->fd;
     conn->local = *local;
     conn->remote = *remote;
-    conn->stream_id = -1;
+    /* The module contract pins exactly one stream: the client's first
+     * bidirectional stream, which QUIC numbers 0 (client-initiated bidi
+     * stream ids are 0, 4, 8, ...). The client opens it as its handshake
+     * completes; the server may send on it from the same moment. */
+    conn->stream_id = 0;
     conn->conn_id = s->next_conn_id++;
+    conn->tx_seq = 1u; /* outbound envelope sequence starts at 1 (TCP parity) */
     conn->server = s;
     conn->rx = (u8 *)malloc(BNQ_FRAME_CAP);
     conn->tx = (u8 *)malloc(BNQ_FRAME_CAP);
@@ -523,6 +654,151 @@ static void bnq_server_accept(BreakNetQuicServer *s,
         return;
     }
     s->slots[index] = conn;
+    s->accepted_count++;
+}
+
+/* Auth gate for unauthenticated connections: the inbox must hold exactly a
+ * well-formed AUTH v2 (id 1, version 2, 56 bytes). Anything else closes the
+ * connection fail-closed. On success the session flips to authenticated and
+ * the app gets an AUTHENTICATED event. */
+static void bnq_server_auth_consume(BreakNetQuicServer *s,
+                                    BreakNetQuicConn *conn) {
+    u16 mid = 0u, ver = 0u;
+    u32 seq = 0u, len = 0u;
+    u8 payload[64];
+    bool ok = bnq_conn_recv_message(conn, &mid, &ver, &seq, payload,
+                                    sizeof(payload), &len);
+    bool authed = false;
+    if (ok && mid == BREAK_NET_MESSAGE_ID_AUTH && ver == 2u && len == 56u) {
+        const u8 *key_id = payload;
+        const u8 *client_nonce = payload + 8u;
+        const u8 *tag = payload + 24u;
+        u8 psk[32];
+        if (s->auth_fn(s->auth_user, key_id, psk)) {
+            u8 context[8u + 16u + 16u];
+            u8 expected[32];
+            memcpy(context, "BRKAUTH2", 8u);
+            memcpy(context + 8u, conn->server_nonce, 16u);
+            memcpy(context + 24u, client_nonce, 16u);
+            if (break_crypto_hmac_sha256(psk, sizeof(psk), context,
+                                         sizeof(context), expected)) {
+                u32 diff = 0u;
+                for (u32 i = 0u; i < 32u; i++) {
+                    diff |= (u32)(expected[i] ^ tag[i]);
+                }
+                authed = (diff == 0u);
+            }
+        }
+        memset(psk, 0, sizeof(psk));
+    }
+    if (authed) {
+        conn->auth_state = 2u;
+        conn->auth_deadline_ns = 0u;
+        bnq_event_post(&s->events, BREAK_NET_QUIC_EVENT_AUTHENTICATED, 0u,
+                       conn->conn_id);
+    } else {
+        /* bad/missing AUTH, wrong tag, unknown key, protocol noise: close */
+        conn->close_reason = BREAK_NET_QUIC_DISCONNECT_AUTH;
+        SnowQuicNgtcp2Close(conn->adapter);
+    }
+}
+
+bool break_net_quic_server_set_auth(BreakNetQuicServer *s,
+                                    BreakNetQuicAuthKeyFn fn, void *user,
+                                    u32 auth_timeout_ms) {
+    if (s == NULL || fn == NULL || s->accepted_count != 0u) {
+        return false;
+    }
+    s->auth_fn = fn;
+    s->auth_user = user;
+    s->auth_timeout_ns =
+        (u64)(auth_timeout_ms != 0u ? auth_timeout_ms : 10000u) *
+        UINT64_C(1000000);
+    return true;
+}
+
+bool break_net_quic_client_authenticate(BreakNetQuicClient *c,
+                                        const u8 key_id[8],
+                                        const u8 psk[32]) {
+    if (c == NULL || c->conn == NULL || key_id == NULL || psk == NULL) {
+        return false;
+    }
+    BreakNetQuicConn *conn = c->conn;
+    /* The CHALLENGE must be the pending inbox message. */
+    u16 mid = 0u, ver = 0u;
+    u32 seq = 0u, len = 0u;
+    u8 nonce[16];
+    if (!bnq_conn_recv_message(conn, &mid, &ver, &seq, nonce, sizeof(nonce),
+                               &len) ||
+        mid != BREAK_NET_MESSAGE_ID_CHALLENGE || ver != 1u || len != 16u) {
+        return false;
+    }
+    u8 payload[56];
+    u8 client_nonce[16];
+    if (!break_crypto_random(client_nonce, sizeof(client_nonce))) {
+        return false;
+    }
+    u8 context[8u + 16u + 16u];
+    memcpy(context, "BRKAUTH2", 8u);
+    memcpy(context + 8u, nonce, 16u);
+    memcpy(context + 24u, client_nonce, 16u);
+    u8 tag[32];
+    if (!break_crypto_hmac_sha256(psk, 32u, context, sizeof(context), tag)) {
+        return false;
+    }
+    memcpy(payload, key_id, 8u);
+    memcpy(payload + 8u, client_nonce, 16u);
+    memcpy(payload + 24u, tag, 32u);
+    memset(client_nonce, 0, sizeof(client_nonce));
+    return bnq_conn_send_message(conn, BREAK_NET_MESSAGE_ID_AUTH, 2u, 0u,
+                                 payload, sizeof(payload));
+}
+
+bool break_net_quic_conn_send_message(BreakNetQuicServer *s,
+                                      BreakNetQuicConn *conn, u16 message_id,
+                                      u16 version, u16 flags,
+                                      const u8 *payload, u32 len) {
+    if (s == NULL || conn == NULL || conn->server != s ||
+        !conn->handshake_done || conn->close_reported) {
+        return false;
+    }
+    return bnq_conn_send_message(conn, message_id, version, flags, payload,
+                                 len);
+}
+
+bool break_net_quic_client_send_message(BreakNetQuicClient *c,
+                                        u16 message_id, u16 version,
+                                        u16 flags, const u8 *payload,
+                                        u32 len) {
+    if (c == NULL || c->conn == NULL || !c->conn->handshake_done ||
+        c->conn->close_reported) {
+        return false;
+    }
+    return bnq_conn_send_message(c->conn, message_id, version, flags, payload,
+                                 len);
+}
+
+bool break_net_quic_conn_recv_message(BreakNetQuicServer *s,
+                                      BreakNetQuicConn *conn,
+                                      u16 *out_message_id, u16 *out_version,
+                                      u32 *out_sequence, u8 *out, u32 cap,
+                                      u32 *out_len) {
+    if (s == NULL || conn == NULL || conn->server != s || out == NULL) {
+        return false;
+    }
+    return bnq_conn_recv_message(conn, out_message_id, out_version,
+                                 out_sequence, out, cap, out_len);
+}
+
+bool break_net_quic_client_recv_message(BreakNetQuicClient *c,
+                                        u16 *out_message_id, u16 *out_version,
+                                        u32 *out_sequence, u8 *out, u32 cap,
+                                        u32 *out_len) {
+    if (c == NULL || c->conn == NULL || out == NULL) {
+        return false;
+    }
+    return bnq_conn_recv_message(c->conn, out_message_id, out_version,
+                                 out_sequence, out, cap, out_len);
 }
 
 bool break_net_quic_server_step(BreakNetQuicServer *s, u32 timeout_ms) {
@@ -604,11 +880,40 @@ bool break_net_quic_server_step(BreakNetQuicServer *s, u32 timeout_ms) {
             bnq_event_post(&s->events, BREAK_NET_QUIC_EVENT_CONNECT, 0u,
                            conn->conn_id);
         }
+        /* Auth configured: the CHALLENGE (first server message, envelope
+         * sequence 1) goes out as soon as the client's READY marker has
+         * materialized the stream; the auth deadline starts at the send. */
+        if (conn->handshake_done && !conn->close_reported &&
+            conn->stream_ready && s->auth_fn != NULL && conn->auth_state == 0u) {
+            if (!break_crypto_random(conn->server_nonce, 16u) ||
+                !bnq_conn_send_message(conn, BREAK_NET_MESSAGE_ID_CHALLENGE,
+                                       1u, 0u, conn->server_nonce, 16u)) {
+                conn->close_reason = BREAK_NET_QUIC_DISCONNECT_AUTH;
+                SnowQuicNgtcp2Close(conn->adapter);
+            } else {
+                conn->auth_state = 1u;
+                conn->auth_deadline_ns = now + s->auth_timeout_ns;
+            }
+        }
         if (conn->handshake_done && !conn->close_reported) {
             if (!conn->rx_msg_ready) {
-                bnq_extract(conn, &s->events);
+                bnq_extract(conn);
+            }
+            if (conn->rx_msg_ready && !conn->rx_msg_event_posted) {
+                if (s->auth_fn != NULL && conn->auth_state != 2u) {
+                    bnq_server_auth_consume(s, conn);
+                } else {
+                    conn->rx_msg_event_posted = true;
+                    bnq_event_post(&s->events, BREAK_NET_QUIC_EVENT_MESSAGE,
+                                   0u, conn->conn_id);
+                }
             }
             bnq_conn_drain_tx(conn);
+            /* auth deadline: still challenged when the timer fires -> close */
+            if (conn->auth_state == 1u && now > conn->auth_deadline_ns) {
+                conn->close_reason = BREAK_NET_QUIC_DISCONNECT_AUTH;
+                SnowQuicNgtcp2Close(conn->adapter);
+            }
         }
         if (SnowQuicNgtcp2IsClosingOrDraining(conn->adapter)) {
             conn->close_reported = true;
@@ -651,7 +956,7 @@ bool break_net_quic_conn_read(BreakNetQuicServer *s, BreakNetQuicConn *conn,
     }
     bool ok = bnq_conn_read(conn, out, cap, out_len);
     if (ok && !conn->rx_msg_ready) {
-        bnq_extract(conn, &s->events);
+        bnq_extract(conn);
     }
     return ok;
 }
@@ -659,7 +964,7 @@ bool break_net_quic_conn_read(BreakNetQuicServer *s, BreakNetQuicConn *conn,
 bool break_net_quic_conn_send(BreakNetQuicServer *s, BreakNetQuicConn *conn,
                               const u8 *data, u32 len) {
     if (s == NULL || conn == NULL || conn->server != s ||
-        !conn->handshake_done || conn->stream_id < 0) {
+        !conn->handshake_done || conn->stream_id < 0 || !conn->stream_ready) {
         return false;
     }
     return bnq_conn_send(conn, data, len);
@@ -747,6 +1052,7 @@ BreakNetQuicClient *break_net_quic_client_create(
     conn->fd = -1;
     conn->stream_id = -1;
     conn->conn_id = 1u;
+    conn->tx_seq = 1u;
     conn->rx = (u8 *)malloc(BNQ_FRAME_CAP);
     conn->tx = (u8 *)malloc(BNQ_FRAME_CAP);
     if (conn->rx == NULL || conn->tx == NULL) {
@@ -864,11 +1170,30 @@ bool break_net_quic_client_step(BreakNetQuicClient *c, u32 timeout_ms) {
         if (SnowQuicNgtcp2OpenBidiStream(conn->adapter, &stream_id, now) ==
             SNOW_OK) {
             conn->stream_id = stream_id;
+            conn->stream_ready = true; /* locally opened = materialized */
         }
+    }
+    /* The READY marker materializes the stream on the server side (the
+     * adapter refuses sends on never-seen streams), letting the server's
+     * CHALLENGE out. Frame-level, invisible to both read APIs. */
+    if (conn->handshake_done && conn->stream_ready && !conn->ready_sent &&
+        conn->tx_off >= conn->tx_len) {
+        conn->tx[0] = 0xFFu;
+        conn->tx[1] = 0xFFu;
+        conn->tx[2] = 0xFFu;
+        conn->tx[3] = 0xFFu;
+        conn->tx_off = 0u;
+        conn->tx_len = 4u;
+        conn->ready_sent = true;
     }
     if (conn->handshake_done) {
         if (!conn->rx_msg_ready) {
-            bnq_extract(conn, &c->events);
+            bnq_extract(conn);
+        }
+        if (conn->rx_msg_ready && !conn->rx_msg_event_posted) {
+            conn->rx_msg_event_posted = true;
+            bnq_event_post(&c->events, BREAK_NET_QUIC_EVENT_MESSAGE, 0u,
+                           conn->conn_id);
         }
         bnq_conn_drain_tx(conn);
     }
@@ -915,7 +1240,7 @@ bool break_net_quic_client_read(BreakNetQuicClient *c, u8 *out, u32 cap,
     }
     bool ok = bnq_conn_read(c->conn, out, cap, out_len);
     if (ok && !c->conn->rx_msg_ready) {
-        bnq_extract(c->conn, &c->events);
+        bnq_extract(c->conn);
     }
     return ok;
 }

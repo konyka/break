@@ -33,6 +33,8 @@
  * ========================================================================== */
 
 #include <core/types.h>
+#include <network/break_net_envelope.h>
+#include <network/break_net_message_registry.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,7 +55,8 @@ typedef enum BreakNetQuicEventType {
     BREAK_NET_QUIC_EVENT_NONE = 0,
     BREAK_NET_QUIC_EVENT_CONNECT,    /* server only: handshake completed */
     BREAK_NET_QUIC_EVENT_MESSAGE,    /* a full frame waits in the inbox */
-    BREAK_NET_QUIC_EVENT_DISCONNECT  /* connection is terminal */
+    BREAK_NET_QUIC_EVENT_DISCONNECT, /* connection is terminal */
+    BREAK_NET_QUIC_EVENT_AUTHENTICATED /* server only: AUTH v2 verified */
 } BreakNetQuicEventType;
 
 typedef enum BreakNetQuicDisconnectReason {
@@ -62,7 +65,8 @@ typedef enum BreakNetQuicDisconnectReason {
     BREAK_NET_QUIC_DISCONNECT_LOCAL = 2,      /* conn_close / client_close */
     BREAK_NET_QUIC_DISCONNECT_IDLE = 3,       /* idle timeout */
     BREAK_NET_QUIC_DISCONNECT_HANDSHAKE = 4,  /* handshake deadline / failure */
-    BREAK_NET_QUIC_DISCONNECT_PROTOCOL = 5    /* frame protocol violation */
+    BREAK_NET_QUIC_DISCONNECT_PROTOCOL = 5,   /* frame protocol violation */
+    BREAK_NET_QUIC_DISCONNECT_AUTH = 6        /* auth timeout or bad AUTH */
 } BreakNetQuicDisconnectReason;
 
 typedef struct BreakNetQuicEvent {
@@ -144,6 +148,63 @@ bool break_net_quic_client_poll_event(BreakNetQuicClient *client,
                                       BreakNetQuicEvent *out);
 void break_net_quic_client_close(BreakNetQuicClient *client);
 void break_net_quic_client_destroy(BreakNetQuicClient **client);
+
+/* ---- session layer: envelopes + CHALLENGE/AUTH-v2 over frames ----------- */
+
+/* Envelope payloads ride frames: the 18-byte envelope header leaves this
+ * much of the 64 KiB frame budget. Larger payloads are refused at send. */
+#define BREAK_NET_QUIC_MAX_ENVELOPE_PAYLOAD \
+    (BREAK_NET_QUIC_MAX_MESSAGE - BREAK_NET_ENVELOPE_HEADER_SIZE)
+
+/* Same wire contract as the TCP transport (transport_security.md section 3):
+ * CHALLENGE = id 3, v1, server_nonce[16]; AUTH v2 = id 1, v2, 56 bytes
+ * key_id[8] || client_nonce[16] || HMAC-SHA256(psk, "BRKAUTH2" ||
+ * server_nonce || client_nonce). Message ids come from
+ * break_net_message_registry.h. */
+typedef bool (*BreakNetQuicAuthKeyFn)(void *user, const u8 key_id[8],
+                                      u8 out_psk[32]);
+
+/* Server: require CHALLENGE/AUTH-v2 on every new connection, resolved through
+ * fn (app-side key custody, per-server — unlike the TCP seam this is not
+ * process-global). Call right after create, before the first step. A
+ * connection that has not authenticated within auth_timeout_ms (0 = default
+ * 10000) is closed with DISCONNECT_AUTH; while unauthenticated, anything
+ * that is not a well-formed AUTH v2 closes the connection fail-closed.
+ * Returns false on bad arguments or when called after traffic. */
+bool break_net_quic_server_set_auth(BreakNetQuicServer *server,
+                                    BreakNetQuicAuthKeyFn fn, void *user,
+                                    u32 auth_timeout_ms);
+
+/* Client: answer the pending CHALLENGE with AUTH v2. Consumes the challenge
+ * from the inbox; false when no challenge is pending, the challenge is
+ * malformed, or the CSPRNG/HMAC fails. Success means the AUTH was queued —
+ * the server never confirms in v1; a failed AUTH closes the connection
+ * (observable via DISCONNECT/AUTH). */
+bool break_net_quic_client_authenticate(BreakNetQuicClient *client,
+                                        const u8 key_id[8], const u8 psk[32]);
+
+/* Envelope-level messaging. Outbound sequence is assigned per direction from
+ * 1 (monotonic, saturating); inbound is checked strictly increasing, exactly
+ * like the TCP adapter's decode_with_context. version is the envelope
+ * protocol_version (1 for application messages; 2 is AUTH v2's). */
+bool break_net_quic_conn_send_message(BreakNetQuicServer *server,
+                                      BreakNetQuicConn *conn, u16 message_id,
+                                      u16 version, u16 flags,
+                                      const u8 *payload, u32 len);
+bool break_net_quic_client_send_message(BreakNetQuicClient *client,
+                                        u16 message_id, u16 version,
+                                        u16 flags, const u8 *payload, u32 len);
+/* Inbox read with envelope decode. Payload copies into out (cap-bounded).
+ * False when the inbox is empty or cap is too small. */
+bool break_net_quic_conn_recv_message(BreakNetQuicServer *server,
+                                      BreakNetQuicConn *conn,
+                                      u16 *out_message_id, u16 *out_version,
+                                      u32 *out_sequence, u8 *out, u32 cap,
+                                      u32 *out_len);
+bool break_net_quic_client_recv_message(BreakNetQuicClient *client,
+                                        u16 *out_message_id, u16 *out_version,
+                                        u32 *out_sequence, u8 *out, u32 cap,
+                                        u32 *out_len);
 
 #ifdef __cplusplus
 } /* extern "C" */
