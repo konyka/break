@@ -30,6 +30,9 @@
 #include <network/break_net_message.h>
 #include <network/break_net_message_registry.h>
 #include <network/break_net_protocol.h>
+// Header is self-contained and present regardless of the BREAK_ENABLE_QUIC
+// build gate (only the library target is gated).
+#include <network/break_net_quic.h>
 #include <network/break_replay_window.h>
 #include <network/break_replication.h>
 #include <network/break_replication_fragment.h>

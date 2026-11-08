@@ -68,6 +68,7 @@ RHI 后端编译为独立静态库（`engine_rhi_vulkan` / `engine_rhi_metal` / 
   non-blocking clipboard transfer, and OpenGL/Vulkan on X11 and Wayland; see
   `docs/myui_integration.md` for the platform matrix.
 - Implementation status: `docs/Implementation_Status.md`
+- QUIC transport (opt-in, Snowflake ngtcp2 adapter): `docs/design/quic_transport.md`
 - Performance roadmap: `docs/Round11_Performance_Plan.md`
 - Rule-engine architecture/design, benchmark, and conformance: `docs/Rule_Engine_Architecture.md`,
   `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and

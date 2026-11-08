@@ -509,6 +509,20 @@ MoltenVK/Vulkan、`shaderc_shared` 和 FreeType。文件监视模块额外链接
 `break_http` 在 `-Werror` 下同时支持 OpenSSL 3.x 与 4.x：4.0 起主机名校验用
 `SSL_set1_dnsname`（`SSL_set1_host` 已弃用），按 `OPENSSL_VERSION_MAJOR` 选择。
 
+QUIC 传输（可选）：`-DBREAK_ENABLE_QUIC=ON` 在 Snowflake 之上启用
+`break_net_quic`（契约见 `docs/design/quic_transport.md`）。需要
+`BREAK_ENABLE_SNOWFLAKE=ON` + `BREAK_ENABLE_CRYPTO=ON` + OpenSSL ≥ 3.5（QUIC TLS
+接缝；本机自编译的 4.x 可用），Snowflake 会构建其 vendored ngtcp2 v1.25.0
+（`third_party/NGTCP2_PROVENANCE.txt` 钉版）。v1 仅 POSIX/IPv4。构建并验证：
+
+```bash
+cmake -S engine -B build-quic -G Ninja -DBREAK_ENABLE_SNOWFLAKE=ON \
+  -DSNOWFLAKE_SOURCE_DIR=<pinned snow checkout> -DBREAK_ENABLE_QUIC=ON \
+  -DOPENSSL_ROOT_DIR=<openssl-3.5+ 前缀>
+cmake --build build-quic
+ctest --test-dir build-quic -R "quic" --output-on-failure
+```
+
 ```bash
 cd engine
 cmake -B build-macos -G Xcode -DCMAKE_BUILD_TYPE=Debug
