@@ -1,3 +1,12 @@
+/* clock_gettime needs _POSIX_C_SOURCE >= 199309L before any system header;
+ * a manual extern declaration conflicts with <time.h> once Snowflake headers
+ * (pulled in via break_net_adapter.h) provide the real prototype. */
+#if !defined(_WIN32) && !defined(ENGINE_PLATFORM_WINDOWS)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 199309L
+#endif
+#endif
+
 #include "network/break_session.h"
 #include "network/break_net_adapter.h"
 #include "network/break_net_message_registry.h"
@@ -17,7 +26,6 @@
 #include <windows.h>
 #else
 #include <time.h>
-extern int clock_gettime(int, struct timespec *);
 #ifndef CLOCK_MONOTONIC
 #define CLOCK_MONOTONIC 1
 #endif

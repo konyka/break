@@ -23,9 +23,14 @@ match the commit pin described below.
 Snowflake is consumed as a path-referenced external checkout, pinned by commit
 hash and verified fail-closed at configure time.
 
-- **Pinned commit:** `0fceed6d885bb8578743d82cc4a5d7ab2f6b0620`
-  (snowflake main HEAD 2026-10-24), held in `engine/CMakeLists.txt` as
-  `BREAK_SNOWFLAKE_PIN`.
+- **Pinned commit:** `7d3d59978a6c50fa61883da6dc89db56539e066b`
+  (snowflake main HEAD 2026-11-08), held in `engine/CMakeLists.txt` as
+  `BREAK_SNOWFLAKE_PIN`. The pin tracks snowflake main HEAD: integrating a
+  newer Snowflake is the same three-place commit below, and is expected to
+  happen whenever snow lands relevant updates (the 2026-11-06 move also
+  adopted the Google-style API rename — `snow_connection_uid()` →
+  `SnowConnectionUid()`, `snow_ssl_t` → `SnowSsl`, enum constants →
+  `kSnow*`, struct fields unchanged snake_case).
 - **Verification mechanism:** inside `if(BREAK_ENABLE_SNOWFLAKE)`, immediately
   after `SNOWFLAKE_SOURCE_DIR` resolution, configure runs
   `git -C <dir> rev-parse HEAD` and compares it to `BREAK_SNOWFLAKE_PIN`.

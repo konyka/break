@@ -7,12 +7,12 @@
 #include <stddef.h>
 #include <string.h>
 
-static snow_acceptor_t *g_test_acceptor;
+static SnowAcceptor *g_test_acceptor;
 
 static BreakNetReactor *make_reactor(void)
 {
     BreakNetReactorConfig config = {0};
-    snow_endpoint_t *endpoint = NULL;
+    SnowEndpoint *endpoint = NULL;
     BreakNetReactor *reactor;
 
     config.drive_mode = BREAK_NET_DRIVE_STEP;
@@ -22,15 +22,15 @@ static BreakNetReactor *make_reactor(void)
     config.watchdog_interval_ms = 1000u;
     config.step_timeout_ms = 1u;
     reactor = break_net_reactor_create(&config);
-    if (reactor == NULL || snow_endpoint_create(&endpoint) != SNOW_OK ||
-        snow_endpoint_set_host(endpoint, "127.0.0.1") != SNOW_OK ||
-        snow_endpoint_set_port(endpoint, 0) != SNOW_OK ||
-        snow_acceptor_create(endpoint, &g_test_acceptor) != SNOW_OK) {
-        snow_endpoint_destroy(endpoint);
+    if (reactor == NULL || SnowEndpointCreate(&endpoint) != SNOW_OK ||
+        SnowEndpointSetHost(endpoint, "127.0.0.1") != SNOW_OK ||
+        SnowEndpointSetPort(endpoint, 0) != SNOW_OK ||
+        SnowAcceptorCreate(endpoint, &g_test_acceptor) != SNOW_OK) {
+        SnowEndpointDestroy(endpoint);
         return reactor;
     }
-    snow_endpoint_destroy(endpoint);
-    if (snow_acceptor_bind(g_test_acceptor, 1) != SNOW_OK ||
+    SnowEndpointDestroy(endpoint);
+    if (SnowAcceptorBind(g_test_acceptor, 1) != SNOW_OK ||
         !break_net_reactor_set_acceptor(reactor, g_test_acceptor) ||
         !break_net_reactor_start(reactor))
         return reactor;
@@ -44,7 +44,7 @@ static void destroy_reactor(BreakNetReactor *reactor)
         break_net_reactor_destroy(reactor);
     }
     if (g_test_acceptor != NULL) {
-        snow_acceptor_destroy(g_test_acceptor);
+        SnowAcceptorDestroy(g_test_acceptor);
         g_test_acceptor = NULL;
     }
 }

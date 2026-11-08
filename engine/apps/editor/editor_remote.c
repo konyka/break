@@ -102,7 +102,7 @@ struct BreakEditorRemote {
     BreakEditorLuaConsole *console; /* owned (NULL = degraded eval path) */
     BreakNetReactor *reactor;       /* owned */
     BreakSessionManager *manager;   /* owned */
-    snow_acceptor_t *acceptor;      /* owned */
+    SnowAcceptor *acceptor;      /* owned */
     EditorRemoteConnRow rows[EDITOR_REMOTE_MAX_CONNECTIONS];
     u32 capacity;
     u32 conn_count;
@@ -1150,7 +1150,7 @@ void break_editor_remote_destroy(BreakEditorRemote *r) {
     break_session_manager_destroy(r->manager);
     break_net_reactor_destroy(r->reactor);
     if (r->acceptor != NULL) {
-        snow_acceptor_destroy(r->acceptor);
+        SnowAcceptorDestroy(r->acceptor);
     }
 #ifdef BREAK_ENABLE_CRYPTO
     /* after the manager is gone (its sessions no longer pin the global
@@ -1391,8 +1391,8 @@ static void remote_keyring_resync(BreakEditorRemote *r) {
 }
 
 bool break_editor_remote_start(BreakEditorRemote *r) {
-    snow_endpoint_t *endpoint = NULL;
-    snow_status_t status;
+    SnowEndpoint *endpoint = NULL;
+    SnowStatus status;
     if (r == NULL || r->started || r->shell == NULL) {
         return false; /* orphaned (shell destroyed) remotes stay inert */
     }
@@ -1403,21 +1403,21 @@ bool break_editor_remote_start(BreakEditorRemote *r) {
                        !r->has_psk)) {
         return false;
     }
-    if (snow_endpoint_create(&endpoint) != SNOW_OK) {
+    if (SnowEndpointCreate(&endpoint) != SNOW_OK) {
         return false;
     }
-    status = snow_endpoint_set_host(endpoint, r->bind_host);
+    status = SnowEndpointSetHost(endpoint, r->bind_host);
     if (status == SNOW_OK) {
-        status = snow_endpoint_set_port(endpoint, (int)r->cfg_port);
+        status = SnowEndpointSetPort(endpoint, (int)r->cfg_port);
     }
     if (status == SNOW_OK) {
-        status = snow_acceptor_create(endpoint, &r->acceptor);
+        status = SnowAcceptorCreate(endpoint, &r->acceptor);
     }
-    snow_endpoint_destroy(endpoint);
+    SnowEndpointDestroy(endpoint);
     if (status != SNOW_OK) {
         return false;
     }
-    if (snow_acceptor_bind(r->acceptor, 1) != SNOW_OK) {
+    if (SnowAcceptorBind(r->acceptor, 1) != SNOW_OK) {
         goto fail;
     }
     if (r->use_tls) {
@@ -1454,7 +1454,7 @@ bool break_editor_remote_start(BreakEditorRemote *r) {
         goto fail;
     }
     r->bound_port =
-        (u16)snow_endpoint_port(snow_acceptor_endpoint(r->acceptor));
+        (u16)SnowEndpointPort(SnowAcceptorEndpoint(r->acceptor));
     r->started = true;
     return true;
 fail:
@@ -1462,7 +1462,7 @@ fail:
     remote_auth_uninstall(r);
 #endif
     (void)break_net_reactor_stop(r->reactor, 1000u);
-    snow_acceptor_destroy(r->acceptor);
+    SnowAcceptorDestroy(r->acceptor);
     r->acceptor = NULL;
     return false;
 }

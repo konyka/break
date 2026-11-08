@@ -55,7 +55,7 @@ typedef struct BreakNetRateLimitConfig {
     uint32_t per_ip_per_minute;       /* sliding-window accepts per source IP; 0 = unlimited */
 } BreakNetRateLimitConfig;
 /* CREATED state only. Uses snow ratelimiter/freqlimiter under the admit(ip,port) hook
- * (snow_net_thread_add_acceptor_with_handlers_ex). Per-IP table ≤ 1024 entries;
+ * (SnowNetThreadAddAcceptorWithHandlersEx). Per-IP table ≤ 1024 entries;
  * full table → deny NEW IPs (fail-closed, documented), known IPs still measured.
  * All limiter state lives on the network driver thread (limiters are not thread-safe). */
 bool break_net_reactor_set_rate_limits(BreakNetReactor *r, const BreakNetRateLimitConfig *cfg);

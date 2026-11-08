@@ -1,4 +1,13 @@
 /* Focused lifecycle tests for the Snowflake-backed Break network adapter. */
+/* clock_gettime needs _POSIX_C_SOURCE >= 199309L before any system header;
+ * a manual extern declaration conflicts with <time.h> once Snowflake headers
+ * (pulled in via break_net_adapter.h) provide the real prototype. */
+#if !defined(_WIN32) && !defined(ENGINE_PLATFORM_WINDOWS)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 199309L
+#endif
+#endif
+
 #include "test_framework.h"
 #include <network/break_net_adapter.h>
 #include <network/break_net_envelope.h>
@@ -21,14 +30,13 @@
 #include <unistd.h>
 #include <pthread.h>
 
-extern int clock_gettime(int, struct timespec *);
 #ifndef CLOCK_MONOTONIC
 #define CLOCK_MONOTONIC 1
 #endif
 extern int usleep(unsigned int);
 
-static snow_acceptor_t *break_net_test_acceptor(void);
-static int break_net_test_connect(snow_acceptor_t *acceptor);
+static SnowAcceptor *break_net_test_acceptor(void);
+static int break_net_test_connect(SnowAcceptor *acceptor);
 
 typedef struct BreakNetStepThreadArgs {
     BreakNetReactor *reactor;
@@ -90,7 +98,7 @@ TEST(break_net_adapter_start_failure_destroys_snow_thread)
     for (i = 0u; i < sizeof(failures) / sizeof(failures[0]); ++i) {
         BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
         BreakNetReactor *reactor = break_net_reactor_create(&config);
-        snow_acceptor_t *acceptor = break_net_test_acceptor();
+        SnowAcceptor *acceptor = break_net_test_acceptor();
         ASSERT_NOT_NULL(reactor);
         ASSERT_NOT_NULL(acceptor);
         ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
@@ -98,7 +106,7 @@ TEST(break_net_adapter_start_failure_destroys_snow_thread)
         ASSERT_EQ(break_net_reactor_state_for_test(reactor), 5);
         ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
         break_net_reactor_destroy(reactor);
-        snow_acceptor_destroy(acceptor);
+        SnowAcceptorDestroy(acceptor);
     }
 }
 
@@ -106,7 +114,7 @@ TEST(break_net_adapter_thread_loop_exits_after_new_connection_failure)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     ASSERT_NOT_NULL(reactor);
     ASSERT_NOT_NULL(acceptor);
     ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
@@ -117,7 +125,7 @@ TEST(break_net_adapter_thread_loop_exits_after_new_connection_failure)
     ASSERT_EQ(break_net_reactor_state_for_test(reactor), 5);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_send_rejects_created_and_stopped)
@@ -145,7 +153,7 @@ TEST(break_net_adapter_acceptor_setter_is_created_only)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     ASSERT_NOT_NULL(reactor);
     ASSERT_NOT_NULL(acceptor);
     ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
@@ -153,37 +161,37 @@ TEST(break_net_adapter_acceptor_setter_is_created_only)
     ASSERT_FALSE(break_net_reactor_set_acceptor(reactor, acceptor));
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
-static snow_acceptor_t *break_net_test_acceptor(void)
+static SnowAcceptor *break_net_test_acceptor(void)
 {
-    snow_endpoint_t *endpoint = NULL;
-    snow_acceptor_t *acceptor = NULL;
-    if (snow_endpoint_create(&endpoint) != SNOW_OK ||
-        snow_endpoint_set_host(endpoint, "127.0.0.1") != SNOW_OK ||
-        snow_endpoint_set_port(endpoint, 0) != SNOW_OK ||
-        snow_acceptor_create(endpoint, &acceptor) != SNOW_OK) {
-        snow_endpoint_destroy(endpoint);
+    SnowEndpoint *endpoint = NULL;
+    SnowAcceptor *acceptor = NULL;
+    if (SnowEndpointCreate(&endpoint) != SNOW_OK ||
+        SnowEndpointSetHost(endpoint, "127.0.0.1") != SNOW_OK ||
+        SnowEndpointSetPort(endpoint, 0) != SNOW_OK ||
+        SnowAcceptorCreate(endpoint, &acceptor) != SNOW_OK) {
+        SnowEndpointDestroy(endpoint);
         return NULL;
     }
-    snow_endpoint_destroy(endpoint);
-    if (snow_acceptor_bind(acceptor, 1) != SNOW_OK) {
-        snow_acceptor_destroy(acceptor);
+    SnowEndpointDestroy(endpoint);
+    if (SnowAcceptorBind(acceptor, 1) != SNOW_OK) {
+        SnowAcceptorDestroy(acceptor);
         return NULL;
     }
     return acceptor;
 }
 
-static int break_net_test_connect(snow_acceptor_t *acceptor)
+static int break_net_test_connect(SnowAcceptor *acceptor)
 {
-    const snow_endpoint_t *endpoint = snow_acceptor_endpoint(acceptor);
+    const SnowEndpoint *endpoint = SnowAcceptorEndpoint(acceptor);
     struct sockaddr_in address = {0};
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = htons((uint16_t)snow_endpoint_port(endpoint));
+    address.sin_port = htons((uint16_t)SnowEndpointPort(endpoint));
     if (connect(fd, (const struct sockaddr *)&address, sizeof(address)) != 0) {
         close(fd);
         return -1;
@@ -195,7 +203,7 @@ TEST(break_net_adapter_step_lifecycle)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     ASSERT_NOT_NULL(reactor);
     ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
     ASSERT_FALSE(break_net_reactor_is_ready(reactor));
@@ -204,7 +212,7 @@ TEST(break_net_adapter_step_lifecycle)
     ASSERT_TRUE(break_net_reactor_step(reactor, 0));
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_rejects_duplicate_start)
@@ -212,7 +220,7 @@ TEST(break_net_adapter_rejects_duplicate_start)
     BreakNetReactorConfig config =
         break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     ASSERT_NOT_NULL(reactor);
     ASSERT_NOT_NULL(acceptor);
     ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
@@ -220,7 +228,7 @@ TEST(break_net_adapter_rejects_duplicate_start)
     ASSERT_FALSE(break_net_reactor_start(reactor));
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_stop_is_idempotent)
@@ -228,7 +236,7 @@ TEST(break_net_adapter_stop_is_idempotent)
     BreakNetReactorConfig config =
         break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     ASSERT_NOT_NULL(reactor);
     ASSERT_NOT_NULL(acceptor);
     ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
@@ -236,7 +244,7 @@ TEST(break_net_adapter_stop_is_idempotent)
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_thread_lifecycle)
@@ -244,7 +252,7 @@ TEST(break_net_adapter_thread_lifecycle)
     BreakNetReactorConfig config =
         break_net_test_config(BREAK_NET_DRIVE_THREAD);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
 
     ASSERT_NOT_NULL(reactor);
     ASSERT_NOT_NULL(acceptor);
@@ -255,14 +263,14 @@ TEST(break_net_adapter_thread_lifecycle)
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_thread_stop_timeout_preserves_reactor)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     uint64_t started_us;
     uint64_t elapsed_us;
     bool stopped;
@@ -282,14 +290,14 @@ TEST(break_net_adapter_thread_stop_timeout_preserves_reactor)
         ASSERT_TRUE(break_net_reactor_stop(reactor, 5000u));
     }
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_step_stop_timeout_waits_for_active_step)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     BreakNetStepThreadArgs args = {0};
     pthread_t step_thread;
     uint64_t started_us;
@@ -312,14 +320,14 @@ TEST(break_net_adapter_step_stop_timeout_waits_for_active_step)
     ASSERT_TRUE(args.result);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_thread_mode_drains_queued_command_before_step)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     unsigned char payload = 0x5au;
     int client_fd;
     uint64_t connection_key;
@@ -342,7 +350,7 @@ TEST(break_net_adapter_thread_mode_drains_queued_command_before_step)
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     close(client_fd);
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_malformed_packet_callback_releases_recv_context)
@@ -425,7 +433,7 @@ TEST(break_net_adapter_outbound_drain_drops_stale_uid)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     unsigned char payload = 0x42u;
 
     ASSERT_NOT_NULL(reactor);
@@ -438,14 +446,14 @@ TEST(break_net_adapter_outbound_drain_drops_stale_uid)
     ASSERT_EQ(break_net_reactor_outbound_count(reactor), 0u);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_outbound_copies_and_bounds_queue)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     unsigned char payload = 8u;
     BreakNetSendResult result;
 
@@ -461,7 +469,7 @@ TEST(break_net_adapter_outbound_copies_and_bounds_queue)
     ASSERT_EQ(break_net_reactor_outbound_count(reactor), 2u);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_message_copies_payload_lifetime)
@@ -648,9 +656,9 @@ TEST(break_net_adapter_loopback_close_emits_event_and_releases_identity)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
     BreakNetReactor *reactor = NULL;
-    snow_acceptor_t *acceptor = NULL;
-    snow_endpoint_t *endpoint = NULL;
-    snow_tcp_client_t *client = NULL;
+    SnowAcceptor *acceptor = NULL;
+    SnowEndpoint *endpoint = NULL;
+    SnowTcpClient *client = NULL;
     BreakNetEvent event = {0};
     uint64_t connection_key = 0u;
     uint64_t deadline;
@@ -658,13 +666,13 @@ TEST(break_net_adapter_loopback_close_emits_event_and_releases_identity)
 
     acceptor = break_net_test_acceptor();
     ASSERT_NOT_NULL(acceptor);
-    ASSERT_EQ(snow_endpoint_create(&endpoint), SNOW_OK);
-    ASSERT_EQ(snow_endpoint_set_host(endpoint, "127.0.0.1"), SNOW_OK);
-    ASSERT_EQ(snow_endpoint_set_port(endpoint, snow_endpoint_port(
-        snow_acceptor_endpoint(acceptor))), SNOW_OK);
-    ASSERT_EQ(snow_endpoint_set_timeout(endpoint, 1000), SNOW_OK);
-    ASSERT_EQ(snow_tcp_client_create(endpoint, &client), SNOW_OK);
-    ASSERT_EQ(snow_tcp_client_connect(client), SNOW_OK);
+    ASSERT_EQ(SnowEndpointCreate(&endpoint), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetHost(endpoint, "127.0.0.1"), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetPort(endpoint, SnowEndpointPort(
+        SnowAcceptorEndpoint(acceptor))), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetTimeout(endpoint, 1000), SNOW_OK);
+    ASSERT_EQ(SnowTcpClientCreate(endpoint, &client), SNOW_OK);
+    ASSERT_EQ(SnowTcpClientConnect(client), SNOW_OK);
 
     reactor = break_net_reactor_create(&config);
     ASSERT_NOT_NULL(reactor);
@@ -684,7 +692,7 @@ TEST(break_net_adapter_loopback_close_emits_event_and_releases_identity)
     ASSERT_TRUE(connection_key != 0u);
     ASSERT_EQ(break_net_reactor_connection_identity_count_for_test(reactor), 1u);
 
-    ASSERT_EQ(snow_tcp_client_close(client), SNOW_OK);
+    ASSERT_EQ(SnowTcpClientClose(client), SNOW_OK);
     deadline = break_net_monotonic_us() + UINT64_C(2000000);
     while (break_net_monotonic_us() < deadline && !saw_close) {
         if (break_net_reactor_poll_event(reactor, &event) == BREAK_NET_EVENT_OK) {
@@ -702,10 +710,10 @@ TEST(break_net_adapter_loopback_close_emits_event_and_releases_identity)
     ASSERT_EQ(break_net_reactor_connection_identity_count_for_test(reactor), 0u);
 
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
-    snow_tcp_client_destroy(client);
-    snow_endpoint_destroy(endpoint);
+    SnowTcpClientDestroy(client);
+    SnowEndpointDestroy(endpoint);
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 /* Server-side transport close: a queued response still reaches the peer,
@@ -715,7 +723,7 @@ TEST(break_net_adapter_server_close_flushes_then_closes_peer)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = NULL;
-    snow_acceptor_t *acceptor = NULL;
+    SnowAcceptor *acceptor = NULL;
     BreakNetEvent event = {0};
     uint64_t connection_key = 0u;
     uint64_t deadline;
@@ -801,7 +809,7 @@ TEST(break_net_adapter_server_close_flushes_then_closes_peer)
     close(fd);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 /* Pumps until OPENED for a new key (returned) or the deadline. */
@@ -831,7 +839,7 @@ TEST(break_net_adapter_reset_with_pending_send_then_reconnect_same_key)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = NULL;
-    snow_acceptor_t *acceptor = NULL;
+    SnowAcceptor *acceptor = NULL;
     BreakNetEvent event = {0};
     uint64_t key_a, key_b;
     uint64_t deadline;
@@ -915,7 +923,7 @@ TEST(break_net_adapter_reset_with_pending_send_then_reconnect_same_key)
     close(fd_b);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 /* THREAD drive mode: the host thread runs the same close path. */
@@ -923,7 +931,7 @@ TEST(break_net_adapter_server_close_thread_mode)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
     BreakNetReactor *reactor = NULL;
-    snow_acceptor_t *acceptor = NULL;
+    SnowAcceptor *acceptor = NULL;
     BreakNetEvent event = {0};
     uint64_t key = 0u;
     uint64_t deadline;
@@ -986,7 +994,7 @@ TEST(break_net_adapter_server_close_thread_mode)
     close(fd);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 /* A close on one connection never disturbs another. */
@@ -994,7 +1002,7 @@ TEST(break_net_adapter_server_close_is_per_connection)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = NULL;
-    snow_acceptor_t *acceptor = NULL;
+    SnowAcceptor *acceptor = NULL;
     BreakNetEvent event = {0};
     uint64_t keys[2] = {0u, 0u};
     unsigned key_count = 0u;
@@ -1074,16 +1082,16 @@ TEST(break_net_adapter_server_close_is_per_connection)
     close(fds[1]);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_loopback_wire_round_trip)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
     BreakNetReactor *reactor = NULL;
-    snow_acceptor_t *acceptor = NULL;
-    snow_endpoint_t *endpoint = NULL;
-    snow_tcp_client_t *client = NULL;
+    SnowAcceptor *acceptor = NULL;
+    SnowEndpoint *endpoint = NULL;
+    SnowTcpClient *client = NULL;
     BreakNetEvent event = {0};
     BreakNetEnvelope incoming = {0};
     BreakNetEnvelope outgoing = {0};
@@ -1097,13 +1105,13 @@ TEST(break_net_adapter_loopback_wire_round_trip)
 
     acceptor = break_net_test_acceptor();
     ASSERT_NOT_NULL(acceptor);
-    ASSERT_EQ(snow_endpoint_create(&endpoint), SNOW_OK);
-    ASSERT_EQ(snow_endpoint_set_host(endpoint, "127.0.0.1"), SNOW_OK);
-    ASSERT_EQ(snow_endpoint_set_port(endpoint, snow_endpoint_port(
-        snow_acceptor_endpoint(acceptor))), SNOW_OK);
-    ASSERT_EQ(snow_endpoint_set_timeout(endpoint, 1000), SNOW_OK);
-    ASSERT_EQ(snow_tcp_client_create(endpoint, &client), SNOW_OK);
-    ASSERT_EQ(snow_tcp_client_connect(client), SNOW_OK);
+    ASSERT_EQ(SnowEndpointCreate(&endpoint), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetHost(endpoint, "127.0.0.1"), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetPort(endpoint, SnowEndpointPort(
+        SnowAcceptorEndpoint(acceptor))), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetTimeout(endpoint, 1000), SNOW_OK);
+    ASSERT_EQ(SnowTcpClientCreate(endpoint, &client), SNOW_OK);
+    ASSERT_EQ(SnowTcpClientConnect(client), SNOW_OK);
 
     reactor = break_net_reactor_create(&config);
     ASSERT_NOT_NULL(reactor);
@@ -1118,7 +1126,7 @@ TEST(break_net_adapter_loopback_wire_round_trip)
     ASSERT_EQ(break_net_envelope_encode(&incoming, incoming_wire, sizeof(incoming_wire),
                                         &incoming_size), BREAK_NET_ENVELOPE_OK);
     ASSERT_EQ(incoming_size, 18u + sizeof(incoming_payload));
-    ASSERT_EQ(snow_tcp_client_send(client, incoming_wire, incoming_size), SNOW_OK);
+    ASSERT_EQ(SnowTcpClientSend(client, incoming_wire, incoming_size), SNOW_OK);
 
     for (attempts = 0; attempts < 100; ++attempts) {
         if (break_net_reactor_poll_event(reactor, &event) == BREAK_NET_EVENT_OK) {
@@ -1141,7 +1149,7 @@ TEST(break_net_adapter_loopback_wire_round_trip)
                                      sizeof(incoming_payload)), BREAK_NET_SEND_OK);
     while (received < 18u + sizeof(incoming_payload)) {
         size_t chunk = sizeof(outgoing_wire) - received;
-        ASSERT_EQ(snow_tcp_client_recv(client, outgoing_wire + received, &chunk), SNOW_OK);
+        ASSERT_EQ(SnowTcpClientRecv(client, outgoing_wire + received, &chunk), SNOW_OK);
         ASSERT_TRUE(chunk != 0u);
         received += chunk;
     }
@@ -1154,12 +1162,12 @@ TEST(break_net_adapter_loopback_wire_round_trip)
     ASSERT_EQ(outgoing.payload_size, sizeof(incoming_payload));
     ASSERT_TRUE(memcmp(outgoing.payload, incoming_payload, sizeof(incoming_payload)) == 0);
 
-    ASSERT_EQ(snow_tcp_client_close(client), SNOW_OK);
+    ASSERT_EQ(SnowTcpClientClose(client), SNOW_OK);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
-    snow_tcp_client_destroy(client);
-    snow_endpoint_destroy(endpoint);
+    SnowTcpClientDestroy(client);
+    SnowEndpointDestroy(endpoint);
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1237,7 +1245,7 @@ TEST(break_net_adapter_outbound_full_ring_remove_preserves_tail)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     int client_fd;
     uint64_t key;
     uint64_t deadline;
@@ -1298,7 +1306,7 @@ TEST(break_net_adapter_outbound_full_ring_remove_preserves_tail)
     ASSERT_EQ(break_net_reactor_connection_identity_count_for_test(reactor), 0u);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 /* Review N1 boundary guard: non-full head drops, wrap-around removal order,
@@ -1307,7 +1315,7 @@ TEST(break_net_adapter_outbound_wrap_and_tail_boundaries)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     int client_fd;
     uint64_t key;
     uint64_t deadline;
@@ -1371,7 +1379,7 @@ TEST(break_net_adapter_outbound_wrap_and_tail_boundaries)
     close(client_fd);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 /* Review N2: a permanently failing command (unregistered message id —
@@ -1382,7 +1390,7 @@ TEST(break_net_adapter_outbound_failed_command_blocks_same_key_only)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     int fd_a;
     int fd_b;
     uint64_t key_a;
@@ -1458,14 +1466,14 @@ TEST(break_net_adapter_outbound_failed_command_blocks_same_key_only)
     close(fd_b);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_outbound_sequences_are_monotonic_per_connection)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     int fd_a;
     int fd_b;
     uint64_t key_a;
@@ -1536,7 +1544,7 @@ TEST(break_net_adapter_outbound_sequences_are_monotonic_per_connection)
     close(fd_b);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 static bool break_net_test_wait_for_connection_count(BreakNetReactor *reactor,
@@ -1555,7 +1563,7 @@ TEST(break_net_adapter_rate_limit_config_is_created_only)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     BreakNetRateLimitConfig limits = {0};
     limits.global_accept_per_sec = 10u;
     limits.global_burst = 1u;
@@ -1568,14 +1576,14 @@ TEST(break_net_adapter_rate_limit_config_is_created_only)
     ASSERT_FALSE(break_net_reactor_set_rate_limits(reactor, &limits));
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_rate_limit_zeros_keep_legacy_behavior)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     BreakNetRateLimitConfig limits = {0};
     int fds[3] = {-1, -1, -1};
     uint64_t deadline;
@@ -1595,14 +1603,14 @@ TEST(break_net_adapter_rate_limit_zeros_keep_legacy_behavior)
     for (i = 0u; i < 3u; ++i) close(fds[i]);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_global_burst_then_denies_immediate_accepts)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     BreakNetRateLimitConfig limits = {0};
     int fd_first = -1;
     int fd_second = -1;
@@ -1640,14 +1648,14 @@ TEST(break_net_adapter_global_burst_then_denies_immediate_accepts)
     close(fd_later);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_adapter_per_ip_window_denies_limit_plus_one)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    SnowAcceptor *acceptor = break_net_test_acceptor();
     BreakNetRateLimitConfig limits = {0};
     int fds[2] = {-1, -1};
     int fd_denied = -1;
@@ -1678,7 +1686,7 @@ TEST(break_net_adapter_per_ip_window_denies_limit_plus_one)
     close(fd_denied);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST_MAIN_BEGIN()

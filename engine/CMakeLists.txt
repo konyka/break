@@ -392,7 +392,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
     # configure time. The pin below is mirrored by the snowflake entry in
     # engine/external/locked_dependencies.json and the pin policy in
     # docs/design/snowflake_c11_adapter.md; all three move in one commit.
-    set(BREAK_SNOWFLAKE_PIN "0fceed6d885bb8578743d82cc4a5d7ab2f6b0620")  # snowflake main HEAD 2026-10-24
+    set(BREAK_SNOWFLAKE_PIN "7d3d59978a6c50fa61883da6dc89db56539e066b")  # snowflake main HEAD 2026-11-08
     execute_process(
         COMMAND git -C "${SNOWFLAKE_SOURCE_DIR}" rev-parse HEAD
         RESULT_VARIABLE _break_snowflake_rev_result
@@ -5013,7 +5013,8 @@ endif()
         target_include_directories(test_break_session PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-            target_compile_options(test_break_session PRIVATE -Wno-type-limits -Wno-maybe-uninitialized)
+            target_compile_options(test_break_session PRIVATE -Wno-type-limits
+                $<$<C_COMPILER_ID:GNU>:-Wno-maybe-uninitialized>)
         endif()
         target_link_libraries(test_break_session PRIVATE break_net_test)
         add_test(NAME test_break_session COMMAND test_break_session)
