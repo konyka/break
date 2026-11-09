@@ -1,0 +1,682 @@
+#if !defined(_WIN32)
+#define _DEFAULT_SOURCE
+#endif
+
+#include "test_framework.h"
+#include "../apps/cry_game/cry_checkpoint.h"
+
+#include <animation/anim_compression.h>
+#include <game/break_flow.h>
+#include <game/break_game.h>
+#include <platform/platform_fs.h>
+#include <scene/scene_serial.h>
+#include <script/break_lua.h>
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#if !defined(_WIN32)
+#include <signal.h>
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
+#ifndef CRY_GAME_BAKE_EXECUTABLE
+#error "CRY_GAME_BAKE_EXECUTABLE must name the real baker"
+#endif
+
+#define TEST_COMP_TRANSFORM 1u
+#define TEST_COMP_MESH_REF 3u
+#define TEST_MANIFEST_CAP 2048u
+
+typedef struct {
+    f32 pos[3];
+} TestTransform;
+
+static const char *const k_asset_names[] = {
+    "level.bscn", "level.fg", "actors.sidecar", "director.lua",
+    "player.lua", "broken.lua", "level.banm", "tone.wav",
+    "deterministic.scenario", "load_unload.scenario", "rollback.scenario"
+};
+static const usize k_asset_count = sizeof(k_asset_names) / sizeof(k_asset_names[0]);
+static char g_assets_a[512];
+static char g_assets_b[512];
+static int g_bake_result = -1;
+
+static void join_path(char *out, usize cap, const char *dir, const char *name) {
+    int n = snprintf(out, cap, "%s/%s", dir, name);
+    if (n < 0 || (usize)n >= cap) abort();
+}
+
+static int clear_directory(const char *dir) {
+    PlatformDirEntry entries[32];
+    u32 count = 0;
+    if (!platform_list_dir(dir, entries, 32, &count)) return -1;
+    if (count > 32u) return -1;
+    for (u32 i = 0; i < count; ++i) {
+        char path[1024];
+        if (entries[i].is_dir) return -1;
+        join_path(path, sizeof(path), dir, entries[i].name);
+        if (remove(path) != 0) return -1;
+    }
+    return 0;
+}
+
+static int prepare_directory(const char *dir) {
+    if (platform_file_size(dir, &(u64){0u})) return -1;
+    if (!platform_mkdir(dir)) {
+        if (clear_directory(dir) != 0) return -1;
+        if (!platform_mkdir(dir)) return -1;
+    }
+    return clear_directory(dir);
+}
+
+static int test_write_checkpoint_file(const char *dir, const char *name,
+                                      const void *data, usize size) {
+    char path[1024];
+    join_path(path, sizeof(path), dir, name);
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+    bool ok = size == 0u || fwrite(data, 1, size, fp) == size;
+    if (fclose(fp) != 0) ok = false;
+    return ok ? 0 : -1;
+}
+
+static u8 *test_read_file(const char *dir, const char *name, usize cap,
+                          usize *out_size) {
+    char path[1024];
+    join_path(path, sizeof(path), dir, name);
+    u64 size = 0;
+    *out_size = 0u;
+    if (!platform_file_size(path, &size) || size > (u64)cap) return NULL;
+    u8 *bytes = (u8 *)malloc(size ? (usize)size : 1u);
+    if (!bytes) return NULL;
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        free(bytes);
+        return NULL;
+    }
+    usize got = size ? fread(bytes, 1, (usize)size, fp) : 0u;
+    int extra = fgetc(fp);
+    bool ok = got == (usize)size && extra == EOF;
+    if (fclose(fp) != 0) ok = false;
+    if (!ok) {
+        free(bytes);
+        return NULL;
+    }
+    *out_size = (usize)size;
+    return bytes;
+}
+
+static int test_copy_file(const char *src_dir, const char *dst_dir,
+                          const char *name) {
+    usize size = 0;
+    u8 *bytes = test_read_file(src_dir, name, TEST_MANIFEST_CAP, &size);
+    if (!bytes) return -1;
+    int result = test_write_checkpoint_file(dst_dir, name, bytes, size);
+    free(bytes);
+    return result;
+}
+
+static int test_copy_checkpoint(const char *src_dir, const char *dst_dir) {
+    PlatformDirEntry entries[16];
+    u32 count = 0;
+    if (!platform_list_dir(src_dir, entries, 16, &count) || count > 16u) return -1;
+    for (u32 i = 0; i < count; ++i) {
+        if (entries[i].is_dir || test_copy_file(src_dir, dst_dir, entries[i].name) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static u64 test_fnv1a64(const void *data, usize size) {
+    const u8 *bytes = (const u8 *)data;
+    u64 hash = 14695981039346656037ULL;
+    for (usize i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static int cry_checkpoint_corrupt_payload_for_fixture(const char *dir,
+                                                       const char *prefix) {
+    PlatformDirEntry entries[16];
+    u32 count = 0;
+    if (!platform_list_dir(dir, entries, 16, &count) || count > 16u) return -1;
+    const char *selected = NULL;
+    usize prefix_len = strlen(prefix);
+    for (u32 i = 0; i < count; ++i) {
+        if (!entries[i].is_dir && strncmp(entries[i].name, prefix, prefix_len) == 0 &&
+            (!selected || strcmp(entries[i].name, selected) > 0))
+            selected = entries[i].name;
+    }
+    if (!selected) return -1;
+    char path[1024];
+    join_path(path, sizeof(path), dir, selected);
+    FILE *fp = fopen(path, "r+b");
+    if (!fp) return -1;
+    int value = fgetc(fp);
+    bool ok = value != EOF;
+    if (ok) {
+        rewind(fp);
+        ok = fputc(value ^ 0x01, fp) != EOF && fflush(fp) == 0;
+    }
+    if (fclose(fp) != 0) ok = false;
+    return ok ? 0 : -1;
+}
+
+static int file_exists(const char *dir, const char *name) {
+    char path[1024];
+    join_path(path, sizeof(path), dir, name);
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return 0;
+    fclose(fp);
+    return 1;
+}
+
+static int run_baker(const char *output) {
+    char command[1600];
+    int n = snprintf(command, sizeof(command), "\"%s\" --output \"%s\"",
+                     CRY_GAME_BAKE_EXECUTABLE, output);
+    if (n < 0 || (usize)n >= sizeof(command)) return -1;
+    return system(command);
+}
+
+static int ensure_baked(void) {
+    if (g_bake_result >= 0) return g_bake_result;
+    test_tmp(g_assets_a, sizeof(g_assets_a), "cry_game_assets_a");
+    test_tmp(g_assets_b, sizeof(g_assets_b), "cry_game_assets_b");
+    if (prepare_directory(g_assets_a) != 0 || prepare_directory(g_assets_b) != 0) {
+        g_bake_result = 1;
+        return g_bake_result;
+    }
+    g_bake_result = run_baker(g_assets_a);
+    if (g_bake_result == 0) g_bake_result = run_baker(g_assets_b);
+    return g_bake_result;
+}
+
+static int files_equal(const char *dir_a, const char *dir_b, const char *name) {
+    char path_a[1024];
+    char path_b[1024];
+    join_path(path_a, sizeof(path_a), dir_a, name);
+    join_path(path_b, sizeof(path_b), dir_b, name);
+    u64 size_a = 0, size_b = 0;
+    if (!platform_file_size(path_a, &size_a) || size_a == 0u ||
+        !platform_file_size(path_b, &size_b) || size_a != size_b)
+        return 0;
+    FILE *a = fopen(path_a, "rb");
+    FILE *b = fopen(path_b, "rb");
+    if (!a || !b) {
+        if (a) fclose(a);
+        if (b) fclose(b);
+        return 0;
+    }
+    int equal = 1;
+    for (;;) {
+        u8 bytes_a[4096];
+        u8 bytes_b[4096];
+        usize got_a = fread(bytes_a, 1, sizeof(bytes_a), a);
+        usize got_b = fread(bytes_b, 1, sizeof(bytes_b), b);
+        if (got_a != got_b || memcmp(bytes_a, bytes_b, got_a) != 0) {
+            equal = 0;
+            break;
+        }
+        if (got_a < sizeof(bytes_a)) {
+            if (ferror(a) || ferror(b)) equal = 0;
+            break;
+        }
+    }
+    if (fclose(a) != 0) equal = 0;
+    if (fclose(b) != 0) equal = 0;
+    return equal;
+}
+
+static u16 read_u16(const u8 *p) {
+    return (u16)((u16)p[0] | ((u16)p[1] << 8));
+}
+
+static u32 read_u32(const u8 *p) {
+    return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) |
+           ((u32)p[3] << 24);
+}
+
+static u64 read_u64(const u8 *p) {
+    return (u64)read_u32(p) | ((u64)read_u32(p + 4) << 32);
+}
+
+TEST(baker_emits_every_formal_asset_byte_identically) {
+    ASSERT_EQ(ensure_baked(), 0);
+    for (usize i = 0; i < k_asset_count; ++i)
+        ASSERT_TRUE(files_equal(g_assets_a, g_assets_b, k_asset_names[i]));
+}
+
+typedef struct {
+    Scene scene;
+} SceneHook;
+
+static BreakGameError load_baked_scene(void *user, World *world, const char *path) {
+    SceneHook *hook = (SceneHook *)user;
+    return scene_load_binary(world, &hook->scene, path) ? BREAK_GAME_OK
+                                                       : BREAK_GAME_FAILED;
+}
+
+static void unload_baked_scene(void *user, World *world) {
+    (void)world;
+    SceneHook *hook = (SceneHook *)user;
+    free(hook->scene.materials);
+    hook->scene.materials = NULL;
+    hook->scene.material_count = 0u;
+    scene_serial_free(&hook->scene);
+}
+
+static void count_actor_tick(BreakGame *game, Entity entity, f32 dt, void *user) {
+    (void)game;
+    (void)entity;
+    (void)dt;
+    ++*(u32 *)user;
+}
+
+TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader) {
+    ASSERT_EQ(ensure_baked(), 0);
+    char scene_path[1024];
+    char sidecar_path[1024];
+    join_path(scene_path, sizeof(scene_path), g_assets_a, "level.bscn");
+    join_path(sidecar_path, sizeof(sidecar_path), g_assets_a, "actors.sidecar");
+    ASSERT_TRUE(scene_probe_binary(scene_path));
+
+    World *world = world_create();
+    ASSERT_NOT_NULL(world);
+    world_register_component(world, BREAK_GAME_POSITION_COMPONENT, sizeof(Vec3));
+    world_register_component(world, TEST_COMP_TRANSFORM, sizeof(TestTransform));
+    world_register_component(world, TEST_COMP_MESH_REF, sizeof(u32));
+    BreakGameConfig config = {8u, 8u};
+    BreakGame *game = break_game_create(world, &config);
+    ASSERT_NOT_NULL(game);
+    static const char *const class_names[] = {
+        "Ground", "Player", "Enemy", "DynamicWall", "Vehicle",
+        "VisibleColor", "HiddenColor"
+    };
+    u32 tick = 0;
+    for (u32 i = 0; i < 7u; ++i) {
+        BreakGameClassDesc desc;
+        memset(&desc, 0, sizeof(desc));
+        desc.name = class_names[i];
+        u32 class_id = 0;
+        ASSERT_EQ(break_game_register_class(game, &desc, &class_id), BREAK_GAME_OK);
+        break_game_set_tick(game, class_id, count_actor_tick, &tick);
+    }
+    SceneHook hook;
+    memset(&hook, 0, sizeof(hook));
+    BreakGameLevelHooks hooks = {load_baked_scene, unload_baked_scene, &hook};
+    ASSERT_EQ(break_game_level_open(game, &hooks, scene_path, sidecar_path),
+              BREAK_GAME_OK);
+    ASSERT_EQ(world->entity_count, 8u);
+    for (u32 i = 1; i <= 7u; ++i) {
+        ASSERT_TRUE(world_entity_exists(world, world->entities[i]));
+        ASSERT_TRUE(world->entities[i].generation != 0u);
+        ASSERT_NOT_NULL(world_get_component(world, world->entities[i],
+                                            TEST_COMP_TRANSFORM));
+        u32 *mesh = (u32 *)world_get_component(world, world->entities[i],
+                                               TEST_COMP_MESH_REF);
+        ASSERT_NOT_NULL(mesh);
+        ASSERT_EQ(*mesh, 0u);
+    }
+    break_game_tick(game, 1.0f / 60.0f);
+    ASSERT_EQ(tick, 7u);
+
+    ASSERT_EQ(hook.scene.node_count, 7u);
+    ASSERT_EQ(hook.scene.mesh_geometry_count, 1u);
+    ASSERT_EQ(hook.scene.mesh_geometry[0].vertex_count, 24u);
+    ASSERT_EQ(hook.scene.mesh_geometry[0].index_count, 36u);
+    ASSERT_EQ(hook.scene.resource_count, 8u);
+    ASSERT_FLOAT_EQ(hook.scene.nodes[0].local_transform.e[0][0], 16.0f, 0.0f);
+    ASSERT_TRUE(hook.scene.nodes[5].has_mesh);
+    ASSERT_FALSE(hook.scene.nodes[6].has_mesh);
+    ASSERT_EQ(hook.scene.nodes[5].mesh_index, 0u);
+    ASSERT_EQ(hook.scene.nodes[6].mesh_index, 0u);
+    ASSERT_EQ(hook.scene.nodes[5].material_idx, 5u);
+    ASSERT_EQ(hook.scene.nodes[6].material_idx, 6u);
+    ASSERT_TRUE(scene_rebuild_materials_from_manifest(&hook.scene));
+    ASSERT_EQ(hook.scene.material_count, 7u);
+    ASSERT_TRUE(hook.scene.materials[5].base_color[0] >
+                hook.scene.materials[5].base_color[2]);
+    ASSERT_TRUE(hook.scene.materials[6].base_color[2] >
+                hook.scene.materials[6].base_color[0]);
+
+    ASSERT_EQ(break_game_level_close(game), BREAK_GAME_OK);
+    break_game_destroy(game);
+    world_destroy(world);
+}
+
+TEST(flow_deserializes_enter_delay_add_item_chain) {
+    ASSERT_EQ(ensure_baked(), 0);
+    usize size = 0;
+    u8 *bytes = test_read_file(g_assets_a, "level.fg", 4096u, &size);
+    ASSERT_NOT_NULL(bytes);
+    BreakFlowGraph *graph = NULL;
+    ASSERT_EQ(break_flow_deserialize(bytes, size, &graph), BREAK_FLOW_OK);
+    free(bytes);
+    ASSERT_NOT_NULL(graph);
+    ASSERT_EQ(break_flow_graph_node_count(graph), 3u);
+    ASSERT_EQ(break_flow_graph_link_count(graph), 2u);
+    BreakFlowNodeDesc nodes[3];
+    for (u32 i = 0; i < 3u; ++i) {
+        u32 id = 0;
+        ASSERT_EQ(break_flow_node_at(graph, i, &id, &nodes[i]), BREAK_FLOW_OK);
+        ASSERT_EQ(id, i + 1u);
+    }
+    ASSERT_EQ(nodes[0].type, BREAK_FLOW_NODE_EVENT);
+    ASSERT_STR_EQ(nodes[0].name, "enter");
+    ASSERT_EQ(nodes[0].event_key, 1u);
+    ASSERT_EQ(nodes[1].type, BREAK_FLOW_NODE_DELAY);
+    ASSERT_STR_EQ(nodes[1].name, "delay");
+    ASSERT_EQ(nodes[1].delay_ticks, 30u);
+    ASSERT_EQ(nodes[2].type, BREAK_FLOW_NODE_ENTITY_ADD_ITEM);
+    ASSERT_STR_EQ(nodes[2].name, "add-item");
+    ASSERT_EQ(nodes[2].entity.index, 2u);
+    ASSERT_TRUE(nodes[2].entity.generation != 0u);
+    ASSERT_EQ(nodes[2].item_id, 1u);
+    for (u32 i = 0; i < 2u; ++i) {
+        u32 id = 0;
+        BreakFlowLinkDesc link;
+        ASSERT_EQ(break_flow_link_at(graph, i, &id, &link), BREAK_FLOW_OK);
+        ASSERT_EQ(link.kind, BREAK_FLOW_PORT_EXEC);
+        ASSERT_EQ(link.source_node, i + 1u);
+        ASSERT_EQ(link.target_node, i + 2u);
+        ASSERT_EQ(link.target_port, BREAK_FLOW_EXEC_IN);
+    }
+    break_flow_graph_destroy(graph);
+}
+
+static f32 quaternion_angle(const f32 *a, const f32 *b) {
+    f32 dot = fabsf(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+    if (dot > 1.0f) dot = 1.0f;
+    return 2.0f * acosf(dot);
+}
+
+TEST(animation_decodes_within_public_error_bounds) {
+    ASSERT_EQ(ensure_baked(), 0);
+    usize size = 0;
+    u8 *bytes = test_read_file(g_assets_a, "level.banm", ANIM_CODEC_MAX_BYTES,
+                               &size);
+    ASSERT_NOT_NULL(bytes);
+    static AnimClip decoded;
+    ASSERT_EQ(anim_codec_decode(bytes, size, &decoded), ANIM_CODEC_OK);
+    free(bytes);
+    static const f32 times[3] = {0.0f, 0.5f, 1.0f};
+    static const f32 translation[3][4] = {
+        {0.0f, 0.0f, 0.0f, 0.0f},
+        {1.0f, 2.0f, 3.0f, 0.0f},
+        {2.0f, 0.0f, -1.0f, 0.0f}
+    };
+    static const f32 rotation[3][4] = {
+        {0.0f, 0.0f, 0.0f, 1.0f},
+        {0.0f, 0.6f, 0.0f, 0.8f},
+        {0.0f, 0.0f, 0.0f, 1.0f}
+    };
+    static const f32 scale[3][4] = {
+        {1.0f, 1.0f, 1.0f, 0.0f},
+        {2.0f, 3.0f, 4.0f, 0.0f},
+        {1.0f, 1.0f, 1.0f, 0.0f}
+    };
+    const f32 (*expected[3])[4] = {translation, rotation, scale};
+    ASSERT_FLOAT_EQ(decoded.duration, 1.0f, 0.0f);
+    ASSERT_TRUE(decoded.loop);
+    ASSERT_EQ(decoded.channel_count, 3u);
+    f32 time_bound = anim_codec_time_error_bound(1.0f);
+    for (u32 c = 0; c < 3u; ++c) {
+        const AnimChannel *channel = &decoded.channels[c];
+        ASSERT_EQ(channel->joint_index, c);
+        ASSERT_EQ(channel->keyframe_count, 3u);
+        ASSERT_EQ(channel->path, (AnimPathType)c);
+        for (u32 k = 0; k < 3u; ++k) {
+            ASSERT_FLOAT_EQ(channel->times[k], times[k], time_bound);
+            if (c == 1u) {
+                ASSERT_TRUE(quaternion_angle(rotation[k], channel->values[k]) <=
+                            ANIM_CODEC_ROTATION_ERROR_BOUND);
+            } else {
+                f32 min_value[3] = {expected[c][0][0], expected[c][0][1],
+                                    expected[c][0][2]};
+                f32 max_value[3] = {min_value[0], min_value[1], min_value[2]};
+                for (u32 other = 1; other < 3u; ++other) {
+                    for (u32 a = 0; a < 3u; ++a) {
+                        f32 value = expected[c][other][a];
+                        if (value < min_value[a]) min_value[a] = value;
+                        if (value > max_value[a]) max_value[a] = value;
+                    }
+                }
+                for (u32 a = 0; a < 3u; ++a) {
+                    f32 bound = anim_codec_scalar_error_bound(min_value[a], max_value[a]);
+                    ASSERT_FLOAT_EQ(channel->values[k][a], expected[c][k][a], bound);
+                }
+            }
+        }
+    }
+}
+
+TEST(wav_is_canonical_44100_hz_mono_pcm16) {
+    ASSERT_EQ(ensure_baked(), 0);
+    usize size = 0;
+    u8 *bytes = test_read_file(g_assets_a, "tone.wav", 65536u, &size);
+    ASSERT_NOT_NULL(bytes);
+    ASSERT_EQ(size, 44u + 4410u * 2u);
+    ASSERT_TRUE(memcmp(bytes, "RIFF", 4) == 0);
+    ASSERT_TRUE(memcmp(bytes + 8, "WAVEfmt ", 8) == 0);
+    ASSERT_TRUE(memcmp(bytes + 36, "data", 4) == 0);
+    ASSERT_EQ(read_u32(bytes + 4), (u32)size - 8u);
+    ASSERT_EQ(read_u32(bytes + 16), 16u);
+    ASSERT_EQ(read_u16(bytes + 20), 1u);
+    ASSERT_EQ(read_u16(bytes + 22), 1u);
+    ASSERT_EQ(read_u32(bytes + 24), 44100u);
+    ASSERT_EQ(read_u32(bytes + 28), 88200u);
+    ASSERT_EQ(read_u16(bytes + 32), 2u);
+    ASSERT_EQ(read_u16(bytes + 34), 16u);
+    ASSERT_EQ(read_u32(bytes + 40), 4410u * 2u);
+    free(bytes);
+}
+
+TEST(lua_assets_execute_and_broken_source_is_rejected) {
+    ASSERT_EQ(ensure_baked(), 0);
+    usize director_size = 0, player_size = 0, broken_size = 0;
+    u8 *director = test_read_file(g_assets_a, "director.lua", 4096u, &director_size);
+    u8 *player = test_read_file(g_assets_a, "player.lua", 4096u, &player_size);
+    u8 *broken = test_read_file(g_assets_a, "broken.lua", 4096u, &broken_size);
+    ASSERT_NOT_NULL(director);
+    ASSERT_NOT_NULL(player);
+    ASSERT_NOT_NULL(broken);
+    BreakLuaRuntime *runtime = break_lua_runtime_create(NULL);
+    ASSERT_NOT_NULL(runtime);
+    ASSERT_EQ(break_lua_runtime_load_module(runtime, "director", director,
+                                            director_size), BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(runtime, "player", player,
+                                            player_size), BREAK_LUA_OK);
+    BreakLuaValue results[2];
+    memset(results, 0, sizeof(results));
+    ASSERT_EQ(break_lua_runtime_call(runtime, "director", "on_enter", NULL, 0u,
+                                     results, 2u), BREAK_LUA_OK);
+    ASSERT_EQ(results[0].type, BREAK_LUA_VALUE_NUMBER);
+    ASSERT_EQ(results[1].type, BREAK_LUA_VALUE_NUMBER);
+    ASSERT_FLOAT_EQ(results[0].as.n, 30.0, 0.0);
+    ASSERT_FLOAT_EQ(results[1].as.n, 1.0, 0.0);
+    ASSERT_EQ(break_lua_runtime_load_module(runtime, "broken", broken,
+                                            broken_size), BREAK_LUA_FAILED);
+    break_lua_runtime_destroy(runtime);
+    free(director);
+    free(player);
+    free(broken);
+}
+
+TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption) {
+    char dir[512], backup[512];
+    test_tmp(dir, sizeof(dir), "cry_checkpoint_current");
+    test_tmp(backup, sizeof(backup), "cry_checkpoint_backup");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(prepare_directory(backup), 0);
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    CryCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                              .hash = 0u, .name = "runtime_1.bin"};
+    file.hash = test_fnv1a64(payload, sizeof(payload));
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+    u64 before_hash = cry_checkpoint_manifest_hash(dir);
+    ASSERT_TRUE(before_hash != 0u);
+    ASSERT_EQ(test_copy_checkpoint(dir, backup), 0);
+
+    usize manifest_size = 0;
+    u8 *manifest = test_read_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                  TEST_MANIFEST_CAP, &manifest_size);
+    ASSERT_NOT_NULL(manifest);
+    ASSERT_EQ(manifest_size, 40u + 88u);
+    ASSERT_TRUE(memcmp(manifest, "CRYCKPT\0", 8) == 0);
+    ASSERT_EQ(read_u32(manifest + 8), 1u);
+    ASSERT_EQ(read_u32(manifest + 12), 40u);
+    ASSERT_EQ(read_u64(manifest + 16), (u64)manifest_size);
+    ASSERT_EQ(read_u64(manifest + 24), 1u);
+    ASSERT_EQ(read_u32(manifest + 32), 1u);
+    ASSERT_EQ(read_u32(manifest + 36), 0u);
+    ASSERT_EQ(read_u32(manifest + 40), 1u);
+    ASSERT_EQ(read_u32(manifest + 44), 13u);
+    ASSERT_EQ(read_u64(manifest + 48), sizeof(payload));
+    ASSERT_EQ(read_u64(manifest + 56), file.hash);
+    ASSERT_STR_EQ((const char *)manifest + 64, "runtime_1.bin");
+    free(manifest);
+
+    strcpy(file.name, "runtime_2.bin");
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 2u), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(before_hash != cry_checkpoint_manifest_hash(dir));
+    ASSERT_EQ(cry_checkpoint_corrupt_payload_for_fixture(dir, "runtime"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(cry_checkpoint_probe(backup), BREAK_RUNTIME_OK);
+
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(test_copy_checkpoint(backup, dir), 0);
+    char manifest_path[1024];
+    join_path(manifest_path, sizeof(manifest_path), dir, CRY_CHECKPOINT_MANIFEST_NAME);
+    FILE *damaged = fopen(manifest_path, "ab");
+    ASSERT_NOT_NULL(damaged);
+    ASSERT_EQ(fputc(0u, damaged), 0);
+    ASSERT_EQ(fclose(damaged), 0);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(cry_checkpoint_probe(backup), BREAK_RUNTIME_OK);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(prepare_directory(backup), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(backup), 0);
+}
+
+TEST(checkpoint_rejects_unsafe_names_and_overflow_before_commit) {
+    char dir[512];
+    test_tmp(dir, sizeof(dir), "cry_checkpoint_invalid");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    const u8 payload[] = {4u, 3u, 2u, 1u};
+    CryCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                              .hash = 0u, .name = "state_1.bin"};
+    file.hash = test_fnv1a64(payload, sizeof(payload));
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+    u64 old_hash = cry_checkpoint_manifest_hash(dir);
+    static const char *const bad_names[] = {
+        "../escape", "/absolute", "folder\\escape", "bad..name"
+    };
+    for (usize i = 0; i < sizeof(bad_names) / sizeof(bad_names[0]); ++i) {
+        strcpy(file.name, bad_names[i]);
+        ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 2u),
+                  BREAK_RUNTIME_INVALID);
+        ASSERT_EQ(cry_checkpoint_manifest_hash(dir), old_hash);
+    }
+    strcpy(file.name, "state_2.bin");
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, NULL, 1u, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 0u, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file,
+              CRY_CHECKPOINT_MAX_FILES + 1u, 2u), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 0u),
+              BREAK_RUNTIME_INVALID);
+    file.size = (u64)CRY_CHECKPOINT_MAX_FILE_BYTES + 1u;
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 2u),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(cry_checkpoint_manifest_hash(dir), old_hash);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OK);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+}
+
+#if !defined(_WIN32)
+static volatile sig_atomic_t g_sigxfsz_seen;
+static void on_sigxfsz(int signal_number) {
+    (void)signal_number;
+    g_sigxfsz_seen = 1;
+}
+
+TEST(checkpoint_mid_write_failure_preserves_old_manifest_and_removes_new_payload) {
+    char dir[512];
+    test_tmp(dir, sizeof(dir), "cry_checkpoint_write_failure");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    CryCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                              .hash = 0u, .name = "runtime_1.bin"};
+    file.hash = test_fnv1a64(payload, sizeof(payload));
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+    usize before_size = 0;
+    u8 *before = test_read_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                TEST_MANIFEST_CAP, &before_size);
+    ASSERT_NOT_NULL(before);
+    ASSERT_TRUE(before_size > 1u);
+    strcpy(file.name, "runtime_2.bin");
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+
+    struct sigaction action, previous_action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = on_sigxfsz;
+    sigemptyset(&action.sa_mask);
+    ASSERT_EQ(sigaction(SIGXFSZ, &action, &previous_action), 0);
+    struct rlimit previous_limit;
+    ASSERT_EQ(getrlimit(RLIMIT_FSIZE, &previous_limit), 0);
+    struct rlimit limit = previous_limit;
+    limit.rlim_cur = (rlim_t)(before_size - 1u);
+    g_sigxfsz_seen = 0;
+    int limited = setrlimit(RLIMIT_FSIZE, &limit) == 0;
+    BreakRuntimeError result = limited
+        ? cry_checkpoint_write_manifest(dir, &file, 1u, 2u)
+        : BREAK_RUNTIME_FAILED;
+    int restored = setrlimit(RLIMIT_FSIZE, &previous_limit);
+    sigaction(SIGXFSZ, &previous_action, NULL);
+
+    ASSERT_TRUE(limited);
+    ASSERT_EQ(restored, 0);
+    ASSERT_TRUE(g_sigxfsz_seen);
+    ASSERT_EQ(result, BREAK_RUNTIME_FAILED);
+    usize after_size = 0;
+    u8 *after = test_read_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                               TEST_MANIFEST_CAP, &after_size);
+    ASSERT_NOT_NULL(after);
+    ASSERT_EQ(after_size, before_size);
+    ASSERT_TRUE(memcmp(after, before, before_size) == 0);
+    ASSERT_FALSE(file_exists(dir, "runtime_2.bin"));
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OK);
+    free(before);
+    free(after);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+}
+#endif
+
+TEST_MAIN_BEGIN()
+    RUN_TEST(baker_emits_every_formal_asset_byte_identically);
+    RUN_TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader);
+    RUN_TEST(flow_deserializes_enter_delay_add_item_chain);
+    RUN_TEST(animation_decodes_within_public_error_bounds);
+    RUN_TEST(wav_is_canonical_44100_hz_mono_pcm16);
+    RUN_TEST(lua_assets_execute_and_broken_source_is_rejected);
+    RUN_TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption);
+    RUN_TEST(checkpoint_rejects_unsafe_names_and_overflow_before_commit);
+#if !defined(_WIN32)
+    RUN_TEST(checkpoint_mid_write_failure_preserves_old_manifest_and_removes_new_payload);
+#endif
+TEST_MAIN_END()

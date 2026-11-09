@@ -1534,7 +1534,8 @@ target_link_libraries(break_game_lua PUBLIC break_game break_lua)
 
 option(CRY_GAME_ENABLE_NETWORK "Enable the optional authenticated Snowflake channel" OFF)
 add_library(cry_game_core STATIC
-    apps/cry_game/cry_game.c)
+    apps/cry_game/cry_game.c
+    apps/cry_game/cry_checkpoint.c)
 set_property(TARGET cry_game_core PROPERTY C_STANDARD 11)
 target_include_directories(cry_game_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(cry_game_core PUBLIC
@@ -1542,6 +1543,9 @@ target_link_libraries(cry_game_core PUBLIC
 add_executable(cry_game apps/cry_game/main.c)
 target_link_libraries(cry_game PRIVATE cry_game_core m)
 engine_link_rhi_backend(cry_game)
+add_executable(cry_game_bake apps/cry_game/cry_game_bake.c)
+set_property(TARGET cry_game_bake PROPERTY C_STANDARD 11)
+target_link_libraries(cry_game_bake PRIVATE cry_game_core m)
 if(CRY_GAME_ENABLE_NETWORK)
     target_compile_definitions(cry_game PRIVATE CRY_GAME_ENABLE_NETWORK=1)
 else()
@@ -4483,6 +4487,17 @@ endif()
         test_cry_game_nm_unsupported PROPERTIES
         LABELS "headless;cry_game;platform_contract" SKIP_RETURN_CODE 77)
 
+    add_executable(test_cry_game_assets tests/test_cry_game_assets.c)
+    set_property(TARGET test_cry_game_assets PROPERTY C_STANDARD 11)
+    target_include_directories(test_cry_game_assets PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_cry_game_assets PRIVATE
+        CRY_GAME_BAKE_EXECUTABLE="$<TARGET_FILE:cry_game_bake>")
+    target_link_libraries(test_cry_game_assets PRIVATE cry_game_core m)
+    add_dependencies(test_cry_game_assets cry_game_bake)
+    add_test(NAME test_cry_game_assets COMMAND test_cry_game_assets)
+    set_tests_properties(test_cry_game_assets PROPERTIES
+        LABELS "headless;cry_game;assets")
+
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
         target_include_directories(test_break_${ai_test} PRIVATE ${TEST_INCLUDE_DIRS})
@@ -6681,7 +6696,7 @@ endif()
         LABELS "platform_contract")
 endif()
 
-foreach(_cry_required_target IN ITEMS cry_game_core cry_game)
+foreach(_cry_required_target IN ITEMS cry_game_core cry_game cry_game_bake)
     if(NOT TARGET ${_cry_required_target})
         message(FATAL_ERROR "${_cry_required_target} must be defined outside ENGINE_BUILD_TESTS")
     endif()
