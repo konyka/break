@@ -56,12 +56,27 @@ static bool join_path(char out[PLATFORM_FS_PATH_CAPACITY], const char *directory
     return written > 0 && (usize)written < PLATFORM_FS_PATH_CAPACITY;
 }
 
+static bool name_equal(const char *a, const char *b) {
+    usize i = 0;
+    for (;;) {
+        unsigned char ac = (unsigned char)a[i];
+        unsigned char bc = (unsigned char)b[i];
+        if (ac >= (unsigned char)'A' && ac <= (unsigned char)'Z')
+            ac = (unsigned char)(ac + ((unsigned char)'a' - (unsigned char)'A'));
+        if (bc >= (unsigned char)'A' && bc <= (unsigned char)'Z')
+            bc = (unsigned char)(bc + ((unsigned char)'a' - (unsigned char)'A'));
+        if (ac != bc) return false;
+        if (ac == 0u) return true;
+        ++i;
+    }
+}
+
 static bool valid_basename(const char name[64]) {
     if (!name) return false;
     usize length = 0;
     while (length < 64u && name[length] != '\0') ++length;
-    if (length == 0u || length == 64u || strcmp(name, ".") == 0 ||
-        strcmp(name, CRY_CHECKPOINT_MANIFEST_NAME) == 0)
+    if (length == 0u || length == 64u || name[length - 1u] == '.' ||
+        name_equal(name, CRY_CHECKPOINT_MANIFEST_NAME))
         return false;
     for (usize i = 0; i < length; ++i) {
         unsigned char ch = (unsigned char)name[i];
@@ -77,7 +92,9 @@ static bool valid_basename(const char name[64]) {
 }
 
 static BreakRuntimeError validate_file(const CryCheckpointFile *file) {
-    if (!file || file->kind == 0u || !valid_basename(file->name))
+    if (!file) return BREAK_RUNTIME_INVALID;
+    if (!memchr(file->name, '\0', sizeof(file->name))) return BREAK_RUNTIME_OVERLOAD;
+    if (file->kind == 0u || !valid_basename(file->name))
         return BREAK_RUNTIME_INVALID;
     if (file->size > (u64)CRY_CHECKPOINT_MAX_FILE_BYTES)
         return BREAK_RUNTIME_OVERLOAD;
@@ -87,7 +104,7 @@ static BreakRuntimeError validate_file(const CryCheckpointFile *file) {
 static bool duplicate_name(const CryCheckpointFile *files, u32 count,
                            const char name[64]) {
     for (u32 i = 0; i < count; ++i) {
-        if (strcmp(files[i].name, name) == 0) return true;
+        if (name_equal(files[i].name, name)) return true;
     }
     return false;
 }
@@ -117,7 +134,8 @@ static BreakRuntimeError parse_manifest(CryManifest *manifest) {
         u32 name_length = get32(record + 4);
         file->size = get64(record + 8);
         file->hash = get64(record + 16);
-        if (name_length == 0u || name_length >= 64u) return BREAK_RUNTIME_INVALID;
+        if (name_length >= 64u) return BREAK_RUNTIME_OVERLOAD;
+        if (name_length == 0u) return BREAK_RUNTIME_INVALID;
         for (u32 n = 0; n < 64u; ++n) {
             u8 value = record[24u + n];
             if (n > name_length && value != 0u) return BREAK_RUNTIME_INVALID;
@@ -253,7 +271,8 @@ BreakRuntimeError cry_checkpoint_write_manifest(const char *directory,
     for (u32 i = 0; i < file_count; ++i) {
         result = validate_file(&files[i]);
         if (result != BREAK_RUNTIME_OK) goto fail;
-        if (duplicate_name(files, i, files[i].name)) {
+        if (duplicate_name(files, i, files[i].name) ||
+            (old_valid && duplicate_name(old.files, old.file_count, files[i].name))) {
             result = BREAK_RUNTIME_INVALID;
             goto fail;
         }
@@ -278,9 +297,13 @@ BreakRuntimeError cry_checkpoint_write_manifest(const char *directory,
     }
     if (!platform_atomic_writer_commit(writer)) {
         if (old_exists && old.raw_size > 0u) {
-            (void)write_raw_manifest(manifest_path, old.raw, old.raw_size);
+            bool restored = write_raw_manifest(manifest_path, old.raw, old.raw_size);
+            if (old_valid)
+                cleanup_safe = restored && cry_checkpoint_probe(directory) == BREAK_RUNTIME_OK;
         } else if (!old_exists) {
             (void)remove(manifest_path);
+            u64 remaining_size = 0;
+            cleanup_safe = !platform_file_size(manifest_path, &remaining_size);
         }
         result = BREAK_RUNTIME_FAILED;
         goto fail;

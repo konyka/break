@@ -22,9 +22,16 @@
 #include <sys/resource.h>
 #include <unistd.h>
 #endif
+#if defined(CRY_TEST_WRAP_FS)
+#include <errno.h>
+#include <sys/stat.h>
+#endif
 
 #ifndef CRY_GAME_BAKE_EXECUTABLE
 #error "CRY_GAME_BAKE_EXECUTABLE must name the real baker"
+#endif
+#ifndef CRY_GAME_FORMAL_ASSET_DIR
+#error "CRY_GAME_FORMAL_ASSET_DIR must name the formal assets"
 #endif
 
 #define TEST_COMP_TRANSFORM 1u
@@ -44,6 +51,53 @@ static const usize k_asset_count = sizeof(k_asset_names) / sizeof(k_asset_names[
 static char g_assets_a[512];
 static char g_assets_b[512];
 static int g_bake_result = -1;
+
+#if defined(CRY_TEST_WRAP_FS)
+static u32 g_dir_fsync_failures;
+static u32 g_dir_fsync_failed;
+static u32 g_restore_write_failed;
+static bool g_arm_restore_write;
+static bool g_fail_next_write;
+
+ssize_t __real_write(int fd, const void *data, usize size);
+int __real_fsync(int fd);
+
+ssize_t __wrap_write(int fd, const void *data, usize size) {
+    if (g_fail_next_write) {
+        g_fail_next_write = false;
+        ++g_restore_write_failed;
+        errno = EIO;
+        return -1;
+    }
+    return __real_write(fd, data, size);
+}
+
+int __wrap_fsync(int fd) {
+    struct stat status;
+    if (g_dir_fsync_failures > 0u && fstat(fd, &status) == 0 && S_ISDIR(status.st_mode)) {
+        --g_dir_fsync_failures;
+        ++g_dir_fsync_failed;
+        if (g_arm_restore_write) g_fail_next_write = true;
+        errno = EIO;
+        return -1;
+    }
+    return __real_fsync(fd);
+}
+
+static void fs_fault_reset(void) {
+    g_dir_fsync_failures = 0u;
+    g_dir_fsync_failed = 0u;
+    g_restore_write_failed = 0u;
+    g_arm_restore_write = false;
+    g_fail_next_write = false;
+}
+
+static void fs_fault_post_rename(bool fail_restore_write) {
+    fs_fault_reset();
+    g_dir_fsync_failures = 1u;
+    g_arm_restore_write = fail_restore_write;
+}
+#endif
 
 static void join_path(char *out, usize cap, const char *dir, const char *name) {
     int n = snprintf(out, cap, "%s/%s", dir, name);
@@ -234,6 +288,27 @@ static int files_equal(const char *dir_a, const char *dir_b, const char *name) {
     return equal;
 }
 
+static const char *formal_asset_dir(void) {
+    const char *override = getenv("CRY_GAME_FORMAL_ASSET_DIR");
+    return override && override[0] != '\0' ? override : CRY_GAME_FORMAL_ASSET_DIR;
+}
+
+TEST(formal_assets_match_fresh_baker) {
+    ASSERT_EQ(ensure_baked(), 0);
+    PlatformDirEntry entries[16];
+    u32 count = 0;
+    ASSERT_TRUE(platform_list_dir(formal_asset_dir(), entries, 16, &count));
+    ASSERT_EQ(count, k_asset_count);
+    for (usize i = 0; i < k_asset_count; ++i) {
+        bool found = false;
+        for (u32 n = 0; n < count && n < 16u; ++n) {
+            if (strcmp(entries[n].name, k_asset_names[i]) == 0) found = true;
+        }
+        ASSERT_TRUE(found);
+        ASSERT_TRUE(files_equal(formal_asset_dir(), g_assets_a, k_asset_names[i]));
+    }
+}
+
 static u16 read_u16(const u8 *p) {
     return (u16)((u16)p[0] | ((u16)p[1] << 8));
 }
@@ -283,8 +358,8 @@ TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader) {
     ASSERT_EQ(ensure_baked(), 0);
     char scene_path[1024];
     char sidecar_path[1024];
-    join_path(scene_path, sizeof(scene_path), g_assets_a, "level.bscn");
-    join_path(sidecar_path, sizeof(sidecar_path), g_assets_a, "actors.sidecar");
+    join_path(scene_path, sizeof(scene_path), formal_asset_dir(), "level.bscn");
+    join_path(sidecar_path, sizeof(sidecar_path), formal_asset_dir(), "actors.sidecar");
     ASSERT_TRUE(scene_probe_binary(scene_path));
 
     World *world = world_create();
@@ -354,7 +429,7 @@ TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader) {
 TEST(flow_deserializes_enter_delay_add_item_chain) {
     ASSERT_EQ(ensure_baked(), 0);
     usize size = 0;
-    u8 *bytes = test_read_file(g_assets_a, "level.fg", 4096u, &size);
+    u8 *bytes = test_read_file(formal_asset_dir(), "level.fg", 4096u, &size);
     ASSERT_NOT_NULL(bytes);
     BreakFlowGraph *graph = NULL;
     ASSERT_EQ(break_flow_deserialize(bytes, size, &graph), BREAK_FLOW_OK);
@@ -400,7 +475,7 @@ static f32 quaternion_angle(const f32 *a, const f32 *b) {
 TEST(animation_decodes_within_public_error_bounds) {
     ASSERT_EQ(ensure_baked(), 0);
     usize size = 0;
-    u8 *bytes = test_read_file(g_assets_a, "level.banm", ANIM_CODEC_MAX_BYTES,
+    u8 *bytes = test_read_file(formal_asset_dir(), "level.banm", ANIM_CODEC_MAX_BYTES,
                                &size);
     ASSERT_NOT_NULL(bytes);
     static AnimClip decoded;
@@ -460,7 +535,7 @@ TEST(animation_decodes_within_public_error_bounds) {
 TEST(wav_is_canonical_44100_hz_mono_pcm16) {
     ASSERT_EQ(ensure_baked(), 0);
     usize size = 0;
-    u8 *bytes = test_read_file(g_assets_a, "tone.wav", 65536u, &size);
+    u8 *bytes = test_read_file(formal_asset_dir(), "tone.wav", 65536u, &size);
     ASSERT_NOT_NULL(bytes);
     ASSERT_EQ(size, 44u + 4410u * 2u);
     ASSERT_TRUE(memcmp(bytes, "RIFF", 4) == 0);
@@ -481,9 +556,9 @@ TEST(wav_is_canonical_44100_hz_mono_pcm16) {
 TEST(lua_assets_execute_and_broken_source_is_rejected) {
     ASSERT_EQ(ensure_baked(), 0);
     usize director_size = 0, player_size = 0, broken_size = 0;
-    u8 *director = test_read_file(g_assets_a, "director.lua", 4096u, &director_size);
-    u8 *player = test_read_file(g_assets_a, "player.lua", 4096u, &player_size);
-    u8 *broken = test_read_file(g_assets_a, "broken.lua", 4096u, &broken_size);
+    u8 *director = test_read_file(formal_asset_dir(), "director.lua", 4096u, &director_size);
+    u8 *player = test_read_file(formal_asset_dir(), "player.lua", 4096u, &player_size);
+    u8 *broken = test_read_file(formal_asset_dir(), "broken.lua", 4096u, &broken_size);
     ASSERT_NOT_NULL(director);
     ASSERT_NOT_NULL(player);
     ASSERT_NOT_NULL(broken);
@@ -606,6 +681,166 @@ TEST(checkpoint_rejects_unsafe_names_and_overflow_before_commit) {
     ASSERT_EQ(TEST_RMDIR(dir), 0);
 }
 
+TEST(checkpoint_basename_63_is_valid_and_64_is_overload) {
+    char dir[512];
+    test_tmp(dir, sizeof(dir), "cry_checkpoint_name_length_api");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    CryCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                              .hash = 0u, .name = "state_1.bin"};
+    file.hash = test_fnv1a64(payload, sizeof(payload));
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+    u64 old_hash = cry_checkpoint_manifest_hash(dir);
+
+    memset(file.name, 'x', sizeof(file.name));
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 2u),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(cry_checkpoint_manifest_hash(dir), old_hash);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OK);
+
+    memset(file.name, 0, sizeof(file.name));
+    memset(file.name, 'y', 63u);
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OK);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+}
+
+TEST(checkpoint_manifest_name_length_overload_is_distinct_from_corruption) {
+    char dir[512];
+    test_tmp(dir, sizeof(dir), "cry_checkpoint_name_length_disk");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    CryCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                              .hash = 0u, .name = "state_1.bin"};
+    file.hash = test_fnv1a64(payload, sizeof(payload));
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+    usize size = 0;
+    u8 *manifest = test_read_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                  TEST_MANIFEST_CAP, &size);
+    ASSERT_NOT_NULL(manifest);
+    ASSERT_EQ(size, 128u);
+    static const u32 lengths[] = {64u, UINT32_MAX};
+    for (usize i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        u32 length = lengths[i];
+        for (u32 byte = 0; byte < 4u; ++byte)
+            manifest[44u + byte] = (u8)(length >> (byte * 8u));
+        ASSERT_EQ(test_write_checkpoint_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                             manifest, size), 0);
+        ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OVERLOAD);
+        manifest[44] = 11u;
+        manifest[45] = 0u;
+        manifest[46] = 0u;
+        manifest[47] = 0u;
+        ASSERT_EQ(test_write_checkpoint_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                             manifest, size), 0);
+        ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OK);
+    }
+    manifest[64 + 13 + 1] = 1u;
+    ASSERT_EQ(test_write_checkpoint_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                         manifest, size), 0);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_INVALID);
+    manifest[64 + 13 + 1] = 0u;
+    manifest[64 + 2] = 0u;
+    ASSERT_EQ(test_write_checkpoint_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                         manifest, size), 0);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_INVALID);
+    free(manifest);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+}
+
+TEST(checkpoint_reserved_manifest_aliases_are_rejected_without_touching_old_generation) {
+    static const char *const aliases[] = {"MANIFEST.CRY", "manifest.cry."};
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    for (usize i = 0; i < sizeof(aliases) / sizeof(aliases[0]); ++i) {
+        char dir[512];
+        test_tmp(dir, sizeof(dir), "cry_checkpoint_manifest_alias");
+        ASSERT_EQ(prepare_directory(dir), 0);
+        CryCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                                  .hash = 0u, .name = "runtime_1.bin"};
+        file.hash = test_fnv1a64(payload, sizeof(payload));
+        ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+        ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+        u64 old_hash = cry_checkpoint_manifest_hash(dir);
+        strcpy(file.name, aliases[i]);
+#if !defined(_WIN32)
+        ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+#endif
+        ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 2u),
+                  BREAK_RUNTIME_INVALID);
+        ASSERT_EQ(cry_checkpoint_manifest_hash(dir), old_hash);
+        ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OK);
+        ASSERT_TRUE(file_exists(dir, "runtime_1.bin"));
+        ASSERT_EQ(prepare_directory(dir), 0);
+        ASSERT_EQ(TEST_RMDIR(dir), 0);
+    }
+}
+
+TEST(checkpoint_old_payload_case_and_trailing_dot_aliases_are_rejected) {
+    static const char *const aliases[] = {"RUNTIME_1.BIN", "runtime_1.bin."};
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    for (usize i = 0; i < sizeof(aliases) / sizeof(aliases[0]); ++i) {
+        char dir[512];
+        test_tmp(dir, sizeof(dir), "cry_checkpoint_payload_alias");
+        ASSERT_EQ(prepare_directory(dir), 0);
+        CryCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                                  .hash = 0u, .name = "runtime_1.bin"};
+        file.hash = test_fnv1a64(payload, sizeof(payload));
+        ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+        ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+        u64 old_hash = cry_checkpoint_manifest_hash(dir);
+        strcpy(file.name, aliases[i]);
+#if !defined(_WIN32)
+        ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+#endif
+        ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 2u),
+                  BREAK_RUNTIME_INVALID);
+        ASSERT_EQ(cry_checkpoint_manifest_hash(dir), old_hash);
+        ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OK);
+        ASSERT_TRUE(file_exists(dir, "runtime_1.bin"));
+        ASSERT_TRUE(file_exists(dir, aliases[i]));
+        ASSERT_EQ(prepare_directory(dir), 0);
+        ASSERT_EQ(TEST_RMDIR(dir), 0);
+    }
+}
+
+TEST(checkpoint_duplicate_names_use_case_insensitive_comparison) {
+    char dir[512];
+    test_tmp(dir, sizeof(dir), "cry_checkpoint_duplicate_alias");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    CryCheckpointFile old = {.kind = 1u, .size = sizeof(payload),
+                             .hash = 0u, .name = "runtime_1.bin"};
+    old.hash = test_fnv1a64(payload, sizeof(payload));
+    ASSERT_EQ(test_write_checkpoint_file(dir, old.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &old, 1u, 1u), BREAK_RUNTIME_OK);
+    u64 old_hash = cry_checkpoint_manifest_hash(dir);
+    CryCheckpointFile files[2];
+    memset(files, 0, sizeof(files));
+    for (u32 i = 0; i < 2u; ++i) {
+        files[i].kind = 1u;
+        files[i].size = sizeof(payload);
+        files[i].hash = old.hash;
+    }
+    strcpy(files[0].name, "state_2.bin");
+    strcpy(files[1].name, "STATE_2.BIN");
+#if !defined(_WIN32)
+    for (u32 i = 0; i < 2u; ++i)
+        ASSERT_EQ(test_write_checkpoint_file(dir, files[i].name, payload,
+                                             sizeof(payload)), 0);
+#endif
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, files, 2u, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(cry_checkpoint_manifest_hash(dir), old_hash);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OK);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+}
+
 #if !defined(_WIN32)
 static volatile sig_atomic_t g_sigxfsz_seen;
 static void on_sigxfsz(int signal_number) {
@@ -665,18 +900,159 @@ TEST(checkpoint_mid_write_failure_preserves_old_manifest_and_removes_new_payload
     ASSERT_EQ(prepare_directory(dir), 0);
     ASSERT_EQ(TEST_RMDIR(dir), 0);
 }
+
+#if defined(CRY_TEST_WRAP_FS)
+TEST(checkpoint_post_rename_failure_restores_old_before_cleanup) {
+    char dir[512];
+    test_tmp(dir, sizeof(dir), "cry_checkpoint_post_rename_restore");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    CryCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                              .hash = 0u, .name = "runtime_1.bin"};
+    file.hash = test_fnv1a64(payload, sizeof(payload));
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+    usize before_size = 0;
+    u8 *before = test_read_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                TEST_MANIFEST_CAP, &before_size);
+    ASSERT_NOT_NULL(before);
+    strcpy(file.name, "runtime_2.bin");
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    fs_fault_post_rename(false);
+    BreakRuntimeError result = cry_checkpoint_write_manifest(dir, &file, 1u, 2u);
+    u32 injected = g_dir_fsync_failed;
+    fs_fault_reset();
+    ASSERT_EQ(injected, 1u);
+    ASSERT_EQ(result, BREAK_RUNTIME_FAILED);
+    usize after_size = 0;
+    u8 *after = test_read_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                               TEST_MANIFEST_CAP, &after_size);
+    ASSERT_NOT_NULL(after);
+    ASSERT_EQ(after_size, before_size);
+    ASSERT_TRUE(memcmp(after, before, before_size) == 0);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OK);
+    ASSERT_FALSE(file_exists(dir, "runtime_2.bin"));
+    free(before);
+    free(after);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+}
+
+TEST(checkpoint_post_rename_restore_write_failure_keeps_new_payload_and_backup) {
+    char dir[512], backup[512];
+    test_tmp(dir, sizeof(dir), "cry_checkpoint_restore_write_failure");
+    test_tmp(backup, sizeof(backup), "cry_checkpoint_restore_failure_backup");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(prepare_directory(backup), 0);
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    CryCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                              .hash = 0u, .name = "runtime_1.bin"};
+    file.hash = test_fnv1a64(payload, sizeof(payload));
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(test_copy_checkpoint(dir, backup), 0);
+    usize before_size = 0;
+    u8 *before = test_read_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                TEST_MANIFEST_CAP, &before_size);
+    ASSERT_NOT_NULL(before);
+    strcpy(file.name, "runtime_2.bin");
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    fs_fault_post_rename(true);
+    BreakRuntimeError result = cry_checkpoint_write_manifest(dir, &file, 1u, 2u);
+    u32 dir_injected = g_dir_fsync_failed;
+    u32 write_injected = g_restore_write_failed;
+    fs_fault_reset();
+    ASSERT_EQ(dir_injected, 1u);
+    ASSERT_EQ(write_injected, 1u);
+    ASSERT_EQ(result, BREAK_RUNTIME_FAILED);
+    usize after_size = 0;
+    u8 *after = test_read_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                               TEST_MANIFEST_CAP, &after_size);
+    ASSERT_NOT_NULL(after);
+    ASSERT_EQ(after_size, before_size);
+    ASSERT_TRUE(memcmp(after, before, before_size) != 0);
+    ASSERT_EQ(read_u64(after + 24), 2u);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(file_exists(dir, "runtime_2.bin"));
+    ASSERT_EQ(cry_checkpoint_probe(backup), BREAK_RUNTIME_OK);
+    free(before);
+    free(after);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(prepare_directory(backup), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(backup), 0);
+}
+
+TEST(checkpoint_post_rename_failure_with_corrupt_old_preserves_raw_bytes_and_payloads) {
+    char dir[512], backup[512];
+    test_tmp(dir, sizeof(dir), "cry_checkpoint_corrupt_old_post_rename");
+    test_tmp(backup, sizeof(backup), "cry_checkpoint_corrupt_old_backup");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(prepare_directory(backup), 0);
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    CryCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                              .hash = 0u, .name = "runtime_1.bin"};
+    file.hash = test_fnv1a64(payload, sizeof(payload));
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    ASSERT_EQ(cry_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(test_copy_checkpoint(dir, backup), 0);
+    usize before_size = 0;
+    u8 *before = test_read_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                TEST_MANIFEST_CAP, &before_size);
+    ASSERT_NOT_NULL(before);
+    before[36] = 1u;
+    ASSERT_EQ(test_write_checkpoint_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                                         before, before_size), 0);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_INVALID);
+    strcpy(file.name, "runtime_2.bin");
+    ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+    fs_fault_post_rename(false);
+    BreakRuntimeError result = cry_checkpoint_write_manifest(dir, &file, 1u, 2u);
+    u32 injected = g_dir_fsync_failed;
+    fs_fault_reset();
+    ASSERT_EQ(injected, 1u);
+    ASSERT_EQ(result, BREAK_RUNTIME_FAILED);
+    usize after_size = 0;
+    u8 *after = test_read_file(dir, CRY_CHECKPOINT_MANIFEST_NAME,
+                               TEST_MANIFEST_CAP, &after_size);
+    ASSERT_NOT_NULL(after);
+    ASSERT_EQ(after_size, before_size);
+    ASSERT_TRUE(memcmp(after, before, before_size) == 0);
+    ASSERT_EQ(cry_checkpoint_probe(dir), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(cry_checkpoint_probe(backup), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(file_exists(dir, "runtime_1.bin"));
+    ASSERT_TRUE(file_exists(dir, "runtime_2.bin"));
+    free(before);
+    free(after);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(prepare_directory(backup), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(backup), 0);
+}
+#endif
 #endif
 
 TEST_MAIN_BEGIN()
     RUN_TEST(baker_emits_every_formal_asset_byte_identically);
+    RUN_TEST(formal_assets_match_fresh_baker);
     RUN_TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader);
     RUN_TEST(flow_deserializes_enter_delay_add_item_chain);
     RUN_TEST(animation_decodes_within_public_error_bounds);
     RUN_TEST(wav_is_canonical_44100_hz_mono_pcm16);
     RUN_TEST(lua_assets_execute_and_broken_source_is_rejected);
     RUN_TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption);
+    RUN_TEST(checkpoint_basename_63_is_valid_and_64_is_overload);
+    RUN_TEST(checkpoint_manifest_name_length_overload_is_distinct_from_corruption);
     RUN_TEST(checkpoint_rejects_unsafe_names_and_overflow_before_commit);
+    RUN_TEST(checkpoint_reserved_manifest_aliases_are_rejected_without_touching_old_generation);
+    RUN_TEST(checkpoint_old_payload_case_and_trailing_dot_aliases_are_rejected);
+    RUN_TEST(checkpoint_duplicate_names_use_case_insensitive_comparison);
 #if !defined(_WIN32)
     RUN_TEST(checkpoint_mid_write_failure_preserves_old_manifest_and_removes_new_payload);
+#endif
+#if defined(CRY_TEST_WRAP_FS)
+    RUN_TEST(checkpoint_post_rename_failure_restores_old_before_cleanup);
+    RUN_TEST(checkpoint_post_rename_restore_write_failure_keeps_new_payload_and_backup);
+    RUN_TEST(checkpoint_post_rename_failure_with_corrupt_old_preserves_raw_bytes_and_payloads);
 #endif
 TEST_MAIN_END()

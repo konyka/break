@@ -104,3 +104,29 @@ Linux 上 `test_cry_game_assets` 为 9/9，通过两回 baker 逐字节比较、
 曾先用名称过滤 `-E 'graphics|fuzz'` 运行 341 项；该方式不排除 `graphics` 标签，因而执行了图形/平台测试，并出现既有 `test_platform_x11_runtime` 的 `start_fullscreen window does not cover the monitor` 一项失败。本任务未修改该 X11 行为，也不将此运行计为非图形通过证据；正确标签过滤后的 330 项结果才是上述验收结果。
 
 `ENGINE_BUILD_TESTS=OFF` 的独立构建树已成功构建 `cry_game` 和 `cry_game_bake`，该 baker 的 11 个输出也与源树正式资产逐字节一致。`test_cry_game_target_contract` 再次通过；两个 nm negative-path 测试仍按合同跳过。合法 `cry_game` 配置的真实进程仍返回 FAILED/退出 2，未被资产交付改成伪成功。
+
+## P12 Task 2 独立评审 fix round 1
+
+### 正式资产追踪与读取
+
+根目录 `.gitignore` 仅对 `engine/assets/cry_game/tone.wav` 增加例外，避免通用 `*.wav` 规则继续漏掉正式资产。`test_cry_game_formal_asset_tracking` 对 Git 索引要求恰好 11 个指定路径；`test_cry_game_assets` 另要求正式目录恰好含这 11 个非空文件，并与 fresh baker 输出逐字节一致。BSCN、Flow、BANM、WAV 和 Lua reader 测试现在读取正式目录，而不是只读临时 baker 输出。`CRY_GAME_FORMAL_ASSET_DIR` 测试环境变量可把同一套 reader/比较测试指向干净 Git archive 的解压目录。
+
+### basename 长度与规范化别名
+
+63 字节 basename 合法；API 中 64 字节无 NUL 的名称和磁盘记录 `name_length>=64` 都返回 `BREAK_RUNTIME_OVERLOAD`，非法字符、内嵌 NUL、非零 padding 等结构损坏仍为 `BREAK_RUNTIME_INVALID`。
+
+为保证同一 checkpoint 在大小写敏感与不敏感文件系统间移动时仍不破坏旧代，v1 采用保守的统一规则，而不是按当前宿主改变接受策略：保留名、重复名和旧 payload 名都按 ASCII 大小写折叠比较；`MANIFEST.CRY` 等保留名变体被拒绝；尾随点被拒绝，避免 Windows 规范化别名；新记录与旧 manifest 中 payload 的大小写变体或尾随点变体也被拒绝。该策略会在大小写敏感系统上额外拒绝一些本来可共存的名称，是有意的可移植性格式约束。Linux 用例验证的是该格式策略，不是 Windows/NTFS 实机行为。
+
+### rename 后失败协议
+
+POSIX `PlatformAtomicWriter` 的既有语义保持不变：rename 后 directory open/fsync 失败仍返回 false，此时目标可能已替换。checkpoint 不再忽略恢复结果。恢复 writer 成功且旧 manifest 与其 payload 经 `cry_checkpoint_probe` 确认可用后，才删除本 generation 新 payload。恢复失败时不删除新 payload；如果新 manifest 仍在，它不会指向已删除文件，独立旧备份也仍可 probe。旧 manifest 已损坏时不把清理视为安全，保留新旧 payload，并保留恢复后的旧原始字节。没有旧 manifest 时，只有确认新 manifest 已移除才清理新 payload。
+
+这些路径仍返回 `BREAK_RUNTIME_FAILED`，调用者不能把 FAILED 当作新代已接收。恢复失败时新 manifest 可能可见，因此本合同不夸大为所有故障下旧 manifest 字节绝对不变，也不构成崩溃持久性证明。测试使用 Linux/GNU/Clang 链接器 `--wrap=fsync` 和 `--wrap=write` 只在 `test_cry_game_assets` 进程内注入真实 PAL directory-fsync 与恢复 write 失败，没有生产 test hook 或共享 PAL 语义改动。
+
+已执行的新套件为 18/18，覆盖恢复成功、恢复写失败、损坏旧 manifest、名称边界和规范化别名；资产/FS/Flow/动画/P1/Lua 定向集合为 8/8。生产变异临时无视恢复结果并无条件清理，恢复写失败用例如期从 18/18 降为 17/18，恢复后回到 18/18。Windows 实机、GPU、音频设备、听测和网络仍未验证。
+
+### fix round 1 最终验证
+
+完整 `cmake --build build-cry-integration-normal -j3` 成功，`ctest --test-dir build-cry-integration-normal -j3 -LE 'graphics|fuzz' -E 'fuzz' --output-on-failure` 为 331/331 通过，三个既有 D3D12/nm 合同测试按规则跳过。`ENGINE_BUILD_TESTS=OFF` 下 `cry_game` 和 `cry_game_bake` 构建成功，no-tests baker 的 11 个输出与正式资产一致；`test_cry_game_target_contract` 通过，两个 nm negative-path 测试仍按合同跳过。
+
+提交前从 Git 索引执行 `git write-tree`，对该干净 tree 的 `engine/assets/cry_game` 做 `git archive`，确认恰好 11 个路径且包含 8864 字节 `tone.wav`，解压到全新临时目录后以 `CRY_GAME_FORMAL_ASSET_DIR` 指向归档资产。完整 18/18 再次通过，其中正式目录与 fresh baker 比较以及 BSCN/Flow/BANM/WAV/Lua readers 均实际读取归档文件，而不是当前源树。

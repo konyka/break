@@ -4491,12 +4491,23 @@ endif()
     set_property(TARGET test_cry_game_assets PROPERTY C_STANDARD 11)
     target_include_directories(test_cry_game_assets PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_cry_game_assets PRIVATE
-        CRY_GAME_BAKE_EXECUTABLE="$<TARGET_FILE:cry_game_bake>")
+        CRY_GAME_BAKE_EXECUTABLE="$<TARGET_FILE:cry_game_bake>"
+        CRY_GAME_FORMAL_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/cry_game")
     target_link_libraries(test_cry_game_assets PRIVATE cry_game_core m)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_definitions(test_cry_game_assets PRIVATE CRY_TEST_WRAP_FS=1)
+        target_link_options(test_cry_game_assets PRIVATE
+            "-Wl,--wrap=fsync" "-Wl,--wrap=write")
+    endif()
     add_dependencies(test_cry_game_assets cry_game_bake)
     add_test(NAME test_cry_game_assets COMMAND test_cry_game_assets)
-    set_tests_properties(test_cry_game_assets PROPERTIES
-        LABELS "headless;cry_game;assets")
+    add_test(NAME test_cry_game_formal_asset_tracking
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cry_game_formal_assets.cmake)
+    set_tests_properties(test_cry_game_assets test_cry_game_formal_asset_tracking
+        PROPERTIES LABELS "headless;cry_game;assets")
 
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
