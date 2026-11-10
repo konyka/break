@@ -15,9 +15,8 @@ if(NOT EXISTS "${EVIDENCE_DOC}")
 endif()
 file(READ "${EVIDENCE_DOC}" evidence_text)
 foreach(required_row
-        "Linux X11 × OpenGL"
-        "Linux X11 × Vulkan"
-        "Linux Wayland × GL/VK"
+        "Linux Wayland × OpenGL"
+        "Linux Wayland × Vulkan"
         "Windows × Vulkan"
         "Windows × D3D12"
         "macOS × Vulkan(MoltenVK)"

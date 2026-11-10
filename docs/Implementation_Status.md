@@ -1,3 +1,13 @@
+## 本轮更新：X11 移除 Task 3——CI、2.0.0 与当前文档（2026-11-10）
+
+- **CI/镜像**：Linux OpenGL、Vulkan/lavapipe、validation、benchmark 均改为 Weston/Wayland；GL lane 实际运行 `test_rhi_wayland_runtime`、`test_mesh_gpu_gl`、`test_world_presentation_gl`，其余 lane 运行对应 graphics/benchmark CTest。各 lane 记录 `rc/passed/skipped`，只有 `rc=0 && passed>0 && skipped=0` 才授予 `GPU_RUNTIME`，否则出 `UNAVAILABLE` 且最终步骤失败。Linux receipts 统一 `linux-wayland`，Steam Deck 真机 lane 同样使用 Weston；SteamRT 缺 Wayland/scanner/pkg-config 时明确 `UNAVAILABLE`，无旧窗口系统回退。镜像删除直接旧窗口开发包和虚拟显示工具，保留 Wayland/Weston/Mesa/EGL/Vulkan，smoke 分别检查 weston 与 wayland-scanner。
+- **版本/回滚**：`project(PureCEngine VERSION 2.0.0)`；未创建 tag。rollback-drill 在 checkout 前以 `sort -V` 只接受 >=2.0.0 的精确 `v<x.y.z>`，旧版本输出 `UNAVAILABLE` 并失败；没有旧版本依赖安装脚本，也未虚构回滚成功。直接执行该 workflow 校验脚本实测：`v1.9.9` 与 malformed 输入 rc=1/UNAVAILABLE，`v2.0.0`、`v2.0.1`、`v10.0.0` rc=0；这只是版本门测试，未执行 checkout、构建或回滚。初版依赖本机不存在的 `dpkg` 导致有效 tag 被拒，已先复现 RED 后改为可移植比较并恢复 GREEN。
+- **当前文档**：README、Build Guide、Architecture、Engine Modules、myui、Vulkan/RHI、输入与 QNX 当前说明统一为 Linux 原生 Wayland-only、Vulkan 默认、OpenGL 最后降级；缺依赖和旧配置 fail-closed。`rhi_backend_evidence.md` 将旧 X11 行原样移至“历史 CI 证据（保留原文，非当前支持）”，旧 URL 未删除；`docs/superpowers`、日期化故障记录及历史 CI 结论未改写。myui 文档顶部明确当前 port 与历史条目的边界。
+- **实际 RED**：新 `test_wayland_ci_migration_contract` 在旧 CI 上报告 X11/Xvfb/`DISPLAY=:99`、缺失 Weston/执行统计、旧包与旧支持声明；`test_release_package_contract` 因 1.9.0 失败；`test_rhi_evidence_register` 因缺少独立的 Linux Wayland × OpenGL/Vulkan 当前行失败。
+- **实际 GREEN**：`cmake --build build-remove-x11-auto -j3` 成功。聚焦 8 项（CI/版本/证据/selector/lane separation/两项移除合同/profiler）8/8 通过。全量 `ctest --test-dir build-remove-x11-auto -LE 'graphics|fuzz' --output-on-failure -j3`：330 入选、329 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP。`git diff --check` 通过。
+- **变异**：临时在 `lane-gpu-runtime-linux-gl` 注入 `export DISPLAY=:99`，`test_wayland_ci_migration_contract` 按预期仅因该 token 失败；精确恢复后同一合同及 diff check 通过，提交中无变异残留。
+- **本地 YAML 限制**：PyYAML 成功解析 3 个 workflow（24 jobs），65 个适用 Bash run block 均通过 `bash -n`。这只是本地结构/语法检查；真实 GitHub workflow、重建镜像、SteamRT、Windows/macOS/iOS/Proton 与其他 native runner 均未在本任务执行，必须 push 后核查，不能写成已通过。Task 2 的真实 Wayland GL/VK 证据作为输入沿用，本任务未重复运行图形套件；范围外显式 OpenGL clip 超时未修改、未包装为 PASS。
+
 ## 本轮更新：P8 fix round 4（2026-11-05）
 
 - **兼容自动 epoch**：`break_aspect_encode` 改为独立的每对象 encoder epoch/hash，不再从 value revision 推导顺序。仅成功输出后推进；连续 baseline/DORMANT/DESTROY 和同值唤醒均单调递增，短输出预算失败不消耗 epoch，耗尽返回 OVERLOAD。显式编码和 apply 仍不写自动 encoder 状态，value revision 与 record high-water 语义不变。

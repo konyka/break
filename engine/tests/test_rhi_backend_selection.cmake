@@ -25,9 +25,9 @@ endif()
 if(DEFINED CMAKE_TOOLCHAIN_FILE AND NOT "${CMAKE_TOOLCHAIN_FILE}" STREQUAL "")
     list(APPEND configure_overrides "-DCMAKE_TOOLCHAIN_FILE:FILEPATH=${CMAKE_TOOLCHAIN_FILE}")
 endif()
-# The nested configure must follow the host WSI stack: Wayland lanes have
-# no X11 development packages (libxrandr), so a default X11 configure
-# fails in platform detection before the selector logic under test runs.
+# The nested configure follows the host WSI stack. Linux is native
+# Wayland-only; disabling it is a rejected legacy configuration covered by
+# test_x11_removal_contract, not an alternative selector test environment.
 # The backend-selection contract is orthogonal to the WSI stack.
 if(DEFINED ENGINE_ENABLE_WAYLAND)
     list(APPEND configure_overrides "-DENGINE_ENABLE_WAYLAND:BOOL=${ENGINE_ENABLE_WAYLAND}")

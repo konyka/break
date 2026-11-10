@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `schema_version` | integer | 是 | 当前固定为 1 |
 | `timestamp` | string | 是 | ISO 8601 UTC（如 `2026-10-14T12:00:00Z`） |
-| `platform` | string | 是 | `linux-x11` / `linux-wayland` / `windows` / `macos` / `ios` / `android` / `ohos`；兼容验证收据允许 `proton`（steamrt 容器证据，不计 Windows D3D12 台账） |
+| `platform` | string | 是 | `linux-wayland` / `windows` / `macos` / `ios` / `android` / `ohos`；兼容验证收据允许 `proton`（steamrt 容器证据，不计 Windows D3D12 台账） |
 | `os_version` | string | 是 | 操作系统与版本（如 `Ubuntu 24.04`） |
 | `backend` | string | 是 | `opengl` / `vulkan` / `metal` / `d3d12` / `vulkan-moltenvk` |
 | `gpu` | string | 是 | GPU 型号；软渲染必须注明（如 `llvmpipe (LLVM 17.0.6, 256 bits)`） |
@@ -17,7 +17,7 @@
 | `ram` | string | 是 | 内存（如 `16 GiB`） |
 | `build_commit` | string | 是 | 40 位 git commit hash |
 | `build_config` | string | 是 | `Debug` / `Release` |
-| `command` | string | 是 | 产生该收据的完整命令行 |
+| `command` | string | 是 | 产生该收据的完整命令行；Linux CI 同时记录 `rc/passed/skipped`，`GPU_RUNTIME` 不得由全 skip 或零执行获得 |
 | `metrics` | object \| 省略 | benchmark 类必填 | `BENCHMARK_COMPARABLE` 必填且四项俱全；其他等级可整体省略，或显式四项俱全地附带实测（生成器拒绝部分提供） |
 | `metrics.fps_avg` | number | benchmark 必填 | 平均 FPS |
 | `metrics.fps_p1` | number | benchmark 必填 | 1% 低帧 FPS |
@@ -32,7 +32,7 @@
 {
   "schema_version": 1,
   "timestamp": "2026-10-14T12:00:00Z",
-  "platform": "linux-x11",
+  "platform": "linux-wayland",
   "os_version": "Ubuntu 24.04",
   "backend": "vulkan",
   "gpu": "llvmpipe (LLVM 17.0.6, 256 bits)",
@@ -58,7 +58,7 @@
 以下 receipt ↔ schema 偏差经 Task 7 评审确认，均为计划 F 的设计决策项：
 
 1. `driver_version`：bench 输出 RHI 层 `u32` 原始编码值（如 NVIDIA `"2588573696"`），schema 期望人读字符串——正确修法是设计决策（vendor 解码 vs schema 放宽），归计划 F；
-2. `platform`：无 `linux-x11`/`linux-wayland` 细分（x11/wayland 是运行期属性，bench 只有编译期宏）——归计划 F；
+2. `platform`：早期 bench 无窗口系统细分；2.0.0 当前 Linux 收据固定为 `linux-wayland`，旧枚举值仅可出现在明确标注的历史证据中；
 3. `build_config`：CI 传 `RelWithDebInfo` 超出 schema 枚举（Debug/Release）——归计划 F；
 4. `command`：bench 硬编码 `"rhi_swapchain_bench"` 非完整命令行——归计划 F；
 5. `BENCHMARK_COMPARABLE` 在 CI 的产出方式（task 7 修复轮 I1）：bench 可执行自产收据硬编码 `GPU_RUNTIME`（`rhi_swapchain_bench.c`），真机 `lane-benchmark-steam-deck-vk` 在 bench 成功后用 `make_evidence_receipt.cmake` 按同一实测重建台账收据（收割 bench metrics + `BENCHMARK_COMPARABLE`），bench 原始收据随同 artifact 上传留档；

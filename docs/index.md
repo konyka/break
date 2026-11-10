@@ -21,7 +21,7 @@ Scene (POM) → SSAO → ContactShadow → VolumetricFog → LensFlare
 | **RHI** | `src/rhi/` | Vulkan/OpenGL 双后端抽象：shader、pipeline、FBO、texture、sampler、uniform |
 | **Renderer** | `src/renderer/` | 26 个渲染子系统 (见下方详细列表) |
 | **Math** | `src/math/` | vec2/vec3/vec4/mat4/quaternion，SIMD-ready |
-| **Platform** | `src/platform/` | X11/Wayland/Win32/Cocoa 窗口、输入、IME、clipboard、时间、文件监控 |
+| **Platform** | `src/platform/` | Wayland（Linux 唯一窗口系统）/Win32/Cocoa 窗口、输入、IME、clipboard、时间、文件监控 |
 | **Asset** | `src/asset/` | 资源加载、热重载、虚拟文件系统 |
 | **Animation** | `src/animation/` | 骨骼动画、GPU skinning |
 | **Audio** | `src/audio/` | miniaudio 封装 |

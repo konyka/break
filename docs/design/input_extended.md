@@ -4,7 +4,7 @@ Date: 2026-11-02
 
 ## Scope
 
-This is the P7 implementation contract from `docs/superpowers/specs/2026-11-02-cry-capability-completion-design.md`. It adds bounded multi-touch input, common gestures, and gamepad haptic requests without changing the layout of `InputState`. XInput2/X11, Wayland, and Win32 touch messages feed the same sidecar. Linux evdev and Windows XInput execute haptic commands on the platform polling thread.
+This is the P7 implementation contract from `docs/superpowers/specs/2026-11-02-cry-capability-completion-design.md`. It adds bounded multi-touch input, common gestures, and gamepad haptic requests without changing the layout of `InputState`. Wayland and Win32 touch messages feed the same sidecar. Linux evdev and Windows XInput execute haptic commands on the platform polling thread. X11 support and its XInput2 backend were removed in 2.0.0; this document now describes only the current backends.
 
 Cocoa, mobile, and QNX Screen expose the sidecar so the platform API remains linkable, but this change does not claim new native touch or haptic support on those backends. No physical touchscreen or force-feedback device is available for this implementation; hardware validation remains a separate requirement.
 
@@ -52,10 +52,6 @@ Only the platform polling thread calls `input_extended_haptic_pump()` and the ba
 A result remains in its slot until `input_extended_haptic_result()` retrieves it. Retrieval returns the final status and frees the slot; an unfinished request returns pending and an unknown/already-retrieved id returns stale. Thus result delivery cannot silently overwrite a newer request. Backend connection serials distinguish two devices that reuse the same numeric pad slot without an intervening public snapshot.
 
 ## Real backends
-
-### X11
-
-When XInput2 2.2 or newer is available, select `XI_TouchBegin`, `XI_TouchUpdate`, and `XI_TouchEnd` on the window. Combine `sourceid` and `detail` into the source identity so two devices can reuse a detail value safely. Begin/update normalize `event_x/event_y`; end always uses the last valid coordinates through `input_extended_touch_end`, even when the final native position is outside the window. All events use dispatch-time `time_microseconds()/1000`, the same monotonic epoch as gesture updates, rather than the wrapping XI2 `time`. XI2 has no portable `XI_TouchCancel` event, so focus loss and `XI_HierarchyChanged` cancel all touches. Servers without XI2 touch retain existing keyboard/mouse behavior and report no touches.
 
 ### Wayland
 

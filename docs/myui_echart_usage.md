@@ -6,12 +6,13 @@ end-to-end by the demo program (`engine/tools/echarts_demo.c`).
 
 ## Interactive explorer (live, adjustable data)
 
+Linux supports native Wayland only in 2.0.0. Explicit Wayland selection is
+recommended for interactive runs; headless modes do not require a compositor.
+
 ```sh
 cmake --build build --target myui_explorer --parallel 2
-./build/myui_explorer                                    # x11 + software
-./build/myui_explorer --platform wayland --backend gl    # wayland + GLES2
-./build/myui_explorer --platform x11 --backend gl        # x11 + EGL/GLES2
-./build/myui_explorer --platform wayland --backend soft  # wayland + wl_shm
+./build/myui_explorer --platform wayland --backend gl    # native Wayland + GLES2
+./build/myui_explorer --platform wayland --backend soft  # native Wayland + wl_shm
 ./build/myui_explorer --selftest dir  # headless scripted frames
 ./build/myui_explorer --shot out.ppm   # software-rendered single frame
 ./build/myui_explorer --glshot out.ppm # GLES2 single frame (EGL pbuffer +
@@ -25,11 +26,11 @@ and `title.subtext` subtitle joining. Conflicting forms and unknown legend
 names are rejected with semantic parser errors.
 
 `--platform` picks the window system and `--backend` the rendering path
-(soft | gl). Software renders into a CPU framebuffer (XImage blit on X11,
-a wl_shm pool on Wayland, StretchDIBits on Windows, NSBitmapImageRep on
-macOS); gl drives the engine's `my_vgcanvas_gles2` hardware backend on a
-GLES2/EGL context (Linux) or a desktop-GL context via WGL (Windows) /
-NSOpenGL (macOS) through the `my_gl_desktop` table.
+(soft | gl). Software renders into a CPU framebuffer (a wl_shm pool on
+Wayland, StretchDIBits on Windows, NSBitmapImageRep on macOS); gl drives the
+engine's `my_vgcanvas_gles2` hardware backend on a GLES2/EGL context (Linux)
+or a desktop-GL context via WGL (Windows) / NSOpenGL (macOS) through the
+`my_gl_desktop` table.
 
 The `soft` path uses 8-bit glyph/geometry coverage AA. The `gl` path uses the
 GLES2 or desktop-GL canvas and linear glyph sampling; when the window surface

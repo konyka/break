@@ -11,7 +11,7 @@
 
 | 平台 | 编译器 | 状态 | 工具链文件 | 备注 |
 |------|--------|------|-----------|------|
-| Linux | GCC | CI 验证 | (默认) | GCC X11/OpenGL、Vulkan、ASan/UBSan 配置见 CI |
+| Linux | GCC | CI 验证 | (默认) | GCC Wayland/OpenGL、Vulkan、ASan/UBSan 配置见 CI |
 | Linux | Clang + lld | CI 验证 | `toolchain-clang-linux.cmake` | Release 配置启用 IPO |
 | Windows | MSVC (cl) | 支持 | `toolchain-msvc.cmake` | 原生 Windows 开发 |
 | Windows | Clang | 支持 | `toolchain-clang-win.cmake` | clang + lld-link |
@@ -19,7 +19,7 @@
 | QNX | qcc/q++ (SDP 7.1/8.0) | headless 兼容层 | `toolchain-qnx.cmake` | poll net_loop、headless RHI；见 `docs/qnx_compat.md` |
 
 ### 1.2 系统依赖（Linux）
-- X11 开发库 (libx11-dev、libxrandr-dev) 或 Wayland 开发库（二选一，编译时互斥)；Wayland 还需要 xkbcommon、wayland-scanner 和 wayland-protocols
+- **Linux 仅支持原生 Wayland**（2.0.0 起）；必需 `libwayland-dev`、`wayland-protocols`、`libxkbcommon-dev`、`wayland-scanner` 与 EGL 开发库。缺少这些依赖时 configure 明确失败，不回退到旧窗口系统或 dummy
 - Vulkan 加载器/头文件 + shaderc（默认后端，例如 libvulkan-dev libshaderc-dev）；OpenGL (libgl1-mesa-dev) 仅在选 `-DENGINE_RHI_BACKEND=opengl` 或 Vulkan 依赖缺失而降级时需要
 - FreeType 开发库（推荐；`dxx_break` 默认 CJK TTC 字体和中文显示需要它）
 - pthread
@@ -77,11 +77,11 @@ cmake --build build-d3d12
   - `platform_vk_create_surface(Platform*, ...)`：经 Platform 句柄创建（内部解包 `platform_surface_native`/`platform_display_native` 后转发到 handles 入口）；
   - `platform_vk_create_surface_handles(surface_native, display_native, ...)`：经裸原生句柄创建——`rhi_vk.c` 的 `vk_init` 持有的是裸句柄而非 `Platform`（`rhi_device_create` 公开 ABI 不变），故消费本入口；结果 surface 的销毁权仍在 `rhi_vk.c`（`vkDestroySurfaceKHR`）。Android 路径成功时本入口对 `ANativeWindow` 持有一个 acquire 引用，失败路径自行 release 回滚。
   - uint64/void* 设计理由：分层规则要求 **platform 层不包含 `<vulkan/vulkan.h>`**——`VkInstance` 以 `void*` 传入、`VkSurfaceKHR`（不可分派 64 位句柄）以 `u64` 传出、`vkGetInstanceProcAddr` 以 `void*` 传入（调用方用 memcpy 桥接函数指针，避免 `-Wpedantic` 的函数指针/void* 强转）。五个 `vkCreate*SurfaceKHR` create-info 的最小 ABI 声明在 `platform_vk_surface_vkabi.h`，由 `test_platform_vk_surface_abi` 对照真实 `<vulkan/vulkan.h>` 逐字段钉死（漂移即编译期/测试期失败）。
-- **`engine/src/platform/platform_wsi.h`** 是 header-only 的 WSI 状态机（`PlatformWsiSurface`：UNAVAILABLE/CREATED/RESIZED/LOST/SUSPENDED/DESTROYING），事件源在各 `window_*.c`（Win32/X11/Wayland/Cocoa/Android 五后端均已接入）；尺寸语义（logical 与 drawable 谁是输入，各平台方向不同）由 `platform_size.h` 单点定义，`window_*.c` 只准调用。消费方式：
+- **`engine/src/platform/platform_wsi.h`** 是 header-only 的 WSI 状态机（`PlatformWsiSurface`：UNAVAILABLE/CREATED/RESIZED/LOST/SUSPENDED/DESTROYING），事件源在各 `window_*.c`（Win32/Wayland/Cocoa/Android 四后端均已接入）；尺寸语义（logical 与 drawable 谁是输入，各平台方向不同）由 `platform_size.h` 单点定义，`window_*.c` 只准调用。消费方式：
   - 帧进入 RHI 前查 `platform_wsi_frame_allowed()`——仅 CREATED/RESIZED 放行，SUSPENDED/LOST/DESTROYING/UNAVAILABLE 一律拒绝（应用层据此跳过渲染，而不是让后端在死 surface 上空转）；
   - 销毁门控：`rhi_device_attach_wsi()` 把状态机挂到设备上，`platform_wsi_rhi_teardown_allowed()` 在进入 DESTROYING 后拒绝销毁——销毁顺序契约为 `rhi_device_destroy_ex` 必须先于 `platform_destroy`。
 - **`rhi_swapchain_bench`**（`engine/tools/rhi_swapchain_bench.c`）：`./build-*/rhi_swapchain_bench <receipt.json>`，固定 600 帧 clear+present，输出符合 `docs/rhi_benchmark_receipt_schema.md` 的收据（`fps_avg`/`fps_p1`/`frame_ms_avg`/`frame_ms_p99`/`evidence_level=GPU_RUNTIME`/`runner` 等字段）；环境缺显示/GPU 时以退出码 77 标记 unavailable（不算通过，也不产出收据）。元数据由环境变量注入：`RECEIPT_TIMESTAMP`、`RECEIPT_RUNNER`、`RECEIPT_OS_VERSION`、`RECEIPT_BUILD_CONFIG`、`GIT_COMMIT`、`RECEIPT_CPU`、`RECEIPT_RAM`；收据用 `cmake -DRECEIPT=<json> -P engine/tests/test_rhi_benchmark_receipt_validate.cmake` 校验。
-- **`ENABLE_GPU_LANES`**：GitHub 仓库变量（Settings → Secrets and variables → Actions → Variables），置为 `1` 才启用 `steam-deck-vulkan-benchmark` lane（self-hosted `linux,gpu-vulkan` runner，跑 graphics 套件 + bench 收据 artifact）；未设置时该 lane 被 `if:` 跳过——GitHub-hosted 运行器没有 self-hosted 标签可接单，不加门会永久 pending。
+- **`ENABLE_GPU_LANES`**：GitHub 仓库变量（Settings → Secrets and variables → Actions → Variables），置为 `1` 才启用 `lane-benchmark-steam-deck-vk`（self-hosted `linux,gpu-vulkan` runner，在 Weston/Wayland 下跑 graphics 套件 + bench 收据 artifact）；未设置时该 lane 被 `if:` 跳过——GitHub-hosted 运行器没有 self-hosted 标签可接单，不加门会永久 pending。
 
 平台契约与 profiler provenance sidecar 可用以下命令验证（不会修改
 `profile_trace.json`）：
@@ -177,11 +177,11 @@ Noto Sans CJK）不可用。
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `ENGINE_ENABLE_WAYLAND` | OFF | Linux 原生 Wayland，关闭时使用 X11 |
+| `ENGINE_ENABLE_WAYLAND` | ON | Linux 唯一原生窗口后端；Linux 下设为 OFF 会明确失败 |
 | `ENGINE_ENABLE_IPO` | ON | Release 且工具链支持时启用 IPO/LTO |
 | `ENGINE_NET_IOURING` | OFF | Linux 实验性 io_uring 网络后端 |
 | `ENGINE_ANDROID_NATIVE_WINDOW` | OFF | Android supplied `ANativeWindow` Vulkan 路径 |
-| `ENGINE_VULKAN` | OFF | 使用 Vulkan 后端，并查找 Vulkan 与 shaderc |
+| `ENGINE_VULKAN` | OFF | 兼容选择开关；`auto` 在依赖齐全时默认 Vulkan，并查找 Vulkan 与 shaderc |
 | `ENGINE_BUILD_TESTS` | ON | 构建 engine 单元测试 |
 | `ENGINE_USE_ASAN` / `ENGINE_USE_UBSAN` / `ENGINE_USE_TSAN` | OFF | 分别启用地址、未定义行为、线程消毒器 |
 | `RULE_ENGINE_ENABLE_C11_PARALLEL` | OFF | 可选 C11 规则匹配执行器 |
@@ -192,7 +192,7 @@ Noto Sans CJK）不可用。
 | `MYUI_GLES2` / `MYUI_GL_DESKTOP` | ON | 可复用 myui GLES2、桌面 OpenGL 后端 |
 | `MYUI_VULKAN` | OFF | 可复用 myui Vulkan 后端 |
 
-软件后端默认使用 8-bit 覆盖率抗锯齿；X11/Wayland EGL 配置优先请求 4x MSAA，驱动不
+软件后端默认使用 8-bit 覆盖率抗锯齿；Wayland EGL 配置优先请求 4x MSAA，驱动不
 支持时回退到单采样。GLES2/桌面 GL 的实际能力由上下文报告，Vulkan/RHI 的能力由实际
 color/depth sample count 报告。上述命令验证软件像素覆盖率和能力契约；GL/VK 窗口及
 复杂 MRT/shadow 路径仍需对应运行时设备，不能由 headless 测试代替。
@@ -253,47 +253,39 @@ sudo dnf install wayland-devel wayland-protocols-devel libxkbcommon-devel mesa-l
 sudo apt install libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev
 ```
 
-构建命令:
+构建命令（默认 Vulkan；显式 OpenGL 是最后降级与对比配置）:
 ```bash
 cd engine
-cmake .. -DENGINE_ENABLE_WAYLAND=ON                    # Wayland + OpenGL
-cmake .. -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON # Wayland + Vulkan
+cmake .. -DENGINE_RHI_BACKEND=opengl   # Wayland + OpenGL
+cmake .. -DENGINE_RHI_BACKEND=vulkan   # Wayland + Vulkan，缺依赖时失败
 ```
 
-> ⚠️ **注意**：`ENGINE_ENABLE_WAYLAND` 与 X11 后端为**编译时互斥选项**，不可同时启用。默认为 OFF（使用 X11）。
+> **2.0.0 边界**：Wayland 是 Linux 唯一窗口后端，`ENGINE_ENABLE_WAYLAND` 默认 ON；设为 OFF 或 `MYUI_PAL=x11` 均明确配置失败。缺少 Wayland/scanner/EGL/xkbcommon 依赖也不会回退。
 Wayland 后端通过 EGL 提供 OpenGL 上下文，通过 `VK_KHR_wayland_surface` 提供 Vulkan 支持。CMake 会调用 `wayland-scanner` 从 `wayland-protocols` 自动生成 `xdg-shell` 客户端代码。
 同时生成 `text-input-v3`、`cursor-shape-v1`（可用时）和 tablet 协议绑定；cursor-shape
 不可用时自动退回 `wayland-cursor` theme。
 
 myui 的 Break PAL 在 Wayland 下使用共享 RHI surface：逻辑 dialog 不创建第二个 OS window，
-并且只有 root window 的 CSD 标题栏允许请求 `xdg_toplevel_move`。X11/Wayland 外部 clipboard
+并且只有 root window 的 CSD 标题栏允许请求 `xdg_toplevel_move`。Wayland 外部 clipboard
 读取由事件循环异步完成；第一次 `Ctrl+V` 会自动重试，不阻塞渲染帧。
 
 ### 2.4 Linux 构建矩阵
 
-Linux 平台支持 4 种窗口后端 + 图形 API 组合：
+Linux 平台支持原生 Wayland 与两种图形 API 配置；`auto` 优先 Vulkan，OpenGL 仅为最后降级和渲染对比：
 
 | 配置 | 窗口 | 图形 | CMake 选项 | 验证构建目录 |
 |------|------|------|-----------|---------------|
-| **X11 + Vulkan** | X11 | Vulkan 1.x | `(默认)` | `build-verify-x11-vk/` |
-| **X11 + OpenGL** | X11 | OpenGL 4.x | `-DENGINE_RHI_BACKEND=opengl` | `build-verify-x11-gl/` |
-| **Wayland + Vulkan** | Wayland | Vulkan 1.x | `-DENGINE_ENABLE_WAYLAND=ON`（Vulkan 默认） | `build-verify-wl-vk/` |
-| **Wayland + OpenGL** | Wayland | OpenGL 4.x (EGL) | `-DENGINE_ENABLE_WAYLAND=ON -DENGINE_RHI_BACKEND=opengl` | `build-verify-wl-gl/` |
+| **Wayland + Vulkan** | Wayland | Vulkan 1.x（默认） | 省略或 `-DENGINE_RHI_BACKEND=vulkan` | `build-verify-wl-vk/` |
+| **Wayland + OpenGL** | Wayland | OpenGL 4.x (EGL) | `-DENGINE_RHI_BACKEND=opengl` | `build-verify-wl-gl/` |
 
 示例：
 ```bash
 cd engine
-# X11 + OpenGL（显式选择）
-cmake -B build-verify-x11-gl -DENGINE_RHI_BACKEND=opengl && cmake --build build-verify-x11-gl
+# Wayland + OpenGL（显式最后降级/对比）
+cmake -B build-verify-wl-gl -DENGINE_RHI_BACKEND=opengl && cmake --build build-verify-wl-gl
 
-# X11 + Vulkan（默认）
-cmake -B build-verify-x11-vk && cmake --build build-verify-x11-vk
-
-# Wayland + OpenGL
-cmake -B build-verify-wl-gl -DENGINE_ENABLE_WAYLAND=ON && cmake --build build-verify-wl-gl
-
-# Wayland + Vulkan
-cmake -B build-verify-wl-vk -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON && cmake --build build-verify-wl-vk
+# Wayland + Vulkan（默认）
+cmake -B build-verify-wl-vk && cmake --build build-verify-wl-vk
 ```
 
 #### Linux Clang 构建
@@ -575,8 +567,8 @@ cmake --build build-gl
 ### 2.7 CMake 选项
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| ENGINE_VULKAN | OFF | 启用 Vulkan 后端（可与 X11/Wayland 任一窗口后端组合）；macOS Cocoa 路径自动使用 Vulkan/MoltenVK |
-| ENGINE_ENABLE_WAYLAND | OFF | 启用 Wayland 窗口后端（与 X11 **编译时互斥**） |
+| ENGINE_VULKAN | OFF | 兼容选择开关；`auto` 默认优先 Vulkan，显式 OpenGL 为最后降级；macOS Cocoa 路径自动使用 Vulkan/MoltenVK |
+| ENGINE_ENABLE_WAYLAND | ON | Linux 唯一窗口后端；Linux 下关闭会配置失败 |
 | ENGINE_USE_ASAN | OFF | 启用 AddressSanitizer（GCC/Clang 使用 `-fsanitize=address`，MSVC 使用 `/fsanitize=address`） |
 | ENGINE_USE_TSAN | OFF | 启用 ThreadSanitizer（GCC/Clang 使用 `-fsanitize=thread`；用于线程安全专项验证） |
 | ENGINE_USE_UBSAN | OFF | 启用 UndefinedBehaviorSanitizer（GCC/Clang 使用 `-fsanitize=undefined`；MSVC 不启用） |
@@ -970,17 +962,17 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 | lane-headless-windows-msvc | windows-latest | 默认 GL，MSVC（`cl`，`/W4 /WX`）Debug，`-LE graphics`（+fuzz smoke） | evidence-receipt-headless-windows-msvc |
 | lane-headless-windows-mingw | windows-latest | 默认 GL，MinGW-w64 GCC Debug，`-LE graphics`（+fuzz smoke） | evidence-receipt-headless-windows-mingw |
 | lane-native-surface-wayland | ubuntu-24.04 | Wayland + Vulkan，Debug（weston headless） | evidence-receipt-native-surface-wayland |
-| wayland-gl（OpenGL 长期保留，对比基准） | ubuntu-latest | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
+| wayland-gl（OpenGL 长期保留，对比基准） | ubuntu-24.04 | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
 | lane-native-surface-win32 | windows-latest | Win32 原生 surface trio，Clang Debug | evidence-receipt-native-surface-win32 |
 | lane-native-surface-cocoa | macos-14 | Cocoa + MoltenVK，Debug | evidence-receipt-native-surface-cocoa |
-| lane-gpu-runtime-linux-gl（OpenGL 长期保留，对比基准） | ubuntu-latest | X11 + GL，Debug，Xvfb 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
-| lane-gpu-runtime-linux-vk | ubuntu-24.04 | X11 + Vulkan，clang-18 Debug，Xvfb + lavapipe（软渲染，收据如实标注） | evidence-receipt-gpu-runtime-linux |
+| lane-gpu-runtime-linux-gl（OpenGL 长期保留，对比基准） | ubuntu-24.04 | Wayland + GL，Debug，Weston + Mesa 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
+| lane-gpu-runtime-linux-vk | ubuntu-24.04 | Wayland + Vulkan，clang-18 Debug，Weston + lavapipe（软渲染，收据如实标注） | evidence-receipt-gpu-runtime-linux |
 | lane-gpu-runtime-macos-metal | macos-14 | Metal，Debug（hosted 无 Metal 会话时收据如实降级 HEADLESS） | evidence-receipt-gpu-runtime-macos-metal |
 | lane-gpu-runtime-windows-d3d12（+ 常开 unavailable 孪生 job） | self-hosted windows gpu（`ENABLE_GPU_LANES` 门控） | D3D12，Release（hosted WARP floor 在 windows-d3d12.yml） | evidence-receipt-gpu-runtime-windows-d3d12 |
-| lane-validation-linux-vk | ubuntu-24.04 | Vulkan，Debug，VK_LAYER_KHRONOS_validation（VUID 即红） | evidence-receipt-validation-linux |
-| lane-benchmark-linux-vk | ubuntu-24.04 | Vulkan，Release，`rhi_swapchain_bench` 600 帧 lavapipe（GPU_RUNTIME 收据注明软渲染） | evidence-receipt-benchmark-linux-vk |
-| lane-benchmark-steam-deck-vk | self-hosted linux gpu-vulkan（`ENABLE_GPU_LANES` 门控） | Vulkan，RelWithDebInfo，真 GPU BENCHMARK_COMPARABLE 收据 | evidence-receipt-benchmark-steam-deck |
-| lane-proton（schedule 周一 03:23 UTC + 手动） | ubuntu-24.04 | steamrt sniper 钉 digest 容器内构建 + ctest（兼容参考） | evidence-receipt-proton |
+| lane-validation-linux-vk | ubuntu-24.04 | Wayland + Vulkan，Debug，Weston + VK_LAYER_KHRONOS_validation（VUID 即红） | evidence-receipt-validation-linux |
+| lane-benchmark-linux-vk | ubuntu-24.04 | Wayland + Vulkan，Release，Weston 下 `rhi_swapchain_bench` 600 帧 lavapipe（GPU_RUNTIME 收据注明软渲染） | evidence-receipt-benchmark-linux-vk |
+| lane-benchmark-steam-deck-vk | self-hosted linux gpu-vulkan（`ENABLE_GPU_LANES` 门控） | Wayland + Vulkan，RelWithDebInfo，真 GPU BENCHMARK_COMPARABLE 收据 | evidence-receipt-benchmark-steam-deck |
+| lane-proton（schedule 周一 03:23 UTC + 手动） | ubuntu-24.04 | steamrt sniper 钉 digest 容器内构建 + ctest（缺 Wayland 工具链则 UNAVAILABLE；兼容参考） | evidence-receipt-proton |
 | clean-room（Task 2 交付，非 lane 命名） | ubuntu-24.04 | 钉版工具链 + git archive 干净导出 + Vulkan | — |
 | ios-metal-build（compile only） | macos-14 | iOS Simulator build-only + metallib、scene manifest 与资源入包断言 | — |
 
@@ -997,8 +989,8 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 
 ### 3.1 运行 engine_demo（Linux 桌面）
 
-- **Wayland/XWayland 节流**：在 Wayland 会话下 GL demo 走 XWayland，`glXSwapBuffers` 会被 Present 节流到 ~1 FPS（profiler 显示 `Frame: 1000 ms`，而引擎 dt 按 R147 钳制 0.1s）。脚本化截图/相机复现前请用 `vblank_mode=0 ./build_gl/engine_demo` 绕过节流，否则一秒的鼠标输入会在单帧内一次性生效。
-- 窗口模式：`G` 或 Alt+Enter 在窗口与**无标题栏全屏**（铺满窗口所在显示器、不改显示器分辨率、不独占，Alt-Tab 不黑屏）之间切换，离开全屏恢复原位置、尺寸与最大化状态；`BREAK_FULLSCREEN=1` 以全屏启动；`BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,...` 在指定帧自动切换，每次切换输出 `WINDOW_MODE_SWITCH`（重建耗时、之后 5 帧最长帧时间），退出时输出 `WINDOW_MODE_STATS`。`BREAK_RESIZE_AT=frame:WxH,...` 不改窗口、只按给定尺寸走同一重建路径，输出 `RESIZE_REBUILD`。API：`platform_set_window_mode` / `platform_get_window_mode`、`PlatformConfig.start_fullscreen`（`platform/platform.h`）。标题栏：Alt+T 切换窗口模式下的标题栏和边框（客户区位置和大小不变，全屏期间的改动在回到窗口时生效）；`BREAK_UNDECORATED=1` 以无标题栏窗口启动；`BREAK_TOGGLE_TITLE_BAR_AT=f1,f2,...` 自动切换并输出 `TITLE_BAR_SWITCH`。API：`platform_set_window_decorated` / `platform_get_window_decorated` / `platform_window_title_bar_visible`、`PlatformConfig.undecorated`。Win32 改窗口样式（无标题栏时最大化只铺满工作区）；X11 用 `_MOTIF_WM_HINTS`；Wayland 关掉 myui 的客户端装饰；Cocoa 去掉 `NSWindowStyleMaskTitled`；QNX Screen 与移动端固定无标题栏。Win32、Cocoa 同步切换；X11、Wayland 以窗口管理器 / 合成器的回报为准（X11 无 EWMH 窗口管理器时退回 Motif 去装饰 + 移到显示器矩形）；QNX Screen 与移动端固定全屏。
+- **历史故障记录（非当前运行路径）**：在 Wayland 会话下 GL demo 走 XWayland，`glXSwapBuffers` 会被 Present 节流到 ~1 FPS（profiler 显示 `Frame: 1000 ms`，而引擎 dt 按 R147 钳制 0.1s）。脚本化截图/相机复现前请用 `vblank_mode=0 ./build_gl/engine_demo` 绕过节流，否则一秒的鼠标输入会在单帧内一次性生效。2.0.0 不再使用该窗口路径，本段仅保留旧故障事实。
+- 窗口模式：`G` 或 Alt+Enter 在窗口与**无标题栏全屏**（铺满窗口所在显示器、不改显示器分辨率、不独占，Alt-Tab 不黑屏）之间切换，离开全屏恢复原位置、尺寸与最大化状态；`BREAK_FULLSCREEN=1` 以全屏启动；`BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,...` 在指定帧自动切换，每次切换输出 `WINDOW_MODE_SWITCH`（重建耗时、之后 5 帧最长帧时间），退出时输出 `WINDOW_MODE_STATS`。`BREAK_RESIZE_AT=frame:WxH,...` 不改窗口、只按给定尺寸走同一重建路径，输出 `RESIZE_REBUILD`。API：`platform_set_window_mode` / `platform_get_window_mode`、`PlatformConfig.start_fullscreen`（`platform/platform.h`）。标题栏：Alt+T 切换窗口模式下的标题栏和边框（客户区位置和大小不变，全屏期间的改动在回到窗口时生效）；`BREAK_UNDECORATED=1` 以无标题栏窗口启动；`BREAK_TOGGLE_TITLE_BAR_AT=f1,f2,...` 自动切换并输出 `TITLE_BAR_SWITCH`。API：`platform_set_window_decorated` / `platform_get_window_decorated` / `platform_window_title_bar_visible`、`PlatformConfig.undecorated`。Win32 改窗口样式（无标题栏时最大化只铺满工作区）；Wayland 关掉 myui 的客户端装饰；Cocoa 去掉 `NSWindowStyleMaskTitled`；QNX Screen 与移动端固定无标题栏。Win32、Cocoa 同步切换；Wayland 以 compositor 回报为准；QNX Screen 与移动端固定全屏。
 - 脚本化钩子（均无默认值，不设即原行为）：`BREAK_FRAMES=N`（N 帧后退出）、`BREAK_SCREENSHOT=a,b,c`（R446 起支持逗号列表，逐帧截图到 screenshot_N.bmp）、`BREAK_CAM=x,y,z[,yaw,pitch]`（初始机位；不设时默认 (0,2,8) 会抬到地形上方 2 m）、`BREAK_CAM_SPIN=deg`（R446，每帧 yaw 增量，复现相机运动伪影）、`BREAK_TAA=0` / `BREAK_MB=0`（R446，TAA/动态模糊开关，用于 A/B 对照）、`BREAK_SSR=1` / `BREAK_SSGI=1` / `BREAK_CS=1` / `BREAK_VOL=1` / `BREAK_LF=1`（R550-A，开启默认关闭的 SSR/SSGI/接触阴影/体积雾/镜头光晕——五路 pass 自 R550-A 起真实合成进帧链）、`BREAK_IBL_STATIC=1`（R559，禁用运行时 IBL rebake）、`BREAK_IBL_REBAKE_FRAMES=N`（R559，每 N 帧触发一次、用于无头验证；rebake 仍跨 42 帧完成）、`BREAK_JITTER=0`（关闭 Halton 抖动，便于隔离时间重投影伪影）、`BREAK_MODEL_VIEW=s`（模型查看：不画地形/水面/展示区，相机对准命令行加载的模型，s 为距离倍数，s<1 更近）、`BREAK_BSCN_ROUNDTRIP_AT=f`（第 f 帧按 `B` 键路径保存 BSCN，第 f+10 帧按 `N` 键路径读回，用于无头验证读档后 LOD 等状态重建；会在工作目录写 `scene_save.bscn` / `scene_state.bin`）。TSR 在初始化或分辨率重建后的第一帧只输出当前帧，不采样历史；随后才恢复历史重投影。
 
 ### 3.2 macOS 窗口模式与标题栏验证
@@ -1041,7 +1033,6 @@ Cocoa 测试直接断言 `NSWindow` 的全屏样式、屏幕矩形、窗口层�
 ### 4.2 平台链接库
 | 平台/后端 | OpenGL | Vulkan |
 |----------|--------|--------|
-| Linux (X11) | X11, GL, dl, pthread | Vulkan, shaderc_shared, dl, pthread |
 | Linux (Wayland) | wayland-client, wayland-egl, EGL, GL, xkbcommon, dl, pthread | Vulkan, wayland-client, xkbcommon, shaderc_shared, dl, pthread |
 | Windows | opengl32, gdi32 | vulkan-1 |
 
@@ -1092,32 +1083,32 @@ glslangValidator -V shader.frag -o shader.frag.spv
 ### 6.3 测试
 ```bash
 cd engine
-cmake -B build-verify-x11-gl -DENGINE_RHI_BACKEND=opengl
-cmake --build build-verify-x11-gl
-ctest --test-dir build-verify-x11-gl -LE graphics --output-on-failure
+cmake -B build-verify-wl-gl -DENGINE_RHI_BACKEND=opengl
+cmake --build build-verify-wl-gl
+ctest --test-dir build-verify-wl-gl -LE graphics --output-on-failure
 
 # Vulkan 后端集成测试（Linux/Windows 默认后端）
-cmake -B build-verify-x11-vk
-cmake --build build-verify-x11-vk
-ctest --test-dir build-verify-x11-vk -L graphics --output-on-failure
+cmake -B build-verify-wl-vk
+cmake --build build-verify-wl-vk
+ctest --test-dir build-verify-wl-vk -L graphics --output-on-failure
 ```
 
-图形测试会创建真实窗口，GL 与 Vulkan 必须顺序执行，避免 X11 窗口资源竞争。完成构建后，
+Linux 图形测试会创建真实 Wayland 窗口，必须在原生 Wayland 会话或已启动的 Weston 下运行；GL 与 Vulkan 顺序执行，避免共享 compositor/GPU 资源竞争。完成构建后，
 推荐按以下完整矩阵验证 forward MRT、真实 IBL、RT1 temporal consumers（TAA/combined AA/
 motion blur；GL/Vulkan graphics gate 都使用真实 `RG16F` 输入并检查 blur 输出变化）和运行时错误门禁：
 
 ```bash
 # 无头单元/集成测试
-ctest --test-dir build-verify-x11-gl -LE graphics --output-on-failure
-ctest --test-dir build-verify-x11-vk -LE graphics --output-on-failure
+ctest --test-dir build-verify-wl-gl -LE graphics --output-on-failure
+ctest --test-dir build-verify-wl-vk -LE graphics --output-on-failure
 
 # 图形测试：严格顺序，不并行
-ctest --test-dir build-verify-x11-gl -L graphics --output-on-failure
-ctest --test-dir build-verify-x11-vk -L graphics --output-on-failure
+ctest --test-dir build-verify-wl-gl -L graphics --output-on-failure
+ctest --test-dir build-verify-wl-vk -L graphics --output-on-failure
 
 # 运行时 smoke：GL 检查 Mesa API 错误；VK 检查 validation 层
-MESA_DEBUG=1 BREAK_FRAMES=120 BREAK_UI=0 ./build-verify-x11-gl/engine_demo
-BREAK_FRAMES=120 BREAK_UI=0 ./build-verify-x11-vk/engine_demo
+MESA_DEBUG=1 BREAK_FRAMES=120 BREAK_UI=0 ./build-verify-wl-gl/engine_demo
+BREAK_FRAMES=120 BREAK_UI=0 ./build-verify-wl-vk/engine_demo
 ```
 
 Windows 的本轮 MSVC 证据限于原生编译和非图形 Win32 platform smoke；Linux 交叉构建不能替代
@@ -1145,14 +1136,14 @@ GitHub Actions workflow：`.github/workflows/ci.yml`。触发：push/PR 到 `mas
 | proton | lane-proton（steamrt sniper 钉 digest 容器内构建 + ctest；兼容参考，不计 Windows 原生证据；仅 schedule/手动触发） |
 | 非 lane 命名保留 | clean-room（Task 2 交付）、ios-metal-build（compile only） |
 
-收据纪律：失败 lane 的收据如实降级 UNAVAILABLE（`job.status` 守卫）；hosted macOS 无 Metal
+收据纪律：失败 lane 的收据如实降级 UNAVAILABLE（`job.status` 与实际 `rc/passed/skipped` 守卫）；Linux 必须实际执行且零 skip 才能授予 GPU_RUNTIME，全 skip 或零执行不会得到通过收据。hosted macOS 无 Metal
 会话时 graphics 整体 SKIP → HEADLESS；lavapipe/llvmpipe 软渲染收据在 gpu 字段与 command 字段
-如实标注，不计入硬件 GPU 证据。最近全绿 run（17 success / 3 设计内 skipped，15 个
+如实标注，不计入硬件 GPU 证据。历史全绿 run（17 success / 3 设计内 skipped，15 个
 evidence-receipt artifact）：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，
-2026-10-17）。
+2026-10-17），不代表 2.0.0 新 workflow 已执行。
 
-`lane-gpu-runtime-linux-vk` 显式启动 Xvfb，并选择 Mesa 的软件 Vulkan ICD（lavapipe）及 llvmpipe；
-若 runner 缺少 Xvfb 或 lavapipe ICD，步骤直接失败，不把未执行宣称为通过。软件渲染与参考 GPU 的
+`lane-gpu-runtime-linux-vk` 启动 Weston，并选择 Mesa 的软件 Vulkan ICD（lavapipe）及 llvmpipe；
+若 runner 缺少 Weston、Wayland/scanner 或 lavapipe ICD，步骤直接失败，不把未执行宣称为通过。软件渲染与参考 GPU 的
 golden image 可能存在差异，因此该 lane 是环境/启动 smoke，不替代真实 GPU graphics 验证。Windows
 lane 的 `test_platform_win32_runtime` 提供 Win32 platform smoke 证据，不覆盖 WGL/Vulkan/GPU/present；
 macOS lane 执行 Cocoa window smoke；Wayland lane 启动 Weston headless compositor 后执行 Wayland

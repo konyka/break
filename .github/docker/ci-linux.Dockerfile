@@ -29,13 +29,11 @@ RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https:
         clang lld llvm \
         clang-18 lld-18 llvm-18-tools \
         cmake=3.28.* ninja-build pkg-config \
-        libx11-dev libxrandr-dev \
         libgl1-mesa-dev libgl1-mesa-dri libegl1-mesa-dev libgles2-mesa-dev \
         libfreetype6-dev \
         libssl-dev \
         libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
         mesa-vulkan-drivers vulkan-validationlayers vulkan-tools \
-        xvfb x11-utils \
         libwayland-dev wayland-protocols libxkbcommon-dev weston \
         fonts-noto-cjk \
  && rm -rf /var/lib/apt/lists/*

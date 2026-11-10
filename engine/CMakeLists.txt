@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 # VERSION 语义（Task 9 semver 规则，docs/rhi_rollback_runbook.md §5）：
-#   major = 破坏性变更（OpenGL 已决定长期保留，不占用 major 版号）；
+#   major = 破坏性变更（2.0.0 移除 Linux X11 支持；OpenGL 继续保留）；
 #   minor = 新后端/新能力；patch = 修复。版本唯一来源本 project() VERSION；
 #   tag 名 v<x.y.z> 与之严格相等（契约测试比对；tag 由 maintainer 发布时创建）。
-project(PureCEngine VERSION 1.9.0 LANGUAGES C CXX)
+project(PureCEngine VERSION 2.0.0 LANGUAGES C CXX)
 # Dual-language policy: engine code is C11; C++ TUs (tests, wrappers, the
 # Windows-only DLSS adapter) build as C++20. Public C API headers must stay
 # C++20-consumable (extern "C" guards); test_public_api_cpp20 pins this.
@@ -4219,6 +4219,12 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_lane_separation.cmake)
     set_tests_properties(test_ci_lane_separation PROPERTIES
         LABELS "platform_contract")
+    add_test(NAME test_wayland_ci_migration_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_wayland_ci_migration_contract.cmake)
+    set_tests_properties(test_wayland_ci_migration_contract PROPERTIES
+        LABELS "headless;platform_contract")
     # Plan C Task 10: offline Metal shader pipeline contract (text-level,
     # platform-free; the real pipeline run is macOS-only).
     add_test(NAME test_metal_shader_pipeline

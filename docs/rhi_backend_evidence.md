@@ -5,13 +5,14 @@
 - 收据字段（每次等级变更必填，benchmark 类收据遵循 `docs/rhi_benchmark_receipt_schema.md`）：日期 / 机器 / GPU / 驱动版本 / 执行命令 / 结果（CI run URL 或本地 run 标识）
 - 纪律：编译成功 ≠ GPU-runtime；模拟器证据只计入 COMPILED/HEADLESS；MoltenVK 证据不计入原生 Metal；Proton 只作兼容参考；headless stub（`engine_rhi_headless`）永不构成 GPU 证据。
 
-## 基线矩阵（2026-10-14 冻结）
+## 当前支持矩阵（2.0.0）
+
+2.0.0 起 Linux 仅支持原生 Wayland；Vulkan 为默认后端，OpenGL 仅作最后降级与渲染对比。下表的本机 Wayland GPU 结果来自 Task 2 实际执行；迁移后的 workflow、镜像与原生平台结果必须待 push 后核查，不能由旧 CI run 推定通过。
 
 | 平台 × 后端 | 当前等级 | 依据 | 收据 |
 |---|---|---|---|
-| Linux X11 × OpenGL（长期保留：最后降级方案 + 渲染对比基准；原 Task 6 移除计划已于 2026-10-26 取消） | GPU_RUNTIME | CI `lane-gpu-runtime-linux-gl`（Xvfb 软渲染 GL；原 `gl` job） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-gpu-runtime-linux-gl` artifact；软渲染收据如实标注） |
-| Linux X11 × Vulkan | GPU_RUNTIME（lavapipe/llvmpipe，软渲染） | CI `lane-gpu-runtime-linux-vk`（原 `vk`+`linux-graphics-smoke` 合并）+ `lane-validation-linux-vk` + `lane-benchmark-linux-vk`（lavapipe 收据注明软渲染） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-gpu-runtime-linux` / `-validation-linux` / `-benchmark-linux-vk` artifacts）；历史绿 run 38979612930（@89f2d444，`vk`/`linux-graphics-smoke`） |
-| Linux Wayland × GL/VK | NATIVE_SURFACE | CI `wayland-gl`（OpenGL 对比基准） / `lane-native-surface-wayland`（原 `wayland-vk`；weston headless） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-native-surface-wayland{,-gl}` artifacts）；历史绿 run 38979612930（@89f2d444） |
+| Linux Wayland × OpenGL（最后降级 + 渲染对比基准） | GPU_RUNTIME（本机） | 真实 Wayland 上 `test_rhi_wayland_runtime`、`test_mesh_gpu_gl`、`test_world_presentation_gl`、`test_mypal_wayland` 非 skip 通过；Mesa 26.2.5 / Intel UHD Graphics (TGL GT1) | `build-remove-x11-auto/rhi_receipt_local.json`（`platform=linux-wayland`）；迁移后的 `lane-gpu-runtime-linux-gl` 待 push |
+| Linux Wayland × Vulkan | GPU_RUNTIME（本机） | 默认 multi-backend graphics 11/11，非 skip；NVIDIA RTX A5000，validation_messages=0，Vulkan 默认与 OpenGL fallback 均实际渲染/readback | `build-remove-x11-vk/rhi_receipt_local.json`（`platform=linux-wayland`）；迁移后的 `lane-gpu-runtime-linux-vk` / validation / benchmark 待 push |
 | Windows × Vulkan | GPU_RUNTIME（本机 + CI win32 runtime trio） | 本机 `build-win-vk/`、CI `lane-headless-windows-clang`（原 `windows-clang`；win32 runtime trio 另由 `lane-native-surface-win32` 出证） | 本机：`cmake --build build-win-vk && ctest --test-dir build-win-vk -LE "graphics|fuzz"` 全绿（2026-10-14，Task 1 记录）；CI：绿 run https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-headless-windows-clang` / `-native-surface-win32` artifacts；pinned Vulkan SDK 1.4.321.0）；历史绿 run 38979612930（@89f2d444） |
 | Windows × D3D12 | BENCHMARK_COMPARABLE（本机，真 GPU 全栈：设备/swapchain/资源/PSO/DXIL/DXR/debug 工具链 + benchmark 收据：d3d12 fps_avg = 同机 Vulkan 基线 122% ≥ 90% 阈值） | `engine/src/rhi/rhi_d3d12.c/h`：真实设备（计划 D Task 3）+ flip-model swapchain/acquire/submit/present/resize（Task 4）+ 资源/PSO/indirect（Task 5）+ HLSL→DXIL shader 路径（Task 6）+ DXR BLAS/TLAS fail-closed（Task 7）+ debug layer/GBV/DRED（Task 8） | 本机：NVIDIA GeForce RTX 4060 Laptop GPU（驱动 32.0.16.1742，Agility SDK 1.616.0），2026-10-15：`ctest --test-dir build-d3d12-debug -L graphics -R test_d3d12` 6/6 绿（含 WARP floor，gpu=WARP 标注）；全量 `ctest --test-dir build-d3d12-debug` 165/171（失败仅已知环境性/未构建项，与 D3D12 无关，见下方计划 D 收据追加）；CI：windows-d3d12 lane 绿 run https://github.com/konyka/break/actions/runs/38703749329 （@65d01ec，WARP floor），ci.yml 全 lane 绿 run https://github.com/konyka/break/actions/runs/38703749404；Task 7 六 lane 后全绿 run https://github.com/konyka/break/actions/runs/38990768014 （15 个 evidence-receipt artifact；hosted d3d12 由常开孪生 job 出 UNAVAILABLE 收据，真机 lane `lane-gpu-runtime-windows-d3d12` 待 `ENABLE_GPU_LANES`） ；benchmark（2026-10-17）：`docs/receipts/rhi_receipt_windows_d3d12_planf.json` + 基线 `docs/receipts/rhi_receipt_windows_vulkan_planf.json`（rhi_swapchain_bench 同场景 640×480 600 帧 vsync off，fps_avg 2174.19 vs 1779.58，ratio 1.222 ≥ 0.90；判定细节见尾部「收据追加（计划 F 前置：D3D12 benchmark）」） |
 | macOS × Vulkan(MoltenVK) | GPU_RUNTIME | CI `lane-native-surface-cocoa`（原 `macos-vulkan`；133/133 CTest 基线 2026-10-13） | CI run：绿 run https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-native-surface-cocoa` artifact）；历史绿 run 38979612930（@89f2d444；brew 补 spirv-cross 后 headless 套件全绿） |
@@ -19,7 +20,17 @@
 | Android × Vulkan | COMPILED（host-injected ANativeWindow） | `engine/src/rhi/rhi_vk.c:1482-1700` | 源码审查记录（2026-10-14 冻结） |
 | iOS × Vulkan(MoltenVK) | COMPILED（host-injected CAMetalLayer） | `engine/src/platform/platform_compat.h:86-95` | 源码审查记录（2026-10-14 冻结） |
 | OHOS | NONE（UNAVAILABLE，fail-closed） | `engine/src/platform/platform_compat.h:111-120`；`engine/CMakeLists.txt:1073-1075` FATAL_ERROR | 契约测试 `test_platform_compat_harmonyos` |
-| Proton (Wine/vkd3d) × D3D12 | compat-verified（兼容验证，不计入 Windows 原生证据） | lane: proton-d3d12（Wine/vkd3d-proton）+ CI `lane-proton`（steamrt sniper 钉 digest 容器构建，周跑，`evidence-receipt-proton`） | lane 实跑绿 run https://github.com/konyka/break/actions/runs/38703986572 （@65d01ec；契约退出码记录于 lane 日志与 CI artifact proton-d3d12-receipt） |
+| Proton (Wine/vkd3d) × D3D12 | compat-verified（兼容验证，不计入 Windows 原生证据） | lane: proton-d3d12（Wine/vkd3d-proton）+ CI `lane-proton`（steamrt sniper 钉 digest 容器构建，周跑，`evidence-receipt-proton`）；SteamRT 缺 Wayland 工具链时 UNAVAILABLE | lane 实跑绿 run https://github.com/konyka/break/actions/runs/38703986572 （@65d01ec；契约退出码记录于 lane 日志与 CI artifact proton-d3d12-receipt） |
+
+## 历史 CI 证据（保留原文，非当前支持）
+
+以下三行及后续日期化记录只证明当时发生过的验证，不构成 2.0.0 支持声明；旧 URL 原样保留。
+
+| 平台 × 后端 | 历史等级 | 历史依据 | 历史收据 |
+|---|---|---|---|
+| Linux X11 × OpenGL（长期保留：最后降级方案 + 渲染对比基准；原 Task 6 移除计划已于 2026-10-26 取消） | GPU_RUNTIME | CI `lane-gpu-runtime-linux-gl`（Xvfb 软渲染 GL；原 `gl` job） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-gpu-runtime-linux-gl` artifact；软渲染收据如实标注） |
+| Linux X11 × Vulkan | GPU_RUNTIME（lavapipe/llvmpipe，软渲染） | CI `lane-gpu-runtime-linux-vk`（原 `vk`+`linux-graphics-smoke` 合并）+ `lane-validation-linux-vk` + `lane-benchmark-linux-vk`（lavapipe 收据注明软渲染） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-gpu-runtime-linux` / `-validation-linux` / `-benchmark-linux-vk` artifacts）；历史绿 run 38979612930（@89f2d444，`vk`/`linux-graphics-smoke`） |
+| Linux Wayland × GL/VK | NATIVE_SURFACE | CI `wayland-gl`（OpenGL 对比基准） / `lane-native-surface-wayland`（原 `wayland-vk`；weston headless） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-native-surface-wayland{,-gl}` artifacts）；历史绿 run 38979612930（@89f2d444） |
 
 ## 变更规则
 

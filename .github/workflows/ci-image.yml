@@ -60,8 +60,8 @@ jobs:
             clang-18 --version | head -1
             gcc --version | head -1
             ninja --version
-            xvfb-run --help >/dev/null 2>&1 || command -v Xvfb
-            command -v weston wayland-scanner glslangValidator >/dev/null 2>&1 || command -v weston
+            command -v weston
+            command -v wayland-scanner
             test -f /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc || ls /usr/share/fonts | head -3
             dpkg -s libvulkan-dev | grep ^Version
             dpkg -s libshaderc-dev | grep ^Version
