@@ -775,6 +775,8 @@ Expected: 命令尚未按 generation 排队/停止或容量未执行的断言 RE
 
 - [ ] **Step 3: 实现音频 owner 与设备泵**
 
+Task 3 的 `GAME_AUDIO_QUEUE_CAPACITY=16` 仅是本阶段 record 临时容量，不视为本 Task 的已完成合同。本 Task 必须把命令队列和 source 槽扩展为 256，并实际执行超过 256 个未消费命令返回 `OVERLOAD`、drain 后恢复的完整容量测试，不能只沿用 16 或只检查常量。
+
 create 时预分配 256 个命令和 source 槽。GameThread 只 enqueue POD；record 在 fixed tick 末有界 drain；device worker 独占 `AudioSystem`，按 budget 调 `audio_play_3d`/source control，音频实时 callback 不做文件 I/O、网络或游戏逻辑。设备路径的资产读取/解码只能发生在非实时设备 owner 的准备路径，不增加实时分配。
 
 shutdown 顺序为停止新命令→关闭队列→有界 drain/停止 sources→join worker→销毁 AudioSystem。source stop 同时验证 level/source generation；失败保留可诊断状态，不越界访问旧槽。普通无设备降级不影响输入/模拟/RHI。

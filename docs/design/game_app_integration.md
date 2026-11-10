@@ -199,3 +199,37 @@ Task 2 的正式 `load_unload.scenario` 无需修改：frame 1 load、frame 2 un
 生产变异曾在 Flow 验证前插入 `game->level = candidate`；正常与 replacement 进程发生段错误，失败 fixture 也无法保持合同，测试按预期 RED。删除该变异行后恢复 GREEN。focused Runtime/BreakGame/Scene 回归 5/5、game_app 既有合同 6/6（两个 nm negative-path 按合同跳过）、全量非图形 348/348 通过。ASan+UBSan 和 TSan 生命周期各 1/1 通过；no-tests 的 `game_app`/`game_asset_bake` 均构建成功。
 
 这些证据仅是 Linux CPU/record 生命周期证据。没有输入/玩家模拟、GPU `asset_scene_restore`、窗口或像素、音频设备/听测、网络、完整 checkpoint 状态恢复或完整 device worker；Windows 和其他平台未运行。VFS 的 16 mount 上限和 Runtime IO/VFS 路径上限仍是当前有界配置，超长路径或超过 mount 预算会明确拒绝 load。
+
+
+## P12 Task 3 独立评审 fix round 1/5（2026-11-10）
+
+本轮只修复 Task 3 的事务、Runtime IO/VFS 和真实进程测试，不改变 Task 4+ 范围。评审 BASE 为 `da5d475aa97823c01de2e90af351ad17b4ab2bff`；两个 Critical、三个 Important 和两个 Minor 均按下述机制闭合。
+
+### mount namespace 与 candidate 一致性
+
+应用拥有的 VFS 只用于 candidate BSCN，且始终只有一个 DIR mount slot。每次 `game_stage_bscn` 在提交新 request 前清空上一 candidate 的 DIR namespace，再 mount 本次 `asset_root`；不会从新 root 回退到旧 root。上一 level 的 World/Scene/record resource 已全部 CPU staging，不依赖旧 mount，因此丢弃旧 namespace 不影响已提交 level，也不会累积 16 个 mount。应用不允许其他 mount 类型或多 slot 状态进入该路径。
+
+真实测试先 load good，再执行 17 次缺失 BSCN replacement，最后再次 load good。17 次都以 generation 1 reject，旧 level 持续逐帧，最后一次以 generation 2 成功 replacement，覆盖失败配额和 valid→valid 分支。修复前同一 fixture 连续错误提交到 generation 15，随后才因 mount 上限拒绝。
+
+### commit 尾部与双代所有权
+
+`game_app_level_load` 现在分别返回 `committed` 和 `runtime_fatal`。所有 staging 阶段失败（包括 render/crossref）在已有 level 时统一写 `load_rejected` 并继续旧代；只有无旧代可回退时才终止。commit 后的 audio/drain/trace/render 错误写 `runtime_fault stage=commit`，不会再写 `load_rejected` 或继续下一帧。
+
+成功 replacement 在指针/generation 提交期间把 previous 保存在 `GameApp.retired_level`，直到实际销毁后才清空。rollback 分别清理 current 和 retired，覆盖 commit 尾部任意失败点。`level_destroyed` 只在实际销毁已提交 level 后记录；成功 replacement、commit 尾部和 sticky shutdown 测试都要求每个 generation 恰好出现一次。销毁前保存 generation，避免事件读取已释放对象。
+
+Linux 测试用独立 `LD_PRELOAD` 库对 `level_unloaded` trace 的一次 `fflush` 注入 EIO。实际 trace 为 `runtime_fault commit → destroyed 2 → destroyed 1 → io_stopped active=0 → runtime_failed`，没有伪 reject/伪停止。对 `io_stopped` 注入同类错误则覆盖 coordinator callback 进入 sticky FAILED 后的应用级显式 rollback。
+
+### IO timeout quiescence
+
+首次 `wait_completion` 的 TIMEOUT 不再直接允许后续 mount，也不使用只统计 caller request 的 `stats.active` 误判 worker 已停止。代码对同一个 request 再做一次有界等待；真实 completion 只在 worker 的 VFS read 完成后发布，因此消费 completion、释放 message/request 并记录 `io_quiesced` 后，后续 mount 才安全。第二次等待失败或 quiescence trace 失败属于 runtime fatal，candidate 清理后由 shutdown/join 收尾，不再继续 scenario。
+
+测试的 preload `fread` 在 timeout replacement 的 BSCN 上延迟 6 秒，scenario 随后再次 load good。修复前 TSan 实际报告主线程 mount 与 IO worker `vfs_open` 的数据竞争；修复后普通和 TSan 均完成 reject→旧代 frame→generation 2 replacement→正常停止。生产代码没有 test hook，测试库不替换 game/runtime 库。
+
+### 其他覆盖与 Minor
+
+- 将正式 BSCN 的 `MESH_DATA` chunk 标为未知类型，保留可解析 Scene 但缺少 geometry，真实触发 crossref reject；旧 generation 继续，不再因 stage 特判退出进程。
+- 成功 valid→valid replacement、17 次 mount reject、commit 尾部、sticky FAILED、IO timeout、crossref 均进入同一个真实进程 CTest，因此 ASan+UBSan/TSan 执行相同路径而非只跑旧主路径。
+- 删除未使用的 `old_request`；`retired_level` 具有明确所有权。
+- `GAME_AUDIO_QUEUE_CAPACITY=16` 仍仅为 Task 3 临时 record 容量。源码注释和 Task 9 计划均明确：Task 9 必须扩展为 256，并实际测试超过 256 个未消费命令的 OVERLOAD 与 drain 后恢复，不能把 16 当成最终常量。
+
+mount 清空、commit 分类和第二次 completion 等待分别做了独立生产变异；三者都取得针对性 RED 后恢复 GREEN。最终全量非图形为 348/348，no-tests 的 `game_app`/`game_asset_bake` 构建成功，ASan+UBSan 和 TSan 的完整 lifecycle 各 1/1，无 sanitizer 报告。证据仍限 Linux CPU/record；LD_PRELOAD 故障注入在非 Linux 平台标为 UNVERIFIED，不声称跨平台覆盖。

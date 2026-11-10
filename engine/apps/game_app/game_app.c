@@ -65,9 +65,9 @@ typedef struct GameApp {
     GameAppConfig config;
     GameScenarioStep steps[GAME_SCENARIO_MAX_STEPS];
     BreakRuntimeCoordinator *coordinator;
-    BreakRuntimeIoRequest *old_request;
     VFS *vfs;
     GameLevel *level;
+    GameLevel *retired_level;
     FILE *trace;
     GameRender render;
     GameAudio audio;
@@ -173,7 +173,15 @@ static void game_level_hook_unload(void *user, World *world) {
 }
 
 static BreakRuntimeError game_stage_bscn(GameApp *game, GameLevel *candidate,
-                                         const char *asset_root) {
+                                         const char *asset_root,
+                                         bool *runtime_fatal) {
+    if (game->vfs->mount_count != 0u) {
+        if (game->vfs->mount_count != 1u ||
+            game->vfs->mounts[0].type != VFS_MOUNT_DIR) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        game->vfs->mount_count = 0u;
+    }
     if (!vfs_mount_dir(game->vfs, asset_root)) return BREAK_RUNTIME_FAILED;
     BreakRuntimeError result = break_runtime_io_submit(&candidate->request,
                                                        "level.bscn", 0u, 0u);
@@ -181,6 +189,21 @@ static BreakRuntimeError game_stage_bscn(GameApp *game, GameLevel *candidate,
     BreakRuntimeOwnedMessage *message = NULL;
     result = break_runtime_io_wait_completion(candidate->request,
                                               GAME_IO_TIMEOUT_MS, &message);
+    if (result == BREAK_RUNTIME_TIMEOUT) {
+        result = break_runtime_io_wait_completion(candidate->request,
+                                                  GAME_IO_TIMEOUT_MS, &message);
+        if (result != BREAK_RUNTIME_OK || !message) {
+            break_runtime_message_release(message);
+            *runtime_fatal = true;
+            return result != BREAK_RUNTIME_OK ? result : BREAK_RUNTIME_FAILED;
+        }
+        break_runtime_message_release(message);
+        break_runtime_io_request_release(candidate->request);
+        candidate->request = NULL;
+        result = game_trace(game, "GAMEAPPTRACE version=1 event=io_quiesced\n");
+        if (result != BREAK_RUNTIME_OK) *runtime_fatal = true;
+        return result != BREAK_RUNTIME_OK ? result : BREAK_RUNTIME_TIMEOUT;
+    }
     if (result != BREAK_RUNTIME_OK || !message) {
         break_runtime_message_release(message);
         return result != BREAK_RUNTIME_OK ? result : BREAK_RUNTIME_FAILED;
@@ -466,15 +489,20 @@ static BreakRuntimeError game_validate_crossrefs(const GameLevel *candidate) {
 }
 
 static BreakRuntimeError game_app_level_load(GameApp *game, const char *asset_root,
-                                             const char **failed_stage) {
+                                             const char **failed_stage,
+                                             bool *out_committed,
+                                             bool *out_runtime_fatal) {
     *failed_stage = "bscn";
+    *out_committed = false;
+    *out_runtime_fatal = false;
     if (!game->io_running || game->next_generation == 0u) {
         return BREAK_RUNTIME_REJECTED;
     }
     GameLevel *candidate = (GameLevel *)calloc(1u, sizeof(*candidate));
     if (!candidate) return BREAK_RUNTIME_OOM;
     candidate->generation = game->next_generation;
-    BreakRuntimeError result = game_stage_bscn(game, candidate, asset_root);
+    BreakRuntimeError result = game_stage_bscn(game, candidate, asset_root,
+                                               out_runtime_fatal);
     if (result != BREAK_RUNTIME_OK) goto reject;
 
     *failed_stage = "flow";
@@ -510,18 +538,27 @@ static BreakRuntimeError game_app_level_load(GameApp *game, const char *asset_ro
     if (result != BREAK_RUNTIME_OK) goto reject;
 
     GameLevel *previous = game->level;
+    game->retired_level = previous;
     game->level = candidate;
     game->next_generation++;
+    *failed_stage = "commit";
+    *out_committed = true;
     if (previous) {
+        u64 previous_generation = previous->generation;
         result = game_audio_enqueue(&game->audio, GAME_AUDIO_STOP,
-                                    previous->generation);
+                                    previous_generation);
         if (result == BREAK_RUNTIME_OK) result = game_audio_drain_record(&game->audio, 1u);
         if (result != BREAK_RUNTIME_OK) return result;
         result = game_trace(game,
             "GAMEAPPTRACE version=1 event=level_unloaded generation=%" PRIu64 "\n",
-            previous->generation);
+            previous_generation);
         if (result != BREAK_RUNTIME_OK) return result;
         game_app_level_destroy(previous);
+        game->retired_level = NULL;
+        result = game_trace(game,
+            "GAMEAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
+            previous_generation);
+        if (result != BREAK_RUNTIME_OK) return result;
     }
     result = game_trace(game,
         "GAMEAPPTRACE version=1 event=level_loaded generation=%" PRIu64 "\n",
@@ -546,9 +583,13 @@ static BreakRuntimeError game_app_unload_level(GameApp *game, bool with_audio) {
     game->level = NULL;
     u64 generation = level->generation;
     game_app_level_destroy(level);
-    return game_trace(game,
+    result = game_trace(game,
         "GAMEAPPTRACE version=1 event=level_unloaded generation=%" PRIu64 "\n",
         generation);
+    BreakRuntimeError destroyed_result = game_trace(game,
+        "GAMEAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
+        generation);
+    return result != BREAK_RUNTIME_OK ? result : destroyed_result;
 }
 
 static BreakRuntimeError game_audio_stop_admission_cb(void *user) {
@@ -786,7 +827,20 @@ static void game_rollback(GameApp *game) {
     if (game->level) {
         GameLevel *level = game->level;
         game->level = NULL;
+        u64 generation = level->generation;
         game_app_level_destroy(level);
+        (void)game_trace(game,
+            "GAMEAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
+            generation);
+    }
+    if (game->retired_level) {
+        GameLevel *level = game->retired_level;
+        game->retired_level = NULL;
+        u64 generation = level->generation;
+        game_app_level_destroy(level);
+        (void)game_trace(game,
+            "GAMEAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
+            generation);
     }
     (void)game_app_stop_io(game);
     if (game->vfs && !game->io_running) {
@@ -862,15 +916,24 @@ BreakRuntimeError game_app_run(const GameAppConfig *config, int *out_exit_code) 
                 ? step->asset_root : config->asset_root;
             bool had_level = game->level != NULL;
             const char *load_stage = "bscn";
-            result = game_app_level_load(game, asset_root, &load_stage);
+            bool committed = false;
+            bool runtime_fatal = false;
+            result = game_app_level_load(game, asset_root, &load_stage, &committed,
+                                         &runtime_fatal);
             if (result != BREAK_RUNTIME_OK) {
                 u64 generation = game->level ? game->level->generation : 0u;
+                if (committed || runtime_fatal) {
+                    (void)game_trace(game,
+                        "GAMEAPPTRACE version=1 event=runtime_fault stage=%s generation=%" PRIu64
+                        "\n", load_stage, generation);
+                    stage = load_stage;
+                    goto finished;
+                }
                 (void)game_trace(game,
                     "GAMEAPPTRACE version=1 event=load_rejected generation=%" PRIu64
                     " stage=%s\n", generation, load_stage);
                 fprintf(stderr, "game_app: stage=%s level load rejected\n", load_stage);
-                if (!had_level || strcmp(load_stage, "crossref") == 0 ||
-                    strcmp(load_stage, "render") == 0) {
+                if (!had_level) {
                     stage = load_stage;
                     goto finished;
                 }

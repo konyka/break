@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 
+/* Task 3 record-only bound; Task 9 must expand this to 256 and test overflow. */
 #define GAME_AUDIO_QUEUE_CAPACITY 16u
 
 typedef enum GameAudioCommandKind {

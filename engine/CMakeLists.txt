@@ -4706,12 +4706,36 @@ endif()
     set_tests_properties(test_game_app_assets test_game_app_formal_asset_tracking
         test_game_app_naming_contract PROPERTIES LABELS "headless;game_app;assets")
 
+    set(_game_app_lifecycle_fault_library "")
+    set(_game_app_lifecycle_fault_supported FALSE)
+    set(_game_app_lifecycle_sanitizer_preload "")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_library(game_app_lifecycle_preload SHARED
+            tests/test_game_app_lifecycle_preload.c)
+        set_property(TARGET game_app_lifecycle_preload PROPERTY C_STANDARD 11)
+        target_link_libraries(game_app_lifecycle_preload PRIVATE ${CMAKE_DL_LIBS})
+        add_dependencies(game_app game_app_lifecycle_preload)
+        set(_game_app_lifecycle_fault_library $<TARGET_FILE:game_app_lifecycle_preload>)
+        set(_game_app_lifecycle_fault_supported TRUE)
+        if(ENGINE_USE_ASAN)
+            execute_process(COMMAND ${CMAKE_C_COMPILER} -print-file-name=libasan.so.8
+                OUTPUT_VARIABLE _game_app_lifecycle_sanitizer_preload
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+            if(NOT EXISTS "${_game_app_lifecycle_sanitizer_preload}")
+                set(_game_app_lifecycle_sanitizer_preload "")
+            endif()
+        endif()
+    endif()
     add_test(NAME test_game_app_lifecycle_load_unload
         COMMAND ${CMAKE_COMMAND}
             -DGAME_APP=$<TARGET_FILE:game_app>
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/game_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/game_app/load_unload.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/game_app_lifecycle
+            -DFAULT_LIBRARY=${_game_app_lifecycle_fault_library}
+            -DFAULT_SUPPORTED=${_game_app_lifecycle_fault_supported}
+            -DSANITIZER_PRELOAD=${_game_app_lifecycle_sanitizer_preload}
+            -DPython3_EXECUTABLE=${Python3_EXECUTABLE}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_lifecycle.cmake)
     set_tests_properties(test_game_app_lifecycle_load_unload PROPERTIES
         LABELS "headless;game_app;lifecycle" TIMEOUT 180)
