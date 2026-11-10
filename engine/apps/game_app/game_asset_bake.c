@@ -8,14 +8,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CRY_LEVEL_ENTITIES 7u
-#define CRY_LEVEL_MATERIALS 7u
-#define CRY_CUBE_VERTICES 24u
-#define CRY_CUBE_INDICES 36u
-#define CRY_WAV_SAMPLES 4410u
-#define CRY_WAV_BYTES (44u + CRY_WAV_SAMPLES * 2u)
+#define GAME_LEVEL_ENTITIES 7u
+#define GAME_LEVEL_MATERIALS 7u
+#define GAME_CUBE_VERTICES 24u
+#define GAME_CUBE_INDICES 36u
+#define GAME_WAV_SAMPLES 4410u
+#define GAME_WAV_BYTES (44u + GAME_WAV_SAMPLES * 2u)
 
-static const char *const k_class_names[CRY_LEVEL_ENTITIES] = {
+static const char *const k_class_names[GAME_LEVEL_ENTITIES] = {
     "Ground", "Player", "Enemy", "DynamicWall", "Vehicle",
     "VisibleColor", "HiddenColor"
 };
@@ -97,8 +97,8 @@ static bool read_cpu_geometry(void *user, const Mesh *mesh, u32 mesh_index,
     return true;
 }
 
-static void make_cube(SceneMeshGeometry *geometry, f32 vertices[CRY_CUBE_VERTICES * 8u],
-                      u32 indices[CRY_CUBE_INDICES]) {
+static void make_cube(SceneMeshGeometry *geometry, f32 vertices[GAME_CUBE_VERTICES * 8u],
+                      u32 indices[GAME_CUBE_INDICES]) {
     static const f32 corners[6][4][3] = {
         {{-1, -1,  1}, { 1, -1,  1}, { 1,  1,  1}, {-1,  1,  1}},
         {{ 1, -1, -1}, {-1, -1, -1}, {-1,  1, -1}, { 1,  1, -1}},
@@ -135,15 +135,15 @@ static void make_cube(SceneMeshGeometry *geometry, f32 vertices[CRY_CUBE_VERTICE
         dst[5] = base + 3u;
     }
     geometry->mesh_index = 0u;
-    geometry->vertex_count = CRY_CUBE_VERTICES;
-    geometry->index_count = CRY_CUBE_INDICES;
+    geometry->vertex_count = GAME_CUBE_VERTICES;
+    geometry->index_count = GAME_CUBE_INDICES;
     geometry->vertices = (u8 *)vertices;
     geometry->indices = indices;
 }
 
 static bool bake_scene(const char *output) {
-    static f32 vertices[CRY_CUBE_VERTICES * 8u];
-    static u32 indices[CRY_CUBE_INDICES];
+    static f32 vertices[GAME_CUBE_VERTICES * 8u];
+    static u32 indices[GAME_CUBE_INDICES];
     SceneMeshGeometry geometry;
     memset(&geometry, 0, sizeof(geometry));
     make_cube(&geometry, vertices, indices);
@@ -157,37 +157,37 @@ static bool bake_scene(const char *output) {
     temporary[0] = '\0';
     if (!world) goto cleanup;
     scene.meshes = (Mesh *)calloc(1u, sizeof(Mesh));
-    scene.materials = (Material *)calloc(CRY_LEVEL_MATERIALS, sizeof(Material));
-    scene.nodes = (SceneNode *)calloc(CRY_LEVEL_ENTITIES, sizeof(SceneNode));
+    scene.materials = (Material *)calloc(GAME_LEVEL_MATERIALS, sizeof(Material));
+    scene.nodes = (SceneNode *)calloc(GAME_LEVEL_ENTITIES, sizeof(SceneNode));
     if (!scene.meshes || !scene.materials || !scene.nodes) goto cleanup;
     scene.mesh_count = 1u;
-    scene.material_count = CRY_LEVEL_MATERIALS;
-    scene.node_count = CRY_LEVEL_ENTITIES;
+    scene.material_count = GAME_LEVEL_MATERIALS;
+    scene.node_count = GAME_LEVEL_ENTITIES;
     scene.mesh_geometry = &geometry;
     scene.mesh_geometry_count = 1u;
-    scene.meshes[0].vertex_count = CRY_CUBE_VERTICES;
-    scene.meshes[0].index_count = CRY_CUBE_INDICES;
+    scene.meshes[0].vertex_count = GAME_CUBE_VERTICES;
+    scene.meshes[0].index_count = GAME_CUBE_INDICES;
     scene.meshes[0].aabb_min = vec3(-1.0f, -1.0f, -1.0f);
     scene.meshes[0].aabb_max = vec3(1.0f, 1.0f, 1.0f);
 
-    static const f32 colors[CRY_LEVEL_MATERIALS][4] = {
+    static const f32 colors[GAME_LEVEL_MATERIALS][4] = {
         {0.18f, 0.20f, 0.22f, 1.0f}, {0.10f, 0.50f, 0.90f, 1.0f},
         {0.90f, 0.10f, 0.10f, 1.0f}, {0.50f, 0.50f, 0.50f, 1.0f},
         {0.90f, 0.70f, 0.10f, 1.0f}, {1.00f, 0.25f, 0.05f, 1.0f},
         {0.10f, 0.20f, 0.90f, 1.0f}
     };
-    static const f32 positions[CRY_LEVEL_ENTITIES][3] = {
+    static const f32 positions[GAME_LEVEL_ENTITIES][3] = {
         {0, -0.5f, 0}, {0, 1, 0}, {4, 1, 4}, {0, 1, 6},
         {-4, 0.75f, 2}, {2, 0.5f, -2}, {-2, 0.5f, -2}
     };
-    static const f32 scales[CRY_LEVEL_ENTITIES][3] = {
+    static const f32 scales[GAME_LEVEL_ENTITIES][3] = {
         {16, 0.5f, 16}, {0.4f, 1, 0.4f}, {0.4f, 1, 0.4f},
         {2, 1, 0.25f}, {1.5f, 0.75f, 2.5f},
         {0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}
     };
     world_register_component(world, 1u, sizeof(f32) * 3u);
     world_register_component(world, 3u, sizeof(u32));
-    for (u32 i = 0; i < CRY_LEVEL_ENTITIES; ++i) {
+    for (u32 i = 0; i < GAME_LEVEL_ENTITIES; ++i) {
         memcpy(scene.materials[i].base_color, colors[i], sizeof(colors[i]));
         scene.materials[i].roughness_factor = 0.8f;
         scene.materials[i].alpha_cutoff = 0.5f;
@@ -237,7 +237,7 @@ cleanup:
 static bool bake_sidecar(const char *output) {
     char text[1024];
     usize offset = 0;
-    for (u32 i = 0; i < CRY_LEVEL_ENTITIES; ++i) {
+    for (u32 i = 0; i < GAME_LEVEL_ENTITIES; ++i) {
         int written = snprintf(text + offset, sizeof(text) - offset, "%u %s\n",
                                i + 1u, k_class_names[i]);
         if (written < 0 || (usize)written >= sizeof(text) - offset) return false;
@@ -336,7 +336,7 @@ static bool bake_animation(const char *output) {
 }
 
 static bool bake_wav(const char *output) {
-    u8 wav[CRY_WAV_BYTES];
+    u8 wav[GAME_WAV_BYTES];
     memset(wav, 0, sizeof(wav));
     memcpy(wav, "RIFF", 4);
     put32(wav + 4, (u32)sizeof(wav) - 8u);
@@ -349,9 +349,9 @@ static bool bake_wav(const char *output) {
     put16(wav + 32, 2u);
     put16(wav + 34, 16u);
     memcpy(wav + 36, "data", 4);
-    put32(wav + 40, CRY_WAV_SAMPLES * 2u);
+    put32(wav + 40, GAME_WAV_SAMPLES * 2u);
     u32 seed = 0xC0FFEE12u;
-    for (u32 i = 0; i < CRY_WAV_SAMPLES; ++i) {
+    for (u32 i = 0; i < GAME_WAV_SAMPLES; ++i) {
         seed ^= seed << 13;
         seed ^= seed >> 17;
         seed ^= seed << 5;
@@ -380,7 +380,7 @@ static bool bake_text_assets(const char *output) {
          "    this is not valid Lua\n"
          "end\n"},
         {"deterministic.scenario",
-         "cry-scenario 1\n"
+         "game-app-scenario 1\n"
          "seed 12648430\n"
          "fixed-dt-ns 16666667\n"
          "frame 0 enter 1\n"
@@ -388,7 +388,7 @@ static bool bake_text_assets(const char *output) {
          "frame 60 checkpoint 1\n"
          "frame 120 end\n"},
         {"load_unload.scenario",
-         "cry-scenario 1\n"
+         "game-app-scenario 1\n"
          "seed 12648430\n"
          "fixed-dt-ns 16666667\n"
          "frame 1 load\n"
@@ -397,7 +397,7 @@ static bool bake_text_assets(const char *output) {
          "frame 4 unload\n"
          "frame 5 end\n"},
         {"rollback.scenario",
-         "cry-scenario 1\n"
+         "game-app-scenario 1\n"
          "seed 12648430\n"
          "fixed-dt-ns 16666667\n"
          "frame 1 checkpoint 7\n"
@@ -416,22 +416,22 @@ static bool bake_text_assets(const char *output) {
 int main(int argc, char **argv) {
     const char *output = NULL;
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
-        puts("Usage: cry_game_bake --output DIR");
+        puts("Usage: game_asset_bake --output DIR");
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "--output") == 0 && argv[2][0] != '\0')
         output = argv[2];
     if (!output) {
-        fputs("Usage: cry_game_bake --output DIR\n", stderr);
+        fputs("Usage: game_asset_bake --output DIR\n", stderr);
         return 2;
     }
     if (!platform_mkdir(output)) {
-        fputs("cry_game_bake: cannot create output directory\n", stderr);
+        fputs("game_asset_bake: cannot create output directory\n", stderr);
         return 1;
     }
     if (!bake_scene(output) || !bake_sidecar(output) || !bake_flow(output) ||
         !bake_animation(output) || !bake_wav(output) || !bake_text_assets(output)) {
-        fputs("cry_game_bake: asset generation failed\n", stderr);
+        fputs("game_asset_bake: asset generation failed\n", stderr);
         return 1;
     }
     return 0;

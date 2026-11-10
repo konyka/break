@@ -62,7 +62,7 @@ engine/build-*/
 frag.spv
 *.bin
 *.wav
-!engine/assets/cry_game/tone.wav
+!engine/assets/game_app/tone.wav
 .qoder/
 screenshot_*.bmp
 .worktrees/

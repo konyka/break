@@ -5,20 +5,20 @@ foreach(var ENGINE_SOURCE_DIR GIT_EXECUTABLE)
 endforeach()
 
 set(expected
-    engine/assets/cry_game/actors.sidecar
-    engine/assets/cry_game/broken.lua
-    engine/assets/cry_game/deterministic.scenario
-    engine/assets/cry_game/director.lua
-    engine/assets/cry_game/level.banm
-    engine/assets/cry_game/level.bscn
-    engine/assets/cry_game/level.fg
-    engine/assets/cry_game/load_unload.scenario
-    engine/assets/cry_game/player.lua
-    engine/assets/cry_game/rollback.scenario
-    engine/assets/cry_game/tone.wav)
+    engine/assets/game_app/actors.sidecar
+    engine/assets/game_app/broken.lua
+    engine/assets/game_app/deterministic.scenario
+    engine/assets/game_app/director.lua
+    engine/assets/game_app/level.banm
+    engine/assets/game_app/level.bscn
+    engine/assets/game_app/level.fg
+    engine/assets/game_app/load_unload.scenario
+    engine/assets/game_app/player.lua
+    engine/assets/game_app/rollback.scenario
+    engine/assets/game_app/tone.wav)
 get_filename_component(repository_root "${ENGINE_SOURCE_DIR}/.." ABSOLUTE)
 execute_process(
-    COMMAND "${GIT_EXECUTABLE}" -C "${repository_root}" ls-files -- engine/assets/cry_game
+    COMMAND "${GIT_EXECUTABLE}" -C "${repository_root}" ls-files -- engine/assets/game_app
     RESULT_VARIABLE git_result
     OUTPUT_VARIABLE tracked_output
     ERROR_VARIABLE git_error
@@ -34,4 +34,4 @@ if(NOT "${tracked}" STREQUAL "${expected}")
         "formal asset tracking mismatch: ${tracked_count} tracked, ${expected_count} required\n"
         "tracked=${tracked}\nexpected=${expected}")
 endif()
-message(STATUS "All 11 formal cry_game assets are tracked, including tone.wav")
+message(STATUS "All 11 formal game_app assets are tracked, including tone.wav")

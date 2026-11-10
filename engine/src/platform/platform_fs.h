@@ -80,11 +80,24 @@ bool platform_list_dir(const char *path, PlatformDirEntry *entries, u32 capacity
 
 /* Opens "<path>.tmpXXXXXX" in the SAME directory as path (rename atomicity requires
  * same filesystem). Only ONE writer per instance; not thread-safe. */
+/* commit_status consumes the writer like commit. SUCCESS_DURABLE means all
+ * platform durability steps completed. NOT_COMMITTED_TARGET_UNCHANGED covers
+ * failures before rename. RENAMED_DURABILITY_UNKNOWN means rename succeeded
+ * but a later directory durability step failed. The legacy bool commit maps
+ * only SUCCESS_DURABLE to true, preserving its previous false for both other
+ * outcomes. Win32 uses MoveFileEx(WRITE_THROUGH) instead of directory fsync. */
+typedef enum PlatformAtomicCommitResult {
+    PLATFORM_ATOMIC_SUCCESS_DURABLE = 0,
+    PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED,
+    PLATFORM_ATOMIC_RENAMED_DURABILITY_UNKNOWN
+} PlatformAtomicCommitResult;
+
 typedef struct PlatformAtomicWriter PlatformAtomicWriter;
 PlatformAtomicWriter *platform_atomic_writer_open(const char *path);     /* NULL on error */
 bool platform_atomic_writer_write(PlatformAtomicWriter *w, const void *data, usize len); /* false → abort state */
 bool platform_atomic_writer_commit(PlatformAtomicWriter *w);  /* fsync file, close, rename over path,
                                                                  fsync directory, free writer */
+PlatformAtomicCommitResult platform_atomic_writer_commit_status(PlatformAtomicWriter *w);
 void platform_atomic_writer_abort(PlatformAtomicWriter *w);   /* close + unlink tmp + free; idempotent */
 
 bool platform_mkdir(const char *path);                        /* single level; true if exists-as-dir */

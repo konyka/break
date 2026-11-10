@@ -1631,24 +1631,24 @@ set_property(TARGET break_game_lua PROPERTY C_STANDARD 11)
 target_include_directories(break_game_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_game_lua PUBLIC break_game break_lua)
 
-option(CRY_GAME_ENABLE_NETWORK "Enable the optional authenticated Snowflake channel" OFF)
-add_library(cry_game_core STATIC
-    apps/cry_game/cry_game.c
-    apps/cry_game/cry_checkpoint.c)
-set_property(TARGET cry_game_core PROPERTY C_STANDARD 11)
-target_include_directories(cry_game_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(cry_game_core PUBLIC
+option(GAME_APP_ENABLE_NETWORK "Enable the optional authenticated Snowflake channel" OFF)
+add_library(game_app_core STATIC
+    apps/game_app/game_app.c
+    apps/game_app/game_checkpoint.c)
+set_property(TARGET game_app_core PROPERTY C_STANDARD 11)
+target_include_directories(game_app_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(game_app_core PUBLIC
     engine break_game break_ai break_flow break_lua break_game_lua runtime_core)
-add_executable(cry_game apps/cry_game/main.c)
-target_link_libraries(cry_game PRIVATE cry_game_core m)
-engine_link_rhi_backend(cry_game)
-add_executable(cry_game_bake apps/cry_game/cry_game_bake.c)
-set_property(TARGET cry_game_bake PROPERTY C_STANDARD 11)
-target_link_libraries(cry_game_bake PRIVATE cry_game_core m)
-if(CRY_GAME_ENABLE_NETWORK)
-    target_compile_definitions(cry_game PRIVATE CRY_GAME_ENABLE_NETWORK=1)
+add_executable(game_app apps/game_app/main.c)
+target_link_libraries(game_app PRIVATE game_app_core m)
+engine_link_rhi_backend(game_app)
+add_executable(game_asset_bake apps/game_app/game_asset_bake.c)
+set_property(TARGET game_asset_bake PROPERTY C_STANDARD 11)
+target_link_libraries(game_asset_bake PRIVATE game_app_core m)
+if(GAME_APP_ENABLE_NETWORK)
+    target_compile_definitions(game_app PRIVATE GAME_APP_ENABLE_NETWORK=1)
 else()
-    target_compile_definitions(cry_game PRIVATE CRY_GAME_ENABLE_NETWORK=0)
+    target_compile_definitions(game_app PRIVATE GAME_APP_ENABLE_NETWORK=0)
 endif()
 
 # Formal optional Stage 4 scene editor core library: the document model
@@ -4619,60 +4619,67 @@ endif()
     set_tests_properties(test_break_game_target_contract PROPERTIES
         LABELS "headless;break_game;platform_contract")
 
-    set(_cry_nm_capable FALSE)
+    set(_game_app_nm_capable FALSE)
     if(CMAKE_NM AND (NOT WIN32 OR MINGW))
-        set(_cry_nm_capable TRUE)
+        set(_game_app_nm_capable TRUE)
     endif()
-    add_test(NAME test_cry_game_target_contract
+    add_test(NAME test_game_app_target_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-            -DCRY_GAME=$<TARGET_FILE:cry_game>
-            -DNETWORK_ENABLED=${CRY_GAME_ENABLE_NETWORK}
-            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/cry_game_contract_main
+            -DGAME_APP=$<TARGET_FILE:game_app>
+            -DNETWORK_ENABLED=${GAME_APP_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/game_app_contract_main
             -DNM=${CMAKE_NM}
-            -DNM_CAPABLE=${_cry_nm_capable}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cry_game_target_contract.cmake)
-    add_test(NAME test_cry_game_nm_missing
+            -DNM_CAPABLE=${_game_app_nm_capable}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_target_contract.cmake)
+    add_test(NAME test_game_app_nm_missing
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-            -DCRY_GAME=$<TARGET_FILE:cry_game>
-            -DNETWORK_ENABLED=${CRY_GAME_ENABLE_NETWORK}
-            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/cry_game_contract_nm_missing
+            -DGAME_APP=$<TARGET_FILE:game_app>
+            -DNETWORK_ENABLED=${GAME_APP_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/game_app_contract_nm_missing
             -DNM= -DNM_CAPABLE=FALSE
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cry_game_target_contract.cmake)
-    add_test(NAME test_cry_game_nm_unsupported
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_target_contract.cmake)
+    add_test(NAME test_game_app_nm_unsupported
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-            -DCRY_GAME=$<TARGET_FILE:cry_game>
-            -DNETWORK_ENABLED=${CRY_GAME_ENABLE_NETWORK}
-            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/cry_game_contract_nm_unsupported
+            -DGAME_APP=$<TARGET_FILE:game_app>
+            -DNETWORK_ENABLED=${GAME_APP_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/game_app_contract_nm_unsupported
             -DNM=${CMAKE_COMMAND} -DNM_CAPABLE=TRUE
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cry_game_target_contract.cmake)
-    set_tests_properties(test_cry_game_target_contract test_cry_game_nm_missing
-        test_cry_game_nm_unsupported PROPERTIES
-        LABELS "headless;cry_game;platform_contract" SKIP_RETURN_CODE 77)
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_target_contract.cmake)
+    set_tests_properties(test_game_app_target_contract test_game_app_nm_missing
+        test_game_app_nm_unsupported PROPERTIES
+        LABELS "headless;game_app;platform_contract" SKIP_RETURN_CODE 77)
 
-    add_executable(test_cry_game_assets tests/test_cry_game_assets.c)
-    set_property(TARGET test_cry_game_assets PROPERTY C_STANDARD 11)
-    target_include_directories(test_cry_game_assets PRIVATE ${TEST_INCLUDE_DIRS})
-    target_compile_definitions(test_cry_game_assets PRIVATE
-        CRY_GAME_BAKE_EXECUTABLE="$<TARGET_FILE:cry_game_bake>"
-        CRY_GAME_FORMAL_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/cry_game")
-    target_link_libraries(test_cry_game_assets PRIVATE cry_game_core m)
+    add_executable(test_game_app_assets tests/test_game_app_assets.c)
+    set_property(TARGET test_game_app_assets PROPERTY C_STANDARD 11)
+    target_include_directories(test_game_app_assets PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_game_app_assets PRIVATE
+        GAME_ASSET_BAKE_EXECUTABLE="$<TARGET_FILE:game_asset_bake>"
+        GAME_APP_FORMAL_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/game_app")
+    target_link_libraries(test_game_app_assets PRIVATE game_app_core m)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_definitions(test_cry_game_assets PRIVATE CRY_TEST_WRAP_FS=1)
-        target_link_options(test_cry_game_assets PRIVATE
-            "-Wl,--wrap=fsync" "-Wl,--wrap=write")
+        target_compile_definitions(test_game_app_assets PRIVATE GAME_TEST_WRAP_FS=1)
+        target_link_options(test_game_app_assets PRIVATE
+            "-Wl,--wrap=fsync" "-Wl,--wrap=write" "-Wl,--wrap=rename")
     endif()
-    add_dependencies(test_cry_game_assets cry_game_bake)
-    add_test(NAME test_cry_game_assets COMMAND test_cry_game_assets)
-    add_test(NAME test_cry_game_formal_asset_tracking
+    add_dependencies(test_game_app_assets game_asset_bake)
+    add_test(NAME test_game_app_assets COMMAND test_game_app_assets)
+    add_test(NAME test_game_app_formal_asset_tracking
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cry_game_formal_assets.cmake)
-    set_tests_properties(test_cry_game_assets test_cry_game_formal_asset_tracking
-        PROPERTIES LABELS "headless;cry_game;assets")
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_formal_assets.cmake)
+    add_test(NAME test_game_app_naming_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -DPLAN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/superpowers/plans/2026-11-03-cry-game-integration.md
+            -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/game_app_integration.md
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_naming_contract.cmake)
+    set_tests_properties(test_game_app_assets test_game_app_formal_asset_tracking
+        test_game_app_naming_contract PROPERTIES LABELS "headless;game_app;assets")
 
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
@@ -5777,6 +5784,11 @@ endif()
     add_executable(test_platform_fs_write tests/test_platform_fs_write.c src/platform/platform_fs.c)
     target_include_directories(test_platform_fs_write PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_platform_fs_write PRIVATE m)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_definitions(test_platform_fs_write PRIVATE GAME_TEST_WRAP_FS=1)
+        target_link_options(test_platform_fs_write PRIVATE
+            "-Wl,--wrap=fsync" "-Wl,--wrap=rename")
+    endif()
     add_test(NAME test_platform_fs_write COMMAND test_platform_fs_write)
     set_tests_properties(test_platform_fs_write PROPERTIES LABELS "headless;platform")
 
@@ -6888,37 +6900,37 @@ endif()
         LABELS "platform_contract")
 endif()
 
-foreach(_cry_required_target IN ITEMS cry_game_core cry_game cry_game_bake)
-    if(NOT TARGET ${_cry_required_target})
-        message(FATAL_ERROR "${_cry_required_target} must be defined outside ENGINE_BUILD_TESTS")
+foreach(_game_app_required_target IN ITEMS game_app_core game_app game_asset_bake)
+    if(NOT TARGET ${_game_app_required_target})
+        message(FATAL_ERROR "${_game_app_required_target} must be defined outside ENGINE_BUILD_TESTS")
     endif()
 endforeach()
-get_target_property(_cry_core_links cry_game_core LINK_LIBRARIES)
-set(_cry_core_expected
+get_target_property(_game_app_core_links game_app_core LINK_LIBRARIES)
+set(_game_app_core_expected
     "engine;break_game;break_ai;break_flow;break_lua;break_game_lua;runtime_core")
-if(NOT "${_cry_core_links}" STREQUAL "${_cry_core_expected}")
-    message(FATAL_ERROR "cry_game_core LINK_LIBRARIES changed: ${_cry_core_links}")
+if(NOT "${_game_app_core_links}" STREQUAL "${_game_app_core_expected}")
+    message(FATAL_ERROR "game_app_core LINK_LIBRARIES changed: ${_game_app_core_links}")
 endif()
-get_target_property(_cry_app_links cry_game LINK_LIBRARIES)
-list(FIND _cry_app_links cry_game_core _cry_core_link_index)
-if(_cry_core_link_index LESS 0)
-    message(FATAL_ERROR "cry_game does not link cry_game_core")
+get_target_property(_game_app_links game_app LINK_LIBRARIES)
+list(FIND _game_app_links game_app_core _game_app_core_link_index)
+if(_game_app_core_link_index LESS 0)
+    message(FATAL_ERROR "game_app does not link game_app_core")
 endif()
-foreach(_cry_legacy IN ITEMS engine engine_demo dxx_break)
-    get_target_property(_cry_legacy_links ${_cry_legacy} LINK_LIBRARIES)
-    foreach(_cry_link IN LISTS _cry_legacy_links)
-        if("${_cry_link}" MATCHES "break_game|break_flow|break_ai|break_lua|runtime_core|cry_game")
-            message(FATAL_ERROR "${_cry_legacy} links a P12 integration library: ${_cry_link}")
+foreach(_game_app_legacy IN ITEMS engine engine_demo dxx_break)
+    get_target_property(_game_app_legacy_links ${_game_app_legacy} LINK_LIBRARIES)
+    foreach(_game_app_link IN LISTS _game_app_legacy_links)
+        if("${_game_app_link}" MATCHES "break_game|break_flow|break_ai|break_lua|runtime_core|game_app")
+            message(FATAL_ERROR "${_game_app_legacy} links a P12 integration library: ${_game_app_link}")
         endif()
     endforeach()
 endforeach()
-get_target_property(_cry_network_definitions cry_game COMPILE_DEFINITIONS)
-if(CRY_GAME_ENABLE_NETWORK)
-    if(NOT "CRY_GAME_ENABLE_NETWORK=1" IN_LIST _cry_network_definitions)
-        message(FATAL_ERROR "CRY_GAME_ENABLE_NETWORK=ON is not propagated to cry_game")
+get_target_property(_game_app_network_definitions game_app COMPILE_DEFINITIONS)
+if(GAME_APP_ENABLE_NETWORK)
+    if(NOT "GAME_APP_ENABLE_NETWORK=1" IN_LIST _game_app_network_definitions)
+        message(FATAL_ERROR "GAME_APP_ENABLE_NETWORK=ON is not propagated to game_app")
     endif()
 else()
-    if(NOT "CRY_GAME_ENABLE_NETWORK=0" IN_LIST _cry_network_definitions)
-        message(FATAL_ERROR "CRY_GAME_ENABLE_NETWORK=OFF is not propagated to cry_game")
+    if(NOT "GAME_APP_ENABLE_NETWORK=0" IN_LIST _game_app_network_definitions)
+        message(FATAL_ERROR "GAME_APP_ENABLE_NETWORK=OFF is not propagated to game_app")
     endif()
 endif()

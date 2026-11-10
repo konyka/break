@@ -1,11 +1,11 @@
-#include "cry_game.h"
+#include "game_app.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static void print_help(void) {
-    puts("Usage: cry_game [OPTIONS]\n"
+    puts("Usage: game_app [OPTIONS]\n"
          "  --render record|auto|vulkan|opengl\n"
          "  --audio record|null|device\n"
          "  --assets DIR\n"
@@ -21,7 +21,7 @@ static void print_help(void) {
 }
 
 static int cli_error(const char *message) {
-    fprintf(stderr, "cry_game: %s\n", message);
+    fprintf(stderr, "game_app: %s\n", message);
     return 2;
 }
 
@@ -42,19 +42,19 @@ static int take_value(int argc, char **argv, int *index, const char *name,
     return 0;
 }
 
-static bool parse_render(const char *value, CryRenderMode *out) {
-    if (strcmp(value, "record") == 0) *out = CRY_RENDER_RECORD;
-    else if (strcmp(value, "auto") == 0) *out = CRY_RENDER_AUTO;
-    else if (strcmp(value, "vulkan") == 0) *out = CRY_RENDER_VULKAN;
-    else if (strcmp(value, "opengl") == 0) *out = CRY_RENDER_OPENGL;
+static bool parse_render(const char *value, GameRenderMode *out) {
+    if (strcmp(value, "record") == 0) *out = GAME_RENDER_RECORD;
+    else if (strcmp(value, "auto") == 0) *out = GAME_RENDER_AUTO;
+    else if (strcmp(value, "vulkan") == 0) *out = GAME_RENDER_VULKAN;
+    else if (strcmp(value, "opengl") == 0) *out = GAME_RENDER_OPENGL;
     else return false;
     return true;
 }
 
-static bool parse_audio(const char *value, CryAudioMode *out) {
-    if (strcmp(value, "record") == 0) *out = CRY_AUDIO_RECORD;
-    else if (strcmp(value, "null") == 0) *out = CRY_AUDIO_NULL;
-    else if (strcmp(value, "device") == 0) *out = CRY_AUDIO_DEVICE;
+static bool parse_audio(const char *value, GameAudioMode *out) {
+    if (strcmp(value, "record") == 0) *out = GAME_AUDIO_RECORD;
+    else if (strcmp(value, "null") == 0) *out = GAME_AUDIO_NULL;
+    else if (strcmp(value, "device") == 0) *out = GAME_AUDIO_DEVICE;
     else return false;
     return true;
 }
@@ -73,10 +73,10 @@ static bool parse_frames(const char *value, u32 *out) {
 }
 
 int main(int argc, char **argv) {
-    CryGameConfig config = {
-        .asset_root = "assets/cry_game",
-        .render_mode = CRY_RENDER_AUTO,
-        .audio_mode = CRY_AUDIO_DEVICE,
+    GameAppConfig config = {
+        .asset_root = "assets/game_app",
+        .render_mode = GAME_RENDER_AUTO,
+        .audio_mode = GAME_AUDIO_DEVICE,
     };
     int exit_code = 2;
     BreakRuntimeError result;
@@ -118,7 +118,7 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--require-device") == 0) {
             config.require_device = true;
         } else if (strcmp(argv[i], "--network") == 0) {
-#if CRY_GAME_ENABLE_NETWORK
+#if GAME_APP_ENABLE_NETWORK
             config.network = true;
 #else
             return cli_error("--network is unavailable in this build");
@@ -128,8 +128,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    result = cry_game_run(&config, &exit_code);
+    result = game_app_run(&config, &exit_code);
     if (result != BREAK_RUNTIME_OK)
-        fprintf(stderr, "cry_game: runtime returned %s\n", break_runtime_error_name(result));
+        fprintf(stderr, "game_app: runtime returned %s\n", break_runtime_error_name(result));
     return exit_code;
 }

@@ -177,25 +177,23 @@ bool platform_atomic_writer_write(PlatformAtomicWriter *w, const void *data, usi
     return true;
 }
 
-bool platform_atomic_writer_commit(PlatformAtomicWriter *w) {
-    if (!w) return false;
-    /* Ordering (durability contract, platform_fs.h):
-     *   FlushFileBuffers file → CloseHandle → MoveFileEx over target with
-     *   MOVEFILE_WRITE_THROUGH. Windows has no directory fsync:
-     *   FlushFileBuffers on a directory handle needs GENERIC_WRITE and
-     *   fails with ERROR_ACCESS_DENIED for it, so the rename itself is made
-     *   durable by WRITE_THROUGH (the call returns after the move is on
-     *   disk). Any pre-rename failure deletes the tmp (target untouched);
-     *   the handle is consumed on every outcome. */
+PlatformAtomicCommitResult platform_atomic_writer_commit_status(PlatformAtomicWriter *w) {
+    if (!w) return PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED;
     bool ok = !w->failed;
     if (ok && !FlushFileBuffers(w->h)) ok = false;
     if (!CloseHandle(w->h)) ok = false;
     w->h = INVALID_HANDLE_VALUE;
     if (ok && !MoveFileExA(w->tmp_path, w->target_path,
-                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) ok = false;
-    if (!ok) DeleteFileA(w->tmp_path); /* no residue; harmless if moved */
+                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        ok = false;
+    if (!ok) DeleteFileA(w->tmp_path);
     free(w);
-    return ok;
+    return ok ? PLATFORM_ATOMIC_SUCCESS_DURABLE
+              : PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED;
+}
+
+bool platform_atomic_writer_commit(PlatformAtomicWriter *w) {
+    return platform_atomic_writer_commit_status(w) == PLATFORM_ATOMIC_SUCCESS_DURABLE;
 }
 
 void platform_atomic_writer_abort(PlatformAtomicWriter *w) {
@@ -351,17 +349,20 @@ bool platform_atomic_writer_write(PlatformAtomicWriter *w, const void *data, usi
     return true;
 }
 
-bool platform_atomic_writer_commit(PlatformAtomicWriter *w) {
-    if (!w) return false;
-    /* Ordering (durability contract, platform_fs.h):
-     *   fsync file → close → rename over target → fsync directory.
-     * Any pre-rename failure unlinks the tmp (target untouched); a failed
-     * writer never renames. The handle is consumed on every outcome. */
+PlatformAtomicCommitResult platform_atomic_writer_commit_status(PlatformAtomicWriter *w) {
+    if (!w) return PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED;
     bool ok = !w->failed;
+    bool renamed = false;
     if (ok && fsync(w->fd) != 0) ok = false;
-    if (close(w->fd) != 0) ok = false; /* closed exactly once, either way */
+    if (close(w->fd) != 0) ok = false;
     w->fd = -1;
-    if (ok && rename(w->tmp_path, w->target_path) != 0) ok = false;
+    if (ok) {
+        if (rename(w->tmp_path, w->target_path) == 0) {
+            renamed = true;
+        } else {
+            ok = false;
+        }
+    }
     if (ok) {
         int dfd = open(w->dir_path, O_RDONLY);
         if (dfd < 0) {
@@ -371,9 +372,17 @@ bool platform_atomic_writer_commit(PlatformAtomicWriter *w) {
             close(dfd);
         }
     }
-    if (!ok) unlink(w->tmp_path); /* no residue; ENOENT post-rename is fine */
+    if (!ok) unlink(w->tmp_path);
     free(w);
-    return ok;
+    if (renamed) {
+        return ok ? PLATFORM_ATOMIC_SUCCESS_DURABLE
+                  : PLATFORM_ATOMIC_RENAMED_DURABILITY_UNKNOWN;
+    }
+    return PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED;
+}
+
+bool platform_atomic_writer_commit(PlatformAtomicWriter *w) {
+    return platform_atomic_writer_commit_status(w) == PLATFORM_ATOMIC_SUCCESS_DURABLE;
 }
 
 void platform_atomic_writer_abort(PlatformAtomicWriter *w) {

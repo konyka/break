@@ -1,6 +1,6 @@
-#include "cry_game.h"
+#include "game_app.h"
 
-BreakRuntimeError cry_game_run(const CryGameConfig *config, int *out_exit_code) {
+BreakRuntimeError game_app_run(const GameAppConfig *config, int *out_exit_code) {
     if (out_exit_code == NULL) return BREAK_RUNTIME_INVALID;
     *out_exit_code = 2;
     if (config == NULL) return BREAK_RUNTIME_INVALID;

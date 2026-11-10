@@ -1,23 +1,23 @@
-foreach(var ENGINE_CMAKE CRY_GAME NETWORK_ENABLED CONTRACT_BUILD_ROOT)
+foreach(var ENGINE_CMAKE GAME_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT)
     if(NOT DEFINED ${var})
         message(FATAL_ERROR "${var} is required")
     endif()
 endforeach()
 
-set_property(GLOBAL PROPERTY CRY_GAME_CONTRACT_ERRORS "")
+set_property(GLOBAL PROPERTY GAME_APP_CONTRACT_ERRORS "")
 
 function(record_error text)
-    get_property(errors GLOBAL PROPERTY CRY_GAME_CONTRACT_ERRORS)
+    get_property(errors GLOBAL PROPERTY GAME_APP_CONTRACT_ERRORS)
     string(APPEND errors "${text}\n")
-    set_property(GLOBAL PROPERTY CRY_GAME_CONTRACT_ERRORS "${errors}")
+    set_property(GLOBAL PROPERTY GAME_APP_CONTRACT_ERRORS "${errors}")
 endfunction()
 
 function(contract_skip reason)
-    get_property(errors GLOBAL PROPERTY CRY_GAME_CONTRACT_ERRORS)
+    get_property(errors GLOBAL PROPERTY GAME_APP_CONTRACT_ERRORS)
     if(NOT errors STREQUAL "")
-        message(FATAL_ERROR "cry_game contract failed before skip:\n${errors}")
+        message(FATAL_ERROR "game_app contract failed before skip:\n${errors}")
     endif()
-    message(STATUS "UNVERIFIED: cry_game symbol scan skipped: ${reason}")
+    message(STATUS "UNVERIFIED: game_app symbol scan skipped: ${reason}")
     if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
         cmake_language(EXIT 77)
     endif()
@@ -26,21 +26,21 @@ endfunction()
 
 function(expect_exit name expected)
     execute_process(
-        COMMAND "${CRY_GAME}" ${ARGN}
+        COMMAND "${GAME_APP}" ${ARGN}
         RESULT_VARIABLE rc
         OUTPUT_VARIABLE out
         ERROR_VARIABLE err
         TIMEOUT 10)
-    set_property(GLOBAL PROPERTY CRY_GAME_LAST_RC "${rc}")
-    set_property(GLOBAL PROPERTY CRY_GAME_LAST_OUT "${out}")
-    set_property(GLOBAL PROPERTY CRY_GAME_LAST_ERR "${err}")
+    set_property(GLOBAL PROPERTY GAME_APP_LAST_RC "${rc}")
+    set_property(GLOBAL PROPERTY GAME_APP_LAST_OUT "${out}")
+    set_property(GLOBAL PROPERTY GAME_APP_LAST_ERR "${err}")
     if(NOT "${rc}" STREQUAL "${expected}")
         record_error("${name}: exit=${rc}, want=${expected}; stdout=${out}; stderr=${err}")
     endif()
 endfunction()
 
 function(expect_last_error name pattern)
-    get_property(err GLOBAL PROPERTY CRY_GAME_LAST_ERR)
+    get_property(err GLOBAL PROPERTY GAME_APP_LAST_ERR)
     if(NOT "${err}" MATCHES "${pattern}")
         record_error("${name}: stderr did not match '${pattern}': ${err}")
     endif()
@@ -49,7 +49,7 @@ endfunction()
 function(expect_runtime_failed name)
     expect_exit(${name} 2 ${ARGN})
     expect_last_error(${name}_failed "runtime returned FAILED")
-    get_property(err GLOBAL PROPERTY CRY_GAME_LAST_ERR)
+    get_property(err GLOBAL PROPERTY GAME_APP_LAST_ERR)
     if("${err}" MATCHES "runtime returned INVALID|unknown or malformed argument|invalid --|requires |unavailable in this build")
         record_error("${name}: legal input took a CLI/INVALID path: ${err}")
     endif()
@@ -57,14 +57,14 @@ endfunction()
 
 get_filename_component(engine_source_dir "${ENGINE_CMAKE}" DIRECTORY)
 file(READ "${ENGINE_CMAKE}" cmake_text)
-if(NOT cmake_text MATCHES "engine_link_rhi_backend\\(cry_game\\)")
-    record_error("cry_game does not use engine_link_rhi_backend")
+if(NOT cmake_text MATCHES "engine_link_rhi_backend\\(game_app\\)")
+    record_error("game_app does not use engine_link_rhi_backend")
 endif()
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -S "${engine_source_dir}" -B "${CONTRACT_BUILD_ROOT}"
         -DENGINE_BUILD_TESTS=OFF -DENGINE_ENABLE_IPO=OFF
         -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF
-        -DCRY_GAME_ENABLE_NETWORK=${NETWORK_ENABLED}
+        -DGAME_APP_ENABLE_NETWORK=${NETWORK_ENABLED}
     RESULT_VARIABLE configure_rc
     OUTPUT_VARIABLE configure_out
     ERROR_VARIABLE configure_err
@@ -74,8 +74,8 @@ if(NOT configure_rc EQUAL 0)
 endif()
 
 expect_exit(help 0 --help)
-get_property(help_out GLOBAL PROPERTY CRY_GAME_LAST_OUT)
-if(NOT help_out MATCHES "Usage: cry_game")
+get_property(help_out GLOBAL PROPERTY GAME_APP_LAST_OUT)
+if(NOT help_out MATCHES "Usage: game_app")
     record_error("help did not describe the real executable: ${help_out}")
 endif()
 
@@ -129,7 +129,7 @@ if(NOT NM_CAPABLE)
 endif()
 
 execute_process(
-    COMMAND "${NM}" --defined-only "${CRY_GAME}"
+    COMMAND "${NM}" --defined-only "${GAME_APP}"
     RESULT_VARIABLE nm_rc
     OUTPUT_VARIABLE nm_out
     ERROR_VARIABLE nm_err
@@ -137,15 +137,15 @@ execute_process(
 if(NOT nm_rc EQUAL 0)
     contract_skip("nm does not support --defined-only for this binary: ${nm_err}")
 endif()
-if(NOT nm_out MATCHES "cry_game_run")
-    contract_skip("nm output format did not expose the expected cry_game_run symbol")
+if(NOT nm_out MATCHES "game_app_run")
+    contract_skip("nm output format did not expose the expected game_app_run symbol")
 endif()
 if(nm_out MATCHES "_for_test|test_hook")
-    record_error("production cry_game contains a test hook")
+    record_error("production game_app contains a test hook")
 endif()
 
-get_property(errors GLOBAL PROPERTY CRY_GAME_CONTRACT_ERRORS)
+get_property(errors GLOBAL PROPERTY GAME_APP_CONTRACT_ERRORS)
 if(NOT errors STREQUAL "")
-    message(FATAL_ERROR "cry_game target/CLI contract failed:\n${errors}")
+    message(FATAL_ERROR "game_app target/CLI contract failed:\n${errors}")
 endif()
-message(STATUS "cry_game target, real-process CLI, and symbol-scan contract passed")
+message(STATUS "game_app target, real-process CLI, and symbol-scan contract passed")
