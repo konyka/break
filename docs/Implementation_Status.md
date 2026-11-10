@@ -24,6 +24,13 @@
 - **验证**：普通完整 `-j3` 构建成功；普通、ASan+UBSan、TSan 的 Flow/NAT/voice/socket/event-loop/replication focused 均 11/11，无 sanitizer/race 报告。普通非图形 `-j3` 为 342 项入选、341 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP；`git diff --check` 通过。
 - **native 限制**：本机只有 Linux。Clang AST/clang-cl 不冒充 native MSVC，LD_PRELOAD 不冒充 Darwin 内核调度；真实 MSVC 编译和 macOS Cocoa/MoltenVK NAT/voice 仍必须在下一轮 native CI 验证。完整命令、输出和变异记录见 `.superpowers/sdd/2026-11-10-remove-x11/platform-behavior-fix-report.md`。
 
+## 本轮更新：真实 Windows WGL context 生命周期修复（2026-11-10）
+
+- **根因与 RED**：scoped 复审指出无 current rendering context 时 `wglGetProcAddress` 合法返回 NULL，直接调用/比较会使 glad 正确 fallback 和 `gladLoadGL` 误判。新增生命周期合同后，当前实现因缺 `RegisterClassExW/CreateWindowExW/pixel format/wglCreateContext/wglMakeCurrent` 和清理路径而 RED。
+- **GREEN**：真实 Windows 分支新增隐藏 message-only 窗口、RGBA32/depth24 pixel format 和实际 WGL context。只有 `wglMakeCurrent` 成功后才调用 `gladLoadGL`，验证现代入口非空、现代/legacy 指针与真实 API 结果一致，以及 GL 版本查询成功；Linux mock 保持原路径和计数断言，未扩大为 GPU 像素测试。
+- **生命周期与变异**：清理先 `wglMakeCurrent(NULL,NULL)`，再 `wglDeleteContext/ReleaseDC/DestroyWindow/UnregisterClassW`，window class 注册、窗口、DC、context 或 DLL 加载失败也走同一逆序清理。删除 `wglMakeCurrent` 的变异再次 RED，精确恢复后交叉对象/链接合同通过，Linux mock 继续通过。实现提交 `51359622`，文档另提交，未合并、未 push。
+- **验证与限制**：普通非图形 343 项零失败（唯一既有 D3D12 平台 skip），`git diff --check` 通过；一次缺少独立单核 haptic 可执行文件的问题通过正常构建该 target 后重跑消除，没有修改或跳过该测试。真实 context 创建、driver 解析和 `gladLoadGL` 仍须下一轮 native CI，COFF 不冒充运行证据。完整证据追加于 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round2-report.md`。
+
 ## 本轮更新：第四轮 Windows MSVC WGL 测试链接修复（2026-11-10）
 
 - **根因与 RED**：真实日志在 `test_glad_wgl_loader.exe` 报告 kernel32.lib 与测试对象重复定义 `FreeLibrary/GetProcAddress` 并以 LNK1169 失败。实际 `lld-link /wholearchive` 对基线 COFF 对象和 kernel32 import library 复现 `LoadLibraryW/GetProcAddress/FreeLibrary` 三个重复符号，证明冲突来自测试替身而非 glad 生产 loader。
