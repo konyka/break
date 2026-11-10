@@ -1,3 +1,13 @@
+## 本轮更新：X11 移除最终门——OpenGL clip 超时修复（2026-11-10）
+
+- **实际根因与最小修复**：clip 测试的离屏 readback 后仍逐轮 `rhi_present` 默认帧缓冲，但测试不 poll 平台事件且继承 EGL swap interval 1；Wayland 回调/可用 back buffer 受节流时，主线程阻塞在 `gl_present` → `eglSwapBuffers` → Mesa `dri2_wl_swap_buffers_with_damage` → `wl_display_poll/ppoll`。现仅在 `test_myui_break_rhi_clip.c` 设备创建成功后调用 `rhi_set_vsync(g_dev, false)`；生产默认 vsync、present、readback 和全部像素断言均未改变。
+- **原失败与受控取证**：输入基线现象为 text OK 后、image 统计前 60 s 超时。本次普通桌面 Wayland 的未改源码基线未再次自然复现（单跑、`-j3` graphics 及 100 次 attach-watch 均通过），因此不虚构原现场栈。改用原生 headless Mutter `--no-x11 --virtual-monitor=640x480@0.01` 确定性地放大同一等待，未改源码在 text 首个 case 内 3 s timeout；gdb 主线程栈明确位于上述 `eglSwapBuffers`/Mesa/Wayland 路径，不在 `glClear` 或 readback。该受控栈证明阻塞机制，但不冒充原随机现场。
+- **无源码 A/B**：同一 0.01 Hz compositor、同一未修二进制，默认设置 `timeout 3s` 返回 124（3010 ms）；`vblank_mode=0` 返回 0，四个 case 全部完成（107 ms）。实际 OpenGL 为 Mesa 26.2.5 / Intel UHD Graphics (TGL GT1)。
+- **修复后 GREEN**：普通原生 Wayland 连续 3 次均 4/4（text、image、painter order、sRGB），每次约 0.09–0.10 s；不设置 `vblank_mode` 的 0.01 Hz 对照环境同样 4/4，96 ms 完成。
+- **生产变异验证**：临时把 Wayland `gl_set_vsync` 改为无视 `false`、始终 `eglSwapInterval(..., 1)`，修复后的测试在受控环境 3 s 返回 124；立即精确恢复生产文件，重建后受控及普通 Wayland 均再次 4/4，`rhi_gl.c` 最终 diff 为空，变异不进入提交。
+- **构建与图形回归**：两个现有构建目录完整 `cmake --build ... -j3` 成功。原生 Wayland OpenGL graphics 7/7，通过设备为 Intel / Mesa Intel(R) UHD Graphics (TGL GT1)；默认 Vulkan graphics 11/11，`backend_selected=vulkan/platform-default`，设备 NVIDIA RTX A5000 Laptop GPU。两者均无 `UNAVAILABLE`、无 CTest skip；全程测试显式移除 `DISPLAY`，受控 compositor 同时禁用 X11。
+- **保留诊断与边界**：OpenGL `test_vulkan` 仍打印既有 acceleration-structure/BLAS/DLSS 子项 SKIP；默认 Vulkan 套件仍有 vertex-input 与 clip sRGB/storage-usage validation 诊断（其中 clip 的 6 处在前置基线已出现），本任务未扩大范围处理。普通桌面原随机 60 s 超时未在本轮再次自然复现，结论限于已取得的受控同路径栈、A/B、变异和回归证据。完整命令、栈和输出见 `.superpowers/sdd/2026-11-10-remove-x11/clip-fix-report.md`。
+
 ## 本轮更新：X11 移除 Task 3——CI、2.0.0 与当前文档（2026-11-10）
 
 - **CI/镜像**：Linux OpenGL、Vulkan/lavapipe、validation、benchmark 均改为 Weston/Wayland；GL lane 实际运行 `test_rhi_wayland_runtime`、`test_mesh_gpu_gl`、`test_world_presentation_gl`，其余 lane 运行对应 graphics/benchmark CTest。各 lane 记录 `rc/passed/skipped`，只有 `rc=0 && passed>0 && skipped=0` 才授予 `GPU_RUNTIME`，否则出 `UNAVAILABLE` 且最终步骤失败。Linux receipts 统一 `linux-wayland`，Steam Deck 真机 lane 同样使用 Weston；SteamRT 缺 Wayland/scanner/pkg-config 时明确 `UNAVAILABLE`，无旧窗口系统回退。镜像删除直接旧窗口开发包和虚拟显示工具，保留 Wayland/Weston/Mesa/EGL/Vulkan，smoke 分别检查 weston 与 wayland-scanner。

@@ -260,6 +260,7 @@ int main(void) {
         platform_destroy(g_platform);
         return 77;
     }
+    rhi_set_vsync(g_dev, false);
     for (i = 0; i < sizeof(k_fonts) / sizeof(k_fonts[0]) && g_font == NULL; i++) {
         const char *paths[1] = {k_fonts[i]};
         FILE *f = fopen(k_fonts[i], "rb");
