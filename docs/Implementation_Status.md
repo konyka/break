@@ -1,3 +1,10 @@
+## 本轮更新：scoped 复审 N1——macos-15 Xcode pin（2026-11-10）
+
+- **根因**：R6 runner 迁移后，`lane-gpu-runtime-macos-metal` 与 `ios-metal-build` 仍强制 `/Applications/Xcode_15.4.app`，会在构建前失败。官方当前 [macos-15 image readme](https://raw.githubusercontent.com/actions/runner-images/main/images/macos/macos-15-Readme.md) 不含 15.4，明确列出 default `Xcode_16.4.app`、macOS 15.5 SDK 和 iOS 18.5 simulator。
+- **RED/GREEN 与变异**：先扩展 `test_ci_execution_semantics`，两个 job 均因缺 16.4、保留 15.4 和 locked dependency 未同步而 RED。随后仅把两处 pin 改为 `/Applications/Xcode_16.4.app/Contents/Developer`，保留 `xcodebuild -version` 和全部 Metal/iOS 证据断言；回退 Metal pin 的变异再次 RED，恢复后 GREEN。未改成 latest 或取消版本检查。
+- **依赖与文档**：`locked_dependencies.json` 保留本地 `>=15.4` 地板，同时记录 CI pin 16.4、macOS 15.5 SDK、iOS 18.5 simulator、arm64 runner 和准确 Xcode 路径；`LOCKED_DEPENDENCIES.md` 与 Build Guide 同步，历史计划及旧 runner 记录不改写。
+- **验证与限制**：CI/locked-deps focused 5/5；普通非图形 342 项零失败，唯一既有 D3D12 平台 skip；`git diff --check` 通过。真实 macOS Metal、iOS Simulator 与其他 native/GHCR 结果仍须下一轮 CI，未在本轮 push。完整 N1 证据追加于 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-fix-report.md`。
+
 ## 本轮更新：X11 移除首轮真实远程 CI 修复（2026-11-10）
 
 - **远程基线与范围**：以 `ffdd2e865ec1e34568588404e69ae8c1716cafb4` 为 base，逐项处理主 CI run [`42788874184`](https://github.com/konyka/break/actions/runs/42788874184) 与 windows-d3d12 run [`42788874021`](https://github.com/konyka/break/actions/runs/42788874021) 的六类失败；未触碰 cry-integration Task2。实现提交为 `c2f7241d`、`e4cba612`、`aa92a196`、`83c6c5e9`，文档另提交；本轮未合并、未 push。

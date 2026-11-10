@@ -614,8 +614,9 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
   GLSL→SPIR-V，target env Vulkan 1.2 / SPIR-V 1.5）、glslang 16.4.0、dxc 1.9.0.5399、
   VK_LAYER_KHRONOS_validation）；Windows CI 另以 LunarG SDK 1.4.321.0 静默安装
   （`engine/tools/fetch_vulkan_sdk_windows.cmake`，版本 + SHA256 钉死）。
-- Android NDK r27c（27.2.12479018）；Xcode `>=15.4`（macOS 侧 glslc/spirv-cross/cmake/ninja
-  的 pin 见 LOCKED_DEPENDENCIES.md 注记）；Windows SDK 10.0.26100.0。
+- Android NDK r27c（27.2.12479018）；Xcode `>=15.4`，CI 在 macos-15 arm64 上钉
+  `/Applications/Xcode_16.4.app`（macOS 15.5 SDK、iOS 18.5 simulator；macOS 侧
+  glslc/spirv-cross/cmake/ninja 的 pin 见 LOCKED_DEPENDENCIES.md 注记）；Windows SDK 10.0.26100.0。
 - D3D12 Agility SDK 1.619.6（runtime-shipped；`engine/external/d3d12/agility_sdk_lock.txt`
   以 SHA512 复核 nupkg 与 D3D12Core.dll）。
 - Linux CI 依赖（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`；另需 `libssl-dev`（noble 为 OpenSSL 3.0.x，未钉小版本，随 apt 安全更新），`BREAK_ENABLE_CRYPTO` 默认开启时缺它整个 Linux configure 都会失败。自 R700 起这些包预装在容器镜像 `ghcr.io/konyka/break-ci-linux:latest` 里（`.github/docker/ci-linux.Dockerfile`，由 `.github/workflows/ci-image.yml` 构建发布），Linux lane 在镜像里运行，job 里不再执行 `apt-get install`。要改包或版本：改 Dockerfile，等 `ci-image` 工作流构建完成后再触发 CI。注意：同一次 push 会同时启动 `ci-image` 与 `CI`，此时 Linux lane 拉到的仍是旧镜像（2026-10-28 加 `libssl-dev` 时就是这样：10 个 Linux 任务拉到旧镜像 digest 全部 configure 失败），需要在镜像发布后再推一次提交或手动触发 `CI`（`workflow_dispatch`；只读令牌无权限重跑，需在 GitHub 页面操作）。`lane-proton`（周跑，需要 i386 + wine）仍在 job 里 apt 安装。

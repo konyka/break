@@ -79,9 +79,9 @@
     },
     {
       "name": "xcode",
-      "version": ">=15.4 (macOS 14 SDK minimum)",
+      "version": ">=15.4 (CI pin 16.4; macOS 15.5 SDK and iOS 18.5 simulator)",
       "purpose": "system-provided",
-      "source": "Apple Xcode; CI runner macos-15 arm64 image (pinned image label, not a floating label)",
+      "source": "Apple Xcode; CI runner macos-15 arm64 image with /Applications/Xcode_16.4.app (pinned runner and toolchain, not floating labels)",
       "sha256": "n/a-apple-developer-tools-version-floor-only",
       "verify_path": "",
       "platforms": ["macos", "ios"]
