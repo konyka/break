@@ -437,7 +437,7 @@ TEST(profiler_export_chrome_trace)
 TEST(profiler_export_provenance_sidecar)
 {
     ProfilerProvenance provenance = {
-        "Linux", "X11", "Vulkan", "OpenGL", "GPU \"A\"", "Debug",
+        "Linux", "Wayland", "Vulkan", "OpenGL", "GPU \"A\"", "Debug",
         "validation\nready", "1920x1080", 42
     };
     char path[64]; test_tmp(path, sizeof path, "profiler_test_provenance.json");
@@ -451,6 +451,7 @@ TEST(profiler_export_provenance_sidecar)
     remove(path);
     ASSERT_TRUE(n > 0u);
     ASSERT_NOT_NULL(strstr(buf, "\"platform\":\"Linux\""));
+    ASSERT_NOT_NULL(strstr(buf, "\"window_system\":\"Wayland\""));
     ASSERT_NOT_NULL(strstr(buf, "\"native_baseline\":\"OpenGL\""));
     ASSERT_NOT_NULL(strstr(buf, "\"gpu\":\"GPU \\\"A\\\"\""));
     ASSERT_NOT_NULL(strstr(buf, "\"validation\":\"validation\\nready\""));

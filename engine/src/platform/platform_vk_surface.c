@@ -20,8 +20,6 @@ u32 platform_vk_required_instance_extensions(Platform *p, const char **out,
         "VK_KHR_wayland_surface",
 #elif defined(ENGINE_PLATFORM_ANDROID)
         "VK_KHR_android_surface",
-#elif defined(ENGINE_PLATFORM_LINUX)
-        "VK_KHR_xlib_surface",
 #endif
     };
     const u32 count = (u32)(sizeof(extensions) / sizeof(extensions[0]));
@@ -48,8 +46,7 @@ u32 platform_vk_instance_create_flags(Platform *p) {
  * 没有任何调用点，定义出来只会触发 -Werror=unused-function。 */
 #if defined(ENGINE_PLATFORM_WINDOWS) || defined(ENGINE_PLATFORM_MACOS) || \
     defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_WAYLAND) || \
-    (defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)) || \
-    defined(ENGINE_PLATFORM_LINUX)
+    (defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW))
 static PVkCreateSurfaceFn pvk_resolve(void *vk_instance, void *vk_get_proc_addr,
                                       const char *entry_name) {
     PVkGetProcAddrFn get_proc;
@@ -151,24 +148,6 @@ u64 platform_vk_create_surface_handles(void *surface_native,
     (void)surface_native; (void)display_native; (void)create;
     return PLATFORM_VK_SURFACE_ERROR_UNAVAILABLE;
 #endif
-#elif defined(ENGINE_PLATFORM_LINUX)
-    {
-        PVkXlibSurfaceCreateInfo ci;
-        if (surface_native == NULL || display_native == NULL)
-            return PLATFORM_VK_SURFACE_ERROR_UNAVAILABLE;
-        ci.sType = PVK_STYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-        ci.pNext = NULL;
-        ci.flags = 0u;
-        ci.dpy = display_native; /* Display *（window_x11.c:1170-1172）*/
-        /* Window = unsigned long：window_x11.c:1174-1176 以 (void*)(uintptr_t)
-         * 传出，这里按原路转回。 */
-        ci.window = (u64)(uintptr_t)surface_native;
-        create = pvk_resolve(vk_instance, vk_get_proc_addr, "vkCreateXlibSurfaceKHR");
-        if (create == NULL) return PLATFORM_VK_SURFACE_ERROR_PROC_MISSING;
-        if (create(vk_instance, &ci, NULL, out_surface) != 0)
-            return PLATFORM_VK_SURFACE_ERROR_CREATE_FAILED;
-        return PLATFORM_VK_SURFACE_OK;
-    }
 #else
     /* OHOS 及未知平台：fail-closed，不伪造 surface（规格 §4.5）。 */
     (void)surface_native; (void)display_native; (void)create;

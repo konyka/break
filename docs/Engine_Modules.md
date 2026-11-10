@@ -184,13 +184,12 @@ bool                platform_get_monitor_info(Platform *p, u32 index, MonitorInf
 **设计意图**：三个 native 接口返回 `void*`，由对应 RHI 后端转换为具体类型。
 `platform_window_native` 专用于 OpenGL/EGL（Wayland 返回 `wl_egl_window*`），
 `platform_surface_native` 专用于 Vulkan WSI（Wayland 返回 `wl_surface*`）；两者不能
-互换。X11 返回 `Window`/`Display*`，Win32 返回 `HWND`/`HINSTANCE`，Cocoa 的两个
-窗口目标都返回 `CAMetalLayer*`。
+互换。Win32 返回 `HWND`/`HINSTANCE`，Cocoa 的两个窗口目标都返回 `CAMetalLayer*`。
 
 `platform_config_valid()` 是所有平台创建路径的统一前置契约：配置、标题必须非空，标题
 必须是合法 UTF-8 且包含 NUL 在内不超过 `PLATFORM_MAX_WINDOW_TITLE_BYTES`（4096 字节），
 宽高必须为非零且不超过 `PLATFORM_MAX_WINDOW_DIMENSION`（16384）。
-各 backend 在调用 X11/Wayland/Win32/Cocoa 原生 API 之前执行该检查，避免把非法输入
+各 backend 在调用 Wayland/Win32/Cocoa 原生 API 之前执行该检查，避免把非法输入
 带入平台库。标题校验按字符串已知长度逐字节检查剩余 continuation byte，截断序列、
 非法 lead、overlong、surrogate 和超出 Unicode 上限的码点均拒绝；因此 malformed UTF-8
 不会触发越界读取。调用方仍须提供以 NUL 结尾的 C 字符串，这是该 API 的输入边界。
@@ -306,20 +305,11 @@ void filewatch_destroy(FileWatch *fw);
 
 ### 2.5 窗口后端实现
 
-窗口层通过 CMake 选项在编译时选择具体后端实现，统一暴露 `Platform *` 抽象。
+窗口层通过 CMake 选项在编译时选择具体后端实现，统一暴露 `Platform *` 抽象。2.0.0 起 Wayland 是 **Linux 唯一窗口后端**；旧 `ENGINE_ENABLE_WAYLAND=OFF` 和 `MYUI_PAL=x11` 配置明确失败。
 
-#### 2.5.1 X11 后端 (`window_x11.c`)
+#### 2.5.1 Wayland 后端 (`window_wayland.c`)
 
-Linux 默认后端，实现要点：
-- 通过 Xlib 创建窗口与事件循环
-- GLX 上下文管理（用于 OpenGL 后端）
-- 键盘/鼠标事件转换为 `InputState`，鼠标支持捕获/隐藏/相对模式（`XGrabPointer` + 窗口中心 warp）
-- 全屏切换通过 `_NET_WM_STATE_FULLSCREEN` Atom
-- 通过 Xrandr/RROutputInfo 枚举多显示器与 DPI
-
-#### 2.5.2 Wayland 后端 (`window_wayland.c`)
-
-Linux 上的现代窗口后端，通过 `cmake -DENGINE_ENABLE_WAYLAND=ON` 启用（与 X11 编译时互斥）。实现要点：
+Linux 原生窗口后端，默认通过 `ENGINE_ENABLE_WAYLAND=ON` 启用且不可关闭。实现要点：
 - 核心对象：`wl_display` / `wl_compositor` / `wl_surface` / `xdg_surface` / `xdg_toplevel` / `wl_seat` / `wl_output`
 - 注册表回调按需绑定 compositor、xdg_wm_base、seat、output
 - XDG Shell 生命周期：`configure` 确认、`close` 退出、`ping/pong` 心跳
@@ -329,7 +319,7 @@ Linux 上的现代窗口后端，通过 `cmake -DENGINE_ENABLE_WAYLAND=ON` 启�
 - Vulkan：使用 `VK_KHR_wayland_surface` 扩展
 - 协议代码：CMake 通过 `wayland-scanner` 自动从 `wayland-protocols` 生成 `xdg-shell` 客户端代码
 
-#### 2.5.3 Win32 后端 (`window_win32.c`)
+#### 2.5.2 Win32 后端 (`window_win32.c`)
 
 Windows 平台实现要点：
 - 通过 `RegisterClassEx` + `CreateWindowEx` 创建窗口
@@ -508,7 +498,7 @@ f64          rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t);
 
 #### OpenGL 后端 (`rhi_gl.c`, ~1647 行)
 
-- GLX 上下文初始化与交换链
+- Wayland EGL / Win32 WGL 上下文初始化与交换链
 - VAO/VBO/IBO 管理
 - Uniform Buffer Object 绑定
 - 纹理单元管理（最多 16 个纹理单元）

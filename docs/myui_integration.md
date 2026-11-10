@@ -1,5 +1,7 @@
 # myui 集成与 Break RHI 后端
 
+> **2.0.0 当前边界：** X11 support was removed; Linux only uses the native Wayland port. Valid `MYUI_PAL` values are `wayland`, `win32`, `cocoa`, and `dummy`; `x11` is a fail-closed legacy configuration. Vulkan remains the default RHI and OpenGL is the final fallback. Dated sections below are historical implementation and incident records: their X11/GLX commands, test counts, and conclusions are preserved as evidence, not current support claims.
+
 ## 数字解析与 locale 无关（2026-10-30）
 
 宿主进程即使设置了逗号小数点的 `LC_NUMERIC`（如 `de_DE`、`fr_FR`），myui 读写的配置与样式中的小数仍统一使用 `.`：
@@ -43,7 +45,7 @@ EGL 的 `EGL_SAMPLE_BUFFERS` 和 `EGL_SAMPLES` 是 `EGLConfig` 属性；PAL 会�
 config 查询它们，而不是从 EGL context 查询。这样上层 GLES2 canvas 能准确区分已协商的
 多重采样表面和单采样回退。
 
-X11/Wayland PAL runtime tests report the negotiated result through
+Wayland PAL runtime tests report the negotiated result through
 `my_pal_gl_has_multisample()`. Both `true` (4x-or-better config) and `false`
 (valid single-sample fallback) are supported outcomes; CI must not require a
 specific GPU sample count.
@@ -63,10 +65,9 @@ and fail during configure if generation fails. This keeps native and
 cross-compilation failures explicit instead of producing a later missing-header
 or stale-protocol error.
 
-Vulkan canvas 只消费 PAL 创建好的 opaque surface handle，不在 `myr` 内定义
-`VK_USE_PLATFORM_XLIB_KHR` 或 `VK_USE_PLATFORM_WAYLAND_KHR`，因此不会把 X11/Wayland
-头文件泄漏到 Windows、macOS 或其他交叉编译目标。各平台 PAL/宿主负责选择并创建对应
-WSI surface，渲染模块只依赖 Vulkan core API。
+Vulkan canvas 只消费 PAL 创建好的 opaque surface handle，不在 `myr` 内定义任何
+WSI 平台宏，因此不会把 Wayland 等平台头文件泄漏到 Windows、macOS 或其他交叉编译目标。
+各平台 PAL/宿主负责选择并创建对应 WSI surface，渲染模块只依赖 Vulkan core API。
 
 WSI instance 扩展通过版本化 `my_pal_vulkan_provider_t` sidecar 查询，不改变 frozen PAL
 window vtable。provider 返回的数组只借用到查询结束，最多 8 个名称；公共查询会将名称
@@ -626,7 +627,7 @@ viewport 缓存当作有效状态；同一线程切换设备时缓存会一次�
 O(1)、无锁、无分配。每个设备从 `rhi_frame_begin()` 成功到 `rhi_present()` 返回期间只能有
 一个活动帧，且每个线程同时只能持有一个设备的活动帧；非 owner 线程的
 `rhi_frame_end()`/`rhi_present()` 会安全忽略。这不等价于完整的
-并行 command context：同一设备的原生 GL/EGL/GLX 上下文仍必须由宿主固定在线程上，跨线程
+并行 command context：同一设备的原生 GL/EGL/WGL 上下文仍必须由宿主固定在线程上，跨线程
 提交必须被调用方禁止。需要并行录制或共享队列时，
 应使用后续显式 command context、queue ownership 和 fence 协议，而不能把 `RHICmdBuffer *`
 跨线程传递。
@@ -674,7 +675,7 @@ layout/damage 与 canvas 的嵌套 frame 因而属于同一个样本；命令获
 调用仍可工作，但没有宿主 frame 时只能统计 canvas 自身的局部 frame。
 
 该实现已经以 headless fake canvas、soft backend、窗口管理器及 sanitizer 构建验证；
-这些证据不等同于真实 Wayland/X11/Win32/Cocoa compositor、Vulkan WSI 或 GPU driver
+这些证据不等同于真实 Wayland/Win32/Cocoa compositor、Vulkan WSI 或 GPU driver
 runtime profiling 通过。
 
 ## 增量合成安全边界
@@ -695,23 +696,19 @@ RHI 现在提供 `rhi_frame_begin_damage()`，在帧开始前接收有界的 dra
 后可用 `rhi_frame_get_damage()` 读取后端根据 buffer age 合并后的有效重绘区域。它会拒绝
 空尺寸、负坐标、越界区域和超过 16 个矩形的输入，拒绝后回到普通帧路径。Wayland EGL
 只有同时检测到 `EGL_EXT_buffer_age`、`eglSwapBuffersWithDamageKHR/EXT` 和成功协商的
-`EGL_BUFFER_PRESERVED` 时才启用局部路径；GLX 只有同时检测到 `GLX_EXT_buffer_age`、
-`GLX_EXT_swap_buffers_with_damage`、对应运行时函数和有效固定容量 history 时才启用。两条路径
-都会按有效 buffer age 合并历史区域，并把统一的 top-left 区域转换为 API 所需的 bottom-left
-坐标；尺寸在进入 API 整数类型前保持受限。GLX 的损坏交换 API 无成功返回值，调用返回后才
-提交 history，resize 仍重建 history；缺少任一前提或未知 age 时安全全屏。Win32 WGL、Vulkan
-和 macOS 当前保持能力关闭。
+`EGL_BUFFER_PRESERVED` 时才启用局部路径。该路径按有效 buffer age 合并历史区域，并把统一的
+top-left 区域转换为 API 所需的 bottom-left 坐标；尺寸在进入 API 整数类型前保持受限。
+缺少任一前提或未知 age 时安全全屏。Win32 WGL、Vulkan 和 macOS 当前保持能力关闭。
 
-present 状态采用保守更新：EGL history 仅在 swap 成功后记录实际提交区域；GLX 的损坏交换
-接口没有成功返回值，仅在调用返回后记录。resize、EGL swap 失败或 history 缺口都会强制
-全屏并清除旧 history；因此可检测的局部优化失败不会污染下一帧的保留像素假设。
+present 状态采用保守更新：EGL history 仅在 swap 成功后记录实际提交区域；resize、EGL swap
+失败或 history 缺口都会强制全屏并清除旧 history，因此可检测的局部优化失败不会污染下一帧
+的保留像素假设。
 
 `RHIPresentRect` 在 RHI 和 BreakUI 中一律使用 drawable 的 top-left 原点。仅在调用
-`eglSwapBuffersWithDamage*` 或 `glXSwapBuffersWithDamageEXT` 的最后一层，
-`rhi_present_damage_to_bottom_left()` 才以固定容量、无堆分配方式转换为原生 bottom-left
-坐标；该入口先复用有界区域校验，并支持同一数组原地转换。这样 history、scissor 和 UI
-damage 不会混入两种坐标系。TDD 覆盖多矩形、原地转换、容量不足和越界输入；RHI 专项普通、
-ASan/UBSan 与 Clang TSan 均为 40/40。
+`eglSwapBuffersWithDamage*` 的最后一层，`rhi_present_damage_to_bottom_left()` 才以固定容量、
+无堆分配方式转换为原生 bottom-left 坐标；该入口先复用有界区域校验，并支持同一数组原地转换。
+这样 history、scissor 和 UI damage 不会混入两种坐标系。TDD 覆盖多矩形、原地转换、容量不足和
+越界输入；RHI 专项普通、ASan/UBSan 与 Clang TSan 均为 40/40。
 
 Dirty rectangle 的几何端点也不直接使用 32 位加法。`my_rect_contains()`、
 `my_rect_intersect()`、`my_rect_union()` 和内部接触判断先在 64 位中间值上计算半开区间
@@ -769,11 +766,11 @@ API 边界。
 `my_scroll_bar_set_value()`、`my_scroll_bar_set_page_size()` 以及对应 getter 也拒绝
 非 scrollbar 实例；非法 getter 返回 `0.0f`，不读取不兼容对象内存。
 
-GL X11 只有在 `GLX_EXT_buffer_age`、`GLX_EXT_swap_buffers_with_damage`、运行时函数入口和
-固定容量 history 同时可用时才声明像素保留能力；其他 X11 驱动与 Win32 WGL、Vulkan、macOS
-继续使用全屏 composite。这是有意的安全默认值，不是未检查的性能开关。Vulkan 仍不启用
-`VK_KHR_incremental_present`：该扩展是 compositor 优化提示，并不保证 present 后 swapchain
-image 内容可被 `LOAD`，所以不能满足 retained-buffer 的硬前提。
+Wayland EGL 只有在 buffer-age、damage-present、运行时函数入口和固定容量 history 同时可用时
+才声明像素保留能力；Win32 WGL、Vulkan、macOS 继续使用全屏 composite。这是有意的安全默认值，
+不是未检查的性能开关。Vulkan 仍不启用 `VK_KHR_incremental_present`：该扩展是 compositor
+优化提示，并不保证 present 后 swapchain image 内容可被 `LOAD`，所以不能满足 retained-buffer
+的硬前提。
 
 ## Vulkan vgcanvas 质量事务
 
@@ -1163,7 +1160,7 @@ resolver 仍应限制根目录并拒绝不可信符号链接。
 `MY_CSS_MEDIA_CAP_ALL` 内的位；未知位和值均拒绝。`color-gamut` 使用等级语义：
 `p3` 满足 `srgb`，`rec2020` 满足 `p3` 和 `srgb`；`dynamic-range: standard` 是默认
 兼容条件。上下文由调用方在解析前一次性采集，解析器不负责平台能力发现，因此该契约
-不会把 X11、Win32、Wayland、macOS 或 GL/Vulkan 类型泄漏到 CSS 层。
+不会把 Win32、Wayland、macOS 或 GL/Vulkan 类型泄漏到 CSS 层。
 旧的 `my_css_parse_ex()`/`my_theme_load_css_ex()` 未提供上下文时仍保持兼容行为，条件
 媒体不会被静默应用。
 
@@ -1173,20 +1170,19 @@ resolver 仍应限制根目录并拒绝不可信符号链接。
 `my_pal_get_media_context()` 仍作为兼容包装，仅返回基础事实。provider 使用
 `MY_PAL_MEDIA_PROVIDER_ABI_VERSION` 与 `size` 校验，应在 PAL 销毁流程中注销。注销会
 先阻止新查询，并在途查询退出后再释放 provider context。查询只在
-冷路径执行；注册表锁不进入渲染帧和主题查找热路径，不暴露 X11、Wayland、Win32、Cocoa 或 RHI 类型；未实现的 PAL 返回
+冷路径执行；注册表锁不进入渲染帧和主题查找热路径，不暴露 Wayland、Win32、Cocoa 或 RHI 类型；未实现的 PAL 返回
 `MY_RET_NOT_SUPPORTED`，窗口按安全默认（`screen`、零设备能力）继续。Linux 原生平台
-只声明可稳定证明的 pointer/hover 与 sRGB；X11 在 XInput2 可用时按设备类采集 coarse/fine
-及 hover，扩展不可用时回退核心指针语义，并在当前 RandR 输出的 EDID 可验证时识别
-Display P3/Rec.2020 与 CTA PQ/HLG HDR；Windows/macOS 在冷路径读取可用的系统颜色
-方案与 reduced-motion 偏好，Windows 还将系统鼠标/触控指标映射为 pointer 能力。Cocoa
+只声明 Wayland seat/output 能稳定证明的 pointer/hover 与 sRGB，没有可靠证据的色域和 HDR
+保持 unknown；Windows/macOS 在冷路径读取可用的系统颜色方案与 reduced-motion 偏好，
+Windows 还将系统鼠标/触控指标映射为 pointer 能力。Cocoa
 会从窗口当前屏幕的 Color Space 识别 Display P3/Rec.2020，并从可用的 EDR selector 识别 HDR；Win32
 通过当前窗口匹配的 Display Configuration 2 读取明确 supported、enabled 且 active 的 HDR 状态；旧版
-advanced-color 接口不区分 WCG 与 HDR。X11、Wayland 和 Win32 结果缓存于 `Platform` 快照，
+advanced-color 接口不区分 WCG 与 HDR。Wayland 和 Win32 结果缓存于 `Platform` 快照，
 设置/显示器/输入设备消息只使快照失效，正常读取为 O(1) 复制；Cocoa 的显示/外观查询仍
 在媒体冷路径按当前窗口重新采样。Windows/Linux
 的 P3/Rec.2020 在没有可靠平台证据时保持未知，不通过猜测改变样式。Break 适配器复用宿主
 Platform 快照，Dummy PAL 可注入快照用于确定性测试。Break 平台适配器还暴露无分配的
-`platform_get_media_generation()`：X11 RandR、Wayland seat/output、Win32 显示/设置/
+`platform_get_media_generation()`：Wayland seat/output、Win32 显示/设置/
 输入设备/DPI 和 Cocoa backing-scale 事件递增饱和代际；`break_ui_pump()` 只在代际变化
 时调用 `my_window_manager_refresh_media()`，因此不会把 CSS 重建放入逐帧热路径。代际
 通知只表示“事实可能变化”，不增加未知能力，也不替代媒体快照的最终校验。
@@ -1414,18 +1410,24 @@ engine/
 目录；`MYUI_SOURCE_DIR` 和 `MYUI_ENGINE_SOURCE_DIR` 均由模块位置推导，不依赖调用方的
 `${CMAKE_SOURCE_DIR}` 布局，也不会把顶层工程误当成头文件根。
 可复用入口按 `myc -> myr -> mypal -> myui -> mymvvm -> mymvvm_myui` 顺序加入。
-其中 `mypal` 默认提供无窗口系统的 dummy port；真实 X11 / Wayland / Win32 /
-Cocoa port 现已随树提供（`mypal/x11`、`mypal/wayland`、`mypal/win32`、
-`mypal/cocoa`），由 CMake 选项 `MYUI_PAL=x11|wayland|win32|cocoa|dummy`
-选择编入，平台库只在对应分支链接（默认 dummy 构建保持零平台依赖）。
-X11 与 Wayland port 在参考主机上经 `test_mypal_x11.c` /
-`test_mypal_wayland.c` 真机验证且 ASan 无泄漏；Win32/Cocoa 为
-compile-targeted。各 port 实现冻结的 `my_pal.h` 契约：窗口生命周期、
-`get_lcd` 呈现语义（XImage / wl_shm / DIB / NSBitmapImageRep）、
-`gl_enable` GL mount（EGL ES2 或 WGL/NSOpenGL + 桌面表回退）、
-事件到 `my_event_t` 的翻译、以及 `run/quit/post_event/timer` 主循环。配置回归
-`test_myr_dependency_config` 会检查五个模块的路径契约和 PAL target；隔离顶层构建已
-在关闭字体、YAML、BiDi 和图像可选项时完成 `87/87` 编译。
+其中 `mypal` 仅在选项未设置或显式 `MYUI_PAL=dummy` 时提供无窗口系统的
+CPU dummy port；真实 Wayland / Win32 / Cocoa port 随树提供
+（`mypal/wayland`、`mypal/win32`、`mypal/cocoa`），由 CMake 选项
+`MYUI_PAL=wayland|win32|cocoa|dummy` 选择编入，平台库只在对应分支链接。
+`MYUI_PAL=x11` 和未识别值会明确配置失败，不会静默选择 dummy；顶层 engine 与
+standalone 使用同一组允许值和平台约束，Wayland 只接受 Linux/明确 Wayland 交叉
+目标，Win32/Cocoa 也只接受对应平台。Wayland 创建失败不回落 dummy。Wayland port
+在参考主机上经 `test_mypal_wayland.c` 真机验证；Win32/Cocoa 为 compile-targeted。
+各 port 实现冻结的 `my_pal.h` 契约：窗口生命周期、`get_lcd` 呈现语义
+（wl_shm / DIB / NSBitmapImageRep）、`gl_enable` GL mount（EGL ES2 或
+WGL/NSOpenGL + 桌面表回退）、事件到 `my_event_t` 的翻译、以及
+`run/quit/post_event/timer` 主循环。配置回归 `test_myui_subproject_config`
+通过嵌套构建覆盖默认/显式 dummy、legacy x11、未识别值和平台原生 PAL；Wayland
+无回落仅在 Linux/明确 Wayland 交叉目标执行，Windows/macOS 分别构建
+Win32/Cocoa，不用 skip 代替配置。Linux 主机另以 Zig 编译真实 Win32 PAL，并做
+Darwin 配置探针；这些交叉/嵌套结果不是 native 运行证据。`test_myr_dependency_config`
+检查五个模块的路径契约和 PAL target。隔离顶层构建已在关闭字体、YAML、BiDi 和
+图像可选项时完成 `87/87` 编译。
 
 网络模块的 UDP 测试使用 `net_udp_create(0)` 获取内核临时端口，并通过
 `net_socket_get_local_address()` 构造 loopback 目标，不依赖固定端口或进程号哈希；该 API
@@ -1484,7 +1486,7 @@ cmake --build build-myui-wayland-vk --target dxx_break -j
   `platform_get_size()` 仅保留为平台原生事件单位兼容接口，不能再传给 RHI。
 - `platform_get_content_scale()` 描述逻辑坐标到 drawable 像素的内容缩放；
   `platform_get_input_scale()` 描述平台输入坐标归一化到 myui 逻辑坐标所需的除数。
-  X11/Win32 输入为物理像素，除数等于内容缩放；Wayland/Cocoa 输入已经是逻辑点，除数为 1。
+  Win32 输入为物理像素，除数等于内容缩放；Wayland/Cocoa 输入已经是逻辑点，除数为 1。
 - 即时调试 UI 同样遵循这条边界：布局和 hit-test 使用 logical 尺寸及已归一化的鼠标，
   `my_vgcanvas_break_rhi` 目标和 RHI compositing 使用 drawable 尺寸，并由 canvas scale
   将逻辑几何转换为物理像素。
@@ -1517,16 +1519,15 @@ cmake --build build-myui-wayland-vk --target dxx_break -j
 
 所有平台的 clipboard 写入和外部 UTF-8 selection 在提交到 PAL 缓存前都按显式字节长度校验，拒绝
 overlong、surrogate、超出 `U+10FFFF`、截断序列和嵌入 NUL，避免恶意 selection 穿透到
-编辑器或 shaping；校验为单次 O(n) 扫描，不增加绘制路径开销。X11 与 Wayland 对本地和
-接收完成的文本使用同一规则，且都允许不含终止字节的最大 `16 MiB` payload，并额外保留
-一个 NUL 终止字节；Wayland 在达到上限时先用非阻塞单字节读取探测 EOF，恰好上限且已
-结束的传输成功，仍有额外字节或校验失败时丢弃本次传输，不污染旧缓存。
+编辑器或 shaping；校验为单次 O(n) 扫描，不增加绘制路径开销。Wayland 对本地和接收完成的
+文本使用同一规则，允许不含终止字节的最大 `16 MiB` payload，并额外保留一个 NUL 终止字节；
+达到上限时先用非阻塞单字节读取探测 EOF，恰好上限且已结束的传输成功，仍有额外字节或校验
+失败时丢弃本次传输，不污染旧缓存。
 
 - Windows 使用 `CF_UNICODETEXT`；Cocoa 使用 `NSPasteboardTypeString`，二者同步读取。
-- X11 使用 `CLIPBOARD`/`UTF8_STRING`/`TARGETS`，含 `INCR` 分块传输；读取永不等待
-  外部 owner。Wayland 使用 `wl_data_device` 和非阻塞 pipe，读取同样由 `platform_poll`
-  增量推进，最多缓存 16 MiB。
-- 外部 X11/Wayland selection 的第一次 `Ctrl+V` 返回 `MY_RET_PENDING` 并由控件的 10 ms
+- Wayland 使用 `wl_data_device` 和非阻塞 pipe，读取同样由 `platform_poll` 增量推进，
+  最多缓存 16 MiB。
+- 外部 Wayland selection 的第一次 `Ctrl+V` 返回 `MY_RET_PENDING` 并由控件的 10 ms
   临时 timer 自动完成；无需用户再次按键。失焦或销毁会取消 timer。
 - 旧有有界 `clipboard_get_text` 保留给兼容调用方；新的控件路径使用分配式接口。
 
@@ -1536,10 +1537,10 @@ overlong、surrogate、超出 `U+10FFFF`、截断序列和嵌入 NUL，避免恶
 超过 `PLATFORM_MAX_WINDOW_TITLE_BYTES`（4096 字节）、非零尺寸和统一的
 `PLATFORM_MAX_WINDOW_DIMENSION` 上限。窗口对象为空或已经销毁时，查询接口返回确定的
 零/基准值，控制接口无副作用；媒体查询失败时清零输出快照，分配型剪贴板查询先清空
-输出指针。`test_platform_config` 与 `test_platform_null_safety` 覆盖通用契约，X11 和
-Wayland runtime smoke 进一步覆盖真实原生对象的创建、句柄获取、事件轮询和销毁。
-runtime smoke 在没有可用显示服务器/compositor 时返回 CTest 标准 skip，不把构建或
-协议单测当作真实 runtime 通过。Win32 的 `WM_SETTINGCHANGE`、显示器、输入设备和
+输出指针。`test_platform_config` 与 `test_platform_null_safety` 覆盖通用契约，Wayland
+runtime smoke 进一步覆盖真实原生对象的创建、句柄获取、事件轮询和销毁。
+runtime smoke 在没有可用 compositor 时返回 CTest 标准 skip，不把构建或协议单测当作真实
+runtime 通过。Win32 的 `WM_SETTINGCHANGE`、显示器、输入设备和
 DPI 事件只让媒体快照失效并递增饱和代际；缺少 suggested `RECT` 的 `WM_DPICHANGED`
 会安全忽略，不解引用无效消息参数。媒体快照查询仍在冷路径完成，缓存命中只复制固定
 大小结构。
@@ -1789,11 +1790,9 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 尺寸或颜色值。软件开放 contour fill 会按 fill 语义自动闭合，开放 stroke 仍保留端点语义。
 结构错误会拒绝加载，不会静默生成错误主题。
 
-X11 媒体能力使用初始化快照和 `XI_HierarchyChanged` 冷路径刷新：能力读取为 O(1) 快照
-复制，设备枚举只在初始化或设备层级变化时发生；XInput2 不可用时回退核心指针语义。
-该设计避免 CSS 媒体刷新或绘制路径重复触发 X11 协议请求，同时通过媒体代际通知宿主
-调用窗口级样式刷新。X11 runtime 测试目标显式继承 XInput2 配置宏，增强设备能力断言
-不会因 target 私有宏传播而被静默裁掉。
+Wayland 媒体能力使用 seat/output 事件维护初始化快照和冷路径刷新：能力读取为 O(1) 快照
+复制，设备能力变化只使快照失效并递增媒体代际，不在绘制路径重复查询协议。缺少可靠平台
+证据的 HDR/广色域保持 unknown；媒体代际通知宿主调用窗口级样式刷新。
 
 仍未实现或明确保留为后续阶段的能力如下：
 
@@ -1803,7 +1802,7 @@ X11 媒体能力使用初始化快照和 `XI_HierarchyChanged` 冷路径刷新�
 | 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining、mandatory Lam-Alef、有限 script segment、paragraph shaping 参数和 cluster-safe bidi glyph-run；Common 标点与 variation selector 基础归类已修正；OpenType provider 会清理未消费的 VS15/VS16 并保留 ZWJ 组合；GSUB/GPOS language-system、requested feature 存在性、required feature 不可关闭优先级及 Noto Arabic/Hebrew RTL glyph/cluster golden 已接入；完整 UAX#24 语义、多段落增量 rebreaking、跨字体 token shaping 和完整 RTL GSUB corpus 仍未实现 | 增加完整 script resolution、跨字体 variation 覆盖、language system、段落级增量 mapping 和 line-break model，继续以多字体 golden 字形/视觉顺序测试锁定契约 |
 | 编辑器 | 代码折叠（支持严格包含嵌套）、有界 YAML 折叠快照、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；完整 RTL token shaping 仍未实现 | 增加版本字段和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
-| Present | 已实现后端无关的 `SKIP/PARTIAL/FULL` 决策和有界 damage 帧接口；Wayland EGL 在 buffer-age、保留 surface 和 damage-present 能力同时满足时执行局部 present；Vulkan、X11、Win32、macOS 仍安全全屏 | 为 Wayland 增加真实 compositor smoke；分别验证 X11/Win32/macOS 的 retained-buffer 语义，并在 Vulkan WSI 具备明确内容保留保证时再评估局部路径 |
+| Present | 已实现后端无关的 `SKIP/PARTIAL/FULL` 决策和有界 damage 帧接口；Wayland EGL 在 buffer-age、保留 surface 和 damage-present 能力同时满足时执行局部 present；Vulkan、Win32、macOS 仍安全全屏 | 扩展真实 Wayland compositor 覆盖；分别验证 Win32/macOS 的 retained-buffer 语义，并在 Vulkan WSI 具备明确内容保留保证时再评估局部路径 |
 | Vulkan/GL readback | `rhi_screenshot()` 提供统一 RGBA8 窗口/默认 framebuffer 读回；调用方必须提供目标字节数，区域越界、零尺寸、乘法溢出或容量不足均失败 | Vulkan 使用 swapchain `TRANSFER_SRC`、一次性 staging buffer 与完成等待；GL 使用受边界校验的 `glReadPixels`。该同步 API 仅用于诊断/截图，不用于每帧渲染 |
 | CSS/YAML UI | CSS 支持最多 4 级祖先路径、descendant/typed `>` 链、祖先 type/class/id、specificity/source order、解析期条件媒体、有界 width/height range、显式设备能力位掩码，以及受限 `@scope` root/`to` 边界（含隐式 root、compound selector 和最多 4 项 selector list）；窗口保留媒体快照，宿主可在系统偏好/设备能力变化时通过 `my_window_refresh_media_style()` 或 `my_window_manager_refresh_media()` 仅对变化窗口事务重建样式，未变化时无主题分配；并提供只读 capability registry 与稳定错误码；完整 at-rule 语义仍未实现。YAML UI loader 已采用类型化 schema，支持逐 factory 属性/事件契约、有限 schema version、最多 16 步连续 migration chain、动态 owned schema，并提供 loader 级 capability registry/error code；冻结后支持低频 runtime factory/schema 新增、替换和注销，失败事务不发布半成品，内建类型受保护 | 增加更细 schema 定位；补真实平台能力采集和 golden corpus，继续评估完整 at-rule 和 callback 代码卸载契约，同时保持解析边界与运行期回滚 |
 | 平台 | Windows/macOS 已有基础本机 CI runtime，但仍缺完整 HiDPI/输入/IME/显示设备矩阵；未启用的 GLES/Vulkan/Wayland 组合仍缺少本机门禁 | 在对应 runner 扩展 build、窗口生命周期、HiDPI/输入/IME 和显示能力矩阵；缺失能力保持 unknown，不以默认值冒充 |
@@ -1916,7 +1915,6 @@ scissor、swapchain extent 与实际 drawable 一致。
 
 | 平台 | OpenGL 句柄 | Vulkan 句柄 | 文本/剪贴板路径 |
 |------|-------------|-------------|-----------------|
-| X11 | X11 `Window` + `Display` | X11 `Window` + `Display` | XIM、UTF-8、INCR |
 | Wayland | `wl_egl_window` + `wl_display` | `wl_surface` + `wl_display` | `text-input-v3`、非阻塞 pipe |
 | Win32 | `HWND` + `HINSTANCE` | `HWND` + `HINSTANCE` | IMM32、UTF-16 clipboard |
 | Cocoa | `CAMetalLayer` | `CAMetalLayer` | `NSTextInputClient`、pasteboard |
@@ -1940,11 +1938,6 @@ Wayland 在 `wl_surface.enter/leave` 中跟踪窗口实际覆盖的 output，选
 buffer scale，避免 125%/150% 下由 compositor 放大较低分辨率光标。
 macOS 在 resize 与 backing scale 变化时同时更新 `CAMetalLayer.contentsScale` 和
 `drawableSize`，后者始终是 `view.bounds * backingScaleFactor` 的物理像素。
-
-X11 通过 RandR topology 事件和每次 `ConfigureNotify` 的 root 坐标重选活动输出：最大
-覆盖面积优先，无覆盖时选择窗口中心最近的输出，面积/距离相同时优先 primary 输出。新的
-DPI/scale 会在后续 Bridge frame 由窗口 scale 刷新契约传递给 canvas；因此拖动窗口跨
-不同 DPI 的 X11 显示器不会继续使用启动显示器的缩放。
 
 ## 性能取舍
 
@@ -1974,7 +1967,7 @@ DPI/scale 会在后续 Bridge frame 由窗口 scale 刷新契约传递给 canvas
   `subtree_need_layout` 只标记后代路径；窗口帧不会因一个深层 child 变化而遍历无关兄弟子树。
 - **固定列 Grid**：可见、非 floating 子项按行主序执行线性布局阶段；行高取该行最大
   子项高度，列宽均分并把余数从左到右分配。行高缓存按需增长，稳态帧不重复分配子项临时数组。
-- **非阻塞选择传输**：X11/Wayland 的 clipboard 协议只在事件循环推进，绝不在 render
+- **非阻塞选择传输**：Wayland 的 clipboard 协议只在事件循环推进，绝不在 render
   frame 等待外部进程；大文本粘贴也维持同一帧时间预算。
 - **有界输入背压**：IME/剪贴板输入均有明确的 16 MiB 单文本上限和有限队列预算，
   将异常输入的最坏内存成本限制在可控范围，同时不阻塞渲染线程。
@@ -1983,7 +1976,6 @@ DPI/scale 会在后续 Bridge frame 由窗口 scale 刷新契约传递给 canvas
 
 | 平台 | OS/图形后端 | IME | Cursor/窗口 | Clipboard |
 |------|-------------|-----|-------------|-----------|
-| X11 | OpenGL、Vulkan | XIM + `Xutf8LookupString`；无 XIC 时仍保留 enabled 状态 | Arrow/Text/Hand；EWMH native move | UTF-8、`INCR`、异步读取 |
 | Wayland | EGL OpenGL、Vulkan | `text-input-v3`（compositor 提供时） | cursor-shape-v1 或 Xcursor fallback；CSD + `xdg_toplevel_move` | `wl_data_device`、异步 pipe |
 | Windows | WGL OpenGL、Vulkan | IMM32 `WM_IME_*` | Win32 cursor + caption drag | `CF_UNICODETEXT` |
 | macOS | MoltenVK/Vulkan | `NSTextInputClient` | Cocoa cursor rect + native drag | `NSPasteboard` |
@@ -1996,8 +1988,8 @@ surface；它不是独立 Metal RHI。
 
 当前验证项：
 
-- X11 OpenGL/Vulkan、Wayland OpenGL/Vulkan 均严格构建 `dxx_break`；四个 Linux 后端
-  均完成 8 秒窗口启动烟测且无崩溃。
+- Wayland OpenGL/Vulkan 均严格构建 `dxx_break`；2026-11-10 真实 Wayland 上 OpenGL
+  damage/F16/mesh/world、Vulkan world 和 runtime fallback 均非 skip 通过，旧四组合记录不再代表当前矩阵。
 - 历史全量 `ENGINE_BUILD_TESTS=ON` 快照中的 `ctest -LE graphics` 为 `53/53`；当前
   非图形/图形分组和总数以 CI 配置及最新 CTest 运行结果为准。
 - `test_break_ui_input`、`test_break_ui_damage`、`test_myui_vggeometry`、
@@ -2006,8 +1998,8 @@ surface；它不是独立 Metal RHI。
   非空字形覆盖；`test_myui_mvvm` 验证大列表数据变更不重置滚动或扩大行池，并验证
   ViewModel 切换后 items/condition 不保留旧 listener。
   window-manager 用例覆盖超过旧 4 KiB 限制的完整 clipboard paste，以及注入 canvas 的
-  HiDPI scale 继承及不伴随 resize 的动态 scale 刷新；`test_monitor_selection` 覆盖 X11
-  跨输出的最大面积、最近输出和 primary tie-break 选择；`test_myui_vgcanvas_backend` 覆盖公共 scale/AA/filter 能力边界和
+  HiDPI scale 继承及不伴随 resize 的动态 scale 刷新；`test_monitor_selection` 覆盖公共
+  跨输出最大面积、最近输出和 primary tie-break 选择；`test_myui_vgcanvas_backend` 覆盖公共 scale/AA/filter 能力边界和
   GLES 图像坐标缩放与物理 drawable resize；`test_wayland` 覆盖跨 output 时的最大
   buffer scale 选择、fractional 125%/150% rounding、cursor backing scale 和 global/output
   移除后的安全回退。`test_break_ui_damage` 额外覆盖结构树增删、重复挂载/环拒绝、移动和
@@ -2165,7 +2157,7 @@ lease 持有时间，普通 factory、绘制、布局和事件热路径不增加
 销毁所有由模块创建的 widget；确认 `my_widget_class_module_try_unload()` 返回
 `MY_RET_OK`；最后才调用平台的 `dlclose`、`FreeLibrary` 或 Cocoa bundle unload，完成后
 调用 `my_widget_class_module_destroy()`。框架不会自动卸载动态库，也不能保护绕过 lease
-直接缓存并调用的外部函数指针。Wayland/X11/Win32/Cocoa 窗口线程和 compositor 的
+直接缓存并调用的外部函数指针。Wayland/Win32/Cocoa 窗口线程和 compositor 的
 quiesce 仍由平台宿主负责验证。YAML factory 可使用
 `my_ui_loader_runtime_register_schema_module()` 或
 `my_ui_loader_runtime_register_dynamic_schema_module()` 接入相同 token；factory、migration
@@ -2196,7 +2188,7 @@ callback guard。该规则防止卸载等待被错误打破，同时不在普通
 拒绝。转换在单个字段处理时完成，不分配额外颜色对象。
 
 图形集成测试现在在 `test_render_init()` 成功创建 RHI device 后显式调用
-`rhi_set_vsync(device, false)`。这只用于测试进程，避免 GLX/Wayland 的交换同步让多次
+`rhi_set_vsync(device, false)`。这只用于测试进程，避免 Wayland EGL 或 Win32 WGL 的交换同步让多次
 预计算 dispatch 依赖外部刷新事件；产品运行时仍由应用自己的 vsync 配置决定。修复后
 OpenGL 集成测试与全量 CTest 均通过，最后结果为 **82/82**。
 ## Vulkan lifecycle and queue ownership
@@ -2213,9 +2205,9 @@ family indices. When they are the same family, exclusive sharing remains the
 fast path. Swapchain recreation rebuilds the render-pass pair before depth and
 framebuffer attachments so format changes cannot leave incompatible objects.
 
-The implementation does not claim complete platform coverage: real X11,
-Wayland, Win32 and macOS WSI runtime CI, allocator fault injection and device
-lost recovery remain required validation work.
+The implementation does not claim complete platform coverage: real Wayland,
+Win32 and macOS WSI runtime CI, allocator fault injection and device-lost
+recovery remain required validation work.
 
 Surface format and present-mode enumeration is fail-closed: both Vulkan query
 stages check their result and zero-length lists are rejected. Every Vulkan

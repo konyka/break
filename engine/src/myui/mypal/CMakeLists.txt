@@ -1,6 +1,27 @@
-# mypal — platform-neutral PAL core plus the deterministic dummy port.
-# Native host ports are built by the engine integration layer; this target is
-# intentionally headless so the reusable myui modules stay window-system free.
+# mypal — platform-neutral PAL core plus explicit platform port selection.
+# Unset or MYUI_PAL=dummy selects the deterministic CPU dummy; native failures
+# never silently select it.
+if(NOT DEFINED MYUI_PAL OR MYUI_PAL STREQUAL "")
+  set(MYUI_PAL dummy)
+endif()
+if(MYUI_PAL STREQUAL "x11")
+  message(FATAL_ERROR "X11 support was removed; use native Wayland")
+endif()
+set(MYUI_PAL_VALID_VALUES dummy wayland win32 cocoa)
+if(NOT MYUI_PAL IN_LIST MYUI_PAL_VALID_VALUES)
+  message(FATAL_ERROR
+    "Unsupported MYUI_PAL='${MYUI_PAL}'; expected dummy, wayland, win32, or cocoa")
+endif()
+if(MYUI_PAL STREQUAL "win32" AND NOT WIN32)
+  message(FATAL_ERROR "MYUI_PAL=win32 requires a Windows host")
+endif()
+if(MYUI_PAL STREQUAL "cocoa" AND NOT APPLE)
+  message(FATAL_ERROR "MYUI_PAL=cocoa requires an Apple host")
+endif()
+if(MYUI_PAL STREQUAL "wayland" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "MYUI_PAL=wayland requires a Linux/Wayland target")
+endif()
+
 set(MYUI_PAL_SOURCES dummy/my_pal_dummy.c)
 set(MYUI_PAL_DEFINES "")
 set(MYUI_PAL_LIBS "")
@@ -53,22 +74,6 @@ elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
   set(MYUI_PAL_SOURCES cocoa/my_pal_cocoa.m)
   set(MYUI_PAL_DEFINES MYUI_PAL_COCOA=1)
   set(MYUI_PAL_LIBS "-framework Cocoa" "-framework OpenGL")
-endif()
-
-if(MYUI_PAL STREQUAL "x11")
-  find_package(X11 REQUIRED)
-  find_package(PkgConfig QUIET)
-  if(PkgConfig_FOUND)
-    pkg_check_modules(MYUI_PAL_EGL QUIET egl)
-  endif()
-  set(MYUI_PAL_SOURCES x11/my_pal_x11.c)
-  set(MYUI_PAL_DEFINES MYUI_PAL_X11=1)
-  set(MYUI_PAL_LIBS ${X11_LIBRARIES})
-  if(MYUI_PAL_EGL_FOUND)
-    list(APPEND MYUI_PAL_LIBS ${MYUI_PAL_EGL_LIBRARIES})
-  else()
-    message(FATAL_ERROR "MYUI_PAL=x11 requires EGL (pkg-config egl)")
-  endif()
 endif()
 
 add_library(mypal STATIC

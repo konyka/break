@@ -25,9 +25,9 @@ endif()
 if(DEFINED CMAKE_TOOLCHAIN_FILE AND NOT "${CMAKE_TOOLCHAIN_FILE}" STREQUAL "")
     list(APPEND configure_overrides "-DCMAKE_TOOLCHAIN_FILE:FILEPATH=${CMAKE_TOOLCHAIN_FILE}")
 endif()
-# The nested configure must follow the host WSI stack: Wayland lanes have
-# no X11 development packages (libxrandr), so a default X11 configure
-# fails in platform detection before the selector logic under test runs.
+# The nested configure follows the host WSI stack. Linux is native
+# Wayland-only; disabling it is a rejected legacy configuration covered by
+# test_x11_removal_contract, not an alternative selector test environment.
 # The backend-selection contract is orthogonal to the WSI stack.
 if(DEFINED ENGINE_ENABLE_WAYLAND)
     list(APPEND configure_overrides "-DENGINE_ENABLE_WAYLAND:BOOL=${ENGINE_ENABLE_WAYLAND}")
@@ -41,6 +41,14 @@ foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_
         list(APPEND configure_overrides "-D${cache_var}=${${cache_var}}")
     endif()
 endforeach()
+# The Stage 5 crypto gate is orthogonal to backend selection. A host without
+# OpenSSL (e.g. macOS has no system linkable OpenSSL and brew openssl is not
+# installed) configures the outer build with BREAK_ENABLE_CRYPTO=OFF; the
+# nested configures must follow the same setting, otherwise they die in
+# find_package(OpenSSL REQUIRED) before the selector logic under test runs.
+if(DEFINED BREAK_ENABLE_CRYPTO)
+    list(APPEND configure_overrides "-DBREAK_ENABLE_CRYPTO:BOOL=${BREAK_ENABLE_CRYPTO}")
+endif()
 # A MoltenVK-free metal lane has no Vulkan SDK anywhere, yet the nested
 # auto/opengl macOS configures hit find_package(Vulkan REQUIRED) in the
 # non-metal branch. The contract under test here is selector *resolution*

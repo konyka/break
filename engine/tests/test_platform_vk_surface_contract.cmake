@@ -30,7 +30,7 @@ if(pal_ext_offset EQUAL -1)
     message(FATAL_ERROR "rhi_vk.c must source instance extensions via platform_vk_required_instance_extensions")
 endif()
 
-# PAL 模块存在且五个平台分支齐备。
+# PAL 模块存在且其余平台分支齐备。
 if(NOT EXISTS "${VK_SURFACE_HEADER}")
     message(FATAL_ERROR "missing: ${VK_SURFACE_HEADER}")
 endif()
@@ -40,14 +40,22 @@ endif()
 file(READ "${VK_SURFACE_SOURCE}" surface_text)
 foreach(required_token
         "ENGINE_PLATFORM_WINDOWS" "ENGINE_PLATFORM_WAYLAND"
-        "ENGINE_PLATFORM_ANDROID" "ENGINE_PLATFORM_LINUX"
-        "vkCreateWin32SurfaceKHR" "vkCreateXlibSurfaceKHR"
-        "vkCreateWaylandSurfaceKHR" "vkCreateAndroidSurfaceKHR"
-        "vkCreateMetalSurfaceEXT")
+        "ENGINE_PLATFORM_ANDROID"
+        "vkCreateWin32SurfaceKHR" "vkCreateWaylandSurfaceKHR"
+        "vkCreateAndroidSurfaceKHR" "vkCreateMetalSurfaceEXT")
     string(FIND "${surface_text}" "${required_token}" surface_offset)
     if(surface_offset EQUAL -1)
         message(FATAL_ERROR
             "platform_vk_surface.c missing platform branch token: ${required_token}")
+    endif()
+endforeach()
+foreach(forbidden_token
+        "VK_KHR_xlib_surface" "VkXlibSurfaceCreateInfoKHR"
+        "vkCreateXlibSurfaceKHR")
+    string(FIND "${surface_text}" "${forbidden_token}" removed_offset)
+    if(NOT removed_offset EQUAL -1)
+        message(FATAL_ERROR
+            "platform_vk_surface.c retains removed Xlib surface support: ${forbidden_token}")
     endif()
 endforeach()
 foreach(dual_token "ENGINE_PLATFORM_MACOS" "ENGINE_PLATFORM_IOS")

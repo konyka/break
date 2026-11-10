@@ -6723,8 +6723,8 @@ TEST(remote_cli_default_off_and_fail_closed_flags)
         static const char *k_bad[] = {
             "6465766963653031 0011\n",                       /* short psk */
             "zz65766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
-            "6465766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n"
-            "6465766963653031 ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100\n",
+            /* duplicate key_id across two valid lines must reject the ring */
+            "6465766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n6465766963653031 ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100\n",
             "# empty ring\n"};
         const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
                               "--remote-key", "k.pem", "--remote-keyring-file",
@@ -6775,7 +6775,7 @@ TEST(remote_cli_default_off_and_fail_closed_flags)
 #ifdef BREAK_ENABLE_CRYPTO
 
 /* ---------------- Phase 4 Task 2: TLS + CHALLENGE/AUTH-v2 ----------------
- * In-test TLS client (raw socket + client-role snow_ssl_t, the
+ * In-test TLS client (raw socket + client-role SnowSsl, the
  * test_break_net_tls.c idiom). The host reactor is STEP-mode, so every wait
  * loop ticks the shell (the server only progresses on the shell thread).
  * Fixture PEMs are the pinned Snowflake self-signed test certs (test-only). */
@@ -6800,9 +6800,9 @@ static void tls_fixture_path(char *out, size_t cap, const char *name) {
 
 typedef struct {
     int fd;
-    snow_ssl_ctx_t *ctx;
-    snow_ssl_t *ssl;
-    snow_network_buffer_t *plain;
+    SnowSslCtx *ctx;
+    SnowSsl *ssl;
+    SnowNetworkBuffer *plain;
     BreakEditorShell *shell;
     u32 next_seq;
     u8 server_nonce[16];
@@ -6814,8 +6814,8 @@ static void tls_client_pump(TlsRemoteClient *c, int poll_ms) {
     (void)poll(&pfd, 1, poll_ms);
 }
 
-static bool tls_client_flush(TlsRemoteClient *c, snow_network_buffer_t *out) {
-    size_t size = snow_network_buffer_length(out);
+static bool tls_client_flush(TlsRemoteClient *c, SnowNetworkBuffer *out) {
+    size_t size = SnowNetworkBufferLength(out);
     size_t copied = 0u, off = 0u;
     u8 *flat;
     if (size == 0u) {
@@ -6823,12 +6823,12 @@ static bool tls_client_flush(TlsRemoteClient *c, snow_network_buffer_t *out) {
     }
     flat = (u8 *)malloc(size);
     if (flat == NULL ||
-        snow_network_buffer_copy_to(out, flat, size, &copied) != SNOW_OK ||
+        SnowNetworkBufferCopyTo(out, flat, size, &copied) != SNOW_OK ||
         copied != size) {
         free(flat);
         return false;
     }
-    snow_network_buffer_clear(out);
+    SnowNetworkBufferClear(out);
     while (off < size) {
         ssize_t n = write(c->fd, flat + off, size - off);
         if (n <= 0) {
@@ -6843,7 +6843,7 @@ static bool tls_client_flush(TlsRemoteClient *c, snow_network_buffer_t *out) {
 
 /* One deadline-bounded read burst: 1 = bytes consumed, 0 = nothing yet,
  * -1 = peer closed / TLS error. */
-static int tls_client_read_burst(TlsRemoteClient *c, snow_network_buffer_t *out,
+static int tls_client_read_burst(TlsRemoteClient *c, SnowNetworkBuffer *out,
                                  bool handshake) {
     u8 buf[4096];
     struct pollfd pfd = {c->fd, POLLIN, 0};
@@ -6857,22 +6857,22 @@ static int tls_client_read_burst(TlsRemoteClient *c, snow_network_buffer_t *out,
         return -1;
     }
     if (handshake) {
-        return snow_ssl_do_handshake(c->ssl, out, buf, (size_t)got) == 0 ? 1
+        return SnowSslDoHandshake(c->ssl, out, buf, (size_t)got) == 0 ? 1
                                                                          : -1;
     }
-    return snow_ssl_read(c->ssl, buf, (size_t)got, c->plain) == 0 ? 1 : -1;
+    return SnowSslRead(c->ssl, buf, (size_t)got, c->plain) == 0 ? 1 : -1;
 }
 
 static bool tls_client_send_wire(TlsRemoteClient *c, const u8 *wire,
                                  size_t size) {
-    snow_network_buffer_t *out = NULL;
+    SnowNetworkBuffer *out = NULL;
     bool ok;
-    if (snow_network_buffer_create(&out) != SNOW_OK) {
+    if (SnowNetworkBufferCreate(&out) != SNOW_OK) {
         return false;
     }
-    ok = snow_ssl_write(c->ssl, (const char *)wire, size, out) == 0 &&
+    ok = SnowSslWrite(c->ssl, (const char *)wire, size, out) == 0 &&
          tls_client_flush(c, out);
-    snow_network_buffer_destroy(out);
+    SnowNetworkBufferDestroy(out);
     return ok;
 }
 
@@ -6901,11 +6901,11 @@ static bool tls_client_recv_timeout(TlsRemoteClient *c, BreakNetEnvelope *out_en
                     BREAK_EDITOR_PROTO_MAX_PAYLOAD];
     u64 deadline = remote_monotonic_us() + (u64)timeout_ms * UINT64_C(1000);
     while (remote_monotonic_us() < deadline) {
-        size_t have = snow_network_buffer_length(c->plain);
+        size_t have = SnowNetworkBufferLength(c->plain);
         if (have >= BREAK_NET_ENVELOPE_HEADER_SIZE) {
             size_t n = 0u, need;
             u32 payload_size;
-            if (snow_network_buffer_get_header(c->plain,
+            if (SnowNetworkBufferGetHeader(c->plain,
                                                BREAK_NET_ENVELOPE_HEADER_SIZE,
                                                frame, sizeof(frame), &n) !=
                 SNOW_OK) {
@@ -6918,11 +6918,11 @@ static bool tls_client_recv_timeout(TlsRemoteClient *c, BreakNetEnvelope *out_en
                 return false;
             }
             if (have >= need) {
-                if (snow_network_buffer_get_header(c->plain, need, frame,
+                if (SnowNetworkBufferGetHeader(c->plain, need, frame,
                                                    sizeof(frame), &n) !=
                         SNOW_OK ||
                     n != need ||
-                    snow_network_buffer_move_header(c->plain, need) !=
+                    SnowNetworkBufferMoveHeader(c->plain, need) !=
                         SNOW_OK) {
                     return false;
                 }
@@ -6945,8 +6945,8 @@ static bool tls_client_recv(TlsRemoteClient *c, BreakNetEnvelope *out_env) {
 static bool tls_client_open(TlsRemoteClient *c, BreakEditorShell *shell,
                             BreakEditorRemote *remote) {
     struct sockaddr_in address;
-    snow_ssl_ctx_opts_t opts;
-    snow_network_buffer_t *out = NULL;
+    SnowSslCtxOpts opts;
+    SnowNetworkBuffer *out = NULL;
     BreakNetEnvelope challenge;
     u64 deadline;
     bool ok = false;
@@ -6966,26 +6966,26 @@ static bool tls_client_open(TlsRemoteClient *c, BreakEditorShell *shell,
         return false;
     }
     memset(&opts, 0, sizeof(opts));
-    c->ctx = snow_ssl_ctx_new(&opts, NULL);
-    c->ssl = c->ctx != NULL ? snow_ssl_new(c->ctx) : NULL;
-    if (c->ssl == NULL || snow_ssl_init(c->ssl, false) != SNOW_OK ||
-        snow_network_buffer_create(&c->plain) != SNOW_OK ||
-        snow_network_buffer_create(&out) != SNOW_OK) {
+    c->ctx = SnowSslCtxNew(&opts, NULL);
+    c->ssl = c->ctx != NULL ? SnowSslNew(c->ctx) : NULL;
+    if (c->ssl == NULL || SnowSslInit(c->ssl, false) != SNOW_OK ||
+        SnowNetworkBufferCreate(&c->plain) != SNOW_OK ||
+        SnowNetworkBufferCreate(&out) != SNOW_OK) {
         goto done;
     }
-    if (snow_ssl_do_handshake(c->ssl, out, NULL, 0u) != 0 ||
+    if (SnowSslDoHandshake(c->ssl, out, NULL, 0u) != 0 ||
         !tls_client_flush(c, out)) {
         goto done;
     }
     deadline = remote_monotonic_us() + UINT64_C(5000000);
-    while (!snow_ssl_is_handshaked(c->ssl) &&
+    while (!SnowSslIsHandshaked(c->ssl) &&
            remote_monotonic_us() < deadline) {
         if (tls_client_read_burst(c, out, true) < 0 ||
             !tls_client_flush(c, out)) {
             goto done;
         }
     }
-    if (!snow_ssl_is_handshaked(c->ssl) || !tls_client_recv(c, &challenge) ||
+    if (!SnowSslIsHandshaked(c->ssl) || !tls_client_recv(c, &challenge) ||
         challenge.message_id != BREAK_NET_MESSAGE_ID_CHALLENGE ||
         challenge.protocol_version != 1u || challenge.payload_size != 16u) {
         goto done;
@@ -6993,7 +6993,7 @@ static bool tls_client_open(TlsRemoteClient *c, BreakEditorShell *shell,
     memcpy(c->server_nonce, challenge.payload, 16u);
     ok = true;
 done:
-    snow_network_buffer_destroy(out);
+    SnowNetworkBufferDestroy(out);
     return ok;
 }
 
@@ -7010,9 +7010,9 @@ static bool tls_client_wait_eof(TlsRemoteClient *c) {
 }
 
 static void tls_client_close(TlsRemoteClient *c) {
-    snow_network_buffer_destroy(c->plain);
-    snow_ssl_free(c->ssl);
-    snow_ssl_ctx_free(c->ctx);
+    SnowNetworkBufferDestroy(c->plain);
+    SnowSslFree(c->ssl);
+    SnowSslCtxFree(c->ctx);
     if (c->fd >= 0) {
         close(c->fd);
     }
@@ -7203,7 +7203,7 @@ TEST(remote_tls_keyring_add_and_revoke)
     remote_wait_connection_count(remote, shell, 2u);
     ASSERT_TRUE(tls_client_send_auth(&c2, k_dev2_id, k_dev2_psk, false));
     ASSERT_TRUE(tls_client_wait_eof(&c2));
-    ASSERT_EQ(snow_network_buffer_length(c2.plain), 0u);
+    ASSERT_EQ(SnowNetworkBufferLength(c2.plain), 0u);
 
     tls_client_close(&c2);
     tls_client_close(&b);
@@ -7600,7 +7600,7 @@ static void tls_unauthenticated_case(int mode) {
      * never receives a response byte; the session saw no applied command */
     break_session_manager_apply_stats(manager, &before);
     ASSERT_TRUE(tls_client_wait_eof(&c));
-    ASSERT_EQ(snow_network_buffer_length(c.plain), 0u);
+    ASSERT_EQ(SnowNetworkBufferLength(c.plain), 0u);
     break_session_manager_apply_stats(manager, &after);
     ASSERT_EQ(after.applied, before.applied);
     ASSERT_EQ(break_editor_doc_entity_count(break_editor_shell_doc(shell)), 0u);
@@ -7640,7 +7640,7 @@ TEST(remote_tls_auth_deadline_closes_idle_unauthenticated_client)
     /* the client completes TLS but never sends AUTH: evicted by deadline */
     ASSERT_TRUE(tls_client_wait_eof(&c));
     ASSERT_TRUE(remote_monotonic_us() - started >= UINT64_C(300000));
-    ASSERT_EQ(snow_network_buffer_length(c.plain), 0u);
+    ASSERT_EQ(SnowNetworkBufferLength(c.plain), 0u);
     remote_wait_connection_count(remote, shell, 0u);
     ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
     ASSERT_EQ(break_editor_remote_auth_timeouts(remote), 1u);
@@ -7767,6 +7767,23 @@ TEST(remote_tls_rate_limit_denials_observable)
         ASSERT_EQ(connect(fds[i], (const struct sockaddr *)&address,
                           sizeof(address)),
                   0);
+        if (i == 0) {
+            /* The listener runs backlog=1 and accepts only on shell ticks
+             * (STEP mode): a second connect before the first accept cannot
+             * complete the TCP handshake (macOS drops the SYN and the
+             * connect eventually times out). Drain the first connection
+             * before dialing the second. */
+            u64 accept_deadline = remote_monotonic_us() + UINT64_C(5000000);
+            while (remote_monotonic_us() < accept_deadline &&
+                   break_editor_remote_connection_count(remote) < 1u) {
+                break_editor_shell_tick(shell);
+                {
+                    struct timespec ts = {0, 1000000L};
+                    nanosleep(&ts, NULL);
+                }
+            }
+            ASSERT_EQ(break_editor_remote_connection_count(remote), 1u);
+        }
     }
     deadline = remote_monotonic_us() + UINT64_C(5000000);
     while (remote_monotonic_us() < deadline &&
@@ -7834,9 +7851,29 @@ TEST(remote_tls_message_rate_limits_an_authenticated_flood)
     }
     ASSERT_TRUE(break_editor_remote_session_stats(remote, &st));
     ASSERT_TRUE(st.rate_limited >= 14u);           /* most of the flood never reached a handler */
-    while (tls_client_recv_timeout(&c, &rsp, 200u)) {
-        ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
-        answered++;
+    /* Drain answers while still ticking: a message admitted but not yet
+     * parsed by the server is neither answered nor rate-limited, so the
+     * total only converges once every flood message has been processed.
+     * Stop as soon as all 20 are accounted for (refills admit stragglers
+     * as answers, which is also progress), with a hard deadline. */
+    deadline = remote_monotonic_us() + UINT64_C(2000000);
+    for (;;) {
+        while (tls_client_recv_timeout(&c, &rsp, 50u)) {
+            ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+            answered++;
+        }
+        ASSERT_TRUE(break_editor_remote_session_stats(remote, &st));
+        if ((u64)answered + st.rate_limited >= 20u) {
+            break;
+        }
+        if (remote_monotonic_us() >= deadline) {
+            break;
+        }
+        break_editor_shell_tick(shell);
+        {
+            struct timespec ts = {0, 1000000L};
+            nanosleep(&ts, NULL);
+        }
     }
     ASSERT_TRUE(answered >= 1u && answered <= 5u);  /* the burst (minus AUTH), plus at most one refill */
     ASSERT_EQ((u64)answered + st.rate_limited, 20u);

@@ -6,12 +6,13 @@ end-to-end by the demo program (`engine/tools/echarts_demo.c`).
 
 ## Interactive explorer (live, adjustable data)
 
+Linux supports native Wayland only in 2.0.0. Explicit Wayland selection is
+recommended for interactive runs; headless modes do not require a compositor.
+
 ```sh
 cmake --build build --target myui_explorer --parallel 2
-./build/myui_explorer                                    # x11 + software
-./build/myui_explorer --platform wayland --backend gl    # wayland + GLES2
-./build/myui_explorer --platform x11 --backend gl        # x11 + EGL/GLES2
-./build/myui_explorer --platform wayland --backend soft  # wayland + wl_shm
+./build/myui_explorer --platform wayland --backend gl    # native Wayland + GLES2
+./build/myui_explorer --platform wayland --backend soft  # native Wayland + wl_shm
 ./build/myui_explorer --selftest dir  # headless scripted frames
 ./build/myui_explorer --shot out.ppm   # software-rendered single frame
 ./build/myui_explorer --glshot out.ppm # GLES2 single frame (EGL pbuffer +
@@ -25,11 +26,11 @@ and `title.subtext` subtitle joining. Conflicting forms and unknown legend
 names are rejected with semantic parser errors.
 
 `--platform` picks the window system and `--backend` the rendering path
-(soft | gl). Software renders into a CPU framebuffer (XImage blit on X11,
-a wl_shm pool on Wayland, StretchDIBits on Windows, NSBitmapImageRep on
-macOS); gl drives the engine's `my_vgcanvas_gles2` hardware backend on a
-GLES2/EGL context (Linux) or a desktop-GL context via WGL (Windows) /
-NSOpenGL (macOS) through the `my_gl_desktop` table.
+(soft | gl). Software renders into a CPU framebuffer (a wl_shm pool on
+Wayland, StretchDIBits on Windows, NSBitmapImageRep on macOS); gl drives the
+engine's `my_vgcanvas_gles2` hardware backend on a GLES2/EGL context (Linux)
+or a desktop-GL context via WGL (Windows) / NSOpenGL (macOS) through the
+`my_gl_desktop` table.
 
 The `soft` path uses 8-bit glyph/geometry coverage AA. The `gl` path uses the
 GLES2 or desktop-GL canvas and linear glyph sampling; when the window surface
@@ -39,29 +40,29 @@ runtime assertion. Full-frame TAA/FXAA is a separate renderer feature, not a
 replacement for glyph coverage AA.
 
 Architectural note: myui's portability seam is the PAL interface
-(`mypal/my_pal.h`). Real ports now live in-tree under
-`engine/src/myui/mypal/` — `x11/`, `wayland/`, `win32/`, `cocoa/` —
-selected at build time via `-DMYUI_PAL=x11|wayland|win32|cocoa|dummy`
-(dummy stays the headless default). When the explorer is built with a
-desktop port compiled in, it consumes `my_pal_create()` exclusively
-(`[pal/soft]` / `[pal/gl]` window titles); the legacy direct-glue
-runners remain as the dummy-build fallback. The X11 and Wayland ports
-are live-verified on the reference host (window lifecycle, lcd
-presentation, GL mount, events, main loop: see `test_mypal_x11.c` /
-`test_mypal_wayland.c`); Win32/Cocoa are compile-targeted against the
-frozen contract with no host in CI.
+(`mypal/my_pal.h`). Real ports live in-tree under
+`engine/src/myui/mypal/` — `wayland/`, `win32/`, `cocoa/` — selected at
+build time via `-DMYUI_PAL=wayland|win32|cocoa|dummy`. Dummy is selected
+only when the option is unset or explicitly `dummy`; `x11` and unknown
+values fail configuration instead of silently selecting dummy. When the
+explorer is built with a desktop port compiled in, it consumes
+`my_pal_create()` exclusively (`[pal/soft]` / `[pal/gl]` window titles);
+the direct Wayland runners remain available in the dummy build. The
+Wayland port is live-verified on the reference host (window lifecycle,
+lcd presentation, GL mount, events, main loop: see
+`test_mypal_wayland.c`). Win32/Cocoa are compile-targeted against the
+frozen contract: the PAL configuration test builds the native port on
+Windows/macOS, while Linux-hosted Win32 cross-builds and Darwin configure
+probes are explicitly not native runtime evidence.
 
-Verification status: all four Linux combinations plus `--shot`/
-`--glshot`/`--palshot` are verified live on the reference host; the PAL
-ports themselves are covered by `test_mypal_x11.c` / `test_mypal_wayland.c`
-(window lifecycle, lcd presentation, GL mount incl. eglTerminate teardown,
-events, main loop; the X11 suite is also leak-sanitizer clean). The
-Windows and macOS runners are implemented against the documented
-Win32/WGL and Cocoa/NSOpenGL APIs with per-OS build wiring, but are
-compile-targeted only (not executed here — no Windows/macOS host in
-CI). The build selects platform sources automatically and falls back to
-x11+soft-only on Linux when the Wayland/EGL development packages are
-absent. Note: the engine's default ctest run excludes the `fuzz`-labeled
+Verification status: Wayland PAL plus `--shot`/`--glshot`/`--palshot`
+are verified live on the reference host. The Windows and macOS runners
+are implemented against the documented Win32/WGL and Cocoa/NSOpenGL APIs
+with per-OS build wiring, but are compile-targeted only (not executed
+here — no Windows/macOS host in CI). If Wayland/EGL development packages
+are absent, the explorer is headless-only (`--selftest`/`--shot`) rather
+than falling back to X11. Note: the engine's default ctest run excludes
+the `fuzz`-labeled
 smoke tests (`-LE "graphics|fuzz"`); they are built and run by the
 sanitizer CI job.
 

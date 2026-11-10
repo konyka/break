@@ -1,3 +1,62 @@
+## 本轮更新：X11 移除终审 fix-wave（2026-11-10）
+
+- **基线与提交**：从 `fb45db134635b70da89f6d95342d55a04b624c61` 逐项完成终审 I1–I5、M1/M2 和 deferred Minor3，依次形成 PAL 平台矩阵、Windows 启动合同、可移植 rollback、EGL/GL configure 闭包、fork digest fallback、WSI 宏矩阵及 fork PR head owner 七个实现提交；当前文档另行提交，SDD 报告按目录规则本地落盘。未合并、未 push，历史条目未改写。
+- **I1/M1**：standalone 与顶层 engine 统一 `MYUI_PAL=dummy|wayland|win32|cocoa` 及平台约束，非 Linux Wayland 和非法值在依赖查找前失败。native 测试按目标构建 dummy 与对应原生 PAL；Linux 上 Zig/x86_64-windows-gnu 编译真实 Win32 PAL，Darwin 探针覆盖 Cocoa 配置和 dummy 构建。新增矩阵还发现并修复 Win32 `atomic_flag_clear_explicit` 缺少 `memory_order_release` 的真实编译错误；这些嵌套/交叉结果不冒充 native Windows/macOS 运行。
+- **I2**：CTest REQUIRED 探测并使用 `Python3_EXECUTABLE` 与 `BASH_EXECUTABLE`，三个 shell helper 均显式经 Bash 启动；workflow 结构解析改用 Python 标准库，不再新增 PyYAML 依赖。Windows 模拟同时检查嵌套注册命令和 Win32 直接脚本启动拒绝，native Windows 使用同一真实 CTest/Bash 路径。
+- **I3**：rollback floor 改为 Bash 正则捕获主版本、去前导零和单位数 `<2` 拒绝，不再调用 GNU `sort -V`。fake stock sort 下 `v1.9.9`/malformed/injection 拒绝，`v2.0.0`、`v2.0.1`、`v10.0.0` 接受且无副作用；workflow 仍在 Ubuntu 执行实际 drill。
+- **I4**：Linux 实际 OpenGL/auto fallback 链在 configure 使用 `find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)` 并链接对应 imported targets。受限 sysroot 中 dummy/wayland 各自独立缺 EGL、缺 GL 均按 component 失败；auto 缺 GL 失败，显式 Vulkan-only 且 multi-backend=OFF 在禁用 OpenGL 包时仍配置成功。
+- **I5**：candidate 保留当前 repository owner，非发布 fallback 固定上游 `ghcr.io/konyka/break-ci-linux`；`BREAK_CI_LINUX_DIGEST` 仍是显式 immutable override。直接执行 workflow verified/select 块的 upstream PR、fork PR、fork push、fork manual、upstream master 合同通过；非发布路径不采纳 candidate verified、不 login/push、不解析 fork `latest`，输出上游 immutable digest。
+- **Minor**：清理当前 GLX 注释和旧白名单，保留 glad 通用扩展常量；新增七个 compile-only 对象钉住 simulation 优先于 real、真实 iOS 优先于 macOS、QNX/HarmonyOS/无平台 backend=0，以及原有 1–5 ABI 数值。优先级和 sentinel 生产变异均被静态断言杀死并恢复。
+- **RED/变异证据**：I1 非 Linux Wayland 与顶层非法 PAL、I2 裸 Python/直接脚本启动、I3 stock sort 有效版本拒绝、I4 四种独立缺依赖与 auto fallback、I5 fork latest/verified 误选均先在未修实现上失败。五项 Important 的生产根因变异分别再次被对应合同杀死并精确恢复；完整命令和关键输出见 `.superpowers/sdd/2026-11-10-remove-x11/final-fix-report.md`。
+- **最终本地验证**：新增 focused 14/14；auto 普通非图形 341 项零失败（唯一既有 D3D12 dependency gate skip）；显式 OpenGL、ASan+UBSan、TSan 各 339 项零失败并各有同一平台 skip，无 sanitizer/race 报告。auto、OpenGL、no-tests、ASan+UBSan、TSan 五个构建均 `-j3` 成功；显式五个 fuzz 目标构建且 CTest 5/5。真实 Wayland 下 OpenGL graphics 7/7、auto Vulkan graphics 11/11，均无 skip；日志确认 Mesa Intel OpenGL 与 Vulkan `platform-default`，未使用 X11。
+- **限制**：本地仅有 Linux。Windows/macOS/iOS/D3D12 native 构建与运行、GitHub Actions 表达式实际求值、GHCR candidate/digest/alias 拉取推送和 Steam Deck 只能 push 后核查；Zig、嵌套 `CMAKE_SYSTEM_NAME`、fake docker/stock sort 和 compile-only 探针均不冒充这些证据。真实签名 tag rollback、release tag 创建不在本轮范围。
+
+## 本轮更新：X11 移除推送前修复——C++20 `main` linkage（2026-11-10）
+
+- **远程 RED**：Windows D3D12 run [`42449243711`](https://github.com/konyka/break/actions/runs/42449243711)（SHA `103d19b5dd7fa8ba0a8b4c9ca89a75fa470ae00c`）在 `test_public_api_cpp20.cpp:55` 报告 `main` 不应为 `extern "C"`（`-Werror,-Wmain`），并在 `:59` 报告缺 `}`；日志将未配对位置明确指向 `core/types.h:18`。该输入来自已同步的 `origin/master`，不是 X11 移除回归。
+- **根因与最小修复**：`core/types.h` 的 C++ linkage 关闭括号误置于 `#if defined(_MSC_VER)` 的 `#else` 内，MSVC 分支从 `:18` 开始的 `extern "C"` 一直覆盖到 `main`。现仅把既有 `#ifdef __cplusplus` / `}` / `#endif` 移到对齐宏条件的 `#endif` 之后；公共头声明仍在 C linkage 内，`main` 恢复 C++ linkage。测试源、全部断言和 live `break_version_string()` 调用未改，未关闭或过滤任何警告。
+- **实际 RED/GREEN 与变异**：本机 Clang 22.1.8 使用完整测试 TU、实际 include/target defines、显式 `-Werror -Wmain` 及 `_MSC_VER=1944 -fms-extensions` 复现上述两条诊断；修复后同命令通过。普通 Linux 参数的 Clang 编译、链接和运行也通过，完整 `cmake --build build-remove-x11-auto -j3` 成功，现有 `test_public_api_cpp20` 1/1 PASS。临时将关闭括号移回旧位置后同一编译合同再次精确变红，恢复后两种 Clang 语法检查及 CTest 再次通过。
+- **验证边界与文件范围**：复现命令用 `-include atomic` 预装宿主标准库头，避免 Linux libstdc++ 在未关闭的 C linkage 内提前产生与远程不同的模板诊断；这只是 Linux 主机对 MSVC 预处理分支的编译复现，不是 native Windows 或 D3D12 运行验证，远程 lane 仍待推送后重跑。实际根因在公共头而非测试源，故必要代码修改为 `engine/src/core/types.h`；没有用在测试中条件补 `}` 的方式掩盖头文件非自包含问题。完整命令与输出见 `.superpowers/sdd/2026-11-10-remove-x11/cpp20-main-fix-report.md`。
+
+## 本轮更新：X11 移除 Task 3 fix round 2——可运行的镜像证明链（2026-11-10）
+
+- **reusable output**：`on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`，prepare 再映射 `${{ steps.selected.outputs.digest }}`。新增 YAML 结构/表达式合同，10 个 `needs.image.outputs.digest` 消费者均有明确来源，不再只查 digest 字符串。
+- **PR 初始路径**：保留 `BREAK_CI_LINUX_DIGEST` 作为可选显式 override；未设置时 `resolve_ci_consumer_digest.sh` 匿名 inspect 公共 GHCR `latest` 并解析为 immutable digest，PR/fork 不 login、不 push，lanes 不直接消费 latest。公共拉取/解析失败明确失败，候选只记为 smoke 证据，不冒充全 lane 已验证镜像。
+- **candidate 身份**：`publish_ci_candidate.sh` 对已 load 且 smoke 通过的本地 candidate 直接 `docker tag` + `docker push`，无第二次 build；先比较 candidate/verified 本地 image ID，再 inspect registry digest。master SHA/latest 从该 digest 创建，`verify_ci_master_aliases.sh` 回读两个引用并要求完全一致。
+- **RED 与生产变异**：初版缺 workflow output、缺匿名解析脚本、缺直接 candidate 发布及别名回读均实际 RED。随后分别把 output 改为错误 job、移除匿名 PR fallback、恢复第二次 `docker/build-push-action`，均被 `test_ci_image_fix2.py` 杀死并精确恢复 GREEN。公共解析失败、candidate ID 不匹配和 alias digest 不匹配也都有实际负向结果。
+- **GREEN**：完整 `cmake --build build-remove-x11-auto -j3` 成功；CI/image/execution focused 4/4。全量非图形为 336 入选、335 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP。3 个 workflow 共 25 jobs、70 个适用 Bash run block 与 3 个镜像 shell helper 均通过本地语法检查，`git diff --check` 通过。
+- **限制**：digest 解析、直接推送和别名验证使用受控 fake docker 合同，未访问真实 GHCR；真实 GitHub Actions、registry 拉取/推送与 native runners 仍待 push 验证。rollback、Deck 和 Minor 未返工。
+
+## 本轮更新：X11 移除 Task 3 fix round 1——输入、设备证据与镜像链（2026-11-10）
+
+- **rollback 输入边界**：job 统一经 `env.TAG` 传递输入，校验、checkout、验签和报告不再把 `${{ inputs.tag }}` 直接插入 shell。新增 `test_rollback_input_contract.py`：普通版本矩阵保持 `v1.9.9` 拒绝、`v2.0.0/v2.0.1/v10.0.0` 接受、malformed 拒绝；分号、命令替换、换行 payload 均在 checkout 前以 UNAVAILABLE 拒绝且标记文件未创建。初版三种 payload 均实际产生副作用，修复后全部无副作用；重新插入直接赋值的生产变异再次被杀死并恢复。
+- **结构化设备证据**：`RHIDeviceInfo` 尾部新增 `device_type`，UNKNOWN=-1，其余值与 `VkPhysicalDeviceType` 对齐；Vulkan 从实际 properties 映射，公共 wrapper 默认 UNKNOWN，GL/D3D12/Metal 不虚报。bench 与生成器输出 `device_type/vendor_id/device_id`。schema 允许 CPU 的普通 GPU_RUNTIME，但 comparable 仅 INTEGRATED/DISCRETE；Deck 另要求维护者配置的 vendor/device ID 精确匹配。`check_steam_deck_hardware.cmake` 在 Emit 和最终 Require 共用，缺配置/unknown/other/virtual/CPU/ID 不匹配均 UNAVAILABLE 且 lane 失败，原始 JSON 和 `hardware.env` 仍上传。hosted lavapipe 的 CPU GPU_RUNTIME 语义不变。
+- **镜像候选与消费**：`ci-image.yml` 改为可复用 workflow，同 commit 由 `ci.yml` 的 `image` job 调用。已有 verified inputs-hash 时复用 digest；否则本地 candidate load+smoke 后才 login/push。verified tag 仅在 smoke 后创建，master 的 SHA/latest 指向同一 digest，schedule 强制重建。10 个实际 container jobs 全部 `needs: image` 并使用 `needs.image.outputs.digest`。PR/fork 不 login/push，只 smoke 候选并使用 `BREAK_CI_LINUX_DIGEST` 指定的上一已发布 digest；缺可用 digest 时明确失败。
+- **Minor**：`docs/design/input_extended.md` 恢复原 XI2 backend、双设备与 source identity 验证为明确的 pre-2.0.0 历史小节，当前 backend/测试另列。CI 合同新增 graphics→Emit(always)→Upload(always)→Require(always)、同 step outputs、Deck 双门、Proton exit77/outcome、rollback 安全通道、镜像 smoke/publish 和 10 个消费者检查。clip 顶部改为“受控环境确认的阻塞机制”，普通桌面上游随机触发的原始根因仍未查明，其它历史未改写。
+- **实际 RED 与生产变异**：tag 三种注入均先产生标记文件，修复后消失；CPU comparable、unknown/virtual/other、缺 device_type 初均被 schema 接受，修复后被拒绝，Deck helper 初不存在。镜像初为 publish 后 smoke 且 10 个 latest 消费者，合同先 RED。之后分别重新引入直接 tag 插值、CPU comparable、candidate 提前 push、破坏 Emit always、恢复一个 latest 消费者，均被对应合同杀死并精确恢复 GREEN。
+- **GREEN**：完整 `cmake --build build-remove-x11-auto -j3` 成功；相关 RHI/receipt/CI/rollback 12 项全过。全量非图形 `ctest -LE 'graphics|fuzz' -j3` 为 335 入选、334 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP。OpenGL bench 序列化为 UNKNOWN/0/0；真实 NVIDIA Vulkan bench 为 DISCRETE、vendor=0x10de、device=0x24b6，匹配时 hardware_ok=true，改 device ID 后 Require 失败。YAML 3 个 workflow 共 25 jobs、69 个适用 Bash run block 均通过本地结构/语法检查，`git diff --check` 通过。
+- **限制**：未执行真实 GitHub Actions、GHCR 构建/发布、SteamRT、Steam Deck/self-hosted GPU 或其他 native runner；这些仍待 push 验证。未实际配置仓库的 Deck ID 或 fallback digest，未宣称真实镜像/Deck 结果。独立 fix round 1 复核待后续安排。
+
+## 本轮更新：X11 移除最终门——OpenGL clip 超时修复（2026-11-10）
+
+- **受控环境确认的阻塞机制与最小修复**：clip 测试的离屏 readback 后仍逐轮 `rhi_present` 默认帧缓冲，但测试不 poll 平台事件且继承 EGL swap interval 1；Wayland 回调/可用 back buffer 受节流时，主线程阻塞在 `gl_present` → `eglSwapBuffers` → Mesa `dri2_wl_swap_buffers_with_damage` → `wl_display_poll/ppoll`。现仅在 `test_myui_break_rhi_clip.c` 设备创建成功后调用 `rhi_set_vsync(g_dev, false)`；生产默认 vsync、present、readback 和全部像素断言均未改变。
+- **原失败与受控取证**：输入基线现象为 text OK 后、image 统计前 60 s 超时。本次普通桌面 Wayland 的未改源码基线未再次自然复现（单跑、`-j3` graphics 及 100 次 attach-watch 均通过），因此不虚构原现场栈。改用原生 headless Mutter `--no-x11 --virtual-monitor=640x480@0.01` 确定性地放大同一等待，未改源码在 text 首个 case 内 3 s timeout；gdb 主线程栈明确位于上述 `eglSwapBuffers`/Mesa/Wayland 路径，不在 `glClear` 或 readback。该受控栈证明阻塞机制，但不冒充原随机现场。
+- **无源码 A/B**：同一 0.01 Hz compositor、同一未修二进制，默认设置 `timeout 3s` 返回 124（3010 ms）；`vblank_mode=0` 返回 0，四个 case 全部完成（107 ms）。实际 OpenGL 为 Mesa 26.2.5 / Intel UHD Graphics (TGL GT1)。
+- **修复后 GREEN**：普通原生 Wayland 连续 3 次均 4/4（text、image、painter order、sRGB），每次约 0.09–0.10 s；不设置 `vblank_mode` 的 0.01 Hz 对照环境同样 4/4，96 ms 完成。
+- **生产变异验证**：临时把 Wayland `gl_set_vsync` 改为无视 `false`、始终 `eglSwapInterval(..., 1)`，修复后的测试在受控环境 3 s 返回 124；立即精确恢复生产文件，重建后受控及普通 Wayland 均再次 4/4，`rhi_gl.c` 最终 diff 为空，变异不进入提交。
+- **构建与图形回归**：两个现有构建目录完整 `cmake --build ... -j3` 成功。原生 Wayland OpenGL graphics 7/7，通过设备为 Intel / Mesa Intel(R) UHD Graphics (TGL GT1)；默认 Vulkan graphics 11/11，`backend_selected=vulkan/platform-default`，设备 NVIDIA RTX A5000 Laptop GPU。两者均无 `UNAVAILABLE`、无 CTest skip；全程测试显式移除 `DISPLAY`，受控 compositor 同时禁用 X11。
+- **保留诊断与边界**：OpenGL `test_vulkan` 仍打印既有 acceleration-structure/BLAS/DLSS 子项 SKIP；默认 Vulkan 套件仍有 vertex-input 与 clip sRGB/storage-usage validation 诊断（其中 clip 的 6 处在前置基线已出现），本任务未扩大范围处理。普通桌面上游随机触发的原始根因仍未查明，本轮未再次自然复现原 60 s 超时；结论限于已取得的受控同路径栈、A/B、变异和回归证据。完整命令、栈和输出见 `.superpowers/sdd/2026-11-10-remove-x11/clip-fix-report.md`。
+
+## 本轮更新：X11 移除 Task 3——CI、2.0.0 与当前文档（2026-11-10）
+
+- **CI/镜像**：Linux OpenGL、Vulkan/lavapipe、validation、benchmark 均改为 Weston/Wayland；GL lane 实际运行 `test_rhi_wayland_runtime`、`test_mesh_gpu_gl`、`test_world_presentation_gl`，其余 lane 运行对应 graphics/benchmark CTest。各 lane 记录 `rc/passed/skipped`，只有 `rc=0 && passed>0 && skipped=0` 才授予 `GPU_RUNTIME`，否则出 `UNAVAILABLE` 且最终步骤失败。Linux receipts 统一 `linux-wayland`，Steam Deck 真机 lane 同样使用 Weston；SteamRT 缺 Wayland/scanner/pkg-config 时明确 `UNAVAILABLE`，无旧窗口系统回退。镜像删除直接旧窗口开发包和虚拟显示工具，保留 Wayland/Weston/Mesa/EGL/Vulkan，smoke 分别检查 weston 与 wayland-scanner。
+- **版本/回滚**：`project(PureCEngine VERSION 2.0.0)`；未创建 tag。rollback-drill 在 checkout 前以 `sort -V` 只接受 >=2.0.0 的精确 `v<x.y.z>`，旧版本输出 `UNAVAILABLE` 并失败；没有旧版本依赖安装脚本，也未虚构回滚成功。直接执行该 workflow 校验脚本实测：`v1.9.9` 与 malformed 输入 rc=1/UNAVAILABLE，`v2.0.0`、`v2.0.1`、`v10.0.0` rc=0；这只是版本门测试，未执行 checkout、构建或回滚。初版依赖本机不存在的 `dpkg` 导致有效 tag 被拒，已先复现 RED 后改为可移植比较并恢复 GREEN。
+- **当前文档**：README、Build Guide、Architecture、Engine Modules、myui、Vulkan/RHI、输入与 QNX 当前说明统一为 Linux 原生 Wayland-only、Vulkan 默认、OpenGL 最后降级；缺依赖和旧配置 fail-closed。`rhi_backend_evidence.md` 将旧 X11 行原样移至“历史 CI 证据（保留原文，非当前支持）”，旧 URL 未删除；`docs/superpowers`、日期化故障记录及历史 CI 结论未改写。myui 文档顶部明确当前 port 与历史条目的边界。
+- **实际 RED**：新 `test_wayland_ci_migration_contract` 在旧 CI 上报告 X11/Xvfb/`DISPLAY=:99`、缺失 Weston/执行统计、旧包与旧支持声明；`test_release_package_contract` 因 1.9.0 失败；`test_rhi_evidence_register` 因缺少独立的 Linux Wayland × OpenGL/Vulkan 当前行失败。
+- **实际 GREEN**：`cmake --build build-remove-x11-auto -j3` 成功。聚焦 8 项（CI/版本/证据/selector/lane separation/两项移除合同/profiler）8/8 通过。全量 `ctest --test-dir build-remove-x11-auto -LE 'graphics|fuzz' --output-on-failure -j3`：330 入选、329 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP。`git diff --check` 通过。
+- **变异**：临时在 `lane-gpu-runtime-linux-gl` 注入 `export DISPLAY=:99`，`test_wayland_ci_migration_contract` 按预期仅因该 token 失败；精确恢复后同一合同及 diff check 通过，提交中无变异残留。
+- **本地 YAML 限制**：PyYAML 成功解析 3 个 workflow（24 jobs），65 个适用 Bash run block 均通过 `bash -n`。这只是本地结构/语法检查；真实 GitHub workflow、重建镜像、SteamRT、Windows/macOS/iOS/Proton 与其他 native runner 均未在本任务执行，必须 push 后核查，不能写成已通过。Task 2 的真实 Wayland GL/VK 证据作为输入沿用，本任务未重复运行图形套件；范围外显式 OpenGL clip 超时未修改、未包装为 PASS。
+
 ## 本轮更新：P8 fix round 4（2026-11-05）
 
 - **兼容自动 epoch**：`break_aspect_encode` 改为独立的每对象 encoder epoch/hash，不再从 value revision 推导顺序。仅成功输出后推进；连续 baseline/DORMANT/DESTROY 和同值唤醒均单调递增，短输出预算失败不消耗 epoch，耗尽返回 OVERLOAD。显式编码和 apply 仍不写自动 encoder 状态，value revision 与 record high-water 语义不变。

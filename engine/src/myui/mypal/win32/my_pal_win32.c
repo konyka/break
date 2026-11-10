@@ -553,7 +553,7 @@ static my_pal_main_loop_t* wpal_loop_create(my_pal_t* pal) {
   l->base.vtable = &s_wloop_vtable;
   l->pal = p;
   l->allocator = p->allocator;
-  atomic_flag_clear_explicit(&l->lock);
+  atomic_flag_clear_explicit(&l->lock, memory_order_release);
   l->timers = my_timer_manager_create(p->allocator, wloop_timer_now, l);
   if (l->timers == NULL) {
     my_mem_free(p->allocator, l);

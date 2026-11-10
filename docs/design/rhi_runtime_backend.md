@@ -54,7 +54,7 @@ The generated files are committed (no build-time code generation, no new build d
 
 `rhi_runtime_active_backend()` reports the active backend name (`vulkan` / `opengl` / `none`) for diagnostics and tests. In the multi-backend build `rhi_rollout_compiled_backend()` / `rhi_rollout_compiled_reason()` return the runtime choice once a device exists (see §8); single-backend builds keep the compile-time answer.
 
-Platform coupling: both backends can be created from the same `Platform`. X11 gives both the same window and display; Wayland gives GL the `wl_egl_window` and VK the `wl_surface`; Windows gives both the HWND. No window is recreated and no second window appears. (Verified on X11 only, §8.)
+Platform coupling: both backends can be created from the same `Platform`. Linux supports native Wayland only in 2.0.0: GL receives the `wl_egl_window` and VK receives the `wl_surface`; Windows gives both the HWND. No window is recreated and no second window appears. Wayland default/fallback/env selection was subsequently verified on a real compositor (2026-11-10); §8 retains the original 2026-10 delivery evidence as history.
 
 ## 5. Failure semantics
 
@@ -96,3 +96,7 @@ Verified on this host (Linux X11; Vulkan = NVIDIA RTX A5000 through NVK, OpenGL 
 - Real (non-hook) Vulkan failures also fall back cleanly on this host: missing ICD (`VK_ICD_FILENAMES=/nonexistent.json`, fails before the instance), invalid `RE_VK_DEVICE_INDEX` (fails after instance + surface), and an injected depth-memory allocation failure (fails after VkDevice + swapchain on the window). Each renders and reads back on OpenGL; ASan + UBSan report nothing beyond a 13 KB leak inside the Vulkan driver that a normal successful Vulkan run shows too.
 
 Not verified: Windows and Wayland runtime fallback (no such host); CI. The `engine_demo` OpenGL shader link error noted at delivery (`vWorldPos` explicit location with no matching output) was a separate bug in `pbr_clustered_arr.vert` and is fixed (commit `1e09e998`); with `BREAK_RHI_FAIL_VULKAN=1` the full demo scene now runs on OpenGL. The slow GL runs measured at the time (60 frames in about 100 s) were an environment effect, not an engine cost: the GNOME session was screen-locked, and mutter/Xwayland throttles frame callbacks for invisible windows to 1 per second, which a vsync-on `glXSwapBuffers` waits on (a standalone GLX program shows the same 1 swap/s). With the screen unlocked, `engine_demo` on OpenGL runs at the 60 FPS vsync cap, also through the multi-backend forced fallback; Vulkan (MAILBOX present) is not throttled this way.
+
+## 9. Current platform boundary (2026-11-10)
+
+Linux is native Wayland-only in 2.0.0; the X11 delivery evidence in §8 is historical. On a real Wayland compositor, `test_rhi_runtime_fallback_{default,forced,env_opengl}` passed 3/3 with actual rendering/readback: default selected Vulkan, forced failure selected OpenGL, and the environment override selected OpenGL. Windows runtime fallback and the migrated CI workflow remain to be checked on their native runners; this update does not claim them.

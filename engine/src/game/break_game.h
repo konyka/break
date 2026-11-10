@@ -9,6 +9,11 @@
 #include <math/math.h>
 #include <platform/input.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define BREAK_GAME_HARD_MAX_CLASSES 64u
 #define BREAK_GAME_HARD_MAX_ACTORS  4096u
 #define BREAK_GAME_HARD_MAX_ACTIONS 64u
@@ -213,3 +218,6 @@ BreakGameError break_game_level_close(BreakGame *game);
 BreakGameError break_game_area_add(BreakGame *game, const BreakGameAreaDesc *desc, u32 *out_id);
 void           break_game_set_area_callback(BreakGame *game, BreakGameAreaFn fn, void *user);
 BreakGameError break_game_area_tick(BreakGame *game);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

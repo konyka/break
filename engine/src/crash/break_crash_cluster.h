@@ -25,6 +25,11 @@
 #include <core/types.h>
 #include <crash/break_crash_symbolize.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define BREAK_CRASH_SIGNATURE_HEX 64u
 #define BREAK_CRASH_CLUSTER_MAX_SIGNATURES 4096u
 #define BREAK_CRASH_CLUSTER_MAX_BUILDS 1024u
@@ -96,3 +101,6 @@ BreakCrashClusterStore *break_crash_cluster_parse(const char *text, usize len);
 typedef struct BreakCrashClusterLock BreakCrashClusterLock;
 BreakCrashClusterLock *break_crash_cluster_lock(const char *path);
 void break_crash_cluster_unlock(BreakCrashClusterLock *l); /* NULL no-op */
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

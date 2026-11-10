@@ -701,11 +701,6 @@ void close_gl(void) {
 #include <dlfcn.h>
 static void* libGL;
 
-#if !defined(__APPLE__) && !defined(__HAIKU__)
-typedef void* (APIENTRYP PFNGLXGETPROCADDRESSPROC_PRIVATE)(const char*);
-static PFNGLXGETPROCADDRESSPROC_PRIVATE gladGetProcAddressPtr;
-#endif
-
 static
 int open_gl(void) {
 #ifdef __APPLE__
@@ -724,13 +719,7 @@ int open_gl(void) {
         libGL = dlopen(NAMES[index], RTLD_NOW | RTLD_GLOBAL);
 
         if(libGL != NULL) {
-#if defined(__APPLE__) || defined(__HAIKU__)
             return 1;
-#else
-            gladGetProcAddressPtr = (PFNGLXGETPROCADDRESSPROC_PRIVATE)dlsym(libGL,
-                "glXGetProcAddressARB");
-            return gladGetProcAddressPtr != NULL;
-#endif
         }
     }
 
@@ -751,18 +740,16 @@ void* get_proc(const char *namez) {
     void* result = NULL;
     if(libGL == NULL) return NULL;
 
-#if !defined(__APPLE__) && !defined(__HAIKU__)
+#if defined(_WIN32) || defined(__CYGWIN__)
     if(gladGetProcAddressPtr != NULL) {
         result = gladGetProcAddressPtr(namez);
     }
-#endif
     if(result == NULL) {
-#if defined(_WIN32) || defined(__CYGWIN__)
         result = (void*)GetProcAddress((HMODULE) libGL, namez);
-#else
-        result = dlsym(libGL, namez);
-#endif
     }
+#else
+    result = dlsym(libGL, namez);
+#endif
 
     return result;
 }

@@ -1,9 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 # VERSION 语义（Task 9 semver 规则，docs/rhi_rollback_runbook.md §5）：
-#   major = 破坏性变更（OpenGL 已决定长期保留，不占用 major 版号）；
+#   major = 破坏性变更（2.0.0 移除 Linux X11 支持；OpenGL 继续保留）；
 #   minor = 新后端/新能力；patch = 修复。版本唯一来源本 project() VERSION；
 #   tag 名 v<x.y.z> 与之严格相等（契约测试比对；tag 由 maintainer 发布时创建）。
-project(PureCEngine VERSION 1.9.0 LANGUAGES C)
+project(PureCEngine VERSION 2.0.0 LANGUAGES C CXX)
+# Dual-language policy: engine code is C11; C++ TUs (tests, wrappers, the
+# Windows-only DLSS adapter) build as C++20. Public C API headers must stay
+# C++20-consumable (extern "C" guards); test_public_api_cpp20 pins this.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -13,13 +18,31 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(Threads REQUIRED)
 
 # Platform detection
-option(ENGINE_ENABLE_WAYLAND "Enable native Wayland support (Linux only)" OFF)
+option(ENGINE_ENABLE_WAYLAND "Enable native Wayland support (Linux only)" ON)
 option(ENGINE_ENABLE_IPO "Enable interprocedural optimization for Release builds when supported" ON)
 option(RULE_ENGINE_ENABLE_C11_PARALLEL "Enable the optional C11 rule match executor" OFF)
 option(RULE_ENGINE_ENABLE_REDIS "Enable native Redis state provider (requires hiredis and a controlled integration service)" OFF)
 # MYUI_PAL option anchor
 set(MYUI_PAL "dummy" CACHE STRING
-    "myui PAL port: dummy | x11 | wayland | win32 | cocoa")
+    "myui PAL port: dummy | wayland | win32 | cocoa")
+set_property(CACHE MYUI_PAL PROPERTY STRINGS dummy wayland win32 cocoa)
+set(MYUI_PAL_VALID_VALUES dummy wayland win32 cocoa)
+if(MYUI_PAL STREQUAL "x11")
+    message(FATAL_ERROR "X11 support was removed; use native Wayland")
+endif()
+if(NOT MYUI_PAL IN_LIST MYUI_PAL_VALID_VALUES)
+    message(FATAL_ERROR
+        "Unsupported MYUI_PAL='${MYUI_PAL}'; expected dummy, wayland, win32, or cocoa")
+endif()
+if(MYUI_PAL STREQUAL "win32" AND NOT WIN32)
+    message(FATAL_ERROR "MYUI_PAL=win32 requires a Windows host")
+endif()
+if(MYUI_PAL STREQUAL "cocoa" AND NOT APPLE)
+    message(FATAL_ERROR "MYUI_PAL=cocoa requires an Apple host")
+endif()
+if(MYUI_PAL STREQUAL "wayland" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "MYUI_PAL=wayland requires a Linux/Wayland target")
+endif()
 
 set(RULE_ENGINE_REDIS_SOURCE_DIR "" CACHE PATH
     "Redis source tree or hiredis source directory used to build the native client")
@@ -47,6 +70,8 @@ set(SNOWFLAKE_SOURCE_DIR "" CACHE PATH
     "Snowflake source tree required by the Break network adapter")
 option(BREAK_ENABLE_CRYPTO
     "Enable the break_crypto OpenSSL EVP wrapper library (Stage 5)" ON)
+option(BREAK_ENABLE_QUIC
+    "Enable break_net_quic over Snowflake's vendored ngtcp2 adapter; requires BREAK_ENABLE_SNOWFLAKE=ON, BREAK_ENABLE_CRYPTO=ON and OpenSSL >= 3.5 (QUIC TLS seam). POSIX-only v1. See docs/design/quic_transport.md" OFF)
 option(BREAK_ENABLE_CRASH
     "Enable the break_crash crash-record/spool library (Stage 5 Phase C)" ON)
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
@@ -81,20 +106,13 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"
             set(ENGINE_PLATFORM "macos")
         endif()
     else()
-        if(ENGINE_ENABLE_WAYLAND)
-            find_package(PkgConfig REQUIRED)
-            pkg_check_modules(WAYLAND REQUIRED wayland-client wayland-egl wayland-cursor)
-            pkg_check_modules(XKB REQUIRED xkbcommon)
-            find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
-        else()
-            find_package(X11 REQUIRED)
-            if(NOT X11_Xrandr_FOUND)
-                message(FATAL_ERROR "Xrandr not found (required for multi-monitor support)")
-            endif()
-            if(X11_Xi_FOUND)
-                set(ENGINE_X11_XINPUT2 1)
-            endif()
+        if(NOT ENGINE_ENABLE_WAYLAND OR MYUI_PAL STREQUAL "x11")
+            message(FATAL_ERROR "X11 support was removed; use native Wayland")
         endif()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(WAYLAND REQUIRED wayland-client wayland-egl wayland-cursor)
+        pkg_check_modules(XKB REQUIRED xkbcommon)
+        find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
         set(ENGINE_PLATFORM "linux")
     endif()
 elseif(WIN32)
@@ -283,6 +301,10 @@ endif()
 set(ENGINE_RHI_BACKEND_EFFECTIVE "${_rhi_backend_effective}" CACHE INTERNAL
     "Resolved RHI backend for this build" FORCE)
 message(STATUS "RHI backend: requested=${ENGINE_RHI_BACKEND}; effective=${ENGINE_RHI_BACKEND_EFFECTIVE}")
+if(ENGINE_PLATFORM STREQUAL "linux" AND
+   (ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl" OR ENGINE_RHI_MULTI_BACKEND_ACTIVE))
+    find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
+endif()
 if(ENGINE_PLATFORM STREQUAL "qnx" AND ENGINE_VULKAN)
     message(FATAL_ERROR
         "ENGINE_VULKAN is UNAVAILABLE on qnx (no Screen/Vulkan WSI; headless platform)")
@@ -392,7 +414,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
     # configure time. The pin below is mirrored by the snowflake entry in
     # engine/external/locked_dependencies.json and the pin policy in
     # docs/design/snowflake_c11_adapter.md; all three move in one commit.
-    set(BREAK_SNOWFLAKE_PIN "0fceed6d885bb8578743d82cc4a5d7ab2f6b0620")  # snowflake main HEAD 2026-10-24
+    set(BREAK_SNOWFLAKE_PIN "696a1ec57163f91d7c2795debc8cab3a359cef44")  # snowflake main HEAD 2026-11-08
     execute_process(
         COMMAND git -C "${SNOWFLAKE_SOURCE_DIR}" rev-parse HEAD
         RESULT_VARIABLE _break_snowflake_rev_result
@@ -428,6 +450,24 @@ if(BREAK_ENABLE_SNOWFLAKE)
     set(SNOW_BUILD_TESTS OFF CACHE BOOL "Snowflake tests are not part of Break builds" FORCE)
     set(SNOW_BUILD_EXAMPLES OFF CACHE BOOL "Snowflake examples are not part of Break builds" FORCE)
     set(SNOW_BUILD_BENCH OFF CACHE BOOL "Snowflake benchmarks are not part of Break builds" FORCE)
+    # QUIC transport (docs/design/quic_transport.md): snow builds its vendored
+    # ngtcp2 + OpenSSL (>= 3.5, QUIC TLS seam) adapter. fail-closed: snow's
+    # vendored-ngtcp2 find_package(OpenSSL 3.5.0 REQUIRED) aborts configure on
+    # an older OpenSSL, and the adapter target check below aborts on a
+    # snow tree without it.
+    if(BREAK_ENABLE_QUIC)
+        if(NOT BREAK_ENABLE_CRYPTO)
+            message(FATAL_ERROR
+                "BREAK_ENABLE_QUIC=ON requires BREAK_ENABLE_CRYPTO=ON (one "
+                "OpenSSL story: OPENSSL_ROOT_DIR feeds both).")
+        endif()
+        set(SNOW_USE_VENDORED_NGTCP2 ON CACHE BOOL
+            "Vendored ngtcp2 for break_net_quic" FORCE)
+        set(SNOW_ENABLE_QUIC_NGTCP2 ON CACHE BOOL
+            "Snowflake ngtcp2 QUIC adapter for break_net_quic" FORCE)
+        set(SNOW_ENABLE_TRANSPORT_MANAGER ON CACHE BOOL
+            "Transport manager contract required by the QUIC adapter" FORCE)
+    endif()
     # Stage 4 Phase 4 Task 1 (documented deviation): snow::warnings is an
     # INTERFACE library whose -Wconversion/-Wfloat-equal/-Wcast-qual/... flag
     # set leaks directory-wide once snow is added via add_subdirectory. That
@@ -482,6 +522,41 @@ if(BREAK_ENABLE_SNOWFLAKE)
         message(STATUS
             "Break Snowflake adapter: snow OpenSSL enabled (SNOW_HAVE_OPENSSL=${SNOW_HAVE_OPENSSL})")
     endif()
+endif()
+
+# break_net_quic (docs/design/quic_transport.md): QUIC transport channel over
+# snow's pinned ngtcp2 adapter. The module carries no QUIC/TLS code of its
+# own; POSIX-only v1 (sockets + poll), mirroring the break_http platform
+# boundary. Fail-closed when requested but unavailable.
+if(BREAK_ENABLE_QUIC)
+    if(NOT BREAK_ENABLE_SNOWFLAKE)
+        message(FATAL_ERROR
+            "BREAK_ENABLE_QUIC=ON requires BREAK_ENABLE_SNOWFLAKE=ON: the "
+            "module is a thin channel over Snowflake's ngtcp2 adapter and "
+            "carries no QUIC implementation of its own.")
+    endif()
+    if(WIN32)
+        message(FATAL_ERROR
+            "BREAK_ENABLE_QUIC is POSIX-only in v1 (sockets + poll); Windows "
+            "support is a documented follow-up.")
+    endif()
+    if(NOT TARGET snow_quic_ngtcp2_adapter)
+        message(FATAL_ERROR
+            "BREAK_ENABLE_QUIC=ON but the pinned Snowflake tree did not "
+            "produce snow_quic_ngtcp2_adapter (needs OpenSSL >= 3.5 with the "
+            "QUIC TLS seam). See docs/design/quic_transport.md section 10.")
+    endif()
+    message(STATUS "Break QUIC transport: enabled (snow ngtcp2 adapter)")
+    add_library(break_net_quic STATIC src/network/break_net_quic.c)
+    set_property(TARGET break_net_quic PROPERTY C_STANDARD 11)
+    target_compile_definitions(break_net_quic PRIVATE _POSIX_C_SOURCE=199309L)
+    target_include_directories(break_net_quic PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    # break_net supplies the envelope codec (no duplication), break_crypto the
+    # HMAC/CSPRNG for CHALLENGE/AUTH-v2; both are guaranteed present by the
+    # gate above (QUIC requires SNOWFLAKE + CRYPTO).
+    target_link_libraries(break_net_quic PUBLIC snow_quic_ngtcp2_adapter
+        break_net break_crypto)
 endif()
 
 # Windows non-MSVC toolchains (Clang, MinGW GCC): FindOpenSSL only searches the
@@ -1117,23 +1192,47 @@ if(ENGINE_BUILD_TESTS)
     add_executable(test_platform_window_mode tests/test_platform_window_mode.c)
     target_include_directories(test_platform_window_mode PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_platform_window_mode PRIVATE SIMULATE_WAYLAND=1)
     add_test(NAME test_platform_window_mode COMMAND test_platform_window_mode)
     set_tests_properties(test_platform_window_mode PROPERTIES
         LABELS "headless;platform_contract")
 
-    foreach(_wsi_name IN ITEMS X11 WAYLAND WIN32 COCOA ANDROID IOS)
+    foreach(_wsi_name IN ITEMS WAYLAND WIN32 COCOA ANDROID IOS)
         string(TOLOWER "${_wsi_name}" _wsi_lower)
         add_executable(test_platform_wsi_lifecycle_${_wsi_lower}
             tests/test_platform_wsi_lifecycle.c)
         target_include_directories(test_platform_wsi_lifecycle_${_wsi_lower}
             PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
-        if(NOT _wsi_name STREQUAL "X11")
-            target_compile_definitions(test_platform_wsi_lifecycle_${_wsi_lower}
-                PRIVATE SIMULATE_${_wsi_name}=1)
-        endif()
+        target_compile_definitions(test_platform_wsi_lifecycle_${_wsi_lower}
+            PRIVATE SIMULATE_${_wsi_name}=1)
         add_test(NAME test_platform_wsi_lifecycle_${_wsi_lower}
             COMMAND test_platform_wsi_lifecycle_${_wsi_lower})
     endforeach()
+
+    set(_wsi_compile_targets "")
+    function(add_wsi_compile_case name expected)
+        set(target test_platform_wsi_compile_${name})
+        add_library(${target} OBJECT EXCLUDE_FROM_ALL
+            tests/test_platform_wsi_compile_matrix.c)
+        target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_compile_definitions(${target} PRIVATE
+            EXPECTED_BACKEND_VALUE=${expected} ${ARGN})
+        set(_wsi_compile_targets ${_wsi_compile_targets} ${target} PARENT_SCOPE)
+    endfunction()
+    add_wsi_compile_case(ios_before_macos 5 ENGINE_PLATFORM_IOS=1 ENGINE_PLATFORM_MACOS=1)
+    add_wsi_compile_case(qnx_unavailable 0 ENGINE_PLATFORM_QNX=1)
+    add_wsi_compile_case(harmonyos_unavailable 0 ENGINE_PLATFORM_HARMONYOS=1)
+    add_wsi_compile_case(no_platform_unavailable 0)
+    add_wsi_compile_case(sim_ios_real_macos 5 SIMULATE_IOS=1 ENGINE_PLATFORM_MACOS=1)
+    add_wsi_compile_case(sim_cocoa_real_ios_macos 3
+        SIMULATE_COCOA=1 ENGINE_PLATFORM_IOS=1 ENGINE_PLATFORM_MACOS=1)
+    add_wsi_compile_case(sim_wayland_real_windows 1 SIMULATE_WAYLAND=1 ENGINE_PLATFORM_WINDOWS=1)
+    add_custom_target(test_platform_wsi_compile_matrix DEPENDS ${_wsi_compile_targets})
+    add_test(NAME test_platform_wsi_compile_matrix
+        COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_CURRENT_BINARY_DIR}"
+            --target test_platform_wsi_compile_matrix -j3)
+    set_tests_properties(test_platform_wsi_compile_matrix PROPERTIES
+        LABELS "headless;platform_contract")
 endif()
 
 # glad.c is generated code — suppress pedantic warnings (void* to fn ptr casts)
@@ -1725,14 +1824,9 @@ if(MYUI_BIDI)
     list(APPEND MYUI_CORE_SOURCES external/SheenBidi/Source/SheenBidi.c)
 endif()
 
-# MYUI_PAL x11 engine integration: compile the PAL dispatcher and the
-# real port into myui_core so in-tree consumers (myui_explorer) can use
-# my_pal_create() with a live desktop port.
-if(MYUI_PAL STREQUAL "x11")
-    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
-        src/myui/mypal/dummy/my_pal_dummy.c
-        src/myui/mypal/x11/my_pal_x11.c)
-elseif(MYUI_PAL STREQUAL "win32" AND WIN32)
+# Native PAL integration: compile the dispatcher and selected port into
+# myui_core so in-tree consumers use my_pal_create() with a live desktop port.
+if(MYUI_PAL STREQUAL "win32" AND WIN32)
     list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
         src/myui/mypal/dummy/my_pal_dummy.c
         src/myui/mypal/win32/my_pal_win32.c)
@@ -1778,30 +1872,18 @@ elseif(MYUI_PAL STREQUAL "wayland")
 endif()
 
 add_library(myui_core STATIC ${MYUI_CORE_SOURCES})
-if(MYUI_PAL STREQUAL "x11")
-    target_compile_definitions(myui_core PUBLIC MYUI_PAL_X11=1)
-    target_link_libraries(myui_core PUBLIC ${X11_LIBRARIES} EGL)
-elseif(MYUI_PAL STREQUAL "win32" AND WIN32)
-    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
-        src/myui/mypal/dummy/my_pal_dummy.c
-        src/myui/mypal/win32/my_pal_win32.c)
-elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
-    enable_language(OBJC)
-    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
-        src/myui/mypal/dummy/my_pal_dummy.c
-        src/myui/mypal/cocoa/my_pal_cocoa.m)
-elseif(MYUI_PAL STREQUAL "wayland")
-    target_compile_definitions(myui_core PUBLIC MYUI_PAL_WAYLAND=1)
-    target_include_directories(myui_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}
-        ${ENGINE_PAL_WL_INCLUDE_DIRS})
-    target_link_libraries(myui_core PUBLIC ${ENGINE_PAL_WL_LIBRARIES})
-elseif(MYUI_PAL STREQUAL "win32" AND WIN32)
+if(MYUI_PAL STREQUAL "win32" AND WIN32)
     target_compile_definitions(myui_core PUBLIC MYUI_PAL_WIN32=1)
     target_link_libraries(myui_core PUBLIC gdi32 user32 opengl32)
 elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
     target_compile_definitions(myui_core PUBLIC MYUI_PAL_COCOA=1)
     target_link_libraries(myui_core PUBLIC "-framework Cocoa"
         "-framework OpenGL")
+elseif(MYUI_PAL STREQUAL "wayland")
+    target_compile_definitions(myui_core PUBLIC MYUI_PAL_WAYLAND=1)
+    target_include_directories(myui_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}
+        ${ENGINE_PAL_WL_INCLUDE_DIRS})
+    target_link_libraries(myui_core PUBLIC ${ENGINE_PAL_WL_LIBRARIES})
 endif()
 target_include_directories(myui_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -2244,41 +2326,13 @@ if(ENGINE_PLATFORM STREQUAL "linux")
             ${WAYLAND_INCLUDE_DIRS}
             ${XKB_INCLUDE_DIRS}
         )
-    else()
-        target_sources(engine PRIVATE
-            src/platform/window_x11.c
-            src/platform/gamepad_linux.c
-        )
-        target_include_directories(engine PRIVATE ${X11_INCLUDE_DIRS})
-        if(ENGINE_X11_XINPUT2)
-            target_sources(engine PRIVATE src/platform/x11_touch.c)
-            target_compile_definitions(engine PRIVATE ENGINE_X11_XINPUT2=1)
-        endif()
     endif()
 
     if(ENGINE_VULKAN)
         find_package(Vulkan REQUIRED)
         target_compile_definitions(engine PUBLIC ENGINE_VULKAN=1)
-        if(ENGINE_ENABLE_WAYLAND)
-            target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
-        else()
-            set(ENGINE_X11_LIBS ${X11_LIBRARIES} ${X11_Xrandr_LIB})
-            if(X11_Xi_FOUND)
-                list(APPEND ENGINE_X11_LIBS ${X11_Xi_LIB})
-            endif()
-            target_link_libraries(engine PRIVATE ${ENGINE_X11_LIBS} dl pthread)
-        endif()
-    else()
-        if(ENGINE_ENABLE_WAYLAND)
-            target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
-        else()
-            set(ENGINE_X11_LIBS ${X11_LIBRARIES} ${X11_Xrandr_LIB})
-            if(X11_Xi_FOUND)
-                list(APPEND ENGINE_X11_LIBS ${X11_Xi_LIB})
-            endif()
-            target_link_libraries(engine PRIVATE ${ENGINE_X11_LIBS} dl pthread)
-        endif()
     endif()
+    target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
 
 elseif(ENGINE_PLATFORM STREQUAL "windows")
     target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_WINDOWS=1 _WIN32_WINNT=0x0601)
@@ -2404,20 +2458,14 @@ endif()
 # Backend-side platform libraries (moved off engine, which no longer
 # compiles any backend source).
 if(ENGINE_PLATFORM STREQUAL "linux")
-    if(ENGINE_ENABLE_WAYLAND)
-        target_link_libraries(engine_rhi_opengl PRIVATE
-            ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
-        if(TARGET engine_rhi_vulkan)
-            target_link_libraries(engine_rhi_vulkan PRIVATE
-                ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
-        endif()
-    else()
-        target_link_libraries(engine_rhi_opengl PRIVATE
-            ${ENGINE_X11_LIBS} GL dl pthread)
-        if(TARGET engine_rhi_vulkan)
-            target_link_libraries(engine_rhi_vulkan PRIVATE
-                ${ENGINE_X11_LIBS} dl pthread)
-        endif()
+    target_link_libraries(engine_rhi_opengl PRIVATE
+        ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
+    if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl" OR ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        target_link_libraries(engine_rhi_opengl PRIVATE OpenGL::OpenGL OpenGL::EGL)
+    endif()
+    if(TARGET engine_rhi_vulkan)
+        target_link_libraries(engine_rhi_vulkan PRIVATE
+            ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
     endif()
 elseif(ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(engine_rhi_opengl PRIVATE opengl32)
@@ -2697,21 +2745,16 @@ target_link_libraries(myui_widgets_demo PRIVATE myui_core m Threads::Threads)
 add_test(NAME myui_widgets_demo_smoke COMMAND myui_widgets_demo ${CMAKE_CURRENT_BINARY_DIR})
 
 # Interactive explorer: live chart driven by real widgets with switchable
-# backends (software / GL) and window systems (X11 / Wayland), plus a
-# headless --selftest mode that renders a scripted interaction sequence.
+# software / GL rendering on Wayland, plus headless selftest and screenshots.
 if(NOT WIN32 AND NOT APPLE)
 find_program(WAYLAND_SCANNER wayland-scanner)
 find_package(PkgConfig QUIET)
-# The explorer always offers the X11 runner on Linux-class hosts; the
-# engine only searches X11 itself in its x11 platform branch, so look
-# here too (ENGINE_ENABLE_WAYLAND=ON leaves X11_LIBRARIES unset).
-find_package(X11 QUIET)
 if(PkgConfig_FOUND)
   pkg_check_modules(EX_WAYLAND QUIET wayland-client wayland-egl egl glesv2)
 endif()
 endif()
 if(NOT WIN32 AND NOT APPLE AND WAYLAND_SCANNER AND EX_WAYLAND_FOUND)
-  set(EX_EXPLORER_PLATFORMS "x11+wayland, soft+gl")
+  set(EX_EXPLORER_PLATFORMS "wayland, soft+gl; headless")
   execute_process(
       COMMAND ${WAYLAND_SCANNER} client-header
               /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
@@ -2723,22 +2766,15 @@ if(NOT WIN32 AND NOT APPLE AND WAYLAND_SCANNER AND EX_WAYLAND_FOUND)
   set(EX_EXPLORER_SOURCES tools/myui_explorer.c
       ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c)
   set(EX_EXPLORER_DEFS "")
-  set(EX_EXPLORER_LIBS ${EX_WAYLAND_LIBRARIES} ${X11_LIBRARIES})
+  set(EX_EXPLORER_LIBS ${EX_WAYLAND_LIBRARIES})
   set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
-      ${CMAKE_CURRENT_BINARY_DIR} ${EX_WAYLAND_INCLUDE_DIRS}
-      ${X11_INCLUDE_DIR})
+      ${CMAKE_CURRENT_BINARY_DIR} ${EX_WAYLAND_INCLUDE_DIRS})
 else()
-  set(EX_EXPLORER_PLATFORMS "x11 only, soft only (wayland/EGL dev pkgs missing)")
+  set(EX_EXPLORER_PLATFORMS "headless only (wayland/EGL dev pkgs missing)")
   set(EX_EXPLORER_SOURCES tools/myui_explorer.c)
   set(EX_EXPLORER_DEFS EX_EXPLORER_NO_WAYLAND=1)
-  set(EX_EXPLORER_LIBS ${X11_LIBRARIES})
-  set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
-      ${X11_INCLUDE_DIR})
-endif()
-if(NOT WIN32 AND NOT APPLE AND NOT X11_FOUND)
-  # Headless-only explorer: selftest/--shot still work, the interactive
-  # runners report "not supported in this build".
-  list(APPEND EX_EXPLORER_DEFS EX_EXPLORER_NO_X11=1)
+  set(EX_EXPLORER_LIBS "")
+  set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
 endif()
 if(WIN32)
   list(APPEND EX_EXPLORER_SOURCES tools/ex_platform_win32.c)
@@ -2793,10 +2829,33 @@ if(ENGINE_BUILD_TESTS)
 
     set(TEST_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
 
+    add_executable(test_glad_wgl_loader tests/test_glad_wgl_loader.c external/glad.c)
+    target_include_directories(test_glad_wgl_loader PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/win32_stub)
+    target_compile_definitions(test_glad_wgl_loader PRIVATE _WIN32=1 __stdcall=)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(test_glad_wgl_loader PRIVATE -Wno-pedantic)
+    endif()
+    add_test(NAME test_glad_wgl_loader COMMAND test_glad_wgl_loader)
+    set_tests_properties(test_glad_wgl_loader PROPERTIES
+        LABELS "headless;platform_contract")
+
     # Focused rule-engine ABI and behavior tests, independent of graphics/Lua.
     add_executable(test_rule_engine tests/test_rule_engine.c)
     set_property(TARGET test_rule_engine PROPERTY C_STANDARD 99)
     target_include_directories(test_rule_engine PRIVATE ${TEST_INCLUDE_DIRS})
+
+    # Dual-language gate (docs/Build_Guide.md): the public C API headers must
+    # compile and link from a C++20 TU. Links engine for the platform macros
+    # and one live cross-language call.
+    add_executable(test_public_api_cpp20 tests/test_public_api_cpp20.cpp)
+    set_property(TARGET test_public_api_cpp20 PROPERTY CXX_STANDARD 20)
+    set_property(TARGET test_public_api_cpp20 PROPERTY CXX_STANDARD_REQUIRED ON)
+    target_include_directories(test_public_api_cpp20 PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_public_api_cpp20 PRIVATE engine)
+    add_test(NAME test_public_api_cpp20 COMMAND test_public_api_cpp20)
+    set_tests_properties(test_public_api_cpp20 PROPERTIES LABELS "headless;platform_contract")
     target_link_libraries(test_rule_engine PRIVATE rule_engine_core)
     if(RULE_ENGINE_ENABLE_REDIS AND RULE_ENGINE_HAS_HIREDIS)
         target_compile_definitions(test_rule_engine PRIVATE RE_HAS_HIREDIS)
@@ -3026,6 +3085,7 @@ if(ENGINE_BUILD_TESTS)
     # Header-only WSI lifecycle contract; intentionally headless and engine-free.
     add_executable(test_platform_wsi_lifecycle tests/test_platform_wsi_lifecycle.c)
     target_include_directories(test_platform_wsi_lifecycle PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_platform_wsi_lifecycle PRIVATE SIMULATE_WAYLAND=1)
     add_test(NAME test_platform_wsi_lifecycle COMMAND test_platform_wsi_lifecycle)
     set_tests_properties(test_platform_wsi_lifecycle PROPERTIES
         LABELS "headless;platform_contract")
@@ -3038,24 +3098,16 @@ if(ENGINE_BUILD_TESTS)
     set_tests_properties(test_rhi_vk_probe PROPERTIES
         LABELS "headless;platform_contract")
 
-    if(ENGINE_PLATFORM STREQUAL "linux" AND NOT ENGINE_ENABLE_WAYLAND)
-        add_executable(test_platform_x11_runtime tests/test_platform_x11_runtime.c)
-        target_include_directories(test_platform_x11_runtime PRIVATE ${TEST_INCLUDE_DIRS})
-        if(ENGINE_X11_XINPUT2)
-            target_compile_definitions(test_platform_x11_runtime PRIVATE ENGINE_X11_XINPUT2=1)
-        endif()
-        target_link_libraries(test_platform_x11_runtime PRIVATE engine m)
-        engine_link_rhi_backend(test_platform_x11_runtime)
-        add_test(NAME test_platform_x11_runtime COMMAND test_platform_x11_runtime)
-        set_tests_properties(test_platform_x11_runtime PROPERTIES
-            LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
+    if(ENGINE_PLATFORM STREQUAL "linux" AND ENGINE_ENABLE_WAYLAND)
         if(NOT ENGINE_VULKAN)
-            add_executable(test_rhi_x11_runtime tests/test_rhi_x11_runtime.c)
-            target_include_directories(test_rhi_x11_runtime PRIVATE ${TEST_INCLUDE_DIRS})
-            target_link_libraries(test_rhi_x11_runtime PRIVATE engine m)
-            engine_link_rhi_backend(test_rhi_x11_runtime)
-            add_test(NAME test_rhi_x11_runtime COMMAND test_rhi_x11_runtime)
-            set_tests_properties(test_rhi_x11_runtime PROPERTIES
+            add_executable(test_rhi_wayland_runtime tests/test_rhi_wayland_runtime.c)
+            target_include_directories(test_rhi_wayland_runtime PRIVATE
+                ${TEST_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS})
+            target_link_libraries(test_rhi_wayland_runtime PRIVATE engine m
+                ${WAYLAND_LIBRARIES})
+            engine_link_rhi_backend(test_rhi_wayland_runtime)
+            add_test(NAME test_rhi_wayland_runtime COMMAND test_rhi_wayland_runtime)
+            set_tests_properties(test_rhi_wayland_runtime PROPERTIES
                 LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
 
             add_executable(test_mesh_gpu_gl tests/test_mesh_gpu_gl.c)
@@ -3180,17 +3232,6 @@ if(ENGINE_BUILD_TESTS)
         ${ENGINE_PAL_WL_LIBRARIES} Threads::Threads)
     add_test(NAME test_mypal_wayland COMMAND test_mypal_wayland)
     set_tests_properties(test_mypal_wayland PROPERTIES
-        LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
-endif()
-
-if(MYUI_PAL STREQUAL "x11")
-    add_executable(test_mypal_x11 tests/test_mypal_x11.c)
-    target_include_directories(test_mypal_x11 PRIVATE
-        ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
-    target_link_libraries(test_mypal_x11 PRIVATE myui_core m
-        ${X11_LIBRARIES} EGL Threads::Threads)
-    add_test(NAME test_mypal_x11 COMMAND test_mypal_x11)
-    set_tests_properties(test_mypal_x11 PROPERTIES
         LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
 endif()
 
@@ -3449,7 +3490,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_capabilities PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_capabilities PRIVATE
                 ENGINE_PLATFORM_WAYLAND=1)
@@ -3503,7 +3544,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_fault_injection PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_fault_injection PRIVATE
                 ENGINE_PLATFORM_WAYLAND=1)
@@ -3579,7 +3620,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_wsi_attach PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_wsi_attach PRIVATE
                 ENGINE_PLATFORM_WAYLAND=1)
@@ -3616,7 +3657,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_error_contract PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_error_contract PRIVATE
                 ENGINE_PLATFORM_WAYLAND=1)
@@ -3652,7 +3693,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_frame_lifecycle_contract PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_frame_lifecycle_contract
                 PRIVATE ENGINE_PLATFORM_WAYLAND=1)
@@ -3682,7 +3723,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_native PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_native PRIVATE
                 ENGINE_PLATFORM_WAYLAND=1)
@@ -3695,6 +3736,32 @@ endif()
     add_test(NAME test_rhi_native COMMAND test_rhi_native)
     set_tests_properties(test_rhi_native PROPERTIES
         LABELS "headless;platform_contract")
+    if(TARGET Vulkan::Vulkan OR Vulkan_INCLUDE_DIR)
+        add_executable(test_rhi_device_type tests/test_rhi_device_type.c
+            ${RHI_CORE_SOURCES} src/core/log.c)
+        target_include_directories(test_rhi_device_type PRIVATE
+            ${TEST_INCLUDE_DIRS} ${Vulkan_INCLUDE_DIR})
+        target_compile_definitions(test_rhi_device_type PRIVATE ENGINE_RHI_TEST=1)
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(test_rhi_device_type PRIVATE
+                ENGINE_PLATFORM_LINUX=1 ENGINE_PLATFORM_WAYLAND=1)
+            target_include_directories(test_rhi_device_type PRIVATE
+                ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_rhi_device_type PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        elseif(ENGINE_PLATFORM STREQUAL "macos")
+            target_compile_definitions(test_rhi_device_type PRIVATE ENGINE_PLATFORM_MACOS=1)
+        elseif(ENGINE_PLATFORM STREQUAL "qnx")
+            target_compile_definitions(test_rhi_device_type PRIVATE ENGINE_PLATFORM_QNX=1)
+        endif()
+        target_link_libraries(test_rhi_device_type PRIVATE engine_rhi_headless m)
+        if(TARGET Vulkan::Vulkan)
+            target_link_libraries(test_rhi_device_type PRIVATE Vulkan::Vulkan)
+        endif()
+        add_test(NAME test_rhi_device_type COMMAND test_rhi_device_type)
+        set_tests_properties(test_rhi_device_type PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
 
     add_executable(test_rhi_tlas_instance_encode
         tests/test_rhi_tlas_instance_encode.c src/rhi/rhi_validation.c)
@@ -3817,7 +3884,10 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
     # macOS 上 engine configure 恒要求 shaderc+Vulkan（molten-vk 无
     # libvulkan.dylib，自动发现必败），把外层已解析的路径透传给嵌套
-    # configure；其他平台这些变量未定义/为空时不传。
+    # configure；其他平台这些变量未定义/为空时不传。BREAK_ENABLE_CRYPTO
+    # 同样透传：无 OpenSSL 的主机外层以 =OFF 配置，嵌套 configure 沿用，
+    # 否则会在 find_package(OpenSSL REQUIRED) 处失败，与被测的后端选择
+    # 契约无关。
     set(_rhi_selector_toolchain_defs)
     foreach(_rhi_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR OPENSSL_ROOT_DIR)
         if(DEFINED ${_rhi_def} AND NOT "${${_rhi_def}}" STREQUAL "")
@@ -3830,6 +3900,7 @@ endif()
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/rhi-selector-contract
             -DENGINE_ENABLE_WAYLAND=${ENGINE_ENABLE_WAYLAND}
+            -DBREAK_ENABLE_CRYPTO=${BREAK_ENABLE_CRYPTO}
             ${_rhi_selector_toolchain_defs}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_selection.cmake)
     add_test(NAME test_locked_dependencies
@@ -4244,6 +4315,56 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_lane_separation.cmake)
     set_tests_properties(test_ci_lane_separation PROPERTIES
         LABELS "platform_contract")
+    add_test(NAME test_wayland_ci_migration_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_wayland_ci_migration_contract.cmake)
+    set_tests_properties(test_wayland_ci_migration_contract PROPERTIES
+        LABELS "headless;platform_contract")
+    add_test(NAME test_ci_image_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_contract.cmake)
+    set_tests_properties(test_ci_image_contract PROPERTIES
+        LABELS "headless;platform_contract")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    find_program(BASH_EXECUTABLE NAMES bash REQUIRED)
+    add_test(NAME test_ci_image_fix2
+        COMMAND "${Python3_EXECUTABLE}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_fix2.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_CURRENT_BINARY_DIR}/ci-image-fix2-contract
+            "${BASH_EXECUTABLE}")
+    set_tests_properties(test_ci_image_fix2 PROPERTIES
+        LABELS "headless;platform_contract")
+    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME test_ci_image_fix2_windows_launch
+            COMMAND "${Python3_EXECUTABLE}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_fix2.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/..
+                ${CMAKE_CURRENT_BINARY_DIR}/ci-image-fix2-windows-contract
+                "${BASH_EXECUTABLE}" --simulate-windows)
+        set_tests_properties(test_ci_image_fix2_windows_launch PROPERTIES
+            LABELS "headless;platform_contract" TIMEOUT 120)
+    endif()
+    add_test(NAME test_ci_execution_semantics
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_execution_semantics.cmake)
+    set_tests_properties(test_ci_execution_semantics PROPERTIES
+        LABELS "headless;platform_contract")
+    add_test(NAME test_rollback_input_contract
+        COMMAND "${Python3_EXECUTABLE}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rollback_input_contract.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../.github/workflows/rollback-drill.yml
+            ${CMAKE_CURRENT_BINARY_DIR}/rollback-input-contract
+            "${BASH_EXECUTABLE}")
+    set_tests_properties(test_rollback_input_contract PROPERTIES
+        LABELS "headless;platform_contract")
+    add_test(NAME test_receipt_device_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/receipt-device-contract
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_receipt_device_contract.cmake)
+    set_tests_properties(test_receipt_device_contract PROPERTIES
+        LABELS "headless;platform_contract")
     # Plan C Task 10: offline Metal shader pipeline contract (text-level,
     # platform-free; the real pipeline run is macOS-only).
     add_test(NAME test_metal_shader_pipeline
@@ -4260,12 +4381,27 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vulkan_isolation_gates.cmake)
     set_tests_properties(test_vulkan_isolation_gates PROPERTIES
         LABELS "platform_contract")
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        add_test(NAME test_x11_removal_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/x11-removal-contract
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_x11_removal_contract.cmake)
+        set_tests_properties(test_x11_removal_contract PROPERTIES
+            LABELS "headless;platform_contract" TIMEOUT 120)
+        add_test(NAME test_rhi_glx_x11_removal_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DBREAK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_glx_x11_removal_contract.cmake)
+        set_tests_properties(test_rhi_glx_x11_removal_contract PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
     add_test(NAME test_platform_wsi_wiring_contract
         COMMAND ${CMAKE_COMMAND}
             -DPLATFORM_H=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform.h
             -DWSI_H=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform_wsi.h
             -DWIN32_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_win32.c
-            -DX11_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_x11.c
             -DWAYLAND_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_wayland.c
             -DCOCOA_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_cocoa.m
             -DMOBILE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_mobile.c
@@ -4285,7 +4421,7 @@ endif()
             target_compile_definitions(test_platform_vk_surface_abi PRIVATE
                 ENGINE_PLATFORM_LINUX=1)
             target_include_directories(test_platform_vk_surface_abi PRIVATE
-                ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS})
+                ${WAYLAND_INCLUDE_DIRS})
             if(ENGINE_ENABLE_WAYLAND)
                 target_compile_definitions(test_platform_vk_surface_abi PRIVATE
                     ENGINE_PLATFORM_WAYLAND=1)
@@ -4307,7 +4443,36 @@ endif()
     add_test(NAME test_myui_subproject_config
         COMMAND ${CMAKE_COMMAND}
             -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt
+            -DMYUI_ROOT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/myui-subproject-contract
+            -DTARGET_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_subproject_config.cmake)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        find_program(MYUI_TEST_ZIG_EXECUTABLE NAMES zig)
+        if(MYUI_TEST_ZIG_EXECUTABLE)
+            add_test(NAME test_myui_subproject_config_windows_cross
+                COMMAND ${CMAKE_COMMAND}
+                    -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt
+                    -DMYUI_ROOT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+                    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/myui-subproject-windows-contract
+                    -DTARGET_SYSTEM_NAME=Windows
+                    -DZIG_EXECUTABLE=${MYUI_TEST_ZIG_EXECUTABLE}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_subproject_config.cmake)
+            add_test(NAME test_myui_subproject_config_darwin_cross
+                COMMAND ${CMAKE_COMMAND}
+                    -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt
+                    -DMYUI_ROOT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+                    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/myui-subproject-darwin-contract
+                    -DTARGET_SYSTEM_NAME=Darwin
+                    -DZIG_EXECUTABLE=${MYUI_TEST_ZIG_EXECUTABLE}
+                    -DNATIVE_PAL_CONFIGURE_ONLY=ON
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_subproject_config.cmake)
+            set_tests_properties(
+                test_myui_subproject_config_windows_cross
+                test_myui_subproject_config_darwin_cross
+                PROPERTIES LABELS "headless;platform_contract" TIMEOUT 120)
+        endif()
+    endif()
     # Vulkan SDK >= 1.4.321 renamed glslangValidator to glslang; accept both.
     find_program(MYUI_GLSLANG_VALIDATOR NAMES glslangValidator glslang)
     if(MYUI_GLSLANG_VALIDATOR)
@@ -5445,7 +5610,8 @@ endif()
         target_include_directories(test_break_session PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-            target_compile_options(test_break_session PRIVATE -Wno-type-limits -Wno-maybe-uninitialized)
+            target_compile_options(test_break_session PRIVATE -Wno-type-limits
+                $<$<C_COMPILER_ID:GNU>:-Wno-maybe-uninitialized>)
         endif()
         target_link_libraries(test_break_session PRIVATE break_net_test break_online)
         add_test(NAME test_break_session COMMAND test_break_session)
@@ -6474,17 +6640,6 @@ endif()
         set_tests_properties(test_gamepad_win_feedback_portable PROPERTIES LABELS "headless;platform_contract")
     endif()
 
-    if(ENGINE_X11_XINPUT2)
-        add_executable(test_x11_touch tests/test_x11_touch.c
-            src/platform/x11_touch.c src/platform/input_extended.c)
-        target_include_directories(test_x11_touch PRIVATE
-            ${TEST_INCLUDE_DIRS} ${X11_INCLUDE_DIRS})
-        target_compile_definitions(test_x11_touch PRIVATE ENGINE_X11_XINPUT2=1)
-        target_link_libraries(test_x11_touch PRIVATE m)
-        add_test(NAME test_x11_touch COMMAND test_x11_touch)
-        set_tests_properties(test_x11_touch PROPERTIES LABELS "headless;platform_contract")
-    endif()
-
     add_executable(test_win32_touch tests/test_win32_touch.c
         src/platform/win32_touch.c src/platform/input_extended.c)
     target_include_directories(test_win32_touch PRIVATE ${TEST_INCLUDE_DIRS})
@@ -6556,6 +6711,31 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_http_target_contract.cmake)
         set_tests_properties(test_break_http_target_contract PROPERTIES
             LABELS "headless;security;platform_contract")
+    endif()
+
+    # break_net_quic (docs/design/quic_transport.md): real UDP loopback
+    # evidence, C API and C++20 wrapper in lockstep (dual-language policy).
+    if(TARGET break_net_quic)
+        add_executable(test_break_net_quic tests/test_break_net_quic.c)
+        set_property(TARGET test_break_net_quic PROPERTY C_STANDARD 11)
+        target_include_directories(test_break_net_quic PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_net_quic PRIVATE
+            BREAK_TEST_SSL_FIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl)
+        target_link_libraries(test_break_net_quic PRIVATE break_net_quic)
+        add_test(NAME test_break_net_quic COMMAND test_break_net_quic)
+        set_tests_properties(test_break_net_quic PROPERTIES
+            LABELS "headless;network;snowflake;quic" TIMEOUT 120)
+
+        add_executable(test_break_net_quic_cpp20 tests/test_break_net_quic_cpp20.cpp)
+        set_property(TARGET test_break_net_quic_cpp20 PROPERTY CXX_STANDARD 20)
+        set_property(TARGET test_break_net_quic_cpp20 PROPERTY CXX_STANDARD_REQUIRED ON)
+        target_include_directories(test_break_net_quic_cpp20 PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_net_quic_cpp20 PRIVATE
+            BREAK_TEST_SSL_FIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl)
+        target_link_libraries(test_break_net_quic_cpp20 PRIVATE break_net_quic)
+        add_test(NAME test_break_net_quic_cpp20 COMMAND test_break_net_quic_cpp20)
+        set_tests_properties(test_break_net_quic_cpp20 PROPERTIES
+            LABELS "headless;network;snowflake;quic" TIMEOUT 120)
     endif()
 
     if(BREAK_ENABLE_CRYPTO AND TARGET break_http AND TARGET break_update AND TARGET break_manifest_tool
@@ -6676,6 +6856,7 @@ endif()
     # is header-only and wayland-free), runs headless on any platform.
     add_executable(test_wayland tests/test_wayland.c)
     target_include_directories(test_wayland PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_wayland PRIVATE SIMULATE_WAYLAND=1)
     target_link_libraries(test_wayland PRIVATE m)
     add_test(NAME test_wayland COMMAND test_wayland)
 
@@ -6686,11 +6867,12 @@ endif()
 
     # Plan B Task 2: logical-vs-drawable size semantics are locked into the
     # header-only platform_size.h helpers; the unit test runs headless and the
-    # cmake contract test pins the four window backends to consume them.
+    # cmake contract test pins the remaining window backends to consume them.
     add_executable(test_platform_size_semantics
         tests/test_platform_size_semantics.c)
     target_include_directories(test_platform_size_semantics PRIVATE
         ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_platform_size_semantics PRIVATE SIMULATE_WAYLAND=1)
     target_link_libraries(test_platform_size_semantics PRIVATE m)
     add_test(NAME test_platform_size_semantics
         COMMAND test_platform_size_semantics)
@@ -6699,7 +6881,6 @@ endif()
         COMMAND ${CMAKE_COMMAND}
             -DSIZE_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform_size.h
             -DWIN32_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_win32.c
-            -DX11_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_x11.c
             -DWAYLAND_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_wayland.c
             -DCOCOA_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_cocoa.m
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_size_contract.cmake)

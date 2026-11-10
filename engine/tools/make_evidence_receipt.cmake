@@ -1,6 +1,7 @@
 # make_evidence_receipt.cmake — emit a benchmark/evidence receipt JSON.
 # 必填 -D: OUT PLATFORM BACKEND EVIDENCE_LEVEL RUNNER COMMAND_STR
 # 可选 -D: GPU DRIVER_VERSION CPU RAM BUILD_COMMIT BUILD_CONFIG
+#        DEVICE_TYPE VENDOR_ID DEVICE_ID
 #        FPS_AVG FPS_P1 FRAME_MS_AVG FRAME_MS_P99（benchmark lane 必填）
 # 未提供的描述性字段落 "unknown"（os_version 取 RUNNER_OS，缺省 unknown），
 # 保证字段级校验（test_evidence_receipt_schema.cmake）全字段非空。
@@ -11,6 +12,15 @@ foreach(v OUT PLATFORM BACKEND EVIDENCE_LEVEL RUNNER COMMAND_STR)
 endforeach()
 if(NOT EVIDENCE_LEVEL MATCHES "^(NONE|COMPILED|HEADLESS|NATIVE_SURFACE|GPU_RUNTIME|BENCHMARK_COMPARABLE|UNAVAILABLE)$")
     message(FATAL_ERROR "invalid evidence_level: ${EVIDENCE_LEVEL}")
+endif()
+if(NOT DEFINED DEVICE_TYPE)
+    set(DEVICE_TYPE UNKNOWN)
+endif()
+if(NOT DEFINED VENDOR_ID)
+    set(VENDOR_ID 0)
+endif()
+if(NOT DEFINED DEVICE_ID)
+    set(DEVICE_ID 0)
 endif()
 string(TIMESTAMP ts "%Y-%m-%dT%H:%M:%SZ" UTC)
 if(NOT DEFINED BUILD_COMMIT)
@@ -48,5 +58,5 @@ else()
     set(metrics "")
 endif()
 file(WRITE "${OUT}"
-"{\n  \"schema_version\": 1,\n  \"timestamp\": \"${ts}\",\n  \"platform\": \"${PLATFORM}\",\n  \"os_version\": \"${os_version}\",\n  \"backend\": \"${BACKEND}\",\n  \"gpu\": \"${GPU}\",\n  \"driver_version\": \"${DRIVER_VERSION}\",\n  \"cpu\": \"${CPU}\",\n  \"ram\": \"${RAM}\",\n  \"build_commit\": \"${BUILD_COMMIT}\",\n  \"build_config\": \"${BUILD_CONFIG}\",\n  \"command\": \"${COMMAND_STR}\",\n  ${metrics}\n  \"evidence_level\": \"${EVIDENCE_LEVEL}\",\n  \"runner\": \"${RUNNER}\"\n}\n")
+"{\n  \"schema_version\": 1,\n  \"timestamp\": \"${ts}\",\n  \"platform\": \"${PLATFORM}\",\n  \"os_version\": \"${os_version}\",\n  \"backend\": \"${BACKEND}\",\n  \"device_type\": \"${DEVICE_TYPE}\",\n  \"vendor_id\": ${VENDOR_ID},\n  \"device_id\": ${DEVICE_ID},\n  \"gpu\": \"${GPU}\",\n  \"driver_version\": \"${DRIVER_VERSION}\",\n  \"cpu\": \"${CPU}\",\n  \"ram\": \"${RAM}\",\n  \"build_commit\": \"${BUILD_COMMIT}\",\n  \"build_config\": \"${BUILD_CONFIG}\",\n  \"command\": \"${COMMAND_STR}\",\n  ${metrics}\n  \"evidence_level\": \"${EVIDENCE_LEVEL}\",\n  \"runner\": \"${RUNNER}\"\n}\n")
 message(STATUS "receipt written: ${OUT}")

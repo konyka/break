@@ -132,7 +132,7 @@ TEST(relative_mouse_mode_ignores_absolute_move_deltas)
     /* R563: WM_MOUSEMOVE accumulated absolute-position deltas even in
      * relative mode while WM_INPUT also added raw deltas (~2x speed, mixed
      * units). In relative mode the absolute handler must only track
-     * mouse_x/y, never mouse_dx/dy (mirrors the X11 backend). */
+     * mouse_x/y, never mouse_dx/dy (shared platform mouse contract). */
     PlatformConfig config = {320, 240, "break relmouse"};
     Platform *platform = platform_create(&config);
     HWND hwnd;

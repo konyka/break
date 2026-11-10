@@ -166,6 +166,26 @@ typedef struct {
     u32        temporal_ubo_binding;
 } RHICapabilities;
 
+typedef enum {
+    RHI_DEVICE_TYPE_UNKNOWN = -1,
+    RHI_DEVICE_TYPE_OTHER = 0,
+    RHI_DEVICE_TYPE_INTEGRATED = 1,
+    RHI_DEVICE_TYPE_DISCRETE = 2,
+    RHI_DEVICE_TYPE_VIRTUAL = 3,
+    RHI_DEVICE_TYPE_CPU = 4,
+} RHIDeviceType;
+
+static inline const char *rhi_device_type_name(RHIDeviceType type) {
+    switch (type) {
+    case RHI_DEVICE_TYPE_OTHER: return "OTHER";
+    case RHI_DEVICE_TYPE_INTEGRATED: return "INTEGRATED";
+    case RHI_DEVICE_TYPE_DISCRETE: return "DISCRETE";
+    case RHI_DEVICE_TYPE_VIRTUAL: return "VIRTUAL";
+    case RHI_DEVICE_TYPE_CPU: return "CPU";
+    default: return "UNKNOWN";
+    }
+}
+
 #define RHI_DEVICE_NAME_MAX 256u
 typedef struct {
     RHIBackend backend;
@@ -175,6 +195,8 @@ typedef struct {
     u32 api_version;
     u32 driver_version;
     u32 feature_bits;
+    /* Vulkan values match VkPhysicalDeviceType; UNKNOWN is a fail-closed sentinel. */
+    RHIDeviceType device_type;
 } RHIDeviceInfo;
 
 typedef enum {
@@ -474,7 +496,7 @@ void       rhi_backend_acceleration_structure_destroy(
 bool       rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,
                                        u32 width, u32 height);
 /* Convert top-left drawable damage to the bottom-left convention used by
- * EGL/GLX damage-present extensions. This is allocation-free and supports
+ * EGL damage-present extensions. This is allocation-free and supports
  * in-place conversion when the input and output buffers alias. */
 bool       rhi_present_damage_to_bottom_left(const RHIPresentRect *rects,
                                              u32 count, u32 width, u32 height,

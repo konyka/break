@@ -35,19 +35,19 @@
 
 ## 4. 版本回滚
 
-1. 每个 release 打签名 tag（Task 9）：`git tag -s v<x.y.z>`；旧 major 长期保留。
+1. 每个 release 打签名 tag（Task 9）：`git tag -s v<x.y.z>`。当前 rollback drill 只接受 **>=2.0.0** 的 tag；2.0.0 移除旧 Linux 窗口系统支持，更早 tag 在当前工作流中为 `UNAVAILABLE`，不为其安装旧依赖或虚构回滚成功。
 2. 回退命令：`git checkout v<x.y.z> && cmake -S engine -B build -DENGINE_RHI_BACKEND=<上一后端> ...`。OpenGL 仍在当前树内，选 `opengl` 无需回到旧 tag。
-3. CI 演练：`.github/workflows/rollback-drill.yml`（workflow_dispatch 手动触发），输入上一 tag，验证其 clean checkout 可构建且 headless 套件绿。每 release 前必跑一次。
+3. CI 演练：`.github/workflows/rollback-drill.yml`（workflow_dispatch 手动触发），先用 Bash 正则与去前导零后的主版本数值门校验 `>=2.0.0` floor（不依赖 GNU `sort -V`），再验证合格 tag 的 clean checkout 可构建且 headless 套件绿。输入统一经 job `env.TAG` 传递，校验脚本、checkout、验签和报告只读取 `"$TAG"` / `${{ env.TAG }}`，不把 `${{ inputs.tag }}` 直接插入 shell；分号、命令替换、换行 payload 必须在 checkout 前拒绝且无副作用。每 release 前必跑一次；本任务不创建 tag，合格签名 tag 不存在时不得宣称演练通过。
 
 ## 5. 签名与完整性
 
 - rollout 配置当前为 `sha256-payload` 完整性哈希（非真实性签名）；`ed25519-sha256` 随发布签名密钥启用。
 - release tag 使用 maintainer GPG key 签名；发布包附 `SHA256SUMS`。
 
-### §5.1 semver 规则（Task 9，2026-10-17）
+### §5.1 semver 规则（Task 9，2026-10-17；2.0.0 边界更新）
 
-- **major = 破坏性变更**（公共 API / 配置 schema / 平台支持面的不兼容变化）。OpenGL 已决定长期保留，不再占用任何 major 版号。
+- **major = 破坏性变更**（公共 API / 配置 schema / 平台支持面的不兼容变化）。2.0.0 对应 Linux 原生 Wayland-only 的支持面变更；OpenGL 继续长期保留。
 - **minor = 新后端/新能力**；**patch = 修复**。
-- **版本唯一来源** = `engine/CMakeLists.txt` 的 `project(PureCEngine VERSION x.y.z)`（当前 1.9.0）；tag 名 `v<x.y.z>` 必须与之严格相等，由契约测试 `test_release_package_contract` 比对（HEAD 无 tag 时跳过）。
+- **版本唯一来源** = `engine/CMakeLists.txt` 的 `project(PureCEngine VERSION x.y.z)`（当前 2.0.0）；tag 名 `v<x.y.z>` 必须与之严格相等，由契约测试 `test_release_package_contract` 比对（HEAD 无 tag 时跳过）。
 - **tag 由 maintainer 在发布时创建**（`git tag -s`），不随开发 commit 自动打；验签（`git tag -v`）与 clean checkout 构建演练由 `rollback-drill.yml` 承担（§4.3）。
 - 离线发布包：`engine/tools/package_release.sh <repo> <build> <out> <version>`（tarball + `MANIFEST` + `SHA256SUMS` + tarball.sha256；缺失平台产物 = UNAVAILABLE，MANIFEST 如实反映）。

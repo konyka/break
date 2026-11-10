@@ -1,9 +1,8 @@
 #pragma once
 /* R443: pure, wayland-free logic backing wl_output enumeration in
  * window_wayland.c. Kept in a header (static inline) with no Wayland includes
- * so the slot/mode-selection rules are unit-testable headless — the dev/CI
- * machine may run an X11 session where no compositor is available
- * (see tests/test_wayland.c). */
+ * so the slot/mode-selection rules are unit-testable even when no compositor
+ * is available (see tests/test_wayland.c). */
 
 #include <core/types.h>
 #include <string.h>

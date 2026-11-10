@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan.h>
 #include <rhi/rhi_backend_internal.h>
+#include <rhi/rhi_device_type_vk.h>
 #include <rhi/rhi_native_vulkan.h>
 #include <rhi/rhi_vk_probe.h>
 #include <rhi/rhi_result_map.h>
@@ -7208,6 +7209,7 @@ bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
      * caller's struct held when the driver name filled the buffer. */
     snprintf(out->device_name, sizeof(out->device_name), "%s",
              vk->device_props.deviceName);
+    out->device_type = rhi_vk_device_type_from_native(vk->device_props.deviceType);
     out->vendor_id = vk->device_props.vendorID;
     out->device_id = vk->device_props.deviceID;
     out->api_version = vk->device_props.apiVersion;

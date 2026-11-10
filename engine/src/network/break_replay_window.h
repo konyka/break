@@ -17,6 +17,11 @@
 
 #include <core/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define BREAK_REPLAY_WINDOW_SIZE 64u
 
 typedef enum BreakReplayResult {
@@ -36,3 +41,6 @@ BreakReplayResult break_replay_window_check(const BreakReplayWindow *w, u64 seq)
 BreakReplayResult break_replay_window_check_and_mark(BreakReplayWindow *w,
                                                      u64 seq);
 u64 break_replay_window_highest(const BreakReplayWindow *w);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

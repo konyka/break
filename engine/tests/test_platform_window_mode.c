@@ -224,7 +224,7 @@ TEST(decoration_change_during_a_pending_enter_is_deferred)
 {
     PlatformWindowModeState s;
     platform_window_mode_init(&s, PLATFORM_WINDOW_MODE_WINDOWED);
-    /* X11/Wayland: ENTER sent, the WM has not answered yet. The window is
+    /* Wayland: ENTER sent, the compositor has not answered yet. The window is
      * about to lose its frame anyway, so nothing native happens now. */
     (void)platform_window_mode_request(&s, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
     ASSERT_EQ(platform_window_mode_set_decorated(&s, false),

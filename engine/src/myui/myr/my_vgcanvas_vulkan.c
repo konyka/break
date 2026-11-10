@@ -169,7 +169,6 @@ static my_ret_t vk_global_init(const char* const* requested_exts,
   memset(&g_vk, 0, sizeof(g_vk));
   if (requested_count == 0u) {
     vk_add_instance_ext(exts, &nexts, "VK_KHR_surface");
-    vk_add_instance_ext(exts, &nexts, "VK_KHR_xlib_surface");
     vk_add_instance_ext(exts, &nexts, "VK_KHR_wayland_surface");
     vk_add_instance_ext(exts, &nexts, "VK_KHR_win32_surface");
     vk_add_instance_ext(exts, &nexts, "VK_EXT_metal_surface");

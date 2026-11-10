@@ -8,15 +8,15 @@
  *  2. a main loop (my_pal_main_loop_t): run/quit/post_event + timers;
  *  3. a monotonic clock (time_now_ms);
  *  4. the platform entry point my_pal_create() (port chosen at compile
- *     time: MYUI_PAL_X11 / MYUI_PAL_DUMMY, CMake option MYUI_PAL).
+ *     time: MYUI_PAL_WAYLAND / MYUI_PAL_DUMMY, CMake option MYUI_PAL).
  *
  * Public inline wrappers validate object/vtable pointers before dispatch.
  * Missing required slots return MY_RET_INVALID_PARAMS; missing optional
  * slots return MY_RET_NOT_SUPPORTED or a documented safe default.
  *
  * Events (my_event_t) are delivered to the single application handler
- * registered with my_pal_set_event_handler(). Ports: dummy/ (headless,
- * tests) and x11/ (Linux desktop). See docs/porting.md to add a port.
+ * registered with my_pal_set_event_handler(). Ports include dummy/ (headless
+ * CPU tests) and wayland/ (Linux desktop). See docs/porting.md to add a port.
  */
 #ifndef MY_PAL_H
 #define MY_PAL_H
@@ -199,8 +199,8 @@ typedef struct my_pal_window_vtable_t {
   /**
    * @brief Ask the compositor/window manager to start an interactive
    * move (M16 CSD: the client-drawn title bar calls this on pointer
-   * down). No-op on ports where the WM owns moving (x11) or that have
-   * no concept of it (dummy/linux_fb).
+   * down). No-op on ports that have no concept of interactive window moves
+   * (dummy/linux_fb).
    */
   my_ret_t (*begin_move)(my_pal_window_t* win);
   /**
@@ -556,7 +556,7 @@ typedef struct my_pal_vtable_t {
    * @brief Whether the compositor/WM provides NO server-side decoration
    * for our windows (M16): true => my_window draws its own title bar
    * (CSD). wayland (mutter on plain xdg-shell gives no SSD) = true;
-   * x11/dummy/linux_fb = false. Optional slot: NULL means false.
+   * dummy/linux_fb = false. Optional slot: NULL means false.
    */
   bool (*needs_client_decoration)(my_pal_t* pal);
 } my_pal_vtable_t;
@@ -698,7 +698,7 @@ static inline void my_pal_destroy(my_pal_t* pal) {
 
 /**
  * @brief Create the platform object for the compile-time selected port
- * (MYUI_PAL_X11 / MYUI_PAL_DUMMY). NULL allocator = default.
+ * (MYUI_PAL_WAYLAND / MYUI_PAL_DUMMY). NULL allocator = default.
  */
 my_pal_t* my_pal_create(const my_allocator_t* allocator);
 

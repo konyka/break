@@ -1,27 +1,15 @@
 #include "test_framework.h"
 #include <renderer/mesh_gpu.h>
 #include <platform/platform.h>
-#include <X11/Xlib.h>
-
-static bool display_open(void) {
-    Display *display = XOpenDisplay(NULL);
-    if (!display) return false;
-    XCloseDisplay(display);
-    return true;
-}
 
 int main(void) {
-    if (!display_open()) {
-        printf("SKIP: no reachable X11 display\n");
-        return 77;
-    }
     printf("=== Running Tests ===\n");
     (void)g_test_count;
     (void)g_test_pass;
     const PlatformConfig config = {.width = 64, .height = 64, .title = "mesh gpu"};
     Platform *platform = platform_create(&config);
     if (!platform) {
-        printf("SKIP: platform window was not created\n");
+        printf("UNAVAILABLE backend=opengl reason=wayland-platform-create\n");
         return 77;
     }
     u32 width = 0, height = 0;
@@ -32,9 +20,13 @@ int main(void) {
                                           width, height);
     if (!device) {
         platform_destroy(platform);
-        printf("SKIP: OpenGL device was not created\n");
+        printf("UNAVAILABLE backend=opengl reason=device-create\n");
         return 77;
     }
+    RHIDeviceInfo info;
+    memset(&info, 0, sizeof(info));
+    (void)rhi_device_get_info(device, &info);
+    printf("GPU RUNTIME backend=opengl device=%s\n", info.device_name);
 
     Decal decal;
     memset(&decal, 0, sizeof(decal));
@@ -106,5 +98,8 @@ int main(void) {
     platform_destroy(platform);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_fail == 0 ? 1 : 0, g_test_fail, 1);
+    if (g_test_fail == 0) {
+        printf("PASS backend=opengl device=%s\n", info.device_name);
+    }
     return g_test_fail > 0 ? 1 : 0;
 }

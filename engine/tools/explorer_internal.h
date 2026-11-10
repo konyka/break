@@ -1,7 +1,7 @@
 /**
  * @file explorer_internal.h
  * @brief Shared contract between the explorer core and the per-platform
- *        runners (X11 / Wayland / Win32 / Cocoa). app_t stays opaque to
+ *        runners (Wayland / Win32 / Cocoa). app_t stays opaque to
  *        the platform modules.
  */
 #ifndef EXPLORER_INTERNAL_H

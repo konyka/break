@@ -1,21 +1,37 @@
 name: ci-image
 
-# Builds and publishes the Linux CI base image (.github/docker/ci-linux.Dockerfile)
-# to GHCR. The Linux lanes in ci.yml run inside it so they no longer depend on
-# Ubuntu's package mirror at job time.
-#
-# Tags: `latest` (what ci.yml pulls), plus the commit sha for traceability.
-# The Dockerfile pins the same apt versions as the old per-job installs.
-
+# Reusable candidate -> smoke -> publish -> immutable-digest workflow. ci.yml
+# calls this file at the same commit. A verified tag is created only after the
+# candidate smoke test; latest and the master SHA are aliases of that digest.
 on:
-  push:
-    branches: [master]
-    paths:
-      - ".github/docker/**"
-      - ".github/workflows/ci-image.yml"
-  schedule:
-    - cron: "41 2 * * 0"   # weekly, Sunday 02:41 UTC: security updates
+  workflow_call:
+    inputs:
+      force_rebuild:
+        description: "Build a fresh candidate even when a verified inputs hash exists"
+        required: false
+        type: boolean
+        default: false
+      fallback_digest:
+        description: "Previously published image@sha256 digest for non-publishing runs"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      digest:
+        description: "Verified or previously published immutable image digest"
+        value: ${{ jobs.prepare.outputs.digest }}
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Build a fresh candidate even when a verified inputs hash exists"
+        required: false
+        type: boolean
+        default: true
+      fallback_digest:
+        description: "Previously published image@sha256 digest for non-publishing runs"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -23,48 +39,116 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/break-ci-linux
+  UPSTREAM_IMAGE: ghcr.io/konyka/break-ci-linux
+  PUBLISH: ${{ github.event_name != 'pull_request' && github.repository == 'konyka/break' }}
+  FORCE_REBUILD: ${{ github.event_name == 'schedule' || inputs.force_rebuild }}
+  FALLBACK_DIGEST: ${{ inputs.fallback_digest }}
 
 jobs:
-  build:
-    name: Build and push ci-linux image
+  prepare:
+    name: Prepare ci-linux image digest
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    outputs:
+      digest: ${{ steps.selected.outputs.digest }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute image inputs hash
+        run: |
+          mapfile -d '' files < <(find .github/docker -type f -print0 | sort -z)
+          hash="$(sha256sum "${files[@]}" .github/workflows/ci-image.yml | sha256sum | awk '{print $1}')"
+          echo "INPUTS_HASH=$hash" >> "$GITHUB_ENV"
 
-      - name: Build and push
+      - name: Resolve previously verified digest
+        id: verified
+        run: |
+          echo "found=false" >> "$GITHUB_OUTPUT"
+          echo "digest=" >> "$GITHUB_OUTPUT"
+          if [ "$PUBLISH" != "true" ] || [ "$FORCE_REBUILD" = "true" ]; then exit 0; fi
+          set +e
+          digest="$(docker buildx imagetools inspect "$IMAGE:verified-$INPUTS_HASH" 2>/dev/null | awk '/^Digest:/ {print $2; exit}')"
+          set -e
+          if [[ "$digest" == sha256:* ]]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build candidate image
+        if: steps.verified.outputs.found != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .github/docker
           file: .github/docker/ci-linux.Dockerfile
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ github.sha }}
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:candidate-${{ env.INPUTS_HASH }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke-test the image
+      - name: Smoke-test the candidate image
+        if: steps.verified.outputs.found != 'true'
         run: |
-          docker run --rm "$IMAGE:latest" bash -c '
+          docker run --rm "$IMAGE:candidate-$INPUTS_HASH" bash -c '
             set -e
             cmake --version | head -1
             clang-18 --version | head -1
             gcc --version | head -1
             ninja --version
-            xvfb-run --help >/dev/null 2>&1 || command -v Xvfb
-            command -v weston wayland-scanner glslangValidator >/dev/null 2>&1 || command -v weston
+            command -v weston
+            command -v wayland-scanner
             test -f /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc || ls /usr/share/fonts | head -3
             dpkg -s libvulkan-dev | grep ^Version
             dpkg -s libshaderc-dev | grep ^Version
             dpkg -s libssl-dev | grep ^Version
             test -f /usr/include/openssl/evp.h
           '
+
+      - name: Login to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish verified image
+        if: env.PUBLISH == 'true' && steps.verified.outputs.found != 'true'
+        id: publish
+        run: |
+          digest="$(engine/tools/publish_ci_candidate.sh "$IMAGE" "$INPUTS_HASH")"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Alias verified image for master
+        if: env.PUBLISH == 'true' && github.ref == 'refs/heads/master'
+        run: |
+          if [ "${{ steps.verified.outputs.found }}" = "true" ]; then
+            digest="${{ steps.verified.outputs.digest }}"
+          else
+            digest="${{ steps.publish.outputs.digest }}"
+          fi
+          docker buildx imagetools create \
+            -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" "$IMAGE@$digest"
+
+      - name: Verify master aliases
+        if: env.PUBLISH == 'true' && github.ref == 'refs/heads/master'
+        run: |
+          if [ "${{ steps.verified.outputs.found }}" = "true" ]; then
+            expected="${{ steps.verified.outputs.digest }}"
+          else
+            expected="${{ steps.publish.outputs.digest }}"
+          fi
+          engine/tools/verify_ci_master_aliases.sh "$IMAGE" "$expected" "$GITHUB_SHA"
+
+      - name: Select consumer digest
+        id: selected
+        run: |
+          selected="$(engine/tools/resolve_ci_consumer_digest.sh \
+            "$IMAGE" \
+            "${{ steps.verified.outputs.digest }}" \
+            "${{ steps.publish.outputs.digest }}" \
+            "$FALLBACK_DIGEST" \
+            "$UPSTREAM_IMAGE")"
+          echo "digest=$selected" >> "$GITHUB_OUTPUT"

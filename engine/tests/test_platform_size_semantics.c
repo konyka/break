@@ -13,14 +13,6 @@ TEST(win32_drawable_equals_event_coords_even_when_scaled) {
     ASSERT_EQ(lh, 500u);
 }
 
-TEST(x11_drawable_equals_event_coords_logical_is_ceil_division) {
-    u32 lw, lh, dw, dh;
-    platform_size_x11(2001u, 999u, 2u, &lw, &lh, &dw, &dh);
-    ASSERT_EQ(dw, 2001u); /* 锁定：drawable == 事件坐标 */
-    ASSERT_EQ(lw, 1001u); /* ceil(2001/2) */
-    ASSERT_EQ(lh, 500u);
-}
-
 TEST(wayland_drawable_derives_from_logical_via_content_scale) {
     u32 lw, lh, dw, dh;
     platform_size_wayland(800u, 600u, 120u, &lw, &lh, &dw, &dh);
@@ -43,7 +35,6 @@ TEST(cocoa_drawable_derives_from_points_via_backing_scale) {
 
 TEST_MAIN_BEGIN()
     RUN_TEST(win32_drawable_equals_event_coords_even_when_scaled);
-    RUN_TEST(x11_drawable_equals_event_coords_logical_is_ceil_division);
     RUN_TEST(wayland_drawable_derives_from_logical_via_content_scale);
     RUN_TEST(cocoa_drawable_derives_from_points_via_backing_scale);
 TEST_MAIN_END()

@@ -53,8 +53,7 @@ break/
 │   ├── interface/    #   抽象接口定义
 │   └── common/       #   基础实现（BaseApplication）
 ├── empty/            # 最小化示例应用
-├── platform/         # 平台演示代码（Windows/Linux）
-│   ├── linux/        #   X11/XCB + OpenGL 示例
+├── platform/         # 平台演示代码
 │   └── windows/      #   Win32 + D3D11 示例
 ├── docs/             # 技术文档
 └── build*/           # 构建输出（build-gl, build-vk, build-asan 等）
@@ -95,7 +94,7 @@ Break Engine 采用**严格分层、单向依赖**的架构模型：
 │  └───────────────────────────────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
 │                   Platform/OS Layer（平台层）                     │
-│              X11 / Win32 / Vulkan Driver / OpenGL Driver         │
+│            Wayland / Win32 / Vulkan Driver / OpenGL Driver       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -107,7 +106,7 @@ Break Engine 采用**严格分层、单向依赖**的架构模型：
   - High-Level：面向场景的渲染管线、ECS、资源管理、动画、物理
   - Mid-Level：硬件抽象层（RHI）、并行任务、脚本、调试 UI
   - Low-Level：内存分配、日志、字符串、数学库、平台窗口/输入/时间
-- **Platform/OS Layer** — 操作系统 API（X11、Win32）及 GPU 驱动
+- **Platform/OS Layer** — 操作系统 API（Wayland、Win32）及 GPU 驱动；Linux 仅使用原生 Wayland
 
 ### Mermaid 层级图
 
@@ -127,7 +126,7 @@ graph TB
 | 模块 | 位置 | 职责 |
 |------|------|------|
 | **Core** | `engine/src/core/` | 基础设施：日志(log)、内存分配器(alloc)、字符串(string)、性能剖析(profiler)、类型定义(types)、断言(assert) |
-| **Platform** | `engine/src/platform/` | 平台抽象：窗口管理(window_x11 / window_wayland / window_win32 / window_cocoa)、输入处理(input，含键盘/鼠标/游戏手柄)、高精度时间(time)、文件监视(filewatch，递归；macOS kqueue/FSEvents 自适应)、高 DPI 与多显示器查询 |
+| **Platform** | `engine/src/platform/` | 平台抽象：窗口管理(window_wayland / window_win32 / window_cocoa)、输入处理(input，含键盘/鼠标/游戏手柄)、高精度时间(time)、文件监视(filewatch，递归；macOS kqueue/FSEvents 自适应)、高 DPI 与多显示器查询；Linux 仅原生 Wayland |
 | **RHI** | `engine/src/rhi/` | 渲染硬件接口：统一的 GPU API 抽象层，编译期单后端：Vulkan (`rhi_vk.c`)、Metal (`rhi_metal.m`，Apple)、D3D12 (`rhi_d3d12.c`，仅 Windows)、OpenGL (`rhi_gl.c`，长期保留：最后降级方案 + 渲染对比基准)、headless fail-closed stub (`rhi_headless.c`) |
 | **Math** | `engine/src/math/` | 数学库：向量、矩阵、四元数、变换等 |
 | **ECS** | `engine/src/ecs/` | 实体-组件-系统架构，数据驱动的对象管理；不可变 Snapshot/Delta 与确定性组件 schema 见 [`design/ecs_snapshot_replication_aoi.md`](design/ecs_snapshot_replication_aoi.md) |
@@ -189,10 +188,10 @@ graph TB
 
 | 类别 | 技术 |
 |------|------|
-| **语言** | C11（引擎核心）、C++11（框架层） |
+| **语言** | C11（引擎核心）、C++20（框架层） |
 | **构建系统** | `engine/` 要求 CMake 3.20+；仓库根项目要求 CMake 3.25+，支持 GL/VK/ASAN/UBSAN/TSAN/Debug 配置 |
 | **图形 API** | Vulkan 1.2 / Metal / D3D12（按平台单选）；OpenGL 4.x 长期保留（最后降级方案 + 渲染对比基准） |
-| **窗口系统** | X11 / Wayland（Linux，编译时互斥）、Win32（Windows）、Cocoa（macOS）；iOS/Android/OHOS 的 CMake 平台识别不等于完整窗口 runtime 支持 |
+| **窗口系统** | Wayland（Linux 唯一窗口系统）、Win32（Windows）、Cocoa（macOS）；iOS/Android/OHOS 的 CMake 平台识别不等于完整窗口 runtime 支持 |
 | **着色器语言** | GLSL 450、SPIR-V（Vulkan 路径使用 shaderc 编译） |
 | **编译器** | GCC、Clang、MSVC（/W4 /WX 级别警告） |
 | **静态分析** | -Wall -Wextra -Werror -pedantic |
@@ -260,8 +259,8 @@ OpenGL 长期保留（维护者决定 2026-10-26：`fallback_chain` 最后一级
 显式 fallback、白名单钉死，无移除计划；`test_rhi_golden_parity` 钉住 VK/GL golden 的对应关系）。macOS
 原生 Metal 已落地（计划 C：BENCHMARK_COMPARABLE，M2 真机收据）。CI 证据面为六类
 lane（计划 F Task 7：headless / native-surface / GPU-runtime / validation / benchmark /
-proton），每 lane 上传 `evidence-receipt-*` 收据 artifact（最近全绿 run
-https://github.com/konyka/break/actions/runs/38990768014 ）。
+proton），每 lane 上传 `evidence-receipt-*` 收据 artifact。历史全绿 run
+https://github.com/konyka/break/actions/runs/38990768014 仅证明 2026-10 的旧矩阵；2.0.0 Weston/Wayland workflow 与镜像结果待 push 后核查。
 
 The Windows D3D12 shader gate compiles a minimal `vs_6_0` HLSL input to DXIL in
 the build directory only. It proves the compiler toolchain, not a D3D12 device,
@@ -306,7 +305,7 @@ rhi_vk.c（vk_init / present / 销毁门控）
   │       VkSurfaceKHR 以 u64 传出；create-info ABI 由 platform_vk_surface_vkabi.h
   │       + test_platform_vk_surface_abi 钉死
   └─ platform_wsi.h（WSI 状态机：UNAVAILABLE/CREATED/RESIZED/LOST/SUSPENDED/DESTROYING）
-       └─ window_*.c 事件源推进状态（Win32/X11/Wayland/Cocoa/Android 五后端）
+       └─ window_*.c 事件源推进状态（Win32/Wayland/Cocoa/Android 四后端）
             └─ rhi_device_attach_wsi() 挂载到设备；platform_wsi_frame_allowed()
                门控帧进入 RHI（仅 CREATED/RESIZED 放行）；销毁顺序契约：
                rhi_device_destroy_ex 必须先于 platform_destroy（DESTROYING 后拒绝销毁）
@@ -416,9 +415,8 @@ gate = `test_renderer_backend_token_gate`（headless label，扫描 main.c / ren
 
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
-| **Linux** | X11 | OpenGL 4.x（最后降级 + 对比基准） | `build-verify-x11-gl/` | ✅ GPU_RUNTIME（CI `lane-gpu-runtime-linux-gl`，Xvfb 软渲染） |
-| **Linux** | X11 | Vulkan 1.2 | `build-verify-x11-vk/` | ✅ GPU_RUNTIME（CI `lane-gpu-runtime-linux-vk` lavapipe 软渲染 + 本机真 GPU；validation lane `lane-validation-linux-vk`） |
-| **Linux** | Wayland | OpenGL 4.x（最后降级）/ Vulkan 1.2 | `build-verify-wl-*/` | ✅ NATIVE_SURFACE（weston headless；CI `wayland-gl` / `lane-native-surface-wayland`） |
+| **Linux** | Wayland | OpenGL 4.x（最后降级 + 对比基准） | `build-verify-wl-gl/` | ✅ GPU_RUNTIME（2026-11-10 本机 Mesa/Intel；CI Weston lane 待 push 核查） |
+| **Linux** | Wayland | Vulkan 1.2（默认） | `build-verify-wl-vk/` | ✅ GPU_RUNTIME（2026-11-10 本机 NVIDIA，graphics 11/11；CI lavapipe/validation lanes 待 push 核查） |
 | **Windows** | Win32 | Vulkan 1.2（Win32 Surface；D3D12 的 fallback 形态） | `build-win-vk/` | ✅ GPU_RUNTIME（本机真 GPU 收据 + CI `lane-headless-windows-clang` win32 trio） |
 | **Windows** | Win32 | D3D12（原生，Agility SDK 1.616.0 + Windows SDK 10.0.26100.0） | `build-d3d12*/`（`-DENGINE_RHI_BACKEND=d3d12`） | ✅ GPU_RUNTIME + BENCHMARK_COMPARABLE（本机 RTX 4060 Laptop 真机收据；CI `windows-d3d12.yml` WARP floor；收据见 `docs/rhi_backend_evidence.md`） |
 | **macOS** | Cocoa | Metal（原生） | `build-metal/`（`-DENGINE_RHI_BACKEND=metal`） | ✅ BENCHMARK_COMPARABLE（M2 真机 2026-10-16；CI `lane-gpu-runtime-macos-metal`） |
@@ -430,9 +428,9 @@ gate = `test_renderer_backend_token_gate`（headless label，扫描 main.c / ren
 
 ### Linux 已验证范围
 
-Linux 的 X11、Wayland 配置和部分 runtime 路径已有实现与 CI 验证，但下表不代表所有 GPU、驱动或 compositor 组合都已覆盖：
+2.0.0 起 Linux 仅有原生 Wayland 配置；本机 GL/VK runtime 已执行，Weston CI 待 push 核查。下表不代表所有 GPU、驱动或 compositor 组合都已覆盖：
 
-- **窗口系统**：X11（Xlib）与 Wayland（XDG Shell + xkbcommon）双后端，编译时通过 `ENGINE_ENABLE_WAYLAND` 选项互斥切换；Wayland 后端通过 EGL 管理 OpenGL 上下文，并支持 Vulkan `VK_KHR_wayland_surface`。
+- **窗口系统**：Wayland（XDG Shell + xkbcommon）是唯一后端，通过 EGL 管理 OpenGL 上下文，并支持 Vulkan `VK_KHR_wayland_surface`；旧 `ENGINE_ENABLE_WAYLAND=OFF` 配置明确失败。
 - **输入系统**：键盘、鼠标（含侧键、捕获/隐藏/相对模式）、游戏手柄（基于 evdev，支持热插拔、摇杆/扳机归一化、最多 4 个手柄）。
 - **音频设备**：基于 miniaudio 的设备枚举与选择 API（`audio_get_device_count` / `audio_set_device`）。
 - **文件监视**：Linux 基于 inotify 的递归目录监视与结构化事件解析，macOS 基于 kqueue/FSEvents 自适应监视，驱动 Shader/资源热重载。
@@ -514,17 +512,11 @@ destroy/dormant 消息，并通过 BreakNetAdapter 有界 outbound queue 发送�
 ### 构建变体
 
 ```bash
-# X11 + OpenGL 后端
-cmake -B build-gl -DENGINE_RHI_BACKEND=opengl && make -C build-gl
+# Wayland + OpenGL 后端（显式最后降级/对比）
+cmake -B build-wl-gl -DENGINE_RHI_BACKEND=opengl && make -C build-wl-gl
 
-# X11 + Vulkan 后端
-cmake -B build-vk -DENGINE_VULKAN=ON && make -C build-vk
-
-# Wayland + OpenGL 后端
-cmake -B build-wl-gl -DENGINE_ENABLE_WAYLAND=ON && make -C build-wl-gl
-
-# Wayland + Vulkan 后端
-cmake -B build-wl-vk -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON && make -C build-wl-vk
+# Wayland + Vulkan 后端（默认）
+cmake -B build-wl-vk -DENGINE_RHI_BACKEND=vulkan && make -C build-wl-vk
 
 # ASAN 检测
 cmake -B build-asan -DENGINE_USE_ASAN=ON && make -C build-asan
@@ -556,4 +548,4 @@ cmake -B build-asan -DENGINE_USE_ASAN=ON && make -C build-asan
 
 ---
 
-*文档版本: v1.1 | 最后更新: 2026-05（Linux 全功能支持）*
+*文档版本: v2.0 | 最后更新: 2026-11（Linux 原生 Wayland-only；Vulkan 默认，OpenGL 最后降级）*

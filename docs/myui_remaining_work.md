@@ -1,5 +1,7 @@
 # myui 后续阶段方案与状态
 
+> **2.0.0 当前边界：** Linux 仅支持原生 Wayland，X11/GLX 后端、PAL 与专属测试已移除；Vulkan 默认，OpenGL 最后降级。本文按时间保留阶段记录，**历史条目中的 X11**、GLX、Xvfb、旧测试数量与故障结论不代表当前支持或待恢复工作；不得依据这些条目重新引入旧后端。当前剩余验证只针对 Wayland 及其他受支持平台。
+
 ## 本轮补充：IOCP 取消重启状态机（2026-09-12，历史证据）
 
 网络循环的 Windows IOCP 实现补齐了取消状态机：当某一兴趣在 overlapped completion 到达前
@@ -2014,10 +2016,10 @@ Canvas 状态 setter 现拒绝 NaN、Inf 和非正 line width，避免非法数�
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas；字体 API 支持 direction/script/language/features；BiDi 构建复用 SheenBidi Unicode 17 primary Script 与仓库内 Unicode 17 Script_Extensions 表，paragraph 按 resolved Script 拆分 run，并保留 byte cluster 与失败回滚；无 BiDi 构建复用静态扩展表和常用 primary fallback；Common 标点、Inherited、variation selector 与假名归属已修正；非 shaping fallback 不产生独立 VS glyph；OpenType provider 清理未消费的 VS15/VS16 并保留 ZWJ 组合；字体链已支持 provider 可确认的跨 face variation glyph 覆盖选择；公共 feature 边界、规范化、冲突覆盖、GSUB/GPOS feature 存在性和 HarfBuzz buffer allocation 检查已统一；provider、字体链和 text-layout 聚合层共享 `MY_FONT_SHAPE_MAX_GLYPHS` 输出预算；每个 layout 提供固定 4 槽 LRU glyph-run cache | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误、未知 provider 的 variation 能力、font lifetime 不满足缓存契约 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、超大 provider 输出、禁用依赖回退和四后端构建；后续补完整跨字体 variation corpus、language-specific feature 选择和完整 RTL GSUB |
 | 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，并在断行测量时复用 visual bidi glyph-run；text area 已消费该模型，RTL 行内映射、同一物理行及相邻物理行之间的全局 visual-line 水平导航、跨 face glyph-run、paragraph shaping 参数、全局 logical ↔ 局部 visual boundary 包装及单段落 JUSTIFY 的绘制/选区/光标联动已接入；跨 visual-line navigation cursor 解决共享 logical boundary 的连续箭头归属；GSUB/GPOS language-system 与 requested feature 存在性可查询；跨物理段落 visual rebreaking、跨段落增量预算和复杂多段落 JUSTIFY 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、跨 visual-line selection 契约；后续补完整 script/features run shaping 与跨物理段落增量 mapping |
 | 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、legacy v0/无版本快照显式升级、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer、LTR/RTL 受限 token 着色已实现；完整 RTL GSUB、跨 face token shaping 和 JUSTIFY 联动未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 继续保持 lexer/cache 单帧预算，并补齐 paragraph/run 级 RTL shaping |
-| 真 partial present | 已完成后端无关的 `SKIP/PARTIAL/FULL` 决策、RHI 有界 damage 帧接口、Wayland EGL buffer-age/damage-present 接入和 dxx 集成；Wayland 在 `EGL_BUFFER_PRESERVED` 成功协商后使用固定容量 history 合并 age>1 重绘区域，history 仅在 swap 成功后更新，失败/resize 自动清除；GLX 仅在同时检测到 `GLX_EXT_buffer_age`、`GLX_EXT_swap_buffers_with_damage`、运行时交换函数和有效固定容量 history 时启用等价路径，其他 X11 驱动继续安全全屏；新增 X11/Wayland platform runtime smoke；Vulkan 仍安全全屏，`VK_KHR_incremental_present` 不启用为能力位，因为该扩展不保证 present 后 swapchain image 内容可被 `LOAD`；Win32/macOS 仍安全全屏 | 未损伤区域内容丢失、WSI 内容保留语义误用、Vulkan 缺少标准 buffer-age/内容保留契约、真实平台能力未覆盖 | Weston/Xvfb 只验证窗口与事件生命周期；仍需真实 Wayland/GLX buffer-age 轮转、Win32/macOS retained-buffer 语义、异常 present 及具备明确 image 保留保证的 Vulkan/WSI 方案 |
+| 真 partial present | 已完成后端无关的 `SKIP/PARTIAL/FULL` 决策、RHI 有界 damage 帧接口、Wayland EGL buffer-age/damage-present 接入和 dxx 集成；Wayland 在 `EGL_BUFFER_PRESERVED` 成功协商后使用固定容量 history 合并 age>1 重绘区域，history 仅在 swap 成功后更新，失败/resize 自动清除；Vulkan 仍安全全屏，`VK_KHR_incremental_present` 不启用为能力位，因为该扩展不保证 present 后 swapchain image 内容可被 `LOAD`；Win32/macOS 仍安全全屏 | 未损伤区域内容丢失、WSI 内容保留语义误用、Vulkan 缺少标准 buffer-age/内容保留契约、真实平台能力未覆盖 | Weston 与真实 Wayland runtime 只覆盖其实际执行项；仍需更多 Wayland buffer-age 轮转、Win32/macOS retained-buffer 语义、异常 present 及具备明确 image 保留保证的 Vulkan/WSI 方案 |
 | 完整 UAX#14 默认规则 | Unicode 17 `LineBreakTest.txt` 已通过 60,487/60,487 边界；SA dictionary 基础 callback 和 paragraph/wrap 接入已完成；核心状态机固定内存、无分配、无锁 | locale-specific tailoring、调用方 SA dictionary 质量和真实平台语言策略 | 版本化 UCD golden corpus 已完成；后续补 locale dictionary corpus、超长输入预算和产品级 tailoring 契约 |
 | 完整 CSS/YAML UI | CSS 已支持最多 4 级祖先路径、descendant/direct-child 链及祖先 type/class/id；主题桥接和 YAML 窗口 style 已有严格诊断与失败回滚；CSS 现提供只读 capability registry 和稳定错误码；`@media all`/`@media screen` 在解析期展开且嵌套有界；新增带一次性上下文的条件媒体解析期评估，支持有界 viewport、orientation、颜色方案、reduced-motion、width/height range，以及 hover、pointer、any-pointer、color-gamut、dynamic-range 设备能力条件；受限 `@media not` 仅修饰单个媒体特性并保留 unknown 语义，查询热路径无媒体分支；YAML UI loader 已替代 XML、采用类型化 schema，支持有界 schema version/migration chain、动态 owned schema，并提供 loader 级 capability registry/error code；query 结果复制到调用者固定存储，动态 schema 替换以跨平台读写租约保护并等待在途加载/查询结束；class registry 已支持冻结后的不可变 table snapshot 运行期新增、替换和删除，loader factory/schema 也支持冻结后的低频运行期新增、替换和删除，旧 descriptor 指针保持进程期稳定；运行期动态 schema 在校验和完整 owned copy 成功后才发布，OOM/非法参数保持旧条目；CSS/YAML/JSON/TOML/BSON 入口均有 4 MiB 输入预算 | 其他 at-rule 语义、HDR/P3 等缺少明确证据的设备能力、全平台 runtime CI；动态 class/factory 回调代码卸载仍需调用方 quiesce 实例和读者 | 将 registry/error 契约扩展到更细 schema 定位；补媒体能力 golden corpus 与真实平台上下文接入，并完成真实平台 runtime 证据 |
-| 平台 runtime CI | 平台配置契约已统一：`platform_create()` 在所有后端进入原生 API 前拒绝 NULL/空标题/非法 UTF-8/零尺寸/超限尺寸；对象查询/控制路径已统一 NULL-safe，媒体/剪贴板失败输出有确定状态；X11 smoke 已接入 Xvfb graphics CI，Wayland smoke 已接入 Weston headless GL/Vulkan CI；Windows 已有无 graphics 的 platform smoke（UTF-8 标题、非法输入、WM_SIZE、销毁）；macOS smoke 已接入 macOS runner | 构建和 headless compositor smoke 通过但 DPI、IME、present、buffer-age 在真实宿主失败；Windows/macOS 证据依赖对应 runner | Windows/macOS 原生 smoke + 各平台启动 smoke + HiDPI/IME/resize/present/buffer-age 证据；当前 Xvfb/Weston smoke 不代表 GPU/WGL/Vulkan 全部成功 |
+| 平台 runtime CI | 平台配置契约已统一：`platform_create()` 在所有后端进入原生 API 前拒绝 NULL/空标题/非法 UTF-8/零尺寸/超限尺寸；对象查询/控制路径已统一 NULL-safe，媒体/剪贴板失败输出有确定状态；Linux 仅有 Wayland，本机真实 GL/VK 已执行，Weston CI 迁移待 push 核查；Windows 已有无 graphics 的 platform smoke（UTF-8 标题、非法输入、WM_SIZE、销毁）；macOS smoke 已接入 macOS runner | 构建和 compositor smoke 通过但 DPI、IME、present、buffer-age 在真实宿主失败；Windows/macOS 证据依赖对应 runner | Windows/macOS 原生 smoke + Wayland HiDPI/IME/resize/present/buffer-age 证据；本机结果不替代新 workflow 与物理设备矩阵 |
 
 ### 冷却按钮契约
 
@@ -2104,15 +2106,14 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
    composite，禁止仅凭 dirty rect 设置 scissor。
 2. 有 retained backbuffer 时按 dirty area 与全屏成本阈值选择局部合成；合并区域超过
    预算即全屏，避免碎片化 draw call。
-3. Wayland 使用 compositor 认可的 damage API；X11/Win32/Cocoa 分别验证 buffer age、
+3. Wayland 使用 compositor 认可的 damage API；Win32/Cocoa 分别验证 buffer age、
    swap semantics 和 resize；Vulkan WSI 只在 explicit synchronization 契约成立时启用。
 
 ## 统一 TDD 与安全门禁
 
 - 单元：每个新增能力先有失败测试；测试输入覆盖空值、边界、溢出、分配失败和重复调用。
-- 跨后端：`build-myui`、`build-myui-vk`、Wayland GL/VK；X11 smoke 在 Xvfb graphics
-  job 执行，Wayland smoke 在 Weston headless job 执行，当前主机没有 runtime 服务时只
-  报告 build/headless 证据，不声称运行时通过。
+- 跨后端：`build-myui`、`build-myui-vk`、Wayland GL/VK；Wayland smoke 在 Weston
+  headless job 执行，当前主机没有 runtime 服务时只报告 build/headless 证据，不声称运行时通过。
 - Sanitizer：ASan/UBSan 覆盖 CSS、文本、damage、资源生命周期；线程相关改动再跑
   TSan，协议队列不允许等待外部 owner。
 - 性能：固定 corpus 对比布局时间、峰值内存、draw call、atlas miss 和 composite

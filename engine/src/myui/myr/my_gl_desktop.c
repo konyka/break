@@ -18,7 +18,7 @@
  * cost stays a direct function-pointer call on every platform.
  * my_gl_desktop_default() returns NULL until the caller has made a WGL
  * context current and all required entry points resolved — the same
- * "current context" contract the EGL/GLX mounts rely on.
+ * "current context" contract the EGL and NSOpenGL mounts rely on.
  */
 #include "myr/my_gl_desktop.h"
 #include "myr/my_gl_desktop_internal.h"

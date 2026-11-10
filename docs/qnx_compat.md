@@ -100,9 +100,9 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
 - `platform_poll` 非阻塞 `screen_get_event`：CLOSE → QUIT；
   POINTER → 坐标（`input_set_mouse`）+ 左中右键（`input_set_key`，
   `SCREEN_*_MOUSE_BUTTON` 掩码）+ 垂直滚轮（`SCREEN_PROPERTY_MOUSE_WHEEL`，
-  上为正，与 X11 约定一致）；KEYBOARD → `SCREEN_PROPERTY_SYM` +
+  上为正，遵循引擎统一的滚动方向约定）；KEYBOARD → `SCREEN_PROPERTY_SYM` +
   `SCREEN_PROPERTY_FLAGS`（KEY_DOWN/KEY_REPEAT/KEY_SYM_VALID）经
-  `screen_keymap.h` 映射到与 X11 相同的引擎键码；
+  `screen_keymap.h` 映射到引擎共享键码；
   尺寸查询实时读 `SCREEN_PROPERTY_SIZE` 并缓存；
 - `screen_keymap.h`：QNX 键符号（Unicode 可打印集 + `KEYCODE_PC_KEYS`
   偏移）→ 引擎键码的纯整数映射，宿主全平台可测

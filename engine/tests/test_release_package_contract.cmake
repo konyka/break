@@ -24,8 +24,8 @@ if(pk MATCHES "latest")
     message(FATAL_ERROR "packager must not reference 'latest'")
 endif()
 file(READ "${ENGINE_CMAKE}" cm)
-if(NOT cm MATCHES "project\\(PureCEngine VERSION [0-9]+\\.[0-9]+\\.[0-9]+")
-    message(FATAL_ERROR "engine/CMakeLists.txt project() must carry an explicit semver VERSION")
+if(NOT cm MATCHES "project\\(PureCEngine VERSION 2\\.0\\.0")
+    message(FATAL_ERROR "X11 removal is a breaking release: engine/CMakeLists.txt must use VERSION 2.0.0")
 endif()
 
 # tag 名 v<x.y.z> 必须与 project() VERSION 相等；HEAD 无 tag 时跳过（发布前由

@@ -1,4 +1,4 @@
-foreach(required_var SIZE_HEADER WIN32_SOURCE X11_SOURCE WAYLAND_SOURCE COCOA_SOURCE)
+foreach(required_var SIZE_HEADER WIN32_SOURCE WAYLAND_SOURCE COCOA_SOURCE)
     if(NOT DEFINED ${required_var})
         message(FATAL_ERROR "${required_var} is required")
     endif()
@@ -8,16 +8,18 @@ if(NOT EXISTS "${SIZE_HEADER}")
 endif()
 file(READ "${SIZE_HEADER}" size_text)
 foreach(required_fn
-        "platform_size_win32" "platform_size_x11"
-        "platform_size_wayland" "platform_size_cocoa")
+        "platform_size_win32" "platform_size_wayland" "platform_size_cocoa")
     string(FIND "${size_text}" "${required_fn}" fn_offset)
     if(fn_offset EQUAL -1)
         message(FATAL_ERROR "platform_size.h missing: ${required_fn}")
     endif()
 endforeach()
+string(FIND "${size_text}" "platform_size_x11" removed_offset)
+if(NOT removed_offset EQUAL -1)
+    message(FATAL_ERROR "platform_size.h retains the removed X11 helper")
+endif()
 foreach(consumer_spec
         "${WIN32_SOURCE}|platform_size_win32"
-        "${X11_SOURCE}|platform_size_x11"
         "${WAYLAND_SOURCE}|platform_size_wayland"
         "${COCOA_SOURCE}|platform_size_cocoa")
     string(REPLACE "|" ";" consumer_parts "${consumer_spec}")

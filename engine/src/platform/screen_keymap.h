@@ -11,8 +11,7 @@
  * offset. window_screen.c static-asserts the mirrored base against the real
  * header on QNX cross builds, so drift is a compile error there.
  *
- * Engine key codes are the same ones x11_key_to_index produces
- * (engine/src/platform/window_x11.c): letters 'a'..'z', digits, ASCII
+ * Shared engine key codes: letters 'a'..'z', digits, ASCII
  * punctuation, ESC 256, RETURN 257, TAB 259, BACKSPACE 260, arrows
  * 261-264, F1-F12 271-282, PgUp/PgDn/Home/End/Insert/Delete 283-288,
  * Shift 289, Ctrl 290, Pause 291, ScrollLock 292, NumLock 293,

@@ -24,18 +24,16 @@ RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https:
         > /etc/apt/apt.conf.d/80-ci-retries \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-        ca-certificates curl git sudo xz-utils zstd python3 file procps make \
+        ca-certificates curl git sudo xz-utils zstd python3 python3-yaml file procps make \
         build-essential gcc \
         clang lld llvm \
         clang-18 lld-18 llvm-18-tools \
         cmake=3.28.* ninja-build pkg-config \
-        libx11-dev libxrandr-dev \
         libgl1-mesa-dev libgl1-mesa-dri libegl1-mesa-dev libgles2-mesa-dev \
         libfreetype6-dev \
         libssl-dev \
         libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
         mesa-vulkan-drivers vulkan-validationlayers vulkan-tools \
-        xvfb x11-utils \
         libwayland-dev wayland-protocols libxkbcommon-dev weston \
         fonts-noto-cjk \
  && rm -rf /var/lib/apt/lists/*

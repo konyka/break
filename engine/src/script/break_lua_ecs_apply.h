@@ -23,6 +23,11 @@
 #include <ecs/ecs.h>
 #include <script/break_lua.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 typedef struct BreakLuaEcsField {
     const char *component; /* script-visible component name (borrowed) */
     const char *field;     /* script-visible field name (borrowed) */
@@ -42,3 +47,6 @@ typedef struct BreakLuaEcsApplyReport {
 bool break_lua_ecs_apply(World *world, const BreakLuaEcsField *schema,
                          usize schema_count, const BreakLuaEcsRecord *records,
                          usize count, BreakLuaEcsApplyReport *report);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

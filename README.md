@@ -6,9 +6,14 @@
 CI lanes: headless (linux clang/gcc±sanitizers, windows clang±asan) /
 native-surface (wayland, win32, cocoa) / GPU-runtime (linux vk lavapipe, macOS Metal, Windows D3D12 — self-hosted gated, hosted WARP floor 在 windows-d3d12.yml workflow) /
 validation (KHRONOS_validation + D3D12 debug) / benchmark (receipt artifacts) / proton (参考，周跑)。
+Linux container lanes consume an immutable image digest exported by the same-commit reusable workflow. Publishing tags and pushes the exact smoke-tested candidate. PR/fork runs never log in or push: fork-owned candidates keep the fork owner, while consumers use an optional explicit digest override or anonymously resolve the upstream `ghcr.io/konyka/break-ci-linux:latest` tag to an immutable digest without consuming that tag directly.
 证据收据: 每个 lane 上传 `evidence-receipt-*` artifact，schema 见 docs/rhi_benchmark_receipt_schema.md。
 
-Pure C11 3D rendering engine with a separate C++11 application framework.
+Pure C11 3D rendering engine with a C++20 application framework. Dual-language
+policy: the engine stays pure C11 while every C++ TU builds as C++20, and the
+public `break_*.h` API headers are C++20-consumable (`extern "C"` guards, gated
+by `test_public_api_cpp20`). New public features ship the C API and the C++20
+wrapper together. See `docs/Build_Guide.md` §1.1.
 
 ## Quick Start
 
@@ -20,19 +25,21 @@ ctest --test-dir engine/build -LE graphics --output-on-failure
 
 **默认图形后端是 Vulkan（Linux / Windows）。** 配置阶段需要 Vulkan 加载器/头文件和 shaderc（例如 `libvulkan-dev libshaderc-dev`）；缺失时 `auto` 会打印警告并降级到 OpenGL，不会静默。明确要 OpenGL（最后降级方案 / 渲染对比基准）用 `-DENGINE_RHI_BACKEND=opengl`；明确要求 Vulkan、缺依赖就报错用 `-DENGINE_RHI_BACKEND=vulkan`。旧开关 `-DENGINE_VULKAN=OFF` 仍表示 OpenGL。默认构建同时链接 Vulkan 和 OpenGL：运行时 Vulkan 设备创建失败会自动在同一窗口降级到 OpenGL（`BREAK_RHI_BACKEND=opengl` 直接用 OpenGL，`BREAK_RHI_NO_FALLBACK=1` 禁止降级；详见 `docs/design/rhi_runtime_backend.md`）。
 
-The engine requires CMake 3.20 or newer. The default (Vulkan) build needs the
-Vulkan loader and headers plus shaderc; an X11 OpenGL build
-(`-DENGINE_RHI_BACKEND=opengl`) needs X11,
-Xrandr, OpenGL, and Threads development packages. FreeType is optional, but is
-needed for the hinted font path and CJK TTC support.
+Linux supports **native Wayland only**; X11 was removed in 2.0.0. The required
+Linux packages are `libwayland-dev`, `wayland-protocols`, `libxkbcommon-dev`,
+`wayland-scanner`, EGL/OpenGL development files, and Threads. Vulkan loader,
+headers, and shaderc are needed for the default backend. Missing Wayland
+packages or a legacy `ENGINE_ENABLE_WAYLAND=OFF` / `MYUI_PAL=x11` configuration
+fails explicitly; neither falls back to another window system. FreeType is
+optional, but is needed for the hinted font path and CJK TTC support.
 
 `test_vulkan` exercises the Vulkan backend path. Run the full graphics integration
-suite from a Vulkan build:
+suite from a Vulkan build inside a native Wayland session (or under Weston):
 
 ```bash
-cmake -S engine -B engine/build-verify-x11-vk -DENGINE_VULKAN=ON
-cmake --build engine/build-verify-x11-vk
-ctest --test-dir engine/build-verify-x11-vk -L graphics --output-on-failure
+cmake -S engine -B engine/build-verify-wl-vk -DENGINE_VULKAN=ON
+cmake --build engine/build-verify-wl-vk
+ctest --test-dir engine/build-verify-wl-vk -L graphics --output-on-failure
 ```
 
 Release builds enable IPO/LTO for the `engine` static library when the active
@@ -46,14 +53,14 @@ RHI 后端编译为独立静态库（`engine_rhi_vulkan` / `engine_rhi_metal` / 
 | 平台 | 后端 | 证据等级 | 收据 |
 |---|---|---|---|
 | Windows | D3D12（fallback Vulkan） | GPU_RUNTIME + BENCHMARK_COMPARABLE（本机真 GPU 全栈收据；CI WARP floor 为 GPU_RUNTIME 下限） | 本机 `docs/receipts/rhi_receipt_windows_d3d12_planf.json`（vs 同机 Vulkan 基线 122%）；CI `windows-d3d12.yml` + `lane-gpu-runtime-windows-d3d12` |
-| Linux / Steam Deck | Vulkan | GPU_RUNTIME（CI lavapipe 软渲染 + 本机真 GPU）；BENCHMARK_COMPARABLE（本机真 GPU 收据） | CI `lane-gpu-runtime-linux-vk` / `lane-benchmark-linux-vk`（lavapipe 收据如实标注软渲染）；本机 `build-vk/rhi_receipt_local.json`；Steam Deck 真机 lane `lane-benchmark-steam-deck-vk`（`ENABLE_GPU_LANES` 门控） |
+| Linux / Steam Deck | Vulkan（默认，Wayland） | GPU_RUNTIME（本机 Wayland；CI Weston/lavapipe 待 push 核查）；BENCHMARK_COMPARABLE（既有本机真 GPU 收据） | CI `lane-gpu-runtime-linux-vk` / `lane-benchmark-linux-vk`（lavapipe 收据如实标注软渲染）；本机 `build-remove-x11-vk/rhi_receipt_local.json`；Steam Deck 真机 lane `lane-benchmark-steam-deck-vk`（`ENABLE_GPU_LANES` 门控） |
 | macOS | Metal（原生） | BENCHMARK_COMPARABLE（M2 真机：600 帧 50.05 fps vs MoltenVK 49.57，比值 1.010）；Vulkan(MoltenVK) GPU_RUNTIME 并行基线 | `docs/rhi_backend_evidence.md` 真机收据；CI `lane-gpu-runtime-macos-metal` / `lane-native-surface-cocoa` |
 | iOS | Metal | COMPILED（模拟器 compile only，无真机） | CI `ios-metal-build` lane |
 | Android | Vulkan | COMPILED（host-injected `ANativeWindow`，无 runtime 收据） | 源码审查记录（`docs/rhi_backend_evidence.md`） |
 | Proton (Wine/vkd3d) | Vulkan（兼容参考） | compat-verified（不计入 Windows 原生证据） | `proton-d3d12.yml` / `lane-proton`（steamrt sniper 钉 digest，周跑） |
 | OHOS (HarmonyOS) | — | UNAVAILABLE（fail-closed） | 契约测试 `test_platform_compat_harmonyos` |
 | QNX (Neutrino) | —（headless RHI fail-closed；Screen 窗口层已 COMPILED） | HEADLESS（SDP 8.0 qcc 交叉 100%×2 架构 + Neutrino x86_64 目标机 144/144 + perf 收据） | `test_platform_compat_qnx[_screen]`；`test_net_loop_qnx`；`test_qnx_perf_smoke`；见 `docs/qnx_compat.md` |
-| OpenGL（Windows / Linux） | 长期保留：最后降级方案 + 对比基准 | GPU_RUNTIME（Linux X11 CI 软渲染） | CI `lane-gpu-runtime-linux-gl` |
+| OpenGL（Windows / Linux Wayland） | 长期保留：最后降级方案 + 对比基准 | GPU_RUNTIME（本机 Wayland；CI Weston 软渲染待 push 核查） | CI `lane-gpu-runtime-linux-gl` |
 
 ## Documentation
 
@@ -61,9 +68,10 @@ RHI 后端编译为独立静态库（`engine_rhi_vulkan` / `engine_rhi_metal` / 
 - myui integration and Break RHI backend: `docs/myui_integration.md`
 - Native ECharts-inspired chart widget: `docs/myui_chart.md`
 - myui now shares one RHI surface across logical windows and supports IME, cursor,
-  non-blocking clipboard transfer, and OpenGL/Vulkan on X11 and Wayland; see
-  `docs/myui_integration.md` for the platform matrix.
+  non-blocking clipboard transfer, and OpenGL/Vulkan on native Wayland, Win32,
+  and Cocoa; see `docs/myui_integration.md` for the platform matrix.
 - Implementation status: `docs/Implementation_Status.md`
+- QUIC transport (opt-in, Snowflake ngtcp2 adapter): `docs/design/quic_transport.md`
 - Performance roadmap: `docs/Round11_Performance_Plan.md`
 - Rule-engine architecture/design, benchmark, and conformance: `docs/Rule_Engine_Architecture.md`,
   `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and

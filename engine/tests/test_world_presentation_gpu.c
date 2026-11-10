@@ -1,7 +1,6 @@
 #include <platform/platform.h>
 #include <renderer/world_presentation.h>
 #include <rhi/rhi_native_vulkan.h>
-#include <X11/Xlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -173,16 +172,10 @@ static bool write_ppm(const char *path, const u8 shot[SHOT_BYTES]) {
 int main(void) {
     const bool vulkan = WORLD_GPU_BACKEND == RHI_BACKEND_VULKAN;
     const char *backend_name = vulkan ? "vulkan" : "opengl";
-    Display *display = XOpenDisplay(NULL);
-    if (!display) {
-        printf("SKIP: no reachable X11 display\n");
-        return 77;
-    }
-    XCloseDisplay(display);
     const PlatformConfig config = {.width = SHOT_W, .height = SHOT_H, .title = "world presentation"};
     Platform *platform = platform_create(&config);
     if (!platform) {
-        printf("SKIP: platform window was not created\n");
+        printf("UNAVAILABLE backend=%s reason=wayland-platform-create\n", backend_name);
         return 77;
     }
     u32 width = 0, height = 0;
@@ -192,9 +185,13 @@ int main(void) {
                                        platform_display_native(platform), width, height);
     if (!dev) {
         platform_destroy(platform);
-        printf("SKIP: %s device was not created\n", backend_name);
+        printf("UNAVAILABLE backend=%s reason=device-create\n", backend_name);
         return 77;
     }
+    RHIDeviceInfo info;
+    memset(&info, 0, sizeof(info));
+    (void)rhi_device_get_info(dev, &info);
+    printf("GPU RUNTIME backend=%s device=%s\n", backend_name, info.device_name);
     rhi_device_attach_wsi(dev, platform_wsi_surface(platform));
     rhi_set_vsync(dev, false);
     if (width != SHOT_W || height != SHOT_H) {
@@ -362,6 +359,7 @@ int main(void) {
     }
 #endif
     result = 0;
+    printf("PASS backend=%s device=%s\n", backend_name, info.device_name);
 
 cleanup:
     rhi_device_idle(dev);

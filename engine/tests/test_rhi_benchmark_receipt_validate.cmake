@@ -9,7 +9,8 @@ file(READ "${RECEIPT}" receipt_text)
 # docs/rhi_benchmark_receipt_schema.md 的校验脚本为准，本检查是 CI 烟雾门）。
 foreach(required_key
         "\"schema_version\"" "\"timestamp\"" "\"platform\"" "\"os_version\""
-        "\"backend\"" "\"gpu\"" "\"driver_version\"" "\"cpu\"" "\"ram\""
+        "\"backend\"" "\"device_type\"" "\"vendor_id\"" "\"device_id\""
+        "\"gpu\"" "\"driver_version\"" "\"cpu\"" "\"ram\""
         "\"build_commit\"" "\"build_config\"" "\"command\"" "\"metrics\""
         "\"fps_avg\"" "\"fps_p1\"" "\"frame_ms_avg\"" "\"frame_ms_p99\""
         "\"evidence_level\"" "\"runner\"")

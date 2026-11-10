@@ -4,22 +4,37 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to roll back to (e.g. v1.4.2)"
+        description: "Signed tag to roll back to (must be v2.0.0 or newer)"
         required: true
         type: string
 
 jobs:
   rollback-verify:
-    name: Build previous tag (rollback rehearsal)
+    name: Build supported tag (rollback rehearsal)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      TAG: ${{ inputs.tag }}
     steps:
+      - name: Validate supported rollback tag
+        run: |
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "UNAVAILABLE: rollback requires an exact v<x.y.z> tag, got '$TAG'" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          major="${BASH_REMATCH[1]}"
+          while [ "${major#0}" != "$major" ]; do major="${major#0}"; done
+          major="${major:-0}"
+          if [ "${#major}" -eq 1 ] && [ "$major" -lt 2 ]; then
+            echo "UNAVAILABLE: '$TAG' predates native Wayland-only support; rollback is not supported" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ env.TAG }}
           fetch-depth: 0
       - name: Verify tag signature exists
-        run: git tag -v "${{ inputs.tag }}"
+        run: git tag -v "$TAG"
       - name: Restore apt package cache
         # R682: .debs a previous run downloaded; apt only fetches what is
         # missing, so a slow Azure mirror (R677-R681: stalls on varied
@@ -50,13 +65,15 @@ jobs:
           apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
-            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
+            clang-18 lld-18 cmake=3.28.* ninja-build pkg-config \
+            libwayland-dev wayland-protocols libxkbcommon-dev weston \
+            libgl1-mesa-dev libegl1-mesa-dev \
             libfreetype6-dev fonts-noto-cjk
           sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
       - name: Configure / build / headless test
         run: |
-          cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_BUILD_TYPE=Release -DENGINE_RHI_BACKEND=opengl
+          cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_WAYLAND=ON -DENGINE_RHI_BACKEND=opengl
           cmake --build build --parallel
           ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
       - name: Report
-        run: echo "rollback drill OK for tag ${{ inputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "rollback drill OK for supported tag $TAG" >> "$GITHUB_STEP_SUMMARY"

@@ -23,12 +23,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  image:
+    name: Verify and publish Linux CI image
+    uses: ./.github/workflows/ci-image.yml
+    with:
+      fallback_digest: ${{ vars.BREAK_CI_LINUX_DIGEST }}
+      force_rebuild: ${{ github.event_name == 'schedule' }}
+    permissions:
+      contents: read
+      packages: write
+
   # ---- lane: headless（无显示依赖；原 5 个 headless job 改名，steps 不变，尾部收据 evidence_level=HEADLESS）----
   lane-headless-linux-clang:
     name: Linux + Clang/LLD (Release, headless)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -59,7 +70,7 @@ jobs:
         run: |
           lvl=HEADLESS
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
-          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
+          cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest --test-dir build -LE graphics|fuzz" -DBUILD_CONFIG=Release \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
@@ -75,8 +86,9 @@ jobs:
   lane-headless-linux-gcc-asan:
     name: Linux + GCC (ASan + UBSan, headless)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
       # LeakSanitizer stops the world with ptrace; Docker blocks it by default.
       options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
     defaults:
@@ -121,7 +133,7 @@ jobs:
         run: |
           lvl=HEADLESS
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
-          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
+          cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -LE graphics|fuzz + fuzz smoke (ASan/UBSan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
@@ -137,8 +149,9 @@ jobs:
   lane-headless-linux-gcc-tsan:
     name: Linux + GCC (TSan, headless)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
       # the "Lower the ASLR entropy" step writes vm.mmap_rnd_bits on the host kernel.
       options: --privileged
     defaults:
@@ -184,7 +197,7 @@ jobs:
         run: |
           lvl=HEADLESS
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
-          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
+          cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -LE graphics|fuzz -E test_async_loader (TSan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
@@ -532,8 +545,9 @@ jobs:
     # 原 wayland-vk（brief :158）。
     name: Linux Wayland + Vulkan (GCC)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -626,8 +640,9 @@ jobs:
     # R680: pinned like every other Linux lane -- ubuntu-latest moves to
     # Ubuntu 26 from 2026-10-19 (runner-images#14748).
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -912,14 +927,14 @@ jobs:
 
   # ---- lane: GPU-runtime（真实 GPU/软渲染 ICD 跑通帧；evidence_level=GPU_RUNTIME）----
   lane-gpu-runtime-linux-gl:
-    # OpenGL 长期保留（最后降级方案 + 渲染对比基准）的 X11+OpenGL lane（brief :121），
-    # 不扩展新能力；Xvfb + LIBGL_ALWAYS_SOFTWARE 下跑 X11/GL runtime。
-    name: Linux X11 + OpenGL (GCC)
+    # OpenGL 最后降级与渲染对比基准：Weston/Wayland + Mesa 软件光栅。
+    name: Linux Wayland + OpenGL (GCC)
     # R680: pinned like every other Linux lane -- ubuntu-latest moves to
     # Ubuntu 26 from 2026-10-19 (runner-images#14748).
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -928,7 +943,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Configure
-        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build --parallel
@@ -945,26 +960,59 @@ jobs:
             exit 1
           fi
 
-      - name: Test X11/OpenGL runtime
+      - name: Test Wayland/OpenGL runtime
+        id: graphics
+        continue-on-error: true
         run: |
-          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb-gl.log 2>&1 &
-          xvfb_pid=$!
-          trap 'kill "$xvfb_pid"' EXIT
-          export DISPLAY=:99
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/wayland-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          export WAYLAND_DISPLAY=wayland-break-gl
+          weston --backend=headless-backend.so \
+            --socket="$WAYLAND_DISPLAY" --idle-time=0 \
+            >/tmp/weston-gl.log 2>&1 &
+          weston_pid=$!
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
+            kill -0 "$weston_pid" 2>/dev/null || { cat /tmp/weston-gl.log; exit 1; }
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
           export LIBGL_ALWAYS_SOFTWARE=1
-          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
-          ctest --test-dir build --output-on-failure -R \
-            '^(test_platform_x11_runtime|test_rhi_x11_runtime)$'
+          export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+          set +e
+          out="$(ctest --test-dir build --output-on-failure -R \
+            '^(test_rhi_wayland_runtime|test_mesh_gpu_gl|test_world_presentation_gl)$' 2>&1)"
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          skipped=$(printf '%s\n' "$out" | grep -c '\*\*\*Skipped' || true)
+          passed=$(printf '%s\n' "$out" | grep -c '   Passed' || true)
+          echo "Wayland/OpenGL execution: rc=$rc passed=$passed skipped=$skipped" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
+          exit "$rc"
 
       - name: Emit evidence receipt
         if: always()
         run: |
-          # GPU_RUNTIME 仅在整 lane 成功时声明；失败 lane 的收据如实降级 UNAVAILABLE。
-          lvl=GPU_RUNTIME
-          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
-          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
+          rc="${{ steps.graphics.outputs.rc }}"; skipped="${{ steps.graphics.outputs.skipped }}"; passed="${{ steps.graphics.outputs.passed }}"
+          : "${rc:=1}"; : "${skipped:=1}"; : "${passed:=0}"
+          if [ "${{ job.status }}" != "success" ] || [ "$rc" != "0" ]; then
+            lvl=UNAVAILABLE
+          elif [ "$skipped" = "0" ] && [ "$passed" -gt 0 ]; then
+            lvl=GPU_RUNTIME
+          else
+            lvl=UNAVAILABLE
+          fi
+          cmd="Wayland OpenGL runtime (Weston; rc=$rc passed=$passed skipped=$skipped)"
+          echo "job=${{ job.status }} $cmd -> evidence_level=$lvl"
+          cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest -R x11_runtime (Xvfb + LIBGL_ALWAYS_SOFTWARE)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=Debug \
+            -DDEVICE_TYPE=CPU -DVENDOR_ID=0 -DDEVICE_ID=0 \
             -DGPU="mesa software rasterizer (LIBGL_ALWAYS_SOFTWARE=1)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -974,14 +1022,20 @@ jobs:
         with:
           name: evidence-receipt-gpu-runtime-linux-gl
           path: receipt.json
+      - name: Require executed graphics tests
+        if: always()
+        run: |
+          test "${{ steps.graphics.outputs.rc }}" = "0"
+          test "${{ steps.graphics.outputs.passed }}" -gt 0
+          test "${{ steps.graphics.outputs.skipped }}" = "0"
 
   lane-gpu-runtime-linux-vk:
-    # 原 vk + linux-graphics-smoke 合并（brief :163）：钉版工具链 + lavapipe
-    # VK_ICD_FILENAMES，headless 全量与 graphics suite 同 lane 出 GPU_RUNTIME 收据。
-    name: Linux X11 + Vulkan (lavapipe, Clang)
+    # 钉版工具链 + lavapipe ICD；headless 全量与 Wayland graphics 同 lane 出据。
+    name: Linux Wayland + Vulkan (lavapipe, Clang)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -996,7 +1050,7 @@ jobs:
           export PATH="/usr/bin:$PATH"
           cmake --version | head -1
           cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 \
-            -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
+            -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON
 
       - name: Build
         run: |
@@ -1024,30 +1078,61 @@ jobs:
             exit 1
           fi
 
-      - name: Test graphics smoke
+      - name: Test Wayland/Vulkan graphics
+        id: graphics
+        continue-on-error: true
         run: |
-          test -x "$(command -v Xvfb)"
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
-          xvfb_pid=$!
-          trap 'kill "$xvfb_pid"' EXIT
-          export DISPLAY=:99
-          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
+          export VK_ICD_FILENAMES="$vk_icd"
           export LIBGL_ALWAYS_SOFTWARE=1
           export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
-          export VK_ICD_FILENAMES="$vk_icd"
-          ctest --test-dir build -L graphics --output-on-failure
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/wayland-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          export WAYLAND_DISPLAY=wayland-break-vk
+          weston --backend=headless-backend.so \
+            --socket="$WAYLAND_DISPLAY" --idle-time=0 \
+            >/tmp/weston-vk.log 2>&1 &
+          weston_pid=$!
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
+            kill -0 "$weston_pid" 2>/dev/null || { cat /tmp/weston-vk.log; exit 1; }
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          set +e
+          out="$(ctest --test-dir build -L graphics --output-on-failure 2>&1)"
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          skipped=$(printf '%s\n' "$out" | grep -c '\*\*\*Skipped' || true)
+          passed=$(printf '%s\n' "$out" | grep -c '   Passed' || true)
+          echo "Wayland/Vulkan execution: rc=$rc passed=$passed skipped=$skipped" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
+          exit "$rc"
 
       - name: Emit evidence receipt
         if: always()
         run: |
-          # GPU_RUNTIME 仅在整 lane 成功时声明；失败 lane 的收据如实降级 UNAVAILABLE。
-          lvl=GPU_RUNTIME
-          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
-          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=vulkan \
+          rc="${{ steps.graphics.outputs.rc }}"; skipped="${{ steps.graphics.outputs.skipped }}"; passed="${{ steps.graphics.outputs.passed }}"
+          : "${rc:=1}"; : "${skipped:=1}"; : "${passed:=0}"
+          if [ "${{ job.status }}" != "success" ] || [ "$rc" != "0" ]; then
+            lvl=UNAVAILABLE
+          elif [ "$skipped" = "0" ] && [ "$passed" -gt 0 ]; then
+            lvl=GPU_RUNTIME
+          else
+            lvl=UNAVAILABLE
+          fi
+          cmd="Wayland Vulkan graphics (Weston + lavapipe; rc=$rc passed=$passed skipped=$skipped)"
+          echo "job=${{ job.status }} $cmd -> evidence_level=$lvl"
+          cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=vulkan \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest -L graphics (lavapipe ICD, Xvfb)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=Debug \
+            -DDEVICE_TYPE=CPU -DVENDOR_ID=0 -DDEVICE_ID=0 \
             -DGPU="lavapipe (software ICD via VK_ICD_FILENAMES)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -1057,6 +1142,12 @@ jobs:
         with:
           name: evidence-receipt-gpu-runtime-linux
           path: receipt.json
+      - name: Require executed graphics tests
+        if: always()
+        run: |
+          test "${{ steps.graphics.outputs.rc }}" = "0"
+          test "${{ steps.graphics.outputs.passed }}" -gt 0
+          test "${{ steps.graphics.outputs.skipped }}" = "0"
 
   lane-gpu-runtime-macos-metal:
     # 计划 C lane（brief :164）：GitHub hosted macOS 无 Metal GPU 窗口会话，
@@ -1246,10 +1337,11 @@ jobs:
 
   # ---- lane: validation（validation layers + D3D12 debug layer）----
   lane-validation-linux-vk:
-    name: "lane: validation (VK_LAYER_KHRONOS_validation)"
+    name: "lane: validation (Linux Wayland, VK_LAYER_KHRONOS_validation)"
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -1264,32 +1356,64 @@ jobs:
           export PATH="/usr/bin:$PATH"
           cmake --version | head -1
           cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 \
-            -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
+            -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON
           cmake --build build --parallel
 
-      - name: Run graphics suite under validation layers
+      - name: Run Wayland graphics under validation layers
+        id: graphics
+        continue-on-error: true
         run: |
-          set -o pipefail
           export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
           export VK_ICD_FILENAMES="$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
-          trap 'kill $!' EXIT
-          export DISPLAY=:99
-          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
-          ctest --test-dir build -L graphics --output-on-failure 2>&1 | tee /tmp/val.log
-          ! grep -q "VUID-" /tmp/val.log   # 任何 validation error 即 lane 失败
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/wayland-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          export WAYLAND_DISPLAY=wayland-break-validation
+          weston --backend=headless-backend.so \
+            --socket="$WAYLAND_DISPLAY" --idle-time=0 \
+            >/tmp/weston-validation.log 2>&1 &
+          weston_pid=$!
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
+            kill -0 "$weston_pid" 2>/dev/null || { cat /tmp/weston-validation.log; exit 1; }
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          set +e
+          out="$(ctest --test-dir build -L graphics --output-on-failure 2>&1)"
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          if printf '%s\n' "$out" | grep -q "VUID-"; then rc=1; fi
+          skipped=$(printf '%s\n' "$out" | grep -c '\*\*\*Skipped' || true)
+          passed=$(printf '%s\n' "$out" | grep -c '   Passed' || true)
+          echo "Wayland validation execution: rc=$rc passed=$passed skipped=$skipped" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
+          exit "$rc"
 
       - name: Emit evidence receipt
         if: always()
         run: |
-          # GPU_RUNTIME 仅在整 lane 成功时声明；失败 lane 的收据如实降级 UNAVAILABLE。
-          lvl=GPU_RUNTIME
-          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
-          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=vulkan \
+          rc="${{ steps.graphics.outputs.rc }}"; skipped="${{ steps.graphics.outputs.skipped }}"; passed="${{ steps.graphics.outputs.passed }}"
+          : "${rc:=1}"; : "${skipped:=1}"; : "${passed:=0}"
+          if [ "${{ job.status }}" != "success" ] || [ "$rc" != "0" ]; then
+            lvl=UNAVAILABLE
+          elif [ "$skipped" = "0" ] && [ "$passed" -gt 0 ]; then
+            lvl=GPU_RUNTIME
+          else
+            lvl=UNAVAILABLE
+          fi
+          cmd="Wayland validation (Weston + lavapipe; rc=$rc passed=$passed skipped=$skipped)"
+          echo "job=${{ job.status }} $cmd -> evidence_level=$lvl"
+          cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=vulkan \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest -L graphics (VK_LAYER_KHRONOS_validation, lavapipe ICD)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=Debug \
+            -DDEVICE_TYPE=CPU -DVENDOR_ID=0 -DDEVICE_ID=0 \
             -DGPU="lavapipe (software ICD via VK_ICD_FILENAMES)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -1299,13 +1423,20 @@ jobs:
         with:
           name: evidence-receipt-validation-linux
           path: receipt.json
+      - name: Require executed graphics tests
+        if: always()
+        run: |
+          test "${{ steps.graphics.outputs.rc }}" = "0"
+          test "${{ steps.graphics.outputs.passed }}" -gt 0
+          test "${{ steps.graphics.outputs.skipped }}" = "0"
 
   # ---- lane: benchmark（evidence_level 如实标注；lavapipe 软渲染与真 GPU 不可比）----
   lane-benchmark-linux-vk:
-    name: "lane: benchmark (linux vulkan, lavapipe)"
+    name: "lane: benchmark (Linux Wayland Vulkan, lavapipe)"
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -1325,7 +1456,7 @@ jobs:
           cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 \
             -DCMAKE_AR=/usr/bin/llvm-ar-18 -DCMAKE_RANLIB=/usr/bin/llvm-ranlib-18 \
             -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld-18" \
-            -DCMAKE_BUILD_TYPE=Release -DENGINE_VULKAN=ON
+            -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON
           set -o pipefail
           cmake --build build --parallel 2>&1 | tee /tmp/bench_build.log || {
             grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target|ld: |plugin needed|multiple definition|cannot open|not found|CMake Error" /tmp/bench_build.log \
@@ -1333,54 +1464,99 @@ jobs:
             exit 1
           }
 
-      - name: Run benchmark
+      - name: Run Wayland benchmark
+        id: graphics
+        continue-on-error: true
         run: |
-          # 实际 benchmark target 为 rhi_swapchain_bench <out.json>（600 帧定长；
-          # 无 --seconds/--headless-lavapipe CLI，偏差记录见 task-7 报告）。
-          # 软渲染经 Xvfb + VK_ICD_FILENAMES(lvp) 提供。
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
           export VK_ICD_FILENAMES="$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
-          trap 'kill $!' EXIT
-          export DISPLAY=:99
-          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
-          ./build/rhi_swapchain_bench metrics.json
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/wayland-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          export WAYLAND_DISPLAY=wayland-break-benchmark
+          weston --backend=headless-backend.so \
+            --socket="$WAYLAND_DISPLAY" --idle-time=0 \
+            >/tmp/weston-benchmark.log 2>&1 &
+          weston_pid=$!
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
+            kill -0 "$weston_pid" 2>/dev/null || { cat /tmp/weston-benchmark.log; exit 1; }
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          set +e
+          out="$(ctest --test-dir build -L benchmark --output-on-failure 2>&1)"
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          skipped=$(printf '%s\n' "$out" | grep -c '\*\*\*Skipped' || true)
+          passed=$(printf '%s\n' "$out" | grep -c '   Passed' || true)
+          echo "Wayland benchmark execution: rc=$rc passed=$passed skipped=$skipped" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
+          exit "$rc"
 
       - name: Emit benchmark receipt
+        if: always()
         run: |
-          # lavapipe 软渲染 fps 与真 GPU 不可比：evidence_level 如实标
-          # GPU_RUNTIME（BENCHMARK_COMPARABLE 仅授予真机收据，如
-          # lane-benchmark-steam-deck-vk 与本机 D3D12/VK 收据），command 注明
-          # lavapipe；metrics 照填供台账留档。
-          m() { python3 -c "import json;print(json.load(open('metrics.json'))['metrics']['$1'])"; }
-          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=vulkan \
-            -DEVIDENCE_LEVEL=GPU_RUNTIME -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="rhi_swapchain_bench metrics.json (lavapipe software ICD, 600 frames)" \
-            -DBUILD_CONFIG=Release \
-            -DGPU="$(python3 -c "import json;print(json.load(open('metrics.json'))['gpu'] or 'unknown')")" \
-            -DDRIVER_VERSION="$(python3 -c "import json;print(json.load(open('metrics.json'))['driver_version'] or 'unknown')")" \
+          rc="${{ steps.graphics.outputs.rc }}"; skipped="${{ steps.graphics.outputs.skipped }}"; passed="${{ steps.graphics.outputs.passed }}"
+          : "${rc:=1}"; : "${skipped:=1}"; : "${passed:=0}"
+          raw=build/rhi_receipt_local.json
+          cmd="rhi_swapchain_bench (Weston + lavapipe; rc=$rc passed=$passed skipped=$skipped)"
+          metrics_args=()
+          if [ "${{ job.status }}" = "success" ] && [ "$rc" = "0" ] && \
+              [ "$skipped" = "0" ] && [ "$passed" -gt 0 ] && [ -s "$raw" ]; then
+            lvl=GPU_RUNTIME
+            m() { python3 -c "import json;print(json.load(open('$raw'))['metrics']['$1'])"; }
+            gpu="$(python3 -c "import json;print(json.load(open('$raw'))['gpu'] or 'unknown')")"
+            driver="$(python3 -c "import json;print(json.load(open('$raw'))['driver_version'] or 'unknown')")"
+            metrics_args=(-DFPS_AVG=$(m fps_avg) -DFPS_P1=$(m fps_p1)
+              -DFRAME_MS_AVG=$(m frame_ms_avg) -DFRAME_MS_P99=$(m frame_ms_p99))
+          else
+            lvl=UNAVAILABLE
+            gpu="lavapipe (not executed)"
+            driver=unknown
+          fi
+          echo "job=${{ job.status }} $cmd -> evidence_level=$lvl"
+          cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=vulkan \
+            -DDEVICE_TYPE=CPU -DVENDOR_ID=0 -DDEVICE_ID=0 \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=Release \
+            -DGPU="$gpu" -DDRIVER_VERSION="$driver" \
             -DCPU="$(uname -m)" -DRAM=unknown \
-            -DFPS_AVG=$(m fps_avg) \
-            -DFPS_P1=$(m fps_p1) \
-            -DFRAME_MS_AVG=$(m frame_ms_avg) \
-            -DFRAME_MS_P99=$(m frame_ms_p99) \
+            "${metrics_args[@]}" \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-benchmark-linux-vk
-          path: receipt.json
+          path: |
+            receipt.json
+            build/rhi_receipt_local.json
+          if-no-files-found: ignore
+      - name: Require executed benchmark
+        if: always()
+        run: |
+          test "${{ steps.graphics.outputs.rc }}" = "0"
+          test "${{ steps.graphics.outputs.passed }}" -gt 0
+          test "${{ steps.graphics.outputs.skipped }}" = "0"
+          test -s build/rhi_receipt_local.json
 
   lane-benchmark-steam-deck-vk:
-    name: Steam Deck / Linux real-GPU Vulkan benchmark
+    name: Steam Deck / Linux Wayland real-GPU Vulkan benchmark
     # 真 GPU 自托管 benchmark lane：BENCHMARK_COMPARABLE 真机证据归这里
     # （lavapipe 上的 lane-benchmark-linux-vk 只出 GPU_RUNTIME 收据）。
     # GitHub-hosted 运行器上没有 self-hosted 标签可接单，不加 if 会永久 pending。
     if: vars.ENABLE_GPU_LANES == '1'
     runs-on: [self-hosted, linux, gpu-vulkan]
     timeout-minutes: 30
+    env:
+      DECK_EXPECTED_VENDOR_ID: ${{ vars.STEAM_DECK_VENDOR_ID }}
+      DECK_EXPECTED_DEVICE_ID: ${{ vars.STEAM_DECK_DEVICE_ID }}
     steps:
       - uses: actions/checkout@v6
 
@@ -1405,57 +1581,109 @@ jobs:
           apt_retry 120 update
           # 钉版候选取自 ubuntu-24.04 (noble)：self-hosted runner 需为 24.04。
           apt_retry 360 install -y --no-install-recommends \
-            build-essential cmake ninja-build libx11-dev libxrandr-dev \
+            build-essential cmake ninja-build pkg-config \
+            libwayland-dev wayland-protocols libxkbcommon-dev weston \
+            libgl1-mesa-dev libegl1-mesa-dev \
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* libfreetype6-dev
           sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENGINE_VULKAN=ON
+        run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON
 
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Graphics suite (GPU-runtime evidence)
-        run: ctest --test-dir build -L graphics --output-on-failure
-
-      - name: Benchmark receipt
+      - name: Run Wayland GPU suite and benchmark
+        id: graphics
+        continue-on-error: true
         env:
           RECEIPT_RUNNER: ${{ runner.name }}
           RECEIPT_OS_VERSION: ${{ runner.os }}
           RECEIPT_BUILD_CONFIG: RelWithDebInfo
           GIT_COMMIT: ${{ github.sha }}
         run: |
-          # RECEIPT_TIMESTAMP 不能写在 env: 块——那里不会求值 $(...)。
           export RECEIPT_TIMESTAMP="$(date -u +%FT%TZ)"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/wayland-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          export WAYLAND_DISPLAY=wayland-break-steam-deck
+          weston --backend=headless-backend.so \
+            --socket="$WAYLAND_DISPLAY" --idle-time=0 \
+            >/tmp/weston-steam-deck.log 2>&1 &
+          weston_pid=$!
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
+            kill -0 "$weston_pid" 2>/dev/null || { cat /tmp/weston-steam-deck.log; exit 1; }
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
           set +e
-          ./build/rhi_swapchain_bench build/rhi_receipt_steam_deck.json
+          out="$(ctest --test-dir build -L graphics --output-on-failure 2>&1)"
           rc=$?
           set -e
-          # 环境缺显示/GPU 时 bench 以 77 退出：记为 unavailable 证据，不算通过。
-          if [ $rc -eq 77 ]; then
-            echo "::warning::bench skipped (no display/GPU on this runner) — no receipt produced"
-            exit 0
+          printf '%s\n' "$out"
+          skipped=$(printf '%s\n' "$out" | grep -c '\*\*\*Skipped' || true)
+          passed=$(printf '%s\n' "$out" | grep -c '   Passed' || true)
+          bench_rc=not-run
+          if [ "$rc" = "0" ] && [ "$skipped" = "0" ] && [ "$passed" -gt 0 ]; then
+            set +e
+            ./build/rhi_swapchain_bench build/rhi_receipt_steam_deck.json
+            bench_rc=$?
+            set -e
+            rc=$bench_rc
           fi
-          test $rc -eq 0
-          cmake -DRECEIPT=build/rhi_receipt_steam_deck.json \
-            -P engine/tests/test_rhi_benchmark_receipt_validate.cmake
-          cmake -DRECEIPT=build/rhi_receipt_steam_deck.json \
-            -P engine/tests/test_evidence_receipt_schema.cmake
-          # BENCHMARK_COMPARABLE 归本真机 lane：bench 自产收据硬编码
-          # GPU_RUNTIME（rhi_swapchain_bench.c），故用生成器按同一实测重建
-          # 台账收据（I1）；gpu/driver 空值回落 unknown（M2）。
-          j() { python3 -c "import json;print(json.load(open('build/rhi_receipt_steam_deck.json'))$1 or 'unknown')"; }
-          jm() { python3 -c "import json;print(json.load(open('build/rhi_receipt_steam_deck.json'))['metrics']['$1'])"; }
-          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=vulkan \
-            -DEVIDENCE_LEVEL=BENCHMARK_COMPARABLE -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="rhi_swapchain_bench (real GPU, 600 frames)" -DBUILD_CONFIG=RelWithDebInfo \
-            -DGPU="$(j "['gpu']")" \
-            -DDRIVER_VERSION="$(j "['driver_version']")" \
+          echo "Steam Deck Wayland execution: rc=$rc passed=$passed skipped=$skipped benchmark=$bench_rc" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      - name: Emit benchmark receipt
+        if: always()
+        run: |
+          rc="${{ steps.graphics.outputs.rc }}"; skipped="${{ steps.graphics.outputs.skipped }}"; passed="${{ steps.graphics.outputs.passed }}"
+          : "${rc:=1}"; : "${skipped:=1}"; : "${passed:=0}"
+          raw=build/rhi_receipt_steam_deck.json
+          cmd="Steam Deck Wayland GPU suite + benchmark (rc=$rc passed=$passed skipped=$skipped)"
+          cmake -DRECEIPT="$raw" -DOUT=hardware.env \
+            -DEXPECTED_VENDOR_ID="$DECK_EXPECTED_VENDOR_ID" \
+            -DEXPECTED_DEVICE_ID="$DECK_EXPECTED_DEVICE_ID" \
+            -P engine/tools/check_steam_deck_hardware.cmake
+          source hardware.env
+          echo "Steam Deck hardware_ok=$hardware_ok reason=$hardware_reason"
+          metrics_args=()
+          if [ "${{ job.status }}" = "success" ] && [ "$rc" = "0" ] && \
+              [ "$skipped" = "0" ] && [ "$passed" -gt 0 ] && [ -s "$raw" ] && \
+              [ "$hardware_ok" = "true" ]; then
+            lvl=BENCHMARK_COMPARABLE
+            cmake -DRECEIPT="$raw" -P engine/tests/test_rhi_benchmark_receipt_validate.cmake
+            cmake -DRECEIPT="$raw" -P engine/tests/test_evidence_receipt_schema.cmake
+            j() { python3 -c "import json;print(json.load(open('$raw'))$1 or 'unknown')"; }
+            jm() { python3 -c "import json;print(json.load(open('$raw'))['metrics']['$1'])"; }
+            gpu="$(j "['gpu']")"
+            driver="$(j "['driver_version']")"
+            dtype="$(j "['device_type']")"
+            vendor="$(j "['vendor_id']")"
+            device="$(j "['device_id']")"
+            metrics_args=(-DFPS_AVG=$(jm fps_avg) -DFPS_P1=$(jm fps_p1)
+              -DFRAME_MS_AVG=$(jm frame_ms_avg) -DFRAME_MS_P99=$(jm frame_ms_p99))
+          else
+            lvl=UNAVAILABLE
+            gpu=unknown
+            driver=unknown
+            dtype=UNKNOWN
+            vendor=0
+            device=0
+          fi
+          echo "job=${{ job.status }} $cmd -> evidence_level=$lvl"
+          cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=vulkan \
+            -DDEVICE_TYPE="$dtype" -DVENDOR_ID="$vendor" -DDEVICE_ID="$device" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=RelWithDebInfo \
+            -DGPU="$gpu" -DDRIVER_VERSION="$driver" \
             -DCPU="$(uname -m)" -DRAM=unknown \
-            -DFPS_AVG=$(jm fps_avg) \
-            -DFPS_P1=$(jm fps_p1) \
-            -DFRAME_MS_AVG=$(jm frame_ms_avg) \
-            -DFRAME_MS_P99=$(jm frame_ms_p99) \
+            "${metrics_args[@]}" \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
 
@@ -1466,8 +1694,24 @@ jobs:
           name: evidence-receipt-benchmark-steam-deck
           path: |
             receipt.json
+            hardware.env
             build/rhi_receipt_steam_deck.json
           if-no-files-found: ignore
+      - name: Require executed real-GPU benchmark
+        if: always()
+        run: |
+          raw=build/rhi_receipt_steam_deck.json
+          cmake -DRECEIPT="$raw" -DOUT=hardware.env \
+            -DEXPECTED_VENDOR_ID="$DECK_EXPECTED_VENDOR_ID" \
+            -DEXPECTED_DEVICE_ID="$DECK_EXPECTED_DEVICE_ID" \
+            -P engine/tools/check_steam_deck_hardware.cmake
+          source hardware.env
+          echo "Steam Deck final hardware_ok=$hardware_ok reason=$hardware_reason"
+          test "$hardware_ok" = "true"
+          test "${{ steps.graphics.outputs.rc }}" = "0"
+          test "${{ steps.graphics.outputs.passed }}" -gt 0
+          test "${{ steps.graphics.outputs.skipped }}" = "0"
+          test -s "$raw"
 
   # ---- lane: proton（兼容验证，不计入 Windows D3D12 证据；schedule + 手动触发）----
   lane-proton:
@@ -1487,7 +1731,17 @@ jobs:
           # 镜像 built 2026-09-28；取法见 task-7 报告）。
           docker run --rm -v "$GITHUB_WORKSPACE":/src -w /src \
             registry.gitlab.steamos.cloud/steamrt/sniper/sdk@sha256:9ae8083ee9ae6298361a62f289e62f0a2b0779d23fc8c276304157f0c06010c5 \
-            bash -c "cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel && ctest --test-dir build -LE 'graphics|fuzz' --output-on-failure"
+            bash -c '
+              if ! command -v pkg-config >/dev/null 2>&1 ||
+                 ! command -v wayland-scanner >/dev/null 2>&1 ||
+                 ! pkg-config --exists wayland-client wayland-egl wayland-cursor xkbcommon; then
+                echo "UNAVAILABLE: pinned SteamRT lacks the native Wayland build toolchain" >&2
+                exit 77
+              fi
+              cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_WAYLAND=ON &&
+              cmake --build build --parallel &&
+              ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
+            '
 
       - name: Emit evidence receipt
         if: always()
@@ -1544,8 +1798,9 @@ jobs:
     # task 2 交付，保留原名；不产出 GPU 收据 artifact）。
     name: Clean-room build (locked deps, fresh export)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash

@@ -63,6 +63,11 @@
 
 #include <core/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define BREAK_CRASH_RECORD_MAX 65536u
 #define BREAK_CRASH_MODULE_MAX 64u
 #define BREAK_CRASH_CONTEXT_BLOB_MAX 4096u
@@ -403,3 +408,6 @@ usize break_crash_summary_format(const BreakCrashSummary *s, char *out,
                                  usize capacity);
 /* Restores previous handlers; spool intact; inbox fd closed. */
 void break_crash_uninstall(void);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

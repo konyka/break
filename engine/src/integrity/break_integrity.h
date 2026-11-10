@@ -26,6 +26,11 @@
 
 #include <core/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 typedef u32 BreakIntegritySignals;
 enum {
     BINT_SIG_FILE_MISMATCH = 1u << 0,   /* a listed file's SHA-256 differs */
@@ -56,3 +61,6 @@ BreakIntegritySignals break_integrity_check_debugger(void);
  * count 0 / NULL list / above the maximum -> CHECK_ERROR. */
 BreakIntegritySignals break_integrity_check_modules(const char *const *allowed_basenames,
                                                     u32 count);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

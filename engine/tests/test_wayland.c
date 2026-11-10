@@ -1,7 +1,6 @@
 /* R443: headless unit tests for the pure wl_output enumeration logic in
  * platform/wayland_output.h (slot management, registry-global dedup, mode
- * selection). No Wayland/compositor needed — the machine running these tests
- * may be an X11 session. */
+ * selection). No Wayland compositor is needed. */
 #include "test_framework.h"
 #include <platform/wayland_output.h>
 

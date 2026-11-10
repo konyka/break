@@ -121,6 +121,9 @@ int main(int argc, char **argv) {
         "  \"platform\": \"%s\",\n"
         "  \"os_version\": \"%s\",\n"
         "  \"backend\": \"%s\",\n"
+        "  \"device_type\": \"%s\",\n"
+        "  \"vendor_id\": %u,\n"
+        "  \"device_id\": %u,\n"
         "  \"gpu\": \"%s\",\n"
         "  \"driver_version\": \"%u\",\n"
         "  \"cpu\": \"%s\",\n"
@@ -136,6 +139,8 @@ int main(int argc, char **argv) {
         env_or("RECEIPT_TIMESTAMP", "unknown"),
 #ifdef ENGINE_PLATFORM_WINDOWS
         "windows",
+#elif defined(ENGINE_PLATFORM_WAYLAND)
+        "linux-wayland",
 #elif defined(ENGINE_PLATFORM_LINUX)
         "linux",
 #elif defined(ENGINE_PLATFORM_MACOS)
@@ -155,6 +160,7 @@ int main(int argc, char **argv) {
 #else
         "opengl",
 #endif
+        rhi_device_type_name(info.device_type), info.vendor_id, info.device_id,
         info.device_name, info.driver_version,
         env_or("RECEIPT_CPU", "unknown"), env_or("RECEIPT_RAM", "unknown"),
         env_or("GIT_COMMIT", "unknown"), env_or("RECEIPT_BUILD_CONFIG", "unknown"),

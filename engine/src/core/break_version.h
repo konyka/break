@@ -1,5 +1,10 @@
 #pragma once
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 /* ---- Product version / build identity ----
  *
  * Bump rules (pre-1.0 product; documented decision):
@@ -22,3 +27,6 @@
  * of that moment's HEAD); incremental rebuilds after new commits do NOT
  * refresh it — the baked-in id is stale until the next reconfigure. */
 const char *break_version_string(void);
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

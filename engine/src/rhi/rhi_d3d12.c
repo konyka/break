@@ -1791,6 +1791,7 @@ bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
                               out->device_name, (int)sizeof(out->device_name),
                               NULL, NULL);
     if (len <= 0) return false;
+    out->device_type = RHI_DEVICE_TYPE_UNKNOWN;
     out->vendor_id = (u32)desc.VendorId;
     out->device_id = (u32)desc.DeviceId;
     return true;
