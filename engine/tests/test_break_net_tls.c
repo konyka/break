@@ -1,14 +1,23 @@
 /* TLS transport-mode tests for the Snowflake-backed Break network adapter.
  *
  * Every loopback test runs a THREAD-mode reactor with a port-0 acceptor and a
- * raw POSIX socket client whose TLS side is an in-test snow_ssl_t (client
- * role); the搬运 loop is socket read -> snow_ssl_do_handshake/snow_ssl_read ->
+ * raw POSIX socket client whose TLS side is an in-test SnowSsl (client
+ * role); the搬运 loop is socket read -> SnowSslDoHandshake/SnowSslRead ->
  * socket write.  Synchronization is condition-polling with deadlines only.
  *
  * Fixture PEMs live in the pinned Snowflake tree (no copies):
  * BREAK_TEST_SSL_FIXTURE_DIR is injected by CMake and points at
  * ${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl (CN=localhost self-signed,
  * test-only). */
+/* clock_gettime needs _POSIX_C_SOURCE >= 199309L before any system header;
+ * a manual extern declaration conflicts with <time.h> once Snowflake headers
+ * (pulled in via break_net_adapter.h) provide the real prototype. */
+#if !defined(_WIN32) && !defined(ENGINE_PLATFORM_WINDOWS)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 199309L
+#endif
+#endif
+
 #include "test_framework.h"
 #include <network/break_net_adapter.h>
 #include <network/break_net_envelope.h>
@@ -29,7 +38,6 @@
 #include <time.h>
 #include <unistd.h>
 
-extern int clock_gettime(int, struct timespec *);
 #ifndef CLOCK_MONOTONIC
 #define CLOCK_MONOTONIC 1
 #endif
@@ -72,34 +80,34 @@ static BreakNetReactorConfig tls_test_config(void)
     return config;
 }
 
-static snow_acceptor_t *tls_test_acceptor(void)
+static SnowAcceptor *tls_test_acceptor(void)
 {
-    snow_endpoint_t *endpoint = NULL;
-    snow_acceptor_t *acceptor = NULL;
-    if (snow_endpoint_create(&endpoint) != SNOW_OK ||
-        snow_endpoint_set_host(endpoint, "127.0.0.1") != SNOW_OK ||
-        snow_endpoint_set_port(endpoint, 0) != SNOW_OK ||
-        snow_acceptor_create(endpoint, &acceptor) != SNOW_OK) {
-        snow_endpoint_destroy(endpoint);
+    SnowEndpoint *endpoint = NULL;
+    SnowAcceptor *acceptor = NULL;
+    if (SnowEndpointCreate(&endpoint) != SNOW_OK ||
+        SnowEndpointSetHost(endpoint, "127.0.0.1") != SNOW_OK ||
+        SnowEndpointSetPort(endpoint, 0) != SNOW_OK ||
+        SnowAcceptorCreate(endpoint, &acceptor) != SNOW_OK) {
+        SnowEndpointDestroy(endpoint);
         return NULL;
     }
-    snow_endpoint_destroy(endpoint);
-    if (snow_acceptor_bind(acceptor, 1) != SNOW_OK) {
-        snow_acceptor_destroy(acceptor);
+    SnowEndpointDestroy(endpoint);
+    if (SnowAcceptorBind(acceptor, 1) != SNOW_OK) {
+        SnowAcceptorDestroy(acceptor);
         return NULL;
     }
     return acceptor;
 }
 
-static int tls_test_connect(snow_acceptor_t *acceptor)
+static int tls_test_connect(SnowAcceptor *acceptor)
 {
-    const snow_endpoint_t *endpoint = snow_acceptor_endpoint(acceptor);
+    const SnowEndpoint *endpoint = SnowAcceptorEndpoint(acceptor);
     struct sockaddr_in address = {0};
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = htons((uint16_t)snow_endpoint_port(endpoint));
+    address.sin_port = htons((uint16_t)SnowEndpointPort(endpoint));
     if (connect(fd, (const struct sockaddr *)&address, sizeof(address)) != 0) {
         close(fd);
         return -1;
@@ -108,23 +116,23 @@ static int tls_test_connect(snow_acceptor_t *acceptor)
 }
 
 /* ------------------------------------------------------------------ */
-/* In-test TLS client (raw socket + client-role snow_ssl_t)            */
+/* In-test TLS client (raw socket + client-role SnowSsl)            */
 /* ------------------------------------------------------------------ */
 
 typedef struct TlsTestClient {
     int fd;
-    snow_ssl_ctx_t *ctx;
-    snow_ssl_t *ssl;
+    SnowSslCtx *ctx;
+    SnowSsl *ssl;
     unsigned char rawlog[TLS_TEST_RAWLOG_CAPACITY];
     size_t rawlog_len;
 } TlsTestClient;
 
-static bool tls_test_client_open(TlsTestClient *client, snow_acceptor_t *acceptor,
+static bool tls_test_client_open(TlsTestClient *client, SnowAcceptor *acceptor,
                                  bool with_client_cert)
 {
     char cert[512];
     char key[512];
-    snow_ssl_ctx_opts_t opts;
+    SnowSslCtxOpts opts;
     memset(client, 0, sizeof(*client));
     memset(&opts, 0, sizeof(opts));
     client->fd = tls_test_connect(acceptor);
@@ -135,13 +143,13 @@ static bool tls_test_client_open(TlsTestClient *client, snow_acceptor_t *accepto
         opts.cert_file = cert;
         opts.key_file = key;
     }
-    client->ctx = snow_ssl_ctx_new(&opts, NULL);
+    client->ctx = SnowSslCtxNew(&opts, NULL);
     if (client->ctx == NULL) { close(client->fd); return false; }
-    client->ssl = snow_ssl_new(client->ctx);
+    client->ssl = SnowSslNew(client->ctx);
     if (client->ssl == NULL ||
-        snow_ssl_init(client->ssl, false) != SNOW_OK) {
-        snow_ssl_free(client->ssl);
-        snow_ssl_ctx_free(client->ctx);
+        SnowSslInit(client->ssl, false) != SNOW_OK) {
+        SnowSslFree(client->ssl);
+        SnowSslCtxFree(client->ctx);
         close(client->fd);
         return false;
     }
@@ -150,8 +158,8 @@ static bool tls_test_client_open(TlsTestClient *client, snow_acceptor_t *accepto
 
 static void tls_test_client_close(TlsTestClient *client)
 {
-    snow_ssl_free(client->ssl);
-    snow_ssl_ctx_free(client->ctx);
+    SnowSslFree(client->ssl);
+    SnowSslCtxFree(client->ctx);
     if (client->fd >= 0) close(client->fd);
     client->ssl = NULL;
     client->ctx = NULL;
@@ -178,21 +186,21 @@ static int tls_test_wait_readable(int fd, uint64_t deadline_us)
 }
 
 /* Drain the ciphertext accumulated in `out` to the socket. */
-static bool tls_test_flush_out(int fd, snow_network_buffer_t *out)
+static bool tls_test_flush_out(int fd, SnowNetworkBuffer *out)
 {
-    size_t size = snow_network_buffer_length(out);
+    size_t size = SnowNetworkBufferLength(out);
     size_t offset = 0u;
     size_t copied = 0u;
     unsigned char *flat;
     if (size == 0u) return true;
     flat = (unsigned char *)malloc(size);
     if (flat == NULL) return false;
-    if (snow_network_buffer_copy_to(out, flat, size, &copied) != SNOW_OK ||
+    if (SnowNetworkBufferCopyTo(out, flat, size, &copied) != SNOW_OK ||
         copied != size) {
         free(flat);
         return false;
     }
-    snow_network_buffer_clear(out);
+    SnowNetworkBufferClear(out);
     while (offset < size) {
         ssize_t written = send(fd, flat + offset, size - offset, 0);
         if (written <= 0) {
@@ -208,43 +216,43 @@ static bool tls_test_flush_out(int fd, snow_network_buffer_t *out)
 /* Drive the client handshake to completion; every step is deadline-bounded. */
 static bool tls_test_client_handshake(TlsTestClient *client, uint64_t deadline_us)
 {
-    snow_network_buffer_t *out = NULL;
+    SnowNetworkBuffer *out = NULL;
     unsigned char buf[4096];
     bool ok = false;
-    if (snow_network_buffer_create(&out) != SNOW_OK) return false;
-    if (snow_ssl_do_handshake(client->ssl, out, NULL, 0u) != 0) goto done;
+    if (SnowNetworkBufferCreate(&out) != SNOW_OK) return false;
+    if (SnowSslDoHandshake(client->ssl, out, NULL, 0u) != 0) goto done;
     if (!tls_test_flush_out(client->fd, out)) goto done;
-    while (!snow_ssl_is_handshaked(client->ssl)) {
+    while (!SnowSslIsHandshaked(client->ssl)) {
         ssize_t got;
         if (tls_test_wait_readable(client->fd, deadline_us) != 1) goto done;
         got = recv(client->fd, buf, sizeof(buf), 0);
         if (got <= 0) goto done;
-        if (snow_ssl_do_handshake(client->ssl, out, buf, (size_t)got) != 0) goto done;
+        if (SnowSslDoHandshake(client->ssl, out, buf, (size_t)got) != 0) goto done;
         if (!tls_test_flush_out(client->fd, out)) goto done;
     }
     ok = true;
 done:
-    snow_network_buffer_destroy(out);
+    SnowNetworkBufferDestroy(out);
     return ok;
 }
 
 /* Encrypt `size` plaintext bytes and write the ciphertext to the socket. */
 static bool tls_test_client_send(TlsTestClient *client, const void *data, size_t size)
 {
-    snow_network_buffer_t *out = NULL;
+    SnowNetworkBuffer *out = NULL;
     bool ok = false;
-    if (snow_network_buffer_create(&out) != SNOW_OK) return false;
-    if (snow_ssl_write(client->ssl, (const char *)data, size, out) == 0 &&
+    if (SnowNetworkBufferCreate(&out) != SNOW_OK) return false;
+    if (SnowSslWrite(client->ssl, (const char *)data, size, out) == 0 &&
         tls_test_flush_out(client->fd, out)) {
         ok = true;
     }
-    snow_network_buffer_destroy(out);
+    SnowNetworkBufferDestroy(out);
     return ok;
 }
 
 /* Read one raw burst (deadline-bounded), log it, decrypt into `plain`.
  * Returns 1 = bytes pumped, 0 = timeout, -1 = peer gone / TLS error. */
-static int tls_test_client_pump(TlsTestClient *client, snow_network_buffer_t *plain,
+static int tls_test_client_pump(TlsTestClient *client, SnowNetworkBuffer *plain,
                                 uint64_t deadline_us)
 {
     unsigned char buf[4096];
@@ -257,7 +265,7 @@ static int tls_test_client_pump(TlsTestClient *client, snow_network_buffer_t *pl
         memcpy(client->rawlog + client->rawlog_len, buf, (size_t)got);
         client->rawlog_len += (size_t)got;
     }
-    if (snow_ssl_read(client->ssl, buf, (size_t)got, plain) != 0) return -1;
+    if (SnowSslRead(client->ssl, buf, (size_t)got, plain) != 0) return -1;
     return 1;
 }
 
@@ -354,7 +362,7 @@ TEST(break_net_tls_config_validation)
     char mismatch[512];
     BreakNetReactorConfig config = tls_test_config();
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = tls_test_acceptor();
+    SnowAcceptor *acceptor = tls_test_acceptor();
     BreakNetTlsConfig cfg = {0};
     tls_test_fixture_path(cert, sizeof(cert), "snow_test_cert.pem");
     tls_test_fixture_path(key, sizeof(key), "snow_test_key.pem");
@@ -398,7 +406,7 @@ TEST(break_net_tls_config_validation)
     ASSERT_FALSE(break_net_reactor_set_tls(reactor, &cfg));
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_tls_handshake_auth_ping_roundtrip)
@@ -407,7 +415,7 @@ TEST(break_net_tls_handshake_auth_ping_roundtrip)
     char key[512];
     BreakNetReactorConfig config = tls_test_config();
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = tls_test_acceptor();
+    SnowAcceptor *acceptor = tls_test_acceptor();
     BreakNetTlsConfig cfg = {0};
     TlsTestClient client;
     uint64_t deadline;
@@ -417,7 +425,7 @@ TEST(break_net_tls_handshake_auth_ping_roundtrip)
     size_t auth_size = 0u;
     BreakNetEnvelope auth = {0};
     BreakNetEvent event = {0};
-    snow_network_buffer_t *plain = NULL;
+    SnowNetworkBuffer *plain = NULL;
     unsigned char ping_wire[64];
     size_t copied = 0u;
     BreakNetEnvelope ping = {0};
@@ -474,14 +482,14 @@ TEST(break_net_tls_handshake_auth_ping_roundtrip)
                                      BREAK_NET_MESSAGE_ID_PING,
                                      BREAK_NET_PROTOCOL_VERSION, payload,
                                      sizeof(payload)), BREAK_NET_SEND_OK);
-    ASSERT_EQ(snow_network_buffer_create(&plain), SNOW_OK);
-    while (snow_network_buffer_length(plain) < 18u + sizeof(payload)) {
+    ASSERT_EQ(SnowNetworkBufferCreate(&plain), SNOW_OK);
+    while (SnowNetworkBufferLength(plain) < 18u + sizeof(payload)) {
         pump = tls_test_client_pump(&client, plain, deadline);
         ASSERT_EQ(pump, 1);
     }
     ASSERT_TRUE(client.rawlog_len > 0u);
     ASSERT_FALSE(tls_test_contains_magic(client.rawlog, client.rawlog_len));
-    ASSERT_EQ(snow_network_buffer_copy_to(plain, ping_wire,
+    ASSERT_EQ(SnowNetworkBufferCopyTo(plain, ping_wire,
                                           18u + sizeof(payload), &copied), SNOW_OK);
     ASSERT_EQ(copied, 18u + sizeof(payload));
     ASSERT_EQ(break_net_envelope_decode(ping_wire, copied, &ping),
@@ -491,7 +499,7 @@ TEST(break_net_tls_handshake_auth_ping_roundtrip)
     ASSERT_EQ(ping.sequence, 1u);
     ASSERT_EQ(ping.payload_size, sizeof(payload));
     ASSERT_TRUE(memcmp(ping.payload, payload, sizeof(payload)) == 0);
-    snow_network_buffer_destroy(plain);
+    SnowNetworkBufferDestroy(plain);
 
     tls_test_client_close(&client);
     deadline = tls_test_monotonic_us() + TLS_TEST_DEADLINE_US;
@@ -504,7 +512,7 @@ TEST(break_net_tls_handshake_auth_ping_roundtrip)
     ASSERT_TRUE(tls_test_wait_identity_count(reactor, 0u, deadline));
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_tls_garbage_before_handshake_closes_without_messages)
@@ -513,7 +521,7 @@ TEST(break_net_tls_garbage_before_handshake_closes_without_messages)
     char key[512];
     BreakNetReactorConfig config = tls_test_config();
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = tls_test_acceptor();
+    SnowAcceptor *acceptor = tls_test_acceptor();
     BreakNetTlsConfig cfg = {0};
     unsigned char garbage[64];
     TlsTestEventWatch watch;
@@ -544,7 +552,7 @@ TEST(break_net_tls_garbage_before_handshake_closes_without_messages)
     close(fd);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_tls_plaintext_envelope_client_is_closed)
@@ -553,7 +561,7 @@ TEST(break_net_tls_plaintext_envelope_client_is_closed)
     char key[512];
     BreakNetReactorConfig config = tls_test_config();
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = tls_test_acceptor();
+    SnowAcceptor *acceptor = tls_test_acceptor();
     BreakNetTlsConfig cfg = {0};
     unsigned char payload[] = {1u, 2u, 3u, 4u};
     unsigned char wire[BREAK_NET_ENVELOPE_MAX_SIZE];
@@ -593,7 +601,7 @@ TEST(break_net_tls_plaintext_envelope_client_is_closed)
     close(fd);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_tls_verify_peer_accepts_fixture_client_cert)
@@ -602,7 +610,7 @@ TEST(break_net_tls_verify_peer_accepts_fixture_client_cert)
     char key[512];
     BreakNetReactorConfig config = tls_test_config();
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = tls_test_acceptor();
+    SnowAcceptor *acceptor = tls_test_acceptor();
     BreakNetTlsConfig cfg = {0};
     TlsTestClient client;
     uint64_t deadline;
@@ -659,7 +667,7 @@ TEST(break_net_tls_verify_peer_accepts_fixture_client_cert)
     ASSERT_TRUE(tls_test_wait_identity_count(reactor, 0u, deadline));
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_net_tls_verify_peer_rejects_certless_client)
@@ -668,7 +676,7 @@ TEST(break_net_tls_verify_peer_rejects_certless_client)
     char key[512];
     BreakNetReactorConfig config = tls_test_config();
     BreakNetReactor *reactor = break_net_reactor_create(&config);
-    snow_acceptor_t *acceptor = tls_test_acceptor();
+    SnowAcceptor *acceptor = tls_test_acceptor();
     BreakNetTlsConfig cfg = {0};
     TlsTestClient client;
     TlsTestEventWatch watch;
@@ -712,8 +720,8 @@ TEST(break_net_tls_verify_peer_rejects_certless_client)
             if (got <= 0) {
                 peer_dead = true;
             } else if (!handshake_ok ||
-                       snow_ssl_read(client.ssl, buf, (size_t)got,
-                                     snow_ssl_recv_buffer(client.ssl)) != 0) {
+                       SnowSslRead(client.ssl, buf, (size_t)got,
+                                     SnowSslRecvBuffer(client.ssl)) != 0) {
                 peer_dead = true;
             }
         }
@@ -722,7 +730,7 @@ TEST(break_net_tls_verify_peer_rejects_certless_client)
     tls_test_client_close(&client);
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 /* ------------------------------------------------------------------ */
@@ -731,7 +739,7 @@ TEST(break_net_tls_verify_peer_rejects_certless_client)
 
 typedef struct TlsTestServer {
     BreakNetReactor *reactor;
-    snow_acceptor_t *acceptor;
+    SnowAcceptor *acceptor;
 } TlsTestServer;
 
 static bool tls_test_server_start(TlsTestServer *server, uint32_t empty_timeout_ms)
@@ -757,7 +765,7 @@ static void tls_test_server_stop(TlsTestServer *server)
 {
     break_net_reactor_stop(server->reactor, 1000u);
     break_net_reactor_destroy(server->reactor);
-    snow_acceptor_destroy(server->acceptor);
+    SnowAcceptorDestroy(server->acceptor);
 }
 
 /* Build one PING envelope (4-byte LE payload = seq) and append it to out. */
@@ -818,7 +826,7 @@ static size_t tls_test_collect_messages(BreakNetReactor *reactor, uint64_t key,
     return got;
 }
 
-/* Review probe A: one snow_ssl_write flight carries three envelopes; all
+/* Review probe A: one SnowSslWrite flight carries three envelopes; all
  * three must be delivered from that single burst (no further traffic). */
 TEST(break_net_tls_multi_frame_single_flight_delivers_all)
 {
@@ -889,7 +897,7 @@ TEST(break_net_tls_blocked_handshake_does_not_freeze_peer)
     uint64_t key_a = 0u;
     uint64_t key_b = 0u;
     unsigned char payload[4] = {0xcau, 0xfeu, 0xbau, 0xbeu};
-    snow_network_buffer_t *plain = NULL;
+    SnowNetworkBuffer *plain = NULL;
     unsigned char frame[64];
     size_t copied = 0u;
     BreakNetEnvelope pong = {0};
@@ -911,17 +919,17 @@ TEST(break_net_tls_blocked_handshake_does_not_freeze_peer)
     ASSERT_EQ(break_net_reactor_send(server.reactor, key_b, BREAK_NET_MESSAGE_ID_PING,
                                      BREAK_NET_PROTOCOL_VERSION, payload,
                                      sizeof(payload)), BREAK_NET_SEND_OK);
-    ASSERT_EQ(snow_network_buffer_create(&plain), SNOW_OK);
-    while (snow_network_buffer_length(plain) < 18u + sizeof(payload)) {
+    ASSERT_EQ(SnowNetworkBufferCreate(&plain), SNOW_OK);
+    while (SnowNetworkBufferLength(plain) < 18u + sizeof(payload)) {
         ASSERT_EQ(tls_test_client_pump(&bclient, plain, deadline), 1);
     }
-    ASSERT_EQ(snow_network_buffer_copy_to(plain, frame, 18u + sizeof(payload),
+    ASSERT_EQ(SnowNetworkBufferCopyTo(plain, frame, 18u + sizeof(payload),
                                           &copied), SNOW_OK);
     ASSERT_EQ(break_net_envelope_decode(frame, copied, &pong), BREAK_NET_ENVELOPE_OK);
     ASSERT_EQ(pong.message_id, BREAK_NET_MESSAGE_ID_PING);
     ASSERT_EQ(pong.payload_size, sizeof(payload));
     ASSERT_TRUE(memcmp(pong.payload, payload, sizeof(payload)) == 0);
-    snow_network_buffer_destroy(plain);
+    SnowNetworkBufferDestroy(plain);
     /* A's command never left the queue while B was served. */
     ASSERT_EQ(break_net_reactor_outbound_count(server.reactor), 1u);
 
@@ -950,7 +958,7 @@ TEST(break_net_tls_blocked_head_middle_removal_keeps_order)
     unsigned char blocked_payload[4] = {0x77u, 0x77u, 0x77u, 0x77u};
     unsigned char first[4] = {1u, 0u, 0u, 0u};
     unsigned char second[4] = {2u, 0u, 0u, 0u};
-    snow_network_buffer_t *plain = NULL;
+    SnowNetworkBuffer *plain = NULL;
     unsigned char frame[64];
     size_t copied = 0u;
     BreakNetEnvelope env = {0};
@@ -973,20 +981,20 @@ TEST(break_net_tls_blocked_head_middle_removal_keeps_order)
                                      BREAK_NET_PROTOCOL_VERSION, second,
                                      sizeof(second)), BREAK_NET_SEND_OK);
 
-    ASSERT_EQ(snow_network_buffer_create(&plain), SNOW_OK);
-    while (snow_network_buffer_length(plain) < 2u * 22u) {
+    ASSERT_EQ(SnowNetworkBufferCreate(&plain), SNOW_OK);
+    while (SnowNetworkBufferLength(plain) < 2u * 22u) {
         ASSERT_EQ(tls_test_client_pump(&bclient, plain, deadline), 1);
     }
-    ASSERT_EQ(snow_network_buffer_copy_to(plain, frame, 22u, &copied), SNOW_OK);
+    ASSERT_EQ(SnowNetworkBufferCopyTo(plain, frame, 22u, &copied), SNOW_OK);
     ASSERT_EQ(break_net_envelope_decode(frame, copied, &env), BREAK_NET_ENVELOPE_OK);
     ASSERT_EQ(env.message_id, BREAK_NET_MESSAGE_ID_PING);
     ASSERT_EQ(env.payload_size, 4u);
     ASSERT_TRUE(memcmp(env.payload, first, sizeof(first)) == 0);
-    ASSERT_EQ(snow_network_buffer_move_header(plain, 22u), SNOW_OK);
-    ASSERT_EQ(snow_network_buffer_copy_to(plain, frame, 22u, &copied), SNOW_OK);
+    ASSERT_EQ(SnowNetworkBufferMoveHeader(plain, 22u), SNOW_OK);
+    ASSERT_EQ(SnowNetworkBufferCopyTo(plain, frame, 22u, &copied), SNOW_OK);
     ASSERT_EQ(break_net_envelope_decode(frame, copied, &env), BREAK_NET_ENVELOPE_OK);
     ASSERT_TRUE(memcmp(env.payload, second, sizeof(second)) == 0);
-    snow_network_buffer_destroy(plain);
+    SnowNetworkBufferDestroy(plain);
     /* A's blocked command never left; B's two were removed from the middle
      * and the (new) tail without disturbing order. */
     ASSERT_EQ(break_net_reactor_outbound_count(server.reactor), 1u);

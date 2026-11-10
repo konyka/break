@@ -8,6 +8,11 @@
 #include <ecs/ecs.h>
 #include <math/math.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define BREAK_NAV_MAX_POINTS 256u
 #define BREAK_SIGHT_MAX_TARGETS 8u
 #define BREAK_STEER_MAX_NEIGHBORS 16u
@@ -238,3 +243,7 @@ BreakNavError break_ai_smart_object_release(BreakAiRuntime *runtime,
 BreakNavError break_ai_smart_object_owner(BreakAiRuntime *runtime,
                                           BreakAiSmartObjectHandle handle,
                                           Entity *out_owner);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

@@ -3,7 +3,12 @@ cmake_minimum_required(VERSION 3.20)
 #   major = 破坏性变更（OpenGL 已决定长期保留，不占用 major 版号）；
 #   minor = 新后端/新能力；patch = 修复。版本唯一来源本 project() VERSION；
 #   tag 名 v<x.y.z> 与之严格相等（契约测试比对；tag 由 maintainer 发布时创建）。
-project(PureCEngine VERSION 1.9.0 LANGUAGES C)
+project(PureCEngine VERSION 1.9.0 LANGUAGES C CXX)
+# Dual-language policy: engine code is C11; C++ TUs (tests, wrappers, the
+# Windows-only DLSS adapter) build as C++20. Public C API headers must stay
+# C++20-consumable (extern "C" guards); test_public_api_cpp20 pins this.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -47,6 +52,8 @@ set(SNOWFLAKE_SOURCE_DIR "" CACHE PATH
     "Snowflake source tree required by the Break network adapter")
 option(BREAK_ENABLE_CRYPTO
     "Enable the break_crypto OpenSSL EVP wrapper library (Stage 5)" ON)
+option(BREAK_ENABLE_QUIC
+    "Enable break_net_quic over Snowflake's vendored ngtcp2 adapter; requires BREAK_ENABLE_SNOWFLAKE=ON, BREAK_ENABLE_CRYPTO=ON and OpenSSL >= 3.5 (QUIC TLS seam). POSIX-only v1. See docs/design/quic_transport.md" OFF)
 option(BREAK_ENABLE_CRASH
     "Enable the break_crash crash-record/spool library (Stage 5 Phase C)" ON)
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
@@ -392,7 +399,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
     # configure time. The pin below is mirrored by the snowflake entry in
     # engine/external/locked_dependencies.json and the pin policy in
     # docs/design/snowflake_c11_adapter.md; all three move in one commit.
-    set(BREAK_SNOWFLAKE_PIN "0fceed6d885bb8578743d82cc4a5d7ab2f6b0620")  # snowflake main HEAD 2026-10-24
+    set(BREAK_SNOWFLAKE_PIN "696a1ec57163f91d7c2795debc8cab3a359cef44")  # snowflake main HEAD 2026-11-08
     execute_process(
         COMMAND git -C "${SNOWFLAKE_SOURCE_DIR}" rev-parse HEAD
         RESULT_VARIABLE _break_snowflake_rev_result
@@ -428,6 +435,24 @@ if(BREAK_ENABLE_SNOWFLAKE)
     set(SNOW_BUILD_TESTS OFF CACHE BOOL "Snowflake tests are not part of Break builds" FORCE)
     set(SNOW_BUILD_EXAMPLES OFF CACHE BOOL "Snowflake examples are not part of Break builds" FORCE)
     set(SNOW_BUILD_BENCH OFF CACHE BOOL "Snowflake benchmarks are not part of Break builds" FORCE)
+    # QUIC transport (docs/design/quic_transport.md): snow builds its vendored
+    # ngtcp2 + OpenSSL (>= 3.5, QUIC TLS seam) adapter. fail-closed: snow's
+    # vendored-ngtcp2 find_package(OpenSSL 3.5.0 REQUIRED) aborts configure on
+    # an older OpenSSL, and the adapter target check below aborts on a
+    # snow tree without it.
+    if(BREAK_ENABLE_QUIC)
+        if(NOT BREAK_ENABLE_CRYPTO)
+            message(FATAL_ERROR
+                "BREAK_ENABLE_QUIC=ON requires BREAK_ENABLE_CRYPTO=ON (one "
+                "OpenSSL story: OPENSSL_ROOT_DIR feeds both).")
+        endif()
+        set(SNOW_USE_VENDORED_NGTCP2 ON CACHE BOOL
+            "Vendored ngtcp2 for break_net_quic" FORCE)
+        set(SNOW_ENABLE_QUIC_NGTCP2 ON CACHE BOOL
+            "Snowflake ngtcp2 QUIC adapter for break_net_quic" FORCE)
+        set(SNOW_ENABLE_TRANSPORT_MANAGER ON CACHE BOOL
+            "Transport manager contract required by the QUIC adapter" FORCE)
+    endif()
     # Stage 4 Phase 4 Task 1 (documented deviation): snow::warnings is an
     # INTERFACE library whose -Wconversion/-Wfloat-equal/-Wcast-qual/... flag
     # set leaks directory-wide once snow is added via add_subdirectory. That
@@ -482,6 +507,40 @@ if(BREAK_ENABLE_SNOWFLAKE)
         message(STATUS
             "Break Snowflake adapter: snow OpenSSL enabled (SNOW_HAVE_OPENSSL=${SNOW_HAVE_OPENSSL})")
     endif()
+endif()
+
+# break_net_quic (docs/design/quic_transport.md): QUIC transport channel over
+# snow's pinned ngtcp2 adapter. The module carries no QUIC/TLS code of its
+# own; POSIX-only v1 (sockets + poll), mirroring the break_http platform
+# boundary. Fail-closed when requested but unavailable.
+if(BREAK_ENABLE_QUIC)
+    if(NOT BREAK_ENABLE_SNOWFLAKE)
+        message(FATAL_ERROR
+            "BREAK_ENABLE_QUIC=ON requires BREAK_ENABLE_SNOWFLAKE=ON: the "
+            "module is a thin channel over Snowflake's ngtcp2 adapter and "
+            "carries no QUIC implementation of its own.")
+    endif()
+    if(WIN32)
+        message(FATAL_ERROR
+            "BREAK_ENABLE_QUIC is POSIX-only in v1 (sockets + poll); Windows "
+            "support is a documented follow-up.")
+    endif()
+    if(NOT TARGET snow_quic_ngtcp2_adapter)
+        message(FATAL_ERROR
+            "BREAK_ENABLE_QUIC=ON but the pinned Snowflake tree did not "
+            "produce snow_quic_ngtcp2_adapter (needs OpenSSL >= 3.5 with the "
+            "QUIC TLS seam). See docs/design/quic_transport.md section 10.")
+    endif()
+    message(STATUS "Break QUIC transport: enabled (snow ngtcp2 adapter)")
+    add_library(break_net_quic STATIC src/network/break_net_quic.c)
+    set_property(TARGET break_net_quic PROPERTY C_STANDARD 11)
+    target_include_directories(break_net_quic PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    # break_net supplies the envelope codec (no duplication), break_crypto the
+    # HMAC/CSPRNG for CHALLENGE/AUTH-v2; both are guaranteed present by the
+    # gate above (QUIC requires SNOWFLAKE + CRYPTO).
+    target_link_libraries(break_net_quic PUBLIC snow_quic_ngtcp2_adapter
+        break_net break_crypto)
 endif()
 
 # Windows non-MSVC toolchains (Clang, MinGW GCC): FindOpenSSL only searches the
@@ -2777,6 +2836,17 @@ if(ENGINE_BUILD_TESTS)
     add_executable(test_rule_engine tests/test_rule_engine.c)
     set_property(TARGET test_rule_engine PROPERTY C_STANDARD 99)
     target_include_directories(test_rule_engine PRIVATE ${TEST_INCLUDE_DIRS})
+
+    # Dual-language gate (docs/Build_Guide.md): the public C API headers must
+    # compile and link from a C++20 TU. Links engine for the platform macros
+    # and one live cross-language call.
+    add_executable(test_public_api_cpp20 tests/test_public_api_cpp20.cpp)
+    set_property(TARGET test_public_api_cpp20 PROPERTY CXX_STANDARD 20)
+    set_property(TARGET test_public_api_cpp20 PROPERTY CXX_STANDARD_REQUIRED ON)
+    target_include_directories(test_public_api_cpp20 PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_public_api_cpp20 PRIVATE engine)
+    add_test(NAME test_public_api_cpp20 COMMAND test_public_api_cpp20)
+    set_tests_properties(test_public_api_cpp20 PROPERTIES LABELS "headless;platform_contract")
     target_link_libraries(test_rule_engine PRIVATE rule_engine_core)
     if(RULE_ENGINE_ENABLE_REDIS AND RULE_ENGINE_HAS_HIREDIS)
         target_compile_definitions(test_rule_engine PRIVATE RE_HAS_HIREDIS)
@@ -3797,7 +3867,10 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
     # macOS 上 engine configure 恒要求 shaderc+Vulkan（molten-vk 无
     # libvulkan.dylib，自动发现必败），把外层已解析的路径透传给嵌套
-    # configure；其他平台这些变量未定义/为空时不传。
+    # configure；其他平台这些变量未定义/为空时不传。BREAK_ENABLE_CRYPTO
+    # 同样透传：无 OpenSSL 的主机外层以 =OFF 配置，嵌套 configure 沿用，
+    # 否则会在 find_package(OpenSSL REQUIRED) 处失败，与被测的后端选择
+    # 契约无关。
     set(_rhi_selector_toolchain_defs)
     foreach(_rhi_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR OPENSSL_ROOT_DIR)
         if(DEFINED ${_rhi_def} AND NOT "${${_rhi_def}}" STREQUAL "")
@@ -3810,6 +3883,7 @@ endif()
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/rhi-selector-contract
             -DENGINE_ENABLE_WAYLAND=${ENGINE_ENABLE_WAYLAND}
+            -DBREAK_ENABLE_CRYPTO=${BREAK_ENABLE_CRYPTO}
             ${_rhi_selector_toolchain_defs}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_selection.cmake)
     add_test(NAME test_locked_dependencies
@@ -5370,7 +5444,8 @@ endif()
         target_include_directories(test_break_session PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-            target_compile_options(test_break_session PRIVATE -Wno-type-limits -Wno-maybe-uninitialized)
+            target_compile_options(test_break_session PRIVATE -Wno-type-limits
+                $<$<C_COMPILER_ID:GNU>:-Wno-maybe-uninitialized>)
         endif()
         target_link_libraries(test_break_session PRIVATE break_net_test break_online)
         add_test(NAME test_break_session COMMAND test_break_session)
@@ -6481,6 +6556,31 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_http_target_contract.cmake)
         set_tests_properties(test_break_http_target_contract PROPERTIES
             LABELS "headless;security;platform_contract")
+    endif()
+
+    # break_net_quic (docs/design/quic_transport.md): real UDP loopback
+    # evidence, C API and C++20 wrapper in lockstep (dual-language policy).
+    if(TARGET break_net_quic)
+        add_executable(test_break_net_quic tests/test_break_net_quic.c)
+        set_property(TARGET test_break_net_quic PROPERTY C_STANDARD 11)
+        target_include_directories(test_break_net_quic PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_net_quic PRIVATE
+            BREAK_TEST_SSL_FIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl)
+        target_link_libraries(test_break_net_quic PRIVATE break_net_quic)
+        add_test(NAME test_break_net_quic COMMAND test_break_net_quic)
+        set_tests_properties(test_break_net_quic PROPERTIES
+            LABELS "headless;network;snowflake;quic" TIMEOUT 120)
+
+        add_executable(test_break_net_quic_cpp20 tests/test_break_net_quic_cpp20.cpp)
+        set_property(TARGET test_break_net_quic_cpp20 PROPERTY CXX_STANDARD 20)
+        set_property(TARGET test_break_net_quic_cpp20 PROPERTY CXX_STANDARD_REQUIRED ON)
+        target_include_directories(test_break_net_quic_cpp20 PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_net_quic_cpp20 PRIVATE
+            BREAK_TEST_SSL_FIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl)
+        target_link_libraries(test_break_net_quic_cpp20 PRIVATE break_net_quic)
+        add_test(NAME test_break_net_quic_cpp20 COMMAND test_break_net_quic_cpp20)
+        set_tests_properties(test_break_net_quic_cpp20 PROPERTIES
+            LABELS "headless;network;snowflake;quic" TIMEOUT 120)
     endif()
 
     if(BREAK_ENABLE_CRYPTO AND TARGET break_http AND TARGET break_update AND TARGET break_manifest_tool

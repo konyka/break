@@ -61,6 +61,11 @@
 
 #include <core/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 /* engine/src/update/break_update.h — manifest is canonical text (UTF-8 ASCII subset, LF):
  *   break-manifest-v1
  *   version: MAJOR.MINOR.PATCH
@@ -128,3 +133,6 @@ bool break_update_store_put_chunk(BreakUpdateStore *s, const void *data, usize l
 bool break_update_store_has_chunk(BreakUpdateStore *s, const char *sha256_hex_name);
 bool break_update_store_get_chunk(BreakUpdateStore *s, const char *sha256_hex_name,
                                   u8 **out_buf, u64 *out_len);   /* false on miss/corruption */
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

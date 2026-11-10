@@ -84,6 +84,11 @@
 #include <core/types.h>
 #include <update/break_update.h> /* BreakUpdateManifest (Phase A header stays stable) */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 typedef struct BreakUpdateClient BreakUpdateClient;
 BreakUpdateClient *break_update_client_open(const char *root_path);  /* creates layout+initial state if absent; NULL on error/corrupt */
 void break_update_client_destroy(BreakUpdateClient *c);
@@ -275,3 +280,6 @@ bool break_update_client_unstage(BreakUpdateClient *c);
  *    ≤128-byte names). No new _WIN32 branches (plan Global Constraints);
  *    the open-time root path bound now covers the deepest join:
  *    "/slots/A/files/" + 128-byte name + the writer's ".tmpXXXXXX" + NUL. */
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

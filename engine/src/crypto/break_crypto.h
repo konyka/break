@@ -1,6 +1,11 @@
 #pragma once
 #include <core/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 /* ==========================================================================
  *  break_crypto — thin C11 wrapper over the system OpenSSL 3 libcrypto EVP
  *  API (Stage 5 Phase A Task 2; primitive layer of the update trust chain in
@@ -48,3 +53,6 @@ bool break_crypto_hmac_sha256(const void *key, usize key_len,
 bool break_crypto_ed25519_verify(const u8 sig[64], const void *msg, usize msg_len,
                                  const u8 pubkey[32]);                    /* false = invalid/failure */
 bool break_crypto_random(u8 *out, usize len);                             /* CSPRNG; false on failure */
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

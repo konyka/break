@@ -1,3 +1,12 @@
+/* clock_gettime needs _POSIX_C_SOURCE >= 199309L before any system header;
+ * a manual extern declaration conflicts with <time.h> once Snowflake headers
+ * (pulled in via break_net_adapter.h) provide the real prototype. */
+#if !defined(_WIN32) && !defined(ENGINE_PLATFORM_WINDOWS)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 199309L
+#endif
+#endif
+
 #include "test_framework.h"
 #include <network/break_net_adapter.h>
 #include <network/break_net_envelope.h>
@@ -24,7 +33,6 @@ extern int usleep(unsigned int);
 #ifndef CLOCK_MONOTONIC
 #define CLOCK_MONOTONIC 1
 #endif
-extern int clock_gettime(int, struct timespec *);
 
 static uint64_t break_session_monotonic_us(void)
 {
@@ -758,29 +766,29 @@ TEST(break_session_wire_auth_reaches_handler_and_sends_response)
     uint8_t response_wire[BREAK_NET_ENVELOPE_MAX_SIZE];
     size_t auth_size = 0u;
     int client_fd = -1;
-    snow_endpoint_t *endpoint = NULL;
-    snow_acceptor_t *acceptor = NULL;
+    SnowEndpoint *endpoint = NULL;
+    SnowAcceptor *acceptor = NULL;
     BreakNetReactor *reactor = break_net_reactor_create(&reactor_config);
     BreakSessionManager *manager = break_session_manager_create(&session_config);
     size_t i;
 
     ASSERT_NOT_NULL(reactor);
     ASSERT_NOT_NULL(manager);
-    ASSERT_EQ(snow_endpoint_create(&endpoint), SNOW_OK);
-    ASSERT_EQ(snow_endpoint_set_host(endpoint, "127.0.0.1"), SNOW_OK);
-    ASSERT_EQ(snow_endpoint_set_port(endpoint, 0), SNOW_OK);
-    ASSERT_EQ(snow_acceptor_create(endpoint, &acceptor), SNOW_OK);
-    snow_endpoint_destroy(endpoint);
+    ASSERT_EQ(SnowEndpointCreate(&endpoint), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetHost(endpoint, "127.0.0.1"), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetPort(endpoint, 0), SNOW_OK);
+    ASSERT_EQ(SnowAcceptorCreate(endpoint, &acceptor), SNOW_OK);
+    SnowEndpointDestroy(endpoint);
     endpoint = NULL;
-    ASSERT_EQ(snow_acceptor_bind(acceptor, 1), SNOW_OK);
+    ASSERT_EQ(SnowAcceptorBind(acceptor, 1), SNOW_OK);
     {
-        const snow_endpoint_t *bound = snow_acceptor_endpoint(acceptor);
+        const SnowEndpoint *bound = SnowAcceptorEndpoint(acceptor);
         struct sockaddr_in address = {0};
         client_fd = socket(AF_INET, SOCK_STREAM, 0);
         ASSERT_TRUE(client_fd >= 0);
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        address.sin_port = htons((uint16_t)snow_endpoint_port(bound));
+        address.sin_port = htons((uint16_t)SnowEndpointPort(bound));
         ASSERT_EQ(connect(client_fd, (const struct sockaddr *)&address,
                           sizeof(address)), 0);
     }
@@ -862,7 +870,7 @@ TEST(break_session_wire_auth_reaches_handler_and_sends_response)
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_session_manager_destroy(manager);
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
 }
 
 TEST(break_session_registry_auth_versions_match_crypto_mode)
@@ -958,40 +966,40 @@ static bool break_session_auth_key(void *user, const u8 key_id[8], u8 out_psk[32
 typedef struct BreakSessionAuthFixture {
     BreakNetReactor *reactor;
     BreakSessionManager *manager;
-    snow_acceptor_t *acceptor;
+    SnowAcceptor *acceptor;
     int fd;
     uint64_t key;
     uint8_t server_nonce[16];
 } BreakSessionAuthFixture;
 
-static snow_acceptor_t *break_session_auth_acceptor(void)
+static SnowAcceptor *break_session_auth_acceptor(void)
 {
-    snow_endpoint_t *endpoint = NULL;
-    snow_acceptor_t *acceptor = NULL;
-    if (snow_endpoint_create(&endpoint) != SNOW_OK ||
-        snow_endpoint_set_host(endpoint, "127.0.0.1") != SNOW_OK ||
-        snow_endpoint_set_port(endpoint, 0) != SNOW_OK ||
-        snow_acceptor_create(endpoint, &acceptor) != SNOW_OK) {
-        snow_endpoint_destroy(endpoint);
+    SnowEndpoint *endpoint = NULL;
+    SnowAcceptor *acceptor = NULL;
+    if (SnowEndpointCreate(&endpoint) != SNOW_OK ||
+        SnowEndpointSetHost(endpoint, "127.0.0.1") != SNOW_OK ||
+        SnowEndpointSetPort(endpoint, 0) != SNOW_OK ||
+        SnowAcceptorCreate(endpoint, &acceptor) != SNOW_OK) {
+        SnowEndpointDestroy(endpoint);
         return NULL;
     }
-    snow_endpoint_destroy(endpoint);
-    if (snow_acceptor_bind(acceptor, 1) != SNOW_OK) {
-        snow_acceptor_destroy(acceptor);
+    SnowEndpointDestroy(endpoint);
+    if (SnowAcceptorBind(acceptor, 1) != SNOW_OK) {
+        SnowAcceptorDestroy(acceptor);
         return NULL;
     }
     return acceptor;
 }
 
-static int break_session_auth_connect(snow_acceptor_t *acceptor)
+static int break_session_auth_connect(SnowAcceptor *acceptor)
 {
-    const snow_endpoint_t *bound = snow_acceptor_endpoint(acceptor);
+    const SnowEndpoint *bound = SnowAcceptorEndpoint(acceptor);
     struct sockaddr_in address = {0};
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = htons((uint16_t)snow_endpoint_port(bound));
+    address.sin_port = htons((uint16_t)SnowEndpointPort(bound));
     if (connect(fd, (const struct sockaddr *)&address, sizeof(address)) != 0) {
         close(fd);
         return -1;
@@ -1049,7 +1057,7 @@ static void break_session_auth_fixture_close(BreakSessionAuthFixture *fixture)
     }
     break_session_manager_destroy(fixture->manager);
     break_net_reactor_destroy(fixture->reactor);
-    if (fixture->acceptor != NULL) snow_acceptor_destroy(fixture->acceptor);
+    if (fixture->acceptor != NULL) SnowAcceptorDestroy(fixture->acceptor);
     memset(fixture, 0, sizeof(*fixture));
     fixture->fd = -1;
 }
@@ -1273,7 +1281,7 @@ TEST(break_session_challenge_client_helper_answers_auth_v2)
     BreakSessionConfig session_config = {0};
     BreakNetReactor *reactor = NULL;
     BreakSessionManager *manager = NULL;
-    snow_acceptor_t *acceptor = NULL;
+    SnowAcceptor *acceptor = NULL;
     BreakNetOwnedMessage reply = {0};
     uint64_t connection = 0x909u;
     uint64_t outbound_connection = 0u;
@@ -1318,7 +1326,7 @@ TEST(break_session_challenge_client_helper_answers_auth_v2)
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_session_manager_destroy(manager);
     break_net_reactor_destroy(reactor);
-    snow_acceptor_destroy(acceptor);
+    SnowAcceptorDestroy(acceptor);
     ASSERT_TRUE(break_session_set_auth(NULL, NULL));
 }
 

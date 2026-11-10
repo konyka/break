@@ -4,8 +4,8 @@
 
 ### 1.1 编译器
 - `engine/` 是严格 C11 项目；CMake 会选择 GCC、Clang/AppleClang 或 MSVC 的 C 编译器，并启用严格警告。仓库没有在 CMake 中声明 GCC 11 或 Clang 14 的最低版本，因此具体工具链仍需能编译 C11 原子和项目依赖。
-- `framework/` 的 `common` 目标使用 C++11；仓库根 CMake 项目要求 CMake 3.25+。
-- `engine/` 的 CMake 最低版本是 3.20+。Linux Clang Release 的 IPO/LTO 配置还需要 `lld`。
+- **双语言策略（2026-11-08 起）**：引擎保持纯 C11；所有 C++ TU（`framework/`、应用胶水层、C++ 封装头）一律按 **C++20** 构建（根项目与 `engine/` 的 `CMAKE_CXX_STANDARD` 均为 20，`engine/` 现在启用 `LANGUAGES C CXX`）。公开的 `break_*.h` 模块 API 头文件必须可被 C++20 消费（`extern "C"` 守卫 + 无 C-only 构造；`core/types.h` 提供 `BREAK_AGG(T)` / `BREAK_STATIC_ASSERT` 双语拼写宏），由 `test_public_api_cpp20` 钉住。有意边界：`engine.h` 及以下的 runtime 头（platform/math/ecs/renderer 内部）保持 C-only。新增公共功能时 C API 与 C++20 封装同步交付。
+- `engine/` 的 CMake 最低版本是 3.20+，仓库根 CMake 项目要求 CMake 3.25+。Linux Clang Release 的 IPO/LTO 配置还需要 `lld`。
 
 #### 编译器支持矩阵
 
@@ -520,9 +520,25 @@ MoltenVK/Vulkan、`shaderc_shared` 和 FreeType。文件监视模块额外链接
 `BREAK_ENABLE_CRYPTO` 默认开启，需要 OpenSSL（libcrypto）。macOS 没有系统自带的
 可链接版本；OpenSSL 不在 Homebrew 默认前缀时，配置时加
 `-DOPENSSL_ROOT_DIR=<openssl 前缀>`。契约测试的最小链接用例会用解析到的
-`OPENSSL_CRYPTO_LIBRARY`，嵌套配置（`test_rhi_backend_selection`）也会继承该前缀。
+`OPENSSL_CRYPTO_LIBRARY`，嵌套配置（`test_rhi_backend_selection`）也会继承该前缀；
+无 OpenSSL 的主机可整体以 `-DBREAK_ENABLE_CRYPTO=OFF` 配置，嵌套配置同样继承
+该开关（后端选择契约与 crypto 无关）。
 `break_http` 在 `-Werror` 下同时支持 OpenSSL 3.x 与 4.x：4.0 起主机名校验用
 `SSL_set1_dnsname`（`SSL_set1_host` 已弃用），按 `OPENSSL_VERSION_MAJOR` 选择。
+
+QUIC 传输（可选）：`-DBREAK_ENABLE_QUIC=ON` 在 Snowflake 之上启用
+`break_net_quic`（契约见 `docs/design/quic_transport.md`）。需要
+`BREAK_ENABLE_SNOWFLAKE=ON` + `BREAK_ENABLE_CRYPTO=ON` + OpenSSL ≥ 3.5（QUIC TLS
+接缝；本机自编译的 4.x 可用），Snowflake 会构建其 vendored ngtcp2 v1.25.0
+（`third_party/NGTCP2_PROVENANCE.txt` 钉版）。v1 仅 POSIX/IPv4。构建并验证：
+
+```bash
+cmake -S engine -B build-quic -G Ninja -DBREAK_ENABLE_SNOWFLAKE=ON \
+  -DSNOWFLAKE_SOURCE_DIR=<pinned snow checkout> -DBREAK_ENABLE_QUIC=ON \
+  -DOPENSSL_ROOT_DIR=<openssl-3.5+ 前缀>
+cmake --build build-quic
+ctest --test-dir build-quic -R "quic" --output-on-failure
+```
 
 ```bash
 cd engine

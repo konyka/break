@@ -1,6 +1,19 @@
 #pragma once
 #include <core/types.h>
+
+/* C/C++ bilingual: _Atomic is C-only; C++ consumers get the
+ * layout-identical std::atomic spelling (engine code manipulates the
+ * field from C only). <atomic> and <stdatomic.h> are mutually exclusive
+ * before C++23 (libc++ hard error), so the includes stay on their own
+ * language branches. */
+#ifdef __cplusplus
+#include <atomic>
+typedef std::atomic<u32> ecs_atomic_u32;
+#else
 #include <stdatomic.h>
+typedef _Atomic u32 ecs_atomic_u32;
+#endif
+
 
 #define ECS_MAX_COMPONENTS 128
 #define ECS_CHUNK_SIZE     (16 * 1024)
@@ -16,7 +29,7 @@ typedef struct {
     u32 generation;
 } Entity;
 
-#define ENTITY_NULL ((Entity){0, 0})
+#define ENTITY_NULL (BREAK_AGG(Entity){0, 0})
 #define entity_valid(e) ((e).generation != 0)
 
 typedef struct {
@@ -102,7 +115,7 @@ typedef struct {
      * world concurrently — a plain read-modify-write claim hands two callers
      * the same slot, and one caller's query_done/reset then zeroes the other's
      * result mid-use (diagnosed via flaky test_ecs_system nested-dispatch). */
-    _Atomic u32 query_next_slot;
+    ecs_atomic_u32 query_next_slot;
 
     /* Query cache: maps signature hash to query slot for O(1) lookup */
     u32        query_cache[ECS_QUERY_CACHE_SIZE]; /* slot index, 0xFFFFFFFF = empty */
