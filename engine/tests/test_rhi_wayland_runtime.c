@@ -3,21 +3,29 @@
 #include "platform/platform.h"
 #include "rhi/rhi.h"
 
-#include <X11/Xlib.h>
+#include <wayland-client.h>
 
 static bool g_runtime_skip;
 
-static bool x11_runtime_available(void)
+static bool wayland_runtime_available(void)
 {
-    Display *display = XOpenDisplay(NULL);
+    struct wl_display *display = wl_display_connect(NULL);
     if (display == NULL) return false;
-    XCloseDisplay(display);
+    wl_display_disconnect(display);
     return true;
 }
 
-TEST(x11_glx_damage_frame_lifecycle)
+static void runtime_log_device(RHIDevice *device)
 {
-    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break GLX damage runtime"};
+    RHIDeviceInfo info;
+    memset(&info, 0, sizeof(info));
+    (void)rhi_device_get_info(device, &info);
+    printf("GPU RUNTIME backend=opengl device=%s\n", info.device_name);
+}
+
+TEST(wayland_egl_damage_frame_lifecycle)
+{
+    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break EGL damage runtime"};
     Platform *platform = platform_create(&config);
     RHIDevice *device = NULL;
     RHICapabilities capabilities;
@@ -37,19 +45,21 @@ TEST(x11_glx_damage_frame_lifecycle)
                                 platform_display_native(platform),
                                 drawable_width, drawable_height);
     if (device == NULL) {
+        printf("UNAVAILABLE backend=opengl reason=device-create\n");
         g_runtime_skip = true;
         platform_destroy(platform);
         return;
     }
+    runtime_log_device(device);
     rhi_set_vsync(device, false);
     if (!rhi_device_get_capabilities(device, &capabilities)) {
-        printf("  FAIL: GLX capabilities query failed\n");
+        printf("  FAIL: EGL capabilities query failed\n");
         g_test_fail++;
     } else {
         if (capabilities.present_target_preserved &&
             (!capabilities.present_damage_supported ||
              !capabilities.present_buffer_age_supported)) {
-            printf("  FAIL: GLX retained-present capability is incomplete\n");
+            printf("  FAIL: EGL retained-present capability is incomplete\n");
             g_test_fail++;
         }
         for (frame = 0u; frame < 3u; ++frame) {
@@ -59,7 +69,7 @@ TEST(x11_glx_damage_frame_lifecycle)
             bool partial = false;
             cmd = rhi_frame_begin_damage(device, &damage, 1u, &partial);
             if (cmd == NULL) {
-                printf("  FAIL: GLX damage frame begin failed\n");
+                printf("  FAIL: EGL damage frame begin failed\n");
                 g_test_fail++;
                 break;
             }
@@ -67,7 +77,7 @@ TEST(x11_glx_damage_frame_lifecycle)
                                       RHI_MAX_PRESENT_DAMAGE_RECTS,
                                       &effective_count) ||
                 effective_count == 0u) {
-                printf("  FAIL: GLX effective damage was empty\n");
+                printf("  FAIL: EGL effective damage was empty\n");
                 g_test_fail++;
             }
             (void)partial;
@@ -79,7 +89,7 @@ TEST(x11_glx_damage_frame_lifecycle)
     platform_destroy(platform);
 }
 
-TEST(x11_gl_f16_cubemap_roundtrip)
+TEST(wayland_gl_f16_cubemap_roundtrip)
 {
     /* R696: the R624/R625 color-cube byte contract on the GL backend —
      * RGBA16F faces upload natively at create and read back face-major
@@ -107,10 +117,12 @@ TEST(x11_gl_f16_cubemap_roundtrip)
                                 platform_display_native(platform),
                                 drawable_width, drawable_height);
     if (device == NULL) {
+        printf("UNAVAILABLE backend=opengl reason=device-create\n");
         g_runtime_skip = true;
         platform_destroy(platform);
         return;
     }
+    runtime_log_device(device);
     for (f = 0; f < 6; ++f) {
         for (i = 0; i < 4 * 4 * 4; i += 4) {
             faces[f][i + 0u] = (u16)(0x3C00u + (u16)f); /* R: 1.0h + face */
@@ -153,18 +165,21 @@ TEST(x11_gl_f16_cubemap_roundtrip)
 
 int main(void)
 {
-    if (!x11_runtime_available()) {
-        printf("SKIP: no reachable X11 display\n");
+    if (!wayland_runtime_available()) {
+        printf("UNAVAILABLE backend=opengl reason=no-wayland-compositor\n");
         return 77;
     }
     printf("=== Running Tests ===\n");
-    RUN_TEST(x11_glx_damage_frame_lifecycle);
-    RUN_TEST(x11_gl_f16_cubemap_roundtrip);
-    if (g_runtime_skip && g_test_fail == 0) {
-        printf("SKIP: OpenGL/GLX runtime is unavailable\n");
-        return 77;
-    }
+    RUN_TEST(wayland_egl_damage_frame_lifecycle);
+    RUN_TEST(wayland_gl_f16_cubemap_roundtrip);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);
+    if (g_runtime_skip && g_test_fail == 0) {
+        printf("UNAVAILABLE backend=opengl reason=runtime-incomplete\n");
+        return 77;
+    }
+    if (g_test_fail == 0) {
+        printf("PASS backend=opengl tests=%d\n", g_test_count);
+    }
     return g_test_fail > 0 ? 1 : 0;
 }

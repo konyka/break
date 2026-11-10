@@ -1757,14 +1757,9 @@ if(MYUI_BIDI)
     list(APPEND MYUI_CORE_SOURCES external/SheenBidi/Source/SheenBidi.c)
 endif()
 
-# MYUI_PAL x11 engine integration: compile the PAL dispatcher and the
-# real port into myui_core so in-tree consumers (myui_explorer) can use
-# my_pal_create() with a live desktop port.
-if(MYUI_PAL STREQUAL "x11")
-    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
-        src/myui/mypal/dummy/my_pal_dummy.c
-        src/myui/mypal/x11/my_pal_x11.c)
-elseif(MYUI_PAL STREQUAL "win32" AND WIN32)
+# Native PAL integration: compile the dispatcher and selected port into
+# myui_core so in-tree consumers use my_pal_create() with a live desktop port.
+if(MYUI_PAL STREQUAL "win32" AND WIN32)
     list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
         src/myui/mypal/dummy/my_pal_dummy.c
         src/myui/mypal/win32/my_pal_win32.c)
@@ -1810,30 +1805,18 @@ elseif(MYUI_PAL STREQUAL "wayland")
 endif()
 
 add_library(myui_core STATIC ${MYUI_CORE_SOURCES})
-if(MYUI_PAL STREQUAL "x11")
-    target_compile_definitions(myui_core PUBLIC MYUI_PAL_X11=1)
-    target_link_libraries(myui_core PUBLIC ${X11_LIBRARIES} EGL)
-elseif(MYUI_PAL STREQUAL "win32" AND WIN32)
-    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
-        src/myui/mypal/dummy/my_pal_dummy.c
-        src/myui/mypal/win32/my_pal_win32.c)
-elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
-    enable_language(OBJC)
-    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
-        src/myui/mypal/dummy/my_pal_dummy.c
-        src/myui/mypal/cocoa/my_pal_cocoa.m)
-elseif(MYUI_PAL STREQUAL "wayland")
-    target_compile_definitions(myui_core PUBLIC MYUI_PAL_WAYLAND=1)
-    target_include_directories(myui_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}
-        ${ENGINE_PAL_WL_INCLUDE_DIRS})
-    target_link_libraries(myui_core PUBLIC ${ENGINE_PAL_WL_LIBRARIES})
-elseif(MYUI_PAL STREQUAL "win32" AND WIN32)
+if(MYUI_PAL STREQUAL "win32" AND WIN32)
     target_compile_definitions(myui_core PUBLIC MYUI_PAL_WIN32=1)
     target_link_libraries(myui_core PUBLIC gdi32 user32 opengl32)
 elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
     target_compile_definitions(myui_core PUBLIC MYUI_PAL_COCOA=1)
     target_link_libraries(myui_core PUBLIC "-framework Cocoa"
         "-framework OpenGL")
+elseif(MYUI_PAL STREQUAL "wayland")
+    target_compile_definitions(myui_core PUBLIC MYUI_PAL_WAYLAND=1)
+    target_include_directories(myui_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}
+        ${ENGINE_PAL_WL_INCLUDE_DIRS})
+    target_link_libraries(myui_core PUBLIC ${ENGINE_PAL_WL_LIBRARIES})
 endif()
 target_include_directories(myui_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -2692,20 +2675,16 @@ target_link_libraries(myui_widgets_demo PRIVATE myui_core m Threads::Threads)
 add_test(NAME myui_widgets_demo_smoke COMMAND myui_widgets_demo ${CMAKE_CURRENT_BINARY_DIR})
 
 # Interactive explorer: live chart driven by real widgets with switchable
-# backends (software / GL) and window systems (X11 / Wayland), plus a
-# headless --selftest mode that renders a scripted interaction sequence.
+# software / GL rendering on Wayland, plus headless selftest and screenshots.
 if(NOT WIN32 AND NOT APPLE)
 find_program(WAYLAND_SCANNER wayland-scanner)
 find_package(PkgConfig QUIET)
-# The explorer's retained legacy runner owns its package lookup independently
-# of the native engine platform (Task 2 removes that runner).
-find_package(X11 QUIET)
 if(PkgConfig_FOUND)
   pkg_check_modules(EX_WAYLAND QUIET wayland-client wayland-egl egl glesv2)
 endif()
 endif()
 if(NOT WIN32 AND NOT APPLE AND WAYLAND_SCANNER AND EX_WAYLAND_FOUND)
-  set(EX_EXPLORER_PLATFORMS "x11+wayland, soft+gl")
+  set(EX_EXPLORER_PLATFORMS "wayland, soft+gl; headless")
   execute_process(
       COMMAND ${WAYLAND_SCANNER} client-header
               /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
@@ -2717,22 +2696,15 @@ if(NOT WIN32 AND NOT APPLE AND WAYLAND_SCANNER AND EX_WAYLAND_FOUND)
   set(EX_EXPLORER_SOURCES tools/myui_explorer.c
       ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c)
   set(EX_EXPLORER_DEFS "")
-  set(EX_EXPLORER_LIBS ${EX_WAYLAND_LIBRARIES} ${X11_LIBRARIES})
+  set(EX_EXPLORER_LIBS ${EX_WAYLAND_LIBRARIES})
   set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
-      ${CMAKE_CURRENT_BINARY_DIR} ${EX_WAYLAND_INCLUDE_DIRS}
-      ${X11_INCLUDE_DIR})
+      ${CMAKE_CURRENT_BINARY_DIR} ${EX_WAYLAND_INCLUDE_DIRS})
 else()
-  set(EX_EXPLORER_PLATFORMS "x11 only, soft only (wayland/EGL dev pkgs missing)")
+  set(EX_EXPLORER_PLATFORMS "headless only (wayland/EGL dev pkgs missing)")
   set(EX_EXPLORER_SOURCES tools/myui_explorer.c)
   set(EX_EXPLORER_DEFS EX_EXPLORER_NO_WAYLAND=1)
-  set(EX_EXPLORER_LIBS ${X11_LIBRARIES})
-  set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
-      ${X11_INCLUDE_DIR})
-endif()
-if(NOT WIN32 AND NOT APPLE AND NOT X11_FOUND)
-  # Headless-only explorer: selftest/--shot still work, the interactive
-  # runners report "not supported in this build".
-  list(APPEND EX_EXPLORER_DEFS EX_EXPLORER_NO_X11=1)
+  set(EX_EXPLORER_LIBS "")
+  set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
 endif()
 if(WIN32)
   list(APPEND EX_EXPLORER_SOURCES tools/ex_platform_win32.c)
@@ -3044,14 +3016,16 @@ if(ENGINE_BUILD_TESTS)
     set_tests_properties(test_rhi_vk_probe PROPERTIES
         LABELS "headless;platform_contract")
 
-    if(ENGINE_PLATFORM STREQUAL "linux" AND NOT ENGINE_ENABLE_WAYLAND)
+    if(ENGINE_PLATFORM STREQUAL "linux" AND ENGINE_ENABLE_WAYLAND)
         if(NOT ENGINE_VULKAN)
-            add_executable(test_rhi_x11_runtime tests/test_rhi_x11_runtime.c)
-            target_include_directories(test_rhi_x11_runtime PRIVATE ${TEST_INCLUDE_DIRS})
-            target_link_libraries(test_rhi_x11_runtime PRIVATE engine m)
-            engine_link_rhi_backend(test_rhi_x11_runtime)
-            add_test(NAME test_rhi_x11_runtime COMMAND test_rhi_x11_runtime)
-            set_tests_properties(test_rhi_x11_runtime PROPERTIES
+            add_executable(test_rhi_wayland_runtime tests/test_rhi_wayland_runtime.c)
+            target_include_directories(test_rhi_wayland_runtime PRIVATE
+                ${TEST_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS})
+            target_link_libraries(test_rhi_wayland_runtime PRIVATE engine m
+                ${WAYLAND_LIBRARIES})
+            engine_link_rhi_backend(test_rhi_wayland_runtime)
+            add_test(NAME test_rhi_wayland_runtime COMMAND test_rhi_wayland_runtime)
+            set_tests_properties(test_rhi_wayland_runtime PROPERTIES
                 LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
 
             add_executable(test_mesh_gpu_gl tests/test_mesh_gpu_gl.c)
@@ -3176,17 +3150,6 @@ if(ENGINE_BUILD_TESTS)
         ${ENGINE_PAL_WL_LIBRARIES} Threads::Threads)
     add_test(NAME test_mypal_wayland COMMAND test_mypal_wayland)
     set_tests_properties(test_mypal_wayland PROPERTIES
-        LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
-endif()
-
-if(MYUI_PAL STREQUAL "x11")
-    add_executable(test_mypal_x11 tests/test_mypal_x11.c)
-    target_include_directories(test_mypal_x11 PRIVATE
-        ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
-    target_link_libraries(test_mypal_x11 PRIVATE myui_core m
-        ${X11_LIBRARIES} EGL Threads::Threads)
-    add_test(NAME test_mypal_x11 COMMAND test_mypal_x11)
-    set_tests_properties(test_mypal_x11 PROPERTIES
         LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
 endif()
 
@@ -4268,6 +4231,13 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_x11_removal_contract.cmake)
         set_tests_properties(test_x11_removal_contract PROPERTIES
             LABELS "headless;platform_contract" TIMEOUT 120)
+        add_test(NAME test_rhi_glx_x11_removal_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DBREAK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_glx_x11_removal_contract.cmake)
+        set_tests_properties(test_rhi_glx_x11_removal_contract PROPERTIES
+            LABELS "headless;platform_contract")
     endif()
     add_test(NAME test_platform_wsi_wiring_contract
         COMMAND ${CMAKE_COMMAND}

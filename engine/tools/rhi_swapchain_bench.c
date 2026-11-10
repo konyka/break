@@ -136,6 +136,8 @@ int main(int argc, char **argv) {
         env_or("RECEIPT_TIMESTAMP", "unknown"),
 #ifdef ENGINE_PLATFORM_WINDOWS
         "windows",
+#elif defined(ENGINE_PLATFORM_WAYLAND)
+        "linux-wayland",
 #elif defined(ENGINE_PLATFORM_LINUX)
         "linux",
 #elif defined(ENGINE_PLATFORM_MACOS)

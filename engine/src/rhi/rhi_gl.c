@@ -145,14 +145,6 @@ bool rhi_backend_acceleration_structure_get_vk_handle(
         EGLDisplay, EGLSurface, const EGLint *, EGLint);
 #elif defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_ANDROID) || defined(ENGINE_PLATFORM_HARMONYOS)
     #error "OpenGL host surface integration is not provided for this mobile target"
-#elif defined(ENGINE_PLATFORM_LINUX)
-    #include <GL/glx.h>
-    #include <X11/Xlib.h>
-    #ifndef GLX_BACK_BUFFER_AGE_EXT
-        #define GLX_BACK_BUFFER_AGE_EXT 0x20F4
-    #endif
-    typedef void (*PFN_break_glx_swap_buffers_with_damage)(
-        Display *, GLXDrawable, const int *, int);
 #else
     #error "OpenGL host surface integration is not provided for this platform"
 #endif
@@ -175,14 +167,6 @@ typedef struct {
     bool                 buffer_age_supported;
     RHIPresentDamageHistory damage_history;
     bool                 damage_history_valid;
-#else
-    Display   *display;
-    Window     window;
-    GLXContext gl_ctx;
-    PFN_break_glx_swap_buffers_with_damage swap_buffers_with_damage;
-    bool       buffer_age_supported;
-    RHIPresentDamageHistory damage_history;
-    bool       damage_history_valid;
 #endif
     /* R672: one fence per frame slot, inserted at frame end and waited on
      * when the slot is reused (rhi_frame_begin), as VK and D3D12 do. The
@@ -723,87 +707,6 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
         free(gl);
         return false;
     }
-#else
-    Display *dpy = (Display *)display_native;
-    if (!dpy) { LOG_FATAL("GL: null display"); free(gl); return false; }
-
-    static int visual_attribs[] = {
-        GLX_RENDER_TYPE, GLX_RGBA_BIT,
-        GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
-        GLX_DOUBLEBUFFER, True,
-        GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8, GLX_ALPHA_SIZE, 8,
-        GLX_DEPTH_SIZE, 24,
-        None
-    };
-
-    int fb_count = 0;
-    Window win = (Window)(uintptr_t)window_native;
-    XWindowAttributes window_attributes;
-    VisualID window_visual_id;
-    GLXFBConfig best_fbc = NULL;
-    GLXFBConfig *fbc;
-    int fbc_index;
-
-    if (!XGetWindowAttributes(dpy, win, &window_attributes) ||
-        window_attributes.visual == NULL) {
-        LOG_FATAL("GL: failed to query X11 window visual");
-        free(gl);
-        return false;
-    }
-    window_visual_id = XVisualIDFromVisual(window_attributes.visual);
-    fbc = glXChooseFBConfig(dpy, DefaultScreen(dpy), visual_attribs, &fb_count);
-    if (!fbc || fb_count == 0) { LOG_FATAL("GL: no framebuffer config"); free(gl); return false; }
-    for (fbc_index = 0; fbc_index < fb_count; ++fbc_index) {
-        XVisualInfo *visual = glXGetVisualFromFBConfig(dpy, fbc[fbc_index]);
-        bool matches = visual != NULL && visual->visualid == window_visual_id;
-        if (visual != NULL) XFree(visual);
-        if (matches) {
-            best_fbc = fbc[fbc_index];
-            break;
-        }
-    }
-    XFree(fbc);
-    if (best_fbc == NULL) {
-        LOG_FATAL("GL: no framebuffer config matches X11 window visual");
-        free(gl);
-        return false;
-    }
-
-    gl->gl_ctx = glXCreateNewContext(dpy, best_fbc, GLX_RGBA_TYPE, NULL, True);
-    if (!gl->gl_ctx) { LOG_FATAL("GL: failed to create context"); free(gl); return false; }
-
-    if (!glXMakeCurrent(dpy, win, gl->gl_ctx)) {
-        LOG_FATAL("GL: failed to make context current");
-        glXDestroyContext(dpy, gl->gl_ctx);
-        free(gl);
-        return false;
-    }
-
-    gl->display = dpy;
-    gl->window  = win;
-
-    if (!gladLoadGLLoader((GLADloadproc)glXGetProcAddress)) {
-        LOG_FATAL("GL: failed to load OpenGL functions");
-        glXMakeCurrent(dpy, None, NULL);
-        glXDestroyContext(dpy, gl->gl_ctx);
-        free(gl);
-        return false;
-    }
-    {
-        const char *extensions =
-            glXQueryExtensionsString(dpy, DefaultScreen(dpy));
-        bool has_age = gl_extension_has(extensions, "GLX_EXT_buffer_age");
-        bool has_damage = gl_extension_has(
-            extensions, "GLX_EXT_swap_buffers_with_damage");
-        gl->buffer_age_supported = has_age;
-        if (has_damage) {
-            gl->swap_buffers_with_damage =
-                (PFN_break_glx_swap_buffers_with_damage)glXGetProcAddress(
-                    (const GLubyte *)"glXSwapBuffersWithDamageEXT");
-        }
-        gl->damage_history_valid =
-            rhi_present_damage_history_init(&gl->damage_history, w, h);
-    }
 #endif
 
     LOG_INFO("OpenGL %s initialized (%s / %s)", (const char *)glGetString(GL_VERSION),
@@ -854,15 +757,6 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
             dev->capabilities.present_damage_supported && has_age &&
             preserved && gl->damage_history_valid;
     }
-#elif !defined(ENGINE_PLATFORM_WINDOWS)
-    dev->capabilities.present_damage_supported =
-        gl->swap_buffers_with_damage != NULL;
-    dev->capabilities.present_buffer_age_supported =
-        gl->buffer_age_supported;
-    dev->capabilities.present_target_preserved =
-        dev->capabilities.present_damage_supported &&
-        dev->capabilities.present_buffer_age_supported &&
-        gl->damage_history_valid;
 #endif
     dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
     dev->capabilities.depth_sample_counts = rhi_sample_count_bit(1u);
@@ -955,9 +849,6 @@ static void gl_shutdown(RHIDevice *dev) {
             eglDestroyContext(gl->egl_display, gl->egl_context);
         eglTerminate(gl->egl_display);
     }
-#else
-    glXMakeCurrent(gl->display, None, NULL);
-    glXDestroyContext(gl->display, gl->gl_ctx);
 #endif
     free(gl);
     dev->backend_data = NULL;
@@ -968,12 +859,6 @@ static void gl_resize(RHIDevice *dev, u32 w, u32 h) {
     dev->width  = w;
     dev->height = h;
 #ifdef ENGINE_PLATFORM_WAYLAND
-    {
-        GLBackend *gl = (GLBackend *)dev->backend_data;
-        gl->damage_history_valid =
-            rhi_present_damage_history_init(&gl->damage_history, w, h);
-    }
-#elif !defined(ENGINE_PLATFORM_WINDOWS)
     {
         GLBackend *gl = (GLBackend *)dev->backend_data;
         gl->damage_history_valid =
@@ -1108,34 +993,6 @@ static void *gl_frame_begin(RHIDevice *dev) {
             }
         }
     }
-#elif !defined(ENGINE_PLATFORM_WINDOWS)
-    if (dev->frame_damage_requested &&
-        dev->capabilities.present_target_preserved &&
-        gl->buffer_age_supported && gl->damage_history_valid) {
-        unsigned int age = 0u;
-        glXQueryDrawable(gl->display, gl->window, GLX_BACK_BUFFER_AGE_EXT,
-                         &age);
-        if (age > 0u) {
-            RHIPresentRect effective[RHI_MAX_PRESENT_DAMAGE_RECTS];
-            u32 effective_count = 0u;
-            bool full = false;
-            if (rhi_present_damage_history_prepare_age(
-                    &gl->damage_history, (u32)age,
-                    dev->frame_current_damage,
-                    dev->frame_current_damage_count, effective,
-                    RHI_MAX_PRESENT_DAMAGE_RECTS, &effective_count, &full)) {
-                if (full) {
-                    dev->frame_damage[0] = effective[0];
-                    dev->frame_damage_count = 1u;
-                } else {
-                    memcpy(dev->frame_damage, effective,
-                           effective_count * sizeof(effective[0]));
-                    dev->frame_damage_count = effective_count;
-                    dev->frame_partial_active = true;
-                }
-            }
-        }
-    }
 #endif
     if (!g_gl_depth_mask) {
         glDepthMask(GL_TRUE);
@@ -1215,46 +1072,6 @@ static bool gl_present(RHIDevice *dev) {
         (void)rhi_present_damage_history_reset(&gl->damage_history);
     }
     return swapped == EGL_TRUE;
-#else
-    bool used_damage = false;
-    (void)glGetError();
-    if (dev->frame_partial_active && gl->swap_buffers_with_damage != NULL) {
-        int damage[4u * RHI_MAX_PRESENT_DAMAGE_RECTS];
-        RHIPresentRect native_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
-        u32 i;
-        if (!rhi_present_damage_to_bottom_left(
-                dev->frame_damage, dev->frame_damage_count, dev->width,
-                dev->height, native_damage, RHI_MAX_PRESENT_DAMAGE_RECTS)) {
-            return false;
-        }
-        for (i = 0u; i < dev->frame_damage_count; ++i) {
-            const RHIPresentRect *rect = &native_damage[i];
-            damage[4u * i + 0u] = rect->x;
-            damage[4u * i + 1u] = rect->y;
-            damage[4u * i + 2u] = (int)rect->w;
-            damage[4u * i + 3u] = (int)rect->h;
-        }
-        gl->swap_buffers_with_damage(gl->display, gl->window, damage,
-                                     (int)dev->frame_damage_count);
-        used_damage = true;
-    } else {
-        glXSwapBuffers(gl->display, gl->window);
-    }
-    if (glGetError() != GL_NO_ERROR) {
-        if (gl->damage_history_valid)
-            (void)rhi_present_damage_history_reset(&gl->damage_history);
-        return false;
-    }
-    if (gl->damage_history_valid) {
-        RHIPresentRect committed = {0, 0, dev->width, dev->height};
-        const RHIPresentRect *committed_rects = used_damage
-                                                    ? dev->frame_damage
-                                                    : &committed;
-        u32 committed_count = used_damage ? dev->frame_damage_count : 1u;
-        (void)rhi_present_damage_history_commit(
-            &gl->damage_history, committed_rects, committed_count);
-    }
-    return true;
 #endif
 }
 
@@ -1270,12 +1087,6 @@ static void gl_set_vsync(RHIDevice *dev, bool enabled) {
     (void)gl;
 #elif defined(ENGINE_PLATFORM_WAYLAND)
     eglSwapInterval(gl->egl_display, enabled ? 1 : 0);
-#else
-    typedef void (*PFNGLXSWAPINTERVALEXT)(Display *, GLXDrawable, int);
-    PFNGLXSWAPINTERVALEXT fn = (PFNGLXSWAPINTERVALEXT)glXGetProcAddress((const GLubyte *)"glXSwapIntervalEXT");
-    if (fn) {
-        fn(gl->display, gl->window, enabled ? 1 : 0);
-    }
 #endif
 }
 

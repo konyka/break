@@ -55,22 +55,6 @@ elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
   set(MYUI_PAL_LIBS "-framework Cocoa" "-framework OpenGL")
 endif()
 
-if(MYUI_PAL STREQUAL "x11")
-  find_package(X11 REQUIRED)
-  find_package(PkgConfig QUIET)
-  if(PkgConfig_FOUND)
-    pkg_check_modules(MYUI_PAL_EGL QUIET egl)
-  endif()
-  set(MYUI_PAL_SOURCES x11/my_pal_x11.c)
-  set(MYUI_PAL_DEFINES MYUI_PAL_X11=1)
-  set(MYUI_PAL_LIBS ${X11_LIBRARIES})
-  if(MYUI_PAL_EGL_FOUND)
-    list(APPEND MYUI_PAL_LIBS ${MYUI_PAL_EGL_LIBRARIES})
-  else()
-    message(FATAL_ERROR "MYUI_PAL=x11 requires EGL (pkg-config egl)")
-  endif()
-endif()
-
 add_library(mypal STATIC
   my_pal.c
   my_event.c

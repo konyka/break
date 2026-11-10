@@ -2,11 +2,10 @@
 /**
  * @file myui_explorer.c
  * @brief Interactive MyUI explorer: a live chart driven by real MyUI
- *        widgets, with switchable rendering backends (software / GL) and
- *        window systems (X11 / Wayland).
+ *        widgets, with switchable software / GL rendering on Wayland.
  *
  * Usage:
- *   myui_explorer [--platform x11|wayland] [--backend soft|gl]
+ *   myui_explorer [--platform wayland] [--backend soft|gl]
  *   myui_explorer --selftest <dir>   # headless scripted frames
  *   myui_explorer --shot <file.ppm>  # render one frame and exit
  */
@@ -773,8 +772,7 @@ void ex_key(app_t* app, int ch) {
 
 
 #if !defined(_WIN32) && !defined(__APPLE__) && \
-    !defined(EX_EXPLORER_NO_X11) && !defined(EX_EXPLORER_NO_WAYLAND) && \
-    !defined(MYUI_PAL_X11) && !defined(MYUI_PAL_WAYLAND)
+    !defined(EX_EXPLORER_NO_WAYLAND) && !defined(MYUI_PAL_WAYLAND)
 #define EX_EXPLORER_GLSHOT_OK 1
 #endif
 #if defined(EX_EXPLORER_GLSHOT_OK)
@@ -856,7 +854,7 @@ static int run_glshot(const char* path, const char* font_path) {
 }
 #endif /* EX_EXPLORER_GLSHOT_OK */
 
-#if defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND)
+#if defined(MYUI_PAL_WAYLAND)
 #include "mypal/my_pal.h"
 
 typedef struct {
@@ -926,7 +924,7 @@ static int run_pal(app_t* app, int gl) {
   my_pal_t* pal = my_pal_create(NULL);
   my_pal_window_t* win;
   if (pal == NULL) {
-    printf("my_pal_create failed\n");
+    printf("no wayland compositor; use --selftest/--shot\n");
     return 1;
   }
   memset(&g_pal, 0, sizeof(g_pal));
@@ -964,7 +962,7 @@ static int run_pal(app_t* app, int gl) {
 }
 #endif
 
-#if defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND)
+#if defined(MYUI_PAL_WAYLAND)
 static int run_palshot(const char* path, const char* font_path) {
   app_t* app = app_create(font_path);
   my_pal_t* pal = my_pal_create(NULL);
@@ -1007,15 +1005,8 @@ static int run_palshot(const char* path, const char* font_path) {
 /* ---------------- window-system / backend runners ---------------- */
 
 #if !defined(_WIN32) && !defined(__APPLE__) && \
-    !defined(EX_EXPLORER_NO_X11) && !defined(MYUI_PAL_X11) && \
-    !defined(MYUI_PAL_WAYLAND)
-#define EX_HAVE_X11 1
-#if !defined(EX_EXPLORER_NO_WAYLAND)
+    !defined(EX_EXPLORER_NO_WAYLAND) && !defined(MYUI_PAL_WAYLAND)
 #define EX_HAVE_EGL_WL 1
-#endif
-#endif
-
-#if defined(EX_HAVE_X11)
 static void nap(void) {
   struct timespec ts = {0, 8000000L};
   nanosleep(&ts, NULL);
@@ -1034,9 +1025,9 @@ static int parse_args(int argc, char** argv, const char** platform,
       *backend = argv[++i];
     }
   }
-  if (strcmp(*platform, "x11") != 0 && strcmp(*platform, "wayland") != 0 &&
+  if (strcmp(*platform, "wayland") != 0 &&
       strcmp(*platform, "win32") != 0 && strcmp(*platform, "cocoa") != 0) {
-    printf("unknown platform %s (x11|wayland|win32|cocoa)\n", *platform);
+    printf("unknown platform %s (wayland|win32|cocoa)\n", *platform);
     return 1;
   }
   if (strcmp(*backend, "soft") != 0 && strcmp(*backend, "gl") != 0) {
@@ -1048,11 +1039,10 @@ static int parse_args(int argc, char** argv, const char** platform,
 
 #if defined(EX_EXPLORER_GLSHOT_OK)
 static int run_glshot(const char* path, const char* font_path);
-static int run_wayland_soft(app_t* app, const char* font_path);
-static int run_gl(app_t* app, const char* font_path, int wayland);
 #endif
-#if defined(EX_HAVE_X11) && !defined(MYUI_PAL_X11) && !defined(MYUI_PAL_WAYLAND)
-static int run_x11_soft(app_t* app, const char* font_path);
+#if defined(EX_HAVE_EGL_WL)
+static int run_wayland_soft(app_t* app, const char* font_path);
+static int run_gl_wayland(app_t* app);
 #endif
 
 int main(int argc, char** argv) {
@@ -1062,7 +1052,7 @@ int main(int argc, char** argv) {
 #elif defined(__APPLE__)
       "cocoa";
 #else
-      "x11";
+      "wayland";
 #endif
   const char* font_path = pick_font();
   const char* platform;
@@ -1086,12 +1076,12 @@ int main(int argc, char** argv) {
       return 1;
 #endif
     }
-#if defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND)
+#if defined(MYUI_PAL_WAYLAND)
     if (strcmp(argv[i], "--palshot") == 0 && i + 1 < argc)
       return run_palshot(argv[i + 1], font_path);
 #endif
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-      printf("usage: myui_explorer [--platform x11|wayland|win32|cocoa] "
+      printf("usage: myui_explorer [--platform wayland|win32|cocoa] "
              "[--backend soft|gl] | --selftest <dir> | --shot <file> | "
              "--glshot <file>\n");
       return 0;
@@ -1102,9 +1092,8 @@ int main(int argc, char** argv) {
   {
     app_t* app = app_create(font_path);
     int gl = strcmp(backend, "gl") == 0;
-#if defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND)
-    if (strcmp(platform, "x11") == 0 || strcmp(platform, "wayland") == 0)
-      return run_pal(app, gl);
+#if defined(MYUI_PAL_WAYLAND)
+    if (strcmp(platform, "wayland") == 0) return run_pal(app, gl);
     printf("platform %s not supported in this PAL build\n", platform);
     return 1;
 #elif defined(_WIN32)
@@ -1115,104 +1104,23 @@ int main(int argc, char** argv) {
     if (strcmp(platform, "cocoa") == 0) return ex_run_cocoa(app, gl);
     printf("platform %s not supported in this build\n", platform);
     return 1;
+#elif defined(EX_HAVE_EGL_WL)
+    if (strcmp(platform, "wayland") != 0) {
+      printf("platform %s not supported in this build\n", platform);
+      return 1;
+    }
+    if (gl) return run_gl_wayland(app);
+    return run_wayland_soft(app, font_path);
 #else
-#if !defined(EX_HAVE_X11)
     (void)gl;
     (void)app;
     printf("no interactive runner in this build; use --selftest/--shot\n");
     return 1;
-#elif defined(EX_HAVE_EGL_WL)
-    if (gl) return run_gl(app, font_path, strcmp(platform, "wayland") == 0);
-    if (strcmp(platform, "wayland") == 0) return run_wayland_soft(app, font_path);
-    return run_x11_soft(app, font_path);
-#else
-    if (gl || strcmp(platform, "wayland") == 0) {
-      printf("platform %s/backend not supported in this build\n", platform);
-      return 1;
-    }
-    return run_x11_soft(app, font_path);
-#endif
 #endif
   }
 }
 
-/* ---------------- X11 + software (XImage blit) ---------------- */
-#if defined(EX_HAVE_X11)
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
-#include <X11/keysym.h>
-
-#if !(defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND))
-static int run_x11_soft(app_t* app, const char* font_path) {
-  Display* dpy;
-  Window win;
-  XImage* image = NULL;
-  GC gc;
-  Atom wm_delete;
-  int screen;
-  (void)font_path;
-  dpy = XOpenDisplay(NULL);
-  if (dpy == NULL) {
-    printf("no X display; try --platform wayland or --selftest\n");
-    return 1;
-  }
-  screen = DefaultScreen(dpy);
-  win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen), 0, 0, EX_W, EX_H,
-                            0, BlackPixel(dpy, screen), WhitePixel(dpy, screen));
-  XStoreName(dpy, win, "MyUI explorer [x11/soft]");
-  XSelectInput(dpy, win, ExposureMask | PointerMotionMask |
-                             ButtonPressMask | KeyPressMask |
-                             StructureNotifyMask);
-  wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
-  XSetWMProtocols(dpy, win, &wm_delete, 1);
-  XMapRaised(dpy, win);
-  gc = XCreateGC(dpy, win, 0, NULL);
-  for (;;) {
-    XEvent ev;
-    int dirty = 1;
-    while (XPending(dpy)) {
-      XNextEvent(dpy, &ev);
-      if (ev.type == Expose) {
-        dirty = 1;
-      } else if (ev.type == ClientMessage &&
-                 (Atom)ev.xclient.data.l[0] == wm_delete) {
-        XCloseDisplay(dpy);
-        return 0;
-      } else if (ev.type == MotionNotify) {
-        pointer(app, ev.xmotion.x, ev.xmotion.y, 0);
-        dirty = 1;
-      } else if (ev.type == ButtonPress) {
-        if (ev.xbutton.button == Button4) wheel(app, 1);
-        else if (ev.xbutton.button == Button5) wheel(app, -1);
-        else if (ev.xbutton.button == Button1)
-          pointer(app, ev.xbutton.x, ev.xbutton.y, 1);
-        dirty = 1;
-      } else if (ev.type == KeyPress) {
-        KeySym k = XLookupKeysym(&ev.xkey, 0);
-        if (k >= XK_space && k <= XK_asciitilde) key(app, (int)k);
-        else if (k == XK_plus) key(app, '+');
-        else if (k == XK_minus) key(app, '-');
-        dirty = 1;
-      }
-    }
-    if (dirty) {
-      advance_animation(app);
-      const uint8_t* pixels;
-      render_frame(app);
-      pixels = my_lcd_mem_get_buffer(app->lcd);
-      if (image == NULL)
-        image = XCreateImage(dpy, DefaultVisual(dpy, screen), 24, ZPixmap, 0,
-                             (char*)pixels, EX_W, EX_H, 32, EX_W * 4);
-      XPutImage(dpy, win, gc, image, 0, 0, 0, 0, EX_W, EX_H);
-      XFlush(dpy);
-    }
-    nap();
-  }
-}
-#endif
-
-#endif /* EX_HAVE_X11 */
-#if !(defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND))
+#if !defined(MYUI_PAL_WAYLAND)
 /* ---------------- Wayland (shared: input + soft runner) ---------------- */
 #if defined(EX_HAVE_EGL_WL)
 #include <wayland-client.h>
@@ -1441,7 +1349,7 @@ static int run_wayland_soft(app_t* app, const char* font_path) {
   memset(&wl, 0, sizeof(wl));
   wl.display = wl_display_connect(NULL);
   if (wl.display == NULL) {
-    printf("no wayland compositor; try --platform x11 or --selftest\n");
+    printf("no wayland compositor; use --selftest/--shot\n");
     return 1;
   }
   wl_registry_init(&wl);
@@ -1470,15 +1378,12 @@ static int run_wayland_soft(app_t* app, const char* font_path) {
   return 0;
 }
 
-/* ---------------- GL backend (EGL on X11 or Wayland) ---------------- */
+/* ---------------- GL backend (EGL on Wayland) ---------------- */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #ifndef EGL_PLATFORM_WAYLAND_KHR
 #define EGL_PLATFORM_WAYLAND_KHR 0x31D8
-#endif
-#ifndef EGL_PLATFORM_X11_KHR
-#define EGL_PLATFORM_X11_KHR 0x31D5
 #endif
 
 typedef struct {
@@ -1519,98 +1424,6 @@ static int gl_context(gl_state_t* gl, void* native_display,
   return eglMakeCurrent(gl->display, gl->surface, gl->surface, gl->context)
              ? 0
              : 1;
-}
-
-
-
-static int run_gl_x11(app_t* app) {
-  Display* dpy;
-  Window win;
-  Atom wm_delete;
-  int screen;
-  gl_state_t gl;
-  my_vgcanvas_t* vg;
-  EGLConfig config;
-  EGLint count = 0;
-  EGLint visual_id = 0;
-  XVisualInfo vi;
-  XSetWindowAttributes swa;
-  memset(&gl, 0, sizeof(gl));
-  dpy = XOpenDisplay(NULL);
-  if (dpy == NULL) {
-    printf("no X display for GL\n");
-    return 1;
-  }
-  screen = DefaultScreen(dpy);
-  gl.display = eglGetPlatformDisplay(EGL_PLATFORM_X11_KHR, (void*)dpy, NULL);
-  if (gl.display == EGL_NO_DISPLAY || !eglInitialize(gl.display, NULL, NULL) ||
-      !eglBindAPI(EGL_OPENGL_ES_API) ||
-      !eglChooseConfig(gl.display, k_gl_attribs, &config, 1, &count) ||
-      count < 1) {
-    printf("EGL setup failed on X11\n");
-    return 1;
-  }
-  if (eglGetConfigAttrib(gl.display, config, EGL_NATIVE_VISUAL_ID,
-                         &visual_id) &&
-      XMatchVisualInfo(dpy, screen, (int)visual_id, TrueColor, &vi)) {
-    swa.colormap = XCreateColormap(dpy, RootWindow(dpy, screen), vi.visual,
-                                   AllocNone);
-    swa.border_pixel = 0;
-    swa.event_mask = ExposureMask | PointerMotionMask | ButtonPressMask |
-                     KeyPressMask;
-    win = XCreateWindow(dpy, RootWindow(dpy, screen), 0, 0, EX_W, EX_H, 0,
-                        vi.depth, InputOutput, vi.visual,
-                        CWColormap | CWBorderPixel | CWEventMask, &swa);
-  } else {
-    win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen), 0, 0, EX_W, EX_H,
-                              0, BlackPixel(dpy, screen),
-                              WhitePixel(dpy, screen));
-    XSelectInput(dpy, win, ExposureMask | PointerMotionMask |
-                               ButtonPressMask | KeyPressMask);
-  }
-  XStoreName(dpy, win, "MyUI explorer [x11/gl]");
-  wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
-  XSetWMProtocols(dpy, win, &wm_delete, 1);
-  XMapRaised(dpy, win);
-  XFlush(dpy);
-  if (gl_context(&gl, (void*)dpy, (void*)win, EGL_PLATFORM_X11_KHR) != 0) {
-    printf("EGL context failed on X11\n");
-    return 1;
-  }
-  vg = my_vgcanvas_gles2_create(NULL, EX_W, EX_H);
-  if (vg == NULL) {
-    printf("gles2 vgcanvas init failed\n");
-    return 1;
-  }
-  for (;;) {
-    XEvent ev;
-    int dirty = 1;
-    while (XPending(dpy)) {
-      XNextEvent(dpy, &ev);
-      if (ev.type == ClientMessage &&
-          (Atom)ev.xclient.data.l[0] == wm_delete)
-        return 0;
-      if (ev.type == MotionNotify) {
-        pointer(app, ev.xmotion.x, ev.xmotion.y, 0);
-        dirty = 1;
-      } else if (ev.type == ButtonPress) {
-        if (ev.xbutton.button == Button4) wheel(app, 1);
-        else if (ev.xbutton.button == Button5) wheel(app, -1);
-        else if (ev.xbutton.button == Button1)
-          pointer(app, ev.xbutton.x, ev.xbutton.y, 1);
-        dirty = 1;
-      } else if (ev.type == KeyPress) {
-        KeySym k = XLookupKeysym(&ev.xkey, 0);
-        if (k >= XK_space && k <= XK_asciitilde) key(app, (int)k);
-        dirty = 1;
-      }
-    }
-    if (dirty) {
-      gl_paint(app, vg);
-      eglSwapBuffers(gl.display, gl.surface);
-    }
-    nap();
-  }
 }
 
 static int run_gl_wayland(app_t* app) {
@@ -1656,11 +1469,6 @@ static int run_gl_wayland(app_t* app) {
     nap();
   }
   return 0;
-}
-
-static int run_gl(app_t* app, const char* font_path, int wayland) {
-  (void)font_path;
-  return wayland ? run_gl_wayland(app) : run_gl_x11(app);
 }
 #endif
 #endif

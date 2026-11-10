@@ -56,6 +56,20 @@ execute_process(
 if(missing_rc EQUAL 0)
     string(APPEND failures
         "missing-wayland: missing development packages fell back to another backend\n")
+else()
+    set(missing_log "${missing_out}${missing_err}")
+    foreach(required_package wayland-client wayland-egl wayland-cursor)
+        if(NOT missing_log MATCHES "Package '${required_package}' not found" OR
+                NOT missing_log MATCHES "- ${required_package}")
+            string(APPEND failures
+                "missing-wayland: pkg-config did not identify ${required_package}\n${missing_log}\n")
+        endif()
+    endforeach()
+    if(NOT missing_log MATCHES "_pkg_check_modules_internal" OR
+            NOT missing_log MATCHES "CMakeLists.txt:[0-9]+ \\(pkg_check_modules\\)")
+        string(APPEND failures
+            "missing-wayland: failure did not come from the real pkg_check_modules call\n${missing_log}\n")
+    endif()
 endif()
 
 execute_process(
