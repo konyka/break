@@ -496,7 +496,7 @@ void       rhi_backend_acceleration_structure_destroy(
 bool       rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,
                                        u32 width, u32 height);
 /* Convert top-left drawable damage to the bottom-left convention used by
- * EGL/GLX damage-present extensions. This is allocation-free and supports
+ * EGL damage-present extensions. This is allocation-free and supports
  * in-place conversion when the input and output buffers alias. */
 bool       rhi_present_damage_to_bottom_left(const RHIPresentRect *rects,
                                              u32 count, u32 width, u32 height,

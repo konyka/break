@@ -1208,6 +1208,31 @@ if(ENGINE_BUILD_TESTS)
         add_test(NAME test_platform_wsi_lifecycle_${_wsi_lower}
             COMMAND test_platform_wsi_lifecycle_${_wsi_lower})
     endforeach()
+
+    set(_wsi_compile_targets "")
+    function(add_wsi_compile_case name expected)
+        set(target test_platform_wsi_compile_${name})
+        add_library(${target} OBJECT EXCLUDE_FROM_ALL
+            tests/test_platform_wsi_compile_matrix.c)
+        target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_compile_definitions(${target} PRIVATE
+            EXPECTED_BACKEND_VALUE=${expected} ${ARGN})
+        set(_wsi_compile_targets ${_wsi_compile_targets} ${target} PARENT_SCOPE)
+    endfunction()
+    add_wsi_compile_case(ios_before_macos 5 ENGINE_PLATFORM_IOS=1 ENGINE_PLATFORM_MACOS=1)
+    add_wsi_compile_case(qnx_unavailable 0 ENGINE_PLATFORM_QNX=1)
+    add_wsi_compile_case(harmonyos_unavailable 0 ENGINE_PLATFORM_HARMONYOS=1)
+    add_wsi_compile_case(no_platform_unavailable 0)
+    add_wsi_compile_case(sim_ios_real_macos 5 SIMULATE_IOS=1 ENGINE_PLATFORM_MACOS=1)
+    add_wsi_compile_case(sim_cocoa_real_ios_macos 3
+        SIMULATE_COCOA=1 ENGINE_PLATFORM_IOS=1 ENGINE_PLATFORM_MACOS=1)
+    add_wsi_compile_case(sim_wayland_real_windows 1 SIMULATE_WAYLAND=1 ENGINE_PLATFORM_WINDOWS=1)
+    add_custom_target(test_platform_wsi_compile_matrix DEPENDS ${_wsi_compile_targets})
+    add_test(NAME test_platform_wsi_compile_matrix
+        COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_CURRENT_BINARY_DIR}"
+            --target test_platform_wsi_compile_matrix -j3)
+    set_tests_properties(test_platform_wsi_compile_matrix PROPERTIES
+        LABELS "headless;platform_contract")
 endif()
 
 # glad.c is generated code — suppress pedantic warnings (void* to fn ptr casts)

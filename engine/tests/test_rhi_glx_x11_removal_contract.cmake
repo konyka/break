@@ -36,6 +36,9 @@ foreach(source_path IN LISTS production_sources)
 endforeach()
 
 foreach(probe_spec
+        "src/rhi/rhi.h|GLX"
+        "src/myui/myr/my_gl_desktop.h|GLX"
+        "src/myui/myr/my_gl_desktop.c|GLX"
         "src/rhi/rhi_gl.c|GLX"
         "src/rhi/rhi_gl.c|glX"
         "src/rhi/rhi_gl.c|X11/"

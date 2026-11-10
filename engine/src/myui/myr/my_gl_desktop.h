@@ -6,7 +6,7 @@
  * to the desktop GL headers and carrying the "#version 120" shader
  * headers (the vgcanvas gles2 backend's shader bodies are valid GLSL
  * 1.20, so one backend serves both APIs). Uses the CURRENT GL context
- * (created via EGL with eglBindAPI(EGL_OPENGL_API), or GLX elsewhere).
+ * (created via EGL with eglBindAPI(EGL_OPENGL_API), WGL, or NSOpenGL).
  */
 #ifndef MY_GL_DESKTOP_H
 #define MY_GL_DESKTOP_H
