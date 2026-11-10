@@ -25,6 +25,24 @@ option(RULE_ENGINE_ENABLE_REDIS "Enable native Redis state provider (requires hi
 # MYUI_PAL option anchor
 set(MYUI_PAL "dummy" CACHE STRING
     "myui PAL port: dummy | wayland | win32 | cocoa")
+set_property(CACHE MYUI_PAL PROPERTY STRINGS dummy wayland win32 cocoa)
+set(MYUI_PAL_VALID_VALUES dummy wayland win32 cocoa)
+if(MYUI_PAL STREQUAL "x11")
+    message(FATAL_ERROR "X11 support was removed; use native Wayland")
+endif()
+if(NOT MYUI_PAL IN_LIST MYUI_PAL_VALID_VALUES)
+    message(FATAL_ERROR
+        "Unsupported MYUI_PAL='${MYUI_PAL}'; expected dummy, wayland, win32, or cocoa")
+endif()
+if(MYUI_PAL STREQUAL "win32" AND NOT WIN32)
+    message(FATAL_ERROR "MYUI_PAL=win32 requires a Windows host")
+endif()
+if(MYUI_PAL STREQUAL "cocoa" AND NOT APPLE)
+    message(FATAL_ERROR "MYUI_PAL=cocoa requires an Apple host")
+endif()
+if(MYUI_PAL STREQUAL "wayland" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "MYUI_PAL=wayland requires a Linux/Wayland target")
+endif()
 
 set(RULE_ENGINE_REDIS_SOURCE_DIR "" CACHE PATH
     "Redis source tree or hiredis source directory used to build the native client")
@@ -4362,7 +4380,34 @@ endif()
             -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt
             -DMYUI_ROOT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/myui
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/myui-subproject-contract
+            -DTARGET_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_subproject_config.cmake)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        find_program(MYUI_TEST_ZIG_EXECUTABLE NAMES zig)
+        if(MYUI_TEST_ZIG_EXECUTABLE)
+            add_test(NAME test_myui_subproject_config_windows_cross
+                COMMAND ${CMAKE_COMMAND}
+                    -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt
+                    -DMYUI_ROOT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+                    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/myui-subproject-windows-contract
+                    -DTARGET_SYSTEM_NAME=Windows
+                    -DZIG_EXECUTABLE=${MYUI_TEST_ZIG_EXECUTABLE}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_subproject_config.cmake)
+            add_test(NAME test_myui_subproject_config_darwin_cross
+                COMMAND ${CMAKE_COMMAND}
+                    -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt
+                    -DMYUI_ROOT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+                    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/myui-subproject-darwin-contract
+                    -DTARGET_SYSTEM_NAME=Darwin
+                    -DZIG_EXECUTABLE=${MYUI_TEST_ZIG_EXECUTABLE}
+                    -DNATIVE_PAL_CONFIGURE_ONLY=ON
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_subproject_config.cmake)
+            set_tests_properties(
+                test_myui_subproject_config_windows_cross
+                test_myui_subproject_config_darwin_cross
+                PROPERTIES LABELS "headless;platform_contract" TIMEOUT 120)
+        endif()
+    endif()
     # Vulkan SDK >= 1.4.321 renamed glslangValidator to glslang; accept both.
     find_program(MYUI_GLSLANG_VALIDATOR NAMES glslangValidator glslang)
     if(MYUI_GLSLANG_VALIDATOR)

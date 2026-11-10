@@ -34,6 +34,39 @@ expect_removed_configuration(no-wayland
 expect_removed_configuration(legacy-pal
     -DENGINE_ENABLE_WAYLAND=ON -DMYUI_PAL=x11)
 
+function(expect_invalid_pal name expected_diagnostic system_name pal)
+    if(system_name STREQUAL "Linux")
+        set(platform_args -DENGINE_ENABLE_WAYLAND=ON -DENGINE_RHI_BACKEND=opengl)
+    elseif(system_name STREQUAL "Darwin")
+        set(platform_args -DENGINE_ENABLE_WAYLAND=OFF -DENGINE_RHI_BACKEND=metal)
+    else()
+        set(platform_args -DENGINE_ENABLE_WAYLAND=OFF -DENGINE_RHI_BACKEND=opengl)
+    endif()
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -S "${ENGINE_SOURCE_DIR}" -B "${WORK}/${name}"
+            ${common_args}
+            "-DCMAKE_SYSTEM_NAME=${system_name}"
+            -DCMAKE_C_COMPILER_WORKS=TRUE -DCMAKE_CXX_COMPILER_WORKS=TRUE
+            -DCMAKE_C_ABI_COMPILED=TRUE -DCMAKE_CXX_ABI_COMPILED=TRUE
+            ${platform_args} "-DMYUI_PAL=${pal}"
+        RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    if(rc EQUAL 0)
+        string(APPEND failures "${name}: invalid PAL ${pal} configured successfully\n")
+    elseif(NOT "${out}${err}" MATCHES "${expected_diagnostic}")
+        string(APPEND failures
+            "${name}: missing diagnostic ${expected_diagnostic}\n${out}${err}\n")
+    endif()
+    set(failures "${failures}" PARENT_SCOPE)
+endfunction()
+
+expect_invalid_pal(unknown-pal "Unsupported MYUI_PAL" Linux not-a-pal)
+expect_invalid_pal(win32-on-linux "MYUI_PAL=win32 requires a Windows host" Linux win32)
+expect_invalid_pal(cocoa-on-linux "MYUI_PAL=cocoa requires an Apple host" Linux cocoa)
+expect_invalid_pal(wayland-on-windows
+    "MYUI_PAL=wayland requires a Linux/Wayland target" Windows wayland)
+expect_invalid_pal(wayland-on-darwin
+    "MYUI_PAL=wayland requires a Linux/Wayland target" Darwin wayland)
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -S "${ENGINE_SOURCE_DIR}" -B "${WORK}/default"
         ${common_args} -DMYUI_PAL=dummy
