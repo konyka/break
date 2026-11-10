@@ -14,7 +14,7 @@ if [ "$candidate_id" != "$verified_id" ]; then
     exit 1
 fi
 
-docker push "$verified"
+docker push "$verified" >&2
 if ! registry_digest="$(docker buildx imagetools inspect "$verified" 2>/dev/null | awk '/^Digest:/ {print $2; exit}')"; then
     echo "failed to inspect published candidate digest: $verified" >&2
     exit 1

@@ -85,7 +85,11 @@ case "$*" in
       *) exit 98 ;;
     esac
     ;;
-  "tag "*|"push "*)
+  "tag "*)
+    ;;
+  "push "*)
+    echo "The push refers to repository [ghcr.io/konyka/break-ci-linux]"
+    echo "layer-abc123: Pushed"
     ;;
   *)
     echo "unexpected docker invocation: $*" >&2
@@ -139,6 +143,14 @@ esac
         failures.append(f"candidate was not tagged, pushed, and inspected: {sequence}")
     if "build-push-action" in sequence or " build " in sequence:
         failures.append("publish performed a second build")
+    if "The push refers to repository" in result.stdout:
+        failures.append("docker push progress polluted helper stdout")
+    if "The push refers to repository" not in result.stderr:
+        failures.append("docker push progress was not routed to stderr")
+    final = run([str(resolver), image, "", DIGEST, ""], env, work)
+    expected_output = f"{image}@{DIGEST}"
+    if final.returncode != 0 or final.stdout != expected_output + "\n" or len(final.stdout.splitlines()) != 1:
+        failures.append(f"workflow output is not one immutable image digest: {final.stdout!r}")
 
     log.write_text("")
     env["FAKE_VERIFIED_ID"] = "sha256:different"
