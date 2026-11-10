@@ -1,3 +1,14 @@
+## 本轮更新：X11 移除首轮真实远程 CI 修复（2026-11-10）
+
+- **远程基线与范围**：以 `ffdd2e865ec1e34568588404e69ae8c1716cafb4` 为 base，逐项处理主 CI run [`42788874184`](https://github.com/konyka/break/actions/runs/42788874184) 与 windows-d3d12 run [`42788874021`](https://github.com/konyka/break/actions/runs/42788874021) 的六类失败；未触碰 cry-integration Task2。实现提交为 `c2f7241d`、`e4cba612`、`aa92a196`、`83c6c5e9`，文档另提交；本轮未合并、未 push。
+- **镜像 alias**：远程 publish digest 为 `8537...`，`imagetools create` 后 SHA/latest 却为 `1384...`。现由 `publish_ci_master_aliases.sh` 按 expected digest pull 同一候选，重打 verified/SHA/latest，逐一核对 image ID 后分别直接 push，再回读三者 digest 一致；不第二次 build、不创建新 index，push 进度继续隔离到 stderr，PR/fork 仍不发布。
+- **Windows 编译与 ASan**：MSVC C++20 编译仅对 C++ TU 加 `/Zc:__cplusplus`，保留 static_assert；Windows Clang ASan 的 C/CXX flags 同步为 `-fsanitize=address -fno-omit-frame-pointer`，runtime DLL 步骤不变；WGL loader 只在非 Windows 模拟分支补 `__stdcall`，真实 Windows 使用内建调用约定。Zig Windows GNU target 的 RED/GREEN 还检查 COFF 对象确实包含 `LoadLibraryW/GetProcAddress/FreeLibrary` mock 符号。
+- **nested PAL**：确认父级是 Ninja/Clang/Debug，而旧 nested configure 未传播 generator/compiler/config，落到默认 MSBuild 且没有多配置 exe 路径处理。现继承父级工具链、显式 `--config`、保存 configure+verbose build 日志，并在配置对应目录查找和运行 `pal_probe`；Linux 实际 Ninja Multi-Config 构建已验证 `Debug/pal_probe`，没有删除 dummy/Win32 矩阵或 skip。
+- **Apple runner**：Cocoa/MoltenVK、macOS native Metal、iOS Metal 三条 arm64 lane 从已退役 `macos-14` 迁移到官方当前支持的 `macos-15`；未改用 Intel、未改变 Metal/MoltenVK/iOS 证据级别，当前 locked dependency 与 Build Guide 同步，历史 runner 记录不改写。
+- **RED/GREEN 与变异**：fake registry 先复现 alias digest 分叉；clang-cl compile command 先缺 `/Zc:__cplusplus`；ASan workflow 先缺 CXX flags；Windows GNU target 两个 WGL TU 先因内建 `__stdcall` 重定义失败；nested 探针先实际选择 Unix Makefiles/GCC/空 build type 而非期望的 Ninja/Clang/Debug；三条 macOS lane 先全部命中 retired label。对应生产/workflow 变异均再次被杀死后恢复，详见 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-fix-report.md`。
+- **本地验证**：受影响 focused 13/13；普通 auto 非图形 342 项零失败，唯一既有 `test_d3d12_dependency_gate` 平台 skip；no-tests 完整 `-j3` 构建成功；`git diff --check` 通过。Linux 原有 WGL loader 行为、公共 C++20 live call、Windows GNU cross build、PAL native/cross 矩阵均重新执行。
+- **限制**：本轮仍未执行真实 native Windows/macOS/iOS/D3D12、Actions 或 GHCR。Zig、clang-cl、Ninja Multi-Config、COFF 符号检查和 fake docker 不证明 native MSVC runtime、Windows WGL mock 运行或 registry digest；这些只能由下一轮 CI 验证。原始 nested Windows 日志只有 MSBuild 版本，新增 verbose 诊断会保留任何后续 native 编译错误，不把本地 GREEN 写成远程已通过。
+
 ## 本轮更新：X11 移除终审 fix-wave（2026-11-10）
 
 - **基线与提交**：从 `fb45db134635b70da89f6d95342d55a04b624c61` 逐项完成终审 I1–I5、M1/M2 和 deferred Minor3，依次形成 PAL 平台矩阵、Windows 启动合同、可移植 rollback、EGL/GL configure 闭包、fork digest fallback、WSI 宏矩阵及 fork PR head owner 七个实现提交；当前文档另行提交，SDD 报告按目录规则本地落盘。未合并、未 push，历史条目未改写。

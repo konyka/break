@@ -1424,8 +1424,11 @@ WGL/NSOpenGL + 桌面表回退）、事件到 `my_event_t` 的翻译、以及
 `run/quit/post_event/timer` 主循环。配置回归 `test_myui_subproject_config`
 通过嵌套构建覆盖默认/显式 dummy、legacy x11、未识别值和平台原生 PAL；Wayland
 无回落仅在 Linux/明确 Wayland 交叉目标执行，Windows/macOS 分别构建
-Win32/Cocoa，不用 skip 代替配置。Linux 主机另以 Zig 编译真实 Win32 PAL，并做
-Darwin 配置探针；这些交叉/嵌套结果不是 native 运行证据。`test_myr_dependency_config`
+Win32/Cocoa，不用 skip 代替配置。nested configure 继承父级 generator、C compiler
+与 build type，构建使用显式 `--config` 和 verbose 日志，并从配置对应目录运行
+`pal_probe`，不再在 Windows 上意外落回默认 MSBuild 或丢失真实编译诊断。Linux 主机
+另以 Zig 编译真实 Win32 PAL、以 Ninja Multi-Config 验证配置子目录，并做 Darwin 配置
+探针；这些交叉/嵌套结果不是 native 运行证据。`test_myr_dependency_config`
 检查五个模块的路径契约和 PAL target。隔离顶层构建已在关闭字体、YAML、BiDi 和
 图像可选项时完成 `87/87` 编译。
 

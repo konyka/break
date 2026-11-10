@@ -590,6 +590,7 @@ cmake --build build-gl
 | CMAKE_TOOLCHAIN_FILE | (无) | 使用工具链文件（见上方编译器支持矩阵） |
 
 > 编译器标志由 CMake 根据 MSVC / Clang / GCC **自动检测并应用三路分支**，无需手动指定告警/优化标志。
+> MSVC 的 C++20 target 额外使用 `/Zc:__cplusplus`，确保 `__cplusplus` 正确报告 202002；Windows Clang ASan lane 对 `CMAKE_C_FLAGS` 与 `CMAKE_CXX_FLAGS` 同时传入 `-fsanitize=address -fno-omit-frame-pointer`，runtime DLL 部署保持不变。WGL loader 测试只在非 Windows 模拟分支补 `__stdcall`，真实 Windows 使用内建调用约定。
 
 `ENGINE_BUILD_TESTS=ON` 时，configure 使用 `find_package(Python3 COMPONENTS Interpreter REQUIRED)`
 和 `find_program(BASH_EXECUTABLE NAMES bash REQUIRED)` 声明测试解释器依赖；CTest 不依赖裸
@@ -958,7 +959,7 @@ creation/destruction 和 Vulkan opaque handle 仍保留在 backend dispatch 边�
 frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/present 路径都会
 修改 partial-present 状态；其 owner-busy 和 damage publication contract 已有测试覆盖。
 
-镜像编排采用 `ci.yml` 的 `image` job 调用同 commit 的 `ci-image.yml`，并在 `on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`。本地候选 `load` 后先 smoke；随后直接给同一 image ID 打 `verified-<inputs-hash>` 标签并 `docker push`，不再第二次 build。发布后再 inspect registry digest，master 的 SHA 与 `latest` 别名从该 digest 创建并回读验证一致。无输入变化复用已验证 digest，schedule 强制重建以获取安全更新。10 个实际 container jobs 均 `needs: image` 并使用 `needs.image.outputs.digest`，不直接消费 `latest`。
+镜像编排采用 `ci.yml` 的 `image` job 调用同 commit 的 `ci-image.yml`，并在 `on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`。本地候选 `load` 后先 smoke；随后直接给同一 image ID 打 `verified-<inputs-hash>` 标签并 `docker push`，不再第二次 build。master alias helper 按该 digest pull 同一候选，重新打 verified、commit SHA 与 `latest` 标签，逐一核对本地 image ID 后分别直接 push，并回读三者 digest 必须一致；不再用 `imagetools create` 生成新 index，也不接受不同 manifest 冒充同一 digest。push 进度保持 stderr，helper 的 digest stdout 不被污染。无输入变化复用已验证 digest，schedule 强制重建以获取安全更新。10 个实际 container jobs 均 `needs: image` 并使用 `needs.image.outputs.digest`，不直接消费 `latest`。
 
 PR/fork 不 login、不 push，只 smoke 本地候选，普通 lanes 不把该候选冒充为全 lane 已验证镜像。candidate 始终使用当前 `github.repository_owner`，非发布消费者的 fallback 则固定为上游 `ghcr.io/konyka/break-ci-linux`；upstream PR、fork PR、fork-owned push/manual 都不会解析不存在的 fork `latest`。可选仓库变量 `BREAK_CI_LINUX_DIGEST` 提供显式 `image@sha256:...` override；未设置时在 prepare 阶段匿名 inspect 上游公共 GHCR `latest`，将其解析为 immutable digest 后消费。公共拉取/解析失败会明确失败；lanes 不直接消费 `latest`，也不会因 override 未配置而阻断首次 PR 或 fork-owned CI。
 
