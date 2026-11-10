@@ -2759,6 +2759,18 @@ if(ENGINE_BUILD_TESTS)
 
     set(TEST_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
 
+    add_executable(test_glad_wgl_loader tests/test_glad_wgl_loader.c external/glad.c)
+    target_include_directories(test_glad_wgl_loader PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/win32_stub)
+    target_compile_definitions(test_glad_wgl_loader PRIVATE _WIN32=1 __stdcall=)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(test_glad_wgl_loader PRIVATE -Wno-pedantic)
+    endif()
+    add_test(NAME test_glad_wgl_loader COMMAND test_glad_wgl_loader)
+    set_tests_properties(test_glad_wgl_loader PROPERTIES
+        LABELS "headless;platform_contract")
+
     # Focused rule-engine ABI and behavior tests, independent of graphics/Lua.
     add_executable(test_rule_engine tests/test_rule_engine.c)
     set_property(TARGET test_rule_engine PROPERTY C_STANDARD 99)
@@ -4285,6 +4297,8 @@ endif()
     add_test(NAME test_myui_subproject_config
         COMMAND ${CMAKE_COMMAND}
             -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt
+            -DMYUI_ROOT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/myui-subproject-contract
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_subproject_config.cmake)
     # Vulkan SDK >= 1.4.321 renamed glslangValidator to glslang; accept both.
     find_program(MYUI_GLSLANG_VALIDATOR NAMES glslangValidator glslang)

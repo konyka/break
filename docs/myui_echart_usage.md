@@ -39,29 +39,27 @@ runtime assertion. Full-frame TAA/FXAA is a separate renderer feature, not a
 replacement for glyph coverage AA.
 
 Architectural note: myui's portability seam is the PAL interface
-(`mypal/my_pal.h`). Real ports now live in-tree under
-`engine/src/myui/mypal/` — `x11/`, `wayland/`, `win32/`, `cocoa/` —
-selected at build time via `-DMYUI_PAL=x11|wayland|win32|cocoa|dummy`
-(dummy stays the headless default). When the explorer is built with a
-desktop port compiled in, it consumes `my_pal_create()` exclusively
-(`[pal/soft]` / `[pal/gl]` window titles); the legacy direct-glue
-runners remain as the dummy-build fallback. The X11 and Wayland ports
-are live-verified on the reference host (window lifecycle, lcd
-presentation, GL mount, events, main loop: see `test_mypal_x11.c` /
+(`mypal/my_pal.h`). Real ports live in-tree under
+`engine/src/myui/mypal/` — `wayland/`, `win32/`, `cocoa/` — selected at
+build time via `-DMYUI_PAL=wayland|win32|cocoa|dummy`. Dummy is selected
+only when the option is unset or explicitly `dummy`; `x11` and unknown
+values fail configuration instead of silently selecting dummy. When the
+explorer is built with a desktop port compiled in, it consumes
+`my_pal_create()` exclusively (`[pal/soft]` / `[pal/gl]` window titles);
+the direct Wayland runners remain available in the dummy build. The
+Wayland port is live-verified on the reference host (window lifecycle,
+lcd presentation, GL mount, events, main loop: see
 `test_mypal_wayland.c`); Win32/Cocoa are compile-targeted against the
 frozen contract with no host in CI.
 
-Verification status: all four Linux combinations plus `--shot`/
-`--glshot`/`--palshot` are verified live on the reference host; the PAL
-ports themselves are covered by `test_mypal_x11.c` / `test_mypal_wayland.c`
-(window lifecycle, lcd presentation, GL mount incl. eglTerminate teardown,
-events, main loop; the X11 suite is also leak-sanitizer clean). The
-Windows and macOS runners are implemented against the documented
-Win32/WGL and Cocoa/NSOpenGL APIs with per-OS build wiring, but are
-compile-targeted only (not executed here — no Windows/macOS host in
-CI). The build selects platform sources automatically and falls back to
-x11+soft-only on Linux when the Wayland/EGL development packages are
-absent. Note: the engine's default ctest run excludes the `fuzz`-labeled
+Verification status: Wayland PAL plus `--shot`/`--glshot`/`--palshot`
+are verified live on the reference host. The Windows and macOS runners
+are implemented against the documented Win32/WGL and Cocoa/NSOpenGL APIs
+with per-OS build wiring, but are compile-targeted only (not executed
+here — no Windows/macOS host in CI). If Wayland/EGL development packages
+are absent, the explorer is headless-only (`--selftest`/`--shot`) rather
+than falling back to X11. Note: the engine's default ctest run excludes
+the `fuzz`-labeled
 smoke tests (`-LE "graphics|fuzz"`); they are built and run by the
 sanitizer CI job.
 

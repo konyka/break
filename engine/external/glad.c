@@ -741,7 +741,12 @@ void* get_proc(const char *namez) {
     if(libGL == NULL) return NULL;
 
 #if defined(_WIN32) || defined(__CYGWIN__)
-    result = (void*)GetProcAddress((HMODULE) libGL, namez);
+    if(gladGetProcAddressPtr != NULL) {
+        result = gladGetProcAddressPtr(namez);
+    }
+    if(result == NULL) {
+        result = (void*)GetProcAddress((HMODULE) libGL, namez);
+    }
 #else
     result = dlsym(libGL, namez);
 #endif

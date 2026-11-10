@@ -1,6 +1,24 @@
-# mypal — platform-neutral PAL core plus the deterministic dummy port.
-# Native host ports are built by the engine integration layer; this target is
-# intentionally headless so the reusable myui modules stay window-system free.
+# mypal — platform-neutral PAL core plus explicit platform port selection.
+# Unset or MYUI_PAL=dummy selects the deterministic CPU dummy; native failures
+# never silently select it.
+if(NOT DEFINED MYUI_PAL OR MYUI_PAL STREQUAL "")
+  set(MYUI_PAL dummy)
+endif()
+if(MYUI_PAL STREQUAL "x11")
+  message(FATAL_ERROR "X11 support was removed; use native Wayland")
+endif()
+set(MYUI_PAL_VALID_VALUES dummy wayland win32 cocoa)
+if(NOT MYUI_PAL IN_LIST MYUI_PAL_VALID_VALUES)
+  message(FATAL_ERROR
+    "Unsupported MYUI_PAL='${MYUI_PAL}'; expected dummy, wayland, win32, or cocoa")
+endif()
+if(MYUI_PAL STREQUAL "win32" AND NOT WIN32)
+  message(FATAL_ERROR "MYUI_PAL=win32 requires a Windows host")
+endif()
+if(MYUI_PAL STREQUAL "cocoa" AND NOT APPLE)
+  message(FATAL_ERROR "MYUI_PAL=cocoa requires an Apple host")
+endif()
+
 set(MYUI_PAL_SOURCES dummy/my_pal_dummy.c)
 set(MYUI_PAL_DEFINES "")
 set(MYUI_PAL_LIBS "")
