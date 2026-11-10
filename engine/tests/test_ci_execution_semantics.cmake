@@ -121,6 +121,28 @@ require_lane_semantics(lane-benchmark-steam-deck-vk
     "- name: Emit benchmark receipt"
     "- name: Require executed real-GPU benchmark")
 
+extract_job(lane-benchmark-linux-vk benchmark)
+foreach(required IN ITEMS
+        "CMAKE_C_COMPILER=clang-18"
+        "CMAKE_CXX_COMPILER=clang++-18"
+        "CMAKE_AR=/usr/bin/llvm-ar-18"
+        "CMAKE_RANLIB=/usr/bin/llvm-ranlib-18"
+        "CMAKE_EXE_LINKER_FLAGS=\"-fuse-ld=lld-18\""
+        "CMAKE_BUILD_TYPE=Release")
+    string(FIND "${benchmark}" "${required}" found)
+    if(found EQUAL -1)
+        fail("benchmark Clang/LLD pair is incomplete: ${required}")
+    endif()
+endforeach()
+file(READ "${REPO_ROOT}/engine/toolchain-clang-linux.cmake" clang_toolchain)
+foreach(required IN ITEMS "set(CMAKE_C_COMPILER clang)" "set(CMAKE_CXX_COMPILER clang++)"
+        "set(CMAKE_LINKER lld)" "set(CMAKE_EXE_LINKER_FLAGS_INIT \"-fuse-ld=lld\")")
+    string(FIND "${clang_toolchain}" "${required}" found)
+    if(found EQUAL -1)
+        fail("Clang/LLD toolchain is incomplete: ${required}")
+    endif()
+endforeach()
+
 extract_job(lane-headless-windows-asan windows_asan)
 foreach(required IN ITEMS
         "CMAKE_C_FLAGS=\"-fsanitize=address -fno-omit-frame-pointer\""

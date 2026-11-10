@@ -102,7 +102,7 @@ if(MYUI_BIDI)
 endif()
 
 # math library for the software rasterizer (floorf/ceilf/sqrtf)
-if(NOT MSVC)
+if(NOT WIN32)
   target_link_libraries(myr PUBLIC m)
 endif()
 

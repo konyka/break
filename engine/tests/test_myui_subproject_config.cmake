@@ -236,17 +236,24 @@ int main(void) {
             if(NOT build_rc EQUAL 0)
                 string(APPEND failures
                     "${name}: build failed; generator=${PROBE_GENERATOR}; compiler=${PROBE_C_COMPILER}; config=${PROBE_BUILD_TYPE}; target=${target}\n"
-                    "CONFIGURE OUTPUT\n${probe_log}\nBUILD OUTPUT\n${build_out}${build_err}\n")
+                    "BUILD OUTPUT\n${build_out}${build_err}\nCONFIGURE OUTPUT\n${probe_log}\n")
+            elseif(TARGET_SYSTEM_NAME STREQUAL "Windows" AND target STREQUAL "pal_probe")
+                file(READ "${WORK}/${name}/CMakeFiles/pal_probe.dir/linkLibs.rsp" pal_link_libraries)
+                string(FIND "${pal_link_libraries}" " -lm " libm_offset)
+                if(NOT libm_offset EQUAL -1)
+                    string(APPEND failures
+                        "${name}: Windows pal_probe link unexpectedly requires raw libm: ${pal_link_libraries}\n")
+                endif()
             endif()
         endif()
         set(failures "${failures}" PARENT_SCOPE)
     endfunction()
 
     function(expect_probe_success name expected_output)
+        expect_build_success("${name}" pal_probe ${ARGN})
         if(DEFINED ZIG_EXECUTABLE)
-            expect_build_success("${name}" mypal ${ARGN})
+            set(probe_exe "")
         else()
-            expect_build_success("${name}" pal_probe ${ARGN})
             set(probe_exe "")
             set(probe_config "${PROBE_BUILD_TYPE}")
             if(NOT probe_config)
@@ -303,7 +310,7 @@ int main(void) {
         if(NATIVE_PAL_CONFIGURE_ONLY)
             expect_configure_success(win32-native -DMYUI_PAL=win32)
         else()
-            expect_build_success(win32-native mypal -DMYUI_PAL=win32)
+            expect_build_success(win32-native pal_probe -DMYUI_PAL=win32)
         endif()
     elseif(TARGET_SYSTEM_NAME STREQUAL "Darwin")
         expect_configure_failure(wayland-wrong-platform

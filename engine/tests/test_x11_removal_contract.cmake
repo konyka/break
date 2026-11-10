@@ -80,6 +80,21 @@ else()
     endif()
 endif()
 
+function(missing_wayland_log_valid log)
+    set(valid TRUE)
+    foreach(required_package wayland-client wayland-egl wayland-cursor)
+        if(NOT log MATCHES "Package '${required_package}'.*not found" OR
+                NOT log MATCHES "- ${required_package}")
+            set(valid FALSE)
+        endif()
+    endforeach()
+    if(NOT log MATCHES "_pkg_check_modules_internal" OR
+            NOT log MATCHES "CMakeLists.txt:[0-9]+ \\(pkg_check_modules\\)")
+        set(valid FALSE)
+    endif()
+    set(missing_log_valid "${valid}" PARENT_SCOPE)
+endfunction()
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env
         "PKG_CONFIG_PATH=" "PKG_CONFIG_LIBDIR=${WORK}/empty-pkgconfig"
@@ -91,18 +106,39 @@ if(missing_rc EQUAL 0)
         "missing-wayland: missing development packages fell back to another backend\n")
 else()
     set(missing_log "${missing_out}${missing_err}")
-    foreach(required_package wayland-client wayland-egl wayland-cursor)
-        if(NOT missing_log MATCHES "Package '${required_package}' not found" OR
-                NOT missing_log MATCHES "- ${required_package}")
-            string(APPEND failures
-                "missing-wayland: pkg-config did not identify ${required_package}\n${missing_log}\n")
-        endif()
-    endforeach()
-    if(NOT missing_log MATCHES "_pkg_check_modules_internal" OR
-            NOT missing_log MATCHES "CMakeLists.txt:[0-9]+ \\(pkg_check_modules\\)")
+    missing_wayland_log_valid("${missing_log}")
+    if(NOT missing_log_valid)
         string(APPEND failures
-            "missing-wayland: failure did not come from the real pkg_check_modules call\n${missing_log}\n")
+            "missing-wayland: pkg-config did not identify all required packages or the real call stack\n${missing_log}\n")
     endif()
+endif()
+
+set(local_missing_log [=[-- Package 'wayland-client' not found
+-- Package 'wayland-egl' not found
+-- Package 'wayland-cursor' not found
+ - wayland-client
+ - wayland-egl
+ - wayland-cursor
+/usr/share/cmake-3.28/Modules/FindPkgConfig.cmake:841 (_pkg_check_modules_internal)
+CMakeLists.txt:113 (pkg_check_modules)]=])
+set(ci_missing_log [=[-- Package 'wayland-client', required by 'virtual:world', not found
+-- Package 'wayland-egl', required by 'virtual:world', not found
+-- Package 'wayland-cursor', required by 'virtual:world', not found
+ - wayland-client
+ - wayland-egl
+ - wayland-cursor
+/usr/share/cmake-3.28/Modules/FindPkgConfig.cmake:841 (_pkg_check_modules_internal)
+CMakeLists.txt:113 (pkg_check_modules)]=])
+foreach(variant local ci)
+    missing_wayland_log_valid("${${variant}_missing_log}")
+    if(NOT missing_log_valid)
+        string(APPEND failures
+            "missing-wayland: ${variant} stdout/stderr diagnostic form was rejected\n${${variant}_missing_log}\n")
+    endif()
+endforeach()
+missing_wayland_log_valid("Package 'unrelated-package' not found")
+if(missing_log_valid)
+    string(APPEND failures "missing-wayland: unrelated/missing package diagnostic was accepted\n")
 endif()
 
 find_path(HOST_GL_INCLUDE_DIR GL/gl.h PATHS /usr/include /usr/local/include)
