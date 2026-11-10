@@ -161,7 +161,7 @@ set(ENGINE_TEST_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH
 # === Compiler flags ===
 if(MSVC)
     # MSVC-compatible frontends require C mode for this C-only project.
-    add_compile_options(/W4 /WX /utf-8)
+    add_compile_options(/W4 /WX /utf-8 $<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
     if(CMAKE_C_COMPILER_ID STREQUAL "MSVC")
         add_compile_options(/experimental:c11atomics)
@@ -2813,13 +2813,31 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_glad_wgl_loader PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/win32_stub)
-    target_compile_definitions(test_glad_wgl_loader PRIVATE _WIN32=1 __stdcall=)
+    target_compile_definitions(test_glad_wgl_loader PRIVATE _WIN32=1)
+    if(NOT WIN32)
+        target_compile_definitions(test_glad_wgl_loader PRIVATE __stdcall=)
+    endif()
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(test_glad_wgl_loader PRIVATE -Wno-pedantic)
     endif()
     add_test(NAME test_glad_wgl_loader COMMAND test_glad_wgl_loader)
     set_tests_properties(test_glad_wgl_loader PROPERTIES
         LABELS "headless;platform_contract")
+    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+        find_program(REMOTE_CI_CLANG_CL NAMES clang-cl)
+        find_program(REMOTE_CI_ZIG_EXECUTABLE NAMES zig)
+        if(REMOTE_CI_CLANG_CL AND REMOTE_CI_ZIG_EXECUTABLE)
+            add_test(NAME test_remote_ci_windows_contract
+                COMMAND ${CMAKE_COMMAND}
+                    -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/remote-ci-windows-contract
+                    -DCLANG_CL=${REMOTE_CI_CLANG_CL}
+                    -DZIG_EXECUTABLE=${REMOTE_CI_ZIG_EXECUTABLE}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_remote_ci_windows_contract.cmake)
+            set_tests_properties(test_remote_ci_windows_contract PROPERTIES
+                LABELS "headless;platform_contract" TIMEOUT 180)
+        endif()
+    endif()
 
     # Focused rule-engine ABI and behavior tests, independent of graphics/Lua.
     add_executable(test_rule_engine tests/test_rule_engine.c)

@@ -121,6 +121,17 @@ require_lane_semantics(lane-benchmark-steam-deck-vk
     "- name: Emit benchmark receipt"
     "- name: Require executed real-GPU benchmark")
 
+extract_job(lane-headless-windows-asan windows_asan)
+foreach(required IN ITEMS
+        "CMAKE_C_FLAGS=\"-fsanitize=address -fno-omit-frame-pointer\""
+        "CMAKE_CXX_FLAGS=\"-fsanitize=address -fno-omit-frame-pointer\""
+        "Copy the ASan runtime DLLs next to the tests")
+    string(FIND "${windows_asan}" "${required}" found)
+    if(found EQUAL -1)
+        fail("Windows ASan lane missing ${required}")
+    endif()
+endforeach()
+
 extract_job(lane-benchmark-steam-deck-vk deck)
 foreach(marker IN ITEMS "- name: Emit benchmark receipt" "- name: Require executed real-GPU benchmark")
     extract_step("${deck}" "${marker}" step)

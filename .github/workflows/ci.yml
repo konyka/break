@@ -323,7 +323,7 @@ jobs:
         # R696: AddressSanitizer on Windows/clang — the runtime ships as
         # clang_rt.asan DLLs that the loader must find; the test step
         # copies them next to the executables after building.
-        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DENGINE_RHI_BACKEND=opengl
+        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build-asan --parallel
