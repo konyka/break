@@ -1,4 +1,4 @@
-# Cry Game Integration Implementation Plan
+# Game App Integration Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -360,12 +360,12 @@ strcpy(file.name, "runtime_2.bin");
 ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
 ASSERT_EQ(game_checkpoint_write_manifest(dir, &file, 1u, 2u), BREAK_RUNTIME_OK);
 ASSERT_TRUE(before_hash != game_checkpoint_manifest_hash(dir));
-ASSERT_EQ(game_checkpoint_corrupt_payload_for_fixture(dir, "runtime"), BREAK_RUNTIME_OK);
+ASSERT_EQ(test_checkpoint_corrupt_payload_for_fixture(dir, "runtime"), BREAK_RUNTIME_OK);
 ASSERT_EQ(game_checkpoint_probe(dir), BREAK_RUNTIME_INVALID);
 ASSERT_EQ(game_checkpoint_probe(backup_dir), BREAK_RUNTIME_OK);
 ```
 
-`test_fnv1a64`、`test_write_checkpoint_file`、`test_copy_checkpoint` 和 `game_checkpoint_corrupt_payload_for_fixture` 都是测试源码局部 helper，不进入生产库。
+`test_fnv1a64`、`test_write_checkpoint_file`、`test_copy_checkpoint` 和 `test_checkpoint_corrupt_payload_for_fixture` 都是测试源码局部 helper，不进入生产库。
 
 - [ ] **Step 2: 运行 baker/reader RED**
 

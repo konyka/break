@@ -1,4 +1,4 @@
-# Cry Game 真实集成
+# Game App 真实集成
 
 日期：2026-11-06
 
@@ -83,11 +83,11 @@ ctest --test-dir build-game-integration-network-flag \
 
 ### checkpoint v1 格式与事务
 
-`manifest.game` 为显式小端二进制：40 字节头加每条 88 字节记录。头依次是 8 字节 `GAMECKPT\0`、version=1、header_bytes=40、exact_total_size(u64)、generation(u64)、file_count(u32)、reserved(u32)。记录依次是 kind(u32)、name_length(u32)、size(u64)、FNV-1a-64(u64)、64 字节以 NUL 结尾并零填充的 basename。FNV 只用于损坏检测，不是安全认证。
+`manifest.game` 为显式小端二进制：40 字节头加每条 88 字节记录。头依次是固定 8 字节 `GAMECKPT`（无额外 NUL）、version=1、header_bytes=40、exact_total_size(u64)、generation(u64)、file_count(u32)、reserved(u32)。记录依次是 kind(u32)、name_length(u32)、size(u64)、FNV-1a-64(u64)、64 字节以 NUL 结尾并零填充的 basename。FNV 只用于损坏检测，不是安全认证。
 
 每代 1..16 个文件，每文件最多 64 MiB，basename 最多 63 字节且只允许 ASCII 字母数字、`_.-`；路径分隔符、绝对路径、`..`、`.` 和 `manifest.game` 均被拒绝。容量或长度超限返回 `BREAK_RUNTIME_OVERLOAD`，不静默截断。读取先验证完整 manifest 和所有记录，再逐文件以固定 4096 字节缓冲 staging 校验精确长度和 hash，无需按 payload 大小分配。
 
-调用者先以新 generation 名写 payload，避免覆盖旧 manifest 引用的文件。`game_checkpoint_write_manifest` 先重新读取并校验所有新 payload，再用一个 `PlatformAtomicWriter` 提交 manifest。校验、打开、写入或提交失败时不提交新代；可安全识别为本代的新文件会删除，旧 manifest 引用的同名文件不会删除。写前保留旧 manifest 字节，用于提交失败后的恢复。`game_checkpoint_probe` 不修改任何 World/Level；真实运行状态反序列化、资源重建和事务 load 属于后续任务。
+调用者先以新 generation 名写 payload，避免覆盖旧 manifest 引用的文件。`game_checkpoint_write_manifest_ex` 先重新读取并校验所有新 payload，再用一个 `PlatformAtomicWriter` 提交 manifest。write、file-fsync、close 或 rename 在目标替换前失败时返回 `BREAK_RUNTIME_FAILED`，结果为 `GAME_CHECKPOINT_COMMIT_NOT_COMMITTED`，旧 manifest 不变，并按既有安全规则清理新 payload。rename 成功后 directory open/fsync 失败时返回逻辑 `BREAK_RUNTIME_OK`，结果为 `GAME_CHECKPOINT_COMMIT_VISIBLE_DURABILITY_UNKNOWN`，新 manifest 与 payload 保留，不执行恢复 rename。旧 `game_checkpoint_write_manifest` 保留逻辑提交 API，OK 也可能表示 unknown；需要 durability 区分的调用必须使用 `_ex`。`game_checkpoint_probe` 不修改任何 World/Level；真实运行状态反序列化、资源重建和事务 load 属于后续任务。
 
 ### 已执行的 Task 2 证据
 
@@ -117,11 +117,13 @@ Linux 上 `test_game_app_assets` 为 9/9，通过两回 baker 逐字节比较、
 
 为保证同一 checkpoint 在大小写敏感与不敏感文件系统间移动时仍不破坏旧代，v1 采用保守的统一规则，而不是按当前宿主改变接受策略：保留名、重复名和旧 payload 名都按 ASCII 大小写折叠比较；`MANIFEST.GAME` 等保留名变体被拒绝；尾随点被拒绝，避免 Windows 规范化别名；新记录与旧 manifest 中 payload 的大小写变体或尾随点变体也被拒绝。该策略会在大小写敏感系统上额外拒绝一些本来可共存的名称，是有意的可移植性格式约束。Linux 用例验证的是该格式策略，不是 Windows/NTFS 实机行为。
 
-### rename 后失败协议
+### 当前 checkpoint 提交与 durability 协议
 
-POSIX `PlatformAtomicWriter` 的既有语义保持不变：rename 后 directory open/fsync 失败仍返回 false，此时目标可能已替换。checkpoint 不再忽略恢复结果。恢复 writer 成功且旧 manifest 与其 payload 经 `game_checkpoint_probe` 确认可用后，才删除本 generation 新 payload。恢复失败时不删除新 payload；如果新 manifest 仍在，它不会指向已删除文件，独立旧备份也仍可 probe。旧 manifest 已损坏时不把清理视为安全，保留新旧 payload，并保留恢复后的旧原始字节。没有旧 manifest 时，只有确认新 manifest 已移除才清理新 payload。
+`PlatformAtomicCommitResult` 区分 `SUCCESS_DURABLE`、`NOT_COMMITTED_TARGET_UNCHANGED` 和 `RENAMED_DURABILITY_UNKNOWN`；旧 `platform_atomic_writer_commit()` 仅对第一种返回 true，保持 bool 兼容。write、file-fsync、close 或 rename 在目标替换前失败时，checkpoint 返回 `BREAK_RUNTIME_FAILED`，旧 manifest 不变并安全清理新 payload，实际 rename 次数为 0。
 
-这些路径仍返回 `BREAK_RUNTIME_FAILED`，调用者不能把 FAILED 当作新代已接收。恢复失败时新 manifest 可能可见，因此本合同不夸大为所有故障下旧 manifest 字节绝对不变，也不构成崩溃持久性证明。测试使用 Linux/GNU/Clang 链接器 `--wrap=fsync` 和 `--wrap=write` 只在 `test_game_app_assets` 进程内注入真实 PAL directory-fsync 与恢复 write 失败，没有生产 test hook 或共享 PAL 语义改动。
+rename 成功后 directory open/fsync 失败时，新 manifest 已经可见。checkpoint 返回逻辑 `BREAK_RUNTIME_OK` 和 `GAME_CHECKPOINT_COMMIT_VISIBLE_DURABILITY_UNKNOWN`，保留新 manifest 与 payload，不执行恢复 rename，并发出 fsync 警告。独立旧备份只用于恢复证据，不改变同目录提交结果。`GAME_CHECKPOINT_COMMIT_DURABLE` 仅表示平台要求的步骤完成，不声称掉电、崩溃或硬件故障下持久性已保证。
+
+故障测试只在 `test_game_app_assets` 和 `test_platform_fs_write` 的 Linux 测试进程内使用 linker wrappers 注入 write、file-fsync、rename 和 directory-fsync 失败，同时检查返回状态、实际 rename 次数、manifest 字节/generation、payload 和 probe；生产代码没有 test hook。
 
 已执行的新套件为 18/18，覆盖恢复成功、恢复写失败、损坏旧 manifest、名称边界和规范化别名；资产/FS/Flow/动画/P1/Lua 定向集合为 8/8。生产变异临时无视恢复结果并无条件清理，恢复写失败用例如期从 18/18 降为 17/18，恢复后回到 18/18。Windows 实机、GPU、音频设备、听测和网络仍未验证。
 
