@@ -81,7 +81,7 @@
       "name": "xcode",
       "version": ">=15.4 (macOS 14 SDK minimum)",
       "purpose": "system-provided",
-      "source": "Apple Xcode; CI runner macos-14 image (pinned image label, not a floating label)",
+      "source": "Apple Xcode; CI runner macos-15 arm64 image (pinned image label, not a floating label)",
       "sha256": "n/a-apple-developer-tools-version-floor-only",
       "verify_path": "",
       "platforms": ["macos", "ios"]

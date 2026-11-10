@@ -782,7 +782,7 @@ jobs:
     # 原 macos-vulkan（brief :160）：test_platform_cocoa_runtime 的 native-surface
     # 证据；MoltenVK 后端（schema backend=vulkan-moltenvk）。
     name: macOS Cocoa + MoltenVK (Clang)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -1154,7 +1154,7 @@ jobs:
     # graphics 契约整体跳过（77）时收据如实降级 HEADLESS，不伪造 GPU_RUNTIME；
     # 真机/self-hosted runner 上 graphics 全绿才标 GPU_RUNTIME。
     name: macOS native Metal (Clang)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -1764,7 +1764,7 @@ jobs:
   ios-metal-build:
     # Simulator evidence = compile only (marking 1 of 3: lane comment)
     name: iOS native Metal build-only (Simulator evidence = compile only)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6

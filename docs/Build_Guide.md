@@ -976,17 +976,17 @@ PR/fork 不 login、不 push，只 smoke 本地候选，普通 lanes 不把该�
 | lane-native-surface-wayland | ubuntu-24.04 | Wayland + Vulkan，Debug（weston headless） | evidence-receipt-native-surface-wayland |
 | wayland-gl（OpenGL 长期保留，对比基准） | ubuntu-24.04 | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
 | lane-native-surface-win32 | windows-latest | Win32 原生 surface trio，Clang Debug | evidence-receipt-native-surface-win32 |
-| lane-native-surface-cocoa | macos-14 | Cocoa + MoltenVK，Debug | evidence-receipt-native-surface-cocoa |
+| lane-native-surface-cocoa | macos-15 (arm64) | Cocoa + MoltenVK，Debug | evidence-receipt-native-surface-cocoa |
 | lane-gpu-runtime-linux-gl（OpenGL 长期保留，对比基准） | ubuntu-24.04 | Wayland + GL，Debug，Weston + Mesa 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
 | lane-gpu-runtime-linux-vk | ubuntu-24.04 | Wayland + Vulkan，clang-18 Debug，Weston + lavapipe（软渲染，收据如实标注） | evidence-receipt-gpu-runtime-linux |
-| lane-gpu-runtime-macos-metal | macos-14 | Metal，Debug（hosted 无 Metal 会话时收据如实降级 HEADLESS） | evidence-receipt-gpu-runtime-macos-metal |
+| lane-gpu-runtime-macos-metal | macos-15 (arm64) | Metal，Debug（hosted 无 Metal 会话时收据如实降级 HEADLESS） | evidence-receipt-gpu-runtime-macos-metal |
 | lane-gpu-runtime-windows-d3d12（+ 常开 unavailable 孪生 job） | self-hosted windows gpu（`ENABLE_GPU_LANES` 门控） | D3D12，Release（hosted WARP floor 在 windows-d3d12.yml） | evidence-receipt-gpu-runtime-windows-d3d12 |
 | lane-validation-linux-vk | ubuntu-24.04 | Wayland + Vulkan，Debug，Weston + VK_LAYER_KHRONOS_validation（VUID 即红） | evidence-receipt-validation-linux |
 | lane-benchmark-linux-vk | ubuntu-24.04 | Wayland + Vulkan，Release，Weston 下 `rhi_swapchain_bench` 600 帧 lavapipe（GPU_RUNTIME 收据注明软渲染） | evidence-receipt-benchmark-linux-vk |
 | lane-benchmark-steam-deck-vk | self-hosted linux gpu-vulkan（`ENABLE_GPU_LANES` 门控） | Wayland + Vulkan，RelWithDebInfo，真 GPU BENCHMARK_COMPARABLE 收据 | evidence-receipt-benchmark-steam-deck |
 | lane-proton（schedule 周一 03:23 UTC + 手动） | ubuntu-24.04 | steamrt sniper 钉 digest 容器内构建 + ctest（缺 Wayland 工具链则 UNAVAILABLE；兼容参考） | evidence-receipt-proton |
 | clean-room（Task 2 交付，非 lane 命名） | ubuntu-24.04 | 钉版工具链 + git archive 干净导出 + Vulkan | — |
-| ios-metal-build（compile only） | macos-14 | iOS Simulator build-only + metallib、scene manifest 与资源入包断言 | — |
+| ios-metal-build（compile only） | macos-15 (arm64) | iOS Simulator build-only + metallib、scene manifest 与资源入包断言 | — |
 
 ## 3. 构建产物
 
