@@ -39,6 +39,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/break-ci-linux
+  UPSTREAM_IMAGE: ghcr.io/konyka/break-ci-linux
   PUBLISH: ${{ github.event_name != 'pull_request' && github.repository == 'konyka/break' }}
   FORCE_REBUILD: ${{ github.event_name == 'schedule' || inputs.force_rebuild }}
   FALLBACK_DIGEST: ${{ inputs.fallback_digest }}
@@ -66,7 +67,7 @@ jobs:
         run: |
           echo "found=false" >> "$GITHUB_OUTPUT"
           echo "digest=" >> "$GITHUB_OUTPUT"
-          if [ "$FORCE_REBUILD" = "true" ]; then exit 0; fi
+          if [ "$PUBLISH" != "true" ] || [ "$FORCE_REBUILD" = "true" ]; then exit 0; fi
           set +e
           digest="$(docker buildx imagetools inspect "$IMAGE:verified-$INPUTS_HASH" 2>/dev/null | awk '/^Digest:/ {print $2; exit}')"
           set -e
@@ -148,5 +149,6 @@ jobs:
             "$IMAGE" \
             "${{ steps.verified.outputs.digest }}" \
             "${{ steps.publish.outputs.digest }}" \
-            "$FALLBACK_DIGEST")"
+            "$FALLBACK_DIGEST" \
+            "$UPSTREAM_IMAGE")"
           echo "digest=$selected" >> "$GITHUB_OUTPUT"

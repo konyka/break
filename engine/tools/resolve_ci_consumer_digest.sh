@@ -5,6 +5,7 @@ image=$1
 verified_digest=${2:-}
 publish_digest=${3:-}
 override_digest=${4:-}
+fallback_image=${5:-ghcr.io/konyka/break-ci-linux}
 
 inspect_public_digest() {
     local reference=$1
@@ -27,10 +28,10 @@ elif [ -n "$publish_digest" ]; then
 elif [ -n "$override_digest" ]; then
     selected="$override_digest"
 else
-    if ! public_digest="$(inspect_public_digest "$image:latest")"; then
+    if ! public_digest="$(inspect_public_digest "$fallback_image:latest")"; then
         exit 1
     fi
-    selected="$image@$public_digest"
+    selected="$fallback_image@$public_digest"
 fi
 
 if [[ ! "$selected" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]]; then

@@ -212,6 +212,17 @@ def main():
     select = next((s for s in steps if s.get("name") == "Select consumer digest"), {})
     if "resolve_ci_consumer_digest.sh" not in select.get("run", ""):
         failures.append("Select consumer digest does not call resolve_ci_consumer_digest.sh")
+    verified = next((s for s in steps if s.get("name") == "Resolve previously verified digest"), {})
+    workflow_env = image_data.get("env", {})
+    upstream_image = "ghcr.io/konyka/break-ci-linux"
+    if workflow_env.get("UPSTREAM_IMAGE") != upstream_image:
+        failures.append("consumer fallback does not name the upstream published image")
+    if '"$UPSTREAM_IMAGE"' not in select.get("run", ""):
+        failures.append("Select consumer digest does not receive the separate upstream fallback")
+    expected_publish_expression = (
+        "${{ github.event_name != 'pull_request' && github.repository == 'konyka/break' }}")
+    if workflow_env.get("PUBLISH") != expected_publish_expression:
+        failures.append("PUBLISH expression is not restricted to upstream non-PR events")
     aliases = next((s for s in steps if s.get("name") == "Verify master aliases"), {})
     if "verify_ci_master_aliases.sh" not in aliases.get("run", ""):
         failures.append("master SHA/latest aliases are not inspected for digest equality")
@@ -266,6 +277,74 @@ esac
     publisher = root / "engine/tools/publish_ci_candidate.sh"
     image = "ghcr.io/konyka/break-ci-linux"
     inputs_hash = "abc123"
+    fork_image = "ghcr.io/fork/break-ci-linux"
+
+    log.write_text("")
+    result = run([BASH, str(resolver), fork_image, "", "", "", upstream_image], env, work)
+    if result.returncode != 0 or result.stdout.strip() != f"{upstream_image}@{DIGEST}":
+        failures.append(
+            f"fork candidate did not fall back to the upstream immutable digest: {result.stdout}{result.stderr}")
+    if f"{fork_image}:latest" in log.read_text():
+        failures.append("fork consumer fallback inspected the unpublished fork latest tag")
+
+    cases = [
+        ("upstream-pr", "pull_request", "konyka/break", "konyka", image, False),
+        ("fork-pr", "pull_request", "konyka/break", "konyka", image, False),
+        ("fork-push", "push", "fork/break", "fork", fork_image, False),
+        ("fork-manual", "workflow_dispatch", "fork/break", "fork", fork_image, False),
+        ("upstream-master", "push", "konyka/break", "konyka", image, True),
+    ]
+    for name, event, repository, owner, expected_candidate, expected_publish in cases:
+        actual_publish = event != "pull_request" and repository == "konyka/break"
+        if actual_publish != expected_publish:
+            failures.append(f"{name}: unexpected PUBLISH expression result")
+        candidate = workflow_env.get("IMAGE", "").replace(
+            "${{ github.repository_owner }}", owner)
+        if candidate != expected_candidate:
+            failures.append(f"{name}: candidate image is {candidate}, expected {expected_candidate}")
+            continue
+        case_env = dict(env)
+        verified_output = work / f"{name}-verified-output"
+        verified_output.write_text("")
+        case_env.update({
+            "PUBLISH": "true" if expected_publish else "false",
+            "FORCE_REBUILD": "false",
+            "IMAGE": candidate,
+            "UPSTREAM_IMAGE": upstream_image,
+            "INPUTS_HASH": inputs_hash,
+            "FALLBACK_DIGEST": "",
+            "GITHUB_OUTPUT": str(verified_output),
+        })
+        log.write_text("")
+        verified_result = run([BASH, "-c", verified.get("run", "")], case_env, root)
+        verified_values = {}
+        for line in verified_output.read_text().splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                verified_values[key] = value
+        expected_found = "true" if expected_publish else "false"
+        if (verified_result.returncode != 0 or
+                verified_values.get("found") != expected_found):
+            failures.append(
+                f"{name}: verified candidate gating returned {verified_values}: "
+                f"{verified_result.stdout}{verified_result.stderr}")
+        select_script = select.get("run", "").replace(
+            "${{ steps.verified.outputs.digest }}", verified_values.get("digest", ""))
+        select_script = select_script.replace("${{ steps.publish.outputs.digest }}", "")
+        selected_output = work / f"{name}-selected-output"
+        selected_output.write_text("")
+        case_env["GITHUB_OUTPUT"] = str(selected_output)
+        selected_result = run([BASH, "-c", select_script], case_env, root)
+        expected_image = candidate if expected_publish else upstream_image
+        expected_output = f"digest={expected_image}@{DIGEST}"
+        if (selected_result.returncode != 0 or
+                expected_output not in selected_output.read_text().splitlines()):
+            failures.append(
+                f"{name}: selected {selected_output.read_text()!r}, expected {expected_output!r}: "
+                f"{selected_result.stdout}{selected_result.stderr}")
+        if (not expected_publish and candidate != upstream_image and
+                f"{candidate}:latest" in log.read_text()):
+            failures.append(f"{name}: non-publishing selection inspected candidate latest")
 
     log.write_text("")
     result = run([BASH, str(resolver), image, "", "", ""], env, work)
