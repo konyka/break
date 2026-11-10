@@ -2811,11 +2811,15 @@ if(ENGINE_BUILD_TESTS)
 
     add_executable(test_glad_wgl_loader tests/test_glad_wgl_loader.c external/glad.c)
     target_include_directories(test_glad_wgl_loader PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/external
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/win32_stub)
+        ${CMAKE_CURRENT_SOURCE_DIR}/external)
     target_compile_definitions(test_glad_wgl_loader PRIVATE _WIN32=1)
     if(NOT WIN32)
-        target_compile_definitions(test_glad_wgl_loader PRIVATE __stdcall=)
+        target_include_directories(test_glad_wgl_loader PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/win32_stub)
+        target_compile_definitions(test_glad_wgl_loader PRIVATE
+            __stdcall= TEST_WGL_LOADER_SIMULATED=1)
+    else()
+        target_link_libraries(test_glad_wgl_loader PRIVATE opengl32)
     endif()
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(test_glad_wgl_loader PRIVATE -Wno-pedantic)

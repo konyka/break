@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef TEST_WGL_LOADER_SIMULATED
 static int wgl_modern_calls;
 static int dll_modern_calls;
 static int wgl_legacy_calls;
@@ -76,10 +77,17 @@ BOOL FreeLibrary(HMODULE module) {
   (void)module;
   return 1;
 }
+#endif
 
 int main(void) {
   int failures = 0;
-  int loaded = gladLoadGL();
+  int loaded;
+#ifdef TEST_WGL_LOADER_SIMULATED
+  loaded = gladLoadGL();
+#else
+  HMODULE real_module = LoadLibraryW(L"opengl32.dll");
+  loaded = 0;
+#endif
 #define CHECK(condition, message)                                                \
   do {                                                                           \
     if (!(condition)) {                                                          \
@@ -88,7 +96,13 @@ int main(void) {
     }                                                                            \
   } while (0)
 
+#ifndef TEST_WGL_LOADER_SIMULATED
+  CHECK(real_module != NULL, "could not load the real opengl32.dll");
+  if (real_module != NULL) loaded = gladLoadGL();
+#endif
   CHECK(loaded == 1, "gladLoadGL did not initialize with the test DLL");
+
+#ifdef TEST_WGL_LOADER_SIMULATED
   CHECK(glad_glCreateShader == (PFNGLCREATESHADERPROC)mock_create_shader,
         "glCreateShader was not resolved through wglGetProcAddress");
   CHECK(wgl_modern_calls == 1, "wglGetProcAddress did not resolve glCreateShader");
@@ -97,14 +111,37 @@ int main(void) {
         "legacy glGetString did not fall back to GetProcAddress");
   CHECK(wgl_legacy_calls > 0, "legacy entries did not try WGL before the DLL fallback");
   CHECK(dll_legacy_calls > 0, "legacy entries did not reach GetProcAddress");
+#else
+  CHECK(glad_glCreateShader == (PFNGLCREATESHADERPROC)wglGetProcAddress("glCreateShader"),
+        "glCreateShader differs from the real wglGetProcAddress result");
+  CHECK(glad_glGetString == (PFNGLGETSTRINGPROC)GetProcAddress(real_module, "glGetString"),
+        "legacy glGetString differs from the real opengl32 export");
+  CHECK(glad_glGetIntegerv == (PFNGLGETINTEGERVPROC)GetProcAddress(real_module, "glGetIntegerv"),
+        "glGetIntegerv differs from the real opengl32 export");
+  CHECK(glad_glGetStringi == (PFNGLGETSTRINGIPROC)wglGetProcAddress("glGetStringi"),
+        "glGetStringi differs from the real wglGetProcAddress result");
+  if (glad_glGetString != NULL) {
+    CHECK(glad_glGetString(GL_VERSION) != NULL,
+          "the real opengl32 version query returned no version string");
+  }
+#endif
 #undef CHECK
 
   if (failures != 0) {
+#ifdef TEST_WGL_LOADER_SIMULATED
     printf("WGL loader: wgl_modern=%d dll_modern=%d wgl_legacy=%d dll_legacy=%d\n",
            wgl_modern_calls, dll_modern_calls, wgl_legacy_calls,
            dll_legacy_calls);
-    return 1;
+#else
+    printf("WGL native loader: loaded=%d glad_glCreateShader=%p wglCreateShader=%p\n",
+           loaded, (void*)glad_glCreateShader,
+           (void*)wglGetProcAddress("glCreateShader"));
+#endif
+  } else {
+    printf("PASS: gladLoadGL resolved modern entry through WGL and legacy entry through DLL\n");
   }
-  printf("PASS: gladLoadGL resolved modern entry through WGL and legacy entry through DLL\n");
-  return 0;
+#ifndef TEST_WGL_LOADER_SIMULATED
+  if (real_module != NULL) FreeLibrary(real_module);
+#endif
+  return failures == 0 ? 0 : 1;
 }
