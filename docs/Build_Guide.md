@@ -590,6 +590,7 @@ cmake --build build-gl
 | CMAKE_TOOLCHAIN_FILE | (无) | 使用工具链文件（见上方编译器支持矩阵） |
 
 > 编译器标志由 CMake 根据 MSVC / Clang / GCC **自动检测并应用三路分支**，无需手动指定告警/优化标志。
+> MSVC 的 C++20 target 额外使用 `/Zc:__cplusplus`，确保 `__cplusplus` 正确报告 202002；Windows Clang ASan lane 对 `CMAKE_C_FLAGS` 与 `CMAKE_CXX_FLAGS` 同时传入 `-fsanitize=address -fno-omit-frame-pointer`，runtime DLL 部署保持不变。WGL loader 测试只在非 Windows 模拟分支补 `__stdcall`，真实 Windows 使用内建调用约定。benchmark 的 Release+IPO lane 配套使用 `clang-18`、`clang++-18` 与 `lld-18`，不让默认 GNU C++ 接管带版本后缀的 LLD；通用 `toolchain-clang-linux.cmake` 同样显式设置 `clang`/`clang++`/`lld`。
 
 `ENGINE_BUILD_TESTS=ON` 时，configure 使用 `find_package(Python3 COMPONENTS Interpreter REQUIRED)`
 和 `find_program(BASH_EXECUTABLE NAMES bash REQUIRED)` 声明测试解释器依赖；CTest 不依赖裸
@@ -613,8 +614,9 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
   GLSL→SPIR-V，target env Vulkan 1.2 / SPIR-V 1.5）、glslang 16.4.0、dxc 1.9.0.5399、
   VK_LAYER_KHRONOS_validation）；Windows CI 另以 LunarG SDK 1.4.321.0 静默安装
   （`engine/tools/fetch_vulkan_sdk_windows.cmake`，版本 + SHA256 钉死）。
-- Android NDK r27c（27.2.12479018）；Xcode `>=15.4`（macOS 侧 glslc/spirv-cross/cmake/ninja
-  的 pin 见 LOCKED_DEPENDENCIES.md 注记）；Windows SDK 10.0.26100.0。
+- Android NDK r27c（27.2.12479018）；Xcode `>=15.4`，CI 在 macos-15 arm64 上钉
+  `/Applications/Xcode_16.4.app`（macOS 15.5 SDK、iOS 18.5 simulator；macOS 侧
+  glslc/spirv-cross/cmake/ninja 的 pin 见 LOCKED_DEPENDENCIES.md 注记）；Windows SDK 10.0.26100.0。
 - D3D12 Agility SDK 1.619.6（runtime-shipped；`engine/external/d3d12/agility_sdk_lock.txt`
   以 SHA512 复核 nupkg 与 D3D12Core.dll）。
 - Linux CI 依赖（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`；另需 `libssl-dev`（noble 为 OpenSSL 3.0.x，未钉小版本，随 apt 安全更新），`BREAK_ENABLE_CRYPTO` 默认开启时缺它整个 Linux configure 都会失败。自 R700 起这些包预装在容器镜像 `ghcr.io/konyka/break-ci-linux:latest` 里（`.github/docker/ci-linux.Dockerfile`，由 `.github/workflows/ci-image.yml` 构建发布），Linux lane 在镜像里运行，job 里不再执行 `apt-get install`。要改包或版本：改 Dockerfile，等 `ci-image` 工作流构建完成后再触发 CI。注意：同一次 push 会同时启动 `ci-image` 与 `CI`，此时 Linux lane 拉到的仍是旧镜像（2026-10-28 加 `libssl-dev` 时就是这样：10 个 Linux 任务拉到旧镜像 digest 全部 configure 失败），需要在镜像发布后再推一次提交或手动触发 `CI`（`workflow_dispatch`；只读令牌无权限重跑，需在 GitHub 页面操作）。`lane-proton`（周跑，需要 i386 + wine）仍在 job 里 apt 安装。
@@ -958,7 +960,7 @@ creation/destruction 和 Vulkan opaque handle 仍保留在 backend dispatch 边�
 frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/present 路径都会
 修改 partial-present 状态；其 owner-busy 和 damage publication contract 已有测试覆盖。
 
-镜像编排采用 `ci.yml` 的 `image` job 调用同 commit 的 `ci-image.yml`，并在 `on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`。本地候选 `load` 后先 smoke；随后直接给同一 image ID 打 `verified-<inputs-hash>` 标签并 `docker push`，不再第二次 build。发布后再 inspect registry digest，master 的 SHA 与 `latest` 别名从该 digest 创建并回读验证一致。无输入变化复用已验证 digest，schedule 强制重建以获取安全更新。10 个实际 container jobs 均 `needs: image` 并使用 `needs.image.outputs.digest`，不直接消费 `latest`。
+镜像编排采用 `ci.yml` 的 `image` job 调用同 commit 的 `ci-image.yml`，并在 `on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`。本地候选 `load` 后先 smoke；随后直接给同一 image ID 打 `verified-<inputs-hash>` 标签并 `docker push`，不再第二次 build。master alias helper 按该 digest pull 同一候选，重新打 verified、commit SHA 与 `latest` 标签，逐一核对本地 image ID 后分别直接 push，并回读三者 digest 必须一致；不再用 `imagetools create` 生成新 index，也不接受不同 manifest 冒充同一 digest。push 进度保持 stderr，helper 的 digest stdout 不被污染。无输入变化复用已验证 digest，schedule 强制重建以获取安全更新。10 个实际 container jobs 均 `needs: image` 并使用 `needs.image.outputs.digest`，不直接消费 `latest`。
 
 PR/fork 不 login、不 push，只 smoke 本地候选，普通 lanes 不把该候选冒充为全 lane 已验证镜像。candidate 始终使用当前 `github.repository_owner`，非发布消费者的 fallback 则固定为上游 `ghcr.io/konyka/break-ci-linux`；upstream PR、fork PR、fork-owned push/manual 都不会解析不存在的 fork `latest`。可选仓库变量 `BREAK_CI_LINUX_DIGEST` 提供显式 `image@sha256:...` override；未设置时在 prepare 阶段匿名 inspect 上游公共 GHCR `latest`，将其解析为 immutable digest 后消费。公共拉取/解析失败会明确失败；lanes 不直接消费 `latest`，也不会因 override 未配置而阻断首次 PR 或 fork-owned CI。
 
@@ -976,17 +978,17 @@ PR/fork 不 login、不 push，只 smoke 本地候选，普通 lanes 不把该�
 | lane-native-surface-wayland | ubuntu-24.04 | Wayland + Vulkan，Debug（weston headless） | evidence-receipt-native-surface-wayland |
 | wayland-gl（OpenGL 长期保留，对比基准） | ubuntu-24.04 | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
 | lane-native-surface-win32 | windows-latest | Win32 原生 surface trio，Clang Debug | evidence-receipt-native-surface-win32 |
-| lane-native-surface-cocoa | macos-14 | Cocoa + MoltenVK，Debug | evidence-receipt-native-surface-cocoa |
+| lane-native-surface-cocoa | macos-15 (arm64) | Cocoa + MoltenVK，Debug | evidence-receipt-native-surface-cocoa |
 | lane-gpu-runtime-linux-gl（OpenGL 长期保留，对比基准） | ubuntu-24.04 | Wayland + GL，Debug，Weston + Mesa 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
 | lane-gpu-runtime-linux-vk | ubuntu-24.04 | Wayland + Vulkan，clang-18 Debug，Weston + lavapipe（软渲染，收据如实标注） | evidence-receipt-gpu-runtime-linux |
-| lane-gpu-runtime-macos-metal | macos-14 | Metal，Debug（hosted 无 Metal 会话时收据如实降级 HEADLESS） | evidence-receipt-gpu-runtime-macos-metal |
+| lane-gpu-runtime-macos-metal | macos-15 (arm64) | Metal，Debug（hosted 无 Metal 会话时收据如实降级 HEADLESS） | evidence-receipt-gpu-runtime-macos-metal |
 | lane-gpu-runtime-windows-d3d12（+ 常开 unavailable 孪生 job） | self-hosted windows gpu（`ENABLE_GPU_LANES` 门控） | D3D12，Release（hosted WARP floor 在 windows-d3d12.yml） | evidence-receipt-gpu-runtime-windows-d3d12 |
 | lane-validation-linux-vk | ubuntu-24.04 | Wayland + Vulkan，Debug，Weston + VK_LAYER_KHRONOS_validation（VUID 即红） | evidence-receipt-validation-linux |
 | lane-benchmark-linux-vk | ubuntu-24.04 | Wayland + Vulkan，Release，Weston 下 `rhi_swapchain_bench` 600 帧 lavapipe（GPU_RUNTIME 收据注明软渲染） | evidence-receipt-benchmark-linux-vk |
 | lane-benchmark-steam-deck-vk | self-hosted linux gpu-vulkan（`ENABLE_GPU_LANES` 门控） | Wayland + Vulkan，RelWithDebInfo，真 GPU BENCHMARK_COMPARABLE 收据 | evidence-receipt-benchmark-steam-deck |
 | lane-proton（schedule 周一 03:23 UTC + 手动） | ubuntu-24.04 | steamrt sniper 钉 digest 容器内构建 + ctest（缺 Wayland 工具链则 UNAVAILABLE；兼容参考） | evidence-receipt-proton |
 | clean-room（Task 2 交付，非 lane 命名） | ubuntu-24.04 | 钉版工具链 + git archive 干净导出 + Vulkan | — |
-| ios-metal-build（compile only） | macos-14 | iOS Simulator build-only + metallib、scene manifest 与资源入包断言 | — |
+| ios-metal-build（compile only） | macos-15 (arm64) | iOS Simulator build-only + metallib、scene manifest 与资源入包断言 | — |
 
 ## 3. 构建产物
 

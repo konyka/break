@@ -60,7 +60,7 @@ jobs:
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
-            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest-headless.log" | head -40 | while IFS= read -r line; do
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error|lld-link|undefined symbol|undefined reference|could not find library|could not open' "$RUNNER_TEMP/ctest-headless.log" | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
             # CMake script gates (e.g. the d3d12 shader compile gate) put the

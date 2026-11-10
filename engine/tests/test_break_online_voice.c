@@ -252,9 +252,18 @@ TEST(voice_real_udp_loopback_preserves_pcm)
     frame.samples[1] = 456;
     ASSERT_EQ(break_voice_encode(&frame, packet, sizeof(packet), &size), BREAK_RUNTIME_OK);
     ASSERT_EQ(net_sendto(sender_socket, packet, size, &destination), (i32)size);
-    ASSERT_EQ(break_voice_receiver_receive_socket(receiver, 1u), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_voice_receiver_pump(receiver, 1u, 0u), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_voice_receiver_pop(receiver, 0u, &playback, &ready), BREAK_RUNTIME_OK);
+    {
+        u32 attempts = 0u;
+        while (!ready && attempts < 500u) {
+            NetPollFd pfd = {receiver_socket, NET_POLL_READ, 0};
+            ASSERT_TRUE(net_poll(&pfd, 1u, 10) >= 0);
+            ASSERT_EQ(break_voice_receiver_receive_socket(receiver, 1u), BREAK_RUNTIME_OK);
+            ASSERT_EQ(break_voice_receiver_pump(receiver, 1u, 0u), BREAK_RUNTIME_OK);
+            ASSERT_EQ(break_voice_receiver_pop(receiver, 0u, &playback, &ready),
+                      BREAK_RUNTIME_OK);
+            attempts++;
+        }
+    }
     ASSERT_TRUE(ready);
     ASSERT_EQ(playback.sequence, 77u);
     ASSERT_EQ(playback.samples[0], -123);

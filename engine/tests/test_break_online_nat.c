@@ -498,8 +498,17 @@ TEST(nat_rejects_malformed_datagrams_and_beyond_peer_capacity)
     bad[4] = 1u;
     ASSERT_EQ(net_sendto(fixture.attacker_socket, bad, 15u,
                          &fixture.coordinator_address), 15);
-    (void)break_nat_coordinator_receive_socket(fixture.coordinator, 32u);
-    (void)break_nat_coordinator_poll(fixture.coordinator, 32u);
+    {
+        u64 deadline = time_microseconds() + UINT64_C(5000000);
+        while (break_nat_coordinator_invalid_messages(fixture.coordinator) < 3u &&
+               time_microseconds() < deadline) {
+            ASSERT_EQ(break_nat_coordinator_receive_socket(fixture.coordinator, 32u),
+                      BREAK_RUNTIME_OK);
+            ASSERT_EQ(break_nat_coordinator_poll(fixture.coordinator, 32u),
+                      BREAK_RUNTIME_OK);
+            platform_thread_yield();
+        }
+    }
     ASSERT_EQ(break_nat_coordinator_invalid_messages(fixture.coordinator), 3u);
     ASSERT_EQ(break_nat_coordinator_peer_count(fixture.coordinator), 0u);
     ASSERT_EQ(break_nat_peer_hello(fixture.a), BREAK_RUNTIME_OK);
@@ -706,9 +715,18 @@ TEST(nat_captured_valid_hello_replay_from_other_socket_is_rejected)
     put_test_u64(discover + 8u, 11u);
     ASSERT_EQ(net_sendto(fixture.a_socket, discover, sizeof(discover),
                          &fixture.coordinator_address), (i32)sizeof(discover));
-    (void)break_nat_coordinator_receive_socket(fixture.coordinator, 1u);
-    (void)break_nat_coordinator_poll(fixture.coordinator, 1u);
-    size = net_recvfrom(fixture.a_socket, challenge, sizeof(challenge), &source);
+    size = NET_WOULD_BLOCK;
+    {
+        u64 deadline = time_microseconds() + UINT64_C(5000000);
+        while (size == NET_WOULD_BLOCK && time_microseconds() < deadline) {
+            ASSERT_EQ(break_nat_coordinator_receive_socket(fixture.coordinator, 1u),
+                      BREAK_RUNTIME_OK);
+            ASSERT_EQ(break_nat_coordinator_poll(fixture.coordinator, 1u),
+                      BREAK_RUNTIME_OK);
+            size = net_recvfrom(fixture.a_socket, challenge, sizeof(challenge), &source);
+            if (size == NET_WOULD_BLOCK) platform_thread_yield();
+        }
+    }
     ASSERT_EQ(size, (i32)sizeof(challenge));
     ASSERT_TRUE(memcmp(challenge, "BRN1", 4u) == 0);
     ASSERT_EQ(challenge[4], 7u);
@@ -721,14 +739,33 @@ TEST(nat_captured_valid_hello_replay_from_other_socket_is_rejected)
     ASSERT_TRUE(break_crypto_hmac_sha256(key, sizeof(key), hello, 40u, hello + 40u));
     ASSERT_EQ(net_sendto(fixture.a_socket, hello, sizeof(hello),
                          &fixture.coordinator_address), (i32)sizeof(hello));
-    (void)break_nat_coordinator_receive_socket(fixture.coordinator, 1u);
-    (void)break_nat_coordinator_poll(fixture.coordinator, 1u);
+    {
+        u64 deadline = time_microseconds() + UINT64_C(5000000);
+        while (break_nat_coordinator_peer_for_session(fixture.coordinator, 11u, &a_peer) !=
+                   BREAK_RUNTIME_OK && time_microseconds() < deadline) {
+            ASSERT_EQ(break_nat_coordinator_receive_socket(fixture.coordinator, 1u),
+                      BREAK_RUNTIME_OK);
+            ASSERT_EQ(break_nat_coordinator_poll(fixture.coordinator, 1u),
+                      BREAK_RUNTIME_OK);
+            platform_thread_yield();
+        }
+    }
     ASSERT_EQ(break_nat_coordinator_peer_for_session(fixture.coordinator, 11u, &a_peer),
               BREAK_RUNTIME_OK);
     ASSERT_EQ(net_sendto(fixture.attacker_socket, hello, sizeof(hello),
                          &fixture.coordinator_address), (i32)sizeof(hello));
-    (void)break_nat_coordinator_receive_socket(fixture.coordinator, 1u);
-    (void)break_nat_coordinator_poll(fixture.coordinator, 1u);
+    {
+        u64 deadline = time_microseconds() + UINT64_C(5000000);
+        while (break_nat_coordinator_invalid_messages(fixture.coordinator) == 0u &&
+               time_microseconds() < deadline) {
+            ASSERT_EQ(break_nat_coordinator_receive_socket(fixture.coordinator, 1u),
+                      BREAK_RUNTIME_OK);
+            ASSERT_EQ(break_nat_coordinator_poll(fixture.coordinator, 1u),
+                      BREAK_RUNTIME_OK);
+            platform_thread_yield();
+        }
+    }
+    ASSERT_EQ(break_nat_coordinator_invalid_messages(fixture.coordinator), 1u);
     ASSERT_EQ(break_nat_coordinator_peer_observed(fixture.coordinator, a_peer, &observed),
               BREAK_RUNTIME_OK);
     ASSERT_TRUE(net_address_equal(&observed, &fixture.a_address));

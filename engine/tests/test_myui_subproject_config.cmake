@@ -60,7 +60,10 @@ if(DEFINED MYUI_ROOT_DIR AND DEFINED WORK)
         "set(CMAKE_C_EXTENSIONS OFF)\n"
         "add_subdirectory(\"${MYUI_ROOT_DIR}\" \"\${CMAKE_CURRENT_BINARY_DIR}/myui\")\n"
         "add_executable(pal_probe pal_probe.c)\n"
-        "target_link_libraries(pal_probe PRIVATE mypal)\n")
+        "target_link_libraries(pal_probe PRIVATE mypal)\n"
+        "get_target_property(_myr_link_libraries myr LINK_LIBRARIES)\n"
+        "get_target_property(_pal_probe_link_libraries pal_probe LINK_LIBRARIES)\n"
+        "file(WRITE \"\${CMAKE_CURRENT_BINARY_DIR}/pal-link-properties.txt\" \"\${_myr_link_libraries};\${_pal_probe_link_libraries}\\n\")\n")
     file(WRITE "${WORK}/host/pal_probe.c" [=[
 #include "mypal/my_pal.h"
 #include <stdio.h>
@@ -107,6 +110,22 @@ int main(void) {
         set(TARGET_SYSTEM_NAME "${CMAKE_HOST_SYSTEM_NAME}")
     endif()
     set(target_args "-DCMAKE_SYSTEM_NAME=${TARGET_SYSTEM_NAME}")
+    set(generator_args "")
+    if(DEFINED PROBE_GENERATOR AND NOT "${PROBE_GENERATOR}" STREQUAL "")
+        list(APPEND generator_args -G "${PROBE_GENERATOR}")
+    endif()
+    if(DEFINED PROBE_GENERATOR_PLATFORM AND NOT "${PROBE_GENERATOR_PLATFORM}" STREQUAL "")
+        list(APPEND generator_args -A "${PROBE_GENERATOR_PLATFORM}")
+    endif()
+    if(DEFINED PROBE_GENERATOR_TOOLSET AND NOT "${PROBE_GENERATOR_TOOLSET}" STREQUAL "")
+        list(APPEND generator_args -T "${PROBE_GENERATOR_TOOLSET}")
+    endif()
+    if(DEFINED PROBE_C_COMPILER AND NOT "${PROBE_C_COMPILER}" STREQUAL "")
+        list(APPEND target_args "-DCMAKE_C_COMPILER=${PROBE_C_COMPILER}")
+    endif()
+    if(DEFINED PROBE_BUILD_TYPE AND NOT "${PROBE_BUILD_TYPE}" STREQUAL "")
+        list(APPEND target_args "-DCMAKE_BUILD_TYPE=${PROBE_BUILD_TYPE}")
+    endif()
     if(DEFINED ZIG_EXECUTABLE)
         string(TOLOWER "${TARGET_SYSTEM_NAME}" target_lower)
         if(TARGET_SYSTEM_NAME STREQUAL "Windows")
@@ -150,10 +169,32 @@ int main(void) {
 
     function(configure_probe name)
         execute_process(
-            COMMAND "${CMAKE_COMMAND}" -S "${WORK}/host" -B "${WORK}/${name}"
+            COMMAND "${CMAKE_COMMAND}" ${generator_args}
+                -S "${WORK}/host" -B "${WORK}/${name}"
                 ${common_args} ${ARGN}
             RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
-        set(probe_log "${out}${err}" PARENT_SCOPE)
+        set(probe_log "${out}${err}")
+        if(rc EQUAL 0)
+            file(READ "${WORK}/${name}/CMakeCache.txt" probe_cache)
+            foreach(expected_spec IN ITEMS
+                    "PROBE_GENERATOR|CMAKE_GENERATOR"
+                    "PROBE_C_COMPILER|CMAKE_C_COMPILER"
+                    "PROBE_BUILD_TYPE|CMAKE_BUILD_TYPE")
+                string(REPLACE "|" ";" expected_parts "${expected_spec}")
+                list(GET expected_parts 0 expected_var)
+                list(GET expected_parts 1 cache_key)
+                if(DEFINED ${expected_var} AND NOT "${${expected_var}}" STREQUAL "")
+                    string(REGEX MATCH "${cache_key}:[A-Za-z]+=[^\n]*" cache_line "${probe_cache}")
+                    string(REGEX REPLACE "^[^=]+=" "" actual_value "${cache_line}")
+                    if(NOT actual_value STREQUAL "${${expected_var}}")
+                        string(APPEND probe_log
+                            "\nEXPECTED ${cache_key}=${${expected_var}}; ACTUAL=${actual_value}\n")
+                        set(rc 2)
+                    endif()
+                endif()
+            endforeach()
+        endif()
+        set(probe_log "${probe_log}" PARENT_SCOPE)
         set(probe_rc "${rc}" PARENT_SCOPE)
     endfunction()
 
@@ -184,31 +225,72 @@ int main(void) {
         if(NOT probe_rc EQUAL 0)
             string(APPEND failures "${name}: configure failed\n${probe_log}\n")
         else()
+            set(build_config_args "")
+            if(DEFINED PROBE_BUILD_TYPE AND NOT "${PROBE_BUILD_TYPE}" STREQUAL "")
+                list(APPEND build_config_args --config "${PROBE_BUILD_TYPE}")
+            endif()
             execute_process(
                 COMMAND "${CMAKE_COMMAND}" --build "${WORK}/${name}"
-                    --target "${target}" -j3
+                    --target "${target}" -j3 --verbose ${build_config_args}
                 RESULT_VARIABLE build_rc OUTPUT_VARIABLE build_out ERROR_VARIABLE build_err)
+            file(WRITE "${WORK}/${name}-build.log"
+                "generator=${PROBE_GENERATOR}; compiler=${PROBE_C_COMPILER}; config=${PROBE_BUILD_TYPE}; target=${target}\n"
+                "CONFIGURE OUTPUT\n${probe_log}\nBUILD OUTPUT\n${build_out}${build_err}\n")
             if(NOT build_rc EQUAL 0)
-                string(APPEND failures "${name}: build failed\n${build_out}${build_err}\n")
+                string(APPEND failures
+                    "${name}: build failed; generator=${PROBE_GENERATOR}; compiler=${PROBE_C_COMPILER}; config=${PROBE_BUILD_TYPE}; target=${target}\n"
+                    "BUILD OUTPUT\n${build_out}${build_err}\nCONFIGURE OUTPUT\n${probe_log}\n")
+            elseif(TARGET_SYSTEM_NAME STREQUAL "Windows" AND target STREQUAL "pal_probe")
+                if(PAL_SIMULATE_NO_LINKLIBS)
+                    file(REMOVE "${WORK}/${name}/CMakeFiles/pal_probe.dir/linkLibs.rsp")
+                endif()
+                if(EXISTS "${WORK}/${name}/CMakeFiles/pal_probe.dir/linkLibs.rsp")
+                    file(READ "${WORK}/${name}/CMakeFiles/pal_probe.dir/linkLibs.rsp" pal_link_libraries)
+                    string(FIND "${pal_link_libraries}" " -lm " libm_offset)
+                    if(NOT libm_offset EQUAL -1)
+                        string(APPEND failures
+                            "${name}: Windows pal_probe link unexpectedly requires raw libm: ${pal_link_libraries}\n")
+                    endif()
+                elseif(EXISTS "${WORK}/${name}/pal-link-properties.txt")
+                    file(READ "${WORK}/${name}/pal-link-properties.txt" pal_link_libraries)
+                    foreach(link_library IN LISTS pal_link_libraries)
+                        if(link_library STREQUAL "m")
+                            string(APPEND failures
+                                "${name}: Windows pal_probe target unexpectedly requires raw libm: ${pal_link_libraries}\n")
+                        endif()
+                    endforeach()
+                else()
+                    string(APPEND failures
+                        "${name}: unable to validate Windows pal_probe link dependencies; no Ninja response file or target properties\n")
+                endif()
             endif()
         endif()
         set(failures "${failures}" PARENT_SCOPE)
     endfunction()
 
     function(expect_probe_success name expected_output)
+        expect_build_success("${name}" pal_probe ${ARGN})
         if(DEFINED ZIG_EXECUTABLE)
-            expect_build_success("${name}" mypal ${ARGN})
+            set(probe_exe "")
         else()
-            expect_build_success("${name}" pal_probe ${ARGN})
-            if(NOT EXISTS "${WORK}/${name}/pal_probe" AND
-                    NOT EXISTS "${WORK}/${name}/pal_probe.exe")
-                string(APPEND failures "${name}: pal_probe was not built\n")
-            elseif(TARGET_SYSTEM_NAME STREQUAL CMAKE_HOST_SYSTEM_NAME)
-                if(EXISTS "${WORK}/${name}/pal_probe.exe")
-                    set(probe_exe "${WORK}/${name}/pal_probe.exe")
-                else()
-                    set(probe_exe "${WORK}/${name}/pal_probe")
+            set(probe_exe "")
+            set(probe_config "${PROBE_BUILD_TYPE}")
+            if(NOT probe_config)
+                set(probe_config Debug)
+            endif()
+            foreach(candidate IN ITEMS
+                    "${WORK}/${name}/pal_probe.exe"
+                    "${WORK}/${name}/${probe_config}/pal_probe.exe"
+                    "${WORK}/${name}/pal_probe"
+                    "${WORK}/${name}/${probe_config}/pal_probe")
+                if(NOT probe_exe AND EXISTS "${candidate}")
+                    set(probe_exe "${candidate}")
                 endif()
+            endforeach()
+            if(NOT probe_exe)
+                string(APPEND failures
+                    "${name}: pal_probe was not built; config=${probe_config}; root=${WORK}/${name}\n")
+            elseif(TARGET_SYSTEM_NAME STREQUAL CMAKE_HOST_SYSTEM_NAME)
                 execute_process(
                     COMMAND "${CMAKE_COMMAND}" -E env
                         WAYLAND_DISPLAY=task2-no-such-compositor
@@ -247,7 +329,7 @@ int main(void) {
         if(NATIVE_PAL_CONFIGURE_ONLY)
             expect_configure_success(win32-native -DMYUI_PAL=win32)
         else()
-            expect_build_success(win32-native mypal -DMYUI_PAL=win32)
+            expect_build_success(win32-native pal_probe -DMYUI_PAL=win32)
         endif()
     elseif(TARGET_SYSTEM_NAME STREQUAL "Darwin")
         expect_configure_failure(wayland-wrong-platform

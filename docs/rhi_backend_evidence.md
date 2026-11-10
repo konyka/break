@@ -83,7 +83,7 @@
 
 | 平台 × 后端 | 等级 | 依据 |
 |---|---|---|
-| macOS × 原生 Metal | COMPILED（CI lane 首跑） | CI `macos-metal` lane（macos-14，brew shaderc+spirv-cross，metallib 产物断言 + headless/契约测试）run 链接见下；**与既有 M2 GPU_RUNTIME 收据并列**（证据来源机器不同：M2 真机为 GPU_RUNTIME，macos-14 runner 仅编译+契约面） |
+| macOS × 原生 Metal | COMPILED（CI lane 首跑） | CI `macos-metal` lane（当前使用 macos-15 arm64，brew shaderc+spirv-cross，metallib 产物断言 + headless/契约测试）run 链接见下；**与既有 M2 GPU_RUNTIME 收据并列**（证据来源机器不同：M2 真机为 GPU_RUNTIME，hosted runner 仅编译+契约面） |
 | iOS × 原生 Metal | COMPILED（**模拟器证据 = compile only，不构成 GPU-runtime 证据**） | CI `ios-metal-build` lane（Xcode -G + iOS Simulator destination build-only + 产物硬断言，零匹配即失败）；模拟器无可信 GPU-runtime 通道。本机 simctl lifecycle 已于 2026-10-27 补齐（见下方收据），仍不构成 GPU_RUNTIME |
 
 | 日期 | 机器 | GPU / 驱动 | 命令 | 结果 |

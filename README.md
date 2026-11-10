@@ -6,7 +6,7 @@
 CI lanes: headless (linux clang/gcc±sanitizers, windows clang±asan) /
 native-surface (wayland, win32, cocoa) / GPU-runtime (linux vk lavapipe, macOS Metal, Windows D3D12 — self-hosted gated, hosted WARP floor 在 windows-d3d12.yml workflow) /
 validation (KHRONOS_validation + D3D12 debug) / benchmark (receipt artifacts) / proton (参考，周跑)。
-Linux container lanes consume an immutable image digest exported by the same-commit reusable workflow. Publishing tags and pushes the exact smoke-tested candidate. PR/fork runs never log in or push: fork-owned candidates keep the fork owner, while consumers use an optional explicit digest override or anonymously resolve the upstream `ghcr.io/konyka/break-ci-linux:latest` tag to an immutable digest without consuming that tag directly.
+Linux container lanes consume an immutable image digest exported by the same-commit reusable workflow. Publishing tags and pushes the exact smoke-tested candidate; verified, master SHA and latest are tagged and pushed directly from that same image ID, with all three registry digests verified equal and no second build or manifest-index rewrite. PR/fork runs never log in or push: fork-owned candidates keep the fork owner, while consumers use an optional explicit digest override or anonymously resolve the upstream `ghcr.io/konyka/break-ci-linux:latest` tag to an immutable digest without consuming that tag directly.
 证据收据: 每个 lane 上传 `evidence-receipt-*` artifact，schema 见 docs/rhi_benchmark_receipt_schema.md。
 
 Pure C11 3D rendering engine with a C++20 application framework. Dual-language

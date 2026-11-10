@@ -121,6 +121,71 @@ require_lane_semantics(lane-benchmark-steam-deck-vk
     "- name: Emit benchmark receipt"
     "- name: Require executed real-GPU benchmark")
 
+extract_job(lane-benchmark-linux-vk benchmark)
+foreach(required IN ITEMS
+        "CMAKE_C_COMPILER=clang-18"
+        "CMAKE_CXX_COMPILER=clang++-18"
+        "CMAKE_AR=/usr/bin/llvm-ar-18"
+        "CMAKE_RANLIB=/usr/bin/llvm-ranlib-18"
+        "CMAKE_EXE_LINKER_FLAGS=\"-fuse-ld=lld-18\""
+        "CMAKE_BUILD_TYPE=Release")
+    string(FIND "${benchmark}" "${required}" found)
+    if(found EQUAL -1)
+        fail("benchmark Clang/LLD pair is incomplete: ${required}")
+    endif()
+endforeach()
+file(READ "${REPO_ROOT}/engine/toolchain-clang-linux.cmake" clang_toolchain)
+foreach(required IN ITEMS "set(CMAKE_C_COMPILER clang)" "set(CMAKE_CXX_COMPILER clang++)"
+        "set(CMAKE_LINKER lld)" "set(CMAKE_EXE_LINKER_FLAGS_INIT \"-fuse-ld=lld\")")
+    string(FIND "${clang_toolchain}" "${required}" found)
+    if(found EQUAL -1)
+        fail("Clang/LLD toolchain is incomplete: ${required}")
+    endif()
+endforeach()
+
+extract_job(lane-headless-windows-asan windows_asan)
+foreach(required IN ITEMS
+        "CMAKE_C_FLAGS=\"-fsanitize=address -fno-omit-frame-pointer\""
+        "CMAKE_CXX_FLAGS=\"-fsanitize=address -fno-omit-frame-pointer\""
+        "Copy the ASan runtime DLLs next to the tests")
+    string(FIND "${windows_asan}" "${required}" found)
+    if(found EQUAL -1)
+        fail("Windows ASan lane missing ${required}")
+    endif()
+endforeach()
+
+foreach(macos_job IN ITEMS lane-native-surface-cocoa lane-gpu-runtime-macos-metal ios-metal-build)
+    extract_job("${macos_job}" macos_block)
+    string(FIND "${macos_block}" "runs-on: macos-15" found)
+    if(found EQUAL -1)
+        fail("${macos_job} must use the supported arm64 macos-15 runner")
+    endif()
+    if(macos_block MATCHES "macos-14|macos-15-intel")
+        fail("${macos_job} changed its retired label or arm64 architecture")
+    endif()
+endforeach()
+string(FIND "${ci}" "runs-on: macos-14" retired_label)
+if(NOT retired_label EQUAL -1)
+    fail("workflow retains unsupported macos-14 runner")
+endif()
+foreach(xcode_job IN ITEMS lane-gpu-runtime-macos-metal ios-metal-build)
+    extract_job("${xcode_job}" xcode_block)
+    string(FIND "${xcode_block}" "sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer && xcodebuild -version" found)
+    if(found EQUAL -1)
+        fail("${xcode_job} must select official macos-15 Xcode 16.4 and print its version")
+    endif()
+    if(xcode_block MATCHES "Xcode_15\\.4\\.app")
+        fail("${xcode_job} retains Xcode 15.4, which is absent from macos-15")
+    endif()
+endforeach()
+file(READ "${REPO_ROOT}/engine/external/locked_dependencies.json" locked_dependencies)
+foreach(required_pin IN ITEMS "CI pin 16.4" "/Applications/Xcode_16.4.app")
+    string(FIND "${locked_dependencies}" "${required_pin}" found)
+    if(found EQUAL -1)
+        fail("locked_dependencies.json is not synchronized with the CI Xcode pin: ${required_pin}")
+    endif()
+endforeach()
+
 extract_job(lane-benchmark-steam-deck-vk deck)
 foreach(marker IN ITEMS "- name: Emit benchmark receipt" "- name: Require executed real-GPU benchmark")
     extract_step("${deck}" "${marker}" step)

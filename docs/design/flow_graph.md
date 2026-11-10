@@ -98,6 +98,8 @@ headless dummy-PAL 测试直接对真实 widget emitter 发送 click/activate，
 
 focused normal、ASan+UBSan、TSan 均使用 `-j3` 构建并运行 Flow/Game/Editor 测试；TSan 另跑跨线程拒绝探针。最终运行相关既有回归、`git diff --check`，并进行只读代码审查。未执行的真实 GPU 交互、人工视觉检查和跨平台设备验证不作为已完成证据。
 
+2026-11-10 跨平台补充：MSVC `/W4 /WX` 不接受测试直接对 `position(&f)` 返回对象的数组成员做下标（C4223）。测试现通过 `position_x()` 内的命名 `Vec3` lvalue 读取 `e[0]`，保持 12 项运行时行为与全部数值断言不变；Flow 生产代码和公共 API 未改。Linux 上 MSVC 兼容 Clang AST 合同及 clang-cl 语法检查只作本地证据，native MSVC 仍由后续 CI 验证。
+
 ## 9. 生命周期与保存边界
 
 Flow Graph 的二进制序列化是独立侧车格式；本轮不暗中改变 BSCN 格式。`BreakEditorDoc` 的 new/reset 会重置图，现有 scene load 不声称加载 Flow 侧车。编辑器 UI 提供图内编辑与 undo；磁盘读写由调用方使用公开序列化 API 完成。运行时 reset 会清空待处理事件，调用方必须在编辑资产后显式执行。

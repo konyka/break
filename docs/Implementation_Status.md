@@ -1,3 +1,48 @@
+## 本轮更新：第二轮 CI 存量跨平台行为修复（2026-11-10）
+
+- **范围**：以 `0fea919b8d0e9b91e614fa1fb0c8be11be6599b0` 为基线，只处理第二轮 CI 明确分开的 MSVC Flow 编译与 Darwin NAT/voice 行为问题；未修改 CI 基础设施、第二轮其它修复或 cry-integration，未合并、未 push。
+- **MSVC Flow**：`test_break_flow_runtime.c` 的 13 个源码位置直接对函数返回 `Vec3` 的数组成员做下标，MSVC `/W4 /WX` 报 `C4223 non-lvalue array converted to pointer`。新增 `position_x()`，先在命名 `Vec3` lvalue 中保存返回对象再读取 `e[0]`；Flow 生产实现、12 项行为测试及全部数值断言不变，未关闭警告。
+- **Darwin 根因**：失败并非已证实的 BSD `sin_len/ss_len` 缺陷。NAT 的 21/23 项和 socket 初始化成功，三处失败前的 `sendto` 长度断言也都成功；发送地址由 `getaddrinfo` 结果完整复制，接收地址由内核填写。共同失败点是测试在非阻塞 socket 上把 `sendto` 完成误当作对端立即可读，与同仓库 R468 已修复的 UDP 竞态一致。
+- **Darwin 最小修复**：仅在 NAT/voice 测试中加入有界条件接收/pump；保留 `invalid_messages==3`、32 字节 challenge、PCM 和 observed-address 断言。captured HELLO 路径还等待有效登记，并要求跨 socket 重放实际被处理且使 invalid 计数增加 1，避免数据报未到达时安全测试假通过。生产 socket、协议、nonce/replay/HMAC 和公共 API 最终均无 diff。
+- **RED/GREEN 与变异**：临时 LD_PRELOAD 只让每个 socket 生命周期首次 `recvfrom` 合法返回 `EAGAIN`，未修源码精确复现 NAT 21/23、voice 7/8 及 CI 同三项断言；修复后同一注入与普通运行均为 NAT 23/23、voice 8/8。完整回退再次得到相同 RED；恢复后 GREEN。MSVC 兼容 Clang AST 合同由 26 个宏展开匹配（13 个源码位置）降为 0，回退后再次为 26。生产 invalid-accounting 变异被 captured-HELLO 测试以 22/23 杀死后恢复。
+- **验证**：普通完整 `-j3` 构建成功；普通、ASan+UBSan、TSan 的 Flow/NAT/voice/socket/event-loop/replication focused 均 11/11，无 sanitizer/race 报告。普通非图形 `-j3` 为 342 项入选、341 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP；`git diff --check` 通过。
+- **native 限制**：本机只有 Linux。Clang AST/clang-cl 不冒充 native MSVC，LD_PRELOAD 不冒充 Darwin 内核调度；真实 MSVC 编译和 macOS Cocoa/MoltenVK NAT/voice 仍必须在下一轮 native CI 验证。完整命令、输出和变异记录见 `.superpowers/sdd/2026-11-10-remove-x11/platform-behavior-fix-report.md`。
+
+## 本轮更新：round2 scoped N1——生成器无关的 PAL 链接验证（2026-11-10）
+
+- **根因与 RED**：`test_myui_subproject_config.cmake` 无条件读取 Ninja 专用 `linkLibs.rsp`，Visual Studio/MSBuild 即使成功链接也会直接中止并跳过后续矩阵。新增明确的无响应文件回归，旧代码在 default-dummy 处以 `file failed to open for reading` 中止，证实不是实际链接失败。
+- **GREEN**：Ninja 继续读取实际 `linkLibs.rsp` 并拒绝 raw `-lm`；文件不存在时改读 nested configure 从真实 `myr`/`pal_probe` 的 `LINK_LIBRARIES` target properties 写出的 `pal-link-properties.txt`，仅在独立库项等于 `m` 时拒绝。两种证据都缺失才追加明确诊断，不再隐式中止。`NOT WIN32` 不链接 raw `m`、verbose build→configure 诊断及完整 dummy/Win32/Cocoa 矩阵保持不变。
+- **变异与验证**：恢复无条件读取后无响应文件回归再次 RED，精确恢复后无响应文件与正常 Ninja 均 GREEN；父级 PAL focused 3/3，普通非图形 342 项零失败（唯一既有 D3D12 平台 skip），`git diff --check` 通过。实现提交 `bcf4b8a8`，文档另提交，未合并、未 push。完整证据追加于 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round2-report.md`。
+- **限制**：本地使用明确的 MSBuild 风格无响应文件回归和真实 target properties，不是 native Visual Studio/MSBuild 执行证据；native Windows 链接与运行仍须下一轮 CI。
+
+## 本轮更新：第二轮真实 CI 基础设施修复（2026-11-10）
+
+- **范围**：以 `1150ccaab131daf121e581dc516db52aa1b5564b` 为 base，读取主 run `42801996748`、D3D12 run `42801996738` 及全部失败 job 日志，处理 missing-wayland、Clang+LLD、Windows PAL 链接三项基础设施问题；实现提交 `03c3e21f`。未修改 brief 排除的 MSVC flow 或 macOS NAT/voice 文件，本轮未合并、未 push。
+- **missing-wayland**：CI 的 pkg-config 输出为 `Package 'wayland-client', required by 'virtual:world', not found`，旧精确匹配 `Package 'wayland-client' not found` 把正确 configure 拒绝误判为缺诊断。现合并 stdout+stderr，允许包名与 `not found` 之间存在实现特定文字，同时继续要求三个真实包名、`_pkg_check_modules_internal` 和 `CMakeLists.txt:... (pkg_check_modules)`；无关包负例仍拒绝，缺依赖门未放松。
+- **Clang+LLD**：benchmark 新增 `CMAKE_CXX_COMPILER=clang++-18`，与 `clang-18`、`lld-18`、llvm-ar/ranlib 和 Release+IPO 配套。默认 GNU C++ 对 `-fuse-ld=lld-18` 的真实 configure RED 与远程一致，补齐后 C/CXX 均 Clang 且配置成功；`toolchain-clang-linux.cmake` 原有 `clang++`/`lld` 组合也由合同钉住。
+- **Windows PAL 链接**：GNU-like Clang 的 `MSVC` 为 false，standalone `myr` 因而添加 `-lm`，MSVC ABI 链接器映射为 `m.lib` 并失败；直接 Clang target 探针实际得到 `could not open 'm.lib': No such file or directory`。现所有 Windows 都不链接 raw `m`，dummy/Win32 均实际链接 `pal_probe`，链接行拒绝 `-lm`。verbose build 移到 configure 前，CI grep 增加 `lld-link`、未解析符号和库文件错误；本地 COFF 不冒充 native 运行。
+- **其它失败 lane**：clean-room、Linux GCC/Clang/Wayland 多 lane 共享 missing-wayland 误判；Weston 已启动，graphics 因前序失败而零执行并正确给 UNAVAILABLE，没有改成 PASS。Apple 剩余失败属于排除的 NAT/voice 行为专项，Xcode 16.4 runner/pin 本身没有新增基础设施问题。candidate/digest、Deck、macos-15/Xcode、C++20/ASan 修复保持不变。
+- **RED/GREEN 与变异**：CI pkg 输出格式先 RED，benchmark CXX 先 RED，Windows dummy/Win32 `-lm` 链接合同先 RED；分别回退精确匹配、删除 CXX、恢复 `NOT MSVC` 条件后均再次 RED 并恢复。完整证据见 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round2-report.md`。
+- **验证与限制**：受影响 focused 11/11；普通非图形 342 项零失败，唯一既有 D3D12 平台 skip；no-tests 完整 `-j3` 构建成功；`git diff --check` 通过。真实 native Windows 链接/运行、Weston graphics、Apple 行为与 GHCR 仍须下一轮 CI，未用本地交叉结果替代。
+
+## 本轮更新：scoped 复审 N1——macos-15 Xcode pin（2026-11-10）
+
+- **根因**：R6 runner 迁移后，`lane-gpu-runtime-macos-metal` 与 `ios-metal-build` 仍强制 `/Applications/Xcode_15.4.app`，会在构建前失败。官方当前 [macos-15 image readme](https://raw.githubusercontent.com/actions/runner-images/main/images/macos/macos-15-Readme.md) 不含 15.4，明确列出 default `Xcode_16.4.app`、macOS 15.5 SDK 和 iOS 18.5 simulator。
+- **RED/GREEN 与变异**：先扩展 `test_ci_execution_semantics`，两个 job 均因缺 16.4、保留 15.4 和 locked dependency 未同步而 RED。随后仅把两处 pin 改为 `/Applications/Xcode_16.4.app/Contents/Developer`，保留 `xcodebuild -version` 和全部 Metal/iOS 证据断言；回退 Metal pin 的变异再次 RED，恢复后 GREEN。未改成 latest 或取消版本检查。
+- **依赖与文档**：`locked_dependencies.json` 保留本地 `>=15.4` 地板，同时记录 CI pin 16.4、macOS 15.5 SDK、iOS 18.5 simulator、arm64 runner 和准确 Xcode 路径；`LOCKED_DEPENDENCIES.md` 与 Build Guide 同步，历史计划及旧 runner 记录不改写。
+- **验证与限制**：CI/locked-deps focused 5/5；普通非图形 342 项零失败，唯一既有 D3D12 平台 skip；`git diff --check` 通过。真实 macOS Metal、iOS Simulator 与其他 native/GHCR 结果仍须下一轮 CI，未在本轮 push。完整 N1 证据追加于 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-fix-report.md`。
+
+## 本轮更新：X11 移除首轮真实远程 CI 修复（2026-11-10）
+
+- **远程基线与范围**：以 `ffdd2e865ec1e34568588404e69ae8c1716cafb4` 为 base，逐项处理主 CI run [`42788874184`](https://github.com/konyka/break/actions/runs/42788874184) 与 windows-d3d12 run [`42788874021`](https://github.com/konyka/break/actions/runs/42788874021) 的六类失败；未触碰 cry-integration Task2。实现提交为 `c2f7241d`、`e4cba612`、`aa92a196`、`83c6c5e9`，文档另提交；本轮未合并、未 push。
+- **镜像 alias**：远程 publish digest 为 `8537...`，`imagetools create` 后 SHA/latest 却为 `1384...`。现由 `publish_ci_master_aliases.sh` 按 expected digest pull 同一候选，重打 verified/SHA/latest，逐一核对 image ID 后分别直接 push，再回读三者 digest 一致；不第二次 build、不创建新 index，push 进度继续隔离到 stderr，PR/fork 仍不发布。
+- **Windows 编译与 ASan**：MSVC C++20 编译仅对 C++ TU 加 `/Zc:__cplusplus`，保留 static_assert；Windows Clang ASan 的 C/CXX flags 同步为 `-fsanitize=address -fno-omit-frame-pointer`，runtime DLL 步骤不变；WGL loader 只在非 Windows 模拟分支补 `__stdcall`，真实 Windows 使用内建调用约定。Zig Windows GNU target 的 RED/GREEN 还检查 COFF 对象确实包含 `LoadLibraryW/GetProcAddress/FreeLibrary` mock 符号。
+- **nested PAL**：确认父级是 Ninja/Clang/Debug，而旧 nested configure 未传播 generator/compiler/config，落到默认 MSBuild 且没有多配置 exe 路径处理。现继承父级工具链、显式 `--config`、保存 configure+verbose build 日志，并在配置对应目录查找和运行 `pal_probe`；Linux 实际 Ninja Multi-Config 构建已验证 `Debug/pal_probe`，没有删除 dummy/Win32 矩阵或 skip。
+- **Apple runner**：Cocoa/MoltenVK、macOS native Metal、iOS Metal 三条 arm64 lane 从已退役 `macos-14` 迁移到官方当前支持的 `macos-15`；未改用 Intel、未改变 Metal/MoltenVK/iOS 证据级别，当前 locked dependency 与 Build Guide 同步，历史 runner 记录不改写。
+- **RED/GREEN 与变异**：fake registry 先复现 alias digest 分叉；clang-cl compile command 先缺 `/Zc:__cplusplus`；ASan workflow 先缺 CXX flags；Windows GNU target 两个 WGL TU 先因内建 `__stdcall` 重定义失败；nested 探针先实际选择 Unix Makefiles/GCC/空 build type 而非期望的 Ninja/Clang/Debug；三条 macOS lane 先全部命中 retired label。对应生产/workflow 变异均再次被杀死后恢复，详见 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-fix-report.md`。
+- **本地验证**：受影响 focused 13/13；普通 auto 非图形 342 项零失败，唯一既有 `test_d3d12_dependency_gate` 平台 skip；no-tests 完整 `-j3` 构建成功；`git diff --check` 通过。Linux 原有 WGL loader 行为、公共 C++20 live call、Windows GNU cross build、PAL native/cross 矩阵均重新执行。
+- **限制**：本轮仍未执行真实 native Windows/macOS/iOS/D3D12、Actions 或 GHCR。Zig、clang-cl、Ninja Multi-Config、COFF 符号检查和 fake docker 不证明 native MSVC runtime、Windows WGL mock 运行或 registry digest；这些只能由下一轮 CI 验证。原始 nested Windows 日志只有 MSBuild 版本，新增 verbose 诊断会保留任何后续 native 编译错误，不把本地 GREEN 写成远程已通过。
+
 ## 本轮更新：X11 移除终审 fix-wave（2026-11-10）
 
 - **基线与提交**：从 `fb45db134635b70da89f6d95342d55a04b624c61` 逐项完成终审 I1–I5、M1/M2 和 deferred Minor3，依次形成 PAL 平台矩阵、Windows 启动合同、可移植 rollback、EGL/GL configure 闭包、fork digest fallback、WSI 宏矩阵及 fork PR head owner 七个实现提交；当前文档另行提交，SDD 报告按目录规则本地落盘。未合并、未 push，历史条目未改写。

@@ -270,7 +270,7 @@ jobs:
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
-            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest-headless.log" | head -40 | while IFS= read -r line; do
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error|lld-link|undefined symbol|undefined reference|could not find library|could not open' "$RUNNER_TEMP/ctest-headless.log" | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
             # CMake script gates (e.g. the d3d12 shader compile gate) put the
@@ -323,7 +323,7 @@ jobs:
         # R696: AddressSanitizer on Windows/clang — the runtime ships as
         # clang_rt.asan DLLs that the loader must find; the test step
         # copies them next to the executables after building.
-        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DENGINE_RHI_BACKEND=opengl
+        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DENGINE_RHI_BACKEND=opengl
 
       - name: Build
         run: cmake --build build-asan --parallel
@@ -352,7 +352,7 @@ jobs:
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
-            grep -E 'FAIL|Failed|FAILED|Not Run|ERROR: AddressSanitizer|SUMMARY: AddressSanitizer|runtime error|Timeout|Segmentation|abort|Aborted|LeakSanitizer|CMake Error' "$RUNNER_TEMP/ctest.log" | head -60 | while IFS= read -r line; do
+            grep -E 'FAIL|Failed|FAILED|Not Run|ERROR: AddressSanitizer|SUMMARY: AddressSanitizer|runtime error|Timeout|Segmentation|abort|Aborted|LeakSanitizer|CMake Error|lld-link|undefined symbol|undefined reference|could not find library|could not open' "$RUNNER_TEMP/ctest.log" | head -60 | while IFS= read -r line; do
               echo "::error::$line"
             done
             # CMake script gates (e.g. the d3d12 shader compile gate) put the
@@ -782,7 +782,7 @@ jobs:
     # 原 macos-vulkan（brief :160）：test_platform_cocoa_runtime 的 native-surface
     # 证据；MoltenVK 后端（schema backend=vulkan-moltenvk）。
     name: macOS Cocoa + MoltenVK (Clang)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -1154,13 +1154,13 @@ jobs:
     # graphics 契约整体跳过（77）时收据如实降级 HEADLESS，不伪造 GPU_RUNTIME；
     # 真机/self-hosted runner 上 graphics 全绿才标 GPU_RUNTIME。
     name: macOS native Metal (Clang)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
       - name: Pin Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer && xcodebuild -version
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer && xcodebuild -version
 
       - name: Install shader toolchain
         run: brew install shaderc spirv-cross
@@ -1454,6 +1454,7 @@ jobs:
           # CMAKE_AR/RANLIB 必须绝对路径：裸名字会被当相对路径解析到
           # workspace（/bin/sh: workspace/llvm-ar-18: not found）。
           cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_AR=/usr/bin/llvm-ar-18 -DCMAKE_RANLIB=/usr/bin/llvm-ranlib-18 \
             -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld-18" \
             -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON
@@ -1764,13 +1765,13 @@ jobs:
   ios-metal-build:
     # Simulator evidence = compile only (marking 1 of 3: lane comment)
     name: iOS native Metal build-only (Simulator evidence = compile only)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
       - name: Pin Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer && xcodebuild -version
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer && xcodebuild -version
 
       - name: Install shader toolchain
         run: brew install shaderc spirv-cross
