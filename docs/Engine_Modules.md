@@ -1898,6 +1898,8 @@ NetRep peer 持久化要求每个 `.peer` 输出文件名完整容纳于内部 5
 - poll/WSAPoll 多路复用（小数组栈分配，大数组堆分配）
 - IPv4 地址解析（getaddrinfo）
 
+非阻塞 UDP 的 `net_sendto()` 完成不保证对端接收队列立即可读；调用方必须用 `net_poll()` 或协议状态条件等待，不能把一次 `NET_WOULD_BLOCK` 当作永久失败。NAT/voice 的真实 UDP 测试同样遵守该约定，且仍要求合法包送达、伪造/重放包被实际拒绝。
+
 **单元测试：** `tests/test_network.c` (7 测试用例)
 
 覆盖：init/shutdown、UDP 创建/关闭、地址解析、localhost 解析、UDP 回环收发、poll 超时、poll 可读检测。

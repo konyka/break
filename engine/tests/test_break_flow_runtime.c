@@ -66,6 +66,11 @@ static Vec3 position(const Fixture *f) {
     return p ? *p : vec3(-999.0f, -999.0f, -999.0f);
 }
 
+static f32 position_x(const Fixture *f) {
+    Vec3 p = position(f);
+    return p.e[0];
+}
+
 static bool build_math_action_graph(Fixture *f) {
     BreakFlowNodeDesc d = node(BREAK_FLOW_NODE_EVENT);
     u32 event = add(f, d);
@@ -140,7 +145,7 @@ TEST(all_arithmetic_nodes_produce_hand_computed_results) {
         ASSERT_NOT_NULL(runtime);
         ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 2.5f), BREAK_FLOW_OK);
         ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
-        ASSERT_FLOAT_EQ(position(&f).e[0], expected[i], 0.000001f);
+        ASSERT_FLOAT_EQ(position_x(&f), expected[i], 0.000001f);
         break_flow_runtime_destroy(runtime);
         fixture_destroy(&f);
     }
@@ -174,11 +179,11 @@ TEST(comparison_and_branch_select_true_then_false) {
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 5.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 7.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 7.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_reset(runtime), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 15.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 9.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 9.0f, 0.0f);
     break_flow_runtime_destroy(runtime);
     fixture_destroy(&f);
 }
@@ -222,7 +227,7 @@ TEST(equal_and_greater_comparisons_cover_true_and_false_branches) {
         ASSERT_NOT_NULL(runtime);
         ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, cases[i].value), BREAK_FLOW_OK);
         ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
-        ASSERT_FLOAT_EQ(position(&f).e[0], cases[i].expected, 0.0f);
+        ASSERT_FLOAT_EQ(position_x(&f), cases[i].expected, 0.0f);
         break_flow_runtime_destroy(runtime);
         fixture_destroy(&f);
     }
@@ -247,10 +252,10 @@ TEST(delay_waits_two_ticks_and_event_queue_is_bounded) {
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 0.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 0.0f), BREAK_FLOW_OVERLOAD);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 1.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 1.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 1u);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 1.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 1.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
     Vec3 p = position(&f);
     ASSERT_FLOAT_EQ(p.e[0], 7.0f, 0.0f);
@@ -272,7 +277,7 @@ TEST(node_budget_resumes_across_frames_without_partial_node_actions) {
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 2u);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_TIMEOUT);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 1u);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 4.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 4.0f, 0.0f);
     u32 count = 99u;
     ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
     ASSERT_EQ(count, 0u);
@@ -308,7 +313,7 @@ TEST(action_failure_restores_world_queue_tick_and_graph_edit_requires_reset) {
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 0.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OVERLOAD);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 1.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 1.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 1u);
     ASSERT_EQ(break_flow_runtime_now_tick(runtime), 0u);
     ASSERT_TRUE(add(&f, node(BREAK_FLOW_NODE_SEQUENCE)) != 0u);
@@ -339,7 +344,7 @@ TEST(divide_by_zero_is_atomic_and_returns_failure) {
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 2.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_FAILED);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 1.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 1.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 1u);
     ASSERT_EQ(break_flow_runtime_now_tick(runtime), 0u);
     break_flow_runtime_destroy(runtime);
@@ -373,12 +378,12 @@ TEST(delay_continuations_preserve_fifo_with_following_events) {
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 3.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 8u);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 2.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 2.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 1u);
     u64 after_second = break_flow_runtime_next_sequence(runtime);
     ASSERT_TRUE(after_second > 8u);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 3.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 3.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 0u);
     ASSERT_EQ(break_flow_runtime_now_tick(runtime), 3u);
     ASSERT_TRUE(break_flow_runtime_next_sequence(runtime) > after_second);
@@ -429,7 +434,7 @@ TEST(failed_sequence_restores_sequence_and_retry_has_no_duplicates_or_loss) {
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
     ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
     ASSERT_EQ(count, 8u);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 3.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 3.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 0u);
     ASSERT_EQ(break_flow_runtime_now_tick(runtime), 1u);
     ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 13u);
@@ -468,7 +473,7 @@ TEST(invalid_event_value_source_rolls_back_entire_tick) {
     u32 count = 99u;
     ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
     ASSERT_EQ(count, 0u);
-    ASSERT_FLOAT_EQ(position(&f).e[0], 1.0f, 0.0f);
+    ASSERT_FLOAT_EQ(position_x(&f), 1.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 1u);
     ASSERT_EQ(break_flow_runtime_now_tick(runtime), 0u);
     ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 2u);

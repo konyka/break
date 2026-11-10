@@ -1,3 +1,13 @@
+## 本轮更新：第二轮 CI 存量跨平台行为修复（2026-11-10）
+
+- **范围**：以 `0fea919b8d0e9b91e614fa1fb0c8be11be6599b0` 为基线，只处理第二轮 CI 明确分开的 MSVC Flow 编译与 Darwin NAT/voice 行为问题；未修改 CI 基础设施、第二轮其它修复或 cry-integration，未合并、未 push。
+- **MSVC Flow**：`test_break_flow_runtime.c` 的 13 个源码位置直接对函数返回 `Vec3` 的数组成员做下标，MSVC `/W4 /WX` 报 `C4223 non-lvalue array converted to pointer`。新增 `position_x()`，先在命名 `Vec3` lvalue 中保存返回对象再读取 `e[0]`；Flow 生产实现、12 项行为测试及全部数值断言不变，未关闭警告。
+- **Darwin 根因**：失败并非已证实的 BSD `sin_len/ss_len` 缺陷。NAT 的 21/23 项和 socket 初始化成功，三处失败前的 `sendto` 长度断言也都成功；发送地址由 `getaddrinfo` 结果完整复制，接收地址由内核填写。共同失败点是测试在非阻塞 socket 上把 `sendto` 完成误当作对端立即可读，与同仓库 R468 已修复的 UDP 竞态一致。
+- **Darwin 最小修复**：仅在 NAT/voice 测试中加入有界条件接收/pump；保留 `invalid_messages==3`、32 字节 challenge、PCM 和 observed-address 断言。captured HELLO 路径还等待有效登记，并要求跨 socket 重放实际被处理且使 invalid 计数增加 1，避免数据报未到达时安全测试假通过。生产 socket、协议、nonce/replay/HMAC 和公共 API 最终均无 diff。
+- **RED/GREEN 与变异**：临时 LD_PRELOAD 只让每个 socket 生命周期首次 `recvfrom` 合法返回 `EAGAIN`，未修源码精确复现 NAT 21/23、voice 7/8 及 CI 同三项断言；修复后同一注入与普通运行均为 NAT 23/23、voice 8/8。完整回退再次得到相同 RED；恢复后 GREEN。MSVC 兼容 Clang AST 合同由 26 个宏展开匹配（13 个源码位置）降为 0，回退后再次为 26。生产 invalid-accounting 变异被 captured-HELLO 测试以 22/23 杀死后恢复。
+- **验证**：普通完整 `-j3` 构建成功；普通、ASan+UBSan、TSan 的 Flow/NAT/voice/socket/event-loop/replication focused 均 11/11，无 sanitizer/race 报告。普通非图形 `-j3` 为 342 项入选、341 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP；`git diff --check` 通过。
+- **native 限制**：本机只有 Linux。Clang AST/clang-cl 不冒充 native MSVC，LD_PRELOAD 不冒充 Darwin 内核调度；真实 MSVC 编译和 macOS Cocoa/MoltenVK NAT/voice 仍必须在下一轮 native CI 验证。完整命令、输出和变异记录见 `.superpowers/sdd/2026-11-10-remove-x11/platform-behavior-fix-report.md`。
+
 ## 本轮更新：第二轮真实 CI 基础设施修复（2026-11-10）
 
 - **范围**：以 `1150ccaab131daf121e581dc516db52aa1b5564b` 为 base，读取主 run `42801996748`、D3D12 run `42801996738` 及全部失败 job 日志，处理 missing-wayland、Clang+LLD、Windows PAL 链接三项基础设施问题；实现提交 `03c3e21f`。未修改 brief 排除的 MSVC flow 或 macOS NAT/voice 文件，本轮未合并、未 push。

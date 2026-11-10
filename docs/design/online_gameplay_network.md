@@ -99,3 +99,5 @@ apply 要求相同 schema hash、live generation 和递增的每对象 record ep
 最终源码上，Linux/GCC 16.2.1 的 crypto ON 无 Snowflake normal focused 为 11/11；使用仓库钉住的 Snowflake `0fceed6d885bb8578743d82cc4a5d7ab2f6b0620` 时，normal、ASan+UBSan、TSan 的网络/复制/Session 标签均为 13/13，基础网络补充均为 5/5。no-crypto normal/ASan+UBSan/TSan 的独立 fail-closed focused 也均为 11/11；无 sanitizer 报告。每个 crypto-enabled lane 均运行 NAT 和语音真实 UDP loopback。no-crypto lane 只运行独立 fail-closed 合约，不执行 HMAC 成功路径。各项 RED/GREEN 和变异输出见 `.superpowers/sdd/online-gameplay-network-report.md`。
 
 这些结果是 focused 网络验证，不是全仓库、全平台或外部部署证明。Windows/macOS/移动原生 lane、任意 NAT、公网服务、主观听感、可靠传输、预测回滚和生产账号后端均未在本切片声称完成。
+
+2026-11-10 Darwin 同步补充：`net_sendto()` 返回完整长度不代表对端非阻塞接收队列已经可读。NAT malformed、captured HELLO 和 voice UDP 测试现按原状态/计数/`ready` 条件做有界接收与 pump，不改变非阻塞 API，也不把 `NET_WOULD_BLOCK` 当成功。captured HELLO 必须先完成合法 peer 登记，跨 socket 重放必须实际被处理并使 invalid 计数增加 1，随后仍验证 observed address 不变。该修复没有改动生产 socket 地址、challenge、HMAC、nonce 或 replay 代码；Linux 故障注入精确复现并验证首次 `recvfrom=EAGAIN` 的行为，但 native macOS 仍须后续 CI 确认。
