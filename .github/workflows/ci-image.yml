@@ -129,8 +129,7 @@ jobs:
           else
             digest="${{ steps.publish.outputs.digest }}"
           fi
-          docker buildx imagetools create \
-            -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" "$IMAGE@$digest"
+          engine/tools/publish_ci_master_aliases.sh "$IMAGE" "$digest" "$GITHUB_SHA" "$INPUTS_HASH"
 
       - name: Verify master aliases
         if: env.PUBLISH == 'true' && github.ref == 'refs/heads/master'
@@ -140,7 +139,7 @@ jobs:
           else
             expected="${{ steps.publish.outputs.digest }}"
           fi
-          engine/tools/verify_ci_master_aliases.sh "$IMAGE" "$expected" "$GITHUB_SHA"
+          engine/tools/verify_ci_master_aliases.sh "$IMAGE" "$expected" "$GITHUB_SHA" "$INPUTS_HASH"
 
       - name: Select consumer digest
         id: selected

@@ -223,6 +223,7 @@ def main():
         "${{ github.event_name != 'pull_request' && github.repository == 'konyka/break' }}")
     if workflow_env.get("PUBLISH") != expected_publish_expression:
         failures.append("PUBLISH expression is not restricted to upstream non-PR events")
+    alias_publish = next((s for s in steps if s.get("name") == "Alias verified image for master"), {})
     aliases = next((s for s in steps if s.get("name") == "Verify master aliases"), {})
     if "verify_ci_master_aliases.sh" not in aliases.get("run", ""):
         failures.append("master SHA/latest aliases are not inspected for digest equality")
@@ -240,20 +241,45 @@ def main():
     docker.write_text("""#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$FAKE_LOG"
 if [ "${FAIL_INSPECT:-0}" = "1" ]; then exit 1; fi
+state="${FAKE_STATE:?FAKE_STATE is required}"
+alias_digest="$FAKE_DIGEST"
+latest_digest="$FAKE_DIGEST"
+if [ -f "$state" ]; then . "$state"; fi
+write_state() {
+  printf 'alias_digest=%s\\nlatest_digest=%s\\n' "$alias_digest" "$latest_digest" > "$state"
+}
 case "$*" in
   "buildx imagetools inspect "*)
-    echo "Digest: $FAKE_DIGEST"
+    reference="${*: -1}"
+    case "$reference" in
+      *":$FAKE_COMMIT_SHA") echo "Digest: $alias_digest" ;;
+      *:latest) echo "Digest: $latest_digest" ;;
+      *) echo "Digest: $FAKE_DIGEST" ;;
+    esac
+    ;;
+  "buildx imagetools create "*)
+    alias_digest="${FAKE_CREATED_DIGEST:?FAKE_CREATED_DIGEST is required}"
+    latest_digest="$FAKE_CREATED_DIGEST"
+    write_state
     ;;
   "image inspect "*)
     case "$*" in
-      *candidate-*) echo "$FAKE_CANDIDATE_ID" ;;
+      *candidate-*|*@sha256:*) echo "$FAKE_CANDIDATE_ID" ;;
       *verified-*) echo "$FAKE_VERIFIED_ID" ;;
+      *":$FAKE_COMMIT_SHA"*|*:latest*) echo "${FAKE_ALIAS_ID:-$FAKE_CANDIDATE_ID}" ;;
       *) exit 98 ;;
     esac
+    ;;
+  "pull "*)
     ;;
   "tag "*)
     ;;
   "push "*)
+    case "$*" in
+      *":$FAKE_COMMIT_SHA") alias_digest="$FAKE_DIGEST" ;;
+      *:latest) latest_digest="$FAKE_DIGEST" ;;
+    esac
+    write_state
     echo "The push refers to repository [ghcr.io/konyka/break-ci-linux]"
     echo "layer-abc123: Pushed"
     ;;
@@ -265,9 +291,13 @@ esac
 """)
     docker.chmod(docker.stat().st_mode | stat.S_IXUSR)
     env = dict(os.environ)
+    state = work / "docker-state"
+    state.write_text("")
     env.update({
         "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
         "FAKE_LOG": str(log),
+        "FAKE_STATE": str(state),
+        "FAKE_COMMIT_SHA": "test-sha",
         "FAKE_DIGEST": DIGEST,
         "FAKE_CANDIDATE_ID": "sha256:candidate",
         "FAKE_VERIFIED_ID": "sha256:candidate",
@@ -394,6 +424,7 @@ esac
     if result.returncode == 0 or "push" in log.read_text():
         failures.append("candidate identity mismatch was not rejected before push")
 
+    state.write_text("")
     alias_verifier = root / "engine/tools/verify_ci_master_aliases.sh"
     result = run([BASH, str(alias_verifier), image, DIGEST, "test-sha"], env, work)
     if result.returncode != 0:
@@ -402,6 +433,34 @@ esac
     result = run([BASH, str(alias_verifier), image, DIGEST, "test-sha"], env, work)
     if result.returncode == 0:
         failures.append("mismatched master alias digest was accepted")
+
+    state.write_text("")
+    log.write_text("")
+    env["FAKE_DIGEST"] = DIGEST
+    env["FAKE_VERIFIED_ID"] = "sha256:candidate"
+    env["FAKE_CREATED_DIGEST"] = "sha256:" + "d" * 64
+    env["IMAGE"] = image
+    env["GITHUB_SHA"] = "test-sha"
+    env["INPUTS_HASH"] = inputs_hash
+    alias_script = alias_publish.get("run", "").replace(
+        "${{ steps.verified.outputs.found }}", "false")
+    alias_script = alias_script.replace("${{ steps.verified.outputs.digest }}", "")
+    alias_script = alias_script.replace("${{ steps.publish.outputs.digest }}", DIGEST)
+    alias_result = run([BASH, "-c", alias_script], env, root)
+    verified_alias = run(
+        [BASH, str(alias_verifier), image, DIGEST, "test-sha", inputs_hash], env, work)
+    if alias_result.returncode != 0 or alias_result.stdout:
+        failures.append(
+            f"master alias publication failed or polluted stdout: {alias_result.stdout}{alias_result.stderr}")
+    if verified_alias.returncode != 0:
+        failures.append(f"verified/SHA/latest digest diverged: {verified_alias.stderr}")
+    alias_sequence = " | ".join(log.read_text().splitlines())
+    for required in ("pull ", "tag ", "push ghcr.io/konyka/break-ci-linux:test-sha",
+                     "push ghcr.io/konyka/break-ci-linux:latest"):
+        if required not in alias_sequence:
+            failures.append(f"direct master alias publication missing {required}: {alias_sequence}")
+    if "imagetools create" in alias_sequence or " build " in alias_sequence:
+        failures.append(f"master aliases created a new index or rebuilt: {alias_sequence}")
 
     if failures:
         print("CI image fix2 contract FAILED:")
