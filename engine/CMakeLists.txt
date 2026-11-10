@@ -4444,6 +4444,11 @@ endif()
             -DMYUI_ROOT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/myui
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/myui-subproject-contract
             -DTARGET_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+            "-DPROBE_GENERATOR=${CMAKE_GENERATOR}"
+            "-DPROBE_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+            "-DPROBE_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+            "-DPROBE_C_COMPILER=${CMAKE_C_COMPILER}"
+            "-DPROBE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_subproject_config.cmake)
     if(ENGINE_PLATFORM STREQUAL "linux")
         find_program(MYUI_TEST_ZIG_EXECUTABLE NAMES zig)
