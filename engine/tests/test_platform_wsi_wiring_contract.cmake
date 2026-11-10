@@ -1,4 +1,4 @@
-foreach(required_var PLATFORM_H WSI_H WIN32_SOURCE X11_SOURCE WAYLAND_SOURCE
+foreach(required_var PLATFORM_H WSI_H WIN32_SOURCE WAYLAND_SOURCE
                      COCOA_SOURCE MOBILE_SOURCE RHI_SOURCE RHI_INTERNAL_HEADER MAIN_SOURCE)
     if(NOT DEFINED ${required_var})
         message(FATAL_ERROR "${required_var} is required")
@@ -18,7 +18,7 @@ foreach(required_token
     endif()
 endforeach()
 
-# platform_wsi.h：两个新判定函数；OHOS 不得进入后端枚举。
+# platform_wsi.h：两个新判定函数；已移除及 fail-closed 后端不得进入枚举。
 file(READ "${WSI_H}" wsi_text)
 foreach(required_token "platform_wsi_frame_allowed" "platform_wsi_rhi_teardown_allowed")
     string(FIND "${wsi_text}" "${required_token}" offset)
@@ -26,16 +26,17 @@ foreach(required_token "platform_wsi_frame_allowed" "platform_wsi_rhi_teardown_a
         message(FATAL_ERROR "platform_wsi.h missing: ${required_token}")
     endif()
 endforeach()
-string(FIND "${wsi_text}" "PLATFORM_WSI_BACKEND_OHOS" ohos_offset)
-if(NOT ohos_offset EQUAL -1)
-    message(FATAL_ERROR "OHOS must stay out of PlatformWsiBackend (fail-closed)")
-endif()
+foreach(forbidden_token PLATFORM_WSI_BACKEND_OHOS PLATFORM_WSI_BACKEND_X11)
+    string(FIND "${wsi_text}" "${forbidden_token}" forbidden_offset)
+    if(NOT forbidden_offset EQUAL -1)
+        message(FATAL_ERROR "removed backend must stay out of PlatformWsiBackend: ${forbidden_token}")
+    endif()
+endforeach()
 
-# 五个窗口后端的接线 token。
+# 其余窗口后端的接线 token。
 foreach(backend_spec
         "${WIN32_SOURCE}|platform_wsi_surface_suspend"
         "${WIN32_SOURCE}|platform_wsi_surface_resize"
-        "${X11_SOURCE}|platform_wsi_surface_resize"
         "${WAYLAND_SOURCE}|platform_wsi_surface_resize"
         "${COCOA_SOURCE}|platform_wsi_surface_resize"
         "${MOBILE_SOURCE}|platform_mobile_notify_suspend"
@@ -53,8 +54,7 @@ foreach(backend_spec
     endif()
 endforeach()
 foreach(backend_path
-        "${WIN32_SOURCE}" "${X11_SOURCE}" "${WAYLAND_SOURCE}"
-        "${COCOA_SOURCE}" "${MOBILE_SOURCE}")
+        "${WIN32_SOURCE}" "${WAYLAND_SOURCE}" "${COCOA_SOURCE}" "${MOBILE_SOURCE}")
     file(READ "${backend_path}" backend_text)
     foreach(lifecycle_token
             "platform_wsi_surface_init" "platform_wsi_surface_destroy"

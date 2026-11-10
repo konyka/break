@@ -760,7 +760,7 @@ static void wayland_commit_text_input_state(Platform *p) {
     if (p->surface != NULL) wl_surface_commit(p->surface);
 }
 
-/* ---- Key mapping (XKB keysyms are identical to X11 KeySyms) ---- */
+/* ---- XKB keysym to shared engine key mapping ---- */
 
 static i32 wayland_keysym_to_engine(xkb_keysym_t ks) {
     if (ks >= XKB_KEY_a && ks <= XKB_KEY_z) return (i32)ks;
@@ -1502,8 +1502,8 @@ static void xdg_output_logical_position(void *data, struct zxdg_output_v1 *xo,
 static void xdg_output_logical_size(void *data, struct zxdg_output_v1 *xo,
                                     i32 w, i32 h) {
     (void)data; (void)xo; (void)w; (void)h;
-    /* MonitorInfo.width/height stay pixel-resolution (X11 parity); the
-     * logical size is scale-derived and not part of the public shape. */
+    /* MonitorInfo.width/height stay pixel-resolution; the logical size is
+     * scale-derived and not part of the public shape. */
 }
 
 static void xdg_output_done(void *data, struct zxdg_output_v1 *xo) {
@@ -2452,8 +2452,7 @@ static void wayland_update_cursor_visibility(Platform *p) {
 }
 
 /* Lock + relative motion: confines the pointer in place and feeds unaccelerated
- * deltas via the relative-pointer protocol — the correct Wayland analog of an
- * X11 warp-based capture. */
+ * deltas via the relative-pointer protocol without warping the pointer. */
 static void wayland_apply_relative(Platform *p) {
     if (!p->pointer) return;
 

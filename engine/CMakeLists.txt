@@ -18,13 +18,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(Threads REQUIRED)
 
 # Platform detection
-option(ENGINE_ENABLE_WAYLAND "Enable native Wayland support (Linux only)" OFF)
+option(ENGINE_ENABLE_WAYLAND "Enable native Wayland support (Linux only)" ON)
 option(ENGINE_ENABLE_IPO "Enable interprocedural optimization for Release builds when supported" ON)
 option(RULE_ENGINE_ENABLE_C11_PARALLEL "Enable the optional C11 rule match executor" OFF)
 option(RULE_ENGINE_ENABLE_REDIS "Enable native Redis state provider (requires hiredis and a controlled integration service)" OFF)
 # MYUI_PAL option anchor
 set(MYUI_PAL "dummy" CACHE STRING
-    "myui PAL port: dummy | x11 | wayland | win32 | cocoa")
+    "myui PAL port: dummy | wayland | win32 | cocoa")
 
 set(RULE_ENGINE_REDIS_SOURCE_DIR "" CACHE PATH
     "Redis source tree or hiredis source directory used to build the native client")
@@ -88,20 +88,13 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"
             set(ENGINE_PLATFORM "macos")
         endif()
     else()
-        if(ENGINE_ENABLE_WAYLAND)
-            find_package(PkgConfig REQUIRED)
-            pkg_check_modules(WAYLAND REQUIRED wayland-client wayland-egl wayland-cursor)
-            pkg_check_modules(XKB REQUIRED xkbcommon)
-            find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
-        else()
-            find_package(X11 REQUIRED)
-            if(NOT X11_Xrandr_FOUND)
-                message(FATAL_ERROR "Xrandr not found (required for multi-monitor support)")
-            endif()
-            if(X11_Xi_FOUND)
-                set(ENGINE_X11_XINPUT2 1)
-            endif()
+        if(NOT ENGINE_ENABLE_WAYLAND OR MYUI_PAL STREQUAL "x11")
+            message(FATAL_ERROR "X11 support was removed; use native Wayland")
         endif()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(WAYLAND REQUIRED wayland-client wayland-egl wayland-cursor)
+        pkg_check_modules(XKB REQUIRED xkbcommon)
+        find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
         set(ENGINE_PLATFORM "linux")
     endif()
 elseif(WIN32)
@@ -534,6 +527,7 @@ if(BREAK_ENABLE_QUIC)
     message(STATUS "Break QUIC transport: enabled (snow ngtcp2 adapter)")
     add_library(break_net_quic STATIC src/network/break_net_quic.c)
     set_property(TARGET break_net_quic PROPERTY C_STANDARD 11)
+    target_compile_definitions(break_net_quic PRIVATE _POSIX_C_SOURCE=199309L)
     target_include_directories(break_net_quic PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     # break_net supplies the envelope codec (no duplication), break_crypto the
@@ -1176,20 +1170,19 @@ if(ENGINE_BUILD_TESTS)
     add_executable(test_platform_window_mode tests/test_platform_window_mode.c)
     target_include_directories(test_platform_window_mode PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_platform_window_mode PRIVATE SIMULATE_WAYLAND=1)
     add_test(NAME test_platform_window_mode COMMAND test_platform_window_mode)
     set_tests_properties(test_platform_window_mode PROPERTIES
         LABELS "headless;platform_contract")
 
-    foreach(_wsi_name IN ITEMS X11 WAYLAND WIN32 COCOA ANDROID IOS)
+    foreach(_wsi_name IN ITEMS WAYLAND WIN32 COCOA ANDROID IOS)
         string(TOLOWER "${_wsi_name}" _wsi_lower)
         add_executable(test_platform_wsi_lifecycle_${_wsi_lower}
             tests/test_platform_wsi_lifecycle.c)
         target_include_directories(test_platform_wsi_lifecycle_${_wsi_lower}
             PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
-        if(NOT _wsi_name STREQUAL "X11")
-            target_compile_definitions(test_platform_wsi_lifecycle_${_wsi_lower}
-                PRIVATE SIMULATE_${_wsi_name}=1)
-        endif()
+        target_compile_definitions(test_platform_wsi_lifecycle_${_wsi_lower}
+            PRIVATE SIMULATE_${_wsi_name}=1)
         add_test(NAME test_platform_wsi_lifecycle_${_wsi_lower}
             COMMAND test_platform_wsi_lifecycle_${_wsi_lower})
     endforeach()
@@ -2283,41 +2276,13 @@ if(ENGINE_PLATFORM STREQUAL "linux")
             ${WAYLAND_INCLUDE_DIRS}
             ${XKB_INCLUDE_DIRS}
         )
-    else()
-        target_sources(engine PRIVATE
-            src/platform/window_x11.c
-            src/platform/gamepad_linux.c
-        )
-        target_include_directories(engine PRIVATE ${X11_INCLUDE_DIRS})
-        if(ENGINE_X11_XINPUT2)
-            target_sources(engine PRIVATE src/platform/x11_touch.c)
-            target_compile_definitions(engine PRIVATE ENGINE_X11_XINPUT2=1)
-        endif()
     endif()
 
     if(ENGINE_VULKAN)
         find_package(Vulkan REQUIRED)
         target_compile_definitions(engine PUBLIC ENGINE_VULKAN=1)
-        if(ENGINE_ENABLE_WAYLAND)
-            target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
-        else()
-            set(ENGINE_X11_LIBS ${X11_LIBRARIES} ${X11_Xrandr_LIB})
-            if(X11_Xi_FOUND)
-                list(APPEND ENGINE_X11_LIBS ${X11_Xi_LIB})
-            endif()
-            target_link_libraries(engine PRIVATE ${ENGINE_X11_LIBS} dl pthread)
-        endif()
-    else()
-        if(ENGINE_ENABLE_WAYLAND)
-            target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
-        else()
-            set(ENGINE_X11_LIBS ${X11_LIBRARIES} ${X11_Xrandr_LIB})
-            if(X11_Xi_FOUND)
-                list(APPEND ENGINE_X11_LIBS ${X11_Xi_LIB})
-            endif()
-            target_link_libraries(engine PRIVATE ${ENGINE_X11_LIBS} dl pthread)
-        endif()
     endif()
+    target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
 
 elseif(ENGINE_PLATFORM STREQUAL "windows")
     target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_WINDOWS=1 _WIN32_WINNT=0x0601)
@@ -2443,20 +2408,11 @@ endif()
 # Backend-side platform libraries (moved off engine, which no longer
 # compiles any backend source).
 if(ENGINE_PLATFORM STREQUAL "linux")
-    if(ENGINE_ENABLE_WAYLAND)
-        target_link_libraries(engine_rhi_opengl PRIVATE
-            ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
-        if(TARGET engine_rhi_vulkan)
-            target_link_libraries(engine_rhi_vulkan PRIVATE
-                ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
-        endif()
-    else()
-        target_link_libraries(engine_rhi_opengl PRIVATE
-            ${ENGINE_X11_LIBS} GL dl pthread)
-        if(TARGET engine_rhi_vulkan)
-            target_link_libraries(engine_rhi_vulkan PRIVATE
-                ${ENGINE_X11_LIBS} dl pthread)
-        endif()
+    target_link_libraries(engine_rhi_opengl PRIVATE
+        ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
+    if(TARGET engine_rhi_vulkan)
+        target_link_libraries(engine_rhi_vulkan PRIVATE
+            ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
     endif()
 elseif(ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(engine_rhi_opengl PRIVATE opengl32)
@@ -2741,9 +2697,8 @@ add_test(NAME myui_widgets_demo_smoke COMMAND myui_widgets_demo ${CMAKE_CURRENT_
 if(NOT WIN32 AND NOT APPLE)
 find_program(WAYLAND_SCANNER wayland-scanner)
 find_package(PkgConfig QUIET)
-# The explorer always offers the X11 runner on Linux-class hosts; the
-# engine only searches X11 itself in its x11 platform branch, so look
-# here too (ENGINE_ENABLE_WAYLAND=ON leaves X11_LIBRARIES unset).
+# The explorer's retained legacy runner owns its package lookup independently
+# of the native engine platform (Task 2 removes that runner).
 find_package(X11 QUIET)
 if(PkgConfig_FOUND)
   pkg_check_modules(EX_WAYLAND QUIET wayland-client wayland-egl egl glesv2)
@@ -3076,6 +3031,7 @@ if(ENGINE_BUILD_TESTS)
     # Header-only WSI lifecycle contract; intentionally headless and engine-free.
     add_executable(test_platform_wsi_lifecycle tests/test_platform_wsi_lifecycle.c)
     target_include_directories(test_platform_wsi_lifecycle PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_platform_wsi_lifecycle PRIVATE SIMULATE_WAYLAND=1)
     add_test(NAME test_platform_wsi_lifecycle COMMAND test_platform_wsi_lifecycle)
     set_tests_properties(test_platform_wsi_lifecycle PROPERTIES
         LABELS "headless;platform_contract")
@@ -3089,16 +3045,6 @@ if(ENGINE_BUILD_TESTS)
         LABELS "headless;platform_contract")
 
     if(ENGINE_PLATFORM STREQUAL "linux" AND NOT ENGINE_ENABLE_WAYLAND)
-        add_executable(test_platform_x11_runtime tests/test_platform_x11_runtime.c)
-        target_include_directories(test_platform_x11_runtime PRIVATE ${TEST_INCLUDE_DIRS})
-        if(ENGINE_X11_XINPUT2)
-            target_compile_definitions(test_platform_x11_runtime PRIVATE ENGINE_X11_XINPUT2=1)
-        endif()
-        target_link_libraries(test_platform_x11_runtime PRIVATE engine m)
-        engine_link_rhi_backend(test_platform_x11_runtime)
-        add_test(NAME test_platform_x11_runtime COMMAND test_platform_x11_runtime)
-        set_tests_properties(test_platform_x11_runtime PROPERTIES
-            LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
         if(NOT ENGINE_VULKAN)
             add_executable(test_rhi_x11_runtime tests/test_rhi_x11_runtime.c)
             target_include_directories(test_rhi_x11_runtime PRIVATE ${TEST_INCLUDE_DIRS})
@@ -3499,7 +3445,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_capabilities PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_capabilities PRIVATE
                 ENGINE_PLATFORM_WAYLAND=1)
@@ -3553,7 +3499,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_fault_injection PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_fault_injection PRIVATE
                 ENGINE_PLATFORM_WAYLAND=1)
@@ -3629,7 +3575,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_wsi_attach PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_wsi_attach PRIVATE
                 ENGINE_PLATFORM_WAYLAND=1)
@@ -3666,7 +3612,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_error_contract PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_error_contract PRIVATE
                 ENGINE_PLATFORM_WAYLAND=1)
@@ -3702,7 +3648,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_frame_lifecycle_contract PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_frame_lifecycle_contract
                 PRIVATE ENGINE_PLATFORM_WAYLAND=1)
@@ -3732,7 +3678,7 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_native PRIVATE
-            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+            ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
         if(ENGINE_ENABLE_WAYLAND)
             target_compile_definitions(test_rhi_native PRIVATE
                 ENGINE_PLATFORM_WAYLAND=1)
@@ -4314,12 +4260,20 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vulkan_isolation_gates.cmake)
     set_tests_properties(test_vulkan_isolation_gates PROPERTIES
         LABELS "platform_contract")
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        add_test(NAME test_x11_removal_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/x11-removal-contract
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_x11_removal_contract.cmake)
+        set_tests_properties(test_x11_removal_contract PROPERTIES
+            LABELS "headless;platform_contract" TIMEOUT 120)
+    endif()
     add_test(NAME test_platform_wsi_wiring_contract
         COMMAND ${CMAKE_COMMAND}
             -DPLATFORM_H=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform.h
             -DWSI_H=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform_wsi.h
             -DWIN32_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_win32.c
-            -DX11_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_x11.c
             -DWAYLAND_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_wayland.c
             -DCOCOA_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_cocoa.m
             -DMOBILE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_mobile.c
@@ -4339,7 +4293,7 @@ endif()
             target_compile_definitions(test_platform_vk_surface_abi PRIVATE
                 ENGINE_PLATFORM_LINUX=1)
             target_include_directories(test_platform_vk_surface_abi PRIVATE
-                ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS})
+                ${WAYLAND_INCLUDE_DIRS})
             if(ENGINE_ENABLE_WAYLAND)
                 target_compile_definitions(test_platform_vk_surface_abi PRIVATE
                     ENGINE_PLATFORM_WAYLAND=1)
@@ -6474,17 +6428,6 @@ endif()
         set_tests_properties(test_gamepad_win_feedback_portable PROPERTIES LABELS "headless;platform_contract")
     endif()
 
-    if(ENGINE_X11_XINPUT2)
-        add_executable(test_x11_touch tests/test_x11_touch.c
-            src/platform/x11_touch.c src/platform/input_extended.c)
-        target_include_directories(test_x11_touch PRIVATE
-            ${TEST_INCLUDE_DIRS} ${X11_INCLUDE_DIRS})
-        target_compile_definitions(test_x11_touch PRIVATE ENGINE_X11_XINPUT2=1)
-        target_link_libraries(test_x11_touch PRIVATE m)
-        add_test(NAME test_x11_touch COMMAND test_x11_touch)
-        set_tests_properties(test_x11_touch PROPERTIES LABELS "headless;platform_contract")
-    endif()
-
     add_executable(test_win32_touch tests/test_win32_touch.c
         src/platform/win32_touch.c src/platform/input_extended.c)
     target_include_directories(test_win32_touch PRIVATE ${TEST_INCLUDE_DIRS})
@@ -6701,6 +6644,7 @@ endif()
     # is header-only and wayland-free), runs headless on any platform.
     add_executable(test_wayland tests/test_wayland.c)
     target_include_directories(test_wayland PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_wayland PRIVATE SIMULATE_WAYLAND=1)
     target_link_libraries(test_wayland PRIVATE m)
     add_test(NAME test_wayland COMMAND test_wayland)
 
@@ -6711,11 +6655,12 @@ endif()
 
     # Plan B Task 2: logical-vs-drawable size semantics are locked into the
     # header-only platform_size.h helpers; the unit test runs headless and the
-    # cmake contract test pins the four window backends to consume them.
+    # cmake contract test pins the remaining window backends to consume them.
     add_executable(test_platform_size_semantics
         tests/test_platform_size_semantics.c)
     target_include_directories(test_platform_size_semantics PRIVATE
         ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_platform_size_semantics PRIVATE SIMULATE_WAYLAND=1)
     target_link_libraries(test_platform_size_semantics PRIVATE m)
     add_test(NAME test_platform_size_semantics
         COMMAND test_platform_size_semantics)
@@ -6724,7 +6669,6 @@ endif()
         COMMAND ${CMAKE_COMMAND}
             -DSIZE_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform_size.h
             -DWIN32_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_win32.c
-            -DX11_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_x11.c
             -DWAYLAND_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_wayland.c
             -DCOCOA_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_cocoa.m
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_size_contract.cmake)

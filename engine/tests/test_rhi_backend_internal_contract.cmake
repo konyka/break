@@ -302,7 +302,6 @@ foreach(rhi_consumer_target
         "test_platform_null_safety"
         "test_imgui_compat"
         "test_myui_break_pal"
-        "test_platform_x11_runtime"
         "test_rhi_x11_runtime"
         "test_platform_wayland_runtime"
         "test_platform_win32_runtime"
@@ -317,7 +316,7 @@ endforeach()
 foreach(linked_target
         "engine_demo" "dxx_break" "test_vulkan" "test_engine_lifecycle"
         "test_platform_null_safety" "test_imgui_compat" "test_myui_break_pal"
-        "test_platform_x11_runtime" "test_rhi_x11_runtime"
+        "test_rhi_x11_runtime"
         "test_platform_wayland_runtime" "test_platform_win32_runtime"
         "test_platform_cocoa_runtime" "test_rhi_capabilities" "test_rhi_native"
         "test_rt_trace" "test_rhi_error_contract" "test_rhi_frame_lifecycle_contract")

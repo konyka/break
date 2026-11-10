@@ -407,7 +407,7 @@ static void cocoa_update_drawable_size(Platform *p) {
     if (self.platform->media_generation != UINT64_MAX)
         self.platform->media_generation++;
 }
-/* R368: match X11 FocusOut / Wayland keyboard_leave — release stuck keys. */
+/* R368: match Wayland keyboard_leave — release stuck keys. */
 - (void)windowDidResignKey:(NSNotification *)n {
     (void)n;
     input_release_all(&self.platform->input);

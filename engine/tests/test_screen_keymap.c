@@ -15,7 +15,7 @@ TEST(keymap_printable_letters_digits_punct)
     ASSERT_EQ(screen_keymap_sym_to_engine((u32)'a'), (i32)'a');
     ASSERT_EQ(screen_keymap_sym_to_engine((u32)'q'), (i32)'q');
     ASSERT_EQ(screen_keymap_sym_to_engine((u32)'z'), (i32)'z');
-    /* Uppercase normalizes to the engine's lowercase slot (x11 parity). */
+    /* Uppercase normalizes to the engine's shared lowercase slot. */
     ASSERT_EQ(screen_keymap_sym_to_engine((u32)'A'), (i32)'a');
     ASSERT_EQ(screen_keymap_sym_to_engine((u32)'Z'), (i32)'z');
     ASSERT_EQ(screen_keymap_sym_to_engine((u32)'0'), (i32)'0');
@@ -36,8 +36,7 @@ TEST(keymap_printable_letters_digits_punct)
 
 TEST(keymap_non_printables_match_engine_codes)
 {
-    /* Engine key codes are the ones x11_key_to_index produces
-     * (window_x11.c:462-524): ESC 256, RET 257, TAB 259, BKSP 260,
+    /* Shared engine key codes: ESC 256, RET 257, TAB 259, BKSP 260,
      * arrows 261-264, F1-F12 271-282, PgUp 283 .. Menu 295,
      * Shift 289 / Ctrl 290. */
     ASSERT_EQ(screen_keymap_sym_to_engine(SCREEN_KEYMAP_PC(0x1B)), 256);

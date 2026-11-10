@@ -52,12 +52,33 @@ TEST(wsi_lifecycle_rejects_unavailable_and_invalid_transitions)
               PLATFORM_WSI_INVALID_TRANSITION);
 }
 
+TEST(wsi_backend_values_are_abi_stable)
+{
+    ASSERT_EQ(PLATFORM_WSI_BACKEND_WAYLAND, 1);
+    ASSERT_EQ(PLATFORM_WSI_BACKEND_WIN32, 2);
+    ASSERT_EQ(PLATFORM_WSI_BACKEND_COCOA, 3);
+    ASSERT_EQ(PLATFORM_WSI_BACKEND_ANDROID, 4);
+    ASSERT_EQ(PLATFORM_WSI_BACKEND_IOS, 5);
+}
+
 TEST(wsi_lifecycle_compiles_for_named_backend)
 {
     PlatformWsiSurface surface;
     ASSERT_EQ(platform_wsi_surface_init(&surface, true, 1u, 1u, 1u, 1u),
               PLATFORM_WSI_OK);
-    ASSERT_EQ(surface.backend, PLATFORM_WSI_COMPILE_BACKEND);
+#if defined(SIMULATE_WAYLAND) || defined(ENGINE_PLATFORM_WAYLAND)
+    ASSERT_EQ(surface.backend, PLATFORM_WSI_BACKEND_WAYLAND);
+#elif defined(SIMULATE_WIN32) || defined(ENGINE_PLATFORM_WINDOWS)
+    ASSERT_EQ(surface.backend, PLATFORM_WSI_BACKEND_WIN32);
+#elif defined(SIMULATE_COCOA) || defined(ENGINE_PLATFORM_MACOS)
+    ASSERT_EQ(surface.backend, PLATFORM_WSI_BACKEND_COCOA);
+#elif defined(SIMULATE_ANDROID) || defined(ENGINE_PLATFORM_ANDROID)
+    ASSERT_EQ(surface.backend, PLATFORM_WSI_BACKEND_ANDROID);
+#elif defined(SIMULATE_IOS) || defined(ENGINE_PLATFORM_IOS)
+    ASSERT_EQ(surface.backend, PLATFORM_WSI_BACKEND_IOS);
+#else
+#error "WSI lifecycle test must explicitly select a backend"
+#endif
 }
 
 TEST(win32_wsi_contract_requires_direct_flip_discard_and_tearing_support)
@@ -148,6 +169,7 @@ TEST(wsi_teardown_rejected_while_destroying)
 TEST_MAIN_BEGIN()
     RUN_TEST(wsi_lifecycle_accepts_legal_surface_transitions);
     RUN_TEST(wsi_lifecycle_rejects_unavailable_and_invalid_transitions);
+    RUN_TEST(wsi_backend_values_are_abi_stable);
     RUN_TEST(wsi_lifecycle_compiles_for_named_backend);
     RUN_TEST(win32_wsi_contract_requires_direct_flip_discard_and_tearing_support);
     RUN_TEST(win32_wsi_contract_orders_present_and_retires_resized_buffers);

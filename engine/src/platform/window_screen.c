@@ -159,7 +159,7 @@ static void screen_apply_pointer(Platform *p)
         input_set_key(&p->input, INPUT_MOUSE_RIGHT,
                       (buttons[0] & SCREEN_RIGHT_MOUSE_BUTTON) != 0);
     }
-    /* Vertical wheel: upward ticks are positive (x11 parity: up = +1 dy). */
+    /* Vertical wheel: upward ticks map to positive dy. */
     int wheel[1] = { 0 };
     if (screen_get_event_property_iv(p->ev, SCREEN_PROPERTY_MOUSE_WHEEL,
                                      wheel) == 0 && wheel[0] != 0) {

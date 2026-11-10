@@ -12,9 +12,6 @@
 #elif defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <android/native_window.h>
-#elif defined(ENGINE_PLATFORM_LINUX)
-#define VK_USE_PLATFORM_XLIB_KHR
-#include <X11/Xlib.h>
 #endif
 #include <vulkan/vulkan.h>
 
@@ -24,13 +21,6 @@ TEST(win32_surface_create_info_abi) {
     ASSERT_EQ(sizeof(PVkWin32SurfaceCreateInfo), sizeof(VkWin32SurfaceCreateInfoKHR));
     ASSERT_EQ(PVK_STYPE_WIN32_SURFACE_CREATE_INFO_KHR,
               (u32)VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR);
-}
-#elif defined(ENGINE_PLATFORM_LINUX) && !defined(ENGINE_PLATFORM_WAYLAND)
-TEST(xlib_surface_create_info_abi) {
-    ASSERT_EQ(sizeof(PVkXlibSurfaceCreateInfo), sizeof(VkXlibSurfaceCreateInfoKHR));
-    ASSERT_EQ(PVK_STYPE_XLIB_SURFACE_CREATE_INFO_KHR,
-              (u32)VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR);
-    ASSERT_EQ(sizeof(Window), sizeof(u64)); /* LP64 契约 */
 }
 #elif defined(ENGINE_PLATFORM_WAYLAND)
 TEST(wayland_surface_create_info_abi) {
@@ -53,8 +43,6 @@ TEST(dummy_when_no_host_branch) { ASSERT_TRUE(1); }
 TEST_MAIN_BEGIN()
 #if defined(ENGINE_PLATFORM_WINDOWS)
     RUN_TEST(win32_surface_create_info_abi);
-#elif defined(ENGINE_PLATFORM_LINUX) && !defined(ENGINE_PLATFORM_WAYLAND)
-    RUN_TEST(xlib_surface_create_info_abi);
 #elif defined(ENGINE_PLATFORM_WAYLAND)
     RUN_TEST(wayland_surface_create_info_abi);
 #elif defined(ENGINE_PLATFORM_MACOS)

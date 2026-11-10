@@ -316,7 +316,7 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         p->close_requested = true;
         return 0;
 
-    /* R368: match X11 FocusOut / Wayland keyboard_leave — release stuck keys. */
+    /* R368: match Wayland keyboard_leave — release stuck keys. */
     case WM_KILLFOCUS:
         input_release_all(&p->input);
         (void)win32_touch_cancel(&p->input_extended,
@@ -494,8 +494,8 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (p->mouse_relative) {
             /* R563: in relative mode WM_INPUT raw deltas own mouse_dx/dy;
              * accumulating absolute-position deltas here too double-counted
-             * (~2x speed, mixed units). Track only the absolute position,
-             * mirroring the X11 backend's exclusive relative branch. */
+             * (~2x speed, mixed units). Track only the absolute position in
+             * the exclusive relative branch. */
             p->input.has_mouse_pos = true;
             p->input.mouse_x = (f32)GET_X_LPARAM(lParam);
             p->input.mouse_y = (f32)GET_Y_LPARAM(lParam);
