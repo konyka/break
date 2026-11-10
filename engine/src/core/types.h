@@ -41,8 +41,8 @@ typedef ptrdiff_t isize;
     #define ENGINE_ALIGN(x) __declspec(align(x))
 #else
     #define ENGINE_ALIGN(x) __attribute__((aligned(x)))
-#ifdef __cplusplus
-} /* extern "C" */
 #endif
 
+#ifdef __cplusplus
+} /* extern "C" */
 #endif

@@ -1,3 +1,10 @@
+## 本轮更新：X11 移除推送前修复——C++20 `main` linkage（2026-11-10）
+
+- **远程 RED**：Windows D3D12 run [`42449243711`](https://github.com/konyka/break/actions/runs/42449243711)（SHA `103d19b5dd7fa8ba0a8b4c9ca89a75fa470ae00c`）在 `test_public_api_cpp20.cpp:55` 报告 `main` 不应为 `extern "C"`（`-Werror,-Wmain`），并在 `:59` 报告缺 `}`；日志将未配对位置明确指向 `core/types.h:18`。该输入来自已同步的 `origin/master`，不是 X11 移除回归。
+- **根因与最小修复**：`core/types.h` 的 C++ linkage 关闭括号误置于 `#if defined(_MSC_VER)` 的 `#else` 内，MSVC 分支从 `:18` 开始的 `extern "C"` 一直覆盖到 `main`。现仅把既有 `#ifdef __cplusplus` / `}` / `#endif` 移到对齐宏条件的 `#endif` 之后；公共头声明仍在 C linkage 内，`main` 恢复 C++ linkage。测试源、全部断言和 live `break_version_string()` 调用未改，未关闭或过滤任何警告。
+- **实际 RED/GREEN 与变异**：本机 Clang 22.1.8 使用完整测试 TU、实际 include/target defines、显式 `-Werror -Wmain` 及 `_MSC_VER=1944 -fms-extensions` 复现上述两条诊断；修复后同命令通过。普通 Linux 参数的 Clang 编译、链接和运行也通过，完整 `cmake --build build-remove-x11-auto -j3` 成功，现有 `test_public_api_cpp20` 1/1 PASS。临时将关闭括号移回旧位置后同一编译合同再次精确变红，恢复后两种 Clang 语法检查及 CTest 再次通过。
+- **验证边界与文件范围**：复现命令用 `-include atomic` 预装宿主标准库头，避免 Linux libstdc++ 在未关闭的 C linkage 内提前产生与远程不同的模板诊断；这只是 Linux 主机对 MSVC 预处理分支的编译复现，不是 native Windows 或 D3D12 运行验证，远程 lane 仍待推送后重跑。实际根因在公共头而非测试源，故必要代码修改为 `engine/src/core/types.h`；没有用在测试中条件补 `}` 的方式掩盖头文件非自包含问题。完整命令与输出见 `.superpowers/sdd/2026-11-10-remove-x11/cpp20-main-fix-report.md`。
+
 ## 本轮更新：X11 移除 Task 3 fix round 2——可运行的镜像证明链（2026-11-10）
 
 - **reusable output**：`on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`，prepare 再映射 `${{ steps.selected.outputs.digest }}`。新增 YAML 结构/表达式合同，10 个 `needs.image.outputs.digest` 消费者均有明确来源，不再只查 digest 字符串。
