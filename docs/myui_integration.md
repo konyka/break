@@ -1414,16 +1414,20 @@ engine/
 CPU dummy port；真实 Wayland / Win32 / Cocoa port 随树提供
 （`mypal/wayland`、`mypal/win32`、`mypal/cocoa`），由 CMake 选项
 `MYUI_PAL=wayland|win32|cocoa|dummy` 选择编入，平台库只在对应分支链接。
-`MYUI_PAL=x11` 和未识别值会明确配置失败，不会静默选择 dummy；Wayland 创建
-失败也不回落 dummy。Wayland port 在参考主机上经 `test_mypal_wayland.c`
-真机验证；Win32/Cocoa 为 compile-targeted。各 port 实现冻结的 `my_pal.h`
-契约：窗口生命周期、`get_lcd` 呈现语义（wl_shm / DIB / NSBitmapImageRep）、
-`gl_enable` GL mount（EGL ES2 或 WGL/NSOpenGL + 桌面表回退）、事件到
-`my_event_t` 的翻译、以及 `run/quit/post_event/timer` 主循环。配置回归
-`test_myui_subproject_config` 通过嵌套构建覆盖默认/显式 dummy、legacy x11、
-未识别值和 Wayland 无回落边界；`test_myr_dependency_config` 检查五个模块的
-路径契约和 PAL target。隔离顶层构建已在关闭字体、YAML、BiDi 和图像可选项时
-完成 `87/87` 编译。
+`MYUI_PAL=x11` 和未识别值会明确配置失败，不会静默选择 dummy；顶层 engine 与
+standalone 使用同一组允许值和平台约束，Wayland 只接受 Linux/明确 Wayland 交叉
+目标，Win32/Cocoa 也只接受对应平台。Wayland 创建失败不回落 dummy。Wayland port
+在参考主机上经 `test_mypal_wayland.c` 真机验证；Win32/Cocoa 为 compile-targeted。
+各 port 实现冻结的 `my_pal.h` 契约：窗口生命周期、`get_lcd` 呈现语义
+（wl_shm / DIB / NSBitmapImageRep）、`gl_enable` GL mount（EGL ES2 或
+WGL/NSOpenGL + 桌面表回退）、事件到 `my_event_t` 的翻译、以及
+`run/quit/post_event/timer` 主循环。配置回归 `test_myui_subproject_config`
+通过嵌套构建覆盖默认/显式 dummy、legacy x11、未识别值和平台原生 PAL；Wayland
+无回落仅在 Linux/明确 Wayland 交叉目标执行，Windows/macOS 分别构建
+Win32/Cocoa，不用 skip 代替配置。Linux 主机另以 Zig 编译真实 Win32 PAL，并做
+Darwin 配置探针；这些交叉/嵌套结果不是 native 运行证据。`test_myr_dependency_config`
+检查五个模块的路径契约和 PAL target。隔离顶层构建已在关闭字体、YAML、BiDi 和
+图像可选项时完成 `87/87` 编译。
 
 网络模块的 UDP 测试使用 `net_udp_create(0)` 获取内核临时端口，并通过
 `net_socket_get_local_address()` 构造 loopback 目标，不依赖固定端口或进程号哈希；该 API

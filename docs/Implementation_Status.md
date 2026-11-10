@@ -1,3 +1,16 @@
+## 本轮更新：X11 移除终审 fix-wave（2026-11-10）
+
+- **基线与提交**：从 `fb45db134635b70da89f6d95342d55a04b624c61` 逐项完成终审 I1–I5、M1/M2 和 deferred Minor3，依次形成 PAL 平台矩阵、Windows 启动合同、可移植 rollback、EGL/GL configure 闭包、fork digest fallback、WSI 宏矩阵及 fork PR head owner 七个实现提交；当前文档另行提交，SDD 报告按目录规则本地落盘。未合并、未 push，历史条目未改写。
+- **I1/M1**：standalone 与顶层 engine 统一 `MYUI_PAL=dummy|wayland|win32|cocoa` 及平台约束，非 Linux Wayland 和非法值在依赖查找前失败。native 测试按目标构建 dummy 与对应原生 PAL；Linux 上 Zig/x86_64-windows-gnu 编译真实 Win32 PAL，Darwin 探针覆盖 Cocoa 配置和 dummy 构建。新增矩阵还发现并修复 Win32 `atomic_flag_clear_explicit` 缺少 `memory_order_release` 的真实编译错误；这些嵌套/交叉结果不冒充 native Windows/macOS 运行。
+- **I2**：CTest REQUIRED 探测并使用 `Python3_EXECUTABLE` 与 `BASH_EXECUTABLE`，三个 shell helper 均显式经 Bash 启动；workflow 结构解析改用 Python 标准库，不再新增 PyYAML 依赖。Windows 模拟同时检查嵌套注册命令和 Win32 直接脚本启动拒绝，native Windows 使用同一真实 CTest/Bash 路径。
+- **I3**：rollback floor 改为 Bash 正则捕获主版本、去前导零和单位数 `<2` 拒绝，不再调用 GNU `sort -V`。fake stock sort 下 `v1.9.9`/malformed/injection 拒绝，`v2.0.0`、`v2.0.1`、`v10.0.0` 接受且无副作用；workflow 仍在 Ubuntu 执行实际 drill。
+- **I4**：Linux 实际 OpenGL/auto fallback 链在 configure 使用 `find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)` 并链接对应 imported targets。受限 sysroot 中 dummy/wayland 各自独立缺 EGL、缺 GL 均按 component 失败；auto 缺 GL 失败，显式 Vulkan-only 且 multi-backend=OFF 在禁用 OpenGL 包时仍配置成功。
+- **I5**：candidate 保留当前 repository owner，非发布 fallback 固定上游 `ghcr.io/konyka/break-ci-linux`；`BREAK_CI_LINUX_DIGEST` 仍是显式 immutable override。直接执行 workflow verified/select 块的 upstream PR、fork PR、fork push、fork manual、upstream master 合同通过；非发布路径不采纳 candidate verified、不 login/push、不解析 fork `latest`，输出上游 immutable digest。
+- **Minor**：清理当前 GLX 注释和旧白名单，保留 glad 通用扩展常量；新增七个 compile-only 对象钉住 simulation 优先于 real、真实 iOS 优先于 macOS、QNX/HarmonyOS/无平台 backend=0，以及原有 1–5 ABI 数值。优先级和 sentinel 生产变异均被静态断言杀死并恢复。
+- **RED/变异证据**：I1 非 Linux Wayland 与顶层非法 PAL、I2 裸 Python/直接脚本启动、I3 stock sort 有效版本拒绝、I4 四种独立缺依赖与 auto fallback、I5 fork latest/verified 误选均先在未修实现上失败。五项 Important 的生产根因变异分别再次被对应合同杀死并精确恢复；完整命令和关键输出见 `.superpowers/sdd/2026-11-10-remove-x11/final-fix-report.md`。
+- **最终本地验证**：新增 focused 14/14；auto 普通非图形 341 项零失败（唯一既有 D3D12 dependency gate skip）；显式 OpenGL、ASan+UBSan、TSan 各 339 项零失败并各有同一平台 skip，无 sanitizer/race 报告。auto、OpenGL、no-tests、ASan+UBSan、TSan 五个构建均 `-j3` 成功；显式五个 fuzz 目标构建且 CTest 5/5。真实 Wayland 下 OpenGL graphics 7/7、auto Vulkan graphics 11/11，均无 skip；日志确认 Mesa Intel OpenGL 与 Vulkan `platform-default`，未使用 X11。
+- **限制**：本地仅有 Linux。Windows/macOS/iOS/D3D12 native 构建与运行、GitHub Actions 表达式实际求值、GHCR candidate/digest/alias 拉取推送和 Steam Deck 只能 push 后核查；Zig、嵌套 `CMAKE_SYSTEM_NAME`、fake docker/stock sort 和 compile-only 探针均不冒充这些证据。真实签名 tag rollback、release tag 创建不在本轮范围。
+
 ## 本轮更新：X11 移除推送前修复——C++20 `main` linkage（2026-11-10）
 
 - **远程 RED**：Windows D3D12 run [`42449243711`](https://github.com/konyka/break/actions/runs/42449243711)（SHA `103d19b5dd7fa8ba0a8b4c9ca89a75fa470ae00c`）在 `test_public_api_cpp20.cpp:55` 报告 `main` 不应为 `extern "C"`（`-Werror,-Wmain`），并在 `:59` 报告缺 `}`；日志将未配对位置明确指向 `core/types.h:18`。该输入来自已同步的 `origin/master`，不是 X11 移除回归。

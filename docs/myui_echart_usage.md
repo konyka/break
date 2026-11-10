@@ -50,8 +50,10 @@ explorer is built with a desktop port compiled in, it consumes
 the direct Wayland runners remain available in the dummy build. The
 Wayland port is live-verified on the reference host (window lifecycle,
 lcd presentation, GL mount, events, main loop: see
-`test_mypal_wayland.c`); Win32/Cocoa are compile-targeted against the
-frozen contract with no host in CI.
+`test_mypal_wayland.c`). Win32/Cocoa are compile-targeted against the
+frozen contract: the PAL configuration test builds the native port on
+Windows/macOS, while Linux-hosted Win32 cross-builds and Darwin configure
+probes are explicitly not native runtime evidence.
 
 Verification status: Wayland PAL plus `--shot`/`--glshot`/`--palshot`
 are verified live on the reference host. The Windows and macOS runners

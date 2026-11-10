@@ -19,8 +19,8 @@
 | QNX | qcc/q++ (SDP 7.1/8.0) | headless 兼容层 | `toolchain-qnx.cmake` | poll net_loop、headless RHI；见 `docs/qnx_compat.md` |
 
 ### 1.2 系统依赖（Linux）
-- **Linux 仅支持原生 Wayland**（2.0.0 起）；必需 `libwayland-dev`、`wayland-protocols`、`libxkbcommon-dev`、`wayland-scanner` 与 EGL 开发库。缺少这些依赖时 configure 明确失败，不回退到旧窗口系统或 dummy
-- Vulkan 加载器/头文件 + shaderc（默认后端，例如 libvulkan-dev libshaderc-dev）；OpenGL (libgl1-mesa-dev) 仅在选 `-DENGINE_RHI_BACKEND=opengl` 或 Vulkan 依赖缺失而降级时需要
+- **Linux 仅支持原生 Wayland**（2.0.0 起）；必需 `libwayland-dev`、`wayland-protocols`、`libxkbcommon-dev`、`wayland-scanner`。缺少这些依赖时 configure 明确失败，不回退到旧窗口系统或 dummy
+- Vulkan 加载器/头文件 + shaderc（默认后端，例如 libvulkan-dev libshaderc-dev）。实际启用 OpenGL 路径时，configure 还 REQUIRED 探测 EGL/OpenGL 头文件和库（例如 libegl1-mesa-dev libgl1-mesa-dev）：包括显式 `ENGINE_RHI_BACKEND=opengl`、auto 配置期降级，以及 auto Vulkan 且 `ENGINE_RHI_MULTI_BACKEND=ON` 的运行时 fallback 链；显式 Vulkan-only 且 multi-backend=OFF 不要求安装 GL
 - FreeType 开发库（推荐；`dxx_break` 默认 CJK TTC 字体和中文显示需要它）
 - pthread
 - 游戏手柄支持：evdev（Linux 内核内置，无需额外包）
@@ -245,12 +245,12 @@ limits; a missing client still force-disables the option without fallback.
 
 依赖安装 (Fedora):
 ```bash
-sudo dnf install wayland-devel wayland-protocols-devel libxkbcommon-devel mesa-libEGL-devel
+sudo dnf install wayland-devel wayland-protocols-devel libxkbcommon-devel mesa-libEGL-devel mesa-libGL-devel
 ```
 
 依赖安装 (Ubuntu/Debian):
 ```bash
-sudo apt install libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev
+sudo apt install libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev
 ```
 
 构建命令（默认 Vulkan；显式 OpenGL 是最后降级与对比配置）:
@@ -260,7 +260,7 @@ cmake .. -DENGINE_RHI_BACKEND=opengl   # Wayland + OpenGL
 cmake .. -DENGINE_RHI_BACKEND=vulkan   # Wayland + Vulkan，缺依赖时失败
 ```
 
-> **2.0.0 边界**：Wayland 是 Linux 唯一窗口后端，`ENGINE_ENABLE_WAYLAND` 默认 ON；设为 OFF 或 `MYUI_PAL=x11` 均明确配置失败。缺少 Wayland/scanner/EGL/xkbcommon 依赖也不会回退。
+> **2.0.0 边界**：Wayland 是 Linux 唯一窗口后端，`ENGINE_ENABLE_WAYLAND` 默认 ON；设为 OFF 或 `MYUI_PAL=x11` 均明确配置失败。缺少 Wayland/scanner/xkbcommon 依赖不会回退；实际 OpenGL/fallback 路径缺少 EGL 或 OpenGL 也在 configure 明确失败。`MYUI_PAL` 仅接受 dummy/wayland/win32/cocoa，并在顶层 engine 与 standalone 同样检查目标平台。
 Wayland 后端通过 EGL 提供 OpenGL 上下文，通过 `VK_KHR_wayland_surface` 提供 Vulkan 支持。CMake 会调用 `wayland-scanner` 从 `wayland-protocols` 自动生成 `xdg-shell` 客户端代码。
 同时生成 `text-input-v3`、`cursor-shape-v1`（可用时）和 tablet 协议绑定；cursor-shape
 不可用时自动退回 `wayland-cursor` theme。
@@ -579,6 +579,7 @@ cmake --build build-gl
 | MYUI_GLES2 | ON | 探测可用依赖后启用可复用 GLES2 后端 |
 | MYUI_GL_DESKTOP | ON | 探测可用依赖后启用桌面 OpenGL 后端 |
 | MYUI_VULKAN | OFF | 启用可复用 Vulkan 后端；需要 Vulkan/shaderc 依赖 |
+| MYUI_PAL | dummy | 可选 dummy/wayland/win32/cocoa；非法值和不匹配的目标平台在 configure 明确失败 |
 | ENGINE_ANDROID_NATIVE_WINDOW | OFF | Android Vulkan 必须开启，并提供 NDK `android/native_window.h` |
 | RULE_ENGINE_ENABLE_C11_PARALLEL | OFF | 启用可选 C11 规则并行执行器；不代表全引擎句柄线程安全 |
 | RULE_ENGINE_ENABLE_REDIS | OFF | 启用 Redis 状态提供者；需要 hiredis/Redis 源目录 |
@@ -589,6 +590,11 @@ cmake --build build-gl
 | CMAKE_TOOLCHAIN_FILE | (无) | 使用工具链文件（见上方编译器支持矩阵） |
 
 > 编译器标志由 CMake 根据 MSVC / Clang / GCC **自动检测并应用三路分支**，无需手动指定告警/优化标志。
+
+`ENGINE_BUILD_TESTS=ON` 时，configure 使用 `find_package(Python3 COMPONENTS Interpreter REQUIRED)`
+和 `find_program(BASH_EXECUTABLE NAMES bash REQUIRED)` 声明测试解释器依赖；CTest 不依赖裸
+`python3`，shell helper 显式经该 Bash 启动。CI image 合同只使用 Python 标准库，不要求
+PyYAML。Windows 测试需要可用的 Python 与 Git Bash；macOS rollback 行为合同不依赖 GNU sort。
 
 `net_loop` 的 `add`、`modify`、`remove`、`wait` 和 `destroy` 必须在同一个
 loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IOCP 后端只提供
@@ -954,7 +960,7 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 
 镜像编排采用 `ci.yml` 的 `image` job 调用同 commit 的 `ci-image.yml`，并在 `on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`。本地候选 `load` 后先 smoke；随后直接给同一 image ID 打 `verified-<inputs-hash>` 标签并 `docker push`，不再第二次 build。发布后再 inspect registry digest，master 的 SHA 与 `latest` 别名从该 digest 创建并回读验证一致。无输入变化复用已验证 digest，schedule 强制重建以获取安全更新。10 个实际 container jobs 均 `needs: image` 并使用 `needs.image.outputs.digest`，不直接消费 `latest`。
 
-PR/fork 不 login、不 push，只 smoke 本地候选，普通 lanes 不把该候选冒充为全 lane 已验证镜像。可选仓库变量 `BREAK_CI_LINUX_DIGEST` 提供显式 `image@sha256:...` override；未设置时在 prepare 阶段匿名 inspect 公共 GHCR `latest`，将其解析为 immutable digest 后消费。公共拉取/解析失败会明确失败；lanes 不直接消费 `latest`，也不会因 override 未配置而阻断首次 PR。
+PR/fork 不 login、不 push，只 smoke 本地候选，普通 lanes 不把该候选冒充为全 lane 已验证镜像。candidate 始终使用当前 `github.repository_owner`，非发布消费者的 fallback 则固定为上游 `ghcr.io/konyka/break-ci-linux`；upstream PR、fork PR、fork-owned push/manual 都不会解析不存在的 fork `latest`。可选仓库变量 `BREAK_CI_LINUX_DIGEST` 提供显式 `image@sha256:...` override；未设置时在 prepare 阶段匿名 inspect 上游公共 GHCR `latest`，将其解析为 immutable digest 后消费。公共拉取/解析失败会明确失败；lanes 不直接消费 `latest`，也不会因 override 未配置而阻断首次 PR 或 fork-owned CI。
 
 `lane-benchmark-steam-deck-vk` 还要求维护者配置 `STEAM_DECK_VENDOR_ID` 与 `STEAM_DECK_DEVICE_ID`（十进制或 `0x` 十六进制）。原始收据含 Vulkan 实际 `device_type/vendor_id/device_id`；仅 `INTEGRATED`/`DISCRETE` 且 ID 精确匹配才可授予 `BENCHMARK_COMPARABLE`。缺配置、UNKNOWN/OTHER/VIRTUAL/CPU、ID 不匹配均为 UNAVAILABLE 且最终 lane 失败，原始 JSON 与 `hardware.env` 仍上传。hosted lavapipe/llvmpipe 可保留 CPU 类型的普通 `GPU_RUNTIME`，但不进入真机可比证据。
 
