@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+BASH = ""
+
 
 def validation_script(workflow):
     try:
@@ -32,17 +34,19 @@ def run_tag_script(script, tag, work):
     direct = "${{ inputs.tag }}" in script
     if direct:
         script = script.replace("${{ inputs.tag }}", tag)
-    result = subprocess.run(["bash", "-c", script], text=True,
+    result = subprocess.run([BASH, "-c", script], text=True,
                             capture_output=True, env=env)
     return result, marker.exists(), direct
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("usage: test_rollback_input_contract.py <rollback-drill.yml> <work-dir>")
+    global BASH
+    if len(sys.argv) != 4:
+        print("usage: test_rollback_input_contract.py <rollback-drill.yml> <work-dir> <bash>")
         return 2
     workflow_path = Path(sys.argv[1])
     work = Path(sys.argv[2])
+    BASH = sys.argv[3]
     work.mkdir(parents=True, exist_ok=True)
     workflow = workflow_path.read_text()
     script = validation_script(workflow)

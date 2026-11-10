@@ -4275,12 +4275,24 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_contract.cmake)
     set_tests_properties(test_ci_image_contract PROPERTIES
         LABELS "headless;platform_contract")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    find_program(BASH_EXECUTABLE NAMES bash REQUIRED)
     add_test(NAME test_ci_image_fix2
-        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_fix2.py
+        COMMAND "${Python3_EXECUTABLE}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_fix2.py
             ${CMAKE_CURRENT_SOURCE_DIR}/..
-            ${CMAKE_CURRENT_BINARY_DIR}/ci-image-fix2-contract)
+            ${CMAKE_CURRENT_BINARY_DIR}/ci-image-fix2-contract
+            "${BASH_EXECUTABLE}")
     set_tests_properties(test_ci_image_fix2 PROPERTIES
         LABELS "headless;platform_contract")
+    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME test_ci_image_fix2_windows_launch
+            COMMAND "${Python3_EXECUTABLE}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_fix2.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/..
+                ${CMAKE_CURRENT_BINARY_DIR}/ci-image-fix2-windows-contract
+                "${BASH_EXECUTABLE}" --simulate-windows)
+        set_tests_properties(test_ci_image_fix2_windows_launch PROPERTIES
+            LABELS "headless;platform_contract" TIMEOUT 120)
+    endif()
     add_test(NAME test_ci_execution_semantics
         COMMAND ${CMAKE_COMMAND}
             -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -4288,9 +4300,10 @@ endif()
     set_tests_properties(test_ci_execution_semantics PROPERTIES
         LABELS "headless;platform_contract")
     add_test(NAME test_rollback_input_contract
-        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rollback_input_contract.py
+        COMMAND "${Python3_EXECUTABLE}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rollback_input_contract.py
             ${CMAKE_CURRENT_SOURCE_DIR}/../.github/workflows/rollback-drill.yml
-            ${CMAKE_CURRENT_BINARY_DIR}/rollback-input-contract)
+            ${CMAKE_CURRENT_BINARY_DIR}/rollback-input-contract
+            "${BASH_EXECUTABLE}")
     set_tests_properties(test_rollback_input_contract PROPERTIES
         LABELS "headless;platform_contract")
     add_test(NAME test_receipt_device_contract
