@@ -590,7 +590,7 @@ cmake --build build-gl
 | CMAKE_TOOLCHAIN_FILE | (无) | 使用工具链文件（见上方编译器支持矩阵） |
 
 > 编译器标志由 CMake 根据 MSVC / Clang / GCC **自动检测并应用三路分支**，无需手动指定告警/优化标志。
-> MSVC 的 C++20 target 额外使用 `/Zc:__cplusplus`，确保 `__cplusplus` 正确报告 202002；Windows Clang ASan lane 对 `CMAKE_C_FLAGS` 与 `CMAKE_CXX_FLAGS` 同时传入 `-fsanitize=address -fno-omit-frame-pointer`，runtime DLL 部署保持不变。WGL loader 测试只在非 Windows 模拟分支补 `__stdcall`，真实 Windows 使用内建调用约定。
+> MSVC 的 C++20 target 额外使用 `/Zc:__cplusplus`，确保 `__cplusplus` 正确报告 202002；Windows Clang ASan lane 对 `CMAKE_C_FLAGS` 与 `CMAKE_CXX_FLAGS` 同时传入 `-fsanitize=address -fno-omit-frame-pointer`，runtime DLL 部署保持不变。WGL loader 测试只在非 Windows 模拟分支补 `__stdcall`，真实 Windows 使用内建调用约定。benchmark 的 Release+IPO lane 配套使用 `clang-18`、`clang++-18` 与 `lld-18`，不让默认 GNU C++ 接管带版本后缀的 LLD；通用 `toolchain-clang-linux.cmake` 同样显式设置 `clang`/`clang++`/`lld`。
 
 `ENGINE_BUILD_TESTS=ON` 时，configure 使用 `find_package(Python3 COMPONENTS Interpreter REQUIRED)`
 和 `find_program(BASH_EXECUTABLE NAMES bash REQUIRED)` 声明测试解释器依赖；CTest 不依赖裸

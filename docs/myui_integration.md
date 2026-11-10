@@ -1426,9 +1426,13 @@ WGL/NSOpenGL + 桌面表回退）、事件到 `my_event_t` 的翻译、以及
 无回落仅在 Linux/明确 Wayland 交叉目标执行，Windows/macOS 分别构建
 Win32/Cocoa，不用 skip 代替配置。nested configure 继承父级 generator、C compiler
 与 build type，构建使用显式 `--config` 和 verbose 日志，并从配置对应目录运行
-`pal_probe`，不再在 Windows 上意外落回默认 MSBuild 或丢失真实编译诊断。Linux 主机
-另以 Zig 编译真实 Win32 PAL、以 Ninja Multi-Config 验证配置子目录，并做 Darwin 配置
-探针；这些交叉/嵌套结果不是 native 运行证据。`test_myr_dependency_config`
+`pal_probe`，不再在 Windows 上意外落回默认 MSBuild 或丢失真实编译诊断。所有
+Windows dummy/Win32 配置还实际链接 `pal_probe` 并拒绝 raw `-lm`：MSVC ABI 会将
+其映射为不存在的 `m.lib`，Windows 的 CRT 已提供所需数学符号，不能依赖 GNU libm。
+失败日志先给完整 verbose build，再给 configure，CI 同时保留 `lld-link`、未解析
+符号和库文件错误。Linux 主机另以 Zig 编译真实 Win32 PAL、以 Ninja Multi-Config
+验证配置子目录，并做 Darwin 配置探针；这些交叉/嵌套结果不是 native 运行证据。
+`test_myr_dependency_config`
 检查五个模块的路径契约和 PAL target。隔离顶层构建已在关闭字体、YAML、BiDi 和
 图像可选项时完成 `87/87` 编译。
 

@@ -1,3 +1,13 @@
+## 本轮更新：第二轮真实 CI 基础设施修复（2026-11-10）
+
+- **范围**：以 `1150ccaab131daf121e581dc516db52aa1b5564b` 为 base，读取主 run `42801996748`、D3D12 run `42801996738` 及全部失败 job 日志，处理 missing-wayland、Clang+LLD、Windows PAL 链接三项基础设施问题；实现提交 `03c3e21f`。未修改 brief 排除的 MSVC flow 或 macOS NAT/voice 文件，本轮未合并、未 push。
+- **missing-wayland**：CI 的 pkg-config 输出为 `Package 'wayland-client', required by 'virtual:world', not found`，旧精确匹配 `Package 'wayland-client' not found` 把正确 configure 拒绝误判为缺诊断。现合并 stdout+stderr，允许包名与 `not found` 之间存在实现特定文字，同时继续要求三个真实包名、`_pkg_check_modules_internal` 和 `CMakeLists.txt:... (pkg_check_modules)`；无关包负例仍拒绝，缺依赖门未放松。
+- **Clang+LLD**：benchmark 新增 `CMAKE_CXX_COMPILER=clang++-18`，与 `clang-18`、`lld-18`、llvm-ar/ranlib 和 Release+IPO 配套。默认 GNU C++ 对 `-fuse-ld=lld-18` 的真实 configure RED 与远程一致，补齐后 C/CXX 均 Clang 且配置成功；`toolchain-clang-linux.cmake` 原有 `clang++`/`lld` 组合也由合同钉住。
+- **Windows PAL 链接**：GNU-like Clang 的 `MSVC` 为 false，standalone `myr` 因而添加 `-lm`，MSVC ABI 链接器映射为 `m.lib` 并失败；直接 Clang target 探针实际得到 `could not open 'm.lib': No such file or directory`。现所有 Windows 都不链接 raw `m`，dummy/Win32 均实际链接 `pal_probe`，链接行拒绝 `-lm`。verbose build 移到 configure 前，CI grep 增加 `lld-link`、未解析符号和库文件错误；本地 COFF 不冒充 native 运行。
+- **其它失败 lane**：clean-room、Linux GCC/Clang/Wayland 多 lane 共享 missing-wayland 误判；Weston 已启动，graphics 因前序失败而零执行并正确给 UNAVAILABLE，没有改成 PASS。Apple 剩余失败属于排除的 NAT/voice 行为专项，Xcode 16.4 runner/pin 本身没有新增基础设施问题。candidate/digest、Deck、macos-15/Xcode、C++20/ASan 修复保持不变。
+- **RED/GREEN 与变异**：CI pkg 输出格式先 RED，benchmark CXX 先 RED，Windows dummy/Win32 `-lm` 链接合同先 RED；分别回退精确匹配、删除 CXX、恢复 `NOT MSVC` 条件后均再次 RED 并恢复。完整证据见 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round2-report.md`。
+- **验证与限制**：受影响 focused 11/11；普通非图形 342 项零失败，唯一既有 D3D12 平台 skip；no-tests 完整 `-j3` 构建成功；`git diff --check` 通过。真实 native Windows 链接/运行、Weston graphics、Apple 行为与 GHCR 仍须下一轮 CI，未用本地交叉结果替代。
+
 ## 本轮更新：scoped 复审 N1——macos-15 Xcode pin（2026-11-10）
 
 - **根因**：R6 runner 迁移后，`lane-gpu-runtime-macos-metal` 与 `ios-metal-build` 仍强制 `/Applications/Xcode_15.4.app`，会在构建前失败。官方当前 [macos-15 image readme](https://raw.githubusercontent.com/actions/runner-images/main/images/macos/macos-15-Readme.md) 不含 15.4，明确列出 default `Xcode_16.4.app`、macOS 15.5 SDK 和 iOS 18.5 simulator。
