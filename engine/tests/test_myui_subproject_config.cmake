@@ -60,7 +60,10 @@ if(DEFINED MYUI_ROOT_DIR AND DEFINED WORK)
         "set(CMAKE_C_EXTENSIONS OFF)\n"
         "add_subdirectory(\"${MYUI_ROOT_DIR}\" \"\${CMAKE_CURRENT_BINARY_DIR}/myui\")\n"
         "add_executable(pal_probe pal_probe.c)\n"
-        "target_link_libraries(pal_probe PRIVATE mypal)\n")
+        "target_link_libraries(pal_probe PRIVATE mypal)\n"
+        "get_target_property(_myr_link_libraries myr LINK_LIBRARIES)\n"
+        "get_target_property(_pal_probe_link_libraries pal_probe LINK_LIBRARIES)\n"
+        "file(WRITE \"\${CMAKE_CURRENT_BINARY_DIR}/pal-link-properties.txt\" \"\${_myr_link_libraries};\${_pal_probe_link_libraries}\\n\")\n")
     file(WRITE "${WORK}/host/pal_probe.c" [=[
 #include "mypal/my_pal.h"
 #include <stdio.h>
@@ -238,11 +241,27 @@ int main(void) {
                     "${name}: build failed; generator=${PROBE_GENERATOR}; compiler=${PROBE_C_COMPILER}; config=${PROBE_BUILD_TYPE}; target=${target}\n"
                     "BUILD OUTPUT\n${build_out}${build_err}\nCONFIGURE OUTPUT\n${probe_log}\n")
             elseif(TARGET_SYSTEM_NAME STREQUAL "Windows" AND target STREQUAL "pal_probe")
-                file(READ "${WORK}/${name}/CMakeFiles/pal_probe.dir/linkLibs.rsp" pal_link_libraries)
-                string(FIND "${pal_link_libraries}" " -lm " libm_offset)
-                if(NOT libm_offset EQUAL -1)
+                if(PAL_SIMULATE_NO_LINKLIBS)
+                    file(REMOVE "${WORK}/${name}/CMakeFiles/pal_probe.dir/linkLibs.rsp")
+                endif()
+                if(EXISTS "${WORK}/${name}/CMakeFiles/pal_probe.dir/linkLibs.rsp")
+                    file(READ "${WORK}/${name}/CMakeFiles/pal_probe.dir/linkLibs.rsp" pal_link_libraries)
+                    string(FIND "${pal_link_libraries}" " -lm " libm_offset)
+                    if(NOT libm_offset EQUAL -1)
+                        string(APPEND failures
+                            "${name}: Windows pal_probe link unexpectedly requires raw libm: ${pal_link_libraries}\n")
+                    endif()
+                elseif(EXISTS "${WORK}/${name}/pal-link-properties.txt")
+                    file(READ "${WORK}/${name}/pal-link-properties.txt" pal_link_libraries)
+                    foreach(link_library IN LISTS pal_link_libraries)
+                        if(link_library STREQUAL "m")
+                            string(APPEND failures
+                                "${name}: Windows pal_probe target unexpectedly requires raw libm: ${pal_link_libraries}\n")
+                        endif()
+                    endforeach()
+                else()
                     string(APPEND failures
-                        "${name}: Windows pal_probe link unexpectedly requires raw libm: ${pal_link_libraries}\n")
+                        "${name}: unable to validate Windows pal_probe link dependencies; no Ninja response file or target properties\n")
                 endif()
             endif()
         endif()
