@@ -288,18 +288,20 @@ esac
         failures.append("fork consumer fallback inspected the unpublished fork latest tag")
 
     cases = [
-        ("upstream-pr", "pull_request", "konyka/break", "konyka", image, False),
-        ("fork-pr", "pull_request", "konyka/break", "konyka", image, False),
-        ("fork-push", "push", "fork/break", "fork", fork_image, False),
-        ("fork-manual", "workflow_dispatch", "fork/break", "fork", fork_image, False),
-        ("upstream-master", "push", "konyka/break", "konyka", image, True),
+        ("upstream-pr", "pull_request", "konyka/break", "konyka", "konyka", image, False),
+        ("fork-pr", "pull_request", "konyka/break", "konyka", "fork", image, False),
+        ("fork-push", "push", "fork/break", "fork", "fork", fork_image, False),
+        ("fork-manual", "workflow_dispatch", "fork/break", "fork", "fork", fork_image, False),
+        ("upstream-master", "push", "konyka/break", "konyka", "konyka", image, True),
     ]
-    for name, event, repository, owner, expected_candidate, expected_publish in cases:
+    for name, event, repository, owner, head_owner, expected_candidate, expected_publish in cases:
         actual_publish = event != "pull_request" and repository == "konyka/break"
         if actual_publish != expected_publish:
             failures.append(f"{name}: unexpected PUBLISH expression result")
         candidate = workflow_env.get("IMAGE", "").replace(
             "${{ github.repository_owner }}", owner)
+        if head_owner != owner and candidate == f"ghcr.io/{head_owner}/break-ci-linux":
+            failures.append(f"{name}: candidate incorrectly uses the PR head owner")
         if candidate != expected_candidate:
             failures.append(f"{name}: candidate image is {candidate}, expected {expected_candidate}")
             continue
