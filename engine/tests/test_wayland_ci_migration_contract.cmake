@@ -156,7 +156,7 @@ endforeach()
 read_repo_file(".github/workflows/rollback-drill.yml" rollback)
 foreach(required IN ITEMS
         "Validate supported rollback tag"
-        "sort -V"
+        "BASH_REMATCH[1]"
         "2.0.0"
         "UNAVAILABLE"
         "libwayland-dev"

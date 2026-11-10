@@ -18,12 +18,14 @@ jobs:
     steps:
       - name: Validate supported rollback tag
         run: |
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             echo "UNAVAILABLE: rollback requires an exact v<x.y.z> tag, got '$TAG'" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          oldest="$(printf '%s\n' 2.0.0 "${TAG#v}" | sort -V | head -n1)"
-          if [ "$oldest" != "2.0.0" ]; then
+          major="${BASH_REMATCH[1]}"
+          while [ "${major#0}" != "$major" ]; do major="${major#0}"; done
+          major="${major:-0}"
+          if [ "${#major}" -eq 1 ] && [ "$major" -lt 2 ]; then
             echo "UNAVAILABLE: '$TAG' predates native Wayland-only support; rollback is not supported" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi

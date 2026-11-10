@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
@@ -31,6 +32,7 @@ def run_tag_script(script, tag, work):
     env["TAG"] = tag
     env["GITHUB_STEP_SUMMARY"] = str(work / "summary.md")
     env["ROLLBACK_TEST_MARKER"] = str(marker)
+    env["PATH"] = f"{work / 'stock-bin'}{os.pathsep}{env['PATH']}"
     direct = "${{ inputs.tag }}" in script
     if direct:
         script = script.replace("${{ inputs.tag }}", tag)
@@ -48,6 +50,17 @@ def main():
     work = Path(sys.argv[2])
     BASH = sys.argv[3]
     work.mkdir(parents=True, exist_ok=True)
+    stock_bin = work / "stock-bin"
+    stock_bin.mkdir(exist_ok=True)
+    stock_sort = stock_bin / "sort"
+    stock_sort.write_text("""#!/usr/bin/env bash
+if [ "${1:-}" = "-V" ]; then
+    echo "sort: illegal option -- V" >&2
+    exit 1
+fi
+exec /usr/bin/sort "$@"
+""")
+    stock_sort.chmod(stock_sort.stat().st_mode | stat.S_IXUSR)
     workflow = workflow_path.read_text()
     script = validation_script(workflow)
     failures = []
