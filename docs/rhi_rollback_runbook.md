@@ -37,7 +37,7 @@
 
 1. 每个 release 打签名 tag（Task 9）：`git tag -s v<x.y.z>`。当前 rollback drill 只接受 **>=2.0.0** 的 tag；2.0.0 移除旧 Linux 窗口系统支持，更早 tag 在当前工作流中为 `UNAVAILABLE`，不为其安装旧依赖或虚构回滚成功。
 2. 回退命令：`git checkout v<x.y.z> && cmake -S engine -B build -DENGINE_RHI_BACKEND=<上一后端> ...`。OpenGL 仍在当前树内，选 `opengl` 无需回到旧 tag。
-3. CI 演练：`.github/workflows/rollback-drill.yml`（workflow_dispatch 手动触发），先用 `sort -V` 校验版本 floor，再验证合格 tag 的 clean checkout 可构建且 headless 套件绿。每 release 前必跑一次；本任务不创建 tag，合格签名 tag 不存在时不得宣称演练通过。
+3. CI 演练：`.github/workflows/rollback-drill.yml`（workflow_dispatch 手动触发），先用 `sort -V` 校验版本 floor，再验证合格 tag 的 clean checkout 可构建且 headless 套件绿。输入统一经 job `env.TAG` 传递，校验脚本、checkout、验签和报告只读取 `"$TAG"` / `${{ env.TAG }}`，不把 `${{ inputs.tag }}` 直接插入 shell；分号、命令替换、换行 payload 必须在 checkout 前拒绝且无副作用。每 release 前必跑一次；本任务不创建 tag，合格签名 tag 不存在时不得宣称演练通过。
 
 ## 5. 签名与完整性
 

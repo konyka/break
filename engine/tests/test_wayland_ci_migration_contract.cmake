@@ -216,6 +216,8 @@ foreach(spec IN ITEMS
         "docs/Build_Guide.md|Linux 仅支持原生 Wayland"
         "docs/Architecture_Overview.md|Wayland（Linux 唯一窗口系统）"
         "docs/Engine_Modules.md|Linux 唯一窗口后端"
+        "docs/design/input_extended.md|Historical X11/XI2 backend (pre-2.0.0)"
+        "docs/design/input_extended.md|Historical verification evidence (pre-2.0.0)"
         "docs/myui_integration.md|X11 support was removed"
         "docs/myui_remaining_work.md|历史条目中的 X11"
         "docs/rhi_backend_evidence.md|历史 CI 证据（保留原文，非当前支持）")

@@ -3666,6 +3666,32 @@ endif()
     add_test(NAME test_rhi_native COMMAND test_rhi_native)
     set_tests_properties(test_rhi_native PROPERTIES
         LABELS "headless;platform_contract")
+    if(TARGET Vulkan::Vulkan OR Vulkan_INCLUDE_DIR)
+        add_executable(test_rhi_device_type tests/test_rhi_device_type.c
+            ${RHI_CORE_SOURCES} src/core/log.c)
+        target_include_directories(test_rhi_device_type PRIVATE
+            ${TEST_INCLUDE_DIRS} ${Vulkan_INCLUDE_DIR})
+        target_compile_definitions(test_rhi_device_type PRIVATE ENGINE_RHI_TEST=1)
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(test_rhi_device_type PRIVATE
+                ENGINE_PLATFORM_LINUX=1 ENGINE_PLATFORM_WAYLAND=1)
+            target_include_directories(test_rhi_device_type PRIVATE
+                ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_rhi_device_type PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        elseif(ENGINE_PLATFORM STREQUAL "macos")
+            target_compile_definitions(test_rhi_device_type PRIVATE ENGINE_PLATFORM_MACOS=1)
+        elseif(ENGINE_PLATFORM STREQUAL "qnx")
+            target_compile_definitions(test_rhi_device_type PRIVATE ENGINE_PLATFORM_QNX=1)
+        endif()
+        target_link_libraries(test_rhi_device_type PRIVATE engine_rhi_headless m)
+        if(TARGET Vulkan::Vulkan)
+            target_link_libraries(test_rhi_device_type PRIVATE Vulkan::Vulkan)
+        endif()
+        add_test(NAME test_rhi_device_type COMMAND test_rhi_device_type)
+        set_tests_properties(test_rhi_device_type PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
 
     add_executable(test_rhi_tlas_instance_encode
         tests/test_rhi_tlas_instance_encode.c src/rhi/rhi_validation.c)
@@ -4224,6 +4250,31 @@ endif()
             -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_wayland_ci_migration_contract.cmake)
     set_tests_properties(test_wayland_ci_migration_contract PROPERTIES
+        LABELS "headless;platform_contract")
+    add_test(NAME test_ci_image_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_contract.cmake)
+    set_tests_properties(test_ci_image_contract PROPERTIES
+        LABELS "headless;platform_contract")
+    add_test(NAME test_ci_execution_semantics
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_execution_semantics.cmake)
+    set_tests_properties(test_ci_execution_semantics PROPERTIES
+        LABELS "headless;platform_contract")
+    add_test(NAME test_rollback_input_contract
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rollback_input_contract.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../.github/workflows/rollback-drill.yml
+            ${CMAKE_CURRENT_BINARY_DIR}/rollback-input-contract)
+    set_tests_properties(test_rollback_input_contract PROPERTIES
+        LABELS "headless;platform_contract")
+    add_test(NAME test_receipt_device_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/receipt-device-contract
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_receipt_device_contract.cmake)
+    set_tests_properties(test_receipt_device_contract PROPERTIES
         LABELS "headless;platform_contract")
     # Plan C Task 10: offline Metal shader pipeline contract (text-level,
     # platform-free; the real pipeline run is macOS-only).

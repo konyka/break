@@ -23,12 +23,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  image:
+    name: Verify and publish Linux CI image
+    uses: ./.github/workflows/ci-image.yml
+    with:
+      fallback_digest: ${{ vars.BREAK_CI_LINUX_DIGEST }}
+      force_rebuild: ${{ github.event_name == 'schedule' }}
+    permissions:
+      contents: read
+      packages: write
+
   # ---- lane: headless（无显示依赖；原 5 个 headless job 改名，steps 不变，尾部收据 evidence_level=HEADLESS）----
   lane-headless-linux-clang:
     name: Linux + Clang/LLD (Release, headless)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -75,8 +86,9 @@ jobs:
   lane-headless-linux-gcc-asan:
     name: Linux + GCC (ASan + UBSan, headless)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
       # LeakSanitizer stops the world with ptrace; Docker blocks it by default.
       options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
     defaults:
@@ -137,8 +149,9 @@ jobs:
   lane-headless-linux-gcc-tsan:
     name: Linux + GCC (TSan, headless)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
       # the "Lower the ASLR entropy" step writes vm.mmap_rnd_bits on the host kernel.
       options: --privileged
     defaults:
@@ -532,8 +545,9 @@ jobs:
     # 原 wayland-vk（brief :158）。
     name: Linux Wayland + Vulkan (GCC)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -626,8 +640,9 @@ jobs:
     # R680: pinned like every other Linux lane -- ubuntu-latest moves to
     # Ubuntu 26 from 2026-10-19 (runner-images#14748).
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -917,8 +932,9 @@ jobs:
     # R680: pinned like every other Linux lane -- ubuntu-latest moves to
     # Ubuntu 26 from 2026-10-19 (runner-images#14748).
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -996,6 +1012,7 @@ jobs:
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=Debug \
+            -DDEVICE_TYPE=CPU -DVENDOR_ID=0 -DDEVICE_ID=0 \
             -DGPU="mesa software rasterizer (LIBGL_ALWAYS_SOFTWARE=1)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -1016,8 +1033,9 @@ jobs:
     # 钉版工具链 + lavapipe ICD；headless 全量与 Wayland graphics 同 lane 出据。
     name: Linux Wayland + Vulkan (lavapipe, Clang)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -1114,6 +1132,7 @@ jobs:
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=vulkan \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=Debug \
+            -DDEVICE_TYPE=CPU -DVENDOR_ID=0 -DDEVICE_ID=0 \
             -DGPU="lavapipe (software ICD via VK_ICD_FILENAMES)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -1320,8 +1339,9 @@ jobs:
   lane-validation-linux-vk:
     name: "lane: validation (Linux Wayland, VK_LAYER_KHRONOS_validation)"
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -1393,6 +1413,7 @@ jobs:
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=vulkan \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=Debug \
+            -DDEVICE_TYPE=CPU -DVENDOR_ID=0 -DDEVICE_ID=0 \
             -DGPU="lavapipe (software ICD via VK_ICD_FILENAMES)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -1413,8 +1434,9 @@ jobs:
   lane-benchmark-linux-vk:
     name: "lane: benchmark (Linux Wayland Vulkan, lavapipe)"
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -1500,6 +1522,7 @@ jobs:
           fi
           echo "job=${{ job.status }} $cmd -> evidence_level=$lvl"
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=vulkan \
+            -DDEVICE_TYPE=CPU -DVENDOR_ID=0 -DDEVICE_ID=0 \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=Release \
             -DGPU="$gpu" -DDRIVER_VERSION="$driver" \
@@ -1531,6 +1554,9 @@ jobs:
     if: vars.ENABLE_GPU_LANES == '1'
     runs-on: [self-hosted, linux, gpu-vulkan]
     timeout-minutes: 30
+    env:
+      DECK_EXPECTED_VENDOR_ID: ${{ vars.STEAM_DECK_VENDOR_ID }}
+      DECK_EXPECTED_DEVICE_ID: ${{ vars.STEAM_DECK_DEVICE_ID }}
     steps:
       - uses: actions/checkout@v6
 
@@ -1620,9 +1646,16 @@ jobs:
           : "${rc:=1}"; : "${skipped:=1}"; : "${passed:=0}"
           raw=build/rhi_receipt_steam_deck.json
           cmd="Steam Deck Wayland GPU suite + benchmark (rc=$rc passed=$passed skipped=$skipped)"
+          cmake -DRECEIPT="$raw" -DOUT=hardware.env \
+            -DEXPECTED_VENDOR_ID="$DECK_EXPECTED_VENDOR_ID" \
+            -DEXPECTED_DEVICE_ID="$DECK_EXPECTED_DEVICE_ID" \
+            -P engine/tools/check_steam_deck_hardware.cmake
+          source hardware.env
+          echo "Steam Deck hardware_ok=$hardware_ok reason=$hardware_reason"
           metrics_args=()
           if [ "${{ job.status }}" = "success" ] && [ "$rc" = "0" ] && \
-              [ "$skipped" = "0" ] && [ "$passed" -gt 0 ] && [ -s "$raw" ]; then
+              [ "$skipped" = "0" ] && [ "$passed" -gt 0 ] && [ -s "$raw" ] && \
+              [ "$hardware_ok" = "true" ]; then
             lvl=BENCHMARK_COMPARABLE
             cmake -DRECEIPT="$raw" -P engine/tests/test_rhi_benchmark_receipt_validate.cmake
             cmake -DRECEIPT="$raw" -P engine/tests/test_evidence_receipt_schema.cmake
@@ -1630,15 +1663,22 @@ jobs:
             jm() { python3 -c "import json;print(json.load(open('$raw'))['metrics']['$1'])"; }
             gpu="$(j "['gpu']")"
             driver="$(j "['driver_version']")"
+            dtype="$(j "['device_type']")"
+            vendor="$(j "['vendor_id']")"
+            device="$(j "['device_id']")"
             metrics_args=(-DFPS_AVG=$(jm fps_avg) -DFPS_P1=$(jm fps_p1)
               -DFRAME_MS_AVG=$(jm frame_ms_avg) -DFRAME_MS_P99=$(jm frame_ms_p99))
           else
             lvl=UNAVAILABLE
             gpu=unknown
             driver=unknown
+            dtype=UNKNOWN
+            vendor=0
+            device=0
           fi
           echo "job=${{ job.status }} $cmd -> evidence_level=$lvl"
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=vulkan \
+            -DDEVICE_TYPE="$dtype" -DVENDOR_ID="$vendor" -DDEVICE_ID="$device" \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=RelWithDebInfo \
             -DGPU="$gpu" -DDRIVER_VERSION="$driver" \
@@ -1654,15 +1694,24 @@ jobs:
           name: evidence-receipt-benchmark-steam-deck
           path: |
             receipt.json
+            hardware.env
             build/rhi_receipt_steam_deck.json
           if-no-files-found: ignore
       - name: Require executed real-GPU benchmark
         if: always()
         run: |
+          raw=build/rhi_receipt_steam_deck.json
+          cmake -DRECEIPT="$raw" -DOUT=hardware.env \
+            -DEXPECTED_VENDOR_ID="$DECK_EXPECTED_VENDOR_ID" \
+            -DEXPECTED_DEVICE_ID="$DECK_EXPECTED_DEVICE_ID" \
+            -P engine/tools/check_steam_deck_hardware.cmake
+          source hardware.env
+          echo "Steam Deck final hardware_ok=$hardware_ok reason=$hardware_reason"
+          test "$hardware_ok" = "true"
           test "${{ steps.graphics.outputs.rc }}" = "0"
           test "${{ steps.graphics.outputs.passed }}" -gt 0
           test "${{ steps.graphics.outputs.skipped }}" = "0"
-          test -s build/rhi_receipt_steam_deck.json
+          test -s "$raw"
 
   # ---- lane: proton（兼容验证，不计入 Windows D3D12 证据；schedule + 手动触发）----
   lane-proton:
@@ -1749,8 +1798,9 @@ jobs:
     # task 2 交付，保留原名；不产出 GPU 收据 artifact）。
     name: Clean-room build (locked deps, fresh export)
     runs-on: ubuntu-24.04
+    needs: image
     container:
-      image: ghcr.io/konyka/break-ci-linux:latest
+      image: ${{ needs.image.outputs.digest }}
     defaults:
       run:
         shell: bash

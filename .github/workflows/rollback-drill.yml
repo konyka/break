@@ -13,25 +13,26 @@ jobs:
     name: Build supported tag (rollback rehearsal)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      TAG: ${{ inputs.tag }}
     steps:
       - name: Validate supported rollback tag
         run: |
-          tag="${{ inputs.tag }}"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "UNAVAILABLE: rollback requires an exact v<x.y.z> tag, got '$tag'" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "UNAVAILABLE: rollback requires an exact v<x.y.z> tag, got '$TAG'" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          oldest="$(printf '%s\n' 2.0.0 "${tag#v}" | sort -V | head -n1)"
+          oldest="$(printf '%s\n' 2.0.0 "${TAG#v}" | sort -V | head -n1)"
           if [ "$oldest" != "2.0.0" ]; then
-            echo "UNAVAILABLE: '$tag' predates native Wayland-only support; rollback is not supported" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "UNAVAILABLE: '$TAG' predates native Wayland-only support; rollback is not supported" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ env.TAG }}
           fetch-depth: 0
       - name: Verify tag signature exists
-        run: git tag -v "${{ inputs.tag }}"
+        run: git tag -v "$TAG"
       - name: Restore apt package cache
         # R682: .debs a previous run downloaded; apt only fetches what is
         # missing, so a slow Azure mirror (R677-R681: stalls on varied
@@ -73,4 +74,4 @@ jobs:
           cmake --build build --parallel
           ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
       - name: Report
-        run: echo "rollback drill OK for supported tag ${{ inputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "rollback drill OK for supported tag $TAG" >> "$GITHUB_STEP_SUMMARY"

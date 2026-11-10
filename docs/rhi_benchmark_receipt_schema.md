@@ -11,7 +11,10 @@
 | `platform` | string | 是 | `linux-wayland` / `windows` / `macos` / `ios` / `android` / `ohos`；兼容验证收据允许 `proton`（steamrt 容器证据，不计 Windows D3D12 台账） |
 | `os_version` | string | 是 | 操作系统与版本（如 `Ubuntu 24.04`） |
 | `backend` | string | 是 | `opengl` / `vulkan` / `metal` / `d3d12` / `vulkan-moltenvk` |
-| `gpu` | string | 是 | GPU 型号；软渲染必须注明（如 `llvmpipe (LLVM 17.0.6, 256 bits)`） |
+| `device_type` | string | 是 | `UNKNOWN` / `OTHER` / `INTEGRATED` / `DISCRETE` / `VIRTUAL` / `CPU`。Vulkan 从实际 `VkPhysicalDeviceProperties.deviceType` 映射；公共 wrapper 与其它后端不能证明时为 `UNKNOWN`，不从 GPU 名称猜测 |
+| `vendor_id` | number | 是 | 实际 vendor ID；不能证明时为 0。Deck comparable 必须与维护者配置匹配 |
+| `device_id` | number | 是 | 实际 device ID；不能证明时为 0。Deck comparable 必须与维护者配置匹配 |
+| `gpu` | string | 是 | GPU 型号；软渲染必须注明（如 `llvmpipe (LLVM 17.0.6, 256 bits)`）。名称只用于显示，不作为 comparable 硬件判定 |
 | `driver_version` | string | 是 | 驱动版本（如 `Mesa 24.0.9`） |
 | `cpu` | string | 是 | CPU 描述（如 `8 × x86_64`） |
 | `ram` | string | 是 | 内存（如 `16 GiB`） |
@@ -23,7 +26,7 @@
 | `metrics.fps_p1` | number | benchmark 必填 | 1% 低帧 FPS |
 | `metrics.frame_ms_avg` | number | benchmark 必填 | 平均帧时长 ms |
 | `metrics.frame_ms_p99` | number | benchmark 必填 | P99 帧时长 ms |
-| `evidence_level` | string | 是 | `NONE` / `COMPILED` / `HEADLESS` / `NATIVE_SURFACE` / `GPU_RUNTIME` / `BENCHMARK_COMPARABLE` / `UNAVAILABLE`（lane 不可得或失败时的诚实降级值） |
+| `evidence_level` | string | 是 | `NONE` / `COMPILED` / `HEADLESS` / `NATIVE_SURFACE` / `GPU_RUNTIME` / `BENCHMARK_COMPARABLE` / `UNAVAILABLE`（lane 不可得或失败时的诚实降级值）。CPU 可为 `GPU_RUNTIME`；`BENCHMARK_COMPARABLE` 仅限 `INTEGRATED`/`DISCRETE`，Steam Deck 另要求 vendor/device ID 与 `STEAM_DECK_VENDOR_ID` / `STEAM_DECK_DEVICE_ID` 精确匹配 |
 | `runner` | string | 是 | 运行器标识（如 `github-actions/ubuntu-latest (job: vk)` 或本机描述） |
 
 ## 示例收据
@@ -35,6 +38,9 @@
   "platform": "linux-wayland",
   "os_version": "Ubuntu 24.04",
   "backend": "vulkan",
+  "device_type": "CPU",
+  "vendor_id": 0,
+  "device_id": 0,
   "gpu": "llvmpipe (LLVM 17.0.6, 256 bits)",
   "driver_version": "Mesa 24.0.9",
   "cpu": "8 × x86_64",
@@ -61,5 +67,5 @@
 2. `platform`：早期 bench 无窗口系统细分；2.0.0 当前 Linux 收据固定为 `linux-wayland`，旧枚举值仅可出现在明确标注的历史证据中；
 3. `build_config`：CI 传 `RelWithDebInfo` 超出 schema 枚举（Debug/Release）——归计划 F；
 4. `command`：bench 硬编码 `"rhi_swapchain_bench"` 非完整命令行——归计划 F；
-5. `BENCHMARK_COMPARABLE` 在 CI 的产出方式（task 7 修复轮 I1）：bench 可执行自产收据硬编码 `GPU_RUNTIME`（`rhi_swapchain_bench.c`），真机 `lane-benchmark-steam-deck-vk` 在 bench 成功后用 `make_evidence_receipt.cmake` 按同一实测重建台账收据（收割 bench metrics + `BENCHMARK_COMPARABLE`），bench 原始收据随同 artifact 上传留档；
+5. `BENCHMARK_COMPARABLE` 在 CI 的产出方式（task 7 修复轮 I1）：bench 可执行自产收据硬编码 `GPU_RUNTIME`（`rhi_swapchain_bench.c`），`lane-benchmark-steam-deck-vk` 在 bench 成功且 `hardware_ok=true` 后用 `make_evidence_receipt.cmake` 按同一实测重建台账收据（收割 bench metrics + `BENCHMARK_COMPARABLE`）。缺配置、非 INTEGRATED/DISCRETE 或 ID 不匹配均为 UNAVAILABLE 且最终 Require 失败，bench 原始收据和 `hardware.env` 仍随 artifact 上传留档；
 6. 平台扩展值 `proton`、可省略 metrics、`UNAVAILABLE` 等级已随 task 7 修复轮（I3）写入上表规范。

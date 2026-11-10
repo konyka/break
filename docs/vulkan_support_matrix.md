@@ -20,7 +20,7 @@
 | Android | 原生（host-injected `ANativeWindow`，`VK_KHR_android_surface`） | 1.2 | COMPILED | `engine/src/rhi/rhi_vk.c`（host-injected 路径，源码审查） | 需 `ENGINE_ANDROID_NATIVE_WINDOW=ON`；无仓库 runtime/CI 收据 |
 | OHOS (HarmonyOS) | — | — | NONE（UNAVAILABLE，fail-closed） | `engine/CMakeLists.txt` harmonyos FATAL_ERROR；`test_platform_compat_harmonyos` | native surface 存在前保持不可用 |
 | Proton (Wine/vkd3d-proton) | 兼容层（D3D12 契约在 vkd3d-proton 上的兼容验证） | 1.2（vkd3d-proton 要求 ≥1.3 的功能子集按需） | compat-verified（**兼容参考，不计入 Windows 原生证据**） | `proton-d3d12.yml` workflow；CI `lane-proton`（steamrt sniper 钉 digest 容器构建，周跑，收据 `evidence-receipt-proton`） | SteamRT 缺 Wayland 工具链时 `UNAVAILABLE`，不回退窗口系统；等级不进本表任何行 |
-| Steam Deck | 原生（真 GPU，Wayland） | 1.2 | GPU_RUNTIME + BENCHMARK_COMPARABLE（lane 预期；runner 未上线） | `lane-benchmark-steam-deck-vk`（`ENABLE_GPU_LANES` 门控 self-hosted runner；bench 收据 + 生成器重建 BENCHMARK_COMPARABLE 收据） | 当前 `ENABLE_GPU_LANES` 未置值 → lane skipped、无运行收据（诚实标注，不虚报） |
+| Steam Deck | 原生（真 GPU，Wayland） | 1.2 | GPU_RUNTIME + BENCHMARK_COMPARABLE（lane 预期；runner 未上线） | `lane-benchmark-steam-deck-vk`（`ENABLE_GPU_LANES` 门控 self-hosted runner；bench 收据 + `hardware_ok` 双门重建 BENCHMARK_COMPARABLE 收据） | 还需配置 `STEAM_DECK_VENDOR_ID` / `STEAM_DECK_DEVICE_ID`；仅 INTEGRATED/DISCRETE 且 ID 匹配，缺配置/unknown/virtual/CPU/ID 不匹配均 UNAVAILABLE 且 lane 失败。当前 runner 未上线，无运行收据（诚实标注，不虚报） |
 
 ## 已知风险：NVIDIA 616.56 混合 GPU
 

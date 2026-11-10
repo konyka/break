@@ -1009,6 +1009,7 @@ bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
             snprintf(out->device_name, sizeof(out->device_name), "%s", name);
         }
     }
+    out->device_type = RHI_DEVICE_TYPE_UNKNOWN;
     out->vendor_id = [mb->device supportsFamily:MTLGPUFamilyApple1] ? 0x106Bu : 0u;
     out->device_id = 0u;
     out->api_version = (3u << 22);   /* Metal 3 baseline (macOS 14 / Xcode 15) */

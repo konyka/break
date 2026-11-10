@@ -252,6 +252,7 @@ RHIResult rhi_device_drain_ex(RHIDevice *dev) {
 bool rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out) {
     if (dev == NULL || out == NULL) return false;
     memset(out, 0, sizeof(*out));
+    out->device_type = RHI_DEVICE_TYPE_UNKNOWN;
     out->backend = dev->capabilities.backend;
     out->feature_bits = dev->capabilities.feature_bits;
     if (dev->backend_data == NULL) return true;

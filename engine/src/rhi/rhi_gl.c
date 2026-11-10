@@ -55,6 +55,7 @@ void rhi_backend_acceleration_structure_destroy(
 bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
     (void)dev;
     if (out == NULL) return false;
+    out->device_type = RHI_DEVICE_TYPE_UNKNOWN;
     snprintf(out->device_name, sizeof(out->device_name), "OpenGL backend");
     return true;
 }
