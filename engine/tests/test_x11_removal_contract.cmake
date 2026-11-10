@@ -105,6 +105,80 @@ else()
     endif()
 endif()
 
+find_path(HOST_GL_INCLUDE_DIR GL/gl.h PATHS /usr/include /usr/local/include)
+find_path(HOST_EGL_INCLUDE_DIR EGL/egl.h PATHS /usr/include /usr/local/include)
+find_library(HOST_OPENGL_LIBRARY NAMES OpenGL PATHS /usr/lib64 /usr/lib /usr/lib/x86_64-linux-gnu)
+find_library(HOST_EGL_LIBRARY NAMES EGL PATHS /usr/lib64 /usr/lib /usr/lib/x86_64-linux-gnu)
+foreach(required_probe HOST_GL_INCLUDE_DIR HOST_EGL_INCLUDE_DIR HOST_OPENGL_LIBRARY HOST_EGL_LIBRARY)
+    if(NOT ${required_probe})
+        message(FATAL_ERROR "${required_probe} is required for the isolated GL dependency matrix")
+    endif()
+endforeach()
+
+function(expect_missing_gl_dependency name pal missing_component)
+    set(root "${WORK}/${name}-sysroot")
+    file(MAKE_DIRECTORY "${root}/usr/include" "${root}/usr/lib" "${root}/usr/lib64"
+        "${root}/usr/share")
+    file(CREATE_LINK /usr/share/wayland-protocols "${root}/usr/share/wayland-protocols" SYMBOLIC)
+    if(missing_component STREQUAL "EGL")
+        file(CREATE_LINK "${HOST_GL_INCLUDE_DIR}/GL" "${root}/usr/include/GL" SYMBOLIC)
+        foreach(libdir usr/lib usr/lib64)
+            file(CREATE_LINK "${HOST_OPENGL_LIBRARY}" "${root}/${libdir}/libOpenGL.so" SYMBOLIC)
+        endforeach()
+        set(expected_missing "EGL")
+    else()
+        file(CREATE_LINK "${HOST_EGL_INCLUDE_DIR}/EGL" "${root}/usr/include/EGL" SYMBOLIC)
+        foreach(libdir usr/lib usr/lib64)
+            file(CREATE_LINK "${HOST_EGL_LIBRARY}" "${root}/${libdir}/libEGL.so" SYMBOLIC)
+        endforeach()
+        set(expected_missing "OpenGL")
+    endif()
+    set(toolchain "${WORK}/${name}-toolchain.cmake")
+    file(WRITE "${toolchain}"
+        "set(CMAKE_FIND_ROOT_PATH \"${root}\")\n"
+        "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)\n"
+        "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)\n"
+        "set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)\n"
+        "set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)\n")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -S "${ENGINE_SOURCE_DIR}" -B "${WORK}/${name}"
+            ${common_args} "-DMYUI_PAL=${pal}" "-DCMAKE_TOOLCHAIN_FILE=${toolchain}"
+        RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    if(rc EQUAL 0)
+        string(APPEND failures
+            "${name}: missing ${missing_component} configured successfully through ${pal}\n")
+    elseif(NOT "${out}${err}" MATCHES "Could NOT find OpenGL" OR
+            NOT "${out}${err}" MATCHES "missing: [^)]*${expected_missing}")
+        string(APPEND failures
+            "${name}: failure did not identify missing ${expected_missing}\n${out}${err}\n")
+    endif()
+    set(failures "${failures}" PARENT_SCOPE)
+endfunction()
+
+expect_missing_gl_dependency(dummy-missing-egl dummy EGL)
+expect_missing_gl_dependency(dummy-missing-gl dummy OpenGL)
+expect_missing_gl_dependency(wayland-missing-egl wayland EGL)
+expect_missing_gl_dependency(wayland-missing-gl wayland OpenGL)
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -S "${ENGINE_SOURCE_DIR}" -B "${WORK}/auto-missing-gl"
+        ${common_args} -DENGINE_RHI_BACKEND=auto -DMYUI_PAL=dummy
+        -DCMAKE_DISABLE_FIND_PACKAGE_OpenGL=TRUE
+    RESULT_VARIABLE auto_rc OUTPUT_VARIABLE auto_out ERROR_VARIABLE auto_err)
+if(auto_rc EQUAL 0)
+    string(APPEND failures "auto-missing-gl: Vulkan/OpenGL fallback chain configured without OpenGL\n")
+endif()
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -S "${ENGINE_SOURCE_DIR}" -B "${WORK}/vulkan-only-without-gl"
+        ${common_args} -DENGINE_RHI_BACKEND=vulkan -DENGINE_RHI_MULTI_BACKEND=OFF
+        -DMYUI_PAL=dummy -DCMAKE_DISABLE_FIND_PACKAGE_OpenGL=TRUE
+    RESULT_VARIABLE vk_rc OUTPUT_VARIABLE vk_out ERROR_VARIABLE vk_err)
+if(NOT vk_rc EQUAL 0)
+    string(APPEND failures
+        "vulkan-only-without-gl: pure Vulkan configuration incorrectly requires OpenGL\n${vk_out}${vk_err}\n")
+endif()
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -S "${ENGINE_SOURCE_DIR}" -B "${WORK}/windows-off"
         ${common_args}

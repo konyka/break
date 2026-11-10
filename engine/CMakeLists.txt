@@ -301,6 +301,10 @@ endif()
 set(ENGINE_RHI_BACKEND_EFFECTIVE "${_rhi_backend_effective}" CACHE INTERNAL
     "Resolved RHI backend for this build" FORCE)
 message(STATUS "RHI backend: requested=${ENGINE_RHI_BACKEND}; effective=${ENGINE_RHI_BACKEND_EFFECTIVE}")
+if(ENGINE_PLATFORM STREQUAL "linux" AND
+   (ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl" OR ENGINE_RHI_MULTI_BACKEND_ACTIVE))
+    find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
+endif()
 if(ENGINE_PLATFORM STREQUAL "qnx" AND ENGINE_VULKAN)
     message(FATAL_ERROR
         "ENGINE_VULKAN is UNAVAILABLE on qnx (no Screen/Vulkan WSI; headless platform)")
@@ -2410,7 +2414,10 @@ endif()
 # compiles any backend source).
 if(ENGINE_PLATFORM STREQUAL "linux")
     target_link_libraries(engine_rhi_opengl PRIVATE
-        ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
+        ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
+    if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl" OR ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        target_link_libraries(engine_rhi_opengl PRIVATE OpenGL::OpenGL OpenGL::EGL)
+    endif()
     if(TARGET engine_rhi_vulkan)
         target_link_libraries(engine_rhi_vulkan PRIVATE
             ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
