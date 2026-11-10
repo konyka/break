@@ -16,6 +16,13 @@
 - **验证**：普通完整 `-j3` 构建成功；普通、ASan+UBSan、TSan 的 Flow/NAT/voice/socket/event-loop/replication focused 均 11/11，无 sanitizer/race 报告。普通非图形 `-j3` 为 342 项入选、341 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP；`git diff --check` 通过。
 - **native 限制**：本机只有 Linux。Clang AST/clang-cl 不冒充 native MSVC，LD_PRELOAD 不冒充 Darwin 内核调度；真实 MSVC 编译和 macOS Cocoa/MoltenVK NAT/voice 仍必须在下一轮 native CI 验证。完整命令、输出和变异记录见 `.superpowers/sdd/2026-11-10-remove-x11/platform-behavior-fix-report.md`。
 
+## 本轮更新：第四轮 Windows MSVC WGL 测试链接修复（2026-11-10）
+
+- **根因与 RED**：真实日志在 `test_glad_wgl_loader.exe` 报告 kernel32.lib 与测试对象重复定义 `FreeLibrary/GetProcAddress` 并以 LNK1169 失败。实际 `lld-link /wholearchive` 对基线 COFF 对象和 kernel32 import library 复现 `LoadLibraryW/GetProcAddress/FreeLibrary` 三个重复符号，证明冲突来自测试替身而非 glad 生产 loader。
+- **GREEN**：`TEST_WGL_LOADER_SIMULATED` 仅在非 Windows 启用，stub 头、`__stdcall` 和 API mock 也只用于模拟；真实 Windows 使用 SDK `windows.h` 并链接 `opengl32`，不再定义系统 DLL 符号。现代入口比较真实 `wglGetProcAddress` 结果，legacy 入口比较真实 `GetProcAddress` 导出，同时要求 `gladLoadGL` 和实际 GL 版本查询成功，不伪造指针相等或依赖 mock 计数。交叉符号合同拒绝这些 API 的 `T` 定义。
+- **变异与回归**：恢复基线测试和 include/define 配置后，合同再次报告三个 `T` 定义，`lld-link /wholearchive` 再次重复符号；精确恢复后 Windows 交叉对象/链接合同通过，Linux WGL mock 继续验证两条解析路径。普通非图形 342 项零失败（唯一既有 D3D12 平台 skip），`git diff --check` 通过。实现提交 `6cecb588`，文档另提交，未合并、未 push。完整证据追加于 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round2-report.md`。
+- **限制**：本地 COFF 对象、import-library 链接和 Linux mock 不执行 Windows exe；真实 Windows 系统 DLL、WGL driver 和 `gladLoadGL` 行为须下一轮 native CI 验证。
+
 ## 本轮更新：round2 scoped N1——生成器无关的 PAL 链接验证（2026-11-10）
 
 - **根因与 RED**：`test_myui_subproject_config.cmake` 无条件读取 Ninja 专用 `linkLibs.rsp`，Visual Studio/MSBuild 即使成功链接也会直接中止并跳过后续矩阵。新增明确的无响应文件回归，旧代码在 default-dummy 处以 `file failed to open for reading` 中止，证实不是实际链接失败。
