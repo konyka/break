@@ -6562,6 +6562,18 @@ endif()
     set_tests_properties(test_input_extended PROPERTIES LABELS "headless;platform_contract")
 
     if(ENGINE_PLATFORM STREQUAL "linux")
+        add_executable(test_input_extended_single_cpu tests/test_input_extended.c
+            src/platform/input_extended.c)
+        target_include_directories(test_input_extended_single_cpu PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_input_extended_single_cpu PRIVATE
+            INPUT_EXTENDED_TEST_SINGLE_CPU=1 _GNU_SOURCE)
+        target_link_libraries(test_input_extended_single_cpu PRIVATE m Threads::Threads)
+        add_test(NAME test_input_extended_single_cpu COMMAND test_input_extended_single_cpu)
+        set_tests_properties(test_input_extended_single_cpu PROPERTIES
+            LABELS "headless;platform_contract" RUN_SERIAL TRUE)
+    endif()
+
+    if(ENGINE_PLATFORM STREQUAL "linux")
         add_executable(test_gamepad_linux_feedback tests/test_gamepad_linux_feedback.c
             src/platform/input_extended.c src/core/log.c)
         target_include_directories(test_gamepad_linux_feedback PRIVATE ${TEST_INCLUDE_DIRS})

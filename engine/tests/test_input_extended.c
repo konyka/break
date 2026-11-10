@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <platform/input_extended.h>
+#include <core/platform_thread.h>
 #include <stdatomic.h>
 #ifdef _WIN32
 #include <windows.h>
@@ -445,13 +446,16 @@ static void *haptic_produce(void *argument)
         if (result == INPUT_EXT_OK) {
             do {
                 result = input_extended_haptic_result(producer->input, id);
+                if (result == INPUT_EXT_PENDING) platform_thread_yield();
             } while (result == INPUT_EXT_PENDING);
             if (result != INPUT_EXT_OK) {
                 producer->error = result;
                 break;
             }
             producer->ids[producer->count++] = id;
-        } else if (result != INPUT_EXT_OVERLOAD) {
+        } else if (result == INPUT_EXT_OVERLOAD) {
+            platform_thread_yield();
+        } else {
             producer->error = result;
             break;
         }
@@ -490,7 +494,9 @@ TEST(haptic_multithreaded_producers_only_queue_commands)
 #endif
     }
     while (atomic_load_explicit(&done, memory_order_acquire) < TEST_PRODUCER_COUNT) {
+        u32 executed_before = fake.count;
         ASSERT_EQ(input_extended_haptic_pump(&s, fake_haptic_execute, &fake), INPUT_EXT_OK);
+        if (fake.count == executed_before) platform_thread_yield();
         ASSERT_TRUE(++guard < 1000000u);
     }
     for (u32 i = 0; i < TEST_PRODUCER_COUNT; i++) {
@@ -507,8 +513,31 @@ TEST(haptic_multithreaded_producers_only_queue_commands)
     ASSERT_EQ(s.haptic_count, 0u);
 }
 
+#ifdef INPUT_EXTENDED_TEST_SINGLE_CPU
+#include <sched.h>
+static bool pin_to_first_available_cpu(void)
+{
+    cpu_set_t available;
+    cpu_set_t single;
+    int cpu = 0;
+    CPU_ZERO(&available);
+    if (sched_getaffinity(0, sizeof(available), &available) != 0) return false;
+    while (cpu < CPU_SETSIZE && !CPU_ISSET(cpu, &available)) cpu++;
+    if (cpu == CPU_SETSIZE) return false;
+    CPU_ZERO(&single);
+    CPU_SET(cpu, &single);
+    return sched_setaffinity(0, sizeof(single), &single) == 0;
+}
+#endif
+
 int main(void)
 {
+#ifdef INPUT_EXTENDED_TEST_SINGLE_CPU
+    if (!pin_to_first_available_cpu()) {
+        printf("single-CPU affinity setup failed\n");
+        return 1;
+    }
+#endif
     printf("=== Running Tests ===\n");
     RUN_TEST(init_has_version_and_empty_bounded_state);
     RUN_TEST(press_move_release_and_frame_transitions);

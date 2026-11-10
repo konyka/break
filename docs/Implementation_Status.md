@@ -1,3 +1,11 @@
+## 本轮更新：第四轮主 CI 输入并发超时修复（2026-11-10）
+
+- **根因**：真实 Clang/LLD Release 日志在 `haptic_multithreaded_producers_only_queue_commands` 的主消费者 guard 失败。主线程持续空调用 `input_extended_haptic_pump()`，生产者又持续等待 `PENDING/OVERLOAD`，单核或受限调度下形成测试自旋饥饿；haptic 没有异步 worker，所有命令都依赖主线程 pump。固定单核 CTest 在未修实现上稳定复现同一 guard，生产 haptic 队列无需修改。
+- **最小修复**：仅在测试等待协议中加入条件让渡：生产者的结果为 `PENDING` 或队列 `OVERLOAD` 时调用 `platform_thread_yield()`；主线程仅在 fake 执行数未增长时让渡。新增 `test_input_extended_single_cpu` 固定到首个可用 CPU，affinity 设置失败显式失败。guard、4x64 命令、全部结果和空队列断言均未削弱，未添加任意 sleep。
+- **RED/GREEN 与变异**：未修单核目标稳定 RED；条件让渡后普通和固定单核 Release 均 GREEN，两个 focused 各连续 100 次通过。删除三处条件让渡的测试同步变异再次稳定命中同一 guard，精确恢复后再次 GREEN。完整证据见 `.superpowers/sdd/2026-11-10-remove-x11/input-concurrency-fix-report.md`。
+- **验证**：普通、ASan+UBSan、TSan 的输入相关测试均 7/7，无 sanitizer/race 报告；CI 同款 Clang/LLD Release+IPO 完整 `-j3` 构建成功，非图形 `-j3` 为 341 项入选、340 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP；Windows `test_input_extended`、XInput fake 和 WM_TOUCH 目标由 Zig 交叉编译成功，`git diff --check` 通过。
+- **限制**：本地只有 Linux，Windows 仅交叉编译未执行 PE，真实主 CI/Windows/macOS/native 调度仍须下一轮 native 验证；普通多核 PASS 本身不再被当作单核调度缺证。
+
 ## 本轮更新：第三轮 CI MSVC voice 初始化修复（2026-11-10）
 
 - **范围**：以 `737ccc8b4227f2d53039119caf1a2b6066e2871e` 为基线，只处理第三轮 MSVC `test_break_online_voice.c` 编译警告；未修改 CI 基础设施、其它行为或 cry-integration，未合并、未 push。
