@@ -8,6 +8,13 @@
 - **验证**：普通完整 `-j3` 构建成功；普通、ASan+UBSan、TSan 的 Flow/NAT/voice/socket/event-loop/replication focused 均 11/11，无 sanitizer/race 报告。普通非图形 `-j3` 为 342 项入选、341 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP；`git diff --check` 通过。
 - **native 限制**：本机只有 Linux。Clang AST/clang-cl 不冒充 native MSVC，LD_PRELOAD 不冒充 Darwin 内核调度；真实 MSVC 编译和 macOS Cocoa/MoltenVK NAT/voice 仍必须在下一轮 native CI 验证。完整命令、输出和变异记录见 `.superpowers/sdd/2026-11-10-remove-x11/platform-behavior-fix-report.md`。
 
+## 本轮更新：round2 scoped N1——生成器无关的 PAL 链接验证（2026-11-10）
+
+- **根因与 RED**：`test_myui_subproject_config.cmake` 无条件读取 Ninja 专用 `linkLibs.rsp`，Visual Studio/MSBuild 即使成功链接也会直接中止并跳过后续矩阵。新增明确的无响应文件回归，旧代码在 default-dummy 处以 `file failed to open for reading` 中止，证实不是实际链接失败。
+- **GREEN**：Ninja 继续读取实际 `linkLibs.rsp` 并拒绝 raw `-lm`；文件不存在时改读 nested configure 从真实 `myr`/`pal_probe` 的 `LINK_LIBRARIES` target properties 写出的 `pal-link-properties.txt`，仅在独立库项等于 `m` 时拒绝。两种证据都缺失才追加明确诊断，不再隐式中止。`NOT WIN32` 不链接 raw `m`、verbose build→configure 诊断及完整 dummy/Win32/Cocoa 矩阵保持不变。
+- **变异与验证**：恢复无条件读取后无响应文件回归再次 RED，精确恢复后无响应文件与正常 Ninja 均 GREEN；父级 PAL focused 3/3，普通非图形 342 项零失败（唯一既有 D3D12 平台 skip），`git diff --check` 通过。实现提交 `bcf4b8a8`，文档另提交，未合并、未 push。完整证据追加于 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round2-report.md`。
+- **限制**：本地使用明确的 MSBuild 风格无响应文件回归和真实 target properties，不是 native Visual Studio/MSBuild 执行证据；native Windows 链接与运行仍须下一轮 CI。
+
 ## 本轮更新：第二轮真实 CI 基础设施修复（2026-11-10）
 
 - **范围**：以 `1150ccaab131daf121e581dc516db52aa1b5564b` 为 base，读取主 run `42801996748`、D3D12 run `42801996738` 及全部失败 job 日志，处理 missing-wayland、Clang+LLD、Windows PAL 链接三项基础设施问题；实现提交 `03c3e21f`。未修改 brief 排除的 MSVC flow 或 macOS NAT/voice 文件，本轮未合并、未 push。

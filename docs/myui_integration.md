@@ -1430,8 +1430,12 @@ Win32/Cocoa，不用 skip 代替配置。nested configure 继承父级 generator
 Windows dummy/Win32 配置还实际链接 `pal_probe` 并拒绝 raw `-lm`：MSVC ABI 会将
 其映射为不存在的 `m.lib`，Windows 的 CRT 已提供所需数学符号，不能依赖 GNU libm。
 失败日志先给完整 verbose build，再给 configure，CI 同时保留 `lld-link`、未解析
-符号和库文件错误。Linux 主机另以 Zig 编译真实 Win32 PAL、以 Ninja Multi-Config
-验证配置子目录，并做 Darwin 配置探针；这些交叉/嵌套结果不是 native 运行证据。
+符号和库文件错误。链接依赖按生成器取证：Ninja 继续检查实际 `linkLibs.rsp`，
+该文件不存在时改读 nested configure 从真实 `LINK_LIBRARIES` target properties
+写出的证据；Visual Studio/MSBuild 不因缺少 Ninja response file 而中断，后续
+dummy/Win32/Cocoa 矩阵仍完整执行。Linux 主机另以 Zig 编译真实 Win32 PAL、以
+Ninja Multi-Config 验证配置子目录，并做 Darwin 配置探针；这些交叉/嵌套结果不是
+native 运行证据。
 `test_myr_dependency_config`
 检查五个模块的路径契约和 PAL target。隔离顶层构建已在关闭字体、YAML、BiDi 和
 图像可选项时完成 `87/87` 编译。
