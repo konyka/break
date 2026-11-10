@@ -1,3 +1,11 @@
+## 本轮更新：第三轮 CI MSVC voice 初始化修复（2026-11-10）
+
+- **范围**：以 `737ccc8b4227f2d53039119caf1a2b6066e2871e` 为基线，只处理第三轮 MSVC `test_break_online_voice.c` 编译警告；未修改 CI 基础设施、其它行为或 cry-integration，未合并、未 push。
+- **根因与最小修复**：有界 UDP 接收循环中，`ready==false` 时 `break_voice_receiver_pop()` 不写出 `playback`，MSVC `/W4 /WX` 因此在循环后的 `playback.sequence` 读取处报 C4701。声明改为 `BreakVoicePlayback playback = {0}`，确定性地零初始化；`ready` 必须为 true、sequence 77 和 PCM `-123/456` 的真实断言全部保留，未关闭警告或删除读取。
+- **RED/GREEN 与变异**：本机 Clang 未原生复现 C4701，故使用真实 C11 TU 的 MSVC 兼容 Clang AST 合同。修复前目标函数内未初始化 `playback` 为 1 match、带 initializer 为 0；修复后分别为 0 和 1，clang-cl `/W4 /WX` 编译检查通过。临时回退 `{0}` 后未初始化匹配恢复为 1，精确恢复后再次为 0，voice 真实 UDP 8/8。
+- **验证**：普通、ASan+UBSan、TSan 的 Flow/NAT/voice/socket/event-loop/replication focused 均 11/11，无 sanitizer/race 报告；`git diff --check` 通过。完整证据追加于 `.superpowers/sdd/2026-11-10-remove-x11/platform-behavior-fix-report.md`。
+- **native 限制**：本地 AST/clang-cl 不是 native MSVC `cl.exe` 证据，第三轮 Windows MSVC `/WX` 仍须下一轮 CI 实际编译确认。
+
 ## 本轮更新：第二轮 CI 存量跨平台行为修复（2026-11-10）
 
 - **范围**：以 `0fea919b8d0e9b91e614fa1fb0c8be11be6599b0` 为基线，只处理第二轮 CI 明确分开的 MSVC Flow 编译与 Darwin NAT/voice 行为问题；未修改 CI 基础设施、第二轮其它修复或 cry-integration，未合并、未 push。
