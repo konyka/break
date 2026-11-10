@@ -162,3 +162,40 @@ rename 成功后 directory open/fsync 失败时，新 manifest 已经可见。ch
 完整 `cmake --build build-game-integration-normal -j3` 成功，`ctest --test-dir build-game-integration-normal -j3 -LE 'graphics|fuzz' -E 'fuzz' --output-on-failure` 为 346/346 通过；`test_d3d12_dependency_gate`、`test_game_app_nm_missing`、`test_game_app_nm_unsupported` 按既有合同跳过。`ENGINE_BUILD_TESTS=OFF` 的 `build-game-integration-no-tests` 成功构建 `game_app` 与 `game_asset_bake`，no-tests baker 的 11 个输出与正式资产逐文件一致；`test_game_app_target_contract` 再次通过，两个 nm negative-path 仍按合同跳过。
 
 master 的 X11 removal 合同和 C++20 public API/QUIC 相关测试均包含在上述全量结果中，没有为 Task 2 回退或排除这些既有行为。
+
+
+## P12 Task 3：事务式 level 与 record 生命周期（2026-11-10）
+
+本节是当前生命周期状态；上方 Task 1 的“合法配置始终 FAILED”和 Task 2 的“主循环尚未运行”仅保留为当时历史。同步 master `737ccc8b4227f2d53039119caf1a2b6066e2871e` 的独立 merge 为 `30c9285d9605ff07157f8563cda60279082f6269`，也是本任务 review BASE。合并没有冲突，X11 移除、CI 修复、Task 2 命名/资产/checkpoint 三态协议及双方文档均保留。
+
+### 所有权与加载事务
+
+`game_app --render=record --audio=record --fixed-step` 现在执行真实场景文件。主线程即 GameThread，独占 `World`、`BreakGame`、Lua/adapter、Flow、AI 和 physics 的可变状态；Runtime IO worker 只通过 VFS 返回有界字节，不接触这些对象。render/audio 分别只消费固定大小的 `GameRender*`/`GameAudio*` POD 快照与命令。
+
+每次 load 都分配独立 `GameLevel` candidate，顺序为：注册 ECS 组件并创建 World → Runtime IO 读取 BSCN、`scene_load_binary_memory` 在 candidate World/Scene 上完成 CPU staging → Flow 反序列化/实体引用验证、两个正式 Lua module 加载和 adapter 创建 → `break_game_level_open` 验证正式 actor sidecar 并 adopt → physics ground/player body → 4x4 CPU navmesh、AI runtime/Enemy agent → BANM decode → record resource POD staging → World/Scene/Flow/resource 交叉引用。只有全部成功后才执行一次 `game->level = candidate` 并递增非零 u64 generation。
+
+candidate 的任一模态资源或验证失败都走统一逆序销毁，不修改当前 level 指针或 `next_generation`。已有 level 时 replacement 失败会写 `load_rejected` 并继续旧 level；没有已提交 level 的启动失败退出 2。显式 unload 先使当前指针失效，再销毁旧 generation。正常 replacement 成功时也先完成 candidate，再提交新代并释放旧代。
+
+`break_game_level_open` 的 load hook 不重复读取 BSCN：它只确认先前 `scene_load_binary_memory` 已填充同一 candidate 的 World/Scene。这样 P1 的 sidecar/adopt/close 生命周期是真实执行路径，同时避免第二次替换 World。
+
+### Runtime IO 与 shutdown
+
+整个进程只调用一次 `break_runtime_io_init`。BSCN completion 的字节被 Scene 复制后先释放 request，再进行后续 staging 或下一次 VFS mount/load；旧 request 不跨 level 保留。正常 shutdown 按 network→audio→render→level 注册 coordinator 回调：关闭 admission/producers 和 audio queue、drain、join、render idle/destroy，level drain 后执行一次 Runtime IO shutdown，确认 `active=0`，最后销毁 level/VFS。network 本任务只有生命周期占位，没有传输实现。
+
+启动失败或 coordinator sticky FAILED 不调用 coordinator stop；`game_rollback` 显式执行 audio drain/join/destroy、render idle/destroy、candidate/current level destroy、Runtime IO shutdown 和 VFS destroy。失败 trace 写 `runtime_failed`，不会伪写正常 `runtime_stopped`。
+
+### record 边界与场景
+
+`game_render.c` 只记录 BSCN manifest 的非零 resource id、generation 和 frame id；没有 RHI device、GPU restore 或 `engine_rhi_headless` 链接。Task 1 已存在的 `game_app` 目标仍按配置链接 Vulkan/OpenGL runtime，但 record 路径不创建设备，不能解释为 GPU 证据。`game_audio.c` 是 16 项固定容量 FIFO，记录 listener/stop 的命令顺序；没有声卡 worker、source 控制或听测。
+
+Task 2 的正式 `load_unload.scenario` 无需修改：frame 1 load、frame 2 unload、frame 3 load、frame 4 unload、frame 5 end。实际 trace 包含有序的 runtime_running → level_loaded 1 → frame 1 → audio listener 1 → level_unloaded 1 → level_loaded 2 → runtime_stopped，也记录第二代 frame/unload 和最终 `io_stopped active=0`。场景 parser 是 Task 3 内部的有界生命周期子集，另外允许 `load ROOT` 以测试跨资产 root 的失败 replacement；Task 4 的输入/移动语义不在此实现。
+
+热帧路径只做固定数组 POD 拷贝、固定 FIFO 操作和 trace 输出，没有堆分配。堆分配限于进程启动和 level staging，固定上限为 64 个 scenario step、64 个 render resource、16 个 audio command、4 个 Runtime IO request 和 1 个 IO worker。
+
+### 验证与限制
+
+真实进程 CTest 先对 stub 观察到退出 2 和完整事件缺失，再对实现 GREEN。正常流程、缺失 BSCN、损坏 Flow、未知 Actor class、缺失 Lua module、以及“有效 load → 坏 Flow replacement → 旧 generation frame 2”均由 `test_game_app_lifecycle_load_unload` 启动真实 `game_app`，没有库 substitute。四个启动失败均退出 2，有各自 stage 诊断，没有 level/frame commit，并以 `io_stopped active=0` 结束。
+
+生产变异曾在 Flow 验证前插入 `game->level = candidate`；正常与 replacement 进程发生段错误，失败 fixture 也无法保持合同，测试按预期 RED。删除该变异行后恢复 GREEN。focused Runtime/BreakGame/Scene 回归 5/5、game_app 既有合同 6/6（两个 nm negative-path 按合同跳过）、全量非图形 348/348 通过。ASan+UBSan 和 TSan 生命周期各 1/1 通过；no-tests 的 `game_app`/`game_asset_bake` 均构建成功。
+
+这些证据仅是 Linux CPU/record 生命周期证据。没有输入/玩家模拟、GPU `asset_scene_restore`、窗口或像素、音频设备/听测、网络、完整 checkpoint 状态恢复或完整 device worker；Windows 和其他平台未运行。VFS 的 16 mount 上限和 Runtime IO/VFS 路径上限仍是当前有界配置，超长路径或超过 mount 预算会明确拒绝 load。

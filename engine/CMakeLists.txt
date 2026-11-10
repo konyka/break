@@ -1634,6 +1634,8 @@ target_link_libraries(break_game_lua PUBLIC break_game break_lua)
 option(GAME_APP_ENABLE_NETWORK "Enable the optional authenticated Snowflake channel" OFF)
 add_library(game_app_core STATIC
     apps/game_app/game_app.c
+    apps/game_app/game_audio.c
+    apps/game_app/game_render.c
     apps/game_app/game_checkpoint.c)
 set_property(TARGET game_app_core PROPERTY C_STANDARD 11)
 target_include_directories(game_app_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -4703,6 +4705,16 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_naming_contract.cmake)
     set_tests_properties(test_game_app_assets test_game_app_formal_asset_tracking
         test_game_app_naming_contract PROPERTIES LABELS "headless;game_app;assets")
+
+    add_test(NAME test_game_app_lifecycle_load_unload
+        COMMAND ${CMAKE_COMMAND}
+            -DGAME_APP=$<TARGET_FILE:game_app>
+            -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/game_app
+            -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/game_app/load_unload.scenario
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/game_app_lifecycle
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_lifecycle.cmake)
+    set_tests_properties(test_game_app_lifecycle_load_unload PROPERTIES
+        LABELS "headless;game_app;lifecycle" TIMEOUT 180)
 
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)

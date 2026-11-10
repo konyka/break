@@ -10496,3 +10496,18 @@ Result: Metal configuration 225/225 (D3D12 gate skipped by design), graphics
 graphics 4/4. After the merge the deferred Metal image is still 37.3 mean
 luminance (MoltenVK 37.7) with mean absolute difference 4.5, the default path
 7.1, and the window toggle demo reports two `ok=1` per backend.
+
+
+### 2026-11-10 P12 Task 3 game_app transactional record lifecycle
+
+The integration branch synchronized master `737ccc8b4227f2d53039119caf1a2b6066e2871e` in merge `30c9285d9605ff07157f8563cda60279082f6269` without conflicts. This merge is the Task 3 review base; the X11 removal, CI fixes, Task 2 assets/naming/checkpoint semantics, and both documentation lines remain present.
+
+`game_app` now has a real fixed-step record lifecycle over the committed Task 2 assets. A candidate `GameLevel` owns fresh World/Scene, BreakGame, Flow, Lua/adapter, physics, AI, animation, record resources, and its transient Runtime IO request. BSCN/Flow/Lua/actor validation, physics/AI/animation creation, record resource staging, and cross-reference checks all finish before one level-pointer commit. Reject cleanup is reverse-order and consumes no generation; a bad replacement Flow leaves the old level producing frames at generation 1. Explicit unload invalidates that generation before destruction.
+
+The process initializes the Runtime IO singleton once and releases each BSCN request before another load. Shutdown is network, audio, render, then level: admission/producer stop, queue close/drain/join, render idle/destroy, IO shutdown with zero active requests, and level/VFS destruction. Startup and sticky-failure cleanup calls explicit subsystem rollback rather than relying on coordinator stop. Render and audio consume only bounded POD records. Record render emits resource/frame ids without a headless RHI or device; record audio is a 16-entry command FIFO, not an audio-device or listening test.
+
+The real-process lifecycle test first failed against the old stub with exit 2 and no level/frame events. The implementation passes the complete two-generation trace, all four initial failure fixtures (missing BSCN, bad Flow, unknown Actor class, missing Lua module) with exit 2 and no partial commit, and rejected-replacement continuation. An intentional pre-Flow `game->level = candidate` mutation caused segmentation faults and contract failures; restoring staging returned the test to green.
+
+Verification: Task 3 plus Runtime/BreakGame/Scene focused tests 5/5; existing game_app contracts 6/6 with the two established nm negative-path tests skipped; complete non-graphics/non-fuzz CTest 348/348 with the established D3D12/nm skips; ASan+UBSan lifecycle 1/1; TSan lifecycle 1/1; no-tests `game_app` and `game_asset_bake` builds succeeded. All builds used `-j3`.
+
+Evidence remains Linux CPU/record only. Input/gameplay simulation, GPU restoration or pixels, audio hardware/listening, networking, checkpoint state restoration, full device workers, and non-Linux runtime behavior are not claimed.
