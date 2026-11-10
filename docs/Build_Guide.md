@@ -952,7 +952,9 @@ creation/destruction 和 Vulkan opaque handle 仍保留在 backend dispatch 边�
 frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/present 路径都会
 修改 partial-present 状态；其 owner-busy 和 damage publication contract 已有测试覆盖。
 
-镜像编排采用 `ci.yml` 的 `image` job 调用同 commit 的 `ci-image.yml`：本地候选 `load` 后先 smoke，成功后才 login/push。`verified-<inputs-hash>` 只在 smoke 后创建；master 的 SHA 与 `latest` 别名指向同一 digest。无输入变化复用已验证 digest，schedule 强制重建以获取安全更新。10 个实际 container jobs 均 `needs: image` 并使用 `needs.image.outputs.digest`，不直接消费 `latest`。PR/fork 不 login、不 push，只 smoke 本地候选；普通 lanes 使用仓库变量 `BREAK_CI_LINUX_DIGEST` 指定的上一已发布 `image@sha256:...`。若当前 inputs 尚无 verified digest 且该变量未配置，job 明确失败，不伪造已验证镜像。
+镜像编排采用 `ci.yml` 的 `image` job 调用同 commit 的 `ci-image.yml`，并在 `on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`。本地候选 `load` 后先 smoke；随后直接给同一 image ID 打 `verified-<inputs-hash>` 标签并 `docker push`，不再第二次 build。发布后再 inspect registry digest，master 的 SHA 与 `latest` 别名从该 digest 创建并回读验证一致。无输入变化复用已验证 digest，schedule 强制重建以获取安全更新。10 个实际 container jobs 均 `needs: image` 并使用 `needs.image.outputs.digest`，不直接消费 `latest`。
+
+PR/fork 不 login、不 push，只 smoke 本地候选，普通 lanes 不把该候选冒充为全 lane 已验证镜像。可选仓库变量 `BREAK_CI_LINUX_DIGEST` 提供显式 `image@sha256:...` override；未设置时在 prepare 阶段匿名 inspect 公共 GHCR `latest`，将其解析为 immutable digest 后消费。公共拉取/解析失败会明确失败；lanes 不直接消费 `latest`，也不会因 override 未配置而阻断首次 PR。
 
 `lane-benchmark-steam-deck-vk` 还要求维护者配置 `STEAM_DECK_VENDOR_ID` 与 `STEAM_DECK_DEVICE_ID`（十进制或 `0x` 十六进制）。原始收据含 Vulkan 实际 `device_type/vendor_id/device_id`；仅 `INTEGRATED`/`DISCRETE` 且 ID 精确匹配才可授予 `BENCHMARK_COMPARABLE`。缺配置、UNKNOWN/OTHER/VIRTUAL/CPU、ID 不匹配均为 UNAVAILABLE 且最终 lane 失败，原始 JSON 与 `hardware.env` 仍上传。hosted lavapipe/llvmpipe 可保留 CPU 类型的普通 `GPU_RUNTIME`，但不进入真机可比证据。
 

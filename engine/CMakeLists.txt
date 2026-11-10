@@ -4257,6 +4257,12 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_contract.cmake)
     set_tests_properties(test_ci_image_contract PROPERTIES
         LABELS "headless;platform_contract")
+    add_test(NAME test_ci_image_fix2
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_fix2.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_CURRENT_BINARY_DIR}/ci-image-fix2-contract)
+    set_tests_properties(test_ci_image_fix2 PROPERTIES
+        LABELS "headless;platform_contract")
     add_test(NAME test_ci_execution_semantics
         COMMAND ${CMAKE_COMMAND}
             -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..

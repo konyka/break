@@ -16,6 +16,10 @@ on:
         required: false
         type: string
         default: ""
+    outputs:
+      digest:
+        description: "Verified or previously published immutable image digest"
+        value: ${{ jobs.prepare.outputs.digest }}
   workflow_dispatch:
     inputs:
       force_rebuild:
@@ -40,8 +44,8 @@ env:
   FALLBACK_DIGEST: ${{ inputs.fallback_digest }}
 
 jobs:
-  verify:
-    name: Verify ci-linux image
+  prepare:
+    name: Prepare ci-linux image digest
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     outputs:
@@ -112,13 +116,9 @@ jobs:
       - name: Publish verified image
         if: env.PUBLISH == 'true' && steps.verified.outputs.found != 'true'
         id: publish
-        uses: docker/build-push-action@v6
-        with:
-          context: .github/docker
-          file: .github/docker/ci-linux.Dockerfile
-          push: true
-          tags: ${{ env.IMAGE }}:verified-${{ env.INPUTS_HASH }}
-          cache-from: type=gha
+        run: |
+          digest="$(engine/tools/publish_ci_candidate.sh "$IMAGE" "$INPUTS_HASH")"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Alias verified image for master
         if: env.PUBLISH == 'true' && github.ref == 'refs/heads/master'
@@ -131,18 +131,22 @@ jobs:
           docker buildx imagetools create \
             -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" "$IMAGE@$digest"
 
+      - name: Verify master aliases
+        if: env.PUBLISH == 'true' && github.ref == 'refs/heads/master'
+        run: |
+          if [ "${{ steps.verified.outputs.found }}" = "true" ]; then
+            expected="${{ steps.verified.outputs.digest }}"
+          else
+            expected="${{ steps.publish.outputs.digest }}"
+          fi
+          engine/tools/verify_ci_master_aliases.sh "$IMAGE" "$expected" "$GITHUB_SHA"
+
       - name: Select consumer digest
         id: selected
         run: |
-          if [ "${{ steps.verified.outputs.found }}" = "true" ]; then
-            selected="$IMAGE@${{ steps.verified.outputs.digest }}"
-          elif [ -n "${{ steps.publish.outputs.digest }}" ]; then
-            selected="$IMAGE@${{ steps.publish.outputs.digest }}"
-          else
-            selected="$FALLBACK_DIGEST"
-          fi
-          if [[ ! "$selected" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]]; then
-            echo "no verified digest available; configure BREAK_CI_LINUX_DIGEST or run on a publishing branch" >&2
-            exit 1
-          fi
+          selected="$(engine/tools/resolve_ci_consumer_digest.sh \
+            "$IMAGE" \
+            "${{ steps.verified.outputs.digest }}" \
+            "${{ steps.publish.outputs.digest }}" \
+            "$FALLBACK_DIGEST")"
           echo "digest=$selected" >> "$GITHUB_OUTPUT"

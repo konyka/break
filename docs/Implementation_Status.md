@@ -1,3 +1,12 @@
+## 本轮更新：X11 移除 Task 3 fix round 2——可运行的镜像证明链（2026-11-10）
+
+- **reusable output**：`on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`，prepare 再映射 `${{ steps.selected.outputs.digest }}`。新增 YAML 结构/表达式合同，10 个 `needs.image.outputs.digest` 消费者均有明确来源，不再只查 digest 字符串。
+- **PR 初始路径**：保留 `BREAK_CI_LINUX_DIGEST` 作为可选显式 override；未设置时 `resolve_ci_consumer_digest.sh` 匿名 inspect 公共 GHCR `latest` 并解析为 immutable digest，PR/fork 不 login、不 push，lanes 不直接消费 latest。公共拉取/解析失败明确失败，候选只记为 smoke 证据，不冒充全 lane 已验证镜像。
+- **candidate 身份**：`publish_ci_candidate.sh` 对已 load 且 smoke 通过的本地 candidate 直接 `docker tag` + `docker push`，无第二次 build；先比较 candidate/verified 本地 image ID，再 inspect registry digest。master SHA/latest 从该 digest 创建，`verify_ci_master_aliases.sh` 回读两个引用并要求完全一致。
+- **RED 与生产变异**：初版缺 workflow output、缺匿名解析脚本、缺直接 candidate 发布及别名回读均实际 RED。随后分别把 output 改为错误 job、移除匿名 PR fallback、恢复第二次 `docker/build-push-action`，均被 `test_ci_image_fix2.py` 杀死并精确恢复 GREEN。公共解析失败、candidate ID 不匹配和 alias digest 不匹配也都有实际负向结果。
+- **GREEN**：完整 `cmake --build build-remove-x11-auto -j3` 成功；CI/image/execution focused 4/4。全量非图形为 336 入选、335 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP。3 个 workflow 共 25 jobs、70 个适用 Bash run block 与 3 个镜像 shell helper 均通过本地语法检查，`git diff --check` 通过。
+- **限制**：digest 解析、直接推送和别名验证使用受控 fake docker 合同，未访问真实 GHCR；真实 GitHub Actions、registry 拉取/推送与 native runners 仍待 push 验证。rollback、Deck 和 Minor 未返工。
+
 ## 本轮更新：X11 移除 Task 3 fix round 1——输入、设备证据与镜像链（2026-11-10）
 
 - **rollback 输入边界**：job 统一经 `env.TAG` 传递输入，校验、checkout、验签和报告不再把 `${{ inputs.tag }}` 直接插入 shell。新增 `test_rollback_input_contract.py`：普通版本矩阵保持 `v1.9.9` 拒绝、`v2.0.0/v2.0.1/v10.0.0` 接受、malformed 拒绝；分号、命令替换、换行 payload 均在 checkout 前以 UNAVAILABLE 拒绝且标记文件未创建。初版三种 payload 均实际产生副作用，修复后全部无副作用；重新插入直接赋值的生产变异再次被杀死并恢复。
