@@ -128,6 +128,36 @@ foreach(relative_path IN ITEMS
     configure_file("${ENGINE_SOURCE_DIR}/${relative_path}"
         "${archive_engine}/${relative_path}" COPYONLY)
 endforeach()
+if(NESTED_ENGINE_RHI_BACKEND STREQUAL "d3d12")
+    function(expect_archive_agility_hashes context)
+        foreach(dll_name IN ITEMS D3D12Core.dll d3d12SDKLayers.dll)
+            set(relative "external/d3d12/agility/build/native/bin/x64/${dll_name}")
+            set(source "${ENGINE_SOURCE_DIR}/${relative}")
+            set(destination "${archive_engine}/${relative}")
+            if(NOT EXISTS "${source}")
+                message(FATAL_ERROR "real parent Agility input is missing: ${source}")
+            endif()
+            if(NOT EXISTS "${destination}")
+                message(FATAL_ERROR "staged Agility destination is missing (${context}): ${destination}")
+            endif()
+            file(SHA256 "${source}" source_hash)
+            file(SHA256 "${destination}" destination_hash)
+            if(NOT "${source_hash}" STREQUAL "${destination_hash}")
+                message(FATAL_ERROR "staged Agility hash mismatch (${context}): ${relative}")
+            endif()
+        endforeach()
+    endfunction()
+    foreach(dll_name IN ITEMS D3D12Core.dll d3d12SDKLayers.dll)
+        set(relative "external/d3d12/agility/build/native/bin/x64/${dll_name}")
+        set(source "${ENGINE_SOURCE_DIR}/${relative}")
+        set(destination "${archive_engine}/${relative}")
+        if(NOT EXISTS "${source}")
+            message(FATAL_ERROR "real parent Agility input is missing: ${source}")
+        endif()
+        configure_file("${source}" "${destination}" COPYONLY)
+    endforeach()
+    expect_archive_agility_hashes("after staging")
+endif()
 set(archive_plan "${archive_root}/docs/superpowers/plans/2026-11-03-core-app-integration.md")
 set(archive_design "${archive_root}/docs/design/core_app_integration.md")
 set(formal_contract "${ENGINE_SOURCE_DIR}/tests/test_core_app_formal_assets.cmake")
@@ -336,6 +366,36 @@ expect_log_contains(naming_corrupt "git rev-parse --git-dir failed:")
 expect_log_lacks(naming_corrupt "CORE_APP_TRACKING_UNVERIFIED")
 file(REMOVE_RECURSE "${archive_root}/.git")
 
+if(NESTED_ENGINE_RHI_BACKEND STREQUAL "d3d12")
+    expect_archive_agility_hashes("before D3D12Core gate mutation")
+    set(missing_core_relative "external/d3d12/agility/build/native/bin/x64/D3D12Core.dll")
+    set(missing_core_source "${ENGINE_SOURCE_DIR}/${missing_core_relative}")
+    set(missing_core_destination "${archive_engine}/${missing_core_relative}")
+    file(REMOVE "${missing_core_destination}")
+    set(missing_core_build "${WORK}/archive-missing-core-build")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CMAKE_COMMAND}"
+            -S "${archive_engine}" -B "${missing_core_build}"
+            -G "${NESTED_CMAKE_GENERATOR}"
+            -DENGINE_BUILD_TESTS=ON -DENGINE_ENABLE_IPO=OFF
+            -DBREAK_ENABLE_SNOWFLAKE=OFF ${nested_configure_defs}
+        RESULT_VARIABLE missing_core_result
+        OUTPUT_VARIABLE missing_core_output
+        ERROR_VARIABLE missing_core_error
+        TIMEOUT 180)
+    configure_file("${missing_core_source}" "${missing_core_destination}" COPYONLY)
+    expect_archive_agility_hashes("after D3D12Core gate mutation restoration")
+    set(missing_core_log "${missing_core_output}${missing_core_error}")
+    if("${missing_core_result}" STREQUAL "0" OR "${missing_core_result}" STREQUAL "77")
+        record_error("archive_d3d12_missing_core: exit=${missing_core_result}, expected FAIL\n${missing_core_log}")
+    endif()
+    string(FIND "${missing_core_log}" "D3D12Core.dll missing" missing_core_diagnostic_index)
+    if(missing_core_diagnostic_index LESS 0)
+        record_error("archive_d3d12_missing_core: missing 'D3D12Core.dll missing'\n${missing_core_log}")
+    endif()
+endif()
+
 set(archive_build "${WORK}/archive-build")
 run_case(archive_configure PASS "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CMAKE_COMMAND}"
@@ -343,6 +403,9 @@ run_case(archive_configure PASS "${CMAKE_COMMAND}" -E env
     -G "${NESTED_CMAKE_GENERATOR}"
     -DENGINE_BUILD_TESTS=ON -DENGINE_ENABLE_IPO=OFF
     -DBREAK_ENABLE_SNOWFLAKE=OFF ${nested_configure_defs})
+if(NESTED_ENGINE_RHI_BACKEND STREQUAL "d3d12")
+    expect_archive_agility_hashes("after archive configure")
+endif()
 if(EXISTS "${archive_build}/CMakeCache.txt")
     file(STRINGS "${archive_build}/CMakeCache.txt" archive_backend
         REGEX "^ENGINE_RHI_BACKEND:STRING=")
