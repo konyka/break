@@ -10536,3 +10536,13 @@ This task changes names only. `GAMECKPT`, `manifest.game`, `GAMEAPPTRACE`, and `
 Verification used Linux CPU/record only. The focused naming/target/assets set completed 5/5 with three passes and the two established nm negative-path skips. The asset/lifecycle/editor/platform focused set passed 5/5; `test_core_app_assets` passed all 20 assertions after restoring the case-variant manifest fixture. Complete non-graphics/non-fuzz CTest passed 349/349 with 346 passes and the established D3D12 plus two nm skips, matching the pre-migration count. No-tests builds produced `core_app` and `core_app_asset_bake`. Real CLI checks returned help=0, unknown-option=2, and legal-options runtime FAILED=2; a real record scenario exited 0 and emitted the complete two-generation `runtime_stopped` trace. A temporary old-name runtime-target mutation made both naming and no-tests target contracts fail, and restoring it returned both to green. All builds and parallel CTest runs used `-j3`.
 
 The brief's `ENGINE_RHI_BACKEND=record` configure argument is rejected by the pre-existing backend selector, which accepts auto/opengl/vulkan/metal/d3d12; verification therefore used `ENGINE_RHI_BACKEND=auto` while the application exercised `--render=record --audio=record`. This is not GPU or audio-device evidence. Native GPU/audio, listening, networking, non-Linux runtime, and remote CI remain unverified.
+
+
+### 2026-11-11 P12 remaining verification register
+
+The following items are explicitly not complete and are not implied by the historical Task 1–3 entries above:
+
+- There is still no fault injection that forces the second bounded IO wait to fail, and no `io_quiesced` trace EIO injection. A permanently blocked worker must not be described as joined or as having `active=0`; the existing delayed-read and control-path evidence does not cover those two failure outcomes.
+- `core_app_audio` still has the temporary 16-entry record FIFO from Task 3. Task 9 must expand it to 256 entries and prove overload plus drain recovery before that capability is considered complete.
+- The Task 2 baker still needs explicit assertions for the Flow player identity and the exec-link source port. These remain scoped follow-ups for the final integration review rather than silently accepted reader evidence.
+- P12 Tasks 4–13 have not started. The naming migration and its tests do not establish gameplay, GPU pixels, audio devices, listening, networking, or non-Linux runtime behavior.
