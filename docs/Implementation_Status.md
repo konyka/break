@@ -2,7 +2,7 @@
 
 - 主 CI run `42964916340` 与 Windows D3D12 run `42964916355` 均已 `SUCCESS`。两个 macOS lane 都实际通过 Runtime IO 的 `stage=0x52` 与精确 `SIGABRT` 路径，先前的 Cocoa setup 竞争不再复现；Windows、Linux、图形与其它 headless lane 也都完成。
 - Core App 命名 Task 1/2 的独立规格与质量评审均为 PASS。合入本地 master 后，完整非图形 CTest 为 **352 项入选、348 PASS、4 个文档化 SKIP、0 FAIL**；两个额外测试来自同步的 master 基线。第二次 bounded IO wait 失败、`io_quiesced` trace EIO、Task 9 的 256 项 FIFO 和 Flow identity/source-port 仍保留在后续台账，未因命名迁移或 CI 转绿而视为完成。
-- 当前推送前门槛为全分支终审与最终提交核对；Compose 与 P12 Task 4–13 尚未在本条目中宣称实现。
+- 全分支终审为 **Ready**，无 Critical/Important 或需阻断合并的 Minor。终审另用真实 reader 确认 Flow Player 为 `{index=2, generation=1}`、两条 exec-link 的 `source_port=1`，资产正确性无疑点；永久断言仍留后续固化。Compose 与 P12 Task 4–13 尚未在本条目中宣称实现。
 
 ## 本轮更新：P12 Core App Naming Task 2——一次性数据格式（2026-11-11）
 
