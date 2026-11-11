@@ -990,20 +990,48 @@ TEST(io_request_double_release_aborts)
         VFS *vfs = fixture_setup();
         BreakRuntimeIoConfig cfg;
         BreakRuntimeIoRequest *req = NULL;
+        BreakRuntimeIoStats stats;
+        BreakRuntimeError init_result = BREAK_RUNTIME_INVALID;
+        BreakRuntimeError submit_result = BREAK_RUNTIME_INVALID;
+        BreakRuntimeError cancel_result = BREAK_RUNTIME_INVALID;
+        BreakRuntimeError shutdown_result = BREAK_RUNTIME_INVALID;
+        BreakRuntimeError stats_result = BREAK_RUNTIME_INVALID;
         if (!vfs) {
             _exit(2); /* fixture failure: not the path under test */
         }
         memset(&cfg, 0, sizeof(cfg));
+        memset(&stats, 0, sizeof(stats));
         cfg.vfs = vfs;
         cfg.worker_count = 1u;
         cfg.request_capacity = 4u;
-        if (break_runtime_io_init(&cfg) != BREAK_RUNTIME_OK) {
-            _exit(2);
+        /* Workers start inside init; park them before they can claim. */
+        break_runtime_test_io_set_gates(1u, 0u);
+        init_result = break_runtime_io_init(&cfg);
+        if (init_result == BREAK_RUNTIME_OK) {
+            submit_result =
+                break_runtime_io_submit(&req, "payload.bin", 0u, 0u);
         }
-        if (break_runtime_io_submit(&req, "payload.bin", 0u, 0u) !=
-                BREAK_RUNTIME_OK ||
-            break_runtime_io_cancel(req) != BREAK_RUNTIME_OK ||
-            break_runtime_io_shutdown(2000u) != BREAK_RUNTIME_OK) {
+        if (submit_result == BREAK_RUNTIME_OK) {
+            cancel_result = break_runtime_io_cancel(req);
+            if (cancel_result == BREAK_RUNTIME_OK) {
+                break_runtime_test_io_set_gates(0u, 0u);
+            }
+        }
+        if (init_result == BREAK_RUNTIME_OK) {
+            shutdown_result = break_runtime_io_shutdown(2000u);
+            stats_result = break_runtime_io_stats(&stats);
+        }
+        fprintf(stderr,
+                "    SETUP init=%d submit=%d cancel=%d shutdown=%d "
+                "stats=%d completed=%llu cancelled=%llu\n",
+                init_result, submit_result, cancel_result, shutdown_result,
+                stats_result, (unsigned long long)stats.completed,
+                (unsigned long long)stats.cancelled);
+        if (init_result != BREAK_RUNTIME_OK ||
+            submit_result != BREAK_RUNTIME_OK ||
+            cancel_result != BREAK_RUNTIME_OK ||
+            shutdown_result != BREAK_RUNTIME_OK ||
+            stats_result != BREAK_RUNTIME_OK) {
             _exit(2); /* setup failed: not the path under test */
         }
         break_runtime_io_request_release(req);
@@ -1014,14 +1042,16 @@ TEST(io_request_double_release_aborts)
     {
         int status = 0;
         ASSERT_EQ(waitpid(pid, &status, 0), pid);
-        if (WIFSIGNALED(status) && WTERMSIG(status) != SIGABRT) {
-            printf("    FAIL-DETAIL: child killed by signal %d (expected SIGABRT)\n",
-                   WTERMSIG(status));
+        if (WIFSIGNALED(status)) {
+            printf("    CHILD signal=%d (expected SIGABRT=%d)\n",
+                   WTERMSIG(status), SIGABRT);
+            if (WTERMSIG(status) != SIGABRT) {
+                printf("    FAIL-DETAIL: unexpected child terminating signal\n");
+            }
         }
         if (WIFEXITED(status)) {
-            /* 2 = the child's setup failed before the path under test (e.g.
-             * shutdown timed out on a loaded runner); 0 = the double release
-             * was NOT rejected. Print which, so CI failures are diagnosable. */
+            /* 2 = a child's init/submit/cancel/shutdown setup step failed;
+             * 0 = the double release was NOT rejected. */
             printf("    FAIL-DETAIL: child exited %d (%s)\n", WEXITSTATUS(status),
                    WEXITSTATUS(status) == 0 ? "double release not rejected"
                                             : "setup failed before the test path");
