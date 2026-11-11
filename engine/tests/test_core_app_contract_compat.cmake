@@ -1,7 +1,15 @@
 foreach(var ENGINE_SOURCE_DIR REPOSITORY_ROOT PLAN_FILE DESIGN_FILE GIT_EXECUTABLE
-        CORE_APP NETWORK_ENABLED CTEST_EXECUTABLE WORK)
+        CORE_APP NETWORK_ENABLED CTEST_EXECUTABLE WORK NESTED_ENGINE_RHI_BACKEND)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required")
+    endif()
+endforeach()
+set(nested_configure_defs "-DENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}")
+set(nested_ctest_defs "\"-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}\"")
+foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
+    if(DEFINED ${cache_var} AND NOT "${${cache_var}}" STREQUAL "")
+        list(APPEND nested_configure_defs "-D${cache_var}=${${cache_var}}")
+        string(APPEND nested_ctest_defs " \"-D${cache_var}=${${cache_var}}\"")
     endif()
 endforeach()
 if(NOT EXISTS "${REPOSITORY_ROOT}/.git")
@@ -101,6 +109,7 @@ set(archive_engine "${archive_root}/engine")
 foreach(relative_path IN ITEMS
         CMakeLists.txt
         tests/test_core_app_target_contract.cmake
+        tests/test_core_app_nested_contract.cmake
         tests/test_core_app_formal_assets.cmake
         tests/test_core_app_naming_contract.cmake
         tests/test_core_app_contract_compat.cmake)
@@ -314,7 +323,22 @@ run_case(archive_configure PASS "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CMAKE_COMMAND}"
     -S "${archive_engine}" -B "${archive_build}"
     -DENGINE_BUILD_TESTS=ON -DENGINE_ENABLE_IPO=OFF
-    -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF)
+    -DBREAK_ENABLE_SNOWFLAKE=OFF ${nested_configure_defs})
+if(EXISTS "${archive_build}/CMakeCache.txt")
+    file(STRINGS "${archive_build}/CMakeCache.txt" archive_backend
+        REGEX "^ENGINE_RHI_BACKEND:STRING=")
+    if(NOT archive_backend STREQUAL "ENGINE_RHI_BACKEND:STRING=${NESTED_ENGINE_RHI_BACKEND}")
+        record_error("archive backend '${archive_backend}' did not follow '${NESTED_ENGINE_RHI_BACKEND}'")
+    endif()
+    if(NOT NESTED_ENGINE_RHI_BACKEND STREQUAL "auto")
+        file(STRINGS "${archive_build}/CMakeCache.txt" archive_effective
+            REGEX "^ENGINE_RHI_BACKEND_EFFECTIVE:INTERNAL=")
+        if(NOT archive_effective STREQUAL
+                "ENGINE_RHI_BACKEND_EFFECTIVE:INTERNAL=${NESTED_ENGINE_RHI_BACKEND}")
+            record_error("archive effective backend '${archive_effective}' did not follow '${NESTED_ENGINE_RHI_BACKEND}'")
+        endif()
+    endif()
+endif()
 if(EXISTS "${archive_build}/CTestTestfile.cmake")
     file(READ "${archive_build}/CTestTestfile.cmake" archive_ctest)
     foreach(test_name IN ITEMS test_core_app_nm_missing test_core_app_nm_unsupported
@@ -387,6 +411,7 @@ foreach(test_name IN ITEMS test_core_app_nm_missing test_core_app_nm_unsupported
     else()
         set(nm_arguments "\"-DNM=${CMAKE_COMMAND}\" \"-DNM_CAPABLE=TRUE\"")
     endif()
+    string(APPEND nm_arguments " ${nested_ctest_defs}")
     file(APPEND "${nm_ctest_source}"
         "add_test(NAME ${test_name} COMMAND \"${CMAKE_COMMAND}\"\n")
     file(APPEND "${nm_ctest_source}"
@@ -415,7 +440,7 @@ foreach(test_name IN ITEMS test_core_app_nested_error test_core_app_cli_error)
     file(APPEND "${nm_ctest_source}"
         "  \"-DNETWORK_ENABLED=${NETWORK_ENABLED}\" \"-DCONTRACT_BUILD_ROOT=${WORK}/${test_name}\"\n")
     file(APPEND "${nm_ctest_source}"
-        "  \"-DNM=\" \"-DNM_CAPABLE=FALSE\" -P \"${target_contract}\")\n")
+        "  \"-DNM=\" \"-DNM_CAPABLE=FALSE\" ${nested_ctest_defs} -P \"${target_contract}\")\n")
 endforeach()
 file(APPEND "${nm_ctest_source}"
     "set_tests_properties(test_core_app_nm_missing test_core_app_nm_unsupported\n")

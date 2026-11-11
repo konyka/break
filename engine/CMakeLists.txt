@@ -4655,6 +4655,18 @@ endif()
     if(CMAKE_NM AND (NOT WIN32 OR MINGW))
         set(_core_app_nm_capable TRUE)
     endif()
+    set(_core_app_nested_rhi_backend "${ENGINE_RHI_BACKEND_EFFECTIVE}")
+    if(_core_app_nested_rhi_backend STREQUAL "headless")
+        set(_core_app_nested_rhi_backend auto)
+    endif()
+    set(_core_app_nested_toolchain_defs
+        "-DNESTED_ENGINE_RHI_BACKEND=${_core_app_nested_rhi_backend}")
+    foreach(_core_app_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
+        if(DEFINED ${_core_app_def} AND NOT "${${_core_app_def}}" STREQUAL "")
+            list(APPEND _core_app_nested_toolchain_defs
+                "-D${_core_app_def}=${${_core_app_def}}")
+        endif()
+    endforeach()
     add_test(NAME test_core_app_target_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
@@ -4663,6 +4675,7 @@ endif()
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_main
             -DNM=${CMAKE_NM}
             -DNM_CAPABLE=${_core_app_nm_capable}
+            ${_core_app_nested_toolchain_defs}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake)
     add_test(NAME test_core_app_nm_missing
         COMMAND ${CMAKE_COMMAND}
@@ -4671,6 +4684,7 @@ endif()
             -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_missing
             -DNM= -DNM_CAPABLE=FALSE
+            ${_core_app_nested_toolchain_defs}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake)
     add_test(NAME test_core_app_nm_unsupported
         COMMAND ${CMAKE_COMMAND}
@@ -4679,10 +4693,26 @@ endif()
             -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_unsupported
             -DNM=${CMAKE_COMMAND} -DNM_CAPABLE=TRUE
+            ${_core_app_nested_toolchain_defs}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake)
     set_tests_properties(test_core_app_target_contract test_core_app_nm_missing
         test_core_app_nm_unsupported PROPERTIES
         LABELS "headless;core_app;platform_contract" SKIP_RETURN_CODE 77)
+    add_test(NAME test_core_app_nested_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nested
+            -DNM=${CMAKE_NM}
+            -DNM_CAPABLE=${_core_app_nm_capable}
+            -DTARGET_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake
+            -DNM_SYMBOL_MISSING_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_symbol_missing.cmake
+            -DNM_WRAPPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_filter.cmake
+            ${_core_app_nested_toolchain_defs}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nested_contract.cmake)
+    set_tests_properties(test_core_app_nested_contract PROPERTIES
+        LABELS "headless;core_app;platform_contract" TIMEOUT 300)
     if(_core_app_nm_capable)
         add_test(NAME test_core_app_nm_symbol_missing
             COMMAND ${CMAKE_COMMAND}
@@ -4693,6 +4723,7 @@ endif()
                 -DNM=${CMAKE_NM}
                 -DTARGET_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake
                 -DNM_WRAPPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_filter.cmake
+                ${_core_app_nested_toolchain_defs}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_symbol_missing.cmake)
         add_test(NAME test_core_app_nm_symbol_missing_unsupported
             COMMAND ${CMAKE_COMMAND}
@@ -4703,6 +4734,7 @@ endif()
                 -DNM=${CMAKE_COMMAND}
                 -DTARGET_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake
                 -DNM_WRAPPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_filter.cmake
+                ${_core_app_nested_toolchain_defs}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_symbol_missing.cmake)
         # The unique preflight token also maps the CMake < 3.29 FATAL_ERROR
         # fallback to SKIP; wrapped-contract UNVERIFIED output cannot match it.
@@ -4759,6 +4791,7 @@ endif()
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
                 -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_compat
+                ${_core_app_nested_toolchain_defs}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_contract_compat.cmake)
         set_tests_properties(test_core_app_contract_compat PROPERTIES
             LABELS "headless;core_app;platform_contract" TIMEOUT 300)

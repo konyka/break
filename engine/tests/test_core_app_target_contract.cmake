@@ -1,4 +1,4 @@
-foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT)
+foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT NESTED_ENGINE_RHI_BACKEND)
     if(NOT DEFINED ${var})
         message(FATAL_ERROR "${var} is required")
     endif()
@@ -56,6 +56,12 @@ function(expect_runtime_failed name)
 endfunction()
 
 get_filename_component(engine_source_dir "${ENGINE_CMAKE}" DIRECTORY)
+set(nested_toolchain_defs)
+foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
+    if(DEFINED ${cache_var} AND NOT "${${cache_var}}" STREQUAL "")
+        list(APPEND nested_toolchain_defs "-D${cache_var}=${${cache_var}}")
+    endif()
+endforeach()
 file(READ "${ENGINE_CMAKE}" cmake_text)
 if(NOT cmake_text MATCHES "engine_link_rhi_backend\\(core_app\\)")
     record_error("core_app does not use engine_link_rhi_backend")
@@ -63,8 +69,9 @@ endif()
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -S "${engine_source_dir}" -B "${CONTRACT_BUILD_ROOT}"
         -DENGINE_BUILD_TESTS=OFF -DENGINE_ENABLE_IPO=OFF
-        -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF
+        -DENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND} -DBREAK_ENABLE_SNOWFLAKE=OFF
         -DCORE_APP_ENABLE_NETWORK=${NETWORK_ENABLED}
+        ${nested_toolchain_defs}
     RESULT_VARIABLE configure_rc
     OUTPUT_VARIABLE configure_out
     ERROR_VARIABLE configure_err
@@ -167,6 +174,9 @@ endif()
 
 get_property(errors GLOBAL PROPERTY CORE_APP_CONTRACT_ERRORS)
 if(NOT errors STREQUAL "")
+    if(errors STREQUAL "nm output did not expose required core_app_run symbol\n")
+        message(STATUS "CORE_APP_NM_ONLY_MISSING_SYMBOL")
+    endif()
     message(FATAL_ERROR "core_app target/CLI contract failed:\n${errors}")
 endif()
 message(STATUS "core_app target, real-process CLI, and symbol-scan contract passed")
