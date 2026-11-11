@@ -63,7 +63,7 @@ endforeach()
 ```bash
 cmake -S engine -B build-core-integration-normal \
   -DCMAKE_BUILD_TYPE=Debug -DENGINE_BUILD_TESTS=ON \
-  -DENGINE_RHI_BACKEND=record -DBREAK_ENABLE_SNOWFLAKE=OFF
+  -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF
 cmake --build build-core-integration-normal -j3
 ```
 
@@ -108,7 +108,7 @@ BreakRuntimeError core_app_checkpoint_probe(const char *directory);
 ```bash
 cmake -S engine -B build-core-integration-normal \
   -DCMAKE_BUILD_TYPE=Debug -DENGINE_BUILD_TESTS=ON \
-  -DENGINE_RHI_BACKEND=record -DBREAK_ENABLE_SNOWFLAKE=OFF
+  -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF
 cmake --build build-core-integration-normal -j3
 ctest --test-dir build-core-integration-normal --output-on-failure -j3 \
   -R '^test_core_app_(naming_contract|target_contract|nm_missing|nm_unsupported|formal_asset_tracking)$'
@@ -198,7 +198,7 @@ ctest --test-dir build-core-integration-normal --output-on-failure -j3 \
 git archive HEAD | tar -x -C build-core-integration-normal/head-archive
 cmake -S build-core-integration-normal/head-archive/engine \
   -B build-core-integration-normal/head-archive-build \
-  -DENGINE_BUILD_TESTS=ON -DENGINE_RHI_BACKEND=record \
+  -DENGINE_BUILD_TESTS=ON -DENGINE_RHI_BACKEND=auto \
   -DBREAK_ENABLE_SNOWFLAKE=OFF
 cmake --build build-core-integration-normal/head-archive-build -j3
 ctest --test-dir build-core-integration-normal/head-archive-build \
@@ -219,7 +219,7 @@ git commit -m "refactor: migrate core app data formats"
 ```bash
 cmake -S engine -B build-core-integration-asan \
   -DCMAKE_BUILD_TYPE=Debug -DENGINE_BUILD_TESTS=ON \
-  -DENGINE_RHI_BACKEND=record -DBREAK_ENABLE_SNOWFLAKE=OFF \
+  -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF \
   -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
 cmake --build build-core-integration-asan -j3
 ctest --test-dir build-core-integration-asan -LE 'graphics|fuzz' \
@@ -227,14 +227,14 @@ ctest --test-dir build-core-integration-asan -LE 'graphics|fuzz' \
 
 cmake -S engine -B build-core-integration-tsan \
   -DCMAKE_BUILD_TYPE=Debug -DENGINE_BUILD_TESTS=ON \
-  -DENGINE_RHI_BACKEND=record -DBREAK_ENABLE_SNOWFLAKE=OFF \
+  -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF \
   -DENGINE_USE_TSAN=ON
 cmake --build build-core-integration-tsan -j3
 ctest --test-dir build-core-integration-tsan --output-on-failure -j3 \
   -R '^test_core_app_lifecycle_load_unload$'
 
 cmake -S engine -B build-core-integration-no-tests \
-  -DENGINE_BUILD_TESTS=OFF -DENGINE_RHI_BACKEND=record \
+  -DENGINE_BUILD_TESTS=OFF -DENGINE_RHI_BACKEND=auto \
   -DBREAK_ENABLE_SNOWFLAKE=OFF
 cmake --build build-core-integration-no-tests -j3
 ```
