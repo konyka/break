@@ -154,6 +154,14 @@ foreach(required IN ITEMS
     endif()
 endforeach()
 
+extract_job(lane-headless-windows-msvc windows_msvc)
+foreach(required IN ITEMS "error C[0-9]+" "fatal error" "error LNK[0-9]+")
+    string(FIND "${windows_msvc}" "${required}" found)
+    if(found EQUAL -1)
+        fail("Windows MSVC diagnostics must expose ${required}")
+    endif()
+endforeach()
+
 foreach(macos_job IN ITEMS lane-native-surface-cocoa lane-gpu-runtime-macos-metal ios-metal-build)
     extract_job("${macos_job}" macos_block)
     string(FIND "${macos_block}" "runs-on: macos-15" found)

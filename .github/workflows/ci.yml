@@ -434,7 +434,7 @@ jobs:
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
-            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest.log" | head -40 | while IFS= read -r line; do
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error|error C[0-9]+|fatal error|error LNK[0-9]+' "$RUNNER_TEMP/ctest.log" | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
             grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest.log" | head -30 | while IFS= read -r line; do

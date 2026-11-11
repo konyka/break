@@ -1,3 +1,11 @@
+## 本轮更新：standalone myui 的 MSVC atomics 工具链修复（2026-11-11）
+
+- **真实 RED 与边界**：主 CI run `42953042678` 的 `Windows + MSVC (headless)` job `130301603976` 在 nested `test_myui_subproject_config` 的 `my_emitter.c`、`my_object.c` 编译失败；同一 run 的 MinGW、Clang、Clang ASan 与 macOS 已通过，Windows D3D12 run `42953042359` 也已成功。保存的日志只有 Ninja FAILED 摘要，未保留 `cl.exe` 原始诊断，因此具体 Cxxxx 错误码未确认。
+- **根因与最小修复**：主 engine 在真实 MSVC 下使用 `/experimental:c11atomics`，standalone myui 缺少同一选项；失败 TU 和多个其它 standalone 子库都使用 C11 atomics。现 standalone 在全部 `add_subdirectory` 前、且仅在 `CMAKE_C_COMPILER_ID STREQUAL "MSVC"` 时添加该目录级选项，与主 engine 一致，不向 Clang/MinGW 传播。MSVC workflow 同时增加 `error C…`、`fatal error`、`error LNK…` 的诊断提取，不改变通过条件。
+- **TDD 与验证**：standalone flag 合同先因缺少真实 MSVC 条件而 RED，CI diagnostics 合同先因缺少三类错误模式而 RED；修复后静态合同、CI execution、native/cross PAL 共 4/4 GREEN。普通完整 `-j3` 构建成功，非图形 `-j3` 为 343 项零失败，唯一既有 non-Windows D3D12 dependency gate SKIP；no-tests 完整 `-j3` 构建成功。独立规格/质量复审无代码阻断项，确认 flag 覆盖和编译器隔离正确。
+- **仍需原生验证**：本地 GCC/Zig native/cross 只证明不回归，不证明真实 `cl.exe` 已修复；缺少 atomics 选项是由失败位置及主/standalone 工具链差异作出的根因推断。下一轮 `lane-headless-windows-msvc` 必须确认实际编译命令包含该 flag、nested 测试通过，且任何后续失败都显示真实编译/链接诊断。
+- **评审 Minor 留档**：静态合同还可进一步检查条件嵌套与 flag 位置、diagnostic token 是否限定在实际 Test step；编译/链接错误与泛化 FAIL 共用 `head -40`，嘈杂失败时仍可能截断。当前实现位置已经人工和独立评审确认，以上不阻断，但不据此声称所有诊断场景已覆盖。完整证据见 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round6-msvc-report.md`。
+
 ## 本轮更新：第五轮 CI WGL 与 NAT 同步修复（2026-11-11）
 
 - **范围与根因**：以主 CI run `42848697723` 和 D3D12 run `42848697714` 为证据，处理真实 `test_glad_wgl_loader` 与 `test_break_online_nat` 失败。WGL 测试的 include 顺序触发 MSVC `APIENTRY` 重定义，函数指针强转触发 MinGW `-Werror=cast-function-type`，legacy-only WGL context 又被误要求现代入口；NAT 三个已连接 pair 的 CLOSE 路径使用固定 8 次非阻塞 pump，把 UDP 发送完成误当成对端已处理。
