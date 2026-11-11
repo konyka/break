@@ -83,7 +83,65 @@ endforeach()
 require_order("${macos}" "./build/test_core_app_assets"
     "ctest --test-dir build -j3" "macOS Metal job")
 
+set(process_launch_helper_path
+    "${REPO_ROOT}/engine/tests/test_core_app_process_launch.c")
+set(process_launch_probe_path
+    "${REPO_ROOT}/engine/tests/test_core_app_process_launch.cmake")
+foreach(path IN ITEMS "${process_launch_helper_path}" "${process_launch_probe_path}")
+    if(NOT EXISTS "${path}")
+        fail("missing temporary process launch probe file: ${path}")
+    endif()
+endforeach()
+if(EXISTS "${process_launch_helper_path}")
+    file(READ "${process_launch_helper_path}" process_launch_helper)
+    foreach(required IN ITEMS
+            [=[int raw = system(argv[1]);]=]
+            [=[int saved_errno = errno;]=]
+            [=[unsigned long os_error = (unsigned long)GetLastError();]=]
+            [=[CORE_APP_PROCESS_LAUNCH command=%s raw=%d os_error=%lu errno=%d\n]=]
+            [=[return raw == 0 ? 0 : 1;]=])
+        require_text("${process_launch_helper}" "${required}"
+            "process launch C system() boundary")
+    endforeach()
+endif()
+if(EXISTS "${process_launch_probe_path}")
+    file(READ "${process_launch_probe_path}" process_launch_probe)
+    foreach(required IN ITEMS
+            [=[set(original "\"${CORE_APP_ASSET_BAKE}\" --output \"${WORK}/original\"")]=]
+            [=[set(outer_quoted "\"${original}\"")]=]
+            [=[string(REPLACE "${WORK}/original" "${WORK}/outer_quoted" outer_quoted "${outer_quoted}")]=]
+            [=[set(backslashes "\"${exe_backslashes}\" --output \"${out_backslashes}\"")]=]
+            [=[set(unquoted "${CORE_APP_ASSET_BAKE} --output ${WORK}/unquoted")]=]
+            [=[foreach(variant IN ITEMS original outer_quoted backslashes unquoted)]=]
+            [=[execute_process(COMMAND "${CORE_APP_PROCESS_LAUNCH}" "${command}"]=]
+            [=[${WORK}/${variant}/level.bscn]=])
+        require_text("${process_launch_probe}" "${required}"
+            "four-variant real baker probe")
+    endforeach()
+endif()
+file(READ "${REPO_ROOT}/engine/CMakeLists.txt" engine_cmake)
+foreach(required IN ITEMS
+        [=[add_executable(test_core_app_process_launch tests/test_core_app_process_launch.c)]=]
+        [=[add_test(NAME test_core_app_process_launch_probe]=]
+        [=[-DCORE_APP_PROCESS_LAUNCH=$<TARGET_FILE:test_core_app_process_launch>]=]
+        [=[-DCORE_APP_ASSET_BAKE=$<TARGET_FILE:core_app_asset_bake>]=]
+        [=[-P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_process_launch.cmake)]=])
+    require_text("${engine_cmake}" "${required}" "process launch target registration")
+endforeach()
+
 extract_job(core-app-windows-msvc windows)
+set(expected_process_launch_step [=[      - name: Probe Core App Windows process launch
+        continue-on-error: true
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        run: ctest --test-dir build -R '^test_core_app_process_launch_probe$' -V
+]=])
+require_text("${windows}" "${expected_process_launch_step}"
+    "Windows real C system() process launch step")
+require_order("${windows}" "${expected_process_launch_step}"
+    "      - name: Run real baker and assets test" "Windows process launch probe placement")
+require_order("${windows}" "${expected_process_launch_step}"
+    "./build/test_core_app_assets.exe" "Windows original assets preservation")
 foreach(required IN ITEMS
         "name: Windows MSVC CPU assets (no GPU evidence)"
         "runs-on: windows-latest"
@@ -92,7 +150,7 @@ foreach(required IN ITEMS
         "uses: ilammy/msvc-dev-cmd@v1"
         "arch: x64"
         "cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON"
-        "cmake --build build --target core_app_asset_bake test_core_app_assets -j3"
+        "cmake --build build --target core_app_asset_bake test_core_app_process_launch test_core_app_assets -j3"
         "ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1"
         "rm -rf \"\$RUNNER_TEMP/core-app-native-validation-assets\""
         "./build/core_app_asset_bake.exe --output \"\$RUNNER_TEMP/core-app-native-validation-assets\" >\"\$bake_log\" 2>&1"

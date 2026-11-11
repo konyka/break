@@ -4759,6 +4759,14 @@ endif()
     endif()
     add_dependencies(test_core_app_assets core_app_asset_bake)
     add_test(NAME test_core_app_assets COMMAND test_core_app_assets)
+    add_executable(test_core_app_process_launch tests/test_core_app_process_launch.c)
+    set_property(TARGET test_core_app_process_launch PROPERTY C_STANDARD 11)
+    add_test(NAME test_core_app_process_launch_probe
+        COMMAND ${CMAKE_COMMAND}
+            -DCORE_APP_PROCESS_LAUNCH=$<TARGET_FILE:test_core_app_process_launch>
+            -DCORE_APP_ASSET_BAKE=$<TARGET_FILE:core_app_asset_bake>
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_process_launch
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_process_launch.cmake)
     add_executable(test_core_app_assets_launch_diagnostic tests/test_core_app_assets.c)
     set_property(TARGET test_core_app_assets_launch_diagnostic PROPERTY C_STANDARD 11)
     target_include_directories(test_core_app_assets_launch_diagnostic PRIVATE ${TEST_INCLUDE_DIRS})

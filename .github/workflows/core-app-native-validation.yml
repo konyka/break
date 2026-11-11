@@ -59,8 +59,14 @@ jobs:
       - name: Configure
         run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON
 
-      - name: Build Core App baker and assets test
-        run: cmake --build build --target core_app_asset_bake test_core_app_assets -j3
+      - name: Build Core App baker, process launch probe, and assets test
+        run: cmake --build build --target core_app_asset_bake test_core_app_process_launch test_core_app_assets -j3
+
+      - name: Probe Core App Windows process launch
+        continue-on-error: true
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        run: ctest --test-dir build -R '^test_core_app_process_launch_probe$' -V
 
       - name: Run real baker and assets test
         env:
