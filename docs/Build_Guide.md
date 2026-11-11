@@ -399,6 +399,12 @@ configure 时真实探测 `GLES2/gl2.h` 与导入库，stock Windows 无 SDK 时
 参数，固定名称还会让并行构建树互相删除文件。`test_world_stream_world` 在 2026-11-02
 按此约定修复，真实 VFS 和文件内容断言不变。
 
+`core_app` 的 11 个正式资产由真实 baker 生成并逐字节比较；其中 Lua、scenario 和
+`actors.sidecar` 在 `.gitattributes` 固定为 LF，避免 `core.autocrlf=true` 将工作树检出为
+CRLF 后产生伪差异。Windows 测试用 `_spawnv(_P_WAIT)` 直接启动 baker，不经过 `system()`
+的命令处理器转发；路径参数按 CRT 规则加双引号，并有含空格目录的真实子进程回归用例。
+进程失败时输出实际命令和退出状态，不改变资产生成与校验内容。
+
 编辑器 `--input-script` 的 `move_to <list>@<row>` 定位的是控件行，不会把列表视口外的
 部分裁掉为可点击区域。目标行没有完全可见时，先 `type <filter>` 将它过滤为第一行，再
 执行 `move_to ...` 和 `click left`；不能把被裁剪行的中心当作可点击位置。Windows/OpenGL
@@ -590,12 +596,13 @@ cmake --build build-gl
 | CMAKE_TOOLCHAIN_FILE | (无) | 使用工具链文件（见上方编译器支持矩阵） |
 
 > 编译器标志由 CMake 根据 MSVC / Clang / GCC **自动检测并应用三路分支**，无需手动指定告警/优化标志。
-> MSVC 的 C++20 target 额外使用 `/Zc:__cplusplus`，确保 `__cplusplus` 正确报告 202002；Windows Clang ASan lane 对 `CMAKE_C_FLAGS` 与 `CMAKE_CXX_FLAGS` 同时传入 `-fsanitize=address -fno-omit-frame-pointer`，runtime DLL 部署保持不变。WGL loader 测试只在非 Windows 模拟分支使用 stub 头、`__stdcall` 和 API mock；真实 Windows 使用 SDK `windows.h` 与系统 `opengl32`，不再定义 `LoadLibraryW/GetProcAddress/FreeLibrary`，避免与 kernel32 import library 重复定义。真实分支先创建隐藏 Win32 窗口，设置 pixel format，并以 `wglMakeCurrent` 绑定实际 WGL context，之后才允许 `gladLoadGL` 和现代/legacy 解析断言；现代入口直接对照真实 `wglGetProcAddress` 结果，legacy 入口对照真实 `GetProcAddress` 导出，且 GL 版本查询必须成功。清理先释放 current context，再删除 context、DC、窗口和 class，失败路径同样覆盖；没有扩大为 GPU 像素测试。Linux 继续用可控 mock 验证 WGL 现代入口和 DLL fallback。benchmark 的 Release+IPO lane 配套使用 `clang-18`、`clang++-18` 与 `lld-18`，不让默认 GNU C++ 接管带版本后缀的 LLD；通用 `toolchain-clang-linux.cmake` 同样显式设置 `clang`/`clang++`/`lld`。
+> MSVC 的 C++20 target 额外使用 `/Zc:__cplusplus`，确保 `__cplusplus` 正确报告 202002；Windows Clang ASan lane 对 `CMAKE_C_FLAGS` 与 `CMAKE_CXX_FLAGS` 同时传入 `-fsanitize=address -fno-omit-frame-pointer`，runtime DLL 部署保持不变。WGL loader 测试只在非 Windows 模拟分支使用 stub 头、`__stdcall` 和 API mock；真实 Windows 使用 SDK `windows.h` 与系统 `opengl32`，不再定义 `LoadLibraryW/GetProcAddress/FreeLibrary`，避免与 kernel32 import library 重复定义。真实分支先创建隐藏 Win32 窗口，设置 pixel format，并以 `wglMakeCurrent` 绑定实际 WGL context，之后才允许 `gladLoadGL` 和现代/legacy 解析断言；现代入口直接对照真实 `wglGetProcAddress` 结果，legacy 入口按 GLAD 的实际顺序优先对应当前 context 的 WGL 结果，WGL 返回 NULL 时必须对应真实 `GetProcAddress` 导出。驱动可提供不同于 DLL 导出地址的有效转发入口，不能只比较 DLL 地址；GL 版本查询仍必须成功。清理先释放 current context，再删除 context、DC、窗口和 class，失败路径同样覆盖；没有扩大为 GPU 像素测试。Linux 继续用可控 mock 验证 WGL 现代入口和 DLL fallback。benchmark 的 Release+IPO lane 配套使用 `clang-18`、`clang++-18` 与 `lld-18`，不让默认 GNU C++ 接管带版本后缀的 LLD；通用 `toolchain-clang-linux.cmake` 同样显式设置 `clang`/`clang++`/`lld`。
 
 `ENGINE_BUILD_TESTS=ON` 时，configure 使用 `find_package(Python3 COMPONENTS Interpreter REQUIRED)`
 和 `find_program(BASH_EXECUTABLE NAMES bash REQUIRED)` 声明测试解释器依赖；CTest 不依赖裸
 `python3`，shell helper 显式经该 Bash 启动。CI image 合同只使用 Python 标准库，不要求
-PyYAML。Windows 测试需要可用的 Python 与 Git Bash；macOS rollback 行为合同不依赖 GNU sort。
+PyYAML。Windows 测试需要可用的 Python 与 Git Bash；工作流 YAML 是 UTF-8，Python 契约 reader
+必须显式使用 `encoding="utf-8"`，不能依赖宿主的活动代码页；macOS rollback 行为合同不依赖 GNU sort。
 
 `net_loop` 的 `add`、`modify`、`remove`、`wait` 和 `destroy` 必须在同一个
 loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IOCP 后端只提供

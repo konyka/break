@@ -266,7 +266,22 @@ static int run_baker(const char *output) {
     int n = snprintf(command, sizeof(command), "\"%s\" --output \"%s\"",
                      CORE_APP_ASSET_BAKE_EXECUTABLE, output);
     if (n < 0 || (usize)n >= sizeof(command)) return -1;
-    return system(command);
+#if defined(_WIN32)
+    char executable_arg[1024];
+    char output_arg[1024];
+    int executable_length = snprintf(executable_arg, sizeof(executable_arg), "\"%s\"",
+                                     CORE_APP_ASSET_BAKE_EXECUTABLE);
+    int output_length = snprintf(output_arg, sizeof(output_arg), "\"%s\"", output);
+    if (executable_length < 0 || (usize)executable_length >= sizeof(executable_arg) ||
+        output_length < 0 || (usize)output_length >= sizeof(output_arg))
+        return -1;
+    const char *argv[] = {executable_arg, "--output", output_arg, NULL};
+    int result = (int)_spawnv(_P_WAIT, CORE_APP_ASSET_BAKE_EXECUTABLE, argv);
+#else
+    int result = system(command);
+#endif
+    if (result != 0) fprintf(stderr, "baker command failed (%d): %s\n", result, command);
+    return result;
 }
 
 static int ensure_baked(void) {
@@ -356,6 +371,18 @@ TEST(baker_emits_every_formal_asset_byte_identically) {
     ASSERT_EQ(ensure_baked(), 0);
     for (usize i = 0; i < k_asset_count; ++i)
         ASSERT_TRUE(files_equal(g_assets_a, g_assets_b, k_asset_names[i]));
+}
+
+TEST(baker_supports_spaces_in_output_path) {
+    ASSERT_EQ(ensure_baked(), 0);
+    char output[512];
+    join_path(output, sizeof(output), g_assets_a, "directory with spaces");
+    ASSERT_EQ(prepare_directory(output), 0);
+    ASSERT_EQ(run_baker(output), 0);
+    for (usize i = 0; i < k_asset_count; ++i)
+        ASSERT_TRUE(files_equal(g_assets_b, output, k_asset_names[i]));
+    ASSERT_EQ(clear_directory(output), 0);
+    ASSERT_EQ(TEST_RMDIR(output), 0);
 }
 
 typedef struct {
@@ -1202,6 +1229,7 @@ TEST(checkpoint_rename_failure_is_not_committed_and_preserves_old_generation) {
 
 TEST_MAIN_BEGIN()
     RUN_TEST(baker_emits_every_formal_asset_byte_identically);
+    RUN_TEST(baker_supports_spaces_in_output_path);
     RUN_TEST(formal_assets_match_fresh_baker);
     RUN_TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader);
     RUN_TEST(flow_deserializes_enter_delay_add_item_chain);

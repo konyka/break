@@ -122,8 +122,12 @@ static int run_native_wgl_test(void) {
   PROC create_context_attribs_proc = NULL;
   PROC wgl_create_shader = NULL;
   PROC wgl_get_stringi = NULL;
+  PROC wgl_get_string = NULL;
+  PROC wgl_get_integerv = NULL;
   FARPROC dll_get_string = NULL;
   FARPROC dll_get_integerv = NULL;
+  FARPROC expected_get_string = NULL;
+  FARPROC expected_get_integerv = NULL;
   PFNWGLCREATECONTEXTATTRIBSARBPROC create_context_attribs = NULL;
   const GLubyte* version_string = NULL;
   const GLubyte* renderer_string = NULL;
@@ -196,6 +200,10 @@ static int run_native_wgl_test(void) {
   }
   dll_get_string = GetProcAddress(real_module, "glGetString");
   dll_get_integerv = GetProcAddress(real_module, "glGetIntegerv");
+  wgl_get_string = wglGetProcAddress("glGetString");
+  wgl_get_integerv = wglGetProcAddress("glGetIntegerv");
+  expected_get_string = wgl_get_string != NULL ? wgl_get_string : dll_get_string;
+  expected_get_integerv = wgl_get_integerv != NULL ? wgl_get_integerv : dll_get_integerv;
   failures += check_native(dll_get_string != NULL, "GetProcAddress(glGetString) failed");
   failures += check_native(dll_get_integerv != NULL,
                            "GetProcAddress(glGetIntegerv) failed");
@@ -203,11 +211,11 @@ static int run_native_wgl_test(void) {
   failures += check_native(loaded == 1, "bootstrap gladLoadGL did not initialize");
   failures += check_native(glad_glGetString != NULL, "no legacy glGetString entry");
   failures += check_native(glad_glGetIntegerv != NULL, "no legacy glGetIntegerv entry");
-  failures += check_native(FUNCTION_POINTERS_EQUAL(glad_glGetString, dll_get_string),
-                           "legacy glGetString differs from the real opengl32 export");
+  failures += check_native(FUNCTION_POINTERS_EQUAL(glad_glGetString, expected_get_string),
+                           "legacy glGetString differs from the selected WGL/DLL entry");
   failures += check_native(
-      FUNCTION_POINTERS_EQUAL(glad_glGetIntegerv, dll_get_integerv),
-      "glGetIntegerv differs from the real opengl32 export");
+      FUNCTION_POINTERS_EQUAL(glad_glGetIntegerv, expected_get_integerv),
+      "glGetIntegerv differs from the selected WGL/DLL entry");
   if (glad_glGetString != NULL) {
     version_string = glad_glGetString(GL_VERSION);
     renderer_string = glad_glGetString(GL_RENDERER);
@@ -258,6 +266,10 @@ static int run_native_wgl_test(void) {
   failures += check_native(loaded == 1, "modern gladLoadGL did not initialize");
   wgl_create_shader = wglGetProcAddress("glCreateShader");
   wgl_get_stringi = wglGetProcAddress("glGetStringi");
+  wgl_get_string = wglGetProcAddress("glGetString");
+  wgl_get_integerv = wglGetProcAddress("glGetIntegerv");
+  expected_get_string = wgl_get_string != NULL ? wgl_get_string : dll_get_string;
+  expected_get_integerv = wgl_get_integerv != NULL ? wgl_get_integerv : dll_get_integerv;
   failures += check_native(glad_glCreateShader != NULL,
                            "no glCreateShader entry on the modern WGL context");
   failures += check_native(glad_glGetStringi != NULL,
@@ -270,11 +282,11 @@ static int run_native_wgl_test(void) {
                            "glCreateShader differs from the real wglGetProcAddress result");
   failures += check_native(FUNCTION_POINTERS_EQUAL(glad_glGetStringi, wgl_get_stringi),
                            "glGetStringi differs from the real wglGetProcAddress result");
-  failures += check_native(FUNCTION_POINTERS_EQUAL(glad_glGetString, dll_get_string),
-                           "modern glGetString differs from the real opengl32 export");
+  failures += check_native(FUNCTION_POINTERS_EQUAL(glad_glGetString, expected_get_string),
+                           "modern glGetString differs from the selected WGL/DLL entry");
   failures += check_native(
-      FUNCTION_POINTERS_EQUAL(glad_glGetIntegerv, dll_get_integerv),
-      "modern glGetIntegerv differs from the real opengl32 export");
+      FUNCTION_POINTERS_EQUAL(glad_glGetIntegerv, expected_get_integerv),
+      "modern glGetIntegerv differs from the selected WGL/DLL entry");
   if (glad_glGetString != NULL) {
     version_string = glad_glGetString(GL_VERSION);
     renderer_string = glad_glGetString(GL_RENDERER);

@@ -1,3 +1,12 @@
+## 本轮更新：Windows 同步修复 Core App 资产、WGL 与 Python 编码（2026-11-11）
+
+- **同步与 RED**：本地从 `59f3f737` 快进至 `f7a1f87e`，无冲突。新代码在 Clang/OpenGL、MSVC 和 MinGW 均暴露 `test_glad_wgl_loader`、`test_ci_image_fix2`、`test_core_app_assets` 三项失败；远程 CI `42967766610` 与 Windows D3D12 `42967766619` 也复现资产测试失败。
+- **Core App 资产**：测试在 Windows 改用 `_spawnv(_P_WAIT)` 直接启动真实 baker，不再依赖 `system()` 的命令处理器转发；仍执行真实 baker、reader 和逐字节比较。`core.autocrlf=true` 曾将 7 个正式文本资产检出为 CRLF，而 baker 固定生成 LF；`.gitattributes` 现在对 Lua、scenario 和 actor sidecar 显式指定 `text eol=lf`，四个二进制资产不变。进程路径参数按 CRT 规则引用，新增含空格输出目录的真实 baker 回归；Clang/MinGW 与独立归档的资产测试均为 17/17。
+- **WGL 与 Python**：真实 WGL context 可为核心入口返回不同于 `opengl32.dll` 导出地址的有效转发地址；测试改为优先对照当前 context 的 `wglGetProcAddress`，为空时必须等于真实 `GetProcAddress`，实际 GL 版本、renderer、texture/extension 查询与模拟 DLL fallback 断言保留。CI 工作流契约的 Python reader 显式指定 UTF-8，不再受 Windows 中文系统默认 GBK 影响。
+- **最终非图形矩阵**：Clang/OpenGL 329 项入选（326 PASS、3 SKIP），Clang/Vulkan 与 Clang/D3D12 各 331 项（328 PASS、3 SKIP），Clang ASan 329 项（326 PASS、3 SKIP），MSVC 335 项（331 PASS、4 SKIP），MinGW 337 项（334 PASS、3 SKIP），均 0 FAIL。MSVC/MinGW 含 5 个 fuzz 冒烟；各构建日志无 warning/error。ASan 使用 `detect_leaks=0`，不据此声称泄漏检测通过。
+- **图形与实机**：OpenGL 4/4、Vulkan 6/6、D3D12 10/10、ASan 4/4、MSVC 9/9、MinGW 4/4，共 37/37 通过。三后端各实跑 90 帧，均完成两次全屏、两次标题栏和渲染尺寸切换；截图中文字位于左上且方向正确，Vulkan validation 为 0。
+- **审查与边界**：独立审查发现含空格参数未引用，新增回归先 RED 后 GREEN，复核为 Ready，无遗留 Critical/Important。本轮仅修改测试、测试资产检出规则和验证记录；不代表 Windows 音频设备、真实网络服务或 POSIX-only 功能已验证。
+
 ## 交付验证：主 CI 与 D3D12 全绿、Core App 命名迁移（2026-11-11）
 
 - 主 CI run `42964916340` 与 Windows D3D12 run `42964916355` 均已 `SUCCESS`。两个 macOS lane 都实际通过 Runtime IO 的 `stage=0x52` 与精确 `SIGABRT` 路径，先前的 Cocoa setup 竞争不再复现；Windows、Linux、图形与其它 headless lane 也都完成。
