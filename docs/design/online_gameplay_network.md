@@ -101,3 +101,5 @@ apply 要求相同 schema hash、live generation 和递增的每对象 record ep
 这些结果是 focused 网络验证，不是全仓库、全平台或外部部署证明。Windows/macOS/移动原生 lane、任意 NAT、公网服务、主观听感、可靠传输、预测回滚和生产账号后端均未在本切片声称完成。
 
 2026-11-10 Darwin 同步补充：`net_sendto()` 返回完整长度不代表对端非阻塞接收队列已经可读。NAT malformed、captured HELLO 和 voice UDP 测试现按原状态/计数/`ready` 条件做有界接收与 pump，不改变非阻塞 API，也不把 `NET_WOULD_BLOCK` 当成功。captured HELLO 必须先完成合法 peer 登记，跨 socket 重放必须实际被处理并使 invalid 计数增加 1，随后仍验证 observed address 不变。该修复没有改动生产 socket 地址、challenge、HMAC、nonce 或 replay 代码；Linux 故障注入精确复现并验证首次 `recvfrom=EAGAIN` 的行为，但 native macOS 仍须后续 CI 确认。
+
+第三轮 MSVC 补充：voice UDP 测试的 `BreakVoicePlayback playback` 在声明时以 `{0}` 零初始化，消除有界循环路径上的 C4701 静态诊断。该初始化不改变播放语义；`ready==true`、sequence 77 和真实 PCM `-123/456` 断言继续执行，native MSVC 仍待后续 CI。

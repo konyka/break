@@ -5,6 +5,46 @@
 - **资产与 archive**：最终 `core_app_asset_bake --output` 分别重建空目录和正式目录，11 个文件逐 `cmp` 一致，BSCN/Flow/BANM/WAV/Lua 真实 readers 通过；未手工编辑二进制。格式提交 `1584794185a14a6c0f8210bfbb9c04d956829c78` 的 HEAD archive 独立配置/构建成功，最终 Core App 9 项入选为 6 PASS、3 个 nm SKIP、0 失败。归档没有 `.git` 导致两个 tracking 合同首次各报 0/11；仅在生成归档目录初始化临时 index 并登记同一组归档资产后，原 CTest 命令全绿，没有借用源树资产。
 - **最终验证**：普通和 ASan+UBSan 非图形/非 fuzz 均为 351 项入选、347 PASS、4 个文档化 SKIP、0 失败；ASan+UBSan 无 sanitizer 报告。TSan lifecycle 1/1，无 race 报告。no-tests 完整构建成功，`core_app_runtime`、`core_app`、`core_app_asset_bake` 均存在且可构建；本切片未修改 CMake 或增加链接依赖。所有构建和并行 CTest 使用 `-j3`。
 - **限制与剩余台账**：仅有 Linux CPU/record 证据，record/null 不证明 GPU、声卡或听测；native GPU/audio、网络、非 Linux 与远程 CI 未运行。第二次 bounded IO wait 失败和 `io_quiesced` trace EIO 注入仍未覆盖；Task 9 的 256 项 FIFO/过载/drain recovery 未提前实现，当前仍为 16 项 record FIFO；baker 的 Flow player identity 与 exec-link source port 专项断言仍待后续。独立规格/质量评审由主代理随后安排，本状态不预先宣称其结论。完整证据见 `.superpowers/sdd/2026-11-11-core-app-naming/task-2-report.md`。
+## 原生验证进展：MSVC/D3D12 通过，macOS Runtime IO 修复待验证（2026-11-11）
+
+- 主 CI run `42956737548` 的 `Windows + MSVC (headless)` job `130313507109` 已通过，standalone `/experimental:c11atomics` 工具链修复获得真实 `cl.exe` 验证；Windows D3D12 run `42956737579` 也已通过。上一轮 WGL、MinGW、Clang 与 NAT 修复未在这些 lane 重现失败。
+- **Runtime IO 根因与 RED**：同一主 run 的 macOS Cocoa job `130313506823` 在 double-release 子进程 setup 中退出 2。分阶段诊断和强制真实 4096 字节完成证明：worker 可先发布 completion，随后 `cancel` 按既有协议返回 `REJECTED`；不是 `shutdown(2000)` 超时，也不是 double-release registry 失败。移除 init 前 gate 的变异精确复现该退出。
+- **最小修复**：`a23fc298` 仅在子进程 init 前用既有 gate 阻止 worker 抢先 claim，cancel 成功后解除，生产 runtime、timeout、sleep、skip 与完成后取消协议均未修改。`f73bd8ed` 进一步用跨 fork pipe 在第一次 release 返回后写入阶段字节，父进程同时验证该字节、`WIFSIGNALED` 和精确 `SIGABRT`，排除提前 abort、setup 失败、其他 signal 以及未 abort 的假通过。
+- **验证与独立评审**：旧判定可接受 SIGSEGV；新判定下 SIGSEGV 与 marker 前 SIGABRT 都失败，真实第二次 release 为 `stage=0x52`、`SIGABRT=6`。普通 focused 5/5、普通非图形 348 项零失败（1 个既有 D3D12 平台 skip），ASan+UBSan/TSan focused 各 5/5，无 sanitizer/race 报告。独立 scoped 复审为 PASS，原 Critical ADDRESSED，无新 Critical/Important。
+- **限制**：上述证据来自 Linux x86_64，不能替代 macOS 的 pipe/fork/signal 行为。下一轮两个 macOS lane 必须实际验证原 CI 场景，当前不把该主 CI 记为通过。完整证据见 `.superpowers/sdd/2026-11-10-remove-x11/runtime-io-close-race-report.md`。
+
+## 本轮更新：standalone myui 的 MSVC atomics 工具链修复（2026-11-11）
+
+- **真实 RED 与边界**：主 CI run `42953042678` 的 `Windows + MSVC (headless)` job `130301603976` 在 nested `test_myui_subproject_config` 的 `my_emitter.c`、`my_object.c` 编译失败；同一 run 的 MinGW、Clang、Clang ASan 与 macOS 已通过，Windows D3D12 run `42953042359` 也已成功。保存的日志只有 Ninja FAILED 摘要，未保留 `cl.exe` 原始诊断，因此具体 Cxxxx 错误码未确认。
+- **根因与最小修复**：主 engine 在真实 MSVC 下使用 `/experimental:c11atomics`，standalone myui 缺少同一选项；失败 TU 和多个其它 standalone 子库都使用 C11 atomics。现 standalone 在全部 `add_subdirectory` 前、且仅在 `CMAKE_C_COMPILER_ID STREQUAL "MSVC"` 时添加该目录级选项，与主 engine 一致，不向 Clang/MinGW 传播。MSVC workflow 同时增加 `error C…`、`fatal error`、`error LNK…` 的诊断提取，不改变通过条件。
+- **TDD 与验证**：standalone flag 合同先因缺少真实 MSVC 条件而 RED，CI diagnostics 合同先因缺少三类错误模式而 RED；修复后静态合同、CI execution、native/cross PAL 共 4/4 GREEN。普通完整 `-j3` 构建成功，非图形 `-j3` 为 343 项零失败，唯一既有 non-Windows D3D12 dependency gate SKIP；no-tests 完整 `-j3` 构建成功。独立规格/质量复审无代码阻断项，确认 flag 覆盖和编译器隔离正确。
+- **仍需原生验证**：本地 GCC/Zig native/cross 只证明不回归，不证明真实 `cl.exe` 已修复；缺少 atomics 选项是由失败位置及主/standalone 工具链差异作出的根因推断。下一轮 `lane-headless-windows-msvc` 必须确认实际编译命令包含该 flag、nested 测试通过，且任何后续失败都显示真实编译/链接诊断。
+- **评审 Minor 留档**：静态合同还可进一步检查条件嵌套与 flag 位置、diagnostic token 是否限定在实际 Test step；编译/链接错误与泛化 FAIL 共用 `head -40`，嘈杂失败时仍可能截断。当前实现位置已经人工和独立评审确认，以上不阻断，但不据此声称所有诊断场景已覆盖。完整证据见 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round6-msvc-report.md`。
+
+## 本轮更新：第五轮 CI WGL 与 NAT 同步修复（2026-11-11）
+
+- **范围与根因**：以主 CI run `42848697723` 和 D3D12 run `42848697714` 为证据，处理真实 `test_glad_wgl_loader` 与 `test_break_online_nat` 失败。WGL 测试的 include 顺序触发 MSVC `APIENTRY` 重定义，函数指针强转触发 MinGW `-Werror=cast-function-type`，legacy-only WGL context 又被误要求现代入口；NAT 三个已连接 pair 的 CLOSE 路径使用固定 8 次非阻塞 pump，把 UDP 发送完成误当成对端已处理。
+- **WGL 修复**：SDK 先于 glad 包含，函数指针按对象表示比较；bootstrap 先验证真实 legacy DLL fallback，缺少 `wglCreateContextAttribsARB` 时仅在全部校验和清理成功后明确返回 77。入口存在时必须创建/current GL 4.5 core 并严格验证 modern/legacy 入口、profile、扩展和逆序清理，advertised entry 失败不会转成 SKIP。实现提交 `eb4b0feb`。
+- **NAT 修复**：新增有界 `nat_pump_until_closed`，等待双端 `!connected && !armed`；完整执行所有 receive/poll 后传播首错，deadline 返回 `TIMEOUT`，真实 overload 不被改写。三处 connected pair 关闭均使用同一同步条件，second pair 也显式断言关闭，保留旧 PUNCH/high-water 和 replacement 断言。实现提交 `dc46aa06`、`34a1e377`；生产协议未修改，没有 sleep 或无条件 skip。
+- **RED/GREEN 与独立评审**：旧 WGL 合同实际捕获 include、四处强转和 capability gate 缺失。旧 NAT 在第一条/第二条 CLOSE 延迟注入下分别精确失败，其中 `nat_two_close_cycles_reject_oldest_punch` 曾假通过；修复后两种注入均 23/23。永久 drop 实际等待 5 秒并返回 `TIMEOUT`，真实 overload 保持 `OVERLOAD`，EIO 立即返回 `FAILED`。规格评审无代码发现；质量评审发现 second CLOSE 遗漏后，fix round 1 scoped 复审为 PASS，三项发现全部 ADDRESSED。
+- **验证**：最终普通完整 `-j3` 构建成功，非图形 `-j3` 共 343 项零失败，唯一既有 non-Windows D3D12 dependency gate SKIP；ASan+UBSan、TSan 的 WGL/NAT focused 各 2/2，无 sanitizer/race 报告；`git diff --check` 通过。完整证据见 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round5-report.md` 和 `remote-ci-round5-nat-report.md`。
+- **限制**：本地交叉编译、COFF、Linux mock 和 UDP/LD_PRELOAD 注入不冒充 native Windows/WGL driver 或 macOS 结果。真实 MSVC、MinGW、legacy/modern WGL 分支和 macOS NAT 仍须下一轮 CI 验证，77 capability skip 不授予 GPU 证据。
+
+## 本轮更新：第四轮主 CI 输入并发超时修复（2026-11-10）
+
+- **根因**：真实 Clang/LLD Release 日志在 `haptic_multithreaded_producers_only_queue_commands` 的主消费者 guard 失败。主线程持续空调用 `input_extended_haptic_pump()`，生产者又持续等待 `PENDING/OVERLOAD`，单核或受限调度下形成测试自旋饥饿；haptic 没有异步 worker，所有命令都依赖主线程 pump。固定单核 CTest 在未修实现上稳定复现同一 guard，生产 haptic 队列无需修改。
+- **最小修复**：仅在测试等待协议中加入条件让渡：生产者的结果为 `PENDING` 或队列 `OVERLOAD` 时调用 `platform_thread_yield()`；主线程仅在 fake 执行数未增长时让渡。新增 `test_input_extended_single_cpu` 固定到首个可用 CPU，affinity 设置失败显式失败。guard、4x64 命令、全部结果和空队列断言均未削弱，未添加任意 sleep。
+- **RED/GREEN 与变异**：未修单核目标稳定 RED；条件让渡后普通和固定单核 Release 均 GREEN，两个 focused 各连续 100 次通过。删除三处条件让渡的测试同步变异再次稳定命中同一 guard，精确恢复后再次 GREEN。完整证据见 `.superpowers/sdd/2026-11-10-remove-x11/input-concurrency-fix-report.md`。
+- **验证**：普通、ASan+UBSan、TSan 的输入相关测试均 7/7，无 sanitizer/race 报告；CI 同款 Clang/LLD Release+IPO 完整 `-j3` 构建成功，非图形 `-j3` 为 341 项入选、340 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP；Windows `test_input_extended`、XInput fake 和 WM_TOUCH 目标由 Zig 交叉编译成功，`git diff --check` 通过。
+- **限制**：本地只有 Linux，Windows 仅交叉编译未执行 PE，真实主 CI/Windows/macOS/native 调度仍须下一轮 native 验证；普通多核 PASS 本身不再被当作单核调度缺证。
+
+## 本轮更新：第三轮 CI MSVC voice 初始化修复（2026-11-10）
+
+- **范围**：以 `737ccc8b4227f2d53039119caf1a2b6066e2871e` 为基线，只处理第三轮 MSVC `test_break_online_voice.c` 编译警告；未修改 CI 基础设施、其它行为或 cry-integration，未合并、未 push。
+- **根因与最小修复**：有界 UDP 接收循环中，`ready==false` 时 `break_voice_receiver_pop()` 不写出 `playback`，MSVC `/W4 /WX` 因此在循环后的 `playback.sequence` 读取处报 C4701。声明改为 `BreakVoicePlayback playback = {0}`，确定性地零初始化；`ready` 必须为 true、sequence 77 和 PCM `-123/456` 的真实断言全部保留，未关闭警告或删除读取。
+- **RED/GREEN 与变异**：本机 Clang 未原生复现 C4701，故使用真实 C11 TU 的 MSVC 兼容 Clang AST 合同。修复前目标函数内未初始化 `playback` 为 1 match、带 initializer 为 0；修复后分别为 0 和 1，clang-cl `/W4 /WX` 编译检查通过。临时回退 `{0}` 后未初始化匹配恢复为 1，精确恢复后再次为 0，voice 真实 UDP 8/8。
+- **验证**：普通、ASan+UBSan、TSan 的 Flow/NAT/voice/socket/event-loop/replication focused 均 11/11，无 sanitizer/race 报告；`git diff --check` 通过。完整证据追加于 `.superpowers/sdd/2026-11-10-remove-x11/platform-behavior-fix-report.md`。
+- **native 限制**：本地 AST/clang-cl 不是 native MSVC `cl.exe` 证据，第三轮 Windows MSVC `/WX` 仍须下一轮 CI 实际编译确认。
 
 ## 本轮更新：第二轮 CI 存量跨平台行为修复（2026-11-10）
 
@@ -15,6 +55,20 @@
 - **RED/GREEN 与变异**：临时 LD_PRELOAD 只让每个 socket 生命周期首次 `recvfrom` 合法返回 `EAGAIN`，未修源码精确复现 NAT 21/23、voice 7/8 及 CI 同三项断言；修复后同一注入与普通运行均为 NAT 23/23、voice 8/8。完整回退再次得到相同 RED；恢复后 GREEN。MSVC 兼容 Clang AST 合同由 26 个宏展开匹配（13 个源码位置）降为 0，回退后再次为 26。生产 invalid-accounting 变异被 captured-HELLO 测试以 22/23 杀死后恢复。
 - **验证**：普通完整 `-j3` 构建成功；普通、ASan+UBSan、TSan 的 Flow/NAT/voice/socket/event-loop/replication focused 均 11/11，无 sanitizer/race 报告。普通非图形 `-j3` 为 342 项入选、341 PASS、0 失败、1 个既有 Windows-only `test_d3d12_dependency_gate` SKIP；`git diff --check` 通过。
 - **native 限制**：本机只有 Linux。Clang AST/clang-cl 不冒充 native MSVC，LD_PRELOAD 不冒充 Darwin 内核调度；真实 MSVC 编译和 macOS Cocoa/MoltenVK NAT/voice 仍必须在下一轮 native CI 验证。完整命令、输出和变异记录见 `.superpowers/sdd/2026-11-10-remove-x11/platform-behavior-fix-report.md`。
+
+## 本轮更新：真实 Windows WGL context 生命周期修复（2026-11-10）
+
+- **根因与 RED**：scoped 复审指出无 current rendering context 时 `wglGetProcAddress` 合法返回 NULL，直接调用/比较会使 glad 正确 fallback 和 `gladLoadGL` 误判。新增生命周期合同后，当前实现因缺 `RegisterClassExW/CreateWindowExW/pixel format/wglCreateContext/wglMakeCurrent` 和清理路径而 RED。
+- **GREEN**：真实 Windows 分支新增隐藏 message-only 窗口、RGBA32/depth24 pixel format 和实际 WGL context。只有 `wglMakeCurrent` 成功后才调用 `gladLoadGL`，验证现代入口非空、现代/legacy 指针与真实 API 结果一致，以及 GL 版本查询成功；Linux mock 保持原路径和计数断言，未扩大为 GPU 像素测试。
+- **生命周期与变异**：清理先 `wglMakeCurrent(NULL,NULL)`，再 `wglDeleteContext/ReleaseDC/DestroyWindow/UnregisterClassW`，window class 注册、窗口、DC、context 或 DLL 加载失败也走同一逆序清理。删除 `wglMakeCurrent` 的变异再次 RED，精确恢复后交叉对象/链接合同通过，Linux mock 继续通过。实现提交 `51359622`，文档另提交，未合并、未 push。
+- **验证与限制**：普通非图形 343 项零失败（唯一既有 D3D12 平台 skip），`git diff --check` 通过；一次缺少独立单核 haptic 可执行文件的问题通过正常构建该 target 后重跑消除，没有修改或跳过该测试。真实 context 创建、driver 解析和 `gladLoadGL` 仍须下一轮 native CI，COFF 不冒充运行证据。完整证据追加于 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round2-report.md`。
+
+## 本轮更新：第四轮 Windows MSVC WGL 测试链接修复（2026-11-10）
+
+- **根因与 RED**：真实日志在 `test_glad_wgl_loader.exe` 报告 kernel32.lib 与测试对象重复定义 `FreeLibrary/GetProcAddress` 并以 LNK1169 失败。实际 `lld-link /wholearchive` 对基线 COFF 对象和 kernel32 import library 复现 `LoadLibraryW/GetProcAddress/FreeLibrary` 三个重复符号，证明冲突来自测试替身而非 glad 生产 loader。
+- **GREEN**：`TEST_WGL_LOADER_SIMULATED` 仅在非 Windows 启用，stub 头、`__stdcall` 和 API mock 也只用于模拟；真实 Windows 使用 SDK `windows.h` 并链接 `opengl32`，不再定义系统 DLL 符号。现代入口比较真实 `wglGetProcAddress` 结果，legacy 入口比较真实 `GetProcAddress` 导出，同时要求 `gladLoadGL` 和实际 GL 版本查询成功，不伪造指针相等或依赖 mock 计数。交叉符号合同拒绝这些 API 的 `T` 定义。
+- **变异与回归**：恢复基线测试和 include/define 配置后，合同再次报告三个 `T` 定义，`lld-link /wholearchive` 再次重复符号；精确恢复后 Windows 交叉对象/链接合同通过，Linux WGL mock 继续验证两条解析路径。普通非图形 342 项零失败（唯一既有 D3D12 平台 skip），`git diff --check` 通过。实现提交 `6cecb588`，文档另提交，未合并、未 push。完整证据追加于 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round2-report.md`。
+- **限制**：本地 COFF 对象、import-library 链接和 Linux mock 不执行 Windows exe；真实 Windows 系统 DLL、WGL driver 和 `gladLoadGL` 行为须下一轮 native CI 验证。
 
 ## 本轮更新：round2 scoped N1——生成器无关的 PAL 链接验证（2026-11-10）
 

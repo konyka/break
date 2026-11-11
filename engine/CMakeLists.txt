@@ -2833,11 +2833,15 @@ if(ENGINE_BUILD_TESTS)
 
     add_executable(test_glad_wgl_loader tests/test_glad_wgl_loader.c external/glad.c)
     target_include_directories(test_glad_wgl_loader PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/external
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/win32_stub)
+        ${CMAKE_CURRENT_SOURCE_DIR}/external)
     target_compile_definitions(test_glad_wgl_loader PRIVATE _WIN32=1)
     if(NOT WIN32)
-        target_compile_definitions(test_glad_wgl_loader PRIVATE __stdcall=)
+        target_include_directories(test_glad_wgl_loader PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/win32_stub)
+        target_compile_definitions(test_glad_wgl_loader PRIVATE
+            __stdcall= TEST_WGL_LOADER_SIMULATED=1)
+    else()
+        target_link_libraries(test_glad_wgl_loader PRIVATE opengl32)
     endif()
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(test_glad_wgl_loader PRIVATE -Wno-pedantic)
@@ -2845,6 +2849,9 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_glad_wgl_loader COMMAND test_glad_wgl_loader)
     set_tests_properties(test_glad_wgl_loader PROPERTIES
         LABELS "headless;platform_contract")
+    if(WIN32)
+        set_tests_properties(test_glad_wgl_loader PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
         find_program(REMOTE_CI_CLANG_CL NAMES clang-cl)
         find_program(REMOTE_CI_ZIG_EXECUTABLE NAMES zig)
@@ -6709,6 +6716,18 @@ endif()
     target_link_libraries(test_input_extended PRIVATE m Threads::Threads)
     add_test(NAME test_input_extended COMMAND test_input_extended)
     set_tests_properties(test_input_extended PROPERTIES LABELS "headless;platform_contract")
+
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        add_executable(test_input_extended_single_cpu tests/test_input_extended.c
+            src/platform/input_extended.c)
+        target_include_directories(test_input_extended_single_cpu PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_input_extended_single_cpu PRIVATE
+            INPUT_EXTENDED_TEST_SINGLE_CPU=1 _GNU_SOURCE)
+        target_link_libraries(test_input_extended_single_cpu PRIVATE m Threads::Threads)
+        add_test(NAME test_input_extended_single_cpu COMMAND test_input_extended_single_cpu)
+        set_tests_properties(test_input_extended_single_cpu PROPERTIES
+            LABELS "headless;platform_contract" RUN_SERIAL TRUE)
+    endif()
 
     if(ENGINE_PLATFORM STREQUAL "linux")
         add_executable(test_gamepad_linux_feedback tests/test_gamepad_linux_feedback.c

@@ -238,7 +238,7 @@ TEST(voice_real_udp_loopback_preserves_pcm)
     BreakVoiceReceiver *receiver = NULL;
     BreakVoiceStreamConfig config = voice_config(8000u, 1u, 16u, 0u);
     BreakVoiceFrame frame = make_frame(77u, 8000u, 1u, 16u, -123);
-    BreakVoicePlayback playback;
+    BreakVoicePlayback playback = {0};
     u8 packet[BREAK_VOICE_MAX_DATAGRAM_SIZE];
     u32 size = 0u;
     bool ready = false;
