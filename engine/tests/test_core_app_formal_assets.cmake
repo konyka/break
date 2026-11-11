@@ -17,6 +17,13 @@ set(expected
     engine/assets/core_app/rollback.scenario
     engine/assets/core_app/tone.wav)
 get_filename_component(repository_root "${ENGINE_SOURCE_DIR}/.." ABSOLUTE)
+if(NOT EXISTS "${repository_root}/.git")
+    message(STATUS "CORE_APP_TRACKING_UNVERIFIED: ${repository_root}/.git is absent")
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+        cmake_language(EXIT 77)
+    endif()
+    message(FATAL_ERROR "UNVERIFIED: core_app tracking requires Git metadata; this CMake cannot emit skip code 77")
+endif()
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" -C "${repository_root}" ls-files -- engine/assets/core_app
     RESULT_VARIABLE git_result

@@ -4742,6 +4742,27 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_naming_contract.cmake)
     set_tests_properties(test_core_app_assets test_core_app_formal_asset_tracking
         test_core_app_naming_contract PROPERTIES LABELS "headless;core_app;assets")
+    set_tests_properties(test_core_app_nm_missing test_core_app_nm_unsupported
+        test_core_app_formal_asset_tracking test_core_app_naming_contract
+        PROPERTIES
+            SKIP_RETURN_CODE 77
+            SKIP_REGULAR_EXPRESSION "UNVERIFIED: core_app symbol scan skipped:|CORE_APP_TRACKING_UNVERIFIED")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../.git")
+        add_test(NAME test_core_app_contract_compat
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+                -DPLAN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/superpowers/plans/2026-11-03-core-app-integration.md
+                -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/core_app_integration.md
+                -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_compat
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_contract_compat.cmake)
+        set_tests_properties(test_core_app_contract_compat PROPERTIES
+            LABELS "headless;core_app;platform_contract" TIMEOUT 300)
+    endif()
 
     set(_core_app_lifecycle_fault_library "")
     set(_core_app_lifecycle_fault_supported FALSE)
