@@ -12,13 +12,18 @@
 #include <scene/scene_serial.h>
 #include <script/break_lua.h>
 
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
-#include <errno.h>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -132,27 +137,111 @@ static void join_path(char *out, usize cap, const char *dir, const char *name) {
     if (n < 0 || (usize)n >= cap) abort();
 }
 
-static int clear_directory(const char *dir) {
+typedef struct {
+    unsigned long os_error;
+    int crt_error;
+} CoreAppTestError;
+
+static CoreAppTestError core_app_test_os_error(void) {
+    CoreAppTestError error;
+    error.crt_error = errno;
+#if defined(_WIN32)
+    error.os_error = (unsigned long)GetLastError();
+#else
+    error.os_error = 0;
+#endif
+    return error;
+}
+
+static CoreAppTestError core_app_test_crt_error(void) {
+    CoreAppTestError error = {0, errno};
+    return error;
+}
+
+static void core_app_test_report(const char *stage, const char *slot, const char *step,
+                                 const char *path, i64 raw_result,
+                                 CoreAppTestError error) {
+    if (!slot) return;
+    fprintf(stderr,
+            "FAIL: CORE_APP_TEST stage=%s slot=%s step=%s path=%s raw=%lld "
+            "os_error=%lu errno=%d\n",
+            stage, slot, step, path, (long long)raw_result, error.os_error,
+            error.crt_error);
+}
+
+static void core_app_test_report_command(const char *slot, const char *step,
+                                         const char *command, const char *path,
+                                         i64 raw_result, CoreAppTestError error) {
+    fprintf(stderr,
+            "FAIL: CORE_APP_TEST stage=launch slot=%s step=%s command=%s path=%s "
+            "raw=%lld os_error=%lu errno=%d\n",
+            slot, step, command, path, (long long)raw_result, error.os_error,
+            error.crt_error);
+}
+
+static int clear_directory(const char *dir, const char *slot) {
     PlatformDirEntry entries[32];
     u32 count = 0;
-    if (!platform_list_dir(dir, entries, 32, &count)) return -1;
-    if (count > 32u) return -1;
+    bool list_result = platform_list_dir(dir, entries, 32, &count);
+    CoreAppTestError list_error = core_app_test_os_error();
+    if (!list_result) {
+        core_app_test_report("prepare", slot, "prepare.clear_directory", dir,
+                             (i64)list_result, list_error);
+        return -1;
+    }
+    if (count > 32u) {
+        CoreAppTestError error = {0, 0};
+        core_app_test_report("prepare", slot, "prepare.clear_directory", dir, -1, error);
+        return -1;
+    }
     for (u32 i = 0; i < count; ++i) {
         char path[1024];
-        if (entries[i].is_dir) return -1;
+        if (entries[i].is_dir) {
+            CoreAppTestError error = {0, 0};
+            core_app_test_report("prepare", slot, "prepare.clear_directory", dir, -1,
+                                 error);
+            return -1;
+        }
         join_path(path, sizeof(path), dir, entries[i].name);
-        if (remove(path) != 0) return -1;
+        int remove_result = remove(path);
+        CoreAppTestError remove_error = core_app_test_crt_error();
+        if (remove_result != 0) {
+            core_app_test_report("prepare", slot, "prepare.remove", path,
+                                 (i64)remove_result, remove_error);
+            return -1;
+        }
     }
     return 0;
 }
 
-static int prepare_directory(const char *dir) {
-    if (platform_file_size(dir, &(u64){0u})) return -1;
-    if (!platform_mkdir(dir)) {
-        if (clear_directory(dir) != 0) return -1;
-        if (!platform_mkdir(dir)) return -1;
+static int prepare_directory_with_slot(const char *dir, const char *slot) {
+    bool file_result = platform_file_size(dir, &(u64){0u});
+    if (file_result) {
+        CoreAppTestError error = {0, 0};
+        core_app_test_report("prepare", slot, "prepare.file_size", dir,
+                             (i64)file_result, error);
+        return -1;
     }
-    return clear_directory(dir);
+    bool mkdir_result = platform_mkdir(dir);
+    if (!mkdir_result) {
+        if (clear_directory(dir, slot) != 0) return -1;
+        mkdir_result = platform_mkdir(dir);
+        CoreAppTestError mkdir_error = core_app_test_os_error();
+        if (!mkdir_result) {
+            core_app_test_report("prepare", slot, "prepare.platform_mkdir", dir,
+                                 (i64)mkdir_result, mkdir_error);
+            return -1;
+        }
+    }
+    return clear_directory(dir, slot);
+}
+
+static int prepare_directory(const char *dir) {
+    return prepare_directory_with_slot(dir, NULL);
+}
+
+static int prepare_asset_directory(const char *dir, const char *slot) {
+    return prepare_directory_with_slot(dir, slot);
 }
 
 static int test_write_checkpoint_file(const char *dir, const char *name,
@@ -279,24 +368,41 @@ static int file_exists(const char *dir, const char *name) {
     return 1;
 }
 
-static int run_baker(const char *output) {
+static int run_baker(const char *output, const char *slot) {
     char command[1600];
+    command[0] = '\0';
     int n = snprintf(command, sizeof(command), "\"%s\" --output \"%s\"",
                      CORE_APP_ASSET_BAKE_EXECUTABLE, output);
-    if (n < 0 || (usize)n >= sizeof(command)) return -1;
-    return system(command);
+    if (n < 0 || (usize)n >= sizeof(command)) {
+        CoreAppTestError error = core_app_test_os_error();
+        core_app_test_report_command(slot, "launch.command", command, output, (i64)n,
+                                     error);
+        return -1;
+    }
+    int result = system(command);
+    CoreAppTestError error = core_app_test_os_error();
+    if (result != 0)
+        core_app_test_report_command(slot, "launch.system", command, output,
+                                     (i64)result, error);
+    return result;
 }
 
 static int ensure_baked(void) {
     if (g_bake_result >= 0) return g_bake_result;
     test_tmp(g_assets_a, sizeof(g_assets_a), "core_app_assets_a");
     test_tmp(g_assets_b, sizeof(g_assets_b), "core_app_assets_b");
-    if (prepare_directory(g_assets_a) != 0 || prepare_directory(g_assets_b) != 0) {
+    int prepare_result = prepare_asset_directory(g_assets_a, "A");
+    if (prepare_result != 0) {
         g_bake_result = 1;
         return g_bake_result;
     }
-    g_bake_result = run_baker(g_assets_a);
-    if (g_bake_result == 0) g_bake_result = run_baker(g_assets_b);
+    prepare_result = prepare_asset_directory(g_assets_b, "B");
+    if (prepare_result != 0) {
+        g_bake_result = 1;
+        return g_bake_result;
+    }
+    g_bake_result = run_baker(g_assets_a, "A");
+    if (g_bake_result == 0) g_bake_result = run_baker(g_assets_b, "B");
     return g_bake_result;
 }
 

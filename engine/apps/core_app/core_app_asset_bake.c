@@ -4,9 +4,17 @@
 #include <platform/platform_fs.h>
 #include <scene/scene_serial.h>
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #define CORE_APP_LEVEL_ENTITIES 7u
 #define CORE_APP_LEVEL_MATERIALS 7u
@@ -19,6 +27,74 @@ static const char *const k_class_names[CORE_APP_LEVEL_ENTITIES] = {
     "Ground", "Player", "Enemy", "DynamicWall", "Vehicle",
     "VisibleColor", "HiddenColor"
 };
+
+typedef struct {
+    unsigned long os_error;
+    int crt_error;
+} CoreAppError;
+
+static CoreAppError core_app_os_error(void) {
+    CoreAppError error;
+    error.crt_error = errno;
+#if defined(_WIN32)
+    error.os_error = (unsigned long)GetLastError();
+#else
+    error.os_error = 0;
+#endif
+    return error;
+}
+
+static CoreAppError core_app_crt_error(void) {
+    CoreAppError error = {0, errno};
+    return error;
+}
+
+static void core_app_report_path(const char *stage, const char *step, const char *path,
+                                 i64 raw_result, CoreAppError error) {
+    fprintf(stderr,
+            "FAIL: CORE_APP_BAKE stage=%s step=%s path=%s raw=%lld "
+            "os_error=%lu errno=%d\n",
+            stage, step, path, (long long)raw_result, error.os_error, error.crt_error);
+}
+
+static void core_app_report_scene(const char *stage, const char *step,
+                                  const char *temporary, const char *final_path,
+                                  i64 raw_result, CoreAppError error) {
+    fprintf(stderr,
+            "FAIL: CORE_APP_BAKE stage=%s step=%s temporary=%s final=%s raw=%lld "
+            "os_error=%lu errno=%d\n",
+            stage, step, temporary, final_path, (long long)raw_result,
+            error.os_error, error.crt_error);
+}
+
+static void core_app_report_read(const char *step, const char *temporary,
+                                 const char *final_path, i64 raw_result,
+                                 CoreAppError error, usize got, u64 expected,
+                                 int extra, int stream_error) {
+    fprintf(stderr,
+            "FAIL: CORE_APP_BAKE stage=scene.commit step=%s temporary=%s final=%s "
+            "raw=%lld os_error=%lu errno=%d got=%llu expected=%llu extra=%d ferror=%d\n",
+            step, temporary, final_path, (long long)raw_result, error.os_error,
+            error.crt_error, (unsigned long long)got, (unsigned long long)expected,
+            extra, stream_error);
+}
+
+static void core_app_report_atomic(const char *stage, const char *temporary,
+                                   const char *final_path,
+                                   const PlatformAtomicWriterDiagnostic *diagnostic) {
+    const char *step = diagnostic->step ? diagnostic->step : "unknown";
+    fprintf(stderr,
+            "FAIL: CORE_APP_BAKE stage=%s step=%s.atomic.%s temporary=%s final=%s "
+            "atomic_temporary=%s raw=%lld os_error=%llu errno=%d",
+            stage, stage, step, temporary, final_path, diagnostic->temporary_path,
+            (long long)diagnostic->raw_result,
+            (unsigned long long)diagnostic->os_error, diagnostic->crt_error);
+    if (strcmp(step, "write") == 0 || strcmp(step, "WriteFile") == 0)
+        fprintf(stderr, " got=%llu expected=%llu",
+                (unsigned long long)diagnostic->got,
+                (unsigned long long)diagnostic->expected);
+    fputc('\n', stderr);
+}
 
 static void put16(u8 *p, u16 value) {
     p[0] = (u8)value;
@@ -38,45 +114,104 @@ static bool output_path(char out[PLATFORM_FS_PATH_CAPACITY], const char *output,
     return written > 0 && (usize)written < PLATFORM_FS_PATH_CAPACITY;
 }
 
-static bool atomic_write(const char *path, const void *data, usize size) {
-    PlatformAtomicWriter *writer = platform_atomic_writer_open(path);
-    if (!writer) return false;
-    if (!platform_atomic_writer_write(writer, data, size)) {
-        platform_atomic_writer_abort(writer);
+static bool atomic_write(const char *stage, const char *temporary, const char *path,
+                         const void *data, usize size) {
+    PlatformAtomicWriterDiagnostic diagnostic;
+    PlatformAtomicWriter *writer = platform_atomic_writer_open_diagnostic(path, &diagnostic);
+    if (!writer) {
+        core_app_report_atomic(stage, temporary, path, &diagnostic);
         return false;
     }
-    return platform_atomic_writer_commit(writer);
+    if (!platform_atomic_writer_write(writer, data, size)) {
+        platform_atomic_writer_abort(writer);
+        core_app_report_atomic(stage, temporary, path, &diagnostic);
+        return false;
+    }
+    bool result = platform_atomic_writer_commit(writer);
+    if (!result) core_app_report_atomic(stage, temporary, path, &diagnostic);
+    return result;
 }
 
 static bool atomic_write_named(const char *output, const char *name,
                                const void *data, usize size) {
     char path[PLATFORM_FS_PATH_CAPACITY];
-    return output_path(path, output, name) && atomic_write(path, data, size);
+    if (!output_path(path, output, name)) {
+        core_app_report_path(name, "asset.output_path", output, 0, core_app_crt_error());
+        return false;
+    }
+    return atomic_write(name, "", path, data, size);
 }
 
 static bool commit_scene_file(const char *temporary, const char *final_path) {
     u64 size = 0;
-    bool ok = scene_probe_binary(temporary) && platform_file_size(temporary, &size) &&
-              size > 0u && size <= (u64)BSCN_MAX_FILE_BYTES;
+    bool ok = scene_probe_binary(temporary);
+    if (!ok)
+        core_app_report_scene("scene.commit", "scene.commit.probe", temporary, final_path,
+                              0, core_app_os_error());
+    if (ok) {
+        bool size_result = platform_file_size(temporary, &size);
+        CoreAppError error = core_app_os_error();
+        if (!size_result) {
+            core_app_report_scene("scene.commit", "scene.commit.file_size", temporary,
+                                  final_path, (i64)size_result, error);
+            ok = false;
+        }
+    }
+    if (ok && (size == 0u || size > (u64)BSCN_MAX_FILE_BYTES)) {
+        core_app_report_scene("scene.commit", "scene.commit.size", temporary, final_path,
+                              0, core_app_crt_error());
+        ok = false;
+    }
     u8 *bytes = NULL;
     if (ok) {
         bytes = (u8 *)malloc((usize)size);
-        ok = bytes != NULL;
+        if (!bytes) {
+            core_app_report_scene("scene.commit", "scene.commit.malloc", temporary,
+                                  final_path, 0, core_app_crt_error());
+            ok = false;
+        }
     }
     if (ok) {
         FILE *fp = fopen(temporary, "rb");
         if (!fp) {
+            core_app_report_scene("scene.commit", "scene.commit.fopen", temporary,
+                                  final_path, 0, core_app_crt_error());
             ok = false;
         } else {
             usize got = fread(bytes, 1, (usize)size, fp);
+            int read_errno = errno;
+            int read_ferror = ferror(fp);
             int extra = fgetc(fp);
+            int extra_errno = errno;
+            int extra_ferror = ferror(fp);
             ok = got == (usize)size && extra == EOF;
-            if (fclose(fp) != 0) ok = false;
+            if (!ok) {
+                bool short_read = got != (usize)size;
+                CoreAppError error = {0, short_read ? read_errno : extra_errno};
+                core_app_report_read("scene.commit.read", temporary, final_path,
+                                     short_read ? (i64)got : (i64)extra, error, got, size,
+                                     extra, short_read ? read_ferror : extra_ferror);
+            }
+            int close_result = fclose(fp);
+            int close_errno = errno;
+            if (close_result != 0) {
+                CoreAppError error = {0, close_errno};
+                core_app_report_scene("scene.commit", "scene.commit.close", temporary,
+                                      final_path, (i64)close_result, error);
+                ok = false;
+            }
         }
     }
-    if (ok) ok = atomic_write(final_path, bytes, (usize)size);
+    if (ok) ok = atomic_write("scene.commit", temporary, final_path, bytes, (usize)size);
     free(bytes);
-    if (remove(temporary) != 0) ok = false;
+    int remove_result = remove(temporary);
+    int remove_errno = errno;
+    if (remove_result != 0) {
+        CoreAppError error = {0, remove_errno};
+        core_app_report_scene("scene.commit", "scene.commit.remove", temporary, final_path,
+                              (i64)remove_result, error);
+        ok = false;
+    }
     return ok;
 }
 
@@ -214,15 +349,26 @@ static bool bake_scene(const char *output) {
         memcpy(transform, positions[i], sizeof(f32) * 3u);
         *mesh = 0u;
     }
-    if (!output_path(temporary, output, ".level.bscn.bake-tmp") ||
-        !output_path(final_path, output, "level.bscn"))
+    if (!output_path(temporary, output, ".level.bscn.bake-tmp")) {
+        core_app_report_path("scene", "scene.temporary_path", output, 0,
+                             core_app_crt_error());
         goto cleanup;
+    }
+    if (!output_path(final_path, output, "level.bscn")) {
+        core_app_report_path("scene", "scene.final_path", output, 0,
+                             core_app_crt_error());
+        goto cleanup;
+    }
     SerializeOptions options;
     memset(&options, 0, sizeof(options));
     options.include_resources = true;
     options.read_mesh_geometry = read_cpu_geometry;
     options.read_mesh_geometry_user = &scene;
-    if (!scene_save_binary(world, &scene, temporary, &options)) goto cleanup;
+    if (!scene_save_binary(world, &scene, temporary, &options)) {
+        core_app_report_scene("scene", "scene.save", temporary, final_path, 0,
+                              core_app_os_error());
+        goto cleanup;
+    }
     ok = commit_scene_file(temporary, final_path);
 
 cleanup:
@@ -425,7 +571,10 @@ int main(int argc, char **argv) {
         fputs("Usage: core_app_asset_bake --output DIR\n", stderr);
         return 2;
     }
-    if (!platform_mkdir(output)) {
+    bool mkdir_result = platform_mkdir(output);
+    if (!mkdir_result) {
+        core_app_report_path("prepare", "prepare.platform_mkdir", output,
+                             (i64)mkdir_result, core_app_os_error());
         fputs("core_app_asset_bake: cannot create output directory\n", stderr);
         return 1;
     }
