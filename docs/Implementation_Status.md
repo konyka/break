@@ -1,3 +1,8 @@
+## 原生验证进展：MSVC/D3D12 通过，macOS Runtime IO 待修（2026-11-11）
+
+- 主 CI run `42956737548` 的 `Windows + MSVC (headless)` job `130313507109` 已通过，standalone `/experimental:c11atomics` 工具链修复获得真实 `cl.exe` 验证；Windows D3D12 run `42956737579` 也已通过。上一轮 WGL、MinGW、Clang 与 NAT 修复未在这些 lane 重现失败。
+- 同一主 run 仅剩 macOS Cocoa job `130313506823` 的 `test_runtime_io` 失败。`io_request_double_release_aborts` 的子进程在 fixture/init/submit/cancel/shutdown setup 阶段退出 2，尚未执行 double-release 断言；这不是 NAT 失败，也不能当成预期的 SIGABRT。具体 setup 分支和最小修复正在调查，未把该主 CI 记为通过，也未用增加等待时间或 skip 掩盖。
+
 ## 本轮更新：standalone myui 的 MSVC atomics 工具链修复（2026-11-11）
 
 - **真实 RED 与边界**：主 CI run `42953042678` 的 `Windows + MSVC (headless)` job `130301603976` 在 nested `test_myui_subproject_config` 的 `my_emitter.c`、`my_object.c` 编译失败；同一 run 的 MinGW、Clang、Clang ASan 与 macOS 已通过，Windows D3D12 run `42953042359` 也已成功。保存的日志只有 Ninja FAILED 摘要，未保留 `cl.exe` 原始诊断，因此具体 Cxxxx 错误码未确认。
