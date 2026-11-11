@@ -262,6 +262,53 @@ if(UNIX)
     endif()
 endif()
 
+file(MAKE_DIRECTORY "${archive_root}/.git/objects" "${archive_root}/.git/refs")
+file(WRITE "${archive_root}/.git/HEAD" "not a valid HEAD\n")
+set(corrupt_fixture "${WORK}/corrupt-fixture")
+set(corrupt_build "${WORK}/corrupt-build")
+file(MAKE_DIRECTORY "${corrupt_fixture}")
+set(corrupt_source "${corrupt_fixture}/CMakeLists.txt")
+file(WRITE "${corrupt_source}" "cmake_minimum_required(VERSION 3.25)\n")
+file(APPEND "${corrupt_source}" "project(core_app_corrupt_compat NONE)\nenable_testing()\n")
+file(APPEND "${corrupt_source}"
+    "add_test(NAME test_core_app_formal_corrupt COMMAND \"${CMAKE_COMMAND}\"\n")
+file(APPEND "${corrupt_source}"
+    "  \"-DENGINE_SOURCE_DIR=${archive_engine}\" \"-DGIT_EXECUTABLE=${GIT_EXECUTABLE}\"\n")
+file(APPEND "${corrupt_source}" "  -P \"${formal_contract}\")\n")
+file(APPEND "${corrupt_source}"
+    "add_test(NAME test_core_app_naming_corrupt COMMAND \"${CMAKE_COMMAND}\"\n")
+file(APPEND "${corrupt_source}"
+    "  \"-DENGINE_SOURCE_DIR=${archive_engine}\" \"-DREPOSITORY_ROOT=${archive_root}\"\n")
+file(APPEND "${corrupt_source}"
+    "  \"-DPLAN_FILE=${archive_plan}\" \"-DDESIGN_FILE=${archive_design}\"\n")
+file(APPEND "${corrupt_source}"
+    "  \"-DGIT_EXECUTABLE=${GIT_EXECUTABLE}\" -P \"${archive_engine}/tests/test_core_app_naming_contract.cmake\")\n")
+file(APPEND "${corrupt_source}"
+    "set_tests_properties(test_core_app_formal_corrupt test_core_app_naming_corrupt\n")
+file(APPEND "${corrupt_source}"
+    "  PROPERTIES SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION \"CORE_APP_TRACKING_UNVERIFIED\")\n")
+run_case(corrupt_fixture_configure PASS "${CMAKE_COMMAND}"
+    -S "${corrupt_fixture}" -B "${corrupt_build}")
+run_case(corrupt_git_probe FAIL "${CMAKE_COMMAND}" -E env
+    --unset=GIT_DIR --unset=GIT_WORK_TREE
+    "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "LC_ALL=C"
+    "${GIT_EXECUTABLE}" -C "${archive_root}" rev-parse --git-dir)
+expect_log_contains(corrupt_git_probe
+    "fatal: not a git repository (or any of the parent directories): .git")
+run_case(formal_corrupt FAIL "${CMAKE_COMMAND}" -E env
+    "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
+    --test-dir "${corrupt_build}" -R "^test_core_app_formal_corrupt$" -V)
+expect_log_contains(formal_corrupt "fatal: not a git repository")
+expect_log_contains(formal_corrupt "git rev-parse --git-dir failed:")
+expect_log_lacks(formal_corrupt "CORE_APP_TRACKING_UNVERIFIED")
+run_case(naming_corrupt FAIL "${CMAKE_COMMAND}" -E env
+    "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
+    --test-dir "${corrupt_build}" -R "^test_core_app_naming_corrupt$" -V)
+expect_log_contains(naming_corrupt "fatal: not a git repository")
+expect_log_contains(naming_corrupt "git rev-parse --git-dir failed:")
+expect_log_lacks(naming_corrupt "CORE_APP_TRACKING_UNVERIFIED")
+file(REMOVE_RECURSE "${archive_root}/.git")
+
 set(archive_build "${WORK}/archive-build")
 run_case(archive_configure PASS "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CMAKE_COMMAND}"

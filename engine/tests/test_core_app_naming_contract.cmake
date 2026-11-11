@@ -245,7 +245,8 @@ execute_process(
     ERROR_VARIABLE git_probe_error)
 set(git_probe_log "${git_probe_output}${git_probe_error}")
 if(NOT git_probe_result EQUAL 0)
-    if("${git_probe_log}" MATCHES "fatal: not a git repository \\(or any of the parent directories\\): \\.git")
+    if(NOT EXISTS "${REPOSITORY_ROOT}/.git" AND
+            "${git_probe_log}" MATCHES "fatal: not a git repository \\(or any of the parent directories\\): \\.git")
         message(STATUS "CORE_APP_TRACKING_UNVERIFIED: ${REPOSITORY_ROOT} is not a Git repository")
         if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
             cmake_language(EXIT 77)
