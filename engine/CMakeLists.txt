@@ -4788,6 +4788,11 @@ endif()
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_formal_assets.cmake)
+    add_test(NAME test_core_app_checkout_attributes
+        COMMAND ${CMAKE_COMMAND}
+            -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_checkout_attributes.cmake)
     add_test(NAME test_core_app_naming_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -4797,13 +4802,17 @@ endif()
             -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_naming_contract.cmake)
     set_tests_properties(test_core_app_assets test_core_app_baker_diagnostics
-        test_core_app_formal_asset_tracking test_core_app_naming_contract
-        PROPERTIES LABELS "headless;core_app;assets")
+        test_core_app_formal_asset_tracking test_core_app_checkout_attributes
+        test_core_app_naming_contract PROPERTIES LABELS "headless;core_app;assets")
     set_tests_properties(test_core_app_nm_missing test_core_app_nm_unsupported
         test_core_app_formal_asset_tracking test_core_app_naming_contract
         PROPERTIES
             SKIP_RETURN_CODE 77
             SKIP_REGULAR_EXPRESSION "UNVERIFIED: core_app symbol scan skipped:|CORE_APP_TRACKING_UNVERIFIED")
+    # The exact prefix also maps the pre-3.29 FATAL_ERROR fallback to SKIP.
+    set_tests_properties(test_core_app_checkout_attributes PROPERTIES
+        SKIP_RETURN_CODE 77
+        SKIP_REGULAR_EXPRESSION "UNVERIFIED: core_app checkout attribute probe skipped:")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../.git")
         add_test(NAME test_core_app_contract_compat
             COMMAND ${CMAKE_COMMAND}
