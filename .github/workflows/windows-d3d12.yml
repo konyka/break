@@ -9,7 +9,7 @@ name: windows-d3d12
 
 on:
   push:
-    branches: [master]
+    branches: [master, core-app-ci-validation]
   pull_request:
     branches: [master]
 

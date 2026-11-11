@@ -1,0 +1,91 @@
+name: Core App native validation
+
+on:
+  push:
+    branches: [core-app-ci-validation]
+
+permissions:
+  contents: read
+
+jobs:
+  core-app-macos-metal:
+    name: macOS Metal CPU and contracts (no GPU evidence)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Pin Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer && xcodebuild -version
+
+      - name: Install shader toolchain
+        run: brew install shaderc spirv-cross
+
+      - name: Configure (metal)
+        run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=metal -DMYUI_PAL=cocoa
+
+      - name: Build Core App
+        run: cmake --build build --target core_app test_core_app_assets -j3
+
+      - name: Run Core App native CPU and contracts
+        run: |
+          ./build/test_core_app_assets
+          ctest --test-dir build -j3 --output-on-failure -R '^(test_core_app_target_contract|test_core_app_nm_missing|test_core_app_nm_unsupported|test_core_app_nested_contract|test_core_app_nm_symbol_missing|test_core_app_nm_symbol_missing_unsupported|test_core_app_contract_compat|test_core_app_formal_asset_tracking|test_core_app_naming_contract)$'
+
+  core-app-windows-msvc:
+    name: Windows MSVC CPU assets (no GPU evidence)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Keep Configure/Build on the default shell so GNU link cannot shadow MSVC link.exe.
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON
+
+      - name: Build Core App baker and assets test
+        run: cmake --build build --target core_app_asset_bake test_core_app_assets -j3
+
+      - name: Run real baker and assets test
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          bake_log="$RUNNER_TEMP/core-app-native-bake.log"
+          test_log="$RUNNER_TEMP/core-app-native-assets.log"
+          rm -rf "$RUNNER_TEMP/core-app-native-validation-assets"
+          set +e
+          ./build/core_app_asset_bake.exe --output "$RUNNER_TEMP/core-app-native-validation-assets" >"$bake_log" 2>&1
+          bake_rc=$?
+          ./build/test_core_app_assets.exe >"$test_log" 2>&1
+          test_rc=$?
+          set -e
+          printf '\n=== core_app_asset_bake (exit %s) ===\n' "$bake_rc"
+          cat "$bake_log"
+          printf '\n=== test_core_app_assets (exit %s) ===\n' "$test_rc"
+          cat "$test_log"
+          if [ "$bake_rc" -ne 0 ] || [ "$test_rc" -ne 0 ]; then
+            first_failure=$(grep -m1 'FAIL:' "$bake_log" || grep -m1 'FAIL:' "$test_log" || true)
+            if [ -n "$first_failure" ]; then
+              echo "::error::$first_failure"
+            else
+              echo "::error::Core App native validation failed (baker exit=$bake_rc, assets exit=$test_rc); full logs above"
+            fi
+            exit 1
+          fi
