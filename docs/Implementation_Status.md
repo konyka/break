@@ -1,3 +1,8 @@
+## 当前待办：Core App 合入后的跨平台 CI（2026-11-11）
+
+- 主 run `42967766610` 与 D3D12 run `42967766619` 当前均为 FAILURE，不能用此前 `d402a375` 的全绿覆盖。失败涉及旧 CMake 的 UNVERIFIED skip 回退、无 `.git` 的 clean-room 资产清单、nested Vulkan 配置，以及 Windows baker 和 macOS manifest alias；具体根因正在按日志分项确认，尚未把任何一项写成已修复。
+- 本地合并结果仍为 352 项非图形入选、348 PASS、4 个文档化 SKIP、0 FAIL，no-tests 构建通过，Core App 全分支终审 Ready；这些不替代远程平台证据。修复将采用 TDD 和独立评审，随后重跑所有受影响 lane。
+
 ## 交付验证：主 CI 与 D3D12 全绿、Core App 命名迁移（2026-11-11）
 
 - 主 CI run `42964916340` 与 Windows D3D12 run `42964916355` 均已 `SUCCESS`。两个 macOS lane 都实际通过 Runtime IO 的 `stage=0x52` 与精确 `SIGABRT` 路径，先前的 Cocoa setup 竞争不再复现；Windows、Linux、图形与其它 headless lane 也都完成。
