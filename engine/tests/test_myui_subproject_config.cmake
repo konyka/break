@@ -24,7 +24,9 @@ foreach(required_text
         "add_subdirectory(myui)"
         "add_subdirectory(mymvvm)"
         "add_subdirectory(mymvvm_myui)"
-        "MYUI_THIRD_PARTY_DIR")
+        "MYUI_THIRD_PARTY_DIR"
+        "if(MSVC AND CMAKE_C_COMPILER_ID STREQUAL \"MSVC\")"
+        "add_compile_options(/experimental:c11atomics)")
     string(FIND "${myui_root_cmake}" "${required_text}" text_offset)
     if(text_offset EQUAL -1)
         message(FATAL_ERROR "myui subproject contract missing: ${required_text}")

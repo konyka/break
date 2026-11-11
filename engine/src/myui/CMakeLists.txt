@@ -8,6 +8,10 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+if(MSVC AND CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+  add_compile_options(/experimental:c11atomics)
+endif()
+
 option(MYUI_FONT_STB "Enable stb_truetype font backend" ON)
 option(MYUI_FONT_FREETYPE "Enable FreeType font backend when available" ON)
 option(MYUI_IMAGE_STB "Enable stb_image image backend" ON)
