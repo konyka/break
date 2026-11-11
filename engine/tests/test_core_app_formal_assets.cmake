@@ -17,12 +17,24 @@ set(expected
     engine/assets/core_app/rollback.scenario
     engine/assets/core_app/tone.wav)
 get_filename_component(repository_root "${ENGINE_SOURCE_DIR}/.." ABSOLUTE)
-if(NOT EXISTS "${repository_root}/.git")
-    message(STATUS "CORE_APP_TRACKING_UNVERIFIED: ${repository_root}/.git is absent")
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
-        cmake_language(EXIT 77)
+unset(ENV{GIT_DIR})
+unset(ENV{GIT_WORK_TREE})
+set(ENV{LC_ALL} "C")
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${repository_root}" rev-parse --git-dir
+    RESULT_VARIABLE git_probe_result
+    OUTPUT_VARIABLE git_probe_output
+    ERROR_VARIABLE git_probe_error)
+set(git_probe_log "${git_probe_output}${git_probe_error}")
+if(NOT git_probe_result EQUAL 0)
+    if("${git_probe_log}" MATCHES "fatal: not a git repository \\(or any of the parent directories\\): \\.git")
+        message(STATUS "CORE_APP_TRACKING_UNVERIFIED: ${repository_root} is not a Git repository")
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+            cmake_language(EXIT 77)
+        endif()
+        message(FATAL_ERROR "UNVERIFIED: core_app tracking requires Git metadata; this CMake cannot emit skip code 77")
     endif()
-    message(FATAL_ERROR "UNVERIFIED: core_app tracking requires Git metadata; this CMake cannot emit skip code 77")
+    message(FATAL_ERROR "git rev-parse --git-dir failed: ${git_probe_log}")
 endif()
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" -C "${repository_root}" ls-files -- engine/assets/core_app

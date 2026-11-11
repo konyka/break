@@ -3,6 +3,7 @@ foreach(var ENGINE_SOURCE_DIR REPOSITORY_ROOT PLAN_FILE DESIGN_FILE GIT_EXECUTAB
         message(FATAL_ERROR "${var} is required")
     endif()
 endforeach()
+get_filename_component(NON_GIT_REPOSITORY_ROOT "${REPOSITORY_ROOT}" ABSOLUTE)
 
 set(required_files
     "${ENGINE_SOURCE_DIR}/apps/core_app/main.c"
@@ -23,7 +24,7 @@ set(required_files
     "${ENGINE_SOURCE_DIR}/tests/test_core_app_naming_contract.cmake"
     "${ENGINE_SOURCE_DIR}/tests/test_core_app_target_contract.cmake"
     "${ENGINE_SOURCE_DIR}/tests/test_core_app_formal_assets.cmake"
-    "${REPOSITORY_ROOT}/.gitignore"
+    "${NON_GIT_REPOSITORY_ROOT}/.gitignore"
     "${PLAN_FILE}"
     "${DESIGN_FILE}")
 foreach(path IN LISTS required_files)
@@ -35,8 +36,8 @@ endforeach()
 set(legacy_paths
     "${ENGINE_SOURCE_DIR}/apps/game_app"
     "${ENGINE_SOURCE_DIR}/assets/game_app"
-    "${REPOSITORY_ROOT}/docs/design/game_app_integration.md"
-    "${REPOSITORY_ROOT}/docs/superpowers/plans/2026-11-03-cry-game-integration.md")
+    "${NON_GIT_REPOSITORY_ROOT}/docs/design/game_app_integration.md"
+    "${NON_GIT_REPOSITORY_ROOT}/docs/superpowers/plans/2026-11-03-cry-game-integration.md")
 file(GLOB legacy_tests "${ENGINE_SOURCE_DIR}/tests/test_game_app_*")
 list(APPEND legacy_paths ${legacy_tests})
 foreach(path IN LISTS legacy_paths)
@@ -111,8 +112,8 @@ set(scan_files
     ${test_sources}
     "${ENGINE_SOURCE_DIR}/CMakeLists.txt"
     "${ENGINE_SOURCE_DIR}/tests/test_editor_scene.c"
-    "${REPOSITORY_ROOT}/.gitignore"
-    "${REPOSITORY_ROOT}/docs/design/editor_phase1.md"
+    "${NON_GIT_REPOSITORY_ROOT}/.gitignore"
+    "${NON_GIT_REPOSITORY_ROOT}/docs/design/editor_phase1.md"
     "${PLAN_FILE}"
     "${DESIGN_FILE}")
 set(errors "")
@@ -234,12 +235,24 @@ file(READ "${ENGINE_SOURCE_DIR}/apps/core_app/core_app.c" app_source)
 if(NOT app_source MATCHES "COREAPPTRACE" OR NOT app_source MATCHES "core-app-scenario")
     message(FATAL_ERROR "application must use COREAPPTRACE and core-app-scenario")
 endif()
-if(NOT EXISTS "${REPOSITORY_ROOT}/.git")
-    message(STATUS "CORE_APP_TRACKING_UNVERIFIED: ${REPOSITORY_ROOT}/.git is absent")
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
-        cmake_language(EXIT 77)
+unset(ENV{GIT_DIR})
+unset(ENV{GIT_WORK_TREE})
+set(ENV{LC_ALL} "C")
+execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${REPOSITORY_ROOT}" rev-parse --git-dir
+    RESULT_VARIABLE git_probe_result
+    OUTPUT_VARIABLE git_probe_output
+    ERROR_VARIABLE git_probe_error)
+set(git_probe_log "${git_probe_output}${git_probe_error}")
+if(NOT git_probe_result EQUAL 0)
+    if("${git_probe_log}" MATCHES "fatal: not a git repository \\(or any of the parent directories\\): \\.git")
+        message(STATUS "CORE_APP_TRACKING_UNVERIFIED: ${REPOSITORY_ROOT} is not a Git repository")
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+            cmake_language(EXIT 77)
+        endif()
+        message(FATAL_ERROR "UNVERIFIED: core_app tracking requires Git metadata; this CMake cannot emit skip code 77")
     endif()
-    message(FATAL_ERROR "UNVERIFIED: core_app tracking requires Git metadata; this CMake cannot emit skip code 77")
+    message(FATAL_ERROR "git rev-parse --git-dir failed: ${git_probe_log}")
 endif()
 execute_process(
     COMMAND "${GIT_EXECUTABLE}" -C "${REPOSITORY_ROOT}" ls-files -- engine/assets/core_app

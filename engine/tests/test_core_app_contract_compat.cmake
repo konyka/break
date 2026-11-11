@@ -132,7 +132,7 @@ run_case(formal_git_error FAIL "${CMAKE_COMMAND}"
     "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
     "-DGIT_EXECUTABLE=${CMAKE_COMMAND}"
     -P "${formal_contract}")
-expect_log_contains(formal_git_error "git ls-files failed:")
+expect_log_contains(formal_git_error "git rev-parse --git-dir failed:")
 expect_log_lacks(formal_git_error "CORE_APP_TRACKING_UNVERIFIED")
 run_case(naming_git_error FAIL "${CMAKE_COMMAND}"
     "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
@@ -141,7 +141,7 @@ run_case(naming_git_error FAIL "${CMAKE_COMMAND}"
     "-DDESIGN_FILE=${DESIGN_FILE}"
     "-DGIT_EXECUTABLE=${CMAKE_COMMAND}"
     -P "${naming_contract}")
-expect_log_contains(naming_git_error "git ls-files failed:")
+expect_log_contains(naming_git_error "git rev-parse --git-dir failed:")
 expect_log_lacks(naming_git_error "CORE_APP_TRACKING_UNVERIFIED")
 
 set(missing_index "${WORK}/missing.index")
@@ -193,6 +193,74 @@ run_case(formal_extra_asset FAIL "${CMAKE_COMMAND}" -E env "GIT_INDEX_FILE=${ext
     "${CMAKE_COMMAND}" "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
     "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}" -P "${formal_contract}")
 expect_log_contains(formal_extra_asset "formal asset tracking mismatch: 12 tracked, 11 required")
+expect_log_lacks(formal_extra_asset "CORE_APP_TRACKING_UNVERIFIED")
+run_case(naming_extra_asset FAIL "${CMAKE_COMMAND}" -E env "GIT_INDEX_FILE=${extra_index}"
+    "${CMAKE_COMMAND}" "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
+    "-DREPOSITORY_ROOT=${REPOSITORY_ROOT}" "-DPLAN_FILE=${PLAN_FILE}"
+    "-DDESIGN_FILE=${DESIGN_FILE}" "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+    -P "${naming_contract}")
+expect_log_contains(naming_extra_asset "core_app asset tracking mismatch: 12 tracked, 11 required")
+expect_log_lacks(naming_extra_asset "CORE_APP_TRACKING_UNVERIFIED")
+
+if(UNIX)
+    execute_process(COMMAND id -u RESULT_VARIABLE id_result OUTPUT_VARIABLE id_output
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(id_result EQUAL 0 AND NOT id_output STREQUAL "0")
+        set(permission_formal_root "${WORK}/permission-formal")
+        set(permission_naming_blocked "${archive_root}/permission-blocked")
+        set(permission_naming_root "${permission_naming_blocked}/..")
+        file(MAKE_DIRECTORY "${permission_formal_root}/engine")
+        file(MAKE_DIRECTORY "${permission_naming_blocked}")
+        set(permission_fixture "${WORK}/permission-fixture")
+        set(permission_build "${WORK}/permission-build")
+        file(MAKE_DIRECTORY "${permission_fixture}")
+        set(permission_source "${permission_fixture}/CMakeLists.txt")
+        file(WRITE "${permission_source}" "cmake_minimum_required(VERSION 3.25)\n")
+        file(APPEND "${permission_source}" "project(core_app_permission_compat NONE)\nenable_testing()\n")
+        file(APPEND "${permission_source}"
+            "add_test(NAME test_core_app_formal_permission COMMAND \"${CMAKE_COMMAND}\"\n")
+        file(APPEND "${permission_source}"
+            "  \"-DENGINE_SOURCE_DIR=${permission_formal_root}/engine\" \"-DGIT_EXECUTABLE=${GIT_EXECUTABLE}\"\n")
+        file(APPEND "${permission_source}" "  -P \"${formal_contract}\")\n")
+        file(APPEND "${permission_source}"
+            "add_test(NAME test_core_app_naming_permission COMMAND \"${CMAKE_COMMAND}\"\n")
+        file(APPEND "${permission_source}"
+            "  \"-DENGINE_SOURCE_DIR=${archive_engine}\" \"-DREPOSITORY_ROOT=${permission_naming_root}\"\n")
+        file(APPEND "${permission_source}"
+            "  \"-DPLAN_FILE=${archive_plan}\" \"-DDESIGN_FILE=${archive_design}\"\n")
+        file(APPEND "${permission_source}"
+            "  \"-DGIT_EXECUTABLE=${GIT_EXECUTABLE}\" -P \"${archive_engine}/tests/test_core_app_naming_contract.cmake\")\n")
+        file(APPEND "${permission_source}"
+            "set_tests_properties(test_core_app_formal_permission test_core_app_naming_permission\n")
+        file(APPEND "${permission_source}"
+            "  PROPERTIES SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION \"CORE_APP_TRACKING_UNVERIFIED\")\n")
+        run_case(permission_fixture_configure PASS "${CMAKE_COMMAND}"
+            -S "${permission_fixture}" -B "${permission_build}")
+        file(CHMOD "${permission_formal_root}" PERMISSIONS OWNER_READ OWNER_WRITE)
+        file(CHMOD "${permission_naming_blocked}" PERMISSIONS OWNER_READ OWNER_WRITE)
+        run_case(permission_git_probe FAIL "${CMAKE_COMMAND}" -E env
+            --unset=GIT_DIR --unset=GIT_WORK_TREE
+            "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "LC_ALL=C"
+            "${GIT_EXECUTABLE}" -C "${permission_formal_root}" rev-parse --git-dir)
+        expect_log_contains(permission_git_probe "cannot change to")
+        run_case(formal_permission FAIL "${CMAKE_COMMAND}" -E env
+            "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
+            --test-dir "${permission_build}" -R "^test_core_app_formal_permission$" -V)
+        expect_log_contains(formal_permission "cannot change to")
+        expect_log_contains(formal_permission "git rev-parse --git-dir failed:")
+        expect_log_lacks(formal_permission "CORE_APP_TRACKING_UNVERIFIED")
+        run_case(naming_permission FAIL "${CMAKE_COMMAND}" -E env
+            "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
+            --test-dir "${permission_build}" -R "^test_core_app_naming_permission$" -V)
+        expect_log_contains(naming_permission "cannot change to")
+        expect_log_contains(naming_permission "git rev-parse --git-dir failed:")
+        expect_log_lacks(naming_permission "CORE_APP_TRACKING_UNVERIFIED")
+        file(CHMOD "${permission_formal_root}" PERMISSIONS
+            OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+        file(CHMOD "${permission_naming_blocked}" PERMISSIONS
+            OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+    endif()
+endif()
 
 set(archive_build "${WORK}/archive-build")
 run_case(archive_configure PASS "${CMAKE_COMMAND}" -E env
