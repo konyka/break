@@ -380,7 +380,7 @@ static bool bake_text_assets(const char *output) {
          "    this is not valid Lua\n"
          "end\n"},
         {"deterministic.scenario",
-         "game-app-scenario 1\n"
+         "core-app-scenario 1\n"
          "seed 12648430\n"
          "fixed-dt-ns 16666667\n"
          "frame 0 enter 1\n"
@@ -388,7 +388,7 @@ static bool bake_text_assets(const char *output) {
          "frame 60 checkpoint 1\n"
          "frame 120 end\n"},
         {"load_unload.scenario",
-         "game-app-scenario 1\n"
+         "core-app-scenario 1\n"
          "seed 12648430\n"
          "fixed-dt-ns 16666667\n"
          "frame 1 load\n"
@@ -397,7 +397,7 @@ static bool bake_text_assets(const char *output) {
          "frame 4 unload\n"
          "frame 5 end\n"},
         {"rollback.scenario",
-         "game-app-scenario 1\n"
+         "core-app-scenario 1\n"
          "seed 12648430\n"
          "fixed-dt-ns 16666667\n"
          "frame 1 checkpoint 7\n"

@@ -200,7 +200,7 @@ static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
         break_runtime_message_release(message);
         break_runtime_io_request_release(candidate->request);
         candidate->request = NULL;
-        result = app_trace(app, "GAMEAPPTRACE version=1 event=io_quiesced\n");
+        result = app_trace(app, "COREAPPTRACE version=1 event=io_quiesced\n");
         if (result != BREAK_RUNTIME_OK) *runtime_fatal = true;
         return result != BREAK_RUNTIME_OK ? result : BREAK_RUNTIME_TIMEOUT;
     }
@@ -550,18 +550,18 @@ static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_roo
         if (result == BREAK_RUNTIME_OK) result = core_app_audio_drain_record(&app->audio, 1u);
         if (result != BREAK_RUNTIME_OK) return result;
         result = app_trace(app,
-            "GAMEAPPTRACE version=1 event=level_unloaded generation=%" PRIu64 "\n",
+            "COREAPPTRACE version=1 event=level_unloaded generation=%" PRIu64 "\n",
             previous_generation);
         if (result != BREAK_RUNTIME_OK) return result;
         core_app_level_destroy(previous);
         app->retired_level = NULL;
         result = app_trace(app,
-            "GAMEAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
+            "COREAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
             previous_generation);
         if (result != BREAK_RUNTIME_OK) return result;
     }
     result = app_trace(app,
-        "GAMEAPPTRACE version=1 event=level_loaded generation=%" PRIu64 "\n",
+        "COREAPPTRACE version=1 event=level_loaded generation=%" PRIu64 "\n",
         candidate->generation);
     if (result != BREAK_RUNTIME_OK) return result;
     return core_app_render_level_committed(&app->render, &candidate->render);
@@ -584,10 +584,10 @@ static BreakRuntimeError core_app_unload_level(CoreApp *app, bool with_audio) {
     u64 generation = level->generation;
     core_app_level_destroy(level);
     result = app_trace(app,
-        "GAMEAPPTRACE version=1 event=level_unloaded generation=%" PRIu64 "\n",
+        "COREAPPTRACE version=1 event=level_unloaded generation=%" PRIu64 "\n",
         generation);
     BreakRuntimeError destroyed_result = app_trace(app,
-        "GAMEAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
+        "COREAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
         generation);
     return result != BREAK_RUNTIME_OK ? result : destroyed_result;
 }
@@ -662,7 +662,7 @@ static BreakRuntimeError core_app_stop_io(CoreApp *app) {
     memset(&stats, 0, sizeof(stats));
     result = break_runtime_io_stats(&stats);
     if (result != BREAK_RUNTIME_OK || stats.active != 0u) return BREAK_RUNTIME_FAILED;
-    return app_trace(app, "GAMEAPPTRACE version=1 event=io_stopped active=0\n");
+    return app_trace(app, "COREAPPTRACE version=1 event=io_stopped active=0\n");
 }
 
 static BreakRuntimeError app_level_join_cb(void *user) {
@@ -742,7 +742,7 @@ static bool app_parse_scenario(CoreApp *app) {
         if (length > 0u && line[length - 1u] == '\r') line[length - 1u] = '\0';
         if (line[0] == '\0' || line[0] == '#') continue;
         if (line_number == 1u) {
-            if (strcmp(line, "game-app-scenario 1") != 0) goto cleanup;
+            if (strcmp(line, "core-app-scenario 1") != 0) goto cleanup;
             continue;
         }
         if (line_number == 2u) {
@@ -830,7 +830,7 @@ static void app_rollback(CoreApp *app) {
         u64 generation = level->generation;
         core_app_level_destroy(level);
         (void)app_trace(app,
-            "GAMEAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
+            "COREAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
             generation);
     }
     if (app->retired_level) {
@@ -839,7 +839,7 @@ static void app_rollback(CoreApp *app) {
         u64 generation = level->generation;
         core_app_level_destroy(level);
         (void)app_trace(app,
-            "GAMEAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
+            "COREAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
             generation);
     }
     (void)core_app_stop_io(app);
@@ -847,7 +847,7 @@ static void app_rollback(CoreApp *app) {
         vfs_destroy(app->vfs);
         app->vfs = NULL;
     }
-    (void)app_trace(app, "GAMEAPPTRACE version=1 event=runtime_failed\n");
+    (void)app_trace(app, "COREAPPTRACE version=1 event=runtime_failed\n");
 }
 
 BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) {
@@ -897,7 +897,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (result != BREAK_RUNTIME_OK) goto finished;
     result = break_runtime_coordinator_start(app->coordinator);
     if (result != BREAK_RUNTIME_OK) goto finished;
-    result = app_trace(app, "GAMEAPPTRACE version=1 event=runtime_running\n");
+    result = app_trace(app, "COREAPPTRACE version=1 event=runtime_running\n");
     if (result != BREAK_RUNTIME_OK) goto finished;
 
     bool ended = false;
@@ -924,13 +924,13 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                 u64 generation = app->level ? app->level->generation : 0u;
                 if (committed || runtime_fatal) {
                     (void)app_trace(app,
-                        "GAMEAPPTRACE version=1 event=runtime_fault stage=%s generation=%" PRIu64
+                        "COREAPPTRACE version=1 event=runtime_fault stage=%s generation=%" PRIu64
                         "\n", load_stage, generation);
                     stage = load_stage;
                     goto finished;
                 }
                 (void)app_trace(app,
-                    "GAMEAPPTRACE version=1 event=load_rejected generation=%" PRIu64
+                    "COREAPPTRACE version=1 event=load_rejected generation=%" PRIu64
                     " stage=%s\n", generation, load_stage);
                 fprintf(stderr, "core_app: stage=%s level load rejected\n", load_stage);
                 if (!had_level) {
@@ -969,7 +969,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
         stage = "shutdown";
         goto finished;
     }
-    result = app_trace(app, "GAMEAPPTRACE version=1 event=runtime_stopped\n");
+    result = app_trace(app, "COREAPPTRACE version=1 event=runtime_stopped\n");
     if (result != BREAK_RUNTIME_OK) {
         stage = "trace";
         goto finished;

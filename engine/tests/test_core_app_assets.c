@@ -615,6 +615,9 @@ TEST(lua_assets_execute_and_broken_source_is_rejected) {
 }
 
 TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption) {
+    static const u8 expected_magic[8] = {
+        'C', 'O', 'R', 'E', 'C', 'K', 'P', 'T'
+    };
     char dir[512], backup[512];
     test_tmp(dir, sizeof(dir), "core_app_checkpoint_current");
     test_tmp(backup, sizeof(backup), "core_app_checkpoint_backup");
@@ -629,6 +632,7 @@ TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption) {
     ASSERT_EQ(core_app_checkpoint_write_manifest_ex(dir, &file, 1u, 1u, &initial_commit),
               BREAK_RUNTIME_OK);
     ASSERT_EQ(initial_commit, CORE_APP_CHECKPOINT_COMMIT_DURABLE);
+    ASSERT_EQ(core_app_checkpoint_probe(dir), BREAK_RUNTIME_OK);
     u64 before_hash = core_app_checkpoint_manifest_hash(dir);
     ASSERT_TRUE(before_hash != 0u);
     ASSERT_EQ(test_copy_checkpoint(dir, backup), 0);
@@ -638,7 +642,7 @@ TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption) {
                                   TEST_MANIFEST_CAP, &manifest_size);
     ASSERT_NOT_NULL(manifest);
     ASSERT_EQ(manifest_size, 40u + 88u);
-    ASSERT_TRUE(memcmp(manifest, "GAMECKPT\0", 8) == 0);
+    ASSERT_TRUE(memcmp(manifest, expected_magic, sizeof(expected_magic)) == 0);
     ASSERT_EQ(read_u32(manifest + 8), 1u);
     ASSERT_EQ(read_u32(manifest + 12), 40u);
     ASSERT_EQ(read_u64(manifest + 16), (u64)manifest_size);
@@ -674,6 +678,64 @@ TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption) {
     ASSERT_EQ(prepare_directory(backup), 0);
     ASSERT_EQ(TEST_RMDIR(dir), 0);
     ASSERT_EQ(TEST_RMDIR(backup), 0);
+}
+
+static int test_write_single_file_checkpoint(const char *dir) {
+    const u8 payload[] = {1u, 2u, 3u, 4u};
+    CoreAppCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+                                  .hash = 0u, .name = "runtime_1.bin"};
+    file.hash = test_fnv1a64(payload, sizeof(payload));
+    if (test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)) != 0)
+        return -1;
+    return core_app_checkpoint_write_manifest(dir, &file, 1u, 1u) == BREAK_RUNTIME_OK
+        ? 0 : -1;
+}
+
+TEST(checkpoint_rejects_legacy_magic) {
+    static const u8 old_magic[8] = {
+        'G', 'A', 'M', 'E', 'C', 'K', 'P', 'T'
+    };
+    char dir[512];
+    test_tmp(dir, sizeof(dir), "core_app_checkpoint_old_magic");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(test_write_single_file_checkpoint(dir), 0);
+    usize size = 0;
+    u8 *manifest = test_read_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                  TEST_MANIFEST_CAP, &size);
+    ASSERT_NOT_NULL(manifest);
+    ASSERT_TRUE(size >= sizeof(old_magic));
+    memcpy(manifest, old_magic, sizeof(old_magic));
+    ASSERT_EQ(test_write_checkpoint_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                         manifest, size), 0);
+    free(manifest);
+    ASSERT_EQ(core_app_checkpoint_probe(dir), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+}
+
+TEST(checkpoint_rejects_legacy_manifest_name) {
+    static const char old_manifest_name[] = {
+        'm', 'a', 'n', 'i', 'f', 'e', 's', 't', '.', 'g', 'a', 'm', 'e', '\0'
+    };
+    char dir[512];
+    test_tmp(dir, sizeof(dir), "core_app_checkpoint_old_manifest");
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(test_write_single_file_checkpoint(dir), 0);
+    usize size = 0;
+    u8 *manifest = test_read_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                  TEST_MANIFEST_CAP, &size);
+    ASSERT_NOT_NULL(manifest);
+    ASSERT_EQ(test_write_checkpoint_file(dir, old_manifest_name, manifest, size), 0);
+    free(manifest);
+    if (strcmp(CORE_APP_CHECKPOINT_MANIFEST_NAME, old_manifest_name) != 0) {
+        char current_path[1024];
+        join_path(current_path, sizeof(current_path), dir,
+                  CORE_APP_CHECKPOINT_MANIFEST_NAME);
+        ASSERT_EQ(remove(current_path), 0);
+    }
+    ASSERT_EQ(core_app_checkpoint_probe(dir), BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(prepare_directory(dir), 0);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
 }
 
 TEST(checkpoint_rejects_unsafe_names_and_overflow_before_commit) {
@@ -787,7 +849,7 @@ TEST(checkpoint_manifest_name_length_overload_is_distinct_from_corruption) {
 }
 
 TEST(checkpoint_reserved_manifest_aliases_are_rejected_without_touching_old_generation) {
-    static const char *const aliases[] = {"MANIFEST.GAME", "manifest.game."};
+    static const char *const aliases[] = {"MANIFEST.CORE", "manifest.core."};
     const u8 payload[] = {1u, 2u, 3u, 4u};
     for (usize i = 0; i < sizeof(aliases) / sizeof(aliases[0]); ++i) {
         char dir[512];
@@ -1147,6 +1209,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(wav_is_canonical_44100_hz_mono_pcm16);
     RUN_TEST(lua_assets_execute_and_broken_source_is_rejected);
     RUN_TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption);
+    RUN_TEST(checkpoint_rejects_legacy_magic);
+    RUN_TEST(checkpoint_rejects_legacy_manifest_name);
     RUN_TEST(checkpoint_basename_63_is_valid_and_64_is_overload);
     RUN_TEST(checkpoint_manifest_name_length_overload_is_distinct_from_corruption);
     RUN_TEST(checkpoint_rejects_unsafe_names_and_overflow_before_commit);

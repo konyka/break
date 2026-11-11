@@ -39,7 +39,7 @@ BreakRuntimeError core_app_audio_drain_record(CoreAppAudio *audio, u32 budget) {
         CoreAppAudioCommand command = audio->commands[audio->head];
         const char *kind = command.kind == CORE_APP_AUDIO_LISTENER ? "listener" : "stop";
         if (fprintf(audio->trace,
-                    "GAMEAPPTRACE version=1 event=audio kind=%s generation=%" PRIu64
+                    "COREAPPTRACE version=1 event=audio kind=%s generation=%" PRIu64
                     "\n", kind, command.generation) < 0 ||
             fflush(audio->trace) != 0) {
             return BREAK_RUNTIME_FAILED;

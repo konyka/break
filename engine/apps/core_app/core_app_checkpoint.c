@@ -11,7 +11,7 @@
 #define CORE_APP_CHECKPOINT_MANIFEST_MAX_BYTES \
     (CORE_APP_CHECKPOINT_HEADER_BYTES + CORE_APP_CHECKPOINT_MAX_FILES * CORE_APP_CHECKPOINT_RECORD_BYTES)
 
-static const u8 k_magic[8] = {'G', 'A', 'M', 'E', 'C', 'K', 'P', 'T'};
+static const u8 k_magic[8] = {'C', 'O', 'R', 'E', 'C', 'K', 'P', 'T'};
 
 typedef struct {
     u64 generation;

@@ -215,7 +215,7 @@ u64 core_app_checkpoint_manifest_hash(const char *directory);
 
 ### 确定性场景文本合同
 
-文件首行必须是 `version 1`，之后每行恰好一个事件；空行和 `#` 注释跳过。总字节不超过 64 KiB、事件不超过 4096、单行不超过 511 字节，路径 token 不超过 255 字节，任何超限整份 `INVALID`，不执行已解析前缀。支持以下精确文法：
+文件首行必须是 `core-app-scenario 1`，之后每行恰好一个事件；空行和 `#` 注释跳过。总字节不超过 64 KiB、事件不超过 4096、单行不超过 511 字节，路径 token 不超过 255 字节，任何超限整份 `INVALID`，不执行已解析前缀。支持以下精确文法：
 
 ```text
 <tick> key <name> <0|1>
@@ -235,7 +235,7 @@ u64 core_app_checkpoint_manifest_hash(const char *directory);
 
 ### Checkpoint 合同
 
-目录内有 `manifest.game` 和带 save generation 的 `scene_<g>.bscn`、`flow_<g>.fg`、`actors_<g>.sidecar`、`state_<g>.bin`、`runtime_<g>.bin`。manifest 为版本化小端二进制，含精确总长、generation、每文件种类/长度/FNV-1a-64 和相对 basename；FNV 只检损，不作为安全认证。文件先完整写入并重新读取验证，manifest 最后通过 `PlatformAtomicWriter` 提交；失败删除本 generation 新文件，旧 manifest 与其文件不变。
+目录内有 `manifest.core` 和带 save generation 的 `scene_<g>.bscn`、`flow_<g>.fg`、`actors_<g>.sidecar`、`state_<g>.bin`、`runtime_<g>.bin`。manifest 以固定 8 字节 `CORECKPT` 开头，为版本化小端二进制，含精确总长、generation、每文件种类/长度/FNV-1a-64 和相对 basename；FNV 只检损，不作为安全认证。文件先完整写入并重新读取验证，manifest 最后通过 `PlatformAtomicWriter` 提交；失败删除本 generation 新文件，旧 manifest 与其文件不变。
 
 `runtime_<g>.bin` 只保存有所有权的 POD：固定 tick、玩家/敌人 CharacterController、相机、昼夜时间、动态障碍的稳定 id/矩形/alive、背包公开状态和 checkpoint generation。Flow pending queue、Lua VM/stack、AI cache、输入瞬态、RHI handle、音频 source id、网络 connection key 一律不保存。加载重建 AI runtime 并使旧路径失效，重新加载 Lua 源并创建新 host handle，重新创建 GPU/音频资源；网络默认仍关闭。
 

@@ -2,9 +2,9 @@
 
 日期：2026-11-06
 
-## Core App Task 1 命名边界（2026-11-11）
+## Core App Task 2 数据格式与命名边界（2026-11-11）
 
-本步只迁移尚未进入 master 的 P12 应用及真实引用，应用、target、接口、测试和 11 个正式资产路径统一使用 `core_app`/`CoreApp`/`CORE_APP` 体系；P0–P11 公共 API/ABI 与链接关系不变。数据格式在本步不变：`GAMECKPT`、`manifest.game`、`GAMEAPPTRACE` 和 `game-app-scenario 1` 仅作为既有格式声明/使用暂时保留，Task 2 将一次性迁移并拒绝旧格式，本步不增加双格式兼容路径。命名合同中的上述格式豁免与既有兼容 API、原型字符串、当前工作树/分支名均按精确字面量审计，历史报告不进入扫描。
+本步在 Task 1 命名边界上一次性迁移 P12 数据格式：checkpoint magic 为固定 8 字节 `CORECKPT`（无额外 NUL），manifest 文件名为 `manifest.core`，trace 首字段为 `COREAPPTRACE version=1`，scenario 首行为 `core-app-scenario 1`。reader 只接受这些新标识并拒绝旧标识，不存在双格式或旧格式回退。manifest 的字段宽度、序列化偏移、FNV-1a-64、generation、错误码、三态提交结果与原子提交语义不变；事务加载、mount 隔离、commit fatal、IO quiescence、sticky FAILED 和逆序销毁行为不变。
 
 当前映射为：可执行应用 `core_app`、静态库 `core_app_runtime`、离线 baker `core_app_asset_bake`；应用、测试和资产根目录分别为 `engine/apps/core_app`、`engine/tests/test_core_app_*`、`engine/assets/core_app`；新构建目录为 `build-core-integration-*`，测试环境变量采用 `CORE_APP_*`。runtime 的 configure-time `SOURCES` property 必须恰好等于 `core_app.c`、`core_app_audio.c`、`core_app_render.c`、`core_app_checkpoint.c` 四个新源文件，不能通过追加 `target_sources` 绕过。
 
@@ -12,9 +12,13 @@
 
 本步验证仍为 Linux CPU/record 证据；record/null 不构成 GPU、声卡或听测证据。
 
-以下区域完整保留 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
+以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
 <!-- CORE_APP_HISTORY_BEGIN -->
+## Core App Task 1 命名边界（2026-11-11）
+
+本步只迁移尚未进入 master 的 P12 应用及真实引用，应用、target、接口、测试和 11 个正式资产路径统一使用 `core_app`/`CoreApp`/`CORE_APP` 体系；P0–P11 公共 API/ABI 与链接关系不变。数据格式在本步不变：`GAMECKPT`、`manifest.game`、`GAMEAPPTRACE` 和 `game-app-scenario 1` 仅作为既有格式声明/使用暂时保留，Task 2 将一次性迁移并拒绝旧格式，本步不增加双格式兼容路径。命名合同中的上述格式豁免与既有兼容 API、原型字符串、当前工作树/分支名均按精确字面量审计，历史报告不进入扫描。
+
 # Game App 真实集成
 
 日期：2026-11-06

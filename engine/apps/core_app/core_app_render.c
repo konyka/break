@@ -58,7 +58,7 @@ BreakRuntimeError core_app_render_level_committed(CoreAppRender *render,
         if (resource->generation != level->generation) return BREAK_RUNTIME_STALE;
         BreakRuntimeError result = render_trace(
             render,
-            "GAMEAPPTRACE version=1 event=render kind=resource generation=%" PRIu64
+            "COREAPPTRACE version=1 event=render kind=resource generation=%" PRIu64
             " id=%" PRIu64 "\n",
             resource->generation, resource->id);
         if (result != BREAK_RUNTIME_OK) return result;
@@ -75,11 +75,11 @@ BreakRuntimeError core_app_render_record_frame(CoreAppRender *render,
         return BREAK_RUNTIME_REJECTED;
     }
     BreakRuntimeError result = render_trace(
-        render, "GAMEAPPTRACE version=1 event=frame frame=%" PRIu64
+        render, "COREAPPTRACE version=1 event=frame frame=%" PRIu64
         " generation=%" PRIu64 "\n", frame->frame, frame->generation);
     if (result != BREAK_RUNTIME_OK) return result;
     result = render_trace(
-        render, "GAMEAPPTRACE version=1 event=render kind=frame frame=%" PRIu64
+        render, "COREAPPTRACE version=1 event=render kind=frame frame=%" PRIu64
         " generation=%" PRIu64 "\n", frame->frame, frame->generation);
     if (result != BREAK_RUNTIME_OK) return result;
     render->last_frame = frame->frame;

@@ -153,19 +153,32 @@ endif()
 file(WRITE "${WORK}/unknown_actor/actors.sidecar" "${changed_sidecar}")
 file(REMOVE "${WORK}/missing_lua/player.lua")
 
+file(READ "${SCENARIO}" formal_scenario)
+if(NOT formal_scenario MATCHES "^core-app-scenario 1\n")
+    record_error("formal scenario does not start with core-app-scenario 1")
+endif()
+string(ASCII 71 65 77 69 65 80 80 84 82 65 67 69 legacy_trace_prefix)
+string(ASCII 103 97 109 101 45 97 112 112 45 115 99 101 110 97 114 105 111
+    legacy_scenario_prefix)
 run_app(load_unload "${ASSET_ROOT}" "${SCENARIO}" 0)
 set(normal_trace "${CORE_APP_LIFECYCLE_TRACE}")
 if(normal_trace STREQUAL "")
     record_error("load_unload: trace is absent; missing level_loaded/frame/audio listener/level_unloaded/runtime_stopped events")
 else()
+    if(NOT normal_trace MATCHES "^COREAPPTRACE version=1 event=runtime_running\n")
+        record_error("load_unload: first trace field is not COREAPPTRACE version=1: ${normal_trace}")
+    endif()
+    if(normal_trace MATCHES "^${legacy_trace_prefix}")
+        record_error("load_unload: legacy trace prefix was emitted: ${normal_trace}")
+    endif()
     set_property(GLOBAL PROPERTY CORE_APP_LIFECYCLE_REMAINDER "${normal_trace}")
-    expect_ordered("GAMEAPPTRACE version=1 event=runtime_running")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_loaded generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=frame frame=1 generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=audio kind=listener generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_unloaded generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_loaded generation=2")
-    expect_ordered("GAMEAPPTRACE version=1 event=runtime_stopped")
+    expect_ordered("COREAPPTRACE version=1 event=runtime_running")
+    expect_ordered("COREAPPTRACE version=1 event=level_loaded generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=frame frame=1 generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=audio kind=listener generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=level_unloaded generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=level_loaded generation=2")
+    expect_ordered("COREAPPTRACE version=1 event=runtime_stopped")
     if(NOT normal_trace MATCHES "event=render kind=resource generation=1 id=[1-9][0-9]*")
         record_error("load_unload: record render emitted no nonzero generation-1 resource id")
     endif()
@@ -177,6 +190,19 @@ else()
     endif()
 endif()
 
+set(legacy_scenario "${WORK}/legacy.scenario")
+file(WRITE "${legacy_scenario}"
+    "${legacy_scenario_prefix} 1\nseed 12648430\nfixed-dt-ns 16666667\n"
+    "frame 1 load ${WORK}/good\n"
+    "frame 2 end\n")
+run_app(legacy_scenario "${WORK}/good" "${legacy_scenario}" 2)
+if(NOT CORE_APP_LIFECYCLE_STDERR MATCHES "stage=scenario")
+    record_error("legacy_scenario: rejection did not identify the scenario stage: ${CORE_APP_LIFECYCLE_STDERR}")
+endif()
+if(NOT CORE_APP_LIFECYCLE_TRACE STREQUAL "COREAPPTRACE version=1 event=runtime_failed\n")
+    record_error("legacy_scenario: rejection did not produce exactly the rollback trace: ${CORE_APP_LIFECYCLE_TRACE}")
+endif()
+
 expect_initial_failure(missing_bscn bscn "${WORK}/missing_bscn")
 expect_initial_failure(bad_flow flow "${WORK}/bad_flow")
 expect_initial_failure(unknown_actor actor "${WORK}/unknown_actor")
@@ -184,7 +210,7 @@ expect_initial_failure(missing_lua lua "${WORK}/missing_lua")
 
 set(replacement_scenario "${WORK}/replacement.scenario")
 file(WRITE "${replacement_scenario}"
-    "game-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
+    "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
     "frame 1 load ${WORK}/good\n"
     "frame 2 load ${WORK}/bad_flow\n"
     "frame 3 unload\n"
@@ -195,12 +221,12 @@ if(replacement_trace STREQUAL "")
     record_error("rejected_replacement: trace is absent; old-level retention was not exercised")
 else()
     set_property(GLOBAL PROPERTY CORE_APP_LIFECYCLE_REMAINDER "${replacement_trace}")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_loaded generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=frame frame=1 generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=load_rejected generation=1 stage=flow")
-    expect_ordered("GAMEAPPTRACE version=1 event=frame frame=2 generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_unloaded generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=runtime_stopped")
+    expect_ordered("COREAPPTRACE version=1 event=level_loaded generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=frame frame=1 generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=load_rejected generation=1 stage=flow")
+    expect_ordered("COREAPPTRACE version=1 event=frame frame=2 generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=level_unloaded generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=runtime_stopped")
     if(replacement_trace MATCHES "event=level_loaded generation=2|event=frame frame=2 generation=2")
         record_error("rejected_replacement: failed Flow candidate consumed/published generation 2: ${replacement_trace}")
     endif()
@@ -211,7 +237,7 @@ endif()
 
 set(crossref_scenario "${WORK}/crossref_replacement.scenario")
 file(WRITE "${crossref_scenario}"
-    "game-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
+    "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
     "frame 1 load ${WORK}/good\n"
     "frame 2 load ${WORK}/crossref_bscn\n"
     "frame 3 unload\n"
@@ -219,19 +245,19 @@ file(WRITE "${crossref_scenario}"
 run_app(crossref_replacement "${WORK}/good" "${crossref_scenario}" 0)
 set(crossref_trace "${CORE_APP_LIFECYCLE_TRACE}")
 set_property(GLOBAL PROPERTY CORE_APP_LIFECYCLE_REMAINDER "${crossref_trace}")
-expect_ordered("GAMEAPPTRACE version=1 event=level_loaded generation=1")
-expect_ordered("GAMEAPPTRACE version=1 event=frame frame=1 generation=1")
-expect_ordered("GAMEAPPTRACE version=1 event=load_rejected generation=1 stage=crossref")
-expect_ordered("GAMEAPPTRACE version=1 event=frame frame=2 generation=1")
-expect_ordered("GAMEAPPTRACE version=1 event=level_unloaded generation=1")
-expect_ordered("GAMEAPPTRACE version=1 event=runtime_stopped")
+expect_ordered("COREAPPTRACE version=1 event=level_loaded generation=1")
+expect_ordered("COREAPPTRACE version=1 event=frame frame=1 generation=1")
+expect_ordered("COREAPPTRACE version=1 event=load_rejected generation=1 stage=crossref")
+expect_ordered("COREAPPTRACE version=1 event=frame frame=2 generation=1")
+expect_ordered("COREAPPTRACE version=1 event=level_unloaded generation=1")
+expect_ordered("COREAPPTRACE version=1 event=runtime_stopped")
 if(crossref_trace MATCHES "event=level_loaded generation=2|event=frame frame=2 generation=2")
     record_error("crossref_replacement: rejected candidate consumed generation 2: ${crossref_trace}")
 endif()
 
 set(mount_scenario "${WORK}/mount_isolation.scenario")
 file(WRITE "${mount_scenario}"
-    "game-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
+    "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
     "frame 1 load ${WORK}/good\n")
 foreach(frame RANGE 2 18)
     file(APPEND "${mount_scenario}" "frame ${frame} load ${WORK}/missing_bscn\n")
@@ -246,17 +272,17 @@ if(mount_trace STREQUAL "")
     record_error("mount_isolation: trace is absent")
 else()
     set_property(GLOBAL PROPERTY CORE_APP_LIFECYCLE_REMAINDER "${mount_trace}")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_loaded generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=frame frame=1 generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=load_rejected generation=1 stage=bscn")
-    expect_ordered("GAMEAPPTRACE version=1 event=frame frame=2 generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_unloaded generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_destroyed generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_loaded generation=2")
-    expect_ordered("GAMEAPPTRACE version=1 event=frame frame=19 generation=2")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_unloaded generation=2")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_destroyed generation=2")
-    expect_ordered("GAMEAPPTRACE version=1 event=runtime_stopped")
+    expect_ordered("COREAPPTRACE version=1 event=level_loaded generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=frame frame=1 generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=load_rejected generation=1 stage=bscn")
+    expect_ordered("COREAPPTRACE version=1 event=frame frame=2 generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=level_unloaded generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=level_destroyed generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=level_loaded generation=2")
+    expect_ordered("COREAPPTRACE version=1 event=frame frame=19 generation=2")
+    expect_ordered("COREAPPTRACE version=1 event=level_unloaded generation=2")
+    expect_ordered("COREAPPTRACE version=1 event=level_destroyed generation=2")
+    expect_ordered("COREAPPTRACE version=1 event=runtime_stopped")
     expect_event_count(mount_replacement_old_destroy "${mount_trace}"
         "event=level_destroyed generation=1" 1)
     expect_event_count(mount_replacement_new_destroy "${mount_trace}"
@@ -274,7 +300,7 @@ endif()
 if(FAULT_SUPPORTED)
     set(commit_tail_scenario "${WORK}/commit_tail.scenario")
     file(WRITE "${commit_tail_scenario}"
-        "game-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
         "frame 1 load ${WORK}/good\n"
         "frame 2 load ${WORK}/good\n"
         "frame 3 unload\n"
@@ -305,7 +331,7 @@ if(FAULT_SUPPORTED)
 
     set(sticky_scenario "${WORK}/sticky_failed.scenario")
     file(WRITE "${sticky_scenario}"
-        "game-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
         "frame 1 load ${WORK}/good\n"
         "frame 2 end\n")
     run_fault_app(sticky_failed "${WORK}/good" "${sticky_scenario}" 2
@@ -326,7 +352,7 @@ if(FAULT_SUPPORTED)
 
     set(timeout_scenario "${WORK}/io_timeout.scenario")
     file(WRITE "${timeout_scenario}"
-        "game-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
         "frame 1 load ${WORK}/good\n"
         "frame 2 load ${WORK}/timeout_bscn\n"
         "frame 3 load ${WORK}/good\n"
@@ -336,15 +362,15 @@ if(FAULT_SUPPORTED)
         CORE_APP_TEST_SLOW_BSCN_US 6000000)
     set(timeout_trace "${CORE_APP_LIFECYCLE_TRACE}")
     set_property(GLOBAL PROPERTY CORE_APP_LIFECYCLE_REMAINDER "${timeout_trace}")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_loaded generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=frame frame=1 generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=io_quiesced")
-    expect_ordered("GAMEAPPTRACE version=1 event=load_rejected generation=1 stage=bscn")
-    expect_ordered("GAMEAPPTRACE version=1 event=frame frame=2 generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_unloaded generation=1")
-    expect_ordered("GAMEAPPTRACE version=1 event=level_loaded generation=2")
-    expect_ordered("GAMEAPPTRACE version=1 event=frame frame=3 generation=2")
-    expect_ordered("GAMEAPPTRACE version=1 event=runtime_stopped")
+    expect_ordered("COREAPPTRACE version=1 event=level_loaded generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=frame frame=1 generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=io_quiesced")
+    expect_ordered("COREAPPTRACE version=1 event=load_rejected generation=1 stage=bscn")
+    expect_ordered("COREAPPTRACE version=1 event=frame frame=2 generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=level_unloaded generation=1")
+    expect_ordered("COREAPPTRACE version=1 event=level_loaded generation=2")
+    expect_ordered("COREAPPTRACE version=1 event=frame frame=3 generation=2")
+    expect_ordered("COREAPPTRACE version=1 event=runtime_stopped")
     if(NOT timeout_trace MATCHES "event=io_stopped active=0\n")
         record_error("io_timeout: worker/request cleanup did not reach active=0: ${timeout_trace}")
     endif()

@@ -6,7 +6,7 @@
 #define CORE_APP_CHECKPOINT_VERSION 1u
 #define CORE_APP_CHECKPOINT_MAX_FILES 16u
 #define CORE_APP_CHECKPOINT_MAX_FILE_BYTES (64u << 20)
-#define CORE_APP_CHECKPOINT_MANIFEST_NAME "manifest.game"
+#define CORE_APP_CHECKPOINT_MANIFEST_NAME "manifest.core"
 
 typedef struct CoreAppCheckpointFile {
     u32 kind;
