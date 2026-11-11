@@ -4759,6 +4759,30 @@ endif()
     endif()
     add_dependencies(test_core_app_assets core_app_asset_bake)
     add_test(NAME test_core_app_assets COMMAND test_core_app_assets)
+    add_executable(test_core_app_assets_launch_diagnostic tests/test_core_app_assets.c)
+    set_property(TARGET test_core_app_assets_launch_diagnostic PROPERTY C_STANDARD 11)
+    target_include_directories(test_core_app_assets_launch_diagnostic PRIVATE ${TEST_INCLUDE_DIRS})
+    set(CORE_APP_MISSING_BAKER
+        "${CMAKE_CURRENT_BINARY_DIR}/core_app_asset_bake_diagnostic_missing${CMAKE_EXECUTABLE_SUFFIX}")
+    target_compile_definitions(test_core_app_assets_launch_diagnostic PRIVATE
+        CORE_APP_ASSET_BAKE_EXECUTABLE="${CORE_APP_MISSING_BAKER}"
+        CORE_APP_FORMAL_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app")
+    target_link_libraries(test_core_app_assets_launch_diagnostic PRIVATE core_app_runtime m)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_definitions(test_core_app_assets_launch_diagnostic PRIVATE
+            CORE_APP_TEST_WRAP_FS=1)
+        target_link_options(test_core_app_assets_launch_diagnostic PRIVATE
+            "-Wl,--wrap=fsync" "-Wl,--wrap=write" "-Wl,--wrap=rename")
+    endif()
+    add_test(NAME test_core_app_baker_diagnostics
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DCORE_APP_ASSET_BAKE=$<TARGET_FILE:core_app_asset_bake>
+            -DCORE_APP_ASSET_TEST=$<TARGET_FILE:test_core_app_assets>
+            -DCORE_APP_ASSET_LAUNCH_TEST=$<TARGET_FILE:test_core_app_assets_launch_diagnostic>
+            -DCORE_APP_MISSING_BAKER=${CORE_APP_MISSING_BAKER}
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_baker_diagnostics
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_baker_diagnostics.cmake)
     add_test(NAME test_core_app_formal_asset_tracking
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -4772,8 +4796,9 @@ endif()
             -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/core_app_integration.md
             -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_naming_contract.cmake)
-    set_tests_properties(test_core_app_assets test_core_app_formal_asset_tracking
-        test_core_app_naming_contract PROPERTIES LABELS "headless;core_app;assets")
+    set_tests_properties(test_core_app_assets test_core_app_baker_diagnostics
+        test_core_app_formal_asset_tracking test_core_app_naming_contract
+        PROPERTIES LABELS "headless;core_app;assets")
     set_tests_properties(test_core_app_nm_missing test_core_app_nm_unsupported
         test_core_app_formal_asset_tracking test_core_app_naming_contract
         PROPERTIES

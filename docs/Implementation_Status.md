@@ -1,3 +1,10 @@
+## 当前进展：Core App Metal/APFS 验收与 Windows 诊断（2026-11-11）
+
+- Core App CI Task 1–3 的实现及独立规格/质量评审均已通过。nested 合同转发有效后端与真实 SDK 路径，并要求缺符号是唯一错误；原生 macOS Metal run `43004390668` 的 job `130468130703` 已实际执行 assets 17/17，以及 Core App 9 项合同的 6 PASS＋3 个明确 nm SKIP，target、nested、wrapped、compat、正式资产和命名均通过。这是 Metal 编译与 CPU/合同证据，不是 Metal GPU 运行证据。
+- macOS reserved-alias 问题只修改了测试夹具，未修改 checkpoint writer、API/ABI 或序列化。修复后的原生 APFS assets 为 17/17；独立变异分支 `core-app-ci-apfs-red` 的 run `43004881342`、job `130469756286` 恢复旧 `"wb"` 预写后精确复现旧 manifest 哈希破坏，结果为 16 PASS＋1 FAIL。删除该预写后的同一实现即为上述 17/17 GREEN。
+- Windows 仍待真实修复：run `43004390668` 的 job `130468130431` 中，直接 baker 返回 0，但资产测试内的 `ensure_baked()` 失败（9 PASS＋7 FAIL）。诊断提交 `58e5e4fa` 正在独立评审，尚未声称修复 prepare/system/path 或恢复 CI。D3D12 run `43004390556` 另有 compat 生成测试 `Not Run` 与归档缺少 Agility DLL 的独立问题；将先取得完整 `-V` 与目录证据，再分别制定最小修复，不与 baker 混淆。
+- Task 4 当前本机非图形回归为 **355 项入选、351 PASS、4 个文档化 SKIP、0 FAIL**。所有构建和并行 CTest 使用 `-j3`。sanitizer、no-tests、显式 fuzz、完整 Windows/macOS/D3D12 lane 与最终 master CI 仍待完成。临时验证分支及其触发配置不会合入 master；未创建 PR。
+
 ## 当前待办：Core App 合入后的跨平台 CI（2026-11-11）
 
 - 主 run `42967766610` 与 D3D12 run `42967766619` 当前均为 FAILURE，不能用此前 `d402a375` 的全绿覆盖。失败涉及旧 CMake 的 UNVERIFIED skip 回退、无 `.git` 的 clean-room 资产清单、nested Vulkan 配置，以及 Windows baker 和 macOS manifest alias；具体根因正在按日志分项确认，尚未把任何一项写成已修复。

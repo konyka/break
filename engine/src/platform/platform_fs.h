@@ -93,7 +93,21 @@ typedef enum PlatformAtomicCommitResult {
 } PlatformAtomicCommitResult;
 
 typedef struct PlatformAtomicWriter PlatformAtomicWriter;
+typedef struct PlatformAtomicWriterDiagnostic {
+    const char *step;
+    i64 raw_result;
+    u64 os_error;
+    int crt_error;
+    u64 got;
+    u64 expected;
+    char temporary_path[PLATFORM_FS_PATH_CAPACITY];
+    char target_path[PLATFORM_FS_PATH_CAPACITY];
+} PlatformAtomicWriterDiagnostic;
 PlatformAtomicWriter *platform_atomic_writer_open(const char *path);     /* NULL on error */
+/* Same open contract, with optional caller-owned first-failure diagnostics.
+ * The diagnostic must outlive the writer; step points to static storage. */
+PlatformAtomicWriter *platform_atomic_writer_open_diagnostic(
+    const char *path, PlatformAtomicWriterDiagnostic *diagnostic);
 bool platform_atomic_writer_write(PlatformAtomicWriter *w, const void *data, usize len); /* false → abort state */
 bool platform_atomic_writer_commit(PlatformAtomicWriter *w);  /* fsync file, close, rename over path,
                                                                  fsync directory, free writer */

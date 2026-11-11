@@ -16,6 +16,12 @@
 
 本步验证仍为 Linux CPU/record 证据；record/null 不构成 GPU、声卡或听测证据，native GPU/声卡/听测、网络、非 Linux runtime 和远程 CI 未验证。Task 3 的第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入仍未覆盖；Task 9 的 256 项声音 FIFO、过载和 drain recovery 未提前实现，当前仍为 16 项 record FIFO；baker 的 Flow player identity 与 exec-link source port 专项断言仍留在后续台账。
 
+## 跨平台合同补充（2026-11-11）
+
+Core App nested 测试现在传递父配置的有效后端与非空真实 `Vulkan_LIBRARY`、`Vulkan_INCLUDE_DIR`、`SHADERC_LIB`、`SHADERC_INCLUDE_DIR`，wrapped 第二跳使用同一组定义。只有错误集合恰好为缺少 `core_app_run` 时才产生 `CORE_APP_NM_ONLY_MISSING_SYMBOL`；nested configure 失败与缺符号文本同时出现仍是 FAIL。原生 macOS Metal run `43004390668` 的 job `130468130703` 实际通过 assets 17/17 和 Core App 9 项合同的 6 PASS＋3 个明确 nm SKIP；target、nested、wrapped、compat、正式资产与命名均执行通过，不构成 GPU 运行证据。
+
+reserved-manifest-alias 用例不再于 writer 调用前预写 alias payload。POSIX 使用 `link` 与 `stat` 的 device/inode 身份检查覆盖真实文件别名，保留调用前哈希并增加完整 manifest 字节比较；`BREAK_RUNTIME_INVALID`、probe 成功和原 `runtime_1.bin` 断言均保留，checkpoint writer 未修改。原生 APFS 的修复后 assets 为 17/17。独立变异 run `43004881342` 的 macOS job `130469756286` 恢复旧预写后在同一旧哈希断言处得到 16 PASS＋1 FAIL，验证了原生 RED 与恢复 GREEN 的因果关系。Windows 与 D3D12 的剩余失败不在这两节中宣称已修复。
+
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
 <!-- CORE_APP_HISTORY_BEGIN -->
