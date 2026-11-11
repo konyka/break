@@ -142,7 +142,11 @@ set(expected_native_diagnostic [=[      - name: Diagnose Core App asset director
             foreach ($pattern in @('break_core_app_assets_a_*', 'break_core_app_assets_b_*')) {
               $root = Join-Path $env:TEMP $pattern
               Write-Output "=== Native temp directories: $root ==="
-              $directories = @(Get-ChildItem -Path $root -Directory -Force -ErrorAction SilentlyContinue)
+              try {
+                $directories = @(Get-ChildItem -Path $root -Directory -Force -ErrorAction Stop)
+              } catch [System.Management.Automation.ItemNotFoundException] {
+                $directories = @()
+              }
               if ($directories.Count -eq 0) {
                 Write-Output "MISSING $root"
               } else {
@@ -165,6 +169,14 @@ require_text("${windows}" "            exit 1
           fi
 
 ${expected_native_diagnostic}" "Windows native asset directory diagnostic placement")
+require_text("${windows}" "Get-ChildItem -Path \$root -Directory -Force -ErrorAction Stop"
+    "Windows native enumeration must surface non-absence errors")
+require_text("${windows}" "catch [System.Management.Automation.ItemNotFoundException]"
+    "Windows native enumeration may suppress only expected absence")
+string(FIND "${windows}" "-ErrorAction SilentlyContinue" native_suppression_offset)
+if(NOT native_suppression_offset EQUAL -1)
+    fail("Windows native asset directory diagnostic must not suppress enumeration errors indiscriminately")
+endif()
 
 foreach(forbidden IN ITEMS
         "workflow_dispatch:" "pull_request:" "schedule:" "packages: write"
@@ -194,7 +206,6 @@ set(expected_d3d12_diagnostic [=[      - name: Diagnose Core App compatibility (
           set +e
           ctest --test-dir build-d3d12 -R '^test_core_app_contract_compat$' -V > "$compat_log" 2>&1
           compat_rc=$?
-          set -e
           cat "$compat_log"
           for fixture in \
             build-d3d12/core_app_contract_compat/corrupt-build/CTestTestfile.cmake \
@@ -225,6 +236,91 @@ string(REPLACE "branches: [master, core-app-ci-validation]"
 string(SHA256 d3d12_base_hash "${d3d12_without_validation}")
 if(NOT d3d12_base_hash STREQUAL "11344c7bda647136befef9d1d97906b103b2774874813a360d6fbaeae747d412")
     fail("D3D12 jobs or evidence semantics changed beyond the validation trigger and compatibility diagnostic")
+endif()
+
+find_program(core_app_bash bash)
+set(compat_step_marker "      - name: Diagnose Core App compatibility (failure only)\n")
+set(compat_next_step_marker "\n      - name: WARP GPU-runtime floor")
+string(FIND "${d3d12}" "${compat_step_marker}" compat_step_start)
+string(FIND "${d3d12}" "${compat_next_step_marker}" compat_step_end)
+if(compat_step_start EQUAL -1 OR compat_step_end EQUAL -1 OR compat_step_end LESS compat_step_start)
+    fail("D3D12 compatibility diagnostic Bash check could not extract the delivered step")
+else()
+    math(EXPR compat_step_length "${compat_step_end} - ${compat_step_start}")
+    string(SUBSTRING "${d3d12}" ${compat_step_start} ${compat_step_length} compat_step)
+    set(compat_run_marker "        run: |\n")
+    string(FIND "${compat_step}" "${compat_run_marker}" compat_run_start)
+    if(compat_run_start EQUAL -1)
+        fail("D3D12 compatibility diagnostic Bash check could not extract the delivered run block")
+    elseif(NOT core_app_bash)
+        fail("D3D12 compatibility diagnostic Bash check requires bash")
+    else()
+        string(LENGTH "${compat_run_marker}" compat_run_marker_length)
+        math(EXPR compat_body_start "${compat_run_start} + ${compat_run_marker_length}")
+        string(SUBSTRING "${compat_step}" ${compat_body_start} -1 compat_run_indented)
+        string(REGEX REPLACE "(^|\n)          " "\\1" compat_run "${compat_run_indented}")
+
+        if(DEFINED ENV{TMPDIR} AND NOT "$ENV{TMPDIR}" STREQUAL "")
+            file(TO_CMAKE_PATH "$ENV{TMPDIR}" core_app_test_temp)
+        elseif(DEFINED ENV{TEMP} AND NOT "$ENV{TEMP}" STREQUAL "")
+            file(TO_CMAKE_PATH "$ENV{TEMP}" core_app_test_temp)
+        else()
+            set(core_app_test_temp "/tmp")
+        endif()
+        string(RANDOM LENGTH 16 ALPHABET 0123456789abcdef core_app_test_suffix)
+        set(core_app_bash_root "${core_app_test_temp}/core-app-compat-contract-${core_app_test_suffix}")
+        set(core_app_runner_temp "${core_app_bash_root}/runner")
+        set(core_app_bash_work "${core_app_bash_root}/work")
+        file(MAKE_DIRECTORY
+            "${core_app_runner_temp}"
+            "${core_app_bash_work}/build-d3d12/core_app_contract_compat/corrupt-build"
+            "${core_app_bash_work}/build-d3d12/core_app_contract_compat/nm-build")
+        file(WRITE "${core_app_bash_work}/build-d3d12/core_app_contract_compat/corrupt-build/CTestTestfile.cmake"
+            "corrupt fixture\n")
+        file(WRITE "${core_app_bash_work}/build-d3d12/core_app_contract_compat/nm-build/CTestTestfile.cmake"
+            "nm fixture\n")
+        set(core_app_cat_calls "${core_app_bash_root}/cat-calls")
+        set(core_app_bash_prelude [=[#!/usr/bin/env bash
+set -o pipefail
+ctest() {
+  return 23
+}
+cat() {
+  printf '%s\n' "$*" >> "$COMPAT_CAT_CALLS"
+  if [ "$1" = "$RUNNER_TEMP/core-app-contract-compat-v.log" ]; then
+    return 91
+  fi
+  return 0
+}
+]=])
+        file(WRITE "${core_app_bash_root}/compat-run.sh"
+            "${core_app_bash_prelude}${compat_run}")
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E env
+                "RUNNER_TEMP=${core_app_runner_temp}"
+                "COMPAT_CAT_CALLS=${core_app_cat_calls}"
+                "${core_app_bash}" "${core_app_bash_root}/compat-run.sh"
+            WORKING_DIRECTORY "${core_app_bash_work}"
+            RESULT_VARIABLE core_app_compat_result
+            OUTPUT_VARIABLE core_app_compat_output
+            ERROR_VARIABLE core_app_compat_error)
+        if(NOT "${core_app_compat_result}" STREQUAL "23")
+            fail("D3D12 compatibility diagnostic Bash check returned ${core_app_compat_result} instead of compat status 23 after a cat failure")
+        endif()
+        set(core_app_expected_cat_calls "${core_app_runner_temp}/core-app-contract-compat-v.log
+build-d3d12/core_app_contract_compat/corrupt-build/CTestTestfile.cmake
+build-d3d12/core_app_contract_compat/nm-build/CTestTestfile.cmake
+")
+        if(EXISTS "${core_app_cat_calls}")
+            file(READ "${core_app_cat_calls}" core_app_actual_cat_calls)
+        else()
+            set(core_app_actual_cat_calls "")
+        endif()
+        if(NOT "${core_app_actual_cat_calls}" STREQUAL "${core_app_expected_cat_calls}")
+            fail("D3D12 compatibility diagnostic Bash check did not attempt both fixture reads after the failed log read; expected ${core_app_expected_cat_calls} but got ${core_app_actual_cat_calls}")
+        endif()
+        file(REMOVE_RECURSE "${core_app_bash_root}")
+    endif()
 endif()
 
 string(FIND "${ci}" "core-app-ci-validation" ci_validation_offset)

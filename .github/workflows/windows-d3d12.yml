@@ -82,7 +82,6 @@ jobs:
           set +e
           ctest --test-dir build-d3d12 -R '^test_core_app_contract_compat$' -V > "$compat_log" 2>&1
           compat_rc=$?
-          set -e
           cat "$compat_log"
           for fixture in \
             build-d3d12/core_app_contract_compat/corrupt-build/CTestTestfile.cmake \

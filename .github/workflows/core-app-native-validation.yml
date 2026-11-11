@@ -112,7 +112,11 @@ jobs:
             foreach ($pattern in @('break_core_app_assets_a_*', 'break_core_app_assets_b_*')) {
               $root = Join-Path $env:TEMP $pattern
               Write-Output "=== Native temp directories: $root ==="
-              $directories = @(Get-ChildItem -Path $root -Directory -Force -ErrorAction SilentlyContinue)
+              try {
+                $directories = @(Get-ChildItem -Path $root -Directory -Force -ErrorAction Stop)
+              } catch [System.Management.Automation.ItemNotFoundException] {
+                $directories = @()
+              }
               if ($directories.Count -eq 0) {
                 Write-Output "MISSING $root"
               } else {
