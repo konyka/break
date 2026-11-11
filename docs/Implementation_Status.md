@@ -1,3 +1,12 @@
+## 本轮更新：第五轮 CI WGL 与 NAT 同步修复（2026-11-11）
+
+- **范围与根因**：以主 CI run `42848697723` 和 D3D12 run `42848697714` 为证据，处理真实 `test_glad_wgl_loader` 与 `test_break_online_nat` 失败。WGL 测试的 include 顺序触发 MSVC `APIENTRY` 重定义，函数指针强转触发 MinGW `-Werror=cast-function-type`，legacy-only WGL context 又被误要求现代入口；NAT 三个已连接 pair 的 CLOSE 路径使用固定 8 次非阻塞 pump，把 UDP 发送完成误当成对端已处理。
+- **WGL 修复**：SDK 先于 glad 包含，函数指针按对象表示比较；bootstrap 先验证真实 legacy DLL fallback，缺少 `wglCreateContextAttribsARB` 时仅在全部校验和清理成功后明确返回 77。入口存在时必须创建/current GL 4.5 core 并严格验证 modern/legacy 入口、profile、扩展和逆序清理，advertised entry 失败不会转成 SKIP。实现提交 `eb4b0feb`。
+- **NAT 修复**：新增有界 `nat_pump_until_closed`，等待双端 `!connected && !armed`；完整执行所有 receive/poll 后传播首错，deadline 返回 `TIMEOUT`，真实 overload 不被改写。三处 connected pair 关闭均使用同一同步条件，second pair 也显式断言关闭，保留旧 PUNCH/high-water 和 replacement 断言。实现提交 `dc46aa06`、`34a1e377`；生产协议未修改，没有 sleep 或无条件 skip。
+- **RED/GREEN 与独立评审**：旧 WGL 合同实际捕获 include、四处强转和 capability gate 缺失。旧 NAT 在第一条/第二条 CLOSE 延迟注入下分别精确失败，其中 `nat_two_close_cycles_reject_oldest_punch` 曾假通过；修复后两种注入均 23/23。永久 drop 实际等待 5 秒并返回 `TIMEOUT`，真实 overload 保持 `OVERLOAD`，EIO 立即返回 `FAILED`。规格评审无代码发现；质量评审发现 second CLOSE 遗漏后，fix round 1 scoped 复审为 PASS，三项发现全部 ADDRESSED。
+- **验证**：最终普通完整 `-j3` 构建成功，非图形 `-j3` 共 343 项零失败，唯一既有 non-Windows D3D12 dependency gate SKIP；ASan+UBSan、TSan 的 WGL/NAT focused 各 2/2，无 sanitizer/race 报告；`git diff --check` 通过。完整证据见 `.superpowers/sdd/2026-11-10-remove-x11/remote-ci-round5-report.md` 和 `remote-ci-round5-nat-report.md`。
+- **限制**：本地交叉编译、COFF、Linux mock 和 UDP/LD_PRELOAD 注入不冒充 native Windows/WGL driver 或 macOS 结果。真实 MSVC、MinGW、legacy/modern WGL 分支和 macOS NAT 仍须下一轮 CI 验证，77 capability skip 不授予 GPU 证据。
+
 ## 本轮更新：第四轮主 CI 输入并发超时修复（2026-11-10）
 
 - **根因**：真实 Clang/LLD Release 日志在 `haptic_multithreaded_producers_only_queue_commands` 的主消费者 guard 失败。主线程持续空调用 `input_extended_haptic_pump()`，生产者又持续等待 `PENDING/OVERLOAD`，单核或受限调度下形成测试自旋饥饿；haptic 没有异步 worker，所有命令都依赖主线程 pump。固定单核 CTest 在未修实现上稳定复现同一 guard，生产 haptic 队列无需修改。
