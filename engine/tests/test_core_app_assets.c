@@ -18,13 +18,11 @@
 #include <string.h>
 
 #if !defined(_WIN32)
+#include <errno.h>
 #include <signal.h>
 #include <sys/resource.h>
-#include <unistd.h>
-#endif
-#if defined(CORE_APP_TEST_WRAP_FS)
-#include <errno.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #ifndef CORE_APP_ASSET_BAKE_EXECUTABLE
@@ -167,6 +165,26 @@ static int test_write_checkpoint_file(const char *dir, const char *name,
     if (fclose(fp) != 0) ok = false;
     return ok ? 0 : -1;
 }
+
+#if !defined(_WIN32)
+static int test_hard_link_checkpoint_file(const char *dir, const char *name,
+                                          const char *alias) {
+    char path[1024];
+    char alias_path[1024];
+    struct stat file_status;
+    struct stat alias_status;
+    join_path(path, sizeof(path), dir, name);
+    join_path(alias_path, sizeof(alias_path), dir, alias);
+    if (stat(path, &file_status) != 0) return -1;
+    if (stat(alias_path, &alias_status) != 0) {
+        if (errno != ENOENT) return -1;
+        if (link(path, alias_path) != 0 && errno != EEXIST) return -1;
+        if (stat(alias_path, &alias_status) != 0) return -1;
+    }
+    return file_status.st_dev == alias_status.st_dev &&
+                   file_status.st_ino == alias_status.st_ino ? 0 : -1;
+}
+#endif
 
 static u8 *test_read_file(const char *dir, const char *name, usize cap,
                           usize *out_size) {
@@ -861,13 +879,26 @@ TEST(checkpoint_reserved_manifest_aliases_are_rejected_without_touching_old_gene
         ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
         ASSERT_EQ(core_app_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
         u64 old_hash = core_app_checkpoint_manifest_hash(dir);
+        usize old_manifest_size = 0u;
+        u8 *old_manifest = test_read_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                          TEST_MANIFEST_CAP, &old_manifest_size);
+        ASSERT_NOT_NULL(old_manifest);
         strcpy(file.name, aliases[i]);
 #if !defined(_WIN32)
-        ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
+        ASSERT_EQ(test_hard_link_checkpoint_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                                 file.name), 0);
 #endif
         ASSERT_EQ(core_app_checkpoint_write_manifest(dir, &file, 1u, 2u),
                   BREAK_RUNTIME_INVALID);
         ASSERT_EQ(core_app_checkpoint_manifest_hash(dir), old_hash);
+        usize new_manifest_size = 0u;
+        u8 *new_manifest = test_read_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                          TEST_MANIFEST_CAP, &new_manifest_size);
+        ASSERT_NOT_NULL(new_manifest);
+        ASSERT_EQ(new_manifest_size, old_manifest_size);
+        ASSERT_EQ(memcmp(new_manifest, old_manifest, old_manifest_size), 0);
+        free(new_manifest);
+        free(old_manifest);
         ASSERT_EQ(core_app_checkpoint_probe(dir), BREAK_RUNTIME_OK);
         ASSERT_TRUE(file_exists(dir, "runtime_1.bin"));
         ASSERT_EQ(prepare_directory(dir), 0);
