@@ -207,6 +207,16 @@ set(expected_native_diagnostic [=[      - name: Diagnose Core App asset director
         run: |
           $ErrorActionPreference = 'Continue'
           try {
+            $formal = Join-Path $env:GITHUB_WORKSPACE 'engine/assets/core_app'
+            Write-Output "=== Core App formal assets: $formal ==="
+            if (Test-Path -LiteralPath $formal -PathType Container) {
+              Get-ChildItem -LiteralPath $formal -File -Force | ForEach-Object {
+                $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+                Write-Output "FORMAL FILE $($_.Name) PATH $($_.FullName) LENGTH $($_.Length) bytes SHA256 $($hash.Hash)"
+              }
+            } else {
+              Write-Output "MISSING $formal"
+            }
             $output = Join-Path $env:RUNNER_TEMP 'core-app-native-validation-assets'
             Write-Output "=== Core App asset output: $output ==="
             if (Test-Path -LiteralPath $output -PathType Container) {
@@ -214,7 +224,8 @@ set(expected_native_diagnostic [=[      - name: Diagnose Core App asset director
                 if ($_.PSIsContainer) {
                   Write-Output "DIR $($_.Name)"
                 } else {
-                  Write-Output "FILE $($_.Name) $($_.Length) bytes"
+                  $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+                  Write-Output "FILE $($_.Name) PATH $($_.FullName) LENGTH $($_.Length) bytes SHA256 $($hash.Hash)"
                 }
               }
             } else {
@@ -234,7 +245,8 @@ set(expected_native_diagnostic [=[      - name: Diagnose Core App asset director
                 foreach ($directory in $directories) {
                   Write-Output "DIR $($directory.FullName)"
                   Get-ChildItem -LiteralPath $directory.FullName -File -Force | ForEach-Object {
-                    Write-Output "FILE $($_.FullName) $($_.Length) bytes"
+                    $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+                    Write-Output "FILE $($_.Name) PATH $($_.FullName) LENGTH $($_.Length) bytes SHA256 $($hash.Hash)"
                   }
                 }
               }
