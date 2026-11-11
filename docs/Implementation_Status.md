@@ -1,7 +1,10 @@
-## 原生验证进展：MSVC/D3D12 通过，macOS Runtime IO 待修（2026-11-11）
+## 原生验证进展：MSVC/D3D12 通过，macOS Runtime IO 修复待验证（2026-11-11）
 
 - 主 CI run `42956737548` 的 `Windows + MSVC (headless)` job `130313507109` 已通过，standalone `/experimental:c11atomics` 工具链修复获得真实 `cl.exe` 验证；Windows D3D12 run `42956737579` 也已通过。上一轮 WGL、MinGW、Clang 与 NAT 修复未在这些 lane 重现失败。
-- 同一主 run 仅剩 macOS Cocoa job `130313506823` 的 `test_runtime_io` 失败。`io_request_double_release_aborts` 的子进程在 fixture/init/submit/cancel/shutdown setup 阶段退出 2，尚未执行 double-release 断言；这不是 NAT 失败，也不能当成预期的 SIGABRT。具体 setup 分支和最小修复正在调查，未把该主 CI 记为通过，也未用增加等待时间或 skip 掩盖。
+- **Runtime IO 根因与 RED**：同一主 run 的 macOS Cocoa job `130313506823` 在 double-release 子进程 setup 中退出 2。分阶段诊断和强制真实 4096 字节完成证明：worker 可先发布 completion，随后 `cancel` 按既有协议返回 `REJECTED`；不是 `shutdown(2000)` 超时，也不是 double-release registry 失败。移除 init 前 gate 的变异精确复现该退出。
+- **最小修复**：`a23fc298` 仅在子进程 init 前用既有 gate 阻止 worker 抢先 claim，cancel 成功后解除，生产 runtime、timeout、sleep、skip 与完成后取消协议均未修改。`f73bd8ed` 进一步用跨 fork pipe 在第一次 release 返回后写入阶段字节，父进程同时验证该字节、`WIFSIGNALED` 和精确 `SIGABRT`，排除提前 abort、setup 失败、其他 signal 以及未 abort 的假通过。
+- **验证与独立评审**：旧判定可接受 SIGSEGV；新判定下 SIGSEGV 与 marker 前 SIGABRT 都失败，真实第二次 release 为 `stage=0x52`、`SIGABRT=6`。普通 focused 5/5、普通非图形 348 项零失败（1 个既有 D3D12 平台 skip），ASan+UBSan/TSan focused 各 5/5，无 sanitizer/race 报告。独立 scoped 复审为 PASS，原 Critical ADDRESSED，无新 Critical/Important。
+- **限制**：上述证据来自 Linux x86_64，不能替代 macOS 的 pipe/fork/signal 行为。下一轮两个 macOS lane 必须实际验证原 CI 场景，当前不把该主 CI 记为通过。完整证据见 `.superpowers/sdd/2026-11-10-remove-x11/runtime-io-close-race-report.md`。
 
 ## 本轮更新：standalone myui 的 MSVC atomics 工具链修复（2026-11-11）
 
