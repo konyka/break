@@ -4,6 +4,23 @@ foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT NM TARGET_
     endif()
 endforeach()
 
+execute_process(
+    COMMAND "${NM}" --defined-only "${CORE_APP}"
+    RESULT_VARIABLE nm_preflight_result
+    OUTPUT_VARIABLE nm_preflight_output
+    ERROR_VARIABLE nm_preflight_error
+    TIMEOUT 20)
+if(NOT nm_preflight_result EQUAL 0)
+    set(skip_reason "CORE_APP_NM_NEGATIVE_UNAVAILABLE: real nm does not support --defined-only: ${nm_preflight_error}")
+    message(STATUS "UNVERIFIED: ${skip_reason}")
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+        cmake_language(EXIT 77)
+    endif()
+    # Older script-mode CMake exits 1 here; the unique token above matches this
+    # test's SKIP_REGULAR_EXPRESSION without hiding wrapped-contract failures.
+    message(FATAL_ERROR "UNVERIFIED: ${skip_reason}; cmake < 3.29 cannot exit 77")
+endif()
+
 file(REMOVE_RECURSE "${CONTRACT_BUILD_ROOT}")
 file(MAKE_DIRECTORY "${CONTRACT_BUILD_ROOT}")
 set(filtered_symbols "${CONTRACT_BUILD_ROOT}/filtered-symbols.txt")

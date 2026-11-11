@@ -4687,8 +4687,23 @@ endif()
                 -DTARGET_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake
                 -DNM_WRAPPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_filter.cmake
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_symbol_missing.cmake)
-        set_tests_properties(test_core_app_nm_symbol_missing PROPERTIES
-            LABELS "headless;core_app;platform_contract")
+        add_test(NAME test_core_app_nm_symbol_missing_unsupported
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_symbol_missing_unsupported
+                -DNM=${CMAKE_COMMAND}
+                -DTARGET_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake
+                -DNM_WRAPPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_filter.cmake
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_symbol_missing.cmake)
+        # The unique preflight token also maps the CMake < 3.29 FATAL_ERROR
+        # fallback to SKIP; wrapped-contract UNVERIFIED output cannot match it.
+        set_tests_properties(test_core_app_nm_symbol_missing
+            test_core_app_nm_symbol_missing_unsupported PROPERTIES
+            LABELS "headless;core_app;platform_contract"
+            SKIP_RETURN_CODE 77
+            SKIP_REGULAR_EXPRESSION "CORE_APP_NM_NEGATIVE_UNAVAILABLE")
     endif()
 
     add_executable(test_core_app_assets tests/test_core_app_assets.c)
