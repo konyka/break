@@ -60,7 +60,7 @@ jobs:
         run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON
 
       - name: Build Core App baker, process launch probe, and assets test
-        run: cmake --build build --target core_app_asset_bake test_core_app_process_launch test_core_app_assets -j3
+        run: cmake --build build --target core_app_asset_bake test_core_app_process_launch test_core_app_assets test_core_app_assets_launch_diagnostic -j3
 
       - name: Probe Core App Windows process launch
         id: process_launch_probe
@@ -77,23 +77,28 @@ jobs:
         run: |
           bake_log="$RUNNER_TEMP/core-app-native-bake.log"
           test_log="$RUNNER_TEMP/core-app-native-assets.log"
+          diagnostics_log="$RUNNER_TEMP/core-app-native-diagnostics.log"
           rm -rf "$RUNNER_TEMP/core-app-native-validation-assets"
           set +e
           ./build/core_app_asset_bake.exe --output "$RUNNER_TEMP/core-app-native-validation-assets" >"$bake_log" 2>&1
           bake_rc=$?
           ./build/test_core_app_assets.exe >"$test_log" 2>&1
           test_rc=$?
+          ctest --test-dir build -j3 -R '^test_core_app_baker_diagnostics$' -V >"$diagnostics_log" 2>&1
+          diagnostics_rc=$?
           set -e
           printf '\n=== core_app_asset_bake (exit %s) ===\n' "$bake_rc"
           cat "$bake_log"
           printf '\n=== test_core_app_assets (exit %s) ===\n' "$test_rc"
           cat "$test_log"
-          if [ "$bake_rc" -ne 0 ] || [ "$test_rc" -ne 0 ]; then
-            first_failure=$(grep -m1 'FAIL:' "$bake_log" || grep -m1 'FAIL:' "$test_log" || true)
+          printf '\n=== test_core_app_baker_diagnostics (exit %s) ===\n' "$diagnostics_rc"
+          cat "$diagnostics_log"
+          if [ "$bake_rc" -ne 0 ] || [ "$test_rc" -ne 0 ] || [ "$diagnostics_rc" -ne 0 ]; then
+            first_failure=$(grep -m1 'FAIL:' "$bake_log" || grep -m1 'FAIL:' "$test_log" || grep -m1 'FAIL:' "$diagnostics_log" || true)
             if [ -n "$first_failure" ]; then
               echo "::error::$first_failure"
             else
-              echo "::error::Core App native validation failed (baker exit=$bake_rc, assets exit=$test_rc); full logs above"
+              echo "::error::Core App native validation failed (baker exit=$bake_rc, assets exit=$test_rc, diagnostics exit=$diagnostics_rc); full logs above"
             fi
             exit 1
           fi

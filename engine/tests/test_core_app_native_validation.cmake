@@ -157,28 +157,43 @@ foreach(required IN ITEMS
         "uses: ilammy/msvc-dev-cmd@v1"
         "arch: x64"
         "cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON"
-        "cmake --build build --target core_app_asset_bake test_core_app_process_launch test_core_app_assets -j3"
+        "cmake --build build --target core_app_asset_bake test_core_app_process_launch test_core_app_assets test_core_app_assets_launch_diagnostic -j3"
         "      - name: Run real baker and assets test\n        id: original_assets"
         "ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1"
         "rm -rf \"\$RUNNER_TEMP/core-app-native-validation-assets\""
+        "diagnostics_log=\"\$RUNNER_TEMP/core-app-native-diagnostics.log\""
         "./build/core_app_asset_bake.exe --output \"\$RUNNER_TEMP/core-app-native-validation-assets\" >\"\$bake_log\" 2>&1"
         "bake_rc=\$?"
         "./build/test_core_app_assets.exe >\"\$test_log\" 2>&1"
         "test_rc=\$?"
+        "ctest --test-dir build -j3 -R '^test_core_app_baker_diagnostics$' -V >\"\$diagnostics_log\" 2>&1"
+        "diagnostics_rc=\$?"
         "cat \"\$bake_log\""
         "cat \"\$test_log\""
-        "first_failure=\$(grep -m1 'FAIL:' \"\$bake_log\" || grep -m1 'FAIL:' \"\$test_log\" || true)"
-        "if [ \"\$bake_rc\" -ne 0 ] || [ \"\$test_rc\" -ne 0 ]; then")
+        "printf '\\n=== test_core_app_baker_diagnostics (exit %s) ===\\n' \"\$diagnostics_rc\""
+        "cat \"\$diagnostics_log\""
+        "first_failure=\$(grep -m1 'FAIL:' \"\$bake_log\" || grep -m1 'FAIL:' \"\$test_log\" || grep -m1 'FAIL:' \"\$diagnostics_log\" || true)"
+        "if [ \"\$bake_rc\" -ne 0 ] || [ \"\$test_rc\" -ne 0 ] || [ \"\$diagnostics_rc\" -ne 0 ]; then"
+        "echo \"::error::Core App native validation failed (baker exit=\$bake_rc, assets exit=\$test_rc, diagnostics exit=\$diagnostics_rc); full logs above\"")
     require_text("${windows}" "${required}" "Windows MSVC job")
 endforeach()
 require_order("${windows}" "./build/core_app_asset_bake.exe"
     "./build/test_core_app_assets.exe" "Windows MSVC job")
 require_order("${windows}" "./build/test_core_app_assets.exe"
+    "ctest --test-dir build -j3 -R '^test_core_app_baker_diagnostics$' -V"
+    "Windows native diagnostics invocation")
+require_order("${windows}" "ctest --test-dir build -j3 -R '^test_core_app_baker_diagnostics$' -V"
+    "diagnostics_rc=\$?" "Windows native diagnostics return capture")
+require_order("${windows}" "diagnostics_rc=\$?"
+    "set -e" "Windows native diagnostics capture before errexit")
+require_order("${windows}" "./build/test_core_app_assets.exe"
     "cat \"\$bake_log\"" "Windows MSVC job")
 require_order("${windows}" "cat \"\$bake_log\""
     "cat \"\$test_log\"" "Windows MSVC job")
 require_order("${windows}" "cat \"\$test_log\""
-    "first_failure=\$(grep -m1 'FAIL:'" "Windows MSVC job")
+    "cat \"\$diagnostics_log\"" "Windows native diagnostics full log")
+require_order("${windows}" "cat \"\$diagnostics_log\""
+    "first_failure=\$(grep -m1 'FAIL:'" "Windows native diagnostics failure annotation")
 foreach(forbidden IN ITEMS "| head" "| tail" "head -" "tail -")
     string(FIND "${windows}" "${forbidden}" truncation_offset)
     if(NOT truncation_offset EQUAL -1)
