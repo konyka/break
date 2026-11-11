@@ -63,6 +63,50 @@ static MyComposeIntent intent_value(uint32_t type, const uint8_t *payload,
     return intent;
 }
 
+static bool apply_diff_in_order(MyComposeNodeHandle *nodes, uint32_t *count,
+    const MyComposeDiff *diff) {
+    for (uint32_t i = 0u; i < diff->count; ++i) {
+        const MyComposeDiffOp *op = &diff->ops[i];
+        if (op->type == MY_COMPOSE_DIFF_UPDATE) continue;
+        if (op->type == MY_COMPOSE_DIFF_CREATE) {
+            if (*count >= MY_COMPOSE_MAX_NODES || op->to_index > *count) {
+                return false;
+            }
+            for (uint32_t j = *count; j > op->to_index; --j) {
+                nodes[j] = nodes[j - 1u];
+            }
+            nodes[op->to_index] = op->node;
+            (*count)++;
+        } else if (op->type == MY_COMPOSE_DIFF_DELETE) {
+            if (op->from_index >= *count ||
+                !handle_equal(nodes[op->from_index], op->node)) {
+                return false;
+            }
+            for (uint32_t j = op->from_index + 1u; j < *count; ++j) {
+                nodes[j - 1u] = nodes[j];
+            }
+            (*count)--;
+        } else if (op->type == MY_COMPOSE_DIFF_MOVE) {
+            if (op->from_index >= *count || op->to_index >= *count ||
+                !handle_equal(nodes[op->from_index], op->node)) {
+                return false;
+            }
+            MyComposeNodeHandle node = nodes[op->from_index];
+            if (op->from_index < op->to_index) {
+                for (uint32_t j = op->from_index; j < op->to_index; ++j) {
+                    nodes[j] = nodes[j + 1u];
+                }
+            } else {
+                for (uint32_t j = op->from_index; j > op->to_index; --j) {
+                    nodes[j] = nodes[j - 1u];
+                }
+            }
+            nodes[op->to_index] = node;
+        }
+    }
+    return true;
+}
+
 TEST(lifecycle_insert_noop_and_delete) {
     MyComposeTreeBuilder *builder = my_compose_tree_builder_create();
     ASSERT_NOT_NULL(builder);
@@ -186,13 +230,21 @@ TEST(mixed_keyed_and_unkeyed_nodes_keep_their_identity_rules) {
     ASSERT_EQ(finish(builder), MY_COMPOSE_OK);
     const MyComposeDiff *diff = my_compose_tree_builder_diff(builder);
     ASSERT_EQ(diff->count, 2u);
+    MyComposeNodeHandle applied[MY_COMPOSE_MAX_NODES] = {a, unkeyed, b};
+    MyComposeNodeHandle expected[3] = {b, unkeyed, a};
+    uint32_t applied_count = 3u;
+    ASSERT_TRUE(apply_diff_in_order(applied, &applied_count, diff));
+    ASSERT_EQ(applied_count, 3u);
+    for (uint32_t i = 0u; i < 3u; ++i) {
+        ASSERT_TRUE(handle_equal(applied[i], expected[i]));
+    }
     ASSERT_EQ(diff->ops[0].type, MY_COMPOSE_DIFF_MOVE);
     ASSERT_TRUE(handle_equal(diff->ops[0].node, b));
     ASSERT_EQ(diff->ops[0].from_index, 2u);
     ASSERT_EQ(diff->ops[0].to_index, 0u);
     ASSERT_EQ(diff->ops[1].type, MY_COMPOSE_DIFF_MOVE);
     ASSERT_TRUE(handle_equal(diff->ops[1].node, a));
-    ASSERT_EQ(diff->ops[1].from_index, 0u);
+    ASSERT_EQ(diff->ops[1].from_index, 1u);
     ASSERT_EQ(diff->ops[1].to_index, 2u);
     my_compose_tree_builder_destroy(builder);
 }
@@ -225,15 +277,23 @@ TEST(mixed_reorder_with_create_keeps_unkeyed_fixed) {
     ASSERT_EQ(finish(builder), MY_COMPOSE_OK);
     const MyComposeDiff *diff = my_compose_tree_builder_diff(builder);
     ASSERT_EQ(diff->count, 3u);
+    MyComposeNodeHandle applied[MY_COMPOSE_MAX_NODES] = {a, unkeyed, b};
+    MyComposeNodeHandle expected[4] = {b, unkeyed, created, a};
+    uint32_t applied_count = 3u;
+    ASSERT_TRUE(apply_diff_in_order(applied, &applied_count, diff));
+    ASSERT_EQ(applied_count, 4u);
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        ASSERT_TRUE(handle_equal(applied[i], expected[i]));
+    }
     ASSERT_EQ(diff->ops[0].type, MY_COMPOSE_DIFF_CREATE);
     ASSERT_TRUE(handle_equal(diff->ops[0].node, created));
     ASSERT_EQ(diff->ops[1].type, MY_COMPOSE_DIFF_MOVE);
     ASSERT_TRUE(handle_equal(diff->ops[1].node, b));
-    ASSERT_EQ(diff->ops[1].from_index, 2u);
+    ASSERT_EQ(diff->ops[1].from_index, 3u);
     ASSERT_EQ(diff->ops[1].to_index, 0u);
     ASSERT_EQ(diff->ops[2].type, MY_COMPOSE_DIFF_MOVE);
     ASSERT_TRUE(handle_equal(diff->ops[2].node, a));
-    ASSERT_EQ(diff->ops[2].from_index, 0u);
+    ASSERT_EQ(diff->ops[2].from_index, 1u);
     ASSERT_EQ(diff->ops[2].to_index, 3u);
     my_compose_tree_builder_destroy(builder);
 }
@@ -373,6 +433,124 @@ TEST(full_tree_cross_parent_replace_uses_a_new_generation) {
     ASSERT_TRUE(handle_equal(diff->ops[0].node, items[0]));
     ASSERT_EQ(diff->ops[1].type, MY_COMPOSE_DIFF_CREATE);
     ASSERT_TRUE(handle_equal(diff->ops[1].node, moved));
+    my_compose_tree_builder_destroy(builder);
+}
+
+TEST(full_tree_unkeyed_cross_parent_reclaims_disappearing_slot) {
+    MyComposeTreeBuilder *builder = my_compose_tree_builder_create();
+    ASSERT_NOT_NULL(builder);
+    MyComposeNodeHandle root;
+    MyComposeNodeHandle column;
+    MyComposeNodeHandle stack;
+    MyComposeNodeHandle items[MY_COMPOSE_MAX_NODES - 3u];
+    ASSERT_EQ(begin_root(builder, &root), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "column", "@column", &column), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "stack", "@stack", &stack), MY_COMPOSE_OK);
+    for (uint32_t i = 0u; i < MY_COMPOSE_MAX_NODES - 3u; ++i) {
+        ASSERT_EQ(add_node(builder, column, NULL, "node", &items[i]), MY_COMPOSE_OK);
+    }
+    ASSERT_EQ(finish(builder), MY_COMPOSE_OK);
+
+    ASSERT_EQ(begin_root(builder, &root), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "column", "@column", &column), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "stack", "@stack", &stack), MY_COMPOSE_OK);
+    for (uint32_t i = 0u; i < MY_COMPOSE_MAX_NODES - 4u; ++i) {
+        MyComposeNodeHandle next;
+        ASSERT_EQ(add_node(builder, column, NULL, "node", &next), MY_COMPOSE_OK);
+        ASSERT_TRUE(handle_equal(next, items[i]));
+    }
+    MyComposeNodeHandle moved;
+    ASSERT_EQ(add_node(builder, stack, NULL, "node", &moved), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_tree_builder_next_node_count(builder), MY_COMPOSE_MAX_NODES);
+    ASSERT_EQ(my_compose_tree_builder_current_node_count(builder), MY_COMPOSE_MAX_NODES);
+    ASSERT_EQ(moved.index, items[MY_COMPOSE_MAX_NODES - 4u].index);
+    ASSERT_EQ(moved.generation, items[MY_COMPOSE_MAX_NODES - 4u].generation + 1u);
+    ASSERT_EQ(finish(builder), MY_COMPOSE_OK);
+    const MyComposeDiff *diff = my_compose_tree_builder_diff(builder);
+    ASSERT_EQ(diff->count, 2u);
+    ASSERT_EQ(diff->ops[0].type, MY_COMPOSE_DIFF_DELETE);
+    ASSERT_TRUE(handle_equal(diff->ops[0].node,
+        items[MY_COMPOSE_MAX_NODES - 4u]));
+    ASSERT_EQ(diff->ops[1].type, MY_COMPOSE_DIFF_CREATE);
+    ASSERT_TRUE(handle_equal(diff->ops[1].node, moved));
+    my_compose_tree_builder_destroy(builder);
+}
+
+TEST(full_tree_duplicate_key_subtree_replacement_reuses_only_retiring_slots) {
+    MyComposeTreeBuilder *builder = my_compose_tree_builder_create();
+    ASSERT_NOT_NULL(builder);
+    MyComposeNodeHandle root;
+    MyComposeNodeHandle left;
+    MyComposeNodeHandle right;
+    MyComposeNodeHandle other;
+    MyComposeNodeHandle old_branch;
+    MyComposeNodeHandle old_children[2];
+    MyComposeNodeHandle right_branch;
+    MyComposeNodeHandle fillers[MY_COMPOSE_MAX_NODES - 8u];
+    ASSERT_EQ(begin_root(builder, &root), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "left", "@column", &left), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "right", "@column", &right), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "other", "@column", &other), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, left, "branch", "subtree", &old_branch), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, old_branch, NULL, "leaf", &old_children[0]),
+        MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, old_branch, NULL, "leaf", &old_children[1]),
+        MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, right, "branch", "leaf", &right_branch),
+        MY_COMPOSE_OK);
+    for (uint32_t i = 0u; i < MY_COMPOSE_MAX_NODES - 8u; ++i) {
+        ASSERT_EQ(add_node(builder, root, NULL, "filler", &fillers[i]),
+            MY_COMPOSE_OK);
+    }
+    ASSERT_EQ(my_compose_tree_builder_current_node_count(builder), 0u);
+    ASSERT_EQ(finish(builder), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_tree_builder_current_node_count(builder), MY_COMPOSE_MAX_NODES);
+
+    ASSERT_EQ(begin_root(builder, &root), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "left", "@column", &left), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "right", "@column", &right), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "other", "@column", &other), MY_COMPOSE_OK);
+    MyComposeNodeHandle next_right_branch;
+    ASSERT_EQ(add_node(builder, right, "branch", "leaf", &next_right_branch),
+        MY_COMPOSE_OK);
+    ASSERT_TRUE(handle_equal(next_right_branch, right_branch));
+    for (uint32_t i = 0u; i < MY_COMPOSE_MAX_NODES - 8u; ++i) {
+        MyComposeNodeHandle next;
+        ASSERT_EQ(add_node(builder, root, NULL, "filler", &next), MY_COMPOSE_OK);
+        ASSERT_TRUE(handle_equal(next, fillers[i]));
+    }
+    MyComposeNodeHandle new_branch;
+    MyComposeNodeHandle new_children[2];
+    ASSERT_EQ(add_node(builder, other, "branch", "subtree", &new_branch),
+        MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, new_branch, NULL, "leaf", &new_children[0]),
+        MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, new_branch, NULL, "leaf", &new_children[1]),
+        MY_COMPOSE_OK);
+    ASSERT_FALSE(handle_equal(new_branch, old_branch));
+    ASSERT_NEQ(new_branch.index, right_branch.index);
+    ASSERT_EQ(new_branch.generation, old_branch.generation + 1u);
+    ASSERT_EQ(finish(builder), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_tree_builder_current_node_count(builder), MY_COMPOSE_MAX_NODES);
+    const MyComposeDiff *diff = my_compose_tree_builder_diff(builder);
+    ASSERT_EQ(diff->count, 6u);
+    ASSERT_EQ(diff->ops[0].type, MY_COMPOSE_DIFF_DELETE);
+    ASSERT_TRUE(handle_equal(diff->ops[0].node, old_children[1]));
+    ASSERT_EQ(diff->ops[1].type, MY_COMPOSE_DIFF_DELETE);
+    ASSERT_TRUE(handle_equal(diff->ops[1].node, old_children[0]));
+    ASSERT_EQ(diff->ops[2].type, MY_COMPOSE_DIFF_DELETE);
+    ASSERT_TRUE(handle_equal(diff->ops[2].node, old_branch));
+    ASSERT_EQ(diff->ops[3].type, MY_COMPOSE_DIFF_CREATE);
+    ASSERT_TRUE(handle_equal(diff->ops[3].node, new_branch));
+    ASSERT_EQ(diff->ops[4].type, MY_COMPOSE_DIFF_CREATE);
+    ASSERT_TRUE(handle_equal(diff->ops[4].node, new_children[0]));
+    ASSERT_EQ(diff->ops[5].type, MY_COMPOSE_DIFF_CREATE);
+    ASSERT_TRUE(handle_equal(diff->ops[5].node, new_children[1]));
+    MyComposeNodeDesc actual;
+    ASSERT_EQ(my_compose_tree_builder_get_node(builder, right_branch, &actual),
+        MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_tree_builder_get_node(builder, old_branch, &actual),
+        MY_COMPOSE_STALE);
     my_compose_tree_builder_destroy(builder);
 }
 
@@ -916,6 +1094,8 @@ int main(void) {
     RUN_TEST(type_change_is_delete_then_create_with_a_new_generation);
     RUN_TEST(cross_parent_key_is_delete_then_create);
     RUN_TEST(full_tree_cross_parent_replace_uses_a_new_generation);
+    RUN_TEST(full_tree_unkeyed_cross_parent_reclaims_disappearing_slot);
+    RUN_TEST(full_tree_duplicate_key_subtree_replacement_reuses_only_retiring_slots);
     RUN_TEST(duplicate_key_preflight_leaves_next_and_current_unchanged);
     RUN_TEST(property_and_event_payloads_are_owned_and_update_diffs_are_granular);
     RUN_TEST(message_payload_limit_and_stale_handles_are_checked);

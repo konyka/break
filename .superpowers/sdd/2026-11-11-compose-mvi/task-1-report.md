@@ -209,3 +209,104 @@ my_compose_tree.c.o:
 - 未运行 ASan/UBSan、TSan 或 fuzz；这些不是本 brief 要求的最终验证。steady-state 无 malloc 的证据是固定存储实现与符号/链接检查，不是 allocation-counter 运行证明。
 - remember/store/myui adapter/C++ DSL 留待各自后续任务；本报告不扩展其实现或计划。
 - 独立规格评审和质量评审由主代理随后安排。
+
+
+## Fix round 1：独立评审 Important 修复
+
+起点：`9204d6de2b46c6a7748927ecb9c49c69d09d5cd0`。本轮只修改 `my_compose_tree.c`、`test_mycompose_tree.c` 和本报告；未扩展到后续任务，未 push。
+
+Fix commit subject：`fix: correct compose tree replacement diff`。最终 SHA 以提交后的 `git rev-parse HEAD` 和交付返回为准。
+
+### 新回归与 RED
+
+在不改生产实现的情况下新增两个真实 API 容量回归，并把 MOVE 字段断言改为由独立执行器先行验证：
+
+1. `full_tree_unkeyed_cross_parent_reclaims_disappearing_slot` 精确复现 current root + 两个 parent + 253 个 unkeyed 共 256 节点；next 保留前 252 个并将最后一个声明到另一 parent。
+2. `full_tree_duplicate_key_subtree_replacement_reuses_only_retiring_slots` 在两个 current parent 中使用相同 key，保留其中一份并替换另一棵三节点子树，覆盖重复 key、连续多个 slot、reserved 保留节点和 generation。
+3. 测试侧 `apply_diff_in_order` 不调用生产 MOVE 算法，独立按 op 顺序对 handle 数组执行 CREATE/MOVE/DELETE，并检查每个 MOVE 的 from 上确实是 op.node；覆盖 `[a,u,b] -> [b,u,a]` 和含 CREATE 的同类重排。
+
+```sh
+cmake --build build-compose-normal --target test_mycompose_tree -j3
+./build-compose-normal/test_mycompose_tree
+```
+
+旧实现结果：exit 1，21 passed / 4 failed / 25 total。
+
+```text
+mixed_keyed_and_unkeyed_nodes_keep_their_identity_rules ...
+  FAIL: apply_diff_in_order(applied, &applied_count, diff) is false
+mixed_reorder_with_create_keeps_unkeyed_fixed ...
+  FAIL: apply_diff_in_order(applied, &applied_count, diff) is false
+full_tree_unkeyed_cross_parent_reclaims_disappearing_slot ...
+  FAIL: add_node(builder, stack, NULL, "node", &moved) != MY_COMPOSE_OK
+full_tree_duplicate_key_subtree_replacement_reuses_only_retiring_slots ...
+  FAIL: add_node(builder, other, "branch", "subtree", &new_branch) != MY_COMPOSE_OK
+=== Results: 21 passed, 4 failed, 25 total ===
+```
+
+因此独立顺序应用本身已在旧实现上失败，不只是把错误的 `old->child_index` 字段改成另一组自洽期望。
+
+### 修复机制
+
+- 删除 `keyed` 唯一 key 补偿分支。无空闲 slot 时统一扫描 current：跳过已经被 next 复用的节点、已 reserved 的 slot，以及 generation 已达到 `UINT32_MAX - 1`、不能安全再做 replacement 的节点；其余消失节点以 `MY_COMPOSE_MATCH_REPLACE` 回收。
+- 新节点取得被回收 slot 的下一 generation，reserved 阻止同一 build 中重复分配；`publish_slots` 对 MATCH_REPLACE 只发布新代际，不先按普通删除释放。保留的重复 key 节点在测试中保持原 handle，被替换子树旧 handle 全部失效。
+- 第一阶段的容量验证为 23/25：两条新容量测试转 GREEN，只剩两条独立 MOVE 顺序 RED。
+- `append_move_diff` 现在显式接收执行时的 `from_index/to_index`。desired keyed 节点使用移动前的 `work_index -> position`；为固定 unkeyed/CREATE 而让路的 keyed 节点使用移动前的 `position -> offender->child_index`，不再读取旧声明位置。
+- 独立顺序样例：无 CREATE 时 `b: 2->0`、`a: 1->2`；先在 index 2 CREATE `c` 时 `b: 3->0`、`a: 1->3`。测试同时保留这些字段断言和最终 handle 顺序断言。
+
+### 最终 focused GREEN
+
+```sh
+cmake --build build-compose-normal --target test_mycompose_tree -j3
+./build-compose-normal/test_mycompose_tree
+ctest --test-dir build-compose-normal -R '^test_mycompose_tree$' \
+  --output-on-failure -j3
+```
+
+```text
+[1] lifecycle_insert_noop_and_delete ... OK
+[2] keyed_reorder_only_moves_and_preserves_handles ... OK
+[3] mixed_keyed_and_unkeyed_nodes_keep_their_identity_rules ... OK
+[4] mixed_reorder_with_create_keeps_unkeyed_fixed ... OK
+[5] unkeyed_insert_uses_absolute_child_position ... OK
+[6] type_change_is_delete_then_create_with_a_new_generation ... OK
+[7] cross_parent_key_is_delete_then_create ... OK
+[8] full_tree_cross_parent_replace_uses_a_new_generation ... OK
+[9] full_tree_unkeyed_cross_parent_reclaims_disappearing_slot ... OK
+[10] full_tree_duplicate_key_subtree_replacement_reuses_only_retiring_slots ... OK
+...
+[25] generation_near_overflow_never_wraps_and_retires_slot ... OK
+=== Results: 25 passed, 0 failed, 25 total ===
+
+1/1 Test #24: test_mycompose_tree .............. Passed
+100% tests passed, 0 tests failed out of 1
+```
+
+### 本轮生产变异 / 恢复
+
+每项均临时修改生产文件、重新构建运行，再恢复并确认 25/25：
+
+- 忽略 type：22/25，3 个失败（unkeyed 位置替换、type change、generation 近溢出），恢复 GREEN。
+- 跳过 duplicate preflight：24/25，`duplicate_key_preflight_leaves_next_and_current_unchanged` 失败，恢复 GREEN。
+- 将 MOVE from 改回 `old->child_index`：23/25，两条独立 `apply_diff_in_order` 断言均失败，恢复 GREEN。
+
+### 完整非图形回归与警告
+
+```sh
+cmake --build build-compose-normal -j3
+ctest --test-dir build-compose-normal -LE "graphics|fuzz" \
+  --output-on-failure -j3
+```
+
+结果：build exit 0，CTest exit 0。
+
+```text
+100% tests passed, 0 tests failed out of 344
+compose = 0.01 sec*proc (1 test)
+headless = 49.64 sec*proc (182 tests)
+Total Test time (real) = 25.98 sec
+The following tests did not run:
+  134 - test_d3d12_dependency_gate (Skipped)
+```
+
+对本轮增量构建日志检索 `warning:`、`警告`、`error:`、`FAILED`、`Failed` 均无匹配；`git diff --check` 通过。未执行图形、fuzz、ASan/UBSan 或 TSan，不宣称 GPU 结果。原独立 reviewer 的 scoped re-review 由主代理安排。

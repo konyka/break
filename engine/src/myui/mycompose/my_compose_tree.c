@@ -162,6 +162,8 @@ static uint32_t current_child_at(const MyComposeTree *tree,
     return MY_COMPOSE_NO_INDEX;
 }
 
+static bool old_node_is_reused(const MyComposeTree *next, uint32_t old_index);
+
 static uint32_t find_free_slot(MyComposeTreeBuilder *builder) {
     for (uint32_t i = 0u; i < MY_COMPOSE_MAX_NODES; ++i) {
         const MyComposeSlot *slot = &builder->slots[i];
@@ -301,27 +303,19 @@ MyComposeStatus my_compose_tree_builder_node(MyComposeTreeBuilder *builder,
             }
         }
     }
-    if (keyed && match == MY_COMPOSE_MATCH_NONE &&
+    if (match == MY_COMPOSE_MATCH_NONE &&
         find_free_slot(builder) == MY_COMPOSE_NO_INDEX) {
         const MyComposeTree *current = builder->current;
-        uint32_t old_index = MY_COMPOSE_NO_INDEX;
-        bool reusable = true;
         for (uint32_t i = 0u; i < current->node_count; ++i) {
             const MyComposeNodeRecord *candidate = &current->nodes[i];
-            if (candidate->key_offset == MY_COMPOSE_NO_INDEX ||
-                strcmp(current->strings + candidate->key_offset, desc->key) != 0) {
+            const MyComposeSlot *slot = &builder->slots[candidate->handle.index];
+            if (old_node_is_reused(tree, i) || slot->reserved ||
+                candidate->handle.generation >= UINT32_MAX - 1u) {
                 continue;
             }
-            if (old_index != MY_COMPOSE_NO_INDEX ||
-                builder->slots[candidate->handle.index].reserved) {
-                reusable = false;
-                break;
-            }
-            old_index = i;
-        }
-        if (reusable && old_index != MY_COMPOSE_NO_INDEX) {
-            previous = old_index;
+            previous = i;
             match = MY_COMPOSE_MATCH_REPLACE;
+            break;
         }
     }
 
@@ -640,11 +634,9 @@ static void work_move(uint32_t *work, uint32_t from, uint32_t to) {
 }
 
 static bool append_move_diff(MyComposeTreeBuilder *builder,
-    const MyComposeNodeRecord *node) {
-    const MyComposeNodeRecord *old = &builder->current->nodes[node->previous];
+    const MyComposeNodeRecord *node, uint32_t from_index, uint32_t to_index) {
     return append_diff(builder, MY_COMPOSE_DIFF_MOVE, node->handle,
-        parent_handle(builder->next, node), old->child_index,
-        node->child_index, NULL, false);
+        parent_handle(builder->next, node), from_index, to_index, NULL, false);
 }
 
 static bool build_parent_move_diff(MyComposeTreeBuilder *builder,
@@ -688,7 +680,9 @@ static bool build_parent_move_diff(MyComposeTreeBuilder *builder,
             if (desired->match == MY_COMPOSE_MATCH_NODE &&
                 desired->key_offset != MY_COMPOSE_NO_INDEX) {
                 work_move(work, work_index, position);
-                if (!append_move_diff(builder, desired)) return false;
+                if (!append_move_diff(builder, desired, work_index, position)) {
+                    return false;
+                }
             } else {
                 uint32_t offender_index = work[position];
                 const MyComposeNodeRecord *offender = &next->nodes[offender_index];
@@ -699,7 +693,10 @@ static bool build_parent_move_diff(MyComposeTreeBuilder *builder,
                     return false;
                 }
                 work_move(work, position, offender->child_index);
-                if (!append_move_diff(builder, offender)) return false;
+                if (!append_move_diff(builder, offender, position,
+                        offender->child_index)) {
+                    return false;
+                }
             }
         }
         if (work[position] != next_index) return false;
