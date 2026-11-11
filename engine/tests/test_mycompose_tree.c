@@ -554,6 +554,129 @@ TEST(full_tree_duplicate_key_subtree_replacement_reuses_only_retiring_slots) {
     my_compose_tree_builder_destroy(builder);
 }
 
+static MyComposeStatus add_full_slot_fillers(MyComposeTreeBuilder *builder,
+    MyComposeNodeHandle root, MyComposeNodeHandle fillers[MY_COMPOSE_MAX_NODES - 3u]) {
+    char key[16];
+    for (uint32_t i = 0u; i < MY_COMPOSE_MAX_NODES - 3u; ++i) {
+        snprintf(key, sizeof(key), "f%u", i);
+        MyComposeStatus status = add_node(builder, root, key, "filler", &fillers[i]);
+        if (status != MY_COMPOSE_OK) return status;
+    }
+    return MY_COMPOSE_OK;
+}
+
+static MyComposeStatus create_full_slot_fixture(MyComposeTreeBuilder *builder,
+    MyComposeNodeHandle *root, MyComposeNodeHandle *a, MyComposeNodeHandle *b,
+    MyComposeNodeHandle fillers[MY_COMPOSE_MAX_NODES - 3u]) {
+    MyComposeStatus status = begin_root(builder, root);
+    if (status != MY_COMPOSE_OK) return status;
+    status = add_node(builder, *root, "a", "button", a);
+    if (status != MY_COMPOSE_OK) return status;
+    status = add_node(builder, *root, "b", "button", b);
+    if (status != MY_COMPOSE_OK) return status;
+    status = add_full_slot_fillers(builder, *root, fillers);
+    if (status != MY_COMPOSE_OK) return status;
+    return finish(builder);
+}
+
+TEST(future_match_node_after_reclaim_keeps_identity_and_high_water) {
+    MyComposeTreeBuilder *builder = my_compose_tree_builder_create();
+    ASSERT_NOT_NULL(builder);
+    MyComposeNodeHandle root;
+    MyComposeNodeHandle a;
+    MyComposeNodeHandle b;
+    MyComposeNodeHandle fillers[MY_COMPOSE_MAX_NODES - 3u];
+    ASSERT_EQ(create_full_slot_fixture(builder, &root, &a, &b, fillers),
+        MY_COMPOSE_OK);
+
+    MyComposeNodeHandle incoming;
+    MyComposeNodeHandle retained_a;
+    MyComposeNodeHandle next_fillers[MY_COMPOSE_MAX_NODES - 3u];
+    ASSERT_EQ(begin_root(builder, &root), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "incoming", "button", &incoming),
+        MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "a", "button", &retained_a), MY_COMPOSE_OK);
+    ASSERT_EQ(add_full_slot_fillers(builder, root, next_fillers), MY_COMPOSE_OK);
+    ASSERT_TRUE(handle_equal(retained_a, a));
+    ASSERT_EQ(incoming.index, a.index);
+    ASSERT_EQ(incoming.generation, a.generation + 1u);
+    ASSERT_FALSE(handle_equal(incoming, retained_a));
+    for (uint32_t i = 0u; i < MY_COMPOSE_MAX_NODES - 3u; ++i) {
+        ASSERT_TRUE(handle_equal(next_fillers[i], fillers[i]));
+    }
+    ASSERT_EQ(finish(builder), MY_COMPOSE_OK);
+    MyComposeNodeDesc actual;
+    ASSERT_EQ(my_compose_tree_builder_get_node(builder, incoming, &actual),
+        MY_COMPOSE_OK);
+    ASSERT_STR_EQ(actual.key, "incoming");
+    ASSERT_EQ(my_compose_tree_builder_get_node(builder, retained_a, &actual),
+        MY_COMPOSE_OK);
+    ASSERT_STR_EQ(actual.key, "a");
+    ASSERT_STR_EQ(actual.type, "button");
+
+    MyComposeNodeHandle replacement;
+    ASSERT_EQ(begin_root(builder, &root), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "a", "edit", &replacement), MY_COMPOSE_OK);
+    ASSERT_EQ(add_full_slot_fillers(builder, root, next_fillers), MY_COMPOSE_OK);
+    ASSERT_EQ(replacement.index, a.index);
+    ASSERT_EQ(replacement.generation, incoming.generation + 1u);
+    ASSERT_EQ(finish(builder), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_tree_builder_get_node(builder, replacement, &actual),
+        MY_COMPOSE_OK);
+    ASSERT_STR_EQ(actual.key, "a");
+    ASSERT_STR_EQ(actual.type, "edit");
+    ASSERT_EQ(my_compose_tree_builder_get_node(builder, incoming, &actual),
+        MY_COMPOSE_STALE);
+    my_compose_tree_builder_destroy(builder);
+}
+
+TEST(future_match_replace_after_reclaim_advances_generation_again) {
+    MyComposeTreeBuilder *builder = my_compose_tree_builder_create();
+    ASSERT_NOT_NULL(builder);
+    MyComposeNodeHandle root;
+    MyComposeNodeHandle a;
+    MyComposeNodeHandle b;
+    MyComposeNodeHandle fillers[MY_COMPOSE_MAX_NODES - 3u];
+    ASSERT_EQ(create_full_slot_fixture(builder, &root, &a, &b, fillers),
+        MY_COMPOSE_OK);
+
+    MyComposeNodeHandle incoming;
+    MyComposeNodeHandle replacement;
+    MyComposeNodeHandle next_fillers[MY_COMPOSE_MAX_NODES - 3u];
+    ASSERT_EQ(begin_root(builder, &root), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "incoming", "button", &incoming),
+        MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "a", "edit", &replacement), MY_COMPOSE_OK);
+    ASSERT_EQ(add_full_slot_fillers(builder, root, next_fillers), MY_COMPOSE_OK);
+    ASSERT_EQ(incoming.index, replacement.index);
+    ASSERT_EQ(incoming.generation, a.generation + 1u);
+    MyComposeStatus publish_status = finish(builder);
+    if (publish_status == MY_COMPOSE_CONFLICT) {
+        ASSERT_EQ(my_compose_tree_builder_diff(builder)->count, 0u);
+        ASSERT_EQ(my_compose_tree_builder_current_node_count(builder),
+            MY_COMPOSE_MAX_NODES);
+        MyComposeNodeDesc before;
+        ASSERT_EQ(my_compose_tree_builder_get_node(builder, a, &before),
+            MY_COMPOSE_OK);
+        ASSERT_STR_EQ(before.key, "a");
+        ASSERT_STR_EQ(before.type, "button");
+    }
+    ASSERT_EQ(publish_status, MY_COMPOSE_OK);
+    ASSERT_EQ(replacement.generation, incoming.generation + 1u);
+    ASSERT_FALSE(handle_equal(incoming, replacement));
+    MyComposeNodeDesc actual;
+    ASSERT_EQ(my_compose_tree_builder_get_node(builder, incoming, &actual),
+        MY_COMPOSE_OK);
+    ASSERT_STR_EQ(actual.key, "incoming");
+    ASSERT_EQ(my_compose_tree_builder_get_node(builder, replacement, &actual),
+        MY_COMPOSE_OK);
+    ASSERT_STR_EQ(actual.key, "a");
+    ASSERT_STR_EQ(actual.type, "edit");
+    ASSERT_EQ(my_compose_tree_builder_get_node(builder, a, &actual),
+        MY_COMPOSE_STALE);
+    my_compose_tree_builder_destroy(builder);
+}
+
 TEST(duplicate_key_preflight_leaves_next_and_current_unchanged) {
     MyComposeTreeBuilder *builder = my_compose_tree_builder_create();
     ASSERT_NOT_NULL(builder);
@@ -1096,6 +1219,8 @@ int main(void) {
     RUN_TEST(full_tree_cross_parent_replace_uses_a_new_generation);
     RUN_TEST(full_tree_unkeyed_cross_parent_reclaims_disappearing_slot);
     RUN_TEST(full_tree_duplicate_key_subtree_replacement_reuses_only_retiring_slots);
+    RUN_TEST(future_match_node_after_reclaim_keeps_identity_and_high_water);
+    RUN_TEST(future_match_replace_after_reclaim_advances_generation_again);
     RUN_TEST(duplicate_key_preflight_leaves_next_and_current_unchanged);
     RUN_TEST(property_and_event_payloads_are_owned_and_update_diffs_are_granular);
     RUN_TEST(message_payload_limit_and_stale_handles_are_checked);

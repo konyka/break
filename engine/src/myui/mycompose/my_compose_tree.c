@@ -73,6 +73,7 @@ typedef struct MyComposeTree {
 
 typedef struct MyComposeSlot {
     uint32_t generation;
+    uint32_t next_generation;
     bool in_use;
     bool retired;
     bool reserved;
@@ -193,6 +194,7 @@ MyComposeStatus my_compose_tree_builder_begin(MyComposeTreeBuilder *builder) {
     if (builder == NULL) return MY_COMPOSE_INVALID;
     memset(builder->next, 0, sizeof(*builder->next));
     for (uint32_t i = 0u; i < MY_COMPOSE_MAX_NODES; ++i) {
+        builder->slots[i].next_generation = builder->slots[i].generation;
         builder->slots[i].reserved = false;
     }
     builder->diff.count = 0u;
@@ -324,16 +326,25 @@ MyComposeStatus my_compose_tree_builder_node(MyComposeTreeBuilder *builder,
     if (match == MY_COMPOSE_MATCH_NODE) {
         handle = builder->current->nodes[previous].handle;
         slot_index = handle.index;
+        if (builder->slots[slot_index].next_generation < handle.generation) {
+            builder->slots[slot_index].next_generation = handle.generation;
+        }
     } else if (match == MY_COMPOSE_MATCH_REPLACE) {
         handle = builder->current->nodes[previous].handle;
-        if (handle.generation != UINT32_MAX) handle.generation++;
         slot_index = handle.index;
+        MyComposeSlot *slot = &builder->slots[slot_index];
+        uint32_t base_generation = slot->next_generation;
+        if (base_generation < handle.generation) base_generation = handle.generation;
+        handle.generation = base_generation == UINT32_MAX ? UINT32_MAX :
+            base_generation + 1u;
+        slot->next_generation = handle.generation;
     } else {
         slot_index = find_free_slot(builder);
         if (slot_index == MY_COMPOSE_NO_INDEX) return MY_COMPOSE_OVERLOAD;
         handle.index = slot_index;
-        handle.generation = builder->slots[slot_index].generation;
+        handle.generation = builder->slots[slot_index].next_generation;
         if (handle.generation == 0u) handle.generation = 1u;
+        builder->slots[slot_index].next_generation = handle.generation;
     }
     if (slot_index >= MY_COMPOSE_MAX_NODES) return MY_COMPOSE_FAILED;
     builder->slots[slot_index].reserved = true;
@@ -844,21 +855,42 @@ static void publish_slots(MyComposeTreeBuilder *builder) {
         const MyComposeNodeRecord *old = &current->nodes[i];
         if (old_node_is_reused(next, i)) continue;
         MyComposeSlot *slot = &builder->slots[old->handle.index];
-        if (old->handle.generation == UINT32_MAX) {
-            slot->generation = UINT32_MAX;
-        } else {
-            slot->generation = old->handle.generation + 1u;
+        uint32_t released_generation = old->handle.generation == UINT32_MAX ?
+            UINT32_MAX : old->handle.generation + 1u;
+        if (slot->next_generation < released_generation) {
+            slot->next_generation = released_generation;
         }
         slot->in_use = false;
-        if (slot->generation == UINT32_MAX) slot->retired = true;
+        if (slot->next_generation == UINT32_MAX) slot->retired = true;
     }
     for (uint32_t i = 0u; i < next->node_count; ++i) {
         const MyComposeNodeRecord *node = &next->nodes[i];
         MyComposeSlot *slot = &builder->slots[node->handle.index];
-        slot->generation = node->handle.generation;
+        if (slot->next_generation < node->handle.generation) {
+            slot->next_generation = node->handle.generation;
+        }
         slot->in_use = true;
         slot->retired = false;
     }
+    for (uint32_t i = 0u; i < MY_COMPOSE_MAX_NODES; ++i) {
+        MyComposeSlot *slot = &builder->slots[i];
+        if (slot->generation < slot->next_generation) {
+            slot->generation = slot->next_generation;
+        }
+        slot->next_generation = slot->generation;
+    }
+}
+
+static bool next_handles_are_unique(const MyComposeTree *tree) {
+    for (uint32_t i = 0u; i < tree->node_count; ++i) {
+        for (uint32_t j = i + 1u; j < tree->node_count; ++j) {
+            if (tree->nodes[i].handle.index == tree->nodes[j].handle.index &&
+                tree->nodes[i].handle.generation == tree->nodes[j].handle.generation) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 MyComposeStatus my_compose_tree_builder_finalize(MyComposeTreeBuilder *builder) {
@@ -867,11 +899,14 @@ MyComposeStatus my_compose_tree_builder_finalize(MyComposeTreeBuilder *builder) 
     builder->diff.count = 0u;
     for (uint32_t i = 0u; i < builder->next->node_count; ++i) {
         const MyComposeNodeRecord *node = &builder->next->nodes[i];
-        if (node->match == MY_COMPOSE_MATCH_REPLACE) {
-            uint32_t old_generation =
-                builder->current->nodes[node->previous].handle.generation;
-            if (old_generation >= UINT32_MAX - 1u) return MY_COMPOSE_OVERLOAD;
+        if (node->match == MY_COMPOSE_MATCH_REPLACE &&
+            node->handle.generation == UINT32_MAX) {
+            return MY_COMPOSE_OVERLOAD;
         }
+    }
+    if (!next_handles_are_unique(builder->next)) {
+        builder->diff.count = 0u;
+        return MY_COMPOSE_CONFLICT;
     }
     if (!build_delete_diff(builder) || !build_structural_diff(builder) ||
         !build_update_diff(builder)) {
@@ -957,6 +992,7 @@ MyComposeStatus my_compose_tree_builder_internal_seed_generation(
     node->handle.generation = generation;
     MyComposeSlot *slot = &builder->slots[handle.index];
     slot->generation = generation;
+    slot->next_generation = generation;
     slot->in_use = true;
     slot->retired = false;
     return MY_COMPOSE_OK;

@@ -310,3 +310,106 @@ The following tests did not run:
 ```
 
 对本轮增量构建日志检索 `warning:`、`警告`、`error:`、`FAILED`、`Failed` 均无匹配；`git diff --check` 通过。未执行图形、fuzz、ASan/UBSan 或 TSan，不宣称 GPU 结果。原独立 reviewer 的 scoped re-review 由主代理安排。
+
+
+## Fix round 2：slot 回收顺序与 handle 唯一性
+
+起点：`3950cf4f186e22f553a70ce22f5792f1c6779ccb`。本轮仍只修改 `my_compose_tree.c`、`test_mycompose_tree.c` 和本报告；未 push，未扩展到后续任务。
+
+Fix commit subject：`fix: preserve compose handle generations`。最终 SHA 以提交后的 `git rev-parse HEAD` 和交付返回为准。
+
+### Critical 复现与 RED
+
+新增两个真实 API 顺序测试，current 均为 root + `a` + `b` + 253 个 keyed filler 的 256 节点树：
+
+- `future_match_node_after_reclaim_keeps_identity_and_high_water`：先声明 incoming 并回收 `a` 的 slot，再声明需要保留的 `a`。验证原 `{index,generation}` 完全保留、incoming 使用新 generation、两者分别 `get_node` 可解析；下一帧对 `a` 换 type，验证分配继续递增而不是因发布回退重用 incoming 的 generation。
+- `future_match_replace_after_reclaim_advances_generation_again`：incoming 先回收 `a` 的 slot，后声明的 `a` 又换 type。验证 incoming 与 replacement 同 index 但 generation 连续递增，两个 handle 不同且分别解析为 `incoming` 与 `a/edit`。
+
+未改生产实现时：
+
+```sh
+cmake --build build-compose-normal --target test_mycompose_tree -j3
+./build-compose-normal/test_mycompose_tree
+```
+
+结果：exit 1，25 passed / 2 failed / 27 total。
+
+```text
+future_match_node_after_reclaim_keeps_identity_and_high_water ...
+  FAIL: replacement.generation != incoming.generation + 1u
+future_match_replace_after_reclaim_advances_generation_again ...
+  FAIL: replacement.generation != incoming.generation + 1u
+=== Results: 25 passed, 2 failed, 27 total ===
+```
+
+第一条证明后遍历 MATCH_NODE 把 slot generation 写回较低值后，下一帧重用旧 incoming generation；第二条证明两个 MATCH_REPLACE 都只使用 `old_generation + 1` 而撞车。此前 full-tree unkeyed、重复 key 子树替换和独立 MOVE 顺序测试全部保留。
+
+### 分配 high-water 与发布机制
+
+- `MyComposeSlot` 增加构建期 `next_generation`。每次 `begin` 从已发布 `generation` 初始化，失败或放弃的 build 不改变 current 的已发布代际。
+- MATCH_NODE 保留原 handle，不降低 high-water；MATCH_REPLACE 以 `max(slot.next_generation, old.handle.generation) + 1` 分配，并立即推进构建期 high-water。于是同一 slot 的 incoming 为 gen2 时，后到 replacement 必为 gen3，而后到 MATCH_NODE 仍可保留 gen1。
+- 新空闲 slot 同步其分配代际；内部近溢出 seed 同步两个代际字段。到达 `UINT32_MAX` 的 replacement 仍在发布前返回 OVERLOAD，不回绕。
+- `publish_slots` 对删除、保留和替换统一取 high-water：删除代际只向上提升，遍历 next 不再用较低 handle generation 覆盖较高值，最后才单调发布到 `generation`。同 index 不同 generation 是允许的；每个完整 handle 对必须唯一。
+
+### finalize 唯一性 guard
+
+在 diff 生成和 `publish_slots` 之前对全部 next 节点做 O(n²) 固定上限扫描，任意两个 `{index,generation}` 完全相同即返回 `MY_COMPOSE_CONFLICT` 并保持 `diff.count == 0`，不交换 current/next、不发布 slot。
+
+后到 REPLACE 测试包含冲突诊断分支：若 finalize 返回 CONFLICT，先断言 diff 为零、current 仍为 256 节点且原 `a/button` 可解析，再让正常成功断言继续约束生产行为。
+
+### focused GREEN 与 generation 变异
+
+```sh
+cmake --build build-compose-normal --target test_mycompose_tree -j3
+./build-compose-normal/test_mycompose_tree
+ctest --test-dir build-compose-normal -R '^test_mycompose_tree$' \
+  --output-on-failure -j3
+```
+
+恢复后的最终输出：
+
+```text
+[1] lifecycle_insert_noop_and_delete ... OK
+...
+[11] future_match_node_after_reclaim_keeps_identity_and_high_water ... OK
+[12] future_match_replace_after_reclaim_advances_generation_again ... OK
+...
+[27] generation_near_overflow_never_wraps_and_retires_slot ... OK
+=== Results: 27 passed, 0 failed, 27 total ===
+
+1/1 Test #24: test_mycompose_tree .............. Passed
+100% tests passed, 0 tests failed out of 1
+```
+
+生产 generation 变异：把 MATCH_REPLACE 的 base 从 `slot->next_generation` 临时改为 `old.handle.generation`，重新构建运行：
+
+```text
+future_match_node_after_reclaim_keeps_identity_and_high_water ...
+  FAIL: replacement.generation != incoming.generation + 1u
+future_match_replace_after_reclaim_advances_generation_again ...
+  FAIL: publish_status != MY_COMPOSE_OK
+=== Results: 25 passed, 2 failed, 27 total ===
+```
+
+第二条由 finalize 唯一性 guard 返回 CONFLICT；其冲突分支中的 diff=0、current 数量及原身份断言均先通过，证明 guard 杀死重复发布而非允许重复 handle 进入 current。恢复 `slot->next_generation` 后重新得到 27/27 和 focused CTest 1/1。
+
+### 完整非图形回归与警告
+
+```sh
+cmake --build build-compose-normal -j3
+ctest --test-dir build-compose-normal -LE "graphics|fuzz" \
+  --output-on-failure -j3
+```
+
+结果：build exit 0，CTest exit 0。
+
+```text
+100% tests passed, 0 tests failed out of 344
+compose = 0.01 sec*proc (1 test)
+headless = 55.36 sec*proc (182 tests)
+Total Test time (real) = 29.31 sec
+The following tests did not run:
+  134 - test_d3d12_dependency_gate (Skipped)
+```
+
+本轮增量构建日志检索 `warning:`、`警告`、`error:`、`FAILED`、`Failed` 均无匹配；`git diff --check` 通过。未执行图形、fuzz、ASan/UBSan 或 TSan，不宣称 GPU 结果。原独立 reviewer 的 scoped 复核由主代理安排。
