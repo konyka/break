@@ -41,10 +41,8 @@ typedef struct PlatformDirEntry { char name[256]; bool is_dir; } PlatformDirEntr
 bool platform_list_dir(const char *path, PlatformDirEntry *entries, u32 capacity, u32 *out_count);
 
 /* ---------------------------------------------------------------- */
-/* Stage 5 Phase A Task 3: write-side PAL. POSIX branch fully        */
-/* tested; Win32 branch compile-only (_WIN32) — correct by           */
-/* inspection only, no Windows lane exercises it in this repo state  */
-/* (the platform_list_dir precedent).                                */
+/* Stage 5 Phase A Task 3: write-side PAL. The POSIX and Win32       */
+/* implementations share the durability contract below.              */
 /*                                                                   */
 /* Crash-safety ordering of a commit (the durability contract):      */
 /*   1. fsync the tmp file (payload bytes durable)                   */
@@ -75,8 +73,8 @@ bool platform_list_dir(const char *path, PlatformDirEntry *entries, u32 capacity
 /* by PLATFORM_FS_PATH_CAPACITY (the ".tmpXXXXXX" suffix must fit).  */
 /* ---------------------------------------------------------------- */
 
-/* platform_fs.h additions — POSIX tested; Win32 branch compile-only (_WIN32):
- * CreateFile/WriteFile/_fsync-equivalent (FlushFileBuffers)/MoveFileEx(REPLACE_EXISTING). */
+/* platform_fs.h write-side PAL additions. The optional diagnostic open
+ * reports the first failed atomic API with saved OS/CRT errors. */
 
 /* Opens "<path>.tmpXXXXXX" in the SAME directory as path (rename atomicity requires
  * same filesystem). Only ONE writer per instance; not thread-safe. */

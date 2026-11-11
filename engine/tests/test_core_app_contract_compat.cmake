@@ -1,9 +1,21 @@
 foreach(var ENGINE_SOURCE_DIR REPOSITORY_ROOT PLAN_FILE DESIGN_FILE GIT_EXECUTABLE
-        CORE_APP NETWORK_ENABLED CTEST_EXECUTABLE WORK NESTED_ENGINE_RHI_BACKEND)
+        CORE_APP NETWORK_ENABLED CTEST_EXECUTABLE WORK NESTED_ENGINE_RHI_BACKEND
+        NESTED_CMAKE_GENERATOR)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required")
     endif()
 endforeach()
+if(NOT DEFINED NESTED_CTEST_CONFIG)
+    message(FATAL_ERROR "NESTED_CTEST_CONFIG is required")
+endif()
+set(nested_ctest_config_args)
+if(NOT "${NESTED_CTEST_CONFIG}" STREQUAL "")
+    list(APPEND nested_ctest_config_args -C "${NESTED_CTEST_CONFIG}")
+endif()
+if(NESTED_CMAKE_GENERATOR MATCHES "Visual Studio|Xcode|Multi-Config" AND
+        "${NESTED_CTEST_CONFIG}" STREQUAL "")
+    message(FATAL_ERROR "a multi-config nested CTest requires NESTED_CTEST_CONFIG")
+endif()
 set(nested_configure_defs "-DENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}")
 set(nested_ctest_defs "\"-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}\"")
 foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
@@ -244,7 +256,8 @@ if(UNIX)
         file(APPEND "${permission_source}"
             "  PROPERTIES SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION \"CORE_APP_TRACKING_UNVERIFIED\")\n")
         run_case(permission_fixture_configure PASS "${CMAKE_COMMAND}"
-            -S "${permission_fixture}" -B "${permission_build}")
+            -S "${permission_fixture}" -B "${permission_build}"
+            -G "${NESTED_CMAKE_GENERATOR}")
         file(CHMOD "${permission_formal_root}" PERMISSIONS OWNER_READ OWNER_WRITE)
         file(CHMOD "${permission_naming_blocked}" PERMISSIONS OWNER_READ OWNER_WRITE)
         run_case(permission_git_probe FAIL "${CMAKE_COMMAND}" -E env
@@ -254,13 +267,15 @@ if(UNIX)
         expect_log_contains(permission_git_probe "cannot change to")
         run_case(formal_permission FAIL "${CMAKE_COMMAND}" -E env
             "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-            --test-dir "${permission_build}" -R "^test_core_app_formal_permission$" -V)
+            --test-dir "${permission_build}" ${nested_ctest_config_args}
+            -R "^test_core_app_formal_permission$" -V)
         expect_log_contains(formal_permission "cannot change to")
         expect_log_contains(formal_permission "git rev-parse --git-dir failed:")
         expect_log_lacks(formal_permission "CORE_APP_TRACKING_UNVERIFIED")
         run_case(naming_permission FAIL "${CMAKE_COMMAND}" -E env
             "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-            --test-dir "${permission_build}" -R "^test_core_app_naming_permission$" -V)
+            --test-dir "${permission_build}" ${nested_ctest_config_args}
+            -R "^test_core_app_naming_permission$" -V)
         expect_log_contains(naming_permission "cannot change to")
         expect_log_contains(naming_permission "git rev-parse --git-dir failed:")
         expect_log_lacks(naming_permission "CORE_APP_TRACKING_UNVERIFIED")
@@ -297,7 +312,8 @@ file(APPEND "${corrupt_source}"
 file(APPEND "${corrupt_source}"
     "  PROPERTIES SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION \"CORE_APP_TRACKING_UNVERIFIED\")\n")
 run_case(corrupt_fixture_configure PASS "${CMAKE_COMMAND}"
-    -S "${corrupt_fixture}" -B "${corrupt_build}")
+    -S "${corrupt_fixture}" -B "${corrupt_build}"
+    -G "${NESTED_CMAKE_GENERATOR}")
 run_case(corrupt_git_probe FAIL "${CMAKE_COMMAND}" -E env
     --unset=GIT_DIR --unset=GIT_WORK_TREE
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "LC_ALL=C"
@@ -306,13 +322,15 @@ expect_log_contains(corrupt_git_probe
     "fatal: not a git repository (or any of the parent directories): .git")
 run_case(formal_corrupt FAIL "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-    --test-dir "${corrupt_build}" -R "^test_core_app_formal_corrupt$" -V)
+    --test-dir "${corrupt_build}" ${nested_ctest_config_args}
+    -R "^test_core_app_formal_corrupt$" -V)
 expect_log_contains(formal_corrupt "fatal: not a git repository")
 expect_log_contains(formal_corrupt "git rev-parse --git-dir failed:")
 expect_log_lacks(formal_corrupt "CORE_APP_TRACKING_UNVERIFIED")
 run_case(naming_corrupt FAIL "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-    --test-dir "${corrupt_build}" -R "^test_core_app_naming_corrupt$" -V)
+    --test-dir "${corrupt_build}" ${nested_ctest_config_args}
+    -R "^test_core_app_naming_corrupt$" -V)
 expect_log_contains(naming_corrupt "fatal: not a git repository")
 expect_log_contains(naming_corrupt "git rev-parse --git-dir failed:")
 expect_log_lacks(naming_corrupt "CORE_APP_TRACKING_UNVERIFIED")
@@ -322,6 +340,7 @@ set(archive_build "${WORK}/archive-build")
 run_case(archive_configure PASS "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CMAKE_COMMAND}"
     -S "${archive_engine}" -B "${archive_build}"
+    -G "${NESTED_CMAKE_GENERATOR}"
     -DENGINE_BUILD_TESTS=ON -DENGINE_ENABLE_IPO=OFF
     -DBREAK_ENABLE_SNOWFLAKE=OFF ${nested_configure_defs})
 if(EXISTS "${archive_build}/CMakeCache.txt")
@@ -352,7 +371,7 @@ if(EXISTS "${archive_build}/CTestTestfile.cmake")
     endforeach()
     run_case(archive_tracking PASS "${CMAKE_COMMAND}" -E env
         "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-        --test-dir "${archive_build}"
+        --test-dir "${archive_build}" ${nested_ctest_config_args}
         -R "^test_core_app_(formal_asset_tracking|naming_contract)$" -V)
     expect_tracking_skips(archive_tracking 2)
     expect_log_lacks(archive_tracking "All 11 formal core_app assets are tracked, including tone.wav")
@@ -373,7 +392,8 @@ file(APPEND "${archive_engine}/apps/core_app/core_app.c" "\n${exact_exemption}\n
 if(EXISTS "${archive_build}/CTestTestfile.cmake")
     run_case(archive_exact_exemption PASS "${CMAKE_COMMAND}" -E env
         "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-        --test-dir "${archive_build}" -R "^test_core_app_naming_contract$" -V)
+        --test-dir "${archive_build}" ${nested_ctest_config_args}
+        -R "^test_core_app_naming_contract$" -V)
     expect_tracking_skips(archive_exact_exemption 1)
     expect_log_lacks(archive_exact_exemption "core_app naming contract failed")
     expect_log_lacks(archive_exact_exemption "core_app naming, target, interface, and 11-asset contract passed")
@@ -449,10 +469,12 @@ file(APPEND "${nm_ctest_source}"
 file(APPEND "${nm_ctest_source}"
     "  SKIP_REGULAR_EXPRESSION \"UNVERIFIED: core_app symbol scan skipped:|CORE_APP_TRACKING_UNVERIFIED\")\n")
 set(nm_build "${WORK}/nm-build")
-run_case(nm_fixture_configure PASS "${CMAKE_COMMAND}" -S "${nm_fixture}" -B "${nm_build}")
+run_case(nm_fixture_configure PASS "${CMAKE_COMMAND}" -S "${nm_fixture}" -B "${nm_build}"
+    -G "${NESTED_CMAKE_GENERATOR}")
 run_case(nm_compat_skips PASS "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-    --test-dir "${nm_build}" -R "^test_core_app_nm_(missing|unsupported)$" -V)
+    --test-dir "${nm_build}" ${nested_ctest_config_args}
+    -R "^test_core_app_nm_(missing|unsupported)$" -V)
 get_property(nm_log GLOBAL PROPERTY CORE_APP_COMPAT_LAST_LOG)
 string(REGEX MATCHALL "UNVERIFIED: core_app symbol scan skipped:" nm_skip_matches "${nm_log}")
 list(LENGTH nm_skip_matches nm_skip_count)
@@ -462,7 +484,7 @@ endif()
 foreach(test_name IN ITEMS test_core_app_nested_error test_core_app_cli_error)
     run_case(${test_name} FAIL "${CMAKE_COMMAND}" -E env
         "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-        --test-dir "${nm_build}" -R "^${test_name}$" -V)
+        --test-dir "${nm_build}" ${nested_ctest_config_args} -R "^${test_name}$" -V)
     expect_log_contains(${test_name} "core_app contract failed before skip:")
     expect_log_lacks(${test_name} "UNVERIFIED: core_app symbol scan skipped:")
     if(test_name STREQUAL "test_core_app_nested_error")

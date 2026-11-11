@@ -22,6 +22,14 @@ Core App nested 测试现在传递父配置的有效后端与非空真实 `Vulka
 
 reserved-manifest-alias 用例不再于 writer 调用前预写 alias payload。POSIX 使用 `link` 与 `stat` 的 device/inode 身份检查覆盖真实文件别名，保留调用前哈希并增加完整 manifest 字节比较；`BREAK_RUNTIME_INVALID`、probe 成功和原 `runtime_1.bin` 断言均保留，checkpoint writer 未修改。原生 APFS 的修复后 assets 为 17/17。独立变异 run `43004881342` 的 macOS job `130469756286` 恢复旧预写后在同一旧哈希断言处得到 16 PASS＋1 FAIL，验证了原生 RED 与恢复 GREEN 的因果关系。Windows 与 D3D12 的剩余失败不在这两节中宣称已修复。
 
+## Windows 进程启动与资产检出（2026-11-11）
+
+Windows 测试启动 baker 时，`system()` 的完整命令在 `_WIN32` 下使用 `""<exe>" --output "<output>""`，exe 与输出路径分别引用，完整字符串再包一层引号；非 Windows 保留原格式。原始格式和反斜杠变体在真实 probe 中失败，完整命令外层引用成功并生成 `level.bscn`，因此未采用无空格路径才能工作的无引号方案。原始返回、A/B 短路与诊断保持原合同。baker 生成、PAL、序列化和公共 API 未因此改变。
+
+正式资产使用 `engine/assets/core_app/* binary`，避免 Git 在 Windows checkout 将文本 LF 改写为 CRLF。原生哈希证明七个文本文件曾被逐行增加一个字节，而 BSCN/BANM/FG/WAV 与 baker 完全一致；未通过归一化或重写资产掩盖差异。`test_core_app_checkout_attributes` 对全部 11 个正式资产执行真实 `git check-attr`，悬空 `.git` symlink 在 `rev-parse` 失败时必须 FAIL，只有真实无元数据或 Git 工具缺失才允许明确 UNVERIFIED。
+
+原生 run `43041968171` 的 Windows job `130595842235` 实际得到 direct baker 退出 0、assets **16/16**、完整 diagnostics 通过，probe outcome/final gate 为 success；macOS job `130595841519` 也通过。当前本机非图形为 **357 项入选、353 PASS、4 个文档化 SKIP、0 FAIL**，所有构建和并行 CTest 使用 `-j3`。D3D12 compat 的 generator/`-C` 配置与真实 Agility 归档暂存仍按独立计划执行，sanitizer、no-tests、fuzz 和最终 master CI 不在本节中宣称完成。
+
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
 <!-- CORE_APP_HISTORY_BEGIN -->

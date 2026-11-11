@@ -4845,10 +4845,29 @@ endif()
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
                 -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_compat
+                "-DNESTED_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
+                "-DNESTED_CTEST_CONFIG=$<CONFIG>"
                 ${_core_app_nested_toolchain_defs}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_contract_compat.cmake)
         set_tests_properties(test_core_app_contract_compat PROPERTIES
             LABELS "headless;core_app;platform_contract" TIMEOUT 300)
+        add_test(NAME test_core_app_ctest_config_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+                -DPLAN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/superpowers/plans/2026-11-03-core-app-integration.md
+                -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/core_app_integration.md
+                -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_ctest_config_contract
+                "-DNESTED_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
+                "-DNESTED_CTEST_CONFIG=$<CONFIG>"
+                ${_core_app_nested_toolchain_defs}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_ctest_config_contract.cmake)
+        set_tests_properties(test_core_app_ctest_config_contract PROPERTIES
+            LABELS "headless;core_app;platform_contract" TIMEOUT 600)
     endif()
 
     set(_core_app_lifecycle_fault_library "")

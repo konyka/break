@@ -1,3 +1,9 @@
+## 当前验证：Core App Windows 启动与资产检出修复（2026-11-11）
+
+- Windows 进程启动修复 `987121d9` 只在 `_WIN32` 的测试 `system()` 命令外再包一层引号，POSIX 格式、原始返回和诊断不变。真实 probe 已区分原始格式失败与完整命令外层引用成功，未采用不安全的无引号捷径。原生 run `43041968171` 的 Windows job `130595842235` 中 direct baker 退出 0，assets **16/16**，完整 `test_core_app_baker_diagnostics` 通过，probe outcome/final gate 均为 success。macOS job `130595841519` 同样通过；这些是 CPU/合同证据，不是 GPU 或声卡证据。
+- 正式文本资产的 CRLF 检出差异由真实长度与 SHA-256 证明，BSCN/BANM/FG/WAV 哈希则一致。现以 `engine/assets/core_app/* binary` 固定检出，不改写 11 个资产或 baker 内容。新 `test_core_app_checkout_attributes` 以真实 `git check-attr` 验证全部资产，`a1504864` 另外阻止悬空 `.git` symlink 被误判为无元数据。新 checkout 的正式资产比较恢复通过，启动与资产两项修复均已完成独立规格/质量评审及 scoped 复审。
+- 当前本机非图形回归为 **357 项入选、353 PASS、4 个文档化 SKIP、0 FAIL**，所有构建和并行 CTest 使用 `-j3`。Windows D3D12 compat 的 generator/`-C` 配置与归档 Agility 暂存仍是独立后续任务，不把上述成功解释为全仓 CI、sanitizer、no-tests、fuzz 或最终 master 已完成。临时验证/APFS/probe 分支不会合入 master，未创建 PR。
+
 ## 当前进展：Core App Metal/APFS 验收与 Windows 诊断（2026-11-11）
 
 - Core App CI Task 1–3 的实现及独立规格/质量评审均已通过。nested 合同转发有效后端与真实 SDK 路径，并要求缺符号是唯一错误；原生 macOS Metal run `43004390668` 的 job `130468130703` 已实际执行 assets 17/17，以及 Core App 9 项合同的 6 PASS＋3 个明确 nm SKIP，target、nested、wrapped、compat、正式资产和命名均通过。这是 Metal 编译与 CPU/合同证据，不是 Metal GPU 运行证据。
