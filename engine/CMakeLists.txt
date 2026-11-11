@@ -4676,6 +4676,20 @@ endif()
     set_tests_properties(test_core_app_target_contract test_core_app_nm_missing
         test_core_app_nm_unsupported PROPERTIES
         LABELS "headless;core_app;platform_contract" SKIP_RETURN_CODE 77)
+    if(_core_app_nm_capable)
+        add_test(NAME test_core_app_nm_symbol_missing
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_symbol_missing
+                -DNM=${CMAKE_NM}
+                -DTARGET_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake
+                -DNM_WRAPPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_filter.cmake
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_nm_symbol_missing.cmake)
+        set_tests_properties(test_core_app_nm_symbol_missing PROPERTIES
+            LABELS "headless;core_app;platform_contract")
+    endif()
 
     add_executable(test_core_app_assets tests/test_core_app_assets.c)
     set_property(TARGET test_core_app_assets PROPERTY C_STANDARD 11)
@@ -6965,6 +6979,12 @@ foreach(_core_app_required_target IN ITEMS core_app_runtime core_app core_app_as
         message(FATAL_ERROR "${_core_app_required_target} must be defined outside ENGINE_BUILD_TESTS")
     endif()
 endforeach()
+get_target_property(_core_app_runtime_sources core_app_runtime SOURCES)
+set(_core_app_runtime_expected_sources
+    "apps/core_app/core_app.c;apps/core_app/core_app_audio.c;apps/core_app/core_app_render.c;apps/core_app/core_app_checkpoint.c")
+if(NOT "${_core_app_runtime_sources}" STREQUAL "${_core_app_runtime_expected_sources}")
+    message(FATAL_ERROR "core_app_runtime SOURCES changed: ${_core_app_runtime_sources}")
+endif()
 get_target_property(_core_app_runtime_links core_app_runtime LINK_LIBRARIES)
 set(_core_app_runtime_expected
     "engine;break_game;break_ai;break_flow;break_lua;break_game_lua;runtime_core")

@@ -241,36 +241,37 @@ u64 core_app_checkpoint_manifest_hash(const char *directory);
 
 ---
 
+<!-- CORE_APP_COMPLETED_TASKS_1_3_BEGIN -->
 ### Task 1: 锁定合并基线、应用 target 与进程入口
 
 **Files:**
 - Modify: `engine/CMakeLists.txt`
-- Create: `engine/apps/core_app/main.c`
-- Create: `engine/apps/core_app/core_app.h`
-- Create: `engine/apps/core_app/core_app.c`
-- Create: `engine/tests/test_core_app_target_contract.cmake`
-- Create: `docs/design/core_app_integration.md`
+- Create: `engine/apps/game_app/main.c`
+- Create: `engine/apps/game_app/game_app.h`
+- Create: `engine/apps/game_app/game_app.c`
+- Create: `engine/tests/test_game_app_target_contract.cmake`
+- Create: `docs/design/game_app_integration.md`
 
 **Interfaces:**
 - Consumes: 已定稿且合入的 P0–P11 target/header，尤其 `break_flow` 和 P9 `break_game_lua`。
-- Produces: 顶层 `core_app_runtime`、`core_app`；`CORE_APP_ENABLE_NETWORK=OFF` 默认；严格 CLI 和 `core_app_run()` 入口。baker 由 Task 2 添加。
+- Produces: 顶层 `game_app_core`、`game_app`；`GAME_APP_ENABLE_NETWORK=OFF` 默认；严格 CLI 和 `game_app_run()` 入口。baker 由 Task 2 添加。
 
 - [ ] **Step 1: 写 target/CLI 行为 RED**
 
-先写 CMake 合同，要求 target 在 `ENGINE_BUILD_TESTS` 外定义、`core_app` 链接 `core_app_runtime` 并经 `engine_link_rhi_backend()` 选择 RHI，核心消费者不新增库，生产二进制不含 `*_for_test`/`test_hook`。同一 CMake 测试通过 `execute_process` 启动真实二进制：`--help` 退出 0；未知参数、`--render=headless`、缺值和 `--network` 在未编译网络时退出 2。无参数行为由后续真实生命周期任务验收，本任务不让其假成功。
+先写 CMake 合同，要求 target 在 `ENGINE_BUILD_TESTS` 外定义、`game_app` 链接 `game_app_core` 并经 `engine_link_rhi_backend()` 选择 RHI，核心消费者不新增库，生产二进制不含 `*_for_test`/`test_hook`。同一 CMake 测试通过 `execute_process` 启动真实二进制：`--help` 退出 0；未知参数、`--render=headless`、缺值和 `--network` 在未编译网络时退出 2。无参数行为由后续真实生命周期任务验收，本任务不让其假成功。
 
 ```cmake
-if(NOT cmake_text MATCHES "add_executable\\(core_app apps/core_app/main.c\\)")
-    message(FATAL_ERROR "missing real core_app executable")
+if(NOT cmake_text MATCHES "add_executable\\(game_app apps/game_app/main.c\\)")
+    message(FATAL_ERROR "missing real game_app executable")
 endif()
 foreach(line IN LISTS consumer_link_lines)
-    if(line MATCHES "break_game|break_flow|break_ai|break_lua|runtime_core|core_app")
+    if(line MATCHES "break_game|break_flow|break_ai|break_lua|runtime_core|game_app")
         message(FATAL_ERROR "P12 library leaked into legacy consumer: ${line}")
     endif()
 endforeach()
-execute_process(COMMAND "${CORE_APP}" --help RESULT_VARIABLE help_rc)
+execute_process(COMMAND "${GAME_APP}" --help RESULT_VARIABLE help_rc)
 if(NOT help_rc EQUAL 0)
-    message(FATAL_ERROR "core_app --help failed: ${help_rc}")
+    message(FATAL_ERROR "game_app --help failed: ${help_rc}")
 endif()
 ```
 
@@ -278,8 +279,8 @@ endif()
 
 Run:
 ```bash
-cmake -S engine -B build-core-integration-normal -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_IPO=OFF -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF
-cmake --build build-core-integration-normal -j3 --target core_app
+cmake -S engine -B build-game-integration-normal -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_IPO=OFF -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF
+cmake --build build-game-integration-normal -j3 --target game_app
 ```
 Expected: target 不存在是结构 RED；加入最小 target 后，真实进程的 `--help`/非法参数断言必须因错误退出码或缺失行为而 RED。若 P9 target/header 或任何前置依赖缺席，停止并回报依赖，不写 stub 通过。
 
@@ -288,53 +289,53 @@ Expected: target 不存在是结构 RED；加入最小 target 后，真实进程
 按现有 C11/CTest 惯例添加：
 
 ```cmake
-option(CORE_APP_ENABLE_NETWORK "Enable the optional authenticated Snowflake channel" OFF)
-add_library(core_app_runtime STATIC
-    apps/core_app/core_app.c)
-set_property(TARGET core_app_runtime PROPERTY C_STANDARD 11)
-target_include_directories(core_app_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(core_app_runtime PUBLIC
+option(GAME_APP_ENABLE_NETWORK "Enable the optional authenticated Snowflake channel" OFF)
+add_library(game_app_core STATIC
+    apps/game_app/game_app.c)
+set_property(TARGET game_app_core PROPERTY C_STANDARD 11)
+target_include_directories(game_app_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(game_app_core PUBLIC
     engine break_game break_ai break_flow break_lua break_game_lua runtime_core)
-add_executable(core_app apps/core_app/main.c)
-target_link_libraries(core_app PRIVATE core_app_runtime m)
-engine_link_rhi_backend(core_app)
-add_test(NAME test_core_app_target_contract
+add_executable(game_app apps/game_app/main.c)
+target_link_libraries(game_app PRIVATE game_app_core m)
+engine_link_rhi_backend(game_app)
+add_test(NAME test_game_app_target_contract
     COMMAND ${CMAKE_COMMAND}
         -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-        -DCORE_APP=$<TARGET_FILE:core_app>
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake)
+        -DGAME_APP=$<TARGET_FILE:game_app>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_target_contract.cmake)
 ```
 
-`main.c` 使用显式 `--render record|auto|vulkan|opengl`、`--audio record|null|device`、`--assets DIR`、`--scenario PATH`、`--checkpoint DIR`、`--trace PATH`、`--screenshot PATH`、`--fixed-step`、`--frames N`、`--require-device`、`--network` 解析；不接受隐式位置参数。`core_app_run` 本任务只完成 config 验证和明确 `FAILED`，不得返回假成功。
+`main.c` 使用显式 `--render record|auto|vulkan|opengl`、`--audio record|null|device`、`--assets DIR`、`--scenario PATH`、`--checkpoint DIR`、`--trace PATH`、`--screenshot PATH`、`--fixed-step`、`--frames N`、`--require-device`、`--network` 解析；不接受隐式位置参数。`game_app_run` 本任务只完成 config 验证和明确 `FAILED`，不得返回假成功。
 
 - [ ] **Step 4: 验证 GREEN 和 no-tests target**
 
 Run:
 ```bash
-cmake --build build-core-integration-normal -j3 --target core_app
-./build-core-integration-normal/core_app --help
-ctest --test-dir build-core-integration-normal -R '^test_core_app_target_contract$' --output-on-failure
-cmake -S engine -B build-core-integration-no-tests -DENGINE_BUILD_TESTS=OFF -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF
-cmake --build build-core-integration-no-tests -j3 --target core_app
+cmake --build build-game-integration-normal -j3 --target game_app
+./build-game-integration-normal/game_app --help
+ctest --test-dir build-game-integration-normal -R '^test_game_app_target_contract$' --output-on-failure
+cmake -S engine -B build-game-integration-no-tests -DENGINE_BUILD_TESTS=OFF -DENGINE_RHI_BACKEND=auto -DBREAK_ENABLE_SNOWFLAKE=OFF
+cmake --build build-game-integration-no-tests -j3 --target game_app
 ```
 Expected: help 为 0，非法输入为 2，合同 PASS；无测试配置仍产出真实应用。完整场景此时明确 FAILED，不写成可玩。
 
 - [ ] **Step 5: 变异并提交**
 
-临时让 legacy `engine_demo` 链接 `core_app_runtime`，确认 target contract RED，恢复后 GREEN；再临时把未知参数当成功，确认 CLI 测试 RED 并恢复。
+临时让 legacy `engine_demo` 链接 `game_app_core`，确认 target contract RED，恢复后 GREEN；再临时把未知参数当成功，确认 CLI 测试 RED 并恢复。
 
 ```bash
-git add engine/CMakeLists.txt engine/apps/core_app engine/tests/test_core_app_target_contract.cmake docs/design/core_app_integration.md
+git add engine/CMakeLists.txt engine/apps/game_app engine/tests/test_game_app_target_contract.cmake docs/design/game_app_integration.md
 git commit -m "game: add explicit playable integration target"
 ```
 
 ### Task 2: 可重复关卡、Flow/Lua/动画/声音资产与检查点格式
 
 **Files:**
-- Create: `engine/apps/core_app/core_app_checkpoint.h/.c`
-- Create: `engine/apps/core_app/core_app_asset_bake.c`
-- Create: `engine/assets/core_app/` 下列出的全部资产
-- Create: `engine/tests/test_core_app_assets.c`
+- Create: `engine/apps/game_app/game_checkpoint.h/.c`
+- Create: `engine/apps/game_app/game_asset_bake.c`
+- Create: `engine/assets/game_app/` 下列出的全部资产
+- Create: `engine/tests/test_game_app_assets.c`
 - Modify: `engine/CMakeLists.txt`
 
 **Interfaces:**
@@ -349,20 +350,20 @@ manifest 测试写两个连续 generation，篡改第二个 payload 而不改 ma
 
 ```c
 const u8 payload[] = {1u, 2u, 3u, 4u};
-CoreAppCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
+GameCheckpointFile file = {.kind = 1u, .size = sizeof(payload),
                           .hash = test_fnv1a64(payload, sizeof(payload)),
                           .name = "runtime_1.bin"};
 ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
-ASSERT_EQ(core_app_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
-u64 before_hash = core_app_checkpoint_manifest_hash(dir);
+ASSERT_EQ(game_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
+u64 before_hash = game_checkpoint_manifest_hash(dir);
 ASSERT_EQ(test_copy_checkpoint(dir, backup_dir), 0);
 strcpy(file.name, "runtime_2.bin");
 ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
-ASSERT_EQ(core_app_checkpoint_write_manifest(dir, &file, 1u, 2u), BREAK_RUNTIME_OK);
-ASSERT_TRUE(before_hash != core_app_checkpoint_manifest_hash(dir));
+ASSERT_EQ(game_checkpoint_write_manifest(dir, &file, 1u, 2u), BREAK_RUNTIME_OK);
+ASSERT_TRUE(before_hash != game_checkpoint_manifest_hash(dir));
 ASSERT_EQ(test_checkpoint_corrupt_payload_for_fixture(dir, "runtime"), BREAK_RUNTIME_OK);
-ASSERT_EQ(core_app_checkpoint_probe(dir), BREAK_RUNTIME_INVALID);
-ASSERT_EQ(core_app_checkpoint_probe(backup_dir), BREAK_RUNTIME_OK);
+ASSERT_EQ(game_checkpoint_probe(dir), BREAK_RUNTIME_INVALID);
+ASSERT_EQ(game_checkpoint_probe(backup_dir), BREAK_RUNTIME_OK);
 ```
 
 `test_fnv1a64`、`test_write_checkpoint_file`、`test_copy_checkpoint` 和 `test_checkpoint_corrupt_payload_for_fixture` 都是测试源码局部 helper，不进入生产库。
@@ -371,14 +372,14 @@ ASSERT_EQ(core_app_checkpoint_probe(backup_dir), BREAK_RUNTIME_OK);
 
 Run:
 ```bash
-cmake --build build-core-integration-normal -j3 --target core_app_asset_bake test_core_app_assets
-./build-core-integration-normal/test_core_app_assets
+cmake --build build-game-integration-normal -j3 --target game_asset_bake test_game_app_assets
+./build-game-integration-normal/test_game_app_assets
 ```
 Expected: 先有资产/manifest 行为断言 RED；若仅是目标缺失，补最小目标后必须继续看到内容或 roundtrip 断言 RED。
 
 - [ ] **Step 3: 实现 baker 与原子 checkpoint**
 
-baker 使用固定数组和固定 seed，按稳定 entity 顺序注册组件，调用 `scene_save_binary` 时提供真实 CPU geometry reader；Flow 用公开序列化 API；动画用公开 codec；声音生成确定性的 44100 Hz 16-bit PCM WAV。写源树正式资产时要求显式 `core_app_asset_bake --output engine/assets/core_app`，测试一律输出临时目录。
+baker 使用固定数组和固定 seed，按稳定 entity 顺序注册组件，调用 `scene_save_binary` 时提供真实 CPU geometry reader；Flow 用公开序列化 API；动画用公开 codec；声音生成确定性的 44100 Hz 16-bit PCM WAV。写源树正式资产时要求显式 `game_asset_bake --output engine/assets/game_app`，测试一律输出临时目录。
 
 checkpoint 写所有 generation 文件后逐一 probe，再用一个 `PlatformAtomicWriter` 写 manifest。所有长度/hash 计算先检查加法/乘法溢出；basename 只能含 ASCII 字母数字、`_.-`，拒绝 `/`、`\\`、`..` 和绝对路径。读取先验证 manifest 全部记录，再 staging 每个文件。
 
@@ -386,39 +387,39 @@ checkpoint 写所有 generation 文件后逐一 probe，再用一个 `PlatformAt
 
 Run:
 ```bash
-./build-core-integration-normal/core_app_asset_bake --output /tmp/app-app-assets-check
-./build-core-integration-normal/test_core_app_assets
-ctest --test-dir build-core-integration-normal -R '^(test_core_app_assets|test_scene_serial|test_break_flow_serial|test_anim_compression)$' --output-on-failure
+./build-game-integration-normal/game_asset_bake --output /tmp/game-app-assets-check
+./build-game-integration-normal/test_game_app_assets
+ctest --test-dir build-game-integration-normal -R '^(test_game_app_assets|test_scene_serial|test_break_flow_serial|test_anim_compression)$' --output-on-failure
 ```
 Expected: 全部 PASS；比较两次 baker 输出逐字节相同；损坏 manifest/payload 被拒绝，旧 checkpoint 可继续使用。
 
 - [ ] **Step 5: 变异、生成正式资产并提交**
 
-临时跳过 manifest hash 检查，确认篡改测试 RED；恢复后 GREEN。用最终 baker 生成并检查 `engine/assets/core_app`，将二进制资产纳入同一提交，保证正常 checkout 可直接运行。
+临时跳过 manifest hash 检查，确认篡改测试 RED；恢复后 GREEN。用最终 baker 生成并检查 `engine/assets/game_app`，将二进制资产纳入同一提交，保证正常 checkout 可直接运行。
 
 ```bash
-git add engine/apps/core_app/core_app_checkpoint.c engine/apps/core_app/core_app_checkpoint.h engine/apps/core_app/core_app_asset_bake.c engine/assets/core_app engine/tests/test_core_app_assets.c engine/CMakeLists.txt
+git add engine/apps/game_app/game_checkpoint.c engine/apps/game_app/game_checkpoint.h engine/apps/game_app/game_asset_bake.c engine/assets/game_app engine/tests/test_game_app_assets.c engine/CMakeLists.txt
 git commit -m "game: add reproducible playable level assets"
 ```
 
 ### Task 3: 事务式 level 加载/卸载与真实 record 生命周期
 
 **Files:**
-- Modify: `engine/apps/core_app/main.c`
-- Modify: `engine/apps/core_app/core_app.h/.c`
-- Create: `engine/apps/core_app/core_app_render.h/.c`
-- Create: `engine/apps/core_app/core_app_audio.h/.c`
-- Create: `engine/assets/core_app/load_unload.scenario`
-- Create: `engine/tests/test_core_app_lifecycle.cmake`
+- Modify: `engine/apps/game_app/main.c`
+- Modify: `engine/apps/game_app/game_app.h/.c`
+- Create: `engine/apps/game_app/game_render.h/.c`
+- Create: `engine/apps/game_app/game_audio.h/.c`
+- Create: `engine/assets/game_app/load_unload.scenario`
+- Create: `engine/tests/test_game_app_lifecycle.cmake`
 - Modify: `engine/CMakeLists.txt`
 
 **Interfaces:**
 - Consumes: Task 2 资产、`BreakRuntimeCoordinator`、`scene_load_binary`、`asset_scene_restore`、`break_game_level_open/close`。
-- Produces: `CoreLevel` staging/commit、level generation、record render trace、完整可执行生命周期。
+- Produces: `GameLevel` staging/commit、level generation、record render trace、完整可执行生命周期。
 
 - [ ] **Step 1: 写真实主程序生命周期 RED**
 
-CTest script 用 `execute_process(COMMAND "${CORE_APP}" --render=record --audio=record --assets "${ASSET_ROOT}" --fixed-step --scenario "${SCENARIO}" --trace "${WORK}/load.trace")` 启动真实应用，不是调用库 substitute。脚本必须观察到有序 trace：
+CTest script 用 `execute_process(COMMAND "${GAME_APP}" --render=record --audio=record --assets "${ASSET_ROOT}" --fixed-step --scenario "${SCENARIO}" --trace "${WORK}/load.trace")` 启动真实应用，不是调用库 substitute。脚本必须观察到有序 trace：
 
 ```text
 GAMEAPPTRACE version=1 event=runtime_running
@@ -436,36 +437,37 @@ GAMEAPPTRACE version=1 event=runtime_stopped
 
 Run:
 ```bash
-cmake --build build-core-integration-normal -j3 --target core_app
-ctest --test-dir build-core-integration-normal -R '^test_core_app_lifecycle_load_unload$' --output-on-failure
+cmake --build build-game-integration-normal -j3 --target game_app
+ctest --test-dir build-game-integration-normal -R '^test_game_app_lifecycle_load_unload$' --output-on-failure
 ```
 Expected: 真实应用目前未实现加载/主循环，退出 2 或 trace 缺少 `level_loaded/frame/level_unloaded`；记录实际缺失事件，而非只记编译错误。
 
 - [ ] **Step 3: 实现 staging、coordinator 和 record 主循环**
 
-`CoreLevel` 聚合 World、Scene、BreakGame、Lua/adapter、Flow、AI、physics、渲染资源和资源请求。加载顺序为：注册组件→CPU BSCN staging→Flow/Lua/actor sidecar 验证→physics/AI/animation 创建→record 资源或 GPU `asset_scene_restore`→全部交叉引用验证→一次赋值 `app->level = candidate`。任一步失败按已初始化标志逆序释放 candidate，当前 level 指针和 generation 不变。
+`GameLevel` 聚合 World、Scene、BreakGame、Lua/adapter、Flow、AI、physics、渲染资源和资源请求。加载顺序为：注册组件→CPU BSCN staging→Flow/Lua/actor sidecar 验证→physics/AI/animation 创建→record 资源或 GPU `asset_scene_restore`→全部交叉引用验证→一次赋值 `game->level = candidate`。任一步失败按已初始化标志逆序释放 candidate，当前 level 指针和 generation 不变。
 
-正常 shutdown 注册 network→audio→render→level 的 coordinator 回调：停止 admission/producers、关闭队列、drain、join、render idle、最后销毁 level。启动失败或 sticky FAILED 走独立 `core_app_level_destroy`；不得依赖 FAILED coordinator 的 stop。
+正常 shutdown 注册 network→audio→render→level 的 coordinator 回调：停止 admission/producers、关闭队列、drain、join、render idle、最后销毁 level。启动失败或 sticky FAILED 走独立 `game_app_level_destroy`；不得依赖 FAILED coordinator 的 stop。
 
-record render 不链接 `engine_rhi_headless` 冒充设备；它消费 POD 并输出 frame/resource ids。`core_app_audio.c` 本任务实现固定容量 record 队列和 listener/stop 命令，供真实生命周期立即使用，Task 9 再添加 device worker 与完整 source 控制。每次成功 load 递增非零 level generation，失败不消耗；卸载使旧 generation 失效。
+record render 不链接 `engine_rhi_headless` 冒充设备；它消费 POD 并输出 frame/resource ids。`game_audio.c` 本任务实现固定容量 record 队列和 listener/stop 命令，供真实生命周期立即使用，Task 9 再添加 device worker 与完整 source 控制。每次成功 load 递增非零 level generation，失败不消耗；卸载使旧 generation 失效。
 
 - [ ] **Step 4: 运行真实生命周期 GREEN 与回归**
 
 Run:
 ```bash
-ctest --test-dir build-core-integration-normal -R '^(test_core_app_lifecycle|test_runtime_core|test_break_game_level|test_scene_serial)' --output-on-failure
+ctest --test-dir build-game-integration-normal -R '^(test_game_app_lifecycle|test_runtime_core|test_break_game_level|test_scene_serial)' --output-on-failure
 ```
 Expected: 真实进程完整 trace 顺序正确，所有失败 fixture 退出 2，focused 既有测试 PASS，无残留进程。
 
 - [ ] **Step 5: 变异并提交**
 
-临时在 Flow 验证前设置 `app->level = candidate`，用坏 Flow 确认旧 level 被污染的测试 RED；恢复 staging 后 GREEN。
+临时在 Flow 验证前设置 `game->level = candidate`，用坏 Flow 确认旧 level 被污染的测试 RED；恢复 staging 后 GREEN。
 
 ```bash
-git add engine/apps/core_app/main.c engine/apps/core_app/core_app.c engine/apps/core_app/core_app.h engine/apps/core_app/core_app_render.c engine/apps/core_app/core_app_render.h engine/apps/core_app/core_app_audio.c engine/apps/core_app/core_app_audio.h engine/assets/core_app/load_unload.scenario engine/tests/test_core_app_lifecycle.cmake engine/CMakeLists.txt
+git add engine/apps/game_app/main.c engine/apps/game_app/game_app.c engine/apps/game_app/game_app.h engine/apps/game_app/game_render.c engine/apps/game_app/game_render.h engine/apps/game_app/game_audio.c engine/apps/game_app/game_audio.h engine/assets/game_app/load_unload.scenario engine/tests/test_game_app_lifecycle.cmake engine/CMakeLists.txt
 git commit -m "game: integrate transactional level lifecycle"
 ```
 
+<!-- CORE_APP_COMPLETED_TASKS_1_3_END -->
 ### Task 4: ActionMap、触摸/手势/反馈与固定步长玩家控制
 
 **Files:**
@@ -997,7 +999,7 @@ Expected: 实际运行通过且无 sanitizer report。若命中仓库既有无�
 Run:
 ```bash
 cmake --build build-core-integration-no-tests -j3 --target core_app
-cmake -E chdir engine ../build-core-integration-no-tests/core_app --render=record --audio=record --fixed-step --scenario assets/core_app/deterministic.scenario --checkpoint /tmp/app-app-no-tests-save --trace /tmp/app-app-no-tests.trace
+cmake -E chdir engine ../build-core-integration-no-tests/core_app --render=record --audio=record --fixed-step --scenario assets/core_app/deterministic.scenario --checkpoint /tmp/core-app-no-tests-save --trace /tmp/core-app-no-tests.trace
 ```
 Expected: 退出 0，完整 load→input→simulation→record/audio→save→unload→shutdown trace；无 Snowflake 源码也可构建/运行。清理临时输出后 `git status --short` 不含生成物。
 

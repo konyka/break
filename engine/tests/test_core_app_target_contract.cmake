@@ -128,17 +128,38 @@ if(NOT NM_CAPABLE)
     contract_skip("the selected toolchain/binary format has no supported nm scan")
 endif()
 
-execute_process(
-    COMMAND "${NM}" --defined-only "${CORE_APP}"
-    RESULT_VARIABLE nm_rc
-    OUTPUT_VARIABLE nm_out
-    ERROR_VARIABLE nm_err
-    TIMEOUT 20)
+if(DEFINED NM_WRAPPER AND NOT "${NM_WRAPPER}" STREQUAL "")
+    if(NOT DEFINED NM_OUTPUT_FILE OR "${NM_OUTPUT_FILE}" STREQUAL "")
+        message(FATAL_ERROR "NM_OUTPUT_FILE is required with NM_WRAPPER")
+    endif()
+    file(REMOVE "${NM_OUTPUT_FILE}")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}"
+            -DREAL_NM=${NM}
+            -DBINARY=${CORE_APP}
+            -DOUTPUT_FILE=${NM_OUTPUT_FILE}
+            -DFILTER_SYMBOL=core_app_run
+            -P ${NM_WRAPPER}
+        RESULT_VARIABLE nm_rc
+        OUTPUT_VARIABLE nm_out
+        ERROR_VARIABLE nm_err
+        TIMEOUT 20)
+    if(EXISTS "${NM_OUTPUT_FILE}")
+        file(READ "${NM_OUTPUT_FILE}" nm_out)
+    endif()
+else()
+    execute_process(
+        COMMAND "${NM}" --defined-only "${CORE_APP}"
+        RESULT_VARIABLE nm_rc
+        OUTPUT_VARIABLE nm_out
+        ERROR_VARIABLE nm_err
+        TIMEOUT 20)
+endif()
 if(NOT nm_rc EQUAL 0)
     contract_skip("nm does not support --defined-only for this binary: ${nm_err}")
 endif()
 if(NOT nm_out MATCHES "core_app_run")
-    contract_skip("nm output format did not expose the expected core_app_run symbol")
+    record_error("nm output did not expose required core_app_run symbol")
 endif()
 if(nm_out MATCHES "_for_test|test_hook")
     record_error("production core_app contains a test hook")
