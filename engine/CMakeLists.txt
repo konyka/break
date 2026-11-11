@@ -2803,11 +2803,23 @@ target_include_directories(verify_myui_sa_dictionary PRIVATE
 )
 target_link_libraries(verify_myui_sa_dictionary PRIVATE myui_core)
 
+add_library(mycompose STATIC
+    src/myui/mycompose/my_compose.c
+    src/myui/mycompose/my_compose_tree.c)
+set_property(TARGET mycompose PROPERTY C_STANDARD 11)
+target_include_directories(mycompose PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 # --- Unit Tests ---
 if(ENGINE_BUILD_TESTS)
     enable_testing()
 
     set(TEST_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+
+    add_executable(test_mycompose_tree tests/test_mycompose_tree.c)
+    target_include_directories(test_mycompose_tree PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_mycompose_tree PRIVATE mycompose)
+    add_test(NAME test_mycompose_tree COMMAND test_mycompose_tree)
+    set_tests_properties(test_mycompose_tree PROPERTIES LABELS "headless;compose")
 
     add_executable(test_glad_wgl_loader tests/test_glad_wgl_loader.c external/glad.c)
     target_include_directories(test_glad_wgl_loader PRIVATE
