@@ -1,9 +1,9 @@
-#include "game_render.h"
+#include "core_app_render.h"
 
 #include <inttypes.h>
 #include <string.h>
 
-static BreakRuntimeError render_trace(GameRender *render, const char *line,
+static BreakRuntimeError render_trace(CoreAppRender *render, const char *line,
                                       u64 first, u64 second) {
     if (!render || !render->trace || !line) return BREAK_RUNTIME_INVALID;
     if (fprintf(render->trace, line, first, second) < 0 ||
@@ -13,7 +13,7 @@ static BreakRuntimeError render_trace(GameRender *render, const char *line,
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError game_render_start(GameRender *render, FILE *trace) {
+BreakRuntimeError core_app_render_start(CoreAppRender *render, FILE *trace) {
     if (!render || !trace) return BREAK_RUNTIME_INVALID;
     memset(render, 0, sizeof(*render));
     render->trace = trace;
@@ -22,15 +22,15 @@ BreakRuntimeError game_render_start(GameRender *render, FILE *trace) {
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError game_render_stage_level(const GameRenderResource *resources,
+BreakRuntimeError core_app_render_stage_level(const CoreAppRenderResource *resources,
                                           u32 resource_count, u64 generation,
-                                          GameRenderLevel *out_level) {
+                                          CoreAppRenderLevel *out_level) {
     if (!out_level || generation == 0u ||
-        resource_count > GAME_RENDER_RESOURCE_CAPACITY ||
+        resource_count > CORE_APP_RENDER_RESOURCE_CAPACITY ||
         (resource_count > 0u && !resources)) {
         return BREAK_RUNTIME_INVALID;
     }
-    GameRenderLevel candidate;
+    CoreAppRenderLevel candidate;
     memset(&candidate, 0, sizeof(candidate));
     candidate.generation = generation;
     candidate.resource_count = resource_count;
@@ -47,14 +47,14 @@ BreakRuntimeError game_render_stage_level(const GameRenderResource *resources,
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError game_render_level_committed(GameRender *render,
-                                              const GameRenderLevel *level) {
+BreakRuntimeError core_app_render_level_committed(CoreAppRender *render,
+                                              const CoreAppRenderLevel *level) {
     if (!render || !level || !render->admission_open || !render->producing ||
-        level->generation == 0u || level->resource_count > GAME_RENDER_RESOURCE_CAPACITY) {
+        level->generation == 0u || level->resource_count > CORE_APP_RENDER_RESOURCE_CAPACITY) {
         return BREAK_RUNTIME_REJECTED;
     }
     for (u32 i = 0u; i < level->resource_count; ++i) {
-        const GameRenderResource *resource = &level->resources[i];
+        const CoreAppRenderResource *resource = &level->resources[i];
         if (resource->generation != level->generation) return BREAK_RUNTIME_STALE;
         BreakRuntimeError result = render_trace(
             render,
@@ -66,11 +66,11 @@ BreakRuntimeError game_render_level_committed(GameRender *render,
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError game_render_record_frame(GameRender *render,
-                                           const GameRenderFrame *frame) {
+BreakRuntimeError core_app_render_record_frame(CoreAppRender *render,
+                                           const CoreAppRenderFrame *frame) {
     if (!render || !frame || !render->admission_open || !render->producing ||
         render->idle || frame->generation == 0u ||
-        frame->resource_count > GAME_RENDER_RESOURCE_CAPACITY ||
+        frame->resource_count > CORE_APP_RENDER_RESOURCE_CAPACITY ||
         frame->frame <= render->last_frame) {
         return BREAK_RUNTIME_REJECTED;
     }
@@ -86,26 +86,26 @@ BreakRuntimeError game_render_record_frame(GameRender *render,
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError game_render_stop_admission(GameRender *render) {
+BreakRuntimeError core_app_render_stop_admission(CoreAppRender *render) {
     if (!render) return BREAK_RUNTIME_INVALID;
     render->admission_open = false;
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError game_render_stop_producers(GameRender *render) {
+BreakRuntimeError core_app_render_stop_producers(CoreAppRender *render) {
     if (!render) return BREAK_RUNTIME_INVALID;
     render->producing = false;
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError game_render_idle(GameRender *render) {
+BreakRuntimeError core_app_render_idle(CoreAppRender *render) {
     if (!render) return BREAK_RUNTIME_INVALID;
     if (render->producing) return BREAK_RUNTIME_REJECTED;
     render->idle = true;
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError game_render_destroy(GameRender *render) {
+BreakRuntimeError core_app_render_destroy(CoreAppRender *render) {
     if (!render) return BREAK_RUNTIME_INVALID;
     if (!render->idle) return BREAK_RUNTIME_REJECTED;
     render->trace = NULL;

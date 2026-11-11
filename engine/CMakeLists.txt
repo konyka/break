@@ -1631,26 +1631,26 @@ set_property(TARGET break_game_lua PROPERTY C_STANDARD 11)
 target_include_directories(break_game_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_game_lua PUBLIC break_game break_lua)
 
-option(GAME_APP_ENABLE_NETWORK "Enable the optional authenticated Snowflake channel" OFF)
-add_library(game_app_core STATIC
-    apps/game_app/game_app.c
-    apps/game_app/game_audio.c
-    apps/game_app/game_render.c
-    apps/game_app/game_checkpoint.c)
-set_property(TARGET game_app_core PROPERTY C_STANDARD 11)
-target_include_directories(game_app_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(game_app_core PUBLIC
+option(CORE_APP_ENABLE_NETWORK "Enable the optional authenticated Snowflake channel" OFF)
+add_library(core_app_runtime STATIC
+    apps/core_app/core_app.c
+    apps/core_app/core_app_audio.c
+    apps/core_app/core_app_render.c
+    apps/core_app/core_app_checkpoint.c)
+set_property(TARGET core_app_runtime PROPERTY C_STANDARD 11)
+target_include_directories(core_app_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(core_app_runtime PUBLIC
     engine break_game break_ai break_flow break_lua break_game_lua runtime_core)
-add_executable(game_app apps/game_app/main.c)
-target_link_libraries(game_app PRIVATE game_app_core m)
-engine_link_rhi_backend(game_app)
-add_executable(game_asset_bake apps/game_app/game_asset_bake.c)
-set_property(TARGET game_asset_bake PROPERTY C_STANDARD 11)
-target_link_libraries(game_asset_bake PRIVATE game_app_core m)
-if(GAME_APP_ENABLE_NETWORK)
-    target_compile_definitions(game_app PRIVATE GAME_APP_ENABLE_NETWORK=1)
+add_executable(core_app apps/core_app/main.c)
+target_link_libraries(core_app PRIVATE core_app_runtime m)
+engine_link_rhi_backend(core_app)
+add_executable(core_app_asset_bake apps/core_app/core_app_asset_bake.c)
+set_property(TARGET core_app_asset_bake PROPERTY C_STANDARD 11)
+target_link_libraries(core_app_asset_bake PRIVATE core_app_runtime m)
+if(CORE_APP_ENABLE_NETWORK)
+    target_compile_definitions(core_app PRIVATE CORE_APP_ENABLE_NETWORK=1)
 else()
-    target_compile_definitions(game_app PRIVATE GAME_APP_ENABLE_NETWORK=0)
+    target_compile_definitions(core_app PRIVATE CORE_APP_ENABLE_NETWORK=0)
 endif()
 
 # Formal optional Stage 4 scene editor core library: the document model
@@ -4644,101 +4644,102 @@ endif()
     set_tests_properties(test_break_game_target_contract PROPERTIES
         LABELS "headless;break_game;platform_contract")
 
-    set(_game_app_nm_capable FALSE)
+    set(_core_app_nm_capable FALSE)
     if(CMAKE_NM AND (NOT WIN32 OR MINGW))
-        set(_game_app_nm_capable TRUE)
+        set(_core_app_nm_capable TRUE)
     endif()
-    add_test(NAME test_game_app_target_contract
+    add_test(NAME test_core_app_target_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-            -DGAME_APP=$<TARGET_FILE:game_app>
-            -DNETWORK_ENABLED=${GAME_APP_ENABLE_NETWORK}
-            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/game_app_contract_main
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_main
             -DNM=${CMAKE_NM}
-            -DNM_CAPABLE=${_game_app_nm_capable}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_target_contract.cmake)
-    add_test(NAME test_game_app_nm_missing
+            -DNM_CAPABLE=${_core_app_nm_capable}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake)
+    add_test(NAME test_core_app_nm_missing
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-            -DGAME_APP=$<TARGET_FILE:game_app>
-            -DNETWORK_ENABLED=${GAME_APP_ENABLE_NETWORK}
-            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/game_app_contract_nm_missing
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_missing
             -DNM= -DNM_CAPABLE=FALSE
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_target_contract.cmake)
-    add_test(NAME test_game_app_nm_unsupported
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake)
+    add_test(NAME test_core_app_nm_unsupported
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-            -DGAME_APP=$<TARGET_FILE:game_app>
-            -DNETWORK_ENABLED=${GAME_APP_ENABLE_NETWORK}
-            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/game_app_contract_nm_unsupported
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_unsupported
             -DNM=${CMAKE_COMMAND} -DNM_CAPABLE=TRUE
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_target_contract.cmake)
-    set_tests_properties(test_game_app_target_contract test_game_app_nm_missing
-        test_game_app_nm_unsupported PROPERTIES
-        LABELS "headless;game_app;platform_contract" SKIP_RETURN_CODE 77)
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake)
+    set_tests_properties(test_core_app_target_contract test_core_app_nm_missing
+        test_core_app_nm_unsupported PROPERTIES
+        LABELS "headless;core_app;platform_contract" SKIP_RETURN_CODE 77)
 
-    add_executable(test_game_app_assets tests/test_game_app_assets.c)
-    set_property(TARGET test_game_app_assets PROPERTY C_STANDARD 11)
-    target_include_directories(test_game_app_assets PRIVATE ${TEST_INCLUDE_DIRS})
-    target_compile_definitions(test_game_app_assets PRIVATE
-        GAME_ASSET_BAKE_EXECUTABLE="$<TARGET_FILE:game_asset_bake>"
-        GAME_APP_FORMAL_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/game_app")
-    target_link_libraries(test_game_app_assets PRIVATE game_app_core m)
+    add_executable(test_core_app_assets tests/test_core_app_assets.c)
+    set_property(TARGET test_core_app_assets PROPERTY C_STANDARD 11)
+    target_include_directories(test_core_app_assets PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_core_app_assets PRIVATE
+        CORE_APP_ASSET_BAKE_EXECUTABLE="$<TARGET_FILE:core_app_asset_bake>"
+        CORE_APP_FORMAL_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app")
+    target_link_libraries(test_core_app_assets PRIVATE core_app_runtime m)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_definitions(test_game_app_assets PRIVATE GAME_TEST_WRAP_FS=1)
-        target_link_options(test_game_app_assets PRIVATE
+        target_compile_definitions(test_core_app_assets PRIVATE CORE_APP_TEST_WRAP_FS=1)
+        target_link_options(test_core_app_assets PRIVATE
             "-Wl,--wrap=fsync" "-Wl,--wrap=write" "-Wl,--wrap=rename")
     endif()
-    add_dependencies(test_game_app_assets game_asset_bake)
-    add_test(NAME test_game_app_assets COMMAND test_game_app_assets)
-    add_test(NAME test_game_app_formal_asset_tracking
+    add_dependencies(test_core_app_assets core_app_asset_bake)
+    add_test(NAME test_core_app_assets COMMAND test_core_app_assets)
+    add_test(NAME test_core_app_formal_asset_tracking
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_formal_assets.cmake)
-    add_test(NAME test_game_app_naming_contract
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_formal_assets.cmake)
+    add_test(NAME test_core_app_naming_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
-            -DPLAN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/superpowers/plans/2026-11-03-cry-game-integration.md
-            -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/game_app_integration.md
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_naming_contract.cmake)
-    set_tests_properties(test_game_app_assets test_game_app_formal_asset_tracking
-        test_game_app_naming_contract PROPERTIES LABELS "headless;game_app;assets")
+            -DPLAN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/superpowers/plans/2026-11-03-core-app-integration.md
+            -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/core_app_integration.md
+            -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_naming_contract.cmake)
+    set_tests_properties(test_core_app_assets test_core_app_formal_asset_tracking
+        test_core_app_naming_contract PROPERTIES LABELS "headless;core_app;assets")
 
-    set(_game_app_lifecycle_fault_library "")
-    set(_game_app_lifecycle_fault_supported FALSE)
-    set(_game_app_lifecycle_sanitizer_preload "")
+    set(_core_app_lifecycle_fault_library "")
+    set(_core_app_lifecycle_fault_supported FALSE)
+    set(_core_app_lifecycle_sanitizer_preload "")
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        add_library(game_app_lifecycle_preload SHARED
-            tests/test_game_app_lifecycle_preload.c)
-        set_property(TARGET game_app_lifecycle_preload PROPERTY C_STANDARD 11)
-        target_link_libraries(game_app_lifecycle_preload PRIVATE ${CMAKE_DL_LIBS})
-        add_dependencies(game_app game_app_lifecycle_preload)
-        set(_game_app_lifecycle_fault_library $<TARGET_FILE:game_app_lifecycle_preload>)
-        set(_game_app_lifecycle_fault_supported TRUE)
+        add_library(core_app_lifecycle_preload SHARED
+            tests/test_core_app_lifecycle_preload.c)
+        set_property(TARGET core_app_lifecycle_preload PROPERTY C_STANDARD 11)
+        target_link_libraries(core_app_lifecycle_preload PRIVATE ${CMAKE_DL_LIBS})
+        add_dependencies(core_app core_app_lifecycle_preload)
+        set(_core_app_lifecycle_fault_library $<TARGET_FILE:core_app_lifecycle_preload>)
+        set(_core_app_lifecycle_fault_supported TRUE)
         if(ENGINE_USE_ASAN)
             execute_process(COMMAND ${CMAKE_C_COMPILER} -print-file-name=libasan.so.8
-                OUTPUT_VARIABLE _game_app_lifecycle_sanitizer_preload
+                OUTPUT_VARIABLE _core_app_lifecycle_sanitizer_preload
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
-            if(NOT EXISTS "${_game_app_lifecycle_sanitizer_preload}")
-                set(_game_app_lifecycle_sanitizer_preload "")
+            if(NOT EXISTS "${_core_app_lifecycle_sanitizer_preload}")
+                set(_core_app_lifecycle_sanitizer_preload "")
             endif()
         endif()
     endif()
-    add_test(NAME test_game_app_lifecycle_load_unload
+    add_test(NAME test_core_app_lifecycle_load_unload
         COMMAND ${CMAKE_COMMAND}
-            -DGAME_APP=$<TARGET_FILE:game_app>
-            -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/game_app
-            -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/game_app/load_unload.scenario
-            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/game_app_lifecycle
-            -DFAULT_LIBRARY=${_game_app_lifecycle_fault_library}
-            -DFAULT_SUPPORTED=${_game_app_lifecycle_fault_supported}
-            -DSANITIZER_PRELOAD=${_game_app_lifecycle_sanitizer_preload}
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+            -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/load_unload.scenario
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle
+            -DFAULT_LIBRARY=${_core_app_lifecycle_fault_library}
+            -DFAULT_SUPPORTED=${_core_app_lifecycle_fault_supported}
+            -DSANITIZER_PRELOAD=${_core_app_lifecycle_sanitizer_preload}
             -DPython3_EXECUTABLE=${Python3_EXECUTABLE}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_game_app_lifecycle.cmake)
-    set_tests_properties(test_game_app_lifecycle_load_unload PROPERTIES
-        LABELS "headless;game_app;lifecycle" TIMEOUT 180)
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_lifecycle.cmake)
+    set_tests_properties(test_core_app_lifecycle_load_unload PROPERTIES
+        LABELS "headless;core_app;lifecycle" TIMEOUT 180)
 
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
@@ -5207,8 +5208,8 @@ endif()
     add_test(NAME test_editor_scene COMMAND test_editor_scene)
     set_tests_properties(test_editor_scene PROPERTIES LABELS "headless;editor")
 
-    # Mutation fuzzer for the editor load + re-save path (kept game chunks are
-    # spliced back on save). Manual, like the other fuzz_* targets: build it
+    # Mutation fuzzer for the editor load + re-save path (kept non-editor
+    # chunks are spliced back on save). Manual, like the other fuzz_* targets: build it
     # in an ASan/UBSan tree and run `./fuzz_editor_scene 20000 <seed>`.
     add_executable(fuzz_editor_scene EXCLUDE_FROM_ALL tests/fuzz_editor_scene.c)
     target_include_directories(fuzz_editor_scene PRIVATE ${TEST_INCLUDE_DIRS})
@@ -6959,37 +6960,37 @@ endif()
         LABELS "platform_contract")
 endif()
 
-foreach(_game_app_required_target IN ITEMS game_app_core game_app game_asset_bake)
-    if(NOT TARGET ${_game_app_required_target})
-        message(FATAL_ERROR "${_game_app_required_target} must be defined outside ENGINE_BUILD_TESTS")
+foreach(_core_app_required_target IN ITEMS core_app_runtime core_app core_app_asset_bake)
+    if(NOT TARGET ${_core_app_required_target})
+        message(FATAL_ERROR "${_core_app_required_target} must be defined outside ENGINE_BUILD_TESTS")
     endif()
 endforeach()
-get_target_property(_game_app_core_links game_app_core LINK_LIBRARIES)
-set(_game_app_core_expected
+get_target_property(_core_app_runtime_links core_app_runtime LINK_LIBRARIES)
+set(_core_app_runtime_expected
     "engine;break_game;break_ai;break_flow;break_lua;break_game_lua;runtime_core")
-if(NOT "${_game_app_core_links}" STREQUAL "${_game_app_core_expected}")
-    message(FATAL_ERROR "game_app_core LINK_LIBRARIES changed: ${_game_app_core_links}")
+if(NOT "${_core_app_runtime_links}" STREQUAL "${_core_app_runtime_expected}")
+    message(FATAL_ERROR "core_app_runtime LINK_LIBRARIES changed: ${_core_app_runtime_links}")
 endif()
-get_target_property(_game_app_links game_app LINK_LIBRARIES)
-list(FIND _game_app_links game_app_core _game_app_core_link_index)
-if(_game_app_core_link_index LESS 0)
-    message(FATAL_ERROR "game_app does not link game_app_core")
+get_target_property(_core_app_links core_app LINK_LIBRARIES)
+list(FIND _core_app_links core_app_runtime _core_app_runtime_link_index)
+if(_core_app_runtime_link_index LESS 0)
+    message(FATAL_ERROR "core_app does not link core_app_runtime")
 endif()
-foreach(_game_app_legacy IN ITEMS engine engine_demo dxx_break)
-    get_target_property(_game_app_legacy_links ${_game_app_legacy} LINK_LIBRARIES)
-    foreach(_game_app_link IN LISTS _game_app_legacy_links)
-        if("${_game_app_link}" MATCHES "break_game|break_flow|break_ai|break_lua|runtime_core|game_app")
-            message(FATAL_ERROR "${_game_app_legacy} links a P12 integration library: ${_game_app_link}")
+foreach(_core_app_legacy IN ITEMS engine engine_demo dxx_break)
+    get_target_property(_core_app_legacy_links ${_core_app_legacy} LINK_LIBRARIES)
+    foreach(_core_app_link IN LISTS _core_app_legacy_links)
+        if("${_core_app_link}" MATCHES "break_game|break_flow|break_ai|break_lua|runtime_core|core_app")
+            message(FATAL_ERROR "${_core_app_legacy} links a P12 integration library: ${_core_app_link}")
         endif()
     endforeach()
 endforeach()
-get_target_property(_game_app_network_definitions game_app COMPILE_DEFINITIONS)
-if(GAME_APP_ENABLE_NETWORK)
-    if(NOT "GAME_APP_ENABLE_NETWORK=1" IN_LIST _game_app_network_definitions)
-        message(FATAL_ERROR "GAME_APP_ENABLE_NETWORK=ON is not propagated to game_app")
+get_target_property(_core_app_network_definitions core_app COMPILE_DEFINITIONS)
+if(CORE_APP_ENABLE_NETWORK)
+    if(NOT "CORE_APP_ENABLE_NETWORK=1" IN_LIST _core_app_network_definitions)
+        message(FATAL_ERROR "CORE_APP_ENABLE_NETWORK=ON is not propagated to core_app")
     endif()
 else()
-    if(NOT "GAME_APP_ENABLE_NETWORK=0" IN_LIST _game_app_network_definitions)
-        message(FATAL_ERROR "GAME_APP_ENABLE_NETWORK=OFF is not propagated to game_app")
+    if(NOT "CORE_APP_ENABLE_NETWORK=0" IN_LIST _core_app_network_definitions)
+        message(FATAL_ERROR "CORE_APP_ENABLE_NETWORK=OFF is not propagated to core_app")
     endif()
 endif()

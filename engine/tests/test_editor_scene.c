@@ -696,7 +696,7 @@ TEST(memory_scene_load_rejects_bad_input_without_mutation) {
     break_editor_doc_destroy(doc);
 }
 
-/* A game-authored BSCN carries render chunks (SCENE_NODES, RESOURCES, ...)
+/* A Core App-authored BSCN carries render chunks (SCENE_NODES, RESOURCES, ...)
  * the editor does not model. Loading it and re-saving from the editor must
  * keep those chunks byte-exact (was: dropped — Phase 1 limitation), while
  * the ENTITIES/COMPONENTS the editor owns reflect the edits. */
@@ -720,12 +720,12 @@ static bool chunk_bytes(const u8 *file, usize size, u32 type, const u8 **out,
     return false;
 }
 
-TEST(resave_keeps_game_render_chunks) {
+TEST(resave_keeps_core_app_render_chunks) {
     char path[512], sidecar[600];
-    test_tmp(path, sizeof(path), "editor_scene_game.bscn");
+    test_tmp(path, sizeof(path), "editor_scene_core_app.bscn");
     sidecar_path_of(path, sidecar, sizeof(sidecar));
     remove(sidecar);
-    /* author a "game" BSCN: one entity + two scene nodes + a resource */
+    /* author a Core App BSCN: one entity + two scene nodes + a resource */
     World *gw = world_create();
     ASSERT_NOT_NULL(gw);
     world_register_component(gw, TEST_COMP_TRANSFORM, sizeof(TestTransform));
@@ -801,7 +801,7 @@ TEST(resave_keeps_game_render_chunks) {
         ASSERT_EQ(memcmp(new_res, orig_res, orig_res_size), 0);
     }
 
-    /* the game side still loads it: nodes intact, both entities present */
+    /* the Core App side still loads it: nodes intact, both entities present */
     {
         World *w2 = world_create();
         ASSERT_NOT_NULL(w2);
@@ -822,7 +822,7 @@ TEST(resave_keeps_game_render_chunks) {
     ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
     break_editor_doc_destroy(doc);
 
-    /* a doc that never loaded a game file saves no render chunks content
+    /* a doc that never loaded a Core App file saves no render chunks content
      * (empty SCENE_NODES, as before) */
     doc = make_doc_with_transform();
     ASSERT_TRUE(break_editor_doc_save(doc, path));
@@ -856,5 +856,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(empty_doc_round_trip);
     RUN_TEST(memory_scene_load_matches_file_load);
     RUN_TEST(memory_scene_load_rejects_bad_input_without_mutation);
-    RUN_TEST(resave_keeps_game_render_chunks);
+    RUN_TEST(resave_keeps_core_app_render_chunks);
 TEST_MAIN_END()

@@ -1,4 +1,4 @@
-#include "game_checkpoint.h"
+#include "core_app_checkpoint.h"
 
 #include <core/log.h>
 #include <platform/platform_fs.h>
@@ -6,20 +6,20 @@
 #include <stdio.h>
 #include <string.h>
 
-#define GAME_CHECKPOINT_HEADER_BYTES 40u
-#define GAME_CHECKPOINT_RECORD_BYTES 88u
-#define GAME_CHECKPOINT_MANIFEST_MAX_BYTES \
-    (GAME_CHECKPOINT_HEADER_BYTES + GAME_CHECKPOINT_MAX_FILES * GAME_CHECKPOINT_RECORD_BYTES)
+#define CORE_APP_CHECKPOINT_HEADER_BYTES 40u
+#define CORE_APP_CHECKPOINT_RECORD_BYTES 88u
+#define CORE_APP_CHECKPOINT_MANIFEST_MAX_BYTES \
+    (CORE_APP_CHECKPOINT_HEADER_BYTES + CORE_APP_CHECKPOINT_MAX_FILES * CORE_APP_CHECKPOINT_RECORD_BYTES)
 
 static const u8 k_magic[8] = {'G', 'A', 'M', 'E', 'C', 'K', 'P', 'T'};
 
 typedef struct {
     u64 generation;
     u32 file_count;
-    GameCheckpointFile files[GAME_CHECKPOINT_MAX_FILES];
-    u8 raw[GAME_CHECKPOINT_MANIFEST_MAX_BYTES];
+    CoreAppCheckpointFile files[CORE_APP_CHECKPOINT_MAX_FILES];
+    u8 raw[CORE_APP_CHECKPOINT_MANIFEST_MAX_BYTES];
     usize raw_size;
-} GameCheckpointManifest;
+} CoreAppCheckpointManifest;
 
 static void put32(u8 *p, u32 value) {
     p[0] = (u8)value;
@@ -77,7 +77,7 @@ static bool valid_basename(const char name[64]) {
     usize length = 0;
     while (length < 64u && name[length] != '\0') ++length;
     if (length == 0u || length == 64u || name[length - 1u] == '.' ||
-        name_equal(name, GAME_CHECKPOINT_MANIFEST_NAME))
+        name_equal(name, CORE_APP_CHECKPOINT_MANIFEST_NAME))
         return false;
     for (usize i = 0; i < length; ++i) {
         unsigned char ch = (unsigned char)name[i];
@@ -92,17 +92,17 @@ static bool valid_basename(const char name[64]) {
     return true;
 }
 
-static BreakRuntimeError validate_file(const GameCheckpointFile *file) {
+static BreakRuntimeError validate_file(const CoreAppCheckpointFile *file) {
     if (!file) return BREAK_RUNTIME_INVALID;
     if (!memchr(file->name, '\0', sizeof(file->name))) return BREAK_RUNTIME_OVERLOAD;
     if (file->kind == 0u || !valid_basename(file->name))
         return BREAK_RUNTIME_INVALID;
-    if (file->size > (u64)GAME_CHECKPOINT_MAX_FILE_BYTES)
+    if (file->size > (u64)CORE_APP_CHECKPOINT_MAX_FILE_BYTES)
         return BREAK_RUNTIME_OVERLOAD;
     return BREAK_RUNTIME_OK;
 }
 
-static bool duplicate_name(const GameCheckpointFile *files, u32 count,
+static bool duplicate_name(const CoreAppCheckpointFile *files, u32 count,
                            const char name[64]) {
     for (u32 i = 0; i < count; ++i) {
         if (name_equal(files[i].name, name)) return true;
@@ -110,26 +110,26 @@ static bool duplicate_name(const GameCheckpointFile *files, u32 count,
     return false;
 }
 
-static BreakRuntimeError parse_manifest(GameCheckpointManifest *manifest) {
+static BreakRuntimeError parse_manifest(CoreAppCheckpointManifest *manifest) {
     const u8 *bytes = manifest->raw;
     usize size = manifest->raw_size;
-    if (size < GAME_CHECKPOINT_HEADER_BYTES) return BREAK_RUNTIME_INVALID;
+    if (size < CORE_APP_CHECKPOINT_HEADER_BYTES) return BREAK_RUNTIME_INVALID;
     if (memcmp(bytes, k_magic, sizeof(k_magic)) != 0 ||
-        get32(bytes + 8) != GAME_CHECKPOINT_VERSION ||
-        get32(bytes + 12) != GAME_CHECKPOINT_HEADER_BYTES ||
+        get32(bytes + 8) != CORE_APP_CHECKPOINT_VERSION ||
+        get32(bytes + 12) != CORE_APP_CHECKPOINT_HEADER_BYTES ||
         get64(bytes + 16) != (u64)size || get32(bytes + 36) != 0u)
         return BREAK_RUNTIME_INVALID;
     u64 generation = get64(bytes + 24);
     u32 count = get32(bytes + 32);
     if (generation == 0u || count == 0u) return BREAK_RUNTIME_INVALID;
-    if (count > GAME_CHECKPOINT_MAX_FILES) return BREAK_RUNTIME_OVERLOAD;
-    usize expected = GAME_CHECKPOINT_HEADER_BYTES + (usize)count * GAME_CHECKPOINT_RECORD_BYTES;
+    if (count > CORE_APP_CHECKPOINT_MAX_FILES) return BREAK_RUNTIME_OVERLOAD;
+    usize expected = CORE_APP_CHECKPOINT_HEADER_BYTES + (usize)count * CORE_APP_CHECKPOINT_RECORD_BYTES;
     if (expected != size) return BREAK_RUNTIME_INVALID;
     manifest->generation = generation;
     manifest->file_count = count;
     for (u32 i = 0; i < count; ++i) {
-        const u8 *record = bytes + GAME_CHECKPOINT_HEADER_BYTES + (usize)i * GAME_CHECKPOINT_RECORD_BYTES;
-        GameCheckpointFile *file = &manifest->files[i];
+        const u8 *record = bytes + CORE_APP_CHECKPOINT_HEADER_BYTES + (usize)i * CORE_APP_CHECKPOINT_RECORD_BYTES;
+        CoreAppCheckpointFile *file = &manifest->files[i];
         memset(file, 0, sizeof(*file));
         file->kind = get32(record);
         u32 name_length = get32(record + 4);
@@ -152,15 +152,15 @@ static BreakRuntimeError parse_manifest(GameCheckpointManifest *manifest) {
     return BREAK_RUNTIME_OK;
 }
 
-static BreakRuntimeError read_manifest(const char *directory, GameCheckpointManifest *manifest) {
+static BreakRuntimeError read_manifest(const char *directory, CoreAppCheckpointManifest *manifest) {
     char path[PLATFORM_FS_PATH_CAPACITY];
     memset(manifest, 0, sizeof(*manifest));
-    if (!join_path(path, directory, GAME_CHECKPOINT_MANIFEST_NAME))
+    if (!join_path(path, directory, CORE_APP_CHECKPOINT_MANIFEST_NAME))
         return BREAK_RUNTIME_OVERLOAD;
     u64 size = 0;
     if (!platform_file_size(path, &size)) return BREAK_RUNTIME_FAILED;
     if (size > (u64)sizeof(manifest->raw)) return BREAK_RUNTIME_OVERLOAD;
-    if (size < (u64)GAME_CHECKPOINT_HEADER_BYTES) return BREAK_RUNTIME_INVALID;
+    if (size < (u64)CORE_APP_CHECKPOINT_HEADER_BYTES) return BREAK_RUNTIME_INVALID;
     FILE *fp = fopen(path, "rb");
     if (!fp) return BREAK_RUNTIME_FAILED;
     usize got = fread(manifest->raw, 1, (usize)size, fp);
@@ -176,7 +176,7 @@ static BreakRuntimeError read_manifest(const char *directory, GameCheckpointMani
 }
 
 static BreakRuntimeError probe_payload(const char *directory,
-                                       const GameCheckpointFile *file) {
+                                       const CoreAppCheckpointFile *file) {
     char path[PLATFORM_FS_PATH_CAPACITY];
     if (!join_path(path, directory, file->name)) return BREAK_RUNTIME_OVERLOAD;
     u64 disk_size = 0;
@@ -205,19 +205,19 @@ static BreakRuntimeError probe_payload(const char *directory,
     return BREAK_RUNTIME_OK;
 }
 
-static void build_manifest(const GameCheckpointFile *files, u32 file_count,
-                           u64 generation, u8 out[GAME_CHECKPOINT_MANIFEST_MAX_BYTES],
+static void build_manifest(const CoreAppCheckpointFile *files, u32 file_count,
+                           u64 generation, u8 out[CORE_APP_CHECKPOINT_MANIFEST_MAX_BYTES],
                            usize *out_size) {
-    usize size = GAME_CHECKPOINT_HEADER_BYTES + (usize)file_count * GAME_CHECKPOINT_RECORD_BYTES;
+    usize size = CORE_APP_CHECKPOINT_HEADER_BYTES + (usize)file_count * CORE_APP_CHECKPOINT_RECORD_BYTES;
     memset(out, 0, size);
     memcpy(out, k_magic, sizeof(k_magic));
-    put32(out + 8, GAME_CHECKPOINT_VERSION);
-    put32(out + 12, GAME_CHECKPOINT_HEADER_BYTES);
+    put32(out + 8, CORE_APP_CHECKPOINT_VERSION);
+    put32(out + 12, CORE_APP_CHECKPOINT_HEADER_BYTES);
     put64(out + 16, (u64)size);
     put64(out + 24, generation);
     put32(out + 32, file_count);
     for (u32 i = 0; i < file_count; ++i) {
-        u8 *record = out + GAME_CHECKPOINT_HEADER_BYTES + (usize)i * GAME_CHECKPOINT_RECORD_BYTES;
+        u8 *record = out + CORE_APP_CHECKPOINT_HEADER_BYTES + (usize)i * CORE_APP_CHECKPOINT_RECORD_BYTES;
         usize name_length = strlen(files[i].name);
         put32(record, files[i].kind);
         put32(record + 4, (u32)name_length);
@@ -229,8 +229,8 @@ static void build_manifest(const GameCheckpointFile *files, u32 file_count,
 }
 
 static void remove_new_payloads(const char *directory,
-                                const GameCheckpointFile *files, u32 file_count,
-                                const GameCheckpointManifest *old, bool old_valid) {
+                                const CoreAppCheckpointFile *files, u32 file_count,
+                                const CoreAppCheckpointManifest *old, bool old_valid) {
     for (u32 i = 0; i < file_count; ++i) {
         if (!valid_basename(files[i].name)) continue;
         if (old_valid && duplicate_name(old->files, old->file_count, files[i].name))
@@ -240,23 +240,23 @@ static void remove_new_payloads(const char *directory,
     }
 }
 
-BreakRuntimeError game_checkpoint_write_manifest_ex(const char *directory,
-                                                    const GameCheckpointFile *files,
+BreakRuntimeError core_app_checkpoint_write_manifest_ex(const char *directory,
+                                                    const CoreAppCheckpointFile *files,
                                                     u32 file_count, u64 generation,
-                                                    GameCheckpointCommitResult *out_result) {
+                                                    CoreAppCheckpointCommitResult *out_result) {
     if (!out_result) return BREAK_RUNTIME_INVALID;
-    *out_result = GAME_CHECKPOINT_COMMIT_NOT_COMMITTED;
+    *out_result = CORE_APP_CHECKPOINT_COMMIT_NOT_COMMITTED;
     if (!directory || directory[0] == '\0' || !files || file_count == 0u ||
         generation == 0u)
         return BREAK_RUNTIME_INVALID;
-    if (file_count > GAME_CHECKPOINT_MAX_FILES) return BREAK_RUNTIME_OVERLOAD;
+    if (file_count > CORE_APP_CHECKPOINT_MAX_FILES) return BREAK_RUNTIME_OVERLOAD;
 
     char manifest_path[PLATFORM_FS_PATH_CAPACITY];
-    if (!join_path(manifest_path, directory, GAME_CHECKPOINT_MANIFEST_NAME))
+    if (!join_path(manifest_path, directory, CORE_APP_CHECKPOINT_MANIFEST_NAME))
         return BREAK_RUNTIME_OVERLOAD;
     u64 old_manifest_size = 0;
     bool old_exists = platform_file_size(manifest_path, &old_manifest_size);
-    GameCheckpointManifest old;
+    CoreAppCheckpointManifest old;
     BreakRuntimeError old_read = read_manifest(directory, &old);
     bool old_valid = old_read == BREAK_RUNTIME_OK;
     bool cleanup_safe = !old_exists || old_valid;
@@ -276,7 +276,7 @@ BreakRuntimeError game_checkpoint_write_manifest_ex(const char *directory,
         if (result != BREAK_RUNTIME_OK) goto fail;
     }
 
-    u8 bytes[GAME_CHECKPOINT_MANIFEST_MAX_BYTES];
+    u8 bytes[CORE_APP_CHECKPOINT_MANIFEST_MAX_BYTES];
     usize size = 0;
     build_manifest(files, file_count, generation, bytes, &size);
     PlatformAtomicWriter *writer = platform_atomic_writer_open(manifest_path);
@@ -291,13 +291,13 @@ BreakRuntimeError game_checkpoint_write_manifest_ex(const char *directory,
     }
     PlatformAtomicCommitResult committed = platform_atomic_writer_commit_status(writer);
     if (committed == PLATFORM_ATOMIC_RENAMED_DURABILITY_UNKNOWN) {
-        *out_result = GAME_CHECKPOINT_COMMIT_VISIBLE_DURABILITY_UNKNOWN;
+        *out_result = CORE_APP_CHECKPOINT_COMMIT_VISIBLE_DURABILITY_UNKNOWN;
         LOG_WARN("checkpoint: generation %llu is visible; directory fsync failed, "
                  "durability unknown", (unsigned long long)generation);
         return BREAK_RUNTIME_OK;
     }
     if (committed == PLATFORM_ATOMIC_SUCCESS_DURABLE) {
-        *out_result = GAME_CHECKPOINT_COMMIT_DURABLE;
+        *out_result = CORE_APP_CHECKPOINT_COMMIT_DURABLE;
         return BREAK_RUNTIME_OK;
     }
     result = BREAK_RUNTIME_FAILED;
@@ -308,17 +308,17 @@ fail:
     return result;
 }
 
-BreakRuntimeError game_checkpoint_write_manifest(const char *directory,
-                                                 const GameCheckpointFile *files,
+BreakRuntimeError core_app_checkpoint_write_manifest(const char *directory,
+                                                 const CoreAppCheckpointFile *files,
                                                  u32 file_count, u64 generation) {
-    GameCheckpointCommitResult commit_result;
-    return game_checkpoint_write_manifest_ex(directory, files, file_count, generation,
+    CoreAppCheckpointCommitResult commit_result;
+    return core_app_checkpoint_write_manifest_ex(directory, files, file_count, generation,
                                             &commit_result);
 }
 
-BreakRuntimeError game_checkpoint_probe(const char *directory) {
+BreakRuntimeError core_app_checkpoint_probe(const char *directory) {
     if (!directory || directory[0] == '\0') return BREAK_RUNTIME_INVALID;
-    GameCheckpointManifest manifest;
+    CoreAppCheckpointManifest manifest;
     BreakRuntimeError result = read_manifest(directory, &manifest);
     if (result != BREAK_RUNTIME_OK) return result;
     for (u32 i = 0; i < manifest.file_count; ++i) {
@@ -328,14 +328,14 @@ BreakRuntimeError game_checkpoint_probe(const char *directory) {
     return BREAK_RUNTIME_OK;
 }
 
-u64 game_checkpoint_manifest_hash(const char *directory) {
+u64 core_app_checkpoint_manifest_hash(const char *directory) {
     char path[PLATFORM_FS_PATH_CAPACITY];
-    if (!join_path(path, directory, GAME_CHECKPOINT_MANIFEST_NAME)) return 0u;
+    if (!join_path(path, directory, CORE_APP_CHECKPOINT_MANIFEST_NAME)) return 0u;
     u64 size = 0;
     if (!platform_file_size(path, &size) || size == 0u ||
-        size > (u64)GAME_CHECKPOINT_MANIFEST_MAX_BYTES)
+        size > (u64)CORE_APP_CHECKPOINT_MANIFEST_MAX_BYTES)
         return 0u;
-    u8 bytes[GAME_CHECKPOINT_MANIFEST_MAX_BYTES];
+    u8 bytes[CORE_APP_CHECKPOINT_MANIFEST_MAX_BYTES];
     FILE *fp = fopen(path, "rb");
     if (!fp) return 0u;
     usize got = fread(bytes, 1, (usize)size, fp);
