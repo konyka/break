@@ -1,3 +1,9 @@
+## 交付验证：主 CI 与 D3D12 全绿、Core App 命名迁移（2026-11-11）
+
+- 主 CI run `42964916340` 与 Windows D3D12 run `42964916355` 均已 `SUCCESS`。两个 macOS lane 都实际通过 Runtime IO 的 `stage=0x52` 与精确 `SIGABRT` 路径，先前的 Cocoa setup 竞争不再复现；Windows、Linux、图形与其它 headless lane 也都完成。
+- Core App 命名 Task 1/2 的独立规格与质量评审均为 PASS。合入本地 master 后，完整非图形 CTest 为 **352 项入选、348 PASS、4 个文档化 SKIP、0 FAIL**；两个额外测试来自同步的 master 基线。第二次 bounded IO wait 失败、`io_quiesced` trace EIO、Task 9 的 256 项 FIFO 和 Flow identity/source-port 仍保留在后续台账，未因命名迁移或 CI 转绿而视为完成。
+- 当前推送前门槛为全分支终审与最终提交核对；Compose 与 P12 Task 4–13 尚未在本条目中宣称实现。
+
 ## 本轮更新：P12 Core App Naming Task 2——一次性数据格式（2026-11-11）
 
 - **范围与格式**：只迁移 P12 数据标识，checkpoint 使用固定 8 字节 `CORECKPT` 和 `manifest.core`，trace 使用 `COREAPPTRACE version=1`，scenario 使用 `core-app-scenario 1`。reader 拒绝旧 magic、旧 manifest 和旧 scenario，不提供双格式。字段宽度、偏移、FNV-1a-64、generation、错误码、三态 checkpoint、mount 隔离、commit fatal、IO quiescence、sticky FAILED 与逆序销毁保持原合同；P0–P11 API/ABI 和链接关系未改。
