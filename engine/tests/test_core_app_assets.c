@@ -887,6 +887,7 @@ TEST(checkpoint_reserved_manifest_aliases_are_rejected_without_touching_old_gene
 #if !defined(_WIN32)
         ASSERT_EQ(test_hard_link_checkpoint_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
                                                  file.name), 0);
+        ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
 #endif
         ASSERT_EQ(core_app_checkpoint_write_manifest(dir, &file, 1u, 2u),
                   BREAK_RUNTIME_INVALID);

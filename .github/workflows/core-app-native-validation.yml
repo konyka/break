@@ -2,7 +2,7 @@ name: Core App native validation
 
 on:
   push:
-    branches: [core-app-ci-validation]
+    branches: [core-app-ci-apfs-red]
 
 permissions:
   contents: read

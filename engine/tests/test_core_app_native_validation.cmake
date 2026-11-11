@@ -56,7 +56,7 @@ set(expected_preamble [=[name: Core App native validation
 
 on:
   push:
-    branches: [core-app-ci-validation]
+    branches: [core-app-ci-apfs-red]
 
 permissions:
   contents: read
@@ -65,7 +65,7 @@ jobs:
 ]=])
 string(FIND "${workflow}" "${expected_preamble}" preamble_offset)
 if(NOT preamble_offset EQUAL 0)
-    fail("native workflow must trigger only on pushes to core-app-ci-validation with read-only contents")
+    fail("native workflow must trigger only on pushes to core-app-ci-apfs-red with read-only contents")
 endif()
 
 extract_job(core-app-macos-metal macos)
