@@ -21,7 +21,7 @@
 - listener 强制写入当前节点 owner，Runtime/adapter 必须共用 Store，reducer 前再次核对 owner。事件只 enqueue Intent；reducer 不做 I/O；worker 不直接访问 Store/myui。
 - tree finalize 是 remember dispose/node generation 的唯一所有者，恰好各一次；adapter commit 只处理 listener lease、owner 表、removed notify、widget unref 和快照。
 - stage detach 不调用 removed hook；commit 才 notify。回滚不得提前清理 focus/grab/IME/selection，属性恢复必须已拥有、无分配且不可失败。
-- Runtime 非拥有 Store/sink，调用方先销毁 Runtime，再在 UI 线程销毁 Store/sink。completion 使用原子状态+refcount+安全 lease，重投不得持有裸 Store/Runtime 指针。
+- Runtime 非拥有 Store/sink，调用方先销毁 Runtime，再在 UI 线程销毁 Store/sink。completion scope/lease/bridge 归 Store 的抽象 async bridge，Runtime close 与 Store destroy 共用幂等 close。completion 使用原子状态+refcount+安全 lease，重投不得持有裸 Store/Runtime 指针；UI reaper 每次 pump 回收终态 request，且恰好一次。
 - 新层预热后不逐帧 malloc；既有 myui children/string/listener 和超过 32 个直接子节点的 paint snapshot 分配单独记录。
 - Vulkan 默认，OpenGL 最后降级和同机对照；Linux 仅 Wayland。record/null/headless 不冒充 GPU/声卡/听测；CI 图形测试必须实际执行且零 skip。
 - 每项新行为先观察目标 RED 再实现 GREEN；每任务至少一个生产变异被测试杀死并恢复。Critical/Important 清零后才进入下一任务。历史文档不改写。
@@ -170,19 +170,21 @@ MyComposeStatus my_compose_effect_batch_append(MyComposeEffectBatch *,
 const MyComposeDiagnostics *my_compose_store_diagnostics(const MyComposeStore *);
 ```
 
-跨多个 drain 让 32 个 Effect 都被接受但无 completion，outbox 可为空而 outstanding=32；下一个带 Effect Intent 必须在 reducer/State 发布前返回 `OVERLOAD`，不得调用 executor。无 Effect Intent 仍可提交。executor PENDING 保留队首，drain 后恢复。
+跨多个 drain 让 32 个 Effect 都被接受但无 completion，outbox 可为空而 outstanding=32；下一个带 Effect Intent 的 reducer 可以作用于 candidate，但必须在 State 发布、outbox 写入和 executor 调用前返回 `OVERLOAD`，candidate 恰好 dispose 一次，当前 State/FIFO 不变。无 Effect Intent 执行 reducer 后正常提交。executor PENDING 保留队首，drain 后恢复。
 
-- [ ] **Step 2: 实现 Store 与三代校验**
+- [ ] **Step 2: 实现 Store、三代校验与终态 reaper**
 
-State slot 为 2×16 KiB，clone 后才允许 reducer 修改 candidate。EffectBatch append 每项最多 256 bytes，sticky 错误使本 Intent 失败。发布前检查 `outbox+outstanding+batch<=32`；OK 只做无失败 slot 移动。
+State slot 为 2×16 KiB，clone 后才允许 reducer 修改 candidate。EffectBatch append 每项最多 256 bytes，sticky 错误使本 Intent 失败。得到实际 batch 后、State 发布前检查 `outbox+outstanding+batch<=32`；OK 只做无失败 slot 移动。
 
-owner 表按 node index 保存当前 generation，注册替换、失效退休；入队和 reduce 前都核对。restart 清 pending/outbox/outstanding 并推进 store generation，保留 State；close 拒绝新输入。request id 不回绕。
+owner 表按 node index 保存当前 generation，注册替换、失效退休；入队和 reduce 前都核对。restart 把 pending/outbox/outstanding 标为 CANCELLED 并推进 store generation，保留 State；close 拒绝新输入。node/store generation 与 request id 的近溢出种子必须验证退休或 `OVERLOAD`，不能等待自然回绕。generation/slot 退休预检在 sink.stage 前完成，tree.finalize 不新增失败。
 
-completion 队列独立为 32，接受 completion 才消费 outstanding 并转 Intent；队列满返回 `OVERLOAD` 且 outstanding 保留，worker 后续可重试。`reduce` 每次最多转换 32 个 completion、处理总计最多 64 个 Intent（含 completion-derived），result 原样传递。
+completion 队列独立为 32，接受 completion 才消费 outstanding 并转 Intent；队列满返回 `OVERLOAD` 且 outstanding 保留，worker 后续可重试。UI reaper 在每次 pump 开头运行，即使 pending-view 也执行：瞬态 post/queue 失败进入 RETRY；worker 放弃、scope close、owner invalidate 或真正 STALE/CANCELLED 时从表中删除 outstanding 并恰好释放 Store 引用一次。已接受 completion 先从表中删除再转 Intent，restart/close 与迟到 callback 不得重复回收。连续 32 个 post-failure/STALE 终态后，无关联新 Effect 在下一次 pump 必须仍可提交。
+
+`reduce` 每次最多转换 32 个 completion、处理总计最多 64 个 Intent（含 completion-derived），result 原样传递。
 
 - [ ] **Step 3: 真实 owner、预算与变异**
 
-注册 `{1,1}` owner，effect 得到 request=1；restart、owner invalidate、close 后 completion 必须 STALE 且不 reduce。排队后删除 owner 的 Intent 也不得 reduce。验证 65 个 Intent 与 33 个 completion 的 FIFO/预算。临时漏掉 owner 检查或 outstanding 预检，必须 RED，恢复 GREEN。
+注册 `{1,1}` owner，effect 得到 request=1；restart、owner invalidate、close 后 completion 必须 STALE 且不 reduce。排队后删除 owner 的 Intent 也不得 reduce。验证 65 个 Intent 与 33 个 completion 的 FIFO/预算、owner/store/request 近溢出，以及 32 个终态后的 slot 恢复。临时漏掉 owner 检查、终态回收或 outstanding 预检，必须 RED，恢复 GREEN。
 
 - [ ] **Step 4: 独立评审并提交**
 
@@ -257,7 +259,7 @@ ASSERT_EQ(adapter->stats.factory_calls_after_duplicate, 0u);
 
 - [ ] **Step 2: 实现 preflight、事务恢复与两阶段发布**
 
-POD 属性保存值；可能分配的属性必须在 descriptor 提供 capture/discard/no-fail restore。字符串恢复用已拥有 buffer/state swap，文本 capture 包括 selection/IME；缺回调的字符串属性在 preflight `NOT_SUPPORTED`。rollback 不分配、不执行 removed hook，恢复不得再次调用可能失败的普通 setter。
+预检 duplicate/capacity/type/property/schema/当前快照，以及本次 create/delete 所需 node slot 与 generation；generation 或 slot 退休在 sink.stage 前返回 `OVERLOAD`，保证 tree.finalize 只做无失败发布。POD 属性保存值；可能分配的属性必须在 descriptor 提供 capture/discard/no-fail restore。字符串恢复用已拥有 buffer/state swap，文本 capture 包括 selection/IME；缺回调的字符串属性在 preflight `NOT_SUPPORTED`。rollback 不分配、不执行 removed hook，恢复不得再次调用可能失败的普通 setter。
 
 stage 创建/更新/插入/MOVE/结构 detach 全成功后才允许发布。Runtime 的固定顺序为：
 
@@ -299,6 +301,7 @@ commit 不分配、不失败；step 中每个 remember 恰好 dispose 一次、�
 typedef MyComposeStatus (*MyComposeView)(void *,
     MyComposeTreeBuilder *, const void *, uint32_t);
 typedef struct MyComposeSinkOps {
+    void *context;
     MyComposeStore *store;
     MyComposeStatus (*stage)(void *, const MyComposeDiff *);
     void (*commit)(void *);
@@ -312,17 +315,17 @@ typedef struct MyComposeRuntimeConfig {
 } MyComposeRuntimeConfig;
 ```
 
-Runtime create 必须要求 `config.store == config.sink.store`。事件回调中直接 pump 返回 `CONFLICT`。真实点击产生 Effect 后删除该节点，旧 completion 必须 STALE，不能进入另一 Store。
+`my_compose_myui_sink()` 把 `sink.context` 设为当前 adapter，Runtime 将它传给 stage/commit/rollback；两个 adapter fixture 验证不存在隐式单例。Runtime create 必须要求 `config.store == config.sink.store`。事件回调中直接 pump 返回 `CONFLICT`。真实点击产生 Effect 后删除该节点，旧 completion 必须 STALE，不能进入另一 Store。
 
-构造 completion queue 满且 callback 已执行、worker 暂停在重投前；随后 close/destroy Runtime 和 Store，再恢复 worker。post 失败、STALE、CANCELLED、scope cancel 均必须是非成功终态并释放引用，不得 UAF/伪 accepted。
+构造 completion queue 满且 callback 已执行、worker 暂停在重投前；随后 close/destroy Runtime 和 Store，再恢复 worker。分别覆盖 window-close 与无 window-close 的 plain `my_compose_runtime_destroy()`。post 失败、STALE、CANCELLED、scope cancel 均必须是非成功终态并释放引用，不得 UAF/伪 accepted。
 
-- [ ] **Step 2: 实现 Runtime 和 lease 命令桥**
+- [ ] **Step 2: 实现 Runtime、pending-view reaper 和 lease 命令桥**
 
-view/diff 或 sink stage 失败设置 pending-view，下一 pump 先以同一 State revision 重建，期间不 reduce/convert/dispatch。sink stage 成功后才 tree finalize 与 sink commit，成功才清 pending-view 并 dispatch outbox。
+每次 pump 先由 Store reaper 回收终态 outstanding，即使 pending-view 也执行。view/diff 或 sink stage 失败设置 pending-view，下一 pump 先 reaper、再以同一 State revision 重建，期间不 reduce/convert/dispatch。sink stage 成功后才 tree finalize 与 sink commit，成功才清 pending-view 并 dispatch outbox。
 
-completion context 使用原子 PENDING/ACCEPTED/RETRY/CANCELLED 与 refcount，worker/UI command 各持引用。worker 重投只持 completion 和安全 emitter lease；UI callback 经 lease 取 Store。队列满写 `OVERLOAD` 且不消费 outstanding；接受后才转 Intent。post 失败与 cancel 释放双方引用。
+completion context 使用原子 PENDING/ACCEPTED/RETRY/CANCELLED/STALE 与 refcount，worker、UI command 与 outstanding slot 各持引用。瞬态 post/queue 失败进入 RETRY，worker 放弃、scope close、owner invalidate 或真正 STALE/CANCELLED 由 UI reaper 恰好回收一次。worker 重投只持 completion、scope ref 和安全 emitter lease；UI callback 经 lease 取 Store。队列满写 `OVERLOAD` 且不消费 outstanding；接受后才转 Intent。
 
-window close 先失效 Store lease、推进代际，再关 scope。Store destroy 在 UI 线程先失效 lease、关 scope 再释放；正在执行的 callback 与 UI destroy 不并发，worker 后续只能看到失效 lease 并安全释放。worker 不得持裸 Store/Runtime。
+scope/lease/bridge 归 Store 的抽象 async bridge 与引用计数管理，不归 Runtime。window close 和 plain Runtime destroy 都先失效 lease、推进代际，再幂等调用 Store close 并 reaper 清理 slot；随后才释放 Runtime。Store destroy 在 UI 线程再次调用同一 close 后释放 bridge owner ref，最后一个 worker 释放前不得销毁 bridge。正在执行的 callback 与 UI destroy 不并发，worker 不得持裸 Store/Runtime。
 
 - [ ] **Step 3: 普通/ASan/TSan 与故障注入**
 

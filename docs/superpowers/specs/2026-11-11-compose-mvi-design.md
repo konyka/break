@@ -126,34 +126,36 @@ UI listener 只复制固定大小 Intent 入队，不直接调用 reducer、修�
 
 `break_ui_pump()` 完成真实输入派发后，应用调用 `my_compose_myui_pump()`：
 
-1. 若没有 pending-view，最多把 32 个有效 completion 转为 Intent，并处理总计最多 64 个 Intent（包括 completion-derived Intent）。store/owner/request 任一代际不符只计 STALE，不进入 reducer。
+1. 先在 UI 线程 reaper 回收终态 outstanding，即使 pending-view 也执行。随后若没有 pending-view，最多把 32 个有效 completion 转为 Intent，并处理总计最多 64 个 Intent（包括 completion-derived Intent）。store/owner/request 任一代际不符只计 STALE，不进入 reducer。
 2. 按 FIFO 取出 Intent，先由 StateOps clone 当前 State 到 candidate。reducer 只执行 `current + intent -> candidate + effect batch`，不得 I/O、post Intent 或访问 myui。
 3. EffectBatch 只能通过 checked append 添加，最多 8 项且每项最多 256 bytes；append 失败不修改 batch 并设置 sticky OVERLOAD。clone、reducer、batch 或容量失败，dispose candidate，当前 State/outbox/outstanding/FIFO 不变。
-4. 预检 `outbox + outstanding + 本批 Effect <= 32`，再原子发布 candidate，写入 `{store generation, owner generation, request id}` 并加入 outbox。outbox 与 outstanding 共用这 32 个 slot，executor OK 只做无失败的 outbox→outstanding 移动。
+4. reducer 可作用于 candidate；只有得到实际 Effect 数量后，才预检 `outbox + outstanding + 本批 Effect <= 32`。预检必须在 State 发布、outbox 写入和 executor 调用前完成，失败时 candidate 恰好 dispose 一次。通过后原子发布 candidate，写入 `{store generation, owner generation, request id}` 并加入 outbox。outbox 与 outstanding 共用这 32 个 slot，executor OK 只做无失败的 outbox→outstanding 移动。
 5. 构建当前 State 的 next view，执行 sink stage、tree finalize、sink commit。成功后清除 pending-view，再从 UI 线程 dispatch outbox。`PENDING` 保留队首，其它 executor 失败记录拒绝且不得注册 request。
-6. view/stage 失败保留已提交 State 和最后有效 UI，设置 pending-view，不 dispatch 本批 Effect。后续 pump 先以同一 State revision 重试 view；恢复前不 reduce 新 Intent、不转换 completion、不 dispatch Effect，成功后才继续 FIFO。
+6. view/stage 失败保留已提交 State 和最后有效 UI，设置 pending-view，不 dispatch 本批 Effect。后续 pump 先 reaper，再以同一 State revision 重试 view；恢复前不 reduce 新 Intent、不转换 completion、不 dispatch Effect，成功后才继续 FIFO。
 
 MVI 提交与 view reconcile 是独立边界：view 失败不撤销已提交 State，也不重复执行 reducer；pending-view 保证不会在下一次重试前推进 State。Reducer 不能递归产生 Intent，因此没有无界重入。65 个 Intent、33 个 completion、两个排队 Intent 与首次 view 失败都必须有顺序/预算测试，executor 和 reducer 不得重复执行。
 
-每个 Runtime 只有一个 UI owner 线程，普通 Dispatch 也只能从该线程调用；worker 不直接访问 Store。restart 推进 store generation、清 pending/outbox/outstanding 但保留 State/UI，由调用方提交新 Intent。节点删除只推进该 owner generation；window close 同时推进 store/owner 代际并关闭 Runtime scope。node/store generation 到达 `UINT32_MAX` 时退休 slot 或返回 `OVERLOAD`，request id 到达 `UINT64_MAX` 返回 `OVERLOAD`，均不回绕复用。
+每个 Runtime 只有一个 UI owner 线程，普通 Dispatch 也只能从该线程调用；worker 不直接访问 Store。restart 推进 store generation、把 pending/outbox/outstanding 标为 CANCELLED 并由 reaper 恰好各回收一次，保留 State/UI，由调用方提交新 Intent。节点删除只推进该 owner generation，并把对应 outstanding 标为终态等待 reaper。window close 同时推进 store/owner 代际并关闭 Store scope。node/store generation 到达 `UINT32_MAX` 时退休 slot 或返回 `OVERLOAD`，request id 到达 `UINT64_MAX` 返回 `OVERLOAD`，均不回绕复用。
 
 ## 异步生命周期
 
-Effect executor 可以用任意 worker，但 worker 只创建 completion，并通过 Runtime 自有 `my_ui_command_scope` 和 Store 的安全 emitter lease 提交到原 PAL loop。completion 队列容量为 32；接受 completion 时才消费 outstanding slot 并转为 Intent，队列满则不消费，UI callback 仅把共享交付状态写为 `OVERLOAD`，worker 保留 completion 并在有界重试中重投。
+Effect executor 可以用任意 worker，但 worker 只创建 completion，并通过 **Store 持有的** `my_ui_command_scope` 和安全 emitter lease 提交到原 PAL loop；纯 C Store 只持有抽象 async bridge 回调，不依赖 myui 类型。completion 队列容量为 32；接受 completion 时才消费 outstanding slot 并转为 Intent，队列满则不消费，UI callback 仅把共享交付状态写为 `OVERLOAD`，worker 保留 completion 并在有界重试中重投。
 
-每个 completion context 使用原子交付状态和 refcount，worker 与 UI command 各持一个引用。状态至少包括 PENDING、ACCEPTED、RETRY、CANCELLED。重投只持有 completion 与安全 lease，不持裸 Store/Runtime 指针；UI callback 通过 lease 取得 Store，lease 失效后不访问 Store。post 失败、STALE、CANCELLED 都是非成功终态并释放双方引用，不能伪造成 accepted。`my_ui_command` 忽略 execute 返回值，因此共享状态才是 worker 的交付凭据。
+每个 completion context 使用原子交付状态和 refcount，worker、UI command 与 outstanding slot 各持一个引用。状态至少包括 PENDING、ACCEPTED、RETRY、CANCELLED、STALE。瞬态 post/queue 失败进入 RETRY，不消费 slot；worker 放弃、scope close、owner invalidate 或真正 STALE/CANCELLED 则由 UI reaper 从表中删除 outstanding 并恰好释放 Store 引用一次，后续 callback/restart/close 不得重复释放。已接受 completion 先从表中删除再转 Intent，因此 reaper 不会重复消费。连续 32 个 post-failure/STALE 终态后，无关联新 Effect 在下一次 pump 必须仍能提交。
 
-window close 先使 Store lease 失效、推进代际，再关闭 Runtime scope，阻止新的提交并取消未执行 command。Runtime 非拥有 Store/sink，调用方必须先销毁 Runtime，再在 UI 线程销毁 Store/sink，不存在 double destroy。Store destroy 在 UI 线程先失效 lease、关闭 scope，再释放 Store；正在执行的 callback 与该 UI 线程销毁不能并发，worker 后续重投只能看到失效 lease 并安全释放。必须确定性测试“满队列 callback 已执行、worker 暂停在重投前、close/destroy 后恢复 worker”，以及 post 失败和 scope cancel。
+重投只持有 completion、scope ref 与安全 lease，不持裸 Store/Runtime 指针；UI callback 通过 lease 取得 Store，lease 失效后不访问 Store。post 最终失败、STALE、CANCELLED 都是非成功终态并释放 worker/UI 引用，不能伪造成 accepted。`my_ui_command` 忽略 execute 返回值，因此共享状态才是 worker 的交付凭据。scope/lease/bridge 也由引用计数管理，Store 释放其 owner ref 后只能等最后一个 worker 释放才销毁。
+
+window close 与 plain `my_compose_runtime_destroy()` 都先使 Store lease 失效、推进代际，再幂等调用 Store close，关闭 Store scope 并 reaper 清理 slot。Runtime 非拥有 Store/sink：Runtime close 返回后先释放 Runtime，再由调用方在 UI 线程销毁 Store/sink；Store destroy 再次调用同一幂等 close 后释放其 bridge owner ref，不存在 scope/Store double destroy。正在执行的 callback 与该 UI 线程销毁不能并发，worker 后续重投只能看到失效 lease 并安全释放。必须分别测试 window-close 和无 window-close 的 plain destroy，以及“满队列 callback 已执行、worker 暂停在重投前、close/destroy 后恢复 worker”和 post 失败。
 
 ## myui 事务适配与回滚
 
-adapter 绑定期间独占其子树结构，调用方不得绕过 adapter add/remove/reorder。每次 stage 先比对当前快照，外部结构改变返回 `CONFLICT`。adapter 只提供 stage/commit/rollback，不再另有一条 remember/handle finalize 路径。
+adapter 绑定期间独占其子树结构，调用方不得绕过 adapter add/remove/reorder。每次 stage 先比对当前快照，外部结构改变返回 `CONFLICT`。adapter 只提供 stage/commit/rollback，不再另有一条 remember/handle finalize 路径。`MyComposeSinkOps` 必须同时携带 `void *context` 与 Store 指针，`my_compose_myui_sink()` 把 context 设为当前 adapter；Runtime 将 context 传给三个回调并验证与自身 Store 相同，两个 adapter fixture 不得共享隐式单例。
 
 为满足同父 reorder 与事务回滚，在 `my_widget.[ch]` 增加 `my_widget_reorder_child`、`my_widget_insert_child`、`my_widget_detach_child`、`my_widget_notify_child_removed`。reorder 只移动顺序，不触发 focus/grab 丢失；detach 只改变结构并把 tree 引用交给事务，不调用 removed hook，不清理 focus/grab/IME。notify 才执行现有 removed hook；既有 `remove_child` 严格按 notify→detach→unref 保持行为。
 
 事务顺序：
 
-1. 预检 duplicate/capacity/type/property/schema/当前快照，任何失败都不调用 factory。保存首次绑定/factory 默认属性、旧顺序和事务代际。
+1. 预检 duplicate/capacity/type/property/schema/当前快照，以及本次 create/delete 所需 node slot 与 generation。generation 或 slot 退休在 sink.stage 前返回 `OVERLOAD`，确保后续 tree.finalize 只做无失败发布。任何失败都不调用 factory。保存首次绑定/factory 默认属性、旧顺序和事务代际。
 2. 为每个更新准备不可失败的恢复记录：POD 属性保存值；可能分配的属性必须在 `my_prop_desc_t` 提供 capture/discard/no-fail restore。字符串恢复通过已拥有 buffer/state swap 完成，不得再次分配。文本 capture 同时保存 selection/IME；缺少事务回调的字符串属性在 preflight 返回 `NOT_SUPPORTED`。
 3. stage 创建 detached widget、设置属性/listener、更新旧节点、插入新节点和 MOVE 保留节点；最后按逆序 detach 删除区域最高节点，事务持有其引用。此时尚未执行 removed hook，selection/focus/grab/IME 与 remember 未销毁。
 4. 任一 stage 失败，严格逆序恢复结构、属性、selection/IME 和 layout，销毁新节点并返回原错误。rollback 不执行 removed hook，不分配、不 dispose 当前 remember，不向 MVI 注入伪造事件；第二次 detach、恢复点和 rollback 分配失败都必须注入验证。
