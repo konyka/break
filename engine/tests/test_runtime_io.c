@@ -9,6 +9,7 @@
 #include <stdio.h>
 
 #if !defined(_WIN32)
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -985,7 +986,10 @@ TEST(io_completion_wait_deadline_and_shutdown_interruption)
 TEST(io_request_double_release_aborts)
 {
 #if !defined(_WIN32)
-    pid_t pid = fork();
+    int stage_pipe[2];
+    pid_t pid;
+    ASSERT_EQ(pipe(stage_pipe), 0);
+    pid = fork();
     if (pid == 0) {
         VFS *vfs = fixture_setup();
         BreakRuntimeIoConfig cfg;
@@ -996,6 +1000,11 @@ TEST(io_request_double_release_aborts)
         BreakRuntimeError cancel_result = BREAK_RUNTIME_INVALID;
         BreakRuntimeError shutdown_result = BREAK_RUNTIME_INVALID;
         BreakRuntimeError stats_result = BREAK_RUNTIME_INVALID;
+        ssize_t stage_write;
+        unsigned char stage = (unsigned char)'R';
+        if (close(stage_pipe[0]) != 0) {
+            _exit(3);
+        }
         if (!vfs) {
             _exit(2); /* fixture failure: not the path under test */
         }
@@ -1035,28 +1044,57 @@ TEST(io_request_double_release_aborts)
             _exit(2); /* setup failed: not the path under test */
         }
         break_runtime_io_request_release(req);
+        do {
+            stage_write = write(stage_pipe[1], &stage, 1u);
+        } while (stage_write < 0 && errno == EINTR);
+        if (stage_write != (ssize_t)1) {
+            close(stage_pipe[1]);
+            _exit(3);
+        }
+        if (close(stage_pipe[1]) != 0) {
+            _exit(3);
+        }
         break_runtime_io_request_release(req); /* violation: must abort */
         _exit(0); /* reached only if double release was NOT rejected */
+    }
+    if (pid < 0) {
+        close(stage_pipe[0]);
+        close(stage_pipe[1]);
     }
     ASSERT_TRUE(pid > 0);
     {
         int status = 0;
-        ASSERT_EQ(waitpid(pid, &status, 0), pid);
+        int close_write_result = close(stage_pipe[1]);
+        int close_read_result;
+        int wait_result;
+        ssize_t stage_read;
+        unsigned char stage = 0u;
+        do {
+            stage_read = read(stage_pipe[0], &stage, 1u);
+        } while (stage_read < 0 && errno == EINTR);
+        close_read_result = close(stage_pipe[0]);
+        wait_result = waitpid(pid, &status, 0);
+        ASSERT_EQ(close_write_result, 0);
+        ASSERT_EQ(close_read_result, 0);
+        ASSERT_EQ(wait_result, pid);
+        printf("    CHILD stage_read=%zd stage=0x%02x (expected 1/0x52)\n",
+               stage_read, (unsigned int)stage);
         if (WIFSIGNALED(status)) {
             printf("    CHILD signal=%d (expected SIGABRT=%d)\n",
                    WTERMSIG(status), SIGABRT);
-            if (WTERMSIG(status) != SIGABRT) {
-                printf("    FAIL-DETAIL: unexpected child terminating signal\n");
-            }
         }
         if (WIFEXITED(status)) {
-            /* 2 = a child's init/submit/cancel/shutdown setup step failed;
-             * 0 = the double release was NOT rejected. */
+            /* 2 = setup failed; 3 = stage channel failed; 0 = no abort. */
             printf("    FAIL-DETAIL: child exited %d (%s)\n", WEXITSTATUS(status),
                    WEXITSTATUS(status) == 0 ? "double release not rejected"
-                                            : "setup failed before the test path");
+                                            : "setup/stage failed before the test path");
         }
+        ASSERT_EQ(stage_read, (ssize_t)1);
+        ASSERT_EQ(stage, (unsigned char)'R');
         ASSERT_TRUE(WIFSIGNALED(status));
+        if (WIFSIGNALED(status)) {
+            ASSERT_EQ(WTERMSIG(status), SIGABRT);
+        }
     }
 #endif
 }
