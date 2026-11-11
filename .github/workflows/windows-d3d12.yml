@@ -71,6 +71,32 @@ jobs:
             exit 1
           fi
 
+      - name: Diagnose Core App compatibility (failure only)
+        if: failure()
+        timeout-minutes: 8
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          compat_log="$RUNNER_TEMP/core-app-contract-compat-v.log"
+          set +e
+          ctest --test-dir build-d3d12 -R '^test_core_app_contract_compat$' -V > "$compat_log" 2>&1
+          compat_rc=$?
+          set -e
+          cat "$compat_log"
+          for fixture in \
+            build-d3d12/core_app_contract_compat/corrupt-build/CTestTestfile.cmake \
+            build-d3d12/core_app_contract_compat/nm-build/CTestTestfile.cmake
+          do
+            printf '\n=== %s ===\n' "$fixture"
+            if [ -f "$fixture" ]; then
+              cat "$fixture"
+            else
+              echo "MISSING: $fixture"
+            fi
+          done
+          exit "$compat_rc"
+
       - name: WARP GPU-runtime floor
         run: ctest --test-dir build-d3d12 -R test_d3d12_warp_runtime --output-on-failure
 

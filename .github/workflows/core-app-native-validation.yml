@@ -89,3 +89,42 @@ jobs:
             fi
             exit 1
           fi
+
+      - name: Diagnose Core App asset directories (failure only)
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          try {
+            $output = Join-Path $env:RUNNER_TEMP 'core-app-native-validation-assets'
+            Write-Output "=== Core App asset output: $output ==="
+            if (Test-Path -LiteralPath $output -PathType Container) {
+              Get-ChildItem -LiteralPath $output -Force | ForEach-Object {
+                if ($_.PSIsContainer) {
+                  Write-Output "DIR $($_.Name)"
+                } else {
+                  Write-Output "FILE $($_.Name) $($_.Length) bytes"
+                }
+              }
+            } else {
+              Write-Output "MISSING $output"
+            }
+            foreach ($pattern in @('break_core_app_assets_a_*', 'break_core_app_assets_b_*')) {
+              $root = Join-Path $env:TEMP $pattern
+              Write-Output "=== Native temp directories: $root ==="
+              $directories = @(Get-ChildItem -Path $root -Directory -Force -ErrorAction SilentlyContinue)
+              if ($directories.Count -eq 0) {
+                Write-Output "MISSING $root"
+              } else {
+                foreach ($directory in $directories) {
+                  Write-Output "DIR $($directory.FullName)"
+                  Get-ChildItem -LiteralPath $directory.FullName -File -Force | ForEach-Object {
+                    Write-Output "FILE $($_.FullName) $($_.Length) bytes"
+                  }
+                }
+              }
+            }
+          } catch {
+            Write-Output "Core App asset directory diagnostic error: $($_.Exception.Message)"
+          }
+          exit 0

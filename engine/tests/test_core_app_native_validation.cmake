@@ -120,6 +120,52 @@ foreach(forbidden IN ITEMS "| head" "| tail" "head -" "tail -")
     endif()
 endforeach()
 
+set(expected_native_diagnostic [=[      - name: Diagnose Core App asset directories (failure only)
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          try {
+            $output = Join-Path $env:RUNNER_TEMP 'core-app-native-validation-assets'
+            Write-Output "=== Core App asset output: $output ==="
+            if (Test-Path -LiteralPath $output -PathType Container) {
+              Get-ChildItem -LiteralPath $output -Force | ForEach-Object {
+                if ($_.PSIsContainer) {
+                  Write-Output "DIR $($_.Name)"
+                } else {
+                  Write-Output "FILE $($_.Name) $($_.Length) bytes"
+                }
+              }
+            } else {
+              Write-Output "MISSING $output"
+            }
+            foreach ($pattern in @('break_core_app_assets_a_*', 'break_core_app_assets_b_*')) {
+              $root = Join-Path $env:TEMP $pattern
+              Write-Output "=== Native temp directories: $root ==="
+              $directories = @(Get-ChildItem -Path $root -Directory -Force -ErrorAction SilentlyContinue)
+              if ($directories.Count -eq 0) {
+                Write-Output "MISSING $root"
+              } else {
+                foreach ($directory in $directories) {
+                  Write-Output "DIR $($directory.FullName)"
+                  Get-ChildItem -LiteralPath $directory.FullName -File -Force | ForEach-Object {
+                    Write-Output "FILE $($_.FullName) $($_.Length) bytes"
+                  }
+                }
+              }
+            }
+          } catch {
+            Write-Output "Core App asset directory diagnostic error: $($_.Exception.Message)"
+          }
+          exit 0
+]=])
+require_text("${windows}" "${expected_native_diagnostic}"
+    "Windows native asset directory diagnostic")
+require_text("${windows}" "            exit 1
+          fi
+
+${expected_native_diagnostic}" "Windows native asset directory diagnostic placement")
+
 foreach(forbidden IN ITEMS
         "workflow_dispatch:" "pull_request:" "schedule:" "packages: write"
         "actions/upload-artifact" "make_evidence_receipt" "GPU_RUNTIME" "NATIVE_SURFACE")
@@ -137,11 +183,48 @@ set(expected_d3d12_trigger [=[on:
 
 jobs:]=])
 require_text("${d3d12}" "${expected_d3d12_trigger}" "D3D12 trigger")
+set(expected_d3d12_diagnostic [=[      - name: Diagnose Core App compatibility (failure only)
+        if: failure()
+        timeout-minutes: 8
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          compat_log="$RUNNER_TEMP/core-app-contract-compat-v.log"
+          set +e
+          ctest --test-dir build-d3d12 -R '^test_core_app_contract_compat$' -V > "$compat_log" 2>&1
+          compat_rc=$?
+          set -e
+          cat "$compat_log"
+          for fixture in \
+            build-d3d12/core_app_contract_compat/corrupt-build/CTestTestfile.cmake \
+            build-d3d12/core_app_contract_compat/nm-build/CTestTestfile.cmake
+          do
+            printf '\n=== %s ===\n' "$fixture"
+            if [ -f "$fixture" ]; then
+              cat "$fixture"
+            else
+              echo "MISSING: $fixture"
+            fi
+          done
+          exit "$compat_rc"
+
+]=])
+require_text("${d3d12}" "${expected_d3d12_diagnostic}"
+    "D3D12 compatibility diagnostic")
+require_text("${d3d12}" "            exit 1
+          fi
+
+${expected_d3d12_diagnostic}" "D3D12 compatibility diagnostic placement after headless tests")
+require_text("${d3d12}" "${expected_d3d12_diagnostic}      - name: WARP GPU-runtime floor"
+    "D3D12 compatibility diagnostic placement before WARP tests")
+string(REPLACE "${expected_d3d12_diagnostic}" ""
+    d3d12_without_diagnostic "${d3d12}")
 string(REPLACE "branches: [master, core-app-ci-validation]"
-    "branches: [master]" d3d12_without_validation "${d3d12}")
+    "branches: [master]" d3d12_without_validation "${d3d12_without_diagnostic}")
 string(SHA256 d3d12_base_hash "${d3d12_without_validation}")
 if(NOT d3d12_base_hash STREQUAL "11344c7bda647136befef9d1d97906b103b2774874813a360d6fbaeae747d412")
-    fail("D3D12 jobs or evidence semantics changed beyond the validation trigger")
+    fail("D3D12 jobs or evidence semantics changed beyond the validation trigger and compatibility diagnostic")
 endif()
 
 string(FIND "${ci}" "core-app-ci-validation" ci_validation_offset)
