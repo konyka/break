@@ -10,7 +10,11 @@
 
 真实 nm 支持且返回成功时，输出缺少 `core_app_run` 是合同 FAIL，不是 SKIP；`test_core_app_nm_symbol_missing` 用真实二进制和只过滤该符号的 wrapper 锁定这一负例。仅 NM 缺失或工具/格式不支持时沿用两个原 nm SKIP 合同。
 
-本步验证仍为 Linux CPU/record 证据；record/null 不构成 GPU、声卡或听测证据。
+合同先在 Task 1 实现上取得预期 RED：assets 为 18/22，旧 scenario 实际退出 0，旧 trace 与旧 manifest/magic 被接受。最小迁移后 focused 4/4 通过，`test_core_app_assets` 为 22/22。临时恢复旧 magic 后 assets 降为 20/22 且命名合同失败；恢复新 magic 后 assets/naming/lifecycle 3/3 再次通过。
+
+最终 baker 以同一 `--output` 接口分别生成空构建目录和正式目录，11 个文件逐字节一致；BSCN+sidecar、Flow、BANM、WAV 和 Lua 均由真实 readers 验证。HEAD archive 独立配置/构建后，Core App 9 项入选为 6 PASS、3 个 nm 合同 SKIP、0 失败。普通和 ASan+UBSan 非图形/非 fuzz 均为 351 项入选、347 PASS、4 个文档化 SKIP、0 失败；TSan lifecycle 为 1/1，no-tests 完整构建仍生成三个应用 target。所有构建和并行 CTest 使用 `-j3`，完整命令、hash 和变异记录见 `.superpowers/sdd/2026-11-11-core-app-naming/task-2-report.md`。
+
+本步验证仍为 Linux CPU/record 证据；record/null 不构成 GPU、声卡或听测证据，native GPU/声卡/听测、网络、非 Linux runtime 和远程 CI 未验证。Task 3 的第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入仍未覆盖；Task 9 的 256 项声音 FIFO、过载和 drain recovery 未提前实现，当前仍为 16 项 record FIFO；baker 的 Flow player identity 与 exec-link source port 专项断言仍留在后续台账。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
