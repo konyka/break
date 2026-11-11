@@ -312,27 +312,24 @@ static void nat_fixture_dispose(NatFixture *fixture)
 
 static BreakRuntimeError nat_pump_once(NatFixture *fixture)
 {
+    BreakRuntimeError first_error = BREAK_RUNTIME_OK;
     BreakRuntimeError result;
-    result = break_nat_coordinator_receive_socket(fixture->coordinator, 32u);
-    if (result != BREAK_RUNTIME_OK) return result;
-    result = break_nat_endpoint_receive_socket(fixture->a, 32u);
-    if (result != BREAK_RUNTIME_OK) return result;
-    result = break_nat_endpoint_receive_socket(fixture->b, 32u);
-    if (result != BREAK_RUNTIME_OK) return result;
-    result = break_nat_endpoint_receive_socket(fixture->c, 32u);
-    if (result != BREAK_RUNTIME_OK) return result;
-    result = break_nat_endpoint_receive_socket(fixture->d, 32u);
-    if (result != BREAK_RUNTIME_OK) return result;
-    result = break_nat_coordinator_poll(fixture->coordinator, 32u);
-    if (result != BREAK_RUNTIME_OK) return result;
-    result = break_nat_endpoint_poll(fixture->a, 32u);
-    if (result != BREAK_RUNTIME_OK) return result;
-    result = break_nat_endpoint_poll(fixture->b, 32u);
-    if (result != BREAK_RUNTIME_OK) return result;
-    result = break_nat_endpoint_poll(fixture->c, 32u);
-    if (result != BREAK_RUNTIME_OK) return result;
-    result = break_nat_endpoint_poll(fixture->d, 32u);
-    return result;
+#define NAT_PUMP_STEP(expression) do { \
+    result = (expression); \
+    if (first_error == BREAK_RUNTIME_OK && result != BREAK_RUNTIME_OK) first_error = result; \
+} while (0)
+    NAT_PUMP_STEP(break_nat_coordinator_receive_socket(fixture->coordinator, 32u));
+    NAT_PUMP_STEP(break_nat_endpoint_receive_socket(fixture->a, 32u));
+    NAT_PUMP_STEP(break_nat_endpoint_receive_socket(fixture->b, 32u));
+    NAT_PUMP_STEP(break_nat_endpoint_receive_socket(fixture->c, 32u));
+    NAT_PUMP_STEP(break_nat_endpoint_receive_socket(fixture->d, 32u));
+    NAT_PUMP_STEP(break_nat_coordinator_poll(fixture->coordinator, 32u));
+    NAT_PUMP_STEP(break_nat_endpoint_poll(fixture->a, 32u));
+    NAT_PUMP_STEP(break_nat_endpoint_poll(fixture->b, 32u));
+    NAT_PUMP_STEP(break_nat_endpoint_poll(fixture->c, 32u));
+    NAT_PUMP_STEP(break_nat_endpoint_poll(fixture->d, 32u));
+#undef NAT_PUMP_STEP
+    return first_error;
 }
 
 static bool nat_pump_until_registered(NatFixture *fixture)
@@ -376,7 +373,7 @@ static BreakRuntimeError nat_pump_until_closed(NatFixture *fixture, BreakOnlineH
             !break_nat_endpoint_armed(fixture->b, pair)) return BREAK_RUNTIME_OK;
         platform_thread_yield();
     }
-    return BREAK_RUNTIME_OVERLOAD;
+    return BREAK_RUNTIME_TIMEOUT;
 }
 
 static bool register_and_pair(NatFixture *fixture, BreakOnlineHandle *out_pair,
@@ -921,7 +918,6 @@ TEST(nat_two_close_cycles_reject_oldest_punch)
     NatFixture fixture;
     BreakOnlineHandle first;
     BreakOnlineHandle second;
-    u32 i;
     ASSERT_TRUE(nat_fixture_init(&fixture, 2u, 1u));
     ASSERT_TRUE(register_and_pair(&fixture, &first, 55u, 1000u));
     ASSERT_TRUE(nat_pump_until_connected(&fixture, first));
@@ -929,7 +925,11 @@ TEST(nat_two_close_cycles_reject_oldest_punch)
     ASSERT_TRUE(register_and_pair(&fixture, &second, 66u, 1000u));
     ASSERT_TRUE(nat_pump_until_connected(&fixture, second));
     ASSERT_EQ(break_nat_coordinator_pair_close(fixture.coordinator, second), BREAK_RUNTIME_OK);
-    for (i = 0u; i < 8u; ++i) (void)nat_pump_once(&fixture);
+    ASSERT_EQ(nat_pump_until_closed(&fixture, second), BREAK_RUNTIME_OK);
+    ASSERT_FALSE(break_nat_endpoint_connected(fixture.a, second));
+    ASSERT_FALSE(break_nat_endpoint_connected(fixture.b, second));
+    ASSERT_FALSE(break_nat_endpoint_armed(fixture.a, second));
+    ASSERT_FALSE(break_nat_endpoint_armed(fixture.b, second));
     send_test_punch(&fixture, first, 55u, 1000u, 1u);
     (void)break_nat_endpoint_receive_socket(fixture.a, 1u);
     (void)break_nat_endpoint_poll(fixture.a, 1u);
@@ -942,7 +942,6 @@ TEST(nat_older_close_cannot_rollback_high_water)
     NatFixture fixture;
     BreakOnlineHandle first;
     BreakOnlineHandle second;
-    u32 i;
     ASSERT_TRUE(nat_fixture_init(&fixture, 2u, 1u));
     ASSERT_TRUE(register_and_pair(&fixture, &first, 55u, 1000u));
     ASSERT_TRUE(nat_pump_until_connected(&fixture, first));
@@ -950,7 +949,11 @@ TEST(nat_older_close_cannot_rollback_high_water)
     ASSERT_TRUE(register_and_pair(&fixture, &second, 66u, 1000u));
     ASSERT_TRUE(nat_pump_until_connected(&fixture, second));
     ASSERT_EQ(break_nat_coordinator_pair_close(fixture.coordinator, second), BREAK_RUNTIME_OK);
-    for (i = 0u; i < 8u; ++i) (void)nat_pump_once(&fixture);
+    ASSERT_EQ(nat_pump_until_closed(&fixture, second), BREAK_RUNTIME_OK);
+    ASSERT_FALSE(break_nat_endpoint_connected(fixture.a, second));
+    ASSERT_FALSE(break_nat_endpoint_connected(fixture.b, second));
+    ASSERT_FALSE(break_nat_endpoint_armed(fixture.a, second));
+    ASSERT_FALSE(break_nat_endpoint_armed(fixture.b, second));
     send_test_close(&fixture, first, 2u);
     (void)break_nat_endpoint_receive_socket(fixture.a, 1u);
     (void)break_nat_endpoint_poll(fixture.a, 1u);
