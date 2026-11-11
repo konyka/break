@@ -65,6 +65,17 @@ foreach(asset level.bscn level.fg actors.sidecar director.lua player.lua broken.
     endif()
 endforeach()
 
+run_process(system_baked_assets 0 "${CORE_APP_ASSET_TEST}")
+expect_not_contains("${CORE_APP_DIAGNOSTIC_OUTPUT}"
+    "FAIL: CORE_APP_TEST stage=launch" "real system() baker launch")
+if(WIN32)
+    file(MAKE_DIRECTORY "${WORK}/temp with space")
+    run_process(system_baked_assets_with_space 0 "${CMAKE_COMMAND}" -E env
+        "TEMP=${WORK}/temp with space" "${CORE_APP_ASSET_TEST}")
+    expect_not_contains("${CORE_APP_DIAGNOSTIC_OUTPUT}"
+        "FAIL: CORE_APP_TEST stage=launch" "space-containing system() baker launch")
+endif()
+
 file(WRITE "${WORK}/blocked-parent" "not a directory\n")
 run_process(impossible_parent 1 "${CORE_APP_ASSET_BAKE}" --output
     "${WORK}/blocked-parent/child")
@@ -176,8 +187,13 @@ exec "$2"
 endif()
 
 run_process(launch_a_failure 1 "${CORE_APP_ASSET_LAUNCH_TEST}")
+if(WIN32)
+    set(missing_baker_command "command=\"\"${CORE_APP_MISSING_BAKER}\" --output \"")
+else()
+    set(missing_baker_command "command=\"${CORE_APP_MISSING_BAKER}\" --output \"")
+endif()
 expect_contains("${CORE_APP_DIAGNOSTIC_OUTPUT}"
-    "FAIL: CORE_APP_TEST stage=launch slot=A step=launch.system command=\"${CORE_APP_MISSING_BAKER}\" --output \""
+    "FAIL: CORE_APP_TEST stage=launch slot=A step=launch.system ${missing_baker_command}"
     "A launch command")
 expect_match("${CORE_APP_DIAGNOSTIC_OUTPUT}"
     "step=launch.system[^\n]*raw=-?[1-9][0-9]* os_error=[0-9]+ errno=[0-9]+"
@@ -199,6 +215,12 @@ expect_contains("${baker_source}" "platform_atomic_writer_open_diagnostic"
     "atomic diagnostic channel")
 
 file(READ "${ENGINE_SOURCE_DIR}/tests/test_core_app_assets.c" asset_test_source)
+expect_contains("${asset_test_source}" "#if defined(_WIN32)"
+    "Windows baker command branch")
+expect_contains("${asset_test_source}" [=["\"\"%s\" --output \"%s\"\""]=]
+    "Windows full-command outer quoting")
+expect_contains("${asset_test_source}" [=["\"%s\" --output \"%s\""]=]
+    "non-Windows single-layer quoting")
 foreach(step prepare.file_size prepare.platform_mkdir prepare.clear_directory
         prepare.remove launch.command launch.system)
     expect_contains("${asset_test_source}" "\"${step}\"" "asset test step ${step}")

@@ -371,8 +371,13 @@ static int file_exists(const char *dir, const char *name) {
 static int run_baker(const char *output, const char *slot) {
     char command[1600];
     command[0] = '\0';
+#if defined(_WIN32)
+    int n = snprintf(command, sizeof(command), "\"\"%s\" --output \"%s\"\"",
+                     CORE_APP_ASSET_BAKE_EXECUTABLE, output);
+#else
     int n = snprintf(command, sizeof(command), "\"%s\" --output \"%s\"",
                      CORE_APP_ASSET_BAKE_EXECUTABLE, output);
+#endif
     if (n < 0 || (usize)n >= sizeof(command)) {
         CoreAppTestError error = core_app_test_os_error();
         core_app_test_report_command(slot, "launch.command", command, output, (i64)n,
