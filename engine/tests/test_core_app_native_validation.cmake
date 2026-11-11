@@ -114,7 +114,13 @@ if(EXISTS "${process_launch_probe_path}")
             [=[set(unquoted "${CORE_APP_ASSET_BAKE} --output ${WORK}/unquoted")]=]
             [=[foreach(variant IN ITEMS original outer_quoted backslashes unquoted)]=]
             [=[execute_process(COMMAND "${CORE_APP_PROCESS_LAUNCH}" "${command}"]=]
-            [=[${WORK}/${variant}/level.bscn]=])
+            [=[${WORK}/${variant}/level.bscn]=]
+            [=[set(${variant}_stdout "${stdout}")]=]
+            [=[if(NOT "${original_result}" STREQUAL "1")]=]
+            [=[string(REGEX MATCH "CORE_APP_PROCESS_LAUNCH command=.* raw=(-?[0-9]+) os_error=[0-9]+ errno=-?[0-9]+" original_record "${original_stdout}")]=]
+            [=[if("${original_record}" STREQUAL "")]=]
+            [=[set(original_raw "${CMAKE_MATCH_1}")]=]
+            [=[if(original_raw EQUAL 0)]=])
         require_text("${process_launch_probe}" "${required}"
             "four-variant real baker probe")
     endforeach()
@@ -131,10 +137,11 @@ endforeach()
 
 extract_job(core-app-windows-msvc windows)
 set(expected_process_launch_step [=[      - name: Probe Core App Windows process launch
+        id: process_launch_probe
         continue-on-error: true
         env:
           ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
-        run: ctest --test-dir build -R '^test_core_app_process_launch_probe$' -V
+        run: ctest --test-dir build -j3 -R '^test_core_app_process_launch_probe$' -V
 ]=])
 require_text("${windows}" "${expected_process_launch_step}"
     "Windows real C system() process launch step")
@@ -151,6 +158,7 @@ foreach(required IN ITEMS
         "arch: x64"
         "cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON"
         "cmake --build build --target core_app_asset_bake test_core_app_process_launch test_core_app_assets -j3"
+        "      - name: Run real baker and assets test\n        id: original_assets"
         "ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1"
         "rm -rf \"\$RUNNER_TEMP/core-app-native-validation-assets\""
         "./build/core_app_asset_bake.exe --output \"\$RUNNER_TEMP/core-app-native-validation-assets\" >\"\$bake_log\" 2>&1"
@@ -179,7 +187,7 @@ foreach(forbidden IN ITEMS "| head" "| tail" "head -" "tail -")
 endforeach()
 
 set(expected_native_diagnostic [=[      - name: Diagnose Core App asset directories (failure only)
-        if: failure()
+        if: ${{ always() && (steps.original_assets.outcome == 'failure' || steps.process_launch_probe.outcome != 'success') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -227,6 +235,30 @@ require_text("${windows}" "            exit 1
           fi
 
 ${expected_native_diagnostic}" "Windows native asset directory diagnostic placement")
+set(expected_process_launch_failure_gate [=[      - name: Preserve Core App process launch probe failure
+        if: always()
+        shell: pwsh
+        run: |
+          $probeOutcome = '${{ steps.process_launch_probe.outcome }}'
+          Write-Output "Core App process launch probe outcome: $probeOutcome"
+          if ($probeOutcome -ne 'success') {
+            Write-Error "Core App process launch probe did not succeed; preserving failure"
+            exit 1
+          }
+]=])
+require_text("${windows}" "${expected_process_launch_failure_gate}"
+    "Windows process launch failure gate")
+require_text("${windows}" "${expected_native_diagnostic}\n${expected_process_launch_failure_gate}"
+    "Windows process launch failure gate placement after directory collection")
+string(LENGTH "${windows}" windows_length)
+string(LENGTH "${expected_process_launch_failure_gate}" process_launch_gate_length)
+math(EXPR process_launch_gate_expected_start
+    "${windows_length} - ${process_launch_gate_length}")
+string(FIND "${windows}" "${expected_process_launch_failure_gate}"
+    process_launch_gate_start)
+if(NOT process_launch_gate_start EQUAL process_launch_gate_expected_start)
+    fail("Windows process launch failure gate must be the final step with no later continue-on-error")
+endif()
 require_text("${windows}" "Get-ChildItem -Path \$root -Directory -Force -ErrorAction Stop"
     "Windows native enumeration must surface non-absence errors")
 require_text("${windows}" "catch [System.Management.Automation.ItemNotFoundException]"

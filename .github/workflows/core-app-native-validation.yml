@@ -63,12 +63,14 @@ jobs:
         run: cmake --build build --target core_app_asset_bake test_core_app_process_launch test_core_app_assets -j3
 
       - name: Probe Core App Windows process launch
+        id: process_launch_probe
         continue-on-error: true
         env:
           ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
-        run: ctest --test-dir build -R '^test_core_app_process_launch_probe$' -V
+        run: ctest --test-dir build -j3 -R '^test_core_app_process_launch_probe$' -V
 
       - name: Run real baker and assets test
+        id: original_assets
         env:
           ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
         shell: bash
@@ -97,7 +99,7 @@ jobs:
           fi
 
       - name: Diagnose Core App asset directories (failure only)
-        if: failure()
+        if: ${{ always() && (steps.original_assets.outcome == 'failure' || steps.process_launch_probe.outcome != 'success') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -138,3 +140,14 @@ jobs:
             Write-Output "Core App asset directory diagnostic error: $($_.Exception.Message)"
           }
           exit 0
+
+      - name: Preserve Core App process launch probe failure
+        if: always()
+        shell: pwsh
+        run: |
+          $probeOutcome = '${{ steps.process_launch_probe.outcome }}'
+          Write-Output "Core App process launch probe outcome: $probeOutcome"
+          if ($probeOutcome -ne 'success') {
+            Write-Error "Core App process launch probe did not succeed; preserving failure"
+            exit 1
+          }
