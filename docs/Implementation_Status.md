@@ -14,6 +14,8 @@
 
 - 主 CI run `43164552740` 的 clean-room job `131003571447` 在真实无 `.git` 的导出树上产生 `fatal: not a git repository (or any parent up to mount point /)` 与 `Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).`。formal、checkout、naming 因只识别旧 parent-directories 文本而失败（352 selected、3 FAIL、其余 349 PASS），dangling 合同则正确通过。当前共享判定只在 `.git` 真正不存在且非 symlink 时接受该两行诊断或原标准诊断，其它权限、所有权、损坏和执行错误继续 FAIL；修正后的 fresh full CI 与 D3D12 run 仍待 controller，本条目不提前宣称通过。
 
+- 主 CI run `43181031519` 的 macOS Cocoa + MoltenVK job `131056765414` 中，`nat_close_before_punch_blocks_late_punch` 在 late PUNCH 后重新 arm A（22/23），但这不是已证实的协议缺陷：coordinator 仅发送 CLOSE 并 retire pair，固定 8 次 pump 不保证 endpoint 已处理关闭并写入 closed generation/sequence。测试现复用既有五秒 `nat_pump_until_closed`，保留初始/最终 disarmed、实际 late PUNCH、receive/poll 和首错传播，不增加 sleep、skip 或生产协议改动。controller 本地 200 次未复现，修正后本地单核 200/200 与 TSan focused 通过；fresh full CI/D3D12 仍待 controller，本条目不提前宣称原生通过。
+
 ## 合并前历史：Core App Windows 启动与资产检出修复（2026-11-11）
 
 - **合并前历史方案，非最终实现**：Windows 进程启动修复 `987121d9` 只在 `_WIN32` 的测试 `system()` 命令外再包一层引号，POSIX 格式、原始返回和诊断不变。真实 probe 已区分原始格式失败与完整命令外层引用成功，未采用不安全的无引号捷径。原生 run `43041968171` 的 Windows job `130595842235` 中 direct baker 退出 0，assets **16/16**，完整 `test_core_app_baker_diagnostics` 通过，probe outcome/final gate 均为 success。macOS job `130595841519` 同样通过；这些是 CPU/合同证据，不是 GPU 或声卡证据。
