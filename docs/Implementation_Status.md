@@ -4,7 +4,7 @@
 - **listener 与 NULL style**：listener 分配按本事务首选 bank→另一个 bank 搜索 `in_use=false` 槽位，旧 lease 仍只在 commit 吊销，rollback 仅销毁新 lease。128 个 edit×2 事件完成初建→半量更新→全量更新及 rollback/retry，逐事件核对 owner/type/payload。style 仅在原 `local_style` 非 NULL 时深捕获，style-stage→后续失败→rollback 精确恢复原 NULL，后续有效 style 更新仍可用。
 - **RED/GREEN 与独立变异**：三项分别先得到 14/15、15/16、16/17 的真实 RED，最小修复后 adapter 17/17。独立回退 root 条件、listener 单 bank、NULL 无条件 capture 均各自得到 16/17 且仅对应用例失败，精确恢复后均回到 17/17。
 - **最终验证**：普通 adapter 17/17、focused CTest 9/9；ASan+UBSan、`detect_leaks=1` 下同为 adapter 17/17、focused 9/9，无 sanitizer/leak 报告。完整非图形 `-j3` 选定 348 项，347 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP；`git diff --check` 通过。
-- **边界与 scoped 复审**：证据仍为 Linux CPU、dummy PAL/headless，不是 GPU、真实窗口或硬件 IME 证明。原 reviewer 将只对这三项 Important 与 fix diff 的新破坏做 scoped re-review，本条不预先宣称其通过；详细证据追加于 `.superpowers/sdd/2026-11-11-compose-mvi/task-5-report.md`。
+- **边界与 scoped 复审**：证据仍为 Linux CPU、dummy PAL/headless，不是 GPU、真实窗口或硬件 IME 证明。三个 Important 的 scoped re-review 均为 ADDRESSED，零新增 Critical/Important/Minor；控制器另在修复提交上复跑 focused 9/9。详细证据追加于 `.superpowers/sdd/2026-11-11-compose-mvi/task-5-report.md`。
 
 ## Compose + MVI Task 5：myui 事务、省略语义与唯一 finalize（2026-11-12）
 
@@ -13,7 +13,7 @@
 - **listener 与故障注入**：事件强制当前节点 owner；省略 event 只吊销 listener lease，不推进保留节点 owner generation，type change/delete 后旧事件不投递，window close 使 Store close。factory OOM、property set、insert、第一次/第二次 detach、style capacity 与恢复点故障均验证原 children/order/property/style/selection/focus/grab/IME/remember 完整恢复；duplicate 在 factory 前失败，外部 reorder 返回 `CONFLICT`，另覆盖 1024 个 property UPDATE。
 - **TDD 与生产变异**：缺实现编译 RED、失败 stub 0/10 后逐步达到 adapter 14/14；1024-property 全替换先为 13/14 RED，扩容并前置 journal 预检后 14/14。临时在 stage detach 提前 notify、在 adapter 重复 dispose remember 分别得到 11/13 RED，均精确恢复后 GREEN。
 - **最终验证**：普通 adapter 14/14、focused CTest 9/9；ASan+UBSan、`detect_leaks=1` 下同为 adapter 14/14、focused 9/9，无 sanitizer/leak 报告。完整非图形 `-j3` 选定 348 项，347 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP；`git diff --check` 通过。
-- **边界与后续**：所有证据均为 Linux CPU、dummy PAL/headless，不是 Vulkan/OpenGL、真实窗口、GPU 像素或硬件 IME 证明。独立规格评审与质量评审尚待后续执行，本条不预先宣称其通过；完整 RED/GREEN、变异及命令记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-5-report.md`。
+- **边界与后续**：所有证据均为 Linux CPU、dummy PAL/headless，不是 Vulkan/OpenGL、真实窗口、GPU 像素或硬件 IME 证明。独立规格与质量评审发现的容量、listener 和 NULL style 问题均已修复并通过 scoped 复审，无遗留 Critical/Important/Minor。完整 RED/GREEN、变异及命令记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-5-report.md`。
 
 ## Compose + MVI Task 4 fix 1：拒绝 wrong-parent removal notice（2026-11-12）
 
