@@ -42,6 +42,10 @@ Windows 测试启动 baker 时，`system()` 的完整命令在 `_WIN32` 下使�
 
 终审修复 `253ce949` 的普通与 ASan+UBSan `detect_leaks=1` 非图形均为 **358 selected、354 PASS、4 个文档化 SKIP、0 FAIL**；TSan focused 为 7/7、assets 为 23/23，no-tests 完整构建通过且注册测试为 0，五个显式 fuzz smoke 全部通过。`45fe548d` 仅修改 CMake 测试脚本，使 intentional no-NM 真实传播到 archived configure，并在实际验证后转发 SKIP 证据；其完整普通非图形同为 358/354/4/0。两项 scoped 复审均 PASS，无遗留 Critical/Important。所有构建和并行 CTest 使用 `-j3`；完整命令、RED/GREEN、变异和既有 Lua `tmpnam` 警告另记于 final-review-fix-report。
 
+最终 CPU run `43155806374` 的 macOS job `130975331228` 揭示了 CTest 成功摘要格式回归：archived nested 的自身成功 marker 和 1/1 Passed 均真实出现，摘要却是 `100% tests passed out of 1`，导致只接受 `100% tests passed, 0 tests failed out of 1` 的 compat 单独失败。macOS assets 为 **18/18**；同 run 的 Windows job `130975330900` 已记录 direct baker exit 0、assets **17/17** 和 diagnostics/probe success。实际 archived 断言现在通过共享精确整行 predicate 仅接受这两种成功格式，零测试、多测试、失败、未运行及 `out of 10` 前缀陷阱均拒绝；本地 CMake 3.28.3 的另一种格式只作对照，不用于猜测 macOS CTest 版本。修正后的原生 Windows/macOS/D3D12 复跑仍由 controller 获取，本节不提前宣称通过。
+
+最终 D3D12 run `43155806382`、job `130975331060` 进一步证明工具链传播是独立根因：parent 明确使用 `C:/Program Files/LLVM/bin/clang.exe`，新 archived target build 却实际使用 `C:/mingw64/bin/cc.exe`，并在 MinGW D3D12 headers 上编译失败，不能归为上一项摘要格式问题，也不能删除归档构建或改成 SKIP。现在 parent 的 `NESTED_CMAKE_C_COMPILER` 沿现有显式链条进入 archived configure 和 target/nm 第二跳，实际 configure 同步接收 `CMAKE_C_COMPILER`；archive 与 positive/wrapped no-tests cache 以 REALPATH 断言真实 parent 路径，防止用另一编译器假绿。两种 CTest 成功格式、intentional no-NM、Agility DLL/hash、backend、Vulkan/shaderc 和 generator/config 均保留。修正后的原生 D3D12/WARP 复跑仍由 controller 获取，本节不提前宣称通过。
+
 第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入、256 项音频 FIFO/过载/drain recovery、Flow player identity 与 exec-link source-port 永久断言仍留在后续台账；Compose 和 P12 Task 4–13 不在本批次中宣称实现。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。

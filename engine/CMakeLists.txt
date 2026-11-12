@@ -4660,7 +4660,8 @@ endif()
         set(_core_app_nested_rhi_backend auto)
     endif()
     set(_core_app_nested_toolchain_defs
-        "-DNESTED_ENGINE_RHI_BACKEND=${_core_app_nested_rhi_backend}")
+        "-DNESTED_ENGINE_RHI_BACKEND=${_core_app_nested_rhi_backend}"
+        "-DNESTED_CMAKE_C_COMPILER=${CMAKE_C_COMPILER}")
     foreach(_core_app_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
         if(DEFINED ${_core_app_def} AND NOT "${${_core_app_def}}" STREQUAL "")
             list(APPEND _core_app_nested_toolchain_defs

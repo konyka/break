@@ -1,5 +1,5 @@
 foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT NM TARGET_CONTRACT NM_WRAPPER
-        NESTED_ENGINE_RHI_BACKEND)
+        NESTED_ENGINE_RHI_BACKEND NESTED_CMAKE_C_COMPILER)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required for the wrapped-nm negative test")
     endif()
@@ -26,7 +26,9 @@ file(REMOVE_RECURSE "${CONTRACT_BUILD_ROOT}")
 file(MAKE_DIRECTORY "${CONTRACT_BUILD_ROOT}")
 set(filtered_symbols "${CONTRACT_BUILD_ROOT}/filtered-symbols.txt")
 set(nested_toolchain_defs
-    "-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}")
+    "-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}"
+    "-DNESTED_CMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}"
+    "-DCMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}")
 foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
     if(DEFINED ${cache_var} AND NOT "${${cache_var}}" STREQUAL "")
         list(APPEND nested_toolchain_defs "-D${cache_var}=${${cache_var}}")
