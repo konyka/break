@@ -1,10 +1,12 @@
 #include <myui/mycompose_myui/my_compose_myui_internal.h>
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <myui/mycompose/my_compose_internal.h>
 #include <myui/my_layout.h>
+#include <myui/my_ui_command.h>
 #include <myui/my_widget_class.h>
 #include <myui/my_window.h>
 
@@ -107,11 +109,27 @@ typedef struct MyComposeMyuiTxn {
     bool suppress_events;
 } MyComposeMyuiTxn;
 
+typedef struct MyComposeMyuiAsync {
+    my_pal_main_loop_t *loop;
+    my_ui_command_scope_t *scope;
+    my_emitter_context_lease_t *lease;
+    atomic_uint fail_posts;
+} MyComposeMyuiAsync;
+
+typedef struct MyComposeMyuiCommand {
+    my_emitter_context_lease_t *lease;
+    MyComposeAsyncDeliver deliver;
+    MyComposeCompletionContext *completion;
+    MyComposeAsyncRelease release;
+    uint32_t result;
+} MyComposeMyuiCommand;
+
 typedef struct MyComposeMyuiState {
     my_window_t *window;
     my_widget_t *root;
     MyComposeTreeBuilder *builder;
     MyComposeStore *store;
+    MyComposeMyuiAsync *async;
     MyComposeMyuiBinding bindings[MY_COMPOSE_MAX_NODES];
     MyComposeMyuiListener listeners[2][MY_COMPOSE_MAX_EVENTS];
     MyComposeMyuiTxn txn;
@@ -1016,9 +1034,15 @@ static void listener_callback(void *context, const char *event, void *data) {
     if (listener == NULL || listener->adapter == NULL) return;
     state = state_of(listener->adapter);
     if (state == NULL || state->window_closed || state->txn.suppress_events) return;
+    state->store->event_callback_depth++;
+    if (listener->adapter->fault.event_pump != NULL) {
+        listener->adapter->fault.event_pump_status = my_compose_myui_pump(
+            listener->adapter, listener->adapter->fault.event_pump);
+    }
     listener->intent.owner = listener->owner;
     listener->intent.payload = listener->payload;
     (void)my_compose_store_dispatch(state->store, &listener->intent);
+    state->store->event_callback_depth--;
 }
 
 static void listener_destroy(MyComposeMyuiListener *listener, bool window_closed) {
@@ -1545,12 +1569,116 @@ static void commit_internal(MyComposeMyui *adapter) {
     state->txn.suppress_events = false;
 }
 
+static my_ret_t async_command_execute(void *context) {
+    MyComposeMyuiCommand *command = context;
+    command->deliver(my_emitter_context_lease_context(command->lease),
+        command->completion, command->result);
+    return MY_RET_OK;
+}
+
+static void async_command_destroy(void *context) {
+    MyComposeMyuiCommand *command = context;
+    command->release(command->completion);
+    my_emitter_context_lease_unref(command->lease);
+    free(command);
+}
+
+static MyComposeStatus async_post(void *context, MyComposeAsyncDeliver deliver,
+    MyComposeCompletionContext *completion, uint32_t result,
+    MyComposeAsyncRelease release) {
+    MyComposeMyuiAsync *async = context;
+    MyComposeMyuiCommand *command;
+    my_ui_command_t *ui_command;
+    my_ret_t ret;
+    unsigned int failures = atomic_load_explicit(&async->fail_posts,
+        memory_order_acquire);
+    while (failures > 0u) {
+        if (atomic_compare_exchange_weak_explicit(&async->fail_posts, &failures,
+                failures - 1u, memory_order_acq_rel, memory_order_acquire)) {
+            release(completion);
+            return MY_COMPOSE_OVERLOAD;
+        }
+    }
+    if (my_ui_command_scope_is_closed(async->scope) ||
+        !my_emitter_context_lease_is_valid(async->lease)) {
+        release(completion);
+        return MY_COMPOSE_CANCELLED;
+    }
+    command = calloc(1u, sizeof(*command));
+    if (command == NULL) {
+        release(completion);
+        return MY_COMPOSE_OVERLOAD;
+    }
+    command->lease = my_emitter_context_lease_ref(async->lease);
+    command->deliver = deliver;
+    command->completion = completion;
+    command->release = release;
+    command->result = result;
+    ui_command = my_ui_command_create(NULL, async_command_execute, command,
+        async_command_destroy);
+    if (ui_command == NULL) {
+        async_command_destroy(command);
+        return MY_COMPOSE_OVERLOAD;
+    }
+    ret = my_ui_command_submit_scoped(async->loop, async->scope, ui_command);
+    my_ui_command_unref(ui_command);
+    if (ret == MY_RET_OK) return MY_COMPOSE_OK;
+    if (ret == MY_RET_PENDING && my_ui_command_scope_is_closed(async->scope)) {
+        return MY_COMPOSE_CANCELLED;
+    }
+    return MY_COMPOSE_OVERLOAD;
+}
+
+static void async_close(void *context) {
+    MyComposeMyuiAsync *async = context;
+    my_emitter_context_lease_invalidate(async->lease);
+    my_ui_command_scope_close(async->scope);
+}
+
+static void async_destroy(void *context) {
+    MyComposeMyuiAsync *async = context;
+    async_close(async);
+    my_emitter_context_lease_unref(async->lease);
+    my_ui_command_scope_unref(async->scope);
+    free(async);
+}
+
+static MyComposeStatus async_create(MyComposeMyuiState *state) {
+    MyComposeAsyncBridgeOps ops;
+    MyComposeStatus status;
+    state->async = calloc(1u, sizeof(*state->async));
+    if (state->async == NULL) return MY_COMPOSE_OVERLOAD;
+    state->async->loop = state->window->loop;
+    state->async->scope = my_ui_command_scope_create(NULL);
+    state->async->lease = my_emitter_context_lease_create(NULL, state->store,
+        NULL);
+    atomic_init(&state->async->fail_posts, 0u);
+    if (state->async->loop == NULL || state->async->scope == NULL ||
+        state->async->lease == NULL) {
+        async_destroy(state->async);
+        state->async = NULL;
+        return MY_COMPOSE_OVERLOAD;
+    }
+    memset(&ops, 0, sizeof(ops));
+    ops.context = state->async;
+    ops.post = async_post;
+    ops.close = async_close;
+    ops.destroy = async_destroy;
+    status = my_compose_store_set_async_bridge(state->store, &ops);
+    if (status != MY_COMPOSE_OK) {
+        async_destroy(state->async);
+        state->async = NULL;
+    }
+    return status;
+}
+
 static void window_closed(void *context) {
     MyComposeMyui *adapter = (MyComposeMyui *)context;
     MyComposeMyuiState *state = state_of(adapter);
     if (state == NULL || state->window_closed) return;
     state->window_closed = true;
     my_compose_store_close(state->store);
+    my_compose_store_reap(state->store);
 }
 
 MyComposeMyui *my_compose_myui_create(my_window_t *window,
@@ -1572,7 +1700,10 @@ MyComposeMyui *my_compose_myui_create(my_window_t *window,
     state->store = store;
     state->close_listener = my_window_add_close_listener(window, window_closed,
         adapter);
-    if (state->close_listener == 0u) {
+    if (state->close_listener == 0u || async_create(state) != MY_COMPOSE_OK) {
+        if (state->close_listener != 0u) {
+            (void)my_window_remove_close_listener(window, state->close_listener);
+        }
         free(state);
         free(adapter);
         return NULL;
@@ -1637,6 +1768,16 @@ void my_compose_myui_rollback(MyComposeMyui *adapter) {
     rollback_internal(adapter);
 }
 
+MyComposeStatus my_compose_myui_pump(MyComposeMyui *adapter,
+    MyComposeRuntime *runtime) {
+    MyComposeMyuiState *state = state_of(adapter);
+    if (state == NULL || runtime == NULL) return MY_COMPOSE_INVALID;
+    if (!my_compose_runtime_internal_matches(runtime, state->store, adapter)) {
+        return MY_COMPOSE_CONFLICT;
+    }
+    return my_compose_runtime_pump(runtime);
+}
+
 static MyComposeStatus sink_stage(void *context, const MyComposeDiff *diff) {
     return my_compose_myui_stage((MyComposeMyui *)context, diff);
 }
@@ -1668,6 +1809,13 @@ my_widget_t *my_compose_myui_widget(const MyComposeMyui *adapter,
     if (state == NULL) return NULL;
     binding = find_binding(state, node);
     return binding != NULL ? binding->widget : NULL;
+}
+
+void my_compose_myui_internal_fail_async_posts(MyComposeMyui *adapter,
+    uint32_t count) {
+    MyComposeMyuiState *state = state_of(adapter);
+    if (state == NULL || state->async == NULL) return;
+    atomic_store_explicit(&state->async->fail_posts, count, memory_order_release);
 }
 
 MyComposeStatus my_compose_myui_internal_seed_generation(

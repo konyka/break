@@ -2807,9 +2807,11 @@ add_library(mycompose STATIC
     src/myui/mycompose/my_compose.c
     src/myui/mycompose/my_compose_tree.c
     src/myui/mycompose/my_compose_remember.c
-    src/myui/mycompose/my_compose_store.c)
+    src/myui/mycompose/my_compose_store.c
+    src/myui/mycompose/my_compose_runtime.c)
 set_property(TARGET mycompose PROPERTY C_STANDARD 11)
 target_include_directories(mycompose PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mycompose PUBLIC Threads::Threads)
 
 add_library(mycompose_myui STATIC
     src/myui/mycompose_myui/my_compose_myui.c)
@@ -2840,6 +2842,20 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_mycompose_store PRIVATE mycompose)
     add_test(NAME test_mycompose_store COMMAND test_mycompose_store)
     set_tests_properties(test_mycompose_store PROPERTIES LABELS "headless;compose")
+
+    add_executable(test_mycompose_runtime tests/test_mycompose_runtime.c)
+    target_include_directories(test_mycompose_runtime PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_mycompose_runtime PRIVATE mycompose)
+    add_test(NAME test_mycompose_runtime COMMAND test_mycompose_runtime)
+    set_tests_properties(test_mycompose_runtime PROPERTIES LABELS "headless;compose")
+
+    add_executable(test_mycompose_async tests/test_mycompose_async.c
+        src/myui/mypal/dummy/my_pal_dummy.c)
+    target_include_directories(test_mycompose_async PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_mycompose_async PRIVATE mycompose_myui m Threads::Threads)
+    add_test(NAME test_mycompose_async COMMAND test_mycompose_async)
+    set_tests_properties(test_mycompose_async PROPERTIES LABELS "headless;compose")
 
     add_executable(test_mycompose_myui tests/test_mycompose_myui.c
         src/myui/mypal/dummy/my_pal_dummy.c)

@@ -9,6 +9,15 @@ extern "C" {
 
 typedef struct MyComposeStore MyComposeStore;
 typedef struct MyComposeEffectBatch MyComposeEffectBatch;
+typedef struct MyComposeCompletionContext MyComposeCompletionContext;
+
+typedef enum MyComposeCompletionState {
+    MY_COMPOSE_COMPLETION_PENDING = 0,
+    MY_COMPOSE_COMPLETION_ACCEPTED,
+    MY_COMPOSE_COMPLETION_RETRY,
+    MY_COMPOSE_COMPLETION_CANCELLED,
+    MY_COMPOSE_COMPLETION_STALE
+} MyComposeCompletionState;
 
 typedef struct MyComposeEffect {
     uint32_t type;
@@ -17,6 +26,7 @@ typedef struct MyComposeEffect {
     MyComposeNodeHandle owner;
     uint32_t store_generation;
     uint64_t request_id;
+    MyComposeCompletionContext *completion;
 } MyComposeEffect;
 
 struct MyComposeEffectBatch {
@@ -37,6 +47,32 @@ typedef struct MyComposeCompletion {
     uint32_t result;
     uint32_t delivery;
 } MyComposeCompletion;
+
+typedef void (*MyComposeAsyncDeliver)(void *, MyComposeCompletionContext *,
+    uint32_t);
+typedef void (*MyComposeAsyncRelease)(MyComposeCompletionContext *);
+
+typedef struct MyComposeAsyncBridgeOps {
+    void *context;
+    MyComposeStatus (*post)(void *, MyComposeAsyncDeliver,
+        MyComposeCompletionContext *, uint32_t, MyComposeAsyncRelease);
+    void (*close)(void *);
+    void (*destroy)(void *);
+} MyComposeAsyncBridgeOps;
+
+MyComposeStatus my_compose_store_set_async_bridge(MyComposeStore *store,
+    const MyComposeAsyncBridgeOps *ops);
+MyComposeCompletionContext *my_compose_completion_ref(
+    MyComposeCompletionContext *completion);
+void my_compose_completion_unref(MyComposeCompletionContext *completion);
+MyComposeStatus my_compose_completion_post(
+    MyComposeCompletionContext *completion, uint32_t result);
+MyComposeCompletionState my_compose_completion_state(
+    const MyComposeCompletionContext *completion);
+MyComposeStatus my_compose_completion_delivery(
+    const MyComposeCompletionContext *completion);
+void my_compose_completion_abandon(MyComposeCompletionContext *completion,
+    MyComposeStatus status);
 
 typedef struct MyComposeStateOps {
     void *context;
@@ -86,8 +122,11 @@ MyComposeStatus my_compose_store_register_owner(MyComposeStore *store,
 MyComposeStatus my_compose_store_invalidate_owner(MyComposeStore *store,
     MyComposeNodeHandle owner);
 MyComposeStatus my_compose_store_reduce(MyComposeStore *store);
+MyComposeStatus my_compose_store_reduce_one(MyComposeStore *store,
+    uint32_t *completion_budget, bool *out_reduced);
 MyComposeStatus my_compose_store_dispatch_effects(MyComposeStore *store);
 MyComposeStatus my_compose_store_restart(MyComposeStore *store);
+void my_compose_store_reap(MyComposeStore *store);
 void my_compose_store_close(MyComposeStore *store);
 
 MyComposeStatus my_compose_store_state(const MyComposeStore *store,

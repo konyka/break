@@ -13,6 +13,8 @@ typedef struct MyComposeMyuiFault {
     uint32_t detach_call;
     my_widget_t *property_widget;
     const char *property_name;
+    MyComposeRuntime *event_pump;
+    MyComposeStatus event_pump_status;
     bool fail_after_property_error;
     bool fail_after_detach_error;
 } MyComposeMyuiFault;
@@ -37,6 +39,8 @@ struct MyComposeMyui {
 
 MyComposeStatus my_compose_myui_internal_seed_generation(
     MyComposeMyui *adapter, MyComposeNodeHandle handle, uint32_t generation);
+void my_compose_myui_internal_fail_async_posts(MyComposeMyui *adapter,
+    uint32_t count);
 
 #ifdef __cplusplus
 }

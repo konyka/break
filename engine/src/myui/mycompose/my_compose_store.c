@@ -2,8 +2,168 @@
 #include <myui/mycompose/my_compose_store.h>
 
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+
+typedef struct MyComposeAsyncBridge {
+    atomic_uint references;
+    atomic_bool closed;
+    MyComposeAsyncBridgeOps ops;
+} MyComposeAsyncBridge;
+
+typedef struct MyComposeCompletionPool {
+    atomic_uint references;
+    MyComposeCompletionContext *contexts;
+} MyComposeCompletionPool;
+
+struct MyComposeCompletionContext {
+    atomic_uint references;
+    atomic_int state;
+    atomic_int delivery;
+    MyComposeCompletionPool *pool;
+    MyComposeAsyncBridge *bridge;
+    MyComposeCompletion completion;
+    uint8_t payload[MY_COMPOSE_MESSAGE_BYTES];
+};
+
+static bool atomic_retain(atomic_uint *references) {
+    unsigned int current = atomic_load_explicit(references, memory_order_relaxed);
+    for (;;) {
+        if (current == 0u || current == UINT_MAX) return false;
+        if (atomic_compare_exchange_weak_explicit(references, &current,
+                current + 1u, memory_order_relaxed, memory_order_relaxed)) {
+            return true;
+        }
+    }
+}
+
+static bool atomic_release(atomic_uint *references) {
+    unsigned int current = atomic_load_explicit(references, memory_order_acquire);
+    for (;;) {
+        if (current == 0u || current == UINT_MAX) return false;
+        if (atomic_compare_exchange_weak_explicit(references, &current,
+                current - 1u, memory_order_acq_rel, memory_order_acquire)) {
+            return current == 1u;
+        }
+    }
+}
+
+static void bridge_unref(MyComposeAsyncBridge *bridge) {
+    if (bridge == NULL || !atomic_release(&bridge->references)) return;
+    bridge->ops.destroy(bridge->ops.context);
+    free(bridge);
+}
+
+static bool bridge_ref(MyComposeAsyncBridge *bridge) {
+    return bridge == NULL || atomic_retain(&bridge->references);
+}
+
+static void bridge_close(MyComposeAsyncBridge *bridge) {
+    if (bridge == NULL || atomic_exchange_explicit(&bridge->closed, true,
+            memory_order_acq_rel)) {
+        return;
+    }
+    bridge->ops.close(bridge->ops.context);
+}
+
+static void pool_unref(MyComposeCompletionPool *pool) {
+    if (pool == NULL || !atomic_release(&pool->references)) return;
+    free(pool->contexts);
+    free(pool);
+}
+
+static bool pool_ref(MyComposeCompletionPool *pool) {
+    return pool != NULL && atomic_retain(&pool->references);
+}
+
+static MyComposeCompletionState completion_state_from_delivery(int delivery) {
+    switch (delivery) {
+        case MY_COMPOSE_OK: return MY_COMPOSE_COMPLETION_ACCEPTED;
+        case MY_COMPOSE_PENDING: return MY_COMPOSE_COMPLETION_PENDING;
+        case MY_COMPOSE_CANCELLED:
+        case MY_COMPOSE_FAILED: return MY_COMPOSE_COMPLETION_CANCELLED;
+        case MY_COMPOSE_STALE: return MY_COMPOSE_COMPLETION_STALE;
+        default: return MY_COMPOSE_COMPLETION_RETRY;
+    }
+}
+
+static MyComposeStatus completion_delivery_from_state(
+    MyComposeCompletionState state) {
+    switch (state) {
+        case MY_COMPOSE_COMPLETION_ACCEPTED: return MY_COMPOSE_OK;
+        case MY_COMPOSE_COMPLETION_PENDING: return MY_COMPOSE_PENDING;
+        case MY_COMPOSE_COMPLETION_CANCELLED: return MY_COMPOSE_CANCELLED;
+        case MY_COMPOSE_COMPLETION_STALE: return MY_COMPOSE_STALE;
+        default: return MY_COMPOSE_OVERLOAD;
+    }
+}
+
+static void completion_transition(MyComposeCompletionContext *completion,
+    MyComposeCompletionState target) {
+    int current_delivery;
+    MyComposeStatus target_delivery = completion_delivery_from_state(target);
+    if (completion == NULL) return;
+    current_delivery = atomic_load_explicit(&completion->delivery,
+        memory_order_acquire);
+    for (;;) {
+        MyComposeCompletionState current =
+            completion_state_from_delivery(current_delivery);
+        if (current == MY_COMPOSE_COMPLETION_ACCEPTED ||
+            current == MY_COMPOSE_COMPLETION_CANCELLED ||
+            current == MY_COMPOSE_COMPLETION_STALE ||
+            (target == MY_COMPOSE_COMPLETION_RETRY &&
+                current == MY_COMPOSE_COMPLETION_RETRY)) {
+            return;
+        }
+        if (atomic_compare_exchange_weak_explicit(&completion->delivery,
+                &current_delivery, target_delivery, memory_order_acq_rel,
+                memory_order_acquire)) {
+            atomic_store_explicit(&completion->state, target, memory_order_release);
+            return;
+        }
+    }
+}
+
+MyComposeCompletionContext *my_compose_completion_ref(
+    MyComposeCompletionContext *completion) {
+    if (completion == NULL || !atomic_retain(&completion->references)) return NULL;
+    return completion;
+}
+
+void my_compose_completion_unref(MyComposeCompletionContext *completion) {
+    MyComposeCompletionPool *pool;
+    MyComposeAsyncBridge *bridge;
+    if (completion == NULL) return;
+    pool = completion->pool;
+    bridge = completion->bridge;
+    if (!atomic_release(&completion->references)) return;
+    bridge_unref(bridge);
+    pool_unref(pool);
+}
+
+MyComposeCompletionState my_compose_completion_state(
+    const MyComposeCompletionContext *completion) {
+    if (completion == NULL) return MY_COMPOSE_COMPLETION_STALE;
+    return completion_state_from_delivery(atomic_load_explicit(
+        (atomic_int *)&completion->delivery, memory_order_acquire));
+}
+
+MyComposeStatus my_compose_completion_delivery(
+    const MyComposeCompletionContext *completion) {
+    if (completion == NULL) return MY_COMPOSE_STALE;
+    return (MyComposeStatus)atomic_load_explicit(
+        (atomic_int *)&completion->delivery, memory_order_acquire);
+}
+
+void my_compose_completion_abandon(MyComposeCompletionContext *completion,
+    MyComposeStatus status) {
+    if (status == MY_COMPOSE_STALE) {
+        completion_transition(completion, MY_COMPOSE_COMPLETION_STALE);
+    } else if (status == MY_COMPOSE_CANCELLED || status == MY_COMPOSE_FAILED) {
+        completion_transition(completion, MY_COMPOSE_COMPLETION_CANCELLED);
+    }
+}
 
 static void update_high_water(uint32_t *high_water, uint32_t value) {
     if (value > *high_water) *high_water = value;
@@ -80,13 +240,18 @@ static MyComposeStatus clone_state(MyComposeStore *store, const void *source,
 
 static void release_request(MyComposeStore *store, uint32_t slot) {
     MyComposeRequest *request = &store->requests[slot];
+    MyComposeCompletionContext *completion;
     if (!request->used) return;
     if (request->location == MY_COMPOSE_REQUEST_OUTSTANDING) {
         store->outstanding_count--;
     }
+    completion = request->completion;
+    request->completion = NULL;
+    request->effect.completion = NULL;
     request->used = false;
     request->terminal = MY_COMPOSE_OK;
     store->request_count--;
+    my_compose_completion_unref(completion);
 }
 
 static void reap_requests(MyComposeStore *store) {
@@ -96,8 +261,23 @@ static void reap_requests(MyComposeStore *store) {
     uint32_t kept_count = 0u;
     for (uint32_t i = 0u; i < MY_COMPOSE_EFFECT_CAPACITY; ++i) {
         MyComposeRequest *request = &store->requests[i];
-        if (request->used && request->terminal != MY_COMPOSE_OK &&
-            request->terminal != MY_COMPOSE_PENDING) {
+        MyComposeCompletionState state;
+        if (!request->used) continue;
+        state = request->completion != NULL ?
+            my_compose_completion_state(request->completion) :
+            MY_COMPOSE_COMPLETION_PENDING;
+        if (request->terminal == MY_COMPOSE_OK ||
+            request->terminal == MY_COMPOSE_PENDING) {
+            if (state == MY_COMPOSE_COMPLETION_CANCELLED) {
+                request->terminal = MY_COMPOSE_CANCELLED;
+            } else if (state == MY_COMPOSE_COMPLETION_STALE) {
+                request->terminal = MY_COMPOSE_STALE;
+            }
+        }
+        if (request->terminal != MY_COMPOSE_OK &&
+            request->terminal != MY_COMPOSE_PENDING &&
+            (request->location == MY_COMPOSE_REQUEST_OUTSTANDING ||
+                request->terminal != MY_COMPOSE_STALE)) {
             release_request(store, i);
             store->diagnostics.recycled_requests++;
         }
@@ -106,7 +286,8 @@ static void reap_requests(MyComposeStore *store) {
         uint32_t slot = store->outbox[(old_head + i) % MY_COMPOSE_EFFECT_CAPACITY];
         MyComposeRequest *request = &store->requests[slot];
         if (request->used && request->location == MY_COMPOSE_REQUEST_OUTBOX &&
-            request->terminal == MY_COMPOSE_OK) {
+            (request->terminal == MY_COMPOSE_OK ||
+                request->terminal == MY_COMPOSE_STALE)) {
             kept[kept_count++] = slot;
         }
     }
@@ -122,6 +303,8 @@ static void cancel_requests(MyComposeStore *store) {
     for (uint32_t i = 0u; i < MY_COMPOSE_EFFECT_CAPACITY; ++i) {
         if (store->requests[i].used) {
             store->requests[i].terminal = MY_COMPOSE_CANCELLED;
+            completion_transition(store->requests[i].completion,
+                MY_COMPOSE_COMPLETION_CANCELLED);
         }
     }
 }
@@ -144,6 +327,120 @@ static uint32_t find_request(MyComposeStore *store, uint64_t request_id) {
     return MY_COMPOSE_NO_INDEX;
 }
 
+static MyComposeStatus prepare_completion(MyComposeStore *store,
+    MyComposeRequest *request) {
+    MyComposeCompletionPool *pool = store->completion_pool;
+    if (pool == NULL) return MY_COMPOSE_FAILED;
+    for (uint32_t i = 0u; i < MY_COMPOSE_EFFECT_CAPACITY; ++i) {
+        MyComposeCompletionContext *completion = &pool->contexts[i];
+        unsigned int expected = 0u;
+        if (!atomic_compare_exchange_strong_explicit(&completion->references,
+                &expected, 1u, memory_order_acq_rel, memory_order_acquire)) {
+            continue;
+        }
+        if (!pool_ref(pool) || !bridge_ref(store->async_bridge)) {
+            completion->pool = pool;
+            completion->bridge = NULL;
+            atomic_store_explicit(&completion->references, 0u,
+                memory_order_release);
+            pool_unref(pool);
+            return MY_COMPOSE_FAILED;
+        }
+        completion->pool = pool;
+        completion->bridge = store->async_bridge;
+        memset(&completion->completion, 0, sizeof(completion->completion));
+        completion->completion.type = request->effect.type;
+        completion->completion.payload_size = request->effect.payload_size;
+        completion->completion.owner = request->effect.owner;
+        completion->completion.store_generation = request->effect.store_generation;
+        completion->completion.request_id = request->effect.request_id;
+        completion->completion.delivery = MY_COMPOSE_OK;
+        if (request->effect.payload_size > 0u) {
+            memcpy(completion->payload, request->effect.payload,
+                request->effect.payload_size);
+        }
+        completion->completion.payload = completion->payload;
+        atomic_store_explicit(&completion->delivery, MY_COMPOSE_PENDING,
+            memory_order_release);
+        atomic_store_explicit(&completion->state, MY_COMPOSE_COMPLETION_PENDING,
+            memory_order_release);
+        if (request->terminal == MY_COMPOSE_STALE) {
+            completion_transition(completion, MY_COMPOSE_COMPLETION_STALE);
+        } else if (request->terminal == MY_COMPOSE_CANCELLED) {
+            completion_transition(completion, MY_COMPOSE_COMPLETION_CANCELLED);
+        }
+        request->completion = completion;
+        request->effect.completion = completion;
+        return MY_COMPOSE_OK;
+    }
+    return MY_COMPOSE_OVERLOAD;
+}
+
+static void async_deliver(void *opaque,
+    MyComposeCompletionContext *completion, uint32_t result) {
+    MyComposeStore *store = opaque;
+    MyComposeCompletion delivered;
+    MyComposeStatus status;
+    uint32_t slot;
+    if (store == NULL || store->closed) {
+        completion_transition(completion, MY_COMPOSE_COMPLETION_CANCELLED);
+        return;
+    }
+    slot = find_request(store, completion->completion.request_id);
+    if (slot == MY_COMPOSE_NO_INDEX ||
+        store->requests[slot].completion != completion) {
+        completion_transition(completion, MY_COMPOSE_COMPLETION_STALE);
+        return;
+    }
+    delivered = completion->completion;
+    delivered.result = result;
+    delivered.delivery = MY_COMPOSE_OK;
+    status = my_compose_store_complete(store, &delivered);
+    if (status == MY_COMPOSE_OK) {
+        completion_transition(completion, MY_COMPOSE_COMPLETION_ACCEPTED);
+    } else if (status == MY_COMPOSE_OVERLOAD || status == MY_COMPOSE_PENDING) {
+        completion_transition(completion, MY_COMPOSE_COMPLETION_RETRY);
+    } else if (status == MY_COMPOSE_STALE) {
+        completion_transition(completion, MY_COMPOSE_COMPLETION_STALE);
+    } else {
+        completion_transition(completion, MY_COMPOSE_COMPLETION_CANCELLED);
+    }
+}
+
+MyComposeStatus my_compose_completion_post(
+    MyComposeCompletionContext *completion, uint32_t result) {
+    MyComposeAsyncBridge *bridge;
+    MyComposeCompletionState state;
+    MyComposeStatus status;
+    if (completion == NULL) return MY_COMPOSE_INVALID;
+    state = my_compose_completion_state(completion);
+    if (state == MY_COMPOSE_COMPLETION_ACCEPTED) return MY_COMPOSE_STALE;
+    if (state == MY_COMPOSE_COMPLETION_STALE) return MY_COMPOSE_STALE;
+    if (state == MY_COMPOSE_COMPLETION_CANCELLED) return MY_COMPOSE_CANCELLED;
+    bridge = completion->bridge;
+    if (bridge == NULL || bridge->ops.post == NULL) {
+        completion_transition(completion, MY_COMPOSE_COMPLETION_RETRY);
+        return MY_COMPOSE_NOT_SUPPORTED;
+    }
+    if (atomic_load_explicit(&bridge->closed, memory_order_acquire)) {
+        completion_transition(completion, MY_COMPOSE_COMPLETION_CANCELLED);
+        return MY_COMPOSE_CANCELLED;
+    }
+    if (my_compose_completion_ref(completion) == NULL) return MY_COMPOSE_STALE;
+    status = bridge->ops.post(bridge->ops.context, async_deliver, completion,
+        result, my_compose_completion_unref);
+    if (status != MY_COMPOSE_OK) {
+        if (status == MY_COMPOSE_STALE) {
+            completion_transition(completion, MY_COMPOSE_COMPLETION_STALE);
+        } else if (status == MY_COMPOSE_CANCELLED) {
+            completion_transition(completion, MY_COMPOSE_COMPLETION_CANCELLED);
+        } else {
+            completion_transition(completion, MY_COMPOSE_COMPLETION_RETRY);
+        }
+    }
+    return status;
+}
+
 static void mark_owner_requests(MyComposeStore *store,
     MyComposeNodeHandle owner, bool previous_generations) {
     for (uint32_t i = 0u; i < MY_COMPOSE_EFFECT_CAPACITY; ++i) {
@@ -154,6 +451,8 @@ static void mark_owner_requests(MyComposeStore *store,
             (!previous_generations &&
                 owner_matches(request->effect.owner, owner))) {
             request->terminal = MY_COMPOSE_STALE;
+            completion_transition(request->completion,
+                MY_COMPOSE_COMPLETION_STALE);
         }
     }
 }
@@ -276,15 +575,30 @@ MyComposeStore *my_compose_store_create(const void *initial_state,
     }
     store = calloc(1u, sizeof(*store));
     if (store == NULL) return NULL;
+    store->completion_pool = calloc(1u, sizeof(*store->completion_pool));
+    if (store->completion_pool == NULL) {
+        free(store);
+        return NULL;
+    }
+    store->completion_pool->contexts = calloc(MY_COMPOSE_EFFECT_CAPACITY,
+        sizeof(*store->completion_pool->contexts));
+    if (store->completion_pool->contexts == NULL) {
+        free(store->completion_pool);
+        free(store);
+        return NULL;
+    }
+    atomic_init(&store->completion_pool->references, 1u);
     if (state_ops != NULL) store->state_ops = *state_ops;
     store->reducer_context = reducer_context;
     store->reducer = reducer;
     store->executor_context = executor_context;
     store->executor = executor;
+    store->owner_thread = thrd_current();
     store->generation = 1u;
     store->next_request_id = 1u;
     status = clone_state(store, initial_state, initial_state_size, 0u);
     if (status != MY_COMPOSE_OK) {
+        pool_unref(store->completion_pool);
         free(store);
         return NULL;
     }
@@ -293,10 +607,32 @@ MyComposeStore *my_compose_store_create(const void *initial_state,
     return store;
 }
 
+MyComposeStatus my_compose_store_set_async_bridge(MyComposeStore *store,
+    const MyComposeAsyncBridgeOps *ops) {
+    MyComposeAsyncBridge *bridge;
+    if (store == NULL || ops == NULL || ops->post == NULL ||
+        ops->close == NULL || ops->destroy == NULL) {
+        return MY_COMPOSE_INVALID;
+    }
+    if (store->closed) return MY_COMPOSE_CANCELLED;
+    if (store->async_bridge != NULL) return MY_COMPOSE_CONFLICT;
+    bridge = calloc(1u, sizeof(*bridge));
+    if (bridge == NULL) return MY_COMPOSE_OVERLOAD;
+    atomic_init(&bridge->references, 1u);
+    atomic_init(&bridge->closed, false);
+    bridge->ops = *ops;
+    store->async_bridge = bridge;
+    return MY_COMPOSE_OK;
+}
+
 void my_compose_store_destroy(MyComposeStore *store) {
     if (store == NULL) return;
     my_compose_store_close(store);
     reap_requests(store);
+    bridge_unref(store->async_bridge);
+    store->async_bridge = NULL;
+    pool_unref(store->completion_pool);
+    store->completion_pool = NULL;
     dispose_state_slot(store, 0u);
     dispose_state_slot(store, 1u);
     free(store);
@@ -307,6 +643,9 @@ MyComposeStatus my_compose_store_dispatch(MyComposeStore *store,
     MyComposeStoredIntent *stored;
     MyComposeStatus status;
     if (store == NULL || intent == NULL) return MY_COMPOSE_INVALID;
+    if (!thrd_equal(thrd_current(), store->owner_thread)) {
+        return MY_COMPOSE_CONFLICT;
+    }
     if (store->closed) return reject_intent(store, MY_COMPOSE_CANCELLED);
     if (store->generation == UINT32_MAX) {
         return reject_intent(store, MY_COMPOSE_OVERLOAD);
@@ -344,6 +683,9 @@ MyComposeStatus my_compose_store_complete(MyComposeStore *store,
     MyComposeStoredCompletion *stored;
     uint32_t slot;
     if (store == NULL || completion == NULL) return MY_COMPOSE_INVALID;
+    if (!thrd_equal(thrd_current(), store->owner_thread)) {
+        return MY_COMPOSE_CONFLICT;
+    }
     if (store->closed) {
         store->diagnostics.stale_completions++;
         return MY_COMPOSE_STALE;
@@ -458,56 +800,80 @@ MyComposeStatus my_compose_store_invalidate_owner(MyComposeStore *store,
     return MY_COMPOSE_OK;
 }
 
+static MyComposeStatus reduce_step(MyComposeStore *store,
+    uint32_t *converted, bool *out_reduced) {
+    MyComposeStatus status;
+    *out_reduced = false;
+    reap_requests(store);
+    if (store->closed) return MY_COMPOSE_CANCELLED;
+    if (store->generation == UINT32_MAX) return MY_COMPOSE_OVERLOAD;
+    while (*converted < MY_COMPOSE_COMPLETION_CAPACITY &&
+           store->completion_count > 0u &&
+           store->intent_count < MY_COMPOSE_INTENT_CAPACITY) {
+        MyComposeStoredCompletion completion =
+            store->completions[store->completion_head];
+        MyComposeStoredIntent *intent;
+        store->completion_head = (store->completion_head + 1u) %
+            MY_COMPOSE_COMPLETION_CAPACITY;
+        store->completion_count--;
+        if (completion.completion.store_generation != store->generation ||
+            owner_status(store, completion.completion.owner) != MY_COMPOSE_OK) {
+            store->diagnostics.stale_completions++;
+            continue;
+        }
+        (*converted)++;
+        intent = &store->intents[(store->intent_head + store->intent_count) %
+            MY_COMPOSE_INTENT_CAPACITY];
+        memset(intent, 0, sizeof(*intent));
+        intent->intent.type = completion.completion.type;
+        intent->intent.payload_size = completion.completion.payload_size;
+        intent->intent.owner = completion.completion.owner;
+        intent->intent.result = completion.completion.result;
+        if (completion.completion.payload_size > 0u) {
+            memcpy(intent->payload, completion.payload,
+                completion.completion.payload_size);
+        }
+        intent->intent.payload = intent->payload;
+        store->intent_count++;
+        store->diagnostics.accepted_intents++;
+        update_high_water(&store->diagnostics.intent_high_water,
+            store->intent_count);
+    }
+    if (store->intent_count == 0u) {
+        sync_diagnostics(store);
+        return MY_COMPOSE_OK;
+    }
+    status = reduce_one(store);
+    if (status != MY_COMPOSE_OK) {
+        sync_diagnostics(store);
+        return status;
+    }
+    store->intent_head = (store->intent_head + 1u) %
+        MY_COMPOSE_INTENT_CAPACITY;
+    store->intent_count--;
+    *out_reduced = true;
+    sync_diagnostics(store);
+    return MY_COMPOSE_OK;
+}
+
+MyComposeStatus my_compose_store_reduce_one(MyComposeStore *store,
+    uint32_t *completion_budget, bool *out_reduced) {
+    if (store == NULL || completion_budget == NULL || out_reduced == NULL ||
+        *completion_budget > MY_COMPOSE_COMPLETION_CAPACITY) {
+        return MY_COMPOSE_INVALID;
+    }
+    return reduce_step(store, completion_budget, out_reduced);
+}
+
 MyComposeStatus my_compose_store_reduce(MyComposeStore *store) {
     uint32_t processed = 0u;
     uint32_t converted = 0u;
     if (store == NULL) return MY_COMPOSE_INVALID;
-    reap_requests(store);
-    if (store->closed) return MY_COMPOSE_CANCELLED;
-    if (store->generation == UINT32_MAX) return MY_COMPOSE_OVERLOAD;
     while (processed < 64u) {
-        MyComposeStatus status;
-        while (converted < MY_COMPOSE_COMPLETION_CAPACITY &&
-               store->completion_count > 0u &&
-               store->intent_count < MY_COMPOSE_INTENT_CAPACITY) {
-            MyComposeStoredCompletion completion =
-                store->completions[store->completion_head];
-            MyComposeStoredIntent *intent;
-            store->completion_head = (store->completion_head + 1u) %
-                MY_COMPOSE_COMPLETION_CAPACITY;
-            store->completion_count--;
-            if (completion.completion.store_generation != store->generation ||
-                owner_status(store, completion.completion.owner) != MY_COMPOSE_OK) {
-                store->diagnostics.stale_completions++;
-                continue;
-            }
-            converted++;
-            intent = &store->intents[(store->intent_head + store->intent_count) %
-                MY_COMPOSE_INTENT_CAPACITY];
-            memset(intent, 0, sizeof(*intent));
-            intent->intent.type = completion.completion.type;
-            intent->intent.payload_size = completion.completion.payload_size;
-            intent->intent.owner = completion.completion.owner;
-            intent->intent.result = completion.completion.result;
-            if (completion.completion.payload_size > 0u) {
-                memcpy(intent->payload, completion.payload,
-                    completion.completion.payload_size);
-            }
-            intent->intent.payload = intent->payload;
-            store->intent_count++;
-            store->diagnostics.accepted_intents++;
-            update_high_water(&store->diagnostics.intent_high_water,
-                store->intent_count);
-        }
-        if (store->intent_count == 0u) break;
-        status = reduce_one(store);
-        if (status != MY_COMPOSE_OK) {
-            sync_diagnostics(store);
-            return status;
-        }
-        store->intent_head = (store->intent_head + 1u) %
-            MY_COMPOSE_INTENT_CAPACITY;
-        store->intent_count--;
+        bool reduced;
+        MyComposeStatus status = reduce_step(store, &converted, &reduced);
+        if (status != MY_COMPOSE_OK) return status;
+        if (!reduced) break;
         processed++;
     }
     sync_diagnostics(store);
@@ -526,6 +892,18 @@ MyComposeStatus my_compose_store_dispatch_effects(MyComposeStore *store) {
         MyComposeRequest *request = &store->requests[slot];
         MyComposeStatus status;
         if (store->executor == NULL) return MY_COMPOSE_INVALID;
+        if (request->completion == NULL) {
+            status = prepare_completion(store, request);
+            if (status != MY_COMPOSE_OK) {
+                store->outbox_head = (store->outbox_head + 1u) %
+                    MY_COMPOSE_EFFECT_CAPACITY;
+                store->outbox_count--;
+                release_request(store, slot);
+                store->diagnostics.executor_failures++;
+                sync_diagnostics(store);
+                return status;
+            }
+        }
         status = store->executor(store->executor_context, &request->effect);
         if (status == MY_COMPOSE_PENDING) {
             sync_diagnostics(store);
@@ -561,8 +939,18 @@ MyComposeStatus my_compose_store_restart(MyComposeStore *store) {
     return MY_COMPOSE_OK;
 }
 
+void my_compose_store_reap(MyComposeStore *store) {
+    if (store == NULL) return;
+    reap_requests(store);
+}
+
 void my_compose_store_close(MyComposeStore *store) {
-    if (store == NULL || store->closed) return;
+    if (store == NULL) return;
+    if (store->closed) {
+        reap_requests(store);
+        return;
+    }
+    bridge_close(store->async_bridge);
     clear_pending(store);
     cancel_requests(store);
     if (store->generation < UINT32_MAX) store->generation++;
@@ -575,6 +963,7 @@ void my_compose_store_close(MyComposeStore *store) {
         if (entry->generation == UINT32_MAX) entry->retired = true;
     }
     store->closed = true;
+    reap_requests(store);
     sync_diagnostics(store);
 }
 

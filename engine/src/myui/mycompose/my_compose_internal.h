@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <threads.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -144,6 +145,7 @@ typedef enum MyComposeRequestLocation {
 typedef struct MyComposeRequest {
     MyComposeEffect effect;
     uint8_t payload[MY_COMPOSE_MESSAGE_BYTES];
+    MyComposeCompletionContext *completion;
     MyComposeStatus terminal;
     MyComposeRequestLocation location;
     bool used;
@@ -180,6 +182,10 @@ struct MyComposeStore {
     MyComposeOwner owners[MY_COMPOSE_MAX_NODES];
     uint32_t generation;
     uint64_t next_request_id;
+    struct MyComposeCompletionPool *completion_pool;
+    struct MyComposeAsyncBridge *async_bridge;
+    thrd_t owner_thread;
+    uint32_t event_callback_depth;
     bool closed;
     MyComposeDiagnostics diagnostics;
 };
@@ -188,6 +194,10 @@ MyComposeStatus my_compose_store_internal_seed_generation(MyComposeStore *store,
     uint32_t generation);
 MyComposeStatus my_compose_store_internal_seed_request(MyComposeStore *store,
     uint64_t next_request_id);
+
+typedef struct MyComposeRuntime MyComposeRuntime;
+bool my_compose_runtime_internal_matches(const MyComposeRuntime *runtime,
+    const MyComposeStore *store, const void *sink_context);
 
 uint32_t my_compose_tree_internal_find_node(const MyComposeTree *tree,
     MyComposeNodeHandle handle);
