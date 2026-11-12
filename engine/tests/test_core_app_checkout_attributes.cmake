@@ -67,10 +67,9 @@ execute_process(
     ERROR_VARIABLE git_probe_error)
 set(git_probe_log "${git_probe_output}${git_probe_error}")
 if(NOT "${git_probe_result}" STREQUAL "0")
-    if(NOT EXISTS "${REPOSITORY_ROOT}/.git" AND
-            NOT IS_SYMLINK "${REPOSITORY_ROOT}/.git" AND
-            "${git_probe_log}" MATCHES
-            "fatal: not a git repository \\(or any of the parent directories\\): \\.git")
+    include("${CMAKE_CURRENT_LIST_DIR}/test_core_app_git_metadata.cmake")
+    core_app_git_metadata_absent("${REPOSITORY_ROOT}" "${git_probe_log}" metadata_absent)
+    if(metadata_absent)
         core_app_checkout_unverified("${REPOSITORY_ROOT} is not a Git repository")
     endif()
     message(FATAL_ERROR "git rev-parse --git-dir failed: ${git_probe_log}")

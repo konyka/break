@@ -1,0 +1,12 @@
+function(core_app_git_metadata_absent repository_root git_log output)
+    set(metadata_absent FALSE)
+    if(NOT EXISTS "${repository_root}/.git" AND NOT IS_SYMLINK "${repository_root}/.git")
+        string(REPLACE "\r\n" "\n" normalized_log "${git_log}")
+        string(STRIP "${normalized_log}" normalized_log)
+        if(normalized_log STREQUAL "fatal: not a git repository (or any of the parent directories): .git"
+                OR normalized_log STREQUAL "fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).")
+            set(metadata_absent TRUE)
+        endif()
+    endif()
+    set(${output} "${metadata_absent}" PARENT_SCOPE)
+endfunction()

@@ -178,6 +178,7 @@ foreach(relative_path IN ITEMS
         tests/test_core_app_nm_filter.cmake
         tests/test_core_app_formal_assets.cmake
         tests/test_core_app_naming_contract.cmake
+        tests/test_core_app_git_metadata.cmake
         tests/test_core_app_contract_compat.cmake)
     configure_file("${ENGINE_SOURCE_DIR}/${relative_path}"
         "${archive_engine}/${relative_path}" COPYONLY)
