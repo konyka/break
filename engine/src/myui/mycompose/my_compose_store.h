@@ -24,6 +24,7 @@ typedef struct MyComposeEffect {
     uint32_t payload_size;
     const uint8_t *payload;
     MyComposeNodeHandle owner;
+    uint64_t store_id;
     uint32_t store_generation;
     uint64_t request_id;
     MyComposeCompletionContext *completion;
@@ -39,6 +40,7 @@ struct MyComposeEffectBatch {
 
 typedef struct MyComposeCompletion {
     uint64_t request_id;
+    uint64_t store_id;
     uint32_t store_generation;
     MyComposeNodeHandle owner;
     uint32_t type;

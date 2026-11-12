@@ -1,3 +1,12 @@
+## Compose + MVI Task 6 fix 1：completion 身份、pool 背压与 accept 线性化（2026-11-13）
+
+- **唯一 Store 身份**：`MyComposeEffect`/`MyComposeCompletion` 增加进程内单调分配、不可回绕的 64 位 `store_id`，不是对象地址且 restart 不变；准备、接受和 conversion 全链路核对。两个 Store 真实拥有相同 request ID、generation 和 owner 的 outstanding 时，A 的 completion 在 B 查表或修改 request 前即为 STALE，B 的 State/FIFO/outstanding 不变，A 仍正常接受；手工 fixture 和 internal 布景均传递实际 credential，没有零 ID 兼容后门。
+- **pool 背压恢复**：32 个真实 accepted 且由 caller 持有的 context 占满 pool 后，新 Effect 返回 PENDING，不调用 executor、不弹出 outbox、不释放 request 或复用 request ID；释放一个 context 后原 Effect 以 request 33 恰好执行一次。completion queue full 与 pool references full 保持不同语义，其它 prepare/executor 失败合同不变。
+- **accept/abandon 线性化**：单一原子状态机新增内部 ACCEPTING，UI callback 只有从 PENDING/RETRY CAS 成功才进入 Store；abandon 先赢则 accept 不执行且 UI reaper 恰好回收一次，accept 先赢则交付完成后才发布 ACCEPTED，后续 abandon 不得反写。queue overload 可从 ACCEPTING 回到 RETRY，业务 result 与 delivery 分离，未引入热路径互斥锁或裸 Store 指针。
+- **RED/GREEN 与变异**：真实跨 Store 同 ID、held-accepted pool 饱和、queued command abandon 分别得到 14/15、15/16、16/17 的目标 RED，最小修复后依次为 15/15、16/16、17/17，Store 27/27、Runtime 8/8 保持。独立移除 store_id 检查、pool-front PENDING 分支和 accept guard 均各得到 16/17，精确恢复后均回到 17/17。
+- **最终验证**：普通 focused CTest 11/11、Runtime 8/8、async 17/17；ASan+UBSan、`detect_leaks=1` 下计数相同且无 sanitizer/leak 报告；TSan runtime/async 2/2，无 data-race 报告。完整非图形 `-j3` 选定 350 项，349 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP，30.75 秒；`git diff --check` 通过。
+- **边界与 scoped 复审**：证据仍为 Linux CPU、dummy PAL/headless，不是 GPU 或真实窗口证明；PAL main loop 仍按借用合同由应用保活，满 completion queue 继续使用 internal 固定布景。三个 Important 的 scoped re-review 尚待原 reviewer 执行，不提前宣称通过；完整 RED/GREEN、线性化和变异记录追加于 `.superpowers/sdd/2026-11-11-compose-mvi/task-6-report.md`。
+
 ## Compose + MVI Task 6：Runtime、pending-view 与安全 completion（2026-11-12）
 
 - **交付与固定顺序**：实现提交 `5b8d90ea` 新增 `MyComposeRuntime`、`my_compose_myui_pump()` 和 Store 单步 reduce；每个 State revision 固定执行 `reduce → sink.stage → tree.finalize → sink.commit → dispatch_effects`。Runtime 非拥有 Store/sink，create 强制 `config.store == config.sink.store`，sink context 按 adapter 隔离，事件重入及非 UI 线程 pump 返回 `CONFLICT`。

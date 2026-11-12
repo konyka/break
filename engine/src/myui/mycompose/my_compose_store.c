@@ -20,12 +20,25 @@ typedef struct MyComposeCompletionPool {
 struct MyComposeCompletionContext {
     atomic_uint references;
     atomic_int state;
-    atomic_int delivery;
     MyComposeCompletionPool *pool;
     MyComposeAsyncBridge *bridge;
     MyComposeCompletion completion;
     uint8_t payload[MY_COMPOSE_MESSAGE_BYTES];
 };
+
+static atomic_uint_fast64_t next_store_id = ATOMIC_VAR_INIT(1u);
+
+static uint64_t allocate_store_id(void) {
+    uint_fast64_t current = atomic_load_explicit(&next_store_id,
+        memory_order_relaxed);
+    for (;;) {
+        if (current == 0u || current == UINT64_MAX) return 0u;
+        if (atomic_compare_exchange_weak_explicit(&next_store_id, &current,
+                current + 1u, memory_order_relaxed, memory_order_relaxed)) {
+            return (uint64_t)current;
+        }
+    }
+}
 
 static bool atomic_retain(atomic_uint *references) {
     unsigned int current = atomic_load_explicit(references, memory_order_relaxed);
@@ -77,52 +90,66 @@ static bool pool_ref(MyComposeCompletionPool *pool) {
     return pool != NULL && atomic_retain(&pool->references);
 }
 
-static MyComposeCompletionState completion_state_from_delivery(int delivery) {
-    switch (delivery) {
-        case MY_COMPOSE_OK: return MY_COMPOSE_COMPLETION_ACCEPTED;
-        case MY_COMPOSE_PENDING: return MY_COMPOSE_COMPLETION_PENDING;
-        case MY_COMPOSE_CANCELLED:
-        case MY_COMPOSE_FAILED: return MY_COMPOSE_COMPLETION_CANCELLED;
-        case MY_COMPOSE_STALE: return MY_COMPOSE_COMPLETION_STALE;
-        default: return MY_COMPOSE_COMPLETION_RETRY;
-    }
-}
+#define MY_COMPOSE_COMPLETION_ACCEPTING_INTERNAL \
+    (MY_COMPOSE_COMPLETION_STALE + 1)
 
-static MyComposeStatus completion_delivery_from_state(
-    MyComposeCompletionState state) {
+static MyComposeStatus completion_delivery_from_state(int state) {
     switch (state) {
         case MY_COMPOSE_COMPLETION_ACCEPTED: return MY_COMPOSE_OK;
-        case MY_COMPOSE_COMPLETION_PENDING: return MY_COMPOSE_PENDING;
+        case MY_COMPOSE_COMPLETION_PENDING:
+        case MY_COMPOSE_COMPLETION_ACCEPTING_INTERNAL: return MY_COMPOSE_PENDING;
         case MY_COMPOSE_COMPLETION_CANCELLED: return MY_COMPOSE_CANCELLED;
         case MY_COMPOSE_COMPLETION_STALE: return MY_COMPOSE_STALE;
         default: return MY_COMPOSE_OVERLOAD;
     }
 }
 
+static int completion_raw_state(const MyComposeCompletionContext *completion) {
+    return atomic_load_explicit((atomic_int *)&completion->state,
+        memory_order_acquire);
+}
+
 static void completion_transition(MyComposeCompletionContext *completion,
     MyComposeCompletionState target) {
-    int current_delivery;
-    MyComposeStatus target_delivery = completion_delivery_from_state(target);
-    if (completion == NULL) return;
-    current_delivery = atomic_load_explicit(&completion->delivery,
-        memory_order_acquire);
+    int current;
+    if (completion == NULL || target == MY_COMPOSE_COMPLETION_ACCEPTED) return;
+    current = completion_raw_state(completion);
     for (;;) {
-        MyComposeCompletionState current =
-            completion_state_from_delivery(current_delivery);
         if (current == MY_COMPOSE_COMPLETION_ACCEPTED ||
             current == MY_COMPOSE_COMPLETION_CANCELLED ||
             current == MY_COMPOSE_COMPLETION_STALE ||
+            current == MY_COMPOSE_COMPLETION_ACCEPTING_INTERNAL ||
             (target == MY_COMPOSE_COMPLETION_RETRY &&
                 current == MY_COMPOSE_COMPLETION_RETRY)) {
             return;
         }
-        if (atomic_compare_exchange_weak_explicit(&completion->delivery,
-                &current_delivery, target_delivery, memory_order_acq_rel,
-                memory_order_acquire)) {
-            atomic_store_explicit(&completion->state, target, memory_order_release);
+        if (atomic_compare_exchange_weak_explicit(&completion->state, &current,
+                target, memory_order_acq_rel, memory_order_acquire)) {
             return;
         }
     }
+}
+
+static bool completion_begin_accept(MyComposeCompletionContext *completion) {
+    int current = completion_raw_state(completion);
+    for (;;) {
+        if (current != MY_COMPOSE_COMPLETION_PENDING &&
+            current != MY_COMPOSE_COMPLETION_RETRY) {
+            return false;
+        }
+        if (atomic_compare_exchange_weak_explicit(&completion->state, &current,
+                MY_COMPOSE_COMPLETION_ACCEPTING_INTERNAL, memory_order_acq_rel,
+                memory_order_acquire)) {
+            return true;
+        }
+    }
+}
+
+static void completion_finish_accept(MyComposeCompletionContext *completion,
+    MyComposeCompletionState target) {
+    int expected = MY_COMPOSE_COMPLETION_ACCEPTING_INTERNAL;
+    (void)atomic_compare_exchange_strong_explicit(&completion->state, &expected,
+        target, memory_order_acq_rel, memory_order_acquire);
 }
 
 MyComposeCompletionContext *my_compose_completion_ref(
@@ -144,16 +171,17 @@ void my_compose_completion_unref(MyComposeCompletionContext *completion) {
 
 MyComposeCompletionState my_compose_completion_state(
     const MyComposeCompletionContext *completion) {
+    int state;
     if (completion == NULL) return MY_COMPOSE_COMPLETION_STALE;
-    return completion_state_from_delivery(atomic_load_explicit(
-        (atomic_int *)&completion->delivery, memory_order_acquire));
+    state = completion_raw_state(completion);
+    return state == MY_COMPOSE_COMPLETION_ACCEPTING_INTERNAL ?
+        MY_COMPOSE_COMPLETION_PENDING : (MyComposeCompletionState)state;
 }
 
 MyComposeStatus my_compose_completion_delivery(
     const MyComposeCompletionContext *completion) {
     if (completion == NULL) return MY_COMPOSE_STALE;
-    return (MyComposeStatus)atomic_load_explicit(
-        (atomic_int *)&completion->delivery, memory_order_acquire);
+    return completion_delivery_from_state(completion_raw_state(completion));
 }
 
 void my_compose_completion_abandon(MyComposeCompletionContext *completion,
@@ -352,6 +380,7 @@ static MyComposeStatus prepare_completion(MyComposeStore *store,
         completion->completion.type = request->effect.type;
         completion->completion.payload_size = request->effect.payload_size;
         completion->completion.owner = request->effect.owner;
+        completion->completion.store_id = request->effect.store_id;
         completion->completion.store_generation = request->effect.store_generation;
         completion->completion.request_id = request->effect.request_id;
         completion->completion.delivery = MY_COMPOSE_OK;
@@ -360,8 +389,6 @@ static MyComposeStatus prepare_completion(MyComposeStore *store,
                 request->effect.payload_size);
         }
         completion->completion.payload = completion->payload;
-        atomic_store_explicit(&completion->delivery, MY_COMPOSE_PENDING,
-            memory_order_release);
         atomic_store_explicit(&completion->state, MY_COMPOSE_COMPLETION_PENDING,
             memory_order_release);
         if (request->terminal == MY_COMPOSE_STALE) {
@@ -392,18 +419,19 @@ static void async_deliver(void *opaque,
         completion_transition(completion, MY_COMPOSE_COMPLETION_STALE);
         return;
     }
+    if (!completion_begin_accept(completion)) return;
     delivered = completion->completion;
     delivered.result = result;
     delivered.delivery = MY_COMPOSE_OK;
     status = my_compose_store_complete(store, &delivered);
     if (status == MY_COMPOSE_OK) {
-        completion_transition(completion, MY_COMPOSE_COMPLETION_ACCEPTED);
+        completion_finish_accept(completion, MY_COMPOSE_COMPLETION_ACCEPTED);
     } else if (status == MY_COMPOSE_OVERLOAD || status == MY_COMPOSE_PENDING) {
-        completion_transition(completion, MY_COMPOSE_COMPLETION_RETRY);
+        completion_finish_accept(completion, MY_COMPOSE_COMPLETION_RETRY);
     } else if (status == MY_COMPOSE_STALE) {
-        completion_transition(completion, MY_COMPOSE_COMPLETION_STALE);
+        completion_finish_accept(completion, MY_COMPOSE_COMPLETION_STALE);
     } else {
-        completion_transition(completion, MY_COMPOSE_COMPLETION_CANCELLED);
+        completion_finish_accept(completion, MY_COMPOSE_COMPLETION_CANCELLED);
     }
 }
 
@@ -413,6 +441,10 @@ MyComposeStatus my_compose_completion_post(
     MyComposeCompletionState state;
     MyComposeStatus status;
     if (completion == NULL) return MY_COMPOSE_INVALID;
+    if (completion_raw_state(completion) ==
+        MY_COMPOSE_COMPLETION_ACCEPTING_INTERNAL) {
+        return MY_COMPOSE_PENDING;
+    }
     state = my_compose_completion_state(completion);
     if (state == MY_COMPOSE_COMPLETION_ACCEPTED) return MY_COMPOSE_STALE;
     if (state == MY_COMPOSE_COMPLETION_STALE) return MY_COMPOSE_STALE;
@@ -550,6 +582,7 @@ static MyComposeStatus reduce_one(MyComposeStore *store) {
             request->effect.payload_size);
         request->effect.payload = request->payload;
         request->effect.owner = intent->owner;
+        request->effect.store_id = store->store_id;
         request->effect.store_generation = store->generation;
         request->effect.request_id = store->next_request_id++;
         store->outbox[(store->outbox_head + store->outbox_count) %
@@ -588,6 +621,12 @@ MyComposeStore *my_compose_store_create(const void *initial_state,
         return NULL;
     }
     atomic_init(&store->completion_pool->references, 1u);
+    store->store_id = allocate_store_id();
+    if (store->store_id == 0u) {
+        pool_unref(store->completion_pool);
+        free(store);
+        return NULL;
+    }
     if (state_ops != NULL) store->state_ops = *state_ops;
     store->reducer_context = reducer_context;
     store->reducer = reducer;
@@ -690,6 +729,10 @@ MyComposeStatus my_compose_store_complete(MyComposeStore *store,
         store->diagnostics.stale_completions++;
         return MY_COMPOSE_STALE;
     }
+    if (completion->store_id != store->store_id) {
+        store->diagnostics.stale_completions++;
+        return MY_COMPOSE_STALE;
+    }
     if (completion->payload_size > MY_COMPOSE_MESSAGE_BYTES) {
         return MY_COMPOSE_OVERLOAD;
     }
@@ -708,7 +751,8 @@ MyComposeStatus my_compose_store_complete(MyComposeStore *store,
         store->diagnostics.stale_completions++;
         return MY_COMPOSE_STALE;
     }
-    if (completion->store_generation != store->generation ||
+    if (request->effect.store_id != store->store_id ||
+        completion->store_generation != store->generation ||
         request->effect.store_generation != store->generation ||
         completion->store_generation != request->effect.store_generation ||
         !owner_matches(completion->owner, request->effect.owner) ||
@@ -740,6 +784,7 @@ MyComposeStatus my_compose_store_complete(MyComposeStore *store,
         store->completion_count) % MY_COMPOSE_COMPLETION_CAPACITY];
     memset(stored, 0, sizeof(*stored));
     stored->completion = *completion;
+    stored->completion.store_id = request->effect.store_id;
     stored->completion.store_generation = request->effect.store_generation;
     stored->completion.owner = request->effect.owner;
     stored->completion.request_id = request->effect.request_id;
@@ -816,7 +861,8 @@ static MyComposeStatus reduce_step(MyComposeStore *store,
         store->completion_head = (store->completion_head + 1u) %
             MY_COMPOSE_COMPLETION_CAPACITY;
         store->completion_count--;
-        if (completion.completion.store_generation != store->generation ||
+        if (completion.completion.store_id != store->store_id ||
+            completion.completion.store_generation != store->generation ||
             owner_status(store, completion.completion.owner) != MY_COMPOSE_OK) {
             store->diagnostics.stale_completions++;
             continue;
@@ -894,6 +940,10 @@ MyComposeStatus my_compose_store_dispatch_effects(MyComposeStore *store) {
         if (store->executor == NULL) return MY_COMPOSE_INVALID;
         if (request->completion == NULL) {
             status = prepare_completion(store, request);
+            if (status == MY_COMPOSE_OVERLOAD) {
+                sync_diagnostics(store);
+                return MY_COMPOSE_PENDING;
+            }
             if (status != MY_COMPOSE_OK) {
                 store->outbox_head = (store->outbox_head + 1u) %
                     MY_COMPOSE_EFFECT_CAPACITY;

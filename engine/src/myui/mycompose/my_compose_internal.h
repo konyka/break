@@ -180,6 +180,7 @@ struct MyComposeStore {
     uint32_t request_count;
     uint32_t outstanding_count;
     MyComposeOwner owners[MY_COMPOSE_MAX_NODES];
+    uint64_t store_id;
     uint32_t generation;
     uint64_t next_request_id;
     struct MyComposeCompletionPool *completion_pool;

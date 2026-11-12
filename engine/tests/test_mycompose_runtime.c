@@ -308,6 +308,7 @@ TEST(completions_keep_fifo_and_result_across_runtime_pumps) {
         ASSERT_EQ(my_compose_runtime_pump(fixture.runtime), MY_COMPOSE_OK);
         memset(&completion, 0, sizeof(completion));
         completion.request_id = fixture.effects[i].request_id;
+        completion.store_id = fixture.effects[i].store_id;
         completion.store_generation = fixture.effects[i].store_generation;
         completion.owner = fixture.effects[i].owner;
         completion.type = COMPLETION_INTENT;
@@ -352,6 +353,7 @@ TEST(restart_recycles_outstanding_and_rejects_old_completion) {
     ASSERT_EQ(my_compose_runtime_pump(fixture.runtime), MY_COMPOSE_OK);
     memset(&completion, 0, sizeof(completion));
     completion.request_id = fixture.effects[0].request_id;
+    completion.store_id = fixture.effects[0].store_id;
     completion.store_generation = fixture.effects[0].store_generation;
     completion.owner = fixture.effects[0].owner;
     completion.delivery = MY_COMPOSE_OK;

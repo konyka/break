@@ -245,6 +245,7 @@ static MyComposeCompletion completion_for(const MyComposeEffect *effect,
     MyComposeCompletion completion;
     memset(&completion, 0, sizeof(completion));
     completion.request_id = effect->request_id;
+    completion.store_id = effect->store_id;
     completion.store_generation = effect->store_generation;
     completion.owner = effect->owner;
     completion.type = INTENT_COMPLETION;
@@ -261,6 +262,7 @@ static void seed_outstanding_for_full_completion(Fixture *fixture) {
     request->used = true;
     request->location = MY_COMPOSE_REQUEST_OUTSTANDING;
     request->effect.type = INTENT_COMPLETION;
+    request->effect.store_id = fixture->store->store_id;
     request->effect.store_generation = fixture->store->generation;
     request->effect.request_id = 1000u;
     request->effect.owner = no_owner();
@@ -852,6 +854,7 @@ TEST(completion_overload_preserves_outstanding_and_retry_drains_33_in_fifo) {
     MyComposeEffect extra;
     memset(&extra, 0, sizeof(extra));
     extra.request_id = 1000u;
+    extra.store_id = fixture.store->store_id;
     extra.store_generation = fixture.store->generation;
     extra.owner = no_owner();
     uint8_t extra_payload = 32u;

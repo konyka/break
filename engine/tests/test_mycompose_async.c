@@ -285,18 +285,25 @@ TEST(completion_roundtrip_enters_store_only_from_ui_command) {
     Fixture fixture;
     PostWorker worker;
     TestThread thread;
+    MyComposeCompletionContext *accepted;
     ASSERT_TRUE(fixture_init(&fixture));
     ASSERT_EQ(my_compose_runtime_pump(fixture.runtime), MY_COMPOSE_OK);
     ASSERT_EQ(dispatch_intent(&fixture, EFFECT_INTENT, 3u), MY_COMPOSE_OK);
     ASSERT_EQ(my_compose_runtime_pump(fixture.runtime), MY_COMPOSE_OK);
     ASSERT_EQ(fixture.executor_calls, 1u);
     ASSERT_NOT_NULL(fixture.effect.completion);
+    accepted = my_compose_completion_ref(fixture.effect.completion);
+    ASSERT_NOT_NULL(accepted);
     start_post_worker(&fixture, &worker, &thread, 77u);
     wait_for_flag(&worker.posted);
     ASSERT_EQ(atomic_load(&worker.post_status), MY_COMPOSE_OK);
     ASSERT_EQ(my_pal_main_loop_pump_n(fixture.loop, 1u), 1u);
     test_thread_join(&thread);
     ASSERT_EQ(atomic_load(&worker.final_state), MY_COMPOSE_COMPLETION_ACCEPTED);
+    my_compose_completion_abandon(accepted, MY_COMPOSE_CANCELLED);
+    ASSERT_EQ(my_compose_completion_state(accepted), MY_COMPOSE_COMPLETION_ACCEPTED);
+    ASSERT_EQ(my_compose_completion_delivery(accepted), MY_COMPOSE_OK);
+    my_compose_completion_unref(accepted);
     ASSERT_EQ(my_compose_store_diagnostics(fixture.store)->queued_completions, 1u);
     ASSERT_EQ(my_compose_runtime_pump(fixture.runtime), MY_COMPOSE_OK);
     ASSERT_EQ(fixture.completed_result, 77u);
@@ -315,6 +322,7 @@ TEST(worker_direct_store_complete_is_rejected_by_owner_thread_guard) {
     memset(&worker, 0, sizeof(worker));
     worker.store = fixture.store;
     worker.completion.request_id = fixture.effect.request_id;
+    worker.completion.store_id = fixture.effect.store_id;
     worker.completion.store_generation = fixture.effect.store_generation;
     worker.completion.owner = fixture.effect.owner;
     worker.completion.type = COMPLETION_INTENT;
@@ -397,6 +405,7 @@ static void seed_full_completions(Fixture *fixture) {
         MyComposeStoredCompletion *stored = &fixture->store->completions[i];
         memset(stored, 0, sizeof(*stored));
         stored->completion.type = COMPLETION_INTENT;
+        stored->completion.store_id = fixture->store->store_id;
         stored->completion.store_generation = fixture->store->generation;
         stored->completion.delivery = MY_COMPOSE_OK;
     }
@@ -491,6 +500,50 @@ TEST(post_failure_abandon_reaps_once_even_with_pending_view) {
     fixture_destroy(&fixture);
 }
 
+TEST(queued_command_abandon_before_execute_never_enters_store) {
+    Fixture fixture;
+    PostWorker worker;
+    TestThread thread;
+    MyComposeCompletionContext *completion;
+    MyComposeCompletionState final_state;
+    MyComposeStatus final_delivery;
+    uint32_t queued;
+    uint32_t outstanding;
+    uint32_t request_count;
+    uint32_t reducers;
+    uint64_t recycled;
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_EQ(my_compose_runtime_pump(fixture.runtime), MY_COMPOSE_OK);
+    ASSERT_EQ(dispatch_intent(&fixture, EFFECT_INTENT, 6u), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_runtime_pump(fixture.runtime), MY_COMPOSE_OK);
+    completion = my_compose_completion_ref(fixture.effect.completion);
+    ASSERT_NOT_NULL(completion);
+    start_post_worker(&fixture, &worker, &thread, 106u);
+    wait_for_flag(&worker.posted);
+    ASSERT_EQ(atomic_load(&worker.post_status), MY_COMPOSE_OK);
+    my_compose_completion_abandon(completion, MY_COMPOSE_CANCELLED);
+    ASSERT_EQ(my_pal_main_loop_pump_n(fixture.loop, 1u), 1u);
+    test_thread_join(&thread);
+    final_state = my_compose_completion_state(completion);
+    final_delivery = my_compose_completion_delivery(completion);
+    queued = my_compose_store_diagnostics(fixture.store)->queued_completions;
+    outstanding = my_compose_store_diagnostics(fixture.store)->outstanding_effects;
+    my_compose_store_reap(fixture.store);
+    request_count = my_compose_store_diagnostics(fixture.store)->request_count;
+    recycled = my_compose_store_diagnostics(fixture.store)->recycled_requests;
+    ASSERT_EQ(my_compose_runtime_pump(fixture.runtime), MY_COMPOSE_OK);
+    reducers = fixture.reducer_calls;
+    my_compose_completion_unref(completion);
+    fixture_destroy(&fixture);
+    ASSERT_EQ(final_state, MY_COMPOSE_COMPLETION_CANCELLED);
+    ASSERT_EQ(final_delivery, MY_COMPOSE_CANCELLED);
+    ASSERT_EQ(queued, 0u);
+    ASSERT_EQ(outstanding, 1u);
+    ASSERT_EQ(request_count, 0u);
+    ASSERT_EQ(recycled, 1u);
+    ASSERT_EQ(reducers, 1u);
+}
+
 TEST(queued_command_close_has_cancelled_final_delivery) {
     Fixture fixture;
     PostWorker worker;
@@ -558,6 +611,116 @@ TEST(owner_invalidate_makes_retained_completion_stale_and_recycles_once) {
     ASSERT_EQ(my_compose_store_diagnostics(fixture.store)->recycled_requests, 1u);
     my_compose_completion_unref(completion);
     fixture_destroy(&fixture);
+}
+
+TEST(held_accepted_contexts_backpressure_preserves_outbox_until_release) {
+    Fixture fixture;
+    PostWorker worker;
+    TestThread thread;
+    MyComposeCompletionContext *held[MY_COMPOSE_EFFECT_CAPACITY];
+    MyComposeStatus saturated_status;
+    MyComposeStatus recovered_status;
+    uint32_t saturated_outbox;
+    uint32_t saturated_requests;
+    uint32_t saturated_executors;
+    uint32_t recovered_executors;
+    uint64_t recovered_request_id;
+    memset(held, 0, sizeof(held));
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_EQ(my_compose_runtime_pump(fixture.runtime), MY_COMPOSE_OK);
+    for (uint32_t i = 0u; i < MY_COMPOSE_EFFECT_CAPACITY; ++i) {
+        ASSERT_EQ(dispatch_intent(&fixture, EFFECT_INTENT, i + 1u), MY_COMPOSE_OK);
+        ASSERT_EQ(my_compose_runtime_pump(fixture.runtime), MY_COMPOSE_OK);
+        held[i] = my_compose_completion_ref(fixture.effect.completion);
+        ASSERT_NOT_NULL(held[i]);
+        start_post_worker(&fixture, &worker, &thread, 200u + i);
+        wait_for_flag(&worker.posted);
+        ASSERT_EQ(my_pal_main_loop_pump_n(fixture.loop, 1u), 1u);
+        test_thread_join(&thread);
+        ASSERT_EQ(atomic_load(&worker.final_state), MY_COMPOSE_COMPLETION_ACCEPTED);
+        ASSERT_EQ(my_compose_completion_delivery(held[i]), MY_COMPOSE_OK);
+    }
+    ASSERT_EQ(my_compose_store_diagnostics(fixture.store)->request_count, 0u);
+    ASSERT_EQ(dispatch_intent(&fixture, EFFECT_INTENT, 33u), MY_COMPOSE_OK);
+    saturated_status = my_compose_runtime_pump(fixture.runtime);
+    saturated_outbox = my_compose_store_diagnostics(fixture.store)->outbox_effects;
+    saturated_requests = my_compose_store_diagnostics(fixture.store)->request_count;
+    saturated_executors = fixture.executor_calls;
+    my_compose_completion_unref(held[0]);
+    held[0] = NULL;
+    recovered_status = my_compose_runtime_pump(fixture.runtime);
+    recovered_executors = fixture.executor_calls;
+    recovered_request_id = fixture.effect.request_id;
+    for (uint32_t i = 0u; i < MY_COMPOSE_EFFECT_CAPACITY; ++i) {
+        my_compose_completion_unref(held[i]);
+    }
+    fixture_destroy(&fixture);
+    ASSERT_EQ(saturated_status, MY_COMPOSE_PENDING);
+    ASSERT_EQ(saturated_outbox, 1u);
+    ASSERT_EQ(saturated_requests, 1u);
+    ASSERT_EQ(saturated_executors, 32u);
+    ASSERT_EQ(recovered_status, MY_COMPOSE_OK);
+    ASSERT_EQ(recovered_executors, 33u);
+    ASSERT_EQ(recovered_request_id, 33u);
+}
+
+TEST(cross_store_same_id_outstanding_rejects_foreign_completion) {
+    Fixture first;
+    Fixture second;
+    MyComposeIntent intent;
+    MyComposeCompletion completion;
+    MyComposeNodeHandle owner = {2u, 1u};
+    uint32_t value = 12u;
+    MyComposeStatus wrong_status;
+    MyComposeStatus correct_status;
+    uint32_t second_queued;
+    uint32_t second_outstanding;
+    uint32_t second_reducers;
+    ASSERT_TRUE(fixture_init(&first));
+    ASSERT_TRUE(fixture_init(&second));
+    ASSERT_EQ(my_compose_runtime_pump(first.runtime), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_runtime_pump(second.runtime), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_store_register_owner(first.store, owner), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_store_register_owner(second.store, owner), MY_COMPOSE_OK);
+    memset(&intent, 0, sizeof(intent));
+    intent.type = EFFECT_INTENT;
+    intent.owner = owner;
+    intent.payload = (const uint8_t *)&value;
+    intent.payload_size = sizeof(value);
+    ASSERT_EQ(my_compose_store_dispatch(first.store, &intent), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_store_dispatch(second.store, &intent), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_runtime_pump(first.runtime), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_runtime_pump(second.runtime), MY_COMPOSE_OK);
+    ASSERT_EQ(first.effect.request_id, second.effect.request_id);
+    ASSERT_EQ(first.effect.store_generation, second.effect.store_generation);
+    ASSERT_EQ(first.effect.owner.index, second.effect.owner.index);
+    ASSERT_EQ(first.effect.owner.generation, second.effect.owner.generation);
+    ASSERT_TRUE(first.effect.store_id != second.effect.store_id);
+    ASSERT_EQ(first.effect.store_id, first.store->store_id);
+    memset(&completion, 0, sizeof(completion));
+    completion.request_id = first.effect.request_id;
+    completion.store_id = first.effect.store_id;
+    completion.store_generation = first.effect.store_generation;
+    completion.owner = first.effect.owner;
+    completion.type = COMPLETION_INTENT;
+    completion.result = 105u;
+    completion.delivery = MY_COMPOSE_OK;
+    wrong_status = my_compose_store_complete(second.store, &completion);
+    second_queued = my_compose_store_diagnostics(second.store)->queued_completions;
+    second_outstanding =
+        my_compose_store_diagnostics(second.store)->outstanding_effects;
+    correct_status = my_compose_store_complete(first.store, &completion);
+    ASSERT_EQ(my_compose_runtime_pump(second.runtime), MY_COMPOSE_OK);
+    second_reducers = second.reducer_calls;
+    ASSERT_EQ(my_compose_runtime_pump(first.runtime), MY_COMPOSE_OK);
+    ASSERT_EQ(first.completed_result, 105u);
+    fixture_destroy(&second);
+    fixture_destroy(&first);
+    ASSERT_EQ(wrong_status, MY_COMPOSE_STALE);
+    ASSERT_EQ(second_queued, 0u);
+    ASSERT_EQ(second_outstanding, 1u);
+    ASSERT_EQ(second_reducers, 1u);
+    ASSERT_EQ(correct_status, MY_COMPOSE_OK);
 }
 
 TEST(thirty_two_async_abandons_recover_request_capacity_exactly_once) {
@@ -676,6 +839,7 @@ TEST(click_effect_outliving_deleted_owner_is_stale_in_both_stores) {
     ASSERT_EQ(my_compose_myui_pump(second.adapter, second.runtime), MY_COMPOSE_OK);
     memset(&completion, 0, sizeof(completion));
     completion.request_id = fixture.effect.request_id;
+    completion.store_id = fixture.effect.store_id;
     completion.store_generation = fixture.effect.store_generation;
     completion.owner = fixture.effect.owner;
     completion.type = COMPLETION_INTENT;
@@ -696,9 +860,12 @@ RUN_TEST(worker_direct_store_dispatch_is_rejected_by_owner_thread_guard);
 RUN_TEST(queue_full_retry_after_plain_runtime_destroy_is_not_accepted);
 RUN_TEST(queue_full_retry_after_window_close_is_not_accepted);
 RUN_TEST(post_failure_abandon_reaps_once_even_with_pending_view);
+RUN_TEST(queued_command_abandon_before_execute_never_enters_store);
 RUN_TEST(queued_command_close_has_cancelled_final_delivery);
 RUN_TEST(restart_cancels_retained_completion_before_worker_retry);
 RUN_TEST(owner_invalidate_makes_retained_completion_stale_and_recycles_once);
+RUN_TEST(held_accepted_contexts_backpressure_preserves_outbox_until_release);
+RUN_TEST(cross_store_same_id_outstanding_rejects_foreign_completion);
 RUN_TEST(thirty_two_async_abandons_recover_request_capacity_exactly_once);
 RUN_TEST(runtime_pump_rejects_non_owner_thread);
 RUN_TEST(myui_pump_uses_independent_adapter_contexts);
