@@ -696,7 +696,7 @@ test("checksum = b64(6-byte time) + machineId", () => {
   // floor(now/1e6) 手工算:选 now = 1_800_000_000_000 -> 1_800_000
   const c = computeChecksum("MID", undefined, 1_800_000_000_000);
   expect(c.startsWith("MID")).toBe(false);
-  const timeB64 = Buffer.from([0, 0x1b, 0x59, 0x8a, 0x40, 0x00]).toString("base64"); // 1800000
+  const timeB64 = Buffer.from([0x00, 0x00, 0x1b, 0x77, 0x40, 0x00]).toString("base64"); // 1800000 的 6 字节 big-endian
   expect(c).toBe(timeB64 + "MID");
   expect(computeChecksum("MID", "MAC", 1_800_000_000_000)).toBe(timeB64 + "MID/MAC");
 });
@@ -837,7 +837,7 @@ export class CursorAiClient {
 }
 ```
 
-占位 `__REQ_MODELS__` 等常量在 Task 1 后由 `scripts/gen-descriptors.mjs` 写入 `src/pb/descriptors.ts` 顶部导出（`export const REQ_MODELS = "aiserver.v1.AvailableModelsRequest"` 之类），此处 import 使用。
+`src/pb/descriptors.ts` 顶部导出消息名常量(如 `export const REQ_MODELS = "aiserver.v1.StreamChatTryReallyHardRequest"`,真实值以 fixtures 为准),client.ts 从 `../pb/descriptors.js` 导入 `DESCRIPTORS` 与这些常量(`runtime.ts` 不导出 DESCRIPTORS)。
 
 翻译层 `src/ai/translate.ts`:`toStreamChatRpc`(OpenAI messages→RPC；工具调用字段若 protocol.md 标记可选则 v1 先透传文本 + basic tool 结构）、`fromStreamChatRpcEvent`(RPC 事件→统一 ChatEvent)。纯函数，测试覆盖：给定 OpenAI 请求对象，断言 RPC 请求对象字段与 protocol.md 一致；给定 fixture 响应帧（Task 1 抓的真实 hex)，断言产出的 ChatEvent 序列。
 
@@ -869,6 +869,8 @@ git add -A && git commit -m "feat: cursor ai client (connect transport, checksum
   - `GET /v1/models` → `{ object: "list", data: [{ id, object: "model", created: 0, owned_by: "cursor" }] }`，缓存 TTL 默认 10 分钟；未知模型名触发一次即时刷新（命中缓存则 200，否则 404 上游错误透传）。
   - `POST /v1/chat/completions` — 请求体 OpenAI ChatCompletion 参数（`model/messages/stream/tools/temperature/max_tokens`)；响应 `stream:true` 时输出 SSE:`data: {chunk}\n\n` + `data: [DONE]`;`stream:false` 时聚合为完整 JSON。无 `stream` 字段默认 true（Kimi Code 全流式）。
   - `GET /api.json` → registry 文档（格式见 plan Global Constraints 第 5 条）:`providers.cursor = { id: "cursor", name: "Cursor (cursor-bridge)", api: "http://127.0.0.1:42137/v1", type: "openai", models: {...} }`。模型元数据：name 用模型 id;`tool_call: true`;reasoning 按模型名前缀（`claude-3-7|claude-4|o1|o3|gpt-5|gemini` → true);`limit.context` 按 protocol.md 的模型表（无则省略，不编造）。
+
+`src/server/registry.ts` 额外导出 `toRegistryModels(modelNames: string[]): RegistryModel[]`(生成 Task 5 格式的模型条目:tool_call 恒 true,reasoning 按前缀 `claude-3-7|claude-4|o1|o3|gpt-5|gemini` 判定,name 用模型 id)。Task 8 的 cli.ts 从 `./server/models.js` 导入 `ModelCache`、从 `./auth/orchestrator.js` 额外导入 `isJwtExpired`。
 
 - [ ] **Step 1: 写失败测试**
 
