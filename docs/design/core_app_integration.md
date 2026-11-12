@@ -22,13 +22,27 @@ Core App nested 测试现在传递父配置的有效后端与非空真实 `Vulka
 
 reserved-manifest-alias 用例不再于 writer 调用前预写 alias payload。POSIX 使用 `link` 与 `stat` 的 device/inode 身份检查覆盖真实文件别名，保留调用前哈希并增加完整 manifest 字节比较；`BREAK_RUNTIME_INVALID`、probe 成功和原 `runtime_1.bin` 断言均保留，checkpoint writer 未修改。原生 APFS 的修复后 assets 为 17/17。独立变异 run `43004881342` 的 macOS job `130469756286` 恢复旧预写后在同一旧哈希断言处得到 16 PASS＋1 FAIL，验证了原生 RED 与恢复 GREEN 的因果关系。Windows 与 D3D12 的剩余失败不在这两节中宣称已修复。
 
-## Windows 进程启动与资产检出（2026-11-11）
+## 合并前历史：Windows 进程启动与资产检出（2026-11-11）
+
+本节仅保留合并前方案与当时证据，完整命令外层引用和 generic binary 均不是最终实现。
 
 Windows 测试启动 baker 时，`system()` 的完整命令在 `_WIN32` 下使用 `""<exe>" --output "<output>""`，exe 与输出路径分别引用，完整字符串再包一层引号；非 Windows 保留原格式。原始格式和反斜杠变体在真实 probe 中失败，完整命令外层引用成功并生成 `level.bscn`，因此未采用无空格路径才能工作的无引号方案。原始返回、A/B 短路与诊断保持原合同。baker 生成、PAL、序列化和公共 API 未因此改变。
 
 正式资产使用 `engine/assets/core_app/* binary`，避免 Git 在 Windows checkout 将文本 LF 改写为 CRLF。原生哈希证明七个文本文件曾被逐行增加一个字节，而 BSCN/BANM/FG/WAV 与 baker 完全一致；未通过归一化或重写资产掩盖差异。`test_core_app_checkout_attributes` 对全部 11 个正式资产执行真实 `git check-attr`，悬空 `.git` symlink 在 `rev-parse` 失败时必须 FAIL，只有真实无元数据或 Git 工具缺失才允许明确 UNVERIFIED。
 
 原生 run `43041968171` 的 Windows job `130595842235` 实际得到 direct baker 退出 0、assets **16/16**、完整 diagnostics 通过，probe outcome/final gate 为 success；macOS job `130595841519` 也通过。当前本机非图形为 **357 项入选、353 PASS、4 个文档化 SKIP、0 FAIL**，所有构建和并行 CTest 使用 `-j3`。D3D12 compat 的 generator/`-C` 配置与真实 Agility 归档暂存仍按独立计划执行，sanitizer、no-tests、fuzz 和最终 master CI 不在本节中宣称完成。
+
+## 最终同步行为与验收记录（2026-11-12）
+
+最终实现中，Windows 以 `_spawnv(_P_WAIT)` 直接启动真实 baker，executable 与 output 参数分别按 CRT 规则引用，并保留 A/B slot、`launch.command` 与原始 `launch.spawnv` 返回诊断；POSIX 仍使用 `system()` 和 `launch.system`。七个文本资产分别由 Lua、scenario、actors.sidecar 规则指定 `text eol=lf`，`level.banm`、`level.bscn`、`level.fg`、`tone.wav` 四个二进制资产显式指定 `binary`。checkout 合同对全部 11 个资产逐一执行真实 `git check-attr -a` 分类检查，不再采用 generic binary。
+
+控制器提供的原生 run `43138732673` 记录 direct baker 退出 0、assets **17/17**、完整 diagnostics 与最终 gate success；Windows job `130920254174` 和 macOS job `130920254617` 均成功。原生 run `43138732792` 的 job `130920254336` 记录 compat **1/1**、WARP runtime **1/1**，push-constant gate、Agility deployment 和七个 D3D12-labelled 测试均在 WARP runner 上通过。WARP 是软件光栅化证据，不是独立显卡或真实 GPU 驱动证明。
+
+原始 `43138732792` 日志没有直接显示 `D3D12Core.dll missing` 文本，因此后续仅在临时 validation 分支增加受真实断言门控的证据输出。独立临时提交 `73e1e267` 的 run `43150345368`、job `130957761304` 现已明确记录 `D3D12Core.dll missing rejected; restored; SHA-256 verified`，八个嵌套夹具无未运行项，compat **1/1**、WARP runtime **1/1** 和 Agility 部署通过；CPU run `43150345348` 的 Windows/macOS 均成功。临时辅助实现及其 workflow 不合入 master，WARP 仍不是独立显卡证明。最终交付提交的 Windows/D3D12 复跑仍由 controller 验收。
+
+终审修复 `253ce949` 的普通与 ASan+UBSan `detect_leaks=1` 非图形均为 **358 selected、354 PASS、4 个文档化 SKIP、0 FAIL**；TSan focused 为 7/7、assets 为 23/23，no-tests 完整构建通过且注册测试为 0，五个显式 fuzz smoke 全部通过。`45fe548d` 仅修改 CMake 测试脚本，使 intentional no-NM 真实传播到 archived configure，并在实际验证后转发 SKIP 证据；其完整普通非图形同为 358/354/4/0。两项 scoped 复审均 PASS，无遗留 Critical/Important。所有构建和并行 CTest 使用 `-j3`；完整命令、RED/GREEN、变异和既有 Lua `tmpnam` 警告另记于 final-review-fix-report。
+
+第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入、256 项音频 FIFO/过载/drain recovery、Flow player identity 与 exec-link source-port 永久断言仍留在后续台账；Compose 和 P12 Task 4–13 不在本批次中宣称实现。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 

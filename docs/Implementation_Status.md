@@ -2,7 +2,9 @@
 
 - 最终实现由 Windows `_spawnv(_P_WAIT)` 直接启动真实 baker，executable/output 参数按 CRT 规则引用，并保留 `run_baker(output, slot)`、`launch.command` 与原始 `launch.spawnv` 诊断；POSIX 仍使用原 `system()` 和 `launch.system`。A/B 短路、长度失败、11 资产逐字节比较与含空格输出目录回归均保留，空格用例使用 `"space"` 诊断 slot。
 - 最终检出规则对 Lua、scenario、actors.sidecar 使用 `text eol=lf`，对 level.banm、level.bscn、level.fg、tone.wav 使用显式 `binary`；generic `engine/assets/core_app/* binary` 不再是现行实现。合同逐一执行真实 `git check-attr -a`，资产字节和比较方式不变。
-- 下文的完整命令外层引用与 generic binary 均仅作合并前历史证据，不与上述最终实现并存。远程 WGL/Python 记录和本分支诊断记录均保留；compat fixture 与 Task 1 配置传播未修改。原生 controller CI 和最终 always-on compat gate 仍待独立验收，本条目不预先声称原生通过。
+- 下文的完整命令外层引用与 generic binary 均仅作合并前历史证据，不与上述最终实现并存。远程 WGL/Python 记录和本分支诊断记录均保留。终审修复 `253ce949` 使 formal/naming 对悬空 `.git` fail-closed，并补充真实归档 nested、失败路径清理和文档边界；`45fe548d` 保留 intentional no-NM 的真实 SKIP 证据。两项 scoped 复审均 PASS，无遗留 Critical/Important。
+- 最终普通非图形为 **358 项入选、354 PASS、4 个文档化 SKIP、0 FAIL**；ASan+UBSan `detect_leaks=1` 同为 358/354/4/0，TSan focused 7/7、assets 23/23、no-tests 构建成功且注册 0 项、显式 fuzz 5/5。所有构建和并行 CTest 使用 `-j3`；既有 Lua `tmpnam` 链接警告仍如实保留。
+- 独立临时 validation 提交 `73e1e267` 的原生 run `43150345368`、job `130957761304` 明确记录 `D3D12Core.dll missing rejected; restored; SHA-256 verified`，八个嵌套夹具无未运行项，compat 1/1、WARP runtime 1/1 与 Agility 部署通过；CPU run `43150345348` 的 Windows/macOS 均成功。WARP 不是独立显卡证明，临时辅助实现不合入 master。最终交付提交的 Windows/D3D12 复跑与主 CI 仍由 controller 验收，本条目不提前宣称完成。
 
 ## 合并前历史：Core App Windows 启动与资产检出修复（2026-11-11）
 

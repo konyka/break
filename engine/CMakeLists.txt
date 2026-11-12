@@ -4805,6 +4805,11 @@ endif()
         COMMAND ${CMAKE_COMMAND}
             -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
             -DCHECKOUT_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_checkout_attributes.cmake
+            -DFORMAL_ASSET_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_formal_assets.cmake
+            -DNAMING_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_naming_contract.cmake
+            -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DPLAN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/superpowers/plans/2026-11-03-core-app-integration.md
+            -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/core_app_integration.md
             -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_checkout_dangling
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_checkout_attributes_dangling.cmake)
@@ -4845,6 +4850,8 @@ endif()
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
                 -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_compat
+                -DNM=${CMAKE_NM}
+                -DNM_CAPABLE=${_core_app_nm_capable}
                 "-DNESTED_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
                 "-DNESTED_CTEST_CONFIG=$<CONFIG>"
                 ${_core_app_nested_toolchain_defs}
@@ -4862,6 +4869,8 @@ endif()
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
                 -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_ctest_config_contract
+                -DNM=${CMAKE_NM}
+                -DNM_CAPABLE=${_core_app_nm_capable}
                 "-DNESTED_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
                 "-DNESTED_CTEST_CONFIG=$<CONFIG>"
                 ${_core_app_nested_toolchain_defs}

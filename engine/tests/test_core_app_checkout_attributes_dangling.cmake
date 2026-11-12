@@ -1,4 +1,5 @@
-foreach(var REPOSITORY_ROOT CHECKOUT_CONTRACT WORK)
+foreach(var REPOSITORY_ROOT CHECKOUT_CONTRACT FORMAL_ASSET_CONTRACT NAMING_CONTRACT
+        ENGINE_SOURCE_DIR PLAN_FILE DESIGN_FILE WORK)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required for the dangling .git regression")
     endif()
@@ -22,8 +23,11 @@ get_filename_component(repository_root "${REPOSITORY_ROOT}" ABSOLUTE)
 get_filename_component(work "${WORK}" ABSOLUTE)
 file(REMOVE_RECURSE "${work}")
 set(fixture "${work}/repository")
-file(MAKE_DIRECTORY "${fixture}")
+file(MAKE_DIRECTORY "${fixture}/engine" "${fixture}/docs/design")
 configure_file("${repository_root}/.gitattributes" "${fixture}/.gitattributes" COPYONLY)
+configure_file("${repository_root}/.gitignore" "${fixture}/.gitignore" COPYONLY)
+configure_file("${repository_root}/docs/design/editor_phase1.md"
+    "${fixture}/docs/design/editor_phase1.md" COPYONLY)
 
 set(missing_target "${work}/definitely-missing-git-target")
 file(CREATE_LINK "${missing_target}" "${fixture}/.git" SYMBOLIC
@@ -37,30 +41,57 @@ if(NOT IS_SYMLINK "${fixture}/.git" OR EXISTS "${fixture}/.git")
 endif()
 message(STATUS "Dangling .git fixture confirmed: IS_SYMLINK=TRUE EXISTS=FALSE")
 
-execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E env
-        "GIT_CEILING_DIRECTORIES=${repository_root}"
-        "${CMAKE_COMMAND}"
-        "-DREPOSITORY_ROOT=${fixture}"
-        "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
-        -P "${CHECKOUT_CONTRACT}"
-    RESULT_VARIABLE contract_result
-    OUTPUT_VARIABLE contract_output
-    ERROR_VARIABLE contract_error)
-set(contract_log "${contract_output}${contract_error}")
-if("${contract_result}" STREQUAL "0")
-    message(FATAL_ERROR "dangling .git metadata unexpectedly passed: ${contract_log}")
+set_property(GLOBAL PROPERTY CORE_APP_DANGLING_ERRORS "")
+function(run_dangling_contract name contract)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "GIT_CEILING_DIRECTORIES=${repository_root}"
+            "${CMAKE_COMMAND}" ${ARGN}
+            "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+            -P "${contract}"
+        RESULT_VARIABLE contract_result
+        OUTPUT_VARIABLE contract_output
+        ERROR_VARIABLE contract_error)
+    set(contract_log "${contract_output}${contract_error}")
+    set(contract_failure "")
+    if("${contract_result}" STREQUAL "0")
+        string(APPEND contract_failure
+            "${name}: dangling .git metadata unexpectedly passed\n${contract_log}\n")
+    elseif("${contract_result}" STREQUAL "77")
+        string(APPEND contract_failure
+            "${name}: dangling .git metadata returned skip code 77\n${contract_log}\n")
+    endif()
+    foreach(token IN ITEMS "UNVERIFIED:" "CORE_APP_TRACKING_UNVERIFIED")
+        string(FIND "${contract_log}" "${token}" token_position)
+        if(NOT token_position EQUAL -1)
+            string(APPEND contract_failure
+                "${name}: dangling .git metadata printed ${token}\n${contract_log}\n")
+        endif()
+    endforeach()
+    string(FIND "${contract_log}" "git rev-parse --git-dir failed:" failure_position)
+    if(failure_position EQUAL -1)
+        string(APPEND contract_failure
+            "${name}: dangling .git metadata failed for an unexpected reason\n${contract_log}\n")
+    endif()
+    if(contract_failure)
+        get_property(errors GLOBAL PROPERTY CORE_APP_DANGLING_ERRORS)
+        string(APPEND errors "${contract_failure}")
+        set_property(GLOBAL PROPERTY CORE_APP_DANGLING_ERRORS "${errors}")
+    else()
+        message(STATUS "${name}: dangling .git metadata failed without UNVERIFIED as required")
+    endif()
+endfunction()
+
+run_dangling_contract(checkout "${CHECKOUT_CONTRACT}"
+    "-DREPOSITORY_ROOT=${fixture}")
+run_dangling_contract(formal_assets "${FORMAL_ASSET_CONTRACT}"
+    "-DENGINE_SOURCE_DIR=${fixture}/engine")
+run_dangling_contract(naming "${NAMING_CONTRACT}"
+    "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
+    "-DREPOSITORY_ROOT=${fixture}"
+    "-DPLAN_FILE=${PLAN_FILE}"
+    "-DDESIGN_FILE=${DESIGN_FILE}")
+get_property(errors GLOBAL PROPERTY CORE_APP_DANGLING_ERRORS)
+if(errors)
+    message(FATAL_ERROR "dangling .git contract failures:\n${errors}")
 endif()
-if("${contract_result}" STREQUAL "77")
-    message(FATAL_ERROR "dangling .git metadata returned skip code 77: ${contract_log}")
-endif()
-string(FIND "${contract_log}" "UNVERIFIED:" unverified_position)
-if(NOT unverified_position EQUAL -1)
-    message(FATAL_ERROR "dangling .git metadata printed UNVERIFIED: ${contract_log}")
-endif()
-string(FIND "${contract_log}" "git rev-parse --git-dir failed:" failure_position)
-if(failure_position EQUAL -1)
-    message(FATAL_ERROR
-        "dangling .git metadata failed for an unexpected reason: ${contract_log}")
-endif()
-message(STATUS "Dangling .git metadata failed without UNVERIFIED as required")
