@@ -2,6 +2,7 @@
 #define MY_COMPOSE_INTERNAL_H
 
 #include <myui/mycompose/my_compose_remember.h>
+#include <myui/mycompose/my_compose_store.h>
 #include <myui/mycompose/my_compose_tree.h>
 
 #include <stdbool.h>
@@ -119,6 +120,74 @@ struct MyComposeTreeBuilder {
     MyComposeDiff diff;
     MyComposeBuildState state;
 };
+
+typedef union MyComposeStateStorage {
+    max_align_t alignment;
+    uint8_t bytes[MY_COMPOSE_STATE_BYTES];
+} MyComposeStateStorage;
+
+typedef struct MyComposeStoredIntent {
+    MyComposeIntent intent;
+    uint8_t payload[MY_COMPOSE_MESSAGE_BYTES];
+} MyComposeStoredIntent;
+
+typedef struct MyComposeStoredCompletion {
+    MyComposeCompletion completion;
+    uint8_t payload[MY_COMPOSE_MESSAGE_BYTES];
+} MyComposeStoredCompletion;
+
+typedef enum MyComposeRequestLocation {
+    MY_COMPOSE_REQUEST_OUTBOX = 0,
+    MY_COMPOSE_REQUEST_OUTSTANDING
+} MyComposeRequestLocation;
+
+typedef struct MyComposeRequest {
+    MyComposeEffect effect;
+    uint8_t payload[MY_COMPOSE_MESSAGE_BYTES];
+    MyComposeStatus terminal;
+    MyComposeRequestLocation location;
+    bool used;
+} MyComposeRequest;
+
+typedef struct MyComposeOwner {
+    uint32_t generation;
+    bool active;
+    bool retired;
+} MyComposeOwner;
+
+struct MyComposeStore {
+    MyComposeStateStorage state_slots[2];
+    uint32_t state_sizes[2];
+    uint32_t current_state;
+    bool state_engaged[2];
+    MyComposeStateOps state_ops;
+    void *reducer_context;
+    MyComposeReducer reducer;
+    void *executor_context;
+    MyComposeExecutor executor;
+    MyComposeStoredIntent intents[MY_COMPOSE_INTENT_CAPACITY];
+    uint32_t intent_head;
+    uint32_t intent_count;
+    MyComposeStoredCompletion completions[MY_COMPOSE_COMPLETION_CAPACITY];
+    uint32_t completion_head;
+    uint32_t completion_count;
+    MyComposeRequest requests[MY_COMPOSE_EFFECT_CAPACITY];
+    uint32_t outbox[MY_COMPOSE_EFFECT_CAPACITY];
+    uint32_t outbox_head;
+    uint32_t outbox_count;
+    uint32_t request_count;
+    uint32_t outstanding_count;
+    MyComposeOwner owners[MY_COMPOSE_MAX_NODES];
+    uint32_t generation;
+    uint64_t next_request_id;
+    bool closed;
+    MyComposeDiagnostics diagnostics;
+};
+
+MyComposeStatus my_compose_store_internal_seed_generation(MyComposeStore *store,
+    uint32_t generation);
+MyComposeStatus my_compose_store_internal_seed_request(MyComposeStore *store,
+    uint64_t next_request_id);
 
 uint32_t my_compose_tree_internal_find_node(const MyComposeTree *tree,
     MyComposeNodeHandle handle);

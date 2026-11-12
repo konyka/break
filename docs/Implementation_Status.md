@@ -1,3 +1,11 @@
+## Compose + MVI Task 3：事务式 Store 与 request slot（2026-11-12）
+
+- **交付范围**：新增 C11 `MyComposeStore`、双 16 KiB State slot、原子 reducer、独立 inline 256-byte Intent/Effect/Completion payload、每 Intent 8 Effect、32 个共享 outbox/outstanding request slot、32 completion、owner/store/request 代际及固定诊断。Task 2 的 remember dispose/node generation 所有权未复制到 Store；未实现 sink、Runtime、PAL bridge 或 C++ DSL。
+- **原子性与异步边界**：clone 成功后才执行 reducer，clone/reducer/batch/request 预检失败保留 current State、FIFO 和 request 队列并正确清理 candidate。第 9 个公共 append 为 sticky `OVERLOAD`；无 Effect Intent 在 32 个 request 占用时仍可提交。executor `PENDING` 保留队首，OK 仅移动 slot；completion 满不消费 outstanding，UI reaper 每次 reduce 开头回收 STALE/CANCELLED/FAILED，重试保持 slot，restart/invalidate/close 防迟到完成且不回绕代际。
+- **TDD 与变异**：缺失实现时先得到构建 RED，失败 stub 得到 0/17 行为 RED；最终 Store 20/20、Compose focused 3/3。重复 PENDING 与环绕 outbox 两个补充回归分别先 RED 再修复。漏掉 reducer 前 owner 校验得到 19/20，禁用终态 reaper 得到 16/20；漏算 outstanding 的单点变异被空 slot 兜底掩盖而保持 20/20，扩大为同时破坏兜底后得到 19/20，三处均恢复并复跑 20/20。
+- **最终验证**：ASan+UBSan、`detect_leaks=1` 下 Store 20/20、Compose 3/3，无 sanitizer/leak 报告。普通完整 `cmake --build build-compose-normal -j3` 成功；`ctest --test-dir build-compose-normal -LE graphics --output-on-failure -j3` 选定 346 项，345 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP。`git diff --check` 通过；完整构建仅保留既有 vendored Lua `tmpnam` linker warning。
+- **边界与后续**：覆盖 65 Intent、33 completion、64 总预算/32 conversion、32 终态后恢复、近溢出和 dispose 次数。满 completion 加一个 outstanding 的串行不可达交界由 internal 固定布景构造，实际 complete/reduce/retry 路径均为生产实现。未引入线程或原子竞态代码，因此未新增 TSan；真实 PAL lease/worker destroy 竞态属于 Task 6。所有证据均为 Linux CPU/headless，不是 GPU、窗口、像素或服务证据。独立规格与质量评审待后续执行，详见 `.superpowers/sdd/2026-11-11-compose-mvi/task-3-report.md`。
+
 ## Compose + MVI Task 2：remember 与节点代际（2026-11-12）
 
 - **交付范围**：C11 `MyComposeRememberOps`、builder remember/get 与固定 64×256-byte 对齐存储；每节点 4 个 local slot。身份为完整节点 `{index,generation}` 加 local slot，keyed reorder 保持指针和值，type replacement/删除由 tree finalize 独占按深度及声明逆序 dispose，generation 仍走 Task 1 的 high-water/唯一 handle 路径。未实现 myui adapter、MVI 或 C++ DSL。
