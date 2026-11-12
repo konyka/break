@@ -38,9 +38,9 @@ Windows 测试启动 baker 时，`system()` 的完整命令在 `_WIN32` 下使�
 
 控制器提供的原生 run `43138732673` 记录 direct baker 退出 0、assets **17/17**、完整 diagnostics 与最终 gate success；Windows job `130920254174` 和 macOS job `130920254617` 均成功。原生 run `43138732792` 的 job `130920254336` 记录 compat **1/1**、WARP runtime **1/1**，push-constant gate、Agility deployment 和七个 D3D12-labelled 测试均在 WARP runner 上通过。WARP 是软件光栅化证据，不是独立显卡或真实 GPU 驱动证明。
 
-原始 `43138732792` 日志没有直接显示 `D3D12Core.dll missing` 文本；已捕获的预期缺失 DLL/恢复证据正由独立的临时 validation-only instrumentation run 暴露。这里不把原日志未可见的诊断写成既成事实，也不把临时 validation 辅助实现并入当前工作树。最终修复提交的 Windows/D3D12 复跑仍由 controller 验收。
+原始 `43138732792` 日志没有直接显示 `D3D12Core.dll missing` 文本，因此后续仅在临时 validation 分支增加受真实断言门控的证据输出。独立临时提交 `73e1e267` 的 run `43150345368`、job `130957761304` 现已明确记录 `D3D12Core.dll missing rejected; restored; SHA-256 verified`，八个嵌套夹具无未运行项，compat **1/1**、WARP runtime **1/1** 和 Agility 部署通过；CPU run `43150345348` 的 Windows/macOS 均成功。临时辅助实现及其 workflow 不合入 master，WARP 仍不是独立显卡证明。最终交付提交的 Windows/D3D12 复跑仍由 controller 验收。
 
-合并结果 `c6e8b80a` 的既有最终非图形结果为 **358 selected、354 PASS、4 个文档化 SKIP、0 FAIL**；ASan+UBSan（包括另一次 `detect_leaks=1`）与 TSan 均为相同计数。no-tests 完整构建通过且注册测试为 0，五个显式 fuzz smoke 全部通过。所有构建和并行 CTest 使用 `-j3`。本批评审修复的重跑结果与命令另记于 final-review-fix-report，不以静态检查替代受影响 lane。
+终审修复 `253ce949` 的普通与 ASan+UBSan `detect_leaks=1` 非图形均为 **358 selected、354 PASS、4 个文档化 SKIP、0 FAIL**；TSan focused 为 7/7、assets 为 23/23，no-tests 完整构建通过且注册测试为 0，五个显式 fuzz smoke 全部通过。`45fe548d` 仅修改 CMake 测试脚本，使 intentional no-NM 真实传播到 archived configure，并在实际验证后转发 SKIP 证据；其完整普通非图形同为 358/354/4/0。两项 scoped 复审均 PASS，无遗留 Critical/Important。所有构建和并行 CTest 使用 `-j3`；完整命令、RED/GREEN、变异和既有 Lua `tmpnam` 警告另记于 final-review-fix-report。
 
 第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入、256 项音频 FIFO/过载/drain recovery、Flow player identity 与 exec-link source-port 永久断言仍留在后续台账；Compose 和 P12 Task 4–13 不在本批次中宣称实现。
 
