@@ -1,3 +1,13 @@
+## Compose + MVI Task 6：Runtime、pending-view 与安全 completion（2026-11-12）
+
+- **交付与固定顺序**：实现提交 `5b8d90ea` 新增 `MyComposeRuntime`、`my_compose_myui_pump()` 和 Store 单步 reduce；每个 State revision 固定执行 `reduce → sink.stage → tree.finalize → sink.commit → dispatch_effects`。Runtime 非拥有 Store/sink，create 强制 `config.store == config.sink.store`，sink context 按 adapter 隔离，事件重入及非 UI 线程 pump 返回 `CONFLICT`。
+- **pending-view 与 reaper**：每次 pump 先由 Store reaper 回收终态 outstanding，包括 pending-view。view/diff/stage 失败保留已提交 State 和最后有效 UI；下一 pump 只 reaper、以同一 State revision 重建并 dispatch 旧 outbox，期间不 reduce 新 Intent、不转换 completion，成功后才继续 FIFO。65 Intent/33 completion 保持既有预算，reducer/executor 不重复。
+- **Store-owned 异步生命周期**：32 个预分配 completion context 的 pool 和抽象 async bridge 归 Store 并独立引用计数，请求槽、worker、UI command 分持 completion 引用。原子 delivery/refcount 覆盖 PENDING/ACCEPTED/RETRY/CANCELLED/STALE，queue full 写 OVERLOAD 且不消费 outstanding；真实 `my_ui_command`、scope 和 emitter lease 只在 UI callback 经 lease 取 Store，worker 不持裸 Store/Runtime。
+- **销毁与 owner 过期**：window close 与 plain Runtime destroy 都先失效 lease/关闭 scope、推进代际并幂等 close+reaper，再释放 Runtime；Store destroy 后仍等待最后 worker/UI command 释放 bridge。真实 pointer 点击产生 Effect 并删除 owner 后，Effect 只执行一次，旧 completion 为 STALE，下一 UI reaper 恰好回收；同一 completion 在另一 Store 同样被拒绝。
+- **TDD 与生产变异**：缺实现编译 RED、失败 stub 和真实行为 RED 后达到 Runtime 8/8、async 14/14。临时移除 owner-thread guard 得到 11/12，仅 worker 直调用例 RED，恢复后 12/12；临时破坏 pending-view 分支得到 4/8，精确恢复后 8/8。普通 Dispatch 与 Runtime owner guard 也分别先 RED 再 GREEN。
+- **最终验证**：普通 focused CTest 11/11、Runtime 8/8、async 14/14；ASan+UBSan、`detect_leaks=1` 下计数相同且无 sanitizer/leak 报告；TSan runtime/async 2/2，无 data-race 报告。完整非图形 `-j3` 选定 350 项，349 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP；`git diff --check` 通过。
+- **边界与后续**：证据均为 Linux CPU、dummy PAL/headless，不是 GPU、真实窗口或像素证明。PAL main loop 仍按现有 `my_ui_command` 借用合同由应用保活至 worker 停止且 queue 销毁。满 completion queue 的 32 项使用 internal 固定布景，第 33 个真实 request、UI callback、重投和销毁均走生产路径。独立规格与质量评审尚待执行，不提前宣称通过；完整记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-6-report.md`。
+
 ## Compose + MVI Task 5 fix 1：事务容量与精确回滚（2026-11-12）
 
 - **retained root**：full property pass 现在仅处理 `new_binding`（含首次 root），retained root 只走 UPDATE，避免 full+UPDATE 双重 capture。合法 current/next 各 512 properties、1024 UPDATE 的输入可完成且实际 capture 恰为 1024，root style 值和省略默认恢复均验证；未扩大容量或删除负例。
