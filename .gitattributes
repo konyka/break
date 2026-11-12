@@ -4,12 +4,18 @@
 # identical on every machine. This section is scoped to shaders only.
 engine/shaders/* text eol=lf
 
+# Offline Core App assets must remain byte-identical to the deterministic baker.
+# Text assets use LF on every OS; binary assets must never be normalized.
+engine/assets/core_app/*.lua text eol=lf
+engine/assets/core_app/*.scenario text eol=lf
+engine/assets/core_app/actors.sidecar text eol=lf
+engine/assets/core_app/level.banm binary
+engine/assets/core_app/level.bscn binary
+engine/assets/core_app/level.fg binary
+engine/assets/core_app/tone.wav binary
+
 # Golden reference images are binary PPMs. Without this, core.autocrlf=true
 # rewrites the LF in their ASCII header (and any 0x0A pixel byte) to CRLF on
 # checkout -- or on a stash pop -- and every golden compare reports DRIFT
 # against a reference that was never changed.
 *.ppm binary
-
-# Offline Core App assets must be byte-identical to the baker on every OS.
-# Text assets must not be rewritten to CRLF on Windows checkout.
-engine/assets/core_app/* binary

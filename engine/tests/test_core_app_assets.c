@@ -22,6 +22,7 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <process.h>
 #include <windows.h>
 #else
 #include <signal.h>
@@ -371,24 +372,44 @@ static int file_exists(const char *dir, const char *name) {
 static int run_baker(const char *output, const char *slot) {
     char command[1600];
     command[0] = '\0';
-#if defined(_WIN32)
-    int n = snprintf(command, sizeof(command), "\"\"%s\" --output \"%s\"\"",
-                     CORE_APP_ASSET_BAKE_EXECUTABLE, output);
-#else
     int n = snprintf(command, sizeof(command), "\"%s\" --output \"%s\"",
                      CORE_APP_ASSET_BAKE_EXECUTABLE, output);
-#endif
     if (n < 0 || (usize)n >= sizeof(command)) {
         CoreAppTestError error = core_app_test_os_error();
         core_app_test_report_command(slot, "launch.command", command, output, (i64)n,
                                      error);
         return -1;
     }
+#if defined(_WIN32)
+    char executable_arg[1024];
+    char output_arg[1024];
+    int executable_length = snprintf(executable_arg, sizeof(executable_arg), "\"%s\"",
+                                     CORE_APP_ASSET_BAKE_EXECUTABLE);
+    int output_length = snprintf(output_arg, sizeof(output_arg), "\"%s\"", output);
+    if (executable_length < 0 || (usize)executable_length >= sizeof(executable_arg) ||
+        output_length < 0 || (usize)output_length >= sizeof(output_arg)) {
+        int length_result =
+            executable_length < 0 || (usize)executable_length >= sizeof(executable_arg)
+                ? executable_length
+                : output_length;
+        CoreAppTestError error = core_app_test_os_error();
+        core_app_test_report_command(slot, "launch.command", command, output,
+                                     (i64)length_result, error);
+        return -1;
+    }
+    const char *argv[] = {executable_arg, "--output", output_arg, NULL};
+    int result = (int)_spawnv(_P_WAIT, CORE_APP_ASSET_BAKE_EXECUTABLE, argv);
+    CoreAppTestError error = core_app_test_os_error();
+    if (result != 0)
+        core_app_test_report_command(slot, "launch.spawnv", command, output,
+                                     (i64)result, error);
+#else
     int result = system(command);
     CoreAppTestError error = core_app_test_os_error();
     if (result != 0)
         core_app_test_report_command(slot, "launch.system", command, output,
                                      (i64)result, error);
+#endif
     return result;
 }
 
@@ -485,6 +506,18 @@ TEST(baker_emits_every_formal_asset_byte_identically) {
     ASSERT_EQ(ensure_baked(), 0);
     for (usize i = 0; i < k_asset_count; ++i)
         ASSERT_TRUE(files_equal(g_assets_a, g_assets_b, k_asset_names[i]));
+}
+
+TEST(baker_supports_spaces_in_output_path) {
+    ASSERT_EQ(ensure_baked(), 0);
+    char output[512];
+    join_path(output, sizeof(output), g_assets_a, "directory with spaces");
+    ASSERT_EQ(prepare_asset_directory(output, "space"), 0);
+    ASSERT_EQ(run_baker(output, "space"), 0);
+    for (usize i = 0; i < k_asset_count; ++i)
+        ASSERT_TRUE(files_equal(g_assets_b, output, k_asset_names[i]));
+    ASSERT_EQ(clear_directory(output, "space"), 0);
+    ASSERT_EQ(TEST_RMDIR(output), 0);
 }
 
 typedef struct {
@@ -1344,6 +1377,7 @@ TEST(checkpoint_rename_failure_is_not_committed_and_preserves_old_generation) {
 
 TEST_MAIN_BEGIN()
     RUN_TEST(baker_emits_every_formal_asset_byte_identically);
+    RUN_TEST(baker_supports_spaces_in_output_path);
     RUN_TEST(formal_assets_match_fresh_baker);
     RUN_TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader);
     RUN_TEST(flow_deserializes_enter_delay_add_item_chain);

@@ -65,15 +65,20 @@ foreach(asset level.bscn level.fg actors.sidecar director.lua player.lua broken.
     endif()
 endforeach()
 
-run_process(system_baked_assets 0 "${CORE_APP_ASSET_TEST}")
+run_process(real_baked_assets 0 "${CORE_APP_ASSET_TEST}")
+if(WIN32)
+    set(real_launch_description "real _spawnv baker launch")
+else()
+    set(real_launch_description "real system() baker launch")
+endif()
 expect_not_contains("${CORE_APP_DIAGNOSTIC_OUTPUT}"
-    "FAIL: CORE_APP_TEST stage=launch" "real system() baker launch")
+    "FAIL: CORE_APP_TEST stage=launch" "${real_launch_description}")
 if(WIN32)
     file(MAKE_DIRECTORY "${WORK}/temp with space")
-    run_process(system_baked_assets_with_space 0 "${CMAKE_COMMAND}" -E env
+    run_process(real_baked_assets_with_space 0 "${CMAKE_COMMAND}" -E env
         "TEMP=${WORK}/temp with space" "${CORE_APP_ASSET_TEST}")
     expect_not_contains("${CORE_APP_DIAGNOSTIC_OUTPUT}"
-        "FAIL: CORE_APP_TEST stage=launch" "space-containing system() baker launch")
+        "FAIL: CORE_APP_TEST stage=launch" "space-containing _spawnv baker launch")
 endif()
 
 file(WRITE "${WORK}/blocked-parent" "not a directory\n")
@@ -187,17 +192,23 @@ exec "$2"
 endif()
 
 run_process(launch_a_failure 1 "${CORE_APP_ASSET_LAUNCH_TEST}")
+set(missing_baker_command "command=\"${CORE_APP_MISSING_BAKER}\" --output \"")
 if(WIN32)
-    set(missing_baker_command "command=\"\"${CORE_APP_MISSING_BAKER}\" --output \"")
+    set(launch_step launch.spawnv)
+    set(launch_result_pattern
+        "step=launch.spawnv[^\n]*raw=-1 os_error=[0-9]+ errno=[1-9][0-9]*")
+    set(launch_result_description "raw _spawnv result")
 else()
-    set(missing_baker_command "command=\"${CORE_APP_MISSING_BAKER}\" --output \"")
+    set(launch_step launch.system)
+    set(launch_result_pattern
+        "step=launch.system[^\n]*raw=-?[1-9][0-9]* os_error=[0-9]+ errno=[0-9]+")
+    set(launch_result_description "raw system result")
 endif()
 expect_contains("${CORE_APP_DIAGNOSTIC_OUTPUT}"
-    "FAIL: CORE_APP_TEST stage=launch slot=A step=launch.system ${missing_baker_command}"
+    "FAIL: CORE_APP_TEST stage=launch slot=A step=${launch_step} ${missing_baker_command}"
     "A launch command")
-expect_match("${CORE_APP_DIAGNOSTIC_OUTPUT}"
-    "step=launch.system[^\n]*raw=-?[1-9][0-9]* os_error=[0-9]+ errno=[0-9]+"
-    "raw system result")
+expect_match("${CORE_APP_DIAGNOSTIC_OUTPUT}" "${launch_result_pattern}"
+    "${launch_result_description}")
 expect_not_contains("${CORE_APP_DIAGNOSTIC_OUTPUT}" "stage=launch slot=B"
     "A launch failure short circuits B")
 
@@ -217,12 +228,32 @@ expect_contains("${baker_source}" "platform_atomic_writer_open_diagnostic"
 file(READ "${ENGINE_SOURCE_DIR}/tests/test_core_app_assets.c" asset_test_source)
 expect_contains("${asset_test_source}" "#if defined(_WIN32)"
     "Windows baker command branch")
-expect_contains("${asset_test_source}" [=["\"\"%s\" --output \"%s\"\""]=]
-    "Windows full-command outer quoting")
 expect_contains("${asset_test_source}" [=["\"%s\" --output \"%s\""]=]
-    "non-Windows single-layer quoting")
+    "diagnostic command quoting")
+expect_not_contains("${asset_test_source}" [=["\"\"%s\" --output \"%s\"\""]=]
+    "obsolete Windows full-command outer quoting")
+expect_contains("${asset_test_source}"
+    [=[int executable_length = snprintf(executable_arg, sizeof(executable_arg), "\"%s\"",]=]
+    "Windows CRT-quoted executable argument")
+expect_contains("${asset_test_source}"
+    [=[int output_length = snprintf(output_arg, sizeof(output_arg), "\"%s\"", output);]=]
+    "Windows CRT-quoted output argument")
+expect_contains("${asset_test_source}"
+    "const char *argv[] = {executable_arg, \"--output\", output_arg, NULL};"
+    "Windows direct baker argv")
+expect_contains("${asset_test_source}"
+    "_spawnv(_P_WAIT, CORE_APP_ASSET_BAKE_EXECUTABLE, argv)"
+    "Windows direct baker launch")
+expect_contains("${asset_test_source}"
+    [=[core_app_test_report_command(slot, "launch.spawnv", command, output,]=]
+    "Windows raw spawn result diagnostic")
+expect_contains("${asset_test_source}" "int result = system(command);"
+    "POSIX system baker launch")
+expect_contains("${asset_test_source}"
+    [=[core_app_test_report_command(slot, "launch.system", command, output,]=]
+    "POSIX raw system result diagnostic")
 foreach(step prepare.file_size prepare.platform_mkdir prepare.clear_directory
-        prepare.remove launch.command launch.system)
+        prepare.remove launch.command launch.spawnv launch.system)
     expect_contains("${asset_test_source}" "\"${step}\"" "asset test step ${step}")
 endforeach()
 foreach(call
@@ -230,7 +261,10 @@ foreach(call
         "prepare_asset_directory(g_assets_b, \"B\")"
         "run_baker(g_assets_a, \"A\")"
         "run_baker(g_assets_b, \"B\")"
-        "g_bake_result = run_baker(g_assets_a, \"A\")")
+        "g_bake_result = run_baker(g_assets_a, \"A\")"
+        "prepare_asset_directory(output, \"space\")"
+        "run_baker(output, \"space\")"
+        "clear_directory(output, \"space\")")
     expect_contains("${asset_test_source}" "${call}" "asset test call ${call}")
 endforeach()
 

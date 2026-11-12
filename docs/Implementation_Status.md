@@ -1,7 +1,13 @@
-## 当前验证：Core App Windows 启动与资产检出修复（2026-11-11）
+## 当前同步：Core App 上游修复合并（2026-11-12）
 
-- Windows 进程启动修复 `987121d9` 只在 `_WIN32` 的测试 `system()` 命令外再包一层引号，POSIX 格式、原始返回和诊断不变。真实 probe 已区分原始格式失败与完整命令外层引用成功，未采用不安全的无引号捷径。原生 run `43041968171` 的 Windows job `130595842235` 中 direct baker 退出 0，assets **16/16**，完整 `test_core_app_baker_diagnostics` 通过，probe outcome/final gate 均为 success。macOS job `130595841519` 同样通过；这些是 CPU/合同证据，不是 GPU 或声卡证据。
-- 正式文本资产的 CRLF 检出差异由真实长度与 SHA-256 证明，BSCN/BANM/FG/WAV 哈希则一致。现以 `engine/assets/core_app/* binary` 固定检出，不改写 11 个资产或 baker 内容。新 `test_core_app_checkout_attributes` 以真实 `git check-attr` 验证全部资产，`a1504864` 另外阻止悬空 `.git` symlink 被误判为无元数据。新 checkout 的正式资产比较恢复通过，启动与资产两项修复均已完成独立规格/质量评审及 scoped 复审。
+- 最终实现由 Windows `_spawnv(_P_WAIT)` 直接启动真实 baker，executable/output 参数按 CRT 规则引用，并保留 `run_baker(output, slot)`、`launch.command` 与原始 `launch.spawnv` 诊断；POSIX 仍使用原 `system()` 和 `launch.system`。A/B 短路、长度失败、11 资产逐字节比较与含空格输出目录回归均保留，空格用例使用 `"space"` 诊断 slot。
+- 最终检出规则对 Lua、scenario、actors.sidecar 使用 `text eol=lf`，对 level.banm、level.bscn、level.fg、tone.wav 使用显式 `binary`；generic `engine/assets/core_app/* binary` 不再是现行实现。合同逐一执行真实 `git check-attr -a`，资产字节和比较方式不变。
+- 下文的完整命令外层引用与 generic binary 均仅作合并前历史证据，不与上述最终实现并存。远程 WGL/Python 记录和本分支诊断记录均保留；compat fixture 与 Task 1 配置传播未修改。原生 controller CI 和最终 always-on compat gate 仍待独立验收，本条目不预先声称原生通过。
+
+## 合并前历史：Core App Windows 启动与资产检出修复（2026-11-11）
+
+- **合并前历史方案，非最终实现**：Windows 进程启动修复 `987121d9` 只在 `_WIN32` 的测试 `system()` 命令外再包一层引号，POSIX 格式、原始返回和诊断不变。真实 probe 已区分原始格式失败与完整命令外层引用成功，未采用不安全的无引号捷径。原生 run `43041968171` 的 Windows job `130595842235` 中 direct baker 退出 0，assets **16/16**，完整 `test_core_app_baker_diagnostics` 通过，probe outcome/final gate 均为 success。macOS job `130595841519` 同样通过；这些是 CPU/合同证据，不是 GPU 或声卡证据。
+- **合并前历史方案，非最终实现**：正式文本资产的 CRLF 检出差异由真实长度与 SHA-256 证明，BSCN/BANM/FG/WAV 哈希则一致。当时以 `engine/assets/core_app/* binary` 固定检出，不改写 11 个资产或 baker 内容。新 `test_core_app_checkout_attributes` 以真实 `git check-attr` 验证全部资产，`a1504864` 另外阻止悬空 `.git` symlink 被误判为无元数据。新 checkout 的正式资产比较恢复通过，启动与资产两项修复均已完成独立规格/质量评审及 scoped 复审。
 - 当前本机非图形回归为 **357 项入选、353 PASS、4 个文档化 SKIP、0 FAIL**，所有构建和并行 CTest 使用 `-j3`。Windows D3D12 compat 的 generator/`-C` 配置与归档 Agility 暂存仍是独立后续任务，不把上述成功解释为全仓 CI、sanitizer、no-tests、fuzz 或最终 master 已完成。临时验证/APFS/probe 分支不会合入 master，未创建 PR。
 
 ## 当前进展：Core App Metal/APFS 验收与 Windows 诊断（2026-11-11）
@@ -15,6 +21,15 @@
 
 - 主 run `42967766610` 与 D3D12 run `42967766619` 当前均为 FAILURE，不能用此前 `d402a375` 的全绿覆盖。失败涉及旧 CMake 的 UNVERIFIED skip 回退、无 `.git` 的 clean-room 资产清单、nested Vulkan 配置，以及 Windows baker 和 macOS manifest alias；具体根因正在按日志分项确认，尚未把任何一项写成已修复。
 - 本地合并结果仍为 352 项非图形入选、348 PASS、4 个文档化 SKIP、0 FAIL，no-tests 构建通过，Core App 全分支终审 Ready；这些不替代远程平台证据。修复将采用 TDD 和独立评审，随后重跑所有受影响 lane。
+
+## 本轮更新：Windows 同步修复 Core App 资产、WGL 与 Python 编码（2026-11-11）
+
+- **同步与 RED**：本地从 `59f3f737` 快进至 `f7a1f87e`，无冲突。新代码在 Clang/OpenGL、MSVC 和 MinGW 均暴露 `test_glad_wgl_loader`、`test_ci_image_fix2`、`test_core_app_assets` 三项失败；远程 CI `42967766610` 与 Windows D3D12 `42967766619` 也复现资产测试失败。
+- **Core App 资产**：测试在 Windows 改用 `_spawnv(_P_WAIT)` 直接启动真实 baker，不再依赖 `system()` 的命令处理器转发；仍执行真实 baker、reader 和逐字节比较。`core.autocrlf=true` 曾将 7 个正式文本资产检出为 CRLF，而 baker 固定生成 LF；`.gitattributes` 现在对 Lua、scenario 和 actor sidecar 显式指定 `text eol=lf`，四个二进制资产不变。进程路径参数按 CRT 规则引用，新增含空格输出目录的真实 baker 回归；Clang/MinGW 与独立归档的资产测试均为 17/17。
+- **WGL 与 Python**：真实 WGL context 可为核心入口返回不同于 `opengl32.dll` 导出地址的有效转发地址；测试改为优先对照当前 context 的 `wglGetProcAddress`，为空时必须等于真实 `GetProcAddress`，实际 GL 版本、renderer、texture/extension 查询与模拟 DLL fallback 断言保留。CI 工作流契约的 Python reader 显式指定 UTF-8，不再受 Windows 中文系统默认 GBK 影响。
+- **最终非图形矩阵**：Clang/OpenGL 329 项入选（326 PASS、3 SKIP），Clang/Vulkan 与 Clang/D3D12 各 331 项（328 PASS、3 SKIP），Clang ASan 329 项（326 PASS、3 SKIP），MSVC 335 项（331 PASS、4 SKIP），MinGW 337 项（334 PASS、3 SKIP），均 0 FAIL。MSVC/MinGW 含 5 个 fuzz 冒烟；各构建日志无 warning/error。ASan 使用 `detect_leaks=0`，不据此声称泄漏检测通过。
+- **图形与实机**：OpenGL 4/4、Vulkan 6/6、D3D12 10/10、ASan 4/4、MSVC 9/9、MinGW 4/4，共 37/37 通过。三后端各实跑 90 帧，均完成两次全屏、两次标题栏和渲染尺寸切换；截图中文字位于左上且方向正确，Vulkan validation 为 0。
+- **审查与边界**：独立审查发现含空格参数未引用，新增回归先 RED 后 GREEN，复核为 Ready，无遗留 Critical/Important。本轮仅修改测试、测试资产检出规则和验证记录；不代表 Windows 音频设备、真实网络服务或 POSIX-only 功能已验证。
 
 ## 交付验证：主 CI 与 D3D12 全绿、Core App 命名迁移（2026-11-11）
 

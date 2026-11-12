@@ -9,10 +9,24 @@ endif()
 file(READ "${REPOSITORY_ROOT}/.gitattributes" checkout_attributes)
 string(REPLACE "\r\n" "\n" checkout_attribute_lines "${checkout_attributes}")
 string(REPLACE "\n" ";" checkout_attribute_lines "${checkout_attribute_lines}")
-list(FIND checkout_attribute_lines "engine/assets/core_app/* binary" checkout_rule_index)
-if(checkout_rule_index EQUAL -1)
+set(required_rules
+    "engine/assets/core_app/*.lua text eol=lf"
+    "engine/assets/core_app/*.scenario text eol=lf"
+    "engine/assets/core_app/actors.sidecar text eol=lf"
+    "engine/assets/core_app/level.banm binary"
+    "engine/assets/core_app/level.bscn binary"
+    "engine/assets/core_app/level.fg binary"
+    "engine/assets/core_app/tone.wav binary")
+foreach(rule IN LISTS required_rules)
+    list(FIND checkout_attribute_lines "${rule}" checkout_rule_index)
+    if(checkout_rule_index EQUAL -1)
+        message(FATAL_ERROR ".gitattributes must contain the independent line: ${rule}")
+    endif()
+endforeach()
+list(FIND checkout_attribute_lines "engine/assets/core_app/* binary" generic_binary_index)
+if(NOT generic_binary_index EQUAL -1)
     message(FATAL_ERROR
-        ".gitattributes must contain the independent line: engine/assets/core_app/* binary")
+        ".gitattributes must not override classified Core App rules with: engine/assets/core_app/* binary")
 endif()
 
 function(core_app_checkout_unverified reason)
@@ -29,18 +43,20 @@ if(NOT DEFINED GIT_EXECUTABLE OR NOT GIT_EXECUTABLE)
     core_app_checkout_unverified("Git executable is unavailable")
 endif()
 
-set(formal_assets
+set(text_assets
     engine/assets/core_app/actors.sidecar
     engine/assets/core_app/broken.lua
     engine/assets/core_app/deterministic.scenario
     engine/assets/core_app/director.lua
+    engine/assets/core_app/load_unload.scenario
+    engine/assets/core_app/player.lua
+    engine/assets/core_app/rollback.scenario)
+set(binary_assets
     engine/assets/core_app/level.banm
     engine/assets/core_app/level.bscn
     engine/assets/core_app/level.fg
-    engine/assets/core_app/load_unload.scenario
-    engine/assets/core_app/player.lua
-    engine/assets/core_app/rollback.scenario
     engine/assets/core_app/tone.wav)
+set(formal_assets ${text_assets} ${binary_assets})
 unset(ENV{GIT_DIR})
 unset(ENV{GIT_WORK_TREE})
 set(ENV{LC_ALL} "C")
@@ -71,13 +87,28 @@ foreach(asset IN LISTS formal_assets)
     if(NOT "${attribute_result}" STREQUAL "0")
         message(FATAL_ERROR "git check-attr failed for ${asset}: ${attribute_log}")
     endif()
-    string(FIND "${attribute_log}" "binary: set" binary_position)
-    if(binary_position EQUAL -1)
-        message(FATAL_ERROR "${asset} does not have binary: set; output=${attribute_log}")
-    endif()
+    list(FIND text_assets "${asset}" text_index)
+    list(FIND binary_assets "${asset}" binary_index)
     string(FIND "${attribute_log}" "text: set" text_position)
-    if(NOT text_position EQUAL -1)
-        message(FATAL_ERROR "${asset} unexpectedly has text: set; output=${attribute_log}")
+    string(FIND "${attribute_log}" "binary: set" binary_position)
+    if(NOT text_index EQUAL -1)
+        string(FIND "${attribute_log}" "eol: lf" eol_position)
+        if(text_position EQUAL -1 OR eol_position EQUAL -1)
+            message(FATAL_ERROR
+                "${asset} must have text: set and eol: lf; output=${attribute_log}")
+        endif()
+        if(NOT binary_position EQUAL -1)
+            message(FATAL_ERROR "${asset} unexpectedly has binary: set; output=${attribute_log}")
+        endif()
+    elseif(NOT binary_index EQUAL -1)
+        if(binary_position EQUAL -1)
+            message(FATAL_ERROR "${asset} does not have binary: set; output=${attribute_log}")
+        endif()
+        if(NOT text_position EQUAL -1)
+            message(FATAL_ERROR "${asset} unexpectedly has text: set; output=${attribute_log}")
+        endif()
+    else()
+        message(FATAL_ERROR "internal asset classification missing for ${asset}")
     endif()
 endforeach()
-message(STATUS "All 11 formal core_app assets have binary checkout attributes")
+message(STATUS "All 11 formal core_app assets have classified checkout attributes")
