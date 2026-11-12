@@ -5,7 +5,7 @@
 - **accept/abandon 线性化**：单一原子状态机新增内部 ACCEPTING，UI callback 只有从 PENDING/RETRY CAS 成功才进入 Store；abandon 先赢则 accept 不执行且 UI reaper 恰好回收一次，accept 先赢则交付完成后才发布 ACCEPTED，后续 abandon 不得反写。queue overload 可从 ACCEPTING 回到 RETRY，业务 result 与 delivery 分离，未引入热路径互斥锁或裸 Store 指针。
 - **RED/GREEN 与变异**：真实跨 Store 同 ID、held-accepted pool 饱和、queued command abandon 分别得到 14/15、15/16、16/17 的目标 RED，最小修复后依次为 15/15、16/16、17/17，Store 27/27、Runtime 8/8 保持。独立移除 store_id 检查、pool-front PENDING 分支和 accept guard 均各得到 16/17，精确恢复后均回到 17/17。
 - **最终验证**：普通 focused CTest 11/11、Runtime 8/8、async 17/17；ASan+UBSan、`detect_leaks=1` 下计数相同且无 sanitizer/leak 报告；TSan runtime/async 2/2，无 data-race 报告。完整非图形 `-j3` 选定 350 项，349 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP，30.75 秒；`git diff --check` 通过。
-- **边界与 scoped 复审**：证据仍为 Linux CPU、dummy PAL/headless，不是 GPU 或真实窗口证明；PAL main loop 仍按借用合同由应用保活，满 completion queue 继续使用 internal 固定布景。三个 Important 的 scoped re-review 尚待原 reviewer 执行，不提前宣称通过；完整 RED/GREEN、线性化和变异记录追加于 `.superpowers/sdd/2026-11-11-compose-mvi/task-6-report.md`。
+- **边界与 scoped 复审**：证据仍为 Linux CPU、dummy PAL/headless，不是 GPU 或真实窗口证明；PAL main loop 仍按借用合同由应用保活，满 completion queue 继续使用 internal 固定布景。三个 Important 的 scoped re-review 均为 ADDRESSED，零新增 Critical/Important/Minor；控制器另在修复提交上复跑 focused 11/11。非阻断增强项为 ACCEPTING 中点交错与 store_id 近溢出种子测试，不属于遗留缺陷。完整 RED/GREEN、线性化和变异记录追加于 `.superpowers/sdd/2026-11-11-compose-mvi/task-6-report.md`。
 
 ## Compose + MVI Task 6：Runtime、pending-view 与安全 completion（2026-11-12）
 
@@ -15,7 +15,7 @@
 - **销毁与 owner 过期**：window close 与 plain Runtime destroy 都先失效 lease/关闭 scope、推进代际并幂等 close+reaper，再释放 Runtime；Store destroy 后仍等待最后 worker/UI command 释放 bridge。真实 pointer 点击产生 Effect 并删除 owner 后，Effect 只执行一次，旧 completion 为 STALE，下一 UI reaper 恰好回收；同一 completion 在另一 Store 同样被拒绝。
 - **TDD 与生产变异**：缺实现编译 RED、失败 stub 和真实行为 RED 后达到 Runtime 8/8、async 14/14。临时移除 owner-thread guard 得到 11/12，仅 worker 直调用例 RED，恢复后 12/12；临时破坏 pending-view 分支得到 4/8，精确恢复后 8/8。普通 Dispatch 与 Runtime owner guard 也分别先 RED 再 GREEN。
 - **最终验证**：普通 focused CTest 11/11、Runtime 8/8、async 14/14；ASan+UBSan、`detect_leaks=1` 下计数相同且无 sanitizer/leak 报告；TSan runtime/async 2/2，无 data-race 报告。完整非图形 `-j3` 选定 350 项，349 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP；`git diff --check` 通过。
-- **边界与后续**：证据均为 Linux CPU、dummy PAL/headless，不是 GPU、真实窗口或像素证明。PAL main loop 仍按现有 `my_ui_command` 借用合同由应用保活至 worker 停止且 queue 销毁。满 completion queue 的 32 项使用 internal 固定布景，第 33 个真实 request、UI callback、重投和销毁均走生产路径。独立规格与质量评审尚待执行，不提前宣称通过；完整记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-6-report.md`。
+- **边界与后续**：证据均为 Linux CPU、dummy PAL/headless，不是 GPU、真实窗口或像素证明。PAL main loop 仍按现有 `my_ui_command` 借用合同由应用保活至 worker 停止且 queue 销毁。满 completion queue 的 32 项使用 internal 固定布景，第 33 个真实 request、UI callback、重投和销毁均走生产路径。独立规格与质量评审及 fix1 scoped 复审均通过，完整记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-6-report.md`。
 
 ## Compose + MVI Task 5 fix 1：事务容量与精确回滚（2026-11-12）
 
