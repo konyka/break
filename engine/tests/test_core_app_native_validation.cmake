@@ -355,6 +355,48 @@ if(NOT d3d12_base_hash STREQUAL "11344c7bda647136befef9d1d97906b103b2774874813a3
     fail("D3D12 jobs or evidence semantics changed beyond the validation trigger and compatibility diagnostic")
 endif()
 
+file(READ "${REPO_ROOT}/engine/tests/test_core_app_contract_compat.cmake" compat_contract)
+set(d3d12_gate_restore [=[configure_file("${missing_core_source}" "${missing_core_destination}" COPYONLY)]=])
+set(d3d12_gate_hash_assertion [=[expect_archive_agility_hashes("after D3D12Core gate mutation restoration")]=])
+set(d3d12_gate_result_assertion [=[if("${missing_core_result}" STREQUAL "0" OR "${missing_core_result}" STREQUAL "77")]=])
+set(d3d12_gate_diagnostic_assertion [=[if(missing_core_diagnostic_index LESS 0)]=])
+set(d3d12_gate_evidence [=[if(NOT "${missing_core_result}" STREQUAL "0" AND
+            NOT "${missing_core_result}" STREQUAL "77" AND
+            NOT missing_core_diagnostic_index LESS 0)
+        message(STATUS "archive_d3d12_missing_core: D3D12Core.dll missing rejected; restored; SHA-256 verified")
+    endif()]=])
+require_text("${compat_contract}" "${d3d12_gate_evidence}" "D3D12 gate evidence guard")
+require_order("${compat_contract}" "${d3d12_gate_restore}" "${d3d12_gate_hash_assertion}"
+    "D3D12 gate immediate restoration before hash assertion")
+require_order("${compat_contract}" "${d3d12_gate_hash_assertion}" "${d3d12_gate_result_assertion}"
+    "D3D12 gate hash assertion before result assertion")
+require_order("${compat_contract}" "${d3d12_gate_result_assertion}" "${d3d12_gate_diagnostic_assertion}"
+    "D3D12 gate result assertion before diagnostic assertion")
+require_order("${compat_contract}" "${d3d12_gate_diagnostic_assertion}" "${d3d12_gate_evidence}"
+    "D3D12 gate evidence after validated checks")
+
+set(nested_ctest_completion_check [=[function(expect_nested_ctest_complete name)
+    expect_log_lacks(${name} "Not Run")
+    expect_log_lacks(${name} "NOT_AVAILABLE")
+endfunction()]=])
+require_text("${compat_contract}" "${nested_ctest_completion_check}"
+    "nested CTest unavailable/unrun checks")
+foreach(fixture IN ITEMS formal_corrupt naming_corrupt archive_tracking
+        archive_exact_exemption nm_compat_skips)
+    require_text("${compat_contract}" "expect_nested_ctest_complete(${fixture})"
+        "nested CTest completion check for ${fixture}")
+endforeach()
+require_text("${compat_contract}" [=[expect_nested_ctest_complete(${test_name})]=]
+    "nested CTest completion check for nested_error and cli_error")
+set(nested_ctest_evidence [=[if(errors STREQUAL "")
+    message(STATUS "nested CTest fixtures formal_corrupt, naming_corrupt, archive_tracking, archive_exact_exemption, test_core_app_nm_missing, test_core_app_nm_unsupported, test_core_app_nested_error, test_core_app_cli_error: no test was unavailable or unrun")
+endif()
+if(NOT errors STREQUAL "")]=])
+require_text("${compat_contract}" "${nested_ctest_evidence}"
+    "nested CTest bounded success evidence")
+require_order("${compat_contract}" [=[expect_nested_ctest_complete(${test_name})]=]
+    "${nested_ctest_evidence}" "nested CTest evidence after all eight fixtures")
+
 find_program(core_app_bash bash)
 set(compat_step_marker "      - name: Verify Core App compatibility and SDK gate\n")
 set(compat_next_step_marker "\n      - name: WARP GPU-runtime floor")

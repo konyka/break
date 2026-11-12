@@ -68,6 +68,11 @@ function(expect_log_lacks name text)
     endif()
 endfunction()
 
+function(expect_nested_ctest_complete name)
+    expect_log_lacks(${name} "Not Run")
+    expect_log_lacks(${name} "NOT_AVAILABLE")
+endfunction()
+
 function(expect_tracking_skips name expected)
     get_property(log GLOBAL PROPERTY CORE_APP_COMPAT_LAST_LOG)
     string(REGEX MATCHALL "CORE_APP_TRACKING_UNVERIFIED" matches "${log}")
@@ -357,6 +362,7 @@ run_case(formal_corrupt FAIL "${CMAKE_COMMAND}" -E env
 expect_log_contains(formal_corrupt "fatal: not a git repository")
 expect_log_contains(formal_corrupt "git rev-parse --git-dir failed:")
 expect_log_lacks(formal_corrupt "CORE_APP_TRACKING_UNVERIFIED")
+expect_nested_ctest_complete(formal_corrupt)
 run_case(naming_corrupt FAIL "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
     --test-dir "${corrupt_build}" ${nested_ctest_config_args}
@@ -364,6 +370,7 @@ run_case(naming_corrupt FAIL "${CMAKE_COMMAND}" -E env
 expect_log_contains(naming_corrupt "fatal: not a git repository")
 expect_log_contains(naming_corrupt "git rev-parse --git-dir failed:")
 expect_log_lacks(naming_corrupt "CORE_APP_TRACKING_UNVERIFIED")
+expect_nested_ctest_complete(naming_corrupt)
 file(REMOVE_RECURSE "${archive_root}/.git")
 
 if(NESTED_ENGINE_RHI_BACKEND STREQUAL "d3d12")
@@ -393,6 +400,11 @@ if(NESTED_ENGINE_RHI_BACKEND STREQUAL "d3d12")
     string(FIND "${missing_core_log}" "D3D12Core.dll missing" missing_core_diagnostic_index)
     if(missing_core_diagnostic_index LESS 0)
         record_error("archive_d3d12_missing_core: missing 'D3D12Core.dll missing'\n${missing_core_log}")
+    endif()
+    if(NOT "${missing_core_result}" STREQUAL "0" AND
+            NOT "${missing_core_result}" STREQUAL "77" AND
+            NOT missing_core_diagnostic_index LESS 0)
+        message(STATUS "archive_d3d12_missing_core: D3D12Core.dll missing rejected; restored; SHA-256 verified")
     endif()
 endif()
 
@@ -439,6 +451,7 @@ if(EXISTS "${archive_build}/CTestTestfile.cmake")
     expect_tracking_skips(archive_tracking 2)
     expect_log_lacks(archive_tracking "All 11 formal core_app assets are tracked, including tone.wav")
     expect_log_lacks(archive_tracking "core_app naming, target, interface, and 11-asset contract passed")
+    expect_nested_ctest_complete(archive_tracking)
 endif()
 
 string(CONCAT legacy_domain "c" "ry")
@@ -460,6 +473,7 @@ if(EXISTS "${archive_build}/CTestTestfile.cmake")
     expect_tracking_skips(archive_exact_exemption 1)
     expect_log_lacks(archive_exact_exemption "core_app naming contract failed")
     expect_log_lacks(archive_exact_exemption "core_app naming, target, interface, and 11-asset contract passed")
+    expect_nested_ctest_complete(archive_exact_exemption)
 endif()
 
 function(run_naming_mutation name mutation expected_error)
@@ -544,6 +558,7 @@ list(LENGTH nm_skip_matches nm_skip_count)
 if(NOT nm_skip_count EQUAL 2)
     record_error("nm_compat_skips: symbol skip count=${nm_skip_count}, expected=2\n${nm_log}")
 endif()
+expect_nested_ctest_complete(nm_compat_skips)
 foreach(test_name IN ITEMS test_core_app_nested_error test_core_app_cli_error)
     run_case(${test_name} FAIL "${CMAKE_COMMAND}" -E env
         "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
@@ -553,9 +568,13 @@ foreach(test_name IN ITEMS test_core_app_nested_error test_core_app_cli_error)
     if(test_name STREQUAL "test_core_app_nested_error")
         expect_log_contains(${test_name} "no-tests target/scope configure failed:")
     endif()
+    expect_nested_ctest_complete(${test_name})
 endforeach()
 
 get_property(errors GLOBAL PROPERTY CORE_APP_COMPAT_ERRORS)
+if(errors STREQUAL "")
+    message(STATUS "nested CTest fixtures formal_corrupt, naming_corrupt, archive_tracking, archive_exact_exemption, test_core_app_nm_missing, test_core_app_nm_unsupported, test_core_app_nested_error, test_core_app_cli_error: no test was unavailable or unrun")
+endif()
 if(NOT errors STREQUAL "")
     message(FATAL_ERROR "core_app compatibility contract failed:\n${errors}")
 endif()
