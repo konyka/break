@@ -1,3 +1,10 @@
+## Compose + MVI Task 4 fix 1：拒绝 wrong-parent removal notice（2026-11-12）
+
+- **Important 修正**：`my_widget_notify_child_removed` 在 NULL 参数检查后、former-parent 临时赋值和任何 hook 前，拒绝 `child->parent != NULL && child->parent != parent`。公开 void API 不变；正确 attached parent 与 parent=NULL 的 staged former-parent 通知路径保持原清理行为，remove 仍为 notify→detach→unref。
+- **两树 RED/GREEN**：新增两个独立 dummy window 的回归，live tree 的 edit 具有真实 selection/focus/grab/IME，wrong tree 同时安装 parent-local/root hooks 并持有自己的 child。未加 guard 时连续两次 wrong notify 使 wrong hook 计数非零，得到 6/7；最小 guard 后 wrong hooks、双方 children/refcount、parent 和 live 状态全部不变，correct-parent notify 仍执行清理，恢复 7/7。既有 staged detach/notify 用例继续通过。
+- **变异与验证**：只移除新增 guard 再次在同一 wrong-hook 断言得到 6/7，精确恢复后 primitives 7/7、普通 focused CTest 7/7。ASan+UBSan、`detect_leaks=1` 下 primitives 7/7、focused 7/7，无 sanitizer/leak 报告。完整非图形 `-j3` 选定 347 项，346 PASS、0 FAIL、1 个既有 D3D12 SKIP。
+- **边界与 scoped 复审**：只增加入口 guard、两树回归和对应文档，没有削弱旧断言、开始 Task 5 或推送。证据仍为 Linux CPU/dummy/headless，不是 GPU/真实窗口证明。原 reviewer 随后进行 scoped re-review，本条目不预先宣告其通过。完整记录追加于 `.superpowers/sdd/2026-11-11-compose-mvi/task-4-report.md`。
+
 ## Compose + MVI Task 4：myui 结构、通知与样式删除原语（2026-11-12）
 
 - **交付范围**：新增 `my_widget_reorder_child`、`my_widget_insert_child`、`my_widget_detach_child`、`my_widget_notify_child_removed`、`my_style_unset` 与 `my_widget_style_unset`。reorder 仅移动 darray 顺序；detach/insert 在事务与树之间转移同一份引用；remove 保持 notify→detach→unref。未实现 Task 5 adapter、Runtime/MVI、C++ DSL 或新 UI 框架。

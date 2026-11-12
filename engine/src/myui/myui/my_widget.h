@@ -177,9 +177,9 @@ my_ret_t my_widget_detach_child(my_widget_t* parent, my_widget_t* child,
                                 my_widget_t** detached);
 
 /** @brief Run the parent-local and root removal hooks without changing the
- * children array or references. A staged child receives its former parent as
- * hook context so existing blur/IME cleanup can find the window, then is
- * restored to detached. */
+ * children array or references. A child attached to a different parent is
+ * ignored. A staged child receives its former parent as hook context so
+ * existing blur/IME cleanup can find the window, then is restored to detached. */
 void my_widget_notify_child_removed(my_widget_t* parent, my_widget_t* child);
 
 /**

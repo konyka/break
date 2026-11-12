@@ -239,6 +239,9 @@ void my_widget_notify_child_removed(my_widget_t* parent, my_widget_t* child) {
   if (parent == NULL || child == NULL) {
     return;
   }
+  if (child->parent != NULL && child->parent != parent) {
+    return;
+  }
   restore_detached_parent = child->parent == NULL;
   if (restore_detached_parent) {
     child->parent = parent;

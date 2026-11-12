@@ -40,6 +40,21 @@ static void probe_root_removed(my_widget_t* root, my_widget_t* removed) {
   }
 }
 
+static notify_probe_t s_wrong_notify;
+
+static void wrong_probe_child_removed(my_widget_t* parent, my_widget_t* child) {
+  (void)parent;
+  (void)child;
+  s_wrong_notify.child_calls++;
+}
+
+static void wrong_probe_root_removed(my_widget_t* root, my_widget_t* removed) {
+  s_wrong_notify.root_calls++;
+  if (s_wrong_notify.previous_root_hook != NULL) {
+    s_wrong_notify.previous_root_hook(root, removed);
+  }
+}
+
 typedef struct widget_fixture_t {
   my_pal_t* pal;
   my_pal_main_loop_t* loop;
@@ -215,6 +230,79 @@ TEST(detach_reinsert_defers_cleanup_until_explicit_notify)
   fixture.staged = NULL;
   ASSERT_EQ(atomic_load(&fixture.a->base.ref_count), 1u);
   widget_fixture_destroy(&fixture);
+}
+
+TEST(wrong_parent_notify_is_noop_for_live_tree)
+{
+  widget_fixture_t fixture;
+  my_window_t* wrong_win;
+  my_widget_t* root;
+  my_widget_t* wrong_root;
+  my_widget_t* wrong_child;
+  unsigned int a_refs;
+  unsigned int b_refs;
+  unsigned int wrong_refs;
+  ASSERT_TRUE(widget_fixture_init(&fixture));
+  root = my_window_widget(fixture.win);
+  wrong_win = my_window_create(NULL, fixture.pal, 160, 100, "wrong-tree");
+  wrong_child = my_widget_create(NULL, "wrong-child");
+  ASSERT_NOT_NULL(wrong_win);
+  ASSERT_NOT_NULL(wrong_child);
+  wrong_root = my_window_widget(wrong_win);
+  memset(&s_wrong_notify, 0, sizeof(s_wrong_notify));
+  s_wrong_notify.previous_root_hook =
+      ((my_widget_t*)wrong_win)->removed_hook;
+  ((my_widget_t*)wrong_win)->removed_hook = wrong_probe_root_removed;
+  wrong_root->child_removed_hook = wrong_probe_child_removed;
+  ASSERT_EQ(my_widget_add_child(wrong_root, wrong_child), MY_RET_OK);
+  a_refs = atomic_load(&fixture.a->base.ref_count);
+  b_refs = atomic_load(&fixture.b->base.ref_count);
+  wrong_refs = atomic_load(&wrong_child->base.ref_count);
+
+  my_widget_notify_child_removed(wrong_root, fixture.a);
+  my_widget_notify_child_removed(wrong_root, fixture.a);
+  ASSERT_EQ(s_wrong_notify.child_calls, 0);
+  ASSERT_EQ(s_wrong_notify.root_calls, 0);
+  ASSERT_EQ(s_notify.child_calls, 0);
+  ASSERT_EQ(s_notify.root_calls, 0);
+  ASSERT_TRUE(fixture_interaction_is_preserved(&fixture));
+  ASSERT_TRUE(fixture.a->parent == root);
+  ASSERT_TRUE(wrong_child->parent == wrong_root);
+  ASSERT_EQ(my_widget_child_count(root), 2u);
+  ASSERT_EQ(my_widget_child_count(wrong_root), 1u);
+  ASSERT_TRUE(my_widget_get_child(root, 0u) == fixture.a);
+  ASSERT_TRUE(my_widget_get_child(root, 1u) == fixture.b);
+  ASSERT_TRUE(my_widget_get_child(wrong_root, 0u) == wrong_child);
+  ASSERT_EQ(atomic_load(&fixture.a->base.ref_count), a_refs);
+  ASSERT_EQ(atomic_load(&fixture.b->base.ref_count), b_refs);
+  ASSERT_EQ(atomic_load(&wrong_child->base.ref_count), wrong_refs);
+
+  my_widget_notify_child_removed(root, fixture.a);
+  ASSERT_EQ(s_notify.child_calls, 1);
+  ASSERT_EQ(s_notify.root_calls, 1);
+  ASSERT_EQ(s_wrong_notify.child_calls, 0);
+  ASSERT_EQ(s_wrong_notify.root_calls, 0);
+  ASSERT_TRUE(fixture.win->dispatcher.focused == NULL);
+  ASSERT_TRUE(fixture.win->dispatcher.grabbed == NULL);
+  ASSERT_FALSE(((my_edit_t*)fixture.a)->focused);
+  ASSERT_TRUE(((my_edit_t*)fixture.a)->ime_preedit == NULL);
+  ASSERT_FALSE(my_pal_dummy_get_ime_enabled(fixture.win->pal_window));
+  ASSERT_TRUE(edit_selection_is(fixture.a, 1u, 4u));
+  ASSERT_TRUE(edit_selection_is(fixture.b, 1u, 3u));
+  ASSERT_TRUE(fixture.a->parent == root);
+  ASSERT_EQ(my_widget_child_count(root), 2u);
+  ASSERT_EQ(my_widget_child_count(wrong_root), 1u);
+  ASSERT_EQ(atomic_load(&fixture.a->base.ref_count), a_refs);
+  ASSERT_EQ(atomic_load(&fixture.b->base.ref_count), b_refs);
+  ASSERT_EQ(atomic_load(&wrong_child->base.ref_count), wrong_refs);
+
+  ((my_widget_t*)wrong_win)->removed_hook =
+      s_wrong_notify.previous_root_hook;
+  wrong_root->child_removed_hook = NULL;
+  my_widget_unref(wrong_child);
+  my_widget_unref((my_widget_t*)wrong_win);
+  widget_fixture_destroy(&fixture);
+  memset(&s_wrong_notify, 0, sizeof(s_wrong_notify));
 }
 
 TEST(structure_primitives_validate_indices_ownership_and_cycles)
@@ -406,6 +494,7 @@ TEST(widget_style_unset_restores_theme_and_invalidates_full_coverage)
 TEST_MAIN_BEGIN()
 RUN_TEST(reorder_preserves_edit_identity_selection_and_dispatch_state);
 RUN_TEST(detach_reinsert_defers_cleanup_until_explicit_notify);
+RUN_TEST(wrong_parent_notify_is_noop_for_live_tree);
 RUN_TEST(structure_primitives_validate_indices_ownership_and_cycles);
 RUN_TEST(remove_child_notifies_attached_child_then_releases_tree_reference);
 RUN_TEST(style_unset_compacts_storage_and_restores_state_fallback);
