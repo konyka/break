@@ -1,7 +1,7 @@
 #ifndef MY_COMPOSE_TREE_H
 #define MY_COMPOSE_TREE_H
 
-#include <myui/mycompose/my_compose.h>
+#include <myui/mycompose/my_compose_remember.h>
 
 #ifdef __cplusplus
 extern "C" {

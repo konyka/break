@@ -4,91 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MY_COMPOSE_NO_INDEX UINT32_MAX
-
-typedef enum MyComposeMatch {
-    MY_COMPOSE_MATCH_NONE = 0,
-    MY_COMPOSE_MATCH_NODE,
-    MY_COMPOSE_MATCH_REPLACE
-} MyComposeMatch;
-
-typedef enum MyComposeBuildState {
-    MY_COMPOSE_BUILD_IDLE = 0,
-    MY_COMPOSE_BUILD_NODES,
-    MY_COMPOSE_BUILD_ENDED
-} MyComposeBuildState;
-
-typedef struct MyComposeNodeRecord {
-    MyComposeNodeHandle handle;
-    uint32_t parent;
-    uint32_t previous;
-    MyComposeMatch match;
-    uint32_t key_offset;
-    uint32_t type_offset;
-    uint32_t depth;
-    uint32_t child_index;
-    uint32_t first_child;
-    uint32_t last_child;
-    uint32_t child_count;
-    uint32_t first_property;
-    uint32_t last_property;
-    uint32_t property_count;
-    uint32_t first_event;
-    uint32_t last_event;
-    uint32_t event_count;
-} MyComposeNodeRecord;
-
-typedef struct MyComposeChildLink {
-    uint32_t node;
-    uint32_t next;
-} MyComposeChildLink;
-
-typedef struct MyComposePropertyRecord {
-    uint32_t name_offset;
-    MyComposeValue value;
-    uint32_t next;
-} MyComposePropertyRecord;
-
-typedef struct MyComposeEventRecord {
-    uint32_t name_offset;
-    uint32_t type;
-    uint32_t payload_size;
-    uint32_t result;
-    uint8_t payload[MY_COMPOSE_MESSAGE_BYTES];
-    uint32_t next;
-} MyComposeEventRecord;
-
-typedef struct MyComposeTree {
-    MyComposeNodeRecord nodes[MY_COMPOSE_MAX_NODES];
-    MyComposeChildLink child_links[MY_COMPOSE_MAX_CHILD_LINKS];
-    MyComposePropertyRecord properties[MY_COMPOSE_MAX_PROPERTIES];
-    MyComposeEventRecord events[MY_COMPOSE_MAX_EVENTS];
-    char strings[MY_COMPOSE_STRING_BYTES];
-    uint32_t node_count;
-    uint32_t child_link_count;
-    uint32_t property_count;
-    uint32_t event_count;
-    uint32_t string_used;
-} MyComposeTree;
-
-typedef struct MyComposeSlot {
-    uint32_t generation;
-    uint32_t next_generation;
-    bool in_use;
-    bool retired;
-    bool reserved;
-} MyComposeSlot;
-
-struct MyComposeTreeBuilder {
-    MyComposeTree storage[2];
-    MyComposeTree *current;
-    MyComposeTree *next;
-    MyComposeSlot slots[MY_COMPOSE_MAX_NODES];
-    MyComposeDiffOp diff_ops[MY_COMPOSE_MAX_DIFF_OPS];
-    MyComposeDiff diff;
-    MyComposeBuildState state;
-};
-
 static bool handle_is_zero(MyComposeNodeHandle handle) {
     return handle.index == 0u && handle.generation == 0u;
 }
@@ -187,11 +102,13 @@ MyComposeTreeBuilder *my_compose_tree_builder_create(void) {
 }
 
 void my_compose_tree_builder_destroy(MyComposeTreeBuilder *builder) {
+    if (builder != NULL) my_compose_remember_destroy(builder);
     free(builder);
 }
 
 MyComposeStatus my_compose_tree_builder_begin(MyComposeTreeBuilder *builder) {
     if (builder == NULL) return MY_COMPOSE_INVALID;
+    my_compose_remember_abort(builder);
     memset(builder->next, 0, sizeof(*builder->next));
     for (uint32_t i = 0u; i < MY_COMPOSE_MAX_NODES; ++i) {
         builder->slots[i].next_generation = builder->slots[i].generation;
@@ -586,6 +503,16 @@ static bool old_node_is_retained(const MyComposeTree *next,
     return false;
 }
 
+uint32_t my_compose_tree_internal_find_node(const MyComposeTree *tree,
+    MyComposeNodeHandle handle) {
+    return find_node(tree, handle);
+}
+
+bool my_compose_tree_internal_old_node_is_retained(const MyComposeTree *next,
+    uint32_t old_index) {
+    return old_node_is_retained(next, old_index);
+}
+
 static bool build_delete_diff(MyComposeTreeBuilder *builder) {
     const MyComposeTree *current = builder->current;
     const MyComposeTree *next = builder->next;
@@ -913,6 +840,7 @@ MyComposeStatus my_compose_tree_builder_finalize(MyComposeTreeBuilder *builder) 
         builder->diff.count = 0u;
         return MY_COMPOSE_OVERLOAD;
     }
+    my_compose_remember_finalize(builder);
     publish_slots(builder);
     MyComposeTree *published = builder->current;
     builder->current = builder->next;
@@ -990,6 +918,7 @@ MyComposeStatus my_compose_tree_builder_internal_seed_generation(
     if (node_index == MY_COMPOSE_NO_INDEX) return MY_COMPOSE_STALE;
     MyComposeNodeRecord *node = &builder->current->nodes[node_index];
     node->handle.generation = generation;
+    my_compose_remember_reseed(builder, handle, generation);
     MyComposeSlot *slot = &builder->slots[handle.index];
     slot->generation = generation;
     slot->next_generation = generation;

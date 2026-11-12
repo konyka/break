@@ -1,3 +1,11 @@
+## Compose + MVI Task 2：remember 与节点代际（2026-11-12）
+
+- **交付范围**：C11 `MyComposeRememberOps`、builder remember/get 与固定 64×256-byte 对齐存储；每节点 4 个 local slot。身份为完整节点 `{index,generation}` 加 local slot，keyed reorder 保持指针和值，type replacement/删除由 tree finalize 独占按深度及声明逆序 dispose，generation 仍走 Task 1 的 high-water/唯一 handle 路径。未实现 myui adapter、MVI 或 C++ DSL。
+- **生命周期与失败语义**：首次身份零初始化，匹配身份复用且不替换原 dispose/context；同 local slot 改 type tag 返回 `TYPE_MISMATCH`。aborted next 只清候选槽，finalize 预检/diff 失败不触碰 current，旧代际 get 为 `STALE`，重复 finalize 不重复销毁；builder destroy 同时回收 current 与未提交候选。64 个物理槽包含 current 和 candidate，候选耗尽返回 `OVERLOAD`，不覆盖旧对象。
+- **TDD/变异证据**：先因缺公开头编译 RED，再以失败 stub 得到 0/8 行为 RED；最小实现后 remember 8/8、tree 27/27。临时让非空 next 的所有旧节点被视为保留，类型替换、删除顺序和失败后重启三项测试杀死变异（5/8），精确恢复后 8/8 与 focused CTest 2/2。
+- **最终验证**：普通完整 `cmake --build build-compose-normal -j3` 成功；`ctest --test-dir build-compose-normal -LE 'graphics|fuzz' --output-on-failure -j3` 为 345 项零失败，唯一既有 non-Windows D3D12 dependency gate skip。ASan+UBSan、`detect_leaks=1` 下 remember 8/8、tree 27/27，无 sanitizer/leak 报告；`git diff --check` 通过。完整构建仍有既有 vendored Lua `tmpnam` linker warning。
+- **边界**：覆盖第 65 个真实全局 slot、`local_slot>=4`、257-byte size、0/非 2 幂/超 `max_align_t` 对齐、替换/删除/中止/失败/destroy 和重复 finalize。证据仅来自 Linux CPU/headless，不是 Vulkan/OpenGL、窗口或像素证明。完整命令与 RED/GREEN 记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-2-report.md`；独立规格/质量评审由主代理随后安排。
+
 ## 原生验证进展：MSVC/D3D12 通过，macOS Runtime IO 修复待验证（2026-11-11）
 
 - 主 CI run `42956737548` 的 `Windows + MSVC (headless)` job `130313507109` 已通过，standalone `/experimental:c11atomics` 工具链修复获得真实 `cl.exe` 验证；Windows D3D12 run `42956737579` 也已通过。上一轮 WGL、MinGW、Clang 与 NAT 修复未在这些 lane 重现失败。
