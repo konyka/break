@@ -3,7 +3,7 @@
 - **Important 修正**：`my_widget_notify_child_removed` 在 NULL 参数检查后、former-parent 临时赋值和任何 hook 前，拒绝 `child->parent != NULL && child->parent != parent`。公开 void API 不变；正确 attached parent 与 parent=NULL 的 staged former-parent 通知路径保持原清理行为，remove 仍为 notify→detach→unref。
 - **两树 RED/GREEN**：新增两个独立 dummy window 的回归，live tree 的 edit 具有真实 selection/focus/grab/IME，wrong tree 同时安装 parent-local/root hooks 并持有自己的 child。未加 guard 时连续两次 wrong notify 使 wrong hook 计数非零，得到 6/7；最小 guard 后 wrong hooks、双方 children/refcount、parent 和 live 状态全部不变，correct-parent notify 仍执行清理，恢复 7/7。既有 staged detach/notify 用例继续通过。
 - **变异与验证**：只移除新增 guard 再次在同一 wrong-hook 断言得到 6/7，精确恢复后 primitives 7/7、普通 focused CTest 7/7。ASan+UBSan、`detect_leaks=1` 下 primitives 7/7、focused 7/7，无 sanitizer/leak 报告。完整非图形 `-j3` 选定 347 项，346 PASS、0 FAIL、1 个既有 D3D12 SKIP。
-- **边界与 scoped 复审**：只增加入口 guard、两树回归和对应文档，没有削弱旧断言、开始 Task 5 或推送。证据仍为 Linux CPU/dummy/headless，不是 GPU/真实窗口证明。原 reviewer 随后进行 scoped re-review，本条目不预先宣告其通过。完整记录追加于 `.superpowers/sdd/2026-11-11-compose-mvi/task-4-report.md`。
+- **边界与 scoped 复审**：只增加入口 guard、两树回归和对应文档，没有削弱旧断言或推送。other-parent finding 的 scoped re-review 为 ADDRESSED，零新增 Critical/Important/Minor；控制器另在修复提交上复跑 focused 7/7。证据仍为 Linux CPU/dummy/headless，不是 GPU/真实窗口证明。完整记录追加于 `.superpowers/sdd/2026-11-11-compose-mvi/task-4-report.md`。
 
 ## Compose + MVI Task 4：myui 结构、通知与样式删除原语（2026-11-12）
 
@@ -12,7 +12,7 @@
 - **样式删除与校验**：`my_style_unset` 释放被删 value、压缩当前 state 数组并保留 normal fallback；widget wrapper 回退 theme，成功时在删除前后使覆盖区域失效，missing key 返回 `MY_RET_NOT_FOUND` 且不制造 dirty。越界、非 direct child、attached/self/cycle insert 均被拒绝，失败不转移引用。
 - **TDD 与变异**：缺 API 编译 RED 后，失败 stub 得到 1/6（五个新行为 RED）；最小实现首轮 5/6，detached PAL IME 断言暴露 former-parent 上下文缺失，修正后 6/6。remove+add reorder 变异得到 4/6并在 interaction 状态断言 RED；detach 提前 notify 变异得到 4/6并在 hook 时机与双重通知断言 RED；两者均精确恢复 6/6。现有 blur 不清 cursor/anchor，因此 remove+add 变异没有被虚报为 selection RED。
 - **最终验证**：普通 focused（新 primitives、widget paint、window manager/dispatcher、edit、Compose tree/remember/store）7/7；ASan+UBSan、`detect_leaks=1` 下同批 7/7，新 primitives 直接运行 6/6，无 sanitizer/leak 报告。完整 `cmake --build build-compose-normal -j3` 成功；`ctest --test-dir build-compose-normal -LE graphics --output-on-failure -j3` 选定 347 项，346 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP。`git diff --check` 通过。
-- **边界与后续**：所有证据均为 Linux CPU/dummy/headless，不是 Vulkan/OpenGL、真实窗口或像素证明。独立规格与质量评审在本提交后进行，本条目不预先宣告其通过。完整 RED/GREEN、变异和命令记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-4-report.md`。
+- **边界与后续**：所有证据均为 Linux CPU/dummy/headless，不是 Vulkan/OpenGL、真实窗口或像素证明。独立规格评审发现 other-parent 通知问题，修复及 scoped 复审已通过，无遗留 Critical/Important/Minor。完整 RED/GREEN、变异和命令记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-4-report.md`。
 
 ## Compose + MVI Task 3 fix 1：reducer 输出与 State 清理（2026-11-12）
 
