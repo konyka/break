@@ -78,6 +78,30 @@ my_ret_t my_style_set(my_style_t* style, my_widget_state_t state, const char* ke
   return my_value_copy(&prop->value, value);
 }
 
+my_ret_t my_style_unset(my_style_t* style, my_widget_state_t state,
+                        const char* key) {
+  size_t i;
+  if (style == NULL || key == NULL || state >= MY_STATE_COUNT ||
+      strlen(key) >= MY_STYLE_KEY_LEN) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  for (i = 0; i < style->counts[state]; i++) {
+    if (strncmp(style->props[state][i].key, key, MY_STYLE_KEY_LEN) == 0) {
+      my_value_reset(&style->props[state][i].value);
+      style->counts[state]--;
+      if (i < style->counts[state]) {
+        memmove(&style->props[state][i], &style->props[state][i + 1],
+                (style->counts[state] - i) * sizeof(my_style_prop_t));
+      }
+      my_value_init(&style->props[state][style->counts[state]].value,
+                    style->allocator);
+      style->props[state][style->counts[state]].key[0] = '\0';
+      return MY_RET_OK;
+    }
+  }
+  return MY_RET_NOT_FOUND;
+}
+
 my_ret_t my_style_set_color(my_style_t* style, my_widget_state_t state,
                             const char* key, uint32_t rgba) {
   my_value_t v;

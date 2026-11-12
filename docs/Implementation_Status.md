@@ -1,3 +1,12 @@
+## Compose + MVI Task 4：myui 结构、通知与样式删除原语（2026-11-12）
+
+- **交付范围**：新增 `my_widget_reorder_child`、`my_widget_insert_child`、`my_widget_detach_child`、`my_widget_notify_child_removed`、`my_style_unset` 与 `my_widget_style_unset`。reorder 仅移动 darray 顺序；detach/insert 在事务与树之间转移同一份引用；remove 保持 notify→detach→unref。未实现 Task 5 adapter、Runtime/MVI、C++ DSL 或新 UI 框架。
+- **状态与清理边界**：真实 dummy window 的 A/B edit 验证同指针、文本 selection、focus/grab/IME 在 reorder、stage detach 和 reinsert 中保留，removed hooks 直到显式 notify 才执行。detached notify 为既有 blur/IME 回调提供短暂 former-parent 上下文，返回后仍保持 parent=NULL，避免 PAL IME 因找不到 window 而无法关闭。
+- **样式删除与校验**：`my_style_unset` 释放被删 value、压缩当前 state 数组并保留 normal fallback；widget wrapper 回退 theme，成功时在删除前后使覆盖区域失效，missing key 返回 `MY_RET_NOT_FOUND` 且不制造 dirty。越界、非 direct child、attached/self/cycle insert 均被拒绝，失败不转移引用。
+- **TDD 与变异**：缺 API 编译 RED 后，失败 stub 得到 1/6（五个新行为 RED）；最小实现首轮 5/6，detached PAL IME 断言暴露 former-parent 上下文缺失，修正后 6/6。remove+add reorder 变异得到 4/6并在 interaction 状态断言 RED；detach 提前 notify 变异得到 4/6并在 hook 时机与双重通知断言 RED；两者均精确恢复 6/6。现有 blur 不清 cursor/anchor，因此 remove+add 变异没有被虚报为 selection RED。
+- **最终验证**：普通 focused（新 primitives、widget paint、window manager/dispatcher、edit、Compose tree/remember/store）7/7；ASan+UBSan、`detect_leaks=1` 下同批 7/7，新 primitives 直接运行 6/6，无 sanitizer/leak 报告。完整 `cmake --build build-compose-normal -j3` 成功；`ctest --test-dir build-compose-normal -LE graphics --output-on-failure -j3` 选定 347 项，346 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP。`git diff --check` 通过。
+- **边界与后续**：所有证据均为 Linux CPU/dummy/headless，不是 Vulkan/OpenGL、真实窗口或像素证明。独立规格与质量评审在本提交后进行，本条目不预先宣告其通过。完整 RED/GREEN、变异和命令记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-4-report.md`。
+
 ## Compose + MVI Task 3 fix 1：reducer 输出与 State 清理（2026-11-12）
 
 - **两个 Important 修正**：`reduce_one` 现在先拒绝 reducer 直接伪造的 `batch.count>8`，再遍历 effects 或 request slots；reducer 返回 OK 且最终 size 非零、不超 16 KiB 后，立即把合法 size 写入 candidate 销毁元数据，覆盖 sticky batch、容量、request-id 和空 slot 等全部后续失败出口。reducer 自身失败或非法零/超大 size 不采用其输出，仍按原 clone size 清理。

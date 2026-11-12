@@ -21,10 +21,10 @@
  *  - Emitter listener names mirror event types: "pointer_down",
  *    "pointer_move", "pointer_up", "key_down", "key_up",
  *    "hover_enter", "hover_leave".
- * grabbed/focused/hovered are weak refs. The window root's removal hook clears
- * any reference into a subtree before remove_child() detaches it; clearing
- * focus emits blur (so IME state is released) and clearing hover restores the
- * default cursor.
+ * grabbed/focused/hovered are weak refs. Explicit removal notification clears
+ * any reference into a subtree (remove_child notifies before detaching; a
+ * staging detach does not notify). Clearing focus emits blur (so IME state is
+ * released) and clearing hover restores the default cursor.
  */
 #ifndef MY_EVENT_DISPATCH_H
 #define MY_EVENT_DISPATCH_H
@@ -52,7 +52,8 @@ bool my_event_dispatch(my_event_dispatcher_t* dispatcher, const my_event_t* even
 
 /**
  * @brief Forget all weak references (grab/focus) pointing at widget or
- * any of its descendants. Called when a subtree leaves the tree.
+ * any of its descendants. Called by removal notification; staging detach
+ * deliberately preserves these references.
  */
 void my_event_dispatcher_forget(my_event_dispatcher_t* dispatcher,
                                 my_widget_t* widget);

@@ -134,11 +134,57 @@ void my_widget_destroy(my_widget_t* widget) {
 /* ---------------- tree ---------------- */
 
 my_ret_t my_widget_add_child(my_widget_t* parent, my_widget_t* child) {
+  my_ret_t ret;
+  my_widget_ref(child);
+  ret = my_widget_insert_child(parent, child, my_widget_child_count(parent));
+  if (ret != MY_RET_OK) {
+    my_widget_unref(child);
+  }
+  return ret;
+}
+
+my_ret_t my_widget_reorder_child(my_widget_t* parent, my_widget_t* child,
+                                 size_t index) {
+  size_t i, n;
+  if (parent == NULL || child == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  n = my_darray_size(parent->children);
+  if (index >= n) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  for (i = 0; i < n; i++) {
+    if (my_darray_get(parent->children, i) == child) {
+      if (i == index) {
+        return MY_RET_OK;
+      }
+      if (i < index) {
+        memmove(parent->children->items + i, parent->children->items + i + 1,
+                (index - i) * sizeof(void*));
+      } else {
+        memmove(parent->children->items + index + 1,
+                parent->children->items + index,
+                (i - index) * sizeof(void*));
+      }
+      parent->children->items[index] = child;
+      my_widget_request_layout(parent);
+      my_widget_invalidate(parent, NULL);
+      return MY_RET_OK;
+    }
+  }
+  return MY_RET_NOT_FOUND;
+}
+
+my_ret_t my_widget_insert_child(my_widget_t* parent, my_widget_t* child,
+                                size_t index) {
   my_widget_t* ancestor;
+  size_t n;
+  my_ret_t ret;
   if (parent == NULL || child == NULL || child == parent) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (child->parent != NULL) {
+  n = my_darray_size(parent->children);
+  if (index > n || child->parent != NULL) {
     return MY_RET_INVALID_PARAMS;
   }
   for (ancestor = parent; ancestor != NULL; ancestor = ancestor->parent) {
@@ -146,10 +192,16 @@ my_ret_t my_widget_add_child(my_widget_t* parent, my_widget_t* child) {
       return MY_RET_INVALID_PARAMS;
     }
   }
-  if (my_darray_push(parent->children, my_widget_ref(child)) != MY_RET_OK) {
-    my_widget_unref(child);
-    return MY_RET_OOM;
+  ret = my_darray_push(parent->children, child);
+  if (ret != MY_RET_OK) {
+    return ret;
   }
+  if (index < n) {
+    memmove(parent->children->items + index + 1,
+            parent->children->items + index,
+            (n - index) * sizeof(void*));
+  }
+  parent->children->items[index] = child;
   child->parent = parent;
   my_widget_request_layout(parent);
   my_widget_mark_layout_path(child);
@@ -157,8 +209,13 @@ my_ret_t my_widget_add_child(my_widget_t* parent, my_widget_t* child) {
   return MY_RET_OK;
 }
 
-my_ret_t my_widget_remove_child(my_widget_t* parent, my_widget_t* child) {
+my_ret_t my_widget_detach_child(my_widget_t* parent, my_widget_t* child,
+                                my_widget_t** detached) {
   size_t i, n;
+  if (detached == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  *detached = NULL;
   if (parent == NULL || child == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
@@ -166,21 +223,53 @@ my_ret_t my_widget_remove_child(my_widget_t* parent, my_widget_t* child) {
   for (i = 0; i < n; i++) {
     if (my_darray_get(parent->children, i) == child) {
       my_widget_invalidate(parent, NULL);
-      if (parent->child_removed_hook != NULL) {
-        parent->child_removed_hook(parent, child);
-      }
-      my_widget_t* root = my_widget_root(parent);
-      if (root != NULL && root->removed_hook != NULL) {
-        root->removed_hook(root, child);
-      }
       my_darray_remove_at(parent->children, i);
       child->parent = NULL;
       my_widget_request_layout(parent);
-      my_widget_unref(child);
+      *detached = child;
       return MY_RET_OK;
     }
   }
   return MY_RET_NOT_FOUND;
+}
+
+void my_widget_notify_child_removed(my_widget_t* parent, my_widget_t* child) {
+  my_widget_t* root;
+  bool restore_detached_parent;
+  if (parent == NULL || child == NULL) {
+    return;
+  }
+  restore_detached_parent = child->parent == NULL;
+  if (restore_detached_parent) {
+    child->parent = parent;
+  }
+  if (parent->child_removed_hook != NULL) {
+    parent->child_removed_hook(parent, child);
+  }
+  root = my_widget_root(parent);
+  if (root != NULL && root->removed_hook != NULL) {
+    root->removed_hook(root, child);
+  }
+  if (restore_detached_parent && child->parent == parent) {
+    child->parent = NULL;
+  }
+}
+
+my_ret_t my_widget_remove_child(my_widget_t* parent, my_widget_t* child) {
+  my_widget_t* detached;
+  my_ret_t ret;
+  if (parent == NULL || child == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (child->parent != parent) {
+    return MY_RET_NOT_FOUND;
+  }
+  my_widget_notify_child_removed(parent, child);
+  ret = my_widget_detach_child(parent, child, &detached);
+  if (ret == MY_RET_OK) {
+    my_widget_unref(detached);
+  }
+  return ret;
 }
 
 my_widget_t* my_widget_find_child(my_widget_t* parent, const char* name) {

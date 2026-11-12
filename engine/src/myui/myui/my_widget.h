@@ -75,7 +75,8 @@ struct my_layouter_t;
 typedef void (*my_widget_removed_hook_t)(my_widget_t* root,
                                          my_widget_t* removed);
 
-/** @brief Parent-local hook invoked before a direct child is detached. */
+/** @brief Parent-local hook invoked by explicit removal notification;
+ * remove_child invokes it before detaching. */
 typedef void (*my_widget_child_removed_hook_t)(my_widget_t* parent,
                                                my_widget_t* child);
 
@@ -159,8 +160,30 @@ static inline void my_widget_unref(my_widget_t* widget) {
  * an operation that would create a cycle, is rejected.
  */
 my_ret_t my_widget_add_child(my_widget_t* parent, my_widget_t* child);
+
+/** @brief Move a direct child to its final zero-based index without removal
+ * notification or any parent/reference change. */
+my_ret_t my_widget_reorder_child(my_widget_t* parent, my_widget_t* child,
+                                 size_t index);
+
+/** @brief Insert a detached child at index (index <= count), consuming the
+ * reference supplied by the caller only on success. */
+my_ret_t my_widget_insert_child(my_widget_t* parent, my_widget_t* child,
+                                size_t index);
+
+/** @brief Detach a direct child without removal notification, transferring
+ * the tree's reference to *detached on success. */
+my_ret_t my_widget_detach_child(my_widget_t* parent, my_widget_t* child,
+                                my_widget_t** detached);
+
+/** @brief Run the parent-local and root removal hooks without changing the
+ * children array or references. A staged child receives its former parent as
+ * hook context so existing blur/IME cleanup can find the window, then is
+ * restored to detached. */
+void my_widget_notify_child_removed(my_widget_t* parent, my_widget_t* child);
+
 /**
- * @brief Remove child (releases the tree's reference).
+ * @brief Remove child (notify, detach, then release the tree's reference).
  *
  * The parent is invalidated and layout is requested through the root, so both
  * the old child pixels and the post-layout arrangement are covered by damage.
@@ -284,6 +307,11 @@ my_ret_t my_widget_off(my_widget_t* widget, uint32_t id);
 /** @brief Set a local style override (highest priority). */
 my_ret_t my_widget_style_set(my_widget_t* widget, my_widget_state_t state,
                              const char* key, const my_value_t* value);
+
+/** @brief Remove a local override, invalidating its old and resolved
+ * coverage; missing keys return MY_RET_NOT_FOUND. */
+my_ret_t my_widget_style_unset(my_widget_t* widget, my_widget_state_t state,
+                               const char* key);
 
 /** @brief Resolve a style value: local > theme name match > theme type
  * match; state falls back to normal. NULL when unresolved. */

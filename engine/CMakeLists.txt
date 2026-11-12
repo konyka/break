@@ -3332,6 +3332,18 @@ endif()
     target_link_libraries(test_myui_edit PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_edit COMMAND test_myui_edit)
 
+    add_executable(test_mycompose_widget_primitives
+        tests/test_mycompose_widget_primitives.c
+        src/myui/mypal/dummy/my_pal_dummy.c)
+    target_include_directories(test_mycompose_widget_primitives PRIVATE
+        ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_mycompose_widget_primitives PRIVATE
+        myui_core m Threads::Threads)
+    add_test(NAME test_mycompose_widget_primitives
+        COMMAND test_mycompose_widget_primitives)
+    set_tests_properties(test_mycompose_widget_primitives PROPERTIES
+        LABELS "headless;compose")
+
     add_executable(test_myui_echart_option tests/test_myui_echart_option.c)
     target_include_directories(test_myui_echart_option PRIVATE
         ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)

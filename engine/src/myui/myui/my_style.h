@@ -52,6 +52,11 @@ void my_style_reset(my_style_t* style);
 my_ret_t my_style_set(my_style_t* style, my_widget_state_t state, const char* key,
                       const my_value_t* value);
 
+/** @brief Remove a property from one exact state slot and compact the slot.
+ * Returns MY_RET_NOT_FOUND when the key is absent. */
+my_ret_t my_style_unset(my_style_t* style, my_widget_state_t state,
+                        const char* key);
+
 /** @brief Convenience: set a color (0xRRGGBBAA). */
 my_ret_t my_style_set_color(my_style_t* style, my_widget_state_t state,
                             const char* key, uint32_t rgba);

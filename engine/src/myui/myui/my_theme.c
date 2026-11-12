@@ -1376,6 +1376,34 @@ my_ret_t my_widget_style_set(my_widget_t* widget, my_widget_state_t state,
   return ret;
 }
 
+my_ret_t my_widget_style_unset(my_widget_t* widget, my_widget_state_t state,
+                               const char* key) {
+  size_t i;
+  my_ret_t ret;
+  if (widget == NULL || key == NULL || state >= MY_STATE_COUNT ||
+      strlen(key) >= MY_STYLE_KEY_LEN) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (widget->local_style == NULL) {
+    return MY_RET_NOT_FOUND;
+  }
+  for (i = 0; i < widget->local_style->counts[state]; i++) {
+    if (strncmp(widget->local_style->props[state][i].key, key,
+                MY_STYLE_KEY_LEN) == 0) {
+      break;
+    }
+  }
+  if (i == widget->local_style->counts[state]) {
+    return MY_RET_NOT_FOUND;
+  }
+  my_widget_invalidate(widget, NULL);
+  ret = my_style_unset(widget->local_style, state, key);
+  if (ret == MY_RET_OK) {
+    my_widget_invalidate(widget, NULL);
+  }
+  return ret;
+}
+
 const my_value_t* my_widget_style_get(my_widget_t* widget,
                                       my_widget_state_t state, const char* key) {
   my_widget_t* w;
