@@ -37,7 +37,7 @@ def run_tag_script(script, tag, work):
     if direct:
         script = script.replace("${{ inputs.tag }}", tag)
     result = subprocess.run([BASH, "-c", script], text=True,
-                            capture_output=True, env=env)
+                            capture_output=True, env=env, encoding="utf-8")
     return result, marker.exists(), direct
 
 
@@ -61,7 +61,7 @@ fi
 exec /usr/bin/sort "$@"
 """)
     stock_sort.chmod(stock_sort.stat().st_mode | stat.S_IXUSR)
-    workflow = workflow_path.read_text()
+    workflow = workflow_path.read_text(encoding="utf-8")
     script = validation_script(workflow)
     failures = []
 

@@ -4355,7 +4355,56 @@ endif()
     set_tests_properties(test_ci_image_contract PROPERTIES
         LABELS "headless;platform_contract")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    find_program(BASH_EXECUTABLE NAMES bash REQUIRED)
+    # Workflow contracts execute POSIX bash. On Windows, System32\bash.exe is
+    # only the WSL launcher: with no distro disk it exits before -c runs, and
+    # its UTF-8 diagnostic is not a GBK-decodable script result. Keep an
+    # explicit working bash, otherwise use the bash that ships next to git.
+    function(_engine_probe_posix_bash candidate ok_var)
+        set(${ok_var} FALSE PARENT_SCOPE)
+        if(NOT candidate OR NOT EXISTS "${candidate}")
+            return()
+        endif()
+        execute_process(
+            COMMAND "${candidate}" -c "echo posix-bash-ok"
+            RESULT_VARIABLE _probe_rc
+            OUTPUT_VARIABLE _probe_out
+            ERROR_VARIABLE _probe_err
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            TIMEOUT 20)
+        if(_probe_rc EQUAL 0 AND _probe_out MATCHES "^posix-bash-ok")
+            set(${ok_var} TRUE PARENT_SCOPE)
+        endif()
+    endfunction()
+    find_program(BASH_EXECUTABLE NAMES bash)
+    set(_engine_bash_ok FALSE)
+    if(BASH_EXECUTABLE)
+        _engine_probe_posix_bash("${BASH_EXECUTABLE}" _engine_bash_ok)
+    endif()
+    if(WIN32 AND NOT _engine_bash_ok)
+        find_program(_engine_git_for_bash NAMES git)
+        if(_engine_git_for_bash)
+            get_filename_component(_engine_git_dir "${_engine_git_for_bash}" DIRECTORY)
+            get_filename_component(_engine_git_root "${_engine_git_dir}" DIRECTORY)
+            foreach(_engine_bash_candidate
+                    "${_engine_git_root}/bin/bash.exe"
+                    "${_engine_git_root}/usr/bin/bash.exe"
+                    "${_engine_git_dir}/bash.exe")
+                _engine_probe_posix_bash("${_engine_bash_candidate}" _engine_bash_ok)
+                if(_engine_bash_ok)
+                    set(BASH_EXECUTABLE "${_engine_bash_candidate}" CACHE FILEPATH
+                        "POSIX bash used by workflow contract tests" FORCE)
+                    break()
+                endif()
+            endforeach()
+        endif()
+        unset(_engine_git_for_bash CACHE)
+    endif()
+    if(NOT BASH_EXECUTABLE OR NOT _engine_bash_ok)
+        message(FATAL_ERROR
+            "A working POSIX bash is required for workflow contract tests. "
+            "Resolved '${BASH_EXECUTABLE}', which did not execute 'echo posix-bash-ok'. "
+            "Windows System32 bash.exe is the WSL launcher and is not a substitute.")
+    endif()
     add_test(NAME test_ci_image_fix2
         COMMAND "${Python3_EXECUTABLE}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_fix2.py
             ${CMAKE_CURRENT_SOURCE_DIR}/..

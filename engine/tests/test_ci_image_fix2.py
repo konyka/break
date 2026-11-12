@@ -126,7 +126,8 @@ def run(cmd, env, cwd):
         return subprocess.CompletedProcess(
             cmd, 127, "", "simulated Win32 CreateProcess cannot execute a shell script")
     try:
-        return subprocess.run(cmd, text=True, capture_output=True, env=env, cwd=cwd)
+        return subprocess.run(
+            cmd, text=True, capture_output=True, env=env, cwd=cwd, encoding="utf-8")
     except OSError as exc:
         return subprocess.CompletedProcess(cmd, 127, "", str(exc))
 
@@ -148,14 +149,14 @@ def check_windows_registration(root, work, failures):
         "-DBREAK_ENABLE_CRASH=OFF", "-DMYUI_PAL=dummy",
         f"-DPython3_EXECUTABLE={python_launcher}",
         f"-DBASH_EXECUTABLE={BASH}",
-    ], text=True, capture_output=True)
+    ], text=True, capture_output=True, encoding="utf-8")
     if configure.returncode != 0:
         failures.append(
             f"Windows nested configure failed: {configure.stdout}{configure.stderr}")
         return
     listing = subprocess.run(
         ["ctest", "--test-dir", str(build), "--show-only=json-v1"],
-        text=True, capture_output=True)
+        text=True, capture_output=True, encoding="utf-8")
     if listing.returncode != 0:
         failures.append(f"Windows CTest JSON listing failed: {listing.stderr}")
         return

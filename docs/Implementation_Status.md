@@ -1,3 +1,10 @@
+## 本机 Windows 验收（2026-11-12）
+
+- 在 `core-app-ci-validation` 的 `0ce1c8a8` 上用 Clang 22.1.6、Ninja 和 `ENGINE_RHI_BACKEND=d3d12` 配置。PATH 末尾放着 MSYS `cc.exe`，父 C 编译器是 `D:/Program Files/LLVM/bin/clang.exe`。归档 compat 的 C 编译器按 REALPATH 跟随该父编译器，没有落到 `cc.exe`。
+- direct baker 退出 0，`test_core_app_assets` 为 **17/17**，process launch probe 与 baker diagnostics 通过。`test_core_app_contract_compat` 通过，日志含 `D3D12Core.dll missing rejected; restored; SHA-256 verified` 和 `core_app compatibility contract passed`。WARP runtime 为 **86/86**，debug layer 0 errors / 0 warnings，没有 `outside declared`。D3D12 `graphics` 标签 7/7 通过。WARP 与这些契约测试都不是独立显卡证明。
+- 非图形、非 fuzz CTest 为 **338 项入选、334 PASS、4 SKIP、0 FAIL**。四个 SKIP 是三个 nm 合同（非 MinGW 的 Windows 沿用既有 SKIP）和悬空 `.git`（当前进程不能创建 symlink，夹具按 UNVERIFIED 返回 77）。并行 CTest 使用 `-j3`。
+- 本机最初失败的是 `test_ci_image_fix2` 和 `test_rollback_input_contract`。`find_program(bash)` 选中 `C:/Windows/System32/bash.exe`，它只是 WSL 启动器；本机发行版磁盘不存在时，脚本没有执行，UTF-8 诊断又被 GBK 文本模式读成空 stdout。现在只接受能执行 `echo posix-bash-ok` 的 bash，探测失败时改用 git 同目录的 bash；本机解析为 `D:/Program Files/Git/bin/bash.exe`。两个 Python 合同的子进程输出显式使用 `encoding="utf-8"`。修复后这两项通过，上面的 338 项结果是修复后的完整重跑。这是本机 Windows 证据，不是 GitHub Actions 复跑，也不是 macOS 复跑。
+
 ## 当前同步：Core App 上游修复合并（2026-11-12）
 
 - 最终实现由 Windows `_spawnv(_P_WAIT)` 直接启动真实 baker，executable/output 参数按 CRT 规则引用，并保留 `run_baker(output, slot)`、`launch.command` 与原始 `launch.spawnv` 诊断；POSIX 仍使用原 `system()` 和 `launch.system`。A/B 短路、长度失败、11 资产逐字节比较与含空格输出目录回归均保留，空格用例使用 `"space"` 诊断 slot。
