@@ -12,19 +12,23 @@
 #include <scene/scene_serial.h>
 #include <script/break_lua.h>
 
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <process.h>
+#include <windows.h>
+#else
 #include <signal.h>
 #include <sys/resource.h>
-#include <unistd.h>
-#endif
-#if defined(CORE_APP_TEST_WRAP_FS)
-#include <errno.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #ifndef CORE_APP_ASSET_BAKE_EXECUTABLE
@@ -134,27 +138,111 @@ static void join_path(char *out, usize cap, const char *dir, const char *name) {
     if (n < 0 || (usize)n >= cap) abort();
 }
 
-static int clear_directory(const char *dir) {
+typedef struct {
+    unsigned long os_error;
+    int crt_error;
+} CoreAppTestError;
+
+static CoreAppTestError core_app_test_os_error(void) {
+    CoreAppTestError error;
+    error.crt_error = errno;
+#if defined(_WIN32)
+    error.os_error = (unsigned long)GetLastError();
+#else
+    error.os_error = 0;
+#endif
+    return error;
+}
+
+static CoreAppTestError core_app_test_crt_error(void) {
+    CoreAppTestError error = {0, errno};
+    return error;
+}
+
+static void core_app_test_report(const char *stage, const char *slot, const char *step,
+                                 const char *path, i64 raw_result,
+                                 CoreAppTestError error) {
+    if (!slot) return;
+    fprintf(stderr,
+            "FAIL: CORE_APP_TEST stage=%s slot=%s step=%s path=%s raw=%lld "
+            "os_error=%lu errno=%d\n",
+            stage, slot, step, path, (long long)raw_result, error.os_error,
+            error.crt_error);
+}
+
+static void core_app_test_report_command(const char *slot, const char *step,
+                                         const char *command, const char *path,
+                                         i64 raw_result, CoreAppTestError error) {
+    fprintf(stderr,
+            "FAIL: CORE_APP_TEST stage=launch slot=%s step=%s command=%s path=%s "
+            "raw=%lld os_error=%lu errno=%d\n",
+            slot, step, command, path, (long long)raw_result, error.os_error,
+            error.crt_error);
+}
+
+static int clear_directory(const char *dir, const char *slot) {
     PlatformDirEntry entries[32];
     u32 count = 0;
-    if (!platform_list_dir(dir, entries, 32, &count)) return -1;
-    if (count > 32u) return -1;
+    bool list_result = platform_list_dir(dir, entries, 32, &count);
+    CoreAppTestError list_error = core_app_test_os_error();
+    if (!list_result) {
+        core_app_test_report("prepare", slot, "prepare.clear_directory", dir,
+                             (i64)list_result, list_error);
+        return -1;
+    }
+    if (count > 32u) {
+        CoreAppTestError error = {0, 0};
+        core_app_test_report("prepare", slot, "prepare.clear_directory", dir, -1, error);
+        return -1;
+    }
     for (u32 i = 0; i < count; ++i) {
         char path[1024];
-        if (entries[i].is_dir) return -1;
+        if (entries[i].is_dir) {
+            CoreAppTestError error = {0, 0};
+            core_app_test_report("prepare", slot, "prepare.clear_directory", dir, -1,
+                                 error);
+            return -1;
+        }
         join_path(path, sizeof(path), dir, entries[i].name);
-        if (remove(path) != 0) return -1;
+        int remove_result = remove(path);
+        CoreAppTestError remove_error = core_app_test_crt_error();
+        if (remove_result != 0) {
+            core_app_test_report("prepare", slot, "prepare.remove", path,
+                                 (i64)remove_result, remove_error);
+            return -1;
+        }
     }
     return 0;
 }
 
-static int prepare_directory(const char *dir) {
-    if (platform_file_size(dir, &(u64){0u})) return -1;
-    if (!platform_mkdir(dir)) {
-        if (clear_directory(dir) != 0) return -1;
-        if (!platform_mkdir(dir)) return -1;
+static int prepare_directory_with_slot(const char *dir, const char *slot) {
+    bool file_result = platform_file_size(dir, &(u64){0u});
+    if (file_result) {
+        CoreAppTestError error = {0, 0};
+        core_app_test_report("prepare", slot, "prepare.file_size", dir,
+                             (i64)file_result, error);
+        return -1;
     }
-    return clear_directory(dir);
+    bool mkdir_result = platform_mkdir(dir);
+    if (!mkdir_result) {
+        if (clear_directory(dir, slot) != 0) return -1;
+        mkdir_result = platform_mkdir(dir);
+        CoreAppTestError mkdir_error = core_app_test_os_error();
+        if (!mkdir_result) {
+            core_app_test_report("prepare", slot, "prepare.platform_mkdir", dir,
+                                 (i64)mkdir_result, mkdir_error);
+            return -1;
+        }
+    }
+    return clear_directory(dir, slot);
+}
+
+static int prepare_directory(const char *dir) {
+    return prepare_directory_with_slot(dir, NULL);
+}
+
+static int prepare_asset_directory(const char *dir, const char *slot) {
+    return prepare_directory_with_slot(dir, slot);
 }
 
 static int test_write_checkpoint_file(const char *dir, const char *name,
@@ -167,6 +255,26 @@ static int test_write_checkpoint_file(const char *dir, const char *name,
     if (fclose(fp) != 0) ok = false;
     return ok ? 0 : -1;
 }
+
+#if !defined(_WIN32)
+static int test_hard_link_checkpoint_file(const char *dir, const char *name,
+                                          const char *alias) {
+    char path[1024];
+    char alias_path[1024];
+    struct stat file_status;
+    struct stat alias_status;
+    join_path(path, sizeof(path), dir, name);
+    join_path(alias_path, sizeof(alias_path), dir, alias);
+    if (stat(path, &file_status) != 0) return -1;
+    if (stat(alias_path, &alias_status) != 0) {
+        if (errno != ENOENT) return -1;
+        if (link(path, alias_path) != 0 && errno != EEXIST) return -1;
+        if (stat(alias_path, &alias_status) != 0) return -1;
+    }
+    return file_status.st_dev == alias_status.st_dev &&
+                   file_status.st_ino == alias_status.st_ino ? 0 : -1;
+}
+#endif
 
 static u8 *test_read_file(const char *dir, const char *name, usize cap,
                           usize *out_size) {
@@ -261,24 +369,66 @@ static int file_exists(const char *dir, const char *name) {
     return 1;
 }
 
-static int run_baker(const char *output) {
+static int run_baker(const char *output, const char *slot) {
     char command[1600];
+    command[0] = '\0';
     int n = snprintf(command, sizeof(command), "\"%s\" --output \"%s\"",
                      CORE_APP_ASSET_BAKE_EXECUTABLE, output);
-    if (n < 0 || (usize)n >= sizeof(command)) return -1;
-    return system(command);
+    if (n < 0 || (usize)n >= sizeof(command)) {
+        CoreAppTestError error = core_app_test_os_error();
+        core_app_test_report_command(slot, "launch.command", command, output, (i64)n,
+                                     error);
+        return -1;
+    }
+#if defined(_WIN32)
+    char executable_arg[1024];
+    char output_arg[1024];
+    int executable_length = snprintf(executable_arg, sizeof(executable_arg), "\"%s\"",
+                                     CORE_APP_ASSET_BAKE_EXECUTABLE);
+    int output_length = snprintf(output_arg, sizeof(output_arg), "\"%s\"", output);
+    if (executable_length < 0 || (usize)executable_length >= sizeof(executable_arg) ||
+        output_length < 0 || (usize)output_length >= sizeof(output_arg)) {
+        int length_result =
+            executable_length < 0 || (usize)executable_length >= sizeof(executable_arg)
+                ? executable_length
+                : output_length;
+        CoreAppTestError error = core_app_test_os_error();
+        core_app_test_report_command(slot, "launch.command", command, output,
+                                     (i64)length_result, error);
+        return -1;
+    }
+    const char *argv[] = {executable_arg, "--output", output_arg, NULL};
+    int result = (int)_spawnv(_P_WAIT, CORE_APP_ASSET_BAKE_EXECUTABLE, argv);
+    CoreAppTestError error = core_app_test_os_error();
+    if (result != 0)
+        core_app_test_report_command(slot, "launch.spawnv", command, output,
+                                     (i64)result, error);
+#else
+    int result = system(command);
+    CoreAppTestError error = core_app_test_os_error();
+    if (result != 0)
+        core_app_test_report_command(slot, "launch.system", command, output,
+                                     (i64)result, error);
+#endif
+    return result;
 }
 
 static int ensure_baked(void) {
     if (g_bake_result >= 0) return g_bake_result;
     test_tmp(g_assets_a, sizeof(g_assets_a), "core_app_assets_a");
     test_tmp(g_assets_b, sizeof(g_assets_b), "core_app_assets_b");
-    if (prepare_directory(g_assets_a) != 0 || prepare_directory(g_assets_b) != 0) {
+    int prepare_result = prepare_asset_directory(g_assets_a, "A");
+    if (prepare_result != 0) {
         g_bake_result = 1;
         return g_bake_result;
     }
-    g_bake_result = run_baker(g_assets_a);
-    if (g_bake_result == 0) g_bake_result = run_baker(g_assets_b);
+    prepare_result = prepare_asset_directory(g_assets_b, "B");
+    if (prepare_result != 0) {
+        g_bake_result = 1;
+        return g_bake_result;
+    }
+    g_bake_result = run_baker(g_assets_a, "A");
+    if (g_bake_result == 0) g_bake_result = run_baker(g_assets_b, "B");
     return g_bake_result;
 }
 
@@ -356,6 +506,18 @@ TEST(baker_emits_every_formal_asset_byte_identically) {
     ASSERT_EQ(ensure_baked(), 0);
     for (usize i = 0; i < k_asset_count; ++i)
         ASSERT_TRUE(files_equal(g_assets_a, g_assets_b, k_asset_names[i]));
+}
+
+TEST(baker_supports_spaces_in_output_path) {
+    ASSERT_EQ(ensure_baked(), 0);
+    char output[512];
+    join_path(output, sizeof(output), g_assets_a, "directory with spaces");
+    ASSERT_EQ(prepare_asset_directory(output, "space"), 0);
+    ASSERT_EQ(run_baker(output, "space"), 0);
+    for (usize i = 0; i < k_asset_count; ++i)
+        ASSERT_TRUE(files_equal(g_assets_b, output, k_asset_names[i]));
+    ASSERT_EQ(clear_directory(output, "space"), 0);
+    ASSERT_EQ(TEST_RMDIR(output), 0);
 }
 
 typedef struct {
@@ -848,6 +1010,25 @@ TEST(checkpoint_manifest_name_length_overload_is_distinct_from_corruption) {
     ASSERT_EQ(TEST_RMDIR(dir), 0);
 }
 
+static void test_assert_reserved_manifest_alias(const char *dir,
+        CoreAppCheckpointFile *file, u64 old_hash, const u8 *old_manifest,
+        usize old_manifest_size, u8 **new_manifest) {
+    *new_manifest = NULL;
+#if !defined(_WIN32)
+    ASSERT_EQ(test_hard_link_checkpoint_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                             file->name), 0);
+#endif
+    ASSERT_EQ(core_app_checkpoint_write_manifest(dir, file, 1u, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(core_app_checkpoint_manifest_hash(dir), old_hash);
+    usize new_manifest_size = 0u;
+    *new_manifest = test_read_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                   TEST_MANIFEST_CAP, &new_manifest_size);
+    ASSERT_NOT_NULL(*new_manifest);
+    ASSERT_EQ(new_manifest_size, old_manifest_size);
+    ASSERT_EQ(memcmp(*new_manifest, old_manifest, old_manifest_size), 0);
+}
+
 TEST(checkpoint_reserved_manifest_aliases_are_rejected_without_touching_old_generation) {
     static const char *const aliases[] = {"MANIFEST.CORE", "manifest.core."};
     const u8 payload[] = {1u, 2u, 3u, 4u};
@@ -861,13 +1042,18 @@ TEST(checkpoint_reserved_manifest_aliases_are_rejected_without_touching_old_gene
         ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
         ASSERT_EQ(core_app_checkpoint_write_manifest(dir, &file, 1u, 1u), BREAK_RUNTIME_OK);
         u64 old_hash = core_app_checkpoint_manifest_hash(dir);
+        usize old_manifest_size = 0u;
+        u8 *old_manifest = test_read_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                          TEST_MANIFEST_CAP, &old_manifest_size);
+        ASSERT_NOT_NULL(old_manifest);
         strcpy(file.name, aliases[i]);
-#if !defined(_WIN32)
-        ASSERT_EQ(test_write_checkpoint_file(dir, file.name, payload, sizeof(payload)), 0);
-#endif
-        ASSERT_EQ(core_app_checkpoint_write_manifest(dir, &file, 1u, 2u),
-                  BREAK_RUNTIME_INVALID);
-        ASSERT_EQ(core_app_checkpoint_manifest_hash(dir), old_hash);
+        u8 *new_manifest = NULL;
+        int failures_before = g_test_fail;
+        test_assert_reserved_manifest_alias(dir, &file, old_hash, old_manifest,
+                                            old_manifest_size, &new_manifest);
+        free(new_manifest);
+        free(old_manifest);
+        if (g_test_fail != failures_before) return;
         ASSERT_EQ(core_app_checkpoint_probe(dir), BREAK_RUNTIME_OK);
         ASSERT_TRUE(file_exists(dir, "runtime_1.bin"));
         ASSERT_EQ(prepare_directory(dir), 0);
@@ -1202,6 +1388,7 @@ TEST(checkpoint_rename_failure_is_not_committed_and_preserves_old_generation) {
 
 TEST_MAIN_BEGIN()
     RUN_TEST(baker_emits_every_formal_asset_byte_identically);
+    RUN_TEST(baker_supports_spaces_in_output_path);
     RUN_TEST(formal_assets_match_fresh_baker);
     RUN_TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader);
     RUN_TEST(flow_deserializes_enter_delay_add_item_chain);
