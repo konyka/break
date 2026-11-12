@@ -25,7 +25,7 @@ def scalar(text):
 
 
 def parse_workflow(path):
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
 
     def indentation(line):
         return len(line) - len(line.lstrip(" "))
