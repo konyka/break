@@ -1,6 +1,6 @@
 foreach(var ENGINE_SOURCE_DIR REPOSITORY_ROOT PLAN_FILE DESIGN_FILE GIT_EXECUTABLE
         CORE_APP NETWORK_ENABLED CTEST_EXECUTABLE WORK NESTED_ENGINE_RHI_BACKEND
-        NESTED_CMAKE_GENERATOR)
+        NESTED_CMAKE_GENERATOR NM_CAPABLE)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required")
     endif()
@@ -122,6 +122,8 @@ foreach(relative_path IN ITEMS
         CMakeLists.txt
         tests/test_core_app_target_contract.cmake
         tests/test_core_app_nested_contract.cmake
+        tests/test_core_app_nm_symbol_missing.cmake
+        tests/test_core_app_nm_filter.cmake
         tests/test_core_app_formal_assets.cmake
         tests/test_core_app_naming_contract.cmake
         tests/test_core_app_contract_compat.cmake)
@@ -421,7 +423,48 @@ if(EXISTS "${archive_build}/CMakeCache.txt")
         endif()
     endif()
 endif()
+if(NM_CAPABLE AND (NOT DEFINED NM OR "${NM}" STREQUAL ""))
+    message(FATAL_ERROR "NM is required when NM_CAPABLE=TRUE")
+endif()
+if(NOT EXISTS "${archive_build}/CTestTestfile.cmake")
+    record_error("archive configure did not generate CTestTestfile.cmake")
+endif()
 if(EXISTS "${archive_build}/CTestTestfile.cmake")
+    set(archive_build_config_args)
+    if(NOT "${NESTED_CTEST_CONFIG}" STREQUAL "")
+        list(APPEND archive_build_config_args --config "${NESTED_CTEST_CONFIG}")
+    endif()
+    run_case(archive_nested_build PASS "${CMAKE_COMMAND}"
+        --build "${archive_build}" --target core_app ${archive_build_config_args} -j3)
+    set(archive_nested_root "${archive_build}/core_app_contract_nested")
+    run_case(archive_nested PASS "${CMAKE_COMMAND}" -E env
+        "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
+        --test-dir "${archive_build}" ${nested_ctest_config_args}
+        -R "^test_core_app_nested_contract$" -V)
+    expect_log_contains(archive_nested "100% tests passed, 0 tests failed out of 1")
+    expect_log_contains(archive_nested
+        "core_app nested backend, real SDK forwarding, wrapped-nm, and false-green contracts passed")
+    expect_log_lacks(archive_nested "Not Run")
+    expect_log_lacks(archive_nested "NOT_AVAILABLE")
+    expect_log_lacks(archive_nested "No tests were found")
+    foreach(relative_path IN ITEMS
+            tests/test_core_app_nm_symbol_missing.cmake
+            tests/test_core_app_nm_filter.cmake)
+        file(SHA256 "${ENGINE_SOURCE_DIR}/${relative_path}" current_nm_hash)
+        file(SHA256 "${archive_engine}/${relative_path}" archive_nm_hash)
+        if(NOT current_nm_hash STREQUAL archive_nm_hash)
+            record_error("archive_nested: stale overlay for ${relative_path}")
+        endif()
+    endforeach()
+    if(NM_CAPABLE)
+        foreach(case_name IN ITEMS wrapped false-green)
+            if(NOT EXISTS "${archive_nested_root}/${case_name}/filtered-symbols.txt")
+                record_error("archive_nested: ${case_name} did not execute the real nm wrapper")
+            endif()
+        endforeach()
+    else()
+        expect_log_contains(archive_nested "UNVERIFIED: core_app symbol scan skipped:")
+    endif()
     file(READ "${archive_build}/CTestTestfile.cmake" archive_ctest)
     foreach(test_name IN ITEMS test_core_app_nm_missing test_core_app_nm_unsupported
             test_core_app_formal_asset_tracking test_core_app_naming_contract)

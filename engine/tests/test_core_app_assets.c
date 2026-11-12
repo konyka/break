@@ -1010,6 +1010,25 @@ TEST(checkpoint_manifest_name_length_overload_is_distinct_from_corruption) {
     ASSERT_EQ(TEST_RMDIR(dir), 0);
 }
 
+static void test_assert_reserved_manifest_alias(const char *dir,
+        CoreAppCheckpointFile *file, u64 old_hash, const u8 *old_manifest,
+        usize old_manifest_size, u8 **new_manifest) {
+    *new_manifest = NULL;
+#if !defined(_WIN32)
+    ASSERT_EQ(test_hard_link_checkpoint_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                             file->name), 0);
+#endif
+    ASSERT_EQ(core_app_checkpoint_write_manifest(dir, file, 1u, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(core_app_checkpoint_manifest_hash(dir), old_hash);
+    usize new_manifest_size = 0u;
+    *new_manifest = test_read_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
+                                   TEST_MANIFEST_CAP, &new_manifest_size);
+    ASSERT_NOT_NULL(*new_manifest);
+    ASSERT_EQ(new_manifest_size, old_manifest_size);
+    ASSERT_EQ(memcmp(*new_manifest, old_manifest, old_manifest_size), 0);
+}
+
 TEST(checkpoint_reserved_manifest_aliases_are_rejected_without_touching_old_generation) {
     static const char *const aliases[] = {"MANIFEST.CORE", "manifest.core."};
     const u8 payload[] = {1u, 2u, 3u, 4u};
@@ -1028,21 +1047,13 @@ TEST(checkpoint_reserved_manifest_aliases_are_rejected_without_touching_old_gene
                                           TEST_MANIFEST_CAP, &old_manifest_size);
         ASSERT_NOT_NULL(old_manifest);
         strcpy(file.name, aliases[i]);
-#if !defined(_WIN32)
-        ASSERT_EQ(test_hard_link_checkpoint_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
-                                                 file.name), 0);
-#endif
-        ASSERT_EQ(core_app_checkpoint_write_manifest(dir, &file, 1u, 2u),
-                  BREAK_RUNTIME_INVALID);
-        ASSERT_EQ(core_app_checkpoint_manifest_hash(dir), old_hash);
-        usize new_manifest_size = 0u;
-        u8 *new_manifest = test_read_file(dir, CORE_APP_CHECKPOINT_MANIFEST_NAME,
-                                          TEST_MANIFEST_CAP, &new_manifest_size);
-        ASSERT_NOT_NULL(new_manifest);
-        ASSERT_EQ(new_manifest_size, old_manifest_size);
-        ASSERT_EQ(memcmp(new_manifest, old_manifest, old_manifest_size), 0);
+        u8 *new_manifest = NULL;
+        int failures_before = g_test_fail;
+        test_assert_reserved_manifest_alias(dir, &file, old_hash, old_manifest,
+                                            old_manifest_size, &new_manifest);
         free(new_manifest);
         free(old_manifest);
+        if (g_test_fail != failures_before) return;
         ASSERT_EQ(core_app_checkpoint_probe(dir), BREAK_RUNTIME_OK);
         ASSERT_TRUE(file_exists(dir, "runtime_1.bin"));
         ASSERT_EQ(prepare_directory(dir), 0);

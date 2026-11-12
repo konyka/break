@@ -1,6 +1,6 @@
 foreach(var ENGINE_SOURCE_DIR REPOSITORY_ROOT PLAN_FILE DESIGN_FILE GIT_EXECUTABLE
         CORE_APP NETWORK_ENABLED CTEST_EXECUTABLE WORK NESTED_ENGINE_RHI_BACKEND
-        NESTED_CMAKE_GENERATOR)
+        NESTED_CMAKE_GENERATOR NM_CAPABLE)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required")
     endif()
@@ -65,6 +65,8 @@ function(run_compat name default_generator nested_generator nested_config work)
             "-DNETWORK_ENABLED=${NETWORK_ENABLED}"
             "-DCTEST_EXECUTABLE=${CTEST_EXECUTABLE}"
             "-DWORK=${work}"
+            "-DNM=${NM}"
+            "-DNM_CAPABLE=${NM_CAPABLE}"
             "-DNESTED_CMAKE_GENERATOR=${nested_generator}"
             "-DNESTED_CTEST_CONFIG=${nested_config}"
             ${nested_toolchain_defs}
