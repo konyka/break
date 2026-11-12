@@ -412,14 +412,10 @@ MyComposeStatus my_compose_tree_builder_event(MyComposeTreeBuilder *builder,
     return MY_COMPOSE_OK;
 }
 
+static MyComposeStatus prepare_diff(MyComposeTreeBuilder *builder);
+
 MyComposeStatus my_compose_tree_builder_end(MyComposeTreeBuilder *builder) {
-    if (builder == NULL) return MY_COMPOSE_INVALID;
-    if (builder->state != MY_COMPOSE_BUILD_NODES ||
-        builder->next->node_count == 0u) {
-        return MY_COMPOSE_INVALID;
-    }
-    builder->state = MY_COMPOSE_BUILD_ENDED;
-    return MY_COMPOSE_OK;
+    return prepare_diff(builder);
 }
 
 static bool value_equal(const MyComposeValue *a, const MyComposeValue *b) {
@@ -820,19 +816,14 @@ static bool next_handles_are_unique(const MyComposeTree *tree) {
     return true;
 }
 
-MyComposeStatus my_compose_tree_builder_finalize(MyComposeTreeBuilder *builder) {
+static MyComposeStatus prepare_diff(MyComposeTreeBuilder *builder) {
     if (builder == NULL) return MY_COMPOSE_INVALID;
-    if (builder->state != MY_COMPOSE_BUILD_ENDED) return MY_COMPOSE_INVALID;
-    builder->diff.count = 0u;
-    for (uint32_t i = 0u; i < builder->next->node_count; ++i) {
-        const MyComposeNodeRecord *node = &builder->next->nodes[i];
-        if (node->match == MY_COMPOSE_MATCH_REPLACE &&
-            node->handle.generation == UINT32_MAX) {
-            return MY_COMPOSE_OVERLOAD;
-        }
+    if (builder->state != MY_COMPOSE_BUILD_NODES ||
+        builder->next->node_count == 0u) {
+        return MY_COMPOSE_INVALID;
     }
+    builder->diff.count = 0u;
     if (!next_handles_are_unique(builder->next)) {
-        builder->diff.count = 0u;
         return MY_COMPOSE_CONFLICT;
     }
     if (!build_delete_diff(builder) || !build_structural_diff(builder) ||
@@ -840,9 +831,25 @@ MyComposeStatus my_compose_tree_builder_finalize(MyComposeTreeBuilder *builder) 
         builder->diff.count = 0u;
         return MY_COMPOSE_OVERLOAD;
     }
+    builder->state = MY_COMPOSE_BUILD_ENDED;
+    return MY_COMPOSE_OK;
+}
+
+MyComposeStatus my_compose_tree_builder_finalize(MyComposeTreeBuilder *builder) {
+    MyComposeTree *published;
+    if (builder == NULL) return MY_COMPOSE_INVALID;
+    if (builder->state != MY_COMPOSE_BUILD_ENDED) return MY_COMPOSE_INVALID;
+    for (uint32_t i = 0u; i < builder->next->node_count; ++i) {
+        const MyComposeNodeRecord *node = &builder->next->nodes[i];
+        if (node->match == MY_COMPOSE_MATCH_REPLACE &&
+            node->handle.generation == UINT32_MAX) {
+            builder->diff.count = 0u;
+            return MY_COMPOSE_OVERLOAD;
+        }
+    }
     my_compose_remember_finalize(builder);
     publish_slots(builder);
-    MyComposeTree *published = builder->current;
+    published = builder->current;
     builder->current = builder->next;
     builder->next = published;
     builder->state = MY_COMPOSE_BUILD_IDLE;

@@ -158,8 +158,8 @@ static my_widget_t* loader_recursive_register_factory(
     const my_allocator_t* allocator, const my_conf_node_t* node)
 {
   static const my_prop_desc_t properties[] = {
-      {"runtime_reentry", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_reentry", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   (void)node;
   loader_recursive_register_result =
       my_ui_loader_register("recursive_child_widget", loader_custom_factory);
@@ -179,9 +179,9 @@ static my_widget_t* class_registry_factory(const my_allocator_t* allocator)
 }
 
 static const my_prop_desc_t LOADER_CUSTOM_PROPERTIES[] = {
-    {"caption", MY_PROP_STRING, NULL, NULL},
-    {"priority", MY_PROP_INT, NULL, NULL},
-    {NULL, MY_PROP_STRING, NULL, NULL}};
+    {"caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+    {"priority", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+    {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
 
 static const char* const LOADER_CUSTOM_EVENTS[] = {"activate", NULL};
 
@@ -241,8 +241,8 @@ static my_ret_t loader_migrate_caption(const my_allocator_t* allocator,
 }
 
 static const my_prop_desc_t LOADER_MIGRATED_PROPERTIES[] = {
-    {"text", MY_PROP_STRING, NULL, NULL},
-    {NULL, MY_PROP_STRING, NULL, NULL}};
+    {"text", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+    {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
 
 static size_t loader_chain_calls;
 static int64_t loader_chain_seen_version;
@@ -289,8 +289,8 @@ static my_ret_t loader_migrate_text_to_label(
 }
 
 static const my_prop_desc_t LOADER_CHAIN_PROPERTIES[] = {
-    {"label", MY_PROP_STRING, NULL, NULL},
-    {NULL, MY_PROP_STRING, NULL, NULL}};
+    {"label", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+    {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
 
 static atomic_bool class_lookup_thread_failed;
 
@@ -328,8 +328,8 @@ static PLATFORM_THREAD_RET class_lease_replace_thread(
     PLATFORM_THREAD_ARG argument)
 {
   static const my_prop_desc_t properties[] = {
-      {"replacement_lease_property", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"replacement_lease_property", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_widget_class_t replacement = {
       "runtime_leased_widget", class_registry_factory, properties, NULL, NULL};
   (void)argument;
@@ -395,11 +395,11 @@ static PLATFORM_THREAD_RET class_runtime_writer_thread(
     PLATFORM_THREAD_ARG argument)
 {
   static const my_prop_desc_t first_properties[] = {
-      {"runtime_concurrent_first", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_concurrent_first", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t second_properties[] = {
-      {"runtime_concurrent_second", MY_PROP_INT, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_concurrent_second", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   const my_widget_class_t first = {
       "runtime_concurrent_widget", class_registry_factory, first_properties,
       NULL, NULL};
@@ -443,11 +443,11 @@ static PLATFORM_THREAD_RET loader_runtime_writer_thread(
     PLATFORM_THREAD_ARG argument)
 {
   static const my_prop_desc_t first_properties[] = {
-      {"loader_runtime_first", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"loader_runtime_first", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t second_properties[] = {
-      {"loader_runtime_second", MY_PROP_INT, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"loader_runtime_second", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   (void)argument;
   for (size_t i = 0u; i < 32u; ++i) {
     const my_prop_desc_t* properties =
@@ -540,8 +540,8 @@ static PLATFORM_THREAD_RET loader_replacement_thread(
     PLATFORM_THREAD_ARG argument)
 {
   static const my_prop_desc_t properties[] = {
-      {"replacement_live", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"replacement_live", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_ui_dynamic_schema_t schema = {properties, 1u, NULL, 0u};
   (void)argument;
   atomic_store_explicit(&loader_replacement_started, true,
@@ -557,8 +557,8 @@ static PLATFORM_THREAD_RET loader_runtime_replacement_thread(
     PLATFORM_THREAD_ARG argument)
 {
   static const my_prop_desc_t properties[] = {
-      {"runtime_replacement", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_replacement", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   (void)argument;
   atomic_store_explicit(&loader_replacement_started, true,
                         memory_order_release);
@@ -1109,8 +1109,8 @@ TEST(yaml_loader_migration_cannot_reenter_registry_write_path)
 TEST(yaml_loader_property_cannot_reenter_registry_write_path)
 {
   static const my_prop_desc_t properties[] = {
-      {"reenter", MY_PROP_STRING, loader_property_reenter_set, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"reenter", MY_PROP_STRING, loader_property_reenter_set, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_ui_error_t error = {0};
   my_widget_t* widget;
 
@@ -1132,8 +1132,8 @@ TEST(yaml_loader_property_cannot_reenter_registry_write_path)
 TEST(yaml_loader_typed_color_property_preserves_rgba32)
 {
   static const my_prop_desc_t properties[] = {
-      {"tint", MY_PROP_COLOR, loader_color_set, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"tint", MY_PROP_COLOR, loader_color_set, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_ui_error_t error = {0};
   my_widget_t* widget;
 
@@ -1167,8 +1167,8 @@ TEST(widget_class_lease_does_not_cover_child_subtree)
   static const my_widget_class_t cls = {
       "runtime_subtree_widget", class_registry_factory, NULL, NULL, NULL};
   static const my_prop_desc_t blocking_properties[] = {
-      {"blocking_property", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"blocking_property", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   PlatformThread load_thread;
   PlatformThread replacement_thread;
   bool replaced_while_child_blocked = false;
@@ -1226,8 +1226,8 @@ TEST(widget_class_lease_does_not_cover_child_subtree)
 TEST(yaml_loader_property_failure_releases_callback_guard)
 {
   static const my_prop_desc_t properties[] = {
-      {"fail", MY_PROP_STRING, loader_property_failure_set, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"fail", MY_PROP_STRING, loader_property_failure_set, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_ui_error_t error = {0};
   my_widget_t* widget;
 
@@ -1257,7 +1257,7 @@ TEST(yaml_loader_rejects_unterminated_schema_tables)
   size_t i;
 
   for (i = 0; i < MY_UI_MAX_TYPE_PROPERTIES; i++) {
-    properties[i] = (my_prop_desc_t){"field", MY_PROP_STRING, NULL, NULL};
+    properties[i] = (my_prop_desc_t){"field", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL};
   }
   for (i = 0; i < MY_UI_MAX_TYPE_EVENTS; i++) {
     events[i] = "event";
@@ -1273,12 +1273,12 @@ TEST(yaml_loader_rejects_unterminated_schema_tables)
 TEST(yaml_loader_rejects_conflicting_schema_descriptors)
 {
   static const my_prop_desc_t reserved[] = {
-      {"version", MY_PROP_INT, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"version", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t duplicate[] = {
-      {"caption", MY_PROP_STRING, NULL, NULL},
-      {"caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {"caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const char* const duplicate_events[] = {"activate", "activate", NULL};
   my_ui_type_info_t info;
 
@@ -1306,8 +1306,8 @@ TEST(yaml_loader_rejects_conflicting_schema_descriptors)
 TEST(yaml_loader_rejects_invalid_schema_descriptor_names)
 {
   static const my_prop_desc_t empty_property[] = {
-      {"", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const char* const empty_event[] = {"", NULL};
   my_prop_desc_t long_property[2];
   char long_name[MY_UI_MAX_SCHEMA_NAME_BYTES];
@@ -1316,8 +1316,8 @@ TEST(yaml_loader_rejects_invalid_schema_descriptor_names)
 
   memset(long_name, 'p', sizeof(long_name));
   memset(long_event, 'e', sizeof(long_event));
-  long_property[0] = (my_prop_desc_t){long_name, MY_PROP_STRING, NULL, NULL};
-  long_property[1] = (my_prop_desc_t){NULL, MY_PROP_STRING, NULL, NULL};
+  long_property[0] = (my_prop_desc_t){long_name, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL};
+  long_property[1] = (my_prop_desc_t){NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL};
   long_events[0] = long_event;
   long_events[1] = NULL;
   ASSERT_EQ(my_ui_loader_register_schema(
@@ -1339,8 +1339,8 @@ TEST(yaml_loader_rejects_invalid_schema_descriptor_names)
 TEST(yaml_loader_rejects_invalid_schema_descriptor_types)
 {
   static const my_prop_desc_t invalid_type[] = {
-      {"caption", (my_prop_type_t)99, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"caption", (my_prop_type_t)99, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
 
   ASSERT_EQ(my_ui_loader_register_schema(
                 "invalid_property_type", loader_custom_factory, invalid_type,
@@ -1351,18 +1351,18 @@ TEST(yaml_loader_rejects_invalid_schema_descriptor_types)
 TEST(widget_class_registry_rejects_invalid_descriptors)
 {
   static const my_prop_desc_t reserved[] = {
-      {"children", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"children", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t duplicate[] = {
-      {"caption", MY_PROP_STRING, NULL, NULL},
-      {"caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {"caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t invalid_type[] = {
-      {"caption", (my_prop_type_t)99, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"caption", (my_prop_type_t)99, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t valid[] = {
-      {"caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const char* const duplicate_events[] = {"activate", "activate",
                                                    NULL};
   static const char* const valid_events[] = {"activate", NULL};
@@ -1383,7 +1383,7 @@ TEST(widget_class_registry_rejects_invalid_descriptors)
   for (i = 0; i < sizeof(unterminated_props) / sizeof(unterminated_props[0]);
        i++) {
     unterminated_props[i] =
-        (my_prop_desc_t){unterminated_prop_name, MY_PROP_STRING, NULL, NULL};
+        (my_prop_desc_t){unterminated_prop_name, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL};
   }
   unterminated_events[0] = unterminated_event_name;
   unterminated_events[1] = NULL;
@@ -1435,8 +1435,8 @@ TEST(widget_class_registry_owns_descriptor_snapshot)
   char property_name[MY_WIDGET_SCHEMA_MAX_NAME_BYTES] = "caption";
   char event_name[MY_WIDGET_SCHEMA_MAX_NAME_BYTES] = "activate";
   my_prop_desc_t properties[] = {
-      {property_name, MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {property_name, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   const char* events[] = {event_name, NULL};
   my_widget_class_t cls = {type, class_registry_factory, properties, events,
                            NULL};
@@ -1456,11 +1456,11 @@ TEST(widget_class_registry_owns_descriptor_snapshot)
 TEST(widget_class_registry_replacement_keeps_previous_snapshot_valid)
 {
   static const my_prop_desc_t first_properties[] = {
-      {"first", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"first", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t second_properties[] = {
-      {"second", MY_PROP_INT, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"second", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_widget_class_t first = {
       "replacement_snapshot_widget", class_registry_factory, first_properties,
       NULL, NULL};
@@ -1484,7 +1484,7 @@ TEST(widget_class_registry_replacement_keeps_previous_snapshot_valid)
 TEST(yaml_loader_copies_dynamic_schema_before_freeze)
 {
   my_prop_desc_t properties[1] = {
-      {"caption", MY_PROP_STRING, NULL, NULL}};
+      {"caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   const char* events[1] = {"activate"};
   my_ui_dynamic_schema_t schema = {properties, 1u, events, 1u};
   my_ui_type_info_t info;
@@ -1513,10 +1513,10 @@ TEST(yaml_loader_copies_dynamic_schema_before_freeze)
 TEST(yaml_loader_rejects_invalid_dynamic_schema_transactionally)
 {
   static const my_prop_desc_t valid[] = {
-      {"caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t invalid[] = {
-      {"type", MY_PROP_STRING, NULL, NULL}};
+      {"type", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_ui_dynamic_schema_t schema = {invalid, 1u, NULL, 0u};
   my_ui_type_info_t info;
 
@@ -1538,11 +1538,11 @@ TEST(yaml_loader_rejects_invalid_dynamic_schema_transactionally)
 TEST(yaml_loader_dynamic_schema_oom_preserves_old_schema)
 {
   static const my_prop_desc_t old_properties[] = {
-      {"caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t new_properties[] = {
-      {"replacement", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"replacement", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_ui_dynamic_schema_t schema = {new_properties, 1u, NULL, 0u};
   size_t fail_at;
 
@@ -1576,11 +1576,11 @@ TEST(yaml_loader_dynamic_schema_oom_preserves_old_schema)
 TEST(yaml_loader_dynamic_schema_replacement_keeps_new_schema)
 {
   static const my_prop_desc_t first_properties[] = {
-      {"first", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"first", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t second_properties[] = {
-      {"second", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"second", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_ui_dynamic_schema_t first = {first_properties, 1u, NULL, 0u};
   my_ui_dynamic_schema_t second = {second_properties, 1u, NULL, 0u};
   my_ui_type_info_t info;
@@ -1609,11 +1609,11 @@ TEST(yaml_loader_dynamic_schema_replacement_keeps_new_schema)
 TEST(yaml_loader_type_query_owns_schema_snapshot)
 {
   static const my_prop_desc_t first_properties[] = {
-      {"first_snapshot", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"first_snapshot", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t second_properties[] = {
-      {"second_snapshot", MY_PROP_INT, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"second_snapshot", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_ui_dynamic_schema_t first = {first_properties, 1u, NULL, 0u};
   my_ui_dynamic_schema_t second = {second_properties, 1u, NULL, 0u};
   my_ui_type_info_t old_info;
@@ -1643,8 +1643,8 @@ TEST(yaml_loader_replacement_waits_for_active_load)
   PlatformThread load_thread;
   PlatformThread replacement_thread;
   static const my_prop_desc_t initial_properties[] = {
-      {"initial_live", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"initial_live", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
 
   ASSERT_EQ(my_ui_loader_register_schema("blocking_loader_widget",
                                          loader_blocking_factory,
@@ -1683,8 +1683,8 @@ TEST(yaml_loader_runtime_replacement_waits_for_active_load)
   PlatformThread load_thread;
   PlatformThread replacement_thread;
   static const my_prop_desc_t initial_properties[] = {
-      {"initial_runtime_live", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"initial_runtime_live", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
 
   ASSERT_TRUE(my_ui_loader_is_frozen());
   ASSERT_EQ(my_ui_loader_runtime_register_schema(
@@ -1743,9 +1743,9 @@ TEST(widget_class_concurrent_first_lookup_is_stable)
 TEST(yaml_loader_dynamic_schema_releases_owned_storage)
 {
   static const my_prop_desc_t first_properties[] = {
-      {"first", MY_PROP_STRING, NULL, NULL}};
+      {"first", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t second_properties[] = {
-      {"second", MY_PROP_INT, NULL, NULL}};
+      {"second", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL}};
   static const char* const first_events[] = {"activate"};
   static const char* const second_events[] = {"commit"};
   my_ui_dynamic_schema_t first = {first_properties, 1u, first_events, 1u};
@@ -1828,8 +1828,8 @@ TEST(yaml_loader_strict_schema_rejects_unknown_field)
 TEST(yaml_loader_strict_schema_validates_common_fields_before_factory)
 {
   static const my_prop_desc_t properties[] = {
-      {"caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   const char* invalid_documents[] = {
       "type: strict_common_widget\nvisible: 1\n",
       "type: strict_common_widget\nx: 2147483648\n",
@@ -2776,11 +2776,11 @@ TEST(widget_property_router_rejects_type_spoof)
 TEST(widget_class_runtime_snapshot_replace_and_remove)
 {
   static const my_prop_desc_t first_properties[] = {
-      {"runtime_first", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_first", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t second_properties[] = {
-      {"runtime_second", MY_PROP_INT, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_second", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   const my_widget_class_t first = {
       "runtime_snapshot_widget", class_registry_factory, first_properties,
       NULL, NULL};
@@ -3184,8 +3184,8 @@ TEST(yaml_loader_module_bind_is_atomic_with_factory_completion)
 TEST(yaml_loader_module_replacement_preserves_entry_count)
 {
   static const my_prop_desc_t properties[] = {
-      {"runtime_module_caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_module_caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_widget_class_module_t* module;
 
   module = my_widget_class_module_create(NULL);
@@ -3251,8 +3251,8 @@ TEST(yaml_loader_module_registration_rejects_invalid_without_locking)
 TEST(yaml_loader_module_schema_variants_share_quiesce)
 {
   static const my_prop_desc_t properties[] = {
-      {"runtime_variant_caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_variant_caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_ui_schema_migration_t migrations[] = {
       {1u, 2u, loader_module_migrate}};
   my_widget_class_module_t* module;
@@ -3279,8 +3279,8 @@ TEST(yaml_loader_module_schema_variants_share_quiesce)
 TEST(widget_class_runtime_snapshot_concurrent_readers)
 {
   static const my_prop_desc_t properties[] = {
-      {"runtime_concurrent_first", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_concurrent_first", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   const my_widget_class_t cls = {
       "runtime_concurrent_widget", class_registry_factory, properties, NULL,
       NULL};
@@ -3313,8 +3313,8 @@ TEST(widget_class_runtime_snapshot_concurrent_readers)
 TEST(yaml_loader_runtime_factory_register_and_unregister)
 {
   static const my_prop_desc_t properties[] = {
-      {"runtime_caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const char* const events[] = {"activate", NULL};
   my_ui_type_info_t info;
   my_ui_error_t error = {0};
@@ -3352,8 +3352,8 @@ TEST(yaml_loader_runtime_factory_register_and_unregister)
 TEST(yaml_loader_runtime_dynamic_schema_owns_snapshot)
 {
   my_prop_desc_t source_properties[] = {
-      {"runtime_dynamic_caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_dynamic_caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   const char* source_events[] = {"activate", NULL};
   my_ui_dynamic_schema_t schema = {source_properties, 1u,
                                    (const char* const*)source_events, 1u};
@@ -3378,11 +3378,11 @@ TEST(yaml_loader_runtime_dynamic_schema_owns_snapshot)
 TEST(yaml_loader_runtime_dynamic_schema_oom_preserves_snapshot)
 {
   static const my_prop_desc_t old_properties[] = {
-      {"runtime_old_caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_old_caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   static const my_prop_desc_t new_properties[] = {
-      {"runtime_new_caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_new_caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_ui_dynamic_schema_t schema = {new_properties, 1u, NULL, 0u};
   size_t fail_at;
 
@@ -3419,8 +3419,8 @@ TEST(yaml_loader_runtime_dynamic_schema_oom_preserves_snapshot)
 TEST(yaml_loader_runtime_dynamic_schema_rejects_invalid_without_allocating)
 {
   static const my_prop_desc_t valid_properties[] = {
-      {"runtime_valid_caption", MY_PROP_STRING, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"runtime_valid_caption", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   my_ui_dynamic_schema_t valid = {valid_properties, 1u, NULL, 0u};
   my_ui_dynamic_schema_t invalid = {NULL, 1u, NULL, 0u};
   loader_alloc_state_t state = {0u, 0u};
@@ -3486,8 +3486,8 @@ TEST(yaml_loader_runtime_factory_concurrent_readers)
 TEST(yaml_loader_runtime_factory_rejects_invalid_and_reentrant_changes)
 {
   static const my_prop_desc_t invalid[] = {
-      {"version", MY_PROP_INT, NULL, NULL},
-      {NULL, MY_PROP_STRING, NULL, NULL}};
+      {"version", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+      {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
   ASSERT_TRUE(my_ui_loader_is_frozen());
   ASSERT_EQ(my_ui_loader_runtime_register_schema(
                 "runtime_invalid_loader_widget", loader_custom_factory,

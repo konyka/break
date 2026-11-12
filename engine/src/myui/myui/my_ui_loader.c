@@ -38,24 +38,24 @@ const my_ui_loader_capabilities_t* my_ui_loader_capabilities(void) {
 #include "myui/my_widget_class.h"
 
 static const my_prop_desc_t UI_COMMON_PROPERTIES[] = {
-    {"name", MY_PROP_STRING, NULL, NULL},
-    {"tooltip", MY_PROP_STRING, NULL, NULL},
-    {"class", MY_PROP_STRING, NULL, NULL},
-    {"x", MY_PROP_INT, NULL, NULL},
-    {"y", MY_PROP_INT, NULL, NULL},
-    {"w", MY_PROP_INT, NULL, NULL},
-    {"h", MY_PROP_INT, NULL, NULL},
-    {"visible", MY_PROP_BOOL, NULL, NULL},
-    {"enable", MY_PROP_BOOL, NULL, NULL},
-    {"lp", MY_PROP_STRING, NULL, NULL},
-    {"layout", MY_PROP_STRING, NULL, NULL},
-    {"version", MY_PROP_INT, NULL, NULL},
-    {NULL, MY_PROP_STRING, NULL, NULL}};
+    {"name", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+    {"tooltip", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+    {"class", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+    {"x", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+    {"y", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+    {"w", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+    {"h", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+    {"visible", MY_PROP_BOOL, NULL, NULL, NULL, NULL, NULL},
+    {"enable", MY_PROP_BOOL, NULL, NULL, NULL, NULL, NULL},
+    {"lp", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+    {"layout", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+    {"version", MY_PROP_INT, NULL, NULL, NULL, NULL, NULL},
+    {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
 
 static const my_prop_desc_t UI_WINDOW_PROPERTIES[] = {
-    {"title", MY_PROP_STRING, NULL, NULL},
-    {"style", MY_PROP_STRING, NULL, NULL},
-    {NULL, MY_PROP_STRING, NULL, NULL}};
+    {"title", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+    {"style", MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL},
+    {NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL, NULL}};
 
 static bool ui_is_common_key(const char* key) {
   static const char* const keys[] = {

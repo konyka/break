@@ -40,11 +40,13 @@
 #define MYUI_EVENTS_LABEL(E)
 
 /* application order mirrors the former UI loader make_edit */
-#define MYUI_PROPS_EDIT(P)                                    \
-  P("hint", MY_PROP_STRING, edit_prop_set_hint, NULL)         \
-  P("password", MY_PROP_BOOL, edit_prop_set_password, NULL)   \
-  P("readonly", MY_PROP_BOOL, edit_prop_set_readonly, NULL)   \
-  P("max_len", MY_PROP_INT, edit_prop_set_max_len, NULL)      \
+#define MYUI_PROPS_EDIT(P)                                               \
+  P("hint", MY_PROP_STRING, edit_prop_set_hint, edit_prop_get_hint)      \
+  P("password", MY_PROP_BOOL, edit_prop_set_password,                    \
+    edit_prop_get_password)                                              \
+  P("readonly", MY_PROP_BOOL, edit_prop_set_readonly,                    \
+    edit_prop_get_readonly)                                              \
+  P("max_len", MY_PROP_INT, edit_prop_set_max_len, edit_prop_get_max_len) \
   P("text", MY_PROP_STRING, edit_prop_set_text, edit_prop_get_text)
 #define MYUI_EVENTS_EDIT(E) \
   E("changed")              \

@@ -37,12 +37,21 @@ typedef enum my_prop_type_t {
   MY_PROP_COLOR
 } my_prop_type_t;
 
+typedef struct my_prop_snapshot_t {
+  my_value_t value;
+  void* state;
+} my_prop_snapshot_t;
+
 /** @brief One property of a widget class (NULL set/get = read/write-only). */
 typedef struct my_prop_desc_t {
   const char* name;   /**< "text" "value" ... */
   my_prop_type_t type;
   my_ret_t (*set)(my_widget_t*, const my_value_t*);  /**< NULL = read-only */
   my_ret_t (*get)(const my_widget_t*, my_value_t*);  /**< NULL = write-only */
+  /** Optional transaction capture. Restore must not allocate or fail. */
+  my_ret_t (*capture)(my_widget_t*, my_prop_snapshot_t*);
+  void (*discard)(my_widget_t*, my_prop_snapshot_t*);
+  void (*restore)(my_widget_t*, my_prop_snapshot_t*);
 } my_prop_desc_t;
 
 /** @brief A widget class: YAML type + factory + property table. */

@@ -260,14 +260,234 @@ static my_ret_t image_prop_set_scale(my_widget_t* w, const my_value_t* v) {
   return my_image_set_scale_mode(w, mode);
 }
 
+/* ---------------- transactional property snapshots ---------------- */
+
+static void prop_snapshot_init(my_widget_t* w, my_prop_snapshot_t* snapshot) {
+  memset(snapshot, 0, sizeof(*snapshot));
+  my_value_init(&snapshot->value, ((my_object_t*)w)->allocator);
+}
+
+static my_ret_t button_text_capture(my_widget_t* w,
+    my_prop_snapshot_t* snapshot) {
+  prop_snapshot_init(w, snapshot);
+  return my_value_set_str(&snapshot->value, ((my_button_t*)w)->text);
+}
+
+static void button_text_discard(my_widget_t* w, my_prop_snapshot_t* snapshot) {
+  (void)w;
+  my_value_reset(&snapshot->value);
+}
+
+static void button_text_restore(my_widget_t* w, my_prop_snapshot_t* snapshot) {
+  my_button_t* button = (my_button_t*)w;
+  char* saved = snapshot->value.type == MY_VALUE_STR ? snapshot->value.u.str : NULL;
+  snapshot->value.type = button->text != NULL ? MY_VALUE_STR : MY_VALUE_NONE;
+  snapshot->value.u.str = button->text;
+  button->text = saved;
+  my_widget_invalidate(w, NULL);
+}
+
+static my_ret_t button_cooldown_capture(my_widget_t* w,
+    my_prop_snapshot_t* snapshot) {
+  prop_snapshot_init(w, snapshot);
+  return my_value_set_uint32(&snapshot->value, ((my_button_t*)w)->cooldown_ms);
+}
+
+static void button_cooldown_restore(my_widget_t* w,
+    my_prop_snapshot_t* snapshot) {
+  ((my_button_t*)w)->cooldown_ms = my_value_get_uint32(&snapshot->value);
+}
+
+#define EDIT_SNAPSHOT_FIELDS(X) \
+  X(char*, text)                \
+  X(char*, masked)              \
+  X(char*, hint)                \
+  X(char*, ime_preedit)
+#define EDIT_FIELD_DECL(type, name) type name;
+
+static void edit_prop_discard(my_widget_t* w, my_prop_snapshot_t* snapshot);
+
+typedef struct edit_prop_snapshot_t {
+  EDIT_SNAPSHOT_FIELDS(EDIT_FIELD_DECL)
+  size_t cursor;
+  size_t anchor;
+  int32_t scroll_x;
+  size_t max_len;
+  int32_t ime_caret;
+  bool readonly;
+  bool password;
+} edit_prop_snapshot_t;
+
+static my_ret_t edit_snapshot_string(my_edit_t* edit, const char* source,
+    char** out) {
+  *out = my_strdup(edit->allocator, source);
+  return source != NULL && *out == NULL ? MY_RET_OOM : MY_RET_OK;
+}
+
+static my_ret_t edit_prop_capture(my_widget_t* w,
+    my_prop_snapshot_t* snapshot) {
+  my_edit_t* edit = (my_edit_t*)w;
+  edit_prop_snapshot_t* saved;
+  prop_snapshot_init(w, snapshot);
+  saved = (edit_prop_snapshot_t*)my_mem_calloc(edit->allocator, 1u,
+      sizeof(*saved));
+  if (saved == NULL) return MY_RET_OOM;
+  snapshot->state = saved;
+#define EDIT_CAPTURE_STRING(type, name)                                      \
+  if (edit_snapshot_string(edit, edit->name, &saved->name) != MY_RET_OK) {   \
+    edit_prop_discard(w, snapshot);                                          \
+    return MY_RET_OOM;                                                       \
+  }
+  EDIT_SNAPSHOT_FIELDS(EDIT_CAPTURE_STRING)
+#undef EDIT_CAPTURE_STRING
+  saved->cursor = edit->cursor;
+  saved->anchor = edit->anchor;
+  saved->scroll_x = edit->scroll_x;
+  saved->max_len = edit->max_len;
+  saved->ime_caret = edit->ime_caret;
+  saved->readonly = edit->readonly;
+  saved->password = edit->password;
+  return MY_RET_OK;
+}
+
+static void edit_prop_discard(my_widget_t* w, my_prop_snapshot_t* snapshot) {
+  my_edit_t* edit = (my_edit_t*)w;
+  edit_prop_snapshot_t* saved = (edit_prop_snapshot_t*)snapshot->state;
+  if (saved != NULL) {
+#define EDIT_FREE_STRING(type, name) my_mem_free(edit->allocator, saved->name);
+    EDIT_SNAPSHOT_FIELDS(EDIT_FREE_STRING)
+#undef EDIT_FREE_STRING
+    my_mem_free(edit->allocator, saved);
+    snapshot->state = NULL;
+  }
+  my_value_reset(&snapshot->value);
+}
+
+static void edit_prop_restore(my_widget_t* w, my_prop_snapshot_t* snapshot) {
+  my_edit_t* edit = (my_edit_t*)w;
+  edit_prop_snapshot_t* saved = (edit_prop_snapshot_t*)snapshot->state;
+#define EDIT_SWAP_STRING(type, name) \
+  do {                               \
+    type temporary = saved->name;    \
+    saved->name = edit->name;        \
+    edit->name = temporary;          \
+  } while (0);
+  EDIT_SNAPSHOT_FIELDS(EDIT_SWAP_STRING)
+#undef EDIT_SWAP_STRING
+  edit->cursor = saved->cursor;
+  edit->anchor = saved->anchor;
+  edit->scroll_x = saved->scroll_x;
+  edit->max_len = saved->max_len;
+  edit->ime_caret = saved->ime_caret;
+  edit->readonly = saved->readonly;
+  edit->password = saved->password;
+  my_widget_invalidate(w, NULL);
+}
+
+static my_ret_t edit_prop_get_hint(const my_widget_t* w, my_value_t* v) {
+  return my_value_set_str(v, ((const my_edit_t*)w)->hint);
+}
+static my_ret_t edit_prop_get_password(const my_widget_t* w, my_value_t* v) {
+  return my_value_set_bool(v, ((const my_edit_t*)w)->password);
+}
+static my_ret_t edit_prop_get_readonly(const my_widget_t* w, my_value_t* v) {
+  return my_value_set_bool(v, ((const my_edit_t*)w)->readonly);
+}
+static my_ret_t edit_prop_get_max_len(const my_widget_t* w, my_value_t* v) {
+  size_t value = ((const my_edit_t*)w)->max_len;
+  return my_value_set_int32(v, value > INT32_MAX ? INT32_MAX : (int32_t)value);
+}
+
 /* ---------------- table expansion ---------------- */
 
-#define EMIT_PROP_ROW(name, type, set_fn, get_fn) {name, type, set_fn, get_fn},
+#define TXN_CAPTURE_button_prop_set_text button_text_capture
+#define TXN_DISCARD_button_prop_set_text button_text_discard
+#define TXN_RESTORE_button_prop_set_text button_text_restore
+#define TXN_CAPTURE_button_prop_set_cooldown button_cooldown_capture
+#define TXN_DISCARD_button_prop_set_cooldown button_text_discard
+#define TXN_RESTORE_button_prop_set_cooldown button_cooldown_restore
+#define TXN_CAPTURE_edit_prop_set_hint edit_prop_capture
+#define TXN_DISCARD_edit_prop_set_hint edit_prop_discard
+#define TXN_RESTORE_edit_prop_set_hint edit_prop_restore
+#define TXN_CAPTURE_edit_prop_set_password edit_prop_capture
+#define TXN_DISCARD_edit_prop_set_password edit_prop_discard
+#define TXN_RESTORE_edit_prop_set_password edit_prop_restore
+#define TXN_CAPTURE_edit_prop_set_readonly edit_prop_capture
+#define TXN_DISCARD_edit_prop_set_readonly edit_prop_discard
+#define TXN_RESTORE_edit_prop_set_readonly edit_prop_restore
+#define TXN_CAPTURE_edit_prop_set_max_len edit_prop_capture
+#define TXN_DISCARD_edit_prop_set_max_len edit_prop_discard
+#define TXN_RESTORE_edit_prop_set_max_len edit_prop_restore
+#define TXN_CAPTURE_edit_prop_set_text edit_prop_capture
+#define TXN_DISCARD_edit_prop_set_text edit_prop_discard
+#define TXN_RESTORE_edit_prop_set_text edit_prop_restore
+#define TXN_CAPTURE_label_prop_set_text NULL
+#define TXN_DISCARD_label_prop_set_text NULL
+#define TXN_RESTORE_label_prop_set_text NULL
+#define TXN_CAPTURE_label_prop_set_align NULL
+#define TXN_DISCARD_label_prop_set_align NULL
+#define TXN_RESTORE_label_prop_set_align NULL
+#define TXN_CAPTURE_checkbox_prop_set_text NULL
+#define TXN_DISCARD_checkbox_prop_set_text NULL
+#define TXN_RESTORE_checkbox_prop_set_text NULL
+#define TXN_CAPTURE_checkbox_prop_set_checked NULL
+#define TXN_DISCARD_checkbox_prop_set_checked NULL
+#define TXN_RESTORE_checkbox_prop_set_checked NULL
+#define TXN_CAPTURE_slider_prop_set_min NULL
+#define TXN_DISCARD_slider_prop_set_min NULL
+#define TXN_RESTORE_slider_prop_set_min NULL
+#define TXN_CAPTURE_slider_prop_set_max NULL
+#define TXN_DISCARD_slider_prop_set_max NULL
+#define TXN_RESTORE_slider_prop_set_max NULL
+#define TXN_CAPTURE_slider_prop_set_step NULL
+#define TXN_DISCARD_slider_prop_set_step NULL
+#define TXN_RESTORE_slider_prop_set_step NULL
+#define TXN_CAPTURE_slider_prop_set_value NULL
+#define TXN_DISCARD_slider_prop_set_value NULL
+#define TXN_RESTORE_slider_prop_set_value NULL
+#define TXN_CAPTURE_progress_bar_prop_set_value NULL
+#define TXN_DISCARD_progress_bar_prop_set_value NULL
+#define TXN_RESTORE_progress_bar_prop_set_value NULL
+#define TXN_CAPTURE_text_area_prop_set_hint NULL
+#define TXN_DISCARD_text_area_prop_set_hint NULL
+#define TXN_RESTORE_text_area_prop_set_hint NULL
+#define TXN_CAPTURE_text_area_prop_set_readonly NULL
+#define TXN_DISCARD_text_area_prop_set_readonly NULL
+#define TXN_RESTORE_text_area_prop_set_readonly NULL
+#define TXN_CAPTURE_text_area_prop_set_wrap NULL
+#define TXN_DISCARD_text_area_prop_set_wrap NULL
+#define TXN_RESTORE_text_area_prop_set_wrap NULL
+#define TXN_CAPTURE_text_area_prop_set_align NULL
+#define TXN_DISCARD_text_area_prop_set_align NULL
+#define TXN_RESTORE_text_area_prop_set_align NULL
+#define TXN_CAPTURE_text_area_prop_set_max_len NULL
+#define TXN_DISCARD_text_area_prop_set_max_len NULL
+#define TXN_RESTORE_text_area_prop_set_max_len NULL
+#define TXN_CAPTURE_text_area_prop_set_text NULL
+#define TXN_DISCARD_text_area_prop_set_text NULL
+#define TXN_RESTORE_text_area_prop_set_text NULL
+#define TXN_CAPTURE_list_view_prop_set_row_height NULL
+#define TXN_DISCARD_list_view_prop_set_row_height NULL
+#define TXN_RESTORE_list_view_prop_set_row_height NULL
+#define TXN_CAPTURE_image_prop_set_src NULL
+#define TXN_DISCARD_image_prop_set_src NULL
+#define TXN_RESTORE_image_prop_set_src NULL
+#define TXN_CAPTURE_image_prop_set_scale NULL
+#define TXN_DISCARD_image_prop_set_scale NULL
+#define TXN_RESTORE_image_prop_set_scale NULL
+#define TXN_CAPTURE(set_fn) TXN_CAPTURE_##set_fn
+#define TXN_DISCARD(set_fn) TXN_DISCARD_##set_fn
+#define TXN_RESTORE(set_fn) TXN_RESTORE_##set_fn
+
+#define EMIT_PROP_ROW(name, type, set_fn, get_fn)                         \
+  {name, type, set_fn, get_fn, TXN_CAPTURE(set_fn), TXN_DISCARD(set_fn), \
+      TXN_RESTORE(set_fn)},
 #define EMIT_EVENT_ROW(ev) ev,
-#define EMIT_CLASS_TABLES(tag, create_fn, create_str, PROPS, EVENTS)    \
-  static const my_prop_desc_t props_of_##create_fn[] = {                \
-      PROPS(EMIT_PROP_ROW){NULL, MY_PROP_STRING, NULL, NULL}};          \
-  static const char* const events_of_##create_fn[] = {                  \
+#define EMIT_CLASS_TABLES(tag, create_fn, create_str, PROPS, EVENTS)       \
+  static const my_prop_desc_t props_of_##create_fn[] = {                   \
+      PROPS(EMIT_PROP_ROW){NULL, MY_PROP_STRING, NULL, NULL, NULL, NULL,   \
+                           NULL}};                                         \
+  static const char* const events_of_##create_fn[] = {                     \
       EVENTS(EMIT_EVENT_ROW) NULL};
 
 MYUI_BUILTIN_CLASSES(EMIT_CLASS_TABLES)

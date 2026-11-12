@@ -2811,6 +2811,12 @@ add_library(mycompose STATIC
 set_property(TARGET mycompose PROPERTY C_STANDARD 11)
 target_include_directories(mycompose PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+add_library(mycompose_myui STATIC
+    src/myui/mycompose_myui/my_compose_myui.c)
+set_property(TARGET mycompose_myui PROPERTY C_STANDARD 11)
+target_include_directories(mycompose_myui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mycompose_myui PUBLIC mycompose myui_core)
+
 # --- Unit Tests ---
 if(ENGINE_BUILD_TESTS)
     enable_testing()
@@ -2834,6 +2840,14 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_mycompose_store PRIVATE mycompose)
     add_test(NAME test_mycompose_store COMMAND test_mycompose_store)
     set_tests_properties(test_mycompose_store PROPERTIES LABELS "headless;compose")
+
+    add_executable(test_mycompose_myui tests/test_mycompose_myui.c
+        src/myui/mypal/dummy/my_pal_dummy.c)
+    target_include_directories(test_mycompose_myui PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_mycompose_myui PRIVATE mycompose_myui m Threads::Threads)
+    add_test(NAME test_mycompose_myui COMMAND test_mycompose_myui)
+    set_tests_properties(test_mycompose_myui PROPERTIES LABELS "headless;compose")
 
     add_executable(test_glad_wgl_loader tests/test_glad_wgl_loader.c external/glad.c)
     target_include_directories(test_glad_wgl_loader PRIVATE

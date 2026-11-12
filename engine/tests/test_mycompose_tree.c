@@ -1208,7 +1208,24 @@ TEST(generation_near_overflow_never_wraps_and_retires_slot) {
     my_compose_tree_builder_destroy(builder);
 }
 
+TEST(end_prepares_diff_before_nonfailing_finalize) {
+    MyComposeTreeBuilder *builder = my_compose_tree_builder_create();
+    MyComposeNodeHandle root;
+    MyComposeNodeHandle item;
+    ASSERT_NOT_NULL(builder);
+    ASSERT_EQ(begin_root(builder, &root), MY_COMPOSE_OK);
+    ASSERT_EQ(add_node(builder, root, "a", "button", &item), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_tree_builder_end(builder), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_tree_builder_current_node_count(builder), 0u);
+    ASSERT_EQ(my_compose_tree_builder_diff(builder)->count, 2u);
+    ASSERT_EQ(my_compose_tree_builder_finalize(builder), MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_tree_builder_current_node_count(builder), 2u);
+    ASSERT_EQ(my_compose_tree_builder_diff(builder)->count, 2u);
+    my_compose_tree_builder_destroy(builder);
+}
+
 int main(void) {
+    RUN_TEST(end_prepares_diff_before_nonfailing_finalize);
     RUN_TEST(lifecycle_insert_noop_and_delete);
     RUN_TEST(keyed_reorder_only_moves_and_preserves_handles);
     RUN_TEST(mixed_keyed_and_unkeyed_nodes_keep_their_identity_rules);
