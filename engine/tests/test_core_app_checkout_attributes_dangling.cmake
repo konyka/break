@@ -5,6 +5,8 @@ foreach(var REPOSITORY_ROOT CHECKOUT_CONTRACT FORMAL_ASSET_CONTRACT NAMING_CONTR
     endif()
 endforeach()
 
+include("${CMAKE_CURRENT_LIST_DIR}/test_core_app_git_metadata.cmake")
+
 function(core_app_dangling_unverified reason)
     message(STATUS "UNVERIFIED: core_app dangling .git fixture skipped: ${reason}")
     if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
@@ -42,6 +44,38 @@ endif()
 message(STATUS "Dangling .git fixture confirmed: IS_SYMLINK=TRUE EXISTS=FALSE")
 
 set_property(GLOBAL PROPERTY CORE_APP_DANGLING_ERRORS "")
+function(check_metadata_absent name root log expected)
+    core_app_git_metadata_absent("${root}" "${log}" actual)
+    if(NOT "${actual}" STREQUAL "${expected}")
+        get_property(errors GLOBAL PROPERTY CORE_APP_DANGLING_ERRORS)
+        string(APPEND errors "${name}: metadata_absent=${actual}, expected=${expected}\n")
+        set_property(GLOBAL PROPERTY CORE_APP_DANGLING_ERRORS "${errors}")
+    endif()
+endfunction()
+
+set(previous_diagnostic "fatal: not a git repository (or any of the parent directories): .git")
+set(alternate_diagnostic
+    "fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).")
+set(absent_fixture "${work}/absent-repository")
+file(MAKE_DIRECTORY "${absent_fixture}")
+set(corrupt_fixture "${work}/corrupt-repository")
+file(MAKE_DIRECTORY "${corrupt_fixture}/.git")
+file(WRITE "${corrupt_fixture}/.git/HEAD" "not a valid HEAD\n")
+check_metadata_absent(previous_absent "${absent_fixture}" "${previous_diagnostic}" TRUE)
+check_metadata_absent(alternate_absent "${absent_fixture}" "${alternate_diagnostic}" TRUE)
+check_metadata_absent(corrupt_previous "${corrupt_fixture}" "${previous_diagnostic}" FALSE)
+check_metadata_absent(corrupt_alternate "${corrupt_fixture}" "${alternate_diagnostic}" FALSE)
+check_metadata_absent(dangling_previous "${fixture}" "${previous_diagnostic}" FALSE)
+check_metadata_absent(dangling_alternate "${fixture}" "${alternate_diagnostic}" FALSE)
+check_metadata_absent(permission_error "${absent_fixture}"
+    "fatal: cannot change to '/tmp/blocked': Permission denied" FALSE)
+check_metadata_absent(unsafe_ownership "${absent_fixture}"
+    "fatal: detected dubious ownership in repository at '/tmp/unsafe'" FALSE)
+check_metadata_absent(execution_error "${absent_fixture}"
+    "/usr/bin/cmake: unknown command -C" FALSE)
+check_metadata_absent(extra_diagnostic "${absent_fixture}"
+    "${previous_diagnostic}\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set)." FALSE)
+
 function(run_dangling_contract name contract)
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -E env

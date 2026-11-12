@@ -52,6 +52,8 @@ Windows 测试启动 baker 时，`system()` 的完整命令在 `_WIN32` 下使�
 
 D3D12 run `43162667434`、job `130997246493` 的完整日志显示 archive 与第二跳均接收 `NESTED_CMAKE_C_COMPILER=C:/Program Files/LLVM/bin/clang.exe`，实际 cache 断言与归档构建均通过，不再落入 MinGW 工具链。`D3D12Core.dll missing rejected; restored; SHA-256 verified`、八夹具无未运行、compat **1/1**、WARP runtime **1/1**、Agility 部署和七个 D3D12-labelled 测试均通过。此前待验收表述由这些新结果更新；临时 workflow、process probe 与插桩均不合入 master，WARP 仍不证明独立显卡。本地 master 合并结果及主 CI 另行验收。
 
+主 CI run `43164552740` 的 clean-room job `131003571447` 在真实无 `.git` 的导出树上暴露了另一种标准 Git 诊断：`fatal: not a git repository (or any parent up to mount point /)`，后接 `Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).`。formal、checkout、naming 因旧的单一 parent-directories 文本假设而错误 FAIL，dangling 仍正确拒绝；352 selected 中其余 349 项通过。三个真实 probe 现在共用同一判定：仅当 `<root>/.git` 的 `EXISTS=FALSE`、`IS_SYMLINK=FALSE` 且完整诊断等于该 alternate 文本或原标准文本时才 UNVERIFIED；权限、unsafe ownership、工具执行错误、corrupt/invalid HEAD 和 dangling 均保持 nonzero/non77 且无 UNVERIFIED。修正后的 fresh full CI 与 D3D12 run 仍由 controller 获取，本节不提前宣称通过。
+
 第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入、256 项音频 FIFO/过载/drain recovery、Flow player identity 与 exec-link source-port 永久断言仍留在后续台账；Compose 和 P12 Task 4–13 不在本批次中宣称实现。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
