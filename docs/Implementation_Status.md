@@ -6,6 +6,8 @@
 - 最终普通非图形为 **358 项入选、354 PASS、4 个文档化 SKIP、0 FAIL**；ASan+UBSan `detect_leaks=1` 同为 358/354/4/0，TSan focused 7/7、assets 23/23、no-tests 构建成功且注册 0 项、显式 fuzz 5/5。所有构建和并行 CTest 使用 `-j3`；既有 Lua `tmpnam` 链接警告仍如实保留。
 - 独立临时 validation 提交 `73e1e267` 的原生 run `43150345368`、job `130957761304` 明确记录 `D3D12Core.dll missing rejected; restored; SHA-256 verified`，八个嵌套夹具无未运行项，compat 1/1、WARP runtime 1/1 与 Agility 部署通过；CPU run `43150345348` 的 Windows/macOS 均成功。WARP 不是独立显卡证明，临时辅助实现不合入 master。最终交付提交的 Windows/D3D12 复跑与主 CI 仍由 controller 验收，本条目不提前宣称完成。
 
+- 最终 CPU run `43155806374` 的 Windows job `130975330900` 已通过 direct baker exit 0、assets **17/17** 和 diagnostics/probe；macOS job `130975331228` 的 assets 为 **18/18**，archived nested 自身 marker 与 1/1 均通过，仅 compat 因实际摘要为 `100% tests passed out of 1`、不符合 newer-only 断言而 RED。当前修复让实际 archived 断言共享精确整行 predicate，仅接受该格式与 `100% tests passed, 0 tests failed out of 1`，并继续拒绝零/多测试、失败和未运行文本；修正后的原生 run 仍待 controller 获取，本条目不提前宣称通过。
+
 ## 合并前历史：Core App Windows 启动与资产检出修复（2026-11-11）
 
 - **合并前历史方案，非最终实现**：Windows 进程启动修复 `987121d9` 只在 `_WIN32` 的测试 `system()` 命令外再包一层引号，POSIX 格式、原始返回和诊断不变。真实 probe 已区分原始格式失败与完整命令外层引用成功，未采用不安全的无引号捷径。原生 run `43041968171` 的 Windows job `130595842235` 中 direct baker 退出 0，assets **16/16**，完整 `test_core_app_baker_diagnostics` 通过，probe outcome/final gate 均为 success。macOS job `130595841519` 同样通过；这些是 CPU/合同证据，不是 GPU 或声卡证据。
