@@ -20,6 +20,7 @@ typedef struct MyComposeMyuiFault {
 typedef struct MyComposeMyuiStats {
     uint32_t factory_calls;
     uint32_t property_set_calls;
+    uint32_t property_captures;
     uint32_t property_restore_set_calls;
     uint32_t insert_calls;
     uint32_t detach_calls;

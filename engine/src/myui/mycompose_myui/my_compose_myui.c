@@ -904,13 +904,13 @@ static MyComposeStatus capture_property(MyComposeMyui *adapter,
             return MY_COMPOSE_FAILED;
         }
     } else if (kind == MYUI_PROP_STYLE) {
-        property->style = (my_style_t *)my_mem_calloc(
-            ((my_object_t *)widget)->allocator, 1u, sizeof(*property->style));
-        if (property->style == NULL) return MY_COMPOSE_FAILED;
-        my_style_init(property->style, ((my_object_t *)widget)->allocator);
         if (widget->local_style != NULL) {
             size_t s;
             size_t i;
+            property->style = (my_style_t *)my_mem_calloc(
+                ((my_object_t *)widget)->allocator, 1u, sizeof(*property->style));
+            if (property->style == NULL) return MY_COMPOSE_FAILED;
+            my_style_init(property->style, ((my_object_t *)widget)->allocator);
             for (s = 0u; s < MY_STATE_COUNT; ++s) {
                 property->style->counts[s] = widget->local_style->counts[s];
                 for (i = 0u; i < widget->local_style->counts[s]; ++i) {
@@ -933,6 +933,7 @@ static MyComposeStatus capture_property(MyComposeMyui *adapter,
         }
     }
     state->txn.property_count++;
+    adapter->stats.property_captures++;
     return MY_COMPOSE_OK;
 }
 
@@ -1037,10 +1038,14 @@ static MyComposeMyuiListener *listener_allocate(MyComposeMyui *adapter,
     const char *name, const MyComposeEventRecord *event) {
     MyComposeMyuiListener *listener = NULL;
     uint32_t i;
-    for (i = 0u; i < MY_COMPOSE_MAX_EVENTS; ++i) {
-        if (!state->listeners[state->txn.listener_bank][i].in_use) {
-            listener = &state->listeners[state->txn.listener_bank][i];
-            break;
+    uint32_t bank_offset;
+    for (bank_offset = 0u; bank_offset < 2u && listener == NULL; ++bank_offset) {
+        uint32_t bank = (state->txn.listener_bank + bank_offset) & 1u;
+        for (i = 0u; i < MY_COMPOSE_MAX_EVENTS; ++i) {
+            if (!state->listeners[bank][i].in_use) {
+                listener = &state->listeners[bank][i];
+                break;
+            }
         }
     }
     if (listener == NULL) return NULL;
@@ -1190,9 +1195,7 @@ static MyComposeStatus stage_properties(MyComposeMyui *adapter,
     for (i = 0u; i < next->node_count; ++i) {
         const MyComposeNodeRecord *node = &next->nodes[i];
         uint32_t property;
-        if (!state->txn.nodes[i].owns_widget && node->parent != MY_COMPOSE_NO_INDEX) {
-            continue;
-        }
+        if (!state->txn.nodes[i].new_binding) continue;
         property = node->first_property;
         while (property != MY_COMPOSE_NO_INDEX) {
             const MyComposePropertyRecord *record = &next->properties[property];

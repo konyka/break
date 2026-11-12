@@ -688,6 +688,33 @@ TEST(property_failure_restores_complete_snapshot_without_setter_rewind) {
   fixture_destroy(&f);
 }
 
+TEST(null_style_rollback_restores_exact_pointer_and_allows_reuse) {
+  fixture_t f;
+  view_t view;
+  const my_style_t* original;
+  const my_value_t* color;
+  ASSERT_TRUE(fixture_init(&f));
+  original = f.button_widget->local_style;
+  ASSERT_TRUE(original == NULL);
+  memset(&view, 0, sizeof(view));
+  view.values = 2;
+  view.events = true;
+  f.adapter->fault.property_widget = f.edit_widget;
+  f.adapter->fault.property_name = "text";
+  ASSERT_EQ(begin_view(&f, &view), MY_COMPOSE_OK);
+  ASSERT_EQ(my_compose_tree_builder_end(f.builder), MY_COMPOSE_OK);
+  ASSERT_EQ(my_compose_myui_stage(f.adapter,
+      my_compose_tree_builder_diff(f.builder)), MY_COMPOSE_FAILED);
+  ASSERT_TRUE(f.button_widget->local_style == original);
+  ASSERT_EQ(apply_view(&f, &view), MY_COMPOSE_OK);
+  ASSERT_NOT_NULL(f.button_widget->local_style);
+  ASSERT_EQ(f.button_widget->local_style->counts[MY_STATE_NORMAL], 1u);
+  color = my_style_get(f.button_widget->local_style, MY_STATE_NORMAL, "bg_color");
+  ASSERT_NOT_NULL(color);
+  ASSERT_EQ(my_value_get_uint32(color), 0x11223344u);
+  fixture_destroy(&f);
+}
+
 TEST(factory_insert_and_style_capacity_failures_leave_original_tree) {
   fixture_t f;
   view_t view;
@@ -836,6 +863,102 @@ TEST(string_property_without_transaction_callbacks_is_not_supported) {
   fixture_destroy(&f);
 }
 
+static MyComposeStatus apply_event_transition(fixture_t* f,
+    MyComposeNodeHandle nodes[128], uint32_t version, uint32_t update_count,
+    bool commit) {
+  MyComposeStatus status = my_compose_tree_builder_begin(f->builder);
+  uint32_t node;
+  if (status != MY_COMPOSE_OK) return status;
+  status = add_node(f->builder, zero_handle(), NULL, "@root", &f->root);
+  if (status != MY_COMPOSE_OK) return status;
+  status = add_node(f->builder, f->root, "column", "@column", &f->column);
+  if (status != MY_COMPOSE_OK) return status;
+  for (node = 0u; node < 128u; node++) {
+    char key[16];
+    uint32_t event_index;
+    snprintf(key, sizeof(key), "e%u", (unsigned)node);
+    status = add_node(f->builder, f->column, key, "edit", &nodes[node]);
+    if (status != MY_COMPOSE_OK) return status;
+    for (event_index = 0u; event_index < 2u; event_index++) {
+      MyComposeIntent intent;
+      uint8_t payload = (uint8_t)(node +
+          (node < update_count ? version : 1u));
+      memset(&intent, 0, sizeof(intent));
+      intent.type = 101u + event_index;
+      intent.payload = &payload;
+      intent.payload_size = 1u;
+      status = my_compose_tree_builder_event(f->builder, nodes[node],
+          event_index == 0u ? "changed" : "activate", &intent);
+      if (status != MY_COMPOSE_OK) return status;
+    }
+  }
+  status = my_compose_tree_builder_end(f->builder);
+  if (status != MY_COMPOSE_OK) return status;
+  status = my_compose_myui_stage(f->adapter,
+      my_compose_tree_builder_diff(f->builder));
+  if (status != MY_COMPOSE_OK || !commit) return status;
+  status = my_compose_tree_builder_finalize(f->builder);
+  if (status != MY_COMPOSE_OK) return status;
+  my_compose_myui_commit(f->adapter);
+  return MY_COMPOSE_OK;
+}
+
+static void verify_event_transition(fixture_t* f,
+    MyComposeNodeHandle nodes[128], uint32_t version, uint32_t update_count) {
+  uint32_t node;
+  for (node = 0u; node < 128u; node++) {
+    my_widget_t* widget = my_compose_myui_widget(f->adapter, nodes[node]);
+    uint32_t event_index;
+    ASSERT_NOT_NULL(widget);
+    for (event_index = 0u; event_index < 2u; event_index++) {
+      uint64_t accepted = my_compose_store_diagnostics(f->store)->accepted_intents;
+      uint32_t queue_index;
+      uint8_t expected_payload = (uint8_t)(node +
+          (node < update_count ? version : 1u));
+      ASSERT_EQ(my_emitter_emit(widget->emitter,
+          event_index == 0u ? "changed" : "activate", NULL), MY_RET_OK);
+      ASSERT_EQ(my_compose_store_diagnostics(f->store)->accepted_intents,
+          accepted + 1u);
+      ASSERT_EQ(f->store->intent_count, 1u);
+      queue_index = (f->store->intent_head + f->store->intent_count - 1u) %
+          MY_COMPOSE_INTENT_CAPACITY;
+      ASSERT_EQ(f->store->intents[queue_index].intent.type, 101u + event_index);
+      ASSERT_EQ(f->store->intents[queue_index].intent.owner.index,
+          nodes[node].index);
+      ASSERT_EQ(f->store->intents[queue_index].intent.owner.generation,
+          nodes[node].generation);
+      ASSERT_EQ(f->store->intents[queue_index].payload[0], expected_payload);
+      ASSERT_EQ(my_compose_store_reduce(f->store), MY_COMPOSE_OK);
+    }
+  }
+}
+
+TEST(listener_history_uses_both_banks_and_rolls_back_only_new_leases) {
+  fixture_t f;
+  MyComposeNodeHandle nodes[128];
+  uint64_t accepted;
+  ASSERT_TRUE(fixture_init_empty(&f));
+  ASSERT_EQ(apply_event_transition(&f, nodes, 1u, 128u, true), MY_COMPOSE_OK);
+  ASSERT_EQ(apply_event_transition(&f, nodes, 2u, 64u, true), MY_COMPOSE_OK);
+  ASSERT_EQ(my_compose_tree_builder_diff(f.builder)->count, 128u);
+  verify_event_transition(&f, nodes, 2u, 64u);
+
+  ASSERT_EQ(apply_event_transition(&f, nodes, 3u, 128u, true), MY_COMPOSE_OK);
+  ASSERT_EQ(my_compose_tree_builder_diff(f.builder)->count, 256u);
+  verify_event_transition(&f, nodes, 3u, 128u);
+
+  ASSERT_EQ(apply_event_transition(&f, nodes, 4u, 128u, false), MY_COMPOSE_OK);
+  accepted = my_compose_store_diagnostics(f.store)->accepted_intents;
+  ASSERT_EQ(my_emitter_emit(my_compose_myui_widget(f.adapter, nodes[0])->emitter,
+      "changed", NULL), MY_RET_OK);
+  ASSERT_EQ(my_compose_store_diagnostics(f.store)->accepted_intents, accepted);
+  my_compose_myui_rollback(f.adapter);
+  verify_event_transition(&f, nodes, 3u, 128u);
+  ASSERT_EQ(apply_event_transition(&f, nodes, 4u, 128u, true), MY_COMPOSE_OK);
+  verify_event_transition(&f, nodes, 4u, 128u);
+  fixture_destroy(&f);
+}
+
 TEST(listener_update_and_type_replace_revoke_old_lease) {
   fixture_t f;
   view_t view;
@@ -960,6 +1083,83 @@ static MyComposeStatus apply_style_transition(fixture_t* f, bool second,
   return MY_COMPOSE_OK;
 }
 
+static MyComposeStatus apply_retained_root_transition(fixture_t* f,
+    MyComposeNodeHandle nodes[8], bool omit_root) {
+  static const char* const states[] = {"normal", "hover", "pressed", "disabled"};
+  MyComposeStatus status = my_compose_tree_builder_begin(f->builder);
+  uint32_t node;
+  uint32_t state;
+  uint32_t index;
+  if (status != MY_COMPOSE_OK) return status;
+  status = add_node(f->builder, zero_handle(), NULL, "@root", &f->root);
+  if (status != MY_COMPOSE_OK) return status;
+  if (!omit_root) {
+    for (state = 0u; state < MY_STATE_COUNT; state++) {
+      for (index = 0u; index < MY_STYLE_MAX_PROPS; index++) {
+        char name[64];
+        snprintf(name, sizeof(name), "style:%s:r%02u", states[state],
+            (unsigned)index);
+        status = prop(f->builder, f->root, name, int_value(3));
+        if (status != MY_COMPOSE_OK) return status;
+      }
+    }
+  }
+  status = add_node(f->builder, f->root, "column", "@column", &f->column);
+  if (status != MY_COMPOSE_OK) return status;
+  for (node = 0u; node < 8u; node++) {
+    char key[16];
+    snprintf(key, sizeof(key), "b%u", (unsigned)node);
+    status = add_node(f->builder, f->column, key, "button", &nodes[node]);
+    if (status != MY_COMPOSE_OK) return status;
+    if (node == 7u) continue;
+    for (state = 0u; state < MY_STATE_COUNT; state++) {
+      for (index = 0u; index < MY_STYLE_MAX_PROPS; index++) {
+        char name[64];
+        snprintf(name, sizeof(name), "style:%s:b%02u", states[state],
+            (unsigned)index);
+        status = prop(f->builder, nodes[node], name, int_value(2));
+        if (status != MY_COMPOSE_OK) return status;
+      }
+    }
+  }
+  status = my_compose_tree_builder_end(f->builder);
+  if (status != MY_COMPOSE_OK) return status;
+  status = my_compose_myui_stage(f->adapter,
+      my_compose_tree_builder_diff(f->builder));
+  if (status != MY_COMPOSE_OK) return status;
+  status = my_compose_tree_builder_finalize(f->builder);
+  if (status != MY_COMPOSE_OK) return status;
+  my_compose_myui_commit(f->adapter);
+  return MY_COMPOSE_OK;
+}
+
+TEST(retained_root_updates_are_captured_once_within_1024_operations) {
+  fixture_t f;
+  MyComposeNodeHandle nodes[8];
+  my_widget_t* root;
+  uint32_t captures;
+  uint32_t state;
+  ASSERT_TRUE(fixture_init_empty(&f));
+  ASSERT_EQ(apply_style_transition(&f, false, nodes), MY_COMPOSE_OK);
+  root = my_compose_myui_widget(f.adapter, f.root);
+  captures = f.adapter->stats.property_captures;
+  ASSERT_EQ(apply_retained_root_transition(&f, nodes, false), MY_COMPOSE_OK);
+  ASSERT_EQ(my_compose_tree_builder_diff(f.builder)->count, 1024u);
+  ASSERT_EQ(f.adapter->stats.property_captures - captures, 1024u);
+  for (state = 0u; state < MY_STATE_COUNT; state++) {
+    const my_value_t* value;
+    ASSERT_EQ(root->local_style->counts[state], 16u);
+    value = my_style_get(root->local_style, (my_widget_state_t)state, "r00");
+    ASSERT_NOT_NULL(value);
+    ASSERT_EQ(my_value_get_int32(value), 3);
+  }
+  ASSERT_EQ(apply_retained_root_transition(&f, nodes, true), MY_COMPOSE_OK);
+  for (state = 0u; state < MY_STATE_COUNT; state++) {
+    ASSERT_EQ(root->local_style->counts[state], 0u);
+  }
+  fixture_destroy(&f);
+}
+
 TEST(property_journal_accepts_1024_updates) {
   fixture_t f;
   MyComposeNodeHandle nodes[8];
@@ -1001,13 +1201,16 @@ TEST_MAIN_BEGIN()
   RUN_TEST(listener_forces_owner_and_event_omission_keeps_owner_generation);
   RUN_TEST(omission_and_explicit_none_restore_defaults_and_intrinsic_layout);
   RUN_TEST(property_failure_restores_complete_snapshot_without_setter_rewind);
+  RUN_TEST(null_style_rollback_restores_exact_pointer_and_allows_reuse);
   RUN_TEST(factory_insert_and_style_capacity_failures_leave_original_tree);
   RUN_TEST(first_and_second_detach_failures_restore_original_order);
   RUN_TEST(duplicate_key_and_external_reorder_fail_before_factory);
   RUN_TEST(string_property_without_transaction_callbacks_is_not_supported);
+  RUN_TEST(listener_history_uses_both_banks_and_rolls_back_only_new_leases);
   RUN_TEST(listener_update_and_type_replace_revoke_old_lease);
   RUN_TEST(delete_revokes_old_listener_lease);
   RUN_TEST(delete_generation_retirement_is_rejected_before_finalize);
+  RUN_TEST(retained_root_updates_are_captured_once_within_1024_operations);
   RUN_TEST(property_journal_accepts_1024_updates);
   RUN_TEST(window_close_closes_bound_store);
 TEST_MAIN_END()

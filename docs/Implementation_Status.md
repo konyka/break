@@ -1,3 +1,11 @@
+## Compose + MVI Task 5 fix 1：事务容量与精确回滚（2026-11-12）
+
+- **retained root**：full property pass 现在仅处理 `new_binding`（含首次 root），retained root 只走 UPDATE，避免 full+UPDATE 双重 capture。合法 current/next 各 512 properties、1024 UPDATE 的输入可完成且实际 capture 恰为 1024，root style 值和省略默认恢复均验证；未扩大容量或删除负例。
+- **listener 与 NULL style**：listener 分配按本事务首选 bank→另一个 bank 搜索 `in_use=false` 槽位，旧 lease 仍只在 commit 吊销，rollback 仅销毁新 lease。128 个 edit×2 事件完成初建→半量更新→全量更新及 rollback/retry，逐事件核对 owner/type/payload。style 仅在原 `local_style` 非 NULL 时深捕获，style-stage→后续失败→rollback 精确恢复原 NULL，后续有效 style 更新仍可用。
+- **RED/GREEN 与独立变异**：三项分别先得到 14/15、15/16、16/17 的真实 RED，最小修复后 adapter 17/17。独立回退 root 条件、listener 单 bank、NULL 无条件 capture 均各自得到 16/17 且仅对应用例失败，精确恢复后均回到 17/17。
+- **最终验证**：普通 adapter 17/17、focused CTest 9/9；ASan+UBSan、`detect_leaks=1` 下同为 adapter 17/17、focused 9/9，无 sanitizer/leak 报告。完整非图形 `-j3` 选定 348 项，347 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP；`git diff --check` 通过。
+- **边界与 scoped 复审**：证据仍为 Linux CPU、dummy PAL/headless，不是 GPU、真实窗口或硬件 IME 证明。原 reviewer 将只对这三项 Important 与 fix diff 的新破坏做 scoped re-review，本条不预先宣称其通过；详细证据追加于 `.superpowers/sdd/2026-11-11-compose-mvi/task-5-report.md`。
+
 ## Compose + MVI Task 5：myui 事务、省略语义与唯一 finalize（2026-11-12）
 
 - **交付与唯一顺序**：实现提交 `5ff3e037` 新增 `MyComposeMyui`、stage/commit/rollback 与 `my_compose_myui_sink()`，真实 dummy window 绑定 builder/Store，覆盖 button/edit/row/column。发布顺序固定为 `end → sink.stage → tree.finalize → sink.commit`；stage 保存候选树，finalize 独占 remember dispose/node generation，commit 只发布 listener/owner/notify/unref/snapshot，adapter 不调用 remember dispose。未实现 Task 6 Runtime/async 或 C++ DSL。
