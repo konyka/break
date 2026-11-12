@@ -71,8 +71,8 @@ jobs:
             exit 1
           fi
 
-      - name: Diagnose Core App compatibility (failure only)
-        if: failure()
+      - name: Verify Core App compatibility and SDK gate
+        if: always()
         timeout-minutes: 8
         env:
           ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1

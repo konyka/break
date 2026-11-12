@@ -312,8 +312,8 @@ set(expected_d3d12_trigger [=[on:
 
 jobs:]=])
 require_text("${d3d12}" "${expected_d3d12_trigger}" "D3D12 trigger")
-set(expected_d3d12_diagnostic [=[      - name: Diagnose Core App compatibility (failure only)
-        if: failure()
+set(expected_d3d12_diagnostic [=[      - name: Verify Core App compatibility and SDK gate
+        if: always()
         timeout-minutes: 8
         env:
           ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
@@ -356,7 +356,7 @@ if(NOT d3d12_base_hash STREQUAL "11344c7bda647136befef9d1d97906b103b2774874813a3
 endif()
 
 find_program(core_app_bash bash)
-set(compat_step_marker "      - name: Diagnose Core App compatibility (failure only)\n")
+set(compat_step_marker "      - name: Verify Core App compatibility and SDK gate\n")
 set(compat_next_step_marker "\n      - name: WARP GPU-runtime floor")
 string(FIND "${d3d12}" "${compat_step_marker}" compat_step_start)
 string(FIND "${d3d12}" "${compat_next_step_marker}" compat_step_end)
