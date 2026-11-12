@@ -182,12 +182,13 @@ if(NM_CAPABLE)
     if(NOT positive_result STREQUAL "0")
         record_error("positive nested target contract failed: ${positive_log}")
     endif()
-elseif(NOT positive_result STREQUAL "0" AND NOT positive_result STREQUAL "77")
-    if(NOT positive_result STREQUAL "1"
-            OR NOT positive_log MATCHES "UNVERIFIED: core_app symbol scan skipped:"
-            OR positive_log MATCHES "core_app contract failed before skip:")
-        record_error("nested target contract failed before its nm-unavailable skip: ${positive_log}")
-    endif()
+elseif(NOT positive_result STREQUAL "77" AND NOT positive_result STREQUAL "1")
+    record_error("nested target contract did not return its documented nm-unavailable skip: ${positive_log}")
+elseif(NOT positive_log MATCHES "UNVERIFIED: core_app symbol scan skipped:"
+        OR positive_log MATCHES "core_app contract failed before skip:")
+    record_error("nested target contract did not prove its nm-unavailable skip: ${positive_log}")
+else()
+    message(STATUS "${positive_log}")
 endif()
 expect_nested_cache(positive "${positive_root}")
 

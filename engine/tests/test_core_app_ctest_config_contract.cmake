@@ -70,6 +70,7 @@ function(run_compat name default_generator nested_generator nested_config work)
             "-DNESTED_CMAKE_GENERATOR=${nested_generator}"
             "-DNESTED_CTEST_CONFIG=${nested_config}"
             ${nested_toolchain_defs}
+            ${ARGN}
             -P "${ENGINE_SOURCE_DIR}/tests/test_core_app_contract_compat.cmake"
         RESULT_VARIABLE result
         OUTPUT_VARIABLE output
@@ -160,5 +161,32 @@ if(required_config_error_index LESS 0)
         "empty multi-config input did not produce the explicit configuration error:\n${COMPAT_LOG}")
 endif()
 message(STATUS "ninja_multi_config_empty_config: explicit rejection passed")
+
+set(intentional_no_nm_work "${WORK}/intentional-no-nm")
+message(STATUS
+    "intentional_no_nm: explicit capability fixture; host NM support is not being probed")
+run_compat(intentional_no_nm
+    "${NESTED_CMAKE_GENERATOR}" "${NESTED_CMAKE_GENERATOR}" "${NESTED_CTEST_CONFIG}"
+    "${intentional_no_nm_work}"
+    "-DNM_CAPABLE=FALSE" "-DNM_CAPABILITY_FIXTURE=TRUE")
+expect_compat_success(intentional_no_nm)
+foreach(required_evidence IN ITEMS
+        "core_app compat intentional no-NM fixture: archived CMAKE_NM=FALSE"
+        "-DNM_CAPABLE=FALSE"
+        "UNVERIFIED: core_app symbol scan skipped:")
+    string(FIND "${COMPAT_LOG}" "${required_evidence}" evidence_index)
+    if(evidence_index LESS 0)
+        message(FATAL_ERROR
+            "intentional_no_nm: missing required evidence '${required_evidence}':\n${COMPAT_LOG}")
+    endif()
+endforeach()
+foreach(unexpected IN ITEMS
+        "Not Run" "NOT_AVAILABLE" "No tests were found" "did not execute the real nm wrapper")
+    string(FIND "${COMPAT_LOG}" "${unexpected}" unexpected_index)
+    if(NOT unexpected_index LESS 0)
+        message(FATAL_ERROR
+            "intentional_no_nm: unexpected '${unexpected}':\n${COMPAT_LOG}")
+    endif()
+endforeach()
 
 message(STATUS "core_app nested CTest configuration contract passed")
