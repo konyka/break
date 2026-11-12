@@ -1,6 +1,6 @@
 foreach(var ENGINE_SOURCE_DIR REPOSITORY_ROOT PLAN_FILE DESIGN_FILE GIT_EXECUTABLE
         CORE_APP NETWORK_ENABLED CTEST_EXECUTABLE WORK NESTED_ENGINE_RHI_BACKEND
-        NESTED_CMAKE_GENERATOR NM_CAPABLE)
+        NESTED_CMAKE_GENERATOR NM_CAPABLE NESTED_CMAKE_C_COMPILER)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required")
     endif()
@@ -16,7 +16,9 @@ if(NESTED_CMAKE_GENERATOR MATCHES "Visual Studio|Xcode|Multi-Config" AND
         "${NESTED_CTEST_CONFIG}" STREQUAL "")
     message(FATAL_ERROR "a multi-config nested CTest requires NESTED_CTEST_CONFIG")
 endif()
-set(nested_configure_defs "-DENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}")
+set(nested_configure_defs
+    "-DENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}"
+    "-DCMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}")
 if(NOT NM_CAPABLE)
     list(APPEND nested_configure_defs "-DCMAKE_NM=FALSE")
     if(NM_CAPABILITY_FIXTURE)
@@ -24,7 +26,8 @@ if(NOT NM_CAPABLE)
             "core_app compat intentional no-NM fixture: archived CMAKE_NM=FALSE")
     endif()
 endif()
-set(nested_ctest_defs "\"-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}\"")
+set(nested_ctest_defs
+    "\"-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}\" \"-DNESTED_CMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}\" \"-DCMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}\"")
 foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
     if(DEFINED ${cache_var} AND NOT "${${cache_var}}" STREQUAL "")
         list(APPEND nested_configure_defs "-D${cache_var}=${${cache_var}}")
@@ -469,6 +472,19 @@ if(EXISTS "${archive_build}/CMakeCache.txt")
         if(NOT archive_effective STREQUAL
                 "ENGINE_RHI_BACKEND_EFFECTIVE:INTERNAL=${NESTED_ENGINE_RHI_BACKEND}")
             record_error("archive effective backend '${archive_effective}' did not follow '${NESTED_ENGINE_RHI_BACKEND}'")
+        endif()
+    endif()
+    file(STRINGS "${archive_build}/CMakeCache.txt" archive_c_compiler_line
+        REGEX "^CMAKE_C_COMPILER:[^=]*=")
+    list(LENGTH archive_c_compiler_line archive_c_compiler_count)
+    if(NOT archive_c_compiler_count EQUAL 1)
+        record_error("archive C compiler cache entries=${archive_c_compiler_count}, expected exactly one")
+    else()
+        string(REGEX REPLACE "^[^=]*=" "" archive_c_compiler "${archive_c_compiler_line}")
+        get_filename_component(archive_c_compiler_real "${archive_c_compiler}" REALPATH)
+        get_filename_component(parent_c_compiler_real "${NESTED_CMAKE_C_COMPILER}" REALPATH)
+        if(NOT archive_c_compiler_real STREQUAL parent_c_compiler_real)
+            record_error("archive C compiler '${archive_c_compiler_real}' did not follow real parent '${parent_c_compiler_real}'")
         endif()
     endif()
 endif()

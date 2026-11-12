@@ -8,6 +8,8 @@
 
 - 最终 CPU run `43155806374` 的 Windows job `130975330900` 已通过 direct baker exit 0、assets **17/17** 和 diagnostics/probe；macOS job `130975331228` 的 assets 为 **18/18**，archived nested 自身 marker 与 1/1 均通过，仅 compat 因实际摘要为 `100% tests passed out of 1`、不符合 newer-only 断言而 RED。当前修复让实际 archived 断言共享精确整行 predicate，仅接受该格式与 `100% tests passed, 0 tests failed out of 1`，并继续拒绝零/多测试、失败和未运行文本；修正后的原生 run 仍待 controller 获取，本条目不提前宣称通过。
 
+- 最终 D3D12 run `43155806382`、job `130975331060` 的 parent configure 使用 `C:/Program Files/LLVM/bin/clang.exe`，archived `core_app` 却实际调用 `C:/mingw64/bin/cc.exe` 并在不兼容 MinGW D3D12 headers 上失败，后续 WARP 因此未形成通过证据。当前修复以 `NESTED_CMAKE_C_COMPILER` 将真实 parent compiler 传入 archived configure 与 target/nm 第二跳，并同时传 `CMAKE_C_COMPILER` 给实际 configure；archive、positive 和 wrapped/no-tests cache 均按 REALPATH 比对。刚完成的两种 CTest 成功格式、no-NM、Agility staging/hash 和 generator/config 保持不变；修正后的原生 D3D12/WARP 复跑仍待 controller，本条目不提前宣称通过。
+
 ## 合并前历史：Core App Windows 启动与资产检出修复（2026-11-11）
 
 - **合并前历史方案，非最终实现**：Windows 进程启动修复 `987121d9` 只在 `_WIN32` 的测试 `system()` 命令外再包一层引号，POSIX 格式、原始返回和诊断不变。真实 probe 已区分原始格式失败与完整命令外层引用成功，未采用不安全的无引号捷径。原生 run `43041968171` 的 Windows job `130595842235` 中 direct baker 退出 0，assets **16/16**，完整 `test_core_app_baker_diagnostics` 通过，probe outcome/final gate 均为 success。macOS job `130595841519` 同样通过；这些是 CPU/合同证据，不是 GPU 或声卡证据。
