@@ -46,6 +46,12 @@ Windows 测试启动 baker 时，`system()` 的完整命令在 `_WIN32` 下使�
 
 最终 D3D12 run `43155806382`、job `130975331060` 进一步证明工具链传播是独立根因：parent 明确使用 `C:/Program Files/LLVM/bin/clang.exe`，新 archived target build 却实际使用 `C:/mingw64/bin/cc.exe`，并在 MinGW D3D12 headers 上编译失败，不能归为上一项摘要格式问题，也不能删除归档构建或改成 SKIP。现在 parent 的 `NESTED_CMAKE_C_COMPILER` 沿现有显式链条进入 archived configure 和 target/nm 第二跳，实际 configure 同步接收 `CMAKE_C_COMPILER`；archive 与 positive/wrapped no-tests cache 以 REALPATH 断言真实 parent 路径，防止用另一编译器假绿。两种 CTest 成功格式、intentional no-NM、Agility DLL/hash、backend、Vulkan/shaderc 和 generator/config 均保留。修正后的原生 D3D12/WARP 复跑仍由 controller 获取，本节不提前宣称通过。
 
+### 修正后的最终原生验收
+
+临时集成 `0ce1c8a8` 包含最终交付 `501dacf6` 与 CTest 格式修复，并已通过独立 scoped 集成复审。CPU run `43162667419` 的 Windows job `130997246369` 实测 direct baker exit 0、assets **17/17**、diagnostics/probe success；macOS job `130997246678` 实测 assets **18/18**，九项 Core App 合同为 **6 PASS＋3 个既有 nm SKIP、0 FAIL**，包含 compat。成功步骤使用 `--output-on-failure`，不打印 archived nested 原始摘要；这里不虚构观察到的格式，实际 compat predicate 已验证捕获日志。
+
+D3D12 run `43162667434`、job `130997246493` 的完整日志显示 archive 与第二跳均接收 `NESTED_CMAKE_C_COMPILER=C:/Program Files/LLVM/bin/clang.exe`，实际 cache 断言与归档构建均通过，不再落入 MinGW 工具链。`D3D12Core.dll missing rejected; restored; SHA-256 verified`、八夹具无未运行、compat **1/1**、WARP runtime **1/1**、Agility 部署和七个 D3D12-labelled 测试均通过。此前待验收表述由这些新结果更新；临时 workflow、process probe 与插桩均不合入 master，WARP 仍不证明独立显卡。本地 master 合并结果及主 CI 另行验收。
+
 第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入、256 项音频 FIFO/过载/drain recovery、Flow player identity 与 exec-link source-port 永久断言仍留在后续台账；Compose 和 P12 Task 4–13 不在本批次中宣称实现。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。

@@ -10,6 +10,8 @@
 
 - 最终 D3D12 run `43155806382`、job `130975331060` 的 parent configure 使用 `C:/Program Files/LLVM/bin/clang.exe`，archived `core_app` 却实际调用 `C:/mingw64/bin/cc.exe` 并在不兼容 MinGW D3D12 headers 上失败，后续 WARP 因此未形成通过证据。当前修复以 `NESTED_CMAKE_C_COMPILER` 将真实 parent compiler 传入 archived configure 与 target/nm 第二跳，并同时传 `CMAKE_C_COMPILER` 给实际 configure；archive、positive 和 wrapped/no-tests cache 均按 REALPATH 比对。刚完成的两种 CTest 成功格式、no-NM、Agility staging/hash 和 generator/config 保持不变；修正后的原生 D3D12/WARP 复跑仍待 controller，本条目不提前宣称通过。
 
+- **修正后的最终原生验收**：临时集成 `0ce1c8a8`（含交付 `501dacf6` 及格式修复）经 scoped 集成复审 PASS。CPU run `43162667419` 的 Windows job `130997246369` 实测 direct baker exit 0、assets **17/17**、diagnostics/probe success；macOS job `130997246678` 实测 assets **18/18**，九项 Core App 合同为 **6 PASS＋3 个既有 nm SKIP、0 FAIL**，包含 compat。成功步骤不打印 archived nested 原始摘要，因此不虚构具体格式；真实 compat predicate 已验证捕获日志。D3D12 run `43162667434`、job `130997246493` 显示 archive/第二跳输入为 `C:/Program Files/LLVM/bin/clang.exe`，并通过实际 cache 断言和完整归档构建；`D3D12Core.dll missing rejected; restored; SHA-256 verified`、八夹具无未运行、compat 1/1、WARP runtime 1/1、Agility 部署和七个 D3D12-labelled 测试均通过。此前待验收记录由这些结果更新；临时辅助实现不合入 master，WARP 不证明独立显卡。本地 master 合并结果与主 CI 仍另行验收。
+
 ## 合并前历史：Core App Windows 启动与资产检出修复（2026-11-11）
 
 - **合并前历史方案，非最终实现**：Windows 进程启动修复 `987121d9` 只在 `_WIN32` 的测试 `system()` 命令外再包一层引号，POSIX 格式、原始返回和诊断不变。真实 probe 已区分原始格式失败与完整命令外层引用成功，未采用不安全的无引号捷径。原生 run `43041968171` 的 Windows job `130595842235` 中 direct baker 退出 0，assets **16/16**，完整 `test_core_app_baker_diagnostics` 通过，probe outcome/final gate 均为 success。macOS job `130595841519` 同样通过；这些是 CPU/合同证据，不是 GPU 或声卡证据。
