@@ -208,8 +208,12 @@ static MyComposeStatus reduce_one(MyComposeStore *store) {
     if (candidate_size > MY_COMPOSE_STATE_BYTES) {
         return fail_candidate(store, candidate, MY_COMPOSE_OVERLOAD);
     }
+    store->state_sizes[candidate] = candidate_size;
     if (batch.status != MY_COMPOSE_OK) {
         return fail_candidate(store, candidate, batch.status);
+    }
+    if (batch.count > MY_COMPOSE_MAX_EFFECTS_PER_INTENT) {
+        return fail_candidate(store, candidate, MY_COMPOSE_OVERLOAD);
     }
     for (uint32_t i = 0u; i < batch.count; ++i) {
         if (batch.effects[i].payload_size > MY_COMPOSE_MESSAGE_BYTES) {

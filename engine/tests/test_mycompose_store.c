@@ -16,6 +16,7 @@
 #define INTENT_FAIL 4u
 #define INTENT_NINE_EFFECTS 5u
 #define INTENT_COMPLETION 6u
+#define INTENT_MALFORMED_BATCH 7u
 
 typedef struct TestState {
     uint32_t count;
@@ -138,6 +139,10 @@ static MyComposeStatus reduce_intent(void *context, const MyComposeIntent *inten
         fixture->ninth_preserved = fixture->ninth_preserved &&
             my_compose_effect_batch_append(batch, 701u, NULL, 0u) ==
                 MY_COMPOSE_OVERLOAD;
+    } else if (intent->type == INTENT_MALFORMED_BATCH) {
+        next->count = 77u;
+        batch->status = MY_COMPOSE_OK;
+        batch->count = MY_COMPOSE_MAX_EFFECTS_PER_INTENT + 1u;
     }
     return MY_COMPOSE_OK;
 }
@@ -264,6 +269,250 @@ static void seed_outstanding_for_full_completion(Fixture *fixture) {
     fixture->store->outstanding_count = 1u;
 }
 
+#define VARIABLE_INITIAL_SIZE 12u
+#define VARIABLE_FINAL_SIZE 32u
+#define INTENT_RESIZE_STICKY 20u
+#define INTENT_RESIZE_REQUEST_ID 21u
+#define INTENT_RESIZE_REDUCER_FAIL 22u
+#define INTENT_RESIZE_ZERO 23u
+#define INTENT_RESIZE_OVERSIZE 24u
+#define INTENT_RESIZE_SUCCESS 25u
+
+typedef struct VariableFixture {
+    MyComposeStore *store;
+    uint32_t dispose_calls;
+    uint32_t dispose_at_last_clone;
+    uint32_t dispose_sizes[16];
+    uint32_t reducer_input_size;
+} VariableFixture;
+
+typedef struct VariableOutcome {
+    MyComposeStatus status;
+    uint32_t state_count;
+    uint32_t state_size;
+    uint32_t pending_intents;
+    uint32_t outbox_effects;
+    uint32_t outstanding_effects;
+    uint32_t request_count;
+    uint64_t next_request_id;
+    uint32_t candidate_disposes;
+    uint32_t candidate_dispose_size;
+} VariableOutcome;
+
+static MyComposeStatus variable_clone(void *context, const void *source,
+    uint32_t source_size, void *destination, uint32_t destination_size,
+    uint32_t *out_size) {
+    VariableFixture *fixture = context;
+    fixture->dispose_at_last_clone = fixture->dispose_calls;
+    if (source_size > destination_size) return MY_COMPOSE_OVERLOAD;
+    memcpy(destination, source, source_size);
+    *out_size = source_size;
+    return MY_COMPOSE_OK;
+}
+
+static void variable_dispose(void *context, void *state, uint32_t size) {
+    VariableFixture *fixture = context;
+    (void)state;
+    if (fixture->dispose_calls < 16u) {
+        fixture->dispose_sizes[fixture->dispose_calls] = size;
+    }
+    fixture->dispose_calls++;
+}
+
+static MyComposeStatus variable_reducer(void *context,
+    const MyComposeIntent *intent, const void *current, uint32_t current_size,
+    void *candidate, uint32_t *candidate_size, MyComposeEffectBatch *batch) {
+    VariableFixture *fixture = context;
+    const TestState *state = current;
+    TestState *next = candidate;
+    uint32_t requested_size = 0u;
+    (void)current_size;
+    fixture->reducer_input_size = *candidate_size;
+    if (intent->payload_size == sizeof(uint32_t)) {
+        memcpy(&requested_size, intent->payload, sizeof(requested_size));
+    }
+    *next = *state;
+    next->count++;
+    if (intent->type == INTENT_RESIZE_REDUCER_FAIL) {
+        *candidate_size = 128u;
+        return MY_COMPOSE_CONFLICT;
+    }
+    *candidate_size = requested_size;
+    if (intent->type == INTENT_RESIZE_STICKY) {
+        for (uint32_t i = 0u; i <= MY_COMPOSE_MAX_EFFECTS_PER_INTENT; ++i) {
+            (void)my_compose_effect_batch_append(batch, 800u, NULL, 0u);
+        }
+    } else if (intent->type == INTENT_RESIZE_REQUEST_ID) {
+        (void)my_compose_effect_batch_append(batch, 801u, NULL, 0u);
+    }
+    return MY_COMPOSE_OK;
+}
+
+static bool variable_init(VariableFixture *fixture) {
+    uint8_t initial[VARIABLE_INITIAL_SIZE] = {0};
+    MyComposeStateOps ops;
+    memset(fixture, 0, sizeof(*fixture));
+    memset(&ops, 0, sizeof(ops));
+    ops.context = fixture;
+    ops.clone = variable_clone;
+    ops.dispose = variable_dispose;
+    fixture->store = my_compose_store_create(initial, VARIABLE_INITIAL_SIZE,
+        &ops, fixture, variable_reducer, NULL, NULL);
+    return fixture->store != NULL;
+}
+
+static void variable_destroy(VariableFixture *fixture) {
+    my_compose_store_destroy(fixture->store);
+    fixture->store = NULL;
+}
+
+static MyComposeStatus variable_dispatch(VariableFixture *fixture,
+    uint32_t type, uint32_t requested_size) {
+    MyComposeIntent intent;
+    memset(&intent, 0, sizeof(intent));
+    intent.type = type;
+    intent.payload = (const uint8_t *)&requested_size;
+    intent.payload_size = (uint32_t)sizeof(requested_size);
+    intent.owner = no_owner();
+    intent.result = MY_COMPOSE_OK;
+    return my_compose_store_dispatch(fixture->store, &intent);
+}
+
+static VariableOutcome variable_outcome(VariableFixture *fixture,
+    MyComposeStatus status) {
+    VariableOutcome outcome;
+    const void *state = NULL;
+    uint32_t state_size = 0u;
+    const MyComposeDiagnostics *current;
+    memset(&outcome, 0, sizeof(outcome));
+    outcome.status = status;
+    if (my_compose_store_state(fixture->store, &state, &state_size) ==
+        MY_COMPOSE_OK) {
+        outcome.state_count = ((const TestState *)state)->count;
+        outcome.state_size = state_size;
+    }
+    current = my_compose_store_diagnostics(fixture->store);
+    outcome.pending_intents = current->pending_intents;
+    outcome.outbox_effects = current->outbox_effects;
+    outcome.outstanding_effects = current->outstanding_effects;
+    outcome.request_count = current->request_count;
+    outcome.next_request_id = fixture->store->next_request_id;
+    outcome.candidate_disposes = fixture->dispose_calls -
+        fixture->dispose_at_last_clone;
+    if (fixture->dispose_at_last_clone < fixture->dispose_calls &&
+        fixture->dispose_at_last_clone < 16u) {
+        outcome.candidate_dispose_size =
+            fixture->dispose_sizes[fixture->dispose_at_last_clone];
+    }
+    return outcome;
+}
+
+static VariableOutcome run_variable_failure(uint32_t type,
+    uint32_t requested_size, bool exhaust_request_id) {
+    VariableFixture fixture;
+    VariableOutcome outcome;
+    MyComposeStatus status = MY_COMPOSE_FAILED;
+    memset(&outcome, 0, sizeof(outcome));
+    if (!variable_init(&fixture)) {
+        outcome.status = MY_COMPOSE_FAILED;
+        return outcome;
+    }
+    if (!exhaust_request_id ||
+        my_compose_store_internal_seed_request(fixture.store, UINT64_MAX) ==
+            MY_COMPOSE_OK) {
+        status = variable_dispatch(&fixture, type, requested_size);
+        if (status == MY_COMPOSE_OK) status = my_compose_store_reduce(fixture.store);
+    }
+    outcome = variable_outcome(&fixture, status);
+    variable_destroy(&fixture);
+    return outcome;
+}
+
+static void expect_variable_failure(VariableOutcome outcome,
+    MyComposeStatus status, uint32_t dispose_size, uint64_t next_request_id) {
+    ASSERT_EQ(outcome.status, status);
+    ASSERT_EQ(outcome.state_count, 0u);
+    ASSERT_EQ(outcome.state_size, VARIABLE_INITIAL_SIZE);
+    ASSERT_EQ(outcome.pending_intents, 1u);
+    ASSERT_EQ(outcome.outbox_effects, 0u);
+    ASSERT_EQ(outcome.outstanding_effects, 0u);
+    ASSERT_EQ(outcome.request_count, 0u);
+    ASSERT_EQ(outcome.next_request_id, next_request_id);
+    ASSERT_EQ(outcome.candidate_disposes, 1u);
+    ASSERT_EQ(outcome.candidate_dispose_size, dispose_size);
+}
+
+TEST(variable_size_sticky_failure_disposes_final_reducer_size) {
+    VariableOutcome outcome = run_variable_failure(INTENT_RESIZE_STICKY,
+        VARIABLE_FINAL_SIZE, false);
+    expect_variable_failure(outcome, MY_COMPOSE_OVERLOAD, VARIABLE_FINAL_SIZE, 1u);
+}
+
+TEST(variable_size_request_id_failure_disposes_final_reducer_size) {
+    VariableOutcome outcome = run_variable_failure(INTENT_RESIZE_REQUEST_ID,
+        VARIABLE_FINAL_SIZE, true);
+    expect_variable_failure(outcome, MY_COMPOSE_OVERLOAD, VARIABLE_FINAL_SIZE,
+        UINT64_MAX);
+}
+
+TEST(variable_size_reducer_failure_disposes_original_clone_size) {
+    VariableOutcome outcome = run_variable_failure(INTENT_RESIZE_REDUCER_FAIL,
+        128u, false);
+    expect_variable_failure(outcome, MY_COMPOSE_CONFLICT, VARIABLE_INITIAL_SIZE,
+        1u);
+}
+
+TEST(variable_size_zero_output_disposes_original_clone_size) {
+    VariableOutcome outcome = run_variable_failure(INTENT_RESIZE_ZERO, 0u, false);
+    expect_variable_failure(outcome, MY_COMPOSE_INVALID, VARIABLE_INITIAL_SIZE,
+        1u);
+}
+
+TEST(variable_size_oversize_output_disposes_original_clone_size) {
+    VariableOutcome outcome = run_variable_failure(INTENT_RESIZE_OVERSIZE,
+        MY_COMPOSE_STATE_BYTES + 1u, false);
+    expect_variable_failure(outcome, MY_COMPOSE_OVERLOAD, VARIABLE_INITIAL_SIZE,
+        1u);
+}
+
+TEST(variable_size_success_then_failure_uses_each_valid_size) {
+    VariableFixture fixture;
+    VariableOutcome outcome;
+    MyComposeStatus dispatch_status;
+    MyComposeStatus success_status;
+    MyComposeStatus failure_status;
+    const void *state = NULL;
+    uint32_t success_size = 0u;
+    uint32_t success_count = UINT32_MAX;
+    memset(&outcome, 0, sizeof(outcome));
+    ASSERT_TRUE(variable_init(&fixture));
+    dispatch_status = variable_dispatch(&fixture, INTENT_RESIZE_SUCCESS,
+        VARIABLE_FINAL_SIZE);
+    success_status = dispatch_status == MY_COMPOSE_OK ?
+        my_compose_store_reduce(fixture.store) : dispatch_status;
+    if (my_compose_store_state(fixture.store, &state, &success_size) ==
+        MY_COMPOSE_OK) {
+        success_count = ((const TestState *)state)->count;
+    }
+    dispatch_status = variable_dispatch(&fixture, INTENT_RESIZE_STICKY, 48u);
+    failure_status = dispatch_status == MY_COMPOSE_OK ?
+        my_compose_store_reduce(fixture.store) : dispatch_status;
+    outcome = variable_outcome(&fixture, failure_status);
+    uint32_t reducer_input_size = fixture.reducer_input_size;
+    variable_destroy(&fixture);
+    ASSERT_EQ(success_status, MY_COMPOSE_OK);
+    ASSERT_EQ(success_count, 1u);
+    ASSERT_EQ(success_size, VARIABLE_FINAL_SIZE);
+    ASSERT_EQ(reducer_input_size, VARIABLE_FINAL_SIZE);
+    ASSERT_EQ(outcome.status, MY_COMPOSE_OVERLOAD);
+    ASSERT_EQ(outcome.state_count, 1u);
+    ASSERT_EQ(outcome.state_size, VARIABLE_FINAL_SIZE);
+    ASSERT_EQ(outcome.pending_intents, 1u);
+    ASSERT_EQ(outcome.request_count, 0u);
+    ASSERT_EQ(outcome.candidate_disposes, 1u);
+    ASSERT_EQ(outcome.candidate_dispose_size, 48u);
+}
+
 TEST(fifo_reduces_cloned_state_and_copies_intent_payload) {
     Fixture fixture;
     ASSERT_TRUE(fixture_init(&fixture));
@@ -345,6 +594,25 @@ TEST(ninth_effect_is_real_sticky_overload_and_atomic) {
     ASSERT_EQ(diagnostics(&fixture)->outstanding_effects, 0u);
     ASSERT_EQ(fixture.executor_calls, 0u);
     ASSERT_EQ(diagnostics(&fixture)->effect_overloads, 1u);
+    fixture_destroy(&fixture);
+}
+
+TEST(malformed_batch_count_is_rejected_before_any_traversal) {
+    Fixture fixture;
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_EQ(dispatch_value(&fixture, INTENT_MALFORMED_BATCH, 0u, no_owner()),
+        MY_COMPOSE_OK);
+    ASSERT_EQ(my_compose_store_reduce(fixture.store), MY_COMPOSE_OVERLOAD);
+    ASSERT_EQ(state_count(&fixture), 0u);
+    ASSERT_EQ(fixture.dispose_calls,
+        fixture.dispose_at_last_clone + 1u);
+    ASSERT_EQ(diagnostics(&fixture)->pending_intents, 1u);
+    ASSERT_EQ(diagnostics(&fixture)->outbox_effects, 0u);
+    ASSERT_EQ(diagnostics(&fixture)->outstanding_effects, 0u);
+    ASSERT_EQ(diagnostics(&fixture)->request_count, 0u);
+    ASSERT_EQ(diagnostics(&fixture)->effect_overloads, 1u);
+    ASSERT_EQ(fixture.store->next_request_id, 1u);
+    ASSERT_EQ(fixture.executor_calls, 0u);
     fixture_destroy(&fixture);
 }
 
@@ -791,6 +1059,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(clone_failure_preserves_state_fifo_and_candidate_lifecycle);
     RUN_TEST(reducer_failure_disposes_candidate_without_commit);
     RUN_TEST(ninth_effect_is_real_sticky_overload_and_atomic);
+    RUN_TEST(malformed_batch_count_is_rejected_before_any_traversal);
+    RUN_TEST(variable_size_sticky_failure_disposes_final_reducer_size);
+    RUN_TEST(variable_size_request_id_failure_disposes_final_reducer_size);
+    RUN_TEST(variable_size_reducer_failure_disposes_original_clone_size);
+    RUN_TEST(variable_size_zero_output_disposes_original_clone_size);
+    RUN_TEST(variable_size_oversize_output_disposes_original_clone_size);
+    RUN_TEST(variable_size_success_then_failure_uses_each_valid_size);
     RUN_TEST(shared_request_capacity_is_checked_after_reducer_before_publish);
     RUN_TEST(full_outbox_rejects_effect_without_moving_existing_fifo);
     RUN_TEST(completion_derived_intents_share_the_64_intent_budget);

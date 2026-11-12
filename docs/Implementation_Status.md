@@ -1,3 +1,10 @@
+## Compose + MVI Task 3 fix 1：reducer 输出与 State 清理（2026-11-12）
+
+- **两个 Important 修正**：`reduce_one` 现在先拒绝 reducer 直接伪造的 `batch.count>8`，再遍历 effects 或 request slots；reducer 返回 OK 且最终 size 非零、不超 16 KiB 后，立即把合法 size 写入 candidate 销毁元数据，覆盖 sticky batch、容量、request-id 和空 slot 等全部后续失败出口。reducer 自身失败或非法零/超大 size 不采用其输出，仍按原 clone size 清理。
+- **真实 RED/GREEN**：畸形 `status=OK,count=9` 在普通构建得到 20/21，ASan+UBSan 同时报 `MyComposeEffect[8]` index 8 越界；前置 guard 后 21/21。可变大小 State 的 sticky、request-id 与成功后再失败用例得到 24/27，修复后 27/27；reducer 失败、零 size、超大 size 始终按原 clone size 且 candidate 恰好 dispose 一次。
+- **变异与最终验证**：放宽 count guard 得到 26/27，移除合法 size 元数据更新得到 24/27，精确恢复均为 27/27。普通 Compose focused 3/3；ASan+UBSan、`detect_leaks=1` 下 Store 27/27、Compose 3/3，无 sanitizer/leak 报告。完整非图形 `-j3` 仍为 346 项选定、345 PASS、0 FAIL、1 个既有 D3D12 SKIP。
+- **边界**：只修改 `my_compose_store.c` 与新增回归断言，没有降低原测试、开始 Task 4、引入依赖或推送。证据仍为 Linux CPU/headless，原 reviewer 的 scoped re-review 待执行。完整记录追加于 `.superpowers/sdd/2026-11-11-compose-mvi/task-3-report.md`。
+
 ## Compose + MVI Task 3：事务式 Store 与 request slot（2026-11-12）
 
 - **交付范围**：新增 C11 `MyComposeStore`、双 16 KiB State slot、原子 reducer、独立 inline 256-byte Intent/Effect/Completion payload、每 Intent 8 Effect、32 个共享 outbox/outstanding request slot、32 completion、owner/store/request 代际及固定诊断。Task 2 的 remember dispose/node generation 所有权未复制到 Store；未实现 sink、Runtime、PAL bridge 或 C++ DSL。
