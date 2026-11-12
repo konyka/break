@@ -1,3 +1,12 @@
+## Compose + MVI Task 5：myui 事务、省略语义与唯一 finalize（2026-11-12）
+
+- **交付与唯一顺序**：实现提交 `5ff3e037` 新增 `MyComposeMyui`、stage/commit/rollback 与 `my_compose_myui_sink()`，真实 dummy window 绑定 builder/Store，覆盖 button/edit/row/column。发布顺序固定为 `end → sink.stage → tree.finalize → sink.commit`；stage 保存候选树，finalize 独占 remember dispose/node generation，commit 只发布 listener/owner/notify/unref/snapshot，adapter 不调用 remember dispose。未实现 Task 6 Runtime/async 或 C++ DSL。
+- **事务与省略**：preflight 检查 duplicate/capacity/type/property/schema/当前快照/create/delete slot 与 generation；POD 保存值，可能分配的属性经 capture/discard/no-fail restore 捕获已拥有 buffer/state，edit 同时保存 selection/IME，rollback 不分配、不执行 removed hook 或普通 setter。property/layout 省略及显式 none 恢复 factory 默认，style unset，row/column 保留 intrinsic layouter，普通节点恢复 absolute+AUTO。
+- **listener 与故障注入**：事件强制当前节点 owner；省略 event 只吊销 listener lease，不推进保留节点 owner generation，type change/delete 后旧事件不投递，window close 使 Store close。factory OOM、property set、insert、第一次/第二次 detach、style capacity 与恢复点故障均验证原 children/order/property/style/selection/focus/grab/IME/remember 完整恢复；duplicate 在 factory 前失败，外部 reorder 返回 `CONFLICT`，另覆盖 1024 个 property UPDATE。
+- **TDD 与生产变异**：缺实现编译 RED、失败 stub 0/10 后逐步达到 adapter 14/14；1024-property 全替换先为 13/14 RED，扩容并前置 journal 预检后 14/14。临时在 stage detach 提前 notify、在 adapter 重复 dispose remember 分别得到 11/13 RED，均精确恢复后 GREEN。
+- **最终验证**：普通 adapter 14/14、focused CTest 9/9；ASan+UBSan、`detect_leaks=1` 下同为 adapter 14/14、focused 9/9，无 sanitizer/leak 报告。完整非图形 `-j3` 选定 348 项，347 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP；`git diff --check` 通过。
+- **边界与后续**：所有证据均为 Linux CPU、dummy PAL/headless，不是 Vulkan/OpenGL、真实窗口、GPU 像素或硬件 IME 证明。独立规格评审与质量评审尚待后续执行，本条不预先宣称其通过；完整 RED/GREEN、变异及命令记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-5-report.md`。
+
 ## Compose + MVI Task 4 fix 1：拒绝 wrong-parent removal notice（2026-11-12）
 
 - **Important 修正**：`my_widget_notify_child_removed` 在 NULL 参数检查后、former-parent 临时赋值和任何 hook 前，拒绝 `child->parent != NULL && child->parent != parent`。公开 void API 不变；正确 attached parent 与 parent=NULL 的 staged former-parent 通知路径保持原清理行为，remove 仍为 notify→detach→unref。
