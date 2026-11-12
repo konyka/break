@@ -397,6 +397,68 @@ require_text("${compat_contract}" "${nested_ctest_evidence}"
 require_order("${compat_contract}" [=[expect_nested_ctest_complete(${test_name})]=]
     "${nested_ctest_evidence}" "nested CTest evidence after all eight fixtures")
 
+set(archive_block_start_marker [=[set(archive_build "${WORK}/archive-build")]=])
+set(archive_block_end_marker [=[function(run_naming_mutation name mutation expected_error)]=])
+set(final_block_marker [=[get_property(errors GLOBAL PROPERTY CORE_APP_COMPAT_ERRORS)
+if(errors STREQUAL "")]=])
+string(FIND "${compat_contract}" "${archive_block_start_marker}" archive_block_start)
+string(FIND "${compat_contract}" "${archive_block_end_marker}" archive_block_end)
+string(FIND "${compat_contract}" "${final_block_marker}" final_block_start)
+if(archive_block_start EQUAL -1 OR archive_block_end EQUAL -1 OR final_block_start EQUAL -1
+        OR archive_block_end LESS archive_block_start OR final_block_start LESS archive_block_end)
+    fail("archive missing CTestTestfile regression could not extract the real compat branches")
+else()
+    math(EXPR archive_block_length "${archive_block_end} - ${archive_block_start}")
+    string(SUBSTRING "${compat_contract}" ${archive_block_start} ${archive_block_length} archive_block)
+    string(SUBSTRING "${compat_contract}" ${final_block_start} -1 final_block)
+    string(RANDOM LENGTH 16 ALPHABET 0123456789abcdef archive_missing_suffix)
+    set(archive_missing_work "${CMAKE_CURRENT_BINARY_DIR}/core-app-archive-missing-${archive_missing_suffix}")
+    file(MAKE_DIRECTORY "${archive_missing_work}/source/engine/apps/core_app")
+    file(WRITE "${archive_missing_work}/source/engine/apps/core_app/core_app.c" "")
+    set(archive_missing_prelude [=[
+set(NESTED_ENGINE_RHI_BACKEND "opengl")
+set(NESTED_CMAKE_GENERATOR "Ninja")
+set(nested_configure_defs)
+set(nested_ctest_config_args)
+set(CTEST_EXECUTABLE "${CMAKE_COMMAND}")
+set_property(GLOBAL PROPERTY CORE_APP_COMPAT_ERRORS "")
+function(record_error text)
+    get_property(errors GLOBAL PROPERTY CORE_APP_COMPAT_ERRORS)
+    string(APPEND errors "${text}\n")
+    set_property(GLOBAL PROPERTY CORE_APP_COMPAT_ERRORS "${errors}")
+endfunction()
+function(run_case name expectation)
+    if(NOT name STREQUAL "archive_configure")
+        message(FATAL_ERROR "unexpected nested invocation in missing-testfile fixture: ${name}")
+    endif()
+endfunction()
+]=])
+    file(WRITE "${archive_missing_work}/missing-testfile.cmake"
+        "set(WORK [=[${archive_missing_work}]=])\n"
+        "set(REPOSITORY_ROOT [=[${REPO_ROOT}]=])\n"
+        "set(archive_engine [=[${archive_missing_work}/source/engine]=])\n"
+        "set(naming_contract [=[${REPO_ROOT}/engine/tests/test_core_app_naming_contract.cmake]=])\n"
+        "${archive_missing_prelude}\n${archive_block}\n${final_block}")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -P "${archive_missing_work}/missing-testfile.cmake"
+        RESULT_VARIABLE archive_missing_result
+        OUTPUT_VARIABLE archive_missing_output
+        ERROR_VARIABLE archive_missing_error
+        TIMEOUT 30)
+    set(archive_missing_log "${archive_missing_output}${archive_missing_error}")
+    file(REMOVE_RECURSE "${archive_missing_work}")
+    if("${archive_missing_result}" STREQUAL "0")
+        fail("archive missing CTestTestfile regression expected failure, got 0\n${archive_missing_log}")
+    endif()
+    require_text("${archive_missing_log}"
+        "archive_configure: expected CTestTestfile.cmake was not generated"
+        "archive missing CTestTestfile explicit failure")
+    string(FIND "${archive_missing_log}" "nested CTest fixtures" archive_missing_marker)
+    if(NOT archive_missing_marker EQUAL -1)
+        fail("archive missing CTestTestfile emitted the eight-fixture success marker")
+    endif()
+endif()
+
 find_program(core_app_bash bash)
 set(compat_step_marker "      - name: Verify Core App compatibility and SDK gate\n")
 set(compat_next_step_marker "\n      - name: WARP GPU-runtime floor")

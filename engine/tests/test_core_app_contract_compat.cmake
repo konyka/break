@@ -418,6 +418,9 @@ run_case(archive_configure PASS "${CMAKE_COMMAND}" -E env
 if(NESTED_ENGINE_RHI_BACKEND STREQUAL "d3d12")
     expect_archive_agility_hashes("after archive configure")
 endif()
+if(NOT EXISTS "${archive_build}/CTestTestfile.cmake")
+    record_error("archive_configure: expected CTestTestfile.cmake was not generated")
+endif()
 if(EXISTS "${archive_build}/CMakeCache.txt")
     file(STRINGS "${archive_build}/CMakeCache.txt" archive_backend
         REGEX "^ENGINE_RHI_BACKEND:STRING=")
