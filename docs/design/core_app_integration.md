@@ -54,6 +54,10 @@ D3D12 run `43162667434`、job `130997246493` 的完整日志显示 archive 与�
 
 主 CI run `43164552740` 的 clean-room job `131003571447` 在真实无 `.git` 的导出树上暴露了另一种标准 Git 诊断：`fatal: not a git repository (or any parent up to mount point /)`，后接 `Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).`。formal、checkout、naming 因旧的单一 parent-directories 文本假设而错误 FAIL，dangling 仍正确拒绝；352 selected 中其余 349 项通过。三个真实 probe 现在共用同一判定：仅当 `<root>/.git` 的 `EXISTS=FALSE`、`IS_SYMLINK=FALSE` 且完整诊断等于该 alternate 文本或原标准文本时才 UNVERIFIED；权限、unsafe ownership、工具执行错误、corrupt/invalid HEAD 和 dangling 均保持 nonzero/non77 且无 UNVERIFIED。修正后的 fresh full CI 与 D3D12 run 仍由 controller 获取，本节不提前宣称通过。
 
+### master 最终验收
+
+合并提交 `a9c25224` 的主工作树完整构建通过，非图形为 **358 selected、354 PASS、4 个文档化 SKIP、0 FAIL**。主 CI run `43186135276` 的全部可执行 job 成功；macOS Cocoa job `131073643195` 的 `test_break_online_nat` 实际通过。clean-room job `131073947704` 为 **352 selected、0 FAIL**，三个缺库合同按预期 UNVERIFIED/SKIP，dangling 仍 fail-closed。D3D12 run `43186135119`、job `131073642817` 的 headless、WARP runtime **1/1**、push-constant、Agility 部署和七个 D3D12-labelled 测试均成功。此前待验收表述由这些新 run 更新；硬件专用 lane 的调度跳过不视为通过或硬件证明，WARP 仍不证明独立显卡。
+
 第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入、256 项音频 FIFO/过载/drain recovery、Flow player identity 与 exec-link source-port 永久断言仍留在后续台账；Compose 和 P12 Task 4–13 不在本批次中宣称实现。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。

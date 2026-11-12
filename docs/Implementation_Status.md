@@ -16,6 +16,8 @@
 
 - 主 CI run `43181031519` 的 macOS Cocoa + MoltenVK job `131056765414` 中，`nat_close_before_punch_blocks_late_punch` 在 late PUNCH 后重新 arm A（22/23），但这不是已证实的协议缺陷：coordinator 仅发送 CLOSE 并 retire pair，固定 8 次 pump 不保证 endpoint 已处理关闭并写入 closed generation/sequence。测试现复用既有五秒 `nat_pump_until_closed`，保留初始/最终 disarmed、实际 late PUNCH、receive/poll 和首错传播，不增加 sleep、skip 或生产协议改动。controller 本地 200 次未复现，修正后本地单核 200/200 与 TSan focused 通过；fresh full CI/D3D12 仍待 controller，本条目不提前宣称原生通过。
 
+- **master 最终验收**：合并提交 `a9c25224` 的主工作树完整构建通过，非图形为 **358 入选、354 PASS、4 个文档化 SKIP、0 FAIL**。主 CI run `43186135276` 的全部可执行 job 成功；macOS Cocoa job `131073643195` 的 `test_break_online_nat` 实际通过，clean-room job `131073947704` 为 **352 selected、0 FAIL**，三个缺库合同按预期 SKIP，dangling 合同通过。D3D12 run `43186135119`、job `131073642817` 的 headless、WARP runtime **1/1**、push-constant、Agility 部署和七个 D3D12-labelled 测试均成功。此前待验收记录由这些新 run 更新；硬件专用 lane 的调度跳过不视为通过或硬件证明，WARP 仍不证明独立显卡。
+
 ## 合并前历史：Core App Windows 启动与资产检出修复（2026-11-11）
 
 - **合并前历史方案，非最终实现**：Windows 进程启动修复 `987121d9` 只在 `_WIN32` 的测试 `system()` 命令外再包一层引号，POSIX 格式、原始返回和诊断不变。真实 probe 已区分原始格式失败与完整命令外层引用成功，未采用不安全的无引号捷径。原生 run `43041968171` 的 Windows job `130595842235` 中 direct baker 退出 0，assets **16/16**，完整 `test_core_app_baker_diagnostics` 通过，probe outcome/final gate 均为 success。macOS job `130595841519` 同样通过；这些是 CPU/合同证据，不是 GPU 或声卡证据。
