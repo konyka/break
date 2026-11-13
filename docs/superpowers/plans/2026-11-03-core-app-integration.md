@@ -590,9 +590,17 @@ git commit -m "core_app: connect actor scripts and flow actions"
 
 ### Task 6: 动态 AI、动画/变形、固定物理、载具与布娃娃
 
-**当前进度（2026-11-13，slice 1 已交付，slice 2–4 未开始）**
+**当前进度（2026-11-13，slice 1–4 均已接入应用固定步并推送 master `99b6b9da`）**
 
-slice 1 覆盖追踪者感知、行为树、当前版本路径、动态墙增删和移动执行，代码在 `engine/apps/core_app/core_app.c`（不是本节原列的 `core_app_simulation.c`）：导航场扩到 8x8、`app_tick_chaser` 每 tick 做视野射线 → 行为树 → 当前版本寻路 → 避让 → `CharacterController`，并在目标进入视野时加墙、进入近区时移除墙。真实进程用例 `test_core_app_lifecycle_simulation`（600 tick）断言路径版本失效/恢复、接近距离和两次运行逐字节一致；三处变异（去墙移除、传旧版本号、跳过加墙）都会 RED 并已恢复。动画（locomotion/morph/facial→skinning）、载具进出与 throttle、布娃娃与 IK 互斥仍在 slice 2–4，Step 1–5 保持未完成。
+代码在 `engine/apps/core_app/core_app.c`（不是本节原列的 `core_app_simulation.c`；`core_app_simulation.c` 只新增了 interact 意图和 `core_app_simulation_place_user`）。每个 slice 都有真实进程 CTest，并做了变异：
+
+- slice 1 追踪者：`test_core_app_lifecycle_simulation`（600 tick）——视野射线 → 行为树 → 当前版本寻路 → 避让 → `CharacterController`，动态墙增删使路径版本失效/恢复，两次运行 `event=sim` 逐字节一致；视野 Area 中心由加载期 `event=sight` 断言。
+- slice 2a locomotion：`test_core_app_lifecycle_locomotion`——水平速度驱动步行/跑步权重，纯跳跃不抬高跑步权重。
+- slice 2b 表情→morph→蒙皮：`test_core_app_lifecycle_facial`——单顶点、单关节，应用内构造。
+- slice 3 载具：`test_core_app_lifecycle_vehicle`——3 m 内按下沿上车、油门驱动底盘、用户随车、下车放置；`physics_step` 首次进入固定步。
+- slice 4 布娃娃/IK：`test_core_app_lifecycle_ragdoll`——布娃娃激活期间 IK 不求解且持有计数为 1，解除后恢复。
+
+未做：蒙皮网格与骨骼仍不是 BSCN 正式资产，`level.banm`/`level.bscn` 未重烘焙，角色与载具没有渲染接线（留给 Task 7/11）。下面的 Step 勾选保持原状，以上述记录为准。
 
 **Files:**
 - Modify: `engine/apps/core_app/core_app_simulation.h/.c`
