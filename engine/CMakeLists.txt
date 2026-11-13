@@ -373,9 +373,11 @@ if(ENGINE_USE_TSAN)
     endif()
 endif()
 
-# R433: MSVC has no libm — provide an empty interface target so the many
-# `target_link_libraries(... m)` below resolve to a no-op on Windows.
-if(WIN32)
+# R433: MSVC has no libm. Apple's libSystem already exports libm, and the
+# new ld warns when -lm is repeated on a link line. An empty interface
+# target keeps `target_link_libraries(... m)` source-compatible and emits
+# no -lm on either platform. Linux still links the real libm.
+if(WIN32 OR APPLE)
     add_library(m INTERFACE)
 endif()
 
@@ -1596,11 +1598,9 @@ target_include_directories(lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
 # Lua calls libm (floor/pow/fmod/...). A static archive resolves left to right,
 # so the math library has to follow liblua.a on every consumer's link line;
 # an INTERFACE dependency guarantees that regardless of how a target orders
-# its own `m`. Windows' CRT and macOS's libSystem carry the math functions
-# themselves (a separate -lm there only makes ld warn about duplicates).
-if(UNIX AND NOT APPLE)
-    target_link_libraries(lua PUBLIC m)
-endif()
+# its own `m`. On Windows and Apple that dependency is the empty interface
+# target above (CRT / libSystem already export libm).
+target_link_libraries(lua PUBLIC m)
 if(MSVC)
     target_compile_options(lua PRIVATE /w)
 else()

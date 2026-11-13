@@ -1,3 +1,9 @@
+## 本机 macOS 复验（2026-11-13）
+
+- 修复接到 `d7330d39`。本机 arm64，Xcode 27.1（macOS SDK 27.0，`xcrun metal`），Apple Clang 21，OpenSSL 3.5.9。配置为 `cmake -S engine -B engine/build-macos-metal -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=metal -DMYUI_PAL=cocoa`。
+- `engine/tools/ex_platform_macos.m` 的 present 改为 `flushBuffer`。Apple 上 `m` 是空接口目标，避免重复 `-lm`。`test_no_hidden_gl_fallback` 跳过 `engine/build*` 里的源码副本。
+- 本机非图形、非 fuzz 为 **364 项入选、360 PASS、4 SKIP、0 FAIL**。四个 SKIP 是 `test_d3d12_dependency_gate` 和三个 nm 合同。Metal graphics 标签 **6/6** 通过，包括 `test_rhi_metal_device_contract`、`test_macos_metal_consumer_smoke` 和 `rhi_swapchain_bench`。这是本机 Metal GPU 运行证据，不是 CI hosted runner 的 HEADLESS 收据。
+
 ## Core App P12 Task 8（slice 2c）：load 自己构建候选关卡再交换（2026-11-13）
 
 - **交付**：关卡加载拆成 `core_app_level_stage`（构建候选）和 `core_app_level_commit`（交换）。`load` 先校验 checkpoint，再构建全新的候选关卡并写入保存状态，全部成功后才交换；任何失败只销毁候选，当前关卡不变。没有当前关卡时也能加载。设计见 `docs/design/core_app_integration.md` 的 Task 8 slice 2c 节。
