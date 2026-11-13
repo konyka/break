@@ -5246,7 +5246,17 @@ endif()
     # Real-device capture lanes. These create a window and a device, so they
     # are labelled gpu and report UNAVAILABLE (not a pass) on a host without
     # a display or device.
-    foreach(_core_app_gpu_backend IN ITEMS vulkan opengl)
+    # Only a build that actually selected that backend can create it: a
+    # headless-only or d3d12-only build has no device for either lane, so
+    # registering the test there would report a defect that cannot exist.
+    set(_core_app_gpu_backends "")
+    if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan" OR ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        list(APPEND _core_app_gpu_backends vulkan)
+    endif()
+    if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl" OR ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        list(APPEND _core_app_gpu_backends opengl)
+    endif()
+    foreach(_core_app_gpu_backend IN LISTS _core_app_gpu_backends)
         # Only the OpenGL case compares against the Vulkan capture; the Vulkan
         # case passes an empty value so its script skips the comparison.
         set(_core_app_gpu_compare_shot "")
