@@ -4,7 +4,7 @@
 - **测试**：`test_break_game_lua` 4/4（含 60 tick 计数、despawn 后 STALE、预算 trip 只禁用一个 module）；`test_core_app_assets` 23/23（事件键 1001、add-item 数量 1、`player` 的 hook 成功、`broken` 可加载但 tick 失败）。真实进程 `test_core_app_lifecycle_script_flow`：tick 30 投递且 pending=1，tick 61 物品变为 1，tick 180 仍为 1；中途卸载报告 `discarded pending=1`，第二关卡全程物品为 0。
 - **变异**：任何 Lua 错误都禁用 module 时 2/4；首个 Lua 错误跳过后续 actor 时 `script_flow` 失败；Area enter 不再投递 Flow 时 `script_flow` 失败。三处都用 `cmp` 恢复。
 - **回归**：普通非图形 374 项（370 PASS、4 个既有 SKIP、0 FAIL）。ASan+UBSan focused 8/8（assets、runtime、lifecycle 5 项、break_game_lua），TSan 6/6（break_game_lua 与 lifecycle 5 项），无 sanitizer 报告。
-- **边界**：AI、动画和 `physics_step` 仍是 Task 6，本任务的 tick 顺序只接了脚本、Flow、模拟和 Area。Flow 动作失败记 `tick_failed` 后继续，不重试、不补做。没有真实窗口、手柄或 GPU 证据。
+- **边界**：AI、动画和 `physics_step` 仍是 Task 6，本任务的 tick 顺序只接了脚本、Flow、模拟和 Area。Flow 动作失败记 `tick_failed` 后应用继续本 tick；Flow runtime 会回滚该次 tick 并在下一个应用 tick 重试同一事件，应用不另做补偿。没有真实窗口、手柄或 GPU 证据。
 
 ## Core App P12 Task 4：ActionMap、触摸与固定步长玩家控制（2026-11-13）
 

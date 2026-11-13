@@ -81,7 +81,7 @@ event=actors tick=<n> generation=<g> player_ticks=<n> player_failures=<n> \
 
 ### Flow
 
-烘焙的 `level.fg` 事件键从 1 改为 1001，add-item 节点的数量字段 `a` 明确为 1（之前是 0，运行时会以 `BREAK_FLOW_INVALID` 拒绝）。玩家前方 Area 的 enter 调用 `break_flow_runtime_post(flow, 1001, player, 1.0)`，trace 记 `event=flow kind=post key=1001 … tick=<n>`。延迟 30 tick 后动作把物品 1 加到 Player，trace 记 `event=item … entity=2 item=1 count=1`。`break_flow_runtime_tick` 的非 OK 结果记 `event=flow kind=tick_failed … status=<n>`，本 tick 继续，不重试。
+烘焙的 `level.fg` 事件键从 1 改为 1001，add-item 节点的数量字段 `a` 明确为 1（之前是 0，运行时会以 `BREAK_FLOW_INVALID` 拒绝）。玩家前方 Area 的 enter 调用 `break_flow_runtime_post(flow, 1001, player, 1.0)`，trace 记 `event=flow kind=post key=1001 … tick=<n>`。延迟 30 tick 后动作把物品 1 加到 Player，trace 记 `event=item … entity=2 item=1 count=1`。`break_flow_runtime_tick` 的非 OK 结果记 `event=flow kind=tick_failed … status=<n>`，本 tick 的其余步骤继续。Flow runtime 在失败时把队列和 `now_tick` 回滚到该次调用之前，所以同一事件会在下一个应用 tick 被再次尝试，应用自己不另做补偿。
 
 替换关卡或卸载时，应用先 trace `event=flow kind=discarded generation=<g> pending=<n>`（pending 为 0 则不记），再销毁该 generation 的 Flow runtime。新关卡不继承旧队列，所以旧事件不能作用到同 index 的新 generation。
 
@@ -95,7 +95,7 @@ event=actors tick=<n> generation=<g> player_ticks=<n> player_failures=<n> \
 
 ### 限制
 
-AI、动画和 `physics_step` 没有接入，tick 顺序里这三步仍是空位。Flow 动作失败只记 trace，不做补偿或重试。证据仍是 Linux CPU/record，没有真实窗口、手柄或 GPU。
+AI、动画和 `physics_step` 没有接入，tick 顺序里这三步仍是空位。Flow 动作失败只记 trace；重试来自 Flow runtime 的回滚，应用不另做补偿。证据仍是 Linux CPU/record，没有真实窗口、手柄或 GPU。
 
 ## P12 Task 4：ActionMap、触摸与固定步长玩家控制（2026-11-13）
 
