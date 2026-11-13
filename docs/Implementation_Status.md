@@ -6,7 +6,7 @@
 - **第二轮（`41958d17`）**：Windows Clang、macOS Cocoa/MoltenVK、macOS Metal 与 iOS Metal 构建通过，MSVC 仍失败。`ATOMIC_VAR_INIT` 在 MSVC 实验性 C11 原子中不存在，静态 `next_store_id` 改为零初始化，第一次成功认领时发出 id 1，耗尽仍返回 0。本机 store/runtime/async 3/3。
 - **第三轮（`1f7e548d`）**：MSVC 继续失败，`compose_parity_fixture.h` 的 `property`/`event` 触发 C4701（可能未初始化）并被 `/WX` 升级为错误。两者在使用前补零初始化；本机 C fixture 与 C++ parity 2/2。
 - **第四轮（`edaa2874`）**：MSVC、MinGW、Windows Clang/ASan、macOS Metal、iOS Metal、全部 Linux lane、windows-d3d12 与 proton-d3d12 通过。macOS Cocoa 只失败 `nat_close_before_punch_blocks_late_punch`：`nat_pump_until_closed` 在 close 报文尚未到达时就因 endpoint 尚未 armed 返回，测试注入的 punch 随后抢先重新 armed。新增 `break_nat_endpoint_closed`，pump 必须看到两端都记录了该 pair 的 close 序号；本机该测试连续 8/8。
-- **未完成**：本条目提交并推送后，需要重读 windows-d3d12、CI 与 proton-d3d12。
+- **第五轮（`c3dded52`）**：CI `43373720376`、windows-d3d12 `43373720365`、proton-d3d12 `43375126594` 均为 success。macOS Cocoa 的 NAT close 用例通过。proton-d3d12 仍只是兼容性证据，不是 Windows 原生 D3D12 证据。
 
 ## Compose + MVI Task 8：真实图形、fuzz 与分配（2026-11-13）
 
