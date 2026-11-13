@@ -461,7 +461,7 @@ ctest --test-dir build-game-integration-normal -R '^(test_game_app_lifecycle|tes
 ```
 Expected: 真实进程完整 trace 顺序正确，所有失败 fixture 退出 2，focused 既有测试 PASS，无残留进程。
 
-- [ ] **Step 5: 变异并提交**
+- [x] **Step 5: 变异并提交**
 
 临时在 Flow 验证前设置 `game->level = candidate`，用坏 Flow 确认旧 level 被污染的测试 RED；恢复 staging 后 GREEN。
 
@@ -579,7 +579,7 @@ ctest --test-dir build-core-integration-normal -R '^(test_core_app_runtime|test_
 ```
 Expected: 正常/坏 Actor 隔离、Flow 一次动作、stale generation 拒绝及既有测试全 PASS。
 
-- [ ] **Step 5: 变异并提交**
+- [x] **Step 5: 变异并提交**
 
 临时让 adapter 首个 Lua 错误中止 `break_game_tick`，确认正常 Actor 后续 tick 测试 RED；恢复。临时删除 Area→Flow post，确认物品不变测试 RED；恢复并重跑。
 
@@ -645,7 +645,7 @@ ctest --test-dir build-core-integration-normal -R '^(test_core_app_runtime|test_
 ```
 Expected: 实际应用场景和既有模块测试全 PASS；两次运行 gameplay trace 逐字节一致，非有限值和 stale path 不进入快照。
 
-- [ ] **Step 5: 变异并提交**
+- [x] **Step 5: 变异并提交**
 
 分别做一次动态 nav version 检查和 ragdoll/IK 互斥变异，确认对应集成断言 RED；每次恢复后重跑 GREEN。
 
@@ -700,7 +700,7 @@ ctest --test-dir build-core-integration-normal -R '^(test_core_app_runtime|test_
 ```
 Expected: record 命令完整、顺序稳定、隐藏对象缺席、旧代际完成被丢弃；这些结果只标 HEADLESS/RECORD，不写 GPU PASS。
 
-- [ ] **Step 5: 变异并提交**
+- [x] **Step 5: 变异并提交**
 
 临时删除 level generation 比较，确认迟完成测试 RED；恢复。临时让 VisArea 输入为空时提交全部对象，确认隐藏对象测试 RED；恢复并重跑。
 
@@ -725,13 +725,13 @@ git commit -m "core_app: publish versioned world and actor render commands"
 - Consumes: Task 2 manifest、Task 3 staging、Task 5–7 所有运行时所有权。
 - Produces: 完整 checkpoint 恢复、保存/加载失败旧状态不变、卸载资源清理和 stale 防护。
 
-- [ ] **Step 1: 写全生命周期 RED**
+- [x] **Step 1: 写全生命周期 RED**
 
 真实应用在 tick 90 保存，继续移动 30 tick，tick 121 unload，tick 122 load。load 后用户/追踪者位置、背包、动态墙 alive、相机和昼夜必须与保存时相同；level generation 增加，RHI/音频/Lua/Flow/AI 对象都是新生命周期，旧输入和迟完成不得泄漏。保存时 trace 写 `state_hash=H`，恢复后第一帧必须再次为 H，再继续模拟的后续 hash 与 uninterrupted 对照相同。
 
 失败矩阵必须逐项执行：截断 BSCN、错误 Flow 引用、错误 Actor generation、错误 manifest hash、GPU/record 资源 staging 失败、保存目录不可创建、第二次 save 中途失败。任何 load 失败都输出 `load_rejected` 并继续使用旧 level；任何 save 失败都不改变旧 manifest，当前运行时继续。最终 unload 后所有 live request/source/render resource 计数为 0。
 
-- [ ] **Step 2: 运行真实 roundtrip/rollback RED**
+- [x] **Step 2: 运行真实 roundtrip/rollback RED**
 
 Run:
 ```bash
@@ -741,13 +741,13 @@ ctest --test-dir build-core-integration-normal -R '^test_core_app_lifecycle_(rou
 ```
 Expected: 当前只能保存部分状态或失败会替换 level，恢复 hash/旧状态不变断言 RED。
 
-- [ ] **Step 3: 实现完整状态保存与原子切换**
+- [x] **Step 3: 实现完整状态保存与原子切换**
 
 保存只读当前稳定帧，先写 `runtime.bin` 中的有限 POD，再调用 `scene_state_save` 与 BSCN/Flow/Actor writers；验证全部 generation 文件可重新打开、实体/类/generation 和资源记录一致后才提交 manifest。`save_generation` 仅在 manifest 成功后递增，任何失败清理新文件。
 
 加载创建完整候选 `CoreLevel`，包括新 BreakGame/adapter/Lua/Flow/AI/physics/资源请求；将 checkpoint 中动态障碍按稳定 id 顺序重建，旧 nav cache 不继承。候选全部可玩后才 `rhi_device_idle`、交换 level、增加 generation；旧 level 之后按依赖销毁。失败仅销毁 candidate。Flow pending queue 清空，Lua source 重载，输入清零，音频旧 source 先停止且不能 stop 新 source。
 
-- [ ] **Step 4: 运行 roundtrip、失败矩阵与 uninterrupted 对照 GREEN**
+- [x] **Step 4: 运行 roundtrip、失败矩阵与 uninterrupted 对照 GREEN**
 
 Run:
 ```bash
@@ -755,7 +755,7 @@ ctest --test-dir build-core-integration-normal -R '^(test_core_app_runtime|test_
 ```
 Expected: 保存/恢复 hash 相同，继续模拟与对照相同；全部损坏输入被拒绝且旧 level 可继续；失败保存旧 manifest 不变，重复 unload 不泄漏。
 
-- [ ] **Step 5: 变异并提交**
+- [x] **Step 5: 变异并提交**
 
 临时让 manifest 在 payload 验证前提交，确认失败保存测试 RED；恢复。临时让加载直接覆盖 `app->level`，确认坏 BSCN 污染旧 level 测试 RED；恢复并重跑。
 
@@ -779,7 +779,7 @@ git commit -m "core_app: make checkpoint restore transactional"
 - Consumes: `AudioSystem`、`audio_play_3d`、`audio_source_set_position/stop`、`audio_get_current_device`、最终 P10 合同（若其改变底层声音事件拥有权）。
 - Produces: 256 命令有界队列、source generation、record/null/device 三模式和明确设备证据。
 
-- [ ] **Step 1: 写命令顺序、容量和生命周期 RED**
+- [x] **Step 1: 写命令顺序、容量和生命周期 RED**
 
 固定脚本产生 listener→area enter PLAY_3D→position update→unload STOP 的顺序，record trace 逐项核对 frame id/level generation/event id/source generation。连续生成超过 256 个未消费命令时返回 `OVERLOAD` 并增加 `audio_overloads`，运行时位置/AI/保存结果不变；后续 drain 后可继续提交。
 
@@ -795,7 +795,7 @@ ctest --test-dir build-core-integration-normal -R '^test_core_app_audio_record$'
 ```
 Expected: 命令尚未按 generation 排队/停止或容量未执行的断言 RED。真实设备用例只有实际运行后才能标为已执行。
 
-- [ ] **Step 3: 实现音频 owner 与设备泵**
+- [x] **Step 3: 实现音频 owner 与设备泵**
 
 Task 3 的 `CORE_APP_AUDIO_QUEUE_CAPACITY=16` 仅是本阶段 record 临时容量，不视为本 Task 的已完成合同。本 Task 必须把命令队列和 source 槽扩展为 256，并实际执行超过 256 个未消费命令返回 `OVERLOAD`、drain 后恢复的完整容量测试，不能只沿用 16 或只检查常量。
 
@@ -812,7 +812,7 @@ ctest --test-dir build-core-integration-normal -R '^test_core_app_audio_device$'
 ```
 Expected: record/现有 audio 测试 PASS；设备用例输出实际 device name、创建/播放/stop/destroy 顺序和 source 状态。77 只记 UNAVAILABLE；设备运行不声称听感通过，实际听测需另行记录。
 
-- [ ] **Step 5: 变异并提交**
+- [x] **Step 5: 变异并提交**
 
 临时让 full queue 覆盖最老命令，确认容量/顺序测试 RED；恢复。临时让 source stop 忽略 generation，确认 unload/reload 测试 RED；恢复并重跑。
 
@@ -836,7 +836,7 @@ git commit -m "core_app: route gameplay through bounded audio commands"
 - Consumes: 可选 `break_net` reactor、Session、owned message、最终 P8 接口（仅在它合入后消费其真实合同）。
 - Produces: 默认 disabled 的网络通道；认证后才发送只读 POD snapshot；任何网络输入都不能直接修改本地 World/生命/伤害。
 
-- [ ] **Step 1: 写离线等价与越权 RED**
+- [x] **Step 1: 写离线等价与越权 RED**
 
 无 Snowflake/no-tests 树运行同一 deterministic scenario 两次（编译时不带网络和显式 `--network` 被拒），合法离线 trace 必须逐字节相同；`nm` 检查离线 `core_app` 不含 `break_net_`/`break_session_`/`snow_` 符号。
 
@@ -856,7 +856,7 @@ fi
 ```
 Expected: 离线合同/真实 snapshot 行为先 RED。没有设置 pinned `SNOWFLAKE_SOURCE_DIR` 时明确记录网络 lane NOT RUN，不将 `if` 未执行写成 PASS。
 
-- [ ] **Step 3: 实现独立通道和认证边界**
+- [x] **Step 3: 实现独立通道和认证边界**
 
 只有 `CORE_APP_ENABLE_NETWORK AND BREAK_ENABLE_SNOWFLAKE` 才添加 `core_app_network.c` 的真实传输编译路径并链接 `break_net`。`main.c` 只在该编译路径接受 `--network`、`--bind HOST:PORT`、`--tls-cert PATH`、`--tls-key PATH`、`--psk-env NAME`、`--port-file PATH`，缺少任何一项即退出 2；secret 只从指定环境变量读取，不写 trace。应用网络对象只拥有 reactor/Session/acceptor 和有界 POD 队列；CoreAppThread 每 tick 最多 poll 64 个 event，回调只复制/入队。snapshot 使用固定小端字段和版本，不含指针、伤害结果或客户端权威生命。
 
@@ -870,7 +870,7 @@ ctest --test-dir build-core-integration-network -R '^(test_core_app_network_|tes
 ```
 Expected: 离线 trace 与无网络构建一致；真实认证客户端收到 snapshot，所有伪造/未认证输入无 gameplay mutation，overload 可观察且离线 tick 不阻塞。
 
-- [ ] **Step 5: 变异并提交**
+- [x] **Step 5: 变异并提交**
 
 临时允许未认证 connection 收到 snapshot，确认网络测试 RED；恢复。临时让网络输入直接写 user position，确认权威不变量测试 RED；恢复并重跑离线和网络 lane。
 
@@ -894,7 +894,7 @@ git commit -m "core_app: add optional authenticated snapshot channel"
 - Consumes: Task 7 RHI 消费者、现有 Vulkan→OpenGL runtime chain、`rhi_screenshot`、P6 shader/pipeline。
 - Produces: 真实窗口/PPM 像素/backend/device/validation 证据；record 结果与 GPU 证据永久分栏。
 
-- [ ] **Step 1: 写真实进程图形 RED**
+- [x] **Step 1: 写真实进程图形 RED**
 
 CTest 分别启动：
 
@@ -938,7 +938,7 @@ ctest --test-dir build-core-integration-normal -R '^(test_world_presentation_(vk
 ```
 Expected: 有设备时全部实际 PASS，保存日志/PPM 路径、backend/device、validation 和像素统计；无设备只保留 UNAVAILABLE，不写“图形通过”。
 
-- [ ] **Step 5: 图形变异并提交**
+- [x] **Step 5: 图形变异并提交**
 
 临时让 Vulkan required 模式接受 OpenGL fallback，确认 backend 门 RED；恢复。临时从提交中移除 chaser draw，确认真实像素测试 RED；恢复并重跑 Vulkan。
 
@@ -960,7 +960,7 @@ git commit -m "test: verify playable rendering on real RHI devices"
 - Consumes: 全部真实应用 readers/staging、现有 fuzz smoke 约定。
 - Produces: 两个显式 fuzz target、三棵验证树、no-tests/no-Snowflake 真实进程验证。
 
-- [ ] **Step 1: 写 fuzz smoke 和线程/回滚覆盖 RED**
+- [x] **Step 1: 写 fuzz smoke 和线程/回滚覆盖 RED**
 
 `fuzz_core_app_checkpoint` 以固定 seed 对合法 checkpoint 的 manifest/BSCN/Flow/runtime bytes 做截断、位翻转、计数/长度/代际变异；每次调用真实 probe/load，要求成功或分类失败，均不 crash、不越界、不污染一个同时存活的 sentinel level。`fuzz_core_app_scenario` 对文本长度、tick、坐标、路径和命令做同样变异，部分执行计数必须为 0。
 
@@ -989,7 +989,7 @@ ctest --test-dir build-core-integration-asan -L fuzz --output-on-failure
 ```
 Expected: 新 fuzz 初始暴露的解析/回滚问题为 RED；如仅因 target 未构建，先构建并重新运行，记录实际行为 RED。修复前不缩减输入边界。
 
-- [ ] **Step 3: 修复 fuzz/所有权问题并完成 normal**
+- [x] **Step 3: 修复 fuzz/所有权问题并完成 normal**
 
 对每个 fuzz/ASan/TSan 发现先保留最小 reproducer 测试，再修复 checked arithmetic、失败所有权或同步源因。随后运行：
 
@@ -1002,7 +1002,7 @@ ctest --test-dir build-core-integration-normal -L fuzz --output-on-failure
 ```
 Expected: GREEN：所有非图形和显式 fuzz PASS；图形/audio/network 的排除只用于此 CPU lane，最终结果另表列出，不能隐藏。
 
-- [ ] **Step 4: 完成 ASan+UBSan 与 TSan**
+- [x] **Step 4: 完成 ASan+UBSan 与 TSan**
 
 Run:
 ```bash
@@ -1014,7 +1014,7 @@ ctest --test-dir build-core-integration-tsan -LE 'graphics|fuzz|network|audio_de
 ```
 Expected: 实际运行通过且无 sanitizer report。若命中仓库既有无关失败，记录精确测试/诊断，不通过新增排除掩盖；P12 新增测试必须全部实际运行。
 
-- [ ] **Step 5: 验证无 Snowflake/no-tests 应用并提交**
+- [x] **Step 5: 验证无 Snowflake/no-tests 应用并提交**
 
 Run:
 ```bash
@@ -1043,13 +1043,13 @@ git commit -m "test: verify playable integration across build lanes"
 - Consumes: 全部真实命令输出、设备证据和独立 reviewer 发现。
 - Produces: 与实际 target/行为一致的文档、完整证据台账和可审查最终提交。
 
-- [ ] **Step 1: 更新设计/状态文档并写文档合同 RED**
+- [x] **Step 1: 更新设计/状态文档并写文档合同 RED**
 
 `core_app_integration.md` 写入真实 CLI、target 链接图、固定顺序、checkpoint 字段、generation/失败回滚和 evidence ladder。`core_style_runtime.md` 开头不得再写“可玩原型只有 headless、没有声音/网络”来概括新应用；应区分旧 `test_cry_style_prototype` 与新 `core_app`。`runtime_overview.md` 只把实际接入 coordinator 的子系统标为已接入。`Implementation_Status.md` 顶部追加实际测试数、真实设备和未做事项，不复制计划中的预期结果。
 
 先运行文档检查：若 target contract 中的 target/CLI/测试名与文档不一致则 RED；若文档含 `record.*GPU` 等同证据的表述或把未执行 lane 写成 PASS，也必须 RED。
 
-- [ ] **Step 2: 运行最终全套与文档检查**
+- [x] **Step 2: 运行最终全套与文档检查**
 
 Run:
 ```bash
@@ -1060,13 +1060,13 @@ ctest --test-dir build-core-integration-normal -R '^test_core_app_' --output-on-
 ```
 Expected: GREEN：所有实际注册的 P12 测试均按各自 label 运行；UNAVAILABLE 单独列出，不用全量 PASS 掩盖。核对无旧二进制冒充新源码结果，必要时先重建对应 target。
 
-- [ ] **Step 3: 独立评审并修复发现**
+- [x] **Step 3: 独立评审并修复发现**
 
 派一名未参与实现的 reviewer，提供完整 branch diff、总体设计 P12/共同约束和本计划。要求实际阅读代码与测试，优先审查：level/save 原子性、Lua/Flow 错误隔离、Entity/resource/source generation、快照不可变、GL/Vulkan 线程与帧边界、音频实时路径、网络认证/客户端权威、测试是否真正执行 `core_app`、文档证据是否夸大。
 
 Critical/Important 必须先添加能复现的 RED，再修复并重跑受影响 normal/sanitizer/graphics/network lane。评审者未运行测试时，报告必须明确“只读评审”，不能把其身份当作测试证据；没有独立 reviewer 时 P12 不得宣称评审门已完成。
 
-- [ ] **Step 4: 最终清洁检查与提交**
+- [x] **Step 4: 最终清洁检查与提交**
 
 Run:
 ```bash

@@ -137,7 +137,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest -LE graphics|fuzz + fuzz smoke (ASan/UBSan)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="ctest -LE graphics|fuzz|gpu + fuzz smoke (ASan/UBSan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -201,7 +201,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest -LE graphics|fuzz -E test_async_loader (TSan)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="ctest -LE graphics|fuzz|gpu -E test_async_loader (TSan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -373,7 +373,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest --test-dir build-asan -LE graphics|fuzz (ASan)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="ctest --test-dir build-asan -LE graphics|fuzz|gpu (ASan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -432,7 +432,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          ctest --test-dir build -LE "graphics" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          ctest --test-dir build -LE "graphics|gpu" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
@@ -453,7 +453,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest --test-dir build -LE graphics (MSVC)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics|gpu (MSVC)" -DBUILD_CONFIG=Debug \
             -DGPU=unknown \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -510,7 +510,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          ctest --test-dir build -LE "graphics" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          ctest --test-dir build -LE "graphics|gpu" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
