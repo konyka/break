@@ -635,7 +635,7 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 ### 验证
 
-新增 `test_core_app_gpu_vulkan` 与 `test_core_app_gpu_opengl`（标签 `gpu`，`RUN_SERIAL`，超时 420s）。每个用例：真实 `core_app --render=<backend> --require-device`，断言 trace 有 `event=gpu result=ready backend=<b> device=...`、存在 `draws>0` 的帧、`event=gpu result=stopped frames=N screenshots=1`，再用 Python 解析 PPM 头与像素数，要求除最频繁颜色外还有其它像素。设备/显示器缺失时 `--require-device` 退出 77，用例报 UNAVAILABLE 跳过而不是判 PASS；设备已创建后的失败一律 FAIL。`test_core_app_gpu_opengl` 还与该次构建中 vulkan 的截图比较绘制采样数，作为跨后端不变量。
+新增 `test_core_app_gpu_vulkan` 与 `test_core_app_gpu_opengl`（标签 `gpu`，`RUN_SERIAL`，超时 420s）。它们只在构建实际选择了对应后端时注册（`ENGINE_RHI_BACKEND_EFFECTIVE` 为该后端或 `ENGINE_RHI_MULTI_BACKEND_ACTIVE`），并在 CI 的 headless 套件里通过 `-LE "graphics|fuzz|gpu"` 排除——没有 GPU 的 runner 不应把“设备不存在”测成失败。本地用 `ctest -L gpu` 显式运行。每个用例：真实 `core_app --render=<backend> --require-device`，断言 trace 有 `event=gpu result=ready backend=<b> device=...`、存在 `draws>0` 的帧、`event=gpu result=stopped frames=N screenshots=1`，再用 Python 解析 PPM 头与像素数，要求除最频繁颜色外还有其它像素。设备/显示器缺失时 `--require-device` 退出 77，用例报 UNAVAILABLE 跳过而不是判 PASS；设备已创建后的失败一律 FAIL。`test_core_app_gpu_opengl` 还与该次构建中 vulkan 的截图比较绘制采样数，作为跨后端不变量。
 
 本机实测（Intel UHD TGL GT1）：
 
