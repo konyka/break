@@ -103,9 +103,13 @@ BreakRuntimeError core_app_gpu_create(CoreAppGpu *gpu, const CoreAppGpuConfig *c
     if (rhi_device_get_info(device, &info)) {
         snprintf(gpu->device_name, sizeof(gpu->device_name), "%s", info.device_name);
     }
-    const char *active = rhi_runtime_active_backend();
+    /* Report the backend the device actually reported. rhi_runtime_active_backend
+     * lives in the runtime selector library, which a single-backend build does
+     * not link, so the device info is the portable source. */
     snprintf(gpu->backend_name, sizeof(gpu->backend_name), "%s",
-             active ? active : (backend == RHI_BACKEND_VULKAN ? "vulkan" : "opengl"));
+             info.backend == RHI_BACKEND_VULKAN ? "vulkan"
+             : info.backend == RHI_BACKEND_OPENGL ? "opengl"
+                                                  : "unknown");
     if (!world_presenter_create(device, &gpu->presenter)) {
         rhi_device_destroy(device);
         platform_destroy(platform);

@@ -11,7 +11,6 @@
 #include <core/types.h>
 #include <renderer/world_presentation.h>
 #include <rhi/rhi.h>
-#include <rhi/rhi_runtime.h>
 #include <runtime/runtime_types.h>
 
 #include <stdio.h>
