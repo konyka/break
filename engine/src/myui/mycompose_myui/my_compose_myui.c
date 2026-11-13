@@ -484,9 +484,12 @@ static bool current_snapshot_matches(MyComposeMyuiState *state) {
             if (parent_binding == NULL) return false;
             parent = parent_binding->widget;
         }
-        if (binding->widget->parent != (node->parent == MY_COMPOSE_NO_INDEX ?
-                NULL : parent) || my_widget_child_count(binding->widget) !=
-            node->child_count) {
+        if (node->parent == MY_COMPOSE_NO_INDEX) {
+            if (binding->widget != state->root) return false;
+        } else if (binding->widget->parent != parent) {
+            return false;
+        }
+        if (my_widget_child_count(binding->widget) != node->child_count) {
             return false;
         }
         if (node->parent != MY_COMPOSE_NO_INDEX &&

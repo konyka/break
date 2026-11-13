@@ -3253,6 +3253,41 @@ if(ENGINE_BUILD_TESTS)
             set_tests_properties(${world_gpu_target} PROPERTIES
                 LABELS "graphics;world" SKIP_RETURN_CODE 77)
         endforeach()
+
+        # Compose + MVI on the BreakUI frame path, one executable per backend
+        # this build links; each uses rhi_device_create with that backend only.
+        add_custom_target(test_mycompose_gpu)
+        foreach(compose_gpu_variant IN LISTS world_gpu_variants)
+            set(compose_gpu_target test_mycompose_gpu_${compose_gpu_variant})
+            add_executable(${compose_gpu_target} tests/test_mycompose_gpu.cpp
+                tests/test_mycompose_image.c
+                src/editor/editor_i18n.c src/editor/editor_i18n_tables.c)
+            target_include_directories(${compose_gpu_target} PRIVATE
+                ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+            if(compose_gpu_variant STREQUAL "vulkan")
+                target_compile_definitions(${compose_gpu_target} PRIVATE
+                    MYCOMPOSE_GPU_VULKAN=1 ENGINE_VK_VALIDATION=1)
+            else()
+                target_compile_definitions(${compose_gpu_target} PRIVATE
+                    MYCOMPOSE_GPU_VULKAN=0)
+            endif()
+            if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
+                target_compile_definitions(${compose_gpu_target} PRIVATE
+                    MYCOMPOSE_ALLOC_WRAP=1)
+                target_link_options(${compose_gpu_target} PRIVATE
+                    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+            endif()
+            target_link_libraries(${compose_gpu_target} PRIVATE
+                mycompose_myui break_myui engine m)
+            engine_link_rhi_backend(${compose_gpu_target})
+            add_dependencies(test_mycompose_gpu ${compose_gpu_target})
+            add_test(NAME ${compose_gpu_target} COMMAND ${compose_gpu_target}
+                     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+            set_tests_properties(${compose_gpu_target} PROPERTIES
+                LABELS "graphics;compose;platform_runtime" SKIP_RETURN_CODE 77
+                TIMEOUT 120
+                ENVIRONMENT "BREAK_ASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR};BREAK_SHADER_DIR=${CMAKE_CURRENT_SOURCE_DIR};MYCOMPOSE_GPU_OUT_DIR=${CMAKE_CURRENT_BINARY_DIR}")
+        endforeach()
     endif()
 
     if(ENGINE_PLATFORM STREQUAL "linux" AND ENGINE_ENABLE_WAYLAND)
@@ -6515,6 +6550,18 @@ endif()
     target_include_directories(fuzz_vfs_pak PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_vfs_pak PRIVATE m)
 
+    # Compose + MVI: length-prefixed tree and intent fuzzers. EXCLUDE_FROM_ALL
+    # like the other fuzz_* targets; the fuzz lane builds them explicitly.
+    add_executable(fuzz_mycompose_tree EXCLUDE_FROM_ALL tests/fuzz_mycompose_tree.c)
+    target_include_directories(fuzz_mycompose_tree PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(fuzz_mycompose_tree PRIVATE mycompose m)
+
+    add_executable(fuzz_mycompose_intent EXCLUDE_FROM_ALL tests/fuzz_mycompose_intent.c)
+    target_include_directories(fuzz_mycompose_intent PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(fuzz_mycompose_intent PRIVATE mycompose m Threads::Threads)
+
     # Mutation fuzzer for the editor remote session wire path (ids 4..13):
     # mutated envelopes -> the real break_net codec -> the real session
     # manager -> the real editor_remote.c handlers on a live headless shell
@@ -6559,8 +6606,11 @@ endif()
         add_test(NAME fuzz_vfs_pak_smoke      COMMAND fuzz_vfs_pak 2000 17)
         add_test(NAME fuzz_asset_gltf_smoke   COMMAND fuzz_asset_gltf 800 23
                  "${CMAKE_SOURCE_DIR}/assets/test.glb")
+        add_test(NAME fuzz_mycompose_tree_smoke COMMAND fuzz_mycompose_tree 2000 19)
+        add_test(NAME fuzz_mycompose_intent_smoke COMMAND fuzz_mycompose_intent 2000 29)
         set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
             fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
+            fuzz_mycompose_tree_smoke fuzz_mycompose_intent_smoke
             PROPERTIES LABELS "fuzz")
         if(BREAK_ENABLE_SNOWFLAKE)
             add_test(NAME fuzz_editor_remote_smoke COMMAND fuzz_editor_remote 600 29)
