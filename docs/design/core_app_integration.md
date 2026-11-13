@@ -382,6 +382,28 @@ event=load_rejected tick=<n> generation=<g> stage=<checkpoint|state>
 
 BSCN/Flow/Actor/scene_state 侧车、相机、昼夜时间；uninterrupted 对照；错误 Actor generation、截断 BSCN、错误 Flow 引用等失败矩阵项。
 
+## P12 Task 8（slice 2b）：与不中断运行的对照（2026-11-13）
+
+### 做法
+
+同一份场景跑两次：A 在 tick 90 保存后一直跑到 tick 149；B 在 tick 90 保存、tick 91 立刻加载，一直跑到 tick 150。B 因为加载多占一个 tick，所以比较的是 A 的 tick k 和 B 的 tick k+1（k = 90..149）的 trace 正文（去掉 tick 和 generation）。
+
+### 发现与修复
+
+第一次对照时，用户、载具、IK、表情都逐字一致，但 locomotion 在加载后的第一帧不同：A 的速度 5.1、跑步权重 1，B 的速度 0、步行权重 1。原因是 `app_apply_state` 把 `previous_user_position_valid` 置为 false，加载后第一帧的速度因此算成 0。现在加载会把上一帧位置设成恢复的用户位置并标记为有效。修复后 user/vehicle/loco/facial/ik 60 行全部逐字一致。
+
+追踪者不逐字一致。加载会丢弃旧路径和跟随器游标（这是计划要求的“旧 nav cache 不继承”），并在下一 tick 按当前 nav version 重新寻路，所以轨迹会分叉；60 tick 后两次运行相差约 0.55 m。测试对追踪者只断言：加载后每一 tick 都有当前版本的路径（`path_current=1`），并且 tick 92 → 150 之间 z 继续减小。
+
+### 验证
+
+- `test_core_app_lifecycle_roundtrip` 新增 continuation 段：B 在 tick 91 加载成功；五类事件各 60 行，与 A 逐字一致；追踪者有当前路径并持续接近。
+- 变异：加载时不保留上一帧用户位置，continuation 段报告 loco 不一致，恢复后通过。
+- `test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14，无 sanitizer 报告；非图形全量 381/381。
+
+### 仍未做
+
+相机和昼夜目前由 tick 推导（相机跟随用户，昼夜按 tick），不是独立状态，所以没有单独保存；只有将来它们变成可变状态时才需要进 checkpoint。BSCN/Flow/Actor/scene_state 侧车，以及错误 Actor generation、截断 BSCN、错误 Flow 引用等失败矩阵项仍未做。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

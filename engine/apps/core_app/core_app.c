@@ -1503,7 +1503,8 @@ static BreakRuntimeError app_apply_state(CoreLevel *level, const CoreAppRuntimeS
     memset(&level->chase_path, 0, sizeof(level->chase_path));
     memset(&level->follower, 0, sizeof(level->follower));
     level->chase_nav_version = break_ai_nav_version(level->ai);
-    level->previous_user_position_valid = false;
+    level->previous_user_position = state->user_position;
+    level->previous_user_position_valid = true;
     return BREAK_RUNTIME_OK;
 }
 

@@ -1,3 +1,11 @@
+## Core App P12 Task 8（slice 2b）：与不中断运行的对照（2026-11-13）
+
+- **交付**：加载后保留上一帧用户位置，locomotion 速度不再在加载后第一帧归零。设计见 `docs/design/core_app_integration.md` 的 Task 8 slice 2b 节。
+- **测试**：`test_core_app_lifecycle_roundtrip` 新增 continuation 段：一次运行不中断，另一次在保存后立刻加载；加载后 60 tick 的 user/vehicle/loco/facial/ik trace 与不中断运行逐字一致。追踪者因重新寻路而分叉（60 tick 后约 0.55 m），只断言有当前路径并持续接近。
+- **变异**：加载时丢弃上一帧位置，continuation 段变红，恢复后通过。
+- **回归**：`test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14；非图形全量 381/381。
+- **边界**：追踪者不逐字一致是设计结果（旧导航缓存不继承）。侧车和其余失败矩阵仍未做。
+
 ## Core App P12 Task 8（slice 2a）：背包进 checkpoint，第二次保存失败保留上一份（2026-11-13）
 
 - **交付**：`runtime_<g>.bin` 版本 2（正文 68 字节）加入物品数量；加载在修改关卡前补足背包，当前数量超过保存值时拒绝。第二次保存失败不动上一代文件和 manifest。设计见 `docs/design/core_app_integration.md` 的 Task 8 slice 2a 节。
