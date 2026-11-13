@@ -2,6 +2,10 @@
 
 > **2.0.0 当前边界：** X11 support was removed; Linux only uses the native Wayland port. Valid `MYUI_PAL` values are `wayland`, `win32`, `cocoa`, and `dummy`; `x11` is a fail-closed legacy configuration. Vulkan remains the default RHI and OpenGL is the final fallback. Dated sections below are historical implementation and incident records: their X11/GLX commands, test counts, and conclusions are preserved as evidence, not current support claims.
 
+## 声明式 UI：Compose + MVI（2026-11-13）
+
+`mycompose`（C11）、`mycompose_myui`（myui sink）和 `my_compose.hpp`（C++20 DSL）在 myui 之上提供声明式 UI 与 Model-View-Intent 状态管理。应用在 `break_ui_pump()` 之后调用 `my_compose_myui_pump()`，BreakUI ABI 不变。由 Compose 管理的 widget 只能经 sink 修改；`label.text` 暂无事务捕获钩子，adapter 返回 `MY_COMPOSE_NOT_SUPPORTED`。用法、容量、帧顺序、生命周期和证据等级见 `docs/design/compose_mvi.md`，构建与测试命令见 `docs/Build_Guide.md` 的 “Compose + MVI 图形与 fuzz 验证”。
+
 ## 数字解析与 locale 无关（2026-10-30）
 
 宿主进程即使设置了逗号小数点的 `LC_NUMERIC`（如 `de_DE`、`fr_FR`），myui 读写的配置与样式中的小数仍统一使用 `.`：

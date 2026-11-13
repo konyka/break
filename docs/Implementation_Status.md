@@ -1,3 +1,14 @@
+## Compose + MVI Task 8：真实图形、fuzz 与分配（2026-11-13）
+
+- **交付**：`acb42dc5` 新增 `test_mycompose_gpu.cpp` 与 C harness `test_mycompose_image.c/.h`，注册 `test_mycompose_gpu_vulkan`/`test_mycompose_gpu_opengl`（graphics label）；`10fa8098` 把 OpenGL 测试加入 CI OpenGL lane regex、新增 `fuzz_mycompose_tree`/`fuzz_mycompose_intent`（`EXCLUDE_FROM_ALL`、fuzz label）并同步 CI 显式 fuzz 列表与 Wayland CI 合同；`048b87f0` 修复 C harness 中的后端 token，使 `test_no_hidden_gl_fallback` 恢复通过。当前使用说明见 `docs/design/compose_mvi.md`。
+- **生产路径**：每帧 `platform_poll → break_ui_pump → my_compose_myui_pump → break_ui_frame_begin/render → rhi_frame_end → rhi_screenshot → rhi_present`。设备以 `rhi_device_create` 显式创建，`RHIDeviceInfo.backend` 与请求不符即 FAIL，不走回退链；`JetBrainsMono-Regular.ttf` 与 `NotoSansSC-VF.ttf` 缺失即 FAIL。State 持有 `BreakEditorLang`，view 用 `break_editor_tr_lang`，测试断言全局语言保持 EN_US。
+- **本机 GPU 结果（Fedora GNOME Wayland）**：Vulkan 设备 `Intel(R) UHD Graphics (TGL GT1)`（vendor 0x8086、device 0x9a70、INTEGRATED），47 帧全部渲染、0 skip、8 次截图、`vk_validation=0`，PASS。OpenGL 对照日志为 `OpenGL 4.6 (Core Profile) Mesa 26.2.5 (Mesa Intel(R) UHD Graphics (TGL GT1))`，47 帧、0 skip，PASS；GL 的 `RHIDeviceInfo` 不报告设备名（`OpenGL backend`、type UNKNOWN），设备身份只来自驱动日志。
+- **输入证据等级**：pointer/key 为 `SYNTHETIC_INPUTSTATE`（`platform_poll` 后写入 `InputState`），文本为 `DIRECT_DISPATCH`（`MY_EVENT_IME_COMMIT`），并断言 `platform_poll_text` 为空；未聚焦 edit 的提交不改变文本为负例。这不是合成器注入的输入证据。
+- **分配**：预热后 `my_compose_myui_pump` 8 帧 0 次、C++ DSL 16 次构建 0 次；myui pump/render 的分配单独打印（Vulkan 554、OpenGL 8），不计入新层断言。
+- **RED/GREEN 与变异**：先观察 `test_mycompose_gpu` 无构建规则与 CI 合同因缺 regex/fuzz 列表失败，再 GREEN。生产变异恢复 `current_snapshot_matches` 的旧 root 检查后，Vulkan 测试在语言切换、keyed 重排与 edit focus 上失败（`my_compose_myui_pump=7`），恢复后通过。
+- **回归**：普通非图形 `-j3` 354 项，353 PASS、1 个既有 D3D12 dependency gate SKIP、0 FAIL；ASan+UBSan 353 项同样 0 FAIL；TSan runtime/async 2/2，无 race 报告；no-tests 构建成功（仍只注册既有 4 个 demo smoke）；fuzz 7/7（既有 5 个加 2 个新 target）；Wayland CI 合同 OK。
+- **边界**：CI 的 GitHub lane 尚未在本分支运行；lavapipe/llvmpipe lane 是软件渲染，不是硬件 GPU 证据。`label.text` 暂无事务捕获钩子，测试标题使用 button。独立评审与合并后验证另行记录。
+
 ## Compose + MVI Task 7：C++20 RAII DSL 与 C parity（2026-11-13）
 
 - **交付**：header-only `engine/src/myui/mycompose/my_compose.hpp` 提供 `breakxx::compose::{Runtime,Store,Builder,NodeScope,Intent,EffectBatch,StateOps}` 与 `Remember<T>`，经 `mycompose_cpp20` INTERFACE target 与 C 层共用同一 Core。C++ wrapper 以 `std::shared_ptr` 绑定 Core，move 只转移 wrapper，不以对象地址作身份。`NodeScope` 支持 Row/Column/Stack/Element/Key/Property/Style/OnEvent，析构只关闭已打开 scope。两个 State slot 为 `std::optional<State>`，仅存活时 engaged；默认 Clone 走拷贝构造，自定义 `StateOps` 支持 move-only State；EffectBatch 用 `std::array` 固定 8 项。构造、clone、reducer、executor、view 抛出的异常在 trampoline 内转成 `MY_COMPOSE_FAILED`，不跨 C ABI 传播；无异常构建要求 noexcept。

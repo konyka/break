@@ -288,6 +288,31 @@ cmake -B build-verify-wl-gl -DENGINE_RHI_BACKEND=opengl && cmake --build build-v
 cmake -B build-verify-wl-vk && cmake --build build-verify-wl-vk
 ```
 
+#### Compose + MVI 图形与 fuzz 验证
+
+Compose 的 GPU 测试在真实 Wayland 窗口上显式创建所选后端设备（不走回退链），设备报告的后端与请求不符即失败。用法见 `docs/design/compose_mvi.md`。
+
+```bash
+# Vulkan（默认）
+cmake -S engine -B build-compose-vk -DCMAKE_BUILD_TYPE=Debug \
+  -DENGINE_BUILD_TESTS=ON -DENGINE_RHI_BACKEND=vulkan -DBREAK_ENABLE_SNOWFLAKE=OFF
+cmake --build build-compose-vk --target test_mycompose_gpu -j3
+ctest --test-dir build-compose-vk --output-on-failure -j3 -L graphics
+
+# OpenGL（同一 fixture 的对照）
+cmake -S engine -B build-compose-gl -DCMAKE_BUILD_TYPE=Debug \
+  -DENGINE_BUILD_TESTS=ON -DENGINE_RHI_BACKEND=opengl -DBREAK_ENABLE_SNOWFLAKE=OFF
+cmake --build build-compose-gl --target test_mycompose_gpu -j3
+ctest --test-dir build-compose-gl --output-on-failure -j3 -R '^test_mycompose_gpu_opengl$'
+
+# fuzz smoke（两个 Compose fuzz target 为 EXCLUDE_FROM_ALL，需按名构建）
+cmake -S engine -B build-compose-fuzz -DENGINE_BUILD_TESTS=ON -DENGINE_BUILD_FUZZ_SMOKE=ON
+cmake --build build-compose-fuzz --target fuzz_mycompose_tree fuzz_mycompose_intent -j3
+ctest --test-dir build-compose-fuzz -L fuzz -j3
+```
+
+GPU 测试需要 Wayland 会话（`WAYLAND_DISPLAY`）；没有显示或设备时退出 77（CTest 记为 Skipped），在目标环境必须为 0 skip。日志的 `device:` 行给出设备名与类型；lavapipe/llvmpipe 是软件渲染，不能作为硬件 GPU 证据。
+
 #### Linux Clang 构建
 
 ```bash
