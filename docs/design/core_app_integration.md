@@ -695,7 +695,7 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 ### 命名
 
-新增的 `core_app_gpu.*`、`core_app_mesh.*`、`core_app_network.*`、两个 fuzz 源、`test_core_app_gpu.cmake`、`test_core_app_mesh.c` 均通过命名契约扫描；标识符、文件名、注释与提交信息不含 `game`/`cry`/`player`/`enemy`。
+新增的 `core_app_gpu.*`、`core_app_mesh.*`、`core_app_network.*`、两个 fuzz 源、`test_core_app_gpu.cmake`、`test_core_app_mesh.c` 均通过命名契约扫描；标识符、文件名、注释与提交信息都不含命名契约禁止的历史领域词与角色词。
 
 ### 仍未做
 
