@@ -3,7 +3,7 @@
 - **交付**：header-only `engine/src/myui/mycompose/my_compose.hpp` 提供 `breakxx::compose::{Runtime,Store,Builder,NodeScope,Intent,EffectBatch,StateOps}` 与 `Remember<T>`，经 `mycompose_cpp20` INTERFACE target 与 C 层共用同一 Core。C++ wrapper 以 `std::shared_ptr` 绑定 Core，move 只转移 wrapper，不以对象地址作身份。`NodeScope` 支持 Row/Column/Stack/Element/Key/Property/Style/OnEvent，析构只关闭已打开 scope。两个 State slot 为 `std::optional<State>`，仅存活时 engaged；默认 Clone 走拷贝构造，自定义 `StateOps` 支持 move-only State；EffectBatch 用 `std::array` 固定 8 项。构造、clone、reducer、executor、view 抛出的异常在 trampoline 内转成 `MY_COMPOSE_FAILED`，不跨 C ABI 传播；无异常构建要求 noexcept。
 - **RED/GREEN 与变异**：先观察缺头文件编译失败，再在行为断言上得到 8/13、9/13、13/14 等目标 RED 及无异常 TU 的 noexcept 静态断言失败，最后 GREEN。两项生产变异均被杀死并精确恢复：keyed 节点忽略请求 type 使 parity 第二帧 diff 计数错误（13/14）；`DisposeThunk` 不复位 engaged optional 使 reducer 异常用例存活计数错误（13/14）。计划原文“clone 前不 reset”在当前 C Store 下为死代码（reduce 已先 dispose candidate），故改用等价的 engaged slot 生命周期变异。
 - **最终验证**：`test_mycompose_cpp20` 14/14；focused CTest 4/4（C++ 用例、独立 C11 fixture、自包含头 TU、`-fno-exceptions` TU），C/C++ 按 canonical diff 字节、State 与 Effect payload 比较。ASan+UBSan、`detect_leaks=1` 下同批 4/4，无 sanitizer/leak 报告。完整非图形 `-j3` 选定 354 项，354 PASS、0 FAIL，唯一既有 non-Windows D3D12 dependency gate SKIP。
-- **边界**：证据仅为 Linux CPU/headless，不是 Vulkan/OpenGL、真实窗口、像素或 IME 证明。独立规格与质量评审尚待完成；完整记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-7-report.md`。
+- **边界与独立评审**：证据仅为 Linux CPU/headless，不是 Vulkan/OpenGL、真实窗口、像素或 IME 证明。独立规格评审 PASS、质量评审 Approved，零 Critical/Important/Minor；评审确认 `my_compose_store.c` 在 clone 前已 dispose candidate，故替代变异充分。完整记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-7-report.md`。
 
 ## Compose + MVI Task 6 fix 1：completion 身份、pool 背压与 accept 线性化（2026-11-13）
 
