@@ -24,7 +24,7 @@
 #define CORE_APP_WAV_BYTES (44u + CORE_APP_WAV_SAMPLES * 2u)
 
 static const char *const k_class_names[CORE_APP_LEVEL_ENTITIES] = {
-    "Ground", "Player", "Enemy", "DynamicWall", "Vehicle",
+    "Ground", "User", "Chaser", "DynamicWall", "Vehicle",
     "VisibleColor", "HiddenColor"
 };
 
@@ -518,16 +518,16 @@ static bool bake_text_assets(const char *output) {
          "function on_enter()\n"
          "    return 30, 1\n"
          "end\n"},
-        {"player.lua",
+        {"user.lua",
          "function on_spawn()\n"
          "    return true\n"
          "end\n"
          "function on_actor_tick(actor, dt)\n"
          "    state.ticks = (state.ticks or 0) + 1\n"
          "end\n"},
-        {"broken.lua",
+        {"chaser.lua",
          "function on_actor_tick(actor, dt)\n"
-         "    error('broken actor tick')\n"
+         "    error('faulty actor tick')\n"
          "end\n"},
         {"deterministic.scenario",
          "core-app-scenario 1\n"

@@ -45,11 +45,11 @@ endif()
 
 set(text_assets
     engine/assets/core_app/actors.sidecar
-    engine/assets/core_app/broken.lua
+    engine/assets/core_app/chaser.lua
     engine/assets/core_app/deterministic.scenario
     engine/assets/core_app/director.lua
     engine/assets/core_app/load_unload.scenario
-    engine/assets/core_app/player.lua
+    engine/assets/core_app/user.lua
     engine/assets/core_app/rollback.scenario)
 set(binary_assets
     engine/assets/core_app/level.banm

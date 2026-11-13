@@ -25,7 +25,7 @@
 
 #define CORE_APP_TEXT_FILE_MAX_BYTES (1u << 20)
 #define CORE_APP_IO_TIMEOUT_MS 5000u
-#define CORE_APP_PLAYER_ENTITY_INDEX 2u
+#define CORE_APP_USER_ENTITY_INDEX 2u
 #define CORE_APP_ENEMY_ENTITY_INDEX 3u
 #define CORE_APP_AREA_FLOW_EVENT 1001u
 #define CORE_APP_FLOW_ITEM 1u
@@ -50,13 +50,25 @@ typedef struct CoreLevel {
     BreakRuntimeIoRequest *request;
     PhysicsBodyHandle ground_body;
     CoreAppSimulation *simulation;
-    Entity player;
-    Entity enemy;
-    u32 player_items;
+    Entity user;
+    Entity chaser;
+    u32 user_items;
     u32 trigger_area;
     u32 pending_area_enters;
     u32 dropped_area_enters;
-    f32 nav_heights[16];
+    f32 nav_heights[64];
+    Vec3 chaser_position;
+    BreakAiPath chase_path;
+    BreakNavFollower follower;
+    BreakBlackboard board;
+    BreakAiObstacleHandle wall;
+    CharacterController chaser_character;
+    PhysicsBodyHandle wall_body;
+    bool wall_added;
+    bool wall_removed;
+    u32 chase_nav_version;
+    u32 sight_area;
+    bool target_in_sight;
     u64 generation;
     bool actor_level_open;
 } CoreLevel;
@@ -250,15 +262,15 @@ static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
     candidate->actor_runtime = break_game_create(candidate->world, &config);
     if (!candidate->actor_runtime) return BREAK_RUNTIME_OOM;
     static const char *const class_names[] = {
-        "Ground", "Player", "Enemy", "DynamicWall", "Vehicle",
+        "Ground", "User", "Chaser", "DynamicWall", "Vehicle",
         "VisibleColor", "HiddenColor"
     };
     for (u32 i = 0u; i < sizeof(class_names) / sizeof(class_names[0]); ++i) {
         BreakGameClassDesc desc;
         memset(&desc, 0, sizeof(desc));
         desc.name = class_names[i];
-        if (i == 1u) desc.lua_module = "player";
-        if (i == 2u) desc.lua_module = "broken";
+        if (i == 1u) desc.lua_module = "user";
+        if (i == 2u) desc.lua_module = "chaser";
         u32 class_id = 0u;
         if (break_game_register_class(candidate->actor_runtime, &desc, &class_id) !=
                 BREAK_GAME_OK ||
@@ -320,7 +332,7 @@ static BreakRuntimeError stage_lua(CoreLevel *candidate,
     config.memory_budget = 8u * 1024u * 1024u;
     candidate->lua = break_lua_runtime_create(&config);
     if (!candidate->lua) return BREAK_RUNTIME_OOM;
-    static const char *const modules[] = {"director", "player", "broken"};
+    static const char *const modules[] = {"director", "user", "chaser"};
     for (u32 i = 0u; i < sizeof(modules) / sizeof(modules[0]); ++i) {
         char filename[64];
         int written = snprintf(filename, sizeof(filename), "%s.lua", modules[i]);
@@ -389,11 +401,16 @@ static BreakRuntimeError stage_physics(CoreLevel *candidate) {
 static void app_area_event(u32 area_id, Entity entity, BreakGameAreaEvent event,
                            void *user) {
     CoreLevel *level = (CoreLevel *)user;
-    if (!level || event != BREAK_GAME_AREA_ENTER || area_id != level->trigger_area ||
-        entity.index != level->player.index ||
-        entity.generation != level->player.generation) {
+    if (!level || event != BREAK_GAME_AREA_ENTER ||
+        entity.index != level->user.index ||
+        entity.generation != level->user.generation) {
         return;
     }
+    if (area_id == level->sight_area) {
+        level->target_in_sight = true;
+        return;
+    }
+    if (area_id != level->trigger_area) return;
     if (level->pending_area_enters < CORE_APP_MAX_PENDING_AREA_ENTERS) {
         level->pending_area_enters++;
     } else {
@@ -403,16 +420,16 @@ static void app_area_event(u32 area_id, Entity entity, BreakGameAreaEvent event,
 
 static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
     if (candidate->scene.node_count < 2u ||
-        candidate->world->entity_count <= CORE_APP_PLAYER_ENTITY_INDEX) {
+        candidate->world->entity_count <= CORE_APP_USER_ENTITY_INDEX) {
         return BREAK_RUNTIME_FAILED;
     }
-    Entity player = candidate->world->entities[CORE_APP_PLAYER_ENTITY_INDEX];
-    if (!world_entity_exists(candidate->world, player)) return BREAK_RUNTIME_STALE;
+    Entity user = candidate->world->entities[CORE_APP_USER_ENTITY_INDEX];
+    if (!world_entity_exists(candidate->world, user)) return BREAK_RUNTIME_STALE;
     const SceneNode *node = &candidate->scene.nodes[1];
     Vec3 center = app_node_position(node);
     Vec3 feet = vec3(center.e[0], center.e[1] - fabsf(node->world_transform.e[1][1]),
                      center.e[2]);
-    Vec3 *position = (Vec3 *)world_add_component(candidate->world, player,
+    Vec3 *position = (Vec3 *)world_add_component(candidate->world, user,
                                                  BREAK_GAME_POSITION_COMPONENT);
     if (!position) return BREAK_RUNTIME_FAILED;
     *position = feet;
@@ -421,16 +438,16 @@ static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
     desc.world = candidate->world;
     desc.actor_runtime = candidate->actor_runtime;
     desc.physics = candidate->physics;
-    desc.player = player;
+    desc.user = user;
     desc.spawn = feet;
     candidate->simulation = core_app_simulation_create(&desc);
     if (!candidate->simulation) return BREAK_RUNTIME_FAILED;
-    candidate->player = player;
+    candidate->user = user;
     if (candidate->world->entity_count <= CORE_APP_ENEMY_ENTITY_INDEX) {
         return BREAK_RUNTIME_FAILED;
     }
-    candidate->enemy = candidate->world->entities[CORE_APP_ENEMY_ENTITY_INDEX];
-    if (!world_entity_exists(candidate->world, candidate->enemy)) return BREAK_RUNTIME_STALE;
+    candidate->chaser = candidate->world->entities[CORE_APP_ENEMY_ENTITY_INDEX];
+    if (!world_entity_exists(candidate->world, candidate->chaser)) return BREAK_RUNTIME_STALE;
     BreakGameAreaDesc area;
     memset(&area, 0, sizeof(area));
     area.center = vec3(feet.e[0], feet.e[1] + 1.0f, feet.e[2] + 3.0f);
@@ -440,7 +457,125 @@ static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
         return BREAK_RUNTIME_FAILED;
     }
     break_game_set_area_callback(candidate->actor_runtime, app_area_event, candidate);
+    BreakGameAreaDesc sight;
+    memset(&sight, 0, sizeof(sight));
+    sight.center = candidate->chaser_position;
+    sight.half_extent = vec3(6.0f, 3.0f, 6.0f);
+    if (break_game_area_add(candidate->actor_runtime, &sight,
+                            &candidate->sight_area) != BREAK_GAME_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
     return BREAK_RUNTIME_OK;
+}
+
+static bool app_chaser_sees_user(void *user, Vec3 from, Vec3 to) {
+    CoreLevel *level = (CoreLevel *)user;
+    Vec3 delta = vec3(to.e[0] - from.e[0], to.e[1] - from.e[1], to.e[2] - from.e[2]);
+    f32 distance = sqrtf(delta.e[0] * delta.e[0] + delta.e[1] * delta.e[1] +
+                         delta.e[2] * delta.e[2]);
+    if (distance <= 1.0e-6f) return true;
+    Vec3 dir = vec3(delta.e[0] / distance, delta.e[1] / distance, delta.e[2] / distance);
+    PhysicsBodyHandle hit;
+    f32 t = 0.0f;
+    if (!physics_raycast(level->physics, from, dir, distance, &hit, &t)) return true;
+    return hit.index == level->wall_body.index && hit.generation == level->wall_body.generation
+               ? false
+               : true;
+}
+
+static BreakRuntimeError app_tick_chaser(CoreApp *app, u32 tick) {
+    CoreLevel *level = app->level;
+    Vec3 user_position;
+    BreakRuntimeError result = core_app_simulation_user_position(level->simulation,
+                                                                   &user_position);
+    if (result != BREAK_RUNTIME_OK) return result;
+    BreakSight sight;
+    memset(&sight, 0, sizeof(sight));
+    sight.eye = level->chaser_position;
+    sight.forward = vec3(-0.707106781f, 0.0f, -0.707106781f);
+    sight.distance = 12.0f;
+    sight.half_angle_rad = 1.2f;
+    BreakSightTarget target;
+    memset(&target, 0, sizeof(target));
+    target.entity = level->user;
+    target.point = user_position;
+    Entity visible;
+    u32 visible_count = 0u;
+    if (break_sight_query(&sight, &target, 1u, app_chaser_sees_user, level,
+                          &visible, 1u, &visible_count) != BREAK_NAV_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    if (visible_count == 1u) {
+        level->board.seen = true;
+        level->board.last_seen = user_position;
+        level->board.target = level->user;
+    }
+    u32 nav_version = break_ai_nav_version(level->ai);
+    bool first_path = level->board.seen && level->chase_path.path.count == 0u;
+    if (level->board.seen && (first_path || nav_version != level->chase_nav_version)) {
+        Vec3 goal = level->board.last_seen;
+        if (goal.e[0] < -0.5f) goal.e[0] = -0.5f;
+        if (goal.e[0] > 6.5f) goal.e[0] = 6.5f;
+        if (goal.e[2] < -0.5f) goal.e[2] = -0.5f;
+        if (goal.e[2] > 6.5f) goal.e[2] = 6.5f;
+        BreakAiPath fresh;
+        BreakNavError path = break_ai_find_path(level->ai, level->chaser_position, goal,
+                                                nav_version, &fresh);
+        if (path == BREAK_NAV_OK) {
+            level->chase_path = fresh;
+            break_nav_follow_reset(&level->follower, &fresh.path, 0.2f);
+        } else if (path != BREAK_NAV_FAILED) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        level->chase_nav_version = nav_version;
+    }
+
+    if (!level->wall_added && level->target_in_sight) {
+        BreakAiObstacleDesc wall = {1.0f, 1.0f, 4.0f, 2.0f};
+        if (break_ai_obstacle_add(level->ai, &wall, &level->wall) != BREAK_NAV_OK) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        level->wall_body = physics_body_create(level->physics,
+            vec3(2.5f, 1.0f, 1.5f), vec3(1.5f, 1.0f, 0.5f), 0.0f, true, 0u);
+        if (!physics_body_handle_is_valid(level->wall_body)) return BREAK_RUNTIME_FAILED;
+        level->wall_added = true;
+    }
+    BreakNode nodes[2];
+    memset(nodes, 0, sizeof(nodes));
+    nodes[0].kind = BREAK_NODE_SELECTOR;
+    nodes[0].child_begin = 1u;
+    nodes[0].child_count = 1u;
+    nodes[1].kind = BREAK_NODE_LEAF;
+    nodes[1].leaf = BREAK_LEAF_CHASE;
+    BreakBehaveResult behave;
+    memset(&behave, 0, sizeof(behave));
+    break_behavior_tick(nodes, 2u, 0u, &level->board, &level->follower,
+                        level->chaser_position, CORE_APP_FIXED_DT, &behave);
+    Vec3 velocity;
+    if (break_steer_avoid_velocity(level->chaser_position, vec3(0, 0, 0), 0.4f, 3.0f,
+                                   vec3(behave.wish.e[0] / CORE_APP_FIXED_DT, 0.0f,
+                                        behave.wish.e[2] / CORE_APP_FIXED_DT),
+                                   NULL, 0u, 1.0f, &velocity) != BREAK_NAV_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    character_update(&level->chaser_character, level->physics, CORE_APP_FIXED_DT,
+                     vec3(velocity.e[0] / 6.0f, 0.0f, velocity.e[2] / 6.0f), false);
+    level->chaser_position = character_get_position(&level->chaser_character);
+    if (level->wall_added && !level->wall_removed && level->board.seen &&
+        level->chaser_position.e[2] < 1.5f &&
+        level->chaser_position.e[0] < 1.0f) {
+        if (break_ai_obstacle_remove(level->ai, level->wall) != BREAK_NAV_OK) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        level->wall_removed = true;
+    }
+    (void)tick;
+    return app_trace(app,
+        "COREAPPTRACE version=1 event=sim tick=%u generation=%" PRIu64
+        " chaser_x=%.9g chaser_z=%.9g nav_version=%u path_current=%u\n",
+        tick, level->generation, (double)level->chaser_position.e[0],
+        (double)level->chaser_position.e[2], break_ai_nav_version(level->ai),
+        break_ai_path_is_current(level->ai, &level->chase_path) ? 1u : 0u);
 }
 
 static BreakRuntimeError stage_ai(CoreLevel *candidate) {
@@ -450,9 +585,11 @@ static BreakRuntimeError stage_ai(CoreLevel *candidate) {
     BreakNavHeightfield field;
     memset(&field, 0, sizeof(field));
     field.heights = candidate->nav_heights;
-    field.width = 4u;
-    field.depth = 4u;
+    field.width = 8u;
+    field.depth = 8u;
     field.cell = 1.0f;
+    field.origin_x = -1.0f;
+    field.origin_z = -1.0f;
     field.height_scale = 1.0f;
     candidate->nav_mesh = break_nav_bake_heightfield(&field, 45.0f, 0.0f);
     if (!candidate->nav_mesh) return BREAK_RUNTIME_OOM;
@@ -470,10 +607,13 @@ static BreakRuntimeError stage_ai(CoreLevel *candidate) {
     agent.position = app_node_position(&candidate->scene.nodes[2]);
     agent.radius = 0.4f;
     agent.max_speed = 3.0f;
-    Entity enemy = candidate->world->entities[3];
-    if (break_ai_agent_add(candidate->ai, enemy, &agent) != BREAK_NAV_OK) {
+    Entity chaser = candidate->world->entities[3];
+    if (break_ai_agent_add(candidate->ai, chaser, &agent) != BREAK_NAV_OK) {
         return BREAK_RUNTIME_FAILED;
     }
+    candidate->chaser_position = agent.position;
+    candidate->chaser_character = character_create(agent.position, 0.4f, 1.0f);
+    candidate->chase_nav_version = break_ai_nav_version(candidate->ai);
     return BREAK_RUNTIME_OK;
 }
 
@@ -833,34 +973,36 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
         if (result != BREAK_RUNTIME_OK) return result;
     }
     u32 items = 0u;
-    if (break_game_inventory_count(level->actor_runtime, level->player,
+    if (break_game_inventory_count(level->actor_runtime, level->user,
                                    CORE_APP_FLOW_ITEM, &items) != BREAK_GAME_OK) {
         return BREAK_RUNTIME_FAILED;
     }
-    if (items != level->player_items) {
-        level->player_items = items;
+    if (items != level->user_items) {
+        level->user_items = items;
         result = app_trace(app,
             "COREAPPTRACE version=1 event=item generation=%" PRIu64
             " tick=%u entity=%u item=%u count=%u\n", level->generation, tick,
-            level->player.index, CORE_APP_FLOW_ITEM, items);
+            level->user.index, CORE_APP_FLOW_ITEM, items);
         if (result != BREAK_RUNTIME_OK) return result;
     }
     result = core_app_simulation_tick(level->simulation, frame);
     if (result != BREAK_RUNTIME_OK) return result;
+    result = app_tick_chaser(app, tick);
+    if (result != BREAK_RUNTIME_OK) return result;
     BreakGameError area = break_game_area_tick(level->actor_runtime);
     if (area != BREAK_GAME_OK && area != BREAK_GAME_OVERLOAD) return BREAK_RUNTIME_FAILED;
     Vec3 position;
-    result = core_app_simulation_player_position(level->simulation, &position);
+    result = core_app_simulation_user_position(level->simulation, &position);
     if (result != BREAK_RUNTIME_OK) return result;
     result = app_trace(app,
-        "COREAPPTRACE version=1 event=player tick=%u generation=%" PRIu64
+        "COREAPPTRACE version=1 event=user tick=%u generation=%" PRIu64
         " x=%.9g y=%.9g z=%.9g\n", tick, level->generation,
         (double)position.e[0], (double)position.e[1], (double)position.e[2]);
     if (result != BREAK_RUNTIME_OK) return result;
     while (level->pending_area_enters > 0u) {
         level->pending_area_enters--;
         flow = break_flow_runtime_post(level->flow, CORE_APP_AREA_FLOW_EVENT,
-                                       level->player, 1.0f);
+                                       level->user, 1.0f);
         if (flow == BREAK_FLOW_OK) {
             result = app_trace(app,
                 "COREAPPTRACE version=1 event=flow kind=post key=%u generation=%" PRIu64
@@ -886,21 +1028,21 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
             after.haptic_request_id);
         if (result != BREAK_RUNTIME_OK) return result;
     }
-    BreakGameLuaActorStats player_stats;
-    BreakGameLuaActorStats enemy_stats;
-    if (break_game_lua_actor_stats(level->adapter, level->player, &player_stats) !=
+    BreakGameLuaActorStats user_stats;
+    BreakGameLuaActorStats chaser_stats;
+    if (break_game_lua_actor_stats(level->adapter, level->user, &user_stats) !=
             BREAK_LUA_OK ||
-        break_game_lua_actor_stats(level->adapter, level->enemy, &enemy_stats) !=
+        break_game_lua_actor_stats(level->adapter, level->chaser, &chaser_stats) !=
             BREAK_LUA_OK) {
         return BREAK_RUNTIME_FAILED;
     }
     return app_trace(app,
         "COREAPPTRACE version=1 event=actors tick=%u generation=%" PRIu64
-        " player_ticks=%" PRIu64 " player_failures=%" PRIu64
-        " enemy_ticks=%" PRIu64 " enemy_failures=%" PRIu64
+        " user_ticks=%" PRIu64 " user_failures=%" PRIu64
+        " chaser_ticks=%" PRIu64 " chaser_failures=%" PRIu64
         " items=%u flow_pending=%u\n", tick, level->generation,
-        player_stats.ticks, player_stats.failures, enemy_stats.ticks,
-        enemy_stats.failures, level->player_items,
+        user_stats.ticks, user_stats.failures, chaser_stats.ticks,
+        chaser_stats.failures, level->user_items,
         break_flow_runtime_pending_count(level->flow));
 }
 

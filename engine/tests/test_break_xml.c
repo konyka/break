@@ -170,7 +170,7 @@ TEST(serializer_reports_output_capacity_without_length) {
 }
 
 TEST(scene_sidecar_roundtrip_uses_versioned_schema) {
-    BreakSceneXmlEntity rows[2] = {{1u, 7u, "Player"}, {8u, 2u, "Enemy.Grunt"}};
+    BreakSceneXmlEntity rows[2] = {{1u, 7u, "User"}, {8u, 2u, "Chaser.Grunt"}};
     BreakSceneXmlEntity loaded[2];
     BreakXmlDocument *doc = create_default();
     char xml[1024];
@@ -184,9 +184,9 @@ TEST(scene_sidecar_roundtrip_uses_versioned_schema) {
     ASSERT_EQ(count, 2u);
     ASSERT_EQ(loaded[0].index, 1u);
     ASSERT_EQ(loaded[0].generation, 7u);
-    ASSERT_STR_EQ(loaded[0].class_name, "Player");
+    ASSERT_STR_EQ(loaded[0].class_name, "User");
     ASSERT_EQ(loaded[1].index, 8u);
-    ASSERT_STR_EQ(loaded[1].class_name, "Enemy.Grunt");
+    ASSERT_STR_EQ(loaded[1].class_name, "Chaser.Grunt");
     break_xml_destroy(doc);
 }
 

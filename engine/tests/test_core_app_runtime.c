@@ -447,7 +447,7 @@ typedef struct SimFixture {
     World *world;
     BreakGame *actor_runtime;
     PhysicsWorld *physics;
-    Entity player;
+    Entity user;
     CoreAppSimulation *simulation;
     CoreAppInput *input;
 } SimFixture;
@@ -460,8 +460,8 @@ static bool sim_fixture_init(SimFixture *fixture) {
     if (!fixture->world) return false;
     world_register_component(fixture->world, BREAK_GAME_POSITION_COMPONENT,
                              sizeof(Vec3));
-    fixture->player = world_create_entity(fixture->world);
-    position = (Vec3 *)world_add_component(fixture->world, fixture->player,
+    fixture->user = world_create_entity(fixture->world);
+    position = (Vec3 *)world_add_component(fixture->world, fixture->user,
                                            BREAK_GAME_POSITION_COMPONENT);
     if (!position) return false;
     *position = vec3(0.0f, 1.5f, 0.0f);
@@ -474,7 +474,7 @@ static bool sim_fixture_init(SimFixture *fixture) {
     desc.world = fixture->world;
     desc.actor_runtime = fixture->actor_runtime;
     desc.physics = fixture->physics;
-    desc.player = fixture->player;
+    desc.user = fixture->user;
     desc.spawn = *position;
     fixture->simulation = core_app_simulation_create(&desc);
     fixture->input = core_app_input_create();
@@ -539,16 +539,16 @@ TEST(simulation_key_and_touch_drag_reach_same_position) {
     ASSERT_TRUE(sim_fixture_init(&touch));
     ASSERT_TRUE(sim_run_key(&key, 180u));
     ASSERT_TRUE(sim_run_touch(&touch, 180u));
-    ASSERT_EQ(core_app_simulation_player_position(key.simulation, &key_position),
+    ASSERT_EQ(core_app_simulation_user_position(key.simulation, &key_position),
               BREAK_RUNTIME_OK);
-    ASSERT_EQ(core_app_simulation_player_position(touch.simulation, &touch_position),
+    ASSERT_EQ(core_app_simulation_user_position(touch.simulation, &touch_position),
               BREAK_RUNTIME_OK);
     ASSERT_EQ(core_app_simulation_tick_count(key.simulation), 180u);
     ASSERT_TRUE(key_position.e[2] > 2.0f);
     ASSERT_FLOAT_EQ(key_position.e[0], touch_position.e[0], 1e-5);
     ASSERT_FLOAT_EQ(key_position.e[1], touch_position.e[1], 1e-5);
     ASSERT_FLOAT_EQ(key_position.e[2], touch_position.e[2], 1e-5);
-    component = (Vec3 *)world_get_component(key.world, key.player,
+    component = (Vec3 *)world_get_component(key.world, key.user,
                                             BREAK_GAME_POSITION_COMPONENT);
     ASSERT_NOT_NULL(component);
     ASSERT_EQ(memcmp(component, &key_position, sizeof(Vec3)), 0);
@@ -567,20 +567,20 @@ TEST(simulation_release_and_cancel_stop_on_next_tick) {
     ASSERT_TRUE(sim_fixture_init(&key));
     ASSERT_TRUE(sim_fixture_init(&touch));
     ASSERT_TRUE(sim_run_key(&key, 10u));
-    ASSERT_EQ(core_app_simulation_player_position(key.simulation, &before),
+    ASSERT_EQ(core_app_simulation_user_position(key.simulation, &before),
               BREAK_RUNTIME_OK);
     ASSERT_TRUE(sim_step(&key, 11u, &up, 1u));
-    ASSERT_EQ(core_app_simulation_player_position(key.simulation, &after),
+    ASSERT_EQ(core_app_simulation_user_position(key.simulation, &after),
               BREAK_RUNTIME_OK);
     ASSERT_TRUE(fabsf(after.e[0] - before.e[0]) < 1e-6f);
     ASSERT_TRUE(fabsf(after.e[2] - before.e[2]) < 1e-6f);
     ASSERT_TRUE(sim_run_touch(&touch, 10u));
-    ASSERT_EQ(core_app_simulation_player_position(touch.simulation, &before),
+    ASSERT_EQ(core_app_simulation_user_position(touch.simulation, &before),
               BREAK_RUNTIME_OK);
     ASSERT_TRUE(before.e[2] > 0.0f);
     ASSERT_TRUE(sim_step(&touch, 11u, &cancel, 1u));
     ASSERT_TRUE(sim_step(&touch, 12u, NULL, 0u));
-    ASSERT_EQ(core_app_simulation_player_position(touch.simulation, &after),
+    ASSERT_EQ(core_app_simulation_user_position(touch.simulation, &after),
               BREAK_RUNTIME_OK);
     ASSERT_TRUE(fabsf(after.e[0] - before.e[0]) < 1e-6f);
     ASSERT_TRUE(fabsf(after.e[2] - before.e[2]) < 1e-6f);
@@ -597,9 +597,9 @@ TEST(simulation_repeated_runs_are_bitwise_identical) {
     ASSERT_TRUE(sim_fixture_init(&second));
     ASSERT_TRUE(sim_run_key(&first, 120u));
     ASSERT_TRUE(sim_run_key(&second, 120u));
-    ASSERT_EQ(core_app_simulation_player_position(first.simulation, &a),
+    ASSERT_EQ(core_app_simulation_user_position(first.simulation, &a),
               BREAK_RUNTIME_OK);
-    ASSERT_EQ(core_app_simulation_player_position(second.simulation, &b),
+    ASSERT_EQ(core_app_simulation_user_position(second.simulation, &b),
               BREAK_RUNTIME_OK);
     ASSERT_EQ(memcmp(&a, &b, sizeof(a)), 0);
     sim_fixture_dispose(&first);
@@ -618,9 +618,9 @@ TEST(simulation_ignores_wall_clock_pacing) {
     g_sim_ms_per_tick = 33u;
     ASSERT_TRUE(sim_run_key(&slow, 90u));
     g_sim_ms_per_tick = 16u;
-    ASSERT_EQ(core_app_simulation_player_position(fast.simulation, &a),
+    ASSERT_EQ(core_app_simulation_user_position(fast.simulation, &a),
               BREAK_RUNTIME_OK);
-    ASSERT_EQ(core_app_simulation_player_position(slow.simulation, &b),
+    ASSERT_EQ(core_app_simulation_user_position(slow.simulation, &b),
               BREAK_RUNTIME_OK);
     ASSERT_TRUE(a.e[2] > 1.0f);
     ASSERT_EQ(memcmp(&a, &b, sizeof(a)), 0);

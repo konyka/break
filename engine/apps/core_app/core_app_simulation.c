@@ -90,8 +90,8 @@ static f32 clamp_unit(f32 value) {
 CoreAppSimulation *core_app_simulation_create(const CoreAppSimulationDesc *desc) {
     CoreAppSimulation *simulation;
     if (!desc || !desc->world || !desc->actor_runtime || !desc->physics ||
-        !world_entity_exists(desc->world, desc->player) ||
-        !world_get_component(desc->world, desc->player,
+        !world_entity_exists(desc->world, desc->user) ||
+        !world_get_component(desc->world, desc->user,
                              BREAK_GAME_POSITION_COMPONENT) ||
         !isfinite(desc->spawn.e[0]) || !isfinite(desc->spawn.e[1]) ||
         !isfinite(desc->spawn.e[2])) {
@@ -149,7 +149,7 @@ BreakRuntimeError core_app_simulation_tick(CoreAppSimulation *simulation,
     BreakRuntimeError result = core_app_simulation_intent(simulation, frame, &intent);
     if (result != BREAK_RUNTIME_OK) return result;
     position = (Vec3 *)world_get_component(simulation->desc.world,
-                                           simulation->desc.player,
+                                           simulation->desc.user,
                                            BREAK_GAME_POSITION_COMPONENT);
     if (!position) return BREAK_RUNTIME_STALE;
     memset(&move_input, 0, sizeof(move_input));
@@ -167,7 +167,7 @@ BreakRuntimeError core_app_simulation_tick(CoreAppSimulation *simulation,
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError core_app_simulation_player_position(
+BreakRuntimeError core_app_simulation_user_position(
     const CoreAppSimulation *simulation, Vec3 *out) {
     if (!simulation || !out) return BREAK_RUNTIME_INVALID;
     *out = simulation->character.position;

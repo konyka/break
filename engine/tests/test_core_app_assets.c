@@ -48,7 +48,7 @@ typedef struct {
 
 static const char *const k_asset_names[] = {
     "level.bscn", "level.fg", "actors.sidecar", "director.lua",
-    "player.lua", "broken.lua", "level.banm", "tone.wav",
+    "user.lua", "chaser.lua", "level.banm", "tone.wav",
     "deterministic.scenario", "load_unload.scenario", "rollback.scenario"
 };
 static const usize k_asset_count = sizeof(k_asset_names) / sizeof(k_asset_names[0]);
@@ -563,7 +563,7 @@ TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader) {
     BreakGame *app = break_game_create(world, &config);
     ASSERT_NOT_NULL(app);
     static const char *const class_names[] = {
-        "Ground", "Player", "Enemy", "DynamicWall", "Vehicle",
+        "Ground", "User", "Chaser", "DynamicWall", "Vehicle",
         "VisibleColor", "HiddenColor"
     };
     u32 tick = 0;
@@ -748,19 +748,19 @@ TEST(wav_is_canonical_44100_hz_mono_pcm16) {
 
 TEST(lua_assets_execute_and_broken_actor_tick_fails) {
     ASSERT_EQ(ensure_baked(), 0);
-    usize director_size = 0, player_size = 0, broken_size = 0;
+    usize director_size = 0, user_size = 0, chaser_size = 0;
     u8 *director = test_read_file(formal_asset_dir(), "director.lua", 4096u, &director_size);
-    u8 *player = test_read_file(formal_asset_dir(), "player.lua", 4096u, &player_size);
-    u8 *broken = test_read_file(formal_asset_dir(), "broken.lua", 4096u, &broken_size);
+    u8 *user = test_read_file(formal_asset_dir(), "user.lua", 4096u, &user_size);
+    u8 *faulty = test_read_file(formal_asset_dir(), "chaser.lua", 4096u, &chaser_size);
     ASSERT_NOT_NULL(director);
-    ASSERT_NOT_NULL(player);
-    ASSERT_NOT_NULL(broken);
+    ASSERT_NOT_NULL(user);
+    ASSERT_NOT_NULL(faulty);
     BreakLuaRuntime *runtime = break_lua_runtime_create(NULL);
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_lua_runtime_load_module(runtime, "director", director,
                                             director_size), BREAK_LUA_OK);
-    ASSERT_EQ(break_lua_runtime_load_module(runtime, "player", player,
-                                            player_size), BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(runtime, "user", user,
+                                            user_size), BREAK_LUA_OK);
     BreakLuaValue results[2];
     memset(results, 0, sizeof(results));
     ASSERT_EQ(break_lua_runtime_call(runtime, "director", "on_enter", NULL, 0u,
@@ -777,18 +777,18 @@ TEST(lua_assets_execute_and_broken_actor_tick_fails) {
     args[0].as.handle = handle;
     args[1].type = BREAK_LUA_VALUE_NUMBER;
     args[1].as.n = 1.0 / 60.0;
-    ASSERT_EQ(break_lua_runtime_call(runtime, "player", "on_actor_tick", args, 2u,
+    ASSERT_EQ(break_lua_runtime_call(runtime, "user", "on_actor_tick", args, 2u,
                                      NULL, 0u), BREAK_LUA_OK);
-    ASSERT_EQ(break_lua_runtime_load_module(runtime, "broken", broken,
-                                            broken_size), BREAK_LUA_OK);
-    ASSERT_EQ(break_lua_runtime_call(runtime, "broken", "on_actor_tick", args, 2u,
+    ASSERT_EQ(break_lua_runtime_load_module(runtime, "chaser", faulty,
+                                            chaser_size), BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_call(runtime, "chaser", "on_actor_tick", args, 2u,
                                      NULL, 0u), BREAK_LUA_FAILED);
-    ASSERT_EQ(break_lua_runtime_call(runtime, "player", "on_actor_tick", args, 2u,
+    ASSERT_EQ(break_lua_runtime_call(runtime, "user", "on_actor_tick", args, 2u,
                                      NULL, 0u), BREAK_LUA_OK);
     break_lua_runtime_destroy(runtime);
     free(director);
-    free(player);
-    free(broken);
+    free(user);
+    free(faulty);
 }
 
 TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption) {

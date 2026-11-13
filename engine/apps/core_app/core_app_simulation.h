@@ -30,7 +30,7 @@ typedef struct CoreAppSimulationDesc {
     World *world;
     BreakGame *actor_runtime;
     PhysicsWorld *physics;
-    Entity player;
+    Entity user;
     Vec3 spawn;
 } CoreAppSimulationDesc;
 
@@ -54,7 +54,7 @@ BreakRuntimeError core_app_simulation_intent(CoreAppSimulation *simulation,
                                              CoreAppMoveIntent *out);
 BreakRuntimeError core_app_simulation_tick(CoreAppSimulation *simulation,
                                            const CoreAppInputFrame *frame);
-BreakRuntimeError core_app_simulation_player_position(
+BreakRuntimeError core_app_simulation_user_position(
     const CoreAppSimulation *simulation, Vec3 *out);
 u64 core_app_simulation_tick_count(const CoreAppSimulation *simulation);
 

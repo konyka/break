@@ -58,7 +58,7 @@ file(MAKE_DIRECTORY "${WORK}")
 run_process(normal_baker 0 "${CORE_APP_ASSET_BAKE}" --output "${WORK}/normal")
 expect_not_contains("${CORE_APP_DIAGNOSTIC_OUTPUT}" "FAIL: CORE_APP_BAKE"
     "normal baker remains quiet")
-foreach(asset level.bscn level.fg actors.sidecar director.lua player.lua broken.lua
+foreach(asset level.bscn level.fg actors.sidecar director.lua user.lua chaser.lua
         level.banm tone.wav deterministic.scenario load_unload.scenario rollback.scenario)
     if(NOT EXISTS "${WORK}/normal/${asset}")
         record_error("normal baker: missing ${asset}")

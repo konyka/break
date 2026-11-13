@@ -97,16 +97,16 @@ endif()
 
 set(expected_assets
     engine/assets/core_app/actors.sidecar
-    engine/assets/core_app/broken.lua
+    engine/assets/core_app/chaser.lua
     engine/assets/core_app/deterministic.scenario
     engine/assets/core_app/director.lua
     engine/assets/core_app/level.banm
     engine/assets/core_app/level.bscn
     engine/assets/core_app/level.fg
     engine/assets/core_app/load_unload.scenario
-    engine/assets/core_app/player.lua
     engine/assets/core_app/rollback.scenario
-    engine/assets/core_app/tone.wav)
+    engine/assets/core_app/tone.wav
+    engine/assets/core_app/user.lua)
 file(GLOB app_sources "${ENGINE_SOURCE_DIR}/apps/core_app/*.c" "${ENGINE_SOURCE_DIR}/apps/core_app/*.h")
 file(GLOB test_sources "${ENGINE_SOURCE_DIR}/tests/test_core_app_*.c" "${ENGINE_SOURCE_DIR}/tests/test_core_app_*.cmake")
 list(REMOVE_ITEM test_sources "${ENGINE_SOURCE_DIR}/tests/test_core_app_naming_contract.cmake")
@@ -167,7 +167,7 @@ foreach(path IN LISTS scan_files)
     # the pre-P12 test_platform_fs_write macro are exempt here.
     # Established pre-P12 prototype contract strings and this existing worktree/branch only.
     string(REPLACE "test_cry_style_prototype" "" text "${text}")
-    string(REPLACE "cry_style_gameplay.md" "" text "${text}")
+    string(REPLACE "core_style_runtime.md" "" text "${text}")
     string(REPLACE ".worktrees/cry-integration" "" text "${text}")
     string(REPLACE [=[`cry-integration`]=] "" text "${text}")
     foreach(legacy_format IN ITEMS "GAMECKPT" "manifest.game" "MANIFEST.GAME"
@@ -191,6 +191,15 @@ foreach(path IN LISTS scan_files)
     if("${text}" MATCHES "[A-Za-z0-9_]+_game([^A-Za-z0-9_]|$)")
         string(APPEND errors "${path}: forbidden legacy domain suffix ${CMAKE_MATCH_0}\n")
     endif()
+    # Neutral-role wording: the runtime addresses the controlled unit as
+    # "user" and the pursuing unit as "chaser"; the legacy actor/gameplay
+    # vocabulary must not reappear in code, assets, traces, or documents.
+    foreach(forbidden IN ITEMS "player" "Player" "enemy" "Enemy" "玩家" "敌人" "游戏")
+        string(FIND "${text}" "${forbidden}" forbidden_index)
+        if(NOT forbidden_index LESS 0)
+            string(APPEND errors "${path}: forbidden role wording ${forbidden}\n")
+        endif()
+    endforeach()
 endforeach()
 if(NOT errors STREQUAL "")
     message(FATAL_ERROR "core_app naming contract failed:\n${errors}")

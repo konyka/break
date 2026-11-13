@@ -6,16 +6,16 @@ endforeach()
 
 set(expected
     engine/assets/core_app/actors.sidecar
-    engine/assets/core_app/broken.lua
+    engine/assets/core_app/chaser.lua
     engine/assets/core_app/deterministic.scenario
     engine/assets/core_app/director.lua
     engine/assets/core_app/level.banm
     engine/assets/core_app/level.bscn
     engine/assets/core_app/level.fg
     engine/assets/core_app/load_unload.scenario
-    engine/assets/core_app/player.lua
     engine/assets/core_app/rollback.scenario
-    engine/assets/core_app/tone.wav)
+    engine/assets/core_app/tone.wav
+    engine/assets/core_app/user.lua)
 get_filename_component(repository_root "${ENGINE_SOURCE_DIR}/.." ABSOLUTE)
 unset(ENV{GIT_DIR})
 unset(ENV{GIT_WORK_TREE})

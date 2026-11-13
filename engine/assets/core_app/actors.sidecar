@@ -1,6 +1,6 @@
 1 Ground
-2 Player
-3 Enemy
+2 User
+3 Chaser
 4 DynamicWall
 5 Vehicle
 6 VisibleColor
