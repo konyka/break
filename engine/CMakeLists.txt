@@ -5120,7 +5120,7 @@ endif()
             COMMAND ${CMAKE_COMMAND}
                 -DCORE_APP=$<TARGET_FILE:core_app>
                 -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
-                -DCOMPARE_SHOT=$<$<STREQUAL:${_core_app_gpu_backend},opengl>${CMAKE_CURRENT_BINARY_DIR}/core_app_gpu_vulkan/gpu.ppm>
+                -DCOMPARE_SHOT=${_core_app_gpu_compare_shot}
                 -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_input_${_core_app_input_mode}
                 -DINPUT_MODE=${_core_app_input_mode}
@@ -5238,6 +5238,13 @@ endif()
     # are labelled gpu and report UNAVAILABLE (not a pass) on a host without
     # a display or device.
     foreach(_core_app_gpu_backend IN ITEMS vulkan opengl)
+        # Only the OpenGL case compares against the Vulkan capture; the Vulkan
+        # case passes an empty value so its script skips the comparison.
+        set(_core_app_gpu_compare_shot "")
+        if(_core_app_gpu_backend STREQUAL "opengl")
+            set(_core_app_gpu_compare_shot
+                "${CMAKE_CURRENT_BINARY_DIR}/core_app_gpu_vulkan/gpu.ppm")
+        endif()
         add_test(NAME test_core_app_gpu_${_core_app_gpu_backend}
             COMMAND ${CMAKE_COMMAND}
                 -DCORE_APP=$<TARGET_FILE:core_app>
