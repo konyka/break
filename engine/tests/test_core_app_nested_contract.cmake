@@ -1,6 +1,6 @@
 foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT
         TARGET_CONTRACT NM_SYMBOL_MISSING_CONTRACT NM_WRAPPER NM_CAPABLE
-        NESTED_ENGINE_RHI_BACKEND)
+        NESTED_ENGINE_RHI_BACKEND NESTED_CMAKE_C_COMPILER)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required for the nested core_app contract")
     endif()
@@ -17,7 +17,9 @@ function(record_error text)
 endfunction()
 
 set(nested_toolchain_defs
-    "-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}")
+    "-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}"
+    "-DNESTED_CMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}"
+    "-DCMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}")
 set(all_sdk_paths TRUE)
 foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
     if(DEFINED ${cache_var} AND NOT "${${cache_var}}" STREQUAL "")
@@ -89,6 +91,8 @@ if(all_sdk_paths)
     set(expected_SHADERC_INCLUDE_DIR "${staged_include_dir}")
     set(case_toolchain_defs
         "-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}"
+        "-DNESTED_CMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}"
+        "-DCMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}"
         "-DVulkan_LIBRARY=${expected_Vulkan_LIBRARY}"
         "-DVulkan_INCLUDE_DIR=${expected_Vulkan_INCLUDE_DIR}"
         "-DSHADERC_LIB=${expected_SHADERC_LIB}"
@@ -182,12 +186,13 @@ if(NM_CAPABLE)
     if(NOT positive_result STREQUAL "0")
         record_error("positive nested target contract failed: ${positive_log}")
     endif()
-elseif(NOT positive_result STREQUAL "0" AND NOT positive_result STREQUAL "77")
-    if(NOT positive_result STREQUAL "1"
-            OR NOT positive_log MATCHES "UNVERIFIED: core_app symbol scan skipped:"
-            OR positive_log MATCHES "core_app contract failed before skip:")
-        record_error("nested target contract failed before its nm-unavailable skip: ${positive_log}")
-    endif()
+elseif(NOT positive_result STREQUAL "77" AND NOT positive_result STREQUAL "1")
+    record_error("nested target contract did not return its documented nm-unavailable skip: ${positive_log}")
+elseif(NOT positive_log MATCHES "UNVERIFIED: core_app symbol scan skipped:"
+        OR positive_log MATCHES "core_app contract failed before skip:")
+    record_error("nested target contract did not prove its nm-unavailable skip: ${positive_log}")
+else()
+    message(STATUS "${positive_log}")
 endif()
 expect_nested_cache(positive "${positive_root}")
 

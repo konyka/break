@@ -1,8 +1,18 @@
 # Shader sources are hashed byte-exactly by the offline Metal shader
 # pipeline (plan C Task 10): the manifest key is FNV-1a 64 over the file
 # bytes the renderer reads at runtime, so checkout line endings must be
-# identical on every machine. Scoped to shaders only.
+# identical on every machine. This section is scoped to shaders only.
 engine/shaders/* text eol=lf
+
+# Offline Core App assets must remain byte-identical to the deterministic baker.
+# Text assets use LF on every OS; binary assets must never be normalized.
+engine/assets/core_app/*.lua text eol=lf
+engine/assets/core_app/*.scenario text eol=lf
+engine/assets/core_app/actors.sidecar text eol=lf
+engine/assets/core_app/level.banm binary
+engine/assets/core_app/level.bscn binary
+engine/assets/core_app/level.fg binary
+engine/assets/core_app/tone.wav binary
 
 # Golden reference images are binary PPMs. Without this, core.autocrlf=true
 # rewrites the LF in their ASCII header (and any 0x0A pixel byte) to CRLF on

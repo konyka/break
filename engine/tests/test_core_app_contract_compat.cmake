@@ -1,11 +1,33 @@
 foreach(var ENGINE_SOURCE_DIR REPOSITORY_ROOT PLAN_FILE DESIGN_FILE GIT_EXECUTABLE
-        CORE_APP NETWORK_ENABLED CTEST_EXECUTABLE WORK NESTED_ENGINE_RHI_BACKEND)
+        CORE_APP NETWORK_ENABLED CTEST_EXECUTABLE WORK NESTED_ENGINE_RHI_BACKEND
+        NESTED_CMAKE_GENERATOR NM_CAPABLE NESTED_CMAKE_C_COMPILER)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required")
     endif()
 endforeach()
-set(nested_configure_defs "-DENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}")
-set(nested_ctest_defs "\"-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}\"")
+if(NOT DEFINED NESTED_CTEST_CONFIG)
+    message(FATAL_ERROR "NESTED_CTEST_CONFIG is required")
+endif()
+set(nested_ctest_config_args)
+if(NOT "${NESTED_CTEST_CONFIG}" STREQUAL "")
+    list(APPEND nested_ctest_config_args -C "${NESTED_CTEST_CONFIG}")
+endif()
+if(NESTED_CMAKE_GENERATOR MATCHES "Visual Studio|Xcode|Multi-Config" AND
+        "${NESTED_CTEST_CONFIG}" STREQUAL "")
+    message(FATAL_ERROR "a multi-config nested CTest requires NESTED_CTEST_CONFIG")
+endif()
+set(nested_configure_defs
+    "-DENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}"
+    "-DCMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}")
+if(NOT NM_CAPABLE)
+    list(APPEND nested_configure_defs "-DCMAKE_NM=FALSE")
+    if(NM_CAPABILITY_FIXTURE)
+        message(STATUS
+            "core_app compat intentional no-NM fixture: archived CMAKE_NM=FALSE")
+    endif()
+endif()
+set(nested_ctest_defs
+    "\"-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}\" \"-DNESTED_CMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}\" \"-DCMAKE_C_COMPILER=${NESTED_CMAKE_C_COMPILER}\"")
 foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
     if(DEFINED ${cache_var} AND NOT "${${cache_var}}" STREQUAL "")
         list(APPEND nested_configure_defs "-D${cache_var}=${${cache_var}}")
@@ -55,6 +77,48 @@ function(expect_log_lacks name text)
         record_error("${name}: unexpectedly contained '${text}'\n${log}")
     endif()
 endfunction()
+
+function(core_app_ctest_one_test_success log output)
+    string(REPLACE "\r\n" "\n" normalized "${log}")
+    string(REPLACE "\n" ";" lines "${normalized}")
+    list(FIND lines "100% tests passed, 0 tests failed out of 1" current_index)
+    list(FIND lines "100% tests passed out of 1" portable_index)
+    if(NOT current_index EQUAL -1 OR NOT portable_index EQUAL -1)
+        set(${output} TRUE PARENT_SCOPE)
+    else()
+        set(${output} FALSE PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(expect_nested_success_summary name)
+    get_property(log GLOBAL PROPERTY CORE_APP_COMPAT_LAST_LOG)
+    core_app_ctest_one_test_success("${log}" success)
+    if(NOT success)
+        record_error("${name}: missing '100% tests passed, 0 tests failed out of 1' or '100% tests passed out of 1'\n${log}")
+    endif()
+endfunction()
+
+function(check_ctest_success_case name text expected)
+    core_app_ctest_one_test_success("${text}" actual)
+    if(NOT "${actual}" STREQUAL "${expected}")
+        record_error("one-test summary case '${name}' matched=${actual}, expected=${expected}")
+    endif()
+endfunction()
+
+check_ctest_success_case(current "100% tests passed, 0 tests failed out of 1" TRUE)
+check_ctest_success_case(portable "100% tests passed out of 1" TRUE)
+check_ctest_success_case(crlf "Test project\r\n100% tests passed out of 1\r\n" TRUE)
+check_ctest_success_case(zero_tests "100% tests passed out of 0" FALSE)
+check_ctest_success_case(multiple_current "100% tests passed, 0 tests failed out of 2" FALSE)
+check_ctest_success_case(multiple_portable "100% tests passed out of 2" FALSE)
+check_ctest_success_case(prefix_current "100% tests passed, 0 tests failed out of 10" FALSE)
+check_ctest_success_case(prefix_portable "100% tests passed out of 10" FALSE)
+check_ctest_success_case(failed_summary "0% tests passed, 1 test failed out of 1" FALSE)
+check_ctest_success_case(failed_test "1/1 Test #1: sample ...***Failed" FALSE)
+check_ctest_success_case(unrun_test "1/1 Test #1: sample ... Not Run" FALSE)
+check_ctest_success_case(no_tests "No tests were found" FALSE)
+check_ctest_success_case(other_percentage "99% tests passed out of 1" FALSE)
+check_ctest_success_case(suffixed "100% tests passed out of 1 unexpected" FALSE)
 
 function(expect_tracking_skips name expected)
     get_property(log GLOBAL PROPERTY CORE_APP_COMPAT_LAST_LOG)
@@ -110,12 +174,45 @@ foreach(relative_path IN ITEMS
         CMakeLists.txt
         tests/test_core_app_target_contract.cmake
         tests/test_core_app_nested_contract.cmake
+        tests/test_core_app_nm_symbol_missing.cmake
+        tests/test_core_app_nm_filter.cmake
         tests/test_core_app_formal_assets.cmake
         tests/test_core_app_naming_contract.cmake
+        tests/test_core_app_git_metadata.cmake
         tests/test_core_app_contract_compat.cmake)
     configure_file("${ENGINE_SOURCE_DIR}/${relative_path}"
         "${archive_engine}/${relative_path}" COPYONLY)
 endforeach()
+if(NESTED_ENGINE_RHI_BACKEND STREQUAL "d3d12")
+    function(expect_archive_agility_hashes context)
+        foreach(dll_name IN ITEMS D3D12Core.dll d3d12SDKLayers.dll)
+            set(relative "external/d3d12/agility/build/native/bin/x64/${dll_name}")
+            set(source "${ENGINE_SOURCE_DIR}/${relative}")
+            set(destination "${archive_engine}/${relative}")
+            if(NOT EXISTS "${source}")
+                message(FATAL_ERROR "real parent Agility input is missing: ${source}")
+            endif()
+            if(NOT EXISTS "${destination}")
+                message(FATAL_ERROR "staged Agility destination is missing (${context}): ${destination}")
+            endif()
+            file(SHA256 "${source}" source_hash)
+            file(SHA256 "${destination}" destination_hash)
+            if(NOT "${source_hash}" STREQUAL "${destination_hash}")
+                message(FATAL_ERROR "staged Agility hash mismatch (${context}): ${relative}")
+            endif()
+        endforeach()
+    endfunction()
+    foreach(dll_name IN ITEMS D3D12Core.dll d3d12SDKLayers.dll)
+        set(relative "external/d3d12/agility/build/native/bin/x64/${dll_name}")
+        set(source "${ENGINE_SOURCE_DIR}/${relative}")
+        set(destination "${archive_engine}/${relative}")
+        if(NOT EXISTS "${source}")
+            message(FATAL_ERROR "real parent Agility input is missing: ${source}")
+        endif()
+        configure_file("${source}" "${destination}" COPYONLY)
+    endforeach()
+    expect_archive_agility_hashes("after staging")
+endif()
 set(archive_plan "${archive_root}/docs/superpowers/plans/2026-11-03-core-app-integration.md")
 set(archive_design "${archive_root}/docs/design/core_app_integration.md")
 set(formal_contract "${ENGINE_SOURCE_DIR}/tests/test_core_app_formal_assets.cmake")
@@ -244,7 +341,8 @@ if(UNIX)
         file(APPEND "${permission_source}"
             "  PROPERTIES SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION \"CORE_APP_TRACKING_UNVERIFIED\")\n")
         run_case(permission_fixture_configure PASS "${CMAKE_COMMAND}"
-            -S "${permission_fixture}" -B "${permission_build}")
+            -S "${permission_fixture}" -B "${permission_build}"
+            -G "${NESTED_CMAKE_GENERATOR}")
         file(CHMOD "${permission_formal_root}" PERMISSIONS OWNER_READ OWNER_WRITE)
         file(CHMOD "${permission_naming_blocked}" PERMISSIONS OWNER_READ OWNER_WRITE)
         run_case(permission_git_probe FAIL "${CMAKE_COMMAND}" -E env
@@ -254,13 +352,15 @@ if(UNIX)
         expect_log_contains(permission_git_probe "cannot change to")
         run_case(formal_permission FAIL "${CMAKE_COMMAND}" -E env
             "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-            --test-dir "${permission_build}" -R "^test_core_app_formal_permission$" -V)
+            --test-dir "${permission_build}" ${nested_ctest_config_args}
+            -R "^test_core_app_formal_permission$" -V)
         expect_log_contains(formal_permission "cannot change to")
         expect_log_contains(formal_permission "git rev-parse --git-dir failed:")
         expect_log_lacks(formal_permission "CORE_APP_TRACKING_UNVERIFIED")
         run_case(naming_permission FAIL "${CMAKE_COMMAND}" -E env
             "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-            --test-dir "${permission_build}" -R "^test_core_app_naming_permission$" -V)
+            --test-dir "${permission_build}" ${nested_ctest_config_args}
+            -R "^test_core_app_naming_permission$" -V)
         expect_log_contains(naming_permission "cannot change to")
         expect_log_contains(naming_permission "git rev-parse --git-dir failed:")
         expect_log_lacks(naming_permission "CORE_APP_TRACKING_UNVERIFIED")
@@ -297,7 +397,8 @@ file(APPEND "${corrupt_source}"
 file(APPEND "${corrupt_source}"
     "  PROPERTIES SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION \"CORE_APP_TRACKING_UNVERIFIED\")\n")
 run_case(corrupt_fixture_configure PASS "${CMAKE_COMMAND}"
-    -S "${corrupt_fixture}" -B "${corrupt_build}")
+    -S "${corrupt_fixture}" -B "${corrupt_build}"
+    -G "${NESTED_CMAKE_GENERATOR}")
 run_case(corrupt_git_probe FAIL "${CMAKE_COMMAND}" -E env
     --unset=GIT_DIR --unset=GIT_WORK_TREE
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "LC_ALL=C"
@@ -306,24 +407,60 @@ expect_log_contains(corrupt_git_probe
     "fatal: not a git repository (or any of the parent directories): .git")
 run_case(formal_corrupt FAIL "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-    --test-dir "${corrupt_build}" -R "^test_core_app_formal_corrupt$" -V)
+    --test-dir "${corrupt_build}" ${nested_ctest_config_args}
+    -R "^test_core_app_formal_corrupt$" -V)
 expect_log_contains(formal_corrupt "fatal: not a git repository")
 expect_log_contains(formal_corrupt "git rev-parse --git-dir failed:")
 expect_log_lacks(formal_corrupt "CORE_APP_TRACKING_UNVERIFIED")
 run_case(naming_corrupt FAIL "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-    --test-dir "${corrupt_build}" -R "^test_core_app_naming_corrupt$" -V)
+    --test-dir "${corrupt_build}" ${nested_ctest_config_args}
+    -R "^test_core_app_naming_corrupt$" -V)
 expect_log_contains(naming_corrupt "fatal: not a git repository")
 expect_log_contains(naming_corrupt "git rev-parse --git-dir failed:")
 expect_log_lacks(naming_corrupt "CORE_APP_TRACKING_UNVERIFIED")
 file(REMOVE_RECURSE "${archive_root}/.git")
 
+if(NESTED_ENGINE_RHI_BACKEND STREQUAL "d3d12")
+    expect_archive_agility_hashes("before D3D12Core gate mutation")
+    set(missing_core_relative "external/d3d12/agility/build/native/bin/x64/D3D12Core.dll")
+    set(missing_core_source "${ENGINE_SOURCE_DIR}/${missing_core_relative}")
+    set(missing_core_destination "${archive_engine}/${missing_core_relative}")
+    file(REMOVE "${missing_core_destination}")
+    set(missing_core_build "${WORK}/archive-missing-core-build")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CMAKE_COMMAND}"
+            -S "${archive_engine}" -B "${missing_core_build}"
+            -G "${NESTED_CMAKE_GENERATOR}"
+            -DENGINE_BUILD_TESTS=ON -DENGINE_ENABLE_IPO=OFF
+            -DBREAK_ENABLE_SNOWFLAKE=OFF ${nested_configure_defs}
+        RESULT_VARIABLE missing_core_result
+        OUTPUT_VARIABLE missing_core_output
+        ERROR_VARIABLE missing_core_error
+        TIMEOUT 180)
+    configure_file("${missing_core_source}" "${missing_core_destination}" COPYONLY)
+    expect_archive_agility_hashes("after D3D12Core gate mutation restoration")
+    set(missing_core_log "${missing_core_output}${missing_core_error}")
+    if("${missing_core_result}" STREQUAL "0" OR "${missing_core_result}" STREQUAL "77")
+        record_error("archive_d3d12_missing_core: exit=${missing_core_result}, expected FAIL\n${missing_core_log}")
+    endif()
+    string(FIND "${missing_core_log}" "D3D12Core.dll missing" missing_core_diagnostic_index)
+    if(missing_core_diagnostic_index LESS 0)
+        record_error("archive_d3d12_missing_core: missing 'D3D12Core.dll missing'\n${missing_core_log}")
+    endif()
+endif()
+
 set(archive_build "${WORK}/archive-build")
 run_case(archive_configure PASS "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CMAKE_COMMAND}"
     -S "${archive_engine}" -B "${archive_build}"
+    -G "${NESTED_CMAKE_GENERATOR}"
     -DENGINE_BUILD_TESTS=ON -DENGINE_ENABLE_IPO=OFF
     -DBREAK_ENABLE_SNOWFLAKE=OFF ${nested_configure_defs})
+if(NESTED_ENGINE_RHI_BACKEND STREQUAL "d3d12")
+    expect_archive_agility_hashes("after archive configure")
+endif()
 if(EXISTS "${archive_build}/CMakeCache.txt")
     file(STRINGS "${archive_build}/CMakeCache.txt" archive_backend
         REGEX "^ENGINE_RHI_BACKEND:STRING=")
@@ -338,9 +475,72 @@ if(EXISTS "${archive_build}/CMakeCache.txt")
             record_error("archive effective backend '${archive_effective}' did not follow '${NESTED_ENGINE_RHI_BACKEND}'")
         endif()
     endif()
+    file(STRINGS "${archive_build}/CMakeCache.txt" archive_c_compiler_line
+        REGEX "^CMAKE_C_COMPILER:[^=]*=")
+    list(LENGTH archive_c_compiler_line archive_c_compiler_count)
+    if(NOT archive_c_compiler_count EQUAL 1)
+        record_error("archive C compiler cache entries=${archive_c_compiler_count}, expected exactly one")
+    else()
+        string(REGEX REPLACE "^[^=]*=" "" archive_c_compiler "${archive_c_compiler_line}")
+        get_filename_component(archive_c_compiler_real "${archive_c_compiler}" REALPATH)
+        get_filename_component(parent_c_compiler_real "${NESTED_CMAKE_C_COMPILER}" REALPATH)
+        if(NOT archive_c_compiler_real STREQUAL parent_c_compiler_real)
+            record_error("archive C compiler '${archive_c_compiler_real}' did not follow real parent '${parent_c_compiler_real}'")
+        endif()
+    endif()
+endif()
+if(NM_CAPABLE AND (NOT DEFINED NM OR "${NM}" STREQUAL ""))
+    message(FATAL_ERROR "NM is required when NM_CAPABLE=TRUE")
+endif()
+if(NOT EXISTS "${archive_build}/CTestTestfile.cmake")
+    record_error("archive configure did not generate CTestTestfile.cmake")
 endif()
 if(EXISTS "${archive_build}/CTestTestfile.cmake")
+    set(archive_build_config_args)
+    if(NOT "${NESTED_CTEST_CONFIG}" STREQUAL "")
+        list(APPEND archive_build_config_args --config "${NESTED_CTEST_CONFIG}")
+    endif()
+    run_case(archive_nested_build PASS "${CMAKE_COMMAND}"
+        --build "${archive_build}" --target core_app ${archive_build_config_args} -j3)
+    set(archive_nested_root "${archive_build}/core_app_contract_nested")
+    run_case(archive_nested PASS "${CMAKE_COMMAND}" -E env
+        "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
+        --test-dir "${archive_build}" ${nested_ctest_config_args}
+        -R "^test_core_app_nested_contract$" -V)
+    expect_nested_success_summary(archive_nested)
+    expect_log_contains(archive_nested
+        "core_app nested backend, real SDK forwarding, wrapped-nm, and false-green contracts passed")
+    expect_log_lacks(archive_nested "Not Run")
+    expect_log_lacks(archive_nested "NOT_AVAILABLE")
+    expect_log_lacks(archive_nested "No tests were found")
+    foreach(relative_path IN ITEMS
+            tests/test_core_app_nm_symbol_missing.cmake
+            tests/test_core_app_nm_filter.cmake)
+        file(SHA256 "${ENGINE_SOURCE_DIR}/${relative_path}" current_nm_hash)
+        file(SHA256 "${archive_engine}/${relative_path}" archive_nm_hash)
+        if(NOT current_nm_hash STREQUAL archive_nm_hash)
+            record_error("archive_nested: stale overlay for ${relative_path}")
+        endif()
+    endforeach()
     file(READ "${archive_build}/CTestTestfile.cmake" archive_ctest)
+    if(NM_CAPABLE)
+        foreach(case_name IN ITEMS wrapped false-green)
+            if(NOT EXISTS "${archive_nested_root}/${case_name}/filtered-symbols.txt")
+                record_error("archive_nested: ${case_name} did not execute the real nm wrapper")
+            endif()
+        endforeach()
+    else()
+        expect_log_contains(archive_nested "UNVERIFIED: core_app symbol scan skipped:")
+        file(STRINGS "${archive_build}/CTestTestfile.cmake" archive_nested_registration
+            REGEX "add_test\\(.*test_core_app_nested_contract")
+        if(NOT archive_nested_registration MATCHES "-DNM_CAPABLE=FALSE")
+            record_error("archive_nested: archived configure did not preserve NM_CAPABLE=FALSE")
+        endif()
+        get_property(no_nm_log GLOBAL PROPERTY CORE_APP_COMPAT_LAST_LOG)
+        if(no_nm_log MATCHES "UNVERIFIED: core_app symbol scan skipped:")
+            message(STATUS "${no_nm_log}")
+        endif()
+    endif()
     foreach(test_name IN ITEMS test_core_app_nm_missing test_core_app_nm_unsupported
             test_core_app_formal_asset_tracking test_core_app_naming_contract)
         string(REGEX MATCH
@@ -352,7 +552,7 @@ if(EXISTS "${archive_build}/CTestTestfile.cmake")
     endforeach()
     run_case(archive_tracking PASS "${CMAKE_COMMAND}" -E env
         "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-        --test-dir "${archive_build}"
+        --test-dir "${archive_build}" ${nested_ctest_config_args}
         -R "^test_core_app_(formal_asset_tracking|naming_contract)$" -V)
     expect_tracking_skips(archive_tracking 2)
     expect_log_lacks(archive_tracking "All 11 formal core_app assets are tracked, including tone.wav")
@@ -373,7 +573,8 @@ file(APPEND "${archive_engine}/apps/core_app/core_app.c" "\n${exact_exemption}\n
 if(EXISTS "${archive_build}/CTestTestfile.cmake")
     run_case(archive_exact_exemption PASS "${CMAKE_COMMAND}" -E env
         "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-        --test-dir "${archive_build}" -R "^test_core_app_naming_contract$" -V)
+        --test-dir "${archive_build}" ${nested_ctest_config_args}
+        -R "^test_core_app_naming_contract$" -V)
     expect_tracking_skips(archive_exact_exemption 1)
     expect_log_lacks(archive_exact_exemption "core_app naming contract failed")
     expect_log_lacks(archive_exact_exemption "core_app naming, target, interface, and 11-asset contract passed")
@@ -449,10 +650,12 @@ file(APPEND "${nm_ctest_source}"
 file(APPEND "${nm_ctest_source}"
     "  SKIP_REGULAR_EXPRESSION \"UNVERIFIED: core_app symbol scan skipped:|CORE_APP_TRACKING_UNVERIFIED\")\n")
 set(nm_build "${WORK}/nm-build")
-run_case(nm_fixture_configure PASS "${CMAKE_COMMAND}" -S "${nm_fixture}" -B "${nm_build}")
+run_case(nm_fixture_configure PASS "${CMAKE_COMMAND}" -S "${nm_fixture}" -B "${nm_build}"
+    -G "${NESTED_CMAKE_GENERATOR}")
 run_case(nm_compat_skips PASS "${CMAKE_COMMAND}" -E env
     "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-    --test-dir "${nm_build}" -R "^test_core_app_nm_(missing|unsupported)$" -V)
+    --test-dir "${nm_build}" ${nested_ctest_config_args}
+    -R "^test_core_app_nm_(missing|unsupported)$" -V)
 get_property(nm_log GLOBAL PROPERTY CORE_APP_COMPAT_LAST_LOG)
 string(REGEX MATCHALL "UNVERIFIED: core_app symbol scan skipped:" nm_skip_matches "${nm_log}")
 list(LENGTH nm_skip_matches nm_skip_count)
@@ -462,7 +665,7 @@ endif()
 foreach(test_name IN ITEMS test_core_app_nested_error test_core_app_cli_error)
     run_case(${test_name} FAIL "${CMAKE_COMMAND}" -E env
         "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
-        --test-dir "${nm_build}" -R "^${test_name}$" -V)
+        --test-dir "${nm_build}" ${nested_ctest_config_args} -R "^${test_name}$" -V)
     expect_log_contains(${test_name} "core_app contract failed before skip:")
     expect_log_lacks(${test_name} "UNVERIFIED: core_app symbol scan skipped:")
     if(test_name STREQUAL "test_core_app_nested_error")

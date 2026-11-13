@@ -824,11 +824,10 @@ TEST(nat_close_before_punch_blocks_late_punch)
 {
     NatFixture fixture;
     BreakOnlineHandle pair;
-    u32 i;
     ASSERT_TRUE(nat_fixture_init(&fixture, 2u, 1u));
     ASSERT_TRUE(register_and_pair(&fixture, &pair, 77u, 1000u));
     ASSERT_EQ(break_nat_coordinator_pair_close(fixture.coordinator, pair), BREAK_RUNTIME_OK);
-    for (i = 0u; i < 8u; ++i) (void)nat_pump_once(&fixture);
+    ASSERT_EQ(nat_pump_until_closed(&fixture, pair), BREAK_RUNTIME_OK);
     ASSERT_FALSE(break_nat_endpoint_armed(fixture.a, pair));
     ASSERT_FALSE(break_nat_endpoint_armed(fixture.b, pair));
     send_test_punch(&fixture, pair, 77u, 1000u, 1u);

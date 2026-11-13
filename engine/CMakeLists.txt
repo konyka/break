@@ -4355,7 +4355,56 @@ endif()
     set_tests_properties(test_ci_image_contract PROPERTIES
         LABELS "headless;platform_contract")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    find_program(BASH_EXECUTABLE NAMES bash REQUIRED)
+    # Workflow contracts execute POSIX bash. On Windows, System32\bash.exe is
+    # only the WSL launcher: with no distro disk it exits before -c runs, and
+    # its UTF-8 diagnostic is not a GBK-decodable script result. Keep an
+    # explicit working bash, otherwise use the bash that ships next to git.
+    function(_engine_probe_posix_bash candidate ok_var)
+        set(${ok_var} FALSE PARENT_SCOPE)
+        if(NOT candidate OR NOT EXISTS "${candidate}")
+            return()
+        endif()
+        execute_process(
+            COMMAND "${candidate}" -c "echo posix-bash-ok"
+            RESULT_VARIABLE _probe_rc
+            OUTPUT_VARIABLE _probe_out
+            ERROR_VARIABLE _probe_err
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            TIMEOUT 20)
+        if(_probe_rc EQUAL 0 AND _probe_out MATCHES "^posix-bash-ok")
+            set(${ok_var} TRUE PARENT_SCOPE)
+        endif()
+    endfunction()
+    find_program(BASH_EXECUTABLE NAMES bash)
+    set(_engine_bash_ok FALSE)
+    if(BASH_EXECUTABLE)
+        _engine_probe_posix_bash("${BASH_EXECUTABLE}" _engine_bash_ok)
+    endif()
+    if(WIN32 AND NOT _engine_bash_ok)
+        find_program(_engine_git_for_bash NAMES git)
+        if(_engine_git_for_bash)
+            get_filename_component(_engine_git_dir "${_engine_git_for_bash}" DIRECTORY)
+            get_filename_component(_engine_git_root "${_engine_git_dir}" DIRECTORY)
+            foreach(_engine_bash_candidate
+                    "${_engine_git_root}/bin/bash.exe"
+                    "${_engine_git_root}/usr/bin/bash.exe"
+                    "${_engine_git_dir}/bash.exe")
+                _engine_probe_posix_bash("${_engine_bash_candidate}" _engine_bash_ok)
+                if(_engine_bash_ok)
+                    set(BASH_EXECUTABLE "${_engine_bash_candidate}" CACHE FILEPATH
+                        "POSIX bash used by workflow contract tests" FORCE)
+                    break()
+                endif()
+            endforeach()
+        endif()
+        unset(_engine_git_for_bash CACHE)
+    endif()
+    if(NOT BASH_EXECUTABLE OR NOT _engine_bash_ok)
+        message(FATAL_ERROR
+            "A working POSIX bash is required for workflow contract tests. "
+            "Resolved '${BASH_EXECUTABLE}', which did not execute 'echo posix-bash-ok'. "
+            "Windows System32 bash.exe is the WSL launcher and is not a substitute.")
+    endif()
     add_test(NAME test_ci_image_fix2
         COMMAND "${Python3_EXECUTABLE}" ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_image_fix2.py
             ${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -4660,7 +4709,8 @@ endif()
         set(_core_app_nested_rhi_backend auto)
     endif()
     set(_core_app_nested_toolchain_defs
-        "-DNESTED_ENGINE_RHI_BACKEND=${_core_app_nested_rhi_backend}")
+        "-DNESTED_ENGINE_RHI_BACKEND=${_core_app_nested_rhi_backend}"
+        "-DNESTED_CMAKE_C_COMPILER=${CMAKE_C_COMPILER}")
     foreach(_core_app_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
         if(DEFINED ${_core_app_def} AND NOT "${${_core_app_def}}" STREQUAL "")
             list(APPEND _core_app_nested_toolchain_defs
@@ -4759,11 +4809,52 @@ endif()
     endif()
     add_dependencies(test_core_app_assets core_app_asset_bake)
     add_test(NAME test_core_app_assets COMMAND test_core_app_assets)
+    add_executable(test_core_app_assets_launch_diagnostic tests/test_core_app_assets.c)
+    set_property(TARGET test_core_app_assets_launch_diagnostic PROPERTY C_STANDARD 11)
+    target_include_directories(test_core_app_assets_launch_diagnostic PRIVATE ${TEST_INCLUDE_DIRS})
+    set(CORE_APP_MISSING_BAKER
+        "${CMAKE_CURRENT_BINARY_DIR}/core_app_asset_bake_diagnostic_missing${CMAKE_EXECUTABLE_SUFFIX}")
+    target_compile_definitions(test_core_app_assets_launch_diagnostic PRIVATE
+        CORE_APP_ASSET_BAKE_EXECUTABLE="${CORE_APP_MISSING_BAKER}"
+        CORE_APP_FORMAL_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app")
+    target_link_libraries(test_core_app_assets_launch_diagnostic PRIVATE core_app_runtime m)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_definitions(test_core_app_assets_launch_diagnostic PRIVATE
+            CORE_APP_TEST_WRAP_FS=1)
+        target_link_options(test_core_app_assets_launch_diagnostic PRIVATE
+            "-Wl,--wrap=fsync" "-Wl,--wrap=write" "-Wl,--wrap=rename")
+    endif()
+    add_test(NAME test_core_app_baker_diagnostics
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DCORE_APP_ASSET_BAKE=$<TARGET_FILE:core_app_asset_bake>
+            -DCORE_APP_ASSET_TEST=$<TARGET_FILE:test_core_app_assets>
+            -DCORE_APP_ASSET_LAUNCH_TEST=$<TARGET_FILE:test_core_app_assets_launch_diagnostic>
+            -DCORE_APP_MISSING_BAKER=${CORE_APP_MISSING_BAKER}
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_baker_diagnostics
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_baker_diagnostics.cmake)
     add_test(NAME test_core_app_formal_asset_tracking
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_formal_assets.cmake)
+    add_test(NAME test_core_app_checkout_attributes
+        COMMAND ${CMAKE_COMMAND}
+            -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_checkout_attributes.cmake)
+    add_test(NAME test_core_app_checkout_attributes_dangling
+        COMMAND ${CMAKE_COMMAND}
+            -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -DCHECKOUT_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_checkout_attributes.cmake
+            -DFORMAL_ASSET_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_formal_assets.cmake
+            -DNAMING_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_naming_contract.cmake
+            -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DPLAN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/superpowers/plans/2026-11-03-core-app-integration.md
+            -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/core_app_integration.md
+            -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_checkout_dangling
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_checkout_attributes_dangling.cmake)
     add_test(NAME test_core_app_naming_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -4772,13 +4863,23 @@ endif()
             -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/core_app_integration.md
             -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_naming_contract.cmake)
-    set_tests_properties(test_core_app_assets test_core_app_formal_asset_tracking
-        test_core_app_naming_contract PROPERTIES LABELS "headless;core_app;assets")
+    set_tests_properties(test_core_app_assets test_core_app_baker_diagnostics
+        test_core_app_formal_asset_tracking test_core_app_checkout_attributes
+        test_core_app_checkout_attributes_dangling test_core_app_naming_contract
+        PROPERTIES LABELS "headless;core_app;assets")
     set_tests_properties(test_core_app_nm_missing test_core_app_nm_unsupported
         test_core_app_formal_asset_tracking test_core_app_naming_contract
         PROPERTIES
             SKIP_RETURN_CODE 77
             SKIP_REGULAR_EXPRESSION "UNVERIFIED: core_app symbol scan skipped:|CORE_APP_TRACKING_UNVERIFIED")
+    # The exact prefix also maps the pre-3.29 FATAL_ERROR fallback to SKIP.
+    set_tests_properties(test_core_app_checkout_attributes PROPERTIES
+        SKIP_RETURN_CODE 77
+        SKIP_REGULAR_EXPRESSION "UNVERIFIED: core_app checkout attribute probe skipped:")
+    # A wrapped-contract skip must fail; only fixture capability may skip.
+    set_tests_properties(test_core_app_checkout_attributes_dangling PROPERTIES
+        SKIP_RETURN_CODE 77
+        SKIP_REGULAR_EXPRESSION "UNVERIFIED: core_app dangling [.]git fixture skipped:")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../.git")
         add_test(NAME test_core_app_contract_compat
             COMMAND ${CMAKE_COMMAND}
@@ -4791,10 +4892,33 @@ endif()
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
                 -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_compat
+                -DNM=${CMAKE_NM}
+                -DNM_CAPABLE=${_core_app_nm_capable}
+                "-DNESTED_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
+                "-DNESTED_CTEST_CONFIG=$<CONFIG>"
                 ${_core_app_nested_toolchain_defs}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_contract_compat.cmake)
         set_tests_properties(test_core_app_contract_compat PROPERTIES
             LABELS "headless;core_app;platform_contract" TIMEOUT 300)
+        add_test(NAME test_core_app_ctest_config_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+                -DPLAN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/superpowers/plans/2026-11-03-core-app-integration.md
+                -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/core_app_integration.md
+                -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_ctest_config_contract
+                -DNM=${CMAKE_NM}
+                -DNM_CAPABLE=${_core_app_nm_capable}
+                "-DNESTED_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
+                "-DNESTED_CTEST_CONFIG=$<CONFIG>"
+                ${_core_app_nested_toolchain_defs}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_ctest_config_contract.cmake)
+        set_tests_properties(test_core_app_ctest_config_contract PROPERTIES
+            LABELS "headless;core_app;platform_contract" TIMEOUT 600)
     endif()
 
     set(_core_app_lifecycle_fault_library "")
