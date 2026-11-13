@@ -1646,6 +1646,9 @@ target_link_libraries(core_app_runtime PUBLIC
     engine break_game break_ai break_flow break_lua break_game_lua runtime_core)
 add_executable(core_app apps/core_app/main.c)
 target_link_libraries(core_app PRIVATE core_app_runtime m)
+# The ragdoll pulls skeleton.o, which calls the rhi_* buffer API; list engine
+# ahead of the backend archives (engine_demo order) so those resolve.
+target_link_libraries(core_app PRIVATE engine)
 engine_link_rhi_backend(core_app)
 add_executable(core_app_asset_bake apps/core_app/core_app_asset_bake.c)
 set_property(TARGET core_app_asset_bake PROPERTY C_STANDARD 11)
@@ -5172,6 +5175,17 @@ endif()
             -DSIM_MODE=vehicle
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_lifecycle.cmake)
     set_tests_properties(test_core_app_lifecycle_vehicle PROPERTIES
+        LABELS "headless;core_app;lifecycle" TIMEOUT 120)
+
+    add_test(NAME test_core_app_lifecycle_ragdoll
+        COMMAND ${CMAKE_COMMAND}
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+            -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_ragdoll
+            -DSIM_MODE=ragdoll
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_lifecycle.cmake)
+    set_tests_properties(test_core_app_lifecycle_ragdoll PROPERTIES
         LABELS "headless;core_app;lifecycle" TIMEOUT 120)
 
     add_executable(test_core_app_runtime tests/test_core_app_runtime.c)

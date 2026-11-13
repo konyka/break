@@ -14,6 +14,7 @@
 #include <game/break_game_internal.h>
 #include <game/break_game_lua.h>
 #include <physics/physics.h>
+#include <physics/ragdoll.h>
 #include <physics/vehicle.h>
 #include <platform/platform_fs.h>
 #include <runtime/runtime_coordinator.h>
@@ -35,6 +36,8 @@
 #define CORE_APP_VEHICLE_NODE_INDEX 4u
 #define CORE_APP_VEHICLE_REACH 3.0f
 #define CORE_APP_VEHICLE_SETTLE_STEPS 120u
+#define CORE_APP_CHAIN_JOINTS 3u
+#define CORE_APP_KEY_RAGDOLL 'r'
 #define CORE_APP_AREA_FLOW_EVENT 1001u
 #define CORE_APP_FLOW_ITEM 1u
 #define CORE_APP_MAX_PENDING_AREA_ENTERS 8u
@@ -90,6 +93,13 @@ typedef struct CoreLevel {
     Vehicle vehicle;
     bool vehicle_live;
     bool interact_was_down;
+    Skeleton chain;
+    IKSystem ik;
+    Ragdoll ragdoll;
+    Vec3 chain_position[CORE_APP_CHAIN_JOINTS];
+    Quat chain_rotation[CORE_APP_CHAIN_JOINTS];
+    Vec3 chain_scale[CORE_APP_CHAIN_JOINTS];
+    Mat4 chain_world[CORE_APP_CHAIN_JOINTS];
     u64 generation;
     bool actor_level_open;
 } CoreLevel;
@@ -188,6 +198,7 @@ static void core_app_level_destroy(CoreLevel *level) {
     anim_blend_state_destroy(&level->locomotion);
     if (level->ai) break_ai_runtime_destroy(level->ai);
     if (level->nav_mesh) break_nav_mesh_destroy(level->nav_mesh);
+    if (level->ragdoll.active && level->physics) ragdoll_deactivate(&level->ragdoll, level->physics);
     if (level->vehicle_live && level->physics) vehicle_destroy(&level->vehicle, level->physics);
     if (level->physics) physics_world_destroy(level->physics);
     if (level->actor_level_open && level->actor_runtime) {
@@ -430,7 +441,79 @@ static BreakRuntimeError stage_physics(CoreLevel *candidate) {
         vehicle_step(&candidate->vehicle, candidate->physics, &idle, CORE_APP_FIXED_DT);
         physics_step(candidate->physics, CORE_APP_FIXED_DT);
     }
+    static const Vec3 bind_world[CORE_APP_CHAIN_JOINTS] = {
+        {{6.0f, 3.0f, -4.0f}}, {{6.0f, 2.0f, -4.0f}}, {{6.0f, 1.0f, -4.0f}}
+    };
+    const u32 parents[CORE_APP_CHAIN_JOINTS] = {UINT32_MAX, 0u, 1u};
+    Mat4 inverse_bind[CORE_APP_CHAIN_JOINTS];
+    for (u32 joint = 0u; joint < CORE_APP_CHAIN_JOINTS; ++joint) {
+        inverse_bind[joint] = mat4_translation(-bind_world[joint].e[0],
+                                               -bind_world[joint].e[1],
+                                               -bind_world[joint].e[2]);
+    }
+    skeleton_init(&candidate->chain, NULL);
+    skeleton_set_joints(&candidate->chain, CORE_APP_CHAIN_JOINTS, parents, inverse_bind);
+    anim_ik_init(&candidate->ik);
+    anim_ik_set_target(&candidate->ik, 0u, 0u, 1u, 2u, vec3(6.6f, 1.6f, -4.0f),
+                       vec3(7.0f, 2.0f, -4.0f));
+    anim_ik_set_weight(&candidate->ik, 0u, 1.0f);
     return BREAK_RUNTIME_OK;
+}
+
+static void app_chain_bind_pose(CoreLevel *level) {
+    level->chain_position[0] = vec3(6.0f, 3.0f, -4.0f);
+    level->chain_position[1] = vec3(0.0f, -1.0f, 0.0f);
+    level->chain_position[2] = vec3(0.0f, -1.0f, 0.0f);
+    for (u32 joint = 0u; joint < CORE_APP_CHAIN_JOINTS; ++joint) {
+        level->chain_rotation[joint] = QUAT_IDENTITY;
+        level->chain_scale[joint] = vec3(1.0f, 1.0f, 1.0f);
+    }
+}
+
+static BreakRuntimeError app_tick_ragdoll(CoreApp *app, u32 tick,
+                                          const CoreAppInputFrame *frame) {
+    CoreLevel *level = app->level;
+    BreakRuntimeError result;
+    if (input_key_pressed(&frame->state, CORE_APP_KEY_RAGDOLL)) {
+        bool ok;
+        if (level->ragdoll.active) {
+            ragdoll_deactivate(&level->ragdoll, level->physics);
+            ok = !level->ragdoll.active;
+        } else {
+            ok = ragdoll_activate(&level->ragdoll, level->physics, &level->chain, &level->ik);
+        }
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=ragdoll tick=%u generation=%" PRIu64
+            " active=%u ok=%u\n", tick, level->generation,
+            level->ragdoll.active ? 1u : 0u, ok ? 1u : 0u);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
+    bool ragdoll_active = level->ragdoll.active;
+    if (ragdoll_active) {
+        if (!ragdoll_write_local_trs(&level->ragdoll, level->physics, &level->chain,
+                                     level->chain_position, level->chain_rotation,
+                                     level->chain_scale)) {
+            return BREAK_RUNTIME_FAILED;
+        }
+    } else {
+        app_chain_bind_pose(level);
+    }
+    skeleton_compute_world_transforms(&level->chain, level->chain_position,
+                                      level->chain_rotation, level->chain_scale,
+                                      level->chain_world);
+    bool solved = anim_ik_solve_unless_ragdoll(&level->ik, level->chain_position,
+                                               level->chain_rotation, level->chain_world,
+                                               CORE_APP_CHAIN_JOINTS, ragdoll_active);
+    skeleton_compute_world_transforms(&level->chain, level->chain_position,
+                                      level->chain_rotation, level->chain_scale,
+                                      level->chain_world);
+    skeleton_apply_local_trs(&level->chain, level->chain_position, level->chain_rotation,
+                             level->chain_scale);
+    return app_trace(app,
+        "COREAPPTRACE version=1 event=ik tick=%u generation=%" PRIu64
+        " ragdoll=%u solved=%u owned=%u tip_x=%.9g tip_y=%.9g\n", tick, level->generation,
+        ragdoll_active ? 1u : 0u, solved ? 1u : 0u, level->ik.physics_ragdoll_count,
+        (double)level->chain_world[2].e[3][0], (double)level->chain_world[2].e[3][1]);
 }
 
 static void app_area_event(u32 area_id, Entity entity, BreakGameAreaEvent event,
@@ -1125,6 +1208,8 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
             (double)chassis->position.e[0], (double)chassis->position.e[2]);
         if (result != BREAK_RUNTIME_OK) return result;
     }
+    result = app_tick_ragdoll(app, tick, frame);
+    if (result != BREAK_RUNTIME_OK) return result;
     BreakGameError area = break_game_area_tick(level->actor_runtime);
     if (area != BREAK_GAME_OK && area != BREAK_GAME_OVERLOAD) return BREAK_RUNTIME_FAILED;
     Vec3 position;

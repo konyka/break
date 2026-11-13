@@ -1,3 +1,11 @@
+## Core App P12 Task 6（slice 4）：布娃娃与 IK 互斥（2026-11-13）
+
+- **交付**：加载期建三关节链与两骨 IK 目标；每个固定步 `app_tick_ragdoll` 在 R 键按下边沿切换 `ragdoll_activate`/`ragdoll_deactivate`，激活时由 `ragdoll_write_local_trs` 驱动姿态，随后 `anim_ik_solve_unless_ragdoll` 只在布娃娃未激活时求解。`core_app` 显式链接 `engine`（在 RHI 后端前），解决 `skeleton.o` 的 `rhi_buffer_*` 引用。trace 新增 `event=ragdoll` 与 `event=ik`。设计见 `docs/design/core_app_integration.md` 的 Task 6 slice 4 节。
+- **测试**：真实进程 `test_core_app_lifecycle_ragdoll`：激活前 IK 求解，激活期间 IK 不求解、持有计数 1、末端随刚体下落，按住 R 不重复切换，解除后 IK 恢复且持有计数归零。
+- **变异**：IK 忽略布娃娃标志、布娃娃不持有 IK、去掉边沿检测、姿态不由布娃娃驱动，均被杀死并恢复。
+- **回归**：lifecycle 10/10；ASan+UBSan 12/12、TSan 12/12，无 sanitizer 报告；非图形全量 379/379。
+- **边界**：关节链在应用内构造，没有渲染，也没有接到用户的角色控制器。Task 6 的四个 slice 至此全部接入应用固定步。
+
 ## Core App P12 Task 6（slice 3）：载具上车、油门与下车（2026-11-13）
 
 - **交付**：加载期在场景节点 4 创建 `Vehicle` 并空载落稳 120 步；每个固定步 `app_tick_vehicle` 处理 interact 的按下边沿（3 m 内 `vehicle_enter`，乘车时 `vehicle_exit` 并用 `core_app_simulation_place_user` 放置用户），乘车时 forward/strafe 映射为油门/转向，随后 `physics_step` 首次进入应用固定步，乘车期间用户跟随底盘。trace 新增 `event=vehicle_enter`、`event=vehicle_exit` 与 `event=vehicle`。设计见 `docs/design/core_app_integration.md` 的 Task 6 slice 3 节。

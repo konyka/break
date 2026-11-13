@@ -208,6 +208,33 @@ event=vehicle tick=<n> generation=<g> occupied=<0|1> throttle=<f> grounded=<0..4
 
 载具只有底盘刚体，没有渲染接线，也没有把场景节点 4 的变换跟随底盘更新。下车点仍由 `vehicle_exit` 的侧向 sweep 决定，被挡住时返回 `ok=0`，用户留在车上。
 
+## P12 Task 6（slice 4）：布娃娃与 IK 互斥（2026-11-13）
+
+### 接线
+
+`stage_physics` 在创建载具之后建一条三关节链（世界位置 (6, 3, -4)、(6, 2, -4)、(6, 1, -4)，父子依次相连，逆绑定矩阵为对应平移的逆），并给 `IKSystem` 设置一个两骨 IK 目标 (6.6, 1.6, -4)，权重 1。骨架不绑定 RHI 设备，只用于 CPU 姿态。
+
+每个固定步在 `event=vehicle` trace 之后调用 `app_tick_ragdoll`：R 键按下的那一 tick 切换布娃娃（未激活时 `ragdoll_activate(&chain, &ik)`，激活时 `ragdoll_deactivate`）。布娃娃激活期间由 `ragdoll_write_local_trs` 从刚体读出局部姿态；未激活时恢复绑定姿态。随后统一调用 `anim_ik_solve_unless_ragdoll`，布娃娃激活时它不修改姿态并返回 false。`ragdoll_activate` 通过 `anim_ik_physics_acquire` 持有 IK，`ragdoll_deactivate` 释放，因此即使调用方忘了传标志，`anim_ik_solve` 也会因为持有计数而跳过。
+
+`core_app` 现在显式链接 `engine`，排在 RHI 后端库之前：布娃娃会拉入 `skeleton.o`，后者引用 `rhi_buffer_*`，只有 engine 在后端库前面时这些符号才能解析（与 `engine_demo` 的链接顺序一致）。
+
+### trace
+
+```text
+event=ragdoll tick=<n> generation=<g> active=<0|1> ok=<0|1>
+event=ik tick=<n> generation=<g> ragdoll=<0|1> solved=<0|1> owned=<u> tip_x=<f> tip_y=<f>
+```
+
+### 验证
+
+- 真实进程 `test_core_app_lifecycle_ragdoll`（90 tick）：tick 5 IK 求解、末端 x ≈ 6.6；tick 10 按 R 激活布娃娃，按住期间不会再次切换；tick 11 起 IK 不求解且持有计数为 1，tick 40 末端 y 已从约 1.6 降到约 0.57；布娃娃激活期间没有任何一行 `ragdoll=1 solved=1`；tick 60 再按 R 解除，tick 61 IK 恢复求解、末端回到 x ≈ 6.6、持有计数为 0。
+- 变异：IK 忽略布娃娃标志、布娃娃不持有 IK、去掉按键边沿检测、姿态不由布娃娃驱动，四处都让断言变红，恢复后通过。
+- lifecycle 10/10；ASan+UBSan 12/12、TSan 12/12（含 `test_ragdoll`、`test_core_app_runtime`），无 sanitizer 报告；普通构建非图形全量 379/379。
+
+### 限制
+
+关节链是应用内构造的，不是正式资产，也没有渲染。布娃娃只在三关节链上演示所有权互斥，没有接到用户的角色控制器。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。
