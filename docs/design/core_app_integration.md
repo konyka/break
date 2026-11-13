@@ -652,6 +652,20 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 `scene_state_save`、GPU 侧真实骨架蒙皮绘制、`BREAK_RHI_FAIL_VULKAN=1` 的创建期降级用例、以及“用户/追踪者/植被各自语义像素”的分项断言。当前证据是“设备真实、几何真实到达目标、两后端一致”，不是逐对象影像回归。
 
+## Core App Task 13（slice 1）：独立评审发现的缺陷与修复（2026-11-14）
+
+一次独立评审（只读、逐提交）指出两处真实缺陷，均已修复并加回归测试：
+
+1. **顶点步长错位**。场景网格契约是 32 字节（pos3+normal3+uv2），而渲染器的 `MeshVertex` 是 36 字节（多 `material`）。slice 2 的上传按 32 字节拷入 `MeshVertex` 数组，导致第二个顶点起全部错位。修复：新增纯函数 `core_app_mesh_convert_vertices`（`core_app_mesh.c/.h`），逐字段转换并把 `material` 置 0；`test_core_app_mesh` 三个用例覆盖字段顺序、容量溢出不写、空源。变异“步长改用 `sizeof(MeshVertex)`”被第一个用例杀死。修复后同一场景的绘制像素从 3797 变为 6240，`draws` 从 8 变为 6。
+2. **stream 对象仍带 record 假句柄**。`rhi_handle_valid` 只检查 `generation != 0`，所以 record 假句柄能通过校验并在真实后端绑定错误缓冲。修复：GPU lane 构造对象-only snapshot 时剔除 `stream` 绘制，`draws` 由 8 降为 6。
+
+同时修正两处对外契约：
+
+- GPU 设备不可用（`stage=gpu_start` 返回 `UNAVAILABLE`）此前仍以退出码 2 收场，现与音频设备一致走 77；真实设备已创建后的失败仍一律退出 2。变异“截图恒失败”被 `test_core_app_gpu_vulkan` 判为 FAIL（exited 2），证明失败没有被误报成 skip。
+- `core_app_gpu.h` 不再引用 `rhi_runtime.h`；后端名改从 `RHIDeviceInfo.backend` 读取。原写法在单后端嵌套构建里产生 `undefined reference to rhi_runtime_active_backend`，使 `test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract` 失败。
+
+本轮修复后：`test_core_app_mesh` 3/3、GPU 两用例通过、`test_core_app_gpu`/`naming`/`target` 契约 5/5；全量含 GPU 405/405。
+
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-13 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
 <!-- CORE_APP_HISTORY_BEGIN -->

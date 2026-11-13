@@ -9,6 +9,7 @@
  * valid record host. */
 
 #include <core/types.h>
+#include <renderer/mesh_buffer.h>
 #include <renderer/world_presentation.h>
 #include <rhi/rhi.h>
 #include <runtime/runtime_types.h>

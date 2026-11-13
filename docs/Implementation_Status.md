@@ -1,3 +1,10 @@
+## Core App P12 Task 13（slice 1）：独立评审缺陷修复（2026-11-14）
+
+- **修复 1（真实缺陷）**：`MeshVertex` 是 36 字节而场景网格是 32 字节，slice 2 的直接拷贝使第二个顶点起错位。新增纯函数 `core_app_mesh_convert_vertices`（`core_app_mesh.c/.h`）做逐字段转换，`test_core_app_mesh` 3 个用例覆盖；变异（用 `sizeof(MeshVertex)` 当步长）被杀死。修复后绘制像素 3797→6240，draws 8→6。
+- **修复 2（真实缺陷）**：stream 对象在 GPU lane 仍带 record 假句柄，`rhi_handle_valid` 只查 generation 所以会绑定错误缓冲；GPU lane 现剔除 stream 绘制。
+- **契约修正**：GPU `UNAVAILABLE` 改走退出码 77（设备创建后的失败仍为 2，变异验证不会被误报为 skip）；`core_app_gpu.h` 不再依赖 `rhi_runtime.h`，后端名取自 `RHIDeviceInfo.backend`，修复单后端嵌套构建的 `undefined reference`（`contract_compat` / `ctest_config_contract` 回归）。
+- **验证**：`test_core_app_mesh` 3/3、GPU 契约 5/5、全量含 GPU 405/405。
+
 ## Core App P12 Task 11（slice 2）：真实网格上传、双后端对照与像素证据（2026-11-14）
 
 - **交付**：GPU lane 在关卡提交时用 `core_app_gpu_upload_mesh` 上传每个可见网格与植被原型，句柄写入 `WorldObject.gpu/draw` 并归关卡所有（`CoreLevel.mesh_device`，销毁关卡时释放）；回滚与成功路径都改为先销毁关卡再销毁设备。GPU lane 跳过 record-only 的假句柄代际校验，提交对象-only 的 snapshot 副本（record 副本的植被批次是假句柄，真实 GL 会在实例化绘制上 SIGSEGV）。设备创建后 `rhi_set_vsync(false)`，否则固定步长循环会阻塞在 present。截图改到 `rhi_frame_end` 之前，符合 RHI 合同。设计见 `docs/design/core_app_integration.md` 的 Task 11 slice 2 节。

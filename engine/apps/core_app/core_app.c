@@ -2386,6 +2386,17 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                 app->gpu_snapshot = app->level->world_snapshots[tick & 1u];
                 app->gpu_snapshot.instance_count = 0u;
                 app->gpu_snapshot.batch_count = 0u;
+                /* The stream object has no device mesh: its geometry is built
+                 * host-side and only its record handle is staged. Binding that
+                 * fake handle on a real backend would draw garbage, so the GPU
+                 * lane drops stream draws instead. */
+                u32 kept = 0u;
+                for (u32 i = 0u; i < app->gpu_snapshot.draw_count; ++i) {
+                    if (app->gpu_snapshot.draws[i].stream) continue;
+                    if (kept != i) app->gpu_snapshot.draws[kept] = app->gpu_snapshot.draws[i];
+                    kept++;
+                }
+                app->gpu_snapshot.draw_count = kept;
                 stage = "gpu";
                 result = core_app_gpu_render(&app->gpu, &app->gpu_snapshot, path, &gpu_frame);
                 app->screenshot_next = false;
@@ -2437,13 +2448,12 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
 finished:
     if (*out_exit_code != 0) {
         if (stage) fprintf(stderr, "core_app: stage=%s runtime rollback\n", stage);
-        bool device_required = config->audio_mode == CORE_APP_AUDIO_DEVICE &&
-                               config->require_device;
         app_rollback(app);
-        if (device_required && result == BREAK_RUNTIME_UNAVAILABLE) {
-            /* Exit 77 mirrors the autotools "skipped" convention: the host
-             * has no audio device, which is an environment fact rather than a
-             * defect in this run. */
+        if (result == BREAK_RUNTIME_UNAVAILABLE) {
+            /* Exit 77 mirrors the autotools "skipped" convention: a facility
+             * the run required (audio device or GPU device) is absent. That is
+             * an environment fact, not a defect in this run, and it must never
+             * be reported as a pass either. */
             *out_exit_code = 77;
             result = BREAK_RUNTIME_UNAVAILABLE;
         } else {

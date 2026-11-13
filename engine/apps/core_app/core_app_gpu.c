@@ -1,5 +1,7 @@
 #include "core_app_gpu.h"
 
+#include "core_app_mesh.h"
+
 #include <platform/platform.h>
 #include <renderer/mesh_buffer.h>
 #include <scene/scene_serial.h>
@@ -199,8 +201,10 @@ BreakRuntimeError core_app_gpu_upload_mesh(CoreAppGpu *gpu, const u8 *vertices,
     if (vertex_count > MESH_BUFFER_MAX_VERTS || index_count > MESH_BUFFER_MAX_INDICES) {
         return BREAK_RUNTIME_OVERLOAD;
     }
-    /* The scene vertex layout is exactly MeshVertex: pos3 + normal3 + uv2. */
-    memcpy(mesh.verts, vertices, (size_t)vertex_count * BSCN_MESH_VERTEX_STRIDE);
+    if (!core_app_mesh_convert_vertices(vertices, vertex_count, mesh.verts,
+                                      MESH_BUFFER_MAX_VERTS)) {
+        return BREAK_RUNTIME_OVERLOAD;
+    }
     mesh.count = vertex_count;
     if (index_count != 0u && indices) {
         memcpy(mesh.indices, indices, (size_t)index_count * sizeof(u32));

@@ -1650,7 +1650,8 @@ set_property(TARGET core_app_runtime PROPERTY C_STANDARD 11)
 target_include_directories(core_app_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(core_app_runtime PUBLIC
     engine break_game break_ai break_flow break_lua break_game_lua runtime_core)
-add_executable(core_app apps/core_app/main.c apps/core_app/core_app_gpu.c)
+add_executable(core_app apps/core_app/main.c apps/core_app/core_app_gpu.c
+    apps/core_app/core_app_mesh.c)
 target_link_libraries(core_app PRIVATE core_app_runtime core_app_network m)
 # The ragdoll pulls skeleton.o, which calls the rhi_* buffer API; list engine
 # ahead of the backend archives (engine_demo order) so those resolve.
@@ -5225,6 +5226,14 @@ endif()
         CORE_APP_SOURCE_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app")
     add_test(NAME test_core_app_runtime COMMAND test_core_app_runtime)
     set_tests_properties(test_core_app_runtime PROPERTIES
+        LABELS "headless;core_app" TIMEOUT 60)
+
+    add_executable(test_core_app_mesh tests/test_core_app_mesh.c
+        apps/core_app/core_app_mesh.c)
+    target_include_directories(test_core_app_mesh PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_core_app_mesh PRIVATE m)
+    add_test(NAME test_core_app_mesh COMMAND test_core_app_mesh)
+    set_tests_properties(test_core_app_mesh PROPERTIES
         LABELS "headless;core_app" TIMEOUT 60)
 
     add_executable(test_core_app_network tests/test_core_app_network.c)
