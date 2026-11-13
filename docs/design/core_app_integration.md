@@ -666,6 +666,41 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 本轮修复后：`test_core_app_mesh` 3/3、GPU 两用例通过、`test_core_app_gpu`/`naming`/`target` 契约 5/5；全量含 GPU 405/405。
 
+## Core App Task 13（slice 2）：交付门与证据总览（2026-11-14）
+
+### 累计交付
+
+| Task | 内容 | 提交 |
+|---|---|---|
+| 8 slice 3 | 场景/Flow/Actor 侧车进 checkpoint，失败矩阵 | `12bd170b` |
+| 9 | 256 条有界音频命令、代际槽、record/null/device 三模式 | `8bedf0d6` |
+| 10 | snapshot 编解码、schema hash、权威防火墙 inbox、有界 outbox | `c632aaf6` |
+| 12 | checkpoint/scenario 两个确定性 fuzz target、三棵验证树 | `064f018d` |
+| 11 slice 1 | 真实设备通道、帧提交、截图写盘、`screenshot` 事件 | `7d9fe204` |
+| 11 slice 2 | 真实网格上传、双后端对照、像素证据 | `5baa2b24` |
+| 13 slice 1 | 独立评审：顶点步长与 stream 假句柄修复 | `6f40829e` |
+| 13 slice 2 | 设备创建失败报 UNAVAILABLE（CI 暴露） | `392edfa1` |
+
+### 验证矩阵
+
+| 树 | 结果 |
+|---|---|
+| 普通构建全量（含 GPU lane） | 405/405 |
+| ASan + UBSan（core_app + fuzz） | 16/16，无报告 |
+| TSan（core_app） | 14/14，无报告 |
+| fuzz lane（9 个 smoke） | 9/9 |
+| no-tests 真实进程 | 完整生命周期，退出 0 |
+| Vulkan validation | VUID 计数 0 |
+| 真实设备 | Intel UHD TGL GT1；Vulkan 与 Mesa GL 各 64 帧、背景色与绘制像素一致 |
+
+### 命名
+
+新增的 `core_app_gpu.*`、`core_app_mesh.*`、`core_app_network.*`、两个 fuzz 源、`test_core_app_gpu.cmake`、`test_core_app_mesh.c` 均通过命名契约扫描；标识符、文件名、注释与提交信息不含 `game`/`cry`/`player`/`enemy`。
+
+### 仍未做
+
+真实网络传输（TLS/Session/reactor 接线与 loopback 客户端）、设备音频后端、GPU 侧骨架蒙皮、`BREAK_RHI_FAIL_VULKAN` 创建期降级用例、逐对象影像回归。这些在计划里属于后续 Task，不在本轮交付范围，也未在文档中宣称完成。
+
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-13 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
 <!-- CORE_APP_HISTORY_BEGIN -->
