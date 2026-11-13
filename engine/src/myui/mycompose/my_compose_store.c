@@ -26,16 +26,19 @@ struct MyComposeCompletionContext {
     uint8_t payload[MY_COMPOSE_MESSAGE_BYTES];
 };
 
-static atomic_uint_fast64_t next_store_id = ATOMIC_VAR_INIT(1u);
+/* Zero-initialized: ATOMIC_VAR_INIT is gone from MSVC's experimental C11
+ * atomics. The first successful claim turns 0 into the first issued id. */
+static atomic_uint_fast64_t next_store_id;
 
 static uint64_t allocate_store_id(void) {
     uint_fast64_t current = atomic_load_explicit(&next_store_id,
         memory_order_relaxed);
     for (;;) {
-        if (current == 0u || current == UINT64_MAX) return 0u;
+        uint_fast64_t issued = current == 0u ? 1u : current;
+        if (issued == UINT64_MAX) return 0u;
         if (atomic_compare_exchange_weak_explicit(&next_store_id, &current,
-                current + 1u, memory_order_relaxed, memory_order_relaxed)) {
-            return (uint64_t)current;
+                issued + 1u, memory_order_relaxed, memory_order_relaxed)) {
+            return (uint64_t)issued;
         }
     }
 }
