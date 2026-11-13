@@ -60,6 +60,43 @@ D3D12 run `43162667434`、job `130997246493` 的完整日志显示 archive 与�
 
 第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入、256 项音频 FIFO/过载/drain recovery、Flow player identity 与 exec-link source-port 永久断言仍留在后续台账；Compose 和 P12 Task 4–13 不在本批次中宣称实现。
 
+## P12 Task 5：Actor/Lua 与 Flow 同帧接线（2026-11-13）
+
+### 每 tick 顺序
+
+固定步内的顺序改为：`break_game_tick` → `break_flow_runtime_tick` → `core_app_simulation_tick` → `break_game_area_tick` → 位置 trace → 处理本 tick 累计的 Area enter → haptic → `event=actors` trace。AI、动画和 `physics_step` 仍由 Task 6 接入，本任务不把它们算作已实现。
+
+`event=actors` 记录 Player 和 Enemy 的脚本计数、玩家物品数和 Flow pending 数：
+
+```text
+event=actors tick=<n> generation=<g> player_ticks=<n> player_failures=<n> \
+    enemy_ticks=<n> enemy_failures=<n> items=<n> flow_pending=<n>
+```
+
+### 脚本
+
+`stage_lua` 以 `instruction_budget = 1000000`、`memory_budget = 8 MiB` 创建 runtime，并加载 `director`、`player`、`broken`。Player 类绑定 `player`，Enemy 类绑定 `broken`。`player.lua` 的 `on_actor_tick` 只累加 `state.ticks`；`broken.lua` 可以加载，但 `on_actor_tick` 每次都 `error`。一个 actor 的错误只记入 `break_game_lua_last_fault` 和该 actor 的 `failures`，不阻止同 tick 的其他 actor。
+
+`break_game_lua_actor_stats(adapter, entity, out)` 返回该 actor 的 `ticks`、`failures`、`skipped`、`last_error` 和 `disabled`。despawn 清零计数，之后查询旧 entity 返回 `BREAK_LUA_STALE`，复用同 index 的新 generation 从 0 开始。一次调用使 `break_lua_runtime_budget_trip_count` 增加时，adapter 只禁用这个 module：它的所有 actor 之后记入 `skipped`，其他 module 继续运行。普通 Lua 错误不会禁用 module。
+
+### Flow
+
+烘焙的 `level.fg` 事件键从 1 改为 1001，add-item 节点的数量字段 `a` 明确为 1（之前是 0，运行时会以 `BREAK_FLOW_INVALID` 拒绝）。玩家前方 Area 的 enter 调用 `break_flow_runtime_post(flow, 1001, player, 1.0)`，trace 记 `event=flow kind=post key=1001 … tick=<n>`。延迟 30 tick 后动作把物品 1 加到 Player，trace 记 `event=item … entity=2 item=1 count=1`。`break_flow_runtime_tick` 的非 OK 结果记 `event=flow kind=tick_failed … status=<n>`，本 tick 继续，不重试。
+
+替换关卡或卸载时，应用先 trace `event=flow kind=discarded generation=<g> pending=<n>`（pending 为 0 则不记），再销毁该 generation 的 Flow runtime。新关卡不继承旧队列，所以旧事件不能作用到同 index 的新 generation。
+
+### 验证
+
+- `test_break_game_lua` 4/4：原有的失败隔离和缺失 hook 用例，加上 60 tick 的 per-actor 计数、despawn 后 STALE、预算 trip 只禁用一个 module。
+- `test_core_app_assets` 23/23：事件键 1001、add-item 数量 1、`player` 的 `on_actor_tick` 返回 OK、`broken` 可加载但 `on_actor_tick` 返回 `BREAK_LUA_FAILED` 且不影响再次调用 `player`。
+- 真实进程 `test_core_app_lifecycle_script_flow`：持续行走时 tick 30 投递且 `flow_pending=1`、物品仍为 0，tick 61 物品变为 1 且 pending 归零，tick 180 仍为 1；Player 180 次成功、Enemy 180 次失败。中途卸载报告 `discarded pending=1` 且全程没有 `event=item`；第二关卡在 tick 42 从 0 开始计数，到 tick 99 物品仍为 0，也没有新的投递（玩家停在原地，不再进入 Area）。
+- 变异：任何 Lua 错误都禁用 module 时 `test_break_game_lua` 为 2/4；首个错误跳过后续 actor 时 `script_flow` 失败；删除 Area→Flow 投递时 `script_flow` 失败。三处恢复后 `cmp` 确认字节一致。
+- 回归：普通非图形 374 项入选，370 PASS，4 个既有文档化 SKIP，0 FAIL。ASan+UBSan focused 8/8，TSan 6/6，均无 sanitizer 报告。
+
+### 限制
+
+AI、动画和 `physics_step` 没有接入，tick 顺序里这三步仍是空位。Flow 动作失败只记 trace，不做补偿或重试。证据仍是 Linux CPU/record，没有真实窗口、手柄或 GPU。
+
 ## P12 Task 4：ActionMap、触摸与固定步长玩家控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。
@@ -92,7 +129,7 @@ tick 是不带符号的十进制，范围 1..1048576，且不得回退；`quit` 
 
 `stage_simulation` 位于 physics 之后、AI 之前。它给 Player（实体 index 2，对应场景节点 1）添加位置组件，脚底高度取节点中心减去半高。原来代表玩家的 70 kg 动态 box 已删除，角色控制器是玩家唯一的碰撞体，否则控制器会把自己的 box 推开。玩家出生点前方 3 m 处有一个 AABB Area。Area 回调只累加计数（上限 8，溢出另计）；tick 结束后由主循环为 pad 0 请求一次 haptic。没有手柄时，trace 记录 `status=disconnected request=0`，移动不受影响。
 
-每个 tick 的顺序为：开始输入帧 → 应用本 tick 事件（遇到 `quit` 则结束）→ 模拟 → Area → `event=player tick=… x=… y=… z=…`（`%.9g`）→ `event=haptic …` → render record → audio listener。
+Task 4 当时每个 tick 的顺序为：开始输入帧 → 应用本 tick 事件（遇到 `quit` 则结束）→ 模拟 → Area → `event=player tick=… x=… y=… z=…`（`%.9g`）→ `event=haptic …` → render record → audio listener。
 
 ### 验证
 

@@ -1,3 +1,11 @@
+## Core App P12 Task 5：Actor/Lua 与 Flow 同帧接线（2026-11-13）
+
+- **交付**：每个固定步先 `break_game_tick`，再 `break_flow_runtime_tick`，随后是模拟和 Area。Area enter 向 Flow 投递事件 1001；烘焙的图延迟 30 tick 后给 Player 加物品 1，且只加一次。卸载时把该 generation 的 pending Flow 事件记入 trace 并随 runtime 丢弃，替换关卡从 0 个物品重新开始。`break_game_lua_actor_stats` 按 actor 统计成功 tick、失败、跳过次数和最后一次错误；指令预算 trip 只禁用触发它的 module，普通 Lua 错误只记录。Enemy 绑定会在 `on_actor_tick` 抛错的 `broken`，Player 绑定实现了 `on_actor_tick` 的 `player`。设计见 `docs/design/core_app_integration.md` 的 Task 5 节。
+- **测试**：`test_break_game_lua` 4/4（含 60 tick 计数、despawn 后 STALE、预算 trip 只禁用一个 module）；`test_core_app_assets` 23/23（事件键 1001、add-item 数量 1、`player` 的 hook 成功、`broken` 可加载但 tick 失败）。真实进程 `test_core_app_lifecycle_script_flow`：tick 30 投递且 pending=1，tick 61 物品变为 1，tick 180 仍为 1；中途卸载报告 `discarded pending=1`，第二关卡全程物品为 0。
+- **变异**：任何 Lua 错误都禁用 module 时 2/4；首个 Lua 错误跳过后续 actor 时 `script_flow` 失败；Area enter 不再投递 Flow 时 `script_flow` 失败。三处都用 `cmp` 恢复。
+- **回归**：普通非图形 374 项（370 PASS、4 个既有 SKIP、0 FAIL）。ASan+UBSan focused 8/8（assets、runtime、lifecycle 5 项、break_game_lua），TSan 6/6（break_game_lua 与 lifecycle 5 项），无 sanitizer 报告。
+- **边界**：AI、动画和 `physics_step` 仍是 Task 6，本任务的 tick 顺序只接了脚本、Flow、模拟和 Area。Flow 动作失败记 `tick_failed` 后继续，不重试、不补做。没有真实窗口、手柄或 GPU 证据。
+
 ## Core App P12 Task 4：ActionMap、触摸与固定步长玩家控制（2026-11-13）
 
 - **交付**：`core_app` 新增 `scenario`（有界文法，tick 1..1048576 单调、quit 唯一且为最后事件、违规整份拒绝）、`core_app_input`（应用自有 `InputState`/`InputExtended`，导出 POD 帧）和 `core_app_simulation`（9 个 ActionMap 动作、触摸虚拟摇杆、`break_game_move_wish` + `character_update` 固定 1/60 s、位置写回 ECS、最多 8 substep 的 accumulator）。新增 `level [asset-root]` 命令；三个正式 scenario 由 baker 重生成。玩家前方 Area enter 触发一次 haptic，无手柄时 trace 为 `status=disconnected request=0`。原 70 kg 玩家动态 box 删除，角色控制器是唯一碰撞体。设计见 `docs/design/core_app_integration.md` 的 Task 4 节。

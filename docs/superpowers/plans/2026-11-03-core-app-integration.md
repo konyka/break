@@ -323,7 +323,7 @@ cmake --build build-game-integration-no-tests -j3 --target game_app
 ```
 Expected: help 为 0，非法输入为 2，合同 PASS；无测试配置仍产出真实应用。完整场景此时明确 FAILED，不写成可玩。
 
-- [ ] **Step 5: 变异并提交**
+- [x] **Step 5: 变异并提交**
 
 临时让 legacy `engine_demo` 链接 `game_app_core`，确认 target contract RED，恢复后 GREEN；再临时把未知参数当成功，确认 CLI 测试 RED 并恢复。
 
@@ -530,6 +530,9 @@ git commit -m "core_app: drive fixed step play from actions and touch"
 
 ### Task 5: Actor/Lua 与 Flow Graph 同帧接线、脚本失败隔离
 
+> 2026-11-13 执行记录：未新建 `core_app_script.c`。脚本接线直接用 P9 的 `break_game_lua` adapter，per-actor 计数落在 `break_game_lua_actor_stats`，而不是应用侧再包一层。`director.lua` 未改。行为 RED 落在 `test_break_game_lua`、`test_core_app_assets` 和 `test_core_app_lifecycle_script_flow`，没有扩展 `test_core_app_runtime`。AI、动画和 `physics_step` 仍是 Task 6，Step 3 的 tick 顺序只接了脚本、Flow、模拟和 Area。
+
+
 **Files:**
 - Create: `engine/apps/core_app/core_app_script.h/.c`
 - Modify: `engine/apps/core_app/core_app.c`
@@ -546,13 +549,13 @@ git commit -m "core_app: drive fixed step play from actions and touch"
 - Consumes: 最终 P9 `break_game_lua` adapter、稳定 `BreakLuaHostHandle`、`break_flow_runtime_post/tick`、`break_game_entity_actions_apply` 的原子动作语义。
 - Produces: 每 Actor `on_actor_tick`、有界诊断、Area→Flow→实体动作链；脚本失败不终止其他 Actor。
 
-- [ ] **Step 1: 写 Actor/Lua/Flow 行为 RED**
+- [x] **Step 1: 写 Actor/Lua/Flow 行为 RED**
 
 固定场景有一个正常 `player.lua` 和一个首 tick 抛错的 `broken.lua`。运行 60 tick 后断言正常 Actor 的 `actor_ticks==60`，坏 Actor 的 `actor_script_failures==60`，应用仍前进且 Flow/物理仍运行；预算 trip 后只禁用对应 module 的后续 hooks，正常 Actor 继续。
 
 Area enter 向 `break_flow_runtime_post(runtime, 1001u, player, 1.0f)` 入队，Flow 在确定的 delay tick 原子添加一个物品。断言只产生一次动作、背包数量从 0 到 1、重复 AREA tick 不重复添加。卸载后旧 Entity/HostHandle/Flow event 均返回或记录 `STALE`，不得写入新 level 的同 index 新 generation Actor。
 
-- [ ] **Step 2: 运行脚本隔离 RED**
+- [x] **Step 2: 运行脚本隔离 RED**
 
 Run:
 ```bash
@@ -562,13 +565,13 @@ ctest --test-dir build-core-integration-normal -R '^test_core_app_lifecycle_scri
 ```
 Expected: Actor 脚本尚未调用或 Flow 尚未提交动作，正常 tick/item trace 断言 RED。若 adapter 仍缺失，停止并回到 P9 依赖，不在本文件伪造其公开函数。
 
-- [ ] **Step 3: 实现脚本适配和 Flow 调度**
+- [x] **Step 3: 实现脚本适配和 Flow 调度**
 
 按 P9 最终公开 API 创建/销毁 adapter，让 `break_game_tick` 调用类配置的 `lua_module`。应用只提供模块 source、固定 instruction/memory budget 和诊断接收；Lua 不获得 World/physics/RHI/network 指针。正常 Actor 的脚本错误逐 Actor 记录并继续，不重试同一帧失败调用。
 
 每个 fixed tick 的顺序固定为 `break_game_tick`→`break_flow_runtime_tick`→AI/动画意图→character/vehicle→`physics_step`→姿态写回→Area→新事件留到约定的下一 tick。Flow 动作失败保持图队列和 World 的上游事务语义，应用记 `FAILED` 但不部分补做。加载时不恢复旧 pending Flow queue，显式 reset 并从 checkpoint 的稳定 gameplay 状态重建。
 
-- [ ] **Step 4: 运行 GREEN 和 P2/P9 回归**
+- [x] **Step 4: 运行 GREEN 和 P2/P9 回归**
 
 Run:
 ```bash
