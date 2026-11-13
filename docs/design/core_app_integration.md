@@ -577,6 +577,28 @@ source 槽带 generation。只有 `PLAY_3D` 认领槽位；`POSITION` 和 `STOP`
 
 真实 TLS/Session/reactor 传输接线、真实认证客户端 loopback 用例、`--network --bind/--tls-cert/--tls-key/--psk-env/--port-file` 的应用参数与 acceptor 生命周期。这些需要 `CORE_APP_ENABLE_NETWORK=ON` 且 `BREAK_ENABLE_SNOWFLAKE=ON` 的独立构建树；当前 `core_app` 在无网络构建下 `--network` 明确退出 2。本步只交付与传输无关、可离线验证的边界层，不宣称已打通真实网络。
 
+## Core App Task 12：确定性 fuzz、三棵验证树与 no-tests 真实进程（2026-11-14）
+
+### 变化
+
+新增两个显式 fuzz target（`EXCLUDE_FROM_ALL`，只在 fuzz lane 构建）：
+
+- `fuzz_core_app_checkpoint`：经真实 writer 造出一份有效 checkpoint，每轮从干净状态重建 `valid` 与 `sentinel` 两棵树，对 manifest 做五类变异（截断、单比特翻转、4 字节全 1、清零连续区、随机字节）。每次变异后调用真实 `core_app_checkpoint_probe`，接受则再走 `core_app_checkpoint_find`；同时断言 `sentinel` 目录字节不变且仍能 probe，证明被拒的变异不会污染无关 state。200 次固定 seed 得到 `accepted=45 rejected=155`，重复运行逐位一致。
+- `fuzz_core_app_scenario`：对合法 scenario 文本做四类变异（整行替换为敌意变体、任意字节截断、控制字符注入、追加数字），每次调用真实解析器。断言解析成功时事件数不超过上限，解析失败时 `event_count == 0`（拒绝的文档不得留下部分事件）。
+
+fuzz smoke 在 `ENGINE_BUILD_FUZZ_SMOKE=ON` 下注册为 `fuzz_core_app_checkpoint_smoke`（200 次，seed 31）与 `fuzz_core_app_scenario_smoke`（500 次，seed 37），同其余七个 fuzz smoke 一样带 `fuzz` 标签。
+
+### 验证
+
+- 普通树 fuzz lane：9/9 PASS（新增两项 + 既有七项）。
+- ASan+UBSan 树：`fuzz_core_app` 两项 + `test_core_app_runtime`、`test_core_app_network` 与 12 项 lifecycle 共 16/16 PASS，无 sanitizer 报告。
+- TSan 树：`test_core_app_runtime`、`test_core_app_network`、lifecycle 全绿，无 TSan 报告。
+- no-tests 树：`core_app` 在无测试构建下仍可构建并跑完整个生命周期。
+
+### 仍未做
+
+fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未做（snapshot 编解码已有确定性单元测试覆盖边界，但没有对应变异 fuzzer）。Task 11 的真实 GPU 像素证据不在本步。
+
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-13 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
 <!-- CORE_APP_HISTORY_BEGIN -->

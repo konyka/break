@@ -1,3 +1,10 @@
+## Core App P12 Task 12：确定性 fuzz、三棵验证树与 no-tests 真实进程（2026-11-14）
+
+- **交付**：新增 `fuzz_core_app_checkpoint`（对真实 writer 造出的 manifest 做五类变异，每次真实 probe + find，并断言 sentinel 树字节不变）与 `fuzz_core_app_scenario`（对合法 scenario 做四类变异，断言拒绝时不留部分事件）；两者在 `ENGINE_BUILD_FUZZ_SMOKE=ON` 下注册为 smoke，seed 固定（31/37）。设计见 `docs/design/core_app_integration.md` 的 Task 12 节。
+- **测试**：普通树 fuzz lane 9/9；ASan+UBSan 树 `fuzz_core_app` 2 项 + `test_core_app_runtime` + `test_core_app_network` + 12 项 lifecycle 共 16/16，无 sanitizer 报告；TSan 树 14/14，无 TSan 报告；no-tests 树 `core_app` 完整生命周期退出 0（load→input→simulation→record/audio→save→unload→shutdown）。
+- **确定性**：checkpoint fuzz 200 次固定 seed 得 `accepted=45 rejected=155`，重复运行逐位一致。
+- **边界**：无 libFuzzer 结构感知、无落盘 corpus；`fuzz_core_app_network` 未做。Task 11 的真实 GPU 像素证据不在本步。
+
 ## Core App P12 Task 10：可选认证网络通道的边界层与客户端权威防火墙（2026-11-14）
 
 - **交付**：新增独立 `core_app_network` 库。固定小端 snapshot 编解码（32 字节头 + n×24 字节实体，schema hash 覆盖字段布局），有界出站队列（容量 8，满则计数丢弃），以及只读诊断的权威防火墙 inbox（未认证/未知消息/schema 不符/level generation 过期分别计数并丢弃，从不返回仿真可用值）。`core_app` 链接该库；`--network` 仍受默认关闭的 `CORE_APP_ENABLE_NETWORK` 控制。设计见 `docs/design/core_app_integration.md` 的 Task 10 节。
