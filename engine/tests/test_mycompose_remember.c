@@ -84,7 +84,7 @@ static MyComposeStatus remember_value(MyComposeTreeBuilder *builder,
     DisposeLog *log, void **out) {
     MyComposeRememberOps ops = dispose_ops(log);
     return my_compose_tree_builder_remember(builder, owner, local_slot, type_tag,
-        32u, _Alignof(max_align_t), &ops, out);
+        32u, MY_COMPOSE_MAX_ALIGNMENT, &ops, out);
 }
 
 static void set_value(void *storage, uint32_t id, uint32_t value) {
@@ -110,7 +110,7 @@ TEST(keyed_reorder_preserves_storage_pointer_and_value) {
         MY_COMPOSE_OK);
     ASSERT_EQ(remember_value(builder, b, 0u, 12u, &log, &b_storage),
         MY_COMPOSE_OK);
-    ASSERT_EQ((uintptr_t)a_storage % _Alignof(max_align_t), 0u);
+    ASSERT_EQ((uintptr_t)a_storage % MY_COMPOSE_MAX_ALIGNMENT, 0u);
     set_value(a_storage, 1u, 1234u);
     set_value(b_storage, 2u, 5678u);
     ASSERT_EQ(finish(builder), MY_COMPOSE_OK);
@@ -382,7 +382,7 @@ TEST(input_limits_and_local_type_mismatch_do_not_overwrite_storage) {
     ASSERT_EQ(my_compose_tree_builder_remember(builder, item, 0u, 1u, 32u, 3u,
         &ops, &storage), MY_COMPOSE_INVALID);
     ASSERT_EQ(my_compose_tree_builder_remember(builder, item, 0u, 1u, 32u,
-        (uint32_t)_Alignof(max_align_t) * 2u, &ops, &storage),
+        MY_COMPOSE_MAX_ALIGNMENT * 2u, &ops, &storage),
         MY_COMPOSE_OVERLOAD);
     ASSERT_EQ(storage, (void *)(uintptr_t)1u);
 

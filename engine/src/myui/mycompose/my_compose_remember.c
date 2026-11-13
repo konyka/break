@@ -105,7 +105,7 @@ MyComposeStatus my_compose_tree_builder_remember(
     if (builder->state != MY_COMPOSE_BUILD_NODES) return MY_COMPOSE_INVALID;
     if (local_slot >= MY_COMPOSE_REMEMBER_SLOTS_PER_NODE ||
         size > MY_COMPOSE_REMEMBER_BYTES ||
-        alignment > (uint32_t)_Alignof(max_align_t)) {
+        alignment > MY_COMPOSE_MAX_ALIGNMENT) {
         return MY_COMPOSE_OVERLOAD;
     }
     if (size == 0u || alignment == 0u ||

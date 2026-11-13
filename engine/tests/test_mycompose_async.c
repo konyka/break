@@ -1,11 +1,8 @@
 #include "test_framework.h"
 
 #include <stdatomic.h>
-#if defined(_WIN32)
-#include <threads.h>
-#else
-#include <pthread.h>
-#endif
+
+#include "core/platform_thread.h"
 
 #include "mypal/dummy/my_pal_dummy.h"
 #include "myui/my_window.h"
@@ -57,40 +54,27 @@ typedef struct DirectWorker {
 } DirectWorker;
 
 typedef struct TestThread {
-#if defined(_WIN32)
-    thrd_t handle;
-#else
-    pthread_t handle;
+    PlatformThread handle;
     int (*entry)(void *);
     void *argument;
-#endif
 } TestThread;
 
-#if !defined(_WIN32)
-static void *test_thread_trampoline(void *argument) {
+static PLATFORM_THREAD_RET test_thread_trampoline(PLATFORM_THREAD_ARG argument) {
     TestThread *thread = argument;
     thread->entry(thread->argument);
-    return NULL;
+    return PLATFORM_THREAD_RETURN;
 }
-#endif
 
 static int test_thread_create(TestThread *thread, int (*entry)(void *),
     void *argument) {
-#if defined(_WIN32)
-    return thrd_create(&thread->handle, entry, argument);
-#else
     thread->entry = entry;
     thread->argument = argument;
-    return pthread_create(&thread->handle, NULL, test_thread_trampoline, thread);
-#endif
+    return platform_thread_create(&thread->handle, test_thread_trampoline, thread)
+        ? 0 : -1;
 }
 
 static void test_thread_join(TestThread *thread) {
-#if defined(_WIN32)
-    (void)thrd_join(thread->handle, NULL);
-#else
-    (void)pthread_join(thread->handle, NULL);
-#endif
+    platform_thread_join(thread->handle);
 }
 
 static MyComposeStatus reduce_intent(void *context, const MyComposeIntent *intent,
@@ -239,7 +223,7 @@ static MyComposeStatus dispatch_intent(Fixture *fixture, uint32_t type,
 }
 
 static void wait_for_flag(atomic_bool *flag) {
-    while (!atomic_load_explicit(flag, memory_order_acquire)) thrd_yield();
+    while (!atomic_load_explicit(flag, memory_order_acquire)) platform_thread_yield();
 }
 
 static int post_worker_main(void *argument) {
@@ -251,7 +235,7 @@ static int post_worker_main(void *argument) {
     atomic_store_explicit(&worker->posted, true, memory_order_release);
     do {
         state = my_compose_completion_state(worker->completion);
-        if (state == MY_COMPOSE_COMPLETION_PENDING) thrd_yield();
+        if (state == MY_COMPOSE_COMPLETION_PENDING) platform_thread_yield();
     } while (state == MY_COMPOSE_COMPLETION_PENDING);
     atomic_store_explicit(&worker->final_state, state, memory_order_release);
     my_compose_completion_unref(worker->completion);
@@ -388,10 +372,10 @@ static int retry_worker_main(void *argument) {
     atomic_store_explicit(&worker->posted, true, memory_order_release);
     do {
         state = my_compose_completion_state(worker->completion);
-        if (state == MY_COMPOSE_COMPLETION_PENDING) thrd_yield();
+        if (state == MY_COMPOSE_COMPLETION_PENDING) platform_thread_yield();
     } while (state == MY_COMPOSE_COMPLETION_PENDING);
     atomic_store_explicit(&worker->callback_done, true, memory_order_release);
-    while (!atomic_load_explicit(&worker->retry, memory_order_acquire)) thrd_yield();
+    while (!atomic_load_explicit(&worker->retry, memory_order_acquire)) platform_thread_yield();
     atomic_store_explicit(&worker->retry_status,
         my_compose_completion_post(worker->completion, 99u), memory_order_release);
     atomic_store_explicit(&worker->final_state,

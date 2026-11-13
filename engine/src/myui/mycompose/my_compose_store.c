@@ -632,7 +632,7 @@ MyComposeStore *my_compose_store_create(const void *initial_state,
     store->reducer = reducer;
     store->executor_context = executor_context;
     store->executor = executor;
-    store->owner_thread = thrd_current();
+    store->owner_thread = platform_thread_current_id();
     store->generation = 1u;
     store->next_request_id = 1u;
     status = clone_state(store, initial_state, initial_state_size, 0u);
@@ -682,7 +682,7 @@ MyComposeStatus my_compose_store_dispatch(MyComposeStore *store,
     MyComposeStoredIntent *stored;
     MyComposeStatus status;
     if (store == NULL || intent == NULL) return MY_COMPOSE_INVALID;
-    if (!thrd_equal(thrd_current(), store->owner_thread)) {
+    if (!platform_thread_id_equal(platform_thread_current_id(), store->owner_thread)) {
         return MY_COMPOSE_CONFLICT;
     }
     if (store->closed) return reject_intent(store, MY_COMPOSE_CANCELLED);
@@ -722,7 +722,7 @@ MyComposeStatus my_compose_store_complete(MyComposeStore *store,
     MyComposeStoredCompletion *stored;
     uint32_t slot;
     if (store == NULL || completion == NULL) return MY_COMPOSE_INVALID;
-    if (!thrd_equal(thrd_current(), store->owner_thread)) {
+    if (!platform_thread_id_equal(platform_thread_current_id(), store->owner_thread)) {
         return MY_COMPOSE_CONFLICT;
     }
     if (store->closed) {

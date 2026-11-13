@@ -12,6 +12,10 @@
 
 `mycompose` 不链接 myui 或 RHI。应用在 `break_ui_pump()` 之后显式调用 `my_compose_myui_pump()`，BreakUI ABI 不变。
 
+线程身份使用 `core/platform_thread.h`（Windows 的线程 ID，其它平台的 `pthread_t`），不依赖 `<threads.h>`。Store 在创建线程上记录 owner；其它线程调用 Store、Runtime 或 pump 返回 `MY_COMPOSE_CONFLICT`。
+
+remember 与 State 存储按公开的 `MyComposeMaxAlign`（`long double`、`long long`、`double`、对象指针、函数指针）对齐。请求的 alignment 必须是非零 2 幂且不超过 `MY_COMPOSE_MAX_ALIGNMENT`；不使用 `max_align_t`，因为 MSVC 的 C 模式没有它。
+
 ## 帧顺序
 
 生产路径每帧：

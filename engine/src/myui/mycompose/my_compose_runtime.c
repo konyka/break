@@ -57,7 +57,8 @@ MyComposeRuntime *my_compose_runtime_create(MyComposeTreeBuilder *builder,
         config->view == NULL || config->sink.store != config->store ||
         config->sink.stage == NULL || config->sink.commit == NULL ||
         config->sink.rollback == NULL ||
-        !thrd_equal(thrd_current(), config->store->owner_thread)) {
+        !platform_thread_id_equal(platform_thread_current_id(),
+            config->store->owner_thread)) {
         return NULL;
     }
     runtime = calloc(1u, sizeof(*runtime));
@@ -80,7 +81,8 @@ MyComposeStatus my_compose_runtime_pump(MyComposeRuntime *runtime) {
     uint32_t converted = 0u;
     MyComposeStore *store;
     if (runtime == NULL) return MY_COMPOSE_INVALID;
-    if (!thrd_equal(thrd_current(), runtime->config.store->owner_thread) ||
+    if (!platform_thread_id_equal(platform_thread_current_id(),
+            runtime->config.store->owner_thread) ||
         runtime->pumping || runtime->config.store->event_callback_depth != 0u) {
         return MY_COMPOSE_CONFLICT;
     }
@@ -114,7 +116,8 @@ MyComposeStatus my_compose_runtime_pump(MyComposeRuntime *runtime) {
 MyComposeStatus my_compose_runtime_restart(MyComposeRuntime *runtime) {
     MyComposeStatus status;
     if (runtime == NULL) return MY_COMPOSE_INVALID;
-    if (!thrd_equal(thrd_current(), runtime->config.store->owner_thread) ||
+    if (!platform_thread_id_equal(platform_thread_current_id(),
+            runtime->config.store->owner_thread) ||
         runtime->pumping || runtime->config.store->event_callback_depth != 0u) {
         return MY_COMPOSE_CONFLICT;
     }

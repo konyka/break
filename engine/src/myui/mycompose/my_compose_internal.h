@@ -8,7 +8,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <threads.h>
+
+#include "core/platform_thread.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -96,7 +97,7 @@ typedef enum MyComposeRememberState {
 } MyComposeRememberState;
 
 typedef union MyComposeRememberStorage {
-    max_align_t alignment;
+    MyComposeMaxAlign alignment;
     uint8_t bytes[MY_COMPOSE_REMEMBER_BYTES];
 } MyComposeRememberStorage;
 
@@ -123,7 +124,7 @@ struct MyComposeTreeBuilder {
 };
 
 typedef union MyComposeStateStorage {
-    max_align_t alignment;
+    MyComposeMaxAlign alignment;
     uint8_t bytes[MY_COMPOSE_STATE_BYTES];
 } MyComposeStateStorage;
 
@@ -185,7 +186,7 @@ struct MyComposeStore {
     uint64_t next_request_id;
     struct MyComposeCompletionPool *completion_pool;
     struct MyComposeAsyncBridge *async_bridge;
-    thrd_t owner_thread;
+    PlatformThreadId owner_thread;
     uint32_t event_callback_depth;
     bool closed;
     MyComposeDiagnostics diagnostics;

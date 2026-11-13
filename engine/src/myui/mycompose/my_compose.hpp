@@ -173,7 +173,7 @@ struct DefaultExecutor {
 
 template <typename T>
 [[nodiscard]] consteval uint64_t TypeTag() {
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
     constexpr std::string_view name = __FUNCSIG__;
 #else
     constexpr std::string_view name = __PRETTY_FUNCTION__;
@@ -615,7 +615,7 @@ class Builder {
         const std::shared_ptr<detail::BuilderCore> &core, NodeHandle owner,
         uint32_t local_slot, Factory &&factory) {
         static_assert(sizeof(T) <= kRememberBytes, "Remember<T> exceeds slot bytes");
-        static_assert(alignof(T) <= alignof(std::max_align_t),
+        static_assert(alignof(T) <= MY_COMPOSE_MAX_ALIGNMENT,
             "Remember<T> exceeds slot alignment");
 #if !MY_COMPOSE_HPP_HAS_EXCEPTIONS
         static_assert(std::is_nothrow_invocable_v<Factory>,
