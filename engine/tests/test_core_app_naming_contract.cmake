@@ -11,6 +11,9 @@ set(required_files
     "${ENGINE_SOURCE_DIR}/apps/core_app/core_app.h"
     "${ENGINE_SOURCE_DIR}/apps/core_app/core_app_audio.c"
     "${ENGINE_SOURCE_DIR}/apps/core_app/core_app_audio.h"
+    "${ENGINE_SOURCE_DIR}/apps/core_app/core_app_network.c"
+    "${ENGINE_SOURCE_DIR}/apps/core_app/core_app_network.h"
+    "${ENGINE_SOURCE_DIR}/tests/test_core_app_network.c"
     "${ENGINE_SOURCE_DIR}/apps/core_app/core_app_render.c"
     "${ENGINE_SOURCE_DIR}/apps/core_app/core_app_render.h"
     "${ENGINE_SOURCE_DIR}/apps/core_app/core_app_checkpoint.c"
@@ -61,7 +64,7 @@ if(runtime_sources_index LESS 0)
 endif()
 foreach(required_cmake IN ITEMS
         "engine_link_rhi_backend(core_app)"
-        "target_link_libraries(core_app PRIVATE core_app_runtime m)"
+        "target_link_libraries(core_app PRIVATE core_app_runtime core_app_network m)"
         "target_link_libraries(core_app_asset_bake PRIVATE core_app_runtime m)")
     string(FIND "${cmake_text}" "${required_cmake}" required_cmake_index)
     if(required_cmake_index LESS 0)

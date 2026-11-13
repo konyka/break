@@ -1,3 +1,10 @@
+## Core App P12 Task 10：可选认证网络通道的边界层与客户端权威防火墙（2026-11-14）
+
+- **交付**：新增独立 `core_app_network` 库。固定小端 snapshot 编解码（32 字节头 + n×24 字节实体，schema hash 覆盖字段布局），有界出站队列（容量 8，满则计数丢弃），以及只读诊断的权威防火墙 inbox（未认证/未知消息/schema 不符/level generation 过期分别计数并丢弃，从不返回仿真可用值）。`core_app` 链接该库；`--network` 仍受默认关闭的 `CORE_APP_ENABLE_NETWORK` 控制。设计见 `docs/design/core_app_integration.md` 的 Task 10 节。
+- **测试**：`test_core_app_network` 10/10（容量、往返、小缓冲不写入、坏 magic、坏版本、截断与超限、schema 稳定性、未认证/未知消息丢弃、schema/过期丢弃、有界出站 FIFO）。
+- **变异**：inbox 放行未认证消息被 `snapshot_inbox_drops_unauthenticated_and_unknown_messages` 杀死。
+- **边界**：真实 TLS/Session/reactor 传输、真实认证客户端 loopback、`--network` 应用参数与 acceptor 生命周期未做，需要单独的 `CORE_APP_ENABLE_NETWORK=ON` + `BREAK_ENABLE_SNOWFLAKE=ON` 构建；本步只交付可离线验证的边界层。
+
 ## Core App P12 Task 9：有界音频命令、三模式与代际隔离（2026-11-14）
 
 - **交付**：`CoreAppAudio` 队列扩到 256 条、source 槽 8 个，命令为 `LISTENER`/`PLAY_3D`/`POSITION`/`STOP`；满队列返回 `OVERLOAD` 并计数且不覆盖最老命令。只有 `PLAY_3D` 认领带 generation 的槽位，`POSITION`/`STOP` 只按本代查找，旧代命令计入 `stale_commands` 且不触碰新代槽；`STOP` 成功后释放槽位。新增 record/null/device 三种启动，设备不可用时普通模式降级 null 并计数，`--require-device` 让进程以 77 退出。新增 `BREAK_RUNTIME_UNAVAILABLE` 区分“可选设施缺失”与“设施异常”。设计见 `docs/design/core_app_integration.md` 的 Task 9 节。

@@ -1640,12 +1640,18 @@ add_library(core_app_runtime STATIC
     apps/core_app/scenario.c
     apps/core_app/core_app_input.c
     apps/core_app/core_app_simulation.c)
+# The snapshot channel is a separate bounded library: the runtime source list
+# above is a pinned contract, and this module is present in every build
+# (its default-off switch lives in the application config, not in CMake).
+add_library(core_app_network STATIC apps/core_app/core_app_network.c)
+set_property(TARGET core_app_network PROPERTY C_STANDARD 11)
+target_include_directories(core_app_network PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_property(TARGET core_app_runtime PROPERTY C_STANDARD 11)
 target_include_directories(core_app_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(core_app_runtime PUBLIC
     engine break_game break_ai break_flow break_lua break_game_lua runtime_core)
 add_executable(core_app apps/core_app/main.c)
-target_link_libraries(core_app PRIVATE core_app_runtime m)
+target_link_libraries(core_app PRIVATE core_app_runtime core_app_network m)
 # The ragdoll pulls skeleton.o, which calls the rhi_* buffer API; list engine
 # ahead of the backend archives (engine_demo order) so those resolve.
 target_link_libraries(core_app PRIVATE engine)
@@ -5219,6 +5225,13 @@ endif()
     add_test(NAME test_core_app_runtime COMMAND test_core_app_runtime)
     set_tests_properties(test_core_app_runtime PROPERTIES
         LABELS "headless;core_app" TIMEOUT 60)
+
+    add_executable(test_core_app_network tests/test_core_app_network.c)
+    target_include_directories(test_core_app_network PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_core_app_network PRIVATE core_app_network m)
+    add_test(NAME test_core_app_network COMMAND test_core_app_network)
+    set_tests_properties(test_core_app_network PROPERTIES
+        LABELS "headless;core_app;network" TIMEOUT 60)
 
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)

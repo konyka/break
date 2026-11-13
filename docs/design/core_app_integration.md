@@ -542,6 +542,41 @@ source 槽带 generation。只有 `PLAY_3D` 认领槽位；`POSITION` 和 `STOP`
 
 设备后端（真实 `AudioSystem` 的 owner 线程与 `audio_play_3d` 调用）、`tone.wav` 的关卡播放事件、256 条满队列的进程级压力用例。record/null 路径的证据是单元与真实进程 trace，不是听感验证。
 
+## Core App Task 10：可选认证网络通道的边界层与客户端权威防火墙（2026-11-14）
+
+### 变化
+
+新增独立的 `core_app_network` 静态库（`engine/apps/core_app/core_app_network.c`），不改动被契约固定为七个源文件的 `core_app_runtime`。该库提供一条默认关闭的 snapshot 通道的“无状态两半”：
+
+- **出站 snapshot**：固定小端布局，32 字节头（magic `CSNP`、version、header_bytes、frame_id、level_generation、schema_hash、entity_count）+ 每实体 24 字节（index、generation、x、y、z、flags）。`core_app_snapshot_encode` 在容量不足时不写任何字节；`core_app_snapshot_decode` 先按声明数量与 payload 长度校验再索引，未知 magic/version 直接拒绝。`core_app_snapshot_schema_hash` 对字段布局做 FNV-1a，布局不同的对端在解释任何字段前就被拒。
+- **权威防火墙**：`core_app_snapshot_inbox_admit` 只把对端消息当作诊断数据消费，从不返回仿真可应用的值。未认证、未知 message id、schema 不符、level generation 与本地实时值不一致的 snapshot 分别计数并丢弃；它不持有任何关卡指针。
+- **有界出站**：`core_app_snapshot_outbox` 容量 8，满则计数 `dropped` 并丢弃最年轻的一帧，绝不阻塞或回滚调用方的帧。
+
+`core_app` 现链接 `core_app_network`（命名契约与链接契约同步更新）。`--network` 的编译开关 `CORE_APP_ENABLE_NETWORK` 仍默认关闭，真实传输路径（reactor/Session/TLS/acceptor）不在本步。
+
+### 验证
+
+`test_core_app_network` 10/10：
+
+| 用例 | 断言 |
+|---|---|
+| `snapshot_build_rejects_entity_count_over_capacity` | 超过 64 实体返回 OVER_LIMIT |
+| `snapshot_roundtrip_preserves_fields` | 字段逐位往返，编码长度等于 32+n*24 |
+| `snapshot_encode_rejects_small_buffer_without_writing` | 缓冲不足时返回 OVER_LIMIT 且不写缓冲、不改 `out_size` |
+| `snapshot_decode_rejects_bad_magic` | 改 magic 返回 BAD_MAGIC |
+| `snapshot_decode_rejects_unknown_version` | 改 version 返回 BAD_VERSION |
+| `snapshot_decode_rejects_truncated_and_over_limit_payloads` | 缺一字节 TRUNCATED；声明数量超容量 OVER_LIMIT |
+| `snapshot_schema_hash_is_stable_and_layout_sensitive` | 两次调用一致且非 0 |
+| `snapshot_inbox_drops_unauthenticated_and_unknown_messages` | 未认证/未知消息分别计数且 `accepted_snapshots=0` |
+| `snapshot_inbox_drops_schema_mismatch_and_stale_level` | schema 不符、generation 过期分别计数，匹配时恰好接受一次 |
+| `snapshot_outbox_is_bounded_and_counts_drops` | 容量 8 满后 OVER_LIMIT 且 `dropped=1`，FIFO 弹出顺序正确 |
+
+变异：让 inbox 放行未认证消息被 `snapshot_inbox_drops_unauthenticated_and_unknown_messages` 杀死。
+
+### 仍未做
+
+真实 TLS/Session/reactor 传输接线、真实认证客户端 loopback 用例、`--network --bind/--tls-cert/--tls-key/--psk-env/--port-file` 的应用参数与 acceptor 生命周期。这些需要 `CORE_APP_ENABLE_NETWORK=ON` 且 `BREAK_ENABLE_SNOWFLAKE=ON` 的独立构建树；当前 `core_app` 在无网络构建下 `--network` 明确退出 2。本步只交付与传输无关、可离线验证的边界层，不宣称已打通真实网络。
+
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-13 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
 <!-- CORE_APP_HISTORY_BEGIN -->
