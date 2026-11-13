@@ -228,8 +228,11 @@ u64 core_app_checkpoint_manifest_hash(const char *directory);
 <tick> load-from <relative-checkpoint-path>
 <tick> unload
 <tick> screenshot
+<tick> level [asset-root]
 <tick> quit
 ```
+
+`level [asset-root]` 由 Task 4 补充：`load`/`load-from` 保留给 checkpoint 恢复，关卡资产加载使用独立命令。tick 为不带符号的十进制 1..1048576，`quit` 必须是最后一个事件。
 
 事件按 `(tick, file_order)` 排序，解析器拒绝 tick 回退、非有限/越界坐标、重复 quit 和未知命令。fixed-step 模式每个 `core_app_step` 恰好一个 1/60 秒 tick；交互模式使用 accumulator，最多 8 个 substep，剩余超额时间计入诊断而不是改变物理步长。`save/load/unload` 只在一个 fixed tick 完成、render/audio 快照提交之前或之后的明确帧边界执行；本计划固定为“simulation 后、下一次 snapshot 构建前”。
 
@@ -484,13 +487,13 @@ git commit -m "game: integrate transactional level lifecycle"
 - Consumes: `InputState`、`InputExtended`、`break_game_bind_actions/eval_actions/move_wish`、`character_update`。
 - Produces: 有界 scenario parser、归一化输入帧、固定 1/60 模拟和键盘/触摸等价路径。
 
-- [ ] **Step 1: 写输入与场景行为 RED**
+- [x] **Step 1: 写输入与场景行为 RED**
 
 直接测试解析器：乱序 tick、4097 事件、64 KiB+1、未知命令、NaN 坐标、重复 quit 全部 `INVALID` 且没有部分执行。主程序测试分别用 W 键 180 tick 和触摸上拖 180 tick，玩家都从地面出生点前进超过 2 m，final position 相同到 1e-5；release/cancel 后下一 tick 不再移动。
 
 追加触摸 id 复用和 cancel：同一 OS source id 第二次 down 的 `InputTouchId` generation 不同；cancel 不产生 tap/swipe；无反馈设备返回 `UNSUPPORTED` 但移动照常。Area enter 只请求一次 haptic，命令带 pad generation，断连后旧 request result 为 `STALE`/`DISCONNECTED`。
 
-- [ ] **Step 2: 运行 fixed-step 主程序 RED**
+- [x] **Step 2: 运行 fixed-step 主程序 RED**
 
 Run:
 ```bash
@@ -500,13 +503,13 @@ ctest --test-dir build-core-integration-normal -R '^test_core_app_lifecycle_inpu
 ```
 Expected: 玩家尚未由 ActionMap/触摸驱动，位移断言或输入 trace RED。
 
-- [ ] **Step 3: 实现输入归一化与玩家模拟**
+- [x] **Step 3: 实现输入归一化与玩家模拟**
 
 在 load 时注册 `forward/back/left/right/jump/interact/fire/save/load` 和 pad 绑定。脚本后端维护自己的 `InputState`/`InputExtended` 实例；`InputExtended` 初始化后绝不 memcpy，输出仅复制 touches/gestures 为普通 POD。真实后端从 `platform_input_extended()` 读取同一快照。
 
 固定 tick 先应用该 tick 输入，再 `break_game_eval_actions`，将前进/侧移/yaw/jump 送入 `break_game_move_wish` 和 `character_update`，最后把 `cc.position` 写回 `BREAK_GAME_POSITION_COMPONENT`。交互模式 accumulator 不超 8 步；fixed-step 不读取墙钟决定模拟结果。触摸纵向位移映射到 forward，横向到 strafe；cancel/up 清零。Area callback 只排队 Flow/audio/haptic 事件。
 
-- [ ] **Step 4: 运行键盘/触摸/确定性 GREEN**
+- [x] **Step 4: 运行键盘/触摸/确定性 GREEN**
 
 Run:
 ```bash
@@ -514,7 +517,7 @@ ctest --test-dir build-core-integration-normal -R '^(test_core_app_runtime|test_
 ```
 Expected: 键/触摸位置一致，cancel 无粘滞，重复运行 canonical gameplay trace 逐字节相同；无触摸/反馈设备时离线仍 PASS。
 
-- [ ] **Step 5: 变异并提交**
+- [x] **Step 5: 变异并提交**
 
 临时让 touch cancel 保留 active，确认 cancel 测试 RED；恢复后 GREEN。再临时把 fixed dt 换成 `engine.delta_time`，确认两次不同 pacing 的 trace 不再相同的 RED 测试有效，然后恢复。
 

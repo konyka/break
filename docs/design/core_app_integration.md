@@ -6,7 +6,7 @@
 
 本步在 Task 1 命名边界上一次性迁移 P12 数据格式：checkpoint magic 为固定 8 字节 `CORECKPT`（无额外 NUL），manifest 文件名为 `manifest.core`，trace 首字段为 `COREAPPTRACE version=1`，scenario 首行为 `core-app-scenario 1`。reader 只接受这些新标识并拒绝旧标识，不存在双格式或旧格式回退。manifest 的字段宽度、序列化偏移、FNV-1a-64、generation、错误码、三态提交结果与原子提交语义不变；事务加载、mount 隔离、commit fatal、IO quiescence、sticky FAILED 和逆序销毁行为不变。
 
-当前映射为：可执行应用 `core_app`、静态库 `core_app_runtime`、离线 baker `core_app_asset_bake`；应用、测试和资产根目录分别为 `engine/apps/core_app`、`engine/tests/test_core_app_*`、`engine/assets/core_app`；新构建目录为 `build-core-integration-*`，测试环境变量采用 `CORE_APP_*`。runtime 的 configure-time `SOURCES` property 必须恰好等于 `core_app.c`、`core_app_audio.c`、`core_app_render.c`、`core_app_checkpoint.c` 四个新源文件，不能通过追加 `target_sources` 绕过。
+当前映射为：可执行应用 `core_app`、静态库 `core_app_runtime`、离线 baker `core_app_asset_bake`；应用、测试和资产根目录分别为 `engine/apps/core_app`、`engine/tests/test_core_app_*`、`engine/assets/core_app`；新构建目录为 `build-core-integration-*`，测试环境变量采用 `CORE_APP_*`。runtime 的 configure-time `SOURCES` property 必须恰好等于 `core_app.c`、`core_app_audio.c`、`core_app_render.c`、`core_app_checkpoint.c`、`scenario.c`、`core_app_input.c`、`core_app_simulation.c` 七个源文件（后三个由 Task 4 加入），不能通过追加 `target_sources` 绕过。
 
 真实 nm 支持且返回成功时，输出缺少 `core_app_run` 是合同 FAIL，不是 SKIP；`test_core_app_nm_symbol_missing` 用真实二进制和只过滤该符号的 wrapper 锁定这一负例。仅 NM 缺失或工具/格式不支持时沿用两个原 nm SKIP 合同。
 
@@ -59,6 +59,49 @@ D3D12 run `43162667434`、job `130997246493` 的完整日志显示 archive 与�
 合并提交 `a9c25224` 的主工作树完整构建通过，非图形为 **358 selected、354 PASS、4 个文档化 SKIP、0 FAIL**。主 CI run `43186135276` 的全部可执行 job 成功；macOS Cocoa job `131073643195` 的 `test_break_online_nat` 实际通过。clean-room job `131073947704` 为 **352 selected、0 FAIL**，三个缺库合同按预期 UNVERIFIED/SKIP，dangling 仍 fail-closed。D3D12 run `43186135119`、job `131073642817` 的 headless、WARP runtime **1/1**、push-constant、Agility 部署和七个 D3D12-labelled 测试均成功。此前待验收表述由这些新 run 更新；硬件专用 lane 的调度跳过不视为通过或硬件证明，WARP 仍不证明独立显卡。
 
 第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入、256 项音频 FIFO/过载/drain recovery、Flow player identity 与 exec-link source-port 永久断言仍留在后续台账；Compose 和 P12 Task 4–13 不在本批次中宣称实现。
+
+## P12 Task 4：ActionMap、触摸与固定步长玩家控制（2026-11-13）
+
+### scenario 文法
+
+`engine/apps/core_app/scenario.h/.c` 取代 Task 3 的 `frame N load|unload|end` 子集。首行固定为 `core-app-scenario 1`，随后是 `seed N` 和非零 `fixed-dt-ns N`，之后每行一个事件：
+
+```text
+<tick> key <a-z|0-9> <0|1>
+<tick> touch <source-id> <down|move|up|cancel> <x> <y>    # x、y ∈ [0, 1]
+<tick> pad <0-3> <axis 0-5> <value ∈ [-1, 1]>
+<tick> flow <event-key> <value>
+<tick> save | load | unload | screenshot | quit
+<tick> save-to <relative-path> | load-from <relative-path>
+<tick> level [asset-root]
+```
+
+tick 是不带符号的十进制，范围 1..1048576，且不得回退；`quit` 恰好出现一次，并且必须是最后一个事件。上限为 64 KiB、4096 个事件、每行 511 字节、路径 255 字节。任何违规都使整份文件 `INVALID`，输出结构清空，不执行已解析的前缀。事件数组在堆上按需扩容，不再使用约 1 MB 的栈对象。
+
+`level [asset-root]` 是对计划文法的补充：计划中的 `load`/`load-from` 表示 Task 8 的 checkpoint 恢复，资产关卡加载需要一个独立命令。三个正式 scenario 由 baker 按新文法重新生成。当前 `core_app_run` 只执行 `key`、`touch`、`pad`、`level`、`unload` 和 `quit`，并要求 `fixed-dt-ns` 等于 16666667；`flow`、`save`、`load`、`screenshot` 等由 Task 5、8、11 接入，在此之前出现时以 `stage=scenario` 拒绝，不会被静默忽略。
+
+### 输入与模拟
+
+`core_app_input` 拥有自己的 `InputState` 和 `InputExtended`，`InputExtended` 初始化后不再复制。每个 tick 先推进按键边沿和触摸帧状态，再应用该 tick 的事件；对外只导出 POD 帧，包含按键、触摸点、手势和 haptic 状态。
+
+`core_app_simulation` 在创建时绑定 9 个动作：forward、back、left、right、jump、interact、fire、save、load。键盘使用 W/S/A/D、空格、E、鼠标左键、F5、F9，手柄使用左摇杆和按钮。每个 tick 依次执行：`break_game_eval_actions`；把活动触摸映射成虚拟摇杆（纵向位移除以 0.1 作为 forward，横向作为 strafe，钳制到 [-1, 1]，release/cancel 的触摸不计入）；`break_game_move_wish`（yaw 为 0）；`character_update(CORE_APP_FIXED_DT)`；最后把位置写回 `BREAK_GAME_POSITION_COMPONENT`。模拟结果不读取墙钟。`core_app_accumulator_advance` 每次最多产生 8 个 substep，超出的时间计入 `dropped_ns`，不改变步长；由于应用目前只支持 fixed-step，它暂时只有单元测试。
+
+### 关卡接线与 trace
+
+`stage_simulation` 位于 physics 之后、AI 之前。它给 Player（实体 index 2，对应场景节点 1）添加位置组件，脚底高度取节点中心减去半高。原来代表玩家的 70 kg 动态 box 已删除，角色控制器是玩家唯一的碰撞体，否则控制器会把自己的 box 推开。玩家出生点前方 3 m 处有一个 AABB Area。Area 回调只累加计数（上限 8，溢出另计）；tick 结束后由主循环为 pad 0 请求一次 haptic。没有手柄时，trace 记录 `status=disconnected request=0`，移动不受影响。
+
+每个 tick 的顺序为：开始输入帧 → 应用本 tick 事件（遇到 `quit` 则结束）→ 模拟 → Area → `event=player tick=… x=… y=… z=…`（`%.9g`）→ `event=haptic …` → render record → audio listener。
+
+### 验证
+
+- `test_core_app_runtime` 共 19 项：解析器拒绝 tick 回退、tick 0 和超限 tick、4097 个事件、64 KiB+1、未知命令、NaN 坐标、重复 quit 和 quit 之后的事件；解析 `level`；三个正式 scenario 都能解析；输入覆盖触摸 id 复用后 generation 改变、cancel 不产生手势、按键按住与释放，以及 haptic 的 DISCONNECTED/UNSUPPORTED/排队后断开不执行；模拟覆盖键盘与触摸位置一致、release/cancel 后停止、两次运行逐位相同、8 ms 与 33 ms 墙钟步进结果逐位相同，以及 accumulator 计算。每组都先在 stub 上取得 RED。
+- 真实进程 CTest `test_core_app_lifecycle_input_key`、`_touch`、`_cancel`：W 键 180 tick 与触摸上拖 180 tick 在 tick 180 的 trace 都是 `x=0 y=6.51925802e-08 z=15.3000059`；release/cancel 后 tick 10、11、20 的 x 和 z 不变（z=0.850000143）；Area haptic 恰好记录一次 disconnected。同一 `deterministic.scenario` 运行两次，trace 逐字节相同。
+- 生产变异全部被杀死，恢复后用 `cmp` 确认字节一致：cancel 映射为 MOVE 时单元测试 13/15、进程级 cancel 用例失败；固定 dt 改为墙钟时 14/15；UNSUPPORTED 映射为 OK 时 9/10；Area enter 不计数时进程级 key/touch 用例失败。
+- 回归：普通构建非图形 373 项入选，369 PASS，4 个既有文档化 SKIP（D3D12 dependency gate 与 3 个 nm 合同），0 FAIL。ASan+UBSan focused 10/10，TSan runtime+lifecycle 5/5，均无 sanitizer 报告。
+
+### 限制
+
+证据仍是 Linux CPU/record。没有真实 Wayland 键盘或触摸注入，没有手柄硬件或 haptic 执行，没有 GPU 和音频设备。真实窗口后端从 `platform_input_extended()` 读取同一快照、以及交互模式的 accumulator 主循环，都要等 Task 11 的窗口路径接入，本任务不宣称已实现。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
