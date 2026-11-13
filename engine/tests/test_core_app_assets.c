@@ -637,7 +637,7 @@ TEST(flow_deserializes_enter_delay_add_item_chain) {
     }
     ASSERT_EQ(nodes[0].type, BREAK_FLOW_NODE_EVENT);
     ASSERT_STR_EQ(nodes[0].name, "enter");
-    ASSERT_EQ(nodes[0].event_key, 1u);
+    ASSERT_EQ(nodes[0].event_key, 1001u);
     ASSERT_EQ(nodes[1].type, BREAK_FLOW_NODE_DELAY);
     ASSERT_STR_EQ(nodes[1].name, "delay");
     ASSERT_EQ(nodes[1].delay_ticks, 30u);
@@ -646,6 +646,7 @@ TEST(flow_deserializes_enter_delay_add_item_chain) {
     ASSERT_EQ(nodes[2].entity.index, 2u);
     ASSERT_TRUE(nodes[2].entity.generation != 0u);
     ASSERT_EQ(nodes[2].item_id, 1u);
+    ASSERT_FLOAT_EQ(nodes[2].a, 1.0, 0.0);
     for (u32 i = 0; i < 2u; ++i) {
         u32 id = 0;
         BreakFlowLinkDesc link;
@@ -745,7 +746,7 @@ TEST(wav_is_canonical_44100_hz_mono_pcm16) {
     free(bytes);
 }
 
-TEST(lua_assets_execute_and_broken_source_is_rejected) {
+TEST(lua_assets_execute_and_broken_actor_tick_fails) {
     ASSERT_EQ(ensure_baked(), 0);
     usize director_size = 0, player_size = 0, broken_size = 0;
     u8 *director = test_read_file(formal_asset_dir(), "director.lua", 4096u, &director_size);
@@ -768,8 +769,22 @@ TEST(lua_assets_execute_and_broken_source_is_rejected) {
     ASSERT_EQ(results[1].type, BREAK_LUA_VALUE_NUMBER);
     ASSERT_FLOAT_EQ(results[0].as.n, 30.0, 0.0);
     ASSERT_FLOAT_EQ(results[1].as.n, 1.0, 0.0);
+    BreakLuaHostHandle handle;
+    BreakLuaValue args[2];
+    ASSERT_EQ(break_lua_host_handle_acquire(runtime, 1u, &handle), BREAK_LUA_OK);
+    memset(args, 0, sizeof(args));
+    args[0].type = BREAK_LUA_VALUE_HOST_HANDLE;
+    args[0].as.handle = handle;
+    args[1].type = BREAK_LUA_VALUE_NUMBER;
+    args[1].as.n = 1.0 / 60.0;
+    ASSERT_EQ(break_lua_runtime_call(runtime, "player", "on_actor_tick", args, 2u,
+                                     NULL, 0u), BREAK_LUA_OK);
     ASSERT_EQ(break_lua_runtime_load_module(runtime, "broken", broken,
-                                            broken_size), BREAK_LUA_FAILED);
+                                            broken_size), BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_call(runtime, "broken", "on_actor_tick", args, 2u,
+                                     NULL, 0u), BREAK_LUA_FAILED);
+    ASSERT_EQ(break_lua_runtime_call(runtime, "player", "on_actor_tick", args, 2u,
+                                     NULL, 0u), BREAK_LUA_OK);
     break_lua_runtime_destroy(runtime);
     free(director);
     free(player);
@@ -1394,7 +1409,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(flow_deserializes_enter_delay_add_item_chain);
     RUN_TEST(animation_decodes_within_public_error_bounds);
     RUN_TEST(wav_is_canonical_44100_hz_mono_pcm16);
-    RUN_TEST(lua_assets_execute_and_broken_source_is_rejected);
+    RUN_TEST(lua_assets_execute_and_broken_actor_tick_fails);
     RUN_TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption);
     RUN_TEST(checkpoint_rejects_legacy_magic);
     RUN_TEST(checkpoint_rejects_legacy_manifest_name);

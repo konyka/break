@@ -402,7 +402,7 @@ static bool bake_flow(const char *output) {
     memset(&desc, 0, sizeof(desc));
     u32 enter = 0, delay = 0, add_item = 0, link = 0;
     desc.type = BREAK_FLOW_NODE_EVENT;
-    desc.event_key = 1u;
+    desc.event_key = 1001u;
     strcpy(desc.name, "enter");
     if (break_flow_node_add(graph, &desc, &enter) != BREAK_FLOW_OK) goto cleanup;
     memset(&desc, 0, sizeof(desc));
@@ -414,6 +414,7 @@ static bool bake_flow(const char *output) {
     desc.type = BREAK_FLOW_NODE_ENTITY_ADD_ITEM;
     desc.entity = (Entity){2u, 1u};
     desc.item_id = 1u;
+    desc.a = 1.0f;
     strcpy(desc.name, "add-item");
     if (break_flow_node_add(graph, &desc, &add_item) != BREAK_FLOW_OK) goto cleanup;
     BreakFlowLinkDesc edge = {BREAK_FLOW_PORT_EXEC, enter,
@@ -520,10 +521,13 @@ static bool bake_text_assets(const char *output) {
         {"player.lua",
          "function on_spawn()\n"
          "    return true\n"
+         "end\n"
+         "function on_actor_tick(actor, dt)\n"
+         "    state.ticks = (state.ticks or 0) + 1\n"
          "end\n"},
         {"broken.lua",
-         "function broken(\n"
-         "    this is not valid Lua\n"
+         "function on_actor_tick(actor, dt)\n"
+         "    error('broken actor tick')\n"
          "end\n"},
         {"deterministic.scenario",
          "core-app-scenario 1\n"

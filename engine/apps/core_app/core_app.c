@@ -26,6 +26,9 @@
 #define CORE_APP_TEXT_FILE_MAX_BYTES (1u << 20)
 #define CORE_APP_IO_TIMEOUT_MS 5000u
 #define CORE_APP_PLAYER_ENTITY_INDEX 2u
+#define CORE_APP_ENEMY_ENTITY_INDEX 3u
+#define CORE_APP_AREA_FLOW_EVENT 1001u
+#define CORE_APP_FLOW_ITEM 1u
 #define CORE_APP_MAX_PENDING_AREA_ENTERS 8u
 #define CORE_APP_HAPTIC_PAD 0u
 #define CORE_APP_HAPTIC_STRENGTH 0.6f
@@ -48,6 +51,8 @@ typedef struct CoreLevel {
     PhysicsBodyHandle ground_body;
     CoreAppSimulation *simulation;
     Entity player;
+    Entity enemy;
+    u32 player_items;
     u32 trigger_area;
     u32 pending_area_enters;
     u32 dropped_area_enters;
@@ -81,6 +86,14 @@ static BreakRuntimeError app_trace(CoreApp *app, const char *format, ...) {
     va_end(args);
     if (written < 0 || fflush(app->trace) != 0) return BREAK_RUNTIME_FAILED;
     return BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_trace_flow_discard(CoreApp *app, const CoreLevel *level) {
+    u32 pending = break_flow_runtime_pending_count(level->flow);
+    if (pending == 0u) return BREAK_RUNTIME_OK;
+    return app_trace(app,
+        "COREAPPTRACE version=1 event=flow kind=discarded generation=%" PRIu64
+        " pending=%u\n", level->generation, pending);
 }
 
 static bool app_path(char out[PLATFORM_FS_PATH_CAPACITY], const char *root,
@@ -245,6 +258,7 @@ static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
         memset(&desc, 0, sizeof(desc));
         desc.name = class_names[i];
         if (i == 1u) desc.lua_module = "player";
+        if (i == 2u) desc.lua_module = "broken";
         u32 class_id = 0u;
         if (break_game_register_class(candidate->actor_runtime, &desc, &class_id) !=
                 BREAK_GAME_OK ||
@@ -306,7 +320,7 @@ static BreakRuntimeError stage_lua(CoreLevel *candidate,
     config.memory_budget = 8u * 1024u * 1024u;
     candidate->lua = break_lua_runtime_create(&config);
     if (!candidate->lua) return BREAK_RUNTIME_OOM;
-    static const char *const modules[] = {"director", "player"};
+    static const char *const modules[] = {"director", "player", "broken"};
     for (u32 i = 0u; i < sizeof(modules) / sizeof(modules[0]); ++i) {
         char filename[64];
         int written = snprintf(filename, sizeof(filename), "%s.lua", modules[i]);
@@ -412,6 +426,11 @@ static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
     candidate->simulation = core_app_simulation_create(&desc);
     if (!candidate->simulation) return BREAK_RUNTIME_FAILED;
     candidate->player = player;
+    if (candidate->world->entity_count <= CORE_APP_ENEMY_ENTITY_INDEX) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    candidate->enemy = candidate->world->entities[CORE_APP_ENEMY_ENTITY_INDEX];
+    if (!world_entity_exists(candidate->world, candidate->enemy)) return BREAK_RUNTIME_STALE;
     BreakGameAreaDesc area;
     memset(&area, 0, sizeof(area));
     area.center = vec3(feet.e[0], feet.e[1] + 1.0f, feet.e[2] + 3.0f);
@@ -599,6 +618,8 @@ static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_roo
                                     previous_generation);
         if (result == BREAK_RUNTIME_OK) result = core_app_audio_drain_record(&app->audio, 1u);
         if (result != BREAK_RUNTIME_OK) return result;
+        result = app_trace_flow_discard(app, previous);
+        if (result != BREAK_RUNTIME_OK) return result;
         result = app_trace(app,
             "COREAPPTRACE version=1 event=level_unloaded generation=%" PRIu64 "\n",
             previous_generation);
@@ -629,6 +650,8 @@ static BreakRuntimeError core_app_unload_level(CoreApp *app, bool with_audio) {
         result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_STOP, level->generation);
         if (result == BREAK_RUNTIME_OK) result = core_app_audio_drain_record(&app->audio, 1u);
     }
+    if (result != BREAK_RUNTIME_OK) return result;
+    result = app_trace_flow_discard(app, level);
     if (result != BREAK_RUNTIME_OK) return result;
     app->level = NULL;
     u64 generation = level->generation;
@@ -800,7 +823,29 @@ static const char *app_input_status_name(InputExtResult result) {
 static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
                                         const CoreAppInputFrame *frame) {
     CoreLevel *level = app->level;
-    BreakRuntimeError result = core_app_simulation_tick(level->simulation, frame);
+    BreakRuntimeError result;
+    break_game_tick(level->actor_runtime, CORE_APP_FIXED_DT);
+    BreakFlowError flow = break_flow_runtime_tick(level->flow);
+    if (flow != BREAK_FLOW_OK) {
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=flow kind=tick_failed generation=%" PRIu64
+            " tick=%u status=%u\n", level->generation, tick, (unsigned)flow);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
+    u32 items = 0u;
+    if (break_game_inventory_count(level->actor_runtime, level->player,
+                                   CORE_APP_FLOW_ITEM, &items) != BREAK_GAME_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    if (items != level->player_items) {
+        level->player_items = items;
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=item generation=%" PRIu64
+            " tick=%u entity=%u item=%u count=%u\n", level->generation, tick,
+            level->player.index, CORE_APP_FLOW_ITEM, items);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
+    result = core_app_simulation_tick(level->simulation, frame);
     if (result != BREAK_RUNTIME_OK) return result;
     BreakGameError area = break_game_area_tick(level->actor_runtime);
     if (area != BREAK_GAME_OK && area != BREAK_GAME_OVERLOAD) return BREAK_RUNTIME_FAILED;
@@ -814,6 +859,19 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
     if (result != BREAK_RUNTIME_OK) return result;
     while (level->pending_area_enters > 0u) {
         level->pending_area_enters--;
+        flow = break_flow_runtime_post(level->flow, CORE_APP_AREA_FLOW_EVENT,
+                                       level->player, 1.0f);
+        if (flow == BREAK_FLOW_OK) {
+            result = app_trace(app,
+                "COREAPPTRACE version=1 event=flow kind=post key=%u generation=%" PRIu64
+                " tick=%u\n", CORE_APP_AREA_FLOW_EVENT, level->generation, tick);
+        } else {
+            result = app_trace(app,
+                "COREAPPTRACE version=1 event=flow kind=post_failed key=%u generation=%" PRIu64
+                " tick=%u status=%u\n", CORE_APP_AREA_FLOW_EVENT, level->generation,
+                tick, (unsigned)flow);
+        }
+        if (result != BREAK_RUNTIME_OK) return result;
         BreakRuntimeError request = core_app_input_request_area_haptic(
             app->input, CORE_APP_HAPTIC_PAD, CORE_APP_HAPTIC_STRENGTH,
             CORE_APP_HAPTIC_STRENGTH, CORE_APP_HAPTIC_DURATION_MS);
@@ -828,7 +886,22 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
             after.haptic_request_id);
         if (result != BREAK_RUNTIME_OK) return result;
     }
-    return BREAK_RUNTIME_OK;
+    BreakGameLuaActorStats player_stats;
+    BreakGameLuaActorStats enemy_stats;
+    if (break_game_lua_actor_stats(level->adapter, level->player, &player_stats) !=
+            BREAK_LUA_OK ||
+        break_game_lua_actor_stats(level->adapter, level->enemy, &enemy_stats) !=
+            BREAK_LUA_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    return app_trace(app,
+        "COREAPPTRACE version=1 event=actors tick=%u generation=%" PRIu64
+        " player_ticks=%" PRIu64 " player_failures=%" PRIu64
+        " enemy_ticks=%" PRIu64 " enemy_failures=%" PRIu64
+        " items=%u flow_pending=%u\n", tick, level->generation,
+        player_stats.ticks, player_stats.failures, enemy_stats.ticks,
+        enemy_stats.failures, level->player_items,
+        break_flow_runtime_pending_count(level->flow));
 }
 
 static void app_rollback(CoreApp *app) {
