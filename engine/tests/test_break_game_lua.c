@@ -203,7 +203,135 @@ TEST(actor_missing_hook_is_a_local_fault_and_does_not_block_sibling)
     world_destroy(world);
 }
 
+TEST(actor_stats_count_ticks_and_failures_per_actor)
+{
+    World *world = make_world();
+    BreakGame *game = break_game_create(world, NULL);
+    BreakLuaRuntime *runtime = break_lua_runtime_create(NULL);
+    BreakGameLuaAdapter *adapter;
+    BreakGameLuaActorStats stats;
+    u32 bad_class;
+    u32 good_class;
+    Entity bad;
+    Entity good;
+    Entity replacement;
+    u32 i;
+    ASSERT_NOT_NULL(world);
+    ASSERT_NOT_NULL(game);
+    ASSERT_NOT_NULL(runtime);
+    ASSERT_EQ(break_lua_runtime_load_module(runtime, "bad_actor", kBadActor,
+                                            strlen(kBadActor)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(runtime, "good_actor", kGoodActor,
+                                            strlen(kGoodActor)),
+              BREAK_LUA_OK);
+    bad_class = register_class(game, "bad", "bad_actor");
+    good_class = register_class(game, "good", "good_actor");
+    adapter = break_game_lua_create(game, runtime);
+    ASSERT_NOT_NULL(adapter);
+    bad = spawn_actor(game, bad_class);
+    good = spawn_actor(game, good_class);
+    ASSERT_TRUE(entity_valid(bad) && entity_valid(good));
+    for (i = 0u; i < 60u; i++) {
+        break_game_tick(game, 1.0f / 60.0f);
+    }
+    ASSERT_EQ(break_game_lua_actor_stats(adapter, good, &stats), BREAK_LUA_OK);
+    ASSERT_EQ(stats.ticks, 60u);
+    ASSERT_EQ(stats.failures, 0u);
+    ASSERT_EQ(stats.skipped, 0u);
+    ASSERT_FALSE(stats.disabled);
+    ASSERT_EQ(break_game_lua_actor_stats(adapter, bad, &stats), BREAK_LUA_OK);
+    ASSERT_EQ(stats.ticks, 0u);
+    ASSERT_EQ(stats.failures, 60u);
+    ASSERT_EQ(stats.last_error, BREAK_LUA_FAILED);
+    ASSERT_FALSE(stats.disabled);
+
+    ASSERT_EQ(break_game_despawn(game, good), BREAK_GAME_OK);
+    ASSERT_EQ(break_game_lua_actor_stats(adapter, good, &stats), BREAK_LUA_STALE);
+    ASSERT_EQ(stats.ticks, 0u);
+    replacement = spawn_actor(game, good_class);
+    ASSERT_EQ(replacement.index, good.index);
+    ASSERT_EQ(break_game_lua_actor_stats(adapter, replacement, &stats), BREAK_LUA_OK);
+    ASSERT_EQ(stats.ticks, 0u);
+    break_game_tick(game, 1.0f / 60.0f);
+    ASSERT_EQ(break_game_lua_actor_stats(adapter, replacement, &stats), BREAK_LUA_OK);
+    ASSERT_EQ(stats.ticks, 1u);
+    ASSERT_EQ(break_game_lua_actor_stats(adapter, good, &stats), BREAK_LUA_STALE);
+    ASSERT_EQ(break_game_lua_actor_stats(NULL, good, &stats), BREAK_LUA_INVALID);
+    ASSERT_EQ(break_game_lua_actor_stats(adapter, good, NULL), BREAK_LUA_INVALID);
+
+    break_game_lua_destroy(adapter);
+    break_lua_runtime_destroy(runtime);
+    break_game_destroy(game);
+    world_destroy(world);
+}
+
+TEST(actor_budget_trip_disables_only_that_module)
+{
+    static const char runaway[] =
+        "function on_actor_tick(actor, dt)\n"
+        "    while true do end\n"
+        "end\n";
+    BreakLuaRuntimeConfig config;
+    World *world = make_world();
+    BreakGame *game = break_game_create(world, NULL);
+    BreakLuaRuntime *runtime;
+    BreakGameLuaAdapter *adapter;
+    BreakGameLuaActorStats stats;
+    BreakLuaValue value;
+    u32 runaway_class;
+    u32 good_class;
+    Entity first;
+    Entity second;
+    Entity good;
+    u64 trips_before;
+    memset(&config, 0, sizeof(config));
+    config.instruction_budget = 10000u;
+    runtime = break_lua_runtime_create(&config);
+    ASSERT_NOT_NULL(world);
+    ASSERT_NOT_NULL(game);
+    ASSERT_NOT_NULL(runtime);
+    ASSERT_EQ(break_lua_runtime_load_module(runtime, "runaway", runaway,
+                                            strlen(runaway)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(runtime, "good_actor", kGoodActor,
+                                            strlen(kGoodActor)),
+              BREAK_LUA_OK);
+    runaway_class = register_class(game, "runaway", "runaway");
+    good_class = register_class(game, "good", "good_actor");
+    adapter = break_game_lua_create(game, runtime);
+    ASSERT_NOT_NULL(adapter);
+    first = spawn_actor(game, runaway_class);
+    second = spawn_actor(game, runaway_class);
+    good = spawn_actor(game, good_class);
+    ASSERT_TRUE(entity_valid(first) && entity_valid(second) && entity_valid(good));
+    trips_before = break_lua_runtime_budget_trip_count(runtime);
+    break_game_tick(game, 0.25f);
+    break_game_tick(game, 0.25f);
+    break_game_tick(game, 0.25f);
+    ASSERT_EQ(break_lua_runtime_budget_trip_count(runtime) - trips_before, 1u);
+    ASSERT_EQ(break_game_lua_actor_stats(adapter, first, &stats), BREAK_LUA_OK);
+    ASSERT_EQ(stats.failures, 1u);
+    ASSERT_EQ(stats.skipped, 2u);
+    ASSERT_TRUE(stats.disabled);
+    ASSERT_EQ(break_game_lua_actor_stats(adapter, second, &stats), BREAK_LUA_OK);
+    ASSERT_EQ(stats.failures, 0u);
+    ASSERT_EQ(stats.skipped, 3u);
+    ASSERT_TRUE(stats.disabled);
+    ASSERT_EQ(break_game_lua_actor_stats(adapter, good, &stats), BREAK_LUA_OK);
+    ASSERT_EQ(stats.ticks, 3u);
+    ASSERT_FALSE(stats.disabled);
+    value = call_value(runtime, "good_actor", "get_count");
+    ASSERT_FLOAT_EQ(value.as.n, 3.0, 1e-12);
+    break_game_lua_destroy(adapter);
+    break_lua_runtime_destroy(runtime);
+    break_game_destroy(game);
+    world_destroy(world);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(actor_lua_tick_isolates_failure_and_uses_stable_stale_checked_identity);
     RUN_TEST(actor_missing_hook_is_a_local_fault_and_does_not_block_sibling);
+    RUN_TEST(actor_stats_count_ticks_and_failures_per_actor);
+    RUN_TEST(actor_budget_trip_disables_only_that_module);
 TEST_MAIN_END()
