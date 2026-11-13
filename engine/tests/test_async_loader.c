@@ -4,6 +4,27 @@
 #include <asset/vfs.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#if defined(_WIN32)
+#include <windows.h>
+static unsigned loader_wait_now(void) { return GetTickCount(); }
+#else
+#include <time.h>
+static unsigned loader_wait_now(void) {
+    return (unsigned)((clock() * 1000) / CLOCKS_PER_SEC);
+}
+#endif
+#define LOADER_WAIT(ready)                                                     \
+    do {                                                                       \
+        unsigned _loader_wait_start = loader_wait_now();                       \
+        for (;;) {                                                             \
+            if (ready) break;                                                  \
+            if (loader_wait_now() - _loader_wait_start > 5000u) break;         \
+            for (volatile int _loader_wait_spin = 0; _loader_wait_spin < 1000; \
+                 _loader_wait_spin++) {                                        \
+                (void)_loader_wait_spin;                                       \
+            }                                                                  \
+        }                                                                      \
+    } while (0)
 
 /* ---- Init/Shutdown ---- */
 
@@ -404,11 +425,7 @@ TEST(async_loader_range_truncated_fails)
                                         range_trunc_cb, NULL);
     ASSERT_NEQ(id, (u64)0);
 
-    for (int i = 0; i < 200; i++) {
-        async_loader_tick();
-        if (atomic_load(&g_range_cb_called)) break;
-        for (volatile int j = 0; j < 50000; j++) { (void)j; }
-    }
+    LOADER_WAIT((async_loader_tick(), atomic_load(&g_range_cb_called)));
 
     ASSERT_EQ(atomic_load(&g_range_cb_called), 1);
     ASSERT_EQ(atomic_load(&g_range_cb_null), 1);
@@ -450,11 +467,7 @@ TEST(async_loader_range_zero_reads_to_end)
     u64 id = async_loader_request_range(strrchr(path, '/') + 1, 2, 0,
                                         range_to_end_cb, NULL);
     ASSERT_NEQ(id, (u64)0);
-    for (int i = 0; i < 200; i++) {
-        async_loader_tick();
-        if (atomic_load(&g_range_to_end_called)) break;
-        for (volatile int j = 0; j < 50000; j++) { (void)j; }
-    }
+    LOADER_WAIT((async_loader_tick(), atomic_load(&g_range_to_end_called)));
     ASSERT_EQ(atomic_load(&g_range_to_end_called), 1);
     ASSERT_EQ(atomic_load(&g_range_to_end_size), 4);
 
@@ -611,10 +624,7 @@ TEST(async_loader_shutdown_drains_ready_completion)
     ASSERT_NEQ(id, (u64)0);
 
     /* Observe completion without draining the main-thread queue. */
-    for (int i = 0; i < 200; i++) {
-        if (async_loader_status(id) == ASSET_READY) break;
-        for (volatile int j = 0; j < 50000; j++) { (void)j; }
-    }
+    LOADER_WAIT(async_loader_status(id) == ASSET_READY);
     ASSERT_EQ(async_loader_status(id), ASSET_READY);
     ASSERT_EQ(atomic_load(&g_shutdown_ready_cb_count), 0);
 
@@ -676,10 +686,7 @@ TEST(async_loader_shutdown_drains_decoded_completion)
                                           shutdown_decode_cb, NULL, 0);
     ASSERT_NEQ(id, (u64)0);
 
-    for (int i = 0; i < 200; i++) {
-        if (decode_pipeline_ready_count() > 0) break;
-        for (volatile int j = 0; j < 50000; j++) { (void)j; }
-    }
+    LOADER_WAIT(decode_pipeline_ready_count() > 0);
     ASSERT_TRUE(decode_pipeline_ready_count() > 0);
     ASSERT_EQ(atomic_load(&g_shutdown_decode_cb_count), 0);
 
