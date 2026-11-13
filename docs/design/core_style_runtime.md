@@ -4,7 +4,11 @@
 
 本文记录 2026-11-01 的 CryENGINE 模块对照如何收成一条可验收的补齐路线，并钉到当前仓库里已经存在的模块。实施步骤在 [`docs/superpowers/plans/2026-11-01-cry-style-gameplay.md`](../superpowers/plans/2026-11-01-cry-style-gameplay.md)。
 
-阶段 A 到 F、D、E 已有代码和 focused 测试，normal / ASan+UBSan / TSan 通过。可玩原型是 headless 的：没有 GPU、声音或网络。植被、昼夜、VisArea 和块驻留的 CPU 结果不证明画面。布娃娃和射线载具的测试不证明驾驶手感。`break_game` 与 `break_ai` 没有链入 `engine`。
+阶段 A 到 F、D、E 已有代码和 focused 测试，normal / ASan+UBSan / TSan 通过。旧的可玩原型（`test_cry_style_prototype` 一系）是 headless 的，本文下面章节保留对它的描述。
+
+2026-11 起的 `core_app` 是另一条线：它是可执行主程序，具备真实设备渲染通道（Vulkan 与 OpenGL，`--render=vulkan|opengl --require-device`），并在 640×480 上产出像素证据、经 `test_core_app_gpu_vulkan`/`_opengl` 校验；音频有 256 条有界命令队列与 record/null/device 三种模式，但设备后端尚未接入，`--audio=device` 在无设备主机如实报告 UNAVAILABLE。网络仍是默认关闭的边界层（snapshot 编解码 + 权威防火墙），真实 TLS/Session 传输未接线。因此“有 GPU、无设备音频、无真实网络”才是 `core_app` 的准确表述，不能套用旧原型的 headless 结论。
+
+植被、昼夜、VisArea 和块驻留的 CPU 结果不证明画面；`core_app` 的 GPU 证据证明的是“设备真实、几何到达目标、两后端一致”，不是逐对象影像回归。布娃娃和射线载具的测试不证明驾驶手感。`break_game` 与 `break_ai` 没有链入 `engine`。
 
 对照来源是 CryENGINE 各模块与 Break 现有代码的差距，不是代码行数竞赛。Cry 侧行数只说明对方体量；Break 侧以源码路径为准。外部行为未在本仓库复核的细节保持未知，不写成需求。
 
