@@ -39,6 +39,11 @@ BreakRuntimeError core_app_input_request_area_haptic(CoreAppInput *input,
 BreakRuntimeError core_app_input_haptic_result(CoreAppInput *input,
                                                u64 request_id,
                                                InputExtResult *out);
+BreakRuntimeError core_app_input_snapshot(const InputState *state,
+                                          const InputExtended *extended,
+                                          CoreAppInputFrame *out);
+BreakRuntimeError core_app_input_pad_generation(const CoreAppInput *input, u32 pad,
+                                                u32 *out);
 void core_app_input_backend_pad(CoreAppInput *input, u32 pad, bool connected,
                                 bool feedback_available, u32 connection_serial);
 BreakRuntimeError core_app_input_pump_haptics(CoreAppInput *input,

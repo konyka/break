@@ -817,9 +817,7 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
         BreakRuntimeError request = core_app_input_request_area_haptic(
             app->input, CORE_APP_HAPTIC_PAD, CORE_APP_HAPTIC_STRENGTH,
             CORE_APP_HAPTIC_STRENGTH, CORE_APP_HAPTIC_DURATION_MS);
-        if (request != BREAK_RUNTIME_OK && request != BREAK_RUNTIME_REJECTED) {
-            return request;
-        }
+        if (request == BREAK_RUNTIME_INVALID) return request;
         CoreAppInputFrame after;
         result = core_app_input_frame(app->input, &after);
         if (result != BREAK_RUNTIME_OK) return result;

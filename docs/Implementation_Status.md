@@ -1,8 +1,9 @@
 ## Core App P12 Task 4：ActionMap、触摸与固定步长玩家控制（2026-11-13）
 
 - **交付**：`core_app` 新增 `scenario`（有界文法，tick 1..1048576 单调、quit 唯一且为最后事件、违规整份拒绝）、`core_app_input`（应用自有 `InputState`/`InputExtended`，导出 POD 帧）和 `core_app_simulation`（9 个 ActionMap 动作、触摸虚拟摇杆、`break_game_move_wish` + `character_update` 固定 1/60 s、位置写回 ECS、最多 8 substep 的 accumulator）。新增 `level [asset-root]` 命令；三个正式 scenario 由 baker 重生成。玩家前方 Area enter 触发一次 haptic，无手柄时 trace 为 `status=disconnected request=0`。原 70 kg 玩家动态 box 删除，角色控制器是唯一碰撞体。设计见 `docs/design/core_app_integration.md` 的 Task 4 节。
-- **测试**：`test_core_app_runtime` 19/19；真实进程 `test_core_app_lifecycle_input_key|touch|cancel`：W 键与触摸上拖 180 tick 位置逐位相同（z=15.3000059），release/cancel 后水平位置不变，同一 scenario 两次运行 trace 逐字节相同。既有 `test_core_app_lifecycle_load_unload` 迁移到新文法后通过。
-- **变异**：cancel→MOVE、墙钟 dt、UNSUPPORTED→OK、Area enter 不计数，均被杀死并 `cmp` 恢复。
+- **测试**：`test_core_app_runtime` 22/22（含恰好 4096 事件边界、haptic pad generation 与重连 STALE、平台快照复制）；真实进程 `test_core_app_lifecycle_input_key|touch|cancel`：W 键与触摸上拖 180 tick 位置逐位相同（z=15.3000059），release/cancel 后水平位置不变，key 模式 CTest 把同一 scenario 运行两次并要求 trace 完全相同。既有 `test_core_app_lifecycle_load_unload` 迁移到新文法后通过。
+- **变异**：cancel→MOVE、墙钟 dt、UNSUPPORTED→OK、Area enter 不计数、删除 4096 事件上限，均被杀死并 `cmp` 恢复。
+- **评审**：独立评审 Needs fixes（4 Important：4097 事件测试因 tick 0 假绿、缺进程级重复运行比较、`platform_input_extended()` 未接却勾选、pad generation 未测），已修复，待 scoped 复审。
 - **回归**：普通非图形 373 项（369 PASS、4 个既有 SKIP、0 FAIL）；ASan+UBSan focused 10/10、TSan runtime+lifecycle 5/5，无 sanitizer 报告。
 - **边界**：仅 Linux CPU/record 证据；无真实 Wayland 键盘/触摸注入、手柄或 haptic 执行、GPU、音频设备。`flow`/`save`/`load`/`screenshot` 由 Task 5/8/11 接入，此前出现会以 `stage=scenario` 拒绝。
 

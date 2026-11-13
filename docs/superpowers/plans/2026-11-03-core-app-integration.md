@@ -505,6 +505,8 @@ Expected: 玩家尚未由 ActionMap/触摸驱动，位移断言或输入 trace R
 
 - [x] **Step 3: 实现输入归一化与玩家模拟**
 
+  > 2026-11-13 状态：部分完成。`core_app_input_snapshot` 提供从 `platform_input_extended()` 复制快照的入口并有单元测试，但 record 模式无窗口，真实后端接线顺延到 Task 11。
+
 在 load 时注册 `forward/back/left/right/jump/interact/fire/save/load` 和 pad 绑定。脚本后端维护自己的 `InputState`/`InputExtended` 实例；`InputExtended` 初始化后绝不 memcpy，输出仅复制 touches/gestures 为普通 POD。真实后端从 `platform_input_extended()` 读取同一快照。
 
 固定 tick 先应用该 tick 输入，再 `break_game_eval_actions`，将前进/侧移/yaw/jump 送入 `break_game_move_wish` 和 `character_update`，最后把 `cc.position` 写回 `BREAK_GAME_POSITION_COMPONENT`。交互模式 accumulator 不超 8 步；fixed-step 不读取墙钟决定模拟结果。触摸纵向位移映射到 forward，横向到 strafe；cancel/up 清零。Area callback 只排队 Flow/audio/haptic 事件。

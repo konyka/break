@@ -6,7 +6,7 @@
 
 本步在 Task 1 命名边界上一次性迁移 P12 数据格式：checkpoint magic 为固定 8 字节 `CORECKPT`（无额外 NUL），manifest 文件名为 `manifest.core`，trace 首字段为 `COREAPPTRACE version=1`，scenario 首行为 `core-app-scenario 1`。reader 只接受这些新标识并拒绝旧标识，不存在双格式或旧格式回退。manifest 的字段宽度、序列化偏移、FNV-1a-64、generation、错误码、三态提交结果与原子提交语义不变；事务加载、mount 隔离、commit fatal、IO quiescence、sticky FAILED 和逆序销毁行为不变。
 
-当前映射为：可执行应用 `core_app`、静态库 `core_app_runtime`、离线 baker `core_app_asset_bake`；应用、测试和资产根目录分别为 `engine/apps/core_app`、`engine/tests/test_core_app_*`、`engine/assets/core_app`；新构建目录为 `build-core-integration-*`，测试环境变量采用 `CORE_APP_*`。runtime 的 configure-time `SOURCES` property 必须恰好等于 `core_app.c`、`core_app_audio.c`、`core_app_render.c`、`core_app_checkpoint.c`、`scenario.c`、`core_app_input.c`、`core_app_simulation.c` 七个源文件（后三个由 Task 4 加入），不能通过追加 `target_sources` 绕过。
+当前映射为：可执行应用 `core_app`、静态库 `core_app_runtime`、离线 baker `core_app_asset_bake`；应用、测试和资产根目录分别为 `engine/apps/core_app`、`engine/tests/test_core_app_*`、`engine/assets/core_app`；新构建目录为 `build-core-integration-*`，测试环境变量采用 `CORE_APP_*`。runtime 的 configure-time `SOURCES` property 必须恰好等于 `core_app.c`、`core_app_audio.c`、`core_app_render.c`、`core_app_checkpoint.c` 四个新源文件，不能通过追加 `target_sources` 绕过。
 
 真实 nm 支持且返回成功时，输出缺少 `core_app_run` 是合同 FAIL，不是 SKIP；`test_core_app_nm_symbol_missing` 用真实二进制和只过滤该符号的 wrapper 锁定这一负例。仅 NM 缺失或工具/格式不支持时沿用两个原 nm SKIP 合同。
 
@@ -62,6 +62,8 @@ D3D12 run `43162667434`、job `130997246493` 的完整日志显示 archive 与�
 
 ## P12 Task 4：ActionMap、触摸与固定步长玩家控制（2026-11-13）
 
+Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。
+
 ### scenario 文法
 
 `engine/apps/core_app/scenario.h/.c` 取代 Task 3 的 `frame N load|unload|end` 子集。首行固定为 `core-app-scenario 1`，随后是 `seed N` 和非零 `fixed-dt-ns N`，之后每行一个事件：
@@ -94,14 +96,14 @@ tick 是不带符号的十进制，范围 1..1048576，且不得回退；`quit` 
 
 ### 验证
 
-- `test_core_app_runtime` 共 19 项：解析器拒绝 tick 回退、tick 0 和超限 tick、4097 个事件、64 KiB+1、未知命令、NaN 坐标、重复 quit 和 quit 之后的事件；解析 `level`；三个正式 scenario 都能解析；输入覆盖触摸 id 复用后 generation 改变、cancel 不产生手势、按键按住与释放，以及 haptic 的 DISCONNECTED/UNSUPPORTED/排队后断开不执行；模拟覆盖键盘与触摸位置一致、release/cancel 后停止、两次运行逐位相同、8 ms 与 33 ms 墙钟步进结果逐位相同，以及 accumulator 计算。每组都先在 stub 上取得 RED。
-- 真实进程 CTest `test_core_app_lifecycle_input_key`、`_touch`、`_cancel`：W 键 180 tick 与触摸上拖 180 tick 在 tick 180 的 trace 都是 `x=0 y=6.51925802e-08 z=15.3000059`；release/cancel 后 tick 10、11、20 的 x 和 z 不变（z=0.850000143）；Area haptic 恰好记录一次 disconnected。同一 `deterministic.scenario` 运行两次，trace 逐字节相同。
-- 生产变异全部被杀死，恢复后用 `cmp` 确认字节一致：cancel 映射为 MOVE 时单元测试 13/15、进程级 cancel 用例失败；固定 dt 改为墙钟时 14/15；UNSUPPORTED 映射为 OK 时 9/10；Area enter 不计数时进程级 key/touch 用例失败。
+- `test_core_app_runtime` 共 22 项：解析器拒绝 tick 回退、tick 0 和超限 tick、4097 个事件（tick 从 1 开始，恰好 4096 个事件为 OK）、64 KiB+1、未知命令、NaN 坐标、重复 quit 和 quit 之后的事件；解析 `level`；三个正式 scenario 都能解析；输入覆盖触摸 id 复用后 generation 改变、cancel 不产生手势、按键按住与释放，以及 haptic 的 DISCONNECTED/UNSUPPORTED/排队后断开不执行、执行时携带 pad generation、换 serial 重连后旧请求为 STALE；`core_app_input_snapshot` 复制平台触摸且不修改源，ABI 版本或结构大小不符时 INVALID；模拟覆盖键盘与触摸位置一致、release/cancel 后停止、两次运行逐位相同、8 ms 与 33 ms 墙钟步进结果逐位相同，以及 accumulator 计算。每组都先在 stub 上取得 RED。
+- 真实进程 CTest `test_core_app_lifecycle_input_key`、`_touch`、`_cancel`（key 模式另把 `deterministic.scenario` 运行两次并要求 trace 完全相同）：W 键 180 tick 与触摸上拖 180 tick 在 tick 180 的 trace 都是 `x=0 y=6.51925802e-08 z=15.3000059`；release/cancel 后 tick 10、11、20 的 x 和 z 不变（z=0.850000143）；Area haptic 恰好记录一次 disconnected。同一 `deterministic.scenario` 运行两次，trace 逐字节相同。
+- 生产变异全部被杀死，恢复后用 `cmp` 确认字节一致：cancel 映射为 MOVE 时单元测试 13/15、进程级 cancel 用例失败；固定 dt 改为墙钟时 14/15；UNSUPPORTED 映射为 OK 时 9/10；Area enter 不计数时进程级 key/touch 用例失败；删除 4096 事件上限时单元测试 21/22。
 - 回归：普通构建非图形 373 项入选，369 PASS，4 个既有文档化 SKIP（D3D12 dependency gate 与 3 个 nm 合同），0 FAIL。ASan+UBSan focused 10/10，TSan runtime+lifecycle 5/5，均无 sanitizer 报告。
 
 ### 限制
 
-证据仍是 Linux CPU/record。没有真实 Wayland 键盘或触摸注入，没有手柄硬件或 haptic 执行，没有 GPU 和音频设备。真实窗口后端从 `platform_input_extended()` 读取同一快照、以及交互模式的 accumulator 主循环，都要等 Task 11 的窗口路径接入，本任务不宣称已实现。
+证据仍是 Linux CPU/record。没有真实 Wayland 键盘或触摸注入，没有手柄硬件或 haptic 执行，没有 GPU 和音频设备。`core_app_input_snapshot(InputState, InputExtended, frame)` 已提供从 `platform_input()`/`platform_input_extended()` 一次复制 POD 快照的入口，并校验 ABI 版本与结构大小（单元测试覆盖），但 record 模式没有窗口，`core_app_run` 尚未调用它；真实窗口后端接线与交互模式 accumulator 主循环要等 Task 11，本任务不宣称已实现。Haptic 请求的任何非 INVALID 结果只写入 trace，不终止运行；应用尚未执行 haptic pump，因为没有真实手柄后端。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 

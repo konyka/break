@@ -107,23 +107,41 @@ BreakRuntimeError core_app_input_apply(CoreAppInput *input,
     }
 }
 
+static void copy_extended(const InputExtended *extended, CoreAppInputFrame *out) {
+    u32 i;
+    for (i = 0u; i < INPUT_MAX_TOUCH_POINTS; ++i) {
+        if (extended->touches[i].id != 0u &&
+            out->touch_count < CORE_APP_INPUT_MAX_TOUCHES) {
+            out->touches[out->touch_count++] = extended->touches[i];
+        }
+    }
+    for (i = 0u; i < extended->gesture_count && i < CORE_APP_INPUT_MAX_GESTURES; ++i) {
+        out->gestures[out->gesture_count++] = extended->gestures[i];
+    }
+}
+
+BreakRuntimeError core_app_input_snapshot(const InputState *state,
+                                          const InputExtended *extended,
+                                          CoreAppInputFrame *out) {
+    if (!out) return BREAK_RUNTIME_INVALID;
+    memset(out, 0, sizeof(*out));
+    if (!state || !extended || extended->abi_version != INPUT_EXTENDED_ABI_VERSION ||
+        extended->struct_size != (u32)sizeof(*extended)) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    out->state = *state;
+    copy_extended(extended, out);
+    out->touch_status = extended->touch_last_error;
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError core_app_input_frame(const CoreAppInput *input,
                                        CoreAppInputFrame *out) {
-    u32 i;
     if (!out) return BREAK_RUNTIME_INVALID;
     memset(out, 0, sizeof(*out));
     if (!input) return BREAK_RUNTIME_INVALID;
     out->state = input->state;
-    for (i = 0u; i < INPUT_MAX_TOUCH_POINTS; ++i) {
-        if (input->extended.touches[i].id != 0u &&
-            out->touch_count < CORE_APP_INPUT_MAX_TOUCHES) {
-            out->touches[out->touch_count++] = input->extended.touches[i];
-        }
-    }
-    for (i = 0u; i < input->extended.gesture_count &&
-                 i < CORE_APP_INPUT_MAX_GESTURES; ++i) {
-        out->gestures[out->gesture_count++] = input->extended.gestures[i];
-    }
+    copy_extended(&input->extended, out);
     out->touch_status = input->touch_status;
     out->haptic_status = input->haptic_status;
     out->haptic_request_id = input->haptic_request_id;
@@ -152,6 +170,19 @@ BreakRuntimeError core_app_input_haptic_result(CoreAppInput *input,
     *out = INPUT_EXT_INVALID;
     if (!input) return BREAK_RUNTIME_INVALID;
     *out = input_extended_haptic_result(&input->extended, request_id);
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError core_app_input_pad_generation(const CoreAppInput *input, u32 pad,
+                                                u32 *out) {
+    InputPadFeedbackStatus status;
+    if (!out) return BREAK_RUNTIME_INVALID;
+    *out = 0u;
+    if (!input || input_extended_pad_status(&input->extended, pad, &status) !=
+                      INPUT_EXT_OK) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    *out = status.generation;
     return BREAK_RUNTIME_OK;
 }
 

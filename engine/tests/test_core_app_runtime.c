@@ -48,7 +48,7 @@ TEST(scenario_rejects_too_many_events_without_partial_events) {
     ASSERT_NOT_NULL(text);
     used = (usize)snprintf(text, 900000u,
         "core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n");
-    for (i = 0u; i < CORE_APP_SCENARIO_MAX_EVENTS + 1u; ++i) {
+    for (i = 1u; i <= CORE_APP_SCENARIO_MAX_EVENTS; ++i) {
         int written = snprintf(text + used, 900000u - used, "%u key w 1\n", i);
         ASSERT_TRUE(written > 0);
         used += (usize)written;
@@ -57,6 +57,29 @@ TEST(scenario_rejects_too_many_events_without_partial_events) {
     ASSERT_EQ(core_app_scenario_parse(text, used, scenario),
               CORE_APP_SCENARIO_INVALID);
     ASSERT_EQ(scenario->event_count, 0u);
+    free(text);
+    scenario_free(scenario);
+}
+
+TEST(scenario_accepts_exactly_max_events) {
+    CoreAppScenario *scenario = scenario_new();
+    char *text = (char *)malloc(900000u);
+    usize used = 0u;
+    u32 i;
+    ASSERT_NOT_NULL(scenario);
+    ASSERT_NOT_NULL(text);
+    used = (usize)snprintf(text, 900000u,
+        "core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n");
+    for (i = 1u; i < CORE_APP_SCENARIO_MAX_EVENTS; ++i) {
+        int written = snprintf(text + used, 900000u - used, "%u key w 1\n", i);
+        ASSERT_TRUE(written > 0);
+        used += (usize)written;
+    }
+    used += (usize)snprintf(text + used, 900000u - used, "%u quit\n", i);
+    ASSERT_TRUE(used <= CORE_APP_SCENARIO_MAX_BYTES);
+    ASSERT_EQ(core_app_scenario_parse(text, used, scenario), CORE_APP_SCENARIO_OK);
+    ASSERT_EQ(scenario->event_count, CORE_APP_SCENARIO_MAX_EVENTS);
+    ASSERT_TRUE(scenario->has_quit);
     free(text);
     scenario_free(scenario);
 }
@@ -337,6 +360,89 @@ TEST(input_haptic_unsupported_and_disconnected_requests_are_not_executed) {
     core_app_input_destroy(input);
 }
 
+typedef struct HapticRecorder {
+    u32 executed;
+    u32 generation;
+    u64 request_id;
+} HapticRecorder;
+
+static InputExtResult haptic_record(void *context, const InputHapticCommand *command) {
+    HapticRecorder *recorder = (HapticRecorder *)context;
+    recorder->executed++;
+    recorder->generation = command->generation;
+    recorder->request_id = command->request_id;
+    return INPUT_EXT_OK;
+}
+
+TEST(input_haptic_carries_pad_generation_and_reconnect_is_stale) {
+    CoreAppInput *input = core_app_input_create();
+    CoreAppInputFrame frame;
+    HapticRecorder recorder;
+    InputExtResult result = INPUT_EXT_INVALID;
+    u32 generation = 0u;
+    u32 reconnected = 0u;
+    u64 first;
+    u64 second;
+    memset(&recorder, 0, sizeof(recorder));
+    ASSERT_NOT_NULL(input);
+    core_app_input_backend_pad(input, 0u, true, true, 1u);
+    ASSERT_EQ(core_app_input_pad_generation(input, 0u, &generation), BREAK_RUNTIME_OK);
+    ASSERT_NEQ(generation, 0u);
+    ASSERT_EQ(core_app_input_request_area_haptic(input, 0u, 0.5f, 0.5f, 100u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_input_frame(input, &frame), BREAK_RUNTIME_OK);
+    first = frame.haptic_request_id;
+    ASSERT_EQ(core_app_input_pump_haptics(input, haptic_record, &recorder),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(recorder.executed, 1u);
+    ASSERT_EQ(recorder.generation, generation);
+    ASSERT_EQ(recorder.request_id, first);
+    ASSERT_EQ(core_app_input_haptic_result(input, first, &result), BREAK_RUNTIME_OK);
+    ASSERT_EQ(result, INPUT_EXT_OK);
+
+    ASSERT_EQ(core_app_input_request_area_haptic(input, 0u, 0.5f, 0.5f, 100u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_input_frame(input, &frame), BREAK_RUNTIME_OK);
+    second = frame.haptic_request_id;
+    core_app_input_backend_pad(input, 0u, true, true, 2u);
+    ASSERT_EQ(core_app_input_pad_generation(input, 0u, &reconnected), BREAK_RUNTIME_OK);
+    ASSERT_NEQ(reconnected, generation);
+    ASSERT_EQ(core_app_input_pump_haptics(input, haptic_record, &recorder),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(recorder.executed, 1u);
+    ASSERT_EQ(core_app_input_haptic_result(input, second, &result), BREAK_RUNTIME_OK);
+    ASSERT_EQ(result, INPUT_EXT_STALE);
+    core_app_input_destroy(input);
+}
+
+TEST(input_snapshot_copies_platform_touches_without_mutating_source) {
+    InputState state;
+    InputExtended *extended = (InputExtended *)calloc(1u, sizeof(InputExtended));
+    CoreAppInputFrame frame;
+    InputTouchId id = 0u;
+    u32 count_before;
+    ASSERT_NOT_NULL(extended);
+    input_init(&state);
+    input_set_key(&state, 'w', true);
+    input_extended_init(extended);
+    ASSERT_EQ(input_extended_touch(extended, INPUT_TOUCH_PRESS, 9, 0.5f, 0.5f,
+                                   1000u, &id), INPUT_EXT_OK);
+    count_before = extended->touch_count;
+    ASSERT_EQ(core_app_input_snapshot(&state, extended, &frame), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(input_key_down(&frame.state, 'w'));
+    ASSERT_EQ(frame.touch_count, 1u);
+    ASSERT_EQ(frame.touches[0].id, id);
+    ASSERT_EQ(extended->touch_count, count_before);
+    extended->abi_version++;
+    ASSERT_EQ(core_app_input_snapshot(&state, extended, &frame), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(frame.touch_count, 0u);
+    extended->abi_version--;
+    extended->struct_size--;
+    ASSERT_EQ(core_app_input_snapshot(&state, extended, &frame), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(core_app_input_snapshot(&state, NULL, &frame), BREAK_RUNTIME_INVALID);
+    free(extended);
+}
+
 typedef struct SimFixture {
     World *world;
     BreakGame *actor_runtime;
@@ -539,6 +645,7 @@ TEST(accumulator_caps_substeps_and_records_dropped_time) {
 TEST_MAIN_BEGIN()
     RUN_TEST(scenario_rejects_tick_regression_without_partial_events);
     RUN_TEST(scenario_rejects_too_many_events_without_partial_events);
+    RUN_TEST(scenario_accepts_exactly_max_events);
     RUN_TEST(scenario_rejects_oversized_file_without_partial_events);
     RUN_TEST(scenario_rejects_unknown_command_and_nan_without_partial_events);
     RUN_TEST(scenario_rejects_duplicate_quit_without_partial_events);
@@ -551,6 +658,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(input_cancel_emits_no_gesture_and_next_tick_is_idle);
     RUN_TEST(input_key_hold_survives_tick_and_release_clears_it);
     RUN_TEST(input_haptic_unsupported_and_disconnected_requests_are_not_executed);
+    RUN_TEST(input_haptic_carries_pad_generation_and_reconnect_is_stale);
+    RUN_TEST(input_snapshot_copies_platform_touches_without_mutating_source);
     RUN_TEST(simulation_key_and_touch_drag_reach_same_position);
     RUN_TEST(simulation_release_and_cancel_stop_on_next_tick);
     RUN_TEST(simulation_repeated_runs_are_bitwise_identical);
