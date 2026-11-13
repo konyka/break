@@ -74,6 +74,7 @@ auto store = compose::Store<AppState>::Create(AppState{},
         if (in.type == kToggleLang) next.lang = Toggle(cur.lang);
         return MY_COMPOSE_OK;
     });
+if (!store.has_value()) return;
 auto runtime = compose::Runtime::Create(*store,
     [](compose::Builder &b, const AppState &s) {
         auto root = b.Node("@root");
@@ -85,6 +86,8 @@ auto runtime = compose::Runtime::Create(*store,
         }
         return b.Status();
     }, my_compose_myui_sink(adapter));
+if (!runtime.has_value()) return;
+(void)runtime->Pump();  /* 每帧在 break_ui_pump 之后调用 */
 ```
 
 C++ 对象均为 move-only RAII；callback 异常在 trampoline 内变为 `MY_COMPOSE_FAILED`，不跨 C ABI。无异常构建要求 callback `noexcept`。
@@ -145,7 +148,7 @@ Compose 只通过 `mycompose_myui` sink 操作 myui，应用不应再直接修�
 | `test_mycompose_tree/remember/store/runtime/async/myui` | C11 核心与 adapter | CPU，dummy/headless PAL |
 | `test_mycompose_cpp20*`（4 项） | C++20 DSL、C parity、头文件自包含、无异常 | CPU |
 | `test_mycompose_gpu_vulkan` | 真实 Wayland 窗口 + Vulkan 设备、截图像素与 State | 本机 Intel UHD (TGL GT1) 为硬件 GPU 证据 |
-| `test_mycompose_gpu_opengl` | 同一 fixture 的 OpenGL 对照 | Mesa Intel UHD；`RHIDeviceInfo` 不报告 GL 设备名，仅驱动日志可见 |
+| `test_mycompose_gpu_opengl` | 同一 fixture 的 OpenGL 对照 | 本机 `Mesa Intel(R) UHD Graphics (TGL GT1)`；`RHIDeviceInfo` 报告 `GL_RENDERER`，类型为 OTHER（GL 无设备类型查询），llvmpipe/softpipe/SwiftShader 报告为 CPU |
 | `fuzz_mycompose_tree_smoke`、`fuzz_mycompose_intent_smoke` | 长度前缀 node/property/intent 流 | 健壮性，不替代行为断言 |
 
 GPU 测试的输入不是合成器注入：pointer/key 为 `SYNTHETIC_INPUTSTATE`（在 `platform_poll` 之后、`break_ui_pump` 之前写入 `InputState`），文本为 `DIRECT_DISPATCH`（直接派发 `MY_EVENT_IME_COMMIT`），并断言 `platform_poll_text` 为空；另有未聚焦 edit 的提交不改变文本的负例。像素断言只比较关键区域颜色与覆盖率，不做跨硬件整帧逐字节比较。无 Wayland 显示或设备时退出 77；CI 的 lavapipe/llvmpipe 运行是软件渲染，不是硬件 GPU 证据。

@@ -87,6 +87,9 @@ ComposeGpuRegion compose_gpu_inspect(ComposeGpu *gpu, ComposeGpuRect rect,
 int compose_gpu_write_ppm(ComposeGpu *gpu, const char *path);
 void compose_gpu_counters(ComposeGpu *gpu, ComposeGpuCounters *out);
 uint32_t compose_gpu_vk_validation_messages(void);
+/* 1 when the reported type is a GPU (integrated, discrete, virtual or
+ * other), 0 for CPU software rasterizers and UNKNOWN. */
+int compose_gpu_device_is_hardware(const ComposeGpuDevice *device);
 void compose_gpu_close(ComposeGpu *gpu);
 
 #ifdef __cplusplus

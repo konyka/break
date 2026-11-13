@@ -321,10 +321,11 @@ static void fixture_destroy(fixture_t* f) {
   memset(f, 0, sizeof(*f));
 }
 
-static bool fixture_init_empty(fixture_t* f) {
+static bool fixture_init_empty_ex(fixture_t* f, bool csd) {
   int state = 0;
   memset(f, 0, sizeof(*f));
   f->pal = my_pal_dummy_create(NULL);
+  if (f->pal != NULL) my_pal_dummy_set_needs_csd(f->pal, csd);
   f->loop = my_pal_main_loop_create(f->pal);
   f->wm = my_window_manager_create(NULL, f->pal, f->loop);
   f->win = my_window_create(NULL, f->pal, 240, 180, "compose");
@@ -343,6 +344,10 @@ static bool fixture_init_empty(fixture_t* f) {
     return false;
   }
   return true;
+}
+
+static bool fixture_init_empty(fixture_t* f) {
+  return fixture_init_empty_ex(f, false);
 }
 
 static bool fixture_init(fixture_t* f) {
@@ -1183,6 +1188,43 @@ TEST(property_journal_accepts_1024_updates) {
   fixture_destroy(&f);
 }
 
+TEST(csd_root_survives_rollback_and_next_stage) {
+  fixture_t f;
+  view_t view;
+  tree_snapshot_t before;
+  my_widget_t* content;
+  ASSERT_TRUE(fixture_init_empty_ex(&f, true));
+  content = my_window_widget(f.win);
+  ASSERT_TRUE(f.win->csd);
+  ASSERT_TRUE(content != (my_widget_t*)f.win);
+  ASSERT_TRUE(content->parent == (my_widget_t*)f.win);
+  memset(&view, 0, sizeof(view));
+  view.values = 2;
+  view.events = true;
+  ASSERT_EQ(apply_view(&f, &view), MY_COMPOSE_OK);
+  ASSERT_EQ(apply_view(&f, &view), MY_COMPOSE_OK);
+  snapshot_capture(&f, &before);
+
+  view.values = 1;
+  f.adapter->fault.property_widget = f.edit_widget;
+  f.adapter->fault.property_name = "text";
+  f.adapter->fault.fail_after_property_error = true;
+  ASSERT_EQ(begin_view(&f, &view), MY_COMPOSE_OK);
+  ASSERT_EQ(my_compose_tree_builder_end(f.builder), MY_COMPOSE_OK);
+  ASSERT_EQ(my_compose_myui_stage(f.adapter,
+      my_compose_tree_builder_diff(f.builder)), MY_COMPOSE_FAILED);
+  my_compose_myui_rollback(f.adapter);
+  ASSERT_TRUE(snapshot_matches(&f, &before));
+  ASSERT_TRUE(content->parent == (my_widget_t*)f.win);
+  ASSERT_TRUE(my_window_widget(f.win) == content);
+
+  memset(&f.adapter->fault, 0, sizeof(f.adapter->fault));
+  ASSERT_EQ(apply_view(&f, &view), MY_COMPOSE_OK);
+  ASSERT_STR_EQ(((my_button_t*)f.button_widget)->text, "first");
+  ASSERT_TRUE(content->parent == (my_widget_t*)f.win);
+  fixture_destroy(&f);
+}
+
 TEST(window_close_closes_bound_store) {
   fixture_t f;
   MyComposeIntent intent;
@@ -1212,5 +1254,6 @@ TEST_MAIN_BEGIN()
   RUN_TEST(delete_generation_retirement_is_rejected_before_finalize);
   RUN_TEST(retained_root_updates_are_captured_once_within_1024_operations);
   RUN_TEST(property_journal_accepts_1024_updates);
+  RUN_TEST(csd_root_survives_rollback_and_next_stage);
   RUN_TEST(window_close_closes_bound_store);
 TEST_MAIN_END()

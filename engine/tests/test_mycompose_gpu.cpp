@@ -370,12 +370,27 @@ int main(void) {
     const int opened = compose_gpu_open(&gpu, MYCOMPOSE_GPU_BACKEND, mono, cjk, &device, &fonts);
     if (opened == 77) return 77;
     CHECK(opened == 0, "compose_gpu_open returned %d", opened);
-    if (g_fail != 0) return 1;
+    if (g_fail != 0) {
+        compose_gpu_close(gpu);
+        return 1;
+    }
     std::printf("device: backend=%s name=\"%s\" vendor=0x%x device=0x%x type=%s "
                 "api=%u driver=%u\n",
         backend, device.name, device.vendor_id, device.device_id,
         device.device_type_name != nullptr ? device.device_type_name : "?",
         device.api_version, device.driver_version);
+    {
+        const char *require = std::getenv("MYCOMPOSE_GPU_REQUIRE_HARDWARE");
+        const int hardware = compose_gpu_device_is_hardware(&device);
+        std::printf("device_class: %s\n", hardware ? "hardware-gpu" : "software");
+        if (require != nullptr && require[0] != '\0' && require[0] != '0' && !hardware) {
+            std::printf("FAIL: MYCOMPOSE_GPU_REQUIRE_HARDWARE set, device \"%s\" type=%s "
+                        "is not a GPU\n",
+                device.name, device.device_type_name != nullptr ? device.device_type_name : "?");
+            compose_gpu_close(gpu);
+            return 1;
+        }
+    }
     std::printf("fonts: JetBrainsMono 'A'=%dx%d NotoSansSC U+5927=%dx%d "
                 "chain_uses_cjk=%d (both loaded)\n",
         fonts.mono_w, fonts.mono_h, fonts.cjk_w, fonts.cjk_h, fonts.chain_uses_cjk);

@@ -311,7 +311,7 @@ cmake --build build-compose-fuzz --target fuzz_mycompose_tree fuzz_mycompose_int
 ctest --test-dir build-compose-fuzz -L fuzz -j3
 ```
 
-GPU 测试需要 Wayland 会话（`WAYLAND_DISPLAY`）；没有显示或设备时退出 77（CTest 记为 Skipped），在目标环境必须为 0 skip。日志的 `device:` 行给出设备名与类型；lavapipe/llvmpipe 是软件渲染，不能作为硬件 GPU 证据。
+GPU 测试需要 Wayland 会话（`WAYLAND_DISPLAY`）；没有显示或设备时退出 77（CTest 记为 Skipped），在目标环境必须为 0 skip。日志的 `device:` 行给出设备名与类型，`device_class:` 行给出 `hardware-gpu` 或 `software`；lavapipe/llvmpipe 是软件渲染，不能作为硬件 GPU 证据。设置 `MYCOMPOSE_GPU_REQUIRE_HARDWARE=1` 时，软件设备直接 FAIL；CI 的 llvmpipe lane 不设置它。
 
 #### Linux Clang 构建
 

@@ -429,6 +429,19 @@ uint32_t compose_gpu_vk_validation_messages(void) {
 #endif
 }
 
+int compose_gpu_device_is_hardware(const ComposeGpuDevice *device) {
+    if (device == NULL) return 0;
+    switch ((RHIDeviceType)device->device_type) {
+    case RHI_DEVICE_TYPE_INTEGRATED:
+    case RHI_DEVICE_TYPE_DISCRETE:
+    case RHI_DEVICE_TYPE_VIRTUAL:
+    case RHI_DEVICE_TYPE_OTHER:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 void compose_gpu_close(ComposeGpu *gpu) {
     if (gpu == NULL) return;
     if (gpu->dev != NULL) rhi_device_idle(gpu->dev);

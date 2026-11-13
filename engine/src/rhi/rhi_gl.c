@@ -52,11 +52,11 @@ void rhi_backend_acceleration_structure_destroy(
     (void)structure;
 }
 
+static void gl_device_info_fill(const RHIDevice *dev, RHIDeviceInfo *out);
+
 bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
-    (void)dev;
     if (out == NULL) return false;
-    out->device_type = RHI_DEVICE_TYPE_UNKNOWN;
-    snprintf(out->device_name, sizeof(out->device_name), "OpenGL backend");
+    gl_device_info_fill(dev, out);
     return true;
 }
 
@@ -181,7 +181,34 @@ typedef struct {
      * shutdown must never delete them. */
     struct GLRetired *retired;
     u32 retired_count, retired_cap;
+    /* GL_RENDERER captured once the context is current, for
+     * rhi_device_get_info; device_type is derived from it. */
+    char renderer[RHI_DEVICE_NAME_MAX];
+    RHIDeviceType device_type;
 } GLBackend;
+
+/* GL has no device-type query. Mesa's software rasterizers name themselves
+ * in GL_RENDERER, so those are CPU; any other renderer is a GPU of unknown
+ * kind (OTHER). An unreadable renderer stays UNKNOWN. */
+static RHIDeviceType gl_device_type_from_renderer(const char *renderer) {
+    if (renderer == NULL || renderer[0] == '\0') return RHI_DEVICE_TYPE_UNKNOWN;
+    if (strstr(renderer, "llvmpipe") != NULL || strstr(renderer, "softpipe") != NULL ||
+        strstr(renderer, "SwiftShader") != NULL) {
+        return RHI_DEVICE_TYPE_CPU;
+    }
+    return RHI_DEVICE_TYPE_OTHER;
+}
+
+static void gl_device_info_fill(const RHIDevice *dev, RHIDeviceInfo *out) {
+    const GLBackend *gl = dev != NULL ? (const GLBackend *)dev->backend_data : NULL;
+    out->device_type = RHI_DEVICE_TYPE_UNKNOWN;
+    if (gl != NULL && gl->renderer[0] != '\0') {
+        snprintf(out->device_name, sizeof(out->device_name), "%s", gl->renderer);
+        out->device_type = gl->device_type;
+    } else {
+        snprintf(out->device_name, sizeof(out->device_name), "OpenGL backend");
+    }
+}
 
 /* Plan E Task 5: reflection-driven bindings — per-stage push-member name
  * cache and the pipeline-level merge cap. */
@@ -712,6 +739,11 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
 
     LOG_INFO("OpenGL %s initialized (%s / %s)", (const char *)glGetString(GL_VERSION),
              (const char *)glGetString(GL_VENDOR), (const char *)glGetString(GL_RENDERER));
+    {
+        const char *renderer = (const char *)glGetString(GL_RENDERER);
+        snprintf(gl->renderer, sizeof(gl->renderer), "%s", renderer != NULL ? renderer : "");
+        gl->device_type = gl_device_type_from_renderer(gl->renderer);
+    }
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
