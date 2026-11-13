@@ -7,6 +7,8 @@
 #include <ai/break_ai.h>
 #include <animation/anim_compression.h>
 #include <animation/animation.h>
+#include <animation/facial.h>
+#include <renderer/lod_skin.h>
 #include <asset/vfs.h>
 #include <game/break_flow.h>
 #include <game/break_game_internal.h>
@@ -75,6 +77,12 @@ typedef struct CoreLevel {
     AnimLoco1D loco;
     Vec3 previous_user_position;
     bool previous_user_position_valid;
+    AnimFacialLibrary facial;
+    AnimMorphSet face_morphs;
+    Vec3 face_delta;
+    u8 face_bind[64];
+    u8 face_morphed[64];
+    f32 face_skinned[3];
     u64 generation;
     bool actor_level_open;
 } CoreLevel;
@@ -479,6 +487,26 @@ static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
     if (!anim_loco1d_init(&candidate->loco, 0u, samples, 2u)) return BREAK_RUNTIME_FAILED;
     anim_blend_state_init(&candidate->locomotion, 1u);
     candidate->previous_user_position_valid = false;
+    if (!anim_morph_init(&candidate->face_morphs, 1u)) return BREAK_RUNTIME_FAILED;
+    candidate->face_delta = vec3(0.0f, 2.0f, 0.0f);
+    if (!anim_morph_add_target(&candidate->face_morphs, "lift", &candidate->face_delta)) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    anim_facial_library_init(&candidate->facial);
+    if (!anim_facial_add_expression(&candidate->facial, "lift")) return BREAK_RUNTIME_FAILED;
+    {
+        const f32 times[2] = {0.0f, 1.0f};
+        const f32 values[2] = {0.0f, 1.0f};
+        if (!anim_facial_add_curve(&candidate->facial, "lift", "up", "lift",
+                                   2u, times, values)) {
+            return BREAK_RUNTIME_FAILED;
+        }
+    }
+    memset(candidate->face_bind, 0, sizeof(candidate->face_bind));
+    {
+        f32 weights[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+        memcpy(candidate->face_bind + 48, weights, sizeof(weights));
+    }
     return BREAK_RUNTIME_OK;
 }
 
@@ -1043,6 +1071,30 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
         " speed=%.9g walk_weight=%.9g run_weight=%.9g\n", tick, level->generation,
         (double)speed, (double)walk_weight, (double)run_weight);
     if (result != BREAK_RUNTIME_OK) return result;
+    {
+        f32 weights[1] = {0.0f};
+        f32 time = (f32)tick * CORE_APP_FIXED_DT;
+        if (time > 1.0f) time = 1.0f;
+        if (!anim_facial_evaluate(&level->facial, &level->face_morphs, "lift", time,
+                                  weights, 1u)) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        if (!anim_morph_evaluate_skinned(&level->face_morphs, level->face_bind, weights, 1u,
+                                         level->face_morphed, sizeof(level->face_morphed))) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        Mat4 skin = mat4_identity();
+        skin.e[3][0] = 3.0f;
+        if (!lod_skin_positions((const f32 *)level->face_morphed, 1u, &skin, 1u,
+                                level->face_skinned)) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=facial tick=%u generation=%" PRIu64
+            " x=%.9g y=%.9g\n", tick, level->generation,
+            (double)level->face_skinned[0], (double)level->face_skinned[1]);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
     while (level->pending_area_enters > 0u) {
         level->pending_area_enters--;
         flow = break_flow_runtime_post(level->flow, CORE_APP_AREA_FLOW_EVENT,

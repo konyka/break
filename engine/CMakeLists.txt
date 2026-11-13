@@ -5152,6 +5152,17 @@ endif()
     set_tests_properties(test_core_app_lifecycle_locomotion PROPERTIES
         LABELS "headless;core_app;lifecycle" TIMEOUT 120)
 
+    add_test(NAME test_core_app_lifecycle_facial
+        COMMAND ${CMAKE_COMMAND}
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+            -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_facial
+            -DSIM_MODE=facial
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_lifecycle.cmake)
+    set_tests_properties(test_core_app_lifecycle_facial PROPERTIES
+        LABELS "headless;core_app;lifecycle" TIMEOUT 120)
+
     add_executable(test_core_app_runtime tests/test_core_app_runtime.c)
     target_include_directories(test_core_app_runtime PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_core_app_runtime PRIVATE core_app_runtime m)

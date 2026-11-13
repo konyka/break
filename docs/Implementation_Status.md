@@ -1,3 +1,11 @@
+## Core App P12 Task 6（slice 2b）：表情曲线 → morph → 蒙皮（2026-11-13）
+
+- **交付**：加载期构造单顶点 morph 目标 `lift`（位移 (0, 2, 0)）、表情 `lift`（0–1 s 权重 0→1）和一个 64 字节绑定顶点。每个固定步执行 `anim_facial_evaluate` → `anim_morph_evaluate_skinned` → `lod_skin_positions`（平移 x = 3 的单关节矩阵），trace 记 `event=facial tick=… x=… y=…`。设计见 `docs/design/core_app_integration.md` 的 Task 6 slice 2b 节。
+- **测试**：真实进程 `test_core_app_lifecycle_facial`：tick 1 的 y < 0.1，tick 29 的 y ∈ (0.9, 1.0]，x ∈ [2.9, 3.1]。lifecycle 8/8，命名合同、资产与 runtime 测试通过。
+- **变异**：morph 位移改为 0 → 断言红，恢复后通过。
+- **回归**：ASan+UBSan 与 TSan 下 simulation、locomotion、facial 各 3/3，无 sanitizer 报告。
+- **边界**：表情、morph 和顶点在应用内构造，关卡资产里还没有蒙皮网格或骨骼；真实骨骼矩阵与渲染接线未做。证据仍限 Linux CPU/record。
+
 ## Core App P12 Task 6（slice 2a）：按水平速度混合步行与跑步（2026-11-13）
 
 - **交付**：固定步在用户位置 trace 之后计算水平速度（相邻 tick 的 xz 位移除以 `CORE_APP_FIXED_DT`，竖直位移不计入），用 `anim_loco1d_apply` 在阈值 0 的步行剪辑和阈值 4 的跑步剪辑之间混合。trace 新增 `event=loco tick=… speed=… walk_weight=… run_weight=…`，权重按 `clip_index` 取值。scenario 文法新增 `key space`（键码 32），用于触发纯竖直跳跃。设计见 `docs/design/core_app_integration.md` 的 Task 6 slice 2a 节。

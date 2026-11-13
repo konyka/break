@@ -156,6 +156,30 @@ event=loco tick=<n> generation=<g> speed=<f> walk_weight=<f> run_weight=<f>
 
 本 slice 只接一维速度混合，不接 morph、facial 或 skinning。scenario 文法为此新增 `key space`，对应键码 32；其余单字符键不变。
 
+## P12 Task 6（slice 2b）：表情曲线 → morph → 蒙皮（2026-11-13）
+
+### 接线
+
+`stage_simulation` 建一个单顶点 `AnimMorphSet`，目标 `lift` 的位移为 (0, 2, 0)；`AnimFacialLibrary` 里的表情 `lift` 有一条曲线，在 0 s 到 1 s 之间把权重从 0 线性升到 1。绑定顶点是 64 字节的 `SkinnedVertex`，位置为原点，权重 (1, 0, 0, 0)。三者都在加载期分配，tick 内不扩容。
+
+每个固定步在 locomotion trace 之后依次执行：`anim_facial_evaluate`（时间为 tick × `CORE_APP_FIXED_DT`，上限 1 s）→ `anim_morph_evaluate_skinned`（变形后的 64 字节顶点，法线、UV、关节和权重原样保留）→ `lod_skin_positions`（单关节蒙皮矩阵，平移 x = 3）。
+
+### trace
+
+```text
+event=facial tick=<n> generation=<g> x=<f> y=<f>
+```
+
+### 验证
+
+- 真实进程 `test_core_app_lifecycle_facial`（scenario 在 tick 30 退出，最后一次模拟是 tick 29）：tick 1 的 y 小于 0.1；tick 29 的 y 在 (0.9, 1.0] 内；tick 29 的 x 在 [2.9, 3.1] 内，证明蒙皮矩阵作用在变形后的顶点上。断言按数值区间比较，不依赖 `%.9g` 的字符串形式。
+- 变异：把 morph 位移改成 0 → “expression did not lift the skinned vertex, y1=0 y29=0”红，恢复后通过。
+- lifecycle 8/8。
+
+### 限制
+
+这是一条单顶点、单关节的接线证据，不是正式资产：关卡 BSCN 里还没有蒙皮网格或骨骼，表情和 morph 目标在应用内构造。把 `level.bscn` 换成带蒙皮网格的资产、由 `skeleton_apply_local_trs` 产生真实蒙皮矩阵，留给后续 slice 与 Task 7 的渲染接线。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。
