@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include "../apps/core_app/scenario.h"
+#include "../apps/core_app/core_app_audio.h"
 #include "../apps/core_app/core_app_input.h"
 #include "../apps/core_app/core_app_render.h"
 #include "../apps/core_app/core_app_simulation.h"
@@ -744,6 +745,177 @@ TEST(resource_table_overload_does_not_touch_live_slots) {
     free(table);
 }
 
+static FILE *audio_trace_open(void) {
+    return tmpfile();
+}
+
+static void audio_trace_read(FILE *trace, char *out, usize capacity) {
+    usize used = 0u;
+    if (!trace || !out || capacity == 0u) return;
+    fflush(trace);
+    rewind(trace);
+    for (;;) {
+        size_t read = fread(out + used, 1u, capacity - 1u - used, trace);
+        used += (usize)read;
+        if (read == 0u || used >= capacity - 1u) break;
+    }
+    out[used] = '\0';
+}
+
+TEST(audio_queue_admits_two_hundred_fifty_six_commands) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start(&audio, trace), BREAK_RUNTIME_OK);
+    ASSERT_EQ(CORE_APP_AUDIO_QUEUE_CAPACITY, 256u);
+    for (u32 i = 0u; i < CORE_APP_AUDIO_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_LISTENER, 1u), BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(audio.count, CORE_APP_AUDIO_QUEUE_CAPACITY);
+    ASSERT_EQ(audio.overloads, 0u);
+    fclose(trace);
+}
+
+TEST(audio_full_queue_reports_overload_and_keeps_oldest) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start(&audio, trace), BREAK_RUNTIME_OK);
+    for (u32 i = 0u; i < CORE_APP_AUDIO_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_LISTENER, 1u), BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(audio.commands[audio.head].sequence, 1u);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_LISTENER, 1u), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(audio.overloads, 1u);
+    ASSERT_EQ(audio.count, CORE_APP_AUDIO_QUEUE_CAPACITY);
+    ASSERT_EQ(audio.commands[audio.head].sequence, 1u);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, 1u), BREAK_RUNTIME_TIMEOUT);
+    ASSERT_EQ(audio.count, CORE_APP_AUDIO_QUEUE_CAPACITY - 1u);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_LISTENER, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.count, CORE_APP_AUDIO_QUEUE_CAPACITY);
+    fclose(trace);
+}
+
+TEST(audio_record_trace_keeps_command_order_and_generation) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    char text[4096];
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start(&audio, trace), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_LISTENER, 3u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_PLAY_3D, 3u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_POSITION, 3u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_STOP, 3u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio kind=listener generation=3 sequence=1 source=0\n"));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio kind=play_3d generation=3 sequence=2 source=1\n"));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio kind=position generation=3 sequence=3 source=1\n"));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio kind=stop generation=3 sequence=4 source=1\n"));
+    fclose(trace);
+}
+
+TEST(audio_source_generation_rejects_late_stop_for_new_level) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start(&audio, trace), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_PLAY_3D, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    u32 old_slot = audio.play_slots[0].slot;
+    ASSERT_NEQ(old_slot, CORE_APP_AUDIO_SOURCE_INVALID);
+    ASSERT_EQ(audio.play_slots[0].generation, 1u);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_STOP, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.stale_commands, 0u);
+    ASSERT_EQ(audio.play_slots[0].slot, CORE_APP_AUDIO_SOURCE_INVALID);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_PLAY_3D, 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.play_slots[0].slot, old_slot);
+    ASSERT_EQ(audio.play_slots[0].generation, 2u);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_STOP, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.stale_commands, 1u);
+    ASSERT_EQ(audio.play_slots[0].slot, old_slot);
+    ASSERT_EQ(audio.play_slots[0].generation, 2u);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_STOP, 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.stale_commands, 1u);
+    ASSERT_EQ(audio.play_slots[0].slot, CORE_APP_AUDIO_SOURCE_INVALID);
+    fclose(trace);
+}
+
+TEST(audio_shutdown_drains_and_refuses_new_commands) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start(&audio, trace), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_LISTENER, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_stop_admission(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_LISTENER, 1u), BREAK_RUNTIME_CLOSED);
+    ASSERT_EQ(core_app_audio_stop_producers(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_close_queues(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_join(&audio), BREAK_RUNTIME_TIMEOUT);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_join(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_destroy(&audio), BREAK_RUNTIME_OK);
+    fclose(trace);
+}
+
+TEST(audio_null_mode_accepts_commands_without_a_trace) {
+    CoreAppAudio audio;
+    ASSERT_EQ(core_app_audio_start_null(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_LISTENER, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_null(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_stop_admission(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_stop_producers(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_close_queues(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_join(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_destroy(&audio), BREAK_RUNTIME_OK);
+}
+
+TEST(audio_device_mode_reports_unavailable_and_degrades_to_null) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    char text[4096];
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start_device(&audio, trace, false), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(audio.mode, CORE_APP_AUDIO_BACKEND_NULL);
+    ASSERT_EQ(audio.device_fallbacks, 1u);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio mode=device result=unavailable fallback=null\n"));
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_LISTENER, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_stop_admission(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_stop_producers(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_close_queues(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_join(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_destroy(&audio), BREAK_RUNTIME_OK);
+    fclose(trace);
+}
+
+TEST(audio_device_required_mode_fails_when_no_device_exists) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start_device(&audio, trace, true), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(audio.device_fallbacks, 0u);
+    fclose(trace);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(scenario_rejects_tick_regression_without_partial_events);
     RUN_TEST(scenario_rejects_too_many_events_without_partial_events);
@@ -771,4 +943,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(resource_late_completion_after_reload_is_stale);
     RUN_TEST(resource_failed_staging_keeps_live_bytes);
     RUN_TEST(resource_table_overload_does_not_touch_live_slots);
+    RUN_TEST(audio_queue_admits_two_hundred_fifty_six_commands);
+    RUN_TEST(audio_full_queue_reports_overload_and_keeps_oldest);
+    RUN_TEST(audio_record_trace_keeps_command_order_and_generation);
+    RUN_TEST(audio_source_generation_rejects_late_stop_for_new_level);
+    RUN_TEST(audio_shutdown_drains_and_refuses_new_commands);
+    RUN_TEST(audio_null_mode_accepts_commands_without_a_trace);
+    RUN_TEST(audio_device_mode_reports_unavailable_and_degrades_to_null);
+    RUN_TEST(audio_device_required_mode_fails_when_no_device_exists);
 TEST_MAIN_END()

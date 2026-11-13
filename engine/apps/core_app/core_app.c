@@ -274,6 +274,8 @@ static BreakRuntimeError app_runtime_decode(const u8 *bytes, usize size,
     return BREAK_RUNTIME_OK;
 }
 
+static BreakRuntimeError app_audio_drain(CoreApp *app, u32 budget);
+
 static BreakRuntimeError app_trace(CoreApp *app, const char *format, ...) {
     if (!app || !app->trace || !format) return BREAK_RUNTIME_INVALID;
     va_list args;
@@ -1260,7 +1262,7 @@ static BreakRuntimeError core_app_level_commit(CoreApp *app, CoreLevel *candidat
         u64 previous_generation = previous->generation;
         result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_STOP,
                                     previous_generation);
-        if (result == BREAK_RUNTIME_OK) result = core_app_audio_drain_record(&app->audio, 1u);
+        if (result == BREAK_RUNTIME_OK) result = app_audio_drain(app, 1u);
         if (result != BREAK_RUNTIME_OK) return result;
         result = app_trace_flow_discard(app, previous);
         if (result != BREAK_RUNTIME_OK) return result;
@@ -1686,7 +1688,7 @@ static BreakRuntimeError core_app_unload_level(CoreApp *app, bool with_audio) {
     BreakRuntimeError result = BREAK_RUNTIME_OK;
     if (with_audio) {
         result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_STOP, level->generation);
-        if (result == BREAK_RUNTIME_OK) result = core_app_audio_drain_record(&app->audio, 1u);
+        if (result == BREAK_RUNTIME_OK) result = app_audio_drain(app, 1u);
     }
     if (result != BREAK_RUNTIME_OK) return result;
     result = app_trace_flow_discard(app, level);
@@ -1705,6 +1707,15 @@ static BreakRuntimeError core_app_unload_level(CoreApp *app, bool with_audio) {
     return result != BREAK_RUNTIME_OK ? result : destroyed_result;
 }
 
+/* The null backend has no trace sink, so draining dispatches on the started
+ * mode instead of always assuming a record trace is present. */
+static BreakRuntimeError app_audio_drain(CoreApp *app, u32 budget) {
+    if (app->audio.mode == CORE_APP_AUDIO_BACKEND_RECORD) {
+        return core_app_audio_drain_record(&app->audio, budget);
+    }
+    return core_app_audio_drain_null(&app->audio, budget);
+}
+
 static BreakRuntimeError core_app_audio_stop_admission_cb(void *user) {
     return core_app_audio_stop_admission(&((CoreApp *)user)->audio);
 }
@@ -1718,8 +1729,7 @@ static BreakRuntimeError core_app_audio_close_queues_cb(void *user) {
 }
 
 static BreakRuntimeError core_app_audio_drain_cb(void *user) {
-    return core_app_audio_drain_record(&((CoreApp *)user)->audio,
-                                   CORE_APP_AUDIO_QUEUE_CAPACITY);
+    return app_audio_drain((CoreApp *)user, CORE_APP_AUDIO_QUEUE_CAPACITY);
 }
 
 static BreakRuntimeError core_app_audio_join_cb(void *user) {
@@ -2032,7 +2042,7 @@ static void app_rollback(CoreApp *app) {
         (void)core_app_audio_stop_admission(&app->audio);
         (void)core_app_audio_stop_producers(&app->audio);
         (void)core_app_audio_close_queues(&app->audio);
-        (void)core_app_audio_drain_record(&app->audio, CORE_APP_AUDIO_QUEUE_CAPACITY);
+        (void)app_audio_drain(app, CORE_APP_AUDIO_QUEUE_CAPACITY);
         (void)core_app_audio_join(&app->audio);
         (void)core_app_audio_destroy(&app->audio);
         app->audio_live = false;
@@ -2074,9 +2084,11 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (!out_exit_code) return BREAK_RUNTIME_INVALID;
     *out_exit_code = 2;
     if (!config) return BREAK_RUNTIME_INVALID;
-    if (config->render_mode != CORE_APP_RENDER_RECORD ||
-        config->audio_mode != CORE_APP_AUDIO_RECORD || !config->fixed_step ||
-        config->require_device || config->network || !config->asset_root ||
+    bool optional_device = config->audio_mode == CORE_APP_AUDIO_DEVICE && !config->require_device;
+    if (config->render_mode != CORE_APP_RENDER_RECORD || !config->fixed_step ||
+        (config->audio_mode != CORE_APP_AUDIO_RECORD &&
+         config->audio_mode != CORE_APP_AUDIO_NULL && !optional_device) ||
+        config->network || !config->asset_root ||
         !config->scenario_path || !config->trace_path || config->screenshot_path ||
         (config->checkpoint_dir && config->checkpoint_dir[0] == '\0')) {
         fprintf(stderr, "core_app: stage=config unsupported lifecycle configuration\n");
@@ -2120,7 +2132,16 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (result != BREAK_RUNTIME_OK) goto finished;
     app->render_live = true;
     stage = "audio_start";
-    result = core_app_audio_start(&app->audio, app->trace);
+    if (config->audio_mode == CORE_APP_AUDIO_NULL) {
+        result = core_app_audio_start_null(&app->audio);
+    } else if (config->audio_mode == CORE_APP_AUDIO_DEVICE) {
+        result = core_app_audio_start_device(&app->audio, app->trace, config->require_device);
+        if (result == BREAK_RUNTIME_UNAVAILABLE && !config->require_device) {
+            result = BREAK_RUNTIME_OK;
+        }
+    } else {
+        result = core_app_audio_start(&app->audio, app->trace);
+    }
     if (result != BREAK_RUNTIME_OK) goto finished;
     app->audio_live = true;
     stage = "coordinator";
@@ -2230,7 +2251,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                 result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_LISTENER,
                                                 app->level->generation);
             }
-            if (result == BREAK_RUNTIME_OK) result = core_app_audio_drain_record(&app->audio, 1u);
+            if (result == BREAK_RUNTIME_OK) result = app_audio_drain(app, 1u);
             if (result != BREAK_RUNTIME_OK) {
                 stage = "frame";
                 goto finished;
@@ -2257,8 +2278,18 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
 finished:
     if (*out_exit_code != 0) {
         if (stage) fprintf(stderr, "core_app: stage=%s runtime rollback\n", stage);
+        bool device_required = config->audio_mode == CORE_APP_AUDIO_DEVICE &&
+                               config->require_device;
         app_rollback(app);
-        result = BREAK_RUNTIME_FAILED;
+        if (device_required && result == BREAK_RUNTIME_UNAVAILABLE) {
+            /* Exit 77 mirrors the autotools "skipped" convention: the host
+             * has no audio device, which is an environment fact rather than a
+             * defect in this run. */
+            *out_exit_code = 77;
+            result = BREAK_RUNTIME_UNAVAILABLE;
+        } else {
+            result = BREAK_RUNTIME_FAILED;
+        }
     } else {
         result = BREAK_RUNTIME_OK;
     }

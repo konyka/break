@@ -1,3 +1,10 @@
+## Core App P12 Task 9：有界音频命令、三模式与代际隔离（2026-11-14）
+
+- **交付**：`CoreAppAudio` 队列扩到 256 条、source 槽 8 个，命令为 `LISTENER`/`PLAY_3D`/`POSITION`/`STOP`；满队列返回 `OVERLOAD` 并计数且不覆盖最老命令。只有 `PLAY_3D` 认领带 generation 的槽位，`POSITION`/`STOP` 只按本代查找，旧代命令计入 `stale_commands` 且不触碰新代槽；`STOP` 成功后释放槽位。新增 record/null/device 三种启动，设备不可用时普通模式降级 null 并计数，`--require-device` 让进程以 77 退出。新增 `BREAK_RUNTIME_UNAVAILABLE` 区分“可选设施缺失”与“设施异常”。设计见 `docs/design/core_app_integration.md` 的 Task 9 节。
+- **测试**：`test_core_app_runtime` 新增 8 项（容量 256、满队列 OVERLOAD 保序、trace 顺序与 source、代际迟到 STOP、关闭顺序、null 无 trace、设备降级、必需设备失败），共 34/34。`test_core_app_lifecycle_load_unload` 的音频断言同步为带 `sequence`/`source` 的完整行。
+- **变异**：容量退回 16 被 `audio_queue_admits_two_hundred_fifty_six_commands` 杀死；跳过代际 stale 判定被 `audio_source_generation_rejects_late_stop_for_new_level` 杀死。
+- **边界**：设备后端（真实 `AudioSystem` owner 线程、`audio_play_3d`）未接入，`tone.wav` 尚无关卡播放事件，256 条满队列的进程级压测未做；本机无音频设备，只有 record/null 证据，不含听感验证。
+
 ## Core App P12 Task 8（slice 3）：场景、Flow、Actor 文件进 checkpoint 与失败矩阵（2026-11-13）
 
 - **交付**：`save` 写 `scene_<g>.bscn`、`flow_<g>.fg`、`actors_<g>.sidecar`、`runtime_<g>.bin` 四个 payload，由一份 manifest 提交，失败时清理本代文件；`load` 从 checkpoint 目录读取场景、Flow、Actor 文件构建候选关卡，资产目录缺这三份文件时仍可恢复。设计见 `docs/design/core_app_integration.md` 的 Task 8 slice 3 节。

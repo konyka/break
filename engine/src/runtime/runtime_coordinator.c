@@ -49,6 +49,7 @@ const char *break_runtime_error_name(BreakRuntimeError error)
     case BREAK_RUNTIME_STALE: return "STALE";
     case BREAK_RUNTIME_REJECTED: return "REJECTED";
     case BREAK_RUNTIME_FAILED: return "FAILED";
+    case BREAK_RUNTIME_UNAVAILABLE: return "UNAVAILABLE";
     default: return "UNKNOWN";
     }
 }

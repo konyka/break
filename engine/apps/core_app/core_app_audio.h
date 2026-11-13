@@ -5,26 +5,47 @@
 
 #include <stdio.h>
 
-/* Task 3 record-only bound; Task 9 must expand this to 256 and test overflow. */
-#define CORE_APP_AUDIO_QUEUE_CAPACITY 16u
+#define CORE_APP_AUDIO_QUEUE_CAPACITY 256u
+#define CORE_APP_AUDIO_SOURCE_SLOTS 8u
+#define CORE_APP_AUDIO_SOURCE_INVALID 0u
 
 typedef enum CoreAppAudioCommandKind {
     CORE_APP_AUDIO_LISTENER = 1,
-    CORE_APP_AUDIO_STOP = 2
+    CORE_APP_AUDIO_PLAY_3D = 2,
+    CORE_APP_AUDIO_POSITION = 3,
+    CORE_APP_AUDIO_STOP = 4
 } CoreAppAudioCommandKind;
+
+typedef enum CoreAppAudioBackend {
+    CORE_APP_AUDIO_BACKEND_RECORD = 0,
+    CORE_APP_AUDIO_BACKEND_NULL,
+    CORE_APP_AUDIO_BACKEND_DEVICE
+} CoreAppAudioBackend;
 
 typedef struct CoreAppAudioCommand {
     u64 generation;
     u64 sequence;
     CoreAppAudioCommandKind kind;
+    u32 source;
 } CoreAppAudioCommand;
+
+typedef struct CoreAppAudioSlot {
+    u32 slot;
+    u64 generation;
+} CoreAppAudioSlot;
 
 typedef struct CoreAppAudio {
     CoreAppAudioCommand commands[CORE_APP_AUDIO_QUEUE_CAPACITY];
+    CoreAppAudioSlot play_slots[CORE_APP_AUDIO_SOURCE_SLOTS];
     FILE *trace;
     u64 next_sequence;
+    u64 overloads;
+    u64 stale_commands;
+    u64 device_fallbacks;
+    u32 next_slot;
     u32 head;
     u32 count;
+    CoreAppAudioBackend mode;
     bool admission_open;
     bool producing;
     bool queue_closed;
@@ -32,9 +53,13 @@ typedef struct CoreAppAudio {
 } CoreAppAudio;
 
 BreakRuntimeError core_app_audio_start(CoreAppAudio *audio, FILE *trace);
+BreakRuntimeError core_app_audio_start_null(CoreAppAudio *audio);
+BreakRuntimeError core_app_audio_start_device(CoreAppAudio *audio, FILE *trace,
+                                              bool require_device);
 BreakRuntimeError core_app_audio_enqueue(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
-                                     u64 generation);
+                                         u64 generation);
 BreakRuntimeError core_app_audio_drain_record(CoreAppAudio *audio, u32 budget);
+BreakRuntimeError core_app_audio_drain_null(CoreAppAudio *audio, u32 budget);
 BreakRuntimeError core_app_audio_stop_admission(CoreAppAudio *audio);
 BreakRuntimeError core_app_audio_stop_producers(CoreAppAudio *audio);
 BreakRuntimeError core_app_audio_close_queues(CoreAppAudio *audio);

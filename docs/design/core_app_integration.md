@@ -509,7 +509,40 @@ Task 4 当时每个 tick 的顺序为：开始输入帧 → 应用本 tick 事�
 
 证据仍是 Linux CPU/record。没有真实 Wayland 键盘或触摸注入，没有手柄硬件或 haptic 执行，没有 GPU 和音频设备。`core_app_input_snapshot(InputState, InputExtended, frame)` 已提供从 `platform_input()`/`platform_input_extended()` 一次复制 POD 快照的入口，并校验 ABI 版本与结构大小（单元测试覆盖），但 record 模式没有窗口，`core_app_run` 尚未调用它；真实窗口后端接线与交互模式 accumulator 主循环要等 Task 11，本任务不宣称已实现。Haptic 请求的任何非 INVALID 结果只写入 trace，不终止运行；应用尚未执行 haptic pump，因为没有真实手柄后端。
 
-以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-10 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
+## Core App Task 9：有界音频命令、null/record/device 三模式与代际隔离（2026-11-14）
+
+### 变化
+
+`CoreAppAudio` 从 Task 3 的 16 条 record 占位队列扩展为本任务合同：命令队列 256 条、source 槽 8 个，命令种类为 `LISTENER`、`PLAY_3D`、`POSITION`、`STOP`。入队只复制 POD 并推进序号，队列满返回 `BREAK_RUNTIME_OVERLOAD` 且计数 `overloads`，不覆盖最老命令；drain 后同一队列可再次入队。
+
+source 槽带 generation。只有 `PLAY_3D` 认领槽位；`POSITION` 和 `STOP` 只按本代 generation 查找已有槽位，查不到即视为上一代遗留命令，计入 `stale_commands` 且不写 trace、不触碰任何槽。`STOP` 成功消费后释放该槽，使同一 index 在下一代可以被重新认领。这样“关卡 1 的迟到 STOP”永远不会停掉关卡 2 复用同 index 的 source。
+
+启动有三种模式：`core_app_audio_start`（record，写 trace）、`core_app_audio_start_null`（无 trace sink，drain 只消费状态）、`core_app_audio_start_device`。设备路径当前没有编译进来的设备后端，因此如实报告 `event=audio mode=device result=unavailable fallback=null|none`：普通 `--audio=device` 降级为 null 泵并计数 `device_fallbacks`，`--audio=device --require-device` 返回 `BREAK_RUNTIME_UNAVAILABLE` 并让进程以退出码 77 结束。`core_app_run` 的 drain 调用点统一走 `app_audio_drain`，按已启动模式分派 record/null。
+
+`BREAK_RUNTIME_UNAVAILABLE` 是新增的运行时错误值，语义是“可选外部设施缺失”，与“设施存在但行为异常”的 `BREAK_RUNTIME_FAILED` 区分；`break_runtime_error_name` 同步给出该名字。
+
+### 验证
+
+`test_core_app_runtime` 新增 8 项：
+
+| 用例 | 断言 |
+|---|---|
+| `audio_queue_admits_two_hundred_fifty_six_commands` | 容量恰为 256，256 条全部 OK 且 `overloads=0` |
+| `audio_full_queue_reports_overload_and_keeps_oldest` | 第 257 条 OVERLOAD、`overloads=1`、队头序号仍为 1；drain 1 条后可再入队 |
+| `audio_record_trace_keeps_command_order_and_generation` | listener→play_3d→position→stop 的 `sequence` 与 `source` 逐行吻合 |
+| `audio_source_generation_rejects_late_stop_for_new_level` | 同代 STOP 释放槽；下一代复用同 index；旧代 STOP 计入 `stale_commands` 且不动新代槽 |
+| `audio_shutdown_drains_and_refuses_new_commands` | 关闭 admission 后入队 CLOSED；未 drain 时 join TIMEOUT；drain 后 join/destroy OK |
+| `audio_null_mode_accepts_commands_without_a_trace` | null 模式无 trace 也能完整走完入队→drain→停止 |
+| `audio_device_mode_reports_unavailable_and_degrades_to_null` | 可选设备不可用时降级 null、`device_fallbacks=1`、trace 记录 fallback |
+| `audio_device_required_mode_fails_when_no_device_exists` | 必需设备不可用时返回 UNAVAILABLE 且不降级 |
+
+真实进程用例 `test_core_app_lifecycle_load_unload` 的音频断言同步为带 `sequence`/`source` 的完整行。设备路径没有启用 `test_core_app_audio_device` 的专用 CTest：本机没有音频设备，新增该用例只会得到 UNAVAILABLE，因此不把环境缺失写成 PASS。
+
+### 仍未做
+
+设备后端（真实 `AudioSystem` 的 owner 线程与 `audio_play_3d` 调用）、`tone.wav` 的关卡播放事件、256 条满队列的进程级压力用例。record/null 路径的证据是单元与真实进程 trace，不是听感验证。
+
+以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-13 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
 <!-- CORE_APP_HISTORY_BEGIN -->
 ## Core App Task 1 命名边界（2026-11-11）

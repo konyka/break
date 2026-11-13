@@ -19,7 +19,12 @@ typedef enum BreakRuntimeError {
     BREAK_RUNTIME_TIMEOUT,
     BREAK_RUNTIME_STALE,
     BREAK_RUNTIME_REJECTED,
-    BREAK_RUNTIME_FAILED
+    BREAK_RUNTIME_FAILED,
+    /* An optional external facility (audio device, GPU, network peer) is
+     * absent. Callers that treat the facility as optional degrade; callers
+     * that required it fail. Never conflate this with BREAK_RUNTIME_FAILED,
+     * which means a present resource misbehaved. */
+    BREAK_RUNTIME_UNAVAILABLE
 } BreakRuntimeError;
 
 typedef enum BreakRuntimeState {
