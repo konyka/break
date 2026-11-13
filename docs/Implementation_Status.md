@@ -1,3 +1,9 @@
+## Core App P12 Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
+
+- **交付**：新增只链接进 `core_app` 的 `core_app_gpu.c/.h`（`core_app_runtime` 七源契约不变）。`--render=vulkan|opengl` 被接受，`--screenshot` 只在 GPU lane 允许；每帧 `rhi_frame_begin`→清屏→`world_presenter_submit`→`rhi_screenshot`→`rhi_present`，RGBA8 翻行序写 P6 PPM（路径含 `%u` 替换为帧号）。场景 `screenshot` 事件被接受；无设备时写 `event=screenshot_rejected stage=device` 不失败。关闭顺序为 idle→presenter→device→platform，写 `event=gpu result=stopped frames/screenshots`。
+- **本机真实设备证据**：Intel UHD Graphics (TGL GT1) / Vulkan 1.4，`event=gpu result=ready backend=vulkan device=Intel(R) UHD Graphics (TGL GT1)`，320×240 PPM 落盘（230415 字节），进程退出 0。
+- **边界**：像素仍只有清屏色——record lane 的 world object 没有 GPU 网格，`world_presenter_submit` 统计 8 次 draw 但顶点/索引缓冲未绑定，Vulkan validation 报 `VUID-vkCmdDrawIndexed-None-07312/-04007`。slice 2 需接真实 `mesh_gpu_upload`；尚无 GPU CTest（`test_core_app_gpu_vk/_gl/_image`）、无 OpenGL 对照、无 `BREAK_RHI_FAIL_VULKAN` 降级用例。不宣称画面正确。
+
 ## Core App P12 Task 12：确定性 fuzz、三棵验证树与 no-tests 真实进程（2026-11-14）
 
 - **交付**：新增 `fuzz_core_app_checkpoint`（对真实 writer 造出的 manifest 做五类变异，每次真实 probe + find，并断言 sentinel 树字节不变）与 `fuzz_core_app_scenario`（对合法 scenario 做四类变异，断言拒绝时不留部分事件）；两者在 `ENGINE_BUILD_FUZZ_SMOKE=ON` 下注册为 smoke，seed 固定（31/37）。设计见 `docs/design/core_app_integration.md` 的 Task 12 节。

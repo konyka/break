@@ -599,6 +599,35 @@ fuzz smoke 在 `ENGINE_BUILD_FUZZ_SMOKE=ON` 下注册为 `fuzz_core_app_checkpoi
 
 fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未做（snapshot 编解码已有确定性单元测试覆盖边界，但没有对应变异 fuzzer）。Task 11 的真实 GPU 像素证据不在本步。
 
+## Core App Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
+
+### 变化
+
+新增 `engine/apps/core_app/core_app_gpu.c/.h`，只链接进 `core_app` 可执行文件，`core_app_runtime` 的七个源文件契约不变。record lane 完全不触碰它，所以无显示器的机器仍是合法的 record 宿主。
+
+- `--render=vulkan|opengl` 现在被接受（`--render=record` 仍是默认）。`--screenshot` 只在 GPU lane 允许，record lane 传它会明确退出 2。
+- `core_app_gpu_create` 走 `platform_create` → 平台原生窗口/surface → `rhi_device_create`，读 `rhi_device_get_info` 与 `rhi_runtime_active_backend` 记录真实 `backend`/`device`。设备或窗口缺失时返回 `UNAVAILABLE`，trace 写 `event=gpu result=unavailable`；`--require-device` 时进程以环境不可用收场而不是假装成功。
+- 每帧在 `app_publish_world` 之后经 `core_app_gpu_render` 提交：`rhi_frame_begin` → 清屏 → `world_presenter_submit` → `rhi_frame_end` →（可选）`rhi_screenshot` → `rhi_present`。截图把 RGBA8 明确翻成顶层向下并做 R/B 直接写入（RHI 已是 RGBA 顺序，因此只翻行序），写标准 P6 PPM；路径含 `%u` 时替换为帧号，否则只允许单次截图。
+- 场景 `screenshot` 事件现在被接受：GPU lane 下一次渲染写图；无设备时写 `event=screenshot_rejected stage=device` 而不让运行失败。
+- 关闭顺序：GPU 在 `runtime_stopped` 之前 `rhi_device_idle` → 销毁 presenter → 销毁设备 → 销毁平台，并写 `event=gpu result=stopped frames=N screenshots=M`；`app_rollback` 同样先销毁 GPU。
+
+### 本机真实设备证据（Intel UHD Graphics TGL GT1，Vulkan 1.4）
+
+```
+COREAPPTRACE version=1 event=gpu result=ready backend=vulkan device=Intel(R) UHD Graphics (TGL GT1) width=320 height=240
+COREAPPTRACE version=1 event=gpu backend=vulkan device=Intel(R) UHD Graphics (TGL GT1) frame=1 generation=1 draws=8 instances=3
+...
+COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
+```
+
+截图落到 320×240 PPM（230415 字节），真实设备创建、帧提交、截图读回、PPM 写盘均成功。
+
+### 仍未做（留给 slice 2）
+
+- 像素内容仍只有清屏色：record lane 的 world object 没有 GPU 网格，因此 `world_presenter_submit` 统计到 8 次 draw 但顶点/索引缓冲未绑定，Vulkan validation 报 `VUID-vkCmdDrawIndexed-None-07312/-04007`。slice 2 需要为 world object 建立真实网格上传（`mesh_gpu_upload`），使地面、用户、追踪者、植被在像素上可分辨。
+- 尚无 CTest 覆盖（`test_core_app_gpu_vk` / `_gl` / `_image` 未写）；无 OpenGL 对照证据；无 `BREAK_RHI_FAIL_VULKAN` 降级用例。
+- 不宣称“画面正确”，只宣称设备/提交/截图链路真实可用。
+
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-13 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 
 <!-- CORE_APP_HISTORY_BEGIN -->

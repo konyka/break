@@ -1650,7 +1650,7 @@ set_property(TARGET core_app_runtime PROPERTY C_STANDARD 11)
 target_include_directories(core_app_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(core_app_runtime PUBLIC
     engine break_game break_ai break_flow break_lua break_game_lua runtime_core)
-add_executable(core_app apps/core_app/main.c)
+add_executable(core_app apps/core_app/main.c apps/core_app/core_app_gpu.c)
 target_link_libraries(core_app PRIVATE core_app_runtime core_app_network m)
 # The ragdoll pulls skeleton.o, which calls the rhi_* buffer API; list engine
 # ahead of the backend archives (engine_demo order) so those resolve.

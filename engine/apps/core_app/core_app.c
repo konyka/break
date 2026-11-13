@@ -2,6 +2,7 @@
 
 #include "core_app_audio.h"
 #include "core_app_checkpoint.h"
+#include "core_app_gpu.h"
 #include "core_app_render.h"
 #include "core_app_simulation.h"
 
@@ -183,6 +184,11 @@ struct CoreApp {
     CoreAppAudio audio;
     CoreAppResourceTable resources;
     CoreAppIoCompletion io[CORE_APP_IO_QUEUE];
+    /* Only --render=vulkan|opengl with a real device creates this; the record
+     * lane never touches it, which keeps a headless host a valid record host. */
+    CoreAppGpu gpu;
+    const char *screenshot_path;
+    bool screenshot_next;
     u32 tick;
     const char *level_asset_root;
     u64 save_generation;
@@ -1851,6 +1857,7 @@ static bool app_scenario_supported(const CoreAppScenario *scenario, bool has_che
         case CORE_APP_SCENARIO_PAD:
         case CORE_APP_SCENARIO_LEVEL:
         case CORE_APP_SCENARIO_UNLOAD:
+        case CORE_APP_SCENARIO_SCREENSHOT:
         case CORE_APP_SCENARIO_QUIT:
             break;
         default:
@@ -2047,6 +2054,9 @@ static void app_rollback(CoreApp *app) {
         (void)core_app_audio_destroy(&app->audio);
         app->audio_live = false;
     }
+    if (app->gpu.live) {
+        (void)core_app_gpu_destroy(&app->gpu);
+    }
     if (app->render_live) {
         (void)core_app_render_stop_admission(&app->render);
         (void)core_app_render_stop_producers(&app->render);
@@ -2085,11 +2095,14 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     *out_exit_code = 2;
     if (!config) return BREAK_RUNTIME_INVALID;
     bool optional_device = config->audio_mode == CORE_APP_AUDIO_DEVICE && !config->require_device;
-    if (config->render_mode != CORE_APP_RENDER_RECORD || !config->fixed_step ||
+    bool gpu_lane = config->render_mode == CORE_APP_RENDER_VULKAN ||
+                    config->render_mode == CORE_APP_RENDER_OPENGL;
+    if ((config->render_mode != CORE_APP_RENDER_RECORD && !gpu_lane) || !config->fixed_step ||
         (config->audio_mode != CORE_APP_AUDIO_RECORD &&
          config->audio_mode != CORE_APP_AUDIO_NULL && !optional_device) ||
         config->network || !config->asset_root ||
-        !config->scenario_path || !config->trace_path || config->screenshot_path ||
+        !config->scenario_path || !config->trace_path ||
+        (config->screenshot_path && !gpu_lane) ||
         (config->checkpoint_dir && config->checkpoint_dir[0] == '\0')) {
         fprintf(stderr, "core_app: stage=config unsupported lifecycle configuration\n");
         return BREAK_RUNTIME_FAILED;
@@ -2131,6 +2144,29 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     result = core_app_render_start(&app->render, app->trace);
     if (result != BREAK_RUNTIME_OK) goto finished;
     app->render_live = true;
+    app->screenshot_path = config->screenshot_path;
+    if (gpu_lane) {
+        CoreAppGpuConfig gpu_config;
+        memset(&gpu_config, 0, sizeof(gpu_config));
+        gpu_config.backend = config->render_mode == CORE_APP_RENDER_VULKAN
+                                 ? CORE_APP_GPU_VULKAN : CORE_APP_GPU_OPENGL;
+        gpu_config.width = 320u;
+        gpu_config.height = 240u;
+        gpu_config.require_device = config->require_device;
+        stage = "gpu_start";
+        result = core_app_gpu_create(&app->gpu, &gpu_config, app->trace);
+        if (result == BREAK_RUNTIME_UNAVAILABLE) {
+            (void)app_trace(app,
+                "COREAPPTRACE version=1 event=gpu result=unavailable backend=%s\n",
+                gpu_config.backend == CORE_APP_GPU_VULKAN ? "vulkan" : "opengl");
+            goto finished;
+        }
+        if (result != BREAK_RUNTIME_OK) goto finished;
+        (void)app_trace(app,
+            "COREAPPTRACE version=1 event=gpu result=ready backend=%s device=%s"
+            " width=%u height=%u\n",
+            app->gpu.backend_name, app->gpu.device_name, app->gpu.width, app->gpu.height);
+    }
     stage = "audio_start";
     if (config->audio_mode == CORE_APP_AUDIO_NULL) {
         result = core_app_audio_start_null(&app->audio);
@@ -2220,6 +2256,15 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                                   : app_load_checkpoint(app, tick);
                 }
                 if (result != BREAK_RUNTIME_OK) goto finished;
+            } else if (event->kind == CORE_APP_SCENARIO_SCREENSHOT) {
+                if (app->gpu.live) {
+                    app->screenshot_next = true;
+                } else {
+                    result = app_trace(app,
+                        "COREAPPTRACE version=1 event=screenshot_rejected tick=%u"
+                        " stage=device\n", tick);
+                    if (result != BREAK_RUNTIME_OK) goto finished;
+                }
             } else if (event->kind == CORE_APP_SCENARIO_QUIT) {
                 quit = true;
             } else {
@@ -2247,6 +2292,16 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
             result = core_app_render_record_frame(&app->render, &frame);
             if (result == BREAK_RUNTIME_OK) result = app_publish_world(app, tick);
             if (result == BREAK_RUNTIME_OK) result = app_publish_skins(app, tick);
+            if (result == BREAK_RUNTIME_OK && app->gpu.live) {
+                const char *path = app->screenshot_next ? app->screenshot_path : NULL;
+                CoreAppGpuFrame gpu_frame = {tick, app->level->generation};
+                const WorldFrameSnapshot *snapshot =
+                    &app->level->world_snapshots[tick & 1u];
+                stage = "gpu";
+                result = core_app_gpu_render(&app->gpu, snapshot, path, &gpu_frame);
+                app->screenshot_next = false;
+                if (result != BREAK_RUNTIME_OK) goto finished;
+            }
             if (result == BREAK_RUNTIME_OK) {
                 result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_LISTENER,
                                                 app->level->generation);
@@ -2266,6 +2321,15 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (result != BREAK_RUNTIME_OK) {
         stage = "shutdown";
         goto finished;
+    }
+    if (app->gpu.live) {
+        stage = "gpu_stop";
+        result = core_app_gpu_destroy(&app->gpu);
+        if (result != BREAK_RUNTIME_OK) goto finished;
+        (void)app_trace(app,
+            "COREAPPTRACE version=1 event=gpu result=stopped frames=%" PRIu64
+            " screenshots=%" PRIu64 "\n",
+            app->gpu.frames_presented, app->gpu.screenshots_written);
     }
     result = app_trace(app, "COREAPPTRACE version=1 event=runtime_stopped\n");
     if (result != BREAK_RUNTIME_OK) {
