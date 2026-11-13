@@ -9,6 +9,7 @@
 #include <animation/animation.h>
 #include <asset/vfs.h>
 #include <game/break_flow.h>
+#include <game/break_game_internal.h>
 #include <game/break_game_lua.h>
 #include <physics/physics.h>
 #include <platform/platform_fs.h>
@@ -787,6 +788,13 @@ static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_roo
     result = app_trace(app,
         "COREAPPTRACE version=1 event=level_loaded generation=%" PRIu64 "\n",
         candidate->generation);
+    if (result != BREAK_RUNTIME_OK) return result;
+    result = app_trace(app,
+        "COREAPPTRACE version=1 event=sight generation=%" PRIu64
+        " x=%.9g z=%.9g\n",
+        candidate->generation,
+        (double)candidate->actor_runtime->areas[candidate->sight_area].desc.center.e[0],
+        (double)candidate->actor_runtime->areas[candidate->sight_area].desc.center.e[2]);
     if (result != BREAK_RUNTIME_OK) return result;
     return core_app_render_level_committed(&app->render, &candidate->render);
 
