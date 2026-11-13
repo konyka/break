@@ -1,7 +1,7 @@
 ## 本机 Windows 复验（2026-11-13）
 
 - 基线是 `438dff87`。Clang 22.1.6、Ninja、`ENGINE_RHI_BACKEND=d3d12`。第一次非图形套件 337 项里有 3 个失败：`test_ci_image_fix2`、`test_rollback_input_contract`、`test_platform_win32_runtime`。前两项来自 `C:/Windows/System32/bash.exe`：它只是 WSL 启动器，本机发行版磁盘不存在时脚本没有执行，UTF-8 诊断又被 GBK 文本模式读丢。现在只接受能执行 `echo posix-bash-ok` 的 bash，探测失败时改用 git 同目录的 bash；本机解析为 `D:/Program Files/Git/bin/bash.exe`。这两个合同的子进程输出显式使用 `encoding="utf-8"`。修复后这两项通过，`test_break_online_nat` 也通过。
-- 修复后的非图形、非 fuzz 为 **337 项入选、332 PASS、4 SKIP、1 FAIL**。四个 SKIP 是三个 nm 合同（非 MinGW Windows）和悬空 `.git`（当前进程不能创建 symlink，夹具返回 77）。唯一 FAIL 是 `clipboard_read_bounds_unterminated_unicode_text`：`OpenClipboard` 在约 5 秒重试后仍返回 `ERROR_ACCESS_DENIED`（5），`GetOpenClipboardWindow` 为空，剪贴板 owner 是 Windows Terminal 窗口。同会话里另外启动的进程同样打不开剪贴板，当前令牌也不能重启 `cbdhsvc`。该用例之外的 25 个 Win32 runtime 检查通过。D3D12 graphics 标签 7/7 通过，其中 WARP runtime 通过；WARP 不是独立显卡证明。
+- 修复后的非图形、非 fuzz 为 **337 项入选、332 PASS、4 SKIP、1 FAIL**。四个 SKIP 是三个 nm 合同（非 MinGW Windows）和悬空 `.git`（当前进程不能创建 symlink，夹具返回 77）。第一次运行时唯一 FAIL 是 `clipboard_read_bounds_unterminated_unicode_text`：`OpenClipboard` 在约 5 秒重试后仍返回 `ERROR_ACCESS_DENIED`（5），`GetOpenClipboardWindow` 为空，剪贴板 owner 是 Windows Terminal 窗口。同会话里另外启动的进程当时也打不开剪贴板，当前令牌不能重启 `cbdhsvc`。该用例之外的 25 个 Win32 runtime 检查当时通过。随后单独重跑 `test_platform_win32_runtime` 为 26/26，剪贴板锁定没有保持。D3D12 graphics 标签 7/7 通过，其中 WARP runtime 通过；WARP 不是独立显卡证明。
 
 ## 当前同步：Core App 上游修复合并（2026-11-12）
 
