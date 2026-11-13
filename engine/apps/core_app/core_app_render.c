@@ -13,6 +13,84 @@ static BreakRuntimeError render_trace(CoreAppRender *render, const char *line,
     return BREAK_RUNTIME_OK;
 }
 
+void core_app_resource_table_init(CoreAppResourceTable *table) {
+    if (table) memset(table, 0, sizeof(*table));
+}
+
+static u64 resource_next_request(CoreAppResourceTable *table) {
+    table->next_request++;
+    if (table->next_request == 0u) table->next_request = 1u;
+    return table->next_request;
+}
+
+BreakRuntimeError core_app_resource_request(CoreAppResourceTable *table, u64 generation,
+                                            u32 *out_slot, u64 *out_request) {
+    if (!table || !out_slot || !out_request || generation == 0u) return BREAK_RUNTIME_INVALID;
+    for (u32 i = 0u; i < CORE_APP_RESOURCE_SLOTS; ++i) {
+        CoreAppResourceSlot *slot = &table->slots[i];
+        if (slot->state != CORE_APP_RESOURCE_EMPTY) continue;
+        memset(slot, 0, sizeof(*slot));
+        slot->request_id = resource_next_request(table);
+        slot->generation = generation;
+        slot->state = CORE_APP_RESOURCE_PENDING;
+        *out_slot = i;
+        *out_request = slot->request_id;
+        return BREAK_RUNTIME_OK;
+    }
+    table->overloads++;
+    return BREAK_RUNTIME_OVERLOAD;
+}
+
+BreakRuntimeError core_app_resource_reload(CoreAppResourceTable *table, u32 slot,
+                                           u64 generation, u64 *out_request) {
+    if (!table || !out_request || slot >= CORE_APP_RESOURCE_SLOTS) return BREAK_RUNTIME_INVALID;
+    CoreAppResourceSlot *entry = &table->slots[slot];
+    if (entry->state != CORE_APP_RESOURCE_LIVE || entry->generation != generation) {
+        return BREAK_RUNTIME_STALE;
+    }
+    entry->request_id = resource_next_request(table);
+    entry->reloading = true;
+    *out_request = entry->request_id;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError core_app_resource_complete(CoreAppResourceTable *table, u32 slot,
+                                             u64 request, u64 generation,
+                                             const void *bytes, u32 byte_count) {
+    if (!table || slot >= CORE_APP_RESOURCE_SLOTS) return BREAK_RUNTIME_INVALID;
+    CoreAppResourceSlot *entry = &table->slots[slot];
+    bool awaiting = entry->state == CORE_APP_RESOURCE_PENDING ||
+                    (entry->state == CORE_APP_RESOURCE_LIVE && entry->reloading);
+    if (!awaiting || entry->request_id != request || entry->generation != generation) {
+        table->stale_completions++;
+        return BREAK_RUNTIME_STALE;
+    }
+    if ((byte_count > 0u && !bytes) || byte_count > CORE_APP_RESOURCE_MAX_BYTES) {
+        entry->reloading = false;
+        return BREAK_RUNTIME_INVALID;
+    }
+    u8 staged[CORE_APP_RESOURCE_MAX_BYTES];
+    if (byte_count > 0u) memcpy(staged, bytes, byte_count);
+    memcpy(entry->bytes, staged, byte_count);
+    entry->byte_count = byte_count;
+    entry->state = CORE_APP_RESOURCE_LIVE;
+    entry->reloading = false;
+    entry->version++;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError core_app_resource_retire_generation(CoreAppResourceTable *table,
+                                                      u64 generation) {
+    if (!table || generation == 0u) return BREAK_RUNTIME_INVALID;
+    for (u32 i = 0u; i < CORE_APP_RESOURCE_SLOTS; ++i) {
+        CoreAppResourceSlot *slot = &table->slots[i];
+        if (slot->state != CORE_APP_RESOURCE_EMPTY && slot->generation == generation) {
+            memset(slot, 0, sizeof(*slot));
+        }
+    }
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError core_app_render_start(CoreAppRender *render, FILE *trace) {
     if (!render || !trace) return BREAK_RUNTIME_INVALID;
     memset(render, 0, sizeof(*render));

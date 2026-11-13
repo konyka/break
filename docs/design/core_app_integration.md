@@ -268,6 +268,28 @@ event=render kind=world frame=<n> generation=<g> draws=<u> stream=<u> batches=<u
 
 本 slice 只做 record 世界快照。角色 skinned 命令、Runtime IO 迟到完成的 `STALE` 丢弃、第 65 个资源请求的 `OVERLOAD`，以及真实 RHI 消费者（`world_presenter_submit`）仍未做，分别留给 Task 7 slice 2 和 Task 11。
 
+## P12 Task 7（slice 2a）：资源表的代际与容量合同（2026-11-13）
+
+### 接口
+
+`core_app_render.h` 新增固定容量的 `CoreAppResourceTable`：64 个槽（`CORE_APP_RESOURCE_SLOTS`），每槽最多 256 字节（`CORE_APP_RESOURCE_MAX_BYTES`），在 create 时随表一起分配，tick 内不扩容。每槽记录 request id、level generation、状态（EMPTY/PENDING/LIVE）、版本号和拥有的字节。
+
+- `core_app_resource_request`：取第一个空槽，分配新的非零 request id，状态置为 PENDING。没有空槽时返回 `OVERLOAD`，`overloads` 加 1，输出参数和所有槽都不变。
+- `core_app_resource_reload`：对 LIVE 槽发起一次重载，换新 request id，旧字节在完成前保持可用。
+- `core_app_resource_complete`：只有槽正在等待、request id 与 generation 都匹配时才接受。不匹配返回 `STALE`，`stale_completions` 加 1，槽不变。字节先完整复制到 staging，校验通过后才替换并递增版本；长度超限返回 `INVALID`，旧的 LIVE 字节和版本保持不变。
+- `core_app_resource_retire_generation`：卸载时清空属于该 generation 的全部槽，同一槽之后可以被新 generation 复用。
+
+### 验证
+
+- `test_core_app_runtime` 新增三个用例：卸载后重载，旧请求 A 的完成和新请求带旧 generation 的完成都返回 `STALE`，新槽保持 PENDING、字节为空，只有新 generation 的完成才写入；重载时 staging 失败，旧字节和版本 1 保持不变；64 个槽占满后第 65 个请求返回 `OVERLOAD`，64 个槽逐字节不变。
+- 行为 RED：先用不做事的桩实现编译，三个用例都在断言处失败，之后才写实现。
+- 变异：完成时不比较 generation、容量满时覆盖第 0 个槽、staging 失败时清空旧字节，三处都让对应用例变红，恢复后通过。
+- `test_core_app_` 26/26；ASan+UBSan 与 TSan 下 `test_core_app_runtime` 和全部 lifecycle 各 12/12，无 sanitizer 报告。
+
+### 限制
+
+这是资源表本身的合同测试，表还没有接到 `CoreLevel` 的加载/卸载和 Runtime IO 完成路径上，也没有在真实进程 trace 里体现。角色 skinned 命令也还未做。两者留给 Task 7 slice 2b。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

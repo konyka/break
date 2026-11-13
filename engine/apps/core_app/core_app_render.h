@@ -15,6 +15,32 @@ typedef struct CoreAppRenderResource {
     u32 ref_index;
 } CoreAppRenderResource;
 
+#define CORE_APP_RESOURCE_SLOTS 64u
+#define CORE_APP_RESOURCE_MAX_BYTES 256u
+
+typedef enum CoreAppResourceState {
+    CORE_APP_RESOURCE_EMPTY = 0,
+    CORE_APP_RESOURCE_PENDING,
+    CORE_APP_RESOURCE_LIVE
+} CoreAppResourceState;
+
+typedef struct CoreAppResourceSlot {
+    u64 request_id;
+    u64 generation;
+    u32 state;
+    u32 version;
+    u32 byte_count;
+    bool reloading;
+    u8 bytes[CORE_APP_RESOURCE_MAX_BYTES];
+} CoreAppResourceSlot;
+
+typedef struct CoreAppResourceTable {
+    CoreAppResourceSlot slots[CORE_APP_RESOURCE_SLOTS];
+    u64 next_request;
+    u64 stale_completions;
+    u64 overloads;
+} CoreAppResourceTable;
+
 typedef struct CoreAppRenderLevel {
     CoreAppRenderResource resources[CORE_APP_RENDER_RESOURCE_CAPACITY];
     u32 resource_count;
@@ -35,6 +61,16 @@ typedef struct CoreAppRender {
     bool idle;
 } CoreAppRender;
 
+void core_app_resource_table_init(CoreAppResourceTable *table);
+BreakRuntimeError core_app_resource_request(CoreAppResourceTable *table, u64 generation,
+                                            u32 *out_slot, u64 *out_request);
+BreakRuntimeError core_app_resource_reload(CoreAppResourceTable *table, u32 slot,
+                                           u64 generation, u64 *out_request);
+BreakRuntimeError core_app_resource_complete(CoreAppResourceTable *table, u32 slot,
+                                             u64 request, u64 generation,
+                                             const void *bytes, u32 byte_count);
+BreakRuntimeError core_app_resource_retire_generation(CoreAppResourceTable *table,
+                                                      u64 generation);
 BreakRuntimeError core_app_render_start(CoreAppRender *render, FILE *trace);
 BreakRuntimeError core_app_render_stage_level(const CoreAppRenderResource *resources,
                                           u32 resource_count, u64 generation,

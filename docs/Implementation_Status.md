@@ -1,3 +1,11 @@
+## Core App P12 Task 7（slice 2a）：资源表的代际与容量合同（2026-11-13）
+
+- **交付**：`CoreAppResourceTable`，64 槽 × 256 字节，固定容量。请求分配非零 request id；完成必须同时匹配 request id 和 level generation，否则 `STALE` 并计数；字节先 staging 再替换，失败保留旧 LIVE 字节；第 65 个请求返回 `OVERLOAD`，不动任何槽；卸载按 generation 清槽。设计见 `docs/design/core_app_integration.md` 的 Task 7 slice 2a 节。
+- **测试**：`test_core_app_runtime` 新增迟到完成、staging 失败、容量上限三个用例。先用桩实现确认三处断言失败，再写实现。
+- **变异**：去掉 generation 比较、满时覆盖槽、失败时清空字节，均被杀死并恢复。
+- **回归**：`test_core_app_` 26/26；ASan+UBSan 12/12、TSan 12/12，无 sanitizer 报告。
+- **边界**：只是表的合同测试，还没接到关卡加载/卸载和 Runtime IO 完成路径，也没有进程级 trace 证据；角色 skinned 命令未做。
+
 ## Core App P12 Task 7（slice 1）：record 模式的世界快照（2026-11-13）
 
 - **交付**：加载流程新增 `presentation` 阶段：从 BSCN 清单重建材质，为 7 个场景节点、1 块 V1 stream tile 和 3 个植被实例准备 `WorldPresentationInput`，隐藏节点不进入 VisArea 列表。每个 tick 用 `world_presentation_snapshot` 写双槽快照，并输出 `event=render kind=world`。record 句柄为 `{对象 id, level generation}`，不交给 RHI；代际不符时返回 `STALE`。设计见 `docs/design/core_app_integration.md` 的 Task 7 slice 1 节。

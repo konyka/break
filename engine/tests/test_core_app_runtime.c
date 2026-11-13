@@ -2,6 +2,7 @@
 
 #include "../apps/core_app/scenario.h"
 #include "../apps/core_app/core_app_input.h"
+#include "../apps/core_app/core_app_render.h"
 #include "../apps/core_app/core_app_simulation.h"
 
 #include <math.h>
@@ -655,6 +656,94 @@ TEST(accumulator_caps_substeps_and_records_dropped_time) {
     ASSERT_EQ(accumulator.remainder_ns, 1000000000ull - 59ull * CORE_APP_FIXED_DT_NS);
 }
 
+static CoreAppResourceTable *resource_table_new(void) {
+    CoreAppResourceTable *table = (CoreAppResourceTable *)calloc(1u, sizeof(*table));
+    if (table) core_app_resource_table_init(table);
+    return table;
+}
+
+TEST(resource_late_completion_after_reload_is_stale) {
+    CoreAppResourceTable *table = resource_table_new();
+    const u8 old_bytes[4] = {1u, 2u, 3u, 4u};
+    const u8 new_bytes[4] = {9u, 8u, 7u, 6u};
+    u32 slot_a = UINT32_MAX;
+    u32 slot_b = UINT32_MAX;
+    u64 request_a = 0u;
+    u64 request_b = 0u;
+    ASSERT_NOT_NULL(table);
+    ASSERT_EQ(core_app_resource_request(table, 1u, &slot_a, &request_a), BREAK_RUNTIME_OK);
+    ASSERT_NEQ(request_a, 0u);
+    ASSERT_EQ(core_app_resource_retire_generation(table, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_resource_request(table, 2u, &slot_b, &request_b), BREAK_RUNTIME_OK);
+    ASSERT_EQ(slot_b, slot_a);
+    ASSERT_NEQ(request_b, request_a);
+    ASSERT_EQ(core_app_resource_complete(table, slot_a, request_a, 1u, old_bytes, 4u),
+              BREAK_RUNTIME_STALE);
+    ASSERT_EQ(table->stale_completions, 1u);
+    ASSERT_EQ(table->slots[slot_b].state, CORE_APP_RESOURCE_PENDING);
+    ASSERT_EQ(table->slots[slot_b].byte_count, 0u);
+    ASSERT_EQ(core_app_resource_complete(table, slot_b, request_b, 1u, old_bytes, 4u),
+              BREAK_RUNTIME_STALE);
+    ASSERT_EQ(table->stale_completions, 2u);
+    ASSERT_EQ(core_app_resource_complete(table, slot_b, request_b, 2u, new_bytes, 4u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(table->slots[slot_b].state, CORE_APP_RESOURCE_LIVE);
+    ASSERT_EQ(table->slots[slot_b].version, 1u);
+    ASSERT_EQ(memcmp(table->slots[slot_b].bytes, new_bytes, 4u), 0);
+    ASSERT_EQ(core_app_resource_complete(table, slot_b, request_b, 2u, old_bytes, 4u),
+              BREAK_RUNTIME_STALE);
+    ASSERT_EQ(memcmp(table->slots[slot_b].bytes, new_bytes, 4u), 0);
+    ASSERT_EQ(table->slots[slot_b].version, 1u);
+    free(table);
+}
+
+TEST(resource_failed_staging_keeps_live_bytes) {
+    CoreAppResourceTable *table = resource_table_new();
+    const u8 bytes[4] = {5u, 5u, 5u, 5u};
+    u8 huge[CORE_APP_RESOURCE_MAX_BYTES + 1u];
+    u32 slot = UINT32_MAX;
+    u64 request = 0u;
+    memset(huge, 0xEE, sizeof(huge));
+    ASSERT_NOT_NULL(table);
+    ASSERT_EQ(core_app_resource_request(table, 3u, &slot, &request), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_resource_complete(table, slot, request, 3u, bytes, 4u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_resource_reload(table, slot, 3u, &request), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_resource_complete(table, slot, request, 3u, huge, sizeof(huge)),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(table->slots[slot].state, CORE_APP_RESOURCE_LIVE);
+    ASSERT_EQ(table->slots[slot].version, 1u);
+    ASSERT_EQ(table->slots[slot].byte_count, 4u);
+    ASSERT_EQ(memcmp(table->slots[slot].bytes, bytes, 4u), 0);
+    free(table);
+}
+
+TEST(resource_table_overload_does_not_touch_live_slots) {
+    CoreAppResourceTable *table = resource_table_new();
+    CoreAppResourceTable *before = (CoreAppResourceTable *)calloc(1u, sizeof(*before));
+    u32 slot = UINT32_MAX;
+    u64 request = 0u;
+    u32 i;
+    ASSERT_NOT_NULL(table);
+    ASSERT_NOT_NULL(before);
+    for (i = 0u; i < CORE_APP_RESOURCE_SLOTS; ++i) {
+        u8 byte = (u8)i;
+        ASSERT_EQ(core_app_resource_request(table, 4u, &slot, &request), BREAK_RUNTIME_OK);
+        ASSERT_EQ(slot, i);
+        ASSERT_EQ(core_app_resource_complete(table, slot, request, 4u, &byte, 1u),
+                  BREAK_RUNTIME_OK);
+    }
+    memcpy(before, table, sizeof(*before));
+    slot = 77u;
+    request = 77u;
+    ASSERT_EQ(core_app_resource_request(table, 4u, &slot, &request), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(slot, 77u);
+    ASSERT_EQ(request, 77u);
+    ASSERT_EQ(memcmp(table->slots, before->slots, sizeof(table->slots)), 0);
+    ASSERT_EQ(table->overloads, 1u);
+    free(before);
+    free(table);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(scenario_rejects_tick_regression_without_partial_events);
     RUN_TEST(scenario_rejects_too_many_events_without_partial_events);
@@ -679,4 +768,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(simulation_repeated_runs_are_bitwise_identical);
     RUN_TEST(simulation_ignores_wall_clock_pacing);
     RUN_TEST(accumulator_caps_substeps_and_records_dropped_time);
+    RUN_TEST(resource_late_completion_after_reload_is_stale);
+    RUN_TEST(resource_failed_staging_keeps_live_bytes);
+    RUN_TEST(resource_table_overload_does_not_touch_live_slots);
 TEST_MAIN_END()
