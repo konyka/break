@@ -33,6 +33,9 @@ extern "C" {
 #ifndef MYCOMPOSE_GPU_VULKAN
 #define MYCOMPOSE_GPU_VULKAN 1
 #endif
+#ifndef MYCOMPOSE_GPU_BACKEND
+#define MYCOMPOSE_GPU_BACKEND 1
+#endif
 
 namespace compose = breakxx::compose;
 
@@ -364,7 +367,7 @@ int main(void) {
     ComposeGpu *gpu = nullptr;
     ComposeGpuDevice device{};
     ComposeGpuFonts fonts{};
-    const int opened = compose_gpu_open(&gpu, vulkan ? 1 : 0, mono, cjk, &device, &fonts);
+    const int opened = compose_gpu_open(&gpu, MYCOMPOSE_GPU_BACKEND, mono, cjk, &device, &fonts);
     if (opened == 77) return 77;
     CHECK(opened == 0, "compose_gpu_open returned %d", opened);
     if (g_fail != 0) return 1;

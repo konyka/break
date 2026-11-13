@@ -66,7 +66,7 @@ uint64_t compose_gpu_alloc_count(void);
 int compose_gpu_alloc_counting(void);
 
 /* 0 = ready, 77 = no display/device, 1 = failure (incl. missing fonts). */
-int compose_gpu_open(ComposeGpu **out, int vulkan, const char *mono_font,
+int compose_gpu_open(ComposeGpu **out, int backend, const char *mono_font,
     const char *cjk_font, ComposeGpuDevice *device, ComposeGpuFonts *fonts);
 int compose_gpu_bind(ComposeGpu *gpu, MyComposeStore *store, MyComposeView view,
     void *view_context);

@@ -86,13 +86,13 @@ static int check_fonts(ComposeGpu *gpu, const char *mono, const char *cjk,
     return fonts->mono_loaded && fonts->cjk_loaded && fonts->chain_uses_cjk;
 }
 
-int compose_gpu_open(ComposeGpu **out, int vulkan, const char *mono_font,
+int compose_gpu_open(ComposeGpu **out, int backend, const char *mono_font,
     const char *cjk_font, ComposeGpuDevice *device, ComposeGpuFonts *fonts) {
     PlatformConfig config;
     RHIDeviceInfo info;
     my_font_source_t sources[2];
     ComposeGpu *gpu;
-    RHIBackend backend = vulkan ? RHI_BACKEND_VULKAN : RHI_BACKEND_OPENGL;
+    int vulkan = backend == (int)RHI_BACKEND_VULKAN;
     u32 w = 0u, h = 0u;
     void *window;
     *out = NULL;
@@ -119,7 +119,7 @@ int compose_gpu_open(ComposeGpu **out, int vulkan, const char *mono_font,
     platform_get_drawable_size(gpu->platform, &w, &h);
     window = vulkan ? platform_surface_native(gpu->platform)
                     : platform_window_native(gpu->platform);
-    gpu->dev = rhi_device_create(backend, window,
+    gpu->dev = rhi_device_create((RHIBackend)backend, window,
         platform_display_native(gpu->platform), w, h);
     if (gpu->dev == NULL) {
         printf("UNAVAILABLE backend=%s reason=device-create\n",
@@ -142,9 +142,9 @@ int compose_gpu_open(ComposeGpu **out, int vulkan, const char *mono_font,
     rhi_device_attach_wsi(gpu->dev, platform_wsi_surface(gpu->platform));
     rhi_set_vsync(gpu->dev, false);
     *out = gpu;
-    if (info.backend != backend) {
+    if ((int)info.backend != backend) {
         printf("FAIL: requested backend %d, device reports %d (fallback)\n",
-            (int)backend, (int)info.backend);
+            backend, (int)info.backend);
         return 1;
     }
     memset(sources, 0, sizeof(sources));

@@ -3266,10 +3266,10 @@ if(ENGINE_BUILD_TESTS)
                 ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
             if(compose_gpu_variant STREQUAL "vulkan")
                 target_compile_definitions(${compose_gpu_target} PRIVATE
-                    MYCOMPOSE_GPU_VULKAN=1 ENGINE_VK_VALIDATION=1)
+                    MYCOMPOSE_GPU_VULKAN=1 MYCOMPOSE_GPU_BACKEND=1 ENGINE_VK_VALIDATION=1)
             else()
                 target_compile_definitions(${compose_gpu_target} PRIVATE
-                    MYCOMPOSE_GPU_VULKAN=0)
+                    MYCOMPOSE_GPU_VULKAN=0 MYCOMPOSE_GPU_BACKEND=0)
             endif()
             if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
                 target_compile_definitions(${compose_gpu_target} PRIVATE
