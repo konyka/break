@@ -365,9 +365,14 @@ static BreakRuntimeError nat_pump_until_closed(NatFixture *fixture, BreakOnlineH
 {
     u64 deadline = time_microseconds() + UINT64_C(5000000);
     while (time_microseconds() < deadline) {
+        u64 a_sequence = 0u;
+        u64 b_sequence = 0u;
         BreakRuntimeError result = nat_pump_once(fixture);
         if (result != BREAK_RUNTIME_OK) return result;
-        if (!break_nat_endpoint_connected(fixture->a, pair) &&
+        if (break_nat_endpoint_closed(fixture->a, pair, &a_sequence) &&
+            break_nat_endpoint_closed(fixture->b, pair, &b_sequence) &&
+            a_sequence != 0u && b_sequence != 0u &&
+            !break_nat_endpoint_connected(fixture->a, pair) &&
             !break_nat_endpoint_connected(fixture->b, pair) &&
             !break_nat_endpoint_armed(fixture->a, pair) &&
             !break_nat_endpoint_armed(fixture->b, pair)) return BREAK_RUNTIME_OK;

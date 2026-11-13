@@ -69,6 +69,8 @@ bool break_nat_endpoint_armed(const BreakNatEndpoint *endpoint,
                               BreakOnlineHandle pair);
 bool break_nat_endpoint_connected(const BreakNatEndpoint *endpoint,
                                   BreakOnlineHandle pair);
+bool break_nat_endpoint_closed(const BreakNatEndpoint *endpoint,
+                               BreakOnlineHandle pair, u64 *out_sequence);
 
 #ifdef __cplusplus
 }

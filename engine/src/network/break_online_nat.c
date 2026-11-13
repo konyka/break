@@ -1097,3 +1097,16 @@ bool break_nat_endpoint_connected(const BreakNatEndpoint *endpoint,
            endpoint->pair.index == pair.index &&
            endpoint->pair.generation == pair.generation;
 }
+
+bool break_nat_endpoint_closed(const BreakNatEndpoint *endpoint,
+                               BreakOnlineHandle pair, u64 *out_sequence)
+{
+    if (!endpoint_owner(endpoint) || !out_sequence ||
+        !endpoint->closed_pair_valid ||
+        endpoint->closed_pair.index != pair.index ||
+        endpoint->closed_pair.generation != pair.generation) {
+        return false;
+    }
+    *out_sequence = endpoint->closed_sequence;
+    return true;
+}
