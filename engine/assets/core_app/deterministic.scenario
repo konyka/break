@@ -1,7 +1,6 @@
 core-app-scenario 1
 seed 12648430
 fixed-dt-ns 16666667
-frame 0 enter 1
-frame 30 add-item 1
-frame 60 checkpoint 1
-frame 120 end
+1 level
+1 key w 1
+181 quit

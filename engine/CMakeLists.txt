@@ -1636,7 +1636,10 @@ add_library(core_app_runtime STATIC
     apps/core_app/core_app.c
     apps/core_app/core_app_audio.c
     apps/core_app/core_app_render.c
-    apps/core_app/core_app_checkpoint.c)
+    apps/core_app/core_app_checkpoint.c
+    apps/core_app/scenario.c
+    apps/core_app/core_app_input.c
+    apps/core_app/core_app_simulation.c)
 set_property(TARGET core_app_runtime PROPERTY C_STANDARD 11)
 target_include_directories(core_app_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(core_app_runtime PUBLIC
@@ -5103,6 +5106,28 @@ endif()
     set_tests_properties(test_core_app_lifecycle_load_unload PROPERTIES
         LABELS "headless;core_app;lifecycle" TIMEOUT 180)
 
+    foreach(_core_app_input_mode IN ITEMS key touch cancel)
+        add_test(NAME test_core_app_lifecycle_input_${_core_app_input_mode}
+            COMMAND ${CMAKE_COMMAND}
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+                -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_input_${_core_app_input_mode}
+                -DINPUT_MODE=${_core_app_input_mode}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_lifecycle.cmake)
+        set_tests_properties(test_core_app_lifecycle_input_${_core_app_input_mode} PROPERTIES
+            LABELS "headless;core_app;lifecycle" TIMEOUT 120)
+    endforeach()
+
+    add_executable(test_core_app_runtime tests/test_core_app_runtime.c)
+    target_include_directories(test_core_app_runtime PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_core_app_runtime PRIVATE core_app_runtime m)
+    target_compile_definitions(test_core_app_runtime PRIVATE
+        CORE_APP_SOURCE_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app")
+    add_test(NAME test_core_app_runtime COMMAND test_core_app_runtime)
+    set_tests_properties(test_core_app_runtime PROPERTIES
+        LABELS "headless;core_app" TIMEOUT 60)
+
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)
         target_include_directories(test_break_${ai_test} PRIVATE ${TEST_INCLUDE_DIRS})
@@ -7356,7 +7381,7 @@ foreach(_core_app_required_target IN ITEMS core_app_runtime core_app core_app_as
 endforeach()
 get_target_property(_core_app_runtime_sources core_app_runtime SOURCES)
 set(_core_app_runtime_expected_sources
-    "apps/core_app/core_app.c;apps/core_app/core_app_audio.c;apps/core_app/core_app_render.c;apps/core_app/core_app_checkpoint.c")
+    "apps/core_app/core_app.c;apps/core_app/core_app_audio.c;apps/core_app/core_app_render.c;apps/core_app/core_app_checkpoint.c;apps/core_app/scenario.c;apps/core_app/core_app_input.c;apps/core_app/core_app_simulation.c")
 if(NOT "${_core_app_runtime_sources}" STREQUAL "${_core_app_runtime_expected_sources}")
     message(FATAL_ERROR "core_app_runtime SOURCES changed: ${_core_app_runtime_sources}")
 endif()

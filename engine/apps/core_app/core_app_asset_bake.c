@@ -529,27 +529,28 @@ static bool bake_text_assets(const char *output) {
          "core-app-scenario 1\n"
          "seed 12648430\n"
          "fixed-dt-ns 16666667\n"
-         "frame 0 enter 1\n"
-         "frame 30 add-item 1\n"
-         "frame 60 checkpoint 1\n"
-         "frame 120 end\n"},
+         "1 level\n"
+         "1 key w 1\n"
+         "181 quit\n"},
         {"load_unload.scenario",
          "core-app-scenario 1\n"
          "seed 12648430\n"
          "fixed-dt-ns 16666667\n"
-         "frame 1 load\n"
-         "frame 2 unload\n"
-         "frame 3 load\n"
-         "frame 4 unload\n"
-         "frame 5 end\n"},
+         "1 level\n"
+         "2 unload\n"
+         "3 level\n"
+         "4 unload\n"
+         "5 quit\n"},
         {"rollback.scenario",
          "core-app-scenario 1\n"
          "seed 12648430\n"
          "fixed-dt-ns 16666667\n"
-         "frame 1 checkpoint 7\n"
-         "frame 2 add-item 1\n"
-         "frame 3 restore 7\n"
-         "frame 4 end\n"}
+         "1 level\n"
+         "30 key w 1\n"
+         "120 key w 0\n"
+         "121 unload\n"
+         "122 level\n"
+         "150 quit\n"}
     };
     for (usize i = 0; i < sizeof(assets) / sizeof(assets[0]); ++i) {
         if (!atomic_write_named(output, assets[i].name, assets[i].text,

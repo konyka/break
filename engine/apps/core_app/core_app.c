@@ -2,6 +2,7 @@
 
 #include "core_app_audio.h"
 #include "core_app_render.h"
+#include "core_app_simulation.h"
 
 #include <ai/break_ai.h>
 #include <animation/anim_compression.h>
@@ -22,23 +23,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CORE_APP_SCENARIO_MAX_STEPS 64u
-#define CORE_APP_SCENARIO_MAX_BYTES (64u * 1024u)
-#define CORE_APP_SCENARIO_ROOT_CAPACITY 1024u
 #define CORE_APP_TEXT_FILE_MAX_BYTES (1u << 20)
 #define CORE_APP_IO_TIMEOUT_MS 5000u
-
-typedef enum CoreAppScenarioAction {
-    CORE_APP_SCENARIO_LOAD = 1,
-    CORE_APP_SCENARIO_UNLOAD,
-    CORE_APP_SCENARIO_END
-} CoreAppScenarioAction;
-
-typedef struct CoreAppScenarioStep {
-    u32 frame;
-    CoreAppScenarioAction action;
-    char asset_root[CORE_APP_SCENARIO_ROOT_CAPACITY];
-} CoreAppScenarioStep;
+#define CORE_APP_PLAYER_ENTITY_INDEX 2u
+#define CORE_APP_MAX_PENDING_AREA_ENTERS 8u
+#define CORE_APP_HAPTIC_PAD 0u
+#define CORE_APP_HAPTIC_STRENGTH 0.6f
+#define CORE_APP_HAPTIC_DURATION_MS 120u
 
 typedef struct CoreLevel {
     World *world;
@@ -55,7 +46,11 @@ typedef struct CoreLevel {
     CoreAppRenderLevel render;
     BreakRuntimeIoRequest *request;
     PhysicsBodyHandle ground_body;
-    PhysicsBodyHandle player_body;
+    CoreAppSimulation *simulation;
+    Entity player;
+    u32 trigger_area;
+    u32 pending_area_enters;
+    u32 dropped_area_enters;
     f32 nav_heights[16];
     u64 generation;
     bool actor_level_open;
@@ -63,7 +58,8 @@ typedef struct CoreLevel {
 
 struct CoreApp {
     CoreAppConfig config;
-    CoreAppScenarioStep steps[CORE_APP_SCENARIO_MAX_STEPS];
+    CoreAppScenario scenario;
+    CoreAppInput *input;
     BreakRuntimeCoordinator *coordinator;
     VFS *vfs;
     CoreLevel *level;
@@ -72,7 +68,6 @@ struct CoreApp {
     CoreAppRender render;
     CoreAppAudio audio;
     u64 next_generation;
-    u32 step_count;
     bool io_running;
     bool render_live;
     bool audio_live;
@@ -142,6 +137,8 @@ static void core_app_level_destroy(CoreLevel *level) {
     if (!level) return;
     break_runtime_io_request_release(level->request);
     level->request = NULL;
+    core_app_simulation_destroy(level->simulation);
+    level->simulation = NULL;
     if (level->ai) break_ai_runtime_destroy(level->ai);
     if (level->nav_mesh) break_nav_mesh_destroy(level->nav_mesh);
     if (level->physics) physics_world_destroy(level->physics);
@@ -369,13 +366,61 @@ static BreakRuntimeError stage_physics(CoreLevel *candidate) {
                               fabsf(ground->world_transform.e[2][2]));
     candidate->ground_body = physics_body_create(candidate->physics,
         app_node_position(ground), ground_extent, 0.0f, true, 0u);
-    const SceneNode *player = &candidate->scene.nodes[1];
-    candidate->player_body = physics_body_create(candidate->physics,
-        app_node_position(player), vec3(0.4f, 1.0f, 0.4f), 70.0f, false, 0u);
-    if (!physics_body_handle_is_valid(candidate->ground_body) ||
-        !physics_body_handle_is_valid(candidate->player_body)) {
+    if (!physics_body_handle_is_valid(candidate->ground_body)) {
         return BREAK_RUNTIME_FAILED;
     }
+    return BREAK_RUNTIME_OK;
+}
+
+static void app_area_event(u32 area_id, Entity entity, BreakGameAreaEvent event,
+                           void *user) {
+    CoreLevel *level = (CoreLevel *)user;
+    if (!level || event != BREAK_GAME_AREA_ENTER || area_id != level->trigger_area ||
+        entity.index != level->player.index ||
+        entity.generation != level->player.generation) {
+        return;
+    }
+    if (level->pending_area_enters < CORE_APP_MAX_PENDING_AREA_ENTERS) {
+        level->pending_area_enters++;
+    } else {
+        level->dropped_area_enters++;
+    }
+}
+
+static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
+    if (candidate->scene.node_count < 2u ||
+        candidate->world->entity_count <= CORE_APP_PLAYER_ENTITY_INDEX) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    Entity player = candidate->world->entities[CORE_APP_PLAYER_ENTITY_INDEX];
+    if (!world_entity_exists(candidate->world, player)) return BREAK_RUNTIME_STALE;
+    const SceneNode *node = &candidate->scene.nodes[1];
+    Vec3 center = app_node_position(node);
+    Vec3 feet = vec3(center.e[0], center.e[1] - fabsf(node->world_transform.e[1][1]),
+                     center.e[2]);
+    Vec3 *position = (Vec3 *)world_add_component(candidate->world, player,
+                                                 BREAK_GAME_POSITION_COMPONENT);
+    if (!position) return BREAK_RUNTIME_FAILED;
+    *position = feet;
+    CoreAppSimulationDesc desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.world = candidate->world;
+    desc.actor_runtime = candidate->actor_runtime;
+    desc.physics = candidate->physics;
+    desc.player = player;
+    desc.spawn = feet;
+    candidate->simulation = core_app_simulation_create(&desc);
+    if (!candidate->simulation) return BREAK_RUNTIME_FAILED;
+    candidate->player = player;
+    BreakGameAreaDesc area;
+    memset(&area, 0, sizeof(area));
+    area.center = vec3(feet.e[0], feet.e[1] + 1.0f, feet.e[2] + 3.0f);
+    area.half_extent = vec3(1.5f, 2.0f, 0.5f);
+    if (break_game_area_add(candidate->actor_runtime, &area,
+                            &candidate->trigger_area) != BREAK_GAME_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    break_game_set_area_callback(candidate->actor_runtime, app_area_event, candidate);
     return BREAK_RUNTIME_OK;
 }
 
@@ -464,7 +509,8 @@ static bool app_find_geometry(const CoreLevel *candidate, u32 mesh_index) {
 static BreakRuntimeError app_validate_crossrefs(const CoreLevel *candidate) {
     if (!candidate->world || !candidate->actor_runtime || !candidate->flow ||
         !candidate->lua || !candidate->adapter || !candidate->actor_level_open ||
-        !candidate->physics || !candidate->ai || !candidate->nav_mesh ||
+        !candidate->physics || !candidate->simulation || !candidate->ai ||
+        !candidate->nav_mesh ||
         candidate->generation == 0u || candidate->animation.channel_count == 0u ||
         candidate->scene.node_count == 0u ||
         candidate->world->entity_count != candidate->scene.node_count + 1u ||
@@ -519,6 +565,10 @@ static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_roo
 
     *failed_stage = "physics";
     result = stage_physics(candidate);
+    if (result != BREAK_RUNTIME_OK) goto reject;
+
+    *failed_stage = "simulation";
+    result = stage_simulation(candidate);
     if (result != BREAK_RUNTIME_OK) goto reject;
 
     *failed_stage = "ai";
@@ -715,92 +765,72 @@ static BreakRuntimeError app_register_subsystems(CoreApp *app) {
     return BREAK_RUNTIME_OK;
 }
 
-static bool app_parse_scenario(CoreApp *app) {
-    u8 *bytes = NULL;
-    usize size = 0u;
-    if (!app_read_file(app->config.scenario_path, CORE_APP_SCENARIO_MAX_BYTES,
-                        &bytes, &size) ||
-        memchr(bytes, '\0', size) != NULL) {
-        free(bytes);
-        return false;
+static bool app_scenario_supported(const CoreAppScenario *scenario) {
+    if (scenario->fixed_dt_ns != CORE_APP_FIXED_DT_NS) return false;
+    for (u32 i = 0u; i < scenario->event_count; ++i) {
+        switch (scenario->events[i].kind) {
+        case CORE_APP_SCENARIO_KEY:
+        case CORE_APP_SCENARIO_TOUCH:
+        case CORE_APP_SCENARIO_PAD:
+        case CORE_APP_SCENARIO_LEVEL:
+        case CORE_APP_SCENARIO_UNLOAD:
+        case CORE_APP_SCENARIO_QUIT:
+            break;
+        default:
+            return false;
+        }
     }
-    bool ok = false;
-    u32 line_number = 0u;
-    bool ended = false;
-    char *cursor = (char *)bytes;
-    while (cursor < (char *)bytes + size) {
-        char *line = cursor;
-        char *newline = memchr(cursor, '\n', (usize)((char *)bytes + size - cursor));
-        if (newline) {
-            *newline = '\0';
-            cursor = newline + 1;
-        } else {
-            cursor = (char *)bytes + size;
-        }
-        line_number++;
-        usize length = strlen(line);
-        if (length > 0u && line[length - 1u] == '\r') line[length - 1u] = '\0';
-        if (line[0] == '\0' || line[0] == '#') continue;
-        if (line_number == 1u) {
-            if (strcmp(line, "core-app-scenario 1") != 0) goto cleanup;
-            continue;
-        }
-        if (line_number == 2u) {
-            unsigned long long seed = 0u;
-            char extra = '\0';
-            if (sscanf(line, "seed %llu %c", &seed, &extra) != 1) goto cleanup;
-            continue;
-        }
-        if (line_number == 3u) {
-            unsigned long long fixed_dt_ns = 0u;
-            char extra = '\0';
-            if (sscanf(line, "fixed-dt-ns %llu %c", &fixed_dt_ns, &extra) != 1 ||
-                fixed_dt_ns == 0u) {
-                goto cleanup;
-            }
-            continue;
-        }
-        if (ended || app->step_count >= CORE_APP_SCENARIO_MAX_STEPS) goto cleanup;
-        char frame_word[16];
-        char action[16];
-        char root[CORE_APP_SCENARIO_ROOT_CAPACITY];
-        char extra[16];
-        memset(frame_word, 0, sizeof(frame_word));
-        memset(action, 0, sizeof(action));
-        memset(root, 0, sizeof(root));
-        memset(extra, 0, sizeof(extra));
-        u32 frame = 0u;
-        int fields = sscanf(line, "%15s %u %15s %1023s %15s", frame_word, &frame,
-                            action, root, extra);
-        if ((fields != 3 && fields != 4) || strcmp(frame_word, "frame") != 0 ||
-            frame != app->step_count + 1u) {
-            goto cleanup;
-        }
-        CoreAppScenarioStep *step = &app->steps[app->step_count];
-        memset(step, 0, sizeof(*step));
-        step->frame = frame;
-        if (strcmp(action, "load") == 0) {
-            step->action = CORE_APP_SCENARIO_LOAD;
-            if (fields == 4 && snprintf(step->asset_root, sizeof(step->asset_root),
-                                        "%s", root) >= (int)sizeof(step->asset_root)) {
-                goto cleanup;
-            }
-        } else if (strcmp(action, "unload") == 0 && fields == 3) {
-            step->action = CORE_APP_SCENARIO_UNLOAD;
-        } else if (strcmp(action, "end") == 0 && fields == 3) {
-            step->action = CORE_APP_SCENARIO_END;
-            ended = true;
-        } else {
-            goto cleanup;
-        }
-        app->step_count++;
-    }
-    ok = ended && app->step_count > 0u &&
-         app->steps[app->step_count - 1u].action == CORE_APP_SCENARIO_END;
+    return true;
+}
 
-cleanup:
-    free(bytes);
-    return ok;
+static const char *app_input_status_name(InputExtResult result) {
+    switch (result) {
+    case INPUT_EXT_OK: return "ok";
+    case INPUT_EXT_INVALID: return "invalid";
+    case INPUT_EXT_OVERLOAD: return "overload";
+    case INPUT_EXT_STALE: return "stale";
+    case INPUT_EXT_DISCONNECTED: return "disconnected";
+    case INPUT_EXT_UNSUPPORTED: return "unsupported";
+    case INPUT_EXT_PENDING: return "pending";
+    case INPUT_EXT_REJECTED: return "rejected";
+    default: return "failed";
+    }
+}
+
+static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
+                                        const CoreAppInputFrame *frame) {
+    CoreLevel *level = app->level;
+    BreakRuntimeError result = core_app_simulation_tick(level->simulation, frame);
+    if (result != BREAK_RUNTIME_OK) return result;
+    BreakGameError area = break_game_area_tick(level->actor_runtime);
+    if (area != BREAK_GAME_OK && area != BREAK_GAME_OVERLOAD) return BREAK_RUNTIME_FAILED;
+    Vec3 position;
+    result = core_app_simulation_player_position(level->simulation, &position);
+    if (result != BREAK_RUNTIME_OK) return result;
+    result = app_trace(app,
+        "COREAPPTRACE version=1 event=player tick=%u generation=%" PRIu64
+        " x=%.9g y=%.9g z=%.9g\n", tick, level->generation,
+        (double)position.e[0], (double)position.e[1], (double)position.e[2]);
+    if (result != BREAK_RUNTIME_OK) return result;
+    while (level->pending_area_enters > 0u) {
+        level->pending_area_enters--;
+        BreakRuntimeError request = core_app_input_request_area_haptic(
+            app->input, CORE_APP_HAPTIC_PAD, CORE_APP_HAPTIC_STRENGTH,
+            CORE_APP_HAPTIC_STRENGTH, CORE_APP_HAPTIC_DURATION_MS);
+        if (request != BREAK_RUNTIME_OK && request != BREAK_RUNTIME_REJECTED) {
+            return request;
+        }
+        CoreAppInputFrame after;
+        result = core_app_input_frame(app->input, &after);
+        if (result != BREAK_RUNTIME_OK) return result;
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=haptic area=%u generation=%" PRIu64
+            " tick=%u status=%s request=%" PRIu64 "\n", level->trigger_area,
+            level->generation, tick, app_input_status_name(after.haptic_status),
+            after.haptic_request_id);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
+    return BREAK_RUNTIME_OK;
 }
 
 static void app_rollback(CoreApp *app) {
@@ -870,7 +900,18 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     BreakRuntimeError result = BREAK_RUNTIME_FAILED;
 
     app->trace = fopen(config->trace_path, "wb");
-    if (!app->trace || !app_parse_scenario(app)) goto finished;
+    if (!app->trace) goto finished;
+    if (core_app_scenario_load(config->scenario_path, &app->scenario) !=
+            CORE_APP_SCENARIO_OK ||
+        !app_scenario_supported(&app->scenario)) {
+        result = BREAK_RUNTIME_FAILED;
+        goto finished;
+    }
+    app->input = core_app_input_create();
+    if (!app->input) {
+        result = BREAK_RUNTIME_OOM;
+        goto finished;
+    }
 
     stage = "io";
     app->vfs = vfs_create();
@@ -901,57 +942,83 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (result != BREAK_RUNTIME_OK) goto finished;
 
     bool ended = false;
-    for (u32 i = 0u; i < app->step_count; ++i) {
-        CoreAppScenarioStep *step = &app->steps[i];
-        if (config->max_frames != 0u && step->frame > config->max_frames) {
+    u32 event_index = 0u;
+    for (u32 tick = 1u; !ended; ++tick) {
+        if (config->max_frames != 0u && tick > config->max_frames) {
             ended = true;
             break;
         }
-        if (step->action == CORE_APP_SCENARIO_END) {
-            ended = true;
-            break;
-        }
-        if (step->action == CORE_APP_SCENARIO_LOAD) {
-            const char *asset_root = step->asset_root[0] != '\0'
-                ? step->asset_root : config->asset_root;
-            bool had_level = app->level != NULL;
-            const char *load_stage = "bscn";
-            bool committed = false;
-            bool runtime_fatal = false;
-            result = core_app_level_load(app, asset_root, &load_stage, &committed,
-                                         &runtime_fatal);
-            if (result != BREAK_RUNTIME_OK) {
-                u64 generation = app->level ? app->level->generation : 0u;
-                if (committed || runtime_fatal) {
+        stage = "input";
+        result = core_app_input_begin_tick(app->input, tick,
+                                           (u64)tick * CORE_APP_FIXED_DT_NS / 1000000u);
+        if (result != BREAK_RUNTIME_OK) goto finished;
+        bool quit = false;
+        while (event_index < app->scenario.event_count &&
+               app->scenario.events[event_index].tick == tick) {
+            const CoreAppScenarioEvent *event = &app->scenario.events[event_index++];
+            if (event->kind == CORE_APP_SCENARIO_KEY ||
+                event->kind == CORE_APP_SCENARIO_TOUCH ||
+                event->kind == CORE_APP_SCENARIO_PAD) {
+                stage = "input";
+                result = core_app_input_apply(app->input, event);
+                if (result != BREAK_RUNTIME_OK) goto finished;
+            } else if (event->kind == CORE_APP_SCENARIO_LEVEL) {
+                const char *asset_root = event->path[0] != '\0'
+                    ? event->path : config->asset_root;
+                bool had_level = app->level != NULL;
+                const char *load_stage = "bscn";
+                bool committed = false;
+                bool runtime_fatal = false;
+                result = core_app_level_load(app, asset_root, &load_stage, &committed,
+                                             &runtime_fatal);
+                if (result != BREAK_RUNTIME_OK) {
+                    u64 generation = app->level ? app->level->generation : 0u;
+                    if (committed || runtime_fatal) {
+                        (void)app_trace(app,
+                            "COREAPPTRACE version=1 event=runtime_fault stage=%s generation=%" PRIu64
+                            "\n", load_stage, generation);
+                        stage = load_stage;
+                        goto finished;
+                    }
                     (void)app_trace(app,
-                        "COREAPPTRACE version=1 event=runtime_fault stage=%s generation=%" PRIu64
-                        "\n", load_stage, generation);
-                    stage = load_stage;
+                        "COREAPPTRACE version=1 event=load_rejected generation=%" PRIu64
+                        " stage=%s\n", generation, load_stage);
+                    fprintf(stderr, "core_app: stage=%s level load rejected\n", load_stage);
+                    if (!had_level) {
+                        stage = load_stage;
+                        goto finished;
+                    }
+                }
+            } else if (event->kind == CORE_APP_SCENARIO_UNLOAD) {
+                result = core_app_unload_level(app, true);
+                if (result != BREAK_RUNTIME_OK) {
+                    stage = "unload";
                     goto finished;
                 }
-                (void)app_trace(app,
-                    "COREAPPTRACE version=1 event=load_rejected generation=%" PRIu64
-                    " stage=%s\n", generation, load_stage);
-                fprintf(stderr, "core_app: stage=%s level load rejected\n", load_stage);
-                if (!had_level) {
-                    stage = load_stage;
-                    goto finished;
-                }
-            }
-        } else if (step->action == CORE_APP_SCENARIO_UNLOAD) {
-            result = core_app_unload_level(app, true);
-            if (result != BREAK_RUNTIME_OK) {
-                stage = "unload";
+            } else if (event->kind == CORE_APP_SCENARIO_QUIT) {
+                quit = true;
+            } else {
+                stage = "scenario";
+                result = BREAK_RUNTIME_FAILED;
                 goto finished;
             }
         }
+        if (quit) {
+            ended = true;
+            break;
+        }
         if (app->level) {
-            CoreAppRenderFrame frame = {step->frame, app->level->generation,
-                                     app->level->render.resource_count};
+            CoreAppInputFrame input_frame;
+            stage = "simulation";
+            result = core_app_input_frame(app->input, &input_frame);
+            if (result == BREAK_RUNTIME_OK) result = app_tick_level(app, tick, &input_frame);
+            if (result != BREAK_RUNTIME_OK) goto finished;
+            CoreAppRenderFrame frame = {tick, app->level->generation,
+                                        app->level->render.resource_count};
             result = core_app_render_record_frame(&app->render, &frame);
             if (result == BREAK_RUNTIME_OK) {
                 result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_LISTENER,
-                                            app->level->generation);
+                                                app->level->generation);
             }
             if (result == BREAK_RUNTIME_OK) result = core_app_audio_drain_record(&app->audio, 1u);
             if (result != BREAK_RUNTIME_OK) {
@@ -987,6 +1054,8 @@ finished:
     }
     break_runtime_coordinator_destroy(app->coordinator);
     if (app->trace) fclose(app->trace);
+    core_app_input_destroy(app->input);
+    free(app->scenario.events);
     free(app);
     return result;
 }

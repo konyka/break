@@ -113,6 +113,115 @@ function(expect_initial_failure name stage assets)
     endif()
 endfunction()
 
+function(player_position name trace tick out_var)
+    string(REGEX MATCH
+        "event=player tick=${tick} generation=[0-9]+ x=([^ \n]+) y=([^ \n]+) z=([^ \n]+)\n"
+        match "${trace}")
+    if(match STREQUAL "")
+        record_error("${name}: no player position for tick ${tick}; trace=${trace}")
+        set(${out_var} "" PARENT_SCOPE)
+    else()
+        set(${out_var} "${CMAKE_MATCH_1};${CMAKE_MATCH_2};${CMAKE_MATCH_3}" PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(expect_forward_beyond_two_meters name position)
+    list(LENGTH position fields)
+    if(NOT fields EQUAL 3)
+        return()
+    endif()
+    list(GET position 2 z)
+    if(NOT z GREATER 2)
+        record_error("${name}: player did not move more than 2 m forward: z=${z}")
+    endif()
+endfunction()
+
+function(write_input_scenario path body)
+    if(ARGC GREATER 2)
+        message(FATAL_ERROR "write_input_scenario takes exactly one body string")
+    endif()
+    file(WRITE "${path}"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n${body}")
+endfunction()
+
+if(DEFINED INPUT_MODE)
+    file(REMOVE_RECURSE "${WORK}")
+    file(MAKE_DIRECTORY "${WORK}")
+    set(key_scenario "${WORK}/input_key.scenario")
+    write_input_scenario("${key_scenario}" "1 level\n1 key w 1\n181 quit\n")
+    if(INPUT_MODE STREQUAL "key" OR INPUT_MODE STREQUAL "touch")
+        run_app(input_key "${ASSET_ROOT}" "${key_scenario}" 0)
+        set(key_trace "${CORE_APP_LIFECYCLE_TRACE}")
+        expect_event_count(input_key "${key_trace}" "event=player tick=" 180)
+        expect_event_count(input_key_haptic "${key_trace}" "event=haptic area=0 " 1)
+        if(NOT key_trace MATCHES "event=haptic area=0 generation=1 tick=[0-9]+ status=(disconnected|unsupported) request=0\n")
+            record_error("input_key: area haptic without a feedback pad was not reported as disconnected/unsupported: ${key_trace}")
+        endif()
+        player_position(input_key "${key_trace}" 180 key_position)
+        expect_forward_beyond_two_meters(input_key "${key_position}")
+        if(NOT key_trace MATCHES "event=runtime_stopped\n")
+            record_error("input_key: run did not stop normally: ${key_trace}")
+        endif()
+    endif()
+    if(INPUT_MODE STREQUAL "touch")
+        set(touch_scenario "${WORK}/input_touch.scenario")
+        write_input_scenario("${touch_scenario}"
+            "1 level\n1 touch 3 down 0.5 0.5\n1 touch 3 move 0.5 0.3\n181 quit\n")
+        run_app(input_touch "${ASSET_ROOT}" "${touch_scenario}" 0)
+        set(touch_trace "${CORE_APP_LIFECYCLE_TRACE}")
+        expect_event_count(input_touch "${touch_trace}" "event=player tick=" 180)
+        player_position(input_touch "${touch_trace}" 180 touch_position)
+        expect_forward_beyond_two_meters(input_touch "${touch_position}")
+        if(NOT "${touch_position}" STREQUAL "${key_position}")
+            record_error("input_touch: touch drag final position ${touch_position} differs from key ${key_position}")
+        endif()
+    elseif(INPUT_MODE STREQUAL "cancel")
+        set(release_scenario "${WORK}/input_release.scenario")
+        write_input_scenario("${release_scenario}"
+            "1 level\n1 key w 1\n11 key w 0\n21 quit\n")
+        set(cancel_scenario "${WORK}/input_cancel.scenario")
+        write_input_scenario("${cancel_scenario}"
+            "1 level\n1 touch 3 down 0.5 0.5\n1 touch 3 move 0.5 0.3\n11 touch 3 cancel 0.5 0.3\n21 quit\n")
+        foreach(case release cancel)
+            run_app(input_${case} "${ASSET_ROOT}" "${${case}_scenario}" 0)
+            set(case_trace "${CORE_APP_LIFECYCLE_TRACE}")
+            player_position(input_${case} "${case_trace}" 10 before)
+            player_position(input_${case} "${case_trace}" 11 stopped)
+            player_position(input_${case} "${case_trace}" 20 after)
+            list(LENGTH before before_fields)
+            if(before_fields EQUAL 3)
+                list(GET before 2 before_z)
+                if(before_z STREQUAL "0")
+                    record_error("input_${case}: player never moved before ${case}")
+                endif()
+            endif()
+            list(LENGTH stopped stopped_fields)
+            list(LENGTH after after_fields)
+            if(NOT before_fields EQUAL 3 OR NOT stopped_fields EQUAL 3 OR
+               NOT after_fields EQUAL 3)
+                record_error("input_${case}: missing tick 10/11/20 positions; trace=${case_trace}")
+                continue()
+            endif()
+            foreach(axis 0 2)
+                list(GET before ${axis} before_axis)
+                list(GET stopped ${axis} stopped_axis)
+                list(GET after ${axis} after_axis)
+                if(NOT stopped_axis STREQUAL before_axis OR NOT after_axis STREQUAL before_axis)
+                    record_error("input_${case}: horizontal axis ${axis} moved after ${case}: tick10=${before} tick11=${stopped} tick20=${after}")
+                endif()
+            endforeach()
+        endforeach()
+    elseif(NOT INPUT_MODE STREQUAL "key")
+        message(FATAL_ERROR "unknown INPUT_MODE ${INPUT_MODE}")
+    endif()
+    get_property(errors GLOBAL PROPERTY CORE_APP_LIFECYCLE_ERRORS)
+    if(NOT errors STREQUAL "")
+        message(FATAL_ERROR "core_app input lifecycle (${INPUT_MODE}) failed:\n${errors}")
+    endif()
+    message(STATUS "core_app real-process input lifecycle (${INPUT_MODE}) passed")
+    return()
+endif()
+
 file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}")
 foreach(fixture good missing_bscn bad_flow unknown_actor missing_lua timeout_bscn crossref_bscn)
@@ -193,8 +302,8 @@ endif()
 set(legacy_scenario "${WORK}/legacy.scenario")
 file(WRITE "${legacy_scenario}"
     "${legacy_scenario_prefix} 1\nseed 12648430\nfixed-dt-ns 16666667\n"
-    "frame 1 load ${WORK}/good\n"
-    "frame 2 end\n")
+    "1 level ${WORK}/good\n"
+    "2 quit\n")
 run_app(legacy_scenario "${WORK}/good" "${legacy_scenario}" 2)
 if(NOT CORE_APP_LIFECYCLE_STDERR MATCHES "stage=scenario")
     record_error("legacy_scenario: rejection did not identify the scenario stage: ${CORE_APP_LIFECYCLE_STDERR}")
@@ -211,10 +320,10 @@ expect_initial_failure(missing_lua lua "${WORK}/missing_lua")
 set(replacement_scenario "${WORK}/replacement.scenario")
 file(WRITE "${replacement_scenario}"
     "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
-    "frame 1 load ${WORK}/good\n"
-    "frame 2 load ${WORK}/bad_flow\n"
-    "frame 3 unload\n"
-    "frame 4 end\n")
+    "1 level ${WORK}/good\n"
+    "2 level ${WORK}/bad_flow\n"
+    "3 unload\n"
+    "4 quit\n")
 run_app(rejected_replacement "${WORK}/good" "${replacement_scenario}" 0)
 set(replacement_trace "${CORE_APP_LIFECYCLE_TRACE}")
 if(replacement_trace STREQUAL "")
@@ -238,10 +347,10 @@ endif()
 set(crossref_scenario "${WORK}/crossref_replacement.scenario")
 file(WRITE "${crossref_scenario}"
     "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
-    "frame 1 load ${WORK}/good\n"
-    "frame 2 load ${WORK}/crossref_bscn\n"
-    "frame 3 unload\n"
-    "frame 4 end\n")
+    "1 level ${WORK}/good\n"
+    "2 level ${WORK}/crossref_bscn\n"
+    "3 unload\n"
+    "4 quit\n")
 run_app(crossref_replacement "${WORK}/good" "${crossref_scenario}" 0)
 set(crossref_trace "${CORE_APP_LIFECYCLE_TRACE}")
 set_property(GLOBAL PROPERTY CORE_APP_LIFECYCLE_REMAINDER "${crossref_trace}")
@@ -258,14 +367,14 @@ endif()
 set(mount_scenario "${WORK}/mount_isolation.scenario")
 file(WRITE "${mount_scenario}"
     "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
-    "frame 1 load ${WORK}/good\n")
+    "1 level ${WORK}/good\n")
 foreach(frame RANGE 2 18)
-    file(APPEND "${mount_scenario}" "frame ${frame} load ${WORK}/missing_bscn\n")
+    file(APPEND "${mount_scenario}" "${frame} level ${WORK}/missing_bscn\n")
 endforeach()
 file(APPEND "${mount_scenario}"
-    "frame 19 load ${WORK}/good\n"
-    "frame 20 unload\n"
-    "frame 21 end\n")
+    "19 level ${WORK}/good\n"
+    "20 unload\n"
+    "21 quit\n")
 run_app(mount_isolation "${WORK}/good" "${mount_scenario}" 0)
 set(mount_trace "${CORE_APP_LIFECYCLE_TRACE}")
 if(mount_trace STREQUAL "")
@@ -301,10 +410,10 @@ if(FAULT_SUPPORTED)
     set(commit_tail_scenario "${WORK}/commit_tail.scenario")
     file(WRITE "${commit_tail_scenario}"
         "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
-        "frame 1 load ${WORK}/good\n"
-        "frame 2 load ${WORK}/good\n"
-        "frame 3 unload\n"
-        "frame 4 end\n")
+        "1 level ${WORK}/good\n"
+        "2 level ${WORK}/good\n"
+        "3 unload\n"
+        "4 quit\n")
     run_fault_app(commit_tail "${WORK}/good" "${commit_tail_scenario}" 2
         CORE_APP_TEST_FAIL_UNLOAD_FLUSH)
     set(commit_trace "${CORE_APP_LIFECYCLE_TRACE}")
@@ -332,8 +441,8 @@ if(FAULT_SUPPORTED)
     set(sticky_scenario "${WORK}/sticky_failed.scenario")
     file(WRITE "${sticky_scenario}"
         "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
-        "frame 1 load ${WORK}/good\n"
-        "frame 2 end\n")
+        "1 level ${WORK}/good\n"
+        "2 quit\n")
     run_fault_app(sticky_failed "${WORK}/good" "${sticky_scenario}" 2
         CORE_APP_TEST_FAIL_IO_STOP_FLUSH)
     set(sticky_trace "${CORE_APP_LIFECYCLE_TRACE}")
@@ -353,11 +462,11 @@ if(FAULT_SUPPORTED)
     set(timeout_scenario "${WORK}/io_timeout.scenario")
     file(WRITE "${timeout_scenario}"
         "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
-        "frame 1 load ${WORK}/good\n"
-        "frame 2 load ${WORK}/timeout_bscn\n"
-        "frame 3 load ${WORK}/good\n"
-        "frame 4 unload\n"
-        "frame 5 end\n")
+        "1 level ${WORK}/good\n"
+        "2 level ${WORK}/timeout_bscn\n"
+        "3 level ${WORK}/good\n"
+        "4 unload\n"
+        "5 quit\n")
     run_fault_app(io_timeout "${WORK}/good" "${timeout_scenario}" 0
         CORE_APP_TEST_SLOW_BSCN_US 6000000)
     set(timeout_trace "${CORE_APP_LIFECYCLE_TRACE}")

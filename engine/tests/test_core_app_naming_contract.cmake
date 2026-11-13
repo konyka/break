@@ -51,10 +51,13 @@ set(runtime_sources [=[add_library(core_app_runtime STATIC
     apps/core_app/core_app.c
     apps/core_app/core_app_audio.c
     apps/core_app/core_app_render.c
-    apps/core_app/core_app_checkpoint.c)]=])
+    apps/core_app/core_app_checkpoint.c
+    apps/core_app/scenario.c
+    apps/core_app/core_app_input.c
+    apps/core_app/core_app_simulation.c)]=])
 string(FIND "${cmake_text}" "${runtime_sources}" runtime_sources_index)
 if(runtime_sources_index LESS 0)
-    message(FATAL_ERROR "core_app_runtime must use exactly the four renamed runtime sources")
+    message(FATAL_ERROR "core_app_runtime must use exactly the seven core_app runtime sources")
 endif()
 foreach(required_cmake IN ITEMS
         "engine_link_rhi_backend(core_app)"
@@ -232,8 +235,10 @@ if(manifest_name_index LESS 0)
     message(FATAL_ERROR "CORE_APP_CHECKPOINT_MANIFEST_NAME must be exactly manifest.core")
 endif()
 file(READ "${ENGINE_SOURCE_DIR}/apps/core_app/core_app.c" app_source)
-if(NOT app_source MATCHES "COREAPPTRACE" OR NOT app_source MATCHES "core-app-scenario")
-    message(FATAL_ERROR "application must use COREAPPTRACE and core-app-scenario")
+file(READ "${ENGINE_SOURCE_DIR}/apps/core_app/scenario.c" scenario_source)
+string(FIND "${scenario_source}" "strcmp(buffer, \"core-app-scenario 1\")" scenario_header_index)
+if(NOT app_source MATCHES "COREAPPTRACE" OR scenario_header_index LESS 0)
+    message(FATAL_ERROR "application must use COREAPPTRACE and the scenario parser must require core-app-scenario 1")
 endif()
 unset(ENV{GIT_DIR})
 unset(ENV{GIT_WORK_TREE})
