@@ -1,0 +1,7 @@
+core-app-scenario 1
+seed 12648430
+fixed-dt-ns 16666667
+frame 1 checkpoint 7
+frame 2 add-item 1
+frame 3 restore 7
+frame 4 end

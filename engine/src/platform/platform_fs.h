@@ -41,10 +41,8 @@ typedef struct PlatformDirEntry { char name[256]; bool is_dir; } PlatformDirEntr
 bool platform_list_dir(const char *path, PlatformDirEntry *entries, u32 capacity, u32 *out_count);
 
 /* ---------------------------------------------------------------- */
-/* Stage 5 Phase A Task 3: write-side PAL. POSIX branch fully        */
-/* tested; Win32 branch compile-only (_WIN32) — correct by           */
-/* inspection only, no Windows lane exercises it in this repo state  */
-/* (the platform_list_dir precedent).                                */
+/* Stage 5 Phase A Task 3: write-side PAL. The POSIX and Win32       */
+/* implementations share the durability contract below.              */
 /*                                                                   */
 /* Crash-safety ordering of a commit (the durability contract):      */
 /*   1. fsync the tmp file (payload bytes durable)                   */
@@ -75,16 +73,43 @@ bool platform_list_dir(const char *path, PlatformDirEntry *entries, u32 capacity
 /* by PLATFORM_FS_PATH_CAPACITY (the ".tmpXXXXXX" suffix must fit).  */
 /* ---------------------------------------------------------------- */
 
-/* platform_fs.h additions — POSIX tested; Win32 branch compile-only (_WIN32):
- * CreateFile/WriteFile/_fsync-equivalent (FlushFileBuffers)/MoveFileEx(REPLACE_EXISTING). */
+/* platform_fs.h write-side PAL additions. The optional diagnostic open
+ * reports the first failed atomic API with saved OS/CRT errors. */
 
 /* Opens "<path>.tmpXXXXXX" in the SAME directory as path (rename atomicity requires
  * same filesystem). Only ONE writer per instance; not thread-safe. */
+/* commit_status consumes the writer like commit. SUCCESS_DURABLE means all
+ * platform durability steps completed. NOT_COMMITTED_TARGET_UNCHANGED covers
+ * failures before rename. RENAMED_DURABILITY_UNKNOWN means rename succeeded
+ * but a later directory durability step failed. The legacy bool commit maps
+ * only SUCCESS_DURABLE to true, preserving its previous false for both other
+ * outcomes. Win32 uses MoveFileEx(WRITE_THROUGH) instead of directory fsync. */
+typedef enum PlatformAtomicCommitResult {
+    PLATFORM_ATOMIC_SUCCESS_DURABLE = 0,
+    PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED,
+    PLATFORM_ATOMIC_RENAMED_DURABILITY_UNKNOWN
+} PlatformAtomicCommitResult;
+
 typedef struct PlatformAtomicWriter PlatformAtomicWriter;
+typedef struct PlatformAtomicWriterDiagnostic {
+    const char *step;
+    i64 raw_result;
+    u64 os_error;
+    int crt_error;
+    u64 got;
+    u64 expected;
+    char temporary_path[PLATFORM_FS_PATH_CAPACITY];
+    char target_path[PLATFORM_FS_PATH_CAPACITY];
+} PlatformAtomicWriterDiagnostic;
 PlatformAtomicWriter *platform_atomic_writer_open(const char *path);     /* NULL on error */
+/* Same open contract, with optional caller-owned first-failure diagnostics.
+ * The diagnostic must outlive the writer; step points to static storage. */
+PlatformAtomicWriter *platform_atomic_writer_open_diagnostic(
+    const char *path, PlatformAtomicWriterDiagnostic *diagnostic);
 bool platform_atomic_writer_write(PlatformAtomicWriter *w, const void *data, usize len); /* false → abort state */
 bool platform_atomic_writer_commit(PlatformAtomicWriter *w);  /* fsync file, close, rename over path,
                                                                  fsync directory, free writer */
+PlatformAtomicCommitResult platform_atomic_writer_commit_status(PlatformAtomicWriter *w);
 void platform_atomic_writer_abort(PlatformAtomicWriter *w);   /* close + unlink tmp + free; idempotent */
 
 bool platform_mkdir(const char *path);                        /* single level; true if exists-as-dir */

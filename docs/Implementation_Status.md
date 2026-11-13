@@ -91,6 +91,71 @@
 - **最终验证**：普通完整 `cmake --build build-compose-normal -j3` 成功；`ctest --test-dir build-compose-normal -LE 'graphics|fuzz' --output-on-failure -j3` 为 345 项零失败，唯一既有 non-Windows D3D12 dependency gate skip。ASan+UBSan、`detect_leaks=1` 下 remember 8/8、tree 27/27，无 sanitizer/leak 报告；`git diff --check` 通过。完整构建仍有既有 vendored Lua `tmpnam` linker warning。
 - **边界与独立评审**：覆盖第 65 个真实全局 slot、`local_slot>=4`、257-byte size、0/非 2 幂/超 `max_align_t` 对齐、替换/删除/中止/失败/destroy 和重复 finalize。独立规格评审 PASS、质量评审 Approved，零 Critical/Important/Minor；控制器另在提交 `0509f643` 上复跑 focused 2/2。证据仅来自 Linux CPU/headless，不是 Vulkan/OpenGL、窗口或像素证明。完整命令与 RED/GREEN 记录见 `.superpowers/sdd/2026-11-11-compose-mvi/task-2-report.md`。
 
+## 本机 Windows 复验（2026-11-13）
+
+- 基线是 `438dff87`。Clang 22.1.6、Ninja、`ENGINE_RHI_BACKEND=d3d12`。第一次非图形套件 337 项里有 3 个失败：`test_ci_image_fix2`、`test_rollback_input_contract`、`test_platform_win32_runtime`。前两项来自 `C:/Windows/System32/bash.exe`：它只是 WSL 启动器，本机发行版磁盘不存在时脚本没有执行，UTF-8 诊断又被 GBK 文本模式读丢。现在只接受能执行 `echo posix-bash-ok` 的 bash，探测失败时改用 git 同目录的 bash；本机解析为 `D:/Program Files/Git/bin/bash.exe`。这两个合同的子进程输出显式使用 `encoding="utf-8"`。修复后这两项通过，`test_break_online_nat` 也通过。
+- 修复后的非图形、非 fuzz 为 **337 项入选、332 PASS、4 SKIP、1 FAIL**。四个 SKIP 是三个 nm 合同（非 MinGW Windows）和悬空 `.git`（当前进程不能创建 symlink，夹具返回 77）。第一次运行时唯一 FAIL 是 `clipboard_read_bounds_unterminated_unicode_text`：`OpenClipboard` 在约 5 秒重试后仍返回 `ERROR_ACCESS_DENIED`（5），`GetOpenClipboardWindow` 为空，剪贴板 owner 是 Windows Terminal 窗口。同会话里另外启动的进程当时也打不开剪贴板，当前令牌不能重启 `cbdhsvc`。该用例之外的 25 个 Win32 runtime 检查当时通过。随后单独重跑 `test_platform_win32_runtime` 为 26/26，剪贴板锁定没有保持。D3D12 graphics 标签 7/7 通过，其中 WARP runtime 通过；WARP 不是独立显卡证明。
+
+## 当前同步：Core App 上游修复合并（2026-11-12）
+
+- 最终实现由 Windows `_spawnv(_P_WAIT)` 直接启动真实 baker，executable/output 参数按 CRT 规则引用，并保留 `run_baker(output, slot)`、`launch.command` 与原始 `launch.spawnv` 诊断；POSIX 仍使用原 `system()` 和 `launch.system`。A/B 短路、长度失败、11 资产逐字节比较与含空格输出目录回归均保留，空格用例使用 `"space"` 诊断 slot。
+- 最终检出规则对 Lua、scenario、actors.sidecar 使用 `text eol=lf`，对 level.banm、level.bscn、level.fg、tone.wav 使用显式 `binary`；generic `engine/assets/core_app/* binary` 不再是现行实现。合同逐一执行真实 `git check-attr -a`，资产字节和比较方式不变。
+- 下文的完整命令外层引用与 generic binary 均仅作合并前历史证据，不与上述最终实现并存。远程 WGL/Python 记录和本分支诊断记录均保留。终审修复 `253ce949` 使 formal/naming 对悬空 `.git` fail-closed，并补充真实归档 nested、失败路径清理和文档边界；`45fe548d` 保留 intentional no-NM 的真实 SKIP 证据。两项 scoped 复审均 PASS，无遗留 Critical/Important。
+- 最终普通非图形为 **358 项入选、354 PASS、4 个文档化 SKIP、0 FAIL**；ASan+UBSan `detect_leaks=1` 同为 358/354/4/0，TSan focused 7/7、assets 23/23、no-tests 构建成功且注册 0 项、显式 fuzz 5/5。所有构建和并行 CTest 使用 `-j3`；既有 Lua `tmpnam` 链接警告仍如实保留。
+- 独立临时 validation 提交 `73e1e267` 的原生 run `43150345368`、job `130957761304` 明确记录 `D3D12Core.dll missing rejected; restored; SHA-256 verified`，八个嵌套夹具无未运行项，compat 1/1、WARP runtime 1/1 与 Agility 部署通过；CPU run `43150345348` 的 Windows/macOS 均成功。WARP 不是独立显卡证明，临时辅助实现不合入 master。最终交付提交的 Windows/D3D12 复跑与主 CI 仍由 controller 验收，本条目不提前宣称完成。
+
+- 最终 CPU run `43155806374` 的 Windows job `130975330900` 已通过 direct baker exit 0、assets **17/17** 和 diagnostics/probe；macOS job `130975331228` 的 assets 为 **18/18**，archived nested 自身 marker 与 1/1 均通过，仅 compat 因实际摘要为 `100% tests passed out of 1`、不符合 newer-only 断言而 RED。当前修复让实际 archived 断言共享精确整行 predicate，仅接受该格式与 `100% tests passed, 0 tests failed out of 1`，并继续拒绝零/多测试、失败和未运行文本；修正后的原生 run 仍待 controller 获取，本条目不提前宣称通过。
+
+- 最终 D3D12 run `43155806382`、job `130975331060` 的 parent configure 使用 `C:/Program Files/LLVM/bin/clang.exe`，archived `core_app` 却实际调用 `C:/mingw64/bin/cc.exe` 并在不兼容 MinGW D3D12 headers 上失败，后续 WARP 因此未形成通过证据。当前修复以 `NESTED_CMAKE_C_COMPILER` 将真实 parent compiler 传入 archived configure 与 target/nm 第二跳，并同时传 `CMAKE_C_COMPILER` 给实际 configure；archive、positive 和 wrapped/no-tests cache 均按 REALPATH 比对。刚完成的两种 CTest 成功格式、no-NM、Agility staging/hash 和 generator/config 保持不变；修正后的原生 D3D12/WARP 复跑仍待 controller，本条目不提前宣称通过。
+
+- **修正后的最终原生验收**：临时集成 `0ce1c8a8`（含交付 `501dacf6` 及格式修复）经 scoped 集成复审 PASS。CPU run `43162667419` 的 Windows job `130997246369` 实测 direct baker exit 0、assets **17/17**、diagnostics/probe success；macOS job `130997246678` 实测 assets **18/18**，九项 Core App 合同为 **6 PASS＋3 个既有 nm SKIP、0 FAIL**，包含 compat。成功步骤不打印 archived nested 原始摘要，因此不虚构具体格式；真实 compat predicate 已验证捕获日志。D3D12 run `43162667434`、job `130997246493` 显示 archive/第二跳输入为 `C:/Program Files/LLVM/bin/clang.exe`，并通过实际 cache 断言和完整归档构建；`D3D12Core.dll missing rejected; restored; SHA-256 verified`、八夹具无未运行、compat 1/1、WARP runtime 1/1、Agility 部署和七个 D3D12-labelled 测试均通过。此前待验收记录由这些结果更新；临时辅助实现不合入 master，WARP 不证明独立显卡。本地 master 合并结果与主 CI 仍另行验收。
+
+- 主 CI run `43164552740` 的 clean-room job `131003571447` 在真实无 `.git` 的导出树上产生 `fatal: not a git repository (or any parent up to mount point /)` 与 `Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).`。formal、checkout、naming 因只识别旧 parent-directories 文本而失败（352 selected、3 FAIL、其余 349 PASS），dangling 合同则正确通过。当前共享判定只在 `.git` 真正不存在且非 symlink 时接受该两行诊断或原标准诊断，其它权限、所有权、损坏和执行错误继续 FAIL；修正后的 fresh full CI 与 D3D12 run 仍待 controller，本条目不提前宣称通过。
+
+- 主 CI run `43181031519` 的 macOS Cocoa + MoltenVK job `131056765414` 中，`nat_close_before_punch_blocks_late_punch` 在 late PUNCH 后重新 arm A（22/23），但这不是已证实的协议缺陷：coordinator 仅发送 CLOSE 并 retire pair，固定 8 次 pump 不保证 endpoint 已处理关闭并写入 closed generation/sequence。测试现复用既有五秒 `nat_pump_until_closed`，保留初始/最终 disarmed、实际 late PUNCH、receive/poll 和首错传播，不增加 sleep、skip 或生产协议改动。controller 本地 200 次未复现，修正后本地单核 200/200 与 TSan focused 通过；fresh full CI/D3D12 仍待 controller，本条目不提前宣称原生通过。
+
+- **master 最终验收**：合并提交 `a9c25224` 的主工作树完整构建通过，非图形为 **358 入选、354 PASS、4 个文档化 SKIP、0 FAIL**。主 CI run `43186135276` 的全部可执行 job 成功；macOS Cocoa job `131073643195` 的 `test_break_online_nat` 实际通过，clean-room job `131073947704` 为 **352 selected、0 FAIL**，三个缺库合同按预期 SKIP，dangling 合同通过。D3D12 run `43186135119`、job `131073642817` 的 headless、WARP runtime **1/1**、push-constant、Agility 部署和七个 D3D12-labelled 测试均成功。此前待验收记录由这些新 run 更新；硬件专用 lane 的调度跳过不视为通过或硬件证明，WARP 仍不证明独立显卡。
+
+## 合并前历史：Core App Windows 启动与资产检出修复（2026-11-11）
+
+- **合并前历史方案，非最终实现**：Windows 进程启动修复 `987121d9` 只在 `_WIN32` 的测试 `system()` 命令外再包一层引号，POSIX 格式、原始返回和诊断不变。真实 probe 已区分原始格式失败与完整命令外层引用成功，未采用不安全的无引号捷径。原生 run `43041968171` 的 Windows job `130595842235` 中 direct baker 退出 0，assets **16/16**，完整 `test_core_app_baker_diagnostics` 通过，probe outcome/final gate 均为 success。macOS job `130595841519` 同样通过；这些是 CPU/合同证据，不是 GPU 或声卡证据。
+- **合并前历史方案，非最终实现**：正式文本资产的 CRLF 检出差异由真实长度与 SHA-256 证明，BSCN/BANM/FG/WAV 哈希则一致。当时以 `engine/assets/core_app/* binary` 固定检出，不改写 11 个资产或 baker 内容。新 `test_core_app_checkout_attributes` 以真实 `git check-attr` 验证全部资产，`a1504864` 另外阻止悬空 `.git` symlink 被误判为无元数据。新 checkout 的正式资产比较恢复通过，启动与资产两项修复均已完成独立规格/质量评审及 scoped 复审。
+- 当前本机非图形回归为 **357 项入选、353 PASS、4 个文档化 SKIP、0 FAIL**，所有构建和并行 CTest 使用 `-j3`。Windows D3D12 compat 的 generator/`-C` 配置与归档 Agility 暂存仍是独立后续任务，不把上述成功解释为全仓 CI、sanitizer、no-tests、fuzz 或最终 master 已完成。临时验证/APFS/probe 分支不会合入 master，未创建 PR。
+
+## 当前进展：Core App Metal/APFS 验收与 Windows 诊断（2026-11-11）
+
+- Core App CI Task 1–3 的实现及独立规格/质量评审均已通过。nested 合同转发有效后端与真实 SDK 路径，并要求缺符号是唯一错误；原生 macOS Metal run `43004390668` 的 job `130468130703` 已实际执行 assets 17/17，以及 Core App 9 项合同的 6 PASS＋3 个明确 nm SKIP，target、nested、wrapped、compat、正式资产和命名均通过。这是 Metal 编译与 CPU/合同证据，不是 Metal GPU 运行证据。
+- macOS reserved-alias 问题只修改了测试夹具，未修改 checkpoint writer、API/ABI 或序列化。修复后的原生 APFS assets 为 17/17；独立变异分支 `core-app-ci-apfs-red` 的 run `43004881342`、job `130469756286` 恢复旧 `"wb"` 预写后精确复现旧 manifest 哈希破坏，结果为 16 PASS＋1 FAIL。删除该预写后的同一实现即为上述 17/17 GREEN。
+- Windows 仍待真实修复：run `43004390668` 的 job `130468130431` 中，直接 baker 返回 0，但资产测试内的 `ensure_baked()` 失败（9 PASS＋7 FAIL）。诊断提交 `58e5e4fa` 正在独立评审，尚未声称修复 prepare/system/path 或恢复 CI。D3D12 run `43004390556` 另有 compat 生成测试 `Not Run` 与归档缺少 Agility DLL 的独立问题；将先取得完整 `-V` 与目录证据，再分别制定最小修复，不与 baker 混淆。
+- Task 4 当前本机非图形回归为 **355 项入选、351 PASS、4 个文档化 SKIP、0 FAIL**。所有构建和并行 CTest 使用 `-j3`。sanitizer、no-tests、显式 fuzz、完整 Windows/macOS/D3D12 lane 与最终 master CI 仍待完成。临时验证分支及其触发配置不会合入 master；未创建 PR。
+
+## 当前待办：Core App 合入后的跨平台 CI（2026-11-11）
+
+- 主 run `42967766610` 与 D3D12 run `42967766619` 当前均为 FAILURE，不能用此前 `d402a375` 的全绿覆盖。失败涉及旧 CMake 的 UNVERIFIED skip 回退、无 `.git` 的 clean-room 资产清单、nested Vulkan 配置，以及 Windows baker 和 macOS manifest alias；具体根因正在按日志分项确认，尚未把任何一项写成已修复。
+- 本地合并结果仍为 352 项非图形入选、348 PASS、4 个文档化 SKIP、0 FAIL，no-tests 构建通过，Core App 全分支终审 Ready；这些不替代远程平台证据。修复将采用 TDD 和独立评审，随后重跑所有受影响 lane。
+
+## 本轮更新：Windows 同步修复 Core App 资产、WGL 与 Python 编码（2026-11-11）
+
+- **同步与 RED**：本地从 `59f3f737` 快进至 `f7a1f87e`，无冲突。新代码在 Clang/OpenGL、MSVC 和 MinGW 均暴露 `test_glad_wgl_loader`、`test_ci_image_fix2`、`test_core_app_assets` 三项失败；远程 CI `42967766610` 与 Windows D3D12 `42967766619` 也复现资产测试失败。
+- **Core App 资产**：测试在 Windows 改用 `_spawnv(_P_WAIT)` 直接启动真实 baker，不再依赖 `system()` 的命令处理器转发；仍执行真实 baker、reader 和逐字节比较。`core.autocrlf=true` 曾将 7 个正式文本资产检出为 CRLF，而 baker 固定生成 LF；`.gitattributes` 现在对 Lua、scenario 和 actor sidecar 显式指定 `text eol=lf`，四个二进制资产不变。进程路径参数按 CRT 规则引用，新增含空格输出目录的真实 baker 回归；Clang/MinGW 与独立归档的资产测试均为 17/17。
+- **WGL 与 Python**：真实 WGL context 可为核心入口返回不同于 `opengl32.dll` 导出地址的有效转发地址；测试改为优先对照当前 context 的 `wglGetProcAddress`，为空时必须等于真实 `GetProcAddress`，实际 GL 版本、renderer、texture/extension 查询与模拟 DLL fallback 断言保留。CI 工作流契约的 Python reader 显式指定 UTF-8，不再受 Windows 中文系统默认 GBK 影响。
+- **最终非图形矩阵**：Clang/OpenGL 329 项入选（326 PASS、3 SKIP），Clang/Vulkan 与 Clang/D3D12 各 331 项（328 PASS、3 SKIP），Clang ASan 329 项（326 PASS、3 SKIP），MSVC 335 项（331 PASS、4 SKIP），MinGW 337 项（334 PASS、3 SKIP），均 0 FAIL。MSVC/MinGW 含 5 个 fuzz 冒烟；各构建日志无 warning/error。ASan 使用 `detect_leaks=0`，不据此声称泄漏检测通过。
+- **图形与实机**：OpenGL 4/4、Vulkan 6/6、D3D12 10/10、ASan 4/4、MSVC 9/9、MinGW 4/4，共 37/37 通过。三后端各实跑 90 帧，均完成两次全屏、两次标题栏和渲染尺寸切换；截图中文字位于左上且方向正确，Vulkan validation 为 0。
+- **审查与边界**：独立审查发现含空格参数未引用，新增回归先 RED 后 GREEN，复核为 Ready，无遗留 Critical/Important。本轮仅修改测试、测试资产检出规则和验证记录；不代表 Windows 音频设备、真实网络服务或 POSIX-only 功能已验证。
+
+## 交付验证：主 CI 与 D3D12 全绿、Core App 命名迁移（2026-11-11）
+
+- 主 CI run `42964916340` 与 Windows D3D12 run `42964916355` 均已 `SUCCESS`。两个 macOS lane 都实际通过 Runtime IO 的 `stage=0x52` 与精确 `SIGABRT` 路径，先前的 Cocoa setup 竞争不再复现；Windows、Linux、图形与其它 headless lane 也都完成。
+- Core App 命名 Task 1/2 的独立规格与质量评审均为 PASS。合入本地 master 后，完整非图形 CTest 为 **352 项入选、348 PASS、4 个文档化 SKIP、0 FAIL**；两个额外测试来自同步的 master 基线。第二次 bounded IO wait 失败、`io_quiesced` trace EIO、Task 9 的 256 项 FIFO 和 Flow identity/source-port 仍保留在后续台账，未因命名迁移或 CI 转绿而视为完成。
+- 全分支终审为 **Ready**，无 Critical/Important 或需阻断合并的 Minor。终审另用真实 reader 确认 Flow Player 为 `{index=2, generation=1}`、两条 exec-link 的 `source_port=1`，资产正确性无疑点；永久断言仍留后续固化。Compose 与 P12 Task 4–13 尚未在本条目中宣称实现。
+
+## 本轮更新：P12 Core App Naming Task 2——一次性数据格式（2026-11-11）
+
+- **范围与格式**：只迁移 P12 数据标识，checkpoint 使用固定 8 字节 `CORECKPT` 和 `manifest.core`，trace 使用 `COREAPPTRACE version=1`，scenario 使用 `core-app-scenario 1`。reader 拒绝旧 magic、旧 manifest 和旧 scenario，不提供双格式。字段宽度、偏移、FNV-1a-64、generation、错误码、三态 checkpoint、mount 隔离、commit fatal、IO quiescence、sticky FAILED 与逆序销毁保持原合同；P0–P11 API/ABI 和链接关系未改。
+- **TDD 与变异**：Task 1 实现上的 focused RED 为 assets 18/22、naming/lifecycle 失败，旧 scenario 实际退出 0。最小实现和正式资产重建后 focused 4/4、assets 22/22。临时恢复旧 magic 使 assets 20/22 且 naming 失败；恢复后 assets/naming/lifecycle 3/3 GREEN。scenario 拒绝仍保留既有单条 `runtime_failed` rollback trace，没有改成空 trace 或正常停止。
+- **资产与 archive**：最终 `core_app_asset_bake --output` 分别重建空目录和正式目录，11 个文件逐 `cmp` 一致，BSCN/Flow/BANM/WAV/Lua 真实 readers 通过；未手工编辑二进制。格式提交 `1584794185a14a6c0f8210bfbb9c04d956829c78` 的 HEAD archive 独立配置/构建成功，最终 Core App 9 项入选为 6 PASS、3 个 nm SKIP、0 失败。归档没有 `.git` 导致两个 tracking 合同首次各报 0/11；仅在生成归档目录初始化临时 index 并登记同一组归档资产后，原 CTest 命令全绿，没有借用源树资产。
+- **最终验证**：普通和 ASan+UBSan 非图形/非 fuzz 均为 351 项入选、347 PASS、4 个文档化 SKIP、0 失败；ASan+UBSan 无 sanitizer 报告。TSan lifecycle 1/1，无 race 报告。no-tests 完整构建成功，`core_app_runtime`、`core_app`、`core_app_asset_bake` 均存在且可构建；本切片未修改 CMake 或增加链接依赖。所有构建和并行 CTest 使用 `-j3`。
+- **限制与剩余台账**：仅有 Linux CPU/record 证据，record/null 不证明 GPU、声卡或听测；native GPU/audio、网络、非 Linux 与远程 CI 未运行。第二次 bounded IO wait 失败和 `io_quiesced` trace EIO 注入仍未覆盖；Task 9 的 256 项 FIFO/过载/drain recovery 未提前实现，当前仍为 16 项 record FIFO；baker 的 Flow player identity 与 exec-link source port 专项断言仍待后续。后续独立规格与质量评审均为 PASS、零 Critical/Important/Minor，确认 writer/reader 负例、11 资产 hash/readers、archive 元数据边界、历史保留及验证日志。完整证据见 `.superpowers/sdd/2026-11-11-core-app-naming/task-2-report.md`。
 ## 原生验证进展：MSVC/D3D12 通过，macOS Runtime IO 修复待验证（2026-11-11）
 
 - 主 CI run `42956737548` 的 `Windows + MSVC (headless)` job `130313507109` 已通过，standalone `/experimental:c11atomics` 工具链修复获得真实 `cl.exe` 验证；Windows D3D12 run `42956737579` 也已通过。上一轮 WGL、MinGW、Clang 与 NAT 修复未在这些 lane 重现失败。
@@ -10644,3 +10709,55 @@ Result: Metal configuration 225/225 (D3D12 gate skipped by design), graphics
 graphics 4/4. After the merge the deferred Metal image is still 37.3 mean
 luminance (MoltenVK 37.7) with mean absolute difference 4.5, the default path
 7.1, and the window toggle demo reports two `ok=1` per backend.
+
+
+### 2026-11-10 P12 Task 3 game_app transactional record lifecycle
+
+The integration branch synchronized master `737ccc8b4227f2d53039119caf1a2b6066e2871e` in merge `30c9285d9605ff07157f8563cda60279082f6269` without conflicts. This merge is the Task 3 review base; the X11 removal, CI fixes, Task 2 assets/naming/checkpoint semantics, and both documentation lines remain present.
+
+`game_app` now has a real fixed-step record lifecycle over the committed Task 2 assets. A candidate `GameLevel` owns fresh World/Scene, BreakGame, Flow, Lua/adapter, physics, AI, animation, record resources, and its transient Runtime IO request. BSCN/Flow/Lua/actor validation, physics/AI/animation creation, record resource staging, and cross-reference checks all finish before one level-pointer commit. Reject cleanup is reverse-order and consumes no generation; a bad replacement Flow leaves the old level producing frames at generation 1. Explicit unload invalidates that generation before destruction.
+
+The process initializes the Runtime IO singleton once and releases each BSCN request before another load. Shutdown is network, audio, render, then level: admission/producer stop, queue close/drain/join, render idle/destroy, IO shutdown with zero active requests, and level/VFS destruction. Startup and sticky-failure cleanup calls explicit subsystem rollback rather than relying on coordinator stop. Render and audio consume only bounded POD records. Record render emits resource/frame ids without a headless RHI or device; record audio is a 16-entry command FIFO, not an audio-device or listening test.
+
+The real-process lifecycle test first failed against the old stub with exit 2 and no level/frame events. The implementation passes the complete two-generation trace, all four initial failure fixtures (missing BSCN, bad Flow, unknown Actor class, missing Lua module) with exit 2 and no partial commit, and rejected-replacement continuation. An intentional pre-Flow `game->level = candidate` mutation caused segmentation faults and contract failures; restoring staging returned the test to green.
+
+Verification: Task 3 plus Runtime/BreakGame/Scene focused tests 5/5; existing game_app contracts 6/6 with the two established nm negative-path tests skipped; complete non-graphics/non-fuzz CTest 348/348 with the established D3D12/nm skips; ASan+UBSan lifecycle 1/1; TSan lifecycle 1/1; no-tests `game_app` and `game_asset_bake` builds succeeded. All builds used `-j3`.
+
+Evidence remains Linux CPU/record only. Input/gameplay simulation, GPU restoration or pixels, audio hardware/listening, networking, checkpoint state restoration, full device workers, and non-Linux runtime behavior are not claimed.
+
+
+### 2026-11-10 P12 Task 3 review fix round 1/5
+
+The Task 3 integration review findings are addressed without expanding into Task 4+ functionality. Candidate BSCN reads now use one application-owned DIR mount namespace per load. The previous DIR slot is cleared before mounting the current root, so a missing BSCN cannot fall back to an older root and rejected candidates do not consume the 16-mount budget. A real scenario executes 17 missing-BSCN replacements at generation 1 followed by a successful generation-2 replacement.
+
+Load errors now distinguish staging rejection, committed failure, and pre-commit runtime-fatal failure. Render/crossref rejection retains an existing level like every other staging reject. A committed replacement keeps the old generation in `retired_level` until destruction completes; rollback owns and destroys both current and retired levels. Post-commit audio/trace/render errors emit `runtime_fault` instead of `load_rejected`. Actual committed-level destruction emits `level_destroyed`, and tests require exactly one event per generation on successful replacement, commit-tail failure, and sticky shutdown rollback.
+
+A first IO wait timeout is followed by a second bounded wait on the same request. The real completion is consumed before any later VFS mount because publication follows the worker's VFS read. `io_quiesced` records this ordering; a second wait failure becomes runtime fatal and shutdown joins the worker. The implementation does not misinterpret `stats.active`, which tracks caller requests rather than worker quiescence. A preload-delayed BSCN read previously produced a TSan mount/read race on the next load; it now rejects, continues the old generation, and completes a subsequent generation-2 replacement without a race.
+
+The real-process suite additionally covers successful valid-to-valid replacement with exact destruction counts, an EIO commit tail, coordinator-callback sticky FAILED, and a crossref fixture whose BSCN mesh-data chunk is hidden while the Scene remains parseable. The preload fault library is test-only and does not replace production runtime/game libraries or add production hooks. Mount reset, commit classification, and the second IO wait each underwent an independent mutation/restore RED-GREEN check.
+
+Verification after the fixes: complete non-graphics/non-fuzz CTest 348/348 with the three established D3D12/nm skips; no-tests `game_app` and `game_asset_bake` builds succeeded; the complete expanded lifecycle passed 1/1 under ASan+UBSan with leak detection and 1/1 under TSan. All builds used `-j3`. The 16-entry audio queue remains explicitly temporary for Task 3; the Task 9 plan now reiterates the mandatory 256-entry storage and overflow/drain recovery tests. Evidence remains Linux CPU/record only.
+
+
+
+### 2026-11-11 P12 Core App Naming Task 1
+
+The P12 application, runtime library, baker, tests, formal assets, and current design/plan references now use the `core_app`/`CoreApp`/`CORE_APP` naming system. The runtime target is `core_app_runtime`; `CoreLevel.actor_runtime` retains the existing BreakGame adapter type. The P0–P11 public API/ABI and link boundaries remain unchanged, including `break_game`, `BreakGame*`, `BREAK_GAME_*`, `break_flow`, `break_ai`, `break_game_lua`, and `runtime_core`. No second application was introduced.
+
+This task changes names only. `GAMECKPT`, `manifest.game`, `GAMEAPPTRACE`, and `game-app-scenario 1` retain their existing data-format meaning pending the one-shot Task 2 format migration and old-format rejection. No old-format compatibility path was added. The naming contract checks required and absent paths, the four-source runtime target, link boundaries, public interfaces, exactly 11 tracked assets, internal helper/local-domain leftovers, and current design/plan references with explicit scoped exemptions.
+
+Verification used Linux CPU/record only. The focused naming/target/assets set completed 5/5 with three passes and the two established nm negative-path skips. The asset/lifecycle/editor/platform focused set passed 5/5; `test_core_app_assets` passed all 20 assertions after restoring the case-variant manifest fixture. Complete non-graphics/non-fuzz CTest passed 349/349 with 346 passes and the established D3D12 plus two nm skips, matching the pre-migration count. No-tests builds produced `core_app` and `core_app_asset_bake`. Real CLI checks returned help=0, unknown-option=2, and legal-options runtime FAILED=2; a real record scenario exited 0 and emitted the complete two-generation `runtime_stopped` trace. A temporary old-name runtime-target mutation made both naming and no-tests target contracts fail, and restoring it returned both to green. All builds and parallel CTest runs used `-j3`.
+
+Final review updates supersede the initial counts above: fix round 1 (`a3b58e12`) restored the historical evidence, runtime source-set contract and supported-nm behavior; fix round 2 (`d398dcdb`) added the real nm capability preflight and explicit unsupported negative-path test, and `42106df7` recorded the remaining register. Scoped re-review passed with Task quality Approved and no new Critical/Important. Final complete non-graphics/non-fuzz CTest was 351/351 with 347 PASS and four documented skips (D3D12 plus three nm-contract skips). With supported wrapped nm, a missing `core_app_run` is a contract FAIL rather than a skip; unsupported nm/tool format is an explicit SKIP.
+
+The brief's `ENGINE_RHI_BACKEND=record` configure argument is rejected by the pre-existing backend selector, which accepts auto/opengl/vulkan/metal/d3d12; verification therefore used `ENGINE_RHI_BACKEND=auto` while the application exercised `--render=record --audio=record`. This is not GPU or audio-device evidence. Native GPU/audio, listening, networking, non-Linux runtime, and remote CI remain unverified.
+
+
+### 2026-11-11 P12 remaining verification register
+
+The following items are explicitly not complete and are not implied by the historical Task 1–3 entries above:
+
+- There is still no fault injection that forces the second bounded IO wait to fail, and no `io_quiesced` trace EIO injection. A permanently blocked worker must not be described as joined or as having `active=0`; the existing delayed-read and control-path evidence does not cover those two failure outcomes.
+- `core_app_audio` still has the temporary 16-entry record FIFO from Task 3. Task 9 must expand it to 256 entries and prove overload plus drain recovery before that capability is considered complete.
+- The Task 2 baker still needs explicit assertions for the Flow player identity and the exec-link source port. These remain scoped follow-ups for the final integration review rather than silently accepted reader evidence.
+- P12 Tasks 4–13 have not started. The naming migration and its tests do not establish gameplay, GPU pixels, audio devices, listening, networking, or non-Linux runtime behavior.

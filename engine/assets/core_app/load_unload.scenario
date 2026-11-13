@@ -1,0 +1,8 @@
+core-app-scenario 1
+seed 12648430
+fixed-dt-ns 16666667
+frame 1 load
+frame 2 unload
+frame 3 load
+frame 4 unload
+frame 5 end

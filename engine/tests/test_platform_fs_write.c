@@ -31,6 +31,9 @@
 #include <sys/resource.h>
 #include <signal.h>
 #endif
+#if defined(GAME_TEST_WRAP_FS)
+#include <errno.h>
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Fixture helpers                                                     */
@@ -438,6 +441,124 @@ TEST(null_and_error_matrix) {
     ASSERT_TRUE(TEST_RMDIR(root) == 0);
 }
 
+#if defined(GAME_TEST_WRAP_FS)
+static u32 g_file_fsync_failures;
+static u32 g_dir_fsync_failures;
+static u32 g_rename_failures;
+static u32 g_file_fsync_injected;
+static u32 g_dir_fsync_injected;
+static u32 g_rename_injected;
+
+int __real_fsync(int fd);
+int __real_rename(const char *old_path, const char *new_path);
+
+int __wrap_fsync(int fd) {
+    struct stat status;
+    if (fstat(fd, &status) != 0) return __real_fsync(fd);
+    if (S_ISREG(status.st_mode) && g_file_fsync_failures > 0u) {
+        --g_file_fsync_failures;
+        ++g_file_fsync_injected;
+        errno = EIO;
+        return -1;
+    }
+    if (S_ISDIR(status.st_mode) && g_dir_fsync_failures > 0u) {
+        --g_dir_fsync_failures;
+        ++g_dir_fsync_injected;
+        errno = EIO;
+        return -1;
+    }
+    return __real_fsync(fd);
+}
+
+int __wrap_rename(const char *old_path, const char *new_path) {
+    if (g_rename_failures > 0u) {
+        --g_rename_failures;
+        ++g_rename_injected;
+        errno = EIO;
+        return -1;
+    }
+    return __real_rename(old_path, new_path);
+}
+
+static void reset_commit_faults(void) {
+    g_file_fsync_failures = 0u;
+    g_dir_fsync_failures = 0u;
+    g_rename_failures = 0u;
+    g_file_fsync_injected = 0u;
+    g_dir_fsync_injected = 0u;
+    g_rename_injected = 0u;
+}
+
+static PlatformAtomicCommitResult commit_status_fixture(const char *target,
+                                                         const char *payload) {
+    PlatformAtomicWriter *writer = platform_atomic_writer_open(target);
+    if (!writer) return PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED;
+    usize size = strlen(payload);
+    if (!platform_atomic_writer_write(writer, payload, size)) {
+        platform_atomic_writer_abort(writer);
+        return PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED;
+    }
+    return platform_atomic_writer_commit_status(writer);
+}
+
+TEST(atomic_commit_status_distinguishes_pre_and_post_rename_outcomes) {
+    char root[512];
+    test_tmp(root, sizeof(root), "fsw_commit_status");
+    ASSERT_TRUE(mk_dir(root));
+    char target[600];
+    join2(target, sizeof(target), root, "target.bin");
+    u8 output[16];
+
+    reset_commit_faults();
+    ASSERT_TRUE(put_file(target, "old", 3));
+    ASSERT_EQ(commit_status_fixture(target, "new"), PLATFORM_ATOMIC_SUCCESS_DURABLE);
+    ASSERT_EQ(read_file(target, output, sizeof(output)), 3);
+    ASSERT_TRUE(memcmp(output, "new", 3) == 0);
+
+    reset_commit_faults();
+    ASSERT_TRUE(put_file(target, "old", 3));
+    g_file_fsync_failures = 1u;
+    ASSERT_EQ(commit_status_fixture(target, "new"),
+              PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED);
+    ASSERT_EQ(g_file_fsync_injected, 1u);
+    ASSERT_EQ(read_file(target, output, sizeof(output)), 3);
+    ASSERT_TRUE(memcmp(output, "old", 3) == 0);
+
+    reset_commit_faults();
+    ASSERT_TRUE(put_file(target, "old", 3));
+    g_rename_failures = 1u;
+    ASSERT_EQ(commit_status_fixture(target, "new"),
+              PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED);
+    ASSERT_EQ(g_rename_injected, 1u);
+    ASSERT_EQ(read_file(target, output, sizeof(output)), 3);
+    ASSERT_TRUE(memcmp(output, "old", 3) == 0);
+
+    reset_commit_faults();
+    ASSERT_TRUE(put_file(target, "old", 3));
+    g_dir_fsync_failures = 1u;
+    ASSERT_EQ(commit_status_fixture(target, "new"),
+              PLATFORM_ATOMIC_RENAMED_DURABILITY_UNKNOWN);
+    ASSERT_EQ(g_dir_fsync_injected, 1u);
+    ASSERT_EQ(read_file(target, output, sizeof(output)), 3);
+    ASSERT_TRUE(memcmp(output, "new", 3) == 0);
+
+    reset_commit_faults();
+    ASSERT_TRUE(put_file(target, "old", 3));
+    PlatformAtomicWriter *writer = platform_atomic_writer_open(target);
+    ASSERT_NOT_NULL(writer);
+    ASSERT_TRUE(platform_atomic_writer_write(writer, "new", 3));
+    g_dir_fsync_failures = 1u;
+    ASSERT_FALSE(platform_atomic_writer_commit(writer));
+    ASSERT_EQ(read_file(target, output, sizeof(output)), 3);
+    ASSERT_TRUE(memcmp(output, "new", 3) == 0);
+
+    reset_commit_faults();
+    ASSERT_EQ(remove(target), 0);
+    ASSERT_EQ(dir_count(root), 0u);
+    ASSERT_TRUE(TEST_RMDIR(root) == 0);
+}
+#endif
+
 #if !defined(_WIN32)
 /* Stage 5 Task 3 review M2 pin (controller pre-authorized in the Task 4
  * dispatch): platform_file_size FOLLOWS symlinks (stat(2)) — a symlink to
@@ -477,6 +598,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(commit_overwrites_existing_target);
     RUN_TEST(abort_no_residue_target_untouched);
     RUN_TEST(abort_idempotent_null_noop);
+#if defined(GAME_TEST_WRAP_FS)
+    RUN_TEST(atomic_commit_status_distinguishes_pre_and_post_rename_outcomes);
+#endif
 #if !defined(_WIN32)
     RUN_TEST(write_failure_latches_then_commit_fails_clean);
     RUN_TEST(readonly_dir_0444_fail_closed);
