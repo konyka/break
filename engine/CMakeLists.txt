@@ -2813,6 +2813,10 @@ set_property(TARGET mycompose PROPERTY C_STANDARD 11)
 target_include_directories(mycompose PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mycompose PUBLIC Threads::Threads)
 
+add_library(mycompose_cpp20 INTERFACE)
+target_include_directories(mycompose_cpp20 INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mycompose_cpp20 INTERFACE mycompose)
+
 add_library(mycompose_myui STATIC
     src/myui/mycompose_myui/my_compose_myui.c)
 set_property(TARGET mycompose_myui PROPERTY C_STANDARD 11)
@@ -2842,6 +2846,47 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_mycompose_store PRIVATE mycompose)
     add_test(NAME test_mycompose_store COMMAND test_mycompose_store)
     set_tests_properties(test_mycompose_store PROPERTIES LABELS "headless;compose")
+
+    # Compile the shared fixture itself as C11, then link its object into the
+    # C++20 test. This checks both independent C behavior and real C/C++ ABI.
+    set_source_files_properties(tests/compose_parity_fixture.h PROPERTIES LANGUAGE C)
+    add_executable(test_mycompose_cpp20_c_fixture tests/compose_parity_fixture.h)
+    target_compile_definitions(test_mycompose_cpp20_c_fixture PRIVATE
+        MY_COMPOSE_PARITY_FIXTURE_IMPLEMENTATION=1 MY_COMPOSE_PARITY_FIXTURE_MAIN=1)
+    target_include_directories(test_mycompose_cpp20_c_fixture PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_mycompose_cpp20_c_fixture PRIVATE mycompose m)
+    add_test(NAME test_mycompose_cpp20_c_fixture COMMAND test_mycompose_cpp20_c_fixture)
+    set_tests_properties(test_mycompose_cpp20_c_fixture PROPERTIES LABELS "headless;compose")
+
+    add_library(mycompose_cpp20_parity_c OBJECT tests/compose_parity_fixture.h)
+    target_compile_definitions(mycompose_cpp20_parity_c PRIVATE
+        MY_COMPOSE_PARITY_FIXTURE_IMPLEMENTATION=1)
+    target_include_directories(mycompose_cpp20_parity_c PRIVATE ${TEST_INCLUDE_DIRS})
+
+    add_executable(test_mycompose_cpp20 tests/test_mycompose_cpp20.cpp
+        $<TARGET_OBJECTS:mycompose_cpp20_parity_c>)
+    target_include_directories(test_mycompose_cpp20 PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_mycompose_cpp20 PRIVATE mycompose_cpp20 m)
+    add_test(NAME test_mycompose_cpp20 COMMAND test_mycompose_cpp20)
+    set_tests_properties(test_mycompose_cpp20 PROPERTIES LABELS "headless;compose")
+
+    add_executable(test_mycompose_cpp20_header tests/test_mycompose_cpp20_header.cpp)
+    target_include_directories(test_mycompose_cpp20_header PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_mycompose_cpp20_header PRIVATE mycompose_cpp20)
+    add_test(NAME test_mycompose_cpp20_header COMMAND test_mycompose_cpp20_header)
+    set_tests_properties(test_mycompose_cpp20_header PROPERTIES LABELS "headless;compose")
+
+    add_executable(test_mycompose_cpp20_noexcept tests/test_mycompose_cpp20_header.cpp)
+    target_include_directories(test_mycompose_cpp20_noexcept PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_mycompose_cpp20_noexcept PRIVATE mycompose_cpp20)
+    if(MSVC)
+        target_compile_options(test_mycompose_cpp20_noexcept PRIVATE /EHs-c-)
+        target_compile_definitions(test_mycompose_cpp20_noexcept PRIVATE _HAS_EXCEPTIONS=0)
+    else()
+        target_compile_options(test_mycompose_cpp20_noexcept PRIVATE -fno-exceptions)
+    endif()
+    add_test(NAME test_mycompose_cpp20_noexcept COMMAND test_mycompose_cpp20_noexcept)
+    set_tests_properties(test_mycompose_cpp20_noexcept PROPERTIES LABELS "headless;compose")
 
     add_executable(test_mycompose_runtime tests/test_mycompose_runtime.c)
     target_include_directories(test_mycompose_runtime PRIVATE ${TEST_INCLUDE_DIRS})
