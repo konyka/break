@@ -65,7 +65,7 @@ P12 是最后的集成任务，不得靠在本分支重实现其他子项目来�
 - Create `engine/apps/core_app/core_app_checkpoint.h/.c`：版本化 manifest、BSCN/Flow/Actor/运行状态侧车、原子保存与 staging load。
 - Create `engine/apps/core_app/core_app_network.h/.c`：默认关闭的可选 POD 快照通道；只在 `CORE_APP_ENABLE_NETWORK=ON` 且 `BREAK_ENABLE_SNOWFLAKE=ON` 时编译真实传输实现。
 - Create `engine/apps/core_app/core_app_asset_bake.c`：可重复生成最小关卡、Flow、压缩动画、音频和损坏 fixture 的离线工具；生成源树资产只在此显式维护任务发生，测试运行不得重写它们。
-- Create `engine/assets/core_app/level.bscn`、`level.fg`、`actors.sidecar`、`director.lua`、`player.lua`、`broken.lua`、`level.banm`、`tone.wav`、`deterministic.scenario`、`load_unload.scenario`、`rollback.scenario`：真实应用读取的固定资产/场景，而非测试硬编码替代品。
+- Create `engine/assets/core_app/level.bscn`、`level.fg`、`actors.sidecar`、`director.lua`、`user.lua`、`chaser.lua`、`level.banm`、`tone.wav`、`deterministic.scenario`、`load_unload.scenario`、`rollback.scenario`：真实应用读取的固定资产/场景，而非测试硬编码替代品。
 - Create `docs/design/core_app_integration.md`：target、操作、数据流、格式、所有权和证据边界。
 
 ### 自动化与构建
@@ -80,7 +80,7 @@ P12 是最后的集成任务，不得靠在本分支重实现其他子项目来�
 - Create `engine/tests/test_core_app_network.cmake` 与 `engine/tests/test_core_app_net_client.c`：只有 Snowflake lane 构建，启动真实应用并用认证 loopback 客户端验证可选通道和越权消息拒绝。
 - Create `engine/tests/fuzz_core_app_checkpoint.c`、`engine/tests/fuzz_core_app_scenario.c`：对真实应用解析/staging 路径做确定性变异 fuzz。
 - Modify `.github/workflows/ci.yml`：让默认 headless/normal/sanitizer lane 构建并运行新非图形测试，fuzz smoke 显式构建新 target；Snowflake 只留在专用可选 lane。
-- Modify `docs/design/cry_style_gameplay.md`、`docs/design/runtime_overview.md`、`docs/Implementation_Status.md`：完成后删除“仍无真实集成/无 GPU/无声音”等过期现状，保留未验证边界和实际证据。
+- Modify `docs/design/core_style_runtime.md`、`docs/design/runtime_overview.md`、`docs/Implementation_Status.md`：完成后删除“仍无真实集成/无 GPU/无声音”等过期现状，保留未验证边界和实际证据。
 - Create `.superpowers/sdd/core-app-integration-report.md`：每个 RED/GREEN、变异、命令、设备、独立评审发现和剩余限制的事实台账。
 
 ### 应用自有稳定接口
@@ -152,7 +152,7 @@ void core_app_destroy(CoreApp *app);
 const CoreAppDiagnostics *core_app_diagnostics(const CoreApp *app);
 ```
 
-`CoreAppConfig.require_device` 对图形模式要求真实所请求 RHI 后端，对 `--audio=device` 要求实际设备初始化成功；测试用 `--require-device` 禁止把环境缺证写成通过。`out_exit_code` 约定：`0` 完整场景成功，`2` 参数/资源/合同失败，`77` 仅表示在创建任何游戏状态之前发现显示/GPU/音频设备不可用。游戏开始后发生的失败不得改成 77。
+`CoreAppConfig.require_device` 对图形模式要求真实所请求 RHI 后端，对 `--audio=device` 要求实际设备初始化成功；测试用 `--require-device` 禁止把环境缺证写成通过。`out_exit_code` 约定：`0` 完整场景成功，`2` 参数/资源/合同失败，`77` 仅表示在创建任何运行时状态之前发现显示/GPU/音频设备不可用。运行时开始后发生的失败不得改成 77。
 
 ```c
 typedef struct CoreAppRenderCommand {
@@ -240,7 +240,7 @@ u64 core_app_checkpoint_manifest_hash(const char *directory);
 
 目录内有 `manifest.core` 和带 save generation 的 `scene_<g>.bscn`、`flow_<g>.fg`、`actors_<g>.sidecar`、`state_<g>.bin`、`runtime_<g>.bin`。manifest 以固定 8 字节 `CORECKPT` 开头，为版本化小端二进制，含精确总长、generation、每文件种类/长度/FNV-1a-64 和相对 basename；FNV 只检损，不作为安全认证。文件先完整写入并重新读取验证，manifest 最后通过 `PlatformAtomicWriter` 提交；失败删除本 generation 新文件，旧 manifest 与其文件不变。
 
-`runtime_<g>.bin` 只保存有所有权的 POD：固定 tick、玩家/敌人 CharacterController、相机、昼夜时间、动态障碍的稳定 id/矩形/alive、背包公开状态和 checkpoint generation。Flow pending queue、Lua VM/stack、AI cache、输入瞬态、RHI handle、音频 source id、网络 connection key 一律不保存。加载重建 AI runtime 并使旧路径失效，重新加载 Lua 源并创建新 host handle，重新创建 GPU/音频资源；网络默认仍关闭。
+`runtime_<g>.bin` 只保存有所有权的 POD：固定 tick、用户/追踪者 CharacterController、相机、昼夜时间、动态障碍的稳定 id/矩形/alive、背包公开状态和 checkpoint generation。Flow pending queue、Lua VM/stack、AI cache、输入瞬态、RHI handle、音频 source id、网络 connection key 一律不保存。加载重建 AI runtime 并使旧路径失效，重新加载 Lua 源并创建新 host handle，重新创建 GPU/音频资源；网络默认仍关闭。
 
 ---
 
@@ -347,7 +347,7 @@ git commit -m "game: add explicit playable integration target"
 
 - [ ] **Step 1: 写资产与 manifest 行为 RED**
 
-测试先调用 baker 到 `test_tmp` 目录，再由真实 readers 打开产物：场景必须含地面、玩家、敌人、一个动态墙、一辆载具和可见/隐藏颜色网格；Actor sidecar 的 index 必须在 BSCN 中存在；Flow 反序列化后包含 enter→delay→add-item；BANM decode 后的 TRS 误差满足 `anim_codec_time_error_bound`/scalar bound；WAV 有合法 RIFF 长度。
+测试先调用 baker 到 `test_tmp` 目录，再由真实 readers 打开产物：场景必须含地面、用户、追踪者、一个动态墙、一辆载具和可见/隐藏颜色网格；Actor sidecar 的 index 必须在 BSCN 中存在；Flow 反序列化后包含 enter→delay→add-item；BANM decode 后的 TRS 误差满足 `anim_codec_time_error_bound`/scalar bound；WAV 有合法 RIFF 长度。
 
 manifest 测试写两个连续 generation，篡改第二个 payload 而不改 manifest，probe 必须 `INVALID`；保存第一份时的独立副本仍可打开；中途 writer 失败时同目录旧 manifest 字节不变。
 
@@ -471,7 +471,7 @@ git commit -m "game: integrate transactional level lifecycle"
 ```
 
 <!-- CORE_APP_COMPLETED_TASKS_1_3_END -->
-### Task 4: ActionMap、触摸/手势/反馈与固定步长玩家控制
+### Task 4: ActionMap、触摸/手势/反馈与固定步长用户控制
 
 **Files:**
 - Create: `engine/apps/core_app/scenario.h/.c`
@@ -489,7 +489,7 @@ git commit -m "game: integrate transactional level lifecycle"
 
 - [x] **Step 1: 写输入与场景行为 RED**
 
-直接测试解析器：乱序 tick、4097 事件、64 KiB+1、未知命令、NaN 坐标、重复 quit 全部 `INVALID` 且没有部分执行。主程序测试分别用 W 键 180 tick 和触摸上拖 180 tick，玩家都从地面出生点前进超过 2 m，final position 相同到 1e-5；release/cancel 后下一 tick 不再移动。
+直接测试解析器：乱序 tick、4097 事件、64 KiB+1、未知命令、NaN 坐标、重复 quit 全部 `INVALID` 且没有部分执行。主程序测试分别用 W 键 180 tick 和触摸上拖 180 tick，用户都从地面出生点前进超过 2 m，final position 相同到 1e-5；release/cancel 后下一 tick 不再移动。
 
 追加触摸 id 复用和 cancel：同一 OS source id 第二次 down 的 `InputTouchId` generation 不同；cancel 不产生 tap/swipe；无反馈设备返回 `UNSUPPORTED` 但移动照常。Area enter 只请求一次 haptic，命令带 pad generation，断连后旧 request result 为 `STALE`/`DISCONNECTED`。
 
@@ -501,9 +501,9 @@ cmake --build build-core-integration-normal -j3 --target test_core_app_runtime c
 ./build-core-integration-normal/test_core_app_runtime
 ctest --test-dir build-core-integration-normal -R '^test_core_app_lifecycle_input_(key|touch|cancel)$' --output-on-failure
 ```
-Expected: 玩家尚未由 ActionMap/触摸驱动，位移断言或输入 trace RED。
+Expected: 用户尚未由 ActionMap/触摸驱动，位移断言或输入 trace RED。
 
-- [x] **Step 3: 实现输入归一化与玩家模拟**
+- [x] **Step 3: 实现输入归一化与用户模拟**
 
   > 2026-11-13 状态：部分完成。`core_app_input_snapshot` 提供从 `platform_input_extended()` 复制快照的入口并有单元测试，但 record 模式无窗口，真实后端接线顺延到 Task 11。
 
@@ -537,8 +537,8 @@ git commit -m "core_app: drive fixed step play from actions and touch"
 - Create: `engine/apps/core_app/core_app_script.h/.c`
 - Modify: `engine/apps/core_app/core_app.c`
 - Modify: `engine/assets/core_app/director.lua`
-- Modify: `engine/assets/core_app/player.lua`
-- Modify: `engine/assets/core_app/broken.lua`
+- Modify: `engine/assets/core_app/user.lua`
+- Modify: `engine/assets/core_app/chaser.lua`
 - Modify: `engine/assets/core_app/level.fg`（由 baker 重生成）
 - Modify: `engine/apps/core_app/core_app_asset_bake.c`
 - Modify: `engine/tests/test_core_app_runtime.c`
@@ -551,9 +551,9 @@ git commit -m "core_app: drive fixed step play from actions and touch"
 
 - [x] **Step 1: 写 Actor/Lua/Flow 行为 RED**
 
-固定场景有一个正常 `player.lua` 和一个首 tick 抛错的 `broken.lua`。运行 60 tick 后断言正常 Actor 的 `actor_ticks==60`，坏 Actor 的 `actor_script_failures==60`，应用仍前进且 Flow/物理仍运行；预算 trip 后只禁用对应 module 的后续 hooks，正常 Actor 继续。
+固定场景有一个正常 `user.lua` 和一个首 tick 抛错的 `chaser.lua`。运行 60 tick 后断言正常 Actor 的 `actor_ticks==60`，坏 Actor 的 `actor_script_failures==60`，应用仍前进且 Flow/物理仍运行；预算 trip 后只禁用对应 module 的后续 hooks，正常 Actor 继续。
 
-Area enter 向 `break_flow_runtime_post(runtime, 1001u, player, 1.0f)` 入队，Flow 在确定的 delay tick 原子添加一个物品。断言只产生一次动作、背包数量从 0 到 1、重复 AREA tick 不重复添加。卸载后旧 Entity/HostHandle/Flow event 均返回或记录 `STALE`，不得写入新 level 的同 index 新 generation Actor。
+Area enter 向 `break_flow_runtime_post(runtime, 1001u, user, 1.0f)` 入队，Flow 在确定的 delay tick 原子添加一个物品。断言只产生一次动作、背包数量从 0 到 1、重复 AREA tick 不重复添加。卸载后旧 Entity/HostHandle/Flow event 均返回或记录 `STALE`，不得写入新 level 的同 index 新 generation Actor。
 
 - [x] **Step 2: 运行脚本隔离 RED**
 
@@ -590,6 +590,10 @@ git commit -m "core_app: connect actor scripts and flow actions"
 
 ### Task 6: 动态 AI、动画/变形、固定物理、载具与布娃娃
 
+**当前进度（2026-11-13，slice 1 已交付，slice 2–4 未开始）**
+
+slice 1 覆盖追踪者感知、行为树、当前版本路径、动态墙增删和移动执行，代码在 `engine/apps/core_app/core_app.c`（不是本节原列的 `core_app_simulation.c`）：导航场扩到 8x8、`app_tick_chaser` 每 tick 做视野射线 → 行为树 → 当前版本寻路 → 避让 → `CharacterController`，并在目标进入视野时加墙、进入近区时移除墙。真实进程用例 `test_core_app_lifecycle_simulation`（600 tick）断言路径版本失效/恢复、接近距离和两次运行逐字节一致；三处变异（去墙移除、传旧版本号、跳过加墙）都会 RED 并已恢复。动画（locomotion/morph/facial→skinning）、载具进出与 throttle、布娃娃与 IK 互斥仍在 slice 2–4，Step 1–5 保持未完成。
+
 **Files:**
 - Modify: `engine/apps/core_app/core_app_simulation.h/.c`
 - Modify: `engine/apps/core_app/core_app_script.c`
@@ -601,11 +605,11 @@ git commit -m "core_app: connect actor scripts and flow actions"
 
 **Interfaces:**
 - Consumes: 最终 P3/P4/P5 API；`physics_raycast` 只作 AI/audio 查询回调，不在 worker 写 World。
-- Produces: 实际 enemy chase、nav version 失效、locomotion/morph/facial→skinning 输入、vehicle control、ragdoll pose authority。
+- Produces: 实际 chaser chase、nav version 失效、locomotion/morph/facial→skinning 输入、vehicle control、ragdoll pose authority。
 
 - [ ] **Step 1: 写可玩模拟行为 RED**
 
-真实场景脚本依次验证：玩家进入视野后敌人产生非零追逐位移；动态墙 add 后旧 `BreakAiPath` 不再 current，当前版本查询不可达或绕行，remove 后重新可查询；重复场景得到同一 enemy path/position。
+真实场景脚本依次验证：用户进入视野后追踪者产生非零追逐位移；动态墙 add 后旧 `BreakAiPath` 不再 current，当前版本查询不可达或绕行，remove 后重新可查询；重复场景得到同一 chaser path/position。
 
 动画断言速度从 0 到跑步阈值时 run 权重大于 walk；facial curve 产生 morph 权重，`anim_morph_evaluate_skinned` 改后的 64 字节顶点经 `lod_skin_positions` 得到不同位置，且 normal/UV/joint/weight 保留。载具 enter 后 ActionMap throttle 进入持久 `VehicleControlState`，接地底盘发生位移；exit 失败时 occupied 不变。脚本触发布娃娃后 ragdoll 拥有姿态，IK 不写局部 TRS；停用后恢复原 IK 状态。
 
@@ -617,11 +621,11 @@ cmake --build build-core-integration-normal -j3 --target test_core_app_runtime c
 ./build-core-integration-normal/test_core_app_runtime
 ctest --test-dir build-core-integration-normal -R '^test_core_app_lifecycle_simulation$' --output-on-failure
 ```
-Expected: enemy/path/pose/vehicle/ragdoll 的行为断言至少一项因尚未接线而 RED；不用只链接 `break_ai` 或 engine 作为替代证据。
+Expected: chaser/path/pose/vehicle/ragdoll 的行为断言至少一项因尚未接线而 RED；不用只链接 `break_ai` 或 engine 作为替代证据。
 
 - [ ] **Step 3: 实现唯一模拟顺序和资源预分配**
 
-load 时烘焙/加载 navmesh、创建 AI runtime、注册 player/enemy agent、分配 animation/morph/skinning scratch、创建物理地面/载具/布娃娃容量。tick 内不扩容：AI 先 sight+behavior+当前版本 path，再 velocity avoidance；输出只形成 movement intent，由 CharacterController/Vehicle 执行。固定 `physics_step(CORE_APP_FIXED_DT)` 后写回 Entity position、骨架局部 TRS 和 wheel contacts。
+load 时烘焙/加载 navmesh、创建 AI runtime、注册 user/chaser agent、分配 animation/morph/skinning scratch、创建物理地面/载具/布娃娃容量。tick 内不扩容：AI 先 sight+behavior+当前版本 path，再 velocity avoidance；输出只形成 movement intent，由 CharacterController/Vehicle 执行。固定 `physics_step(CORE_APP_FIXED_DT)` 后写回 Entity position、骨架局部 TRS 和 wheel contacts。
 
 动画先 blend/locomotion/facial/morph，再 physics；若 ragdoll active，使用合并后唯一的 `ragdoll_write_local_trs`/IK 挂起合同，否则执行 IK。最后 `skeleton_apply_local_trs` 形成实际 skinning matrices。不得让 P4/P5 两套字段各自绕过对方；若最终公共头仍有冲突，回到集成门解决源合同。
 
@@ -658,7 +662,7 @@ git commit -m "core_app: integrate navigation animation and physics"
 
 - [ ] **Step 1: 写命令内容和代际 RED**
 
-record 场景至少提交地面、普通世界对象、V1 stream 对象、可见植被 batch、player skinned mesh 和 enemy skinned mesh。断言普通/stream 使用同一 world pipeline 逻辑，VisArea 隐藏对象没有命令，植被 batch `instance_count>1`，角色 command 的 resource generation 与当前 level 相同，动画前后帧 skinned resource version 改变。
+record 场景至少提交地面、普通世界对象、V1 stream 对象、可见植被 batch、user skinned mesh 和 chaser skinned mesh。断言普通/stream 使用同一 world pipeline 逻辑，VisArea 隐藏对象没有命令，植被 batch `instance_count>1`，角色 command 的 resource generation 与当前 level 相同，动画前后帧 skinned resource version 改变。
 
 资源测试提交 request A，unload/load 后以 A 的 request id + 旧 generation 完成，必须记 `stale_completions++`、释放 completion、当前资源字节不变；新 generation 的完成才允许 staging/commit。资源容量第 65 个请求返回 `OVERLOAD`，不覆盖任何 live slot。
 
@@ -715,9 +719,9 @@ git commit -m "core_app: publish versioned world and actor render commands"
 
 - [ ] **Step 1: 写全生命周期 RED**
 
-真实应用在 tick 90 保存，继续移动 30 tick，tick 121 unload，tick 122 load。load 后玩家/敌人位置、背包、动态墙 alive、相机和昼夜必须与保存时相同；level generation 增加，RHI/音频/Lua/Flow/AI 对象都是新生命周期，旧输入和迟完成不得泄漏。保存时 trace 写 `state_hash=H`，恢复后第一帧必须再次为 H，再继续模拟的后续 hash 与 uninterrupted 对照相同。
+真实应用在 tick 90 保存，继续移动 30 tick，tick 121 unload，tick 122 load。load 后用户/追踪者位置、背包、动态墙 alive、相机和昼夜必须与保存时相同；level generation 增加，RHI/音频/Lua/Flow/AI 对象都是新生命周期，旧输入和迟完成不得泄漏。保存时 trace 写 `state_hash=H`，恢复后第一帧必须再次为 H，再继续模拟的后续 hash 与 uninterrupted 对照相同。
 
-失败矩阵必须逐项执行：截断 BSCN、错误 Flow 引用、错误 Actor generation、错误 manifest hash、GPU/record 资源 staging 失败、保存目录不可创建、第二次 save 中途失败。任何 load 失败都输出 `load_rejected` 并继续使用旧 level；任何 save 失败都不改变旧 manifest，当前游戏继续。最终 unload 后所有 live request/source/render resource 计数为 0。
+失败矩阵必须逐项执行：截断 BSCN、错误 Flow 引用、错误 Actor generation、错误 manifest hash、GPU/record 资源 staging 失败、保存目录不可创建、第二次 save 中途失败。任何 load 失败都输出 `load_rejected` 并继续使用旧 level；任何 save 失败都不改变旧 manifest，当前运行时继续。最终 unload 后所有 live request/source/render resource 计数为 0。
 
 - [ ] **Step 2: 运行真实 roundtrip/rollback RED**
 
@@ -769,7 +773,7 @@ git commit -m "core_app: make checkpoint restore transactional"
 
 - [ ] **Step 1: 写命令顺序、容量和生命周期 RED**
 
-固定脚本产生 listener→area enter PLAY_3D→position update→unload STOP 的顺序，record trace 逐项核对 frame id/level generation/event id/source generation。连续生成超过 256 个未消费命令时返回 `OVERLOAD` 并增加 `audio_overloads`，游戏位置/AI/保存结果不变；后续 drain 后可继续提交。
+固定脚本产生 listener→area enter PLAY_3D→position update→unload STOP 的顺序，record trace 逐项核对 frame id/level generation/event id/source generation。连续生成超过 256 个未消费命令时返回 `OVERLOAD` 并增加 `audio_overloads`，运行时位置/AI/保存结果不变；后续 drain 后可继续提交。
 
 卸载后迟到的旧 PLAY/STOP 不得操作新 level source；同 index 新 source 的 generation 不同。device 初始化失败时普通 `--audio=device` 明确降级 null 并记录，离线仍可玩；`--audio=device --require-device` 在创建设备失败时退出 77，但设备创建之后任何资源/播放失败都退出 2。
 
@@ -787,7 +791,7 @@ Expected: 命令尚未按 generation 排队/停止或容量未执行的断言 RE
 
 Task 3 的 `CORE_APP_AUDIO_QUEUE_CAPACITY=16` 仅是本阶段 record 临时容量，不视为本 Task 的已完成合同。本 Task 必须把命令队列和 source 槽扩展为 256，并实际执行超过 256 个未消费命令返回 `OVERLOAD`、drain 后恢复的完整容量测试，不能只沿用 16 或只检查常量。
 
-create 时预分配 256 个命令和 source 槽。CoreAppThread 只 enqueue POD；record 在 fixed tick 末有界 drain；device worker 独占 `AudioSystem`，按 budget 调 `audio_play_3d`/source control，音频实时 callback 不做文件 I/O、网络或游戏逻辑。设备路径的资产读取/解码只能发生在非实时设备 owner 的准备路径，不增加实时分配。
+create 时预分配 256 个命令和 source 槽。CoreAppThread 只 enqueue POD；record 在 fixed tick 末有界 drain；device worker 独占 `AudioSystem`，按 budget 调 `audio_play_3d`/source control，音频实时 callback 不做文件 I/O、网络或运行时逻辑。设备路径的资产读取/解码只能发生在非实时设备 owner 的准备路径，不增加实时分配。
 
 shutdown 顺序为停止新命令→关闭队列→有界 drain/停止 sources→join worker→销毁 AudioSystem。source stop 同时验证 level/source generation；失败保留可诊断状态，不越界访问旧槽。普通无设备降级不影响输入/模拟/RHI。
 
@@ -828,7 +832,7 @@ git commit -m "core_app: route gameplay through bounded audio commands"
 
 无 Snowflake/no-tests 树运行同一 deterministic scenario 两次（编译时不带网络和显式 `--network` 被拒），合法离线 trace 必须逐字节相同；`nm` 检查离线 `core_app` 不含 `break_net_`/`break_session_`/`snow_` 符号。
 
-可选 loopback 用例启动真实 `core_app` 和认证测试客户端，应用参数精确使用 `--network --bind 127.0.0.1:0 --tls-cert "${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem" --tls-key "${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem" --psk-env CORE_APP_TEST_PSK --port-file "${WORK}/server.port"`。客户端完成 TLS/AUTH 后接收带 schema hash、frame id、level generation 和 Entity index/generation 的 snapshot。客户端发送未知 message id、伪造 damage/health 字段、旧 generation 和未认证消息；应用必须拒绝/关闭或记录分类错误，本地玩家位置、背包和 fire-intent 序号完全不变，离线 tick 继续。网络 outbound 满返回 `OVERLOAD` 并计数，不阻塞/回写 CoreAppThread。
+可选 loopback 用例启动真实 `core_app` 和认证测试客户端，应用参数精确使用 `--network --bind 127.0.0.1:0 --tls-cert "${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem" --tls-key "${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem" --psk-env CORE_APP_TEST_PSK --port-file "${WORK}/server.port"`。客户端完成 TLS/AUTH 后接收带 schema hash、frame id、level generation 和 Entity index/generation 的 snapshot。客户端发送未知 message id、伪造 damage/health 字段、旧 generation 和未认证消息；应用必须拒绝/关闭或记录分类错误，本地用户位置、背包和 fire-intent 序号完全不变，离线 tick 继续。网络 outbound 满返回 `OVERLOAD` 并计数，不阻塞/回写 CoreAppThread。
 
 - [ ] **Step 2: 运行无 Snowflake 与可选网络 RED**
 
@@ -848,7 +852,7 @@ Expected: 离线合同/真实 snapshot 行为先 RED。没有设置 pinned `SNOW
 
 只有 `CORE_APP_ENABLE_NETWORK AND BREAK_ENABLE_SNOWFLAKE` 才添加 `core_app_network.c` 的真实传输编译路径并链接 `break_net`。`main.c` 只在该编译路径接受 `--network`、`--bind HOST:PORT`、`--tls-cert PATH`、`--tls-key PATH`、`--psk-env NAME`、`--port-file PATH`，缺少任何一项即退出 2；secret 只从指定环境变量读取，不写 trace。应用网络对象只拥有 reactor/Session/acceptor 和有界 POD 队列；CoreAppThread 每 tick 最多 poll 64 个 event，回调只复制/入队。snapshot 使用固定小端字段和版本，不含指针、伤害结果或客户端权威生命。
 
-只有认证 Session 的 connection key 可作为网络身份；message registry 仅注册明确的 snapshot/control 消息，未知/越权消息 fail closed。发送快照失败只影响网络诊断，禁止回滚或修改本地游戏。停止顺序为停止 admission→停止 reactor producer→drain/close sessions→销毁 transport；离线模式这些对象从不创建。
+只有认证 Session 的 connection key 可作为网络身份；message registry 仅注册明确的 snapshot/control 消息，未知/越权消息 fail closed。发送快照失败只影响网络诊断，禁止回滚或修改本地运行时状态。停止顺序为停止 admission→停止 reactor producer→drain/close sessions→销毁 transport；离线模式这些对象从不创建。
 
 - [ ] **Step 4: 运行离线 GREEN 与可选 loopback 证据**
 
@@ -860,7 +864,7 @@ Expected: 离线 trace 与无网络构建一致；真实认证客户端收到 sn
 
 - [ ] **Step 5: 变异并提交**
 
-临时允许未认证 connection 收到 snapshot，确认网络测试 RED；恢复。临时让网络输入直接写 player position，确认权威不变量测试 RED；恢复并重跑离线和网络 lane。
+临时允许未认证 connection 收到 snapshot，确认网络测试 RED；恢复。临时让网络输入直接写 user position，确认权威不变量测试 RED；恢复并重跑离线和网络 lane。
 
 ```bash
 git add engine/apps/core_app/core_app_network.c engine/apps/core_app/core_app_network.h engine/apps/core_app/main.c engine/apps/core_app/core_app.c engine/CMakeLists.txt engine/tests/test_core_app_network.cmake engine/tests/test_core_app_net_client.c engine/tests/test_core_app_target_contract.cmake
@@ -899,7 +903,7 @@ cmake -E env BREAK_RHI_BACKEND=opengl BREAK_RHI_NO_FALLBACK=1 \
   --screenshot "$PWD/build-core-integration-normal/core_app_gl_%u.ppm" --trace "$PWD/build-core-integration-normal/core_app_gl.trace"
 ```
 
-应用必须在 trace 写实际 `backend`、`device_name`、frame present 数、validation count 和 save/unload 结果。image test 读取各 tick PPM：地面/玩家/敌人/植被/流式对象都有非背景像素，隐藏黄色网格为 0；移动前后玩家像素质心发生变化，动画两帧角色区域有差异，昼夜帧亮度显著变化，重载后的场景对象与保存时可见。两后端比较允许光栅化误差，但每个语义对象和移动/明暗趋势都必须成立。
+应用必须在 trace 写实际 `backend`、`device_name`、frame present 数、validation count 和 save/unload 结果。image test 读取各 tick PPM：地面/用户/追踪者/植被/流式对象都有非背景像素，隐藏黄色网格为 0；移动前后用户像素质心发生变化，动画两帧角色区域有差异，昼夜帧亮度显著变化，重载后的场景对象与保存时可见。两后端比较允许光栅化误差，但每个语义对象和移动/明暗趋势都必须成立。
 
 - [ ] **Step 2: 在真实设备上观察 RED 或诚实缺证**
 
@@ -928,7 +932,7 @@ Expected: 有设备时全部实际 PASS，保存日志/PPM 路径、backend/devi
 
 - [ ] **Step 5: 图形变异并提交**
 
-临时让 Vulkan required 模式接受 OpenGL fallback，确认 backend 门 RED；恢复。临时从提交中移除 enemy draw，确认真实像素测试 RED；恢复并重跑 Vulkan。
+临时让 Vulkan required 模式接受 OpenGL fallback，确认 backend 门 RED；恢复。临时从提交中移除 chaser draw，确认真实像素测试 RED；恢复并重跑 Vulkan。
 
 ```bash
 git add engine/apps/core_app/core_app_render.c engine/apps/core_app/main.c engine/assets/core_app/rollback.scenario engine/tests/test_core_app_gpu.cmake engine/tests/test_core_app_image.c engine/CMakeLists.txt docs/design/core_app_integration.md
@@ -1020,7 +1024,7 @@ git commit -m "test: verify playable integration across build lanes"
 
 **Files:**
 - Modify: `docs/design/core_app_integration.md`
-- Modify: `docs/design/cry_style_gameplay.md`
+- Modify: `docs/design/core_style_runtime.md`
 - Modify: `docs/design/runtime_overview.md`
 - Modify: `docs/Implementation_Status.md`
 - Modify: `docs/superpowers/plans/2026-11-03-core-app-integration.md`（仅勾实际完成步骤）
@@ -1033,7 +1037,7 @@ git commit -m "test: verify playable integration across build lanes"
 
 - [ ] **Step 1: 更新设计/状态文档并写文档合同 RED**
 
-`core_app_integration.md` 写入真实 CLI、target 链接图、固定顺序、checkpoint 字段、generation/失败回滚和 evidence ladder。`cry_style_gameplay.md` 开头不得再写“可玩原型只有 headless、没有声音/网络”来概括新应用；应区分旧 `test_cry_style_prototype` 与新 `core_app`。`runtime_overview.md` 只把实际接入 coordinator 的子系统标为已接入。`Implementation_Status.md` 顶部追加实际测试数、真实设备和未做事项，不复制计划中的预期结果。
+`core_app_integration.md` 写入真实 CLI、target 链接图、固定顺序、checkpoint 字段、generation/失败回滚和 evidence ladder。`core_style_runtime.md` 开头不得再写“可玩原型只有 headless、没有声音/网络”来概括新应用；应区分旧 `test_cry_style_prototype` 与新 `core_app`。`runtime_overview.md` 只把实际接入 coordinator 的子系统标为已接入。`Implementation_Status.md` 顶部追加实际测试数、真实设备和未做事项，不复制计划中的预期结果。
 
 先运行文档检查：若 target contract 中的 target/CLI/测试名与文档不一致则 RED；若文档含 `record.*GPU` 等同证据的表述或把未执行 lane 写成 PASS，也必须 RED。
 
@@ -1065,7 +1069,7 @@ git log --oneline --decorate -15
 Expected: 无 whitespace error、无变异源码、无构建/log/PPM/checkpoint 生成物；计划只勾已做步骤，报告列出所有命令结果和剩余缺证。最终提交仍在 `cry-integration`，不 push、不改 master。
 
 ```bash
-git add docs/design/core_app_integration.md docs/design/cry_style_gameplay.md docs/design/runtime_overview.md docs/Implementation_Status.md docs/superpowers/plans/2026-11-03-core-app-integration.md .superpowers/sdd/core-app-integration-report.md
+git add docs/design/core_app_integration.md docs/design/core_style_runtime.md docs/design/runtime_overview.md docs/Implementation_Status.md docs/superpowers/plans/2026-11-03-core-app-integration.md .superpowers/sdd/core-app-integration-report.md
 git commit -m "docs: record playable integration evidence"
 ```
 

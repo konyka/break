@@ -4,7 +4,7 @@
 
 ## 1. 目标与范围
 
-本设计承接 `docs/design/cry_style_gameplay.md`。此前标为“范围外”的软件能力，本轮纳入实施。目标是让 Break 对 Cry3DEngine、CryAction、CryAISystem、CryAnimation、CryEntitySystem、CryInput、CryNetwork、CryScriptSystem、CrySoundSystem、CrySystem 的已识别缺口都有可调用、可测试的实现，并完成一条真实集成路径。
+本设计承接 `docs/design/core_style_runtime.md`。此前标为“范围外”的软件能力，本轮纳入实施。目标是让 Break 对 Cry3DEngine、CryAction、CryAISystem、CryAnimation、CryEntitySystem、CryInput、CryNetwork、CryScriptSystem、CrySoundSystem、CrySystem 的已识别缺口都有可调用、可测试的实现，并完成一条真实集成路径。
 
 这不是逐行复制 CryENGINE 3.1，也不以文件数、函数数或同名类数量声称“源码级等价”。完成依据是本文列出的行为合同、真实测试和文档证据。既有实现不推倒重写，已通过的测试必须继续通过。生产服务部署、没有设备时的真机验证、对全部 CryENGINE 私有行为的穷举兼容不属于代码完成证据，必须继续如实记录。
 

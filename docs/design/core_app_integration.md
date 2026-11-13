@@ -14,7 +14,7 @@
 
 最终 baker 以同一 `--output` 接口分别生成空构建目录和正式目录，11 个文件逐字节一致；BSCN+sidecar、Flow、BANM、WAV 和 Lua 均由真实 readers 验证。HEAD archive 独立配置/构建后，Core App 9 项入选为 6 PASS、3 个 nm 合同 SKIP、0 失败。普通和 ASan+UBSan 非图形/非 fuzz 均为 351 项入选、347 PASS、4 个文档化 SKIP、0 失败；TSan lifecycle 为 1/1，no-tests 完整构建仍生成三个应用 target。所有构建和并行 CTest 使用 `-j3`，完整命令、hash 和变异记录见 `.superpowers/sdd/2026-11-11-core-app-naming/task-2-report.md`。
 
-本步验证仍为 Linux CPU/record 证据；record/null 不构成 GPU、声卡或听测证据，native GPU/声卡/听测、网络、非 Linux runtime 和远程 CI 未验证。Task 3 的第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入仍未覆盖；Task 9 的 256 项声音 FIFO、过载和 drain recovery 未提前实现，当前仍为 16 项 record FIFO；baker 的 Flow player identity 与 exec-link source port 专项断言仍留在后续台账。
+本步验证仍为 Linux CPU/record 证据；record/null 不构成 GPU、声卡或听测证据，native GPU/声卡/听测、网络、非 Linux runtime 和远程 CI 未验证。Task 3 的第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入仍未覆盖；Task 9 的 256 项声音 FIFO、过载和 drain recovery 未提前实现，当前仍为 16 项 record FIFO；baker 的 Flow user identity 与 exec-link source port 专项断言仍留在后续台账。
 
 ## 跨平台合同补充（2026-11-11）
 
@@ -58,7 +58,7 @@ D3D12 run `43162667434`、job `130997246493` 的完整日志显示 archive 与�
 
 合并提交 `a9c25224` 的主工作树完整构建通过，非图形为 **358 selected、354 PASS、4 个文档化 SKIP、0 FAIL**。主 CI run `43186135276` 的全部可执行 job 成功；macOS Cocoa job `131073643195` 的 `test_break_online_nat` 实际通过。clean-room job `131073947704` 为 **352 selected、0 FAIL**，三个缺库合同按预期 UNVERIFIED/SKIP，dangling 仍 fail-closed。D3D12 run `43186135119`、job `131073642817` 的 headless、WARP runtime **1/1**、push-constant、Agility 部署和七个 D3D12-labelled 测试均成功。此前待验收表述由这些新 run 更新；硬件专用 lane 的调度跳过不视为通过或硬件证明，WARP 仍不证明独立显卡。
 
-第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入、256 项音频 FIFO/过载/drain recovery、Flow player identity 与 exec-link source-port 永久断言仍留在后续台账；Compose 和 P12 Task 4–13 不在本批次中宣称实现。
+第二次 bounded IO wait 失败与 `io_quiesced` trace EIO 注入、256 项音频 FIFO/过载/drain recovery、Flow user identity 与 exec-link source-port 永久断言仍留在后续台账；Compose 和 P12 Task 4–13 不在本批次中宣称实现。
 
 ## P12 Task 5：Actor/Lua 与 Flow 同帧接线（2026-11-13）
 
@@ -66,30 +66,30 @@ D3D12 run `43162667434`、job `130997246493` 的完整日志显示 archive 与�
 
 固定步内的顺序改为：`break_game_tick` → `break_flow_runtime_tick` → `core_app_simulation_tick` → `break_game_area_tick` → 位置 trace → 处理本 tick 累计的 Area enter → haptic → `event=actors` trace。AI、动画和 `physics_step` 仍由 Task 6 接入，本任务不把它们算作已实现。
 
-`event=actors` 记录 Player 和 Enemy 的脚本计数、玩家物品数和 Flow pending 数：
+`event=actors` 记录 User 和 Chaser 的脚本计数、用户物品数和 Flow pending 数：
 
 ```text
-event=actors tick=<n> generation=<g> player_ticks=<n> player_failures=<n> \
-    enemy_ticks=<n> enemy_failures=<n> items=<n> flow_pending=<n>
+event=actors tick=<n> generation=<g> user_ticks=<n> user_failures=<n> \
+    chaser_ticks=<n> chaser_failures=<n> items=<n> flow_pending=<n>
 ```
 
 ### 脚本
 
-`stage_lua` 以 `instruction_budget = 1000000`、`memory_budget = 8 MiB` 创建 runtime，并加载 `director`、`player`、`broken`。Player 类绑定 `player`，Enemy 类绑定 `broken`。`player.lua` 的 `on_actor_tick` 只累加 `state.ticks`；`broken.lua` 可以加载，但 `on_actor_tick` 每次都 `error`。一个 actor 的错误只记入 `break_game_lua_last_fault` 和该 actor 的 `failures`，不阻止同 tick 的其他 actor。
+`stage_lua` 以 `instruction_budget = 1000000`、`memory_budget = 8 MiB` 创建 runtime，并加载 `director`、`user`、`chaser`。User 类绑定 `user`，Chaser 类绑定 `chaser`。`user.lua` 的 `on_actor_tick` 只累加 `state.ticks`；`chaser.lua` 可以加载，但 `on_actor_tick` 每次都 `error`。一个 actor 的错误只记入 `break_game_lua_last_fault` 和该 actor 的 `failures`，不阻止同 tick 的其他 actor。
 
 `break_game_lua_actor_stats(adapter, entity, out)` 返回该 actor 的 `ticks`、`failures`、`skipped`、`last_error` 和 `disabled`。despawn 清零计数，之后查询旧 entity 返回 `BREAK_LUA_STALE`，复用同 index 的新 generation 从 0 开始。一次调用使 `break_lua_runtime_budget_trip_count` 增加时，adapter 只禁用这个 module：它的所有 actor 之后记入 `skipped`，其他 module 继续运行。普通 Lua 错误不会禁用 module。
 
 ### Flow
 
-烘焙的 `level.fg` 事件键从 1 改为 1001，add-item 节点的数量字段 `a` 明确为 1（之前是 0，运行时会以 `BREAK_FLOW_INVALID` 拒绝）。玩家前方 Area 的 enter 调用 `break_flow_runtime_post(flow, 1001, player, 1.0)`，trace 记 `event=flow kind=post key=1001 … tick=<n>`。延迟 30 tick 后动作把物品 1 加到 Player，trace 记 `event=item … entity=2 item=1 count=1`。`break_flow_runtime_tick` 的非 OK 结果记 `event=flow kind=tick_failed … status=<n>`，本 tick 的其余步骤继续。Flow runtime 在失败时把队列和 `now_tick` 回滚到该次调用之前，所以同一事件会在下一个应用 tick 被再次尝试，应用自己不另做补偿。
+烘焙的 `level.fg` 事件键从 1 改为 1001，add-item 节点的数量字段 `a` 明确为 1（之前是 0，运行时会以 `BREAK_FLOW_INVALID` 拒绝）。用户前方 Area 的 enter 调用 `break_flow_runtime_post(flow, 1001, user, 1.0)`，trace 记 `event=flow kind=post key=1001 … tick=<n>`。延迟 30 tick 后动作把物品 1 加到 User，trace 记 `event=item … entity=2 item=1 count=1`。`break_flow_runtime_tick` 的非 OK 结果记 `event=flow kind=tick_failed … status=<n>`，本 tick 的其余步骤继续。Flow runtime 在失败时把队列和 `now_tick` 回滚到该次调用之前，所以同一事件会在下一个应用 tick 被再次尝试，应用自己不另做补偿。
 
 替换关卡或卸载时，应用先 trace `event=flow kind=discarded generation=<g> pending=<n>`（pending 为 0 则不记），再销毁该 generation 的 Flow runtime。新关卡不继承旧队列，所以旧事件不能作用到同 index 的新 generation。
 
 ### 验证
 
 - `test_break_game_lua` 4/4：原有的失败隔离和缺失 hook 用例，加上 60 tick 的 per-actor 计数、despawn 后 STALE、预算 trip 只禁用一个 module。
-- `test_core_app_assets` 23/23：事件键 1001、add-item 数量 1、`player` 的 `on_actor_tick` 返回 OK、`broken` 可加载但 `on_actor_tick` 返回 `BREAK_LUA_FAILED` 且不影响再次调用 `player`。
-- 真实进程 `test_core_app_lifecycle_script_flow`：持续行走时 tick 30 投递且 `flow_pending=1`、物品仍为 0，tick 61 物品变为 1 且 pending 归零，tick 180 仍为 1；Player 180 次成功、Enemy 180 次失败。中途卸载报告 `discarded pending=1` 且全程没有 `event=item`；第二关卡在 tick 42 从 0 开始计数，到 tick 99 物品仍为 0，也没有新的投递（玩家停在原地，不再进入 Area）。
+- `test_core_app_assets` 23/23：事件键 1001、add-item 数量 1、`user` 的 `on_actor_tick` 返回 OK、`chaser` 可加载但 `on_actor_tick` 返回 `BREAK_LUA_FAILED` 且不影响再次调用 `user`。
+- 真实进程 `test_core_app_lifecycle_script_flow`：持续行走时 tick 30 投递且 `flow_pending=1`、物品仍为 0，tick 61 物品变为 1 且 pending 归零，tick 180 仍为 1；User 180 次成功、Chaser 180 次失败。中途卸载报告 `discarded pending=1` 且全程没有 `event=item`；第二关卡在 tick 42 从 0 开始计数，到 tick 99 物品仍为 0，也没有新的投递（用户停在原地，不再进入 Area）。
 - 变异：任何 Lua 错误都禁用 module 时 `test_break_game_lua` 为 2/4；首个错误跳过后续 actor 时 `script_flow` 失败；删除 Area→Flow 投递时 `script_flow` 失败。三处恢复后 `cmp` 确认字节一致。
 - 回归：普通非图形 374 项入选，370 PASS，4 个既有文档化 SKIP，0 FAIL。ASan+UBSan focused 8/8，TSan 6/6，均无 sanitizer 报告。
 
@@ -97,7 +97,45 @@ event=actors tick=<n> generation=<g> player_ticks=<n> player_failures=<n> \
 
 AI、动画和 `physics_step` 没有接入，tick 顺序里这三步仍是空位。Flow 动作失败只记 trace；重试来自 Flow runtime 的回滚，应用不另做补偿。证据仍是 Linux CPU/record，没有真实窗口、手柄或 GPU。
 
-## P12 Task 4：ActionMap、触摸与固定步长玩家控制（2026-11-13）
+## P12 Task 6（slice 1）：追踪者的视野、行为树、当前版本路径与动态墙（2026-11-13）
+
+### 每 tick 顺序
+
+固定步内的顺序扩展为：`break_game_tick` → `break_flow_runtime_tick` → `core_app_simulation_tick` → `app_tick_chaser` → `break_game_area_tick` → 位置 trace → Area enter 处理 → haptic → `event=actors` trace → `event=sim` trace。追踪者的移动意图由行为树产生，由 `CharacterController` 执行；应用自身不直接写世界位置。
+
+### 导航场与 AI 接线
+
+`stage_ai` 把导航高度场从 4x4 扩到 8x8（cell 1.0，`origin_x/origin_z = -1.0`），`break_nav_bake_heightfield` 的结果作为 `BreakAiRuntime` 的输入，并给场景实体 index 3 注册半径 0.4、最大速度 3 的 agent。加载期不再寻路：寻路只发生在 tick 内。
+
+### 视野
+
+`stage_simulation` 在用户实体周围注册一个半尺寸 (6, 3, 6) 的 Area 作为 `sight_area`；`app_area_event` 命中该区域时置 `target_in_sight`，命中 `trigger_area` 时保留 Task 5 的 Flow 触发计数。每 tick 用 `break_sight_query` 做一次射线检测：眼睛取自身位置，前向 (-0.7071, 0, -0.7071)，距离 12，半角 1.2 rad；遮挡回调只在命中动态墙刚体时判定为不可见，地面命中不遮挡。命中后写入 `BreakBlackboard` 的 `seen`、`last_seen` 和 `target`。
+
+### 行为树与当前版本路径
+
+每 tick 构建 SELECTOR 根 + CHASE 叶的行为树，`break_behavior_tick` 读取黑板与 `BreakNavFollower` 给出 `wish` 位移。除首次寻路外，只有当 `break_ai_nav_version` 与上次记录的版本不同才重新寻路；查询使用当前版本号，因此动态墙 add/remove 之后旧路径立即失效（`break_ai_path_is_current` 返回假）并在下一次 tick 用新版本重建。`BREAK_NAV_FAILED`（目标不可达）被容忍，不中断该 tick。
+
+### 动态墙
+
+当 `target_in_sight` 成立且尚未加墙时，`break_ai_obstacle_add` 加入矩形 (1, 1, 4, 2)，同时 `physics_body_create` 建立对应的动态刚体。追踪者的位置进入 x < 1.0 且 z < 1.5 的区域后，`break_ai_obstacle_remove` 移除障碍，nav 版本再次递增，路径重新可查询，追踪者继续接近目标。
+
+### trace
+
+```text
+event=sim tick=<n> generation=<g> chaser_x=<f> chaser_z=<f> nav_version=<u> path_current=<0|1>
+```
+
+### 验证
+
+- 真实进程 `test_core_app_lifecycle_simulation`（600 tick）：tick 1 的路径是当前版本（`path_current=1`，nav 版本 1）；tick 2 加墙后版本前进且路径过期（`path_current=0`）；tick 200 重新寻路后 `path_current=1` 且 z 已向目标下降；tick 500 版本再次前进（墙已移除）、路径当前、z 继续下降、x < 0.5。同一场景重复运行两次，全部 `event=sim` 行逐字节一致。
+- 变异（改代码 → 断言必须红 → 恢复）：去掉 `break_ai_obstacle_remove` → 报“tick 500 nav version 未前进”；寻路时传旧版本号 → 失败；跳过加墙分支 → 报“tick 2 版本未前进”。
+- 证据仍限 Linux CPU/record：没有真实窗口、手柄、GPU 或音频设备。
+
+### 限制
+
+本 slice 只覆盖追踪者的感知、决策、寻路与移动；locomotion/morph/facial→skinning、载具进出与 throttle、布娃娃与 IK 互斥仍属 Task 6 后续 slice。导航场是静态高度场烘焙，动态障碍只通过 `break_ai_obstacle_*` 影响可达性，不重建网格。
+
+## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。
 
@@ -127,9 +165,9 @@ tick 是不带符号的十进制，范围 1..1048576，且不得回退；`quit` 
 
 ### 关卡接线与 trace
 
-`stage_simulation` 位于 physics 之后、AI 之前。它给 Player（实体 index 2，对应场景节点 1）添加位置组件，脚底高度取节点中心减去半高。原来代表玩家的 70 kg 动态 box 已删除，角色控制器是玩家唯一的碰撞体，否则控制器会把自己的 box 推开。玩家出生点前方 3 m 处有一个 AABB Area。Area 回调只累加计数（上限 8，溢出另计）；tick 结束后由主循环为 pad 0 请求一次 haptic。没有手柄时，trace 记录 `status=disconnected request=0`，移动不受影响。
+`stage_simulation` 位于 physics 之后、AI 之前。它给 User（实体 index 2，对应场景节点 1）添加位置组件，脚底高度取节点中心减去半高。原来代表用户的 70 kg 动态 box 已删除，角色控制器是用户唯一的碰撞体，否则控制器会把自己的 box 推开。用户出生点前方 3 m 处有一个 AABB Area。Area 回调只累加计数（上限 8，溢出另计）；tick 结束后由主循环为 pad 0 请求一次 haptic。没有手柄时，trace 记录 `status=disconnected request=0`，移动不受影响。
 
-Task 4 当时每个 tick 的顺序为：开始输入帧 → 应用本 tick 事件（遇到 `quit` 则结束）→ 模拟 → Area → `event=player tick=… x=… y=… z=…`（`%.9g`）→ `event=haptic …` → render record → audio listener。
+Task 4 当时每个 tick 的顺序为：开始输入帧 → 应用本 tick 事件（遇到 `quit` 则结束）→ 模拟 → Area → `event=user tick=… x=… y=… z=…`（`%.9g`）→ `event=haptic …` → render record → audio listener。
 
 ### 验证
 
@@ -218,7 +256,7 @@ ctest --test-dir build-game-integration-network-flag \
   -R '^test_game_app_target_contract$' --output-on-failure
 ```
 
-当前证据仅为 Linux CPU 构建、configure 和真实进程 CLI。没有运行游戏场景、真实 Vulkan/OpenGL 窗口、音频设备或网络；record/headless 也不能解释为 GPU 画面。后续任务必须分别提供这些证据。
+当前证据仅为 Linux CPU 构建、configure 和真实进程 CLI。没有运行真实场景、真实 Vulkan/OpenGL 窗口、音频设备或网络；record/headless 也不能解释为 GPU 画面。后续任务必须分别提供这些证据。
 
 ## P12 Task 2：离线资产与 checkpoint v1
 
@@ -226,9 +264,9 @@ ctest --test-dir build-game-integration-network-flag \
 
 `game_asset_bake --output DIR` 是独立 C11 离线工具；目标在 `ENGINE_BUILD_TESTS=OFF` 时也存在。它不调用 `game_app_run()`，不创建 RHI 设备、音频设备、网络或跨线程所有权。源树正式资产只由该命令显式生成，测试使用 per-process 临时目录。
 
-`level.bscn` 由真实 `scene_save_binary` 写出并由 `scene_probe_binary`/`scene_load_binary` 回读。固定实体顺序为 Ground、Player、Enemy、DynamicWall、Vehicle、VisibleColor、HiddenColor；`actors.sidecar` 逐行使用 P1 已有的 `entity-index class-name` 格式。七个实体共享一份真实 CPU cube 几何（24 vertices、36 indices），通过 `SerializeOptions.read_mesh_geometry` 交给 BSCN writer；没有 GPU readback。七个节点使用各自的变换和颜色材质，隐藏颜色节点保留 mesh/material 引用但初始 `has_mesh=false`。场景实体和 Flow 目标只保存 `(index, generation)`，没有持久化 C 指针。
+`level.bscn` 由真实 `scene_save_binary` 写出并由 `scene_probe_binary`/`scene_load_binary` 回读。固定实体顺序为 Ground、User、Chaser、DynamicWall、Vehicle、VisibleColor、HiddenColor；`actors.sidecar` 逐行使用 P1 已有的 `entity-index class-name` 格式。七个实体共享一份真实 CPU cube 几何（24 vertices、36 indices），通过 `SerializeOptions.read_mesh_geometry` 交给 BSCN writer；没有 GPU readback。七个节点使用各自的变换和颜色材质，隐藏颜色节点保留 mesh/material 引用但初始 `has_mesh=false`。场景实体和 Flow 目标只保存 `(index, generation)`，没有持久化 C 指针。
 
-`level.fg` 由 `break_flow_serialize` 生成，包含 enter → delay(30 ticks) → add-item 的两条 exec link。`director.lua` 和 `player.lua` 可由真实 `break_lua` 加载，`broken.lua` 是明确的语法错误 fixture；本任务不建立游戏 VM 生命周期。`level.banm` 由 `anim_codec_encode` 生成，含 translation/rotation/scale 三个通道，测试用 `anim_codec_decode`、`anim_codec_time_error_bound`、`anim_codec_scalar_error_bound` 和旋转误差界验收。`tone.wav` 是固定 seed 的 44100 Hz、mono、16-bit PCM，4410 个样本；没有音频设备或听测证据。
+`level.fg` 由 `break_flow_serialize` 生成，包含 enter → delay(30 ticks) → add-item 的两条 exec link。`director.lua` 和 `user.lua` 可由真实 `break_lua` 加载，`chaser.lua` 是明确的语法错误 fixture；本任务不建立运行时 VM 生命周期。`level.banm` 由 `anim_codec_encode` 生成，含 translation/rotation/scale 三个通道，测试用 `anim_codec_decode`、`anim_codec_time_error_bound`、`anim_codec_scalar_error_bound` 和旋转误差界验收。`tone.wav` 是固定 seed 的 44100 Hz、mono、16-bit PCM，4410 个样本；没有音频设备或听测证据。
 
 三个 `.scenario` 文件是版本化固定输入资产，由同一 baker 生成；场景脚本解析和生命周期执行属于后续任务，本任务没有声称它们已运行。
 
@@ -246,7 +284,7 @@ Linux 上 `test_game_app_assets` 为 9/9，通过两回 baker 逐字节比较、
 
 生产变异临时删除 payload hash 比较后，篡改用例如期失败（8 通过、1 失败）；恢复后 9/9。正式 `engine/assets/game_app` 的 11 个文件均由最终 baker 生成，并与第二回独立输出逐 `cmp` 一致。关键 SHA-256 为：`level.bscn` `85c1f349f8fc50fd916d3aa74797c337ee34d2c5ae65f723d10df2def6e0537e`，`level.fg` `9be4ca42a7bbd0e3ccd7f663a9d372b15b0daaaaeac08a8f876e15d0a57fb473`，`level.banm` `f3181920a4cdf26267b0aaeefb29664b9fae582ddaef9d39558403e236788873`，`tone.wav` `f0e63c5eb3adef364e73e3113573b104a372bad25425819684ee1d0a695e2682`。
 
-这些证据仅为 Linux CPU/文件系统证据。未运行 Windows 写路径、真实游戏循环、GPU、音频设备、听测或网络；`game_app_run()` 对合法配置仍按 Task 1 合同返回 `BREAK_RUNTIME_FAILED`。
+这些证据仅为 Linux CPU/文件系统证据。未运行 Windows 写路径、真实运行时循环、GPU、音频设备、听测或网络；`game_app_run()` 对合法配置仍按 Task 1 合同返回 `BREAK_RUNTIME_FAILED`。
 
 ### 最终回归补充（2026-11-09）
 
@@ -306,7 +344,7 @@ rename 成功后 directory open/fsync 失败时，新 manifest 已经可见。ch
 
 新构建树的真实 `game_app` CLI/target、资产、命名和 reader focused 集合为 12/12（两个 nm negative-path 按既有合同跳过），`test_game_app_assets` 为 20/20，`test_platform_fs_write` 为 11/11。ASan+UBSan 和 TSan focused 均 4/4，无 sanitizer 报告。旧 scenario 数据标识曾使正式目录与 fresh baker 比较出现 19/20，使用最终 `game_asset_bake` 重生成后恢复 20/20。生产变异把 unknown 错映射为 FAILED，三个 rename 后协议用例按预期降为 17/20；恢复后再次 20/20。
 
-正式 `engine/assets/game_app` 的 11 个文件均由最终 baker 生成，fresh 第二回逐字节一致。未运行 Windows/NTFS 实机、真实游戏主循环、GPU、音频设备/听测或网络；这些结果不构成崩溃持久性证明。
+正式 `engine/assets/game_app` 的 11 个文件均由最终 baker 生成，fresh 第二回逐字节一致。未运行 Windows/NTFS 实机、真实运行时主循环、GPU、音频设备/听测或网络；这些结果不构成崩溃持久性证明。
 
 ### 全量与交付验证补充
 
@@ -323,7 +361,7 @@ master 的 X11 removal 合同和 C++20 public API/QUIC 相关测试均包含在�
 
 `game_app --render=record --audio=record --fixed-step` 现在执行真实场景文件。主线程即 GameThread，独占 `World`、`BreakGame`、Lua/adapter、Flow、AI 和 physics 的可变状态；Runtime IO worker 只通过 VFS 返回有界字节，不接触这些对象。render/audio 分别只消费固定大小的 `GameRender*`/`GameAudio*` POD 快照与命令。
 
-每次 load 都分配独立 `GameLevel` candidate，顺序为：注册 ECS 组件并创建 World → Runtime IO 读取 BSCN、`scene_load_binary_memory` 在 candidate World/Scene 上完成 CPU staging → Flow 反序列化/实体引用验证、两个正式 Lua module 加载和 adapter 创建 → `break_game_level_open` 验证正式 actor sidecar 并 adopt → physics ground/player body → 4x4 CPU navmesh、AI runtime/Enemy agent → BANM decode → record resource POD staging → World/Scene/Flow/resource 交叉引用。只有全部成功后才执行一次 `game->level = candidate` 并递增非零 u64 generation。
+每次 load 都分配独立 `GameLevel` candidate，顺序为：注册 ECS 组件并创建 World → Runtime IO 读取 BSCN、`scene_load_binary_memory` 在 candidate World/Scene 上完成 CPU staging → Flow 反序列化/实体引用验证、两个正式 Lua module 加载和 adapter 创建 → `break_game_level_open` 验证正式 actor sidecar 并 adopt → physics ground/user body → 8x8 CPU navmesh、AI runtime/Chaser agent → BANM decode → record resource POD staging → World/Scene/Flow/resource 交叉引用。只有全部成功后才执行一次 `game->level = candidate` 并递增非零 u64 generation。
 
 candidate 的任一模态资源或验证失败都走统一逆序销毁，不修改当前 level 指针或 `next_generation`。已有 level 时 replacement 失败会写 `load_rejected` 并继续旧 level；没有已提交 level 的启动失败退出 2。显式 unload 先使当前指针失效，再销毁旧 generation。正常 replacement 成功时也先完成 candidate，再提交新代并释放旧代。
 
@@ -349,7 +387,7 @@ Task 2 的正式 `load_unload.scenario` 无需修改：frame 1 load、frame 2 un
 
 生产变异曾在 Flow 验证前插入 `game->level = candidate`；正常与 replacement 进程发生段错误，失败 fixture 也无法保持合同，测试按预期 RED。删除该变异行后恢复 GREEN。focused Runtime/BreakGame/Scene 回归 5/5、game_app 既有合同 6/6（两个 nm negative-path 按合同跳过）、全量非图形 348/348 通过。ASan+UBSan 和 TSan 生命周期各 1/1 通过；no-tests 的 `game_app`/`game_asset_bake` 均构建成功。
 
-这些证据仅是 Linux CPU/record 生命周期证据。没有输入/玩家模拟、GPU `asset_scene_restore`、窗口或像素、音频设备/听测、网络、完整 checkpoint 状态恢复或完整 device worker；Windows 和其他平台未运行。VFS 的 16 mount 上限和 Runtime IO/VFS 路径上限仍是当前有界配置，超长路径或超过 mount 预算会明确拒绝 load。
+这些证据仅是 Linux CPU/record 生命周期证据。没有输入/用户模拟、GPU `asset_scene_restore`、窗口或像素、音频设备/听测、网络、完整 checkpoint 状态恢复或完整 device worker；Windows 和其他平台未运行。VFS 的 16 mount 上限和 Runtime IO/VFS 路径上限仍是当前有界配置，超长路径或超过 mount 预算会明确拒绝 load。
 
 
 ## P12 Task 3 独立评审 fix round 1/5（2026-11-10）

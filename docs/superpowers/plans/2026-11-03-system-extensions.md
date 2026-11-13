@@ -313,7 +313,7 @@ git commit -m "system: load allowlisted plugins through PAL"
 
 **Files:**
 - Create: `docs/design/system_extensions.md`
-- Modify: `docs/design/cry_style_gameplay.md`
+- Modify: `docs/design/core_style_runtime.md`
 - Modify: `docs/Implementation_Status.md`
 - Modify: `docs/superpowers/plans/2026-11-03-system-extensions.md`
 - Create: `.superpowers/sdd/system-extensions-report.md`
@@ -324,7 +324,7 @@ git commit -m "system: load allowlisted plugins through PAL"
 
 - [x] **Step 1: 更新设计、状态和计划勾选**
 
-`system_extensions.md` 写明配置文法、XML 子集与硬上限、场景 schema、ABI/哈希/生命周期、线程归属、PAL 链接所有权和安全边界。`cry_style_gameplay.md` 将 P11 从待办改为已交付并链接设计；`Implementation_Status.md` 顶部追加真实测试数量与限制。只勾选已执行的步骤。
+`system_extensions.md` 写明配置文法、XML 子集与硬上限、场景 schema、ABI/哈希/生命周期、线程归属、PAL 链接所有权和安全边界。`core_style_runtime.md` 将 P11 从待办改为已交付并链接设计；`Implementation_Status.md` 顶部追加真实测试数量与限制。只勾选已执行的步骤。
 
 - [x] **Step 2: 配置并运行 normal / ASan+UBSan / TSan focused**
 

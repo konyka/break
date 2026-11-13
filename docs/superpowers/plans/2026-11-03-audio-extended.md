@@ -30,7 +30,7 @@
 - `engine/tests/test_audio_realtime_contract.cmake`：回调禁用分配、文件/解码和游戏入口的源级契约。
 - `engine/CMakeLists.txt`：把扩展接入 `engine` 和 focused 测试。
 - `docs/design/audio_extended.md`：公共合同、容量、线程、PCM 格式和限制。
-- `docs/design/cry_style_gameplay.md`、`docs/Implementation_Status.md`：只更新已实际交付的 P10 状态。
+- `docs/design/core_style_runtime.md`、`docs/Implementation_Status.md`：只更新已实际交付的 P10 状态。
 - `.superpowers/sdd/audio-extended-report.md`：逐项 RED/GREEN、变异、命令、提交与限制。
 
 ---
@@ -262,7 +262,7 @@ git commit -m "audio: drive occlusion and distance from game-thread rays"
 - Create: `engine/tests/test_audio_realtime_contract.cmake`
 - Modify: `engine/CMakeLists.txt`, `engine/src/audio/audio_stream.c`（仅实际兼容修复需要时）
 - Create: `docs/design/audio_extended.md`, `.superpowers/sdd/audio-extended-report.md`
-- Modify: `docs/design/cry_style_gameplay.md`, `docs/Implementation_Status.md`, `docs/superpowers/plans/2026-11-03-audio-extended.md`
+- Modify: `docs/design/core_style_runtime.md`, `docs/Implementation_Status.md`, `docs/superpowers/plans/2026-11-03-audio-extended.md`
 
 - [x] **Step 1: 写回调契约并确认能失败**
 

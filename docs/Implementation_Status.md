@@ -1,14 +1,23 @@
+## Core App P12 Task 6（slice 1）：追踪者视野、行为树、当前版本路径与动态墙（2026-11-13）
+
+- **交付**：导航高度场从 4x4 扩到 8x8（`origin_x/origin_z = -1.0`），加载期建 AI runtime 并注册 agent；每 tick 新增 `app_tick_chaser`：视野射线（距离 12、半角 1.2 rad，动态墙刚体遮挡）→ 行为树 CHASE 叶 → 只在 nav 版本变化时按当前版本重新寻路 → 侧向避让 → `CharacterController` 执行移动意图。目标进入视野时加入动态墙并建立对应刚体，追踪者进入近区后移除墙体，nav 版本再次递增、路径恢复可查询。trace 新增 `event=sim tick=… chaser_x=… chaser_z=… nav_version=… path_current=…`。设计见 `docs/design/core_app_integration.md` 的 Task 6 节。
+- **测试**：真实进程 `test_core_app_lifecycle_simulation`（600 tick）：tick 1 路径为当前版本；tick 2 加墙后版本前进且路径过期；tick 200 重新寻路后路径当前且 z 下降；tick 500 墙体移除后版本再次前进、路径当前、z 继续下降且 x < 0.5；同一场景两次运行的全部 `event=sim` 行逐字节一致。
+- **变异**：去掉 `break_ai_obstacle_remove` → “tick 500 nav version 未前进”红；寻路传旧版本号 → 红；跳过加墙分支 → “tick 2 版本未前进”红。三处均已恢复并复测。
+- **命名边界**：`core_app` 层不再使用 player/enemy/game 词表：受控单位为 `user`（类名 `User`、脚本 `user.lua`），追踪单位为 `chaser`（类名 `Chaser`、脚本 `chaser.lua`），正式资产由 `player.lua`/`broken.lua` 改名为 `user.lua`/`chaser.lua`；命名合同测试新增禁止词检查（`player`/`Player`/`enemy`/`Enemy`/`玩家`/`敌人`/`游戏`），覆盖 core_app 源码、测试、CMake 与设计/计划文档。`docs/design/cry_style_gameplay.md` 更名为 `docs/design/core_style_runtime.md`。
+- **回归**：普通非图形全量 0 FAIL（除 2 项依赖 `git archive HEAD` 的提交态合同，见下）；ASan/UBSan 与 TSan focused 见本条目后续补记。
+- **边界**：本 slice 只做追踪者的感知、决策、寻路与移动；locomotion/morph/facial→skinning、载具进出与 throttle、布娃娃与 IK 互斥仍在 Task 6 后续 slice。证据仍限 Linux CPU/record，没有真实窗口、手柄、GPU 或音频设备。
+
 ## Core App P12 Task 5：Actor/Lua 与 Flow 同帧接线（2026-11-13）
 
-- **交付**：每个固定步先 `break_game_tick`，再 `break_flow_runtime_tick`，随后是模拟和 Area。Area enter 向 Flow 投递事件 1001；烘焙的图延迟 30 tick 后给 Player 加物品 1，且只加一次。卸载时把该 generation 的 pending Flow 事件记入 trace 并随 runtime 丢弃，替换关卡从 0 个物品重新开始。`break_game_lua_actor_stats` 按 actor 统计成功 tick、失败、跳过次数和最后一次错误；指令预算 trip 只禁用触发它的 module，普通 Lua 错误只记录。Enemy 绑定会在 `on_actor_tick` 抛错的 `broken`，Player 绑定实现了 `on_actor_tick` 的 `player`。设计见 `docs/design/core_app_integration.md` 的 Task 5 节。
-- **测试**：`test_break_game_lua` 4/4（含 60 tick 计数、despawn 后 STALE、预算 trip 只禁用一个 module）；`test_core_app_assets` 23/23（事件键 1001、add-item 数量 1、`player` 的 hook 成功、`broken` 可加载但 tick 失败）。真实进程 `test_core_app_lifecycle_script_flow`：tick 30 投递且 pending=1，tick 61 物品变为 1，tick 180 仍为 1；中途卸载报告 `discarded pending=1`，第二关卡全程物品为 0。
+- **交付**：每个固定步先 `break_game_tick`，再 `break_flow_runtime_tick`，随后是模拟和 Area。Area enter 向 Flow 投递事件 1001；烘焙的图延迟 30 tick 后给 User 加物品 1，且只加一次。卸载时把该 generation 的 pending Flow 事件记入 trace 并随 runtime 丢弃，替换关卡从 0 个物品重新开始。`break_game_lua_actor_stats` 按 actor 统计成功 tick、失败、跳过次数和最后一次错误；指令预算 trip 只禁用触发它的 module，普通 Lua 错误只记录。Chaser 绑定会在 `on_actor_tick` 抛错的 `chaser`，User 绑定实现了 `on_actor_tick` 的 `user`。设计见 `docs/design/core_app_integration.md` 的 Task 5 节。
+- **测试**：`test_break_game_lua` 4/4（含 60 tick 计数、despawn 后 STALE、预算 trip 只禁用一个 module）；`test_core_app_assets` 23/23（事件键 1001、add-item 数量 1、`user` 的 hook 成功、`chaser` 可加载但 tick 失败）。真实进程 `test_core_app_lifecycle_script_flow`：tick 30 投递且 pending=1，tick 61 物品变为 1，tick 180 仍为 1；中途卸载报告 `discarded pending=1`，第二关卡全程物品为 0。
 - **变异**：任何 Lua 错误都禁用 module 时 2/4；首个 Lua 错误跳过后续 actor 时 `script_flow` 失败；Area enter 不再投递 Flow 时 `script_flow` 失败。三处都用 `cmp` 恢复。
 - **回归**：普通非图形 374 项（370 PASS、4 个既有 SKIP、0 FAIL）。ASan+UBSan focused 8/8（assets、runtime、lifecycle 5 项、break_game_lua），TSan 6/6（break_game_lua 与 lifecycle 5 项），无 sanitizer 报告。
 - **边界**：AI、动画和 `physics_step` 仍是 Task 6，本任务的 tick 顺序只接了脚本、Flow、模拟和 Area。Flow 动作失败记 `tick_failed` 后应用继续本 tick；Flow runtime 会回滚该次 tick 并在下一个应用 tick 重试同一事件，应用不另做补偿。没有真实窗口、手柄或 GPU 证据。
 
-## Core App P12 Task 4：ActionMap、触摸与固定步长玩家控制（2026-11-13）
+## Core App P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
-- **交付**：`core_app` 新增 `scenario`（有界文法，tick 1..1048576 单调、quit 唯一且为最后事件、违规整份拒绝）、`core_app_input`（应用自有 `InputState`/`InputExtended`，导出 POD 帧）和 `core_app_simulation`（9 个 ActionMap 动作、触摸虚拟摇杆、`break_game_move_wish` + `character_update` 固定 1/60 s、位置写回 ECS、最多 8 substep 的 accumulator）。新增 `level [asset-root]` 命令；三个正式 scenario 由 baker 重生成。玩家前方 Area enter 触发一次 haptic，无手柄时 trace 为 `status=disconnected request=0`。原 70 kg 玩家动态 box 删除，角色控制器是唯一碰撞体。设计见 `docs/design/core_app_integration.md` 的 Task 4 节。
+- **交付**：`core_app` 新增 `scenario`（有界文法，tick 1..1048576 单调、quit 唯一且为最后事件、违规整份拒绝）、`core_app_input`（应用自有 `InputState`/`InputExtended`，导出 POD 帧）和 `core_app_simulation`（9 个 ActionMap 动作、触摸虚拟摇杆、`break_game_move_wish` + `character_update` 固定 1/60 s、位置写回 ECS、最多 8 substep 的 accumulator）。新增 `level [asset-root]` 命令；三个正式 scenario 由 baker 重生成。用户前方 Area enter 触发一次 haptic，无手柄时 trace 为 `status=disconnected request=0`。原 70 kg 用户动态 box 删除，角色控制器是唯一碰撞体。设计见 `docs/design/core_app_integration.md` 的 Task 4 节。
 - **测试**：`test_core_app_runtime` 22/22（含恰好 4096 事件边界、haptic pad generation 与重连 STALE、平台快照复制）；真实进程 `test_core_app_lifecycle_input_key|touch|cancel`：W 键与触摸上拖 180 tick 位置逐位相同（z=15.3000059），release/cancel 后水平位置不变，key 模式 CTest 把同一 scenario 运行两次并要求 trace 完全相同。既有 `test_core_app_lifecycle_load_unload` 迁移到新文法后通过。
 - **变异**：cancel→MOVE、墙钟 dt、UNSUPPORTED→OK、Area enter 不计数、删除 4096 事件上限，均被杀死并 `cmp` 恢复。
 - **评审**：独立评审 Needs fixes（4 Important：4097 事件测试因 tick 0 假绿、缺进程级重复运行比较、`platform_input_extended()` 未接却勾选、pad generation 未测），已在 `58a4360d` 修复；scoped 复审 Approved（剩余 Minor：非致命 haptic 路径与手势快照复制无专项测试）。
@@ -174,7 +183,7 @@
 
 - 主 CI run `42964916340` 与 Windows D3D12 run `42964916355` 均已 `SUCCESS`。两个 macOS lane 都实际通过 Runtime IO 的 `stage=0x52` 与精确 `SIGABRT` 路径，先前的 Cocoa setup 竞争不再复现；Windows、Linux、图形与其它 headless lane 也都完成。
 - Core App 命名 Task 1/2 的独立规格与质量评审均为 PASS。合入本地 master 后，完整非图形 CTest 为 **352 项入选、348 PASS、4 个文档化 SKIP、0 FAIL**；两个额外测试来自同步的 master 基线。第二次 bounded IO wait 失败、`io_quiesced` trace EIO、Task 9 的 256 项 FIFO 和 Flow identity/source-port 仍保留在后续台账，未因命名迁移或 CI 转绿而视为完成。
-- 全分支终审为 **Ready**，无 Critical/Important 或需阻断合并的 Minor。终审另用真实 reader 确认 Flow Player 为 `{index=2, generation=1}`、两条 exec-link 的 `source_port=1`，资产正确性无疑点；永久断言仍留后续固化。Compose 与 P12 Task 4–13 尚未在本条目中宣称实现。
+- 全分支终审为 **Ready**，无 Critical/Important 或需阻断合并的 Minor。终审另用真实 reader 确认 Flow User 为 `{index=2, generation=1}`、两条 exec-link 的 `source_port=1`，资产正确性无疑点；永久断言仍留后续固化。Compose 与 P12 Task 4–13 尚未在本条目中宣称实现。
 
 ## 本轮更新：P12 Core App Naming Task 2——一次性数据格式（2026-11-11）
 
@@ -182,7 +191,7 @@
 - **TDD 与变异**：Task 1 实现上的 focused RED 为 assets 18/22、naming/lifecycle 失败，旧 scenario 实际退出 0。最小实现和正式资产重建后 focused 4/4、assets 22/22。临时恢复旧 magic 使 assets 20/22 且 naming 失败；恢复后 assets/naming/lifecycle 3/3 GREEN。scenario 拒绝仍保留既有单条 `runtime_failed` rollback trace，没有改成空 trace 或正常停止。
 - **资产与 archive**：最终 `core_app_asset_bake --output` 分别重建空目录和正式目录，11 个文件逐 `cmp` 一致，BSCN/Flow/BANM/WAV/Lua 真实 readers 通过；未手工编辑二进制。格式提交 `1584794185a14a6c0f8210bfbb9c04d956829c78` 的 HEAD archive 独立配置/构建成功，最终 Core App 9 项入选为 6 PASS、3 个 nm SKIP、0 失败。归档没有 `.git` 导致两个 tracking 合同首次各报 0/11；仅在生成归档目录初始化临时 index 并登记同一组归档资产后，原 CTest 命令全绿，没有借用源树资产。
 - **最终验证**：普通和 ASan+UBSan 非图形/非 fuzz 均为 351 项入选、347 PASS、4 个文档化 SKIP、0 失败；ASan+UBSan 无 sanitizer 报告。TSan lifecycle 1/1，无 race 报告。no-tests 完整构建成功，`core_app_runtime`、`core_app`、`core_app_asset_bake` 均存在且可构建；本切片未修改 CMake 或增加链接依赖。所有构建和并行 CTest 使用 `-j3`。
-- **限制与剩余台账**：仅有 Linux CPU/record 证据，record/null 不证明 GPU、声卡或听测；native GPU/audio、网络、非 Linux 与远程 CI 未运行。第二次 bounded IO wait 失败和 `io_quiesced` trace EIO 注入仍未覆盖；Task 9 的 256 项 FIFO/过载/drain recovery 未提前实现，当前仍为 16 项 record FIFO；baker 的 Flow player identity 与 exec-link source port 专项断言仍待后续。后续独立规格与质量评审均为 PASS、零 Critical/Important/Minor，确认 writer/reader 负例、11 资产 hash/readers、archive 元数据边界、历史保留及验证日志。完整证据见 `.superpowers/sdd/2026-11-11-core-app-naming/task-2-report.md`。
+- **限制与剩余台账**：仅有 Linux CPU/record 证据，record/null 不证明 GPU、声卡或听测；native GPU/audio、网络、非 Linux 与远程 CI 未运行。第二次 bounded IO wait 失败和 `io_quiesced` trace EIO 注入仍未覆盖；Task 9 的 256 项 FIFO/过载/drain recovery 未提前实现，当前仍为 16 项 record FIFO；baker 的 Flow user identity 与 exec-link source port 专项断言仍待后续。后续独立规格与质量评审均为 PASS、零 Critical/Important/Minor，确认 writer/reader 负例、11 资产 hash/readers、archive 元数据边界、历史保留及验证日志。完整证据见 `.superpowers/sdd/2026-11-11-core-app-naming/task-2-report.md`。
 ## 原生验证进展：MSVC/D3D12 通过，macOS Runtime IO 修复待验证（2026-11-11）
 
 - 主 CI run `42956737548` 的 `Windows + MSVC (headless)` job `130313507109` 已通过，standalone `/experimental:c11atomics` 工具链修复获得真实 `cl.exe` 验证；Windows D3D12 run `42956737579` 也已通过。上一轮 WGL、MinGW、Clang 与 NAT 修复未在这些 lane 重现失败。
@@ -610,7 +619,7 @@
 
 ## 本轮更新：Cry 式游戏能力的前三段（2026-11-01）
 
-- **交付**：`break_game`（Actor 类、生成与 tick、ActionMap、移动合成、关卡侧车、触发区）和 `break_ai`（高度图导航网格、A*、跟随、视野、小型行为树、胶囊侧向避障）是正式可选静态库，不链入 `engine`、`engine_demo`、`dxx_break`。动画侧增加一维速度混合、骨架挂点、瞄准/注视 IK 槽。合同见 `docs/design/cry_style_gameplay.md`，计划见 `docs/superpowers/plans/2026-11-01-cry-style-gameplay.md`。
+- **交付**：`break_game`（Actor 类、生成与 tick、ActionMap、移动合成、关卡侧车、触发区）和 `break_ai`（高度图导航网格、A*、跟随、视野、小型行为树、胶囊侧向避障）是正式可选静态库，不链入 `engine`、`engine_demo`、`dxx_break`。动画侧增加一维速度混合、骨架挂点、瞄准/注视 IK 槽。合同见 `docs/design/core_style_runtime.md`，计划见 `docs/superpowers/plans/2026-11-01-cry-style-gameplay.md`。
 - **测试**：normal、ASan+UBSan、TSan 三棵树上，`test_break_game_*`、`test_break_nav_*`、`test_break_perception`、`test_break_behavior`、`test_break_steer`、`test_anim_locomotion`、`test_skeleton_socket`、`test_anim_aim` 通过。既有 `test_animation` 仍通过。
 - **未做**：阶段 F 的 headless 可玩原型还没把这三层串起来。植被、昼夜、VisArea、流式、刚体朝向、布娃娃、载具都没有开始。两个新库没有接到 demo。Lua 模块名只保存，不执行。导航网格不在运行时雕刻。
 

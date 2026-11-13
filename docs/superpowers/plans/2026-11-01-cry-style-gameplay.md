@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (or subagent-driven-development) to implement this plan task by task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-**Goal:** 按 [`docs/design/cry_style_gameplay.md`](../../design/cry_style_gameplay.md) 补齐可玩原型（游戏内核、导航与行为、运动混合），再分别补世界表现和布娃娃/载具。本文是实施计划；设计合同以该文档为准。
+**Goal:** 按 [`docs/design/core_style_runtime.md`](../../design/core_style_runtime.md) 补齐可玩原型（游戏内核、导航与行为、运动混合），再分别补世界表现和布娃娃/载具。本文是实施计划；设计合同以该文档为准。
 
 文末完成定义已满足：下面的步骤都已落地。再开目标时以新的完成定义为准，不要把容量上限当成未完成的计划步骤。
 

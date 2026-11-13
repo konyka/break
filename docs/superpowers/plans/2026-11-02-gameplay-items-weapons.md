@@ -147,7 +147,7 @@ git commit -m "game: add transactional actor inventories"
 - Modify: `engine/CMakeLists.txt`
 - Modify: `engine/tests/test_break_game_target_contract.cmake`
 - Create: `docs/design/gameplay_items_weapons.md`
-- Modify: `docs/design/cry_style_gameplay.md`
+- Modify: `docs/design/core_style_runtime.md`
 - Modify: `docs/Implementation_Status.md`
 
 **Interfaces:**
@@ -215,7 +215,7 @@ Expected: 全通过。
 
 - [ ] **Step 5: 文档、独立评审与提交**
 
-`gameplay_items_weapons.md` 写明 API、事务、时序、权威边界和真实测试命令；`cry_style_gameplay.md` 只把已完成的物品/武器缺口改为已交付，Flow Graph 等后续项保持未完成。派只读 reviewer 检查回滚、句柄、溢出和状态机，修复发现后再提交：
+`gameplay_items_weapons.md` 写明 API、事务、时序、权威边界和真实测试命令；`core_style_runtime.md` 只把已完成的物品/武器缺口改为已交付，Flow Graph 等后续项保持未完成。派只读 reviewer 检查回滚、句柄、溢出和状态机，修复发现后再提交：
 
 ```bash
 git add engine/src/game engine/tests/test_break_game_weapons.c engine/tests/test_break_game_target_contract.cmake engine/CMakeLists.txt docs
