@@ -194,7 +194,7 @@ foreach(path IN LISTS scan_files)
     # Neutral-role wording: the runtime addresses the controlled unit as
     # "user" and the pursuing unit as "chaser"; the legacy actor/gameplay
     # vocabulary must not reappear in code, assets, traces, or documents.
-    foreach(forbidden IN ITEMS "player" "Player" "enemy" "Enemy" "玩家" "敌人" "游戏")
+    foreach(forbidden IN ITEMS "player" "Player" "PLAYER" "enemy" "Enemy" "ENEMY" "玩家" "敌人" "游戏")
         string(FIND "${text}" "${forbidden}" forbidden_index)
         if(NOT forbidden_index LESS 0)
             string(APPEND errors "${path}: forbidden role wording ${forbidden}\n")

@@ -7,8 +7,8 @@
 #define CORE_APP_KEY_SPACE 32
 #define CORE_APP_KEY_F5 275
 #define CORE_APP_KEY_F9 279
-#define CORE_APP_PLAYER_RADIUS 0.4f
-#define CORE_APP_PLAYER_HEIGHT 2.0f
+#define CORE_APP_USER_RADIUS 0.4f
+#define CORE_APP_USER_HEIGHT 2.0f
 
 struct CoreAppSimulation {
     CoreAppSimulationDesc desc;
@@ -101,8 +101,8 @@ CoreAppSimulation *core_app_simulation_create(const CoreAppSimulationDesc *desc)
     simulation = (CoreAppSimulation *)calloc(1u, sizeof(*simulation));
     if (!simulation) return NULL;
     simulation->desc = *desc;
-    simulation->character = character_create(desc->spawn, CORE_APP_PLAYER_RADIUS,
-                                             CORE_APP_PLAYER_HEIGHT);
+    simulation->character = character_create(desc->spawn, CORE_APP_USER_RADIUS,
+                                             CORE_APP_USER_HEIGHT);
     return simulation;
 }
 

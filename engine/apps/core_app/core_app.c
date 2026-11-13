@@ -27,7 +27,7 @@
 #define CORE_APP_TEXT_FILE_MAX_BYTES (1u << 20)
 #define CORE_APP_IO_TIMEOUT_MS 5000u
 #define CORE_APP_USER_ENTITY_INDEX 2u
-#define CORE_APP_ENEMY_ENTITY_INDEX 3u
+#define CORE_APP_CHASER_ENTITY_INDEX 3u
 #define CORE_APP_AREA_FLOW_EVENT 1001u
 #define CORE_APP_FLOW_ITEM 1u
 #define CORE_APP_MAX_PENDING_AREA_ENTERS 8u
@@ -449,10 +449,10 @@ static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
     candidate->simulation = core_app_simulation_create(&desc);
     if (!candidate->simulation) return BREAK_RUNTIME_FAILED;
     candidate->user = user;
-    if (candidate->world->entity_count <= CORE_APP_ENEMY_ENTITY_INDEX) {
+    if (candidate->world->entity_count <= CORE_APP_CHASER_ENTITY_INDEX) {
         return BREAK_RUNTIME_FAILED;
     }
-    candidate->chaser = candidate->world->entities[CORE_APP_ENEMY_ENTITY_INDEX];
+    candidate->chaser = candidate->world->entities[CORE_APP_CHASER_ENTITY_INDEX];
     if (!world_entity_exists(candidate->world, candidate->chaser)) return BREAK_RUNTIME_STALE;
     BreakGameAreaDesc area;
     memset(&area, 0, sizeof(area));
