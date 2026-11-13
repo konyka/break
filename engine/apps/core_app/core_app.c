@@ -130,6 +130,12 @@ typedef struct CoreLevel {
     LodInstanceState lod_state;
     WorldFrameSnapshot world_snapshots[2];
     u32 skin_slot[CORE_APP_SKINNED_OBJECTS];
+    u8 *scene_bytes;
+    usize scene_size;
+    u8 *flow_bytes;
+    usize flow_size;
+    u8 *actor_bytes;
+    usize actor_size;
     u64 generation;
     bool actor_level_open;
 } CoreLevel;
@@ -143,6 +149,16 @@ typedef struct CoreAppRuntimeState {
     u32 flags;
     u32 items;
 } CoreAppRuntimeState;
+
+typedef struct CoreAppLevelSource {
+    const char *asset_root;
+    const char *scene_root;
+    const char *scene_name;
+    const char *flow_root;
+    const char *flow_name;
+    const char *actor_root;
+    const char *actor_name;
+} CoreAppLevelSource;
 
 typedef struct CoreAppIoCompletion {
     bool used;
@@ -351,6 +367,9 @@ static void core_app_level_destroy(CoreLevel *level) {
     level->scene.material_count = 0u;
     scene_serial_free(&level->scene);
     if (level->world) world_destroy(level->world);
+    free(level->scene_bytes);
+    free(level->flow_bytes);
+    free(level->actor_bytes);
     free(level);
 }
 
@@ -369,7 +388,7 @@ static void app_level_hook_unload(void *user, World *world) {
 }
 
 static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
-                                         const char *asset_root,
+                                         const char *root, const char *name,
                                          bool *runtime_fatal) {
     if (app->vfs->mount_count != 0u) {
         if (app->vfs->mount_count != 1u ||
@@ -378,9 +397,9 @@ static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
         }
         app->vfs->mount_count = 0u;
     }
-    if (!vfs_mount_dir(app->vfs, asset_root)) return BREAK_RUNTIME_FAILED;
+    if (!vfs_mount_dir(app->vfs, root)) return BREAK_RUNTIME_FAILED;
     BreakRuntimeError result = break_runtime_io_submit(&candidate->request,
-                                                       "level.bscn", 0u, 0u);
+                                                       name, 0u, 0u);
     if (result != BREAK_RUNTIME_OK) return result;
     BreakRuntimeOwnedMessage *message = NULL;
     result = break_runtime_io_wait_completion(candidate->request,
@@ -414,6 +433,13 @@ static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
         break_runtime_message_release(message);
         return BREAK_RUNTIME_FAILED;
     }
+    candidate->scene_bytes = (u8 *)malloc((usize)completion.byte_size);
+    if (!candidate->scene_bytes) {
+        break_runtime_message_release(message);
+        return BREAK_RUNTIME_OOM;
+    }
+    memcpy(candidate->scene_bytes, completion.bytes, (usize)completion.byte_size);
+    candidate->scene_size = (usize)completion.byte_size;
 
     candidate->world = world_create();
     if (!candidate->world) {
@@ -459,17 +485,17 @@ static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
     return BREAK_RUNTIME_OK;
 }
 
-static BreakRuntimeError stage_flow(CoreLevel *candidate,
-                                         const char *asset_root) {
+static BreakRuntimeError stage_flow(CoreLevel *candidate, const char *root,
+                                    const char *name) {
     u8 *bytes = NULL;
     usize size = 0u;
-    if (!app_read_asset(asset_root, "level.fg", CORE_APP_TEXT_FILE_MAX_BYTES,
-                         &bytes, &size)) {
+    if (!app_read_asset(root, name, CORE_APP_TEXT_FILE_MAX_BYTES, &bytes, &size)) {
         return BREAK_RUNTIME_FAILED;
     }
+    candidate->flow_bytes = bytes;
+    candidate->flow_size = size;
     BreakFlowError flow_result = break_flow_deserialize(bytes, size,
                                                         &candidate->flow_graph);
-    free(bytes);
     if (flow_result != BREAK_FLOW_OK ||
         break_flow_graph_validate(candidate->flow_graph) != BREAK_FLOW_OK) {
         return BREAK_RUNTIME_FAILED;
@@ -529,12 +555,16 @@ static BreakRuntimeError stage_lua(CoreLevel *candidate,
 }
 
 static BreakRuntimeError stage_actor(CoreLevel *candidate,
-                                          const char *asset_root) {
+                                     const CoreAppLevelSource *source) {
     char scene_path[PLATFORM_FS_PATH_CAPACITY];
     char sidecar_path[PLATFORM_FS_PATH_CAPACITY];
-    if (!app_path(scene_path, asset_root, "level.bscn") ||
-        !app_path(sidecar_path, asset_root, "actors.sidecar")) {
+    if (!app_path(scene_path, source->scene_root, source->scene_name) ||
+        !app_path(sidecar_path, source->actor_root, source->actor_name)) {
         return BREAK_RUNTIME_INVALID;
+    }
+    if (!app_read_file(sidecar_path, CORE_APP_TEXT_FILE_MAX_BYTES, &candidate->actor_bytes,
+                       &candidate->actor_size)) {
+        return BREAK_RUNTIME_FAILED;
     }
     BreakGameLevelHooks hooks;
     memset(&hooks, 0, sizeof(hooks));
@@ -1151,7 +1181,8 @@ static BreakRuntimeError app_validate_crossrefs(const CoreLevel *candidate) {
     return BREAK_RUNTIME_OK;
 }
 
-static BreakRuntimeError core_app_level_stage(CoreApp *app, const char *asset_root,
+static BreakRuntimeError core_app_level_stage(CoreApp *app,
+                                              const CoreAppLevelSource *source,
                                               const char **failed_stage,
                                               bool *out_runtime_fatal,
                                               CoreLevel **out_candidate) {
@@ -1164,20 +1195,20 @@ static BreakRuntimeError core_app_level_stage(CoreApp *app, const char *asset_ro
     CoreLevel *candidate = (CoreLevel *)calloc(1u, sizeof(*candidate));
     if (!candidate) return BREAK_RUNTIME_OOM;
     candidate->generation = app->next_generation;
-    BreakRuntimeError result = stage_bscn(app, candidate, asset_root,
-                                               out_runtime_fatal);
+    BreakRuntimeError result = stage_bscn(app, candidate, source->scene_root,
+                                          source->scene_name, out_runtime_fatal);
     if (result != BREAK_RUNTIME_OK) goto reject;
 
     *failed_stage = "flow";
-    result = stage_flow(candidate, asset_root);
+    result = stage_flow(candidate, source->flow_root, source->flow_name);
     if (result != BREAK_RUNTIME_OK) goto reject;
 
     *failed_stage = "lua";
-    result = stage_lua(candidate, asset_root);
+    result = stage_lua(candidate, source->asset_root);
     if (result != BREAK_RUNTIME_OK) goto reject;
 
     *failed_stage = "actor";
-    result = stage_actor(candidate, asset_root);
+    result = stage_actor(candidate, source);
     if (result != BREAK_RUNTIME_OK) goto reject;
 
     *failed_stage = "physics";
@@ -1193,7 +1224,7 @@ static BreakRuntimeError core_app_level_stage(CoreApp *app, const char *asset_ro
     if (result != BREAK_RUNTIME_OK) goto reject;
 
     *failed_stage = "animation";
-    result = stage_animation(candidate, asset_root);
+    result = stage_animation(candidate, source->asset_root);
     if (result != BREAK_RUNTIME_OK) goto reject;
 
     *failed_stage = "render";
@@ -1268,7 +1299,9 @@ static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_roo
                                              bool *out_runtime_fatal) {
     *out_committed = false;
     CoreLevel *candidate = NULL;
-    BreakRuntimeError result = core_app_level_stage(app, asset_root, failed_stage,
+    CoreAppLevelSource source = {asset_root, asset_root, "level.bscn", asset_root,
+                                 "level.fg", asset_root, "actors.sidecar"};
+    BreakRuntimeError result = core_app_level_stage(app, &source, failed_stage,
                                                     out_runtime_fatal, &candidate);
     if (result != BREAK_RUNTIME_OK) return result;
     return core_app_level_commit(app, candidate, failed_stage, out_committed);
@@ -1405,64 +1438,110 @@ static BreakRuntimeError app_trace_state(CoreApp *app, const char *event, u32 ti
         state->items);
 }
 
-static BreakRuntimeError app_write_runtime_file(const char *path,
-                                                const CoreAppRuntimeState *state,
-                                                CoreAppCheckpointFile *file) {
-    u8 bytes[CORE_APP_RUNTIME_FILE_BYTES];
-    memcpy(bytes, k_runtime_magic, sizeof(k_runtime_magic));
-    app_put32(bytes + 8u, CORE_APP_RUNTIME_STATE_VERSION);
-    app_put32(bytes + 12u, CORE_APP_RUNTIME_BODY_BYTES);
-    app_runtime_encode_body(state, bytes + CORE_APP_RUNTIME_HEADER_BYTES);
+#define CORE_APP_CHECKPOINT_PAYLOADS 4u
+
+static const struct {
+    u32 kind;
+    const char *format;
+} k_checkpoint_payloads[CORE_APP_CHECKPOINT_PAYLOADS] = {
+    {CORE_APP_CHECKPOINT_SCENE, "scene_%" PRIu64 ".bscn"},
+    {CORE_APP_CHECKPOINT_FLOW, "flow_%" PRIu64 ".fg"},
+    {CORE_APP_CHECKPOINT_ACTORS, "actors_%" PRIu64 ".sidecar"},
+    {CORE_APP_CHECKPOINT_RUNTIME, "runtime_%" PRIu64 ".bin"},
+};
+
+static bool app_payload_name(u32 index, u64 generation, char out[64]) {
+    int written = snprintf(out, 64, k_checkpoint_payloads[index].format, generation);
+    return written > 0 && written < 64;
+}
+
+static BreakRuntimeError app_write_payload(const char *directory, u32 index, u64 generation,
+                                           const u8 *bytes, usize size,
+                                           CoreAppCheckpointFile *file) {
+    char path[PLATFORM_FS_PATH_CAPACITY];
+    memset(file, 0, sizeof(*file));
+    if (!bytes || size == 0u || !app_payload_name(index, generation, file->name) ||
+        !app_path(path, directory, file->name)) {
+        return BREAK_RUNTIME_INVALID;
+    }
     PlatformAtomicWriter *writer = platform_atomic_writer_open(path);
     if (!writer) return BREAK_RUNTIME_FAILED;
-    if (!platform_atomic_writer_write(writer, bytes, sizeof(bytes))) {
+    if (!platform_atomic_writer_write(writer, bytes, size)) {
         platform_atomic_writer_abort(writer);
         return BREAK_RUNTIME_FAILED;
     }
-    if (platform_atomic_writer_commit_status(writer) == PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED) {
+    if (platform_atomic_writer_commit_status(writer) ==
+        PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED) {
         return BREAK_RUNTIME_FAILED;
     }
-    file->kind = CORE_APP_CHECKPOINT_RUNTIME;
-    file->size = sizeof(bytes);
-    file->hash = app_fnv1a64(bytes, sizeof(bytes));
+    file->kind = k_checkpoint_payloads[index].kind;
+    file->size = (u64)size;
+    file->hash = app_fnv1a64(bytes, size);
     return BREAK_RUNTIME_OK;
+}
+
+static void app_remove_payloads(const char *directory, const CoreAppCheckpointFile *files,
+                                u32 count) {
+    char path[PLATFORM_FS_PATH_CAPACITY];
+    for (u32 i = 0u; i < count; ++i) {
+        if (app_path(path, directory, files[i].name)) (void)remove(path);
+    }
 }
 
 static BreakRuntimeError app_save_checkpoint(CoreApp *app, u32 tick) {
     const char *directory = app->config.checkpoint_dir;
+    const CoreLevel *level = app->level;
     CoreAppRuntimeState state;
-    BreakRuntimeError result = app_capture_state(app->level, &state);
+    BreakRuntimeError result = app_capture_state(level, &state);
     if (result != BREAK_RUNTIME_OK) return result;
     CoreAppCheckpointFile previous;
-    u64 committed_generation = app->save_generation;
+    u64 committed_generation = 0u;
     bool has_previous = core_app_checkpoint_find(directory, CORE_APP_CHECKPOINT_RUNTIME,
                                                  &previous, &committed_generation) ==
                         BREAK_RUNTIME_OK;
     if (!has_previous) committed_generation = app->save_generation;
     u64 next = committed_generation + 1u;
-    CoreAppCheckpointFile file;
-    memset(&file, 0, sizeof(file));
-    char path[PLATFORM_FS_PATH_CAPACITY];
-    int written = snprintf(file.name, sizeof(file.name), "runtime_%" PRIu64 ".bin", next);
-    bool ok = written > 0 && (usize)written < sizeof(file.name) &&
-              platform_mkdir(directory) && app_path(path, directory, file.name);
-    if (ok) ok = app_write_runtime_file(path, &state, &file) == BREAK_RUNTIME_OK;
+
+    u8 runtime[CORE_APP_RUNTIME_FILE_BYTES];
+    memcpy(runtime, k_runtime_magic, sizeof(k_runtime_magic));
+    app_put32(runtime + 8u, CORE_APP_RUNTIME_STATE_VERSION);
+    app_put32(runtime + 12u, CORE_APP_RUNTIME_BODY_BYTES);
+    app_runtime_encode_body(&state, runtime + CORE_APP_RUNTIME_HEADER_BYTES);
+    const u8 *payloads[CORE_APP_CHECKPOINT_PAYLOADS] = {
+        level->scene_bytes, level->flow_bytes, level->actor_bytes, runtime};
+    const usize sizes[CORE_APP_CHECKPOINT_PAYLOADS] = {
+        level->scene_size, level->flow_size, level->actor_size, sizeof(runtime)};
+
+    CoreAppCheckpointFile files[CORE_APP_CHECKPOINT_PAYLOADS];
+    u32 written = 0u;
+    bool ok = platform_mkdir(directory);
+    for (u32 i = 0u; ok && i < CORE_APP_CHECKPOINT_PAYLOADS; ++i) {
+        ok = app_write_payload(directory, i, next, payloads[i], sizes[i], &files[i]) ==
+             BREAK_RUNTIME_OK;
+        if (ok) written++;
+    }
     CoreAppCheckpointCommitResult commit = CORE_APP_CHECKPOINT_COMMIT_NOT_COMMITTED;
     if (ok) {
-        ok = core_app_checkpoint_write_manifest_ex(directory, &file, 1u, next, &commit) ==
+        ok = core_app_checkpoint_write_manifest_ex(directory, files, written, next, &commit) ==
              BREAK_RUNTIME_OK;
-        if (!ok) (void)remove(path);
     }
     if (!ok) {
+        app_remove_payloads(directory, files, written);
         return app_trace(app,
             "COREAPPTRACE version=1 event=save tick=%u generation=%" PRIu64
-            " save_generation=%" PRIu64 " result=failed\n", tick, app->level->generation,
+            " save_generation=%" PRIu64 " result=failed\n", tick, level->generation,
             app->save_generation);
     }
     app->save_generation = next;
-    if (has_previous && strcmp(previous.name, file.name) != 0 &&
-        app_path(path, directory, previous.name)) {
-        (void)remove(path);
+    if (has_previous && committed_generation != next) {
+        CoreAppCheckpointFile stale[CORE_APP_CHECKPOINT_PAYLOADS];
+        u32 stale_count = 0u;
+        for (u32 i = 0u; i < CORE_APP_CHECKPOINT_PAYLOADS; ++i) {
+            if (app_payload_name(i, committed_generation, stale[stale_count].name)) {
+                stale_count++;
+            }
+        }
+        app_remove_payloads(directory, stale, stale_count);
     }
     return app_trace_state(app, "save", tick, &state);
 }
@@ -1540,8 +1619,23 @@ static BreakRuntimeError app_load_checkpoint(CoreApp *app, u32 tick) {
     CoreAppRuntimeState state;
     u8 *bytes = NULL;
     usize size = 0u;
+    const char *directory = app->config.checkpoint_dir;
+    CoreAppCheckpointFile scene;
+    CoreAppCheckpointFile flow;
+    CoreAppCheckpointFile actors;
+    u64 other = 0u;
     BreakRuntimeError result = core_app_checkpoint_find(
-        app->config.checkpoint_dir, CORE_APP_CHECKPOINT_RUNTIME, &file, &generation);
+        directory, CORE_APP_CHECKPOINT_RUNTIME, &file, &generation);
+    if (result == BREAK_RUNTIME_OK) {
+        result = core_app_checkpoint_find(directory, CORE_APP_CHECKPOINT_SCENE, &scene, &other);
+    }
+    if (result == BREAK_RUNTIME_OK) {
+        result = core_app_checkpoint_find(directory, CORE_APP_CHECKPOINT_FLOW, &flow, &other);
+    }
+    if (result == BREAK_RUNTIME_OK) {
+        result = core_app_checkpoint_find(directory, CORE_APP_CHECKPOINT_ACTORS, &actors,
+                                          &other);
+    }
     if (result == BREAK_RUNTIME_OK &&
         !app_read_asset(app->config.checkpoint_dir, file.name, CORE_APP_RUNTIME_FILE_BYTES,
                         &bytes, &size)) {
@@ -1560,7 +1654,9 @@ static BreakRuntimeError app_load_checkpoint(CoreApp *app, u32 tick) {
     const char *stage = "bscn";
     bool runtime_fatal = false;
     CoreLevel *candidate = NULL;
-    result = core_app_level_stage(app, asset_root, &stage, &runtime_fatal, &candidate);
+    CoreAppLevelSource source = {asset_root, directory, scene.name, directory, flow.name,
+                                 directory, actors.name};
+    result = core_app_level_stage(app, &source, &stage, &runtime_fatal, &candidate);
     if (result != BREAK_RUNTIME_OK) {
         if (runtime_fatal) return result;
         return app_trace_load_rejected(app, tick, stage);

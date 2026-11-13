@@ -624,10 +624,110 @@ if(DEFINED SIM_MODE)
         record_error("roundtrip: run did not stop normally")
     endif()
 
+    foreach(pair "scene_1.bscn;level.bscn" "flow_1.fg;level.fg" "actors_1.sidecar;actors.sidecar")
+        list(GET pair 0 saved_name)
+        list(GET pair 1 asset_name)
+        if(NOT EXISTS "${CORE_APP_CHECKPOINT_DIR}/${saved_name}")
+            record_error("roundtrip: the checkpoint has no ${saved_name}")
+        else()
+            file(SHA256 "${CORE_APP_CHECKPOINT_DIR}/${saved_name}" saved_sum)
+            file(SHA256 "${ASSET_ROOT}/${asset_name}" asset_sum)
+            if(NOT saved_sum STREQUAL asset_sum)
+                record_error("roundtrip: ${saved_name} differs from the loaded ${asset_name}")
+            endif()
+        endif()
+    endforeach()
+
     set(scenario "${WORK}/rejected.scenario")
     file(WRITE "${scenario}"
         "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n1 level\n"
         "2 key w 1\n40 load\n60 quit\n")
+    set(patch_checkpoint [=[
+import struct
+import sys
+directory, name, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+path = directory + "/" + name
+with open(path, "rb") as source:
+    data = source.read()
+if mode == "truncate":
+    data = data[:64]
+elif mode == "flow":
+    data = b"BFLW definitely-not-a-flow-graph\n"
+elif mode == "actors":
+    text = data.decode()
+    if "2 User" not in text:
+        raise SystemExit("the saved actor sidecar has no User row")
+    data = text.replace("2 User", "2 UnknownUser").encode()
+else:
+    raise SystemExit("unknown mode " + mode)
+with open(path, "wb") as output:
+    output.write(data)
+if len(sys.argv) > 4 and sys.argv[4] == "keep-manifest":
+    raise SystemExit(0)
+digest = 14695981039346656037
+for byte in data:
+    digest ^= byte
+    digest = (digest * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+with open(directory + "/manifest.core", "rb") as source:
+    manifest = bytearray(source.read())
+count = struct.unpack_from("<I", manifest, 32)[0]
+for index in range(count):
+    offset = 40 + index * 88
+    length = struct.unpack_from("<I", manifest, offset + 4)[0]
+    if bytes(manifest[offset + 24:offset + 24 + length]).decode() == name:
+        struct.pack_into("<QQ", manifest, offset + 8, len(data), digest)
+        break
+else:
+    raise SystemExit("manifest has no record for " + name)
+with open(directory + "/manifest.core", "wb") as output:
+    output.write(manifest)
+]=])
+    foreach(case "truncated_scene;scene_1.bscn;truncate;fix;bscn"
+                 "bad_flow;flow_1.fg;flow;fix;flow"
+                 "unknown_actor;actors_1.sidecar;actors;fix;actor"
+                 "manifest_hash;scene_1.bscn;truncate;keep-manifest;checkpoint")
+        list(GET case 0 case_name)
+        list(GET case 1 case_file)
+        list(GET case 2 case_mode)
+        list(GET case 3 case_manifest)
+        list(GET case 4 case_stage)
+        set(case_dir "${WORK}/matrix_${case_name}")
+        file(REMOVE_RECURSE "${case_dir}")
+        file(COPY "${CORE_APP_CHECKPOINT_DIR}/" DESTINATION "${case_dir}")
+        execute_process(COMMAND "${Python3_EXECUTABLE}" -c "${patch_checkpoint}"
+            "${case_dir}" "${case_file}" "${case_mode}" "${case_manifest}"
+            RESULT_VARIABLE patch_result ERROR_VARIABLE patch_error)
+        if(NOT patch_result EQUAL 0)
+            record_error("matrix ${case_name}: could not build the fixture: ${patch_error}")
+            continue()
+        endif()
+        set(saved_dir "${CORE_APP_CHECKPOINT_DIR}")
+        set(CORE_APP_CHECKPOINT_DIR "${case_dir}")
+        run_app(matrix_${case_name} "${ASSET_ROOT}" "${scenario}" 0)
+        set(CORE_APP_CHECKPOINT_DIR "${saved_dir}")
+        set(trace "${CORE_APP_LIFECYCLE_TRACE}")
+        if(NOT trace MATCHES "event=load_rejected tick=40 generation=1 stage=${case_stage}\n")
+            record_error("matrix ${case_name}: the load was not rejected at stage ${case_stage}")
+        endif()
+        if(trace MATCHES "event=load tick=40 " OR trace MATCHES "event=level_loaded generation=2")
+            record_error("matrix ${case_name}: the damaged checkpoint built or replaced a level")
+        endif()
+        set(before_z "")
+        set(after_z "")
+        if(trace MATCHES "event=user tick=39 generation=1 x=[-+0-9.eE]+ y=[-+0-9.eE]+ z=([-+0-9.eE]+)\n")
+            set(before_z "${CMAKE_MATCH_1}")
+        endif()
+        if(trace MATCHES "event=user tick=41 generation=1 x=[-+0-9.eE]+ y=[-+0-9.eE]+ z=([-+0-9.eE]+)\n")
+            set(after_z "${CMAKE_MATCH_1}")
+        endif()
+        if(before_z STREQUAL "" OR after_z STREQUAL "" OR NOT after_z GREATER before_z)
+            record_error("matrix ${case_name}: the current level did not keep running after the rejected load")
+        endif()
+        if(NOT trace MATCHES "event=runtime_stopped\n")
+            record_error("matrix ${case_name}: run did not stop normally")
+        endif()
+    endforeach()
+
     file(WRITE "${CORE_APP_CHECKPOINT_DIR}/runtime_1.bin" "corrupt")
     run_app(load_corrupt "${ASSET_ROOT}" "${scenario}" 0)
     set(trace "${CORE_APP_LIFECYCLE_TRACE}")
@@ -749,11 +849,54 @@ if(DEFINED SIM_MODE)
         record_error("second_save: the load after the failed save did not restore the first checkpoint")
     endif()
     if(NOT EXISTS "${CORE_APP_CHECKPOINT_DIR}/runtime_1.bin" OR
+       NOT EXISTS "${CORE_APP_CHECKPOINT_DIR}/scene_1.bscn" OR
        NOT IS_DIRECTORY "${CORE_APP_CHECKPOINT_DIR}/runtime_2.bin")
-        record_error("second_save: the failed save removed the first payload or the blocking directory")
+        record_error("second_save: the failed save removed the first payloads or the blocking directory")
     endif()
+    foreach(leftover scene_2.bscn flow_2.fg actors_2.sidecar)
+        if(EXISTS "${CORE_APP_CHECKPOINT_DIR}/${leftover}")
+            record_error("second_save: the failed save left ${leftover} behind")
+        endif()
+    endforeach()
     if(NOT trace MATCHES "event=runtime_stopped\n")
         record_error("second_save: run did not stop normally")
+    endif()
+
+    set(live_assets "${WORK}/assets_live")
+    file(REMOVE_RECURSE "${live_assets}")
+    file(COPY "${ASSET_ROOT}/" DESTINATION "${live_assets}")
+    set(CORE_APP_CHECKPOINT_DIR "${WORK}/standalone")
+    file(REMOVE_RECURSE "${CORE_APP_CHECKPOINT_DIR}")
+    set(scenario "${WORK}/standalone_save.scenario")
+    file(WRITE "${scenario}"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n1 level\n"
+        "2 key w 1\n40 save\n41 quit\n")
+    run_app(standalone_save "${live_assets}" "${scenario}" 0)
+    set(trace "${CORE_APP_LIFECYCLE_TRACE}")
+    set(standalone_hash "")
+    set(standalone_uz "")
+    if(trace MATCHES "event=save tick=40 generation=1 save_generation=1 result=ok state_hash=([0-9a-f]+) user_x=[-+0-9.eE]+ user_z=([-+0-9.eE]+) ")
+        set(standalone_hash "${CMAKE_MATCH_1}")
+        set(standalone_uz "${CMAKE_MATCH_2}")
+    else()
+        record_error("standalone: the save did not commit")
+    endif()
+    file(REMOVE "${live_assets}/level.bscn" "${live_assets}/level.fg" "${live_assets}/actors.sidecar")
+    set(scenario "${WORK}/standalone_load.scenario")
+    file(WRITE "${scenario}"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n1 load\n10 quit\n")
+    run_app(standalone_load "${live_assets}" "${scenario}" 0)
+    set(trace "${CORE_APP_LIFECYCLE_TRACE}")
+    if(NOT standalone_hash STREQUAL "" AND
+       NOT trace MATCHES "event=load tick=1 generation=1 save_generation=1 result=ok state_hash=${standalone_hash} ")
+        record_error("standalone: the checkpoint did not rebuild the level once the scene, flow and actor assets were gone")
+    endif()
+    if(NOT standalone_uz STREQUAL "" AND
+       NOT trace MATCHES "event=user tick=1 generation=1 x=0 y=[-+0-9.eE]+ z=${standalone_uz}\n")
+        record_error("standalone: the rebuilt level did not start from the saved user position")
+    endif()
+    if(NOT trace MATCHES "event=runtime_stopped\n")
+        record_error("standalone: run did not stop normally")
     endif()
 
     file(REMOVE_RECURSE "${WORK}/blocked")

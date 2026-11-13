@@ -5205,6 +5205,7 @@ endif()
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_roundtrip
+            -DPython3_EXECUTABLE=${Python3_EXECUTABLE}
             -DSIM_MODE=roundtrip
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_lifecycle.cmake)
     set_tests_properties(test_core_app_lifecycle_roundtrip PROPERTIES

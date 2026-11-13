@@ -432,6 +432,38 @@ BSCN/Flow/Actor/scene_state 侧车、相机、昼夜时间；uninterrupted 对�
 
 BSCN/Flow/Actor/scene_state 侧车；错误 Actor generation、截断 BSCN、错误 Flow 引用等失败矩阵项（构建阶段的失败已经走同一条 `load_rejected stage=<阶段>` 路径，但还没有针对 checkpoint 加载的专门用例）。
 
+## P12 Task 8（slice 3）：场景、Flow、Actor 文件进 checkpoint 与失败矩阵（2026-11-13）
+
+### 变化
+
+- 关卡构建时保留实际读入的字节：BSCN（来自 Runtime IO 完成消息）、`level.fg`、`actors.sidecar`。`CoreAppLevelSource` 描述每份文件的目录和文件名，`core_app_level_stage` 按它构建，场景里的 `level` 事件仍从资产目录读 `level.bscn` / `level.fg` / `actors.sidecar`。
+- `save` 写四个 payload：`scene_<g>.bscn`、`flow_<g>.fg`、`actors_<g>.sidecar`、`runtime_<g>.bin`，各自经原子写入，再由一份 manifest 一次提交（kind 分别为 SCENE、FLOW、ACTORS、RUNTIME）。任何一步失败都删除本代已写的文件，旧 manifest 和上一代文件不动；成功后删除上一代的四个文件。
+- `load` 先用 `core_app_checkpoint_find` 取出四条记录（每次都校验 manifest 里全部 payload 的长度和哈希），再从 checkpoint 目录构建候选关卡：场景、Flow、Actor 文件来自 checkpoint，Lua、动画和音频仍来自资产目录。因此资产目录里的 `level.bscn`、`level.fg`、`actors.sidecar` 被删除后，checkpoint 仍能单独重建关卡。
+
+### 验证
+
+`test_core_app_lifecycle_roundtrip` 新增或扩展：
+
+- roundtrip：checkpoint 目录含四个 payload，三份侧车与加载时的资产 SHA-256 相同。
+- 失败矩阵：每项都从同一份有效 checkpoint 复制出一个目录，用 Python 改坏其中一份文件；除最后一项外同时更新 manifest 的长度和哈希，使它通过 manifest 校验、在构建阶段失败：
+
+  | 用例 | 改动 | 期望 |
+  |---|---|---|
+  | truncated_scene | `scene_1.bscn` 截到 64 字节 | `load_rejected stage=bscn` |
+  | bad_flow | `flow_1.fg` 换成非法内容 | `load_rejected stage=flow` |
+  | unknown_actor | `actors_1.sidecar` 中 `2 User` 改为 `2 UnknownUser` | `load_rejected stage=actor` |
+  | manifest_hash | 截断 `scene_1.bscn`，manifest 不改 | `load_rejected stage=checkpoint` |
+
+  每项都断言没有 `event=load`、没有构建 generation 2、当前关卡在 tick 39 → 41 继续前进、运行正常停止。
+- second_save：第二次保存失败后，`runtime_1.bin` 和 `scene_1.bscn` 仍在，`scene_2.bscn`、`flow_2.fg`、`actors_2.sidecar` 没有残留。
+- standalone：从资产副本运行并保存，删除副本里的场景、Flow、Actor 文件，再用 `1 load` 启动，checkpoint 重建 generation 1，`state_hash` 与用户位置等于保存值。
+- 变异：find 不校验 payload、加载忽略 checkpoint 里的文件、保存失败不清理新文件，三处都让断言变红，恢复后通过。另一处“不经 manifest 查找、按 generation 拼场景文件名”没有被杀死：runtime 记录的查找已经校验 manifest 中全部 payload，损坏的场景文件仍在 checkpoint 阶段被拒，这是等价变异。
+- `test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14，无 sanitizer 报告；非图形全量 381/381。
+
+### 仍未做
+
+`scene_state_save`（物理体等场景运行态）没有写进 checkpoint，动态墙仍由 runtime 标志重建；错误 Actor generation 与 GPU/record 资源 staging 失败两项失败矩阵用例未做。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

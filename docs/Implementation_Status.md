@@ -1,3 +1,11 @@
+## Core App P12 Task 8（slice 3）：场景、Flow、Actor 文件进 checkpoint 与失败矩阵（2026-11-13）
+
+- **交付**：`save` 写 `scene_<g>.bscn`、`flow_<g>.fg`、`actors_<g>.sidecar`、`runtime_<g>.bin` 四个 payload，由一份 manifest 提交，失败时清理本代文件；`load` 从 checkpoint 目录读取场景、Flow、Actor 文件构建候选关卡，资产目录缺这三份文件时仍可恢复。设计见 `docs/design/core_app_integration.md` 的 Task 8 slice 3 节。
+- **测试**：`test_core_app_lifecycle_roundtrip` 新增失败矩阵（截断 BSCN、错误 Flow、未知 Actor 类、manifest 哈希不符，均被拒且旧关卡继续）、standalone 段（删除资产后从 checkpoint 启动）和第二次保存失败无残留断言。
+- **变异**：find 不校验 payload、加载忽略 checkpoint 文件、保存失败不清理，均被杀死；“按 generation 拼场景文件名”为等价变异（runtime 查找已校验全部 payload）。
+- **回归**：`test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14；非图形全量 381/381。
+- **边界**：`scene_state_save` 未接入；错误 Actor generation、资源 staging 失败两项用例未做。
+
 ## 本机 macOS 复验（2026-11-13）
 
 - 修复接到 `d7330d39`。本机 arm64，Xcode 27.1（macOS SDK 27.0，`xcrun metal`），Apple Clang 21，OpenSSL 3.5.9。配置为 `cmake -S engine -B engine/build-macos-metal -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=metal -DMYUI_PAL=cocoa`。
