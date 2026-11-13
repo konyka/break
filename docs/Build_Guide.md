@@ -32,7 +32,7 @@
 
 ### 1.4 macOS、iOS、Android、OHOS 与 QNX
 - 平台图形元数据把性能基线与 Vulkan 证据分开：Linux/Windows 的 native baseline 是 OpenGL（渲染对比基准），默认后端是 Vulkan，macOS 是 Metal；macOS Vulkan 明确走 MoltenVK，不表示已实现 Metal RHI。Vulkan 证据级别使用 `compiled`、`headless`、`native-surface`、`GPU-runtime`、`benchmark-comparable`，不能把编译通过当作运行时支持。
-- macOS 由 CMake 识别为 `macos`，当前 Cocoa Vulkan 路径使用 Vulkan loader/MoltenVK、`shaderc_shared` 和 FreeType；仓库的 macOS CI 安装 `molten-vk`、`shaderc`、`freetype`。
+- macOS 由 CMake 识别为 `macos`，当前 Cocoa Vulkan 路径使用 Vulkan loader/MoltenVK、`shaderc_shared` 和 FreeType；仓库的 macOS CI 安装 `molten-vk`、`shaderc`、`freetype`。原生 Metal 需要 Xcode 的 `metal`（`xcrun --sdk macosx metal`）和 `spirv-cross`。数学库在 libSystem 里，Apple 与 Windows 一样使用空的接口目标 `m`，链接行不再重复 `-lm`。
 - iOS 由 CMake 识别为 `ios`，使用 kqueue 网络后端，但仓库没有声明 iOS runtime 或窗口渲染 CI 覆盖。
 - Android 由 CMake 识别为 `android`，使用 epoll；Vulkan 是宿主注入的 compile/integration 路径。启用 `ENGINE_VULKAN=ON` 时必须同时设置 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，并让 CMake 找到 NDK 的 `android/native_window.h`；这不代表完整 Android runtime 支持。
 - iOS/Android 的平台契约测试只证明编译路径与宿主注入边界；HarmonyOS 的 Vulkan 状态为 unavailable/unsupported，直到存在 native surface 实现。

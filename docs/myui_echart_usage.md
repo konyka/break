@@ -30,7 +30,9 @@ names are rejected with semantic parser errors.
 Wayland, StretchDIBits on Windows, NSBitmapImageRep on macOS); gl drives the
 engine's `my_vgcanvas_gles2` hardware backend on a GLES2/EGL context (Linux)
 or a desktop-GL context via WGL (Windows) / NSOpenGL (macOS) through the
-`my_gl_desktop` table.
+`my_gl_desktop` table. The Cocoa GL window is double-buffered
+(`NSOpenGLPFADoubleBuffer`); present calls `-[NSOpenGLContext flushBuffer]`.
+`NSOpenGLContext` has no `flush` method.
 
 The `soft` path uses 8-bit glyph/geometry coverage AA. The `gl` path uses the
 GLES2 or desktop-GL canvas and linear glyph sampling; when the window surface

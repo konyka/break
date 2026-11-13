@@ -1,3 +1,9 @@
+## 本机 macOS 复验（2026-11-13）
+
+- 基线是 `e8512df0`。本机 arm64，Xcode 27.1（macOS SDK 27.0，`xcrun metal`），Apple Clang 21，OpenSSL 3.5.9，Homebrew shaderc / MoltenVK / spirv-cross。配置为 `cmake -S engine -B engine/build-macos-metal -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=metal -DMYUI_PAL=cocoa`。
+- 修复前完整构建能通过，但有两类诊断。`engine/tools/ex_platform_macos.m` 对 `NSOpenGLContext` 调用了不存在的 `-flush`（`-Wobjc-method-access`）；双缓冲像素格式下正确的 present 是 `flushBuffer`，与 `my_pal_cocoa.m` 的 `cgl_swap` 相同。另外 Apple ld 对重复的 `-lm` 报警：libSystem 已导出 libm，CMake 现在在 Apple 上提供与 Windows 相同的空接口目标 `m`，源码里的 `target_link_libraries(... m)` 保持不变，链接行不再带 `-lm`。`editor` / `engine_demo` 为静态库顺序再次链接 `libengine.a` 的警告保留，不改 GNU ld 的归档顺序。
+- 修复前的非图形、非 fuzz 为 **341 项入选、337 PASS、4 SKIP、0 FAIL**。四个 SKIP 是 `test_d3d12_dependency_gate` 和三个 nm 合同。Metal graphics 标签 **6/6** 通过，包括 `test_rhi_metal_device_contract`、`test_macos_metal_consumer_smoke` 和 `rhi_swapchain_bench`。这是本机 Metal GPU 运行证据，不是 CI hosted runner 的 HEADLESS 收据。
+
 ## 本机 Windows 复验（2026-11-13）
 
 - 基线是 `438dff87`。Clang 22.1.6、Ninja、`ENGINE_RHI_BACKEND=d3d12`。第一次非图形套件 337 项里有 3 个失败：`test_ci_image_fix2`、`test_rollback_input_contract`、`test_platform_win32_runtime`。前两项来自 `C:/Windows/System32/bash.exe`：它只是 WSL 启动器，本机发行版磁盘不存在时脚本没有执行，UTF-8 诊断又被 GBK 文本模式读丢。现在只接受能执行 `echo posix-bash-ok` 的 bash，探测失败时改用 git 同目录的 bash；本机解析为 `D:/Program Files/Git/bin/bash.exe`。这两个合同的子进程输出显式使用 `encoding="utf-8"`。修复后这两项通过，`test_break_online_nat` 也通过。
