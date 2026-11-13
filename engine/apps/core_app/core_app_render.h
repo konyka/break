@@ -81,6 +81,9 @@ BreakRuntimeError core_app_render_record_frame(CoreAppRender *render,
                                            const CoreAppRenderFrame *frame);
 BreakRuntimeError core_app_render_record_world(CoreAppRender *render, u64 generation,
                                              const WorldFrameSnapshot *snapshot);
+BreakRuntimeError core_app_render_record_skinned(CoreAppRender *render, u64 frame,
+                                               u64 generation, u32 object,
+                                               const CoreAppResourceTable *table, u32 slot);
 BreakRuntimeError core_app_render_stop_admission(CoreAppRender *render);
 BreakRuntimeError core_app_render_stop_producers(CoreAppRender *render);
 BreakRuntimeError core_app_render_idle(CoreAppRender *render);

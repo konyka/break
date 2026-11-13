@@ -1,3 +1,11 @@
+## Core App P12 Task 7（slice 2b）：资源表接入关卡生命周期与角色 skinned 命令（2026-11-13）
+
+- **交付**：`CoreApp` 持有资源表和 8 项延迟完成队列（到期 tick = 提交 + 2）。关卡提交后为用户和追踪者各申请一个槽；每 tick 先处理到期完成（`event=resource kind=complete`），再在槽为 LIVE 且 generation 匹配时输出 `event=render kind=skinned`；姿态变化时发起重载，版本只在完成时递增。卸载和替换关卡前清空旧 generation 的槽。设计见 `docs/design/core_app_integration.md` 的 Task 7 slice 2b 节。
+- **测试**：真实进程 `test_core_app_lifecycle_render_record`：卸载后再加载时，旧 generation 的完成在新关卡之后到达并被记为 stale；skinned 命令的资源代际始终等于关卡代际；PENDING 期间不出命令；重载后槽从 version 1 重新开始；动画期间版本递增，动画结束后不变。
+- **变异**：卸载不清 generation、姿态变化不重新上传、PENDING 时出命令，均被杀死并恢复。
+- **回归**：lifecycle 11/11、`test_core_app_` 26/26；ASan+UBSan 13/13、TSan 13/13；非图形全量 380/380。
+- **边界**：延迟队列是应用内确定性模拟，不经过 Runtime IO worker；skinned 命令只是 record trace，没有 GPU 上传；字节不是正式蒙皮资产。Task 7 的 record 部分至此完成，真实 RHI 提交留给 Task 11。
+
 ## Core App P12 Task 7（slice 2a）：资源表的代际与容量合同（2026-11-13）
 
 - **交付**：`CoreAppResourceTable`，64 槽 × 256 字节，固定容量。请求分配非零 request id；完成必须同时匹配 request id 和 level generation，否则 `STALE` 并计数；字节先 staging 再替换，失败保留旧 LIVE 字节；第 65 个请求返回 `OVERLOAD`，不动任何槽；卸载按 generation 清槽。设计见 `docs/design/core_app_integration.md` 的 Task 7 slice 2a 节。

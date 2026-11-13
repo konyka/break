@@ -290,6 +290,38 @@ event=render kind=world frame=<n> generation=<g> draws=<u> stream=<u> batches=<u
 
 这是资源表本身的合同测试，表还没有接到 `CoreLevel` 的加载/卸载和 Runtime IO 完成路径上，也没有在真实进程 trace 里体现。角色 skinned 命令也还未做。两者留给 Task 7 slice 2b。
 
+## P12 Task 7（slice 2b）：资源表接入关卡生命周期与角色 skinned 命令（2026-11-13）
+
+### 接线
+
+`CoreApp` 持有一张 `CoreAppResourceTable` 和一个 8 项的延迟完成队列（`CoreAppIoCompletion`）。队列模拟异步 IO：提交时复制字节并记下到期 tick（当前 tick + 2），每个 tick 开头 `app_io_drain` 把到期项交给 `core_app_resource_complete`，并写 `event=resource kind=complete` trace（`result=ok|stale|invalid`）。`STALE` 只记录不报错，其他失败结束运行。
+
+- 关卡提交成功后，`app_request_skins` 为两个角色（对象 0 = 用户的表情变形顶点，对象 1 = 追踪者位置）各申请一个槽并提交首个上传。
+- 每个 tick 在世界快照之后调用 `app_publish_skins`：槽为 LIVE 且 generation 等于当前关卡时，才输出 `event=render kind=skinned`；PENDING 的槽不出命令。当前姿态字节与槽内字节不同、且没有进行中的重载时，用 `core_app_resource_reload` 发起一次新上传。旧字节在完成前继续使用，版本号只在完成时递增。
+- 卸载（`core_app_unload_level`）和替换关卡（提交新关卡时销毁旧关卡）都会先调用 `core_app_resource_retire_generation` 清空旧 generation 的槽。之后到期的旧完成，因为 request id 或 generation 不匹配而被丢弃。
+
+### trace
+
+```text
+event=resource kind=complete tick=<n> slot=<u> request=<u> generation=<g> result=<ok|stale|invalid>
+event=render kind=skinned frame=<n> generation=<g> object=<0|1> slot=<u> resource_generation=<g> version=<u>
+```
+
+### 验证
+
+- 真实进程 `test_core_app_lifecycle_render_record`（tick 1 加载，tick 30 先卸载再加载，tick 100 退出）：
+  - 两个槽在 tick 30 各收到一次 generation 1 的 `result=stale`，出现在 `level_loaded generation=2` 之后；
+  - 每个 skinned 命令的 `resource_generation` 都等于关卡 generation，共 100 条以上；
+  - frame 1 和 frame 30 没有 skinned 命令，因为资源还在 PENDING；
+  - frame 2 用户对象 version 1；重载后 frame 31 复用槽 0，从 version 1 重新开始；
+  - 动画期间 version 递增（frame 35 → 40），表情曲线结束后保持不变（frame 90 = 95）。
+- 变异：卸载不清 generation、姿态变化后不重新上传、PENDING 时也发 skinned 命令，三处都让断言变红，恢复后通过。
+- lifecycle 11/11、`test_core_app_` 26/26；ASan+UBSan 13/13、TSan 13/13，无 sanitizer 报告；非图形全量 380/380。
+
+### 限制
+
+延迟完成队列是应用内的确定性模拟，没有经过 Runtime IO 的 worker 线程；skinned 命令只是 record trace，没有 RHI skinned pipeline 或 GPU 上传（Task 11）。字节内容是 64 字节变形顶点和追踪者位置，不是正式蒙皮网格资产。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

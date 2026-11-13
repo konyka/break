@@ -42,6 +42,9 @@
 #define CORE_APP_STREAM_OBJECT_ID 100u
 #define CORE_APP_VEGETATION_CAPACITY 4u
 #define CORE_APP_DAY_SECONDS 2.0f
+#define CORE_APP_SKINNED_OBJECTS 2u
+#define CORE_APP_IO_LATENCY_TICKS 2u
+#define CORE_APP_IO_QUEUE 8u
 #define CORE_APP_AREA_FLOW_EVENT 1001u
 #define CORE_APP_FLOW_ITEM 1u
 #define CORE_APP_MAX_PENDING_AREA_ENTERS 8u
@@ -116,9 +119,20 @@ typedef struct CoreLevel {
     u32 lod_tags[CORE_APP_VEGETATION_CAPACITY];
     LodInstanceState lod_state;
     WorldFrameSnapshot world_snapshots[2];
+    u32 skin_slot[CORE_APP_SKINNED_OBJECTS];
     u64 generation;
     bool actor_level_open;
 } CoreLevel;
+
+typedef struct CoreAppIoCompletion {
+    bool used;
+    u32 due_tick;
+    u32 slot;
+    u64 request;
+    u64 generation;
+    u32 byte_count;
+    u8 bytes[CORE_APP_RESOURCE_MAX_BYTES];
+} CoreAppIoCompletion;
 
 struct CoreApp {
     CoreAppConfig config;
@@ -131,11 +145,16 @@ struct CoreApp {
     FILE *trace;
     CoreAppRender render;
     CoreAppAudio audio;
+    CoreAppResourceTable resources;
+    CoreAppIoCompletion io[CORE_APP_IO_QUEUE];
+    u32 tick;
     u64 next_generation;
     bool io_running;
     bool render_live;
     bool audio_live;
 };
+
+static BreakRuntimeError app_request_skins(CoreApp *app, CoreLevel *level);
 
 static BreakRuntimeError app_trace(CoreApp *app, const char *format, ...) {
     if (!app || !app->trace || !format) return BREAK_RUNTIME_INVALID;
@@ -1105,6 +1124,8 @@ static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_roo
             "COREAPPTRACE version=1 event=level_unloaded generation=%" PRIu64 "\n",
             previous_generation);
         if (result != BREAK_RUNTIME_OK) return result;
+        result = core_app_resource_retire_generation(&app->resources, previous_generation);
+        if (result != BREAK_RUNTIME_OK) return result;
         core_app_level_destroy(previous);
         app->retired_level = NULL;
         result = app_trace(app,
@@ -1123,11 +1144,104 @@ static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_roo
         (double)candidate->actor_runtime->areas[candidate->sight_area].desc.center.e[0],
         (double)candidate->actor_runtime->areas[candidate->sight_area].desc.center.e[2]);
     if (result != BREAK_RUNTIME_OK) return result;
+    result = app_request_skins(app, candidate);
+    if (result != BREAK_RUNTIME_OK) return result;
     return core_app_render_level_committed(&app->render, &candidate->render);
 
 reject:
     core_app_level_destroy(candidate);
     return result;
+}
+
+static void app_skin_pose(const CoreLevel *level, u32 object, const void **bytes,
+                          u32 *byte_count) {
+    if (object == 0u) {
+        *bytes = level->face_morphed;
+        *byte_count = (u32)sizeof(level->face_morphed);
+    } else {
+        *bytes = &level->chaser_position;
+        *byte_count = (u32)sizeof(level->chaser_position);
+    }
+}
+
+static BreakRuntimeError app_io_submit(CoreApp *app, u32 slot, u64 request, u64 generation,
+                                       const void *bytes, u32 byte_count) {
+    if (byte_count > CORE_APP_RESOURCE_MAX_BYTES) return BREAK_RUNTIME_INVALID;
+    for (u32 i = 0u; i < CORE_APP_IO_QUEUE; ++i) {
+        CoreAppIoCompletion *io = &app->io[i];
+        if (io->used) continue;
+        io->used = true;
+        io->due_tick = app->tick + CORE_APP_IO_LATENCY_TICKS;
+        io->slot = slot;
+        io->request = request;
+        io->generation = generation;
+        io->byte_count = byte_count;
+        if (byte_count > 0u) memcpy(io->bytes, bytes, byte_count);
+        return BREAK_RUNTIME_OK;
+    }
+    return BREAK_RUNTIME_OVERLOAD;
+}
+
+static BreakRuntimeError app_io_drain(CoreApp *app) {
+    for (u32 i = 0u; i < CORE_APP_IO_QUEUE; ++i) {
+        CoreAppIoCompletion *io = &app->io[i];
+        if (!io->used || io->due_tick > app->tick) continue;
+        BreakRuntimeError done = core_app_resource_complete(
+            &app->resources, io->slot, io->request, io->generation, io->bytes, io->byte_count);
+        io->used = false;
+        const char *outcome = done == BREAK_RUNTIME_OK ? "ok"
+                            : done == BREAK_RUNTIME_STALE ? "stale" : "invalid";
+        BreakRuntimeError result = app_trace(app,
+            "COREAPPTRACE version=1 event=resource kind=complete tick=%u slot=%u request=%" PRIu64
+            " generation=%" PRIu64 " result=%s\n", app->tick, io->slot, io->request,
+            io->generation, outcome);
+        if (result != BREAK_RUNTIME_OK) return result;
+        if (done != BREAK_RUNTIME_OK && done != BREAK_RUNTIME_STALE) return done;
+    }
+    return BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_request_skins(CoreApp *app, CoreLevel *level) {
+    for (u32 object = 0u; object < CORE_APP_SKINNED_OBJECTS; ++object) {
+        u64 request = 0u;
+        BreakRuntimeError result = core_app_resource_request(
+            &app->resources, level->generation, &level->skin_slot[object], &request);
+        if (result != BREAK_RUNTIME_OK) return result;
+        const void *bytes = NULL;
+        u32 byte_count = 0u;
+        app_skin_pose(level, object, &bytes, &byte_count);
+        result = app_io_submit(app, level->skin_slot[object], request, level->generation,
+                               bytes, byte_count);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
+    return BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_publish_skins(CoreApp *app, u32 tick) {
+    CoreLevel *level = app->level;
+    for (u32 object = 0u; object < CORE_APP_SKINNED_OBJECTS; ++object) {
+        u32 slot = level->skin_slot[object];
+        const CoreAppResourceSlot *entry = &app->resources.slots[slot];
+        if (entry->state != CORE_APP_RESOURCE_LIVE || entry->generation != level->generation) {
+            continue;
+        }
+        BreakRuntimeError result = core_app_render_record_skinned(
+            &app->render, tick, level->generation, object, &app->resources, slot);
+        if (result != BREAK_RUNTIME_OK) return result;
+        if (entry->reloading) continue;
+        const void *bytes = NULL;
+        u32 byte_count = 0u;
+        app_skin_pose(level, object, &bytes, &byte_count);
+        if (byte_count == entry->byte_count && memcmp(bytes, entry->bytes, byte_count) == 0) {
+            continue;
+        }
+        u64 request = 0u;
+        result = core_app_resource_reload(&app->resources, slot, level->generation, &request);
+        if (result != BREAK_RUNTIME_OK) return result;
+        result = app_io_submit(app, slot, request, level->generation, bytes, byte_count);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
+    return BREAK_RUNTIME_OK;
 }
 
 static BreakRuntimeError core_app_unload_level(CoreApp *app, bool with_audio) {
@@ -1143,6 +1257,8 @@ static BreakRuntimeError core_app_unload_level(CoreApp *app, bool with_audio) {
     if (result != BREAK_RUNTIME_OK) return result;
     app->level = NULL;
     u64 generation = level->generation;
+    result = core_app_resource_retire_generation(&app->resources, generation);
+    if (result != BREAK_RUNTIME_OK) return result;
     core_app_level_destroy(level);
     result = app_trace(app,
         "COREAPPTRACE version=1 event=level_unloaded generation=%" PRIu64 "\n",
@@ -1641,6 +1757,10 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
             ended = true;
             break;
         }
+        app->tick = tick;
+        stage = "resource";
+        result = app_io_drain(app);
+        if (result != BREAK_RUNTIME_OK) goto finished;
         if (app->level) {
             CoreAppInputFrame input_frame;
             stage = "simulation";
@@ -1651,6 +1771,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                                         app->level->render.resource_count};
             result = core_app_render_record_frame(&app->render, &frame);
             if (result == BREAK_RUNTIME_OK) result = app_publish_world(app, tick);
+            if (result == BREAK_RUNTIME_OK) result = app_publish_skins(app, tick);
             if (result == BREAK_RUNTIME_OK) {
                 result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_LISTENER,
                                                 app->level->generation);

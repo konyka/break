@@ -200,6 +200,29 @@ BreakRuntimeError core_app_render_record_world(CoreAppRender *render, u64 genera
     return BREAK_RUNTIME_OK;
 }
 
+BreakRuntimeError core_app_render_record_skinned(CoreAppRender *render, u64 frame,
+                                               u64 generation, u32 object,
+                                               const CoreAppResourceTable *table, u32 slot) {
+    if (!render || !table || !render->trace || !render->admission_open ||
+        !render->producing || render->idle || generation == 0u ||
+        frame != render->last_frame || slot >= CORE_APP_RESOURCE_SLOTS) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+    const CoreAppResourceSlot *entry = &table->slots[slot];
+    if (entry->state != CORE_APP_RESOURCE_LIVE || entry->generation != generation) {
+        return BREAK_RUNTIME_STALE;
+    }
+    if (fprintf(render->trace,
+                "COREAPPTRACE version=1 event=render kind=skinned frame=%" PRIu64
+                " generation=%" PRIu64 " object=%u slot=%u resource_generation=%" PRIu64
+                " version=%u\n", frame, generation, object, slot, entry->generation,
+                entry->version) < 0 ||
+        fflush(render->trace) != 0) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError core_app_render_stop_admission(CoreAppRender *render) {
     if (!render) return BREAK_RUNTIME_INVALID;
     render->admission_open = false;
