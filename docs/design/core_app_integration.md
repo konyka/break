@@ -404,6 +404,34 @@ BSCN/Flow/Actor/scene_state 侧车、相机、昼夜时间；uninterrupted 对�
 
 相机和昼夜目前由 tick 推导（相机跟随用户，昼夜按 tick），不是独立状态，所以没有单独保存；只有将来它们变成可变状态时才需要进 checkpoint。BSCN/Flow/Actor/scene_state 侧车，以及错误 Actor generation、截断 BSCN、错误 Flow 引用等失败矩阵项仍未做。
 
+## P12 Task 8（slice 2c）：load 自己构建候选关卡再交换（2026-11-13）
+
+### 变化
+
+`core_app_level_load` 拆成两步：`core_app_level_stage` 从 BSCN 起逐阶段构建候选关卡（到 presentation 为止，不触碰当前关卡），`core_app_level_commit` 负责交换、停旧关卡音频、退役旧 generation 的资源槽、写 level_loaded 并申请 skin 槽。场景里的 `level` 事件仍然是 stage + commit。
+
+`load` 现在不再修改当前关卡：
+
+1. 读取 manifest、校验 payload 哈希并解码 runtime 文件；失败写 `load_rejected stage=checkpoint`。
+2. 用上一次成功加载关卡的资产根（没有则用 `--assets`）构建新的候选关卡；构建失败写 `load_rejected stage=<阶段>`，候选被销毁。
+3. 把保存的状态写进候选（`app_apply_state`）；失败写 `load_rejected stage=state`，候选被销毁。
+4. 以上都成功才 commit：候选得到新的 generation，旧关卡按正常卸载顺序退出。
+
+因此当前没有关卡时也能 `load`，失败的加载对当前关卡没有任何影响。
+
+### 验证
+
+- roundtrip：tick 123 的加载构建 generation 3，并在报告前卸载 generation 2；tick 150 再次加载同一份 checkpoint，构建 generation 4，`state_hash` 相同。
+- cold_load：tick 40 保存后卸载，tick 41 没有关卡在运行；tick 42 加载构建 generation 2，用户位置等于保存值。
+- load_corrupt：坏文件被拒，没有构建 generation 2，当前关卡继续前进。
+- continuation、second_save 改为期望加载产生新 generation，其余断言不变。
+- 变异：候选不写入保存状态、加载被拒时扰动当前关卡、直接修改当前关卡而不建候选，三处都让断言变红，恢复后通过。其中第二处第一次因隐式声明编译失败，结果作废，换成可编译写法重做。
+- `test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14，无 sanitizer 报告；非图形全量 381/381。
+
+### 仍未做
+
+BSCN/Flow/Actor/scene_state 侧车；错误 Actor generation、截断 BSCN、错误 Flow 引用等失败矩阵项（构建阶段的失败已经走同一条 `load_rejected stage=<阶段>` 路径，但还没有针对 checkpoint 加载的专门用例）。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

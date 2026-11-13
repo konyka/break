@@ -1,3 +1,11 @@
+## Core App P12 Task 8（slice 2c）：load 自己构建候选关卡再交换（2026-11-13）
+
+- **交付**：关卡加载拆成 `core_app_level_stage`（构建候选）和 `core_app_level_commit`（交换）。`load` 先校验 checkpoint，再构建全新的候选关卡并写入保存状态，全部成功后才交换；任何失败只销毁候选，当前关卡不变。没有当前关卡时也能加载。设计见 `docs/design/core_app_integration.md` 的 Task 8 slice 2c 节。
+- **测试**：`test_core_app_lifecycle_roundtrip`：加载产生新 generation 并先卸载旧关卡；同一 checkpoint 加载两次得到相同 `state_hash`；新增 cold_load 段（卸载后加载）；坏文件不构建关卡。
+- **变异**：候选不写状态、被拒时扰动当前关卡、直接改当前关卡，均被杀死并恢复。
+- **回归**：`test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14；非图形全量 381/381。
+- **边界**：侧车和 checkpoint 专属的失败矩阵用例仍未做。
+
 ## Core App P12 Task 8（slice 2b）：与不中断运行的对照（2026-11-13）
 
 - **交付**：加载后保留上一帧用户位置，locomotion 速度不再在加载后第一帧归零。设计见 `docs/design/core_app_integration.md` 的 Task 8 slice 2b 节。

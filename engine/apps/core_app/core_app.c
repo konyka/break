@@ -168,6 +168,7 @@ struct CoreApp {
     CoreAppResourceTable resources;
     CoreAppIoCompletion io[CORE_APP_IO_QUEUE];
     u32 tick;
+    const char *level_asset_root;
     u64 save_generation;
     u64 next_generation;
     bool io_running;
@@ -1150,13 +1151,13 @@ static BreakRuntimeError app_validate_crossrefs(const CoreLevel *candidate) {
     return BREAK_RUNTIME_OK;
 }
 
-static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_root,
-                                             const char **failed_stage,
-                                             bool *out_committed,
-                                             bool *out_runtime_fatal) {
+static BreakRuntimeError core_app_level_stage(CoreApp *app, const char *asset_root,
+                                              const char **failed_stage,
+                                              bool *out_runtime_fatal,
+                                              CoreLevel **out_candidate) {
     *failed_stage = "bscn";
-    *out_committed = false;
     *out_runtime_fatal = false;
+    *out_candidate = NULL;
     if (!app->io_running || app->next_generation == 0u) {
         return BREAK_RUNTIME_REJECTED;
     }
@@ -1206,7 +1207,18 @@ static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_roo
     *failed_stage = "presentation";
     result = stage_presentation(candidate);
     if (result != BREAK_RUNTIME_OK) goto reject;
+    *out_candidate = candidate;
+    return BREAK_RUNTIME_OK;
 
+reject:
+    core_app_level_destroy(candidate);
+    return result;
+}
+
+static BreakRuntimeError core_app_level_commit(CoreApp *app, CoreLevel *candidate,
+                                               const char **failed_stage,
+                                               bool *out_committed) {
+    BreakRuntimeError result;
     CoreLevel *previous = app->level;
     app->retired_level = previous;
     app->level = candidate;
@@ -1248,10 +1260,18 @@ static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_roo
     result = app_request_skins(app, candidate);
     if (result != BREAK_RUNTIME_OK) return result;
     return core_app_render_level_committed(&app->render, &candidate->render);
+}
 
-reject:
-    core_app_level_destroy(candidate);
-    return result;
+static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_root,
+                                             const char **failed_stage,
+                                             bool *out_committed,
+                                             bool *out_runtime_fatal) {
+    *out_committed = false;
+    CoreLevel *candidate = NULL;
+    BreakRuntimeError result = core_app_level_stage(app, asset_root, failed_stage,
+                                                    out_runtime_fatal, &candidate);
+    if (result != BREAK_RUNTIME_OK) return result;
+    return core_app_level_commit(app, candidate, failed_stage, out_committed);
 }
 
 static void app_skin_pose(const CoreLevel *level, u32 object, const void **bytes,
@@ -1508,8 +1528,13 @@ static BreakRuntimeError app_apply_state(CoreLevel *level, const CoreAppRuntimeS
     return BREAK_RUNTIME_OK;
 }
 
+static BreakRuntimeError app_trace_load_rejected(CoreApp *app, u32 tick, const char *stage) {
+    return app_trace(app,
+        "COREAPPTRACE version=1 event=load_rejected tick=%u generation=%" PRIu64
+        " stage=%s\n", tick, app->level ? app->level->generation : 0u, stage);
+}
+
 static BreakRuntimeError app_load_checkpoint(CoreApp *app, u32 tick) {
-    const char *stage = "checkpoint";
     CoreAppCheckpointFile file;
     u64 generation = 0u;
     CoreAppRuntimeState state;
@@ -1528,15 +1553,30 @@ static BreakRuntimeError app_load_checkpoint(CoreApp *app, u32 tick) {
     }
     if (result == BREAK_RUNTIME_OK) result = app_runtime_decode(bytes, size, &state);
     free(bytes);
-    if (result == BREAK_RUNTIME_OK) {
-        stage = "state";
-        result = app_apply_state(app->level, &state);
-    }
+    if (result != BREAK_RUNTIME_OK) return app_trace_load_rejected(app, tick, "checkpoint");
+
+    const char *asset_root = app->level_asset_root ? app->level_asset_root
+                                                   : app->config.asset_root;
+    const char *stage = "bscn";
+    bool runtime_fatal = false;
+    CoreLevel *candidate = NULL;
+    result = core_app_level_stage(app, asset_root, &stage, &runtime_fatal, &candidate);
     if (result != BREAK_RUNTIME_OK) {
-        return app_trace(app,
-            "COREAPPTRACE version=1 event=load_rejected tick=%u generation=%" PRIu64
-            " stage=%s\n", tick, app->level->generation, stage);
+        if (runtime_fatal) return result;
+        return app_trace_load_rejected(app, tick, stage);
     }
+    result = app_apply_state(candidate, &state);
+    if (result != BREAK_RUNTIME_OK) {
+        core_app_level_destroy(candidate);
+        return app_trace_load_rejected(app, tick, "state");
+    }
+    bool committed = false;
+    result = core_app_level_commit(app, candidate, &stage, &committed);
+    if (result != BREAK_RUNTIME_OK) {
+        if (!committed) core_app_level_destroy(candidate);
+        return result;
+    }
+    app->level_asset_root = asset_root;
     app->save_generation = generation;
     CoreAppRuntimeState restored;
     result = app_capture_state(app->level, &restored);
@@ -2025,6 +2065,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                 bool runtime_fatal = false;
                 result = core_app_level_load(app, asset_root, &load_stage, &committed,
                                              &runtime_fatal);
+                if (result == BREAK_RUNTIME_OK) app->level_asset_root = asset_root;
                 if (result != BREAK_RUNTIME_OK) {
                     u64 generation = app->level ? app->level->generation : 0u;
                     if (committed || runtime_fatal) {
@@ -2053,7 +2094,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                        event->kind == CORE_APP_SCENARIO_LOAD) {
                 bool save = event->kind == CORE_APP_SCENARIO_SAVE;
                 stage = save ? "save" : "load";
-                if (!app->level) {
+                if (save && !app->level) {
                     result = app_trace(app,
                         "COREAPPTRACE version=1 event=%s_rejected tick=%u generation=0"
                         " stage=level\n", save ? "save" : "load", tick);
