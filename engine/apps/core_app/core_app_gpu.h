@@ -60,4 +60,11 @@ BreakRuntimeError core_app_gpu_create(CoreAppGpu *gpu, const CoreAppGpuConfig *c
  * presented without a capture. */
 BreakRuntimeError core_app_gpu_render(CoreAppGpu *gpu, const WorldFrameSnapshot *snapshot,
                                       const char *screenshot_path, const CoreAppGpuFrame *frame);
+/* Uploads a scene mesh (pos3+normal3+uv2, 32-byte stride) into device buffers
+ * and fills the draw descriptor. The host `SceneMeshGeometry` is only read
+ * here; nothing outlives the call. */
+BreakRuntimeError core_app_gpu_upload_mesh(CoreAppGpu *gpu, const u8 *vertices,
+                                           u32 vertex_count, const u32 *indices,
+                                           u32 index_count, MeshGpu *out_gpu,
+                                           MeshDrawDesc *out_draw);
 BreakRuntimeError core_app_gpu_destroy(CoreAppGpu *gpu);

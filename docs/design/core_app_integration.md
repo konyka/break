@@ -622,11 +622,35 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 截图落到 320×240 PPM（230415 字节），真实设备创建、帧提交、截图读回、PPM 写盘均成功。
 
-### 仍未做（留给 slice 2）
+## Core App Task 11（slice 2）：真实网格上传、双后端对照与像素证据（2026-11-14）
 
-- 像素内容仍只有清屏色：record lane 的 world object 没有 GPU 网格，因此 `world_presenter_submit` 统计到 8 次 draw 但顶点/索引缓冲未绑定，Vulkan validation 报 `VUID-vkCmdDrawIndexed-None-07312/-04007`。slice 2 需要为 world object 建立真实网格上传（`mesh_gpu_upload`），使地面、用户、追踪者、植被在像素上可分辨。
-- 尚无 CTest 覆盖（`test_core_app_gpu_vk` / `_gl` / `_image` 未写）；无 OpenGL 对照证据；无 `BREAK_RHI_FAIL_VULKAN` 降级用例。
-- 不宣称“画面正确”，只宣称设备/提交/截图链路真实可用。
+### 变化
+
+- 关卡提交时，GPU lane 为本关卡每个可见网格调用 `core_app_gpu_upload_mesh`：场景顶点布局（pos3+normal3+uv2，32 字节）恰好等于 `MeshVertex`，因此按 stride 直接拷入 `MeshBuffer` 上传；句柄写入 `WorldObject.gpu/draw`，并记录到关卡自己的 `gpu_meshes[]`。植被原型同样上传 `scene->mesh_geometry[0]`，否则实例化绘制会绑定无效索引缓冲。
+- 设备句柄归关卡所有：`CoreLevel` 保存 `mesh_device`，销毁关卡时先释放网格；回滚与成功路径都调整为先销毁/卸载关卡再销毁设备，避免使用已销毁设备的句柄。
+- record-only 校验（`draws[i].gpu.vertex.generation == 关卡代际`）在 GPU lane 不再适用，因为真实句柄里没有这个字段；GPU lane 跳过该检查，证据改由 `event=gpu` 提供。
+- GPU lane 提交的是对象-only 的 snapshot 副本（`instance_count=0`、`batch_count=0`）：record snapshot 里的植被批次携带的是 record 假句柄，真实后端会在实例化绘制上撞到无效缓冲（OpenGL 直接 SIGSEGV）。
+- 创建设备后立即 `rhi_set_vsync(device, false)`。应用自己按固定步长驱动循环；再让交换链节流会让主机循环阻塞在 present 上（实测 GL 卡在第 4 帧）。
+- 截图必须发生在 `rhi_frame_begin` 与 `rhi_frame_end` 之间，因此提前分配读回缓冲，清屏/绘制后立即 `rhi_screenshot`，再 `rhi_frame_end`、写 PPM、`rhi_present`。
+
+### 验证
+
+新增 `test_core_app_gpu_vulkan` 与 `test_core_app_gpu_opengl`（标签 `gpu`，`RUN_SERIAL`，超时 420s）。每个用例：真实 `core_app --render=<backend> --require-device`，断言 trace 有 `event=gpu result=ready backend=<b> device=...`、存在 `draws>0` 的帧、`event=gpu result=stopped frames=N screenshots=1`，再用 Python 解析 PPM 头与像素数，要求除最频繁颜色外还有其它像素。设备/显示器缺失时 `--require-device` 退出 77，用例报 UNAVAILABLE 跳过而不是判 PASS；设备已创建后的失败一律 FAIL。`test_core_app_gpu_opengl` 还与该次构建中 vulkan 的截图比较绘制采样数，作为跨后端不变量。
+
+本机实测（Intel UHD TGL GT1）：
+
+| 后端 | device | 帧 | PPM | 采样 |
+|---|---|---|---|---|
+| vulkan | Intel(R) UHD Graphics (TGL GT1) | 64 | 921615 B | 背景 (13,15,20)，drawn_samples=101 |
+| opengl | Mesa Intel(R) UHD Graphics (TGL GT1) | 64 | 921615 B | 同上，两后端一致 |
+
+640×480 全帧统计：两后端都是 3797 个非背景像素、同背景色。Vulkan validation（`BREAK_VK_VALIDATION=1`）VUID 计数为 0（此前 slice 1 有两条未绑定缓冲告警）。
+
+变异：把 GPU snapshot 的 `draw_count` 置 0，`test_core_app_gpu_vulkan` 以 “no frame with draws was rendered” 变红；恢复后转绿。
+
+### 仍未做
+
+`scene_state_save`、GPU 侧真实骨架蒙皮绘制、`BREAK_RHI_FAIL_VULKAN=1` 的创建期降级用例、以及“用户/追踪者/植被各自语义像素”的分项断言。当前证据是“设备真实、几何真实到达目标、两后端一致”，不是逐对象影像回归。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-13 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 

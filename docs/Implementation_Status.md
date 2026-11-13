@@ -1,3 +1,11 @@
+## Core App P12 Task 11（slice 2）：真实网格上传、双后端对照与像素证据（2026-11-14）
+
+- **交付**：GPU lane 在关卡提交时用 `core_app_gpu_upload_mesh` 上传每个可见网格与植被原型，句柄写入 `WorldObject.gpu/draw` 并归关卡所有（`CoreLevel.mesh_device`，销毁关卡时释放）；回滚与成功路径都改为先销毁关卡再销毁设备。GPU lane 跳过 record-only 的假句柄代际校验，提交对象-only 的 snapshot 副本（record 副本的植被批次是假句柄，真实 GL 会在实例化绘制上 SIGSEGV）。设备创建后 `rhi_set_vsync(false)`，否则固定步长循环会阻塞在 present。截图改到 `rhi_frame_end` 之前，符合 RHI 合同。设计见 `docs/design/core_app_integration.md` 的 Task 11 slice 2 节。
+- **测试**：新增 `test_core_app_gpu_vulkan` / `_opengl`（标签 `gpu`，RUN_SERIAL）。断言真实设备创建、`draws>0` 的帧、干净关闭与 `screenshots=1`，并用 Python 校验 PPM 头/像素数/非背景像素；GL 用例与同构建的 Vulkan 截图比较绘制采样数。无设备时退出 77 报 UNAVAILABLE，不判 PASS。
+- **实测**：Intel UHD TGL GT1，Vulkan 与 Mesa GL 各 64 帧、640×480、921615 字节 PPM，两者 3797 个非背景像素且背景色一致；Vulkan validation VUID 计数 0。
+- **变异**：`draw_count=0` 被 `test_core_app_gpu_vulkan` 以 "no frame with draws was rendered" 杀死。
+- **边界**：GPU 侧骨架蒙皮绘制、`BREAK_RHI_FAIL_VULKAN` 创建期降级用例、逐对象语义像素断言未做；证据是“设备真实、几何到达目标、两后端一致”，不是影像回归。
+
 ## Core App P12 Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
 
 - **交付**：新增只链接进 `core_app` 的 `core_app_gpu.c/.h`（`core_app_runtime` 七源契约不变）。`--render=vulkan|opengl` 被接受，`--screenshot` 只在 GPU lane 允许；每帧 `rhi_frame_begin`→清屏→`world_presenter_submit`→`rhi_screenshot`→`rhi_present`，RGBA8 翻行序写 P6 PPM（路径含 `%u` 替换为帧号）。场景 `screenshot` 事件被接受；无设备时写 `event=screenshot_rejected stage=device` 不失败。关闭顺序为 idle→presenter→device→platform，写 `event=gpu result=stopped frames/screenshots`。

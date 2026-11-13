@@ -1,10 +1,27 @@
 #include "core_app_gpu.h"
 
 #include <platform/platform.h>
+#include <renderer/mesh_buffer.h>
+#include <scene/scene_serial.h>
 
 #include <inttypes.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+
+
+static BreakRuntimeError app_gpu_trace(CoreAppGpu *gpu, const char *format, ...) {
+    if (!gpu || !gpu->trace) return BREAK_RUNTIME_INVALID;
+    if (fprintf(gpu->trace, "COREAPPTRACE version=1 ") < 0) return BREAK_RUNTIME_FAILED;
+    va_list args;
+    va_start(args, format);
+    int written = vfprintf(gpu->trace, format, args);
+    va_end(args);
+    if (written < 0 || fputc('\n', gpu->trace) == EOF || fflush(gpu->trace) != 0) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    return BREAK_RUNTIME_OK;
+}
 
 /* RGBA8 readback converted to a top-down PPM. The RHI contract returns rows
  * bottom-up for at least one of the backends, so the flip is explicit here
@@ -78,6 +95,9 @@ BreakRuntimeError core_app_gpu_create(CoreAppGpu *gpu, const CoreAppGpuConfig *c
         return BREAK_RUNTIME_UNAVAILABLE;
     }
     gpu->device = device;
+    /* The application drives its own fixed-step pacing; letting the swap chain
+     * also throttle would block the host loop on presentation. */
+    rhi_set_vsync(device, false);
     RHIDeviceInfo info;
     memset(&info, 0, sizeof(info));
     if (rhi_device_get_info(device, &info)) {
@@ -103,41 +123,89 @@ BreakRuntimeError core_app_gpu_render(CoreAppGpu *gpu, const WorldFrameSnapshot 
     if (!gpu || !gpu->live || !snapshot || !frame) return BREAK_RUNTIME_INVALID;
     RHICmdBuffer *cmd = rhi_frame_begin(gpu->device);
     if (!cmd) return BREAK_RUNTIME_FAILED;
+    BreakRuntimeError result = BREAK_RUNTIME_OK;
+    u8 *rgba = NULL;
+    usize bytes = 0u;
+    if (screenshot_path && screenshot_path[0] != '\0') {
+        bytes = (usize)gpu->width * gpu->height * 4u;
+        rgba = (u8 *)malloc(bytes);
+        if (!rgba) {
+            rhi_cmd_end_render_pass(cmd);
+            rhi_frame_end(gpu->device);
+            return BREAK_RUNTIME_OOM;
+        }
+    }
     rhi_cmd_begin_render_pass(cmd);
     rhi_cmd_clear_color(cmd, 0.05f, 0.06f, 0.08f, 1.0f);
     WorldSubmitStats stats;
     memset(&stats, 0, sizeof(stats));
-    if (world_presenter_submit(cmd, &gpu->presenter, snapshot, &stats) != WORLD_PRESENTATION_OK) {
+    WorldPresentationStatus submit_status =
+        world_presenter_submit(cmd, &gpu->presenter, snapshot, &stats);
+    if (submit_status != WORLD_PRESENTATION_OK) {
+        (void)app_gpu_trace(gpu, "event=gpu result=submit_failed status=%d draws=%u",
+                            (int)submit_status, snapshot->draw_count);
+        result = BREAK_RUNTIME_FAILED;
+    }
+    if (result == BREAK_RUNTIME_OK) {
+        rhi_cmd_end_render_pass(cmd);
+        /* The capture must happen inside the acquired frame, before end and
+         * present: rhi_screenshot reads the command buffer's target, which is
+         * only valid between frame_begin and frame_end. */
+        if (rgba && !rhi_screenshot(gpu->device, 0u, 0u, gpu->width, gpu->height, rgba,
+                                    bytes)) {
+            (void)app_gpu_trace(gpu, "event=gpu result=screenshot_failed frame=%" PRIu64,
+                                frame->frame);
+            result = BREAK_RUNTIME_FAILED;
+        }
+        rhi_frame_end(gpu->device);
+    } else {
         rhi_cmd_end_render_pass(cmd);
         rhi_frame_end(gpu->device);
-        return BREAK_RUNTIME_FAILED;
     }
-    rhi_cmd_end_render_pass(cmd);
-    rhi_frame_end(gpu->device);
-    if (screenshot_path && screenshot_path[0] != '\0') {
-        usize bytes = (usize)gpu->width * gpu->height * 4u;
-        u8 *rgba = (u8 *)malloc(bytes);
-        if (!rgba) return BREAK_RUNTIME_OOM;
-        bool captured = rhi_screenshot(gpu->device, 0u, 0u, gpu->width, gpu->height, rgba,
-                                       bytes);
-        BreakRuntimeError result = BREAK_RUNTIME_OK;
-        if (!captured) {
-            result = BREAK_RUNTIME_FAILED;
+    if (result == BREAK_RUNTIME_OK && rgba) {
+        result = write_ppm(screenshot_path, rgba, gpu->width, gpu->height, frame->frame);
+        if (result == BREAK_RUNTIME_OK) {
+            gpu->screenshots_written++;
         } else {
-            result = write_ppm(screenshot_path, rgba, gpu->width, gpu->height, frame->frame);
-            if (result == BREAK_RUNTIME_OK) gpu->screenshots_written++;
+            (void)app_gpu_trace(gpu, "event=gpu result=ppm_failed frame=%" PRIu64,
+                                frame->frame);
         }
-        free(rgba);
-        if (result != BREAK_RUNTIME_OK) return result;
     }
+    free(rgba);
+    if (result != BREAK_RUNTIME_OK) return result;
     rhi_present(gpu->device);
     gpu->frames_presented++;
-    if (fprintf(gpu->trace,
-                "COREAPPTRACE version=1 event=gpu backend=%s device=%s frame=%" PRIu64
-                " generation=%" PRIu64 " draws=%u instances=%u\n",
-                gpu->backend_name, gpu->device_name, frame->frame, frame->generation,
-                stats.object_draws + stats.stream_draws, stats.instance_count) < 0 ||
-        fflush(gpu->trace) != 0) {
+    return app_gpu_trace(gpu,
+                         "event=gpu backend=%s device=%s frame=%" PRIu64
+                         " generation=%" PRIu64 " draws=%u instances=%u",
+                         gpu->backend_name, gpu->device_name, frame->frame,
+                         frame->generation, stats.object_draws + stats.stream_draws,
+                         stats.instance_count);
+}
+
+BreakRuntimeError core_app_gpu_upload_mesh(CoreAppGpu *gpu, const u8 *vertices,
+                                           u32 vertex_count, const u32 *indices,
+                                           u32 index_count, MeshGpu *out_gpu,
+                                           MeshDrawDesc *out_draw) {
+    if (!gpu || !gpu->live || !vertices || vertex_count == 0u || !out_gpu || !out_draw) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    MeshBuffer mesh;
+    memset(&mesh, 0, sizeof(mesh));
+    if (vertex_count > MESH_BUFFER_MAX_VERTS || index_count > MESH_BUFFER_MAX_INDICES) {
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    /* The scene vertex layout is exactly MeshVertex: pos3 + normal3 + uv2. */
+    memcpy(mesh.verts, vertices, (size_t)vertex_count * BSCN_MESH_VERTEX_STRIDE);
+    mesh.count = vertex_count;
+    if (index_count != 0u && indices) {
+        memcpy(mesh.indices, indices, (size_t)index_count * sizeof(u32));
+        mesh.index_count = index_count;
+    }
+    if (!mesh_gpu_upload(gpu->device, &mesh, out_gpu)) return BREAK_RUNTIME_FAILED;
+    if (!mesh_buffer_draw_desc(&mesh, out_draw)) {
+        mesh_gpu_destroy(gpu->device, out_gpu);
+        memset(out_gpu, 0, sizeof(*out_gpu));
         return BREAK_RUNTIME_FAILED;
     }
     return BREAK_RUNTIME_OK;

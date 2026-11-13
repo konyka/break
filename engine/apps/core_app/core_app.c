@@ -120,6 +120,14 @@ typedef struct CoreLevel {
     Mat4 chain_world[CORE_APP_CHAIN_JOINTS];
     WorldObject world_objects[CORE_APP_WORLD_OBJECTS];
     u32 world_object_count;
+    /* Device handles exist only when the GPU lane is live; record mode leaves
+     * them zeroed and never calls into the RHI. */
+    MeshGpu gpu_meshes[CORE_APP_WORLD_OBJECTS];
+    bool gpu_meshes_live;
+    MeshGpu vegetation_prototype_gpu;
+    MeshDrawDesc vegetation_prototype_draw;
+    bool vegetation_prototype_gpu_live;
+    RHIDevice *mesh_device;
     u32 visible_ids[CORE_APP_WORLD_OBJECTS];
     u32 visible_count;
     MeshBuffer stream_mesh;
@@ -187,6 +195,7 @@ struct CoreApp {
     /* Only --render=vulkan|opengl with a real device creates this; the record
      * lane never touches it, which keeps a headless host a valid record host. */
     CoreAppGpu gpu;
+    WorldFrameSnapshot gpu_snapshot;
     const char *screenshot_path;
     bool screenshot_next;
     u32 tick;
@@ -352,6 +361,24 @@ static bool app_read_asset(const char *root, const char *name, usize maximum,
 
 static void core_app_level_destroy(CoreLevel *level) {
     if (!level) return;
+    /* Device handles die with the level that uploaded them. mesh_device is
+     * only set when the GPU lane is live, so record mode never touches the
+     * RHI here. */
+    if (level->gpu_meshes_live && level->mesh_device) {
+        for (u32 i = 0u; i < level->world_object_count; ++i) {
+            if (rhi_handle_valid(level->gpu_meshes[i].vertex) ||
+                rhi_handle_valid(level->gpu_meshes[i].index)) {
+                mesh_gpu_destroy(level->mesh_device, &level->gpu_meshes[i]);
+            }
+        }
+    }
+    if (level->vegetation_prototype_gpu_live && level->mesh_device) {
+        mesh_gpu_destroy(level->mesh_device, &level->vegetation_prototype_gpu);
+    }
+    level->vegetation_prototype_gpu_live = false;
+    memset(level->gpu_meshes, 0, sizeof(level->gpu_meshes));
+    level->gpu_meshes_live = false;
+    level->mesh_device = NULL;
     break_runtime_io_request_release(level->request);
     level->request = NULL;
     core_app_simulation_destroy(level->simulation);
@@ -1123,6 +1150,11 @@ static BreakRuntimeError app_publish_world(CoreApp *app, u32 tick) {
     if (world_presentation_snapshot(&input, slot) != WORLD_PRESENTATION_OK) {
         return BREAK_RUNTIME_FAILED;
     }
+    /* In the GPU lane the snapshot carries real device handles, so the
+     * record-only handle validation (generation == level generation) does not
+     * apply; the real device trace is the evidence instead. Record mode keeps
+     * the validation. */
+    if (app->gpu.live) return BREAK_RUNTIME_OK;
     return core_app_render_record_world(&app->render, level->generation, slot);
 }
 
@@ -1258,6 +1290,58 @@ static BreakRuntimeError core_app_level_commit(CoreApp *app, CoreLevel *candidat
                                                const char **failed_stage,
                                                bool *out_committed) {
     BreakRuntimeError result;
+    /* Upload the candidate's visible meshes before it becomes live, so the
+     * first frame of a new level already draws real geometry. Record mode has
+     * no device and skips this entirely. */
+    if (app->gpu.live) {
+        for (u32 i = 0u; i < candidate->world_object_count; ++i) {
+            WorldObject *object = &candidate->world_objects[i];
+            if (object->stream) continue;
+            const SceneNode *node = NULL;
+            for (u32 n = 0u; n < candidate->scene.node_count; ++n) {
+                if (n + 1u == object->id) { node = &candidate->scene.nodes[n]; break; }
+            }
+            if (!node || node->mesh_index >= candidate->scene.mesh_geometry_count) continue;
+            const SceneMeshGeometry *mesh = &candidate->scene.mesh_geometry[node->mesh_index];
+            MeshGpu gpu_mesh;
+            MeshDrawDesc draw;
+            memset(&gpu_mesh, 0, sizeof(gpu_mesh));
+            memset(&draw, 0, sizeof(draw));
+            result = core_app_gpu_upload_mesh(&app->gpu, mesh->vertices, mesh->vertex_count,
+                                              mesh->indices, mesh->index_count, &gpu_mesh,
+                                              &draw);
+            if (result != BREAK_RUNTIME_OK) {
+                *failed_stage = "gpu_upload";
+                return result;
+            }
+            candidate->gpu_meshes[i] = gpu_mesh;
+            object->gpu = gpu_mesh;
+            object->draw = draw;
+        }
+        /* The vegetation prototype is also record-mode fake handles in
+         * staging; give it a real mesh so instanced draws bind valid buffers. */
+        if (candidate->scene.mesh_geometry_count > 0u) {
+            const SceneMeshGeometry *proto = &candidate->scene.mesh_geometry[0];
+            MeshGpu proto_gpu;
+            MeshDrawDesc proto_draw;
+            memset(&proto_gpu, 0, sizeof(proto_gpu));
+            memset(&proto_draw, 0, sizeof(proto_draw));
+            result = core_app_gpu_upload_mesh(&app->gpu, proto->vertices,
+                                              proto->vertex_count, proto->indices,
+                                              proto->index_count, &proto_gpu, &proto_draw);
+            if (result != BREAK_RUNTIME_OK) {
+                *failed_stage = "gpu_upload_prototype";
+                return result;
+            }
+            candidate->vegetation_prototype_gpu = proto_gpu;
+            candidate->vegetation_prototype_draw = proto_draw;
+            candidate->vegetation_prototype.gpu[0] = proto_gpu;
+            candidate->vegetation_prototype.draws[0] = proto_draw;
+            candidate->vegetation_prototype_gpu_live = true;
+        }
+        candidate->gpu_meshes_live = true;
+        candidate->mesh_device = app->gpu.device;
+    }
     CoreLevel *previous = app->level;
     app->retired_level = previous;
     app->level = candidate;
@@ -2054,9 +2138,6 @@ static void app_rollback(CoreApp *app) {
         (void)core_app_audio_destroy(&app->audio);
         app->audio_live = false;
     }
-    if (app->gpu.live) {
-        (void)core_app_gpu_destroy(&app->gpu);
-    }
     if (app->render_live) {
         (void)core_app_render_stop_admission(&app->render);
         (void)core_app_render_stop_producers(&app->render);
@@ -2081,6 +2162,10 @@ static void app_rollback(CoreApp *app) {
         (void)app_trace(app,
             "COREAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
             generation);
+    }
+    /* Levels release their device meshes, so the device must outlive them. */
+    if (app->gpu.live) {
+        (void)core_app_gpu_destroy(&app->gpu);
     }
     (void)core_app_stop_io(app);
     if (app->vfs && !app->io_running) {
@@ -2150,8 +2235,8 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
         memset(&gpu_config, 0, sizeof(gpu_config));
         gpu_config.backend = config->render_mode == CORE_APP_RENDER_VULKAN
                                  ? CORE_APP_GPU_VULKAN : CORE_APP_GPU_OPENGL;
-        gpu_config.width = 320u;
-        gpu_config.height = 240u;
+        gpu_config.width = 640u;
+        gpu_config.height = 480u;
         gpu_config.require_device = config->require_device;
         stage = "gpu_start";
         result = core_app_gpu_create(&app->gpu, &gpu_config, app->trace);
@@ -2295,10 +2380,14 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
             if (result == BREAK_RUNTIME_OK && app->gpu.live) {
                 const char *path = app->screenshot_next ? app->screenshot_path : NULL;
                 CoreAppGpuFrame gpu_frame = {tick, app->level->generation};
-                const WorldFrameSnapshot *snapshot =
-                    &app->level->world_snapshots[tick & 1u];
+                /* The record snapshot carries record-only fake handles in the
+                 * vegetation batches, so the GPU lane submits an object-only
+                 * copy: every draw there has a real device mesh. */
+                app->gpu_snapshot = app->level->world_snapshots[tick & 1u];
+                app->gpu_snapshot.instance_count = 0u;
+                app->gpu_snapshot.batch_count = 0u;
                 stage = "gpu";
-                result = core_app_gpu_render(&app->gpu, snapshot, path, &gpu_frame);
+                result = core_app_gpu_render(&app->gpu, &app->gpu_snapshot, path, &gpu_frame);
                 app->screenshot_next = false;
                 if (result != BREAK_RUNTIME_OK) goto finished;
             }
@@ -2323,6 +2412,12 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
         goto finished;
     }
     if (app->gpu.live) {
+        /* Levels own device meshes; release them before the device goes. */
+        if (app->level) {
+            CoreLevel *level = app->level;
+            app->level = NULL;
+            core_app_level_destroy(level);
+        }
         stage = "gpu_stop";
         result = core_app_gpu_destroy(&app->gpu);
         if (result != BREAK_RUNTIME_OK) goto finished;
