@@ -1,3 +1,11 @@
+## Core App P12 Task 6（slice 3）：载具上车、油门与下车（2026-11-13）
+
+- **交付**：加载期在场景节点 4 创建 `Vehicle` 并空载落稳 120 步；每个固定步 `app_tick_vehicle` 处理 interact 的按下边沿（3 m 内 `vehicle_enter`，乘车时 `vehicle_exit` 并用 `core_app_simulation_place_user` 放置用户），乘车时 forward/strafe 映射为油门/转向，随后 `physics_step` 首次进入应用固定步，乘车期间用户跟随底盘。trace 新增 `event=vehicle_enter`、`event=vehicle_exit` 与 `event=vehicle`。设计见 `docs/design/core_app_integration.md` 的 Task 6 slice 3 节。
+- **测试**：真实进程 `test_core_app_lifecycle_vehicle`：远处上车被拒、近处上车成功、按住 E 不重复切换、油门推动底盘且四轮着地、用户跟随底盘、松开 W 油门归零、下车把用户放到底盘侧面。
+- **变异**：油门不映射、去掉边沿检测、去掉距离检查、乘车时不移动用户，均被杀死并恢复。
+- **回归**：lifecycle 9/9；ASan+UBSan 9/9、TSan 9/9，无 sanitizer 报告；`test_vehicle`、命名合同、资产、runtime 通过。
+- **边界**：载具没有渲染接线，场景节点不随底盘移动；布娃娃与 IK 互斥仍是 Task 6 后续 slice。
+
 ## Core App P12 Task 6（slice 2b）：表情曲线 → morph → 蒙皮（2026-11-13）
 
 - **交付**：加载期构造单顶点 morph 目标 `lift`（位移 (0, 2, 0)）、表情 `lift`（0–1 s 权重 0→1）和一个 64 字节绑定顶点。每个固定步执行 `anim_facial_evaluate` → `anim_morph_evaluate_skinned` → `lod_skin_positions`（平移 x = 3 的单关节矩阵），trace 记 `event=facial tick=… x=… y=…`。设计见 `docs/design/core_app_integration.md` 的 Task 6 slice 2b 节。

@@ -38,6 +38,7 @@ typedef struct CoreAppMoveIntent {
     f32 forward;
     f32 strafe;
     bool jump;
+    bool interact;
 } CoreAppMoveIntent;
 
 typedef struct CoreAppAccumulator {
@@ -56,6 +57,8 @@ BreakRuntimeError core_app_simulation_tick(CoreAppSimulation *simulation,
                                            const CoreAppInputFrame *frame);
 BreakRuntimeError core_app_simulation_user_position(
     const CoreAppSimulation *simulation, Vec3 *out);
+BreakRuntimeError core_app_simulation_place_user(CoreAppSimulation *simulation,
+                                                Vec3 position);
 u64 core_app_simulation_tick_count(const CoreAppSimulation *simulation);
 
 u32 core_app_accumulator_advance(CoreAppAccumulator *accumulator, u64 elapsed_ns);

@@ -180,6 +180,34 @@ event=facial tick=<n> generation=<g> x=<f> y=<f>
 
 这是一条单顶点、单关节的接线证据，不是正式资产：关卡 BSCN 里还没有蒙皮网格或骨骼，表情和 morph 目标在应用内构造。把 `level.bscn` 换成带蒙皮网格的资产、由 `skeleton_apply_local_trs` 产生真实蒙皮矩阵，留给后续 slice 与 Task 7 的渲染接线。
 
+## P12 Task 6（slice 3）：载具上车、油门与下车（2026-11-13）
+
+### 接线
+
+`stage_physics` 的物理世界容量从 16 提到 32，并在场景节点 4（Vehicle，位置 (-4, 0.75, 2)）上方 0.25 m 处 `vehicle_create`，加载期先空载推进 120 个固定步让悬挂落稳。`core_app_level_destroy` 在销毁物理世界前调用 `vehicle_destroy`。
+
+每个固定步的顺序变为：`break_game_tick` → `break_flow_runtime_tick` → `app_tick_vehicle` → 用户未乘车时 `core_app_simulation_tick` → `app_tick_chaser` → `physics_step` → 乘车时把用户放到底盘位置 → `event=vehicle` trace → `break_game_area_tick` → 其余 trace。`physics_step` 由此第一次进入应用的固定步。
+
+`app_tick_vehicle` 读取 interact 动作（E 键或手柄西键），只在按下的那一 tick 触发：未乘车时，用户与底盘的水平距离不超过 3 m 才调用 `vehicle_enter`；已乘车时调用 `vehicle_exit`，成功后用新增的 `core_app_simulation_place_user` 把角色控制器和 ECS 位置放到下车点，并清零速度。乘车期间 forward 映射为油门、strafe 映射为转向，不乘车时三项控制都为 0，每个固定步都调用 `vehicle_step`。
+
+### trace
+
+```text
+event=vehicle_enter tick=<n> generation=<g> ok=<0|1>
+event=vehicle_exit tick=<n> generation=<g> ok=<0|1>
+event=vehicle tick=<n> generation=<g> occupied=<0|1> throttle=<f> grounded=<0..4> x=<f> z=<f>
+```
+
+### 验证
+
+- 真实进程 `test_core_app_lifecycle_vehicle`（90 tick）：tick 1 在出生点按 E，距离约 4.5 m，上车被拒绝；按 A 走到 x ≈ -2.55 后 tick 40 上车成功；按住 E 的下一 tick 不会再次切换；按住 W 时 tick 60 油门为 1、四轮着地、底盘 z 增大，用户位置与底盘一致；松开 W 后 tick 74 油门为 0；tick 76 下车成功，用户落在底盘右侧 x ≈ -2.3。
+- 变异：油门不映射、去掉按键边沿检测、去掉距离检查、乘车时不移动用户，四处都让断言变红，恢复后通过。
+- lifecycle 9/9；ASan+UBSan 9/9、TSan 9/9，无 sanitizer 报告；`test_vehicle`、命名合同、资产与 runtime 测试通过。
+
+### 限制
+
+载具只有底盘刚体，没有渲染接线，也没有把场景节点 4 的变换跟随底盘更新。下车点仍由 `vehicle_exit` 的侧向 sweep 决定，被挡住时返回 `ok=0`，用户留在车上。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

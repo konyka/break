@@ -14,6 +14,7 @@
 #include <game/break_game_internal.h>
 #include <game/break_game_lua.h>
 #include <physics/physics.h>
+#include <physics/vehicle.h>
 #include <platform/platform_fs.h>
 #include <runtime/runtime_coordinator.h>
 #include <runtime/runtime_io.h>
@@ -31,6 +32,9 @@
 #define CORE_APP_IO_TIMEOUT_MS 5000u
 #define CORE_APP_USER_ENTITY_INDEX 2u
 #define CORE_APP_CHASER_ENTITY_INDEX 3u
+#define CORE_APP_VEHICLE_NODE_INDEX 4u
+#define CORE_APP_VEHICLE_REACH 3.0f
+#define CORE_APP_VEHICLE_SETTLE_STEPS 120u
 #define CORE_APP_AREA_FLOW_EVENT 1001u
 #define CORE_APP_FLOW_ITEM 1u
 #define CORE_APP_MAX_PENDING_AREA_ENTERS 8u
@@ -83,6 +87,9 @@ typedef struct CoreLevel {
     u8 face_bind[64];
     u8 face_morphed[64];
     f32 face_skinned[3];
+    Vehicle vehicle;
+    bool vehicle_live;
+    bool interact_was_down;
     u64 generation;
     bool actor_level_open;
 } CoreLevel;
@@ -181,6 +188,7 @@ static void core_app_level_destroy(CoreLevel *level) {
     anim_blend_state_destroy(&level->locomotion);
     if (level->ai) break_ai_runtime_destroy(level->ai);
     if (level->nav_mesh) break_nav_mesh_destroy(level->nav_mesh);
+    if (level->vehicle_live && level->physics) vehicle_destroy(&level->vehicle, level->physics);
     if (level->physics) physics_world_destroy(level->physics);
     if (level->actor_level_open && level->actor_runtime) {
         (void)break_game_level_close(level->actor_runtime);
@@ -399,7 +407,7 @@ static BreakRuntimeError stage_physics(CoreLevel *candidate) {
     if (candidate->scene.node_count < 2u || !candidate->scene.nodes) {
         return BREAK_RUNTIME_FAILED;
     }
-    candidate->physics = physics_world_create(16u);
+    candidate->physics = physics_world_create(32u);
     if (!candidate->physics) return BREAK_RUNTIME_OOM;
     const SceneNode *ground = &candidate->scene.nodes[0];
     Vec3 ground_extent = vec3(fabsf(ground->world_transform.e[0][0]),
@@ -409,6 +417,18 @@ static BreakRuntimeError stage_physics(CoreLevel *candidate) {
         app_node_position(ground), ground_extent, 0.0f, true, 0u);
     if (!physics_body_handle_is_valid(candidate->ground_body)) {
         return BREAK_RUNTIME_FAILED;
+    }
+    if (candidate->scene.node_count <= CORE_APP_VEHICLE_NODE_INDEX) return BREAK_RUNTIME_FAILED;
+    Vec3 spawn = app_node_position(&candidate->scene.nodes[CORE_APP_VEHICLE_NODE_INDEX]);
+    spawn.e[1] += 0.25f;
+    if (!vehicle_create(&candidate->vehicle, candidate->physics, spawn)) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    candidate->vehicle_live = true;
+    VehicleInput idle = {0.0f, 0.0f, 0.0f};
+    for (u32 step = 0u; step < CORE_APP_VEHICLE_SETTLE_STEPS; ++step) {
+        vehicle_step(&candidate->vehicle, candidate->physics, &idle, CORE_APP_FIXED_DT);
+        physics_step(candidate->physics, CORE_APP_FIXED_DT);
     }
     return BREAK_RUNTIME_OK;
 }
@@ -507,6 +527,49 @@ static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
         f32 weights[4] = {1.0f, 0.0f, 0.0f, 0.0f};
         memcpy(candidate->face_bind + 48, weights, sizeof(weights));
     }
+    return BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_tick_vehicle(CoreApp *app, u32 tick,
+                                          const CoreAppInputFrame *frame) {
+    CoreLevel *level = app->level;
+    CoreAppMoveIntent intent;
+    BreakRuntimeError result = core_app_simulation_intent(level->simulation, frame, &intent);
+    if (result != BREAK_RUNTIME_OK) return result;
+    bool pressed = intent.interact && !level->interact_was_down;
+    level->interact_was_down = intent.interact;
+    RigidBody *chassis = physics_body_resolve(level->physics, level->vehicle.chassis);
+    if (!chassis) return BREAK_RUNTIME_STALE;
+    if (pressed && !level->vehicle.occupied) {
+        Vec3 user_position;
+        result = core_app_simulation_user_position(level->simulation, &user_position);
+        if (result != BREAK_RUNTIME_OK) return result;
+        f32 dx = user_position.e[0] - chassis->position.e[0];
+        f32 dz = user_position.e[2] - chassis->position.e[2];
+        bool ok = dx * dx + dz * dz <= CORE_APP_VEHICLE_REACH * CORE_APP_VEHICLE_REACH &&
+                  vehicle_enter(&level->vehicle);
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=vehicle_enter tick=%u generation=%" PRIu64
+            " ok=%u\n", tick, level->generation, ok ? 1u : 0u);
+        if (result != BREAK_RUNTIME_OK) return result;
+    } else if (pressed) {
+        Vec3 feet;
+        bool ok = vehicle_exit(&level->vehicle, level->physics, &feet);
+        if (ok) {
+            result = core_app_simulation_place_user(level->simulation, feet);
+            if (result != BREAK_RUNTIME_OK) return result;
+        }
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=vehicle_exit tick=%u generation=%" PRIu64
+            " ok=%u\n", tick, level->generation, ok ? 1u : 0u);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
+    VehicleInput input = {0.0f, 0.0f, 0.0f};
+    if (level->vehicle.occupied) {
+        input.throttle = intent.forward;
+        input.steer = intent.strafe;
+    }
+    vehicle_step(&level->vehicle, level->physics, &input, CORE_APP_FIXED_DT);
     return BREAK_RUNTIME_OK;
 }
 
@@ -1034,10 +1097,34 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
             level->user.index, CORE_APP_FLOW_ITEM, items);
         if (result != BREAK_RUNTIME_OK) return result;
     }
-    result = core_app_simulation_tick(level->simulation, frame);
+    result = app_tick_vehicle(app, tick, frame);
     if (result != BREAK_RUNTIME_OK) return result;
+    if (!level->vehicle.occupied) {
+        result = core_app_simulation_tick(level->simulation, frame);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
     result = app_tick_chaser(app, tick);
     if (result != BREAK_RUNTIME_OK) return result;
+    physics_step(level->physics, CORE_APP_FIXED_DT);
+    {
+        RigidBody *chassis = physics_body_resolve(level->physics, level->vehicle.chassis);
+        if (!chassis) return BREAK_RUNTIME_STALE;
+        if (level->vehicle.occupied) {
+            result = core_app_simulation_place_user(level->simulation, chassis->position);
+            if (result != BREAK_RUNTIME_OK) return result;
+        }
+        u32 grounded = 0u;
+        for (u32 wheel = 0u; wheel < 4u; ++wheel) {
+            if (level->vehicle.wheels[wheel].grounded) grounded++;
+        }
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=vehicle tick=%u generation=%" PRIu64
+            " occupied=%u throttle=%.9g grounded=%u x=%.9g z=%.9g\n", tick,
+            level->generation, level->vehicle.occupied ? 1u : 0u,
+            (double)level->vehicle.control.throttle, grounded,
+            (double)chassis->position.e[0], (double)chassis->position.e[2]);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
     BreakGameError area = break_game_area_tick(level->actor_runtime);
     if (area != BREAK_GAME_OK && area != BREAK_GAME_OVERLOAD) return BREAK_RUNTIME_FAILED;
     Vec3 position;

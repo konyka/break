@@ -137,6 +137,7 @@ BreakRuntimeError core_app_simulation_intent(CoreAppSimulation *simulation,
     out->forward = clamp_unit(forward);
     out->strafe = clamp_unit(strafe);
     out->jump = values[CORE_APP_ACTION_JUMP].down;
+    out->interact = values[CORE_APP_ACTION_INTERACT].down;
     return BREAK_RUNTIME_OK;
 }
 
@@ -171,6 +172,24 @@ BreakRuntimeError core_app_simulation_user_position(
     const CoreAppSimulation *simulation, Vec3 *out) {
     if (!simulation || !out) return BREAK_RUNTIME_INVALID;
     *out = simulation->character.position;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError core_app_simulation_place_user(CoreAppSimulation *simulation,
+                                                Vec3 position) {
+    Vec3 *component;
+    if (!simulation || !isfinite(position.e[0]) || !isfinite(position.e[1]) ||
+        !isfinite(position.e[2])) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    component = (Vec3 *)world_get_component(simulation->desc.world, simulation->desc.user,
+                                            BREAK_GAME_POSITION_COMPONENT);
+    if (!component) return BREAK_RUNTIME_STALE;
+    simulation->character.position = position;
+    simulation->character.velocity = vec3(0.0f, 0.0f, 0.0f);
+    simulation->character.grounded = false;
+    simulation->character.ground_body = PHYSICS_BODY_HANDLE_INVALID;
+    *component = position;
     return BREAK_RUNTIME_OK;
 }
 
