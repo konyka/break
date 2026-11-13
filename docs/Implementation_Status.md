@@ -4,6 +4,7 @@
 - **原因与修复**：Clang `-pedantic` 把 `__FUNCSIG__` 当扩展，`TypeTag` 只在非 Clang 的 MSVC 下使用它。`my_compose_internal.h` 不再包含 `<threads.h>`，owner 线程改为 `core/platform_thread.h` 的 `PlatformThreadId`；`test_mycompose_async` 的测试线程同样改走该头。remember/State 对齐从 `max_align_t` 改为公开的 `MyComposeMaxAlign` 与 `MY_COMPOSE_MAX_ALIGNMENT`，MSVC C 模式因此能编译。
 - **本机验证**：以 `-fms-extensions -D_MSC_VER` 复现并消除 Clang 的 extension 错误；普通与 ASan/TSan 构建成功，mycompose focused 13/13，TSan runtime/async 3/3 无 race。ASan 的 OpenGL/Wayland leak 也出现在改动 stash 后的既有 `test_rhi_wayland_runtime`，且 CI 使用 `detect_leaks=0`，不是本次回归。fuzz 目标因本机缺 libFuzzer 未链接，与本次改动无关。
 - **第二轮（`41958d17`）**：Windows Clang、macOS Cocoa/MoltenVK、macOS Metal 与 iOS Metal 构建通过，MSVC 仍失败。`ATOMIC_VAR_INIT` 在 MSVC 实验性 C11 原子中不存在，静态 `next_store_id` 改为零初始化，第一次成功认领时发出 id 1，耗尽仍返回 0。本机 store/runtime/async 3/3。
+- **第三轮（`1f7e548d`）**：MSVC 继续失败，`compose_parity_fixture.h` 的 `property`/`event` 触发 C4701（可能未初始化）并被 `/WX` 升级为错误。两者在使用前补零初始化；本机 C fixture 与 C++ parity 2/2。
 - **未完成**：本条目提交并推送后，需要重读 windows-d3d12、CI 与 proton-d3d12。
 
 ## Compose + MVI Task 8：真实图形、fuzz 与分配（2026-11-13）

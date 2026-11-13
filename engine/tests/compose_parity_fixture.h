@@ -201,6 +201,8 @@ MyComposeStatus ComposeParityRunC(ComposeParityResult *result) {
     MyComposeIntent event;
     const void *state = NULL;
     uint32_t state_size = 0u;
+    memset(&property, 0, sizeof(property));
+    memset(&event, 0, sizeof(event));
     if (result == NULL) return MY_COMPOSE_INVALID;
     memset(result, 0, sizeof(*result));
     context.result = result;
