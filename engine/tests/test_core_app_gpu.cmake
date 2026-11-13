@@ -40,9 +40,22 @@ execute_process(
     ERROR_VARIABLE run_err
     TIMEOUT 300)
 if(NOT run_rc EQUAL 0)
+    # Exit 77 is the explicit environment-unavailable contract. A build whose
+    # RHI was compiled without the requested backend can also fail while
+    # creating the device; that path is only acceptable when the trace names
+    # the failure as unavailable. Any failure after a device existed must fail
+    # this test, so a trace with result=ready is never treated as a skip.
     if(run_rc EQUAL 77)
         message(STATUS "UNAVAILABLE backend=${BACKEND}: no display or device")
         return()
+    endif()
+    if(EXISTS "${trace}")
+        file(READ "${trace}" early_trace)
+        if(early_trace MATCHES "event=gpu result=unavailable backend=${BACKEND}" AND
+           NOT early_trace MATCHES "event=gpu result=ready")
+            message(STATUS "UNAVAILABLE backend=${BACKEND}: device could not be created")
+            return()
+        endif()
     endif()
     message(FATAL_ERROR "core_app ${BACKEND} exited ${run_rc}\n${run_out}\n${run_err}")
 endif()

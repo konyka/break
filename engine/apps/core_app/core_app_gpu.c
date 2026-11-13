@@ -117,7 +117,10 @@ BreakRuntimeError core_app_gpu_create(CoreAppGpu *gpu, const CoreAppGpuConfig *c
         platform_destroy(platform);
         gpu->device = NULL;
         gpu->platform = NULL;
-        return BREAK_RUNTIME_FAILED;
+        /* A presenter needs pipelines and shaders; a host whose driver cannot
+         * provide them is as unavailable as one with no device at all. The
+         * caller turns this into a reported UNAVAILABLE, not a pass. */
+        return BREAK_RUNTIME_UNAVAILABLE;
     }
     gpu->live = true;
     return BREAK_RUNTIME_OK;
