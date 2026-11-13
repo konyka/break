@@ -6,6 +6,7 @@
 
 #include <ai/break_ai.h>
 #include <animation/anim_compression.h>
+#include <animation/animation.h>
 #include <asset/vfs.h>
 #include <game/break_flow.h>
 #include <game/break_game_lua.h>
@@ -69,6 +70,10 @@ typedef struct CoreLevel {
     u32 chase_nav_version;
     u32 sight_area;
     bool target_in_sight;
+    AnimBlendState locomotion;
+    AnimLoco1D loco;
+    Vec3 previous_user_position;
+    bool previous_user_position_valid;
     u64 generation;
     bool actor_level_open;
 } CoreLevel;
@@ -164,6 +169,7 @@ static void core_app_level_destroy(CoreLevel *level) {
     level->request = NULL;
     core_app_simulation_destroy(level->simulation);
     level->simulation = NULL;
+    anim_blend_state_destroy(&level->locomotion);
     if (level->ai) break_ai_runtime_destroy(level->ai);
     if (level->nav_mesh) break_nav_mesh_destroy(level->nav_mesh);
     if (level->physics) physics_world_destroy(level->physics);
@@ -465,6 +471,10 @@ static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
                             &candidate->sight_area) != BREAK_GAME_OK) {
         return BREAK_RUNTIME_FAILED;
     }
+    AnimLocoSample samples[2] = {{0.0f, 0u}, {4.0f, 1u}};
+    if (!anim_loco1d_init(&candidate->loco, 0u, samples, 2u)) return BREAK_RUNTIME_FAILED;
+    anim_blend_state_init(&candidate->locomotion, 1u);
+    candidate->previous_user_position_valid = false;
     return BREAK_RUNTIME_OK;
 }
 
@@ -998,6 +1008,30 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
         "COREAPPTRACE version=1 event=user tick=%u generation=%" PRIu64
         " x=%.9g y=%.9g z=%.9g\n", tick, level->generation,
         (double)position.e[0], (double)position.e[1], (double)position.e[2]);
+    if (result != BREAK_RUNTIME_OK) return result;
+    f32 speed = 0.0f;
+    if (level->previous_user_position_valid) {
+        f32 dx = position.e[0] - level->previous_user_position.e[0];
+        f32 dy = position.e[1] - level->previous_user_position.e[1];
+        f32 dz = position.e[2] - level->previous_user_position.e[2];
+        speed = sqrtf(dx * dx + dy * dy + dz * dz) / CORE_APP_FIXED_DT;
+    }
+    level->previous_user_position = position;
+    level->previous_user_position_valid = true;
+    anim_loco1d_apply(&level->loco, &level->locomotion, speed);
+    f32 walk_weight = 0.0f;
+    f32 run_weight = 0.0f;
+    for (u32 layer = 0u; layer < 2u; layer++) {
+        if (level->locomotion.layers[layer].clip_index == 0u) {
+            walk_weight = level->locomotion.layers[layer].weight;
+        } else if (level->locomotion.layers[layer].clip_index == 1u) {
+            run_weight = level->locomotion.layers[layer].weight;
+        }
+    }
+    result = app_trace(app,
+        "COREAPPTRACE version=1 event=loco tick=%u generation=%" PRIu64
+        " speed=%.9g walk_weight=%.9g run_weight=%.9g\n", tick, level->generation,
+        (double)speed, (double)walk_weight, (double)run_weight);
     if (result != BREAK_RUNTIME_OK) return result;
     while (level->pending_area_enters > 0u) {
         level->pending_area_enters--;
