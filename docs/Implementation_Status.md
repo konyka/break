@@ -1,3 +1,11 @@
+## Core App P12 Task 8（slice 2a）：背包进 checkpoint，第二次保存失败保留上一份（2026-11-13）
+
+- **交付**：`runtime_<g>.bin` 版本 2（正文 68 字节）加入物品数量；加载在修改关卡前补足背包，当前数量超过保存值时拒绝。第二次保存失败不动上一代文件和 manifest。设计见 `docs/design/core_app_integration.md` 的 Task 8 slice 2a 节。
+- **测试**：`test_core_app_lifecycle_roundtrip` 新增断言：保存 `items=1`，重新加载关卡后加载 checkpoint，背包恢复为 1 且没有新的拾取事件；新增 second_save 段：第一次保存成功、第二次因目录占位失败、随后加载恢复第一次的 `state_hash`。
+- **变异**：不补背包、保存写 0、失败时删除上一代文件，均被杀死并恢复。
+- **回归**：`test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14；非图形全量 381/381。
+- **边界**：侧车、相机、昼夜、uninterrupted 对照和其余失败矩阵仍未做。
+
 ## Core App P12 Task 8（slice 1）：运行时 POD checkpoint、加载拒绝与保存失败（2026-11-13）
 
 - **交付**：接受 `--checkpoint DIR`，实现场景 `save`/`load`。`runtime_<g>.bin`（80 字节，`CORERUN1`）保存用户与追踪者的位置/速度、last_seen 和墙/视野标志，经原子写入，再由 manifest 提交；新增 `core_app_checkpoint_find`。加载先校验 manifest、哈希和解码，全部通过后才修改关卡（恢复用户、补加或移除墙、重建追踪者与 AI agent、清空旧路径）。保存失败和加载被拒都只写 trace，运行继续。设计见 `docs/design/core_app_integration.md` 的 Task 8 slice 1 节。

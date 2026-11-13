@@ -362,6 +362,26 @@ event=load_rejected tick=<n> generation=<g> stage=<checkpoint|state>
 
 本 slice 只覆盖 runtime POD。BSCN/Flow/Actor/scene_state 侧车、背包、相机和昼夜时间还没有进 checkpoint；“加载创建完整候选关卡后再交换”目前由场景里先 `level` 再 `load` 两步完成，而不是 `load` 单独完成。uninterrupted 对照、第二次保存中途失败、错误 Actor generation 等失败矩阵项仍未做。
 
+## P12 Task 8（slice 2a）：背包进 checkpoint，第二次保存失败保留上一份（2026-11-13）
+
+### 变化
+
+- `runtime_<g>.bin` 升到版本 2，正文 68 字节，在标志之后加 4 字节的背包物品 1 数量。版本 1 的文件现在按 `INVALID` 拒绝。
+- `save` 用 `break_game_inventory_count` 记录数量，trace 多一个 `items=<u>` 字段。
+- `load` 只允许补足：当前数量大于保存数量时以 `REJECTED` 拒绝；小于时用 `break_game_inventory_add` 补差。这一步和其他校验一样，在修改用户与追踪者之前完成。
+- 第二次保存失败时（例如 `runtime_2.bin` 位置已有同名目录），上一代 `runtime_1.bin` 和 manifest 保持不变，`save_generation` 不递增；之后的 `load` 恢复第一次保存的状态。
+
+### 验证
+
+- roundtrip：tick 62 Flow 拾取 1 个物品，tick 90 保存 `items=1`；卸载、重新加载后背包为 0，加载 checkpoint 后 tick 124 的 actors 行为 `items=1`，并且加载后没有新的 `event=item`（数量不是 Flow 重新触发得到的）。
+- second_save：tick 20 保存成功，tick 40 因目录占位而失败，trace 为 `save_generation=1 result=failed`；tick 60 加载得到 tick 20 的 `state_hash`；`runtime_1.bin` 仍在，占位目录也没被动。
+- 变异：加载不补背包、保存时写 0、保存失败时删除上一代文件，三处都让断言变红，恢复后通过。
+- `test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14，无 sanitizer 报告；非图形全量 381/381。
+
+### 仍未做
+
+BSCN/Flow/Actor/scene_state 侧车、相机、昼夜时间；uninterrupted 对照；错误 Actor generation、截断 BSCN、错误 Flow 引用等失败矩阵项。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

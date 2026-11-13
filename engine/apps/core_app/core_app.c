@@ -46,9 +46,9 @@
 #define CORE_APP_SKINNED_OBJECTS 2u
 #define CORE_APP_IO_LATENCY_TICKS 2u
 #define CORE_APP_IO_QUEUE 8u
-#define CORE_APP_RUNTIME_STATE_VERSION 1u
+#define CORE_APP_RUNTIME_STATE_VERSION 2u
 #define CORE_APP_RUNTIME_HEADER_BYTES 16u
-#define CORE_APP_RUNTIME_BODY_BYTES 64u
+#define CORE_APP_RUNTIME_BODY_BYTES 68u
 #define CORE_APP_RUNTIME_FILE_BYTES (CORE_APP_RUNTIME_HEADER_BYTES + CORE_APP_RUNTIME_BODY_BYTES)
 #define CORE_APP_RUNTIME_FLAG_WALL_ADDED 1u
 #define CORE_APP_RUNTIME_FLAG_WALL_REMOVED 2u
@@ -141,6 +141,7 @@ typedef struct CoreAppRuntimeState {
     Vec3 chaser_velocity;
     Vec3 last_seen;
     u32 flags;
+    u32 items;
 } CoreAppRuntimeState;
 
 typedef struct CoreAppIoCompletion {
@@ -215,6 +216,7 @@ static void app_runtime_encode_body(const CoreAppRuntimeState *state,
     app_put_vec3(body + 36u, state->chaser_velocity);
     app_put_vec3(body + 48u, state->last_seen);
     app_put32(body + 60u, state->flags);
+    app_put32(body + 64u, state->items);
 }
 
 static u64 app_fnv1a64(const u8 *bytes, usize size) {
@@ -245,6 +247,7 @@ static BreakRuntimeError app_runtime_decode(const u8 *bytes, usize size,
         return BREAK_RUNTIME_INVALID;
     }
     state.flags = app_get32(body + 60u);
+    state.items = app_get32(body + 64u);
     if ((state.flags & ~CORE_APP_RUNTIME_FLAGS) != 0u ||
         ((state.flags & CORE_APP_RUNTIME_FLAG_WALL_REMOVED) != 0u &&
          (state.flags & CORE_APP_RUNTIME_FLAG_WALL_ADDED) == 0u)) {
@@ -1357,6 +1360,10 @@ static BreakRuntimeError app_capture_state(const CoreLevel *level, CoreAppRuntim
     if (level->wall_removed) out->flags |= CORE_APP_RUNTIME_FLAG_WALL_REMOVED;
     if (level->target_in_sight) out->flags |= CORE_APP_RUNTIME_FLAG_TARGET_IN_SIGHT;
     if (level->board.seen) out->flags |= CORE_APP_RUNTIME_FLAG_SEEN;
+    if (break_game_inventory_count(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
+                                   &out->items) != BREAK_GAME_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
     return BREAK_RUNTIME_OK;
 }
 
@@ -1371,10 +1378,11 @@ static BreakRuntimeError app_trace_state(CoreApp *app, const char *event, u32 ti
     return app_trace(app,
         "COREAPPTRACE version=1 event=%s tick=%u generation=%" PRIu64
         " save_generation=%" PRIu64 " result=ok state_hash=%016" PRIx64
-        " user_x=%.9g user_z=%.9g chaser_x=%.9g chaser_z=%.9g\n",
+        " user_x=%.9g user_z=%.9g chaser_x=%.9g chaser_z=%.9g items=%u\n",
         event, tick, app->level->generation, app->save_generation, app_state_hash(state),
         (double)state->user_position.e[0], (double)state->user_position.e[2],
-        (double)state->chaser_position.e[0], (double)state->chaser_position.e[2]);
+        (double)state->chaser_position.e[0], (double)state->chaser_position.e[2],
+        state->items);
 }
 
 static BreakRuntimeError app_write_runtime_file(const char *path,
@@ -1445,6 +1453,18 @@ static BreakRuntimeError app_apply_state(CoreLevel *level, const CoreAppRuntimeS
     if ((level->wall_added && !saved_added) || (level->wall_removed && !saved_removed)) {
         return BREAK_RUNTIME_REJECTED;
     }
+    u32 items = 0u;
+    if (break_game_inventory_count(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
+                                   &items) != BREAK_GAME_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    if (items > state->items) return BREAK_RUNTIME_REJECTED;
+    if (items < state->items &&
+        break_game_inventory_add(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
+                                 state->items - items) != BREAK_GAME_OK) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+    level->user_items = state->items;
     BreakRuntimeError result = core_app_simulation_restore_user(
         level->simulation, state->user_position, state->user_velocity);
     if (result != BREAK_RUNTIME_OK) return result;
