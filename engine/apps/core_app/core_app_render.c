@@ -86,6 +86,42 @@ BreakRuntimeError core_app_render_record_frame(CoreAppRender *render,
     return BREAK_RUNTIME_OK;
 }
 
+BreakRuntimeError core_app_render_record_world(CoreAppRender *render, u64 generation,
+                                             const WorldFrameSnapshot *snapshot) {
+    if (!render || !snapshot || !render->trace || !render->admission_open ||
+        !render->producing || render->idle || generation == 0u ||
+        snapshot->frame_id != render->last_frame ||
+        snapshot->draw_count > WORLD_PRESENT_MAX_OBJECTS) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+    u32 stream = 0u;
+    for (u32 i = 0u; i < snapshot->draw_count; ++i) {
+        if (snapshot->draws[i].gpu.vertex.generation != (u32)generation) {
+            return BREAK_RUNTIME_STALE;
+        }
+        if (snapshot->draws[i].stream) stream++;
+    }
+    if (fprintf(render->trace,
+                "COREAPPTRACE version=1 event=render kind=world frame=%" PRIu64
+                " generation=%" PRIu64 " draws=%u stream=%u batches=%u instances=%u objects=",
+                snapshot->frame_id, generation, snapshot->draw_count, stream,
+                snapshot->batch_count, snapshot->instance_count) < 0) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    for (u32 i = 0u; i < snapshot->draw_count; ++i) {
+        if (fprintf(render->trace, i == 0u ? "%u" : ",%u",
+                    snapshot->draws[i].object_id) < 0) {
+            return BREAK_RUNTIME_FAILED;
+        }
+    }
+    if (fprintf(render->trace, " sun_y=%.9g\n",
+                (double)snapshot->lighting.sun_dir.e[1]) < 0 ||
+        fflush(render->trace) != 0) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError core_app_render_stop_admission(CoreAppRender *render) {
     if (!render) return BREAK_RUNTIME_INVALID;
     render->admission_open = false;

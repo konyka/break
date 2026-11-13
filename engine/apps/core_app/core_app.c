@@ -38,6 +38,10 @@
 #define CORE_APP_VEHICLE_SETTLE_STEPS 120u
 #define CORE_APP_CHAIN_JOINTS 3u
 #define CORE_APP_KEY_RAGDOLL 'r'
+#define CORE_APP_WORLD_OBJECTS 8u
+#define CORE_APP_STREAM_OBJECT_ID 100u
+#define CORE_APP_VEGETATION_CAPACITY 4u
+#define CORE_APP_DAY_SECONDS 2.0f
 #define CORE_APP_AREA_FLOW_EVENT 1001u
 #define CORE_APP_FLOW_ITEM 1u
 #define CORE_APP_MAX_PENDING_AREA_ENTERS 8u
@@ -100,6 +104,18 @@ typedef struct CoreLevel {
     Quat chain_rotation[CORE_APP_CHAIN_JOINTS];
     Vec3 chain_scale[CORE_APP_CHAIN_JOINTS];
     Mat4 chain_world[CORE_APP_CHAIN_JOINTS];
+    WorldObject world_objects[CORE_APP_WORLD_OBJECTS];
+    u32 world_object_count;
+    u32 visible_ids[CORE_APP_WORLD_OBJECTS];
+    u32 visible_count;
+    MeshBuffer stream_mesh;
+    VegetationInstance vegetation_instances[CORE_APP_VEGETATION_CAPACITY];
+    VegetationBuild vegetation;
+    WorldVegetationPrototype vegetation_prototype;
+    u8 lod_levels[CORE_APP_VEGETATION_CAPACITY];
+    u32 lod_tags[CORE_APP_VEGETATION_CAPACITY];
+    LodInstanceState lod_state;
+    WorldFrameSnapshot world_snapshots[2];
     u64 generation;
     bool actor_level_open;
 } CoreLevel;
@@ -209,6 +225,9 @@ static void core_app_level_destroy(CoreLevel *level) {
     if (level->flow) break_flow_runtime_destroy(level->flow);
     if (level->flow_graph) break_flow_graph_destroy(level->flow_graph);
     if (level->actor_runtime) break_game_destroy(level->actor_runtime);
+    free(level->scene.materials);
+    level->scene.materials = NULL;
+    level->scene.material_count = 0u;
     scene_serial_free(&level->scene);
     if (level->world) world_destroy(level->world);
     free(level);
@@ -818,6 +837,136 @@ static BreakRuntimeError stage_animation(CoreLevel *candidate,
     return result == ANIM_CODEC_OK ? BREAK_RUNTIME_OK : BREAK_RUNTIME_FAILED;
 }
 
+static RHIBuffer app_record_handle(u32 id, u64 generation) {
+    RHIBuffer handle = {id, (u32)generation};
+    return handle;
+}
+
+static BreakRuntimeError stage_presentation(CoreLevel *candidate) {
+    if (!scene_rebuild_materials_from_manifest(&candidate->scene)) return BREAK_RUNTIME_FAILED;
+    const Scene *scene = &candidate->scene;
+    if (!scene->nodes || !scene->mesh_geometry || !scene->materials ||
+        scene->node_count + 1u > CORE_APP_WORLD_OBJECTS || (u32)candidate->generation == 0u) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    candidate->world_object_count = 0u;
+    candidate->visible_count = 0u;
+    for (u32 i = 0u; i < scene->node_count; ++i) {
+        const SceneNode *node = &scene->nodes[i];
+        if (node->mesh_index >= scene->mesh_geometry_count ||
+            node->material_idx >= scene->material_count) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        const SceneMeshGeometry *mesh = &scene->mesh_geometry[node->mesh_index];
+        const Material *material = &scene->materials[node->material_idx];
+        WorldObject *object = &candidate->world_objects[candidate->world_object_count++];
+        memset(object, 0, sizeof(*object));
+        object->id = i + 1u;
+        object->gpu.vertex = app_record_handle(object->id, candidate->generation);
+        object->gpu.index = app_record_handle(object->id, candidate->generation);
+        object->draw.vertex_count = mesh->vertex_count;
+        object->draw.stride = (u32)sizeof(MeshVertex);
+        object->draw.index_count = mesh->index_count;
+        object->material.base_color = vec3(material->base_color[0], material->base_color[1],
+                                           material->base_color[2]);
+        f32 roughness = material->roughness_factor;
+        object->material.roughness = roughness < 0.0f ? 0.0f : (roughness > 1.0f ? 1.0f : roughness);
+        if (node->has_mesh) candidate->visible_ids[candidate->visible_count++] = object->id;
+    }
+    StreamTileData tile;
+    memset(&tile, 0, sizeof(tile));
+    tile.vertex_count = 4u;
+    static const f32 corners[4][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+    for (u32 v = 0u; v < 4u; ++v) {
+        tile.verts[v].px = corners[v][0];
+        tile.verts[v].pz = corners[v][1];
+        tile.verts[v].ny = 1.0f;
+    }
+    if (!world_presentation_stream_mesh(&tile, vec3(6.0f, 0.0f, -6.0f),
+                                        &candidate->stream_mesh)) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    WorldObject *stream = &candidate->world_objects[candidate->world_object_count++];
+    memset(stream, 0, sizeof(*stream));
+    stream->id = CORE_APP_STREAM_OBJECT_ID;
+    stream->gpu.vertex = app_record_handle(stream->id, candidate->generation);
+    stream->gpu.index = app_record_handle(stream->id, candidate->generation);
+    stream->draw.vertex_count = candidate->stream_mesh.count;
+    stream->draw.stride = (u32)sizeof(MeshVertex);
+    stream->draw.index_count = candidate->stream_mesh.index_count;
+    stream->material.base_color = vec3(0.4f, 0.4f, 0.4f);
+    stream->material.roughness = 1.0f;
+    stream->stream = true;
+    candidate->visible_ids[candidate->visible_count++] = stream->id;
+
+    static const u8 density[4] = {1u, 1u, 1u, 0u};
+    static const f32 heights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    VegetationDesc vegetation;
+    memset(&vegetation, 0, sizeof(vegetation));
+    vegetation.density = density;
+    vegetation.width = 2u;
+    vegetation.depth = 2u;
+    vegetation.cell = 1.0f;
+    vegetation.prototype_count = 1u;
+    candidate->vegetation.instances = candidate->vegetation_instances;
+    candidate->vegetation.capacity = CORE_APP_VEGETATION_CAPACITY;
+    if (!vegetation_build(&vegetation, heights, 1.0f, &candidate->vegetation)) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    WorldVegetationPrototype *prototype = &candidate->vegetation_prototype;
+    memset(prototype, 0, sizeof(*prototype));
+    prototype->lod_count = 1u;
+    prototype->gpu[0].vertex = app_record_handle(200u, candidate->generation);
+    prototype->gpu[0].index = app_record_handle(200u, candidate->generation);
+    prototype->draws[0].vertex_count = scene->mesh_geometry[0].vertex_count;
+    prototype->draws[0].stride = (u32)sizeof(MeshVertex);
+    prototype->draws[0].index_count = scene->mesh_geometry[0].index_count;
+    prototype->bounding_radius = 0.5f;
+    prototype->material.base_color = vec3(0.2f, 0.7f, 0.2f);
+    prototype->material.roughness = 1.0f;
+    candidate->lod_state.level = candidate->lod_levels;
+    candidate->lod_state.tag = candidate->lod_tags;
+    candidate->lod_state.capacity = CORE_APP_VEGETATION_CAPACITY;
+    return BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_publish_world(CoreApp *app, u32 tick) {
+    CoreLevel *level = app->level;
+    Vec3 user;
+    BreakRuntimeError result = core_app_simulation_user_position(level->simulation, &user);
+    if (result != BREAK_RUNTIME_OK) return result;
+    Vec3 eye = vec3(user.e[0], user.e[1] + 6.0f, user.e[2] - 10.0f);
+    Vec3 forward = vec3_normalize(vec3_sub(user, eye));
+    VisQuery visibility;
+    memset(&visibility, 0, sizeof(visibility));
+    visibility.camera = eye;
+    visibility.camera_forward = forward;
+    visibility.outdoor_ids = level->visible_ids;
+    visibility.outdoor_count = level->visible_count;
+    WorldPresentationInput input;
+    memset(&input, 0, sizeof(input));
+    input.frame_id = tick;
+    input.view = mat4_lookat(eye, user, vec3(0.0f, 1.0f, 0.0f));
+    input.projection = mat4_perspective(1.0f, 16.0f / 9.0f, 0.1f, 200.0f);
+    input.camera = eye;
+    input.fov = 1.0f;
+    input.screen_height = 720.0f;
+    input.pixel_error = 1.0f;
+    time_of_day_eval((f32)tick * CORE_APP_FIXED_DT, CORE_APP_DAY_SECONDS, &input.lighting);
+    input.objects = level->world_objects;
+    input.object_count = level->world_object_count;
+    input.visibility = &visibility;
+    input.vegetation = &level->vegetation;
+    input.prototypes = &level->vegetation_prototype;
+    input.prototype_count = 1u;
+    input.lod_state = &level->lod_state;
+    WorldFrameSnapshot *slot = &level->world_snapshots[tick & 1u];
+    if (world_presentation_snapshot(&input, slot) != WORLD_PRESENTATION_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    return core_app_render_record_world(&app->render, level->generation, slot);
+}
+
 static BreakRuntimeError stage_render(CoreLevel *candidate) {
     if (candidate->scene.resource_count > CORE_APP_RENDER_RESOURCE_CAPACITY ||
         (candidate->scene.resource_count > 0u && !candidate->scene.resources)) {
@@ -932,6 +1081,10 @@ static BreakRuntimeError core_app_level_load(CoreApp *app, const char *asset_roo
 
     *failed_stage = "crossref";
     result = app_validate_crossrefs(candidate);
+    if (result != BREAK_RUNTIME_OK) goto reject;
+
+    *failed_stage = "presentation";
+    result = stage_presentation(candidate);
     if (result != BREAK_RUNTIME_OK) goto reject;
 
     CoreLevel *previous = app->level;
@@ -1497,6 +1650,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
             CoreAppRenderFrame frame = {tick, app->level->generation,
                                         app->level->render.resource_count};
             result = core_app_render_record_frame(&app->render, &frame);
+            if (result == BREAK_RUNTIME_OK) result = app_publish_world(app, tick);
             if (result == BREAK_RUNTIME_OK) {
                 result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_LISTENER,
                                                 app->level->generation);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/types.h>
+#include <renderer/world_presentation.h>
 #include <runtime/runtime_types.h>
 
 #include <stdio.h>
@@ -42,6 +43,8 @@ BreakRuntimeError core_app_render_level_committed(CoreAppRender *render,
                                               const CoreAppRenderLevel *level);
 BreakRuntimeError core_app_render_record_frame(CoreAppRender *render,
                                            const CoreAppRenderFrame *frame);
+BreakRuntimeError core_app_render_record_world(CoreAppRender *render, u64 generation,
+                                             const WorldFrameSnapshot *snapshot);
 BreakRuntimeError core_app_render_stop_admission(CoreAppRender *render);
 BreakRuntimeError core_app_render_stop_producers(CoreAppRender *render);
 BreakRuntimeError core_app_render_idle(CoreAppRender *render);

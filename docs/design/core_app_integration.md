@@ -235,6 +235,39 @@ event=ik tick=<n> generation=<g> ragdoll=<0|1> solved=<0|1> owned=<u> tip_x=<f> 
 
 关节链是应用内构造的，不是正式资产，也没有渲染。布娃娃只在三关节链上演示所有权互斥，没有接到用户的角色控制器。
 
+## P12 Task 7（slice 1）：record 模式的世界快照（2026-11-13）
+
+### 接线
+
+加载流程在 `crossref` 之后新增 `presentation` 阶段（`stage_presentation`），失败时以 `stage=presentation` 拒绝候选关卡，旧关卡不变。该阶段：
+
+- 用 `scene_rebuild_materials_from_manifest` 从 BSCN 资源清单重建材质（BSCN 只保存清单，不保存 `Material` 数组），`core_app_level_destroy` 负责释放；
+- 为 7 个场景节点各建一个 `WorldObject`（id = 节点序号 + 1），顶点/索引数取 `scene.mesh_geometry`（无设备加载时 `scene.meshes` 为空）；`has_mesh` 为假的节点 7（HiddenColor）不进入 VisArea 的 outdoor 列表；
+- 用 `world_presentation_stream_mesh` 迁移一块 4 顶点的 V1 stream tile（平移到 (6, 0, -6)），作为对象 100，`stream=true`；
+- 用 `vegetation_build` 在 2×2 密度图上生成 3 个植被实例，原型 1 个 LOD。
+
+每个 tick 在 `core_app_render_record_frame` 之后调用 `app_publish_world`：相机跟在用户后上方，昼夜由 `time_of_day_eval(tick × 1/60, 2 s)` 计算，`world_presentation_snapshot` 写入两个快照槽之一（按 tick 奇偶交替），写完不再修改，再由 `core_app_render_record_world` 输出一行 canonical trace。
+
+### record 句柄
+
+record 模式没有 GPU，但 `world_presentation_snapshot` 要求句柄有效。因此每个对象的 vertex/index 句柄是 `{对象 id, level generation}`，只用来在 trace 里标识资源及其代际，从不交给 RHI 设备。`core_app_render_record_world` 拒绝 generation 与当前关卡不符的句柄（`STALE`），所以卸载后重载的关卡不能发布旧代际的对象。这些结果只属于 CPU/record 证据，不是 GPU 证据。
+
+### trace
+
+```text
+event=render kind=world frame=<n> generation=<g> draws=<u> stream=<u> batches=<u> instances=<u> objects=<id,...> sun_y=<f>
+```
+
+### 验证
+
+- 真实进程 `test_core_app_lifecycle_render_record`（tick 1 加载、30 卸载、31 重载、60 退出）：两个关卡各 29 帧，共 58 行世界快照；frame 1 为 `draws=7 stream=1 batches=1 instances=3 objects=1,2,3,4,5,6,100`；任何帧都不含隐藏对象 7；frame 31 起 generation 为 2，frame 30/31 不出现 generation 1；`sun_y` 从 frame 1 的约 -1 升到 frame 29 的约 -0.05。
+- 变异：隐藏对象进入可见列表、重载关卡沿用 generation 1 句柄、不发布世界快照、昼夜时间冻结，四处都让断言变红，恢复后通过。
+- lifecycle 11/11；ASan+UBSan 14/14、TSan 14/14（含 `test_world_presentation`），无 sanitizer 报告；非图形全量 380/380。
+
+### 限制
+
+本 slice 只做 record 世界快照。角色 skinned 命令、Runtime IO 迟到完成的 `STALE` 丢弃、第 65 个资源请求的 `OVERLOAD`，以及真实 RHI 消费者（`world_presenter_submit`）仍未做，分别留给 Task 7 slice 2 和 Task 11。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

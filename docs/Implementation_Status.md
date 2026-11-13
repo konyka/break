@@ -1,3 +1,11 @@
+## Core App P12 Task 7（slice 1）：record 模式的世界快照（2026-11-13）
+
+- **交付**：加载流程新增 `presentation` 阶段：从 BSCN 清单重建材质，为 7 个场景节点、1 块 V1 stream tile 和 3 个植被实例准备 `WorldPresentationInput`，隐藏节点不进入 VisArea 列表。每个 tick 用 `world_presentation_snapshot` 写双槽快照，并输出 `event=render kind=world`。record 句柄为 `{对象 id, level generation}`，不交给 RHI；代际不符时返回 `STALE`。设计见 `docs/design/core_app_integration.md` 的 Task 7 slice 1 节。
+- **测试**：真实进程 `test_core_app_lifecycle_render_record`：两个关卡各 29 帧快照，内容为 7 个绘制（含 1 个 stream）、1 个植被批次、3 个实例；隐藏对象从不出现；重载后 generation 为 2；昼夜随 tick 推进。
+- **变异**：隐藏对象可见、重载沿用旧代际句柄、不发布快照、昼夜冻结，均被杀死并恢复。
+- **回归**：lifecycle 11/11；ASan+UBSan 14/14、TSan 14/14，无 sanitizer 报告；非图形全量 380/380。
+- **边界**：只是 CPU/record 证据。角色 skinned 命令、迟到完成丢弃、资源容量上限和真实 RHI 提交尚未做。
+
 ## Core App P12 Task 6（slice 4）：布娃娃与 IK 互斥（2026-11-13）
 
 - **交付**：加载期建三关节链与两骨 IK 目标；每个固定步 `app_tick_ragdoll` 在 R 键按下边沿切换 `ragdoll_activate`/`ragdoll_deactivate`，激活时由 `ragdoll_write_local_trs` 驱动姿态，随后 `anim_ik_solve_unless_ragdoll` 只在布娃娃未激活时求解。`core_app` 显式链接 `engine`（在 RHI 后端前），解决 `skeleton.o` 的 `rhi_buffer_*` 引用。trace 新增 `event=ragdoll` 与 `event=ik`。设计见 `docs/design/core_app_integration.md` 的 Task 6 slice 4 节。
