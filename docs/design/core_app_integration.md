@@ -135,6 +135,27 @@ event=sim tick=<n> generation=<g> chaser_x=<f> chaser_z=<f> nav_version=<u> path
 
 本 slice 只覆盖追踪者的感知、决策、寻路与移动；locomotion/morph/facial→skinning、载具进出与 throttle、布娃娃与 IK 互斥仍属 Task 6 后续 slice。导航场是静态高度场烘焙，动态障碍只通过 `break_ai_obstacle_*` 影响可达性，不重建网格。
 
+## P12 Task 6（slice 2a）：按水平速度混合步行与跑步（2026-11-13）
+
+### 接线
+
+`stage_simulation` 初始化一维 locomotion：阈值 0 对应步行剪辑 0，阈值 4 对应跑步剪辑 1，混合写进 `AnimBlendState` 的前两层。每个固定步在用户位置 trace 之后，用相邻 tick 的水平位移除以 `CORE_APP_FIXED_DT` 得到速度，竖直位移不计入。`anim_loco1d_apply` 把权重大的样本放在主层、小的放在次层，trace 按 `clip_index` 取值，不按层号取值。
+
+### trace
+
+```text
+event=loco tick=<n> generation=<g> speed=<f> walk_weight=<f> run_weight=<f>
+```
+
+### 验证
+
+- 真实进程 `test_core_app_lifecycle_locomotion`：按住 W 时跑步权重超过步行权重；tick 1 无位移，`speed=0 walk_weight=1 run_weight=0`；只按空格跳跃时跑步权重保持 0。
+- 变异：跑步阈值改到 100 → “run weight never exceeded walk weight”红；速度改回三维 → “a vertical jump raised the run weight”红。两处均已恢复并复测。
+
+### 限制
+
+本 slice 只接一维速度混合，不接 morph、facial 或 skinning。scenario 文法为此新增 `key space`，对应键码 32；其余单字符键不变。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。
@@ -144,7 +165,7 @@ Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四�
 `engine/apps/core_app/scenario.h/.c` 取代 Task 3 的 `frame N load|unload|end` 子集。首行固定为 `core-app-scenario 1`，随后是 `seed N` 和非零 `fixed-dt-ns N`，之后每行一个事件：
 
 ```text
-<tick> key <a-z|0-9> <0|1>
+<tick> key <a-z|0-9|space> <0|1>
 <tick> touch <source-id> <down|move|up|cancel> <x> <y>    # x、y ∈ [0, 1]
 <tick> pad <0-3> <axis 0-5> <value ∈ [-1, 1]>
 <tick> flow <event-key> <value>

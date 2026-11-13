@@ -1023,9 +1023,8 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
     f32 speed = 0.0f;
     if (level->previous_user_position_valid) {
         f32 dx = position.e[0] - level->previous_user_position.e[0];
-        f32 dy = position.e[1] - level->previous_user_position.e[1];
         f32 dz = position.e[2] - level->previous_user_position.e[2];
-        speed = sqrtf(dx * dx + dy * dy + dz * dz) / CORE_APP_FIXED_DT;
+        speed = sqrtf(dx * dx + dz * dz) / CORE_APP_FIXED_DT;
     }
     level->previous_user_position = position;
     level->previous_user_position_valid = true;

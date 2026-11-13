@@ -1,3 +1,11 @@
+## Core App P12 Task 6（slice 2a）：按水平速度混合步行与跑步（2026-11-13）
+
+- **交付**：固定步在用户位置 trace 之后计算水平速度（相邻 tick 的 xz 位移除以 `CORE_APP_FIXED_DT`，竖直位移不计入），用 `anim_loco1d_apply` 在阈值 0 的步行剪辑和阈值 4 的跑步剪辑之间混合。trace 新增 `event=loco tick=… speed=… walk_weight=… run_weight=…`，权重按 `clip_index` 取值。scenario 文法新增 `key space`（键码 32），用于触发纯竖直跳跃。设计见 `docs/design/core_app_integration.md` 的 Task 6 slice 2a 节。
+- **测试**：真实进程 `test_core_app_lifecycle_locomotion`：按住 W 时跑步权重超过步行权重；tick 1 为 `speed=0 walk_weight=1 run_weight=0`；只按空格跳跃时跑步权重保持 0。`test_core_app_runtime` 23/23，含 `key space` 解析。
+- **变异**：跑步阈值改到 100 → “run weight never exceeded walk weight”红；速度改回三维 → “a vertical jump raised the run weight”红。两处均已恢复并复测。
+- **回归**：普通构建 `core_app|break_game_lua` 23/23（3 个既有 nm SKIP）。ASan+UBSan focused 4/4（naming、simulation、locomotion、runtime），TSan focused 4/4，无 sanitizer 报告。
+- **边界**：本 slice 只接一维速度混合，不接 morph、facial 或 skinning。证据仍限 Linux CPU/record。
+
 ## Core App P12 Task 6（slice 1）：追踪者视野、行为树、当前版本路径与动态墙（2026-11-13）
 
 - **交付**：导航高度场从 4x4 扩到 8x8（`origin_x/origin_z = -1.0`），加载期建 AI runtime 并注册 agent；每 tick 新增 `app_tick_chaser`：视野射线（距离 12、半角 1.2 rad，动态墙刚体遮挡）→ 行为树 CHASE 叶 → 只在 nav 版本变化时按当前版本重新寻路 → 侧向避让 → `CharacterController` 执行移动意图。目标进入视野时加入动态墙并建立对应刚体，追踪者进入近区后移除墙体，nav 版本再次递增、路径恢复可查询。trace 新增 `event=sim tick=… chaser_x=… chaser_z=… nav_version=… path_current=…`。设计见 `docs/design/core_app_integration.md` 的 Task 6 节。

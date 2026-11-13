@@ -161,6 +161,19 @@ TEST(scenario_parses_ordered_input_and_header) {
     scenario_free(scenario);
 }
 
+TEST(scenario_parses_space_key) {
+    CoreAppScenario *scenario = scenario_new();
+    const char *text =
+        "core-app-scenario 1\nseed 1\nfixed-dt-ns 1\n1 key space 1\n2 quit\n";
+    ASSERT_NOT_NULL(scenario);
+    ASSERT_EQ(parse(text, scenario), CORE_APP_SCENARIO_OK);
+    ASSERT_EQ(scenario->event_count, 2u);
+    ASSERT_EQ(scenario->events[0].kind, CORE_APP_SCENARIO_KEY);
+    ASSERT_EQ(scenario->events[0].key_code, 32);
+    ASSERT_EQ(scenario->events[0].key_down, 1);
+    scenario_free(scenario);
+}
+
 TEST(scenario_rejects_event_after_quit_without_partial_events) {
     CoreAppScenario *scenario = scenario_new();
     const char *text =
@@ -650,6 +663,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scenario_rejects_unknown_command_and_nan_without_partial_events);
     RUN_TEST(scenario_rejects_duplicate_quit_without_partial_events);
     RUN_TEST(scenario_parses_ordered_input_and_header);
+    RUN_TEST(scenario_parses_space_key);
     RUN_TEST(scenario_rejects_event_after_quit_without_partial_events);
     RUN_TEST(scenario_rejects_tick_beyond_limit_without_partial_events);
     RUN_TEST(scenario_parses_level_with_and_without_asset_root);

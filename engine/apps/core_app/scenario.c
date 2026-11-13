@@ -71,7 +71,12 @@ static bool finite_number(const char *token, f32 minimum, f32 maximum, f32 *out)
 }
 
 static bool key_code(const char *token, i32 *out) {
-    if (!token || token[1] != '\0') return false;
+    if (!token) return false;
+    if (strcmp(token, "space") == 0) {
+        *out = 32;
+        return true;
+    }
+    if (token[1] != '\0') return false;
     if (token[0] >= 'A' && token[0] <= 'Z') {
         *out = (i32)(token[0] - 'A' + 'a');
         return true;
