@@ -1,6 +1,7 @@
 #include "core_app.h"
 
 #include "core_app_audio.h"
+#include "core_app_checkpoint.h"
 #include "core_app_render.h"
 #include "core_app_simulation.h"
 
@@ -45,6 +46,15 @@
 #define CORE_APP_SKINNED_OBJECTS 2u
 #define CORE_APP_IO_LATENCY_TICKS 2u
 #define CORE_APP_IO_QUEUE 8u
+#define CORE_APP_RUNTIME_STATE_VERSION 1u
+#define CORE_APP_RUNTIME_HEADER_BYTES 16u
+#define CORE_APP_RUNTIME_BODY_BYTES 64u
+#define CORE_APP_RUNTIME_FILE_BYTES (CORE_APP_RUNTIME_HEADER_BYTES + CORE_APP_RUNTIME_BODY_BYTES)
+#define CORE_APP_RUNTIME_FLAG_WALL_ADDED 1u
+#define CORE_APP_RUNTIME_FLAG_WALL_REMOVED 2u
+#define CORE_APP_RUNTIME_FLAG_TARGET_IN_SIGHT 4u
+#define CORE_APP_RUNTIME_FLAG_SEEN 8u
+#define CORE_APP_RUNTIME_FLAGS 15u
 #define CORE_APP_AREA_FLOW_EVENT 1001u
 #define CORE_APP_FLOW_ITEM 1u
 #define CORE_APP_MAX_PENDING_AREA_ENTERS 8u
@@ -124,6 +134,15 @@ typedef struct CoreLevel {
     bool actor_level_open;
 } CoreLevel;
 
+typedef struct CoreAppRuntimeState {
+    Vec3 user_position;
+    Vec3 user_velocity;
+    Vec3 chaser_position;
+    Vec3 chaser_velocity;
+    Vec3 last_seen;
+    u32 flags;
+} CoreAppRuntimeState;
+
 typedef struct CoreAppIoCompletion {
     bool used;
     u32 due_tick;
@@ -148,6 +167,7 @@ struct CoreApp {
     CoreAppResourceTable resources;
     CoreAppIoCompletion io[CORE_APP_IO_QUEUE];
     u32 tick;
+    u64 save_generation;
     u64 next_generation;
     bool io_running;
     bool render_live;
@@ -155,6 +175,84 @@ struct CoreApp {
 };
 
 static BreakRuntimeError app_request_skins(CoreApp *app, CoreLevel *level);
+
+static const u8 k_runtime_magic[8] = {'C', 'O', 'R', 'E', 'R', 'U', 'N', '1'};
+
+static void app_put32(u8 *p, u32 value) {
+    p[0] = (u8)value;
+    p[1] = (u8)(value >> 8);
+    p[2] = (u8)(value >> 16);
+    p[3] = (u8)(value >> 24);
+}
+
+static u32 app_get32(const u8 *p) {
+    return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
+}
+
+static void app_put_vec3(u8 *p, Vec3 value) {
+    for (u32 i = 0u; i < 3u; ++i) {
+        u32 bits;
+        memcpy(&bits, &value.e[i], sizeof(bits));
+        app_put32(p + i * 4u, bits);
+    }
+}
+
+static bool app_get_vec3(const u8 *p, Vec3 *out) {
+    for (u32 i = 0u; i < 3u; ++i) {
+        u32 bits = app_get32(p + i * 4u);
+        memcpy(&out->e[i], &bits, sizeof(bits));
+        if (!isfinite(out->e[i])) return false;
+    }
+    return true;
+}
+
+static void app_runtime_encode_body(const CoreAppRuntimeState *state,
+                                    u8 body[CORE_APP_RUNTIME_BODY_BYTES]) {
+    memset(body, 0, CORE_APP_RUNTIME_BODY_BYTES);
+    app_put_vec3(body + 0u, state->user_position);
+    app_put_vec3(body + 12u, state->user_velocity);
+    app_put_vec3(body + 24u, state->chaser_position);
+    app_put_vec3(body + 36u, state->chaser_velocity);
+    app_put_vec3(body + 48u, state->last_seen);
+    app_put32(body + 60u, state->flags);
+}
+
+static u64 app_fnv1a64(const u8 *bytes, usize size) {
+    u64 hash = 14695981039346656037ULL;
+    for (usize i = 0u; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static BreakRuntimeError app_runtime_decode(const u8 *bytes, usize size,
+                                            CoreAppRuntimeState *out) {
+    if (!bytes || !out || size != CORE_APP_RUNTIME_FILE_BYTES ||
+        memcmp(bytes, k_runtime_magic, sizeof(k_runtime_magic)) != 0 ||
+        app_get32(bytes + 8u) != CORE_APP_RUNTIME_STATE_VERSION ||
+        app_get32(bytes + 12u) != CORE_APP_RUNTIME_BODY_BYTES) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    const u8 *body = bytes + CORE_APP_RUNTIME_HEADER_BYTES;
+    CoreAppRuntimeState state;
+    memset(&state, 0, sizeof(state));
+    if (!app_get_vec3(body + 0u, &state.user_position) ||
+        !app_get_vec3(body + 12u, &state.user_velocity) ||
+        !app_get_vec3(body + 24u, &state.chaser_position) ||
+        !app_get_vec3(body + 36u, &state.chaser_velocity) ||
+        !app_get_vec3(body + 48u, &state.last_seen)) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    state.flags = app_get32(body + 60u);
+    if ((state.flags & ~CORE_APP_RUNTIME_FLAGS) != 0u ||
+        ((state.flags & CORE_APP_RUNTIME_FLAG_WALL_REMOVED) != 0u &&
+         (state.flags & CORE_APP_RUNTIME_FLAG_WALL_ADDED) == 0u)) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    *out = state;
+    return BREAK_RUNTIME_OK;
+}
 
 static BreakRuntimeError app_trace(CoreApp *app, const char *format, ...) {
     if (!app || !app->trace || !format) return BREAK_RUNTIME_INVALID;
@@ -1244,6 +1342,187 @@ static BreakRuntimeError app_publish_skins(CoreApp *app, u32 tick) {
     return BREAK_RUNTIME_OK;
 }
 
+static BreakRuntimeError app_capture_state(const CoreLevel *level, CoreAppRuntimeState *out) {
+    memset(out, 0, sizeof(*out));
+    BreakRuntimeError result = core_app_simulation_user_position(level->simulation,
+                                                                 &out->user_position);
+    if (result == BREAK_RUNTIME_OK) {
+        result = core_app_simulation_user_velocity(level->simulation, &out->user_velocity);
+    }
+    if (result != BREAK_RUNTIME_OK) return result;
+    out->chaser_position = level->chaser_position;
+    out->chaser_velocity = level->chaser_character.velocity;
+    out->last_seen = level->board.last_seen;
+    if (level->wall_added) out->flags |= CORE_APP_RUNTIME_FLAG_WALL_ADDED;
+    if (level->wall_removed) out->flags |= CORE_APP_RUNTIME_FLAG_WALL_REMOVED;
+    if (level->target_in_sight) out->flags |= CORE_APP_RUNTIME_FLAG_TARGET_IN_SIGHT;
+    if (level->board.seen) out->flags |= CORE_APP_RUNTIME_FLAG_SEEN;
+    return BREAK_RUNTIME_OK;
+}
+
+static u64 app_state_hash(const CoreAppRuntimeState *state) {
+    u8 body[CORE_APP_RUNTIME_BODY_BYTES];
+    app_runtime_encode_body(state, body);
+    return app_fnv1a64(body, sizeof(body));
+}
+
+static BreakRuntimeError app_trace_state(CoreApp *app, const char *event, u32 tick,
+                                         const CoreAppRuntimeState *state) {
+    return app_trace(app,
+        "COREAPPTRACE version=1 event=%s tick=%u generation=%" PRIu64
+        " save_generation=%" PRIu64 " result=ok state_hash=%016" PRIx64
+        " user_x=%.9g user_z=%.9g chaser_x=%.9g chaser_z=%.9g\n",
+        event, tick, app->level->generation, app->save_generation, app_state_hash(state),
+        (double)state->user_position.e[0], (double)state->user_position.e[2],
+        (double)state->chaser_position.e[0], (double)state->chaser_position.e[2]);
+}
+
+static BreakRuntimeError app_write_runtime_file(const char *path,
+                                                const CoreAppRuntimeState *state,
+                                                CoreAppCheckpointFile *file) {
+    u8 bytes[CORE_APP_RUNTIME_FILE_BYTES];
+    memcpy(bytes, k_runtime_magic, sizeof(k_runtime_magic));
+    app_put32(bytes + 8u, CORE_APP_RUNTIME_STATE_VERSION);
+    app_put32(bytes + 12u, CORE_APP_RUNTIME_BODY_BYTES);
+    app_runtime_encode_body(state, bytes + CORE_APP_RUNTIME_HEADER_BYTES);
+    PlatformAtomicWriter *writer = platform_atomic_writer_open(path);
+    if (!writer) return BREAK_RUNTIME_FAILED;
+    if (!platform_atomic_writer_write(writer, bytes, sizeof(bytes))) {
+        platform_atomic_writer_abort(writer);
+        return BREAK_RUNTIME_FAILED;
+    }
+    if (platform_atomic_writer_commit_status(writer) == PLATFORM_ATOMIC_NOT_COMMITTED_TARGET_UNCHANGED) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    file->kind = CORE_APP_CHECKPOINT_RUNTIME;
+    file->size = sizeof(bytes);
+    file->hash = app_fnv1a64(bytes, sizeof(bytes));
+    return BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_save_checkpoint(CoreApp *app, u32 tick) {
+    const char *directory = app->config.checkpoint_dir;
+    CoreAppRuntimeState state;
+    BreakRuntimeError result = app_capture_state(app->level, &state);
+    if (result != BREAK_RUNTIME_OK) return result;
+    CoreAppCheckpointFile previous;
+    u64 committed_generation = app->save_generation;
+    bool has_previous = core_app_checkpoint_find(directory, CORE_APP_CHECKPOINT_RUNTIME,
+                                                 &previous, &committed_generation) ==
+                        BREAK_RUNTIME_OK;
+    if (!has_previous) committed_generation = app->save_generation;
+    u64 next = committed_generation + 1u;
+    CoreAppCheckpointFile file;
+    memset(&file, 0, sizeof(file));
+    char path[PLATFORM_FS_PATH_CAPACITY];
+    int written = snprintf(file.name, sizeof(file.name), "runtime_%" PRIu64 ".bin", next);
+    bool ok = written > 0 && (usize)written < sizeof(file.name) &&
+              platform_mkdir(directory) && app_path(path, directory, file.name);
+    if (ok) ok = app_write_runtime_file(path, &state, &file) == BREAK_RUNTIME_OK;
+    CoreAppCheckpointCommitResult commit = CORE_APP_CHECKPOINT_COMMIT_NOT_COMMITTED;
+    if (ok) {
+        ok = core_app_checkpoint_write_manifest_ex(directory, &file, 1u, next, &commit) ==
+             BREAK_RUNTIME_OK;
+        if (!ok) (void)remove(path);
+    }
+    if (!ok) {
+        return app_trace(app,
+            "COREAPPTRACE version=1 event=save tick=%u generation=%" PRIu64
+            " save_generation=%" PRIu64 " result=failed\n", tick, app->level->generation,
+            app->save_generation);
+    }
+    app->save_generation = next;
+    if (has_previous && strcmp(previous.name, file.name) != 0 &&
+        app_path(path, directory, previous.name)) {
+        (void)remove(path);
+    }
+    return app_trace_state(app, "save", tick, &state);
+}
+
+static BreakRuntimeError app_apply_state(CoreLevel *level, const CoreAppRuntimeState *state) {
+    bool saved_added = (state->flags & CORE_APP_RUNTIME_FLAG_WALL_ADDED) != 0u;
+    bool saved_removed = (state->flags & CORE_APP_RUNTIME_FLAG_WALL_REMOVED) != 0u;
+    if ((level->wall_added && !saved_added) || (level->wall_removed && !saved_removed)) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+    BreakRuntimeError result = core_app_simulation_restore_user(
+        level->simulation, state->user_position, state->user_velocity);
+    if (result != BREAK_RUNTIME_OK) return result;
+    if (saved_added && !level->wall_added) {
+        BreakAiObstacleDesc wall = {1.0f, 1.0f, 4.0f, 2.0f};
+        if (break_ai_obstacle_add(level->ai, &wall, &level->wall) != BREAK_NAV_OK) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        level->wall_body = physics_body_create(level->physics,
+            vec3(2.5f, 1.0f, 1.5f), vec3(1.5f, 1.0f, 0.5f), 0.0f, true, 0u);
+        if (!physics_body_handle_is_valid(level->wall_body)) return BREAK_RUNTIME_FAILED;
+        level->wall_added = true;
+    }
+    if (saved_removed && !level->wall_removed) {
+        if (break_ai_obstacle_remove(level->ai, level->wall) != BREAK_NAV_OK) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        level->wall_removed = true;
+    }
+    level->chaser_character = character_create(state->chaser_position, 0.4f, 1.0f);
+    level->chaser_character.velocity = state->chaser_velocity;
+    level->chaser_position = state->chaser_position;
+    BreakAiAgentDesc agent;
+    memset(&agent, 0, sizeof(agent));
+    agent.position = state->chaser_position;
+    agent.velocity = state->chaser_velocity;
+    agent.radius = 0.4f;
+    agent.max_speed = 3.0f;
+    if (break_ai_agent_update(level->ai, level->chaser, &agent) != BREAK_NAV_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    level->target_in_sight = (state->flags & CORE_APP_RUNTIME_FLAG_TARGET_IN_SIGHT) != 0u;
+    level->board.seen = (state->flags & CORE_APP_RUNTIME_FLAG_SEEN) != 0u;
+    level->board.last_seen = state->last_seen;
+    level->board.target = level->board.seen ? level->user : (Entity){0u, 0u};
+    memset(&level->chase_path, 0, sizeof(level->chase_path));
+    memset(&level->follower, 0, sizeof(level->follower));
+    level->chase_nav_version = break_ai_nav_version(level->ai);
+    level->previous_user_position_valid = false;
+    return BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_load_checkpoint(CoreApp *app, u32 tick) {
+    const char *stage = "checkpoint";
+    CoreAppCheckpointFile file;
+    u64 generation = 0u;
+    CoreAppRuntimeState state;
+    u8 *bytes = NULL;
+    usize size = 0u;
+    BreakRuntimeError result = core_app_checkpoint_find(
+        app->config.checkpoint_dir, CORE_APP_CHECKPOINT_RUNTIME, &file, &generation);
+    if (result == BREAK_RUNTIME_OK &&
+        !app_read_asset(app->config.checkpoint_dir, file.name, CORE_APP_RUNTIME_FILE_BYTES,
+                        &bytes, &size)) {
+        result = BREAK_RUNTIME_INVALID;
+    }
+    if (result == BREAK_RUNTIME_OK &&
+        (size != file.size || app_fnv1a64(bytes, size) != file.hash)) {
+        result = BREAK_RUNTIME_INVALID;
+    }
+    if (result == BREAK_RUNTIME_OK) result = app_runtime_decode(bytes, size, &state);
+    free(bytes);
+    if (result == BREAK_RUNTIME_OK) {
+        stage = "state";
+        result = app_apply_state(app->level, &state);
+    }
+    if (result != BREAK_RUNTIME_OK) {
+        return app_trace(app,
+            "COREAPPTRACE version=1 event=load_rejected tick=%u generation=%" PRIu64
+            " stage=%s\n", tick, app->level->generation, stage);
+    }
+    app->save_generation = generation;
+    CoreAppRuntimeState restored;
+    result = app_capture_state(app->level, &restored);
+    if (result != BREAK_RUNTIME_OK) return result;
+    return app_trace_state(app, "load", tick, &restored);
+}
+
 static BreakRuntimeError core_app_unload_level(CoreApp *app, bool with_audio) {
     CoreLevel *level = app->level;
     if (!level) return BREAK_RUNTIME_OK;
@@ -1392,10 +1671,14 @@ static BreakRuntimeError app_register_subsystems(CoreApp *app) {
     return BREAK_RUNTIME_OK;
 }
 
-static bool app_scenario_supported(const CoreAppScenario *scenario) {
+static bool app_scenario_supported(const CoreAppScenario *scenario, bool has_checkpoint) {
     if (scenario->fixed_dt_ns != CORE_APP_FIXED_DT_NS) return false;
     for (u32 i = 0u; i < scenario->event_count; ++i) {
         switch (scenario->events[i].kind) {
+        case CORE_APP_SCENARIO_SAVE:
+        case CORE_APP_SCENARIO_LOAD:
+            if (!has_checkpoint) return false;
+            break;
         case CORE_APP_SCENARIO_KEY:
         case CORE_APP_SCENARIO_TOUCH:
         case CORE_APP_SCENARIO_PAD:
@@ -1637,8 +1920,8 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (config->render_mode != CORE_APP_RENDER_RECORD ||
         config->audio_mode != CORE_APP_AUDIO_RECORD || !config->fixed_step ||
         config->require_device || config->network || !config->asset_root ||
-        !config->scenario_path || !config->trace_path || config->checkpoint_dir ||
-        config->screenshot_path) {
+        !config->scenario_path || !config->trace_path || config->screenshot_path ||
+        (config->checkpoint_dir && config->checkpoint_dir[0] == '\0')) {
         fprintf(stderr, "core_app: stage=config unsupported lifecycle configuration\n");
         return BREAK_RUNTIME_FAILED;
     }
@@ -1653,7 +1936,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (!app->trace) goto finished;
     if (core_app_scenario_load(config->scenario_path, &app->scenario) !=
             CORE_APP_SCENARIO_OK ||
-        !app_scenario_supported(&app->scenario)) {
+        !app_scenario_supported(&app->scenario, config->checkpoint_dir != NULL)) {
         result = BREAK_RUNTIME_FAILED;
         goto finished;
     }
@@ -1745,6 +2028,19 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                     stage = "unload";
                     goto finished;
                 }
+            } else if (event->kind == CORE_APP_SCENARIO_SAVE ||
+                       event->kind == CORE_APP_SCENARIO_LOAD) {
+                bool save = event->kind == CORE_APP_SCENARIO_SAVE;
+                stage = save ? "save" : "load";
+                if (!app->level) {
+                    result = app_trace(app,
+                        "COREAPPTRACE version=1 event=%s_rejected tick=%u generation=0"
+                        " stage=level\n", save ? "save" : "load", tick);
+                } else {
+                    result = save ? app_save_checkpoint(app, tick)
+                                  : app_load_checkpoint(app, tick);
+                }
+                if (result != BREAK_RUNTIME_OK) goto finished;
             } else if (event->kind == CORE_APP_SCENARIO_QUIT) {
                 quit = true;
             } else {

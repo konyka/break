@@ -328,6 +328,28 @@ BreakRuntimeError core_app_checkpoint_probe(const char *directory) {
     return BREAK_RUNTIME_OK;
 }
 
+BreakRuntimeError core_app_checkpoint_find(const char *directory, u32 kind,
+                                           CoreAppCheckpointFile *out_file,
+                                           u64 *out_generation) {
+    if (!directory || directory[0] == '\0' || !out_file || !out_generation || kind == 0u)
+        return BREAK_RUNTIME_INVALID;
+    CoreAppCheckpointManifest manifest;
+    BreakRuntimeError result = read_manifest(directory, &manifest);
+    if (result != BREAK_RUNTIME_OK) return result;
+    const CoreAppCheckpointFile *found = NULL;
+    for (u32 i = 0; i < manifest.file_count; ++i) {
+        result = probe_payload(directory, &manifest.files[i]);
+        if (result != BREAK_RUNTIME_OK) return result;
+        if (manifest.files[i].kind != kind) continue;
+        if (found) return BREAK_RUNTIME_INVALID;
+        found = &manifest.files[i];
+    }
+    if (!found) return BREAK_RUNTIME_INVALID;
+    *out_file = *found;
+    *out_generation = manifest.generation;
+    return BREAK_RUNTIME_OK;
+}
+
 u64 core_app_checkpoint_manifest_hash(const char *directory) {
     char path[PLATFORM_FS_PATH_CAPACITY];
     if (!join_path(path, directory, CORE_APP_CHECKPOINT_MANIFEST_NAME)) return 0u;

@@ -322,6 +322,46 @@ event=render kind=skinned frame=<n> generation=<g> object=<0|1> slot=<u> resourc
 
 延迟完成队列是应用内的确定性模拟，没有经过 Runtime IO 的 worker 线程；skinned 命令只是 record trace，没有 RHI skinned pipeline 或 GPU 上传（Task 11）。字节内容是 64 字节变形顶点和追踪者位置，不是正式蒙皮网格资产。
 
+## P12 Task 8（slice 1）：运行时 POD checkpoint、加载拒绝与保存失败（2026-11-13）
+
+### 接线
+
+`--checkpoint DIR` 现在被接受。场景中的 `save`/`load` 事件只在给了 checkpoint 目录时有效，否则整份场景在启动时被拒。事件在 tick 开头、模拟之前处理，因此 tick N 的 `save` 记录的是 tick N-1 结束时的状态。
+
+- `save`：`app_capture_state` 读取用户位置/速度、追踪者位置/速度、黑板 last_seen 和四个标志（墙已加、墙已移除、目标进入视野、已看见）。`runtime_<g>.bin` 是 80 字节的小端文件：8 字节 `CORERUN1`、版本、正文长度、64 字节正文，经 `PlatformAtomicWriter` 写入；随后 `core_app_checkpoint_write_manifest_ex` 提交 manifest（kind = `CORE_APP_CHECKPOINT_RUNTIME`）。manifest 提交成功后 `save_generation` 才递增，上一代 runtime 文件被删除。任何一步失败都写 `event=save ... result=failed`，删除本代新文件，运行继续，旧 manifest 不变。
+- `load`：新函数 `core_app_checkpoint_find` 读取 manifest、逐个校验 payload 的长度和 FNV-1a，并返回唯一的 runtime 记录。文件再按 manifest 长度/哈希核对一次，然后解码；非有限值、未知标志位、“墙已移除但未添加”都返回 `INVALID`。校验全部通过后才调用 `app_apply_state` 修改当前关卡：恢复用户位置和速度（`core_app_simulation_restore_user`）、按标志补加或移除动态墙（旧导航缓存不继承，路径和跟随器清零，nav version 重新读取）、重建追踪者角色控制器并同步 AI agent。任何失败都写 `event=load_rejected ... stage=checkpoint|state`，当前关卡继续运行。
+- 当前 checkpoint 只保存 runtime POD。Flow pending 队列、Lua VM、AI 缓存、输入瞬态和资源槽都不保存；加载前的 `level` 事件已经重建了它们。
+
+### trace
+
+```text
+event=save tick=<n> generation=<g> save_generation=<s> result=ok state_hash=<hex> user_x=<f> user_z=<f> chaser_x=<f> chaser_z=<f>
+event=save tick=<n> generation=<g> save_generation=<s> result=failed
+event=load tick=<n> generation=<g> save_generation=<s> result=ok state_hash=<hex> ...
+event=load_rejected tick=<n> generation=<g> stage=<checkpoint|state>
+```
+
+### 验证
+
+真实进程 `test_core_app_lifecycle_roundtrip` 包含三段：
+
+- roundtrip：tick 2 按住 W，tick 90 保存，tick 120 松开，tick 121 卸载，tick 122 重新加载，tick 123 加载 checkpoint。断言包括：
+  - 保存记录的用户和追踪者坐标与 tick 89 的 trace 一致；
+  - 保存后用户继续移动；tick 122 的新关卡与保存状态不同；
+  - tick 123 加载到 generation 2，`state_hash` 和四个坐标与保存时逐字相同；
+  - tick 124 追踪者从恢复的位置继续（x < 3.3、z < 3.8，新关卡出生点约为 4,4），用户 z 在 7–8 之间；
+  - `manifest.core` 和 `runtime_1.bin` 存在。
+- load_corrupt：在同一目录把 `runtime_1.bin` 改坏后加载，写 `load_rejected stage=checkpoint`，没有 `event=load`，用户在 tick 39 → 41 之间继续前进。
+- save_fail：checkpoint 路径是一个普通文件，保存写 `result=failed`，tick 11 模拟继续，那个文件内容不变。
+
+变异：加载不恢复用户、加载保留新关卡的追踪者、保存失败时结束运行、加载被拒时修改用户位置，四处都让断言变红，恢复后通过。其中“保留新追踪者”第一次与测试修改并行执行而误报存活，按顺序重跑后被杀死。
+
+`test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14，无 sanitizer 报告；非图形全量 381/381。
+
+### 限制
+
+本 slice 只覆盖 runtime POD。BSCN/Flow/Actor/scene_state 侧车、背包、相机和昼夜时间还没有进 checkpoint；“加载创建完整候选关卡后再交换”目前由场景里先 `level` 再 `load` 两步完成，而不是 `load` 单独完成。uninterrupted 对照、第二次保存中途失败、错误 Actor generation 等失败矩阵项仍未做。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

@@ -8,6 +8,14 @@
 #define CORE_APP_CHECKPOINT_MAX_FILE_BYTES (64u << 20)
 #define CORE_APP_CHECKPOINT_MANIFEST_NAME "manifest.core"
 
+typedef enum CoreAppCheckpointKind {
+    CORE_APP_CHECKPOINT_SCENE = 1,
+    CORE_APP_CHECKPOINT_FLOW,
+    CORE_APP_CHECKPOINT_ACTORS,
+    CORE_APP_CHECKPOINT_STATE,
+    CORE_APP_CHECKPOINT_RUNTIME
+} CoreAppCheckpointKind;
+
 typedef struct CoreAppCheckpointFile {
     u32 kind;
     u64 size;
@@ -36,3 +44,9 @@ BreakRuntimeError core_app_checkpoint_write_manifest(const char *directory,
                                                  u32 file_count, u64 generation);
 BreakRuntimeError core_app_checkpoint_probe(const char *directory);
 u64 core_app_checkpoint_manifest_hash(const char *directory);
+/* Reads the manifest, probes every payload, and returns the single record of
+ * `kind` with the manifest generation. A missing kind, a duplicate kind or any
+ * payload that fails its size/hash check is rejected. */
+BreakRuntimeError core_app_checkpoint_find(const char *directory, u32 kind,
+                                           CoreAppCheckpointFile *out_file,
+                                           u64 *out_generation);

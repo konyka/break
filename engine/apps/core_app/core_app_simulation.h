@@ -57,6 +57,12 @@ BreakRuntimeError core_app_simulation_tick(CoreAppSimulation *simulation,
                                            const CoreAppInputFrame *frame);
 BreakRuntimeError core_app_simulation_user_position(
     const CoreAppSimulation *simulation, Vec3 *out);
+BreakRuntimeError core_app_simulation_user_velocity(
+    const CoreAppSimulation *simulation, Vec3 *out);
+/* Restores a saved position and velocity. Grounding is recomputed on the
+ * next tick. */
+BreakRuntimeError core_app_simulation_restore_user(CoreAppSimulation *simulation,
+                                                   Vec3 position, Vec3 velocity);
 BreakRuntimeError core_app_simulation_place_user(CoreAppSimulation *simulation,
                                                 Vec3 position);
 u64 core_app_simulation_tick_count(const CoreAppSimulation *simulation);

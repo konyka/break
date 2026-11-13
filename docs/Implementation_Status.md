@@ -1,3 +1,11 @@
+## Core App P12 Task 8（slice 1）：运行时 POD checkpoint、加载拒绝与保存失败（2026-11-13）
+
+- **交付**：接受 `--checkpoint DIR`，实现场景 `save`/`load`。`runtime_<g>.bin`（80 字节，`CORERUN1`）保存用户与追踪者的位置/速度、last_seen 和墙/视野标志，经原子写入，再由 manifest 提交；新增 `core_app_checkpoint_find`。加载先校验 manifest、哈希和解码，全部通过后才修改关卡（恢复用户、补加或移除墙、重建追踪者与 AI agent、清空旧路径）。保存失败和加载被拒都只写 trace，运行继续。设计见 `docs/design/core_app_integration.md` 的 Task 8 slice 1 节。
+- **测试**：真实进程 `test_core_app_lifecycle_roundtrip`：保存→继续移动→卸载→重新加载→加载 checkpoint 后 `state_hash` 与坐标一致，下一 tick 从恢复位置继续；改坏的 runtime 文件被拒且旧关卡继续；不可用目录下保存失败且运行继续。
+- **变异**：不恢复用户、保留新追踪者、保存失败结束运行、加载被拒修改用户，均被杀死并恢复。
+- **回归**：`test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14；非图形全量 381/381。
+- **边界**：只保存 runtime POD；BSCN/Flow/Actor/scene_state 侧车、背包、相机、昼夜未保存；uninterrupted 对照和其余失败矩阵项未做。
+
 ## Core App P12 Task 7（slice 2b）：资源表接入关卡生命周期与角色 skinned 命令（2026-11-13）
 
 - **交付**：`CoreApp` 持有资源表和 8 项延迟完成队列（到期 tick = 提交 + 2）。关卡提交后为用户和追踪者各申请一个槽；每 tick 先处理到期完成（`event=resource kind=complete`），再在槽为 LIVE 且 generation 匹配时输出 `event=render kind=skinned`；姿态变化时发起重载，版本只在完成时递增。卸载和替换关卡前清空旧 generation 的槽。设计见 `docs/design/core_app_integration.md` 的 Task 7 slice 2b 节。

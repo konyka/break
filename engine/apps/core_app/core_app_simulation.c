@@ -193,6 +193,25 @@ BreakRuntimeError core_app_simulation_place_user(CoreAppSimulation *simulation,
     return BREAK_RUNTIME_OK;
 }
 
+BreakRuntimeError core_app_simulation_user_velocity(
+    const CoreAppSimulation *simulation, Vec3 *out) {
+    if (!simulation || !out) return BREAK_RUNTIME_INVALID;
+    *out = simulation->character.velocity;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError core_app_simulation_restore_user(CoreAppSimulation *simulation,
+                                                   Vec3 position, Vec3 velocity) {
+    if (!simulation || !isfinite(velocity.e[0]) || !isfinite(velocity.e[1]) ||
+        !isfinite(velocity.e[2])) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    BreakRuntimeError result = core_app_simulation_place_user(simulation, position);
+    if (result != BREAK_RUNTIME_OK) return result;
+    simulation->character.velocity = velocity;
+    return BREAK_RUNTIME_OK;
+}
+
 u64 core_app_simulation_tick_count(const CoreAppSimulation *simulation) {
     return simulation ? simulation->tick_count : 0u;
 }
