@@ -125,7 +125,8 @@ jobs:
         run: |
           cmake --build build --parallel --target \
             fuzz_scene_serial fuzz_net_packet fuzz_asset_gltf \
-            fuzz_decode_image fuzz_vfs_pak
+            fuzz_decode_image fuzz_vfs_pak \
+            fuzz_mycompose_tree fuzz_mycompose_intent
           ctest --test-dir build -L fuzz --output-on-failure
 
       - name: Emit evidence receipt
@@ -422,7 +423,7 @@ jobs:
       # The fuzz targets are EXCLUDE_FROM_ALL; without building them the
       # *_smoke tests report Not Run.
       - name: Build fuzz targets
-        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf --parallel
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent --parallel
 
       - name: Test (headless suite)
         env:
@@ -500,7 +501,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Build fuzz targets
-        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf --parallel
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent --parallel
 
       - name: Test (headless suite)
         env:
@@ -983,7 +984,7 @@ jobs:
           export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
           set +e
           out="$(ctest --test-dir build --output-on-failure -R \
-            '^(test_rhi_wayland_runtime|test_mesh_gpu_gl|test_world_presentation_gl)$' 2>&1)"
+            '^(test_rhi_wayland_runtime|test_mesh_gpu_gl|test_world_presentation_gl|test_mycompose_gpu_opengl)$' 2>&1)"
           rc=$?
           set -e
           printf '%s\n' "$out"

@@ -106,10 +106,28 @@ require_lane(lane-validation-linux-vk "VK_LAYER_KHRONOS_validation")
 require_lane(lane-benchmark-linux-vk "ctest --test-dir build -L benchmark")
 
 extract_ci_job(lane-gpu-runtime-linux-gl gl_block)
-foreach(required_test test_mesh_gpu_gl test_world_presentation_gl)
+foreach(required_test test_mesh_gpu_gl test_world_presentation_gl test_mycompose_gpu_opengl)
     string(FIND "${gl_block}" "${required_test}" offset)
     if(offset EQUAL -1)
         contract_failure("lane-gpu-runtime-linux-gl: missing real GL coverage ${required_test}")
+    endif()
+endforeach()
+
+# The Vulkan lane runs `-L graphics`; the Compose GPU test must carry it.
+read_repo_file("engine/CMakeLists.txt" engine_cmake)
+string(FIND "${engine_cmake}" "set(compose_gpu_target test_mycompose_gpu_\${compose_gpu_variant})" offset)
+string(FIND "${engine_cmake}" "LABELS \"graphics;compose;platform_runtime\"" compose_labels)
+if(offset EQUAL -1 OR compose_labels EQUAL -1)
+    contract_failure("engine/CMakeLists.txt: test_mycompose_gpu_<backend> must be registered with the graphics label")
+endif()
+
+# Compose fuzz smokes are EXCLUDE_FROM_ALL: every lane that builds the fuzz
+# targets explicitly must name these too, or `-L fuzz` ends in Not Run.
+foreach(required_fuzz fuzz_mycompose_tree fuzz_mycompose_intent)
+    string(REGEX MATCHALL "${required_fuzz}" fuzz_hits "${ci}")
+    list(LENGTH fuzz_hits fuzz_hit_count)
+    if(fuzz_hit_count LESS 3)
+        contract_failure("${ci_path}: ${required_fuzz} appears ${fuzz_hit_count} times; expected the asan list and both build steps")
     endif()
 endforeach()
 
