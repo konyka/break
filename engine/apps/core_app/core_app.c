@@ -463,9 +463,12 @@ static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
         return BREAK_RUNTIME_FAILED;
     }
     break_game_set_area_callback(candidate->actor_runtime, app_area_event, candidate);
+    if (candidate->scene.node_count < 3u || !candidate->scene.nodes) {
+        return BREAK_RUNTIME_FAILED;
+    }
     BreakGameAreaDesc sight;
     memset(&sight, 0, sizeof(sight));
-    sight.center = candidate->chaser_position;
+    sight.center = app_node_position(&candidate->scene.nodes[2]);
     sight.half_extent = vec3(6.0f, 3.0f, 6.0f);
     if (break_game_area_add(candidate->actor_runtime, &sight,
                             &candidate->sight_area) != BREAK_GAME_OK) {
