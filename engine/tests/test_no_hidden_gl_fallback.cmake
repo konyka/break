@@ -29,6 +29,12 @@ file(GLOB_RECURSE sources RELATIVE "${ENGINE_SOURCE_DIR}"
     "${ENGINE_SOURCE_DIR}/tests/*.c")
 set(violations "")
 foreach(rel IN LISTS sources)
+    # In-tree build directories (engine/build*) contain archived copies of
+    # these sources. GLOB_RECURSE follows CMakeLists.txt into them; those
+    # copies are not a second fallback implementation.
+    if(rel MATCHES "(^|/)build[^/]*/")
+        continue()
+    endif()
     file(READ "${ENGINE_SOURCE_DIR}/${rel}" content)
     string(TOLOWER "${content}" lower)
     foreach(tok IN LISTS tokens)

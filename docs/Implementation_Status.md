@@ -1,3 +1,9 @@
+## 本机 macOS 复验（2026-11-13）
+
+- 修复接到 `edaa2874`。本机 arm64，Xcode 27.1（macOS SDK 27.0，`xcrun metal`），Apple Clang 21，OpenSSL 3.5.9。配置为 `cmake -S engine -B engine/build-macos-metal -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=metal -DMYUI_PAL=cocoa`。
+- `engine/tools/ex_platform_macos.m` 对 `NSOpenGLContext` 调用了不存在的 `-flush`；双缓冲 present 改为 `flushBuffer`，与 `my_pal_cocoa.m` 的 `cgl_swap` 相同。Apple ld 对重复 `-lm` 报警，libSystem 已导出 libm，CMake 在 Apple 上使用与 Windows 相同的空接口目标 `m`。`editor` / `engine_demo` 为静态库顺序再次链接 `libengine.a` 的警告保留。
+- 接到 `edaa2874` 后的本机非图形、非 fuzz 为 **352 项入选、348 PASS、4 SKIP、0 FAIL**。四个 SKIP 是 `test_d3d12_dependency_gate` 和三个 nm 合同。`test_no_hidden_gl_fallback` 曾把 `engine/build*` 里 core-app 归档的源码副本当成隐藏 GL 落点；扫描现在跳过构建目录。Metal graphics 标签 **6/6** 通过，包括 `test_rhi_metal_device_contract`、`test_macos_metal_consumer_smoke` 和 `rhi_swapchain_bench`。这是本机 Metal GPU 运行证据，不是 CI hosted runner 的 HEADLESS 收据。
+
 ## Compose + MVI：master CI 跨平台修复（2026-11-13）
 
 - **触发**：`7660442c` 推到 master 后，windows-d3d12、Windows Clang/MSVC、MinGW、macOS Cocoa 与 native Metal 的构建失败。Linux 本机普通 369 项、Vulkan graphics 7/7、OpenGL 对照 4/4 当时已通过。

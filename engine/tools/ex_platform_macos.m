@@ -27,7 +27,9 @@ static NSOpenGLContext* g_gl_ctx;
   (void)rect;
   if (g_gl) {
     ex_frame_gl(g_app);
-    [g_gl_ctx flush];
+    /* NSOpenGLContext has no -flush; double-buffered present is flushBuffer,
+     * the same call my_pal_cocoa.m uses for cgl_swap. */
+    [g_gl_ctx flushBuffer];
     return;
   }
   {
