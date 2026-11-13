@@ -7,7 +7,7 @@
 - **分配**：预热后 `my_compose_myui_pump` 8 帧 0 次、C++ DSL 16 次构建 0 次；myui pump/render 的分配单独打印（Vulkan 554、OpenGL 8），不计入新层断言。
 - **RED/GREEN 与变异**：先观察 `test_mycompose_gpu` 无构建规则与 CI 合同因缺 regex/fuzz 列表失败，再 GREEN。生产变异恢复 `current_snapshot_matches` 的旧 root 检查后，Vulkan 测试在语言切换、keyed 重排与 edit focus 上失败（`my_compose_myui_pump=7`），恢复后通过。
 - **回归**：普通非图形 `-j3` 354 项，353 PASS、1 个既有 D3D12 dependency gate SKIP、0 FAIL；ASan+UBSan 353 项同样 0 FAIL；TSan runtime/async 2/2，无 race 报告；no-tests 构建成功（仍只注册既有 4 个 demo smoke）；fuzz 7/7（既有 5 个加 2 个新 target）；Wayland CI 合同 OK。
-- **边界**：CI 的 GitHub lane 尚未在本分支运行；lavapipe/llvmpipe lane 是软件渲染，不是硬件 GPU 证据。`label.text` 暂无事务捕获钩子，测试标题使用 button。独立评审与合并后验证另行记录。
+- **边界**：CI 的 GitHub lane 尚未在本分支运行；lavapipe/llvmpipe lane 是软件渲染，不是硬件 GPU 证据。`label.text` 暂无事务捕获钩子，测试标题使用 button。分配计数只包装 `malloc/calloc/realloc` 与标量 `operator new`，不含 `strdup`、aligned/nothrow `new`；GL 软件渲染识别只覆盖 Mesa 的 llvmpipe/softpipe 与 SwiftShader，Windows GDI Generic、WARP、Apple Software Renderer 会被记为 OTHER。独立评审为 Needs fixes（2 Important），修复 `cc8b0fdc` 经 scoped 复审 Approved；合并后验证另行记录。
 
 ## Compose + MVI Task 7：C++20 RAII DSL 与 C parity（2026-11-13）
 
