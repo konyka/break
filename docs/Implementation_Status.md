@@ -1,3 +1,9 @@
+## Core App 认证期限改为墙钟与传输收尾（2026-11-15）
+
+- **修复**：未认证连接的期限从 180 tick 改为单调时钟 3000 ms（`CORE_APP_NET_AUTH_DEADLINE_MS`）。record 车道默认不限速，180 tick 只有约 6 ms，真实客户端来不及认证。stop 超时后 transport 置 `leaked`，再次 destroy 直接返回 `TIMEOUT`，不再销毁仍被 reactor 持有的 acceptor；`core_app_net_transport_free` 在 destroy 失败时有意不释放。`--net-poll-ms` 改用独立解析（1 到 3 位数字，≤100），接受 `00`，拒绝 `0001`。
+- **测试**：新增 `test_core_app_network_late_auth`（服务器每 1 ms 一 tick，客户端 TLS 后等 1 s 再认证，必须收到 snapshot，`auth_timeouts==0`），按 tick 计期限时 RED；target contract 新增 `00` 接受与 `0001` 拒绝，修复前两条都 RED。
+- **未做**：stop 超时分支没有可注入的测试入口（`break_net_reactor_stop_pending_for_test` 只读状态），`leaked` 路径只经代码审查。
+
 ## Core App 认证传输评审修复与 Windows nm 跳过（2026-11-15）
 
 - **修复**：`net_destroy` 只要 reactor 存在就 stop，stop 超时则保留 reactor/acceptor 并写 `result=stop_timeout`，清除 auth 回调失败时返回 `FAILED`，退出删除 port file；只在事件队列为空且槽位的 session id 与认证时一致时发送 snapshot；连接 180 tick 内未认证即关闭（`auth_timeouts`）；新增 `--net-poll-ms 0..100`（默认 0，tick 不再阻塞 16 ms）；port file 改为原子写入；拒绝全零 PSK；新增启动阶段 `acceptor`；`SEND_DRAINED` 不再交给会话层，`session_invalid` 从 16 变为 0；stats 增加 refused、send_overloads、send_closed、outbox_overloads、auth_timeouts、admitted、rejected_unknown、rejected_unauthenticated。设计见 `docs/design/core_app_integration.md` Task 10「认证传输」。

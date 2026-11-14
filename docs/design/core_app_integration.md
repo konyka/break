@@ -657,15 +657,15 @@ core_app --network --bind HOST:PORT --tls-cert PATH --tls-key PATH --psk-env NAM
 - 缺任一项退出 2：`--network requires --bind, --tls-cert, --tls-key, --psk-env and --port-file`；
 - 给了这些参数但没有 `--network`：`network options require --network`；
 - `HOST:PORT` 非法：主机必须是点分十进制 IPv4，`localhost:0` 这类非数字主机和 65536 这类端口都退出 2，`invalid --bind value`；
-- `--net-poll-ms` 是每 tick 等待 reactor 的毫秒数，默认 0（不阻塞 tick），超出 0..100 退出 2：`--net-poll-ms requires 0..100`；
+- `--net-poll-ms` 是每 tick 等待 reactor 的毫秒数，默认 0（不阻塞 tick）。只接受 1 到 3 位十进制数字且值不超过 100（`00` 合法，`0001` 和 `101` 不合法），否则退出 2：`--net-poll-ms requires 0..100`；
 - PSK 只从 `--psk-env` 指定的环境变量读取，必须是 64 位 hex，不写入 trace；全零 key 视为未设置，启动以 `stage=psk` 拒绝；key id 固定为 `coreapp1`；
 - 监听成功后用 `platform_atomic_writer_*` 把实际端口写入 `--port-file`（`--bind 127.0.0.1:0` 因此可用于测试），进程退出时删除该文件。
 
-运行时：`CoreAppNetworkHooks` 把传输对象挂到 `core_app` 生命周期。`network_start` 阶段位于 audio 之后、coordinator 之前；每 tick 在 audio listener 之后最多处理 64 个 reactor 事件（等待 `--net-poll-ms`，最多 8 个连接），并只向已认证会话发送 snapshot（user `flags=1`，chaser `flags=2`）。`SEND_DRAINED` 只是流控通知，直接释放，不交给会话层。连接打开 180 tick 内仍未认证即关闭，计入 `auth_timeouts`，空闲的 TLS 对端因此不能占满连接槽。
+运行时：`CoreAppNetworkHooks` 把传输对象挂到 `core_app` 生命周期。`network_start` 阶段位于 audio 之后、coordinator 之前；每 tick 在 audio listener 之后最多处理 64 个 reactor 事件（等待 `--net-poll-ms`，最多 8 个连接），并只向已认证会话发送 snapshot（user `flags=1`，chaser `flags=2`）。`SEND_DRAINED` 只是流控通知，直接释放，不交给会话层。连接打开 3000 ms 内仍未认证即关闭，计入 `auth_timeouts`，空闲的 TLS 对端因此不能占满连接槽。期限按单调时钟（`time_microseconds()`，POSIX 上为 `CLOCK_MONOTONIC`，Windows 上为 QPC）计算，与 tick 无关：record 车道默认不限速，1500 tick 只需约 0.05 s，按 tick 计的期限（原先 180 tick）在这种情况下只有几毫秒。
 
 发送前的防护：只有 reactor 事件队列为空时才发送，并且目标槽必须满足：未在关闭中、会话状态为 `AUTHENTICATED`、会话层报告的 session id 等于该槽认证时记录的 id。connection key 随传输槽复用，队列里还没处理的 close 事件对应的 key 可能已经分配给一个未认证的新连接；这两条检查防止新连接收到旧会话的 snapshot。这一竞态没有进程级复现，只靠代码审查和上述条件保证。收到的 snapshot 只进入 `core_app_snapshot_admit` 并改变计数，decode 失败或带尾部字节计为 `decode_failed`；网络输入从不写回仿真。
 
-停止顺序：stop admission → stop producers → drain → destroy（drain 每轮等待 1 ms，最多 8 轮）。`app_rollback` 在 audio 之前调用这四个钩子。`net_destroy` 幂等：只有已经进入监听状态时才写一行 `event=network_stats`；只要 reactor 存在就调用 stop，不管启动失败停在哪个阶段（已启动的 reactor 上 `break_net_reactor_destroy` 不做任何事，acceptor 也不能在 reactor 仍持有它时销毁）。stop 成功后依次销毁 session manager、reactor、acceptor。stop 超时时写 `event=network result=stop_timeout`，有意保留 reactor 和 acceptor（泄漏），返回 `TIMEOUT`。随后清除 auth 回调；清除失败时保留 PSK（全局回调仍指向它）并返回 `FAILED`，成功时清零 PSK。最后删除 port file。
+停止顺序：stop admission → stop producers → drain → destroy（drain 每轮等待 1 ms，最多 8 轮）。`app_rollback` 在 audio 之前调用这四个钩子。`net_destroy` 幂等：只有已经进入监听状态时才写一行 `event=network_stats`；只要 reactor 存在就调用 stop，不管启动失败停在哪个阶段（已启动的 reactor 上 `break_net_reactor_destroy` 不做任何事，acceptor 也不能在 reactor 仍持有它时销毁）。stop 成功后依次销毁 session manager、reactor、acceptor。stop 超时时写 `event=network result=stop_timeout`，有意保留 reactor 和 acceptor（泄漏），置 `leaked` 并返回 `TIMEOUT`；之后再调用 destroy 直接返回 `TIMEOUT`，不再触碰仍被泄漏 reactor 持有的 acceptor。`core_app_net_transport_free` 在 destroy 返回非 `OK` 时不释放内存（运行中的 reactor 或全局 auth 回调仍指向它）。随后清除 auth 回调；清除失败时保留 PSK（全局回调仍指向它）并返回 `FAILED`，成功时清零 PSK。最后删除 port file。
 
 启动阶段依次为 `psk`、`reactor`、`bind`、`tls`、`acceptor`、`auth`、`listen`、`port_file`。任一阶段失败写 `event=network result=rejected stage=<阶段>`，走同一清理路径，进程退出 2。
 
@@ -689,7 +689,8 @@ SIGPIPE：transport 构建在 `--network` 生效时调用 `signal(SIGPIPE, SIG_I
 
   驱动脚本断言 trace 不含 secret、`authenticated==2`、`opened>=6`、`snapshots_sent>=2`、`auth_timeouts>=1`、`admitted>=1`、各拒绝计数至少 1、`session_handler_failed>=2`，退出后不残留 port file，并且过滤 network 行后与离线 trace 逐字节相同，snapshot generation 等于 `level_loaded` generation。本机一次运行的 stats：`opened=6 closed=6 authenticated=2 snapshots_sent=6 auth_timeouts=1 decode_failed=1 admitted=1 rejected_schema=1 rejected_stale=1 session_applied=15 session_phase_rejected=1 session_invalid=0 session_handler_failed=2`。
 - `test_core_app_network_start_failure`（transport 构建且非 WIN32）：缺 PSK 环境变量与全零 PSK（`stage=psk`）、坏证书（`stage=tls`）、port file 指向不存在的目录（`stage=port_file`）。每项断言 rc=2、无 Sanitizer 输出、无 `listening` 与 `network_stats` 行、不留 port file。
-- `test_core_app_target_contract` 覆盖 `--net-poll-ms 101` 的错误文本。
+- `test_core_app_network_late_auth`（注册条件同 loopback）：服务器 `--net-poll-ms 1`，scenario `engine/tests/data/core_app_network_late_auth.scenario`（6000 tick），客户端以 `late-auth` 模式只运行场景 G：完成 TLS 后静默 1 s 再发 AUTH，必须收到 snapshot；驱动脚本断言 `authenticated==1`、`auth_timeouts==0`。按 tick 计期限时 RED（`g_receives_snapshot_after_late_auth` FAIL），改为毫秒期限后通过。
+- `test_core_app_target_contract` 覆盖 `--net-poll-ms 101` 与 `0001` 的错误文本，并要求 `00` 不被当作 CLI 错误（随后因 PSK 变量未设置而在启动阶段退出 2）。
 - 变异：去掉“只发给已认证会话”检查 → B/C/D 三项 FAIL；把对端 snapshot 位置写进 user → `network input changed the simulation`；`net_destroy` 只在 started/listening 时调用 stop → ASan 树 start_failure 的 port_file 用例 rc=1 并报 LeakSanitizer 泄漏。三处恢复后 `cmp` 一致。评审修复前的 RED：loopback 因 `--net-poll-ms` 未知报 `unknown or malformed argument`，start_failure 报 `zero_psk: rc=0, want 2`。
 
 ### 边界
