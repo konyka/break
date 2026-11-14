@@ -597,7 +597,32 @@ fuzz smoke 在 `ENGINE_BUILD_FUZZ_SMOKE=ON` 下注册为 `fuzz_core_app_checkpoi
 
 ### 仍未做
 
-fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未做（snapshot 编解码已有确定性单元测试覆盖边界，但没有对应变异 fuzzer）。Task 11 的真实 GPU 像素证据不在本步。
+fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未做（snapshot 编解码已有确定性单元测试覆盖边界，但没有对应变异 fuzzer；已在 2026-11-14 补上，见下一小节）。Task 11 的真实 GPU 像素证据不在本步。
+
+### 补充：`fuzz_core_app_network`（2026-11-14）
+
+新增 `engine/tests/fuzz_core_app_network.c`，只链接 `core_app_network m`，参数为迭代次数和 seed，同一 seed 输出逐位一致。
+
+每轮先用 `core_app_snapshot_build` 生成 0..64 个实体的快照（坐标有 1/4 概率取 NaN、±Inf、非规格化数或 -0 的位型），用 `core_app_snapshot_encode` 编码，再以 7/8 概率做五类变异之一：翻转任意字节；截断到任意长度；改写偏移 28 的 count（0、1、63、64、65、`UINT32_MAX` 或随机值）；改写 magic、version 或 header_bytes；尾部追加最多 64 个随机字节。变异后的字节复制到恰好 `size` 字节的堆块再解码，越界读会被 ASan 抓到。
+
+断言：
+
+- 解码结果与独立的参考模型一致：size<32 → TRUNCATED；magic 不符 → BAD_MAGIC；version≠1 或 header_bytes≠32 → BAD_VERSION；count>64 → OVER_LIMIT；size<32+24·count → TRUNCATED；其余 → OK。
+- 拒绝时 `out` 与调用前填入的 0xA5 哨兵逐字节相同。`core_app_network.h` 的 decode 注释已写明这一约定。
+- 接受时重新编码的字节等于 payload 的前 `needed` 字节（尾部垃圾被忽略，不被解释）。
+- 接受的快照送入随机初始化的 inbox（authenticated、admission id、peer schema 各自随机）调用 1..4 次 `core_app_snapshot_admit`，结果与参考模型（unauth → unknown message → schema → stale → admitted）一致，五个计数之和等于调用次数。
+- 再推入长期存在的 outbox，与影子环形队列比较：容量 8，`enqueued+dropped` 等于推入次数，弹出按 FIFO 返回 frame_id。
+
+注册为 `fuzz_core_app_network_smoke`（2000 次，seed 41，`fuzz` 标签）。CI 的 ASan fuzz 列表和两个 “Build fuzz targets” 步骤都已加入该目标；`test_wayland_ci_migration_contract` 现在要求三个 core_app fuzz 目标在 ci.yml 中各出现至少 3 次，改 ci.yml 前该契约 RED。
+
+证据：
+
+- seed 41：`accepted=1050 rejected=950 admitted=138 truncated=399 bad_magic=115 bad_version=182 over_limit=254 enqueued=1018 dropped=32`；50000 次 seed 7 通过。
+- ASan+UBSan 树 20000 次无报告。
+- 三处变异都判红：去掉 decode 的 `size < needed` 检查（第 0 轮）；去掉 header_bytes 检查（第 31 轮）；admit 跳过 generation 检查（第 12 轮）。
+- normal 树全量非 fuzz 400 项通过。
+
+仍未做：没有落盘 corpus，也没有 libFuzzer 覆盖率引导；fuzzer 不经过真实 socket 或 `break_net` 会话层。
 
 ## Core App Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
 

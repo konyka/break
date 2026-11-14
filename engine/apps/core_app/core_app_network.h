@@ -80,7 +80,8 @@ CoreAppSnapshotOutcome core_app_snapshot_encode(const CoreAppSnapshot *snapshot,
                                                 size_t *out_size);
 
 /* Decodes a peer payload. Never writes outside `out`, never allocates, and
- * reports TRUNCATED/OVER_LIMIT instead of trusting a declared count. */
+ * reports TRUNCATED/OVER_LIMIT instead of trusting a declared count. On any
+ * failure `out` is left exactly as the caller passed it. */
 CoreAppSnapshotOutcome core_app_snapshot_decode(const u8 *payload, size_t size,
                                                 CoreAppSnapshot *out);
 

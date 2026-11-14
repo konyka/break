@@ -1,3 +1,9 @@
+## Core App 网络快照 fuzz：`fuzz_core_app_network`（2026-11-14）
+
+- **交付**：新增 `fuzz_core_app_network`，对编码后的快照做五类字节变异（翻转、截断、count、magic/version/header_bytes、尾部追加），用独立参考模型核对 decode 结果；拒绝时 `out` 不被写入，接受时重新编码与原字节一致；再核对 admit 的拒绝顺序和计数、outbox 的容量与 FIFO。注册为 `fuzz_core_app_network_smoke`（2000 次，seed 41），CI 的三处 fuzz 构建列表已加入。设计见 `docs/design/core_app_integration.md` 的 Task 12 补充小节。
+- **测试**：`test_wayland_ci_migration_contract` 要求三个 core_app fuzz 目标出现在 ci.yml 中，先 RED 后 GREEN；同一 seed 两次输出一致；ASan+UBSan 20000 次无报告；3 处变异都判红；normal 树全量 400 项通过。
+- **未做**：落盘 corpus、覆盖率引导、经过真实 socket 的会话层 fuzz。
+
 ## Core App Task 9 slice 6：按事件选择声音资源（2026-11-14）
 
 - **交付**：新增 `CoreAppAudioSound`（none/chaser/item）和 `core_app_audio_enqueue_sound`。声源按 (generation, sound) 寻址，同一关卡可以同时有追踪者声源和拾取声源。拾取时在用户位置播放新正式资产 `chime.wav`，追踪者继续播放 `tone.wav`；卸载时各自 STOP。trace 行加 `sound=`，设备停止行加 `item_plays=`。正式资产增加到 12 个。设计见 `docs/design/core_app_integration.md` 的 slice 6 节。
@@ -96,7 +102,7 @@
 - **交付**：新增 `fuzz_core_app_checkpoint`（对真实 writer 造出的 manifest 做五类变异，每次真实 probe + find，并断言 sentinel 树字节不变）与 `fuzz_core_app_scenario`（对合法 scenario 做四类变异，断言拒绝时不留部分事件）；两者在 `ENGINE_BUILD_FUZZ_SMOKE=ON` 下注册为 smoke，seed 固定（31/37）。设计见 `docs/design/core_app_integration.md` 的 Task 12 节。
 - **测试**：普通树 fuzz lane 9/9；ASan+UBSan 树 `fuzz_core_app` 2 项 + `test_core_app_runtime` + `test_core_app_network` + 12 项 lifecycle 共 16/16，无 sanitizer 报告；TSan 树 14/14，无 TSan 报告；no-tests 树 `core_app` 完整生命周期退出 0（load→input→simulation→record/audio→save→unload→shutdown）。
 - **确定性**：checkpoint fuzz 200 次固定 seed 得 `accepted=45 rejected=155`，重复运行逐位一致。
-- **边界**：无 libFuzzer 结构感知、无落盘 corpus；`fuzz_core_app_network` 未做。Task 11 的真实 GPU 像素证据不在本步。
+- **边界**：无 libFuzzer 结构感知、无落盘 corpus；`fuzz_core_app_network` 未做（已在 2026-11-14 补上）。Task 11 的真实 GPU 像素证据不在本步。
 
 ## Core App P12 Task 10：可选认证网络通道的边界层与客户端权威防火墙（2026-11-14）
 

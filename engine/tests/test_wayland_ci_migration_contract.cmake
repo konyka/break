@@ -123,7 +123,8 @@ endif()
 
 # Compose fuzz smokes are EXCLUDE_FROM_ALL: every lane that builds the fuzz
 # targets explicitly must name these too, or `-L fuzz` ends in Not Run.
-foreach(required_fuzz fuzz_mycompose_tree fuzz_mycompose_intent)
+foreach(required_fuzz fuzz_mycompose_tree fuzz_mycompose_intent
+        fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network)
     string(REGEX MATCHALL "${required_fuzz}" fuzz_hits "${ci}")
     list(LENGTH fuzz_hits fuzz_hit_count)
     if(fuzz_hit_count LESS 3)

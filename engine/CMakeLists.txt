@@ -7104,8 +7104,8 @@ endif()
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
     target_link_libraries(fuzz_mycompose_intent PRIVATE mycompose m Threads::Threads)
 
-    # Core app integration fuzzers: the checkpoint manifest reader and the
-    # scenario text parser. EXCLUDE_FROM_ALL like the other fuzz_* targets;
+    # Core app integration fuzzers: the checkpoint manifest reader, the
+    # scenario text parser and the snapshot wire decoder/admission path. EXCLUDE_FROM_ALL like the other fuzz_* targets;
     # the fuzz lane builds them explicitly.
     add_executable(fuzz_core_app_checkpoint EXCLUDE_FROM_ALL
         tests/fuzz_core_app_checkpoint.c)
@@ -7116,6 +7116,11 @@ endif()
         tests/fuzz_core_app_scenario.c)
     target_include_directories(fuzz_core_app_scenario PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_core_app_scenario PRIVATE core_app_runtime m)
+
+    add_executable(fuzz_core_app_network EXCLUDE_FROM_ALL
+        tests/fuzz_core_app_network.c)
+    target_include_directories(fuzz_core_app_network PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(fuzz_core_app_network PRIVATE core_app_network m)
 
     # Mutation fuzzer for the editor remote session wire path (ids 4..21):
     # mutated envelopes -> the real break_net codec -> the real session
@@ -7165,10 +7170,12 @@ endif()
         add_test(NAME fuzz_mycompose_intent_smoke COMMAND fuzz_mycompose_intent 2000 29)
         add_test(NAME fuzz_core_app_checkpoint_smoke COMMAND fuzz_core_app_checkpoint 200 31)
         add_test(NAME fuzz_core_app_scenario_smoke COMMAND fuzz_core_app_scenario 500 37)
+        add_test(NAME fuzz_core_app_network_smoke COMMAND fuzz_core_app_network 2000 41)
         set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
             fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
             fuzz_mycompose_tree_smoke fuzz_mycompose_intent_smoke
             fuzz_core_app_checkpoint_smoke fuzz_core_app_scenario_smoke
+            fuzz_core_app_network_smoke
             PROPERTIES LABELS "fuzz")
         if(BREAK_ENABLE_SNOWFLAKE)
             add_test(NAME fuzz_editor_remote_smoke COMMAND fuzz_editor_remote 600 29)
