@@ -107,6 +107,7 @@ endif()
 set(expected_assets
     engine/assets/core_app/actors.sidecar
     engine/assets/core_app/chaser.lua
+    engine/assets/core_app/chime.wav
     engine/assets/core_app/deterministic.scenario
     engine/assets/core_app/director.lua
     engine/assets/core_app/level.banm
@@ -284,4 +285,4 @@ if(NOT "${tracked_assets}" STREQUAL "${expected_assets}")
         "core_app asset tracking mismatch: ${tracked_count} tracked, ${expected_count} required\n"
         "tracked=${tracked_assets}\nexpected=${expected_assets}")
 endif()
-message(STATUS "core_app naming, target, interface, and 11-asset contract passed")
+message(STATUS "core_app naming, target, interface, and 12-asset contract passed")

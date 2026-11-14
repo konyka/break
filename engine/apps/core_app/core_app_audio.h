@@ -17,6 +17,16 @@ typedef enum CoreAppAudioCommandKind {
     CORE_APP_AUDIO_STOP = 4
 } CoreAppAudioCommandKind;
 
+/* The sound a command names. The listener has none; every source plays one
+ * of the level's sounds, and a level may play each sound on its own slot. */
+typedef enum CoreAppAudioSound {
+    CORE_APP_AUDIO_SOUND_NONE = 0,
+    CORE_APP_AUDIO_SOUND_CHASER = 1,
+    CORE_APP_AUDIO_SOUND_ITEM = 2
+} CoreAppAudioSound;
+
+#define CORE_APP_AUDIO_SOUND_COUNT 3u
+
 typedef enum CoreAppAudioBackend {
     CORE_APP_AUDIO_BACKEND_RECORD = 0,
     CORE_APP_AUDIO_BACKEND_NULL,
@@ -28,12 +38,14 @@ typedef struct CoreAppAudioCommand {
     u64 sequence;
     Vec3 position;
     CoreAppAudioCommandKind kind;
+    CoreAppAudioSound sound;
     u32 source;
 } CoreAppAudioCommand;
 
 typedef struct CoreAppAudioSlot {
     u32 slot;
     u64 generation;
+    CoreAppAudioSound sound;
 } CoreAppAudioSlot;
 
 typedef struct CoreAppAudio {
@@ -48,6 +60,8 @@ typedef struct CoreAppAudio {
     u32 device_sources[CORE_APP_AUDIO_SOURCE_SLOTS];
     u64 device_listener_updates;
     u64 device_plays;
+    /* Successful PLAY_3D calls per sound, indexed by CoreAppAudioSound. */
+    u64 device_plays_by_sound[CORE_APP_AUDIO_SOUND_COUNT];
     u64 device_moves;
     u64 device_stops;
     u64 device_evictions;
@@ -57,7 +71,9 @@ typedef struct CoreAppAudio {
     u64 device_calls_off_owner;
     char device_backend[32];
     char device_name[128];
-    char sound_path[1024];
+    /* File each sound plays, indexed by CoreAppAudioSound: tone.wav for the
+     * chaser, chime.wav for the item; empty for NONE. */
+    char sound_paths[CORE_APP_AUDIO_SOUND_COUNT][1024];
     u64 next_sequence;
     u64 overloads;
     u64 stale_commands;
@@ -80,7 +96,8 @@ BreakRuntimeError core_app_audio_start_null(CoreAppAudio *audio);
 /* Opens the default playback device. A system that only reaches miniaudio's
  * Null backend, or that has no device at all, is reported as unavailable:
  * a required device then returns UNAVAILABLE, an optional one degrades to the
- * null pump. A real device plays asset_root/tone.wav once as a probe. */
+ * null pump. A real device plays asset_root/tone.wav once as a probe; level
+ * sources play asset_root/tone.wav (chaser) or asset_root/chime.wav (item). */
 BreakRuntimeError core_app_audio_start_device(CoreAppAudio *audio, FILE *trace,
                                               bool require_device, const char *asset_root);
 /* Same contract with an explicit engine backend; tests force NULL or FAKE to
@@ -100,12 +117,21 @@ BreakRuntimeError core_app_audio_start_system(CoreAppAudio *audio, FILE *trace,
 BreakRuntimeError core_app_audio_start_system_owned(CoreAppAudio *audio, FILE *trace,
                                                     AudioSystem *system,
                                                     const char *asset_root);
+/* enqueue and enqueue_at name the chaser sound for PLAY_3D, POSITION and
+ * STOP, and no sound for LISTENER. */
 BreakRuntimeError core_app_audio_enqueue(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
                                          u64 generation);
 /* enqueue with a world position: the listener position for LISTENER, the
  * source position for PLAY_3D and POSITION; ignored for STOP. */
 BreakRuntimeError core_app_audio_enqueue_at(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
                                             u64 generation, Vec3 position);
+/* enqueue_at with an explicit sound. A source is addressed by (generation,
+ * sound): PLAY_3D claims the slot, POSITION and STOP reach only that slot.
+ * LISTENER must name NONE and every other kind CHASER or ITEM; otherwise
+ * INVALID, and nothing is queued and no sequence number is used. */
+BreakRuntimeError core_app_audio_enqueue_sound(CoreAppAudio *audio,
+                                               CoreAppAudioCommandKind kind, u64 generation,
+                                               CoreAppAudioSound sound, Vec3 position);
 BreakRuntimeError core_app_audio_drain_record(CoreAppAudio *audio, u32 budget);
 BreakRuntimeError core_app_audio_drain_null(CoreAppAudio *audio, u32 budget);
 /* Device mode: each command becomes the matching AudioSystem call. INVALID

@@ -223,7 +223,7 @@ run_case(real_formal PASS "${CMAKE_COMMAND}"
     "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
     "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
     -P "${formal_contract}")
-expect_log_contains(real_formal "All 11 formal core_app assets are tracked, including tone.wav")
+expect_log_contains(real_formal "All 12 formal core_app assets are tracked, including tone.wav")
 run_case(real_naming PASS "${CMAKE_COMMAND}"
     "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
     "-DREPOSITORY_ROOT=${REPOSITORY_ROOT}"
@@ -231,7 +231,7 @@ run_case(real_naming PASS "${CMAKE_COMMAND}"
     "-DDESIGN_FILE=${DESIGN_FILE}"
     "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
     -P "${naming_contract}")
-expect_log_contains(real_naming "core_app naming, target, interface, and 11-asset contract passed")
+expect_log_contains(real_naming "core_app naming, target, interface, and 12-asset contract passed")
 
 run_case(formal_git_error PASS "${GIT_EXECUTABLE}" -C "${REPOSITORY_ROOT}" rev-parse --git-dir)
 run_case(formal_git_error FAIL "${CMAKE_COMMAND}"
@@ -265,13 +265,13 @@ endif()
 run_case(formal_missing_asset FAIL "${CMAKE_COMMAND}" -E env "GIT_INDEX_FILE=${missing_index}"
     "${CMAKE_COMMAND}" "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
     "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}" -P "${formal_contract}")
-expect_log_contains(formal_missing_asset "formal asset tracking mismatch: 10 tracked, 11 required")
+expect_log_contains(formal_missing_asset "formal asset tracking mismatch: 11 tracked, 12 required")
 run_case(naming_missing_asset FAIL "${CMAKE_COMMAND}" -E env "GIT_INDEX_FILE=${missing_index}"
     "${CMAKE_COMMAND}" "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
     "-DREPOSITORY_ROOT=${REPOSITORY_ROOT}" "-DPLAN_FILE=${PLAN_FILE}"
     "-DDESIGN_FILE=${DESIGN_FILE}" "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
     -P "${naming_contract}")
-expect_log_contains(naming_missing_asset "core_app asset tracking mismatch: 10 tracked, 11 required")
+expect_log_contains(naming_missing_asset "core_app asset tracking mismatch: 11 tracked, 12 required")
 
 set(extra_index "${WORK}/extra.index")
 prepare_index("${extra_index}")
@@ -298,14 +298,14 @@ endif()
 run_case(formal_extra_asset FAIL "${CMAKE_COMMAND}" -E env "GIT_INDEX_FILE=${extra_index}"
     "${CMAKE_COMMAND}" "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
     "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}" -P "${formal_contract}")
-expect_log_contains(formal_extra_asset "formal asset tracking mismatch: 12 tracked, 11 required")
+expect_log_contains(formal_extra_asset "formal asset tracking mismatch: 13 tracked, 12 required")
 expect_log_lacks(formal_extra_asset "CORE_APP_TRACKING_UNVERIFIED")
 run_case(naming_extra_asset FAIL "${CMAKE_COMMAND}" -E env "GIT_INDEX_FILE=${extra_index}"
     "${CMAKE_COMMAND}" "-DENGINE_SOURCE_DIR=${ENGINE_SOURCE_DIR}"
     "-DREPOSITORY_ROOT=${REPOSITORY_ROOT}" "-DPLAN_FILE=${PLAN_FILE}"
     "-DDESIGN_FILE=${DESIGN_FILE}" "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
     -P "${naming_contract}")
-expect_log_contains(naming_extra_asset "core_app asset tracking mismatch: 12 tracked, 11 required")
+expect_log_contains(naming_extra_asset "core_app asset tracking mismatch: 13 tracked, 12 required")
 expect_log_lacks(naming_extra_asset "CORE_APP_TRACKING_UNVERIFIED")
 
 if(UNIX)
@@ -555,8 +555,8 @@ if(EXISTS "${archive_build}/CTestTestfile.cmake")
         --test-dir "${archive_build}" ${nested_ctest_config_args}
         -R "^test_core_app_(formal_asset_tracking|naming_contract)$" -V)
     expect_tracking_skips(archive_tracking 2)
-    expect_log_lacks(archive_tracking "All 11 formal core_app assets are tracked, including tone.wav")
-    expect_log_lacks(archive_tracking "core_app naming, target, interface, and 11-asset contract passed")
+    expect_log_lacks(archive_tracking "All 12 formal core_app assets are tracked, including tone.wav")
+    expect_log_lacks(archive_tracking "core_app naming, target, interface, and 12-asset contract passed")
 endif()
 
 string(CONCAT legacy_domain "c" "ry")
@@ -577,7 +577,7 @@ if(EXISTS "${archive_build}/CTestTestfile.cmake")
         -R "^test_core_app_naming_contract$" -V)
     expect_tracking_skips(archive_exact_exemption 1)
     expect_log_lacks(archive_exact_exemption "core_app naming contract failed")
-    expect_log_lacks(archive_exact_exemption "core_app naming, target, interface, and 11-asset contract passed")
+    expect_log_lacks(archive_exact_exemption "core_app naming, target, interface, and 12-asset contract passed")
 endif()
 
 function(run_naming_mutation name mutation expected_error)

@@ -7,6 +7,7 @@ endforeach()
 set(expected
     engine/assets/core_app/actors.sidecar
     engine/assets/core_app/chaser.lua
+    engine/assets/core_app/chime.wav
     engine/assets/core_app/deterministic.scenario
     engine/assets/core_app/director.lua
     engine/assets/core_app/level.banm
@@ -55,4 +56,4 @@ if(NOT "${tracked}" STREQUAL "${expected}")
         "formal asset tracking mismatch: ${tracked_count} tracked, ${expected_count} required\n"
         "tracked=${tracked}\nexpected=${expected}")
 endif()
-message(STATUS "All 11 formal core_app assets are tracked, including tone.wav")
+message(STATUS "All 12 formal core_app assets are tracked, including tone.wav")

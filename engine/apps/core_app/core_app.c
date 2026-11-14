@@ -86,6 +86,8 @@ typedef struct CoreLevel {
     u32 pending_area_enters;
     u32 dropped_area_enters;
     bool sound_live;
+    /* The item pick-up sound was started at the user and still owns a slot. */
+    bool item_sound_live;
     f32 nav_heights[64];
     Vec3 chaser_position;
     BreakAiPath chase_path;
@@ -292,6 +294,7 @@ static BreakRuntimeError app_runtime_decode(const u8 *bytes, usize size,
 }
 
 static BreakRuntimeError app_audio_drain(CoreApp *app, u32 budget);
+static BreakRuntimeError app_audio_stop_level(CoreApp *app, const CoreLevel *level);
 
 static BreakRuntimeError app_trace(CoreApp *app, const char *format, ...) {
     if (!app || !app->trace || !format) return BREAK_RUNTIME_INVALID;
@@ -1352,9 +1355,7 @@ static BreakRuntimeError core_app_level_commit(CoreApp *app, CoreLevel *candidat
     *out_committed = true;
     if (previous) {
         u64 previous_generation = previous->generation;
-        result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_STOP,
-                                    previous_generation);
-        if (result == BREAK_RUNTIME_OK) result = app_audio_drain(app, 1u);
+        result = app_audio_stop_level(app, previous);
         if (result != BREAK_RUNTIME_OK) return result;
         result = app_trace_flow_discard(app, previous);
         if (result != BREAK_RUNTIME_OK) return result;
@@ -1778,10 +1779,7 @@ static BreakRuntimeError core_app_unload_level(CoreApp *app, bool with_audio) {
     CoreLevel *level = app->level;
     if (!level) return BREAK_RUNTIME_OK;
     BreakRuntimeError result = BREAK_RUNTIME_OK;
-    if (with_audio) {
-        result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_STOP, level->generation);
-        if (result == BREAK_RUNTIME_OK) result = app_audio_drain(app, 1u);
-    }
+    if (with_audio) result = app_audio_stop_level(app, level);
     if (result != BREAK_RUNTIME_OK) return result;
     result = app_trace_flow_discard(app, level);
     if (result != BREAK_RUNTIME_OK) return result;
@@ -1801,6 +1799,25 @@ static BreakRuntimeError core_app_unload_level(CoreApp *app, bool with_audio) {
 
 /* The null backend has no trace sink, so draining dispatches on the started
  * mode instead of always assuming a record trace is present. */
+/* Stops every source the level may still play before the level goes: the
+ * chaser source always (a STOP without a slot is dropped as stale), the item
+ * sound only when it was started. */
+static BreakRuntimeError app_audio_stop_level(CoreApp *app, const CoreLevel *level) {
+    Vec3 origin = vec3(0.0f, 0.0f, 0.0f);
+    BreakRuntimeError result = core_app_audio_enqueue_sound(
+        &app->audio, CORE_APP_AUDIO_STOP, level->generation, CORE_APP_AUDIO_SOUND_CHASER,
+        origin);
+    u32 queued = result == BREAK_RUNTIME_OK ? 1u : 0u;
+    if (result == BREAK_RUNTIME_OK && level->item_sound_live) {
+        result = core_app_audio_enqueue_sound(&app->audio, CORE_APP_AUDIO_STOP,
+                                              level->generation, CORE_APP_AUDIO_SOUND_ITEM,
+                                              origin);
+        if (result == BREAK_RUNTIME_OK) queued++;
+    }
+    if (result != BREAK_RUNTIME_OK) return result;
+    return app_audio_drain(app, queued);
+}
+
 static BreakRuntimeError app_audio_drain(CoreApp *app, u32 budget) {
     if (app->audio.mode == CORE_APP_AUDIO_BACKEND_RECORD) {
         return core_app_audio_drain_record(&app->audio, budget);
@@ -1988,7 +2005,19 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
         return BREAK_RUNTIME_FAILED;
     }
     if (items != level->user_items) {
+        bool gained = items > level->user_items;
         level->user_items = items;
+        if (gained) {
+            /* A pick-up plays the item sound once where the user stands. */
+            Vec3 at = vec3(0.0f, 0.0f, 0.0f);
+            result = core_app_simulation_user_position(level->simulation, &at);
+            if (result != BREAK_RUNTIME_OK) return result;
+            result = core_app_audio_enqueue_sound(&app->audio, CORE_APP_AUDIO_PLAY_3D,
+                                                  level->generation,
+                                                  CORE_APP_AUDIO_SOUND_ITEM, at);
+            if (result != BREAK_RUNTIME_OK) return result;
+            level->item_sound_live = true;
+        }
         result = app_trace(app,
             "COREAPPTRACE version=1 event=item generation=%" PRIu64
             " tick=%u entity=%u item=%u count=%u\n", level->generation, tick,

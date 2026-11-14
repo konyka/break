@@ -22,6 +22,9 @@
 #define CORE_APP_CUBE_INDICES 36u
 #define CORE_APP_WAV_SAMPLES 4410u
 #define CORE_APP_WAV_BYTES (44u + CORE_APP_WAV_SAMPLES * 2u)
+#define CORE_APP_CHIME_SAMPLES 2205u
+#define CORE_APP_CHIME_BYTES (44u + CORE_APP_CHIME_SAMPLES * 2u)
+#define CORE_APP_CHIME_PERIOD 40u
 
 static const char *const k_class_names[CORE_APP_LEVEL_ENTITIES] = {
     "Ground", "User", "Chaser", "DynamicWall", "Vehicle",
@@ -482,11 +485,10 @@ static bool bake_animation(const char *output) {
     return atomic_write_named(output, "level.banm", encoded, written);
 }
 
-static bool bake_wav(const char *output) {
-    u8 wav[CORE_APP_WAV_BYTES];
-    memset(wav, 0, sizeof(wav));
+/* Canonical 44100 Hz mono PCM16 header for samples frames. */
+static void put_wav_header(u8 *wav, u32 samples) {
     memcpy(wav, "RIFF", 4);
-    put32(wav + 4, (u32)sizeof(wav) - 8u);
+    put32(wav + 4, 36u + samples * 2u);
     memcpy(wav + 8, "WAVEfmt ", 8);
     put32(wav + 16, 16u);
     put16(wav + 20, 1u);
@@ -496,7 +498,13 @@ static bool bake_wav(const char *output) {
     put16(wav + 32, 2u);
     put16(wav + 34, 16u);
     memcpy(wav + 36, "data", 4);
-    put32(wav + 40, CORE_APP_WAV_SAMPLES * 2u);
+    put32(wav + 40, samples * 2u);
+}
+
+static bool bake_wav(const char *output) {
+    u8 wav[CORE_APP_WAV_BYTES];
+    memset(wav, 0, sizeof(wav));
+    put_wav_header(wav, CORE_APP_WAV_SAMPLES);
     u32 seed = 0xC0FFEE12u;
     for (u32 i = 0; i < CORE_APP_WAV_SAMPLES; ++i) {
         seed ^= seed << 13;
@@ -507,6 +515,18 @@ static bool bake_wav(const char *output) {
         put16(wav + 44u + i * 2u, (u16)(i16)sample);
     }
     return atomic_write_named(output, "tone.wav", wav, sizeof(wav));
+}
+
+/* The item pick-up sound: a 50 ms square wave, higher than the tone. */
+static bool bake_chime(const char *output) {
+    u8 wav[CORE_APP_CHIME_BYTES];
+    memset(wav, 0, sizeof(wav));
+    put_wav_header(wav, CORE_APP_CHIME_SAMPLES);
+    for (u32 i = 0; i < CORE_APP_CHIME_SAMPLES; ++i) {
+        i32 sample = (i % CORE_APP_CHIME_PERIOD < CORE_APP_CHIME_PERIOD / 2u) ? 8192 : -8192;
+        put16(wav + 44u + i * 2u, (u16)(i16)sample);
+    }
+    return atomic_write_named(output, "chime.wav", wav, sizeof(wav));
 }
 
 static bool bake_text_assets(const char *output) {
@@ -584,7 +604,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!bake_scene(output) || !bake_sidecar(output) || !bake_flow(output) ||
-        !bake_animation(output) || !bake_wav(output) || !bake_text_assets(output)) {
+        !bake_animation(output) || !bake_wav(output) || !bake_chime(output) ||
+        !bake_text_assets(output)) {
         fputs("core_app_asset_bake: asset generation failed\n", stderr);
         return 1;
     }

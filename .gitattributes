@@ -13,6 +13,7 @@ engine/assets/core_app/level.banm binary
 engine/assets/core_app/level.bscn binary
 engine/assets/core_app/level.fg binary
 engine/assets/core_app/tone.wav binary
+engine/assets/core_app/chime.wav binary
 
 # Golden reference images are binary PPMs. Without this, core.autocrlf=true
 # rewrites the LF in their ASCII header (and any 0x0A pixel byte) to CRLF on

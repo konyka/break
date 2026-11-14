@@ -810,13 +810,13 @@ TEST(audio_record_trace_keeps_command_order_and_generation) {
               BREAK_RUNTIME_OK);
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text,
-        "event=audio kind=listener generation=3 sequence=1 source=0\n"));
+        "event=audio kind=listener generation=3 sequence=1 source=0 sound=none\n"));
     ASSERT_NOT_NULL(strstr(text,
-        "event=audio kind=play_3d generation=3 sequence=2 source=1\n"));
+        "event=audio kind=play_3d generation=3 sequence=2 source=1 sound=chaser\n"));
     ASSERT_NOT_NULL(strstr(text,
-        "event=audio kind=position generation=3 sequence=3 source=1\n"));
+        "event=audio kind=position generation=3 sequence=3 source=1 sound=chaser\n"));
     ASSERT_NOT_NULL(strstr(text,
-        "event=audio kind=stop generation=3 sequence=4 source=1\n"));
+        "event=audio kind=stop generation=3 sequence=4 source=1 sound=chaser\n"));
     fclose(trace);
 }
 
@@ -1008,7 +1008,7 @@ TEST(audio_device_drain_drives_the_audio_system) {
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text, "event=audio mode=device result=ready backend=fake"));
     ASSERT_NOT_NULL(strstr(text, "listener_updates=1 plays=1 moves=1 stops=1 evictions=0 "
-                                 "owner_thread=0\n"));
+                                 "item_plays=0 owner_thread=0\n"));
     fclose(trace);
 }
 
@@ -1113,7 +1113,7 @@ TEST(audio_owner_thread_makes_every_device_call) {
     ASSERT_TRUE(audio.owner == NULL);
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text, "listener_updates=1 plays=1 moves=1 stops=0 evictions=0 "
-                                 "owner_thread=1\n"));
+                                 "item_plays=0 owner_thread=1\n"));
     fclose(trace);
 }
 
@@ -1133,8 +1133,8 @@ TEST(audio_owner_thread_drains_the_queue_before_join) {
     ASSERT_EQ(audio.device_plays, CORE_APP_AUDIO_SOURCE_SLOTS);
     ASSERT_EQ(audio.device_calls_off_owner, 0u);
     audio_trace_read(trace, text, sizeof(text));
-    ASSERT_NOT_NULL(strstr(text, "kind=play_3d generation=8 sequence=8 source=8\n"));
-    ASSERT_NOT_NULL(strstr(text, "plays=8 moves=0 stops=0 evictions=0 owner_thread=1\n"));
+    ASSERT_NOT_NULL(strstr(text, "kind=play_3d generation=8 sequence=8 source=8 sound=chaser\n"));
+    ASSERT_NOT_NULL(strstr(text, "plays=8 moves=0 stops=0 evictions=0 item_plays=0 owner_thread=1\n"));
     fclose(trace);
 }
 
@@ -1184,6 +1184,119 @@ TEST(audio_owner_thread_rejects_a_frame_drain_wait) {
     ASSERT_EQ(audio.device_listener_updates + audio.overloads,
               (u64)CORE_APP_AUDIO_QUEUE_CAPACITY);
     ASSERT_EQ(audio.device_calls_off_owner, 0u);
+    fclose(trace);
+}
+
+/* The chaser loop and the item pick-up are two sources of one level: each
+ * sound claims its own slot, and a STOP ends only the sound it names. */
+TEST(audio_sound_selection_keeps_two_sources_per_level) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    char text[4096];
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start(&audio, trace), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_PLAY_3D, 5u,
+                                           CORE_APP_AUDIO_SOUND_CHASER, vec3(1.0f, 0.0f, 0.0f)),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_PLAY_3D, 5u,
+                                           CORE_APP_AUDIO_SOUND_ITEM, vec3(0.0f, 0.0f, 2.0f)),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_POSITION, 5u,
+                                           CORE_APP_AUDIO_SOUND_CHASER, vec3(2.0f, 0.0f, 0.0f)),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_STOP, 5u,
+                                           CORE_APP_AUDIO_SOUND_ITEM, vec3(0.0f, 0.0f, 0.0f)),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio kind=play_3d generation=5 sequence=1 source=1 sound=chaser\n"));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio kind=play_3d generation=5 sequence=2 source=2 sound=item\n"));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio kind=position generation=5 sequence=3 source=1 sound=chaser\n"));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio kind=stop generation=5 sequence=4 source=2 sound=item\n"));
+    ASSERT_EQ(audio.stale_commands, 0u);
+    ASSERT_EQ(audio.play_slots[0].slot, 1u);
+    ASSERT_EQ(audio.play_slots[0].sound, CORE_APP_AUDIO_SOUND_CHASER);
+    ASSERT_EQ(audio.play_slots[1].slot, CORE_APP_AUDIO_SOURCE_INVALID);
+    /* With the item slot retired, an item POSITION finds nothing to move. */
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_POSITION, 5u,
+                                           CORE_APP_AUDIO_SOUND_ITEM, vec3(0.0f, 0.0f, 0.0f)),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_record(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.stale_commands, 1u);
+    fclose(trace);
+}
+
+TEST(audio_enqueue_sound_rejects_mismatched_sound) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    Vec3 origin = vec3(0.0f, 0.0f, 0.0f);
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start(&audio, trace), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_LISTENER, 1u,
+                                           CORE_APP_AUDIO_SOUND_ITEM, origin),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_PLAY_3D, 1u,
+                                           CORE_APP_AUDIO_SOUND_NONE, origin),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_STOP, 1u,
+                                           (CoreAppAudioSound)99, origin),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(audio.count, 0u);
+    ASSERT_EQ(audio.next_sequence, 1u);
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_LISTENER, 1u,
+                                           CORE_APP_AUDIO_SOUND_NONE, origin),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.count, 1u);
+    fclose(trace);
+}
+
+/* The device plays the file the event chose: two distinct sources, and the
+ * item one is counted on its own. */
+TEST(audio_device_plays_the_sound_chosen_by_the_event) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    char text[8192];
+    ASSERT_NOT_NULL(trace);
+    AudioSystem *system = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(system);
+    ASSERT_EQ(core_app_audio_start_system(&audio, trace, system, CORE_APP_SOURCE_ASSET_DIR),
+              BREAK_RUNTIME_OK);
+    ASSERT_NOT_NULL(strstr(audio.sound_paths[CORE_APP_AUDIO_SOUND_CHASER], "/tone.wav"));
+    ASSERT_NOT_NULL(strstr(audio.sound_paths[CORE_APP_AUDIO_SOUND_ITEM], "/chime.wav"));
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_PLAY_3D, 6u,
+                                           CORE_APP_AUDIO_SOUND_CHASER, vec3(1.0f, 0.0f, 0.0f)),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_PLAY_3D, 6u,
+                                           CORE_APP_AUDIO_SOUND_ITEM, vec3(0.0f, 0.0f, 3.0f)),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    u32 chaser = audio.device_sources[0];
+    u32 item = audio.device_sources[1];
+    ASSERT_TRUE(chaser != 0u);
+    ASSERT_TRUE(item != 0u);
+    ASSERT_TRUE(chaser != item);
+    ASSERT_EQ(audio.device_plays, 2u);
+    ASSERT_EQ(audio.device_failures, 0u);
+    ASSERT_EQ(audio.device_plays_by_sound[CORE_APP_AUDIO_SOUND_CHASER], 1u);
+    ASSERT_EQ(audio.device_plays_by_sound[CORE_APP_AUDIO_SOUND_ITEM], 1u);
+    ASSERT_EQ(core_app_audio_enqueue_sound(&audio, CORE_APP_AUDIO_STOP, 6u,
+                                           CORE_APP_AUDIO_SOUND_CHASER, vec3(0.0f, 0.0f, 0.0f)),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_TRUE(audio_source_at_end(system, chaser));
+    ASSERT_FALSE(audio_source_at_end(system, item));
+    audio_shutdown(&audio);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text, "plays=2 moves=0 stops=1 evictions=0 item_plays=1 "
+                                 "owner_thread=0\n"));
     fclose(trace);
 }
 
@@ -1251,6 +1364,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_owner_thread_drains_the_queue_before_join);
     RUN_TEST(audio_owner_thread_keeps_the_stale_stop_check);
     RUN_TEST(audio_owner_thread_rejects_a_frame_drain_wait);
+    RUN_TEST(audio_sound_selection_keeps_two_sources_per_level);
+    RUN_TEST(audio_enqueue_sound_rejects_mismatched_sound);
+    RUN_TEST(audio_device_plays_the_sound_chosen_by_the_event);
     RUN_TEST(audio_flush_without_owner_reports_the_backlog);
     RUN_TEST(audio_device_drain_requires_a_device);
 TEST_MAIN_END()

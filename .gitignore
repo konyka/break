@@ -63,6 +63,7 @@ frag.spv
 *.bin
 *.wav
 !engine/assets/core_app/tone.wav
+!engine/assets/core_app/chime.wav
 .qoder/
 screenshot_*.bmp
 .worktrees/

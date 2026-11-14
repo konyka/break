@@ -48,7 +48,7 @@ typedef struct {
 
 static const char *const k_asset_names[] = {
     "level.bscn", "level.fg", "actors.sidecar", "director.lua",
-    "user.lua", "chaser.lua", "level.banm", "tone.wav",
+    "user.lua", "chaser.lua", "level.banm", "tone.wav", "chime.wav",
     "deterministic.scenario", "load_unload.scenario", "rollback.scenario"
 };
 static const usize k_asset_count = sizeof(k_asset_names) / sizeof(k_asset_names[0]);
@@ -746,6 +746,33 @@ TEST(wav_is_canonical_44100_hz_mono_pcm16) {
     free(bytes);
 }
 
+TEST(chime_wav_is_canonical_44100_hz_mono_pcm16) {
+    ASSERT_EQ(ensure_baked(), 0);
+    usize size = 0;
+    u8 *bytes = test_read_file(formal_asset_dir(), "chime.wav", 65536u, &size);
+    ASSERT_NOT_NULL(bytes);
+    ASSERT_EQ(size, 44u + 2205u * 2u);
+    ASSERT_TRUE(memcmp(bytes, "RIFF", 4) == 0);
+    ASSERT_TRUE(memcmp(bytes + 8, "WAVEfmt ", 8) == 0);
+    ASSERT_TRUE(memcmp(bytes + 36, "data", 4) == 0);
+    ASSERT_EQ(read_u32(bytes + 4), (u32)size - 8u);
+    ASSERT_EQ(read_u16(bytes + 20), 1u);
+    ASSERT_EQ(read_u16(bytes + 22), 1u);
+    ASSERT_EQ(read_u32(bytes + 24), 44100u);
+    ASSERT_EQ(read_u16(bytes + 34), 16u);
+    ASSERT_EQ(read_u32(bytes + 40), 2205u * 2u);
+    for (u32 i = 0; i < 2205u; ++i) {
+        i16 expected = (i % 40u) < 20u ? (i16)8192 : (i16)-8192;
+        ASSERT_EQ((i16)read_u16(bytes + 44u + i * 2u), expected);
+    }
+    usize tone_size = 0;
+    u8 *tone = test_read_file(formal_asset_dir(), "tone.wav", 65536u, &tone_size);
+    ASSERT_NOT_NULL(tone);
+    ASSERT_TRUE(tone_size != size);
+    free(tone);
+    free(bytes);
+}
+
 TEST(lua_assets_execute_and_broken_actor_tick_fails) {
     ASSERT_EQ(ensure_baked(), 0);
     usize director_size = 0, user_size = 0, chaser_size = 0;
@@ -1409,6 +1436,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(flow_deserializes_enter_delay_add_item_chain);
     RUN_TEST(animation_decodes_within_public_error_bounds);
     RUN_TEST(wav_is_canonical_44100_hz_mono_pcm16);
+    RUN_TEST(chime_wav_is_canonical_44100_hz_mono_pcm16);
     RUN_TEST(lua_assets_execute_and_broken_actor_tick_fails);
     RUN_TEST(checkpoint_manifest_is_versioned_little_endian_and_detects_corruption);
     RUN_TEST(checkpoint_rejects_legacy_magic);

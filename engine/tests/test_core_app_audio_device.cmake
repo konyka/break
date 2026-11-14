@@ -7,7 +7,8 @@
 #   2. the probe tone was played by the device (the cursor advanced),
 #   3. the command queue drove the device: the listener followed the user on
 #      every fixed tick, the Area enter started the chaser source, later ticks
-#      moved it, the unload stopped it, and no command failed on the device,
+#      moved it, the item pickup played the item sound, the unload stopped
+#      them, and no command failed on the device,
 #   4. the device was closed after the runtime stopped admitting work and
 #      before the runtime reported it had stopped.
 #
@@ -32,9 +33,9 @@ file(WRITE "${scenario}"
     "1 level\n"
     "1 key w 1\n"
     "40 key w 0\n"
-    "41 unload\n"
-    "42 level\n"
-    "60 quit\n")
+    "80 unload\n"
+    "81 level\n"
+    "100 quit\n")
 
 execute_process(
     COMMAND "${CORE_APP}" --render=record --audio=device --require-device --fixed-step
@@ -87,7 +88,7 @@ if(device_name STREQUAL "none" OR device_name STREQUAL "")
 endif()
 
 if(NOT trace_text MATCHES
-   "event=audio mode=device result=stopped backend=${device_backend} probe_complete=([01]) probe_seconds=([0-9.]+) failures=([0-9]+) listener_updates=([0-9]+) plays=([0-9]+) moves=([0-9]+) stops=([0-9]+) evictions=([0-9]+)")
+   "event=audio mode=device result=stopped backend=${device_backend} probe_complete=([01]) probe_seconds=([0-9.]+) failures=([0-9]+) listener_updates=([0-9]+) plays=([0-9]+) moves=([0-9]+) stops=([0-9]+) evictions=([0-9]+) item_plays=([0-9]+)")
     message(FATAL_ERROR "the device was never closed\n${trace_text}")
 endif()
 set(probe_complete "${CMAKE_MATCH_1}")
@@ -97,20 +98,26 @@ set(listener_updates "${CMAKE_MATCH_4}")
 set(device_plays "${CMAKE_MATCH_5}")
 set(device_moves "${CMAKE_MATCH_6}")
 set(device_stops "${CMAKE_MATCH_7}")
+set(device_item_plays "${CMAKE_MATCH_9}")
 # Every device call after start-up must come from the audio owner thread.
 if(NOT trace_text MATCHES "event=audio mode=device result=stopped [^\n]* owner_thread=1\n")
     message(FATAL_ERROR "the device was not driven by the audio owner thread\n${trace_text}")
 endif()
-# The listener follows the user once per fixed tick, so a 60-tick run must
+# The listener follows the user once per fixed tick, so a 100-tick run must
 # have driven the device listener on (almost) every tick, not just once.
 if(listener_updates LESS 40)
     message(FATAL_ERROR "the command queue drove the device listener only ${listener_updates} times")
 endif()
 # Walking forward enters the trigger Area at tick 30: one PLAY_3D on the
-# chaser, POSITION on ticks 31..40, and the tick-41 unload STOPs it.
-if(NOT device_plays EQUAL 1 OR device_moves LESS 5 OR device_stops LESS 1)
+# chaser, POSITION on later ticks, and the tick-80 unload STOPs it. The Flow
+# delay adds the item at tick 61, which plays the item sound once, so the
+# device played two sounds and exactly one of them was the item sound.
+if(NOT device_plays EQUAL 2 OR device_moves LESS 5 OR device_stops LESS 1)
     message(FATAL_ERROR "level sound did not reach the device: plays=${device_plays}"
                         " moves=${device_moves} stops=${device_stops}")
+endif()
+if(NOT device_item_plays EQUAL 1)
+    message(FATAL_ERROR "the item pickup played the item sound ${device_item_plays} times")
 endif()
 if(NOT device_failures EQUAL 0)
     message(FATAL_ERROR "${device_failures} commands failed on the device")
@@ -136,4 +143,4 @@ endif()
 message(STATUS "verified audio device backend=${device_backend} device=${device_name}"
                " probe_complete=${probe_complete} probe_seconds=${probe_seconds}"
                " listener_updates=${listener_updates} plays=${device_plays}"
-               " moves=${device_moves} stops=${device_stops}")
+               " moves=${device_moves} stops=${device_stops} item_plays=${device_item_plays}")

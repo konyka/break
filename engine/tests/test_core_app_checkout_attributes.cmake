@@ -16,7 +16,8 @@ set(required_rules
     "engine/assets/core_app/level.banm binary"
     "engine/assets/core_app/level.bscn binary"
     "engine/assets/core_app/level.fg binary"
-    "engine/assets/core_app/tone.wav binary")
+    "engine/assets/core_app/tone.wav binary"
+    "engine/assets/core_app/chime.wav binary")
 foreach(rule IN LISTS required_rules)
     list(FIND checkout_attribute_lines "${rule}" checkout_rule_index)
     if(checkout_rule_index EQUAL -1)
@@ -52,6 +53,7 @@ set(text_assets
     engine/assets/core_app/user.lua
     engine/assets/core_app/rollback.scenario)
 set(binary_assets
+    engine/assets/core_app/chime.wav
     engine/assets/core_app/level.banm
     engine/assets/core_app/level.bscn
     engine/assets/core_app/level.fg
@@ -110,4 +112,4 @@ foreach(asset IN LISTS formal_assets)
         message(FATAL_ERROR "internal asset classification missing for ${asset}")
     endif()
 endforeach()
-message(STATUS "All 11 formal core_app assets have classified checkout attributes")
+message(STATUS "All 12 formal core_app assets have classified checkout attributes")

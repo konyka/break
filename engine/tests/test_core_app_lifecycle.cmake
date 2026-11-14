@@ -1073,9 +1073,15 @@ if(DEFINED SCRIPT_MODE)
     # The Area enter at tick 30 starts one chaser-attached source; every later
     # tick moves it to the chaser (ticks 31..180).
     expect_event_count(script_walk_plays "${walk}"
-        "event=audio kind=play_3d generation=1 sequence=[0-9]+ source=1\n" 1)
+        "event=audio kind=play_3d generation=1 sequence=[0-9]+ source=1 sound=chaser\n" 1)
+    # The tick-61 pickup starts one item sound at the user, separate from the
+    # chaser source, and never moves it.
+    expect_event_count(script_walk_item_plays "${walk}"
+        "event=audio kind=play_3d generation=1 sequence=[0-9]+ source=2 sound=item\n" 1)
+    expect_event_count(script_walk_item_moves "${walk}"
+        "event=audio kind=position generation=1 sequence=[0-9]+ source=[0-9]+ sound=item\n" 0)
     expect_event_count(script_walk_moves "${walk}"
-        "event=audio kind=position generation=1 sequence=[0-9]+ source=1\n" 150)
+        "event=audio kind=position generation=1 sequence=[0-9]+ source=1 sound=chaser\n" 150)
     string(FIND "${walk}" "event=flow kind=post key=1001 generation=1 tick=30" walk_post_at)
     string(FIND "${walk}" "event=audio kind=play_3d generation=1" walk_play_at)
     string(FIND "${walk}" "event=audio kind=position generation=1" walk_move_at)
@@ -1105,9 +1111,11 @@ if(DEFINED SCRIPT_MODE)
     # Ticks 31..40 move the source; the tick-41 unload stops that same
     # generation-1 source before the level goes, and generation 2 starts none.
     expect_event_count(script_discard_moves "${discard}"
-        "event=audio kind=position generation=1 sequence=[0-9]+ source=1\n" 10)
+        "event=audio kind=position generation=1 sequence=[0-9]+ source=1 sound=chaser\n" 10)
     expect_event_count(script_discard_stops "${discard}"
-        "event=audio kind=stop generation=1 sequence=[0-9]+ source=1\n" 1)
+        "event=audio kind=stop generation=1 sequence=[0-9]+ source=1 sound=chaser\n" 1)
+    expect_event_count(script_discard_item_sound "${discard}"
+        "event=audio kind=[a-z_0-9]+ generation=[0-9]+ sequence=[0-9]+ source=[0-9]+ sound=item\n" 0)
     expect_event_count(script_discard_new_sound "${discard}"
         "event=audio kind=(play_3d|position|stop) generation=2 " 0)
     string(FIND "${discard}" "event=audio kind=stop generation=1" discard_stop_at)
@@ -1277,7 +1285,7 @@ else()
     expect_ordered("COREAPPTRACE version=1 event=runtime_running")
     expect_ordered("COREAPPTRACE version=1 event=level_loaded generation=1")
     expect_ordered("COREAPPTRACE version=1 event=frame frame=1 generation=1")
-    expect_ordered("COREAPPTRACE version=1 event=audio kind=listener generation=1 sequence=1 source=0")
+    expect_ordered("COREAPPTRACE version=1 event=audio kind=listener generation=1 sequence=1 source=0 sound=none")
     expect_ordered("COREAPPTRACE version=1 event=level_unloaded generation=1")
     expect_ordered("COREAPPTRACE version=1 event=level_loaded generation=2")
     expect_ordered("COREAPPTRACE version=1 event=runtime_stopped")

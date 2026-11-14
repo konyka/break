@@ -56,54 +56,80 @@ static void sound_reset(CoreAppAudio *audio, CoreAppAudioBackend mode) {
     audio->producing = true;
 }
 
-/* Only a PLAY_3D owns a slot. POSITION and STOP resolve to a slot the level
- * already plays on, so a command from an unloaded level never allocates a
- * fresh slot and never touches the new level's source. */
-static u32 sound_claim_slot(CoreAppAudio *audio, u64 generation) {
+static const char *sound_name(CoreAppAudioSound sound) {
+    switch (sound) {
+        case CORE_APP_AUDIO_SOUND_NONE: return "none";
+        case CORE_APP_AUDIO_SOUND_CHASER: return "chaser";
+        case CORE_APP_AUDIO_SOUND_ITEM: return "item";
+    }
+    return "unknown";
+}
+
+static bool sound_fits_kind(CoreAppAudioCommandKind kind, CoreAppAudioSound sound) {
+    if (kind == CORE_APP_AUDIO_LISTENER) return sound == CORE_APP_AUDIO_SOUND_NONE;
+    return sound == CORE_APP_AUDIO_SOUND_CHASER || sound == CORE_APP_AUDIO_SOUND_ITEM;
+}
+
+static bool sound_slot_is(const CoreAppAudioSlot *slot, u64 generation,
+                          CoreAppAudioSound sound) {
+    return slot->slot != CORE_APP_AUDIO_SOURCE_INVALID && slot->generation == generation &&
+           slot->sound == sound;
+}
+
+/* Only a PLAY_3D owns a slot, one per (generation, sound). POSITION and STOP
+ * resolve to the slot that sound of the level already plays on, so a command
+ * from an unloaded level never allocates a fresh slot and never touches the
+ * new level's sources, and one sound never moves or stops another. */
+static u32 sound_claim_slot(CoreAppAudio *audio, u64 generation, CoreAppAudioSound sound) {
     for (u32 i = 0u; i < CORE_APP_AUDIO_SOURCE_SLOTS; ++i) {
-        if (audio->play_slots[i].slot != CORE_APP_AUDIO_SOURCE_INVALID &&
-            audio->play_slots[i].generation == generation) {
+        if (sound_slot_is(&audio->play_slots[i], generation, sound)) {
             return audio->play_slots[i].slot;
         }
     }
+    u32 index = CORE_APP_AUDIO_SOURCE_SLOTS;
     for (u32 i = 0u; i < CORE_APP_AUDIO_SOURCE_SLOTS; ++i) {
         if (audio->play_slots[i].slot == CORE_APP_AUDIO_SOURCE_INVALID) {
-            audio->play_slots[i].slot = i + 1u;
-            audio->play_slots[i].generation = generation;
-            return audio->play_slots[i].slot;
+            index = i;
+            break;
         }
     }
-    u32 index = audio->next_slot % CORE_APP_AUDIO_SOURCE_SLOTS;
-    audio->next_slot++;
+    if (index == CORE_APP_AUDIO_SOURCE_SLOTS) {
+        index = audio->next_slot % CORE_APP_AUDIO_SOURCE_SLOTS;
+        audio->next_slot++;
+    }
     audio->play_slots[index].slot = index + 1u;
     audio->play_slots[index].generation = generation;
+    audio->play_slots[index].sound = sound;
     return audio->play_slots[index].slot;
 }
 
-static u32 sound_lookup_slot(const CoreAppAudio *audio, u64 generation) {
+static u32 sound_lookup_slot(const CoreAppAudio *audio, u64 generation,
+                             CoreAppAudioSound sound) {
     for (u32 i = 0u; i < CORE_APP_AUDIO_SOURCE_SLOTS; ++i) {
-        if (audio->play_slots[i].slot != CORE_APP_AUDIO_SOURCE_INVALID &&
-            audio->play_slots[i].generation == generation) {
+        if (sound_slot_is(&audio->play_slots[i], generation, sound)) {
             return audio->play_slots[i].slot;
         }
     }
     return CORE_APP_AUDIO_SOURCE_INVALID;
 }
 
-static bool sound_slot_matches(const CoreAppAudio *audio, u32 slot, u64 generation) {
+static bool sound_slot_matches(const CoreAppAudio *audio, u32 slot, u64 generation,
+                               CoreAppAudioSound sound) {
     if (slot == CORE_APP_AUDIO_SOURCE_INVALID) return false;
     for (u32 i = 0u; i < CORE_APP_AUDIO_SOURCE_SLOTS; ++i) {
         if (audio->play_slots[i].slot == slot) {
-            return audio->play_slots[i].generation == generation;
+            return audio->play_slots[i].generation == generation &&
+                   audio->play_slots[i].sound == sound;
         }
     }
     return false;
 }
 
-static void sound_retire_slot(CoreAppAudio *audio, u32 slot, u64 generation) {
+static void sound_retire_slot(CoreAppAudio *audio, u32 slot, u64 generation,
+                              CoreAppAudioSound sound) {
     for (u32 i = 0u; i < CORE_APP_AUDIO_SOURCE_SLOTS; ++i) {
         if (audio->play_slots[i].slot == slot &&
-            audio->play_slots[i].generation == generation) {
+            sound_slot_is(&audio->play_slots[i], generation, sound)) {
             audio->play_slots[i].slot = CORE_APP_AUDIO_SOURCE_INVALID;
             return;
         }
@@ -128,10 +154,18 @@ static bool sound_backend_is_device(const char *name) {
 }
 
 static bool sound_set_path(CoreAppAudio *audio, const char *asset_root) {
+    static const char *const files[CORE_APP_AUDIO_SOUND_COUNT] = {NULL, "tone.wav",
+                                                                 "chime.wav"};
     if (!asset_root) return false;
-    int written = snprintf(audio->sound_path, sizeof(audio->sound_path), "%s/tone.wav",
-                           asset_root);
-    return written > 0 && (usize)written < sizeof(audio->sound_path);
+    for (u32 sound = 0u; sound < CORE_APP_AUDIO_SOUND_COUNT; ++sound) {
+        char *path = audio->sound_paths[sound];
+        path[0] = '\0';
+        if (!files[sound]) continue;
+        int written = snprintf(path, sizeof(audio->sound_paths[sound]), "%s/%s", asset_root,
+                               files[sound]);
+        if (written <= 0 || (usize)written >= sizeof(audio->sound_paths[sound])) return false;
+    }
+    return true;
 }
 
 /* Takes ownership of system. On a trace failure the system is destroyed. */
@@ -183,7 +217,8 @@ BreakRuntimeError core_app_audio_start_device_backend(CoreAppAudio *audio, FILE 
     if (system && sound_backend_is_device(backend_name)) {
         u32 probe = 0u;
         if (sound_set_path(audio, asset_root)) {
-            probe = audio_play(system, audio->sound_path, 0.25f, false);
+            probe = audio_play(system, audio->sound_paths[CORE_APP_AUDIO_SOUND_CHASER],
+                               0.25f, false);
         }
         if (probe == 0u) {
             audio_system_destroy(system);
@@ -221,7 +256,8 @@ BreakRuntimeError core_app_audio_start_device(CoreAppAudio *audio, FILE *trace,
 }
 
 static BreakRuntimeError sound_enqueue_locked(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
-                                              u64 generation, Vec3 position) {
+                                              u64 generation, CoreAppAudioSound sound,
+                                              Vec3 position) {
     if (!audio->admission_open || !audio->producing || audio->queue_closed) {
         return BREAK_RUNTIME_CLOSED;
     }
@@ -235,26 +271,37 @@ static BreakRuntimeError sound_enqueue_locked(CoreAppAudio *audio, CoreAppAudioC
     command->kind = kind;
     command->generation = generation;
     command->position = position;
+    command->sound = sound;
     command->sequence = audio->next_sequence++;
     if (kind == CORE_APP_AUDIO_PLAY_3D) {
-        command->source = sound_claim_slot(audio, generation);
+        command->source = sound_claim_slot(audio, generation, sound);
     } else if (kind == CORE_APP_AUDIO_POSITION || kind == CORE_APP_AUDIO_STOP) {
-        command->source = sound_lookup_slot(audio, generation);
+        command->source = sound_lookup_slot(audio, generation, sound);
     }
     audio->count++;
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError core_app_audio_enqueue_at(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
-                                            u64 generation, Vec3 position) {
-    if (!audio || generation == 0u || !sound_kind(kind)) return BREAK_RUNTIME_INVALID;
+BreakRuntimeError core_app_audio_enqueue_sound(CoreAppAudio *audio,
+                                               CoreAppAudioCommandKind kind, u64 generation,
+                                               CoreAppAudioSound sound, Vec3 position) {
+    if (!audio || generation == 0u || !sound_kind(kind) || !sound_fits_kind(kind, sound)) {
+        return BREAK_RUNTIME_INVALID;
+    }
     CoreAppAudioOwner *owner = audio->owner;
-    if (!owner) return sound_enqueue_locked(audio, kind, generation, position);
+    if (!owner) return sound_enqueue_locked(audio, kind, generation, sound, position);
     platform_mutex_lock(&owner->mutex);
-    BreakRuntimeError result = sound_enqueue_locked(audio, kind, generation, position);
+    BreakRuntimeError result = sound_enqueue_locked(audio, kind, generation, sound, position);
     if (result == BREAK_RUNTIME_OK) platform_cond_signal(&owner->work);
     platform_mutex_unlock(&owner->mutex);
     return result;
+}
+
+BreakRuntimeError core_app_audio_enqueue_at(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
+                                            u64 generation, Vec3 position) {
+    CoreAppAudioSound sound = kind == CORE_APP_AUDIO_LISTENER ? CORE_APP_AUDIO_SOUND_NONE
+                                                              : CORE_APP_AUDIO_SOUND_CHASER;
+    return core_app_audio_enqueue_sound(audio, kind, generation, sound, position);
 }
 
 BreakRuntimeError core_app_audio_enqueue(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
@@ -296,13 +343,14 @@ static void sound_apply_device(CoreAppAudio *audio, const CoreAppAudioCommand *c
             *handle = 0u;
             audio->device_evictions++;
         }
-        u32 started = audio_play_3d_source(system, audio->sound_path, command->position, 0.5f,
-                                           false);
+        u32 started = audio_play_3d_source(system, audio->sound_paths[command->sound],
+                                           command->position, 0.5f, false);
         if (started == 0u) {
             audio->device_failures++;
         } else {
             *handle = started;
             audio->device_plays++;
+            audio->device_plays_by_sound[command->sound]++;
         }
     } else if (command->kind == CORE_APP_AUDIO_POSITION) {
         if (*handle != 0u) {
@@ -322,12 +370,13 @@ static void sound_apply_device(CoreAppAudio *audio, const CoreAppAudioCommand *c
  * under the owner lock when there is an owner, since enqueue claims slots. */
 static bool sound_admit(CoreAppAudio *audio, const CoreAppAudioCommand *command) {
     if (command->kind == CORE_APP_AUDIO_POSITION || command->kind == CORE_APP_AUDIO_STOP) {
-        if (!sound_slot_matches(audio, command->source, command->generation)) {
+        if (!sound_slot_matches(audio, command->source, command->generation,
+                                command->sound)) {
             audio->stale_commands++;
             return false;
         }
         if (command->kind == CORE_APP_AUDIO_STOP) {
-            sound_retire_slot(audio, command->source, command->generation);
+            sound_retire_slot(audio, command->source, command->generation, command->sound);
         }
     }
     return true;
@@ -339,9 +388,9 @@ static BreakRuntimeError sound_emit(CoreAppAudio *audio, const CoreAppAudioComma
     if (!audio->trace) return BREAK_RUNTIME_OK;
     if (fprintf(audio->trace,
                 "COREAPPTRACE version=1 event=audio kind=%s generation=%" PRIu64
-                " sequence=%" PRIu64 " source=%u\n",
+                " sequence=%" PRIu64 " source=%u sound=%s\n",
                 sound_kind_name(command->kind), command->generation, command->sequence,
-                command->source) < 0 ||
+                command->source, sound_name(command->sound)) < 0 ||
         fflush(audio->trace) != 0) {
         return BREAK_RUNTIME_FAILED;
     }
@@ -467,11 +516,12 @@ static BreakRuntimeError sound_close_device(CoreAppAudio *audio) {
                 "COREAPPTRACE version=1 event=audio mode=device result=stopped backend=%s "
                 "probe_complete=%u probe_seconds=%.3f failures=%" PRIu64
                 " listener_updates=%" PRIu64 " plays=%" PRIu64 " moves=%" PRIu64
-                " stops=%" PRIu64 " evictions=%" PRIu64 " owner_thread=%u\n",
+                " stops=%" PRIu64 " evictions=%" PRIu64 " item_plays=%" PRIu64
+                " owner_thread=%u\n",
                 audio->device_backend, complete ? 1u : 0u, (double)played,
                 audio->device_failures, audio->device_listener_updates, audio->device_plays,
                 audio->device_moves, audio->device_stops, audio->device_evictions,
-                sound_on_owner(audio) ? 1u : 0u) < 0 ||
+                audio->device_plays_by_sound[CORE_APP_AUDIO_SOUND_ITEM], sound_on_owner(audio) ? 1u : 0u) < 0 ||
         fflush(audio->trace) != 0) {
         return BREAK_RUNTIME_FAILED;
     }

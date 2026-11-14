@@ -1,3 +1,9 @@
+## Core App Task 9 slice 6：按事件选择声音资源（2026-11-14）
+
+- **交付**：新增 `CoreAppAudioSound`（none/chaser/item）和 `core_app_audio_enqueue_sound`。声源按 (generation, sound) 寻址，同一关卡可以同时有追踪者声源和拾取声源。拾取时在用户位置播放新正式资产 `chime.wav`，追踪者继续播放 `tone.wav`；卸载时各自 STOP。trace 行加 `sound=`，设备停止行加 `item_plays=`。正式资产增加到 12 个。设计见 `docs/design/core_app_integration.md` 的 slice 6 节。
+- **测试**：runtime 新增 3 个用例，assets 新增 1 个，五个资产契约改为 12 个，lifecycle 和 audio_device 的断言随之更新。先 RED，后 GREEN；真实 PulseAudio 设备得到 `plays=2 item_plays=1`；TSan 下 runtime 零报告；3 处变异都被判红。
+- **未做**：听感验证；拾取声不跟随用户移动。
+
 ## Editor remote RENDER 消息（2026-11-14）
 
 - **交付**：新增协议消息 `BREAK_EDITOR_MSG_RENDER = 21`，已登记进 `break_net` 默认 registry。请求是 `action/u8`：0 只读查询，1 请求一次视口 shader 重载（与 Ctrl+Shift+R 共用新的 `break_editor_shell_request_shader_reload`）。响应是 `reload/u8`、`rows/u8` 和每行 `len/u8 + text`，内容就是渲染调试面板的行。未知 action 返回 RESULT invalid，长度不是 1 字节则关闭会话。不改文档、不进 undo、不切换后端。
@@ -8,7 +14,7 @@
 
 - **交付**：`--audio=device` 接上真实设备后由独立 owner 线程执行全部 `AudioSystem` 调用；主线程只入队，帧 drain 不等待设备。新增 `core_app_audio_flush`、`core_app_audio_start_system_owned`，`result=stopped` 行末尾追加 `owner_thread=0|1`。设计与证据见 `docs/design/core_app_integration.md` 的 slice 5 节。
 - **测试**：`test_core_app_runtime` 新增 5 个用例（先 RED 后 GREEN，44/44）；`test_core_app_audio_device` 要求 `owner_thread=1`，真实 PulseAudio 设备通过；normal 树全量 400/400；TSan 连跑 10 次零报告。
-- **未做**：record/null 模式仍在主线程 drain；按事件选择声音资源与听感验证。
+- **未做**：record/null 模式仍在主线程 drain；按事件选择声音资源与听感验证（按事件选择声音资源已在 slice 6 完成）。
 
 ## 中性命名 Task 4：当前文档去掉旧领域词（2026-11-14）
 

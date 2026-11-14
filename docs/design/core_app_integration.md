@@ -666,6 +666,36 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 本轮修复后：`test_core_app_mesh` 3/3、GPU 两用例通过、`test_core_app_gpu`/`naming`/`target` 契约 5/5；全量含 GPU 405/405。
 
+## Core App Task 9（slice 6）：按事件选择声音资源（2026-11-14）
+
+### 交付
+
+- `core_app_audio.h` 新增 `CoreAppAudioSound`，取值为 `NONE`、`CHASER`、`ITEM`，另有 `CORE_APP_AUDIO_SOUND_COUNT`。`CoreAppAudioCommand` 和 `CoreAppAudioSlot` 各增加一个 `sound` 字段。
+- 新接口 `core_app_audio_enqueue_sound(audio, kind, generation, sound, position)`：
+  - `LISTENER` 只能配 `NONE`，`PLAY_3D`、`POSITION`、`STOP` 只能配 `CHASER` 或 `ITEM`。
+  - 不合规的组合返回 `INVALID`，不入队，也不占用 sequence。
+  - 原有的 `enqueue` 和 `enqueue_at` 签名不变：LISTENER 用 `NONE`，其余命令用 `CHASER`。
+- 声源按 `(generation, sound)` 寻址。`PLAY_3D` 为该组合占用一个槽位，`POSITION` 和 `STOP` 只作用于同一组合的槽位。因此同一关卡可以同时播放追踪者循环声和拾取声，`STOP item` 不会停掉追踪者声源。
+- `sound_path` 改为 `sound_paths[3]`：`CHASER` 播放 `<root>/tone.wav`，`ITEM` 播放 `<root>/chime.wav`，`NONE` 为空。设备探测音仍用 `tone.wav`。
+- 设备每次成功播放都按 sound 计数，记在 `device_plays_by_sound[]`。`result=stopped` 行在 `evictions=` 之后、`owner_thread=` 之前加入 ` item_plays=N`。
+- trace 行末尾加 ` sound=none|chaser|item`。
+- 应用侧：
+  - 背包物品数增加时（Flow 延迟 30 tick 后，在 tick 61 加物品），在用户当前位置入队一次 `PLAY_3D sound=item`，并设置 `CoreLevel.item_sound_live`。
+  - 卸载和切关统一走 `app_audio_stop_level`。它对 chaser 声源始终发一条 `STOP`（没有槽位的 STOP 会按 stale 丢弃）；item 声源只在已播放时发 `STOP`。随后按实际入队条数 drain。
+- 资产：baker 新增 `bake_chime`，确定性生成 44100 Hz、单声道、PCM16 的方波，共 2205 个样本（50 ms），周期 40 个样本，振幅 ±8192。正式资产从 11 个增加到 12 个，`.gitattributes` 和 `.gitignore` 都登记了 `chime.wav binary`。
+
+### 验证
+
+- RED：`test_core_app_runtime` 新增 3 个用例（双声源互不干扰、sound 与 kind 不匹配时拒绝、设备按事件播放对应文件），实现前编译失败。资产测试新增 `chime_wav_is_canonical_44100_hz_mono_pcm16`。formal、naming、checkout、baker、compat 五个契约都改为 12 个资产。lifecycle 要求 script_walk 恰好一条 `source=2 sound=item` 的 PLAY_3D，script_discard 在拾取前卸载，所以 item 计数为 0。
+- GREEN：normal 树全量中，除提交前必然失败的两个 HEAD archive 契约外全部通过。真实 PulseAudio 设备的 trace 为 `plays=2 moves=49 stops=2 item_plays=1`（场景改为 tick 80 才卸载，因此会经过 tick 61 的拾取）。TSan 下 `test_core_app_runtime` 零报告。
+- 变异检查：ITEM 改用 `tone.wav`、claim 只按 generation 匹配、拾取时不入队，三处变异都被测试判红。
+
+### 边界
+
+- 仍然没有听感验证，进程测试只证明设备打开并播放了被选中的文件。
+- 拾取声不随用户移动：只发 PLAY_3D，不发 POSITION。
+- slice 2–5 中“声源固定使用 `tone.wav`”和“11 个正式资产”的描述是当时状态，保持原文不改。
+
 ## Core App Task 9（slice 5）：音频 owner 线程（2026-11-14）
 
 ### 交付
