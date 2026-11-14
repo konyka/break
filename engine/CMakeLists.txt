@@ -7193,6 +7193,14 @@ endif()
         add_test(NAME fuzz_core_app_checkpoint_smoke COMMAND fuzz_core_app_checkpoint 200 31)
         add_test(NAME fuzz_core_app_scenario_smoke COMMAND fuzz_core_app_scenario 500 37)
         add_test(NAME fuzz_core_app_network_smoke COMMAND fuzz_core_app_network 2000 41)
+        # Checked-in wire samples, one per file; the name prefix is the expected
+        # decode outcome. Regenerate with `fuzz_core_app_network --emit-corpus <dir>`.
+        file(GLOB CORE_APP_NETWORK_CORPUS CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_network_corpus/*.bin")
+        list(SORT CORE_APP_NETWORK_CORPUS)
+        add_test(NAME fuzz_core_app_network_corpus
+                 COMMAND fuzz_core_app_network --replay ${CORE_APP_NETWORK_CORPUS})
+        set_tests_properties(fuzz_core_app_network_corpus PROPERTIES LABELS "fuzz")
         set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
             fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
             fuzz_mycompose_tree_smoke fuzz_mycompose_intent_smoke

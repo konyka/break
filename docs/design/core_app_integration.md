@@ -682,7 +682,25 @@ fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未
 - 三处变异都判红：去掉 decode 的 `size < needed` 检查（第 0 轮）；去掉 header_bytes 检查（第 31 轮）；admit 跳过 generation 检查（第 12 轮）。
 - normal 树全量非 fuzz 400 项通过。
 
-仍未做：没有落盘 corpus，也没有 libFuzzer 覆盖率引导；fuzzer 不经过真实 socket 或 `break_net` 会话层。
+仍未做：没有落盘 corpus，也没有 libFuzzer 覆盖率引导；fuzzer 不经过真实 socket 或 `break_net` 会话层。（落盘 corpus 已在下一小节补上。）
+
+### 补充：`fuzz_core_app_network` 落盘 corpus（2026-11-14）
+
+计划见 `docs/superpowers/plans/2026-11-14-fuzz-core-app-network-corpus.md`。
+
+- 仓库新增 `engine/tests/data/core_app_network_corpus/`，17 个 `.bin` 文件，每个是一份 snapshot 线上字节。文件名前缀是期望的解码结果：`ok`（空、1 个、64 个实体、NaN/Inf/非规格化坐标、尾部多 16 字节）、`truncated`（0 字节、头少 1 字节、实体少 1 字节、满载少一个实体、count=1 但没有实体）、`bad_magic`、`bad_version`（version 0、version 2、header_bytes 31）、`over_limit`（count 65、count `UINT32_MAX`）。
+- `fuzz_core_app_network --emit-corpus <dir>` 用固定构造重新生成这些文件，不用随机数；重新生成的结果与仓库中的文件逐字节相同。
+- `fuzz_core_app_network --replay <file>...` 逐个检查：解码结果等于文件名前缀，也等于参考模型；拒绝时 `out` 保持 0xA5 哨兵；接受时重新编码等于 payload 前 `needed` 字节，`schema_hash` 等于当前布局的哈希（布局变化后必须重新生成 corpus），并且认证 inbox 在 generation 相同时 ADMITTED、不同时 STALE_LEVEL。前缀未知或五种结果有任何一种缺失都失败，避免目录为空时假通过。
+- CMake 在 `ENGINE_BUILD_FUZZ_SMOKE=ON` 下用 `file(GLOB CONFIGURE_DEPENDS)` 把文件作为参数注册 `fuzz_core_app_network_corpus`（`fuzz` 标签）。目录通过参数传入，不依赖 dirent，Windows 通道也能跑。CI 已构建该 target 并运行 `-L fuzz`，ci.yml 不需要改。
+
+证据：
+
+- RED：目录为空时测试失败（`corpus has no 'ok' file`）。
+- GREEN：`replayed=17 ok=5 truncated=5 bad_magic=2 bad_version=3 over_limit=2`。
+- 变异：去掉 decode 的 `size < needed` 检查，`truncated-count_without_entities` 判红；去掉 header_bytes 检查，`bad_version-header_bytes` 判红。恢复后通过，源文件与备份逐字节一致。
+- normal 树：非 fuzz 400/400（4 个既有 SKIP），fuzz 11/11。ASan+UBSan 树：三个 core_app fuzz target 共 4 项全部通过，无报告。
+
+仍未做：libFuzzer 覆盖率引导与结构感知变异；checkpoint 和 scenario fuzzer 还没有落盘 corpus。
 
 ## Core App Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
 

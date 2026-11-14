@@ -1,3 +1,9 @@
+## Core App 网络快照 fuzz 落盘 corpus（2026-11-14）
+
+- **交付**：新增 `engine/tests/data/core_app_network_corpus/`，17 个 snapshot 线上样例，文件名前缀写明期望的解码结果（ok、truncated、bad_magic、bad_version、over_limit）。`fuzz_core_app_network --emit-corpus <dir>` 用固定构造重新生成，结果与仓库文件逐字节相同；`--replay <file>...` 按前缀和参考模型逐个检查，五种结果缺任何一种都失败。注册为 `fuzz_core_app_network_corpus`（`fuzz` 标签）。设计见 `docs/design/core_app_integration.md` 的 Task 12 补充小节。
+- **测试**：目录为空时 RED，生成后 GREEN（`replayed=17`）；去掉 `size < needed` 检查和 header_bytes 检查两处变异都判红；normal 树非 fuzz 400/400、fuzz 11/11；ASan+UBSan 树 core_app fuzz 4/4 无报告。
+- **未做**：覆盖率引导；checkpoint 与 scenario fuzzer 的落盘 corpus。
+
 ## Core App checkpoint 保存布娃娃运行态（2026-11-14）
 
 - **交付**：`runtime_<g>.bin` 升到版本 4（正文 496 字节，文件 512 字节），新增标志 `RAGDOLL_ACTIVE`（128）。偏移 124 起保存 3 个关节的 pose 矩阵，偏移 316 起保存 3 块骨骼刚体（每块 60 字节：位置、速度、朝向、角速度、静止帧数、休眠位）。读档时重建约束并激活布娃娃，再写回每块刚体。pose 和向量必须是有限值；四元数长度只在布娃娃激活时检查；不满足一律 `stage=checkpoint`。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的补充小节。
@@ -39,7 +45,7 @@
 
 - **交付**：新增 `fuzz_core_app_network`，对编码后的快照做五类字节变异（翻转、截断、count、magic/version/header_bytes、尾部追加），用独立参考模型核对 decode 结果；拒绝时 `out` 不被写入，接受时重新编码与原字节一致；再核对 admit 的拒绝顺序和计数、outbox 的容量与 FIFO。注册为 `fuzz_core_app_network_smoke`（2000 次，seed 41），CI 的三处 fuzz 构建列表已加入。设计见 `docs/design/core_app_integration.md` 的 Task 12 补充小节。
 - **测试**：`test_wayland_ci_migration_contract` 要求三个 core_app fuzz 目标出现在 ci.yml 中，先 RED 后 GREEN；同一 seed 两次输出一致；ASan+UBSan 20000 次无报告；3 处变异都判红；normal 树全量 400 项通过。
-- **未做**：落盘 corpus、覆盖率引导、经过真实 socket 的会话层 fuzz。
+- **未做**：覆盖率引导、经过真实 socket 的会话层 fuzz（落盘 corpus 已在 2026-11-14 补上，见顶部条目）。
 
 ## Core App Task 9 slice 6：按事件选择声音资源（2026-11-14）
 

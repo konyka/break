@@ -6,7 +6,14 @@
  * must leave the caller's `out` untouched; an accepted payload must re-encode
  * to exactly the bytes it was decoded from. Accepted snapshots then cross the
  * inbound admission firewall and the bounded outbox, whose counters and FIFO
- * order are checked against shadow state. */
+ * order are checked against shadow state.
+ *
+ * Usage:
+ *   fuzz_core_app_network [iterations] [seed]   random mutation run
+ *   fuzz_core_app_network --emit-corpus <dir>   write the fixed wire samples
+ *   fuzz_core_app_network --replay <file>...    check each sample against the
+ *       outcome named by its file prefix (ok, truncated, bad_magic,
+ *       bad_version, over_limit); every outcome must appear at least once. */
 
 #include "../apps/core_app/core_app_network.h"
 
@@ -138,7 +145,244 @@ static int fail(const char *what, long iteration) {
     return 1;
 }
 
+typedef struct CorpusKind {
+    const char *prefix;
+    CoreAppSnapshotOutcome outcome;
+} CorpusKind;
+
+static const CorpusKind k_corpus_kinds[] = {
+    {"ok", CORE_APP_SNAPSHOT_OK},
+    {"truncated", CORE_APP_SNAPSHOT_TRUNCATED},
+    {"bad_magic", CORE_APP_SNAPSHOT_BAD_MAGIC},
+    {"bad_version", CORE_APP_SNAPSHOT_BAD_VERSION},
+    {"over_limit", CORE_APP_SNAPSHOT_OVER_LIMIT},
+};
+enum { k_corpus_kind_count = (int)(sizeof(k_corpus_kinds) / sizeof(k_corpus_kinds[0])) };
+enum { k_corpus_level_generation = 2 };
+enum { k_corpus_max_file_bytes = CORE_APP_SNAPSHOT_MAX_BYTES + 256 };
+
+/* The file name prefix before the first '-' names the expected outcome. */
+static int corpus_kind_of(const char *path) {
+    const char *base = path;
+    for (const char *p = path; *p; ++p) {
+        if (*p == '/' || *p == '\\') base = p + 1;
+    }
+    const char *dash = strchr(base, '-');
+    if (!dash) return -1;
+    size_t len = (size_t)(dash - base);
+    for (int i = 0; i < k_corpus_kind_count; ++i) {
+        if (strlen(k_corpus_kinds[i].prefix) == len &&
+            memcmp(k_corpus_kinds[i].prefix, base, len) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int replay_one(const char *path, int *seen) {
+    int kind = corpus_kind_of(path);
+    if (kind < 0) {
+        fprintf(stderr, "fuzz_core_app_network: %s: unknown outcome prefix\n", path);
+        return 1;
+    }
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        fprintf(stderr, "fuzz_core_app_network: %s: cannot open\n", path);
+        return 1;
+    }
+    u8 *bytes = (u8 *)malloc(k_corpus_max_file_bytes + 1);
+    if (!bytes) {
+        fclose(file);
+        return 1;
+    }
+    size_t size = fread(bytes, 1u, (size_t)k_corpus_max_file_bytes + 1u, file);
+    fclose(file);
+    if (size > (size_t)k_corpus_max_file_bytes) {
+        fprintf(stderr, "fuzz_core_app_network: %s: larger than %d bytes\n", path,
+                k_corpus_max_file_bytes);
+        free(bytes);
+        return 1;
+    }
+    /* Exact-size copy so ASan sees any read past the payload. */
+    u8 *payload = (u8 *)malloc(size ? size : 1u);
+    CoreAppSnapshot *decoded = (CoreAppSnapshot *)malloc(sizeof(*decoded));
+    CoreAppSnapshot *sentinel = (CoreAppSnapshot *)malloc(sizeof(*sentinel));
+    u8 *reencoded = (u8 *)malloc(CORE_APP_SNAPSHOT_MAX_BYTES);
+    int rc = 1;
+    if (!payload || !decoded || !sentinel || !reencoded) goto done;
+    memcpy(payload, bytes, size);
+    memset(decoded, 0xA5, sizeof(*decoded));
+    memset(sentinel, 0xA5, sizeof(*sentinel));
+    CoreAppSnapshotOutcome want = k_corpus_kinds[kind].outcome;
+    CoreAppSnapshotOutcome outcome = core_app_snapshot_decode(payload, size, decoded);
+    if (outcome != want || reference_decode(payload, size) != want) {
+        fprintf(stderr, "fuzz_core_app_network: %s: decode=%d reference=%d expected=%d\n", path,
+                (int)outcome, (int)reference_decode(payload, size), (int)want);
+        goto done;
+    }
+    if (outcome != CORE_APP_SNAPSHOT_OK) {
+        if (memcmp(decoded, sentinel, sizeof(*decoded)) != 0) {
+            fprintf(stderr, "fuzz_core_app_network: %s: rejected payload wrote into out\n", path);
+            goto done;
+        }
+    } else {
+        size_t needed = 0u;
+        if (core_app_snapshot_encode(decoded, reencoded, CORE_APP_SNAPSHOT_MAX_BYTES, &needed) !=
+                CORE_APP_SNAPSHOT_OK ||
+            needed > size || memcmp(reencoded, payload, needed) != 0) {
+            fprintf(stderr, "fuzz_core_app_network: %s: does not re-encode to its bytes\n", path);
+            goto done;
+        }
+        u32 schema = core_app_snapshot_schema_hash();
+        if (decoded->schema_hash != schema) {
+            fprintf(stderr, "fuzz_core_app_network: %s: schema 0x%08x is not the current 0x%08x; "
+                    "regenerate the corpus with --emit-corpus\n", path,
+                    (unsigned)decoded->schema_hash, (unsigned)schema);
+            goto done;
+        }
+        CoreAppSnapshotInbox inbox;
+        core_app_snapshot_inbox_init(&inbox, true, (u16)CORE_APP_SNAPSHOT_MESSAGE_ID, schema);
+        if (core_app_snapshot_admit(&inbox, (u16)CORE_APP_SNAPSHOT_MESSAGE_ID, decoded,
+                                    decoded->level_generation) != CORE_APP_SNAPSHOT_ADMITTED ||
+            core_app_snapshot_admit(&inbox, (u16)CORE_APP_SNAPSHOT_MESSAGE_ID, decoded,
+                                    decoded->level_generation + 1u) !=
+                CORE_APP_SNAPSHOT_REJECTED_STALE_LEVEL ||
+            inbox.accepted_snapshots != 1u || inbox.rejected_stale_level != 1u) {
+            fprintf(stderr, "fuzz_core_app_network: %s: admission is wrong\n", path);
+            goto done;
+        }
+    }
+    seen[kind]++;
+    rc = 0;
+done:
+    free(bytes);
+    free(payload);
+    free(decoded);
+    free(sentinel);
+    free(reencoded);
+    return rc;
+}
+
+static int replay_corpus(int count, char **paths) {
+    int seen[k_corpus_kind_count] = {0};
+    for (int i = 0; i < count; ++i) {
+        if (replay_one(paths[i], seen) != 0) return 1;
+    }
+    for (int i = 0; i < k_corpus_kind_count; ++i) {
+        if (seen[i] == 0) {
+            fprintf(stderr, "fuzz_core_app_network: corpus has no '%s' file\n",
+                    k_corpus_kinds[i].prefix);
+            return 1;
+        }
+    }
+    printf("fuzz_core_app_network: replayed=%d ok=%d truncated=%d bad_magic=%d bad_version=%d "
+           "over_limit=%d\n", count, seen[0], seen[1], seen[2], seen[3], seen[4]);
+    return 0;
+}
+static int emit_file(const char *dir, const char *name, const u8 *bytes, size_t size) {
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/%s.bin", dir, name);
+    if (n < 0 || (size_t)n >= sizeof(path)) return 1;
+    FILE *file = fopen(path, "wb");
+    if (!file) {
+        fprintf(stderr, "fuzz_core_app_network: cannot write %s\n", path);
+        return 1;
+    }
+    size_t written = size ? fwrite(bytes, 1u, size, file) : 0u;
+    int closed = fclose(file);
+    return written == size && closed == 0 ? 0 : 1;
+}
+
+/* Fixed snapshot with `count` entities; no random numbers, so the corpus is
+ * reproducible from the source alone. */
+static size_t corpus_encode(u8 *out, u32 count, bool special_floats) {
+    static const u32 k_special_bits[] = {0x7FC00000u, 0xFF800000u, 0x00000001u, 0x80000000u};
+    CoreAppSnapshotEntity entities[CORE_APP_SNAPSHOT_MAX_ENTITIES];
+    for (u32 i = 0u; i < count; ++i) {
+        entities[i].index = i;
+        entities[i].generation = 1u + i % 3u;
+        entities[i].x = (f32)i * 0.5f;
+        entities[i].y = -(f32)i;
+        entities[i].z = 100.0f + (f32)i;
+        entities[i].flags = i & 7u;
+        if (special_floats) {
+            memcpy(&entities[i].x, &k_special_bits[i % 4u], sizeof(f32));
+            memcpy(&entities[i].z, &k_special_bits[(i + 1u) % 4u], sizeof(f32));
+        }
+    }
+    CoreAppSnapshot *snapshot = (CoreAppSnapshot *)malloc(sizeof(*snapshot));
+    size_t size = 0u;
+    if (!snapshot ||
+        core_app_snapshot_build(snapshot, 1000u + count, k_corpus_level_generation,
+                                core_app_snapshot_schema_hash(), count ? entities : NULL,
+                                count) != CORE_APP_SNAPSHOT_OK ||
+        core_app_snapshot_encode(snapshot, out, CORE_APP_SNAPSHOT_MAX_BYTES, &size) !=
+            CORE_APP_SNAPSHOT_OK) {
+        size = 0u;
+    }
+    free(snapshot);
+    return size;
+}
+
+static int emit_corpus(const char *dir) {
+    u8 *bytes = (u8 *)calloc(1u, k_corpus_max_file_bytes);
+    if (!bytes) return 1;
+    int rc = 0;
+    size_t size;
+
+    size = corpus_encode(bytes, 0u, false);
+    rc |= emit_file(dir, "ok-empty", bytes, size);
+    size = corpus_encode(bytes, 1u, false);
+    rc |= emit_file(dir, "ok-one", bytes, size);
+    size = corpus_encode(bytes, CORE_APP_SNAPSHOT_MAX_ENTITIES, false);
+    rc |= emit_file(dir, "ok-full", bytes, size);
+    size = corpus_encode(bytes, 4u, true);
+    rc |= emit_file(dir, "ok-special_floats", bytes, size);
+    size = corpus_encode(bytes, 1u, false);
+    for (u32 i = 0u; i < 16u; ++i) bytes[size + i] = (u8)(0xF0u + i);
+    rc |= emit_file(dir, "ok-trailing_bytes", bytes, size + 16u);
+
+    rc |= emit_file(dir, "truncated-empty", bytes, 0u);
+    size = corpus_encode(bytes, 0u, false);
+    rc |= emit_file(dir, "truncated-header", bytes, size - 1u);
+    size = corpus_encode(bytes, 1u, false);
+    rc |= emit_file(dir, "truncated-entity", bytes, size - 1u);
+    size = corpus_encode(bytes, CORE_APP_SNAPSHOT_MAX_ENTITIES, false);
+    rc |= emit_file(dir, "truncated-full_missing_entity", bytes,
+                    size - CORE_APP_SNAPSHOT_ENTITY_BYTES);
+    size = corpus_encode(bytes, 0u, false);
+    write_u32(bytes + 28u, 1u);
+    rc |= emit_file(dir, "truncated-count_without_entities", bytes, size);
+
+    size = corpus_encode(bytes, 1u, false);
+    write_u32(bytes, CORE_APP_SNAPSHOT_MAGIC ^ 1u);
+    rc |= emit_file(dir, "bad_magic-flipped_bit", bytes, size);
+    write_u32(bytes, 0u);
+    rc |= emit_file(dir, "bad_magic-zero", bytes, size);
+
+    size = corpus_encode(bytes, 1u, false);
+    write_u16(bytes + 4u, 0u);
+    rc |= emit_file(dir, "bad_version-zero", bytes, size);
+    write_u16(bytes + 4u, CORE_APP_SNAPSHOT_VERSION + 1u);
+    rc |= emit_file(dir, "bad_version-next", bytes, size);
+    size = corpus_encode(bytes, 1u, false);
+    write_u16(bytes + 6u, CORE_APP_SNAPSHOT_HEADER_BYTES - 1u);
+    rc |= emit_file(dir, "bad_version-header_bytes", bytes, size);
+
+    size = corpus_encode(bytes, 0u, false);
+    write_u32(bytes + 28u, CORE_APP_SNAPSHOT_MAX_ENTITIES + 1u);
+    rc |= emit_file(dir, "over_limit-count_65", bytes, size);
+    write_u32(bytes + 28u, 0xFFFFFFFFu);
+    rc |= emit_file(dir, "over_limit-count_max", bytes, size);
+
+    free(bytes);
+    if (rc == 0) printf("fuzz_core_app_network: corpus written to %s\n", dir);
+    return rc;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--replay") == 0) return replay_corpus(argc - 2, argv + 2);
+    if (argc == 3 && strcmp(argv[1], "--emit-corpus") == 0) return emit_corpus(argv[2]);
     long iterations = argc > 1 ? strtol(argv[1], NULL, 10) : 2000L;
     if (argc > 2) rng_state = (unsigned long long)strtoull(argv[2], NULL, 10) + 1u;
     if (iterations <= 0L) iterations = 2000L;
