@@ -40,3 +40,7 @@
   `.superpowers/sdd/2026-10-14-rhi-plan-c-metal/task-10-report.md`（glslc/spirv-cross）
   与同目录 `progress.md`（cmake/ninja 完整 sha256）；spirv-cross 为
   Metal 工具链内部组件，未单列为 JSON 条目。
+- vendored `miniaudio.h` 为 v0.11.25，另回港了 v0.11.26 中
+  `ma_resource_manager_data_buffer_node_acquire` 失败路径的 use-after-free 修复
+  （释放节点前先读出 `isDataOwnedByResourceManager`，释放后置 NULL）。升级到 0.11.26
+  或更高版本时可直接替换整个文件。
