@@ -73,10 +73,12 @@ Before Task 3 starts, check `git grep -w -E "pad|PadState|PAD_BTN"` to confirm t
 
 **Files:** comments and strings in `engine/src/{editor,network,runtime,renderer,authority,crash,platform}`, `engine/src/main.c`, `engine/apps/editor/editor_remote.h`, and the `engine/tests` files listed by `git grep -n -i game -- engine | grep -v -i gamepad`.
 
-- [ ] **Step 1: Raise the contract to `STAGE=2`.** Expected: FAIL, listing `editor_scene.c`, `break_session.h`, `test_break_crash_cluster.c` and others.
-- [ ] **Step 2: Replace the wording.** "GameThread" → "logic thread". "game-side chunks"/"kept game chunks" → "application chunks". "game loader" → "application loader". "gameplay" → "action keys"/"interaction". The crash test's module name `"game"` → `"app"`. Rename `path_longer_than_63_is_cut_like_the_game_loader_and_stays_in_bounds` → `path_longer_than_63_is_cut_like_the_scene_loader_and_stays_in_bounds`. Rename `non_game_thread_is_rejected_without_mutation` → `non_logic_thread_is_rejected_without_mutation`.
-- [ ] **Step 3: Run the full ctest.** Expected: all pass.
-- [ ] **Step 4: Commit** with the message `refactor: describe engine threads and chunks without the legacy domain word`.
+- [x] **Step 1: Raise the contract to `STAGE=2`.** Expected: FAIL, listing `editor_scene.c`, `break_session.h`, `test_break_crash_cluster.c` and others.
+- [x] **Step 2: Replace the wording.** "GameThread" → "logic thread". "game-side chunks"/"kept game chunks" → "application chunks". "game loader" → "application loader". "gameplay" → "action keys"/"interaction". The crash test's module name `"game"` → `"app"`. Rename `path_longer_than_63_is_cut_like_the_game_loader_and_stays_in_bounds` → `path_longer_than_63_is_cut_like_the_scene_loader_and_stays_in_bounds`. Rename `non_game_thread_is_rejected_without_mutation` → `non_logic_thread_is_rejected_without_mutation`.
+- [x] **Step 3: Run the full ctest.** Expected: all pass.
+- [x] **Step 4: Commit** with the message `refactor: describe engine threads and chunks without the legacy domain word`.
+
+> 2026-11-14 执行记录：Task 2 提交 `4f0f2198`。RED 为 stage 2 契约列出 15 个文件（`break_session.h`、`editor_scene.c`、`test_break_crash_cluster.c` 等）；替换后 stage 2 扫描 1308 个文件全部通过，normal 树全量 400/400。契约在 stage 3 之前跳过路径含 `gamepad`/`xinput` 的文件，`gamepad_linux.c` 的注释留到 Task 3。`editor_remote.h` 实际位于 `engine/apps/editor/`。
 
 ### Task 3: Pad input names
 

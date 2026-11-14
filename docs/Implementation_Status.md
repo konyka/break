@@ -1,3 +1,9 @@
+## 中性命名 Task 2：代码注释与测试名去掉旧领域词（2026-11-14）
+
+- **交付**：`GameThread` 改为 logic thread；编辑器的 game chunks 改为 application chunks；`main.c`/`window_win32.c` 的 1-8 数字键说明改为 actions；崩溃聚类测试的模块名 `"game"` 改为 `"app"`；测试名 `non_logic_thread_is_rejected_without_mutation`、`path_longer_than_63_is_cut_like_the_scene_loader_and_stays_in_bounds`。只改注释、日志文本和测试名，行为不变。
+- **测试**：`test_repo_naming_contract` 升到 `STAGE=2`，改前 RED（15 个文件），改后 GREEN；normal 树全量 400/400。
+- **未做**：手柄输入命名（Task 3）、文档正文和文件名（Task 4）。
+
 ## 中性命名 Task 1：Actor kernel 改名为 break_kernel（2026-11-14）
 
 - **交付**：`engine/src/game/` 移到 `engine/src/kernel/`；`break_game*`、`BreakGame*`、`BREAK_GAME_*`、`break_game_lua` 改为 `break_kernel*`、`BreakKernel*`、`BREAK_KERNEL_*`、`break_kernel_lua`；测试改为 `test_break_kernel_*`，原型测试改为 `test_core_style_prototype`。行为与数据格式不变。计划见 `docs/superpowers/plans/2026-11-14-neutral-naming.md`。
