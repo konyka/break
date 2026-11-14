@@ -1,3 +1,9 @@
+## 中性命名 Task 3：手柄输入命名改为 pad（2026-11-14）
+
+- **交付**：`engine/src/platform/gamepad_linux.c/h`、`gamepad_win.c` 改为 `pad_linux.c/h`、`pad_win.c`；`GamepadState`/`GamepadDevice`/`GamepadSystem*` 改为 `PadState`/`PadDevice`/`PadSystem*`；`gamepad_init/poll/shutdown/feedback_poll` 改为 `pad_*`；`GAMEPAD_BTN_*`/`GAMEPAD_AXIS_*`/`INPUT_MAX_GAMEPADS` 改为 `PAD_BTN_*`/`PAD_AXIS_*`/`INPUT_MAX_PADS`；`InputState.gamepads` 改为 `pads`；测试改为 `test_pad_linux_feedback`、`test_pad_win_feedback(_portable)`。SDK 名 `XINPUT_GAMEPAD*`、`BTN_GAMEPAD` 和 XInput 结构体成员 `Gamepad` 保留。行为不变。
+- **测试**：`test_repo_naming_contract` 升到 `STAGE=3`，改前 RED（35 处），改后 GREEN；normal 树全量 400/400。契约脚本固定 `cmake_policy(VERSION 3.20)`，修复 CI 上 `IN_LIST` 在脚本模式下的报错。
+- **未做**：文档正文和文件名（Task 4）。
+
 ## 中性命名 Task 2：代码注释与测试名去掉旧领域词（2026-11-14）
 
 - **交付**：`GameThread` 改为 logic thread；编辑器的 game chunks 改为 application chunks；`main.c`/`window_win32.c` 的 1-8 数字键说明改为 actions；崩溃聚类测试的模块名 `"game"` 改为 `"app"`；测试名 `non_logic_thread_is_rejected_without_mutation`、`path_longer_than_63_is_cut_like_the_scene_loader_and_stays_in_bounds`。只改注释、日志文本和测试名，行为不变。

@@ -82,10 +82,12 @@ Before Task 3 starts, check `git grep -w -E "pad|PadState|PAD_BTN"` to confirm t
 
 ### Task 3: Pad input names
 
-- [ ] **Step 1: Raise the contract to `STAGE=3`.** Expected: FAIL on `gamepad_linux.c`.
-- [ ] **Step 2: Rename files and identifiers** per the Task 3 table, leaving only the SDK names.
-- [ ] **Step 3: Run the full ctest.** Then build the `fake_windows` portable test (`test_pad_win_feedback_portable`). Expected: all pass.
-- [ ] **Step 4: Commit** with the message `refactor: name controller input pad instead of the legacy device word`.
+- [x] **Step 1: Raise the contract to `STAGE=3`.** Expected: FAIL on `gamepad_linux.c`.
+- [x] **Step 2: Rename files and identifiers** per the Task 3 table, leaving only the SDK names.
+- [x] **Step 3: Run the full ctest.** Then build the `fake_windows` portable test (`test_pad_win_feedback_portable`). Expected: all pass.
+- [x] **Step 4: Commit** with the message `refactor: name controller input pad instead of the legacy device word`.
+
+> 2026-11-14 执行记录：Task 3 提交 `45157387`。RED 为 stage 3 契约列出 35 处；`gamepad_linux.c/h`、`gamepad_win.c` 改为 `pad_linux.c/h`、`pad_win.c`，`InputState.gamepads` 改为 `pads`，其余按上表改名。SDK 名 `XINPUT_GAMEPAD*`、`BTN_GAMEPAD` 以及 XInput 结构体成员 `Gamepad`（`st.Gamepad`、`XINPUT_GAMEPAD Gamepad;`）列入契约豁免。stage 3 扫描 1308 个文件通过，normal 树全量 400/400，含 `test_pad_win_feedback_portable`。另修复：CI 镜像中的 CMake 在 `-P` 模式下默认使用旧策略，导致 `IN_LIST` 报错（bfb9a1c8 的 Linux 通道全部因此失败）；契约脚本加入 `cmake_policy(VERSION 3.20)`。
 
 ### Task 4: Current docs
 
