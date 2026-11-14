@@ -482,6 +482,17 @@ BSCN/Flow/Actor/scene_state 侧车；错误 Actor generation、截断 BSCN、错
   - 只去掉 `parse_sidecar` 的越界和存活判定时没有判红，因为 `break_kernel_adopt` 的存活检查仍会拒绝，这是等价变异。两处判定同时去掉后，stale_actor 判红：拒绝阶段变成 `stage=state`。
 - `test_core_app_lifecycle` 12/12 通过；ASan+UBSan 与 TSan 树的 `test_core_app_` 中，非 GPU 用例全部通过。GPU 用例（`test_core_app_gpu_*`，标签 `gpu`）在 sanitizer 树中失败，与本节无关：ASan 报 swapchain 重建路径 `vk_retire_push`（`engine/src/rhi/rhi_vk.c`）分配的退役记录泄漏，TSan 报的竞争位于 Vulkan validation layer 内部线程。这两项作为下一项单独处理。
 
+### 补充：GPU 用例在 sanitizer 树中通过（2026-11-14）
+
+上一段记下的 sanitizer 树 GPU 失败已经处理，计划见 `docs/superpowers/plans/2026-11-14-core-app-gpu-sanitizer-lanes.md`。
+
+- 引擎缺陷：`vk_retire_collect_budget`（`engine/src/rhi/rhi_vk.c`）在 `retired_count == 0` 时提前返回，所以帧内回收把计数降到 0 以后，`vk_shutdown` 的全量回收不会释放 `retired` 数组本身。启动时 `rhi_set_vsync` 重建 swapchain 会分配这个数组（64 项，1536 字节），之后每次运行都泄漏。修复后，全量回收在数组仍存在时继续执行，并释放数组。
+- 第三方 suppression 只加在 `test_core_app_gpu_*` 上，并且只在 Linux 的 sanitizer 树中生效：
+  - ASan：`VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING=1`，`LSAN_OPTIONS` 指向 `engine/tests/core_app_gpu_lsan.supp`（`libnvidia-glcore.so`、`libnvidia-glsi.so`、`libEGL_nvidia.so`），并设置 `fast_unwind_on_malloc=0`。OpenGL 走 glvnd 时，NVIDIA 的 GL 模块在退出前已被卸载，泄漏栈顶只显示 unknown module；改用慢速回溯后才能回溯到仍处于映射状态的 `libEGL_nvidia.so` 帧。
+  - TSan：`TSAN_OPTIONS` 指向 `engine/tests/core_app_gpu_tsan.supp`，只匹配 `libVkLayer_khronos_validation.so`。报告中的竞争发生在 validation layer 自己的队列线程与 `DestroyFence` 之间。Debug 构建默认打开 validation。
+- 验证：ASan+UBSan 与 TSan 树的 GPU 用例都是 3/3，trace 中有 `result=ready` 和 `frames=64 screenshots=1`。撤掉引擎修复后，Vulkan 用例在 suppression 下仍判红，报告 `vk_retire_push` 的 1536 字节泄漏，说明 suppression 没有掩盖引擎代码。
+- 边界：CI 仍用 `-LE "graphics|fuzz|gpu"` 排除这些用例，本节的证据只来自本机（Intel UHD TGL GT1 + NVIDIA 驱动并存）。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

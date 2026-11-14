@@ -1,3 +1,9 @@
+## Core App GPU 用例在 sanitizer 树中通过（2026-11-14）
+
+- **修复**：`vk_retire_collect_budget` 在计数为 0 时提前返回，导致 `vk_shutdown` 不释放 `retired` 数组（每次运行泄漏 1536 字节）。现在全量回收会释放数组。
+- **测试**：`test_core_app_gpu_*` 在 Linux 的 ASan/TSan 树中加上只匹配第三方模块的 suppression（NVIDIA 驱动与 EGL vendor、Khronos validation layer）后，两棵树都是 3/3。撤掉引擎修复后 Vulkan 用例仍判红。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的补充小节。
+- **未做**：CI 不运行 `gpu` 标签，证据只来自本机。
+
 ## Core App checkpoint 失败矩阵：失效 Actor 行与 render 资源 staging 失败（2026-11-14）
 
 - **交付**：`test_core_app_lifecycle_roundtrip` 的失败矩阵新增 stale_actor（sidecar 的 `2 User` 改为 `99 User`，期望 `stage=actor`）与 render_resource（BSCN 第一个资源 guid 写 0，期望 `stage=render`）。实现未改。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的补充小节。

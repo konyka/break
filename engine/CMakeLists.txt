@@ -5313,6 +5313,28 @@ endif()
         set_tests_properties(test_core_app_gpu_fallback PROPERTIES
             LABELS "gpu;core_app" TIMEOUT 420 RUN_SERIAL TRUE)
     endif()
+    # Sanitizer trees: the real-device lanes load third-party driver and layer
+    # code. Suppress only by module name (NVIDIA ICD caches kept mapped so LSan
+    # can name them; the NVIDIA EGL vendor's GL module is unloaded before exit,
+    # so slow unwinding is needed to reach the still-mapped libEGL_nvidia
+    # frames; races inside the Khronos validation layer's own worker thread).
+    # Allocations and accesses in engine code still fail the test.
+    set(_core_app_gpu_tests "")
+    foreach(_core_app_gpu_backend IN LISTS _core_app_gpu_backends)
+        list(APPEND _core_app_gpu_tests test_core_app_gpu_${_core_app_gpu_backend})
+    endforeach()
+    if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        list(APPEND _core_app_gpu_tests test_core_app_gpu_fallback)
+    endif()
+    if(_core_app_gpu_tests AND ENGINE_USE_ASAN AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_property(TEST ${_core_app_gpu_tests} APPEND PROPERTY ENVIRONMENT
+            "VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING=1"
+            "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/core_app_gpu_lsan.supp:fast_unwind_on_malloc=0")
+    endif()
+    if(_core_app_gpu_tests AND ENGINE_USE_TSAN AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_property(TEST ${_core_app_gpu_tests} APPEND PROPERTY ENVIRONMENT
+            "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/core_app_gpu_tsan.supp")
+    endif()
 
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)

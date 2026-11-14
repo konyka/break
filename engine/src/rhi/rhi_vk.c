@@ -820,7 +820,7 @@ static void vk_retire_poll(VKBackend *vk) {
  * spent and the rest stays queued in order for the next call. `all` releases
  * everything; only valid once the device is idle. */
 static void vk_retire_collect_budget(VKBackend *vk, bool all, u32 budget_us) {
-    if (!vk || vk->retired_count == 0u) return;
+    if (!vk || (vk->retired_count == 0u && (!all || !vk->retired))) return;
     if (!all) vk_retire_poll(vk);
     u64 t0 = budget_us ? time_microseconds() : 0u;
     bool out_of_budget = false;
