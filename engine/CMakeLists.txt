@@ -7357,6 +7357,25 @@ endif()
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_scenario_corpus)
             set_tests_properties(libfuzz_core_app_scenario_run PROPERTIES
                 LABELS "fuzz;libfuzzer" TIMEOUT 300)
+            add_executable(libfuzz_core_app_checkpoint EXCLUDE_FROM_ALL
+                tests/fuzz_core_app_checkpoint.c apps/core_app/core_app_checkpoint.c
+                src/platform/platform_fs.c src/core/log.c)
+            target_compile_definitions(libfuzz_core_app_checkpoint PRIVATE CORE_APP_LIBFUZZER=1)
+            target_compile_options(libfuzz_core_app_checkpoint PRIVATE
+                -fsanitize=fuzzer -Wno-unused-function -Wno-unused-variable
+                -Wno-unused-const-variable)
+            target_link_options(libfuzz_core_app_checkpoint PRIVATE -fsanitize=fuzzer)
+            target_include_directories(libfuzz_core_app_checkpoint PRIVATE ${TEST_INCLUDE_DIRS})
+            target_link_libraries(libfuzz_core_app_checkpoint PRIVATE m)
+            set(_libfuzz_checkpoint_dir ${CMAKE_CURRENT_BINARY_DIR}/libfuzz_core_app_checkpoint_corpus)
+            file(MAKE_DIRECTORY ${_libfuzz_checkpoint_dir})
+            add_test(NAME libfuzz_core_app_checkpoint_run
+                COMMAND libfuzz_core_app_checkpoint -runs=50000 -seed=1 -max_len=2048
+                    ${_libfuzz_checkpoint_dir}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_checkpoint_corpus)
+            set_tests_properties(libfuzz_core_app_checkpoint_run PROPERTIES
+                LABELS "fuzz;libfuzzer" TIMEOUT 300
+                WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
         endif()
         if(BREAK_ENABLE_SNOWFLAKE)
             add_test(NAME fuzz_editor_remote_smoke COMMAND fuzz_editor_remote 600 29)

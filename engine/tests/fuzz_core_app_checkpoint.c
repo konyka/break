@@ -14,10 +14,15 @@
  *   fuzz_core_app_checkpoint --replay <file>...    stage each sample as manifest.core
  *       next to the four fixed payloads and check probe and find(RUNTIME) against
  *       its `ok-`, `nofind-`, `invalid-` or `overload-` prefix; every prefix must
- *       appear at least once. */
+ *       appear at least once.
+ *
+ * Built with CORE_APP_LIBFUZZER=1 the file instead exports
+ * LLVMFuzzerTestOneInput: each input becomes manifest.core and must satisfy
+ * the same invariants replay checks, without an expected prefix. */
 
 #include "../apps/core_app/core_app_checkpoint.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -427,6 +432,77 @@ static int check_found_record(const char *path, const unsigned char *bytes, long
     return 1;
 }
 
+/* Counts RUNTIME records in a manifest that probe already accepted, so the
+ * header count and record layout are known to be consistent. */
+static u32 runtime_record_count(const unsigned char *bytes, long size) {
+    u32 count = corpus_get32(bytes + 32);
+    u32 runtime = 0u;
+    for (u32 i = 0u; i < count; ++i) {
+        if ((long)(CORPUS_HEADER_BYTES + (size_t)(i + 1u) * CORPUS_RECORD_BYTES) > size) break;
+        if (corpus_get32(corpus_record((unsigned char *)bytes, i)) == CORE_APP_CHECKPOINT_RUNTIME)
+            runtime++;
+    }
+    return runtime;
+}
+
+/* Stages `bytes` as manifest.core next to the fixed payloads and checks the
+ * invariants that hold for any input: probe and find(RUNTIME) only classify
+ * (never FAILED), a rejected probe makes find report the same error, an
+ * accepted probe lets find fail only when RUNTIME is missing or repeated, and
+ * a successful find returns the record the manifest bytes name. */
+static int check_manifest(const char *directory, const unsigned char *bytes, long size,
+                          const char *label, BreakRuntimeError *out_probe,
+                          BreakRuntimeError *out_find) {
+    if (!write_payload(directory, "manifest.core", bytes, (size_t)size)) {
+        fprintf(stderr, "fuzz_core_app_checkpoint: cannot stage %s\n", label);
+        return 1;
+    }
+    BreakRuntimeError probe = core_app_checkpoint_probe(directory);
+    CoreAppCheckpointFile found;
+    memset(&found, 0, sizeof(found));
+    u64 generation = 0u;
+    BreakRuntimeError find =
+        core_app_checkpoint_find(directory, CORE_APP_CHECKPOINT_RUNTIME, &found, &generation);
+    *out_probe = probe;
+    *out_find = find;
+    int classified_probe = probe == BREAK_RUNTIME_OK || probe == BREAK_RUNTIME_INVALID ||
+                           probe == BREAK_RUNTIME_OVERLOAD;
+    int classified_find = find == BREAK_RUNTIME_OK || find == BREAK_RUNTIME_INVALID ||
+                          find == BREAK_RUNTIME_OVERLOAD;
+    if (!classified_probe || !classified_find) {
+        fprintf(stderr, "fuzz_core_app_checkpoint: %s: unclassified probe=%d find=%d\n", label,
+                (int)probe, (int)find);
+        return 1;
+    }
+    if (probe != BREAK_RUNTIME_OK) {
+        if (find != probe) {
+            fprintf(stderr, "fuzz_core_app_checkpoint: %s: probe=%d but find=%d\n", label,
+                    (int)probe, (int)find);
+            return 1;
+        }
+        return 0;
+    }
+    if (find == BREAK_RUNTIME_OVERLOAD) {
+        fprintf(stderr, "fuzz_core_app_checkpoint: %s: probe OK but find OVERLOAD\n", label);
+        return 1;
+    }
+    u32 runtime = runtime_record_count(bytes, size);
+    if (find == BREAK_RUNTIME_INVALID) {
+        if (runtime == 1u) {
+            fprintf(stderr, "fuzz_core_app_checkpoint: %s: one RUNTIME record but find "
+                    "INVALID\n", label);
+            return 1;
+        }
+        return 0;
+    }
+    if (runtime != 1u) {
+        fprintf(stderr, "fuzz_core_app_checkpoint: %s: find OK with %u RUNTIME records\n",
+                label, (unsigned)runtime);
+        return 1;
+    }
+    return check_found_record(label, bytes, size, &found, generation);
+}
+
 static int replay_one(const char *directory, const char *path, int counts[4]) {
     int expect = corpus_expectation(path);
     if (expect == k_expect_none) {
@@ -439,17 +515,12 @@ static int replay_one(const char *directory, const char *path, int counts[4]) {
         fprintf(stderr, "fuzz_core_app_checkpoint: cannot read %s\n", path);
         return 1;
     }
-    if (!write_payload(directory, "manifest.core", bytes, (size_t)size)) {
-        fprintf(stderr, "fuzz_core_app_checkpoint: cannot stage %s\n", path);
+    BreakRuntimeError probe = BREAK_RUNTIME_OK;
+    BreakRuntimeError find = BREAK_RUNTIME_OK;
+    if (check_manifest(directory, bytes, size, path, &probe, &find) != 0) {
         free(bytes);
         return 1;
     }
-    BreakRuntimeError probe = core_app_checkpoint_probe(directory);
-    CoreAppCheckpointFile found;
-    memset(&found, 0, sizeof(found));
-    u64 generation = 0u;
-    BreakRuntimeError find =
-        core_app_checkpoint_find(directory, CORE_APP_CHECKPOINT_RUNTIME, &found, &generation);
     BreakRuntimeError want_probe = BREAK_RUNTIME_OK;
     BreakRuntimeError want_find = BREAK_RUNTIME_OK;
     if (expect == k_expect_nofind) want_find = BREAK_RUNTIME_INVALID;
@@ -460,8 +531,6 @@ static int replay_one(const char *directory, const char *path, int counts[4]) {
         fprintf(stderr, "fuzz_core_app_checkpoint: %s: probe=%d find=%d, expected %s\n", path,
                 (int)probe, (int)find, expectation_name(expect));
         rc = 1;
-    } else if (expect == k_expect_ok) {
-        rc = check_found_record(path, bytes, size, &found, generation);
     }
     free(bytes);
     if (rc == 0) counts[expect]++;
@@ -506,6 +575,54 @@ static int replay_corpus(int count, char **paths) {
     return 0;
 }
 
+#if CORE_APP_LIBFUZZER
+/* libFuzzer drives the manifest bytes directly. One scratch directory holding
+ * the four fixed payloads is prepared on the first input and reused; every
+ * input is staged as manifest.core there and must satisfy check_manifest. The
+ * payloads are re-read every 256 inputs so a reader that writes is caught. */
+static char g_libfuzz_root[256];
+static char g_libfuzz_directory[600];
+
+static void libfuzz_cleanup(void) {
+    remove_tree(g_libfuzz_directory);
+    remove_tree(g_libfuzz_root);
+}
+
+static void libfuzz_prepare(void) {
+    scratch_root(g_libfuzz_root, sizeof(g_libfuzz_root));
+    join_path(g_libfuzz_directory, sizeof(g_libfuzz_directory), g_libfuzz_root, "libfuzz");
+    libfuzz_cleanup();
+    if (!make_directory(g_libfuzz_root) || !make_directory(g_libfuzz_directory) ||
+        !write_default_payloads(g_libfuzz_directory)) {
+        fprintf(stderr, "fuzz_core_app_checkpoint: cannot prepare %s\n", g_libfuzz_directory);
+        abort();
+    }
+    atexit(libfuzz_cleanup);
+}
+
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    static int prepared = 0;
+    static unsigned long inputs = 0u;
+    if (!prepared) {
+        libfuzz_prepare();
+        prepared = 1;
+    }
+    unsigned char *bytes = (unsigned char *)malloc(size ? size : 1u);
+    if (!bytes) abort();
+    if (size) memcpy(bytes, data, size);
+    BreakRuntimeError probe = BREAK_RUNTIME_OK;
+    BreakRuntimeError find = BREAK_RUNTIME_OK;
+    int rc = check_manifest(g_libfuzz_directory, bytes, (long)size, "libfuzzer input", &probe,
+                            &find);
+    free(bytes);
+    if (rc != 0) abort();
+    if ((++inputs & 255u) == 0u && !payloads_unchanged(g_libfuzz_directory)) {
+        fprintf(stderr, "fuzz_core_app_checkpoint: a reader modified a payload\n");
+        abort();
+    }
+    return 0;
+}
+#else
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--replay") == 0) return replay_corpus(argc - 2, argv + 2);
     if (argc == 3 && strcmp(argv[1], "--emit-corpus") == 0) return emit_corpus(argv[2]);
@@ -665,3 +782,4 @@ int main(int argc, char **argv) {
            iterations, accepted, rejected);
     return 0;
 }
+#endif
