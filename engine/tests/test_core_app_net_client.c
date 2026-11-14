@@ -341,11 +341,19 @@ static void scenario_authenticated(void) {
         forged.entities[0].x = 9999.0f;
         forged.entities[0].z = -9999.0f;
         check(send_snapshot(&a, &forged, 16u), "a_sent_forged_position_with_trailing_bytes");
+        /* Current generation and schema, forged position, exact length: the
+         * firewall admits it as a diagnostic, and the driver still requires
+         * the networked trace to match the offline one. */
+        check(send_snapshot(&a, &forged, 0u), "a_sent_admissible_forged_position");
+        /* Wait for a frame built well after the hostile sends: the outbox
+         * may already hold the next few frames, and closing with those
+         * hostile bytes still unread by the server would let the RST from
+         * close() drop them. */
         bool advanced = false;
         u64 deadline = now_ms() + 10000u;
         while (!advanced && now_ms() < deadline) {
             if (client_next_snapshot(&a, &later, 2000u) != 1) break;
-            advanced = later.frame_id > first.frame_id &&
+            advanced = later.frame_id >= first.frame_id + 60u &&
                        later.level_generation == first.level_generation &&
                        snapshot_shape_ok(&later) && later.entities[0].x != 9999.0f;
         }
@@ -363,7 +371,9 @@ static void scenario_unauthenticated(void) {
     check(client_open(&b), "b_tls_challenge");
     core_app_snapshot_build(&snapshot, 1u, 1u, core_app_snapshot_schema_hash(), NULL, 0u);
     check(send_snapshot(&b, &snapshot, 0u), "b_sent_unauthenticated_snapshot");
-    check(client_next_snapshot(&b, &probe, 1500u) != 1, "b_never_receives_snapshot");
+    /* 0 means the probe timed out with the connection still open; a closed
+     * connection (-1) would also hide a snapshot, so it does not count. */
+    check(client_next_snapshot(&b, &probe, 1500u) == 0, "b_never_receives_snapshot_and_stays_open");
     client_close(&b);
 }
 
@@ -388,6 +398,27 @@ static void scenario_wrong_psk(void) {
     client_close(&d);
 }
 
+/* E: TLS but no AUTH and no traffic. The server closes it once the
+ * authentication deadline passes. */
+static void scenario_auth_deadline(void) {
+    NetClient e;
+    check(client_open(&e), "e_tls_challenge");
+    check(client_closed_without_snapshot(&e, 10000u), "e_closed_after_auth_deadline");
+    client_close(&e);
+}
+
+/* F: a second authenticated peer at the end. Receiving a snapshot proves
+ * the server was still running, so the closures in C, D and E were
+ * decisions of a live server and not its shutdown. */
+static void scenario_alive_at_end(void) {
+    NetClient f;
+    CoreAppSnapshot snapshot;
+    check(client_open(&f), "f_tls_challenge");
+    check(client_auth(&f, g_psk), "f_auth_sent");
+    check(client_next_snapshot(&f, &snapshot, 5000u) == 1, "f_server_alive_at_end");
+    client_close(&f);
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE\n");
@@ -403,6 +434,8 @@ int main(int argc, char **argv) {
         scenario_unauthenticated();
         scenario_unknown_id();
         scenario_wrong_psk();
+        scenario_auth_deadline();
+        scenario_alive_at_end();
     }
     fprintf(g_report, "client failures=%d\n", g_failures);
     fclose(g_report);

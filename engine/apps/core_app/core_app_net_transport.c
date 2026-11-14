@@ -4,6 +4,7 @@
 #include <network/break_net_events.h>
 #include <network/break_net_message_registry.h>
 #include <network/break_session.h>
+#include <platform/platform_fs.h>
 #include <snow/acceptor.h>
 #include <snow/endpoint.h>
 
@@ -24,7 +25,11 @@ _Static_assert(CORE_APP_SNAPSHOT_MAX_BYTES == BREAK_NET_CORE_SNAPSHOT_MAX_PAYLOA
 
 #define CORE_APP_NET_MAX_CONNECTIONS 8u
 #define CORE_APP_NET_EVENTS_PER_TICK 64u
-#define CORE_APP_NET_STEP_MS 16
+#define CORE_APP_NET_DRAIN_STEP_MS 1
+#define CORE_APP_NET_MAX_POLL_MS 100u
+/* A connection that has not authenticated this many ticks after it opened
+ * is closed, so idle TLS peers cannot hold every slot. */
+#define CORE_APP_NET_AUTH_DEADLINE_TICKS 180u
 #define CORE_APP_NET_PATH_CAPACITY 512u
 
 static const u8 k_core_app_net_key_id[8] = {'c', 'o', 'r', 'e', 'a', 'p', 'p', '1'};
@@ -37,6 +42,8 @@ typedef struct CoreAppNetStats {
     u64 snapshots_sent;
     u64 send_overloads;
     u64 send_closed;
+    u64 outbox_overloads;
+    u64 auth_timeouts;
     u64 decode_failed;
 } CoreAppNetStats;
 
@@ -48,17 +55,26 @@ struct CoreAppNetTransport {
     char psk_env[128];
     char port_file[CORE_APP_NET_PATH_CAPACITY];
     u8 psk[32];
+    u32 poll_ms;
+    u32 current_tick;
     FILE *trace;
     BreakNetReactor *reactor;
     BreakSessionManager *manager;
     SnowAcceptor *acceptor;
     bool started;
+    bool listening;
+    bool port_file_written;
     bool auth_installed;
     bool admission_open;
     bool producing;
     u64 live_generation;
     BreakConnectionKey keys[CORE_APP_NET_MAX_CONNECTIONS];
     bool authenticated[CORE_APP_NET_MAX_CONNECTIONS];
+    bool closing[CORE_APP_NET_MAX_CONNECTIONS];
+    BreakSessionId session_ids[CORE_APP_NET_MAX_CONNECTIONS];
+    u32 opened_tick[CORE_APP_NET_MAX_CONNECTIONS];
+    CoreAppSnapshot scratch_snapshot;
+    u8 scratch_wire[CORE_APP_SNAPSHOT_MAX_BYTES];
     CoreAppSnapshotInbox inbox;
     CoreAppSnapshotOutbox outbox;
     CoreAppNetStats stats;
@@ -84,15 +100,19 @@ static int net_hex(char c) {
     return -1;
 }
 
+/* Decodes a 64-hex-digit key. An all-zero key is rejected: it is never a
+ * real secret, only an unset or placeholder value. */
 static bool net_hex_decode(const char *text, u8 *out, usize size) {
+    u8 any = 0u;
     if (!text || strlen(text) != size * 2u) return false;
     for (usize i = 0u; i < size; ++i) {
         int hi = net_hex(text[2u * i]);
         int lo = net_hex(text[2u * i + 1u]);
         if (hi < 0 || lo < 0) return false;
         out[i] = (u8)((hi << 4) | lo);
+        any |= out[i];
     }
-    return true;
+    return any != 0u;
 }
 
 bool core_app_net_parse_bind(const char *bind, char *host, usize host_capacity, u16 *port) {
@@ -159,6 +179,9 @@ static int net_slot_add(CoreAppNetTransport *t, BreakConnectionKey key) {
         if (t->keys[i] == 0u) {
             t->keys[i] = key;
             t->authenticated[i] = false;
+            t->closing[i] = false;
+            t->session_ids[i] = 0u;
+            t->opened_tick[i] = t->current_tick;
             return (int)i;
         }
     }
@@ -171,32 +194,39 @@ static int net_slot_add(CoreAppNetTransport *t, BreakConnectionKey key) {
 static bool net_on_snapshot(BreakConnectionKey connection, const BreakNetOwnedMessage *message,
                             void *user) {
     CoreAppNetTransport *t = (CoreAppNetTransport *)user;
-    CoreAppSnapshot *peer = (CoreAppSnapshot *)calloc(1u, sizeof(*peer));
-    if (!peer) return false;
+    CoreAppSnapshot *peer = &t->scratch_snapshot;
+    memset(peer, 0, sizeof(*peer));
     if (core_app_snapshot_decode((const u8 *)message->data, message->size, peer) !=
             CORE_APP_SNAPSHOT_OK ||
         message->size != CORE_APP_SNAPSHOT_HEADER_BYTES +
                              (usize)peer->entity_count * CORE_APP_SNAPSHOT_ENTITY_BYTES) {
         t->stats.decode_failed++;
-        free(peer);
         return false;
     }
     t->inbox.authenticated = break_session_manager_state(t->manager, connection) ==
                              BREAK_SESSION_AUTHENTICATED;
     (void)core_app_snapshot_admit(&t->inbox, message->message_id, peer, t->live_generation);
     t->inbox.authenticated = false;
-    free(peer);
     return true;
+}
+
+static void net_close_slot(CoreAppNetTransport *t, u32 i) {
+    t->authenticated[i] = false;
+    if (t->closing[i]) return;
+    t->closing[i] = true;
+    (void)break_session_manager_close(t->manager, t->keys[i], 0u);
+    (void)break_net_reactor_close(t->reactor, t->keys[i]);
 }
 
 static void net_sync_sessions(CoreAppNetTransport *t, u32 tick) {
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         BreakConnectionKey key = t->keys[i];
-        if (key == 0u) continue;
+        if (key == 0u || t->closing[i]) continue;
         BreakSessionState state = break_session_manager_state(t->manager, key);
         if (state == BREAK_SESSION_AUTHENTICATED && !t->authenticated[i]) {
             char line[160];
             t->authenticated[i] = true;
+            t->session_ids[i] = break_session_manager_session_id(t->manager, key);
             t->stats.authenticated++;
             snprintf(line, sizeof(line),
                      "COREAPPTRACE version=1 event=network_session result=authenticated"
@@ -204,8 +234,11 @@ static void net_sync_sessions(CoreAppNetTransport *t, u32 tick) {
             net_trace(t, line);
         } else if (state == BREAK_SESSION_CLOSING || state == BREAK_SESSION_CLOSED ||
                    state == BREAK_SESSION_UNKNOWN) {
-            t->authenticated[i] = false;
-            (void)break_net_reactor_close(t->reactor, key);
+            net_close_slot(t, i);
+        } else if (!t->authenticated[i] &&
+                   tick - t->opened_tick[i] >= CORE_APP_NET_AUTH_DEADLINE_TICKS) {
+            t->stats.auth_timeouts++;
+            net_close_slot(t, i);
         }
     }
 }
@@ -215,6 +248,11 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
     (void)break_net_reactor_step(t->reactor, timeout_ms);
     while (*budget > 0u && break_net_reactor_poll_event(t->reactor, &event) == BREAK_NET_EVENT_OK) {
         (*budget)--;
+        if (event.type == BREAK_NET_EVENT_SEND_DRAINED) {
+            /* Flow-control notice only; the session layer has no use for it. */
+            break_net_event_release(&event);
+            continue;
+        }
         if (event.type == BREAK_NET_EVENT_CONNECTION_OPENED) {
             if (!t->admission_open || net_slot_find(t, event.connection_key) >= 0 ||
                 net_slot_add(t, event.connection_key) < 0) {
@@ -232,6 +270,8 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
             if (slot >= 0) {
                 t->keys[slot] = 0u;
                 t->authenticated[slot] = false;
+                t->closing[slot] = false;
+                t->session_ids[slot] = 0u;
                 t->stats.closed++;
             }
         }
@@ -243,14 +283,23 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
     net_sync_sessions(t, tick);
 }
 
+/* A slot may receive a snapshot only while its key still names the session
+ * that authenticated. Connection keys are reused with transport slots, so a
+ * close still waiting in the event queue could otherwise let a new,
+ * unauthenticated connection inherit the old key. */
+static bool net_slot_sendable(const CoreAppNetTransport *t, u32 i) {
+    BreakConnectionKey key = t->keys[i];
+    return key != 0u && t->authenticated[i] && !t->closing[i] &&
+           break_session_manager_state(t->manager, key) == BREAK_SESSION_AUTHENTICATED &&
+           break_session_manager_session_id(t->manager, key) == t->session_ids[i];
+}
+
 static void net_send_pending(CoreAppNetTransport *t) {
-    CoreAppSnapshot *snapshot = (CoreAppSnapshot *)malloc(sizeof(*snapshot));
-    u8 *wire = (u8 *)malloc(CORE_APP_SNAPSHOT_MAX_BYTES);
-    if (!snapshot || !wire) {
-        free(snapshot);
-        free(wire);
-        return;
-    }
+    CoreAppSnapshot *snapshot = &t->scratch_snapshot;
+    u8 *wire = t->scratch_wire;
+    /* Unprocessed events may include a close for a key that a new
+     * connection already reuses; hold snapshots until the queue is empty. */
+    if (!break_net_reactor_event_queue_empty(t->reactor)) return;
     while (core_app_snapshot_outbox_pop(&t->outbox, snapshot)) {
         usize size = 0u;
         if (core_app_snapshot_encode(snapshot, wire, CORE_APP_SNAPSHOT_MAX_BYTES, &size) !=
@@ -258,7 +307,7 @@ static void net_send_pending(CoreAppNetTransport *t) {
             continue;
         }
         for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
-            if (t->keys[i] == 0u || !t->authenticated[i]) continue;
+            if (!net_slot_sendable(t, i)) continue;
             BreakNetSendResult sent = break_net_reactor_send(
                 t->reactor, t->keys[i], CORE_APP_SNAPSHOT_MESSAGE_ID,
                 CORE_APP_SNAPSHOT_PROTOCOL_VERSION, wire, size);
@@ -267,21 +316,24 @@ static void net_send_pending(CoreAppNetTransport *t) {
             else t->stats.send_closed++;
         }
     }
-    free(snapshot);
-    free(wire);
 }
 
-static BreakRuntimeError net_write_port_file(const CoreAppNetTransport *t, u16 port) {
-    char temp[CORE_APP_NET_PATH_CAPACITY + 8u];
-    snprintf(temp, sizeof(temp), "%s.tmp", t->port_file);
-    FILE *file = fopen(temp, "wb");
-    if (!file) return BREAK_RUNTIME_FAILED;
-    bool ok = fprintf(file, "%u\n", (unsigned)port) > 0;
-    ok = fclose(file) == 0 && ok;
-    if (!ok || rename(temp, t->port_file) != 0) {
-        remove(temp);
+static BreakRuntimeError net_write_port_file(CoreAppNetTransport *t, u16 port) {
+    char text[16];
+    int length = snprintf(text, sizeof(text), "%u\n", (unsigned)port);
+    PlatformAtomicWriter *writer = platform_atomic_writer_open(t->port_file);
+    if (!writer) return BREAK_RUNTIME_FAILED;
+    if (length <= 0 || !platform_atomic_writer_write(writer, text, (usize)length)) {
+        platform_atomic_writer_abort(writer);
         return BREAK_RUNTIME_FAILED;
     }
+    PlatformAtomicCommitResult committed = platform_atomic_writer_commit_status(writer);
+    if (committed != PLATFORM_ATOMIC_SUCCESS_DURABLE &&
+        committed != PLATFORM_ATOMIC_RENAMED_DURABILITY_UNKNOWN) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    /* The reader only needs the file to exist; durability does not matter. */
+    t->port_file_written = true;
     return BREAK_RUNTIME_OK;
 }
 
@@ -324,19 +376,20 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
     tls.cert_file = t->tls_cert;
     tls.key_file = t->tls_key;
     if (!break_net_reactor_set_tls(t->reactor, &tls)) goto fail;
-    stage = "listen";
+    stage = "acceptor";
     if (!break_net_reactor_set_acceptor(t->reactor, t->acceptor)) goto fail;
     stage = "auth";
     if (!break_session_set_auth(net_auth_key, t)) goto fail;
     t->auth_installed = true;
     stage = "listen";
     if (!break_net_reactor_start(t->reactor)) goto fail;
-    t->started = true;
     stage = "port_file";
     if (net_write_port_file(t, (u16)SnowEndpointPort(SnowAcceptorEndpoint(t->acceptor))) !=
         BREAK_RUNTIME_OK) {
         goto fail;
     }
+    t->started = true;
+    t->listening = true;
     t->admission_open = true;
     t->producing = true;
     net_trace(t, "COREAPPTRACE version=1 event=network result=listening tls=1 auth=v2\n");
@@ -348,7 +401,6 @@ fail:
                  "COREAPPTRACE version=1 event=network result=rejected stage=%s\n", stage);
         net_trace(t, line);
     }
-    t->started = false;
     (void)net_destroy(t);
     return BREAK_RUNTIME_FAILED;
 }
@@ -358,19 +410,18 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     CoreAppNetTransport *t = (CoreAppNetTransport *)user;
     if (!t || !t->started) return;
     t->live_generation = level_generation;
+    t->current_tick = tick;
     if (t->producing) {
-        CoreAppSnapshot *snapshot = (CoreAppSnapshot *)calloc(1u, sizeof(*snapshot));
-        if (snapshot &&
-            core_app_snapshot_build(snapshot, tick, level_generation,
+        CoreAppSnapshot *snapshot = &t->scratch_snapshot;
+        if (core_app_snapshot_build(snapshot, tick, level_generation,
                                     core_app_snapshot_schema_hash(), entities,
                                     entity_count) == CORE_APP_SNAPSHOT_OK &&
             core_app_snapshot_outbox_push(&t->outbox, snapshot) == CORE_APP_SNAPSHOT_OVER_LIMIT) {
-            t->stats.send_overloads++;
+            t->stats.outbox_overloads++;
         }
-        free(snapshot);
     }
     u32 budget = CORE_APP_NET_EVENTS_PER_TICK;
-    net_pump(t, CORE_APP_NET_STEP_MS, &budget, tick);
+    net_pump(t, (int)t->poll_ms, &budget, tick);
     net_send_pending(t);
 }
 
@@ -394,13 +445,11 @@ static BreakRuntimeError net_drain(void *user) {
     if (!t->started) return BREAK_RUNTIME_OK;
     net_send_pending(t);
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
-        if (t->keys[i] == 0u) continue;
-        (void)break_session_manager_close(t->manager, t->keys[i], 0u);
-        (void)break_net_reactor_close(t->reactor, t->keys[i]);
+        if (t->keys[i] != 0u) net_close_slot(t, i);
     }
     for (u32 round = 0u; round < 8u; ++round) {
         u32 budget = CORE_APP_NET_EVENTS_PER_TICK;
-        net_pump(t, 1, &budget, 0u);
+        net_pump(t, CORE_APP_NET_DRAIN_STEP_MS, &budget, t->current_tick);
         bool open = false;
         for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) open = open || t->keys[i] != 0u;
         if (!open && break_net_reactor_event_queue_empty(t->reactor)) break;
@@ -416,7 +465,8 @@ static void net_trace_stats(CoreAppNetTransport *t) {
     snprintf(line, sizeof(line),
              "COREAPPTRACE version=1 event=network_stats opened=%" PRIu64 " closed=%" PRIu64
              " refused=%" PRIu64 " authenticated=%" PRIu64 " snapshots_sent=%" PRIu64
-             " send_overloads=%" PRIu64 " send_closed=%" PRIu64 " decode_failed=%" PRIu64
+             " send_overloads=%" PRIu64 " send_closed=%" PRIu64 " outbox_overloads=%" PRIu64
+             " auth_timeouts=%" PRIu64 " decode_failed=%" PRIu64
              " admitted=%" PRIu64 " rejected_unknown=%" PRIu64
              " rejected_unauthenticated=%" PRIu64 " rejected_schema=%" PRIu64
              " rejected_stale=%" PRIu64 " session_applied=%" PRIu64
@@ -424,34 +474,59 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              " session_handler_failed=%" PRIu64 "\n",
              t->stats.opened, t->stats.closed, t->stats.refused, t->stats.authenticated,
              t->stats.snapshots_sent, t->stats.send_overloads, t->stats.send_closed,
-             t->stats.decode_failed, t->inbox.accepted_snapshots,
+             t->stats.outbox_overloads, t->stats.auth_timeouts, t->stats.decode_failed, t->inbox.accepted_snapshots,
              t->inbox.rejected_unknown_message, t->inbox.rejected_unauthenticated,
              t->inbox.rejected_schema, t->inbox.rejected_stale_level, (u64)session.applied,
              (u64)session.phase_rejected, (u64)session.invalid, (u64)session.handler_failed);
     net_trace(t, line);
 }
 
+/* Idempotent. The reactor is stopped whenever it exists, whatever state a
+ * failed start left it in: break_net_reactor_destroy is a no-op on a
+ * started reactor, and the acceptor must not die while a live reactor still
+ * holds it. If the stop fails, both are kept (leaked on purpose) and the
+ * result says so. */
 static BreakRuntimeError net_destroy(void *user) {
     CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    BreakRuntimeError result = BREAK_RUNTIME_OK;
     if (!t) return BREAK_RUNTIME_INVALID;
-    if (t->started) net_trace_stats(t);
+    if (t->listening) net_trace_stats(t);
+    t->listening = false;
+    t->started = false;
     t->admission_open = false;
     t->producing = false;
-    if (t->reactor && t->started) (void)break_net_reactor_stop(t->reactor, 1000u);
-    t->started = false;
+    bool reactor_stopped = !t->reactor || break_net_reactor_stop(t->reactor, 1000u);
     if (t->manager) break_session_manager_destroy(t->manager);
     t->manager = NULL;
-    if (t->reactor) break_net_reactor_destroy(t->reactor);
+    if (reactor_stopped) {
+        if (t->reactor) break_net_reactor_destroy(t->reactor);
+        if (t->acceptor) SnowAcceptorDestroy(t->acceptor);
+        t->acceptor = NULL;
+    } else {
+        net_trace(t, "COREAPPTRACE version=1 event=network result=stop_timeout\n");
+        result = BREAK_RUNTIME_TIMEOUT;
+    }
     t->reactor = NULL;
-    if (t->acceptor) SnowAcceptorDestroy(t->acceptor);
-    t->acceptor = NULL;
-    if (t->auth_installed) (void)break_session_set_auth(NULL, NULL);
-    t->auth_installed = false;
+    if (t->auth_installed) {
+        if (break_session_set_auth(NULL, NULL)) {
+            t->auth_installed = false;
+        } else {
+            /* The global auth hook still points at t; keep the PSK readable
+             * only through it and report the failure. */
+            result = BREAK_RUNTIME_FAILED;
+        }
+    }
+    if (t->port_file_written) {
+        (void)remove(t->port_file);
+        t->port_file_written = false;
+    }
     memset(t->keys, 0, sizeof(t->keys));
     memset(t->authenticated, 0, sizeof(t->authenticated));
-    net_wipe(t->psk, sizeof(t->psk));
+    memset(t->closing, 0, sizeof(t->closing));
+    memset(t->session_ids, 0, sizeof(t->session_ids));
+    if (!t->auth_installed) net_wipe(t->psk, sizeof(t->psk));
     t->trace = NULL;
-    return BREAK_RUNTIME_OK;
+    return result;
 }
 
 CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConfig *config) {
@@ -462,13 +537,15 @@ CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConf
         !net_copy(t->tls_cert, sizeof(t->tls_cert), config->tls_cert) ||
         !net_copy(t->tls_key, sizeof(t->tls_key), config->tls_key) ||
         !net_copy(t->psk_env, sizeof(t->psk_env), config->psk_env) ||
-        !net_copy(t->port_file, sizeof(t->port_file), config->port_file)) {
+        !net_copy(t->port_file, sizeof(t->port_file), config->port_file) ||
+        config->poll_ms > CORE_APP_NET_MAX_POLL_MS) {
         free(t);
         return NULL;
     }
     core_app_snapshot_inbox_init(&t->inbox, false, CORE_APP_SNAPSHOT_MESSAGE_ID,
                                  core_app_snapshot_schema_hash());
     core_app_snapshot_outbox_init(&t->outbox);
+    t->poll_ms = config->poll_ms;
     return t;
 }
 

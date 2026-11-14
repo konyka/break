@@ -131,6 +131,10 @@ if(NETWORK_ENABLED AND NETWORK_TRANSPORT)
     expect_exit(network_bad_port 2 --network --bind 127.0.0.1:65536 --tls-cert c.pem
         --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt)
     expect_last_error(network_bad_port "invalid --bind value")
+    expect_exit(network_bad_poll_ms 2 --network --bind 127.0.0.1:0 --tls-cert c.pem
+        --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt
+        --net-poll-ms 101)
+    expect_last_error(network_bad_poll_ms "--net-poll-ms requires 0..100")
 elseif(NETWORK_ENABLED)
     expect_runtime_failed(network_enabled_but_unimplemented --network)
     expect_exit(network_transport_options_absent 2 --bind 127.0.0.1:0)

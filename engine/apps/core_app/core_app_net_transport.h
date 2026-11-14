@@ -20,7 +20,8 @@ typedef struct CoreAppNetTransportConfig {
     const char *tls_cert;  /* PEM server certificate */
     const char *tls_key;   /* PEM server key */
     const char *psk_env;   /* environment variable holding 64 hex digits */
-    const char *port_file; /* receives the bound port after start */
+    const char *port_file; /* receives the bound port after start; removed on exit */
+    u32 poll_ms;           /* per-tick socket wait, 0..100; 0 never blocks the tick */
 } CoreAppNetTransportConfig;
 
 /* Validates the configuration shape (every field present, bind parses).

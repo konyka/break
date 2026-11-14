@@ -25,8 +25,9 @@ typedef enum CoreAppAudioMode {
 
 /* Optional network channel, borrowed for the whole run. The runtime library
  * never links a transport: the executable supplies these callbacks only in
- * a build with the authenticated transport, so an offline core_app carries
- * no network code at all. Every callback runs on the CoreAppThread. tick
+ * a build with the authenticated transport, so an offline core_app links no
+ * break_net, break_session or snow symbols. Every callback runs on the
+ * CoreAppThread. tick
  * receives read-only POD copies and returns nothing, so a network failure
  * can only change network diagnostics, never the simulation. The four stop
  * callbacks follow the runtime coordinator phases and must be idempotent

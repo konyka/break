@@ -6,6 +6,13 @@
 # same scenario runs offline, and every non-network trace line must be
 # byte-identical: hostile network input never changes the simulation.
 #
+# The server and the client are COMMANDs of one execute_process, which CMake
+# connects as a pipeline (server stdout -> client stdin). The client never
+# reads stdin and core_app writes nothing to stdout, so the pipe stays empty.
+#
+# MODE=start_failure: every start failure must exit 2 with a rejected stage,
+# leave no port file, and (in sanitizer trees) report no leak.
+#
 # MODE=offline: the same scenario twice without --network must give
 # byte-identical traces with no network line. In a build without the
 # transport, nm must find no break_net_/break_session_/snow_/Snow symbol.
@@ -87,6 +94,52 @@ if(MODE STREQUAL "offline")
     return()
 endif()
 
+if(MODE STREQUAL "start_failure")
+    foreach(var TLS_CERT TLS_KEY)
+        if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
+            message(FATAL_ERROR "${var} is required for MODE=start_failure")
+        endif()
+    endforeach()
+    set(good_psk "0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff0")
+    set(zero_psk "0000000000000000000000000000000000000000000000000000000000000000")
+    function(expect_start_failure name psk cert port_file stage)
+        if(psk STREQUAL "-")
+            unset(ENV{CORE_APP_TEST_PSK})
+        else()
+            set(ENV{CORE_APP_TEST_PSK} "${psk}")
+        endif()
+        execute_process(
+            COMMAND "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/${name}.trace"
+                --network --bind 127.0.0.1:0 --tls-cert "${cert}" --tls-key "${TLS_KEY}"
+                --psk-env CORE_APP_TEST_PSK --port-file "${port_file}"
+            RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 60)
+        unset(ENV{CORE_APP_TEST_PSK})
+        if(NOT rc EQUAL 2)
+            message(FATAL_ERROR "${name}: rc=${rc}, want 2\n${out}${err}")
+        endif()
+        if(err MATCHES "Sanitizer|LeakSanitizer")
+            message(FATAL_ERROR "${name}: sanitizer report\n${err}")
+        endif()
+        file(READ "${WORK_DIR}/${name}.trace" trace)
+        if(NOT trace MATCHES "event=network result=rejected stage=${stage}\n")
+            message(FATAL_ERROR "${name}: no rejected stage=${stage}\n${trace}")
+        endif()
+        if(trace MATCHES "event=network_stats|result=listening")
+            message(FATAL_ERROR "${name}: a rejected start reported a listener\n${trace}")
+        endif()
+        if(EXISTS "${port_file}")
+            message(FATAL_ERROR "${name}: a rejected start left ${port_file}")
+        endif()
+    endfunction()
+    expect_start_failure(missing_psk - "${TLS_CERT}" "${WORK_DIR}/a.port" psk)
+    expect_start_failure(zero_psk "${zero_psk}" "${TLS_CERT}" "${WORK_DIR}/b.port" psk)
+    expect_start_failure(bad_cert "${good_psk}" "${WORK_DIR}/missing.pem" "${WORK_DIR}/c.port" tls)
+    expect_start_failure(port_file "${good_psk}" "${TLS_CERT}"
+        "${WORK_DIR}/no-such-dir/d.port" port_file)
+    message(STATUS "core_app network start failure contract passed")
+    return()
+endif()
+
 if(NOT MODE STREQUAL "loopback")
     message(FATAL_ERROR "unknown MODE=${MODE}")
 endif()
@@ -102,7 +155,7 @@ set(ENV{CORE_APP_TEST_PSK}
 execute_process(
     COMMAND "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/network.trace"
         --network --bind 127.0.0.1:0 --tls-cert "${TLS_CERT}" --tls-key "${TLS_KEY}"
-        --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port"
+        --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port" --net-poll-ms 16
     COMMAND "${NET_CLIENT}" "${WORK_DIR}/server.port" "${WORK_DIR}/client.report"
     RESULTS_VARIABLE results
     OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
@@ -118,6 +171,9 @@ if(NOT server_rc EQUAL 0 OR NOT client_rc EQUAL 0)
         "loopback failed: server=${server_rc} client=${client_rc}\n${report}\n${err}")
 endif()
 message(STATUS "client report:\n${report}")
+if(EXISTS "${WORK_DIR}/server.port")
+    message(FATAL_ERROR "the server left its port file after a clean exit")
+endif()
 
 file(READ "${WORK_DIR}/network.trace" trace)
 if(trace MATCHES "CORE_APP_TEST_PSK|0f1e2d3c4b5a6978")
@@ -135,22 +191,18 @@ endif()
 set(stats "${CMAKE_MATCH_0}")
 message(STATUS "${stats}")
 stat_value("${stats}" authenticated authenticated)
-if(NOT authenticated EQUAL 1)
-    message(FATAL_ERROR "exactly one peer holds the PSK; authenticated=${authenticated}")
+if(NOT authenticated EQUAL 2)
+    message(FATAL_ERROR "peers A and F hold the PSK; authenticated=${authenticated}")
 endif()
-expect_at_least("${stats}" opened 4)
+expect_at_least("${stats}" opened 6)
+expect_at_least("${stats}" auth_timeouts 1)
+expect_at_least("${stats}" admitted 1)
 expect_at_least("${stats}" snapshots_sent 2)
 expect_at_least("${stats}" rejected_stale 1)
 expect_at_least("${stats}" rejected_schema 1)
 expect_at_least("${stats}" decode_failed 1)
 expect_at_least("${stats}" session_phase_rejected 1)
 expect_at_least("${stats}" session_handler_failed 2)
-stat_value("${stats}" admitted admitted)
-if(admitted GREATER 0)
-    # An admitted snapshot is only diagnostic, but this peer sent nothing
-    # that matches the live level and schema without a forged field.
-    message(STATUS "note: admitted=${admitted} diagnostic snapshots")
-endif()
 
 run_offline(offline)
 read_core_lines("${WORK_DIR}/network.trace" networked)

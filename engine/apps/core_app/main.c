@@ -29,6 +29,7 @@ static void print_help(void) {
          "  --tls-key PATH\n"
          "  --psk-env NAME\n"
          "  --port-file PATH\n"
+         "  --net-poll-ms 0..100\n"
 #endif
          "  --help");
 }
@@ -152,6 +153,15 @@ int main(int argc, char **argv) {
         } else if ((matched = take_value(argc, argv, &i, "--port-file", &value)) != 0) {
             if (matched < 0) return cli_error("--port-file requires a nonempty path");
             net_config.port_file = value;
+            net_option_seen = true;
+        } else if ((matched = take_value(argc, argv, &i, "--net-poll-ms", &value)) != 0) {
+            u32 poll_ms = 0u;
+            if (matched < 0 || strcmp(value, "0") == 0) {
+                if (matched < 0) return cli_error("--net-poll-ms requires 0..100");
+            } else if (!parse_frames(value, &poll_ms) || poll_ms > 100u) {
+                return cli_error("--net-poll-ms requires 0..100");
+            }
+            net_config.poll_ms = poll_ms;
             net_option_seen = true;
 #endif
         } else if (strcmp(argv[i], "--fixed-step") == 0) {
