@@ -1,3 +1,9 @@
+## Mipmap 同步强制加载改为按时间等待（2026-11-14）
+
+- **问题**：macOS Cocoa + MoltenVK 的 CI（run 43576165785）里 `test_mipmap_stream` 的 `mipmap_request_pool_reuse_after_free` 判红，`mipmap_stream_force_level` 返回 false。原因是它的等待上限是 100 万次 `async_loader_tick()` 空转，本机实测约 20 ms。CI 机器繁忙时 IO 线程来不及被调度，正常的加载被当成失败。
+- **修复**：等待上限改为墙钟时间 `MIPMAP_STREAM_FORCE_TIMEOUT_US`（5 秒），每轮空转之间调用 `platform_thread_yield()` 让出 CPU。加载失败仍立即返回 false。
+- **测试**：新增 `mipmap_force_level_waits_for_slow_io_worker`（非 Windows），用 FIFO 让唯一的 IO 线程阻塞 150 ms。旧代码判红；把上限改回 20 ms 的变异也判红。normal 全量 400/400，ASan 与 TSan 下 `test_mipmap_stream` 各 1/1。
+
 ## Core App checkpoint 保存车辆物理运行态（2026-11-14）
 
 - **交付**：`runtime_<g>.bin` 升到版本 3（正文 124 字节），保存底盘的位置、速度、朝向、角速度、静止帧数和休眠状态，以及乘坐状态与交互键按住状态。读档后车辆和乘坐者从存档时的状态继续运行。非有限值或退化朝向一律拒绝，结果为 `stage=checkpoint`。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的补充小节。

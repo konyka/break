@@ -19,6 +19,7 @@ u32 mipmap_stream_coverage_to_level(f32 coverage, u32 mip_count, u32 width, u32 
 #define MIPMAP_STREAM_MAX_TEXTURES  1024
 #define MIPMAP_STREAM_MAX_LEVELS    16
 #define MIPMAP_STREAM_REQ_POOL_SIZE 64  /* preallocated request context slots */
+#define MIPMAP_STREAM_FORCE_TIMEOUT_US 5000000ull  /* force_level wall-clock bound */
 
 typedef enum {
     MIPMAP_LEVEL_UNLOADED = 0,   /* Not loaded, data not in memory */
@@ -111,7 +112,9 @@ void mipmap_stream_update(MipmapStreamManager *mgr);
 /* Get the data pointer for a specific mipmap level (NULL if not resident) */
 void *mipmap_stream_get_level(MipmapStreamManager *mgr, i32 tex_idx, u32 level);
 
-/* Force load a specific mipmap level synchronously (blocks until ready) */
+/* Force load a specific mipmap level synchronously. Blocks until the level is
+ * resident, the load fails, or MIPMAP_STREAM_FORCE_TIMEOUT_US of wall-clock
+ * time passes (returns false on failure or timeout). */
 bool mipmap_stream_force_level(MipmapStreamManager *mgr, i32 tex_idx, u32 level);
 
 /* Register a GPU upload callback, invoked when a level becomes resident. */

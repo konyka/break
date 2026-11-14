@@ -407,6 +407,73 @@ TEST(mipmap_failed_load_not_rerequested)
     vfs_destroy(vfs);
 }
 
+#if !defined(_WIN32)
+#include <core/platform_thread.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+static const char *mip_fifo_full(void)
+{
+    static char b[128];
+    return test_tmp(b, sizeof b, "test_mipmap_fifo");
+}
+
+static void fifo_noop_cb(void *user, void *data, u32 size)
+{
+    (void)user; (void)size;
+    free(data);
+}
+
+static PLATFORM_THREAD_RET fifo_release_after_delay(PLATFORM_THREAD_ARG arg)
+{
+    (void)arg;
+    time_sleep_us(150000);
+    int fd = open(mip_fifo_full(), O_WRONLY);
+    if (fd >= 0) close(fd);
+    return PLATFORM_THREAD_RETURN;
+}
+
+/* macOS CI: force_level bounded its wait by 1e6 async_loader_tick() spins
+ * (~20 ms), so a busy runner that did not schedule the IO worker in time
+ * reported a healthy load as failed. Pin the only IO worker on a FIFO open
+ * for 150 ms; the wait must be wall-clock bounded and outlast that. */
+TEST(mipmap_force_level_waits_for_slow_io_worker)
+{
+    ASSERT_TRUE(write_mip_file());
+    remove(mip_fifo_full());
+    ASSERT_EQ(mkfifo(mip_fifo_full(), 0600), 0);
+
+    VFS *vfs = vfs_create();
+    vfs_mount_dir(vfs, test_tmp_root());
+    async_loader_init(1, vfs);
+
+    MipmapStreamManager mgr;
+    ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20));
+    i32 idx = mipmap_stream_register(&mgr, TMP_PATH_BASE, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
+    ASSERT_TRUE(idx >= 0);
+
+    const char *fifo_full = mip_fifo_full();
+    const char *fifo_base = strrchr(fifo_full, '/');
+    fifo_base = fifo_base ? fifo_base + 1 : fifo_full;
+    ASSERT_NEQ(async_loader_request(fifo_base, fifo_noop_cb, NULL), 0u);
+    time_sleep_us(20000);
+
+    PlatformThread releaser;
+    ASSERT_TRUE(platform_thread_create(&releaser, fifo_release_after_delay, NULL));
+    bool ok = mipmap_stream_force_level(&mgr, idx, 0);
+    platform_thread_join(releaser);
+    ASSERT_TRUE(ok);
+    ASSERT_NOT_NULL(mipmap_stream_get_level(&mgr, idx, 0));
+
+    mipmap_stream_shutdown(&mgr);
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+    remove(mip_fifo_full());
+    remove(TMP_PATH);
+}
+#endif
+
 TEST(mipmap_budget_addition_does_not_wrap)
 {
     /* R458: total + needed can wrap usize near SIZE_MAX, making an already
@@ -446,5 +513,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(coverage_to_level_known_values);
     RUN_TEST(mipmap_request_pool_reuse_after_free);
     RUN_TEST(mipmap_failed_load_not_rerequested);
+#if !defined(_WIN32)
+    RUN_TEST(mipmap_force_level_waits_for_slow_io_worker);
+#endif
     RUN_TEST(mipmap_budget_addition_does_not_wrap);
 TEST_MAIN_END()

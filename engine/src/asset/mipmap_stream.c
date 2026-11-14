@@ -1,6 +1,8 @@
 #include "mipmap_stream.h"
 #include <asset/vfs.h>
 #include <core/log.h>
+#include <core/platform_thread.h>
+#include <platform/time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -479,15 +481,17 @@ bool mipmap_stream_force_level(MipmapStreamManager *mgr, i32 tex_idx, u32 level)
     }
 
     /* Block until the completion callback marks the level resident. We pump
-     * async_loader_tick() ourselves since residency is delivered there. */
-    u32 timeout = 1000000;
-    while (timeout > 0) {
+     * async_loader_tick() ourselves since residency is delivered there. The
+     * bound is wall-clock: a spin count expired in ~20 ms, before a busy host
+     * had scheduled the IO worker, and reported a healthy load as failed. */
+    u64 deadline = time_microseconds() + MIPMAP_STREAM_FORCE_TIMEOUT_US;
+    for (;;) {
         async_loader_tick();
         if (tex->level_state[level] == MIPMAP_LEVEL_RESIDENT) return true;
         if (tex->level_state[level] == MIPMAP_LEVEL_UNLOADED) return false; /* failed */
-        timeout--;
+        if (time_microseconds() >= deadline) return false;
+        platform_thread_yield();
     }
-    return false;
 }
 
 void mipmap_stream_set_upload(MipmapStreamManager *mgr, MipmapUploadFn fn, void *ctx) {
