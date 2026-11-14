@@ -163,19 +163,7 @@ foreach(path IN LISTS scan_files)
         set(current_plan_text "${current_plan_prefix}${current_plan_suffix}")
         set(text "${current_plan_text}")
     endif()
-    # P0--P11 compatibility API: names and link relationships are unchanged.
-    string(REPLACE "game/break_game" "" text "${text}")
-    string(REPLACE "game/break_flow" "" text "${text}")
-    string(REPLACE "break_game" "" text "${text}")
-    string(REPLACE "BreakGame" "" text "${text}")
-    string(REPLACE "BREAK_GAME" "" text "${text}")
-    string(REPLACE "foreach(game_test IN ITEMS actor items weapons actions move level area flow)" "" text "${text}")
-    string(REPLACE "\${game_test}" "" text "${text}")
-    string(REPLACE "GAME_TEST_WRAP_FS" "" text "${text}")
-    # Only the existing break_game CTest iterator declaration/expansions and
-    # the pre-P12 test_platform_fs_write macro are exempt here.
-    # Established pre-P12 prototype contract strings and this existing worktree/branch only.
-    string(REPLACE "test_cry_style_prototype" "" text "${text}")
+    # Established pre-P12 contract strings and this existing worktree/branch only.
     string(REPLACE "core_style_runtime.md" "" text "${text}")
     string(REPLACE ".worktrees/cry-integration" "" text "${text}")
     string(REPLACE [=[`cry-integration`]=] "" text "${text}")

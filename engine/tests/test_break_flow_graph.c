@@ -1,5 +1,5 @@
 #include "test_framework.h"
-#include <game/break_flow.h>
+#include <kernel/break_flow.h>
 #include <stdint.h>
 #include <string.h>
 

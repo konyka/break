@@ -5,7 +5,7 @@
 
 #include <editor/editor_internal.h>
 #include <editor/editor_test_hooks.h>
-#include <game/break_flow.h>
+#include <kernel/break_flow.h>
 
 #include <stdio.h>
 #include <stdlib.h>

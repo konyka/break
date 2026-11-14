@@ -1,5 +1,5 @@
 #include <animation/anim_compression.h>
-#include <game/break_flow.h>
+#include <kernel/break_flow.h>
 #include <math/math.h>
 #include <platform/platform_fs.h>
 #include <scene/scene_serial.h>

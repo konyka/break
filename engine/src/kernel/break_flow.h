@@ -1,6 +1,6 @@
 #pragma once
 
-#include <game/break_game.h>
+#include <kernel/break_kernel.h>
 
 #define BREAK_FLOW_HARD_MAX_NODES 256u
 #define BREAK_FLOW_HARD_MAX_LINKS 1024u
@@ -130,7 +130,7 @@ typedef struct BreakFlowRuntimeConfig {
     u32 node_budget;
 } BreakFlowRuntimeConfig;
 
-BreakFlowRuntime *break_flow_runtime_create(BreakFlowGraph *graph, BreakGame *game,
+BreakFlowRuntime *break_flow_runtime_create(BreakFlowGraph *graph, BreakKernel *kernel,
                                             const BreakFlowRuntimeConfig *config);
 void break_flow_runtime_destroy(BreakFlowRuntime *runtime);
 BreakFlowError break_flow_runtime_check_owner(const BreakFlowRuntime *runtime);

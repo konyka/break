@@ -460,7 +460,7 @@ TEST(input_snapshot_copies_platform_touches_without_mutating_source) {
 
 typedef struct SimFixture {
     World *world;
-    BreakGame *actor_runtime;
+    BreakKernel *actor_runtime;
     PhysicsWorld *physics;
     Entity user;
     CoreAppSimulation *simulation;
@@ -473,14 +473,14 @@ static bool sim_fixture_init(SimFixture *fixture) {
     memset(fixture, 0, sizeof(*fixture));
     fixture->world = world_create();
     if (!fixture->world) return false;
-    world_register_component(fixture->world, BREAK_GAME_POSITION_COMPONENT,
+    world_register_component(fixture->world, BREAK_KERNEL_POSITION_COMPONENT,
                              sizeof(Vec3));
     fixture->user = world_create_entity(fixture->world);
     position = (Vec3 *)world_add_component(fixture->world, fixture->user,
-                                           BREAK_GAME_POSITION_COMPONENT);
+                                           BREAK_KERNEL_POSITION_COMPONENT);
     if (!position) return false;
     *position = vec3(0.0f, 1.5f, 0.0f);
-    fixture->actor_runtime = break_game_create(fixture->world, NULL);
+    fixture->actor_runtime = break_kernel_create(fixture->world, NULL);
     fixture->physics = physics_world_create(16u);
     if (!fixture->actor_runtime || !fixture->physics) return false;
     physics_body_create(fixture->physics, vec3(0.0f, 0.0f, 0.0f),
@@ -500,7 +500,7 @@ static void sim_fixture_dispose(SimFixture *fixture) {
     core_app_input_destroy(fixture->input);
     core_app_simulation_destroy(fixture->simulation);
     if (fixture->physics) physics_world_destroy(fixture->physics);
-    if (fixture->actor_runtime) break_game_destroy(fixture->actor_runtime);
+    if (fixture->actor_runtime) break_kernel_destroy(fixture->actor_runtime);
     if (fixture->world) world_destroy(fixture->world);
 }
 
@@ -564,7 +564,7 @@ TEST(simulation_key_and_touch_drag_reach_same_position) {
     ASSERT_FLOAT_EQ(key_position.e[1], touch_position.e[1], 1e-5);
     ASSERT_FLOAT_EQ(key_position.e[2], touch_position.e[2], 1e-5);
     component = (Vec3 *)world_get_component(key.world, key.user,
-                                            BREAK_GAME_POSITION_COMPONENT);
+                                            BREAK_KERNEL_POSITION_COMPONENT);
     ASSERT_NOT_NULL(component);
     ASSERT_EQ(memcmp(component, &key_position, sizeof(Vec3)), 0);
     sim_fixture_dispose(&key);

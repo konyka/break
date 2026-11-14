@@ -1,7 +1,7 @@
 #pragma once
 
 #include <editor/editor_doc.h>
-#include <game/break_flow.h>
+#include <kernel/break_flow.h>
 
 /* Borrowed graph. Any successful flow edit, undo/redo or reset replaces it;
  * callers must re-fetch instead of retaining the pointer across mutations. */

@@ -1,23 +1,23 @@
 #pragma once
 
-#include <game/break_game.h>
+#include <kernel/break_kernel.h>
 #include <script/break_lua.h>
 
-typedef struct BreakGameLuaAdapter BreakGameLuaAdapter;
+typedef struct BreakKernelLuaAdapter BreakKernelLuaAdapter;
 
-typedef struct BreakGameLuaFault {
+typedef struct BreakKernelLuaFault {
     bool valid;
     u64 total;
     Entity entity;
-    char module[BREAK_GAME_NAME_CAP];
+    char module[BREAK_KERNEL_NAME_CAP];
     BreakLuaError error;
-} BreakGameLuaFault;
+} BreakKernelLuaFault;
 
-BreakGameLuaAdapter *break_game_lua_create(BreakGame *game,
+BreakKernelLuaAdapter *break_kernel_lua_create(BreakKernel *kernel,
                                             BreakLuaRuntime *runtime);
-void break_game_lua_destroy(BreakGameLuaAdapter *adapter);
-BreakGameLuaFault break_game_lua_last_fault(
-    const BreakGameLuaAdapter *adapter);
+void break_kernel_lua_destroy(BreakKernelLuaAdapter *adapter);
+BreakKernelLuaFault break_kernel_lua_last_fault(
+    const BreakKernelLuaAdapter *adapter);
 
 /* Per-actor script counters for the live actor `entity`. `ticks` counts
  * successful on_actor_tick calls, `failures` failed ones (including handle
@@ -28,14 +28,14 @@ BreakGameLuaFault break_game_lua_last_fault(
  * BREAK_LUA_INVALID; non-owner thread -> BREAK_LUA_REJECTED; an entity that
  * is not a live actor -> BREAK_LUA_STALE. `out` is zeroed on every non-OK
  * return. */
-typedef struct BreakGameLuaActorStats {
+typedef struct BreakKernelLuaActorStats {
     u64 ticks;
     u64 failures;
     u64 skipped;
     BreakLuaError last_error;
     bool disabled;
-} BreakGameLuaActorStats;
+} BreakKernelLuaActorStats;
 
-BreakLuaError break_game_lua_actor_stats(const BreakGameLuaAdapter *adapter,
+BreakLuaError break_kernel_lua_actor_stats(const BreakKernelLuaAdapter *adapter,
                                          Entity entity,
-                                         BreakGameLuaActorStats *out);
+                                         BreakKernelLuaActorStats *out);

@@ -20,7 +20,7 @@
 #include <crash/break_crash_cluster.h>
 #include <crash/break_crash_symbolize.h>
 #include <crypto/break_crypto.h>
-#include <game/break_game.h>
+#include <kernel/break_kernel.h>
 #include <integrity/break_integrity.h>
 #include <network/break_aoi.h>
 #include <network/break_msg_rate.h>

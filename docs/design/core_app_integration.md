@@ -64,7 +64,7 @@ D3D12 run `43162667434`、job `130997246493` 的完整日志显示 archive 与�
 
 ### 每 tick 顺序
 
-固定步内的顺序改为：`break_game_tick` → `break_flow_runtime_tick` → `core_app_simulation_tick` → `break_game_area_tick` → 位置 trace → 处理本 tick 累计的 Area enter → haptic → `event=actors` trace。AI、动画和 `physics_step` 仍由 Task 6 接入，本任务不把它们算作已实现。
+固定步内的顺序改为：`break_kernel_tick` → `break_flow_runtime_tick` → `core_app_simulation_tick` → `break_kernel_area_tick` → 位置 trace → 处理本 tick 累计的 Area enter → haptic → `event=actors` trace。AI、动画和 `physics_step` 仍由 Task 6 接入，本任务不把它们算作已实现。
 
 `event=actors` 记录 User 和 Chaser 的脚本计数、用户物品数和 Flow pending 数：
 
@@ -75,9 +75,9 @@ event=actors tick=<n> generation=<g> user_ticks=<n> user_failures=<n> \
 
 ### 脚本
 
-`stage_lua` 以 `instruction_budget = 1000000`、`memory_budget = 8 MiB` 创建 runtime，并加载 `director`、`user`、`chaser`。User 类绑定 `user`，Chaser 类绑定 `chaser`。`user.lua` 的 `on_actor_tick` 只累加 `state.ticks`；`chaser.lua` 可以加载，但 `on_actor_tick` 每次都 `error`。一个 actor 的错误只记入 `break_game_lua_last_fault` 和该 actor 的 `failures`，不阻止同 tick 的其他 actor。
+`stage_lua` 以 `instruction_budget = 1000000`、`memory_budget = 8 MiB` 创建 runtime，并加载 `director`、`user`、`chaser`。User 类绑定 `user`，Chaser 类绑定 `chaser`。`user.lua` 的 `on_actor_tick` 只累加 `state.ticks`；`chaser.lua` 可以加载，但 `on_actor_tick` 每次都 `error`。一个 actor 的错误只记入 `break_kernel_lua_last_fault` 和该 actor 的 `failures`，不阻止同 tick 的其他 actor。
 
-`break_game_lua_actor_stats(adapter, entity, out)` 返回该 actor 的 `ticks`、`failures`、`skipped`、`last_error` 和 `disabled`。despawn 清零计数，之后查询旧 entity 返回 `BREAK_LUA_STALE`，复用同 index 的新 generation 从 0 开始。一次调用使 `break_lua_runtime_budget_trip_count` 增加时，adapter 只禁用这个 module：它的所有 actor 之后记入 `skipped`，其他 module 继续运行。普通 Lua 错误不会禁用 module。
+`break_kernel_lua_actor_stats(adapter, entity, out)` 返回该 actor 的 `ticks`、`failures`、`skipped`、`last_error` 和 `disabled`。despawn 清零计数，之后查询旧 entity 返回 `BREAK_LUA_STALE`，复用同 index 的新 generation 从 0 开始。一次调用使 `break_lua_runtime_budget_trip_count` 增加时，adapter 只禁用这个 module：它的所有 actor 之后记入 `skipped`，其他 module 继续运行。普通 Lua 错误不会禁用 module。
 
 ### Flow
 
@@ -87,10 +87,10 @@ event=actors tick=<n> generation=<g> user_ticks=<n> user_failures=<n> \
 
 ### 验证
 
-- `test_break_game_lua` 4/4：原有的失败隔离和缺失 hook 用例，加上 60 tick 的 per-actor 计数、despawn 后 STALE、预算 trip 只禁用一个 module。
+- `test_break_kernel_lua` 4/4：原有的失败隔离和缺失 hook 用例，加上 60 tick 的 per-actor 计数、despawn 后 STALE、预算 trip 只禁用一个 module。
 - `test_core_app_assets` 23/23：事件键 1001、add-item 数量 1、`user` 的 `on_actor_tick` 返回 OK、`chaser` 可加载但 `on_actor_tick` 返回 `BREAK_LUA_FAILED` 且不影响再次调用 `user`。
 - 真实进程 `test_core_app_lifecycle_script_flow`：持续行走时 tick 30 投递且 `flow_pending=1`、物品仍为 0，tick 61 物品变为 1 且 pending 归零，tick 180 仍为 1；User 180 次成功、Chaser 180 次失败。中途卸载报告 `discarded pending=1` 且全程没有 `event=item`；第二关卡在 tick 42 从 0 开始计数，到 tick 99 物品仍为 0，也没有新的投递（用户停在原地，不再进入 Area）。
-- 变异：任何 Lua 错误都禁用 module 时 `test_break_game_lua` 为 2/4；首个错误跳过后续 actor 时 `script_flow` 失败；删除 Area→Flow 投递时 `script_flow` 失败。三处恢复后 `cmp` 确认字节一致。
+- 变异：任何 Lua 错误都禁用 module 时 `test_break_kernel_lua` 为 2/4；首个错误跳过后续 actor 时 `script_flow` 失败；删除 Area→Flow 投递时 `script_flow` 失败。三处恢复后 `cmp` 确认字节一致。
 - 回归：普通非图形 374 项入选，370 PASS，4 个既有文档化 SKIP，0 FAIL。ASan+UBSan focused 8/8，TSan 6/6，均无 sanitizer 报告。
 
 ### 限制
@@ -101,7 +101,7 @@ AI、动画和 `physics_step` 没有接入，tick 顺序里这三步仍是空位
 
 ### 每 tick 顺序
 
-固定步内的顺序扩展为：`break_game_tick` → `break_flow_runtime_tick` → `core_app_simulation_tick` → `app_tick_chaser` → `break_game_area_tick` → 位置 trace → Area enter 处理 → haptic → `event=actors` trace → `event=sim` trace。追踪者的移动意图由行为树产生，由 `CharacterController` 执行；应用自身不直接写世界位置。
+固定步内的顺序扩展为：`break_kernel_tick` → `break_flow_runtime_tick` → `core_app_simulation_tick` → `app_tick_chaser` → `break_kernel_area_tick` → 位置 trace → Area enter 处理 → haptic → `event=actors` trace → `event=sim` trace。追踪者的移动意图由行为树产生，由 `CharacterController` 执行；应用自身不直接写世界位置。
 
 ### 导航场与 AI 接线
 
@@ -186,7 +186,7 @@ event=facial tick=<n> generation=<g> x=<f> y=<f>
 
 `stage_physics` 的物理世界容量从 16 提到 32，并在场景节点 4（Vehicle，位置 (-4, 0.75, 2)）上方 0.25 m 处 `vehicle_create`，加载期先空载推进 120 个固定步让悬挂落稳。`core_app_level_destroy` 在销毁物理世界前调用 `vehicle_destroy`。
 
-每个固定步的顺序变为：`break_game_tick` → `break_flow_runtime_tick` → `app_tick_vehicle` → 用户未乘车时 `core_app_simulation_tick` → `app_tick_chaser` → `physics_step` → 乘车时把用户放到底盘位置 → `event=vehicle` trace → `break_game_area_tick` → 其余 trace。`physics_step` 由此第一次进入应用的固定步。
+每个固定步的顺序变为：`break_kernel_tick` → `break_flow_runtime_tick` → `app_tick_vehicle` → 用户未乘车时 `core_app_simulation_tick` → `app_tick_chaser` → `physics_step` → 乘车时把用户放到底盘位置 → `event=vehicle` trace → `break_kernel_area_tick` → 其余 trace。`physics_step` 由此第一次进入应用的固定步。
 
 `app_tick_vehicle` 读取 interact 动作（E 键或手柄西键），只在按下的那一 tick 触发：未乘车时，用户与底盘的水平距离不超过 3 m 才调用 `vehicle_enter`；已乘车时调用 `vehicle_exit`，成功后用新增的 `core_app_simulation_place_user` 把角色控制器和 ECS 位置放到下车点，并清零速度。乘车期间 forward 映射为油门、strafe 映射为转向，不乘车时三项控制都为 0，每个固定步都调用 `vehicle_step`。
 
@@ -367,8 +367,8 @@ event=load_rejected tick=<n> generation=<g> stage=<checkpoint|state>
 ### 变化
 
 - `runtime_<g>.bin` 升到版本 2，正文 68 字节，在标志之后加 4 字节的背包物品 1 数量。版本 1 的文件现在按 `INVALID` 拒绝。
-- `save` 用 `break_game_inventory_count` 记录数量，trace 多一个 `items=<u>` 字段。
-- `load` 只允许补足：当前数量大于保存数量时以 `REJECTED` 拒绝；小于时用 `break_game_inventory_add` 补差。这一步和其他校验一样，在修改用户与追踪者之前完成。
+- `save` 用 `break_kernel_inventory_count` 记录数量，trace 多一个 `items=<u>` 字段。
+- `load` 只允许补足：当前数量大于保存数量时以 `REJECTED` 拒绝；小于时用 `break_kernel_inventory_add` 补差。这一步和其他校验一样，在修改用户与追踪者之前完成。
 - 第二次保存失败时（例如 `runtime_2.bin` 位置已有同名目录），上一代 `runtime_1.bin` 和 manifest 保持不变，`save_generation` 不递增；之后的 `load` 恢复第一次保存的状态。
 
 ### 验证
@@ -490,7 +490,7 @@ tick 是不带符号的十进制，范围 1..1048576，且不得回退；`quit` 
 
 `core_app_input` 拥有自己的 `InputState` 和 `InputExtended`，`InputExtended` 初始化后不再复制。每个 tick 先推进按键边沿和触摸帧状态，再应用该 tick 的事件；对外只导出 POD 帧，包含按键、触摸点、手势和 haptic 状态。
 
-`core_app_simulation` 在创建时绑定 9 个动作：forward、back、left、right、jump、interact、fire、save、load。键盘使用 W/S/A/D、空格、E、鼠标左键、F5、F9，手柄使用左摇杆和按钮。每个 tick 依次执行：`break_game_eval_actions`；把活动触摸映射成虚拟摇杆（纵向位移除以 0.1 作为 forward，横向作为 strafe，钳制到 [-1, 1]，release/cancel 的触摸不计入）；`break_game_move_wish`（yaw 为 0）；`character_update(CORE_APP_FIXED_DT)`；最后把位置写回 `BREAK_GAME_POSITION_COMPONENT`。模拟结果不读取墙钟。`core_app_accumulator_advance` 每次最多产生 8 个 substep，超出的时间计入 `dropped_ns`，不改变步长；由于应用目前只支持 fixed-step，它暂时只有单元测试。
+`core_app_simulation` 在创建时绑定 9 个动作：forward、back、left、right、jump、interact、fire、save、load。键盘使用 W/S/A/D、空格、E、鼠标左键、F5、F9，手柄使用左摇杆和按钮。每个 tick 依次执行：`break_kernel_eval_actions`；把活动触摸映射成虚拟摇杆（纵向位移除以 0.1 作为 forward，横向作为 strafe，钳制到 [-1, 1]，release/cancel 的触摸不计入）；`break_kernel_move_wish`（yaw 为 0）；`character_update(CORE_APP_FIXED_DT)`；最后把位置写回 `BREAK_KERNEL_POSITION_COMPONENT`。模拟结果不读取墙钟。`core_app_accumulator_advance` 每次最多产生 8 个 substep，超出的时间计入 `dropped_ns`，不改变步长；由于应用目前只支持 fixed-step，它暂时只有单元测试。
 
 ### 关卡接线与 trace
 

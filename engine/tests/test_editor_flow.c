@@ -3,8 +3,8 @@
 #include <editor/editor_doc.h>
 #include <editor/editor_flow.h>
 #include <editor/editor_test_hooks.h>
-#include <game/break_game.h>
-#include <game/break_flow.h>
+#include <kernel/break_kernel.h>
+#include <kernel/break_flow.h>
 #include <string.h>
 
 static BreakFlowNodeDesc node(BreakFlowNodeType type) {
@@ -113,16 +113,16 @@ TEST(invalid_and_oom_edits_do_not_enter_stack_and_reset_clears_graph) {
 
 TEST(editor_graph_is_a_real_runtime_consumer_source) {
     World *world = world_create();
-    world_register_component(world, BREAK_GAME_POSITION_COMPONENT, sizeof(Vec3));
-    BreakGameConfig game_cfg = {0u, 1u};
-    BreakGame *game = break_game_create(world, &game_cfg);
-    ComponentType components[1] = {BREAK_GAME_POSITION_COMPONENT};
-    BreakGameClassDesc cls = {"pawn", components, 1u, NULL};
+    world_register_component(world, BREAK_KERNEL_POSITION_COMPONENT, sizeof(Vec3));
+    BreakKernelConfig kernel_cfg = {0u, 1u};
+    BreakKernel *kernel = break_kernel_create(world, &kernel_cfg);
+    ComponentType components[1] = {BREAK_KERNEL_POSITION_COMPONENT};
+    BreakKernelClassDesc cls = {"pawn", components, 1u, NULL};
     u32 class_id = 0u;
-    ASSERT_EQ(break_game_register_class(game, &cls, &class_id), BREAK_GAME_OK);
-    BreakGameSpawn spawn = {class_id, {{1.0f, 2.0f, 3.0f}}};
+    ASSERT_EQ(break_kernel_register_class(kernel, &cls, &class_id), BREAK_KERNEL_OK);
+    BreakKernelSpawn spawn = {class_id, {{1.0f, 2.0f, 3.0f}}};
     Entity actor = ENTITY_NULL;
-    ASSERT_EQ(break_game_spawn(game, &spawn, &actor), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_spawn(kernel, &spawn, &actor), BREAK_KERNEL_OK);
 
     BreakEditorDoc *doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
@@ -140,18 +140,18 @@ TEST(editor_graph_is_a_real_runtime_consumer_source) {
     u32 link_id = 0u;
     ASSERT_EQ(break_editor_flow_connect(doc, &link, &link_id), BREAK_FLOW_OK);
     BreakFlowRuntime *runtime = break_flow_runtime_create(
-        break_editor_doc_flow_graph(doc), game, NULL);
+        break_editor_doc_flow_graph(doc), kernel, NULL);
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, actor, 0.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
     const Vec3 *position = (const Vec3 *)world_get_component(
-        world, actor, BREAK_GAME_POSITION_COMPONENT);
+        world, actor, BREAK_KERNEL_POSITION_COMPONENT);
     ASSERT_FLOAT_EQ(position->e[0], 6.0f, 0.0f);
     ASSERT_FLOAT_EQ(position->e[1], 7.0f, 0.0f);
     ASSERT_FLOAT_EQ(position->e[2], 8.0f, 0.0f);
     break_flow_runtime_destroy(runtime);
     break_editor_doc_destroy(doc);
-    break_game_destroy(game);
+    break_kernel_destroy(kernel);
     world_destroy(world);
 }
 

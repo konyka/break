@@ -3,7 +3,7 @@
 #include "core_app_input.h"
 
 #include <ecs/ecs.h>
-#include <game/break_game.h>
+#include <kernel/break_kernel.h>
 #include <physics/character.h>
 #include <physics/physics.h>
 #include <runtime/runtime_types.h>
@@ -28,7 +28,7 @@ typedef enum CoreAppAction {
 
 typedef struct CoreAppSimulationDesc {
     World *world;
-    BreakGame *actor_runtime;
+    BreakKernel *actor_runtime;
     PhysicsWorld *physics;
     Entity user;
     Vec3 spawn;

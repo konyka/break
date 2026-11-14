@@ -1,62 +1,62 @@
-#include <game/break_game_lua.h>
+#include <kernel/break_kernel_lua.h>
 
-#include <game/break_game_internal.h>
+#include <kernel/break_kernel_internal.h>
 
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct BreakGameLuaActor {
+typedef struct BreakKernelLuaActor {
     BreakLuaHostHandle handle;
     bool live;
     u64 ticks;
     u64 failures;
     u64 skipped;
     BreakLuaError last_error;
-} BreakGameLuaActor;
+} BreakKernelLuaActor;
 
-struct BreakGameLuaAdapter {
-    BreakGame *game;
+struct BreakKernelLuaAdapter {
+    BreakKernel *kernel;
     BreakLuaRuntime *runtime;
-    BreakGameLuaActor *actors;
-    BreakGameLuaFault last_fault;
-    char disabled[BREAK_GAME_HARD_MAX_CLASSES][BREAK_GAME_NAME_CAP];
+    BreakKernelLuaActor *actors;
+    BreakKernelLuaFault last_fault;
+    char disabled[BREAK_KERNEL_HARD_MAX_CLASSES][BREAK_KERNEL_NAME_CAP];
     u32 disabled_count;
 };
 
-static bool break_game_lua_module_disabled(const BreakGameLuaAdapter *adapter,
+static bool break_kernel_lua_module_disabled(const BreakKernelLuaAdapter *adapter,
                                            const char *module)
 {
     u32 i;
     for (i = 0u; i < adapter->disabled_count; i++) {
-        if (strncmp(adapter->disabled[i], module, BREAK_GAME_NAME_CAP) == 0) {
+        if (strncmp(adapter->disabled[i], module, BREAK_KERNEL_NAME_CAP) == 0) {
             return true;
         }
     }
     return false;
 }
 
-static void break_game_lua_disable_module(BreakGameLuaAdapter *adapter,
+static void break_kernel_lua_disable_module(BreakKernelLuaAdapter *adapter,
                                           const char *module)
 {
     usize len = 0u;
     char *slot;
-    if (break_game_lua_module_disabled(adapter, module) ||
-        adapter->disabled_count >= BREAK_GAME_HARD_MAX_CLASSES) {
+    if (break_kernel_lua_module_disabled(adapter, module) ||
+        adapter->disabled_count >= BREAK_KERNEL_HARD_MAX_CLASSES) {
         return;
     }
     slot = adapter->disabled[adapter->disabled_count++];
-    while (len + 1u < BREAK_GAME_NAME_CAP && module[len] != '\0') {
+    while (len + 1u < BREAK_KERNEL_NAME_CAP && module[len] != '\0') {
         len++;
     }
     memcpy(slot, module, len);
     slot[len] = '\0';
 }
 
-static void break_game_lua_record_fault(BreakGameLuaAdapter *adapter,
+static void break_kernel_lua_record_fault(BreakKernelLuaAdapter *adapter,
                                         const char *module, Entity entity,
                                         BreakLuaError error)
 {
-    BreakGameLuaFault *fault = &adapter->last_fault;
+    BreakKernelLuaFault *fault = &adapter->last_fault;
     usize len = 0u;
     fault->valid = true;
     fault->total++;
@@ -69,21 +69,21 @@ static void break_game_lua_record_fault(BreakGameLuaAdapter *adapter,
     fault->module[len] = '\0';
 }
 
-static void break_game_lua_actor_tick(void *user, const char *module,
+static void break_kernel_lua_actor_tick(void *user, const char *module,
                                       Entity entity, f32 dt)
 {
-    BreakGameLuaAdapter *adapter = (BreakGameLuaAdapter *)user;
-    BreakGameLuaActor *actor;
+    BreakKernelLuaAdapter *adapter = (BreakKernelLuaAdapter *)user;
+    BreakKernelLuaActor *actor;
     BreakLuaValue args[2];
     BreakLuaError err;
     u64 trips;
-    u32 slot = break_game_actor_slot(adapter->game, entity);
+    u32 slot = break_kernel_actor_slot(adapter->kernel, entity);
     if (slot == UINT32_MAX) {
-        break_game_lua_record_fault(adapter, module, entity, BREAK_LUA_STALE);
+        break_kernel_lua_record_fault(adapter, module, entity, BREAK_LUA_STALE);
         return;
     }
     actor = &adapter->actors[slot];
-    if (break_game_lua_module_disabled(adapter, module)) {
+    if (break_kernel_lua_module_disabled(adapter, module)) {
         actor->skipped++;
         return;
     }
@@ -94,7 +94,7 @@ static void break_game_lua_actor_tick(void *user, const char *module,
         if (err != BREAK_LUA_OK) {
             actor->failures++;
             actor->last_error = err;
-            break_game_lua_record_fault(adapter, module, entity, err);
+            break_kernel_lua_record_fault(adapter, module, entity, err);
             return;
         }
         actor->live = true;
@@ -111,19 +111,19 @@ static void break_game_lua_actor_tick(void *user, const char *module,
         actor->failures++;
         actor->last_error = err;
         if (break_lua_runtime_budget_trip_count(adapter->runtime) != trips) {
-            break_game_lua_disable_module(adapter, module);
+            break_kernel_lua_disable_module(adapter, module);
         }
-        break_game_lua_record_fault(adapter, module, entity, err);
+        break_kernel_lua_record_fault(adapter, module, entity, err);
         return;
     }
     actor->ticks++;
 }
 
-static void break_game_lua_actor_despawn(void *user, Entity entity)
+static void break_kernel_lua_actor_despawn(void *user, Entity entity)
 {
-    BreakGameLuaAdapter *adapter = (BreakGameLuaAdapter *)user;
-    u32 slot = break_game_actor_slot(adapter->game, entity);
-    BreakGameLuaActor *actor;
+    BreakKernelLuaAdapter *adapter = (BreakKernelLuaAdapter *)user;
+    u32 slot = break_kernel_actor_slot(adapter->kernel, entity);
+    BreakKernelLuaActor *actor;
     BreakLuaError err;
     if (slot == UINT32_MAX) {
         return;
@@ -140,36 +140,36 @@ static void break_game_lua_actor_despawn(void *user, Entity entity)
     actor->live = false;
     memset(&actor->handle, 0, sizeof(actor->handle));
     if (err != BREAK_LUA_OK) {
-        break_game_lua_record_fault(adapter, "actor_despawn", entity, err);
+        break_kernel_lua_record_fault(adapter, "actor_despawn", entity, err);
     }
 }
 
-BreakGameLuaAdapter *break_game_lua_create(BreakGame *game,
+BreakKernelLuaAdapter *break_kernel_lua_create(BreakKernel *kernel,
                                             BreakLuaRuntime *runtime)
 {
-    BreakGameLuaAdapter *adapter;
-    BreakGameScriptBridge bridge;
-    if (!game || !runtime || !break_game_is_owner(game) ||
+    BreakKernelLuaAdapter *adapter;
+    BreakKernelScriptBridge bridge;
+    if (!kernel || !runtime || !break_kernel_is_owner(kernel) ||
         break_lua_runtime_check_owner(runtime) != BREAK_LUA_OK) {
         return NULL;
     }
-    adapter = (BreakGameLuaAdapter *)calloc(1u, sizeof(*adapter));
+    adapter = (BreakKernelLuaAdapter *)calloc(1u, sizeof(*adapter));
     if (!adapter) {
         return NULL;
     }
-    adapter->actors = (BreakGameLuaActor *)calloc(game->max_actors,
+    adapter->actors = (BreakKernelLuaActor *)calloc(kernel->max_actors,
                                                   sizeof(*adapter->actors));
     if (!adapter->actors) {
         free(adapter);
         return NULL;
     }
-    adapter->game = game;
+    adapter->kernel = kernel;
     adapter->runtime = runtime;
     memset(&bridge, 0, sizeof(bridge));
     bridge.user = adapter;
-    bridge.actor_tick = break_game_lua_actor_tick;
-    bridge.actor_despawn = break_game_lua_actor_despawn;
-    if (break_game_set_script_bridge(game, &bridge) != BREAK_GAME_OK) {
+    bridge.actor_tick = break_kernel_lua_actor_tick;
+    bridge.actor_despawn = break_kernel_lua_actor_despawn;
+    if (break_kernel_set_script_bridge(kernel, &bridge) != BREAK_KERNEL_OK) {
         free(adapter->actors);
         free(adapter);
         return NULL;
@@ -177,19 +177,19 @@ BreakGameLuaAdapter *break_game_lua_create(BreakGame *game,
     return adapter;
 }
 
-void break_game_lua_destroy(BreakGameLuaAdapter *adapter)
+void break_kernel_lua_destroy(BreakKernelLuaAdapter *adapter)
 {
     u32 slot;
-    if (!adapter || !break_game_is_owner(adapter->game) ||
+    if (!adapter || !break_kernel_is_owner(adapter->kernel) ||
         break_lua_runtime_check_owner(adapter->runtime) != BREAK_LUA_OK) {
         return;
     }
-    if (adapter->game->script_bridge_used &&
-        adapter->game->script_bridge.user == adapter) {
-        (void)break_game_set_script_bridge(adapter->game, NULL);
+    if (adapter->kernel->script_bridge_used &&
+        adapter->kernel->script_bridge.user == adapter) {
+        (void)break_kernel_set_script_bridge(adapter->kernel, NULL);
     }
-    for (slot = 0u; slot < adapter->game->max_actors; slot++) {
-        BreakGameLuaActor *actor = &adapter->actors[slot];
+    for (slot = 0u; slot < adapter->kernel->max_actors; slot++) {
+        BreakKernelLuaActor *actor = &adapter->actors[slot];
         if (actor->live) {
             (void)break_lua_host_handle_release(adapter->runtime, actor->handle);
             actor->live = false;
@@ -199,22 +199,22 @@ void break_game_lua_destroy(BreakGameLuaAdapter *adapter)
     free(adapter);
 }
 
-BreakGameLuaFault break_game_lua_last_fault(
-    const BreakGameLuaAdapter *adapter)
+BreakKernelLuaFault break_kernel_lua_last_fault(
+    const BreakKernelLuaAdapter *adapter)
 {
-    BreakGameLuaFault fault;
+    BreakKernelLuaFault fault;
     memset(&fault, 0, sizeof(fault));
-    if (adapter && break_game_is_owner(adapter->game)) {
+    if (adapter && break_kernel_is_owner(adapter->kernel)) {
         fault = adapter->last_fault;
     }
     return fault;
 }
 
-BreakLuaError break_game_lua_actor_stats(const BreakGameLuaAdapter *adapter,
+BreakLuaError break_kernel_lua_actor_stats(const BreakKernelLuaAdapter *adapter,
                                          Entity entity,
-                                         BreakGameLuaActorStats *out)
+                                         BreakKernelLuaActorStats *out)
 {
-    const BreakGameLuaActor *actor;
+    const BreakKernelLuaActor *actor;
     u32 slot;
     if (!out) {
         return BREAK_LUA_INVALID;
@@ -223,10 +223,10 @@ BreakLuaError break_game_lua_actor_stats(const BreakGameLuaAdapter *adapter,
     if (!adapter) {
         return BREAK_LUA_INVALID;
     }
-    if (!break_game_is_owner(adapter->game)) {
+    if (!break_kernel_is_owner(adapter->kernel)) {
         return BREAK_LUA_REJECTED;
     }
-    slot = break_game_actor_slot(adapter->game, entity);
+    slot = break_kernel_actor_slot(adapter->kernel, entity);
     if (slot == UINT32_MAX) {
         return BREAK_LUA_STALE;
     }
@@ -235,8 +235,8 @@ BreakLuaError break_game_lua_actor_stats(const BreakGameLuaAdapter *adapter,
     out->failures = actor->failures;
     out->skipped = actor->skipped;
     out->last_error = actor->last_error;
-    out->disabled = break_game_lua_module_disabled(
+    out->disabled = break_kernel_lua_module_disabled(
         adapter,
-        adapter->game->classes[adapter->game->actors[slot].class_id].lua_module);
+        adapter->kernel->classes[adapter->kernel->actors[slot].class_id].lua_module);
     return BREAK_LUA_OK;
 }

@@ -31,7 +31,7 @@
 #include <sys/resource.h>
 #include <signal.h>
 #endif
-#if defined(GAME_TEST_WRAP_FS)
+#if defined(KERNEL_TEST_WRAP_FS)
 #include <errno.h>
 #endif
 
@@ -441,7 +441,7 @@ TEST(null_and_error_matrix) {
     ASSERT_TRUE(TEST_RMDIR(root) == 0);
 }
 
-#if defined(GAME_TEST_WRAP_FS)
+#if defined(KERNEL_TEST_WRAP_FS)
 static u32 g_file_fsync_failures;
 static u32 g_dir_fsync_failures;
 static u32 g_rename_failures;
@@ -598,7 +598,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(commit_overwrites_existing_target);
     RUN_TEST(abort_no_residue_target_untouched);
     RUN_TEST(abort_idempotent_null_noop);
-#if defined(GAME_TEST_WRAP_FS)
+#if defined(KERNEL_TEST_WRAP_FS)
     RUN_TEST(atomic_commit_status_distinguishes_pre_and_post_rename_outcomes);
 #endif
 #if !defined(_WIN32)

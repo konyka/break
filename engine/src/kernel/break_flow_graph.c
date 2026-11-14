@@ -1,4 +1,4 @@
-#include <game/break_flow_internal.h>
+#include <kernel/break_flow_internal.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -57,7 +57,7 @@ static BreakFlowError normalize_node(const BreakFlowGraph *graph, u32 id,
         return BREAK_FLOW_INVALID;
     }
     if (input->type == BREAK_FLOW_NODE_ENTITY_ADD_ITEM &&
-        (input->item_id == 0u || input->item_id > BREAK_GAME_MAX_ITEMS)) {
+        (input->item_id == 0u || input->item_id > BREAK_KERNEL_MAX_ITEMS)) {
         return BREAK_FLOW_INVALID;
     }
     if (graph && input->type == BREAK_FLOW_NODE_EVENT) {

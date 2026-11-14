@@ -1,4 +1,4 @@
-#include <game/break_game.h>
+#include <kernel/break_kernel.h>
 #include <math.h>
 
 static f32 clampf(f32 v, f32 lo, f32 hi) {
@@ -11,12 +11,12 @@ static f32 clampf(f32 v, f32 lo, f32 hi) {
     return v;
 }
 
-BreakGameError break_game_move_wish(const BreakGameMoveInput *in, BreakGameMoveOutput *out) {
+BreakKernelError break_kernel_move_wish(const BreakKernelMoveInput *in, BreakKernelMoveOutput *out) {
     if (!in || !out) {
-        return BREAK_GAME_INVALID;
+        return BREAK_KERNEL_INVALID;
     }
     if (!isfinite(in->forward) || !isfinite(in->strafe) || !isfinite(in->camera_yaw)) {
-        return BREAK_GAME_INVALID;
+        return BREAK_KERNEL_INVALID;
     }
     f32 forward = clampf(in->forward, -1.0f, 1.0f);
     f32 strafe = clampf(in->strafe, -1.0f, 1.0f);
@@ -32,5 +32,5 @@ BreakGameError break_game_move_wish(const BreakGameMoveInput *in, BreakGameMoveO
     out->wish = wish;
     out->jump = in->jump;
     out->yaw = in->camera_yaw;
-    return BREAK_GAME_OK;
+    return BREAK_KERNEL_OK;
 }

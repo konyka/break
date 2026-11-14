@@ -12,9 +12,9 @@
 #include <animation/facial.h>
 #include <renderer/lod_skin.h>
 #include <asset/vfs.h>
-#include <game/break_flow.h>
-#include <game/break_game_internal.h>
-#include <game/break_game_lua.h>
+#include <kernel/break_flow.h>
+#include <kernel/break_kernel_internal.h>
+#include <kernel/break_kernel_lua.h>
 #include <physics/physics.h>
 #include <physics/ragdoll.h>
 #include <physics/vehicle.h>
@@ -66,11 +66,11 @@
 typedef struct CoreLevel {
     World *world;
     Scene scene;
-    BreakGame *actor_runtime;
+    BreakKernel *actor_runtime;
     BreakFlowGraph *flow_graph;
     BreakFlowRuntime *flow;
     BreakLuaRuntime *lua;
-    BreakGameLuaAdapter *adapter;
+    BreakKernelLuaAdapter *adapter;
     PhysicsWorld *physics;
     BreakNavMesh *nav_mesh;
     BreakAiRuntime *ai;
@@ -392,13 +392,13 @@ static void core_app_level_destroy(CoreLevel *level) {
     if (level->vehicle_live && level->physics) vehicle_destroy(&level->vehicle, level->physics);
     if (level->physics) physics_world_destroy(level->physics);
     if (level->actor_level_open && level->actor_runtime) {
-        (void)break_game_level_close(level->actor_runtime);
+        (void)break_kernel_level_close(level->actor_runtime);
     }
-    if (level->adapter) break_game_lua_destroy(level->adapter);
+    if (level->adapter) break_kernel_lua_destroy(level->adapter);
     if (level->lua) break_lua_runtime_destroy(level->lua);
     if (level->flow) break_flow_runtime_destroy(level->flow);
     if (level->flow_graph) break_flow_graph_destroy(level->flow_graph);
-    if (level->actor_runtime) break_game_destroy(level->actor_runtime);
+    if (level->actor_runtime) break_kernel_destroy(level->actor_runtime);
     free(level->scene.materials);
     level->scene.materials = NULL;
     level->scene.material_count = 0u;
@@ -410,13 +410,13 @@ static void core_app_level_destroy(CoreLevel *level) {
     free(level);
 }
 
-static BreakGameError app_level_hook_load(void *user, World *world,
+static BreakKernelError app_level_hook_load(void *user, World *world,
                                            const char *scene_path) {
     CoreLevel *level = (CoreLevel *)user;
     if (!level || level->world != world || !scene_path || scene_path[0] == '\0') {
-        return BREAK_GAME_INVALID;
+        return BREAK_KERNEL_INVALID;
     }
-    return level->scene.node_count > 0u ? BREAK_GAME_OK : BREAK_GAME_FAILED;
+    return level->scene.node_count > 0u ? BREAK_KERNEL_OK : BREAK_KERNEL_FAILED;
 }
 
 static void app_level_hook_unload(void *user, World *world) {
@@ -483,7 +483,7 @@ static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
         break_runtime_message_release(message);
         return BREAK_RUNTIME_OOM;
     }
-    world_register_component(candidate->world, BREAK_GAME_POSITION_COMPONENT,
+    world_register_component(candidate->world, BREAK_KERNEL_POSITION_COMPONENT,
                              sizeof(Vec3));
     world_register_component(candidate->world, 1u, sizeof(f32) * 3u);
     world_register_component(candidate->world, 3u, sizeof(u32));
@@ -495,28 +495,28 @@ static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
     candidate->request = NULL;
     if (!loaded) return BREAK_RUNTIME_FAILED;
 
-    BreakGameConfig config = {16u, 64u};
-    candidate->actor_runtime = break_game_create(candidate->world, &config);
+    BreakKernelConfig config = {16u, 64u};
+    candidate->actor_runtime = break_kernel_create(candidate->world, &config);
     if (!candidate->actor_runtime) return BREAK_RUNTIME_OOM;
     static const char *const class_names[] = {
         "Ground", "User", "Chaser", "DynamicWall", "Vehicle",
         "VisibleColor", "HiddenColor"
     };
     for (u32 i = 0u; i < sizeof(class_names) / sizeof(class_names[0]); ++i) {
-        BreakGameClassDesc desc;
+        BreakKernelClassDesc desc;
         memset(&desc, 0, sizeof(desc));
         desc.name = class_names[i];
         if (i == 1u) desc.lua_module = "user";
         if (i == 2u) desc.lua_module = "chaser";
         u32 class_id = 0u;
-        if (break_game_register_class(candidate->actor_runtime, &desc, &class_id) !=
-                BREAK_GAME_OK ||
+        if (break_kernel_register_class(candidate->actor_runtime, &desc, &class_id) !=
+                BREAK_KERNEL_OK ||
             class_id == 0u) {
             return BREAK_RUNTIME_FAILED;
         }
     }
-    BreakGameItemDesc item = {1u, 1000000u};
-    if (break_game_item_define(candidate->actor_runtime, &item) != BREAK_GAME_OK) {
+    BreakKernelItemDesc item = {1u, 1000000u};
+    if (break_kernel_item_define(candidate->actor_runtime, &item) != BREAK_KERNEL_OK) {
         return BREAK_RUNTIME_FAILED;
     }
     return BREAK_RUNTIME_OK;
@@ -587,7 +587,7 @@ static BreakRuntimeError stage_lua(CoreLevel *candidate,
         free(source);
         if (result != BREAK_LUA_OK) return BREAK_RUNTIME_FAILED;
     }
-    candidate->adapter = break_game_lua_create(candidate->actor_runtime, candidate->lua);
+    candidate->adapter = break_kernel_lua_create(candidate->actor_runtime, candidate->lua);
     return candidate->adapter ? BREAK_RUNTIME_OK : BREAK_RUNTIME_OOM;
 }
 
@@ -603,13 +603,13 @@ static BreakRuntimeError stage_actor(CoreLevel *candidate,
                        &candidate->actor_size)) {
         return BREAK_RUNTIME_FAILED;
     }
-    BreakGameLevelHooks hooks;
+    BreakKernelLevelHooks hooks;
     memset(&hooks, 0, sizeof(hooks));
     hooks.load = app_level_hook_load;
     hooks.unload = app_level_hook_unload;
     hooks.user = candidate;
-    if (break_game_level_open(candidate->actor_runtime, &hooks, scene_path, sidecar_path) !=
-        BREAK_GAME_OK) {
+    if (break_kernel_level_open(candidate->actor_runtime, &hooks, scene_path, sidecar_path) !=
+        BREAK_KERNEL_OK) {
         return BREAK_RUNTIME_FAILED;
     }
     candidate->actor_level_open = true;
@@ -723,10 +723,10 @@ static BreakRuntimeError app_tick_ragdoll(CoreApp *app, u32 tick,
         (double)level->chain_world[2].e[3][0], (double)level->chain_world[2].e[3][1]);
 }
 
-static void app_area_event(u32 area_id, Entity entity, BreakGameAreaEvent event,
+static void app_area_event(u32 area_id, Entity entity, BreakKernelAreaEvent event,
                            void *user) {
     CoreLevel *level = (CoreLevel *)user;
-    if (!level || event != BREAK_GAME_AREA_ENTER ||
+    if (!level || event != BREAK_KERNEL_AREA_ENTER ||
         entity.index != level->user.index ||
         entity.generation != level->user.generation) {
         return;
@@ -755,7 +755,7 @@ static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
     Vec3 feet = vec3(center.e[0], center.e[1] - fabsf(node->world_transform.e[1][1]),
                      center.e[2]);
     Vec3 *position = (Vec3 *)world_add_component(candidate->world, user,
-                                                 BREAK_GAME_POSITION_COMPONENT);
+                                                 BREAK_KERNEL_POSITION_COMPONENT);
     if (!position) return BREAK_RUNTIME_FAILED;
     *position = feet;
     CoreAppSimulationDesc desc;
@@ -773,24 +773,24 @@ static BreakRuntimeError stage_simulation(CoreLevel *candidate) {
     }
     candidate->chaser = candidate->world->entities[CORE_APP_CHASER_ENTITY_INDEX];
     if (!world_entity_exists(candidate->world, candidate->chaser)) return BREAK_RUNTIME_STALE;
-    BreakGameAreaDesc area;
+    BreakKernelAreaDesc area;
     memset(&area, 0, sizeof(area));
     area.center = vec3(feet.e[0], feet.e[1] + 1.0f, feet.e[2] + 3.0f);
     area.half_extent = vec3(1.5f, 2.0f, 0.5f);
-    if (break_game_area_add(candidate->actor_runtime, &area,
-                            &candidate->trigger_area) != BREAK_GAME_OK) {
+    if (break_kernel_area_add(candidate->actor_runtime, &area,
+                            &candidate->trigger_area) != BREAK_KERNEL_OK) {
         return BREAK_RUNTIME_FAILED;
     }
-    break_game_set_area_callback(candidate->actor_runtime, app_area_event, candidate);
+    break_kernel_set_area_callback(candidate->actor_runtime, app_area_event, candidate);
     if (candidate->scene.node_count < 3u || !candidate->scene.nodes) {
         return BREAK_RUNTIME_FAILED;
     }
-    BreakGameAreaDesc sight;
+    BreakKernelAreaDesc sight;
     memset(&sight, 0, sizeof(sight));
     sight.center = app_node_position(&candidate->scene.nodes[2]);
     sight.half_extent = vec3(6.0f, 3.0f, 6.0f);
-    if (break_game_area_add(candidate->actor_runtime, &sight,
-                            &candidate->sight_area) != BREAK_GAME_OK) {
+    if (break_kernel_area_add(candidate->actor_runtime, &sight,
+                            &candidate->sight_area) != BREAK_KERNEL_OK) {
         return BREAK_RUNTIME_FAILED;
     }
     AnimLocoSample samples[2] = {{0.0f, 0u}, {4.0f, 1u}};
@@ -1507,8 +1507,8 @@ static BreakRuntimeError app_capture_state(const CoreLevel *level, CoreAppRuntim
     if (level->wall_removed) out->flags |= CORE_APP_RUNTIME_FLAG_WALL_REMOVED;
     if (level->target_in_sight) out->flags |= CORE_APP_RUNTIME_FLAG_TARGET_IN_SIGHT;
     if (level->board.seen) out->flags |= CORE_APP_RUNTIME_FLAG_SEEN;
-    if (break_game_inventory_count(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
-                                   &out->items) != BREAK_GAME_OK) {
+    if (break_kernel_inventory_count(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
+                                   &out->items) != BREAK_KERNEL_OK) {
         return BREAK_RUNTIME_FAILED;
     }
     return BREAK_RUNTIME_OK;
@@ -1647,14 +1647,14 @@ static BreakRuntimeError app_apply_state(CoreLevel *level, const CoreAppRuntimeS
         return BREAK_RUNTIME_REJECTED;
     }
     u32 items = 0u;
-    if (break_game_inventory_count(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
-                                   &items) != BREAK_GAME_OK) {
+    if (break_kernel_inventory_count(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
+                                   &items) != BREAK_KERNEL_OK) {
         return BREAK_RUNTIME_FAILED;
     }
     if (items > state->items) return BREAK_RUNTIME_REJECTED;
     if (items < state->items &&
-        break_game_inventory_add(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
-                                 state->items - items) != BREAK_GAME_OK) {
+        break_kernel_inventory_add(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
+                                 state->items - items) != BREAK_KERNEL_OK) {
         return BREAK_RUNTIME_REJECTED;
     }
     level->user_items = state->items;
@@ -1974,7 +1974,7 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
                                         const CoreAppInputFrame *frame) {
     CoreLevel *level = app->level;
     BreakRuntimeError result;
-    break_game_tick(level->actor_runtime, CORE_APP_FIXED_DT);
+    break_kernel_tick(level->actor_runtime, CORE_APP_FIXED_DT);
     BreakFlowError flow = break_flow_runtime_tick(level->flow);
     if (flow != BREAK_FLOW_OK) {
         result = app_trace(app,
@@ -1983,8 +1983,8 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
         if (result != BREAK_RUNTIME_OK) return result;
     }
     u32 items = 0u;
-    if (break_game_inventory_count(level->actor_runtime, level->user,
-                                   CORE_APP_FLOW_ITEM, &items) != BREAK_GAME_OK) {
+    if (break_kernel_inventory_count(level->actor_runtime, level->user,
+                                   CORE_APP_FLOW_ITEM, &items) != BREAK_KERNEL_OK) {
         return BREAK_RUNTIME_FAILED;
     }
     if (items != level->user_items) {
@@ -2025,8 +2025,8 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
     }
     result = app_tick_ragdoll(app, tick, frame);
     if (result != BREAK_RUNTIME_OK) return result;
-    BreakGameError area = break_game_area_tick(level->actor_runtime);
-    if (area != BREAK_GAME_OK && area != BREAK_GAME_OVERLOAD) return BREAK_RUNTIME_FAILED;
+    BreakKernelError area = break_kernel_area_tick(level->actor_runtime);
+    if (area != BREAK_KERNEL_OK && area != BREAK_KERNEL_OVERLOAD) return BREAK_RUNTIME_FAILED;
     Vec3 position;
     result = core_app_simulation_user_position(level->simulation, &position);
     if (result != BREAK_RUNTIME_OK) return result;
@@ -2124,11 +2124,11 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
             after.haptic_request_id);
         if (result != BREAK_RUNTIME_OK) return result;
     }
-    BreakGameLuaActorStats user_stats;
-    BreakGameLuaActorStats chaser_stats;
-    if (break_game_lua_actor_stats(level->adapter, level->user, &user_stats) !=
+    BreakKernelLuaActorStats user_stats;
+    BreakKernelLuaActorStats chaser_stats;
+    if (break_kernel_lua_actor_stats(level->adapter, level->user, &user_stats) !=
             BREAK_LUA_OK ||
-        break_game_lua_actor_stats(level->adapter, level->chaser, &chaser_stats) !=
+        break_kernel_lua_actor_stats(level->adapter, level->chaser, &chaser_stats) !=
             BREAK_LUA_OK) {
         return BREAK_RUNTIME_FAILED;
     }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <game/break_flow.h>
+#include <kernel/break_flow.h>
 
 typedef struct BreakFlowNode {
     bool used;

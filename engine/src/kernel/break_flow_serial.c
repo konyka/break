@@ -1,4 +1,4 @@
-#include <game/break_flow_internal.h>
+#include <kernel/break_flow_internal.h>
 
 #include <stdlib.h>
 #include <string.h>

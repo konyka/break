@@ -765,34 +765,34 @@ if(NOT ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(break_ecs_replication PUBLIC m)
 endif()
 
-# Gameplay kernel (actor classes, action map, level sidecar, trigger areas).
+# Actor kernel (actor classes, action map, level sidecar, trigger areas).
 # Formal optional static library: built regardless of ENGINE_BUILD_TESTS and
 # not linked into engine, engine_demo, or dxx_break. ECS comes from
 # break_ecs_replication so this target does not compile a second ecs.c.
-add_library(break_game STATIC
-    src/game/break_game.c
-    src/game/break_game_actor.c
-    src/game/break_game_items.c
-    src/game/break_game_weapons.c
-    src/game/break_game_actions.c
-    src/game/break_game_move.c
-    src/game/break_game_level.c
-    src/game/break_game_area.c
-    src/game/break_game_flow.c)
-set_property(TARGET break_game PROPERTY C_STANDARD 11)
-target_include_directories(break_game PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(break_game PUBLIC break_ecs_replication)
+add_library(break_kernel STATIC
+    src/kernel/break_kernel.c
+    src/kernel/break_kernel_actor.c
+    src/kernel/break_kernel_items.c
+    src/kernel/break_kernel_weapons.c
+    src/kernel/break_kernel_actions.c
+    src/kernel/break_kernel_move.c
+    src/kernel/break_kernel_level.c
+    src/kernel/break_kernel_area.c
+    src/kernel/break_kernel_flow.c)
+set_property(TARGET break_kernel PROPERTY C_STANDARD 11)
+target_include_directories(break_kernel PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_kernel PUBLIC break_ecs_replication)
 if(ENGINE_PLATFORM STREQUAL "linux")
-    target_link_libraries(break_game PUBLIC pthread)
+    target_link_libraries(break_kernel PUBLIC pthread)
 endif()
 
 add_library(break_flow STATIC
-    src/game/break_flow_graph.c
-    src/game/break_flow_serial.c
-    src/game/break_flow_runtime.c)
+    src/kernel/break_flow_graph.c
+    src/kernel/break_flow_serial.c
+    src/kernel/break_flow_runtime.c)
 set_property(TARGET break_flow PROPERTY C_STANDARD 11)
 target_include_directories(break_flow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(break_flow PUBLIC break_game)
+target_link_libraries(break_flow PUBLIC break_kernel)
 if(NOT ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(break_flow PUBLIC m)
 endif()
@@ -831,7 +831,7 @@ target_include_directories(break_replication_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 
-# Optional online-session/gameplay network capabilities. Socket symbols remain
+# Optional online-session network capabilities. Socket symbols remain
 # owned by engine/network.c and resolve at the consumer's final link.
 add_library(break_online STATIC
     src/network/break_online_lobby.c
@@ -1626,10 +1626,10 @@ set_property(TARGET break_lua_debug PROPERTY C_STANDARD 11)
 target_include_directories(break_lua_debug PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_lua_debug PUBLIC break_lua)
 
-add_library(break_game_lua STATIC src/game/break_game_lua.c)
-set_property(TARGET break_game_lua PROPERTY C_STANDARD 11)
-target_include_directories(break_game_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(break_game_lua PUBLIC break_game break_lua)
+add_library(break_kernel_lua STATIC src/kernel/break_kernel_lua.c)
+set_property(TARGET break_kernel_lua PROPERTY C_STANDARD 11)
+target_include_directories(break_kernel_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_kernel_lua PUBLIC break_kernel break_lua)
 
 option(CORE_APP_ENABLE_NETWORK "Enable the optional authenticated Snowflake channel" OFF)
 add_library(core_app_runtime STATIC
@@ -1649,7 +1649,7 @@ target_include_directories(core_app_network PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/s
 set_property(TARGET core_app_runtime PROPERTY C_STANDARD 11)
 target_include_directories(core_app_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(core_app_runtime PUBLIC
-    engine break_game break_ai break_flow break_lua break_game_lua runtime_core)
+    engine break_kernel break_ai break_flow break_lua break_kernel_lua runtime_core)
 add_executable(core_app apps/core_app/main.c apps/core_app/core_app_gpu.c
     apps/core_app/core_app_mesh.c)
 target_link_libraries(core_app PRIVATE core_app_runtime core_app_network m)
@@ -4822,20 +4822,20 @@ endif()
     endif()
     add_test(NAME test_ecs COMMAND test_ecs)
 
-    foreach(game_test IN ITEMS actor items weapons actions move level area flow)
-        add_executable(test_break_game_${game_test} tests/test_break_game_${game_test}.c)
-        target_include_directories(test_break_game_${game_test} PRIVATE ${TEST_INCLUDE_DIRS})
-        target_link_libraries(test_break_game_${game_test} PRIVATE break_game)
+    foreach(kernel_test IN ITEMS actor items weapons actions move level area flow)
+        add_executable(test_break_kernel_${kernel_test} tests/test_break_kernel_${kernel_test}.c)
+        target_include_directories(test_break_kernel_${kernel_test} PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_kernel_${kernel_test} PRIVATE break_kernel)
         if(ENGINE_PLATFORM STREQUAL "linux")
-            target_compile_definitions(test_break_game_${game_test} PRIVATE
+            target_compile_definitions(test_break_kernel_${kernel_test} PRIVATE
                 ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
-            target_link_libraries(test_break_game_${game_test} PRIVATE pthread m)
+            target_link_libraries(test_break_kernel_${kernel_test} PRIVATE pthread m)
         elseif(ENGINE_PLATFORM STREQUAL "windows")
-            target_compile_definitions(test_break_game_${game_test} PRIVATE ENGINE_PLATFORM_WINDOWS=1)
-            target_link_libraries(test_break_game_${game_test} PRIVATE kernel32)
+            target_compile_definitions(test_break_kernel_${kernel_test} PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_kernel_${kernel_test} PRIVATE kernel32)
         endif()
-        add_test(NAME test_break_game_${game_test} COMMAND test_break_game_${game_test})
-        set_tests_properties(test_break_game_${game_test} PROPERTIES LABELS "headless;break_game")
+        add_test(NAME test_break_kernel_${kernel_test} COMMAND test_break_kernel_${kernel_test})
+        set_tests_properties(test_break_kernel_${kernel_test} PROPERTIES LABELS "headless;break_kernel")
     endforeach()
 
     foreach(flow_test IN ITEMS graph serial runtime)
@@ -4854,12 +4854,12 @@ endif()
         set_tests_properties(test_break_flow_${flow_test} PROPERTIES LABELS "headless;break_flow")
     endforeach()
 
-    add_test(NAME test_break_game_target_contract
+    add_test(NAME test_break_kernel_target_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_game_target_contract.cmake)
-    set_tests_properties(test_break_game_target_contract PROPERTIES
-        LABELS "headless;break_game;platform_contract")
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_kernel_target_contract.cmake)
+    set_tests_properties(test_break_kernel_target_contract PROPERTIES
+        LABELS "headless;break_kernel;platform_contract")
 
     set(_core_app_nm_capable FALSE)
     if(CMAKE_NM AND (NOT WIN32 OR MINGW))
@@ -5024,6 +5024,13 @@ endif()
             -DDESIGN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/core_app_integration.md
             -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_naming_contract.cmake)
+    add_test(NAME test_repo_naming_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -DSTAGE=1
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_repo_naming_contract.cmake)
+    set_tests_properties(test_repo_naming_contract PROPERTIES
+        LABELS "headless;platform_contract")
     set_tests_properties(test_core_app_assets test_core_app_baker_diagnostics
         test_core_app_formal_asset_tracking test_core_app_checkout_attributes
         test_core_app_checkout_attributes_dangling test_core_app_naming_contract
@@ -5327,17 +5334,17 @@ endif()
     set_tests_properties(test_break_ai_hot_path_contract PROPERTIES
         LABELS "headless;break_ai;platform_contract")
 
-    add_executable(test_cry_style_prototype tests/test_cry_style_prototype.c
+    add_executable(test_core_style_prototype tests/test_core_style_prototype.c
         src/physics/character.c src/physics/physics.c src/physics/bvh.c
         src/math/math.c src/core/log.c
         src/animation/anim_locomotion.c src/animation/animation.c)
-    target_include_directories(test_cry_style_prototype PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_cry_style_prototype PRIVATE break_game break_ai m)
+    target_include_directories(test_core_style_prototype PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_core_style_prototype PRIVATE break_kernel break_ai m)
     if(ENGINE_PLATFORM STREQUAL "linux")
-        target_link_libraries(test_cry_style_prototype PRIVATE pthread)
+        target_link_libraries(test_core_style_prototype PRIVATE pthread)
     endif()
-    add_test(NAME test_cry_style_prototype COMMAND test_cry_style_prototype)
-    set_tests_properties(test_cry_style_prototype PROPERTIES LABELS "headless;break_game;break_ai")
+    add_test(NAME test_core_style_prototype COMMAND test_core_style_prototype)
+    set_tests_properties(test_core_style_prototype PROPERTIES LABELS "headless;break_kernel;break_ai")
 
     foreach(world_test IN ITEMS vegetation time_of_day visarea world_stream)
         add_executable(test_${world_test} tests/test_${world_test}.c src/renderer/${world_test}.c src/math/math.c)
@@ -5678,27 +5685,27 @@ endif()
     set_tests_properties(test_break_lua_debug PROPERTIES
         LABELS "headless;break_lua")
 
-    add_library(break_game_lua_test STATIC src/game/break_game_lua.c)
-    set_property(TARGET break_game_lua_test PROPERTY C_STANDARD 11)
-    target_include_directories(break_game_lua_test PUBLIC
+    add_library(break_kernel_lua_test STATIC src/kernel/break_kernel_lua.c)
+    set_property(TARGET break_kernel_lua_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_kernel_lua_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(break_game_lua_test PUBLIC break_game break_lua_test)
+    target_link_libraries(break_kernel_lua_test PUBLIC break_kernel break_lua_test)
 
-    add_executable(test_break_game_lua tests/test_break_game_lua.c)
-    target_include_directories(test_break_game_lua PRIVATE
+    add_executable(test_break_kernel_lua tests/test_break_kernel_lua.c)
+    target_include_directories(test_break_kernel_lua PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
-        target_compile_definitions(test_break_game_lua PRIVATE
+        target_compile_definitions(test_break_kernel_lua PRIVATE
             ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
-        target_link_libraries(test_break_game_lua PRIVATE pthread m)
+        target_link_libraries(test_break_kernel_lua PRIVATE pthread m)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
-        target_compile_definitions(test_break_game_lua PRIVATE ENGINE_PLATFORM_WINDOWS=1)
-        target_link_libraries(test_break_game_lua PRIVATE kernel32)
+        target_compile_definitions(test_break_kernel_lua PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_kernel_lua PRIVATE kernel32)
     endif()
-    target_link_libraries(test_break_game_lua PRIVATE break_game_lua_test)
-    add_test(NAME test_break_game_lua COMMAND test_break_game_lua)
-    set_tests_properties(test_break_game_lua PROPERTIES
-        LABELS "headless;break_game;break_lua")
+    target_link_libraries(test_break_kernel_lua PRIVATE break_kernel_lua_test)
+    add_test(NAME test_break_kernel_lua COMMAND test_break_kernel_lua)
+    set_tests_properties(test_break_kernel_lua PROPERTIES
+        LABELS "headless;break_kernel;break_lua")
 
     # test_break_lua_ecs_apply: drained Lua ECS records applied to a World.
     add_executable(test_break_lua_ecs_apply tests/test_break_lua_ecs_apply.c
@@ -6411,7 +6418,7 @@ endif()
     target_include_directories(test_platform_fs_write PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_platform_fs_write PRIVATE m)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_definitions(test_platform_fs_write PRIVATE GAME_TEST_WRAP_FS=1)
+        target_compile_definitions(test_platform_fs_write PRIVATE KERNEL_TEST_WRAP_FS=1)
         target_link_options(test_platform_fs_write PRIVATE
             "-Wl,--wrap=fsync" "-Wl,--wrap=rename")
     endif()
@@ -7582,7 +7589,7 @@ if(NOT "${_core_app_runtime_sources}" STREQUAL "${_core_app_runtime_expected_sou
 endif()
 get_target_property(_core_app_runtime_links core_app_runtime LINK_LIBRARIES)
 set(_core_app_runtime_expected
-    "engine;break_game;break_ai;break_flow;break_lua;break_game_lua;runtime_core")
+    "engine;break_kernel;break_ai;break_flow;break_lua;break_kernel_lua;runtime_core")
 if(NOT "${_core_app_runtime_links}" STREQUAL "${_core_app_runtime_expected}")
     message(FATAL_ERROR "core_app_runtime LINK_LIBRARIES changed: ${_core_app_runtime_links}")
 endif()
@@ -7594,7 +7601,7 @@ endif()
 foreach(_core_app_legacy IN ITEMS engine engine_demo dxx_break)
     get_target_property(_core_app_legacy_links ${_core_app_legacy} LINK_LIBRARIES)
     foreach(_core_app_link IN LISTS _core_app_legacy_links)
-        if("${_core_app_link}" MATCHES "break_game|break_flow|break_ai|break_lua|runtime_core|core_app")
+        if("${_core_app_link}" MATCHES "break_kernel|break_flow|break_ai|break_lua|runtime_core|core_app")
             message(FATAL_ERROR "${_core_app_legacy} links a P12 integration library: ${_core_app_link}")
         endif()
     endforeach()

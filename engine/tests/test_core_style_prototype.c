@@ -1,5 +1,5 @@
 #include "test_framework.h"
-#include <game/break_game.h>
+#include <kernel/break_kernel.h>
 #include <ai/break_ai.h>
 #include <animation/animation.h>
 #include <physics/character.h>
@@ -15,49 +15,49 @@ static bool ray_yes(void *user, Vec3 from, Vec3 to) {
 static int g_enters;
 static int g_leaves;
 
-static void on_area(u32 area_id, Entity entity, BreakGameAreaEvent event, void *user) {
+static void on_area(u32 area_id, Entity entity, BreakKernelAreaEvent event, void *user) {
     (void)area_id;
     (void)entity;
     (void)user;
-    if (event == BREAK_GAME_AREA_ENTER) g_enters++;
-    if (event == BREAK_GAME_AREA_LEAVE) g_leaves++;
+    if (event == BREAK_KERNEL_AREA_ENTER) g_enters++;
+    if (event == BREAK_KERNEL_AREA_LEAVE) g_leaves++;
 }
 
 TEST(prototype_player_moves_on_a_floor) {
     PhysicsWorld *pw = physics_world_create(8);
     physics_body_create(pw, vec3(0, 0, 0), vec3(40, 0.5f, 40), 0, true, 0);
     World *world = world_create();
-    world_register_component(world, BREAK_GAME_POSITION_COMPONENT, sizeof(Vec3));
-    BreakGame *game = break_game_create(world, NULL);
-    ComponentType comps[1] = {BREAK_GAME_POSITION_COMPONENT};
-    BreakGameClassDesc desc;
+    world_register_component(world, BREAK_KERNEL_POSITION_COMPONENT, sizeof(Vec3));
+    BreakKernel *kernel = break_kernel_create(world, NULL);
+    ComponentType comps[1] = {BREAK_KERNEL_POSITION_COMPONENT};
+    BreakKernelClassDesc desc;
     desc.name = "player";
     desc.components = comps;
     desc.component_count = 1;
     desc.lua_module = NULL;
     u32 class_id = 0;
-    ASSERT_EQ(break_game_register_class(game, &desc, &class_id), BREAK_GAME_OK);
-    BreakGameSpawn spawn;
+    ASSERT_EQ(break_kernel_register_class(kernel, &desc, &class_id), BREAK_KERNEL_OK);
+    BreakKernelSpawn spawn;
     spawn.class_id = class_id;
     spawn.position = vec3(0, 1, 0);
     Entity player = ENTITY_NULL;
-    ASSERT_EQ(break_game_spawn(game, &spawn, &player), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_spawn(kernel, &spawn, &player), BREAK_KERNEL_OK);
     CharacterController cc = character_create(vec3(0, 1, 0), 0.3f, 1.8f);
-    BreakGameMoveInput in;
+    BreakKernelMoveInput in;
     in.forward = 1;
     in.strafe = 0;
     in.camera_yaw = 0;
     in.jump = false;
     for (int i = 0; i < 180; i++) {
-        BreakGameMoveOutput wish;
-        ASSERT_EQ(break_game_move_wish(&in, &wish), BREAK_GAME_OK);
+        BreakKernelMoveOutput wish;
+        ASSERT_EQ(break_kernel_move_wish(&in, &wish), BREAK_KERNEL_OK);
         character_update(&cc, pw, 1.0f / 60.0f, wish.wish, false);
     }
     ASSERT_TRUE(cc.position.e[2] - 0.0f > 2.0f);
-    Vec3 *pos = (Vec3 *)world_get_component(world, player, BREAK_GAME_POSITION_COMPONENT);
+    Vec3 *pos = (Vec3 *)world_get_component(world, player, BREAK_KERNEL_POSITION_COMPONENT);
     ASSERT_NOT_NULL(pos);
     *pos = cc.position;
-    break_game_destroy(game);
+    break_kernel_destroy(kernel);
     world_destroy(world);
     physics_world_destroy(pw);
 }
@@ -146,42 +146,42 @@ TEST(prototype_locomotion_and_trigger) {
     anim_blend_state_destroy(&state);
 
     World *world = world_create();
-    world_register_component(world, BREAK_GAME_POSITION_COMPONENT, sizeof(Vec3));
-    BreakGame *game = break_game_create(world, NULL);
-    ComponentType comps[1] = {BREAK_GAME_POSITION_COMPONENT};
-    BreakGameClassDesc desc;
+    world_register_component(world, BREAK_KERNEL_POSITION_COMPONENT, sizeof(Vec3));
+    BreakKernel *kernel = break_kernel_create(world, NULL);
+    ComponentType comps[1] = {BREAK_KERNEL_POSITION_COMPONENT};
+    BreakKernelClassDesc desc;
     desc.name = "player";
     desc.components = comps;
     desc.component_count = 1;
     desc.lua_module = NULL;
     u32 class_id = 0;
-    ASSERT_EQ(break_game_register_class(game, &desc, &class_id), BREAK_GAME_OK);
-    BreakGameSpawn spawn;
+    ASSERT_EQ(break_kernel_register_class(kernel, &desc, &class_id), BREAK_KERNEL_OK);
+    BreakKernelSpawn spawn;
     spawn.class_id = class_id;
     spawn.position = vec3(10, 0, 0);
     Entity player = ENTITY_NULL;
-    ASSERT_EQ(break_game_spawn(game, &spawn, &player), BREAK_GAME_OK);
-    BreakGameAreaDesc area;
+    ASSERT_EQ(break_kernel_spawn(kernel, &spawn, &player), BREAK_KERNEL_OK);
+    BreakKernelAreaDesc area;
     area.center = vec3(0, 0, 0);
     area.half_extent = vec3(1, 1, 1);
     area.radius = 0;
     u32 area_id = 0;
-    ASSERT_EQ(break_game_area_add(game, &area, &area_id), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_area_add(kernel, &area, &area_id), BREAK_KERNEL_OK);
     g_enters = 0;
     g_leaves = 0;
-    break_game_set_area_callback(game, on_area, NULL);
-    ASSERT_EQ(break_game_area_tick(game), BREAK_GAME_OK);
+    break_kernel_set_area_callback(kernel, on_area, NULL);
+    ASSERT_EQ(break_kernel_area_tick(kernel), BREAK_KERNEL_OK);
     ASSERT_EQ(g_enters, 0);
-    Vec3 *pos = (Vec3 *)world_get_component(world, player, BREAK_GAME_POSITION_COMPONENT);
+    Vec3 *pos = (Vec3 *)world_get_component(world, player, BREAK_KERNEL_POSITION_COMPONENT);
     *pos = vec3(0, 0, 0);
-    ASSERT_EQ(break_game_area_tick(game), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_area_tick(kernel), BREAK_KERNEL_OK);
     ASSERT_EQ(g_enters, 1);
-    ASSERT_EQ(break_game_area_tick(game), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_area_tick(kernel), BREAK_KERNEL_OK);
     ASSERT_EQ(g_enters, 1);
     *pos = vec3(1.4f, 0, 0);
-    ASSERT_EQ(break_game_area_tick(game), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_area_tick(kernel), BREAK_KERNEL_OK);
     ASSERT_EQ(g_leaves, 1);
-    break_game_destroy(game);
+    break_kernel_destroy(kernel);
     world_destroy(world);
 }
 

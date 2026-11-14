@@ -1,4 +1,4 @@
-#include <game/break_flow_internal.h>
+#include <kernel/break_flow_internal.h>
 #include <core/platform_thread.h>
 
 #include <math.h>
@@ -18,7 +18,7 @@ typedef struct BreakFlowEvent {
 
 struct BreakFlowRuntime {
     BreakFlowGraph *graph;
-    BreakGame *game;
+    BreakKernel *kernel;
     PlatformThreadId owner;
     u32 max_events;
     u32 max_actions;
@@ -26,7 +26,7 @@ struct BreakFlowRuntime {
     BreakFlowEvent *events;
     BreakFlowEvent *backup;
     u32 event_count;
-    BreakGameEntityAction *actions;
+    BreakKernelEntityAction *actions;
     u32 action_count;
     u8 *eval_state;
     u64 next_sequence;
@@ -145,7 +145,7 @@ static BreakFlowError fire(BreakFlowRuntime *runtime, u32 source, u32 port,
 }
 
 static BreakFlowError stage_action(BreakFlowRuntime *runtime,
-                                   const BreakGameEntityAction *action) {
+                                   const BreakKernelEntityAction *action) {
     if (runtime->action_count >= runtime->max_actions) return BREAK_FLOW_OVERLOAD;
     runtime->actions[runtime->action_count++] = *action;
     return BREAK_FLOW_OK;
@@ -195,9 +195,9 @@ static BreakFlowError execute_node(BreakFlowRuntime *runtime, u32 id, bool resum
             err = eval_input(runtime, id, ports[i], values[i], context, used, &values[i]);
             if (err != BREAK_FLOW_OK) return err;
         }
-        BreakGameEntityAction action;
+        BreakKernelEntityAction action;
         memset(&action, 0, sizeof(action));
-        action.type = BREAK_GAME_ENTITY_SET_POSITION;
+        action.type = BREAK_KERNEL_ENTITY_SET_POSITION;
         action.entity = node->entity;
         action.position = vec3(values[0], values[1], values[2]);
         err = stage_action(runtime, &action);
@@ -215,9 +215,9 @@ static BreakFlowError execute_node(BreakFlowRuntime *runtime, u32 id, bool resum
             floorf(count) != count) {
             return BREAK_FLOW_INVALID;
         }
-        BreakGameEntityAction action;
+        BreakKernelEntityAction action;
         memset(&action, 0, sizeof(action));
-        action.type = BREAK_GAME_ENTITY_INVENTORY_ADD;
+        action.type = BREAK_KERNEL_ENTITY_INVENTORY_ADD;
         action.entity = node->entity;
         action.item_id = node->item_id;
         action.count = (u32)count;
@@ -228,22 +228,22 @@ static BreakFlowError execute_node(BreakFlowRuntime *runtime, u32 id, bool resum
     return BREAK_FLOW_FAILED;
 }
 
-static BreakFlowError map_game_error(BreakGameError error) {
+static BreakFlowError map_kernel_error(BreakKernelError error) {
     switch (error) {
-        case BREAK_GAME_OK: return BREAK_FLOW_OK;
-        case BREAK_GAME_INVALID: return BREAK_FLOW_INVALID;
-        case BREAK_GAME_OVERLOAD: return BREAK_FLOW_OVERLOAD;
-        case BREAK_GAME_OOM: return BREAK_FLOW_OOM;
-        case BREAK_GAME_TIMEOUT: return BREAK_FLOW_TIMEOUT;
-        case BREAK_GAME_STALE: return BREAK_FLOW_STALE;
-        case BREAK_GAME_REJECTED: return BREAK_FLOW_REJECTED;
+        case BREAK_KERNEL_OK: return BREAK_FLOW_OK;
+        case BREAK_KERNEL_INVALID: return BREAK_FLOW_INVALID;
+        case BREAK_KERNEL_OVERLOAD: return BREAK_FLOW_OVERLOAD;
+        case BREAK_KERNEL_OOM: return BREAK_FLOW_OOM;
+        case BREAK_KERNEL_TIMEOUT: return BREAK_FLOW_TIMEOUT;
+        case BREAK_KERNEL_STALE: return BREAK_FLOW_STALE;
+        case BREAK_KERNEL_REJECTED: return BREAK_FLOW_REJECTED;
         default: return BREAK_FLOW_FAILED;
     }
 }
 
-BreakFlowRuntime *break_flow_runtime_create(BreakFlowGraph *graph, BreakGame *game,
+BreakFlowRuntime *break_flow_runtime_create(BreakFlowGraph *graph, BreakKernel *kernel,
                                             const BreakFlowRuntimeConfig *config) {
-    if (!graph || !game || break_flow_graph_validate(graph) != BREAK_FLOW_OK) return NULL;
+    if (!graph || !kernel || break_flow_graph_validate(graph) != BREAK_FLOW_OK) return NULL;
     BreakFlowRuntimeConfig effective = {256u, 256u, 256u};
     if (config) effective = *config;
     if (effective.max_events == 0u) effective.max_events = 256u;
@@ -251,14 +251,14 @@ BreakFlowRuntime *break_flow_runtime_create(BreakFlowGraph *graph, BreakGame *ga
     if (effective.node_budget == 0u) effective.node_budget = 256u;
     if (effective.max_events > BREAK_FLOW_HARD_MAX_EVENTS ||
         effective.max_actions > BREAK_FLOW_HARD_MAX_ACTIONS ||
-        effective.max_actions > BREAK_GAME_MAX_ENTITY_ACTIONS ||
+        effective.max_actions > BREAK_KERNEL_MAX_ENTITY_ACTIONS ||
         effective.node_budget > BREAK_FLOW_HARD_MAX_BUDGET) {
         return NULL;
     }
     BreakFlowRuntime *runtime = (BreakFlowRuntime *)calloc(1u, sizeof(*runtime));
     if (!runtime) return NULL;
     runtime->graph = graph;
-    runtime->game = game;
+    runtime->kernel = kernel;
     runtime->owner = platform_thread_current_id();
     runtime->max_events = effective.max_events;
     runtime->max_actions = effective.max_actions;
@@ -267,7 +267,7 @@ BreakFlowRuntime *break_flow_runtime_create(BreakFlowGraph *graph, BreakGame *ga
     runtime->graph_revision = break_flow_graph_revision(graph);
     runtime->events = (BreakFlowEvent *)calloc(effective.max_events, sizeof(*runtime->events));
     runtime->backup = (BreakFlowEvent *)calloc(effective.max_events, sizeof(*runtime->backup));
-    runtime->actions = (BreakGameEntityAction *)calloc(effective.max_actions,
+    runtime->actions = (BreakKernelEntityAction *)calloc(effective.max_actions,
                                                         sizeof(*runtime->actions));
     runtime->eval_state = (u8 *)calloc((size_t)graph->max_nodes + 1u, 1u);
     if (!runtime->events || !runtime->backup || !runtime->actions || !runtime->eval_state) {
@@ -384,8 +384,8 @@ BreakFlowError break_flow_runtime_tick(BreakFlowRuntime *runtime) {
         }
     }
     if (runtime->action_count > 0u) {
-        BreakFlowError committed = map_game_error(break_game_entity_actions_apply(
-            runtime->game, runtime->actions, runtime->action_count));
+        BreakFlowError committed = map_kernel_error(break_kernel_entity_actions_apply(
+            runtime->kernel, runtime->actions, runtime->action_count));
         if (committed != BREAK_FLOW_OK) {
             memcpy(runtime->events, runtime->backup,
                    (size_t)backup_count * sizeof(*runtime->events));

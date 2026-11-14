@@ -1,11 +1,11 @@
 #include "test_framework.h"
 #include <core/platform_thread.h>
-#include <game/break_flow.h>
+#include <kernel/break_flow.h>
 #include <string.h>
 
 typedef struct {
     World *world;
-    BreakGame *game;
+    BreakKernel *kernel;
     BreakFlowGraph *graph;
     Entity actor;
 } Fixture;
@@ -14,27 +14,27 @@ static bool fixture_make(Fixture *f) {
     memset(f, 0, sizeof(*f));
     f->world = world_create();
     if (!f->world) return false;
-    world_register_component(f->world, BREAK_GAME_POSITION_COMPONENT, sizeof(Vec3));
-    BreakGameConfig game_cfg = {0u, 2u};
-    f->game = break_game_create(f->world, &game_cfg);
-    if (!f->game) return false;
-    ComponentType comps[1] = {BREAK_GAME_POSITION_COMPONENT};
-    BreakGameClassDesc cls = {"pawn", comps, 1u, NULL};
+    world_register_component(f->world, BREAK_KERNEL_POSITION_COMPONENT, sizeof(Vec3));
+    BreakKernelConfig kernel_cfg = {0u, 2u};
+    f->kernel = break_kernel_create(f->world, &kernel_cfg);
+    if (!f->kernel) return false;
+    ComponentType comps[1] = {BREAK_KERNEL_POSITION_COMPONENT};
+    BreakKernelClassDesc cls = {"pawn", comps, 1u, NULL};
     u32 class_id = 0u;
-    BreakGameSpawn spawn;
+    BreakKernelSpawn spawn;
     spawn.position = vec3(1.0f, 2.0f, 3.0f);
-    if (break_game_register_class(f->game, &cls, &class_id) != BREAK_GAME_OK) return false;
+    if (break_kernel_register_class(f->kernel, &cls, &class_id) != BREAK_KERNEL_OK) return false;
     spawn.class_id = class_id;
-    if (break_game_spawn(f->game, &spawn, &f->actor) != BREAK_GAME_OK) return false;
-    BreakGameItemDesc item = {3u, 10u};
-    if (break_game_item_define(f->game, &item) != BREAK_GAME_OK) return false;
+    if (break_kernel_spawn(f->kernel, &spawn, &f->actor) != BREAK_KERNEL_OK) return false;
+    BreakKernelItemDesc item = {3u, 10u};
+    if (break_kernel_item_define(f->kernel, &item) != BREAK_KERNEL_OK) return false;
     f->graph = break_flow_graph_create(NULL);
     return f->graph != NULL;
 }
 
 static void fixture_destroy(Fixture *f) {
     break_flow_graph_destroy(f->graph);
-    break_game_destroy(f->game);
+    break_kernel_destroy(f->kernel);
     world_destroy(f->world);
 }
 
@@ -62,7 +62,7 @@ static bool edge(Fixture *f, BreakFlowPortKind kind, u32 sn, u32 sp,
 
 static Vec3 position(const Fixture *f) {
     const Vec3 *p = (const Vec3 *)world_get_component(
-        f->world, f->actor, BREAK_GAME_POSITION_COMPONENT);
+        f->world, f->actor, BREAK_KERNEL_POSITION_COMPONENT);
     return p ? *p : vec3(-999.0f, -999.0f, -999.0f);
 }
 
@@ -106,7 +106,7 @@ TEST(event_math_and_sequence_drive_real_entity_actions) {
     Fixture f;
     ASSERT_TRUE(fixture_make(&f));
     ASSERT_TRUE(build_math_action_graph(&f));
-    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, NULL);
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 2.5f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
@@ -115,7 +115,7 @@ TEST(event_math_and_sequence_drive_real_entity_actions) {
     ASSERT_FLOAT_EQ(p.e[1], 4.0f, 0.0f);
     ASSERT_FLOAT_EQ(p.e[2], 5.0f, 0.0f);
     u32 count = 0u;
-    ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_inventory_count(f.kernel, f.actor, 3u, &count), BREAK_KERNEL_OK);
     ASSERT_EQ(count, 10u);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 0u);
     ASSERT_EQ(break_flow_runtime_now_tick(runtime), 1u);
@@ -141,7 +141,7 @@ TEST(all_arithmetic_nodes_produce_hand_computed_results) {
                          math, BREAK_FLOW_MATH_INPUT_A));
         ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_VALUE, math, BREAK_FLOW_MATH_VALUE_OUT,
                          set, BREAK_FLOW_ACTION_INPUT_X));
-        BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+        BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, NULL);
         ASSERT_NOT_NULL(runtime);
         ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 2.5f), BREAK_FLOW_OK);
         ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
@@ -175,7 +175,7 @@ TEST(comparison_and_branch_select_true_then_false) {
                      yes, BREAK_FLOW_EXEC_IN));
     ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, branch, BREAK_FLOW_BRANCH_FALSE_OUT,
                      no, BREAK_FLOW_EXEC_IN));
-    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, NULL);
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 5.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
@@ -223,7 +223,7 @@ TEST(equal_and_greater_comparisons_cover_true_and_false_branches) {
                          yes, BREAK_FLOW_EXEC_IN));
         ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, branch, BREAK_FLOW_BRANCH_FALSE_OUT,
                          no, BREAK_FLOW_EXEC_IN));
-        BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+        BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, NULL);
         ASSERT_NOT_NULL(runtime);
         ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, cases[i].value), BREAK_FLOW_OK);
         ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
@@ -247,7 +247,7 @@ TEST(delay_waits_two_ticks_and_event_queue_is_bounded) {
     ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, delay, BREAK_FLOW_DELAY_EXEC_OUT,
                      set, BREAK_FLOW_EXEC_IN));
     BreakFlowRuntimeConfig cfg = {1u, 4u, 32u};
-    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, &cfg);
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, &cfg);
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 0.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 0.0f), BREAK_FLOW_OVERLOAD);
@@ -270,7 +270,7 @@ TEST(node_budget_resumes_across_frames_without_partial_node_actions) {
     ASSERT_TRUE(fixture_make(&f));
     ASSERT_TRUE(build_math_action_graph(&f));
     BreakFlowRuntimeConfig cfg = {16u, 8u, 2u};
-    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, &cfg);
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, &cfg);
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 1.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_TIMEOUT);
@@ -279,10 +279,10 @@ TEST(node_budget_resumes_across_frames_without_partial_node_actions) {
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 1u);
     ASSERT_FLOAT_EQ(position_x(&f), 4.0f, 0.0f);
     u32 count = 99u;
-    ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_inventory_count(f.kernel, f.actor, 3u, &count), BREAK_KERNEL_OK);
     ASSERT_EQ(count, 0u);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
-    ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_inventory_count(f.kernel, f.actor, 3u, &count), BREAK_KERNEL_OK);
     ASSERT_EQ(count, 4u);
     ASSERT_EQ(break_flow_runtime_now_tick(runtime), 3u);
     break_flow_runtime_destroy(runtime);
@@ -309,7 +309,7 @@ TEST(action_failure_restores_world_queue_tick_and_graph_edit_requires_reset) {
                      set, BREAK_FLOW_EXEC_IN));
     ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_EXEC, sequence, BREAK_FLOW_SEQUENCE_OUT_1,
                      add_item, BREAK_FLOW_EXEC_IN));
-    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, NULL);
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 0.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OVERLOAD);
@@ -340,7 +340,7 @@ TEST(divide_by_zero_is_atomic_and_returns_failure) {
                      set, BREAK_FLOW_EXEC_IN));
     ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_VALUE, math, BREAK_FLOW_MATH_VALUE_OUT,
                      set, BREAK_FLOW_ACTION_INPUT_X));
-    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, NULL);
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 2.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_FAILED);
@@ -367,7 +367,7 @@ TEST(delay_continuations_preserve_fifo_with_following_events) {
                      set, BREAK_FLOW_EXEC_IN));
     ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_VALUE, event, BREAK_FLOW_EVENT_VALUE_OUT,
                      set, BREAK_FLOW_ACTION_INPUT_X));
-    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, NULL);
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 1.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 2.0f), BREAK_FLOW_OK);
@@ -412,27 +412,27 @@ TEST(failed_sequence_restores_sequence_and_retry_has_no_duplicates_or_loss) {
                      set, BREAK_FLOW_EXEC_IN));
     ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_VALUE, event, BREAK_FLOW_EVENT_VALUE_OUT,
                      set, BREAK_FLOW_ACTION_INPUT_X));
-    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, NULL);
     ASSERT_NOT_NULL(runtime);
-    ASSERT_EQ(break_game_inventory_add(f.game, f.actor, 3u, 10u), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_inventory_add(f.kernel, f.actor, 3u, 10u), BREAK_KERNEL_OK);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 1.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 2.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OVERLOAD);
     u32 count = 0u;
-    ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_inventory_count(f.kernel, f.actor, 3u, &count), BREAK_KERNEL_OK);
     ASSERT_EQ(count, 10u);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 2u);
     ASSERT_EQ(break_flow_runtime_now_tick(runtime), 0u);
     ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 3u);
 
-    BreakGameSpawn spawn = {1u, {{0.0f, 0.0f, 0.0f}}};
+    BreakKernelSpawn spawn = {1u, {{0.0f, 0.0f, 0.0f}}};
     Entity other = ENTITY_NULL;
-    ASSERT_EQ(break_game_spawn(f.game, &spawn, &other), BREAK_GAME_OK);
-    ASSERT_EQ(break_game_inventory_transfer(f.game, f.actor, other, 3u, 5u), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_spawn(f.kernel, &spawn, &other), BREAK_KERNEL_OK);
+    ASSERT_EQ(break_kernel_inventory_transfer(f.kernel, f.actor, other, 3u, 5u), BREAK_KERNEL_OK);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 3.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_next_sequence(runtime), 4u);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_OK);
-    ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_inventory_count(f.kernel, f.actor, 3u, &count), BREAK_KERNEL_OK);
     ASSERT_EQ(count, 8u);
     ASSERT_FLOAT_EQ(position_x(&f), 3.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 0u);
@@ -466,12 +466,12 @@ TEST(invalid_event_value_source_rolls_back_entire_tick) {
                      set, BREAK_FLOW_EXEC_IN));
     ASSERT_TRUE(edge(&f, BREAK_FLOW_PORT_VALUE, event_b, BREAK_FLOW_EVENT_VALUE_OUT,
                      set, BREAK_FLOW_ACTION_INPUT_X));
-    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, NULL);
     ASSERT_NOT_NULL(runtime);
     ASSERT_EQ(break_flow_runtime_post(runtime, 5u, f.actor, 8.0f), BREAK_FLOW_OK);
     ASSERT_EQ(break_flow_runtime_tick(runtime), BREAK_FLOW_FAILED);
     u32 count = 99u;
-    ASSERT_EQ(break_game_inventory_count(f.game, f.actor, 3u, &count), BREAK_GAME_OK);
+    ASSERT_EQ(break_kernel_inventory_count(f.kernel, f.actor, 3u, &count), BREAK_KERNEL_OK);
     ASSERT_EQ(count, 0u);
     ASSERT_FLOAT_EQ(position_x(&f), 1.0f, 0.0f);
     ASSERT_EQ(break_flow_runtime_pending_count(runtime), 1u);
@@ -501,7 +501,7 @@ TEST(non_owner_thread_cannot_mutate_runtime) {
     Fixture f;
     ASSERT_TRUE(fixture_make(&f));
     ASSERT_TRUE(add(&f, node(BREAK_FLOW_NODE_EVENT)) != 0u);
-    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.game, NULL);
+    BreakFlowRuntime *runtime = break_flow_runtime_create(f.graph, f.kernel, NULL);
     ASSERT_NOT_NULL(runtime);
     ThreadProbe probe;
     memset(&probe, 0, sizeof(probe));

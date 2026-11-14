@@ -6,7 +6,7 @@
 
 **Architecture:** `core_app_runtime` 在 CoreAppThread 独占 ECS/Actor/Lua/Flow/AI/动画/物理可变状态，在帧边界生成不可变 POD 渲染、音频和可选网络快照；`core_app` 主程序实际创建平台窗口/RHI/音频资源并执行场景脚本。离线默认使用 Vulkan 优先的现有 RHI 选择链，CPU record 后端只记录命令；保存采用分文件 staging 加原子 manifest，加载在完整 staging 成功后一次替换当前 level。
 
-**Tech Stack:** C11、现有 ECS/`break_game`/`break_flow`/`break_ai`/`break_lua`/P9 Actor adapter、Runtime Core、RHI（Vulkan 默认、OpenGL 最后降级）、现有 animation/physics/world presenter、miniaudio `AudioSystem`、可选 Snowflake `break_net`、CMake/CTest/`test_framework.h`。
+**Tech Stack:** C11、现有 ECS/`break_kernel`/`break_flow`/`break_ai`/`break_lua`/P9 Actor adapter、Runtime Core、RHI（Vulkan 默认、OpenGL 最后降级）、现有 animation/physics/world presenter、miniaudio `AudioSystem`、可选 Snowflake `break_net`、CMake/CTest/`test_framework.h`。
 
 ## Global Constraints
 
@@ -36,16 +36,16 @@ P12 是最后的集成任务，不得靠在本分支重实现其他子项目来�
 
 本计划勘察时观察到的事实如下；它们是合并检查项，不是冻结兼容承诺：
 
-- P1 已在当前基线提供 `break_game` 的 Actor、ActionMap、level sidecar、Area、物品和权威 fire intent。
+- P1 已在当前基线提供 `break_kernel` 的 Actor、ActionMap、level sidecar、Area、物品和权威 fire intent。
 - P2 的 `break_flow` 已有图、序列化和运行时实现，但编辑器/运行时分支仍在变动；以最终 `break_flow.h` 和测试为准。
 - P3 已有动态导航/agent/编组/智能对象实现，仍有进行中的导航并发修改；合入前必须重新确认 owner 规则，不能假设查询可跨线程。
 - P4 与 P5 同时触及 `animation.h/.c` 和 ragdoll/IK 边界。最终树必须只有一种 IK/布娃娃互斥合同；不得同时保留 `physics_suspended` 与另一套旁路闸门而不解释所有权。
 - P6 已有 `WorldPresenter`/POD 快照实现，真实 GPU 测试仍有进行中改动；最终提交必须包含并运行其真实 Vulkan/OpenGL 测试，而不是只保留 fake RHI。
 - P7 的 `InputExtended`/`platform_input_extended()` 仍处于进行中；若最终头文件或平台后端缺失，P12 停止在该集成门，不添加同名 shim。
-- P9 文档要求独立 `break_game_lua` adapter，但勘察时尚未形成该目标/公开头。P12 必须消费最终 adapter 的 per-Actor 错误隔离、句柄 acquire/release 和诊断 API，不得在应用里另写一套同名 adapter。
+- P9 文档要求独立 `break_kernel_lua` adapter，但勘察时尚未形成该目标/公开头。P12 必须消费最终 adapter 的 per-Actor 错误隔离、句柄 acquire/release 和诊断 API，不得在应用里另写一套同名 adapter。
 - P8/P10/P11 的独立工作树在勘察时尚无可合入增量。它们仍需按各自计划完成并合入；P12 不虚构大厅、声音事件或 CVar API。本应用的最低声音通道使用已经存在的 `audio.h`，可选网络使用已经存在的 `break_net`/Session API；后续 P8/P10 正式接口合入后只在其真实合同内替换实现。
-- `scene_load_binary` 恢复 ECS/Scene CPU 数据与 Entity generation，但不恢复 BreakGame adapter、Lua VM、Flow 待处理队列、AI runtime、GPU 资源或音频源。`asset_scene_restore` 失败后文档要求丢弃该 Scene；集成层必须遵守，不能把“BSCN parse 成功”当成 level 恢复成功。
-- `break_game_level_close` 会 despawn 已登记 Actor 并调用 unload hook；hook 不得递归销毁其 BreakGame/World。完整 level 卸载由 `CoreLevel` 所有者按依赖顺序完成。
+- `scene_load_binary` 恢复 ECS/Scene CPU 数据与 Entity generation，但不恢复 BreakKernel adapter、Lua VM、Flow 待处理队列、AI runtime、GPU 资源或音频源。`asset_scene_restore` 失败后文档要求丢弃该 Scene；集成层必须遵守，不能把“BSCN parse 成功”当成 level 恢复成功。
+- `break_kernel_level_close` 会 despawn 已登记 Actor 并调用 unload hook；hook 不得递归销毁其 BreakKernel/World。完整 level 卸载由 `CoreLevel` 所有者按依赖顺序完成。
 - `scene_save_binary` 的 geometry reader 失败会跳过网格；因此 P12 的 checkpoint 必须在保存后重新 probe/load 并核对 manifest 中的几何记录，不能把 best-effort writer 当成完整性保证。
 - `asset_scene_restore` 可能部分重建后失败；staging Scene 必须立即 `asset_scene_free`，旧 level 保持不动。当前 level 的 GPU 资源只有在 `rhi_device_idle` 成功且不再被快照引用后才能销毁。
 - Runtime coordinator 在 sticky `FAILED` 状态不会执行普通 stop 回调；启动失败和运行失败必须走应用的显式 rollback/cleanup 路径，不能依赖一个会被拒绝的 `stop()` 来释放资源。
@@ -203,9 +203,9 @@ u64 core_app_checkpoint_manifest_hash(const char *directory);
 
 ### 直接使用的外部接口
 
-- `break_game_create/register_class/spawn/despawn/tick/eval_actions/level_open/level_close/area_*` 使用 `engine/src/game/break_game.h` 的最终签名。
-- `break_flow_deserialize`、`break_flow_runtime_create/post/tick/reset/destroy` 使用 `engine/src/game/break_flow.h`；Flow 持久化只保存图资产，延迟队列在 load 后显式 reset，不伪称恢复。
-- P9 adapter 只从最终 `break_game_lua` 公开头消费；本计划不预设其函数拼写。集成门要求该头提供 create/destroy、逐 Actor 错误诊断和 despawn release 的真实实现。
+- `break_kernel_create/register_class/spawn/despawn/tick/eval_actions/level_open/level_close/area_*` 使用 `engine/src/kernel/break_kernel.h` 的最终签名。
+- `break_flow_deserialize`、`break_flow_runtime_create/post/tick/reset/destroy` 使用 `engine/src/kernel/break_flow.h`；Flow 持久化只保存图资产，延迟队列在 load 后显式 reset，不伪称恢复。
+- P9 adapter 只从最终 `break_kernel_lua` 公开头消费；本计划不预设其函数拼写。集成门要求该头提供 create/destroy、逐 Actor 错误诊断和 despawn release 的真实实现。
 - `break_ai_runtime_create/find_path/path_is_current/agent_*`、`break_behavior_tick`、`break_nav_follow_*` 使用最终 `break_ai.h`；所有调用仍在 CoreAppThread。
 - `anim_blend_*`、`anim_loco1d_*`、`anim_morph_evaluate_skinned`、`anim_facial_evaluate`、`anim_codec_decode`、`skeleton_apply_local_trs/upload`、`ragdoll_*`、`character_update`、`vehicle_step`、`physics_step` 使用合并后的公共头。
 - `world_presentation_snapshot`、`world_presenter_create/submit/destroy` 使用 P6 的 POD 快照；快照提交后不再写其存储。
@@ -484,7 +484,7 @@ git commit -m "game: integrate transactional level lifecycle"
 - Modify: `engine/CMakeLists.txt`
 
 **Interfaces:**
-- Consumes: `InputState`、`InputExtended`、`break_game_bind_actions/eval_actions/move_wish`、`character_update`。
+- Consumes: `InputState`、`InputExtended`、`break_kernel_bind_actions/eval_actions/move_wish`、`character_update`。
 - Produces: 有界 scenario parser、归一化输入帧、固定 1/60 模拟和键盘/触摸等价路径。
 
 - [x] **Step 1: 写输入与场景行为 RED**
@@ -509,13 +509,13 @@ Expected: 用户尚未由 ActionMap/触摸驱动，位移断言或输入 trace R
 
 在 load 时注册 `forward/back/left/right/jump/interact/fire/save/load` 和 pad 绑定。脚本后端维护自己的 `InputState`/`InputExtended` 实例；`InputExtended` 初始化后绝不 memcpy，输出仅复制 touches/gestures 为普通 POD。真实后端从 `platform_input_extended()` 读取同一快照。
 
-固定 tick 先应用该 tick 输入，再 `break_game_eval_actions`，将前进/侧移/yaw/jump 送入 `break_game_move_wish` 和 `character_update`，最后把 `cc.position` 写回 `BREAK_GAME_POSITION_COMPONENT`。交互模式 accumulator 不超 8 步；fixed-step 不读取墙钟决定模拟结果。触摸纵向位移映射到 forward，横向到 strafe；cancel/up 清零。Area callback 只排队 Flow/audio/haptic 事件。
+固定 tick 先应用该 tick 输入，再 `break_kernel_eval_actions`，将前进/侧移/yaw/jump 送入 `break_kernel_move_wish` 和 `character_update`，最后把 `cc.position` 写回 `BREAK_KERNEL_POSITION_COMPONENT`。交互模式 accumulator 不超 8 步；fixed-step 不读取墙钟决定模拟结果。触摸纵向位移映射到 forward，横向到 strafe；cancel/up 清零。Area callback 只排队 Flow/audio/haptic 事件。
 
 - [x] **Step 4: 运行键盘/触摸/确定性 GREEN**
 
 Run:
 ```bash
-ctest --test-dir build-core-integration-normal -R '^(test_core_app_runtime|test_core_app_lifecycle_input_|test_input_extended|test_break_game_actions|test_character)' --output-on-failure
+ctest --test-dir build-core-integration-normal -R '^(test_core_app_runtime|test_core_app_lifecycle_input_|test_input_extended|test_break_kernel_actions|test_character)' --output-on-failure
 ```
 Expected: 键/触摸位置一致，cancel 无粘滞，重复运行 canonical gameplay trace 逐字节相同；无触摸/反馈设备时离线仍 PASS。
 
@@ -530,7 +530,7 @@ git commit -m "core_app: drive fixed step play from actions and touch"
 
 ### Task 5: Actor/Lua 与 Flow Graph 同帧接线、脚本失败隔离
 
-> 2026-11-13 执行记录：未新建 `core_app_script.c`。脚本接线直接用 P9 的 `break_game_lua` adapter，per-actor 计数落在 `break_game_lua_actor_stats`，而不是应用侧再包一层。`director.lua` 未改。行为 RED 落在 `test_break_game_lua`、`test_core_app_assets` 和 `test_core_app_lifecycle_script_flow`，没有扩展 `test_core_app_runtime`。AI、动画和 `physics_step` 仍是 Task 6，Step 3 的 tick 顺序只接了脚本、Flow、模拟和 Area。
+> 2026-11-13 执行记录：未新建 `core_app_script.c`。脚本接线直接用 P9 的 `break_kernel_lua` adapter，per-actor 计数落在 `break_kernel_lua_actor_stats`，而不是应用侧再包一层。`director.lua` 未改。行为 RED 落在 `test_break_kernel_lua`、`test_core_app_assets` 和 `test_core_app_lifecycle_script_flow`，没有扩展 `test_core_app_runtime`。AI、动画和 `physics_step` 仍是 Task 6，Step 3 的 tick 顺序只接了脚本、Flow、模拟和 Area。
 
 
 **Files:**
@@ -546,7 +546,7 @@ git commit -m "core_app: drive fixed step play from actions and touch"
 - Modify: `engine/CMakeLists.txt`
 
 **Interfaces:**
-- Consumes: 最终 P9 `break_game_lua` adapter、稳定 `BreakLuaHostHandle`、`break_flow_runtime_post/tick`、`break_game_entity_actions_apply` 的原子动作语义。
+- Consumes: 最终 P9 `break_kernel_lua` adapter、稳定 `BreakLuaHostHandle`、`break_flow_runtime_post/tick`、`break_kernel_entity_actions_apply` 的原子动作语义。
 - Produces: 每 Actor `on_actor_tick`、有界诊断、Area→Flow→实体动作链；脚本失败不终止其他 Actor。
 
 - [x] **Step 1: 写 Actor/Lua/Flow 行为 RED**
@@ -567,21 +567,21 @@ Expected: Actor 脚本尚未调用或 Flow 尚未提交动作，正常 tick/item
 
 - [x] **Step 3: 实现脚本适配和 Flow 调度**
 
-按 P9 最终公开 API 创建/销毁 adapter，让 `break_game_tick` 调用类配置的 `lua_module`。应用只提供模块 source、固定 instruction/memory budget 和诊断接收；Lua 不获得 World/physics/RHI/network 指针。正常 Actor 的脚本错误逐 Actor 记录并继续，不重试同一帧失败调用。
+按 P9 最终公开 API 创建/销毁 adapter，让 `break_kernel_tick` 调用类配置的 `lua_module`。应用只提供模块 source、固定 instruction/memory budget 和诊断接收；Lua 不获得 World/physics/RHI/network 指针。正常 Actor 的脚本错误逐 Actor 记录并继续，不重试同一帧失败调用。
 
-每个 fixed tick 的顺序固定为 `break_game_tick`→`break_flow_runtime_tick`→AI/动画意图→character/vehicle→`physics_step`→姿态写回→Area→新事件留到约定的下一 tick。Flow 动作失败保持图队列和 World 的上游事务语义，应用记 `FAILED` 但不部分补做。加载时不恢复旧 pending Flow queue，显式 reset 并从 checkpoint 的稳定 gameplay 状态重建。
+每个 fixed tick 的顺序固定为 `break_kernel_tick`→`break_flow_runtime_tick`→AI/动画意图→character/vehicle→`physics_step`→姿态写回→Area→新事件留到约定的下一 tick。Flow 动作失败保持图队列和 World 的上游事务语义，应用记 `FAILED` 但不部分补做。加载时不恢复旧 pending Flow queue，显式 reset 并从 checkpoint 的稳定 gameplay 状态重建。
 
 - [x] **Step 4: 运行 GREEN 和 P2/P9 回归**
 
 Run:
 ```bash
-ctest --test-dir build-core-integration-normal -R '^(test_core_app_runtime|test_core_app_lifecycle_script_flow|test_break_game_flow|test_break_flow_runtime|test_break_lua|test_break_game_actor)' --output-on-failure
+ctest --test-dir build-core-integration-normal -R '^(test_core_app_runtime|test_core_app_lifecycle_script_flow|test_break_kernel_flow|test_break_flow_runtime|test_break_lua|test_break_kernel_actor)' --output-on-failure
 ```
 Expected: 正常/坏 Actor 隔离、Flow 一次动作、stale generation 拒绝及既有测试全 PASS。
 
 - [x] **Step 5: 变异并提交**
 
-临时让 adapter 首个 Lua 错误中止 `break_game_tick`，确认正常 Actor 后续 tick 测试 RED；恢复。临时删除 Area→Flow post，确认物品不变测试 RED；恢复并重跑。
+临时让 adapter 首个 Lua 错误中止 `break_kernel_tick`，确认正常 Actor 后续 tick 测试 RED；恢复。临时删除 Area→Flow post，确认物品不变测试 RED；恢复并重跑。
 
 ```bash
 git add engine/apps/core_app/core_app_script.c engine/apps/core_app/core_app_script.h engine/apps/core_app/core_app.c engine/apps/core_app/core_app_asset_bake.c engine/assets/core_app engine/tests/test_core_app_runtime.c engine/tests/test_core_app_lifecycle.cmake engine/CMakeLists.txt
@@ -745,7 +745,7 @@ Expected: 当前只能保存部分状态或失败会替换 level，恢复 hash/�
 
 保存只读当前稳定帧，先写 `runtime.bin` 中的有限 POD，再调用 `scene_state_save` 与 BSCN/Flow/Actor writers；验证全部 generation 文件可重新打开、实体/类/generation 和资源记录一致后才提交 manifest。`save_generation` 仅在 manifest 成功后递增，任何失败清理新文件。
 
-加载创建完整候选 `CoreLevel`，包括新 BreakGame/adapter/Lua/Flow/AI/physics/资源请求；将 checkpoint 中动态障碍按稳定 id 顺序重建，旧 nav cache 不继承。候选全部可玩后才 `rhi_device_idle`、交换 level、增加 generation；旧 level 之后按依赖销毁。失败仅销毁 candidate。Flow pending queue 清空，Lua source 重载，输入清零，音频旧 source 先停止且不能 stop 新 source。
+加载创建完整候选 `CoreLevel`，包括新 BreakKernel/adapter/Lua/Flow/AI/physics/资源请求；将 checkpoint 中动态障碍按稳定 id 顺序重建，旧 nav cache 不继承。候选全部可玩后才 `rhi_device_idle`、交换 level、增加 generation；旧 level 之后按依赖销毁。失败仅销毁 candidate。Flow pending queue 清空，Lua source 重载，输入清零，音频旧 source 先停止且不能 stop 新 source。
 
 - [x] **Step 4: 运行 roundtrip、失败矩阵与 uninterrupted 对照 GREEN**
 
@@ -1045,7 +1045,7 @@ git commit -m "test: verify playable integration across build lanes"
 
 - [x] **Step 1: 更新设计/状态文档并写文档合同 RED**
 
-`core_app_integration.md` 写入真实 CLI、target 链接图、固定顺序、checkpoint 字段、generation/失败回滚和 evidence ladder。`core_style_runtime.md` 开头不得再写“可玩原型只有 headless、没有声音/网络”来概括新应用；应区分旧 `test_cry_style_prototype` 与新 `core_app`。`runtime_overview.md` 只把实际接入 coordinator 的子系统标为已接入。`Implementation_Status.md` 顶部追加实际测试数、真实设备和未做事项，不复制计划中的预期结果。
+`core_app_integration.md` 写入真实 CLI、target 链接图、固定顺序、checkpoint 字段、generation/失败回滚和 evidence ladder。`core_style_runtime.md` 开头不得再写“可玩原型只有 headless、没有声音/网络”来概括新应用；应区分旧 `test_core_style_prototype` 与新 `core_app`。`runtime_overview.md` 只把实际接入 coordinator 的子系统标为已接入。`Implementation_Status.md` 顶部追加实际测试数、真实设备和未做事项，不复制计划中的预期结果。
 
 先运行文档检查：若 target contract 中的 target/CLI/测试名与文档不一致则 RED；若文档含 `record.*GPU` 等同证据的表述或把未执行 lane 写成 PASS，也必须 RED。
 

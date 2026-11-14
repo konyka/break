@@ -6,8 +6,8 @@
 #include "../apps/core_app/core_app_checkpoint.h"
 
 #include <animation/anim_compression.h>
-#include <game/break_flow.h>
-#include <game/break_game.h>
+#include <kernel/break_flow.h>
+#include <kernel/break_kernel.h>
 #include <platform/platform_fs.h>
 #include <scene/scene_serial.h>
 #include <script/break_lua.h>
@@ -524,10 +524,10 @@ typedef struct {
     Scene scene;
 } SceneHook;
 
-static BreakGameError load_baked_scene(void *user, World *world, const char *path) {
+static BreakKernelError load_baked_scene(void *user, World *world, const char *path) {
     SceneHook *hook = (SceneHook *)user;
-    return scene_load_binary(world, &hook->scene, path) ? BREAK_GAME_OK
-                                                       : BREAK_GAME_FAILED;
+    return scene_load_binary(world, &hook->scene, path) ? BREAK_KERNEL_OK
+                                                       : BREAK_KERNEL_FAILED;
 }
 
 static void unload_baked_scene(void *user, World *world) {
@@ -539,7 +539,7 @@ static void unload_baked_scene(void *user, World *world) {
     scene_serial_free(&hook->scene);
 }
 
-static void count_actor_tick(BreakGame *app, Entity entity, f32 dt, void *user) {
+static void count_actor_tick(BreakKernel *app, Entity entity, f32 dt, void *user) {
     (void)app;
     (void)entity;
     (void)dt;
@@ -556,11 +556,11 @@ TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader) {
 
     World *world = world_create();
     ASSERT_NOT_NULL(world);
-    world_register_component(world, BREAK_GAME_POSITION_COMPONENT, sizeof(Vec3));
+    world_register_component(world, BREAK_KERNEL_POSITION_COMPONENT, sizeof(Vec3));
     world_register_component(world, TEST_COMP_TRANSFORM, sizeof(TestTransform));
     world_register_component(world, TEST_COMP_MESH_REF, sizeof(u32));
-    BreakGameConfig config = {8u, 8u};
-    BreakGame *app = break_game_create(world, &config);
+    BreakKernelConfig config = {8u, 8u};
+    BreakKernel *app = break_kernel_create(world, &config);
     ASSERT_NOT_NULL(app);
     static const char *const class_names[] = {
         "Ground", "User", "Chaser", "DynamicWall", "Vehicle",
@@ -568,18 +568,18 @@ TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader) {
     };
     u32 tick = 0;
     for (u32 i = 0; i < 7u; ++i) {
-        BreakGameClassDesc desc;
+        BreakKernelClassDesc desc;
         memset(&desc, 0, sizeof(desc));
         desc.name = class_names[i];
         u32 class_id = 0;
-        ASSERT_EQ(break_game_register_class(app, &desc, &class_id), BREAK_GAME_OK);
-        break_game_set_tick(app, class_id, count_actor_tick, &tick);
+        ASSERT_EQ(break_kernel_register_class(app, &desc, &class_id), BREAK_KERNEL_OK);
+        break_kernel_set_tick(app, class_id, count_actor_tick, &tick);
     }
     SceneHook hook;
     memset(&hook, 0, sizeof(hook));
-    BreakGameLevelHooks hooks = {load_baked_scene, unload_baked_scene, &hook};
-    ASSERT_EQ(break_game_level_open(app, &hooks, scene_path, sidecar_path),
-              BREAK_GAME_OK);
+    BreakKernelLevelHooks hooks = {load_baked_scene, unload_baked_scene, &hook};
+    ASSERT_EQ(break_kernel_level_open(app, &hooks, scene_path, sidecar_path),
+              BREAK_KERNEL_OK);
     ASSERT_EQ(world->entity_count, 8u);
     for (u32 i = 1; i <= 7u; ++i) {
         ASSERT_TRUE(world_entity_exists(world, world->entities[i]));
@@ -591,7 +591,7 @@ TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader) {
         ASSERT_NOT_NULL(mesh);
         ASSERT_EQ(*mesh, 0u);
     }
-    break_game_tick(app, 1.0f / 60.0f);
+    break_kernel_tick(app, 1.0f / 60.0f);
     ASSERT_EQ(tick, 7u);
 
     ASSERT_EQ(hook.scene.node_count, 7u);
@@ -613,8 +613,8 @@ TEST(scene_and_actor_sidecar_roundtrip_through_p1_reader) {
     ASSERT_TRUE(hook.scene.materials[6].base_color[2] >
                 hook.scene.materials[6].base_color[0]);
 
-    ASSERT_EQ(break_game_level_close(app), BREAK_GAME_OK);
-    break_game_destroy(app);
+    ASSERT_EQ(break_kernel_level_close(app), BREAK_KERNEL_OK);
+    break_kernel_destroy(app);
     world_destroy(world);
 }
 
