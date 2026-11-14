@@ -5,6 +5,7 @@
 #include "../apps/core_app/core_app_input.h"
 #include "../apps/core_app/core_app_render.h"
 #include "../apps/core_app/core_app_simulation.h"
+#include <core/platform_thread.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -1138,8 +1139,12 @@ TEST(audio_owner_thread_drains_the_queue_before_join) {
     fclose(trace);
 }
 
-/* The generation check still runs on the owner: a STOP whose slot was
- * reclaimed before it drained is counted stale and never reaches the device. */
+/* The generation check still runs on the owner: a STOP for a level whose
+ * slot another level already reclaimed is counted stale and never reaches the
+ * device. The reclaiming PLAY_3D is queued first, so the outcome does not
+ * depend on when the owner drains; the variant where the STOP resolves its
+ * slot before the reclaim is audio_device_stale_stop_never_reaches_a_reclaimed_slot,
+ * which drains synchronously. */
 TEST(audio_owner_thread_keeps_the_stale_stop_check) {
     CoreAppAudio audio;
     AudioSystem *system = NULL;
@@ -1151,9 +1156,9 @@ TEST(audio_owner_thread_keeps_the_stale_stop_check) {
                   BREAK_RUNTIME_OK);
     }
     ASSERT_EQ(core_app_audio_flush(&audio), BREAK_RUNTIME_OK);
-    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_STOP, 1u), BREAK_RUNTIME_OK);
     ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_PLAY_3D,
                                      CORE_APP_AUDIO_SOURCE_SLOTS + 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_STOP, 1u), BREAK_RUNTIME_OK);
     ASSERT_EQ(core_app_audio_flush(&audio), BREAK_RUNTIME_OK);
     ASSERT_EQ(audio.stale_commands, 1u);
     ASSERT_EQ(audio.device_stops, 0u);
@@ -1184,6 +1189,96 @@ TEST(audio_owner_thread_rejects_a_frame_drain_wait) {
     ASSERT_EQ(audio.device_listener_updates + audio.overloads,
               (u64)CORE_APP_AUDIO_QUEUE_CAPACITY);
     ASSERT_EQ(audio.device_calls_off_owner, 0u);
+    fclose(trace);
+}
+
+#define AUDIO_STRESS_PRODUCERS 4u
+#define AUDIO_STRESS_COMMANDS 4096u
+
+typedef struct AudioStressProducer {
+    CoreAppAudio *audio;
+    PlatformThread thread;
+    u64 generation;
+    u64 overloads;
+    u64 unexpected;
+} AudioStressProducer;
+
+static PLATFORM_THREAD_RET audio_stress_produce(PLATFORM_THREAD_ARG arg) {
+    AudioStressProducer *producer = (AudioStressProducer *)arg;
+    for (u32 i = 0u; i < AUDIO_STRESS_COMMANDS; ++i) {
+        for (;;) {
+            BreakRuntimeError result = core_app_audio_enqueue_at(
+                producer->audio, CORE_APP_AUDIO_LISTENER, producer->generation,
+                vec3((f32)i, 0.0f, 0.0f));
+            if (result == BREAK_RUNTIME_OK) break;
+            if (result != BREAK_RUNTIME_OVERLOAD) {
+                producer->unexpected++;
+                break;
+            }
+            producer->overloads++;
+            platform_thread_yield();
+        }
+    }
+    return PLATFORM_THREAD_RETURN;
+}
+
+/* Several producers keep the 256-entry queue full while the owner drains it
+ * and the frame keeps calling the non-waiting drain. Every command is
+ * executed exactly once, in the order its sequence number was assigned, and
+ * every OVERLOAD a producer saw is counted. */
+TEST(audio_owner_thread_survives_concurrent_full_queue_producers) {
+    CoreAppAudio audio;
+    AudioSystem *system = NULL;
+    AudioStressProducer producers[AUDIO_STRESS_PRODUCERS];
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    audio_start_owned(&audio, trace, &system);
+    for (u32 p = 0u; p < AUDIO_STRESS_PRODUCERS; ++p) {
+        memset(&producers[p], 0, sizeof(producers[p]));
+        producers[p].audio = &audio;
+        producers[p].generation = p + 1u;
+        ASSERT_TRUE(platform_thread_create(&producers[p].thread, audio_stress_produce,
+                                           &producers[p]));
+    }
+    for (u32 i = 0u; i < 2000u; ++i) {
+        ASSERT_EQ(core_app_audio_drain_device(&audio, 0u), BREAK_RUNTIME_OK);
+        platform_thread_yield();
+    }
+    u64 seen_overloads = 0u;
+    for (u32 p = 0u; p < AUDIO_STRESS_PRODUCERS; ++p) {
+        platform_thread_join(producers[p].thread);
+        ASSERT_EQ(producers[p].unexpected, 0u);
+        seen_overloads += producers[p].overloads;
+    }
+    audio_shutdown(&audio);
+    const u64 total = (u64)AUDIO_STRESS_PRODUCERS * AUDIO_STRESS_COMMANDS;
+    ASSERT_EQ(audio.device_listener_updates, total);
+    ASSERT_EQ(audio.overloads, seen_overloads);
+    ASSERT_EQ(audio.device_calls_off_owner, 0u);
+
+    u64 per_generation[AUDIO_STRESS_PRODUCERS + 1u] = {0u};
+    u64 expected_sequence = 1u;
+    u64 lines = 0u;
+    char line[256];
+    fflush(trace);
+    rewind(trace);
+    while (fgets(line, sizeof(line), trace)) {
+        unsigned long long generation = 0u;
+        unsigned long long sequence = 0u;
+        const char *event = strstr(line, "event=audio kind=listener ");
+        if (!event) continue;
+        ASSERT_EQ(sscanf(event, "event=audio kind=listener generation=%llu sequence=%llu",
+                         &generation, &sequence), 2);
+        ASSERT_EQ((u64)sequence, expected_sequence);
+        ASSERT_TRUE(generation >= 1u && generation <= AUDIO_STRESS_PRODUCERS);
+        per_generation[generation]++;
+        expected_sequence++;
+        lines++;
+    }
+    ASSERT_EQ(lines, total);
+    for (u32 p = 1u; p <= AUDIO_STRESS_PRODUCERS; ++p) {
+        ASSERT_EQ(per_generation[p], (u64)AUDIO_STRESS_COMMANDS);
+    }
     fclose(trace);
 }
 
@@ -1364,6 +1459,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_owner_thread_drains_the_queue_before_join);
     RUN_TEST(audio_owner_thread_keeps_the_stale_stop_check);
     RUN_TEST(audio_owner_thread_rejects_a_frame_drain_wait);
+    RUN_TEST(audio_owner_thread_survives_concurrent_full_queue_producers);
     RUN_TEST(audio_sound_selection_keeps_two_sources_per_level);
     RUN_TEST(audio_enqueue_sound_rejects_mismatched_sound);
     RUN_TEST(audio_device_plays_the_sound_chosen_by_the_event);

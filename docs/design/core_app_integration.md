@@ -691,6 +691,24 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 本轮修复后：`test_core_app_mesh` 3/3、GPU 两用例通过、`test_core_app_gpu`/`naming`/`target` 契约 5/5；全量含 GPU 405/405。
 
+## Core App Task 9 补充：满队列多生产者压测（2026-11-14）
+
+Task 9 原边界写的“256 条满队列的进程级压测未做”，本节补上进程内多线程部分。`core_app_audio.c` 未改。
+
+- 用例 `audio_owner_thread_survives_concurrent_full_queue_producers`（`test_core_app_runtime`）：FAKE 后端加 owner 线程；4 个生产者线程各以自己的 generation（1..4）入队 4096 条 LISTENER，遇到 `OVERLOAD` 就计数、`platform_thread_yield` 后重试同一条；主线程同时调用 2000 次不等待的 `core_app_audio_drain_device(&audio, 0)`。
+- 断言：
+  - `device_listener_updates == 16384`，命令不丢也不重复执行。
+  - `audio.overloads` 等于各生产者看到的 OVERLOAD 次数之和。
+  - `device_calls_off_owner == 0`。
+  - trace 中 listener 行恰好 16384 行，sequence 依次为 1..16384（FIFO，序号在锁内分配），每个 generation 各 4096 行。
+- 本机 20 次运行中 OVERLOAD 次数为 53432–114181；绑到单核（`taskset -c 0`）时为 57。两种情况下队列都被真正打满。
+- 变异：满队列时只计一半 overload，判红（计数不等）；owner 模式 enqueue 不加锁，判红（命令丢失）；owner 出队的 head/count 更新移到锁外，判红（命令丢失）。
+- TSan 树连跑 10 次零报告，ASan+UBSan 树 48/48。
+
+同一提交修复 `audio_owner_thread_keeps_the_stale_stop_check` 的时序依赖。CI run 43570966229 的 Windows MinGW 任务报 `stale_commands != 1u`。原用例先入队 STOP(1)，再入队抢占槽位的 PLAY_3D(9)。STOP 在入队时就解析出槽位；如果 owner 在 PLAY_3D 入队前先消费了 STOP，槽位仍属于第 1 代，STOP 是合法的，结果取决于调度。本机在两次入队之间插入 20000 次 yield 可稳定复现。修复后先入队 PLAY_3D(9) 再入队 STOP(1)：STOP 入队时第 1 代已经没有槽位，无论 owner 何时消费都判为 stale。“STOP 先解析槽位、随后槽位被抢占”的情形仍由同步 drain 的 `audio_device_stale_stop_never_reaches_a_reclaimed_slot` 覆盖。插入 yield 后新顺序 48/48；去掉 `sound_admit` 的代际判定后该用例仍判红；本机连跑 300 次无失败。
+
+仍未做：经过 `core_app` 进程、真实设备的满队列压测；应用每 tick 产生的命令数远低于 256，没有自然路径能撞满队列。
+
 ## Core App Task 9（slice 6）：按事件选择声音资源（2026-11-14）
 
 ### 交付
