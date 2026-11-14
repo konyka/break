@@ -1,3 +1,8 @@
+## Core App checkpoint 动态墙读档等价性（2026-11-14）
+
+- **结论**：动态墙不需要新的存档字段。墙由一个导航障碍和一个质量为 0 的静态刚体组成，没有标志之外的可变状态，读档按 `WALL_ADDED`/`WALL_REMOVED` 重建即与直跑等价。`runtime_<g>.bin` 保持版本 4。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的“动态墙读档等价性”小节。
+- **测试**：roundtrip 新增 `wall_continuation`：tick 91 读档后 tick 92 必须为 `nav_version=2 path_current=1`；墙加入并移除后在 tick 380 存档，读档后 60 tick 的 sim 行和 user 行与直跑逐字一致。跳过加墙、跳过移墙两处变异都判红。
+
 ## Core App checkpoint fuzz 落盘 corpus（2026-11-14）
 
 - **交付**：新增 `engine/tests/data/core_app_checkpoint_corpus/`，39 份 `manifest.core` 样例（4 个 `ok-`、3 个 `nofind-`、28 个 `invalid-`、4 个 `overload-`），覆盖头部各字段、记录数上限、名字长度与填充、basename 规则、大小写与完全相同的重名、payload 大小与哈希、find 的重复 kind 和缺失 kind。`fuzz_core_app_checkpoint --emit-corpus` 用测试内独立编码器逐字节重新生成；`--replay` 经真实 `core_app_checkpoint_probe` 与 `core_app_checkpoint_find` 检查，结束时确认 payload 未变。注册为 `fuzz_core_app_checkpoint_corpus`（`fuzz` 标签）。随机变异模式结束时现在会删除自己的临时目录。设计见 `docs/design/core_app_integration.md` 的 Task 12 补充小节。
@@ -21,7 +26,7 @@
 
 - **交付**：`runtime_<g>.bin` 升到版本 4（正文 496 字节，文件 512 字节），新增标志 `RAGDOLL_ACTIVE`（128）。偏移 124 起保存 3 个关节的 pose 矩阵，偏移 316 起保存 3 块骨骼刚体（每块 60 字节：位置、速度、朝向、角速度、静止帧数、休眠位）。读档时重建约束并激活布娃娃，再写回每块刚体。pose 和向量必须是有限值；四元数长度只在布娃娃激活时检查；不满足一律 `stage=checkpoint`。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的补充小节。
 - **测试**：roundtrip 新增 `ragdoll_continuation`，读档后 40 tick 的 ik、user、ragdoll 行与直跑逐字一致；失败矩阵新增 `ragdoll_nan` 和 `ragdoll_quat`。四处变异都判红；ASan 与 TSan 下 lifecycle 各 12/12，normal 全量 400/400。
-- **未做**：动态墙仍由标志重建。
+- **未做**：无（动态墙经确认按标志重建即等价，见上方条目）。
 
 ## Mipmap 同步强制加载改为按时间等待（2026-11-14）
 
@@ -33,7 +38,7 @@
 
 - **交付**：`runtime_<g>.bin` 升到版本 3（正文 124 字节），保存底盘的位置、速度、朝向、角速度、静止帧数和休眠状态，以及乘坐状态与交互键按住状态。读档后车辆和乘坐者从存档时的状态继续运行。非有限值或退化朝向一律拒绝，结果为 `stage=checkpoint`。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的补充小节。
 - **测试**：roundtrip 新增 `vehicle_continuation` 段，要求读档后 40 tick 的 vehicle 行和 user 行与直跑逐字一致；失败矩阵新增 `vehicle_nan` 和 `vehicle_quat`。四处变异都判红；ASan 与 TSan 下 lifecycle 各 12/12，normal 全量 400/400。
-- **未做**：布娃娃刚体不保存；动态墙仍由标志重建。
+- **未做**：布娃娃刚体不保存（已在后续条目补上）；动态墙按标志重建（已确认等价）。
 
 ## Core App GPU 用例在 sanitizer 树中通过（2026-11-14）
 

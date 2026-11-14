@@ -117,7 +117,7 @@ AI、动画和 `physics_step` 没有接入，tick 顺序里这三步仍是空位
 
 ### 动态墙
 
-当 `target_in_sight` 成立且尚未加墙时，`break_ai_obstacle_add` 加入矩形 (1, 1, 4, 2)，同时 `physics_body_create` 建立对应的动态刚体。追踪者的位置进入 x < 1.0 且 z < 1.5 的区域后，`break_ai_obstacle_remove` 移除障碍，nav 版本再次递增，路径重新可查询，追踪者继续接近目标。
+当 `target_in_sight` 成立且尚未加墙时，`break_ai_obstacle_add` 加入矩形 (1, 1, 4, 2)，同时 `physics_body_create` 建立对应的静态刚体（质量 0）。追踪者的位置进入 x < 1.0 且 z < 1.5 的区域后，`break_ai_obstacle_remove` 移除障碍，nav 版本再次递增，路径重新可查询，追踪者继续接近目标。移除只撤掉导航障碍，刚体保留，视线遮挡仍以它为准。
 
 ### trace
 
@@ -462,7 +462,7 @@ BSCN/Flow/Actor/scene_state 侧车；错误 Actor generation、截断 BSCN、错
 
 ### 仍未做
 
-`scene_state_save`（物理体等场景运行态）没有写进 checkpoint，动态墙仍由 runtime 标志重建；错误 Actor generation 与 GPU/record 资源 staging 失败两项失败矩阵用例未做。
+`scene_state_save`（物理体等场景运行态）没有写进 checkpoint（车辆和布娃娃后来已补上），动态墙由 runtime 标志重建，后经确认与直跑等价；错误 Actor generation 与 GPU/record 资源 staging 失败两项失败矩阵用例未做。
 
 ### 补充：失效 Actor 行与 render 资源 staging 失败（2026-11-14）
 
@@ -505,7 +505,7 @@ BSCN/Flow/Actor/scene_state 侧车；错误 Actor generation、截断 BSCN、错
   - 失败矩阵新增 `vehicle_nan`（底盘 position.x 写入 NaN）和 `vehicle_quat`（orientation 全写 0），两项都同步更新 manifest，期望 `stage=checkpoint`。
 - 变异：不写回 occupied、不写回 position、去掉 position 的有限值检查、去掉四元数长度检查，四处都判红，恢复后 `cmp` 确认与备份逐字节一致。
 - lifecycle 在 ASan+UBSan 与 TSan 树中各 12/12，normal 树非 fuzz 全量 400/400。
-- 仍未做：布娃娃骨骼刚体不保存（R 键状态不进存档，读档后布娃娃为未激活）。动态墙仍由标志重建。（布娃娃部分已在下一小节补上。）
+- 仍未做：布娃娃骨骼刚体不保存（R 键状态不进存档，读档后布娃娃为未激活）。动态墙仍由标志重建。（布娃娃已在下一小节补上；动态墙经确认按标志重建即等价，见“动态墙读档等价性”小节。）
 
 ### 补充：布娃娃运行态进 checkpoint（2026-11-14）
 
@@ -522,7 +522,17 @@ BSCN/Flow/Actor/scene_state 侧车；错误 Actor generation、截断 BSCN、错
   - 失败矩阵新增 `ragdoll_nan`（第二个 pose 矩阵的平移 x 写入 NaN）和 `ragdoll_quat`（置 `RAGDOLL_ACTIVE`，三块骨骼四元数全写 0），期望 `stage=checkpoint`。vehicle 两项的长度检查同步改为 512。
 - 变异：不写回 pose、不写回骨骼刚体、去掉四元数长度检查、去掉 pose 有限值检查，四处都判红，恢复后 `cmp` 确认与备份逐字节一致。
 - lifecycle 在 ASan+UBSan 与 TSan 树中各 12/12，normal 树非 fuzz 全量 400/400。
-- 仍未做：动态墙仍由标志重建。
+- 动态墙的处理见下一小节。
+
+### 补充：动态墙读档等价性（2026-11-14）
+
+计划见 `docs/superpowers/plans/2026-11-14-core-app-checkpoint-wall-state.md`。
+
+- 结论：墙不需要额外的存档字段。墙由一个导航障碍和一个质量为 0 的静态刚体组成，刚体没有速度、休眠或接触累积，位置和形状固定；障碍只有在场和已移除两种状态。`WALL_ADDED`/`WALL_REMOVED` 两个标志就是它的全部运行态，`app_apply_state` 按标志以相同参数执行 add/remove，结果与 tick 路径一致。`runtime_<g>.bin` 保持版本 4。
+- 验证（`test_core_app_lifecycle_roundtrip` 新增 `wall_continuation`）：
+  - 原 continuation 在 tick 91 读档，此时墙已在场；断言读档后 tick 92 为 `nav_version=2 path_current=1`。
+  - 新增一对运行，tick 380 存档，此时墙已加入并已移除（tick 379 为 `nav_version=3`）。一次直跑到 tick 439，一次在 tick 381 读档后跑到 tick 440，两次的 60 条 sim 行和 60 条 user 行逐字一致。
+- 变异：让 `app_apply_state` 跳过加墙、跳过移墙，两处都判红；恢复后 `cmp` 确认与备份逐字节一致。
 
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
