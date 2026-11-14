@@ -7209,6 +7209,15 @@ endif()
         add_test(NAME fuzz_core_app_scenario_corpus
                  COMMAND fuzz_core_app_scenario --replay ${CORE_APP_SCENARIO_CORPUS})
         set_tests_properties(fuzz_core_app_scenario_corpus PROPERTIES LABELS "fuzz")
+        # Checkpoint manifest samples; the `ok-`/`nofind-`/`invalid-`/`overload-` prefix
+        # is the expected probe and find result. Regenerate with
+        # `fuzz_core_app_checkpoint --emit-corpus <dir>`.
+        file(GLOB CORE_APP_CHECKPOINT_CORPUS CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_checkpoint_corpus/*.core")
+        list(SORT CORE_APP_CHECKPOINT_CORPUS)
+        add_test(NAME fuzz_core_app_checkpoint_corpus
+                 COMMAND fuzz_core_app_checkpoint --replay ${CORE_APP_CHECKPOINT_CORPUS})
+        set_tests_properties(fuzz_core_app_checkpoint_corpus PROPERTIES LABELS "fuzz")
         set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
             fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
             fuzz_mycompose_tree_smoke fuzz_mycompose_intent_smoke

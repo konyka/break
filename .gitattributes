@@ -26,3 +26,6 @@ engine/tests/data/core_app_network_corpus/*.bin binary
 
 # Scenario parser samples, including CRLF and control bytes; never normalize.
 engine/tests/data/core_app_scenario_corpus/*.scenario binary
+
+# Checkpoint manifest samples replayed byte-exactly by fuzz_core_app_checkpoint --replay.
+engine/tests/data/core_app_checkpoint_corpus/*.core binary

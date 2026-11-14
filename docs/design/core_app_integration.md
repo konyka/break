@@ -716,7 +716,28 @@ fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未
 - 变异（每次恢复后源文件与备份逐字节一致）：撤销 digit 修复，`reject-pad_axis` 判红；允许 quit 之后的事件，`reject-event_after_quit` 判红；去掉 4096 事件上限，`reject-over_max_events` 判红；允许 `..` 路径，`reject-parent_path` 判红。
 - normal 树：非 fuzz 400/400，fuzz 12/12。ASan+UBSan 树：三个 core_app fuzz target 与 `test_core_app_runtime` 共 6 项通过，无报告。TSan 树：`test_core_app_runtime` 49/49，无报告。
 
-仍未做：checkpoint fuzzer 的落盘 corpus；libFuzzer 覆盖率引导。
+仍未做：checkpoint fuzzer 的落盘 corpus；libFuzzer 覆盖率引导。（checkpoint corpus 已在下一小节补上。）
+
+### 补充：`fuzz_core_app_checkpoint` 落盘 corpus（2026-11-14）
+
+计划见 `docs/superpowers/plans/2026-11-14-fuzz-core-app-checkpoint-corpus.md`。
+
+- 仓库新增 `engine/tests/data/core_app_checkpoint_corpus/`，39 个 `.core` 文件，每个是一份 `manifest.core` 字节。文件名前缀写明期望结果：
+  - `ok-`（4 个）：基本 4 条记录、generation 为 u64 最大值、RUNTIME 排在第一条、只有 RUNTIME 一条。probe 与 find(RUNTIME) 都返回 OK，find 返回的 generation、kind、size、hash、name 与样例字节中的 RUNTIME 记录一致。
+  - `nofind-`（3 个）：缺 RUNTIME、两条记录都是 RUNTIME kind、RUNTIME 记录改成未知 kind 99。probe 返回 OK，find(RUNTIME) 返回 INVALID。
+  - `invalid-`（28 个）：magic、version、header_bytes、size 字段（含高 32 位）、保留字、generation 为 0、count 为 0、count 与长度不符、截断一字节、name_len 为 0、偏短、偏长、名字填充非 0、kind 为 0、payload 哈希错、payload 大小错、payload 文件不存在、名字以 `.` 结尾、含 `..`、`/`、`\`、空格、名字为 `MANIFEST.CORE`、大小写不同的重名、完全相同的重名、不足 40 字节、空文件。probe 与 find 都返回 INVALID。
+  - `overload-`（4 个）：count 为 17、name_len 为 64、payload 大小超过 64 MiB、文件超过 1448 字节。probe 与 find 都返回 OVERLOAD。
+- `fuzz_core_app_checkpoint --emit-corpus <dir>` 用测试内独立的编码器生成样例，不调用生产 writer，所以 corpus 固定的是磁盘格式本身。重新生成的结果与仓库文件逐字节相同。
+- `fuzz_core_app_checkpoint --replay <file>...` 在临时目录写入 fuzzer 固定的 4 个 payload（scene、flow、actors、runtime），把每个样例复制成 `manifest.core` 后调用真实的 `core_app_checkpoint_probe` 与 `core_app_checkpoint_find`。全部样例跑完后检查 4 个 payload 字节未变，再删除临时目录。前缀未知或四种前缀缺任何一种都失败。注册为 `fuzz_core_app_checkpoint_corpus`（`fuzz` 标签）。`.gitattributes` 把该目录标为 binary。
+- 随机变异模式结束时现在会删除 `valid`、`sentinel` 和根临时目录。之前只删 `manifest.core`，每次运行都在构建目录里留下一个 `fuzz_core_app_ckpt_<pid>` 目录。
+
+证据：
+
+- RED：目录为空时测试失败。GREEN：`replayed=39 ok=4 nofind=3 invalid=28 overload=4`。
+- 变异（每次恢复后源文件与备份逐字节一致）：去掉 `duplicate_name` 检查，第一版 corpus 没有判红。原因是大小写不同的重名样例让第二条记录指向不存在的文件，在 payload 校验处就被拒绝了。补上 `invalid-name_duplicate_exact`（同一 payload 以同名列出两次）后判红。去掉保留字检查，`invalid-reserved_word` 判红；find 不拒绝重复 kind，`nofind-duplicate_runtime_kind` 判红；去掉 payload 哈希比较，`invalid-payload_hash` 判红。
+- normal 树：非 fuzz 400/400，fuzz 13/13。ASan+UBSan 树：三个 core_app fuzz target 共 6 项通过，无报告。
+
+仍未做：libFuzzer 覆盖率引导。
 
 ## Core App Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
 

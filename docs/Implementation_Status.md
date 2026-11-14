@@ -1,9 +1,15 @@
+## Core App checkpoint fuzz 落盘 corpus（2026-11-14）
+
+- **交付**：新增 `engine/tests/data/core_app_checkpoint_corpus/`，39 份 `manifest.core` 样例（4 个 `ok-`、3 个 `nofind-`、28 个 `invalid-`、4 个 `overload-`），覆盖头部各字段、记录数上限、名字长度与填充、basename 规则、大小写与完全相同的重名、payload 大小与哈希、find 的重复 kind 和缺失 kind。`fuzz_core_app_checkpoint --emit-corpus` 用测试内独立编码器逐字节重新生成；`--replay` 经真实 `core_app_checkpoint_probe` 与 `core_app_checkpoint_find` 检查，结束时确认 payload 未变。注册为 `fuzz_core_app_checkpoint_corpus`（`fuzz` 标签）。随机变异模式结束时现在会删除自己的临时目录。设计见 `docs/design/core_app_integration.md` 的 Task 12 补充小节。
+- **测试**：目录为空时 RED，生成后 GREEN（`replayed=39`）。去掉重名检查、保留字检查、find 的重复 kind 检查、payload 哈希比较，四处变异都判红。normal 树非 fuzz 400/400、fuzz 13/13；ASan+UBSan 树 core_app fuzz 6/6，无报告。
+- **未做**：覆盖率引导。
+
 ## Core App scenario fuzz 落盘 corpus 与 pad 范围修复（2026-11-14）
 
 - **交付**：新增 `engine/tests/data/core_app_scenario_corpus/`，40 个样例（10 个 `accept-`、30 个 `reject-`），覆盖全部命令、CRLF、各项上限与越界、非法路径和 quit 规则。`fuzz_core_app_scenario --emit-corpus` 可逐字节重新生成；`--replay` 经真实 `core_app_scenario_load` 检查。注册为 `fuzz_core_app_scenario_corpus`（`fuzz` 标签）。设计见 `docs/design/core_app_integration.md` 的 Task 12 补充小节。
 - **修复**：`decimal_u64` 在单个数字大于上限时无符号下溢，`pad 4` 和轴 6..9 被错误接受。现在先检查 `digit > limit`。新增单测 `scenario_rejects_pad_index_and_axis_beyond_limit`，修复前 RED。
 - **测试**：4 处变异都判红；normal 树非 fuzz 400/400、fuzz 12/12；ASan+UBSan 6/6、TSan `test_core_app_runtime` 49/49，无报告。
-- **未做**：checkpoint fuzzer 的落盘 corpus；覆盖率引导。
+- **未做**：覆盖率引导（checkpoint fuzzer 的落盘 corpus 已在上一条补上）。
 
 ## Core App 网络快照 fuzz 落盘 corpus（2026-11-14）
 
