@@ -690,7 +690,7 @@ SIGPIPE：transport 构建在 `--network` 生效时调用 `signal(SIGPIPE, SIG_I
   驱动脚本断言 trace 不含 secret、`authenticated==2`、`opened>=6`、`snapshots_sent>=2`、`auth_timeouts>=1`、`admitted>=1`、各拒绝计数至少 1、`session_handler_failed>=2`，退出后不残留 port file，并且过滤 network 行后与离线 trace 逐字节相同，snapshot generation 等于 `level_loaded` generation。本机一次运行的 stats：`opened=6 closed=6 authenticated=2 snapshots_sent=6 auth_timeouts=1 decode_failed=1 admitted=1 rejected_schema=1 rejected_stale=1 session_applied=15 session_phase_rejected=1 session_invalid=0 session_handler_failed=2`。
 - `test_core_app_network_start_failure`（transport 构建且非 WIN32）：缺 PSK 环境变量与全零 PSK（`stage=psk`）、坏证书（`stage=tls`）、port file 指向不存在的目录（`stage=port_file`）。每项断言 rc=2、无 Sanitizer 输出、无 `listening` 与 `network_stats` 行、不留 port file。
 - `test_core_app_network_late_auth`（注册条件同 loopback）：服务器 `--net-poll-ms 1`，scenario `engine/tests/data/core_app_network_late_auth.scenario`（6000 tick），客户端以 `late-auth` 模式只运行场景 G：完成 TLS 后静默 1 s 再发 AUTH，必须收到 snapshot；驱动脚本断言 `authenticated==1`、`auth_timeouts==0`。按 tick 计期限时 RED（`g_receives_snapshot_after_late_auth` FAIL），改为毫秒期限后通过。
-- `test_core_app_target_contract` 覆盖 `--net-poll-ms 101` 与 `0001` 的错误文本，并要求 `00` 不被当作 CLI 错误（随后因 PSK 变量未设置而在启动阶段退出 2）。
+- `test_core_app_target_contract` 覆盖 `--net-poll-ms 101` 与 `0001` 的错误文本，并要求 `00` 不被当作 CLI 错误（参数解析接受后，因缺少 `--scenario`/`--fixed-step` 在 config 阶段以 `stage=config unsupported lifecycle configuration` 退出 2）。
 - 变异：去掉“只发给已认证会话”检查 → B/C/D 三项 FAIL；把对端 snapshot 位置写进 user → `network input changed the simulation`；`net_destroy` 只在 started/listening 时调用 stop → ASan 树 start_failure 的 port_file 用例 rc=1 并报 LeakSanitizer 泄漏。三处恢复后 `cmp` 一致。评审修复前的 RED：loopback 因 `--net-poll-ms` 未知报 `unknown or malformed argument`，start_failure 报 `zero_psk: rc=0, want 2`。
 
 ### 边界

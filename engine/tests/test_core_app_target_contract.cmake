@@ -139,8 +139,8 @@ if(NETWORK_ENABLED AND NETWORK_TRANSPORT)
         --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt
         --net-poll-ms 0001)
     expect_last_error(network_long_poll_ms "--net-poll-ms requires 0..100")
-    # "00" is a valid zero. The run then fails later (the PSK variable is
-    # unset), which shows the option itself was accepted.
+    # "00" is a valid zero. The run then exits 2 at the config stage (no
+    # --scenario or --fixed-step), after option parsing accepted it.
     expect_exit(network_zero_padded_poll_ms 2 --network --bind 127.0.0.1:0 --tls-cert c.pem
         --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt
         --net-poll-ms 00)
