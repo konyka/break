@@ -259,7 +259,7 @@ u64 core_app_checkpoint_manifest_hash(const char *directory);
 - Consumes: 已定稿且合入的 P0–P11 target/header，尤其 `break_flow` 和 P9 `break_kernel_lua`。
 - Produces: 顶层 `core_app_runtime`、`core_app`；`CORE_APP_ENABLE_NETWORK=OFF` 默认；严格 CLI 和 `core_app_run()` 入口。baker 由 Task 2 添加。
 
-- [ ] **Step 1: 写 target/CLI 行为 RED**
+- [x] **Step 1: 写 target/CLI 行为 RED**
 
 先写 CMake 合同，要求 target 在 `ENGINE_BUILD_TESTS` 外定义、`core_app` 链接 `core_app_runtime` 并经 `engine_link_rhi_backend()` 选择 RHI，核心消费者不新增库，生产二进制不含 `*_for_test`/`test_hook`。同一 CMake 测试通过 `execute_process` 启动真实二进制：`--help` 退出 0；未知参数、`--render=headless`、缺值和 `--network` 在未编译网络时退出 2。无参数行为由后续真实生命周期任务验收，本任务不让其假成功。
 
@@ -278,7 +278,7 @@ if(NOT help_rc EQUAL 0)
 endif()
 ```
 
-- [ ] **Step 2: 运行结构 RED 和行为 RED**
+- [x] **Step 2: 运行结构 RED 和行为 RED**
 
 Run:
 ```bash
@@ -287,7 +287,7 @@ cmake --build build-core-integration-normal -j3 --target core_app
 ```
 Expected: target 不存在是结构 RED；加入最小 target 后，真实进程的 `--help`/非法参数断言必须因错误退出码或缺失行为而 RED。若 P9 target/header 或任何前置依赖缺席，停止并回报依赖，不写 stub 通过。
 
-- [ ] **Step 3: 最小实现真实 target 与参数解析**
+- [x] **Step 3: 最小实现真实 target 与参数解析**
 
 按现有 C11/CTest 惯例添加：
 
@@ -311,7 +311,7 @@ add_test(NAME test_core_app_target_contract
 
 `main.c` 使用显式 `--render record|auto|vulkan|opengl`、`--audio record|null|device`、`--assets DIR`、`--scenario PATH`、`--checkpoint DIR`、`--trace PATH`、`--screenshot PATH`、`--fixed-step`、`--frames N`、`--require-device`、`--network` 解析；不接受隐式位置参数。`core_app_run` 本任务只完成 config 验证和明确 `FAILED`，不得返回假成功。
 
-- [ ] **Step 4: 验证 GREEN 和 no-tests target**
+- [x] **Step 4: 验证 GREEN 和 no-tests target**
 
 Run:
 ```bash
@@ -345,7 +345,7 @@ git commit -m "application: add explicit playable integration target"
 - Consumes: `scene_save_binary`、`scene_probe_binary`、`break_flow_serialize`、`anim_codec_encode`、`PlatformAtomicWriter`。
 - Produces: checkpoint v1 manifest、可重复 baker、真实固定场景资产。
 
-- [ ] **Step 1: 写资产与 manifest 行为 RED**
+- [x] **Step 1: 写资产与 manifest 行为 RED**
 
 测试先调用 baker 到 `test_tmp` 目录，再由真实 readers 打开产物：场景必须含地面、用户、追踪者、一个动态墙、一辆载具和可见/隐藏颜色网格；Actor sidecar 的 index 必须在 BSCN 中存在；Flow 反序列化后包含 enter→delay→add-item；BANM decode 后的 TRS 误差满足 `anim_codec_time_error_bound`/scalar bound；WAV 有合法 RIFF 长度。
 
@@ -371,7 +371,7 @@ ASSERT_EQ(core_app_checkpoint_probe(backup_dir), BREAK_RUNTIME_OK);
 
 `test_fnv1a64`、`test_write_checkpoint_file`、`test_copy_checkpoint` 和 `test_checkpoint_corrupt_payload_for_fixture` 都是测试源码局部 helper，不进入生产库。
 
-- [ ] **Step 2: 运行 baker/reader RED**
+- [x] **Step 2: 运行 baker/reader RED**
 
 Run:
 ```bash
@@ -380,13 +380,13 @@ cmake --build build-core-integration-normal -j3 --target core_app_asset_bake tes
 ```
 Expected: 先有资产/manifest 行为断言 RED；若仅是目标缺失，补最小目标后必须继续看到内容或 roundtrip 断言 RED。
 
-- [ ] **Step 3: 实现 baker 与原子 checkpoint**
+- [x] **Step 3: 实现 baker 与原子 checkpoint**
 
 baker 使用固定数组和固定 seed，按稳定 entity 顺序注册组件，调用 `scene_save_binary` 时提供真实 CPU geometry reader；Flow 用公开序列化 API；动画用公开 codec；声音生成确定性的 44100 Hz 16-bit PCM WAV。写源树正式资产时要求显式 `core_app_asset_bake --output engine/assets/core_app`，测试一律输出临时目录。
 
 checkpoint 写所有 generation 文件后逐一 probe，再用一个 `PlatformAtomicWriter` 写 manifest。所有长度/hash 计算先检查加法/乘法溢出；basename 只能含 ASCII 字母数字、`_.-`，拒绝 `/`、`\\`、`..` 和绝对路径。读取先验证 manifest 全部记录，再 staging 每个文件。
 
-- [ ] **Step 4: 运行 roundtrip GREEN 与损坏回归**
+- [x] **Step 4: 运行 roundtrip GREEN 与损坏回归**
 
 Run:
 ```bash
@@ -396,7 +396,7 @@ ctest --test-dir build-core-integration-normal -R '^(test_core_app_assets|test_s
 ```
 Expected: 全部 PASS；比较两次 baker 输出逐字节相同；损坏 manifest/payload 被拒绝，旧 checkpoint 可继续使用。
 
-- [ ] **Step 5: 变异、生成正式资产并提交**
+- [x] **Step 5: 变异、生成正式资产并提交**
 
 临时跳过 manifest hash 检查，确认篡改测试 RED；恢复后 GREEN。用最终 baker 生成并检查 `engine/assets/core_app`，将二进制资产纳入同一提交，保证正常 checkout 可直接运行。
 
@@ -420,7 +420,7 @@ git commit -m "application: add reproducible playable level assets"
 - Consumes: Task 2 资产、`BreakRuntimeCoordinator`、`scene_load_binary`、`asset_scene_restore`、`break_kernel_level_open/close`。
 - Produces: `CoreLevel` staging/commit、level generation、record render trace、完整可执行生命周期。
 
-- [ ] **Step 1: 写真实主程序生命周期 RED**
+- [x] **Step 1: 写真实主程序生命周期 RED**
 
 CTest script 用 `execute_process(COMMAND "${CORE_APP}" --render=record --audio=record --assets "${ASSET_ROOT}" --fixed-step --scenario "${SCENARIO}" --trace "${WORK}/load.trace")` 启动真实应用，不是调用库 substitute。脚本必须观察到有序 trace：
 
@@ -436,7 +436,7 @@ COREAPPTRACE version=1 event=runtime_stopped
 
 测试还启动缺失 BSCN、损坏 Flow、未知 Actor class 和缺失 Lua module 四种进程；每种必须退出 2，不能留下运行中的 worker，且不能出现 `runtime_running` 后的半 level commit。
 
-- [ ] **Step 2: 运行进程并确认行为 RED**
+- [x] **Step 2: 运行进程并确认行为 RED**
 
 Run:
 ```bash
@@ -445,7 +445,7 @@ ctest --test-dir build-core-integration-normal -R '^test_core_app_lifecycle_load
 ```
 Expected: 真实应用目前未实现加载/主循环，退出 2 或 trace 缺少 `level_loaded/frame/level_unloaded`；记录实际缺失事件，而非只记编译错误。
 
-- [ ] **Step 3: 实现 staging、coordinator 和 record 主循环**
+- [x] **Step 3: 实现 staging、coordinator 和 record 主循环**
 
 `CoreLevel` 聚合 World、Scene、BreakKernel、Lua/adapter、Flow、AI、physics、渲染资源和资源请求。加载顺序为：注册组件→CPU BSCN staging→Flow/Lua/actor sidecar 验证→physics/AI/animation 创建→record 资源或 GPU `asset_scene_restore`→全部交叉引用验证→一次赋值 `application->level = candidate`。任一步失败按已初始化标志逆序释放 candidate，当前 level 指针和 generation 不变。
 
@@ -453,7 +453,7 @@ Expected: 真实应用目前未实现加载/主循环，退出 2 或 trace 缺�
 
 record render 不链接 `engine_rhi_headless` 冒充设备；它消费 POD 并输出 frame/resource ids。`core_app_audio.c` 本任务实现固定容量 record 队列和 listener/stop 命令，供真实生命周期立即使用，Task 9 再添加 device worker 与完整 source 控制。每次成功 load 递增非零 level generation，失败不消耗；卸载使旧 generation 失效。
 
-- [ ] **Step 4: 运行真实生命周期 GREEN 与回归**
+- [x] **Step 4: 运行真实生命周期 GREEN 与回归**
 
 Run:
 ```bash
@@ -615,13 +615,13 @@ git commit -m "core_app: connect actor scripts and flow actions"
 - Consumes: 最终 P3/P4/P5 API；`physics_raycast` 只作 AI/audio 查询回调，不在 worker 写 World。
 - Produces: 实际 chaser chase、nav version 失效、locomotion/morph/facial→skinning 输入、vehicle control、ragdoll pose authority。
 
-- [ ] **Step 1: 写可玩模拟行为 RED**
+- [x] **Step 1: 写可玩模拟行为 RED**
 
 真实场景脚本依次验证：用户进入视野后追踪者产生非零追逐位移；动态墙 add 后旧 `BreakAiPath` 不再 current，当前版本查询不可达或绕行，remove 后重新可查询；重复场景得到同一 chaser path/position。
 
 动画断言速度从 0 到跑步阈值时 run 权重大于 walk；facial curve 产生 morph 权重，`anim_morph_evaluate_skinned` 改后的 64 字节顶点经 `lod_skin_positions` 得到不同位置，且 normal/UV/joint/weight 保留。载具 enter 后 ActionMap throttle 进入持久 `VehicleControlState`，接地底盘发生位移；exit 失败时 occupied 不变。脚本触发布娃娃后 ragdoll 拥有姿态，IK 不写局部 TRS；停用后恢复原 IK 状态。
 
-- [ ] **Step 2: 运行实际场景 RED**
+- [x] **Step 2: 运行实际场景 RED**
 
 Run:
 ```bash
@@ -631,13 +631,13 @@ ctest --test-dir build-core-integration-normal -R '^test_core_app_lifecycle_simu
 ```
 Expected: chaser/path/pose/vehicle/ragdoll 的行为断言至少一项因尚未接线而 RED；不用只链接 `break_ai` 或 engine 作为替代证据。
 
-- [ ] **Step 3: 实现唯一模拟顺序和资源预分配**
+- [x] **Step 3: 实现唯一模拟顺序和资源预分配**
 
 load 时烘焙/加载 navmesh、创建 AI runtime、注册 user/chaser agent、分配 animation/morph/skinning scratch、创建物理地面/载具/布娃娃容量。tick 内不扩容：AI 先 sight+behavior+当前版本 path，再 velocity avoidance；输出只形成 movement intent，由 CharacterController/Vehicle 执行。固定 `physics_step(CORE_APP_FIXED_DT)` 后写回 Entity position、骨架局部 TRS 和 wheel contacts。
 
 动画先 blend/locomotion/facial/morph，再 physics；若 ragdoll active，使用合并后唯一的 `ragdoll_write_local_trs`/IK 挂起合同，否则执行 IK。最后 `skeleton_apply_local_trs` 形成实际 skinning matrices。不得让 P4/P5 两套字段各自绕过对方；若最终公共头仍有冲突，回到集成门解决源合同。
 
-- [ ] **Step 4: 运行完整模拟 GREEN 与模块回归**
+- [x] **Step 4: 运行完整模拟 GREEN 与模块回归**
 
 Run:
 ```bash
@@ -668,13 +668,13 @@ git commit -m "core_app: integrate navigation animation and physics"
 - Consumes: P6 `WorldPresentationInput/WorldFrameSnapshot/WorldPresenter`、`world_stream_want/commit_vfs`、`world_presentation_stream_mesh`、`Skeleton`、RHI frame/snapshot/idle API、Runtime IO。
 - Produces: 带 frame id/level generation 的不可变渲染快照、record/RHI 两个消费者、迟完成丢弃与资源延迟销毁。
 
-- [ ] **Step 1: 写命令内容和代际 RED**
+- [x] **Step 1: 写命令内容和代际 RED**
 
 record 场景至少提交地面、普通世界对象、V1 stream 对象、可见植被 batch、user skinned mesh 和 chaser skinned mesh。断言普通/stream 使用同一 world pipeline 逻辑，VisArea 隐藏对象没有命令，植被 batch `instance_count>1`，角色 command 的 resource generation 与当前 level 相同，动画前后帧 skinned resource version 改变。
 
 资源测试提交 request A，unload/load 后以 A 的 request id + 旧 generation 完成，必须记 `stale_completions++`、释放 completion、当前资源字节不变；新 generation 的完成才允许 staging/commit。资源容量第 65 个请求返回 `OVERLOAD`，不覆盖任何 live slot。
 
-- [ ] **Step 2: 运行 record 命令 RED**
+- [x] **Step 2: 运行 record 命令 RED**
 
 Run:
 ```bash
@@ -684,7 +684,7 @@ ctest --test-dir build-core-integration-normal -R '^test_core_app_lifecycle_rend
 ```
 Expected: 缺少 world/skinned/植被命令或 stale completion 仍覆盖资源的断言 RED。
 
-- [ ] **Step 3: 实现不可变快照和实际消费者**
+- [x] **Step 3: 实现不可变快照和实际消费者**
 
 CoreAppThread 用 `world_stream_want` 生成驻留意图，以 `world_stream_commit_vfs` 在 CoreAppThread 提交 ECS 驻留/卸载，再用 `world_presentation_stream_mesh` 迁移 V1 tile 并进入同一 MeshGpu 上传/销毁代际；坏 tile 或上传失败不替换旧驻留资源。随后将 `WorldFrameSnapshot` 与角色 POD 写入双槽之一，标记 frame id、level generation 和资源版本；构建完成后不再写该槽。record 直接输出 canonical command。
 
@@ -692,7 +692,7 @@ CoreAppThread 用 `world_stream_want` 生成驻留意图，以 `world_stream_com
 
 GPU/CPU 资源表槽包含 request id、generation、state 和拥有句柄。异步完成先验证 request id/generation，再 staging 完整资源，成功才交换；旧资源延迟到 `rhi_device_idle` 成功且没有快照引用后销毁。失败保留旧资源。record 模式只更新 CPU resource version，不声称发生 GPU upload。
 
-- [ ] **Step 4: 运行 record GREEN 与 P6/RHI 回归**
+- [x] **Step 4: 运行 record GREEN 与 P6/RHI 回归**
 
 Run:
 ```bash
@@ -913,7 +913,9 @@ cmake -E env BREAK_RHI_BACKEND=opengl BREAK_RHI_NO_FALLBACK=1 \
 
 应用必须在 trace 写实际 `backend`、`device_name`、frame present 数、validation count 和 save/unload 结果。image test 读取各 tick PPM：地面/用户/追踪者/植被/流式对象都有非背景像素，隐藏黄色网格为 0；移动前后用户像素质心发生变化，动画两帧角色区域有差异，昼夜帧亮度显著变化，重载后的场景对象与保存时可见。两后端比较允许光栅化误差，但每个语义对象和移动/明暗趋势都必须成立。
 
-- [ ] **Step 2: 在真实设备上观察 RED 或诚实缺证**
+- [x] **Step 2: 在真实设备上观察 RED 或诚实缺证**
+
+执行记录：真实 Vulkan 设备上观察到顶点步长错位（32 字节场景网格拷入 36 字节 `MeshVertex`），修复前截图对象错位；设备缺失时退出 77；`draw_count` 置 0 与“截图恒失败”变异均判 FAIL 而非 skip。证据见 `docs/design/core_app_integration.md` Task 11 slice 1–3。
 
 Run:
 ```bash
@@ -979,7 +981,9 @@ endif()
 
 TSan focused 覆盖 audio producer/consumer、Runtime IO completion、网络 enabled 时的 callback/CoreAppThread poll和 shutdown；普通/ASan 覆盖保存失败与迟完成释放。
 
-- [ ] **Step 2: 运行 fuzz/并发 RED**
+- [x] **Step 2: 运行 fuzz/并发 RED**
+
+执行记录：scenario fuzz corpus 暴露 `decimal_u64` 无符号下溢（`pad 4 …` 被接受），`scenario_rejects_pad_index_and_axis_beyond_limit` 修复前判红；network fuzz 三处变异与音频队列三处并发变异均判红。证据见 `docs/design/core_app_integration.md` Task 12 及其补充小节。
 
 Run:
 ```bash
