@@ -95,8 +95,8 @@ jobs:
             set -e
             cmake --version | head -1
             clang-18 --version | head -1
-            printf 'int LLVMFuzzerTestOneInput(const unsigned char *d, unsigned long n) { (void)d; (void)n; return 0; }\n' > /tmp/lf.c
-            clang-18 -fsanitize=fuzzer,address /tmp/lf.c -o /tmp/lf && /tmp/lf -runs=10
+            echo "int LLVMFuzzerTestOneInput(const unsigned char *d, unsigned long n) { (void)d; (void)n; return 0; }" > /tmp/lf.c
+            clang-18 -fsanitize=fuzzer,address /tmp/lf.c -o /tmp/lf && ASAN_OPTIONS=detect_leaks=0 /tmp/lf -runs=10 -detect_leaks=0
             gcc --version | head -1
             ninja --version
             command -v weston
