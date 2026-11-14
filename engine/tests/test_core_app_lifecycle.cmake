@@ -678,15 +678,30 @@ elif mode == "zero_guid":
     data = bytes(data)
 elif mode == "vehicle_nan":
     data = bytearray(data)
-    if len(data) != 140 or data[:8] != b"CORERUN1":
-        raise SystemExit("the saved runtime state is not a version 3 record")
+    if len(data) != 512 or data[:8] != b"CORERUN1":
+        raise SystemExit("the saved runtime state is not a version 4 record")
     struct.pack_into("<I", data, 16 + 68, 0x7FC00000)
     data = bytes(data)
 elif mode == "vehicle_quat":
     data = bytearray(data)
-    if len(data) != 140 or data[:8] != b"CORERUN1":
-        raise SystemExit("the saved runtime state is not a version 3 record")
+    if len(data) != 512 or data[:8] != b"CORERUN1":
+        raise SystemExit("the saved runtime state is not a version 4 record")
     struct.pack_into("<4f", data, 16 + 92, 0.0, 0.0, 0.0, 0.0)
+    data = bytes(data)
+elif mode == "ragdoll_nan":
+    data = bytearray(data)
+    if len(data) != 512 or data[:8] != b"CORERUN1":
+        raise SystemExit("the saved runtime state is not a version 4 record")
+    struct.pack_into("<I", data, 16 + 124 + 64 + 48, 0x7FC00000)
+    data = bytes(data)
+elif mode == "ragdoll_quat":
+    data = bytearray(data)
+    if len(data) != 512 or data[:8] != b"CORERUN1":
+        raise SystemExit("the saved runtime state is not a version 4 record")
+    flags = struct.unpack_from("<I", data, 16 + 60)[0]
+    struct.pack_into("<I", data, 16 + 60, flags | 128)
+    for bone in range(3):
+        struct.pack_into("<4f", data, 16 + 316 + bone * 60 + 24, 0.0, 0.0, 0.0, 0.0)
     data = bytes(data)
 else:
     raise SystemExit("unknown mode " + mode)
@@ -719,6 +734,8 @@ with open(directory + "/manifest.core", "wb") as output:
                  "render_resource;scene_1.bscn;zero_guid;fix;render"
                  "vehicle_nan;runtime_1.bin;vehicle_nan;fix;checkpoint"
                  "vehicle_quat;runtime_1.bin;vehicle_quat;fix;checkpoint"
+                 "ragdoll_nan;runtime_1.bin;ragdoll_nan;fix;checkpoint"
+                 "ragdoll_quat;runtime_1.bin;ragdoll_quat;fix;checkpoint"
                  "manifest_hash;scene_1.bscn;truncate;keep-manifest;checkpoint")
         list(GET case 0 case_name)
         list(GET case 1 case_file)
@@ -861,6 +878,47 @@ with open(directory + "/manifest.core", "wb") as output:
             record_error("vehicle_continuation: ${straight_count} ${event} lines in the straight drive, want 40")
         elseif(NOT straight_lines STREQUAL resumed_lines)
             record_error("vehicle_continuation: ${event} after the load differs from the uninterrupted drive")
+        endif()
+    endforeach()
+
+    set(ragdoll_inputs "1 level\n10 key r 1\n13 key r 0\n30 save\n")
+    set(CORE_APP_CHECKPOINT_DIR "${WORK}/ragdoll_straight")
+    file(REMOVE_RECURSE "${CORE_APP_CHECKPOINT_DIR}")
+    set(scenario "${WORK}/ragdoll_straight.scenario")
+    file(WRITE "${scenario}"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n${ragdoll_inputs}"
+        "50 key r 1\n51 key r 0\n70 quit\n")
+    run_app(ragdoll_straight "${ASSET_ROOT}" "${scenario}" 0)
+    set(ragdoll_straight_trace "${CORE_APP_LIFECYCLE_TRACE}")
+    set(CORE_APP_CHECKPOINT_DIR "${WORK}/ragdoll_resumed")
+    file(REMOVE_RECURSE "${CORE_APP_CHECKPOINT_DIR}")
+    set(scenario "${WORK}/ragdoll_resumed.scenario")
+    file(WRITE "${scenario}"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n${ragdoll_inputs}"
+        "31 load\n51 key r 1\n52 key r 0\n71 quit\n")
+    run_app(ragdoll_resumed "${ASSET_ROOT}" "${scenario}" 0)
+    set(ragdoll_resumed_trace "${CORE_APP_LIFECYCLE_TRACE}")
+    if(NOT ragdoll_resumed_trace MATCHES "event=load tick=31 generation=2 save_generation=1 result=ok ")
+        record_error("ragdoll_continuation: the resumed run did not load at tick 31")
+    endif()
+    if(NOT ragdoll_straight_trace MATCHES "event=ik tick=29 generation=1 ragdoll=1 solved=0 owned=1 ")
+        record_error("ragdoll_continuation: the ragdoll was not active when the save was taken")
+    endif()
+    if(NOT ragdoll_resumed_trace MATCHES "event=ik tick=31 generation=2 ragdoll=1 solved=0 owned=1 ")
+        record_error("ragdoll_continuation: the restored level did not keep the ragdoll active")
+    endif()
+    if(NOT ragdoll_straight_trace MATCHES "event=ragdoll tick=50 generation=1 active=0 ok=1\n" OR
+       NOT ragdoll_resumed_trace MATCHES "event=ragdoll tick=51 generation=2 active=0 ok=1\n")
+        record_error("ragdoll_continuation: pressing R after the save did not put the ragdoll away in both runs")
+    endif()
+    foreach(event ik user ragdoll)
+        event_payloads("${ragdoll_straight_trace}" ${event} 30 69 straight_lines)
+        event_payloads("${ragdoll_resumed_trace}" ${event} 31 70 resumed_lines)
+        list(LENGTH straight_lines straight_count)
+        if(straight_count EQUAL 0)
+            record_error("ragdoll_continuation: no ${event} lines in the straight run")
+        elseif(NOT straight_lines STREQUAL resumed_lines)
+            record_error("ragdoll_continuation: ${event} after the load differs from the uninterrupted run:\n${straight_lines}\n${resumed_lines}")
         endif()
     endforeach()
 

@@ -505,7 +505,24 @@ BSCN/Flow/Actor/scene_state 侧车；错误 Actor generation、截断 BSCN、错
   - 失败矩阵新增 `vehicle_nan`（底盘 position.x 写入 NaN）和 `vehicle_quat`（orientation 全写 0），两项都同步更新 manifest，期望 `stage=checkpoint`。
 - 变异：不写回 occupied、不写回 position、去掉 position 的有限值检查、去掉四元数长度检查，四处都判红，恢复后 `cmp` 确认与备份逐字节一致。
 - lifecycle 在 ASan+UBSan 与 TSan 树中各 12/12，normal 树非 fuzz 全量 400/400。
-- 仍未做：布娃娃骨骼刚体不保存（R 键状态不进存档，读档后布娃娃为未激活）。动态墙仍由标志重建。
+- 仍未做：布娃娃骨骼刚体不保存（R 键状态不进存档，读档后布娃娃为未激活）。动态墙仍由标志重建。（布娃娃部分已在下一小节补上。）
+
+### 补充：布娃娃运行态进 checkpoint（2026-11-14）
+
+计划见 `docs/superpowers/plans/2026-11-14-core-app-checkpoint-ragdoll-state.md`。
+
+- 发现：版本 3 不保存布娃娃。R 键激活后存档，读档得到的是未激活的链条，IK 立即重新求解，轨迹与不中断的运行不同。
+- `runtime_<g>.bin` 升到版本 4，正文从 124 字节扩到 496 字节，文件总长 512 字节。新标志 `RAGDOLL_ACTIVE`（128）。偏移 124 起是 3 个关节的 pose 矩阵（每个 64 字节，按列主序 `c*16 + r*4` 排列）；偏移 316 + j×60 起是第 j 块骨骼刚体：position（+0）、velocity（+12）、orientation（+24，4×f32）、angular_velocity（+40）、rest_frames（+52）、body_flags（+56，bit0 = sleeping）。版本 3 的文件按版本号拒绝。
+- 保存：`app_tick_ragdoll` 在布娃娃激活前把链条的 `current_pose` 复制到 `CoreLevel.ragdoll_pose`；`app_capture_state` 在激活时置标志，要求骨骼数为 3，复制 pose，并经 `physics_body_resolve` 逐块复制刚体状态。未激活时整段写 0。
+- 解码：pose 和所有向量分量必须是有限值；四元数长度平方在 (0.5, 2) 之内的检查只在 `RAGDOLL_ACTIVE` 置位时做，所以未激活时的全零段能通过；`body_flags` 大于 1 时拒绝。失败一律 `INVALID`，结果为 `load_rejected stage=checkpoint`。
+- 读档：`app_apply_state` 在车辆写回之后执行。候选关卡里布娃娃已激活时返回 `REJECTED`；否则把 pose 写回链条和 `ragdoll_pose`，调用 `ragdoll_activate`（失败返回 `FAILED`），再逐块写回 position（同时写 `step_start_position`）、velocity、orientation、angular_velocity、rest_frames 和 sleeping。`state_hash` 覆盖新正文。
+- 不保存的部分：骨骼之间的约束没有 warm-start 冲量，由 `ragdoll_activate` 在读档时重建即可；contact 字段每个物理步都会清零。
+- 验证（`test_core_app_lifecycle_roundtrip`）：
+  - 新增 `ragdoll_continuation`：tick 10 按 R、tick 30 存档，一次直跑到 tick 69，一次 tick 31 读档后跑到 tick 70，两次都在存档后再按一次 R 收起布娃娃。读档后 tick 31 为 `ragdoll=1 solved=0 owned=1`，tick 30..69 与 31..70 的 ik、user、ragdoll 行逐字一致。改代码前判红。
+  - 失败矩阵新增 `ragdoll_nan`（第二个 pose 矩阵的平移 x 写入 NaN）和 `ragdoll_quat`（置 `RAGDOLL_ACTIVE`，三块骨骼四元数全写 0），期望 `stage=checkpoint`。vehicle 两项的长度检查同步改为 512。
+- 变异：不写回 pose、不写回骨骼刚体、去掉四元数长度检查、去掉 pose 有限值检查，四处都判红，恢复后 `cmp` 确认与备份逐字节一致。
+- lifecycle 在 ASan+UBSan 与 TSan 树中各 12/12，normal 树非 fuzz 全量 400/400。
+- 仍未做：动态墙仍由标志重建。
 
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 

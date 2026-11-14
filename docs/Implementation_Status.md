@@ -1,3 +1,9 @@
+## Core App checkpoint 保存布娃娃运行态（2026-11-14）
+
+- **交付**：`runtime_<g>.bin` 升到版本 4（正文 496 字节，文件 512 字节），新增标志 `RAGDOLL_ACTIVE`（128）。偏移 124 起保存 3 个关节的 pose 矩阵，偏移 316 起保存 3 块骨骼刚体（每块 60 字节：位置、速度、朝向、角速度、静止帧数、休眠位）。读档时重建约束并激活布娃娃，再写回每块刚体。pose 和向量必须是有限值；四元数长度只在布娃娃激活时检查；不满足一律 `stage=checkpoint`。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的补充小节。
+- **测试**：roundtrip 新增 `ragdoll_continuation`，读档后 40 tick 的 ik、user、ragdoll 行与直跑逐字一致；失败矩阵新增 `ragdoll_nan` 和 `ragdoll_quat`。四处变异都判红；ASan 与 TSan 下 lifecycle 各 12/12，normal 全量 400/400。
+- **未做**：动态墙仍由标志重建。
+
 ## Mipmap 同步强制加载改为按时间等待（2026-11-14）
 
 - **问题**：macOS Cocoa + MoltenVK 的 CI（run 43576165785）里 `test_mipmap_stream` 的 `mipmap_request_pool_reuse_after_free` 判红，`mipmap_stream_force_level` 返回 false。原因是它的等待上限是 100 万次 `async_loader_tick()` 空转，本机实测约 20 ms。CI 机器繁忙时 IO 线程来不及被调度，正常的加载被当成失败。

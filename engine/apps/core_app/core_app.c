@@ -47,9 +47,9 @@
 #define CORE_APP_SKINNED_OBJECTS 2u
 #define CORE_APP_IO_LATENCY_TICKS 2u
 #define CORE_APP_IO_QUEUE 8u
-#define CORE_APP_RUNTIME_STATE_VERSION 3u
+#define CORE_APP_RUNTIME_STATE_VERSION 4u
 #define CORE_APP_RUNTIME_HEADER_BYTES 16u
-#define CORE_APP_RUNTIME_BODY_BYTES 124u
+#define CORE_APP_RUNTIME_BODY_BYTES 496u
 #define CORE_APP_RUNTIME_FILE_BYTES (CORE_APP_RUNTIME_HEADER_BYTES + CORE_APP_RUNTIME_BODY_BYTES)
 #define CORE_APP_RUNTIME_FLAG_WALL_ADDED 1u
 #define CORE_APP_RUNTIME_FLAG_WALL_REMOVED 2u
@@ -58,7 +58,11 @@
 #define CORE_APP_RUNTIME_FLAG_VEHICLE_OCCUPIED 16u
 #define CORE_APP_RUNTIME_FLAG_VEHICLE_SLEEPING 32u
 #define CORE_APP_RUNTIME_FLAG_INTERACT_DOWN 64u
-#define CORE_APP_RUNTIME_FLAGS 127u
+#define CORE_APP_RUNTIME_FLAG_RAGDOLL_ACTIVE 128u
+#define CORE_APP_RUNTIME_FLAGS 255u
+#define CORE_APP_RUNTIME_POSE_OFFSET 124u
+#define CORE_APP_RUNTIME_BONE_OFFSET 316u
+#define CORE_APP_RUNTIME_BONE_BYTES 60u
 #define CORE_APP_AREA_FLOW_EVENT 1001u
 #define CORE_APP_FLOW_ITEM 1u
 #define CORE_APP_MAX_PENDING_AREA_ENTERS 8u
@@ -120,6 +124,7 @@ typedef struct CoreLevel {
     Skeleton chain;
     IKSystem ik;
     Ragdoll ragdoll;
+    Mat4 ragdoll_pose[CORE_APP_CHAIN_JOINTS];
     Vec3 chain_position[CORE_APP_CHAIN_JOINTS];
     Quat chain_rotation[CORE_APP_CHAIN_JOINTS];
     Vec3 chain_scale[CORE_APP_CHAIN_JOINTS];
@@ -155,6 +160,15 @@ typedef struct CoreLevel {
     bool actor_level_open;
 } CoreLevel;
 
+typedef struct CoreAppRagdollBodyState {
+    Vec3 position;
+    Vec3 velocity;
+    Quat orientation;
+    Vec3 angular_velocity;
+    u32 rest_frames;
+    u32 body_flags;
+} CoreAppRagdollBodyState;
+
 typedef struct CoreAppRuntimeState {
     Vec3 user_position;
     Vec3 user_velocity;
@@ -168,6 +182,8 @@ typedef struct CoreAppRuntimeState {
     Quat chassis_orientation;
     Vec3 chassis_angular_velocity;
     u32 chassis_rest_frames;
+    Mat4 ragdoll_pose[CORE_APP_CHAIN_JOINTS];
+    CoreAppRagdollBodyState ragdoll_bodies[CORE_APP_CHAIN_JOINTS];
 } CoreAppRuntimeState;
 
 typedef struct CoreAppLevelSource {
@@ -270,6 +286,36 @@ static bool app_get_quat(const u8 *p, Quat *out) {
     return length2 > 0.5f && length2 < 2.0f;
 }
 
+static bool app_get_quat_finite(const u8 *p, Quat *out) {
+    for (u32 i = 0u; i < 4u; ++i) {
+        u32 bits = app_get32(p + i * 4u);
+        memcpy(&out->e[i], &bits, sizeof(bits));
+        if (!isfinite(out->e[i])) return false;
+    }
+    return true;
+}
+
+static void app_put_mat4(u8 *p, const Mat4 *value) {
+    for (u32 c = 0u; c < 4u; ++c) {
+        for (u32 r = 0u; r < 4u; ++r) {
+            u32 bits;
+            memcpy(&bits, &value->e[c][r], sizeof(bits));
+            app_put32(p + c * 16u + r * 4u, bits);
+        }
+    }
+}
+
+static bool app_get_mat4(const u8 *p, Mat4 *out) {
+    for (u32 c = 0u; c < 4u; ++c) {
+        for (u32 r = 0u; r < 4u; ++r) {
+            u32 bits = app_get32(p + c * 16u + r * 4u);
+            memcpy(&out->e[c][r], &bits, sizeof(bits));
+            if (!isfinite(out->e[c][r])) return false;
+        }
+    }
+    return true;
+}
+
 static void app_runtime_encode_body(const CoreAppRuntimeState *state,
                                     u8 body[CORE_APP_RUNTIME_BODY_BYTES]) {
     memset(body, 0, CORE_APP_RUNTIME_BODY_BYTES);
@@ -285,6 +331,17 @@ static void app_runtime_encode_body(const CoreAppRuntimeState *state,
     app_put_quat(body + 92u, state->chassis_orientation);
     app_put_vec3(body + 108u, state->chassis_angular_velocity);
     app_put32(body + 120u, state->chassis_rest_frames);
+    for (u32 j = 0u; j < CORE_APP_CHAIN_JOINTS; ++j) {
+        app_put_mat4(body + CORE_APP_RUNTIME_POSE_OFFSET + j * 64u, &state->ragdoll_pose[j]);
+        const CoreAppRagdollBodyState *bone = &state->ragdoll_bodies[j];
+        u8 *at = body + CORE_APP_RUNTIME_BONE_OFFSET + j * CORE_APP_RUNTIME_BONE_BYTES;
+        app_put_vec3(at + 0u, bone->position);
+        app_put_vec3(at + 12u, bone->velocity);
+        app_put_quat(at + 24u, bone->orientation);
+        app_put_vec3(at + 40u, bone->angular_velocity);
+        app_put32(at + 52u, bone->rest_frames);
+        app_put32(at + 56u, bone->body_flags);
+    }
 }
 
 static u64 app_fnv1a64(const u8 *bytes, usize size) {
@@ -325,6 +382,23 @@ static BreakRuntimeError app_runtime_decode(const u8 *bytes, usize size,
         ((state.flags & CORE_APP_RUNTIME_FLAG_WALL_REMOVED) != 0u &&
          (state.flags & CORE_APP_RUNTIME_FLAG_WALL_ADDED) == 0u)) {
         return BREAK_RUNTIME_INVALID;
+    }
+    bool ragdoll_active = (state.flags & CORE_APP_RUNTIME_FLAG_RAGDOLL_ACTIVE) != 0u;
+    for (u32 j = 0u; j < CORE_APP_CHAIN_JOINTS; ++j) {
+        CoreAppRagdollBodyState *bone = &state.ragdoll_bodies[j];
+        const u8 *at = body + CORE_APP_RUNTIME_BONE_OFFSET + j * CORE_APP_RUNTIME_BONE_BYTES;
+        if (!app_get_mat4(body + CORE_APP_RUNTIME_POSE_OFFSET + j * 64u,
+                          &state.ragdoll_pose[j]) ||
+            !app_get_vec3(at + 0u, &bone->position) ||
+            !app_get_vec3(at + 12u, &bone->velocity) ||
+            !(ragdoll_active ? app_get_quat(at + 24u, &bone->orientation)
+                             : app_get_quat_finite(at + 24u, &bone->orientation)) ||
+            !app_get_vec3(at + 40u, &bone->angular_velocity)) {
+            return BREAK_RUNTIME_INVALID;
+        }
+        bone->rest_frames = app_get32(at + 52u);
+        bone->body_flags = app_get32(at + 56u);
+        if (bone->body_flags > 1u) return BREAK_RUNTIME_INVALID;
     }
     *out = state;
     return BREAK_RUNTIME_OK;
@@ -727,6 +801,7 @@ static BreakRuntimeError app_tick_ragdoll(CoreApp *app, u32 tick,
             ragdoll_deactivate(&level->ragdoll, level->physics);
             ok = !level->ragdoll.active;
         } else {
+            memcpy(level->ragdoll_pose, level->chain.current_pose, sizeof(level->ragdoll_pose));
             ok = ragdoll_activate(&level->ragdoll, level->physics, &level->chain, &level->ik);
         }
         result = app_trace(app,
@@ -1555,6 +1630,23 @@ static BreakRuntimeError app_capture_state(const CoreLevel *level, CoreAppRuntim
     out->chassis_orientation = chassis->orientation;
     out->chassis_angular_velocity = chassis->angular_velocity;
     out->chassis_rest_frames = chassis->rest_frames;
+    if (level->ragdoll.active) {
+        if (level->ragdoll.bone_count != CORE_APP_CHAIN_JOINTS) return BREAK_RUNTIME_FAILED;
+        out->flags |= CORE_APP_RUNTIME_FLAG_RAGDOLL_ACTIVE;
+        memcpy(out->ragdoll_pose, level->ragdoll_pose, sizeof(out->ragdoll_pose));
+        for (u32 j = 0u; j < CORE_APP_CHAIN_JOINTS; ++j) {
+            const RigidBody *bone = physics_body_resolve(level->physics,
+                                                         level->ragdoll.bones[j].body_id);
+            if (!bone) return BREAK_RUNTIME_STALE;
+            CoreAppRagdollBodyState *saved = &out->ragdoll_bodies[j];
+            saved->position = bone->position;
+            saved->velocity = bone->velocity;
+            saved->orientation = bone->orientation;
+            saved->angular_velocity = bone->angular_velocity;
+            saved->rest_frames = bone->rest_frames;
+            saved->body_flags = bone->sleeping ? 1u : 0u;
+        }
+    }
     if (break_kernel_inventory_count(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
                                    &out->items) != BREAK_KERNEL_OK) {
         return BREAK_RUNTIME_FAILED;
@@ -1736,6 +1828,28 @@ static BreakRuntimeError app_apply_state(CoreLevel *level, const CoreAppRuntimeS
     chassis->sleeping = (state->flags & CORE_APP_RUNTIME_FLAG_VEHICLE_SLEEPING) != 0u;
     level->vehicle.occupied = (state->flags & CORE_APP_RUNTIME_FLAG_VEHICLE_OCCUPIED) != 0u;
     level->interact_was_down = (state->flags & CORE_APP_RUNTIME_FLAG_INTERACT_DOWN) != 0u;
+    if ((state->flags & CORE_APP_RUNTIME_FLAG_RAGDOLL_ACTIVE) != 0u) {
+        if (level->ragdoll.active) return BREAK_RUNTIME_REJECTED;
+        memcpy(level->chain.current_pose, state->ragdoll_pose, sizeof(state->ragdoll_pose));
+        memcpy(level->ragdoll_pose, state->ragdoll_pose, sizeof(level->ragdoll_pose));
+        if (!ragdoll_activate(&level->ragdoll, level->physics, &level->chain, &level->ik) ||
+            level->ragdoll.bone_count != CORE_APP_CHAIN_JOINTS) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        for (u32 j = 0u; j < CORE_APP_CHAIN_JOINTS; ++j) {
+            RigidBody *bone = physics_body_resolve(level->physics,
+                                                   level->ragdoll.bones[j].body_id);
+            if (!bone) return BREAK_RUNTIME_STALE;
+            const CoreAppRagdollBodyState *saved = &state->ragdoll_bodies[j];
+            bone->position = saved->position;
+            bone->step_start_position = saved->position;
+            bone->velocity = saved->velocity;
+            bone->orientation = saved->orientation;
+            bone->angular_velocity = saved->angular_velocity;
+            bone->rest_frames = saved->rest_frames;
+            bone->sleeping = saved->body_flags != 0u;
+        }
+    }
     level->chaser_character = character_create(state->chaser_position, 0.4f, 1.0f);
     level->chaser_character.velocity = state->chaser_velocity;
     level->chaser_position = state->chaser_position;
