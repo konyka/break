@@ -350,7 +350,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          ctest --test-dir build-asan -LE "graphics|fuzz" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          ctest --test-dir build-asan -LE "graphics|fuzz|gpu" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
