@@ -52,6 +52,9 @@ typedef struct CoreAppAudio {
     u64 device_stops;
     u64 device_evictions;
     u64 device_failures;
+    /* Device calls made on, and off, the audio owner thread. */
+    u64 device_calls_on_owner;
+    u64 device_calls_off_owner;
     char device_backend[32];
     char device_name[128];
     char sound_path[1024];
@@ -67,6 +70,9 @@ typedef struct CoreAppAudio {
     bool producing;
     bool queue_closed;
     bool joined;
+    /* Device mode only: the audio owner thread state, private to
+     * core_app_audio.c. NULL when the caller drains the queue itself. */
+    struct CoreAppAudioOwner *owner;
 } CoreAppAudio;
 
 BreakRuntimeError core_app_audio_start(CoreAppAudio *audio, FILE *trace);
@@ -89,6 +95,11 @@ BreakRuntimeError core_app_audio_start_device_backend(CoreAppAudio *audio, FILE 
  * failure the system is destroyed. */
 BreakRuntimeError core_app_audio_start_system(CoreAppAudio *audio, FILE *trace,
                                               AudioSystem *system, const char *asset_root);
+/* start_system, then a dedicated owner thread makes every later
+ * AudioSystem call; the caller only enqueues. Same failure contract. */
+BreakRuntimeError core_app_audio_start_system_owned(CoreAppAudio *audio, FILE *trace,
+                                                    AudioSystem *system,
+                                                    const char *asset_root);
 BreakRuntimeError core_app_audio_enqueue(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
                                          u64 generation);
 /* enqueue with a world position: the listener position for LISTENER, the
@@ -98,10 +109,16 @@ BreakRuntimeError core_app_audio_enqueue_at(CoreAppAudio *audio, CoreAppAudioCom
 BreakRuntimeError core_app_audio_drain_record(CoreAppAudio *audio, u32 budget);
 BreakRuntimeError core_app_audio_drain_null(CoreAppAudio *audio, u32 budget);
 /* Device mode: each command becomes the matching AudioSystem call. INVALID
- * when no device system is attached. */
+ * when no device system is attached. With an owner thread the drain only
+ * wakes the owner and returns its first error; it never waits for the device. */
 BreakRuntimeError core_app_audio_drain_device(CoreAppAudio *audio, u32 budget);
+/* Waits until the owner has consumed every queued command. Without an owner
+ * nothing drains in the background: TIMEOUT while commands are queued. */
+BreakRuntimeError core_app_audio_flush(CoreAppAudio *audio);
 BreakRuntimeError core_app_audio_stop_admission(CoreAppAudio *audio);
 BreakRuntimeError core_app_audio_stop_producers(CoreAppAudio *audio);
 BreakRuntimeError core_app_audio_close_queues(CoreAppAudio *audio);
+/* With an owner thread: stops it after it drained the queue and closed the
+ * device, and returns the owner's first error. */
 BreakRuntimeError core_app_audio_join(CoreAppAudio *audio);
 BreakRuntimeError core_app_audio_destroy(CoreAppAudio *audio);

@@ -540,7 +540,7 @@ source 槽带 generation。只有 `PLAY_3D` 认领槽位；`POSITION` 和 `STOP`
 
 ### 仍未做
 
-独立的音频 owner 线程、256 条满队列的进程级压力用例。设备的打开、探测播放与关闭已在 Task 9 slice 2 补上，命令队列驱动设备已在 slice 3 补上，关卡播放事件已在 slice 4 补上。record/null 路径的证据是单元与真实进程 trace，不是听感验证。
+256 条满队列的进程级压力用例。设备的打开、探测播放与关闭已在 Task 9 slice 2 补上，命令队列驱动设备已在 slice 3 补上，关卡播放事件已在 slice 4 补上，device 模式的独立音频 owner 线程已在 slice 5 补上。record/null 路径的证据是单元与真实进程 trace，不是听感验证。
 
 ## Core App Task 10：可选认证网络通道的边界层与客户端权威防火墙（2026-11-14）
 
@@ -666,6 +666,30 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 本轮修复后：`test_core_app_mesh` 3/3、GPU 两用例通过、`test_core_app_gpu`/`naming`/`target` 契约 5/5；全量含 GPU 405/405。
 
+## Core App Task 9（slice 5）：音频 owner 线程（2026-11-14）
+
+### 交付
+
+- `--audio=device` 接上真实设备后，`core_app_audio_start_device_backend` 启动一个独立的音频 owner 线程。启动之后的每一次 `AudioSystem` 调用（listener、play_3d、位置、停止、探测等待与 `audio_system_destroy`）都在这个线程上执行。
+- 线程、mutex 和两个条件变量放在 `core_app_audio.c` 私有的堆块 `CoreAppAudioOwner` 里，`CoreAppAudio` 只多一个不透明的 `owner` 指针，头文件不引入平台线程头。线程原语来自 `engine/src/core/platform_thread.h`。
+- 生产侧（应用主线程）：`core_app_audio_enqueue_at` 在锁内做原有的准入、溢出和槽位分配，然后唤醒 owner。`core_app_audio_drain_device` 在 owned 模式下只唤醒 owner 并返回 owner 的第一个错误，帧不等待设备。
+- owner 循环：锁内弹出一条命令，做代际检查和 STOP 的槽位回收；锁外调用设备并写 trace 行。只有收到停止请求且队列为空才退出，退出时执行原有的关闭步骤，并写 `result=stopped` 行。出错后剩余命令只出队，不再调用设备。
+- `core_app_audio_join` 设置停止标志、唤醒并 join 线程；`core_app_audio_destroy` 返回 owner 的关闭结果并释放堆块。`core_app.c` 未改：协调器的停止顺序（停准入、停生产、关队列、drain、join、destroy）已满足要求。
+- 新增 `core_app_audio_flush`（等待队列清空且没有正在处理的命令；无 owner 时有积压返回 TIMEOUT）和 `core_app_audio_start_system_owned`。`core_app_audio_start_system` 保持同步，原有 FAKE 单测不变。
+- 证据计数 `device_calls_on_owner`/`device_calls_off_owner`；`result=stopped` 行末尾追加 ` owner_thread=0|1`（关闭步骤是否在 owner 线程上执行）。
+
+### 边界
+
+- record 与 null 模式仍由应用主线程同步 drain，record trace 内容与顺序不变。
+- device 模式下 trace 行由 owner 线程写入，与主线程写的帧行之间的交错顺序不再固定；进程测试只断言计数与 `owner_thread=1`，不断言行序。
+- 声源仍固定为 `tone.wav`，没有按事件选择资源，也没有听感验证。
+
+### 验证
+
+- RED：`test_core_app_runtime` 新增 5 个用例在实现前编译失败（缺 `core_app_audio_start_system_owned`、`core_app_audio_flush`、`owner` 与计数字段）；`test_core_app_audio_device.cmake` 新增 `owner_thread=1` 断言。
+- GREEN：`test_core_app_runtime` 44/44，连跑 20 次无失败；真实设备（PulseAudio）trace：`listener_updates=58 plays=1 moves=10 stops=1 evictions=0 owner_thread=1`；normal 树全量 400/400。
+- TSan 树 `test_core_app_runtime` 连跑 10 次零报告，`core_app|audio` 中只有本机 GPU 用例失败（Mesa/VVL，与本改动无关）；ASan 树 `core_app|audio` 同样只有 3 个 GPU 用例失败。
+
 ## Core App Task 9（slice 4）：关卡声音事件（2026-11-14）
 
 ### 变化
@@ -682,7 +706,7 @@ ASan/TSan 在 `test_audio` 的 `play_3d_source_reports_failure_as_zero` 中报�
 
 ### 边界
 
-`AudioSystem` 仍由应用主线程持有，没有独立 owner 线程。声源固定使用 `tone.wav`，没有按事件选择资源，也没有听感验证。
+`AudioSystem` 仍由应用主线程持有，没有独立 owner 线程（slice 5 起 device 模式改由独立 owner 线程持有）。声源固定使用 `tone.wav`，没有按事件选择资源，也没有听感验证。
 
 ### 验证
 
@@ -712,7 +736,7 @@ ASan/TSan 在 `test_audio` 的 `play_3d_source_reports_failure_as_zero` 中报�
 
 ### 边界
 
-slice 3 时关卡只产生 LISTENER 与卸载时的 STOP，真实进程里 `plays=0`；slice 4（上一节）起 Area enter 产生 PLAY_3D/POSITION。PLAY_3D/POSITION/STOP/挤出路径的设备证据来自 FAKE 系统单测。`AudioSystem` 仍由应用主线程持有，没有独立 owner 线程。
+slice 3 时关卡只产生 LISTENER 与卸载时的 STOP，真实进程里 `plays=0`；slice 4（上一节）起 Area enter 产生 PLAY_3D/POSITION。PLAY_3D/POSITION/STOP/挤出路径的设备证据来自 FAKE 系统单测。`AudioSystem` 仍由应用主线程持有，没有独立 owner 线程（slice 5 起 device 模式改由独立 owner 线程持有）。
 
 ### 验证
 
@@ -743,7 +767,7 @@ slice 3 时关卡只产生 LISTENER 与卸载时的 STOP，真实进程里 `play
 
 ### 边界
 
-- `AudioSystem` 由应用主线程持有，不是独立 owner 线程；miniaudio 自己的设备线程只运行它的混音回调。
+- `AudioSystem` 由应用主线程持有，不是独立 owner 线程；miniaudio 自己的设备线程只运行它的混音回调。slice 5 起 device 模式改由独立 owner 线程持有。
 - slice 2 时命令队列只更新槽位与 trace；slice 3（下一节）起 drain 会调用 `AudioSystem`。关卡目前仍不产生 PLAY_3D。
 - 不包含听感验证。
 

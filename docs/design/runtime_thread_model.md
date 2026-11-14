@@ -296,7 +296,7 @@ Slice A 的 target 边界与 Slice B/C/D 的首批基元已交付（2026-10-22/2
 | Network RX + TX | Network/Snowflake driver（单 owner） | 合并为一个 driver owner；callback 只 validate/copy/enqueue。RX/TX 拆成双线程属于 Stage 2 后续性能子项目，拆分前必须保持现有 bounded queue 与 close watermark 语义 |
 | IO | IO owner workers | 已覆盖；completion 由 Main owner tick |
 | Worker | Task workers | 已覆盖；只读 retained snapshot，写自己拥有的 job result |
-| Audio | 未单设 owner | 当前 `engine/src/audio/` 基于 miniaudio，设备回调线程在库内部；需求中的独立 Audio command queue 域属于后续音频子项目，立项前不得宣称独立音频线程域存在 |
+| Audio | core_app 音频 owner 线程（device 模式） | `engine/src/audio/` 基于 miniaudio，混音回调线程在库内部。2026-11-14 起 `core_app` 的 `--audio=device` 有独立 owner 线程：主线程只把命令放进有界队列，owner 线程做代际检查并执行全部 `AudioSystem` 调用，退出前关闭设备（`engine/apps/core_app/core_app_audio.c`）。record/null 模式仍在主线程同步 drain；其他应用没有音频 owner 线程 |
 | Physics | 未单设 owner | 当前 `engine/src/physics/` 由 Main/Application 步进；需求的 Physics command/result queue 独立线程域属于后续物理子项目，需先定义 world ownership 与固定步长契约 |
 | Profiler | Profiler per-thread recording | 已覆盖；frame ring 发布/导出有明确 owner |
 

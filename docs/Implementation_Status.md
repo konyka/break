@@ -1,3 +1,9 @@
+## Core App Task 9 slice 5：音频 owner 线程（2026-11-14）
+
+- **交付**：`--audio=device` 接上真实设备后由独立 owner 线程执行全部 `AudioSystem` 调用；主线程只入队，帧 drain 不等待设备。新增 `core_app_audio_flush`、`core_app_audio_start_system_owned`，`result=stopped` 行末尾追加 `owner_thread=0|1`。设计与证据见 `docs/design/core_app_integration.md` 的 slice 5 节。
+- **测试**：`test_core_app_runtime` 新增 5 个用例（先 RED 后 GREEN，44/44）；`test_core_app_audio_device` 要求 `owner_thread=1`，真实 PulseAudio 设备通过；normal 树全量 400/400；TSan 连跑 10 次零报告。
+- **未做**：record/null 模式仍在主线程 drain；按事件选择声音资源与听感验证。
+
 ## 中性命名 Task 4：当前文档去掉旧领域词（2026-11-14）
 
 - **交付**：`docs/`（不含 `docs/ue5.8.3`）、`README.md`、根 `CMakeLists.txt` 不再出现旧领域词、旧角色词和旧引擎前缀的本仓库名称（禁用词清单见 `engine/tests/test_repo_naming_contract.cmake`）；6 个文件名含旧词的文档已改名，链接同步。外部项目原名（CryENGINE 模块、GEFS、T3DGameR1 等）只作为引用保留，由契约的 docs 豁免表列出。

@@ -97,6 +97,10 @@ set(listener_updates "${CMAKE_MATCH_4}")
 set(device_plays "${CMAKE_MATCH_5}")
 set(device_moves "${CMAKE_MATCH_6}")
 set(device_stops "${CMAKE_MATCH_7}")
+# Every device call after start-up must come from the audio owner thread.
+if(NOT trace_text MATCHES "event=audio mode=device result=stopped [^\n]* owner_thread=1\n")
+    message(FATAL_ERROR "the device was not driven by the audio owner thread\n${trace_text}")
+endif()
 # The listener follows the user once per fixed tick, so a 60-tick run must
 # have driven the device listener on (almost) every tick, not just once.
 if(listener_updates LESS 40)
