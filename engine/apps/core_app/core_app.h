@@ -3,6 +3,10 @@
 #include <core/types.h>
 #include <runtime/runtime_types.h>
 
+#include <stdio.h>
+
+#include "core_app_network.h"
+
 typedef struct CoreAppConfig CoreAppConfig;
 typedef struct CoreApp CoreApp;
 
@@ -19,6 +23,25 @@ typedef enum CoreAppAudioMode {
     CORE_APP_AUDIO_DEVICE
 } CoreAppAudioMode;
 
+/* Optional network channel, borrowed for the whole run. The runtime library
+ * never links a transport: the executable supplies these callbacks only in
+ * a build with the authenticated transport, so an offline core_app carries
+ * no network code at all. Every callback runs on the CoreAppThread. tick
+ * receives read-only POD copies and returns nothing, so a network failure
+ * can only change network diagnostics, never the simulation. The four stop
+ * callbacks follow the runtime coordinator phases and must be idempotent
+ * because rollback may call them after a partial start. */
+typedef struct CoreAppNetworkHooks {
+    void *user;
+    BreakRuntimeError (*start)(void *user, FILE *trace);
+    void (*tick)(void *user, u32 tick, u64 level_generation,
+                 const CoreAppSnapshotEntity *entities, u32 entity_count);
+    BreakRuntimeError (*stop_admission)(void *user);
+    BreakRuntimeError (*stop_producers)(void *user);
+    BreakRuntimeError (*drain)(void *user);
+    BreakRuntimeError (*destroy)(void *user);
+} CoreAppNetworkHooks;
+
 struct CoreAppConfig {
     const char *asset_root;
     const char *scenario_path;
@@ -30,6 +53,7 @@ struct CoreAppConfig {
     bool fixed_step;
     bool require_device;
     bool network;
+    const CoreAppNetworkHooks *network_hooks;
     u32 max_frames;
 };
 

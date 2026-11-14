@@ -5,6 +5,9 @@ foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT
         message(FATAL_ERROR "${var} is required for the nested core_app contract")
     endif()
 endforeach()
+if(NOT DEFINED NETWORK_TRANSPORT OR "${NETWORK_TRANSPORT}" STREQUAL "")
+    set(NETWORK_TRANSPORT OFF)
+endif()
 if(NM_CAPABLE AND (NOT DEFINED NM OR "${NM}" STREQUAL ""))
     message(FATAL_ERROR "NM is required when NM_CAPABLE=TRUE")
 endif()
@@ -143,6 +146,7 @@ function(run_target_contract name engine_cmake network_enabled contract_root)
             "-DENGINE_CMAKE=${engine_cmake}"
             "-DCORE_APP=${CORE_APP}"
             "-DNETWORK_ENABLED=${network_enabled}"
+            "-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}"
             "-DCONTRACT_BUILD_ROOT=${contract_root}"
             "-DNM=${NM}"
             "-DNM_CAPABLE=${NM_CAPABLE}"
@@ -163,6 +167,7 @@ function(run_nm_negative name engine_cmake network_enabled contract_root)
             "-DENGINE_CMAKE=${engine_cmake}"
             "-DCORE_APP=${CORE_APP}"
             "-DNETWORK_ENABLED=${network_enabled}"
+            "-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}"
             "-DCONTRACT_BUILD_ROOT=${contract_root}"
             "-DNM=${NM}"
             "-DTARGET_CONTRACT=${TARGET_CONTRACT}"

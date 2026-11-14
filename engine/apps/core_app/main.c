@@ -1,5 +1,11 @@
 #include "core_app.h"
 
+#if CORE_APP_NET_TRANSPORT
+#include "core_app_net_transport.h"
+
+#include <signal.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +23,13 @@ static void print_help(void) {
          "  --frames N\n"
          "  --require-device\n"
          "  --network\n"
+#if CORE_APP_NET_TRANSPORT
+         "  --bind HOST:PORT\n"
+         "  --tls-cert PATH\n"
+         "  --tls-key PATH\n"
+         "  --psk-env NAME\n"
+         "  --port-file PATH\n"
+#endif
          "  --help");
 }
 
@@ -80,6 +93,12 @@ int main(int argc, char **argv) {
     };
     int exit_code = 2;
     BreakRuntimeError result;
+#if CORE_APP_NET_TRANSPORT
+    CoreAppNetTransportConfig net_config = {0};
+    CoreAppNetTransport *transport = NULL;
+    CoreAppNetworkHooks net_hooks;
+    bool net_option_seen = false;
+#endif
 
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         print_help();
@@ -113,6 +132,28 @@ int main(int argc, char **argv) {
         } else if ((matched = take_value(argc, argv, &i, "--frames", &value)) != 0) {
             if (matched < 0 || !parse_frames(value, &config.max_frames))
                 return cli_error("--frames requires a positive 32-bit integer");
+#if CORE_APP_NET_TRANSPORT
+        } else if ((matched = take_value(argc, argv, &i, "--bind", &value)) != 0) {
+            if (matched < 0) return cli_error("--bind requires HOST:PORT");
+            net_config.bind = value;
+            net_option_seen = true;
+        } else if ((matched = take_value(argc, argv, &i, "--tls-cert", &value)) != 0) {
+            if (matched < 0) return cli_error("--tls-cert requires a nonempty path");
+            net_config.tls_cert = value;
+            net_option_seen = true;
+        } else if ((matched = take_value(argc, argv, &i, "--tls-key", &value)) != 0) {
+            if (matched < 0) return cli_error("--tls-key requires a nonempty path");
+            net_config.tls_key = value;
+            net_option_seen = true;
+        } else if ((matched = take_value(argc, argv, &i, "--psk-env", &value)) != 0) {
+            if (matched < 0) return cli_error("--psk-env requires a variable name");
+            net_config.psk_env = value;
+            net_option_seen = true;
+        } else if ((matched = take_value(argc, argv, &i, "--port-file", &value)) != 0) {
+            if (matched < 0) return cli_error("--port-file requires a nonempty path");
+            net_config.port_file = value;
+            net_option_seen = true;
+#endif
         } else if (strcmp(argv[i], "--fixed-step") == 0) {
             config.fixed_step = true;
         } else if (strcmp(argv[i], "--require-device") == 0) {
@@ -128,7 +169,34 @@ int main(int argc, char **argv) {
         }
     }
 
+#if CORE_APP_NET_TRANSPORT
+    if (net_option_seen && !config.network)
+        return cli_error("network options require --network");
+    if (config.network) {
+        char host[64];
+        u16 port = 0u;
+        if (!net_config.bind || !net_config.tls_cert || !net_config.tls_key ||
+            !net_config.psk_env || !net_config.port_file) {
+            return cli_error(
+                "--network requires --bind, --tls-cert, --tls-key, --psk-env and --port-file");
+        }
+        if (!core_app_net_parse_bind(net_config.bind, host, sizeof(host), &port))
+            return cli_error("invalid --bind value");
+        /* A write to a peer that already closed must fail with EPIPE and be
+         * counted by the session layer instead of killing the process. */
+#ifdef SIGPIPE
+        signal(SIGPIPE, SIG_IGN);
+#endif
+        transport = core_app_net_transport_create(&net_config);
+        if (!transport) return cli_error("invalid network configuration");
+        core_app_net_transport_hooks(transport, &net_hooks);
+        config.network_hooks = &net_hooks;
+    }
+#endif
     result = core_app_run(&config, &exit_code);
+#if CORE_APP_NET_TRANSPORT
+    core_app_net_transport_free(transport);
+#endif
     if (result != BREAK_RUNTIME_OK)
         fprintf(stderr, "core_app: runtime returned %s\n", break_runtime_error_name(result));
     return exit_code;

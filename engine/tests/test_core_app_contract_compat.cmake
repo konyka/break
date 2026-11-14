@@ -8,6 +8,9 @@ endforeach()
 if(NOT DEFINED NESTED_CTEST_CONFIG)
     message(FATAL_ERROR "NESTED_CTEST_CONFIG is required")
 endif()
+if(NOT DEFINED NETWORK_TRANSPORT OR "${NETWORK_TRANSPORT}" STREQUAL "")
+    set(NETWORK_TRANSPORT OFF)
+endif()
 set(nested_ctest_config_args)
 if(NOT "${NESTED_CTEST_CONFIG}" STREQUAL "")
     list(APPEND nested_ctest_config_args -C "${NESTED_CTEST_CONFIG}")
@@ -618,7 +621,7 @@ foreach(test_name IN ITEMS test_core_app_nm_missing test_core_app_nm_unsupported
     file(APPEND "${nm_ctest_source}"
         "  \"-DENGINE_CMAKE=${archive_engine}/CMakeLists.txt\" \"-DCORE_APP=${CORE_APP}\"\n")
     file(APPEND "${nm_ctest_source}"
-        "  \"-DNETWORK_ENABLED=${NETWORK_ENABLED}\" \"-DCONTRACT_BUILD_ROOT=${WORK}/${test_name}\"\n")
+        "  \"-DNETWORK_ENABLED=${NETWORK_ENABLED}\" \"-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}\" \"-DCONTRACT_BUILD_ROOT=${WORK}/${test_name}\"\n")
     file(APPEND "${nm_ctest_source}"
         "  ${nm_arguments} -P \"${target_contract}\")\n")
 endforeach()
@@ -639,7 +642,7 @@ foreach(test_name IN ITEMS test_core_app_nested_error test_core_app_cli_error)
     file(APPEND "${nm_ctest_source}"
         "  \"-DENGINE_CMAKE=${case_engine}\" \"-DCORE_APP=${case_executable}\"\n")
     file(APPEND "${nm_ctest_source}"
-        "  \"-DNETWORK_ENABLED=${NETWORK_ENABLED}\" \"-DCONTRACT_BUILD_ROOT=${WORK}/${test_name}\"\n")
+        "  \"-DNETWORK_ENABLED=${NETWORK_ENABLED}\" \"-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}\" \"-DCONTRACT_BUILD_ROOT=${WORK}/${test_name}\"\n")
     file(APPEND "${nm_ctest_source}"
         "  \"-DNM=\" \"-DNM_CAPABLE=FALSE\" ${nested_ctest_defs} -P \"${target_contract}\")\n")
 endforeach()

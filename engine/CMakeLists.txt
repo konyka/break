@@ -1665,6 +1665,23 @@ if(CORE_APP_ENABLE_NETWORK)
 else()
     target_compile_definitions(core_app PRIVATE CORE_APP_ENABLE_NETWORK=0)
 endif()
+# The real authenticated transport (TLS + AUTH-v2 over break_net) is compiled
+# only when both switches are on. NETWORK=ON alone keeps --network accepted by
+# the CLI but unimplemented at runtime; the offline build never links break_net.
+if(CORE_APP_ENABLE_NETWORK AND BREAK_ENABLE_SNOWFLAKE)
+    if(NOT BREAK_ENABLE_CRYPTO)
+        message(FATAL_ERROR
+            "CORE_APP_ENABLE_NETWORK with BREAK_ENABLE_SNOWFLAKE requires "
+            "BREAK_ENABLE_CRYPTO=ON: the core_app transport only speaks AUTH-v2")
+    endif()
+    target_sources(core_app PRIVATE apps/core_app/core_app_net_transport.c)
+    target_link_libraries(core_app PRIVATE break_net)
+    target_compile_definitions(core_app PRIVATE CORE_APP_NET_TRANSPORT=1)
+    set(_core_app_net_transport ON)
+else()
+    target_compile_definitions(core_app PRIVATE CORE_APP_NET_TRANSPORT=0)
+    set(_core_app_net_transport OFF)
+endif()
 
 # Formal optional Stage 4 scene editor core library: the document model
 # (one owned ECS World, bounded entity name map, dirty flag), the bounded
@@ -4883,6 +4900,7 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DCORE_APP=$<TARGET_FILE:core_app>
             -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DNETWORK_TRANSPORT=${_core_app_net_transport}
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_main
             -DNM=${CMAKE_NM}
             -DNM_CAPABLE=${_core_app_nm_capable}
@@ -4893,6 +4911,7 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DCORE_APP=$<TARGET_FILE:core_app>
             -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DNETWORK_TRANSPORT=${_core_app_net_transport}
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_missing
             -DNM= -DNM_CAPABLE=FALSE
             ${_core_app_nested_toolchain_defs}
@@ -4902,6 +4921,7 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DCORE_APP=$<TARGET_FILE:core_app>
             -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DNETWORK_TRANSPORT=${_core_app_net_transport}
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_unsupported
             -DNM=${CMAKE_COMMAND} -DNM_CAPABLE=TRUE
             ${_core_app_nested_toolchain_defs}
@@ -4914,6 +4934,7 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DCORE_APP=$<TARGET_FILE:core_app>
             -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DNETWORK_TRANSPORT=${_core_app_net_transport}
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nested
             -DNM=${CMAKE_NM}
             -DNM_CAPABLE=${_core_app_nm_capable}
@@ -4930,6 +4951,7 @@ endif()
                 -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
                 -DCORE_APP=$<TARGET_FILE:core_app>
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DNETWORK_TRANSPORT=${_core_app_net_transport}
                 -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_symbol_missing
                 -DNM=${CMAKE_NM}
                 -DTARGET_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake
@@ -4941,6 +4963,7 @@ endif()
                 -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
                 -DCORE_APP=$<TARGET_FILE:core_app>
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DNETWORK_TRANSPORT=${_core_app_net_transport}
                 -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_symbol_missing_unsupported
                 -DNM=${CMAKE_COMMAND}
                 -DTARGET_CONTRACT=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_target_contract.cmake
@@ -5058,6 +5081,7 @@ endif()
                 -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
                 -DCORE_APP=$<TARGET_FILE:core_app>
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DNETWORK_TRANSPORT=${_core_app_net_transport}
                 -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_compat
                 -DNM=${CMAKE_NM}
@@ -5077,6 +5101,7 @@ endif()
                 -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
                 -DCORE_APP=$<TARGET_FILE:core_app>
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DNETWORK_TRANSPORT=${_core_app_net_transport}
                 -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_ctest_config_contract
                 -DNM=${CMAKE_NM}
@@ -5249,6 +5274,42 @@ endif()
     add_test(NAME test_core_app_network COMMAND test_core_app_network)
     set_tests_properties(test_core_app_network PROPERTIES
         LABELS "headless;core_app;network" TIMEOUT 60)
+
+    # Offline determinism and (without the transport) a symbol scan proving
+    # the offline executable links no network code.
+    add_test(NAME test_core_app_network_offline
+        COMMAND ${CMAKE_COMMAND}
+            -DMODE=offline
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+            -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
+            -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/core_app_network_offline
+            -DNETWORK_TRANSPORT=${_core_app_net_transport}
+            -DNM=${CMAKE_NM}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
+    set_tests_properties(test_core_app_network_offline PROPERTIES
+        LABELS "headless;core_app;network" TIMEOUT 300 SKIP_RETURN_CODE 77)
+    if(_core_app_net_transport AND NOT WIN32)
+        # Real TLS + AUTH-v2 loopback against the real core_app process.
+        add_executable(test_core_app_net_client tests/test_core_app_net_client.c)
+        set_property(TARGET test_core_app_net_client PROPERTY C_STANDARD 11)
+        target_include_directories(test_core_app_net_client PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/apps/core_app ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_core_app_net_client PRIVATE core_app_network break_net)
+        add_test(NAME test_core_app_network_loopback
+            COMMAND ${CMAKE_COMMAND}
+                -DMODE=loopback
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNET_CLIENT=$<TARGET_FILE:test_core_app_net_client>
+                -DASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+                -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_network_loopback.scenario
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/core_app_network_loopback
+                -DTLS_CERT=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem
+                -DTLS_KEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
+        set_tests_properties(test_core_app_network_loopback PROPERTIES
+            LABELS "network;snowflake;core_app" TIMEOUT 180)
+    endif()
 
     # Real-device capture lanes. These create a window and a device, so they
     # are labelled gpu and report UNAVAILABLE (not a pass) on a host without

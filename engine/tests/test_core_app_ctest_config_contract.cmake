@@ -8,6 +8,9 @@ endforeach()
 if(NOT DEFINED NESTED_CTEST_CONFIG)
     message(FATAL_ERROR "NESTED_CTEST_CONFIG must be defined; an empty single-config value is valid")
 endif()
+if(NOT DEFINED NETWORK_TRANSPORT OR "${NETWORK_TRANSPORT}" STREQUAL "")
+    set(NETWORK_TRANSPORT OFF)
+endif()
 
 set(nested_toolchain_defs
     "-DNESTED_ENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND}"
@@ -65,6 +68,7 @@ function(run_compat name default_generator nested_generator nested_config work)
             "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
             "-DCORE_APP=${CORE_APP}"
             "-DNETWORK_ENABLED=${NETWORK_ENABLED}"
+            "-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}"
             "-DCTEST_EXECUTABLE=${CTEST_EXECUTABLE}"
             "-DWORK=${work}"
             "-DNM=${NM}"

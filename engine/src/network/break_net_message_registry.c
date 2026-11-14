@@ -49,7 +49,8 @@ bool break_net_message_definition_supports_version(
 
 const BreakNetMessageRegistry *break_net_message_registry_default(void)
 {
-    /* Editor wire protocol (Stage 4 scene editor Phase 4): ids 4..21 occupy
+    /* The last entry is the core_app snapshot (0x4001), which is only
+     * accepted after AUTH. Editor wire protocol (Stage 4 scene editor Phase 4): ids 4..21 occupy
      * the free id space after AUTH/PING/CHALLENGE. The envelope codec only
      * consults this default registry, so the editor messages MUST be
      * registered here (docs/design/session_protocol.md:117 — the documented
@@ -97,12 +98,15 @@ const BreakNetMessageRegistry *break_net_message_registry_default(void)
             BREAK_EDITOR_DEF(18u), /* HISTORY */
             BREAK_EDITOR_DEF(19u), /* UNDO_OWN */
             BREAK_EDITOR_DEF(20u), /* REDO_OWN */
-            BREAK_EDITOR_DEF(21u)  /* RENDER */
+            BREAK_EDITOR_DEF(21u), /* RENDER */
+            {BREAK_NET_MESSAGE_ID_CORE_SNAPSHOT, 1u, 1u,
+             BREAK_NET_CORE_SNAPSHOT_MAX_PAYLOAD,
+             BREAK_NET_MESSAGE_PHASE_AUTHENTICATED, BREAK_NET_DUPLICATE_IDEMPOTENT}
         },
 #ifdef BREAK_ENABLE_CRYPTO
-        21u
+        22u
 #else
-        20u
+        21u
 #endif
     };
 #undef BREAK_EDITOR_DEF

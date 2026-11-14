@@ -13,6 +13,11 @@ extern "C" {
 #define BREAK_NET_MESSAGE_ID_AUTH 1u
 #define BREAK_NET_MESSAGE_ID_PING 2u
 #define BREAK_NET_MESSAGE_ID_CHALLENGE 3u
+/* core_app read-only snapshot (engine/apps/core_app/core_app_network.h).
+ * AUTHENTICATED phase only; the payload limit equals
+ * CORE_APP_SNAPSHOT_MAX_BYTES (32-byte header + 64 entities x 24 bytes). */
+#define BREAK_NET_MESSAGE_ID_CORE_SNAPSHOT 0x4001u
+#define BREAK_NET_CORE_SNAPSHOT_MAX_PAYLOAD (32u + 64u * 24u)
 #define BREAK_NET_MESSAGE_ID_MAX 65535u
 #define BREAK_NET_REGISTRY_MAX_MESSAGES 64u
 #define BREAK_NET_MAX_PAYLOAD_SIZE (64u * 1024u)

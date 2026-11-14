@@ -1,0 +1,410 @@
+/* Loopback peer for test_core_app_network_loopback.
+ *
+ * Runs next to a real core_app started with --network. Every check here is
+ * about the wire: TLS, AUTH-v2, which connections receive snapshots, and
+ * which hostile inputs close a connection. Whether hostile input changed
+ * the simulation is checked by the CMake driver, which compares the
+ * networked trace with an offline run of the same scenario.
+ *
+ * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
+ * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). */
+#define _POSIX_C_SOURCE 200809L
+#include "core_app_network.h"
+
+#include <crypto/break_crypto.h>
+#include <network/break_net_envelope.h>
+#include <snow/network_buffer.h>
+#include <snow/openssl.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
+
+#define NET_CLIENT_FRAME_CAPACITY (BREAK_NET_ENVELOPE_HEADER_SIZE + 4096u)
+
+static const u8 k_key_id[8] = {'c', 'o', 'r', 'e', 'a', 'p', 'p', '1'};
+static u8 g_psk[32];
+static u16 g_port;
+static FILE *g_report;
+static int g_failures;
+
+typedef struct NetClient {
+    int fd;
+    SnowSslCtx *ctx;
+    SnowSsl *ssl;
+    SnowNetworkBuffer *plain;
+    u32 next_seq;
+    u8 server_nonce[16];
+} NetClient;
+
+static u64 now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000u + (u64)ts.tv_nsec / 1000000u;
+}
+
+static void check(bool ok, const char *what) {
+    fprintf(g_report, "check %s %s\n", ok ? "pass" : "FAIL", what);
+    fflush(g_report);
+    if (!ok) g_failures++;
+}
+
+static int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool read_psk(void) {
+    const char *text = getenv("CORE_APP_TEST_PSK");
+    if (!text || strlen(text) != 64u) return false;
+    for (u32 i = 0u; i < 32u; ++i) {
+        int hi = hex_digit(text[2u * i]);
+        int lo = hex_digit(text[2u * i + 1u]);
+        if (hi < 0 || lo < 0) return false;
+        g_psk[i] = (u8)((hi << 4) | lo);
+    }
+    return true;
+}
+
+static bool wait_port(const char *path) {
+    u64 deadline = now_ms() + 30000u;
+    while (now_ms() < deadline) {
+        FILE *file = fopen(path, "rb");
+        if (file) {
+            unsigned value = 0u;
+            int got = fscanf(file, "%u", &value);
+            fclose(file);
+            if (got == 1 && value > 0u && value <= 65535u) {
+                g_port = (u16)value;
+                return true;
+            }
+        }
+        struct timespec pause = {0, 20000000L};
+        nanosleep(&pause, NULL);
+    }
+    return false;
+}
+
+static bool client_flush(NetClient *c, SnowNetworkBuffer *out) {
+    size_t size = SnowNetworkBufferLength(out);
+    size_t copied = 0u, off = 0u;
+    if (size == 0u) return true;
+    u8 *flat = (u8 *)malloc(size);
+    if (!flat || SnowNetworkBufferCopyTo(out, flat, size, &copied) != SNOW_OK ||
+        copied != size) {
+        free(flat);
+        return false;
+    }
+    SnowNetworkBufferClear(out);
+    while (off < size) {
+        ssize_t n = write(c->fd, flat + off, size - off);
+        if (n <= 0) {
+            free(flat);
+            return false;
+        }
+        off += (size_t)n;
+    }
+    free(flat);
+    return true;
+}
+
+/* 1 = bytes consumed, 0 = nothing within 5 ms, -1 = closed or TLS error. */
+static int client_read_burst(NetClient *c, SnowNetworkBuffer *out, bool handshake) {
+    u8 buf[4096];
+    struct pollfd pfd = {c->fd, POLLIN, 0};
+    if (poll(&pfd, 1, 5) <= 0) return 0;
+    ssize_t got = read(c->fd, buf, sizeof(buf));
+    if (got <= 0) return -1;
+    if (handshake) return SnowSslDoHandshake(c->ssl, out, buf, (size_t)got) == 0 ? 1 : -1;
+    return SnowSslRead(c->ssl, buf, (size_t)got, c->plain) == 0 ? 1 : -1;
+}
+
+static bool client_send_wire(NetClient *c, const u8 *wire, size_t size) {
+    SnowNetworkBuffer *out = NULL;
+    if (SnowNetworkBufferCreate(&out) != SNOW_OK) return false;
+    bool ok = SnowSslWrite(c->ssl, (const char *)wire, size, out) == 0 && client_flush(c, out);
+    SnowNetworkBufferDestroy(out);
+    return ok;
+}
+
+static bool client_send(NetClient *c, u16 id, u16 version, const u8 *payload, size_t size) {
+    BreakNetEnvelope env;
+    u8 wire[NET_CLIENT_FRAME_CAPACITY];
+    size_t wire_size = 0u;
+    memset(&env, 0, sizeof(env));
+    env.protocol_version = version;
+    env.message_id = id;
+    env.sequence = c->next_seq++;
+    env.payload = payload;
+    env.payload_size = size;
+    if (break_net_envelope_encode(&env, wire, sizeof(wire), &wire_size) !=
+        BREAK_NET_ENVELOPE_OK) {
+        return false;
+    }
+    return client_send_wire(c, wire, wire_size);
+}
+
+/* The envelope encoder refuses ids outside the registry, so an unknown id
+ * is framed by hand with the documented 18-byte little-endian header. */
+static bool client_send_raw_id(NetClient *c, u16 id) {
+    u8 wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 4u];
+    u32 magic = BREAK_NET_ENVELOPE_MAGIC, seq = c->next_seq++, size = 4u;
+    memset(wire, 0, sizeof(wire));
+    for (u32 i = 0u; i < 4u; ++i) wire[i] = (u8)(magic >> (8u * i));
+    wire[4] = 1u;
+    wire[6] = (u8)id;
+    wire[7] = (u8)(id >> 8u);
+    for (u32 i = 0u; i < 4u; ++i) wire[10u + i] = (u8)(seq >> (8u * i));
+    for (u32 i = 0u; i < 4u; ++i) wire[14u + i] = (u8)(size >> (8u * i));
+    return client_send_wire(c, wire, sizeof(wire));
+}
+
+/* Reads one envelope into a static frame. Returns 1 on a frame, 0 on
+ * timeout, -1 when the server closed the connection. */
+static int client_recv(NetClient *c, BreakNetEnvelope *env, u32 timeout_ms) {
+    static u8 frame[NET_CLIENT_FRAME_CAPACITY];
+    u64 deadline = now_ms() + timeout_ms;
+    while (now_ms() < deadline) {
+        size_t have = SnowNetworkBufferLength(c->plain);
+        if (have >= BREAK_NET_ENVELOPE_HEADER_SIZE) {
+            size_t n = 0u;
+            if (SnowNetworkBufferGetHeader(c->plain, BREAK_NET_ENVELOPE_HEADER_SIZE, frame,
+                                           sizeof(frame), &n) != SNOW_OK) {
+                return -1;
+            }
+            u32 payload = (u32)frame[14] | ((u32)frame[15] << 8u) | ((u32)frame[16] << 16u) |
+                          ((u32)frame[17] << 24u);
+            size_t need = BREAK_NET_ENVELOPE_HEADER_SIZE + (size_t)payload;
+            if (need > sizeof(frame)) return -1;
+            if (have >= need) {
+                if (SnowNetworkBufferGetHeader(c->plain, need, frame, sizeof(frame), &n) !=
+                        SNOW_OK ||
+                    n != need || SnowNetworkBufferMoveHeader(c->plain, need) != SNOW_OK) {
+                    return -1;
+                }
+                return break_net_envelope_decode(frame, need, env) == BREAK_NET_ENVELOPE_OK ? 1
+                                                                                          : -1;
+            }
+        }
+        if (client_read_burst(c, NULL, false) < 0) return -1;
+    }
+    return 0;
+}
+
+static void client_close(NetClient *c) {
+    if (c->plain) SnowNetworkBufferDestroy(c->plain);
+    if (c->ssl) SnowSslFree(c->ssl);
+    if (c->ctx) SnowSslCtxFree(c->ctx);
+    if (c->fd >= 0) close(c->fd);
+    memset(c, 0, sizeof(*c));
+    c->fd = -1;
+}
+
+/* TCP connect, TLS handshake, then the server CHALLENGE (nonce kept). */
+static bool client_open(NetClient *c) {
+    struct sockaddr_in address;
+    SnowSslCtxOpts opts;
+    SnowNetworkBuffer *out = NULL;
+    BreakNetEnvelope challenge;
+    bool ok = false;
+    memset(c, 0, sizeof(*c));
+    c->next_seq = 1u;
+    c->fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (c->fd < 0) return false;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(g_port);
+    if (connect(c->fd, (const struct sockaddr *)&address, sizeof(address)) != 0) return false;
+    memset(&opts, 0, sizeof(opts));
+    c->ctx = SnowSslCtxNew(&opts, NULL);
+    c->ssl = c->ctx ? SnowSslNew(c->ctx) : NULL;
+    if (!c->ssl || SnowSslInit(c->ssl, false) != SNOW_OK ||
+        SnowNetworkBufferCreate(&c->plain) != SNOW_OK ||
+        SnowNetworkBufferCreate(&out) != SNOW_OK) {
+        goto done;
+    }
+    if (SnowSslDoHandshake(c->ssl, out, NULL, 0u) != 0 || !client_flush(c, out)) goto done;
+    u64 deadline = now_ms() + 10000u;
+    while (!SnowSslIsHandshaked(c->ssl) && now_ms() < deadline) {
+        if (client_read_burst(c, out, true) < 0 || !client_flush(c, out)) goto done;
+    }
+    if (!SnowSslIsHandshaked(c->ssl) || client_recv(c, &challenge, 10000u) != 1 ||
+        challenge.message_id != BREAK_NET_MESSAGE_ID_CHALLENGE ||
+        challenge.protocol_version != 1u || challenge.payload_size != 16u) {
+        goto done;
+    }
+    memcpy(c->server_nonce, challenge.payload, 16u);
+    ok = true;
+done:
+    if (out) SnowNetworkBufferDestroy(out);
+    return ok;
+}
+
+static bool client_auth(NetClient *c, const u8 psk[32]) {
+    u8 payload[56];
+    u8 context[40];
+    memcpy(payload, k_key_id, 8u);
+    for (u32 i = 0u; i < 16u; ++i) payload[8u + i] = (u8)(0x3cu + i);
+    memcpy(context, "BRKAUTH2", 8u);
+    memcpy(context + 8u, c->server_nonce, 16u);
+    memcpy(context + 24u, payload + 8u, 16u);
+    if (!break_crypto_hmac_sha256(psk, 32u, context, sizeof(context), payload + 24u)) {
+        return false;
+    }
+    return client_send(c, BREAK_NET_MESSAGE_ID_AUTH, 2u, payload, sizeof(payload));
+}
+
+/* Waits for the next snapshot; other envelope ids are skipped. */
+static int client_next_snapshot(NetClient *c, CoreAppSnapshot *out, u32 timeout_ms) {
+    u64 deadline = now_ms() + timeout_ms;
+    while (now_ms() < deadline) {
+        BreakNetEnvelope env;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got != 1) return got;
+        if (env.message_id != CORE_APP_SNAPSHOT_MESSAGE_ID) continue;
+        if (env.protocol_version != CORE_APP_SNAPSHOT_PROTOCOL_VERSION) return -1;
+        return core_app_snapshot_decode((const u8 *)env.payload, env.payload_size, out) ==
+                       CORE_APP_SNAPSHOT_OK
+                   ? 1
+                   : -1;
+    }
+    return 0;
+}
+
+/* Waits until the server closes the connection. Fails if a snapshot arrives
+ * first, because a rejected peer must never receive one. */
+static bool client_closed_without_snapshot(NetClient *c, u32 timeout_ms) {
+    u64 deadline = now_ms() + timeout_ms;
+    while (now_ms() < deadline) {
+        BreakNetEnvelope env;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got < 0) return true;
+        if (got == 1 && env.message_id == CORE_APP_SNAPSHOT_MESSAGE_ID) return false;
+    }
+    return false;
+}
+
+static bool send_snapshot(NetClient *c, const CoreAppSnapshot *snapshot, size_t trailing) {
+    u8 wire[CORE_APP_SNAPSHOT_MAX_BYTES + 64u];
+    size_t size = 0u;
+    if (core_app_snapshot_encode(snapshot, wire, sizeof(wire), &size) != CORE_APP_SNAPSHOT_OK) {
+        return false;
+    }
+    memset(wire + size, 0xa5, trailing);
+    return client_send(c, CORE_APP_SNAPSHOT_MESSAGE_ID, CORE_APP_SNAPSHOT_PROTOCOL_VERSION, wire,
+                       size + trailing);
+}
+static bool snapshot_shape_ok(const CoreAppSnapshot *s) {
+    return s->schema_hash == core_app_snapshot_schema_hash() && s->frame_id > 0u &&
+           s->level_generation > 0u && s->entity_count == 2u && s->entities[0].flags == 1u &&
+           s->entities[1].flags == 2u && s->entities[0].generation > 0u &&
+           s->entities[1].generation > 0u &&
+           (s->entities[0].index != s->entities[1].index ||
+            s->entities[0].generation != s->entities[1].generation);
+}
+
+/* A: authenticated peer. Receives snapshots, then sends hostile snapshots
+ * that must only change counters and must not close the session. */
+static void scenario_authenticated(void) {
+    NetClient a;
+    CoreAppSnapshot first, later, forged;
+    check(client_open(&a), "a_tls_challenge");
+    check(client_auth(&a, g_psk), "a_auth_sent");
+    int got = client_next_snapshot(&a, &first, 15000u);
+    check(got == 1, "a_received_snapshot");
+    if (got == 1) {
+        check(snapshot_shape_ok(&first), "a_snapshot_fields");
+        fprintf(g_report,
+                "snapshot frame=%llu generation=%llu user_index=%u user_generation=%u"
+                " chaser_index=%u chaser_generation=%u\n",
+                (unsigned long long)first.frame_id, (unsigned long long)first.level_generation,
+                first.entities[0].index, first.entities[0].generation, first.entities[1].index,
+                first.entities[1].generation);
+        forged = first;
+        forged.level_generation = first.level_generation + 100u;
+        check(send_snapshot(&a, &forged, 0u), "a_sent_stale_generation");
+        forged = first;
+        forged.schema_hash ^= 0x5a5a5a5au;
+        check(send_snapshot(&a, &forged, 0u), "a_sent_forged_schema");
+        forged = first;
+        forged.entities[0].x = 9999.0f;
+        forged.entities[0].z = -9999.0f;
+        check(send_snapshot(&a, &forged, 16u), "a_sent_forged_position_with_trailing_bytes");
+        bool advanced = false;
+        u64 deadline = now_ms() + 10000u;
+        while (!advanced && now_ms() < deadline) {
+            if (client_next_snapshot(&a, &later, 2000u) != 1) break;
+            advanced = later.frame_id > first.frame_id &&
+                       later.level_generation == first.level_generation &&
+                       snapshot_shape_ok(&later) && later.entities[0].x != 9999.0f;
+        }
+        check(advanced, "a_session_survives_and_frames_advance");
+    }
+    client_close(&a);
+}
+
+/* B: TLS but no AUTH. A snapshot from it is phase-rejected, and it must
+ * never receive one. */
+static void scenario_unauthenticated(void) {
+    NetClient b;
+    CoreAppSnapshot snapshot, probe;
+    memset(&snapshot, 0, sizeof(snapshot));
+    check(client_open(&b), "b_tls_challenge");
+    core_app_snapshot_build(&snapshot, 1u, 1u, core_app_snapshot_schema_hash(), NULL, 0u);
+    check(send_snapshot(&b, &snapshot, 0u), "b_sent_unauthenticated_snapshot");
+    check(client_next_snapshot(&b, &probe, 1500u) != 1, "b_never_receives_snapshot");
+    client_close(&b);
+}
+
+/* C: an unregistered message id closes the connection. */
+static void scenario_unknown_id(void) {
+    NetClient c;
+    check(client_open(&c), "c_tls_challenge");
+    check(client_send_raw_id(&c, 0x7777u), "c_sent_unknown_id");
+    check(client_closed_without_snapshot(&c, 5000u), "c_closed_after_unknown_id");
+    client_close(&c);
+}
+
+/* D: AUTH with the wrong key closes the connection without a snapshot. */
+static void scenario_wrong_psk(void) {
+    NetClient d;
+    u8 wrong[32];
+    memcpy(wrong, g_psk, sizeof(wrong));
+    wrong[0] ^= 0xffu;
+    check(client_open(&d), "d_tls_challenge");
+    check(client_auth(&d, wrong), "d_sent_wrong_auth");
+    check(client_closed_without_snapshot(&d, 5000u), "d_closed_after_wrong_psk");
+    client_close(&d);
+}
+
+int main(int argc, char **argv) {
+    if (argc != 3) {
+        fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE\n");
+        return 2;
+    }
+    signal(SIGPIPE, SIG_IGN);
+    g_report = fopen(argv[2], "wb");
+    if (!g_report) return 2;
+    check(read_psk(), "psk_from_environment");
+    check(wait_port(argv[1]), "port_file_published");
+    if (g_failures == 0) {
+        scenario_authenticated();
+        scenario_unauthenticated();
+        scenario_unknown_id();
+        scenario_wrong_psk();
+    }
+    fprintf(g_report, "client failures=%d\n", g_failures);
+    fclose(g_report);
+    return g_failures == 0 ? 0 : 1;
+}

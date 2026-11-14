@@ -4,6 +4,9 @@ foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT NM TARGET_
         message(FATAL_ERROR "${var} is required for the wrapped-nm negative test")
     endif()
 endforeach()
+if(NOT DEFINED NETWORK_TRANSPORT OR "${NETWORK_TRANSPORT}" STREQUAL "")
+    set(NETWORK_TRANSPORT OFF)
+endif()
 
 execute_process(
     COMMAND "${NM}" --defined-only "${CORE_APP}"
@@ -39,6 +42,7 @@ execute_process(
         -DENGINE_CMAKE=${ENGINE_CMAKE}
         -DCORE_APP=${CORE_APP}
         -DNETWORK_ENABLED=${NETWORK_ENABLED}
+        -DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}
         -DCONTRACT_BUILD_ROOT=${CONTRACT_BUILD_ROOT}/no-tests
         -DNM=${NM}
         -DNM_CAPABLE=TRUE

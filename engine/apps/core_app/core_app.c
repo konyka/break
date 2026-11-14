@@ -233,6 +233,7 @@ struct CoreApp {
     bool io_running;
     bool render_live;
     bool audio_live;
+    bool network_live;
 };
 
 static BreakRuntimeError app_request_skins(CoreApp *app, CoreLevel *level);
@@ -2051,6 +2052,56 @@ static BreakRuntimeError app_level_stop_producers_cb(void *user) {
     return BREAK_RUNTIME_OK;
 }
 
+static const CoreAppNetworkHooks *app_network(const CoreApp *app) {
+    return app->network_live ? app->config.network_hooks : NULL;
+}
+
+static BreakRuntimeError app_network_stop_admission_cb(void *user) {
+    const CoreAppNetworkHooks *hooks = app_network((CoreApp *)user);
+    return hooks ? hooks->stop_admission(hooks->user) : BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_network_stop_producers_cb(void *user) {
+    const CoreAppNetworkHooks *hooks = app_network((CoreApp *)user);
+    return hooks ? hooks->stop_producers(hooks->user) : BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_network_drain_cb(void *user) {
+    const CoreAppNetworkHooks *hooks = app_network((CoreApp *)user);
+    return hooks ? hooks->drain(hooks->user) : BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_network_destroy_cb(void *user) {
+    CoreApp *app = (CoreApp *)user;
+    const CoreAppNetworkHooks *hooks = app_network(app);
+    if (!hooks) return BREAK_RUNTIME_OK;
+    BreakRuntimeError result = hooks->destroy(hooks->user);
+    if (result == BREAK_RUNTIME_OK) app->network_live = false;
+    return result;
+}
+
+/* Publishes read-only copies of the two simulated units. The hook cannot
+ * return a value the tick applies, so the network never feeds back. */
+static void app_network_publish(CoreApp *app, u32 tick, Vec3 user_position) {
+    const CoreAppNetworkHooks *hooks = app_network(app);
+    if (!hooks || !app->level) return;
+    const CoreLevel *level = app->level;
+    CoreAppSnapshotEntity entities[2];
+    entities[0].index = level->user.index;
+    entities[0].generation = level->user.generation;
+    entities[0].x = user_position.e[0];
+    entities[0].y = user_position.e[1];
+    entities[0].z = user_position.e[2];
+    entities[0].flags = 1u;
+    entities[1].index = level->chaser.index;
+    entities[1].generation = level->chaser.generation;
+    entities[1].x = level->chaser_position.e[0];
+    entities[1].y = level->chaser_position.e[1];
+    entities[1].z = level->chaser_position.e[2];
+    entities[1].flags = 2u;
+    hooks->tick(hooks->user, tick, level->generation, entities, 2u);
+}
+
 static BreakRuntimeError app_level_drain_cb(void *user) {
     CoreApp *app = (CoreApp *)user;
     if (app->level && app->level->request) {
@@ -2094,6 +2145,11 @@ static BreakRuntimeError app_register_subsystems(CoreApp *app) {
     BreakRuntimeSubsystem subsystems[4];
     memset(subsystems, 0, sizeof(subsystems));
     subsystems[0].name = "network";
+    subsystems[0].user_data = app;
+    subsystems[0].stop_admission = app_network_stop_admission_cb;
+    subsystems[0].stop_producers = app_network_stop_producers_cb;
+    subsystems[0].drain = app_network_drain_cb;
+    subsystems[0].destroy = app_network_destroy_cb;
     subsystems[1].name = "audio";
     subsystems[1].user_data = app;
     subsystems[1].stop_admission = core_app_audio_stop_admission_cb;
@@ -2348,6 +2404,14 @@ static void app_rollback(CoreApp *app) {
         break_runtime_coordinator_state(app->coordinator) != BREAK_RUNTIME_STOPPED) {
         (void)break_runtime_coordinator_fail(app->coordinator, BREAK_RUNTIME_FAILED);
     }
+    if (app->network_live) {
+        const CoreAppNetworkHooks *hooks = app->config.network_hooks;
+        (void)hooks->stop_admission(hooks->user);
+        (void)hooks->stop_producers(hooks->user);
+        (void)hooks->drain(hooks->user);
+        (void)hooks->destroy(hooks->user);
+        app->network_live = false;
+    }
     if (app->audio_live) {
         (void)core_app_audio_stop_admission(&app->audio);
         (void)core_app_audio_stop_producers(&app->audio);
@@ -2405,7 +2469,12 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
         (config->audio_mode != CORE_APP_AUDIO_RECORD &&
          config->audio_mode != CORE_APP_AUDIO_NULL &&
          config->audio_mode != CORE_APP_AUDIO_DEVICE) ||
-        config->network || !config->asset_root ||
+        (config->network &&
+         (!config->network_hooks || !config->network_hooks->start ||
+          !config->network_hooks->tick || !config->network_hooks->stop_admission ||
+          !config->network_hooks->stop_producers || !config->network_hooks->drain ||
+          !config->network_hooks->destroy)) ||
+        !config->asset_root ||
         !config->scenario_path || !config->trace_path ||
         (config->screenshot_path && !gpu_lane) ||
         (config->checkpoint_dir && config->checkpoint_dir[0] == '\0')) {
@@ -2489,6 +2558,12 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     }
     if (result != BREAK_RUNTIME_OK) goto finished;
     app->audio_live = true;
+    if (config->network) {
+        stage = "network_start";
+        result = config->network_hooks->start(config->network_hooks->user, app->trace);
+        if (result != BREAK_RUNTIME_OK) goto finished;
+        app->network_live = true;
+    }
     stage = "coordinator";
     result = app_register_subsystems(app);
     if (result != BREAK_RUNTIME_OK) goto finished;
@@ -2635,6 +2710,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                     result = core_app_audio_enqueue_at(&app->audio, CORE_APP_AUDIO_LISTENER,
                                                        app->level->generation, listener);
                 }
+                if (result == BREAK_RUNTIME_OK) app_network_publish(app, tick, listener);
             }
             if (result == BREAK_RUNTIME_OK) {
                 result = app_audio_drain(app, CORE_APP_AUDIO_QUEUE_CAPACITY);
