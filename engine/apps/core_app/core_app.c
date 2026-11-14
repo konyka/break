@@ -1804,6 +1804,9 @@ static BreakRuntimeError app_audio_drain(CoreApp *app, u32 budget) {
     if (app->audio.mode == CORE_APP_AUDIO_BACKEND_RECORD) {
         return core_app_audio_drain_record(&app->audio, budget);
     }
+    if (app->audio.mode == CORE_APP_AUDIO_BACKEND_DEVICE && app->audio.system) {
+        return core_app_audio_drain_device(&app->audio, budget);
+    }
     return core_app_audio_drain_null(&app->audio, budget);
 }
 
@@ -2409,8 +2412,14 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                 if (result != BREAK_RUNTIME_OK) goto finished;
             }
             if (result == BREAK_RUNTIME_OK) {
-                result = core_app_audio_enqueue(&app->audio, CORE_APP_AUDIO_LISTENER,
-                                                app->level->generation);
+                /* The listener follows the user; the position does not enter
+                 * the trace, so record runs stay byte-identical. */
+                Vec3 listener = vec3(0.0f, 0.0f, 0.0f);
+                result = core_app_simulation_user_position(app->level->simulation, &listener);
+                if (result == BREAK_RUNTIME_OK) {
+                    result = core_app_audio_enqueue_at(&app->audio, CORE_APP_AUDIO_LISTENER,
+                                                       app->level->generation, listener);
+                }
             }
             if (result == BREAK_RUNTIME_OK) result = app_audio_drain(app, 1u);
             if (result != BREAK_RUNTIME_OK) {

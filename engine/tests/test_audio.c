@@ -17,6 +17,7 @@
 #endif
 
 #include "test_framework.h"
+#include <time.h>
 #include <audio/audio.h>
 
 #include "../src/audio/audio.c"
@@ -347,6 +348,58 @@ TEST(device_name_is_absent_without_a_device)
     ASSERT_FALSE(audio_system_device_name(NULL, NULL, 0u));
 }
 
+/* Writes a 0.1 s mono 16-bit 48 kHz square wave so the play tests do not
+ * depend on an asset directory. Returns false if the file cannot be written. */
+static bool write_test_wav(const char *path)
+{
+    const u32 frames = 4800u;
+    const u32 data_bytes = frames * 2u;
+    u8 header[44] = {
+        'R','I','F','F', 0,0,0,0, 'W','A','V','E', 'f','m','t',' ',
+        16,0,0,0, 1,0, 1,0, 0x80,0xBB,0,0, 0,0x77,1,0, 2,0, 16,0,
+        'd','a','t','a', 0,0,0,0 };
+    u32 riff = 36u + data_bytes;
+    memcpy(header + 4, &riff, 4);
+    memcpy(header + 40, &data_bytes, 4);
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool ok = fwrite(header, 1, sizeof(header), f) == sizeof(header);
+    for (u32 i = 0; ok && i < frames; ++i) {
+        i16 sample = (i / 50u) % 2u ? 4000 : -4000;
+        ok = fwrite(&sample, 1, 2, f) == 2;
+    }
+    return fclose(f) == 0 && ok;
+}
+
+TEST(play_3d_source_returns_a_stoppable_handle)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "/tmp/break_test_audio_%ld.wav", (long)clock());
+    ASSERT_TRUE(write_test_wav(path));
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    u32 handle = audio_play_3d_source(as, path, vec3(1.0f, 0.0f, 0.0f), 0.5f, false);
+    ASSERT_TRUE(handle != 0u);
+    ASSERT_FALSE(audio_source_at_end(as, handle));
+    audio_source_set_position(as, handle, vec3(2.0f, 0.0f, 0.0f));
+    audio_stop(as, handle);
+    /* After stop the handle is stale: queries treat it as ended. */
+    ASSERT_TRUE(audio_source_at_end(as, handle));
+    audio_system_destroy(as);
+    remove(path);
+}
+
+TEST(play_3d_source_reports_failure_as_zero)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(audio_play_3d_source(as, "/nonexistent/break.wav", vec3(0, 0, 0), 1.0f, false),
+              0u);
+    ASSERT_EQ(audio_play_3d_source(as, NULL, vec3(0, 0, 0), 1.0f, false), 0u);
+    ASSERT_EQ(audio_play_3d_source(NULL, "x.wav", vec3(0, 0, 0), 1.0f, false), 0u);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(atten_inside_min_is_full);
     RUN_TEST(atten_inverse_known_values);
@@ -370,4 +423,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(backend_name_of_missing_system_is_none);
     RUN_TEST(device_name_reports_the_null_playback_device);
     RUN_TEST(device_name_is_absent_without_a_device);
+    RUN_TEST(play_3d_source_returns_a_stoppable_handle);
+    RUN_TEST(play_3d_source_reports_failure_as_zero);
 TEST_MAIN_END()

@@ -5,7 +5,9 @@
 #   1. a playback backend other than miniaudio's Null backend was opened, and
 #      the trace names that backend and the device,
 #   2. the probe tone was played by the device (the cursor advanced),
-#   3. the device was closed after the runtime stopped admitting work and
+#   3. the command queue drove the device: the listener followed the user on
+#      every fixed tick and no command failed on the device,
+#   4. the device was closed after the runtime stopped admitting work and
 #      before the runtime reported it had stopped.
 #
 # A host without a playback device exits 77 and is reported as UNAVAILABLE
@@ -80,11 +82,21 @@ if(device_name STREQUAL "none" OR device_name STREQUAL "")
 endif()
 
 if(NOT trace_text MATCHES
-   "event=audio mode=device result=stopped backend=${device_backend} probe_complete=([01]) probe_seconds=([0-9.]+)")
+   "event=audio mode=device result=stopped backend=${device_backend} probe_complete=([01]) probe_seconds=([0-9.]+) failures=([0-9]+) listener_updates=([0-9]+) plays=([0-9]+) moves=([0-9]+) stops=([0-9]+) evictions=([0-9]+)")
     message(FATAL_ERROR "the device was never closed\n${trace_text}")
 endif()
 set(probe_complete "${CMAKE_MATCH_1}")
 set(probe_seconds "${CMAKE_MATCH_2}")
+set(device_failures "${CMAKE_MATCH_3}")
+set(listener_updates "${CMAKE_MATCH_4}")
+# The listener follows the user once per fixed tick, so a 30-tick run must
+# have driven the device listener on (almost) every tick, not just once.
+if(listener_updates LESS 20)
+    message(FATAL_ERROR "the command queue drove the device listener only ${listener_updates} times")
+endif()
+if(NOT device_failures EQUAL 0)
+    message(FATAL_ERROR "${device_failures} commands failed on the device")
+endif()
 if(probe_seconds LESS_EQUAL 0)
     message(FATAL_ERROR "the device never played the probe (cursor ${probe_seconds}s)")
 endif()
@@ -104,4 +116,5 @@ if(NOT (ready_at LESS running_at AND running_at LESS stopped_at AND
 endif()
 
 message(STATUS "verified audio device backend=${device_backend} device=${device_name}"
-               " probe_complete=${probe_complete} probe_seconds=${probe_seconds}")
+               " probe_complete=${probe_complete} probe_seconds=${probe_seconds}"
+               " listener_updates=${listener_updates}")

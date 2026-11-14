@@ -540,7 +540,7 @@ source 槽带 generation。只有 `PLAY_3D` 认领槽位；`POSITION` 和 `STOP`
 
 ### 仍未做
 
-命令队列驱动设备（`audio_play_3d`/position/stop 由 drain 调到 `AudioSystem`）、独立的音频 owner 线程、`tone.wav` 的关卡播放事件、256 条满队列的进程级压力用例。设备的打开、探测播放与关闭已在 Task 9 slice 2 补上。record/null 路径的证据是单元与真实进程 trace，不是听感验证。
+独立的音频 owner 线程、`tone.wav` 的关卡播放事件（关卡目前不产生 PLAY_3D/POSITION）、256 条满队列的进程级压力用例。设备的打开、探测播放与关闭已在 Task 9 slice 2 补上，命令队列驱动设备已在 slice 3 补上。record/null 路径的证据是单元与真实进程 trace，不是听感验证。
 
 ## Core App Task 10：可选认证网络通道的边界层与客户端权威防火墙（2026-11-14）
 
@@ -666,6 +666,43 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 本轮修复后：`test_core_app_mesh` 3/3、GPU 两用例通过、`test_core_app_gpu`/`naming`/`target` 契约 5/5；全量含 GPU 405/405。
 
+## Core App Task 9（slice 3）：命令队列驱动音频设备（2026-11-14）
+
+### 变化
+
+- `CoreAppAudioCommand` 增加 `position`。新入口 `core_app_audio_enqueue_at(audio, kind, generation, position)`：LISTENER 用作听者位置，PLAY_3D/POSITION 用作声源位置，STOP 忽略。旧的 `core_app_audio_enqueue` 以原点调用它。
+- 新增 `core_app_audio_drain_device`：每条命令先过与 record 相同的代际检查，通过后再调用设备：
+  - LISTENER → `audio_set_listener`；
+  - PLAY_3D → `audio_play_3d_source(asset_root/tone.wav, position)`，句柄存入 `device_sources[slot-1]`；
+  - POSITION → `audio_source_set_position`；
+  - STOP → `audio_stop` 并清空句柄。
+  代际不符的 POSITION/STOP 只计 `stale_commands`，从不触达设备。
+- 槽位满后 PLAY_3D 复用槽位时，先 `audio_stop` 被挤出的旧句柄并计 `device_evictions`，避免设备上残留无人可寻址的声源。
+- 引擎新增 `audio_play_3d_source`：与 `audio_play_3d` 相同，但返回句柄（失败返回 0）。`audio_play_3d` 改为调用它并丢弃句柄，现有调用方不变。
+- 新增 `core_app_audio_start_system`：接管一个已创建的 `AudioSystem`，不播放探测音，单测用它注入 FAKE 系统。
+- `core_app_run` 的 `app_audio_drain` 在设备模式且系统存在时走 `drain_device`。每个固定 tick 的 LISTENER 现在带用户位置（`core_app_simulation_user_position`）。位置不写入 trace，record 运行的 trace 保持逐字节不变。
+- 关闭时的 `result=stopped` 行增加 `failures listener_updates plays moves stops evictions` 计数。销毁 `AudioSystem` 会释放所有仍在槽位里的声源。
+
+### 边界
+
+关卡目前只产生 LISTENER 与卸载时的 STOP，没有 PLAY_3D/POSITION 的产生方，所以真实进程里 `plays=0`。PLAY_3D/POSITION/STOP/挤出路径的设备证据来自 FAKE 系统单测。`AudioSystem` 仍由应用主线程持有，没有独立 owner 线程。
+
+### 验证
+
+- `test_audio` 24/24（+2）：`audio_play_3d_source` 返回可停止的句柄；路径缺失或参数为 NULL 时返回 0。
+- `test_core_app_runtime` 39/39（+4）：
+  - FAKE 系统上 listener 位置、play/move/stop 计数与句柄一一对应；
+  - 槽位复用时挤出源被停止；
+  - 槽位在 STOP 排出前被新代际回收时，旧 STOP 不停新源；
+  - 无设备时 `drain_device` 返回 INVALID。
+- `test_core_app_audio_device` 额外要求 30 tick 的运行里 `listener_updates >= 20` 且 `failures == 0`。本机 PulseAudio 实测 `listener_updates=29 failures=0`。
+- 变异（均已恢复）：
+  - 不停挤出源 → `device_evictions` 断言变红；
+  - 代际不符仍触达设备 → 回收槽位用例 `device_stops != 0` 变红；
+  - listener 不调设备 → 位置断言变红；
+  - `app_audio_drain` 不走设备分支 → 进程级用例以 “drove the device listener only 0 times” 变红。
+- 恢复后全量 408/408。
+
 ## Core App Task 9（slice 2）：真实音频播放设备（2026-11-14）
 
 ### 变化
@@ -680,7 +717,7 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 ### 边界
 
 - `AudioSystem` 由应用主线程持有，不是独立 owner 线程；miniaudio 自己的设备线程只运行它的混音回调。
-- 命令队列（listener/play_3d/position/stop）仍只更新槽位与 trace，**不**调用 `audio_play_3d` 或 source control。关卡目前也不产生 PLAY_3D。设备证据只覆盖“设备真实打开、探测源真实被播放、按生命周期关闭”。
+- slice 2 时命令队列只更新槽位与 trace；slice 3（下一节）起 drain 会调用 `AudioSystem`。关卡目前仍不产生 PLAY_3D。
 - 不包含听感验证。
 
 ### 验证
@@ -746,7 +783,7 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 ### 仍未做
 
-真实网络传输（TLS/Session/reactor 接线与 loopback 客户端）、由命令队列驱动的设备音频播放、GPU 侧骨架蒙皮、逐对象影像回归。创建期降级用例已在 Task 11 slice 3 补上，设备音频的打开/探测/关闭已在 Task 9 slice 2 补上。这些在计划里属于后续 Task，不在本轮交付范围，也未在文档中宣称完成。
+真实网络传输（TLS/Session/reactor 接线与 loopback 客户端）、关卡声音事件（PLAY_3D/POSITION 的产生方）、GPU 侧骨架蒙皮、逐对象影像回归。创建期降级用例已在 Task 11 slice 3 补上，设备音频的打开/探测/关闭与命令队列驱动设备已在 Task 9 slice 2–3 补上。这些在计划里属于后续 Task，不在本轮交付范围，也未在文档中宣称完成。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-13 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 

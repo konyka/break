@@ -944,6 +944,144 @@ TEST(audio_device_mode_rejects_a_system_without_a_device) {
     fclose(trace);
 }
 
+static void audio_shutdown(CoreAppAudio *audio) {
+    ASSERT_EQ(core_app_audio_stop_admission(audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_stop_producers(audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_close_queues(audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_join(audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_destroy(audio), BREAK_RUNTIME_OK);
+}
+
+/* The device drain must turn each queued command into the matching
+ * AudioSystem call. A FAKE system has no hardware but real sources, so the
+ * listener position and the source handles are observable. */
+TEST(audio_device_drain_drives_the_audio_system) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    char text[8192];
+    ASSERT_NOT_NULL(trace);
+    AudioSystem *system = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(system);
+    ASSERT_EQ(core_app_audio_start_system(&audio, trace, system, CORE_APP_SOURCE_ASSET_DIR),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.mode, CORE_APP_AUDIO_BACKEND_DEVICE);
+
+    ASSERT_EQ(core_app_audio_enqueue_at(&audio, CORE_APP_AUDIO_LISTENER, 4u,
+                                        vec3(1.0f, 2.0f, 3.0f)), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue_at(&audio, CORE_APP_AUDIO_PLAY_3D, 4u,
+                                        vec3(5.0f, 0.0f, 0.0f)), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_FLOAT_EQ(system->listener_pos.e[0], 1.0f, 1e-6);
+    ASSERT_FLOAT_EQ(system->listener_pos.e[1], 2.0f, 1e-6);
+    ASSERT_FLOAT_EQ(system->listener_pos.e[2], 3.0f, 1e-6);
+    u32 slot = audio.play_slots[0].slot;
+    ASSERT_NEQ(slot, CORE_APP_AUDIO_SOURCE_INVALID);
+    u32 handle = audio.device_sources[slot - 1u];
+    ASSERT_TRUE(handle != 0u);
+    ASSERT_FALSE(audio_source_at_end(system, handle));
+    ASSERT_EQ(audio.device_plays, 1u);
+
+    ASSERT_EQ(core_app_audio_enqueue_at(&audio, CORE_APP_AUDIO_POSITION, 4u,
+                                        vec3(6.0f, 0.0f, 0.0f)), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.device_moves, 1u);
+    ASSERT_EQ(audio.device_sources[slot - 1u], handle);
+
+    /* A STOP from another level's generation never reaches the device. */
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_STOP, 3u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.device_stops, 0u);
+    ASSERT_FALSE(audio_source_at_end(system, handle));
+
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_STOP, 4u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.device_stops, 1u);
+    ASSERT_EQ(audio.device_sources[slot - 1u], 0u);
+    ASSERT_TRUE(audio_source_at_end(system, handle));
+
+    audio_shutdown(&audio);
+    ASSERT_TRUE(audio.system == NULL);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text, "event=audio mode=device result=ready backend=fake"));
+    ASSERT_NOT_NULL(strstr(text, "listener_updates=1 plays=1 moves=1 stops=1 evictions=0\n"));
+    fclose(trace);
+}
+
+/* When every slot is taken a new PLAY_3D reuses one; the source it displaces
+ * must be stopped, not leaked on the device. */
+TEST(audio_device_slot_reuse_stops_the_displaced_source) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    AudioSystem *system = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(system);
+    ASSERT_EQ(core_app_audio_start_system(&audio, trace, system, CORE_APP_SOURCE_ASSET_DIR),
+              BREAK_RUNTIME_OK);
+    for (u64 generation = 1u; generation <= CORE_APP_AUDIO_SOURCE_SLOTS; ++generation) {
+        ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_PLAY_3D, generation),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    u32 first = audio.device_sources[0];
+    ASSERT_TRUE(first != 0u);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_PLAY_3D,
+                                     CORE_APP_AUDIO_SOURCE_SLOTS + 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.device_plays, CORE_APP_AUDIO_SOURCE_SLOTS + 1u);
+    ASSERT_EQ(audio.device_evictions, 1u);
+    ASSERT_TRUE(audio_source_at_end(system, first));
+    ASSERT_TRUE(audio.device_sources[0] != first);
+    audio_shutdown(&audio);
+    fclose(trace);
+}
+
+/* A STOP queued for a level whose slot is reclaimed before the STOP drains
+ * must not stop the new owner's source on the device. */
+TEST(audio_device_stale_stop_never_reaches_a_reclaimed_slot) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    AudioSystem *system = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(system);
+    ASSERT_EQ(core_app_audio_start_system(&audio, trace, system, CORE_APP_SOURCE_ASSET_DIR),
+              BREAK_RUNTIME_OK);
+    for (u64 generation = 1u; generation <= CORE_APP_AUDIO_SOURCE_SLOTS; ++generation) {
+        ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_PLAY_3D, generation),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    /* STOP for generation 1 resolves to slot 1; the next PLAY_3D reclaims
+     * that slot for a new generation before the STOP is drained. */
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_STOP, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_PLAY_3D,
+                                     CORE_APP_AUDIO_SOURCE_SLOTS + 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.stale_commands, 1u);
+    ASSERT_EQ(audio.device_stops, 0u);
+    ASSERT_EQ(audio.device_evictions, 1u);
+    ASSERT_EQ(audio.play_slots[0].generation, CORE_APP_AUDIO_SOURCE_SLOTS + 1u);
+    ASSERT_FALSE(audio_source_at_end(system, audio.device_sources[0]));
+    audio_shutdown(&audio);
+    fclose(trace);
+}
+
+/* Draining the device queue without a device is a caller error. */
+TEST(audio_device_drain_requires_a_device) {
+    CoreAppAudio audio;
+    ASSERT_EQ(core_app_audio_start_null(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, 1u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(core_app_audio_start_system(&audio, NULL, NULL, CORE_APP_SOURCE_ASSET_DIR),
+              BREAK_RUNTIME_INVALID);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(scenario_rejects_tick_regression_without_partial_events);
     RUN_TEST(scenario_rejects_too_many_events_without_partial_events);
@@ -980,4 +1118,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_device_mode_reports_unavailable_and_degrades_to_null);
     RUN_TEST(audio_device_required_mode_fails_when_no_device_exists);
     RUN_TEST(audio_device_mode_rejects_a_system_without_a_device);
+    RUN_TEST(audio_device_drain_drives_the_audio_system);
+    RUN_TEST(audio_device_slot_reuse_stops_the_displaced_source);
+    RUN_TEST(audio_device_stale_stop_never_reaches_a_reclaimed_slot);
+    RUN_TEST(audio_device_drain_requires_a_device);
 TEST_MAIN_END()

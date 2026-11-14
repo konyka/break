@@ -26,6 +26,7 @@ typedef enum CoreAppAudioBackend {
 typedef struct CoreAppAudioCommand {
     u64 generation;
     u64 sequence;
+    Vec3 position;
     CoreAppAudioCommandKind kind;
     u32 source;
 } CoreAppAudioCommand;
@@ -43,8 +44,17 @@ typedef struct CoreAppAudio {
      * proves the device consumed frames. NULL in record and null modes. */
     AudioSystem *system;
     u32 probe_source;
+    /* Device handle behind each play slot (index = slot - 1), 0 when idle. */
+    u32 device_sources[CORE_APP_AUDIO_SOURCE_SLOTS];
+    u64 device_listener_updates;
+    u64 device_plays;
+    u64 device_moves;
+    u64 device_stops;
+    u64 device_evictions;
+    u64 device_failures;
     char device_backend[32];
     char device_name[128];
+    char sound_path[1024];
     u64 next_sequence;
     u64 overloads;
     u64 stale_commands;
@@ -73,10 +83,23 @@ BreakRuntimeError core_app_audio_start_device_backend(CoreAppAudio *audio, FILE 
                                                       bool require_device,
                                                       const char *asset_root,
                                                       AudioBackend backend);
+/* Takes ownership of an already created system and drives it from the
+ * command queue; no probe tone is played. Returns INVALID (system not taken)
+ * for a missing argument or an asset path that does not fit; on any later
+ * failure the system is destroyed. */
+BreakRuntimeError core_app_audio_start_system(CoreAppAudio *audio, FILE *trace,
+                                              AudioSystem *system, const char *asset_root);
 BreakRuntimeError core_app_audio_enqueue(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
                                          u64 generation);
+/* enqueue with a world position: the listener position for LISTENER, the
+ * source position for PLAY_3D and POSITION; ignored for STOP. */
+BreakRuntimeError core_app_audio_enqueue_at(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
+                                            u64 generation, Vec3 position);
 BreakRuntimeError core_app_audio_drain_record(CoreAppAudio *audio, u32 budget);
 BreakRuntimeError core_app_audio_drain_null(CoreAppAudio *audio, u32 budget);
+/* Device mode: each command becomes the matching AudioSystem call. INVALID
+ * when no device system is attached. */
+BreakRuntimeError core_app_audio_drain_device(CoreAppAudio *audio, u32 budget);
 BreakRuntimeError core_app_audio_stop_admission(CoreAppAudio *audio);
 BreakRuntimeError core_app_audio_stop_producers(CoreAppAudio *audio);
 BreakRuntimeError core_app_audio_close_queues(CoreAppAudio *audio);

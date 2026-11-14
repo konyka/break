@@ -337,11 +337,12 @@ u32 audio_play(AudioSystem *as, const char *path, f32 volume, bool looping) {
     return audio_make_handle(src, id);
 }
 
-void audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume, bool looping) {
-    if (!as || !as->engine || !path) return;
+u32 audio_play_3d_source(AudioSystem *as, const char *path, Vec3 position, f32 volume,
+                         bool looping) {
+    if (!as || !as->engine || !path) return 0;
 
     u32 id = audio_acquire_slot(as);
-    if (id == UINT32_MAX) return;
+    if (id == UINT32_MAX) return 0;
 
     struct AudioImpl *impl = as->engine;
     AudioSource *src = &as->sources[id];
@@ -360,7 +361,7 @@ void audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume,
         if (as->free_count < AUDIO_MAX_SOURCES) {
             as->free_list[as->free_count++] = id;
         }
-        return;
+        return 0;
     }
 
     src->volume = volume;             /* R435 */
@@ -374,6 +375,11 @@ void audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume,
     ma_sound_set_position(&src->sound, position.e[0], position.e[1], position.e[2]);
     ma_sound_start(&src->sound);
     src->active = true;
+    return audio_make_handle(src, id);
+}
+
+void audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume, bool looping) {
+    (void)audio_play_3d_source(as, path, position, volume, looping);
 }
 
 void audio_stop(AudioSystem *as, u32 source_id) {

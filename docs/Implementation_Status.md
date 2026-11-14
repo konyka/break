@@ -1,10 +1,18 @@
+## Core App P12 Task 9（slice 3）：命令队列驱动音频设备（2026-11-14）
+
+- **交付**：设备模式下，drain 把 LISTENER/PLAY_3D/POSITION/STOP 转成 `audio_set_listener`、`audio_play_3d_source`、`audio_source_set_position`、`audio_stop`，并且先过代际检查。槽位复用时停止被挤出的源。听者每 tick 跟随用户位置（不写入 trace，record 输出不变）。引擎新增 `audio_play_3d_source`。设计见 `docs/design/core_app_integration.md` 的 Task 9 slice 3 节。
+- **测试**：`test_audio` 24/24（+2）、`test_core_app_runtime` 39/39（+4，FAKE 系统）、`test_core_app_audio_device` 新增 `listener_updates >= 20 且 failures == 0` 断言。
+- **实测**：PulseAudio，`listener_updates=29 failures=0`。
+- **变异**：不停挤出源、代际不符仍触达设备、listener 不调设备、drain 不走设备分支，四处都会变红；恢复后全量 408/408。
+- **未做**：关卡没有 PLAY_3D/POSITION 的产生方（真实进程里 `plays=0`），也没有独立音频 owner 线程。
+
 ## Core App P12 Task 9（slice 2）：真实音频播放设备（2026-11-14）
 
 - **交付**：`--audio=device` 打开默认播放设备，播放一次 `tone.wav` 探测源，停机最后一步记录播放进度后关闭设备。只打开到 miniaudio Null 后端时如实报告 unavailable（required 退出 77）。引擎新增 `audio_system_backend_name`、`audio_system_device_name`。设计见 `docs/design/core_app_integration.md` 的 Task 9 slice 2 节。
 - **测试**：`test_audio` 22/22（+5）、`test_core_app_runtime` 35/35（+1，既有两条改为断言后端名）、新增 `test_core_app_audio_device`（`audio_device` 标签，77 跳过，CI headless 套件排除）。
 - **实测**：PulseAudio，设备「内置音频 模拟立体声」，`probe_complete=1 probe_seconds=0.100`。
 - **变异**：Null 当作设备 → 单测 3 条变红；探测源立即停止 → 进程级用例变红；恢复后全量 408/408。
-- **未做**：命令队列驱动设备、独立音频 owner 线程、关卡声音事件、听感验证。
+- **未做**：独立音频 owner 线程、关卡声音事件、听感验证（命令队列驱动设备已在 slice 3 补上）。
 
 ## Core App P12 Task 11（slice 3）：创建期 Vulkan→OpenGL 降级（2026-11-14）
 
@@ -53,7 +61,7 @@
 - **交付**：`CoreAppAudio` 队列扩到 256 条、source 槽 8 个，命令为 `LISTENER`/`PLAY_3D`/`POSITION`/`STOP`；满队列返回 `OVERLOAD` 并计数且不覆盖最老命令。只有 `PLAY_3D` 认领带 generation 的槽位，`POSITION`/`STOP` 只按本代查找，旧代命令计入 `stale_commands` 且不触碰新代槽；`STOP` 成功后释放槽位。新增 record/null/device 三种启动，设备不可用时普通模式降级 null 并计数，`--require-device` 让进程以 77 退出。新增 `BREAK_RUNTIME_UNAVAILABLE` 区分“可选设施缺失”与“设施异常”。设计见 `docs/design/core_app_integration.md` 的 Task 9 节。
 - **测试**：`test_core_app_runtime` 新增 8 项（容量 256、满队列 OVERLOAD 保序、trace 顺序与 source、代际迟到 STOP、关闭顺序、null 无 trace、设备降级、必需设备失败），共 34/34。`test_core_app_lifecycle_load_unload` 的音频断言同步为带 `sequence`/`source` 的完整行。
 - **变异**：容量退回 16 被 `audio_queue_admits_two_hundred_fifty_six_commands` 杀死；跳过代际 stale 判定被 `audio_source_generation_rejects_late_stop_for_new_level` 杀死。
-- **边界**：命令队列尚不驱动设备（`audio_play_3d`/source control 未接入），`tone.wav` 尚无关卡播放事件，256 条满队列的进程级压测未做；不含听感验证。设备打开/探测/关闭见下方 Task 9 slice 2 条目。
+- **边界**：`tone.wav` 尚无关卡播放事件，256 条满队列的进程级压测未做；不含听感验证。设备打开/探测/关闭与命令队列驱动设备见下方 Task 9 slice 2–3 条目。
 
 ## Core App P12 Task 8（slice 3）：场景、Flow、Actor 文件进 checkpoint 与失败矩阵（2026-11-13）
 

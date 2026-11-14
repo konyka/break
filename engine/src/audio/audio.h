@@ -83,6 +83,10 @@ void         audio_system_update(AudioSystem *as, Vec3 listener_pos, Vec3 forwar
 
 u32          audio_play(AudioSystem *as, const char *path, f32 volume, bool looping);
 void         audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume, bool looping);
+/* audio_play_3d that returns the source handle (0 on failure), so the caller
+ * can move or stop exactly the source it started. */
+u32          audio_play_3d_source(AudioSystem *as, const char *path, Vec3 position,
+                                  f32 volume, bool looping);
 void         audio_stop(AudioSystem *as, u32 source_id);
 void         audio_set_listener(AudioSystem *as, Vec3 pos, Vec3 forward, Vec3 up);
 
