@@ -1,8 +1,20 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200112L
+#endif
 #include "test_framework.h"
 
 #include "../apps/core_app/core_app_network.h"
 
+#include <stdlib.h>
 #include <string.h>
+
+static void env_set(const char *name, const char *value) {
+#ifdef _WIN32
+    (void)_putenv_s(name, value);
+#else
+    (void)setenv(name, value, 1);
+#endif
+}
 
 static void entity_fill(CoreAppSnapshotEntity *entity, u32 index, u32 generation, f32 x) {
     entity->index = index;
@@ -194,6 +206,41 @@ TEST(snapshot_outbox_is_bounded_and_counts_drops) {
     ASSERT_FALSE(core_app_snapshot_outbox_pop(&outbox, &popped));
 }
 
+TEST(secret_env_decodes_and_removes_the_variable) {
+    u8 key[32];
+    memset(key, 0xAA, sizeof(key));
+    env_set("CORE_APP_UNIT_PSK",
+            "0f1e2d3c4b5a69788796a5b4c3d2e1f000112233445566778899aabbccddeeFF");
+    ASSERT_TRUE(core_app_net_take_secret_env("CORE_APP_UNIT_PSK", key, sizeof(key)));
+    ASSERT_EQ(key[0], 0x0fu);
+    ASSERT_EQ(key[15], 0xf0u);
+    ASSERT_EQ(key[16], 0x00u);
+    ASSERT_EQ(key[31], 0xffu);
+    ASSERT_TRUE(getenv("CORE_APP_UNIT_PSK") == NULL);
+    ASSERT_FALSE(core_app_net_take_secret_env("CORE_APP_UNIT_PSK", key, sizeof(key)));
+}
+
+TEST(secret_env_rejects_bad_values_and_still_removes_them) {
+    static const char *const bad[] = {
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0f1e2d3c4b5a69788796a5b4c3d2e1f000112233445566778899aabbccddeeF",
+        "0f1e2d3c4b5a69788796a5b4c3d2e1f000112233445566778899aabbccddeeFF0",
+        "0f1e2d3c4b5a69788796a5b4c3d2e1f000112233445566778899aabbccddeegg",
+    };
+    for (usize i = 0u; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        u8 key[32];
+        memset(key, 0xAA, sizeof(key));
+        env_set("CORE_APP_UNIT_PSK", bad[i]);
+        ASSERT_FALSE(core_app_net_take_secret_env("CORE_APP_UNIT_PSK", key, sizeof(key)));
+        ASSERT_TRUE(getenv("CORE_APP_UNIT_PSK") == NULL);
+        for (usize b = 0u; b < sizeof(key); ++b) ASSERT_EQ(key[b], 0u);
+    }
+    u8 key[32];
+    ASSERT_FALSE(core_app_net_take_secret_env(NULL, key, sizeof(key)));
+    ASSERT_FALSE(core_app_net_take_secret_env("", key, sizeof(key)));
+    ASSERT_FALSE(core_app_net_take_secret_env("CORE_APP_UNIT_PSK", NULL, sizeof(key)));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(snapshot_build_rejects_entity_count_over_capacity);
     RUN_TEST(snapshot_roundtrip_preserves_fields);
@@ -205,4 +252,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(snapshot_inbox_drops_unauthenticated_and_unknown_messages);
     RUN_TEST(snapshot_inbox_drops_schema_mismatch_and_stale_level);
     RUN_TEST(snapshot_outbox_is_bounded_and_counts_drops);
+    RUN_TEST(secret_env_decodes_and_removes_the_variable);
+    RUN_TEST(secret_env_rejects_bad_values_and_still_removes_them);
 TEST_MAIN_END()

@@ -1,5 +1,9 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200112L
+#endif
 #include "core_app_network.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 /* All integers are little-endian on the wire regardless of host byte order,
@@ -209,4 +213,45 @@ bool core_app_snapshot_outbox_pop(CoreAppSnapshotOutbox *outbox, CoreAppSnapshot
     outbox->head = (outbox->head + 1u) % CORE_APP_SNAPSHOT_OUTBOUND_CAPACITY;
     outbox->count--;
     return true;
+}
+
+static int secret_hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static void secret_wipe(u8 *out, usize size) {
+    volatile u8 *bytes = (volatile u8 *)out;
+    while (size--) *bytes++ = 0u;
+}
+
+static void secret_unset(const char *name) {
+#ifdef _WIN32
+    (void)_putenv_s(name, "");
+#else
+    (void)unsetenv(name);
+#endif
+}
+
+bool core_app_net_take_secret_env(const char *name, u8 *out, usize size) {
+    if (!name || name[0] == '\0' || !out || size == 0u) return false;
+    const char *text = getenv(name);
+    bool ok = text && strlen(text) == size * 2u;
+    u8 any = 0u;
+    for (usize i = 0u; ok && i < size; ++i) {
+        int hi = secret_hex(text[2u * i]);
+        int lo = secret_hex(text[2u * i + 1u]);
+        if (hi < 0 || lo < 0) {
+            ok = false;
+            break;
+        }
+        out[i] = (u8)((hi << 4) | lo);
+        any |= out[i];
+    }
+    if (any == 0u) ok = false;
+    secret_unset(name);
+    if (!ok) secret_wipe(out, size);
+    return ok;
 }

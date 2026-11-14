@@ -141,3 +141,11 @@ CoreAppSnapshotOutcome core_app_snapshot_outbox_push(CoreAppSnapshotOutbox *outb
                                                      const CoreAppSnapshot *snapshot);
 /* Pops the oldest snapshot. Returns false when the outbox is empty. */
 bool core_app_snapshot_outbox_pop(CoreAppSnapshotOutbox *outbox, CoreAppSnapshot *out);
+
+/* Reads the environment variable `name` as exactly 2*size hex digits into
+ * `out`, then removes the variable from the process environment whether or
+ * not it decoded, so child processes and later getenv calls never see the
+ * secret. An all-zero value is rejected as a placeholder. On failure `out`
+ * is zeroed. The initial environment block the kernel exposes (for example
+ * /proc/<pid>/environ) is not rewritten. */
+bool core_app_net_take_secret_env(const char *name, u8 *out, usize size);

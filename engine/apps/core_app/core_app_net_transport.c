@@ -97,28 +97,6 @@ static bool net_copy(char *out, usize capacity, const char *value) {
     return true;
 }
 
-static int net_hex(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-/* Decodes a 64-hex-digit key. An all-zero key is rejected: it is never a
- * real secret, only an unset or placeholder value. */
-static bool net_hex_decode(const char *text, u8 *out, usize size) {
-    u8 any = 0u;
-    if (!text || strlen(text) != size * 2u) return false;
-    for (usize i = 0u; i < size; ++i) {
-        int hi = net_hex(text[2u * i]);
-        int lo = net_hex(text[2u * i + 1u]);
-        if (hi < 0 || lo < 0) return false;
-        out[i] = (u8)((hi << 4) | lo);
-        any |= out[i];
-    }
-    return any != 0u;
-}
-
 bool core_app_net_parse_bind(const char *bind, char *host, usize host_capacity, u16 *port) {
     if (!bind || !host || !port || host_capacity == 0u) return false;
     const char *colon = strrchr(bind, ':');
@@ -354,7 +332,7 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
     SnowStatus status = SNOW_OK;
     const char *stage = "psk";
     t->trace = trace;
-    if (!net_hex_decode(getenv(t->psk_env), t->psk, sizeof(t->psk))) goto fail;
+    if (!core_app_net_take_secret_env(t->psk_env, t->psk, sizeof(t->psk))) goto fail;
     stage = "reactor";
     memset(&reactor_config, 0, sizeof(reactor_config));
     reactor_config.drive_mode = BREAK_NET_DRIVE_STEP;
