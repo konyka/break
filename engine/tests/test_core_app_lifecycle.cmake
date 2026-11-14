@@ -658,6 +658,24 @@ elif mode == "actors":
     if "2 User" not in text:
         raise SystemExit("the saved actor sidecar has no User row")
     data = text.replace("2 User", "2 UnknownUser").encode()
+elif mode == "stale_actor":
+    text = data.decode()
+    if "2 User" not in text:
+        raise SystemExit("the saved actor sidecar has no User row")
+    data = text.replace("2 User", "99 User").encode()
+elif mode == "zero_guid":
+    data = bytearray(data)
+    chunk_count = struct.unpack_from("<I", data, 8)[0]
+    for index in range(chunk_count):
+        kind, offset, size = struct.unpack_from("<III", data, 12 + index * 12)
+        if kind == 4:
+            if size < 12 or struct.unpack_from("<I", data, offset)[0] == 0:
+                raise SystemExit("the saved scene has no resources")
+            struct.pack_into("<Q", data, offset + 4, 0)
+            break
+    else:
+        raise SystemExit("the saved scene has no RESOURCES chunk")
+    data = bytes(data)
 else:
     raise SystemExit("unknown mode " + mode)
 with open(path, "wb") as output:
@@ -685,6 +703,8 @@ with open(directory + "/manifest.core", "wb") as output:
     foreach(case "truncated_scene;scene_1.bscn;truncate;fix;bscn"
                  "bad_flow;flow_1.fg;flow;fix;flow"
                  "unknown_actor;actors_1.sidecar;actors;fix;actor"
+                 "stale_actor;actors_1.sidecar;stale_actor;fix;actor"
+                 "render_resource;scene_1.bscn;zero_guid;fix;render"
                  "manifest_hash;scene_1.bscn;truncate;keep-manifest;checkpoint")
         list(GET case 0 case_name)
         list(GET case 1 case_file)

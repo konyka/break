@@ -1,3 +1,9 @@
+## Core App checkpoint 失败矩阵：失效 Actor 行与 render 资源 staging 失败（2026-11-14）
+
+- **交付**：`test_core_app_lifecycle_roundtrip` 的失败矩阵新增 stale_actor（sidecar 的 `2 User` 改为 `99 User`，期望 `stage=actor`）与 render_resource（BSCN 第一个资源 guid 写 0，期望 `stage=render`）。实现未改。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的补充小节。
+- **测试**：lifecycle 12/12；render 的 id 校验变异判红；只去掉 `parse_sidecar` 的存活判定是等价变异（`break_kernel_adopt` 仍拒绝），两处同时去掉后判红。
+- **未做**：`scene_state_save` 仍未接入 checkpoint；GPU 上传失败属于 commit 阶段的致命错误，不在失败矩阵内。
+
 ## Core App 音频满队列多生产者压测（2026-11-14）
 
 - **交付**：`test_core_app_runtime` 新增 `audio_owner_thread_survives_concurrent_full_queue_producers`。4 个生产者线程各入队 4096 条，同时 owner 线程消费、主线程持续调用不等待的 drain。断言 16384 条全部执行、OVERLOAD 计数与生产者观察值一致、sequence 在 trace 中严格递增、设备调用全在 owner 线程。实现未改。设计见 `docs/design/core_app_integration.md` 的 Task 9 补充小节。
@@ -131,7 +137,7 @@
 - **测试**：`test_core_app_lifecycle_roundtrip` 新增失败矩阵（截断 BSCN、错误 Flow、未知 Actor 类、manifest 哈希不符，均被拒且旧关卡继续）、standalone 段（删除资产后从 checkpoint 启动）和第二次保存失败无残留断言。
 - **变异**：find 不校验 payload、加载忽略 checkpoint 文件、保存失败不清理，均被杀死；“按 generation 拼场景文件名”为等价变异（runtime 查找已校验全部 payload）。
 - **回归**：`test_core_app_` 27/27；ASan+UBSan 14/14、TSan 14/14；非图形全量 381/381。
-- **边界**：`scene_state_save` 未接入；错误 Actor generation、资源 staging 失败两项用例未做。
+- **边界**：`scene_state_save` 未接入；错误 Actor generation、资源 staging 失败两项用例未做（2026-11-14 已补，见顶部条目）。
 
 ## 本机 macOS 复验（2026-11-13）
 

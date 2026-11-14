@@ -464,6 +464,24 @@ BSCN/Flow/Actor/scene_state 侧车；错误 Actor generation、截断 BSCN、错
 
 `scene_state_save`（物理体等场景运行态）没有写进 checkpoint，动态墙仍由 runtime 标志重建；错误 Actor generation 与 GPU/record 资源 staging 失败两项失败矩阵用例未做。
 
+### 补充：失效 Actor 行与 render 资源 staging 失败（2026-11-14）
+
+上面两项失败矩阵用例已补到 `test_core_app_lifecycle_roundtrip`（矩阵代码在 `engine/tests/test_core_app_lifecycle.cmake` 的 `SIM_MODE=roundtrip` 分支）。实现未改。
+
+| 用例 | 改动 | 期望 |
+|---|---|---|
+| stale_actor | `actors_1.sidecar` 中 `2 User` 改为 `99 User` | `load_rejected stage=actor` |
+| render_resource | `scene_1.bscn` RESOURCES chunk 第一个资源的 guid 写成 0 | `load_rejected stage=render` |
+
+两项同样同步更新 manifest 的长度和哈希，并沿用矩阵的其余断言：没有 `event=load`、没有构建 generation 2、当前关卡在 tick 39 → 41 继续前进、运行正常停止。
+
+- “错误 Actor generation”的含义：sidecar 每行只有“实体序号 类名”，不带 generation。实体的代际由 `parse_sidecar`（`engine/src/kernel/break_kernel_level.c`）按候选关卡自己的 world 核对，序号越界或槽位不是存活实体就返回 `BREAK_KERNEL_STALE`；`break_kernel_adopt` 再用 `world_entity_exists` 检查一次。用例让 sidecar 指向本代 world 不存在的实体。
+- render staging：BSCN 没有内容校验和，guid 为 0 的资源能通过解码，由 `core_app_render_stage_level` 以 `INVALID` 拒绝。这是 record 资源表的 staging；GPU 上传失败走的是 commit 阶段的 `gpu_upload`，属于运行时致命错误，不在失败矩阵内。
+- 变异：
+  - `core_app_render_stage_level` 不检查 `id == 0`，render_resource 判红。
+  - 只去掉 `parse_sidecar` 的越界和存活判定时没有判红，因为 `break_kernel_adopt` 的存活检查仍会拒绝，这是等价变异。两处判定同时去掉后，stale_actor 判红：拒绝阶段变成 `stage=state`。
+- `test_core_app_lifecycle` 12/12 通过；ASan+UBSan 与 TSan 树的 `test_core_app_` 中，非 GPU 用例全部通过。GPU 用例（`test_core_app_gpu_*`，标签 `gpu`）在 sanitizer 树中失败，与本节无关：ASan 报 swapchain 重建路径 `vk_retire_push`（`engine/src/rhi/rhi_vk.c`）分配的退役记录泄漏，TSan 报的竞争位于 Vulkan validation layer 内部线程。这两项作为下一项单独处理。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。
