@@ -5,6 +5,7 @@
 #include <network/break_net_message_registry.h>
 #include <network/break_session.h>
 #include <platform/platform_fs.h>
+#include <platform/time.h>
 #include <snow/acceptor.h>
 #include <snow/endpoint.h>
 
@@ -27,9 +28,11 @@ _Static_assert(CORE_APP_SNAPSHOT_MAX_BYTES == BREAK_NET_CORE_SNAPSHOT_MAX_PAYLOA
 #define CORE_APP_NET_EVENTS_PER_TICK 64u
 #define CORE_APP_NET_DRAIN_STEP_MS 1
 #define CORE_APP_NET_MAX_POLL_MS 100u
-/* A connection that has not authenticated this many ticks after it opened
- * is closed, so idle TLS peers cannot hold every slot. */
-#define CORE_APP_NET_AUTH_DEADLINE_TICKS 180u
+/* A connection that has not authenticated this long after it opened is
+ * closed, so idle TLS peers cannot hold every slot. Measured on the
+ * monotonic clock: the tick rate depends on --net-poll-ms and on whether
+ * the output paces frames, so a tick count is no deadline a peer can meet. */
+#define CORE_APP_NET_AUTH_DEADLINE_MS 3000u
 #define CORE_APP_NET_PATH_CAPACITY 512u
 
 static const u8 k_core_app_net_key_id[8] = {'c', 'o', 'r', 'e', 'a', 'p', 'p', '1'};
@@ -67,12 +70,13 @@ struct CoreAppNetTransport {
     bool auth_installed;
     bool admission_open;
     bool producing;
+    bool leaked;
     u64 live_generation;
     BreakConnectionKey keys[CORE_APP_NET_MAX_CONNECTIONS];
     bool authenticated[CORE_APP_NET_MAX_CONNECTIONS];
     bool closing[CORE_APP_NET_MAX_CONNECTIONS];
     BreakSessionId session_ids[CORE_APP_NET_MAX_CONNECTIONS];
-    u32 opened_tick[CORE_APP_NET_MAX_CONNECTIONS];
+    u64 opened_us[CORE_APP_NET_MAX_CONNECTIONS];
     CoreAppSnapshot scratch_snapshot;
     u8 scratch_wire[CORE_APP_SNAPSHOT_MAX_BYTES];
     CoreAppSnapshotInbox inbox;
@@ -181,7 +185,7 @@ static int net_slot_add(CoreAppNetTransport *t, BreakConnectionKey key) {
             t->authenticated[i] = false;
             t->closing[i] = false;
             t->session_ids[i] = 0u;
-            t->opened_tick[i] = t->current_tick;
+            t->opened_us[i] = time_microseconds();
             return (int)i;
         }
     }
@@ -236,7 +240,8 @@ static void net_sync_sessions(CoreAppNetTransport *t, u32 tick) {
                    state == BREAK_SESSION_UNKNOWN) {
             net_close_slot(t, i);
         } else if (!t->authenticated[i] &&
-                   tick - t->opened_tick[i] >= CORE_APP_NET_AUTH_DEADLINE_TICKS) {
+                   time_microseconds() - t->opened_us[i] >=
+                       (u64)CORE_APP_NET_AUTH_DEADLINE_MS * 1000u) {
             t->stats.auth_timeouts++;
             net_close_slot(t, i);
         }
@@ -484,12 +489,14 @@ static void net_trace_stats(CoreAppNetTransport *t) {
 /* Idempotent. The reactor is stopped whenever it exists, whatever state a
  * failed start left it in: break_net_reactor_destroy is a no-op on a
  * started reactor, and the acceptor must not die while a live reactor still
- * holds it. If the stop fails, both are kept (leaked on purpose) and the
- * result says so. */
+ * holds it. If the stop fails, both are kept (leaked on purpose), the
+ * result says so, and every later call returns TIMEOUT without touching
+ * them again. */
 static BreakRuntimeError net_destroy(void *user) {
     CoreAppNetTransport *t = (CoreAppNetTransport *)user;
     BreakRuntimeError result = BREAK_RUNTIME_OK;
     if (!t) return BREAK_RUNTIME_INVALID;
+    if (t->leaked) return BREAK_RUNTIME_TIMEOUT;
     if (t->listening) net_trace_stats(t);
     t->listening = false;
     t->started = false;
@@ -502,11 +509,12 @@ static BreakRuntimeError net_destroy(void *user) {
         if (t->reactor) break_net_reactor_destroy(t->reactor);
         if (t->acceptor) SnowAcceptorDestroy(t->acceptor);
         t->acceptor = NULL;
+        t->reactor = NULL;
     } else {
         net_trace(t, "COREAPPTRACE version=1 event=network result=stop_timeout\n");
+        t->leaked = true;
         result = BREAK_RUNTIME_TIMEOUT;
     }
-    t->reactor = NULL;
     if (t->auth_installed) {
         if (break_session_set_auth(NULL, NULL)) {
             t->auth_installed = false;
@@ -549,9 +557,12 @@ CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConf
     return t;
 }
 
+/* A failed destroy leaves a running reactor or the global auth hook
+ * pointing at the transport, so the memory is leaked on purpose instead
+ * of freed under them. */
 void core_app_net_transport_free(CoreAppNetTransport *transport) {
     if (!transport) return;
-    (void)net_destroy(transport);
+    if (net_destroy(transport) != BREAK_RUNTIME_OK) return;
     free(transport);
 }
 

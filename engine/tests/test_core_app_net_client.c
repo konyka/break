@@ -419,9 +419,24 @@ static void scenario_alive_at_end(void) {
     client_close(&f);
 }
 
+/* G: TLS, then a pause of about one second, then AUTH. The deadline is
+ * measured in wall-clock time, so a server that ticks every millisecond
+ * must still accept a peer that authenticates within it. */
+static void scenario_late_auth(void) {
+    NetClient g;
+    CoreAppSnapshot snapshot;
+    struct timespec pause = {1, 0};
+    check(client_open(&g), "g_tls_challenge");
+    nanosleep(&pause, NULL);
+    check(client_auth(&g, g_psk), "g_auth_sent_after_pause");
+    check(client_next_snapshot(&g, &snapshot, 5000u) == 1, "g_receives_snapshot_after_late_auth");
+    client_close(&g);
+}
+
 int main(int argc, char **argv) {
-    if (argc != 3) {
-        fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE\n");
+    bool late_auth = argc == 4 && strcmp(argv[3], "late-auth") == 0;
+    if (argc != 3 && !late_auth) {
+        fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE [late-auth]\n");
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -429,7 +444,9 @@ int main(int argc, char **argv) {
     if (!g_report) return 2;
     check(read_psk(), "psk_from_environment");
     check(wait_port(argv[1]), "port_file_published");
-    if (g_failures == 0) {
+    if (g_failures == 0 && late_auth) {
+        scenario_late_auth();
+    } else if (g_failures == 0) {
         scenario_authenticated();
         scenario_unauthenticated();
         scenario_unknown_id();

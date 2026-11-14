@@ -135,6 +135,19 @@ if(NETWORK_ENABLED AND NETWORK_TRANSPORT)
         --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt
         --net-poll-ms 101)
     expect_last_error(network_bad_poll_ms "--net-poll-ms requires 0..100")
+    expect_exit(network_long_poll_ms 2 --network --bind 127.0.0.1:0 --tls-cert c.pem
+        --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt
+        --net-poll-ms 0001)
+    expect_last_error(network_long_poll_ms "--net-poll-ms requires 0..100")
+    # "00" is a valid zero. The run then fails later (the PSK variable is
+    # unset), which shows the option itself was accepted.
+    expect_exit(network_zero_padded_poll_ms 2 --network --bind 127.0.0.1:0 --tls-cert c.pem
+        --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt
+        --net-poll-ms 00)
+    get_property(err GLOBAL PROPERTY CORE_APP_LAST_ERR)
+    if("${err}" MATCHES "--net-poll-ms requires|unknown or malformed argument")
+        record_error("network_zero_padded_poll_ms: 00 was rejected as a CLI error: ${err}")
+    endif()
 elseif(NETWORK_ENABLED)
     expect_runtime_failed(network_enabled_but_unimplemented --network)
     expect_exit(network_transport_options_absent 2 --bind 127.0.0.1:0)

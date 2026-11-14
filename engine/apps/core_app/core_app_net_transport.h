@@ -27,6 +27,9 @@ typedef struct CoreAppNetTransportConfig {
 /* Validates the configuration shape (every field present, bind parses).
  * Reads no secret and opens no socket; start does both. */
 CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConfig *config);
+/* Destroys and frees the transport. When the destroy fails (the reactor did
+ * not stop, or the global auth hook could not be cleared) the memory is
+ * leaked on purpose, because live code still points at it. */
 void core_app_net_transport_free(CoreAppNetTransport *transport);
 
 /* Fills hooks bound to the transport. The transport must outlive the run. */

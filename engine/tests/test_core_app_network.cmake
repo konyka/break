@@ -13,6 +13,10 @@
 # MODE=start_failure: every start failure must exit 2 with a rejected stage,
 # leave no port file, and (in sanitizer trees) report no leak.
 #
+# MODE=late_auth: the server ticks every millisecond and one peer waits
+# about a second between TLS and AUTH. The authentication deadline is wall
+# clock, so the peer must still authenticate and receive a snapshot.
+#
 # MODE=offline: the same scenario twice without --network must give
 # byte-identical traces with no network line. In a build without the
 # transport, nm must find no break_net_/break_session_/snow_/Snow symbol.
@@ -140,7 +144,7 @@ if(MODE STREQUAL "start_failure")
     return()
 endif()
 
-if(NOT MODE STREQUAL "loopback")
+if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth")
     message(FATAL_ERROR "unknown MODE=${MODE}")
 endif()
 foreach(var NET_CLIENT TLS_CERT TLS_KEY)
@@ -152,11 +156,19 @@ endforeach()
 # Test-only key; it is passed through the environment, never on argv.
 set(ENV{CORE_APP_TEST_PSK}
     "0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff0")
+set(poll_ms 16)
+set(client_mode "")
+if(MODE STREQUAL "late_auth")
+    set(poll_ms 1)
+    set(client_mode late-auth)
+endif()
 execute_process(
     COMMAND "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/network.trace"
         --network --bind 127.0.0.1:0 --tls-cert "${TLS_CERT}" --tls-key "${TLS_KEY}"
-        --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port" --net-poll-ms 16
+        --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port"
+        --net-poll-ms ${poll_ms}
     COMMAND "${NET_CLIENT}" "${WORK_DIR}/server.port" "${WORK_DIR}/client.report"
+        ${client_mode}
     RESULTS_VARIABLE results
     OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
 unset(ENV{CORE_APP_TEST_PSK})
@@ -190,6 +202,15 @@ if(NOT trace MATCHES "COREAPPTRACE version=1 event=network_stats[^\n]*")
 endif()
 set(stats "${CMAKE_MATCH_0}")
 message(STATUS "${stats}")
+if(MODE STREQUAL "late_auth")
+    stat_value("${stats}" authenticated authenticated)
+    stat_value("${stats}" auth_timeouts auth_timeouts)
+    if(NOT authenticated EQUAL 1 OR NOT auth_timeouts EQUAL 0)
+        message(FATAL_ERROR "the late peer must authenticate before the deadline: ${stats}")
+    endif()
+    message(STATUS "core_app late authentication contract passed")
+    return()
+endif()
 stat_value("${stats}" authenticated authenticated)
 if(NOT authenticated EQUAL 2)
     message(FATAL_ERROR "peers A and F hold the PSK; authenticated=${authenticated}")

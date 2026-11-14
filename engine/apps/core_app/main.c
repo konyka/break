@@ -86,6 +86,22 @@ static bool parse_frames(const char *value, u32 *out) {
     return true;
 }
 
+#if CORE_APP_NET_TRANSPORT
+/* One to three decimal digits, at most 100. Unlike --frames, zero (also
+ * written "00" or "000") is valid: it means no pacing. */
+static bool parse_poll_ms(const char *value, u32 *out) {
+    u32 parsed = 0u;
+    usize length = 0u;
+    for (const char *p = value; *p != '\0'; ++p, ++length) {
+        if (*p < '0' || *p > '9' || length >= 3u) return false;
+        parsed = parsed * 10u + (u32)(*p - '0');
+    }
+    if (length == 0u || parsed > 100u) return false;
+    *out = parsed;
+    return true;
+}
+#endif
+
 int main(int argc, char **argv) {
     CoreAppConfig config = {
         .asset_root = "assets/core_app",
@@ -156,11 +172,8 @@ int main(int argc, char **argv) {
             net_option_seen = true;
         } else if ((matched = take_value(argc, argv, &i, "--net-poll-ms", &value)) != 0) {
             u32 poll_ms = 0u;
-            if (matched < 0 || strcmp(value, "0") == 0) {
-                if (matched < 0) return cli_error("--net-poll-ms requires 0..100");
-            } else if (!parse_frames(value, &poll_ms) || poll_ms > 100u) {
+            if (matched < 0 || !parse_poll_ms(value, &poll_ms))
                 return cli_error("--net-poll-ms requires 0..100");
-            }
             net_config.poll_ms = poll_ms;
             net_option_seen = true;
 #endif

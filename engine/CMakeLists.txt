@@ -5310,6 +5310,19 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
         set_tests_properties(test_core_app_network_loopback PROPERTIES
             LABELS "network;snowflake;core_app" TIMEOUT 180)
+        add_test(NAME test_core_app_network_late_auth
+            COMMAND ${CMAKE_COMMAND}
+                -DMODE=late_auth
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNET_CLIENT=$<TARGET_FILE:test_core_app_net_client>
+                -DASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+                -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_network_late_auth.scenario
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/core_app_network_late_auth
+                -DTLS_CERT=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem
+                -DTLS_KEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
+        set_tests_properties(test_core_app_network_late_auth PROPERTIES
+            LABELS "network;snowflake;core_app" TIMEOUT 180)
         add_test(NAME test_core_app_network_start_failure
             COMMAND ${CMAKE_COMMAND}
                 -DMODE=start_failure
