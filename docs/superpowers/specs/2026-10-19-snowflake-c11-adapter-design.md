@@ -4,7 +4,7 @@
 
 ## Goal
 
-Integrate the Break C11 runtime with `/home/timeshift/opensource/snowflake` without reimplementing transport primitives, while preserving strict GameThread ownership of game state and enabling both a dedicated reactor-thread mode and a deterministic step-driven test/editor mode.
+Integrate the Break C11 runtime with `/home/timeshift/opensource/snowflake` without reimplementing transport primitives, while preserving strict LogicThread ownership of application state and enabling both a dedicated reactor-thread mode and a deterministic step-driven test/editor mode.
 
 ## Scope
 
@@ -25,12 +25,12 @@ It does not implement ECS replication, AoI, login business rules, Lua bindings, 
 
 Snowflake is a C project (`project(... LANGUAGES C)`, C11 interface) and currently exposes a passive `snow_net_thread_t` reactor. The reactor is driven by `snow_net_thread_run()` or `snow_net_thread_step()` on exactly one driver thread. It does not create the host pthread itself. Cross-context `_send`, `_close`, and `_terminate` operations use Snowflake's notification path and are drained by the reactor.
 
-The adapter may use Snowflake's `snow_net_thread_t`, `snow_connection_t`, `snow_connection_list_t`, `snow_acceptor_t`, `snow_epoller_t`, `snow_send_context_t`, `snow_recv_context_t`, `snow_network_buffer_t`, `snow_thread_t`, atomic primitives, and queues. It must not expose those concrete types through the game-facing API.
+The adapter may use Snowflake's `snow_net_thread_t`, `snow_connection_t`, `snow_connection_list_t`, `snow_acceptor_t`, `snow_epoller_t`, `snow_send_context_t`, `snow_recv_context_t`, `snow_network_buffer_t`, `snow_thread_t`, atomic primitives, and queues. It must not expose those concrete types through the application-facing API.
 
 ## Architecture
 
 ```text
-Break GameThread
+Break LogicThread
   |  validated inbound messages
   v
 BreakNetAdapter inbound queue
@@ -47,8 +47,8 @@ Snowflake reactor host thread
   | outbound commands
 BreakNetAdapter outbound queue
   ^
-  | GameThread submits send request
-Break GameThread
+  | LogicThread submits send request
+Break LogicThread
 ```
 
 ### Drive modes
@@ -56,7 +56,7 @@ Break GameThread
 - `BREAK_NET_DRIVE_THREAD`: Break creates one host OS thread for each adapter reactor. That thread alone calls Snowflake run/step APIs.
 - `BREAK_NET_DRIVE_STEP`: the caller alone drives `step`; used by deterministic unit tests, offline tools, and editor-local preview.
 - A reactor cannot switch modes after `start`.
-- No adapter API performs a blocking wait on the GameThread.
+- No adapter API performs a blocking wait on the LogicThread.
 
 ### Ownership
 
@@ -65,7 +65,7 @@ Break GameThread
 - Break owns copied inbound envelopes after the parser callback returns.
 - Break owns outbound command payloads until the reactor callback converts them to Snowflake send contexts.
 - `BreakNetMessageView.data` is callback/poll scoped and must not be retained.
-- GameThread owns sessions, ECS, World, and Lua.
+- LogicThread owns sessions, ECS, World, and Lua.
 
 ## Public C11 API
 
@@ -108,8 +108,8 @@ The implementation may add a bounded polling API and an outbound send API, but a
 ## Thread Rules
 
 - Snowflake parser/connection callbacks only validate framing, copy or transfer bounded data, update metrics, and enqueue an event.
-- They must not call Lua, mutate ECS/World, call UI/RHI, perform blocking file/database work, or wait for GameThread.
-- GameThread is the only owner of game sessions and gameplay state.
+- They must not call Lua, mutate ECS/World, call UI/RHI, perform blocking file/database work, or wait for LogicThread.
+- LogicThread is the only owner of application sessions and logic state.
 - `break_net_reactor_step` and Snowflake run APIs are single-driver operations.
 - Stop first prevents new application messages, then wakes the reactor, stops accepts, drains or rejects sends according to policy, closes connections, joins the host thread, and only then destroys Snowflake objects.
 
@@ -126,7 +126,7 @@ The adapter validates before dispatch:
 7. payload bounds;
 8. optional authentication/integrity metadata supplied by the later protocol layer.
 
-The adapter never interprets gameplay payload fields.
+The adapter never interprets logic payload fields.
 
 ## Error Model
 
@@ -158,7 +158,7 @@ The first implementation is accepted only when tests cover:
 - queue overload mapping;
 - invalid length/version/sequence rejection;
 - unknown message behavior;
-- callback never directly mutating GameThread-owned state;
+- callback never directly mutating LogicThread-owned state;
 - Snowflake-disabled configuration failure without a hidden fallback;
 - Linux C11 build;
 - Windows C11 build when the platform toolchain is available;
@@ -170,10 +170,10 @@ Later subsystems depend only on the adapter contract:
 
 - Session/login layer consumes connection events and sends authenticated responses.
 - Replication/AoI consumes validated inbound commands and immutable snapshots.
-- Lua consumes GameThread-dispatched messages only.
+- Lua consumes LogicThread-dispatched messages only.
 - myui Scene Editor uses a separate editor protocol over the same adapter.
 - Diagnostics consumes adapter metrics and bounded event records.
 
 ## Non-goals and Limits
 
-The adapter does not promise that external Snowflake or platform library internals are thread-safe beyond the documented single-driver and queue contracts. It does not provide client trust, anti-cheat guarantees, gameplay authorization, or encryption policy by itself. Those are later protocol/security layers and must not be silently inferred from transport availability.
+The adapter does not promise that external Snowflake or platform library internals are thread-safe beyond the documented single-driver and queue contracts. It does not provide client trust, anti-cheat guarantees, logic authorization, or encryption policy by itself. Those are later protocol/security layers and must not be silently inferred from transport availability.

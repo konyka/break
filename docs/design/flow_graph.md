@@ -7,13 +7,13 @@
 
 交付一个真正可执行的 C11 Flow Graph，而不是重命名 `rule_engine`。图包含有界稳定节点 id、显式端口、事件、数学/比较、实体动作、延迟、顺序/条件分支、环检测、每帧节点预算和确定性事件队列。版本化二进制序列化拒绝损坏的长度、引用、类型和范围。编辑器使用现有 myui 列表与输入控件编辑节点、连接和属性，所有修改进入 `BreakEditorDoc` 已有的 undo/redo 命令栈。
 
-不实现通用脚本语言、不引入新 UI 框架、不把 Flow Graph 链入 `engine`、`engine_demo` 或 `dxx_break`。本设计采用整数 tick 延迟，不用墙钟时间；GameThread 独占运行时可变状态和实体动作。
+不实现通用脚本语言、不引入新 UI 框架、不把 Flow Graph 链入 `engine`、`engine_demo` 或 `dxx_break`。本设计采用整数 tick 延迟，不用墙钟时间；LogicThread 独占运行时可变状态和实体动作。
 
 ## 2. 方案取舍
 
 ### 采用：独立图资产 + 有界运行时 + 原子实体动作批次
 
-`break_flow` 分为图资产与运行时。资产只保存节点、连接和稳定 id；运行时借用资产和 `BreakGame`，创建时预分配事件队列、动作批次及快照。实体动作先暂存，在 tick 末尾由 `break_game` 一次校验并提交。这样图求值失败或动作失败不会留下半个 tick 的世界修改。
+`break_flow` 分为图资产与运行时。资产只保存节点、连接和稳定 id；运行时借用资产和 `BreakKernel`，创建时预分配事件队列、动作批次及快照。实体动作先暂存，在 tick 末尾由 `break_kernel` 一次校验并提交。这样图求值失败或动作失败不会留下半个 tick 的世界修改。
 
 ### 备选：节点回调直接修改 World
 
@@ -58,7 +58,7 @@
 
 运行时在 tick 起点备份固定队列、sequence 和 tick。节点执行期间，实体动作只写入固定容量动作批次。发生无效数值、引用失效、队列溢出或实体提交失败时，恢复 tick 起点运行时状态；由于实体动作尚未提交，World 保持不变。
 
-`break_game_entity_actions_apply` 接收有界 `SET_POSITION` / `INVENTORY_ADD` 批次。它先验证 owner、所有 generation 句柄、位置组件、有限坐标、物品定义、正整数数量及同 actor/item 的聚合堆叠上限，再一次写入。任一动作失败则整批不修改。该入口也可被其他 GameThread 消费者直接调用，并有独立测试。
+`break_kernel_entity_actions_apply` 接收有界 `SET_POSITION` / `INVENTORY_ADD` 批次。它先验证 owner、所有 generation 句柄、位置组件、有限坐标、物品定义、正整数数量及同 actor/item 的聚合堆叠上限，再一次写入。任一动作失败则整批不修改。该入口也可被其他 LogicThread 消费者直接调用，并有独立测试。
 
 预算耗尽不是执行失败：已完成动作前缀在帧尾提交，未完成节点仍留在队列。动作提交只在节点处理结束或预算停止时发生一次。
 
@@ -96,7 +96,7 @@ headless dummy-PAL 测试直接对真实 widget emitter 发送 click/activate，
 
 关键变异至少覆盖：关闭环检测必须使环测试变红；忽略每帧预算必须使预算测试变红；放宽序列化引用/范围检查必须使对应损坏输入测试变红；实体批次缺少预校验必须使原子性测试变红。每个变异完成后立即恢复生产源码并重跑正常测试。
 
-focused normal、ASan+UBSan、TSan 均使用 `-j3` 构建并运行 Flow/Game/Editor 测试；TSan 另跑跨线程拒绝探针。最终运行相关既有回归、`git diff --check`，并进行只读代码审查。未执行的真实 GPU 交互、人工视觉检查和跨平台设备验证不作为已完成证据。
+focused normal、ASan+UBSan、TSan 均使用 `-j3` 构建并运行 Flow/Application/Editor 测试；TSan 另跑跨线程拒绝探针。最终运行相关既有回归、`git diff --check`，并进行只读代码审查。未执行的真实 GPU 交互、人工视觉检查和跨平台设备验证不作为已完成证据。
 
 2026-11-10 跨平台补充：MSVC `/W4 /WX` 不接受测试直接对 `position(&f)` 返回对象的数组成员做下标（C4223）。测试现通过 `position_x()` 内的命名 `Vec3` lvalue 读取 `e[0]`，保持 12 项运行时行为与全部数值断言不变；Flow 生产代码和公共 API 未改。Linux 上 MSVC 兼容 Clang AST 合同及 clang-cl 语法检查只作本地证据，native MSVC 仍由后续 CI 验证。
 

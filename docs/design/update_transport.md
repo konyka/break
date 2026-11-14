@@ -59,4 +59,4 @@ Mutations that turn it red: the server ignoring Range, the client ignoring the p
 - Windows support for `break_http` and the server; the Windows and macOS lanes were not run.
 - Certificate revocation checking (CRL/OCSP), certificate pinning, and any custody of the offline signing key (unchanged from `update_client.md`).
 - Interruptible DNS.
-- Wiring into the editor or a game: nothing in this repository links `break_http` yet, so no shipped binary downloads updates.
+- Wiring into the editor or an application: nothing in this repository links `break_http` yet, so no shipped binary downloads updates.

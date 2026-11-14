@@ -2,13 +2,13 @@
 
 ## 1. 文档定位
 
-本文记录 2026-11-01 的 CryENGINE 模块对照如何收成一条可验收的补齐路线，并钉到当前仓库里已经存在的模块。实施步骤在 [`docs/superpowers/plans/2026-11-01-cry-style-gameplay.md`](../superpowers/plans/2026-11-01-cry-style-gameplay.md)。
+本文记录 2026-11-01 的 CryENGINE 模块对照如何收成一条可验收的补齐路线，并钉到当前仓库里已经存在的模块。实施步骤在 [`docs/superpowers/plans/2026-11-01-core-style-actions.md`](../superpowers/plans/2026-11-01-core-style-actions.md)。
 
-阶段 A 到 F、D、E 已有代码和 focused 测试，normal / ASan+UBSan / TSan 通过。旧的可玩原型（`test_cry_style_prototype` 一系）是 headless 的，本文下面章节保留对它的描述。
+阶段 A 到 F、D、E 已有代码和 focused 测试，normal / ASan+UBSan / TSan 通过。旧的可玩原型（`test_core_style_prototype` 一系）是 headless 的，本文下面章节保留对它的描述。
 
 2026-11 起的 `core_app` 是另一条线：它是可执行主程序，具备真实设备渲染通道（Vulkan 与 OpenGL，`--render=vulkan|opengl --require-device`），并在 640×480 上产出像素证据、经 `test_core_app_gpu_vulkan`/`_opengl` 校验；音频有 256 条有界命令队列与 record/null/device 三种模式；`--audio=device` 会打开真实播放设备、播放一次探测音，并由命令队列驱动设备（听者每 tick 跟随用户；`test_core_app_audio_device`）。但关卡还不产生 PLAY_3D 声音事件。无设备主机如实报告 UNAVAILABLE。网络仍是默认关闭的边界层（snapshot 编解码 + 权威防火墙），真实 TLS/Session 传输未接线。因此“有 GPU、音频设备由命令队列驱动但关卡声音事件未接入、无真实网络”才是 `core_app` 的准确表述，不能套用旧原型的 headless 结论。
 
-植被、昼夜、VisArea 和块驻留的 CPU 结果不证明画面；`core_app` 的 GPU 证据证明的是“设备真实、几何到达目标、两后端一致”，不是逐对象影像回归。布娃娃和射线载具的测试不证明驾驶手感。`break_game` 与 `break_ai` 没有链入 `engine`。
+植被、昼夜、VisArea 和块驻留的 CPU 结果不证明画面；`core_app` 的 GPU 证据证明的是“设备真实、几何到达目标、两后端一致”，不是逐对象影像回归。布娃娃和射线载具的测试不证明驾驶手感。`break_kernel` 与 `break_ai` 没有链入 `engine`。
 
 对照来源是 CryENGINE 各模块与 Break 现有代码的差距，不是代码行数竞赛。Cry 侧行数只说明对方体量；Break 侧以源码路径为准。外部行为未在本仓库复核的细节保持未知，不写成需求。
 
@@ -43,7 +43,7 @@ AI 是最大的空白，但它要挂在 Actor 和关卡上才成为运行时能�
 
 ```mermaid
 flowchart TD
-    kernel[PhaseA_GameplayKernel]
+    kernel[PhaseA_ActorKernel]
     ai[PhaseB_NavigationAndBehavior]
     anim[PhaseC_Locomotion]
     proto[PhaseF_PlayablePrototype]
@@ -62,9 +62,9 @@ flowchart TD
 ## 4. 所有权与语言
 
 - 运行时核心继续是 C11。新增公共类型使用 `engine/src/core/types.h` 的 `u8/u16/u32/u64/f32`。
-- Game 线程独占可变的 `World`、Actor 表、导航查询缓存、行为树、动画混合状态和物理世界。其它线程只提交烘焙结果或资源字节，不调用这些对象的 step。
+- Application 线程独占可变的 `World`、Actor 表、导航查询缓存、行为树、动画混合状态和物理世界。其它线程只提交烘焙结果或资源字节，不调用这些对象的 step。
 - 网络回调继续只做校验、拷贝和入队。AI、动画、关卡加载都不在网络线程上运行。
-- `break_game` 与 `break_ai` 是正式可选静态库：顶层 CMake target，`ENGINE_BUILD_TESTS=OFF` 时也产出，本计划不把它们链入 `engine`、`engine_demo`、`dxx_break`。接入 demo 是每阶段最后单独的集成任务，通过之后才能写“已接入运行时”。
+- `break_kernel` 与 `break_ai` 是正式可选静态库：顶层 CMake target，`ENGINE_BUILD_TESTS=OFF` 时也产出，本计划不把它们链入 `engine`、`engine_demo`、`dxx_break`。接入 demo 是每阶段最后单独的集成任务，通过之后才能写“已接入运行时”。
 - 动画和物理的增量改现有模块，因为类型已经在 `engine` 里。改动保持固定容量，热路径不在 step 内 `malloc`。
 - 渲染增量（植被、昼夜、VisArea、地形块）留在 `engine/src/renderer/`，因为它们必须碰 RHI。`break_ai` 不包含 `renderer/terrain.h`：导航烘焙吃一份纯 CPU 的高度图副本（`f32` 网格、原点、格子大小、高度缩放）。
 
@@ -89,7 +89,7 @@ Actor 不是 C++ 类层次。一个 Actor 是一个 `Entity` 加上类注册表�
 
 ### 5.2 关卡
 
-关卡加载由宿主回调完成。`break_game` 不链接 `scene_serial` 和渲染器。回调签名接收路径和 `World*`，由集成层调用现有 `scene_load_binary`。
+关卡加载由宿主回调完成。`break_kernel` 不链接 `scene_serial` 和渲染器。回调签名接收路径和 `World*`，由集成层调用现有 `scene_load_binary`。
 
 加载成功后，内核按一份关卡侧车（每行：实体 index、类名）把已有实体登记成 Actor。侧车缺失时关卡仍然算加载成功，Actor 数量为 0。卸载销毁内核登记过的 Actor，并调用宿主的卸载回调；`World` 本身由宿主释放。
 
@@ -107,15 +107,15 @@ Actor 不是 C++ 类层次。一个 Actor 是一个 `Entity` 加上类注册表�
 
 ### 5.4 Area
 
-触发区是轴对齐盒或球，挂在关卡坐标里。每帧用 Actor 脚底位置做进入/停留/离开，边界外加 0.25 m 滞回，避免站在边上反复触发。回调在 Game 线程同步调用，签名是区域 id、Actor 实体、事件种类。
+触发区是轴对齐盒或球，挂在关卡坐标里。每帧用 Actor 脚底位置做进入/停留/离开，边界外加 0.25 m 滞回，避免站在边上反复触发。回调在 Application 线程同步调用，签名是区域 id、Actor 实体、事件种类。
 
 上限：256 个区域，每个区域每帧最多报告 64 个进入或离开。超出的 Actor 留到下一帧，返回值里带 `OVERLOAD` 计数，不丢状态。
 
 ### 5.5 物品与武器（后续增量，已交付）
 
-固定物品表和事务式背包已经落地；武器增量复用同一 Actor 槽与背包存储。每种武器由宿主定义弹药物品、伤害、弹匣容量、开火间隔和装填 tick。装备、冷却、装填、退弹与 despawn 清理由 `break_game` 状态机处理，所有公开操作检查 owner 和 Entity generation。
+固定物品表和事务式背包已经落地；武器增量复用同一 Actor 槽与背包存储。每种武器由宿主定义弹药物品、伤害、弹匣容量、开火间隔和装填 tick。装备、冷却、装填、退弹与 despawn 清理由 `break_kernel` 状态机处理，所有公开操作检查 owner 和 Entity generation。
 
-equip 只选择武器且弹匣从 0 开始，Actor 时钟/冷却跨 unequip/equip 保留。装填完成时原子扣备弹，失败时武器状态和 inventory 完整回滚并可重试；unequip 容量不足不改装备或物品。开火只输出 `BreakGameFireIntent`，其中伤害来自服务端配置、序号全 `BreakGame` 单调。命中、目标生命和客户端裁决仍未交付。API、事务与测试命令见 [`gameplay_items_weapons.md`](gameplay_items_weapons.md)，行为测试为 `test_break_game_items` 和 `test_break_game_weapons`。
+equip 只选择武器且弹匣从 0 开始，Actor 时钟/冷却跨 unequip/equip 保留。装填完成时原子扣备弹，失败时武器状态和 inventory 完整回滚并可重试；unequip 容量不足不改装备或物品。开火只输出 `BreakKernelFireIntent`，其中伤害来自服务端配置、序号全 `BreakKernel` 单调。命中、目标生命和客户端裁决仍未交付。API、事务与测试命令见 [`items_weapons.md`](items_weapons.md)，行为测试为 `test_break_kernel_items` 和 `test_break_kernel_weapons`。
 
 ## 6. 阶段 B — 导航与行为
 
@@ -210,7 +210,7 @@ D 和 E 另有自己的测试，不作为本切片的门槛。
 
 ## 11. 后续能力补齐（2026-11-02 更新）
 
-旧版把下列能力留在范围外；用户随后要求实现所有未覆盖项，因此该排除决定已由 `docs/superpowers/specs/2026-11-02-cry-capability-completion-design.md` 取代。下列能力按独立子项目实施，不再把“旧计划排除”写成当前状态；只有对应代码、测试和文档实际交付后才能标为完成。
+旧版把下列能力留在范围外；用户随后要求实现所有未覆盖项，因此该排除决定已由 `docs/superpowers/specs/2026-11-02-core-capability-completion-design.md` 取代。下列能力按独立子项目实施，不再把“旧计划排除”写成当前状态；只有对应代码、测试和文档实际交付后才能标为完成。
 
 - P2：Flow Graph 与 myui 节点编辑。规则引擎仍保持独立，不改名为关卡脚本。
 - P1 已交付固定物品/武器表、事务式背包、弹匣状态与权威开火 intent；背包网格、物品数据库、命中/弹道和权威目标生命接入属于后续集成，不在 P1 单独声称完成。
@@ -232,4 +232,4 @@ D 和 E 另有自己的测试，不作为本切片的门槛。
 - 新静态库的 target contract：`ENGINE_BUILD_TESTS=OFF` 时仍生成，且不出现在 `engine`、`engine_demo`、`dxx_break` 的链接行上。
 - `docs/Implementation_Status.md` 顶部追加一条，写明已交付行为和未交付边界。设计文档在对应阶段落地后把状态从“设计-only”改成“已交付”并指向测试名。
 
-Windows 执行已于 2026-11-02 验证：Clang/OpenGL、Vulkan、D3D12、ASan+UBSan 及 MSVC、MinGW 构建树均包含本计划的 focused 测试并通过；测试的临时目录兼容性问题由 `test_world_stream_world` 修复，见 `docs/Implementation_Status.md` 同日期条目。macOS 和这些新增世界表现的真实 GPU 截图仍未验证。上述证据只覆盖 CPU/headless 合同，不把 `break_game`/`break_ai` 说成已接入 `engine`，也不把主机侧顶点字节说成设备缓冲或画面。
+Windows 执行已于 2026-11-02 验证：Clang/OpenGL、Vulkan、D3D12、ASan+UBSan 及 MSVC、MinGW 构建树均包含本计划的 focused 测试并通过；测试的临时目录兼容性问题由 `test_world_stream_world` 修复，见 `docs/Implementation_Status.md` 同日期条目。macOS 和这些新增世界表现的真实 GPU 截图仍未验证。上述证据只覆盖 CPU/headless 合同，不把 `break_kernel`/`break_ai` 说成已接入 `engine`，也不把主机侧顶点字节说成设备缓冲或画面。

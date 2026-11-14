@@ -6,7 +6,7 @@
 
 本子项目实现总设计 P9：默认关闭的断点与单步、真实调用栈和局部变量检查、与指令预算共存的调试 hook、有递归/节点/字符串上限的表值、带 generation 的稳定 host 句柄，以及 Actor 类 `lua_module` 到 `on_actor_tick` 的真实接线。
 
-不实现远程调试协议、socket 监听、网络命令面或阻塞式调试会话。宿主若未来增加远程调试，必须在独立应用中显式启用并完成授权；本设计不新增任何入口。`break_lua`、`break_game`、`engine`、`engine_demo`、`dxx_break` 不因调试器或 Actor 适配器而相互耦合。
+不实现远程调试协议、socket 监听、网络命令面或阻塞式调试会话。宿主若未来增加远程调试，必须在独立应用中显式启用并完成授权；本设计不新增任何入口。`break_lua`、`break_kernel`、`engine`、`engine_demo`、`dxx_break` 不因调试器或 Actor 适配器而相互耦合。
 
 ## 2. 方案取舍
 
@@ -68,20 +68,20 @@
 
 ## 5. Actor 适配边界
 
-新增独立可选库 `break_game_lua`，链接 `break_game` 与 `break_lua`；两者本身不互链。`break_game` 只增加一个不依赖 Lua 的通用脚本桥回调，实际适配由 `BreakGameLuaAdapter` 完成。
+新增独立可选库 `break_kernel_lua`，链接 `break_kernel` 与 `break_lua`；两者本身不互链。`break_kernel` 只增加一个不依赖 Lua 的通用脚本桥回调，实际适配由 `BreakKernelLuaAdapter` 完成。
 
-- 创建 adapter 时登记脚本桥；`break_game_tick` 对每个存活 Actor，在其类配置了非空 `lua_module` 时调用 adapter。已有原生 class tick 保持原行为。
+- 创建 adapter 时登记脚本桥；`break_kernel_tick` 对每个存活 Actor，在其类配置了非空 `lua_module` 时调用 adapter。已有原生 class tick 保持原行为。
 - adapter 首次见到 Actor 时 acquire 一个稳定句柄，token 编码 Entity index/generation；同一 Actor 后续 tick 复用。despawn 桥回调 release 句柄，防止代际复用继承身份。
-- 每次 Actor tick 经 `break_lua_runtime_call(module, "on_actor_tick", {handle, dt})`。普通脚本错误、预算跳闸、缺失模块/函数和句柄容量失败只记录该 Actor 的有界诊断，循环继续服务其他 Actor；不会中止 `break_game_tick`，也不会回滚其他 Actor 已完成的脚本状态。
-- adapter 保存最近错误和累计失败数，测试可读取诊断而不依赖 stdout。adapter 必须先于 game/runtime 销毁，销毁时注销自己的桥并释放全部句柄。
+- 每次 Actor tick 经 `break_lua_runtime_call(module, "on_actor_tick", {handle, dt})`。普通脚本错误、预算跳闸、缺失模块/函数和句柄容量失败只记录该 Actor 的有界诊断，循环继续服务其他 Actor；不会中止 `break_kernel_tick`，也不会回滚其他 Actor 已完成的脚本状态。
+- adapter 保存最近错误和累计失败数，测试可读取诊断而不依赖 stdout。adapter 必须先于 application/runtime 销毁，销毁时注销自己的桥并释放全部句柄。
 
 ## 6. 错误与线程
 
-沿用 `BreakLuaError`/`BreakGameError`：畸形输入 `INVALID`，失效句柄或断点 `STALE`，容量/深度/字符串上限 `OVERLOAD`，owner 违规 `REJECTED`，Lua 普通错误或不支持类型 `FAILED`，Lua 分配失败 `OOM`。调试检查和 Actor 脚本均在 GameThread/owner 上同步运行；不引入 mutex、后台线程或热路径分配。
+沿用 `BreakLuaError`/`BreakKernelError`：畸形输入 `INVALID`，失效句柄或断点 `STALE`，容量/深度/字符串上限 `OVERLOAD`，owner 违规 `REJECTED`，Lua 普通错误或不支持类型 `FAILED`，Lua 分配失败 `OOM`。调试检查和 Actor 脚本均在 LogicThread/owner 上同步运行；不引入 mutex、后台线程或热路径分配。
 
 ## 7. 验证与变异
 
-严格先写目标行为测试并看到 RED，再实现 GREEN。focused 范围包括全部 `break_lua` 测试、新调试/表/Actor 适配测试、既有 `break_game` 与 `cry_style` 回归，以及 target contract；构建并行度固定 `-j3`。
+严格先写目标行为测试并看到 RED，再实现 GREEN。focused 范围包括全部 `break_lua` 测试、新调试/表/Actor 适配测试、既有 `break_kernel` 与 `core_style` 回归，以及 target contract；构建并行度固定 `-j3`。
 
 必须分别变异并确认测试变红后恢复：断点命中、三种步进深度、调用栈内容、局部变量值、表深度、表节点数、表字符串长度、stale generation、Actor 单脚本失败隔离，以及预算与调试 hook 共存。normal、ASan+UBSan、TSan 三棵独立构建树运行 focused CTest；TSan 下不新增跨线程 VM 使用。生产 no-tests 树确认可选库可独立构建且核心应用没有新增链接。
 

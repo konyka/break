@@ -1,12 +1,12 @@
-# Cry 式游戏能力补齐 Implementation Plan
+# Cry 式应用能力补齐 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (or subagent-driven-development) to implement this plan task by task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-**Goal:** 按 [`docs/design/core_style_runtime.md`](../../design/core_style_runtime.md) 补齐可玩原型（游戏内核、导航与行为、运动混合），再分别补世界表现和布娃娃/载具。本文是实施计划；设计合同以该文档为准。
+**Goal:** 按 [`docs/design/core_style_runtime.md`](../../design/core_style_runtime.md) 补齐可玩原型（应用内核、导航与行为、运动混合），再分别补世界表现和布娃娃/载具。本文是实施计划；设计合同以该文档为准。
 
 文末完成定义已满足：下面的步骤都已落地。再开目标时以新的完成定义为准，不要把容量上限当成未完成的计划步骤。
 
-**Architecture:** `break_game` 与 `break_ai` 是正式可选 C11 静态库，不链入 `engine` / `engine_demo` / `dxx_break`。关卡字节和导航烘焙输入都由宿主回调或纯 CPU 缓冲喂入，这两个库不包含 RHI。动画与物理增量落在现有 `engine/src/animation` 和 `engine/src/physics`。植被、昼夜、VisArea、地形块落在 `engine/src/renderer`。
+**Architecture:** `break_kernel` 与 `break_ai` 是正式可选 C11 静态库，不链入 `engine` / `engine_demo` / `dxx_break`。关卡字节和导航烘焙输入都由宿主回调或纯 CPU 缓冲喂入，这两个库不包含 RHI。动画与物理增量落在现有 `engine/src/animation` 和 `engine/src/physics`。植被、昼夜、VisArea、地形块落在 `engine/src/renderer`。
 
 **Tech Stack:** C11；现有 ECS（`engine/src/ecs/ecs.h`）、`InputState`（`engine/src/platform/input.h`）、`PhysicsWorld` / `CharacterController`、`AnimBlendState`、`scene_serial`（仅集成层调用）、CTest、ASan/UBSan/TSan。
 
@@ -16,7 +16,7 @@
 - TDD：每个任务先写失败测试，确认红，再实现到绿。
 - 新库顶层放在 `engine/CMakeLists.txt`，`ENGINE_BUILD_TESTS=OFF` 时也产出。每个新库配一个 `test_*_target_contract.cmake`，断言不在 `engine`、`engine_demo`、`dxx_break` 的链接行上，且生产归档没有测试钩子符号。
 - 容量用尽返回各库的 `OVERLOAD`。失败路径不部分提交：要么状态前进，要么与调用前字节级一致（测试钉住）。
-- Game 线程约定与 `break_lua` 相同：create 记录 owner 线程，跨线程调用返回 `REJECTED`。不给这些对象加互斥锁。
+- Application 线程约定与 `break_lua` 相同：create 记录 owner 线程，跨线程调用返回 `REJECTED`。不给这些对象加互斥锁。
 - 热路径（`tick`、`physics_step`、寻路、混合评估）不调用 `malloc`。上限在 create 时一次分配。
 - 三棵树：normal、`ENGINE_USE_ASAN`+UBSan、`ENGINE_USE_TSAN`。阶段 A–C 与 E 的 focused 测试不链渲染后端。阶段 D 的 CPU 裁剪测试同样不链 GPU；只有植被绘制和昼夜 uniform 写入才进 graphics 标签。
 - 每个阶段结束时在 `docs/Implementation_Status.md` 顶部追加一条，列出测试名和未交付边界。不要把设计文档改成“已交付”，除非该阶段的三棵树已经跑过。
@@ -28,55 +28,55 @@ A 完成后再开始 B 和 C。B 与 C 可以并行。F 等 B 和 C 都绿。D �
 
 ---
 
-## 阶段 A：游戏内核（`break_game`）
+## 阶段 A：应用内核（`break_kernel`）
 
 ### Task A1: 库骨架与 Actor 类注册
 
 **Files:**
 
-- Create: `engine/src/game/break_game.h`
-- Create: `engine/src/game/break_game.c`
-- Create: `engine/tests/test_break_game_actor.c`
+- Create: `engine/src/kernel/break_kernel.h`
+- Create: `engine/src/kernel/break_kernel.c`
+- Create: `engine/tests/test_break_kernel_actor.c`
 - Modify: `engine/CMakeLists.txt`
 
 **Interfaces:**
 
 ```c
-typedef enum BreakGameError {
-    BREAK_GAME_OK = 0,
-    BREAK_GAME_INVALID,
-    BREAK_GAME_CLOSED,
-    BREAK_GAME_OVERLOAD,
-    BREAK_GAME_OOM,
-    BREAK_GAME_TIMEOUT,
-    BREAK_GAME_STALE,
-    BREAK_GAME_REJECTED,
-    BREAK_GAME_FAILED
-} BreakGameError;
+typedef enum BreakKernelError {
+    BREAK_KERNEL_OK = 0,
+    BREAK_KERNEL_INVALID,
+    BREAK_KERNEL_CLOSED,
+    BREAK_KERNEL_OVERLOAD,
+    BREAK_KERNEL_OOM,
+    BREAK_KERNEL_TIMEOUT,
+    BREAK_KERNEL_STALE,
+    BREAK_KERNEL_REJECTED,
+    BREAK_KERNEL_FAILED
+} BreakKernelError;
 
-typedef struct BreakGame BreakGame;
+typedef struct BreakKernel BreakKernel;
 
-typedef struct BreakGameConfig {
+typedef struct BreakKernelConfig {
     u32 max_classes;   /* 0 => 64，硬上限 64 */
     u32 max_actors;    /* 0 => 4096，硬上限 4096 */
-} BreakGameConfig;
+} BreakKernelConfig;
 
-typedef struct BreakGameClassDesc {
+typedef struct BreakKernelClassDesc {
     const char *name;                 /* 1..63 字节，NUL 结尾 */
     const ComponentType *components;  /* 生成时按序 add */
     u32 component_count;              /* 硬上限 16 */
     const char *lua_module;           /* 可为 NULL */
-} BreakGameClassDesc;
+} BreakKernelClassDesc;
 
-BreakGame *break_game_create(World *world, const BreakGameConfig *config);
-void       break_game_destroy(BreakGame *game);
+BreakKernel *break_kernel_create(World *world, const BreakKernelConfig *config);
+void       break_kernel_destroy(BreakKernel *application);
 
-BreakGameError break_game_register_class(BreakGame *game,
-                                         const BreakGameClassDesc *desc,
+BreakKernelError break_kernel_register_class(BreakKernel *application,
+                                         const BreakKernelClassDesc *desc,
                                          u32 *out_class_id);
 ```
 
-- [x] 写失败测试：create/destroy；超硬上限的 config 返回 NULL；重名类 `REJECTED`；第 65 个类 `OVERLOAD`；组件数 17 `INVALID`；空名字 `INVALID`；`out_class_id` 从 1 起单调递增。跨线程 register 返回 `REJECTED`（测试里用一个记录过 owner 的探针，第二线程只在 `BREAK_GAME_TESTING` 下编译）。
+- [x] 写失败测试：create/destroy；超硬上限的 config 返回 NULL；重名类 `REJECTED`；第 65 个类 `OVERLOAD`；组件数 17 `INVALID`；空名字 `INVALID`；`out_class_id` 从 1 起单调递增。跨线程 register 返回 `REJECTED`（测试里用一个记录过 owner 的探针，第二线程只在 `BREAK_KERNEL_TESTING` 下编译）。
 - [x] 跑测试，确认红。
 - [x] 实现 create 时一次分配类表和 Actor 槽。`world` 只借用，destroy 不销毁 `World`。
 - [x] 加 target contract 并在 `ENGINE_BUILD_TESTS=OFF` 的树上确认库存在且未被 `engine` 链接。
@@ -86,25 +86,25 @@ BreakGameError break_game_register_class(BreakGame *game,
 
 **Files:**
 
-- Modify: `engine/src/game/break_game.h`
-- Modify: `engine/src/game/break_game.c`
-- Create: `engine/src/game/break_game_actor.c`
-- Modify: `engine/tests/test_break_game_actor.c`
+- Modify: `engine/src/kernel/break_kernel.h`
+- Modify: `engine/src/kernel/break_kernel.c`
+- Create: `engine/src/kernel/break_kernel_actor.c`
+- Modify: `engine/tests/test_break_kernel_actor.c`
 
 **Interfaces:**
 
 ```c
-typedef void (*BreakGameTickFn)(BreakGame *game, Entity entity, f32 dt, void *user);
+typedef void (*BreakKernelTickFn)(BreakKernel *application, Entity entity, f32 dt, void *user);
 
-typedef struct BreakGameSpawn {
+typedef struct BreakKernelSpawn {
     u32 class_id;
     Vec3 position;
-} BreakGameSpawn;
+} BreakKernelSpawn;
 
-BreakGameError break_game_spawn(BreakGame *game, const BreakGameSpawn *spawn, Entity *out_entity);
-BreakGameError break_game_despawn(BreakGame *game, Entity entity);
-void           break_game_set_tick(BreakGame *game, u32 class_id, BreakGameTickFn fn, void *user);
-void           break_game_tick(BreakGame *game, f32 dt);
+BreakKernelError break_kernel_spawn(BreakKernel *application, const BreakKernelSpawn *spawn, Entity *out_entity);
+BreakKernelError break_kernel_despawn(BreakKernel *application, Entity entity);
+void           break_kernel_set_tick(BreakKernel *application, u32 class_id, BreakKernelTickFn fn, void *user);
+void           break_kernel_tick(BreakKernel *application, f32 dt);
 ```
 
 - [x] 写失败测试：spawn 创建的实体带有类声明的全部组件且字节为 0，位置组件写上 `spawn.position`（约定组件 0 是 3 个 `f32` 的位置，测试在 register 前 `world_register_component`）；未知 class id `STALE`；满 4096 `OVERLOAD` 且 `World` 实体数不变；despawn 后同一 Entity 值 `STALE`；generation 复用后旧 Entity 值仍然 `STALE`；tick 只调用存活实例，dt 原样传入；despawn 发生在 tick 回调里时，本次 tick 不再访问该槽（测试用回调里 despawn 自己，ASan 树必须干净）。
@@ -116,76 +116,76 @@ void           break_game_tick(BreakGame *game, f32 dt);
 
 **Files:**
 
-- Create: `engine/src/game/break_game_actions.c`
-- Modify: `engine/src/game/break_game.h`
-- Create: `engine/tests/test_break_game_actions.c`
+- Create: `engine/src/kernel/break_kernel_actions.c`
+- Modify: `engine/src/kernel/break_kernel.h`
+- Create: `engine/tests/test_break_kernel_actions.c`
 - Modify: `engine/CMakeLists.txt`
 
 **Interfaces:**
 
 ```c
-typedef enum BreakGameBindSource {
-    BREAK_GAME_BIND_KEY = 1,
-    BREAK_GAME_BIND_MOUSE_BUTTON,
-    BREAK_GAME_BIND_MOUSE_AXIS,   /* 0 = dx, 1 = dy, 2 = wheel */
-    BREAK_GAME_BIND_PAD_BUTTON,
-    BREAK_GAME_BIND_PAD_AXIS
-} BreakGameBindSource;
+typedef enum BreakKernelBindSource {
+    BREAK_KERNEL_BIND_KEY = 1,
+    BREAK_KERNEL_BIND_MOUSE_BUTTON,
+    BREAK_KERNEL_BIND_MOUSE_AXIS,   /* 0 = dx, 1 = dy, 2 = wheel */
+    BREAK_KERNEL_BIND_PAD_BUTTON,
+    BREAK_KERNEL_BIND_PAD_AXIS
+} BreakKernelBindSource;
 
-typedef struct BreakGameBinding {
-    BreakGameBindSource source;
+typedef struct BreakKernelBinding {
+    BreakKernelBindSource source;
     i32 code;          /* 键/按钮/轴编号，含义与 InputState 一致 */
     i32 pad;           /* 仅手柄；其它源必须为 0 */
     f32 scale;         /* 数字量按下时贡献 scale；轴贡献 raw * scale */
-} BreakGameBinding;
+} BreakKernelBinding;
 
-typedef struct BreakGameActionDesc {
+typedef struct BreakKernelActionDesc {
     const char *name;
-    const BreakGameBinding *bindings;
+    const BreakKernelBinding *bindings;
     u32 binding_count;             /* 硬上限 8 */
-} BreakGameActionDesc;
+} BreakKernelActionDesc;
 
-typedef struct BreakGameActionValue {
+typedef struct BreakKernelActionValue {
     bool down;
     f32 axis;
-} BreakGameActionValue;
+} BreakKernelActionValue;
 
-BreakGameError break_game_bind_actions(BreakGame *game,
-                                       const BreakGameActionDesc *actions,
+BreakKernelError break_kernel_bind_actions(BreakKernel *application,
+                                       const BreakKernelActionDesc *actions,
                                        u32 count);
-BreakGameError break_game_eval_actions(BreakGame *game, const InputState *input,
-                                       BreakGameActionValue *out, u32 cap);
+BreakKernelError break_kernel_eval_actions(BreakKernel *application, const InputState *input,
+                                       BreakKernelActionValue *out, u32 cap);
 ```
 
 - [x] 写失败测试：64 个动作可绑定，第 65 个整表拒绝且旧表不变；一个动作 9 个绑定 `INVALID` 且旧表不变；键按下时 `down` 为真且 axis 等于 scale；正负轴相加后钳到 [-1, 1]；`cap` 小于已绑定数量返回 `OVERLOAD` 且不写 `out`；替换绑定后旧键不再产生动作。
-- [x] 确认红，然后实现。`break_game_eval_actions` 不分配。
+- [x] 确认红，然后实现。`break_kernel_eval_actions` 不分配。
 - [x] 三棵树通过。
 
 ### Task A4: 移动适配
 
 **Files:**
 
-- Create: `engine/src/game/break_game_move.c`
-- Modify: `engine/src/game/break_game.h`
-- Create: `engine/tests/test_break_game_move.c`
+- Create: `engine/src/kernel/break_kernel_move.c`
+- Modify: `engine/src/kernel/break_kernel.h`
+- Create: `engine/tests/test_break_kernel_move.c`
 
 **Interfaces:**
 
 ```c
-typedef struct BreakGameMoveInput {
+typedef struct BreakKernelMoveInput {
     f32 forward;     /* [-1, 1] */
     f32 strafe;      /* [-1, 1] */
     f32 camera_yaw;  /* 弧度，0 朝向 +Z */
     bool jump;
-} BreakGameMoveInput;
+} BreakKernelMoveInput;
 
-typedef struct BreakGameMoveOutput {
+typedef struct BreakKernelMoveOutput {
     Vec3 wish;       /* 世界 XZ，y = 0，长度不超过 1 */
     bool jump;
     f32 yaw;
-} BreakGameMoveOutput;
+} BreakKernelMoveOutput;
 
-BreakGameError break_game_move_wish(const BreakGameMoveInput *in, BreakGameMoveOutput *out);
+BreakKernelError break_kernel_move_wish(const BreakKernelMoveInput *in, BreakKernelMoveOutput *out);
 ```
 
 - [x] 写失败测试：yaw 0、forward 1 得到 +Z；yaw 为 π/2、forward 1 得到 +X（误差 1e-5）；strafe 与 forward 同时为 1 时 wish 长度为 1；NaN 输入 `INVALID` 且 `out` 不变。
@@ -196,25 +196,25 @@ BreakGameError break_game_move_wish(const BreakGameMoveInput *in, BreakGameMoveO
 
 **Files:**
 
-- Create: `engine/src/game/break_game_level.c`
-- Modify: `engine/src/game/break_game.h`
-- Create: `engine/tests/test_break_game_level.c`
+- Create: `engine/src/kernel/break_kernel_level.c`
+- Modify: `engine/src/kernel/break_kernel.h`
+- Create: `engine/tests/test_break_kernel_level.c`
 
 **Interfaces:**
 
 ```c
-typedef BreakGameError (*BreakGameLevelLoadFn)(void *user, World *world, const char *path);
-typedef void (*BreakGameLevelUnloadFn)(void *user, World *world);
+typedef BreakKernelError (*BreakKernelLevelLoadFn)(void *user, World *world, const char *path);
+typedef void (*BreakKernelLevelUnloadFn)(void *user, World *world);
 
-typedef struct BreakGameLevelHooks {
-    BreakGameLevelLoadFn load;
-    BreakGameLevelUnloadFn unload;
+typedef struct BreakKernelLevelHooks {
+    BreakKernelLevelLoadFn load;
+    BreakKernelLevelUnloadFn unload;
     void *user;
-} BreakGameLevelHooks;
+} BreakKernelLevelHooks;
 
-BreakGameError break_game_level_open(BreakGame *game, const BreakGameLevelHooks *hooks,
+BreakKernelError break_kernel_level_open(BreakKernel *application, const BreakKernelLevelHooks *hooks,
                                      const char *scene_path, const char *actor_sidecar);
-BreakGameError break_game_level_close(BreakGame *game);
+BreakKernelError break_kernel_level_close(BreakKernel *application);
 ```
 
 侧车是 UTF-8 文本：每行 `entity_index class_name`，`#` 开头为注释，空行跳过。硬上限 4096 行、文件 1 MiB。
@@ -227,36 +227,36 @@ BreakGameError break_game_level_close(BreakGame *game);
 
 **Files:**
 
-- Create: `engine/src/game/break_game_area.c`
-- Modify: `engine/src/game/break_game.h`
-- Create: `engine/tests/test_break_game_area.c`
+- Create: `engine/src/kernel/break_kernel_area.c`
+- Modify: `engine/src/kernel/break_kernel.h`
+- Create: `engine/tests/test_break_kernel_area.c`
 
 **Interfaces:**
 
 ```c
-typedef enum BreakGameAreaEvent {
-    BREAK_GAME_AREA_ENTER = 1,
-    BREAK_GAME_AREA_LEAVE = 2
-} BreakGameAreaEvent;
+typedef enum BreakKernelAreaEvent {
+    BREAK_KERNEL_AREA_ENTER = 1,
+    BREAK_KERNEL_AREA_LEAVE = 2
+} BreakKernelAreaEvent;
 
-typedef struct BreakGameAreaDesc {
+typedef struct BreakKernelAreaDesc {
     Vec3 center;
     Vec3 half_extent;  /* 任一分量 > 0 则为 AABB；全 0 则用 radius */
     f32 radius;
-} BreakGameAreaDesc;
+} BreakKernelAreaDesc;
 
-typedef void (*BreakGameAreaFn)(u32 area_id, Entity entity, BreakGameAreaEvent event, void *user);
+typedef void (*BreakKernelAreaFn)(u32 area_id, Entity entity, BreakKernelAreaEvent event, void *user);
 
-BreakGameError break_game_area_add(BreakGame *game, const BreakGameAreaDesc *desc, u32 *out_id);
-void           break_game_set_area_callback(BreakGame *game, BreakGameAreaFn fn, void *user);
-BreakGameError break_game_area_tick(BreakGame *game);
+BreakKernelError break_kernel_area_add(BreakKernel *application, const BreakKernelAreaDesc *desc, u32 *out_id);
+void           break_kernel_set_area_callback(BreakKernel *application, BreakKernelAreaFn fn, void *user);
+BreakKernelError break_kernel_area_tick(BreakKernel *application);
 ```
 
 位置读 Actor 的位置组件。滞回 0.25 m：进入用体积边界，离开用边界再外扩 0.25 m。
 
 - [x] 写失败测试：从外走进盒子得到一次 ENTER；停在内部再 tick 不产生事件；走出外扩边界得到一次 LEAVE；在边界 0.1 m 内往返不产生第二对事件；第 257 个区域 `OVERLOAD`；已 despawn 的 Actor 不再产生 LEAVE 以外的事件（despawn 本身补一次 LEAVE，且只一次）。
 - [x] 确认红，然后实现。每区域一份定长 inside 位图，create 时按 `max_actors` 分配。
-- [x] 三棵树通过。阶段 A 结束时更新 `docs/Implementation_Status.md`：写明 `break_game` 未链入 `engine`，Lua 模块名尚未执行。
+- [x] 三棵树通过。阶段 A 结束时更新 `docs/Implementation_Status.md`：写明 `break_kernel` 未链入 `engine`，Lua 模块名尚未执行。
 
 ---
 
@@ -590,15 +590,15 @@ void anim_ik_set_slot(IKSystem *ik, AnimIkSlot slot,
 
 **Files:**
 
-- Create: `engine/tests/test_cry_style_prototype.c`
+- Create: `engine/tests/test_core_style_prototype.c`
 - Modify: `engine/CMakeLists.txt`
 
-测试自己搭 `World`、`PhysicsWorld`、`BreakGame`、`BreakNavMesh`、`AnimLoco1D`，不打开窗口。
+测试自己搭 `World`、`PhysicsWorld`、`BreakKernel`、`BreakNavMesh`、`AnimLoco1D`，不打开窗口。
 
-- [x] 地面是一个静态盒子。玩家 Actor 用 Task A4 的 wish 驱动 `character_update`，前进轴为 1、yaw 为 0、dt 累计 3 秒后水平位移 > 2 m。
-- [x] 高度图中间有一堵墙。敌人起点和玩家起点分居墙的两侧开口。`break_nav_find_path` 的长度大于两点直线距离。行为树在 `BreakSightRayFn` 返回真时走出非零 wish。
+- [x] 地面是一个静态盒子。用户 Actor 用 Task A4 的 wish 驱动 `character_update`，前进轴为 1、yaw 为 0、dt 累计 3 秒后水平位移 > 2 m。
+- [x] 高度图中间有一堵墙。追踪者起点和用户起点分居墙的两侧开口。`break_nav_find_path` 的长度大于两点直线距离。行为树在 `BreakSightRayFn` 返回真时走出非零 wish。
 - [x] 速度 0 时步行剪辑权重高于跑步；速度等于跑步样本时相反。
-- [x] 触发区：玩家坐标从区外步进区内，回调恰好一次 ENTER；再步进到滞回外，恰好一次 LEAVE。
+- [x] 触发区：用户坐标从区外步进区内，回调恰好一次 ENTER；再步进到滞回外，恰好一次 LEAVE。
 - [x] 三棵树通过。更新 `docs/Implementation_Status.md` 和设计文档第 1 节的状态句：可玩原型已交付，D/E 仍是设计-only。同时写明此测试没有 GPU、没有声音、没有网络。
 
 ---

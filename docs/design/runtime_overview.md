@@ -18,7 +18,7 @@
 - **示例类型约定**：本文及所有 Stage 2 示例统一使用项目 `u8/u16/u32/u64/usize`，定义见 `engine/src/core/types.h`；不混用裸 `uint*_t`/`size_t`。
 - **C11 Engine Runtime Core**：PAL、线程同步、任务调度、消息/命令、IO、VFS、Profiler、ECS 数据快照与网络适配边界均使用 C11 ABI。公共头文件优先使用不透明句柄、定长/有界数据、显式 retain/release 和返回值/错误码；不使用异常、RTTI、模板、隐式析构或 C++ 容器。
 - **C++11 Application/Framework**：`framework/interface/runtime_module_interface.h:21-30` 的 `RuntimeModuleInterface` 只负责 `Init/Tick/DeInit` 生命周期；`framework/common/base_application.h:22-32` 是应用层实现方向。C++ 层可以组合 C11 runtime，但不得把 World、ECS、Lua VM 或网络 callback 的所有权转移给 C++ 对象的隐式生命周期。
-- **Lua**：Lua 是计划中的唯一 runtime scripting language（roadmap `:5-13`、`:51-68`）。Lua VM 应由后续 `BreakLuaRuntime` opaque C11 facade 独占；Lua callback 只能通过有界 command/message 访问 GameThread-owned state，不能直接持有 raw RHI、World、网络或 PAL 句柄。Lua facade、reload、模块版本和脚本测试不属于本文已实现能力。
+- **Lua**：Lua 是计划中的唯一 runtime scripting language（roadmap `:5-13`、`:51-68`）。Lua VM 应由后续 `BreakLuaRuntime` opaque C11 facade 独占；Lua callback 只能通过有界 command/message 访问 LogicThread-owned state，不能直接持有 raw RHI、World、网络或 PAL 句柄。Lua facade、reload、模块版本和脚本测试不属于本文已实现能力。
 
 ### 2.2 正式与 focused target 的事实
 
@@ -47,7 +47,7 @@ Runtime Core 采用 C11 的分层、单向依赖图：
 flowchart TB
     APP[Application / C++11 Framework]
     RT[break_runtime C11 facade]
-    GT[GameThread owner]
+    GT[LogicThread owner]
     MSG[Message + Command queues]
     TASK[Task scheduler]
     IO[IO + VFS]
@@ -76,7 +76,7 @@ flowchart TB
 目标依赖规则：
 
 - PAL 只依赖 core types、OS headers 和平台实现；PAL 不知道 ECS、Lua、UI、RHI 或 Snowflake concrete types。
-- Thread/Task 依赖 PAL synchronization/thread primitives；Task 不拥有 World，也不允许 worker 直接调用 gameplay。
+- Thread/Task 依赖 PAL synchronization/thread primitives；Task 不拥有 World，也不允许 worker 直接调用 logic。
 - Message/Command 只传递 owned bytes 或固定大小 value；不跨线程传 raw borrowed pointer，除非 view 的有效期在 API 中明确且不越过 callback。
 - ECS replication 依赖 Message contract，但不直接依赖 Snowflake；adapter 依赖 Message/Protocol 并把网络事件转成 owned event。
 - C++ framework 依赖 C11 runtime facade，不反向进入 engine internals；Lua 只能依赖其 facade。
@@ -87,11 +87,11 @@ flowchart TB
 
 这是实现 Runtime Core 前置条件，不是把现有 focused 代码直接标成 production：
 
-1. **Schema/Snapshot**：保留 GameThread 对可变 `World`、schema registry 和 structural barrier 的独占；`world_snapshot.*` 生成 owned immutable bytes，消费者只能 retain/release snapshot。现状证据为 `engine/src/ecs/world_snapshot.h:11-28` 和 `docs/design/ecs_snapshot_replication_aoi.md:43-72`。设计目标是一个不持有 `World *` 的正式 C11 library contract；自动 barrier、mutex publication service 和 epoch reclamation 仍另立项。
+1. **Schema/Snapshot**：保留 LogicThread 对可变 `World`、schema registry 和 structural barrier 的独占；`world_snapshot.*` 生成 owned immutable bytes，消费者只能 retain/release snapshot。现状证据为 `engine/src/ecs/world_snapshot.h:11-28` 和 `docs/design/ecs_snapshot_replication_aoi.md:43-72`。设计目标是一个不持有 `World *` 的正式 C11 library contract；自动 barrier、mutex publication service 和 epoch reclamation 仍另立项。
 2. **Delta**：diff 只能读取 immutable snapshots；apply 必须执行 base/schema/tick 验证、ECS-owned staging、final validation 和 atomic replace。失败销毁 staging、原 World 不变。`engine/src/ecs/world_delta.h:39-63` 已暴露该方向，但正式 runtime integration、wire schema/tick fields 和 authority protocol 仍未实现。
-3. **AoI/Replication**：GameThread 拥有 Real/Ghost、witness、scope 和 budget state；AoI worker 只能消费 snapshot/owned values，不能写 World 或 Session。queue overload 必须返回可分类错误并允许下一次 sync retry；distributed cells、authority handoff、prediction/rollback 未实现。
+3. **AoI/Replication**：LogicThread 拥有 Real/Ghost、witness、scope 和 budget state；AoI worker 只能消费 snapshot/owned values，不能写 World 或 Session。queue overload 必须返回可分类错误并允许下一次 sync retry；distributed cells、authority handoff、prediction/rollback 未实现。
 4. **Fragment**：transport-independent 的 fragment/reassembly 只拥有 metadata 和完整 payload，支持乱序、duplicate/conflict、checksum、reset/destroy；它不调用 Snowflake、不 enqueue、不 apply World。当前 checksum 是 FNV-1a 完整性检查，不是加密认证；timeout/eviction 必须由上层 scheduler 设计。
-5. **`break_net`/Session**：adapter callback 只验证、copy、enqueue；GameThread 才 poll event、推进 Session、调用 ECS/Lua/UI/RHI。`BreakNetReactor` 当前有 256 event 与 256 outbound capacity（`engine/src/network/break_net_adapter.h:39-63`），Session 是 GameThread-only 且 registry/reactor/handler 为 borrowed contract（`engine/src/network/break_session.h:64-95`）。正式化不改变这个线程纪律。
+5. **`break_net`/Session**：adapter callback 只验证、copy、enqueue；LogicThread 才 poll event、推进 Session、调用 ECS/Lua/UI/RHI。`BreakNetReactor` 当前有 256 event 与 256 outbound capacity（`engine/src/network/break_net_adapter.h:39-63`），Session 是 LogicThread-only 且 registry/reactor/handler 为 borrowed contract（`engine/src/network/break_session.h:64-95`）。正式化不改变这个线程纪律。
 
 Phase A 的 target 拆分已交付（2026-10-22，Tasks 1-2）：非 Snowflake 的正式可选 `break_ecs_replication` 与 `break_replication_core`，以及保留 Snowflake optional 的 `break_net`（独立于 `ENGINE_BUILD_TESTS`）；三者均为 `engine/CMakeLists.txt` 顶层目标且不链入 `engine`/`engine_demo`/`dxx_break`。迁入 `engine` 或 runtime/session 集成仍属后续 plan。
 
@@ -103,7 +103,7 @@ Phase B 才实现下列统一 facade：
 - **Thread**：opaque `BreakThread`、thread id/affinity、joinable lifecycle、deadline wait 和 named registration。现有 `platform_thread.h` 是 inline primitive wrapper，不是完整 ownership API。
 - **Task**：统一 task submission、dependency、priority、cancel/stop token、worker affinity 和 metrics；复用现有 Chase-Lev/submit queue 机制。现有 contract 明确 worker 不得调用 `task_wait`/`task_wait_handle`（`engine/src/task/task.h:120-143`），第二个 live TaskSystem 也被拒绝（`:101-112`），这些约束应成为 facade 的明确错误而非隐式死锁。
 - **Message**：固定容量 MPSC/SPSC queues、owned payload、message type/version、sequence、drop/overload metrics。网络 event queue 使用现有 256 上限；Runtime Core 的其他 queue 不得复用同一容量而不说明预算。
-- **IO**：把 async loader 的 request heap 256、request slots/completion ring 1024（`engine/src/asset/async_loader.c:16-24,45-82`）抽象为有界 IO service；完成 callback 仍只在 owner/GameThread tick dispatch。`net_loop.h:67-83` 的 loop-thread affinity 继续有效，wakeup 是唯一跨线程唤醒入口。
+- **IO**：把 async loader 的 request heap 256、request slots/completion ring 1024（`engine/src/asset/async_loader.c:16-24,45-82`）抽象为有界 IO service；完成 callback 仍只在 owner/LogicThread tick dispatch。`net_loop.h:67-83` 的 loop-thread affinity 继续有效，wakeup 是唯一跨线程唤醒入口。
 - **VFS**：保留最多 16 mounts、260-byte path、4096 PAK entries、128 MiB file cap（`engine/src/asset/vfs.h:5-12`），所有 mount/read failure 返回错误，不由 worker 越过 VFS ownership。
 - **Profiler**：复用 120-frame ring、64 regions、32 thread tracks（`engine/src/core/profiler.h:4-11`）；每线程 TLS open stack 和 region allocation lock 是已有并发事实，目标 facade 只统一 registration/frame boundaries，不声称已有 always-on distributed tracing。
 
@@ -111,7 +111,7 @@ Phase B 才实现下列统一 facade：
 
 ```mermaid
 sequenceDiagram
-    participant G as GameThread
+    participant G as LogicThread
     participant T as Task workers
     participant I as IO workers
     participant N as Network/adapter
@@ -131,10 +131,10 @@ sequenceDiagram
 
 所有权规则：
 
-- GameThread 是唯一可变 `World`、ECS structural state、schema registration、Real/Ghost、SessionManager 和 Lua VM owner。线程 owner 不是“最后调用 API 的线程”，而是 runtime create 时固定并可查询的 contract。
+- LogicThread 是唯一可变 `World`、ECS structural state、schema registration、Real/Ghost、SessionManager 和 Lua VM owner。线程 owner 不是“最后调用 API 的线程”，而是 runtime create 时固定并可查询的 contract。
 - Task worker 只执行显式提交的 function/context；context 若跨异步生命周期必须由提交方持有到 completion。worker 不调用 UI/window/RHI 主循环、不直接 mutate World、不调用 SessionManager。
 - IO worker 只读 VFS/文件或 decode buffer；完成事件复制为 bounded record，`async_loader_tick()` 在 owner thread dispatch callback。VFS mount/unmount 与 loader shutdown 必须先停止新请求，再 drain/join。
-- Network callback/driver 只拥有 transport-local identity、borrowed input view 和 copied event；不得访问 World/ECS/Lua/UI/RHI。Session 与 replication apply 由 GameThread poll。
+- Network callback/driver 只拥有 transport-local identity、borrowed input view 和 copied event；不得访问 World/ECS/Lua/UI/RHI。Session 与 replication apply 由 LogicThread poll。
 - Profiler region 可跨 recording threads，但 frame ring publication 由 frame owner 控制；线程注册不等于线程拥有业务对象。
 
 ## 6. 统一容量、backpressure 与错误契约
@@ -174,7 +174,7 @@ Runtime Core 的唯一 coordinator 发布全局状态：`CREATED -> STARTING -> 
 - C11 API 以 `bool`、枚举错误码和 out parameter 表达失败；输出对象在失败前清零或保持原对象不变。Delta apply、VFS mount、message decode 和 fragment push 都采用 fail-closed。
 - borrowed view 只在调用期间有效；跨线程/队列必须 copy 成 owned message。所有 size/offset/count 加法在分配前做 checked arithmetic。
 - schema hash、tick、entity generation、message version、sequence 都是验证字段；不匹配不得“尽量应用”。
-- Lua、Session、网络、editor RPC 和 online update 不应绕过 command queue 直接调用 GameThread。身份认证、加密、replay protection、anti-cheat 和 crash upload 属于 Stage 5/Stage 3 专门设计，本文不假设其存在。
+- Lua、Session、网络、editor RPC 和 online update 不应绕过 command queue 直接调用 LogicThread。身份认证、加密、replay protection、anti-cheat 和 crash upload 属于 Stage 5/Stage 3 专门设计，本文不假设其存在。
 - `FNV-1a` fragment checksum 只能检测传输损坏/冲突，不能提供 authenticity 或 confidentiality；后续安全设计必须使用维护中的密码库/平台原语。
 
 ## 9. 验证与验收门
@@ -186,7 +186,7 @@ Runtime Core 的唯一 coordinator 发布全局状态：`CREATED -> STARTING -> 
 - clean configure/build 明确构建 formal engine、ECS/network formal candidate、focused/test-only targets；记录 target 是否实际生成。
 - snapshot schema hash 对 registration order 稳定；generation reuse、delta base/schema/tick mismatch、staging failure 保持原 World 不变。
 - AoI 多 witness/owner/dormant/hysteresis 排序确定；replication queue overload 可重试；fragment reorder/duplicate/conflict/size cap 正确。
-- Session loopback 维持 AUTH/PING/close watermark/stale 语义；adapter outbound 维持真实 envelope send；不允许 network thread 直接触发 gameplay。
+- Session loopback 维持 AUTH/PING/close watermark/stale 语义；adapter outbound 维持真实 envelope send；不允许 network thread 直接触发 logic。
 - Runtime Core 队列 FIFO、容量边界、backpressure、close race、double stop/destroy、OOM/failure injection 和 deterministic shutdown。
 
 ### 9.2 ASan/UBSan
@@ -216,6 +216,6 @@ full CTest 的失败必须分类为 code、environment、skipped/not-built；fuz
 
 ## 11. 结论与实施前置条件
 
-本设计的完成标准不是“已有文件很多”，而是：ECS/network focused APIs 的正式与测试 target 边界可由 CMake 和文档同时证明；GameThread、worker、IO、network callback、Lua 和 C++ framework 的所有权不重叠；每个队列有容量和可观察 backpressure；shutdown/failure 不造成资源悬挂；normal/ASan/TSan 测试在实际 target 上通过。
+本设计的完成标准不是“已有文件很多”，而是：ECS/network focused APIs 的正式与测试 target 边界可由 CMake 和文档同时证明；LogicThread、worker、IO、network callback、Lua 和 C++ framework 的所有权不重叠；每个队列有容量和可观察 backpressure；shutdown/failure 不造成资源悬挂；normal/ASan/TSan 测试在实际 target 上通过。
 
 只有 Phase A 的 formal-vs-focused target contract、snapshot publication、wire/schema/fragment scheduler 边界被单独评审并验收后，才进入 Phase B Runtime Core 的 PAL/Thread/Task/Message/IO/VFS/Profiler 实现。本文没有实现这些目标，也没有修改源码或 CMake。

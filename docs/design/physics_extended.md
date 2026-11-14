@@ -103,7 +103,7 @@ void ragdoll_write_pose(const Ragdoll *rd, const PhysicsWorld *pw, Skeleton *sk)
 
 角修正按两端有效逆惯性分配，A 承受反向、B 承受正向修正，固定迭代内收敛。限位修正同时只消除继续向界外的相对角速度，不消除合法切向运动。修正或速度裁剪会唤醒刚体。全部临时值位于大小固定的栈或世界/对象内嵌数组中。
 
-每帧顺序保持为：载具/外部控制 → 现有积分与接触 → 约束位置和角投影 → 约束速度处理 → kill floor → post-step → 布娃娃局部 TRS 写出。GameThread 独占所有可变状态。
+每帧顺序保持为：载具/外部控制 → 现有积分与接触 → 约束位置和角投影 → 约束速度处理 → kill floor → post-step → 布娃娃局部 TRS 写出。LogicThread 独占所有可变状态。
 
 ## 5. 错误、容量与生命周期
 
@@ -115,7 +115,7 @@ void ragdoll_write_pose(const Ragdoll *rd, const PhysicsWorld *pw, Skeleton *sk)
 - 约束/骨体销毁幂等；布娃娃停用只移除自己拥有的约束，不影响世界中已有约束。
 - 载具和布娃娃热路径均无 `malloc/calloc/realloc/free`；世界创建/销毁维持现有分配边界。Lua 在 bind/shutdown 管理固定容量 serial/generation/epoch/retired 映射，保留既有初始数字 id ABI；同一世界重绑保留映射，跨 world/失败重绑不重置历史 public id 游标，新 id 严格大于历史最大 id，旧变量不能命中新 occupant。map epoch 到达 `UINT32_MAX` 后永久停用映射，不回绕重新开放 adoption。
 - Lua spawn 在 `physics_body_create` 前镜像其 slot 选择并验证映射、serial、历史 public id 游标和 53 位上限；serial/public id 耗尽退休映射 slot。预检成功后只提交确定性映射和发号游标，不在创建失败后用 park 回滚，因此分配失败不改变物理世界。
-- GameThread 独占所有可变状态。
+- LogicThread 独占所有可变状态。
 
 ## 6. 验证与变异
 

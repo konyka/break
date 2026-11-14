@@ -2,7 +2,7 @@
 
 ## 1. 项目概述
 
-**T3DGameR1** 是 Andre' LaMothe 所著《Tricks of Windows Game Programming Gurus - Vol. I, Revision I》(Windows 游戏编程大师技巧) 的配套光盘资源。这是一本经典的 DirectX 游戏编程入门教材的完整配套代码库，包含 15 章教学源码、第三方引擎、示例游戏和大量参考资料。
+**T3DGameR1** 是 Andre' LaMothe 所著《Tricks of Windows Application Programming Gurus - Vol. I, Revision I》(Windows 应用编程大师技巧) 的配套光盘资源。这是一本经典的 DirectX 应用编程入门教材的完整配套代码库，包含 15 章教学源码、第三方引擎、示例应用和大量参考资料。
 
 - **语言**: C / 汇编 (x86)
 - **图形 API**: DirectX 7/8
@@ -15,7 +15,7 @@
 T3DGameR1/T3DGameR1/
 ├── Source/           # 15 章教学源码 (T3DCHAP01 ~ T3DCHAP15)
 ├── Engines/          # 第三方引擎 (Genesis3D, PowerRender)
-├── Games/            # 示例游戏
+├── Games/            # 示例应用
 ├── DirectX/          # DirectX SDK
 ├── Applications/     # 辅助应用程序
 ├── Articles/         # 技术文章集
@@ -33,7 +33,7 @@ T3DGameR1/T3DGameR1/
 
 | 章节 | 关键文件 | 主题 |
 |------|----------|------|
-| **T3DCHAP01** | `blackbox.cpp`, `freakout.cpp` | Windows 编程基础、第一个游戏 |
+| **T3DCHAP01** | `blackbox.cpp`, `freakout.cpp` | Windows 编程基础、第一个应用 |
 | **T3DCHAP02-03** | | Windows 高级编程、GDI 绘图 |
 | **T3DCHAP04-05** | | DirectX 基础、DirectDraw |
 | **T3DCHAP06** | | 位图操作和精灵 |
@@ -45,11 +45,11 @@ T3DGameR1/T3DGameR1/
 | **T3DCHAP12** | | 3D 渲染基础 |
 | **T3DCHAP13** | | 光照和纹理映射 |
 | **T3DCHAP14** | | 高级 3D 渲染 |
-| **T3DCHAP15** | `outpost.cpp`, `t3dlib1.cpp~t3dlib3.cpp` | 综合示例 - 完整 3D 游戏 |
+| **T3DCHAP15** | `outpost.cpp`, `t3dlib1.cpp~t3dlib3.cpp` | 综合示例 - 完整 3D 应用 |
 
 ### 核心库文件
 
-教学源码附带了一套自研的 2D/3D 游戏开发库:
+教学源码附带了一套自研的 2D/3D 应用开发库:
 
 | 库文件 | 功能 |
 |--------|------|
@@ -66,7 +66,7 @@ Engines/Genesis3D/
 └── Genesis3D/       # Eclipse Software 的开源 3D 引擎
 ```
 
-Genesis3D 是 90 年代末流行的开源 3D 游戏引擎，由 Eclipse Software 开发，支持:
+Genesis3D 是 90 年代末流行的开源 3D 引擎，由 Eclipse Software 开发，支持:
 - 实时 3D 渲染 (软件/D3D)
 - BSP 场景管理
 - 基本物理碰撞
@@ -86,14 +86,14 @@ PowerRender 是 Egerter Software 的商用 3D 渲染引擎 SDK，提供:
 - 粒子系统
 - 骨骼动画
 
-## 5. 示例游戏 (`Games/`)
+## 5. 示例应用 (`Games/`)
 
-| 游戏 | 安装文件 | 说明 |
+| 应用 | 安装文件 | 说明 |
 |------|----------|------|
-| AI 2000 | `ai2000installsw.exe` | AI 展示游戏 |
-| Columns Demo | `columnsdemoinstall.EXE` | 消除类游戏 |
-| Electro Balz | `electrobalzdemo.EXE` | 弹珠类游戏 |
-| Neo Dragoon | `neodragoondemo.exe` | 动作游戏 |
+| AI 2000 | `ai2000installsw.exe` | AI 展示应用 |
+| Columns Demo | `columnsdemoinstall.EXE` | 消除类应用 |
+| Electro Balz | `electrobalzdemo.EXE` | 弹珠类应用 |
+| Neo Dragoon | `neodragoondemo.exe` | 动作应用 |
 
 ## 6. 辅助应用程序 (`Applications/`)
 
@@ -108,7 +108,7 @@ PowerRender 是 Egerter Software 的商用 3D 渲染引擎 SDK，提供:
 
 ## 7. 技术文章 (`Articles/`)
 
-30+ 篇游戏开发技术文章:
+30+ 篇应用开发技术文章:
 
 | 主题 | 文章目录 |
 |------|----------|
@@ -118,7 +118,7 @@ PowerRender 是 Egerter Software 的商用 3D 渲染引擎 SDK，提供:
 | 动画 | `Dynamic3DAnimation/`, `HumanCharacters/` |
 | 网络 | `LinkingUpDirectPlay/`, `Netware/`, `NetworkTrafficReduction/` |
 | 优化 | `OptimizingWithMMX/`, `PentiumSecrets/` |
-| 游戏设计 | `DesigningThePuzzle/`, `IntoTheGreyzone/` |
+| 应用设计 | `DesigningThePuzzle/`, `IntoTheGreyzone/` |
 | 数据结构 | `KDTrees/`, `TileGraphics/` |
 | 音频 | `MusicalContentFundamentals/` |
 | 调试 | `XtremeDebugging/` |
@@ -142,7 +142,7 @@ PowerRender 是 Egerter Software 的商用 3D 渲染引擎 SDK，提供:
 
 ```
 ┌──────────────────────────────────────┐
-│        示例游戏 (Games/)             │
+│        示例应用 (Games/)             │
 ├──────────────────────────────────────┤
 │    T3D 教学库 (t3dlib1~3)            │
 ├──────────────────────────────────────┤
@@ -159,7 +159,7 @@ PowerRender 是 Egerter Software 的商用 3D 渲染引擎 SDK，提供:
 
 ## 10. 历史意义
 
-T3DGameR1 是 90 年代末到 2000 年代初游戏编程教育的典型代表:
+T3DGameR1 是 90 年代末到 2000 年代初应用编程教育的典型代表:
 - 教授了 DirectX 底层编程而非封装
 - 包含软件光栅化实现 (理解 GPU 渲染原理的基础)
 - 涵盖了从 Windows 编程到 3D 渲染的完整学习路径

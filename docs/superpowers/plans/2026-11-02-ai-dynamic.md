@@ -4,7 +4,7 @@
 
 **Goal:** Extend `break_ai` with transactional dynamic navigation, versioned cached queries, velocity avoidance, deterministic formations, smart-object reservations, and fixed-capacity agents without hot-path allocation.
 
-**Architecture:** A GameThread-owned `BreakAiRuntime` borrows the existing baked mesh and owns fixed-capacity sidecar arrays plus a preallocated A* workspace. Dynamic obstacle counts feed the existing A* implementation; formations and smart objects use the same runtime's generation-checked entities.
+**Architecture:** A LogicThread-owned `BreakAiRuntime` borrows the existing baked mesh and owns fixed-capacity sidecar arrays plus a preallocated A* workspace. Dynamic obstacle counts feed the existing A* implementation; formations and smart objects use the same runtime's generation-checked entities.
 
 **Tech Stack:** C11, existing `BreakNavMesh`/A*, `test_framework.h`, CMake/CTest, ASan+UBSan, TSan.
 
@@ -12,7 +12,7 @@
 
 - Work only in `.worktrees/cry-ai` on `cry-wave1-ai`; do not push or create a PR.
 - Engine additions are C11. `break_ai` remains renderer/RHI-free and is not linked into `engine`, `engine_demo`, or `dxx_break`.
-- All mutable runtime calls are GameThread-owner-only; non-owner calls return `BREAK_NAV_REJECTED`.
+- All mutable runtime calls are LogicThread-owner-only; non-owner calls return `BREAK_NAV_REJECTED`.
 - Hot paths perform no heap allocation. Capacity is fixed at creation and hard-limited; excess returns `OVERLOAD`, never silent truncation.
 - Every failed mutation is atomic and every failed output-producing call leaves its output unchanged.
 - Reuse `break_nav_query.c` A* and `break_nav_follow_wish`; do not create a parallel navigation system.
@@ -217,7 +217,7 @@ Validate object handle and agent before every mutation. Use `ENTITY_NULL` for a 
 
 - [x] **Step 4: Run smart-object and full focused normal tests to confirm GREEN**
 
-Run: `cmake --build build-ai -j3 --target test_break_ai_smart_object && ctest --test-dir build-ai -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_cry_style_prototype' --output-on-failure`
+Run: `cmake --build build-ai -j3 --target test_break_ai_smart_object && ctest --test-dir build-ai -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_core_style_prototype' --output-on-failure`
 Expected: all focused tests PASS.
 
 - [x] **Step 5: Commit**
@@ -241,13 +241,13 @@ Temporarily change one guard at a time: expected-version comparison, blocked-nei
 
 ```bash
 cmake --build build-ai -j3
-ctest --test-dir build-ai -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_cry_style_prototype' --output-on-failure
+ctest --test-dir build-ai -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_core_style_prototype' --output-on-failure
 cmake -S engine -B build-ai-asan -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_IPO=OFF -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
-cmake --build build-ai-asan -j3 --target test_break_nav_bake test_break_nav_query test_break_nav_follow test_break_perception test_break_behavior test_break_steer test_break_ai_dynamic test_break_steer_velocity test_break_ai_agents test_break_ai_formation test_break_ai_smart_object test_cry_style_prototype
-ctest --test-dir build-ai-asan -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_cry_style_prototype' --output-on-failure
+cmake --build build-ai-asan -j3 --target test_break_nav_bake test_break_nav_query test_break_nav_follow test_break_perception test_break_behavior test_break_steer test_break_ai_dynamic test_break_steer_velocity test_break_ai_agents test_break_ai_formation test_break_ai_smart_object test_core_style_prototype
+ctest --test-dir build-ai-asan -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_core_style_prototype' --output-on-failure
 cmake -S engine -B build-ai-tsan -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_IPO=OFF -DENGINE_USE_TSAN=ON
-cmake --build build-ai-tsan -j3 --target test_break_nav_bake test_break_nav_query test_break_nav_follow test_break_perception test_break_behavior test_break_steer test_break_ai_dynamic test_break_steer_velocity test_break_ai_agents test_break_ai_formation test_break_ai_smart_object test_cry_style_prototype
-ctest --test-dir build-ai-tsan -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_cry_style_prototype' --output-on-failure
+cmake --build build-ai-tsan -j3 --target test_break_nav_bake test_break_nav_query test_break_nav_follow test_break_perception test_break_behavior test_break_steer test_break_ai_dynamic test_break_steer_velocity test_break_ai_agents test_break_ai_formation test_break_ai_smart_object test_core_style_prototype
+ctest --test-dir build-ai-tsan -R 'break_ai|test_break_nav|test_break_steer|test_break_perception|test_break_behavior|test_core_style_prototype' --output-on-failure
 ```
 
 Expected: every focused test PASS with no sanitizer diagnostic.

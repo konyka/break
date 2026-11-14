@@ -38,9 +38,9 @@
 
 ### 2.3 Lua 边界
 
-Lua 是唯一计划中的运行时脚本语言；Zig 不作为 gameplay scripting dependency。当前 `engine/src/script/script_lua.h` 已有真实 Lua 5.4 `lua_State`、文件加载、hook 调用、mtime reload 和可选 host pointer 绑定，但尚无稳定的 `BreakLuaRuntime` facade、旧版本保留/失败回滚策略或严格 ECS batch command contract。
+Lua 是唯一计划中的运行时脚本语言；Zig 不作为 logic scripting dependency。当前 `engine/src/script/script_lua.h` 已有真实 Lua 5.4 `lua_State`、文件加载、hook 调用、mtime reload 和可选 host pointer 绑定，但尚无稳定的 `BreakLuaRuntime` facade、旧版本保留/失败回滚策略或严格 ECS batch command contract。
 
-设计目标是：Lua VM 由明确的 Script/Game owner 线程独占；其他线程不得调用 Lua C API。Lua 只能通过 bounded command/message API 请求 ECS、配置或 editor automation，不能获得 raw RHI、physics、network socket 或 World 内部指针。Lua callback failure 转为脚本错误事件/metrics，不穿透线程边界调用网络 callback、UI 或 RHI。
+设计目标是：Lua VM 由明确的 Script/Application owner 线程独占；其他线程不得调用 Lua C API。Lua 只能通过 bounded command/message API 请求 ECS、配置或 editor automation，不能获得 raw RHI、physics、network socket 或 World 内部指针。Lua callback failure 转为脚本错误事件/metrics，不穿透线程边界调用网络 callback、UI 或 RHI。
 
 ## 3. 当前 target 与边界证据
 
@@ -66,12 +66,12 @@ Lua 是唯一计划中的运行时脚本语言；Zig 不作为 gameplay scriptin
 所以以下 API 是**正式可选库能力**（不等于已集成进 `engine`/demo runtime）：
 
 - `engine/src/ecs/replication_schema.*`：确定性 schema 注册/查找/hash；
-- `world_snapshot.*`：GameThread barrier 后的深拷贝、generation-aware entity、immutable snapshot；
+- `world_snapshot.*`：LogicThread barrier 后的深拷贝、generation-aware entity、immutable snapshot；
 - `world_delta.*`：不可变 snapshot diff、校验、staging、final validation、atomic replace；
 - `break_aoi.*`：grid、witness、owner/dormant/relevancy、hysteresis、确定性 enter/stay/leave；
 - `break_replication.*`：Real/Ghost、baseline/dirty/destroy/dormant、budget 和 queue retry；
 - `break_replication_fragment.*`：bounded fragmentation/reassembly、乱序、duplicate/conflict、FNV-1a integrity、reset/destroy；
-- `break_net_adapter.*`、envelope/message/registry、`break_session.*`：bounded adapter queues、wire validation、GameThread-owned Session state machine。
+- `break_net_adapter.*`、envelope/message/registry、`break_session.*`：bounded adapter queues、wire validation、LogicThread-owned Session state machine。
 
 `docs/design/ecs_snapshot_replication_aoi.md`、`session_protocol.md` 和 `snowflake_c11_adapter.md` 是这些切片的事实边界；它们明确指出 timeout/eviction、cryptographic authentication、schema negotiation、正式 runtime/session integration 等仍未实现。
 
@@ -82,7 +82,7 @@ Lua 是唯一计划中的运行时脚本语言；Zig 不作为 gameplay scriptin
 ```mermaid
 flowchart LR
     PAL[PAL / OS owner]
-    MAIN[Main/Game owner]
+    MAIN[Main/Application owner]
     TASK[Task workers: read-only jobs]
     IO[IO owner workers]
     NET[Network/Snowflake driver]
@@ -106,9 +106,9 @@ flowchart LR
 
 **设计目标**是单写者优先，而不是给所有对象加 mutex：
 
-- Main/Game owner 独占可变 `World`、ECS structural state、schema registry、Real/Ghost、AoI scope、Session manager 和 gameplay state；
+- Main/Application owner 独占可变 `World`、ECS structural state、schema registry、Real/Ghost、AoI scope、Session manager 和 logic state；
 - Task workers 只读取 retained immutable snapshot/delta/AoI 输入，或写入自己拥有的 job result；不得写 World、Lua、UI、RHI；
-- Network driver 只拥有 transport/reactor 与网络队列，callback 只 validate/copy/enqueue；不得调用 Game/ECS/Lua/UI/RHI；
+- Network driver 只拥有 transport/reactor 与网络队列，callback 只 validate/copy/enqueue；不得调用 Application/ECS/Lua/UI/RHI；
 - IO workers 只读 VFS/文件/解码输入，完成品进入 bounded completion queue；completion callback 由 Main owner tick；
 - Lua VM 只有一个 owner；
 - RHI/UI/window 只由其既有 owner thread 调用；
@@ -137,23 +137,23 @@ bool break_runtime_snapshot_acquire(const BreakRuntimeSnapshotStore *,
                                     BreakWorldSnapshot **out_snapshot);
 ```
 
-这不是当前 API。它必须保证 publish 只由 Game owner 执行，acquire 返回 retain 后的 immutable object，替换 current pointer 后旧 snapshot 在最后一个 release 前继续有效。schema registry 仍由 Game owner 初始化/冻结；schema hash 变化必须切断旧 delta stream，schema negotiation/online schema update 不在本设计中自动实现。
+这不是当前 API。它必须保证 publish 只由 Application owner 执行，acquire 返回 retain 后的 immutable object，替换 current pointer 后旧 snapshot 在最后一个 release 前继续有效。schema registry 仍由 Application owner 初始化/冻结；schema hash 变化必须切断旧 delta stream，schema negotiation/online schema update 不在本设计中自动实现。
 
-数据流：systems 完成 -> structural barrier -> Game owner build snapshot -> publish/retain -> Task workers 做 diff/AoI -> Game owner 验证完整 delta -> ECS-owned staging apply -> final validation -> atomic replace。任何失败销毁 staging，原 World 不变。fragment reassembly 完成不等于可 apply：必须回到 Game owner 做 base/schema/tick/delta validation。
+数据流：systems 完成 -> structural barrier -> Application owner build snapshot -> publish/retain -> Task workers 做 diff/AoI -> Application owner 验证完整 delta -> ECS-owned staging apply -> final validation -> atomic replace。任何失败销毁 staging，原 World 不变。fragment reassembly 完成不等于可 apply：必须回到 Application owner 做 base/schema/tick/delta validation。
 
 ### 5.2 Network/Session
 
-当前 `BreakNetReactor` 有 256 项 event queue 和 256 项 outbound queue；`BreakSessionManager` 是 GameThread-only，`BreakNetMessageView` 借用，`BreakNetOwnedMessage` 显式复制和 release。当前 send queue 满返回 overload 且不阻塞，adapter callback 入队失败不阻塞 reactor。
+当前 `BreakNetReactor` 有 256 项 event queue 和 256 项 outbound queue；`BreakSessionManager` 是 LogicThread-only，`BreakNetMessageView` 借用，`BreakNetOwnedMessage` 显式复制和 release。当前 send queue 满返回 overload 且不阻塞，adapter callback 入队失败不阻塞 reactor。
 
 设计目标保持并扩展该方向：
 
 ```c
 BreakNetSendResult break_net_reactor_send(/* copied bounded command */);
 bool break_net_reactor_poll_event(/* transfers owned event to caller */);
-bool break_session_manager_apply_adapter_event(/* Game owner only */);
+bool break_session_manager_apply_adapter_event(/* Application owner only */);
 ```
 
-Network callback -> envelope/registry/sequence validation -> owned event copy -> bounded event queue -> Game owner poll -> Session transition/handler -> bounded outbound command -> reactor-only encode/send。handler 只在 Game owner 调用，payload 仅在调用期间有效；需要保留时再次 copy。Session close watermark 不允许迟到 event 复活已关闭 connection。
+Network callback -> envelope/registry/sequence validation -> owned event copy -> bounded event queue -> Application owner poll -> Session transition/handler -> bounded outbound command -> reactor-only encode/send。handler 只在 Application owner 调用，payload 仅在调用期间有效；需要保留时再次 copy。Session close watermark 不允许迟到 event 复活已关闭 connection。
 
 ### 5.3 Message、Task、IO 与 VFS
 
@@ -163,7 +163,7 @@ Network callback -> envelope/registry/sequence validation -> owned event copy ->
 
 **IO/VFS（当前已有）**：`async_loader.h` 规定 IO worker 读取 VFS、每帧 `async_loader_tick()` 在 Main thread dispatch completion；`vfs.h` 有 16 mounts、128 MiB `VFS_MAX_FILE_BYTES`、PAK entry cap 4096，`vfs.c` 对共享 PAK file cursor 已有 lock。formal IO queue 满返回 `BREAK_RUNTIME_OVERLOAD` 或 credit rejection；completion wait 必须可被 deadline/shutdown wakeup 打断，而 compatibility loader 的现有等待语义不因本文改变。
 
-**已交付事实（2026-10-23，Task 5）**：正式可选 `runtime_core`（不链入 `engine`/`engine_demo`/`dxx_break`）新增两个 facade。`engine/src/runtime/runtime_thread.h/.c`：opaque `BreakRuntimeThread` 包装 `platform_thread.h`，公共头不暴露 OS handle，entry 为 `void (*)(void *)`（内部适配 native calling convention）；`stop(timeout_ms)` 发布 stop request（worker 经 `break_runtime_thread_stop_requested()` 观察的 completion condition）后有界等待 worker 退出，退出后由 owner 恰好 join 一次（join ownership）；超时返回 `BREAK_RUNTIME_TIMEOUT` 并保留 live ownership（状态停在 `STOP_REQUESTED`，不 free、不强杀、可重试），`destroy` 只允许 CREATED/STOPPED。`engine/src/runtime/runtime_io.h/.c`：module-level 单例 formal IO facade（request API 不携带 context 指针），借用 VFS 注入；worker 是正式 `BreakRuntimeThread`；completion 恰好一次、为 owned `BreakRuntimeOwnedMessage`；`wait_completion` 可被 deadline 与 shutdown 打断；submit 满载非阻塞 `OVERLOAD`；cancel 推进 generation，stale worker 结果被丢弃计数；`shutdown` 有界 stop，TIMEOUT 保留 live ownership 可重试；facade 无 callback，IO worker 不可能调用 GameThread callback。两个 facade 的有界等待在各自 `.c` 内按 `break_net_adapter.c` 既有模式实现（POSIX `pthread_cond_timedwait` / Win32 `SleepConditionVariableCS`，TIME_UTC deadline）；`platform_thread.h` 仍未改动、仍无 portable timed wait/monotonic 包装（Task 4 起停放的 minor，保留为后续项）。兼容 loader 等待语义未变。验证：`test_runtime_io` 16/16，normal/ASan+UBSan/TSan 三树各 4/4（含 `test_runtime_core`、`test_runtime_facade`、target contract），TSan 连跑 10 次零报告；`test_async_loader`/`test_vfs`/`test_asset_gltf` 3/3 绿。
+**已交付事实（2026-10-23，Task 5）**：正式可选 `runtime_core`（不链入 `engine`/`engine_demo`/`dxx_break`）新增两个 facade。`engine/src/runtime/runtime_thread.h/.c`：opaque `BreakRuntimeThread` 包装 `platform_thread.h`，公共头不暴露 OS handle，entry 为 `void (*)(void *)`（内部适配 native calling convention）；`stop(timeout_ms)` 发布 stop request（worker 经 `break_runtime_thread_stop_requested()` 观察的 completion condition）后有界等待 worker 退出，退出后由 owner 恰好 join 一次（join ownership）；超时返回 `BREAK_RUNTIME_TIMEOUT` 并保留 live ownership（状态停在 `STOP_REQUESTED`，不 free、不强杀、可重试），`destroy` 只允许 CREATED/STOPPED。`engine/src/runtime/runtime_io.h/.c`：module-level 单例 formal IO facade（request API 不携带 context 指针），借用 VFS 注入；worker 是正式 `BreakRuntimeThread`；completion 恰好一次、为 owned `BreakRuntimeOwnedMessage`；`wait_completion` 可被 deadline 与 shutdown 打断；submit 满载非阻塞 `OVERLOAD`；cancel 推进 generation，stale worker 结果被丢弃计数；`shutdown` 有界 stop，TIMEOUT 保留 live ownership 可重试；facade 无 callback，IO worker 不可能调用 LogicThread callback。两个 facade 的有界等待在各自 `.c` 内按 `break_net_adapter.c` 既有模式实现（POSIX `pthread_cond_timedwait` / Win32 `SleepConditionVariableCS`，TIME_UTC deadline）；`platform_thread.h` 仍未改动、仍无 portable timed wait/monotonic 包装（Task 4 起停放的 minor，保留为后续项）。兼容 loader 等待语义未变。验证：`test_runtime_io` 16/16，normal/ASan+UBSan/TSan 三树各 4/4（含 `test_runtime_core`、`test_runtime_facade`、target contract），TSan 连跑 10 次零报告；`test_async_loader`/`test_vfs`/`test_asset_gltf` 3/3 绿。
 
 **Profiler（当前已有）**：`profiler.h` 有 120 frame ring、64 regions、32 thread tracks，`profiler_register_thread/current_tid` 和 Chrome trace/provenance export。设计目标是线程注册、region stack 和 export 的并发合同：worker 可记录自己的 track；frame begin/end、ring publish 和文件 export 必须由 profiler owner 或明确 snapshot；export 失败不影响 runtime execution。
 
@@ -174,7 +174,7 @@ Network callback -> envelope/registry/sequence validation -> owned event copy ->
 | 队列/存储 | 当前证据 | 设计决策 |
 |---|---:|---|
 | Network event | 256 (`session_protocol.md`, adapter headers) | bounded；满则 callback 丢弃并计数/transport error telemetry，不阻塞网络线程 |
-| Network outbound | 256 | bounded；满返回 `OVERLOAD`，Game owner 保留 replication dirty/baseline 状态供下次 retry |
+| Network outbound | 256 | bounded；满返回 `OVERLOAD`，Application owner 保留 replication dirty/baseline 状态供下次 retry |
 | Task external submit | 256 (`task.h`) | bounded；现有 inline fallback 必须显式统计；Runtime Core 新提交 API 可返回 overload |
 | Worker deque | 1024/priority (`task.h`) | owner push、thief steal；formal facade 满载返回 `BREAK_RUNTIME_OVERLOAD`，不 inline、不等待；legacy 行为仅按兼容 API 记录 |
 | VFS mounts | 16 (`vfs.h`) | 固定上限；mount 失败不替换已有 mounts |
@@ -190,8 +190,8 @@ Network callback -> envelope/registry/sequence validation -> owned event copy ->
 
 ### 6.2 backpressure 规则
 
-- Network callback 不等待 Game owner；队列满时拒绝/丢弃当前 event，并保留 transport 可继续运行的能力；不能在 callback 内调用 gameplay。
-- Game owner 提交 outbound 失败时得到明确 `OVERLOAD`，replication 不清除 dirty/baseline 事实；后续 sync 重试，超出重试期限的策略另由网络设计文档决定。
+- Network callback 不等待 Application owner；队列满时拒绝/丢弃当前 event，并保留 transport 可继续运行的能力；不能在 callback 内调用 logic。
+- Application owner 提交 outbound 失败时得到明确 `OVERLOAD`，replication 不清除 dirty/baseline 事实；后续 sync 重试，超出重试期限的策略另由网络设计文档决定。
 - Task submit 满时的语义按层区分：legacy Task API 的 inline fallback 是当前兼容事实，必须记录；formal Runtime Core submit 必须返回 `BREAK_RUNTIME_OVERLOAD` 或显式 credit rejection，不提供 inline 选项，也不得在 shutdown 后触碰已销毁 owner。
 - IO completion 满时 worker 不调用 Main callback；保留 request 为 retry/cancel 或转为 `FAILED_OVERLOAD`，并释放其 owned buffers。
 - Fragment incomplete 状态保留已收片供 retry；由于当前 focused API 没有 timeout/eviction，正式 runtime promotion 前必须增加 scheduler owner、deadline、最大并发 assembly 和 reset/evict 结果。
@@ -256,7 +256,7 @@ Stage 2 每一项实现必须先有 focused RED/GREEN test，再决定 source pr
 - source 进入明确的正式 library/target，target graph 和 include/link 关系可审计；
 - owner、queue capacity、backpressure、shutdown、failure contract 有 API 和测试；
 - normal/ASan/TSan 结果来自实际构建的该 target，缺失 lane 明确标注；
-- 原始 end-to-end 场景成立（例如 snapshot -> delta -> fragment -> network queue -> Game apply），而不是只测试 import/compile；
+- 原始 end-to-end 场景成立（例如 snapshot -> delta -> fragment -> network queue -> Application apply），而不是只测试 import/compile；
 - 文档同步更新“当前已有 / focused / 设计目标 / 未实现”，并通过 `git diff --check`。
 
 ## 9. 未实现与未决风险
@@ -278,18 +278,18 @@ Stage 2 每一项实现必须先有 focused RED/GREEN test，再决定 source pr
 - **Slice B — ownership/message primitives**：C11 owned message、bounded MPSC/SPSC queue、result/error taxonomy、admission gate；用 network/IO/Task focused tests 验证。
 - **Slice C — PAL/Thread/Task lifecycle**：统一 thread identity、cond/deadline、join/stop failure paths；保留现有 `platform_thread.h` 与 Task semantics，补 shutdown/TSan。
 - **Slice D — IO/VFS/Profiler Core**：把 async completion、VFS read limits、per-thread profiler publication 接入统一 lifecycle；不把 Lua 或 World 指针跨 worker 传递。
-- **Slice E — formal ECS/network integration**：snapshot store、fragment timeout/eviction scheduler、Session/replication Game owner coordinator；端到端验证后才允许正式 target claim。
+- **Slice E — formal ECS/network integration**：snapshot store、fragment timeout/eviction scheduler、Session/replication Application owner coordinator；端到端验证后才允许正式 target claim。
 - **Slice F — consumers**：Lua facade、editor command routing、asset/hot reload 和后续 security/network features 按各自设计文档依赖上述合同。
 
 Slice A 的 target 边界与 Slice B/C/D 的首批基元已交付（2026-10-22/23 Tasks 1-6：正式可选 `break_ecs_replication`/`break_replication_core`/`break_net`/`runtime_core`，含 coordinator、owned message、bounded queue、task/thread/IO facade、reload coordinator、profiler bridge；均不链入 `engine`/demo）。在 Slice E（formal ECS/network integration）与 Slice F（consumers）完成且验收证据齐全前，本文中的 Runtime Core 集成与完整 Stage 2 仍必须保持“设计目标/未实现”标记。
 
 ## 附录 A：与原始需求 12 线程域表的对照（2026-10-22）
 
-原始需求给出 12 个线程域（Main/Game、UI、Render、RHI、GPU、Network RX、Network TX、IO、Worker、Audio、Physics、Profiler）。本文件正文的 owner domain 模型是其第一阶段子集，对照关系如下；正文规则不变，本附录只做映射与边界澄清。
+原始需求给出 12 个线程域（Main/Application、UI、Render、RHI、GPU、Network RX、Network TX、IO、Worker、Audio、Physics、Profiler）。本文件正文的 owner domain 模型是其第一阶段子集，对照关系如下；正文规则不变，本附录只做映射与边界澄清。
 
 | 需求线程域 | 本文对应 | 状态与边界 |
 |---|---|---|
-| Main/Game | Main/Game owner | 已覆盖；独占可变 World/ECS/schema/Session/gameplay |
+| Main/Application | Main/Application owner | 已覆盖；独占可变 World/ECS/schema/Session/logic |
 | UI | PAL window/UI owner + myui 既有线程约束 | 部分覆盖；UI 只在其既有 owner 线程执行，经 owned command 与 Main 交互；myui 事件队列的细节契约属于 Stage 4 编辑器子项目 |
 | Render + RHI | Render/RHI owner | 合并为一个 owner；当前 Break 为编译期单后端、主线程驱动的现实边界见 §3；拆成独立 Render/RHI 双线程是后续独立子项目，需自带验收 |
 | GPU | 不由用户态调度 | 概念对齐；Fence/Semaphore/Timeline 契约属于 RHI 层，不在本文展开 |
@@ -297,7 +297,7 @@ Slice A 的 target 边界与 Slice B/C/D 的首批基元已交付（2026-10-22/2
 | IO | IO owner workers | 已覆盖；completion 由 Main owner tick |
 | Worker | Task workers | 已覆盖；只读 retained snapshot，写自己拥有的 job result |
 | Audio | 未单设 owner | 当前 `engine/src/audio/` 基于 miniaudio，设备回调线程在库内部；需求中的独立 Audio command queue 域属于后续音频子项目，立项前不得宣称独立音频线程域存在 |
-| Physics | 未单设 owner | 当前 `engine/src/physics/` 由 Main/Game 步进；需求的 Physics command/result queue 独立线程域属于后续物理子项目，需先定义 world ownership 与固定步长契约 |
+| Physics | 未单设 owner | 当前 `engine/src/physics/` 由 Main/Application 步进；需求的 Physics command/result queue 独立线程域属于后续物理子项目，需先定义 world ownership 与固定步长契约 |
 | Profiler | Profiler per-thread recording | 已覆盖；frame ring 发布/导出有明确 owner |
 
 映射原则：需求的通信方式列（无锁事件队列、SPSC/MPSC packet queue、command queue、Fence 等）与本文 §5–§6 的 owned message + bounded queue + backpressure 规则一致；合并域（Render/RHI、Network RX/TX）和未设域（Audio、Physics）都必须以独立子项目形式拆分验收，不允许在主线上一次性铺开。

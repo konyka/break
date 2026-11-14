@@ -16,7 +16,7 @@
 - **当前已有**：源码和当前文档明确描述，且有对应验证证据；不表示已完成产品级网络服务。
 - **focused/test-only**：代码存在并可由专门测试 target 编译/运行，但没有进入正式 `engine` 静态库，不能被 `engine_demo` 或 `dxx_break` 当作运行时能力。
 - **设计目标**：本文建议的正式化或新接口，尚未实现；后续实施必须先有 RED 测试、target 变更和证据。
-- **未实现/明确排除**：本文不假设其存在，也不以接口草图冒充交付，包括认证后端、加密认证、authority handoff、预测回滚、分布式 Cell、Lua gameplay callback、editor RPC 和在线更新。
+- **未实现/明确排除**：本文不假设其存在，也不以接口草图冒充交付，包括认证后端、加密认证、authority handoff、预测回滚、分布式 Cell、Lua logic callback、editor RPC 和在线更新。
 
 ### 1.2 当前 target 证据
 
@@ -51,7 +51,7 @@ C++11 Framework/Application
         v
 Runtime facade (C11 opaque handles; C++ wrapper is optional)
         |
-        +--> Session / protocol policy (GameThread-owned)
+        +--> Session / protocol policy (LogicThread-owned)
         |       +--> ECS replication policy
         |       +--> owned Message queues
         |
@@ -61,12 +61,12 @@ Runtime facade (C11 opaque handles; C++ wrapper is optional)
         |
         +--> VFS / Profiler / Task
 
-ECS World/snapshot/delta/schema <--- GameThread command boundary ---> Session/Replication
+ECS World/snapshot/delta/schema <--- LogicThread command boundary ---> Session/Replication
 ```
 
 目标规则：
 
-- `World`、ECS 结构、schema registry、Real/Ghost、Session state 都由 GameThread 负责修改。
+- `World`、ECS 结构、schema registry、Real/Ghost、Session state 都由 LogicThread 负责修改。
 - Network/IO callbacks 只做 bounded validation、copy、identity bookkeeping 和 enqueue；不得直接调用 World/ECS/Lua/UI/RHI。
 - Read-only workers 只读取已拥有的 immutable snapshot/delta/AoI 输入；不能保存指向 live World 或 transient callback payload 的指针。
 - `break_net`/Snowflake 仍拥有 socket/readiness/transport queue。Break 只拥有 adapter lifecycle、事件记录和有界副本；正式化不能把 Snowflake 内部对象泄漏进公共 C11 header。
@@ -79,7 +79,7 @@ ECS World/snapshot/delta/schema <--- GameThread command boundary ---> Session/Re
 当前 focused API 已在以下源码中存在：`engine/src/ecs/replication_schema.{h,c}`、`world_snapshot.{h,c}`、`world_delta.{h,c}`。
 
 - schema 注册包含 component ID、version、size、alignment、flags 和可选 encode/decode；确定性 schema 的 hash 使用 canonical component ID。pointer-containing、resource reference、derived cache 不应走 raw snapshot policy。
-- `break_world_snapshot_build(World *, schemas, tick)` 是 GameThread 操作，要求调用方已经完成结构屏障；builder 不自动建立 barrier。snapshot 深拷贝 entity `(index,generation)` 和组件 bytes，拥有 immutable storage，并通过 retain/release 管理生命周期。
+- `break_world_snapshot_build(World *, schemas, tick)` 是 LogicThread 操作，要求调用方已经完成结构屏障；builder 不自动建立 barrier。snapshot 深拷贝 entity `(index,generation)` 和组件 bytes，拥有 immutable storage，并通过 retain/release 管理生命周期。
 - delta 只在 immutable snapshots 之间 diff。apply 先验证 base/schema/tick/records，再对 World 做 ECS-owned staging clone；只在 staging 上 mutation 和最终验证，成功后 atomic replace，任何失败销毁 staging 且原 World 不变。
 
 **设计目标：formal snapshot library**  
@@ -102,7 +102,7 @@ publisher 必须明确 acquire/release 和 shutdown fence；不能返回无生�
 这些逻辑自 2026-10-22 起由正式可选 `break_replication_core` 承载（不链入 `engine`/demo），但 replication header 仍直接引用 adapter（`break_replication.h` include `break_net_adapter.h`，reactor send 符号在消费方最终链接解析）。完整正式化仍应拆为两层：
 
 1. **transport-independent policy library**：AoI、scope diff、Real/Ghost 和 record scheduling 只产出 owned `BreakReplicationCommand`；不调用 Snowflake。
-2. **network bridge**：GameThread 消费 command，编码成 Session/Message envelope，再调用 Message/IO queue。
+2. **network bridge**：LogicThread 消费 command，编码成 Session/Message envelope，再调用 Message/IO queue。
 
 这样可以在没有 Snowflake 的 headless、ASan 和 TSan lane 中验证 policy；也能避免把 replication queue overload 当成 World mutation 失败。
 
@@ -110,7 +110,7 @@ publisher 必须明确 acquire/release 和 shutdown fence；不能返回无生�
 
 `engine/src/network/break_replication_fragment.{h,c}` 已实现有界分片和 opaque reassembly：payload 非空；单片受 `BREAK_NET_MAX_PAYLOAD_SIZE`（当前 64 KiB）限制；总重组预算 `BREAK_REPLICATION_MAX_REASSEMBLY_SIZE`（当前 16 MiB）；携带 `delta_id`、`base_id`、index/count、FNV-1a checksum；支持乱序、精确 duplicate、冲突拒绝、owned complete payload、reset/destroy。
 
-当前没有 timeout/eviction；上层 scheduler 必须管理半成品 lifetime。正式 bridge 的设计目标是：每个 connection/stream 有 bounded assembly budget 和 deadline；超时进入 `EXPIRED` 并释放 storage，重复/冲突/校验失败进入可计数的 drop reason。checksum 不得升级为 authentication。完整重组之后仍需回到 GameThread 做 schema/base/tick/delta validation，再 apply。
+当前没有 timeout/eviction；上层 scheduler 必须管理半成品 lifetime。正式 bridge 的设计目标是：每个 connection/stream 有 bounded assembly budget 和 deadline；超时进入 `EXPIRED` 并释放 storage，重复/冲突/校验失败进入可计数的 drop reason。checksum 不得升级为 authentication。完整重组之后仍需回到 LogicThread 做 schema/base/tick/delta validation，再 apply。
 
 ## 5. `break_net` 与 Session 边界
 
@@ -118,11 +118,11 @@ publisher 必须明确 acquire/release 和 shutdown fence；不能返回无生�
 
 `engine/src/network/break_net_adapter.h` 的 `BreakNetReactor` 是 opaque C11 handle，支持互斥的 `BREAK_NET_DRIVE_THREAD` 和 `BREAK_NET_DRIVE_STEP`。Snowflake callback 只产生有界 `BreakNetEvent`；adapter event queue 和 outbound queue 均为 **256** 项，identity capacity 也是 **256**。payload view 是借用，入队前必须复制成 `BreakNetOwnedMessage`；poll 后 ownership 转给 caller，最终由 `break_net_event_release` 释放。
 
-`break_net_reactor_send` 在 queue 满时立即返回 `BREAK_NET_SEND_OVERLOAD`，不阻塞 GameThread；CREATED/FAILED/STOPPING/STOPPED 返回 `BREAK_NET_SEND_CLOSED`。stale connection UID 被丢弃。thread-mode stop 的顺序是 terminate Snowflake、等待 adapter-owned `host_exited` deadline、确认退出后 join、destroy reactor、发布 STOPPED；超时返回 false 并保留 live resources，后续 stop 可重试。step mode 的唯一 driver 由 atomic guard 保护。
+`break_net_reactor_send` 在 queue 满时立即返回 `BREAK_NET_SEND_OVERLOAD`，不阻塞 LogicThread；CREATED/FAILED/STOPPING/STOPPED 返回 `BREAK_NET_SEND_CLOSED`。stale connection UID 被丢弃。thread-mode stop 的顺序是 terminate Snowflake、等待 adapter-owned `host_exited` deadline、确认退出后 join、destroy reactor、发布 STOPPED；超时返回 false 并保留 live resources，后续 stop 可重试。step mode 的唯一 driver 由 atomic guard 保护。
 
 ### 5.2 当前 Session
 
-`engine/src/network/break_session.{h,c}` 的 `BreakSessionManager` 是 GameThread-only、非线程安全 opaque handle。状态为 `NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED`，也允许 `NEW -> CLOSING -> CLOSED`。`poll_adapter()` 在 GameThread 分页消费 adapter queue；只有 event queue 排空后才 finalise close。closed entry 不回收，`max_sessions` 是 manager lifetime capacity，不是并发在线数。
+`engine/src/network/break_session.{h,c}` 的 `BreakSessionManager` 是 LogicThread-only、非线程安全 opaque handle。状态为 `NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED`，也允许 `NEW -> CLOSING -> CLOSED`。`poll_adapter()` 在 LogicThread 分页消费 adapter queue；只有 event queue 排空后才 finalise close。closed entry 不回收，`max_sessions` 是 manager lifetime capacity，不是并发在线数。
 
 当前 envelope 是固定 18-byte little-endian prefix，default registry 最大 64 项，目前 AUTH/PING 是已实现定义。Session handler 的 payload 只在 handler 调用期间有效；需要长期保存必须显式复制。当前 custom registry 可用于 Session policy，但 adapter envelope codec 仍使用 default registry；这是真实未决边界，不应在设计中默认为已解决。
 
@@ -131,7 +131,7 @@ publisher 必须明确 acquire/release 和 shutdown fence；不能返回无生�
 设计目标是将 Session 消费的输入固定为：
 
 ```text
-adapter callback -> bounded owned event -> GameThread poll_adapter
+adapter callback -> bounded owned event -> LogicThread poll_adapter
                    -> Session validation/state transition
                    -> handler/replication command
                    -> Message encode -> bounded outbound queue -> IO driver
@@ -158,7 +158,7 @@ PAL 负责时间、线程、mutex/cond、socket native handle 和平台错误映
 
 现有 `engine/src/task/task.h` 的 TaskSystem 是进程内单实例；`SUBMIT_QUEUE_CAPACITY == 256`，worker 每优先级有 `DEQUE_CAPACITY == 1024` 的 Chase-Lev deque；worker task 调 `task_wait()`/`task_wait_handle()` 会自等待，按契约立即返回。
 
-设计目标保持这些事实并补齐正式 contract：外部 submit 在 256 项 global queue 满时返回 overload（不无限分配）；worker local deque 满时按显式策略 reject 或转入 bounded overflow，禁止静默丢 task。TaskSystem shutdown 先停止接受新任务，再 drain/取消策略明确，唤醒所有 waiter，join workers，最后释放 task registry。网络 callback 不直接提交任意 gameplay task；只投递固定大小 command 或由 GameThread 预算调度。
+设计目标保持这些事实并补齐正式 contract：外部 submit 在 256 项 global queue 满时返回 overload（不无限分配）；worker local deque 满时按显式策略 reject 或转入 bounded overflow，禁止静默丢 task。TaskSystem shutdown 先停止接受新任务，再 drain/取消策略明确，唤醒所有 waiter，join workers，最后释放 task registry。网络 callback 不直接提交任意 logic task；只投递固定大小 command 或由 LogicThread 预算调度。
 
 ### 6.3 Message
 
@@ -201,7 +201,7 @@ Runtime Core formal facade 的统一 queue 满载结果为非阻塞 `BREAK_RUNTI
 sequenceDiagram
     participant N as IO/Snowflake driver
     participant QI as bounded inbound queue (256)
-    participant G as GameThread
+    participant G as LogicThread
     participant S as Session/Replication
     participant QO as bounded outbound queue (256)
     participant T as transport
@@ -215,7 +215,7 @@ sequenceDiagram
     T->>QO: drain and encode envelope
 ```
 
-snapshot path独立于 transport：GameThread 完成 systems 和结构屏障后 build snapshot；read-only worker 对 retained snapshot 做 diff/AoI；GameThread 消费结果并决定 replication command。网络线程不读取 live snapshot pointer，除非通过明确 retain/release 的 publication service。
+snapshot path独立于 transport：LogicThread 完成 systems 和结构屏障后 build snapshot；read-only worker 对 retained snapshot 做 diff/AoI；LogicThread 消费结果并决定 replication command。网络线程不读取 live snapshot pointer，除非通过明确 retain/release 的 publication service。
 
 ### 7.2 Backpressure policy
 
@@ -253,7 +253,7 @@ shutdown 必须幂等；timeout 返回明确 `TIMEOUT` 并保留仍存活的 own
 
 - malformed frame/schema/base mismatch：拒绝单条，保留当前 World，计数并可按 Session policy close；
 - staging allocation/mutation/final validation failure：销毁 staging，原 World 不变；
-- handler failure：Session 记录 `HANDLER_FAILED`，不在网络线程重试用户代码；由 GameThread policy 决定 close/retry；
+- handler failure：Session 记录 `HANDLER_FAILED`，不在网络线程重试用户代码；由 LogicThread policy 决定 close/retry；
 - transport error/close：先发布 owned event，Session 设置不可逆 close watermark，replication 清理 Ghost；
 - profiler/VFS export failure：降级为错误计数，不阻塞网络 shutdown。
 
@@ -265,11 +265,11 @@ C11 拥有 opaque handles、POD wire records、显式 alloc/free、错误码、�
 
 ### C++11 framework
 
-C++11 `RuntimeModuleInterface`/`BaseApplication` 负责生命周期编排和 UI/editor integration，但只能在 owner thread 调 C11 facade。C++ wrapper 可用 RAII 管理 C11 handle，却必须把 destroy 顺序映射到 C11 contract；异常不得穿过 C ABI，跨层错误转换为 enum/result。Frame/Tick 不能直接从 UI thread 修改 ECS，须投递 GameThread command。
+C++11 `RuntimeModuleInterface`/`BaseApplication` 负责生命周期编排和 UI/editor integration，但只能在 owner thread 调 C11 facade。C++ wrapper 可用 RAII 管理 C11 handle，却必须把 destroy 顺序映射到 C11 contract；异常不得穿过 C ABI，跨层错误转换为 enum/result。Frame/Tick 不能直接从 UI thread 修改 ECS，须投递 LogicThread command。
 
 ### Lua
 
-当前 `engine/src/script/script_lua.h` 的 `LuaScript` 是已有脚本加载/调用能力，并不等于稳定 `BreakLuaRuntime` facade。Lua VM 应由单一 Script/Game owner thread 持有；network/IO/worker 不进入 Lua。未来 facade 只接收 bounded command batch、snapshot/query 的 copied view 和 scalar configuration；禁止暴露 raw `World *`、socket、RHI handle、allocator 或 queue internals。Lua error、过量 command、超时和 reload failure 都回到 GameThread result，不允许异常式跨线程传播。稳定 facade 属 Stage 3，本文只定义其不得越过的边界。
+当前 `engine/src/script/script_lua.h` 的 `LuaScript` 是已有脚本加载/调用能力，并不等于稳定 `BreakLuaRuntime` facade。Lua VM 应由单一 Script/Application owner thread 持有；network/IO/worker 不进入 Lua。未来 facade 只接收 bounded command batch、snapshot/query 的 copied view 和 scalar configuration；禁止暴露 raw `World *`、socket、RHI handle、allocator 或 queue internals。Lua error、过量 command、超时和 reload failure 都回到 LogicThread result，不允许异常式跨线程传播。稳定 facade 属 Stage 3，本文只定义其不得越过的边界。
 
 ## 10. 验收与验证矩阵
 
@@ -302,7 +302,7 @@ Stage 2 网络边界只有在以下条件同时满足后才能标记“formal ru
 
 - snapshot/schema/delta/AoI/replication/fragment 的 library target 与 `engine`/runtime target 依赖已由 CMake contract test 钉死；
 - `break_net`/Session 的 Snowflake 可选性、payload ownership、queue capacity 和 shutdown semantics 在无 Snowflake/headless 与有 Snowflake 两条 lane 都有明确结果；
-- GameThread-only mutation、network callback no-gameplay、worker read-only snapshot 由测试和代码扫描共同验证；
+- LogicThread-only mutation、network callback no-logic、worker read-only snapshot 由测试和代码扫描共同验证；
 - normal/ASan/TSan focused integration 全部通过，失败项没有以“未构建”冒充通过；
 - timeout/eviction、schema negotiation、认证和安全项仍分别标为未实现，直到各自 Stage 计划和验收完成。
 
@@ -315,7 +315,7 @@ Stage 2 网络边界只有在以下条件同时满足后才能标记“formal ru
 5. **protocol/security 风险**：当前 envelope default registry、sequence 和 FNV-1a 只提供边界/完整性；不能推断为 authentication、replay protection 或可信 client identity。
 6. **跨平台风险**：adapter bounded stop 的非 Linux lane 尚未在本机验证；PAL/IO 的 Windows/macOS/移动平台必须分别完成 compile、headless/native-surface 和 sanitizer 证据。
 7. **Task/VFS 共享资源风险**：TaskSystem 是进程内单实例；VFS PAK FILE seek 已需锁；Runtime Core 设计不可创建第二套隐式 worker pool 或绕过现有锁模型。
-8. **Lua/editor 依赖风险**：Lua facade、editor RPC、remote diagnostics 和 online update 尚未实现；网络设计只能提供 owned command 边界，不能提前承诺 gameplay/editor integration。
+8. **Lua/editor 依赖风险**：Lua facade、editor RPC、remote diagnostics 和 online update 尚未实现；网络设计只能提供 owned command 边界，不能提前承诺 logic/editor integration。
 9. **验证完整性风险**：已有 full CTest 记录包含未构建 fuzz smoke 和无关环境/图形失败；后续报告必须逐项说明“测试通过”“未构建”“跳过”或“与本改动无关”。
 
-**结论：**当前仓库已经有可验证的 ECS snapshot/replication 和 Snowflake adapter/Session contract，target/ownership/queue/lifecycle 边界正式化已交付（2026-10-22 Tasks 1-2：正式可选 `break_ecs_replication`/`break_replication_core`/`break_net`），Runtime Core 首批 contract 也已交付（2026-10-22/23 Tasks 3-6 的 `runtime_core`）；但它们尚未构成正式 runtime network——各库均不链入 `engine`/`engine_demo`/`dxx_break`，GameThread 集成、snapshot publication、authority 与真实子系统接线仍属后续 plan。
+**结论：**当前仓库已经有可验证的 ECS snapshot/replication 和 Snowflake adapter/Session contract，target/ownership/queue/lifecycle 边界正式化已交付（2026-10-22 Tasks 1-2：正式可选 `break_ecs_replication`/`break_replication_core`/`break_net`），Runtime Core 首批 contract 也已交付（2026-10-22/23 Tasks 3-6 的 `runtime_core`）；但它们尚未构成正式 runtime network——各库均不链入 `engine`/`engine_demo`/`dxx_break`，LogicThread 集成、snapshot publication、authority 与真实子系统接线仍属后续 plan。

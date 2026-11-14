@@ -15,7 +15,7 @@
 - Windows 使用 `_spawnv(_P_WAIT)` 直接启动真实 baker，参数按 CRT 规则引用；保留 A/B slot、`launch.command` 和 `launch.spawnv` 原始返回诊断。POSIX 保持原 `system()` 和 `launch.system`。不得改成无引号参数或删除空格路径回归。
 - 七个文本资产使用 `text eol=lf`，`level.banm`、`level.bscn`、`level.fg`、`tone.wav` 使用 `binary`。不得以 generic binary 覆盖远程文本规则，也不得归一化比较来掩盖字节差异。
 - compat Task 1 的 generator/config 与 Task 2 的真实 Agility 文件、哈希和 gate 删除/恢复不得改变。临时 process probe/validation 分支不进入 master，不建 PR。
-- 新名称使用 `core_app`/`CoreApp`/`CORE_APP` 和现有 C/CMake 风格，不引入旧外部引擎前缀或新 `game` 领域名。Vulkan 默认，OpenGL 只作最后降级/画面对照，不引入 X11。
+- 新名称使用 `core_app`/`CoreApp`/`CORE_APP` 和现有 C/CMake 风格，不引入旧外部引擎前缀或新 `application` 领域名。Vulkan 默认，OpenGL 只作最后降级/画面对照，不引入 X11。
 - 所有构建和并行 CTest 使用 `-j3`。每项先 RED、最小 GREEN、变异/恢复、完整非图形回归、独立规格与质量评审。最终必须重跑 ASan+UBSan、TSan、no-tests、显式 fuzz 和真实 Windows/D3D12，不能沿用合并前结果。
 - 历史记录只补充当前事实。合并前的外层引用 probe 和 generic binary 方案可保留为历史，但必须明确最终同步采用 `_spawnv` 和分类属性规则，不得写成两套同时生效的实现。
 

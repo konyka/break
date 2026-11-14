@@ -4,11 +4,11 @@
 
 ## 目标
 
-落实用户最新命名要求：本轮新增的 Cry 对照集成不使用 `cry/Cry/CRY`，也不再使用 `game/Game/GAME` 作为文件、类型、函数、变量、常量、target、测试或当前描述的名称。P12 统一迁移为 `core_app` 领域命名，遵守现有 C11/C++20 风格与 Google 一致性。
+落实用户最新命名要求：本轮新增的 Cry 对照集成不使用 `cry/Cry/CRY`，也不再使用 旧领域词（全小写、首字母大写、全大写三种形式） 作为文件、类型、函数、变量、常量、target、测试或当前描述的名称。P12 统一迁移为 `core_app` 领域命名，遵守现有 C11/C++20 风格与 Google 一致性。
 
 ## 范围
 
-只迁移尚未合入 master 的 P12 集成层及其当前计划、资产、测试和文档。既有 P0–P11 公共 API/ABI（`break_game`、`BreakGame*`、`BREAK_GAME_*`、`break_flow`、`break_ai`、`break_game_lua`、`runtime_core`）不在本项目中重命名；如需全仓公共 API 迁移，必须另开兼容项目。历史报告继续记录旧名称，当前生产与说明不使用旧名称。
+只迁移尚未合入 master 的 P12 集成层及其当前计划、资产、测试和文档。既有 P0–P11 公共 API/ABI（`break_kernel`、`BreakKernel*`、`BREAK_KERNEL_*`、`break_flow`、`break_ai`、`break_kernel_lua`、`runtime_core`）不在本项目中重命名；如需全仓公共 API 迁移，必须另开兼容项目。历史报告继续记录旧名称，当前生产与说明不使用旧名称。
 
 ## 命名方案
 
@@ -16,7 +16,7 @@
 - 路径：`engine/apps/core_app`、`engine/assets/core_app`、`docs/design/core_app_integration.md`。
 - 文件：`core_app.[ch]`、`core_app_audio.[ch]`、`core_app_render.[ch]`、`core_app_checkpoint.[ch]`、`core_app_asset_bake.c`；后续模块使用 `core_app_input`、`core_app_simulation`、`core_app_network`、`core_app_script`。
 - 类型：`CoreApp`、`CoreLevel`、`CoreAppConfig`、`CoreAppDiagnostics`、`CoreAppCheckpoint*`、`CoreAppRender*`、`CoreAppAudio*`。
-- 函数和变量：`core_app_*`、`core_app_checkpoint_*`、`core_app_render_*`、`core_app_audio_*`；局部 `game` 变量改为 `app` 或具体职责名称。
+- 函数和变量：`core_app_*`、`core_app_checkpoint_*`、`core_app_render_*`、`core_app_audio_*`；局部 `application` 变量改为 `app` 或具体职责名称。
 - 宏：`CORE_APP_*`、`CORE_APP_RENDER_*`、`CORE_APP_AUDIO_*`、`CORE_APP_CHECKPOINT_*`。
 - 测试：`test_core_app_*`；构建目录 `build-core-integration-*`；CTest 与环境变量同步迁移。
 - 计划改名为 `2026-11-03-core-app-integration.md`，新 SDD workspace 记录旧 workspace 的历史路径，旧台账不删除。
@@ -25,7 +25,7 @@
 
 ## 数据格式
 
-当前 P12 尚未进入 master，也没有兼容旧 checkpoint 的承诺。一次性迁移 `GAMECKPT` 为固定 8 字节 `CORECKPT`、`manifest.game` 为 `manifest.core`、`GAMEAPPTRACE` 为 `COREAPPTRACE`、`game-app-scenario 1` 为 `core-app-scenario 1`。reader 只接受新格式，不静默接受双格式。由最终 baker 重新生成全部正式资产，真实 readers 验证。
+当前 P12 尚未进入 master，也没有兼容旧 checkpoint 的承诺。一次性迁移 `CORECKPT` 为固定 8 字节 `CORECKPT`、`manifest.core` 为 `manifest.core`、`COREAPPTRACE` 为 `COREAPPTRACE`、`core-app-scenario 1` 为 `core-app-scenario 1`。reader 只接受新格式，不静默接受双格式。由最终 baker 重新生成全部正式资产，真实 readers 验证。
 
 ## 风格
 

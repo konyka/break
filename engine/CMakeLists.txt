@@ -5027,7 +5027,7 @@ endif()
     add_test(NAME test_repo_naming_contract
         COMMAND ${CMAKE_COMMAND}
             -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
-            -DSTAGE=3
+            -DSTAGE=4
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_repo_naming_contract.cmake)
     set_tests_properties(test_repo_naming_contract PROPERTIES
         LABELS "headless;platform_contract")

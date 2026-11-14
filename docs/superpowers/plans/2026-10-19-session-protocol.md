@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the C11 protocol envelope and GameThread-owned session layer above the completed Snowflake adapter.
+**Goal:** Build the C11 protocol envelope and LogicThread-owned session layer above the completed Snowflake adapter.
 
-**Architecture:** Snowflake remains transport/reactor owner. Adapter callbacks create bounded immutable events; GameThread polls and owns message registry, session state, authentication phase, and connection binding. Outbound commands are copied into an adapter-owned queue and sent through Snowflake notification APIs.
+**Architecture:** Snowflake remains transport/reactor owner. Adapter callbacks create bounded immutable events; LogicThread polls and owns message registry, session state, authentication phase, and connection binding. Outbound commands are copied into an adapter-owned queue and sent through Snowflake notification APIs.
 
 **Tech Stack:** C11, existing Break CMake/CTest, completed `break_net_adapter`, `break_net_message`, `break_net_protocol`, Snowflake C API.
 
@@ -13,11 +13,11 @@
 - Keep all new core code C11 and opaque-handle based.
 - Do not modify Snowflake.
 - Do not call SessionManager, Lua, ECS, World, UI, RHI, file IO, or database code from Snowflake callbacks.
-- GameThread owns all session mutations.
+- LogicThread owns all session mutations.
 - Use explicit byte order and checked arithmetic.
 - Do not implement ECS replication, AoI, Lua bindings, editor RPC, online update, or anti-cheat in this plan.
 - Every behavior gets a failing test before implementation.
-- Outbound overload must return a bounded error and never block GameThread.
+- Outbound overload must return a bounded error and never block LogicThread.
 
 ---
 
@@ -57,13 +57,13 @@
 - Modify: tests and CMake
 
 - [x] Add bounded adapter event types for connection opened, message received, send-drained, connection closed, and transport error.
-- [x] Add GameThread-only poll/drain API that transfers owned event records.
+- [x] Add LogicThread-only poll/drain API that transfers owned event records.
 - [x] Add outbound command API that copies payloads and maps queue overload without blocking.
 - [x] Read the exact Snowflake `add_acceptor_with_handlers` and connection callback signatures before wiring parser/open/close callbacks; do not guess signatures.
 - [x] Ensure callback path only creates events and never calls SessionManager.
 - [x] Test payload lifetime, FIFO ordering, stale connection events, and overload.
 
-## Task 4: GameThread-owned SessionManager
+## Task 4: LogicThread-owned SessionManager
 
 **Files:**
 - Create: `engine/src/network/break_session.h`
@@ -74,7 +74,7 @@
 - [x] Implement legal transitions: NEW→AUTHENTICATING→AUTHENTICATED→CLOSING→CLOSED and NEW→CLOSING→CLOSED.
 - [x] Reject backward transitions and unknown connection keys.
 - [x] Bind at most one session per connection.
-- [x] Poll adapter events on GameThread and apply connection/message events deterministically.
+- [x] Poll adapter events on LogicThread and apply connection/message events deterministically.
 - [x] Ensure events queued before close are classified stale after close and cannot mutate a closed session.
 - [x] Test transitions, duplicate auth, close ordering, and manager destruction.
 
@@ -87,7 +87,7 @@
 - Test: normal/ASan/TSan focused tests and full CTest
 
 - [x] Document envelope fields, registry, session states, thread ownership, callback restrictions, and failure policy.
-- [x] Add Mermaid diagrams for network callback→event queue→GameThread session dispatch and session close ordering.
+- [x] Add Mermaid diagrams for network callback→event queue→LogicThread session dispatch and session close ordering.
 - [x] Run normal, ASan, and TSan focused tests (adapter 30/30; Session 20/20 in each lane), including the real loopback wire path.
 - [x] Run the standard full build/CTest and record unrelated environment failures without hiding them: known failures are outside this Session slice, five fuzz smoke targets were not run because their executables were not built, and the full suite is not a clean gate for this task.
 - [x] Run `git diff --check`.

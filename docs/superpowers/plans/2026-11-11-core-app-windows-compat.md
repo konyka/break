@@ -15,7 +15,7 @@
 - 生成的 `CTestTestfile.cmake` 含按配置分支的 `add_test` 和 `else() add_test(... NOT_AVAILABLE)`；旧嵌套调用没有 `-C`。禁止只改引号或无条件删除测试来掩盖这一机制。
 - 父级 Agility DLL 位于 `engine/external/d3d12/agility/build/native/bin/x64`，被 `.gitignore` 排除，HEAD archive 不包含它们。D3D12 归档只复制该真实父级 `D3D12Core.dll` 和 `d3d12SDKLayers.dll`，源/目标 SHA-256 必须一致；缺失真实输入必须 FAIL。
 - 保留现有 Core App API/ABI、后端有效值、D3D12 DLL gate、nm 缺符号 FAIL、无 Git UNVERIFIED 边界和原有负例。不得把 `Not Run`、nested configure failure 或真实错误改成 skip/PASS。
-- 新名称使用 `core_app`/`CoreApp`/`CORE_APP` 和现有 CMake 风格，不引入旧外部引擎前缀或新 `game` 领域名。Vulkan 默认，OpenGL 只作最后降级/画面对照，不引入 X11。
+- 新名称使用 `core_app`/`CoreApp`/`CORE_APP` 和现有 CMake 风格，不引入旧外部引擎前缀或新 `application` 领域名。Vulkan 默认，OpenGL 只作最后降级/画面对照，不引入 X11。
 - 构建和并行 CTest 使用 `-j3`。Linux Ninja Multi-Config 只验证相同生成器/配置机制，不冒充 native Windows/D3D12。最终必须有真实 Windows compat 和 D3D12 lane 结果。
 - 每项先 RED、最小 GREEN、变异/恢复、完整非图形回归、独立规格与质量评审。文档只追加当前事实；controller 负责验证分支的原生运行与最终合并，代理不 push。
 - 运行合同的完成判定必须来自真实返回码和 `core_app compatibility contract passed`。只在生成文件中存在合法 `NOT_AVAILABLE` 分支不构成失败；`Not Run` 只在实际运行输出中判定。缺工具、缺真实 SDK 或缺输入不能被当作产品 RED/GREEN。

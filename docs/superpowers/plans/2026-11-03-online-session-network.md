@@ -1,10 +1,10 @@
-# Online Gameplay Network Implementation Plan
+# Online Logic Network Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Deliver the P8 online-session, UDP coordination, bounded PCM voice, and aspect-based replication behaviors as real C11 libraries with direct loopback and failure-path tests.
 
-**Architecture:** Add an optional `break_online` static library beside the existing network libraries. GameThread-owned lobby, NAT protocol state, voice playout, and aspect replication use create-time fixed storage; network-facing receive entry points only validate datagram bounds and copy into mutex-protected bounded rings. Existing `BreakSessionManager` supplies authenticated identity through a narrow adapter, existing `NetSocket` supplies UDP I/O, and aspect scheduling consumes existing `BreakAoIResult` plus `BreakReplicationFragment` rather than reimplementing AOI, transport security, reliable delivery, or fragmentation checksums.
+**Architecture:** Add an optional `break_online` static library beside the existing network libraries. LogicThread-owned lobby, NAT protocol state, voice playout, and aspect replication use create-time fixed storage; network-facing receive entry points only validate datagram bounds and copy into mutex-protected bounded rings. Existing `BreakSessionManager` supplies authenticated identity through a narrow adapter, existing `NetSocket` supplies UDP I/O, and aspect scheduling consumes existing `BreakAoIResult` plus `BreakReplicationFragment` rather than reimplementing AOI, transport security, reliable delivery, or fragmentation checksums.
 
 **Tech Stack:** C11, CMake/CTest, `test_framework.h`, existing `platform_thread.h`, `network.c`/`net_loop`, `break_replication_core`, no new dependencies.
 
@@ -12,7 +12,7 @@
 
 - Work only in `.worktrees/cry-network` on `cry-wave2-network`; do not modify master or push.
 - Engine and new libraries use C11 with fixed capacity and no hot-path allocation after create.
-- GameThread owns mutable lobby/NAT protocol/voice playout/replication state; network callbacks validate and enqueue only, never call game logic.
+- LogicThread owns mutable lobby/NAT protocol/voice playout/replication state; network callbacks validate and enqueue only, never call application logic.
 - External persistent identity uses `{index,generation}` handles; stale handles return `BREAK_RUNTIME_STALE`.
 - Invalid external data returns `INVALID`, full capacity returns `OVERLOAD`, wrong owner returns `REJECTED`, unavailable work returns `FAILED`.
 - Every mutating operation validates before commit; failure leaves prior state and outputs unchanged unless network datagrams already handed to the OS make recall impossible.
@@ -26,7 +26,7 @@
 - `engine/src/network/break_online_types.h`: shared `BreakRuntimeError` use, generation handle, authenticated identity/provider POD.
 - `engine/src/network/break_online_lobby.{h,c}`: bounded room directory, membership, host migration, matchmaking, owner checks.
 - `engine/src/network/break_online_session.h`: static-inline adapter from authenticated `BreakSessionManager` state to `BreakOnlineAuthSource`.
-- `engine/src/network/break_online_inbox.{h,c}`: internal fixed-size datagram ring, MPSC producers and single GameThread consumer.
+- `engine/src/network/break_online_inbox.{h,c}`: internal fixed-size datagram ring, MPSC producers and single LogicThread consumer.
 - `engine/src/network/break_online_nat.{h,c}`: versioned NAT coordination wire messages, peer/pair state, borrowed UDP sockets, loopback-observable connected state.
 - `engine/src/network/break_online_voice.{h,c}`: bounded little-endian PCM frame codec, queued receiver, sequence-aware jitter buffer and explicit concealment.
 - `engine/src/network/break_online_aspect.{h,c}`: fixed aspect schema/store, stable object identity, dirty-mask canonical packet encode and transactional apply.
@@ -36,10 +36,10 @@
 - `engine/tests/test_break_replication_fragment.c`: caller-storage fragmentation and regression coverage.
 - `engine/tests/test_break_session.c`: real authenticated-session identity adapter coverage when Snowflake is enabled.
 - `engine/CMakeLists.txt`: formal optional target and focused tests; no link into `engine`, demos, or editor.
-- `docs/design/online_gameplay_network.md`: actual API, wire formats, ownership, limits, and evidence.
+- `docs/design/online_session_network.md`: actual API, wire formats, ownership, limits, and evidence.
 - `docs/design/session_protocol.md`, `docs/design/ecs_snapshot_replication_aoi.md`: links and actual new integration boundaries only.
 - `docs/Implementation_Status.md`: concise verified P8 status and limitations.
-- `.superpowers/sdd/online-gameplay-network-report.md`: final commands, RED/GREEN/mutation evidence, commits, and limitations.
+- `.superpowers/sdd/online-session-network-report.md`: final commands, RED/GREEN/mutation evidence, commits, and limitations.
 
 ---
 
@@ -169,7 +169,7 @@ git commit -m "feat(network): add authenticated bounded lobby"
 **Interfaces:**
 - Produces a fixed datagram inbox (`BREAK_ONLINE_MAX_DATAGRAM == 1280`) with nonblocking producer push, FIFO poll, close, and overload/invalid counters.
 - Produces `BreakNatCoordinator` and `BreakNatEndpoint`, both with borrowed `NetSocket` and create-time queue/peer/pair capacities. Public messages are `HELLO`, `WELCOME`, `PUNCH`, `PING`, `ACK`; integers are explicit little-endian, not packed structs.
-- `break_nat_*_receive_socket` may run on the network thread and only drains bounded datagrams into the inbox. `break_nat_*_poll` runs on the recorded GameThread and performs protocol transitions and nonblocking sends.
+- `break_nat_*_receive_socket` may run on the network thread and only drains bounded datagrams into the inbox. `break_nat_*_poll` runs on the recorded LogicThread and performs protocol transitions and nonblocking sends.
 
 ```c
 BreakRuntimeError break_nat_peer_hello(BreakNatEndpoint *);
@@ -210,7 +210,7 @@ Build `test_break_online_nat`. After declarations/stubs make it compile, expecte
 
 The inbox allocation is one object plus `capacity` fixed slots. `push` holds `PlatformMutex` only for copy/ring bookkeeping; it never waits or calls a callback. Poll detaches one slot under the same lock and returns a value copy.
 
-HELLO handling authenticates on GameThread, records the datagram source as the observed address, and returns a peer handle. Pairing validates two distinct live peers and nonzero nonce, then sends each a PUNCH containing the other observed address, pair handle, nonce, and expiry. PUNCH arms an endpoint; PING is accepted only for the armed pair, nonce, and source. A valid PING sends one PING reply and ACK to the coordinator, then marks the endpoint connected. Both endpoint ACKs complete coordinator pair state. Expiry clears only the matching generation.
+HELLO handling authenticates on LogicThread, records the datagram source as the observed address, and returns a peer handle. Pairing validates two distinct live peers and nonzero nonce, then sends each a PUNCH containing the other observed address, pair handle, nonce, and expiry. PUNCH arms an endpoint; PING is accepted only for the armed pair, nonce, and source. A valid PING sends one PING reply and ACK to the coordinator, then marks the endpoint connected. Both endpoint ACKs complete coordinator pair state. Expiry clears only the matching generation.
 
 ```c
 if (!address_equal(&source, &endpoint->peer_address) ||
@@ -266,7 +266,7 @@ BreakRuntimeError break_voice_receiver_pop(BreakVoiceReceiver *, u64 now_ms,
                                            BreakVoicePlayback *out, bool *out_ready);
 ```
 
-The stream config fixes sample rate, mono/stereo channels, interleaved scalar sample count per frame (1..480 and divisible by channels), jitter delay, and buffer/queue capacities. Sequence comparison uses unsigned serial arithmetic, including wrap. The receive path copies validated bounded datagrams only; pump decodes on GameThread. An empty/not-yet-due pop returns `OK` with `*out_ready=false` and leaves playback unchanged.
+The stream config fixes sample rate, mono/stereo channels, interleaved scalar sample count per frame (1..480 and divisible by channels), jitter delay, and buffer/queue capacities. Sequence comparison uses unsigned serial arithmetic, including wrap. The receive path copies validated bounded datagrams only; pump decodes on LogicThread. An empty/not-yet-due pop returns `OK` with `*out_ready=false` and leaves playback unchanged.
 
 - [x] **Step 1: Write failing codec and playout tests**
 
@@ -498,11 +498,11 @@ git commit -m "feat(network): schedule aspect deltas through AOI"
 ### Task 7: Documentation, Full Verification, and Report
 
 **Files:**
-- Create: `docs/design/online_gameplay_network.md`
+- Create: `docs/design/online_session_network.md`
 - Modify: `docs/design/session_protocol.md`
 - Modify: `docs/design/ecs_snapshot_replication_aoi.md`
 - Modify: `docs/Implementation_Status.md`
-- Create: `.superpowers/sdd/online-gameplay-network-report.md`
+- Create: `.superpowers/sdd/online-session-network-report.md`
 - Modify: this plan's checkboxes to match completed steps
 
 - [x] **Step 1: Build and run the normal network lane**
@@ -552,8 +552,8 @@ Document exact capacities/defaults, wire fields, ownership, error/retry behavior
 - [x] **Step 5: Commit documentation/report and finish**
 
 ```bash
-git add docs engine/CMakeLists.txt .superpowers/sdd/online-gameplay-network-report.md
-git commit -m "docs(network): record online gameplay capabilities"
+git add docs engine/CMakeLists.txt .superpowers/sdd/online-session-network-report.md
+git commit -m "docs(network): record online logic capabilities"
 git log --oneline a0bfeb95..HEAD
 ```
 Final handoff must state `DONE` only when all requested code and available-lane verification are complete; otherwise state `DONE_WITH_CONCERNS` with the exact limitation, final hash, and short test summary.

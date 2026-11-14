@@ -32,7 +32,7 @@ Phase A 的实施计划是 `docs/superpowers/plans/2026-10-24-stage5-security-fo
 
 ## 3. 服务端权威（设计目标枚举 + 参考引擎）
 
-**2026-10-30 起库内有参考引擎 `break_authority`**（`docs/design/server_authority.md`）：意图进、服务端账本裁定、固定枚举裁决出；线上只有“买什么/买几个”和“打谁”，没有余额、价格、伤害或结果字段；会话身份来自认证传输而不是载荷；溢出、重放、间隔、限速都有检查，随机 10 万条意图的账本不变量测试通过。它不是游戏服务器：仍然没有服务端产品、网络前端、持久化、权威模拟，匹配仍只是设计目标。以下枚举保持原样：本仓库不含服务端产品；以下为**设计目标**级枚举，用于钉住"权威在服务端"的边界，供后续 Phase 与服务器侧计划引用：
+**2026-10-30 起库内有参考引擎 `break_authority`**（`docs/design/server_authority.md`）：意图进、服务端账本裁定、固定枚举裁决出；线上只有“买什么/买几个”和“打谁”，没有余额、价格、伤害或结果字段；会话身份来自认证传输而不是载荷；溢出、重放、间隔、限速都有检查，随机 10 万条意图的账本不变量测试通过。它不是应用服务器：仍然没有服务端产品、网络前端、持久化、权威模拟，匹配仍只是设计目标。以下枚举保持原样：本仓库不含服务端产品；以下为**设计目标**级枚举，用于钉住"权威在服务端"的边界，供后续 Phase 与服务器侧计划引用：
 
 - **economy（经济）**：货币余额、交易、兑换比率只由服务端记账；客户端只能提交意图（intent），服务端按规则校验、限速、落账后下发结果；
 - **inventory（库存）**：物品增减、装备、消耗以服务端台账为准；客户端展示的是服务端快照的只读视图；
@@ -161,5 +161,5 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 - `engine/external/locked_dependencies.json`：锁定依赖清单；Snowflake 自 Phase D Task 1 起在其中（pin `d5d4a928`）。
 - `engine/src/network/break_replication_fragment.h:20-26`：FNV-1a checksum 字段（完整性检查，非认证）。
 - `engine/src/asset/vfs.h:5-12`：VFS 资源上限（16 mounts / 4096 entries / 128 MiB）。
-- `docs/design/session_protocol.md:21-37`：Session GameThread ownership 与队列语义。
+- `docs/design/session_protocol.md:21-37`：Session LogicThread ownership 与队列语义。
 - `docs/Implementation_Status.md:200,220,222,230`：房屋口径锚点——fuzz 未构建写 `Not Run`（`:200`/`:220`）、focused/test-only 不等于正式集成（`:222` "因果边界"/`:230` "正式集成边界"；`:230` 另含已修正的 `break_net` 门控表述）。

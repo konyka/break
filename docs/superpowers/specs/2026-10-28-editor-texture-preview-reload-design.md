@@ -13,7 +13,7 @@ Out of scope: material/scene texture reload, mip chains, sRGB handling, formats 
 
 A. **Own preview owner on Runtime Core reload (chosen).** Same shape as `editor_shader_reload`: one coordinator, 1 worker, small slot table. The worker reads the file and its `validate` hook checks the image header with `stbi_info_from_memory` (format recognised, dimensions in bounds) without decoding; the owner `commit` hook decodes the borrowed bytes into owned staging pixels; the shell tick creates the new `RHITexture` and destroys the old one only after the new one exists. Runtime Core's hooks only pass the raw file bytes (validate may not keep state, commit may not retain the pointer), so the decode has to happen in commit. The 4096x4096 bound keeps that decode bounded on the shell thread; this cost is documented rather than hidden. Reuses tested machinery and the same failure semantics.
 
-B. `async_loader` + `decode_pipeline`. Already decodes textures off-thread, but it is the game asset path with a global singleton, mip generation and its own slot lifecycle; driving it from the editor would couple the two and still leave the swap to write.
+B. `async_loader` + `decode_pipeline`. Already decodes textures off-thread, but it is the application asset path with a global singleton, mip generation and its own slot lifecycle; driving it from the editor would couple the two and still leave the swap to write.
 
 C. Decode on the shell thread. Simplest, but a large image would stall the UI and it does not exercise the worker path the roadmap asks for.
 

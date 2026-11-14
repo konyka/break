@@ -4,14 +4,14 @@
 
 **Goal:** 交付默认关闭的 Lua 断点/步进/栈/局部变量检查、受界限表与 generation host 句柄，以及隔离单脚本失败的 Actor `on_actor_tick` 接线。
 
-**Architecture:** `break_lua` 内部统一组合 count/line hook；独立 `break_lua_debug` 在同步暂停回调中检查真实 Lua 帧。受限表采用创建时预分配节点和 scratch 提交，独立 `break_game_lua` 通过 `break_game` 的无 Lua 依赖脚本桥适配 Actor。
+**Architecture:** `break_lua` 内部统一组合 count/line hook；独立 `break_lua_debug` 在同步暂停回调中检查真实 Lua 帧。受限表采用创建时预分配节点和 scratch 提交，独立 `break_kernel_lua` 通过 `break_kernel` 的无 Lua 依赖脚本桥适配 Actor。
 
-**Tech Stack:** C11、vendored Lua 5.4、现有 `BreakLuaRuntime`/`BreakGame`/ECS Entity、CMake、CTest、`test_framework.h`、ASan+UBSan、TSan。
+**Tech Stack:** C11、vendored Lua 5.4、现有 `BreakLuaRuntime`/`BreakKernel`/ECS Entity、CMake、CTest、`test_framework.h`、ASan+UBSan、TSan。
 
 ## Global Constraints
 
 - 只修改 `.worktrees/cry-lua`；不 push、不建 PR、不改 `docs/Implementation_Status.md`。
-- 遵循 `docs/superpowers/specs/2026-11-02-cry-capability-completion-design.md` 第 4、5、6、8 节及 `docs/design/lua_debug_binding.md`。
+- 遵循 `docs/superpowers/specs/2026-11-02-core-capability-completion-design.md` 第 4、5、6、8 节及 `docs/design/lua_debug_binding.md`。
 - 每项行为先看到断言 RED，再实现 GREEN；编译/链接缺失不是最终 RED 证据。
 - 热路径不临时分配 host 内存；固定容量、深度、节点数、字符串长度，超限返回错误，不静默截断。
 - 不公开 `lua_State` 或 C host 指针；模块白名单不增加 `debug/package/require/coroutine/load`。
@@ -204,58 +204,58 @@ Expected: 全通过。分别禁用 breakpoint match、INTO 条件、OVER/OUT 深
 ### Task 4: Actor 通用脚本桥与独立 Lua 适配器
 
 **Files:**
-- Modify: `engine/src/game/break_game.h`
-- Modify: `engine/src/game/break_game_internal.h`
-- Modify: `engine/src/game/break_game_actor.c`
-- Create: `engine/src/game/break_game_lua.h`
-- Create: `engine/src/game/break_game_lua.c`
-- Create: `engine/tests/test_break_game_lua.c`
+- Modify: `engine/src/kernel/break_kernel.h`
+- Modify: `engine/src/kernel/break_kernel_internal.h`
+- Modify: `engine/src/kernel/break_kernel_actor.c`
+- Create: `engine/src/kernel/break_kernel_lua.h`
+- Create: `engine/src/kernel/break_kernel_lua.c`
+- Create: `engine/tests/test_break_kernel_lua.c`
 - Modify: `engine/CMakeLists.txt`
-- Modify: `engine/tests/test_break_game_target_contract.cmake`
+- Modify: `engine/tests/test_break_kernel_target_contract.cmake`
 
 **Interfaces:**
 
 ```c
-typedef struct BreakGameScriptBridge {
+typedef struct BreakKernelScriptBridge {
     void *user;
     void (*actor_tick)(void *, const char *module, Entity, f32);
     void (*actor_despawn)(void *, Entity);
-} BreakGameScriptBridge;
-BreakGameError break_game_set_script_bridge(BreakGame *,
-                                             const BreakGameScriptBridge *);
+} BreakKernelScriptBridge;
+BreakKernelError break_kernel_set_script_bridge(BreakKernel *,
+                                             const BreakKernelScriptBridge *);
 
-typedef struct BreakGameLuaAdapter BreakGameLuaAdapter;
-BreakGameLuaAdapter *break_game_lua_create(BreakGame *, BreakLuaRuntime *);
-void break_game_lua_destroy(BreakGameLuaAdapter *);
-BreakGameLuaFault break_game_lua_last_fault(const BreakGameLuaAdapter *);
+typedef struct BreakKernelLuaAdapter BreakKernelLuaAdapter;
+BreakKernelLuaAdapter *break_kernel_lua_create(BreakKernel *, BreakLuaRuntime *);
+void break_kernel_lua_destroy(BreakKernelLuaAdapter *);
+BreakKernelLuaFault break_kernel_lua_last_fault(const BreakKernelLuaAdapter *);
 ```
 
 - [ ] **Step 1: 写真实 Actor tick、稳定身份和失败隔离测试**
 
-注册 bad/good 两个类和模块，bad 的 `on_actor_tick` 抛错，good 增加 `state.count`。bad Actor 排在 good 前；调用两次 `break_game_tick` 后 good count 为 2，fault total 为 2，证明一个失败不阻断其他 Actor。good 模块保存最近收到的 handle/dt；host resolve token 验证 Entity index/generation，连续 tick handle 相同。despawn 后旧 handle `STALE`，再次生成复用 index 的新 Entity 不继承旧 handle。缺失 `on_actor_tick` 也仅记 fault 并继续。
+注册 bad/good 两个类和模块，bad 的 `on_actor_tick` 抛错，good 增加 `state.count`。bad Actor 排在 good 前；调用两次 `break_kernel_tick` 后 good count 为 2，fault total 为 2，证明一个失败不阻断其他 Actor。good 模块保存最近收到的 handle/dt；host resolve token 验证 Entity index/generation，连续 tick handle 相同。despawn 后旧 handle `STALE`，再次生成复用 index 的新 Entity 不继承旧 handle。缺失 `on_actor_tick` 也仅记 fault 并继续。
 
 ```c
-break_game_tick(game, 0.25f);
-break_game_tick(game, 0.25f);
+break_kernel_tick(application, 0.25f);
+break_kernel_tick(application, 0.25f);
 ASSERT_EQ(good_tick_count(rt), 2u);
-ASSERT_EQ(break_game_lua_last_fault(adapter).total, 2u);
+ASSERT_EQ(break_kernel_lua_last_fault(adapter).total, 2u);
 ```
 
 - [ ] **Step 2: 确认行为 RED**
 
 最小 adapter 可创建但不注册桥，测试可执行。
 
-Run: `cmake --build build-p9-lua -j3 --target test_break_game_lua && ./build-p9-lua/test_break_game_lua`
+Run: `cmake --build build-p9-lua -j3 --target test_break_kernel_lua && ./build-p9-lua/test_break_kernel_lua`
 Expected: good tick/count、handle 或隔离断言实际失败。
 
 - [ ] **Step 3: 实现桥和固定状态适配器**
 
-`break_game` 只存 bridge POD；已有 native tick 先运行，若 Actor 仍存活再发脚本 tick，despawn 先发身份释放通知。adapter 按 actor slot 预分配 handle 状态，首次 acquire，后续复用，despawn release。每次以 `{HOST_HANDLE, NUMBER dt}` 调 `break_lua_runtime_call`，任何非 OK 写固定 fault 后继续；destroy 注销同一 bridge 并释放剩余 handle。
+`break_kernel` 只存 bridge POD；已有 native tick 先运行，若 Actor 仍存活再发脚本 tick，despawn 先发身份释放通知。adapter 按 actor slot 预分配 handle 状态，首次 acquire，后续复用，despawn release。每次以 `{HOST_HANDLE, NUMBER dt}` 调 `break_lua_runtime_call`，任何非 OK 写固定 fault 后继续；destroy 注销同一 bridge 并释放剩余 handle。
 
 - [ ] **Step 4: 验证 GREEN 与失败隔离变异**
 
-Run: `ctest --test-dir build-p9-lua -R 'test_break_game|test_cry_style_prototype|test_break_lua' --output-on-failure`
-Expected: 全通过。临时让 adapter 在首个脚本错误后停止整次 game tick，确认 good Actor count 测试变红；恢复。临时让 despawn 不 release，确认 stale 测试变红；恢复并重跑。
+Run: `ctest --test-dir build-p9-lua -R 'test_break_kernel|test_core_style_prototype|test_break_lua' --output-on-failure`
+Expected: 全通过。临时让 adapter 在首个脚本错误后停止整次 logic tick，确认 good Actor count 测试变红；恢复。临时让 despawn 不 release，确认 stale 测试变红；恢复并重跑。
 
 ### Task 5: target contract、三 lane、只读评审与交付
 
@@ -266,7 +266,7 @@ Expected: 全通过。临时让 adapter 在首个脚本错误后停止整次 gam
 
 - [ ] **Step 1: 验证独立 target 和沙箱/链接边界**
 
-更新 contract 检查 `break_lua_debug`、`break_game_lua` 顶层 target、各自源文件和链接方向，且 `engine/engine_demo/dxx_break` 不含新库。配置 `ENGINE_BUILD_TESTS=OFF` 树并以 `-j3` 构建三个生产库；用 `nm` 检查生产 `break_lua` 无 test hooks。
+更新 contract 检查 `break_lua_debug`、`break_kernel_lua` 顶层 target、各自源文件和链接方向，且 `engine/engine_demo/dxx_break` 不含新库。配置 `ENGINE_BUILD_TESTS=OFF` 树并以 `-j3` 构建三个生产库；用 `nm` 检查生产 `break_lua` 无 test hooks。
 
 - [ ] **Step 2: 配置并运行三棵 focused lane**
 
@@ -279,8 +279,8 @@ cmake -S engine -B build-p9-lua-asan -DENGINE_BUILD_TESTS=ON \
 cmake -S engine -B build-p9-lua-tsan -DENGINE_BUILD_TESTS=ON \
   -DCMAKE_C_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
   -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread'
-ctest --test-dir build-p9-lua-asan -R 'test_break_lua|test_break_game|test_cry_style_prototype|test_script_lua' --output-on-failure
-ctest --test-dir build-p9-lua-tsan -R 'test_break_lua|test_break_game|test_cry_style_prototype|test_script_lua' --output-on-failure
+ctest --test-dir build-p9-lua-asan -R 'test_break_lua|test_break_kernel|test_core_style_prototype|test_script_lua' --output-on-failure
+ctest --test-dir build-p9-lua-tsan -R 'test_break_lua|test_break_kernel|test_core_style_prototype|test_script_lua' --output-on-failure
 ```
 
 Expected: focused 全通过，无 sanitizer 报告。若机器运行时 TSan 自身不可用，保留构建/诊断证据并明确限制，不声称运行通过。

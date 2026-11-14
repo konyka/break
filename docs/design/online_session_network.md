@@ -1,4 +1,4 @@
-# Online Gameplay Network 当前实现事实
+# Online Logic Network 当前实现事实
 
 日期：2026-11-03
 
@@ -6,7 +6,7 @@
 
 P8 的正式可选静态库是 `break_online`，源码位于 `engine/src/network/break_online_*`。它不链入 `engine`、`engine_demo`、`dxx_break` 或编辑器，消费方显式选择该库。库 PUBLIC 依赖 `Threads::Threads` 与既有 `break_replication_core`；UDP 的 `net_*` 符号继续由既有 `network.c` 在最终消费链接中提供，没有第二套 socket、可靠传输、认证、安全分片或 AOI 实现。
 
-可变大厅、NAT 协议、语音播放和 aspect 状态均由创建线程（接入时为 GameThread）拥有，错误线程返回 `BREAK_RUNTIME_REJECTED`。所有容器在 create 时分配并固定容量；运行路径没有 `malloc/calloc/realloc`。外部身份使用 `{index,generation}` 句柄，失效句柄返回 `STALE`，容量耗尽返回 `OVERLOAD`，非法输入返回 `INVALID`。用户认证回调只在 GameThread 执行，网络接收路径只验证数据报界限、复制并入有界队列。
+可变大厅、NAT 协议、语音播放和 aspect 状态均由创建线程（接入时为 LogicThread）拥有，错误线程返回 `BREAK_RUNTIME_REJECTED`。所有容器在 create 时分配并固定容量；运行路径没有 `malloc/calloc/realloc`。外部身份使用 `{index,generation}` 句柄，失效句柄返回 `STALE`，容量耗尽返回 `OVERLOAD`，非法输入返回 `INVALID`。用户认证回调只在 LogicThread 执行，网络接收路径只验证数据报界限、复制并入有界队列。
 
 ## 2. 认证大厅、房间目录与匹配
 
@@ -17,7 +17,7 @@ P8 的正式可选静态库是 `break_online`，源码位于 `engine/src/network
 - 创建、加入、离开、目录、匹配、断连清理都检查 generation。房间空时销毁；成员或房间槽复用不会复活旧句柄。
 - 主机离开时由剩余成员中加入序号最小者继任，`host_epoch` 递增。`break_lobby_disconnect` 移除同一 session 在全部房间中的成员并执行同样的迁移，重复清理是幂等的。
 - 目录只列出 `listed` 房间，可按 region/mode 过滤，使用显式 offset/page capacity/`next_offset` 分页，不静默截断。
-- 服务端匹配只选择符合过滤条件且未满的 listed 房间，优先成员数较多者，平局按 generation/index 键排序；匹配成功与加入是同一个 GameThread 操作，没有匹配房间返回 `FAILED`。
+- 服务端匹配只选择符合过滤条件且未满的 listed 房间，优先成员数较多者，平局按 generation/index 键排序；匹配成功与加入是同一个 LogicThread 操作，没有匹配房间返回 `FAILED`。
 
 直接测试 10/10；真实 `BreakSessionManager` 适配包含在 Session 38/38 中，覆盖认证前拒绝、认证后创建和断连清理。
 
@@ -51,10 +51,10 @@ PING 必须匹配 armed pair、generation、nonce 和期望源地址，否则不
 
 流配置固定采样率（1..192000）、单/双声道、每帧样本数、jitter delay、jitter/queue 容量。样本数必须被声道数整除，且帧时长至少 1ms；jitter 容量为 1..64，delay 为 0..10000ms。创建后这些参数不变。
 
-- 网络入口只检查数据报大小并复制入队；GameThread 的 pump 才检查 magic、流格式和精确长度、解码 PCM 并维护序号。
+- 网络入口只检查数据报大小并复制入队；LogicThread 的 pump 才检查 magic、流格式和精确长度、解码 PCM 并维护序号。
 - 首帧到达后经过配置的 jitter delay 才开始播放。播放前可按无符号序号关系重排，覆盖 `UINT32_MAX -> 0` 回绕；重复帧和播放后的迟到帧分别计数并拒绝。
 - 期望帧缺失但已存在更晚帧时，按固定节奏输出一个同序号、同长度、全零且 `concealed=true` 的帧，然后前进一个序号。迟到的缺失帧不能覆盖后续 PCM。没有更晚帧时不无限制造静音。
-- pop 只向调用方返回 PCM，不混音、不调用音频设备，也不在网络线程执行游戏逻辑。
+- pop 只向调用方返回 PCM，不混音、不调用音频设备，也不在网络线程执行应用逻辑。
 
 测试 8/8 覆盖逐字节线序、立体声样本、非法/尾随数据、jitter 重排、丢帧隐藏、重复/回绕、队列满和真实 UDP loopback 样本一致性。**未做听感测试，未证明网络丢包下的主观音质。**
 
@@ -96,7 +96,7 @@ apply 要求相同 schema hash、live generation 和递增的每对象 record ep
 
 ## 7. 验证与限制
 
-最终源码上，Linux/GCC 16.2.1 的 crypto ON 无 Snowflake normal focused 为 11/11；使用仓库钉住的 Snowflake `0fceed6d885bb8578743d82cc4a5d7ab2f6b0620` 时，normal、ASan+UBSan、TSan 的网络/复制/Session 标签均为 13/13，基础网络补充均为 5/5。no-crypto normal/ASan+UBSan/TSan 的独立 fail-closed focused 也均为 11/11；无 sanitizer 报告。每个 crypto-enabled lane 均运行 NAT 和语音真实 UDP loopback。no-crypto lane 只运行独立 fail-closed 合约，不执行 HMAC 成功路径。各项 RED/GREEN 和变异输出见 `.superpowers/sdd/online-gameplay-network-report.md`。
+最终源码上，Linux/GCC 16.2.1 的 crypto ON 无 Snowflake normal focused 为 11/11；使用仓库钉住的 Snowflake `0fceed6d885bb8578743d82cc4a5d7ab2f6b0620` 时，normal、ASan+UBSan、TSan 的网络/复制/Session 标签均为 13/13，基础网络补充均为 5/5。no-crypto normal/ASan+UBSan/TSan 的独立 fail-closed focused 也均为 11/11；无 sanitizer 报告。每个 crypto-enabled lane 均运行 NAT 和语音真实 UDP loopback。no-crypto lane 只运行独立 fail-closed 合约，不执行 HMAC 成功路径。各项 RED/GREEN 和变异输出见 `.superpowers/sdd/online-session-network-report.md`。
 
 这些结果是 focused 网络验证，不是全仓库、全平台或外部部署证明。Windows/macOS/移动原生 lane、任意 NAT、公网服务、主观听感、可靠传输、预测回滚和生产账号后端均未在本切片声称完成。
 

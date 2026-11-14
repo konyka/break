@@ -204,7 +204,7 @@ IME 文本事件统一从 `platform_poll_text` 取出。常见文本使用 64 �
 
 ```c
 #define INPUT_MAX_KEYS        512
-#define INPUT_MAX_GAMEPADS    4
+#define INPUT_MAX_PADS    4
 #define INPUT_MAX_AXES        6
 #define INPUT_MAX_PAD_BUTTONS 16
 
@@ -220,7 +220,7 @@ typedef struct {
     u8   buttons[INPUT_MAX_PAD_BUTTONS]; /* bit0=当前, bit1=上帧 */
     bool connected;
     char name[128];
-} GamepadState;
+} PadState;
 
 typedef struct {
     u8  keys[INPUT_MAX_KEYS];      // 512 键位状态（bit0=当前, bit1=上帧）
@@ -228,7 +228,7 @@ typedef struct {
     f32 mouse_dx, mouse_dy;        // 鼠标帧间偏移
     f32 scroll_dx, scroll_dy;      // 滚轮偏移
     u64 frame_number;              // 当前帧号
-    GamepadState gamepads[INPUT_MAX_GAMEPADS];
+    PadState pads[INPUT_MAX_PADS];
 } InputState;
 ```
 
@@ -239,14 +239,14 @@ typedef struct {
 #define input_key_pressed(s, k)  (((s)->keys[(k)] & 3) == 3) // 本帧刚按下
 #define input_key_released(s, k) (((s)->keys[(k)] & 3) == 1) // 本帧刚释放
 
-#define input_pad_button_down(s, p, b)     ((s)->gamepads[(p)].buttons[(b)] & 1)
-#define input_pad_button_pressed(s, p, b)  (((s)->gamepads[(p)].buttons[(b)] & 3) == 3)
+#define input_pad_button_down(s, p, b)     ((s)->pads[(p)].buttons[(b)] & 1)
+#define input_pad_button_pressed(s, p, b)  (((s)->pads[(p)].buttons[(b)] & 3) == 3)
 ```
 
-#### 游戏手柄轴与按键常量
+#### 手柄轴与按键常量
 
-按键：`GAMEPAD_BTN_SOUTH/EAST/WEST/NORTH`、`LB/RB`、`BACK/START/GUIDE`、`LSTICK/RSTICK`、`DPAD_UP/DOWN/LEFT/RIGHT`。
-轴：`GAMEPAD_AXIS_LEFT_X/Y`、`RIGHT_X/Y`、`LTRIGGER`、`RTRIGGER`。
+按键：`PAD_BTN_SOUTH/EAST/WEST/NORTH`、`LB/RB`、`BACK/START/GUIDE`、`LSTICK/RSTICK`、`DPAD_UP/DOWN/LEFT/RIGHT`。
+轴：`PAD_AXIS_LEFT_X/Y`、`RIGHT_X/Y`、`LTRIGGER`、`RTRIGGER`。
 
 ### 2.3 时间系统 (`time.h` / `time.c`)
 
@@ -327,22 +327,22 @@ Windows 平台实现要点：
 - 高 DPI：动态加载 `SetProcessDpiAwarenessContext` 启用 Per-Monitor V2，`WM_DPICHANGED` 中按建议矩形 `SetWindowPos` 并刷新尺寸缓存
 - 鼠标：`SetCapture` + `ShowCursor` + 相对模式桩
 
-### 2.6 游戏手柄 (Linux: `gamepad_linux.c` / `gamepad_linux.h`)
+### 2.6 手柄 (Linux: `pad_linux.c` / `pad_linux.h`)
 
-Linux 平台基于 evdev 的游戏手柄输入实现。
+Linux 平台基于 evdev 的手柄输入实现。
 
 ```c
-bool gamepad_linux_init(void);
-void gamepad_linux_poll(InputState *state);
-void gamepad_linux_shutdown(void);
+bool pad_linux_init(void);
+void pad_linux_poll(InputState *state);
+void pad_linux_shutdown(void);
 ```
 
 **特性**：
 - 扫描 `/dev/input/event*`，通过 `EVIOCGBIT` 过滤具备摇杆/扳机/按键能力的设备
 - 通过 `EVIOCGABS` 读取轴的最小/最大/死区，并归一化到 -1.0 ~ 1.0
 - 基于 `inotify` 监听 `/dev/input` 实现热插拔（设备插入/移除自动追加/释放）
-- 按键映射至统一抽象常量（XBox/SDL 风格的 `GAMEPAD_BTN_*` 与 `GAMEPAD_AXIS_*`）
-- 权限/设备异常仅日志告警，不崩溃；最多支持 `INPUT_MAX_GAMEPADS = 4` 个手柄
+- 按键映射至统一抽象常量（XBox/SDL 风格的 `PAD_BTN_*` 与 `PAD_AXIS_*`）
+- 权限/设备异常仅日志告警，不崩溃；最多支持 `INPUT_MAX_PADS = 4` 个手柄
 - D-Pad 来自 `ABS_HAT0X/Y`，分解为四个独立按钮事件
 
 #### 模块关系
@@ -698,7 +698,7 @@ ecs_query_refresh(world, q);
 ```
 
 #### 模块关系
-- **被依赖**: 游戏逻辑层
+- **被依赖**: 应用逻辑层
 - **依赖**: Core（类型、内存）
 
 **单元测试：** `tests/test_ecs.c` (28 测试用例，覆盖实体创建/销毁/回收、generation 安全句柄、组件增删/数据完整性、并发查询、多组件迁移周期、Exclude 过滤、Optional 匹性匹配、查询刷新)
@@ -985,7 +985,7 @@ typedef struct {
 
 ## 8. Physics 物理系统 (`engine/src/physics/`)
 
-轻量级刚体物理引擎，聚焦游戏常见场景。
+轻量级刚体物理引擎，聚焦应用常见场景。
 
 ### 8.1 刚体（RigidBody）
 
@@ -1080,7 +1080,7 @@ BVH (Bounding Volume Hierarchy) 用于物理碰撞的宽相检测：
 覆盖：创建基本属性、重力下落、移动输入、地面碰撞、跳跃、位置查询、初始状态、sweep test 命中/未中/忽略。
 
 #### 模块关系
-- **被依赖**: 游戏逻辑
+- **被依赖**: 应用逻辑
 - **依赖**: Math
 
 ---
@@ -1148,7 +1148,7 @@ bool             audio_set_device(AudioSystem *as, u32 index);
 - 完全向后兼容原有初始化路径（默认设备路径未变）
 
 #### 模块关系
-- **被依赖**: 游戏逻辑
+- **被依赖**: 应用逻辑
 - **依赖**: Math（Vec3）、Core
 
 ---
@@ -1197,7 +1197,7 @@ i32         task_worker_id(TaskSystem *ts);                            // 获取
 
 ## 11. Script 脚本系统 (`engine/src/script/`)
 
-自定义轻量脚本语言，用于快速迭代游戏逻辑。
+自定义轻量脚本语言，用于快速迭代应用逻辑。
 
 ### 11.1 核心结构
 
@@ -1243,7 +1243,7 @@ void  script_reload_if_changed(ScriptEngine *se, const char *path);
 
 脚本加载采用事务式替换：新文件完整读取和解析成功前，运行中的脚本、全局变量与回调保持不变；热重载的瞬态 I/O 失败不会清空上一份有效逻辑。
 
-脚本文本的数值字面量属于不可信输入。加载器拒绝 `var`、`set`、`add` 与 `spawn` 中的 NaN/Inf；任一非法数值令候选加载失败并保留上一份有效脚本，避免非有限值传播到游戏逻辑。验证只发生在加载或热重载期间，不增加每帧 `script_call()` 的开销或常驻分配。
+脚本文本的数值字面量属于不可信输入。加载器拒绝 `var`、`set`、`add` 与 `spawn` 中的 NaN/Inf；任一非法数值令候选加载失败并保留上一份有效脚本，避免非有限值传播到应用逻辑。验证只发生在加载或热重载期间，不增加每帧 `script_call()` 的开销或常驻分配。
 
 数值字面量始终以 `.` 作为小数点，与宿主进程的 `LC_NUMERIC` 无关：解析器用 `break_strtod_c`（`core/string.h`）代替 `sscanf("%f")`，即使在 `de_DE` 等逗号小数 locale 下 `var speed = 5.5` 也读为 5.5。
 
@@ -1272,7 +1272,7 @@ on_spawn:
 覆盖：init/shutdown、set/get global、global 覆盖、缺失 global、多 global、文件加载+函数执行、不存在函数调用、不存在文件、失败替换状态保持、NaN/Inf 数值拒绝、注释忽略、每引擎热重载、空文件、操作数与文件大小上限、逗号小数 locale 下的数值解析。
 
 #### 模块关系
-- **被依赖**: 游戏逻辑
+- **被依赖**: 应用逻辑
 - **依赖**: Core（IO、字符串）
 
 ---
@@ -1398,7 +1398,7 @@ int main(void) {
     if (!engine_init(&engine, &cfg)) return 1;
 
     while (engine_frame(&engine)) {
-        // 游戏逻辑更新
+        // 应用逻辑更新
         // 渲染提交
     }
 
@@ -1910,7 +1910,7 @@ NetRep peer 持久化要求每个 `.peer` 输出文件名完整容纳于内部 5
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    Game Logic                         │
+│                    Application Logic                         │
 ├─────────┬──────────┬──────────┬──────────┬──────────┤
 │ Script  │  ECS     │ Physics  │  Audio   │  Task    │
 ├─────────┴──────────┴──────────┴──────────┴──────────┤

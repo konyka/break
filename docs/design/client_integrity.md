@@ -38,6 +38,6 @@ The debugger test runs a real tracer: a forked child calls `PTRACE_TRACEME`, sto
 ## 5. Not delivered
 
 - Windows and macOS implementations of the debugger and module checks.
-- Integration into the editor, demos or a game: nothing links this library (pinned by the contract test), so no running binary reports these signals.
+- Integration into the editor, demos or an application: nothing links this library (pinned by the contract test), so no running binary reports these signals.
 - A transport for the signals and the server-side risk scoring that would consume them.
 - Code-section or memory integrity checks, anti-injection, obfuscation, anything that resists an attacker with local code execution. By design none of that is claimed.

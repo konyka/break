@@ -91,11 +91,13 @@ Before Task 3 starts, check `git grep -w -E "pad|PadState|PAD_BTN"` to confirm t
 
 ### Task 4: Current docs
 
-- [ ] **Step 1: Raise the contract to `STAGE=4`.** Expected: FAIL listing docs.
-- [ ] **Step 2: Rename doc files with `git mv`.** `docs/design/gameplay_items_weapons.md` → `items_weapons.md`, `docs/design/online_gameplay_network.md` → `online_session_network.md`, and the files under `docs/superpowers/plans|specs` whose names contain `game`/`cry` (replace `cry-style-gameplay` with `core-style-actions`, and so on). Update every link.
-- [ ] **Step 3: Update terms in the doc bodies.** 玩家 → 用户 / 用户 A、B; 敌人 → 追踪者; game → 应用/逻辑. Third-party names in the cross-engine docs stay inside backticks and are covered by the exempt-token list.
-- [ ] **Step 4: Run the full ctest**, including the doc link/contract tests.
-- [ ] **Step 5: Commit, push to `master`, and confirm CI passes on every lane.**
+- [x] **Step 1: Raise the contract to `STAGE=4`.** Expected: FAIL listing docs.
+- [x] **Step 2: Rename doc files with `git mv`.** `docs/design/gameplay_items_weapons.md` → `items_weapons.md`, `docs/design/online_gameplay_network.md` → `online_session_network.md`, and the files under `docs/superpowers/plans|specs` whose names contain `game`/`cry` (replace `cry-style-gameplay` with `core-style-actions`, and so on). Update every link.
+- [x] **Step 3: Update terms in the doc bodies.** 玩家 → 用户 / 用户 A、B; 敌人 → 追踪者; game → 应用/逻辑. Third-party names in the cross-engine docs stay inside backticks and are covered by the exempt-token list.
+- [x] **Step 4: Run the full ctest**, including the doc link/contract tests.
+- [x] **Step 5: Commit, push to `master`, and confirm CI passes on every lane.**
+
+> 2026-11-14 执行记录：Task 4 把契约升到 `STAGE=4`，改前 RED（127 处）。6 个文档用 `git mv` 改名（`items_weapons.md`、`online_session_network.md`、`2026-11-01-core-style-actions.md`、`2026-11-02-items-weapons.md`、`2026-11-03-online-session-network.md`、`2026-11-02-core-capability-completion-design.md`），链接同步更新。正文先把旧标识符映射到现名（`break_kernel*`、`core_app*`、`pad_*`、`CORECKPT`、`manifest.core`、`COREAPPTRACE`、`core-app-scenario` 等），再改散词（game/gameplay 改为 application/logic，游戏改为应用，玩家改为用户，敌人改为追踪者）；改名后变成“X → X”的历史记录改写为“旧名 → X”。外部项目原名（CryENGINE 模块 `Cry*`、GEFS、T3DGameR1 的类名和目录名、BW191 定时器名、源码路径 `opensource/game_engine`）只在 `docs/` 下豁免。契约提速：docs 扫描跳过 `docs/ue5.8.3`；整行提取只在快速匹配命中后执行（CMake 的 `if(AND)` 不短路，所以写成嵌套 if），单次耗时由约 70 秒降到约 2.4 秒。normal 树全量 400/400。
 
 ## Verification
 

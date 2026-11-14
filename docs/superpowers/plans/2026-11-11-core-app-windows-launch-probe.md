@@ -13,7 +13,7 @@
 - 临时工作树固定为 `/home/timeshift/opensource/break/.worktrees/core-app-ci-validation`，分支 `core-app-ci-validation`，基线为 `f9f6f9be1ac809730c92a6dd29c3de1a0b380257`；临时提交不合并到 master，不建 PR，代理不 push。
 - 已证实的原生失败是 `system()` 返回 1，子进程输出 `The filename, directory name, or volume label syntax is incorrect`，A/B 目录为空；直接 baker 返回 0。不得把它提前断言为某条引号规则或文件系统故障。
 - 只使用真实 C `system()`、真实可执行文件和独立输出目录，不以 PowerShell/`cmd.exe` 的直接调用冒充相同 CRT 边界，不伪造 SDK 或运行结果。
-- 不改变生产 baker、现有资产测试、PAL、序列化、Core App API/ABI、RHI 或 CI 通过条件。新名称使用 `core_app`/`CoreApp`/`CORE_APP`，不引入旧外部引擎前缀或新 `game` 领域名。
+- 不改变生产 baker、现有资产测试、PAL、序列化、Core App API/ABI、RHI 或 CI 通过条件。新名称使用 `core_app`/`CoreApp`/`CORE_APP`，不引入旧外部引擎前缀或新 `application` 领域名。
 - 所有构建和并行 CTest 使用 `-j3`。Linux 结果只验证探针，不是 native Windows 证据。先 RED、再 GREEN、变异/恢复，独立规格与质量评审后才由 controller push。
 - 现有原生日志为 `build-core-ci-controller-logs/native-windows-diagnostic-round1.log`。报告必须保留每条命令、原始返回、OS/CRT 错误、生成的 `level.bscn` 是否存在，以及后续修复仍需的未知项。
 

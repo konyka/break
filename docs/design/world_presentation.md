@@ -6,11 +6,11 @@
 
 本设计实现总体能力设计的 P6：普通世界网格与流式块使用受光、可 textured 的材质；CPU 植被布局进入真实实例化绘制并选择 LOD；昼夜参数进入着色器；VisArea 可见集决定对象提交。Vulkan 仍是默认后端，OpenGL 仅作最终降级，两条路径都只调用现有 RHI。
 
-不修改 ECS 流式驻留策略、VFS、其他游戏子系统或 `docs/Implementation_Status.md`。本设计不声称 D3D12/Metal 的画面 parity，也不把 headless/fake RHI 记录当作图形证据。
+不修改 ECS 流式驻留策略、VFS、其他应用子系统或 `docs/Implementation_Status.md`。本设计不声称 D3D12/Metal 的画面 parity，也不把 headless/fake RHI 记录当作图形证据。
 
 ## 方案取舍
 
-1. **采用：扩展现有网格/RHI，并增加一个有界世界快照提交层。** 旧 CPU 模块继续负责布局、驻留和可见性；新层只在 GameThread 生成 POD 快照，在 RenderThread 通过同一个绘制辅助函数提交普通对象和流式对象。优点是真实消费链短、可分别做 CPU/fake/像素验收。
+1. **采用：扩展现有网格/RHI，并增加一个有界世界快照提交层。** 旧 CPU 模块继续负责布局、驻留和可见性；新层只在 LogicThread 生成 POD 快照，在 RenderThread 通过同一个绘制辅助函数提交普通对象和流式对象。优点是真实消费链短、可分别做 CPU/fake/像素验收。
 2. 不采用：把材质和植被直接塞进各后端。这样会产生 GL-only 旁路，并重复 Vulkan 描述符、顶点布局和实例缓冲逻辑。
 3. 不采用：保留 28 字节顶点并用 material id 猜测 UV，或为植被逐实例发出单实例 draw。前者不能可靠采样纹理，后者不是实际实例化且无法验证批次行为。
 
@@ -24,9 +24,9 @@ RHI 的 `mesh_stage_vertex` 布局同时支持 28 字节旧布局和 36 字节�
 
 片元颜色为 `base_color * texture(albedo, uv)`，再做法线方向光、受 roughness 控制的低强度高光、环境光及距离雾。`time_of_day_eval` 的结果由快照逐值传入这些 uniform，而不是仅保留 CPU 参数。
 
-## GameThread 快照
+## LogicThread 快照
 
-`world_presentation_snapshot` 是纯 GameThread 构建步骤，输入和输出分离：
+`world_presentation_snapshot` 是纯 LogicThread 构建步骤，输入和输出分离：
 
 - `frame_id`、相机 view/projection、FOV/screen height/pixel error 和 `TimeOfDayLighting` 均按值复制。
 - 普通/流式对象记录包含稳定 object id、`MeshGpu` 句柄、`MeshDrawDesc`、材质和来源标记。GPU 资源由 RenderThread 资源所有者管理；快照不拥有或销毁它们。
@@ -36,7 +36,7 @@ RHI 的 `mesh_stage_vertex` 布局同时支持 28 字节旧布局和 36 字节�
 
 容量固定为 512 个普通/流式对象、1024 个植被实例、8 个 prototype、每 prototype 最多 4 个 LOD、最多 32 个实例批次。所有输入、句柄、draw stride/count、材质数值、prototype 引用和非递减 LOD error 在写入输出前验证。失败返回 `INVALID` 或 `OVERLOAD` 且保持旧输出及 LOD 状态不变；成功才替换整个快照。热路径无动态分配。
 
-快照提交后即视为不可变。GameThread 不得继续写该帧存储；RenderThread 只读快照。调用者以 frame 生命周期或双缓冲保证快照存储复用、被引用 GPU 句柄销毁及 presenter 销毁都晚于所有引用它们的 in-flight 帧完成。此边界不使用原子指针掩盖数据竞争。
+快照提交后即视为不可变。LogicThread 不得继续写该帧存储；RenderThread 只读快照。调用者以 frame 生命周期或双缓冲保证快照存储复用、被引用 GPU 句柄销毁及 presenter 销毁都晚于所有引用它们的 in-flight 帧完成。此边界不使用原子指针掩盖数据竞争。
 
 ## RenderThread 提交
 

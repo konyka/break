@@ -2,7 +2,7 @@
 
 ## 1. 项目概述
 
-**BigWorld Technology** 是一款专为大型多人在线游戏 (MMO) 设计的商用游戏引擎中间件，版本号 1.9.1。该引擎曾被用于《魔兽世界》(World of Warcraft) 等知名 MMO 游戏。BW191 提供了从服务端集群到客户端渲染的完整 MMO 解决方案。
+**BigWorld Technology** 是一款专为大型多人在线应用 (MMO) 设计的商用引擎中间件，版本号 1.9.1。该引擎曾被用于《魔兽世界》(World of Warcraft) 等知名 MMO 应用。BW191 提供了从服务端集群到客户端渲染的完整 MMO 解决方案。
 
 - **语言**: C++ (核心) + Python (脚本/工具)
 - **构建系统**: Visual Studio 2005 项目文件 (.vcproj) + Makefile (Linux)
@@ -19,9 +19,9 @@ BW191/
 │   ├── bin/           # 编译输出和命令脚本
 │   ├── doc/           # 技术文档 (HTML + 训练资料)
 │   └── lib/           # 引擎库文件
-├── fantasydemo/       # FantasyDemo 示例游戏
-│   ├── src/           # 示例游戏源码 (client / web)
-│   ├── res/           # 游戏资源 (角色、环境、地图、粒子等)
+├── fantasydemo/       # FantasyDemo 示例应用
+│   ├── src/           # 示例应用源码 (client / web)
+│   ├── res/           # 应用资源 (角色、环境、地图、粒子等)
 │   ├── audio/         # 音频资源
 │   └── tools/         # 内容创建工具
 ├── lib/               # 第三方预编译库
@@ -55,7 +55,7 @@ BigWorld 的服务端采用**分布式微服务架构**，每个组件作为独�
 
 ```
 server/
-├── baseapp/          # Base App - 玩家持久化实体服务
+├── baseapp/          # Base App - 用户持久化实体服务
 ├── baseappmgr/       # Base App Manager - Base App 集群管理器
 ├── cellapp/          # Cell App - 空间分区实体计算服务
 ├── cellappmgr/       # Cell App Manager - Cell App 集群管理器
@@ -91,7 +91,7 @@ server/
                     └──────┬──────┘
               ┌────────────┼────────────┐
          ┌────▼────┐  ┌────▼────┐  ┌───▼─────┐
-         │ BaseApp │  │ BaseApp │  │ BaseApp │  ← 每个玩家一个 BaseApp 实体
+         │ BaseApp │  │ BaseApp │  │ BaseApp │  ← 每个用户一个 BaseApp 实体
          └────┬────┘  └────┬────┘  └───┬─────┘
               │              │           │
                     ┌───────▼────────┐
@@ -132,14 +132,14 @@ server/
 | `egclient3` | 进一步精简版 |
 | `egclient4` | 完整版，含 Python 绑定 (`py_entities`, `py_server`) |
 
-## 4. FantasyDemo 示例游戏
+## 4. FantasyDemo 示例应用
 
-`fantasydemo/` 是一个完整的奇幻风格 MMO 示例游戏，展示了引擎的全部功能:
+`fantasydemo/` 是一个完整的奇幻风格 MMO 示例应用，展示了引擎的全部功能:
 
 ```
 fantasydemo/
 ├── src/
-│   ├── client/       # 游戏客户端逻辑
+│   ├── client/       # 应用客户端逻辑
 │   └── web/          # Web 集成 (账号管理等)
 ├── res/
 │   ├── characters/   # 角色模型和动画
@@ -150,7 +150,7 @@ fantasydemo/
 │   ├── materials/    # 材质定义
 │   ├── objects/      # 静态物体
 │   ├── particles/    # 粒子效果
-│   ├── scripts/      # Python 游戏脚本
+│   ├── scripts/      # Python 应用脚本
 │   ├── server/       # 服务端配置
 │   ├── shaders/      # 着色器
 │   ├── spaces/       # 空间定义
@@ -170,7 +170,7 @@ BigWorld 大量使用 **Python** 作为脚本语言:
 
 - **客户端脚本**: `bigworld/res/scripts/client/` - UI 交互、图形预设、键位绑定、过滤器工具
 - **公共脚本**: `bigworld/res/scripts/common/` - 包含完整 Python 标准库子集 + 自定义工具
-- **服务端脚本**: 通过 Python 实现游戏逻辑，C++ 核心通过 `py_moo`, `py_network`, `py_physics2` 暴露接口
+- **服务端脚本**: 通过 Python 实现应用逻辑，C++ 核心通过 `py_moo`, `py_network`, `py_physics2` 暴露接口
 
 ## 6. 文档体系
 
@@ -193,8 +193,8 @@ BigWorld 大量使用 **Python** 作为脚本语言:
 ## 7. 关键设计模式
 
 1. **分布式服务架构**: 服务端采用多进程微服务设计，支持水平扩展
-2. **Cell 分区**: 游戏世界按空间划分为 Cell，由不同 CellApp 管理
-3. **BaseApp 实体管理**: 每个玩家实体绑定到特定 BaseApp，保证状态一致性
+2. **Cell 分区**: 应用世界按空间划分为 Cell，由不同 CellApp 管理
+3. **BaseApp 实体管理**: 每个用户实体绑定到特定 BaseApp，保证状态一致性
 4. **客户端过滤系统**: 多种过滤器 (AvatarFilter, BoidsFilter, DumbFilter) 处理网络延迟下的实体位置插值和预测
-5. **Python 脚本驱动**: 游戏逻辑通过 Python 脚本实现，C++ 核心提供高性能计算
+5. **Python 脚本驱动**: 应用逻辑通过 Python 脚本实现，C++ 核心提供高性能计算
 6. **自适应 LOD**: 根据性能指标动态调整渲染细节

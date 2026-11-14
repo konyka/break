@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-**Goal:** Deliver bounded multi-touch/gesture input and thread-safe gamepad haptic commands, wired through X11, Wayland, Win32, evdev, and XInput without changing `InputState` ABI.
+**Goal:** Deliver bounded multi-touch/gesture input and thread-safe pad haptic commands, wired through X11, Wayland, Win32, evdev, and XInput without changing `InputState` ABI.
 
 **Architecture:** A versioned `InputExtended` sidecar lives beside each window's `InputState`. Touch events update fixed per-frame arrays on the platform thread; haptic producers only claim fixed command slots, and the platform thread executes them through a real or fake backend.
 
@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Follow P7 and sections 4, 6, and 8 of `docs/superpowers/specs/2026-11-02-cry-capability-completion-design.md`.
+- Follow P7 and sections 4, 6, and 8 of `docs/superpowers/specs/2026-11-02-core-capability-completion-design.md`.
 - Do not change `InputState` layout, push, open a PR, edit `docs/Implementation_Status.md`, or modify unrelated modules.
 - Use hard capacities 16 touches, 32 touch events, 16 gestures, 32 haptic commands, drain budget 8, and duration <=5000 ms. Overflow is returned and counted, never silently truncated.
 - No hot-path allocation. No OS device call while holding the haptic lock or from a producer thread.
@@ -111,15 +111,15 @@ Run the Task 1 command, then configure `build-input-tsan` with `-DENGINE_USE_TSA
 ### Task 3: Real Linux and Windows feedback backends
 
 **Files:**
-- Modify: `engine/src/platform/gamepad_linux.h`
-- Modify: `engine/src/platform/gamepad_linux.c`
-- Modify: `engine/src/platform/gamepad_win.c`
+- Modify: `engine/src/platform/pad_linux.h`
+- Modify: `engine/src/platform/pad_linux.c`
+- Modify: `engine/src/platform/pad_win.c`
 - Modify: `engine/tests/test_input_extended.c`
 
 **Interfaces:**
 
 ```c
-void gamepad_feedback_poll(InputExtended *extended);
+void pad_feedback_poll(InputExtended *extended);
 ```
 
 - [x] **Step 1: Add backend-contract RED checks**
@@ -128,7 +128,7 @@ Use the fake executor to pin the shared statuses and exact strength conversion i
 
 - [x] **Step 2: Implement evdev feedback**
 
-Probe writable FF_RUMBLE support, retain ordinary read-only fallback, execute upload/start/stop only in `gamepad_feedback_poll`, and clean up effects on disconnect.
+Probe writable FF_RUMBLE support, retain ordinary read-only fallback, execute upload/start/stop only in `pad_feedback_poll`, and clean up effects on disconnect.
 
 - [x] **Step 3: Implement XInput feedback**
 
@@ -168,7 +168,7 @@ Own and initialize the sidecar in every backend, advance it with `input_new_fram
 
 - [x] **Step 3: Wire native events**
 
-Select XI2 touch events, add the complete `wl_touch_listener`, and register/process `WM_TOUCH` as specified in the design. Cancel on focus/capability/seat loss and update gestures from `time_microseconds()/1000`. Call `gamepad_feedback_poll` after ordinary gamepad polling.
+Select XI2 touch events, add the complete `wl_touch_listener`, and register/process `WM_TOUCH` as specified in the design. Cancel on focus/capability/seat loss and update gestures from `time_microseconds()/1000`. Call `pad_feedback_poll` after ordinary pad polling.
 
 - [x] **Step 4: Verify platform GREEN**
 

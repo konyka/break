@@ -193,7 +193,7 @@ Entity 是数组索引
 
 ### 2.3 最优方案: B (Archetype + Chunk)
 
-**理由**: 游戏引擎 90% 的性能瓶颈在遍历，Archetype 的遍历性能碾压其他方案。添加/删除的开销在帧预算中可忽略 (每帧通常 < 100 次添加/删除 vs 数万次遍历)。
+**理由**: 引擎 90% 的性能瓶颈在遍历，Archetype 的遍历性能碾压其他方案。添加/删除的开销在帧预算中可忽略 (每帧通常 < 100 次添加/删除 vs 数万次遍历)。
 
 **改进设计**:
 
@@ -691,7 +691,7 @@ void task_frame_end(TaskSystem* ts);    // 等待所有帧内 job 完成
 |---|------|--------|------|
 | 1 | **回调事件模型** | 高 | 回调在平台线程触发，引擎状态可能不一致。需要事件队列 |
 | 2 | **无输入状态快照** | 高 | 缺少"本帧按键状态"查询 (key_down_this_frame vs key_held) |
-| 3 | **无手柄/控制器支持** | 高 | 现代游戏必备 |
+| 3 | **无手柄/控制器支持** | 高 | 现代应用必备 |
 | 4 | **无剪贴板/拖拽/IME** | 中 | 编辑器和 UI 需要这些功能 |
 | 5 | **window_native 返回 void*** | 低 | 类型不安全 |
 | 6 | **无多显示器支持** | 低 | |
@@ -707,7 +707,7 @@ typedef enum {
     EVENT_MOUSE_MOVE,
     EVENT_MOUSE_SCROLL,
     EVENT_TOUCH,
-    EVENT_GAMEPAD,
+    EVENT_PAD,
     EVENT_WINDOW_RESIZE,
     EVENT_WINDOW_FOCUS,
     EVENT_QUIT,
@@ -722,7 +722,7 @@ typedef struct {
         struct { float x, y; } mouse_move;
         struct { float dx, dy; } scroll;
         struct { float x, y; int action; int finger_id; } touch;
-        struct { int gamepad_id; int button; int action; float axis[6]; } gamepad;
+        struct { int pad_id; int button; int action; float axis[6]; } pad;
         struct { uint32_t w, h; } resize;
         struct { bool focused; } focus;
     };
@@ -747,7 +747,7 @@ typedef struct {
         bool     connected;
         float    axes[6];        // 左XY, 右XY, 左右trigger
         uint8_t  buttons[16];
-    } gamepads[4];
+    } pads[4];
     
     uint64_t frame_number;       // 快照的帧号
 } InputState;
@@ -1051,7 +1051,7 @@ void renderer_sort_draws(DrawCommand* cmds, uint32_t count);
 | 2 | **无宽相算法选择** | 高 | BVH? Sweep-and-Prune? Spatial Hash? |
 | 3 | **无窄相算法选择** | 高 | GJK? SAT? |
 | 4 | **无 CCD** | 中 | 连续碰撞检测防止隧穿 |
-| 5 | **无角色控制器** | 中 | 游戏引擎必备 |
+| 5 | **无角色控制器** | 中 | 引擎必备 |
 | 6 | **无场景查询** | 高 | 射线检测、形状投射、重叠检测 |
 | 7 | **未考虑固定时间步** | 中 | 物理需要确定性 |
 

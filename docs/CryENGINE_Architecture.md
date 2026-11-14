@@ -2,7 +2,7 @@
 
 ## 1. 项目概述
 
-**CryENGINE** 是由 Crytek 开发的商用 AAA 级游戏引擎，本仓库包含 PC 平台 v3.1.2 (Build 1742) 的完整源码。该引擎被用于《孤岛危机》(Crysis) 系列等知名游戏，以其先进的实时渲染技术和 sandbox 编辑器著称。
+**CryENGINE** 是由 Crytek 开发的商用 AAA 级引擎，本仓库包含 PC 平台 v3.1.2 (Build 1742) 的完整源码。该引擎被用于《孤岛危机》(Crysis) 系列等知名应用，以其先进的实时渲染技术和 sandbox 编辑器著称。
 
 - **语言**: C++
 - **构建系统**: Visual Studio 解决方案 (.sln / .vcproj)
@@ -15,7 +15,7 @@
 CryENGINE_FullCode_PC_v3_1_2_1742/
 ├── Code/             # 引擎和工具源码
 │   └── CryEngine/    # 引擎核心 (16个子系统)
-├── Game/             # 游戏逻辑层 (Lua 脚本 + C++)
+├── Application/             # 应用逻辑层 (Lua 脚本 + C++)
 ├── Bin32/            # 编译输出、DLL、资源编译器 (rc/)
 ├── BinTemp/          # 临时编译中间文件
 └── Tools/            # 开发工具集
@@ -28,7 +28,7 @@ CryENGINE 采用**模块化 DLL 架构**，每个子系统作为独立的 DLL �
 ```
 CryEngine/
 ├── Cry3DEngine/       # 3D 渲染引擎
-├── CryAction/         # 游戏框架 (Gameplay 框架)
+├── CryAction/         # 应用框架 (Logic 框架)
 ├── CryAISystem/       # AI 系统
 ├── CryAnimation/      # 骨骼动画系统
 ├── CryCommon/         # 公共接口和类型定义
@@ -87,9 +87,9 @@ RenderDLL/
 └── XRenderNULL/      # 空渲染器 (用于服务端/测试)
 ```
 
-### 3.3 CryAction - 游戏框架
+### 3.3 CryAction - 应用框架
 
-CryAction 是连接引擎底层系统与游戏逻辑的桥梁，提供了完整的游戏开发框架:
+CryAction 是连接引擎底层系统与应用逻辑的桥梁，提供了完整的应用开发框架:
 
 | 子系统 | 职责 |
 |--------|------|
@@ -97,14 +97,14 @@ CryAction 是连接引擎底层系统与游戏逻辑的桥梁，提供了完整�
 | **Animation** | 角色动画控制 |
 | **AnimationGraph** | 动画状态图 (混合树) |
 | **FlowSystem** | 可视化流程脚本系统 (类似蓝图) |
-| **GameObjects** | 游戏对象系统 (实体扩展) |
+| **GameObjects** | 应用对象系统 (实体扩展) |
 | **DialogSystem** | NPC 对话系统 |
 | **EffectSystem** | 视觉效果管理 |
 | **ForceFeedbackSystem** | 力反馈 (手柄震动) |
 | **MaterialEffects** | 材质交互效果 (碰撞火花等) |
 | **MusicLogic** | 动态音乐系统 |
-| **GameTokens** | 游戏状态变量系统 |
-| **GameplayRecorder** | 游戏过程录制/回放 |
+| **GameTokens** | 应用状态变量系统 |
+| **GameplayRecorder** | 应用过程录制/回放 |
 | **CheckPoint** | 存档/检查点系统 |
 | **Network** | 网络同步 |
 | **LivePreview** | 实时预览 (编辑器) |
@@ -171,19 +171,19 @@ Crytek 自研物理引擎:
 | **CrySoundSystem** | 音频播放、3D 音效 |
 | **CrySystem** | 引擎初始化、主循环、CVars (控制台变量)、内存管理 |
 
-## 4. 游戏层 (`Game/`)
+## 4. 应用层 (`Application/`)
 
-Game 目录包含用 CryAction 框架开发的游戏逻辑:
+Application 目录包含用 CryAction 框架开发的应用逻辑:
 
 ```
-Game/
+Application/
 ├── Entities/         # C++ 实体定义
-└── Scripts/          # Lua 游戏脚本
+└── Scripts/          # Lua 应用脚本
     ├── AI/           # AI 行为脚本
     ├── BehaviorTree/ # 行为树定义
     ├── Entities/     # 实体脚本
     ├── FlowNodes/    # 流程脚本节点
-    ├── GameRules/    # 游戏规则
+    ├── GameRules/    # 应用规则
     ├── Network/      # 网络逻辑
     ├── UI/           # 用户界面
     └── Utils/        # 工具函数
@@ -193,11 +193,11 @@ Game/
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Game Layer                           │
+│                        Application Layer                           │
 │  (Lua Scripts + C++ Entities)                               │
 ├─────────────────────────────────────────────────────────────┤
 │                      CryAction                              │
-│  (Game Framework: FlowSystem, GameObjects, AnimationGraph)  │
+│  (Application Framework: FlowSystem, GameObjects, AnimationGraph)  │
 ├──────────┬──────────┬──────────┬──────────┬─────────────────┤
 │Cry3D     │CryPhysics│CryAI     │CryNetwork│CryAnimation     │
 │Engine    │          │System    │          │                 │
@@ -218,6 +218,6 @@ Game/
 2. **模块化 DLL**: 每个子系统编译为独立 DLL，支持热替换
 3. **CVar 系统**: 全局控制台变量系统，运行时可调参数 (调试/优化利器)
 4. **渲染节点 (RenderNode)**: 场景中的可渲染对象统一抽象为 RenderNode
-5. **Flow System**: 可视化脚本系统，非程序员可通过流程图定义游戏逻辑
-6. **Lua 脚本层**: 游戏逻辑主要用 Lua 实现，C++ 提供高性能核心
+5. **Flow System**: 可视化脚本系统，非程序员可通过流程图定义应用逻辑
+6. **Lua 脚本层**: 应用逻辑主要用 Lua 实现，C++ 提供高性能核心
 7. **GPU 厂商特定优化**: 通过 ATI/NVAPI 针对不同 GPU 进行优化

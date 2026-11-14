@@ -14,7 +14,7 @@ The step driver drains outbound commands before one Snowflake step. The dedicate
 
 Stop uses an adapter-owned bounded deadline in both drive modes. Thread mode calls Snowflake terminate, then waits for the host entry point to publish `host_exited`; step mode first publishes step-driver ownership and waits for an active step to publish completion. A timed-out call returns false and retains `STOPPING`, the Snowflake reactor, and live thread/step ownership; `destroy` remains a no-op and a later stop can finish. Only the cleanup owner that observes completion calls the unbounded platform join, Snowflake destroy, and terminal state transition. POSIX uses `pthread_cond_timedwait`; Windows uses `SleepConditionVariableCS`; no timed-join extension is used. Lifecycle waits never hold the lifecycle mutex while calling Snowflake.
 
-Callbacks only enqueue Break events and perform bounded ownership operations; they do not call GameThread, ECS, Lua, or gameplay handlers.
+Callbacks only enqueue Break events and perform bounded ownership operations; they do not call LogicThread, ECS, Lua, or logic handlers.
 
 ## Verification
 

@@ -138,7 +138,7 @@ step calls and must not call them from more than one thread.
 With `BREAK_NET_DRIVE_THREAD`, `start` creates a Break-owned host thread. That
 thread performs the initial Snowflake step, publishes readiness, and then runs
 the Snowflake step loop. No other thread may drive the same Snowflake reactor.
-The host thread does not call game logic or access GameThread-owned state. If
+The host thread does not call application logic or access LogicThread-owned state. If
 an `on_new_connection` failure marks the reactor `FAILED`, the loop observes
 that state and exits without another Snowflake step; callers then use the normal
 stop/destroy lifecycle without double cleanup.
@@ -148,7 +148,7 @@ stop/destroy lifecycle without double cleanup.
 The opaque `BreakNetReactor` owns its private Snowflake thread handle, lifecycle
 state, synchronization objects, and (in thread mode) the host thread handle.
 Snowflake owns sockets, connections, readiness backends, parser/transport
-internals, and transport queues. GameThread owns future Session/ECS/World
+internals, and transport queues. LogicThread owns future Session/ECS/World
 state; none of those systems are called by this adapter today.
 
 Before `start`, callers must install a borrowed opaque Snowflake acceptor with
@@ -210,7 +210,7 @@ asynchronous adapter notification and is not used as the stop precondition.
 flowchart LR
     S[Snowflake passive reactor\nowns sockets, connections, transport] --> A[BreakNetReactor\nopaque C11 adapter]
     A --> H[Break host thread\nthread mode only]
-    G[Caller / future GameThread\nsole driver in step mode] --> A
+    G[Caller / future LogicThread\nsole driver in step mode] --> A
     A -. borrowed view .-> V[BreakNetMessageView]
     V -->|explicit copy| O[BreakNetOwnedMessage\nBreak allocation + release]
     O -->|bounded owned command| G
@@ -219,7 +219,7 @@ flowchart LR
 The inbound boundary remains a contract boundary: callbacks validate and copy a
 bounded payload before handing an owned record to the adapter event queue. The
 outbound command path is implemented through the bounded queue and reactor-only
-Snowflake conversion; it never invokes gameplay code from a reactor thread.
+Snowflake conversion; it never invokes logic code from a reactor thread.
 The focused adapter contract tests include real inbound, outbound, and close loopback E2E; the test client sends AUTH, receives the PING response, then closes. Close notification remains asynchronous and is not used as the stop precondition.
 
 ```mermaid
@@ -227,7 +227,7 @@ flowchart LR
     N[Snowflake network/parser boundary] -->|borrowed bytes + envelope| P[Protocol validation]
     P -->|valid view| C[BreakNetMessageView]
     C -->|copy before callback returns| I[Owned inbound record\nfuture queue boundary]
-    G[Caller / future GameThread] -->|owned outbound command| Q[Bounded outbound queue]
+    G[Caller / future LogicThread] -->|owned outbound command| Q[Bounded outbound queue]
     Q -->|reactor-only conversion| N
     P -->|reject| X[No message object]
 ```
@@ -247,7 +247,7 @@ KiB). The received buffer must be exactly header plus payload. Length addition
 is checked before evaluation. Per-context sequence validation rejects duplicate
 or backward sequences and jumps larger than `max_sequence_jump`. The view is
 cleared before validation and remains empty on rejection. Validation has no
-Session, ECS, gameplay, or parser callback dependency.
+Session, ECS, logic, or parser callback dependency.
 
 Validation results are `OK`, `INVALID_LENGTH`, `UNSUPPORTED_VERSION`,
 `UNKNOWN_MESSAGE`, `INVALID_SEQUENCE`, and `OVER_LIMIT`.
@@ -278,7 +278,7 @@ remaining deadline. No platform-specific timed-join extension is used. Step
 mode has no host join and retains its existing immediate terminate/destroy
 ordering.
 Close callbacks enqueue only Break transport events; they do not invoke
-GameThread code. Outbound queued commands remain queued when conversion cannot
+LogicThread code. Outbound queued commands remain queued when conversion cannot
 be proven safe, rather than being dropped or reported as sent.
 
 ```mermaid

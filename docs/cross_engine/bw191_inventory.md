@@ -84,7 +84,7 @@ BW191 的现有仓库证据是 [`docs/BW191_Architecture.md`](../BW191_Architect
 - **范围**：音频播放、空间音频、语音、音频资源和设备后端。
 - **已知能力**：FantasyDemo 有 `audio/` 资源目录，包含 `atmos/`、`fx/` 和 `ui/`；客户端核心模块列出 `bwvoip.cpp` 语音通信。
 - **证据/来源**：[`docs/BW191_Architecture.md`](../BW191_Architecture.md) §3.1、§4。
-- **与 Break 的比较边界**：可比较“示例游戏音频资源组织和 VoIP 文件线索”。音频设备 API、混音线程、3D 声场、编解码、FMOD 的实际接入方式和运行时验证为 `资料不足`；顶层 `fmod-redist/` 只证明发行包目录被记录。
+- **与 Break 的比较边界**：可比较“示例应用音频资源组织和 VoIP 文件线索”。音频设备 API、混音线程、3D 声场、编解码、FMOD 的实际接入方式和运行时验证为 `资料不足`；顶层 `fmod-redist/` 只证明发行包目录被记录。
 
 ### 11. Assets / hot reload
 
@@ -197,7 +197,7 @@ BW191 的现有仓库证据是 [`docs/BW191_Architecture.md`](../BW191_Architect
 
 ### A.9 Physics（升级正文第 9 节）
 
-- 无独立刚体物理引擎（设计明确列为非目标）。客户端 `physics2` 库做世界三角碰撞/hull + Chunk obstacle；玩家本地预测由客户端 `Physics`（collide/jump/teleport）执行，服务器 `forcedPosition` 纠正，客户端回 `ackPhysicsCorrection`（证据：`00-概要设计.md` §10、§6.3；`02-客户端详细设计.md` §3）。
+- 无独立刚体物理引擎（设计明确列为非目标）。客户端 `physics2` 库做世界三角碰撞/hull + Chunk obstacle；用户本地预测由客户端 `Physics`（collide/jump/teleport）执行，服务器 `forcedPosition` 纠正，客户端回 `ackPhysicsCorrection`（证据：`00-概要设计.md` §10、§6.3；`02-客户端详细设计.md` §3）。
 - 服务端 Cell 权威物理由 Controller 体系实现（Move/Navigation/Turn/Proximity 等 12 种 Controller），寻路靠 `waypoint` 导航网格（证据：`01-服务端详细设计.md` §6.3）。
 
 ### A.10 Audio（升级正文第 10 节）
@@ -211,7 +211,7 @@ BW191 的现有仓库证据是 [`docs/BW191_Architecture.md`](../BW191_Architect
 
 ### A.12 Editor（升级正文第 12 节）
 
-- WorldEditor（`src/tools/worldeditor`）：空间、地形、实体放置、UDO、chunk 保存，依赖 `ual/gizmo/guitabs/editor_chunk_item/bwlockd`；编辑器与游戏共用 Chunk 格式；`.def` 属性可标 `EDITOR_ONLY/Editable`。配套 ModelEditor、ParticleEditor、Max/Maya 导出器、res_packer、assetprocessor 等（证据：`06-工具链与FantasyDemo.md` §1；`05-实体系统.md` §2）。
+- WorldEditor（`src/tools/worldeditor`）：空间、地形、实体放置、UDO、chunk 保存，依赖 `ual/gizmo/guitabs/editor_chunk_item/bwlockd`；编辑器与应用共用 Chunk 格式；`.def` 属性可标 `EDITOR_ONLY/Editable`。配套 ModelEditor、ParticleEditor、Max/Maya 导出器、res_packer、assetprocessor 等（证据：`06-工具链与FantasyDemo.md` §1；`05-实体系统.md` §2）。
 
 ### A.13 Diagnostics / Remote Debugging（升级正文第 13 节细节）
 
@@ -219,7 +219,7 @@ BW191 的现有仓库证据是 [`docs/BW191_Architecture.md`](../BW191_Architect
 
 ### A.14 Crash Upload（补充正文第 14 节）
 
-- 文档未专列章节，维持弱证据：`Reviver` 进程监视各管理进程 Birth/Death 并自动拉起；`src/lib/geh`（游戏异常处理库）与 `third_party/stack_walker` 提供崩溃栈支持；BaseApp 新式逐实体备份（`backupBaseEntity` hash 备份到其它 BaseApp）保证进程崩溃后 restore。
+- 文档未专列章节，维持弱证据：`Reviver` 进程监视各管理进程 Birth/Death 并自动拉起；`src/lib/geh`（应用异常处理库）与 `third_party/stack_walker` 提供崩溃栈支持；BaseApp 新式逐实体备份（`backupBaseEntity` hash 备份到其它 BaseApp）保证进程崩溃后 restore。
 - 结论：有进程级故障恢复与栈捕获线索；无独立“崩溃上传客户端/服务端”设计，该子项仍 `资料不足`。
 
 ### A.15 Online Update（补充正文第 15 节）

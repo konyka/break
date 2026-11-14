@@ -90,7 +90,7 @@ Built-in CHALLENGE client helper: generates a random 16B client_nonce and sends 
 
 ## 4. Key lifecycle seam
 
-Delivered: the **seam** only. `BreakNetAuthKeyFn` maps an 8-byte key_id to a 32-byte PSK; provisioning, storage, rotation, and revocation are application-side, inside the callback. The engine never stores key material: the PSK lives in a stack buffer for the duration of verification. Session expiry (`break_session_set_max_age`, 0 = no expiry, monotonic clock — `CLOCK_MONOTONIC` on POSIX, `GetTickCount64` on Windows) ages AUTHENTICATED sessions into CLOSING at the next GameThread poll; the expiry scan is bounded by capacity and is not deferrable by the close budget (review fix round 1).
+Delivered: the **seam** only. `BreakNetAuthKeyFn` maps an 8-byte key_id to a 32-byte PSK; provisioning, storage, rotation, and revocation are application-side, inside the callback. The engine never stores key material: the PSK lives in a stack buffer for the duration of verification. Session expiry (`break_session_set_max_age`, 0 = no expiry, monotonic clock — `CLOCK_MONOTONIC` on POSIX, `GetTickCount64` on Windows) ages AUTHENTICATED sessions into CLOSING at the next LogicThread poll; the expiry scan is bounded by capacity and is not deferrable by the close budget (review fix round 1).
 
 NOT delivered: key generation tooling, per-device provisioning, rotation/rollout orchestration, revocation lists, key escrow. Until those exist app-side, the authentication seam is not a deployable credential system.
 

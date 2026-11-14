@@ -4,7 +4,7 @@
 
 **Goal:** Close Session phase, duplicate, stale-event, apply-failure, and borrowed-message semantics without changing Snowflake or adapter callback source.
 
-**Architecture:** Keep `BreakSessionManager` GameThread-owned and opaque. Add result classifications and counters to the Session API, enforce registry phase and duplicate policy during adapter-event application, and retain closed entries as lifetime slot records so stale events remain classifiable.
+**Architecture:** Keep `BreakSessionManager` LogicThread-owned and opaque. Add result classifications and counters to the Session API, enforce registry phase and duplicate policy during adapter-event application, and retain closed entries as lifetime slot records so stale events remain classifiable.
 
 **Tech Stack:** C11, existing Break CMake/CTest, focused normal/ASan/TSan builds.
 
@@ -12,7 +12,7 @@
 
 - Do not modify Snowflake.
 - Do not modify real adapter callback source.
-- Preserve GameThread-only Session mutation and borrowed handler-message lifetime.
+- Preserve LogicThread-only Session mutation and borrowed handler-message lifetime.
 - Add each behavior as a failing test before implementation.
 - Keep closed slots retained; `max_sessions` remains lifetime binding capacity.
 

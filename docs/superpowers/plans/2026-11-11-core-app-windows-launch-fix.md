@@ -14,7 +14,7 @@
 - 原生 run `43025231891`、job `130538179477` 已证明：original 返回 1 且无 `level.bscn`；outer-quoted 返回 0 且生成 `level.bscn`；backslashes 返回 1；unquoted 返回 0 但不能处理空格。日志为 `build-core-ci-controller-logs/windows-launch-probe-results.log`。
 - 只修改 Windows 测试进程启动，不改 baker 生成、PAL、序列化、CLI、公共 API/ABI、checkpoint writer、RHI、D3D12/compat 或 CI 通过条件。
 - 不把无空格路径不加引号作为修复；必须保留 exe/输出路径各自引用及完整命令额外引用，支持空格路径。
-- 新名称使用 `core_app`/`CoreApp`/`CORE_APP`，不引入旧外部引擎前缀或新 `game` 领域名。Vulkan 默认，OpenGL 只作最后降级/画面对照，不引入 X11。
+- 新名称使用 `core_app`/`CoreApp`/`CORE_APP`，不引入旧外部引擎前缀或新 `application` 领域名。Vulkan 默认，OpenGL 只作最后降级/画面对照，不引入 X11。
 - 所有构建和并行 CTest 使用 `-j3`。每项先真实 RED、最小 GREEN、变异/恢复、全量非图形回归、独立规格与质量评审。Linux 结果不能替代 native Windows；controller 负责真实 CI。
 
 ---

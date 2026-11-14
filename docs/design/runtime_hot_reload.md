@@ -34,8 +34,8 @@
 - `engine/CMakeLists.txt:313-324` 的正式可选 `break_ecs_replication` 承载 `ecs.c`、`replication_schema.c`、`world_snapshot.c`、`world_delta.c` 与 core logging（这些源不在正式 `engine` static library）；`test_ecs_replication` 经 fault-injection 变体 `break_ecs_replication_test`（`:3235-3249`，另含 `break_aoi.c`）编译。
 - AoI/replication/fragment 由正式可选 `break_replication_core`（`engine/CMakeLists.txt:326-333`）承载；`engine/CMakeLists.txt:362-377` 的 `break_net` 在 `BREAK_ENABLE_SNOWFLAKE=ON` 时生成（独立于 `ENGINE_BUILD_TESTS`），并且 `engine_demo`/`dxx_break` 不链接它。
 - `docs/design/ecs_snapshot_replication_aoi.md:5-20,148-159` 记录 snapshot/schema/delta/AoI/replication/fragment focused API 已实现，但正式 runtime/session integration、snapshot publication service、wire schema/tick、fragment timeout/eviction、认证仍未实现。
-- `engine/src/ecs/world_snapshot.h:11-27` 的 snapshot API 要求从 GameThread-owned `World` 构建；`world_delta.h:39-63` 的 apply 通过不可变 snapshot diff 和 atomic replace 语义工作；`replication_schema.h:46-52` 的 registry 是可变注册表，非同步热路径对象。
-- `engine/src/network/break_net_adapter.h:30-73` 和 `engine/src/network/break_session.h:64-103` 显式定义 adapter 的 256 项 event/outbound queues，以及 SessionManager 为 GameThread-owned、not thread-safe。`docs/design/session_protocol.md:32-84`、`docs/design/snowflake_c11_adapter.md:73-103` 禁止 network callback 直接调用 World/ECS/Lua/UI/RHI；消息必须 copy 后入队。
+- `engine/src/ecs/world_snapshot.h:11-27` 的 snapshot API 要求从 LogicThread-owned `World` 构建；`world_delta.h:39-63` 的 apply 通过不可变 snapshot diff 和 atomic replace 语义工作；`replication_schema.h:46-52` 的 registry 是可变注册表，非同步热路径对象。
+- `engine/src/network/break_net_adapter.h:30-73` 和 `engine/src/network/break_session.h:64-103` 显式定义 adapter 的 256 项 event/outbound queues，以及 SessionManager 为 LogicThread-owned、not thread-safe。`docs/design/session_protocol.md:32-84`、`docs/design/snowflake_c11_adapter.md:73-103` 禁止 network callback 直接调用 World/ECS/Lua/UI/RHI；消息必须 copy 后入队。
 - `engine/src/network/break_replication_fragment.h:30-59` 的 reassembler 当前单 delta、16 MiB 总预算、checksum/duplicate/conflict/reset；`docs/design/ecs_snapshot_replication_aoi.md:134-146` 明确没有 timeout/eviction，FNV-1a 也不是加密认证。
 
 因此，Stage 2 的第一道门不是“让 hot reload 直接调用这些 API”，而是先决定哪些 focused 源成为正式库、哪些继续 test-only，并给正式库补 target、ABI、生命周期和 sanitizer 证据。本文的 Runtime Core 只消费正式合同；在该门通过前不得声称网络 session 热重载已集成。
@@ -85,7 +85,7 @@ C++11 只负责应用生命周期、编辑器 command routing、窗口/UI 所属
 
 ### 3.3 Lua
 
-Lua 是唯一计划中的 runtime scripting language，Lua VM 必须由一个明确的 Script/Game owner 线程拥有；但 Stage 2 这里只定义 boundary，不能要求当前已有 Lua VM/facade。`engine/src/script/script.h:39-60` 当前是有限的 `ScriptEngine`/`.script` API，`script_lua.c` 的存在不等于稳定 `BreakLuaRuntime` facade。本文只定义边界：Lua reload 请求进入 Game/Script owner 的 bounded command queue；新 chunk/module 在隔离 staging VM 或受控 staging state 中加载和校验；旧 module 在新版本成功提交前继续服务；失败只产生错误事件并保留旧版本。Lua 不直接访问 raw RHI、network reactor、ECS mutable World 或 UI。
+Lua 是唯一计划中的 runtime scripting language，Lua VM 必须由一个明确的 Script/Application owner 线程拥有；但 Stage 2 这里只定义 boundary，不能要求当前已有 Lua VM/facade。`engine/src/script/script.h:39-60` 当前是有限的 `ScriptEngine`/`.script` API，`script_lua.c` 的存在不等于稳定 `BreakLuaRuntime` facade。本文只定义边界：Lua reload 请求进入 Application/Script owner 的 bounded command queue；新 chunk/module 在隔离 staging VM 或受控 staging state 中加载和校验；旧 module 在新版本成功提交前继续服务；失败只产生错误事件并保留旧版本。Lua 不直接访问 raw RHI、network reactor、ECS mutable World 或 UI。
 
 `BreakLuaRuntime` facade、sandbox、instruction budget、C API binding 与 ASan/TSan lane 已由 Stage 3 Task 1-4 作为正式可选库交付（§2.4）；module dependency graph、memory budget 与 engine/demo 集成仍属后续，本文不将其写成当前实现。
 
@@ -99,7 +99,7 @@ PAL/FileWatch -> IO/VFS -> ReloadCoordinator -> Staging/Validator
                                       v              v
                                Message queues    Commit fence
                                       |              |
-       Network/Session -> GameThread command <- Task workers (read-only)
+       Network/Session -> LogicThread command <- Task workers (read-only)
                                       |
                    ECS World / Lua owner / RHI owner / Editor UI owner
 ```
@@ -115,13 +115,13 @@ PAL/FileWatch -> IO/VFS -> ReloadCoordinator -> Staging/Validator
 
 | 域 | 唯一 owner | 可做 | 禁止 |
 |---|---|---|---|
-| FileWatch/PAL | PAL poller 或专用 watcher producer | 产生路径事件、标记 overflow | 调用 Game/ECS/Lua/UI/RHI |
+| FileWatch/PAL | PAL poller 或专用 watcher producer | 产生路径事件、标记 overflow | 调用 Application/ECS/Lua/UI/RHI |
 | IO/VFS | IO workers；VFS mount 生命周期由 Runtime owner | 读取/解码到 owned bytes | 写 World、调用脚本、替换 GPU资源 |
 | Task workers | TaskSystem worker | 只读 snapshot diff、decode、validate | 等待自身 task；持有 owner-only handle |
-| Game/ECS | GameThread | World mutation、schema registration、snapshot build、delta apply、reload command commit | 被 network/PAL callback 直接调用 |
-| Session/replication | GameThread（当前合同） | poll adapter、Session transition、完整 delta validation/apply | network callback 直接改状态 |
+| Application/ECS | LogicThread | World mutation、schema registration、snapshot build、delta apply、reload command commit | 被 network/PAL callback 直接调用 |
+| Session/replication | LogicThread（当前合同） | poll adapter、Session transition、完整 delta validation/apply | network callback 直接改状态 |
 | RHI/render | Render owner（当前应用帧线程；具体 backend 规则另行设计） | pipeline/texture swap、retire fence | worker 直接 destroy/use live GPU resource |
-| Lua | Script/Game owner | module call、module commit、error policy | 网络/IO线程执行 Lua |
+| Lua | Script/Application owner | module call、module commit、error policy | 网络/IO线程执行 Lua |
 | Editor/UI | UI/window thread | 显示状态、发 command | 直接跨线程写 ECS/RHI |
 | Profiler | 每线程写 TLS/当前帧槽，导出 owner 负责 | bounded region/metadata | 让 profiler export 反向阻塞 runtime |
 
@@ -135,10 +135,10 @@ PAL/FileWatch -> IO/VFS -> ReloadCoordinator -> Staging/Validator
 |---|---:|---|
 | FileWatch event queue | 32（当前 `filewatch.c:12-14`） | 丢弃重复/非关键提示，设置 `overflow/rescan_required`；下一次按目录重新扫描，不声称每个事件可靠 |
 | Runtime reload request queue | 256（设计目标） | 同 asset 合并为一个最新 fingerprint；新 asset 入队失败返回 `OVERLOAD`，保留旧版本并记录指标，不阻塞 producer |
-| Game/owner commit queue | 256（设计目标，与 `break_net` event/outbound 256 对齐） | 不执行 commit；staging 保留到 bounded TTL/取消，向请求方返回 overload |
+| Application/owner commit queue | 256（设计目标，与 `break_net` event/outbound 256 对齐） | 不执行 commit；staging 保留到 bounded TTL/取消，向请求方返回 overload |
 | Task external submit | 256（当前 `task.h:68-83`） | `task_submit_ex` 必须返回显式失败/句柄无效；不得静默覆盖；worker 不等待队列空间 |
 | IO completion | 1024（当前 `async_loader.c:16-24`） | producer 不覆盖未消费 completion；请求进入 FAILED/RETRYABLE，并由主线程观测 backlog |
-| Network adapter event/outbound | 256（当前 `break_net_adapter.h:39-41`） | `BREAK_NET_SEND_OVERLOAD`/event drop 只影响网络记录；GameThread 不阻塞，replication 下次 sync 重试 |
+| Network adapter event/outbound | 256（当前 `break_net_adapter.h:39-41`） | `BREAK_NET_SEND_OVERLOAD`/event drop 只影响网络记录；LogicThread 不阻塞，replication 下次 sync 重试 |
 | Fragment reassembly bytes | 16 MiB（当前 header:36-38） | fail closed；未来 scheduler 必须 timeout/evict，不能无限保留 incomplete assembly |
 
 背压规则：变更提示是 lossy、请求/commit 是可观测失败、owned payload 队列绝不覆盖 live entry；任何 coalescing 都按 asset id/version 明确记录。禁止在 PAL callback、network callback、RHI callback 中睡眠等待队列空间。高优先级安全/生命周期消息可以使用独立保留槽，但不能绕过容量计数。
@@ -223,7 +223,7 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 ### 5.1 典型流程
 
 1. PAL poller 收到 `MODIFIED` 或 overflow/rescan hint；入队并去重。
-2. Game/Runtime owner 在 tick 中 poll，向 IO queue 提交 bounded read；不在 callback 中加载。
+2. Application/Runtime owner 在 tick 中 poll，向 IO queue 提交 bounded read；不在 callback 中加载。
 3. IO worker 从 VFS 读取并解码；Task worker 做只读验证、shader reflection、schema/dependency 检查。
 4. coordinator 将结果投递到对应 owner commit queue；Profiler 记录 request id。
 5. owner 在安全点执行 compare-version、publish-new、fence-retire；失败则保留 old 并发布错误消息。
@@ -256,9 +256,9 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 | Shader/texture reload | 开发期 pipeline/texture callback；失败保留旧对象；Runtime Core reload coordinator 已交付 staging→validate→owner-commit 状态机（failed-keep-old、cancel/timeout/OOM、恰好一次 completion，Task 6，可选库） | `test_hotreload` 使用 RHI stubs；`test_runtime_reload` 用 probe hook 验证 owner-thread commit | staging + owner commit + GPU fence + versioned registry | 多线程 RHI-safe swap、依赖图、生产资源 registry |
 | VFS/IO | DIR/PAK、128 MiB file cap、async loader、range/priority | `test_vfs`、`test_async_loader` 等专项 target | IO/decoder/commit 分离，统一 backpressure/cancel | Runtime Core IO facade、跨域 cancellation contract |
 | Task | C11 worker pool、work stealing、submit 256、单实例 | `test_task`/TSan lanes | reload job class、bounded submit result、可观测 cancellation | reload-specific scheduler policy |
-| ECS snapshot/schema/delta/AoI | API 已实现、GameThread ownership；正式可选 `break_ecs_replication`（2026-10-22 Task 1，未链入 engine/demo） | `test_ecs_replication` 经 `break_ecs_replication_test` 变体编译 focused 源 | 接入 engine/runtime 前先交付 immutable version publication | formal runtime integration、schema negotiation/epoch |
+| ECS snapshot/schema/delta/AoI | API 已实现、LogicThread ownership；正式可选 `break_ecs_replication`（2026-10-22 Task 1，未链入 engine/demo） | `test_ecs_replication` 经 `break_ecs_replication_test` 变体编译 focused 源 | 接入 engine/runtime 前先交付 immutable version publication | formal runtime integration、schema negotiation/epoch |
 | replication/fragment | Real/Ghost/AoI/fragment；16 MiB guard；正式可选 `break_replication_core`（Task 1） | `test_break_replication_fragment` 链接正式库与 Snowflake tests | owner scheduler 管 timeout/eviction、完整 wire contract | timeout/eviction、加密认证、authority/prediction |
-| break_net/Session | C11 adapter、256 queues、GameThread Session、loopback；正式可选 `break_net`（Task 2，Snowflake-conditional） | Snowflake-enabled tests 链接正式 `break_net` | engine/demo 集成与 Runtime Message boundary | `engine_demo`/`dxx_break` integration、auth/Lua/editor RPC |
+| break_net/Session | C11 adapter、256 queues、LogicThread Session、loopback；正式可选 `break_net`（Task 2，Snowflake-conditional） | Snowflake-enabled tests 链接正式 `break_net` | engine/demo 集成与 Runtime Message boundary | `engine_demo`/`dxx_break` integration、auth/Lua/editor RPC |
 | Lua | `.script` engine、Lua source 与 `script_lua.c`；正式可选 `break_lua`（Stage 3 Task 1-4：VM ownership、module load/版本化 reload 旧版本保留、值编组/call/帧 hook/每 hook 指令预算、有界 ECS batch + config bindings、白名单沙箱；未链入 engine/demo） | `test_script*`；`test_break_lua_*` 经 test-only `break_lua_test` 变体编译 | owner-thread versioned module reload、old-version retention（facade 层已交付） | engine/demo 集成、module dependency graph、LuaJIT |
 | Profiler | frame ring、per-thread tid、Chrome trace/sidecar | existing profiler tests | reload span/status/backpressure telemetry | reload-specific export schema |
 
@@ -288,7 +288,7 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 - **Normal**：相关 formal target clean build；focused tests、reload unit/integration、真实 Snowflake loopback（可用时）通过。
 - **ASan/UBSan**：覆盖 staging lifetime、queue drop/merge、VFS/decoder、fragment payload、shutdown/cancel、RHI old-version retire；不得以只运行 import/compile 代替真实 reload 流程。
 - **TSan**：至少覆盖 FileWatch producer→reload queue、IO/Task completion→owner commit、adapter event queue→Session poll、Profiler per-thread registration；零 data race，特别检查 C11 atomic publication、mutex/cond 生命周期和 queue slot reuse。
-- **End-to-end**：修改一个受监视 shader/texture 或测试 asset，真实经过 watch→read→validate→owner commit→旧版保留/retire；注入坏版本确认画面/对象仍使用旧版。ECS 端真实场景必须先构建 snapshot、生成 delta、完成 validation，再 apply；network 端只能由 GameThread `poll_adapter` 消费，不允许 callback 直接 apply。
+- **End-to-end**：修改一个受监视 shader/texture 或测试 asset，真实经过 watch→read→validate→owner commit→旧版保留/retire；注入坏版本确认画面/对象仍使用旧版。ECS 端真实场景必须先构建 snapshot、生成 delta、完成 validation，再 apply；network 端只能由 LogicThread `poll_adapter` 消费，不允许 callback 直接 apply。
 - **证据纪律**：记录 build configuration、target、CTest 数量、ASan/TSan 输出和环境失败分类。`docs/Implementation_Status.md:82-87` 已说明当前 full CTest 可能缺少 fuzz executable、存在无关图形/UI failure；这些不能被混写成 hot reload 通过证据。
 
 ## 9. 后续依赖与实现顺序
@@ -307,9 +307,9 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 - 当前 filewatch 结构化队列只有 32 项且会丢事件；若只在其上加 callback，burst 修改会造成 silent stale state。必须保留 overflow/rescan 语义并让 coordinator 可验证最终 fingerprint。
 - 当前 `hotreload.c` 直接替换 RHI handle；多线程 renderer 或 deferred GPU destruction 未由现有 API 证明。没有 fence/owner contract 前不能推广为生产路径。
 - `WorldSnapshot` build 仍要求调用方建立 structural barrier；自动 publication service、epoch reclamation 和 schema negotiation 缺失，ECS 热重载不能绕过这些条件。
-- `break_net`/Session 的 fixed 256 queues 和 GameThread-only API 很适合边界测试，但尚未是正式 engine runtime/session integration；把可选 library 直接当生产依赖（不经 integration 验收就链入 engine/demo）会制造错误的完成度声明。
+- `break_net`/Session 的 fixed 256 queues 和 LogicThread-only API 很适合边界测试，但尚未是正式 engine runtime/session integration；把可选 library 直接当生产依赖（不经 integration 验收就链入 engine/demo）会制造错误的完成度声明。
 - Fragment checksum 是 FNV-1a 完整性检查，不是认证；timeout/eviction 未实现。热重载或网络 delta 不能把它当安全更新校验。
 - TaskSystem 单实例与 worker 禁止 self-wait 会限制 runtime shutdown 编排；需要明确 coordinator 的 owner/thread 和 drain 责任，避免 shutdown deadlock。
 - VFS/async loader 的静态上限解决了无界分配的一部分风险，但 queue saturation、cancel 与 callback user-data 生命周期仍需统一合同。
-- Lua、editor、online update、安全策略尚未实现；任何把“文件变化”描述为可执行 gameplay/editor/remote update 的设计都越过当前边界。
+- Lua、editor、online update、安全策略尚未实现；任何把“文件变化”描述为可执行 logic/editor/remote update 的设计都越过当前边界。
 - 跨平台 filewatch backend（inotify/kqueue/FSEvents/Win32）事件语义不同，当前 macOS/非 Linux 的 runtime evidence 不能由 Linux focused test 推断。

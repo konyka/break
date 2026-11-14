@@ -12,7 +12,7 @@ P10 在现有 `AudioSystem` 和同一个 miniaudio `ma_engine` 内实现。新�
 - 带 generation 的 voice handle；自然结束、显式停止和抢占后的 stale handle 拒绝。
 - 最多 16 轨的音乐 playlist、循环播放、零淡化切轨及样本级线性交叉淡化。音乐只使用预留 voice 0/1。
 - 最多四级的可组合 DSP：一极低通滤波、反馈延迟和固定四 tap 混响。delay/reverb 可带 filter 组成同一条链。
-- GameThread 射线回调驱动的遮挡，以及与既有逆距离模型一致的距离衰减；扩展 voice 同时遵守现有 bus/master 增益。
+- LogicThread 射线回调驱动的遮挡，以及与既有逆距离模型一致的距离衰减；扩展 voice 同时遵守现有 bus/master 增益。
 - `AUDIO_BACKEND_NULL` 的真实设备生命周期，`AUDIO_BACKEND_FAKE` 的确定性离线 PCM。没有实际听测结论。
 
 ## 固定容量
@@ -35,7 +35,7 @@ P10 在现有 `AudioSystem` 和同一个 miniaudio `ma_engine` 内实现。新�
 
 `audio_extended_init` 在创建期把 32 个 custom data source 直接接到现有 engine node graph 的 `ma_data_source_node`。没有使用 `ma_sound` 的扩展 PCM 路径，因为其实现会预读固定大小的 processing cache，短 clip 会在小渲染请求下被提前消费。直接 node graph 路径按请求帧数读取，测试覆盖了这一点。
 
-GameThread 是唯一命令生产者。START、STOP、RAMP 都是值命令，携带稳定内部 PCM 指针、公共 serial、独立内部 epoch 和预计算配置；head/tail 用 C11 release/acquire 原子发布。每次 START 都递增 epoch，公共 RESTART handle 不变；STOP/RAMP 只作用于对应 epoch，旧完成不能回收新播放。空间快照在单个 64-bit 原子值中打包 32-bit revision 和 32-bit gain bits，所有写入均通过整快照 CAS，START 初始 gain 的 CAS 失败不重试、不覆盖新 revision。GameThread 的 position/listener 发布若因 callback START CAS 先成功而失败，会重新验证 epoch、revision 和当前快照后用新增益重试，不会重试旧 START；主线程 revision 只在发布成功后提交。`spatial_epoch` 标记快照归属，voice_read 在 snapshot 前后各 acquire-load 一次 epoch，只有两次结果相同且等于 `playing_epoch` 才采用新快照，否则保留 callback 私有的已应用增益。回调只有在消费 START 时才归零 cursor、发布初始空间快照并发布 `started_epoch`；音乐 update 仅在 `started_epoch == voice->epoch` 时读取 cursor。自然结束用 `completed_epoch` 与当前 epoch 匹配后才能回收 voice。队列空间预检后才发布，失败保持原状态。
+LogicThread 是唯一命令生产者。START、STOP、RAMP 都是值命令，携带稳定内部 PCM 指针、公共 serial、独立内部 epoch 和预计算配置；head/tail 用 C11 release/acquire 原子发布。每次 START 都递增 epoch，公共 RESTART handle 不变；STOP/RAMP 只作用于对应 epoch，旧完成不能回收新播放。空间快照在单个 64-bit 原子值中打包 32-bit revision 和 32-bit gain bits，所有写入均通过整快照 CAS，START 初始 gain 的 CAS 失败不重试、不覆盖新 revision。LogicThread 的 position/listener 发布若因 callback START CAS 先成功而失败，会重新验证 epoch、revision 和当前快照后用新增益重试，不会重试旧 START；主线程 revision 只在发布成功后提交。`spatial_epoch` 标记快照归属，voice_read 在 snapshot 前后各 acquire-load 一次 epoch，只有两次结果相同且等于 `playing_epoch` 才采用新快照，否则保留 callback 私有的已应用增益。回调只有在消费 START 时才归零 cursor、发布初始空间快照并发布 `started_epoch`；音乐 update 仅在 `started_epoch == voice->epoch` 时读取 cursor。自然结束用 `completed_epoch` 与当前 epoch 匹配后才能回收 voice。队列空间预检后才发布，失败保持原状态。
 
 epoch 0 保留为未启动/无效值；max-1→max 可以启动，达到 UINT64_MAX 后该 voice 退休，后续 START 返回 `AUDIO_OVERLOAD`，不绕回或重置。revision 在 voice 生命周期内单调递增，达到 UINT32_MAX 后 position/listener 和新 START 均拒绝，不回绕。快照字段大小由 C11 静态断言约束，原子类型不要求 lock-free。
 
@@ -45,9 +45,9 @@ PCM 回调只做以下工作：
 - 推进 cursor/fade，合成 source/bus/master/spatial 增益；
 - 在预分配 filter/delay/reverb 状态上做算术并写输出。
 
-回调不分配或释放内存，不访问文件、网络、World、游戏对象或射线 callback，不做 playlist 决策。`test_audio_realtime_contract` 对这些函数体做源级约束；实际 PCM 与 TSan 测试补充运行证据。
+回调不分配或释放内存，不访问文件、网络、World、应用对象或射线 callback，不做 playlist 决策。`test_audio_realtime_contract` 对这些函数体做源级约束；实际 PCM 与 TSan 测试补充运行证据。
 
-遮挡射线只从 event trigger、`audio_voice_set_position` 和 listener 实际变化的 `audio_system_update` 调用。listener 的 NaN/Inf 在更新前拒绝，距离和增益先验证再 ray/发布；stop-pending voice 不再发射线或重定位。非空间事件不发射线，空间增益在 GameThread 计算后写入原子快照。
+遮挡射线只从 event trigger、`audio_voice_set_position` 和 listener 实际变化的 `audio_system_update` 调用。listener 的 NaN/Inf 在更新前拒绝，距离和增益先验证再 ray/发布；stop-pending voice 不再发射线或重定位。非空间事件不发射线，空间增益在 LogicThread 计算后写入原子快照。
 
 ## 失败原子与生命周期
 

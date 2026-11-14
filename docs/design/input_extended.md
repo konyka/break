@@ -1,10 +1,10 @@
-# Extended Input: Touch, Gestures, and Gamepad Feedback
+# Extended Input: Touch, Gestures, and Pad Feedback
 
 Date: 2026-11-02
 
 ## Scope
 
-This is the P7 implementation contract from `docs/superpowers/specs/2026-11-02-cry-capability-completion-design.md`. It adds bounded multi-touch input, common gestures, and gamepad haptic requests without changing the layout of `InputState`. Wayland and Win32 touch messages feed the same sidecar. Linux evdev and Windows XInput execute haptic commands on the platform polling thread. X11 support and its XInput2 backend were removed in 2.0.0; current behavior and pre-2.0.0 implementation evidence are documented separately below.
+This is the P7 implementation contract from `docs/superpowers/specs/2026-11-02-core-capability-completion-design.md`. It adds bounded multi-touch input, common gestures, and pad haptic requests without changing the layout of `InputState`. Wayland and Win32 touch messages feed the same sidecar. Linux evdev and Windows XInput execute haptic commands on the platform polling thread. X11 support and its XInput2 backend were removed in 2.0.0; current behavior and pre-2.0.0 implementation evidence are documented separately below.
 
 Cocoa, mobile, and QNX Screen expose the sidecar so the platform API remains linkable, but this change does not claim new native touch or haptic support on those backends. No physical touchscreen or force-feedback device is available for this implementation; hardware validation remains a separate requirement.
 
@@ -63,7 +63,7 @@ Register the HWND for `WM_TOUCH`. Convert each `TOUCHINPUT` screen position in h
 
 ### Linux evdev haptics
 
-Try `O_RDWR|O_NONBLOCK`, then fall back to the existing read-only path. Feedback is available only on a writable device advertising `EV_FF` and `FF_RUMBLE`. The polling thread uploads/reuses one bounded rumble effect per device and writes `EV_FF`; zero duration stops it. Remove the effect when closing the device. Read-only or non-FF devices degrade to unsupported without affecting ordinary gamepad input.
+Try `O_RDWR|O_NONBLOCK`, then fall back to the existing read-only path. Feedback is available only on a writable device advertising `EV_FF` and `FF_RUMBLE`. The polling thread uploads/reuses one bounded rumble effect per device and writes `EV_FF`; zero duration stops it. Remove the effect when closing the device. Read-only or non-FF devices degrade to unsupported without affecting ordinary pad input.
 
 ### Windows XInput haptics
 

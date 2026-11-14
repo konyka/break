@@ -13,12 +13,12 @@
 - C11; no new dependencies; no changes to `framework/`, `engine/src/ecs`, `engine/src/scene`, `engine/src/script*`; myui changes limited to ONE additive vgcanvas extension slot (RHI texture blit) + its tests — no behavior change to existing slots (Phase 1's adjudicated my_list_view fix stays untouched).
 - Phase 1 invariants hold: all doc mutations through undoable commands; widget callbacks never call `world_*`; `break_editor` stays a formal optional lib out of engine/demos; `editor` executable links `break_editor break_myui engine m` + `engine_link_rhi_backend(editor)`.
 - `EditorTransform.rot` semantics are UNDEFINED until this plan: this plan defines them as intrinsic **yaw(Y)→pitch(X)→roll(Z)** degrees, applied when building model matrices (`mat4_mul` chains); pin by tests.
-- Entity proxy rendering: one unit cube per entity with an EditorTransform; proxy AABB half-extent = `0.5 * scale` (per-axis, min clamp 0.05 for pickability); the proxy is an EDITOR-ONLY rendering representation — it does not claim game-scene fidelity (the Phase 1 documented SCENE_NODES-dropped limitation stands; no Scene ownership added in this phase).
+- Entity proxy rendering: one unit cube per entity with an EditorTransform; proxy AABB half-extent = `0.5 * scale` (per-axis, min clamp 0.05 for pickability); the proxy is an EDITOR-ONLY rendering representation — it does not claim application-scene fidelity (the Phase 1 documented SCENE_NODES-dropped limitation stands; no Scene ownership added in this phase).
 - Bounded: gizmo handles ≤ 24; pick candidate buffer ≤ 4096 entities per query; drag float math guarded against degenerate rays (parallel-to-axis fallback); viewport panel min size 32×32; FBO recreated on resize only.
 - GPU paths are not headless-testable (RHI headless backend is fail-closed, engine/CMakeLists.txt:161-167); ALL behavior tests target the CPU core; GPU code is verified by compilation + a live-window smoke run recorded honestly (no GPU-correctness claims).
 - `break_ui_frame_begin` may skip frames without damage (myui_break.c:554-558); the viewport widget must `my_widget_invalidate` every frame while visible (viewport is a live 3D view; this is intended).
 - Shortcut updates: W/E/R now switch gizmo MODE (translate/rotate/scale) AND update the tool label; Q = select mode (gizmo hidden); F = focus camera on selected entity (real behavior); Ctrl+S/Z/Y/P unchanged.
-- Docs: viewport is an editor tool view; no claims of game-scene rendering parity, no GPU-validation claims without a recorded run.
+- Docs: viewport is an editor tool view; no claims of application-scene rendering parity, no GPU-validation claims without a recorded run.
 
 ---
 

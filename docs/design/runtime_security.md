@@ -81,20 +81,20 @@ Runtime Core 的公共实现语言为 C11，与架构文档 `docs/Architecture_O
 
 Lua 是唯一计划中的 runtime scripting language（roadmap `:5-6`）。当前 `script_lua.c/.h` 已在正式 `engine` 源列表中，但稳定 `BreakLuaRuntime` facade、reload policy 和安全绑定尚未交付（roadmap `:51-68`）。设计边界为：
 
-- Lua VM 由一个明确的 Script/Game owner 线程独占；worker/network/PAL 不直接进入 VM；
+- Lua VM 由一个明确的 Script/Application owner 线程独占；worker/network/PAL 不直接进入 VM；
 - Lua 只消费受限 command/snapshot/query facade，不获得 World 指针、RHI 原生句柄、Snowflake connection、VFS host FILE* 或 allocator internals；
-- Lua callback 的预算、错误、stack、GC 和 reload 失败必须转成 Runtime 错误，不可跨线程抛出或回调 gameplay；
+- Lua callback 的预算、错误、stack、GC 和 reload 失败必须转成 Runtime 错误，不可跨线程抛出或回调 logic；
 - Lua runtime 的 normal/ASan/TSan 验收是 Stage 3 依赖，不因当前 `script_lua.c` 存在而提前宣称完成。
 
 ## 5. 现有 ECS/network 边界正式化
 
 ### 5.1 World、schema、snapshot、delta
 
-**当前已有/focused：** `replication_schema.*`、`world_snapshot.*`、`world_delta.*` 的行为见 `docs/design/ecs_snapshot_replication_aoi.md:7-18,45-78`。GameThread 独占可变 World、ECS 结构、schema 和 delta apply；snapshot 是拥有 bytes 的不可变对象，实体身份含 `(index,generation)`；delta 在 immutable snapshots 间 diff，并通过 ECS-owned deep clone/staging、最终验证和 atomic replace commit 应用，失败时原 World 不变。
+**当前已有/focused：** `replication_schema.*`、`world_snapshot.*`、`world_delta.*` 的行为见 `docs/design/ecs_snapshot_replication_aoi.md:7-18,45-78`。LogicThread 独占可变 World、ECS 结构、schema 和 delta apply；snapshot 是拥有 bytes 的不可变对象，实体身份含 `(index,generation)`；delta 在 immutable snapshots 间 diff，并通过 ECS-owned deep clone/staging、最终验证和 atomic replace commit 应用，失败时原 World 不变。
 
 **安全设计目标：**
 
-- schema registry 初始化/GameThread-owned，不在热路径隐式加锁；schema hash 变化即切断旧 delta stream，直到未来 schema negotiation 明确允许；
+- schema registry 初始化/LogicThread-owned，不在热路径隐式加锁；schema hash 变化即切断旧 delta stream，直到未来 schema negotiation 明确允许；
 - snapshot build 只能在调用方已经完成 structural barrier 后执行；builder 不偷偷建立 barrier；
 - snapshot publication 未来由一个明确 owner 的 current-snapshot service 负责 retain/release；在该 service 实现前，调用方必须持有已返回 snapshot；
 - delta apply 只接受单调 tick、匹配 base/schema、经过完整校验的 payload；不接受“尽力应用”或半更新；
@@ -106,7 +106,7 @@ Lua 是唯一计划中的 runtime scripting language（roadmap `:5-6`）。当�
 
 **当前已有/focused：** `break_aoi.*` 有空间网格、sphere/AABB、多个 Witness、owner/always-relevant/dormant、hysteresis 和确定性 `enter/stay/leave`；`break_replication.*` 有 Real/Ghost baseline、dirty、destroy/dormant、预算和 overload retry。证据见 `docs/design/ecs_snapshot_replication_aoi.md:80-98`。
 
-**安全设计目标：** AoI 只产生 bounded、排序稳定的候选/记录；connection scope 与 Ghost map 归 GameThread owner；网络线程不能直接改变 scope 或 Ghost。版本到 `UINT64_MAX` 时 fail-closed，不能 rollover 或释放旧 payload 后重试。带宽或 outbound overload 返回可观察结果，未发送 baseline/dirty 留待后续 sync，而不是假报 sent。
+**安全设计目标：** AoI 只产生 bounded、排序稳定的候选/记录；connection scope 与 Ghost map 归 LogicThread owner；网络线程不能直接改变 scope 或 Ghost。版本到 `UINT64_MAX` 时 fail-closed，不能 rollover 或释放旧 payload 后重试。带宽或 outbound overload 返回可观察结果，未发送 baseline/dirty 留待后续 sync，而不是假报 sent。
 
 **未实现：** distributed Cell、持久跨 World NetEntityId、authority handoff、客户端预测/rollback 和 server-authoritative policy。
 
@@ -114,7 +114,7 @@ Lua 是唯一计划中的 runtime scripting language（roadmap `:5-6`）。当�
 
 **当前已有/focused：** `engine/src/network/break_replication_fragment.h:20-59` 定义 delta/base ID、fragment index/count、checksum、owned reassembler output、reset/destroy；当前总重组预算为 16 MiB，transport payload 上限为 64 KiB，且支持乱序、精确重复与冲突拒绝（`docs/design/ecs_snapshot_replication_aoi.md:134-146`）。
 
-**安全设计目标：** reassembler 必须在元数据分配、单片拷贝和 total-size 累加前检查上限；每个 connection/stream 只允许有界 assembly 数和总字节数；外部 scheduler 负责 deadline/eviction，过期必须 reset 并计数；完整重组后仍须在 GameThread 做 base/schema/delta validation，fragment layer 不调用 World 或 Snowflake。
+**安全设计目标：** reassembler 必须在元数据分配、单片拷贝和 total-size 累加前检查上限；每个 connection/stream 只允许有界 assembly 数和总字节数；外部 scheduler 负责 deadline/eviction，过期必须 reset 并计数；完整重组后仍须在 LogicThread 做 base/schema/delta validation，fragment layer 不调用 World 或 Snowflake。
 
 **未实现：** 当前 focused API 没有 timeout/eviction scheduler，也没有 cryptographic MAC/AEAD。FNV-1a 只能发现传输损坏/错误重复，不能证明来源、抗篡改或保密；正式接入前必须由 Stage 5 transport security contract 提供认证。
 
@@ -122,13 +122,13 @@ Lua 是唯一计划中的 runtime scripting language（roadmap `:5-6`）。当�
 
 **当前已有/focused：** `BreakNetReactor` 是 C11 opaque adapter，Snowflake 负责 socket、connection、readiness、transport queue；Break 负责 lifecycle、driver、状态同步、bounded view/copy/release。`engine/src/network/break_net_adapter.h:21-73` 明确了 thread/step drive、256 event queue、256 outbound queue、256 identity capacity；`docs/design/snowflake_c11_adapter.md:73-103,201-228` 定义单 driver、stop deadline、timeout 后保留 live resources 的语义。
 
-网络 callback 只能验证、复制、入队；不能调用 GameThread、Session、World、ECS、Lua、UI 或 RHI。Session 是 GameThread-only，状态为 `NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED`，queued event/payload ownership 见 `docs/design/session_protocol.md:21-37,40-84,164-187`。
+网络 callback 只能验证、复制、入队；不能调用 LogicThread、Session、World、ECS、Lua、UI 或 RHI。Session 是 LogicThread-only，状态为 `NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED`，queued event/payload ownership 见 `docs/design/session_protocol.md:21-37,40-84,164-187`。
 
-**容量与 backpressure：** event/outbound 队列满必须显式失败或丢弃并计数，不能 callback 阻塞；send 满返回 `BREAK_NET_SEND_OVERLOAD`，closed state 返回 `BREAK_NET_SEND_CLOSED`；GameThread 下一次 poll/sync 再决定 retry/drop。固定 256 是当前 adapter contract，不应被设计文档扩大解释为系统全局连接容量。
+**容量与 backpressure：** event/outbound 队列满必须显式失败或丢弃并计数，不能 callback 阻塞；send 满返回 `BREAK_NET_SEND_OVERLOAD`，closed state 返回 `BREAK_NET_SEND_CLOSED`；LogicThread 下一次 poll/sync 再决定 retry/drop。固定 256 是当前 adapter contract，不应被设计文档扩大解释为系统全局连接容量。
 
 **shutdown：** thread mode 先 terminate Snowflake，等待 adapter-owned `host_exited` deadline，确认退出后 join，再 destroy Snowflake reactor，最后发布 stopped；timeout 返回 false 且保留 `STOPPING` 和所有 live ownership，后续 stop 可继续。step mode 由唯一 caller 驱动并拒绝并发 step。
 
-**未实现：** player authentication backend、真实 credential/key lifecycle、Session 与 ECS replication 的正式 runtime integration、Lua gameplay callback、editor RPC、online update 和额外 security 功能。默认 AUTH/PING registry 允许协议测试流转，不等于身份认证。
+**未实现：** player authentication backend、真实 credential/key lifecycle、Session 与 ECS replication 的正式 runtime integration、Lua logic callback、editor RPC、online update 和额外 security 功能。默认 AUTH/PING registry 允许协议测试流转，不等于身份认证。
 
 ## 6. Runtime Core 设计目标
 
@@ -138,7 +138,7 @@ Lua 是唯一计划中的 runtime scripting language（roadmap `:5-6`）。当�
 
 **设计目标：** PAL 只暴露稳定、可测试、fail-closed 的 C11 contract：线程 create/join/detach（默认禁止 detach）、mutex/cond/atomic wait、monotonic deadline、文件 descriptor/socket 等 opaque handle。所有 API 明确 owner 和调用线程。禁止在持有 Runtime lifecycle lock 时调用可能回调用户代码、阻塞无限期或进入 Snowflake 的函数。
 
-线程角色最小集合：Game/Main owner、Render owner、IO owner、Network driver、Task workers、Profiler registration caller。线程注册表只记录 opaque identity 和 shutdown epoch；不允许借线程 ID 推断 World ownership。跨线程交互只用 owned message、bounded queue、immutable snapshot 或 fence。
+线程角色最小集合：Application/Main owner、Render owner、IO owner、Network driver、Task workers、Profiler registration caller。线程注册表只记录 opaque identity 和 shutdown epoch；不允许借线程 ID 推断 World ownership。跨线程交互只用 owned message、bounded queue、immutable snapshot 或 fence。
 
 ### 6.2 Task
 
@@ -152,7 +152,7 @@ Lua 是唯一计划中的 runtime scripting language（roadmap `:5-6`）。当�
 
 **设计目标：** Message 是 Runtime Core 的统一 ownership 载体：header、type/version、sequence、payload length、deadline/trace id 和 owned bytes；decode 前检查 magic/version/length/limit，未知 type 默认拒绝。Borrowed view 只能在回调期间使用；跨线程一律 deep copy 或引用计数 immutable blob。
 
-每个 producer/consumer pair 必须声明容量、计数器和 backpressure policy。建议初始容量沿已有事实保持：网络 event/outbound 256；fragment assembly 16 MiB 总预算；Task external submit 256。IO completion queue 不应无限增长，设计目标为固定容量或总字节预算，overload 时保持 caller 可重试状态。IO callback 只投递 completion message，不直接调用 gameplay。
+每个 producer/consumer pair 必须声明容量、计数器和 backpressure policy。建议初始容量沿已有事实保持：网络 event/outbound 256；fragment assembly 16 MiB 总预算；Task external submit 256。IO completion queue 不应无限增长，设计目标为固定容量或总字节预算，overload 时保持 caller 可重试状态。IO callback 只投递 completion message，不直接调用 logic。
 
 IO shutdown 先停止新请求，再取消/标记未完成请求，等待 completion producer 停止，drain 可释放消息，最后关闭 handles。cancel race 的结果必须是 exactly-one completion（成功、取消或失败之一），并带 request generation，避免旧 completion 命中新请求。
 
@@ -168,7 +168,7 @@ IO shutdown 先停止新请求，再取消/标记未完成请求，等待 comple
 
 **当前已有：** `engine/src/core/profiler.h:4-13` 有 120 frame、64 region、32 thread 上限；`:15-42` 定义 region/tid/frame ring；`:55-100` 提供线程注册和 Chrome trace 导出；`:103-119` 提供 provenance sidecar。Profiler 已在正式 `engine` target。
 
-**设计目标：** profiler 记录路径必须无阻塞、固定预算、失败可丢样本但不得破坏业务；region overflow、thread overflow、trace path failure 必须有计数/返回值。导出在业务线程外用已拥有的 frame snapshot 执行，不能在持锁时写文件。元数据和 provenance 必须做路径、命令行、peer、用户 payload 的 redaction；不默认记录 secrets、tokens 或完整网络 payload。Profiler API 不得成为任意线程调用 gameplay 的回调通道。
+**设计目标：** profiler 记录路径必须无阻塞、固定预算、失败可丢样本但不得破坏业务；region overflow、thread overflow、trace path failure 必须有计数/返回值。导出在业务线程外用已拥有的 frame snapshot 执行，不能在持锁时写文件。元数据和 provenance 必须做路径、命令行、peer、用户 payload 的 redaction；不默认记录 secrets、tokens 或完整网络 payload。Profiler API 不得成为任意线程调用 logic 的回调通道。
 
 ## 7. 错误、隔离与 shutdown 总则
 
@@ -176,7 +176,7 @@ Runtime Core formal facade 统一使用 `BreakRuntimeError`：`OK`、`INVALID`�
 
 1. **Validate before allocate/copy/dispatch**：长度、乘法、版本、sequence、预算、状态和 ownership 先验；
 2. **No partial commit**：ECS delta、VFS mount、Session transition、resource publication 使用 staging/transaction；
-3. **No callback re-entry**：network/IO/task/profiler callback 只能构造结果或 message；GameThread 在明确 poll 点 apply；
+3. **No callback re-entry**：network/IO/task/profiler callback 只能构造结果或 message；LogicThread 在明确 poll 点 apply；
 4. **Bound every wait**：公共 stop/join/poll/wait API 要有 deadline 版本；超时保留 ownership 并返回可重试错误；
 5. **Idempotent cleanup**：release/destroy/stop 可重复调用；失败 start 必须清理已创建的下游对象；
 6. **Observable overload**：overload、drop、timeout、stale、invalid、auth/integrity failure 分开计数并可导出；不能把丢包当成功；
@@ -225,7 +225,7 @@ focused 源只有在以下条件同时满足后才可晋级为正式库：
 ```text
 PAL/OS -> IO/Network driver -> validate + copy -> bounded Message queues
                                                 |
-                                      GameThread poll/apply
+                                      LogicThread poll/apply
                                                 |
                          World/ECS owner -> immutable Snapshot
                                                 |
@@ -241,7 +241,7 @@ PAL/OS -> IO/Network driver -> validate + copy -> bounded Message queues
 3. Task ownership、fence、worker shutdown；
 4. VFS path/PAK validation 与 async owned blob；
 5. Profiler bounded recording/export/redaction；
-6. 将 ECS focused sources 迁入正式 runtime library——已交付为正式可选 `break_ecs_replication`/`break_replication_core`（2026-10-22 Task 1）；迁入 `engine` 并由 GameThread/message contracts 接入仍未实现；
+6. 将 ECS focused sources 迁入正式 runtime library——已交付为正式可选 `break_ecs_replication`/`break_replication_core`（2026-10-22 Task 1）；迁入 `engine` 并由 LogicThread/message contracts 接入仍未实现；
 7. 将 `break_net` 从 test-gated 目标晋级——已交付（2026-10-22 Task 2：`BREAK_ENABLE_SNOWFLAKE=ON` 即生成，独立于 `ENGINE_BUILD_TESTS`）；正式 Session/replication integration 仍未实现；
 8. Stage 3 Lua facade 只能建立在上述 owner/queue/snapshot contracts 上；
 9. Stage 5 才处理认证、签名更新、crash upload、replay protection、server authority 和 anti-tamper。
@@ -264,7 +264,7 @@ PAL/OS -> IO/Network driver -> validate + copy -> bounded Message queues
 - `docs/Architecture_Overview.md`：C11/C++11 分层、正式模块、Task/网络/ECS 当前边界与 focused target 事实。
 - `docs/Implementation_Status.md`：当前验证数字、已知失败和“focused 不等于正式 integration”的限制。
 - `docs/design/ecs_snapshot_replication_aoi.md`：snapshot/schema/delta/AoI/replication/fragment 的 ownership、容量、失败和未实现项。
-- `docs/design/session_protocol.md`：18-byte envelope、256 队列、Session GameThread ownership、stale/close 语义。
+- `docs/design/session_protocol.md`：18-byte envelope、256 队列、Session LogicThread ownership、stale/close 语义。
 - `docs/design/snowflake_c11_adapter.md`：Snowflake target 要求、single driver、callback 边界、bounded stop 和 owned payload。
 - `engine/CMakeLists.txt:291-309,313-377,387-471,3235-3298,3405-3444`：真实 `engine`、正式可选 ECS/fragment/Snowflake `break_net`/`runtime_core` target 与 test-only 变体证据。
 - `engine/src/task/task.h`、`engine/src/asset/vfs.h`、`engine/src/core/profiler.h`：Runtime Core 现有容量、线程、VFS 和 Profiler API 证据。

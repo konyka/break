@@ -4,7 +4,7 @@
 
 **Goal:** Integrate Break's C11 runtime with Snowflake's passive reactor through a tested opaque-handle adapter supporting dedicated reactor threads and deterministic step mode.
 
-**Architecture:** Add a C11 Break adapter that owns lifecycle, bounded inbound/outbound queues, protocol-envelope validation, and Snowflake status translation. Snowflake remains the owner of sockets, epoll/io_uring/kqueue/IOCP, connections, parser execution, and transport queues; GameThread remains the owner of sessions, ECS, World, and Lua.
+**Architecture:** Add a C11 Break adapter that owns lifecycle, bounded inbound/outbound queues, protocol-envelope validation, and Snowflake status translation. Snowflake remains the owner of sockets, epoll/io_uring/kqueue/IOCP, connections, parser execution, and transport queues; LogicThread remains the owner of sessions, ECS, World, and Lua.
 
 **Tech Stack:** C11, CMake, CTest, Snowflake C API at `/home/timeshift/opensource/snowflake`, existing Break task/queue/error conventions, GCC/Clang, ASan/TSan where supported.
 
@@ -14,8 +14,8 @@
 - Do not reimplement sockets, epoll, io_uring, kqueue, IOCP, Snowflake connection management, or Snowflake transport queues.
 - Do not expose Snowflake concrete structs in Break public headers.
 - Only one thread may drive each Snowflake reactor.
-- Snowflake callbacks may validate, copy/transfer bounded payloads, update metrics, and enqueue events; they may not call Lua, mutate ECS/World, call UI/RHI, or block on GameThread.
-- GameThread owns sessions and gameplay state.
+- Snowflake callbacks may validate, copy/transfer bounded payloads, update metrics, and enqueue events; they may not call Lua, mutate ECS/World, call UI/RHI, or block on LogicThread.
+- LogicThread owns sessions and logic state.
 - Step mode is required for deterministic tests and editor-local preview.
 - Thread mode is required for production server execution.
 - Every behavior must have a CTest test before implementation changes are accepted.
@@ -34,7 +34,7 @@ Create:
 - `engine/src/network/break_net_message.h` — bounded inbound/outbound message records and ownership helpers.
 - `engine/src/network/break_net_message.c` — message allocation, copy, release, queue-facing helpers.
 - `engine/src/network/break_net_protocol.h` — envelope constants, validation result and parser-facing declarations.
-- `engine/src/network/break_net_protocol.c` — length/version/ID/sequence validation without gameplay decoding.
+- `engine/src/network/break_net_protocol.c` — length/version/ID/sequence validation without logic decoding.
 - `engine/tests/test_break_net_adapter.c` — lifecycle, mode, ownership, queue, callback isolation, protocol tests.
 - `docs/design/snowflake_c11_adapter.md` — implementation-facing API, ownership, threading, and shutdown documentation.
 
@@ -155,7 +155,7 @@ bool break_net_reactor_is_ready(const BreakNetReactor *reactor);
 
 Document that `step` and Snowflake run APIs are single-driver operations and that destroy requires a stopped reactor.
 
-- [x] **Step 3: Define bounded message records without gameplay fields**
+- [x] **Step 3: Define bounded message records without logic fields**
 
 Define a message view with `message_id`, `protocol_version`, `sequence`, `data`, and `size`; define a configurable maximum payload and an owned message record for queue transfer. The view is borrowed and the owned record is released by Break.
 
@@ -243,7 +243,7 @@ Create/configure the Snowflake reactor in the adapter lifecycle according to the
 
 - [x] **Step 3: Drive one step only from the caller**
 
-`break_net_reactor_step` must check mode and state, call the Snowflake step API once, translate failure, and return without executing game logic.
+`break_net_reactor_step` must check mode and state, call the Snowflake step API once, translate failure, and return without executing application logic.
 
 - [x] **Step 4: Implement stop wake-up and cleanup**
 
@@ -282,9 +282,9 @@ Test that an inbound payload remains valid after the Snowflake callback returns,
 
 Copy only the bounded payload and envelope metadata during the Snowflake callback. Use the existing Break allocator/error conventions; reject over-limit allocations before allocating.
 
-- [x] **Step 3: Implement GameThread polling**
+- [x] **Step 3: Implement LogicThread polling**
 
-Add an internal poll/drain function used by later GameThread integration. It must return owned messages in FIFO order and never call a gameplay handler from the reactor thread.
+Add an internal poll/drain function used by later LogicThread integration. It must return owned messages in FIFO order and never call a logic handler from the reactor thread.
 
 - [x] **Step 4: Implement outbound command ownership**
 
@@ -329,7 +329,7 @@ Keep per-connection sequence state in the adapter-owned connection context. Do n
 
 - [x] **Step 4: Translate Snowflake connection events**
 
-Convert accepted/closed/transport-error notifications to owned Break events. Do not assign gameplay session identity yet.
+Convert accepted/closed/transport-error notifications to owned Break events. Do not assign logic session identity yet.
 
 - [x] **Step 5: Run protocol tests; record fuzz boundary**
 
@@ -354,7 +354,7 @@ Assert that start returns only after the host thread is created, ready becomes o
 
 - [x] **Step 2: Implement the host thread entry point**
 
-The entry point calls exactly one Snowflake run/step loop, records readiness and terminal error atomically, and never touches GameThread-owned state.
+The entry point calls exactly one Snowflake run/step loop, records readiness and terminal error atomically, and never touches LogicThread-owned state.
 
 - [x] **Step 3: Implement stop/join ordering**
 

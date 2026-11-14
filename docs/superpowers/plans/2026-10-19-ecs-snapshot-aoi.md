@@ -4,7 +4,7 @@
 
 **Goal:** Add immutable C11 World snapshots, snapshot deltas, and per-connection AoI scope computation above the existing ECS and Snowflake session/adapter layers.
 
-**Architecture:** GameThread remains the sole mutable World owner. A structural barrier produces a deep-copied canonical snapshot with generation-aware entity identity. Pure snapshot diff produces deltas; an independent spatial index and Witness policy produce `enter/stay/leave`; only fully validated messages reach the GameThread mutation phase.
+**Architecture:** LogicThread remains the sole mutable World owner. A structural barrier produces a deep-copied canonical snapshot with generation-aware entity identity. Pure snapshot diff produces deltas; an independent spatial index and Witness policy produce `enter/stay/leave`; only fully validated messages reach the LogicThread mutation phase.
 
 **Tech Stack:** C11, existing ECS/TaskSystem/Scene serialization, BreakNetAdapter/Snowflake, CMake/CTest, ASan/TSan.
 
@@ -43,7 +43,7 @@
 - [ ] Define opaque registry and schema record with component ID, version, size, flags, and optional encode/decode callbacks.
 - [ ] Reject duplicate IDs, zero sizes, invalid alignment, and unsupported pointer-containing raw-byte policy.
 - [ ] Add deterministic registration/lookup/hash tests.
-- [ ] Keep registry GameThread/initialization-only; do not add a mutex to ECS hot paths.
+- [ ] Keep registry LogicThread/initialization-only; do not add a mutex to ECS hot paths.
 
 ## Task 3: Immutable WorldSnapshot
 
@@ -68,7 +68,7 @@
 - [ ] Diff two immutable snapshots into entity create/destroy and component add/remove/update records.
 - [ ] Include base ID, target ID, schema hash, tick, and deterministic record order.
 - [ ] Reject base/schema mismatch during apply before mutating World.
-- [ ] Apply deltas only on GameThread and only through existing World APIs.
+- [ ] Apply deltas only on LogicThread and only through existing World APIs.
 - [ ] Test index reuse with generation change, idempotence, malformed record, and rollback on apply failure.
 
 ## Task 5: Spatial index, Witness, and AoI
@@ -93,7 +93,7 @@
 
 - [ ] Register Real objects and per-connection Ghost/scope state.
 - [ ] Build baseline for enter, dirty delta for stay, destroy/dormant for leave.
-- [ ] Enforce per-connection bandwidth and object priority without blocking GameThread.
+- [ ] Enforce per-connection bandwidth and object priority without blocking LogicThread.
 - [x] Convert complete replication messages to existing BreakNet outbound queue; do not call Snowflake directly from World code.
 - [ ] Test scope transitions, baseline retry, queue overload, and disconnect cleanup.
 
@@ -116,7 +116,7 @@
 - Modify: `docs/Implementation_Status.md`
 
 - [x] Document World mutation/snapshot phases, schema rules, Real/Ghost/Witness/AoI, delta lifecycle, thread ownership, and fragmentation.
-- [x] Add Mermaid diagrams for snapshot publication, delta application, AoI enter/stay/leave, and network thread/GameThread boundaries.
+- [x] Add Mermaid diagrams for snapshot publication, delta application, AoI enter/stay/leave, and network thread/LogicThread boundaries.
 - [x] Run normal, ASan, and TSan focused tests (fragment 7/7; Snowflake replication 7/7 in each lane).
 - [x] Run full CTest and record unrelated failures exactly; the latest 181-test tree is incomplete because five fuzz executables were not built, so those entries are `Not Run`.
 - [x] Run `git diff --check`.

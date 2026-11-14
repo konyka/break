@@ -4,7 +4,7 @@
 
 ## Goal
 
-Add a C11 game-session and protocol-envelope layer above the completed Snowflake adapter without allowing network callbacks to mutate GameThread-owned World, ECS, Lua, or UI state.
+Add a C11 application-session and protocol-envelope layer above the completed Snowflake adapter without allowing network callbacks to mutate LogicThread-owned World, ECS, Lua, or UI state.
 
 ## Scope
 
@@ -12,14 +12,14 @@ This phase adds:
 
 - Stable envelope encode/decode.
 - Message ID registry and version policy.
-- Connection-open/close events translated to GameThread-owned events.
+- Connection-open/close events translated to LogicThread-owned events.
 - Session state machine: `NEW`, `AUTHENTICATING`, `AUTHENTICATED`, `CLOSING`, `CLOSED`.
-- Connection-to-session binding owned by GameThread.
+- Connection-to-session binding owned by LogicThread.
 - Inbound polling and outbound send-command transfer at the adapter boundary.
 - Length, version, sequence, authentication-state, and replay-window checks.
 - C11 tests and documentation.
 
-It does not add player authentication backend, ECS replication, AoI, Lua gameplay callbacks, editor RPC, online updates, or security beyond envelope/session checks.
+It does not add player authentication backend, ECS replication, AoI, Lua logic callbacks, editor RPC, online updates, or security beyond envelope/session checks.
 
 ## Ownership
 
@@ -27,13 +27,13 @@ It does not add player authentication backend, ECS replication, AoI, Lua gamepla
 Snowflake reactor thread
   -> parser/connection callback
   -> bounded adapter event queue
-  -> GameThread poll
+  -> LogicThread poll
   -> SessionManager / World commands
   -> bounded outbound command queue
   -> Snowflake reactor send/close notification
 ```
 
-Network callbacks may create immutable event records only. Sessions and their state transitions are GameThread-owned. A Snowflake connection is represented by a Break opaque connection key, never by a business object pointer exposed to Lua.
+Network callbacks may create immutable event records only. Sessions and their state transitions are LogicThread-owned. A Snowflake connection is represented by a Break opaque connection key, never by a business object pointer exposed to Lua.
 
 ## Envelope
 
@@ -69,7 +69,7 @@ bool break_session_manager_close(BreakSessionManager *manager, BreakConnectionKe
 BreakSessionState break_session_manager_state(const BreakSessionManager *manager, BreakConnectionKey connection);
 ```
 
-Exact signatures may be adjusted to current Break error conventions during Task 1, but handles remain opaque and all mutation remains GameThread-only.
+Exact signatures may be adjusted to current Break error conventions during Task 1, but handles remain opaque and all mutation remains LogicThread-only.
 
 ## Thread and failure policy
 
@@ -79,7 +79,7 @@ Exact signatures may be adjusted to current Break error conventions during Task 
 - A session cannot transition backward from `AUTHENTICATED` to `NEW`.
 - Unknown connection keys are rejected.
 - Duplicate authentication messages are rejected or treated idempotently according to the message registry, never executed twice accidentally.
-- Outbound overload produces a bounded error and does not block GameThread.
+- Outbound overload produces a bounded error and does not block LogicThread.
 - Session close releases business state only after all queued events for that connection are classified as stale.
 
 ## Acceptance

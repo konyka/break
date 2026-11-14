@@ -101,7 +101,7 @@
 - 独立可选 `break_lua_debug` 默认关闭。断点、INTO/OVER/OUT 和局部变量/调用栈检查均在同步 line-hook 暂停回调内执行；栈最多 32 个 Lua 帧，断点最多 32 个，检查输出不足或名字/字符串超长返回 `OVERLOAD`，回调外检查返回 `REJECTED`。组合 hook 同时保留 count 预算与 line 观察者。
 - `break_lua_host_handle_*` 提供 64 个固定槽的 `{slot, generation}` 身份；release/复用后旧值 `STALE`。Lua 侧 full userdata 只保存整数并由锁定 metatable 标识，marshal 时重新查 registry，不包含 host 地址。
 - `break_lua_table.h` 提供预分配节点树和 `runtime_call_table`：节点上限 256、表递归上限 16、字符串 payload 上限 127，实际创建参数可更小。Lua 返回先写 scratch，完整成功才提交；超深/节点/字符串、循环表和不支持类型均有界失败且旧输出不变。
-- 独立 `break_game_lua` 经 `break_game` 通用脚本桥把类 `lua_module` 接到 `on_actor_tick(handle, dt)`。每个 Actor 的句柄跨 tick 稳定，despawn 立即 release；模块错误、缺失 hook 或预算失败只记录 `BreakGameLuaFault`，不阻断其他 Actor。
+- 独立 `break_kernel_lua` 经 `break_kernel` 通用脚本桥把类 `lua_module` 接到 `on_actor_tick(handle, dt)`。每个 Actor 的句柄跨 tick 稳定，despawn 立即 release；模块错误、缺失 hook 或预算失败只记录 `BreakKernelLuaFault`，不阻断其他 Actor。
 - 调试器不改变模块白名单，`debug/package/require/coroutine/load` 仍缺席。本轮没有远程调试、socket 或监听入口；未来远程功能必须在独立应用中显式启用并完成授权。
 
 ## 3. 设计-only / 未实现

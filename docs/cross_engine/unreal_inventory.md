@@ -23,7 +23,7 @@ UE 证据主要来自本仓库的 [`docs/ue5.8.3/README.md`](../ue5.8.3/README.m
 ## 2. ECS/entity
 
 - **范围**：对象/实体生命周期、组件、反射/序列化对象模型及批量实体框架。
-- **已知能力**：UE 的 `UObject`/`UClass`/`UPROPERTY` 提供对象、反射、GC 和序列化基础；`AActor`/`UActorComponent` 构成 Engine gameplay entity 形态；Mass Entity 提供 chunk/data-oriented 的实体框架。
+- **已知能力**：UE 的 `UObject`/`UClass`/`UPROPERTY` 提供对象、反射、GC 和序列化基础；`AActor`/`UActorComponent` 构成 Engine logic entity 形态；Mass Entity 提供 chunk/data-oriented 的实体框架。
 - **证据/来源**：[`03_coreuobject.md`](../ue5.8.3/design/03_coreuobject.md)、[`04_engine_framework.md`](../ue5.8.3/design/04_engine_framework.md)、[`15_ai_gameplay_mass.md`](../ue5.8.3/design/15_ai_gameplay_mass.md)。`32_gap_audit.md` 明确指出 UObject 边缘语义、Mass 默认值和 observer 协议仍有未核验项。
 - **比较 Break**：Break 的 ECS、snapshot/delta/schema/AoI 事实见 [`Architecture_Overview.md` ECS 边界](../Architecture_Overview.md#ecs-snapshot--replication--aoi-边界) 及 `engine/src/ecs/`；这些 focused sources 当前直接编入测试 target，不在正式 `engine` static library。两者实体模型、反射/GC 与 replication 语义不可直接等价。
 
@@ -43,10 +43,10 @@ UE 证据主要来自本仓库的 [`docs/ue5.8.3/README.md`](../ue5.8.3/README.m
 
 ## 5. threads/messages
 
-- **范围**：Game/Render/RHI/Audio/IO 线程、队列、事件、委托和消息总线。
+- **范围**：Application/Render/RHI/Audio/IO 线程、队列、事件、委托和消息总线。
 - **已知能力**：UE 有 GT/RT/RHI 等渲染线程链、`TQueue`、delegate、Message Bus、FieldNotification、Ticker/Timer/Promise 等事件与回调入口。
 - **证据/来源**：[`26_threading_concurrency_overall.md`](../ue5.8.3/design/26_threading_concurrency_overall.md)、[`29_render_thread_deep.md`](../ue5.8.3/design/29_render_thread_deep.md)、[`31_message_event_mechanisms.md`](../ue5.8.3/design/31_message_event_mechanisms.md)。跨平台 callback 线程、内存可见性、取消和完整 wire 语义在审计中多处标为 `资料不足`。
-- **比较 Break**：Break 的网络回调不得访问 GameThread/ECS/World/Lua/UI/RHI；Session 是 GameThread-only，具体约束见 [`Architecture_Overview.md` Snowflake 边界](../Architecture_Overview.md#snowflake-c11-网络适配器边界)。不要把 Break 的有界 queue 与 UE Message Bus 的功能/可靠性直接类比。
+- **比较 Break**：Break 的网络回调不得访问 LogicThread/ECS/World/Lua/UI/RHI；Session 是 LogicThread-only，具体约束见 [`Architecture_Overview.md` Snowflake 边界](../Architecture_Overview.md#snowflake-c11-网络适配器边界)。不要把 Break 的有界 queue 与 UE Message Bus 的功能/可靠性直接类比。
 
 ## 6. networking
 

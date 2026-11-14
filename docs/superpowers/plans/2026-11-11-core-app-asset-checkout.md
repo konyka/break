@@ -13,7 +13,7 @@
 - 正式工作树 `/home/timeshift/opensource/break/.worktrees/core-app-ci`，分支 `core-app-ci`，基线 `987121d9`。不建 PR，不合并临时 validation/APFS/process-probe 分支；controller 负责独立评审后的原生验证与最终 push。
 - 原生 run `43033533322`、job `130566358685` 的证据在 `build-core-ci-controller-logs/windows-formal-asset-hashes.log`：`actors.sidecar` 86 vs 79、`broken.lua` 50 vs 47、`deterministic.scenario` 134 vs 127、`director.lua` 44 vs 41、`load_unload.scenario` 131 vs 123、`player.lua` 43 vs 40、`rollback.scenario` 132 vs 125；这些增加值正好等于各文件行数。BSCN/BANM/FG/WAV 的 SHA-256 与 baker 完全一致。
 - 只修 checkout 属性，不改资产内容、baker、PAL、序列化、reader、比较算法、公共 API/ABI、RHI、CI 通过条件或临时 probe。不得通过 CRLF 归一化、忽略文本差异或重新生成含 CRLF 的正式资产来掩盖问题。
-- 新名称使用 `core_app`/`CoreApp`/`CORE_APP`，不引入旧外部引擎前缀或新 `game` 领域名。Vulkan 默认，OpenGL 只作最后降级/画面对照，不引入 X11。
+- 新名称使用 `core_app`/`CoreApp`/`CORE_APP`，不引入旧外部引擎前缀或新 `application` 领域名。Vulkan 默认，OpenGL 只作最后降级/画面对照，不引入 X11。
 - 所有构建和并行 CTest 使用 `-j3`。每项先 RED、最小 GREEN、变异/恢复、全量非图形回归、独立规格与质量评审。Linux 属性检查不替代 native Windows 字节证据。
 
 ---

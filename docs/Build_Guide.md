@@ -23,7 +23,7 @@
 - Vulkan 加载器/头文件 + shaderc（默认后端，例如 libvulkan-dev libshaderc-dev）。实际启用 OpenGL 路径时，configure 还 REQUIRED 探测 EGL/OpenGL 头文件和库（例如 libegl1-mesa-dev libgl1-mesa-dev）：包括显式 `ENGINE_RHI_BACKEND=opengl`、auto 配置期降级，以及 auto Vulkan 且 `ENGINE_RHI_MULTI_BACKEND=ON` 的运行时 fallback 链；显式 Vulkan-only 且 multi-backend=OFF 不要求安装 GL
 - FreeType 开发库（推荐；`dxx_break` 默认 CJK TTC 字体和中文显示需要它）
 - pthread
-- 游戏手柄支持：evdev（Linux 内核内置，无需额外包）
+- 手柄支持：evdev（Linux 内核内置，无需额外包）
 
 ### 1.3 系统依赖（Windows）
 - Visual Studio 2019+ 或 MinGW
@@ -1249,10 +1249,10 @@ bk::ApplicationInterface* g_pApp = &g_App;
 
 int main() {
     Engine engine = {0};
-    EngineConfig cfg = { .width = 1280, .height = 720, .title = "My Game" };
+    EngineConfig cfg = { .width = 1280, .height = 720, .title = "My Application" };
     if (!engine_init(&engine, &cfg)) return 1;
     while (engine_frame(&engine)) {
-        // 游戏逻辑
+        // 应用逻辑
     }
     engine_shutdown(&engine);
 }

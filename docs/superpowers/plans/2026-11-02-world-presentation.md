@@ -4,7 +4,7 @@
 
 **Goal:** 将旧世界网格、植被、昼夜、VisArea 和 V1 流式块接入同一套 Vulkan 默认/OpenGL 降级的 RHI 呈现路径。
 
-**Architecture:** 保留 28 字节 staging ABI，在上传前迁移为 36 字节带 UV 顶点。GameThread 用固定容量 POD 快照完成可见性过滤和 LOD 分桶，RenderThread 用共享 RHI 提交普通/流式 draw 与实例批次。
+**Architecture:** 保留 28 字节 staging ABI，在上传前迁移为 36 字节带 UV 顶点。LogicThread 用固定容量 POD 快照完成可见性过滤和 LOD 分桶，RenderThread 用共享 RHI 提交普通/流式 draw 与实例批次。
 
 **Tech Stack:** C11、CMake/CTest、现有 `test_framework.h`、RHI、Vulkan GLSL push constants、OpenGL uniforms、现有 LOD/VisArea/Vegetation/StreamTileData。
 
@@ -12,7 +12,7 @@
 
 - 只修改本工作树；不 push、不建 PR、不改 `docs/Implementation_Status.md` 或其他子系统。
 - 新库代码使用 C11；热路径不动态分配；对象 512、植被 1024、prototype 8、LOD 4、批次 32，超限显式失败。
-- GameThread 独占输入和 LOD 状态；提交后的快照不可变，RenderThread 只读 POD 和 RHI 句柄。
+- LogicThread 独占输入和 LOD 状态；提交后的快照不可变，RenderThread 只读 POD 和 RHI 句柄。
 - 失败保持旧输出、LOD 状态或 presenter 资源所有权不变；所有构建/测试并行度为 `-j3`。
 - Vulkan 默认、OpenGL 最终降级；不得增加直接 GL/Vulkan 后端调用。fake/headless 不是像素证据。
 - 每项行为先 RED 后 GREEN；材质、可见性、LOD、流式同源至少各做一次变异检查。

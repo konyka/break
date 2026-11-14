@@ -4,9 +4,9 @@
 
 ## 1. 目标与边界
 
-本设计在现有 `break_ai` 中补齐 P3：GameThread 提交的动态障碍会改变实际 A* 可通行区域；导航版本和查询缓存拒绝陈旧结果；局部避障使用位置与速度；编组具有稳定槽位和确定性跟随；智能对象支持预约、释放和竞争拒绝；agent、障碍及其他运行对象都有创建时容量和事务式失败。
+本设计在现有 `break_ai` 中补齐 P3：LogicThread 提交的动态障碍会改变实际 A* 可通行区域；导航版本和查询缓存拒绝陈旧结果；局部避障使用位置与速度；编组具有稳定槽位和确定性跟随；智能对象支持预约、释放和竞争拒绝；agent、障碍及其他运行对象都有创建时容量和事务式失败。
 
-不建立第二套导航系统，不引入 RHI、渲染器、物理或 ECS 可变状态的跨线程访问。`BreakAiRuntime` 借用既有 `BreakNavMesh`，运行期障碍、查询、agent、编组和智能对象都只能在创建 runtime 的 GameThread 上调用；非 owner 调用返回 `BREAK_NAV_REJECTED`。销毁 mesh 前必须先销毁 runtime。
+不建立第二套导航系统，不引入 RHI、渲染器、物理或 ECS 可变状态的跨线程访问。`BreakAiRuntime` 借用既有 `BreakNavMesh`，运行期障碍、查询、agent、编组和智能对象都只能在创建 runtime 的 LogicThread 上调用；非 owner 调用返回 `BREAK_NAV_REJECTED`。销毁 mesh 前必须先销毁 runtime。
 
 障碍是按 XZ 轴对齐矩形定义的运行时覆盖层。矩形覆盖其中心落在范围内的已烘焙多边形；它不是连续碰撞体，也不改变基础高度图。局部避障是固定候选集上的有界最优速度选择，不承诺替代全局路径或完整 ORCA。编组跟随负责确定性地趋向槽位，调用方可把输出速度再送入局部避障；本切片不增加编组级路径规划。智能对象每个实例只有一个当前预约者，不实现等待队列。
 
@@ -14,7 +14,7 @@
 
 采用“预分配 runtime 侧车 + 同一 A* 核心”。基础 mesh 在 bake 时分配四个 A* 工作区组成有限池，runtime 另有一份创建时分配的工作区；动态查询额外接收每个 base poly 的阻挡计数。A* 的堆、评分、前驱和路径压缩逻辑仍由 `break_nav_query.c` 提供，旧 `break_nav_find_path` 通过原子 lease 使用池槽且不在热路径分配。
 
-不采用“每次变化重新烘焙高度图”：它会在 GameThread 分配大块内存，使障碍更新代价与整图大小耦合，也不能自然表达重叠障碍的独立生命周期。
+不采用“每次变化重新烘焙高度图”：它会在 LogicThread 分配大块内存，使障碍更新代价与整图大小耦合，也不能自然表达重叠障碍的独立生命周期。
 
 不采用“独立动态网格/第二套查询算法”：它会复制邻居、A*、路径上限和错误语义，增加两套实现漂移的风险。
 
@@ -83,7 +83,7 @@ BreakNavError break_nav_find_path_workspace(const BreakNavMesh *mesh,
                                             BreakNavPath *out);
 ```
 
-旧公共查询以 acquire/release 内存序从 mesh 的四槽工作区池取得 lease，并传入 `NULL` 阻挡表；每个槽同时只服务一个调用，支持有界并发与重入。池耗尽立即返回 `OVERLOAD`，不等待、不写输出；所有查询返回路径都释放 lease。动态查询仍使用 GameThread runtime 的独立工作区和计数表。查询过程只使用调用栈上的定长数组和已分配工作区，不调用 `malloc/calloc/realloc/free`。
+旧公共查询以 acquire/release 内存序从 mesh 的四槽工作区池取得 lease，并传入 `NULL` 阻挡表；每个槽同时只服务一个调用，支持有界并发与重入。池耗尽立即返回 `OVERLOAD`，不等待、不写输出；所有查询返回路径都释放 lease。动态查询仍使用 LogicThread runtime 的独立工作区和计数表。查询过程只使用调用栈上的定长数组和已分配工作区，不调用 `malloc/calloc/realloc/free`。
 
 ## 6. 带速度的有界局部避障与 agent
 

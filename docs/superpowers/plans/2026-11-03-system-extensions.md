@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- 遵循 `docs/superpowers/specs/2026-11-02-cry-capability-completion-design.md` 第 4、5、6、8 节，特别是 C11、固定容量、失败原子、无新依赖和真实 RED→GREEN。
+- 遵循 `docs/superpowers/specs/2026-11-02-core-capability-completion-design.md` 第 4、5、6、8 节，特别是 C11、固定容量、失败原子、无新依赖和真实 RED→GREEN。
 - 只在 `.worktrees/cry-system` 的 `cry-wave2-system` 分支提交；不改 master、其它子项目，不 push。
 - 每个行为测试必须因目标行为缺失而失败；编译/链接缺失只用于首次启动 RED，随后至少保留一个运行期行为 RED。每项至少做一次能杀死关键防护的变异并恢复复测。
 - 热路径不分配；create 后的 register/set/parse/serialize/acquire/release/unload 不扩容。超限返回 `OVERLOAD`，非法输入返回 `INVALID`，失效插件句柄返回 `STALE`，权限或仍被引用返回 `REJECTED`。

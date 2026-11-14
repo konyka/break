@@ -28,16 +28,35 @@ foreach(scan_root IN LISTS scan_roots)
     endforeach()
 endforeach()
 list(APPEND globs "${root}/engine/CMakeLists.txt")
-if(STAGE GREATER_EQUAL 4)
-    list(APPEND globs "${root}/docs/*.md" "${root}/README.md" "${root}/CMakeLists.txt")
-endif()
 file(GLOB_RECURSE files LIST_DIRECTORIES false ${globs})
+if(STAGE GREATER_EQUAL 4)
+    # docs/ue5.8.3 is a large third-party reference; never walk into it.
+    file(GLOB doc_files LIST_DIRECTORIES false "${root}/docs/*.md")
+    list(APPEND files ${doc_files})
+    file(GLOB doc_dirs LIST_DIRECTORIES true "${root}/docs/*")
+    foreach(doc_dir IN LISTS doc_dirs)
+        if(IS_DIRECTORY "${doc_dir}" AND NOT doc_dir STREQUAL "${root}/docs/ue5.8.3")
+            file(GLOB_RECURSE doc_files LIST_DIRECTORIES false "${doc_dir}/*.md")
+            list(APPEND files ${doc_files})
+        endif()
+    endforeach()
+endif()
+# Root files are listed directly: a recursive glob would enter build trees.
+if(STAGE GREATER_EQUAL 4)
+    foreach(root_file README.md CMakeLists.txt)
+        if(EXISTS "${root}/${root_file}")
+            list(APPEND files "${root}/${root_file}")
+        endif()
+    endforeach()
+endif()
 
 # This contract and the core_app contract quote the words they reject.
 set(self_exempt
     "${root}/engine/tests/test_repo_naming_contract.cmake"
     "${root}/engine/tests/test_core_app_naming_contract.cmake"
     "${root}/docs/superpowers/plans/2026-11-14-neutral-naming.md")
+# Names that belong to the engines and books the reference docs describe.
+set(external_doc_regex "Cry[A-Z][A-Za-z0-9]*|GameEngineFromScratch|IGameLogic|BilliardGame[A-Za-z]*|GameObjects|GameTokens|GameRules|GameplayRecorder|IEditorGame|GameSkeleton|TIMEOUT_GAME_TICK|SmallGroupGameDev|WebGamesOnAShoeString|opensource/game_engine|15_ai_gameplay_mass|Games/")
 # Controller input keeps its old names until stage 3.
 set(pad_regex "(gamepad|Gamepad|GAMEPAD)")
 
@@ -61,6 +80,12 @@ foreach(path IN LISTS files)
     # Names owned by system SDKs and by external projects.
     string(REGEX REPLACE "XINPUT_GAMEPAD[A-Z_]*( Gamepad;)?|\\.Gamepad|BTN_GAMEPAD|CryENGINE|T3DGameR1" "" text "${text}")
     set(scan_path "${rel}")
+    string(REGEX REPLACE "CryENGINE|T3DGameR1" "" scan_path "${scan_path}")
+    if(rel MATCHES "^docs/")
+        # Upstream module, class and directory names quoted by the
+        # cross-engine reference docs.
+        string(REGEX REPLACE "${external_doc_regex}" "" text "${text}")
+    endif()
     if(STAGE LESS 3)
         string(REGEX REPLACE "${pad_regex}" "" text "${text}")
         string(REGEX REPLACE "${pad_regex}" "" scan_path "${scan_path}")
@@ -74,12 +99,18 @@ foreach(path IN LISTS files)
         if(scan_path MATCHES "${pattern}")
             string(APPEND errors "${rel}: file name contains ${CMAKE_MATCH_0}\n")
         endif()
-        if(text MATCHES "[^\n]*${pattern}[^\n]*")
-            string(APPEND errors "${rel}: ${CMAKE_MATCH_0}\n")
+        # if() does not short-circuit, so the costly whole-line regex sits
+        # in a nested block and runs only on a file that already matched.
+        if(text MATCHES "${pattern}")
+            if(text MATCHES "[^\n]*${pattern}[^\n]*")
+                string(APPEND errors "${rel}: ${CMAKE_MATCH_0}\n")
+            endif()
         endif()
     endforeach()
-    if(text MATCHES "[^\n]*(^|[^A-Za-z])(cry_|Cry[A-Z]|CRY_)[^\n]*")
-        string(APPEND errors "${rel}: legacy prefix: ${CMAKE_MATCH_0}\n")
+    if(text MATCHES "(^|[^A-Za-z])(cry_|Cry[A-Z]|CRY_)")
+        if(text MATCHES "[^\n]*(^|[^A-Za-z])(cry_|Cry[A-Z]|CRY_)[^\n]*")
+            string(APPEND errors "${rel}: legacy prefix: ${CMAKE_MATCH_0}\n")
+        endif()
     endif()
 endforeach()
 

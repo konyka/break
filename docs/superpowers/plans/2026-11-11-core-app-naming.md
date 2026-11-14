@@ -23,25 +23,25 @@
 ### Task 1: 源码、构建与当前文档命名
 
 **Files:**
-- Rename: `engine/apps/game_app/` → `engine/apps/core_app/`
-- Rename: `game_app.[ch]` → `core_app.[ch]`；`game_audio.[ch]` → `core_app_audio.[ch]`；`game_render.[ch]` → `core_app_render.[ch]`；`game_checkpoint.[ch]` → `core_app_checkpoint.[ch]`；`game_asset_bake.c` → `core_app_asset_bake.c`
-- Rename: `engine/assets/game_app/` → `engine/assets/core_app/`
-- Rename: `engine/tests/test_game_app_*` → `engine/tests/test_core_app_*`
-- Rename: `docs/design/game_app_integration.md` → `docs/design/core_app_integration.md`
-- Rename: `docs/superpowers/plans/2026-11-03-cry-game-integration.md` → `docs/superpowers/plans/2026-11-03-core-app-integration.md`
+- Rename: 旧名 → `engine/apps/core_app/`
+- Rename: 旧名 → `core_app.[ch]`；旧名 → `core_app_audio.[ch]`；旧名 → `core_app_render.[ch]`；旧名 → `core_app_checkpoint.[ch]`；旧名 → `core_app_asset_bake.c`
+- Rename: 旧名 → `engine/assets/core_app/`
+- Rename: 旧名 → `engine/tests/test_core_app_*`
+- Rename: 旧名 → `docs/design/core_app_integration.md`
+- Rename: 旧名 → `docs/superpowers/plans/2026-11-03-core-app-integration.md`
 - Modify: `engine/CMakeLists.txt`、`.gitignore`、`docs/Implementation_Status.md`、`docs/design/editor_phase1.md`、`engine/tests/test_editor_scene.c` 中真实引用
 - Test: `engine/tests/test_core_app_naming_contract.cmake`、`test_core_app_target_contract.cmake`、`test_core_app_formal_assets.cmake`
 
 **Interfaces:**
 - Consumes: 当前 Task 3 已验收的应用入口、record render/audio 与 checkpoint API。
 - Produces: `core_app_runtime`、`core_app`、`core_app_asset_bake` targets；`CoreAppConfig`、`CoreApp`、`CoreLevel`、`CoreAppRender*`、`CoreAppAudio*`、`CoreAppCheckpoint*` 类型；`core_app_*`、`core_app_render_*`、`core_app_audio_*`、`core_app_checkpoint_*` 函数；`CORE_APP_*` 宏。
-- Preserves: 既有外部 `break_game`、`BreakGame*`、`BREAK_GAME_*`、`break_flow`、`break_ai`、`break_game_lua`、`runtime_core` 的名称和链接关系。局部外部对象用 `actor_runtime` 等职责名，不改外部 API。
+- Preserves: 既有外部 `break_kernel`、`BreakKernel*`、`BREAK_KERNEL_*`、`break_flow`、`break_ai`、`break_kernel_lua`、`runtime_core` 的名称和链接关系。局部外部对象用 `actor_runtime` 等职责名，不改外部 API。
 
 - [ ] **Step 1: 先提交设计和本计划，再写新命名合同**
 
 将新测试要求写成以下可执行断言：所有新路径存在、旧应用/测试/资产路径不存在；`core_app_runtime` 使用四个新源文件；`core_app` 通过 `engine_link_rhi_backend` 链接；`core_app_asset_bake` 链接 `core_app_runtime`；`core_app_run` 出现在符号扫描中；11 个新资产路径精确等于 Git 跟踪列表。
 
-扫描新应用、新测试与当前设计时，先移除明确豁免的 `break_game`、`BreakGame`、`BREAK_GAME`、`game/break_game` 以及既有 `test_cry_style_prototype` 合同字符串，再拒绝遗留应用前缀、`Cry` 前缀和旧的 `game` 领域命名。不要用宽泛豁免隐藏新代码；历史文档不加入扫描。checkpoint 仍暂用现有格式，本步只检查名称。
+扫描新应用、新测试与当前设计时，先移除明确豁免的 `break_kernel`、`BreakKernel`、`BREAK_KERNEL`、`kernel/break_kernel` 以及既有 `test_core_style_prototype` 合同字符串，再拒绝遗留应用前缀、`Cry` 前缀和旧的 `application` 领域命名。不要用宽泛豁免隐藏新代码；历史文档不加入扫描。checkpoint 仍暂用现有格式，本步只检查名称。
 
 ```cmake
 foreach(required IN ITEMS
@@ -99,7 +99,7 @@ BreakRuntimeError core_app_audio_start(CoreAppAudio *audio, FILE *trace);
 BreakRuntimeError core_app_checkpoint_probe(const char *directory);
 ```
 
-`game_app_core` 必须改为 `core_app_runtime`，不能使用重复的 `core_app_core`。局部变量 `game` 改为 `app`，其它内部 helper 改为 `app_*` 或明确的 `stage_*` 职责名；`CoreLevel.actor_runtime` 保存既有 Actor adapter 指针。测试 preload 类型和 `CORE_APP_TEST_*` 环境变量同步迁移。CTest 名称、构建目录、`.gitignore` 和当前 editor 引用同步更新。
+旧名 必须改为 `core_app_runtime`，不能使用重复的 `core_app_core`。局部变量 `application` 改为 `app`，其它内部 helper 改为 `app_*` 或明确的 `stage_*` 职责名；`CoreLevel.actor_runtime` 保存既有 Actor adapter 指针。测试 preload 类型和 `CORE_APP_TEST_*` 环境变量同步迁移。CTest 名称、构建目录、`.gitignore` 和当前 editor 引用同步更新。
 
 当前 P12 计划改为 Core App Integration，后续 Task 4–13 使用 `core_app_input`、`core_app_simulation`、`core_app_network`、`core_app_script`。历史提交标题和旧报告不编辑。
 
@@ -155,7 +155,7 @@ ASSERT_TRUE(memcmp(manifest_bytes, expected_magic, sizeof(expected_magic)) == 0)
 ASSERT_EQ(core_app_checkpoint_probe(old_magic_directory), BREAK_RUNTIME_INVALID);
 ```
 
-在 lifecycle 合同中要求 trace 首字段为 `COREAPPTRACE version=1`、scenario 首字段为 `core-app-scenario 1`；旧 `GAMEAPPTRACE` 和旧 scenario 标识必须失败。命名脚本要求 `CORE_APP_CHECKPOINT_MANIFEST_NAME` 精确为 `"manifest.core"`，旧 `manifest.game` 不得被 reader 接受。
+在 lifecycle 合同中要求 trace 首字段为 `COREAPPTRACE version=1`、scenario 首字段为 `core-app-scenario 1`；旧 `COREAPPTRACE` 和旧 scenario 标识必须失败。命名脚本要求 `CORE_APP_CHECKPOINT_MANIFEST_NAME` 精确为 `"manifest.core"`，旧 `manifest.core` 不得被 reader 接受。
 
 先在只完成 Task 1 的代码上运行 focused 测试，记录 magic、manifest、trace/scenario 预期失败；不要改测试来接受两种格式。
 

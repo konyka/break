@@ -4,7 +4,7 @@
 
 ## Goal
 
-Add a C11, GameThread-owned replication model that produces immutable World snapshots, computes deltas between snapshots, and derives per-connection `enter/stay/leave` scopes without exposing mutable ECS or Scene pointers to Snowflake/network workers.
+Add a C11, LogicThread-owned replication model that produces immutable World snapshots, computes deltas between snapshots, and derives per-connection `enter/stay/leave` scopes without exposing mutable ECS or Scene pointers to Snowflake/network workers.
 
 ## Existing Constraints
 
@@ -13,12 +13,12 @@ Add a C11, GameThread-owned replication model that produces immutable World snap
 - Scene serialization currently stores raw component bytes and asset references but does not provide an immutable concurrent snapshot.
 - Existing `NetTransformSnapshot` is only `entity_id + position[3]`; it is not a general replication model.
 - Existing peer `delta.log` stores peer statistics, not ECS deltas.
-- Snowflake callbacks produce immutable events; GameThread owns sessions, World, ECS, and Lua.
+- Snowflake callbacks produce immutable events; LogicThread owns sessions, World, ECS, and Lua.
 
 ## Architecture
 
 ```text
-GameThread mutable World
+LogicThread mutable World
     |
     | structural barrier + completed worker tasks
     v
@@ -87,7 +87,7 @@ A delta is a pure value diff between two immutable snapshots:
 - component removes;
 - component updates.
 
-Applying a delta is GameThread-only. A base mismatch or schema mismatch rejects the delta and requests a full snapshot. Repeated application of the same delta is idempotent by target snapshot ID.
+Applying a delta is LogicThread-only. A base mismatch or schema mismatch rejects the delta and requests a full snapshot. Repeated application of the same delta is idempotent by target snapshot ID.
 
 Because the existing transport MTU is bounded, a WorldDelta is fragmented with delta ID, base ID, fragment index/count, checksum, and sequence. Fragments are reassembled before any World mutation.
 
@@ -112,9 +112,9 @@ leave = old_scope - new_scope
 
 - Network/reactor threads parse and reassemble bounded immutable messages only.
 - Network threads never call `world_create_entity`, `world_destroy_entity`, component mutation, Lua, UI, or RHI.
-- GameThread applies validated deltas at the World mutation phase.
+- LogicThread applies validated deltas at the World mutation phase.
 - Snapshot readers never access mutable ECS chunks.
-- Asset workers produce independent results; GameThread commits Scene/ECS changes.
+- Asset workers produce independent results; LogicThread commits Scene/ECS changes.
 - Snapshot build waits for existing ECS parallel systems and disallows structural mutation during enumeration.
 
 ## C11 API Direction

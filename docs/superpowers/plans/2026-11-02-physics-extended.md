@@ -4,7 +4,7 @@
 
 **Goal:** 在现有物理世界上交付稳定锥 twist 约束、射线轮载具、布娃娃局部 TRS/IK 互斥及完整生命周期防护。
 
-**Architecture:** 复用 `PhysicsWorld` 的刚体、约束槽、BVH 和固定步长；四轮以 `Vehicle` 内嵌接触实体表示。布娃娃保存骨体到关节的绑定偏移，写出局部 TRS 后复用 `skeleton_apply_local_trs`。所有可变状态留在 GameThread，热路径仅使用固定数组和栈。
+**Architecture:** 复用 `PhysicsWorld` 的刚体、约束槽、BVH 和固定步长；四轮以 `Vehicle` 内嵌接触实体表示。布娃娃保存骨体到关节的绑定偏移，写出局部 TRS 后复用 `skeleton_apply_local_trs`。所有可变状态留在 LogicThread，热路径仅使用固定数组和栈。
 
 **Tech Stack:** C11、现有 physics/animation C API、CTest、`test_framework.h`、CMake、GCC ASan/UBSan/TSan。
 

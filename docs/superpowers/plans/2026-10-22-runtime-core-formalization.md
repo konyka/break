@@ -21,7 +21,7 @@
 - A timeout retains live ownership and allows the same coordinator to retry; it must not free objects used by a live worker or reactor.
 - Network wire fragments are capped at 64 KiB; one fragment assembly is capped at 16 MiB; internal messages and asset blobs use separate budgets.
 - All new public handles are opaque C11 types with explicit borrowed/owned lifetime rules.
-- Snapshot/World mutation remains GameThread-owned; network callbacks never call World, ECS, Lua, UI, or RHI.
+- Snapshot/World mutation remains LogicThread-owned; network callbacks never call World, ECS, Lua, UI, or RHI.
 - Normal, ASan/UBSan, and TSan focused tests are required for each promoted target; fuzz smoke targets are explicitly built before `ctest -L fuzz`.
 - Focused/test-only status must never be described as formal engine/demo runtime integration.
 
@@ -132,7 +132,7 @@ typedef enum BreakRuntimeState {
 ```
 
 - [ ] Write RED tests for legal lifecycle transitions, invalid transitions, timeout retaining ownership, retrying stop from `STOPPING`, and sticky `FAILED` admission behavior.
-- [ ] Implement the coordinator as a Game/Main owner object; no mutex is used to make arbitrary multi-owner mutation legal.
+- [ ] Implement the coordinator as a Application/Main owner object; no mutex is used to make arbitrary multi-owner mutation legal.
 - [ ] Implement explicit subsystem admission/drain/join callbacks in a bounded table; callbacks must run in the documented order and return `BreakRuntimeError`.
 - [ ] Make timeout return `BREAK_RUNTIME_TIMEOUT` without freeing live resources.
 - [ ] Run normal/ASan/TSan `test_runtime_core` and update the lifecycle diagrams.
@@ -203,7 +203,7 @@ void break_runtime_io_request_release(BreakRuntimeIoRequest *request);
 - [ ] Write RED tests for thread start/stop timeout, owner completion, IO completion ownership, cancel-before-start, stale generation, queue overload, and shutdown interruption.
 - [ ] Wrap existing `platform_thread.h` without exposing OS handles in public headers.
 - [ ] Adapt existing VFS/async loader only through a formal completion bridge; compatibility loader waits remain unchanged.
-- [ ] Make completion waits deadline- and shutdown-interruptible; never invoke GameThread callbacks on IO workers.
+- [ ] Make completion waits deadline- and shutdown-interruptible; never invoke LogicThread callbacks on IO workers.
 - [ ] Run normal/ASan/TSan and a VFS/asset-focused build.
 
 ### Task 6: Implement reload and profiler formal boundaries

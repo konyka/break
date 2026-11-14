@@ -52,10 +52,10 @@ Stage 2 的顺序是硬约束：先把网络复制和资源请求的 target、�
 
 ECS 和网络切片的事实来源是 `docs/design/ecs_snapshot_replication_aoi.md`、`docs/design/session_protocol.md`、`docs/design/snowflake_c11_adapter.md`，并由 `docs/Architecture_Overview.md:482-506` 与 `docs/Implementation_Status.md` 的最新条目交叉记录。
 
-- **正式可选库当前已有（2026-10-22 Tasks 1-2 交付 target，未链入 engine/demo）**：`replication_schema.*` 的 deterministic POD schema/hash；`world_snapshot.*` 的 GameThread 构建、generation-aware entity identity、owned immutable bytes；`world_delta.*` 的 immutable diff、base/schema/tick validation、staging + atomic replace；`break_aoi.*` 的 deterministic enter/stay/leave；`break_replication.*` 的 Real/Ghost/baseline/dirty/destroy/dormant 与预算；`break_replication_fragment.*` 的有界分片、乱序重组、duplicate/conflict、FNV-1a 完整性检查。
+- **正式可选库当前已有（2026-10-22 Tasks 1-2 交付 target，未链入 engine/demo）**：`replication_schema.*` 的 deterministic POD schema/hash；`world_snapshot.*` 的 LogicThread 构建、generation-aware entity identity、owned immutable bytes；`world_delta.*` 的 immutable diff、base/schema/tick validation、staging + atomic replace；`break_aoi.*` 的 deterministic enter/stay/leave；`break_replication.*` 的 Real/Ghost/baseline/dirty/destroy/dormant 与预算；`break_replication_fragment.*` 的有界分片、乱序重组、duplicate/conflict、FNV-1a 完整性检查。
 - **target 证据**：`engine/CMakeLists.txt:313-324` 的正式可选 `break_ecs_replication` 承载 snapshot/schema/delta 源（test-only fault-injection 变体 `break_ecs_replication_test` `:3235-3249` 供 `test_ecs_replication`）；`engine/CMakeLists.txt:326-333` 的正式可选 `break_replication_core` 承载 AoI/replication/fragment 源；`engine/CMakeLists.txt:362-377` 在 `BREAK_ENABLE_SNOWFLAKE=ON` 时生成正式可选 `break_net`（独立于 `ENGINE_BUILD_TESTS`），并且 `engine_demo`/`dxx_break` 不链接它。
-- **线程事实**：GameThread 独占可变 World/ECS/schema/Real/Ghost/apply；snapshot/delta/AoI 消费者只读 owned immutable values；网络 callback 只验证、复制、入 bounded queue，不访问 World/ECS/Lua/UI/RHI。`BreakSessionManager` 是同一 GameThread 串行拥有的非线程安全对象。
-- **仍未实现**：正式 `engine` runtime/session integration、snapshot publication service、wire-level schema/tick negotiation、fragment timeout/eviction scheduler、加密认证、authority handoff、client prediction/rollback、Lua/editor/network gameplay integration。
+- **线程事实**：LogicThread 独占可变 World/ECS/schema/Real/Ghost/apply；snapshot/delta/AoI 消费者只读 owned immutable values；网络 callback 只验证、复制、入 bounded queue，不访问 World/ECS/Lua/UI/RHI。`BreakSessionManager` 是同一 LogicThread 串行拥有的非线程安全对象。
+- **仍未实现**：正式 `engine` runtime/session integration、snapshot publication service、wire-level schema/tick negotiation、fragment timeout/eviction scheduler、加密认证、authority handoff、client prediction/rollback、Lua/editor/network logic integration。
 
 资源请求只能引用这些边界提供的 stable asset identity 和 snapshot data，不能绕过边界在网络线程或 worker 中消费 World 指针。
 
@@ -66,7 +66,7 @@ ECS 和网络切片的事实来源是 `docs/design/ecs_snapshot_replication_aoi.
 ```mermaid
 flowchart TB
     APP[Application / C++11 Framework]
-    GT[GameThread / C11 Runtime Coordinator]
+    GT[LogicThread / C11 Runtime Coordinator]
     ECS[ECS snapshot/schema/delta/AoI/replication boundary]
     NET[break_net/session boundary]
     AS[Asset Stream Service]
@@ -83,13 +83,13 @@ flowchart TB
     ECS -->|asset refs in owned snapshot/delta| AS
 ```
 
-Runtime Core 提供机制，不拥有 gameplay World。Asset Stream Service 编排 manifest/identity、优先级、range/decode/residency 和 RHI upload；ECS/replication 只提供资源引用与版本事件；Session/network 只提供有界 owned command/event。
+Runtime Core 提供机制，不拥有 logic World。Asset Stream Service 编排 manifest/identity、优先级、range/decode/residency 和 RHI upload；ECS/replication 只提供资源引用与版本事件；Session/network 只提供有界 owned command/event。
 
 ### 3.2 语言与 ABI 边界
 
 - **C11**：`engine/` runtime core、asset service、PAL、Thread、Task、Message、IO、VFS、Profiler、ECS/network public contracts。示例类型统一使用项目 `u8/u16/u32/u64/usize`（定义见 `engine/src/core/types.h`）；公共对象使用 opaque pointer、显式 `bool`/error enum、caller-visible ownership；不依赖异常、RTTI、模板、隐式析构或 C++ ABI。
 - **C++11**：`framework/`、`BaseApplication`、editor/application orchestration。C++ 只能通过 C11 opaque API 和显式 command/message 接入，不能把 C++ 对象指针放入跨线程消息、snapshot、delta、网络 payload 或 VFS cache。
-- **Lua**：唯一计划中的 runtime scripting language。Lua 只在明确的 GameThread Lua facade 上运行，后续由 Stage 3 定义；Lua 不直接获得 `World *`、RHI handle、socket、worker queue、VFS internal pointer 或 allocator ownership。Asset API 对 Lua 暴露 request/status/metadata/owned result 的受限 C facade，不暴露内部线程同步原语。
+- **Lua**：唯一计划中的 runtime scripting language。Lua 只在明确的 LogicThread Lua facade 上运行，后续由 Stage 3 定义；Lua 不直接获得 `World *`、RHI handle、socket、worker queue、VFS internal pointer 或 allocator ownership。Asset API 对 Lua 暴露 request/status/metadata/owned result 的受限 C facade，不暴露内部线程同步原语。
 - **跨语言 ownership**：C11 API 返回的 buffer 必须配对 release API；C++/Lua wrapper 不可自行 `free` C11-owned memory。callback 只在文档声明的线程调用，payload 只在 callback 期间有效，除非 API 明确交付 owned handle。
 
 ## 4. 目标接口方向
@@ -175,12 +175,12 @@ Manifest 必须在提交时验证 type、size、range、alignment、依赖和版
 
 | 队列 | 所有者/生产者 | 消费者 | 初始容量目标 | 满时行为 |
 |---|---|---|---:|---|
-| request ingress | GameThread/C++/Lua facade | Asset coordinator | 256 | 返回 `OVERLOAD`，不阻塞调用者 |
+| request ingress | LogicThread/C++/Lua facade | Asset coordinator | 256 | 返回 `OVERLOAD`，不阻塞调用者 |
 | IO work | coordinator | IO workers | 256 | 保留 request 为 `QUEUED`，按 priority/backpressure 拒绝新请求 |
 | decode work | IO workers | decode workers | 256（与当前 `DECODE_INPUT_CAP` 对齐） | 释放 raw ownership，request `FAILED_OVERLOAD` |
-| completion | IO/decode workers | GameThread tick | 1024（与当前 `ASYNC_QUEUE_SIZE` 对齐） | 生产者等待不可接受；设计目标是预留 credit 或 fail request，禁止覆盖未消费槽 |
-| GPU upload command | GameThread/asset completion | RHI/render owner | 256 | 低优先级请求降级/延迟；不可在 worker 直接调用 RHI |
-| network asset command | GameThread replication/session | network adapter | 256（与 `BreakNet` outbound queue 对齐） | 返回 overload；不阻塞 GameThread |
+| completion | IO/decode workers | LogicThread tick | 1024（与当前 `ASYNC_QUEUE_SIZE` 对齐） | 生产者等待不可接受；设计目标是预留 credit 或 fail request，禁止覆盖未消费槽 |
+| GPU upload command | LogicThread/asset completion | RHI/render owner | 256 | 低优先级请求降级/延迟；不可在 worker 直接调用 RHI |
+| network asset command | LogicThread replication/session | network adapter | 256（与 `BreakNet` outbound queue 对齐） | 返回 overload；不阻塞 LogicThread |
 
 容量是可观测 contract，不是“建议值”。每项应能查询 current/depth/high-water/rejected。禁止无界 malloc 链表作为 backpressure 替代。优先级只决定有界队列内服务顺序，不允许低优先级请求无限饿死高优先级之外的公平性；设计目标是按 frame budget 和 aging 做有限 aging。
 
@@ -194,17 +194,17 @@ IO worker 只拥有 request 的 immutable path/range copy 和临时 bytes。VFS 
 
 1. **Read**：从 VFS 按 bounded range 读入 IO-owned buffer；检查 offset+length、最大文件和 request generation。
 2. **Decode/parse**：对需要解码的类型转移 buffer ownership 到 decode queue；decoder 产生 typed CPU blob 或 failed result，不持有 VFS file。
-3. **Publish/upload**：completion 由 GameThread 消费；创建/替换 RHI resource 的命令只能进入 RHI owner queue。旧版本在新版本完全验证并完成 GPU fence 前保持可用。
+3. **Publish/upload**：completion 由 LogicThread 消费；创建/替换 RHI resource 的命令只能进入 RHI owner queue。旧版本在新版本完全验证并完成 GPU fence 前保持可用。
 
 当前 `mipmap_stream` 的 range contract（`mipmap_stream.h:93-115`）可作为纹理 streaming 的 focused 先验：resident bytes 先 reserve、失败释放 reservation、stale completion 用 request ID 丢弃、budget 超限先 eviction。但它假设 raw mip chain、RGBA8 和宿主 upload callback；通用 Runtime Asset Stream 不能把这个假设扩展成所有 asset type。
 
-**已交付事实（2026-10-23，Task 5）**：正式可选 `runtime_core`（仍不链入 `engine`/`engine_demo`/`dxx_break`）交付了本节 IO/VFS 方向的第一切片：`engine/src/runtime/runtime_io.h/.c` 是 module-level 单例 formal IO facade（brief 的 request API 不携带 context 指针），VFS 以借用指针注入（mount table 生命周期长于全部 IO worker），IO worker 是正式 `BreakRuntimeThread`（`runtime_thread.h/.c`，包装 `platform_thread.h` 且公共头不暴露任何 OS handle）。每个 request 获得恰好一个 owned completion（`BreakRuntimeOwnedMessage`，kind=`BREAK_RUNTIME_IO_COMPLETION_KIND`，payload = wire header + 文件字节，byte budget `BREAK_RUNTIME_IO_MAX_FILE_BYTES` 默认 16 MiB 且仍需装入 message budget，超限 → FAILED/OVERLOAD completion）；`poll_completion` 非阻塞、`wait_completion` 可被 deadline（`BREAK_RUNTIME_TIMEOUT`，不消费 completion，可重试）与 shutdown（`BREAK_RUNTIME_CLOSED`）打断；submit 满载非阻塞返回 `BREAK_RUNTIME_OVERLOAD`（双闸门：live request 计数 + pending ring 物理占用；released-but-queued 的 request 在 claim/drain 前仍占 ring 槽位，绝不等待容量、绝不覆盖活槽位）；cancel 推进 request generation 并自行发布 CANCELLED completion（completion 先于任何状态变更构建，OOM 时 request 完全不变、不产生 stranded half-cancel），worker 迟到结果按 stale generation 丢弃并释放自有 bytes（stats 计数）；`shutdown(timeout_ms)` 按「关闭 admission → drain 队列（queued request 发布 CANCELLED completion）→ 有界 stop/join worker」执行，worker 超时返回 `BREAK_RUNTIME_TIMEOUT` 并保留 live ownership，可重试。facade 没有任何 callback，因此「IO worker 不调用 GameThread callback」在结构上成立。兼容 loader（`async_loader.c` 含其 completion 队列等待行为）逐字节未动。range request、decode 队列、typed blob、manifest、RHI upload command 仍为设计-only。验证：`test_runtime_io` 16/16（thread start/stop timeout/owner completion、owned completion bytes、cancel-before-start、stale generation drop、queue overload、release-queued-at-full-ring 与 cancel-completion OOM 回归、deadline/shutdown 打断 completion wait、fork 子进程 double-release abort、alloc 故障注入），normal/ASan+UBSan/TSan 三树各 4/4，TSan 连跑 10 次零报告。
+**已交付事实（2026-10-23，Task 5）**：正式可选 `runtime_core`（仍不链入 `engine`/`engine_demo`/`dxx_break`）交付了本节 IO/VFS 方向的第一切片：`engine/src/runtime/runtime_io.h/.c` 是 module-level 单例 formal IO facade（brief 的 request API 不携带 context 指针），VFS 以借用指针注入（mount table 生命周期长于全部 IO worker），IO worker 是正式 `BreakRuntimeThread`（`runtime_thread.h/.c`，包装 `platform_thread.h` 且公共头不暴露任何 OS handle）。每个 request 获得恰好一个 owned completion（`BreakRuntimeOwnedMessage`，kind=`BREAK_RUNTIME_IO_COMPLETION_KIND`，payload = wire header + 文件字节，byte budget `BREAK_RUNTIME_IO_MAX_FILE_BYTES` 默认 16 MiB 且仍需装入 message budget，超限 → FAILED/OVERLOAD completion）；`poll_completion` 非阻塞、`wait_completion` 可被 deadline（`BREAK_RUNTIME_TIMEOUT`，不消费 completion，可重试）与 shutdown（`BREAK_RUNTIME_CLOSED`）打断；submit 满载非阻塞返回 `BREAK_RUNTIME_OVERLOAD`（双闸门：live request 计数 + pending ring 物理占用；released-but-queued 的 request 在 claim/drain 前仍占 ring 槽位，绝不等待容量、绝不覆盖活槽位）；cancel 推进 request generation 并自行发布 CANCELLED completion（completion 先于任何状态变更构建，OOM 时 request 完全不变、不产生 stranded half-cancel），worker 迟到结果按 stale generation 丢弃并释放自有 bytes（stats 计数）；`shutdown(timeout_ms)` 按「关闭 admission → drain 队列（queued request 发布 CANCELLED completion）→ 有界 stop/join worker」执行，worker 超时返回 `BREAK_RUNTIME_TIMEOUT` 并保留 live ownership，可重试。facade 没有任何 callback，因此「IO worker 不调用 LogicThread callback」在结构上成立。兼容 loader（`async_loader.c` 含其 completion 队列等待行为）逐字节未动。range request、decode 队列、typed blob、manifest、RHI upload command 仍为设计-only。验证：`test_runtime_io` 16/16（thread start/stop timeout/owner completion、owned completion bytes、cancel-before-start、stale generation drop、queue overload、release-queued-at-full-ring 与 cancel-completion OOM 回归、deadline/shutdown 打断 completion wait、fork 子进程 double-release abort、alloc 故障注入），normal/ASan+UBSan/TSan 三树各 4/4，TSan 连跑 10 次零报告。
 
 ### 4.4 RHI 与 resource lifetime
 
 - RHI handle 只能由 RHI owner thread 创建、更新、销毁；asset worker 不得调用 `rhi_*`。
-- GameThread 收到 decoded blob 后提交 `AssetGpuUploadCommand`，其中只包含 copied/owned bytes、asset generation、目标 descriptor 和 fence policy。
-- upload 成功后，GameThread 在下一安全 publication point 切换 `AssetView`；旧 GPU resource 由 fence/retire queue 延迟释放。
+- LogicThread 收到 decoded blob 后提交 `AssetGpuUploadCommand`，其中只包含 copied/owned bytes、asset generation、目标 descriptor 和 fence policy。
+- upload 成功后，LogicThread 在下一安全 publication point 切换 `AssetView`；旧 GPU resource 由 fence/retire queue 延迟释放。
 - upload 失败保持旧资源，记录可诊断错误；第一次加载失败返回 placeholder/failed，不伪造 ready。
 - `hotreload_pipeline_*`/`hotreload_texture_*` 当前 callback 形式只能作为 adapter；设计目标增加 staged candidate、validation、atomic swap、old-version retention 和 bounded retry。
 
@@ -214,7 +214,7 @@ IO worker 只拥有 request 的 immutable path/range copy 和临时 bytes。VFS 
 
 ```mermaid
 sequenceDiagram
-    participant G as GameThread
+    participant G as LogicThread
     participant E as ECS snapshot/AoI/replication boundary
     participant A as Asset coordinator
     participant I as IO/decode workers
@@ -229,11 +229,11 @@ sequenceDiagram
     G->>E: publish AssetView reference at frame boundary
 ```
 
-Snapshot build 仍必须由 GameThread 在结构屏障后执行；资源 service 只读 snapshot 中已经 deep-copied 的 deterministic data。资源引用若放进 replicated component，schema 必须把它作为稳定 POD/content ID 处理；pointer-containing、derived cache、RHI handle 不得进入 `BREAK_SCHEMA_FLAG_RAW_BYTES` snapshot policy（现有约束见 `ecs_snapshot_replication_aoi.md:74-78`）。
+Snapshot build 仍必须由 LogicThread 在结构屏障后执行；资源 service 只读 snapshot 中已经 deep-copied 的 deterministic data。资源引用若放进 replicated component，schema 必须把它作为稳定 POD/content ID 处理；pointer-containing、derived cache、RHI handle 不得进入 `BREAK_SCHEMA_FLAG_RAW_BYTES` snapshot policy（现有约束见 `ecs_snapshot_replication_aoi.md:74-78`）。
 
 ### 5.2 AoI 进入/离开与资源优先级
 
-AoI `enter` 可提升相关 asset request 优先级，`stay` 维持或按可见性/距离更新，`leave` 取消尚未开始的低优先级请求或允许已进入 decode 的 request 完成后丢弃。AoI worker 只产生 deterministic scope result；它不直接触碰 Asset Stream mutable cache。GameThread 负责把 scope result 转成 request commands，因此取消和 generation 都在单一 owner 上串行化。
+AoI `enter` 可提升相关 asset request 优先级，`stay` 维持或按可见性/距离更新，`leave` 取消尚未开始的低优先级请求或允许已进入 decode 的 request 完成后丢弃。AoI worker 只产生 deterministic scope result；它不直接触碰 Asset Stream mutable cache。LogicThread 负责把 scope result 转成 request commands，因此取消和 generation 都在单一 owner 上串行化。
 
 资源系统不把 AoI 当作权威安全策略：远端客户端传来的 asset request 仍需 session/auth/manifest policy 验证。当前 Session 只做 envelope/registry/state/handler 边界，没有 player authentication backend（`session_protocol.md:15-19`），故不能声称网络资源授权已实现。
 
@@ -245,7 +245,7 @@ AoI `enter` 可提升相关 asset request 优先级，`stay` 维持或按可见�
 BreakNet callback
   -> validate envelope + copy bounded owned payload
   -> 256-item event queue
-  -> GameThread poll_adapter/apply
+  -> LogicThread poll_adapter/apply
   -> validate session and asset command schema
   -> Asset request queue
   -> IO/decode/upload
@@ -254,7 +254,7 @@ BreakNet callback
 反向发布若需要远端资源 manifest/delta：
 
 ```text
-GameThread-owned asset manifest event
+LogicThread-owned asset manifest event
   -> replication/message encoder
   -> optional fragmenter (<=64 KiB transport payload, <=16 MiB reassembly budget)
   -> BreakNet outbound queue (256)
@@ -263,7 +263,7 @@ GameThread-owned asset manifest event
 
 `break_replication_fragment` 当前只做 transport-independent payload fragmentation/reassembly，checksum 是 FNV-1a integrity 而非 authentication；其没有 timeout/eviction。设计目标的 asset manifest/download protocol 必须在 fragment reassembly 外层增加 request ID、content ID、schema/version、deadline、bounded timeout/eviction 和认证策略；这些尚未实现，不能直接复用 fragment API 就宣称安全下载。
 
-网络线程不能直接启动 IO request，因为 request coordinator 的 owner、quota、Lua/editor policy 和 cancel generation 都属于 GameThread/runtime coordinator。网络线程只产生事件；GameThread 批量 poll 后再提交。
+网络线程不能直接启动 IO request，因为 request coordinator 的 owner、quota、Lua/editor policy 和 cancel generation 都属于 LogicThread/runtime coordinator。网络线程只产生事件；LogicThread 批量 poll 后再提交。
 
 ## 6. 线程所有权、shutdown 与 failure
 
@@ -271,15 +271,15 @@ GameThread-owned asset manifest event
 
 | 对象 | 唯一 owner | 允许读取者 | 禁止行为 |
 |---|---|---|---|
-| mutable Asset registry/request map | Asset coordinator（GameThread） | immutable query snapshot | worker 直接写 map |
+| mutable Asset registry/request map | Asset coordinator（LogicThread） | immutable query snapshot | worker 直接写 map |
 | VFS mount table | Runtime coordinator | IO workers via VFS API | worker destroy/mount concurrently |
 | request bytes | queue stage owner | next stage after ownership transfer | 双方同时 free |
-| decode result | completion queue until poll | GameThread after poll | callback 外借用 result |
-| CPU asset view | GameThread/asset cache | read-only consumers via retained view | worker 原地替换 published view |
-| RHI resource | RHI/render owner | opaque read-only handles | IO/decode/GameThread 直接 destroy |
-| World/ECS/schema/Real/Ghost | GameThread | owned immutable snapshot readers | network/asset worker mutation |
-| Session manager | one GameThread owner | none without command API | callback/worker 调用 |
-| Lua VM | Lua/GameThread owner | none | asset/network/RHI worker调用 |
+| decode result | completion queue until poll | LogicThread after poll | callback 外借用 result |
+| CPU asset view | LogicThread/asset cache | read-only consumers via retained view | worker 原地替换 published view |
+| RHI resource | RHI/render owner | opaque read-only handles | IO/decode/LogicThread 直接 destroy |
+| World/ECS/schema/Real/Ghost | LogicThread | owned immutable snapshot readers | network/asset worker mutation |
+| Session manager | one LogicThread owner | none without command API | callback/worker 调用 |
+| Lua VM | Lua/LogicThread owner | none | asset/network/RHI worker调用 |
 
 ### 6.2 Stop 顺序
 
@@ -301,7 +301,7 @@ Asset/HotReload formal facade 统一映射到 `BreakRuntimeError`：`OK`、`INVA
 - 失败不得替换仍可用的旧版本；第一次失败只发布 failed/placeholder，不发布伪 ready。
 - stale completion 必须释放自己拥有的 bytes，但不能改写新 generation 的 state。
 - queue overload 不重试忙等；上层按 priority/deadline/backoff 重试，且 retry 受总次数和总字节预算限制。
-- decode/parse 失败不自动把原始网络 bytes交给 gameplay/Lua。
+- decode/parse 失败不自动把原始网络 bytes交给 logic/Lua。
 - 未知 schema/version、bad base、fragment conflict、checksum mismatch 进入丢弃/计数路径；不调用 World apply。
 - 日志和 profiler 记录 request/content ID、stage、error、bytes、generation，不记录未脱敏 payload。
 
@@ -316,7 +316,7 @@ Asset/HotReload formal facade 统一映射到 `BreakRuntimeError`：`OK`、`INVA
 | Hot reload | file watcher + pipeline/texture poll/callback | watcher/hotreload tests | staged candidate + atomic swap + old version retention | production online patch |
 | ECS snapshot/schema/delta/AoI | C11 APIs 已实现，正式可选 `break_ecs_replication` 承载（2026-10-22 Task 1，未链入 engine/demo） | `test_ecs_replication` 经 fault-injection 变体 `break_ecs_replication_test` 验证 | 迁入 engine/runtime 前先冻结边界、publication service | 自动 barrier、distributed Cell、prediction/rollback |
 | Replication/fragment | Real/Ghost、fragment integrity/reassembly，正式可选 `break_replication_core` 承载（Task 1） | `test_break_replication_fragment` 链接正式库、Snowflake focused tests | asset manifest message integration、timeout/eviction scheduler | cryptographic auth currently absent |
-| break_net/session | 正式可选 Snowflake adapter、256 event/outbound queue、GameThread Session（`BREAK_ENABLE_SNOWFLAKE=ON` 即生成，Task 2） | `test_break_net_adapter`/`test_break_session`/`test_break_replication` 链接正式 `break_net` | engine/demo integration after contract review | player auth backend、Lua/editor RPC |
+| break_net/session | 正式可选 Snowflake adapter、256 event/outbound queue、LogicThread Session（`BREAK_ENABLE_SNOWFLAKE=ON` 即生成，Task 2） | `test_break_net_adapter`/`test_break_session`/`test_break_replication` 链接正式 `break_net` | engine/demo integration after contract review | player auth backend、Lua/editor RPC |
 | Profiling | global 120-frame/32-thread Chrome trace | existing profiler tests | asset stage/queue/failure counters and trace metadata | remote telemetry/upload |
 
 ## 8. 验证与验收
@@ -334,7 +334,7 @@ Asset/HotReload formal facade 统一映射到 `BreakRuntimeError`：`OK`、`INVA
 7. hot reload candidate failure保留旧资源、成功时单次 atomic swap；
 8. shutdown 在 queued/running/decode-ready/upload-pending 各阶段都能完成或返回 bounded timeout，且不 UAF/double-free；
 9. ECS snapshot asset reference 只读、schema mismatch/base mismatch 不触碰原 World；
-10. Session/network callback 只 enqueue owned event，队列满不调用 Asset/Game/Lua/RHI；
+10. Session/network callback 只 enqueue owned event，队列满不调用 Asset/Application/Lua/RHI；
 11. fragment reorder/duplicate/conflict/checksum/over-budget，以及上层 timeout/eviction reset；
 12. profiler trace 至少包含 request ID、stage、bytes、queue depth、latency、failure code。
 
@@ -369,7 +369,7 @@ Asset/HotReload formal facade 统一映射到 `BreakRuntimeError`：`OK`、`INVA
 
 - **正式 target 迁移风险**：当前 ECS/network focused 源直接编译进测试目标；若直接加入 `engine`，可能引入 Snowflake、线程、链接和生命周期循环，必须先做 target graph 与 ABI 评审。
 - **旧异步 loader 生命周期风险**：`async_loader`/`decode_pipeline` 使用 process-stable synchronization workaround；新 Runtime Core 若复用其 global state，re-init、并行 manager、测试隔离和多 VFS 实例仍需专门验证。
-- **completion backpressure 风险**：当前 completion producer 在满队列时等待；shutdown deadline、低帧率 GameThread 和 callback re-entry 可能造成阻塞链。目标 contract 必须选择 credit/fail/可中断等待之一并写测试。
+- **completion backpressure 风险**：当前 completion producer 在满队列时等待；shutdown deadline、低帧率 LogicThread 和 callback re-entry 可能造成阻塞链。目标 contract 必须选择 credit/fail/可中断等待之一并写测试。
 - **RHI thread语义风险**：现有部分 asset upload callback 在主线程触发，但不同 backend 的 device/frame ownership 不能从“callback 在主线程”推断安全；必须以实际 RHI owner/fence contract 为准。
 - **资源 identity 风险**：Scene `guid`、RHI generation handle、网络 content ID 语义不同；若混用会造成 stale upload、错误 cache hit 或跨进程错误引用。
 - **网络可信边界风险**：fragment checksum 非认证，Session 当前无 player authentication backend；任何远端资源下载/manifest 接受都不能默认可信。

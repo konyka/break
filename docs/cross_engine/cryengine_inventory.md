@@ -13,9 +13,9 @@
 
 ## 1. 模块系统
 
-- **范围**：引擎核心模块、游戏层和模块间接口/装载边界。
+- **范围**：引擎核心模块、应用层和模块间接口/装载边界。
 - **已知能力**：CryENGINE 采用模块化 DLL 架构；`Code/CryEngine/` 下列出 Cry3DEngine、CryAction、CryAISystem、CryAnimation、CryCommon、CryEntitySystem、CryFont、CryInput、CryMovie、CryNetwork、CryPhysics、CryScriptSystem、CrySoundSystem、CrySystem 和 RenderDLL 等模块。CryCommon 通过接口解耦子系统，CrySystem 负责初始化和主循环。
-- **证据/来源**：[`docs/CryENGINE_Architecture.md`](../CryENGINE_Architecture.md) §1、§3、§3.10、§5、§6；证据中的 `Code/CryEngine/`、`Game/`、`Tools/` 目录结构。
+- **证据/来源**：[`docs/CryENGINE_Architecture.md`](../CryENGINE_Architecture.md) §1、§3、§3.10、§5、§6；证据中的 `Code/CryEngine/`、`Application/`、`Tools/` 目录结构。
 - **与 Break 的比较边界**：Break 的核心为纯 C11，引擎/框架/应用分层见 [`docs/Architecture_Overview.md`](../Architecture_Overview.md) §2–§3；目录与接口边界不能直接等同于 CryENGINE DLL 边界。
 
 ## 2. ECS / Entity
@@ -44,7 +44,7 @@
 - **范围**：线程模型、跨线程消息、主循环和线程安全边界。
 - **已知能力**：CrySystem 负责引擎初始化和主循环；除此之外，资料不足，未给出 worker thread、消息总线或跨线程 ownership 规则。
 - **证据/来源**：[`docs/CryENGINE_Architecture.md`](../CryENGINE_Architecture.md) §3.10 对 CrySystem 的职责描述。
-- **与 Break 的比较边界**：Break 的 Task/平台线程接口分别位于 `engine/src/task/`、`engine/src/core/platform_thread.h`，网络线程与 GameThread 的边界见 [`docs/Architecture_Overview.md`](../Architecture_Overview.md) §Snowflake C11 网络适配器边界。CryENGINE 消息语义不能从模块名称推断。
+- **与 Break 的比较边界**：Break 的 Task/平台线程接口分别位于 `engine/src/task/`、`engine/src/core/platform_thread.h`，网络线程与 LogicThread 的边界见 [`docs/Architecture_Overview.md`](../Architecture_Overview.md) §Snowflake C11 网络适配器边界。CryENGINE 消息语义不能从模块名称推断。
 
 ## 6. Networking
 
@@ -55,9 +55,9 @@
 
 ## 7. UI / Input
 
-- **范围**：用户输入、字体/UI 和游戏内界面。
-- **已知能力**：CryInput 提供键盘、鼠标、手柄输入；CryFont 提供 TrueType 字体渲染；Game 脚本目录包含 UI；CryAction 包含 ForceFeedbackSystem。资料没有给出完整 UI 框架 API。
-- **证据/来源**：[`docs/CryENGINE_Architecture.md`](../CryENGINE_Architecture.md) §3、§3.10、§4，`CryInput/`、`CryFont/`、`Game/Scripts/UI/`。
+- **范围**：用户输入、字体/UI 和应用内界面。
+- **已知能力**：CryInput 提供键盘、鼠标、手柄输入；CryFont 提供 TrueType 字体渲染；Application 脚本目录包含 UI；CryAction 包含 ForceFeedbackSystem。资料没有给出完整 UI 框架 API。
+- **证据/来源**：[`docs/CryENGINE_Architecture.md`](../CryENGINE_Architecture.md) §3、§3.10、§4，`CryInput/`、`CryFont/`、`Application/Scripts/UI/`。
 - **与 Break 的比较边界**：Break 的 UI/input 路径为 `engine/src/ui/`、`engine/src/platform/`；输入平台范围见 [`docs/Architecture_Overview.md`](../Architecture_Overview.md) §平台支持。CryENGINE 资料只足以确认输入和字体模块，不能确认编辑器 UI、布局系统或跨线程 UI 规则。
 
 ## 8. Rendering / RHI
@@ -154,7 +154,7 @@
 ### A.0 证据范围变更
 
 - 本次补充直接勘察了 CryENGINE v3.1.2 / Build 1742 的实际源码树：`/home/timeshift/opensource/game_engine/CryENGINE_FullCode_PC_v3_1_2_1742/Code`。用户原指定的 `Code/doc` 目录不存在；实际存在 `Code/docs/design/`（中文设计文档，含 `interfaces/IThreadTask.h.md` 等接口抽取），该目录不像原始交付物，仅作辅助线索，结论仍以源码文件为准。
-- `Code/CryEngine/` 下确认的完整模块列表：Cry3DEngine、CryAction、CryAISystem、CryAnimation、CryCommon、CryEntitySystem、CryFont、CryInput、CryMovie、CryNetwork、CryPhysics、CryScriptSystem、CrySoundSystem、CrySystem、RenderDLL；顶层另有 `Game/`、`GameSkeleton/`、`Sandbox/`、`SDKs/`、`Tools/`、`Solutions/`。
+- `Code/CryEngine/` 下确认的完整模块列表：Cry3DEngine、CryAction、CryAISystem、CryAnimation、CryCommon、CryEntitySystem、CryFont、CryInput、CryMovie、CryNetwork、CryPhysics、CryScriptSystem、CrySoundSystem、CrySystem、RenderDLL；顶层另有 `Application/`、`GameSkeleton/`、`Sandbox/`、`SDKs/`、`Tools/`、`Solutions/`。
 - 本附录将正文中标记为 `资料不足` 的若干维度升级为“源码证据”，正文章节保留原样；以本附录为准的条目在各节标题后标注“（升级正文第 N 节）”。
 - 证据等级仍为“源码存在 + 接口可读”，不等于本工作区编译或运行过 CryENGINE。
 
@@ -208,7 +208,7 @@
 
 - HTTP 下载：`CrySystem/DownloadManager.h/.cpp` + `HTTPDownloader.cpp`（补丁/资源下载）；CryAction 网络侧 `CryAction/Network/DownloadTask.cpp`。
 - 运行时热更新见 A.11（HotUpdate/LivePreview/LiveCreate）。
-- 未发现独立的版本化 patcher/launcher：`Game/Launcher/Main.cpp`、`DedicatedLauncher/Main.cpp` 仅为启动器壳。
+- 未发现独立的版本化 patcher/launcher：`Application/Launcher/Main.cpp`、`DedicatedLauncher/Main.cpp` 仅为启动器壳。
 - 结论：有下载器与热更新机制证据；“manifest/签名/回滚的完整在线更新闭环”仍 `资料不足`。
 
 ### A.16 Security / Anti-cheat（升级正文第 16 节）

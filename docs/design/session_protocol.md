@@ -13,14 +13,14 @@ Stage 5 Phase D（2026-10-24，branch `sdd/stage5-transport-security`）起本�
 - `BreakNetEnvelope` 的编码、解码、默认 registry 校验和序列检查；
 - `BreakNetMessageRegistry` 的固定容量消息定义表；
 - `BreakNetEvent` 记录、adapter 有界事件队列和有界 outbound command 队列；
-- 不透明的 `BreakSessionManager` 及其 GameThread 侧状态迁移 API；
+- 不透明的 `BreakSessionManager` 及其 LogicThread 侧状态迁移 API；
 - TLS 传输模式、CHALLENGE/AUTH-v2 认证握手、出站单调序号、准入限速（Stage 5 Phase D，见下文专节与 `docs/design/transport_security.md`）；
 - CTest 覆盖 envelope、little-endian 字节序、长度/ID/版本/序列错误、payload 拷贝、队列 FIFO、会话状态迁移和关闭后的拒绝行为；真实 loopback 覆盖 AUTH 入站、Session poll、handler dispatch、PING response、client close、`CLOSED` 和 stale 事件；TLS loopback 覆盖握手/加密往返/mTLS/负例。
-- P8 的 `break_online_session.h` 只把 `AUTHENTICATED` Session 映射为在线大厅/NAT 的 session 域身份，未认证状态不能创建或加入；真实适配测试包含在 `test_break_session` 中。NAT 控制面另要求应用提供每 session 的 `session_key` 和 coordinator 本地 `challenge_key`，使用 stateless 来源绑定 challenge、HMAC-SHA256 和 replay window，不能把身份映射本身当作报文新鲜性证明。大厅、NAT、语音和 aspect 的实际合同见 `docs/design/online_gameplay_network.md`。
+- P8 的 `break_online_session.h` 只把 `AUTHENTICATED` Session 映射为在线大厅/NAT 的 session 域身份，未认证状态不能创建或加入；真实适配测试包含在 `test_break_session` 中。NAT 控制面另要求应用提供每 session 的 `session_key` 和 coordinator 本地 `challenge_key`，使用 stateless 来源绑定 challenge、HMAC-SHA256 和 replay window，不能把身份映射本身当作报文新鲜性证明。大厅、NAT、语音和 aspect 的实际合同见 `docs/design/online_session_network.md`。
 
 当前仍没有：
 
-- 跨重连 player account backend、Lua gameplay callback、editor RPC、online update 或服务端产品/反篡改代码；
+- 跨重连 player account backend、Lua logic callback、editor RPC、online update 或服务端产品/反篡改代码；
 - Snowflake per-context completion/drop 通知不足，因此 adapter 仍以 send-drained/close 顺序和 pending 引用维护本地 identity 生命周期；
 - 自定义 registry 已用于 Session 的真实 wire codec 边界，但 envelope codec 当前仍以 default registry 为编码/解码入口。
 
@@ -29,18 +29,18 @@ Stage 5 Phase D（2026-10-24，branch `sdd/stage5-transport-security`）起本�
 ```mermaid
 flowchart LR
     S[Snowflake reactor / callback thread] -->|immutable event record| Q[BreakNetReactor event queue]
-    Q -->|break_net_reactor_poll_event| G[GameThread caller]
-    G -->|apply_adapter_event / session API| M[GameThread-owned SessionManager]
+    Q -->|break_net_reactor_poll_event| G[LogicThread caller]
+    G -->|apply_adapter_event / session API| M[LogicThread-owned SessionManager]
     G -->|break_net_reactor_send: copy| O[BreakNetReactor outbound queue]
     O -->|18-byte envelope / send context| T[Snowflake send/close notification]
 ```
 
 实际线程边界如下：
 
-- `BREAK_NET_DRIVE_STEP`：调用方是该 reactor 的唯一 Snowflake driver；`break_net_reactor_step` 以 atomic guard 拒绝并发 step。GameThread 可以是该调用方，但 API 本身没有自动把调用方标记为 GameThread。
+- `BREAK_NET_DRIVE_STEP`：调用方是该 reactor 的唯一 Snowflake driver；`break_net_reactor_step` 以 atomic guard 拒绝并发 step。LogicThread 可以是该调用方，但 API 本身没有自动把调用方标记为 LogicThread。
 - `BREAK_NET_DRIVE_THREAD`：Break 创建并 join 一个 host thread；该线程执行 `snow_net_thread_step` 循环。它不调用 SessionManager、World、ECS、Lua、UI 或 RHI。
 - Snowflake callback 路径只构造 `BreakNetEvent` 并尝试入队；事件队列由 mutex 保护。事件入队失败时 callback 忽略失败，不能阻塞 reactor。
-- `BreakSessionManager` 的公开 API 没有内部 mutex，也没有线程安全声明；它的创建、销毁、bind、状态迁移、`poll` 和 `apply_*` 都必须由同一个 GameThread/拥有者串行调用。
+- `BreakSessionManager` 的公开 API 没有内部 mutex，也没有线程安全声明；它的创建、销毁、bind、状态迁移、`poll` 和 `apply_*` 都必须由同一个 LogicThread/拥有者串行调用。
 - `break_net_reactor_poll_event` 是把队列中的事件记录移交给调用方；调用方负责在使用后调用 `break_net_event_release`。
 
 ## Message view、owned payload 与事件
@@ -115,11 +115,11 @@ typedef enum BreakNetEventType {
 | `BREAK_NET_MESSAGE_ID_PING == 2` | 1..1 | 64 KiB | `ANY` | `IDEMPOTENT` |
 | `BREAK_NET_MESSAGE_ID_CHALLENGE == 3` | 1..1（仅 CRYPTO=ON） | 16 B | `ANY` | `REJECT` |
 
-registry 的最大定义数为 64；register 拒绝 ID 0、重复 ID、反向版本区间、超过全局 payload 上限或满表。公共 `BreakSessionConfig.registry` 也拒绝 `count > BREAK_NET_REGISTRY_MAX_MESSAGES` 的 malformed registry，避免后续 lookup 越过固定定义表；registry 仍是 borrowed immutable storage，必须活到 manager destroy。当前 envelope codec 使用 `break_net_message_registry_default()`，没有把自定义 registry 传入 codec 的 API。`phase` 和 `duplicate_policy` 已记录在定义中；Session 在 GameThread apply/dispatch 阶段执行 phase、版本、payload limit 和 duplicate policy。默认 AUTH/PING 均为有意的 `ANY` phase：默认 registry 下 AUTH 在 `NEW` 中允许并成功后进入 `AUTHENTICATED`，PING 在 pre-auth `NEW` 中也允许且保持 `NEW`；自定义 registry 的 phase 仍严格限制（例如 `AUTHENTICATING` 定义在 `NEW` 中被拒绝）。默认 AUTH 重复策略为 `REJECT`，PING 重复策略为 `IDEMPOTENT`。测试 `break_session_default_registry_allows_auth_in_new_and_ping_pre_auth` 与 `break_session_uses_attached_registry_phase_and_duplicate_policy` 分别锁定这两个边界。
+registry 的最大定义数为 64；register 拒绝 ID 0、重复 ID、反向版本区间、超过全局 payload 上限或满表。公共 `BreakSessionConfig.registry` 也拒绝 `count > BREAK_NET_REGISTRY_MAX_MESSAGES` 的 malformed registry，避免后续 lookup 越过固定定义表；registry 仍是 borrowed immutable storage，必须活到 manager destroy。当前 envelope codec 使用 `break_net_message_registry_default()`，没有把自定义 registry 传入 codec 的 API。`phase` 和 `duplicate_policy` 已记录在定义中；Session 在 LogicThread apply/dispatch 阶段执行 phase、版本、payload limit 和 duplicate policy。默认 AUTH/PING 均为有意的 `ANY` phase：默认 registry 下 AUTH 在 `NEW` 中允许并成功后进入 `AUTHENTICATED`，PING 在 pre-auth `NEW` 中也允许且保持 `NEW`；自定义 registry 的 phase 仍严格限制（例如 `AUTHENTICATING` 定义在 `NEW` 中被拒绝）。默认 AUTH 重复策略为 `REJECT`，PING 重复策略为 `IDEMPOTENT`。测试 `break_session_default_registry_allows_auth_in_new_and_ping_pre_auth` 与 `break_session_uses_attached_registry_phase_and_duplicate_policy` 分别锁定这两个边界。
 
 ## SessionManager API 与状态机
 
-`BreakSessionManager` 是 GameThread-owned 且非线程安全；所有创建、绑定、状态迁移、poll 和 apply 都必须由同一拥有者串行调用。`BreakSessionConfig.registry` 是 borrowed immutable registry，必须活到 manager destroy；attach 的 reactor 是 borrowed，必须活到 detach（当前没有独立 detach API）或 manager destroy；handler 和 `user_data` 均为 borrowed，且 handler 仅由 GameThread 调用。handler 收到的 message payload 只在 handler 调用期间有效。
+`BreakSessionManager` 是 LogicThread-owned 且非线程安全；所有创建、绑定、状态迁移、poll 和 apply 都必须由同一拥有者串行调用。`BreakSessionConfig.registry` 是 borrowed immutable registry，必须活到 manager destroy；attach 的 reactor 是 borrowed，必须活到 detach（当前没有独立 detach API）或 manager destroy；handler 和 `user_data` 均为 borrowed，且 handler 仅由 LogicThread 调用。handler 收到的 message payload 只在 handler 调用期间有效。
 
 `max_sessions` 是 manager lifetime capacity：closed slots 不会分配给其他 key（同一 key 的新 open 原地重开，见下文），因此它表示 manager 生命周期内可绑定的不同 connection key 数，而不是同时在线数。真实 loopback Session 流程已验证 AUTH -> Session poll -> handler -> PING response -> client close -> `CLOSED`/stale。
 
@@ -178,7 +178,7 @@ NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED
 
 `transition` 只接受上述正向边；未知 connection、`BREAK_SESSION_UNKNOWN`、从 `CLOSED` 再迁移、向后迁移和重复 authentication 都返回 false。一个 connection 只能绑定一个 entry；容量由 `max_sessions` 限制，entry 关闭后不会复用。session ID 从 `first_session_id` 开始递增；从 `UINT64_MAX` 已分配 ID 后不能再 bind。
 
-`break_session_manager_apply_adapter_event` 在 GameThread 上处理生命周期和消息：
+`break_session_manager_apply_adapter_event` 在 LogicThread 上处理生命周期和消息：
 
 - `CONNECTION_OPENED`：调用 `bind`；active entry 的重复 open 分类为 duplicate，CLOSING entry 的迟到 open 分类为 stale，容量拒绝分类为 invalid。CLOSED entry 上的 open 视为 transport key 复用（snow connection uid = list magic | slot，slot 回收后新连接会携带旧 key）：因为 `CLOSED` 只在 reactor event queue 排空后才 finalize，此时的 open 必然属于新连接，entry 原地重置为 `NEW` 并分配新的 session ID（ID 耗尽时仍为 stale）。显式 `bind` API 仍拒绝已关闭的 key；
 - `CONNECTION_CLOSED` 或 `TRANSPORT_ERROR`：调用 `close`，进入 `CLOSING`；关闭后的事件保留为 stale；
@@ -187,11 +187,11 @@ NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED
 
 `break_session_manager_last_result` 暴露最近一次 apply 分类，`break_session_manager_apply_stats` 暴露 applied、unknown、stale、invalid、phase rejected、duplicate 和 handler failed 的累计计数。handler 收到的 `BreakNetOwnedMessage` 是 manager 当前事件的借用视图，只在 handler 调用期间有效；handler 必须复制需要保留的内容。
 
-`break_session_manager_poll` 是低层 close-finalization 原语：只推进 close finalization，不轮询 `BreakNetReactor`，因此对尚未通过 adapter apply 的 reactor event 不产生任何 session 影响。普通接入应使用推荐入口 `break_session_manager_poll_adapter`；它在 GameThread 上每次最多消费 `max_events` 个 reactor event 并 apply/dispatch，只有在消费后确认 manager 所附 reactor event queue 已排空时，才把最多 `max_events` 个 `CLOSING` entry 改为 `CLOSED`；因此分页消费不会提前 finalize close。
+`break_session_manager_poll` 是低层 close-finalization 原语：只推进 close finalization，不轮询 `BreakNetReactor`，因此对尚未通过 adapter apply 的 reactor event 不产生任何 session 影响。普通接入应使用推荐入口 `break_session_manager_poll_adapter`；它在 LogicThread 上每次最多消费 `max_events` 个 reactor event 并 apply/dispatch，只有在消费后确认 manager 所附 reactor event queue 已排空时，才把最多 `max_events` 个 `CLOSING` entry 改为 `CLOSED`；因此分页消费不会提前 finalize close。
 
 ### stale event
 
-关闭会形成不可逆的 close watermark：entry 转为 `CLOSING`/`CLOSED` 后，后续同 connection 的消息和重复生命周期事件不会改变状态，并由 apply-result API 分类为 stale（未知 connection 则为 unknown）。closed entry 不会被其他 key 复用；同一 key 的新 `CONNECTION_OPENED` 会在原 entry 上重新开始（见上）。因此 `max_sessions` 是 manager 生命周期内可绑定的不同 connection key 数，而不是同时在线容量。adapter event queue 仍由 GameThread 逐条 poll，事件 payload 在 apply 返回后由 caller 释放。
+关闭会形成不可逆的 close watermark：entry 转为 `CLOSING`/`CLOSED` 后，后续同 connection 的消息和重复生命周期事件不会改变状态，并由 apply-result API 分类为 stale（未知 connection 则为 unknown）。closed entry 不会被其他 key 复用；同一 key 的新 `CONNECTION_OPENED` 会在原 entry 上重新开始（见上）。因此 `max_sessions` 是 manager 生命周期内可绑定的不同 connection key 数，而不是同时在线容量。adapter event queue 仍由 LogicThread 逐条 poll，事件 payload 在 apply 返回后由 caller 释放。
 
 ## TLS 模式
 
@@ -259,4 +259,4 @@ snow_status_t snow_net_thread_add_acceptor_with_handlers_ex(
 
 ## 验证与边界
 
-Task 5 文档应与实际验证保持一致：adapter focused normal/ASan/TSan 均为 38/38，Session focused normal/ASan/TSan 均为 34/34，TLS focused normal/ASan/TSan 均为 10/10；真实 loopback 覆盖 Snowflake acceptor registration、parser/open/message/send/close、AUTH 入站、Session poll/handler dispatch、PING response、18-byte wire envelope、client close 后 `CLOSED`/stale 语义和 bounded stop。默认 registry 下 AUTH/PING 均为 `ANY` phase；自定义 registry 的 phase/duplicate policy、duplicate 行为、lifetime capacity、borrowed registry/reactor/handler/payload contract 均已明确。仍不应把本切片写成已完成 player authentication backend、复制、Lua、editor、security、ECS/World 或 gameplay integration；Snowflake per-context completion/drop 通知不足、custom registry codec 当前仍使用 default registry 的真实 adapter codec 边界、GameThread-only contract、full CTest 其他模块失败、fuzz 未运行以及 timeout/stop 的非 Linux 平台 lane 均保留为限制。
+Task 5 文档应与实际验证保持一致：adapter focused normal/ASan/TSan 均为 38/38，Session focused normal/ASan/TSan 均为 34/34，TLS focused normal/ASan/TSan 均为 10/10；真实 loopback 覆盖 Snowflake acceptor registration、parser/open/message/send/close、AUTH 入站、Session poll/handler dispatch、PING response、18-byte wire envelope、client close 后 `CLOSED`/stale 语义和 bounded stop。默认 registry 下 AUTH/PING 均为 `ANY` phase；自定义 registry 的 phase/duplicate policy、duplicate 行为、lifetime capacity、borrowed registry/reactor/handler/payload contract 均已明确。仍不应把本切片写成已完成 player authentication backend、复制、Lua、editor、security、ECS/World 或 logic integration；Snowflake per-context completion/drop 通知不足、custom registry codec 当前仍使用 default registry 的真实 adapter codec 边界、LogicThread-only contract、full CTest 其他模块失败、fuzz 未运行以及 timeout/stop 的非 Linux 平台 lane 均保留为限制。

@@ -108,7 +108,7 @@ typedef bool (*BreakNetAuthKeyFn)(void *user, const u8 key_id[8], u8 out_psk[32]
  * key_id (the key-lifecycle seam; provisioning/rollover stay app-side, documented). */
 bool break_session_set_auth(BreakNetAuthKeyFn fn, void *user);
 /* Optional session expiry (0 = no expiry, default); authenticated sessions older than
- * max_age_seconds transition CLOSING at the next poll (GameThread). */
+ * max_age_seconds transition CLOSING at the next poll (LogicThread). */
 void break_session_set_max_age(BreakSession *s, u32 max_age_seconds);
 ```
 

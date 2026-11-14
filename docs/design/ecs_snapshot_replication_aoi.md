@@ -4,17 +4,17 @@
 
 ## Scope and Current Boundary
 
-The current implementation is a C11, GameThread-facing foundation:
+The current implementation is a C11, LogicThread-facing foundation:
 
 - `replication_schema.*` registers deterministic component schemas and computes a stable schema hash from canonical component IDs.
-- `world_snapshot.*` builds an owned, immutable copy of live entity handles and registered component bytes. Snapshot build remains a GameThread operation after the structural barrier; there is no automatic ECS barrier.
+- `world_snapshot.*` builds an owned, immutable copy of live entity handles and registered component bytes. Snapshot build remains a LogicThread operation after the structural barrier; there is no automatic ECS barrier.
 - `world_delta.*` diffs two immutable snapshots and applies a validated delta through ECS-owned deep-clone staging and an atomic replace commit.
 - `break_aoi.*` maintains a simple spatial index and computes deterministic `enter`, `stay`, and `leave` sets for one or more witnesses.
 - `break_replication.*` tracks per-connection Ghost state, sends baselines/dirty/destroy/dormant records through `BreakNetReactor`, and enforces a byte budget.
 - `break_replication_fragment.*` splits non-empty payloads under `BREAK_NET_MAX_PAYLOAD_SIZE` and reassembles one delta at a time after metadata, checksum, duplicate/conflict, and completeness validation. P8 adds caller-storage fragment views with a shared planner/fill. A monotonically newer delta supersedes an incomplete old delta only after all new metadata/first-fragment/result allocations succeed, otherwise the old stream is preserved. A persistent high-water also rejects older deltas after completion; explicit reset starts a new epoch.
 - P8 `break_online_aspect.*` adds fixed aspect schemas, generation-aware stores, sparse change-mask packets and transactional apply with per-object record epochs. Explicit-epoch encoding is read-only, and apply advances record ordering without overwriting the public local-value revision. The compatibility `break_aspect_encode` owns a separate per-object automatic encoder high-water, committed only after successful output; callers must not switch back to automatic encoding after issuing a larger explicit epoch on that object. `break_online_aspect_replication.*` maps them onto the existing AOI enter/stay/leave sets with per-connection dirty state and fixed fragment metadata. Each actual send attempt gets a fresh epoch after budget/fragmentation preflight and before the first datagram; callback failure preserves that high-water and dirty state, while only complete success clears dirty. Ordinary scope leaves deactivate without retiring the reusable handle, while explicit object destruction still retires generation. The send callback is the authenticated transport boundary, not a replacement for Session security.
 
-The formal optional libraries are `break_ecs_replication` (ECS schema/snapshot/delta plus ECS-owned AoI-independent dependencies and core logging) and `break_replication_core` (AoI, replication scheduling, and fragmentation). They are non-Snowflake targets and are available even when `ENGINE_BUILD_TESTS=OFF`; the umbrella header is `ecs/replication_runtime.h`. They are deliberately not linked into `engine`, `engine_demo`, or `dxx_break` until a runtime/session owner defines publication, authority, and thread-lifecycle integration. `break_ecs_replication_test` is a test-only composition carrying `BREAK_WORLD_DELTA_TESTING=1`; production libraries never receive that fault-injection macro. `break_net` remains an optional Snowflake adapter: it is produced whenever `BREAK_ENABLE_SNOWFLAKE=ON`, independent of `ENGINE_BUILD_TESTS`, and links `break_replication_core` and `snow::net`. P8 `break_online` is likewise optional and links `break_replication_core`; its actual aspect behavior and limits are recorded in `docs/design/online_gameplay_network.md`.
+The formal optional libraries are `break_ecs_replication` (ECS schema/snapshot/delta plus ECS-owned AoI-independent dependencies and core logging) and `break_replication_core` (AoI, replication scheduling, and fragmentation). They are non-Snowflake targets and are available even when `ENGINE_BUILD_TESTS=OFF`; the umbrella header is `ecs/replication_runtime.h`. They are deliberately not linked into `engine`, `engine_demo`, or `dxx_break` until a runtime/session owner defines publication, authority, and thread-lifecycle integration. `break_ecs_replication_test` is a test-only composition carrying `BREAK_WORLD_DELTA_TESTING=1`; production libraries never receive that fault-injection macro. `break_net` remains an optional Snowflake adapter: it is produced whenever `BREAK_ENABLE_SNOWFLAKE=ON`, independent of `ENGINE_BUILD_TESTS`, and links `break_replication_core` and `snow::net`. P8 `break_online` is likewise optional and links `break_replication_core`; its actual aspect behavior and limits are recorded in `docs/design/online_session_network.md`.
 
 Task 7 is implemented as a transport-independent fragmentation/reassembly layer. Fragment metadata carries `delta_id`, `base_id`, `fragment_index`, `fragment_count`, and a deterministic FNV-1a checksum over each fragment payload. The reassembler accepts out-of-order fragments, returns `INCOMPLETE` while fragments are missing, returns `COMPLETE` with newly allocated owned bytes only after every fragment is present, reports exact duplicate fragments separately from conflicts, rejects checksum/base/index/count/delta mismatches, and exposes explicit reset/destroy lifecycle operations.
 
@@ -24,7 +24,7 @@ The current Snowflake adapter remains an adapter boundary: it owns transport int
 
 ```mermaid
 flowchart LR
-    GT[GameThread: mutable World]
+    GT[LogicThread: mutable World]
     B[Structural barrier and completed ECS tasks]
     S[WorldSnapshot: owned immutable bytes]
     D[Pure WorldDelta diff]
@@ -41,13 +41,13 @@ flowchart LR
     N -. immutable events .-> GT
 ```
 
-The intended lifecycle is: systems finish, the GameThread establishes the structural barrier, the GameThread builds a snapshot, and readers retain that snapshot while diff/AoI work runs. Snapshot build still requires that GameThread/structural-barrier discipline; the builder does not insert an automatic barrier. The current snapshot builder is stop-the-world and owns all copied bytes; it stores no `World *`, archetype, chunk, RHI, or Scene pointer. Entity identity includes both `index` and `generation`, so index reuse is not mistaken for the same entity.
+The intended lifecycle is: systems finish, the LogicThread establishes the structural barrier, the LogicThread builds a snapshot, and readers retain that snapshot while diff/AoI work runs. Snapshot build still requires that LogicThread/structural-barrier discipline; the builder does not insert an automatic barrier. The current snapshot builder is stop-the-world and owns all copied bytes; it stores no `World *`, archetype, chunk, RHI, or Scene pointer. Entity identity includes both `index` and `generation`, so index reuse is not mistaken for the same entity.
 
 ### Snapshot publication and delta application
 
 ```mermaid
 sequenceDiagram
-    participant G as GameThread
+    participant G as LogicThread
     participant W as World
     participant S as Snapshot
     participant X as Worker/read-only consumer
@@ -76,7 +76,7 @@ A delta retains its base and target snapshots, records entity create/destroy and
 
 A registered component declares component ID, version, size, alignment, flags, and optional encode/decode callbacks. Registration rejects duplicate IDs, zero sizes, invalid alignment, and raw-byte schemas marked pointer-containing. Snapshot raw bytes are accepted only for deterministic POD schemas with `BREAK_SCHEMA_FLAG_RAW_BYTES`; resource references, derived caches, and pointer-containing components are rejected by the snapshot policy.
 
-The registry is initialization/GameThread-owned. It is not a synchronized hot-path object. A schema change changes the schema hash and therefore requires a new compatible snapshot/delta stream; schema negotiation and online schema updates are not implemented.
+The registry is initialization/LogicThread-owned. It is not a synchronized hot-path object. A schema change changes the schema hash and therefore requires a new compatible snapshot/delta stream; schema negotiation and online schema updates are not implemented.
 
 ## Real, Ghost, Witness, and AoI
 
@@ -102,7 +102,7 @@ The explicit set contract is `enter = new - old`, `stay = new ∩ old`, and `lea
 
 ```mermaid
 flowchart LR
-    subgraph GameThread
+    subgraph LogicThread
         W[World/ECS mutation]
         S[Snapshot build and retain]
         A[AoI and replication state]
@@ -126,11 +126,11 @@ flowchart LR
     Q --> G
 ```
 
-The GameThread owns mutable `World`, ECS structural state, schema registration, Real objects, Ghost maps, and connection scope state. Snapshot and AoI consumers may read only owned immutable values. Network callbacks and reactor workers handle bounded message views/copies and queue events; they must not call World/ECS/Lua/UI/RHI or mutate replication state directly. The adapter has one driver per reactor (`BREAK_NET_DRIVE_STEP` or its host-thread mode), and shutdown is terminate, join when applicable, destroy reactor, then publish stopped. The adapter's `timeout_ms` is currently compatibility-only because the underlying thread abstraction has no timed join.
+The LogicThread owns mutable `World`, ECS structural state, schema registration, Real objects, Ghost maps, and connection scope state. Snapshot and AoI consumers may read only owned immutable values. Network callbacks and reactor workers handle bounded message views/copies and queue events; they must not call World/ECS/Lua/UI/RHI or mutate replication state directly. The adapter has one driver per reactor (`BREAK_NET_DRIVE_STEP` or its host-thread mode), and shutdown is terminate, join when applicable, destroy reactor, then publish stopped. The adapter's `timeout_ms` is currently compatibility-only because the underlying thread abstraction has no timed join.
 
 Replication version safety is fail-closed: an object at `UINT64_MAX` cannot be registered again or marked dirty, and the rejection occurs before payload allocation, freeing, or version mutation. This is a terminal-version policy rather than an epoch rollover; callers must replace the object identity if they need a new version domain.
 
-Lifecycle on a connection is: open connection state, compute scope, send baseline on `enter`, send dirty versioned payloads on `stay`, send destroy/dormant on `leave`, and discard all Ghost state on disconnect. Queue overload is reported without blocking the GameThread; a later sync can retry unsent baseline or dirty records.
+Lifecycle on a connection is: open connection state, compute scope, send baseline on `enter`, send dirty versioned payloads on `stay`, send destroy/dormant on `leave`, and discard all Ghost state on disconnect. Queue overload is reported without blocking the LogicThread; a later sync can retry unsent baseline or dirty records.
 
 ## Fragmentation and Validation Boundary
 
@@ -144,20 +144,20 @@ Each emitted fragment carries:
 
 `break_replication_reassembler_create(expected_base_id)` owns one in-progress delta assembly. `push()` validates non-empty data, transport size, base ID, checksum, index/count bounds, and rejects fragment counts or metadata allocations beyond the 16 MiB reassembly budget before allocating per-fragment state; it also rejects any `total_size` growth beyond that budget. It then fixes the first fragment's delta ID/count as the assembly identity. Later fragments with another delta/count are conflicts. Exact duplicate bytes return `DUPLICATE`; same-index bytes with different size/checksum/content return `CONFLICT`. Fragments are copied into reassembler-owned storage, so the input view may be temporary. Missing fragments return `INCOMPLETE`; only the final validated set produces a newly allocated contiguous payload and `COMPLETE`. The caller owns that result and releases it with `break_replication_reassembly_free()`.
 
-Completion clears the assembly state. An incomplete or failed final allocation leaves collected fragments available for retry; `break_replication_reassembler_reset()` explicitly discards that state, and destroy also frees all owned fragment storage. The focused API has no timeout or eviction policy: the owning replication scheduler must bound lifetime and call reset/recreate on loss or expiry. The checksum is integrity validation, not cryptographic authentication. No Snowflake call and no World mutation belongs in this layer. The GameThread applies only the fully reassembled result after its own base/schema/delta validation; the fragmentation API itself does not enqueue or apply deltas.
+Completion clears the assembly state. An incomplete or failed final allocation leaves collected fragments available for retry; `break_replication_reassembler_reset()` explicitly discards that state, and destroy also frees all owned fragment storage. The focused API has no timeout or eviction policy: the owning replication scheduler must bound lifetime and call reset/recreate on loss or expiry. The checksum is integrity validation, not cryptographic authentication. No Snowflake call and no World mutation belongs in this layer. The LogicThread applies only the fully reassembled result after its own base/schema/delta validation; the fragmentation API itself does not enqueue or apply deltas.
 
 ## Implemented vs Future Work
 
 | Area | Implemented now | Not implemented / future boundary |
 |---|---|---|
-| Snapshot | Deep copy, generation-aware handles, canonical-ID schema hash, deterministic hash, refcount lifetime; GameThread/structural-barrier build contract | Automatic barrier, mutex publication service, epoch reclamation; formal runtime/session publication integration |
+| Snapshot | Deep copy, generation-aware handles, canonical-ID schema hash, deterministic hash, refcount lifetime; LogicThread/structural-barrier build contract | Automatic barrier, mutex publication service, epoch reclamation; formal runtime/session publication integration |
 | Delta | Immutable diff, base-world validation, generation prediction, staging final validation, ECS-owned deep clone, atomic replace commit, unchanged-on-failure behavior | Wire schema/tick fields, authority protocol; formal runtime/session integration |
 | AoI | Grid, sphere/AABB, witnesses, flags, hysteresis, enter/stay/leave | Distributed spatial cells, occlusion/LOD policy, prediction; formal runtime/session integration |
 | Replication | Real/Ghost records, baseline/dirty/destroy/dormant, budget and queue retry | Full authority handoff and client prediction/rollback; formal runtime/session integration |
 | Transport | Break adapter queue boundary and owned payloads; Task 7 fragmentation/reassembly, checksum, reorder, duplicate/conflict, base validation, owned output, reset | Real Snowflake registration/socket send integration, timeout/eviction scheduler, cryptographic authentication |
-| Gameplay | No network-thread mutation; GameThread-owned apply boundary | Lua callbacks, editor RPC, online updates, security/authentication |
+| Logic | No network-thread mutation; LogicThread-owned apply boundary | Lua callbacks, editor RPC, online updates, security/authentication |
 
-Distributed Cell services, cross-World persistent NetEntityId, client prediction, rollback, authority handoff, Lua gameplay integration, editor tooling, online schema updates, and security policy are deliberately outside this slice.
+Distributed Cell services, cross-World persistent NetEntityId, client prediction, rollback, authority handoff, Lua logic integration, editor tooling, online schema updates, and security policy are deliberately outside this slice.
 
 ## Validation
 

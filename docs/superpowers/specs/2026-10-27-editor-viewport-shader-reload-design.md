@@ -48,7 +48,7 @@
 - `break_editor_shell_tick` 驱动 reload，发生在 `break_ui_frame_begin` 之前。不得在 worker、FileWatcher callback 或当前 command buffer 录制期间创建、替换或销毁 RHI 资源。
 - FileWatcher callback 只记录 `pending` 和计数。worker 只读 VFS 并验证 bounded bytes；不读取 viewport、widget、document 或 RHI handle。
 - reload 结果通过现有有界 editor console 和只读 stats 暴露；logger 由 shell/viewport 接线，不把 document 或 widget 所有权交给 worker。
-- `engine/src/asset/hotreload.c` 的现有同步 API 和游戏 renderer 调用方保持不变。
+- `engine/src/asset/hotreload.c` 的现有同步 API 和应用 renderer 调用方保持不变。
 
 当前 editor 的 shell 与 render owner 是同一线程。本设计不虚构独立 RenderThread，也不声称实现了异步 GPU compile。编译/链接和现有 RHI 的销毁等待可能阻塞 shell，属于开发期编辑器的明确成本。
 
@@ -105,7 +105,7 @@ file event / Ctrl+Shift+R
 把 `vp_lazy_init` 的 GPU 构建部分提取为事务式 candidate builder。初次加载与 reload 使用同一个 builder：
 
 1. 从 memory source 创建 VS 和 FS；清理所有已创建的临时 stage。
-2. 使用现有 `RHIPipelineDesc`：position-only `vertex_stride=12`、`disable_culling=true`，不套用游戏旧 helper 的 `uses_textures=true`。
+2. 使用现有 `RHIPipelineDesc`：position-only `vertex_stride=12`、`disable_culling=true`，不套用应用旧 helper 的 `uses_textures=true`。
 3. 创建新 pipeline，再创建新 bindings。
 4. `u_mvp` 和 `u_color` 都 resolve 成功才继续；compile/link 成功但 ABI 不符仍是失败。
 5. 若初始失败导致 cube VBO 尚不存在，先构建 candidate VBO；已有 VBO 和 FBO 不随 shader 重建。

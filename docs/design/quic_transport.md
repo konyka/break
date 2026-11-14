@@ -38,7 +38,7 @@ the one consumed.
 ## 2. Architecture
 
 ```text
-app (game client/server)
+app (application client/server)
    │  break_net_quic.h — create / step / send / poll_message / close
    ▼
 break_net_quic (engine/src/network/break_net_quic.c)

@@ -1,4 +1,4 @@
-# Task 4: GameThread-owned SessionManager
+# Task 4: LogicThread-owned SessionManager
 
 ## Scope
 
@@ -17,11 +17,11 @@ Before implementation, `build-session-red` failed to compile because the require
 
 ## Implementation
 
-- `engine/src/network/break_session.h`: exposes reactor attachment, message-handler registration, and GameThread adapter polling APIs.
+- `engine/src/network/break_session.h`: exposes reactor attachment, message-handler registration, and LogicThread adapter polling APIs.
 - `engine/src/network/break_session.c`: polls the adapter FIFO, applies lifecycle events deterministically, validates the attached registry/version/payload limits, enforces definition-driven phase and duplicate policy, transitions AUTH through `NEW -> AUTHENTICATING -> AUTHENTICATED` only after handler success, and releases each owned event after dispatch.
 - `BreakSessionConfig.registry` is an optional borrowed registry attachment; NULL selects the default registry. Duplicate tracking is per definition slot, so future registry entries follow the same `REJECT`/`IDEMPOTENT` policy without message-ID special cases.
 - Closed entries are deliberately retained and are not reclaimed/rebound. This is the explicit capacity contract: `max_sessions` is a lifetime connection-key binding capacity for a manager, and a closed key cannot be rebound.
-- No Session/ECS/Lua/UI calls occur from adapter callbacks. Handler callbacks are GameThread dispatch callbacks and receive only connection key plus borrowed event message during the call.
+- No Session/ECS/Lua/UI calls occur from adapter callbacks. Handler callbacks are LogicThread dispatch callbacks and receive only connection key plus borrowed event message during the call.
 
 ## Verification
 

@@ -10,9 +10,9 @@
 
 ## Global Constraints
 
-- 遵循 `docs/superpowers/specs/2026-11-02-cry-capability-completion-design.md` 第 4、5、6、8 节及 P10；只在 `.worktrees/cry-audio` 的 `cry-wave2-audio` 本地提交，不改 master、不 push。
+- 遵循 `docs/superpowers/specs/2026-11-02-core-capability-completion-design.md` 第 4、5、6、8 节及 P10；只在 `.worktrees/cry-audio` 的 `cry-wave2-audio` 本地提交，不改 master、不 push。
 - 每个行为先看到断言级 RED，再写生产实现；编译/链接缺失只作辅助 RED。每项至少做一项关键行为变异并恢复后复验，实际结果追加到 `.superpowers/sdd/audio-extended-report.md`。
-- 热路径不分配内存，不在 PCM 回调中做文件 I/O、网络、游戏逻辑、射线查询或播放列表决策；所有命令、事件、clip、voice、playlist 和 DSP 容量有硬上限，超限返回错误而非截断。
+- 热路径不分配内存，不在 PCM 回调中做文件 I/O、网络、应用逻辑、射线查询或播放列表决策；所有命令、事件、clip、voice、playlist 和 DSP 容量有硬上限，超限返回错误而非截断。
 - 所有注册、播放列表替换和双 voice 交叉淡化先完整验证/预留再提交；失败不留下半注册 clip、半启动 voice 或半切换音乐。
 - PCM 是创建后不可变的预解码 f32 mono/stereo，采样率必须为 48000；clip 注册时复制到系统拥有的固定存储。真实听感、Windows/macOS 和其他采样率重采样不在未验证证据中。
 - 复用现有 `ma_engine`，不创建设备级平行混音系统；既有 `test_audio`、流式 API 和总线行为必须继续通过。
@@ -27,7 +27,7 @@
 - `engine/tests/test_audio.c`：既有回归，继续覆盖旧距离/总线/句柄。
 - `engine/tests/test_audio_extended.c`：真实 fake/null miniaudio API、事件、音乐、遮挡和生命周期。
 - `engine/tests/test_audio_dsp.c`：确定性 DSP PCM 与组合顺序。
-- `engine/tests/test_audio_realtime_contract.cmake`：回调禁用分配、文件/解码和游戏入口的源级契约。
+- `engine/tests/test_audio_realtime_contract.cmake`：回调禁用分配、文件/解码和应用入口的源级契约。
 - `engine/CMakeLists.txt`：把扩展接入 `engine` 和 focused 测试。
 - `docs/design/audio_extended.md`：公共合同、容量、线程、PCM 格式和限制。
 - `docs/design/core_style_runtime.md`、`docs/Implementation_Status.md`：只更新已实际交付的 P10 状态。
@@ -242,7 +242,7 @@ fake ray 记录 listener/source 并按 user 返回 blocked；source `(2,0,0)`、
 
 - [x] **Step 2: 确认 RED 后实现主线程空间快照**
 
-ray 只在 trigger、`audio_voice_set_position`、`audio_system_update` 的 GameThread 路径执行。结果使用既有 `audio_attenuation_gain` 组合，写入每 voice `atomic_uint` f32-bit gain；回调只 load 并乘 source/bus/master/fade。listener 不变时不重复发 ray；无 ray callback 时只应用距离。
+ray 只在 trigger、`audio_voice_set_position`、`audio_system_update` 的 LogicThread 路径执行。结果使用既有 `audio_attenuation_gain` 组合，写入每 voice `atomic_uint` f32-bit gain；回调只 load 并乘 source/bus/master/fade。listener 不变时不重复发 ray；无 ray callback 时只应用距离。
 
 - [x] **Step 3: GREEN 与关键变异**
 
@@ -253,7 +253,7 @@ Expected: 全通过。临时忽略 ray 返回值、跳过 listener 更新重算�
 
 ```bash
 git add engine/src/audio/audio.c engine/src/audio/audio_extended.* engine/tests/test_audio_extended.c
-git commit -m "audio: drive occlusion and distance from game-thread rays"
+git commit -m "audio: drive occlusion and distance from logic-thread rays"
 ```
 
 ### Task 6: 实时约束、兼容回归、sanitizers 与文档交付

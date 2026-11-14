@@ -1,7 +1,7 @@
 # Round 11+ 性能优先补全计划
 
 > 在 Round 0–10 完成后，依据 [Implementation_Status.md](./Implementation_Status.md) 中仍为 **部分 / 桩 / 缺失** 的条目，制定后续补全路线。
-> **原则：性能最优先** — 先修“算了但没生效 / 多 pass 可合并 / CPU 热点可 GPU 化”，再补 gameplay / 工具链特性。
+> **原则：性能最优先** — 先修“算了但没生效 / 多 pass 可合并 / CPU 热点可 GPU 化”，再补 logic / 工具链特性。
 
 ## 当前缺口总览（按性能影响排序）
 
@@ -16,7 +16,7 @@
 | P2 | TAA motion vector | ~~无 per-object / 相机 MV~~ **R554/R555 forward 双 MRT、R560 deferred skinned 已收口**（水/粒子速度、RT3 NDC delta） | — |
 | P2 | 点光阴影(前向) | 仅 deferred cube | 前向 PBR 无点光阴影 |
 | P2 | Async loader 优先级 | 字段未生效 | 流式资源争抢 I/O |
-| P3 | Network 复制 | socket 有、无游戏同步 | 非渲染热点 |
+| P3 | Network 复制 | socket 有、无应用同步 | 非渲染热点 |
 | P3 | Animation blend/IK demo | 代码有、demo 未接 | 非帧预算热点 |
 | P3 | 字体 SDF / UI 完善 | Latin-1 atlas | 非 GPU 瓶颈 |
 | P3 | RHI bindless / push API | ~~部分缺失~~ **R441 纹理数组路线已落地**（前向材质间接单 execute，`BREAK_MAT_INDIRECT` 默认开；GL 实测无 ARB_bindless_texture，数组为唯一双后端通道） | 大场景材质切换——前向已解决、deferred/gbuffer **R442 已完成**（gbuffer array 化单 execute）；真 bindless（VK descriptor indexing）留作 VK-only 后续选项；**R444**：push-constant 公开 API 落地（`rhi_cmd_push_constants`，校验按声明 range，修 `[push_range_size,256)` flush 静默截断；GL 文档化空操作），缺口仅剩真 bindless |
@@ -2138,7 +2138,7 @@ forward_velocity）、骨骼动画（skeleton.c）、平台时间（time.c）。
 ## R114：平台窗口管理与手柄输入审查（无需修复）
 
 **审查范围**：全平台窗口管理（window_x11.c 381 行 / window_wayland.c 719 行 /
-window_win32.c 518 行）、手柄输入（gamepad_linux.c 421 行 / gamepad_win.c 178 行）、
+window_win32.c 518 行）、手柄输入（pad_linux.c 421 行 / pad_win.c 178 行）、
 剔除辅助（cull.c 31 行）。
 
 ### 确认无需修复的子系统
@@ -2163,14 +2163,14 @@ window_win32.c 518 行）、手柄输入（gamepad_linux.c 421 行 / gamepad_win
    GetDpiForWindow/GetDpiForMonitor）。Raw Input 64 字节栈缓冲区 + size 检查。
    监视器枚举 WideCharToMultiByte + 显式 null 终止。全屏切换 save/restore
    windowed style + rect。相对鼠标 RegisterRawInputDevices + ClipCursor。
-4. **gamepad_linux.c**：evdev 设备发现（/dev/input/event*）。ioctl(EVIOCGBIT)
+4. **pad_linux.c**：evdev 设备发现（/dev/input/event*）。ioctl(EVIOCGBIT)
    过滤手柄（EV_KEY + EV_ABS + BTN_GAMEPAD）。ioctl(EVIOCGABS) 查询轴校准。
    inotify 热插拔（IN_CREATE/IN_DELETE/IN_ATTRIB）。所有轴/按钮索引检查
    `>= 0 && < MAX`。normalize_axis/trigger 检查 `range == 0`。read 错误处理
    EAGAIN/EWOULDBLOCK/ENODEV。close_device 检查 `connected` + `fd >= 0`。
-5. **gamepad_win.c**：动态 XInput 加载（xinput1_4 → xinput1_3 → xinput9_1_0）。
-   gamepad_poll 检查 `initialized && out_pads && get_state`。normalize_stick
-   死区 + 重缩放。断开连接状态清除。gamepad_shutdown 检查 `initialized && dll`。
+5. **pad_win.c**：动态 XInput 加载（xinput1_4 → xinput1_3 → xinput9_1_0）。
+   pad_poll 检查 `initialized && out_pads && get_state`。normalize_stick
+   死区 + 重缩放。断开连接状态清除。pad_shutdown 检查 `initialized && dll`。
 6. **cull.c**：frustum_from_vp 提取 6 平面。`len2 > 1e-12f` 防除零。
    sign_mask 预计算 p-vertex 选择。fast_rsqrt 归一化。
 
@@ -2846,7 +2846,7 @@ malloc 失败时 `fread(NULL, ...)` 为未定义行为。
 6. **platform 代码**（5 个 demo 文件）：仅 1 处 `memcpy(ms.pData, OurVertices, sizeof(VERTEX) * 3)` — 固定 3 顶点拷贝 ✓。无 malloc/calloc/realloc ✓。→ 安全
 7. **framework 代码**（3 个 C++ 文件，共 96 行）：桩实现，无内存分配。→ 安全
 8. **无危险函数确认**：全代码库无 `scanf`（无 's' 前缀）、无 `strcpy`、无 `strcat`、无 `gets`、无 `sprintf`。→ 安全
-9. **fread 返回值**（main.c 游戏状态加载 L2677-2698）：`magic` 初始化为 0 + `== 0x534E4547u` 守卫保护整个块；`pc` 初始化为 0 + 循环条件保护；`feof(lf)` 守卫可选数据。→ 逻辑上可接受
+9. **fread 返回值**（main.c 应用状态加载 L2677-2698）：`magic` 初始化为 0 + `== 0x534E4547u` 守卫保护整个块；`pc` 初始化为 0 + 循环条件保护；`feof(lf)` 守卫可选数据。→ 逻辑上可接受
 10. **memcpy sizeof 乘法**（asset.c 9 处 + skeleton.c 1 处）：`sizeof(f32) * 16` 等固定常量 ✓；`vi * ps` 索引乘法在 u32 范围内 ✓。→ 安全
 
 **结论**：R127 未发现新的可修复问题。经过 R102-R127 九轮深度审查（R102-R119 全量源码审查 + R120-R127 八轮深度修复扫描），代码库的内存安全、资源管理、边界检查均已达到工业级水平。
@@ -5013,7 +5013,7 @@ glTF 2.0 §3.6.2.4 要求 accessor 相对 buffer 的偏移
 | 32 | 6255 | `src/main.c` | `scene_state.bin` 读取路径已核（见上），无缺陷；模块与应用状态深度耦合，抽出来测属大改动 |
 | 15 | 6904 | `src/rhi/rhi_vk.c` | 分配与 memcpy 的尺寸源自引擎自身描述符，非外部文件 |
 | 4 | 496 | `src/platform/filewatch.c` | inotify 由内核喂数据，属加固范畴（见上） |
-| 4 | 420 | `src/platform/gamepad_linux.c` | 同上，`/dev/input` 事件由内核产生 |
+| 4 | 420 | `src/platform/pad_linux.c` | 同上，`/dev/input` 事件由内核产生 |
 | 3 | 187 | `src/asset/hotreload.c` | 走 `stb_image`，已由 R144/R153/R160-B 封住 |
 
 **另记录（未改）**：动画采样器的读取（`asset.c:603` 的 `times_data[time_count-1]`、
@@ -5758,12 +5758,12 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
 
 ## R334：Linux 手柄 evdev 后端（事件解析/轴缩放/按钮边沿锁存/inotify 热插拔）深审——无 demo 可达高置信 bug，不修复
 
-- 审计范围与结论（`engine/src/platform/gamepad_linux.c`）：
-  - 越界安全：按钮经 `evdev_btn_to_gamepad(code)` 映射，`idx>=0 && idx<INPUT_MAX_PAD_BUTTONS(16)` 才 `apply_button_state(&out->buttons[idx],...)`；轴 `if (ax>=0 && ax<INPUT_MAX_AXES(6) && ev.code<ABS_CNT && d->abs_info[ev.code].present)`；HAT0X/HAT0Y 直写 `out->buttons[GAMEPAD_BTN_DPAD_LEFT/RIGHT/UP/DOWN]`——这些常量为 13/14/11/12，恒 `<16`，无运行时查界但静态在界。
+- 审计范围与结论（`engine/src/platform/pad_linux.c`）：
+  - 越界安全：按钮经 `evdev_btn_to_pad(code)` 映射，`idx>=0 && idx<INPUT_MAX_PAD_BUTTONS(16)` 才 `apply_button_state(&out->buttons[idx],...)`；轴 `if (ax>=0 && ax<INPUT_MAX_AXES(6) && ev.code<ABS_CNT && d->abs_info[ev.code].present)`；HAT0X/HAT0Y 直写 `out->buttons[PAD_BTN_DPAD_LEFT/RIGHT/UP/DOWN]`——这些常量为 13/14/11/12，恒 `<16`，无运行时查界但静态在界。
   - 按钮状态机（`buttons[]`：0=up/1=released/2=held/3=pressed）：`apply_button_state(slot,pressed)`：pressed 且 `*slot!=2` → 3（已 held 则保持 2）；released 且 `*slot==3||*slot==2` → 1。evdev 仅在实际状态变化时投递 EV_KEY 事件，故 3→2（pressed→held）与 1→0（released→up）的每帧衰减由上层 input 帧推进完成，属标准即时输入边沿锁存。
   - 轴缩放：`normalize_axis(v,min,max)` = `(v-min)/(max-min)*2-1`（`range==0→0` 防除零）；`normalize_trigger` = `(v-min)/(max-min)` 并 clamp[0,1]（扳机报 0..max → 0..1）。`device_query_axes` 用 `ioctl(EVIOCGABS(axis))` 读 min/max，`present=(min!=0||max!=0)`；ABS_Z/ABS_BRAKE→LTRIGGER、ABS_RZ/ABS_GAS→RTRIGGER（`is_trigger=true`），ABS_HAT0X/Y 转 DPAD 按钮（不落轴归一，因这些 case 不设 `ax`）。
-  - 热插拔：`inotify_init1(IN_NONBLOCK|IN_CLOEXEC)` + `inotify_add_watch(/dev/input, IN_CREATE|IN_DELETE|IN_ATTRIB)`，任一失败仅告警降级（hot-plug 关闭，不致命）；初始 `opendir` 扫描 `event*`；`process_inotify_events` 循环读、内层按 `p += sizeof(struct inotify_event)+ev->len` 步进、仅 `ev->len>0 && name` 前缀为 "event" 才处理，IN_CREATE/ATTRIB→`try_open_device`（EACCES 常见，靠后续 udev 设权限触发 IN_ATTRIB 重试）、IN_DELETE→`find_slot_by_path`+`close_device`。`try_open_device` 先 `find_slot_by_path` 去重、`fd_is_gamepad` 用 EVIOCGBIT 验 EV_KEY+EV_ABS+至少一个规范手柄键、`find_free_slot` 满则关 fd 告警。
-  - 生命周期：`close_device` 幂等（`!connected` 早退、close fd、memset、fd=-1）；`gamepad_poll` 先 `process_inotify_events` 再遍历设备——断开帧（`!d->connected && s->connected`）memset axes、全部按钮 `apply_button_state(false)`→released、清 connected/name；连接帧置 connected+`snprintf` name；`process_device_events` 非阻塞 read 循环：完整帧处理、EAGAIN/EWOULDBLOCK 返回、其他 errno（ENODEV 设备移除）`close_device`、短读/0 返回。`gamepad_shutdown` 关所有设备、`inotify_rm_watch`+close、memset。
+  - 热插拔：`inotify_init1(IN_NONBLOCK|IN_CLOEXEC)` + `inotify_add_watch(/dev/input, IN_CREATE|IN_DELETE|IN_ATTRIB)`，任一失败仅告警降级（hot-plug 关闭，不致命）；初始 `opendir` 扫描 `event*`；`process_inotify_events` 循环读、内层按 `p += sizeof(struct inotify_event)+ev->len` 步进、仅 `ev->len>0 && name` 前缀为 "event" 才处理，IN_CREATE/ATTRIB→`try_open_device`（EACCES 常见，靠后续 udev 设权限触发 IN_ATTRIB 重试）、IN_DELETE→`find_slot_by_path`+`close_device`。`try_open_device` 先 `find_slot_by_path` 去重、`fd_is_pad` 用 EVIOCGBIT 验 EV_KEY+EV_ABS+至少一个规范手柄键、`find_free_slot` 满则关 fd 告警。
+  - 生命周期：`close_device` 幂等（`!connected` 早退、close fd、memset、fd=-1）；`pad_poll` 先 `process_inotify_events` 再遍历设备——断开帧（`!d->connected && s->connected`）memset axes、全部按钮 `apply_button_state(false)`→released、清 connected/name；连接帧置 connected+`snprintf` name；`process_device_events` 非阻塞 read 循环：完整帧处理、EAGAIN/EWOULDBLOCK 返回、其他 errno（ENODEV 设备移除）`close_device`、短读/0 返回。`pad_shutdown` 关所有设备、`inotify_rm_watch`+close、memset。
 - 结论：事件解析越界防护、按钮边沿锁存语义、轴/扳机缩放与除零守卫、inotify 热插拔与权限重试、去重/幂等 close、断开清零均正确。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
 
 ## R333：地形系统（高度图双线性采样/central-diff 法线/侵蚀邻居访问/编辑区域重建/坐标逆变换）深审——无 demo 可达高置信 bug，不修复
@@ -6143,10 +6143,10 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
 
 ## R295：`input_set_key` 按键 held 态被 OS 自动重复重置为 just-pressed → 一次性动作随重复率误触发（已完成）
 
-### [x] R295-A input_set_key 的 just-pressed 边沿守卫与 gamepad 版不一致
+### [x] R295-A input_set_key 的 just-pressed 边沿守卫与 pad 版不一致
 - [x] `keys[]` 语义 0=up/1=just-released/2=held/3=just-pressed；`input_key_pressed`==3 用作"本帧刚按下"边沿。旧 `input_set_key(pressed)` 守卫 `if (s->keys[key] != 3)` 允许 **2(held)→3**：Win32 后端 `WM_KEYDOWN`(未过滤 lParam bit30 重复位)与 Cocoa `keyDown:`(未看 `isARepeat`)把 OS 自动重复原样转发为重复 `pressed` 事件 → 按住键时 `input_key_pressed` 随重复率反复置真,绑定到 just-pressed 边沿的一次性动作(跳跃/切换)误触发多次。
-- [x] 同文件 gamepad 版 `input_set_pad_button` 用 `if (*slot != 2)` 正确规避;键盘版改为 `if (s->keys[key] != 2 && s->keys[key] != 3)`——仅从 up(0)/just-released(1) 锁存新边沿,held/pressed 不重置。`input_key_down`(2 或 3 均为 down)不受影响,按住语义不变；释放路径与合法"释放后再按"边沿保持。
-- [x] Wayland 后端由合成器不发重复 key 事件(客户端侧合成),故 Linux 不触发,但引擎函数本身仍需与 gamepad 契约一致。
+- [x] 同文件 pad 版 `input_set_pad_button` 用 `if (*slot != 2)` 正确规避;键盘版改为 `if (s->keys[key] != 2 && s->keys[key] != 3)`——仅从 up(0)/just-released(1) 锁存新边沿,held/pressed 不重置。`input_key_down`(2 或 3 均为 down)不受影响,按住语义不变；释放路径与合法"释放后再按"边沿保持。
+- [x] Wayland 后端由合成器不发重复 key 事件(客户端侧合成),故 Linux 不触发,但引擎函数本身仍需与 pad 契约一致。
 
 **验收**:新增回归 `key_repeat_while_held_does_not_refire_pressed`——press→new_frame(held)→再 press(模拟重复) 断言 `keys=2`/`!pressed`,再 release→press 断言重新锁存 3。旧 `!=3` guard 下该测试 FAIL(`s.keys['a'] != 2`),修复后 PASS。双后端构建通过；VK/GL CTest 各 **31/31**。
 

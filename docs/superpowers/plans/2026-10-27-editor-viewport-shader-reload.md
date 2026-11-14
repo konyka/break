@@ -13,7 +13,7 @@
 - 设计合同：`docs/superpowers/specs/2026-10-27-editor-viewport-shader-reload-design.md`。
 - 默认 Vulkan 不变；OpenGL 永久保留为最终降级方案和渲染对比基准。
 - 生产代码 C11；不增加依赖、UI 框架、线程池、RenderThread 或 Runtime Core batch ABI。
-- `engine/src/asset/hotreload.c` 和游戏 renderer 的现有同步 hot reload 行为不变。
+- `engine/src/asset/hotreload.c` 和应用 renderer 的现有同步 hot reload 行为不变。
 - 每个文件不超过 `SHADER_MAX_FILE_BYTES`（4 MiB）；路径不得截断成另一个资源名。
 - 新功能先 RED 后实现；mutation 后恢复源码；不对已提交 golden 使用 `GOLDEN_UPDATE=1`。
 - 不交付纹理热加载、scene-faithful 材质、`#include` 依赖、device migration、Metal/D3D12 或 Windows/macOS 运行证据。

@@ -6,7 +6,7 @@ This closeout implements Session-side semantic enforcement only. Snowflake and r
 
 ## Contracts
 
-- Message registry phase is enforced by `BreakSessionManager` on the GameThread.
+- Message registry phase is enforced by `BreakSessionManager` on the LogicThread.
 - AUTH dispatch occurs while authenticating; a handler failure does not authenticate and moves the entry to `CLOSING`.
 - PING is idempotent for a repeated `(connection, sequence)` and does not dispatch its handler twice.
 - Closed entries retain their lifetime slot and classify later events as stale; they are never rebound.

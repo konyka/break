@@ -79,7 +79,7 @@ Break Engine 采用**严格分层、单向依赖**的架构模型：
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Application Layer（应用层）                   │
-│         empty_application / 用户游戏逻辑 / 编辑器                │
+│         empty_application / 用户应用逻辑 / 编辑器                │
 ├─────────────────────────────────────────────────────────────────┤
 │                     Framework Layer（框架层）                     │
 │  RuntimeModuleInterface → ApplicationInterface → BaseApplication│
@@ -100,7 +100,7 @@ Break Engine 采用**严格分层、单向依赖**的架构模型：
 
 ### 层级职责
 
-- **Application Layer** — 最终用户代码，实现具体的游戏/应用逻辑
+- **Application Layer** — 最终用户代码，实现具体的应用/应用逻辑
 - **Framework Layer** — C++ 模块化框架，定义 `RuntimeModuleInterface`（Init/Tick/DeInit 三阶段），提供 `BaseApplication` 基类
 - **Engine Layer** — 纯 C 引擎核心，提供所有运行时子系统
   - High-Level：面向场景的渲染管线、ECS、资源管理、动画、物理
@@ -126,7 +126,7 @@ graph TB
 | 模块 | 位置 | 职责 |
 |------|------|------|
 | **Core** | `engine/src/core/` | 基础设施：日志(log)、内存分配器(alloc)、字符串(string)、性能剖析(profiler)、类型定义(types)、断言(assert) |
-| **Platform** | `engine/src/platform/` | 平台抽象：窗口管理(window_wayland / window_win32 / window_cocoa)、输入处理(input，含键盘/鼠标/游戏手柄)、高精度时间(time)、文件监视(filewatch，递归；macOS kqueue/FSEvents 自适应)、高 DPI 与多显示器查询；Linux 仅原生 Wayland |
+| **Platform** | `engine/src/platform/` | 平台抽象：窗口管理(window_wayland / window_win32 / window_cocoa)、输入处理(input，含键盘/鼠标/手柄)、高精度时间(time)、文件监视(filewatch，递归；macOS kqueue/FSEvents 自适应)、高 DPI 与多显示器查询；Linux 仅原生 Wayland |
 | **RHI** | `engine/src/rhi/` | 渲染硬件接口：统一的 GPU API 抽象层，编译期单后端：Vulkan (`rhi_vk.c`)、Metal (`rhi_metal.m`，Apple)、D3D12 (`rhi_d3d12.c`，仅 Windows)、OpenGL (`rhi_gl.c`，长期保留：最后降级方案 + 渲染对比基准)、headless fail-closed stub (`rhi_headless.c`) |
 | **Math** | `engine/src/math/` | 数学库：向量、矩阵、四元数、变换等 |
 | **ECS** | `engine/src/ecs/` | 实体-组件-系统架构，数据驱动的对象管理；不可变 Snapshot/Delta 与确定性组件 schema 见 [`design/ecs_snapshot_replication_aoi.md`](design/ecs_snapshot_replication_aoi.md) |
@@ -145,7 +145,7 @@ graph TB
 
 ```
                           ┌─────────┐
-                          │  Game   │
+                          │  Application   │
                           └────┬────┘
                                │
             ┌──────────────────┼──────────────────┐
@@ -431,7 +431,7 @@ gate = `test_renderer_backend_token_gate`（headless label，扫描 main.c / ren
 2.0.0 起 Linux 仅有原生 Wayland 配置；本机 GL/VK runtime 已执行，Weston CI 待 push 核查。下表不代表所有 GPU、驱动或 compositor 组合都已覆盖：
 
 - **窗口系统**：Wayland（XDG Shell + xkbcommon）是唯一后端，通过 EGL 管理 OpenGL 上下文，并支持 Vulkan `VK_KHR_wayland_surface`；旧 `ENGINE_ENABLE_WAYLAND=OFF` 配置明确失败。
-- **输入系统**：键盘、鼠标（含侧键、捕获/隐藏/相对模式）、游戏手柄（基于 evdev，支持热插拔、摇杆/扳机归一化、最多 4 个手柄）。
+- **输入系统**：键盘、鼠标（含侧键、捕获/隐藏/相对模式）、手柄（基于 evdev，支持热插拔、摇杆/扳机归一化、最多 4 个手柄）。
 - **音频设备**：基于 miniaudio 的设备枚举与选择 API（`audio_get_device_count` / `audio_set_device`）。
 - **文件监视**：Linux 基于 inotify 的递归目录监视与结构化事件解析，macOS 基于 kqueue/FSEvents 自适应监视，驱动 Shader/资源热重载。
 - **高 DPI / 多显示器**：`platform_get_dpi` / `platform_get_scale_factor` / `platform_get_monitor_info` 统一 API。
@@ -452,7 +452,7 @@ view/copy/release 和 envelope validation。
 适配器支持两种互斥驱动方式：`BREAK_NET_DRIVE_STEP` 由单一调用方逐次调用
 `break_net_reactor_step`，`BREAK_NET_DRIVE_THREAD` 由 Break 创建并 join 一个
 host thread。每个 reactor 只能有一个 Snowflake driver；回调/网络线程不调用
-GameThread、Session、ECS、World、Lua、UI 或 RHI。`start` 通过真实的
+LogicThread、Session、ECS、World、Lua、UI 或 RHI。`start` 通过真实的
 `snow_net_thread_add_acceptor_with_handlers` 注册 parser/open/packet/send-drained/close
 handlers；adapter loopback fixture 驱动真实 accept/read/write/close。消息 view 借用输入，owned
 message 由 Break 拷贝并由 `break_net_message_release` 释放。adapter focused normal/ASan/TSan
@@ -460,7 +460,7 @@ message 由 Break 拷贝并由 `break_net_message_release` 释放。adapter focu
 cleanup，bounded stop 也已实现。
 
 当前 Session/Protocol 切片已提供 18-byte little-endian `BreakNetEnvelope`、默认
-message registry、256 项有界 adapter event/outbound queues，以及由 GameThread
+message registry、256 项有界 adapter event/outbound queues，以及由 LogicThread
 串行拥有的 `BreakSessionManager`。Session 状态迁移为
 `NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED`，也允许
 `NEW -> CLOSING -> CLOSED`；已关闭或未知 connection 的后续 event 被拒绝。
@@ -484,9 +484,9 @@ platform lane 尚未在本机验证；Snowflake per-context completion/drop noti
 
 最新验证记录（2026-10-23，Task 7）：clean 构建树 `build-sdd-t7`（`-DBREAK_ENABLE_SNOWFLAKE=ON`，187 项注册测试）中 5 个 fuzz executable 全部显式构建，`ctest -L fuzz` **5/5**；完整构建后非 graphics/fuzz CTest 178 项入选：**177 通过、0 失败、1 platform skip**（`test_d3d12_dependency_gate`，Windows-only lane）。ASan+UBSan 树（`build-sdd-t7-asan`）与 TSan 树（`build-sdd-t7-tsan`）的 runtime/ecs/net focused lane 各 **16/16** 通过、无 sanitizer 报告。早期记录中的 `test_myui_text_layout` Hebrew boundary 失败本次未复现（该测试在 full run 中通过）；`test_vulkan` 带 graphics label，本轮未在本机执行。`test_break_replication_fragment` 在各 lane 均通过；它带有一条与本计划提交无关的间歇性 flake 记录（已在 ledger 停放）。该证据确认 focused API 与正式可选 target 已实现及其测试边界，不等同于正式 engine runtime/session integration；后者另列边界，包括真实 Snowflake registration/socket-send E2E、Task 6 scheduler/close-event integration、Task 7 timeout/eviction chain、timeout/eviction 或 cryptographic authentication。fragment checksum 仍非加密认证。
 
-ECS 的 GameThread 拥有可变 `World`；系统完成并进入结构屏障后，`world_snapshot.*` 才能深拷贝
+ECS 的 LogicThread 拥有可变 `World`；系统完成并进入结构屏障后，`world_snapshot.*` 才能深拷贝
 带 `(index,generation)` 身份的实体和已注册确定性 POD 组件。Snapshot build 不会自动建立
-barrier，调用方必须维持 GameThread/结构屏障纪律。`world_delta.*` 只在不可变 Snapshot 间
+barrier，调用方必须维持 LogicThread/结构屏障纪律。`world_delta.*` 只在不可变 Snapshot 间
 做 diff，并通过 ECS-owned deep clone/staging、最终验证和 atomic replace commit 应用；失败时
 销毁 staging，原 World 保持不变。schema hash 基于 canonical component ID，delta 还要求 tick
 单调递增；clone、mutation、final-validation fault injection 仅用于测试。`break_aoi.*`
@@ -495,7 +495,7 @@ barrier，调用方必须维持 GameThread/结构屏障纪律。`world_delta.*` 
 destroy/dormant 消息，并通过 BreakNetAdapter 有界 outbound queue 发送。
 
 网络线程只处理有界消息 view/copy 和队列事件，不访问 World/ECS/Lua/UI/RHI；网络回调不
-直接变更 GameThread 状态。Task 7 的 `break_replication_fragment.*` 已实现 transport-independent
+直接变更 LogicThread 状态。Task 7 的 `break_replication_fragment.*` 已实现 transport-independent
 分片与 opaque reassembly：携带 delta/base ID、fragment index/count、FNV-1a checksum，支持
 乱序、完整性校验、精确重复识别、冲突拒绝、owned 完整 payload、reset/destroy；该 API 不
 直接调用 Snowflake 或 World。需要明确：snapshot/schema/delta/AoI/replication focused API 已实现，并由两个正式的可选、
@@ -534,9 +534,9 @@ cmake -B build-asan -DENGINE_USE_ASAN=ON && make -C build-asan
 | [Phase5B_ClusteredLighting.md](Phase5B_ClusteredLighting.md) | Clustered Lighting 技术方案 |
 | [BW191_Architecture.md](BW191_Architecture.md) | BW191 架构参考 |
 | [CryENGINE_Architecture.md](CryENGINE_Architecture.md) | CryENGINE 架构分析 |
-| [design/core_style_runtime.md](design/core_style_runtime.md) | 补齐 Cry 式游戏能力的设计合同（设计-only，2026-11-01） |
+| [design/core_style_runtime.md](design/core_style_runtime.md) | 补齐 Cry 式应用能力的设计合同（设计-only，2026-11-01） |
 | [GEFS_Architecture.md](GEFS_Architecture.md) | GEFS 架构参考 |
-| [T3DGameR1_Architecture.md](T3DGameR1_Architecture.md) | T3D 游戏引擎架构参考 |
+| [T3DGameR1_Architecture.md](T3DGameR1_Architecture.md) | T3D 引擎架构参考 |
 
 ### 待创建文档
 

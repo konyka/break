@@ -2,12 +2,12 @@
 
 ## 1. 项目概述
 
-**GameEngineFromScratch** (GEFS) 是知乎专栏《从零开始手敲次世代游戏引擎》的配套教学项目。它是一个从零构建的现代游戏引擎，采用 C++20 编写，跨平台支持多个图形 API。
+**GameEngineFromScratch** (GEFS) 是知乎专栏《从零开始手敲次世代引擎》的配套教学项目。它是一个从零构建的现代引擎，采用 C++20 编写，跨平台支持多个图形 API。
 
 - **语言**: C++20 (核心), CUDA (可选), ISPC (可选)
 - **构建系统**: CMake 3.20+
 - **许可证**: MIT
-- **源文件规模**: ~205+ (Framework+RHI), 全项目含 Asset、Game、Viewer 等
+- **源文件规模**: ~205+ (Framework+RHI), 全项目含 Asset、Application、Viewer 等
 
 ## 2. 支持的平台和图形 API
 
@@ -42,7 +42,7 @@ GameEngineFromScratch/
 ├── Physics/          # 物理引擎集成
 ├── Platform/         # 平台抽象层
 ├── Asset/            # 引擎资源 (模型、纹理、着色器等)
-├── Game/             # 游戏示例 (台球)
+├── Application/             # 应用示例 (台球)
 ├── Viewer/           # 模型查看器工具
 ├── Utility/          # 通用工具库
 ├── Test/             # 测试
@@ -76,7 +76,7 @@ Interface/
 ├── IDispatchPass.hpp        # 分发通道
 ├── IDrawPass.hpp            # 绘制通道
 ├── IDrawSubPass.hpp         # 绘制子通道
-├── IGameLogic.hpp           # 游戏逻辑接口
+├── IGameLogic.hpp           # 应用逻辑接口
 ├── IGraphicsManager.hpp     # 图形管理器
 ├── IImageEncoder.hpp        # 图像编码
 ├── IImageParser.hpp         # 图像解析
@@ -259,16 +259,16 @@ Platform/
 - 文件系统路径
 - 线程和时间
 
-## 8. 游戏层和工具
+## 8. 应用层和工具
 
-### 8.1 Game (`Game/`)
+### 8.1 Application (`Application/`)
 
 ```
-Game/
-└── Billiard/                # 台球游戏示例
+Application/
+└── Billiard/                # 台球应用示例
     ├── main.cpp             # 入口
-    ├── BilliardGameLogic.cpp/hpp   # 游戏逻辑
-    └── BilliardGameConfig.cpp      # 游戏配置
+    ├── BilliardGameLogic.cpp/hpp   # 应用逻辑
+    └── BilliardGameConfig.cpp      # 应用配置
 ```
 
 ### 8.2 Viewer (`Viewer/`)
@@ -283,7 +283,7 @@ Viewer/
 ## 9. 资源管线
 
 ### 支持的场景格式
-- **OpenGEX** - 开源游戏引擎交换格式
+- **OpenGEX** - 开源引擎交换格式
 - **Collada** - 规划中，未实现
 
 ### 支持的纹理格式
@@ -317,8 +317,8 @@ Viewer/
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│                    Game / Viewer                       │
-│  (IGameLogic 实现 - 台球游戏、模型查看器)                │
+│                    Application / Viewer                       │
+│  (IGameLogic 实现 - 台球应用、模型查看器)                │
 ├────────────────────────────────────────────────────────┤
 │              Framework / Interface                     │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐ │

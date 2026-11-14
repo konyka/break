@@ -323,7 +323,7 @@ Restore/rebuild the unmodified sources and rerun GREEN. Record exact mutant/test
 - Modify: `engine/CMakeLists.txt`
 
 **Interfaces:**
-- Consumes: existing `IKSystem`, local TRS, world matrices, and the current `ragdoll_active` boolean supplied by the GameThread owner.
+- Consumes: existing `IKSystem`, local TRS, world matrices, and the current `ragdoll_active` boolean supplied by the LogicThread owner.
 - Produces: `bool anim_ik_solve_unless_ragdoll(IKSystem *, Vec3 *, Quat *, const Mat4 *, u32, bool ragdoll_active)`.
 
 - [ ] **Step 1: Write the failing exclusion test**

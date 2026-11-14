@@ -4,15 +4,15 @@
 
 **Goal:** 交付可执行、可安全序列化且可由 myui/undo 编辑的有界 Flow Graph。
 
-**Architecture:** 新建独立 `break_flow` 图资产与运行时库，运行时通过 `break_game` 原子动作批次修改实体。`BreakEditorDoc` 持有图资产，图命令保存前后版本化字节以保证 undo/redo 的 id 和连接完全恢复；独立 myui 列表面板调用这些命令。
+**Architecture:** 新建独立 `break_flow` 图资产与运行时库，运行时通过 `break_kernel` 原子动作批次修改实体。`BreakEditorDoc` 持有图资产，图命令保存前后版本化字节以保证 undo/redo 的 id 和连接完全恢复；独立 myui 列表面板调用这些命令。
 
-**Tech Stack:** C11、CTest、`test_framework.h`、现有 BreakGame/ECS、BreakEditorCmdStack、myui widgets；无新依赖。
+**Tech Stack:** C11、CTest、`test_framework.h`、现有 BreakKernel/ECS、BreakEditorCmdStack、myui widgets；无新依赖。
 
 ## Global Constraints
 
 - 所有写操作仅在 `/home/timeshift/opensource/break/.worktrees/cry-flow-ai`，分支 `cry-wave1-flow-ai`；不 push、不建 PR、不改 `docs/Implementation_Status.md`。
 - 热路径不临时分配；节点硬上限 256、连接硬上限 1024，超限报错，不静默截断。
-- GameThread 独占运行时和实体修改；持久实体身份使用 `{index, generation}`。
+- LogicThread 独占运行时和实体修改；持久实体身份使用 `{index, generation}`。
 - 新库不链入 `engine`、`engine_demo`、`dxx_break`；不重命名或复用 `rule_engine` 冒充 Flow Graph。
 - 每组行为先真实 RED 再 GREEN；环、预算、序列化防护和原子动作执行变异检查。
 - normal、ASan+UBSan、TSan focused 均以 `cmake --build ... -j3` 构建并实际运行。
@@ -20,12 +20,12 @@
 
 ## File Structure
 
-- `engine/src/game/break_flow.h`：公开图、端口、序列化、运行时 API 与硬上限。
-- `engine/src/game/break_flow_internal.h`：图/运行时固定存储布局和内部验证函数。
-- `engine/src/game/break_flow_graph.c`：节点、连接、稳定 id、端口检查、DFS 环检测。
-- `engine/src/game/break_flow_serial.c`：v1 小端编码与 fail-closed 解码。
-- `engine/src/game/break_flow_runtime.c`：确定性队列、求值、预算、延迟和动作暂存。
-- `engine/src/game/break_game_flow.c`：GameThread 实体动作批次预校验与原子提交。
+- `engine/src/kernel/break_flow.h`：公开图、端口、序列化、运行时 API 与硬上限。
+- `engine/src/kernel/break_flow_internal.h`：图/运行时固定存储布局和内部验证函数。
+- `engine/src/kernel/break_flow_graph.c`：节点、连接、稳定 id、端口检查、DFS 环检测。
+- `engine/src/kernel/break_flow_serial.c`：v1 小端编码与 fail-closed 解码。
+- `engine/src/kernel/break_flow_runtime.c`：确定性队列、求值、预算、延迟和动作暂存。
+- `engine/src/kernel/break_kernel_flow.c`：LogicThread 实体动作批次预校验与原子提交。
 - `engine/src/editor/editor_flow.h/.c`：文档图资产访问和 undoable 图命令。
 - `engine/apps/editor/editor_panel_flow.c`：真实 myui 节点列表、连接和属性编辑。
 - `engine/tests/test_break_flow_graph.c`：图结构、端口、容量与环。
@@ -40,7 +40,7 @@
 ### Task 1: 有界图、显式端口与环检测
 
 **Files:**
-- Create: `engine/src/game/break_flow.h`, `engine/src/game/break_flow_internal.h`, `engine/src/game/break_flow_graph.c`
+- Create: `engine/src/kernel/break_flow.h`, `engine/src/kernel/break_flow_internal.h`, `engine/src/kernel/break_flow_graph.c`
 - Create: `engine/tests/test_break_flow_graph.c`
 - Modify: `engine/CMakeLists.txt:678`
 
@@ -72,7 +72,7 @@ ASSERT_EQ(break_flow_graph_link_count(g), 1u);
 
 - [ ] **Step 2: 注册目标并确认 RED**
 
-在 `break_game` 后注册 `break_flow` 静态库及 `test_break_flow_graph`。运行：
+在 `break_kernel` 后注册 `break_flow` 静态库及 `test_break_flow_graph`。运行：
 
 ```bash
 cmake -S engine -B build-flow-normal -DENGINE_RHI_BACKEND=opengl -DBREAK_ENABLE_CRYPTO=OFF
@@ -118,7 +118,7 @@ cmake --build build-flow-normal --target test_break_flow_graph -j3
 - [ ] **Step 6: 提交**
 
 ```bash
-git add engine/src/game/break_flow* engine/tests/test_break_flow_graph.c engine/CMakeLists.txt
+git add engine/src/kernel/break_flow* engine/tests/test_break_flow_graph.c engine/CMakeLists.txt
 git commit -m "flow: add bounded graph with explicit ports"
 ```
 
@@ -127,8 +127,8 @@ git commit -m "flow: add bounded graph with explicit ports"
 ### Task 2: 版本化安全序列化
 
 **Files:**
-- Create: `engine/src/game/break_flow_serial.c`, `engine/tests/test_break_flow_serial.c`
-- Modify: `engine/src/game/break_flow.h`, `engine/src/game/break_flow_internal.h`, `engine/CMakeLists.txt`
+- Create: `engine/src/kernel/break_flow_serial.c`, `engine/tests/test_break_flow_serial.c`
+- Modify: `engine/src/kernel/break_flow.h`, `engine/src/kernel/break_flow_internal.h`, `engine/CMakeLists.txt`
 
 **Interfaces:**
 - Produces: `break_flow_serialized_size`, `break_flow_serialize`, `break_flow_deserialize(const void *bytes, usize len, BreakFlowGraph **out)`。
@@ -196,21 +196,21 @@ cmake --build build-flow-normal --target test_break_flow_serial test_break_flow_
 - [ ] **Step 6: 提交**
 
 ```bash
-git add engine/src/game/break_flow* engine/tests/test_break_flow_serial.c engine/CMakeLists.txt
+git add engine/src/kernel/break_flow* engine/tests/test_break_flow_serial.c engine/CMakeLists.txt
 git commit -m "flow: add validated versioned serialization"
 ```
 
 ---
 
-### Task 3: GameThread 原子实体动作批次
+### Task 3: LogicThread 原子实体动作批次
 
 **Files:**
-- Create: `engine/src/game/break_game_flow.c`, `engine/tests/test_break_game_flow.c`
-- Modify: `engine/src/game/break_game.h`, `engine/CMakeLists.txt`
+- Create: `engine/src/kernel/break_kernel_flow.c`, `engine/tests/test_break_kernel_flow.c`
+- Modify: `engine/src/kernel/break_kernel.h`, `engine/CMakeLists.txt`
 
 **Interfaces:**
-- Produces: `BreakGameEntityAction`（SET_POSITION/INVENTORY_ADD）和 `BreakGameError break_game_entity_actions_apply(BreakGame *, const BreakGameEntityAction *, u32 count)`。
-- Consumes: `break_game_actor_slot`、物品定义、已有 position component 和 owner 检查。
+- Produces: `BreakKernelEntityAction`（SET_POSITION/INVENTORY_ADD）和 `BreakKernelError break_kernel_entity_actions_apply(BreakKernel *, const BreakKernelEntityAction *, u32 count)`。
+- Consumes: `break_kernel_actor_slot`、物品定义、已有 position component 和 owner 检查。
 
 - [ ] **Step 1: 写真实 World 原子性测试**
 
@@ -218,11 +218,11 @@ git commit -m "flow: add validated versioned serialization"
 
 - [ ] **Step 2: 确认 RED**
 
-将 `flow` 加入既有 game test foreach 后：
+将 `flow` 加入既有 application test foreach 后：
 
 ```bash
-cmake --build build-flow-normal --target test_break_game_flow -j3
-./build-flow-normal/test_break_game_flow
+cmake --build build-flow-normal --target test_break_kernel_flow -j3
+./build-flow-normal/test_break_kernel_flow
 ```
 
 预期：缺少新 API 或原子断言失败。
@@ -232,21 +232,21 @@ cmake --build build-flow-normal --target test_break_game_flow -j3
 第二遍扫描累加同一 actor slot/item 的先前增量，使用 `u64` 计算最终数量。只有全部动作通过后才写 position/inventory：
 
 ```c
-u64 total = (u64)game->inventories[slot * stride + item];
+u64 total = (u64)application->inventories[slot * stride + item];
 for (u32 k = 0; k < i; ++k) {
     if (same_actor_and_item(actions, k, i)) total += actions[k].count;
 }
 total += actions[i].count;
-if (total > game->items[item].stack_limit) return BREAK_GAME_OVERLOAD;
+if (total > application->items[item].stack_limit) return BREAK_KERNEL_OVERLOAD;
 ```
 
 提交阶段仅做已无失败路径的 `memcpy` 和整数写，不调用可能中途失败的新分配。
 
-- [ ] **Step 4: GREEN 与既有 game 回归**
+- [ ] **Step 4: GREEN 与既有 application 回归**
 
 ```bash
-cmake --build build-flow-normal --target test_break_game_flow test_break_game_items test_break_game_actor -j3
-ctest --test-dir build-flow-normal -R 'test_break_game_(flow|items|actor)$' --output-on-failure
+cmake --build build-flow-normal --target test_break_kernel_flow test_break_kernel_items test_break_kernel_actor -j3
+ctest --test-dir build-flow-normal -R 'test_break_kernel_(flow|items|actor)$' --output-on-failure
 ```
 
 预期：三项目标全部通过。
@@ -258,8 +258,8 @@ ctest --test-dir build-flow-normal -R 'test_break_game_(flow|items|actor)$' --ou
 - [ ] **Step 6: 提交**
 
 ```bash
-git add engine/src/game/break_game* engine/tests/test_break_game_flow.c engine/CMakeLists.txt
-git commit -m "game: add atomic entity action batches"
+git add engine/src/kernel/break_kernel* engine/tests/test_break_kernel_flow.c engine/CMakeLists.txt
+git commit -m "application: add atomic entity action batches"
 ```
 
 ---
@@ -267,8 +267,8 @@ git commit -m "game: add atomic entity action batches"
 ### Task 4: 数学、比较、事件与顺序执行
 
 **Files:**
-- Create: `engine/src/game/break_flow_runtime.c`, `engine/tests/test_break_flow_runtime.c`
-- Modify: `engine/src/game/break_flow.h`, `engine/src/game/break_flow_internal.h`, `engine/CMakeLists.txt`
+- Create: `engine/src/kernel/break_flow_runtime.c`, `engine/tests/test_break_flow_runtime.c`
+- Modify: `engine/src/kernel/break_flow.h`, `engine/src/kernel/break_flow_internal.h`, `engine/CMakeLists.txt`
 
 **Interfaces:**
 - Produces: `BreakFlowRuntime`, `break_flow_runtime_create/destroy/reset/post/tick`, `break_flow_runtime_pending_count`, `break_flow_runtime_now_tick`。
@@ -303,7 +303,7 @@ cmake --build build-flow-normal --target test_break_flow_runtime -j3
 - [ ] **Step 5: 提交**
 
 ```bash
-git add engine/src/game/break_flow* engine/tests/test_break_flow_runtime.c engine/CMakeLists.txt
+git add engine/src/kernel/break_flow* engine/tests/test_break_flow_runtime.c engine/CMakeLists.txt
 git commit -m "flow: execute events math and entity actions"
 ```
 
@@ -312,7 +312,7 @@ git commit -m "flow: execute events math and entity actions"
 ### Task 5: 延迟、预算、失败回滚与线程防护
 
 **Files:**
-- Modify: `engine/src/game/break_flow_runtime.c`, `engine/src/game/break_flow.h`
+- Modify: `engine/src/kernel/break_flow_runtime.c`, `engine/src/kernel/break_flow.h`
 - Modify: `engine/tests/test_break_flow_runtime.c`
 
 **Interfaces:**
@@ -351,7 +351,7 @@ cmake --build build-flow-normal --target test_break_flow_runtime -j3
 - [ ] **Step 6: 提交**
 
 ```bash
-git add engine/src/game/break_flow* engine/tests/test_break_flow_runtime.c
+git add engine/src/kernel/break_flow* engine/tests/test_break_flow_runtime.c
 git commit -m "flow: bound scheduling and roll back failures"
 ```
 
@@ -458,7 +458,7 @@ git commit -m "editor: add myui flow graph panel"
 
 ```bash
 cmake --build build-flow-normal -j3
-ctest --test-dir build-flow-normal -R 'break_flow|break_game|editor_(flow|doc|cmd|shell)$' --output-on-failure
+ctest --test-dir build-flow-normal -R 'break_flow|break_kernel|editor_(flow|doc|cmd|shell)$' --output-on-failure
 ```
 
 预期：所有选中测试通过；构建只使用 `-j3`。
@@ -467,8 +467,8 @@ ctest --test-dir build-flow-normal -R 'break_flow|break_game|editor_(flow|doc|cm
 
 ```bash
 cmake -S engine -B build-flow-asan -DENGINE_RHI_BACKEND=opengl -DBREAK_ENABLE_CRYPTO=OFF -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
-cmake --build build-flow-asan --target test_break_flow_graph test_break_flow_serial test_break_flow_runtime test_break_game_flow test_editor_flow test_editor_shell -j3
-ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-flow-asan -R 'break_flow|break_game_flow|editor_(flow|shell)$' --output-on-failure
+cmake --build build-flow-asan --target test_break_flow_graph test_break_flow_serial test_break_flow_runtime test_break_kernel_flow test_editor_flow test_editor_shell -j3
+ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-flow-asan -R 'break_flow|break_kernel_flow|editor_(flow|shell)$' --output-on-failure
 ```
 
 预期：无 sanitizer 报告且全部通过。
@@ -477,8 +477,8 @@ ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build
 
 ```bash
 cmake -S engine -B build-flow-tsan -DENGINE_RHI_BACKEND=opengl -DBREAK_ENABLE_CRYPTO=OFF -DENGINE_USE_TSAN=ON
-cmake --build build-flow-tsan --target test_break_flow_runtime test_break_game_flow test_editor_flow -j3
-TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-flow-tsan -R 'break_flow_runtime|break_game_flow|editor_flow$' --output-on-failure
+cmake --build build-flow-tsan --target test_break_flow_runtime test_break_kernel_flow test_editor_flow -j3
+TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-flow-tsan -R 'break_flow_runtime|break_kernel_flow|editor_flow$' --output-on-failure
 ```
 
 预期：跨线程拒绝探针运行，无竞态报告且全部通过。

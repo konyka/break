@@ -1,8 +1,8 @@
-# Break — 纯 C 跨平台游戏引擎
+# Break — 纯 C 跨平台引擎
 
 ## 项目概述
 
-从零构建的纯 C11 游戏引擎，另有使用 C++11 的 framework 层，支持 Vulkan 和 OpenGL 双后端渲染。
+从零构建的纯 C11 引擎，另有使用 C++11 的 framework 层，支持 Vulkan 和 OpenGL 双后端渲染。
 
 **当前进度**: Phase 0-8Y 文档记录已完成，CTest 主套件持续扩充；性能结果必须结合日期、硬件和构建配置解读。
 
@@ -118,9 +118,9 @@ ctest --test-dir build --output-on-failure
 ### 参考架构
 
 - [BW191 (BigWorld) 引擎架构](./BW191_Architecture.md) — 商用 MMO 引擎
-- [CryENGINE v3.1.2 架构](./CryENGINE_Architecture.md) — AAA 游戏引擎
+- [CryENGINE v3.1.2 架构](./CryENGINE_Architecture.md) — AAA 引擎
 - [GameEngineFromScratch 架构](./GEFS_Architecture.md) — 教学引擎
-- [T3DGameR1 架构](./T3DGameR1_Architecture.md) — 《Windows 游戏编程大师技巧》
+- [T3DGameR1 架构](./T3DGameR1_Architecture.md) — 《Windows 应用编程大师技巧》
 
 ### 技术专题
 

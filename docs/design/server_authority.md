@@ -1,6 +1,6 @@
 # Server authority reference engine (`break_authority`)
 
-Status: delivered 2026-10-30 as an optional static library. Stage 5 subproject 5, first half. It is a **reference engine for the rule, not a game server**: there is still no server product, no network front end and no persistence in this repository.
+Status: delivered 2026-10-30 as an optional static library. Stage 5 subproject 5, first half. It is a **reference engine for the rule, not an application server**: there is still no server product, no network front end and no persistence in this repository.
 
 Source: `engine/src/authority/break_authority.{h,c}`. Tests: `engine/tests/test_break_authority.c` (14), `engine/tests/test_break_authority_target_contract.cmake`.
 
@@ -46,8 +46,8 @@ The contract test pins that the library is not linked into `engine`, `engine_dem
 
 ## 5. Not delivered
 
-- A game server, a network front end, persistence of the ledgers, and a way to load the item table from data. Prices live in whatever calls `define_item`.
-- Authoritative simulation. Damage is a single constant; hit detection, range, line of sight and cooldowns are the game's.
+- An application server, a network front end, persistence of the ledgers, and a way to load the item table from data. Prices live in whatever calls `define_item`.
+- Authoritative simulation. Damage is a single constant; hit detection, range, line of sight and cooldowns are the application's.
 - Matchmaking (threat model section 3 still lists it as a design goal only).
 - Wiring to `break_net` / `break_session`: the caller maps the connection's session to a `session_id` and feeds the payload to the decoder. That mapping is the part that must come from the authenticated transport.
 - Multi-thread use (one owner thread, like the other libraries).
