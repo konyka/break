@@ -803,6 +803,20 @@ fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未
 
 仍未做：libFuzzer 覆盖率引导。
 
+### 补充：libFuzzer 覆盖率引导（2026-11-15）
+
+- `engine/tests/fuzz_core_app_network.c` 把逐 payload 的检查提取为 `check_payload`：精确大小的堆拷贝、与参考模型比较 decode 结果、拒绝时 `out` 不变、接受时重新编码逐字节一致并以 live/stale 各过一次准入防火墙。`--replay` 与 libFuzzer 入口共用它。
+- 以 `CORE_APP_LIBFUZZER=1` 编译时文件导出 `LLVMFuzzerTestOneInput`（不含 `main`），任何检查失败即 `abort()`。新选项 `ENGINE_BUILD_LIBFUZZER`（默认 OFF，仅 Clang）构建 `libfuzz_core_app_network`，注册 `libfuzz_core_app_network_run`（标签 `fuzz;libfuzzer`）：`-runs=200000 -seed=1 -max_len=2048`，种子为已提交 corpus，新输入写入构建树。
+- CI 新增 `lane-libfuzzer-linux-clang`（clang-18 + ASan/UBSan），失败时上传 `crash-*`/`leak-*`/`timeout-*`。镜像加装 `libclang-rt-18-dev`，候选 smoke 链接并运行一个空 fuzzer。
+
+证据：
+
+- RED：加入 `-fsanitize=fuzzer` 后链接失败（`multiple definition of main`、`undefined reference to LLVMFuzzerTestOneInput`）。GREEN：本机 clang 22.1.8，种子 16 个文件，`INITED cov: 53 ft: 72`，200000 次约 1 s 完成。
+- 变异：把 decode 的截断判断放宽一个实体（`size + CORE_APP_SNAPSHOT_ENTITY_BYTES < needed`），未加载种子 corpus 的 libFuzzer 运行报 `heap-buffer-overflow` 并退出 1。恢复后源文件与备份 `cmp` 一致。
+- normal 树 `fuzz_core_app_network_smoke`、`_corpus` 2/2；CI 合同 10/10（`test_ci_image_contract` 与 `test_ci_image_fix2` 的使用方数量改为 11，并要求新车道与镜像 smoke 存在）。
+
+仍未做：scenario 与 checkpoint fuzzer 的 libFuzzer 入口；结构感知变异（自定义 mutator）。
+
 ## Core App Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
 
 ### 变化

@@ -1,3 +1,9 @@
+## Core App libFuzzer 覆盖率引导（2026-11-15）
+
+- **交付**：新选项 `ENGINE_BUILD_LIBFUZZER`（仅 Clang）构建 `libfuzz_core_app_network`。它与 `fuzz_core_app_network --replay` 共用 `check_payload`，检查失败即 `abort()`。测试 `libfuzz_core_app_network_run`（`fuzz;libfuzzer` 标签）以固定种子跑 200000 次，种子为已提交 corpus。CI 新增 `lane-libfuzzer-linux-clang`（clang-18 + ASan/UBSan），镜像加装 `libclang-rt-18-dev`，候选 smoke 链接并运行空 fuzzer。设计见 `docs/design/core_app_integration.md` Task 12「libFuzzer 覆盖率引导」。
+- **测试**：链接 RED（缺 `LLVMFuzzerTestOneInput`、重复 `main`）→ GREEN（`cov: 53 ft: 72`）。把截断判断放宽一个实体的变异被 libFuzzer 以 `heap-buffer-overflow` 抓到。CI 合同 10/10（使用方数量 10→11）。
+- **未做**：scenario、checkpoint fuzzer 的 libFuzzer 入口；结构感知 mutator。CI 车道的首次结果待推送后确认。
+
 ## Core App 认证期限改为墙钟与传输收尾（2026-11-15）
 
 - **修复**：未认证连接的期限从 180 tick 改为单调时钟 3000 ms（`CORE_APP_NET_AUTH_DEADLINE_MS`）。record 车道默认不限速，180 tick 只有约 6 ms，真实客户端来不及认证。stop 超时后 transport 置 `leaked`，再次 destroy 直接返回 `TIMEOUT`，不再销毁仍被 reactor 持有的 acceptor；`core_app_net_transport_free` 在 destroy 失败时有意不释放。`--net-poll-ms` 改用独立解析（1 到 3 位数字，≤100），接受 `00`，拒绝 `0001`。

@@ -309,7 +309,16 @@ ctest --test-dir build-compose-gl --output-on-failure -j3 -R '^test_mycompose_gp
 cmake -S engine -B build-compose-fuzz -DENGINE_BUILD_TESTS=ON -DENGINE_BUILD_FUZZ_SMOKE=ON
 cmake --build build-compose-fuzz --target fuzz_mycompose_tree fuzz_mycompose_intent -j3
 ctest --test-dir build-compose-fuzz -L fuzz -j3
+
+# libFuzzer 覆盖率引导（仅 Clang；目标同样 EXCLUDE_FROM_ALL）
+CC=clang cmake -S engine -B build-libfuzzer -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON \
+  -DENGINE_BUILD_FUZZ_SMOKE=ON -DENGINE_BUILD_LIBFUZZER=ON
+cmake --build build-libfuzzer --target libfuzz_core_app_network
+ctest --test-dir build-libfuzzer -L libfuzzer --output-on-failure
 ```
+
+`ENGINE_BUILD_LIBFUZZER=ON` 要求 Clang（GCC 或 MSVC 下 configure 直接 FATAL）。`libfuzz_core_app_network_run` 以 `-runs=200000 -seed=1 -max_len=2048` 运行，种子取自已提交的 `engine/tests/data/core_app_network_corpus`（只读），新输入写入构建树下的 `libfuzz_core_app_network_corpus/`。失败时 libFuzzer 在工作目录留下 `crash-*` 文件，可直接作为参数重放：`./libfuzz_core_app_network crash-<hash>`。
 
 GPU 测试需要 Wayland 会话（`WAYLAND_DISPLAY`）；没有显示或设备时退出 77（CTest 记为 Skipped），在目标环境必须为 0 skip。日志的 `device:` 行给出设备名与类型，`device_class:` 行给出 `hardware-gpu` 或 `software`；lavapipe/llvmpipe 是软件渲染，不能作为硬件 GPU 证据。设置 `MYCOMPOSE_GPU_REQUIRE_HARDWARE=1` 时，软件设备直接 FAIL；CI 的 llvmpipe lane 不设置它。
 
@@ -994,7 +1003,7 @@ creation/destruction 和 Vulkan opaque handle 仍保留在 backend dispatch 边�
 frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/present 路径都会
 修改 partial-present 状态；其 owner-busy 和 damage publication contract 已有测试覆盖。
 
-镜像编排采用 `ci.yml` 的 `image` job 调用同 commit 的 `ci-image.yml`，并在 `on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`。本地候选 `load` 后先 smoke；随后直接给同一 image ID 打 `verified-<inputs-hash>` 标签并 `docker push`，不再第二次 build。master alias helper 按该 digest pull 同一候选，重新打 verified、commit SHA 与 `latest` 标签，逐一核对本地 image ID 后分别直接 push，并回读三者 digest 必须一致；不再用 `imagetools create` 生成新 index，也不接受不同 manifest 冒充同一 digest。push 进度保持 stderr，helper 的 digest stdout 不被污染。无输入变化复用已验证 digest，schedule 强制重建以获取安全更新。10 个实际 container jobs 均 `needs: image` 并使用 `needs.image.outputs.digest`，不直接消费 `latest`。
+镜像编排采用 `ci.yml` 的 `image` job 调用同 commit 的 `ci-image.yml`，并在 `on.workflow_call.outputs.digest.value` 显式映射 `${{ jobs.prepare.outputs.digest }}`。本地候选 `load` 后先 smoke；随后直接给同一 image ID 打 `verified-<inputs-hash>` 标签并 `docker push`，不再第二次 build。master alias helper 按该 digest pull 同一候选，重新打 verified、commit SHA 与 `latest` 标签，逐一核对本地 image ID 后分别直接 push，并回读三者 digest 必须一致；不再用 `imagetools create` 生成新 index，也不接受不同 manifest 冒充同一 digest。push 进度保持 stderr，helper 的 digest stdout 不被污染。无输入变化复用已验证 digest，schedule 强制重建以获取安全更新。11 个实际 container jobs（含 2026-11-15 新增的 `lane-libfuzzer-linux-clang`）均 `needs: image` 并使用 `needs.image.outputs.digest`，不直接消费 `latest`。镜像额外安装 `libclang-rt-18-dev`（libFuzzer 运行时），候选 smoke 会用 `clang-18 -fsanitize=fuzzer,address` 链接并运行一个空 fuzzer。
 
 PR/fork 不 login、不 push，只 smoke 本地候选，普通 lanes 不把该候选冒充为全 lane 已验证镜像。candidate 始终使用当前 `github.repository_owner`，非发布消费者的 fallback 则固定为上游 `ghcr.io/konyka/break-ci-linux`；upstream PR、fork PR、fork-owned push/manual 都不会解析不存在的 fork `latest`。可选仓库变量 `BREAK_CI_LINUX_DIGEST` 提供显式 `image@sha256:...` override；未设置时在 prepare 阶段匿名 inspect 上游公共 GHCR `latest`，将其解析为 immutable digest 后消费。公共拉取/解析失败会明确失败；lanes 不直接消费 `latest`，也不会因 override 未配置而阻断首次 PR 或 fork-owned CI。
 
