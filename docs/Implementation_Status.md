@@ -1,3 +1,10 @@
+## Core App 认证传输评审修复与 Windows nm 跳过（2026-11-15）
+
+- **修复**：`net_destroy` 只要 reactor 存在就 stop，stop 超时则保留 reactor/acceptor 并写 `result=stop_timeout`，清除 auth 回调失败时返回 `FAILED`，退出删除 port file；只在事件队列为空且槽位的 session id 与认证时一致时发送 snapshot；连接 180 tick 内未认证即关闭（`auth_timeouts`）；新增 `--net-poll-ms 0..100`（默认 0，tick 不再阻塞 16 ms）；port file 改为原子写入；拒绝全零 PSK；新增启动阶段 `acceptor`；`SEND_DRAINED` 不再交给会话层，`session_invalid` 从 16 变为 0；stats 增加 refused、send_overloads、send_closed、outbox_overloads、auth_timeouts、admitted、rejected_unknown、rejected_unauthenticated。设计见 `docs/design/core_app_integration.md` Task 10「认证传输」。
+- **Windows CI**：`test_core_app_network_offline` 在 Windows+Clang、Windows+Clang ASan 和 windows-d3d12 上报 `nm output lacks core_app_run`，因为 nm 读不了 PE/PDB。测试现在接收 `_core_app_nm_capable`，为假时 UNVERIFIED 并以 77 跳过，与其他 nm 合同相同。
+- **测试**：新增 `test_core_app_network_start_failure`（missing_psk、zero_psk、bad_cert、port_file，各要求 rc=2、无 sanitizer 输出、无 listening/stats 行、不留 port file）；loopback 新增 E（只做 TLS 不认证，被期限关闭）与 F（第二个认证对端到最后仍收到 snapshot），并断言 `authenticated==2`、`auth_timeouts>=1`、`admitted>=1`、退出后无 port file（A 要等到晚 60 帧的 snapshot 才关闭，避免服务器还没读到最后一条可 admit 的包就被 RST 丢掉；修复前 9 次里出现 1 次 `admitted=0`）；target contract 覆盖 `--net-poll-ms 101`。修复前 RED：loopback 报 `unknown or malformed argument`，start_failure 报 `zero_psk: rc=0, want 2`。变异：stop 只在 started/listening 时调用 → ASan 树 port_file 用例 rc=1 且 LeakSanitizer 报泄漏，恢复后 `cmp` 一致。
+- **未做**：发送前 key 复用防护没有进程级复现；OVERLOAD 进程级触发不到；CI 没有开启 transport 的 job；退出时不 `unsetenv` PSK。
+
 ## Core App checkpoint 动态墙读档等价性（2026-11-14）
 
 - **结论**：动态墙不需要新的存档字段。墙由一个导航障碍和一个质量为 0 的静态刚体组成，没有标志之外的可变状态，读档按 `WALL_ADDED`/`WALL_REMOVED` 重建即与直跑等价。`runtime_<g>.bin` 保持版本 4。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的“动态墙读档等价性”小节。
@@ -171,7 +178,7 @@
 - **测试**：`test_core_app_network` 10/10（容量、往返、小缓冲不写入、坏 magic、坏版本、截断与超限、schema 稳定性、未认证/未知消息丢弃、schema/过期丢弃、有界出站 FIFO）。
 - **变异**：inbox 放行未认证消息被 `snapshot_inbox_drops_unauthenticated_and_unknown_messages` 杀死。
 - **认证传输（2026-11-15 补上）**：`CORE_APP_ENABLE_NETWORK=ON` + `BREAK_ENABLE_SNOWFLAKE=ON`（要求 CRYPTO）时编译 `core_app_net_transport.c`，`--network --bind/--tls-cert/--tls-key/--psk-env/--port-file` 启动 TLS + AUTH-v2 acceptor；snapshot（registry 新增 `0x4001`，AUTHENTICATED phase）只发给已认证会话，对端输入只改计数；停止顺序 admission → producers → drain → destroy；`--network` 生效时忽略 SIGPIPE。测试：`test_core_app_network_offline`（双跑 SHA256 一致，无 transport 时 nm 0 个网络符号）、`test_core_app_network_loopback`（真实进程 + 客户端 A/B/C/D 四场景，过滤 network 行后与离线 trace 逐字节相同），loopback 连续 15 次通过，ASan/TSan 树各 16/16。两处变异（放行未认证会话、网络位置写回 user）均 RED 后恢复。
-- **边界**：OVERLOAD 进程级触发不到（reactor 队列 256 且每 tick drain），只由 outbox 单元测试覆盖；CI 没有开启 transport 的 job；loopback 不在 WIN32 注册。设计见 `docs/design/core_app_integration.md` Task 10「认证传输」。
+- **边界**：OVERLOAD 进程级触发不到（reactor 队列 256 且每 tick drain），只由 outbox 单元测试覆盖；CI 没有开启 transport 的 job；loopback 与 start_failure 不在 WIN32 注册。评审修复见顶部条目。设计见 `docs/design/core_app_integration.md` Task 10「认证传输」。
 
 ## Core App P12 Task 9：有界音频命令、三模式与代际隔离（2026-11-14）
 

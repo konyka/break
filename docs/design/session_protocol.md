@@ -118,6 +118,8 @@ typedef enum BreakNetEventType {
 
 `0x4001` 是 core_app 只读 snapshot（`engine/apps/core_app/core_app_network.h`），只在认证后接受；默认表另含编辑器远程消息 4..21（v1..1，4096 B，`ANY`，`IDEMPOTENT`，见 `docs/design/editor_remote.md`），因此 count 为 22（CRYPTO=ON）/ 21（OFF）。
 
+默认表加入 `0x4001` 后，其他使用默认 registry 的 manager（例如编辑器远程会话）也会通过它的 envelope 校验。这些 manager 没有为 `0x4001` 注册 handler：已认证会话收到它时 `break_session.c` 记为 `HANDLER_FAILED`（计入 `handler_failed`），连接不关闭；只有 AUTH 的 handler 失败才会关闭连接。未认证的会话先受 `AUTHENTICATED` phase 检查。
+
 registry 的最大定义数为 64；register 拒绝 ID 0、重复 ID、反向版本区间、超过全局 payload 上限或满表。公共 `BreakSessionConfig.registry` 也拒绝 `count > BREAK_NET_REGISTRY_MAX_MESSAGES` 的 malformed registry，避免后续 lookup 越过固定定义表；registry 仍是 borrowed immutable storage，必须活到 manager destroy。当前 envelope codec 使用 `break_net_message_registry_default()`，没有把自定义 registry 传入 codec 的 API。`phase` 和 `duplicate_policy` 已记录在定义中；Session 在 LogicThread apply/dispatch 阶段执行 phase、版本、payload limit 和 duplicate policy。默认 AUTH/PING 均为有意的 `ANY` phase：默认 registry 下 AUTH 在 `NEW` 中允许并成功后进入 `AUTHENTICATED`，PING 在 pre-auth `NEW` 中也允许且保持 `NEW`；自定义 registry 的 phase 仍严格限制（例如 `AUTHENTICATING` 定义在 `NEW` 中被拒绝）。默认 AUTH 重复策略为 `REJECT`，PING 重复策略为 `IDEMPOTENT`。测试 `break_session_default_registry_allows_auth_in_new_and_ping_pre_auth` 与 `break_session_uses_attached_registry_phase_and_duplicate_policy` 分别锁定这两个边界。
 
 ## SessionManager API 与状态机
