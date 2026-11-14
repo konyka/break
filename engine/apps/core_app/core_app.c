@@ -47,15 +47,18 @@
 #define CORE_APP_SKINNED_OBJECTS 2u
 #define CORE_APP_IO_LATENCY_TICKS 2u
 #define CORE_APP_IO_QUEUE 8u
-#define CORE_APP_RUNTIME_STATE_VERSION 2u
+#define CORE_APP_RUNTIME_STATE_VERSION 3u
 #define CORE_APP_RUNTIME_HEADER_BYTES 16u
-#define CORE_APP_RUNTIME_BODY_BYTES 68u
+#define CORE_APP_RUNTIME_BODY_BYTES 124u
 #define CORE_APP_RUNTIME_FILE_BYTES (CORE_APP_RUNTIME_HEADER_BYTES + CORE_APP_RUNTIME_BODY_BYTES)
 #define CORE_APP_RUNTIME_FLAG_WALL_ADDED 1u
 #define CORE_APP_RUNTIME_FLAG_WALL_REMOVED 2u
 #define CORE_APP_RUNTIME_FLAG_TARGET_IN_SIGHT 4u
 #define CORE_APP_RUNTIME_FLAG_SEEN 8u
-#define CORE_APP_RUNTIME_FLAGS 15u
+#define CORE_APP_RUNTIME_FLAG_VEHICLE_OCCUPIED 16u
+#define CORE_APP_RUNTIME_FLAG_VEHICLE_SLEEPING 32u
+#define CORE_APP_RUNTIME_FLAG_INTERACT_DOWN 64u
+#define CORE_APP_RUNTIME_FLAGS 127u
 #define CORE_APP_AREA_FLOW_EVENT 1001u
 #define CORE_APP_FLOW_ITEM 1u
 #define CORE_APP_MAX_PENDING_AREA_ENTERS 8u
@@ -160,6 +163,11 @@ typedef struct CoreAppRuntimeState {
     Vec3 last_seen;
     u32 flags;
     u32 items;
+    Vec3 chassis_position;
+    Vec3 chassis_velocity;
+    Quat chassis_orientation;
+    Vec3 chassis_angular_velocity;
+    u32 chassis_rest_frames;
 } CoreAppRuntimeState;
 
 typedef struct CoreAppLevelSource {
@@ -243,6 +251,25 @@ static bool app_get_vec3(const u8 *p, Vec3 *out) {
     return true;
 }
 
+static void app_put_quat(u8 *p, Quat value) {
+    for (u32 i = 0u; i < 4u; ++i) {
+        u32 bits;
+        memcpy(&bits, &value.e[i], sizeof(bits));
+        app_put32(p + i * 4u, bits);
+    }
+}
+
+static bool app_get_quat(const u8 *p, Quat *out) {
+    f32 length2 = 0.0f;
+    for (u32 i = 0u; i < 4u; ++i) {
+        u32 bits = app_get32(p + i * 4u);
+        memcpy(&out->e[i], &bits, sizeof(bits));
+        if (!isfinite(out->e[i])) return false;
+        length2 += out->e[i] * out->e[i];
+    }
+    return length2 > 0.5f && length2 < 2.0f;
+}
+
 static void app_runtime_encode_body(const CoreAppRuntimeState *state,
                                     u8 body[CORE_APP_RUNTIME_BODY_BYTES]) {
     memset(body, 0, CORE_APP_RUNTIME_BODY_BYTES);
@@ -253,6 +280,11 @@ static void app_runtime_encode_body(const CoreAppRuntimeState *state,
     app_put_vec3(body + 48u, state->last_seen);
     app_put32(body + 60u, state->flags);
     app_put32(body + 64u, state->items);
+    app_put_vec3(body + 68u, state->chassis_position);
+    app_put_vec3(body + 80u, state->chassis_velocity);
+    app_put_quat(body + 92u, state->chassis_orientation);
+    app_put_vec3(body + 108u, state->chassis_angular_velocity);
+    app_put32(body + 120u, state->chassis_rest_frames);
 }
 
 static u64 app_fnv1a64(const u8 *bytes, usize size) {
@@ -279,9 +311,14 @@ static BreakRuntimeError app_runtime_decode(const u8 *bytes, usize size,
         !app_get_vec3(body + 12u, &state.user_velocity) ||
         !app_get_vec3(body + 24u, &state.chaser_position) ||
         !app_get_vec3(body + 36u, &state.chaser_velocity) ||
-        !app_get_vec3(body + 48u, &state.last_seen)) {
+        !app_get_vec3(body + 48u, &state.last_seen) ||
+        !app_get_vec3(body + 68u, &state.chassis_position) ||
+        !app_get_vec3(body + 80u, &state.chassis_velocity) ||
+        !app_get_quat(body + 92u, &state.chassis_orientation) ||
+        !app_get_vec3(body + 108u, &state.chassis_angular_velocity)) {
         return BREAK_RUNTIME_INVALID;
     }
+    state.chassis_rest_frames = app_get32(body + 120u);
     state.flags = app_get32(body + 60u);
     state.items = app_get32(body + 64u);
     if ((state.flags & ~CORE_APP_RUNTIME_FLAGS) != 0u ||
@@ -1508,6 +1545,16 @@ static BreakRuntimeError app_capture_state(const CoreLevel *level, CoreAppRuntim
     if (level->wall_removed) out->flags |= CORE_APP_RUNTIME_FLAG_WALL_REMOVED;
     if (level->target_in_sight) out->flags |= CORE_APP_RUNTIME_FLAG_TARGET_IN_SIGHT;
     if (level->board.seen) out->flags |= CORE_APP_RUNTIME_FLAG_SEEN;
+    if (level->vehicle.occupied) out->flags |= CORE_APP_RUNTIME_FLAG_VEHICLE_OCCUPIED;
+    if (level->interact_was_down) out->flags |= CORE_APP_RUNTIME_FLAG_INTERACT_DOWN;
+    const RigidBody *chassis = physics_body_resolve(level->physics, level->vehicle.chassis);
+    if (!chassis) return BREAK_RUNTIME_STALE;
+    if (chassis->sleeping) out->flags |= CORE_APP_RUNTIME_FLAG_VEHICLE_SLEEPING;
+    out->chassis_position = chassis->position;
+    out->chassis_velocity = chassis->velocity;
+    out->chassis_orientation = chassis->orientation;
+    out->chassis_angular_velocity = chassis->angular_velocity;
+    out->chassis_rest_frames = chassis->rest_frames;
     if (break_kernel_inventory_count(level->actor_runtime, level->user, CORE_APP_FLOW_ITEM,
                                    &out->items) != BREAK_KERNEL_OK) {
         return BREAK_RUNTIME_FAILED;
@@ -1678,6 +1725,17 @@ static BreakRuntimeError app_apply_state(CoreLevel *level, const CoreAppRuntimeS
         }
         level->wall_removed = true;
     }
+    RigidBody *chassis = physics_body_resolve(level->physics, level->vehicle.chassis);
+    if (!chassis) return BREAK_RUNTIME_STALE;
+    chassis->position = state->chassis_position;
+    chassis->step_start_position = state->chassis_position;
+    chassis->velocity = state->chassis_velocity;
+    chassis->orientation = state->chassis_orientation;
+    chassis->angular_velocity = state->chassis_angular_velocity;
+    chassis->rest_frames = state->chassis_rest_frames;
+    chassis->sleeping = (state->flags & CORE_APP_RUNTIME_FLAG_VEHICLE_SLEEPING) != 0u;
+    level->vehicle.occupied = (state->flags & CORE_APP_RUNTIME_FLAG_VEHICLE_OCCUPIED) != 0u;
+    level->interact_was_down = (state->flags & CORE_APP_RUNTIME_FLAG_INTERACT_DOWN) != 0u;
     level->chaser_character = character_create(state->chaser_position, 0.4f, 1.0f);
     level->chaser_character.velocity = state->chaser_velocity;
     level->chaser_position = state->chaser_position;

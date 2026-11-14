@@ -676,6 +676,18 @@ elif mode == "zero_guid":
     else:
         raise SystemExit("the saved scene has no RESOURCES chunk")
     data = bytes(data)
+elif mode == "vehicle_nan":
+    data = bytearray(data)
+    if len(data) != 140 or data[:8] != b"CORERUN1":
+        raise SystemExit("the saved runtime state is not a version 3 record")
+    struct.pack_into("<I", data, 16 + 68, 0x7FC00000)
+    data = bytes(data)
+elif mode == "vehicle_quat":
+    data = bytearray(data)
+    if len(data) != 140 or data[:8] != b"CORERUN1":
+        raise SystemExit("the saved runtime state is not a version 3 record")
+    struct.pack_into("<4f", data, 16 + 92, 0.0, 0.0, 0.0, 0.0)
+    data = bytes(data)
 else:
     raise SystemExit("unknown mode " + mode)
 with open(path, "wb") as output:
@@ -705,6 +717,8 @@ with open(directory + "/manifest.core", "wb") as output:
                  "unknown_actor;actors_1.sidecar;actors;fix;actor"
                  "stale_actor;actors_1.sidecar;stale_actor;fix;actor"
                  "render_resource;scene_1.bscn;zero_guid;fix;render"
+                 "vehicle_nan;runtime_1.bin;vehicle_nan;fix;checkpoint"
+                 "vehicle_quat;runtime_1.bin;vehicle_quat;fix;checkpoint"
                  "manifest_hash;scene_1.bscn;truncate;keep-manifest;checkpoint")
         list(GET case 0 case_name)
         list(GET case 1 case_file)
@@ -814,6 +828,41 @@ with open(directory + "/manifest.core", "wb") as output:
     elseif(NOT chaser_z_last LESS chaser_z_first)
         record_error("continuation: the chaser stopped closing in after the load, z ${chaser_z_first} -> ${chaser_z_last}")
     endif()
+
+    set(drive_inputs "1 level\n1 key e 1\n2 key e 0\n3 key a 1\n33 key a 0\n40 key e 1\n42 key e 0\n43 key w 1\n60 save\n")
+    set(CORE_APP_CHECKPOINT_DIR "${WORK}/drive_straight")
+    file(REMOVE_RECURSE "${CORE_APP_CHECKPOINT_DIR}")
+    set(scenario "${WORK}/drive_straight.scenario")
+    file(WRITE "${scenario}"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n${drive_inputs}100 quit\n")
+    run_app(drive_straight "${ASSET_ROOT}" "${scenario}" 0)
+    set(drive_straight_trace "${CORE_APP_LIFECYCLE_TRACE}")
+    set(CORE_APP_CHECKPOINT_DIR "${WORK}/drive_resumed")
+    file(REMOVE_RECURSE "${CORE_APP_CHECKPOINT_DIR}")
+    set(scenario "${WORK}/drive_resumed.scenario")
+    file(WRITE "${scenario}"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n${drive_inputs}61 load\n101 quit\n")
+    run_app(drive_resumed "${ASSET_ROOT}" "${scenario}" 0)
+    set(drive_resumed_trace "${CORE_APP_LIFECYCLE_TRACE}")
+    if(NOT drive_resumed_trace MATCHES "event=load tick=61 generation=2 save_generation=1 result=ok ")
+        record_error("vehicle_continuation: the resumed drive did not load at tick 61")
+    endif()
+    if(NOT drive_straight_trace MATCHES "event=vehicle tick=59 generation=1 occupied=1 throttle=1 ")
+        record_error("vehicle_continuation: the user was not driving when the save was taken")
+    endif()
+    if(NOT drive_resumed_trace MATCHES "event=vehicle tick=61 generation=2 occupied=1 throttle=1 ")
+        record_error("vehicle_continuation: the restored vehicle lost its rider")
+    endif()
+    foreach(event vehicle user)
+        event_payloads("${drive_straight_trace}" ${event} 60 99 straight_lines)
+        event_payloads("${drive_resumed_trace}" ${event} 61 100 resumed_lines)
+        list(LENGTH straight_lines straight_count)
+        if(NOT straight_count EQUAL 40)
+            record_error("vehicle_continuation: ${straight_count} ${event} lines in the straight drive, want 40")
+        elseif(NOT straight_lines STREQUAL resumed_lines)
+            record_error("vehicle_continuation: ${event} after the load differs from the uninterrupted drive")
+        endif()
+    endforeach()
 
     set(CORE_APP_CHECKPOINT_DIR "${WORK}/cold")
     file(REMOVE_RECURSE "${CORE_APP_CHECKPOINT_DIR}")

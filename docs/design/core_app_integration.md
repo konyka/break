@@ -493,6 +493,20 @@ BSCN/Flow/Actor/scene_state 侧车；错误 Actor generation、截断 BSCN、错
 - 验证：ASan+UBSan 与 TSan 树的 GPU 用例都是 3/3，trace 中有 `result=ready` 和 `frames=64 screenshots=1`。撤掉引擎修复后，Vulkan 用例在 suppression 下仍判红，报告 `vk_retire_push` 的 1536 字节泄漏，说明 suppression 没有掩盖引擎代码。
 - 边界：CI 仍用 `-LE "graphics|fuzz|gpu"` 排除这些用例，本节的证据只来自本机（Intel UHD TGL GT1 + NVIDIA 驱动并存）。
 
+### 补充：车辆物理运行态进 checkpoint（2026-11-14）
+
+上面“仍未做”中的场景物理运行态，本节补上车辆部分，计划见 `docs/superpowers/plans/2026-11-14-core-app-checkpoint-vehicle-state.md`。`main.c` 的 `scene_state_save` 保存相机、太阳角，以及按槽位顺序排列的全部刚体，和分代 checkpoint 不是同一种格式，这里不直接复用。
+
+- 发现：之前读档会按场景重建车辆，底盘回到出生点，乘坐状态丢失。用户在车里时存档，读档后 `occupied=0`，轨迹和不中断的运行不一致。
+- `runtime_<g>.bin` 升到版本 3，正文从 68 字节扩到 124 字节，偏移 68 起依次是：底盘 position（12 字节）、velocity（12）、orientation（16，4×f32）、angular_velocity（12）、rest_frames（4）。标志新增三位：`VEHICLE_OCCUPIED`（16）、`VEHICLE_SLEEPING`（32）、`INTERACT_DOWN`（64）。保存交互键的按住状态，是因为不保存时，存档那一刻按着的 E 会在读档后再触发一次上车或下车。控制量（throttle/steer/brake）不保存，因为 `vehicle_step` 每个 tick 都按输入重写。版本 2 的文件按版本号拒绝。
+- 解码要求车辆字段全部是有限值，orientation 的长度平方必须在 (0.5, 2) 之内；不满足返回 `INVALID`，结果为 `load_rejected stage=checkpoint`。`app_apply_state` 解析底盘句柄（失效返回 STALE，结果为 `stage=state`），写回位置（同时写 `step_start_position`）、速度、朝向、角速度、静止帧数和休眠标志，以及 `vehicle.occupied` 和 `interact_was_down`。`state_hash` 覆盖新的正文，roundtrip 的哈希相等断言因此也覆盖车辆字段。
+- 验证（`test_core_app_lifecycle_roundtrip`）：
+  - 新增 `vehicle_continuation`：同一输入序列（走到车旁、tick 40 上车、tick 43 按住 W、tick 60 存档）跑两次，一次直跑到 tick 99，一次在 tick 61 读档后跑到 tick 100。读档后 tick 61 为 `occupied=1 throttle=1`，之后 40 个 tick 的 vehicle 行和 user 行与直跑逐字一致。改代码前这三条断言都判红。
+  - 失败矩阵新增 `vehicle_nan`（底盘 position.x 写入 NaN）和 `vehicle_quat`（orientation 全写 0），两项都同步更新 manifest，期望 `stage=checkpoint`。
+- 变异：不写回 occupied、不写回 position、去掉 position 的有限值检查、去掉四元数长度检查，四处都判红，恢复后 `cmp` 确认与备份逐字节一致。
+- lifecycle 在 ASan+UBSan 与 TSan 树中各 12/12，normal 树非 fuzz 全量 400/400。
+- 仍未做：布娃娃骨骼刚体不保存（R 键状态不进存档，读档后布娃娃为未激活）。动态墙仍由标志重建。
+
 ## P12 Task 4：ActionMap、触摸与固定步长用户控制（2026-11-13）
 
 Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四个加 `scenario.c`、`core_app_input.c`、`core_app_simulation.c`，命名合同同步检查。

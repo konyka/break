@@ -1,3 +1,9 @@
+## Core App checkpoint 保存车辆物理运行态（2026-11-14）
+
+- **交付**：`runtime_<g>.bin` 升到版本 3（正文 124 字节），保存底盘的位置、速度、朝向、角速度、静止帧数和休眠状态，以及乘坐状态与交互键按住状态。读档后车辆和乘坐者从存档时的状态继续运行。非有限值或退化朝向一律拒绝，结果为 `stage=checkpoint`。设计见 `docs/design/core_app_integration.md` Task 8 slice 3 的补充小节。
+- **测试**：roundtrip 新增 `vehicle_continuation` 段，要求读档后 40 tick 的 vehicle 行和 user 行与直跑逐字一致；失败矩阵新增 `vehicle_nan` 和 `vehicle_quat`。四处变异都判红；ASan 与 TSan 下 lifecycle 各 12/12，normal 全量 400/400。
+- **未做**：布娃娃刚体不保存；动态墙仍由标志重建。
+
 ## Core App GPU 用例在 sanitizer 树中通过（2026-11-14）
 
 - **修复**：`vk_retire_collect_budget` 在计数为 0 时提前返回，导致 `vk_shutdown` 不释放 `retired` 数组（每次运行泄漏 1536 字节）。现在全量回收会释放数组。
