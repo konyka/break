@@ -371,10 +371,22 @@ static bool write_test_wav(const char *path)
     return fclose(f) == 0 && ok;
 }
 
+/* Picks a writable scratch directory on POSIX and Windows hosts alike. */
+static const char *test_temp_dir(void)
+{
+    static const char *const kVars[] = {"TMPDIR", "TEMP", "TMP"};
+    for (size_t i = 0; i < sizeof(kVars) / sizeof(kVars[0]); ++i) {
+        const char *dir = getenv(kVars[i]);
+        if (dir && dir[0]) return dir;
+    }
+    return ".";
+}
+
 TEST(play_3d_source_returns_a_stoppable_handle)
 {
-    char path[64];
-    snprintf(path, sizeof(path), "/tmp/break_test_audio_%ld.wav", (long)clock());
+    char path[512];
+    snprintf(path, sizeof(path), "%s/break_test_audio_%ld.wav", test_temp_dir(),
+             (long)clock());
     ASSERT_TRUE(write_test_wav(path));
     AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
     ASSERT_NOT_NULL(as);
