@@ -9,6 +9,8 @@
 #   4  engine/ plus the current docs, README.md and the root CMakeLists.txt
 # Walks the tree with file(GLOB_RECURSE), so it needs no Git metadata.
 
+cmake_policy(VERSION 3.20)
+
 foreach(var REPOSITORY_ROOT STAGE)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required")
