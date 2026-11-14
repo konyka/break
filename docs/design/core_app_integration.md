@@ -699,7 +699,14 @@ SIGPIPE：transport 构建在 `--network` 生效时调用 `signal(SIGPIPE, SIG_I
 - CI 当前没有开启 `CORE_APP_ENABLE_NETWORK` + `BREAK_ENABLE_SNOWFLAKE` 的 job，loopback 只在本地 Fedora 网络树、ASan 树和 TSan 树验证。
 - 之前典型运行中 `session_invalid` 为 16，来源是交给会话层的 `SEND_DRAINED` 事件；现在跳过该事件，值为 0。
 - 发送前的 key 复用防护（队列为空才发送、session id 必须一致）没有进程级复现。
-- 退出时没有 `unsetenv` PSK 环境变量。
+- PSK 环境变量在 start 读取后立即从进程环境删除，见下方「PSK 读取后删除环境变量」。
+
+### 补充：PSK 读取后删除环境变量（2026-11-15）
+
+- 新函数 `core_app_net_take_secret_env(name, out, size)` 位于 `core_app_network`（带单元测试的库），替换 transport 内原来的 `net_hex_decode(getenv(...))`。它要求值恰好是 `2*size` 位 hex（大小写均可）且不全为 0，解码后无论成功与否都调用 `unsetenv`（Windows 为 `_putenv_s(name, "")`）删除该变量；失败时用 volatile 写把 `out` 清零。之后的 `getenv` 和子进程都看不到这个密钥。
+- 时机是 `net_start` 的 `psk` 阶段，也就是读取的同时删除，而不是等到退出。这样即使进程异常终止，运行期间也不会再有代码读到它。
+- 边界：内核在 exec 时给出的初始环境块（`/proc/<pid>/environ`）不会被改写；同用户的其他进程仍能从那里读到启动时的值。这和 editor `--remote` 推荐用文件传 PSK 的理由相同。
+- 测试：`test_core_app_network` 新增 2 项（共 12 项），覆盖正确值解码并删除变量、再次调用失败，以及全零、63 位、65 位、非 hex 四种坏值都返回失败、删除变量并清零输出，参数为空时失败。先链接 RED（未定义符号），再 GREEN。变异：只在成功时删除变量，坏值用例判红（`getenv(...) == NULL is false`），恢复后 `cmp` 一致。network 树 `test_core_app_network*` 5/5（含 loopback、late_auth、start_failure），ASan 树 3/3，libFuzzer network 1/1，normal 树 `-L core_app` 非 GPU 31/31。
 
 ## Core App Task 12：确定性 fuzz、三棵验证树与 no-tests 真实进程（2026-11-14）
 

@@ -1,3 +1,9 @@
+## Core App PSK 读取后删除环境变量（2026-11-15）
+
+- **交付**：`core_app_net_take_secret_env`（`core_app_network`）解码 `--psk-env` 指定的变量，解码后无论成败都从进程环境删除它，失败时清零输出。transport 的 `psk` 阶段改用它，原来的私有解码函数删除。设计见 `docs/design/core_app_integration.md` Task 10「PSK 读取后删除环境变量」。
+- **测试**：`test_core_app_network` 新增 2 项（12/12），链接 RED → GREEN；“只在成功时删除”的变异判红。network 树网络测试 5/5，ASan 3/3，libFuzzer network 1/1，normal 树 core_app 31/31。
+- **未做**：`/proc/<pid>/environ` 的初始环境块不会被改写，这是平台限制。
+
 ## Core App checkpoint 读取器 libFuzzer 入口（2026-11-15）
 
 - **交付**：`libfuzz_core_app_checkpoint`（`ENGINE_BUILD_LIBFUZZER=ON`）与 `libfuzz_core_app_checkpoint_run`（`fuzz;libfuzzer`，50000 次，`-max_len=2048`，种子为 `core_app_checkpoint_corpus`）。新增共用的 `check_manifest`：probe/find 只做分类不返回 FAILED，probe 拒绝时 find 同错，find 结果与 manifest 中 RUNTIME 记录的数量和内容一致。libFuzzer 入口复用一个临时目录，每 256 个输入核对载荷未被改写，退出时删除目录。CI 车道 `lane-libfuzzer-linux-clang` 构建三个 libFuzzer 目标。设计见 `docs/design/core_app_integration.md`「checkpoint 读取器的 libFuzzer 入口」。
@@ -28,7 +34,7 @@
 - **修复**：`net_destroy` 只要 reactor 存在就 stop，stop 超时则保留 reactor/acceptor 并写 `result=stop_timeout`，清除 auth 回调失败时返回 `FAILED`，退出删除 port file；只在事件队列为空且槽位的 session id 与认证时一致时发送 snapshot；连接 180 tick 内未认证即关闭（`auth_timeouts`）；新增 `--net-poll-ms 0..100`（默认 0，tick 不再阻塞 16 ms）；port file 改为原子写入；拒绝全零 PSK；新增启动阶段 `acceptor`；`SEND_DRAINED` 不再交给会话层，`session_invalid` 从 16 变为 0；stats 增加 refused、send_overloads、send_closed、outbox_overloads、auth_timeouts、admitted、rejected_unknown、rejected_unauthenticated。设计见 `docs/design/core_app_integration.md` Task 10「认证传输」。
 - **Windows CI**：`test_core_app_network_offline` 在 Windows+Clang、Windows+Clang ASan 和 windows-d3d12 上报 `nm output lacks core_app_run`，因为 nm 读不了 PE/PDB。测试现在接收 `_core_app_nm_capable`，为假时 UNVERIFIED 并以 77 跳过，与其他 nm 合同相同。
 - **测试**：新增 `test_core_app_network_start_failure`（missing_psk、zero_psk、bad_cert、port_file，各要求 rc=2、无 sanitizer 输出、无 listening/stats 行、不留 port file）；loopback 新增 E（只做 TLS 不认证，被期限关闭）与 F（第二个认证对端到最后仍收到 snapshot），并断言 `authenticated==2`、`auth_timeouts>=1`、`admitted>=1`、退出后无 port file（A 要等到晚 60 帧的 snapshot 才关闭，避免服务器还没读到最后一条可 admit 的包就被 RST 丢掉；修复前 9 次里出现 1 次 `admitted=0`）；target contract 覆盖 `--net-poll-ms 101`。修复前 RED：loopback 报 `unknown or malformed argument`，start_failure 报 `zero_psk: rc=0, want 2`。变异：stop 只在 started/listening 时调用 → ASan 树 port_file 用例 rc=1 且 LeakSanitizer 报泄漏，恢复后 `cmp` 一致。
-- **未做**：发送前 key 复用防护没有进程级复现；OVERLOAD 进程级触发不到；CI 没有开启 transport 的 job；退出时不 `unsetenv` PSK。
+- **未做**：发送前 key 复用防护没有进程级复现；OVERLOAD 进程级触发不到；CI 没有开启 transport 的 job（PSK 环境变量现已在读取后删除，见顶部条目）。
 
 ## Core App checkpoint 动态墙读档等价性（2026-11-14）
 
