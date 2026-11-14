@@ -687,9 +687,10 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 - `test_audio` 22/22：后端名（Null/fake/none）与设备名（Null 设备有名、FAKE 与 NULL 无名）5 个新用例。
 - `test_core_app_runtime` 35/35：两条既有设备用例改为强制 Null 后端，并断言 trace 里的 `backend=Null`；新增 FAKE 后端用例断言 `backend=fake fallback=none`。
-- 新增 `test_core_app_audio_device`（标签 `audio_device`，`SKIP_RETURN_CODE 77`，CI 的 headless 套件经 `-LE` 排除）：以 `--render=record --audio=device --require-device` 运行真实进程，要求非 Null 后端、非空设备名、`probe_seconds > 0`，以及 trace 顺序 ready → `runtime_running` → stopped → `runtime_stopped`。
+- 新增 `test_core_app_audio_device`（标签 `audio_device`，`SKIP_RETURN_CODE 77` 与 `SKIP_REGULAR_EXPRESSION "CORE_APP_AUDIO_DEVICE_UNAVAILABLE"`，CI 的 headless 套件经 `-LE` 排除）：以 `--render=record --audio=device --require-device` 运行真实进程，要求非 Null 后端、非空设备名、`probe_seconds > 0`，以及 trace 顺序 ready → `runtime_running` → stopped → `runtime_stopped`。
 - 本机实测：`backend=PulseAudio device=内置音频 模拟立体声 probe_complete=1 probe_seconds=0.100`。
 - 变异：把 Null 当作设备时 `test_core_app_runtime` 3 条用例变红；探测源播放后立即停止时进程级用例以 “the device never played the probe (cursor 0.000s)” 变红。恢复后全量 408/408。
+- cmake < 3.29 的主机（clean-room lane 用 3.28.3）没有 `cmake_language(EXIT)`，脚本因此在跳过点先打印 `CORE_APP_AUDIO_DEVICE_UNAVAILABLE` 再失败；`SKIP_REGULAR_EXPRESSION` 只匹配该 token（产品代码从不输出它），所以“已打开设备后又退出 77”仍是硬失败。用一个桩进程验过两条路径：无设备 → Skipped，ready 后退出 77 → Failed。
 
 ## Core App Task 11（slice 3）：创建期 Vulkan→OpenGL 降级（2026-11-14）
 

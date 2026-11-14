@@ -5286,7 +5286,8 @@ endif()
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_audio_device.cmake)
     set_tests_properties(test_core_app_audio_device PROPERTIES
-        LABELS "audio_device;core_app" TIMEOUT 180 RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+        LABELS "audio_device;core_app" TIMEOUT 180 RUN_SERIAL TRUE SKIP_RETURN_CODE 77
+        SKIP_REGULAR_EXPRESSION "CORE_APP_AUDIO_DEVICE_UNAVAILABLE")
     # Creation-time fallback: --render=auto with the Vulkan entry forced to
     # fail must land on OpenGL through the runtime chain. Only the
     # multi-backend shape has a chain to fall back through.
