@@ -1,3 +1,10 @@
+## Core App P12 Task 11（slice 3）：创建期 Vulkan→OpenGL 降级（2026-11-14）
+
+- **交付**：`--render=auto` 进入 GPU lane，经 `rhi_device_create_compiled` 走编译期链（多后端构建 Vulkan 优先，创建失败才降级 OpenGL）；`--render=vulkan|opengl` 仍是显式、不降级。设计见 `docs/design/core_app_integration.md` 的 Task 11 slice 3 节。
+- **测试**：`test_core_app_gpu_fallback`（`gpu` 标签，仅多后端构建注册）以 `BREAK_RHI_FAIL_VULKAN=1 --render=auto` 运行，断言 OpenGL 设备、Vulkan `fallback` RHIEVT、OpenGL `backend_selected reason=config-fallback` 与像素证据。显式用例改为同时设 `BREAK_RHI_NO_FALLBACK=1`。
+- **实测**：Intel UHD TGL GT1，Mesa GL 以 config-fallback 选中，640×480，drawn_samples=172。
+- **变异**：去掉失败钩子、或让 auto 改走显式 Vulkan，用例均变红；恢复后 GPU 3/3、全量 407/407。
+
 ## Core App P12 Task 13（slice 1）：独立评审缺陷修复（2026-11-14）
 
 - **修复 1（真实缺陷）**：`MeshVertex` 是 36 字节而场景网格是 32 字节，slice 2 的直接拷贝使第二个顶点起错位。新增纯函数 `core_app_mesh_convert_vertices`（`core_app_mesh.c/.h`）做逐字段转换，`test_core_app_mesh` 3 个用例覆盖；变异（用 `sizeof(MeshVertex)` 当步长）被杀死。修复后绘制像素 3797→6240，draws 8→6。

@@ -23,7 +23,10 @@ typedef struct CoreAppGpuFrame {
 
 typedef enum CoreAppGpuBackend {
     CORE_APP_GPU_VULKAN = 0,
-    CORE_APP_GPU_OPENGL
+    CORE_APP_GPU_OPENGL,
+    /* The compiled chain: Vulkan first, OpenGL only when Vulkan creation
+     * fails. Explicit VULKAN/OPENGL never fall back. */
+    CORE_APP_GPU_AUTO
 } CoreAppGpuBackend;
 
 typedef struct CoreAppGpuConfig {

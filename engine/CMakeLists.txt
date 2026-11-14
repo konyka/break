@@ -5276,6 +5276,24 @@ endif()
         set_tests_properties(test_core_app_gpu_${_core_app_gpu_backend} PROPERTIES
             LABELS "gpu;core_app" TIMEOUT 420 RUN_SERIAL TRUE)
     endforeach()
+    # Creation-time fallback: --render=auto with the Vulkan entry forced to
+    # fail must land on OpenGL through the runtime chain. Only the
+    # multi-backend shape has a chain to fall back through.
+    if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        add_test(NAME test_core_app_gpu_fallback
+            COMMAND ${CMAKE_COMMAND}
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DBACKEND=auto
+                -DEXPECT_BACKEND=opengl
+                -DFAIL_VULKAN=ON
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_gpu_fallback
+                -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+                -DSCENARIO=${CMAKE_CURRENT_BINARY_DIR}/core_app_gpu_fallback/gpu.scenario
+                -DPython3_EXECUTABLE=${Python3_EXECUTABLE}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_gpu.cmake)
+        set_tests_properties(test_core_app_gpu_fallback PROPERTIES
+            LABELS "gpu;core_app" TIMEOUT 420 RUN_SERIAL TRUE)
+    endif()
 
     foreach(ai_test IN ITEMS nav_bake nav_query nav_query_concurrent nav_follow perception behavior steer ai_dynamic steer_velocity ai_agents ai_formation ai_smart_object)
         add_executable(test_break_${ai_test} tests/test_break_${ai_test}.c)

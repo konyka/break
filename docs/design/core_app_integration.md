@@ -650,7 +650,7 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 ### 仍未做
 
-`scene_state_save`、GPU 侧真实骨架蒙皮绘制、`BREAK_RHI_FAIL_VULKAN=1` 的创建期降级用例、以及“用户/追踪者/植被各自语义像素”的分项断言。当前证据是“设备真实、几何真实到达目标、两后端一致”，不是逐对象影像回归。
+`scene_state_save`、GPU 侧真实骨架蒙皮绘制（创建期降级已在 slice 3 补上）、以及“用户/追踪者/植被各自语义像素”的分项断言。当前证据是“设备真实、几何真实到达目标、两后端一致”，不是逐对象影像回归。
 
 ## Core App Task 13（slice 1）：独立评审发现的缺陷与修复（2026-11-14）
 
@@ -665,6 +665,27 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 - `core_app_gpu.h` 不再引用 `rhi_runtime.h`；后端名改从 `RHIDeviceInfo.backend` 读取。原写法在单后端嵌套构建里产生 `undefined reference to rhi_runtime_active_backend`，使 `test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract` 失败。
 
 本轮修复后：`test_core_app_mesh` 3/3、GPU 两用例通过、`test_core_app_gpu`/`naming`/`target` 契约 5/5；全量含 GPU 405/405。
+
+## Core App Task 11（slice 3）：创建期 Vulkan→OpenGL 降级（2026-11-14）
+
+### 变化
+
+- `--render=auto` 进入 GPU lane（此前在 config 阶段被拒绝），对应 `CORE_APP_GPU_AUTO`。它调用 `rhi_device_create_compiled`，走编译期链：多后端构建中是 Vulkan 优先、Vulkan 创建失败时以 OpenGL 作最后降级；单后端构建中就是那一个后端。
+- `--render=vulkan|opengl` 保持显式语义：调用 `rhi_device_create(backend, ...)`，不会降级。GPU 测试对显式后端额外设置 `BREAK_RHI_BACKEND=<b>` 与 `BREAK_RHI_NO_FALLBACK=1`，并断言 trace 里的 `backend=` 就是请求的那个。
+- 设备创建成功后的 device loss 不切换后端，仍按 RHI 合同失败退出。
+
+### 验证
+
+新增 `test_core_app_gpu_fallback`（标签 `gpu`，只在 `ENGINE_RHI_MULTI_BACKEND_ACTIVE` 时注册）：以 `BREAK_RHI_FAIL_VULKAN=1 core_app --render=auto --require-device` 运行，要求：
+
+1. trace 出现 `event=gpu result=ready backend=opengl device=...`；
+2. 进程输出含 `RHIEVT {"event":"fallback","backend":"vulkan",...}`，证明链确实先拒绝了 Vulkan；
+3. 进程输出含 `RHIEVT {"event":"backend_selected","backend":"opengl","reason":"config-fallback",...}`；
+4. 与显式用例相同的 draws、干净关闭与 PPM 像素检查。
+
+本机实测（Intel UHD TGL GT1）：Vulkan entry 被钩子跳过，OpenGL（Mesa）以 `config-fallback` 选中，640×480 捕获、`drawn_samples=172`。
+
+变异：测试侧去掉 `BREAK_RHI_FAIL_VULKAN` 时用例以 “no real opengl device was created for --render=auto” 变红（链直接选中 Vulkan）；实现侧让 `auto` 改走显式 Vulkan 时同样变红。两处恢复后 GPU 三个用例全绿，全量 407/407。
 
 ## Core App Task 13（slice 2）：交付门与证据总览（2026-11-14）
 
@@ -699,7 +720,7 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 ### 仍未做
 
-真实网络传输（TLS/Session/reactor 接线与 loopback 客户端）、设备音频后端、GPU 侧骨架蒙皮、`BREAK_RHI_FAIL_VULKAN` 创建期降级用例、逐对象影像回归。这些在计划里属于后续 Task，不在本轮交付范围，也未在文档中宣称完成。
+真实网络传输（TLS/Session/reactor 接线与 loopback 客户端）、设备音频后端、GPU 侧骨架蒙皮、逐对象影像回归。创建期降级用例已在 Task 11 slice 3 补上。这些在计划里属于后续 Task，不在本轮交付范围，也未在文档中宣称完成。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-13 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 

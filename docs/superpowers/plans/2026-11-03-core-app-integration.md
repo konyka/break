@@ -922,13 +922,13 @@ ctest --test-dir build-core-integration-normal -R '^test_core_app_gpu_(vk|gl|fal
 ```
 Expected: 若应用还没有完整 RHI draw，真实截图缺对象/趋势而 RED。没有 display/device 时在设备创建前退出 77，报告 UNAVAILABLE；平台已创建而 shader/draw/readback 失败必须 FAIL，不得转成 skip。
 
-- [ ] **Step 3: 修正真实 RHI 路径并保留后端门**
+- [x] **Step 3: 修正真实 RHI 路径并保留后端门**
 
 实际设备信息来自 `RHIDeviceInfo`；多后端时用 `rhi_runtime_active_backend()`，单后端用 capabilities.backend 交叉核对。Vulkan 测试强制无 fallback；另用 `BREAK_RHI_FAIL_VULKAN=1` 启动 auto 模式验证创建期最后降级到 OpenGL。成功创建设备后 device loss 不切换后端，按现有 RHI 合同失败退出。
 
 截图只在 acquired frame 内调用 `rhi_screenshot`，RGBA 转顶层向下的 PPM 时做明确 R/B 和行序处理；不在 record 模式生成“截图”。修复所有真实 shader/binding/stride/帧生命周期问题后，检查 Vulkan validation 为 0。
 
-- [ ] **Step 4: 运行 Vulkan、OpenGL 对照和创建失败降级 GREEN**
+- [x] **Step 4: 运行 Vulkan、OpenGL 对照和创建失败降级 GREEN**
 
 Run:
 ```bash

@@ -85,12 +85,22 @@ BreakRuntimeError core_app_gpu_create(CoreAppGpu *gpu, const CoreAppGpuConfig *c
     }
     gpu->width = actual_width;
     gpu->height = actual_height;
-    RHIBackend backend = config->backend == CORE_APP_GPU_VULKAN ? RHI_BACKEND_VULKAN
-                                                                : RHI_BACKEND_OPENGL;
-    void *window = backend == RHI_BACKEND_VULKAN ? platform_surface_native(platform)
-                                                 : platform_window_native(platform);
-    RHIDevice *device = rhi_device_create(backend, window, platform_display_native(platform),
-                                          gpu->width, gpu->height);
+    RHIDevice *device = NULL;
+    if (config->backend == CORE_APP_GPU_AUTO) {
+        /* Each compiled backend picks the handle it consumes: Vulkan the
+         * surface, OpenGL the window. */
+        device = rhi_device_create_compiled(platform_window_native(platform),
+                                            platform_surface_native(platform),
+                                            platform_display_native(platform),
+                                            gpu->width, gpu->height);
+    } else {
+        RHIBackend backend = config->backend == CORE_APP_GPU_VULKAN ? RHI_BACKEND_VULKAN
+                                                                    : RHI_BACKEND_OPENGL;
+        void *window = backend == RHI_BACKEND_VULKAN ? platform_surface_native(platform)
+                                                     : platform_window_native(platform);
+        device = rhi_device_create(backend, window, platform_display_native(platform),
+                                   gpu->width, gpu->height);
+    }
     if (!device) {
         platform_destroy(platform);
         gpu->platform = NULL;

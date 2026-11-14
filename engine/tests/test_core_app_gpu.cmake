@@ -16,6 +16,22 @@ foreach(var CORE_APP BACKEND WORK SCENARIO ASSET_ROOT Python3_EXECUTABLE)
     endif()
 endforeach()
 
+# BACKEND is the --render value. EXPECT_BACKEND is the backend the device must
+# actually report; it differs only for the creation-time fallback case, where
+# --render=auto runs with BREAK_RHI_FAIL_VULKAN=1 and must land on OpenGL.
+if(NOT DEFINED EXPECT_BACKEND OR "${EXPECT_BACKEND}" STREQUAL "")
+    set(EXPECT_BACKEND "${BACKEND}")
+endif()
+set(run_env "")
+if(BACKEND STREQUAL "auto")
+    if(DEFINED FAIL_VULKAN AND FAIL_VULKAN)
+        list(APPEND run_env "BREAK_RHI_FAIL_VULKAN=1")
+    endif()
+else()
+    # An explicit backend must never be satisfied by a fallback.
+    list(APPEND run_env "BREAK_RHI_BACKEND=${BACKEND}" "BREAK_RHI_NO_FALLBACK=1")
+endif()
+
 file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}")
 
@@ -30,8 +46,7 @@ file(WRITE "${SCENARIO}"
     "65 quit\n")
 
 execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E env
-        "BREAK_RHI_BACKEND=${BACKEND}"
+    COMMAND "${CMAKE_COMMAND}" -E env ${run_env}
         "${CORE_APP}" --render=${BACKEND} --require-device --audio=null --fixed-step
         --assets "${ASSET_ROOT}"
         --scenario "${SCENARIO}" --screenshot "${shot}" --trace "${trace}"
@@ -64,11 +79,22 @@ if(NOT EXISTS "${trace}")
     message(FATAL_ERROR "missing trace ${trace}")
 endif()
 file(READ "${trace}" trace_text)
-if(NOT trace_text MATCHES "event=gpu result=ready backend=${BACKEND} device=[^\n]+")
-    message(FATAL_ERROR "no real device was created for ${BACKEND}")
+if(NOT trace_text MATCHES "event=gpu result=ready backend=${EXPECT_BACKEND} device=[^\n]+")
+    message(FATAL_ERROR "no real ${EXPECT_BACKEND} device was created for --render=${BACKEND}")
 endif()
-if(NOT trace_text MATCHES "event=gpu backend=${BACKEND} .*draws=[1-9][0-9]*")
-    message(FATAL_ERROR "no frame with draws was rendered on ${BACKEND}")
+if(NOT trace_text MATCHES "event=gpu backend=${EXPECT_BACKEND} .*draws=[1-9][0-9]*")
+    message(FATAL_ERROR "no frame with draws was rendered on ${EXPECT_BACKEND}")
+endif()
+# The fallback case must show the chain actually rejected Vulkan before it
+# selected OpenGL; a device that was OpenGL from the start proves nothing.
+if(BACKEND STREQUAL "auto" AND DEFINED FAIL_VULKAN AND FAIL_VULKAN)
+    set(run_log "${run_out}${run_err}")
+    if(NOT run_log MATCHES "RHIEVT [{]\"event\":\"fallback\",\"backend\":\"vulkan\"")
+        message(FATAL_ERROR "no vulkan fallback event was emitted\n${run_log}")
+    endif()
+    if(NOT run_log MATCHES "RHIEVT [{]\"event\":\"backend_selected\",\"backend\":\"opengl\",\"reason\":\"config-fallback\"")
+        message(FATAL_ERROR "opengl was not selected as the fallback\n${run_log}")
+    endif()
 endif()
 if(NOT trace_text MATCHES "event=gpu result=stopped frames=[1-9][0-9]* screenshots=1")
     message(FATAL_ERROR "the device was not shut down after one capture on ${BACKEND}")

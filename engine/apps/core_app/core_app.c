@@ -192,8 +192,9 @@ struct CoreApp {
     CoreAppAudio audio;
     CoreAppResourceTable resources;
     CoreAppIoCompletion io[CORE_APP_IO_QUEUE];
-    /* Only --render=vulkan|opengl with a real device creates this; the record
-     * lane never touches it, which keeps a headless host a valid record host. */
+    /* Only --render=vulkan|opengl|auto with a real device creates this; the
+     * record lane never touches it, which keeps a headless host a valid record
+     * host. auto uses the compiled chain (Vulkan, then OpenGL on failure). */
     CoreAppGpu gpu;
     WorldFrameSnapshot gpu_snapshot;
     const char *screenshot_path;
@@ -2181,7 +2182,8 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (!config) return BREAK_RUNTIME_INVALID;
     bool optional_device = config->audio_mode == CORE_APP_AUDIO_DEVICE && !config->require_device;
     bool gpu_lane = config->render_mode == CORE_APP_RENDER_VULKAN ||
-                    config->render_mode == CORE_APP_RENDER_OPENGL;
+                    config->render_mode == CORE_APP_RENDER_OPENGL ||
+                    config->render_mode == CORE_APP_RENDER_AUTO;
     if ((config->render_mode != CORE_APP_RENDER_RECORD && !gpu_lane) || !config->fixed_step ||
         (config->audio_mode != CORE_APP_AUDIO_RECORD &&
          config->audio_mode != CORE_APP_AUDIO_NULL && !optional_device) ||
@@ -2233,8 +2235,9 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (gpu_lane) {
         CoreAppGpuConfig gpu_config;
         memset(&gpu_config, 0, sizeof(gpu_config));
-        gpu_config.backend = config->render_mode == CORE_APP_RENDER_VULKAN
-                                 ? CORE_APP_GPU_VULKAN : CORE_APP_GPU_OPENGL;
+        gpu_config.backend = config->render_mode == CORE_APP_RENDER_VULKAN ? CORE_APP_GPU_VULKAN
+                             : config->render_mode == CORE_APP_RENDER_OPENGL ? CORE_APP_GPU_OPENGL
+                                                                             : CORE_APP_GPU_AUTO;
         gpu_config.width = 640u;
         gpu_config.height = 480u;
         gpu_config.require_device = config->require_device;
@@ -2243,7 +2246,9 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
         if (result == BREAK_RUNTIME_UNAVAILABLE) {
             (void)app_trace(app,
                 "COREAPPTRACE version=1 event=gpu result=unavailable backend=%s\n",
-                gpu_config.backend == CORE_APP_GPU_VULKAN ? "vulkan" : "opengl");
+                gpu_config.backend == CORE_APP_GPU_VULKAN   ? "vulkan"
+                : gpu_config.backend == CORE_APP_GPU_OPENGL ? "opengl"
+                                                            : "auto");
             goto finished;
         }
         if (result != BREAK_RUNTIME_OK) goto finished;
