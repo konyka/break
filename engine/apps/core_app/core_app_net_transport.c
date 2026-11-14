@@ -544,6 +544,21 @@ void core_app_net_transport_free(CoreAppNetTransport *transport) {
     free(transport);
 }
 
+#ifdef CORE_APP_NET_TRANSPORT_TESTING
+BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport) {
+    return transport ? transport->reactor : NULL;
+}
+
+bool core_app_net_transport_reclaim_for_test(CoreAppNetTransport *transport) {
+    if (!transport) return false;
+    if (transport->reactor && !break_net_reactor_stop(transport->reactor, 1000u)) return false;
+    if (transport->reactor) break_net_reactor_destroy(transport->reactor);
+    if (transport->acceptor) SnowAcceptorDestroy(transport->acceptor);
+    free(transport);
+    return true;
+}
+#endif
+
 void core_app_net_transport_hooks(CoreAppNetTransport *transport, CoreAppNetworkHooks *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));

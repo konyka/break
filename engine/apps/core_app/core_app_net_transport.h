@@ -35,6 +35,16 @@ void core_app_net_transport_free(CoreAppNetTransport *transport);
 /* Fills hooks bound to the transport. The transport must outlive the run. */
 void core_app_net_transport_hooks(CoreAppNetTransport *transport, CoreAppNetworkHooks *out);
 
+#ifdef CORE_APP_NET_TRANSPORT_TESTING
+typedef struct BreakNetReactor BreakNetReactor;
+/* Test-only (test_core_app_net_transport): the live reactor, or NULL. */
+BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport);
+/* Test-only: after the step that blocked the stop has returned, stops and
+ * destroys the reactor and the acceptor a timed-out destroy kept, then frees
+ * the transport. Returns false if the reactor still does not stop. */
+bool core_app_net_transport_reclaim_for_test(CoreAppNetTransport *transport);
+#endif
+
 /* Parses "HOST:PORT" with a dotted IPv4 host. Exposed for the CLI so a
  * malformed value fails before the runtime starts. */
 bool core_app_net_parse_bind(const char *bind, char *host, usize host_capacity, u16 *port);

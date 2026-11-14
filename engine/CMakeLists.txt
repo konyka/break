@@ -5337,6 +5337,23 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
         set_tests_properties(test_core_app_network_start_failure PROPERTIES
             LABELS "network;snowflake;core_app" TIMEOUT 180)
+        # Transport unit test: drives the real hooks against break_net_test so
+        # a step held on another thread forces the reactor stop to time out.
+        add_executable(test_core_app_net_transport tests/test_core_app_net_transport.c
+            apps/core_app/core_app_net_transport.c src/platform/platform_fs.c
+            src/platform/time.c)
+        set_property(TARGET test_core_app_net_transport PROPERTY C_STANDARD 11)
+        target_include_directories(test_core_app_net_transport PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/apps/core_app ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_core_app_net_transport PRIVATE
+            CORE_APP_NET_TRANSPORT=1 CORE_APP_NET_TRANSPORT_TESTING=1
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200809L
+            CORE_APP_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
+        target_link_libraries(test_core_app_net_transport PRIVATE
+            core_app_network break_net_test m Threads::Threads)
+        add_test(NAME test_core_app_net_transport COMMAND test_core_app_net_transport)
+        set_tests_properties(test_core_app_net_transport PROPERTIES
+            LABELS "network;snowflake;core_app" TIMEOUT 30)
     endif()
 
     # Real-device capture lanes. These create a window and a device, so they
