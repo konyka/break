@@ -49,7 +49,7 @@ static ssize_t fake_write(int fd, const void *data, size_t size)
 
 #define ioctl fake_ioctl
 #define write fake_write
-#include "../src/platform/gamepad_linux.c"
+#include "../src/platform/pad_linux.c"
 #undef write
 #undef ioctl
 
@@ -65,9 +65,9 @@ static void reset_fakes(void)
     memset(&fake_event, 0, sizeof(fake_event));
 }
 
-static GamepadDevice feedback_device(void)
+static PadDevice feedback_device(void)
 {
-    GamepadDevice device;
+    PadDevice device;
     memset(&device, 0, sizeof(device));
     device.fd = 7;
     device.connected = true;
@@ -90,7 +90,7 @@ static InputHapticCommand haptic_command(f32 low, f32 high, u32 duration)
 
 TEST(evdev_uploads_rumble_and_stops_reused_effect)
 {
-    GamepadDevice device = feedback_device();
+    PadDevice device = feedback_device();
     InputHapticCommand command = haptic_command(0.25f, 0.75f, 250);
     reset_fakes();
     ASSERT_EQ(linux_device_haptic(&device, &command), INPUT_EXT_OK);
@@ -115,7 +115,7 @@ TEST(evdev_uploads_rumble_and_stops_reused_effect)
 
 TEST(evdev_disconnected_and_no_feedback_do_not_touch_os)
 {
-    GamepadDevice device = feedback_device();
+    PadDevice device = feedback_device();
     InputHapticCommand command = haptic_command(0.5f, 0.5f, 100);
     reset_fakes();
     device.connected = false;
@@ -129,7 +129,7 @@ TEST(evdev_disconnected_and_no_feedback_do_not_touch_os)
 
 TEST(evdev_upload_and_write_failures_preserve_error_meaning)
 {
-    GamepadDevice device = feedback_device();
+    PadDevice device = feedback_device();
     InputHapticCommand command = haptic_command(0.5f, 0.5f, 100);
     reset_fakes();
     fake_ioctl_result = -1;

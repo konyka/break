@@ -93,11 +93,11 @@ BreakRuntimeError core_app_input_apply(CoreAppInput *input,
         return from_ext(result);
     }
     case CORE_APP_SCENARIO_PAD: {
-        GamepadState *pad;
-        if (event->pad >= INPUT_MAX_GAMEPADS || event->axis >= INPUT_MAX_AXES) {
+        PadState *pad;
+        if (event->pad >= INPUT_MAX_PADS || event->axis >= INPUT_MAX_AXES) {
             return BREAK_RUNTIME_INVALID;
         }
-        pad = &input->state.gamepads[event->pad];
+        pad = &input->state.pads[event->pad];
         pad->connected = true;
         pad->axes[event->axis] = event->value;
         return BREAK_RUNTIME_OK;

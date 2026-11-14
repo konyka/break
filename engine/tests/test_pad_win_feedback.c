@@ -15,16 +15,16 @@ static DWORD WINAPI fake_set_state(DWORD pad, XINPUT_VIBRATION *vibration)
     return fake_set_result;
 }
 
-#include "../src/platform/gamepad_win.c"
+#include "../src/platform/pad_win.c"
 
-#ifdef GAMEPAD_WIN_PORTABLE_TEST
+#ifdef PAD_WIN_PORTABLE_TEST
 static u64 fake_now_us;
 u64 time_microseconds(void) { return fake_now_us; }
 #endif
 
 static void reset_fake(void)
 {
-#ifdef GAMEPAD_WIN_PORTABLE_TEST
+#ifdef PAD_WIN_PORTABLE_TEST
     fake_now_us = 1000000u;
 #endif
     memset(&g_pad, 0, sizeof(g_pad));
@@ -44,10 +44,10 @@ TEST(xinput_fake_receives_bounded_motor_values)
     u64 id;
     reset_fake();
     input_extended_init(&input);
-    gamepad_feedback_poll(&input);
+    pad_feedback_poll(&input);
     ASSERT_EQ(input_extended_request_haptic(&input, 0, 0.25f, 0.75f, 200, &id),
               INPUT_EXT_OK);
-    gamepad_feedback_poll(&input);
+    pad_feedback_poll(&input);
     ASSERT_EQ(fake_set_calls, 1u);
     ASSERT_EQ(fake_vibration.wLeftMotorSpeed, 16384);
     ASSERT_EQ(fake_vibration.wRightMotorSpeed, 49151);
@@ -61,17 +61,17 @@ TEST(xinput_no_feedback_and_disconnect_degrade_without_retry_storm)
     reset_fake();
     g_pad.feedback_available[0] = false;
     input_extended_init(&input);
-    gamepad_feedback_poll(&input);
+    pad_feedback_poll(&input);
     ASSERT_EQ(input_extended_request_haptic(&input, 0, 0.5f, 0.5f, 100, &id),
               INPUT_EXT_UNSUPPORTED);
     ASSERT_EQ(fake_set_calls, 0u);
 
     g_pad.feedback_available[0] = true;
-    gamepad_feedback_poll(&input);
+    pad_feedback_poll(&input);
     ASSERT_EQ(input_extended_request_haptic(&input, 0, 0.5f, 0.5f, 100, &id),
               INPUT_EXT_OK);
     fake_set_result = ERROR_DEVICE_NOT_CONNECTED;
-    gamepad_feedback_poll(&input);
+    pad_feedback_poll(&input);
     ASSERT_EQ(fake_set_calls, 1u);
     ASSERT_EQ(input_extended_haptic_result(&input, id), INPUT_EXT_DISCONNECTED);
     ASSERT_FALSE(g_pad.connected[0]);
@@ -87,9 +87,9 @@ TEST(xinput_zero_duration_stops_motors)
     u64 id;
     reset_fake();
     input_extended_init(&input);
-    gamepad_feedback_poll(&input);
+    pad_feedback_poll(&input);
     ASSERT_EQ(input_extended_request_haptic(&input, 0, 0, 0, 0, &id), INPUT_EXT_OK);
-    gamepad_feedback_poll(&input);
+    pad_feedback_poll(&input);
     ASSERT_EQ(fake_set_calls, 1u);
     ASSERT_EQ(fake_vibration.wLeftMotorSpeed, 0);
     ASSERT_EQ(fake_vibration.wRightMotorSpeed, 0);
@@ -103,11 +103,11 @@ TEST(xinput_duration_expiry_stops_motors_on_poll_thread)
     u64 deadline;
     reset_fake();
     input_extended_init(&input);
-    gamepad_feedback_poll(&input);
+    pad_feedback_poll(&input);
     ASSERT_EQ(input_extended_request_haptic(&input, 0, 0.5f, 0.25f,
                                             INPUT_HAPTIC_MAX_DURATION_MS, &id),
               INPUT_EXT_OK);
-    gamepad_feedback_poll(&input);
+    pad_feedback_poll(&input);
     ASSERT_EQ(fake_set_calls, 1u);
     ASSERT_TRUE(g_pad.vibration_active[0]);
     deadline = g_pad.stop_deadline_us[0];

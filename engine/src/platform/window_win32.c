@@ -32,7 +32,7 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 #include <platform/time.h>
 #include <core/types.h>
 #include <core/log.h>
-#include "gamepad_linux.h"  /* shared gamepad API; Windows impl in gamepad_win.c */
+#include "pad_linux.h"  /* shared pad API; Windows impl in pad_win.c */
 
 #include <stdlib.h>
 #include <string.h>
@@ -687,7 +687,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
         UpdateWindow(p->hwnd);
     }
 
-    gamepad_init();
+    pad_init();
 
     LOG_INFO("Platform initialized: %ux%u \"%s\"", cfg->width, cfg->height, cfg->title);
     return p;
@@ -696,7 +696,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
 void platform_destroy(Platform *p) {
     if (!p) return;
     (void)platform_wsi_surface_destroy(&p->wsi);
-    gamepad_shutdown();
+    pad_shutdown();
     platform_text_queue_destroy(&p->text_queue);
     if (p->hdc) ReleaseDC(p->hwnd, p->hdc);
     if (p->hwnd && p->touch_registered) (void)UnregisterTouchWindow(p->hwnd);
@@ -750,9 +750,9 @@ PlatformEventResult platform_poll(Platform *p) {
     }
 
     input_extended_update(&p->input_extended, time_microseconds() / 1000u);
-    /* Pump gamepads (XInput) into the shared input state. */
-    gamepad_poll(p->input.gamepads);
-    gamepad_feedback_poll(&p->input_extended);
+    /* Pump pads (XInput) into the shared input state. */
+    pad_poll(p->input.pads);
+    pad_feedback_poll(&p->input_extended);
 
     if (p->should_close || p->close_requested) return PLATFORM_EVENT_QUIT;
     return PLATFORM_EVENT_NONE;

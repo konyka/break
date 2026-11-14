@@ -33,9 +33,9 @@ TEST(bind_and_eval_keys_axes_and_replace) {
     InputState input;
     memset(&input, 0, sizeof(input));
     input.keys[17] = 3;
-    input.gamepads[0].connected = true;
-    input.gamepads[0].axes[0] = 1.0f;
-    input.gamepads[0].axes[1] = 1.0f;
+    input.pads[0].connected = true;
+    input.pads[0].axes[0] = 1.0f;
+    input.pads[0].axes[1] = 1.0f;
     BreakKernelActionValue values[2];
     memset(values, 0, sizeof(values));
     ASSERT_EQ(break_kernel_eval_actions(kernel, &input, values, 2), BREAK_KERNEL_OK);
@@ -44,8 +44,8 @@ TEST(bind_and_eval_keys_axes_and_replace) {
     ASSERT_FALSE(values[1].down);
     ASSERT_FLOAT_EQ(values[1].axis, 1.0f, 1e-6);
 
-    input.gamepads[0].axes[0] = 1.0f;
-    input.gamepads[0].axes[1] = 0.0f;
+    input.pads[0].axes[0] = 1.0f;
+    input.pads[0].axes[1] = 0.0f;
     BreakKernelBinding back;
     back.source = BREAK_KERNEL_BIND_PAD_AXIS;
     back.code = 0;

@@ -383,7 +383,7 @@ static void haptic_unlock(const InputExtended *s)
 InputExtResult input_extended_pad_status(const InputExtended *s, u32 pad,
                                          InputPadFeedbackStatus *out)
 {
-    if (s == NULL || out == NULL || pad >= INPUT_MAX_GAMEPADS)
+    if (s == NULL || out == NULL || pad >= INPUT_MAX_PADS)
         return INPUT_EXT_INVALID;
     haptic_lock(s);
     *out = s->pads[pad];
@@ -395,7 +395,7 @@ void input_extended_backend_pad(InputExtended *s, u32 pad, bool connected,
                                 bool feedback_available, u32 connection_serial)
 {
     InputPadFeedbackStatus *status;
-    if (s == NULL || pad >= INPUT_MAX_GAMEPADS) return;
+    if (s == NULL || pad >= INPUT_MAX_PADS) return;
     haptic_lock(s);
     status = &s->pads[pad];
     if (connected && (!status->connected || s->pad_serials[pad] != connection_serial)) {
@@ -414,7 +414,7 @@ InputExtResult input_extended_request_haptic(InputExtended *s, u32 pad,
     InputExtResult result = INPUT_EXT_OK;
     u32 slot;
     if (out_request_id != NULL) *out_request_id = 0;
-    if (s == NULL || out_request_id == NULL || pad >= INPUT_MAX_GAMEPADS ||
+    if (s == NULL || out_request_id == NULL || pad >= INPUT_MAX_PADS ||
         !isfinite(low) || !isfinite(high) ||
         low < 0.0f || low > 1.0f || high < 0.0f || high > 1.0f ||
         duration_ms > INPUT_HAPTIC_MAX_DURATION_MS)

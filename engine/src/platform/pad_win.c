@@ -1,9 +1,9 @@
 #ifdef ENGINE_PLATFORM_WINDOWS
 
-/* Windows XInput gamepad backend.
+/* Windows XInput pad backend.
  *
- * Implements the same gamepad_init/poll/shutdown contract as the Linux evdev
- * backend (gamepad_linux.c) so window_win32.c can wire it in identically.
+ * Implements the same pad_init/poll/shutdown contract as the Linux evdev
+ * backend (pad_linux.c) so window_win32.c can wire it in identically.
  *
  * XInput is loaded dynamically (xinput1_4 -> xinput1_3 -> xinput9_1_0) so the
  * engine links cleanly on systems lacking the newest redistributable and
@@ -24,9 +24,9 @@
 #include <core/types.h>
 #include <core/log.h>
 
-#include "gamepad_linux.h"  /* shared gamepad_init/poll/shutdown prototypes */
+#include "pad_linux.h"  /* shared pad_init/poll/shutdown prototypes */
 
-/* XInput exposes at most 4 controllers — matches INPUT_MAX_GAMEPADS. */
+/* XInput exposes at most 4 controllers — matches INPUT_MAX_PADS. */
 #ifndef XUSER_MAX_COUNT
 #define XUSER_MAX_COUNT 4
 #endif
@@ -45,16 +45,16 @@ typedef struct {
     PFN_XInputSetState        set_state;
     PFN_XInputGetCapabilities get_capabilities;
     bool                      initialized;
-    bool                      connected[INPUT_MAX_GAMEPADS];
-    bool                      feedback_available[INPUT_MAX_GAMEPADS];
-    bool                      vibration_active[INPUT_MAX_GAMEPADS];
-    u64                       stop_deadline_us[INPUT_MAX_GAMEPADS];
-    u32                       connection_serial[INPUT_MAX_GAMEPADS];
+    bool                      connected[INPUT_MAX_PADS];
+    bool                      feedback_available[INPUT_MAX_PADS];
+    bool                      vibration_active[INPUT_MAX_PADS];
+    u64                       stop_deadline_us[INPUT_MAX_PADS];
+    u32                       connection_serial[INPUT_MAX_PADS];
     u32                       next_serial;
-    DWORD                     last_packet[INPUT_MAX_GAMEPADS];
-} GamepadSystemWin;
+    DWORD                     last_packet[INPUT_MAX_PADS];
+} PadSystemWin;
 
-static GamepadSystemWin g_pad;
+static PadSystemWin g_pad;
 
 /* ---------------------------------------------------------------- */
 
@@ -88,28 +88,28 @@ static void apply_button_state(u8 *slot, bool pressed) {
     }
 }
 
-static void map_buttons(const XINPUT_GAMEPAD *gp, GamepadState *s) {
+static void map_buttons(const XINPUT_GAMEPAD *gp, PadState *s) {
     WORD w = gp->wButtons;
-    apply_button_state(&s->buttons[GAMEPAD_BTN_SOUTH],     w & XINPUT_GAMEPAD_A);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_EAST],      w & XINPUT_GAMEPAD_B);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_WEST],      w & XINPUT_GAMEPAD_X);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_NORTH],     w & XINPUT_GAMEPAD_Y);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_LB],        w & XINPUT_GAMEPAD_LEFT_SHOULDER);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_RB],        w & XINPUT_GAMEPAD_RIGHT_SHOULDER);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_BACK],      w & XINPUT_GAMEPAD_BACK);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_START],     w & XINPUT_GAMEPAD_START);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_LSTICK],    w & XINPUT_GAMEPAD_LEFT_THUMB);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_RSTICK],    w & XINPUT_GAMEPAD_RIGHT_THUMB);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_DPAD_UP],   w & XINPUT_GAMEPAD_DPAD_UP);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_DPAD_DOWN], w & XINPUT_GAMEPAD_DPAD_DOWN);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_DPAD_LEFT], w & XINPUT_GAMEPAD_DPAD_LEFT);
-    apply_button_state(&s->buttons[GAMEPAD_BTN_DPAD_RIGHT],w & XINPUT_GAMEPAD_DPAD_RIGHT);
+    apply_button_state(&s->buttons[PAD_BTN_SOUTH],     w & XINPUT_GAMEPAD_A);
+    apply_button_state(&s->buttons[PAD_BTN_EAST],      w & XINPUT_GAMEPAD_B);
+    apply_button_state(&s->buttons[PAD_BTN_WEST],      w & XINPUT_GAMEPAD_X);
+    apply_button_state(&s->buttons[PAD_BTN_NORTH],     w & XINPUT_GAMEPAD_Y);
+    apply_button_state(&s->buttons[PAD_BTN_LB],        w & XINPUT_GAMEPAD_LEFT_SHOULDER);
+    apply_button_state(&s->buttons[PAD_BTN_RB],        w & XINPUT_GAMEPAD_RIGHT_SHOULDER);
+    apply_button_state(&s->buttons[PAD_BTN_BACK],      w & XINPUT_GAMEPAD_BACK);
+    apply_button_state(&s->buttons[PAD_BTN_START],     w & XINPUT_GAMEPAD_START);
+    apply_button_state(&s->buttons[PAD_BTN_LSTICK],    w & XINPUT_GAMEPAD_LEFT_THUMB);
+    apply_button_state(&s->buttons[PAD_BTN_RSTICK],    w & XINPUT_GAMEPAD_RIGHT_THUMB);
+    apply_button_state(&s->buttons[PAD_BTN_DPAD_UP],   w & XINPUT_GAMEPAD_DPAD_UP);
+    apply_button_state(&s->buttons[PAD_BTN_DPAD_DOWN], w & XINPUT_GAMEPAD_DPAD_DOWN);
+    apply_button_state(&s->buttons[PAD_BTN_DPAD_LEFT], w & XINPUT_GAMEPAD_DPAD_LEFT);
+    apply_button_state(&s->buttons[PAD_BTN_DPAD_RIGHT],w & XINPUT_GAMEPAD_DPAD_RIGHT);
     /* Standard XInput has no Guide button slot. */
 }
 
 /* ---------------------------------------------------------------- */
 
-void gamepad_init(void) {
+void pad_init(void) {
     /* R570: not idempotent — a second call would overwrite g_pad.dll and leak
      * the xinput HMODULE. Early-return once initialized. */
     if (g_pad.initialized) return;
@@ -129,7 +129,7 @@ void gamepad_init(void) {
                               GetProcAddress(g_pad.dll, "XInputSetState"));
                 WIN_PROC_LOAD(g_pad.get_capabilities,
                               GetProcAddress(g_pad.dll, "XInputGetCapabilities"));
-                LOG_INFO("gamepad: XInput backend loaded (%s)", dlls[i]);
+                LOG_INFO("pad: XInput backend loaded (%s)", dlls[i]);
                 break;
             }
             FreeLibrary(g_pad.dll);
@@ -138,7 +138,7 @@ void gamepad_init(void) {
     }
 
     if (!g_pad.get_state) {
-        LOG_WARN("gamepad: XInput unavailable — no gamepads");
+        LOG_WARN("pad: XInput unavailable — no pads");
     }
     g_pad.initialized = true;
 }
@@ -156,17 +156,17 @@ static void win_query_feedback(u32 pad) {
     g_pad.feedback_available[pad] = available;
 }
 
-void gamepad_poll(GamepadState *out_pads) {
+void pad_poll(PadState *out_pads) {
     if (!g_pad.initialized || !out_pads || !g_pad.get_state) return;
 
-    int max = (INPUT_MAX_GAMEPADS < XUSER_MAX_COUNT)
-                  ? INPUT_MAX_GAMEPADS : XUSER_MAX_COUNT;
+    int max = (INPUT_MAX_PADS < XUSER_MAX_COUNT)
+                  ? INPUT_MAX_PADS : XUSER_MAX_COUNT;
 
     for (int i = 0; i < max; i++) {
         XINPUT_STATE st;
         memset(&st, 0, sizeof(st));
         DWORD res = g_pad.get_state((DWORD)i, &st);
-        GamepadState *s = &out_pads[i];
+        PadState *s = &out_pads[i];
 
         if (res != ERROR_SUCCESS) {
             if (g_pad.connected[i]) {
@@ -179,7 +179,7 @@ void gamepad_poll(GamepadState *out_pads) {
                 g_pad.connected[i] = false;
                 g_pad.feedback_available[i] = false;
                 g_pad.vibration_active[i] = false;
-                LOG_INFO("gamepad: disconnected slot=%d", i);
+                LOG_INFO("pad: disconnected slot=%d", i);
             }
             continue;
         }
@@ -192,20 +192,20 @@ void gamepad_poll(GamepadState *out_pads) {
             win_query_feedback((u32)i);
             s->connected = true;
             snprintf(s->name, sizeof(s->name), "XInput Controller %d", i);
-            LOG_INFO("gamepad: connected slot=%d name=\"%s\" feedback=%d",
+            LOG_INFO("pad: connected slot=%d name=\"%s\" feedback=%d",
                      i, s->name, g_pad.feedback_available[i] ? 1 : 0);
         }
 
         const XINPUT_GAMEPAD *gp = &st.Gamepad;
         map_buttons(gp, s);
 
-        s->axes[GAMEPAD_AXIS_LEFT_X]  =  normalize_stick(gp->sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+        s->axes[PAD_AXIS_LEFT_X]  =  normalize_stick(gp->sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
         /* Negate Y so "up" is negative, matching the evdev backend convention. */
-        s->axes[GAMEPAD_AXIS_LEFT_Y]  = -normalize_stick(gp->sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-        s->axes[GAMEPAD_AXIS_RIGHT_X] =  normalize_stick(gp->sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
-        s->axes[GAMEPAD_AXIS_RIGHT_Y] = -normalize_stick(gp->sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
-        s->axes[GAMEPAD_AXIS_LTRIGGER] = normalize_trigger_win(gp->bLeftTrigger);
-        s->axes[GAMEPAD_AXIS_RTRIGGER] = normalize_trigger_win(gp->bRightTrigger);
+        s->axes[PAD_AXIS_LEFT_Y]  = -normalize_stick(gp->sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+        s->axes[PAD_AXIS_RIGHT_X] =  normalize_stick(gp->sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+        s->axes[PAD_AXIS_RIGHT_Y] = -normalize_stick(gp->sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+        s->axes[PAD_AXIS_LTRIGGER] = normalize_trigger_win(gp->bLeftTrigger);
+        s->axes[PAD_AXIS_RTRIGGER] = normalize_trigger_win(gp->bRightTrigger);
 
         g_pad.last_packet[i] = st.dwPacketNumber;
     }
@@ -217,7 +217,7 @@ static InputExtResult win_execute_haptic(void *context,
     DWORD result;
     u32 pad;
     (void)context;
-    if (command == NULL || command->pad >= INPUT_MAX_GAMEPADS)
+    if (command == NULL || command->pad >= INPUT_MAX_PADS)
         return INPUT_EXT_INVALID;
     pad = command->pad;
     if (!g_pad.connected[pad]) return INPUT_EXT_DISCONNECTED;
@@ -242,7 +242,7 @@ static InputExtResult win_execute_haptic(void *context,
 }
 
 static void win_haptic_tick(u64 now_us) {
-    for (u32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
+    for (u32 i = 0; i < INPUT_MAX_PADS; i++) {
         XINPUT_VIBRATION stop;
         if (!g_pad.vibration_active[i] || now_us < g_pad.stop_deadline_us[i])
             continue;
@@ -259,14 +259,14 @@ static void win_haptic_tick(u64 now_us) {
 }
 
 static void win_sync_haptic_pads(InputExtended *extended) {
-    for (u32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
+    for (u32 i = 0; i < INPUT_MAX_PADS; i++) {
         input_extended_backend_pad(extended, i, g_pad.connected[i],
                                    g_pad.feedback_available[i],
                                    g_pad.connection_serial[i]);
     }
 }
 
-void gamepad_feedback_poll(InputExtended *extended) {
+void pad_feedback_poll(InputExtended *extended) {
     if (!g_pad.initialized || extended == NULL) return;
     win_sync_haptic_pads(extended);
     (void)input_extended_haptic_pump(extended, win_execute_haptic, NULL);
@@ -274,9 +274,9 @@ void gamepad_feedback_poll(InputExtended *extended) {
     win_sync_haptic_pads(extended);
 }
 
-void gamepad_shutdown(void) {
+void pad_shutdown(void) {
     if (!g_pad.initialized) return;
-    for (u32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
+    for (u32 i = 0; i < INPUT_MAX_PADS; i++) {
         if (g_pad.vibration_active[i] && g_pad.connected[i] && g_pad.set_state != NULL) {
             XINPUT_VIBRATION stop;
             stop.wLeftMotorSpeed = 0;

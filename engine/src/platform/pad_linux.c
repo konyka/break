@@ -1,9 +1,9 @@
 #ifdef ENGINE_PLATFORM_LINUX
 
-/* Linux evdev gamepad backend.
+/* Linux evdev pad backend.
  *
  * Discovers /dev/input/event* devices, filters those that look like
- * gamepads (EV_ABS axes + EV_KEY game buttons), polls them non-blocking
+ * pads (EV_ABS axes + EV_KEY pad buttons), polls them non-blocking
  * each frame, and watches /dev/input via inotify for hot-plug events.
  */
 
@@ -22,7 +22,7 @@
 #include <core/types.h>
 #include <core/log.h>
 
-#include "gamepad_linux.h"
+#include "pad_linux.h"
 
 /* Bit-test helper used with EVIOCGBIT result arrays. */
 #define BITS_PER_LONG (sizeof(unsigned long) * 8)
@@ -40,24 +40,24 @@ typedef struct {
     u32  connection_serial;
     char name[128];
     char path[288];
-    /* Per-axis calibration. We only really need the codes used by gamepads,
+    /* Per-axis calibration. We only really need the codes used by pads,
      * but keeping the full ABS_MAX range keeps the indexing straightforward. */
     struct {
         i32  min;
         i32  max;
         bool present;
     } abs_info[ABS_CNT];
-} GamepadDevice;
+} PadDevice;
 
 typedef struct {
-    GamepadDevice devices[INPUT_MAX_GAMEPADS];
+    PadDevice devices[INPUT_MAX_PADS];
     int           inotify_fd;
     int           inotify_wd;
     u32           next_serial;
     bool          initialized;
-} GamepadSystem;
+} PadSystem;
 
-static GamepadSystem g_gamepad_sys;
+static PadSystem g_pad_sys;
 
 /* ---------------------------------------------------------------- */
 /*  Helpers                                                         */
@@ -79,23 +79,23 @@ static f32 normalize_trigger(i32 value, i32 min, i32 max) {
     return v;
 }
 
-static i32 evdev_btn_to_gamepad(u16 code) {
+static i32 evdev_btn_to_pad(u16 code) {
     switch (code) {
-        case BTN_SOUTH:  return GAMEPAD_BTN_SOUTH;
-        case BTN_EAST:   return GAMEPAD_BTN_EAST;
-        case BTN_NORTH:  return GAMEPAD_BTN_NORTH;
-        case BTN_WEST:   return GAMEPAD_BTN_WEST;
-        case BTN_TL:     return GAMEPAD_BTN_LB;
-        case BTN_TR:     return GAMEPAD_BTN_RB;
-        case BTN_SELECT: return GAMEPAD_BTN_BACK;
-        case BTN_START:  return GAMEPAD_BTN_START;
-        case BTN_MODE:   return GAMEPAD_BTN_GUIDE;
-        case BTN_THUMBL: return GAMEPAD_BTN_LSTICK;
-        case BTN_THUMBR: return GAMEPAD_BTN_RSTICK;
-        case BTN_DPAD_UP:    return GAMEPAD_BTN_DPAD_UP;
-        case BTN_DPAD_DOWN:  return GAMEPAD_BTN_DPAD_DOWN;
-        case BTN_DPAD_LEFT:  return GAMEPAD_BTN_DPAD_LEFT;
-        case BTN_DPAD_RIGHT: return GAMEPAD_BTN_DPAD_RIGHT;
+        case BTN_SOUTH:  return PAD_BTN_SOUTH;
+        case BTN_EAST:   return PAD_BTN_EAST;
+        case BTN_NORTH:  return PAD_BTN_NORTH;
+        case BTN_WEST:   return PAD_BTN_WEST;
+        case BTN_TL:     return PAD_BTN_LB;
+        case BTN_TR:     return PAD_BTN_RB;
+        case BTN_SELECT: return PAD_BTN_BACK;
+        case BTN_START:  return PAD_BTN_START;
+        case BTN_MODE:   return PAD_BTN_GUIDE;
+        case BTN_THUMBL: return PAD_BTN_LSTICK;
+        case BTN_THUMBR: return PAD_BTN_RSTICK;
+        case BTN_DPAD_UP:    return PAD_BTN_DPAD_UP;
+        case BTN_DPAD_DOWN:  return PAD_BTN_DPAD_DOWN;
+        case BTN_DPAD_LEFT:  return PAD_BTN_DPAD_LEFT;
+        case BTN_DPAD_RIGHT: return PAD_BTN_DPAD_RIGHT;
         default: return -1;
     }
 }
@@ -112,7 +112,7 @@ static void apply_button_state(u8 *slot, bool pressed) {
 /*  Device probing                                                  */
 /* ---------------------------------------------------------------- */
 
-static bool fd_is_gamepad(int fd) {
+static bool fd_is_pad(int fd) {
     unsigned long evbits[NLONGS(EV_CNT)]   = {0};
     unsigned long keybits[NLONGS(KEY_CNT)] = {0};
 
@@ -122,14 +122,14 @@ static bool fd_is_gamepad(int fd) {
 
     if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keybits)), keybits) < 0) return false;
 
-    /* Accept anything that exposes at least one canonical gamepad button. */
+    /* Accept anything that exposes at least one canonical pad button. */
     if (TEST_BIT(keybits, BTN_GAMEPAD)) return true;  /* alias of BTN_SOUTH */
     if (TEST_BIT(keybits, BTN_SOUTH))   return true;
     if (TEST_BIT(keybits, BTN_A))       return true;
     return false;
 }
 
-static void device_query_axes(GamepadDevice *d) {
+static void device_query_axes(PadDevice *d) {
     for (int axis = 0; axis < ABS_CNT; axis++) {
         struct input_absinfo ai;
         if (ioctl(d->fd, EVIOCGABS(axis), &ai) == 0) {
@@ -144,7 +144,7 @@ static void device_query_axes(GamepadDevice *d) {
     }
 }
 
-static void device_query_haptic(GamepadDevice *d, bool writable) {
+static void device_query_haptic(PadDevice *d, bool writable) {
     unsigned long evbits[NLONGS(EV_CNT)] = {0};
     unsigned long ffbits[NLONGS(FF_CNT)] = {0};
     d->feedback_available = false;
@@ -156,16 +156,16 @@ static void device_query_haptic(GamepadDevice *d, bool writable) {
 }
 
 static i32 find_free_slot(void) {
-    for (i32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
-        if (!g_gamepad_sys.devices[i].connected) return i;
+    for (i32 i = 0; i < INPUT_MAX_PADS; i++) {
+        if (!g_pad_sys.devices[i].connected) return i;
     }
     return -1;
 }
 
 static i32 find_slot_by_path(const char *path) {
-    for (i32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
-        if (g_gamepad_sys.devices[i].connected &&
-            strcmp(g_gamepad_sys.devices[i].path, path) == 0) {
+    for (i32 i = 0; i < INPUT_MAX_PADS; i++) {
+        if (g_pad_sys.devices[i].connected &&
+            strcmp(g_pad_sys.devices[i].path, path) == 0) {
             return i;
         }
     }
@@ -185,12 +185,12 @@ static bool try_open_device(const char *path) {
     if (fd < 0) {
         /* Permission denied is the common case for non-input-group users. */
         if (errno != EACCES && errno != ENOENT) {
-            LOG_DEBUG("gamepad: open(%s) failed: %s", path, strerror(errno));
+            LOG_DEBUG("pad: open(%s) failed: %s", path, strerror(errno));
         }
         return false;
     }
 
-    if (!fd_is_gamepad(fd)) {
+    if (!fd_is_pad(fd)) {
         close(fd);
         return false;
     }
@@ -198,23 +198,23 @@ static bool try_open_device(const char *path) {
     i32 slot = find_free_slot();
     if (slot < 0) {
         close(fd);
-        LOG_WARN("gamepad: no free slot for %s (max %d)", path, INPUT_MAX_GAMEPADS);
+        LOG_WARN("pad: no free slot for %s (max %d)", path, INPUT_MAX_PADS);
         return false;
     }
 
-    GamepadDevice *d = &g_gamepad_sys.devices[slot];
+    PadDevice *d = &g_pad_sys.devices[slot];
     memset(d, 0, sizeof(*d));
     d->fd        = fd;
     d->connected = true;
     d->effect_id = -1;
-    g_gamepad_sys.next_serial++;
-    if (g_gamepad_sys.next_serial == 0u) g_gamepad_sys.next_serial++;
-    d->connection_serial = g_gamepad_sys.next_serial;
+    g_pad_sys.next_serial++;
+    if (g_pad_sys.next_serial == 0u) g_pad_sys.next_serial++;
+    d->connection_serial = g_pad_sys.next_serial;
     snprintf(d->path, sizeof(d->path), "%s", path);
 
     char name[128] = {0};
     if (ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name) < 0) {
-        snprintf(d->name, sizeof(d->name), "Unknown Gamepad");
+        snprintf(d->name, sizeof(d->name), "Unknown Pad");
     } else {
         snprintf(d->name, sizeof(d->name), "%s", name);
     }
@@ -222,16 +222,16 @@ static bool try_open_device(const char *path) {
     device_query_axes(d);
     device_query_haptic(d, writable);
 
-    LOG_INFO("gamepad: connected slot=%d path=%s name=\"%s\" feedback=%d",
+    LOG_INFO("pad: connected slot=%d path=%s name=\"%s\" feedback=%d",
              slot, d->path, d->name, d->feedback_available ? 1 : 0);
     return true;
 }
 
 static void close_device(i32 slot) {
-    GamepadDevice *d = &g_gamepad_sys.devices[slot];
+    PadDevice *d = &g_pad_sys.devices[slot];
     if (!d->connected) return;
 
-    LOG_INFO("gamepad: disconnected slot=%d path=%s name=\"%s\"",
+    LOG_INFO("pad: disconnected slot=%d path=%s name=\"%s\"",
              slot, d->path, d->name);
 
     if (d->fd >= 0 && d->effect_id >= 0)
@@ -246,12 +246,12 @@ static void close_device(i32 slot) {
 /*  Public API                                                      */
 /* ---------------------------------------------------------------- */
 
-/* Full scan of /dev/input for gamepad event devices. Used at init and to
+/* Full scan of /dev/input for pad event devices. Used at init and to
  * recover from an inotify queue overflow (events may have been lost). */
 static void scan_input_dir(void) {
     DIR *dir = opendir(DEV_INPUT_DIR);
     if (!dir) {
-        LOG_WARN("gamepad: opendir(%s) failed: %s — no gamepads available",
+        LOG_WARN("pad: opendir(%s) failed: %s — no pads available",
                  DEV_INPUT_DIR, strerror(errno));
         return;
     }
@@ -266,46 +266,46 @@ static void scan_input_dir(void) {
     closedir(dir);
 }
 
-void gamepad_init(void) {
-    memset(&g_gamepad_sys, 0, sizeof(g_gamepad_sys));
-    for (i32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
-        g_gamepad_sys.devices[i].fd = -1;
+void pad_init(void) {
+    memset(&g_pad_sys, 0, sizeof(g_pad_sys));
+    for (i32 i = 0; i < INPUT_MAX_PADS; i++) {
+        g_pad_sys.devices[i].fd = -1;
     }
 
     /* inotify watcher for hot-plug. Not fatal if unavailable. */
-    g_gamepad_sys.inotify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
-    if (g_gamepad_sys.inotify_fd < 0) {
-        LOG_WARN("gamepad: inotify_init1 failed (%s) — hot-plug disabled",
+    g_pad_sys.inotify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (g_pad_sys.inotify_fd < 0) {
+        LOG_WARN("pad: inotify_init1 failed (%s) — hot-plug disabled",
                  strerror(errno));
-        g_gamepad_sys.inotify_wd = -1;
+        g_pad_sys.inotify_wd = -1;
     } else {
-        g_gamepad_sys.inotify_wd = inotify_add_watch(
-            g_gamepad_sys.inotify_fd, DEV_INPUT_DIR,
+        g_pad_sys.inotify_wd = inotify_add_watch(
+            g_pad_sys.inotify_fd, DEV_INPUT_DIR,
             IN_CREATE | IN_DELETE | IN_ATTRIB);
-        if (g_gamepad_sys.inotify_wd < 0) {
-            LOG_WARN("gamepad: inotify_add_watch(%s) failed: %s — hot-plug disabled",
+        if (g_pad_sys.inotify_wd < 0) {
+            LOG_WARN("pad: inotify_add_watch(%s) failed: %s — hot-plug disabled",
                      DEV_INPUT_DIR, strerror(errno));
-            close(g_gamepad_sys.inotify_fd);
-            g_gamepad_sys.inotify_fd = -1;
+            close(g_pad_sys.inotify_fd);
+            g_pad_sys.inotify_fd = -1;
         }
     }
 
     /* Initial scan. */
     scan_input_dir();
 
-    g_gamepad_sys.initialized = true;
+    g_pad_sys.initialized = true;
 }
 
 static void process_inotify_events(void) {
-    if (g_gamepad_sys.inotify_fd < 0) return;
+    if (g_pad_sys.inotify_fd < 0) return;
 
     /* Buffer must be large enough for at least one event. */
     char buf[4096] ENGINE_ALIGN(__alignof__(struct inotify_event));
     for (;;) {
-        ssize_t len = read(g_gamepad_sys.inotify_fd, buf, sizeof(buf));
+        ssize_t len = read(g_pad_sys.inotify_fd, buf, sizeof(buf));
         if (len <= 0) {
             if (len < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                LOG_WARN("gamepad: inotify read failed: %s", strerror(errno));
+                LOG_WARN("pad: inotify read failed: %s", strerror(errno));
             }
             return;
         }
@@ -315,7 +315,7 @@ static void process_inotify_events(void) {
              * plugged during the burst would never be opened. Re-scan the
              * whole directory to recover (try_open_device dedups by path). */
             if (ev->mask & IN_Q_OVERFLOW) {
-                LOG_WARN("gamepad: inotify queue overflow — re-scanning %s",
+                LOG_WARN("pad: inotify queue overflow — re-scanning %s",
                          DEV_INPUT_DIR);
                 scan_input_dir();
                 p += sizeof(struct inotify_event) + ev->len;
@@ -336,8 +336,8 @@ static void process_inotify_events(void) {
     }
 }
 
-static void process_device_events(i32 slot, GamepadState *out) {
-    GamepadDevice *d = &g_gamepad_sys.devices[slot];
+static void process_device_events(i32 slot, PadState *out) {
+    PadDevice *d = &g_pad_sys.devices[slot];
     if (!d->connected) return;
 
     struct input_event ev;
@@ -345,7 +345,7 @@ static void process_device_events(i32 slot, GamepadState *out) {
         ssize_t n = read(d->fd, &ev, sizeof(ev));
         if (n == (ssize_t)sizeof(ev)) {
             if (ev.type == EV_KEY) {
-                i32 idx = evdev_btn_to_gamepad(ev.code);
+                i32 idx = evdev_btn_to_pad(ev.code);
                 if (idx >= 0 && idx < INPUT_MAX_PAD_BUTTONS) {
                     apply_button_state(&out->buttons[idx], ev.value != 0);
                 }
@@ -353,28 +353,28 @@ static void process_device_events(i32 slot, GamepadState *out) {
                 i32 ax = -1;
                 bool is_trigger = false;
                 switch (ev.code) {
-                    case ABS_X:     ax = GAMEPAD_AXIS_LEFT_X;   break;
-                    case ABS_Y:     ax = GAMEPAD_AXIS_LEFT_Y;   break;
-                    case ABS_RX:    ax = GAMEPAD_AXIS_RIGHT_X;  break;
-                    case ABS_RY:    ax = GAMEPAD_AXIS_RIGHT_Y;  break;
+                    case ABS_X:     ax = PAD_AXIS_LEFT_X;   break;
+                    case ABS_Y:     ax = PAD_AXIS_LEFT_Y;   break;
+                    case ABS_RX:    ax = PAD_AXIS_RIGHT_X;  break;
+                    case ABS_RY:    ax = PAD_AXIS_RIGHT_Y;  break;
                     case ABS_Z:
                     case ABS_BRAKE:
-                        ax = GAMEPAD_AXIS_LTRIGGER; is_trigger = true; break;
+                        ax = PAD_AXIS_LTRIGGER; is_trigger = true; break;
                     case ABS_RZ:
                     case ABS_GAS:
-                        ax = GAMEPAD_AXIS_RTRIGGER; is_trigger = true; break;
+                        ax = PAD_AXIS_RTRIGGER; is_trigger = true; break;
                     case ABS_HAT0X: {
                         bool left  = ev.value < 0;
                         bool right = ev.value > 0;
-                        apply_button_state(&out->buttons[GAMEPAD_BTN_DPAD_LEFT],  left);
-                        apply_button_state(&out->buttons[GAMEPAD_BTN_DPAD_RIGHT], right);
+                        apply_button_state(&out->buttons[PAD_BTN_DPAD_LEFT],  left);
+                        apply_button_state(&out->buttons[PAD_BTN_DPAD_RIGHT], right);
                         break;
                     }
                     case ABS_HAT0Y: {
                         bool up   = ev.value < 0;
                         bool down = ev.value > 0;
-                        apply_button_state(&out->buttons[GAMEPAD_BTN_DPAD_UP],   up);
-                        apply_button_state(&out->buttons[GAMEPAD_BTN_DPAD_DOWN], down);
+                        apply_button_state(&out->buttons[PAD_BTN_DPAD_UP],   up);
+                        apply_button_state(&out->buttons[PAD_BTN_DPAD_DOWN], down);
                         break;
                     }
                     default: break;
@@ -402,7 +402,7 @@ static void process_device_events(i32 slot, GamepadState *out) {
                 return;
             }
             /* ENODEV is the typical "device gone" signal. */
-            LOG_INFO("gamepad: read failed slot=%d (%s) — disconnecting",
+            LOG_INFO("pad: read failed slot=%d (%s) — disconnecting",
                      slot, strerror(errno));
             close_device(slot);
             return;
@@ -412,14 +412,14 @@ static void process_device_events(i32 slot, GamepadState *out) {
     }
 }
 
-void gamepad_poll(GamepadState *out_pads) {
-    if (!g_gamepad_sys.initialized || !out_pads) return;
+void pad_poll(PadState *out_pads) {
+    if (!g_pad_sys.initialized || !out_pads) return;
 
     process_inotify_events();
 
-    for (i32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
-        GamepadDevice *d = &g_gamepad_sys.devices[i];
-        GamepadState  *s = &out_pads[i];
+    for (i32 i = 0; i < INPUT_MAX_PADS; i++) {
+        PadDevice *d = &g_pad_sys.devices[i];
+        PadState  *s = &out_pads[i];
 
         if (!d->connected) {
             if (s->connected) {
@@ -447,7 +447,7 @@ static InputExtResult linux_haptic_error(void) {
     return errno == ENODEV ? INPUT_EXT_DISCONNECTED : INPUT_EXT_FAILED;
 }
 
-static InputExtResult linux_device_haptic(GamepadDevice *d,
+static InputExtResult linux_device_haptic(PadDevice *d,
                                           const InputHapticCommand *command) {
     struct input_event event;
     ssize_t written;
@@ -482,43 +482,43 @@ static InputExtResult linux_execute_haptic(void *context,
                                            const InputHapticCommand *command) {
     InputExtResult result;
     (void)context;
-    if (command->pad >= INPUT_MAX_GAMEPADS) return INPUT_EXT_INVALID;
-    result = linux_device_haptic(&g_gamepad_sys.devices[command->pad], command);
+    if (command->pad >= INPUT_MAX_PADS) return INPUT_EXT_INVALID;
+    result = linux_device_haptic(&g_pad_sys.devices[command->pad], command);
     if (result == INPUT_EXT_DISCONNECTED) close_device((i32)command->pad);
     return result;
 }
 
 static void sync_haptic_pads(InputExtended *extended) {
-    for (u32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
-        const GamepadDevice *d = &g_gamepad_sys.devices[i];
+    for (u32 i = 0; i < INPUT_MAX_PADS; i++) {
+        const PadDevice *d = &g_pad_sys.devices[i];
         input_extended_backend_pad(extended, i, d->connected,
                                    d->feedback_available, d->connection_serial);
     }
 }
 
-void gamepad_feedback_poll(InputExtended *extended) {
-    if (!g_gamepad_sys.initialized || extended == NULL) return;
+void pad_feedback_poll(InputExtended *extended) {
+    if (!g_pad_sys.initialized || extended == NULL) return;
     sync_haptic_pads(extended);
     (void)input_extended_haptic_pump(extended, linux_execute_haptic, NULL);
     sync_haptic_pads(extended);
 }
 
-void gamepad_shutdown(void) {
-    if (!g_gamepad_sys.initialized) return;
+void pad_shutdown(void) {
+    if (!g_pad_sys.initialized) return;
 
-    for (i32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
-        if (g_gamepad_sys.devices[i].connected) {
+    for (i32 i = 0; i < INPUT_MAX_PADS; i++) {
+        if (g_pad_sys.devices[i].connected) {
             close_device(i);
         }
     }
 
-    if (g_gamepad_sys.inotify_wd >= 0 && g_gamepad_sys.inotify_fd >= 0) {
-        inotify_rm_watch(g_gamepad_sys.inotify_fd, g_gamepad_sys.inotify_wd);
+    if (g_pad_sys.inotify_wd >= 0 && g_pad_sys.inotify_fd >= 0) {
+        inotify_rm_watch(g_pad_sys.inotify_fd, g_pad_sys.inotify_wd);
     }
-    if (g_gamepad_sys.inotify_fd >= 0) {
-        close(g_gamepad_sys.inotify_fd);
+    if (g_pad_sys.inotify_fd >= 0) {
+        close(g_pad_sys.inotify_fd);
     }
-    memset(&g_gamepad_sys, 0, sizeof(g_gamepad_sys));
+    memset(&g_pad_sys, 0, sizeof(g_pad_sys));
 }
 
 #endif /* ENGINE_PLATFORM_LINUX */

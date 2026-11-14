@@ -310,7 +310,7 @@ TEST(haptic_validation_disconnect_and_no_feedback)
     input_extended_backend_pad(&s, 0, true, true, 1);
     ASSERT_EQ(input_extended_request_haptic(&s, 0, 0.5f, 0.5f, 100, NULL),
               INPUT_EXT_INVALID);
-    ASSERT_EQ(input_extended_request_haptic(&s, INPUT_MAX_GAMEPADS,
+    ASSERT_EQ(input_extended_request_haptic(&s, INPUT_MAX_PADS,
                                             0.5f, 0.5f, 100, NULL), INPUT_EXT_INVALID);
     ASSERT_EQ(input_extended_request_haptic(&s, 0, -0.01f, 0.5f, 100, NULL),
               INPUT_EXT_INVALID);

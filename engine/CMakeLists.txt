@@ -2325,7 +2325,7 @@ if(ENGINE_PLATFORM STREQUAL "linux")
         target_sources(engine PRIVATE
             src/platform/window_wayland.c
             src/platform/wayland_touch.c
-            src/platform/gamepad_linux.c
+            src/platform/pad_linux.c
             ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c
             ${CMAKE_CURRENT_BINARY_DIR}/relative-pointer-unstable-v1-protocol.c
             ${CMAKE_CURRENT_BINARY_DIR}/pointer-constraints-unstable-v1-protocol.c
@@ -2354,7 +2354,7 @@ elseif(ENGINE_PLATFORM STREQUAL "windows")
     target_sources(engine PRIVATE
         src/platform/window_win32.c
         src/platform/win32_touch.c
-        src/platform/gamepad_win.c
+        src/platform/pad_win.c
     )
 
     if(ENGINE_VULKAN)
@@ -2364,7 +2364,7 @@ elseif(ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(engine PRIVATE gdi32)
 
     target_link_libraries(engine PRIVATE user32 kernel32 shell32 imm32 advapi32)
-    # XInput (gamepad) is loaded dynamically at runtime — no import lib needed.
+    # XInput (pad) is loaded dynamically at runtime — no import lib needed.
     # Winsock2 for network module; mswsock for the IOCP net_loop backend
     target_link_libraries(engine PRIVATE ws2_32 mswsock)
 
@@ -5027,7 +5027,7 @@ endif()
     add_test(NAME test_repo_naming_contract
         COMMAND ${CMAKE_COMMAND}
             -DREPOSITORY_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
-            -DSTAGE=2
+            -DSTAGE=3
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_repo_naming_contract.cmake)
     set_tests_properties(test_repo_naming_contract PROPERTIES
         LABELS "headless;platform_contract")
@@ -7298,34 +7298,34 @@ endif()
     endif()
 
     if(ENGINE_PLATFORM STREQUAL "linux")
-        add_executable(test_gamepad_linux_feedback tests/test_gamepad_linux_feedback.c
+        add_executable(test_pad_linux_feedback tests/test_pad_linux_feedback.c
             src/platform/input_extended.c src/core/log.c)
-        target_include_directories(test_gamepad_linux_feedback PRIVATE ${TEST_INCLUDE_DIRS})
-        target_compile_definitions(test_gamepad_linux_feedback PRIVATE ENGINE_PLATFORM_LINUX=1)
-        target_link_libraries(test_gamepad_linux_feedback PRIVATE m)
-        add_test(NAME test_gamepad_linux_feedback COMMAND test_gamepad_linux_feedback)
-        set_tests_properties(test_gamepad_linux_feedback PROPERTIES LABELS "headless;platform_contract")
+        target_include_directories(test_pad_linux_feedback PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_pad_linux_feedback PRIVATE ENGINE_PLATFORM_LINUX=1)
+        target_link_libraries(test_pad_linux_feedback PRIVATE m)
+        add_test(NAME test_pad_linux_feedback COMMAND test_pad_linux_feedback)
+        set_tests_properties(test_pad_linux_feedback PROPERTIES LABELS "headless;platform_contract")
     endif()
 
     if(ENGINE_PLATFORM STREQUAL "windows")
-        add_executable(test_gamepad_win_feedback tests/test_gamepad_win_feedback.c
+        add_executable(test_pad_win_feedback tests/test_pad_win_feedback.c
             src/platform/input_extended.c src/platform/time.c src/core/log.c)
-        target_include_directories(test_gamepad_win_feedback PRIVATE ${TEST_INCLUDE_DIRS})
-        target_compile_definitions(test_gamepad_win_feedback PRIVATE
+        target_include_directories(test_pad_win_feedback PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_pad_win_feedback PRIVATE
             ENGINE_PLATFORM_WINDOWS=1)
-        target_link_libraries(test_gamepad_win_feedback PRIVATE kernel32)
-        add_test(NAME test_gamepad_win_feedback COMMAND test_gamepad_win_feedback)
-        set_tests_properties(test_gamepad_win_feedback PROPERTIES LABELS "headless;platform_contract")
+        target_link_libraries(test_pad_win_feedback PRIVATE kernel32)
+        add_test(NAME test_pad_win_feedback COMMAND test_pad_win_feedback)
+        set_tests_properties(test_pad_win_feedback PROPERTIES LABELS "headless;platform_contract")
     else()
-        add_executable(test_gamepad_win_feedback_portable tests/test_gamepad_win_feedback.c
+        add_executable(test_pad_win_feedback_portable tests/test_pad_win_feedback.c
             src/platform/input_extended.c src/core/log.c)
-        target_include_directories(test_gamepad_win_feedback_portable PRIVATE
+        target_include_directories(test_pad_win_feedback_portable PRIVATE
             ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_windows)
-        target_compile_definitions(test_gamepad_win_feedback_portable PRIVATE
-            ENGINE_PLATFORM_WINDOWS=1 GAMEPAD_WIN_PORTABLE_TEST=1)
-        target_link_libraries(test_gamepad_win_feedback_portable PRIVATE m)
-        add_test(NAME test_gamepad_win_feedback_portable COMMAND test_gamepad_win_feedback_portable)
-        set_tests_properties(test_gamepad_win_feedback_portable PROPERTIES LABELS "headless;platform_contract")
+        target_compile_definitions(test_pad_win_feedback_portable PRIVATE
+            ENGINE_PLATFORM_WINDOWS=1 PAD_WIN_PORTABLE_TEST=1)
+        target_link_libraries(test_pad_win_feedback_portable PRIVATE m)
+        add_test(NAME test_pad_win_feedback_portable COMMAND test_pad_win_feedback_portable)
+        set_tests_properties(test_pad_win_feedback_portable PROPERTIES LABELS "headless;platform_contract")
     endif()
 
     add_executable(test_win32_touch tests/test_win32_touch.c

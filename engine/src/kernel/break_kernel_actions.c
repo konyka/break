@@ -12,10 +12,10 @@ static bool binding_ok(const BreakKernelBinding *b) {
     case BREAK_KERNEL_BIND_MOUSE_AXIS:
         return b->pad == 0 && b->code >= 0 && b->code <= 2;
     case BREAK_KERNEL_BIND_PAD_BUTTON:
-        return b->pad >= 0 && b->pad < INPUT_MAX_GAMEPADS &&
+        return b->pad >= 0 && b->pad < INPUT_MAX_PADS &&
                b->code >= 0 && b->code < INPUT_MAX_PAD_BUTTONS;
     case BREAK_KERNEL_BIND_PAD_AXIS:
-        return b->pad >= 0 && b->pad < INPUT_MAX_GAMEPADS &&
+        return b->pad >= 0 && b->pad < INPUT_MAX_PADS &&
                b->code >= 0 && b->code < INPUT_MAX_AXES;
     default:
         return false;
@@ -28,7 +28,7 @@ static bool digital_down(const InputState *input, const BreakKernelBinding *b) {
     case BREAK_KERNEL_BIND_MOUSE_BUTTON:
         return input_key_down(input, b->code);
     case BREAK_KERNEL_BIND_PAD_BUTTON:
-        return input->gamepads[b->pad].connected && input_pad_button_down(input, b->pad, b->code);
+        return input->pads[b->pad].connected && input_pad_button_down(input, b->pad, b->code);
     default:
         return false;
     }
@@ -50,10 +50,10 @@ static f32 binding_axis(const InputState *input, const BreakKernelBinding *b) {
         }
         return raw * b->scale;
     }
-    if (!input->gamepads[b->pad].connected) {
+    if (!input->pads[b->pad].connected) {
         return 0.0f;
     }
-    return input->gamepads[b->pad].axes[b->code] * b->scale;
+    return input->pads[b->pad].axes[b->code] * b->scale;
 }
 
 BreakKernelError break_kernel_bind_actions(BreakKernel *kernel, const BreakKernelActionDesc *actions, u32 count) {

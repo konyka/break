@@ -109,8 +109,8 @@ typedef struct {
     bool pinch_active;
     f32 pinch_start_distance;
     f32 pinch_start_angle;
-    InputPadFeedbackStatus pads[INPUT_MAX_GAMEPADS];
-    u32 pad_serials[INPUT_MAX_GAMEPADS];
+    InputPadFeedbackStatus pads[INPUT_MAX_PADS];
+    u32 pad_serials[INPUT_MAX_PADS];
     InputHapticSlot haptic_slots[INPUT_MAX_HAPTIC_COMMANDS];
     u32 haptic_count;
     u32 haptic_cursor;

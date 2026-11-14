@@ -8,7 +8,7 @@
 #include <platform/wayland_touch.h>
 #include <platform/time.h>
 #include <core/log.h>
-#include "gamepad_linux.h"
+#include "pad_linux.h"
 
 #include <wayland-client.h>
 #include <wayland-cursor.h>
@@ -2004,7 +2004,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
         wl_display_roundtrip(p->display);
     }
 
-    gamepad_init();
+    pad_init();
 
     /* R443: extra roundtrip so wl_output/xdg-output initial events (bound
      * during the first roundtrip's dispatch) have arrived before queries. */
@@ -2020,7 +2020,7 @@ void platform_destroy(Platform *p) {
     if (!p) return;
     (void)platform_wsi_surface_destroy(&p->wsi);
 
-    gamepad_shutdown();
+    pad_shutdown();
 
     wayland_clear_relative(p);
     wayland_clipboard_finish_read(p, false);
@@ -2155,9 +2155,9 @@ PlatformEventResult platform_poll(Platform *p) {
     wayland_clipboard_drain_writes(p);
 
     input_extended_update(&p->input_extended, time_microseconds() / 1000u);
-    /* Pump gamepads (evdev) into the shared input state. */
-    gamepad_poll(p->input.gamepads);
-    gamepad_feedback_poll(&p->input_extended);
+    /* Pump pads (evdev) into the shared input state. */
+    pad_poll(p->input.pads);
+    pad_feedback_poll(&p->input_extended);
 
     if (p->should_close || p->close_requested) return PLATFORM_EVENT_QUIT;
     return PLATFORM_EVENT_NONE;

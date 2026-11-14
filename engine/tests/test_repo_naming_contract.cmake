@@ -57,7 +57,7 @@ foreach(path IN LISTS files)
     endif()
     file(READ "${path}" text)
     # Names owned by system SDKs and by external projects.
-    string(REGEX REPLACE "XINPUT_GAMEPAD[A-Z_]*|BTN_GAMEPAD|CryENGINE|T3DGameR1" "" text "${text}")
+    string(REGEX REPLACE "XINPUT_GAMEPAD[A-Z_]*( Gamepad;)?|\\.Gamepad|BTN_GAMEPAD|CryENGINE|T3DGameR1" "" text "${text}")
     set(scan_path "${rel}")
     if(STAGE LESS 3)
         string(REGEX REPLACE "${pad_regex}" "" text "${text}")

@@ -18,11 +18,11 @@ void input_new_frame(InputState *s) {
         else if (v == 1) s->keys[i] = 0;  /* just released -> up */
     }
 
-    for (usize p = 0; p < INPUT_MAX_GAMEPADS; p++) {
+    for (usize p = 0; p < INPUT_MAX_PADS; p++) {
         for (usize b = 0; b < INPUT_MAX_PAD_BUTTONS; b++) {
-            u8 v = s->gamepads[p].buttons[b];
-            if (v == 3) s->gamepads[p].buttons[b] = 2;
-            else if (v == 1) s->gamepads[p].buttons[b] = 0;
+            u8 v = s->pads[p].buttons[b];
+            if (v == 3) s->pads[p].buttons[b] = 2;
+            else if (v == 1) s->pads[p].buttons[b] = 0;
         }
     }
 }
@@ -49,7 +49,7 @@ void input_release_all(InputState *s) {
     /* R263: mirror input_set_key(false) for every held/just-pressed slot so the
      * just-released edge still fires once and input_key_down() goes false. Mouse
      * buttons share keys[] (INPUT_MOUSE_* >= 300), so this covers them too.
-     * Gamepads are not window-focus bound and are left untouched. */
+     * Pads are not window-focus bound and are left untouched. */
     for (usize i = 0; i < INPUT_MAX_KEYS; i++) {
         if (s->keys[i] == 3 || s->keys[i] == 2) s->keys[i] = 1;
     }
@@ -75,9 +75,9 @@ void input_set_scroll(InputState *s, f32 dx, f32 dy) {
 }
 
 void input_set_pad_button(InputState *s, i32 pad, i32 button, bool pressed) {
-    if (pad < 0 || pad >= INPUT_MAX_GAMEPADS) return;
+    if (pad < 0 || pad >= INPUT_MAX_PADS) return;
     if (button < 0 || button >= INPUT_MAX_PAD_BUTTONS) return;
-    u8 *slot = &s->gamepads[pad].buttons[button];
+    u8 *slot = &s->pads[pad].buttons[button];
     if (pressed) {
         if (*slot != 2) *slot = 3;
     } else {

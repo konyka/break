@@ -8,7 +8,7 @@
  *   - input_set_mouse: position and delta tracking
  *   - input_set_scroll: scroll accumulation
  *   - input_set_key: out-of-bounds safety
- *   - input_set_pad_button: gamepad button state machine
+ *   - input_set_pad_button: pad button state machine
  *   - mouse button constants
  *   - multi-key simultaneous tracking
  */
@@ -136,7 +136,7 @@ TEST(key_repeat_while_held_does_not_refire_pressed)
     /* R295: OS key auto-repeat (Win32 WM_KEYDOWN / Cocoa keyDown:) forwards a
      * held key as repeated `pressed` events. A held key must stay held(2) and
      * NOT re-latch the just-pressed edge(3), else one-shot actions bound to
-     * input_key_pressed re-fire every repeat tick. Mirrors the gamepad contract
+     * input_key_pressed re-fire every repeat tick. Mirrors the pad contract
      * verified by pad_button_press_release. */
     InputState s;
     input_init(&s);
@@ -298,7 +298,7 @@ TEST(key_out_of_bounds_too_large)
 }
 
 /* ------------------------------------------------------------------ */
-/* Gamepad buttons                                                     */
+/* Pad buttons                                                     */
 /* ------------------------------------------------------------------ */
 
 TEST(pad_button_press_release)
@@ -306,19 +306,19 @@ TEST(pad_button_press_release)
     InputState s;
     input_init(&s);
 
-    input_set_pad_button(&s, 0, GAMEPAD_BTN_SOUTH, true);
-    ASSERT_TRUE(input_pad_button_pressed(&s, 0, GAMEPAD_BTN_SOUTH));
-    ASSERT_TRUE(input_pad_button_down(&s, 0, GAMEPAD_BTN_SOUTH));
+    input_set_pad_button(&s, 0, PAD_BTN_SOUTH, true);
+    ASSERT_TRUE(input_pad_button_pressed(&s, 0, PAD_BTN_SOUTH));
+    ASSERT_TRUE(input_pad_button_down(&s, 0, PAD_BTN_SOUTH));
 
     input_new_frame(&s);
-    ASSERT_TRUE(!input_pad_button_pressed(&s, 0, GAMEPAD_BTN_SOUTH));
-    ASSERT_TRUE(input_pad_button_down(&s, 0, GAMEPAD_BTN_SOUTH));
+    ASSERT_TRUE(!input_pad_button_pressed(&s, 0, PAD_BTN_SOUTH));
+    ASSERT_TRUE(input_pad_button_down(&s, 0, PAD_BTN_SOUTH));
 
-    input_set_pad_button(&s, 0, GAMEPAD_BTN_SOUTH, false);
-    ASSERT_TRUE(input_pad_button_released(&s, 0, GAMEPAD_BTN_SOUTH));
+    input_set_pad_button(&s, 0, PAD_BTN_SOUTH, false);
+    ASSERT_TRUE(input_pad_button_released(&s, 0, PAD_BTN_SOUTH));
 
     input_new_frame(&s);
-    ASSERT_TRUE(!input_pad_button_down(&s, 0, GAMEPAD_BTN_SOUTH));
+    ASSERT_TRUE(!input_pad_button_down(&s, 0, PAD_BTN_SOUTH));
 }
 
 TEST(pad_button_out_of_bounds)
@@ -328,7 +328,7 @@ TEST(pad_button_out_of_bounds)
 
     /* Invalid pad index */
     input_set_pad_button(&s, -1, 0, true);
-    input_set_pad_button(&s, INPUT_MAX_GAMEPADS, 0, true);
+    input_set_pad_button(&s, INPUT_MAX_PADS, 0, true);
 
     /* Invalid button index */
     input_set_pad_button(&s, 0, -1, true);
@@ -336,20 +336,20 @@ TEST(pad_button_out_of_bounds)
     /* No crash = pass */
 }
 
-/* Gamepad backends (evdev / XInput) only write axes on change events and rely
+/* Pad backends (evdev / XInput) only write axes on change events and rely
  * on input_new_frame NOT clearing them — verify that contract. */
 TEST(pad_axes_persist_across_frames)
 {
     InputState s;
     input_init(&s);
 
-    s.gamepads[0].axes[GAMEPAD_AXIS_LEFT_X]  = -0.5f;
-    s.gamepads[0].axes[GAMEPAD_AXIS_LTRIGGER] = 0.75f;
+    s.pads[0].axes[PAD_AXIS_LEFT_X]  = -0.5f;
+    s.pads[0].axes[PAD_AXIS_LTRIGGER] = 0.75f;
 
     input_new_frame(&s);
 
-    ASSERT_FLOAT_EQ(s.gamepads[0].axes[GAMEPAD_AXIS_LEFT_X],  -0.5f, 1e-6f);
-    ASSERT_FLOAT_EQ(s.gamepads[0].axes[GAMEPAD_AXIS_LTRIGGER], 0.75f, 1e-6f);
+    ASSERT_FLOAT_EQ(s.pads[0].axes[PAD_AXIS_LEFT_X],  -0.5f, 1e-6f);
+    ASSERT_FLOAT_EQ(s.pads[0].axes[PAD_AXIS_LTRIGGER], 0.75f, 1e-6f);
 }
 
 /* Button edge decay must run for every pad slot, not just pad 0. */
@@ -358,17 +358,17 @@ TEST(pad_all_slots_advance_on_new_frame)
     InputState s;
     input_init(&s);
 
-    for (int p = 0; p < INPUT_MAX_GAMEPADS; p++)
-        input_set_pad_button(&s, p, GAMEPAD_BTN_START, true);
+    for (int p = 0; p < INPUT_MAX_PADS; p++)
+        input_set_pad_button(&s, p, PAD_BTN_START, true);
 
-    for (int p = 0; p < INPUT_MAX_GAMEPADS; p++)
-        ASSERT_TRUE(input_pad_button_pressed(&s, p, GAMEPAD_BTN_START));
+    for (int p = 0; p < INPUT_MAX_PADS; p++)
+        ASSERT_TRUE(input_pad_button_pressed(&s, p, PAD_BTN_START));
 
     input_new_frame(&s);
 
-    for (int p = 0; p < INPUT_MAX_GAMEPADS; p++) {
-        ASSERT_TRUE(!input_pad_button_pressed(&s, p, GAMEPAD_BTN_START));
-        ASSERT_TRUE(input_pad_button_down(&s, p, GAMEPAD_BTN_START)); /* held */
+    for (int p = 0; p < INPUT_MAX_PADS; p++) {
+        ASSERT_TRUE(!input_pad_button_pressed(&s, p, PAD_BTN_START));
+        ASSERT_TRUE(input_pad_button_down(&s, p, PAD_BTN_START)); /* held */
     }
 }
 
@@ -378,11 +378,11 @@ TEST(pad_slots_independent)
     InputState s;
     input_init(&s);
 
-    input_set_pad_button(&s, 1, GAMEPAD_BTN_NORTH, true);
+    input_set_pad_button(&s, 1, PAD_BTN_NORTH, true);
 
-    ASSERT_TRUE(input_pad_button_down(&s, 1, GAMEPAD_BTN_NORTH));
-    ASSERT_TRUE(!input_pad_button_down(&s, 0, GAMEPAD_BTN_NORTH));
-    ASSERT_TRUE(!input_pad_button_down(&s, 2, GAMEPAD_BTN_NORTH));
+    ASSERT_TRUE(input_pad_button_down(&s, 1, PAD_BTN_NORTH));
+    ASSERT_TRUE(!input_pad_button_down(&s, 0, PAD_BTN_NORTH));
+    ASSERT_TRUE(!input_pad_button_down(&s, 2, PAD_BTN_NORTH));
 }
 
 /* ------------------------------------------------------------------ */

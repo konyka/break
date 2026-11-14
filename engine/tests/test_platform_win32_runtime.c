@@ -1,7 +1,7 @@
 #include "test_framework.h"
 
 #include "platform/platform.h"
-#include "platform/gamepad_linux.h"  /* shared gamepad_init/shutdown prototypes */
+#include "platform/pad_linux.h"  /* shared pad_init/shutdown prototypes */
 
 #include <windows.h>
 
@@ -311,9 +311,9 @@ cleanup:
     if (!ok) return;
 }
 
-TEST(gamepad_init_is_idempotent)
+TEST(pad_init_is_idempotent)
 {
-    /* R570: a second gamepad_init used to overwrite g_pad.dll and leak the
+    /* R570: a second pad_init used to overwrite g_pad.dll and leak the
      * xinput HMODULE. Repeated init/shutdown must be harmless no-ops
      * (platform_destroy below shuts down once more, also harmlessly). */
     PlatformConfig config = {320, 240, "break pad"};
@@ -323,10 +323,10 @@ TEST(gamepad_init_is_idempotent)
         record_failure("platform_create returned NULL");
         return;
     }
-    gamepad_init();   /* platform_create already initialized: must be no-op */
-    gamepad_init();
-    gamepad_shutdown();
-    gamepad_shutdown();
+    pad_init();   /* platform_create already initialized: must be no-op */
+    pad_init();
+    pad_shutdown();
+    pad_shutdown();
     platform_destroy(platform);
 }
 
@@ -1147,7 +1147,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(alt_f4_requests_close_through_default_system_key_handling);
     RUN_TEST(relative_mouse_mode_ignores_absolute_move_deltas);
     RUN_TEST(clipboard_read_bounds_unterminated_unicode_text);
-    RUN_TEST(gamepad_init_is_idempotent);
+    RUN_TEST(pad_init_is_idempotent);
     RUN_TEST(media_context_reports_windows_preferences_when_queryable);
     RUN_TEST(media_context_pointer_capabilities_follow_windows_metrics);
     RUN_TEST(media_context_hdr_capability_has_explicit_knowledge);

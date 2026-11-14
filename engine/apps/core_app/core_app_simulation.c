@@ -46,7 +46,7 @@ static BreakKernelError bind_actions(BreakKernel *actor_runtime) {
     u32 i;
     bindings[CORE_APP_ACTION_FORWARD][0] = key_binding('w', 1.0f);
     bindings[CORE_APP_ACTION_FORWARD][1] =
-        pad_binding(BREAK_KERNEL_BIND_PAD_AXIS, GAMEPAD_AXIS_LEFT_Y, -1.0f);
+        pad_binding(BREAK_KERNEL_BIND_PAD_AXIS, PAD_AXIS_LEFT_Y, -1.0f);
     counts[CORE_APP_ACTION_FORWARD] = 2u;
     bindings[CORE_APP_ACTION_BACK][0] = key_binding('s', 1.0f);
     counts[CORE_APP_ACTION_BACK] = 1u;
@@ -54,20 +54,20 @@ static BreakKernelError bind_actions(BreakKernel *actor_runtime) {
     counts[CORE_APP_ACTION_LEFT] = 1u;
     bindings[CORE_APP_ACTION_RIGHT][0] = key_binding('d', 1.0f);
     bindings[CORE_APP_ACTION_RIGHT][1] =
-        pad_binding(BREAK_KERNEL_BIND_PAD_AXIS, GAMEPAD_AXIS_LEFT_X, 1.0f);
+        pad_binding(BREAK_KERNEL_BIND_PAD_AXIS, PAD_AXIS_LEFT_X, 1.0f);
     counts[CORE_APP_ACTION_RIGHT] = 2u;
     bindings[CORE_APP_ACTION_JUMP][0] = key_binding(CORE_APP_KEY_SPACE, 1.0f);
     bindings[CORE_APP_ACTION_JUMP][1] =
-        pad_binding(BREAK_KERNEL_BIND_PAD_BUTTON, GAMEPAD_BTN_SOUTH, 1.0f);
+        pad_binding(BREAK_KERNEL_BIND_PAD_BUTTON, PAD_BTN_SOUTH, 1.0f);
     counts[CORE_APP_ACTION_JUMP] = 2u;
     bindings[CORE_APP_ACTION_INTERACT][0] = key_binding('e', 1.0f);
     bindings[CORE_APP_ACTION_INTERACT][1] =
-        pad_binding(BREAK_KERNEL_BIND_PAD_BUTTON, GAMEPAD_BTN_WEST, 1.0f);
+        pad_binding(BREAK_KERNEL_BIND_PAD_BUTTON, PAD_BTN_WEST, 1.0f);
     counts[CORE_APP_ACTION_INTERACT] = 2u;
     bindings[CORE_APP_ACTION_FIRE][0] = key_binding(INPUT_MOUSE_LEFT, 1.0f);
     bindings[CORE_APP_ACTION_FIRE][0].source = BREAK_KERNEL_BIND_MOUSE_BUTTON;
     bindings[CORE_APP_ACTION_FIRE][1] =
-        pad_binding(BREAK_KERNEL_BIND_PAD_BUTTON, GAMEPAD_BTN_RB, 1.0f);
+        pad_binding(BREAK_KERNEL_BIND_PAD_BUTTON, PAD_BTN_RB, 1.0f);
     counts[CORE_APP_ACTION_FIRE] = 2u;
     bindings[CORE_APP_ACTION_SAVE][0] = key_binding(CORE_APP_KEY_F5, 1.0f);
     counts[CORE_APP_ACTION_SAVE] = 1u;
