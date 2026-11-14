@@ -842,7 +842,7 @@ git commit -m "core_app: route logic through bounded audio commands"
 
 可选 loopback 用例启动真实 `core_app` 和认证测试客户端，应用参数精确使用 `--network --bind 127.0.0.1:0 --tls-cert "${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem" --tls-key "${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem" --psk-env CORE_APP_TEST_PSK --port-file "${WORK}/server.port"`。客户端完成 TLS/AUTH 后接收带 schema hash、frame id、level generation 和 Entity index/generation 的 snapshot。客户端发送未知 message id、伪造 damage/health 字段、旧 generation 和未认证消息；应用必须拒绝/关闭或记录分类错误，本地用户位置、背包和 fire-intent 序号完全不变，离线 tick 继续。网络 outbound 满返回 `OVERLOAD` 并计数，不阻塞/回写 CoreAppThread。
 
-- [ ] **Step 2: 运行无 Snowflake 与可选网络 RED**
+- [x] **Step 2: 运行无 Snowflake 与可选网络 RED**
 
 Run:
 ```bash
@@ -862,7 +862,7 @@ Expected: 离线合同/真实 snapshot 行为先 RED。没有设置 pinned `SNOW
 
 只有认证 Session 的 connection key 可作为网络身份；message registry 仅注册明确的 snapshot/control 消息，未知/越权消息 fail closed。发送快照失败只影响网络诊断，禁止回滚或修改本地运行时状态。停止顺序为停止 admission→停止 reactor producer→drain/close sessions→销毁 transport；离线模式这些对象从不创建。
 
-- [ ] **Step 4: 运行离线 GREEN 与可选 loopback 证据**
+- [x] **Step 4: 运行离线 GREEN 与可选 loopback 证据**
 
 Run: 重复 Step 2 全部命令，并在网络树额外运行：
 ```bash

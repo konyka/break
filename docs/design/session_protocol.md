@@ -107,13 +107,16 @@ typedef enum BreakNetEventType {
 
 `break_net_envelope_encode` 先查 default registry、版本、flags 和 payload limit，再检查 `size_t` 加法和输出 buffer 大小。`break_net_envelope_decode_with_context` 先检查最小 header、magic、payload 上限和“buffer 必须恰好等于 header + payload”，然后做 registry/版本/flags 校验，再做 sequence 校验。拒绝时输出 envelope 被清零；成功时 `payload` 仍是输入 buffer 内的借用指针，不由 decode 分配或释放。
 
-默认 registry 当前只有（`BREAK_ENABLE_CRYPTO=ON` 时三行，OFF 时仅前两行、AUTH 收窄为 v1..1）：
+默认 registry 当前包含下表各行（`BREAK_ENABLE_CRYPTO=ON` 时含 CHALLENGE，OFF 时没有 CHALLENGE、AUTH 收窄为 v1..1）：
 
 | ID | Version | Payload limit | Phase | Duplicate policy |
 |---:|---:|---:|---|---|
 | `BREAK_NET_MESSAGE_ID_AUTH == 1` | 1..2（CRYPTO=ON）/ 1..1（OFF） | 64 KiB | `ANY` | `REJECT` |
 | `BREAK_NET_MESSAGE_ID_PING == 2` | 1..1 | 64 KiB | `ANY` | `IDEMPOTENT` |
 | `BREAK_NET_MESSAGE_ID_CHALLENGE == 3` | 1..1（仅 CRYPTO=ON） | 16 B | `ANY` | `REJECT` |
+| `BREAK_NET_MESSAGE_ID_CORE_SNAPSHOT == 0x4001` | 1..1 | 32 + 64×24 B | `AUTHENTICATED` | `IDEMPOTENT` |
+
+`0x4001` 是 core_app 只读 snapshot（`engine/apps/core_app/core_app_network.h`），只在认证后接受；默认表另含编辑器远程消息 4..21（v1..1，4096 B，`ANY`，`IDEMPOTENT`，见 `docs/design/editor_remote.md`），因此 count 为 22（CRYPTO=ON）/ 21（OFF）。
 
 registry 的最大定义数为 64；register 拒绝 ID 0、重复 ID、反向版本区间、超过全局 payload 上限或满表。公共 `BreakSessionConfig.registry` 也拒绝 `count > BREAK_NET_REGISTRY_MAX_MESSAGES` 的 malformed registry，避免后续 lookup 越过固定定义表；registry 仍是 borrowed immutable storage，必须活到 manager destroy。当前 envelope codec 使用 `break_net_message_registry_default()`，没有把自定义 registry 传入 codec 的 API。`phase` 和 `duplicate_policy` 已记录在定义中；Session 在 LogicThread apply/dispatch 阶段执行 phase、版本、payload limit 和 duplicate policy。默认 AUTH/PING 均为有意的 `ANY` phase：默认 registry 下 AUTH 在 `NEW` 中允许并成功后进入 `AUTHENTICATED`，PING 在 pre-auth `NEW` 中也允许且保持 `NEW`；自定义 registry 的 phase 仍严格限制（例如 `AUTHENTICATING` 定义在 `NEW` 中被拒绝）。默认 AUTH 重复策略为 `REJECT`，PING 重复策略为 `IDEMPOTENT`。测试 `break_session_default_registry_allows_auth_in_new_and_ping_pre_auth` 与 `break_session_uses_attached_registry_phase_and_duplicate_policy` 分别锁定这两个边界。
 

@@ -170,7 +170,8 @@
 - **交付**：新增独立 `core_app_network` 库。固定小端 snapshot 编解码（32 字节头 + n×24 字节实体，schema hash 覆盖字段布局），有界出站队列（容量 8，满则计数丢弃），以及只读诊断的权威防火墙 inbox（未认证/未知消息/schema 不符/level generation 过期分别计数并丢弃，从不返回仿真可用值）。`core_app` 链接该库；`--network` 仍受默认关闭的 `CORE_APP_ENABLE_NETWORK` 控制。设计见 `docs/design/core_app_integration.md` 的 Task 10 节。
 - **测试**：`test_core_app_network` 10/10（容量、往返、小缓冲不写入、坏 magic、坏版本、截断与超限、schema 稳定性、未认证/未知消息丢弃、schema/过期丢弃、有界出站 FIFO）。
 - **变异**：inbox 放行未认证消息被 `snapshot_inbox_drops_unauthenticated_and_unknown_messages` 杀死。
-- **边界**：真实 TLS/Session/reactor 传输、真实认证客户端 loopback、`--network` 应用参数与 acceptor 生命周期未做，需要单独的 `CORE_APP_ENABLE_NETWORK=ON` + `BREAK_ENABLE_SNOWFLAKE=ON` 构建；本步只交付可离线验证的边界层。
+- **认证传输（2026-11-15 补上）**：`CORE_APP_ENABLE_NETWORK=ON` + `BREAK_ENABLE_SNOWFLAKE=ON`（要求 CRYPTO）时编译 `core_app_net_transport.c`，`--network --bind/--tls-cert/--tls-key/--psk-env/--port-file` 启动 TLS + AUTH-v2 acceptor；snapshot（registry 新增 `0x4001`，AUTHENTICATED phase）只发给已认证会话，对端输入只改计数；停止顺序 admission → producers → drain → destroy；`--network` 生效时忽略 SIGPIPE。测试：`test_core_app_network_offline`（双跑 SHA256 一致，无 transport 时 nm 0 个网络符号）、`test_core_app_network_loopback`（真实进程 + 客户端 A/B/C/D 四场景，过滤 network 行后与离线 trace 逐字节相同），loopback 连续 15 次通过，ASan/TSan 树各 16/16。两处变异（放行未认证会话、网络位置写回 user）均 RED 后恢复。
+- **边界**：OVERLOAD 进程级触发不到（reactor 队列 256 且每 tick drain），只由 outbox 单元测试覆盖；CI 没有开启 transport 的 job；loopback 不在 WIN32 注册。设计见 `docs/design/core_app_integration.md` Task 10「认证传输」。
 
 ## Core App P12 Task 9：有界音频命令、三模式与代际隔离（2026-11-14）
 

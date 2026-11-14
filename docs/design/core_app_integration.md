@@ -643,9 +643,43 @@ source 槽带 generation。只有 `PLAY_3D` 认领槽位；`POSITION` 和 `STOP`
 
 变异：让 inbox 放行未认证消息被 `snapshot_inbox_drops_unauthenticated_and_unknown_messages` 杀死。
 
-### 仍未做
+### 认证传输（2026-11-15）
 
-真实 TLS/Session/reactor 传输接线、真实认证客户端 loopback 用例、`--network --bind/--tls-cert/--tls-key/--psk-env/--port-file` 的应用参数与 acceptor 生命周期。这些需要 `CORE_APP_ENABLE_NETWORK=ON` 且 `BREAK_ENABLE_SNOWFLAKE=ON` 的独立构建树；当前 `core_app` 在无网络构建下 `--network` 明确退出 2。本步只交付与传输无关、可离线验证的边界层，不宣称已打通真实网络。
+只有 `CORE_APP_ENABLE_NETWORK=ON` 且 `BREAK_ENABLE_SNOWFLAKE=ON` 时，CMake 才编译 `apps/core_app/core_app_net_transport.c`、链接 `break_net` 并定义 `CORE_APP_NET_TRANSPORT=1`。这条路径要求 `BREAK_ENABLE_CRYPTO=ON`（AUTH-v2 需要 HMAC），否则配置期 `FATAL_ERROR`。其他组合定义 `CORE_APP_NET_TRANSPORT=0`，离线 `core_app` 不含任何 `break_net_`/`break_session_`/`snow_`/`Snow*` 符号（`test_core_app_network_offline` 用 `nm` 检查）。
+
+命令行（仅 transport 构建接受，help 也只在该构建列出）：
+
+```text
+core_app --network --bind HOST:PORT --tls-cert PATH --tls-key PATH --psk-env NAME --port-file PATH
+```
+
+- 缺任一项退出 2：`--network requires --bind, --tls-cert, --tls-key, --psk-env and --port-file`；
+- 给了这些参数但没有 `--network`：`network options require --network`；
+- `HOST:PORT` 非法（例如 `localhost:0` 以外的非数字主机、端口 65536）：`invalid --bind value`；
+- PSK 只从 `--psk-env` 指定的环境变量读取，必须是 64 位 hex，不写入 trace；key id 固定为 `coreapp1`；
+- 监听成功后把实际端口写入 `--port-file`，`--bind 127.0.0.1:0` 因此可用于测试。
+
+运行时：`CoreAppNetworkHooks` 把传输对象挂到 `core_app` 生命周期。`network_start` 阶段位于 audio 之后、coordinator 之前；每 tick 在 audio listener 之后最多处理 64 个 reactor 事件（step 16 ms，最多 8 个连接），并只向已认证会话发送 snapshot（user `flags=1`，chaser `flags=2`）。收到的 snapshot 只进入 `core_app_snapshot_admit` 并改变计数，decode 失败或带尾部字节计为 `decode_failed`；网络输入从不写回仿真。
+
+停止顺序：stop admission → stop producers → drain → destroy。`app_rollback` 在 audio 之前调用这四个钩子；`net_destroy` 幂等，先写一行 `event=network_stats`，再执行 stop → session manager destroy → reactor destroy → acceptor destroy → 清除 auth 回调 → 清零 PSK。启动失败写 `event=network result=rejected stage=<阶段>` 并走同一清理路径。
+
+消息注册表新增 `BREAK_NET_MESSAGE_ID_CORE_SNAPSHOT = 0x4001`（v1..1，`AUTHENTICATED` phase，`IDEMPOTENT`，payload 上限 `32 + 64 × 24` 字节）。transport 用 `#error`/`_Static_assert` 锁定 id 和上限与 `core_app_network.h` 一致。
+
+SIGPIPE：transport 构建在 `--network` 生效时调用 `signal(SIGPIPE, SIG_IGN)`，对端关闭后的写入返回 `EPIPE`，由会话层计数，进程不会被杀。离线进程不改信号处理。修复前 loopback 约 1/7 失败（`server=SIGPIPE`），修复后连续 15 次通过。
+
+`event=network_stats` 字段：`opened`、`closed`、`authenticated`、`snapshots_sent`、`decode_failed`、`rejected_schema`、`rejected_stale`，以及会话层的 `session_applied`、`session_phase_rejected`、`session_invalid`、`session_handler_failed`。
+
+### 测试
+
+- `test_core_app_network_offline`（所有构建）：同一 scenario 离线跑两次，SHA256 相同；trace 无 network 行；无 transport 时 `nm` 扫描为 0 个网络符号。
+- `test_core_app_network_loopback`（transport 构建且非 WIN32；客户端使用 POSIX socket）：真实 `core_app` 与 `test_core_app_net_client` 并发运行，scenario 为 `engine/tests/data/core_app_network_loopback.scenario`（900 tick）。客户端场景 A：认证后收到 snapshot，再发旧 generation、伪造 schema、伪造位置加 16 字节尾部，会话不断、帧号继续增加；B：不认证发 snapshot，永远收不到 snapshot；C：未知 id `0x7777`，连接被关闭；D：错误 PSK，连接被关闭。驱动脚本断言 trace 不含 secret、`authenticated==1`、`opened>=4`、`snapshots_sent>=2`、各拒绝计数至少 1、`session_handler_failed>=2`，并且过滤 network 行后与离线 trace 逐字节相同，snapshot generation 等于 `level_loaded` generation。
+- 变异：去掉“只发给已认证会话”检查 → B/C/D 三项 FAIL；把对端 snapshot 位置写进 user → `network input changed the simulation`。两处恢复后 `cmp` 一致。
+
+### 边界
+
+- OVERLOAD 在进程级触发不到：reactor 队列容量 256 且每 tick 都会 drain，只由 outbox 单元测试（容量 8 满后 OVER_LIMIT 且计数）和 `network_stats` 可观察性覆盖。
+- CI 当前没有开启 `CORE_APP_ENABLE_NETWORK` + `BREAK_ENABLE_SNOWFLAKE` 的 job，loopback 只在本地 Fedora 网络树、ASan 树和 TSan 树验证。
+- `session_invalid` 在典型运行中为 16，来源未细查，测试不对它断言。
 
 ## Core App Task 12：确定性 fuzz、三棵验证树与 no-tests 真实进程（2026-11-14）
 
@@ -1055,7 +1089,7 @@ P12 Task 1 已建立独立 `core_app` 可执行应用及 `core_app_runtime` 静�
 - `core_app` 是真实可执行目标，拥有 `apps/core_app/main.c`，链接 `core_app_runtime` 并经 `engine_link_rhi_backend(core_app)` 使用现有 RHI 选择链。
 - `core_app_runtime` 显式链接 `engine`、`break_kernel`、`break_ai`、`break_flow`、`break_lua`、`break_kernel_lua` 和 `runtime_core`。
 - `engine`、`engine_demo`、`dxx_break` 不链接上述新增集成层。Actor/Lua 适配器使用 `engine/src/kernel/break_kernel_lua.h`；世界呈现 API 位于 `engine/src/renderer/world_presentation.h`。
-- `CORE_APP_ENABLE_NETWORK` 默认 `OFF`，CMake 始终把数值 `0` 或 `1` 传给 `core_app` 的同名预处理条件。OFF 时 `--network` 被真实进程拒绝；ON 时该选项可以进入运行时，但本任务仍只返回 `BREAK_RUNTIME_FAILED`，没有网络实现或伪成功。
+- `CORE_APP_ENABLE_NETWORK` 默认 `OFF`，CMake 始终把数值 `0` 或 `1` 传给 `core_app` 的同名预处理条件。OFF 时 `--network` 被真实进程拒绝；ON 时该选项可以进入运行时，但本任务仍只返回 `BREAK_RUNTIME_FAILED`，没有网络实现或伪成功。（Task 10 之后：NETWORK=ON 而 SNOWFLAKE=OFF 的构建仍是这一行为；NETWORK 与 SNOWFLAKE 都开启时走认证传输，见 Task 10「认证传输」。）
 
 配置末尾直接检查实际 target 的 `LINK_LIBRARIES`：锁定 `core_app_runtime` 依赖、legacy consumer 的直接链接集合和网络 0/1 定义。多行命令与变量展开因此由实际 target property 验收，而不是只扫描命令首行。合同还实际执行 `ENGINE_BUILD_TESTS=OFF` configure，防止 target 被移入测试作用域。
 
