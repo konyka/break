@@ -700,7 +700,23 @@ fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未
 - 变异：去掉 decode 的 `size < needed` 检查，`truncated-count_without_entities` 判红；去掉 header_bytes 检查，`bad_version-header_bytes` 判红。恢复后通过，源文件与备份逐字节一致。
 - normal 树：非 fuzz 400/400（4 个既有 SKIP），fuzz 11/11。ASan+UBSan 树：三个 core_app fuzz target 共 4 项全部通过，无报告。
 
-仍未做：libFuzzer 覆盖率引导与结构感知变异；checkpoint 和 scenario fuzzer 还没有落盘 corpus。
+仍未做：libFuzzer 覆盖率引导与结构感知变异；checkpoint 和 scenario fuzzer 还没有落盘 corpus（scenario 已在下一小节补上）。
+
+### 补充：`fuzz_core_app_scenario` 落盘 corpus 与 pad 范围修复（2026-11-14）
+
+计划见 `docs/superpowers/plans/2026-11-14-fuzz-core-app-scenario-corpus.md`。
+
+- 仓库新增 `engine/tests/data/core_app_scenario_corpus/`，40 个 `.scenario` 文件，前缀 `accept-`（10 个）或 `reject-`（30 个）写明期望的解析结果。覆盖：全部命令、CRLF、注释与空行、无结尾换行、tick 上限 1048576、同 tick 多事件、u64 最大 seed；恰好 4096 事件与 4097 事件；恰好 511 字节行与 512 字节行；超过 64 KiB；NUL 与控制字节；quit 之后的事件、重复 quit、缺 quit；tick 为 0、超限、倒退；`..` 与绝对路径；touch 越界、NaN、未知 phase；pad 序号与轴越界；flow key 溢出与值越界；key 状态与键名非法；多余字段与未知命令。
+- `fuzz_core_app_scenario --emit-corpus <dir>` 用固定文本重新生成，结果与仓库文件逐字节相同。`--replay <file>...` 经真实 `core_app_scenario_load` 读文件：reject 必须返回 INVALID 且 `event_count == 0`、`events == NULL`；accept 必须返回 OK，事件数 1..4096，最后一个事件是 QUIT，tick 单调不减且在 1..1048576 内。前缀未知或缺少任一前缀都失败。注册为 `fuzz_core_app_scenario_corpus`（`fuzz` 标签）。`.gitattributes` 把该目录标为 binary，CRLF 与控制字节样例在任何平台检出都不变。
+- **真实缺陷**：`decimal_u64` 的溢出判断 `value > (limit - digit) / 10` 在 `digit > limit` 时无符号下溢，因此单个数字超过上限也被接受：`pad 4 …` 与 `pad 0 6 …` 原本解析成功，违反上方文法 `pad <0-3> <axis 0-5>`。`core_app_input.c` 在使用前还会按 `INPUT_MAX_PADS`/`INPUT_MAX_AXES` 再检查，所以没有越界访问，但应用会把一份不合法的文档当成合法。修复为先判断 `digit > limit`。`test_core_app_runtime` 新增 `scenario_rejects_pad_index_and_axis_beyond_limit`，修复前判红，修复后 49/49。
+
+证据：
+
+- RED：目录为空时测试失败；生成后 `reject-pad_axis` 判红，暴露上述缺陷。GREEN：`replayed=40 accept=10 reject=30`。
+- 变异（每次恢复后源文件与备份逐字节一致）：撤销 digit 修复，`reject-pad_axis` 判红；允许 quit 之后的事件，`reject-event_after_quit` 判红；去掉 4096 事件上限，`reject-over_max_events` 判红；允许 `..` 路径，`reject-parent_path` 判红。
+- normal 树：非 fuzz 400/400，fuzz 12/12。ASan+UBSan 树：三个 core_app fuzz target 与 `test_core_app_runtime` 共 6 项通过，无报告。TSan 树：`test_core_app_runtime` 49/49，无报告。
+
+仍未做：checkpoint fuzzer 的落盘 corpus；libFuzzer 覆盖率引导。
 
 ## Core App Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
 

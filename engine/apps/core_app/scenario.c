@@ -18,7 +18,7 @@ static bool decimal_u64(const char *token, u64 limit, u64 *out) {
     if (!token || token[0] < '0' || token[0] > '9') return false;
     while (*cursor >= '0' && *cursor <= '9') {
         u64 digit = (u64)(*cursor - '0');
-        if (value > (limit - digit) / 10u) return false;
+        if (digit > limit || value > (limit - digit) / 10u) return false;
         value = value * 10u + digit;
         cursor++;
     }

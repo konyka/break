@@ -23,3 +23,6 @@ engine/assets/core_app/chime.wav binary
 
 # Snapshot wire samples replayed byte-exactly by fuzz_core_app_network --replay.
 engine/tests/data/core_app_network_corpus/*.bin binary
+
+# Scenario parser samples, including CRLF and control bytes; never normalize.
+engine/tests/data/core_app_scenario_corpus/*.scenario binary

@@ -1,3 +1,10 @@
+## Core App scenario fuzz 落盘 corpus 与 pad 范围修复（2026-11-14）
+
+- **交付**：新增 `engine/tests/data/core_app_scenario_corpus/`，40 个样例（10 个 `accept-`、30 个 `reject-`），覆盖全部命令、CRLF、各项上限与越界、非法路径和 quit 规则。`fuzz_core_app_scenario --emit-corpus` 可逐字节重新生成；`--replay` 经真实 `core_app_scenario_load` 检查。注册为 `fuzz_core_app_scenario_corpus`（`fuzz` 标签）。设计见 `docs/design/core_app_integration.md` 的 Task 12 补充小节。
+- **修复**：`decimal_u64` 在单个数字大于上限时无符号下溢，`pad 4` 和轴 6..9 被错误接受。现在先检查 `digit > limit`。新增单测 `scenario_rejects_pad_index_and_axis_beyond_limit`，修复前 RED。
+- **测试**：4 处变异都判红；normal 树非 fuzz 400/400、fuzz 12/12；ASan+UBSan 6/6、TSan `test_core_app_runtime` 49/49，无报告。
+- **未做**：checkpoint fuzzer 的落盘 corpus；覆盖率引导。
+
 ## Core App 网络快照 fuzz 落盘 corpus（2026-11-14）
 
 - **交付**：新增 `engine/tests/data/core_app_network_corpus/`，17 个 snapshot 线上样例，文件名前缀写明期望的解码结果（ok、truncated、bad_magic、bad_version、over_limit）。`fuzz_core_app_network --emit-corpus <dir>` 用固定构造重新生成，结果与仓库文件逐字节相同；`--replay <file>...` 按前缀和参考模型逐个检查，五种结果缺任何一种都失败。注册为 `fuzz_core_app_network_corpus`（`fuzz` 标签）。设计见 `docs/design/core_app_integration.md` 的 Task 12 补充小节。

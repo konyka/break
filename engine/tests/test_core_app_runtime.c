@@ -120,6 +120,26 @@ TEST(scenario_rejects_unknown_command_and_nan_without_partial_events) {
     scenario_free(scenario);
 }
 
+TEST(scenario_rejects_pad_index_and_axis_beyond_limit) {
+    CoreAppScenario *scenario = scenario_new();
+    const char *axis_six =
+        "core-app-scenario 1\nseed 1\nfixed-dt-ns 1\n1 pad 0 6 0.5\n2 quit\n";
+    const char *pad_four =
+        "core-app-scenario 1\nseed 1\nfixed-dt-ns 1\n1 pad 4 0 0.5\n2 quit\n";
+    const char *at_limit =
+        "core-app-scenario 1\nseed 1\nfixed-dt-ns 1\n1 pad 3 5 0.5\n2 quit\n";
+    ASSERT_NOT_NULL(scenario);
+    ASSERT_EQ(parse(axis_six, scenario), CORE_APP_SCENARIO_INVALID);
+    ASSERT_EQ(scenario->event_count, 0u);
+    ASSERT_EQ(parse(pad_four, scenario), CORE_APP_SCENARIO_INVALID);
+    ASSERT_EQ(scenario->event_count, 0u);
+    ASSERT_EQ(parse(at_limit, scenario), CORE_APP_SCENARIO_OK);
+    ASSERT_EQ(scenario->event_count, 2u);
+    ASSERT_EQ(scenario->events[0].pad, 3u);
+    ASSERT_EQ(scenario->events[0].axis, 5u);
+    scenario_free(scenario);
+}
+
 TEST(scenario_rejects_duplicate_quit_without_partial_events) {
     CoreAppScenario *scenario = scenario_new();
     const char *text =
@@ -1422,6 +1442,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scenario_accepts_exactly_max_events);
     RUN_TEST(scenario_rejects_oversized_file_without_partial_events);
     RUN_TEST(scenario_rejects_unknown_command_and_nan_without_partial_events);
+    RUN_TEST(scenario_rejects_pad_index_and_axis_beyond_limit);
     RUN_TEST(scenario_rejects_duplicate_quit_without_partial_events);
     RUN_TEST(scenario_parses_ordered_input_and_header);
     RUN_TEST(scenario_parses_space_key);

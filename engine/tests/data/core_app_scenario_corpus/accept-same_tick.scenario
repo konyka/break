@@ -1,0 +1,6 @@
+core-app-scenario 1
+seed 1
+fixed-dt-ns 16666667
+5 key w 1
+5 key w 0
+5 quit

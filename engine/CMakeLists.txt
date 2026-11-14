@@ -7201,6 +7201,14 @@ endif()
         add_test(NAME fuzz_core_app_network_corpus
                  COMMAND fuzz_core_app_network --replay ${CORE_APP_NETWORK_CORPUS})
         set_tests_properties(fuzz_core_app_network_corpus PROPERTIES LABELS "fuzz")
+        # Scenario text samples; `accept-`/`reject-` prefix is the expected parse result.
+        # Regenerate with `fuzz_core_app_scenario --emit-corpus <dir>`.
+        file(GLOB CORE_APP_SCENARIO_CORPUS CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_scenario_corpus/*.scenario")
+        list(SORT CORE_APP_SCENARIO_CORPUS)
+        add_test(NAME fuzz_core_app_scenario_corpus
+                 COMMAND fuzz_core_app_scenario --replay ${CORE_APP_SCENARIO_CORPUS})
+        set_tests_properties(fuzz_core_app_scenario_corpus PROPERTIES LABELS "fuzz")
         set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
             fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
             fuzz_mycompose_tree_smoke fuzz_mycompose_intent_smoke

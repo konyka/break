@@ -1,0 +1,11 @@
+# leading comment
+
+core-app-scenario 1
+#
+seed 0
+
+fixed-dt-ns 16666667
+# between events
+1 key w 1
+
+2 quit

@@ -1,0 +1,23 @@
+core-app-scenario 1
+seed 1
+fixed-dt-ns 16666667
+1 level
+1 level assets/core_app
+2 key w 1
+2 key space 0
+2 key Z 1
+3 touch 0 down 0.5 0.25
+3 touch -9223372036854775808 move 0 1
+3 touch 7 up 1 0
+3 touch 7 cancel 0.0 0.0
+4 pad 3 5 -1
+4 pad 0 0 1.0
+5 flow 4294967295 1000000
+5 flow 0 -1e6
+6 save
+6 save-to slot/a
+7 load
+7 load-from slot/a
+8 screenshot
+9 unload
+10 quit
