@@ -1,3 +1,9 @@
+## 中性命名 Task 1：Actor kernel 改名为 break_kernel（2026-11-14）
+
+- **交付**：`engine/src/game/` 移到 `engine/src/kernel/`；`break_game*`、`BreakGame*`、`BREAK_GAME_*`、`break_game_lua` 改为 `break_kernel*`、`BreakKernel*`、`BREAK_KERNEL_*`、`break_kernel_lua`；测试改为 `test_break_kernel_*`，原型测试改为 `test_core_style_prototype`。行为与数据格式不变。计划见 `docs/superpowers/plans/2026-11-14-neutral-naming.md`。
+- **测试**：新增 `test_repo_naming_contract`（`STAGE=1`，按目录扫描、不依赖 Git），改名前 RED，改名后 GREEN；normal 树全量 400/400。
+- **未做**：其余代码注释（Task 2）、手柄输入命名（Task 3）、文档正文和文件名（Task 4）。部分设计文档仍引用旧的测试/源码路径，Task 4 统一更新。
+
 ## Core App P12 Task 9（slice 4）：关卡声音事件（2026-11-14）
 
 - **交付**：第一个 Area enter 在追踪者位置入队 `PLAY_3D`，之后每 tick 以追踪者位置入队 `POSITION`，卸载/切关的已有 `STOP` 结束同一代际的声源。帧末 drain 预算改为队列容量 256。回港 miniaudio 0.11.26 对资源管理器失败路径 use-after-free 的修复（CI ASan/TSan 的 `test_audio` 失败）。设计见 `docs/design/core_app_integration.md` 的 Task 9 slice 4 节。
