@@ -1070,6 +1070,18 @@ if(DEFINED SCRIPT_MODE)
             endif()
         endif()
     endif()
+    # The Area enter at tick 30 starts one chaser-attached source; every later
+    # tick moves it to the chaser (ticks 31..180).
+    expect_event_count(script_walk_plays "${walk}"
+        "event=audio kind=play_3d generation=1 sequence=[0-9]+ source=1\n" 1)
+    expect_event_count(script_walk_moves "${walk}"
+        "event=audio kind=position generation=1 sequence=[0-9]+ source=1\n" 150)
+    string(FIND "${walk}" "event=flow kind=post key=1001 generation=1 tick=30" walk_post_at)
+    string(FIND "${walk}" "event=audio kind=play_3d generation=1" walk_play_at)
+    string(FIND "${walk}" "event=audio kind=position generation=1" walk_move_at)
+    if(walk_play_at LESS walk_post_at OR walk_move_at LESS walk_play_at)
+        record_error("script_walk: sound order post=${walk_post_at} play=${walk_play_at} move=${walk_move_at}")
+    endif()
     if(NOT walk MATCHES "event=runtime_stopped\n")
         record_error("script_walk: run did not stop normally")
     endif()
@@ -1089,6 +1101,19 @@ if(DEFINED SCRIPT_MODE)
     expect_actors(script_discard "${discard}" 99 "2;58;0;0;58;0;0")
     if(discard MATCHES "event=flow kind=post key=1001 generation=2 ")
         record_error("script_discard: stationary generation-2 user posted a Flow event")
+    endif()
+    # Ticks 31..40 move the source; the tick-41 unload stops that same
+    # generation-1 source before the level goes, and generation 2 starts none.
+    expect_event_count(script_discard_moves "${discard}"
+        "event=audio kind=position generation=1 sequence=[0-9]+ source=1\n" 10)
+    expect_event_count(script_discard_stops "${discard}"
+        "event=audio kind=stop generation=1 sequence=[0-9]+ source=1\n" 1)
+    expect_event_count(script_discard_new_sound "${discard}"
+        "event=audio kind=(play_3d|position|stop) generation=2 " 0)
+    string(FIND "${discard}" "event=audio kind=stop generation=1" discard_stop_at)
+    string(FIND "${discard}" "event=level_unloaded generation=1" discard_unload_at)
+    if(discard_stop_at LESS 0 OR discard_unload_at LESS discard_stop_at)
+        record_error("script_discard: stop=${discard_stop_at} not before unload=${discard_unload_at}")
     endif()
     if(NOT discard MATCHES "event=runtime_stopped\n")
         record_error("script_discard: run did not stop normally")

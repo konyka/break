@@ -85,6 +85,7 @@ typedef struct CoreLevel {
     u32 trigger_area;
     u32 pending_area_enters;
     u32 dropped_area_enters;
+    bool sound_live;
     f32 nav_heights[64];
     Vec3 chaser_position;
     BreakAiPath chase_path;
@@ -2081,8 +2082,21 @@ static BreakRuntimeError app_tick_level(CoreApp *app, u32 tick,
             (double)level->face_skinned[0], (double)level->face_skinned[1]);
         if (result != BREAK_RUNTIME_OK) return result;
     }
+    if (level->sound_live) {
+        result = core_app_audio_enqueue_at(&app->audio, CORE_APP_AUDIO_POSITION,
+                                           level->generation, level->chaser_position);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
     while (level->pending_area_enters > 0u) {
         level->pending_area_enters--;
+        if (!level->sound_live) {
+            /* The first Area enter starts one source on the chaser; later
+             * ticks move it and the level's unload STOP ends it. */
+            result = core_app_audio_enqueue_at(&app->audio, CORE_APP_AUDIO_PLAY_3D,
+                                               level->generation, level->chaser_position);
+            if (result != BREAK_RUNTIME_OK) return result;
+            level->sound_live = true;
+        }
         flow = break_flow_runtime_post(level->flow, CORE_APP_AREA_FLOW_EVENT,
                                        level->user, 1.0f);
         if (flow == BREAK_FLOW_OK) {
@@ -2421,7 +2435,9 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                                                        app->level->generation, listener);
                 }
             }
-            if (result == BREAK_RUNTIME_OK) result = app_audio_drain(app, 1u);
+            if (result == BREAK_RUNTIME_OK) {
+                result = app_audio_drain(app, CORE_APP_AUDIO_QUEUE_CAPACITY);
+            }
             if (result != BREAK_RUNTIME_OK) {
                 stage = "frame";
                 goto finished;

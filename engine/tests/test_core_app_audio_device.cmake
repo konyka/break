@@ -6,7 +6,8 @@
 #      the trace names that backend and the device,
 #   2. the probe tone was played by the device (the cursor advanced),
 #   3. the command queue drove the device: the listener followed the user on
-#      every fixed tick and no command failed on the device,
+#      every fixed tick, the Area enter started the chaser source, later ticks
+#      moved it, the unload stopped it, and no command failed on the device,
 #   4. the device was closed after the runtime stopped admitting work and
 #      before the runtime reported it had stopped.
 #
@@ -29,7 +30,11 @@ file(WRITE "${scenario}"
     "seed 12648430\n"
     "fixed-dt-ns 16666667\n"
     "1 level\n"
-    "30 quit\n")
+    "1 key w 1\n"
+    "40 key w 0\n"
+    "41 unload\n"
+    "42 level\n"
+    "60 quit\n")
 
 execute_process(
     COMMAND "${CORE_APP}" --render=record --audio=device --require-device --fixed-step
@@ -89,10 +94,19 @@ set(probe_complete "${CMAKE_MATCH_1}")
 set(probe_seconds "${CMAKE_MATCH_2}")
 set(device_failures "${CMAKE_MATCH_3}")
 set(listener_updates "${CMAKE_MATCH_4}")
-# The listener follows the user once per fixed tick, so a 30-tick run must
+set(device_plays "${CMAKE_MATCH_5}")
+set(device_moves "${CMAKE_MATCH_6}")
+set(device_stops "${CMAKE_MATCH_7}")
+# The listener follows the user once per fixed tick, so a 60-tick run must
 # have driven the device listener on (almost) every tick, not just once.
-if(listener_updates LESS 20)
+if(listener_updates LESS 40)
     message(FATAL_ERROR "the command queue drove the device listener only ${listener_updates} times")
+endif()
+# Walking forward enters the trigger Area at tick 30: one PLAY_3D on the
+# chaser, POSITION on ticks 31..40, and the tick-41 unload STOPs it.
+if(NOT device_plays EQUAL 1 OR device_moves LESS 5 OR device_stops LESS 1)
+    message(FATAL_ERROR "level sound did not reach the device: plays=${device_plays}"
+                        " moves=${device_moves} stops=${device_stops}")
 endif()
 if(NOT device_failures EQUAL 0)
     message(FATAL_ERROR "${device_failures} commands failed on the device")
@@ -117,4 +131,5 @@ endif()
 
 message(STATUS "verified audio device backend=${device_backend} device=${device_name}"
                " probe_complete=${probe_complete} probe_seconds=${probe_seconds}"
-               " listener_updates=${listener_updates}")
+               " listener_updates=${listener_updates} plays=${device_plays}"
+               " moves=${device_moves} stops=${device_stops}")

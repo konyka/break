@@ -540,7 +540,7 @@ source 槽带 generation。只有 `PLAY_3D` 认领槽位；`POSITION` 和 `STOP`
 
 ### 仍未做
 
-独立的音频 owner 线程、`tone.wav` 的关卡播放事件（关卡目前不产生 PLAY_3D/POSITION）、256 条满队列的进程级压力用例。设备的打开、探测播放与关闭已在 Task 9 slice 2 补上，命令队列驱动设备已在 slice 3 补上。record/null 路径的证据是单元与真实进程 trace，不是听感验证。
+独立的音频 owner 线程、256 条满队列的进程级压力用例。设备的打开、探测播放与关闭已在 Task 9 slice 2 补上，命令队列驱动设备已在 slice 3 补上，关卡播放事件已在 slice 4 补上。record/null 路径的证据是单元与真实进程 trace，不是听感验证。
 
 ## Core App Task 10：可选认证网络通道的边界层与客户端权威防火墙（2026-11-14）
 
@@ -666,6 +666,33 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 本轮修复后：`test_core_app_mesh` 3/3、GPU 两用例通过、`test_core_app_gpu`/`naming`/`target` 契约 5/5；全量含 GPU 405/405。
 
+## Core App Task 9（slice 4）：关卡声音事件（2026-11-14）
+
+### 变化
+
+- `CoreLevel` 增加 `sound_live`。`app_tick_level` 处理第一个 Area enter 时，以追踪者当前位置入队一条 `PLAY_3D`（本关卡 generation），并置 `sound_live`。同一关卡再次进入 Area 不再开新声源。
+- `sound_live` 之后的每个 tick，在处理 Area enter 之前入队 `POSITION`，位置为追踪者在本 tick 移动后的位置，所以声源跟随追踪者。
+- 声源的结束沿用已有路径：卸载与切关时入队本 generation 的 `STOP`，它按代际找到同一个槽位并停止该声源。新关卡从 `sound_live=false` 开始，不会继承旧声源。
+- 帧末 drain 的预算从 1 改为 `CORE_APP_AUDIO_QUEUE_CAPACITY`（256）。一个 tick 现在最多产生 LISTENER、POSITION、PLAY_3D 三条命令，预算 1 会留下积压并让 drain 返回 TIMEOUT。
+- record 模式 trace 新增 `event=audio kind=play_3d|position …` 行；位置本身仍不写入 trace，相同场景的 record 输出仍逐字节确定。
+
+### 第三方修复
+
+ASan/TSan 在 `test_audio` 的 `play_3d_source_reports_failure_as_zero` 中报告 miniaudio 0.11.25 的 heap-use-after-free：`ma_resource_manager_data_buffer_node_acquire` 在失败路径 `ma_free` 节点后又读 `pDataBufferNode->isDataOwnedByResourceManager`。已把上游 0.11.26 对 `done:` 块的修复（先读出该字段，释放后置 NULL）回港到 `engine/external/miniaudio.h`，其余代码仍为 0.11.25。
+
+### 边界
+
+`AudioSystem` 仍由应用主线程持有，没有独立 owner 线程。声源固定使用 `tone.wav`，没有按事件选择资源，也没有听感验证。
+
+### 验证
+
+- RED：`test_core_app_lifecycle_script_flow` 新增断言在实现前失败（`script_discard: stop=-1`，record trace 中没有 play_3d/position）。
+- GREEN：
+  - script_walk：tick 30 的 Flow post 之后恰好 1 条 `play_3d generation=1 source=1`，之后 150 条 `position`（tick 31..180）；
+  - script_discard：10 条 `position`（tick 31..40），1 条 `stop generation=1 source=1`，且在 `level_unloaded generation=1` 之前；generation 2 没有任何声音命令。
+- `test_core_app_audio_device` 场景改为前进 40 tick、卸载、重载、60 tick 退出，要求 `plays=1`、`moves>=5`、`stops>=1`、`listener_updates>=40`。本机 PulseAudio 实测 `listener_updates=58 plays=1 moves=10 stops=1`。
+- `test_audio` 在 ASan 树中由 heap-use-after-free 变为通过。
+
 ## Core App Task 9（slice 3）：命令队列驱动音频设备（2026-11-14）
 
 ### 变化
@@ -685,7 +712,7 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 ### 边界
 
-关卡目前只产生 LISTENER 与卸载时的 STOP，没有 PLAY_3D/POSITION 的产生方，所以真实进程里 `plays=0`。PLAY_3D/POSITION/STOP/挤出路径的设备证据来自 FAKE 系统单测。`AudioSystem` 仍由应用主线程持有，没有独立 owner 线程。
+slice 3 时关卡只产生 LISTENER 与卸载时的 STOP，真实进程里 `plays=0`；slice 4（上一节）起 Area enter 产生 PLAY_3D/POSITION。PLAY_3D/POSITION/STOP/挤出路径的设备证据来自 FAKE 系统单测。`AudioSystem` 仍由应用主线程持有，没有独立 owner 线程。
 
 ### 验证
 
