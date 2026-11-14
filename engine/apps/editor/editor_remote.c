@@ -810,6 +810,39 @@ static bool remote_handle_view(BreakEditorRemote *r, u64 key, const u8 *p,
     return remote_respond_view_state(r, key, BREAK_EDITOR_MSG_VIEW);
 }
 
+/* RENDER: the render debugger rows, optionally after queueing a viewport
+ * shader reload (action 1). Rows are bounded by the panel (<= 16 x < 96 B),
+ * so the response stays far below the payload limit. */
+static bool remote_handle_render(BreakEditorRemote *r, u64 key, const u8 *p,
+                                 size_t size) {
+    u8 rsp[2u + 16u * 96u];
+    size_t off = 2u;
+    u32 count, i, rows = 0u;
+    if (size != 1u) {
+        return false;
+    }
+    if (p[0] > 1u) {
+        return remote_respond(r, key, BREAK_EDITOR_MSG_RESULT,
+                              BREAK_EDITOR_PROTO_STATUS_INVALID, NULL, 0u);
+    }
+    rsp[0] = (p[0] == 1u && break_editor_shell_request_shader_reload(r->shell))
+                 ? 1u : 0u;
+    count = break_editor_shell_render_row_count(r->shell);
+    for (i = 0u; i < count && rows < 16u; i++) {
+        const char *text = break_editor_shell_render_row_text(r->shell, i);
+        size_t len = text != NULL ? strlen(text) : 0u;
+        if (len > 95u) {
+            len = 95u;
+        }
+        rsp[off++] = (u8)len;
+        memcpy(rsp + off, text != NULL ? text : "", len);
+        off += len;
+        rows++;
+    }
+    rsp[1] = (u8)rows;
+    return remote_respond(r, key, BREAK_EDITOR_MSG_RENDER, 0u, rsp, off);
+}
+
 /* HISTORY: read-only view of the shared command stack (the local shell and
  * every remote client edit through ONE stack, so UNDO/REDO from either side
  * revert the newest command whoever issued it). */
@@ -1010,6 +1043,8 @@ static bool remote_dispatch(BreakEditorRemote *r, BreakConnectionKey connection,
         return remote_handle_undo_redo_own(r, connection, p, size, true);
     case BREAK_EDITOR_MSG_REDO_OWN:
         return remote_handle_undo_redo_own(r, connection, p, size, false);
+    case BREAK_EDITOR_MSG_RENDER:
+        return remote_handle_render(r, connection, p, size);
     default:
         return false;
     }
@@ -1031,7 +1066,8 @@ BreakEditorRemote *break_editor_remote_create(
         BREAK_EDITOR_MSG_EVAL,     BREAK_EDITOR_MSG_SAVE,
         BREAK_EDITOR_MSG_LOAD,     BREAK_EDITOR_MSG_VIEW,
         BREAK_EDITOR_MSG_CAMERA_SET, BREAK_EDITOR_MSG_HISTORY,
-        BREAK_EDITOR_MSG_UNDO_OWN, BREAK_EDITOR_MSG_REDO_OWN};
+        BREAK_EDITOR_MSG_UNDO_OWN, BREAK_EDITOR_MSG_REDO_OWN,
+        BREAK_EDITOR_MSG_RENDER};
     usize i;
     if (shell == NULL || cfg == NULL ||
         cfg->max_connections > EDITOR_REMOTE_MAX_CONNECTIONS) {

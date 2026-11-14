@@ -1956,7 +1956,7 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
     }
     if (key == 'r' &&
         modifiers == (MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT)) {
-        if (!break_editor_viewport3d_request_shader_reload(shell->vp3d)) {
+        if (!break_editor_shell_request_shader_reload(shell)) {
             editor_shell_log(shell, "%s",
                              break_editor_tr(BREAK_EDITOR_TR_LOG_SR_UNAVAILABLE));
         }
@@ -3289,6 +3289,11 @@ bool break_editor_shell_revert(BreakEditorShell *shell) {
     /* load_scene copies its argument into scene_path: pass a copy */
     memcpy(path, shell->scene_path, sizeof(path));
     return editor_shell_load_scene(shell, path);
+}
+
+bool break_editor_shell_request_shader_reload(BreakEditorShell *shell) {
+    return shell != NULL &&
+           break_editor_viewport3d_request_shader_reload(shell->vp3d);
 }
 
 bool break_editor_shell_apply_view(BreakEditorShell *shell, u8 mask, u8 value) {

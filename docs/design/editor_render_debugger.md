@@ -6,7 +6,7 @@ Status: **delivered with limits** (2026-10-26, branch `sdd/editor-render-debugge
 
 A **pure-view** diagnostics panel in the editor's right column that answers "what is the renderer doing right now": which backend is running, on which GPU, with which capabilities, how the viewport pass behaved last frame, and how many RHI resource slots are in use.
 
-Non-goals (NOT delivered): frame capture, per-draw inspection, shader/pipeline inspection, texture viewer, GPU timing queries, render settings or any control (it never changes rendering), remote render control (`editor_remote.md` §9).
+Non-goals (NOT delivered): frame capture, per-draw inspection, shader/pipeline inspection, texture viewer, GPU timing queries, render settings or any control (it never changes rendering). Since 2026-11-14 the remote RENDER message (21, `editor_remote.md` §1) returns these rows and can queue the same shader reload as Ctrl+Shift+R; the panel itself still never changes rendering.
 
 ## 2. Data sources (all read-only)
 
@@ -66,4 +66,4 @@ Implementation: `engine/apps/editor/editor_panel_render.c` (pure-view panel), `e
 - Source-scan mutation check: inserting `rhi_cmd_draw` into the read-only region fails `render_panel_source_is_read_only`.
 - Independent review found a shared-row attachment-failure UAF. The regression test forces the `editor-diag-row` attach to fail; before the fix ASan reported `heap-use-after-free` in `my_list_view_refresh`, after attaching the empty row before building the panels the same test passes. ASan+UBSan and TSan both report 67/67 with no sanitizer findings. A second regression covers the shell NULL-device path (`skipped=no-device`).
 
-Remaining limits: no frame capture, per-draw/shader/texture inspection, GPU timing, render controls, or remote render control. Windows/macOS runtime and CI were not run. The panel is a diagnostic view, not a GPU correctness oracle.
+Remaining limits: no frame capture, per-draw/shader/texture inspection, GPU timing, render controls, or remote backend switching (remote row readout and shader reload: RENDER, 2026-11-14). Windows/macOS runtime and CI were not run. The panel is a diagnostic view, not a GPU correctness oracle.

@@ -1,3 +1,9 @@
+## Editor remote RENDER 消息（2026-11-14）
+
+- **交付**：新增协议消息 `BREAK_EDITOR_MSG_RENDER = 21`，已登记进 `break_net` 默认 registry。请求是 `action/u8`：0 只读查询，1 请求一次视口 shader 重载（与 Ctrl+Shift+R 共用新的 `break_editor_shell_request_shader_reload`）。响应是 `reload/u8`、`rows/u8` 和每行 `len/u8 + text`，内容就是渲染调试面板的行。未知 action 返回 RESULT invalid，长度不是 1 字节则关闭会话。不改文档、不进 undo、不切换后端。
+- **测试**：`test_editor_shell` 新增 3 个用例，registry 用例改为 4..21 已占、22 空闲；先 RED（编译失败），后 GREEN 195/195（Snowflake+crypto 树，Snowflake 用 pin 提交 696a1ec5 的临时 worktree）。`fuzz_editor_remote` 覆盖 4..21；该目标此前缺 `editor_panel_flow.c` 导致链接失败，已补上；8 个 seed × 20000 条消息全部通过，RENDER 每个 seed 被接受 165–213 次。normal 树全量 400/400。
+- **未做**：远程切换 RHI 后端（需要重建设备和 swapchain，编辑器没有运行时路径）。
+
 ## Core App Task 9 slice 5：音频 owner 线程（2026-11-14）
 
 - **交付**：`--audio=device` 接上真实设备后由独立 owner 线程执行全部 `AudioSystem` 调用；主线程只入队，帧 drain 不等待设备。新增 `core_app_audio_flush`、`core_app_audio_start_system_owned`，`result=stopped` 行末尾追加 `owner_thread=0|1`。设计与证据见 `docs/design/core_app_integration.md` 的 slice 5 节。
@@ -978,7 +984,7 @@
 - **fuzz**：`fuzz_editor_remote` 的 id 范围扩到 4..15，并为 harness 配置了真实的场景路径；ASan 下 8 个 seed、每个 20000 条消息全部通过，SAVE/LOAD 各被接受约 400 次；`ctest -L fuzz` 6/6。
 - **追加 VIEW**：新增 `BREAK_EDITOR_MSG_VIEW = 16`，调用 `break_editor_shell_apply_view`。可开关网格和统计叠层，也可复位相机；mask=0 为只读查询。响应返回网格、统计状态，以及 7 个 f32 的相机参数（LE）。只改视图状态，不产生 doc 编辑或 undo；未知位返回 INVALID。测试：`remote_view_toggles_view_state_without_touching_the_doc` 先红后绿，registry 测试覆盖 14/15/16 三个 id；`build-sdd-p4-final` 161/161。fuzz 扩到 4..16，ASan 下 8 个 seed、每个 20000 条消息全部通过（seed 1 中 VIEW 被接受 253 次），`ctest -L fuzz` 6/6。
 - **追加 CAMERA_SET**：新增 `BREAK_EDITOR_MSG_CAMERA_SET = 17`，请求为 7 个 f32 的完整相机位姿。整体校验：需为有限值、pitch 不超过 89°、distance 在 [0.05, 1e4]、fov 在 [1°, 170°]；任一项不合法即返回 INVALID，相机保持不变。测试先红后绿，变异检查：删掉 pitch 校验后变红；`build-sdd-p4-final` 162/162。fuzz 扩到 4..17，ASan 下 8 个 seed 全部通过，seed 1 中 CAMERA_SET 被接受 266 次。
-- **未做**：渲染设置的 remote 控制。
+- **未做**：渲染设置的 remote 控制（2026-11-14 起 RENDER=21 提供渲染行读取与 shader 重载；后端切换仍未做）。
 
 ## 本轮更新：全仓数字文本与 locale 无关（2026-10-30）
 

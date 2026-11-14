@@ -53,7 +53,8 @@ enum BreakEditorMessageId {
     BREAK_EDITOR_MSG_CAMERA_SET = 17 /* req: camera 7×f32 LE (target xyz, yaw, pitch, distance, fov_y) → rsp: same layout as VIEW. Whole pose validated (finite; |target|,|yaw| ≤ 1e6; |pitch| ≤ 89°; distance in [0.05, 1e4]; fov_y in [1°, 170°]) or RESULT invalid with the camera untouched */,
     BREAK_EDITOR_MSG_HISTORY  = 18,  /* req: empty → rsp: undo/u16, redo/u16, revision/u64, last_len/u16 + last (≤127 B, what the next UNDO reverts; 0 = none). Read-only view of the shared command stack */
     BREAK_EDITOR_MSG_UNDO_OWN = 19,  /* req: empty → rsp: applied/u8, blocked/u8. Undoes the newest command THIS connection issued, if no later command of another origin touches the same entities (blocked=1 otherwise, nothing changes) */
-    BREAK_EDITOR_MSG_REDO_OWN = 20   /* req: empty → rsp: applied/u8, blocked/u8. Redoes this connection's oldest undone command under the same independence rule */
+    BREAK_EDITOR_MSG_REDO_OWN = 20,  /* req: empty → rsp: applied/u8, blocked/u8. Redoes this connection's oldest undone command under the same independence rule */
+    BREAK_EDITOR_MSG_RENDER   = 21   /* req: action/u8 (0 query, 1 request a viewport shader reload; other values → RESULT invalid) → rsp: reload/u8 (1 = reload queued), rows/u8, per row len/u8 + text: the render debugger panel rows (≤16 × <96 B). No doc edit, no undo, no backend switch */
 };
 
 /* Response status values carried in the BREAK_EDITOR_MSG_RESULT wrapper. */

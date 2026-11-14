@@ -330,6 +330,10 @@ static usize build_valid(const Harness *h, u16 id, u8 *out) {
         }
         return 28u;
     }
+    case BREAK_EDITOR_MSG_RENDER:
+        /* mostly query/reload, sometimes an unknown action */
+        out[0] = rnd_below(5u) == 0u ? (u8)rnd() : (u8)rnd_below(2u);
+        return 1u;
     case BREAK_EDITOR_MSG_EVAL: {
         const char *s = k_eval_snippets[rnd_below((unsigned)N_EVAL)];
         return put_str(out, s);
@@ -439,8 +443,8 @@ typedef struct Stats {
     unsigned max_entities;
     /* per editor id 4..13: messages that reached the session manager, and how
      * many the handler accepted (apply OK) */
-    unsigned reached[21];
-    unsigned accepted[21];
+    unsigned reached[22];
+    unsigned accepted[22];
     unsigned state_changing_ok; /* applied OK AND the document fingerprint moved */
 } Stats;
 
@@ -500,10 +504,10 @@ static bool feed(Harness *h, u16 id, u16 version, u32 sequence, const void *data
 static u16 pick_id(void) {
     unsigned r = rnd_below(16u);
     if (r < 12u) {
-        return (u16)(4u + rnd_below(17u)); /* 4..20 */
+        return (u16)(4u + rnd_below(18u)); /* 4..21 */
     }
     if (r == 12u) return (u16)rnd_below(4u);      /* 0..3 */
-    if (r == 13u) return (u16)(21u + rnd_below(8u));
+    if (r == 13u) return (u16)(22u + rnd_below(8u));
     if (r == 14u) return 0xFFFFu;
     return (u16)rnd();
 }
@@ -638,7 +642,7 @@ static int one_message(Harness *h, Stats *st, unsigned it) {
     }
 
     result = break_session_manager_last_result(h->manager);
-    if (last_id >= 4u && last_id <= 20u) {
+    if (last_id >= 4u && last_id <= 21u) {
         st->reached[last_id]++;
         if (result == BREAK_SESSION_APPLY_OK) {
             st->accepted[last_id]++;
@@ -732,12 +736,12 @@ int main(int argc, char **argv) {
            st.sessions, st.closed_by_message, st.session_table_stuck, st.evals,
            st.max_entities);
     {
-        static const char *const names[21] = {
+        static const char *const names[22] = {
             "", "", "", "", "DESCRIBE", "LIST", "SPAWN", "REMOVE", "RENAME",
-            "SET_FIELD", "UNDO", "REDO", "EVAL", "RESULT", "SAVE", "LOAD", "VIEW", "CAMERA_SET", "HISTORY", "UNDO_OWN", "REDO_OWN"};
+            "SET_FIELD", "UNDO", "REDO", "EVAL", "RESULT", "SAVE", "LOAD", "VIEW", "CAMERA_SET", "HISTORY", "UNDO_OWN", "REDO_OWN", "RENDER"};
         unsigned i;
         printf("per id (reached manager / handler accepted):");
-        for (i = 4u; i <= 20u; i++) {
+        for (i = 4u; i <= 21u; i++) {
             printf(" %s %u/%u", names[i], st.reached[i], st.accepted[i]);
         }
         printf("\naccepted messages that changed the document: %u\n",

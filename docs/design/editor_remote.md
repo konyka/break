@@ -35,6 +35,7 @@ Wire rules (pinned by tests):
 | 18 | HISTORY | empty (non-empty closes) | `undo/u16, redo/u16, revision/u64` (LE), `last_len/u16` + up to 127 B description of the command the next UNDO reverts (0 = none) | Read-only view of the **shared** command stack (2026-10-30). The local shell and every remote client edit through one stack, so UNDO/REDO from either side revert the newest command whoever issued it; a client can check what UNDO will do, and see local edits from the revision moving, before sending it. Test: `remote_history_reports_the_shared_undo_stack`. |
 | 19 | UNDO_OWN | empty (non-empty closes) | `applied/u8, blocked/u8` | `break_editor_undo_origin` (2026-10-30). Per-client undo: every connection gets its own undo origin (a counter that is never reused, so a client does not inherit the history of whoever held its table row before; 0 is the local shell). It undoes the newest command **this connection** issued, even if other clients' commands are newer, but only when nothing it would move past touches the same entities: `blocked=1` (nothing changes, revision untouched) when a later command of another origin, applied or undone, touches one of its entity indices. Same-origin commands never block each other. `applied=0, blocked=0` = this connection has nothing to undo. The global UNDO (10) is unchanged. |
 | 20 | REDO_OWN | empty (non-empty closes) | `applied/u8, blocked/u8` | `break_editor_redo_origin`. Redoes this connection's oldest undone command under the same rule against the undone commands ahead of it. Add/remove commands re-create the exact entity id, which needs the ECS free list to hand it back; if it is in another order the attempt fails with `blocked=1`, document and stack unchanged. |
+| 21 | RENDER | `action/u8` (0 query, 1 shader reload; other values → RESULT invalid; any other size closes) | `reload/u8, rows/u8`, then per row `len/u8 + text` | Render debugger panel rows (≤16 rows of <96 B, `editor_render_debugger.md` §4). Action 1 calls `break_editor_shell_request_shader_reload`, the same request as Ctrl+Shift+R; `reload=1` only means the request was queued, the outcome shows up in the reload log and the rows. No doc edit, no undo, no backend switch (2026-11-14). |
 
 Every mutation maps 1:1 to an existing undoable doc command: a remote SPAWN is reverted by a local Ctrl+Z and by a remote UNDO (both test-pinned). No raw world pointer is reachable.
 
@@ -58,7 +59,7 @@ A command that runs but does nothing (REMOVE of a stale id, UNDO with an empty s
 | Resource | Bound | Enforcement |
 |---|---|---|
 | Inbound payload | ≤ 4096 B per frame | default-registry `payload_limit` (codec rejects before any handler) + exact-layout handler checks |
-| Editor ids | 4..20 used (17 definitions: DESCRIBE..REDO_OWN), 21 and above are not registered | `break_net_message_registry_default` |
+| Editor ids | 4..21 used (18 definitions: DESCRIBE..RENDER), 22 and above are not registered | `break_net_message_registry_default` |
 | EVAL input | ≤ 4096 B (`BREAK_EDITOR_LUA_INPUT_MAX_BYTES`) | larger → RESULT INVALID, connection stays up |
 | EVAL response | ≤ 16 lines × ≤ 127 B, ≤ 4096 B total | fixed capture buffer in the host |
 | Connection table | ≤ 32 rows (`max_connections`, 0 ⇒ 32; the CLI uses 4) | create rejects > 32; the reactor gets the same cap |
@@ -78,7 +79,7 @@ TLS (server-side acceptor; handshake failure closes)
         ▼
 CHALLENGE id=3 (16 B CSPRNG server nonce) → AUTH v2 id=1 (56 B, HMAC-SHA256 tag)
         ▼
-session AUTHENTICATED → editor commands 4..20 dispatched on the shell thread
+session AUTHENTICATED → editor commands 4..21 dispatched on the shell thread
 ```
 
 - **Default OFF.** The shell never creates a remote on its own. Without `--remote`, `editor` creates no reactor and nothing listens. Any `--remote-*` option without `--remote` fails the parse (exit 2). Pinned by `remote_cli_default_off_and_fail_closed_flags` and `remote_disabled_leaves_shell_untouched`. With no remote attached, the shell behaves exactly as in Phase 3 (the existing editor lane proves it).
@@ -120,7 +121,7 @@ session AUTHENTICATED → editor commands 4..20 dispatched on the shell thread
 
 ## 5. Codec boundary
 
-The envelope codec consults only `break_net_message_registry_default()` (`session_protocol.md`, codec-boundary note). A custom registry cannot admit ids the codec does not know, so the editor ids are registered **in the default registry**, in its free id space after AUTH(1)/PING(2)/CHALLENGE(3). Ids 4..20 are registered for the editor (17 definitions; the registry holds up to 64 in total). The manager is created with `registry = NULL` (the default registry) so the manager and the codec see the same table. The consequence is documented rather than worked around: every `break_net` consumer in the process now recognizes ids 4..20 as valid frames (`PHASE_ANY`, `payload_limit` 4096). An application that hosts its own `break_session` manager without editor handlers would see such frames as unhandled. Pinned by `remote_protocol_ids_live_in_default_registry`.
+The envelope codec consults only `break_net_message_registry_default()` (`session_protocol.md`, codec-boundary note). A custom registry cannot admit ids the codec does not know, so the editor ids are registered **in the default registry**, in its free id space after AUTH(1)/PING(2)/CHALLENGE(3). Ids 4..21 are registered for the editor (18 definitions; the registry holds up to 64 in total). The manager is created with `registry = NULL` (the default registry) so the manager and the codec see the same table. The consequence is documented rather than worked around: every `break_net` consumer in the process now recognizes ids 4..21 as valid frames (`PHASE_ANY`, `payload_limit` 4096). An application that hosts its own `break_session` manager without editor handlers would see such frames as unhandled. Pinned by `remote_protocol_ids_live_in_default_registry`.
 
 ## 6. Lifecycle
 
@@ -149,14 +150,14 @@ Status values: every response was the per-id success response (no `RESULT` frame
 - **Auth deadline granularity:** checked once per editor frame against the monotonic clock; a peer that authenticates is never evicted later by it (sessions have no idle timeout after authentication).
 - **Process-wide auth domain:** one PSK-carrying remote per process (§2).
 - **Frame-cadence latency:** one reactor step and ≤ 32 events per frame (§3).
-- **Shared default registry:** ids 4..20 are visible to every `break_net` consumer in the process (§5).
+- **Shared default registry:** ids 4..21 are visible to every `break_net` consumer in the process (§5).
 - **Client-sent RESULT** counts as `handler_failed` without closing (§1).
 - **The EVAL console is separate from the panel console:** the remote owns its own `BreakEditorLuaConsole` core on the same doc and logs into the same shared ring. Lua module state is not shared with the local Lua panel, though doc effects are, since both go through one command stack.
 
 ## 9. NOT delivered
 
 - Remote save/load to a path the CLIENT chooses. SAVE (14) and LOAD (15) exist but only act on the scene path the local user configured (no path on the wire), and LOAD never discards unsaved work (2026-10-30).
-- Remote render settings and backend switches. VIEW (16) covers grid/stats toggles, camera reset and readback; CAMERA_SET (17) sets a validated camera pose. The **render debugger panel** is delivered separately as a local pure view (`docs/design/editor_render_debugger.md`), not as a remote-control surface.
+- Remote backend switches and render settings beyond the view toggles. VIEW (16) covers grid/stats/wireframe toggles, camera reset and readback; CAMERA_SET (17) sets a validated camera pose; RENDER (21, 2026-11-14) reads the render debugger rows and queues a viewport shader reload. Switching the RHI backend needs the device and swapchain rebuilt, and the editor has no runtime path for that.
 - A production credential system: per-device key distribution, key storage, and CLI/config management of the keyring (the in-process keyring with add/revoke exists since 2026-10-30). The PSK is a dev path (`transport_security.md` §4).
 - WAN deployment and multi-client management (no user or role model, no per-client permissions, no session listing or kick control, no non-loopback bind flag).
 - Collaboration semantics beyond per-client undo: remote and local commands share the one doc command stack and UNDO_OWN/REDO_OWN (19/20, 2026-10-30) undo a client's own commands only when nothing newer touches the same entities, but there is no merge or conflict resolution, no change-notification push, and no per-client permissions.
@@ -202,3 +203,4 @@ Phase 4 Task 4 closeout, HEAD = `357be082` + the closeout commit (one added test
 - **Editor (`test_editor_shell` 80 -> 82, Snowflake tree):** the unauthenticated-client cases (no AUTH, tampered tag, unknown key id, AUTH v1 under v2) and the malformed-REMOVE case now assert the client reads EOF with zero response bytes and zero doc effect; `remote_tls_auth_deadline_closes_idle_unauthenticated_client` (300 ms deadline, EOF no earlier than 300 ms after connecting, slot freed, one timeout counted) and `remote_tls_auth_deadline_spares_authenticated_client` (still served 700 ms past the deadline); the CLI config pins the 10 s default. Mutations: removing the transport close fails three tests, removing the deadline fails one, letting the deadline hit authenticated sessions fails one.
 - **Live `editor --remote` (Snowflake Debug tree, default Vulkan, X11):** throwaway self-signed cert and random PSK, Python `ssl` client. A client that completes TLS but sends nothing was closed by the server 11.05 s after connecting (10 s deadline plus TLS/CHALLENGE time and frame cadence), with 0 response bytes. A command sent without AUTH: server closed the connection, 0 response bytes. A correctly authenticated client was still answered (DESCRIBE `version 1, 0 entities, clean`) 12 s after connecting, i.e. past the deadline; its malformed REMOVE then got the connection closed with 0 response bytes. The editor kept running throughout. In these runs the close arrived about 2 s after the offending frame; the unit tests show sub-second closes, and the extra latency in the live run comes from the editor's frame pacing, which I did not profile.
 - **Sanitizers:** `test_editor_shell` ASan x3 and TSan x3 82/82, `test_break_net_adapter`/`test_break_net_tls`/`test_break_session` clean under both; `fuzz_editor_remote` 3 seeds x 20,000 on the normal tree and 4 seeds under ASan, all clean.
+- **2026-11-14, RENDER (21).** `test_editor_shell` adds `remote_render_reports_the_render_debugger_rows`, `remote_render_reload_without_viewport_reports_zero` and `remote_render_rejects_unknown_action_and_size`; the registry test now claims 4..21 and checks that 22 is free. RED first (compile failure: `BREAK_EDITOR_MSG_RENDER`, `break_editor_shell_request_shader_reload` undeclared), then 195/195 in a Snowflake+crypto tree. The fuzzer picks ids 4..21 with a RENDER generator (mostly action 0/1, sometimes an arbitrary byte). The `fuzz_editor_remote` link had been broken since `editor_panel_flow.c` joined the shell: the target now compiles it like `test_editor_shell`. 8 seeds x 20,000 messages exit 0; RENDER reached/accepted per seed 482..546 / 165..213.

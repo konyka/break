@@ -4956,7 +4956,7 @@ TEST(remote_protocol_ids_live_in_default_registry)
                {BREAK_EDITOR_MSG_SAVE},     {BREAK_EDITOR_MSG_LOAD},
                {BREAK_EDITOR_MSG_VIEW},     {BREAK_EDITOR_MSG_CAMERA_SET},
                {BREAK_EDITOR_MSG_HISTORY},  {BREAK_EDITOR_MSG_UNDO_OWN},
-               {BREAK_EDITOR_MSG_REDO_OWN}};
+               {BREAK_EDITOR_MSG_REDO_OWN}, {BREAK_EDITOR_MSG_RENDER}};
     const BreakNetMessageRegistry *registry = break_net_message_registry_default();
     usize i;
     for (i = 0u; i < sizeof(ids) / sizeof(ids[0]); i++) {
@@ -4967,8 +4967,8 @@ TEST(remote_protocol_ids_live_in_default_registry)
         ASSERT_EQ(def->maximum_version, 1u);
         ASSERT_EQ(def->payload_limit, (size_t)BREAK_EDITOR_PROTO_MAX_PAYLOAD);
     }
-    /* 4..20 free space is claimed, not beyond */
-    ASSERT_TRUE(break_net_message_registry_lookup(registry, 21u) == NULL);
+    /* 4..21 free space is claimed, not beyond */
+    ASSERT_TRUE(break_net_message_registry_lookup(registry, 22u) == NULL);
 }
 
 TEST(remote_describe_returns_version_entity_count_dirty)
@@ -5507,6 +5507,129 @@ TEST(remote_history_reports_the_shared_undo_stack)
     break_editor_shell_destroy(shell);
 }
 
+
+/* RENDER (21): reloaded/u8, rows/u8, then per row len/u8 + text. */
+static void render_recv_rows(RemoteClient *c, u8 action, u8 *reload,
+                             char rows[16][96], u32 *out_count)
+{
+    BreakNetEnvelope rsp;
+    const u8 *p;
+    size_t size, off;
+    u32 count, i;
+    *out_count = UINT32_MAX;
+    remote_client_send(c, BREAK_EDITOR_MSG_RENDER, &action, 1u);
+    size = remote_client_recv(c, &rsp);
+    ASSERT_TRUE(size != SIZE_MAX && size >= 2u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_RENDER);
+    p = (const u8 *)rsp.payload;
+    *reload = p[0];
+    count = p[1];
+    ASSERT_TRUE(count <= 16u);
+    off = 2u;
+    for (i = 0u; i < count; i++) {
+        u8 len;
+        ASSERT_TRUE(off < size);
+        len = p[off++];
+        ASSERT_TRUE(len < 96u && off + len <= size);
+        memcpy(rows[i], p + off, len);
+        rows[i][len] = '\0';
+        off += len;
+    }
+    ASSERT_EQ(off, size);
+    *out_count = count;
+}
+
+TEST(remote_render_reports_the_render_debugger_rows)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    char rows[16][96];
+    u8 reload = 9u;
+    u32 n, i;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+
+    render_recv_rows(&c, 0u, &reload, rows, &n);
+    ASSERT_EQ(reload, 0u);
+    ASSERT_EQ(n, 1u);
+    ASSERT_STR_EQ(rows[0], "render: no device");
+
+    g_render_clock_us = UINT64_C(1000000);
+    g_render_fake_lost = 0;
+    g_render_fake_used = 17u;
+    break_editor_shell_set_render_clock_for_test(shell, render_test_clock, NULL);
+    break_editor_shell_set_render_source_for_test(shell, &k_render_fake_source);
+    break_editor_shell_set_render_device(shell, (RHIDevice *)&g_render_fake_device);
+    break_editor_shell_tick(shell);
+    render_recv_rows(&c, 0u, &reload, rows, &n);
+    ASSERT_EQ(n, break_editor_shell_render_row_count(shell));
+    ASSERT_EQ(n, 9u);
+    for (i = 0u; i < n; i++) {
+        ASSERT_STR_EQ(rows[i], break_editor_shell_render_row_text(shell, i));
+    }
+    ASSERT_FALSE(break_editor_doc_is_dirty(break_editor_shell_doc(shell)));
+
+    break_editor_shell_set_render_device(shell, NULL);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_render_reload_without_viewport_reports_zero)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    char rows[16][96];
+    u8 reload = 9u;
+    u32 n;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_FALSE(break_editor_shell_request_shader_reload(shell));
+    ASSERT_FALSE(break_editor_shell_request_shader_reload(NULL));
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    render_recv_rows(&c, 1u, &reload, rows, &n);
+    ASSERT_EQ(reload, 0u);
+    ASSERT_FALSE(break_editor_doc_is_dirty(break_editor_shell_doc(shell)));
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_render_rejects_unknown_action_and_size)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    char rows[16][96];
+    u8 reload = 9u;
+    u32 n;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+
+    remote_client_send(&c, BREAK_EDITOR_MSG_RENDER, (const u8[]){2u}, 1u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_RESULT);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], BREAK_EDITOR_PROTO_STATUS_INVALID);
+    /* the session survives an unknown action */
+    render_recv_rows(&c, 0u, &reload, rows, &n);
+    ASSERT_EQ(n, 1u);
+
+    /* a wrong-size payload is a protocol error: the session closes */
+    remote_client_send(&c, BREAK_EDITOR_MSG_RENDER, (const u8[]){0u, 0u}, 2u);
+    remote_wait_connection_count(remote, shell, 0u);
+
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
 
 /* UNDO_OWN / REDO_OWN (19/20): per-client undo. Response: applied/u8,
  * blocked/u8. The local shell is origin 0; every connection gets its own
@@ -11032,6 +11155,9 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_camera_set_applies_a_validated_pose);
     RUN_TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected);
     RUN_REMOTE_TEST(remote_history_reports_the_shared_undo_stack);
+    RUN_REMOTE_TEST(remote_render_reports_the_render_debugger_rows);
+    RUN_REMOTE_TEST(remote_render_reload_without_viewport_reports_zero);
+    RUN_REMOTE_TEST(remote_render_rejects_unknown_action_and_size);
     RUN_REMOTE_TEST(remote_undo_own_only_reverts_this_clients_commands);
     RUN_REMOTE_TEST(remote_undo_own_is_blocked_by_another_clients_edit_of_the_same_entity);
     RUN_REMOTE_TEST(remote_undo_own_never_touches_local_shell_edits_and_origin_resets);

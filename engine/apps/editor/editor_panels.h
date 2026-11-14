@@ -194,6 +194,11 @@ bool break_editor_shell_revert(BreakEditorShell *shell);
 #define BREAK_EDITOR_VIEW_RESET_CAMERA 0x04u
 #define BREAK_EDITOR_VIEW_WIREFRAME 0x08u
 bool break_editor_shell_apply_view(BreakEditorShell *shell, u8 mask, u8 value);
+/* Queue a viewport shader reload, the same request as Ctrl+Shift+R (and the
+ * remote RENDER action 1). false when there is no viewport or no reload
+ * owner; the outcome is reported later through the reload log and the
+ * render debugger rows. Never edits the document. */
+bool break_editor_shell_request_shader_reload(BreakEditorShell *shell);
 /* Replace the viewport camera with `pose` after validating every field
  * (finite; |target| and |yaw| <= 1e6; |pitch| <= BREAK_EDITOR_CAMERA_PITCH_LIMIT;
  * distance within [MIN_DISTANCE, MAX_DISTANCE]; fov_y within [1°, 170°]).

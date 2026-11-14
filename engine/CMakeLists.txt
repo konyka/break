@@ -7117,7 +7117,7 @@ endif()
     target_include_directories(fuzz_core_app_scenario PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_core_app_scenario PRIVATE core_app_runtime m)
 
-    # Mutation fuzzer for the editor remote session wire path (ids 4..13):
+    # Mutation fuzzer for the editor remote session wire path (ids 4..21):
     # mutated envelopes -> the real break_net codec -> the real session
     # manager -> the real editor_remote.c handlers on a live headless shell
     # and document, no sockets. Needs the remote host, so it exists only with
@@ -7127,7 +7127,7 @@ endif()
         add_executable(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c
             apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
             apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-            apps/editor/editor_panel_profiler.c
+            apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c
             apps/editor/editor_remote.c apps/editor/editor_panel_network.c
             apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
             src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
