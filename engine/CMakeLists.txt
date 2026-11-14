@@ -5286,6 +5286,7 @@ endif()
             -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/core_app_network_offline
             -DNETWORK_TRANSPORT=${_core_app_net_transport}
             -DNM=${CMAKE_NM}
+            -DNM_CAPABLE=${_core_app_nm_capable}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
     set_tests_properties(test_core_app_network_offline PROPERTIES
         LABELS "headless;core_app;network" TIMEOUT 300 SKIP_RETURN_CODE 77)
