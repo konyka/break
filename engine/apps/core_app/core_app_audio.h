@@ -1,5 +1,6 @@
 #pragma once
 
+#include <audio/audio.h>
 #include <core/types.h>
 #include <runtime/runtime_types.h>
 
@@ -38,6 +39,12 @@ typedef struct CoreAppAudio {
     CoreAppAudioCommand commands[CORE_APP_AUDIO_QUEUE_CAPACITY];
     CoreAppAudioSlot play_slots[CORE_APP_AUDIO_SOURCE_SLOTS];
     FILE *trace;
+    /* Device mode only: the opened playback system and the probe source that
+     * proves the device consumed frames. NULL in record and null modes. */
+    AudioSystem *system;
+    u32 probe_source;
+    char device_backend[32];
+    char device_name[128];
     u64 next_sequence;
     u64 overloads;
     u64 stale_commands;
@@ -54,8 +61,18 @@ typedef struct CoreAppAudio {
 
 BreakRuntimeError core_app_audio_start(CoreAppAudio *audio, FILE *trace);
 BreakRuntimeError core_app_audio_start_null(CoreAppAudio *audio);
+/* Opens the default playback device. A system that only reaches miniaudio's
+ * Null backend, or that has no device at all, is reported as unavailable:
+ * a required device then returns UNAVAILABLE, an optional one degrades to the
+ * null pump. A real device plays asset_root/tone.wav once as a probe. */
 BreakRuntimeError core_app_audio_start_device(CoreAppAudio *audio, FILE *trace,
-                                              bool require_device);
+                                              bool require_device, const char *asset_root);
+/* Same contract with an explicit engine backend; tests force NULL or FAKE to
+ * exercise the unavailable path deterministically. */
+BreakRuntimeError core_app_audio_start_device_backend(CoreAppAudio *audio, FILE *trace,
+                                                      bool require_device,
+                                                      const char *asset_root,
+                                                      AudioBackend backend);
 BreakRuntimeError core_app_audio_enqueue(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
                                          u64 generation);
 BreakRuntimeError core_app_audio_drain_record(CoreAppAudio *audio, u32 budget);

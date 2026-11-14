@@ -6,7 +6,7 @@
 
 阶段 A 到 F、D、E 已有代码和 focused 测试，normal / ASan+UBSan / TSan 通过。旧的可玩原型（`test_cry_style_prototype` 一系）是 headless 的，本文下面章节保留对它的描述。
 
-2026-11 起的 `core_app` 是另一条线：它是可执行主程序，具备真实设备渲染通道（Vulkan 与 OpenGL，`--render=vulkan|opengl --require-device`），并在 640×480 上产出像素证据、经 `test_core_app_gpu_vulkan`/`_opengl` 校验；音频有 256 条有界命令队列与 record/null/device 三种模式，但设备后端尚未接入，`--audio=device` 在无设备主机如实报告 UNAVAILABLE。网络仍是默认关闭的边界层（snapshot 编解码 + 权威防火墙），真实 TLS/Session 传输未接线。因此“有 GPU、无设备音频、无真实网络”才是 `core_app` 的准确表述，不能套用旧原型的 headless 结论。
+2026-11 起的 `core_app` 是另一条线：它是可执行主程序，具备真实设备渲染通道（Vulkan 与 OpenGL，`--render=vulkan|opengl --require-device`），并在 640×480 上产出像素证据、经 `test_core_app_gpu_vulkan`/`_opengl` 校验；音频有 256 条有界命令队列与 record/null/device 三种模式；`--audio=device` 会打开真实播放设备并播放一次探测音（`test_core_app_audio_device`），但命令队列还不驱动设备播放，无设备主机如实报告 UNAVAILABLE。网络仍是默认关闭的边界层（snapshot 编解码 + 权威防火墙），真实 TLS/Session 传输未接线。因此“有 GPU、能打开音频设备但关卡声音未接入、无真实网络”才是 `core_app` 的准确表述，不能套用旧原型的 headless 结论。
 
 植被、昼夜、VisArea 和块驻留的 CPU 结果不证明画面；`core_app` 的 GPU 证据证明的是“设备真实、几何到达目标、两后端一致”，不是逐对象影像回归。布娃娃和射线载具的测试不证明驾驶手感。`break_game` 与 `break_ai` 没有链入 `engine`。
 

@@ -785,7 +785,7 @@ git commit -m "core_app: make checkpoint restore transactional"
 
 卸载后迟到的旧 PLAY/STOP 不得操作新 level source；同 index 新 source 的 generation 不同。device 初始化失败时普通 `--audio=device` 明确降级 null 并记录，离线仍可玩；`--audio=device --require-device` 在创建设备失败时退出 77，但设备创建之后任何资源/播放失败都退出 2。
 
-- [ ] **Step 2: 运行 record 与设备 RED**
+- [x] **Step 2: 运行 record 与设备 RED**
 
 Run:
 ```bash
@@ -803,7 +803,7 @@ create 时预分配 256 个命令和 source 槽。CoreAppThread 只 enqueue POD�
 
 shutdown 顺序为停止新命令→关闭队列→有界 drain/停止 sources→join worker→销毁 AudioSystem。source stop 同时验证 level/source generation；失败保留可诊断状态，不越界访问旧槽。普通无设备降级不影响输入/模拟/RHI。
 
-- [ ] **Step 4: 运行 record GREEN 和真实设备证据**
+- [x] **Step 4: 运行 record GREEN 和真实设备证据**
 
 Run:
 ```bash

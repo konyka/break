@@ -1,7 +1,13 @@
 #include "core_app_audio.h"
 
+#include <platform/time.h>
+
 #include <inttypes.h>
 #include <string.h>
+
+/* Bounded wait for the probe tone at shutdown: 400 polls of 5 ms. */
+#define CORE_APP_AUDIO_PROBE_POLLS 400u
+#define CORE_APP_AUDIO_PROBE_POLL_US 5000u
 
 static bool sound_kind(CoreAppAudioCommandKind kind) {
     return kind == CORE_APP_AUDIO_LISTENER || kind == CORE_APP_AUDIO_PLAY_3D ||
@@ -93,18 +99,56 @@ BreakRuntimeError core_app_audio_start_null(CoreAppAudio *audio) {
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError core_app_audio_start_device(CoreAppAudio *audio, FILE *trace,
-                                              bool require_device) {
+static bool sound_backend_is_device(const char *name) {
+    return strcmp(name, "Null") != 0 && strcmp(name, "fake") != 0 && strcmp(name, "none") != 0;
+}
+
+BreakRuntimeError core_app_audio_start_device_backend(CoreAppAudio *audio, FILE *trace,
+                                                      bool require_device,
+                                                      const char *asset_root,
+                                                      AudioBackend backend) {
     if (!audio || !trace) return BREAK_RUNTIME_INVALID;
     sound_reset(audio, CORE_APP_AUDIO_BACKEND_DEVICE);
     audio->trace = trace;
-    /* No device backend is compiled into this application yet, so the device
-     * path is honestly unavailable rather than silently pretended. A required
-     * device therefore fails; an optional one degrades to the null pump and
-     * keeps the rest of the runtime playable. */
+    AudioSystem *system = audio_system_create_ex(backend);
+    const char *backend_name = audio_system_backend_name(system);
+    if (system && sound_backend_is_device(backend_name)) {
+        char path[1024];
+        int written = snprintf(path, sizeof(path), "%s/tone.wav", asset_root ? asset_root : "");
+        u32 probe = 0u;
+        if (asset_root && written > 0 && (usize)written < sizeof(path)) {
+            probe = audio_play(system, path, 0.25f, false);
+        }
+        if (probe == 0u) {
+            audio_system_destroy(system);
+            (void)fprintf(trace, "COREAPPTRACE version=1 event=audio mode=device "
+                                 "result=failed reason=probe\n");
+            (void)fflush(trace);
+            audio->trace = NULL;
+            return BREAK_RUNTIME_FAILED;
+        }
+        audio->system = system;
+        audio->probe_source = probe;
+        snprintf(audio->device_backend, sizeof(audio->device_backend), "%s", backend_name);
+        (void)audio_system_device_name(system, audio->device_name, sizeof(audio->device_name));
+        if (fprintf(trace, "COREAPPTRACE version=1 event=audio mode=device result=ready "
+                           "backend=%s device=%s probe_source=%u\n",
+                    audio->device_backend, audio->device_name, probe) < 0 ||
+            fflush(trace) != 0) {
+            audio_system_destroy(system);
+            audio->system = NULL;
+            audio->trace = NULL;
+            return BREAK_RUNTIME_FAILED;
+        }
+        return BREAK_RUNTIME_OK;
+    }
+    /* No playback device: either nothing opened, or only miniaudio's Null
+     * backend did. Neither may be reported as a device. The backend name is a
+     * static string, so it outlives the destroyed system. */
+    if (system) audio_system_destroy(system);
     if (fprintf(trace, "COREAPPTRACE version=1 event=audio mode=device "
-                       "result=unavailable fallback=%s\n",
-                require_device ? "none" : "null") < 0 ||
+                       "result=unavailable backend=%s fallback=%s\n",
+                backend_name, require_device ? "none" : "null") < 0 ||
         fflush(trace) != 0) {
         audio->trace = NULL;
         return BREAK_RUNTIME_FAILED;
@@ -113,6 +157,12 @@ BreakRuntimeError core_app_audio_start_device(CoreAppAudio *audio, FILE *trace,
     audio->mode = CORE_APP_AUDIO_BACKEND_NULL;
     audio->device_fallbacks = 1u;
     return BREAK_RUNTIME_UNAVAILABLE;
+}
+
+BreakRuntimeError core_app_audio_start_device(CoreAppAudio *audio, FILE *trace,
+                                              bool require_device, const char *asset_root) {
+    return core_app_audio_start_device_backend(audio, trace, require_device, asset_root,
+                                               AUDIO_BACKEND_DEFAULT);
 }
 
 BreakRuntimeError core_app_audio_enqueue(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
@@ -209,9 +259,38 @@ BreakRuntimeError core_app_audio_join(CoreAppAudio *audio) {
     return BREAK_RUNTIME_OK;
 }
 
+/* Waits (bounded) for the probe tone, records how far the device actually
+ * played it, then stops the source and closes the device. */
+static BreakRuntimeError sound_close_device(CoreAppAudio *audio) {
+    if (!audio->system) return BREAK_RUNTIME_OK;
+    bool complete = false;
+    for (u32 poll = 0u; poll < CORE_APP_AUDIO_PROBE_POLLS; ++poll) {
+        if (audio_source_at_end(audio->system, audio->probe_source)) {
+            complete = true;
+            break;
+        }
+        time_sleep_us(CORE_APP_AUDIO_PROBE_POLL_US);
+    }
+    f32 played = audio_source_cursor_seconds(audio->system, audio->probe_source);
+    audio_source_stop(audio->system, audio->probe_source);
+    audio_system_destroy(audio->system);
+    audio->system = NULL;
+    audio->probe_source = 0u;
+    if (!audio->trace) return BREAK_RUNTIME_OK;
+    if (fprintf(audio->trace,
+                "COREAPPTRACE version=1 event=audio mode=device result=stopped backend=%s "
+                "probe_complete=%u probe_seconds=%.3f\n",
+                audio->device_backend, complete ? 1u : 0u, (double)played) < 0 ||
+        fflush(audio->trace) != 0) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError core_app_audio_destroy(CoreAppAudio *audio) {
     if (!audio) return BREAK_RUNTIME_INVALID;
     if (!audio->joined || audio->count != 0u) return BREAK_RUNTIME_REJECTED;
+    BreakRuntimeError result = sound_close_device(audio);
     audio->trace = NULL;
-    return BREAK_RUNTIME_OK;
+    return result;
 }

@@ -517,7 +517,7 @@ Task 4 当时每个 tick 的顺序为：开始输入帧 → 应用本 tick 事�
 
 source 槽带 generation。只有 `PLAY_3D` 认领槽位；`POSITION` 和 `STOP` 只按本代 generation 查找已有槽位，查不到即视为上一代遗留命令，计入 `stale_commands` 且不写 trace、不触碰任何槽。`STOP` 成功消费后释放该槽，使同一 index 在下一代可以被重新认领。这样“关卡 1 的迟到 STOP”永远不会停掉关卡 2 复用同 index 的 source。
 
-启动有三种模式：`core_app_audio_start`（record，写 trace）、`core_app_audio_start_null`（无 trace sink，drain 只消费状态）、`core_app_audio_start_device`。设备路径当前没有编译进来的设备后端，因此如实报告 `event=audio mode=device result=unavailable fallback=null|none`：普通 `--audio=device` 降级为 null 泵并计数 `device_fallbacks`，`--audio=device --require-device` 返回 `BREAK_RUNTIME_UNAVAILABLE` 并让进程以退出码 77 结束。`core_app_run` 的 drain 调用点统一走 `app_audio_drain`，按已启动模式分派 record/null。
+启动有三种模式：`core_app_audio_start`（record，写 trace）、`core_app_audio_start_null`（无 trace sink，drain 只消费状态）、`core_app_audio_start_device`。设备路径（Task 9 slice 2 起）打开默认播放设备；只打开到 miniaudio Null 后端或没有设备时如实报告 `event=audio mode=device result=unavailable backend=<名称> fallback=null|none`：普通 `--audio=device` 降级为 null 泵并计数 `device_fallbacks`，`--audio=device --require-device` 返回 `BREAK_RUNTIME_UNAVAILABLE` 并让进程以退出码 77 结束。`core_app_run` 的 drain 调用点统一走 `app_audio_drain`，按已启动模式分派 record/null。
 
 `BREAK_RUNTIME_UNAVAILABLE` 是新增的运行时错误值，语义是“可选外部设施缺失”，与“设施存在但行为异常”的 `BREAK_RUNTIME_FAILED` 区分；`break_runtime_error_name` 同步给出该名字。
 
@@ -540,7 +540,7 @@ source 槽带 generation。只有 `PLAY_3D` 认领槽位；`POSITION` 和 `STOP`
 
 ### 仍未做
 
-设备后端（真实 `AudioSystem` 的 owner 线程与 `audio_play_3d` 调用）、`tone.wav` 的关卡播放事件、256 条满队列的进程级压力用例。record/null 路径的证据是单元与真实进程 trace，不是听感验证。
+命令队列驱动设备（`audio_play_3d`/position/stop 由 drain 调到 `AudioSystem`）、独立的音频 owner 线程、`tone.wav` 的关卡播放事件、256 条满队列的进程级压力用例。设备的打开、探测播放与关闭已在 Task 9 slice 2 补上。record/null 路径的证据是单元与真实进程 trace，不是听感验证。
 
 ## Core App Task 10：可选认证网络通道的边界层与客户端权威防火墙（2026-11-14）
 
@@ -666,6 +666,31 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 本轮修复后：`test_core_app_mesh` 3/3、GPU 两用例通过、`test_core_app_gpu`/`naming`/`target` 契约 5/5；全量含 GPU 405/405。
 
+## Core App Task 9（slice 2）：真实音频播放设备（2026-11-14）
+
+### 变化
+
+- 引擎 `audio.h` 新增两个只读查询：`audio_system_backend_name`（miniaudio 实际打开的后端名，如 `PulseAudio`、`ALSA`、`WASAPI`、`Null`；FAKE 系统报 `fake`，NULL 指针报 `none`）与 `audio_system_device_name`（播放设备名，无设备时写 `none` 并返回 false）。
+- `core_app_audio_start_device(audio, trace, require_device, asset_root)` 用 `AUDIO_BACKEND_DEFAULT` 打开默认播放设备。后端名是 `Null`、`fake` 或 `none` 时不算设备：销毁系统，写 `result=unavailable backend=<名称> fallback=null|none`，required 时返回 UNAVAILABLE（进程退出 77），optional 时降级为 null 泵。
+- 打开到真实后端后，以 0.25 音量播放一次 `asset_root/tone.wav` 作为探测源，写 `result=ready backend=<后端> device=<设备> probe_source=<id>`。`tone.wav` 无法播放时返回 FAILED，不降级。
+- `core_app_audio_destroy`（停机最后一步，在 join 之后）最多轮询 400×5 ms 等探测音结束，记录游标秒数，停止源并销毁 `AudioSystem`，写 `result=stopped backend=<后端> probe_complete=0|1 probe_seconds=<s>`。
+- `core_app_audio_start_device_backend` 是同一合同、显式传引擎后端的入口，单测用 NULL/FAKE 确定性地走 unavailable 分支。
+- config 校验不再拒绝 `--audio=device --require-device`。
+
+### 边界
+
+- `AudioSystem` 由应用主线程持有，不是独立 owner 线程；miniaudio 自己的设备线程只运行它的混音回调。
+- 命令队列（listener/play_3d/position/stop）仍只更新槽位与 trace，**不**调用 `audio_play_3d` 或 source control。关卡目前也不产生 PLAY_3D。设备证据只覆盖“设备真实打开、探测源真实被播放、按生命周期关闭”。
+- 不包含听感验证。
+
+### 验证
+
+- `test_audio` 22/22：后端名（Null/fake/none）与设备名（Null 设备有名、FAKE 与 NULL 无名）5 个新用例。
+- `test_core_app_runtime` 35/35：两条既有设备用例改为强制 Null 后端，并断言 trace 里的 `backend=Null`；新增 FAKE 后端用例断言 `backend=fake fallback=none`。
+- 新增 `test_core_app_audio_device`（标签 `audio_device`，`SKIP_RETURN_CODE 77`，CI 的 headless 套件经 `-LE` 排除）：以 `--render=record --audio=device --require-device` 运行真实进程，要求非 Null 后端、非空设备名、`probe_seconds > 0`，以及 trace 顺序 ready → `runtime_running` → stopped → `runtime_stopped`。
+- 本机实测：`backend=PulseAudio device=内置音频 模拟立体声 probe_complete=1 probe_seconds=0.100`。
+- 变异：把 Null 当作设备时 `test_core_app_runtime` 3 条用例变红；探测源播放后立即停止时进程级用例以 “the device never played the probe (cursor 0.000s)” 变红。恢复后全量 408/408。
+
 ## Core App Task 11（slice 3）：创建期 Vulkan→OpenGL 降级（2026-11-14）
 
 ### 变化
@@ -720,7 +745,7 @@ COREAPPTRACE version=1 event=gpu result=stopped frames=N screenshots=1
 
 ### 仍未做
 
-真实网络传输（TLS/Session/reactor 接线与 loopback 客户端）、设备音频后端、GPU 侧骨架蒙皮、逐对象影像回归。创建期降级用例已在 Task 11 slice 3 补上。这些在计划里属于后续 Task，不在本轮交付范围，也未在文档中宣称完成。
+真实网络传输（TLS/Session/reactor 接线与 loopback 客户端）、由命令队列驱动的设备音频播放、GPU 侧骨架蒙皮、逐对象影像回归。创建期降级用例已在 Task 11 slice 3 补上，设备音频的打开/探测/关闭已在 Task 9 slice 2 补上。这些在计划里属于后续 Task，不在本轮交付范围，也未在文档中宣称完成。
 
 以下区域完整保留 Core App Task 1 命名边界及 2026-11-06 至 2026-11-13 已执行设计、命令和证据原文。历史名称只按上述当前映射理解，不把历史命令当作当前可执行路径。
 

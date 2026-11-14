@@ -189,6 +189,32 @@ AudioSystem *audio_system_create_ex(AudioBackend backend) {
     return as;
 }
 
+const char *audio_system_backend_name(const AudioSystem *as) {
+    if (!as || !as->engine) return "none";
+    if (as->backend == AUDIO_BACKEND_FAKE) return "fake";
+    struct AudioImpl *impl = (struct AudioImpl *)as->engine;
+    ma_device *device = ma_engine_get_device(&impl->engine);
+    if (!device || !device->pContext) return "none";
+    return ma_get_backend_name(device->pContext->backend);
+}
+
+bool audio_system_device_name(const AudioSystem *as, char *out, usize capacity) {
+    if (!out || capacity == 0u) return false;
+    snprintf(out, capacity, "%s", "none");
+    if (!as || !as->engine || as->backend == AUDIO_BACKEND_FAKE) return false;
+    struct AudioImpl *impl = (struct AudioImpl *)as->engine;
+    ma_device *device = ma_engine_get_device(&impl->engine);
+    if (!device) return false;
+    ma_device_info info;
+    memset(&info, 0, sizeof(info));
+    if (ma_device_get_info(device, ma_device_type_playback, &info) != MA_SUCCESS ||
+        info.name[0] == '\0') {
+        return false;
+    }
+    snprintf(out, capacity, "%s", info.name);
+    return true;
+}
+
 AudioSystem *audio_system_create(void) {
     return audio_system_create_ex(AUDIO_BACKEND_DEFAULT);
 }

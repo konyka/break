@@ -55,9 +55,9 @@ jobs:
 
       - name: Test (headless suite)
         run: |
-          if ! ctest --test-dir build -LE "graphics|fuzz|gpu" --output-on-failure; then
+          if ! ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
-            ctest --test-dir build -LE "graphics|fuzz|gpu" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
+            ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
             grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest|CMake Error" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
@@ -72,7 +72,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest --test-dir build -LE graphics|fuzz|gpu" -DBUILD_CONFIG=Release \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics|fuzz|gpu|audio_device" -DBUILD_CONFIG=Release \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -107,7 +107,7 @@ jobs:
       - name: Test (headless suite)
         run: |
           set +e
-          ctest --test-dir build -LE "graphics|fuzz|gpu" --output-on-failure > /tmp/ctest.log 2>&1
+          ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --output-on-failure > /tmp/ctest.log 2>&1
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
@@ -137,7 +137,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest -LE graphics|fuzz|gpu + fuzz smoke (ASan/UBSan)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="ctest -LE graphics|fuzz|gpu|audio_device + fuzz smoke (ASan/UBSan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -182,7 +182,7 @@ jobs:
           # race (TSan reports thread leak in platform_thread_create and data
           # races in async_loader_init/async_submit_request) unrelated to any
           # recent change; needs a dedicated async_loader threading fix.
-          ctest --test-dir build -LE "graphics|fuzz|gpu" -E "test_async_loader" --output-on-failure > /tmp/ctest.log 2>&1
+          ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" -E "test_async_loader" --output-on-failure > /tmp/ctest.log 2>&1
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
@@ -201,7 +201,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest -LE graphics|fuzz|gpu -E test_async_loader (TSan)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="ctest -LE graphics|fuzz|gpu|audio_device -E test_async_loader (TSan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -268,7 +268,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          ctest --test-dir build -LE "graphics|fuzz|gpu" --output-on-failure > "$RUNNER_TEMP/ctest-headless.log" 2>&1
+          ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --output-on-failure > "$RUNNER_TEMP/ctest-headless.log" 2>&1
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
@@ -291,7 +291,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=vulkan \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest --test-dir build -LE graphics|fuzz|gpu" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics|fuzz|gpu|audio_device" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -350,7 +350,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          ctest --test-dir build-asan -LE "graphics|fuzz|gpu" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          ctest --test-dir build-asan -LE "graphics|fuzz|gpu|audio_device" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
@@ -373,7 +373,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest --test-dir build-asan -LE graphics|fuzz|gpu (ASan)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="ctest --test-dir build-asan -LE graphics|fuzz|gpu|audio_device (ASan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -432,7 +432,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          ctest --test-dir build -LE "graphics|gpu" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          ctest --test-dir build -LE "graphics|gpu|audio_device" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
@@ -453,7 +453,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest --test-dir build -LE graphics|gpu (MSVC)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics|gpu|audio_device (MSVC)" -DBUILD_CONFIG=Debug \
             -DGPU=unknown \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -510,7 +510,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          ctest --test-dir build -LE "graphics|gpu" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          ctest --test-dir build -LE "graphics|gpu|audio_device" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
@@ -598,7 +598,7 @@ jobs:
           done
            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
            set +e
-           ctest --test-dir build -LE "graphics|fuzz|gpu" --output-on-failure > /tmp/ctest-wayland.log 2>&1
+           ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --output-on-failure > /tmp/ctest-wayland.log 2>&1
            rc_headless=$?
            ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure > /tmp/ctest-wayland-runtime.log 2>&1
            rc_runtime=$?
@@ -693,7 +693,7 @@ jobs:
           done
           test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
           set +e
-          ctest --test-dir build -LE "graphics|fuzz|gpu" --output-on-failure > /tmp/ctest-wayland.log 2>&1
+          ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --output-on-failure > /tmp/ctest-wayland.log 2>&1
           rc_headless=$?
           ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure > /tmp/ctest-wayland-runtime.log 2>&1
           rc_runtime=$?
@@ -895,7 +895,7 @@ jobs:
           # link MoltenVK honor this marker and skip with a printed reason;
           # a local macOS machine with a GPU runs them in full.
           export BREAK_MYUI_SKIP_VK_SENSITIVE=1
-          ctest --test-dir build -LE "graphics|fuzz|gpu" --output-on-failure 2>&1 | tee /tmp/macos_headless.log || {
+          ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --output-on-failure 2>&1 | tee /tmp/macos_headless.log || {
             # Surface which tests failed first — the vgcanvas tail below is
             # only a supplementary dump, not a failure identifier.
             grep -E "\(Failed\)|\(Timeout\)|\(Not Run\)|FAIL:|CMake Error" /tmp/macos_headless.log | head -30 \
@@ -952,9 +952,9 @@ jobs:
 
       - name: Test (headless suite)
         run: |
-          if ! ctest --test-dir build -LE "graphics|fuzz|gpu" --output-on-failure; then
+          if ! ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
-            ctest --test-dir build -LE "graphics|fuzz|gpu" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
+            ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
             grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest|CMake Error" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
@@ -1070,9 +1070,9 @@ jobs:
 
       - name: Test (headless suite)
         run: |
-          if ! ctest --test-dir build -LE "graphics|fuzz|gpu" --output-on-failure; then
+          if ! ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
-            ctest --test-dir build -LE "graphics|fuzz|gpu" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
+            ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
             grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest|CMake Error" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
@@ -1181,7 +1181,7 @@ jobs:
         # this repo's log download needs elevated token rights, annotations
         # stay readable through the checks API.
         run: |
-          ctest --test-dir build -LE "graphics|fuzz|gpu" --parallel 4 --output-on-failure || {
+          ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --parallel 4 --output-on-failure || {
             rc=$?
             if [ -f build/Testing/Temporary/LastTestsFailed.log ]; then
               head -10 build/Testing/Temporary/LastTestsFailed.log | while IFS= read -r t; do echo "::error::ctest failed: $t"; done
@@ -1743,7 +1743,7 @@ jobs:
               fi
               cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_WAYLAND=ON &&
               cmake --build build --parallel &&
-              ctest --test-dir build -LE "graphics|fuzz|gpu" --output-on-failure
+              ctest --test-dir build -LE "graphics|fuzz|gpu|audio_device" --output-on-failure
             '
 
       - name: Emit evidence receipt

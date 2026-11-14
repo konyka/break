@@ -69,6 +69,15 @@ typedef struct {
 
 AudioSystem *audio_system_create(void);
 AudioSystem *audio_system_create_ex(AudioBackend backend);
+/* Name of the playback backend the system actually opened, as miniaudio
+ * reports it ("PulseAudio", "ALSA", "WASAPI", "Null", ...). A FAKE system has
+ * no device and reports "fake"; a NULL system pointer reports "none". The
+ * string is static and never freed. */
+const char  *audio_system_backend_name(const AudioSystem *as);
+/* Writes the name of the playback device the system opened into out and
+ * returns true. Returns false and writes "none" (when out has room) for a
+ * NULL system, a FAKE system or a device that reports no name. */
+bool         audio_system_device_name(const AudioSystem *as, char *out, usize capacity);
 void         audio_system_destroy(AudioSystem *as);
 void         audio_system_update(AudioSystem *as, Vec3 listener_pos, Vec3 forward, Vec3 up);
 

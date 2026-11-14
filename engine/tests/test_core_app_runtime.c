@@ -890,12 +890,17 @@ TEST(audio_device_mode_reports_unavailable_and_degrades_to_null) {
     FILE *trace = audio_trace_open();
     char text[4096];
     ASSERT_NOT_NULL(trace);
-    ASSERT_EQ(core_app_audio_start_device(&audio, trace, false), BREAK_RUNTIME_UNAVAILABLE);
+    /* miniaudio's Null backend opens without hardware, so it is the
+     * deterministic stand-in for a host with no playback device. */
+    ASSERT_EQ(core_app_audio_start_device_backend(&audio, trace, false, CORE_APP_SOURCE_ASSET_DIR,
+                                                  AUDIO_BACKEND_NULL),
+              BREAK_RUNTIME_UNAVAILABLE);
     ASSERT_EQ(audio.mode, CORE_APP_AUDIO_BACKEND_NULL);
     ASSERT_EQ(audio.device_fallbacks, 1u);
+    ASSERT_TRUE(audio.system == NULL);
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text,
-        "event=audio mode=device result=unavailable fallback=null\n"));
+        "event=audio mode=device result=unavailable backend=Null fallback=null\n"));
     ASSERT_EQ(core_app_audio_enqueue(&audio, CORE_APP_AUDIO_LISTENER, 1u), BREAK_RUNTIME_OK);
     ASSERT_EQ(core_app_audio_stop_admission(&audio), BREAK_RUNTIME_OK);
     ASSERT_EQ(core_app_audio_stop_producers(&audio), BREAK_RUNTIME_OK);
@@ -911,8 +916,31 @@ TEST(audio_device_required_mode_fails_when_no_device_exists) {
     CoreAppAudio audio;
     FILE *trace = audio_trace_open();
     ASSERT_NOT_NULL(trace);
-    ASSERT_EQ(core_app_audio_start_device(&audio, trace, true), BREAK_RUNTIME_UNAVAILABLE);
+    char text[4096];
+    ASSERT_EQ(core_app_audio_start_device_backend(&audio, trace, true, CORE_APP_SOURCE_ASSET_DIR,
+                                                  AUDIO_BACKEND_NULL),
+              BREAK_RUNTIME_UNAVAILABLE);
     ASSERT_EQ(audio.device_fallbacks, 0u);
+    ASSERT_TRUE(audio.system == NULL);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio mode=device result=unavailable backend=Null fallback=none\n"));
+    fclose(trace);
+}
+
+/* A FAKE system has no device and must never be reported as one either. */
+TEST(audio_device_mode_rejects_a_system_without_a_device) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    char text[4096];
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start_device_backend(&audio, trace, true, CORE_APP_SOURCE_ASSET_DIR,
+                                                  AUDIO_BACKEND_FAKE),
+              BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_TRUE(audio.system == NULL);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio mode=device result=unavailable backend=fake fallback=none\n"));
     fclose(trace);
 }
 
@@ -951,4 +979,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_null_mode_accepts_commands_without_a_trace);
     RUN_TEST(audio_device_mode_reports_unavailable_and_degrades_to_null);
     RUN_TEST(audio_device_required_mode_fails_when_no_device_exists);
+    RUN_TEST(audio_device_mode_rejects_a_system_without_a_device);
 TEST_MAIN_END()

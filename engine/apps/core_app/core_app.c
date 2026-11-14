@@ -2180,13 +2180,13 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (!out_exit_code) return BREAK_RUNTIME_INVALID;
     *out_exit_code = 2;
     if (!config) return BREAK_RUNTIME_INVALID;
-    bool optional_device = config->audio_mode == CORE_APP_AUDIO_DEVICE && !config->require_device;
     bool gpu_lane = config->render_mode == CORE_APP_RENDER_VULKAN ||
                     config->render_mode == CORE_APP_RENDER_OPENGL ||
                     config->render_mode == CORE_APP_RENDER_AUTO;
     if ((config->render_mode != CORE_APP_RENDER_RECORD && !gpu_lane) || !config->fixed_step ||
         (config->audio_mode != CORE_APP_AUDIO_RECORD &&
-         config->audio_mode != CORE_APP_AUDIO_NULL && !optional_device) ||
+         config->audio_mode != CORE_APP_AUDIO_NULL &&
+         config->audio_mode != CORE_APP_AUDIO_DEVICE) ||
         config->network || !config->asset_root ||
         !config->scenario_path || !config->trace_path ||
         (config->screenshot_path && !gpu_lane) ||
@@ -2261,7 +2261,8 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (config->audio_mode == CORE_APP_AUDIO_NULL) {
         result = core_app_audio_start_null(&app->audio);
     } else if (config->audio_mode == CORE_APP_AUDIO_DEVICE) {
-        result = core_app_audio_start_device(&app->audio, app->trace, config->require_device);
+        result = core_app_audio_start_device(&app->audio, app->trace, config->require_device,
+                                             config->asset_root);
         if (result == BREAK_RUNTIME_UNAVAILABLE && !config->require_device) {
             result = BREAK_RUNTIME_OK;
         }

@@ -302,6 +302,51 @@ TEST(source_on_master_bus_not_double_counted)
     ASSERT_FLOAT_EQ(audio_source_effective_gain(&as, &as.sources[0]), 0.5f, 1e-6);
 }
 
+/* The backend name is the evidence that a device run actually reached a
+ * playback backend; a null or fake system must never report a device one. */
+TEST(backend_name_reports_null_backend)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    ASSERT_STR_EQ(audio_system_backend_name(as), "Null");
+    audio_system_destroy(as);
+}
+
+TEST(backend_name_reports_fake_without_device)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_STR_EQ(audio_system_backend_name(as), "fake");
+    audio_system_destroy(as);
+}
+
+TEST(backend_name_of_missing_system_is_none)
+{
+    ASSERT_STR_EQ(audio_system_backend_name(NULL), "none");
+}
+
+TEST(device_name_reports_the_null_playback_device)
+{
+    char name[128];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    ASSERT_TRUE(audio_system_device_name(as, name, sizeof(name)));
+    ASSERT_TRUE(name[0] != '\0');
+    audio_system_destroy(as);
+}
+
+TEST(device_name_is_absent_without_a_device)
+{
+    char name[128] = "unchanged";
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_FALSE(audio_system_device_name(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, "none");
+    audio_system_destroy(as);
+    ASSERT_FALSE(audio_system_device_name(NULL, name, sizeof(name)));
+    ASSERT_FALSE(audio_system_device_name(NULL, NULL, 0u));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(atten_inside_min_is_full);
     RUN_TEST(atten_inverse_known_values);
@@ -320,4 +365,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(source_bus_volume_compose_and_fallback);
     RUN_TEST(master_gain_reapplies_to_sub_bus_sources);
     RUN_TEST(source_on_master_bus_not_double_counted);
+    RUN_TEST(backend_name_reports_null_backend);
+    RUN_TEST(backend_name_reports_fake_without_device);
+    RUN_TEST(backend_name_of_missing_system_is_none);
+    RUN_TEST(device_name_reports_the_null_playback_device);
+    RUN_TEST(device_name_is_absent_without_a_device);
 TEST_MAIN_END()
