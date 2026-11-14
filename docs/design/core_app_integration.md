@@ -815,7 +815,7 @@ fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未
 - 变异：把 decode 的截断判断放宽一个实体（`size + CORE_APP_SNAPSHOT_ENTITY_BYTES < needed`），未加载种子 corpus 的 libFuzzer 运行报 `heap-buffer-overflow` 并退出 1。恢复后源文件与备份 `cmp` 一致。
 - normal 树 `fuzz_core_app_network_smoke`、`_corpus` 2/2；CI 合同 10/10（`test_ci_image_contract` 与 `test_ci_image_fix2` 的使用方数量改为 11，并要求新车道与镜像 smoke 存在）。
 
-仍未做：checkpoint fuzzer 的 libFuzzer 入口；结构感知变异（自定义 mutator）。
+仍未做：结构感知变异（自定义 mutator）。scenario 与 checkpoint 的入口见下两节。
 
 ### 补充：scenario 解析器的 libFuzzer 入口与被测模块插桩（2026-11-15）
 
@@ -831,7 +831,27 @@ fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未
 - 变异：把 `scenario.c` 的 tick 递减判断改成恒假（`... && tick == 0u`），libFuzzer 报 `fuzz_core_app_scenario: parse: event 1 has tick 4` 并 `deadly signal`。恢复后 `git diff` 为空，重跑 4/4。
 - normal 树与 ASan 树 `fuzz_core_app_{scenario,network}_{smoke,corpus}` 各 4/4；CI 合同 10/10。
 
-仍未做：checkpoint fuzzer 的 libFuzzer 入口（涉及临时目录与文件 IO）；结构感知变异。
+仍未做：结构感知变异。checkpoint 的入口见下一节。
+
+### 补充：checkpoint 读取器的 libFuzzer 入口（2026-11-15）
+
+- `engine/tests/fuzz_core_app_checkpoint.c` 新增 `check_manifest`：把输入写成 `manifest.core`，放在四个固定载荷旁边，调用 `core_app_checkpoint_probe` 与 `core_app_checkpoint_find(RUNTIME)`，检查对任何输入都成立的不变量：
+  - probe 与 find 只返回 OK、INVALID、OVERLOAD，出现 FAILED（文件 IO 失败）视为缺陷；
+  - probe 不是 OK 时，find 返回同一个错误；
+  - probe 是 OK 时，find 不会是 OVERLOAD；find 是 INVALID 时，manifest 字节里 RUNTIME 记录必须不是恰好一条（缺失或重复）；
+  - find 是 OK 时，manifest 字节里恰好一条 RUNTIME 记录，且 find 返回的 kind、size、hash、name 与 generation 和它一致（沿用 `check_found_record`）。
+- `--replay` 复用 `check_manifest`，再按文件名前缀（ok/nofind/invalid/overload）精确比较结果，因此回放现在也检查上面的不变量。
+- `CORE_APP_LIBFUZZER=1` 时导出 `LLVMFuzzerTestOneInput`：首个输入时在工作目录建 `fuzz_core_app_ckpt_<pid>/libfuzz/` 并写入四个载荷，之后复用；每个输入拷到精确大小的堆缓冲区再检查，失败即 `abort()`；每 256 个输入重读一次载荷，读取器若改写载荷即 `abort()`；`atexit` 删除临时目录。
+- 目标 `libfuzz_core_app_checkpoint` 把 `apps/core_app/core_app_checkpoint.c`、`src/platform/platform_fs.c`、`src/core/log.c` 直接编进目标（都带覆盖插桩，后两者只依赖 libc）。测试 `libfuzz_core_app_checkpoint_run`：`-runs=50000 -seed=1 -max_len=2048`（大于 1448 字节的 manifest 上限，能走到 OVERLOAD），种子为 `tests/data/core_app_checkpoint_corpus` 的 39 个文件，`WORKING_DIRECTORY` 为构建树。CI 车道 `lane-libfuzzer-linux-clang` 同时构建三个目标。
+
+证据：
+
+- RED：只加 CMake 目标时链接失败（`multiple definition of main`、`undefined reference to LLVMFuzzerTestOneInput`）。
+- GREEN（clang 22，ASan/UBSan）：50000 次 `DONE cov: 338 ft: 776`，约 2 s；结束后构建树不残留 `fuzz_core_app_ckpt_*`。另跑 400000 次，RSS 稳定在约 412 MB，没有持续增长。
+- 变异：让 `core_app_checkpoint_find` 不再拒绝重复 kind（`if (found && kind == 0u)`），libFuzzer 报 `find OK with 2 RUNTIME records` 并 `deadly signal`。恢复后 `git diff` 为空。
+- libfuzzer 树 `ctest -L libfuzzer` 3/3；normal 与 ASan 树 `fuzz_core_app_{checkpoint,scenario,network}_{smoke,corpus}` 各 6/6；CI 合同 10/10。
+
+仍未做：结构感知变异；载荷文件本身不参与 libFuzzer 变异（固定四个载荷，只变异 manifest）。
 
 ## Core App Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
 

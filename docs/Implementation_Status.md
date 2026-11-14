@@ -1,9 +1,15 @@
+## Core App checkpoint 读取器 libFuzzer 入口（2026-11-15）
+
+- **交付**：`libfuzz_core_app_checkpoint`（`ENGINE_BUILD_LIBFUZZER=ON`）与 `libfuzz_core_app_checkpoint_run`（`fuzz;libfuzzer`，50000 次，`-max_len=2048`，种子为 `core_app_checkpoint_corpus`）。新增共用的 `check_manifest`：probe/find 只做分类不返回 FAILED，probe 拒绝时 find 同错，find 结果与 manifest 中 RUNTIME 记录的数量和内容一致。libFuzzer 入口复用一个临时目录，每 256 个输入核对载荷未被改写，退出时删除目录。CI 车道 `lane-libfuzzer-linux-clang` 构建三个 libFuzzer 目标。设计见 `docs/design/core_app_integration.md`「checkpoint 读取器的 libFuzzer 入口」。
+- **测试**：链接 RED → GREEN（`cov: 338 ft: 776`，约 2 s）。让 find 放过重复 kind 的变异被 libFuzzer 抓到（`find OK with 2 RUNTIME records`）。libfuzzer 树 3/3，normal 与 ASan 树 fuzz smoke/corpus 各 6/6，CI 合同 10/10。
+- **未做**：结构感知 mutator；载荷文件不参与变异。
+
 ## Core App scenario 解析器 libFuzzer 入口（2026-11-15）
 
 - **交付**：`libfuzz_core_app_scenario`（`ENGINE_BUILD_LIBFUZZER=ON`）与 `libfuzz_core_app_scenario_run`（`fuzz;libfuzzer`，200000 次，`-max_len=70000`，种子为 `core_app_scenario_corpus`）。新增共用的 `check_accepted`：变异运行、libFuzzer 入口和 `--replay` 都检查最终 quit、tick 范围与顺序。CI 车道 `lane-libfuzzer-linux-clang` 同时构建两个 libFuzzer 目标。设计见 `docs/design/core_app_integration.md`「scenario 解析器的 libFuzzer 入口与被测模块插桩」。
 - **修复**：两个 libFuzzer 目标改为把被测源文件直接编进目标。之前链接的是未插桩的归档，覆盖反馈只来自测试文件（network 的 `cov` 从 53 升到 226）。
 - **测试**：链接 RED → GREEN（scenario `cov: 386 ft: 1566`）。去掉 tick 递减判断的变异被 libFuzzer 抓到（`event 1 has tick 4`）。normal、ASan 树 scenario/network fuzz 各 4/4，CI 合同 10/10。
-- **未做**：checkpoint fuzzer 的 libFuzzer 入口；结构感知 mutator。
+- **未做**：结构感知 mutator（checkpoint 入口见上一条）。
 
 ## Core App libFuzzer 覆盖率引导（2026-11-15）
 

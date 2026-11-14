@@ -314,11 +314,11 @@ ctest --test-dir build-compose-fuzz -L fuzz -j3
 CC=clang cmake -S engine -B build-libfuzzer -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON \
   -DENGINE_BUILD_FUZZ_SMOKE=ON -DENGINE_BUILD_LIBFUZZER=ON
-cmake --build build-libfuzzer --target libfuzz_core_app_network libfuzz_core_app_scenario
+cmake --build build-libfuzzer --target libfuzz_core_app_network libfuzz_core_app_scenario libfuzz_core_app_checkpoint
 ctest --test-dir build-libfuzzer -L libfuzzer --output-on-failure
 ```
 
-`ENGINE_BUILD_LIBFUZZER=ON` 要求 Clang（GCC 或 MSVC 下 configure 直接 FATAL）。`libfuzz_core_app_network_run` 以 `-runs=200000 -seed=1 -max_len=2048` 运行，种子取自已提交的 `engine/tests/data/core_app_network_corpus`（只读），新输入写入构建树下的 `libfuzz_core_app_network_corpus/`。`libfuzz_core_app_scenario_run` 以 `-runs=200000 -seed=1 -max_len=70000` 运行，种子取自 `engine/tests/data/core_app_scenario_corpus`，新输入写入 `libfuzz_core_app_scenario_corpus/`。两个目标都把被测源文件直接编进目标，使其带覆盖插桩。失败时 libFuzzer 在工作目录留下 `crash-*` 文件，可直接作为参数重放：`./libfuzz_core_app_network crash-<hash>`（scenario 同理）。
+`ENGINE_BUILD_LIBFUZZER=ON` 要求 Clang（GCC 或 MSVC 下 configure 直接 FATAL）。`libfuzz_core_app_network_run` 以 `-runs=200000 -seed=1 -max_len=2048` 运行，种子取自已提交的 `engine/tests/data/core_app_network_corpus`（只读），新输入写入构建树下的 `libfuzz_core_app_network_corpus/`。`libfuzz_core_app_scenario_run` 以 `-runs=200000 -seed=1 -max_len=70000` 运行，种子取自 `engine/tests/data/core_app_scenario_corpus`，新输入写入 `libfuzz_core_app_scenario_corpus/`。`libfuzz_core_app_checkpoint_run` 以 `-runs=50000 -seed=1 -max_len=2048` 运行，种子取自 `engine/tests/data/core_app_checkpoint_corpus`，新输入写入 `libfuzz_core_app_checkpoint_corpus/`；它在构建树下建 `fuzz_core_app_ckpt_<pid>/libfuzz/` 放四个固定载荷，每个输入写成 `manifest.core`，进程退出时删除。三个目标都把被测源文件直接编进目标，使其带覆盖插桩。失败时 libFuzzer 在工作目录留下 `crash-*` 文件，可直接作为参数重放：`./libfuzz_core_app_network crash-<hash>`（scenario 同理）。
 
 GPU 测试需要 Wayland 会话（`WAYLAND_DISPLAY`）；没有显示或设备时退出 77（CTest 记为 Skipped），在目标环境必须为 0 skip。日志的 `device:` 行给出设备名与类型，`device_class:` 行给出 `hardware-gpu` 或 `software`；lavapipe/llvmpipe 是软件渲染，不能作为硬件 GPU 证据。设置 `MYCOMPOSE_GPU_REQUIRE_HARDWARE=1` 时，软件设备直接 FAIL；CI 的 llvmpipe lane 不设置它。
 
