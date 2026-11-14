@@ -27,7 +27,7 @@ RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https:
         ca-certificates curl git sudo xz-utils zstd python3 python3-yaml file procps make \
         build-essential gcc \
         clang lld llvm \
-        clang-18 lld-18 llvm-18-tools \
+        clang-18 lld-18 llvm-18-tools libclang-rt-18-dev \
         cmake=3.28.* ninja-build pkg-config \
         libgl1-mesa-dev libgl1-mesa-dri libegl1-mesa-dev libgles2-mesa-dev \
         libfreetype6-dev \

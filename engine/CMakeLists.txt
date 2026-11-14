@@ -64,6 +64,8 @@ option(ENGINE_QNX_SCREEN "Compile the QNX Screen window layer when the SDP provi
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
 option(ENGINE_BUILD_FUZZ_SMOKE
     "Register deterministic fuzz smoke tests (requires explicit fuzz targets)" OFF)
+option(ENGINE_BUILD_LIBFUZZER
+    "Build coverage-guided libFuzzer targets (Clang only, requires ENGINE_BUILD_FUZZ_SMOKE)" OFF)
 option(BREAK_ENABLE_SNOWFLAKE
     "Enable the Snowflake-backed C11 Break network adapter" OFF)
 set(SNOWFLAKE_SOURCE_DIR "" CACHE PATH
@@ -7311,6 +7313,30 @@ endif()
             fuzz_core_app_checkpoint_smoke fuzz_core_app_scenario_smoke
             fuzz_core_app_network_smoke
             PROPERTIES LABELS "fuzz")
+        if(ENGINE_BUILD_LIBFUZZER)
+            if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang" OR MSVC)
+                message(FATAL_ERROR "ENGINE_BUILD_LIBFUZZER requires Clang (got ${CMAKE_C_COMPILER_ID})")
+            endif()
+            # Same checks as fuzz_core_app_network, driven by libFuzzer's
+            # coverage feedback. New inputs go to a build-tree directory; the
+            # checked-in corpus is only read, as the seed set.
+            add_executable(libfuzz_core_app_network EXCLUDE_FROM_ALL
+                tests/fuzz_core_app_network.c)
+            target_compile_definitions(libfuzz_core_app_network PRIVATE CORE_APP_LIBFUZZER=1)
+            target_compile_options(libfuzz_core_app_network PRIVATE
+                -fsanitize=fuzzer -Wno-unused-function)
+            target_link_options(libfuzz_core_app_network PRIVATE -fsanitize=fuzzer)
+            target_include_directories(libfuzz_core_app_network PRIVATE ${TEST_INCLUDE_DIRS})
+            target_link_libraries(libfuzz_core_app_network PRIVATE core_app_network m)
+            set(_libfuzz_network_dir ${CMAKE_CURRENT_BINARY_DIR}/libfuzz_core_app_network_corpus)
+            file(MAKE_DIRECTORY ${_libfuzz_network_dir})
+            add_test(NAME libfuzz_core_app_network_run
+                COMMAND libfuzz_core_app_network -runs=200000 -seed=1 -max_len=2048
+                    ${_libfuzz_network_dir}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_network_corpus)
+            set_tests_properties(libfuzz_core_app_network_run PROPERTIES
+                LABELS "fuzz;libfuzzer" TIMEOUT 300)
+        endif()
         if(BREAK_ENABLE_SNOWFLAKE)
             add_test(NAME fuzz_editor_remote_smoke COMMAND fuzz_editor_remote 600 29)
             set_tests_properties(fuzz_editor_remote_smoke PROPERTIES LABELS "fuzz")

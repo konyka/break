@@ -201,8 +201,10 @@ def main():
             consumers.append(name)
             if job.get("container", {}).get("image") != "${{ needs.image.outputs.digest }}":
                 failures.append(f"{name} does not consume needs.image.outputs.digest")
-    if len(consumers) != 10:
-        failures.append(f"expected 10 digest consumers, got {len(consumers)}")
+    if len(consumers) != 11:
+        failures.append(f"expected 11 digest consumers, got {len(consumers)}")
+    if "lane-libfuzzer-linux-clang" not in consumers:
+        failures.append("the libFuzzer lane does not consume the verified image")
 
     steps = prepare.get("steps", [])
     publish = next((s for s in steps if s.get("name") == "Publish verified image"), {})

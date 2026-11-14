@@ -13,10 +13,16 @@
  *   fuzz_core_app_network --emit-corpus <dir>   write the fixed wire samples
  *   fuzz_core_app_network --replay <file>...    check each sample against the
  *       outcome named by its file prefix (ok, truncated, bad_magic,
- *       bad_version, over_limit); every outcome must appear at least once. */
+ *       bad_version, over_limit); every outcome must appear at least once.
+ *
+ * Built with CORE_APP_LIBFUZZER=1 (target libfuzz_core_app_network) the file
+ * instead exports LLVMFuzzerTestOneInput: each input is one wire payload and
+ * goes through the same per-payload checks as --replay, with libFuzzer's
+ * coverage feedback choosing the next input. A failed check aborts. */
 
 #include "../apps/core_app/core_app_network.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -179,6 +185,67 @@ static int corpus_kind_of(const char *path) {
     return -1;
 }
 
+/* Decodes one payload from an exact-size heap copy (so ASan sees any read
+ * past it) and checks it against the reference model: a rejected payload
+ * leaves `out` untouched, an accepted one re-encodes to its own bytes and
+ * crosses the admission firewall once as live and once as stale. Returns 0
+ * when every check holds and reports the decode outcome. */
+static int check_payload(const u8 *bytes, size_t size, const char *label,
+                         CoreAppSnapshotOutcome *outcome_out, u32 *schema_out) {
+    u8 *payload = (u8 *)malloc(size ? size : 1u);
+    CoreAppSnapshot *decoded = (CoreAppSnapshot *)malloc(sizeof(*decoded));
+    CoreAppSnapshot *sentinel = (CoreAppSnapshot *)malloc(sizeof(*sentinel));
+    u8 *reencoded = (u8 *)malloc(CORE_APP_SNAPSHOT_MAX_BYTES);
+    int rc = 1;
+    if (!payload || !decoded || !sentinel || !reencoded) goto done;
+    if (size) memcpy(payload, bytes, size);
+    memset(decoded, 0xA5, sizeof(*decoded));
+    memset(sentinel, 0xA5, sizeof(*sentinel));
+    CoreAppSnapshotOutcome outcome = core_app_snapshot_decode(payload, size, decoded);
+    CoreAppSnapshotOutcome expected = reference_decode(payload, size);
+    *outcome_out = outcome;
+    if (outcome != expected) {
+        fprintf(stderr, "fuzz_core_app_network: %s: decode=%d reference=%d size=%lu\n", label,
+                (int)outcome, (int)expected, (unsigned long)size);
+        goto done;
+    }
+    if (outcome != CORE_APP_SNAPSHOT_OK) {
+        if (memcmp(decoded, sentinel, sizeof(*decoded)) != 0) {
+            fprintf(stderr, "fuzz_core_app_network: %s: rejected payload wrote into out\n", label);
+            goto done;
+        }
+        rc = 0;
+        goto done;
+    }
+    *schema_out = decoded->schema_hash;
+    size_t needed = 0u;
+    if (core_app_snapshot_encode(decoded, reencoded, CORE_APP_SNAPSHOT_MAX_BYTES, &needed) !=
+            CORE_APP_SNAPSHOT_OK ||
+        needed > size || memcmp(reencoded, payload, needed) != 0) {
+        fprintf(stderr, "fuzz_core_app_network: %s: does not re-encode to its bytes\n", label);
+        goto done;
+    }
+    CoreAppSnapshotInbox inbox;
+    core_app_snapshot_inbox_init(&inbox, true, (u16)CORE_APP_SNAPSHOT_MESSAGE_ID,
+                                 decoded->schema_hash);
+    if (core_app_snapshot_admit(&inbox, (u16)CORE_APP_SNAPSHOT_MESSAGE_ID, decoded,
+                                decoded->level_generation) != CORE_APP_SNAPSHOT_ADMITTED ||
+        core_app_snapshot_admit(&inbox, (u16)CORE_APP_SNAPSHOT_MESSAGE_ID, decoded,
+                                decoded->level_generation + 1u) !=
+            CORE_APP_SNAPSHOT_REJECTED_STALE_LEVEL ||
+        inbox.accepted_snapshots != 1u || inbox.rejected_stale_level != 1u) {
+        fprintf(stderr, "fuzz_core_app_network: %s: admission is wrong\n", label);
+        goto done;
+    }
+    rc = 0;
+done:
+    free(payload);
+    free(decoded);
+    free(sentinel);
+    free(reencoded);
+    return rc;
+}
+
 static int replay_one(const char *path, int *seen) {
     int kind = corpus_kind_of(path);
     if (kind < 0) {
@@ -203,64 +270,25 @@ static int replay_one(const char *path, int *seen) {
         free(bytes);
         return 1;
     }
-    /* Exact-size copy so ASan sees any read past the payload. */
-    u8 *payload = (u8 *)malloc(size ? size : 1u);
-    CoreAppSnapshot *decoded = (CoreAppSnapshot *)malloc(sizeof(*decoded));
-    CoreAppSnapshot *sentinel = (CoreAppSnapshot *)malloc(sizeof(*sentinel));
-    u8 *reencoded = (u8 *)malloc(CORE_APP_SNAPSHOT_MAX_BYTES);
-    int rc = 1;
-    if (!payload || !decoded || !sentinel || !reencoded) goto done;
-    memcpy(payload, bytes, size);
-    memset(decoded, 0xA5, sizeof(*decoded));
-    memset(sentinel, 0xA5, sizeof(*sentinel));
+    CoreAppSnapshotOutcome outcome = CORE_APP_SNAPSHOT_INVALID;
+    u32 schema = 0u;
+    int rc = check_payload(bytes, size, path, &outcome, &schema);
+    free(bytes);
+    if (rc != 0) return 1;
     CoreAppSnapshotOutcome want = k_corpus_kinds[kind].outcome;
-    CoreAppSnapshotOutcome outcome = core_app_snapshot_decode(payload, size, decoded);
-    if (outcome != want || reference_decode(payload, size) != want) {
-        fprintf(stderr, "fuzz_core_app_network: %s: decode=%d reference=%d expected=%d\n", path,
-                (int)outcome, (int)reference_decode(payload, size), (int)want);
-        goto done;
+    if (outcome != want) {
+        fprintf(stderr, "fuzz_core_app_network: %s: decode=%d expected=%d\n", path, (int)outcome,
+                (int)want);
+        return 1;
     }
-    if (outcome != CORE_APP_SNAPSHOT_OK) {
-        if (memcmp(decoded, sentinel, sizeof(*decoded)) != 0) {
-            fprintf(stderr, "fuzz_core_app_network: %s: rejected payload wrote into out\n", path);
-            goto done;
-        }
-    } else {
-        size_t needed = 0u;
-        if (core_app_snapshot_encode(decoded, reencoded, CORE_APP_SNAPSHOT_MAX_BYTES, &needed) !=
-                CORE_APP_SNAPSHOT_OK ||
-            needed > size || memcmp(reencoded, payload, needed) != 0) {
-            fprintf(stderr, "fuzz_core_app_network: %s: does not re-encode to its bytes\n", path);
-            goto done;
-        }
-        u32 schema = core_app_snapshot_schema_hash();
-        if (decoded->schema_hash != schema) {
-            fprintf(stderr, "fuzz_core_app_network: %s: schema 0x%08x is not the current 0x%08x; "
-                    "regenerate the corpus with --emit-corpus\n", path,
-                    (unsigned)decoded->schema_hash, (unsigned)schema);
-            goto done;
-        }
-        CoreAppSnapshotInbox inbox;
-        core_app_snapshot_inbox_init(&inbox, true, (u16)CORE_APP_SNAPSHOT_MESSAGE_ID, schema);
-        if (core_app_snapshot_admit(&inbox, (u16)CORE_APP_SNAPSHOT_MESSAGE_ID, decoded,
-                                    decoded->level_generation) != CORE_APP_SNAPSHOT_ADMITTED ||
-            core_app_snapshot_admit(&inbox, (u16)CORE_APP_SNAPSHOT_MESSAGE_ID, decoded,
-                                    decoded->level_generation + 1u) !=
-                CORE_APP_SNAPSHOT_REJECTED_STALE_LEVEL ||
-            inbox.accepted_snapshots != 1u || inbox.rejected_stale_level != 1u) {
-            fprintf(stderr, "fuzz_core_app_network: %s: admission is wrong\n", path);
-            goto done;
-        }
+    if (outcome == CORE_APP_SNAPSHOT_OK && schema != core_app_snapshot_schema_hash()) {
+        fprintf(stderr, "fuzz_core_app_network: %s: schema 0x%08x is not the current 0x%08x; "
+                "regenerate the corpus with --emit-corpus\n", path, (unsigned)schema,
+                (unsigned)core_app_snapshot_schema_hash());
+        return 1;
     }
     seen[kind]++;
-    rc = 0;
-done:
-    free(bytes);
-    free(payload);
-    free(decoded);
-    free(sentinel);
-    free(reencoded);
-    return rc;
+    return 0;
 }
 
 static int replay_corpus(int count, char **paths) {
@@ -380,6 +408,15 @@ static int emit_corpus(const char *dir) {
     return rc;
 }
 
+#if CORE_APP_LIBFUZZER
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    CoreAppSnapshotOutcome outcome = CORE_APP_SNAPSHOT_INVALID;
+    u32 schema = 0u;
+    if (check_payload(data, size, "libfuzzer input", &outcome, &schema) != 0) abort();
+    return 0;
+}
+#else
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--replay") == 0) return replay_corpus(argc - 2, argv + 2);
     if (argc == 3 && strcmp(argv[1], "--emit-corpus") == 0) return emit_corpus(argv[2]);
@@ -510,3 +547,4 @@ int main(int argc, char **argv) {
     free(reencoded);
     return 0;
 }
+#endif

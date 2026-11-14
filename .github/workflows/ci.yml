@@ -148,6 +148,40 @@ jobs:
           name: evidence-receipt-headless-linux-gcc-asan
           path: receipt.json
 
+  lane-libfuzzer-linux-clang:
+    name: Linux + Clang-18 (libFuzzer, coverage-guided)
+    runs-on: ubuntu-24.04
+    needs: image
+    container:
+      image: ${{ needs.image.outputs.digest }}
+      options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON -DENGINE_BUILD_FUZZ_SMOKE=ON -DENGINE_BUILD_LIBFUZZER=ON -DENGINE_RHI_BACKEND=opengl
+
+      # Fixed seed and run count: a fresh corpus directory is seeded from the
+      # checked-in samples, so the run is reproducible from the commit alone.
+      - name: libFuzzer (ASan/UBSan)
+        run: |
+          cmake --build build --parallel --target libfuzz_core_app_network
+          ctest --test-dir build -L libfuzzer --output-on-failure
+
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: libfuzzer-crash-inputs
+          path: |
+            build/crash-*
+            build/leak-*
+            build/timeout-*
+          if-no-files-found: ignore
+
   lane-headless-linux-gcc-tsan:
     name: Linux + GCC (TSan, headless)
     runs-on: ubuntu-24.04
