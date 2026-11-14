@@ -49,12 +49,12 @@ static BreakCrashFrame frame(const char *module, const char *symbol, u64 mod_off
 TEST(a_signature_is_stable_and_ignores_addresses_and_processes) {
     char a[65], b[65];
     BreakCrashFrame f1[3], f2[3];
-    f1[0] = frame("game", "leaf", 0x100, true);  f1[0].pc = 0x400100; f1[0].symbol_offset = 7;
-    f1[1] = frame("game", "mid", 0x200, true);   f1[1].pc = 0x400200;
-    f1[2] = frame("game", "outer", 0x300, true); f1[2].pc = 0x400300;
-    f2[0] = frame("game", "leaf", 0x9100, true); f2[0].pc = 0x7f0000009100ull; f2[0].symbol_offset = 99;
-    f2[1] = frame("game", "mid", 0x9200, true);
-    f2[2] = frame("game", "outer", 0x9300, true);
+    f1[0] = frame("app", "leaf", 0x100, true);  f1[0].pc = 0x400100; f1[0].symbol_offset = 7;
+    f1[1] = frame("app", "mid", 0x200, true);   f1[1].pc = 0x400200;
+    f1[2] = frame("app", "outer", 0x300, true); f1[2].pc = 0x400300;
+    f2[0] = frame("app", "leaf", 0x9100, true); f2[0].pc = 0x7f0000009100ull; f2[0].symbol_offset = 99;
+    f2[1] = frame("app", "mid", 0x9200, true);
+    f2[2] = frame("app", "outer", 0x9300, true);
     ASSERT_TRUE(break_crash_signature(11, f1, 3u, a));
     ASSERT_TRUE(break_crash_signature(11, f2, 3u, b));
     ASSERT_STR_EQ(a, b);                       /* different addresses / offsets inside the functions */
@@ -65,17 +65,17 @@ TEST(a_signature_is_stable_and_ignores_addresses_and_processes) {
 TEST(a_signature_depends_on_signal_and_the_top_three_frames_only) {
     char base[65], other[65];
     BreakCrashFrame f[5];
-    f[0] = frame("game", "leaf", 1, true);
-    f[1] = frame("game", "mid", 2, true);
-    f[2] = frame("game", "outer", 3, true);
-    f[3] = frame("game", "main", 4, true);
+    f[0] = frame("app", "leaf", 1, true);
+    f[1] = frame("app", "mid", 2, true);
+    f[2] = frame("app", "outer", 3, true);
+    f[3] = frame("app", "main", 4, true);
     f[4] = frame("libc.so.6", "", 5, false);
     ASSERT_TRUE(break_crash_signature(11, f, 5u, base));
     /* frames beyond the third do not matter */
     {
         BreakCrashFrame g[5];
         memcpy(g, f, sizeof(g));
-        g[3] = frame("game", "different", 9, true);
+        g[3] = frame("app", "different", 9, true);
         g[4] = frame("x", "y", 9, true);
         ASSERT_TRUE(break_crash_signature(11, g, 5u, other));
         ASSERT_STR_EQ(base, other);
@@ -87,7 +87,7 @@ TEST(a_signature_depends_on_signal_and_the_top_three_frames_only) {
     for (int k = 0; k < 3; k++) {
         BreakCrashFrame g[5];
         memcpy(g, f, sizeof(g));
-        g[k] = frame("game", "changed", 77, true);
+        g[k] = frame("app", "changed", 77, true);
         ASSERT_TRUE(break_crash_signature(11, g, 5u, other));
         ASSERT_TRUE(strcmp(base, other) != 0);
     }
@@ -113,14 +113,14 @@ TEST(a_signature_depends_on_signal_and_the_top_three_frames_only) {
 TEST(an_unresolved_frame_is_identified_by_module_and_offset_and_frames_do_not_collide) {
     char a[65], b[65], c[65];
     BreakCrashFrame f[1], g[1], h[2];
-    f[0] = frame("game", "", 0x1234, false);
-    g[0] = frame("game", "", 0x1235, false);
+    f[0] = frame("app", "", 0x1234, false);
+    g[0] = frame("app", "", 0x1235, false);
     ASSERT_TRUE(break_crash_signature(11, f, 1u, a));
     ASSERT_TRUE(break_crash_signature(11, g, 1u, b));
     ASSERT_TRUE(strcmp(a, b) != 0);
     /* a resolved frame whose name looks like an unresolved encoding is still a different frame */
-    h[0] = frame("game", "x", 0, true);
-    h[1] = frame("game", "", 0, false);
+    h[0] = frame("app", "x", 0, true);
+    h[1] = frame("app", "", 0, false);
     ASSERT_TRUE(break_crash_signature(11, h, 2u, c));
     ASSERT_TRUE(strcmp(c, a) != 0);
     /* a frame with no module at all */
@@ -144,7 +144,7 @@ TEST(an_unresolved_frame_is_identified_by_module_and_offset_and_frames_do_not_co
 TEST(signature_rejects_bad_arguments) {
     char out[65];
     BreakCrashFrame f[1];
-    f[0] = frame("game", "leaf", 1, true);
+    f[0] = frame("app", "leaf", 1, true);
     ASSERT_FALSE(break_crash_signature(0, f, 1u, out));
     ASSERT_FALSE(break_crash_signature(-1, f, 1u, out));
     ASSERT_FALSE(break_crash_signature(65, f, 1u, out));

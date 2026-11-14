@@ -17,7 +17,7 @@
  * reads through a borrowed VFS on its own formal worker threads
  * (runtime_thread.h) and delivers exactly one OWNED completion per request
  * as a BreakRuntimeOwnedMessage. There are NO callbacks anywhere in this
- * API, so no GameThread callback can ever fire on an IO worker.
+ * API, so no logic thread callback can ever fire on an IO worker.
  *
  * Lifecycle: the facade is a module-level singleton (the brief's request
  * APIs carry no context pointer).

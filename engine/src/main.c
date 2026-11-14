@@ -5351,7 +5351,7 @@ int engine_demo_main(int argc, char **argv, const EngineConfig *host_config) {
 
     LOG_INFO("Phase 4 running — ECS: %u entities, Physics: %u bodies, Script: %s",
              world->entity_count - 1, physics->count, script.loaded ? "yes" : "no");
-    LOG_INFO("WASD+mouse | ESC quit | Tab UI | F1-F12 | KP5-9/Dec:CG/lens | 1-8 gameplay | 9 gravity 0 water | Shift+` FPS | +/- exp | CapsLock autoexp");
+    LOG_INFO("WASD+mouse | ESC quit | Tab UI | F1-F12 | KP5-9/Dec:CG/lens | 1-8 actions | 9 gravity 0 water | Shift+` FPS | +/- exp | CapsLock autoexp");
 
     RHIGPUTimer *gpu_scene_timer = NULL;
     RHIGPUTimer *gpu_postfx_timer = NULL;
@@ -6928,7 +6928,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             sharpen_enabled = !sharpen_enabled;
             LOG_INFO("Sharpen: %s", sharpen_enabled ? "on" : "off");
         }
-        /* R364: digits 1–8 are gameplay (explosion/magnet/…). CG/lens → KP_5..9 + Decimal. */
+        /* R364: digits 1–8 are actions (explosion/magnet/…). CG/lens → KP_5..9 + Decimal. */
         {
             InputState *inp = platform_input(engine.platform);
             if (input_key_pressed(inp, 310)) { cg_temperature -= 0.05f; LOG_INFO("Temperature: %.2f", cg_temperature); }

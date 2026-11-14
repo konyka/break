@@ -134,7 +134,7 @@ static PLATFORM_THREAD_RET apply_off_thread(PLATFORM_THREAD_ARG arg) {
     return PLATFORM_THREAD_RETURN;
 }
 
-TEST(non_game_thread_is_rejected_without_mutation) {
+TEST(non_logic_thread_is_rejected_without_mutation) {
     World *world = make_world();
     Entity actor = ENTITY_NULL;
     BreakKernel *kernel = make_kernel(world, &actor);
@@ -157,5 +157,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(late_inventory_failure_does_not_apply_earlier_position);
     RUN_TEST(valid_batch_commits_position_and_inventory_together);
     RUN_TEST(aggregate_additions_and_invalid_handles_are_preflighted);
-    RUN_TEST(non_game_thread_is_rejected_without_mutation);
+    RUN_TEST(non_logic_thread_is_rejected_without_mutation);
 TEST_MAIN_END()

@@ -14,7 +14,7 @@
 #define PRICE_ITEM1 10
 #define HUGE_ITEM 64u
 
-/* The item table belongs to the game server: the library has none built in. */
+/* The item table belongs to the application server: the library has none built in. */
 static BreakAuthority *make(void) {
     BreakAuthority *a = break_authority_create(8u);
     if (a == NULL) return NULL;

@@ -28,7 +28,7 @@
  *     command failed. Malformed frames never get a response: the connection
  *     closes.
  *
- * Threading: the handlers run on the editor shell thread (the GameThread —
+ * Threading: the handlers run on the editor shell thread (the logic thread —
  * the STEP-mode reactor is stepped from break_editor_remote_tick inside
  * break_editor_shell_tick), so every doc/Lua/command call below satisfies
  * the single-owner-thread convention by construction. */

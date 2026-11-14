@@ -1,9 +1,9 @@
 /* Mutation fuzzer for the editor scene load + re-save path.
  *
- * Builds a game-style BSCN (entities, components, SCENE_NODES, RESOURCES),
+ * Builds an application-style BSCN (entities, components, SCENE_NODES, RESOURCES),
  * then repeatedly mutates its bytes and feeds them through
  * break_editor_doc_load_bytes; every accepted file is re-saved through
- * break_editor_doc_save (which splices the kept game chunks back) and the
+ * break_editor_doc_save (which splices the kept application chunks back) and the
  * result is loaded again. Loaders may reject anything; they must not crash,
  * read out of bounds or leak, and a re-save of an accepted file must load.
  * Usage (ASan/UBSan tree): ./fuzz_editor_scene [iterations] [seed] */

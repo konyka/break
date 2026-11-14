@@ -31,7 +31,7 @@
  *  Reuses break_replay_window (per-session sequence window) and
  *  break_msg_rate (per-session intent bucket, injected clock). The library
  *  has no clock, no I/O, no threads (one owner) and allocates only in
- *  create. It is not a game: item prices and kinds are the caller's table.
+ *  create. It holds no domain rules: item prices and kinds are the caller's table.
  * ========================================================================== */
 
 #include <core/types.h>

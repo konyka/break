@@ -2,7 +2,7 @@
 /* Scene texture model: a read-only view of the textures and the material
  * links a loaded BSCN carries in its RESOURCES chunk.
  *
- * The editor keeps the chunk as the game wrote it (editor_scene.h); this
+ * The editor keeps the chunk as the application wrote it (editor_scene.h); this
  * parses it for display and for hot reload of the texture files. It is NOT a
  * link from the editor's entities to materials: BSCN has none. Pure CPU, no
  * allocation, single owner thread.
@@ -46,7 +46,7 @@ u32 break_editor_scene_textures_parse(const BreakEditorDoc *doc,
 /* The same parse over a RESOURCES chunk payload (`version` = the BSCN header
  * version of its file). This is what the document-based call runs on the kept
  * chunk; it is separate so the bounds handling can be tested with chunks the
- * game loader would never let into a document. */
+ * application loader would never let into a document. */
 u32 break_editor_scene_textures_parse_chunk(const u8 *bytes, u32 size,
                                             u32 version,
                                             BreakEditorSceneTexture *out,

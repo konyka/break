@@ -298,7 +298,7 @@ TEST(older_layouts_parse_without_material_links) {
     }
 }
 
-TEST(path_longer_than_63_is_cut_like_the_game_loader_and_stays_in_bounds) {
+TEST(path_longer_than_63_is_cut_like_the_scene_loader_and_stays_in_bounds) {
     Buf b = {g_res, 0, sizeof(g_res)};
     BreakEditorSceneTexture tex[2];
     char long_path[120];
@@ -323,7 +323,7 @@ static u32 parse_raw(const Buf *b, u32 version, u32 *mat_total) {
                                                    4, NULL, 0, mat_total);
 }
 
-/* These chunks never reach a document (the game loader rejects the file), so
+/* These chunks never reach a document (the scene loader rejects the file), so
  * the chunk parser is fed directly; every one must give 0 and no partial data. */
 TEST(malformed_resources_chunks_yield_nothing) {
     Buf b;
@@ -439,6 +439,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(resolve_joins_against_the_scene_directory);
     RUN_TEST(make_absolute_joins_relative_scene_paths_with_the_working_directory);
     RUN_TEST(older_layouts_parse_without_material_links);
-    RUN_TEST(path_longer_than_63_is_cut_like_the_game_loader_and_stays_in_bounds);
+    RUN_TEST(path_longer_than_63_is_cut_like_the_scene_loader_and_stays_in_bounds);
     RUN_TEST(malformed_resources_chunks_yield_nothing);
 TEST_MAIN_END()

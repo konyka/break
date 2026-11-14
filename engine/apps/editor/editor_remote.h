@@ -2,7 +2,7 @@
 /* BreakEditorRemote — Stage 4 scene editor Phase 4: the remote session host
  * (Task 1 core + Task 2 TLS/CHALLENGE/AUTH-v2 wiring). Owns a STEP-mode BreakNetReactor (the shell thread
  * drives it explicitly from break_editor_remote_tick — the shell thread IS
- * the GameThread, so every protocol handler runs on the doc/Lua/command
+ * the logic thread, so every protocol handler runs on the doc/Lua/command
  * owner thread by construction; there is no cross-thread dispatch), a
  * BreakSessionManager attached to that reactor, and a bounded connection
  * table. The editor wire messages (ids 4..13, editor/editor_protocol.h)

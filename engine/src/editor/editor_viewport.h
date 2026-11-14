@@ -38,7 +38,7 @@
  * entities stay pickable. Entities WITHOUT an EditorTransform have no proxy
  * and are skipped by pick. Non-finite pos/scale components also skip the
  * entity (bounded). The proxy is an EDITOR-ONLY representation — it does
- * not claim game-scene fidelity.
+ * not claim application-scene fidelity.
  *
  * Picking: pick rebuilds the BVH over all proxy AABBs ON EACH CALL
  * (documented Phase 2 choice — entity counts are editor-scale; incremental

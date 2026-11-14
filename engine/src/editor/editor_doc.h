@@ -131,7 +131,7 @@ u32 break_editor_doc_duplicate_entities(BreakEditorDoc *doc,
                                         u32 count, BreakEditorEntityId *out);
 
 /* Empties the document: a fresh world (components registered as at
- * create), no names, no kept game chunks, no undo history, clean. Ids from
+ * create), no names, no kept application chunks, no undo history, clean. Ids from
  * before the reset are stale afterwards. false for NULL or when the new
  * world cannot be allocated (document unchanged). */
 bool break_editor_doc_reset(BreakEditorDoc *doc);

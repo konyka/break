@@ -124,7 +124,7 @@ struct BreakEditorDoc {
      * break_editor_doc_init_components. */
     BreakEditorComponentReg components[BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY];
     u32 component_count;
-    /* Game-side chunks of the last loaded BSCN that the editor does not
+    /* Application chunks of the last loaded BSCN that the editor does not
      * model (every chunk except ENTITIES/COMPONENTS/HIERARCHY: SCENE_NODES,
      * RESOURCES, mesh/skin geometry, skeleton, anims, future types). Kept
      * as the exact {type, bytes} the file held and spliced back by save, so

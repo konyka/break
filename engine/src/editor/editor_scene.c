@@ -422,12 +422,12 @@ static bool sidecar_apply(BreakEditorDoc *doc, const char *sidecar_path) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Kept game chunks                                                 */
+/* Kept application chunks                                                 */
 /* ---------------------------------------------------------------- */
 
 /* The editor owns ENTITIES and COMPONENTS (rebuilt from its World on every
  * save); HIERARCHY is derived from SCENE_NODES. Every other chunk belongs
- * to the game side and is carried through byte-exact. */
+ * to the application side and is carried through byte-exact. */
 struct BreakEditorKeptChunk {
     u32 type;
     u32 size;
@@ -467,9 +467,9 @@ bool break_editor_doc_kept_chunk(const BreakEditorDoc *doc, u32 chunk_type,
     return false;
 }
 
-/* Copies the game-side chunks out of an already-validated BSCN image. A
+/* Copies the application chunks out of an already-validated BSCN image. A
  * chunk that is empty in the editor's own output (SCENE_NODES/RESOURCES
- * with count 0) is still kept: the bytes are what the game wrote. */
+ * with count 0) is still kept: the bytes are what the application wrote. */
 static bool kept_collect(const u8 *data, usize size,
                          struct BreakEditorKeptChunk **out, u32 *out_n) {
     BscnHeader h;
@@ -513,7 +513,7 @@ static bool kept_collect(const u8 *data, usize size,
 }
 
 /* Rewrites the BSCN at `path` (just produced by scene_save_binary with a
- * NULL Scene) so its editor-owned chunks are followed by the kept game
+ * NULL Scene) so its editor-owned chunks are followed by the kept application
  * chunks instead of the empty placeholders. Same table layout the writer
  * uses: header, entry table, payloads back to back. */
 static bool kept_splice(const BreakEditorDoc *doc, const char *path) {
@@ -643,7 +643,7 @@ static bool doc_load_staged(BreakEditorDoc *doc, const char *path,
         if (sz) world_register_component(staging, t, sz);
     }
     /* NULL Scene: parse-and-discard (scene_serial.c:1596-1598) — the
-     * game chunks are validated by that parse and then copied verbatim. */
+     * application chunks are validated by that parse and then copied verbatim. */
     if (!scene_load_binary_memory(staging, NULL, data, size)) {
         world_destroy(staging);
         return false; /* doc fully unchanged: entities, names, stack, dirty */

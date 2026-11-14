@@ -115,7 +115,7 @@ WorldPresentationStatus world_presenter_submit(RHICmdBuffer *cmd,
                                                 const WorldFrameSnapshot *snapshot,
                                                 WorldSubmitStats *out_stats);
 
-/* GameThread only. The output and LOD state are unchanged on failure. A
+/* Logic thread only. The output and LOD state are unchanged on failure. A
  * successful snapshot owns its POD storage and contains no input pointers. */
 WorldPresentationStatus world_presentation_snapshot(const WorldPresentationInput *input,
                                                      WorldFrameSnapshot *out);

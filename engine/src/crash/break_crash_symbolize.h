@@ -5,7 +5,7 @@
  *  (docs/design/crash_symbolization.md).
  *
  *  Meant for the SERVER (or a developer machine): it reads symbol files from
- *  disk and is never linked into a shipped game binary. Every input is
+ *  disk and is never linked into a shipped application binary. Every input is
  *  untrusted: the record comes from a client, and the ELF file is validated
  *  as hostile (all offsets and sizes bounds-checked, no allocation sized by an
  *  unchecked field, a corrupt file gives NULL, never a crash).

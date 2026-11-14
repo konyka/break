@@ -473,7 +473,7 @@ TEST(character_rides_moving_platform)
 
 /* Vertical inheritance: a descending platform carries the character down so
  * the feet keep tracking its top face (free-fall alone cannot keep up).
- * The platform moves before character_update, mirroring the real game loop
+ * The platform moves before character_update, mirroring the real application loop
  * (physics_step advances bodies, then the character inherits velocity from
  * the support recorded on the previous contact frame). */
 TEST(character_rides_descending_platform)

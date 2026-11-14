@@ -20,12 +20,12 @@
  * scene_save_binary's scene chunks all handle NULL (emit empty payloads —
  * scene_serial.c:255-257, 275-277, 366-367) and scene_load_binary treats a
  * NULL Scene as "parse and discard" (scene_serial.c:1596-1598). The editor
- * document owns no render scene. Game-side chunks are still preserved
+ * document owns no render scene. Application chunks are still preserved
  * (2026-10-29; previously dropped on re-save): load keeps every chunk the
  * editor does not own (all but ENTITIES/COMPONENTS/HIERARCHY — so
  * SCENE_NODES, RESOURCES, mesh/skin geometry, skeleton, anims and unknown
  * future types) as exact bytes, and save splices them back after its own
- * ENTITIES/COMPONENTS. They describe the game's render graph, not the
+ * ENTITIES/COMPONENTS. They describe the application's render graph, not the
  * editor's entities, so they are NOT re-indexed when entities are added or
  * removed; a later phase that edits the render graph must take ownership.
  *
@@ -122,7 +122,7 @@ bool break_editor_doc_load(BreakEditorDoc *doc, const char *path);
  * instead of re-reading path. sidecar_path is still read from path at commit. */
 bool break_editor_doc_load_bytes(BreakEditorDoc *doc, const char *path,
                                   const void *data, usize size);
-/* Read-only view of a game-side chunk the last load kept verbatim (e.g.
+/* Read-only view of an application chunk the last load kept verbatim (e.g.
  * BSCN_CHUNK_RESOURCES). The bytes are borrowed from the document and stay
  * valid until the next load/reset/destroy. `bscn_version` (optional) is the
  * BSCN header version of the file they came from. false when the document

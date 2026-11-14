@@ -40,7 +40,7 @@ void break_session_auth_set_test_hook_for_test(BreakSessionAuthTestHook hook,
                                                void *user);
 #endif
 /* Optional session expiry (0 = no expiry, default); authenticated sessions
- * older than max_age_seconds enter CLOSING at the next GameThread poll. */
+ * older than max_age_seconds enter CLOSING at the next logic thread poll. */
 void break_session_set_max_age(BreakSession *s, u32 max_age_seconds);
 #endif
 
@@ -81,7 +81,7 @@ typedef struct BreakSessionApplyStats {
 
 /* Optional per-connection message/byte rate limit (break_msg_rate token
  * buckets). clock returns monotonic milliseconds; it is called on the
- * GameThread only. Over-limit messages are dropped before dispatch and
+ * Logic thread only. Over-limit messages are dropped before dispatch and
  * recorded as RATE_LIMITED; the session stays open. */
 typedef u64 (*BreakSessionClockMsFn)(void *user);
 typedef struct BreakSessionMessageRateConfig {
@@ -104,7 +104,7 @@ typedef struct BreakSessionConfig {
     const BreakNetMessageRegistry *registry;
 } BreakSessionConfig;
 
-/* The manager is GameThread-owned and not thread-safe. */
+/* The manager is logic-thread-owned and not thread-safe. */
 BreakSessionManager *break_session_manager_create(const BreakSessionConfig *config);
 void break_session_manager_destroy(BreakSessionManager *manager);
 /* Advances close finalization and configured expiry without polling the reactor.
@@ -129,7 +129,7 @@ bool break_session_manager_apply_adapter_event(BreakSessionManager *manager,
 /* Borrowed reactor; it must outlive detach (not currently exposed) or manager destroy. */
 bool break_session_manager_attach_reactor(BreakSessionManager *manager,
                                           BreakNetReactor *reactor);
-/* handler and user_data are borrowed; the handler is called only on the GameThread. */
+/* handler and user_data are borrowed; the handler is called only on the logic thread. */
 bool break_session_manager_set_message_handler(BreakSessionManager *manager,
                                                uint16_t message_id,
                                                BreakSessionMessageHandler handler,
@@ -139,7 +139,7 @@ bool break_session_manager_set_message_handler(BreakSessionManager *manager,
  * starts with full buckets. */
 bool break_session_manager_set_message_rate(BreakSessionManager *manager,
                                             const BreakSessionMessageRateConfig *config);
-/* Polls the borrowed reactor on the GameThread and applies up to max_events. */
+/* Polls the borrowed reactor on the logic thread and applies up to max_events. */
 size_t break_session_manager_poll_adapter(BreakSessionManager *manager,
                                            uint32_t max_events);
 BreakSessionState break_session_manager_state(const BreakSessionManager *manager,

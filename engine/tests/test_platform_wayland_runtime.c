@@ -191,7 +191,7 @@ static void wayland_test_buffer_destroy(WaylandTestBuffer *tb)
 }
 
 /* Polls (bounded, about 3 s) until the configure-confirmed mode is `mode`,
- * presenting a frame after each poll like a running game. */
+ * presenting a frame after each poll like a running application. */
 static bool wayland_wait_for_mode(Platform *platform, const WaylandTestBuffer *tb,
                                   PlatformWindowMode mode)
 {

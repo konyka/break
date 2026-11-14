@@ -6,7 +6,7 @@
 /* BreakRuntimeCoordinator — the single lifecycle coordinator.
  *
  * OWNER THREAD (binding constraint): every function in this header must be
- * called from the one owner thread (Game/Main). The coordinator deliberately
+ * called from the one owner thread (logic/main). The coordinator deliberately
  * contains no mutex; arbitrary multi-owner mutation is a contract violation,
  * not a supported mode. Subsystem callbacks also run on the owner thread.
  *
