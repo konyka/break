@@ -1,3 +1,10 @@
+## Core App transport stop 超时单元测试（2026-11-15）
+
+- **交付**：新增 `test_core_app_net_transport`，链接 `break_net_test`，用真实 TLS 监听与另一线程中被延迟的 step 迫使 reactor stop 超时。transport 增加只在 `CORE_APP_NET_TRANSPORT_TESTING` 下编译的 `core_app_net_transport_reactor_for_test` 与 `core_app_net_transport_reclaim_for_test`，生产行为不变。设计见 `docs/design/core_app_integration.md`「stop 超时 `leaked` 路径的单元测试」。
+- **修复**：无。`leaked` 路径此前只经代码审查，现在有测试覆盖；确认超时期间并发 step 不访问已销毁的 session manager。
+- **测试**：链接 RED → GREEN（network、ASan、TSan 树各 1/1）。四个变异（不置 `leaked`、去掉 `stop_timeout` trace、超时时保留 port file、超时返回 `OK`）均判红。network 树相关测试 41/41，normal 树合同与网络单元 12/12；正式 `core_app` 无 `_for_test` 符号。
+- **未做**：Windows 上没有这项测试（依赖 pthread 与 `break_net_test`）；CI 中开启 transport 的 job 仍被私有 Snowflake 仓库阻塞，因此该测试目前只在本地运行。
+
 ## Core App PSK 读取后删除环境变量（2026-11-15）
 
 - **交付**：`core_app_net_take_secret_env`（`core_app_network`）解码 `--psk-env` 指定的变量，解码后无论成败都从进程环境删除它，失败时清零输出。transport 的 `psk` 阶段改用它，原来的私有解码函数删除。设计见 `docs/design/core_app_integration.md` Task 10「PSK 读取后删除环境变量」。

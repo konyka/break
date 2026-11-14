@@ -860,6 +860,30 @@ fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未
 
 仍未做：结构感知变异；载荷文件本身不参与 libFuzzer 变异（固定四个载荷，只变异 manifest）。
 
+### 补充：stop 超时 `leaked` 路径的单元测试（2026-11-15）
+
+- 新增 `test_core_app_net_transport`（仅在 transport 编译且非 Windows 时构建）。它把 `core_app_net_transport.c`、`platform_fs.c`、`time.c` 直接编进测试，并链接 `break_net_test`，以便使用 `break_net_reactor_step_delay_for_test`。
+- transport 新增两个只在 `CORE_APP_NET_TRANSPORT_TESTING` 下编译的函数：
+  - `core_app_net_transport_reactor_for_test` 返回当前 reactor；
+  - `core_app_net_transport_reclaim_for_test` 在阻塞的 step 返回后停止并销毁保留的 reactor 和 acceptor，然后释放 transport。
+  正式 `core_app` 不定义这两个宏，`nm` 中 `_for_test` 符号数为 0。生产行为没有改动，stop 超时仍为 1000 ms。
+- 测试流程：用 Snowflake fixture 证书在 `127.0.0.1:0` 启动 transport，给下一次 step 注入 1500 ms 延迟，在另一线程调用 `break_net_reactor_step`，主线程调 `destroy`。断言如下：
+  - 返回 `TIMEOUT`；
+  - trace 中有 `event=network result=stop_timeout`；
+  - port file 已删除；
+  - reactor 指针保留且 `stop_pending`；
+  - 第二次 `destroy` 仍返回 `TIMEOUT`；
+  - `core_app_net_transport_free` 不释放内存。
+  step 线程 join 后，由 reclaim 清理，因此 ASan 不报泄漏。
+- 并发安全：`net_destroy` 在 stop 超时后才销毁 session manager。正在运行的 step 只调用 `break_net_drain_outbound` 和 `SnowNetThreadStep`，不回调 manager（manager 只在 `net_pump` 中被读取，而 `net_pump` 运行在调用 destroy 的同一线程）。TSan 树运行该测试没有报告。
+
+证据：
+
+- RED：只加测试与声明时链接失败（`undefined reference to core_app_net_transport_reactor_for_test`）。
+- GREEN：network 树 1/1，约 1.5 s；ASan 与 TSan 树各 1/1。
+- 变异各自判红，恢复后 `cmp` 一致：不置 `leaked`；改掉 `stop_timeout` trace；超时时保留 port file；超时返回 `OK`。
+- network 树 `core_app|break_net|break_session` 41/41（3 项按设计 Skipped）；normal 树 CI 合同、release config 与 `test_core_app_network` 12/12。
+
 ## Core App Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
 
 ### 变化
