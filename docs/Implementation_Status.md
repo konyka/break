@@ -1,3 +1,10 @@
+## Core App scenario 解析器 libFuzzer 入口（2026-11-15）
+
+- **交付**：`libfuzz_core_app_scenario`（`ENGINE_BUILD_LIBFUZZER=ON`）与 `libfuzz_core_app_scenario_run`（`fuzz;libfuzzer`，200000 次，`-max_len=70000`，种子为 `core_app_scenario_corpus`）。新增共用的 `check_accepted`：变异运行、libFuzzer 入口和 `--replay` 都检查最终 quit、tick 范围与顺序。CI 车道 `lane-libfuzzer-linux-clang` 同时构建两个 libFuzzer 目标。设计见 `docs/design/core_app_integration.md`「scenario 解析器的 libFuzzer 入口与被测模块插桩」。
+- **修复**：两个 libFuzzer 目标改为把被测源文件直接编进目标。之前链接的是未插桩的归档，覆盖反馈只来自测试文件（network 的 `cov` 从 53 升到 226）。
+- **测试**：链接 RED → GREEN（scenario `cov: 386 ft: 1566`）。去掉 tick 递减判断的变异被 libFuzzer 抓到（`event 1 has tick 4`）。normal、ASan 树 scenario/network fuzz 各 4/4，CI 合同 10/10。
+- **未做**：checkpoint fuzzer 的 libFuzzer 入口；结构感知 mutator。
+
 ## Core App libFuzzer 覆盖率引导（2026-11-15）
 
 - **交付**：新选项 `ENGINE_BUILD_LIBFUZZER`（仅 Clang）构建 `libfuzz_core_app_network`。它与 `fuzz_core_app_network --replay` 共用 `check_payload`，检查失败即 `abort()`。测试 `libfuzz_core_app_network_run`（`fuzz;libfuzzer` 标签）以固定种子跑 200000 次，种子为已提交 corpus。CI 新增 `lane-libfuzzer-linux-clang`（clang-18 + ASan/UBSan），镜像加装 `libclang-rt-18-dev`，候选 smoke 链接并运行空 fuzzer。设计见 `docs/design/core_app_integration.md` Task 12「libFuzzer 覆盖率引导」。

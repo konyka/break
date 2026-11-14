@@ -815,7 +815,23 @@ fuzz corpus 不落盘、无 libFuzzer 结构感知；`fuzz_core_app_network` 未
 - 变异：把 decode 的截断判断放宽一个实体（`size + CORE_APP_SNAPSHOT_ENTITY_BYTES < needed`），未加载种子 corpus 的 libFuzzer 运行报 `heap-buffer-overflow` 并退出 1。恢复后源文件与备份 `cmp` 一致。
 - normal 树 `fuzz_core_app_network_smoke`、`_corpus` 2/2；CI 合同 10/10（`test_ci_image_contract` 与 `test_ci_image_fix2` 的使用方数量改为 11，并要求新车道与镜像 smoke 存在）。
 
-仍未做：scenario 与 checkpoint fuzzer 的 libFuzzer 入口；结构感知变异（自定义 mutator）。
+仍未做：checkpoint fuzzer 的 libFuzzer 入口；结构感知变异（自定义 mutator）。
+
+### 补充：scenario 解析器的 libFuzzer 入口与被测模块插桩（2026-11-15）
+
+- `engine/tests/fuzz_core_app_scenario.c` 新增 `check_accepted`：接受的场景必须有事件、不超过 `CORE_APP_SCENARIO_MAX_EVENTS`、`has_quit` 且最后一个事件是 QUIT，tick 在 1..`CORE_APP_SCENARIO_MAX_TICK` 内且不递减。`parse_and_check`（变异运行与 libFuzzer）和 `--replay` 共用它，所以变异运行现在也检查 tick 顺序，之前只检查事件上限。
+- `CORE_APP_LIBFUZZER=1` 时导出 `LLVMFuzzerTestOneInput`：把输入拷到精确大小的堆缓冲区（不补 NUL，size 为 0 也分配），检查失败即 `abort()`。目标 `libfuzz_core_app_scenario`，测试 `libfuzz_core_app_scenario_run`：`-runs=200000 -seed=1 -max_len=70000`（大于 64 KiB 上限，能走到大小拒绝路径），种子为 `tests/data/core_app_scenario_corpus`。
+- 修正：两个 libFuzzer 目标都把被测源文件直接编进目标（`apps/core_app/scenario.c`、`apps/core_app/core_app_network.c`），不再链接 `core_app_runtime`/`core_app_network` 归档。归档是用普通选项编译的，没有 `-fsanitize=fuzzer` 的覆盖插桩，上一节的 `cov: 53` 只统计了测试文件本身。改后 `nm` 显示两个被测 .o 都含 `__sancov` 符号。
+- CI 车道 `lane-libfuzzer-linux-clang` 同时构建两个目标，`ctest -L libfuzzer` 跑两项。
+
+证据：
+
+- RED：只加 CMake 目标时链接失败（`multiple definition of main`、`undefined reference to LLVMFuzzerTestOneInput`）。
+- GREEN（clang 22，ASan/UBSan）：scenario `INITED cov: 349 ft: 790`，200000 次后 `cov: 386 ft: 1566`，约 9 s；network 改为插桩后 `INITED cov: 226`，`DONE ft: 716`。
+- 变异：把 `scenario.c` 的 tick 递减判断改成恒假（`... && tick == 0u`），libFuzzer 报 `fuzz_core_app_scenario: parse: event 1 has tick 4` 并 `deadly signal`。恢复后 `git diff` 为空，重跑 4/4。
+- normal 树与 ASan 树 `fuzz_core_app_{scenario,network}_{smoke,corpus}` 各 4/4；CI 合同 10/10。
+
+仍未做：checkpoint fuzzer 的 libFuzzer 入口（涉及临时目录与文件 IO）；结构感知变异。
 
 ## Core App Task 11（slice 1）：真实窗口设备通道、截图写盘与截图事件（2026-11-14）
 
