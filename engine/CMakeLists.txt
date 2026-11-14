@@ -7320,14 +7320,16 @@ endif()
             # Same checks as fuzz_core_app_network, driven by libFuzzer's
             # coverage feedback. New inputs go to a build-tree directory; the
             # checked-in corpus is only read, as the seed set.
+            # The module under test is compiled into the target (not linked from
+            # its archive) so it carries the coverage instrumentation too.
             add_executable(libfuzz_core_app_network EXCLUDE_FROM_ALL
-                tests/fuzz_core_app_network.c)
+                tests/fuzz_core_app_network.c apps/core_app/core_app_network.c)
             target_compile_definitions(libfuzz_core_app_network PRIVATE CORE_APP_LIBFUZZER=1)
             target_compile_options(libfuzz_core_app_network PRIVATE
                 -fsanitize=fuzzer -Wno-unused-function)
             target_link_options(libfuzz_core_app_network PRIVATE -fsanitize=fuzzer)
             target_include_directories(libfuzz_core_app_network PRIVATE ${TEST_INCLUDE_DIRS})
-            target_link_libraries(libfuzz_core_app_network PRIVATE core_app_network m)
+            target_link_libraries(libfuzz_core_app_network PRIVATE m)
             set(_libfuzz_network_dir ${CMAKE_CURRENT_BINARY_DIR}/libfuzz_core_app_network_corpus)
             file(MAKE_DIRECTORY ${_libfuzz_network_dir})
             add_test(NAME libfuzz_core_app_network_run
@@ -7335,6 +7337,25 @@ endif()
                     ${_libfuzz_network_dir}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_network_corpus)
             set_tests_properties(libfuzz_core_app_network_run PROPERTIES
+                LABELS "fuzz;libfuzzer" TIMEOUT 300)
+            # Scenario parser: same accept/reject checks as fuzz_core_app_scenario.
+            # max_len is above CORE_APP_SCENARIO_MAX_BYTES so the size cap is reached.
+            add_executable(libfuzz_core_app_scenario EXCLUDE_FROM_ALL
+                tests/fuzz_core_app_scenario.c apps/core_app/scenario.c)
+            target_compile_definitions(libfuzz_core_app_scenario PRIVATE CORE_APP_LIBFUZZER=1)
+            target_compile_options(libfuzz_core_app_scenario PRIVATE
+                -fsanitize=fuzzer -Wno-unused-function -Wno-unused-variable
+                -Wno-unused-const-variable)
+            target_link_options(libfuzz_core_app_scenario PRIVATE -fsanitize=fuzzer)
+            target_include_directories(libfuzz_core_app_scenario PRIVATE ${TEST_INCLUDE_DIRS})
+            target_link_libraries(libfuzz_core_app_scenario PRIVATE m)
+            set(_libfuzz_scenario_dir ${CMAKE_CURRENT_BINARY_DIR}/libfuzz_core_app_scenario_corpus)
+            file(MAKE_DIRECTORY ${_libfuzz_scenario_dir})
+            add_test(NAME libfuzz_core_app_scenario_run
+                COMMAND libfuzz_core_app_scenario -runs=200000 -seed=1 -max_len=70000
+                    ${_libfuzz_scenario_dir}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_scenario_corpus)
+            set_tests_properties(libfuzz_core_app_scenario_run PROPERTIES
                 LABELS "fuzz;libfuzzer" TIMEOUT 300)
         endif()
         if(BREAK_ENABLE_SNOWFLAKE)

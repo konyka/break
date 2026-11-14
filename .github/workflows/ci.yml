@@ -169,7 +169,7 @@ jobs:
       # checked-in samples, so the run is reproducible from the commit alone.
       - name: libFuzzer (ASan/UBSan)
         run: |
-          cmake --build build --parallel --target libfuzz_core_app_network
+          cmake --build build --parallel --target libfuzz_core_app_network libfuzz_core_app_scenario
           ctest --test-dir build -L libfuzzer --output-on-failure
 
       - uses: actions/upload-artifact@v6

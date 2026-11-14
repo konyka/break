@@ -11,11 +11,18 @@
  *   fuzz_core_app_scenario --emit-corpus <dir>   write the fixed text samples
  *   fuzz_core_app_scenario --replay <file>...    load each sample through
  *       core_app_scenario_load and check it against its `accept-` or
- *       `reject-` file prefix; both prefixes must appear at least once. */
+ *       `reject-` file prefix; both prefixes must appear at least once.
+ *
+ * Built with CORE_APP_LIBFUZZER=1 (target libfuzz_core_app_scenario) the file
+ * instead exports LLVMFuzzerTestOneInput: each input is one scenario text,
+ * copied to a buffer of exactly its size (no trailing NUL) and checked like a
+ * mutation-run document. An accepted text must also pass the replay accept
+ * checks (final quit, tick range and order). A failed check aborts. */
 
 #include "../apps/core_app/scenario.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,19 +65,39 @@ static void copy_scenario(char *out, size_t capacity, const char *text) {
     out[length] = '\0';
 }
 
+/* An accepted scenario ends in exactly one quit, stays within the event
+   limit, and has ticks in 1..MAX_TICK that never decrease. Returns 0 when it
+   holds and prints the first violation otherwise. */
+static int check_accepted(const CoreAppScenario *scenario, const char *label) {
+    if (scenario->event_count == 0u ||
+        scenario->event_count > CORE_APP_SCENARIO_MAX_EVENTS || !scenario->has_quit ||
+        !scenario->events ||
+        scenario->events[scenario->event_count - 1u].kind != CORE_APP_SCENARIO_QUIT) {
+        fprintf(stderr, "fuzz_core_app_scenario: %s: accepted %u events without a final quit\n",
+                label, scenario->event_count);
+        return 1;
+    }
+    u32 last = 0u;
+    for (u32 i = 0u; i < scenario->event_count; ++i) {
+        u32 tick = scenario->events[i].tick;
+        if (tick == 0u || tick > CORE_APP_SCENARIO_MAX_TICK || tick < last) {
+            fprintf(stderr, "fuzz_core_app_scenario: %s: event %u has tick %u\n", label, i,
+                    tick);
+            return 1;
+        }
+        last = tick;
+    }
+    return 0;
+}
+
 static long parse_and_check(const char *text, usize size) {
     CoreAppScenario scenario;
     memset(&scenario, 0, sizeof(scenario));
     CoreAppScenarioStatus status = core_app_scenario_parse(text, size, &scenario);
     if (status == CORE_APP_SCENARIO_OK) {
-        if (scenario.event_count > CORE_APP_SCENARIO_MAX_EVENTS) {
-            fprintf(stderr, "fuzz_core_app_scenario: accepted %u events over the limit\n",
-                    scenario.event_count);
-            free(scenario.events);
-            return -1;
-        }
+        int bad = check_accepted(&scenario, "parse");
         free(scenario.events);
-        return 1;
+        return bad ? -1 : 1;
     }
     if (scenario.event_count != 0u) {
         fprintf(stderr,
@@ -120,25 +147,9 @@ static int replay_one(const char *path, int *accepted, int *rejected) {
     if (status != CORE_APP_SCENARIO_OK) {
         fprintf(stderr, "fuzz_core_app_scenario: %s: status=%d, expected OK\n", path,
                 (int)status);
-    } else if (scenario.event_count == 0u ||
-               scenario.event_count > CORE_APP_SCENARIO_MAX_EVENTS || !scenario.has_quit ||
-               scenario.events[scenario.event_count - 1u].kind != CORE_APP_SCENARIO_QUIT) {
-        fprintf(stderr, "fuzz_core_app_scenario: %s: accepted %u events without a final quit\n",
-                path, scenario.event_count);
-    } else {
+    } else if (check_accepted(&scenario, path) == 0) {
         rc = 0;
-        u32 last = 0u;
-        for (u32 i = 0u; i < scenario.event_count; ++i) {
-            u32 tick = scenario.events[i].tick;
-            if (tick == 0u || tick > CORE_APP_SCENARIO_MAX_TICK || tick < last) {
-                fprintf(stderr, "fuzz_core_app_scenario: %s: event %u has tick %u\n", path, i,
-                        tick);
-                rc = 1;
-                break;
-            }
-            last = tick;
-        }
-        if (rc == 0) (*accepted)++;
+        (*accepted)++;
     }
     free(scenario.events);
     return rc;
@@ -290,6 +301,18 @@ static int emit_corpus(const char *dir) {
     return rc;
 }
 
+#if CORE_APP_LIBFUZZER
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    char *text = (char *)malloc(size ? size : 1u);
+    if (!text) abort();
+    if (size) memcpy(text, data, size);
+    long result = parse_and_check(text, (usize)size);
+    free(text);
+    if (result < 0) abort();
+    return 0;
+}
+#else
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--replay") == 0) return replay_corpus(argc - 2, argv + 2);
     if (argc == 3 && strcmp(argv[1], "--emit-corpus") == 0) return emit_corpus(argv[2]);
@@ -363,3 +386,4 @@ int main(int argc, char **argv) {
            iterations, built, accepted, rejected);
     return 0;
 }
+#endif
