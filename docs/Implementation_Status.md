@@ -11241,3 +11241,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - New module `engine/src/physics/physics_sync.{h,c}`, linked into `engine`. It has a 16-byte little-endian report (`PSYN`, tick u32, hash u64) and a `PhysicsSyncTracker` that keeps the last 64 local `(tick, physics_state_hash)` pairs and returns MATCH, DESYNC or UNKNOWN for a remote hash. The first desync tick stays latched until the next init.
 - Test `test_physics_sync` passes 4/4, and all 26 mutations are caught. This module only detects divergence. It does not transfer or correct state, and it is not connected to the network layer yet.
+
+### 2026-11-15 physics desync correction packet
+
+- `physics_sync` 新增修正包，格式是 16 字节头（`PSNP`、tick、payload 长度、FNV-1a 32 校验和）加物理快照。权威端发现 DESYNC 后发送修正包；另一端 `physics_sync_apply_correction` 校验魔数、精确长度和校验和后恢复世界，并把 tracker 重置到该 tick 的哈希。任何失败都不改世界和 tracker。
+- `test_physics_sync` 6/6；新增代码 21 项变异中 20 项被捕获，存活的是短包长度防护（不可观察的越界读防护，保留）。仍未接入网络层；跨平台确定性仍缺。

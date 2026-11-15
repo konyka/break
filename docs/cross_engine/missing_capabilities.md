@@ -223,3 +223,4 @@
 - **第 15 节（在线更新）**
   - `break_http` 支持可选的 SPKI SHA-256 钉扎，最多 8 个 pin，在 TLS 握手成功后比较（`21fd9e02`）。见 [`docs/design/update_transport.md`](../design/update_transport.md)。
   - 仍缺：代理、证书吊销（CRL/OCSP）、HTTP/2；发布二进制仍没有链接 `break_http`。
+- **第 9 节（物理）追加**：`physics_sync` 提供基于 `physics_state_hash` 的 desync 检测报文和快照修正包（`a33587ea` 及后续提交）。它解决的是「发现分歧并整体恢复」，还不是增量状态同步，也没有接入网络层。

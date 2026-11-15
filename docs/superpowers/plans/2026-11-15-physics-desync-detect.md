@@ -44,3 +44,19 @@ Done. `test_physics_sync` 4/4. Mutation run over `physics_sync.c`: 26 of 26
 killed. While simplifying the tracker, a new RED case showed that an
 unwritten ring slot (tick 0, hash 0) matched a report for tick 0; each slot
 now has a `valid` flag.
+
+## Status（第二步：快照修正包）
+
+Done. Added a correction packet: 16-byte header (`PSNP`, tick, payload
+bytes, FNV-1a 32 checksum) plus a `physics_snapshot_save` payload.
+`physics_sync_apply_correction` validates magic, exact length and checksum,
+restores the world, and resets the tracker to `(tick, restored hash)`, which
+clears the desync latch. Any failure leaves the world, tracker and output
+tick unchanged, including a restore into a world with too little capacity.
+
+`test_physics_sync` 6/6. Mutation run over the new code: 20 of 21 killed.
+The survivor removes the `size < header` guard; without it a short packet is
+still rejected by the payload-length compare, but only after reading past
+the buffer, so the guard stays as a memory-safety check that the test cannot
+observe without a sanitizer. The unreachable failure branch after
+`physics_snapshot_save` (capacity is checked first) was removed.
