@@ -11228,3 +11228,11 @@ New `engine/src/physics/physics_replay.{h,c}` (added to the `engine` library). I
 Tests: `test_physics_replay` (4/4) covers encode/decode round trip and replay, a changed impulse diverging at the next step (record 12), a corrupted stored hash diverging at that record, rejected recording inputs and malformed data. Mutation check: 33 mutations over every validation, every encoded and decoded field, byte order, hash comparison and the divergence index; all fail a test. Full ctest: 402/402 (`build-core-app-master`).
 
 Still missing: cross-platform determinism, physics network sync and a parallel solver. Design note: `docs/design/physics_extended.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-physics-input-replay.md`.
+
+### 2026-11-15 break_http public-key pinning
+
+`BreakHttpConfig` gains optional `spki_sha256_pins` / `spki_pin_count` (up to 8 SHA-256 digests of the leaf certificate's DER SubjectPublicKeyInfo). The pin check runs only after the handshake and the CA and host name checks pass, so a pin narrows trust and never replaces it. A leaf key outside the list is `BHTTP_ERR_TLS`; a count above 8, or a non-zero count with a NULL pointer, is `BHTTP_ERR_URL` before any socket. With count 0 behaviour is unchanged. Comparison uses `CRYPTO_memcmp`.
+
+Tests: 6 new tests in `engine/tests/test_break_http.c` (43/43): a match on the second listed pin, a mismatch, a matching pin with the wrong CA, argument validation, a stalled handshake that stays a TIMEOUT, and loopback http ignoring pins. Mutation check: 8 mutations (skipping the zero-count shortcut, forcing the comparison, checking only the first pin, a zero pin stride, dropping either argument check, skipping the check call, checking before the handshake result); all fail a test. A digest-length check was removed because SHA-256 always yields 32 bytes and no test could observe it. Full ctest: 402/402 (`build-core-app-master`).
+
+Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a shipped binary that links `break_http`. Design note: `docs/design/update_transport.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-http-spki-pinning.md`.

@@ -5,7 +5,9 @@
 #endif
 #include <net_http/break_http.h>
 
+#include <openssl/crypto.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
@@ -449,6 +451,37 @@ static BreakHttpError tls_handshake(Conn *c, const Url *u) {
     return BHTTP_OK;
 }
 
+/* Runs after CA and host name verification have passed. The leaf key must be
+ * one of the configured pins; a pin only narrows trust. */
+static BreakHttpError tls_check_pins(const Conn *c, const BreakHttpConfig *cfg) {
+    X509 *leaf;
+    unsigned char *der = NULL;
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0u;
+    BreakHttpError e = BHTTP_ERR_TLS;
+    int n;
+    if (cfg->spki_pin_count == 0u) return BHTTP_OK;
+#if defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 3
+    leaf = SSL_get1_peer_certificate(c->ssl);
+#else
+    leaf = SSL_get_peer_certificate(c->ssl);
+#endif
+    if (leaf == NULL) return BHTTP_ERR_TLS;
+    n = i2d_X509_PUBKEY(X509_get_X509_PUBKEY(leaf), &der);
+    if (n > 0 && EVP_Digest(der, (size_t)n, digest, &digest_len, EVP_sha256(), NULL) == 1) {
+        for (u32 i = 0u; i < cfg->spki_pin_count; ++i) {
+            if (CRYPTO_memcmp(digest, cfg->spki_sha256_pins + (usize)i * BREAK_HTTP_PIN_BYTES,
+                              BREAK_HTTP_PIN_BYTES) == 0) {
+                e = BHTTP_OK;
+                break;
+            }
+        }
+    }
+    OPENSSL_free(der);
+    X509_free(leaf);
+    return e;
+}
+
 /* ---------------- response head ---------------- */
 
 typedef struct {
@@ -619,6 +652,10 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
     if (connect_ms > BREAK_HTTP_MAX_IO_MS || io_ms > BREAK_HTTP_MAX_IO_MS) return BHTTP_ERR_URL;
     if (u->https) {
         if (cfg == NULL || cfg->ca_file == NULL || cfg->ca_file[0] == '\0') return BHTTP_ERR_URL;
+        if (cfg->spki_pin_count > BREAK_HTTP_MAX_PINS ||
+            (cfg->spki_pin_count != 0u && cfg->spki_sha256_pins == NULL)) {
+            return BHTTP_ERR_URL;
+        }
         c.ctx = tls_ctx_new(cfg->ca_file);
         if (c.ctx == NULL) {
             ERR_clear_error();
@@ -633,6 +670,7 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
     c.deadline = now_ms() + io_ms;
     if (u->https) {
         e = tls_handshake(&c, u);
+        if (e == BHTTP_OK) e = tls_check_pins(&c, cfg);
         if (e != BHTTP_OK) goto done;
     }
 

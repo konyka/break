@@ -794,6 +794,121 @@ TEST(https_with_the_wrong_ca_is_a_tls_error) {
     ASSERT_EQ(tls_get("localhost", KEY, true, buf, sizeof(buf), &got), BHTTP_ERR_TLS);
 }
 
+/* ---- SPKI pinning ---- */
+
+static bool fixture_spki_sha256(u8 out[BREAK_HTTP_PIN_BYTES]) {
+    FILE *f = fopen(CERT, "rb");
+    X509 *x;
+    unsigned char *der = NULL;
+    unsigned int len = 0u;
+    int n;
+    bool ok;
+    if (f == NULL) return false;
+    x = PEM_read_X509(f, NULL, NULL, NULL);
+    fclose(f);
+    if (x == NULL) return false;
+    n = i2d_X509_PUBKEY(X509_get_X509_PUBKEY(x), &der);
+    ok = n > 0 && EVP_Digest(der, (size_t)n, out, &len, EVP_sha256(), NULL) == 1 &&
+         len == BREAK_HTTP_PIN_BYTES;
+    OPENSSL_free(der);
+    X509_free(x);
+    return ok;
+}
+
+static BreakHttpError pinned_get(bool tls, const char *ca, const u8 *pins, u32 count) {
+    Server s;
+    char url[128];
+    u8 buf[16];
+    u64 got = 0;
+    BreakHttpConfig cfg;
+    BreakHttpError e;
+    static const char r[] = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = ca;
+    cfg.io_timeout_ms = 3000;
+    cfg.spki_sha256_pins = pins;
+    cfg.spki_pin_count = count;
+    if (!server_start(&s, tls, r, sizeof(r) - 1u)) return BHTTP_ERR_CONNECT;
+    server_go(&s);
+    url_of(&s, tls ? "https" : "http", tls ? "localhost" : "127.0.0.1", "/x", url, sizeof(url));
+    e = break_http_get(&cfg, url, buf, sizeof(buf), &got);
+    server_stop(&s);
+    if (e == BHTTP_OK && (got != 5u || memcmp(buf, "hello", 5) != 0)) return BHTTP_ERR_PROTOCOL;
+    return e;
+}
+
+TEST(https_accepts_a_leaf_key_listed_in_the_pins) {
+    u8 pins[2u * BREAK_HTTP_PIN_BYTES];
+    memset(pins, 0x11, sizeof(pins));
+    ASSERT_TRUE(fixture_spki_sha256(pins + BREAK_HTTP_PIN_BYTES));
+    ASSERT_EQ(pinned_get(true, CERT, pins, 2u), BHTTP_OK);
+    ASSERT_EQ(pinned_get(true, CERT, pins + BREAK_HTTP_PIN_BYTES, 1u), BHTTP_OK);
+}
+
+TEST(https_rejects_a_leaf_key_outside_the_pins) {
+    u8 pins[2u * BREAK_HTTP_PIN_BYTES];
+    ASSERT_TRUE(fixture_spki_sha256(pins));
+    pins[BREAK_HTTP_PIN_BYTES - 1u] ^= 0x01u;
+    memset(pins + BREAK_HTTP_PIN_BYTES, 0x22, BREAK_HTTP_PIN_BYTES);
+    ASSERT_EQ(pinned_get(true, CERT, pins, 2u), BHTTP_ERR_TLS);
+    ASSERT_EQ(pinned_get(true, CERT, pins, 0u), BHTTP_OK);
+}
+
+TEST(a_matching_pin_does_not_replace_ca_verification) {
+    u8 pin[BREAK_HTTP_PIN_BYTES];
+    ASSERT_TRUE(fixture_spki_sha256(pin));
+    ASSERT_EQ(pinned_get(true, KEY, pin, 1u), BHTTP_ERR_TLS);
+}
+
+TEST(pin_arguments_are_validated_before_any_socket) {
+    u8 pins[(BREAK_HTTP_MAX_PINS + 1u) * BREAK_HTTP_PIN_BYTES];
+    u8 buf[8];
+    u64 got = 0;
+    BreakHttpConfig cfg;
+    memset(pins, 0, sizeof(pins));
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = CERT;
+    cfg.spki_sha256_pins = pins;
+    cfg.spki_pin_count = BREAK_HTTP_MAX_PINS + 1u;
+    ASSERT_EQ(break_http_get(&cfg, "https://localhost:1/x", buf, sizeof(buf), &got), BHTTP_ERR_URL);
+    cfg.spki_pin_count = 1u;
+    cfg.spki_sha256_pins = NULL;
+    ASSERT_EQ(break_http_get(&cfg, "https://localhost:1/x", buf, sizeof(buf), &got), BHTTP_ERR_URL);
+    cfg.spki_sha256_pins = pins;
+    cfg.spki_pin_count = BREAK_HTTP_MAX_PINS;
+    ASSERT_EQ(break_http_get(&cfg, "https://localhost:1/x", buf, sizeof(buf), &got), BHTTP_ERR_CONNECT);
+}
+
+TEST(a_handshake_timeout_with_pins_stays_a_timeout) {
+    /* The pin check runs only after a completed handshake, so a stalled
+     * handshake keeps its TIMEOUT instead of turning into a pin failure. */
+    Server s;
+    char url[128];
+    u8 buf[8];
+    u8 pin[BREAK_HTTP_PIN_BYTES];
+    u64 got = 0;
+    BreakHttpConfig cfg;
+    ASSERT_TRUE(fixture_spki_sha256(pin));
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = CERT;
+    cfg.io_timeout_ms = 400;
+    cfg.spki_sha256_pins = pin;
+    cfg.spki_pin_count = 1u;
+    ASSERT_TRUE(server_start(&s, false, "", 0u));
+    s.stall_after_reply = true;
+    s.linger_ms = 600;
+    server_go(&s);
+    url_of(&s, "https", "localhost", "/x", url, sizeof(url));
+    ASSERT_EQ(break_http_get(&cfg, url, buf, sizeof(buf), &got), BHTTP_ERR_TIMEOUT);
+    server_stop(&s);
+}
+
+TEST(pins_are_ignored_for_loopback_http) {
+    u8 pin[BREAK_HTTP_PIN_BYTES];
+    memset(pin, 0x33, sizeof(pin));
+    ASSERT_EQ(pinned_get(false, NULL, pin, 1u), BHTTP_OK);
+}
+
 /* ---- in-process certificate generation (wrong name / expired) ---- */
 
 static void tmp_file(char *out, size_t cap, const char *tag) {
@@ -1064,6 +1179,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(https_succeeds_when_the_certificate_matches_the_ca_and_the_host);
     RUN_TEST(https_to_an_ip_literal_fails_because_the_certificate_has_no_ip_san);
     RUN_TEST(https_with_the_wrong_ca_is_a_tls_error);
+    RUN_TEST(https_accepts_a_leaf_key_listed_in_the_pins);
+    RUN_TEST(https_rejects_a_leaf_key_outside_the_pins);
+    RUN_TEST(a_matching_pin_does_not_replace_ca_verification);
+    RUN_TEST(pin_arguments_are_validated_before_any_socket);
+    RUN_TEST(a_handshake_timeout_with_pins_stays_a_timeout);
+    RUN_TEST(pins_are_ignored_for_loopback_http);
     RUN_TEST(a_valid_generated_certificate_for_localhost_is_accepted_control);
     RUN_TEST(a_trusted_certificate_for_another_name_is_rejected);
     RUN_TEST(an_expired_certificate_is_rejected);

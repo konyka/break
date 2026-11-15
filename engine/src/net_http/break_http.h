@@ -48,10 +48,21 @@ extern "C" {
 #define BREAK_HTTP_MAX_HEAD 8192u
 #define BREAK_HTTP_MAX_HEADERS 64u
 
+#define BREAK_HTTP_MAX_PINS 8u
+#define BREAK_HTTP_PIN_BYTES 32u
+
 typedef struct BreakHttpConfig {
     const char *ca_file;      /* PEM bundle; required for https, ignored for http */
     u32 connect_timeout_ms;   /* 0 = default */
     u32 io_timeout_ms;        /* 0 = default; total for handshake + request + response */
+    /* Optional public-key pins: spki_pin_count SHA-256 digests (32 bytes
+     * each, back to back) of the leaf certificate's DER SubjectPublicKeyInfo.
+     * Checked only after CA and host name verification succeed, so a pin
+     * narrows trust and never replaces it. A leaf key outside the list is
+     * ERR_TLS. A count above BREAK_HTTP_MAX_PINS, or a non-zero count with a
+     * NULL pointer, is ERR_URL before any socket. Ignored for loopback http. */
+    const u8 *spki_sha256_pins;
+    u32 spki_pin_count;
 } BreakHttpConfig;
 
 typedef enum BreakHttpError {

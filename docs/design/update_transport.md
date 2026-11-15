@@ -60,3 +60,15 @@ Mutations that turn it red: the server ignoring Range, the client ignoring the p
 - Certificate revocation checking (CRL/OCSP), certificate pinning, and any custody of the offline signing key (unchanged from `update_client.md`).
 - Interruptible DNS.
 - Wiring into the editor or an application: nothing in this repository links `break_http` yet, so no shipped binary downloads updates.
+
+## 补充（2026-11-15）：公钥钉扎
+
+`BreakHttpConfig` 新增可选字段 `spki_sha256_pins` 和 `spki_pin_count`：`spki_pin_count` 个连续 32 字节摘要，每个是叶子证书 DER SubjectPublicKeyInfo 的 SHA-256。上文「不支持证书钉扎」一项由此改为已支持；吊销检查（CRL/OCSP）仍未实现。
+
+- count 为 0 时行为与原来完全相同。
+- 钉扎在握手、CA 校验和主机名校验全部通过之后才检查，只能收紧信任，不能替代 CA 校验：用错误 CA 加正确钉扎仍是 `ERR_TLS`。
+- 叶子公钥不在列表中：`ERR_TLS`。握手超时仍报 `ERR_TIMEOUT`，不会变成钉扎失败。
+- count 大于 `BREAK_HTTP_MAX_PINS`（8），或 count 非 0 而指针为 NULL：在建立任何 socket 之前返回 `ERR_URL`。
+- 比较使用 `CRYPTO_memcmp`。明文 http（仅 loopback）忽略钉扎。
+
+测试在 `engine/tests/test_break_http.c`：列表第二项匹配时通过、不匹配为 TLS 错误、钉扎不能绕过错误 CA、参数校验、握手超时、loopback http 忽略钉扎。
