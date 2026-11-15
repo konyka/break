@@ -4,6 +4,7 @@
 
 #include "test_framework.h"
 #include <core/profiler.h>
+#include <core/trace_schema.h>
 #include <platform/time.h>
 #include <stdio.h>
 #include <string.h>
@@ -434,6 +435,93 @@ TEST(profiler_export_chrome_trace)
     ASSERT_NOT_NULL(strstr(buf, "gpu_test"));
 }
 
+static usize read_trace_file(const char *path, char *buf, usize capacity) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return 0u;
+    usize n = fread(buf, 1, capacity - 1u, fp);
+    fclose(fp);
+    buf[n] = '\0';
+    return n;
+}
+
+static usize count_substr(const char *haystack, const char *needle) {
+    usize count = 0u;
+    usize len = strlen(needle);
+    for (const char *p = strstr(haystack, needle); p; p = strstr(p + len, needle)) count++;
+    return count;
+}
+
+/* Every "cat" value must be one of the schema categories. */
+static bool trace_categories_known(const char *buf) {
+    static const char *const known[] = {
+        BREAK_TRACE_CAT_CPU, BREAK_TRACE_CAT_FRAME, BREAK_TRACE_CAT_GPU,
+        BREAK_TRACE_CAT_META, BREAK_TRACE_CAT_RUNTIME, BREAK_TRACE_CAT_RUNTIME_FLOW};
+    const char *key = "\"cat\":\"";
+    for (const char *p = strstr(buf, key); p; p = strstr(p + 1, key)) {
+        const char *value = p + strlen(key);
+        const char *end = strchr(value, '"');
+        if (!end) return false;
+        bool found = false;
+        for (usize i = 0u; i < sizeof(known) / sizeof(known[0]); ++i) {
+            if (strlen(known[i]) == (usize)(end - value) &&
+                strncmp(known[i], value, (usize)(end - value)) == 0) {
+                found = true;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+static bool trace_schema_ok(const char *buf, usize n) {
+    return count_substr(buf, BREAK_TRACE_OTHER_DATA) == 1u &&
+           n >= 3u && strcmp(buf + n - 3u, "}}\n") == 0 && trace_categories_known(buf);
+}
+
+TEST(profiler_export_marks_trace_schema)
+{
+    profiler_reset();
+    profiler_set_enabled(true);
+    profiler_begin_frame();
+    profiler_push("schema_region");
+    profiler_pop();
+    profiler_end_frame();
+    const ProfilerFrame *f = profiler_last_frame();
+    ASSERT_NOT_NULL(f);
+
+    ProfilerGpuRegion gpu[1] = { { "schema_gpu", 0.5 } };
+    ProfilerMetaInstant meta[1] = { { "schema_meta", "v" } };
+    static char buf[16384];
+    char path[64];
+    test_tmp(path, sizeof path, "profiler_schema_trace.json");
+
+    ASSERT_STR_EQ(BREAK_TRACE_SCHEMA_NAME, "break.trace");
+    ASSERT_EQ(BREAK_TRACE_SCHEMA_VERSION, 1);
+    ASSERT_STR_EQ(BREAK_TRACE_OTHER_DATA,
+                  "\"otherData\":{\"schema\":\"break.trace\",\"schema_version\":1}");
+    ASSERT_STR_EQ(BREAK_TRACE_CAT_CPU, "cpu");
+    ASSERT_STR_EQ(BREAK_TRACE_CAT_FRAME, "frame");
+    ASSERT_STR_EQ(BREAK_TRACE_CAT_GPU, "gpu");
+    ASSERT_STR_EQ(BREAK_TRACE_CAT_META, "meta");
+    ASSERT_STR_EQ(BREAK_TRACE_CAT_RUNTIME, "runtime");
+    ASSERT_STR_EQ(BREAK_TRACE_CAT_RUNTIME_FLOW, "runtime.flow");
+
+    ASSERT_TRUE(profiler_export_chrome_trace(path, f, gpu, 1, meta, 1));
+    usize n = read_trace_file(path, buf, sizeof buf);
+    remove(path);
+    ASSERT_TRUE(n > 0u && n < sizeof buf - 1u);
+    ASSERT_TRUE(trace_schema_ok(buf, n));
+    ASSERT_NOT_NULL(strstr(buf, "\"cat\":\"" BREAK_TRACE_CAT_GPU "\""));
+    ASSERT_NOT_NULL(strstr(buf, "\"cat\":\"" BREAK_TRACE_CAT_META "\""));
+
+    ASSERT_TRUE(profiler_export_chrome_trace_ring(path, gpu, 1, meta, 1));
+    n = read_trace_file(path, buf, sizeof buf);
+    remove(path);
+    ASSERT_TRUE(n > 0u && n < sizeof buf - 1u);
+    ASSERT_TRUE(trace_schema_ok(buf, n));
+    ASSERT_NOT_NULL(strstr(buf, "\"cat\":\"" BREAK_TRACE_CAT_FRAME "\""));
+}
+
 TEST(profiler_export_provenance_sidecar)
 {
     ProfilerProvenance provenance = {
@@ -680,6 +768,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(profiler_export_chrome_trace);
     RUN_TEST(profiler_export_provenance_sidecar);
     RUN_TEST(profiler_export_chrome_meta);
+    RUN_TEST(profiler_export_marks_trace_schema);
     RUN_TEST(profiler_export_reports_close_failure);
     /* R434: per-thread sampling */
 #ifdef ENGINE_PLATFORM_LINUX

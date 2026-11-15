@@ -311,3 +311,10 @@ Slice A 的 target 边界与 Slice B/C/D 的首批基元已交付（2026-10-22/2
 - 只出现一次的 `cid` 只输出 slice；不带关联 ID 的条目不输出。
 - 时间戳为 `ts_us - base_us`，下限截到 0。事件名做 JSON 转义。
 - 该函数只能在 owner 线程调用，否则返回 REJECTED。缓冲区不足时返回 OVERLOAD，`*out_len` 给出所需字节数，`buf` 置空。
+
+### 2026-11-15 addendum: trace schema
+
+- 引擎写出的 Chrome trace JSON 统一使用 `engine/src/core/trace_schema.h` 中的定义：schema 名 `break.trace`，版本 `1`。
+- 类别固定为 6 个：`cpu`、`frame`、`gpu`、`meta`、`runtime`、`runtime.flow`，分别对应 `BREAK_TRACE_CAT_*` 常量；导出代码不再内联类别字面量。
+- `profiler_export_chrome_trace` 和 `profiler_export_chrome_trace_ring` 写完整文档，结尾为 `],"otherData":{"schema":"break.trace","schema_version":1}}`。`otherData` 属于 Chrome Trace Event Format，查看器照常加载。
+- `break_runtime_profiler_export_flows` 只输出要拼进调用方 `traceEvents` 数组的事件片段，所以不带 marker，由外层文档提供。

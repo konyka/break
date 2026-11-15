@@ -1,6 +1,7 @@
 #include <runtime/runtime_profiler.h>
 
 #include <core/platform_thread.h>
+#include <core/trace_schema.h>
 #include <platform/time.h>
 #include <runtime/runtime_test_hooks.h>
 
@@ -383,7 +384,7 @@ BreakRuntimeError break_runtime_profiler_export_flows(
         runtime_profiler_flow_puts(&w, "{\"name\":\"");
         runtime_profiler_flow_put_escaped(&w, event->name);
         snprintf(field, sizeof(field),
-                 "\",\"cat\":\"runtime\",\"ph\":\"X\",\"ts\":%llu,\"dur\":1,"
+                 "\",\"cat\":\"" BREAK_TRACE_CAT_RUNTIME "\",\"ph\":\"X\",\"ts\":%llu,\"dur\":1,"
                  "\"pid\":1,\"tid\":%u,\"args\":{\"cid\":%llu}}",
                  (unsigned long long)ts, event->tid, (unsigned long long)cid);
         runtime_profiler_flow_puts(&w, field);
@@ -393,7 +394,7 @@ BreakRuntimeError break_runtime_profiler_export_flows(
         }
         phase = !has_earlier ? "s" : (has_later ? "t" : "f");
         snprintf(field, sizeof(field),
-                 ",\n{\"name\":\"correlation\",\"cat\":\"runtime.flow\","
+                 ",\n{\"name\":\"correlation\",\"cat\":\"" BREAK_TRACE_CAT_RUNTIME_FLOW "\","
                  "\"ph\":\"%s\",\"id\":%llu,\"ts\":%llu,\"pid\":1,\"tid\":%u,"
                  "\"bp\":\"e\"}",
                  phase, (unsigned long long)cid, (unsigned long long)ts,

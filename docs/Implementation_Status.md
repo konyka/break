@@ -11276,3 +11276,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - 对端报告 DESYNC 后，core_app 在下一 tick 编码当前物理世界的 `physics_sync` 修正包，以 `0x4003` 只发给报告 desync 的已认证连接；多次 desync 合并为一次修正，`network_stats` 追加 `physics_corrections_sent`。
 - `test_core_app_network_loopback` 先 RED（`a_received_physics_correction` FAIL），实现后通过；新增第二个认证对端 A2 证明修正不会发给未报告 desync 的连接；8 项变异全部被捕获。对端收到后调用 `physics_sync_apply_correction` 恢复的客户端运行时还没有。
+
+### 2026-11-15 trace schema marker for chrome traces
+
+- 新增 `engine/src/core/trace_schema.h`：schema `break.trace` v1 和 6 个类别常量。`core/profiler.c` 两个导出函数在文档结尾写 `otherData` marker；`runtime/runtime_profiler.c` 的 flow 片段改用类别常量。
+- `test_profiler` 新增 `profiler_export_marks_trace_schema`（先 RED，后 GREEN），`test_runtime_reload` 的 flow 测试补充类别计数；6 项变异全部被捕获。跨进程/网络 trace 合并和 core_app 文本 trace 还没纳入该 schema。

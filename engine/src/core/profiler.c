@@ -1,4 +1,5 @@
 #include <core/profiler.h>
+#include <core/trace_schema.h>
 #include <platform/time.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -218,7 +219,7 @@ bool profiler_export_chrome_trace(const char *path,
         if (!first) fprintf(f, ",\n");
         first = false;
         fprintf(f,
-            "{\"name\":\"%s\",\"cat\":\"cpu\",\"ph\":\"X\",\"ts\":%llu,\"dur\":%llu,"
+            "{\"name\":\"%s\",\"cat\":\"" BREAK_TRACE_CAT_CPU "\",\"ph\":\"X\",\"ts\":%llu,\"dur\":%llu,"
             "\"pid\":1,\"tid\":%u,\"args\":{\"thread\":\"%s\"}}",
             ename,
             (unsigned long long)ts,
@@ -236,7 +237,7 @@ bool profiler_export_chrome_trace(const char *path,
             /* R434: GPU samples keep the historic tid 2 track, reserved by the
              * CPU tid allocator so the two never collide. */
             fprintf(f,
-                "{\"name\":\"%s\",\"cat\":\"gpu\",\"ph\":\"X\",\"ts\":0,\"dur\":%llu,"
+                "{\"name\":\"%s\",\"cat\":\"" BREAK_TRACE_CAT_GPU "\",\"ph\":\"X\",\"ts\":0,\"dur\":%llu,"
                 "\"pid\":1,\"tid\":%u,\"args\":{\"thread\":\"gpu\"}}",
                 ename, (unsigned long long)dur_us, PROFILER_TID_GPU);
         }
@@ -247,7 +248,7 @@ bool profiler_export_chrome_trace(const char *path,
     u64 frame_dur = (frame->frame_end_us >= frame->frame_start_us)
         ? (frame->frame_end_us - frame->frame_start_us) : 0u;
     fprintf(f,
-        "{\"name\":\"frame\",\"cat\":\"meta\",\"ph\":\"X\",\"ts\":0,\"dur\":%llu,"
+        "{\"name\":\"frame\",\"cat\":\"" BREAK_TRACE_CAT_META "\",\"ph\":\"X\",\"ts\":0,\"dur\":%llu,"
         "\"pid\":1,\"tid\":%u}",
         (unsigned long long)frame_dur, PROFILER_TID_MAIN);
 
@@ -259,7 +260,7 @@ bool profiler_export_chrome_trace(const char *path,
             profiler_json_escape_name(meta[i].value, eval, sizeof(eval));
             fprintf(f, ",\n");
             fprintf(f,
-                "{\"name\":\"%s\",\"cat\":\"meta\",\"ph\":\"i\",\"ts\":0,"
+                "{\"name\":\"%s\",\"cat\":\"" BREAK_TRACE_CAT_META "\",\"ph\":\"i\",\"ts\":0,"
                 "\"pid\":1,\"tid\":%u,\"args\":{\"value\":\"%s\"}}",
                 ekey, PROFILER_TID_MAIN, eval);
         }
@@ -284,7 +285,7 @@ bool profiler_export_chrome_trace(const char *path,
             PROFILER_TID_GPU);
     }
 
-    fprintf(f, "\n]}\n");
+    fprintf(f, "\n]," BREAK_TRACE_OTHER_DATA "}\n");
     bool write_ok = !ferror(f);
     if (fclose(f) != 0) write_ok = false;
     return write_ok;
@@ -320,7 +321,7 @@ bool profiler_export_chrome_trace_ring(const char *path,
             if (!first) fprintf(f, ",\n");
             first = false;
             fprintf(f,
-                "{\"name\":\"%s\",\"cat\":\"cpu\",\"ph\":\"X\",\"ts\":%llu,\"dur\":%llu,"
+                "{\"name\":\"%s\",\"cat\":\"" BREAK_TRACE_CAT_CPU "\",\"ph\":\"X\",\"ts\":%llu,\"dur\":%llu,"
                 "\"pid\":1,\"tid\":%u,\"args\":{\"thread\":\"%s\"}}",
                 ename,
                 (unsigned long long)ts,
@@ -336,7 +337,7 @@ bool profiler_export_chrome_trace_ring(const char *path,
         if (!first) fprintf(f, ",\n");
         first = false;
         fprintf(f,
-            "{\"name\":\"frame\",\"cat\":\"frame\",\"ph\":\"X\",\"ts\":%llu,\"dur\":%llu,"
+            "{\"name\":\"frame\",\"cat\":\"" BREAK_TRACE_CAT_FRAME "\",\"ph\":\"X\",\"ts\":%llu,\"dur\":%llu,"
             "\"pid\":1,\"tid\":%u}",
             (unsigned long long)frame_ts,
             (unsigned long long)frame_dur,
@@ -351,7 +352,7 @@ bool profiler_export_chrome_trace_ring(const char *path,
             if (!first) fprintf(f, ",\n");
             first = false;
             fprintf(f,
-                "{\"name\":\"%s\",\"cat\":\"gpu\",\"ph\":\"X\",\"ts\":0,\"dur\":%llu,"
+                "{\"name\":\"%s\",\"cat\":\"" BREAK_TRACE_CAT_GPU "\",\"ph\":\"X\",\"ts\":0,\"dur\":%llu,"
                 "\"pid\":1,\"tid\":%u,\"args\":{\"thread\":\"gpu\"}}",
                 ename, (unsigned long long)dur_us, PROFILER_TID_GPU);
         }
@@ -365,7 +366,7 @@ bool profiler_export_chrome_trace_ring(const char *path,
             if (!first) fprintf(f, ",\n");
             first = false;
             fprintf(f,
-                "{\"name\":\"%s\",\"cat\":\"meta\",\"ph\":\"i\",\"ts\":0,"
+                "{\"name\":\"%s\",\"cat\":\"" BREAK_TRACE_CAT_META "\",\"ph\":\"i\",\"ts\":0,"
                 "\"pid\":1,\"tid\":%u,\"args\":{\"value\":\"%s\"}}",
                 ekey, PROFILER_TID_MAIN, eval);
         }
@@ -381,7 +382,7 @@ bool profiler_export_chrome_trace_ring(const char *path,
             "\"args\":{\"name\":\"%s\"}}",
             t, etname);
     }
-    fprintf(f, "\n]}\n");
+    fprintf(f, "\n]," BREAK_TRACE_OTHER_DATA "}\n");
     bool write_ok = !ferror(f);
     if (fclose(f) != 0) write_ok = false;
     return write_ok;

@@ -6,6 +6,7 @@
 #include <runtime/runtime_test_hooks.h>
 #include <core/platform_thread.h>
 #include <core/profiler.h>
+#include <core/trace_schema.h>
 #include <asset/vfs.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -1926,6 +1927,10 @@ TEST(profiler_flow_export_links_cross_thread_chain)
     ASSERT_EQ(profiler_count_substr(buf, "\"ph\":\"t\""), 1u);
     ASSERT_EQ(profiler_count_substr(buf, "\"ph\":\"f\""), 1u);
     ASSERT_EQ(profiler_count_substr(buf, "\"bp\":\"e\""), 3u);
+    ASSERT_EQ(profiler_count_substr(buf, "\"cat\":\"" BREAK_TRACE_CAT_RUNTIME "\""),
+              4u);
+    ASSERT_EQ(profiler_count_substr(buf, "\"cat\":\"" BREAK_TRACE_CAT_RUNTIME_FLOW "\""),
+              3u);
     snprintf(needle, sizeof(needle), "\"id\":%llu,", (unsigned long long)chain);
     ASSERT_EQ(profiler_count_substr(buf, needle), 3u);
     snprintf(needle, sizeof(needle), "\"id\":%llu,", (unsigned long long)solo);
