@@ -11148,4 +11148,15 @@ Before this change, letter shortcuts ignored SHIFT, so Ctrl+Shift+P opened the c
 
 The log lines are i18n keys with English and Chinese text. Test: `ctrl_shift_diagnostic_shortcuts_do_not_fall_through` in `engine/tests/test_editor_shell.c`. Mutation check: disabling any of the three branches, leaving the console NULL after reload, or skipping the Network tab switch each fails the test.
 
-F5–F8 (run, run current scene, pause, stop) are still missing; they are Task B of `docs/superpowers/plans/2026-11-15-editor-shortcut-parity.md`.
+F5–F8 (run, run current scene, pause, stop) are still missing; they are Task B of `docs/superpowers/plans/2026-11-15-editor-shortcut-parity.md`. (Delivered later the same day; see the play mode entry below.)
+
+### 2026-11-15 Editor play mode (F5–F8)
+
+The editor now has a play mode, which closes the last gap in the Stage 4 shortcut table.
+
+- History mark (`engine/src/editor/editor_cmd.h`): `break_editor_history_mark` records the undo cursor and the dirty flag. `break_editor_history_rewind` undoes or redoes back to that cursor, discards commands pushed after the mark, and restores the dirty flag. It returns `LOST` with nothing changed when a later push removed a marked command, when drop-oldest removed a command recorded after the mark, or when the stack was cleared (load, new scene, hot reload). A drop-oldest of commands older than the mark shifts the mark and does not lose it. Tests: four `history_rewind_*` cases in `engine/tests/test_editor_cmd.c`. Mutation check: six mutations (no loss on push below the mark, no mark shift on drop, no loss on clear, no tail discard, no dirty restore, no loss on drop at position 0) each fail a test.
+- Shell (`engine/apps/editor/editor_panels.c`): F5 enters PLAYING, F6 does the same only with a current scene path, F7 toggles PAUSED, and F8 rewinds and returns to EDIT. Save and new scene are refused outside EDIT, and the status bar shows the play state. Test: `play_mode_f5_to_f8_runs_pauses_and_restores_the_scene` in `engine/tests/test_editor_shell.c`. Mutation check: eight mutations (F6 ignores the path, the frame counter runs while paused, save or new scene not refused, stop skips the rewind, a lost history reported as a clean stop, no status suffix, F5 re-marks while playing) each fail the test.
+
+Limits: play mode does not run the scene in a separate core_app process, and no simulation systems tick the editor document. Play mode is an editable session that F8 reverts.
+
+Plan: `docs/superpowers/plans/2026-11-15-editor-shortcut-parity.md` (Tasks A and B delivered).

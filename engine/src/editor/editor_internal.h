@@ -142,6 +142,14 @@ struct BreakEditorCmdStack {
     u32 undo_pos; /* [0, undo_pos) applied; [undo_pos, size) redoable */
     bool dropped_oldest;
     u64 revision; /* +1 per push / undo / redo (change signal) */
+    /* History mark (break_editor_history_mark): mark_pos follows the marked
+     * cursor through drop-oldest shifts; mark_lost is set when a push,
+     * drop or clear destroys a command the rewind would need. */
+    bool has_mark;
+    bool mark_lost;
+    bool mark_pushed; /* a command was pushed after the mark */
+    bool mark_dirty;  /* doc dirty flag at mark time */
+    u32 mark_pos;
 };
 
 /* editor_scene.c: releases doc->kept_chunks (safe when none). */

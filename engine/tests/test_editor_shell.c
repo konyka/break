@@ -9367,6 +9367,94 @@ TEST(ctrl_shift_diagnostic_shortcuts_do_not_fall_through)
     break_editor_shell_destroy(shell);
 }
 
+TEST(play_mode_f5_to_f8_runs_pauses_and_restores_the_scene)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "a")));
+    break_editor_shell_refresh(shell);
+    ASSERT_EQ((int)break_editor_shell_play_state(shell), (int)BREAK_EDITOR_PLAY_EDIT);
+
+    /* F6 needs a current scene path */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_F6, MY_KEYMOD_NONE));
+    ASSERT_EQ((int)break_editor_shell_play_state(shell), (int)BREAK_EDITOR_PLAY_EDIT);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "play: no current scene\n");
+    /* F7/F8 outside play mode are bounded no-ops */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_F7, MY_KEYMOD_NONE));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_F8, MY_KEYMOD_NONE));
+    ASSERT_EQ((int)break_editor_shell_play_state(shell), (int)BREAK_EDITOR_PLAY_EDIT);
+
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_F5, MY_KEYMOD_NONE));
+    ASSERT_EQ((int)break_editor_shell_play_state(shell), (int)BREAK_EDITOR_PLAY_PLAYING);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "play: started\n");
+    ASSERT_TRUE(strstr(break_editor_shell_status_text(shell), "play=playing") != NULL);
+    ASSERT_EQ(break_editor_shell_play_frames(shell), 0u);
+    break_editor_shell_tick(shell);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_play_frames(shell), 2u);
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "b")));
+    break_editor_shell_refresh(shell);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_F7, MY_KEYMOD_NONE));
+    ASSERT_EQ((int)break_editor_shell_play_state(shell), (int)BREAK_EDITOR_PLAY_PAUSED);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "play: paused\n");
+    ASSERT_TRUE(strstr(break_editor_shell_status_text(shell), "play=paused") != NULL);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_play_frames(shell), 2u);
+
+    /* save and new scene are refused until play stops */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 's', MY_KEYMOD_CTRL));
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "play: stop first\n");
+    ASSERT_FALSE(break_editor_shell_save(shell));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'n', MY_KEYMOD_CTRL));
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "play: stop first\n");
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_F7, MY_KEYMOD_NONE));
+    ASSERT_EQ((int)break_editor_shell_play_state(shell), (int)BREAK_EDITOR_PLAY_PLAYING);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "play: resumed\n");
+    /* F5 while playing does not re-mark */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_F5, MY_KEYMOD_NONE));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_F8, MY_KEYMOD_NONE));
+    ASSERT_EQ((int)break_editor_shell_play_state(shell), (int)BREAK_EDITOR_PLAY_EDIT);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "play: stopped\n");
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 1u);
+    ASSERT_TRUE(strstr(break_editor_shell_status_text(shell), "play=") == NULL);
+    /* the pre-play history is intact */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'y', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+
+    /* F6 with a scene path; history lost mid-play keeps the changes */
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, "/tmp/break_play_mode_unused.bscn"));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_F6, MY_KEYMOD_NONE));
+    ASSERT_EQ((int)break_editor_shell_play_state(shell), (int)BREAK_EDITOR_PLAY_PLAYING);
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "c")));
+    break_editor_shell_refresh(shell);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_F8, MY_KEYMOD_NONE));
+    ASSERT_EQ((int)break_editor_shell_play_state(shell), (int)BREAK_EDITOR_PLAY_EDIT);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "play: stopped, changes kept (history lost)\n");
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+
+    ASSERT_EQ((int)break_editor_shell_play_state(NULL), (int)BREAK_EDITOR_PLAY_EDIT);
+    ASSERT_EQ(break_editor_shell_play_frames(NULL), 0u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(shader_reload_shortcut_without_owner_is_bounded)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -11173,6 +11261,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shader_reload_shutdown_timeout_can_retry);
     RUN_TEST(shader_reload_viewport_and_shell_shutdown_retry_same_owner);
     RUN_TEST(ctrl_shift_diagnostic_shortcuts_do_not_fall_through);
+    RUN_TEST(play_mode_f5_to_f8_runs_pauses_and_restores_the_scene);
     RUN_TEST(shader_reload_shortcut_without_owner_is_bounded);
     RUN_TEST(shader_reload_unavailable_stats_and_null_calls);
     RUN_TEST(hot_reload_valid_external_edit_replaces_document);

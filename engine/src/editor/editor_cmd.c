@@ -42,6 +42,10 @@ void break_editor_cmd_stack_push_applied(BreakEditorDoc *doc,
 
     /* New mutation clears the redo tail (this is what keeps revert/redo
      * adjacent for the generation-restore mechanism). */
+    if (stack->has_mark) {
+        if (stack->undo_pos < stack->mark_pos) stack->mark_lost = true;
+        stack->mark_pushed = true;
+    }
     while (stack->size > stack->undo_pos) {
         stack->size--;
         stack->entries[stack->size]->destroy(stack->entries[stack->size]);
@@ -57,6 +61,10 @@ void break_editor_cmd_stack_push_applied(BreakEditorDoc *doc,
         stack->size--;
         stack->undo_pos--;
         stack->dropped_oldest = true;
+        if (stack->has_mark) {
+            if (stack->mark_pos == 0u) stack->mark_lost = true;
+            else stack->mark_pos--;
+        }
     }
 
     cmd->origin = doc->origin;
@@ -199,6 +207,49 @@ void break_editor_cmd_stack_clear(BreakEditorCmdStack *stack) {
     stack->size = 0;
     stack->undo_pos = 0;
     stack->dropped_oldest = false;
+    if (stack->has_mark) stack->mark_lost = true;
+}
+
+bool break_editor_history_mark(BreakEditorDoc *doc) {
+    if (!doc || !doc->stack) return false;
+    BreakEditorCmdStack *stack = doc->stack;
+    stack->has_mark = true;
+    stack->mark_lost = false;
+    stack->mark_pushed = false;
+    stack->mark_dirty = doc->dirty;
+    stack->mark_pos = stack->undo_pos;
+    return true;
+}
+
+bool break_editor_history_has_mark(const BreakEditorDoc *doc) {
+    return doc && doc->stack && doc->stack->has_mark;
+}
+
+BreakEditorRewindResult break_editor_history_rewind(BreakEditorDoc *doc) {
+    if (!doc || !doc->stack || !doc->stack->has_mark) {
+        return BREAK_EDITOR_REWIND_NONE;
+    }
+    BreakEditorCmdStack *stack = doc->stack;
+    stack->has_mark = false;
+    if (stack->mark_lost || stack->mark_pos > stack->size) {
+        return BREAK_EDITOR_REWIND_LOST;
+    }
+    while (stack->undo_pos > stack->mark_pos) {
+        if (!break_editor_undo(doc)) return BREAK_EDITOR_REWIND_FAILED;
+    }
+    while (stack->undo_pos < stack->mark_pos) {
+        if (!break_editor_redo(doc)) return BREAK_EDITOR_REWIND_FAILED;
+    }
+    if (stack->mark_pushed && stack->size > stack->undo_pos) {
+        while (stack->size > stack->undo_pos) {
+            stack->size--;
+            stack->entries[stack->size]->destroy(stack->entries[stack->size]);
+            stack->entries[stack->size] = NULL;
+        }
+        stack->revision++;
+    }
+    doc->dirty = stack->mark_dirty;
+    return BREAK_EDITOR_REWIND_APPLIED;
 }
 
 u32 break_editor_cmd_stack_capacity(const BreakEditorCmdStack *stack) {

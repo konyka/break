@@ -32,8 +32,35 @@ Test (RED first): `ctrl_shift_diagnostic_shortcuts_do_not_fall_through` in
 - F7 toggles PLAYING/PAUSED.
 - F8 restores the snapshot and returns to EDIT.
 - Query: `break_editor_shell_play_state`.
-- Design details (snapshot storage, undo history across stop) are decided in
-  this plan's Task B section before its RED test is written.
+
+Design (decided 2026-11-15):
+
+- There is no in-memory BSCN writer, and `break_editor_doc_load_bytes` clears
+  the undo history, so a reload-based snapshot would erase the user's
+  history. Play mode instead uses a history mark.
+- B1 (library, `editor_cmd.h`): `break_editor_history_mark(doc, &mark)`
+  records the undo cursor, the dirty flag, and three stack counters (pushes,
+  drop-oldest drops, clears). `break_editor_history_rewind(doc, &mark)` moves
+  the cursor back to the mark with undo/redo. If commands were pushed after
+  the mark, it then discards the redo tail (play-time commands), and it
+  restores the dirty flag. It returns `LOST` with nothing changed when the
+  stack was cleared (load / new scene / hot reload) or drop-oldest removed
+  play-time commands, and `FAILED` when an undo/redo step fails.
+  Tests: `test_editor_cmd.c`.
+- B2 (shell): `BreakEditorPlayState` EDIT / PLAYING / PAUSED with
+  `break_editor_shell_play_state` and `break_editor_shell_play_frames`.
+  - F5: EDIT -> PLAYING (marks history).
+  - F6: same, but only when a current scene path is set; otherwise logs
+    `play: no current scene` and stays in EDIT.
+  - F7: PLAYING <-> PAUSED.
+  - F8: rewind and return to EDIT; logs `play: stopped` or
+    `play: stopped, changes kept (history lost)`.
+  - While PLAYING, shell tick advances the play frame counter; PAUSED does
+    not.
+  - Ctrl+S and Ctrl+N are refused outside EDIT (`play: stop first`).
+  - The status bar shows the play state.
+  Tests: `test_editor_shell.c`.
+- Out of scope: launching the scene in a separate core_app process.
 
 ## Verification
 
@@ -45,3 +72,8 @@ confirm the test fails.
 
 - `docs/design/editor_phase1.md` §4 shortcut table.
 - `docs/Implementation_Status.md` status entry.
+
+## Status (2026-11-15)
+
+Task A and Task B are delivered. See `docs/Implementation_Status.md`
+("Editor Ctrl+Shift diagnostic shortcuts" and "Editor play mode (F5–F8)").

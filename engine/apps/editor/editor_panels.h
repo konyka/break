@@ -52,6 +52,12 @@
  *             break_editor_camera_focus on the proxy AABB; view state, not
  *             undoable)
  *   Ctrl+Shift+R queue a viewport shader reload (no GPU work in the callback)
+ *   Ctrl+Shift+P/D/L show the profiler / show the network page and log the
+ *             remote debug state / rebuild the Lua console
+ *   F5/F6     enter play mode (F6 only with a current scene path); marks the
+ *             undo history (editor_cmd.h break_editor_history_mark)
+ *   F7        pause / resume play mode
+ *   F8        stop: rewind the history to the mark and return to edit
  *   Ctrl+S    save to the path set via break_editor_shell_set_scene_path
  *   Ctrl+Z/Y  undo/redo via the doc command stack; mid-gizmo-drag they first
  *             END+COMMIT the in-progress drag (Task 3 policy, pinned by
@@ -245,6 +251,17 @@ u32 break_editor_shell_palette_cursor(const BreakEditorShell *shell);
 bool break_editor_shell_set_language(BreakEditorShell *shell,
                                      BreakEditorLang lang);
 const char *break_editor_shell_status_text(const BreakEditorShell *shell);
+/* Editor play mode (F5-F8). While not EDIT, Ctrl+S / Ctrl+N (and the palette
+ * Save) are refused with "play: stop first"; PLAYING advances the frame
+ * counter once per break_editor_shell_tick, PAUSED does not. NULL shell =>
+ * EDIT / 0. */
+typedef enum {
+    BREAK_EDITOR_PLAY_EDIT = 0,
+    BREAK_EDITOR_PLAY_PLAYING = 1,
+    BREAK_EDITOR_PLAY_PAUSED = 2
+} BreakEditorPlayState;
+BreakEditorPlayState break_editor_shell_play_state(const BreakEditorShell *shell);
+u64 break_editor_shell_play_frames(const BreakEditorShell *shell);
 const char *break_editor_shell_console_text(const BreakEditorShell *shell);
 const char *break_editor_shell_name_edit_text(const BreakEditorShell *shell);
 BreakEditorEntityId break_editor_shell_selected(const BreakEditorShell *shell);

@@ -77,6 +77,27 @@ u32 break_editor_cmd_stack_undo_count_origin(const BreakEditorCmdStack *stack,
 u32 break_editor_cmd_stack_redo_count_origin(const BreakEditorCmdStack *stack,
                                              u32 origin);
 
+/* History mark (editor play mode). mark records the undo cursor and the
+ * dirty flag (replacing an earlier mark); rewind undoes/redoes back to that
+ * cursor, discards the redo tail when commands were pushed after the mark,
+ * restores the dirty flag, and consumes the mark. Results:
+ *   NONE    no mark (also NULL doc);
+ *   APPLIED the document is back at the marked history state;
+ *   LOST    a later push, drop-oldest or clear (load / reset) destroyed a
+ *           command the rewind needs; nothing changed;
+ *   FAILED  an undo/redo step failed part way; the cursor stays where it
+ *           stopped. */
+typedef enum {
+    BREAK_EDITOR_REWIND_NONE = 0,
+    BREAK_EDITOR_REWIND_APPLIED = 1,
+    BREAK_EDITOR_REWIND_LOST = 2,
+    BREAK_EDITOR_REWIND_FAILED = 3
+} BreakEditorRewindResult;
+
+bool break_editor_history_mark(BreakEditorDoc *doc); /* false for NULL */
+bool break_editor_history_has_mark(const BreakEditorDoc *doc);
+BreakEditorRewindResult break_editor_history_rewind(BreakEditorDoc *doc);
+
 /* Test/status-readable accessors (NULL stack => 0/false). */
 u32  break_editor_cmd_stack_capacity(const BreakEditorCmdStack *stack);
 u32  break_editor_cmd_stack_size(const BreakEditorCmdStack *stack);      /* applied + redoable */

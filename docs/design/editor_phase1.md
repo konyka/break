@@ -77,12 +77,23 @@ editor 可执行（engine/apps/editor/editor_main.c，薄 main）
 | Ctrl+Shift+P | Ctrl+Shift | 切到诊断区 Profiler 页（area 1, tab 0），日志 `profiler: shown`；不打开调色板（2026-11-15） |
 | Ctrl+Shift+D | Ctrl+Shift | 切到 Network 页（area 1, tab 1），日志 `remote debug: on/off`；只报告状态，不启动监听，不复制实体（2026-11-15） |
 | Ctrl+Shift+L | Ctrl+Shift | Lua 热加载：销毁并重建 Lua console（新沙箱状态），切到 Lua 页（area 0, tab 1），日志 `lua: reloaded` / `lua: reload failed`（2026-11-15） |
+| F5 | 无 | 进入运行模式（PLAYING），用 `break_editor_history_mark` 记录撤销历史位置；PAUSED 时等同继续（2026-11-15） |
+| F6 | 无 | 运行当前场景：同 F5，但需要已设置场景路径，否则日志 `play: no current scene` 并留在编辑模式（2026-11-15） |
+| F7 | 无 | PLAYING ↔ PAUSED；编辑模式下为空操作（2026-11-15） |
+| F8 | 无 | 停止：`break_editor_history_rewind` 回到标记位置（丢弃运行期间的命令，恢复 dirty），回到编辑模式；历史在运行期间被清空或 drop-oldest 覆盖时保留修改并日志 `play: stopped, changes kept (history lost)`（2026-11-15） |
 | Esc / Return / ↑ / ↓ | 调色板打开时 | 关闭 / 执行高亮行 / 移动高亮（2026-10-29 起） |
 
 真实窗口的按键路由：myui dispatcher 只把 KEY_DOWN 投给焦点控件并**向父级
 冒泡**（`my_event_dispatch.c`）；shell 在 root 容器上挂 "key_down" 监听并在
 create 时把焦点设到 root，故快捷键只在焦点控件未消费该键时触发（在编辑框
 里打 Q 不会切工具）。测试直接调 `break_editor_shell_dispatch_key`。
+
+运行模式（2026-11-15）：状态为 EDIT / PLAYING / PAUSED（`break_editor_shell_play_state`）。
+PLAYING 时每次 `break_editor_shell_tick` 帧计数加一（`break_editor_shell_play_frames`），
+PAUSED 不加。非 EDIT 状态下 Ctrl+S、Ctrl+N 和调色板 Save 都被拒绝并记录
+`play: stop first`；状态栏末尾追加 ` play=playing` / ` play=paused`。运行期间仍可编辑，
+F8 通过撤销历史回退这些编辑。编辑器内没有独立的运行时进程，运行模式不会启动
+core_app。
 
 ## 5. 有界性与所有权
 

@@ -132,6 +132,8 @@ struct BreakEditorShell {
     bool flying;
     u32 fly_keys;
     u64 fly_last_us; /* 0 = no previous tick to measure from */
+    u32 play_state;  /* BreakEditorPlayState */
+    u64 play_frames; /* ticks spent PLAYING since the last F5/F6 */
 
     /* Phase 2 Task 3 viewport state (see editor_panels.h): the camera is
      * view state (never undoable); the gizmo is glued to the selection via
@@ -391,6 +393,15 @@ static void shell_refresh_status(BreakEditorShell *shell) {
                        shell->doc),
                    break_editor_doc_is_dirty(shell->doc) ? 1 : 0, last,
                    shell->note);
+    if (shell->play_state != BREAK_EDITOR_PLAY_EDIT) {
+        usize used = strlen(shell->status_text);
+        (void)snprintf(shell->status_text + used,
+                       sizeof(shell->status_text) - used, "%s",
+                       break_editor_tr(shell->play_state ==
+                                               BREAK_EDITOR_PLAY_PLAYING
+                                           ? BREAK_EDITOR_TR_STATUS_PLAY_PLAYING
+                                           : BREAK_EDITOR_TR_STATUS_PLAY_PAUSED));
+    }
     (void)my_label_set_text(shell->status_label, shell->status_text);
 }
 
@@ -1396,8 +1407,20 @@ static void shell_do_remove_selected(BreakEditorShell *shell) {
     editor_shell_refresh_all(shell);
 }
 
+static bool shell_play_refuses(BreakEditorShell *shell) {
+    if (shell->play_state == BREAK_EDITOR_PLAY_EDIT) {
+        return false;
+    }
+    editor_shell_log(shell, "%s",
+                     break_editor_tr(BREAK_EDITOR_TR_LOG_PLAY_STOP_FIRST));
+    return true;
+}
+
 static bool shell_do_save(BreakEditorShell *shell) {
     bool saved = false;
+    if (shell_play_refuses(shell)) {
+        return false;
+    }
     if (!shell->scene_path_set) {
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_SAVE_NO_PATH));
         (void)snprintf(shell->note, sizeof(shell->note), "save: no path");
@@ -1911,6 +1934,91 @@ bool break_editor_shell_fly_advance(BreakEditorShell *shell, f32 seconds) {
     return true;
 }
 
+static void shell_play_set(BreakEditorShell *shell, u32 state,
+                           BreakEditorTr line) {
+    shell->play_state = state;
+    editor_shell_log(shell, "%s", break_editor_tr(line));
+    shell_refresh_status(shell);
+}
+
+static void shell_play_start(BreakEditorShell *shell, bool current_scene) {
+    if (shell->play_state == BREAK_EDITOR_PLAY_PAUSED) {
+        shell_play_set(shell, BREAK_EDITOR_PLAY_PLAYING,
+                       BREAK_EDITOR_TR_LOG_PLAY_RESUMED);
+        return;
+    }
+    if (shell->play_state != BREAK_EDITOR_PLAY_EDIT) {
+        return;
+    }
+    if (current_scene && !shell->scene_path_set) {
+        editor_shell_log(shell, "%s",
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_PLAY_NO_SCENE));
+        return;
+    }
+    shell_end_gizmo_drag(shell);
+    if (!break_editor_history_mark(shell->doc)) {
+        return;
+    }
+    shell->play_frames = 0u;
+    shell_play_set(shell, BREAK_EDITOR_PLAY_PLAYING,
+                   BREAK_EDITOR_TR_LOG_PLAY_STARTED);
+}
+
+static void shell_play_stop(BreakEditorShell *shell) {
+    BreakEditorTr line = BREAK_EDITOR_TR_LOG_PLAY_STOPPED;
+    if (shell->play_state == BREAK_EDITOR_PLAY_EDIT) {
+        return;
+    }
+    shell_end_gizmo_drag(shell);
+    switch (break_editor_history_rewind(shell->doc)) {
+    case BREAK_EDITOR_REWIND_APPLIED:
+        break;
+    case BREAK_EDITOR_REWIND_FAILED:
+        line = BREAK_EDITOR_TR_LOG_PLAY_STOP_FAILED;
+        break;
+    default:
+        line = BREAK_EDITOR_TR_LOG_PLAY_STOPPED_LOST;
+        break;
+    }
+    shell->play_state = BREAK_EDITOR_PLAY_EDIT;
+    editor_shell_log(shell, "%s", break_editor_tr(line));
+    editor_shell_refresh_all(shell);
+}
+
+static bool shell_dispatch_play_key(BreakEditorShell *shell, u32 key) {
+    switch (key) {
+    case MY_KEY_F5:
+        shell_play_start(shell, false);
+        return true;
+    case MY_KEY_F6:
+        shell_play_start(shell, true);
+        return true;
+    case MY_KEY_F7:
+        if (shell->play_state == BREAK_EDITOR_PLAY_PLAYING) {
+            shell_play_set(shell, BREAK_EDITOR_PLAY_PAUSED,
+                           BREAK_EDITOR_TR_LOG_PLAY_PAUSED);
+        } else if (shell->play_state == BREAK_EDITOR_PLAY_PAUSED) {
+            shell_play_set(shell, BREAK_EDITOR_PLAY_PLAYING,
+                           BREAK_EDITOR_TR_LOG_PLAY_RESUMED);
+        }
+        return true;
+    case MY_KEY_F8:
+        shell_play_stop(shell);
+        return true;
+    default:
+        return false;
+    }
+}
+
+BreakEditorPlayState break_editor_shell_play_state(const BreakEditorShell *shell) {
+    return shell != NULL ? (BreakEditorPlayState)shell->play_state
+                         : BREAK_EDITOR_PLAY_EDIT;
+}
+
+u64 break_editor_shell_play_frames(const BreakEditorShell *shell) {
+    return shell != NULL ? shell->play_frames : 0u;
+}
+
 bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
                                      u32 modifiers) {
     size_t i;
@@ -1960,6 +2068,9 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
             editor_shell_log(shell, "%s",
                              break_editor_tr(BREAK_EDITOR_TR_LOG_SR_UNAVAILABLE));
         }
+        return true;
+    }
+    if (modifiers == MY_KEYMOD_NONE && shell_dispatch_play_key(shell, key)) {
         return true;
     }
     if (key == 'p' &&
@@ -3243,6 +3354,9 @@ static bool shell_discard_confirmed(BreakEditorShell *shell, const char *key,
 /* Ctrl+N / "New scene": empty untitled document (no save target, no
  * selection, nothing hidden, no scene watch). */
 static void shell_do_new_scene(BreakEditorShell *shell) {
+    if (shell_play_refuses(shell)) {
+        return;
+    }
     /* NUL-led key cannot collide with a real path */
     if (!shell_discard_confirmed(shell, "\x01new", BREAK_EDITOR_TR_LOG_NEW_UNSAVED)) {
         return;
@@ -3539,6 +3653,9 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
         my_widget_invalidate(shell->viewport_widget, NULL);
     }
     (void)shell_sync_selection(shell); /* keeps the gizmo attach current */
+    if (shell->play_state == BREAK_EDITOR_PLAY_PLAYING) {
+        shell->play_frames++;
+    }
     if (shell->flying && shell->fly_keys != 0u) {
         u64 now = time_microseconds();
         if (shell->fly_last_us != 0u && now > shell->fly_last_us) {

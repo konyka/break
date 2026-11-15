@@ -766,6 +766,143 @@ TEST(origin_command_without_a_touch_set_conflicts_with_everything) {
     break_editor_doc_destroy(doc);
 }
 
+TEST(history_rewind_reverts_marked_commands_and_keeps_prior_history) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorCmdStack *stack = break_editor_doc_stack(doc);
+    BreakEditorEntityId a = break_editor_doc_add_entity(doc, "a");
+    BreakEditorEntityId b = break_editor_doc_add_entity(doc, "b");
+    ASSERT_TRUE(break_editor_entity_id_valid(b));
+    break_editor_doc_clear_dirty(doc);
+    ASSERT_FALSE(break_editor_history_has_mark(doc));
+    ASSERT_TRUE(break_editor_history_mark(doc));
+    ASSERT_TRUE(break_editor_history_has_mark(doc));
+
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "c")));
+    ASSERT_TRUE(break_editor_doc_rename_entity(doc, a, "renamed"));
+    ASSERT_TRUE(break_editor_doc_remove_entity(doc, b));
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+
+    ASSERT_EQ((int)break_editor_history_rewind(doc),
+              (int)BREAK_EDITOR_REWIND_APPLIED);
+    ASSERT_FALSE(break_editor_history_has_mark(doc));
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(stack), 2u);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count(stack), 0u);
+    BreakEditorEntityId at_id;
+    const char *at_name = NULL;
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 0, &at_id, &at_name));
+    ASSERT_TRUE(break_editor_entity_id_eq(at_id, a));
+    ASSERT_STR_EQ(at_name, "a");
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 1, &at_id, &at_name));
+    ASSERT_TRUE(break_editor_entity_id_eq(at_id, b));
+    ASSERT_STR_EQ(at_name, "b");
+
+    /* the history from before the mark still works */
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_FALSE(break_editor_undo(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_EQ((int)break_editor_history_rewind(doc), (int)BREAK_EDITOR_REWIND_NONE);
+    ASSERT_EQ((int)break_editor_history_rewind(NULL), (int)BREAK_EDITOR_REWIND_NONE);
+    ASSERT_FALSE(break_editor_history_mark(NULL));
+    ASSERT_FALSE(break_editor_history_has_mark(NULL));
+    break_editor_doc_destroy(doc);
+}
+
+TEST(history_rewind_without_push_restores_cursor_and_redo_tail) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorCmdStack *stack = break_editor_doc_stack(doc);
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "a")));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "b")));
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(break_editor_history_mark(doc));
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_EQ((int)break_editor_history_rewind(doc),
+              (int)BREAK_EDITOR_REWIND_APPLIED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(stack), 1u);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count(stack), 1u);
+    break_editor_doc_destroy(doc);
+}
+
+TEST(history_rewind_is_lost_when_marked_history_was_overwritten) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorCmdStack *stack = break_editor_doc_stack(doc);
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "a")));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "b")));
+    ASSERT_TRUE(break_editor_history_mark(doc));
+    /* undo past the mark, then a new push destroys the marked command */
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "c")));
+    u64 rev = break_editor_cmd_stack_revision(stack);
+    ASSERT_EQ((int)break_editor_history_rewind(doc), (int)BREAK_EDITOR_REWIND_LOST);
+    ASSERT_FALSE(break_editor_history_has_mark(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_EQ(break_editor_cmd_stack_revision(stack), rev);
+
+    /* a cleared stack (load / reset) also loses the mark */
+    ASSERT_TRUE(break_editor_history_mark(doc));
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "d")));
+    ASSERT_EQ((int)break_editor_history_rewind(doc), (int)BREAK_EDITOR_REWIND_LOST);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+
+    /* a mark at cursor 0 is lost by the clear itself, not by the push */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_TRUE(break_editor_history_mark(doc));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "x")));
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "d")));
+    ASSERT_EQ((int)break_editor_history_rewind(doc), (int)BREAK_EDITOR_REWIND_LOST);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+
+    /* drop-oldest of a command recorded after the mark loses it too */
+    stack = break_editor_doc_stack(doc);
+    ASSERT_TRUE(break_editor_history_mark(doc));
+    for (u32 i = 0; i < 257u; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "bulk_%u", i);
+        ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, name)));
+    }
+    ASSERT_EQ((int)break_editor_history_rewind(doc), (int)BREAK_EDITOR_REWIND_LOST);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 258u);
+    break_editor_doc_destroy(doc);
+}
+
+TEST(history_rewind_survives_drop_oldest_of_older_commands) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorCmdStack *stack = break_editor_doc_stack(doc);
+    for (u32 i = 0; i < 250u; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "old_%u", i);
+        ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, name)));
+    }
+    ASSERT_TRUE(break_editor_history_mark(doc));
+    for (u32 i = 0; i < 10u; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "new_%u", i);
+        ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, name)));
+    }
+    ASSERT_TRUE(break_editor_cmd_stack_dropped_oldest(stack));
+    ASSERT_EQ((int)break_editor_history_rewind(doc),
+              (int)BREAK_EDITOR_REWIND_APPLIED);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 250u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(stack), 246u);
+    ASSERT_EQ(break_editor_cmd_stack_redo_count(stack), 0u);
+    break_editor_doc_destroy(doc);
+}
+
 int main(void) {
     printf("=== test_editor_cmd ===\n");
     RUN_TEST(stack_create_destroy);
@@ -794,6 +931,10 @@ int main(void) {
     RUN_TEST(origin_survives_drop_oldest_and_new_push_clears_the_redo_tail);
     RUN_TEST(origin_redo_blocked_by_earlier_undone_foreign_command_on_same_entity);
     RUN_TEST(origin_command_without_a_touch_set_conflicts_with_everything);
+    RUN_TEST(history_rewind_reverts_marked_commands_and_keeps_prior_history);
+    RUN_TEST(history_rewind_without_push_restores_cursor_and_redo_tail);
+    RUN_TEST(history_rewind_is_lost_when_marked_history_was_overwritten);
+    RUN_TEST(history_rewind_survives_drop_oldest_of_older_commands);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
            g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;
