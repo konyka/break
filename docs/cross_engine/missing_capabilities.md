@@ -193,3 +193,19 @@
 ### 未变化
 
 第 1–8、11、13 节的 Break 缺口维持正文和 2026-10-30 补充的描述，本次核对没有发现足以改变状态的新证据。
+
+## 补充交付记录（2026-11-15 第二批）
+
+本节只记录 2026-11-15 新交付的项，不修改上文状态描述。证据见 `docs/Implementation_Status.md` 同日条目。
+
+- **第 13 节（诊断/跨线程关联）**
+  - Runtime Core 消息和 profiler 事件带 `correlation_id`，`break_runtime_correlation_next()` 发号（`a4614457`）。
+  - `break_runtime_profiler_export_flows` 把关联事件导出成 Chrome trace slice 和 flow 事件（`26e15d63`）。
+  - 网络 envelope 新增可选 8 字节关联扩展，标志位 `0x0010`；不带 ID 的帧与原格式逐字节相同（`e507ef37`）。
+  - `BreakNetMessageView`、owned message、adapter 收发路径传递 ID，新增 `break_net_reactor_send_correlated`（`937b69e9`）。
+  - 编辑器远程响应回带请求 ID（`32a01091`）。
+- **第 9 节（编辑器）**
+  - Ctrl+Shift+P/D/L 诊断快捷键（`478a0aee`）。
+  - F5–F8 play mode：进入时记录 history mark，停止时回滚场景（`0d06c0bb`）。这不是独立进程的 PIE。
+
+仍缺：session 层与 Runtime Core 消息之间的 ID 映射，以及统一 trace schema。CI 不构建 Snowflake 网络目标，所以网络相关测试只在本地 Snowflake 构建树 `build-net-master` 里跑过（405/405）。
