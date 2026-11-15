@@ -3,9 +3,11 @@
 #include <crypto/break_crypto.h>
 #include <editor/editor_doc.h>
 #include <editor/editor_plugin_host.h>
+#include <editor/editor_plugin_manifest.h>
 #include <system/break_plugin.h>
 
 #include <stdio.h>
+#include <string.h>
 
 static bool hash_file(const char *path, u8 out[32])
 {
@@ -106,7 +108,105 @@ TEST(failed_registration_leaves_no_command)
     break_editor_plugin_cmds_destroy(cmds);
 }
 
+typedef struct ManifestLoader {
+    BreakPluginManager *manager;
+    BreakPluginHandle handles[BREAK_EDITOR_PLUGIN_MANIFEST_MAX];
+    u32 calls;
+} ManifestLoader;
+
+static bool manifest_load_plugin(void *user, const BreakEditorPluginManifestEntry *entry)
+{
+    ManifestLoader *loader = (ManifestLoader *)user;
+    BreakPluginHandle handle;
+    if (break_plugin_load(loader->manager, entry->path, entry->build_id, entry->sha256,
+                          &handle) != BREAK_PLUGIN_OK) {
+        loader->calls++;
+        return false;
+    }
+    loader->handles[loader->calls++] = handle;
+    return true;
+}
+
+static void hex_digest(const u8 digest[32], char out[65])
+{
+    static const char digits[] = "0123456789abcdef";
+    for (u32 i = 0u; i < 32u; ++i) {
+        out[2u * i] = digits[digest[i] >> 4];
+        out[2u * i + 1u] = digits[digest[i] & 15u];
+    }
+    out[64] = '\0';
+}
+
+/* A manifest of real libraries: the good plugin loads and keeps its
+ * command; the plugin whose registration fails and an entry with a wrong
+ * hash both fail and leave no command behind. */
+TEST(manifest_loads_real_plugins_and_skips_failures)
+{
+    u8 good[32];
+    u8 fail[32];
+    char good_hex[65];
+    char fail_hex[65];
+    char wrong_hex[65];
+    static char text[4096];
+    static BreakEditorPluginManifest manifest;
+    BreakEditorPluginManifestReport report;
+    ManifestLoader loader;
+    BreakEditorPluginCmds *cmds = break_editor_plugin_cmds_create(8u);
+    BreakEditorPluginHost *host = break_editor_plugin_host_create(cmds);
+    ASSERT_NOT_NULL(host);
+    ASSERT_TRUE(hash_file(EDITOR_TEST_PLUGIN_PATH, good));
+    ASSERT_TRUE(hash_file(EDITOR_TEST_PLUGIN_FAIL_PATH, fail));
+    hex_digest(good, good_hex);
+    hex_digest(fail, fail_hex);
+    good[0] ^= 0xffu;
+    hex_digest(good, wrong_hex);
+    snprintf(text, sizeof text,
+             "# startup plugins\n"
+             "plugin editor-test-plugin-fail %s %s\n"
+             "plugin editor-test-plugin %s %s\n",
+             fail_hex, EDITOR_TEST_PLUGIN_FAIL_PATH, good_hex, EDITOR_TEST_PLUGIN_PATH);
+    ASSERT_EQ(break_editor_plugin_manifest_parse(text, strlen(text), NULL, &manifest, NULL),
+              BREAK_EDITOR_PLUGIN_MANIFEST_OK);
+    ASSERT_EQ(manifest.count, 2u);
+
+    memset(&loader, 0, sizeof loader);
+    loader.manager = break_plugin_create(4u, (void *)break_editor_plugin_host_api(host));
+    ASSERT_NOT_NULL(loader.manager);
+    ASSERT_TRUE(break_editor_plugin_manifest_load_all(&manifest, host, manifest_load_plugin,
+                                                      &loader, &report));
+    ASSERT_EQ(loader.calls, 2u);
+    ASSERT_EQ(report.loaded, 1u);
+    ASSERT_EQ(report.failed, 1u);
+    ASSERT_EQ(report.owners[0], 0u);
+    ASSERT_TRUE(report.owners[1] != 0u);
+    ASSERT_EQ(break_editor_plugin_cmds_count(cmds), 1u);
+    ASSERT_EQ(break_editor_plugin_cmds_find(cmds, "fixture.hello"), 0u);
+    ASSERT_EQ(break_editor_plugin_cmds_owner(cmds, 0u), report.owners[1]);
+
+    ASSERT_EQ(break_editor_plugin_host_release(host, report.owners[1]), 1u);
+    ASSERT_EQ(break_plugin_unload(loader.manager, loader.handles[1]), BREAK_PLUGIN_OK);
+    ASSERT_EQ(break_editor_plugin_cmds_count(cmds), 0u);
+
+    /* The same library with a wrong hash is refused before it runs. */
+    snprintf(text, sizeof text, "plugin editor-test-plugin %s %s\n", wrong_hex,
+             EDITOR_TEST_PLUGIN_PATH);
+    ASSERT_EQ(break_editor_plugin_manifest_parse(text, strlen(text), NULL, &manifest, NULL),
+              BREAK_EDITOR_PLUGIN_MANIFEST_OK);
+    memset(loader.handles, 0, sizeof loader.handles);
+    loader.calls = 0u;
+    ASSERT_TRUE(break_editor_plugin_manifest_load_all(&manifest, host, manifest_load_plugin,
+                                                      &loader, &report));
+    ASSERT_EQ(report.loaded, 0u);
+    ASSERT_EQ(report.failed, 1u);
+    ASSERT_EQ(break_editor_plugin_cmds_count(cmds), 0u);
+
+    ASSERT_EQ(break_plugin_destroy(loader.manager), BREAK_PLUGIN_OK);
+    break_editor_plugin_host_destroy(host);
+    break_editor_plugin_cmds_destroy(cmds);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(real_plugin_adds_and_removes_a_command);
     RUN_TEST(failed_registration_leaves_no_command);
+    RUN_TEST(manifest_loads_real_plugins_and_skips_failures);
 TEST_MAIN_END()

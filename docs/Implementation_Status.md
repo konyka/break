@@ -11290,3 +11290,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 ### 2026-11-15 trace schema test accepts CRLF line endings
 
 - Windows CI 上 `profiler_export_marks_trace_schema` 失败：导出函数以文本模式写文件，Windows 结尾是 `\r\n`。测试改为先去掉结尾换行（含可选 `\r`）再检查 `}}`；两处结尾回退变异仍被捕获。
+
+### 2026-11-15 editor plugin manifest and startup loader
+
+- 新增 `engine/src/editor/editor_plugin_manifest.[ch]`：解析 `plugin <build_id> <sha256 hex> <路径>` 文本 manifest，支持注释、空行、CRLF，相对路径拼接到 `base_dir`；格式、build id、哈希、路径、重复、超过 32 条和 NUL 字节分别报错并给出行号，失败时清空结果。
+- `break_editor_plugin_manifest_load_all` 对每条执行 plugin host 的 begin_load → 调用方 load 回调 → end_load，失败条目的命令被撤回，报告记录 loaded/failed 和每条的 owner。
+- `test_editor_plugin_manifest`（5 项）和 `test_editor_plugin_load` 新增的真实 fixture 测试先 RED 后 GREEN；15 项变异全部被捕获。editor 二进制启动时还没有读取 manifest。
