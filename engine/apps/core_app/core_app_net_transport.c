@@ -4,6 +4,7 @@
 #include <network/break_net_events.h>
 #include <network/break_net_message_registry.h>
 #include <network/break_session.h>
+#include <physics/physics_sync.h>
 #include <platform/platform_fs.h>
 #include <platform/time.h>
 #include <snow/acceptor.h>
@@ -23,6 +24,8 @@
 #endif
 _Static_assert(CORE_APP_SNAPSHOT_MAX_BYTES == BREAK_NET_CORE_SNAPSHOT_MAX_PAYLOAD,
                "core_app snapshot size must match the registry payload limit");
+_Static_assert(PHYSICS_SYNC_REPORT_BYTES == BREAK_NET_PHYSICS_SYNC_REPORT_PAYLOAD,
+               "physics report size must match the registry payload limit");
 
 #define CORE_APP_NET_MAX_CONNECTIONS 8u
 #define CORE_APP_NET_EVENTS_PER_TICK 64u
@@ -48,6 +51,11 @@ typedef struct CoreAppNetStats {
     u64 outbox_overloads;
     u64 auth_timeouts;
     u64 decode_failed;
+    u64 physics_reports_sent;
+    u64 physics_matched;
+    u64 physics_desynced;
+    u64 physics_unknown;
+    u64 physics_decode_failed;
 } CoreAppNetStats;
 
 struct CoreAppNetTransport {
@@ -81,6 +89,10 @@ struct CoreAppNetTransport {
     u8 scratch_wire[CORE_APP_SNAPSHOT_MAX_BYTES];
     CoreAppSnapshotInbox inbox;
     CoreAppSnapshotOutbox outbox;
+    PhysicsSyncTracker physics;
+    u8 physics_report[PHYSICS_SYNC_REPORT_BYTES];
+    bool physics_report_pending;
+    bool physics_desync_traced;
     CoreAppNetStats stats;
 };
 
@@ -192,6 +204,37 @@ static bool net_on_snapshot(BreakConnectionKey connection, const BreakNetOwnedMe
     return true;
 }
 
+/* Peer physics reports only change counters and, on the first desync, one
+ * trace line. The world is never touched from here. */
+static bool net_on_physics_report(BreakConnectionKey connection,
+                                  const BreakNetOwnedMessage *message, void *user) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    u32 tick = 0u;
+    u64 hash = 0u;
+    (void)connection;
+    if (!physics_sync_decode_report((const u8 *)message->data, message->size, &tick, &hash)) {
+        t->stats.physics_decode_failed++;
+        return false;
+    }
+    PhysicsSyncVerdict verdict = physics_sync_check(&t->physics, tick, hash);
+    if (verdict == PHYSICS_SYNC_MATCH) {
+        t->stats.physics_matched++;
+    } else if (verdict == PHYSICS_SYNC_DESYNC) {
+        t->stats.physics_desynced++;
+        if (!t->physics_desync_traced) {
+            char line[128];
+            t->physics_desync_traced = true;
+            snprintf(line, sizeof(line),
+                     "COREAPPTRACE version=1 event=network_physics_sync result=desync"
+                     " tick=%u\n", tick);
+            net_trace(t, line);
+        }
+    } else {
+        t->stats.physics_unknown++;
+    }
+    return true;
+}
+
 static void net_close_slot(CoreAppNetTransport *t, u32 i) {
     t->authenticated[i] = false;
     if (t->closing[i]) return;
@@ -299,6 +342,17 @@ static void net_send_pending(CoreAppNetTransport *t) {
             else t->stats.send_closed++;
         }
     }
+    if (!t->physics_report_pending) return;
+    t->physics_report_pending = false;
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        if (!net_slot_sendable(t, i)) continue;
+        BreakNetSendResult sent = break_net_reactor_send(
+            t->reactor, t->keys[i], BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, 1u,
+            t->physics_report, sizeof(t->physics_report));
+        if (sent == BREAK_NET_SEND_OK) t->stats.physics_reports_sent++;
+        else if (sent == BREAK_NET_SEND_OVERLOAD) t->stats.send_overloads++;
+        else t->stats.send_closed++;
+    }
 }
 
 static BreakRuntimeError net_write_port_file(CoreAppNetTransport *t, u16 port) {
@@ -344,7 +398,9 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
     t->manager = t->reactor ? break_session_manager_create(&session_config) : NULL;
     if (!t->manager || !break_session_manager_attach_reactor(t->manager, t->reactor) ||
         !break_session_manager_set_message_handler(t->manager, CORE_APP_SNAPSHOT_MESSAGE_ID,
-                                                   net_on_snapshot, t)) {
+                                                   net_on_snapshot, t) ||
+        !break_session_manager_set_message_handler(
+            t->manager, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, net_on_physics_report, t)) {
         goto fail;
     }
     stage = "bind";
@@ -389,12 +445,20 @@ fail:
 }
 
 static void net_tick(void *user, u32 tick, u64 level_generation,
-                     const CoreAppSnapshotEntity *entities, u32 entity_count) {
+                     const CoreAppSnapshotEntity *entities, u32 entity_count, u64 physics_hash) {
     CoreAppNetTransport *t = (CoreAppNetTransport *)user;
     if (!t || !t->started) return;
     t->live_generation = level_generation;
     t->current_tick = tick;
     if (t->producing) {
+        /* A level reload may restart ticks; start a fresh history then. */
+        if (!physics_sync_record(&t->physics, tick, physics_hash)) {
+            physics_sync_init(&t->physics);
+            t->physics_desync_traced = false;
+            (void)physics_sync_record(&t->physics, tick, physics_hash);
+        }
+        t->physics_report_pending = physics_sync_encode_report(
+            tick, physics_hash, t->physics_report, sizeof(t->physics_report));
         CoreAppSnapshot *snapshot = &t->scratch_snapshot;
         if (core_app_snapshot_build(snapshot, tick, level_generation,
                                     core_app_snapshot_schema_hash(), entities,
@@ -444,7 +508,7 @@ static void net_trace_stats(CoreAppNetTransport *t) {
     BreakSessionApplyStats session;
     memset(&session, 0, sizeof(session));
     if (t->manager) break_session_manager_apply_stats(t->manager, &session);
-    char line[768];
+    char line[1024];
     snprintf(line, sizeof(line),
              "COREAPPTRACE version=1 event=network_stats opened=%" PRIu64 " closed=%" PRIu64
              " refused=%" PRIu64 " authenticated=%" PRIu64 " snapshots_sent=%" PRIu64
@@ -454,13 +518,18 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              " rejected_unauthenticated=%" PRIu64 " rejected_schema=%" PRIu64
              " rejected_stale=%" PRIu64 " session_applied=%" PRIu64
              " session_phase_rejected=%" PRIu64 " session_invalid=%" PRIu64
-             " session_handler_failed=%" PRIu64 "\n",
+             " session_handler_failed=%" PRIu64 " physics_reports_sent=%" PRIu64
+             " physics_matched=%" PRIu64 " physics_desynced=%" PRIu64
+             " physics_unknown=%" PRIu64 " physics_decode_failed=%" PRIu64 "\n",
              t->stats.opened, t->stats.closed, t->stats.refused, t->stats.authenticated,
              t->stats.snapshots_sent, t->stats.send_overloads, t->stats.send_closed,
              t->stats.outbox_overloads, t->stats.auth_timeouts, t->stats.decode_failed, t->inbox.accepted_snapshots,
              t->inbox.rejected_unknown_message, t->inbox.rejected_unauthenticated,
              t->inbox.rejected_schema, t->inbox.rejected_stale_level, (u64)session.applied,
-             (u64)session.phase_rejected, (u64)session.invalid, (u64)session.handler_failed);
+             (u64)session.phase_rejected, (u64)session.invalid, (u64)session.handler_failed,
+             t->stats.physics_reports_sent, t->stats.physics_matched,
+             t->stats.physics_desynced, t->stats.physics_unknown,
+             t->stats.physics_decode_failed);
     net_trace(t, line);
 }
 
@@ -531,6 +600,7 @@ CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConf
     core_app_snapshot_inbox_init(&t->inbox, false, CORE_APP_SNAPSHOT_MESSAGE_ID,
                                  core_app_snapshot_schema_hash());
     core_app_snapshot_outbox_init(&t->outbox);
+    physics_sync_init(&t->physics);
     t->poll_ms = config->poll_ms;
     return t;
 }

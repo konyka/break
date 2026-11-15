@@ -290,9 +290,40 @@ static bool client_closed_without_snapshot(NetClient *c, u32 timeout_ms) {
         BreakNetEnvelope env;
         int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
         if (got < 0) return true;
-        if (got == 1 && env.message_id == CORE_APP_SNAPSHOT_MESSAGE_ID) return false;
+        if (got == 1 && (env.message_id == CORE_APP_SNAPSHOT_MESSAGE_ID ||
+                         env.message_id == BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT)) {
+            return false;
+        }
     }
     return false;
+}
+
+/* Physics report layout, decoded by hand so the test does not trust
+ * physics_sync.c: magic "PSYN" u32, tick u32, hash u64, little-endian. */
+#define NET_CLIENT_PHYSICS_REPORT_BYTES 16u
+#define NET_CLIENT_PHYSICS_REPORT_MAGIC 0x4e595350u
+
+static u32 le32(const u8 *p) {
+    return (u32)p[0] | ((u32)p[1] << 8u) | ((u32)p[2] << 16u) | ((u32)p[3] << 24u);
+}
+
+/* Waits for the next physics report and copies its raw bytes. */
+static int client_next_physics_report(NetClient *c, u8 out[NET_CLIENT_PHYSICS_REPORT_BYTES],
+                                      u32 timeout_ms) {
+    u64 deadline = now_ms() + timeout_ms;
+    while (now_ms() < deadline) {
+        BreakNetEnvelope env;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got != 1) return got;
+        if (env.message_id != BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT) continue;
+        if (env.protocol_version != 1u || env.payload_size != NET_CLIENT_PHYSICS_REPORT_BYTES ||
+            le32((const u8 *)env.payload) != NET_CLIENT_PHYSICS_REPORT_MAGIC) {
+            return -1;
+        }
+        memcpy(out, env.payload, NET_CLIENT_PHYSICS_REPORT_BYTES);
+        return 1;
+    }
+    return 0;
 }
 
 static bool send_snapshot(NetClient *c, const CoreAppSnapshot *snapshot, size_t trailing) {
@@ -345,6 +376,27 @@ static void scenario_authenticated(void) {
          * firewall admits it as a diagnostic, and the driver still requires
          * the networked trace to match the offline one. */
         check(send_snapshot(&a, &forged, 0u), "a_sent_admissible_forged_position");
+        /* Echo the authority's own physics report (a match), then the same
+         * report with a flipped hash (a desync), then a short payload. */
+        u8 report[NET_CLIENT_PHYSICS_REPORT_BYTES];
+        got = client_next_physics_report(&a, report, 10000u);
+        check(got == 1, "a_received_physics_report");
+        if (got == 1) {
+            fprintf(g_report, "physics_report tick=%u\n", le32(report + 4u));
+            check(client_send(&a, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, 1u, report,
+                              sizeof(report)),
+                  "a_sent_matching_physics_report");
+            report[8] ^= 0xffu;
+            check(client_send(&a, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, 1u, report,
+                              sizeof(report)),
+                  "a_sent_desynced_physics_report");
+            check(client_send(&a, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, 1u, report,
+                              sizeof(report)),
+                  "a_sent_repeated_desynced_physics_report");
+            check(client_send(&a, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, 1u, report,
+                              sizeof(report) - 1u),
+                  "a_sent_short_physics_report");
+        }
         /* Wait for a frame built well after the hostile sends: the outbox
          * may already hold the next few frames, and closing with those
          * hostile bytes still unread by the server would let the RST from

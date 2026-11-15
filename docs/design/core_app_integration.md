@@ -698,6 +698,16 @@ SIGPIPE：transport 构建在 `--network` 生效时调用 `signal(SIGPIPE, SIG_I
 - OVERLOAD 在进程级触发不到：reactor 队列容量 256 且每 tick 都会 drain，只由 outbox 单元测试（容量 8 满后 OVER_LIMIT 且计数）和 `network_stats` 可观察性覆盖。
 - CI 当前没有开启 `CORE_APP_ENABLE_NETWORK` + `BREAK_ENABLE_SNOWFLAKE` 的 job，loopback 只在本地 Fedora 网络树、ASan 树和 TSan 树验证。
 - 之前典型运行中 `session_invalid` 为 16，来源是交给会话层的 `SEND_DRAINED` 事件；现在跳过该事件，值为 0。
+
+### 物理状态哈希报告（2026-11-15）
+
+`CoreAppNetworkHooks.tick` 新增参数 `u64 physics_hash`，由 `app_network_publish` 传入 `physics_state_hash(level->physics)`（`physics_step` 之后）。transport 持有一个 `PhysicsSyncTracker`：每个 producing tick 先 `physics_sync_record(tick, hash)`；tick 不递增导致记录被拒时（例如关卡重载后 tick 重新开始）重置 tracker 和 desync 标记再记录。随后编码一份 16 字节报告，在 snapshot 之后、同样等事件队列为空时，发给每个 `net_slot_sendable` 的槽（id `0x4002`，v1）。未认证连接收不到报告。
+
+对端发来的 `0x4002` 由 `net_on_physics_report` 处理：`physics_sync_decode_report` 失败计 `physics_decode_failed` 并返回 false（会话层记为 handler_failed，连接不关闭）；否则 `physics_sync_check` 的结果计入 `physics_matched` / `physics_desynced` / `physics_unknown`。第一次 DESYNC 写一行 `COREAPPTRACE version=1 event=network_physics_sync result=desync tick=N`，之后的 DESYNC 只计数。处理函数不持有关卡指针，报告不会修改物理世界；修正包 `0x4003` 的发送还没接入。
+
+`event=network_stats` 在原有字段之后追加 `physics_reports_sent`、`physics_matched`、`physics_desynced`、`physics_unknown`、`physics_decode_failed`。
+
+测试：loopback 场景 A 在发完敌意 snapshot 后读取下一份报告（客户端按 PSYN/tick/hash 布局手工解码，不依赖 `physics_sync.c`），原样回发一次（MATCH），翻转哈希后发两次（DESYNC），再发 15 字节载荷（解码失败）。驱动脚本断言 `physics_reports_sent>=2`、`physics_matched>=1`、`physics_desynced>=2`、`physics_decode_failed>=1`，desync 行恰好一行且 tick 等于客户端收到的报告 tick，离线 trace 对比仍逐字节相同（`event=network` 前缀的行被过滤）。本机一次运行：`physics_reports_sent=64 physics_matched=1 physics_desynced=1 physics_unknown=0 physics_decode_failed=1`（重复 DESYNC 测试加入前）。9 项变异全部被捕获。验证树为 `build-core-app-net`（Snowflake + CRYPTO + `CORE_APP_ENABLE_NETWORK=ON`，全量 414/414）；CI 仍没有开启该组合的 job。
 - 发送前的 key 复用防护（队列为空才发送、session id 必须一致）没有进程级复现。
 - PSK 环境变量在 start 读取后立即从进程环境删除，见下方「PSK 读取后删除环境变量」。
 

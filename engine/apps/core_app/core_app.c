@@ -2099,7 +2099,8 @@ static void app_network_publish(CoreApp *app, u32 tick, Vec3 user_position) {
     entities[1].y = level->chaser_position.e[1];
     entities[1].z = level->chaser_position.e[2];
     entities[1].flags = 2u;
-    hooks->tick(hooks->user, tick, level->generation, entities, 2u);
+    hooks->tick(hooks->user, tick, level->generation, entities, 2u,
+                physics_state_hash(level->physics));
 }
 
 static BreakRuntimeError app_level_drain_cb(void *user) {

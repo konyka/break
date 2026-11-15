@@ -28,7 +28,8 @@ typedef enum CoreAppAudioMode {
  * a build with the authenticated transport, so an offline core_app links no
  * break_net, break_session or snow symbols. Every callback runs on the
  * CoreAppThread. tick
- * receives read-only POD copies and returns nothing, so a network failure
+ * receives read-only POD copies plus the physics_state_hash of the live
+ * world after the step, and returns nothing, so a network failure
  * can only change network diagnostics, never the simulation. The four stop
  * callbacks follow the runtime coordinator phases and must be idempotent
  * because rollback may call them after a partial start. */
@@ -36,7 +37,7 @@ typedef struct CoreAppNetworkHooks {
     void *user;
     BreakRuntimeError (*start)(void *user, FILE *trace);
     void (*tick)(void *user, u32 tick, u64 level_generation,
-                 const CoreAppSnapshotEntity *entities, u32 entity_count);
+                 const CoreAppSnapshotEntity *entities, u32 entity_count, u64 physics_hash);
     BreakRuntimeError (*stop_admission)(void *user);
     BreakRuntimeError (*stop_producers)(void *user);
     BreakRuntimeError (*drain)(void *user);

@@ -11266,3 +11266,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - 默认网络注册表新增 `BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT 0x4002`（v1..1，16 字节，`AUTHENTICATED`，`IDEMPOTENT`）和 `BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION 0x4003`（v1..1，64 KiB，`AUTHENTICATED`，`IDEMPOTENT`），envelope 编解码器现在能承载 `physics_sync` 报告和修正包。条目数为 24（CRYPTO=ON）/ 23（OFF）。
 - 测试 `break_session_registry_has_physics_sync_messages`（`test_break_session` 43/43，Snowflake 树）覆盖字段、报告报文往返和超长载荷拒绝；11 项变异全部被捕获。还没有 transport 在运行时发送或消费这两种报文。
+
+### 2026-11-15 core_app physics state hash reports
+
+- core_app transport 每个 tick 把 `physics_state_hash` 编成 `0x4002` 报告发给已认证对端，并用 `PhysicsSyncTracker` 检查对端回报的哈希；第一次 desync 写 `event=network_physics_sync result=desync tick=N`，`network_stats` 追加五个 physics 计数。对端报告只改计数，不改世界。
+- `test_core_app_network_loopback` 增加回发、翻转哈希、短载荷三类报告；先 RED（`a_received_physics_report` FAIL），实现后通过；9 项变异全部被捕获；`build-core-app-net`（开启 `CORE_APP_ENABLE_NETWORK`）全量 414/414。还没做：DESYNC 后自动发送修正包 `0x4003`。

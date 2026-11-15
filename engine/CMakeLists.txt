@@ -5343,7 +5343,8 @@ endif()
         # a step held on another thread forces the reactor stop to time out.
         add_executable(test_core_app_net_transport tests/test_core_app_net_transport.c
             apps/core_app/core_app_net_transport.c src/platform/platform_fs.c
-            src/platform/time.c)
+            src/platform/time.c src/physics/physics_sync.c src/physics/physics.c
+            src/physics/bvh.c src/math/math.c src/core/log.c)
         set_property(TARGET test_core_app_net_transport PROPERTY C_STANDARD 11)
         target_include_directories(test_core_app_net_transport PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/apps/core_app ${TEST_INCLUDE_DIRS})
