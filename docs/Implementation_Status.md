@@ -11236,3 +11236,8 @@ Still missing: cross-platform determinism, physics network sync and a parallel s
 Tests: 6 new tests in `engine/tests/test_break_http.c` (43/43): a match on the second listed pin, a mismatch, a matching pin with the wrong CA, argument validation, a stalled handshake that stays a TIMEOUT, and loopback http ignoring pins. Mutation check: 8 mutations (skipping the zero-count shortcut, forcing the comparison, checking only the first pin, a zero pin stride, dropping either argument check, skipping the check call, checking before the handshake result); all fail a test. A digest-length check was removed because SHA-256 always yields 32 bytes and no test could observe it. Full ctest: 402/402 (`build-core-app-master`).
 
 Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a shipped binary that links `break_http`. Design note: `docs/design/update_transport.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-http-spki-pinning.md`.
+
+### 2026-11-15 physics desync detection
+
+- New module `engine/src/physics/physics_sync.{h,c}`, linked into `engine`. It has a 16-byte little-endian report (`PSYN`, tick u32, hash u64) and a `PhysicsSyncTracker` that keeps the last 64 local `(tick, physics_state_hash)` pairs and returns MATCH, DESYNC or UNKNOWN for a remote hash. The first desync tick stays latched until the next init.
+- Test `test_physics_sync` passes 4/4, and all 26 mutations are caught. This module only detects divergence. It does not transfer or correct state, and it is not connected to the network layer yet.
