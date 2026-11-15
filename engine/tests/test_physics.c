@@ -1460,6 +1460,143 @@ TEST(ground_contact_allows_sleep_and_moving_contact_wakes) {
     physics_world_destroy(pw);
 }
 
+static PhysicsWorld *snapshot_scene(PhysicsBodyHandle *out_a, PhysicsBodyHandle *out_b)
+{
+    PhysicsWorld *pw = physics_world_create(8);
+    (void)physics_body_create(pw, vec3(0, -1, 0), vec3(10, 1, 10), 0.0f, true, 0);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 3, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(1.5f, 5, 0), vec3(0.5f, 0.5f, 0.5f), 2.0f, false, 0);
+    (void)physics_body_create_sphere(pw, vec3(-1, 7, 0.3f), 0.5f, 1.0f, false, 0);
+    physics_body_apply_impulse(pw, b, vec3(-0.5f, 0, 0.25f));
+    *out_a = a;
+    *out_b = b;
+    return pw;
+}
+
+TEST(physics_snapshot_replay_is_bit_identical)
+{
+    PhysicsBodyHandle a, b;
+    PhysicsWorld *pw = snapshot_scene(&a, &b);
+    ASSERT_TRUE(physics_constraint_handle_is_valid(physics_constraint_add_distance(pw, a, b, 1.6f)));
+    for (int i = 0; i < 90; i++) physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->collision_center_count > 0u);
+    ASSERT_TRUE(pw->hot_pair_count > 0u);
+    ASSERT_TRUE(pw->total_collision_speed > 0.0f);
+    usize size = physics_snapshot_size(pw);
+    usize written = 0u;
+    void *snap = malloc(size);
+    ASSERT_NOT_NULL(snap);
+    ASSERT_FALSE(pw->bvh_dirty);
+    ASSERT_TRUE(physics_snapshot_save(pw, snap, size, &written));
+    ASSERT_EQ(written, size);
+    ASSERT_TRUE(pw->bvh_dirty);
+    u64 saved_hash = physics_state_hash(pw);
+    u32 saved_hot_count = pw->hot_pair_count;
+    u32 saved_hot_a = pw->hot_pair_a;
+    u32 saved_hot_b = pw->hot_pair_b;
+    u32 saved_center_count = pw->collision_center_count;
+    for (int i = 0; i < 30; i++) physics_step(pw, 1.0f / 60.0f);
+    u64 first_run = physics_state_hash(pw);
+    u32 first_collisions = pw->collision_count;
+    f32 first_impulse = pw->total_impulse_applied;
+    f32 first_speed = pw->total_collision_speed;
+    u32 first_center_count = pw->collision_center_count;
+    u32 first_hot_count = pw->hot_pair_count;
+    RigidBody first_bodies[8];
+    memcpy(first_bodies, pw->bodies, pw->count * sizeof(RigidBody));
+    ASSERT_TRUE(first_run != saved_hash);
+
+    physics_constraint_remove(pw, (PhysicsConstraintHandle){0u, pw->constraints[0].generation});
+    ASSERT_EQ(physics_constraint_count(pw), 0u);
+    (void)physics_body_create(pw, vec3(4, 4, 4), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    physics_step(pw, 1.0f / 60.0f);
+    ASSERT_FALSE(pw->bvh_dirty);
+    ASSERT_TRUE(physics_snapshot_restore(pw, snap, size));
+    ASSERT_TRUE(pw->bvh_dirty);
+    ASSERT_EQ(physics_state_hash(pw), saved_hash);
+    ASSERT_EQ(pw->hot_pair_count, saved_hot_count);
+    ASSERT_EQ(pw->hot_pair_a, saved_hot_a);
+    ASSERT_EQ(pw->hot_pair_b, saved_hot_b);
+    ASSERT_EQ(pw->collision_center_count, saved_center_count);
+    ASSERT_EQ(pw->count, 4u);
+    ASSERT_EQ(physics_constraint_count(pw), 1u);
+    for (int i = 0; i < 30; i++) physics_step(pw, 1.0f / 60.0f);
+    ASSERT_EQ(physics_state_hash(pw), first_run);
+    ASSERT_EQ(pw->collision_count, first_collisions);
+    ASSERT_TRUE(pw->total_impulse_applied == first_impulse);
+    ASSERT_TRUE(pw->total_collision_speed == first_speed);
+    ASSERT_EQ(pw->collision_center_count, first_center_count);
+    ASSERT_EQ(pw->hot_pair_count, first_hot_count);
+    ASSERT_TRUE(memcmp(first_bodies, pw->bodies, pw->count * sizeof(RigidBody)) == 0);
+    free(snap);
+    physics_world_destroy(pw);
+}
+
+TEST(physics_snapshot_rejects_bad_input)
+{
+    PhysicsBodyHandle a, b;
+    PhysicsWorld *pw = snapshot_scene(&a, &b);
+    usize size = physics_snapshot_size(pw);
+    usize needed = 0u;
+    u8 small[16];
+    memset(small, 0xab, sizeof(small));
+    ASSERT_FALSE(physics_snapshot_save(pw, small, sizeof(small), &needed));
+    ASSERT_EQ(needed, size);
+    for (usize i = 0; i < sizeof(small); i++) ASSERT_EQ(small[i], 0xabu);
+
+    u8 *snap = (u8 *)malloc(size);
+    ASSERT_NOT_NULL(snap);
+    ASSERT_TRUE(physics_snapshot_save(pw, snap, size, &needed));
+    physics_step(pw, 1.0f / 60.0f);
+    u64 before = physics_state_hash(pw);
+    ASSERT_FALSE(physics_snapshot_restore(pw, snap, size - 1u));
+    ASSERT_FALSE(physics_snapshot_restore(pw, NULL, size));
+    snap[0] ^= 0x01u;
+    ASSERT_FALSE(physics_snapshot_restore(pw, snap, size));
+    snap[0] ^= 0x01u;
+    snap[4] ^= 0x01u;
+    ASSERT_FALSE(physics_snapshot_restore(pw, snap, size));
+    snap[4] ^= 0x01u;
+    ASSERT_EQ(physics_state_hash(pw), before);
+
+    PhysicsWorld *tiny = physics_world_create(2);
+    ASSERT_FALSE(physics_snapshot_restore(tiny, snap, size));
+    ASSERT_EQ(tiny->count, 0u);
+    ASSERT_TRUE(physics_snapshot_restore(pw, snap, size));
+    ASSERT_TRUE(physics_state_hash(pw) != before);
+    physics_world_destroy(tiny);
+    free(snap);
+    physics_world_destroy(pw);
+}
+
+TEST(physics_state_hash_tracks_motion)
+{
+    PhysicsBodyHandle a1, b1, a2, b2;
+    PhysicsWorld *one = snapshot_scene(&a1, &b1);
+    PhysicsWorld *two = snapshot_scene(&a2, &b2);
+    ASSERT_EQ(physics_state_hash(one), physics_state_hash(two));
+    u64 base = physics_state_hash(two);
+    two->bodies[a2.index].velocity.e[0] += 0.25f;
+    ASSERT_TRUE(physics_state_hash(two) != base);
+    two->bodies[a2.index].velocity = one->bodies[a1.index].velocity;
+    two->bodies[b2.index].angular_velocity.e[1] += 0.25f;
+    ASSERT_TRUE(physics_state_hash(two) != base);
+    two->bodies[b2.index].angular_velocity = one->bodies[b1.index].angular_velocity;
+    two->bodies[a2.index].position.e[2] += 0.25f;
+    ASSERT_TRUE(physics_state_hash(two) != base);
+    two->bodies[a2.index].position = one->bodies[a1.index].position;
+    two->bodies[a2.index].orientation.e[0] += 0.25f;
+    ASSERT_TRUE(physics_state_hash(two) != base);
+    two->bodies[a2.index].orientation = one->bodies[a1.index].orientation;
+    two->bodies[a2.index].sleeping = !two->bodies[a2.index].sleeping;
+    ASSERT_TRUE(physics_state_hash(two) != base);
+    two->bodies[a2.index].sleeping = one->bodies[a1.index].sleeping;
+    ASSERT_EQ(physics_state_hash(two), base);
+    ASSERT_EQ(physics_state_hash(NULL), 0u);
+    physics_world_destroy(one);
+    physics_world_destroy(two);
+}
+
 TEST(constraint_velocity_wake_does_not_require_position_error) {
     PhysicsWorld *pw = physics_world_create(4);
     PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 3, 0), vec3(0, 0, 0), 1, false, 0);
@@ -1651,4 +1788,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(constraint_remove_wakes_supported_body);
     RUN_TEST(ground_contact_allows_sleep_and_moving_contact_wakes);
     RUN_TEST(constraint_velocity_wake_does_not_require_position_error);
+    RUN_TEST(physics_snapshot_replay_is_bit_identical);
+    RUN_TEST(physics_snapshot_rejects_bad_input);
+    RUN_TEST(physics_state_hash_tracks_motion);
 TEST_MAIN_END()

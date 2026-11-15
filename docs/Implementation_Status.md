@@ -11212,3 +11212,11 @@ The client session layer answers a CHALLENGE with an AUTH v2 reply on its own. T
 Test: `break_session_challenge_auth_reply_echoes_correlation_id` in `engine/tests/test_break_session.c` (42/42). Mutation check: masking the forwarded ID (`& 0u`) fails the test. Full ctest: 405/405 (Snowflake tree `build-net-master`) and 401/401 (`build-core-app-master`). CI does not build the Snowflake targets.
 
 Still missing: mapping the ID into Runtime Core messages on the core app snapshot path, and a unified trace schema. Design note: `docs/design/runtime_network.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-session-auth-correlation.md`.
+
+### 2026-11-15 Physics world snapshot and deterministic replay
+
+`physics.h` adds `physics_snapshot_size`, `physics_snapshot_save`, `physics_snapshot_restore` and `physics_state_hash`. A snapshot holds bodies, constraints and world collision counters. Save and restore both mark the BVH cache for rebuild, so a run restored from a snapshot repeats the saved run bit for bit under the same inputs. Restore validates magic, version, layout sizes, body capacity and exact length, and leaves the world unchanged on failure. The format is in-process only (same build), not a wire or disk format.
+
+Tests in `engine/tests/test_physics.c` (83/83): `physics_snapshot_replay_is_bit_identical` (snapshot after collisions, 30 steps, perturb the world, restore, 30 steps again, compare hash, collision counters and every `RigidBody` byte), `physics_snapshot_rejects_bad_input`, `physics_state_hash_tracks_motion`. Mutation check: 23 mutations over restore copies, every validation, every restored counter, both BVH dirty marks, the save capacity check and every hash field; all fail a test. Full ctest: 401/401 (`build-core-app-master`).
+
+Still missing: cross-platform determinism, an input recording file format, physics network sync and a parallel solver. Design note: `docs/design/physics_extended.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-physics-snapshot-replay.md`.

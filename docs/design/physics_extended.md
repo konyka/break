@@ -131,3 +131,14 @@ void ragdoll_write_pose(const Ragdoll *rd, const PhysicsWorld *pw, Skeleton *sk)
 ## 7. 限制
 
 射线轮不是独立碰撞轮体，不模拟轮胎几何侧壁、复杂 Pacejka 力矩或每个轮的刚体转动惯量；本轮提供的是固定容量、可测试的悬挂/接地/驱动框架。布娃娃只覆盖最多 32 个显式骨架关节，未加入自动人体比例生成或自碰撞过滤组。以上限制不以提高上限或伪造物理量规避。
+
+## 补充（2026-11-15）：世界快照与确定性回放
+
+`physics.h` 新增进程内快照接口，用于回放和回滚：
+
+- `physics_snapshot_size(pw)`：保存当前世界所需字节数（头部 + `count` 个 `RigidBody` + 全部 64 个约束槽）。
+- `physics_snapshot_save(pw, buf, cap, &size)`：容量不足返回 false，缓冲区不写，`*out_size` 总是给出所需字节数。保存会把 BVH 标脏，让原运行和恢复后的运行都从同一状态重建 broadphase。
+- `physics_snapshot_restore(pw, buf, size)`：校验魔数、版本、`RigidBody`/约束结构大小、body 数不超过世界容量、长度精确相等；任何一项失败都返回 false，世界不变。恢复 body、约束、世界碰撞统计，并把 BVH 标脏。
+- `physics_state_hash(pw)`：对每个 body 的位置、速度、朝向、角速度和睡眠状态做 FNV-1a，供回放比对与网络同步诊断。
+
+快照是同一构建内的内存格式，不是线格式或磁盘格式；接触回调和 post-step 钩子不保存。测试 `physics_snapshot_replay_is_bit_identical` 在发生碰撞后保存，跑 30 步记录结果，再删除约束、新增 body、恢复、重跑 30 步，断言哈希、碰撞统计和全部 `RigidBody` 字节逐位相同。仍缺：跨平台确定性、输入录制文件格式、网络同步。

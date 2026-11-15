@@ -219,6 +219,22 @@ u32           physics_constraint_count(const PhysicsWorld *pw);
 void          physics_step(PhysicsWorld *pw, f32 dt);
 bool          physics_raycast(const PhysicsWorld *pw, Vec3 origin, Vec3 dir, f32 max_dist, PhysicsBodyHandle *out_body, f32 *out_t);
 
+/* In-process snapshot of bodies, constraints and world counters, for replay
+ * and rollback within one build. Not a wire or on-disk format. Callbacks and
+ * post-step hooks are not saved. Saving marks the BVH cache for rebuild, so
+ * the saved run and a run restored from the snapshot take the same
+ * broadphase path and stay bit-identical under the same inputs.
+ * save: returns false when capacity is too small and leaves the buffer
+ * untouched; *out_size always receives the required byte count.
+ * restore: validates magic, version, layout sizes, body count against the
+ * world's capacity and the exact length; on failure the world is unchanged. */
+usize         physics_snapshot_size(const PhysicsWorld *pw);
+bool          physics_snapshot_save(PhysicsWorld *pw, void *buffer, usize capacity, usize *out_size);
+bool          physics_snapshot_restore(PhysicsWorld *pw, const void *buffer, usize size);
+/* FNV-1a over each body's position, velocity, orientation, angular velocity
+ * and sleep state. Equal states give equal hashes. */
+u64           physics_state_hash(const PhysicsWorld *pw);
+
 bool          physics_collide(const RigidBody *a, const RigidBody *b, Contact *out);
 AABB  aabb_from_body(const RigidBody *b);
 bool  aabb_overlap(AABB a, AABB b);

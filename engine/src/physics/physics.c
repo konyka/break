@@ -1737,3 +1737,125 @@ bool physics_raycast(const PhysicsWorld *pw, Vec3 origin, Vec3 dir, f32 max_dist
     }
     return false;
 }
+
+#define PHYSICS_SNAPSHOT_MAGIC 0x50534e50u /* "PNSP" */
+#define PHYSICS_SNAPSHOT_VERSION 1u
+
+typedef struct PhysicsSnapshotHeader {
+    u32  magic;
+    u32  version;
+    u32  body_bytes;
+    u32  constraint_bytes;
+    u32  body_count;
+    u32  constraint_count;
+    u32  collision_count;
+    u32  respawn_count;
+    f32  total_impulse_applied;
+    Vec3 last_collision_pos;
+    u32  hot_pair_a;
+    u32  hot_pair_b;
+    u32  hot_pair_count;
+    f32  total_collision_speed;
+    Vec3 collision_center;
+    u32  collision_center_count;
+    Vec3 total_impulse_axis;
+} PhysicsSnapshotHeader;
+
+static usize physics_snapshot_bytes(u32 body_count) {
+    return sizeof(PhysicsSnapshotHeader) + (usize)body_count * sizeof(RigidBody) +
+           sizeof(((PhysicsWorld *)0)->constraints);
+}
+
+usize physics_snapshot_size(const PhysicsWorld *pw) {
+    return pw ? physics_snapshot_bytes(pw->count) : 0u;
+}
+
+bool physics_snapshot_save(PhysicsWorld *pw, void *buffer, usize capacity, usize *out_size) {
+    if (!pw) return false;
+    usize size = physics_snapshot_bytes(pw->count);
+    if (out_size) *out_size = size;
+    if (!buffer || capacity < size) return false;
+    PhysicsSnapshotHeader h;
+    memset(&h, 0, sizeof(h));
+    h.magic = PHYSICS_SNAPSHOT_MAGIC;
+    h.version = PHYSICS_SNAPSHOT_VERSION;
+    h.body_bytes = (u32)sizeof(RigidBody);
+    h.constraint_bytes = (u32)sizeof(DistanceConstraint);
+    h.body_count = pw->count;
+    h.constraint_count = pw->constraint_count;
+    h.collision_count = pw->collision_count;
+    h.respawn_count = pw->respawn_count;
+    h.total_impulse_applied = pw->total_impulse_applied;
+    h.last_collision_pos = pw->last_collision_pos;
+    h.hot_pair_a = pw->hot_pair_a;
+    h.hot_pair_b = pw->hot_pair_b;
+    h.hot_pair_count = pw->hot_pair_count;
+    h.total_collision_speed = pw->total_collision_speed;
+    h.collision_center = pw->collision_center;
+    h.collision_center_count = pw->collision_center_count;
+    h.total_impulse_axis = pw->total_impulse_axis;
+    u8 *out = (u8 *)buffer;
+    memcpy(out, &h, sizeof(h));
+    out += sizeof(h);
+    memcpy(out, pw->bodies, (usize)pw->count * sizeof(RigidBody));
+    out += (usize)pw->count * sizeof(RigidBody);
+    memcpy(out, pw->constraints, sizeof(pw->constraints));
+    pw->bvh_dirty = true;
+    return true;
+}
+
+bool physics_snapshot_restore(PhysicsWorld *pw, const void *buffer, usize size) {
+    PhysicsSnapshotHeader h;
+    if (!pw || !buffer || size < sizeof(h)) return false;
+    memcpy(&h, buffer, sizeof(h));
+    if (h.magic != PHYSICS_SNAPSHOT_MAGIC || h.version != PHYSICS_SNAPSHOT_VERSION ||
+        h.body_bytes != sizeof(RigidBody) || h.constraint_bytes != sizeof(DistanceConstraint) ||
+        h.body_count > pw->capacity || h.constraint_count > PHYSICS_MAX_CONSTRAINTS ||
+        size != physics_snapshot_bytes(h.body_count)) {
+        return false;
+    }
+    const u8 *in = (const u8 *)buffer + sizeof(h);
+    memcpy(pw->bodies, in, (usize)h.body_count * sizeof(RigidBody));
+    in += (usize)h.body_count * sizeof(RigidBody);
+    memcpy(pw->constraints, in, sizeof(pw->constraints));
+    pw->count = h.body_count;
+    pw->constraint_count = h.constraint_count;
+    pw->collision_count = h.collision_count;
+    pw->respawn_count = h.respawn_count;
+    pw->total_impulse_applied = h.total_impulse_applied;
+    pw->last_collision_pos = h.last_collision_pos;
+    pw->hot_pair_a = h.hot_pair_a;
+    pw->hot_pair_b = h.hot_pair_b;
+    pw->hot_pair_count = h.hot_pair_count;
+    pw->total_collision_speed = h.total_collision_speed;
+    pw->collision_center = h.collision_center;
+    pw->collision_center_count = h.collision_center_count;
+    pw->total_impulse_axis = h.total_impulse_axis;
+    pw->bvh_dirty = true;
+    return true;
+}
+
+static u64 physics_hash_bytes(u64 hash, const void *data, usize size) {
+    const u8 *p = (const u8 *)data;
+    for (usize i = 0; i < size; i++) {
+        hash ^= p[i];
+        hash *= 0x100000001b3ull;
+    }
+    return hash;
+}
+
+u64 physics_state_hash(const PhysicsWorld *pw) {
+    if (!pw) return 0u;
+    u64 hash = 0xcbf29ce484222325ull;
+    hash = physics_hash_bytes(hash, &pw->count, sizeof(pw->count));
+    for (u32 i = 0; i < pw->count; i++) {
+        const RigidBody *b = &pw->bodies[i];
+        u8 sleeping = b->sleeping ? 1u : 0u;
+        hash = physics_hash_bytes(hash, &b->position, sizeof(b->position));
+        hash = physics_hash_bytes(hash, &b->velocity, sizeof(b->velocity));
+        hash = physics_hash_bytes(hash, &b->orientation, sizeof(b->orientation));
+        hash = physics_hash_bytes(hash, &b->angular_velocity, sizeof(b->angular_velocity));
+        hash = physics_hash_bytes(hash, &sleeping, sizeof(sleeping));
+    }
+    return hash;
+}
