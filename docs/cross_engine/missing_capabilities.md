@@ -209,3 +209,17 @@
   - F5–F8 play mode：进入时记录 history mark，停止时回滚场景（`0d06c0bb`）。这不是独立进程的 PIE。
 
 仍缺：session 层与 Runtime Core 消息之间的 ID 映射，以及统一 trace schema。CI 不构建 Snowflake 网络目标，所以网络相关测试只在本地 Snowflake 构建树 `build-net-master` 里跑过（405/405）。
+
+## 补充交付记录（2026-11-15 第三批）
+
+本节只记录新交付的项，不修改上文状态描述。
+
+- **第 13 节（诊断/跨线程关联）**
+  - session 层回复 CHALLENGE 时，AUTH 帧回带 CHALLENGE 的 `correlation_id`（`9a958b68`），测试 `break_session_challenge_auth_reply_echoes_correlation_id`。上文「session 层与 Runtime Core 消息之间的 ID 映射」中，session 握手这一段已覆盖；core_app 快照路径仍未映射，因为快照目前只进入 inbox 计数，没有可观察的消费者。
+- **第 9 节（物理）**
+  - 世界快照 `physics_snapshot_save/restore` 和状态哈希 `physics_state_hash`（`65884bb1`）。
+  - 输入录制与回放文件格式 `physics_replay.{h,c}`，`physics_replay_run` 返回 OK、DIVERGED 或 INVALID，并给出第一处分歧的记录下标（`03564f30`），测试 `test_physics_replay`。
+  - 仍缺：并行 solver、网络同步、跨平台确定性。回放只保证同一构建、同一平台上的结果一致。
+- **第 15 节（在线更新）**
+  - `break_http` 支持可选的 SPKI SHA-256 钉扎，最多 8 个 pin，在 TLS 握手成功后比较（`21fd9e02`）。见 [`docs/design/update_transport.md`](../design/update_transport.md)。
+  - 仍缺：代理、证书吊销（CRL/OCSP）、HTTP/2；发布二进制仍没有链接 `break_http`。
