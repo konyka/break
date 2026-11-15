@@ -83,3 +83,7 @@ git commit -m "merge: integrate upstream Core App fixes"
 ```
 
 写完整 `task-1-report.md`，列出每个冲突的实际解决、RED/GREEN/变异、完整验证、run ID 与限制。controller 负责独立全分支终审、真实 CI、文档和最终 push；临时分支不合并到 master。
+
+## Status (2026-11-15)
+
+Delivered in merge `c6e8b80a`; see `docs/Implementation_Status.md` (the `_spawnv` and `.gitattributes` entries). The unchecked steps above are stale bookkeeping.

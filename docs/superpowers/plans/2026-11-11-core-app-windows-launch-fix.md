@@ -88,3 +88,7 @@ git commit -m "fix: quote core app Windows process launch"
 ```
 
 原生证据取得后，追加 `docs/Implementation_Status.md` 与 `docs/design/core_app_integration.md` 的当前结果和剩余 compat 限制。完整 sanitizer/no-tests/fuzz、全分支终审和 controller push 是后续 integration gate，不在本任务提前宣称完成。
+
+## Status (2026-11-15)
+
+Delivered in `987121d9` (fix) and `24d4ce48` (docs). The upstream sync merge `c6e8b80a` later replaced the outer-quoted `system()` command with `_spawnv(_P_WAIT)` (`engine/tests/test_core_app_assets.c`). The unchecked steps above are stale bookkeeping.

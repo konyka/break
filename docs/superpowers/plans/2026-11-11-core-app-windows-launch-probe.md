@@ -113,3 +113,7 @@ git commit -m "test: probe core app Windows process launch"
 ```
 
 将 RED/GREEN/变异、Linux 结果、原生限制写入指定 report。独立规格与质量评审通过后由 controller push 并补充真实 Windows 结果。随后按证据另建独立最小修复计划，不把本诊断任务写成 Windows 已修复。
+
+## Status (2026-11-15)
+
+Delivered. The probe ran on the temporary validation branch only (native run `43025231891`), and its evidence fed `2026-11-11-core-app-windows-launch-fix.md`. The unchecked steps above are stale bookkeeping.
