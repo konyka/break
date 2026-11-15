@@ -1437,6 +1437,53 @@ endif()
 string(ASCII 71 65 77 69 65 80 80 84 82 65 67 69 legacy_trace_prefix)
 string(ASCII 103 97 109 101 45 97 112 112 45 115 99 101 110 97 114 105 111
     legacy_scenario_prefix)
+set(json_trace_path "${WORK}/load_unload_json.trace")
+set(json_path "${WORK}/load_unload.trace.json")
+file(REMOVE "${json_trace_path}" "${json_path}")
+execute_process(
+    COMMAND "${CORE_APP}" --render=record --audio=record
+        --assets "${ASSET_ROOT}" --fixed-step --scenario "${SCENARIO}"
+        --trace "${json_trace_path}" --trace-json "${json_path}"
+    RESULT_VARIABLE json_rc
+    OUTPUT_VARIABLE json_out
+    ERROR_VARIABLE json_err
+    TIMEOUT 30)
+if(NOT json_rc EQUAL 0)
+    record_error("trace_json: exit=${json_rc}; stdout=${json_out}; stderr=${json_err}")
+elseif(NOT EXISTS "${json_path}")
+    record_error("trace_json: ${json_path} was not written")
+else()
+    file(READ "${json_path}" trace_json)
+    file(STRINGS "${json_trace_path}" trace_lines REGEX "^COREAPPTRACE version=1 event=")
+    list(LENGTH trace_lines trace_line_count)
+    string(REGEX MATCHALL "\"cat\":\"core_app\"" json_events "${trace_json}")
+    list(LENGTH json_events json_event_count)
+    if(NOT trace_json MATCHES "^{\"traceEvents\":\\[\n{\"name\":\"runtime_running\",\"cat\":\"core_app\",\"ph\":\"i\",\"s\":\"g\",\"ts\":0,")
+        record_error("trace_json: document does not start with the runtime_running event: ${trace_json}")
+    endif()
+    if(NOT trace_json MATCHES "\"name\":\"level_loaded\"[^\n]*\"args\":{\"generation\":1}}")
+        record_error("trace_json: level_loaded generation=1 did not become a numeric arg")
+    endif()
+    if(NOT trace_json MATCHES "\\],\"otherData\":{\"schema\":\"break.trace\",\"schema_version\":1}}\r?\n$")
+        record_error("trace_json: document is not closed with the break.trace marker")
+    endif()
+    if(trace_line_count EQUAL 0 OR NOT json_event_count EQUAL trace_line_count)
+        record_error("trace_json: ${json_event_count} events for ${trace_line_count} trace lines")
+    endif()
+endif()
+
+execute_process(
+    COMMAND "${CORE_APP}" --render=record --audio=record
+        --assets "${ASSET_ROOT}" --fixed-step --scenario "${SCENARIO}"
+        --trace "${json_trace_path}" --trace-json "${WORK}/missing_dir/trace.json"
+    RESULT_VARIABLE json_rc
+    OUTPUT_VARIABLE json_out
+    ERROR_VARIABLE json_err
+    TIMEOUT 30)
+if(NOT json_rc EQUAL 2 OR NOT json_err MATCHES "could not write --trace-json")
+    record_error("trace_json_unwritable: exit=${json_rc}, want 2; stderr=${json_err}")
+endif()
+
 run_app(load_unload "${ASSET_ROOT}" "${SCENARIO}" 0)
 set(normal_trace "${CORE_APP_LIFECYCLE_TRACE}")
 if(normal_trace STREQUAL "")

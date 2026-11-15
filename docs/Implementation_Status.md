@@ -11301,3 +11301,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - 新增 `engine/src/core/trace_core_app.[ch]`：把 `COREAPPTRACE version=1 event=... k=v` 文本 trace 转成 Chrome trace-event JSON，每行一个 `core_app` 类别的 instant 事件，`ts` 为事件序号，其余字段进 `args`（纯数字为数值，其他为转义字符串），文档以 `BREAK_TRACE_OTHER_DATA` 结尾。格式错误的行跳过并计数，支持只查询长度。
 - `test_trace_core_app`（3 项）先 RED 后 GREEN，18 项变异全部被捕获。文本 trace 本身格式不变，lifecycle 测试不受影响；尚无 CLI 直接输出 JSON，事件没有真实时间戳。
+
+### 2026-11-15 core_app --trace-json
+
+- `core_app` 新增 `--trace-json PATH`：运行结束后把 `--trace` 文本转换为 `break.trace` Chrome JSON 写到 PATH。缺少 `--trace` 时报 CLI 错误；写入失败时返回 2。
+- target contract 和 lifecycle load_unload 测试先 RED 后 GREEN，6 项变异全部被捕获。

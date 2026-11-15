@@ -1,5 +1,7 @@
 #include "core_app.h"
 
+#include <core/trace_core_app.h>
+
 #if CORE_APP_NET_TRANSPORT
 #include "core_app_net_transport.h"
 
@@ -18,6 +20,7 @@ static void print_help(void) {
          "  --scenario PATH\n"
          "  --checkpoint DIR\n"
          "  --trace PATH\n"
+         "  --trace-json PATH\n"
          "  --screenshot PATH\n"
          "  --fixed-step\n"
          "  --frames N\n"
@@ -86,6 +89,36 @@ static bool parse_frames(const char *value, u32 *out) {
     return true;
 }
 
+/* Rewrites the finished text trace as a break.trace Chrome JSON document. */
+static bool write_trace_json(const char *trace_path, const char *json_path) {
+    bool ok = false;
+    char *text = NULL;
+    char *json = NULL;
+    long size = -1;
+    FILE *in = fopen(trace_path, "rb");
+    if (!in) return false;
+    if (fseek(in, 0, SEEK_END) == 0) size = ftell(in);
+    if (size >= 0 && fseek(in, 0, SEEK_SET) == 0) text = malloc((usize)size + 1u);
+    if (text && fread(text, 1u, (usize)size, in) == (usize)size) {
+        BreakTraceCoreAppReport report;
+        if (break_trace_core_app_to_chrome(text, (usize)size, NULL, 0u, &report) ==
+                BREAK_TRACE_CONVERT_TOO_SMALL &&
+            (json = malloc((usize)report.bytes + 1u)) != NULL &&
+            break_trace_core_app_to_chrome(text, (usize)size, json, (usize)report.bytes + 1u,
+                                           &report) == BREAK_TRACE_CONVERT_OK) {
+            FILE *out = fopen(json_path, "wb");
+            if (out) {
+                ok = fwrite(json, 1u, (usize)report.bytes, out) == (usize)report.bytes;
+                ok = fclose(out) == 0 && ok;
+            }
+        }
+    }
+    fclose(in);
+    free(json);
+    free(text);
+    return ok;
+}
+
 #if CORE_APP_NET_TRANSPORT
 /* One to three decimal digits, at most 100. Unlike --frames, zero (also
  * written "00" or "000") is valid: it means no pacing. */
@@ -109,6 +142,7 @@ int main(int argc, char **argv) {
         .audio_mode = CORE_APP_AUDIO_DEVICE,
     };
     int exit_code = 2;
+    const char *trace_json_path = NULL;
     BreakRuntimeError result;
 #if CORE_APP_NET_TRANSPORT
     CoreAppNetTransportConfig net_config = {0};
@@ -143,6 +177,9 @@ int main(int argc, char **argv) {
         } else if ((matched = take_value(argc, argv, &i, "--trace", &value)) != 0) {
             if (matched < 0) return cli_error("--trace requires a nonempty path");
             config.trace_path = value;
+        } else if ((matched = take_value(argc, argv, &i, "--trace-json", &value)) != 0) {
+            if (matched < 0) return cli_error("--trace-json requires a nonempty path");
+            trace_json_path = value;
         } else if ((matched = take_value(argc, argv, &i, "--screenshot", &value)) != 0) {
             if (matched < 0) return cli_error("--screenshot requires a nonempty path");
             config.screenshot_path = value;
@@ -191,6 +228,8 @@ int main(int argc, char **argv) {
             return cli_error("unknown or malformed argument");
         }
     }
+    if (trace_json_path && !config.trace_path)
+        return cli_error("--trace-json requires --trace");
 
 #if CORE_APP_NET_TRANSPORT
     if (net_option_seen && !config.network)
@@ -222,5 +261,9 @@ int main(int argc, char **argv) {
 #endif
     if (result != BREAK_RUNTIME_OK)
         fprintf(stderr, "core_app: runtime returned %s\n", break_runtime_error_name(result));
+    if (trace_json_path && !write_trace_json(config.trace_path, trace_json_path)) {
+        fprintf(stderr, "core_app: could not write --trace-json %s\n", trace_json_path);
+        if (exit_code == 0) exit_code = 2;
+    }
     return exit_code;
 }

@@ -49,3 +49,17 @@ Status here, `docs/Implementation_Status.md`,
 - Still missing: no `core_app` CLI flag or tool writes the JSON next to the
   text trace yet; the converted events have ordinal timestamps only, so
   cross-process/network merge still has no shared clock.
+
+## Follow-up: `core_app --trace-json PATH`
+- After `core_app_run` returns, `main.c` reads the `--trace` file and writes
+  the converted document to PATH. `--trace-json` without `--trace` is a CLI
+  error (exit 2); a failed write prints `could not write --trace-json` and
+  turns exit 0 into 2 (a nonzero runtime exit code is kept).
+- RED: `test_core_app_target_contract` (missing value, missing `--trace`,
+  help line) and `test_core_app_lifecycle_load_unload` (JSON starts with
+  `runtime_running` at ts 0, numeric `generation`, schema marker, one event
+  per trace line, unwritable path exits 2) failed with "unknown or malformed
+  argument". GREEN: both pass.
+- Mutation: 6 single-site mutations of `main.c`, all killed.
+- Still missing: the text trace has no real timestamps, so a merged
+  cross-process timeline is still not possible.
