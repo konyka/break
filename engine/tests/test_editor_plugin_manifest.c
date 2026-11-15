@@ -4,6 +4,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 
 #define HASH_A "00112233445566778899aabbccddeeff00112233445566778899AABBCCDDEEFF"
 
@@ -224,10 +227,214 @@ TEST(manifest_load_all_tracks_owners_and_drops_failed_commands)
     break_editor_plugin_cmds_destroy(cmds);
 }
 
+TEST(manifest_status_names)
+{
+    ASSERT_STR_EQ(break_editor_plugin_manifest_status_name(BREAK_EDITOR_PLUGIN_MANIFEST_OK), "ok");
+    ASSERT_STR_EQ(break_editor_plugin_manifest_status_name(BREAK_EDITOR_PLUGIN_MANIFEST_INVALID),
+                  "invalid");
+    ASSERT_STR_EQ(break_editor_plugin_manifest_status_name(BREAK_EDITOR_PLUGIN_MANIFEST_SYNTAX),
+                  "syntax");
+    ASSERT_STR_EQ(
+        break_editor_plugin_manifest_status_name(BREAK_EDITOR_PLUGIN_MANIFEST_BAD_BUILD_ID),
+        "bad build id");
+    ASSERT_STR_EQ(break_editor_plugin_manifest_status_name(BREAK_EDITOR_PLUGIN_MANIFEST_BAD_HASH),
+                  "bad sha256");
+    ASSERT_STR_EQ(break_editor_plugin_manifest_status_name(BREAK_EDITOR_PLUGIN_MANIFEST_BAD_PATH),
+                  "bad path");
+    ASSERT_STR_EQ(
+        break_editor_plugin_manifest_status_name(BREAK_EDITOR_PLUGIN_MANIFEST_DUPLICATE),
+        "duplicate path");
+    ASSERT_STR_EQ(break_editor_plugin_manifest_status_name(BREAK_EDITOR_PLUGIN_MANIFEST_FULL),
+                  "too many entries");
+    ASSERT_STR_EQ(break_editor_plugin_manifest_status_name(BREAK_EDITOR_PLUGIN_MANIFEST_IO),
+                  "cannot read file");
+    ASSERT_STR_EQ(
+        break_editor_plugin_manifest_status_name(BREAK_EDITOR_PLUGIN_MANIFEST_TOO_LARGE),
+        "file too large");
+    ASSERT_STR_EQ(break_editor_plugin_manifest_status_name(
+                      (BreakEditorPluginManifestStatus)(BREAK_EDITOR_PLUGIN_MANIFEST_TOO_LARGE + 1)),
+                  "unknown");
+    ASSERT_STR_EQ(break_editor_plugin_manifest_status_name((BreakEditorPluginManifestStatus)-1),
+                  "unknown");
+}
+
+static void write_text(const char *path, const char *text, usize size)
+{
+    FILE *f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(fwrite(text, 1u, size, f), size);
+    ASSERT_EQ(fclose(f), 0);
+}
+
+TEST(manifest_read_file_joins_to_the_manifest_directory)
+{
+    char path[640];
+    char dir[640];
+    char want[700];
+    u32 line = 99u;
+    const char *text = "plugin a " HASH_A " libs/a.so\nplugin b " HASH_A " /abs/b.so\n";
+    test_tmp(path, sizeof path, "editor_plugin_manifest.txt");
+    write_text(path, text, strlen(text));
+    snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '/');
+    ASSERT_NOT_NULL(slash);
+    *slash = '\0';
+    snprintf(want, sizeof want, "%s/libs/a.so", dir);
+
+    ASSERT_EQ(break_editor_plugin_manifest_read_file(path, &g_manifest, &line),
+              BREAK_EDITOR_PLUGIN_MANIFEST_OK);
+    ASSERT_EQ(line, 0u);
+    ASSERT_EQ(g_manifest.count, 2u);
+    ASSERT_STR_EQ(g_manifest.entries[0].path, want);
+    ASSERT_STR_EQ(g_manifest.entries[1].path, "/abs/b.so");
+
+    const char *bad = "# ok\nplugin a " HASH_A " a.so\nplugin a nothex x.so\n";
+    write_text(path, bad, strlen(bad));
+    ASSERT_EQ(break_editor_plugin_manifest_read_file(path, &g_manifest, &line),
+              BREAK_EDITOR_PLUGIN_MANIFEST_BAD_HASH);
+    ASSERT_EQ(line, 3u);
+    ASSERT_EQ(g_manifest.count, 0u);
+
+    ASSERT_EQ(break_editor_plugin_manifest_read_file(path, &g_manifest, NULL),
+              BREAK_EDITOR_PLUGIN_MANIFEST_BAD_HASH);
+    ASSERT_EQ(remove(path), 0);
+}
+
+TEST(manifest_read_file_without_directory_keeps_relative_paths)
+{
+    char name[96];
+    u32 line = 0u;
+    const char *text = "plugin a " HASH_A " a.so\n";
+    snprintf(name, sizeof name, "editor_plugin_manifest_%d.txt", (int)TEST_GETPID());
+    write_text(name, text, strlen(text));
+    ASSERT_EQ(break_editor_plugin_manifest_read_file(name, &g_manifest, &line),
+              BREAK_EDITOR_PLUGIN_MANIFEST_OK);
+    ASSERT_EQ(g_manifest.count, 1u);
+    ASSERT_STR_EQ(g_manifest.entries[0].path, "a.so");
+    ASSERT_EQ(remove(name), 0);
+}
+
+TEST(manifest_read_file_rejects_missing_large_and_null)
+{
+    static char big[BREAK_EDITOR_PLUGIN_MANIFEST_FILE_MAX + 1u];
+    char path[640];
+    u32 line = 7u;
+    ASSERT_EQ(parse("plugin seed " HASH_A " /seed.so", NULL, NULL),
+              BREAK_EDITOR_PLUGIN_MANIFEST_OK);
+    test_tmp(path, sizeof path, "editor_plugin_manifest_missing.txt");
+    (void)remove(path);
+    ASSERT_EQ(break_editor_plugin_manifest_read_file(path, &g_manifest, &line),
+              BREAK_EDITOR_PLUGIN_MANIFEST_IO);
+    ASSERT_EQ(line, 0u);
+    ASSERT_EQ(g_manifest.count, 0u);
+
+    memset(big, '#', sizeof big);
+    test_tmp(path, sizeof path, "editor_plugin_manifest_big.txt");
+    write_text(path, big, BREAK_EDITOR_PLUGIN_MANIFEST_FILE_MAX);
+    ASSERT_EQ(break_editor_plugin_manifest_read_file(path, &g_manifest, &line),
+              BREAK_EDITOR_PLUGIN_MANIFEST_OK);
+    ASSERT_EQ(g_manifest.count, 0u);
+    ASSERT_EQ(parse("plugin seed " HASH_A " /seed.so", NULL, NULL),
+              BREAK_EDITOR_PLUGIN_MANIFEST_OK);
+    line = 7u;
+    write_text(path, big, sizeof big);
+    ASSERT_EQ(break_editor_plugin_manifest_read_file(path, &g_manifest, &line),
+              BREAK_EDITOR_PLUGIN_MANIFEST_TOO_LARGE);
+    ASSERT_EQ(line, 0u);
+    ASSERT_EQ(g_manifest.count, 0u);
+    ASSERT_EQ(remove(path), 0);
+
+    /* A directory opens on POSIX but fails to read; Windows refuses to open it. */
+    char dir[640];
+    test_tmp(dir, sizeof dir, "editor_plugin_manifest_dir");
+    ASSERT_EQ(TEST_MKDIR(dir), 0);
+    line = 7u;
+    ASSERT_EQ(break_editor_plugin_manifest_read_file(dir, &g_manifest, &line),
+              BREAK_EDITOR_PLUGIN_MANIFEST_IO);
+    ASSERT_EQ(line, 0u);
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
+
+    ASSERT_EQ(break_editor_plugin_manifest_read_file(NULL, &g_manifest, &line),
+              BREAK_EDITOR_PLUGIN_MANIFEST_INVALID);
+    ASSERT_EQ(break_editor_plugin_manifest_read_file(path, NULL, &line),
+              BREAK_EDITOR_PLUGIN_MANIFEST_INVALID);
+}
+
+TEST(manifest_take_cli)
+{
+    char a0[] = "editor", a1[] = "--plugin-manifest", a2[] = "/p/one.txt", a3[] = "scene.bscn",
+         a4[] = "--plugin-manifest=/p/two.txt", a5[] = "--plugin-manifests", a6[] = "--lang";
+    char *argv[] = {a0, a1, a2, a3, a4, a5, a6, NULL};
+    int argc = 7;
+    const char *path = (const char *)1;
+    char err[96];
+    ASSERT_TRUE(break_editor_plugin_manifest_take_cli(&argc, argv, &path, err, sizeof err));
+    ASSERT_STR_EQ(path, "/p/two.txt");
+    ASSERT_EQ(argc, 4);
+    ASSERT_STR_EQ(argv[0], "editor");
+    ASSERT_STR_EQ(argv[1], "scene.bscn");
+    ASSERT_STR_EQ(argv[2], "--plugin-manifests");
+    ASSERT_STR_EQ(argv[3], "--lang");
+    ASSERT_TRUE(argv[4] == NULL);
+
+    char b0[] = "editor", b1[] = "x";
+    char *none[] = {b0, b1, NULL};
+    int none_argc = 2;
+    path = (const char *)1;
+    ASSERT_TRUE(break_editor_plugin_manifest_take_cli(&none_argc, none, &path, NULL, 0u));
+    ASSERT_TRUE(path == NULL);
+    ASSERT_EQ(none_argc, 2);
+    ASSERT_STR_EQ(none[1], "x");
+
+    char c0[] = "editor", c1[] = "x", c2[] = "--plugin-manifest";
+    char *missing[] = {c0, c1, c2, NULL};
+    int missing_argc = 3;
+    err[0] = '\0';
+    ASSERT_FALSE(
+        break_editor_plugin_manifest_take_cli(&missing_argc, missing, &path, err, sizeof err));
+    ASSERT_EQ(missing_argc, 3);
+    ASSERT_STR_EQ(missing[1], "x");
+    ASSERT_TRUE(strstr(err, "--plugin-manifest needs a path") != NULL);
+
+    char d0[] = "editor", d1[] = "--plugin-manifest=", d2[] = "y";
+    char *empty[] = {d0, d1, d2, NULL};
+    int empty_argc = 3;
+    err[0] = '\0';
+    ASSERT_FALSE(break_editor_plugin_manifest_take_cli(&empty_argc, empty, &path, err, sizeof err));
+    ASSERT_EQ(empty_argc, 3);
+    ASSERT_STR_EQ(empty[1], "--plugin-manifest=");
+    ASSERT_TRUE(strstr(err, "--plugin-manifest needs a path") != NULL);
+
+    char e0[] = "editor", e1[] = "--plugin-manifest", e2[] = "";
+    char *blank[] = {e0, e1, e2, NULL};
+    int blank_argc = 3;
+    ASSERT_FALSE(break_editor_plugin_manifest_take_cli(&blank_argc, blank, &path, NULL, 0u));
+    ASSERT_EQ(blank_argc, 3);
+
+    /* The value after a bare option is a path even when it looks like one. */
+    char f0[] = "editor", f1[] = "--plugin-manifest", f2[] = "--plugin-manifest=/x";
+    char *odd[] = {f0, f1, f2, NULL};
+    int odd_argc = 3;
+    ASSERT_TRUE(break_editor_plugin_manifest_take_cli(&odd_argc, odd, &path, NULL, 0u));
+    ASSERT_STR_EQ(path, "--plugin-manifest=/x");
+    ASSERT_EQ(odd_argc, 1);
+
+    ASSERT_FALSE(break_editor_plugin_manifest_take_cli(NULL, argv, &path, err, sizeof err));
+    ASSERT_FALSE(break_editor_plugin_manifest_take_cli(&argc, NULL, &path, err, sizeof err));
+    ASSERT_FALSE(break_editor_plugin_manifest_take_cli(&argc, argv, NULL, err, sizeof err));
+    int zero = 0;
+    ASSERT_FALSE(break_editor_plugin_manifest_take_cli(&zero, argv, &path, err, sizeof err));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(manifest_parses_entries_comments_and_crlf);
     RUN_TEST(manifest_path_joining);
     RUN_TEST(manifest_rejects_bad_lines);
     RUN_TEST(manifest_rejects_nul_full_and_long_paths);
     RUN_TEST(manifest_load_all_tracks_owners_and_drops_failed_commands);
+    RUN_TEST(manifest_status_names);
+    RUN_TEST(manifest_read_file_joins_to_the_manifest_directory);
+    RUN_TEST(manifest_read_file_without_directory_keeps_relative_paths);
+    RUN_TEST(manifest_read_file_rejects_missing_large_and_null);
+    RUN_TEST(manifest_take_cli);
 TEST_MAIN_END()

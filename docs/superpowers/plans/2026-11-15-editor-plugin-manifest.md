@@ -54,3 +54,27 @@ path can load every listed plugin and drop the commands of any that fail.
   `break_system` may not be linked into `editor`, so wiring needs an optional
   loader library or a callback injected from `editor_main.c`. No plugin panel
   and no inspector extension points yet.
+
+## Follow-up: editor `--plugin-manifest`
+- `break_editor_plugin_manifest_read_file(path, out, error_line)` reads up to
+  64 KiB (`BREAK_EDITOR_PLUGIN_MANIFEST_FILE_MAX`) and joins relative entry
+  paths to the directory of the manifest file. New statuses `IO` and
+  `TOO_LARGE`; `break_editor_plugin_manifest_status_name` gives the stderr text.
+- `break_editor_plugin_manifest_take_cli` removes every
+  `--plugin-manifest PATH` / `--plugin-manifest=PATH` from argv, keeping the last
+  one; an empty or missing value is a usage error.
+- `editor` checks the manifest before it creates a window: a broken manifest
+  exits 2 with `plugin manifest <path> line <n>: <reason>`; a valid one prints
+  each entry as "not loaded", because the binary still does not link
+  `break_system`.
+- Tests: `test_editor_plugin_manifest` gained 5 cases (10 total);
+  `test_editor_plugin_manifest_cli` runs the real binary. The valid-manifest
+  case appends a bare `--remote` so the editor stops (fail closed) before
+  opening a window.
+- RED: the 5 new cases failed against stubs. GREEN in
+  `build-core-app-master`. 16 mutations killed, after adding a directory
+  read failure case, a value-that-looks-like-an-option case, and fixing the
+  base directory of a root-level manifest (`/m.txt` now joins to `/`).
+- Still missing: actual loading from the `editor` binary (needs an optional
+  loader that links `break_system` without breaking
+  `test_break_system_target_contract`), plugin panels, inspector extensions.

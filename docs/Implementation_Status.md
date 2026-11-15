@@ -11316,3 +11316,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - 新增 `engine/tools/trace_merge.c`：`trace_merge --out PATH [--label NAME] [--offset-us N] INPUT ...`，第 k 个输入使用 pid k，`--label`/`--offset-us` 只作用于紧随其后的输入。文档格式错误时报告输入序号、路径和行号，且不写出文件；用法错误返回 2。
 - `test_trace_merge_tool` 先 RED 后 GREEN，13 项变异全部被捕获。
+
+### 2026-11-15 editor --plugin-manifest
+
+- `editor --plugin-manifest PATH`：启动时在创建窗口前读取并校验插件 manifest（最大 64 KiB，相对路径按 manifest 所在目录拼接）。格式错误、文件不可读或过大时打印行号和原因并以 2 退出；合法时逐条打印条目，标明“未加载”，因为 editor 仍不链接 `break_system`。
+- `editor_plugin_manifest` 新增 `read_file`、`take_cli`、`status_name`。`test_editor_plugin_manifest` 增至 10 项，新增 `test_editor_plugin_manifest_cli` 驱动真实二进制。先 RED 后 GREEN，16 项变异全部被捕获。

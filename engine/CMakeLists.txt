@@ -5926,6 +5926,12 @@ endif()
     target_link_libraries(test_editor_plugin_manifest PRIVATE break_editor_test)
     add_test(NAME test_editor_plugin_manifest COMMAND test_editor_plugin_manifest)
     set_tests_properties(test_editor_plugin_manifest PROPERTIES LABELS "headless;editor")
+    add_test(NAME test_editor_plugin_manifest_cli
+        COMMAND ${CMAKE_COMMAND}
+            -DEDITOR=$<TARGET_FILE:editor>
+            -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/editor-plugin-manifest-cli
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_editor_plugin_manifest_cli.cmake)
+    set_tests_properties(test_editor_plugin_manifest_cli PROPERTIES LABELS "headless;editor")
 
     add_executable(test_editor_flow tests/test_editor_flow.c)
     target_include_directories(test_editor_flow PRIVATE ${TEST_INCLUDE_DIRS})

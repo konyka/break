@@ -237,3 +237,4 @@
 - **第 13 节（诊断/跨线程关联）追加**：`core_app --trace-json PATH` 直接输出带 `break.trace` 标记的 Chrome trace，可在 trace 查看器中打开。仍缺：文本 trace 的真实时间戳、跨进程/网络对端 trace 合并。
 - **第 13 节（诊断/跨线程关联）追加**：`break_trace_merge` 可把多个进程的 `break.trace` 文档合并成一条时间线，每个进程独立 pid 轨道并支持时间偏移。仍缺：合并的命令行入口、core_app 文本 trace 的真实时间戳、网络对端之间的时钟对齐。
 - **第 13 节（诊断/跨线程关联）追加**：`trace_merge` 命令行工具已交付，可把多个进程的 `break.trace` 文件合并为一个时间线文件。仍缺：core_app 文本 trace 的真实时间戳、网络对端之间的时钟对齐。
+- **第 12 节（编辑器）追加**：editor 二进制支持 `--plugin-manifest PATH`，启动前校验 manifest，错误时以 2 退出（fail closed），合法时列出条目。仍缺：editor 真正调用 `break_plugin` 加载（需要不违反 `test_break_system_target_contract` 的可选加载库）、插件面板、检查器扩展点。

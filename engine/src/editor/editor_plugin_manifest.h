@@ -32,8 +32,12 @@ typedef enum BreakEditorPluginManifestStatus {
     BREAK_EDITOR_PLUGIN_MANIFEST_BAD_HASH,
     BREAK_EDITOR_PLUGIN_MANIFEST_BAD_PATH,
     BREAK_EDITOR_PLUGIN_MANIFEST_DUPLICATE,
-    BREAK_EDITOR_PLUGIN_MANIFEST_FULL
+    BREAK_EDITOR_PLUGIN_MANIFEST_FULL,
+    BREAK_EDITOR_PLUGIN_MANIFEST_IO,
+    BREAK_EDITOR_PLUGIN_MANIFEST_TOO_LARGE
 } BreakEditorPluginManifestStatus;
+
+#define BREAK_EDITOR_PLUGIN_MANIFEST_FILE_MAX (64u * 1024u)
 
 typedef struct BreakEditorPluginManifestEntry {
     char build_id[BREAK_EDITOR_PLUGIN_MANIFEST_BUILD_ID_CAPACITY];
@@ -73,3 +77,21 @@ bool break_editor_plugin_manifest_load_all(const BreakEditorPluginManifest *mani
                                            BreakEditorPluginHost *host,
                                            BreakEditorPluginManifestLoadFn load_fn, void *user,
                                            BreakEditorPluginManifestReport *report);
+
+/* Short lowercase name of a status ("ok", "syntax", ...); "unknown" for
+ * values outside the enum. */
+const char *break_editor_plugin_manifest_status_name(BreakEditorPluginManifestStatus status);
+
+/* Reads and parses a manifest file. Relative entry paths are joined to the
+ * directory part of `path` (kept as written when `path` has none). IO when
+ * the file cannot be opened or read, TOO_LARGE above
+ * BREAK_EDITOR_PLUGIN_MANIFEST_FILE_MAX bytes; otherwise as _parse. */
+BreakEditorPluginManifestStatus break_editor_plugin_manifest_read_file(
+    const char *path, BreakEditorPluginManifest *out, u32 *error_line);
+
+/* Removes every "--plugin-manifest <path>" / "--plugin-manifest=<path>"
+ * from argv in place and keeps the last path in *out_path (NULL when the
+ * option is absent). False with a bounded message in err when an option
+ * has an empty or missing value; *argc is then unchanged. */
+bool break_editor_plugin_manifest_take_cli(int *argc, char **argv, const char **out_path,
+                                           char *err, usize err_cap);

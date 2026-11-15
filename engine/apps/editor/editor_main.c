@@ -45,6 +45,7 @@
 
 #include <core/profiler.h>
 #include <platform/filewatch.h>
+#include <editor/editor_plugin_manifest.h>
 #include <editor/editor_scene.h>
 
 #include "myui/my_window.h"
@@ -126,6 +127,38 @@ int main(int argc, char **argv) {
     }
   }
 #endif
+
+  /* --plugin-manifest <file>: checked before any window exists so a broken
+   * manifest exits 2. This binary does not link break_system, so the listed
+   * plugins are reported but not loaded. */
+  {
+    const char *manifest_path = NULL;
+    if (!break_editor_plugin_manifest_take_cli(&argc, argv, &manifest_path,
+                                               lang_err, sizeof(lang_err))) {
+      fprintf(stderr, "editor: %s\n", lang_err);
+      return 2;
+    }
+    if (manifest_path != NULL) {
+      static BreakEditorPluginManifest manifest;
+      u32 manifest_line = 0u;
+      BreakEditorPluginManifestStatus manifest_status =
+          break_editor_plugin_manifest_read_file(manifest_path, &manifest,
+                                                 &manifest_line);
+      if (manifest_status != BREAK_EDITOR_PLUGIN_MANIFEST_OK) {
+        fprintf(stderr, "editor: plugin manifest %s line %u: %s\n",
+                manifest_path, (unsigned)manifest_line,
+                break_editor_plugin_manifest_status_name(manifest_status));
+        return 2;
+      }
+      fprintf(stderr, "editor: plugin manifest %s: %u entries\n",
+              manifest_path, (unsigned)manifest.count);
+      for (u32 i = 0u; i < manifest.count; i++) {
+        fprintf(stderr, "editor: plugin %s %s (not loaded: this build has "
+                        "no plugin loader)\n",
+                manifest.entries[i].build_id, manifest.entries[i].path);
+      }
+    }
+  }
 
   /* parsed before any window exists: a bad --remote config exits non-zero
    * without ever opening a listener (fail closed) */

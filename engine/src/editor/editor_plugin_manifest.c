@@ -1,5 +1,6 @@
 #include <editor/editor_plugin_manifest.h>
 
+#include <stdio.h>
 #include <string.h>
 
 typedef struct ManifestCursor {
@@ -179,5 +180,96 @@ bool break_editor_plugin_manifest_load_all(const BreakEditorPluginManifest *mani
             report->failed++;
         }
     }
+    return true;
+}
+
+const char *break_editor_plugin_manifest_status_name(BreakEditorPluginManifestStatus status)
+{
+    switch (status) {
+    case BREAK_EDITOR_PLUGIN_MANIFEST_OK: return "ok";
+    case BREAK_EDITOR_PLUGIN_MANIFEST_INVALID: return "invalid";
+    case BREAK_EDITOR_PLUGIN_MANIFEST_SYNTAX: return "syntax";
+    case BREAK_EDITOR_PLUGIN_MANIFEST_BAD_BUILD_ID: return "bad build id";
+    case BREAK_EDITOR_PLUGIN_MANIFEST_BAD_HASH: return "bad sha256";
+    case BREAK_EDITOR_PLUGIN_MANIFEST_BAD_PATH: return "bad path";
+    case BREAK_EDITOR_PLUGIN_MANIFEST_DUPLICATE: return "duplicate path";
+    case BREAK_EDITOR_PLUGIN_MANIFEST_FULL: return "too many entries";
+    case BREAK_EDITOR_PLUGIN_MANIFEST_IO: return "cannot read file";
+    case BREAK_EDITOR_PLUGIN_MANIFEST_TOO_LARGE: return "file too large";
+    }
+    return "unknown";
+}
+
+static char g_manifest_file_text[BREAK_EDITOR_PLUGIN_MANIFEST_FILE_MAX + 1u];
+
+BreakEditorPluginManifestStatus break_editor_plugin_manifest_read_file(
+    const char *path, BreakEditorPluginManifest *out, u32 *error_line)
+{
+    char base_dir[BREAK_EDITOR_PLUGIN_MANIFEST_PATH_CAPACITY];
+    if (error_line) *error_line = 0u;
+    if (!path || !out) return BREAK_EDITOR_PLUGIN_MANIFEST_INVALID;
+    out->count = 0u;
+
+    usize dir_length = 0u;
+    for (usize i = 0u; path[i] != '\0'; ++i) {
+        if (path[i] == '/' || path[i] == '\\') dir_length = i + 1u;
+    }
+    if (dir_length >= sizeof base_dir) return BREAK_EDITOR_PLUGIN_MANIFEST_BAD_PATH;
+    memcpy(base_dir, path, dir_length);
+    base_dir[dir_length] = '\0';
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return BREAK_EDITOR_PLUGIN_MANIFEST_IO;
+    usize size = fread(g_manifest_file_text, 1u, sizeof g_manifest_file_text, f);
+    bool failed = ferror(f) != 0;
+    fclose(f);
+    if (failed) return BREAK_EDITOR_PLUGIN_MANIFEST_IO;
+    if (size > BREAK_EDITOR_PLUGIN_MANIFEST_FILE_MAX) return BREAK_EDITOR_PLUGIN_MANIFEST_TOO_LARGE;
+    return break_editor_plugin_manifest_parse(g_manifest_file_text, size, base_dir, out,
+                                              error_line);
+}
+
+#define MANIFEST_OPTION "--plugin-manifest"
+#define MANIFEST_OPTION_LENGTH 17u
+
+static bool manifest_is_option(const char *arg)
+{
+    return arg != NULL && strncmp(arg, MANIFEST_OPTION, MANIFEST_OPTION_LENGTH) == 0 &&
+           (arg[MANIFEST_OPTION_LENGTH] == '\0' || arg[MANIFEST_OPTION_LENGTH] == '=');
+}
+
+bool break_editor_plugin_manifest_take_cli(int *argc, char **argv, const char **out_path,
+                                           char *err, usize err_cap)
+{
+    const char *found = NULL;
+    if (!argc || !argv || !out_path || *argc < 1) return false;
+    int n = *argc;
+    for (int i = 1; i < n; ++i) {
+        if (!manifest_is_option(argv[i])) continue;
+        const char *value = NULL;
+        if (argv[i][MANIFEST_OPTION_LENGTH] == '=') {
+            value = argv[i] + MANIFEST_OPTION_LENGTH + 1u;
+        } else if (i + 1 < n) {
+            value = argv[++i];
+        }
+        if (!value || value[0] == '\0') {
+            if (err && err_cap > 0u) {
+                (void)snprintf(err, err_cap, "--plugin-manifest needs a path");
+            }
+            return false;
+        }
+        found = value;
+    }
+    int kept = 1;
+    for (int i = 1; i < n; ++i) {
+        if (manifest_is_option(argv[i])) {
+            if (argv[i][MANIFEST_OPTION_LENGTH] == '\0') i++;
+            continue;
+        }
+        argv[kept++] = argv[i];
+    }
+    argv[kept] = NULL;
+    *argc = kept;
+    *out_path = found;
     return true;
 }
