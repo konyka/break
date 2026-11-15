@@ -1715,7 +1715,7 @@ endif()
 # engine target (its platform siblings live there) and the editor
 # executable resolves platform_list_dir from libengine.a; editor tests
 # compile the TU inline instead (test_editor_assets).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c)
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c src/editor/editor_plugin_host.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
@@ -5873,7 +5873,7 @@ endif()
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break. The variant links break_lua_test (not
     # break_lua) so console-core tests share the Lua-side injection hooks.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c src/editor/editor_plugin_host.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -5903,6 +5903,13 @@ endif()
     target_link_libraries(test_editor_plugin_cmds PRIVATE break_editor_test)
     add_test(NAME test_editor_plugin_cmds COMMAND test_editor_plugin_cmds)
     set_tests_properties(test_editor_plugin_cmds PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_plugin_host tests/test_editor_plugin_host.c)
+    target_include_directories(test_editor_plugin_host PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_plugin_host PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_plugin_host PRIVATE break_editor_test)
+    add_test(NAME test_editor_plugin_host COMMAND test_editor_plugin_host)
+    set_tests_properties(test_editor_plugin_host PROPERTIES LABELS "headless;editor")
 
     add_executable(test_editor_flow tests/test_editor_flow.c)
     target_include_directories(test_editor_flow PRIVATE ${TEST_INCLUDE_DIRS})
@@ -6650,6 +6657,31 @@ endif()
         target_link_libraries(test_break_plugin_unsupported PRIVATE break_crypto ${CMAKE_DL_LIBS})
         add_test(NAME test_break_plugin_unsupported COMMAND test_break_plugin_unsupported)
         set_tests_properties(test_break_plugin_unsupported PROPERTIES LABELS "headless;system")
+
+        # Editor plugin host end-to-end: real fixture plugins register
+        # commands through BreakEditorPluginApi (editor_plugin_host.h).
+        add_library(test_editor_fixture_plugin SHARED tests/fixtures/editor_test_plugin.c)
+        target_include_directories(test_editor_fixture_plugin PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        add_library(test_editor_fixture_plugin_fail SHARED tests/fixtures/editor_test_plugin.c)
+        target_include_directories(test_editor_fixture_plugin_fail PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_compile_definitions(test_editor_fixture_plugin_fail PRIVATE
+            EDITOR_TEST_PLUGIN_NAME="editor-test-plugin-fail"
+            EDITOR_TEST_PLUGIN_BUILD_ID="editor-test-plugin-fail"
+            EDITOR_TEST_REGISTER_RESULT=0)
+        add_executable(test_editor_plugin_load tests/test_editor_plugin_load.c)
+        target_include_directories(test_editor_plugin_load PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_editor_plugin_load PRIVATE
+            EDITOR_TEST_PLUGIN_PATH="$<TARGET_FILE:test_editor_fixture_plugin>"
+            EDITOR_TEST_PLUGIN_FAIL_PATH="$<TARGET_FILE:test_editor_fixture_plugin_fail>")
+        add_dependencies(test_editor_plugin_load
+            test_editor_fixture_plugin test_editor_fixture_plugin_fail)
+        target_link_libraries(test_editor_plugin_load PRIVATE break_editor_test break_system)
+        if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "windows")
+            add_test(NAME test_editor_plugin_load COMMAND test_editor_plugin_load)
+            set_tests_properties(test_editor_plugin_load PROPERTIES LABELS "headless;editor;system")
+        endif()
 
         add_test(NAME test_break_system_target_contract
             COMMAND ${CMAKE_COMMAND}
