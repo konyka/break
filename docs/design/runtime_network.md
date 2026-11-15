@@ -331,3 +331,12 @@ Stage 2 网络边界只有在以下条件同时满足后才能标记“formal ru
 - 解码：设置了标志但长度字段小于 8 返回 INVALID_LENGTH；扩展里的 ID 为 0 属于非规范编码，返回 INVALID_FLAGS。输出的 `flags` 去掉该位，`payload_size` 不含扩展。
 - 兼容性：旧解码器遇到该标志会返回 INVALID_FLAGS，不会把扩展误读成 payload。发送方只应对同版本的对端设置关联 ID。
 - 仍未接线：`BreakNetMessageView`、adapter 事件和 session 层还不传递这个 ID，属于下一个切片。
+
+## 补充（2026-11-15）：消息与 adapter 传递关联 ID
+
+上一节的线格式扩展现在接到了消息层和 adapter。
+
+- `BreakNetMessageView` 和 `BreakNetOwnedMessage`（`engine/src/network/break_net_message.h`）新增末尾成员 `uint64_t correlation_id`，0 表示不关联。`break_net_message_view_init` 签名不变，会把它置 0；`break_net_message_copy` 复制它，`break_net_message_release` 清零它。
+- adapter 的明文和 TLS 两条收包路径都把解码出的 `envelope.correlation_id` 放进 `BREAK_NET_EVENT_MESSAGE_RECEIVED` 事件的消息里。
+- 新增 `break_net_reactor_send_correlated(reactor, key, id, version, cid, data, size)`。`break_net_reactor_send` 等价于 cid 为 0 的调用。outbound drain 把排队消息的 ID 写进 envelope 扩展。非 0 ID 只应发给能解码扩展的对端。
+- 仍未接线：session 层（`break_session.c`）和 Runtime Core 消息之间的 ID 映射。

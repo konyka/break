@@ -14,6 +14,9 @@ typedef struct BreakNetMessageView {
     uint32_t sequence;
     const void *data;
     size_t size;
+    /* 0 = uncorrelated. Carried on the wire by the envelope correlation
+     * extension. Last member: positional initializers list it last. */
+    uint64_t correlation_id;
 } BreakNetMessageView;
 
 #ifndef BREAK_NET_MAX_PAYLOAD_SIZE
@@ -26,6 +29,7 @@ typedef struct BreakNetOwnedMessage {
     uint32_t sequence;
     void *data;
     size_t size;
+    uint64_t correlation_id; /* 0 = uncorrelated */
 } BreakNetOwnedMessage;
 
 typedef enum BreakNetMessageResult {
@@ -35,6 +39,8 @@ typedef enum BreakNetMessageResult {
     BREAK_NET_MESSAGE_OUT_OF_MEMORY
 } BreakNetMessageResult;
 
+/* Sets correlation_id to 0; assign view->correlation_id afterwards to
+ * correlate the message. */
 BreakNetMessageResult break_net_message_view_init(
     BreakNetMessageView *view,
     uint16_t message_id,

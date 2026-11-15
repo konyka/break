@@ -25,6 +25,7 @@ BreakNetMessageResult break_net_message_view_init(
     view->sequence = sequence;
     view->data = data;
     view->size = size;
+    view->correlation_id = 0u;
     return BREAK_NET_MESSAGE_OK;
 }
 
@@ -61,6 +62,7 @@ BreakNetMessageResult break_net_message_copy(
     owned->sequence = view->sequence;
     owned->data = copy;
     owned->size = view->size;
+    owned->correlation_id = view->correlation_id;
     return BREAK_NET_MESSAGE_OK;
 }
 
@@ -75,4 +77,5 @@ void break_net_message_release(BreakNetOwnedMessage *owned)
     owned->sequence = 0u;
     owned->data = NULL;
     owned->size = 0u;
+    owned->correlation_id = 0u;
 }

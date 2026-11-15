@@ -411,7 +411,7 @@ TEST(break_session_applies_adapter_lifecycle_without_taking_payload_ownership)
     BreakNetEvent message = {0};
     BreakNetEvent closed = {0};
     unsigned char payload = 0x5au;
-    BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_PING, 1u, 1u, &payload, 1u};
+    BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_PING, 1u, 1u, &payload, 1u, 0u};
 
     ASSERT_NOT_NULL(manager);
     opened.type = BREAK_NET_EVENT_CONNECTION_OPENED;
@@ -515,7 +515,7 @@ TEST(break_session_auth_handler_failure_closes_without_authenticating)
     BreakNetEvent message = {0};
     const unsigned char payload = 0x03u;
     BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_AUTH, 1u, 1u,
-                                &payload, sizeof(payload)};
+                                &payload, sizeof(payload), 0u};
 
     ASSERT_NOT_NULL(manager);
     opened.type = BREAK_NET_EVENT_CONNECTION_OPENED;
@@ -550,7 +550,7 @@ TEST(break_session_ping_duplicate_is_idempotent_and_observable)
     BreakNetEvent duplicate = {0};
     const unsigned char payload = 0x04u;
     BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_PING, 1u, 77u,
-                                &payload, sizeof(payload)};
+                                &payload, sizeof(payload), 0u};
     BreakSessionApplyStats stats = {0};
 
     ASSERT_NOT_NULL(manager);
@@ -589,7 +589,7 @@ static bool break_test_send_ping(BreakSessionManager *manager,
     static unsigned char payload[64];
     BreakNetEvent event = {0};
     BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_PING, 1u, sequence,
-                                payload, size};
+                                payload, size, 0u};
     bool ok;
     if (break_net_message_copy(&event.message, &view) != BREAK_NET_MESSAGE_OK) {
         return false;
@@ -704,7 +704,7 @@ TEST(break_session_uses_attached_registry_phase_and_duplicate_policy)
         BREAK_NET_MESSAGE_PHASE_AUTHENTICATING,
         BREAK_NET_DUPLICATE_IDEMPOTENT
     };
-    BreakNetMessageView view = {77u, 1u, 9u, &payload, sizeof(payload)};
+    BreakNetMessageView view = {77u, 1u, 9u, &payload, sizeof(payload), 0u};
 
     break_net_message_registry_init(&registry);
     ASSERT_TRUE(break_net_message_registry_register(&registry, &definition));
@@ -743,9 +743,9 @@ TEST(break_session_default_registry_allows_auth_in_new_and_ping_pre_auth)
     BreakNetEvent ping = {0};
     const unsigned char payload = 0x06u;
     BreakNetMessageView auth_view = {BREAK_NET_MESSAGE_ID_AUTH, 1u, 1u,
-                                     &payload, sizeof(payload)};
+                                     &payload, sizeof(payload), 0u};
     BreakNetMessageView ping_view = {BREAK_NET_MESSAGE_ID_PING, 1u, 2u,
-                                     &payload, sizeof(payload)};
+                                     &payload, sizeof(payload), 0u};
 
     ASSERT_NOT_NULL(manager);
     opened.type = BREAK_NET_EVENT_CONNECTION_OPENED;
@@ -961,7 +961,7 @@ TEST(break_session_wire_auth_reaches_handler_and_sends_response)
         BreakNetEvent stale_message = {0};
         BreakNetMessageView stale_view = {
             BREAK_NET_MESSAGE_ID_PING, BREAK_NET_PROTOCOL_VERSION, 2u,
-            "stale", 5u
+            "stale", 5u, 0u
         };
 
         deadline = break_session_monotonic_us() + UINT64_C(2000000);
@@ -1018,7 +1018,7 @@ TEST(break_session_max_age_expires_at_poll)
     BreakNetEvent auth = {0};
     const unsigned char payload = 0x5au;
     BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_AUTH, 1u, 1u,
-                                &payload, sizeof(payload)};
+                                &payload, sizeof(payload), 0u};
     uint64_t deadline;
 
     ASSERT_NOT_NULL(manager);
@@ -1470,7 +1470,7 @@ TEST(break_session_max_age_not_deferred_by_close_budget)
     BreakNetEvent auth = {0};
     const unsigned char payload = 0x6bu;
     BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_AUTH, 1u, 1u,
-                                &payload, sizeof(payload)};
+                                &payload, sizeof(payload), 0u};
     uint64_t authenticated_at;
     uint64_t deadline;
     bool aged = false;
@@ -1545,7 +1545,7 @@ TEST(break_session_auth_set_during_new_v1_snapshot_is_rejected)
     BreakNetEvent auth = {0};
     const unsigned char payload = 0x7cu;
     BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_AUTH, 1u, 1u,
-                                &payload, sizeof(payload)};
+                                &payload, sizeof(payload), 0u};
     bool handled;
     bool cleanup_set;
     BreakSessionState state_after;

@@ -475,7 +475,7 @@ TEST(break_net_adapter_outbound_copies_and_bounds_queue)
 TEST(break_net_message_copies_payload_lifetime)
 {
     unsigned char payload[] = {1u, 2u, 3u, 4u};
-    BreakNetMessageView view = {7u, 1u, 9u, payload, sizeof(payload)};
+    BreakNetMessageView view = {7u, 1u, 9u, payload, sizeof(payload), 0u};
     BreakNetOwnedMessage owned = {0};
 
     ASSERT_EQ(break_net_message_copy(&owned, &view), BREAK_NET_MESSAGE_OK);
@@ -489,6 +489,23 @@ TEST(break_net_message_copies_payload_lifetime)
     break_net_message_release(&owned);
     ASSERT_TRUE(owned.data == NULL);
     ASSERT_EQ(owned.size, 0u);
+}
+
+TEST(break_net_message_copy_keeps_correlation_id)
+{
+    unsigned char payload[] = {5u, 6u};
+    BreakNetMessageView view = {0};
+    BreakNetOwnedMessage owned = {0};
+
+    view.correlation_id = 77u;
+    ASSERT_EQ(break_net_message_view_init(&view, 3u, 1u, 4u, payload, sizeof(payload)),
+              BREAK_NET_MESSAGE_OK);
+    ASSERT_TRUE(view.correlation_id == 0u);
+    view.correlation_id = 0x0102030405060708ull;
+    ASSERT_EQ(break_net_message_copy(&owned, &view), BREAK_NET_MESSAGE_OK);
+    ASSERT_TRUE(owned.correlation_id == 0x0102030405060708ull);
+    break_net_message_release(&owned);
+    ASSERT_TRUE(owned.correlation_id == 0u);
 }
 
 TEST(break_net_message_accepts_zero_payload)
@@ -507,7 +524,7 @@ TEST(break_net_message_accepts_zero_payload)
 TEST(break_net_message_accepts_max_payload)
 {
     unsigned char payload[BREAK_NET_MAX_PAYLOAD_SIZE];
-    BreakNetMessageView view = {0u, 1u, 0u, payload, sizeof(payload)};
+    BreakNetMessageView view = {0u, 1u, 0u, payload, sizeof(payload), 0u};
     BreakNetOwnedMessage owned = {0};
 
     memset(payload, 0x5a, sizeof(payload));
@@ -520,7 +537,7 @@ TEST(break_net_message_accepts_max_payload)
 TEST(break_net_message_rejects_invalid_input)
 {
     unsigned char payload = 1u;
-    BreakNetMessageView view = {0u, 1u, 0u, &payload, BREAK_NET_MAX_PAYLOAD_SIZE + 1u};
+    BreakNetMessageView view = {0u, 1u, 0u, &payload, BREAK_NET_MAX_PAYLOAD_SIZE + 1u, 0u};
     BreakNetOwnedMessage owned = {0};
 
     ASSERT_EQ(break_net_message_view_init(NULL, 0u, 1u, 0u, &payload, 1u),
@@ -542,7 +559,7 @@ TEST(break_net_message_rejects_invalid_input)
 TEST(break_net_message_release_is_idempotent)
 {
     unsigned char payload = 42u;
-    BreakNetMessageView view = {0u, 1u, 0u, &payload, 1u};
+    BreakNetMessageView view = {0u, 1u, 0u, &payload, 1u, 0u};
     BreakNetOwnedMessage owned = {0};
 
     ASSERT_EQ(break_net_message_copy(&owned, &view), BREAK_NET_MESSAGE_OK);
@@ -1170,6 +1187,107 @@ TEST(break_net_adapter_loopback_wire_round_trip)
     SnowAcceptorDestroy(acceptor);
 }
 
+TEST(break_net_adapter_loopback_carries_correlation_id)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
+    BreakNetReactor *reactor = NULL;
+    SnowAcceptor *acceptor = NULL;
+    SnowEndpoint *endpoint = NULL;
+    SnowTcpClient *client = NULL;
+    BreakNetEvent event = {0};
+    BreakNetEnvelope incoming = {0};
+    BreakNetEnvelope outgoing = {0};
+    unsigned char payload[] = {0x11u, 0x22u, 0x33u};
+    unsigned char incoming_wire[BREAK_NET_ENVELOPE_MAX_SIZE];
+    unsigned char outgoing_wire[BREAK_NET_ENVELOPE_MAX_SIZE];
+    size_t incoming_size = 0u;
+    size_t received = 0u;
+    size_t expected = 0u;
+    uint64_t connection_key = 0u;
+    int attempts;
+
+    acceptor = break_net_test_acceptor();
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_EQ(SnowEndpointCreate(&endpoint), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetHost(endpoint, "127.0.0.1"), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetPort(endpoint, SnowEndpointPort(
+        SnowAcceptorEndpoint(acceptor))), SNOW_OK);
+    ASSERT_EQ(SnowEndpointSetTimeout(endpoint, 1000), SNOW_OK);
+    ASSERT_EQ(SnowTcpClientCreate(endpoint, &client), SNOW_OK);
+    ASSERT_EQ(SnowTcpClientConnect(client), SNOW_OK);
+
+    reactor = break_net_reactor_create(&config);
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+
+    incoming.protocol_version = BREAK_NET_PROTOCOL_VERSION;
+    incoming.message_id = BREAK_NET_MESSAGE_ID_AUTH;
+    incoming.sequence = 3u;
+    incoming.correlation_id = 0xabcdef0123456789ull;
+    incoming.payload = payload;
+    incoming.payload_size = sizeof(payload);
+    ASSERT_EQ(break_net_envelope_encode(&incoming, incoming_wire, sizeof(incoming_wire),
+                                        &incoming_size), BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(incoming_size, 18u + 8u + sizeof(payload));
+    ASSERT_EQ(SnowTcpClientSend(client, incoming_wire, incoming_size), SNOW_OK);
+
+    for (attempts = 0; attempts < 100; ++attempts) {
+        if (break_net_reactor_poll_event(reactor, &event) == BREAK_NET_EVENT_OK) {
+            if (event.type == BREAK_NET_EVENT_MESSAGE_RECEIVED) break;
+            break_net_event_release(&event);
+        }
+        usleep(10000u);
+    }
+    ASSERT_EQ(event.type, BREAK_NET_EVENT_MESSAGE_RECEIVED);
+    connection_key = event.connection_key;
+    ASSERT_TRUE(event.message.correlation_id == 0xabcdef0123456789ull);
+    ASSERT_EQ(event.message.size, sizeof(payload));
+    ASSERT_TRUE(memcmp(event.message.data, payload, sizeof(payload)) == 0);
+    break_net_event_release(&event);
+
+    ASSERT_EQ(break_net_reactor_send_correlated(reactor, connection_key,
+                                                BREAK_NET_MESSAGE_ID_PING,
+                                                BREAK_NET_PROTOCOL_VERSION, 42u,
+                                                payload, sizeof(payload)),
+              BREAK_NET_SEND_OK);
+    ASSERT_EQ(break_net_reactor_send(reactor, connection_key, BREAK_NET_MESSAGE_ID_PING,
+                                     BREAK_NET_PROTOCOL_VERSION, payload,
+                                     sizeof(payload)), BREAK_NET_SEND_OK);
+    expected = (18u + 8u + sizeof(payload)) + (18u + sizeof(payload));
+    while (received < expected) {
+        size_t chunk = sizeof(outgoing_wire) - received;
+        ASSERT_EQ(SnowTcpClientRecv(client, outgoing_wire + received, &chunk), SNOW_OK);
+        ASSERT_TRUE(chunk != 0u);
+        received += chunk;
+    }
+    ASSERT_EQ(received, expected);
+    ASSERT_EQ(break_net_envelope_decode(outgoing_wire, 18u + 8u + sizeof(payload),
+                                        &outgoing), BREAK_NET_ENVELOPE_OK);
+    ASSERT_TRUE(outgoing.correlation_id == 42u);
+    ASSERT_EQ(outgoing.sequence, 1u);
+    ASSERT_EQ(outgoing.payload_size, sizeof(payload));
+    ASSERT_TRUE(memcmp(outgoing.payload, payload, sizeof(payload)) == 0);
+    ASSERT_EQ(break_net_envelope_decode(outgoing_wire + 18u + 8u + sizeof(payload),
+                                        18u + sizeof(payload), &outgoing),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_TRUE(outgoing.correlation_id == 0u);
+    ASSERT_EQ(outgoing.sequence, 2u);
+
+    ASSERT_EQ(break_net_reactor_send_correlated(NULL, connection_key,
+                                                BREAK_NET_MESSAGE_ID_PING,
+                                                BREAK_NET_PROTOCOL_VERSION, 1u,
+                                                NULL, 0u),
+              BREAK_NET_SEND_INVALID);
+
+    ASSERT_EQ(SnowTcpClientClose(client), SNOW_OK);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    SnowTcpClientDestroy(client);
+    SnowEndpointDestroy(endpoint);
+    break_net_reactor_destroy(reactor);
+    SnowAcceptorDestroy(acceptor);
+}
+
 /* ------------------------------------------------------------------ */
 /* Review-round-2 regression scaffolding (outbound ring + FIFO)        */
 /* ------------------------------------------------------------------ */
@@ -1712,6 +1830,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_net_adapter_outbound_drain_drops_stale_uid);
     RUN_TEST(break_net_adapter_outbound_copies_and_bounds_queue);
     RUN_TEST(break_net_message_copies_payload_lifetime);
+    RUN_TEST(break_net_message_copy_keeps_correlation_id);
     RUN_TEST(break_net_message_accepts_zero_payload);
     RUN_TEST(break_net_message_accepts_max_payload);
     RUN_TEST(break_net_message_rejects_invalid_input);
@@ -1720,6 +1839,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_net_protocol_rejects_bad_sequences_without_queue_view);
     RUN_TEST(break_net_adapter_loopback_close_emits_event_and_releases_identity);
     RUN_TEST(break_net_adapter_loopback_wire_round_trip);
+    RUN_TEST(break_net_adapter_loopback_carries_correlation_id);
     RUN_TEST(break_net_adapter_server_close_flushes_then_closes_peer);
     RUN_TEST(break_net_adapter_server_close_is_per_connection);
     RUN_TEST(break_net_adapter_server_close_thread_mode);

@@ -89,6 +89,16 @@ BreakNetSendResult break_net_reactor_send(BreakNetReactor *reactor,
                                           uint16_t message_id,
                                           uint16_t protocol_version,
                                           const void *data, size_t size);
+/* send() plus a correlation ID (0 = uncorrelated, same as send()). A
+ * non-zero ID is written into the envelope correlation extension
+ * (network/break_net_envelope.h), so only send it to peers that decode the
+ * extension. Same queueing, errors and ownership as send(). */
+BreakNetSendResult break_net_reactor_send_correlated(BreakNetReactor *reactor,
+                                                     uint64_t connection_key,
+                                                     uint16_t message_id,
+                                                     uint16_t protocol_version,
+                                                     uint64_t correlation_id,
+                                                     const void *data, size_t size);
 size_t break_net_reactor_outbound_count(BreakNetReactor *reactor);
 
 /* Server-side close of one connection. Safe from any thread; never blocks.

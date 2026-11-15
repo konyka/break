@@ -196,6 +196,20 @@ struct BreakNetReactor {
     BreakNetAdmissionState *admission;
 };
 
+/* Received-message view over a decoded envelope, keeping its correlation
+ * ID (the envelope correlation extension). */
+static BreakNetMessageResult break_net_view_from_envelope(
+    BreakNetMessageView *view, const BreakNetEnvelope *envelope)
+{
+    BreakNetMessageResult result = break_net_message_view_init(
+        view, envelope->message_id, envelope->protocol_version,
+        envelope->sequence, envelope->payload, envelope->payload_size);
+    if (result == BREAK_NET_MESSAGE_OK) {
+        view->correlation_id = envelope->correlation_id;
+    }
+    return result;
+}
+
 /* Frame exactly one envelope off a PLAINTEXT buffer (the wire buffer in
  * plaintext mode, the decrypted accumulator in TLS mode).  This is the
  * pre-TLS parser body, extracted unchanged: plaintext-mode wire behavior is
@@ -409,9 +423,7 @@ static SnowNbPacket break_net_parser_tls(BreakNetReactor *reactor,
             event.connection_key = (uint64_t)SnowConnectionUid(connection);
             if (break_net_envelope_decode((const uint8_t *)data, size, &envelope) ==
                     BREAK_NET_ENVELOPE_OK &&
-                break_net_message_view_init(&view, envelope.message_id,
-                                            envelope.protocol_version, envelope.sequence,
-                                            envelope.payload, envelope.payload_size) == BREAK_NET_MESSAGE_OK &&
+                break_net_view_from_envelope(&view, &envelope) == BREAK_NET_MESSAGE_OK &&
                 break_net_message_copy(&event.message, &view) == BREAK_NET_MESSAGE_OK) {
                 if (!break_net_event_push(reactor, &event)) {
                     break_net_event_release(&event);
@@ -581,9 +593,7 @@ static void break_net_on_packet(SnowConnection *connection,
         event.connection_key = (uint64_t)SnowConnectionUid(connection);
         if (break_net_envelope_decode((const uint8_t *)data, size, &envelope) !=
                 BREAK_NET_ENVELOPE_OK ||
-            break_net_message_view_init(&view, envelope.message_id,
-                                        envelope.protocol_version, envelope.sequence,
-                                        envelope.payload, envelope.payload_size) != BREAK_NET_MESSAGE_OK ||
+            break_net_view_from_envelope(&view, &envelope) != BREAK_NET_MESSAGE_OK ||
             break_net_message_copy(&event.message, &view) != BREAK_NET_MESSAGE_OK) {
             break_net_event_release(&event);
             SnowRecvContextFree(entry);
@@ -915,6 +925,7 @@ static void break_net_drain_outbound(BreakNetReactor *reactor)
             envelope.protocol_version = command->message.protocol_version;
             envelope.message_id = command->message.message_id;
             envelope.sequence = command->message.sequence;
+            envelope.correlation_id = command->message.correlation_id;
             envelope.payload = command->message.data;
             envelope.payload_size = command->message.size;
             status = command->message.sequence != 0u &&
@@ -1851,11 +1862,23 @@ BreakNetSendResult break_net_reactor_send(BreakNetReactor *reactor,
                                           uint16_t protocol_version,
                                           const void *data, size_t size)
 {
+    return break_net_reactor_send_correlated(reactor, connection_key, message_id,
+                                             protocol_version, 0u, data, size);
+}
+
+BreakNetSendResult break_net_reactor_send_correlated(BreakNetReactor *reactor,
+                                                     uint64_t connection_key,
+                                                     uint16_t message_id,
+                                                     uint16_t protocol_version,
+                                                     uint64_t correlation_id,
+                                                     const void *data, size_t size)
+{
     BreakNetMessageView view;
     size_t index;
     if (reactor == NULL || (size != 0u && data == NULL)) return BREAK_NET_SEND_INVALID;
     if (break_net_message_view_init(&view, message_id, protocol_version, 0u,
                                     data, size) != BREAK_NET_MESSAGE_OK) return BREAK_NET_SEND_INVALID;
+    view.correlation_id = correlation_id;
     platform_mutex_lock(&reactor->lifecycle_mutex);
     if (reactor->state != BREAK_NET_STATE_STARTED) {
         platform_mutex_unlock(&reactor->lifecycle_mutex);
