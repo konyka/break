@@ -1841,10 +1841,20 @@ bool break_net_reactor_enqueue_message_for_test(BreakNetReactor *reactor,
                                                 uint16_t protocol_version,
                                                 const void *data, size_t size)
 {
+    return break_net_reactor_enqueue_correlated_message_for_test(
+        reactor, connection_key, message_id, protocol_version, 0u, data, size);
+}
+
+bool break_net_reactor_enqueue_correlated_message_for_test(
+    BreakNetReactor *reactor, uint64_t connection_key, uint16_t message_id,
+    uint16_t protocol_version, uint64_t correlation_id, const void *data,
+    size_t size)
+{
     BreakNetEvent event = {0};
     BreakNetMessageView view;
     if (break_net_message_view_init(&view, message_id, protocol_version, 0u,
                                     data, size) != BREAK_NET_MESSAGE_OK) return false;
+    view.correlation_id = correlation_id;
     if (break_net_message_copy(&event.message, &view) != BREAK_NET_MESSAGE_OK) return false;
     event.type = BREAK_NET_EVENT_MESSAGE_RECEIVED;
     event.connection_key = connection_key;

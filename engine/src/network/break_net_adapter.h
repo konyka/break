@@ -161,6 +161,10 @@ bool break_net_reactor_enqueue_message_for_test(BreakNetReactor *reactor,
                                                 uint16_t message_id,
                                                 uint16_t protocol_version,
                                                 const void *data, size_t size);
+bool break_net_reactor_enqueue_correlated_message_for_test(
+    BreakNetReactor *reactor, uint64_t connection_key, uint16_t message_id,
+    uint16_t protocol_version, uint64_t correlation_id, const void *data,
+    size_t size);
 /* Exercises the callback's malformed-frame cleanup path. */
 bool break_net_reactor_malformed_packet_cleanup_for_test(BreakNetReactor *reactor);
 /* Verifies close defers identity cleanup until the pending send is drained. */

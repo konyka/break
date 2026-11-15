@@ -507,9 +507,10 @@ static bool break_session_challenge_received(
                                        BREAK_SESSION_APPLY_HANDLER_FAILED);
     }
     memcpy(payload + 8u, client_nonce, sizeof(client_nonce));
-    if (break_net_reactor_send(manager->reactor, event->connection_key,
-                               BREAK_NET_MESSAGE_ID_AUTH, 2u,
-                               payload, sizeof(payload)) != BREAK_NET_SEND_OK) {
+    if (break_net_reactor_send_correlated(
+            manager->reactor, event->connection_key, BREAK_NET_MESSAGE_ID_AUTH,
+            2u, event->message.correlation_id, payload,
+            sizeof(payload)) != BREAK_NET_SEND_OK) {
         return break_session_auth_fail(manager, event->connection_key,
                                        BREAK_SESSION_APPLY_HANDLER_FAILED);
     }

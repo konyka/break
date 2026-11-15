@@ -1445,6 +1445,47 @@ TEST(break_session_challenge_client_helper_answers_auth_v2)
     ASSERT_TRUE(break_session_set_auth(NULL, NULL));
 }
 
+TEST(break_session_challenge_auth_reply_echoes_correlation_id)
+{
+    BreakSessionAuthKeys keys = {true};
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u,
+                                             1000, 1000u, 1u};
+    BreakSessionConfig session_config = {0};
+    BreakNetReactor *reactor = NULL;
+    BreakSessionManager *manager = NULL;
+    SnowAcceptor *acceptor = NULL;
+    BreakNetOwnedMessage reply = {0};
+    uint64_t connection = 0x90au;
+    uint64_t outbound_connection = 0u;
+    uint8_t server_nonce[16] = {0u};
+
+    ASSERT_TRUE(break_session_set_auth(break_session_auth_key, &keys));
+    acceptor = break_session_auth_acceptor();
+    reactor = break_net_reactor_create(&reactor_config);
+    manager = break_session_manager_create(&session_config);
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(manager);
+    ASSERT_TRUE(break_session_manager_attach_reactor(manager, reactor));
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    ASSERT_TRUE(break_net_reactor_enqueue_opened_for_test(reactor, connection));
+    ASSERT_TRUE(break_net_reactor_enqueue_correlated_message_for_test(
+        reactor, connection, BREAK_NET_MESSAGE_ID_CHALLENGE, 1u, 0x5151u,
+        server_nonce, sizeof(server_nonce)));
+    ASSERT_EQ(break_session_manager_poll_adapter(manager, 8u), 2u);
+    ASSERT_EQ(break_net_reactor_poll_outbound_for_test(
+                  reactor, &outbound_connection, &reply), BREAK_NET_EVENT_OK);
+    ASSERT_EQ(reply.message_id, BREAK_NET_MESSAGE_ID_AUTH);
+    ASSERT_EQ(reply.correlation_id, 0x5151u);
+    break_net_message_release(&reply);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_session_manager_destroy(manager);
+    break_net_reactor_destroy(reactor);
+    SnowAcceptorDestroy(acceptor);
+    ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+}
+
 TEST(break_session_auth_configuration_is_new_state_only)
 {
     BreakSessionAuthKeys keys = {0};
@@ -1782,6 +1823,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_session_auth_configured_rejects_v1);
     RUN_TEST(break_session_auth_v2_replay_on_new_connection_closes);
     RUN_TEST(break_session_challenge_client_helper_answers_auth_v2);
+    RUN_TEST(break_session_challenge_auth_reply_echoes_correlation_id);
     RUN_TEST(break_session_auth_configuration_is_new_state_only);
     RUN_TEST(break_session_max_age_not_deferred_by_close_budget);
     RUN_TEST(break_session_auth_set_during_new_v1_snapshot_is_rejected);

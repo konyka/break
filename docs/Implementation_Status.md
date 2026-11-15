@@ -11204,3 +11204,11 @@ Every editor remote response (per-id success and RESULT) now carries the request
 Test: `remote_response_echoes_request_correlation_id` in `engine/tests/test_editor_shell.c` (198/198) covers a correlated DESCRIBE, a correlated REMOVE that fails into RESULT, and an uncorrelated DESCRIBE. Mutation check: dropping the stored ID or the forwarded ID each fails the test. A reset after dispatch was removed because its mutation survived: responses are only sent from dispatch handlers, so the reset had no observable effect. Full ctest: 405/405 (Snowflake tree `build-net-master`) and 401/401 (`build-core-app-master`).
 
 Still missing: mapping the ID between the session layer and Runtime Core messages, and a unified trace schema. Design note: `docs/design/editor_remote.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-editor-remote-correlation.md`.
+
+### 2026-11-15 Session AUTH reply echoes the challenge correlation ID
+
+The client session layer answers a CHALLENGE with an AUTH v2 reply on its own. That reply now carries the CHALLENGE's envelope correlation ID (`break_session_challenge_received` sends with `break_net_reactor_send_correlated`), so a trace flow can link the handshake request and reply. An uncorrelated CHALLENGE still gets an uncorrelated reply. New test-only helper: `break_net_reactor_enqueue_correlated_message_for_test`; the old `enqueue_message_for_test` forwards to it with ID 0.
+
+Test: `break_session_challenge_auth_reply_echoes_correlation_id` in `engine/tests/test_break_session.c` (42/42). Mutation check: masking the forwarded ID (`& 0u`) fails the test. Full ctest: 405/405 (Snowflake tree `build-net-master`) and 401/401 (`build-core-app-master`). CI does not build the Snowflake targets.
+
+Still missing: mapping the ID into Runtime Core messages on the core app snapshot path, and a unified trace schema. Design note: `docs/design/runtime_network.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-session-auth-correlation.md`.

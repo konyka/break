@@ -340,3 +340,7 @@ Stage 2 网络边界只有在以下条件同时满足后才能标记“formal ru
 - adapter 的明文和 TLS 两条收包路径都把解码出的 `envelope.correlation_id` 放进 `BREAK_NET_EVENT_MESSAGE_RECEIVED` 事件的消息里。
 - 新增 `break_net_reactor_send_correlated(reactor, key, id, version, cid, data, size)`。`break_net_reactor_send` 等价于 cid 为 0 的调用。outbound drain 把排队消息的 ID 写进 envelope 扩展。非 0 ID 只应发给能解码扩展的对端。
 - 仍未接线：session 层（`break_session.c`）和 Runtime Core 消息之间的 ID 映射。
+
+## 补充（2026-11-15）：Session AUTH 回复回带关联 ID
+
+客户端 session 层收到 CHALLENGE 后自动生成 AUTH v2 回复。该回复现在复制 CHALLENGE 的 `correlation_id`，CHALLENGE 未带关联扩展时回复也不带。session handler 收到的 `BreakNetOwnedMessage` 本来就含 `correlation_id`，业务 handler 需要回带时自行调用 `break_net_reactor_send_correlated`。测试注入辅助 `break_net_reactor_enqueue_correlated_message_for_test` 仅在 `BREAK_NET_TESTING` 下可用。
