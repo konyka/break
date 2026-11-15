@@ -193,6 +193,16 @@ void editor_panel_lua_destroy(EditorPanelLua *panel) {
     free(panel);
 }
 
+bool editor_panel_lua_reload(EditorPanelLua *panel) {
+    if (panel == NULL) {
+        return false;
+    }
+    break_editor_lua_destroy(panel->console);
+    panel->console = break_editor_lua_create(
+        break_editor_shell_doc(panel->shell), lua_panel_log, panel->shell);
+    return panel->console != NULL;
+}
+
 bool editor_panel_lua_build(EditorPanelLua *panel, my_widget_t *parent) {
     my_widget_t *section;
     my_widget_t *label;

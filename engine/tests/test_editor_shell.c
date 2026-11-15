@@ -9324,6 +9324,49 @@ TEST(shader_reload_viewport_and_shell_shutdown_retry_same_owner)
     shader_env_restore(&env);
 }
 
+TEST(ctrl_shift_diagnostic_shortcuts_do_not_fall_through)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *edit;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_doc_add_entity(doc, "a")));
+    break_editor_shell_refresh(shell);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'a', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 1u, 2u));
+
+    ASSERT_TRUE(break_editor_shell_dispatch_key(
+        shell, 'P', MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT));
+    ASSERT_FALSE(break_editor_shell_palette_is_open(shell));
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 1u), 0u);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "profiler: shown\n");
+
+    ASSERT_TRUE(break_editor_shell_dispatch_key(
+        shell, 'd', MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 1u), 1u);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "remote debug: off\n");
+
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 2u));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(
+        shell, 'l', MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT));
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 0u), 1u);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "lua: reloaded\n");
+    edit = find(shell, "editor-lua-edit");
+    ASSERT_NOT_NULL(edit);
+    ASSERT_EQ(my_edit_set_text(edit, "return 1+2"), MY_RET_OK);
+    emit_activate(edit);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "lua| 3\n");
+    ASSERT_FALSE(break_editor_shell_palette_is_open(shell));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(shader_reload_shortcut_without_owner_is_bounded)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -11129,6 +11172,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shader_reload_inflight_claim_teardown_is_bounded);
     RUN_TEST(shader_reload_shutdown_timeout_can_retry);
     RUN_TEST(shader_reload_viewport_and_shell_shutdown_retry_same_owner);
+    RUN_TEST(ctrl_shift_diagnostic_shortcuts_do_not_fall_through);
     RUN_TEST(shader_reload_shortcut_without_owner_is_bounded);
     RUN_TEST(shader_reload_unavailable_stats_and_null_calls);
     RUN_TEST(hot_reload_valid_external_edit_replaces_document);

@@ -1962,6 +1962,32 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
         }
         return true;
     }
+    if (key == 'p' &&
+        modifiers == (MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT)) {
+        (void)break_editor_shell_select_tab(shell, 1u, 0u);
+        editor_shell_log(shell, "%s",
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_PROFILER_SHOWN));
+        return true;
+    }
+    if (key == 'd' &&
+        modifiers == (MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT)) {
+        bool on = shell->remote != NULL &&
+                  break_editor_remote_is_running(shell->remote);
+        (void)break_editor_shell_select_tab(shell, 1u, 1u);
+        editor_shell_log(shell, "%s",
+                         break_editor_tr(on ? BREAK_EDITOR_TR_LOG_REMOTE_DEBUG_ON
+                                            : BREAK_EDITOR_TR_LOG_REMOTE_DEBUG_OFF));
+        return true;
+    }
+    if (key == 'l' &&
+        modifiers == (MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT)) {
+        bool ok = editor_panel_lua_reload(shell->lua_panel);
+        (void)break_editor_shell_select_tab(shell, 0u, 1u);
+        editor_shell_log(shell, "%s",
+                         break_editor_tr(ok ? BREAK_EDITOR_TR_LOG_LUA_RELOADED
+                                            : BREAK_EDITOR_TR_LOG_LUA_RELOAD_FAILED));
+        return true;
+    }
     relevant = (key >= 'a' && key <= 'z')
                    ? modifiers & (MY_KEYMOD_CTRL | MY_KEYMOD_ALT)
                    : modifiers & (MY_KEYMOD_SHIFT | MY_KEYMOD_CTRL |

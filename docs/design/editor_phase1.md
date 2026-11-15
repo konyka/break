@@ -74,6 +74,9 @@ editor 可执行（engine/apps/editor/editor_main.c，薄 main）
 | Delete | 无 | 删除所选实体（2026-10-29） |
 | Ctrl+G | Ctrl | 切换 gizmo 吸附（2026-10-29） |
 | Ctrl+Shift+R | Ctrl+Shift | 视口着色器重载 |
+| Ctrl+Shift+P | Ctrl+Shift | 切到诊断区 Profiler 页（area 1, tab 0），日志 `profiler: shown`；不打开调色板（2026-11-15） |
+| Ctrl+Shift+D | Ctrl+Shift | 切到 Network 页（area 1, tab 1），日志 `remote debug: on/off`；只报告状态，不启动监听，不复制实体（2026-11-15） |
+| Ctrl+Shift+L | Ctrl+Shift | Lua 热加载：销毁并重建 Lua console（新沙箱状态），切到 Lua 页（area 0, tab 1），日志 `lua: reloaded` / `lua: reload failed`（2026-11-15） |
 | Esc / Return / ↑ / ↓ | 调色板打开时 | 关闭 / 执行高亮行 / 移动高亮（2026-10-29 起） |
 
 真实窗口的按键路由：myui dispatcher 只把 KEY_DOWN 投给焦点控件并**向父级

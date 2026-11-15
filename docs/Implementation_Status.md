@@ -11137,3 +11137,15 @@ The four register items above are re-checked against `master` (`e07574b6`); the 
 - "P12 Tasks 4–13 have not started" is outdated. Later entries in this file record their delivery.
 
 Plan: `docs/superpowers/plans/2026-11-15-core-app-io-fault-register.md`.
+
+### 2026-11-15 Editor Ctrl+Shift diagnostic shortcuts
+
+Before this change, letter shortcuts ignored SHIFT, so Ctrl+Shift+P opened the command palette and Ctrl+Shift+D duplicated the selection. `break_editor_shell_dispatch_key` (`engine/apps/editor/editor_panels.c`) now handles three Ctrl+Shift combinations before the table lookup:
+
+- Ctrl+Shift+P selects the Profiler page and logs `profiler: shown`.
+- Ctrl+Shift+D selects the Network page and logs `remote debug: on` or `remote debug: off`, depending on whether an attached remote is running. It never starts a listener, so remote debugging stays opt-in.
+- Ctrl+Shift+L rebuilds the Lua console through `editor_panel_lua_reload` (`editor_panel_lua.c`), selects the Lua page, and logs `lua: reloaded` (or `lua: reload failed`, in which case the panel degrades to the existing bounded error line).
+
+The log lines are i18n keys with English and Chinese text. Test: `ctrl_shift_diagnostic_shortcuts_do_not_fall_through` in `engine/tests/test_editor_shell.c`. Mutation check: disabling any of the three branches, leaving the console NULL after reload, or skipping the Network tab switch each fails the test.
+
+F5–F8 (run, run current scene, pause, stop) are still missing; they are Task B of `docs/superpowers/plans/2026-11-15-editor-shortcut-parity.md`.

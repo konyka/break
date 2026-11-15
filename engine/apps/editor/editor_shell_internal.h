@@ -88,6 +88,9 @@ EditorPanelLua *editor_panel_lua_create(BreakEditorShell *shell);
 void editor_panel_lua_destroy(EditorPanelLua *panel);
 bool editor_panel_lua_build(EditorPanelLua *panel, my_widget_t *parent);
 usize editor_panel_lua_history_count(const EditorPanelLua *panel);
+/* Ctrl+Shift+L: replace the console with a fresh sandbox. Returns false (and
+ * leaves the panel degraded) when the new console cannot be created. */
+bool editor_panel_lua_reload(EditorPanelLua *panel);
 
 EditorPanelFlow *editor_panel_flow_create(BreakEditorShell *shell);
 void editor_panel_flow_destroy(EditorPanelFlow *panel);
