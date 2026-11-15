@@ -142,3 +142,14 @@ void ragdoll_write_pose(const Ragdoll *rd, const PhysicsWorld *pw, Skeleton *sk)
 - `physics_state_hash(pw)`：对每个 body 的位置、速度、朝向、角速度和睡眠状态做 FNV-1a，供回放比对与网络同步诊断。
 
 快照是同一构建内的内存格式，不是线格式或磁盘格式；接触回调和 post-step 钩子不保存。测试 `physics_snapshot_replay_is_bit_identical` 在发生碰撞后保存，跑 30 步记录结果，再删除约束、新增 body、恢复、重跑 30 步，断言哈希、碰撞统计和全部 `RigidBody` 字节逐位相同。仍缺：跨平台确定性、输入录制文件格式、网络同步。
+
+## 补充（2026-11-15）：输入录制与回放文件格式
+
+`engine/src/physics/physics_replay.{h,c}` 在世界快照之上记录输入：
+
+- `physics_replay_impulse` 施加并记录冲量；`physics_replay_step` 执行 step 并记录 step 后的 `physics_state_hash`。body 无效、冲量或 dt 非有限、dt 不为正、记录存储已满时返回 false，世界和记录都不变。存储由调用方提供，不分配内存。
+- 编码格式（小端）：12 字节头部（魔数 `PRPL`、版本 1、记录数），每条记录 32 字节（op、body index、generation、3 个 f32 位模式、u64 step 后哈希）。
+- `physics_replay_decode` 校验魔数、版本、记录数不超过容量、长度精确相等、每条 op 合法、浮点有限且 dt 为正；先校验全部记录再写入，失败时 replay 不变。
+- `physics_replay_run` 在调用方已用快照恢复的世界上重放，返回 OK / DIVERGED / INVALID，`out_divergent` 给出第一条哈希不符的 step 记录下标。
+
+哈希一致性只在同一构建、同一平台内成立；跨平台浮点确定性仍未保证。

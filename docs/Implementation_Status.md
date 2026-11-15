@@ -11220,3 +11220,11 @@ Still missing: mapping the ID into Runtime Core messages on the core app snapsho
 Tests in `engine/tests/test_physics.c` (83/83): `physics_snapshot_replay_is_bit_identical` (snapshot after collisions, 30 steps, perturb the world, restore, 30 steps again, compare hash, collision counters and every `RigidBody` byte), `physics_snapshot_rejects_bad_input`, `physics_state_hash_tracks_motion`. Mutation check: 23 mutations over restore copies, every validation, every restored counter, both BVH dirty marks, the save capacity check and every hash field; all fail a test. Full ctest: 401/401 (`build-core-app-master`).
 
 Still missing: cross-platform determinism, an input recording file format, physics network sync and a parallel solver. Design note: `docs/design/physics_extended.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-physics-snapshot-replay.md`.
+
+### 2026-11-15 Physics input recording and replay file format
+
+New `engine/src/physics/physics_replay.{h,c}` (added to the `engine` library). It records impulses and steps applied to a world, with the state hash after every step, and encodes them in a fixed little-endian format: a 12-byte header (`PRPL`, version 1, count) and 32-byte records. Decode validates magic, version, count against capacity, exact length, every op and every float before writing anything. `physics_replay_run` replays a log on a world restored from a snapshot and reports the first step whose hash differs.
+
+Tests: `test_physics_replay` (4/4) covers encode/decode round trip and replay, a changed impulse diverging at the next step (record 12), a corrupted stored hash diverging at that record, rejected recording inputs and malformed data. Mutation check: 33 mutations over every validation, every encoded and decoded field, byte order, hash comparison and the divergence index; all fail a test. Full ctest: 402/402 (`build-core-app-master`).
+
+Still missing: cross-platform determinism, physics network sync and a parallel solver. Design note: `docs/design/physics_extended.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-physics-input-replay.md`.

@@ -1037,6 +1037,7 @@ src/renderer/lens_effects.c
     src/ecs/ecs_system.c
     src/task/task.c
     src/physics/physics.c
+    src/physics/physics_replay.c
     src/physics/ragdoll.c
     src/physics/vehicle.c
     src/physics/rope.c
@@ -6950,6 +6951,13 @@ endif()
     target_include_directories(test_physics PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_physics PRIVATE m)
     add_test(NAME test_physics COMMAND test_physics)
+
+    add_executable(test_physics_replay tests/test_physics_replay.c src/physics/physics_replay.c
+        src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
+    target_include_directories(test_physics_replay PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_physics_replay PRIVATE m)
+    add_test(NAME test_physics_replay COMMAND test_physics_replay)
+    set_tests_properties(test_physics_replay PROPERTIES LABELS "headless;physics")
 
     add_executable(test_physics_hinge tests/test_physics_hinge.c
         src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)
