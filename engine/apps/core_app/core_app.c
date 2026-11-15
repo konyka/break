@@ -16,6 +16,7 @@
 #include <kernel/break_kernel_internal.h>
 #include <kernel/break_kernel_lua.h>
 #include <physics/physics.h>
+#include <physics/physics_sync.h>
 #include <physics/ragdoll.h>
 #include <physics/vehicle.h>
 #include <platform/platform_fs.h>
@@ -2101,6 +2102,18 @@ static void app_network_publish(CoreApp *app, u32 tick, Vec3 user_position) {
     entities[1].flags = 2u;
     hooks->tick(hooks->user, tick, level->generation, entities, 2u,
                 physics_state_hash(level->physics));
+    if (!hooks->physics_correction_wanted || !hooks->physics_correction ||
+        !hooks->physics_correction_wanted(hooks->user)) {
+        return;
+    }
+    usize size = physics_sync_correction_size(level->physics);
+    if (size > CORE_APP_PHYSICS_CORRECTION_MAX_BYTES) return;
+    u8 *bytes = (u8 *)malloc(size);
+    if (!bytes) return;
+    if (physics_sync_encode_correction(level->physics, tick, bytes, size, NULL)) {
+        hooks->physics_correction(hooks->user, tick, bytes, size);
+    }
+    free(bytes);
 }
 
 static BreakRuntimeError app_level_drain_cb(void *user) {

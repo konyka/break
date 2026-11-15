@@ -11271,3 +11271,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - core_app transport 每个 tick 把 `physics_state_hash` 编成 `0x4002` 报告发给已认证对端，并用 `PhysicsSyncTracker` 检查对端回报的哈希；第一次 desync 写 `event=network_physics_sync result=desync tick=N`，`network_stats` 追加五个 physics 计数。对端报告只改计数，不改世界。
 - `test_core_app_network_loopback` 增加回发、翻转哈希、短载荷三类报告；先 RED（`a_received_physics_report` FAIL），实现后通过；9 项变异全部被捕获；`build-core-app-net`（开启 `CORE_APP_ENABLE_NETWORK`）全量 414/414。还没做：DESYNC 后自动发送修正包 `0x4003`。
+
+### 2026-11-15 core_app physics correction after a reported desync
+
+- 对端报告 DESYNC 后，core_app 在下一 tick 编码当前物理世界的 `physics_sync` 修正包，以 `0x4003` 只发给报告 desync 的已认证连接；多次 desync 合并为一次修正，`network_stats` 追加 `physics_corrections_sent`。
+- `test_core_app_network_loopback` 先 RED（`a_received_physics_correction` FAIL），实现后通过；新增第二个认证对端 A2 证明修正不会发给未报告 desync 的连接；8 项变异全部被捕获。对端收到后调用 `physics_sync_apply_correction` 恢复的客户端运行时还没有。

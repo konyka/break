@@ -28,7 +28,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define NET_CLIENT_FRAME_CAPACITY (BREAK_NET_ENVELOPE_HEADER_SIZE + 4096u)
+#define NET_CLIENT_FRAME_CAPACITY (BREAK_NET_ENVELOPE_HEADER_SIZE + BREAK_NET_MAX_PAYLOAD_SIZE)
 
 static const u8 k_key_id[8] = {'c', 'o', 'r', 'e', 'a', 'p', 'p', '1'};
 static u8 g_psk[32];
@@ -326,6 +326,59 @@ static int client_next_physics_report(NetClient *c, u8 out[NET_CLIENT_PHYSICS_RE
     return 0;
 }
 
+/* Correction layout, checked by hand: magic "PSNP" u32, tick u32, payload
+ * bytes u32, FNV-1a 32 of the payload u32, then the payload. */
+#define NET_CLIENT_PHYSICS_CORRECTION_MAGIC 0x504e5350u
+#define NET_CLIENT_PHYSICS_CORRECTION_HEADER 16u
+
+static int client_next_physics_correction(NetClient *c, u32 *out_tick, size_t *out_bytes,
+                                          u32 timeout_ms) {
+    u64 deadline = now_ms() + timeout_ms;
+    while (now_ms() < deadline) {
+        BreakNetEnvelope env;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got != 1) return got;
+        if (env.message_id != BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION) continue;
+        const u8 *p = (const u8 *)env.payload;
+        if (env.protocol_version != 1u || env.payload_size <= NET_CLIENT_PHYSICS_CORRECTION_HEADER ||
+            le32(p) != NET_CLIENT_PHYSICS_CORRECTION_MAGIC ||
+            (size_t)le32(p + 8u) != env.payload_size - NET_CLIENT_PHYSICS_CORRECTION_HEADER) {
+            return -1;
+        }
+        u32 h = 2166136261u;
+        for (size_t i = NET_CLIENT_PHYSICS_CORRECTION_HEADER; i < env.payload_size; ++i) {
+            h ^= p[i];
+            h *= 16777619u;
+        }
+        if (h != le32(p + 12u)) return -1;
+        *out_tick = le32(p + 4u);
+        *out_bytes = env.payload_size;
+        return 1;
+    }
+    return 0;
+}
+
+/* The server sends a correction for tick N right after the report for
+ * tick N, so a peer that reads up to a report newer than N has seen every
+ * correction it could get. True when a correction arrives first or the
+ * connection fails, both wrong for a peer that never desynced. */
+static bool client_receives_correction_before(NetClient *c, u32 after_tick, u32 timeout_ms) {
+    u64 deadline = now_ms() + timeout_ms;
+    while (now_ms() < deadline) {
+        BreakNetEnvelope env;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got < 0) return true;
+        if (got != 1) continue;
+        if (env.message_id == BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION) return true;
+        if (env.message_id == BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT &&
+            env.payload_size == NET_CLIENT_PHYSICS_REPORT_BYTES &&
+            le32((const u8 *)env.payload + 4u) > after_tick) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool send_snapshot(NetClient *c, const CoreAppSnapshot *snapshot, size_t trailing) {
     u8 wire[CORE_APP_SNAPSHOT_MAX_BYTES + 64u];
     size_t size = 0u;
@@ -376,6 +429,13 @@ static void scenario_authenticated(void) {
          * firewall admits it as a diagnostic, and the driver still requires
          * the networked trace to match the offline one. */
         check(send_snapshot(&a, &forged, 0u), "a_sent_admissible_forged_position");
+        /* A second authenticated peer that never reports a desync must not
+         * receive the correction A asks for. */
+        NetClient a2;
+        CoreAppSnapshot a2_first;
+        check(client_open(&a2), "a2_tls_challenge");
+        check(client_auth(&a2, g_psk), "a2_auth_sent");
+        check(client_next_snapshot(&a2, &a2_first, 10000u) == 1, "a2_authenticated");
         /* Echo the authority's own physics report (a match), then the same
          * report with a flipped hash (a desync), then a short payload. */
         u8 report[NET_CLIENT_PHYSICS_REPORT_BYTES];
@@ -396,7 +456,17 @@ static void scenario_authenticated(void) {
             check(client_send(&a, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, 1u, report,
                               sizeof(report) - 1u),
                   "a_sent_short_physics_report");
+            u32 correction_tick = 0u;
+            size_t correction_bytes = 0u;
+            check(client_next_physics_correction(&a, &correction_tick, &correction_bytes,
+                                                 10000u) == 1,
+                  "a_received_physics_correction");
+            fprintf(g_report, "physics_correction tick=%u bytes=%zu\n", correction_tick,
+                    correction_bytes);
+            check(!client_receives_correction_before(&a2, correction_tick, 10000u),
+                  "a2_never_receives_correction");
         }
+        client_close(&a2);
         /* Wait for a frame built well after the hostile sends: the outbox
          * may already hold the next few frames, and closing with those
          * hostile bytes still unread by the server would let the RST from

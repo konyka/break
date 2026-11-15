@@ -42,7 +42,15 @@ typedef struct CoreAppNetworkHooks {
     BreakRuntimeError (*stop_producers)(void *user);
     BreakRuntimeError (*drain)(void *user);
     BreakRuntimeError (*destroy)(void *user);
+    /* Optional. After tick, the runtime asks whether a peer reported a
+     * physics desync; if so it encodes a physics_sync correction of the live
+     * world and hands the bytes over, borrowed for the call only. */
+    bool (*physics_correction_wanted)(void *user);
+    void (*physics_correction)(void *user, u32 tick, const u8 *data, usize size);
 } CoreAppNetworkHooks;
+
+/* Corrections above the net payload cap are never encoded. */
+#define CORE_APP_PHYSICS_CORRECTION_MAX_BYTES (64u * 1024u)
 
 struct CoreAppConfig {
     const char *asset_root;

@@ -1433,3 +1433,9 @@ mount 清空、commit 分类和第二次 completion 等待分别做了独立生�
 ### Baker 的 Flow 身份与端口
 
 `test_core_app_assets` 断言 add-item 节点的目标实体正好是 `{2, 1}`（sidecar 中的 `User`），并断言两条 exec link 的 source port 依次为 `BREAK_FLOW_EVENT_EXEC_OUT`、`BREAK_FLOW_DELAY_EXEC_OUT`。
+
+### 物理修正包（2026-11-15）
+
+`CoreAppNetworkHooks` 新增两个可选钩子 `physics_correction_wanted` 和 `physics_correction`。对端报告 DESYNC 时，transport 把该连接的槽标为 `correction_pending`。`app_network_publish` 在 `tick` 之后询问 `physics_correction_wanted`，为真时按 `physics_sync_correction_size` 分配缓冲、`physics_sync_encode_correction` 编码当前物理世界，再交给 `physics_correction`（字节只在调用期间借用，调用后释放）。超过 `CORE_APP_PHYSICS_CORRECTION_MAX_BYTES`（64 KiB，与网络载荷上限用 `_Static_assert` 锁定）的修正不编码。transport 只发给仍在等待且可发送的槽（id `0x4003`，v1），发送成功或连接已关闭时清除标记，OVERLOAD 时保留到下一 tick。同一 tick 前的多次 DESYNC 合并为一次修正。`network_stats` 末尾追加 `physics_corrections_sent`。
+
+测试：loopback 场景 A 在发出 DESYNC 报告后等待 `0x4003`，客户端手工校验 PSNP 魔数、长度字段和 FNV-1a 校验和；新增第二个认证对端 A2，它从不报告 desync，读到比修正 tick 更新的报告之前不得收到修正。驱动脚本断言 `authenticated==3`、`physics_corrections_sent>=1` 且不超过 `physics_desynced`，离线 trace 对比仍逐字节相同。本机一次运行：修正 10644 字节，`physics_desynced=2`，`physics_corrections_sent=1`。8 项变异全部被捕获（其中「不标记 pending」因未使用变量在编译期失败，同一行为由「wanted 恒为假」变异在运行期覆盖）。
