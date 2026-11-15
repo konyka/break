@@ -1715,7 +1715,7 @@ endif()
 # engine target (its platform siblings live there) and the editor
 # executable resolves platform_list_dir from libengine.a; editor tests
 # compile the TU inline instead (test_editor_assets).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c)
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
@@ -5873,7 +5873,7 @@ endif()
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break. The variant links break_lua_test (not
     # break_lua) so console-core tests share the Lua-side injection hooks.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -5896,6 +5896,13 @@ endif()
     target_link_libraries(test_editor_cmd PRIVATE break_editor_test)
     add_test(NAME test_editor_cmd COMMAND test_editor_cmd)
     set_tests_properties(test_editor_cmd PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_plugin_cmds tests/test_editor_plugin_cmds.c)
+    target_include_directories(test_editor_plugin_cmds PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_plugin_cmds PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_plugin_cmds PRIVATE break_editor_test)
+    add_test(NAME test_editor_plugin_cmds COMMAND test_editor_plugin_cmds)
+    set_tests_properties(test_editor_plugin_cmds PROPERTIES LABELS "headless;editor")
 
     add_executable(test_editor_flow tests/test_editor_flow.c)
     target_include_directories(test_editor_flow PRIVATE ${TEST_INCLUDE_DIRS})

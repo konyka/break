@@ -11246,3 +11246,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - `physics_sync` 新增修正包，格式是 16 字节头（`PSNP`、tick、payload 长度、FNV-1a 32 校验和）加物理快照。权威端发现 DESYNC 后发送修正包；另一端 `physics_sync_apply_correction` 校验魔数、精确长度和校验和后恢复世界，并把 tracker 重置到该 tick 的哈希。任何失败都不改世界和 tracker。
 - `test_physics_sync` 6/6；新增代码 21 项变异中 20 项被捕获，存活的是短包长度防护（不可观察的越界读防护，保留）。仍未接入网络层；跨平台确定性仍缺。
+
+### 2026-11-15 editor plugin command registry
+
+- 新模块 `engine/src/editor/editor_plugin_cmds.{h,c}`，已加入 `break_editor` 和 `break_editor_test`。它是有界注册表，插件按 owner key 注册命令（id 只允许 `[a-z0-9_.]`，长度 1–63；label 1–95 字节，不含控制字符），支持按 owner 整体移除（保持其余命令顺序）、精确查找、大小写不敏感的过滤和执行回调。
+- `test_editor_plugin_cmds` 5/5，43 项变异全部被捕获。命令面板还没有接入这个注册表，插件加载流程也还没有调用它。
