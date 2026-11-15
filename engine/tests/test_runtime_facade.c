@@ -5,6 +5,7 @@
 #include <runtime/runtime_test_hooks.h>
 #include <core/platform_thread.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if !defined(_WIN32)
@@ -1015,6 +1016,95 @@ TEST(task_allocation_failure_injection)
     break_runtime_task_queue_destroy(q);
 }
 
+TEST(message_copy_keeps_correlation_id)
+{
+    u32 payload = 7u;
+    BreakRuntimeMessageView view;
+    BreakRuntimeMessageView owned_view;
+    BreakRuntimeOwnedMessage *msg = NULL;
+
+    memset(&view, 0, sizeof(view));
+    view.kind = 5u;
+    view.version = 1u;
+    view.sequence = 11u;
+    view.correlation_id = 0x1234567890ABCDEFull;
+    view.data = &payload;
+    view.size = sizeof(payload);
+    ASSERT_EQ(break_runtime_message_copy(&view, &msg), BREAK_RUNTIME_OK);
+    view.correlation_id = 0u;
+    ASSERT_EQ(break_runtime_message_view(msg, &owned_view), BREAK_RUNTIME_OK);
+    ASSERT_EQ(owned_view.correlation_id, 0x1234567890ABCDEFull);
+    ASSERT_EQ(owned_view.sequence, 11u);
+    break_runtime_message_release(msg);
+
+    /* zeroed views stay uncorrelated */
+    ASSERT_EQ(break_runtime_message_copy(&view, &msg), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_message_view(msg, &owned_view), BREAK_RUNTIME_OK);
+    ASSERT_EQ(owned_view.correlation_id, 0u);
+    break_runtime_message_release(msg);
+}
+
+#define CORRELATION_THREADS 4
+#define CORRELATION_PER_THREAD 1000
+
+typedef struct {
+    u64 ids[CORRELATION_PER_THREAD];
+} CorrelationCtx;
+
+static PLATFORM_THREAD_RET correlation_main(PLATFORM_THREAD_ARG arg)
+{
+    CorrelationCtx *c = (CorrelationCtx *)arg;
+    u32 j;
+    for (j = 0; j < (u32)CORRELATION_PER_THREAD; j++) {
+        c->ids[j] = break_runtime_correlation_next();
+    }
+    return PLATFORM_THREAD_RETURN;
+}
+
+static int compare_u64(const void *a, const void *b)
+{
+    u64 x = *(const u64 *)a;
+    u64 y = *(const u64 *)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+TEST(correlation_next_is_unique_across_threads)
+{
+    static CorrelationCtx ctx[CORRELATION_THREADS];
+    static u64 all[CORRELATION_THREADS * CORRELATION_PER_THREAD];
+    PlatformThread threads[CORRELATION_THREADS];
+    u64 first;
+    u64 second;
+    int i;
+    u32 j;
+    usize n = 0u;
+
+    first = break_runtime_correlation_next();
+    second = break_runtime_correlation_next();
+    ASSERT_TRUE(first != 0u);
+    ASSERT_TRUE(second > first);
+    for (i = 0; i < CORRELATION_THREADS; i++) {
+        ASSERT_TRUE(platform_thread_create(&threads[i], correlation_main,
+                                           &ctx[i]));
+    }
+    for (i = 0; i < CORRELATION_THREADS; i++) {
+        platform_thread_join(threads[i]);
+    }
+    for (i = 0; i < CORRELATION_THREADS; i++) {
+        for (j = 0; j < (u32)CORRELATION_PER_THREAD; j++) {
+            ASSERT_TRUE(ctx[i].ids[j] > second);
+            if (j > 0u) {
+                ASSERT_TRUE(ctx[i].ids[j] > ctx[i].ids[j - 1u]);
+            }
+            all[n++] = ctx[i].ids[j];
+        }
+    }
+    qsort(all, n, sizeof(all[0]), compare_u64);
+    for (j = 1u; j < (u32)n; j++) {
+        ASSERT_TRUE(all[j] != all[j - 1u]);
+    }
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(message_copy_produces_independent_owned_bytes);
     RUN_TEST(message_copy_validates_null_and_size);
@@ -1032,4 +1122,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(task_drain_executes_on_legacy_system);
     RUN_TEST(task_drain_forward_failure_retains_queue);
     RUN_TEST(task_allocation_failure_injection);
+    RUN_TEST(message_copy_keeps_correlation_id);
+    RUN_TEST(correlation_next_is_unique_across_threads);
 TEST_MAIN_END()

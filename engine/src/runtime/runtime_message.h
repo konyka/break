@@ -50,6 +50,10 @@ typedef struct BreakRuntimeMessageView {
     u16 version;
     u32 flags;
     u64 sequence;
+    /* Cross-thread/network correlation ID (0 = uncorrelated). Producers that
+     * start a causal chain take one from break_runtime_correlation_next() and
+     * every message/profiler event of that chain carries the same value. */
+    u64 correlation_id;
     const void *data;
     usize size;
 } BreakRuntimeMessageView;
@@ -72,3 +76,9 @@ void break_runtime_message_release(BreakRuntimeOwnedMessage *message);
 BreakRuntimeError break_runtime_message_view(
     const BreakRuntimeOwnedMessage *message,
     BreakRuntimeMessageView *out_view);
+
+/* Process-wide correlation ID source: thread-safe (one atomic increment),
+ * never returns 0, and every call returns a value greater than all values
+ * returned before it. IDs are unique only within one process; a network
+ * peer must not treat a received ID as its own. */
+u64 break_runtime_correlation_next(void);

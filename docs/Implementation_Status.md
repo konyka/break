@@ -11160,3 +11160,15 @@ The editor now has a play mode, which closes the last gap in the Stage 4 shortcu
 Limits: play mode does not run the scene in a separate core_app process, and no simulation systems tick the editor document. Play mode is an editable session that F8 reverts.
 
 Plan: `docs/superpowers/plans/2026-11-15-editor-shortcut-parity.md` (Tasks A and B delivered).
+
+### 2026-11-15 Runtime correlation IDs
+
+`docs/cross_engine/missing_capabilities.md` §13 listed cross-thread correlation IDs as missing. The formal Runtime Core now has them:
+
+- `BreakRuntimeMessageView` and owned messages carry `u64 correlation_id` (0 = uncorrelated).
+- `break_runtime_correlation_next()` returns process-unique, non-zero, increasing IDs from one atomic counter.
+- `break_runtime_profiler_record_correlated` tags profiler events with an ID. The exported meta value then ends in ` cid=ID`, so events of one chain recorded on different threads can be joined. `BREAK_RUNTIME_PROFILER_VALUE_CAPACITY` grew from 56 to 80 bytes so the longest value fits.
+
+Tests: `message_copy_keeps_correlation_id` and `correlation_next_is_unique_across_threads` in `engine/tests/test_runtime_facade.c`; `profiler_correlated_events_export_cid` in `engine/tests/test_runtime_reload.c`. Mutation check: dropping the ID in copy, view or record, starting the counter at 0, never exporting `cid=`, or exporting `cid=0` each fails a test.
+
+Still missing: the ID in the network wire format (`BreakNetEnvelope`), Chrome trace flow events, and a unified trace schema. Design note: `docs/design/runtime_message_model.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-runtime-correlation-id.md`.

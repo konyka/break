@@ -43,7 +43,8 @@
  *    one-shot buffer. Without advance the window eventually saturates and
  *    every later collect drops (all counted, never silent).
  *  - break_runtime_profiler_export_meta() fills a caller-provided
- *    ProfilerMetaInstant array (key = event name, value = "tid=N ts=US")
+ *    ProfilerMetaInstant array (key = event name, value = "tid=N ts=US", or
+ *    "tid=N ts=US cid=ID" for an event with a non-zero correlation ID)
  *    borrowing the window storage; the consumer hands the array straight to
  *    profiler_export_chrome_trace(). The borrowed pointers stay valid until
  *    the next collect()/window_advance()/export_meta()/destroy() on this
@@ -65,7 +66,8 @@
 typedef struct BreakRuntimeProfiler BreakRuntimeProfiler; /* opaque, caller-owned */
 
 #define BREAK_RUNTIME_PROFILER_NAME_CAPACITY 48u
-#define BREAK_RUNTIME_PROFILER_VALUE_CAPACITY 56u
+/* Fits the longest value "tid=<u32> ts=<u64> cid=<u64>" (63 bytes + NUL). */
+#define BREAK_RUNTIME_PROFILER_VALUE_CAPACITY 80u
 #define BREAK_RUNTIME_PROFILER_DEFAULT_EVENT_CAPACITY 256u
 #define BREAK_RUNTIME_PROFILER_MAX_EVENT_CAPACITY 4096u
 #define BREAK_RUNTIME_PROFILER_DEFAULT_WINDOW_CAPACITY 128u
@@ -107,6 +109,16 @@ void break_runtime_profiler_destroy(BreakRuntimeProfiler *profiler);
 BreakRuntimeError break_runtime_profiler_record(
     BreakRuntimeProfiler *profiler,
     const char *name);
+
+/* record() plus a correlation ID (runtime_message.h
+ * break_runtime_correlation_next; 0 = uncorrelated, same as record()). Events
+ * of one causal chain recorded on different threads share the ID, so the
+ * exported meta values can be joined on "cid=". Same hot-path contract and
+ * errors as record(). */
+BreakRuntimeError break_runtime_profiler_record_correlated(
+    BreakRuntimeProfiler *profiler,
+    const char *name,
+    u64 correlation_id);
 
 /* COLLECTOR/OWNER THREAD ONLY (REJECTED otherwise). Moves up to
  * `max_events` queued events into the bounded presentation window (window

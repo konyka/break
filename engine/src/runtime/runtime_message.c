@@ -2,6 +2,7 @@
 
 #include <runtime/runtime_test_hooks.h>
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -14,6 +15,7 @@ struct BreakRuntimeOwnedMessage {
     u16 version;
     u32 flags;
     u64 sequence;
+    u64 correlation_id;
     usize size;
     unsigned char data[];
 };
@@ -125,6 +127,7 @@ BreakRuntimeError break_runtime_message_copy(
     message->version = view->version;
     message->flags = view->flags;
     message->sequence = view->sequence;
+    message->correlation_id = view->correlation_id;
     message->size = view->size;
     if (view->size > 0u) {
         memcpy(message->data, view->data, view->size);
@@ -164,7 +167,17 @@ BreakRuntimeError break_runtime_message_view(
     out_view->version = message->version;
     out_view->flags = message->flags;
     out_view->sequence = message->sequence;
+    out_view->correlation_id = message->correlation_id;
     out_view->data = message->size > 0u ? (const void *)message->data : NULL;
     out_view->size = message->size;
     return BREAK_RUNTIME_OK;
+}
+
+static atomic_uint_fast64_t g_runtime_correlation_counter;
+
+u64 break_runtime_correlation_next(void)
+{
+    return (u64)atomic_fetch_add_explicit(&g_runtime_correlation_counter, 1u,
+                                          memory_order_relaxed) +
+           1u;
 }

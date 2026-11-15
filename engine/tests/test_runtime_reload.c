@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <runtime/runtime_reload.h>
+#include <runtime/runtime_message.h>
 #include <runtime/runtime_profiler.h>
 #include <runtime/runtime_thread.h>
 #include <runtime/runtime_test_hooks.h>
@@ -7,6 +8,7 @@
 #include <core/profiler.h>
 #include <asset/vfs.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1738,6 +1740,113 @@ static void profiler_producer_worker(void *arg)
     }
 }
 
+typedef struct ProfilerCorrelatedCtx {
+    BreakRuntimeProfiler *profiler;
+    u64 correlation_id;
+    _Atomic u32 record_failures;
+} ProfilerCorrelatedCtx;
+
+static void profiler_correlated_worker(void *arg)
+{
+    ProfilerCorrelatedCtx *ctx = (ProfilerCorrelatedCtx *)arg;
+    if (break_runtime_profiler_record_correlated(ctx->profiler, "req.end",
+                                                 ctx->correlation_id) !=
+        BREAK_RUNTIME_OK) {
+        atomic_fetch_add_explicit(&ctx->record_failures, 1u,
+                                  memory_order_acq_rel);
+    }
+}
+
+static const char *profiler_meta_value(const ProfilerMetaInstant *meta,
+                                       u32 count, const char *key)
+{
+    u32 i;
+    for (i = 0u; i < count; i++) {
+        if (strcmp(meta[i].key, key) == 0) {
+            return meta[i].value;
+        }
+    }
+    return NULL;
+}
+
+TEST(profiler_correlated_events_export_cid)
+{
+    BreakRuntimeProfiler *profiler = NULL;
+    ProfilerCorrelatedCtx ctx;
+    BreakRuntimeThread *thread = NULL;
+    BreakRuntimeThreadConfig thread_cfg;
+    ProfilerMetaInstant meta[8];
+    u32 count = 0u;
+    u32 meta_count = 0u;
+    u64 cid;
+    char expected[48];
+    const char *value;
+    const char *max_suffix = " cid=18446744073709551615";
+
+    ASSERT_EQ(break_runtime_profiler_create(NULL, &profiler), BREAK_RUNTIME_OK);
+    cid = break_runtime_correlation_next();
+    ASSERT_TRUE(cid != 0u);
+    ASSERT_EQ(break_runtime_profiler_record_correlated(profiler, "req.begin",
+                                                       cid),
+              BREAK_RUNTIME_OK);
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.profiler = profiler;
+    ctx.correlation_id = cid;
+    memset(&thread_cfg, 0, sizeof(thread_cfg));
+    thread_cfg.name = "prof-corr";
+    thread_cfg.fn = profiler_correlated_worker;
+    thread_cfg.arg = &ctx;
+    ASSERT_EQ(break_runtime_thread_create(&thread_cfg, &thread),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_thread_start(thread), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_thread_stop(thread, 5000u), BREAK_RUNTIME_OK);
+    break_runtime_thread_destroy(thread);
+    ASSERT_EQ(atomic_load_explicit(&ctx.record_failures, memory_order_acquire),
+              0u);
+
+    ASSERT_EQ(break_runtime_profiler_record(profiler, "plain"),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_record_correlated(profiler, "zero", 0u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_record_correlated(profiler, "max",
+                                                       UINT64_MAX),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_record_correlated(NULL, "x", 1u),
+              BREAK_RUNTIME_INVALID);
+
+    ASSERT_EQ(break_runtime_profiler_collect(profiler, 8u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(count, 5u);
+    ASSERT_EQ(break_runtime_profiler_export_meta(profiler, meta, 8u,
+                                                 &meta_count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(meta_count, 5u);
+
+    snprintf(expected, sizeof(expected), " cid=%llu", (unsigned long long)cid);
+    value = profiler_meta_value(meta, meta_count, "req.begin");
+    ASSERT_NOT_NULL(value);
+    ASSERT_TRUE(strncmp(value, "tid=", 4u) == 0);
+    ASSERT_TRUE(strlen(value) > strlen(expected));
+    ASSERT_STR_EQ(value + strlen(value) - strlen(expected), expected);
+    value = profiler_meta_value(meta, meta_count, "req.end");
+    ASSERT_NOT_NULL(value);
+    ASSERT_STR_EQ(value + strlen(value) - strlen(expected), expected);
+    value = profiler_meta_value(meta, meta_count, "plain");
+    ASSERT_NOT_NULL(value);
+    ASSERT_TRUE(strstr(value, "cid=") == NULL);
+    value = profiler_meta_value(meta, meta_count, "zero");
+    ASSERT_NOT_NULL(value);
+    ASSERT_TRUE(strstr(value, "cid=") == NULL);
+    value = profiler_meta_value(meta, meta_count, "max");
+    ASSERT_NOT_NULL(value);
+    ASSERT_TRUE(strlen(value) > strlen(max_suffix));
+    ASSERT_STR_EQ(value + strlen(value) - strlen(max_suffix), max_suffix);
+
+    break_runtime_profiler_close(profiler);
+    break_runtime_profiler_destroy(profiler);
+}
+
 TEST(profiler_multithreaded_handoff)
 {
     BreakRuntimeProfiler *profiler = NULL;
@@ -2078,6 +2187,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(profiler_record_overload_never_blocks);
     RUN_TEST(profiler_name_copied_owned);
     RUN_TEST(profiler_multithreaded_handoff);
+    RUN_TEST(profiler_correlated_events_export_cid);
     RUN_TEST(profiler_close_drains_then_closed);
     RUN_TEST(profiler_window_bounded_drop);
     RUN_TEST(profiler_window_advance_keeps_continuous);

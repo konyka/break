@@ -22,6 +22,7 @@
 
 typedef struct RuntimeProfilerEvent {
     u64 ts_us;
+    u64 correlation_id; /* 0 = uncorrelated */
     u32 tid;
     char name[BREAK_RUNTIME_PROFILER_NAME_CAPACITY];
 } RuntimeProfilerEvent;
@@ -142,6 +143,14 @@ BreakRuntimeError break_runtime_profiler_record(
     BreakRuntimeProfiler *profiler,
     const char *name)
 {
+    return break_runtime_profiler_record_correlated(profiler, name, 0u);
+}
+
+BreakRuntimeError break_runtime_profiler_record_correlated(
+    BreakRuntimeProfiler *profiler,
+    const char *name,
+    u64 correlation_id)
+{
     usize name_len;
     RuntimeProfilerEvent *slot;
 
@@ -173,6 +182,7 @@ BreakRuntimeError break_runtime_profiler_record(
      * and the current microsecond clock. */
     slot->tid = profiler_current_tid();
     slot->ts_us = time_microseconds();
+    slot->correlation_id = correlation_id;
     memcpy(slot->name, name, name_len + 1u);
     profiler->event_count++;
     profiler->recorded++;
@@ -208,9 +218,18 @@ BreakRuntimeError break_runtime_profiler_collect(
             /* Ownership handoff: the window takes the event copy; the value
              * string is materialized into bounded window storage. */
             profiler->window[slot] = *event;
-            snprintf(profiler->window_values[slot],
-                     BREAK_RUNTIME_PROFILER_VALUE_CAPACITY, "tid=%u ts=%llu",
-                     event->tid, (unsigned long long)event->ts_us);
+            if (event->correlation_id != 0u) {
+                snprintf(profiler->window_values[slot],
+                         BREAK_RUNTIME_PROFILER_VALUE_CAPACITY,
+                         "tid=%u ts=%llu cid=%llu", event->tid,
+                         (unsigned long long)event->ts_us,
+                         (unsigned long long)event->correlation_id);
+            } else {
+                snprintf(profiler->window_values[slot],
+                         BREAK_RUNTIME_PROFILER_VALUE_CAPACITY,
+                         "tid=%u ts=%llu", event->tid,
+                         (unsigned long long)event->ts_us);
+            }
             profiler->window_count++;
         } else {
             /* The window never overwrites a live entry. */

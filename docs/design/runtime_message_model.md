@@ -324,3 +324,15 @@ C++11 framework 在 `Init/Tick/DeInit` 建立 runtime；每 tick 由 LogicThread
 - `engine/src/ecs/{replication_schema.h,world_snapshot.h,world_delta.h}`：C11 snapshot/schema/delta API 方向。
 - `engine/src/network/{break_net_message.h,break_net_events.h,break_net_adapter.h,break_session.h,break_replication_fragment.h}`：owned/borrowed message、event/queue、Session、fragment API 证据。
 - `engine/src/task/task.h`, `engine/src/network/net_loop.h`, `engine/src/asset/vfs.h`, `engine/src/core/profiler.h`, `engine/src/core/platform_thread.h`：现有 Task/IO/VFS/Profiler/PAL基础约束。
+
+## 补充（2026-11-15）：correlation ID 已交付
+
+§5 建议的 envelope 字段里，`correlation_id` 现在进入了 formal Runtime Core：
+
+- `BreakRuntimeMessageView` 新增 `u64 correlation_id`，0 表示不关联。`break_runtime_message_copy` 把它存进 owned message，`break_runtime_message_view` 原样返回。现有构造点都先 `memset` 清零 view，所以默认仍为 0。
+- `break_runtime_correlation_next()`（`engine/src/runtime/runtime_message.h`）是进程内唯一的 ID 源：一次 C11 原子自增，线程安全，从不返回 0，后一次调用的返回值一定大于之前所有调用。ID 只在本进程内唯一，网络对端不能把收到的 ID 当成自己的 ID。
+- profiler bridge 新增 `break_runtime_profiler_record_correlated(profiler, name, id)`，`record()` 等于传 0。导出的 meta value 在 ID 非 0 时为 `tid=N ts=US cid=ID`，否则仍为 `tid=N ts=US`。`BREAK_RUNTIME_PROFILER_VALUE_CAPACITY` 从 56 增大到 80，最长的值（63 字节）不会被截断。同一条因果链在不同线程上记录的事件可以按 `cid=` 关联起来。
+
+测试：`test_runtime_facade` 的 `message_copy_keeps_correlation_id`、`correlation_next_is_unique_across_threads`（4 线程 × 1000 个 ID，全部非 0 且互不相同），以及 `test_runtime_reload` 的 `profiler_correlated_events_export_cid`（跨线程共享 ID、0 不输出、`UINT64_MAX` 不截断）。
+
+仍未做：`BreakNetEnvelope` 线格式里的关联 ID、Chrome trace flow 事件（ph:"s"/"f"）、统一 trace schema。计划：`docs/superpowers/plans/2026-11-15-runtime-correlation-id.md`。
