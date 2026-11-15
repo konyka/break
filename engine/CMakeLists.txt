@@ -957,6 +957,7 @@ add_library(engine STATIC
     src/core/string.c
     src/core/profiler.c
     src/core/trace_core_app.c
+    src/core/trace_merge.c
     src/platform/input.c
     src/platform/input_extended.c
     src/platform/platform_config.c
@@ -7504,6 +7505,12 @@ endif()
     target_include_directories(test_trace_core_app PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_trace_core_app COMMAND test_trace_core_app)
     set_tests_properties(test_trace_core_app PROPERTIES LABELS "headless")
+
+    add_executable(test_trace_merge tests/test_trace_merge.c src/core/trace_merge.c
+        src/core/trace_core_app.c)
+    target_include_directories(test_trace_merge PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_trace_merge COMMAND test_trace_merge)
+    set_tests_properties(test_trace_merge PROPERTIES LABELS "headless")
 
     # test_lighting: needs lighting.c + math.c + log.c + RHI stubs
     add_executable(test_lighting tests/test_lighting.c

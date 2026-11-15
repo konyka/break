@@ -11306,3 +11306,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - `core_app` 新增 `--trace-json PATH`：运行结束后把 `--trace` 文本转换为 `break.trace` Chrome JSON 写到 PATH。缺少 `--trace` 时报 CLI 错误；写入失败时返回 2。
 - target contract 和 lifecycle load_unload 测试先 RED 后 GREEN，6 项变异全部被捕获。
+
+### 2026-11-15 merge break.trace documents from several processes
+
+- 新增 `engine/src/core/trace_merge.[ch]`：`break_trace_merge` 把多份 `break.trace` Chrome trace 合并为一份，每份输入改写为各自的 pid，可加 `process_name` 标签，并对 `ts` 加时间偏移（超过 2^63-1 拒绝）。只改写 `args` 之前的字段，`args` 里的同名键保持不变。格式不符时报 BAD_DOCUMENT，并给出输入序号和行号；pid 为 0 或重复时报 INVALID。
+- `test_trace_merge`（5 项）先 RED 后 GREEN，22 项变异全部被捕获。还没有命令行入口；core_app 文本 trace 只有序号时间，偏移需由调用方给出。
