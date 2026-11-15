@@ -11261,3 +11261,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - 新模块 `engine/src/editor/editor_plugin_host.{h,c}`。插件的 `register_fn` 收到 `BreakEditorPluginApi`（带 struct_size 和 api_version），通过 `add_command` 向编辑器命令注册表添加命令。宿主在每次 `break_plugin_load` 前后调用 `begin_load` / `end_load`：加载失败（包括 register_fn 失败）时自动移除该插件已添加的命令；卸载前调用 `release`。模块本身不调用 `break_plugin_*`，编辑器可执行文件仍不链接 `break_system`。
 - `test_editor_plugin_host` 2/2；`test_editor_plugin_load` 2/2 用两个真实动态库 fixture 走完加载、执行、卸载和注册失败路径；13 项变异全部被捕获。编辑器启动时加载插件还没做。
+
+### 2026-11-15 physics sync messages in the default net registry
+
+- 默认网络注册表新增 `BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT 0x4002`（v1..1，16 字节，`AUTHENTICATED`，`IDEMPOTENT`）和 `BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION 0x4003`（v1..1，64 KiB，`AUTHENTICATED`，`IDEMPOTENT`），envelope 编解码器现在能承载 `physics_sync` 报告和修正包。条目数为 24（CRYPTO=ON）/ 23（OFF）。
+- 测试 `break_session_registry_has_physics_sync_messages`（`test_break_session` 43/43，Snowflake 树）覆盖字段、报告报文往返和超长载荷拒绝；11 项变异全部被捕获。还没有 transport 在运行时发送或消费这两种报文。

@@ -15,6 +15,7 @@
 #include <network/break_session.h>
 #include <network/break_online_lobby.h>
 #include <network/break_online_session.h>
+#include <physics/physics_sync.h>
 #ifdef BREAK_ENABLE_CRYPTO
 #include <crypto/break_crypto.h>
 #endif
@@ -1009,6 +1010,58 @@ TEST(break_session_registry_auth_versions_match_crypto_mode)
 #endif
 }
 
+TEST(break_session_registry_has_physics_sync_messages)
+{
+    const BreakNetMessageRegistry *registry = break_net_message_registry_default();
+    const BreakNetMessageDefinition *report = break_net_message_registry_lookup(
+        registry, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT);
+    const BreakNetMessageDefinition *correction = break_net_message_registry_lookup(
+        registry, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION);
+    uint8_t payload[PHYSICS_SYNC_REPORT_BYTES + 1u];
+    uint8_t wire[BREAK_NET_ENVELOPE_HEADER_SIZE + sizeof(payload)];
+    BreakNetEnvelope env = {0};
+    BreakNetEnvelope decoded = {0};
+    size_t wire_size = 0u;
+
+    ASSERT_EQ(BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, 0x4002u);
+    ASSERT_EQ(BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION, 0x4003u);
+    ASSERT_NOT_NULL(report);
+    ASSERT_NOT_NULL(correction);
+    ASSERT_EQ(report->minimum_version, 1u);
+    ASSERT_EQ(report->maximum_version, 1u);
+    ASSERT_EQ(report->payload_limit, (size_t)PHYSICS_SYNC_REPORT_BYTES);
+    ASSERT_EQ(BREAK_NET_PHYSICS_SYNC_REPORT_PAYLOAD, PHYSICS_SYNC_REPORT_BYTES);
+    ASSERT_EQ(report->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+    ASSERT_EQ(report->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+    ASSERT_EQ(correction->minimum_version, 1u);
+    ASSERT_EQ(correction->maximum_version, 1u);
+    ASSERT_EQ(correction->payload_limit, (size_t)BREAK_NET_MAX_PAYLOAD_SIZE);
+    ASSERT_EQ(correction->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+    ASSERT_EQ(correction->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+#ifdef BREAK_ENABLE_CRYPTO
+    ASSERT_EQ(registry->count, 24u);
+#else
+    ASSERT_EQ(registry->count, 23u);
+#endif
+
+    memset(payload, 0x5a, sizeof(payload));
+    env.protocol_version = 1u;
+    env.message_id = BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT;
+    env.sequence = 1u;
+    env.payload = payload;
+    env.payload_size = PHYSICS_SYNC_REPORT_BYTES;
+    ASSERT_EQ(break_net_envelope_encode(&env, wire, sizeof(wire), &wire_size),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(wire_size, (size_t)(BREAK_NET_ENVELOPE_HEADER_SIZE + PHYSICS_SYNC_REPORT_BYTES));
+    ASSERT_EQ(break_net_envelope_decode(wire, wire_size, &decoded), BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(decoded.message_id, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT);
+    ASSERT_EQ(decoded.payload_size, (size_t)PHYSICS_SYNC_REPORT_BYTES);
+
+    env.payload_size = PHYSICS_SYNC_REPORT_BYTES + 1u;
+    ASSERT_EQ(break_net_envelope_encode(&env, wire, sizeof(wire), &wire_size),
+              BREAK_NET_ENVELOPE_OVER_LIMIT);
+}
+
 #ifdef BREAK_ENABLE_CRYPTO
 TEST(break_session_max_age_expires_at_poll)
 {
@@ -1815,6 +1868,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_session_poll_is_low_level_close_finalization);
     RUN_TEST(break_session_wire_auth_reaches_handler_and_sends_response);
     RUN_TEST(break_session_registry_auth_versions_match_crypto_mode);
+    RUN_TEST(break_session_registry_has_physics_sync_messages);
 #ifdef BREAK_ENABLE_CRYPTO
     RUN_TEST(break_session_max_age_expires_at_poll);
     RUN_TEST(break_session_auth_v2_loopback_authenticates);

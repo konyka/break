@@ -115,8 +115,10 @@ typedef enum BreakNetEventType {
 | `BREAK_NET_MESSAGE_ID_PING == 2` | 1..1 | 64 KiB | `ANY` | `IDEMPOTENT` |
 | `BREAK_NET_MESSAGE_ID_CHALLENGE == 3` | 1..1（仅 CRYPTO=ON） | 16 B | `ANY` | `REJECT` |
 | `BREAK_NET_MESSAGE_ID_CORE_SNAPSHOT == 0x4001` | 1..1 | 32 + 64×24 B | `AUTHENTICATED` | `IDEMPOTENT` |
+| `BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT == 0x4002` | 1..1 | 16 B（`PHYSICS_SYNC_REPORT_BYTES`） | `AUTHENTICATED` | `IDEMPOTENT` |
+| `BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION == 0x4003` | 1..1 | 64 KiB | `AUTHENTICATED` | `IDEMPOTENT` |
 
-`0x4001` 是 core_app 只读 snapshot（`engine/apps/core_app/core_app_network.h`），只在认证后接受；默认表另含编辑器远程消息 4..21（v1..1，4096 B，`ANY`，`IDEMPOTENT`，见 `docs/design/editor_remote.md`），因此 count 为 22（CRYPTO=ON）/ 21（OFF）。
+`0x4001` 是 core_app 只读 snapshot（`engine/apps/core_app/core_app_network.h`），只在认证后接受；默认表另含编辑器远程消息 4..21（v1..1，4096 B，`ANY`，`IDEMPOTENT`，见 `docs/design/editor_remote.md`），以及 `0x4002`/`0x4003` 物理同步报文（`engine/src/physics/physics_sync.h`：16 字节状态哈希报告；修正包为 16 字节头加完整物理快照，大小随刚体数变化，因此上限取全局 64 KiB），因此 count 为 24（CRYPTO=ON）/ 23（OFF）。注册表头文件不依赖物理头文件，`break_session_registry_has_physics_sync_messages` 断言 `BREAK_NET_PHYSICS_SYNC_REPORT_PAYLOAD == PHYSICS_SYNC_REPORT_BYTES`。
 
 默认表加入 `0x4001` 后，其他使用默认 registry 的 manager（例如编辑器远程会话）也会通过它的 envelope 校验。这些 manager 没有为 `0x4001` 注册 handler：已认证会话收到它时 `break_session.c` 记为 `HANDLER_FAILED`（计入 `handler_failed`），连接不关闭；只有 AUTH 的 handler 失败才会关闭连接。未认证的会话先受 `AUTHENTICATED` phase 检查。
 

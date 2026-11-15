@@ -18,6 +18,12 @@ extern "C" {
  * CORE_APP_SNAPSHOT_MAX_BYTES (32-byte header + 64 entities x 24 bytes). */
 #define BREAK_NET_MESSAGE_ID_CORE_SNAPSHOT 0x4001u
 #define BREAK_NET_CORE_SNAPSHOT_MAX_PAYLOAD (32u + 64u * 24u)
+/* physics_sync (engine/src/physics/physics_sync.h), AUTHENTICATED only.
+ * A report is exactly PHYSICS_SYNC_REPORT_BYTES; a correction is a 16-byte
+ * header plus a full physics snapshot, bounded by the global payload cap. */
+#define BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT 0x4002u
+#define BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION 0x4003u
+#define BREAK_NET_PHYSICS_SYNC_REPORT_PAYLOAD 16u
 #define BREAK_NET_MESSAGE_ID_MAX 65535u
 #define BREAK_NET_REGISTRY_MAX_MESSAGES 64u
 #define BREAK_NET_MAX_PAYLOAD_SIZE (64u * 1024u)
