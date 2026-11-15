@@ -204,7 +204,7 @@
   - 网络 envelope 新增可选 8 字节关联扩展，标志位 `0x0010`；不带 ID 的帧与原格式逐字节相同（`e507ef37`）。
   - `BreakNetMessageView`、owned message、adapter 收发路径传递 ID，新增 `break_net_reactor_send_correlated`（`937b69e9`）。
   - 编辑器远程响应回带请求 ID（`32a01091`）。
-- **第 9 节（编辑器）**
+- **第 12 节（编辑器）**
   - Ctrl+Shift+P/D/L 诊断快捷键（`478a0aee`）。
   - F5–F8 play mode：进入时记录 history mark，停止时回滚场景（`0d06c0bb`）。这不是独立进程的 PIE。
 
