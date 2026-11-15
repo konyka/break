@@ -4770,10 +4770,14 @@ static void remote_client_connect(RemoteClient *c, BreakEditorShell *shell,
  * Well-formed messages only — payloads above the 4096 B protocol bound or
  * unregistered ids are rejected by the client-side codec, so negative
  * tests use remote_client_send_raw below. */
-static void remote_client_send(RemoteClient *c, u16 id, const u8 *payload,
-                               size_t payload_size) {
+static void remote_client_send_correlated(RemoteClient *c, u16 id,
+                                          u64 correlation_id,
+                                          const u8 *payload,
+                                          size_t payload_size) {
     BreakNetEnvelope env;
-    u8 wire[BREAK_NET_ENVELOPE_HEADER_SIZE + BREAK_EDITOR_PROTO_MAX_PAYLOAD];
+    u8 wire[BREAK_NET_ENVELOPE_HEADER_SIZE +
+            BREAK_NET_ENVELOPE_CORRELATION_SIZE +
+            BREAK_EDITOR_PROTO_MAX_PAYLOAD];
     size_t wire_size = 0u;
     size_t off = 0u;
     ASSERT_TRUE(payload_size <= BREAK_EDITOR_PROTO_MAX_PAYLOAD);
@@ -4781,6 +4785,7 @@ static void remote_client_send(RemoteClient *c, u16 id, const u8 *payload,
     env.protocol_version = BREAK_EDITOR_PROTO_VERSION;
     env.message_id = id;
     env.sequence = c->next_seq++;
+    env.correlation_id = correlation_id;
     env.payload = payload;
     env.payload_size = payload_size;
     ASSERT_EQ(break_net_envelope_encode(&env, wire, sizeof(wire), &wire_size),
@@ -4794,6 +4799,11 @@ static void remote_client_send(RemoteClient *c, u16 id, const u8 *payload,
         off += (size_t)n;
         remote_client_pump(c, 0);
     }
+}
+
+static void remote_client_send(RemoteClient *c, u16 id, const u8 *payload,
+                               size_t payload_size) {
+    remote_client_send_correlated(c, id, 0u, payload, payload_size);
 }
 
 /* Hand-crafts one envelope WITHOUT the codec (unknown ids / oversized
@@ -4831,6 +4841,7 @@ static void remote_client_send_raw(RemoteClient *c, u16 id,
  * equals SIZE_MAX). */
 static size_t remote_client_recv(RemoteClient *c, BreakNetEnvelope *out_env) {
     static u8 buf[BREAK_NET_ENVELOPE_HEADER_SIZE +
+                  BREAK_NET_ENVELOPE_CORRELATION_SIZE +
                   BREAK_EDITOR_PROTO_MAX_PAYLOAD];
     size_t have = 0u;
     size_t need;
@@ -4999,6 +5010,40 @@ TEST(remote_describe_returns_version_entity_count_dirty)
     remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
     ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
     ASSERT_EQ(((const u8 *)rsp.payload)[6], 1u);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_response_echoes_request_correlation_id)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    static const u8 zero_id[8] = {0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+
+    remote_client_send_correlated(&c, BREAK_EDITOR_MSG_DESCRIBE,
+                                  UINT64_C(0x1234567890abcdef), NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+    ASSERT_TRUE(rsp.correlation_id == UINT64_C(0x1234567890abcdef));
+
+    remote_client_send_correlated(&c, BREAK_EDITOR_MSG_REMOVE, 77u, zero_id,
+                                  sizeof(zero_id));
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_RESULT);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], BREAK_EDITOR_PROTO_STATUS_INVALID);
+    ASSERT_TRUE(rsp.correlation_id == 77u);
+
+    remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    ASSERT_TRUE(rsp.correlation_id == 0u);
+
     remote_client_close(&c);
     break_editor_remote_destroy(remote);
     break_editor_shell_destroy(shell);
@@ -11280,6 +11325,7 @@ TEST_MAIN_BEGIN()
 #ifdef BREAK_EDITOR_REMOTE_TESTS
     RUN_REMOTE_TEST(remote_protocol_ids_live_in_default_registry);
     RUN_REMOTE_TEST(remote_describe_returns_version_entity_count_dirty);
+    RUN_REMOTE_TEST(remote_response_echoes_request_correlation_id);
     RUN_REMOTE_TEST(remote_spawn_list_rename_remove_roundtrip_and_ctrl_z_pin);
     RUN_REMOTE_TEST(remote_spawn_then_remote_undo_redo);
     RUN_REMOTE_TEST(remote_save_writes_configured_path_only);

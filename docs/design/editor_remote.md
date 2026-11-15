@@ -204,3 +204,11 @@ Phase 4 Task 4 closeout, HEAD = `357be082` + the closeout commit (one added test
 - **Live `editor --remote` (Snowflake Debug tree, default Vulkan, X11):** throwaway self-signed cert and random PSK, Python `ssl` client. A client that completes TLS but sends nothing was closed by the server 11.05 s after connecting (10 s deadline plus TLS/CHALLENGE time and frame cadence), with 0 response bytes. A command sent without AUTH: server closed the connection, 0 response bytes. A correctly authenticated client was still answered (DESCRIBE `version 1, 0 entities, clean`) 12 s after connecting, i.e. past the deadline; its malformed REMOVE then got the connection closed with 0 response bytes. The editor kept running throughout. In these runs the close arrived about 2 s after the offending frame; the unit tests show sub-second closes, and the extra latency in the live run comes from the editor's frame pacing, which I did not profile.
 - **Sanitizers:** `test_editor_shell` ASan x3 and TSan x3 82/82, `test_break_net_adapter`/`test_break_net_tls`/`test_break_session` clean under both; `fuzz_editor_remote` 3 seeds x 20,000 on the normal tree and 4 seeds under ASan, all clean.
 - **2026-11-14, RENDER (21).** `test_editor_shell` adds `remote_render_reports_the_render_debugger_rows`, `remote_render_reload_without_viewport_reports_zero` and `remote_render_rejects_unknown_action_and_size`; the registry test now claims 4..21 and checks that 22 is free. RED first (compile failure: `BREAK_EDITOR_MSG_RENDER`, `break_editor_shell_request_shader_reload` undeclared), then 195/195 in a Snowflake+crypto tree. The fuzzer picks ids 4..21 with a RENDER generator (mostly action 0/1, sometimes an arbitrary byte). The `fuzz_editor_remote` link had been broken since `editor_panel_flow.c` joined the shell: the target now compiles it like `test_editor_shell`. 8 seeds x 20,000 messages exit 0; RENDER reached/accepted per seed 482..546 / 165..213.
+
+## 补充（2026-11-15）：响应回带请求的关联 ID
+
+远程宿主（`engine/apps/editor/editor_remote.c`）的每个响应，包括按 id 的成功响应和 RESULT 包装响应，都带回请求 envelope 里的关联 ID（envelope 关联扩展，见 `docs/design/runtime_network.md` 2026-11-15 补充）。客户端可以据此把响应和请求对上。
+
+- `remote_on_message` 在每次分发前把请求的 `correlation_id` 记到 `BreakEditorRemote.reply_correlation_id`。`remote_respond` 通过 `break_net_reactor_send_correlated` 发出它。
+- 不带关联 ID 的请求得到不带 ID 的响应，与改动前逐字节相同。
+- SNOWFLAKE=OFF 的桩实现不变。

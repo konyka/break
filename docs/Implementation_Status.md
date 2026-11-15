@@ -11196,3 +11196,11 @@ Still missing: passing the ID through `BreakNetMessageView`, adapter events and 
 Tests: `break_net_message_copy_keeps_correlation_id` and `break_net_adapter_loopback_carries_correlation_id` in `engine/tests/test_break_net_adapter.c` (44/44); the loopback test sends a correlated frame over TCP, checks the received event, then checks a correlated and an uncorrelated reply on the wire. Mutation check: dropping the ID in copy, release, view_init, receive, drain or send_correlated, or forwarding a non-zero ID from plain send, each fails a test. Full ctest: 405/405 (Snowflake tree `build-net-master`) and 401/401 (`build-core-app-master`). CI does not build the Snowflake targets.
 
 Still missing: mapping the ID between the session layer and Runtime Core messages, and a unified trace schema. Design note: `docs/design/runtime_network.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-net-message-correlation.md`.
+
+### 2026-11-15 Editor remote echoes the correlation ID
+
+Every editor remote response (per-id success and RESULT) now carries the request's envelope correlation ID, so a client can match responses to requests. `remote_on_message` stores the request ID before dispatch and `remote_respond` sends with `break_net_reactor_send_correlated`. Uncorrelated requests get byte-identical uncorrelated responses.
+
+Test: `remote_response_echoes_request_correlation_id` in `engine/tests/test_editor_shell.c` (198/198) covers a correlated DESCRIBE, a correlated REMOVE that fails into RESULT, and an uncorrelated DESCRIBE. Mutation check: dropping the stored ID or the forwarded ID each fails the test. A reset after dispatch was removed because its mutation survived: responses are only sent from dispatch handlers, so the reset had no observable effect. Full ctest: 405/405 (Snowflake tree `build-net-master`) and 401/401 (`build-core-app-master`).
+
+Still missing: mapping the ID between the session layer and Runtime Core messages, and a unified trace schema. Design note: `docs/design/editor_remote.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-editor-remote-correlation.md`.

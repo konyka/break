@@ -110,6 +110,10 @@ struct BreakEditorRemote {
     u16 bound_port;
     u64 poll_count;                 /* test pin: poll_adapter calls */
     EditorRemoteEvalCapture eval_capture;
+    /* Correlation ID of the request being dispatched (0 = uncorrelated),
+     * set before every dispatch. remote_respond is only called from
+     * dispatch handlers and echoes it. */
+    u64 reply_correlation_id;
     /* config copies (the caller's struct/strings are borrowed at create) */
     char bind_host[64];
     u16 cfg_port;
@@ -395,7 +399,8 @@ static void remote_table_sync(BreakEditorRemote *r) {
 /* ---------------- response send helpers ---------------- */
 
 /* Sends one response envelope: the per-id success response, or the RESULT
- * wrapper (id == BREAK_EDITOR_MSG_RESULT: status byte + optional payload). */
+ * wrapper (id == BREAK_EDITOR_MSG_RESULT: status byte + optional payload).
+ * The response carries the dispatched request's correlation ID. */
 static bool remote_respond(BreakEditorRemote *r, u64 key, u16 id, u8 status,
                            const u8 *payload, size_t payload_size) {
     u8 buf[1u + BREAK_EDITOR_PROTO_MAX_PAYLOAD];
@@ -412,9 +417,10 @@ static bool remote_respond(BreakEditorRemote *r, u64 key, u16 id, u8 status,
         body = buf;
         body_size = payload_size + 1u;
     }
-    return break_net_reactor_send(r->reactor, key, id,
-                                  BREAK_EDITOR_PROTO_VERSION, body,
-                                  body_size) == BREAK_NET_SEND_OK;
+    return break_net_reactor_send_correlated(r->reactor, key, id,
+                                             BREAK_EDITOR_PROTO_VERSION,
+                                             r->reply_correlation_id, body,
+                                             body_size) == BREAK_NET_SEND_OK;
 }
 
 /* Console-core log sink: every line lands in the shell's shared ring (the
@@ -994,6 +1000,7 @@ static bool remote_on_message(BreakConnectionKey connection,
         const EditorRemoteConnRow *row = remote_row_find(r, connection);
         BreakEditorDoc *doc = break_editor_shell_doc(r->shell);
         break_editor_doc_set_origin(doc, row != NULL ? row->origin : 0u);
+        r->reply_correlation_id = message->correlation_id;
         ok = remote_dispatch(r, connection, message);
         break_editor_doc_set_origin(doc, 0u);
     }
