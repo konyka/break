@@ -11126,3 +11126,14 @@ The following items are explicitly not complete and are not implied by the histo
 - `core_app_audio` still has the temporary 16-entry record FIFO from Task 3. Task 9 must expand it to 256 entries and prove overload plus drain recovery before that capability is considered complete.
 - The Task 2 baker still needs explicit assertions for the Flow player identity and the exec-link source port. These remain scoped follow-ups for the final integration review rather than silently accepted reader evidence.
 - P12 Tasks 4–13 have not started. The naming migration and its tests do not establish logic, GPU pixels, audio devices, listening, networking, or non-Linux runtime behavior.
+
+### 2026-11-15 P12 remaining verification register closure
+
+The four register items above are re-checked against `master` (`e07574b6`); the original text is kept as history.
+
+- Bounded IO wait failures now have real-process fault injection in `engine/tests/test_core_app_lifecycle.cmake`. `CORE_APP_TEST_FAIL_QUIESCED_FLUSH` (in `test_core_app_lifecycle_preload.c`) fails the `fflush` after the `event=io_quiesced` line with `EIO`. The `io_quiesced_eio` case expects exit 2, `runtime_fault stage=bscn`, no `load_rejected generation=1 stage=bscn`, and no later frame. The `io_second_wait_fail` case blocks the read for 25 s, longer than both 5 s completion waits plus the 5 s shutdown. It expects exit 2 and `runtime_fault stage=bscn`, and the trace must contain neither `io_quiesced` nor `io_stopped active=0`. `break_runtime_io_shutdown` returns `BREAK_RUNTIME_TIMEOUT` and keeps the facade STOPPING, so `core_app_stop_io` never reports a blocked worker as joined. `run_fault_app` accepts an optional extra `VAR=value` environment entry. Mutation check: removing `*runtime_fatal = true` from the second-wait branch fails `io_second_wait_fail`; removing it from the quiesced-trace branch fails `io_quiesced_eio`.
+- The audio FIFO item was already closed: `CORE_APP_AUDIO_QUEUE_CAPACITY` is `256u` in `engine/apps/core_app/core_app_audio.h`, and the audio queue stress plan is complete.
+- Baker identity: `flow_deserializes_enter_delay_add_item_chain` in `engine/tests/test_core_app_assets.c` now requires the add-item target entity to be exactly `{index 2, generation 1}` (the `User` sidecar entry). It also requires the exec-link source ports to be `BREAK_FLOW_EVENT_EXEC_OUT` and then `BREAK_FLOW_DELAY_EXEC_OUT`. Mutation check: baking generation 2 fails the entity assertion, and an expected `BREAK_FLOW_BRANCH_FALSE_OUT` fails the source-port assertion.
+- "P12 Tasks 4–13 have not started" is outdated. Later entries in this file record their delivery.
+
+Plan: `docs/superpowers/plans/2026-11-15-core-app-io-fault-register.md`.

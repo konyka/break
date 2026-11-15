@@ -1411,3 +1411,15 @@ Linux 测试用独立 `LD_PRELOAD` 库对 `level_unloaded` trace 的一次 `fflu
 - `CORE_APP_AUDIO_QUEUE_CAPACITY=16` 仍仅为 Task 3 临时 record 容量。源码注释和 Task 9 计划均明确：Task 9 必须扩展为 256，并实际测试超过 256 个未消费命令的 OVERLOAD 与 drain 后恢复，不能把 16 当成最终常量。
 
 mount 清空、commit 分类和第二次 completion 等待分别做了独立生产变异；三者都取得针对性 RED 后恢复 GREEN。最终全量非图形为 348/348，no-tests 的 `core_app`/`core_app_asset_bake` 构建成功，ASan+UBSan 和 TSan 的完整 lifecycle 各 1/1，无 sanitizer 报告。证据仍限 Linux CPU/record；LD_PRELOAD 故障注入在非 Linux 平台标为 UNVERIFIED，不声称跨平台覆盖。
+
+## P12 剩余验证登记关闭（2026-11-15）
+
+### 有界 IO 等待的故障结果
+
+- `stage_bscn` 第一次 5 s completion 等待超时后再等一次。第二次等待失败，或 `io_quiesced` trace 写入失败，都会设置 `runtime_fatal`，主循环随后写 `runtime_fault stage=bscn` 并以 2 退出，不会降级为 `load_rejected`。
+- `io_quiesced_eio` 用 `CORE_APP_TEST_FAIL_QUIESCED_FLUSH` 在 `io_quiesced` 行后注入 `fflush` `EIO`。`io_second_wait_fail` 让读取阻塞 25 s，超过两次等待和 5 s shutdown 的总和。
+- `break_runtime_io_shutdown` 超时返回 `BREAK_RUNTIME_TIMEOUT`，facade 保持 STOPPING，不释放任何对象。因此 `core_app_stop_io` 不写 `io_stopped active=0`，测试断言 trace 中没有这一行。
+
+### Baker 的 Flow 身份与端口
+
+`test_core_app_assets` 断言 add-item 节点的目标实体正好是 `{2, 1}`（sidecar 中的 `User`），并断言两条 exec link 的 source port 依次为 `BREAK_FLOW_EVENT_EXEC_OUT`、`BREAK_FLOW_DELAY_EXEC_OUT`。

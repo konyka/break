@@ -20,6 +20,7 @@ static FILE *slow_stream;
 static unsigned long slow_microseconds;
 static int fail_unload_flush;
 static int fail_io_stop_flush;
+static int fail_quiesced_flush;
 static int fail_next_flush;
 static int slow_completed;
 
@@ -38,11 +39,13 @@ __attribute__((constructor)) static void app_faults_init(void) {
     slow_microseconds = slow ? strtoul(slow, NULL, 10) : 0u;
     fail_unload_flush = getenv("CORE_APP_TEST_FAIL_UNLOAD_FLUSH") != NULL;
     fail_io_stop_flush = getenv("CORE_APP_TEST_FAIL_IO_STOP_FLUSH") != NULL;
+    fail_quiesced_flush = getenv("CORE_APP_TEST_FAIL_QUIESCED_FLUSH") != NULL;
 }
 
 int vfprintf(FILE *stream, const char *format, va_list args) {
     if ((fail_unload_flush && strstr(format, "event=level_unloaded")) ||
-        (fail_io_stop_flush && strstr(format, "event=io_stopped"))) {
+        (fail_io_stop_flush && strstr(format, "event=io_stopped")) ||
+        (fail_quiesced_flush && strstr(format, "event=io_quiesced"))) {
         fail_next_flush = 1;
     }
     return real_vfprintf(stream, format, args);

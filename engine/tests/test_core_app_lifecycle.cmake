@@ -76,8 +76,13 @@ function(run_fault_app name assets scenario expected_rc fault_var)
     if(ARGC GREATER 5)
         set(fault_value "${ARGV5}")
     endif()
+    set(extra_env "")
+    if(ARGC GREATER 6)
+        set(extra_env "${ARGV6}")
+    endif()
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -E env "LD_PRELOAD=${preload}" "${fault_var}=${fault_value}"
+            ${extra_env}
             "${CORE_APP}" --render=record --audio=record
             --assets "${assets}" --fixed-step --scenario "${scenario}"
             --trace "${trace_path}"
@@ -1645,6 +1650,51 @@ if(FAULT_SUPPORTED)
     expect_ordered("COREAPPTRACE version=1 event=runtime_stopped")
     if(NOT timeout_trace MATCHES "event=io_stopped active=0\n")
         record_error("io_timeout: worker/request cleanup did not reach active=0: ${timeout_trace}")
+    endif()
+
+    set(quiesced_scenario "${WORK}/io_quiesced_eio.scenario")
+    file(WRITE "${quiesced_scenario}"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
+        "1 level ${WORK}/good\n"
+        "2 level ${WORK}/timeout_bscn\n"
+        "3 level ${WORK}/good\n"
+        "4 quit\n")
+    run_fault_app(io_quiesced_eio "${WORK}/good" "${quiesced_scenario}" 2
+        CORE_APP_TEST_SLOW_BSCN_US 6000000 "CORE_APP_TEST_FAIL_QUIESCED_FLUSH=1")
+    set(quiesced_trace "${CORE_APP_LIFECYCLE_TRACE}")
+    if(NOT quiesced_trace MATCHES "event=runtime_fault stage=bscn generation=")
+        record_error("io_quiesced_eio: quiesced trace EIO was not fatal: ${quiesced_trace}")
+    endif()
+    if(quiesced_trace MATCHES "event=load_rejected generation=1 stage=bscn")
+        record_error("io_quiesced_eio: EIO was downgraded to a rejected load: ${quiesced_trace}")
+    endif()
+    if(quiesced_trace MATCHES "event=frame frame=2 ")
+        record_error("io_quiesced_eio: frames continued after the fatal trace failure: ${quiesced_trace}")
+    endif()
+    if(NOT CORE_APP_LIFECYCLE_STDERR MATCHES "stage=bscn")
+        record_error("io_quiesced_eio: stage diagnostic missing: ${CORE_APP_LIFECYCLE_STDERR}")
+    endif()
+
+    set(blocked_scenario "${WORK}/io_second_wait_fail.scenario")
+    file(WRITE "${blocked_scenario}"
+        "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
+        "1 level ${WORK}/good\n"
+        "2 level ${WORK}/timeout_bscn\n"
+        "3 quit\n")
+    run_fault_app(io_second_wait_fail "${WORK}/good" "${blocked_scenario}" 2
+        CORE_APP_TEST_SLOW_BSCN_US 25000000)
+    set(blocked_trace "${CORE_APP_LIFECYCLE_TRACE}")
+    if(NOT blocked_trace MATCHES "event=runtime_fault stage=bscn generation=")
+        record_error("io_second_wait_fail: second bounded wait failure was not fatal: ${blocked_trace}")
+    endif()
+    if(blocked_trace MATCHES "event=io_quiesced")
+        record_error("io_second_wait_fail: a blocked worker was reported quiesced: ${blocked_trace}")
+    endif()
+    if(blocked_trace MATCHES "event=io_stopped active=0")
+        record_error("io_second_wait_fail: a blocked worker was reported joined: ${blocked_trace}")
+    endif()
+    if(blocked_trace MATCHES "event=frame frame=2 ")
+        record_error("io_second_wait_fail: frames continued after the fatal wait: ${blocked_trace}")
     endif()
 else()
     message(STATUS "UNVERIFIED: LD_PRELOAD lifecycle fault injection requires Linux")

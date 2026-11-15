@@ -644,15 +644,18 @@ TEST(flow_deserializes_enter_delay_add_item_chain) {
     ASSERT_EQ(nodes[2].type, BREAK_FLOW_NODE_ENTITY_ADD_ITEM);
     ASSERT_STR_EQ(nodes[2].name, "add-item");
     ASSERT_EQ(nodes[2].entity.index, 2u);
-    ASSERT_TRUE(nodes[2].entity.generation != 0u);
+    ASSERT_EQ(nodes[2].entity.generation, 1u);
     ASSERT_EQ(nodes[2].item_id, 1u);
     ASSERT_FLOAT_EQ(nodes[2].a, 1.0, 0.0);
+    static const u32 source_ports[2] = {BREAK_FLOW_EVENT_EXEC_OUT,
+                                        BREAK_FLOW_DELAY_EXEC_OUT};
     for (u32 i = 0; i < 2u; ++i) {
         u32 id = 0;
         BreakFlowLinkDesc link;
         ASSERT_EQ(break_flow_link_at(graph, i, &id, &link), BREAK_FLOW_OK);
         ASSERT_EQ(link.kind, BREAK_FLOW_PORT_EXEC);
         ASSERT_EQ(link.source_node, i + 1u);
+        ASSERT_EQ(link.source_port, source_ports[i]);
         ASSERT_EQ(link.target_node, i + 2u);
         ASSERT_EQ(link.target_port, BREAK_FLOW_EXEC_IN);
     }
