@@ -11311,3 +11311,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - 新增 `engine/src/core/trace_merge.[ch]`：`break_trace_merge` 把多份 `break.trace` Chrome trace 合并为一份，每份输入改写为各自的 pid，可加 `process_name` 标签，并对 `ts` 加时间偏移（超过 2^63-1 拒绝）。只改写 `args` 之前的字段，`args` 里的同名键保持不变。格式不符时报 BAD_DOCUMENT，并给出输入序号和行号；pid 为 0 或重复时报 INVALID。
 - `test_trace_merge`（5 项）先 RED 后 GREEN，22 项变异全部被捕获。还没有命令行入口；core_app 文本 trace 只有序号时间，偏移需由调用方给出。
+
+### 2026-11-15 trace_merge command-line tool
+
+- 新增 `engine/tools/trace_merge.c`：`trace_merge --out PATH [--label NAME] [--offset-us N] INPUT ...`，第 k 个输入使用 pid k，`--label`/`--offset-us` 只作用于紧随其后的输入。文档格式错误时报告输入序号、路径和行号，且不写出文件；用法错误返回 2。
+- `test_trace_merge_tool` 先 RED 后 GREEN，13 项变异全部被捕获。

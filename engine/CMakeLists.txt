@@ -2701,6 +2701,10 @@ add_library(rule_engine_c99_consumer OBJECT tests/rule_engine_c99_consumer.c)
 set_property(TARGET rule_engine_c99_consumer PROPERTY C_STANDARD 99)
 target_include_directories(rule_engine_c99_consumer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# Merges break.trace documents from several processes into one timeline.
+add_executable(trace_merge tools/trace_merge.c src/core/trace_merge.c)
+target_include_directories(trace_merge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 # Verification tool: mounts a .pak via VFS and compares against source files
 add_executable(verify_pak tools/verify_pak.c src/asset/vfs.c src/core/log.c)
 target_include_directories(verify_pak PRIVATE
@@ -7511,6 +7515,13 @@ endif()
     target_include_directories(test_trace_merge PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_trace_merge COMMAND test_trace_merge)
     set_tests_properties(test_trace_merge PROPERTIES LABELS "headless")
+
+    add_test(NAME test_trace_merge_tool
+        COMMAND ${CMAKE_COMMAND}
+            -DTRACE_MERGE=$<TARGET_FILE:trace_merge>
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/trace-merge-tool
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_trace_merge_tool.cmake)
+    set_tests_properties(test_trace_merge_tool PROPERTIES LABELS "headless")
 
     # test_lighting: needs lighting.c + math.c + log.c + RHI stubs
     add_executable(test_lighting tests/test_lighting.c

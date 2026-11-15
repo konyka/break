@@ -53,3 +53,18 @@ Status here, `docs/Implementation_Status.md`,
   a ts of 2^63.
 - Still missing: no CLI wraps the merge yet, and the core_app text trace has
   ordinal timestamps only, so offsets must come from the caller.
+
+## Follow-up: `trace_merge` command-line tool
+- `engine/tools/trace_merge.c`:
+  `trace_merge --out PATH [--label NAME] [--offset-us N] INPUT ...`.
+  Input k gets pid k; `--label` and `--offset-us` apply to the next input
+  only. Exit 0 merged, 1 read/merge/write failure (a rejected document names
+  the input number, path and line; no output file is written), 2 usage error.
+- RED: `test_trace_merge_tool` (CTest driver
+  `engine/tests/test_trace_merge_tool.cmake`) failed against a stub. GREEN:
+  exact merged output, per-input option reset, bad document, missing input,
+  missing `--out`, no inputs, dangling `--label`, bad offsets, empty and
+  missing option values, unknown option, unwritable output, `--help`.
+- Mutation: 13 single-site mutations, all killed. An empty-string check in
+  the offset parser was unreachable (empty values are rejected earlier) and
+  was removed.
