@@ -11180,3 +11180,11 @@ Correlated profiler events can now be drawn as causal chains in Chrome/Perfetto.
 Test: `profiler_flow_export_links_cross_thread_chain` in `engine/tests/test_runtime_reload.c` covers a cross-thread chain, a single-entry ID, an uncorrelated event, name escaping, the time base clamp, the too-small buffer, and NULL arguments. Mutation check: dropping the middle phase, the single-entry skip, the uncorrelated skip, the required-length report, the escaping, or the clamp each fails the test.
 
 Still missing: the ID in the network wire format (`BreakNetEnvelope`) and a unified trace schema. Design note: `docs/design/runtime_thread_model.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-runtime-trace-flow.md`.
+
+### 2026-11-15 Net envelope correlation extension
+
+The network envelope can now carry a correlation ID. `BreakNetEnvelope` gained `uint64_t correlation_id`. A non-zero ID sets the codec-owned flag `BREAK_NET_ENVELOPE_FLAG_CORRELATED` (`0x0010`) and writes an 8-byte little-endian extension between the 18-byte header and the payload. The length field counts extension plus payload, so the adapter's length-only framer still splits frames (its bound is now `BREAK_NET_ENVELOPE_MAX_BODY_SIZE`). Frames without an ID are byte-identical to before.
+
+Tests: `break_envelope_correlation_id_round_trips_on_the_wire`, `break_envelope_uncorrelated_frames_keep_the_base_layout` and `break_envelope_correlation_rejects_malformed_extension` in `engine/tests/test_break_session.c` (41/41). Mutation check: dropping the flag write, the body length, either extension offset, the zero-ID reject, the short-body reject, the flag strip, or the ID output each fails a test. Full ctest: 405/405 in a Snowflake-enabled tree (`build-net-master`, configured against the pinned Snowflake worktree) and 401/401 in `build-core-app-master`. CI does not build the Snowflake targets, so these network tests run locally only.
+
+Still missing: passing the ID through `BreakNetMessageView`, adapter events and the session layer, and a unified trace schema. Design note: `docs/design/runtime_network.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-net-envelope-correlation.md`.

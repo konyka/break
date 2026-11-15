@@ -219,7 +219,9 @@ static SnowNbPacket break_net_parse_plaintext_frame(
                    ((uint32_t)header[15] << 8u) |
                    ((uint32_t)header[16] << 16u) |
                    ((uint32_t)header[17] << 24u);
-    if (payload_size > BREAK_NET_MAX_PAYLOAD_SIZE) {
+    /* Offset 14 is the body length (optional correlation extension +
+     * payload); the codec re-validates it against the flags. */
+    if (payload_size > BREAK_NET_ENVELOPE_MAX_BODY_SIZE) {
         return kSnowNbPacketErr;
     }
     frame_size = BREAK_NET_ENVELOPE_HEADER_SIZE + (size_t)payload_size;

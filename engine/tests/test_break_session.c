@@ -193,6 +193,121 @@ TEST(break_envelope_rejects_malformed_lengths_and_bad_sequence)
               BREAK_NET_ENVELOPE_INVALID_LENGTH);
 }
 
+TEST(break_envelope_correlation_id_round_trips_on_the_wire)
+{
+    uint8_t encoded[BREAK_NET_ENVELOPE_MAX_SIZE] = {0};
+    BreakNetEnvelope input = break_test_envelope(
+        BREAK_NET_PROTOCOL_VERSION, BREAK_NET_MESSAGE_ID_AUTH, 0x0003u,
+        0x01020304u, k_payload, sizeof(k_payload));
+    BreakNetEnvelope output = {0};
+    size_t encoded_size = 0u;
+
+    input.correlation_id = 0x1122334455667788ull;
+    ASSERT_EQ(break_net_envelope_encode(&input, encoded, sizeof(encoded),
+                                        &encoded_size),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(encoded_size, BREAK_NET_ENVELOPE_HEADER_SIZE +
+                                BREAK_NET_ENVELOPE_CORRELATION_SIZE +
+                                sizeof(k_payload));
+    ASSERT_EQ(encoded[8], 0x13u);
+    ASSERT_EQ(encoded[9], 0x00u);
+    ASSERT_EQ(encoded[14], 12u);
+    ASSERT_EQ(encoded[15], 0u);
+    ASSERT_EQ(encoded[18], 0x88u);
+    ASSERT_EQ(encoded[19], 0x77u);
+    ASSERT_EQ(encoded[24], 0x22u);
+    ASSERT_EQ(encoded[25], 0x11u);
+    ASSERT_TRUE(memcmp(encoded + 26u, k_payload, sizeof(k_payload)) == 0);
+
+    ASSERT_EQ(break_net_envelope_decode(encoded, encoded_size, &output),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(output.flags, 0x0003u);
+    ASSERT_EQ(output.sequence, input.sequence);
+    ASSERT_TRUE(output.correlation_id == 0x1122334455667788ull);
+    ASSERT_EQ(output.payload_size, sizeof(k_payload));
+    ASSERT_TRUE(memcmp(output.payload, k_payload, sizeof(k_payload)) == 0);
+}
+
+TEST(break_envelope_uncorrelated_frames_keep_the_base_layout)
+{
+    uint8_t encoded[BREAK_NET_ENVELOPE_MAX_SIZE] = {0};
+    BreakNetEnvelope input = break_test_envelope(
+        BREAK_NET_PROTOCOL_VERSION, BREAK_NET_MESSAGE_ID_AUTH, 0x0001u, 7u,
+        k_payload, sizeof(k_payload));
+    BreakNetEnvelope output = {0};
+    size_t encoded_size = 0u;
+
+    ASSERT_EQ(break_net_envelope_encode(&input, encoded, sizeof(encoded),
+                                        &encoded_size),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(encoded_size, BREAK_NET_ENVELOPE_HEADER_SIZE + sizeof(k_payload));
+    ASSERT_EQ(encoded[8], 0x01u);
+    ASSERT_EQ(encoded[14], (uint8_t)sizeof(k_payload));
+    ASSERT_TRUE(memcmp(encoded + 18u, k_payload, sizeof(k_payload)) == 0);
+    output.correlation_id = 99u;
+    ASSERT_EQ(break_net_envelope_decode(encoded, encoded_size, &output),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_TRUE(output.correlation_id == 0u);
+}
+
+TEST(break_envelope_correlation_rejects_malformed_extension)
+{
+    uint8_t encoded[BREAK_NET_ENVELOPE_MAX_SIZE] = {0};
+    uint8_t max_payload[BREAK_NET_ENVELOPE_MAX_PAYLOAD_SIZE];
+    BreakNetEnvelope envelope = break_test_envelope(
+        BREAK_NET_PROTOCOL_VERSION, BREAK_NET_MESSAGE_ID_PING,
+        BREAK_NET_ENVELOPE_FLAG_CORRELATED, 1u, NULL, 0u);
+    BreakNetEnvelope decoded = {0};
+    size_t encoded_size = 0u;
+    size_t i;
+
+    ASSERT_EQ(break_net_envelope_encode(&envelope, encoded, sizeof(encoded),
+                                        &encoded_size),
+              BREAK_NET_ENVELOPE_INVALID_FLAGS);
+
+    envelope.flags = 0u;
+    envelope.correlation_id = 5u;
+    ASSERT_EQ(break_net_envelope_encode(&envelope, encoded,
+                                        BREAK_NET_ENVELOPE_HEADER_SIZE +
+                                            BREAK_NET_ENVELOPE_CORRELATION_SIZE - 1u,
+                                        &encoded_size),
+              BREAK_NET_ENVELOPE_BUFFER_TOO_SMALL);
+    ASSERT_EQ(break_net_envelope_encode(&envelope, encoded, sizeof(encoded),
+                                        &encoded_size),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(encoded_size, BREAK_NET_ENVELOPE_HEADER_SIZE +
+                                BREAK_NET_ENVELOPE_CORRELATION_SIZE);
+
+    for (i = 18u; i < 26u; ++i) {
+        encoded[i] = 0u;
+    }
+    ASSERT_EQ(break_net_envelope_decode(encoded, encoded_size, &decoded),
+              BREAK_NET_ENVELOPE_INVALID_FLAGS);
+
+    encoded[18] = 5u;
+    encoded[14] = 7u;
+    ASSERT_EQ(break_net_envelope_decode(encoded, BREAK_NET_ENVELOPE_HEADER_SIZE + 7u,
+                                        &decoded),
+              BREAK_NET_ENVELOPE_INVALID_LENGTH);
+    encoded[14] = 8u;
+    ASSERT_EQ(break_net_envelope_decode(encoded, encoded_size, &decoded),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_TRUE(decoded.correlation_id == 5u);
+
+    memset(max_payload, 0x5au, sizeof(max_payload));
+    envelope.payload = max_payload;
+    envelope.payload_size = sizeof(max_payload);
+    envelope.correlation_id = UINT64_MAX;
+    ASSERT_EQ(break_net_envelope_encode(&envelope, encoded, sizeof(encoded),
+                                        &encoded_size),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(encoded_size, (size_t)BREAK_NET_ENVELOPE_MAX_SIZE);
+    ASSERT_EQ(break_net_envelope_decode(encoded, encoded_size, &decoded),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_TRUE(decoded.correlation_id == UINT64_MAX);
+    ASSERT_EQ(decoded.payload_size, sizeof(max_payload));
+}
+
 TEST(break_session_legal_transitions_and_unknown_connection)
 {
     BreakSessionConfig config = {0};
@@ -1637,6 +1752,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_envelope_accepts_minimum_zero_and_exact_max_payloads);
     RUN_TEST(break_envelope_rejects_over_limit_unknown_id_and_version);
     RUN_TEST(break_envelope_rejects_malformed_lengths_and_bad_sequence);
+    RUN_TEST(break_envelope_correlation_id_round_trips_on_the_wire);
+    RUN_TEST(break_envelope_uncorrelated_frames_keep_the_base_layout);
+    RUN_TEST(break_envelope_correlation_rejects_malformed_extension);
     RUN_TEST(break_session_legal_transitions_and_unknown_connection);
     RUN_TEST(break_session_rejects_backward_transition_and_duplicate_auth);
     RUN_TEST(break_session_rejects_stale_event_after_close);

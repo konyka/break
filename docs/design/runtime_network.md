@@ -319,3 +319,15 @@ Stage 2 网络边界只有在以下条件同时满足后才能标记“formal ru
 9. **验证完整性风险**：已有 full CTest 记录包含未构建 fuzz smoke 和无关环境/图形失败；后续报告必须逐项说明“测试通过”“未构建”“跳过”或“与本改动无关”。
 
 **结论：**当前仓库已经有可验证的 ECS snapshot/replication 和 Snowflake adapter/Session contract，target/ownership/queue/lifecycle 边界正式化已交付（2026-10-22 Tasks 1-2：正式可选 `break_ecs_replication`/`break_replication_core`/`break_net`），Runtime Core 首批 contract 也已交付（2026-10-22/23 Tasks 3-6 的 `runtime_core`）；但它们尚未构成正式 runtime network——各库均不链入 `engine`/`engine_demo`/`dxx_break`，LogicThread 集成、snapshot publication、authority 与真实子系统接线仍属后续 plan。
+
+## 补充（2026-11-15）：Envelope 关联 ID 扩展
+
+`engine/src/network/break_net_envelope.{h,c}` 的线格式新增一个可选扩展，用来把 Runtime Core 的 `correlation_id` 带过网络。
+
+- 18 字节基础头不变（小端）。新增编解码器专用的标志位 `BREAK_NET_ENVELOPE_FLAG_CORRELATED = 0x0010`，它位于调用方标志掩码 `0x000f` 之外。
+- 设置该标志时，头部之后、payload 之前跟一个 8 字节小端的非 0 关联 ID。偏移 14 的长度字段此时表示「扩展 + payload」的总长度，所以只读长度字段分帧的代码（adapter 明文分帧器）仍然能找到帧边界；该分帧器的上限改为 `BREAK_NET_ENVELOPE_MAX_BODY_SIZE`。
+- `BreakNetEnvelope.correlation_id` 为 0 时不写扩展，编码结果与改动前逐字节相同。payload 上限只计 payload，不计扩展。`BREAK_NET_ENVELOPE_MAX_SIZE` 增加了 8 字节。
+- 编码：调用方在 `flags` 里传 `0x0010` 返回 INVALID_FLAGS，这一位只能由编解码器设置。
+- 解码：设置了标志但长度字段小于 8 返回 INVALID_LENGTH；扩展里的 ID 为 0 属于非规范编码，返回 INVALID_FLAGS。输出的 `flags` 去掉该位，`payload_size` 不含扩展。
+- 兼容性：旧解码器遇到该标志会返回 INVALID_FLAGS，不会把扩展误读成 payload。发送方只应对同版本的对端设置关联 ID。
+- 仍未接线：`BreakNetMessageView`、adapter 事件和 session 层还不传递这个 ID，属于下一个切片。

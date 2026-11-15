@@ -13,16 +13,31 @@ extern "C" {
 #define BREAK_NET_ENVELOPE_MAGIC 0x42524b31u
 #define BREAK_NET_ENVELOPE_HEADER_SIZE 18u
 #define BREAK_NET_ENVELOPE_MAX_PAYLOAD_SIZE BREAK_NET_MAX_PAYLOAD_SIZE
-#define BREAK_NET_ENVELOPE_MAX_SIZE (BREAK_NET_ENVELOPE_HEADER_SIZE + BREAK_NET_ENVELOPE_MAX_PAYLOAD_SIZE)
+/* Optional correlation extension: when the codec-owned flag
+ * BREAK_NET_ENVELOPE_FLAG_CORRELATED is set on the wire, an 8-byte
+ * little-endian non-zero correlation ID follows the 18-byte header, before
+ * the payload. The length field at offset 14 then counts extension +
+ * payload, so length-only framers still find frame boundaries. Frames with
+ * correlation_id == 0 are byte-identical to the base layout; older decoders
+ * reject the flag (INVALID_FLAGS) instead of misreading the payload. */
+#define BREAK_NET_ENVELOPE_CORRELATION_SIZE 8u
+#define BREAK_NET_ENVELOPE_MAX_BODY_SIZE \
+    (BREAK_NET_ENVELOPE_CORRELATION_SIZE + BREAK_NET_ENVELOPE_MAX_PAYLOAD_SIZE)
+#define BREAK_NET_ENVELOPE_MAX_SIZE (BREAK_NET_ENVELOPE_HEADER_SIZE + BREAK_NET_ENVELOPE_MAX_BODY_SIZE)
+/* Caller-visible flag bits. */
 #define BREAK_NET_ENVELOPE_FLAGS_MASK 0x000fu
+/* Codec-owned wire bit; callers set correlation_id instead. Passing it in
+ * `flags` to encode is INVALID_FLAGS; decode strips it from `flags`. */
+#define BREAK_NET_ENVELOPE_FLAG_CORRELATED 0x0010u
 
 typedef struct BreakNetEnvelope {
     uint16_t protocol_version;
     uint16_t message_id;
     uint16_t flags;
     uint32_t sequence;
+    uint64_t correlation_id; /* 0 = uncorrelated (no wire extension) */
     const void *payload;
-    size_t payload_size;
+    size_t payload_size; /* payload only; never includes the extension */
 } BreakNetEnvelope;
 
 typedef struct BreakNetEnvelopeContext {

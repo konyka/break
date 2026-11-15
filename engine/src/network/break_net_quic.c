@@ -303,6 +303,7 @@ static bool bnq_conn_send_message(BreakNetQuicConn *conn, u16 message_id,
     env.message_id = message_id;
     env.flags = flags;
     env.sequence = seq;
+    env.correlation_id = 0u;
     env.payload = payload;
     env.payload_size = len;
     size_t encoded = 0u;
