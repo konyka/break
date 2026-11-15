@@ -45,6 +45,7 @@
 #include <editor/editor_cmd.h>
 #include <editor/editor_components.h>
 #include <editor/editor_gizmo.h>
+#include <editor/editor_plugin_cmds.h>
 #include <editor/editor_flow.h>
 #include <editor/editor_scene.h>
 #include <editor/editor_viewport.h>
@@ -326,6 +327,75 @@ static void dispatch_key_event(BreakEditorShell *shell, u32 key) {
     my_event_t ev = my_event_init(MY_EVENT_KEY_DOWN);
     ev.u.key.key = key;
     (void)my_event_dispatch(&win->dispatcher, &ev);
+}
+
+typedef struct PluginCall {
+    u32 calls;
+    BreakEditorDoc *doc;
+    bool result;
+} PluginCall;
+
+static bool plugin_cmd_record(void *user, BreakEditorDoc *doc)
+{
+    PluginCall *call = (PluginCall *)user;
+    call->calls++;
+    call->doc = doc;
+    return call->result;
+}
+
+/* Plugin commands registered on the shell registry show up in the palette
+ * after the built-in rows, run on Enter with the shell's doc, and a failing
+ * command logs a translated console line. */
+TEST(palette_lists_and_runs_plugin_commands)
+{
+    PluginCall ok = {0u, NULL, true};
+    PluginCall bad = {0u, NULL, false};
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *row;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_plugin_cmds(NULL) == NULL);
+    BreakEditorPluginCmds *reg = break_editor_shell_plugin_cmds(shell);
+    ASSERT_NOT_NULL(reg);
+    ASSERT_EQ(break_editor_plugin_cmds_add(reg, 1u, "terrain.raise", "Raise Terrain",
+                                           plugin_cmd_record, &ok),
+              BREAK_EDITOR_PLUGIN_CMD_OK);
+    ASSERT_EQ(break_editor_plugin_cmds_add(reg, 2u, "lights.bake", "Bake Lights",
+                                           plugin_cmd_record, &bad),
+              BREAK_EDITOR_PLUGIN_CMD_OK);
+
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 23u);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "TERRAIN"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    shell_paint(shell);
+    row = palette_selected_row(shell);
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(((const my_button_t *)row)->text, "Raise Terrain");
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_FALSE(break_editor_shell_palette_is_open(shell));
+    ASSERT_EQ(ok.calls, 1u);
+    ASSERT_TRUE(ok.doc == break_editor_shell_doc(shell));
+    ASSERT_EQ(bad.calls, 0u);
+    ASSERT_TRUE(strcmp(last_console_line(break_editor_shell_console_text(shell)),
+                       "palette: Raise Terrain\n") == 0);
+
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "lights.bake"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_EQ(bad.calls, 1u);
+    ASSERT_TRUE(strcmp(last_console_line(break_editor_shell_console_text(shell)),
+                       "plugin command 'lights.bake' failed\n") == 0);
+
+    ASSERT_EQ(break_editor_plugin_cmds_remove_owner(reg, 1u), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "terrain"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 0u);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, ""));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 22u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_ESCAPE, 0u));
+    ASSERT_EQ(ok.calls, 1u);
+    break_editor_shell_destroy(shell);
 }
 
 TEST(palette_arrow_keys_move_the_highlight_and_enter_runs_it)
@@ -11200,6 +11270,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_opens_filters_and_escape_closes);
     RUN_TEST(palette_executes_tool_command_on_activate);
     RUN_TEST(palette_arrow_keys_move_the_highlight_and_enter_runs_it);
+    RUN_TEST(palette_lists_and_runs_plugin_commands);
     RUN_TEST(ctrl_s_saves_to_configured_path);
     RUN_TEST(outliner_row_click_selects);
     RUN_TEST(rename_then_undo_reverts_outliner_row_text);

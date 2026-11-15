@@ -126,6 +126,7 @@
 
 #include <editor/editor_doc.h>
 #include <editor/editor_i18n.h>
+#include <editor/editor_plugin_cmds.h>
 #include <editor/editor_gizmo.h>
 #include <editor/editor_viewport.h>
 #include <rhi/rhi.h>
@@ -276,6 +277,12 @@ bool break_editor_shell_palette_is_open(const BreakEditorShell *shell);
 usize break_editor_shell_palette_count(const BreakEditorShell *shell);
 bool break_editor_shell_palette_set_filter(BreakEditorShell *shell,
                                            const char *text);
+/* Borrowed registry of plugin commands (capacity 64; NULL for a NULL
+ * shell). Its commands are listed after the built-in and recent palette
+ * rows, match on label or id, and run with the shell's doc; a command that
+ * returns false logs "plugin command '<id>' failed". Remove a plugin's
+ * commands (break_editor_plugin_cmds_remove_owner) before unloading it. */
+BreakEditorPluginCmds *break_editor_shell_plugin_cmds(BreakEditorShell *shell);
 
 /* ---------------- Phase 2 Task 3: viewport panel ---------------- */
 

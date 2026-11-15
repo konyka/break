@@ -29,6 +29,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #include <editor/editor_i18n.h>
 #include <editor/editor_components.h>
 #include <editor/editor_scene.h>
+#include <editor/editor_plugin_cmds.h>
 
 #include "platform/time.h"
 
@@ -55,6 +56,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
 #define EDITOR_PALETTE_COMMAND_COUNT 21u
+#define EDITOR_PLUGIN_CMD_CAPACITY 64u
 /* 25 degrees: the editor camera starts above the grid plane */
 #define EDITOR_DEFAULT_CAMERA_PITCH 0.43633231f
 /* "2": look along -X from the +X side (90 degrees) */
@@ -189,7 +191,11 @@ struct BreakEditorShell {
 
     bool palette_open;
     u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT + 2u +
-                        BREAK_EDITOR_SETTINGS_RECENT_MAX];
+                        BREAK_EDITOR_SETTINGS_RECENT_MAX +
+                        EDITOR_PLUGIN_CMD_CAPACITY];
+    /* commands contributed by editor plugins (owned; listed after the
+     * built-in and recent rows) */
+    BreakEditorPluginCmds *plugin_cmds;
     /* recently opened/saved scenes (persisted with the UI settings) */
     u32 recent_count;
     char recent[BREAK_EDITOR_SETTINGS_RECENT_MAX][BREAK_EDITOR_SETTINGS_RECENT_PATH];
@@ -261,6 +267,9 @@ enum {
 #define PAL_SAVE_AS EDITOR_PALETTE_COMMAND_COUNT
 #define PAL_OPEN (EDITOR_PALETTE_COMMAND_COUNT + 1u)
 #define PAL_RECENT_0 (EDITOR_PALETTE_COMMAND_COUNT + 2u) /* + index */
+/* + plugin registry index (valid until the registry changes; the palette
+ * rebuilds its matches on every filter change) */
+#define PAL_PLUGIN_0 (PAL_RECENT_0 + BREAK_EDITOR_SETTINGS_RECENT_MAX)
 #define EDITOR_SAVE_AS_PREFIX "save as "
 #define EDITOR_OPEN_PREFIX "open "
 
@@ -1254,6 +1263,14 @@ bool break_editor_shell_palette_set_filter(BreakEditorShell *shell,
             shell->palette_matches[shell->palette_match_count++] = PAL_RECENT_0 + i;
         }
     }
+    {
+        u32 plugin[EDITOR_PLUGIN_CMD_CAPACITY];
+        u32 n = break_editor_plugin_cmds_filter(shell->plugin_cmds, text, plugin,
+                                                EDITOR_PLUGIN_CMD_CAPACITY);
+        for (i = 0u; i < n; i++) {
+            shell->palette_matches[shell->palette_match_count++] = PAL_PLUGIN_0 + plugin[i];
+        }
+    }
     if (shell->palette_list != NULL) {
         (void)my_list_view_refresh(shell->palette_list);
     }
@@ -1567,6 +1584,14 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
 
 static const char *shell_palette_row_text(const BreakEditorShell *shell,
                                           u32 cmd, char *buf, size_t cap) {
+    if (cmd >= PAL_PLUGIN_0) {
+        const char *label = shell != NULL
+                                ? break_editor_plugin_cmds_label(shell->plugin_cmds,
+                                                                 cmd - PAL_PLUGIN_0)
+                                : NULL;
+        (void)snprintf(buf, cap, "%s", label != NULL ? label : "?");
+        return buf;
+    }
     if (cmd >= PAL_RECENT_0 && shell != NULL &&
         cmd - PAL_RECENT_0 < shell->recent_count) {
         const char *path = shell->recent[cmd - PAL_RECENT_0];
@@ -1590,6 +1615,15 @@ static const char *shell_palette_row_text(const BreakEditorShell *shell,
 
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     if (shell == NULL) {
+        return;
+    }
+    if (cmd >= PAL_PLUGIN_0) {
+        u32 index = cmd - PAL_PLUGIN_0;
+        if (!break_editor_plugin_cmds_execute(shell->plugin_cmds, index, shell->doc)) {
+            const char *id = break_editor_plugin_cmds_id(shell->plugin_cmds, index);
+            editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PLUGIN_CMD_FAILED_FMT),
+                             id != NULL ? id : "?");
+        }
         return;
     }
     if (cmd >= PAL_RECENT_0) {
@@ -2918,7 +2952,11 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         return NULL;
     }
     shell->doc = break_editor_doc_create();
-    if (shell->doc == NULL) {
+    shell->plugin_cmds = break_editor_plugin_cmds_create(EDITOR_PLUGIN_CMD_CAPACITY);
+    if (shell->doc == NULL || shell->plugin_cmds == NULL) {
+        break_editor_plugin_cmds_destroy(shell->plugin_cmds);
+        break_editor_plugin_cmds_destroy(shell->plugin_cmds);
+        break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
     }
@@ -2932,6 +2970,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     if (shell->gizmo == NULL || shell->vp3d == NULL) {
         break_editor_viewport3d_destroy(shell->vp3d);
         break_editor_gizmo_destroy(shell->gizmo);
+        break_editor_plugin_cmds_destroy(shell->plugin_cmds);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -2964,6 +3003,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         editor_panel_assets_destroy(shell->assets_panel);
         break_editor_viewport3d_destroy(shell->vp3d);
         break_editor_gizmo_destroy(shell->gizmo);
+        break_editor_plugin_cmds_destroy(shell->plugin_cmds);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -2980,6 +3020,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         editor_panel_assets_destroy(shell->assets_panel);
         break_editor_viewport3d_destroy(shell->vp3d);
         break_editor_gizmo_destroy(shell->gizmo);
+        break_editor_plugin_cmds_destroy(shell->plugin_cmds);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3002,6 +3043,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         editor_panel_assets_destroy(shell->assets_panel);
         break_editor_viewport3d_destroy(shell->vp3d);
         break_editor_gizmo_destroy(shell->gizmo);
+        break_editor_plugin_cmds_destroy(shell->plugin_cmds);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3146,6 +3188,7 @@ bool break_editor_shell_destroy(BreakEditorShell *shell) {
     editor_panel_lua_destroy(shell->lua_panel);
     editor_panel_assets_destroy(shell->assets_panel);
     break_editor_gizmo_destroy(shell->gizmo);
+    break_editor_plugin_cmds_destroy(shell->plugin_cmds);
     break_editor_doc_destroy(shell->doc);
     free(shell);
     return true;
@@ -3231,6 +3274,10 @@ bool break_editor_shell_select_index(BreakEditorShell *shell, usize i) {
 
 bool break_editor_shell_palette_is_open(const BreakEditorShell *shell) {
     return shell != NULL && shell->palette_open;
+}
+
+BreakEditorPluginCmds *break_editor_shell_plugin_cmds(BreakEditorShell *shell) {
+    return shell != NULL ? shell->plugin_cmds : NULL;
 }
 
 usize break_editor_shell_palette_count(const BreakEditorShell *shell) {

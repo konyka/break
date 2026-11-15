@@ -56,3 +56,23 @@ for `owner`, `id`, `label` and `execute`. Second pass: 43 of 43 killed.
 Next slice: list and run these commands from the command palette in
 `engine/apps/editor/editor_panels.c`, and register plugin commands from the
 `break_plugin` register callback.
+
+## Status（第二步：命令面板接入）
+
+Done. The editor shell owns a 64-entry `BreakEditorPluginCmds`
+(`break_editor_shell_plugin_cmds`). `break_editor_shell_palette_set_filter`
+appends matching plugin commands after the built-in and recent rows
+(`PAL_PLUGIN_0 + registry index`); the row text is the plugin label; Enter
+or a row click runs the callback with the shell's doc. A callback that
+returns false logs the new translated line
+`BREAK_EDITOR_TR_LOG_PLUGIN_CMD_FAILED_FMT` ("plugin command '%s' failed" /
+"插件命令 '%s' 执行失败").
+
+Test `palette_lists_and_runs_plugin_commands` in `test_editor_shell`
+(150/150): plugin rows are listed, filtered by label or id, run with the
+doc, report failure, and disappear after `remove_owner`. `test_editor_i18n`
+8/8 checks the new key in both languages. Mutation run over the new shell
+code: 10 of 10 killed.
+
+Still open: calling the registry from the `break_plugin` register and
+unregister callbacks when the editor loads a plugin.

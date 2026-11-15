@@ -186,6 +186,7 @@ typedef enum {
     BREAK_EDITOR_TR_LOG_PAK_ENTRY_FMT,   /* %s entry path, %u bytes */
     BREAK_EDITOR_TR_LOG_PAK_MORE_FMT,    /* %u entries not listed */
     BREAK_EDITOR_TR_LOG_PAK_FAILED_FMT,  /* %s file name */
+    BREAK_EDITOR_TR_LOG_PLUGIN_CMD_FAILED_FMT, /* %s command id */
     /* inspector component headings */
     BREAK_EDITOR_TR_COMPONENT_TRANSFORM,
     BREAK_EDITOR_TR_COMPONENT_LIGHT,

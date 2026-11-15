@@ -11251,3 +11251,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - 新模块 `engine/src/editor/editor_plugin_cmds.{h,c}`，已加入 `break_editor` 和 `break_editor_test`。它是有界注册表，插件按 owner key 注册命令（id 只允许 `[a-z0-9_.]`，长度 1–63；label 1–95 字节，不含控制字符），支持按 owner 整体移除（保持其余命令顺序）、精确查找、大小写不敏感的过滤和执行回调。
 - `test_editor_plugin_cmds` 5/5，43 项变异全部被捕获。命令面板还没有接入这个注册表，插件加载流程也还没有调用它。
+
+### 2026-11-15 editor palette lists plugin commands
+
+- 编辑器 shell 持有一个 64 项的插件命令注册表（`break_editor_shell_plugin_cmds`）。命令面板把匹配的插件命令排在内置命令和最近场景之后，按 label 或 id 过滤，回车或点击时用当前文档执行回调；回调返回 false 时在控制台输出中英文翻译的失败提示。
+- `test_editor_shell` 新增 `palette_lists_and_runs_plugin_commands`，150/150；`test_editor_i18n` 8/8；新增 shell 代码 10 项变异全部被捕获。编辑器加载插件时调用注册表的接线还没做。
