@@ -11286,3 +11286,7 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - `test_core_app_net_client` 收到 `0x4003` 修正包后，用 `physics_sync_apply_correction` 恢复到自己的 32 容量物理世界，并比较 `physics_state_hash` 与权威端同一 tick 的报告哈希；报告里写 `physics_correction_applied tick=N converged=1`，驱动脚本要求该行。
 - 先 RED 后 GREEN；4 项变异全部被捕获。core_app 本身只作为权威端运行，实时会话中还没有运行时客户端应用修正。
+
+### 2026-11-15 trace schema test accepts CRLF line endings
+
+- Windows CI 上 `profiler_export_marks_trace_schema` 失败：导出函数以文本模式写文件，Windows 结尾是 `\r\n`。测试改为先去掉结尾换行（含可选 `\r`）再检查 `}}`；两处结尾回退变异仍被捕获。

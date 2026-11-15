@@ -44,3 +44,8 @@ Chrome trace, or which category set to expect.
   categories renamed. All killed.
 - Still missing: merging traces across processes or network peers; the
   core_app text trace (COREAPPTRACE) does not use this schema.
+- Follow-up: Windows CI (MSVC, MinGW, Clang, D3D12) failed
+  `profiler_export_marks_trace_schema` because the exporters open the file
+  in text mode and Windows ends it with `\r\n`. The test now strips one
+  trailing `\n` and an optional `\r` before checking for `}}`. Both trailer
+  mutations are still killed.

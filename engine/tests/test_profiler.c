@@ -473,9 +473,12 @@ static bool trace_categories_known(const char *buf) {
     return true;
 }
 
+/* The exporters write in text mode, so Windows ends the file with "\r\n". */
 static bool trace_schema_ok(const char *buf, usize n) {
+    if (n >= 1u && buf[n - 1u] == '\n') n--;
+    if (n >= 1u && buf[n - 1u] == '\r') n--;
     return count_substr(buf, BREAK_TRACE_OTHER_DATA) == 1u &&
-           n >= 3u && strcmp(buf + n - 3u, "}}\n") == 0 && trace_categories_known(buf);
+           n >= 2u && strncmp(buf + n - 2u, "}}", 2u) == 0 && trace_categories_known(buf);
 }
 
 TEST(profiler_export_marks_trace_schema)
