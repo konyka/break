@@ -11172,3 +11172,11 @@ Plan: `docs/superpowers/plans/2026-11-15-editor-shortcut-parity.md` (Tasks A and
 Tests: `message_copy_keeps_correlation_id` and `correlation_next_is_unique_across_threads` in `engine/tests/test_runtime_facade.c`; `profiler_correlated_events_export_cid` in `engine/tests/test_runtime_reload.c`. Mutation check: dropping the ID in copy, view or record, starting the counter at 0, never exporting `cid=`, or exporting `cid=0` each fails a test.
 
 Still missing: the ID in the network wire format (`BreakNetEnvelope`), Chrome trace flow events, and a unified trace schema. Design note: `docs/design/runtime_message_model.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-runtime-correlation-id.md`.
+
+### 2026-11-15 Runtime profiler flow events
+
+Correlated profiler events can now be drawn as causal chains in Chrome/Perfetto. `break_runtime_profiler_export_flows` (`engine/src/runtime/runtime_profiler.{h,c}`) writes each correlated window entry as a 1 us slice and links entries that share an ID with flow events (`ph` s/t/f, `id = cid`, `bp:"e"`). `engine/src/core/profiler.c` is unchanged.
+
+Test: `profiler_flow_export_links_cross_thread_chain` in `engine/tests/test_runtime_reload.c` covers a cross-thread chain, a single-entry ID, an uncorrelated event, name escaping, the time base clamp, the too-small buffer, and NULL arguments. Mutation check: dropping the middle phase, the single-entry skip, the uncorrelated skip, the required-length report, the escaping, or the clamp each fails the test.
+
+Still missing: the ID in the network wire format (`BreakNetEnvelope`) and a unified trace schema. Design note: `docs/design/runtime_thread_model.md` (2026-11-15 addendum). Plan: `docs/superpowers/plans/2026-11-15-runtime-trace-flow.md`.

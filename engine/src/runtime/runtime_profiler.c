@@ -283,6 +283,136 @@ BreakRuntimeError break_runtime_profiler_export_meta(
     return BREAK_RUNTIME_OK;
 }
 
+typedef struct RuntimeProfilerFlowWriter {
+    char *buf;
+    usize capacity;
+    usize len; /* bytes required so far, even past capacity */
+} RuntimeProfilerFlowWriter;
+
+static void runtime_profiler_flow_put(RuntimeProfilerFlowWriter *w,
+                                      const char *bytes, usize n)
+{
+    /* Once one write overflows, len >= capacity and every later write is
+     * only counted, so a partial tail is never placed at a wrong offset. */
+    if (w->buf && w->len + n < w->capacity) {
+        memcpy(w->buf + w->len, bytes, n);
+    }
+    w->len += n;
+}
+
+static void runtime_profiler_flow_puts(RuntimeProfilerFlowWriter *w,
+                                       const char *text)
+{
+    runtime_profiler_flow_put(w, text, strlen(text));
+}
+
+static void runtime_profiler_flow_put_escaped(RuntimeProfilerFlowWriter *w,
+                                              const char *text)
+{
+    const unsigned char *p = (const unsigned char *)text;
+    char esc[8];
+    for (; *p != '\0'; p++) {
+        if (*p == '"' || *p == '\\') {
+            esc[0] = '\\';
+            esc[1] = (char)*p;
+            runtime_profiler_flow_put(w, esc, 2u);
+        } else if (*p < 0x20u) {
+            snprintf(esc, sizeof(esc), "\\u%04x", (unsigned)*p);
+            runtime_profiler_flow_put(w, esc, 6u);
+        } else {
+            runtime_profiler_flow_put(w, (const char *)p, 1u);
+        }
+    }
+}
+
+BreakRuntimeError break_runtime_profiler_export_flows(
+    BreakRuntimeProfiler *profiler,
+    u64 base_us,
+    char *buf,
+    usize capacity,
+    usize *out_len)
+{
+    RuntimeProfilerFlowWriter w;
+    u32 i;
+    u32 j;
+    bool first_object = true;
+    char field[160];
+
+    if (out_len) {
+        *out_len = 0u;
+    }
+    if (!profiler || !out_len || (!buf && capacity != 0u)) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (!platform_thread_id_equal(profiler->owner,
+                                  platform_thread_current_id())) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+
+    w.buf = buf;
+    w.capacity = capacity;
+    w.len = 0u;
+    platform_mutex_lock(&profiler->mutex);
+    for (i = 0u; i < profiler->window_count; i++) {
+        const RuntimeProfilerEvent *event = &profiler->window[i];
+        const u64 cid = event->correlation_id;
+        const u64 ts = event->ts_us >= base_us ? event->ts_us - base_us : 0u;
+        bool has_earlier = false;
+        bool has_later = false;
+        const char *phase;
+
+        if (cid == 0u) {
+            continue;
+        }
+        /* Bounded by the window capacity; the owner thread pays this off
+         * the hot path at export time. */
+        for (j = 0u; j < profiler->window_count; j++) {
+            if (j != i && profiler->window[j].correlation_id == cid) {
+                if (j < i) {
+                    has_earlier = true;
+                } else {
+                    has_later = true;
+                }
+            }
+        }
+
+        if (!first_object) {
+            runtime_profiler_flow_puts(&w, ",\n");
+        }
+        first_object = false;
+        runtime_profiler_flow_puts(&w, "{\"name\":\"");
+        runtime_profiler_flow_put_escaped(&w, event->name);
+        snprintf(field, sizeof(field),
+                 "\",\"cat\":\"runtime\",\"ph\":\"X\",\"ts\":%llu,\"dur\":1,"
+                 "\"pid\":1,\"tid\":%u,\"args\":{\"cid\":%llu}}",
+                 (unsigned long long)ts, event->tid, (unsigned long long)cid);
+        runtime_profiler_flow_puts(&w, field);
+
+        if (!has_earlier && !has_later) {
+            continue; /* a single-entry chain has nothing to link */
+        }
+        phase = !has_earlier ? "s" : (has_later ? "t" : "f");
+        snprintf(field, sizeof(field),
+                 ",\n{\"name\":\"correlation\",\"cat\":\"runtime.flow\","
+                 "\"ph\":\"%s\",\"id\":%llu,\"ts\":%llu,\"pid\":1,\"tid\":%u,"
+                 "\"bp\":\"e\"}",
+                 phase, (unsigned long long)cid, (unsigned long long)ts,
+                 event->tid);
+        runtime_profiler_flow_puts(&w, field);
+    }
+    platform_mutex_unlock(&profiler->mutex);
+
+    *out_len = w.len;
+    if (w.len >= capacity) {
+        if (capacity > 0u) {
+            buf[0] = '\0';
+        }
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    buf[w.len] = '\0';
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError break_runtime_profiler_window_advance(
     BreakRuntimeProfiler *profiler,
     u32 count)

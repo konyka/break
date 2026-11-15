@@ -1847,6 +1847,128 @@ TEST(profiler_correlated_events_export_cid)
     break_runtime_profiler_destroy(profiler);
 }
 
+static u32 profiler_count_substr(const char *haystack, const char *needle)
+{
+    u32 n = 0u;
+    const char *p = haystack;
+    usize needle_len = strlen(needle);
+    while ((p = strstr(p, needle)) != NULL) {
+        n++;
+        p += needle_len;
+    }
+    return n;
+}
+
+TEST(profiler_flow_export_links_cross_thread_chain)
+{
+    BreakRuntimeProfiler *profiler = NULL;
+    ProfilerCorrelatedCtx ctx;
+    BreakRuntimeThread *thread = NULL;
+    BreakRuntimeThreadConfig thread_cfg;
+    static char buf[8192];
+    char small[16];
+    char needle[64];
+    usize len = 0u;
+    usize small_len = 0u;
+    u32 count = 0u;
+    u64 chain;
+    u64 solo;
+    const char *s_pos;
+    const char *t_pos;
+    const char *f_pos;
+
+    ASSERT_EQ(break_runtime_profiler_create(NULL, &profiler), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_export_flows(profiler, 0u, buf,
+                                                  sizeof(buf), &len),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(len, 0u);
+    ASSERT_STR_EQ(buf, "");
+
+    chain = break_runtime_correlation_next();
+    solo = break_runtime_correlation_next();
+    ASSERT_EQ(break_runtime_profiler_record_correlated(profiler, "req.begin",
+                                                       chain),
+              BREAK_RUNTIME_OK);
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.profiler = profiler;
+    ctx.correlation_id = chain;
+    memset(&thread_cfg, 0, sizeof(thread_cfg));
+    thread_cfg.name = "prof-flow";
+    thread_cfg.fn = profiler_correlated_worker;
+    thread_cfg.arg = &ctx;
+    ASSERT_EQ(break_runtime_thread_create(&thread_cfg, &thread),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_thread_start(thread), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_thread_stop(thread, 5000u), BREAK_RUNTIME_OK);
+    break_runtime_thread_destroy(thread);
+    ASSERT_EQ(atomic_load_explicit(&ctx.record_failures, memory_order_acquire),
+              0u);
+    ASSERT_EQ(break_runtime_profiler_record_correlated(profiler, "req.done",
+                                                       chain),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_record_correlated(profiler, "q\"x\\y",
+                                                       solo),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_record(profiler, "plain"),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_collect(profiler, 8u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(count, 5u);
+
+    ASSERT_EQ(break_runtime_profiler_export_flows(profiler, 0u, buf,
+                                                  sizeof(buf), &len),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(len, strlen(buf));
+    ASSERT_EQ(buf[0], '{');
+    ASSERT_EQ(buf[len - 1u], '}');
+    ASSERT_EQ(profiler_count_substr(buf, "\"ph\":\"X\""), 4u);
+    ASSERT_EQ(profiler_count_substr(buf, "\"ph\":\"s\""), 1u);
+    ASSERT_EQ(profiler_count_substr(buf, "\"ph\":\"t\""), 1u);
+    ASSERT_EQ(profiler_count_substr(buf, "\"ph\":\"f\""), 1u);
+    ASSERT_EQ(profiler_count_substr(buf, "\"bp\":\"e\""), 3u);
+    snprintf(needle, sizeof(needle), "\"id\":%llu,", (unsigned long long)chain);
+    ASSERT_EQ(profiler_count_substr(buf, needle), 3u);
+    snprintf(needle, sizeof(needle), "\"id\":%llu,", (unsigned long long)solo);
+    ASSERT_EQ(profiler_count_substr(buf, needle), 0u);
+    snprintf(needle, sizeof(needle), "\"cid\":%llu}", (unsigned long long)chain);
+    ASSERT_EQ(profiler_count_substr(buf, needle), 3u);
+    ASSERT_NOT_NULL(strstr(buf, "\"name\":\"q\\\"x\\\\y\""));
+    ASSERT_TRUE(strstr(buf, "plain") == NULL);
+    s_pos = strstr(buf, "\"ph\":\"s\"");
+    t_pos = strstr(buf, "\"ph\":\"t\"");
+    f_pos = strstr(buf, "\"ph\":\"f\"");
+    ASSERT_TRUE(s_pos != NULL && t_pos != NULL && f_pos != NULL);
+    ASSERT_TRUE(s_pos < t_pos && t_pos < f_pos);
+    ASSERT_TRUE(strstr(buf, "\"ts\":0,") == NULL);
+
+    ASSERT_EQ(break_runtime_profiler_export_flows(profiler, UINT64_MAX, buf,
+                                                  sizeof(buf), &len),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(profiler_count_substr(buf, "\"ts\":0,"), 7u);
+
+    memset(small, 'z', sizeof(small));
+    ASSERT_EQ(break_runtime_profiler_export_flows(profiler, UINT64_MAX, small,
+                                                  sizeof(small), &small_len),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(small_len, len);
+    ASSERT_EQ(break_runtime_profiler_export_flows(profiler, UINT64_MAX, NULL,
+                                                  0u, &small_len),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(small_len, len);
+    ASSERT_EQ(break_runtime_profiler_export_flows(NULL, 0u, buf, sizeof(buf),
+                                                  &len),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_profiler_export_flows(profiler, 0u, buf,
+                                                  sizeof(buf), NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_profiler_export_flows(profiler, 0u, NULL, 8u,
+                                                  &len),
+              BREAK_RUNTIME_INVALID);
+
+    break_runtime_profiler_close(profiler);
+    break_runtime_profiler_destroy(profiler);
+}
+
 TEST(profiler_multithreaded_handoff)
 {
     BreakRuntimeProfiler *profiler = NULL;
@@ -2188,6 +2310,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(profiler_name_copied_owned);
     RUN_TEST(profiler_multithreaded_handoff);
     RUN_TEST(profiler_correlated_events_export_cid);
+    RUN_TEST(profiler_flow_export_links_cross_thread_chain);
     RUN_TEST(profiler_close_drains_then_closed);
     RUN_TEST(profiler_window_bounded_drop);
     RUN_TEST(profiler_window_advance_keeps_continuous);

@@ -49,6 +49,10 @@
  *    profiler_export_chrome_trace(). The borrowed pointers stay valid until
  *    the next collect()/window_advance()/export_meta()/destroy() on this
  *    bridge.
+ *  - break_runtime_profiler_export_flows() writes the window's correlated
+ *    entries as Chrome trace slices plus flow events (ph s/t/f, id = cid)
+ *    into a caller buffer, so trace viewers draw cross-thread causal chains
+ *    without any change to profiler.c.
  *
  * close() stops admission (record -> CLOSED, idempotent); collect() drains
  * the remainder and reports CLOSED once a closed bridge is empty. destroy()
@@ -139,6 +143,29 @@ BreakRuntimeError break_runtime_profiler_export_meta(
     ProfilerMetaInstant *out_meta,
     u32 capacity,
     u32 *out_count);
+
+/* COLLECTOR/OWNER THREAD ONLY (REJECTED otherwise). Writes the presentation
+ * window's correlated entries as comma-separated Chrome trace event objects
+ * into `buf` (NUL-terminated), ready to splice into a "traceEvents" array:
+ *  - each entry with a non-zero correlation ID -> a 1 us slice
+ *    (ph "X", cat "runtime", args.cid) on the recording thread's tid;
+ *  - each correlation ID seen at least twice -> flow events
+ *    (cat "runtime.flow", id = cid, bp "e"): ph "s" on its first entry,
+ *    "t" on middle entries, "f" on its last entry, so Chrome/Perfetto draw
+ *    the cross-thread causal chain. A single-entry ID gets no flow events;
+ *    uncorrelated entries are skipped.
+ * Timestamps are ts_us - `base_us` (clamped at 0); pass the same time base
+ * the consumer used for its other trace events. Names are JSON-escaped.
+ * *out_len receives the byte length (excluding NUL). `buf` too small (or
+ * NULL with `capacity` 0) -> OVERLOAD with *out_len = required length and an
+ * empty `buf` when capacity > 0. NULL profiler/out_len, or NULL `buf` with
+ * non-zero capacity -> INVALID. */
+BreakRuntimeError break_runtime_profiler_export_flows(
+    BreakRuntimeProfiler *profiler,
+    u64 base_us,
+    char *buf,
+    usize capacity,
+    usize *out_len);
 
 /* COLLECTOR/OWNER THREAD ONLY (REJECTED otherwise). Retires the oldest
  * min(`count`, window_count) presented entries FIFO, freeing window capacity

@@ -301,3 +301,13 @@ Slice A 的 target 边界与 Slice B/C/D 的首批基元已交付（2026-10-22/2
 | Profiler | Profiler per-thread recording | 已覆盖；frame ring 发布/导出有明确 owner |
 
 映射原则：需求的通信方式列（无锁事件队列、SPSC/MPSC packet queue、command queue、Fence 等）与本文 §5–§6 的 owned message + bounded queue + backpressure 规则一致；合并域（Render/RHI、Network RX/TX）和未设域（Audio、Physics）都必须以独立子项目形式拆分验收，不允许在主线上一次性铺开。
+
+## 补充（2026-11-15）：Profiler flow 导出
+
+`break_runtime_profiler_export_flows(profiler, base_us, buf, cap, &len)`（`engine/src/runtime/runtime_profiler.h`）把 bridge 展示窗口里带关联 ID 的事件写成 Chrome trace 事件对象，以逗号分隔，可以直接拼进 `traceEvents` 数组。`engine/src/core/profiler.c` 不变。
+
+- 每个 `cid != 0` 的条目输出一个 1 微秒的 slice（`ph:"X"`，`cat:"runtime"`，`args.cid`），位于记录线程的 tid 上。这里用 slice 而不用 instant，是为了让 flow 事件有可以绑定的外层 slice。
+- 同一 `cid` 出现两次及以上时，按窗口顺序输出 flow 事件（`cat:"runtime.flow"`，`id = cid`，`bp:"e"`）：第一条为 `ph:"s"`，中间为 `"t"`，最后一条为 `"f"`。Chrome/Perfetto 会据此画出跨线程的因果链。
+- 只出现一次的 `cid` 只输出 slice；不带关联 ID 的条目不输出。
+- 时间戳为 `ts_us - base_us`，下限截到 0。事件名做 JSON 转义。
+- 该函数只能在 owner 线程调用，否则返回 REJECTED。缓冲区不足时返回 OVERLOAD，`*out_len` 给出所需字节数，`buf` 置空。
