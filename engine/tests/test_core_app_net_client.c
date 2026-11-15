@@ -13,6 +13,7 @@
 
 #include <crypto/break_crypto.h>
 #include <network/break_net_envelope.h>
+#include <physics/physics_sync.h>
 #include <snow/network_buffer.h>
 #include <snow/openssl.h>
 
@@ -331,6 +332,13 @@ static int client_next_physics_report(NetClient *c, u8 out[NET_CLIENT_PHYSICS_RE
 #define NET_CLIENT_PHYSICS_CORRECTION_MAGIC 0x504e5350u
 #define NET_CLIENT_PHYSICS_CORRECTION_HEADER 16u
 
+/* Latest report seen while waiting for a correction, and the correction
+ * bytes, kept so the client can restore them into its own world. */
+static bool g_report_seen;
+static u32 g_report_tick;
+static u64 g_report_hash;
+static u8 g_correction[BREAK_NET_MAX_PAYLOAD_SIZE];
+
 static int client_next_physics_correction(NetClient *c, u32 *out_tick, size_t *out_bytes,
                                           u32 timeout_ms) {
     u64 deadline = now_ms() + timeout_ms;
@@ -338,6 +346,14 @@ static int client_next_physics_correction(NetClient *c, u32 *out_tick, size_t *o
         BreakNetEnvelope env;
         int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
         if (got != 1) return got;
+        if (env.message_id == BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT &&
+            env.payload_size == NET_CLIENT_PHYSICS_REPORT_BYTES) {
+            const u8 *r = (const u8 *)env.payload;
+            g_report_seen = true;
+            g_report_tick = le32(r + 4u);
+            g_report_hash = (u64)le32(r + 8u) | ((u64)le32(r + 12u) << 32u);
+            continue;
+        }
         if (env.message_id != BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION) continue;
         const u8 *p = (const u8 *)env.payload;
         if (env.protocol_version != 1u || env.payload_size <= NET_CLIENT_PHYSICS_CORRECTION_HEADER ||
@@ -350,7 +366,8 @@ static int client_next_physics_correction(NetClient *c, u32 *out_tick, size_t *o
             h ^= p[i];
             h *= 16777619u;
         }
-        if (h != le32(p + 12u)) return -1;
+        if (h != le32(p + 12u) || env.payload_size > sizeof(g_correction)) return -1;
+        memcpy(g_correction, p, env.payload_size);
         *out_tick = le32(p + 4u);
         *out_bytes = env.payload_size;
         return 1;
@@ -362,6 +379,25 @@ static int client_next_physics_correction(NetClient *c, u32 *out_tick, size_t *o
  * tick N, so a peer that reads up to a report newer than N has seen every
  * correction it could get. True when a correction arrives first or the
  * connection fails, both wrong for a peer that never desynced. */
+/* Restores the received correction into a world of core_app's capacity
+ * and checks it reproduces the hash the authority reported for that tick. */
+static void client_apply_correction(u32 correction_tick, size_t correction_bytes) {
+    PhysicsWorld *world = physics_world_create(32u);
+    PhysicsSyncTracker tracker;
+    u32 applied_tick = 0u;
+    physics_sync_init(&tracker);
+    bool applied = world && correction_bytes > 0u &&
+                   physics_sync_apply_correction(&tracker, world, g_correction,
+                                                 correction_bytes, &applied_tick) &&
+                   applied_tick == correction_tick;
+    bool converged = applied && g_report_seen && g_report_tick == correction_tick &&
+                     physics_state_hash(world) == g_report_hash;
+    check(applied, "a_applied_physics_correction");
+    fprintf(g_report, "physics_correction_applied tick=%u converged=%d\n", applied_tick,
+            converged ? 1 : 0);
+    if (world) physics_world_destroy(world);
+}
+
 static bool client_receives_correction_before(NetClient *c, u32 after_tick, u32 timeout_ms) {
     u64 deadline = now_ms() + timeout_ms;
     while (now_ms() < deadline) {
@@ -463,6 +499,7 @@ static void scenario_authenticated(void) {
                   "a_received_physics_correction");
             fprintf(g_report, "physics_correction tick=%u bytes=%zu\n", correction_tick,
                     correction_bytes);
+            client_apply_correction(correction_tick, correction_bytes);
             check(!client_receives_correction_before(&a2, correction_tick, 10000u),
                   "a2_never_receives_correction");
         }

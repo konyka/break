@@ -231,3 +231,4 @@
 - **第 9 节（物理）追加**：core_app 已在认证通道上每帧发送物理状态哈希报告并检查对端回报，desync 会写入 trace 和 `network_stats`。仍缺：DESYNC 后自动下发修正包、增量同步、并行 solver、跨平台确定性。
 - **第 9 节（物理）追加**：core_app 在对端报告 desync 后会自动下发完整物理快照修正包，只发给报告方。仍缺：接收端运行时应用修正、增量同步、并行 solver、跨平台确定性。
 - **第 13 节（诊断/跨线程关联）追加**：Chrome trace 导出统一标记 schema `break.trace` v1，类别集中定义在 `core/trace_schema.h`。仍缺：跨进程/网络对端 trace 合并、core_app 文本 trace（COREAPPTRACE）纳入同一 schema。
+- **第 9 节（物理）追加**：loopback 测试客户端已能把收到的修正包恢复到自己的物理世界，状态哈希与权威端该 tick 的报告一致，端到端证明修正包可用。仍缺：core_app 运行时作为客户端应用修正、增量同步、并行 solver、跨平台确定性。

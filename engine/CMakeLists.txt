@@ -5296,11 +5296,13 @@ endif()
         LABELS "headless;core_app;network" TIMEOUT 300 SKIP_RETURN_CODE 77)
     if(_core_app_net_transport AND NOT WIN32)
         # Real TLS + AUTH-v2 loopback against the real core_app process.
-        add_executable(test_core_app_net_client tests/test_core_app_net_client.c)
+        add_executable(test_core_app_net_client tests/test_core_app_net_client.c
+            src/physics/physics_sync.c src/physics/physics.c src/physics/bvh.c
+            src/math/math.c src/core/log.c)
         set_property(TARGET test_core_app_net_client PROPERTY C_STANDARD 11)
         target_include_directories(test_core_app_net_client PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/apps/core_app ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        target_link_libraries(test_core_app_net_client PRIVATE core_app_network break_net)
+        target_link_libraries(test_core_app_net_client PRIVATE core_app_network break_net m)
         add_test(NAME test_core_app_network_loopback
             COMMAND ${CMAKE_COMMAND}
                 -DMODE=loopback
