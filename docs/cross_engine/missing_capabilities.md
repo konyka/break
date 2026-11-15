@@ -173,3 +173,23 @@
 
 1. **线程/消息缺口**：BW191 证明“单线程渲染 + 明确锁纪律”可以支撑大型 MMO 客户端，UE 证明 GT/RT/RHI 分离是高吞吐路线；Break 的 Stage 2 线程模型设计（`docs/design/runtime_thread_model.md`）在两者之间选择了显式线程域 + 消息/命令队列，该选择现有两个反例边界可参考：不要退回 BW191 式主线程全包，也不必一步到位 UE 式全分离。
 2. **安全缺口**：CryENGINE 与 BW191 的证据表明“认证 + 信道加密 + 服务端权威 + 限速/防重放”是引擎层可交付的最小闭环；Break 第 16 节的后续建议（threat model → 加密认证 → 重放防护 → 审计）与该最小闭环一致，可按 Stage 5 子项目拆分独立验收。
+
+## 补充证据修订（2026-11-15）
+
+### 修订背景
+
+正文与 2026-10-30 补充里的若干「仍缺」项已在后续提交中交付。本节按当前 `master` 重新核对，只记录有源码和测试证据的状态变化，不改写上面的原文。核对用的构建树是 `build-core-app-master`：全量 CTest 401/401 通过，下面列出的定向测试也都在这棵树里通过。
+
+### Break 状态变化
+
+- **第 9 节（物理）**：`engine/src/physics/` 现有刚体、BVH、角色、载具、布料、绳索、软体、布娃娃和可破坏体。定向测试 `test_physics`、`test_physics_hinge`、`test_physics_slider`、`test_physics_cone_twist`、`test_physics_identity`、`test_character`、`test_vehicle`、`test_cloth`、`test_rope`、`test_soft_body`、`test_ragdoll`、`test_destructible` 通过。状态由「已具基础」升为「正式 runtime（局部）」。仍缺：并行 solver、网络同步和回放。
+- **第 10 节（音频）**：`engine/src/audio/` 有 DSP、流式播放和扩展模块；`core_app_audio` 使用 256 项命令队列，并有真实设备通道 `test_core_app_audio_device`。`test_audio`、`test_audio_dsp`、`test_audio_extended`、`test_audio_realtime_contract` 通过。仍缺：网络语音和音频编辑工具。
+- **第 12 节（编辑器）**：编辑器 remote 已支持 HISTORY、SAVE、SET_FIELD（含 bool 字段）、多设备 keyring 与吊销，以及 RENDER 消息，见 `docs/Implementation_Status.md` 的 2026-10-30 与 2026-11-14 条目。`test_editor*` 共 16 个测试。仍缺项同 2026-10-30 补充。
+- **第 14 节（崩溃上传）**：2026-10-30 补充所列缺口已交付。`break_crash_symbolize` 读取 ELF 符号并恢复最多 32 帧；`break_crash_cluster` 负责签名、回归统计和去重；`break_crash_upload_http` 是 HTTP 上传实现；`break_crash_server` 是参考收集服务，要求 TLS。见 [`docs/design/crash_symbolization.md`](../design/crash_symbolization.md)。`test_break_crash*` 与 `test_break_crash_e2e` 通过。仍缺：生产部署的收集服务、minidump 格式、Windows/macOS 符号化。
+- **第 15 节（在线更新）**：真实传输与参考服务端已交付。`break_http` 是有界 HTTP/1.1 客户端，强制 TLS 1.2 以上、要求 CA 文件并校验主机名；另有参考服务端 `break_update_server`，`test_break_update_e2e` 覆盖灰度拒绝、断点续传、篡改块拒绝和 manifest 验签失败。见 [`docs/design/update_transport.md`](../design/update_transport.md)。仍缺：生产更新服务、HTTP/2、代理、证书吊销与钉扎；目前没有发布二进制链接 `break_http`。
+- **第 16 节（安全/反作弊）**：服务端权威参考引擎 `break_authority` 和客户端完整性信号 `break_integrity` 已交付，见 [`docs/design/server_authority.md`](../design/server_authority.md)、[`docs/design/client_integrity.md`](../design/client_integrity.md)。`break_integrity` 只观察和上报，不作为授权输入；契约测试禁止它导出任何「放行/拒绝」类函数。`test_break_authority`、`test_break_integrity` 及其 target contract 通过。仍缺：服务端产品与持久化、凭证 provisioning 和轮换。
+- **第 17 节（大世界/流式）**：`test_world_stream`、`test_world_stream_job`、`test_world_stream_world`、`test_mipmap_stream`、`test_ecs_replication`、`test_net_replication` 通过。`break_aoi.c` 现在属于 `break_replication_core`（`engine/CMakeLists.txt` 第 827 行）。`break_net` 和 `break_online` 链接这个库；`core_app` 在 `CORE_APP_ENABLE_NETWORK` 与 `BREAK_ENABLE_SNOWFLAKE` 都开启时链接 `break_net`。因此 AoI 已不再是 test-only，但仍不在 `engine` static library 中，离线构建也不链接它。状态由「focused/test-only」改为「可选 runtime 组件」。分布式 Cell 服务和跨分区 authority handoff 仍未实现。
+
+### 未变化
+
+第 1–8、11、13 节的 Break 缺口维持正文和 2026-10-30 补充的描述，本次核对没有发现足以改变状态的新证据。
