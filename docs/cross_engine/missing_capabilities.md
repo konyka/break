@@ -233,3 +233,4 @@
 - **第 13 节（诊断/跨线程关联）追加**：Chrome trace 导出统一标记 schema `break.trace` v1，类别集中定义在 `core/trace_schema.h`。仍缺：跨进程/网络对端 trace 合并、core_app 文本 trace（COREAPPTRACE）纳入同一 schema。
 - **第 9 节（物理）追加**：loopback 测试客户端已能把收到的修正包恢复到自己的物理世界，状态哈希与权威端该 tick 的报告一致，端到端证明修正包可用。仍缺：core_app 运行时作为客户端应用修正、增量同步、并行 solver、跨平台确定性。
 - **第 12 节（编辑器）追加**：编辑器插件可通过文本 manifest（build id + SHA-256 + 路径）批量加载，经 plugin host 的加载窗口登记命令，失败的插件不会留下命令。仍缺：editor 二进制启动时读取 manifest 并接入真实 `break_plugin` 加载、插件面板、检查器扩展点。
+- **第 13 节（诊断/跨线程关联）追加**：core_app 文本 trace（COREAPPTRACE）可通过 `break_trace_core_app_to_chrome` 转成带 `break.trace` v1 标记的 Chrome trace JSON。仍缺：转换的 CLI 入口、文本 trace 的真实时间戳、跨进程/网络对端 trace 合并。

@@ -12,6 +12,7 @@
 #define BREAK_TRACE_OTHER_DATA \
     "\"otherData\":{\"schema\":\"break.trace\",\"schema_version\":1}"
 
+#define BREAK_TRACE_CAT_CORE_APP "core_app"
 #define BREAK_TRACE_CAT_CPU "cpu"
 #define BREAK_TRACE_CAT_FRAME "frame"
 #define BREAK_TRACE_CAT_GPU "gpu"

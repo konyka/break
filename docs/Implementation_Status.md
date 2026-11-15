@@ -11296,3 +11296,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 新增 `engine/src/editor/editor_plugin_manifest.[ch]`：解析 `plugin <build_id> <sha256 hex> <路径>` 文本 manifest，支持注释、空行、CRLF，相对路径拼接到 `base_dir`；格式、build id、哈希、路径、重复、超过 32 条和 NUL 字节分别报错并给出行号，失败时清空结果。
 - `break_editor_plugin_manifest_load_all` 对每条执行 plugin host 的 begin_load → 调用方 load 回调 → end_load，失败条目的命令被撤回，报告记录 loaded/failed 和每条的 owner。
 - `test_editor_plugin_manifest`（5 项）和 `test_editor_plugin_load` 新增的真实 fixture 测试先 RED 后 GREEN；15 项变异全部被捕获。editor 二进制启动时还没有读取 manifest。
+
+### 2026-11-15 core_app text trace converts to the break.trace schema
+
+- 新增 `engine/src/core/trace_core_app.[ch]`：把 `COREAPPTRACE version=1 event=... k=v` 文本 trace 转成 Chrome trace-event JSON，每行一个 `core_app` 类别的 instant 事件，`ts` 为事件序号，其余字段进 `args`（纯数字为数值，其他为转义字符串），文档以 `BREAK_TRACE_OTHER_DATA` 结尾。格式错误的行跳过并计数，支持只查询长度。
+- `test_trace_core_app`（3 项）先 RED 后 GREEN，18 项变异全部被捕获。文本 trace 本身格式不变，lifecycle 测试不受影响；尚无 CLI 直接输出 JSON，事件没有真实时间戳。

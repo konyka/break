@@ -956,6 +956,7 @@ add_library(engine STATIC
     src/core/pool.c
     src/core/string.c
     src/core/profiler.c
+    src/core/trace_core_app.c
     src/platform/input.c
     src/platform/input_extended.c
     src/platform/platform_config.c
@@ -7498,6 +7499,11 @@ endif()
     endif()
     target_link_libraries(test_profiler PRIVATE m)
     add_test(NAME test_profiler COMMAND test_profiler)
+
+    add_executable(test_trace_core_app tests/test_trace_core_app.c src/core/trace_core_app.c)
+    target_include_directories(test_trace_core_app PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_trace_core_app COMMAND test_trace_core_app)
+    set_tests_properties(test_trace_core_app PROPERTIES LABELS "headless")
 
     # test_lighting: needs lighting.c + math.c + log.c + RHI stubs
     add_executable(test_lighting tests/test_lighting.c

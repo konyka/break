@@ -1439,3 +1439,7 @@ mount 清空、commit 分类和第二次 completion 等待分别做了独立生�
 `CoreAppNetworkHooks` 新增两个可选钩子 `physics_correction_wanted` 和 `physics_correction`。对端报告 DESYNC 时，transport 把该连接的槽标为 `correction_pending`。`app_network_publish` 在 `tick` 之后询问 `physics_correction_wanted`，为真时按 `physics_sync_correction_size` 分配缓冲、`physics_sync_encode_correction` 编码当前物理世界，再交给 `physics_correction`（字节只在调用期间借用，调用后释放）。超过 `CORE_APP_PHYSICS_CORRECTION_MAX_BYTES`（64 KiB，与网络载荷上限用 `_Static_assert` 锁定）的修正不编码。transport 只发给仍在等待且可发送的槽（id `0x4003`，v1），发送成功或连接已关闭时清除标记，OVERLOAD 时保留到下一 tick。同一 tick 前的多次 DESYNC 合并为一次修正。`network_stats` 末尾追加 `physics_corrections_sent`。
 
 测试：loopback 场景 A 在发出 DESYNC 报告后等待 `0x4003`，客户端手工校验 PSNP 魔数、长度字段和 FNV-1a 校验和；新增第二个认证对端 A2，它从不报告 desync，读到比修正 tick 更新的报告之前不得收到修正。驱动脚本断言 `authenticated==3`、`physics_corrections_sent>=1` 且不超过 `physics_desynced`，离线 trace 对比仍逐字节相同。本机一次运行：修正 10644 字节，`physics_desynced=2`，`physics_corrections_sent=1`。8 项变异全部被捕获（其中「不标记 pending」因未使用变量在编译期失败，同一行为由「wanted 恒为假」变异在运行期覆盖）。
+
+### trace 转换为 break.trace（2026-11-15）
+
+`core/trace_core_app.h` 的 `break_trace_core_app_to_chrome` 读取 `--trace` 写出的文本，生成 Chrome trace-event JSON：每条有效 `COREAPPTRACE version=1` 行变为 `cat=core_app`、`ph=i` 的事件，`name` 取 `event=` 的值，`ts` 为序号，其余字段进 `args`。文本格式本身没有改变。不合格的行（前缀错误、版本不是 1、缺 `event=`、字段没有 `=`、空键、重复键、超过 32 个字段）被跳过并计入 `skipped`。
