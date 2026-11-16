@@ -9,6 +9,12 @@ struct BreakEditorPluginHost {
     BreakEditorPluginPanels *panels;
     BreakEditorDoc *doc;
     usize window_component_count; /* doc component count when the window opened */
+    /* types registered through add_component in `doc`, by owner */
+    struct {
+        u32 owner;
+        u32 component_id;
+    } types[BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY];
+    u32 type_count;
     u32 next_owner;
     u32 loading_owner;
 };
@@ -84,7 +90,35 @@ static BreakEditorComponentRegStatus host_add_component(void *host_ptr,
         return BREAK_EDITOR_COMPONENT_REG_INVALID;
     }
     /* NULL doc and NULL desc are rejected by the registry */
-    return break_editor_doc_register_component(host->doc, desc);
+    BreakEditorComponentRegStatus status = break_editor_doc_register_component(host->doc, desc);
+    /* the registry holds at most its capacity, so a new type always fits */
+    if (status == BREAK_EDITOR_COMPONENT_REG_OK &&
+        host->type_count < BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY) {
+        host->types[host->type_count].owner = host->loading_owner;
+        host->types[host->type_count].component_id = desc->component_id;
+        host->type_count++;
+    }
+    return status;
+}
+
+/* Unregisters the owner's types the doc lets go and forgets their records;
+ * a type still on a live entity keeps its record. Returns how many went. */
+static u32 host_drop_types(BreakEditorPluginHost *host, u32 owner)
+{
+    u32 kept = 0u;
+    u32 removed = 0u;
+    for (u32 i = 0u; i < host->type_count; i++) {
+        bool drop = host->types[i].owner == owner &&
+                    break_editor_doc_unregister_component(host->doc,
+                                                          host->types[i].component_id);
+        if (drop) {
+            removed++;
+        } else {
+            host->types[kept++] = host->types[i];
+        }
+    }
+    host->type_count = kept;
+    return removed;
 }
 
 static BreakEditorPluginPanelStatus host_add_panel(void *host_ptr, const char *id,
@@ -128,6 +162,8 @@ void break_editor_plugin_host_set_doc(BreakEditorPluginHost *host, BreakEditorDo
 {
     /* the window's rollback count belongs to the doc it was read from */
     if (host && host->loading_owner == 0u) {
+        /* the records name types of the old doc */
+        if (doc != host->doc) host->type_count = 0u;
         host->doc = doc;
     }
 }
@@ -195,8 +231,9 @@ bool break_editor_plugin_host_end_load(BreakEditorPluginHost *host, bool loaded)
     }
     if (!loaded) {
         (void)break_editor_plugin_host_release(host, host->loading_owner);
-        /* nothing can use the window's types yet: the plugin never ran a
-         * command, so no entity has them */
+        /* release already unregistered the window's types (the plugin never
+         * ran a command, so no entity has them); this also covers types
+         * registered in the window without a record */
         (void)break_editor_doc_truncate_components(host->doc, host->window_component_count);
     }
     host->loading_owner = 0u;
@@ -210,5 +247,6 @@ u32 break_editor_plugin_host_release(BreakEditorPluginHost *host, u32 owner)
     }
     return break_editor_plugin_cmds_remove_owner(host->cmds, owner) +
            break_editor_plugin_sections_remove_owner(host->sections, owner) +
-           break_editor_plugin_panels_remove_owner(host->panels, owner);
+           break_editor_plugin_panels_remove_owner(host->panels, owner) +
+           host_drop_types(host, owner);
 }

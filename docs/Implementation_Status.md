@@ -11397,3 +11397,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - 新增 `fuzz_break_online_voice`：对 `BRV1`/`BRV2` 语音帧做变异，用独立参考解码器和影子抖动缓冲核对接收器的计数、播放序号、播放样本和补偿帧。注册为 `fuzz_break_online_voice_smoke`（2000 次，seed 43），CI 三处 fuzz 构建列表已加入，`test_wayland_ci_migration_contract` 要求它出现。
 - 验证：契约先 RED 后 GREEN；ASan+UBSan 下 2000 与 50000 次通过；28 项接收器变异全部被捕获；`ctest -L fuzz` 14/14。
+
+### 2026-11-16 plugin unload removes its component types
+
+- `break_editor_doc_unregister_component` 从注册表任意位置移除一个非内置、未被存活实体使用的类型，其余类型保持顺序和默认字节。
+- 插件宿主记录每个插件注册的类型；`break_editor_plugin_host_release` 卸载前移除其中未被使用的类型（计入返回值），仍被使用的保留到下一次 release；`set_doc` 换 doc 时清空记录。
+- 验证：先 RED 后 GREEN，`test_editor_components` 27/27、`test_editor_plugin_host` 6/6；17 项变异全部被捕获；ASan+UBSan 无报告。

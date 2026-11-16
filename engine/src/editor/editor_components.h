@@ -195,6 +195,13 @@ BreakEditorComponentRegStatus break_editor_doc_register_component(
  * the current count is a true no-op. */
 bool break_editor_doc_truncate_components(BreakEditorDoc *doc, usize count);
 
+/* Removes one registered (non built-in) type from any registry position,
+ * keeping the order and default bytes of the rest. Refuses (false, nothing
+ * changed) for a NULL doc, Transform or Light, an id that is not
+ * registered, or a type a live entity has. The World keeps the size and
+ * undo history may re-add the bytes, as for truncate. */
+bool break_editor_doc_unregister_component(BreakEditorDoc *doc, u32 component_id);
+
 /* Number of registered editable component types (2 after doc create:
  * Transform, Light). */
 usize break_editor_doc_component_count(const BreakEditorDoc *doc);

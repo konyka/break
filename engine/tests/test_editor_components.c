@@ -1353,6 +1353,98 @@ TEST(registered_component_edits_undo_reset_and_save_load) {
     }
 }
 
+/* unregister removes one type from any position; the rest keep their
+ * order, fields and default bytes, and a type on a live entity stays. */
+TEST(unregister_component_keeps_order_and_defaults) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorComponentDesc a = extra_desc(70u, "Alpha");
+    BreakEditorComponentDesc b = extra_desc(71u, "Beta");
+    BreakEditorComponentDesc c = extra_desc(72u, "Gamma");
+    static const ExtraStats c_defaults = {7.25f, 0u};
+    c.default_bytes = &c_defaults;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &a), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_EQ(break_editor_doc_register_component(doc, &b), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_EQ(break_editor_doc_register_component(doc, &c), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 5u);
+
+    /* rejections change nothing */
+    ASSERT_FALSE(break_editor_doc_unregister_component(NULL, 70u));
+    ASSERT_FALSE(break_editor_doc_unregister_component(doc, BREAK_EDITOR_COMPONENT_TRANSFORM));
+    ASSERT_FALSE(break_editor_doc_unregister_component(doc, BREAK_EDITOR_COMPONENT_LIGHT));
+    ASSERT_FALSE(break_editor_doc_unregister_component(doc, 73u));
+    ASSERT_FALSE(break_editor_doc_unregister_component(doc, 0u));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 5u);
+
+    /* a type a live entity has stays until the entity drops it */
+    BreakEditorEntityId e = break_editor_doc_add_entity(doc, "e");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, e, 71u));
+    ASSERT_FALSE(break_editor_doc_unregister_component(doc, 71u));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 5u);
+    ASSERT_TRUE(break_editor_doc_remove_component(doc, e, 71u));
+
+    /* removing the middle entry keeps the order of the others */
+    ASSERT_TRUE(break_editor_doc_unregister_component(doc, 71u));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
+    ASSERT_FALSE(break_editor_doc_unregister_component(doc, 71u));
+    {
+        BreakEditorComponentInfo info;
+        ASSERT_TRUE(break_editor_doc_component_info(doc, 0u, &info));
+        ASSERT_EQ(info.component_id, BREAK_EDITOR_COMPONENT_TRANSFORM);
+        ASSERT_TRUE(break_editor_doc_component_info(doc, 1u, &info));
+        ASSERT_EQ(info.component_id, BREAK_EDITOR_COMPONENT_LIGHT);
+        ASSERT_TRUE(break_editor_doc_component_info(doc, 2u, &info));
+        ASSERT_EQ(info.component_id, 70u);
+        ASSERT_TRUE(break_editor_doc_component_info(doc, 3u, &info));
+        ASSERT_EQ(info.component_id, 72u);
+        ASSERT_STR_EQ(info.display_name, "Gamma");
+        ASSERT_EQ(info.field_count, 2u);
+        ASSERT_STR_EQ(info.fields[1].name, "active");
+        ASSERT_FALSE(break_editor_doc_component_info(doc, 4u, &info));
+    }
+    ASSERT_FALSE(break_editor_doc_has_component(doc, e, 71u));
+    ASSERT_FALSE(break_editor_doc_add_component(doc, e, 71u));
+
+    /* the moved entry still adds its own default bytes, and so does Alpha */
+    {
+        f32 level = 0.0f;
+        ASSERT_TRUE(break_editor_doc_add_component(doc, e, 72u));
+        ASSERT_TRUE(break_editor_doc_get_field_f32(doc, e, 72u, 0u, &level));
+        ASSERT_TRUE(level == 7.25f);
+        ASSERT_TRUE(break_editor_doc_add_component(doc, e, 70u));
+        ASSERT_TRUE(break_editor_doc_get_field_f32(doc, e, 70u, 0u, &level));
+        ASSERT_TRUE(level == 2.5f);
+    }
+
+    /* the World keeps 71's size: only the same size registers again, and
+     * it goes to the end */
+    b.size = 12u;
+    b.default_bytes = NULL;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &b), BREAK_EDITOR_COMPONENT_REG_BAD_SIZE);
+    b = extra_desc(71u, "Beta");
+    ASSERT_EQ(break_editor_doc_register_component(doc, &b), BREAK_EDITOR_COMPONENT_REG_OK);
+    {
+        BreakEditorComponentInfo info;
+        ASSERT_TRUE(break_editor_doc_component_info(doc, 4u, &info));
+        ASSERT_EQ(info.component_id, 71u);
+    }
+
+    /* the first and the last extra entries can go too */
+    ASSERT_TRUE(break_editor_doc_remove_component(doc, e, 70u));
+    ASSERT_TRUE(break_editor_doc_unregister_component(doc, 70u));
+    ASSERT_TRUE(break_editor_doc_unregister_component(doc, 71u));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+    {
+        BreakEditorComponentInfo info;
+        f32 level = 0.0f;
+        ASSERT_TRUE(break_editor_doc_component_info(doc, 2u, &info));
+        ASSERT_EQ(info.component_id, 72u);
+        ASSERT_TRUE(break_editor_doc_get_field_f32(doc, e, 72u, 0u, &level));
+        ASSERT_TRUE(level == 7.25f);
+    }
+    break_editor_doc_destroy(doc);
+}
+
 /* truncate drops the newest registered types, never the built-ins and
  * never a type a live entity has; the World keeps the dropped sizes, so a
  * re-registration with another size is refused until a reset. */
@@ -1453,6 +1545,7 @@ int main(void) {
     RUN_TEST(register_component_full);
     RUN_TEST(registered_component_edits_undo_reset_and_save_load);
     RUN_TEST(truncate_components_and_world_sizes);
+    RUN_TEST(unregister_component_keeps_order_and_defaults);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
            g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;

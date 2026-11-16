@@ -203,6 +203,24 @@ bool break_editor_doc_truncate_components(BreakEditorDoc *doc, usize count) {
     return true;
 }
 
+bool break_editor_doc_unregister_component(BreakEditorDoc *doc, u32 component_id) {
+    if (!doc) return false;
+    u32 at = 2u; /* entries 0 and 1 are the built-ins */
+    while (at < doc->component_count && doc->components[at].component_id != component_id) at++;
+    if (at >= doc->component_count || component_in_use(doc, component_id)) return false;
+    for (u32 i = at; i + 1u < doc->component_count; i++) {
+        BreakEditorComponentReg *dst = &doc->components[i];
+        const BreakEditorComponentReg *src = &doc->components[i + 1u];
+        bool owned = src->default_bytes == src->owned_defaults;
+        *dst = *src;
+        /* the defaults live inside the entry, so the pointer moves with it */
+        if (owned) dst->default_bytes = dst->owned_defaults;
+    }
+    doc->component_count--;
+    memset(&doc->components[doc->component_count], 0, sizeof(BreakEditorComponentReg));
+    return true;
+}
+
 const BreakEditorComponentReg *break_editor_doc_find_component(
     const BreakEditorDoc *doc, u32 component_id) {
     if (!doc) return NULL;

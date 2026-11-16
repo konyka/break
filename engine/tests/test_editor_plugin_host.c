@@ -270,8 +270,18 @@ static BreakEditorComponentDesc host_desc(u32 id, const char *name)
     return d;
 }
 
+/* Public-API lookup: is `id` in the doc's component registry? */
+static bool doc_has_type(const BreakEditorDoc *doc, u32 id)
+{
+    BreakEditorComponentInfo info;
+    for (usize i = 0u; break_editor_doc_component_info(doc, i, &info); i++) {
+        if (info.component_id == id) return true;
+    }
+    return false;
+}
+
 /* add_component follows the load window and needs an attached doc; a failed
- * load drops the types it registered; release keeps them. */
+ * load drops the types it registered; release removes the unused ones. */
 TEST(plugin_host_components_follow_the_window)
 {
     BreakEditorPluginCmds *cmds = break_editor_plugin_cmds_create(8u);
@@ -320,9 +330,47 @@ TEST(plugin_host_components_follow_the_window)
         ASSERT_EQ(info.component_id, 81u);
     }
 
-    /* release keeps component types (entities may use them) */
+    /* release removes the owner's unused types; a type on a live entity
+     * stays until a later release finds it unused */
+    BreakEditorEntityId e = break_editor_doc_add_entity(doc, "e");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, e, 81u));
+    ASSERT_EQ(break_editor_plugin_host_release(host, first), 0u);
+    ASSERT_EQ(break_editor_plugin_host_release(host, second), 1u);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+    ASSERT_TRUE(!doc_has_type(doc, 80u));
+    ASSERT_TRUE(doc_has_type(doc, 81u));
     ASSERT_EQ(break_editor_plugin_host_release(host, second), 0u);
+    ASSERT_TRUE(break_editor_doc_remove_component(doc, e, 81u));
+    ASSERT_EQ(break_editor_plugin_host_release(host, second), 1u);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 2u);
+    ASSERT_EQ(break_editor_plugin_host_release(host, second), 0u);
+
+    /* a type registered outside the host is never released by it */
+    {
+        BreakEditorComponentDesc d = host_desc(83u, "Delta");
+        ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_OK);
+    }
+    u32 fourth = break_editor_plugin_host_begin_load(host);
+    ASSERT_EQ(api->add_component(api->host, &a), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, true));
+    ASSERT_EQ(break_editor_plugin_host_release(host, fourth), 1u);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+    ASSERT_TRUE(doc_has_type(doc, 83u));
+
+    /* attaching another doc forgets the records: release leaves the first
+     * doc's types alone */
+    u32 fifth = break_editor_plugin_host_begin_load(host);
+    ASSERT_EQ(api->add_component(api->host, &b), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, true));
+    BreakEditorDoc *other = break_editor_doc_create();
+    ASSERT_NOT_NULL(other);
+    break_editor_plugin_host_set_doc(host, other);
+    ASSERT_EQ(break_editor_plugin_host_release(host, fifth), 0u);
+    ASSERT_TRUE(doc_has_type(doc, 81u));
     ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
+    break_editor_plugin_host_set_doc(host, doc);
+    ASSERT_EQ(break_editor_plugin_host_release(host, fifth), 0u);
+    ASSERT_TRUE(doc_has_type(doc, 81u));
 
     /* detach outside a window: refused again */
     break_editor_plugin_host_set_doc(host, NULL);
@@ -332,6 +380,7 @@ TEST(plugin_host_components_follow_the_window)
     ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
 
     break_editor_plugin_host_destroy(host);
+    break_editor_doc_destroy(other);
     break_editor_doc_destroy(doc);
     break_editor_plugin_cmds_destroy(cmds);
 }

@@ -72,9 +72,9 @@ typedef struct BreakEditorPluginApi {
     /* Registers an editable component type in the attached doc
      * (break_editor_doc_register_component). Same load-window rule as
      * add_command; INVALID without an attached doc. The registry copies the
-     * name, fields and default bytes, so the type stays usable for the
-     * editor session after the plugin unloads; a failed load drops the
-     * types it registered. */
+     * name, fields and default bytes. A failed load drops the types it
+     * registered; break_editor_plugin_host_release drops the ones no live
+     * entity uses. */
     BreakEditorPluginAddComponentFn add_component;
     /* Adds a panel to the "Plugins" page of the bottom tool window
      * (editor_plugin_panels.h). Same load-window and owner rules as
@@ -100,7 +100,8 @@ void break_editor_plugin_host_set_panels(BreakEditorPluginHost *host,
                                          BreakEditorPluginPanels *panels);
 /* Attaches the doc that add_component registers types in (borrowed, may be
  * NULL to detach; it must outlive the host). NULL host is a no-op, and so is
- * a call while a load window is open. */
+ * a call while a load window is open. A different doc forgets which types
+ * the plugins registered, so release leaves the old doc's types alone. */
 void break_editor_plugin_host_set_doc(BreakEditorPluginHost *host, BreakEditorDoc *doc);
 /* Leaves the registered commands in place. NULL no-op. */
 void break_editor_plugin_host_destroy(BreakEditorPluginHost *host);
@@ -111,7 +112,9 @@ u32 break_editor_plugin_host_begin_load(BreakEditorPluginHost *host);
  * and panels and the component types registered in the window. False when
  * no window was open. */
 bool break_editor_plugin_host_end_load(BreakEditorPluginHost *host, bool loaded);
-/* Removes the owner's commands, sections and panels; returns how many in
- * total. Component types stay: entities and undo history may still use
- * them. */
+/* Removes the owner's commands, sections and panels and unregisters the
+ * component types it added (break_editor_doc_unregister_component); returns
+ * how many in total. A type a live entity still has stays registered and
+ * is tried again by the next release of the same owner. Types registered
+ * in a doc that has since been replaced by set_doc are left alone. */
 u32 break_editor_plugin_host_release(BreakEditorPluginHost *host, u32 owner);
