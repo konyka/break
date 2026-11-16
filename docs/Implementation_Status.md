@@ -11327,3 +11327,4 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 新增 `engine/src/editor/editor_plugin_loader.[ch]`（库 `break_editor_plugin_loader`）：持有 `BreakPluginManager`，按 manifest 调用 `break_plugin_load` 加载插件并记录每个插件的 owner，`destroy` 先移除命令再卸载动态库。
 - CMake 选项 `BREAK_EDITOR_PLUGINS`（默认 OFF）打开后，editor 在 shell 创建后加载 `--plugin-manifest` 中的插件，命令进入命令面板，失败的条目逐条打印，退出前卸载。默认构建仍不链接 `break_system`；`test_break_system_target_contract` 新增检查：选项默认 OFF，editor 对 loader 的唯一链接位于 `if(BREAK_EDITOR_PLUGINS)` 内。
 - `test_editor_plugin_load` 增至 5 项（Linux 上用 `/proc/self/maps` 确认卸载）。先 RED 后 GREEN，9 项源码变异和 4 项 CMake 变异全部被捕获。Fedora Wayland 实机：真实 fixture 插件 1 个加载成功、1 个注册失败。
+- CI：gcc ASan/UBSan 任务改为 `-DBREAK_EDITOR_PLUGINS=ON` 配置，覆盖插件加载库和该模式下的 editor 测试；其他任务保持默认 OFF。

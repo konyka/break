@@ -63,3 +63,10 @@ default editor.
 - Still missing: plugin panels and inspector extension points; no CI job
   builds with `BREAK_EDITOR_PLUGINS=ON` yet; on macOS `test_editor_plugin_load`
   is not registered (break_plugin is Linux/Windows only).
+
+## Follow-up: CI coverage
+- The gcc ASan/UBSan job in `.github/workflows/ci.yml` now configures with
+  `-DBREAK_EDITOR_PLUGINS=ON`, so the loader library, the plugins-on editor
+  and `test_editor_plugin_manifest_cli` in its ON mode build and run in CI.
+  The local CI contract tests (`ctest -R "ci_|workflow"`, 7 tests) pass with
+  the change. Every other job keeps the default OFF.
