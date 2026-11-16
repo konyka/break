@@ -11342,3 +11342,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 命令面板的行与过滤、检查器区块标题跟随 `break_editor_shell_set_language` 切换。
 - 新增/扩展用例：`test_editor_plugin_cmds` +2、`test_editor_plugin_sections` +1、`test_editor_plugin_host` +1、`test_editor_shell` +1（`plugin_text_follows_the_language`），`test_editor_plugin_load` 增加中文断言。先 RED 后 GREEN，34 项变异全部被捕获。
 - 同时修复 `8bf2ce5b` 在 MSVC 上的 C4456 编译失败（`test_editor_plugin_load.c` 块内变量遮蔽）。
+
+### 2026-11-16 editor plugin component types
+
+- `break_editor_doc_register_component`：运行时注册可编辑组件类型（id 66..119，最多 9 个 f32/bool 字段，大小 4..256 字节且为 4 的倍数，名字不能与已有类型重复），注册表自持默认字节；类型在 `break_editor_doc_reset` 和场景加载后保留。`break_editor_doc_truncate_components` 撤回最新注册的类型（有实体使用时拒绝）。
+- 插件 API 追加 `add_component`，宿主新增 `break_editor_plugin_host_set_doc`；加载失败时撤回该插件注册的类型。`BREAK_EDITOR_PLUGINS` 构建的 editor 把 shell 的 doc 挂到插件宿主。
+- fixture 插件注册 `FixtureStats`（level f32、active bool），插件卸载后该类型仍能编辑、撤销、按默认值添加。
+- 新增用例：`test_editor_components` +4、`test_editor_plugin_host` +1、`test_editor_shell` +1（`inspector_edits_a_registered_component_type`）、`test_editor_lua` +1（Lua `brk.ecs.set` 按名字写入注册类型），`test_editor_plugin_load` 增加组件断言。先 RED 后 GREEN，36 项变异全部被捕获。三棵构建树全量通过（412/412、412/412、420/420）。

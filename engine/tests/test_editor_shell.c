@@ -7,6 +7,7 @@
 #include "test_framework.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -822,6 +823,70 @@ TEST(inspector_bool_field_is_a_checkbox_routed_through_undo)
     ASSERT_TRUE(my_checkbox_get_checked(find(shell, "editor-field-65-5")));
     /* f32 fields stay edit boxes */
     ASSERT_FALSE(my_checkbox_is_instance(find(shell, "editor-field-65-4")));
+    break_editor_shell_destroy(shell);
+}
+
+typedef struct ShellExtra {
+    f32 level;
+    u32 active;
+} ShellExtra;
+
+/* A component type registered after the shell exists (as a plugin does)
+ * gets the same inspector rows as the built-in ones: an add button, an edit
+ * box for the f32 field, a checkbox for the bool field, and undo. */
+TEST(inspector_edits_a_registered_component_type)
+{
+    static const BreakEditorField fields[2] = {
+        {"level", offsetof(ShellExtra, level), BREAK_EDITOR_FIELD_F32},
+        {"active", offsetof(ShellExtra, active), BREAK_EDITOR_FIELD_BOOL},
+    };
+    static const ShellExtra defaults = {2.5f, 1u};
+    BreakEditorComponentDesc desc;
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId id;
+    my_widget_t *w;
+    const char *unused_name = NULL;
+    f32 level = 0.0f;
+    bool on = false;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    desc.component_id = 90u;
+    desc.display_name = "Stats";
+    desc.size = (u32)sizeof(ShellExtra);
+    desc.fields = fields;
+    desc.field_count = 2u;
+    desc.default_bytes = &defaults;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &desc), BREAK_EDITOR_COMPONENT_REG_OK);
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0));
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 0, &id, &unused_name));
+    ASSERT_TRUE(find(shell, "editor-field-90-0") == NULL);
+    emit_click(find(shell, "editor-component-add-90"));
+    ASSERT_TRUE(break_editor_doc_has_component(doc, id, 90u));
+    w = find(shell, "editor-field-90-0");
+    ASSERT_NOT_NULL(w);
+    ASSERT_STR_EQ(my_edit_get_text(w), "2.5");
+    ASSERT_EQ(my_edit_set_text(w, "4.25"), MY_RET_OK);
+    emit_activate(w);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, id, 90u, 0u, &level));
+    ASSERT_TRUE(level == 4.25f);
+    w = find(shell, "editor-field-90-1");
+    ASSERT_NOT_NULL(w);
+    ASSERT_TRUE(my_checkbox_is_instance(w));
+    ASSERT_TRUE(my_checkbox_get_checked(w));
+    ASSERT_EQ(my_checkbox_set_checked(w, false), MY_RET_OK);
+    ASSERT_EQ(my_emitter_emit(w->emitter, "changed", NULL), MY_RET_OK);
+    ASSERT_TRUE(break_editor_doc_get_field_bool(doc, id, 90u, 1u, &on));
+    ASSERT_FALSE(on);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, id, 90u, 0u, &level));
+    ASSERT_TRUE(level == 2.5f);
+    ASSERT_STR_EQ(my_edit_get_text(find(shell, "editor-field-90-0")), "2.5");
+    emit_click(find(shell, "editor-component-remove-90"));
+    ASSERT_FALSE(break_editor_doc_has_component(doc, id, 90u));
+    ASSERT_NOT_NULL(find(shell, "editor-component-add-90"));
     break_editor_shell_destroy(shell);
 }
 
@@ -11449,6 +11514,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_lists_and_runs_plugin_commands);
     RUN_TEST(inspector_shows_plugin_sections);
     RUN_TEST(plugin_text_follows_the_language);
+    RUN_TEST(inspector_edits_a_registered_component_type);
     RUN_TEST(ctrl_s_saves_to_configured_path);
     RUN_TEST(outliner_row_click_selects);
     RUN_TEST(rename_then_undo_reverts_outliner_row_text);

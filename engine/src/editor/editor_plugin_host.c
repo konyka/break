@@ -6,6 +6,8 @@ struct BreakEditorPluginHost {
     BreakEditorPluginApi api;
     BreakEditorPluginCmds *cmds;
     BreakEditorPluginSections *sections;
+    BreakEditorDoc *doc;
+    usize window_component_count; /* doc component count when the window opened */
     u32 next_owner;
     u32 loading_owner;
 };
@@ -73,6 +75,25 @@ static const char *host_lang_tag(void *host_ptr)
     return break_editor_i18n_lang_tag(break_editor_i18n_lang());
 }
 
+static BreakEditorComponentRegStatus host_add_component(void *host_ptr,
+                                                        const BreakEditorComponentDesc *desc)
+{
+    BreakEditorPluginHost *host = (BreakEditorPluginHost *)host_ptr;
+    if (!host || host->loading_owner == 0u) {
+        return BREAK_EDITOR_COMPONENT_REG_INVALID;
+    }
+    /* NULL doc and NULL desc are rejected by the registry */
+    return break_editor_doc_register_component(host->doc, desc);
+}
+
+void break_editor_plugin_host_set_doc(BreakEditorPluginHost *host, BreakEditorDoc *doc)
+{
+    /* the window's rollback count belongs to the doc it was read from */
+    if (host && host->loading_owner == 0u) {
+        host->doc = doc;
+    }
+}
+
 void break_editor_plugin_host_set_sections(BreakEditorPluginHost *host,
                                            BreakEditorPluginSections *sections)
 {
@@ -98,6 +119,7 @@ BreakEditorPluginHost *break_editor_plugin_host_create(BreakEditorPluginCmds *cm
     host->api.set_command_label = host_set_command_label;
     host->api.set_section_title = host_set_section_title;
     host->api.lang_tag = host_lang_tag;
+    host->api.add_component = host_add_component;
     host->cmds = cmds;
     return host;
 }
@@ -122,6 +144,7 @@ u32 break_editor_plugin_host_begin_load(BreakEditorPluginHost *host)
         host->next_owner = 1u;
     }
     host->loading_owner = host->next_owner;
+    host->window_component_count = break_editor_doc_component_count(host->doc);
     return host->loading_owner;
 }
 
@@ -132,6 +155,9 @@ bool break_editor_plugin_host_end_load(BreakEditorPluginHost *host, bool loaded)
     }
     if (!loaded) {
         (void)break_editor_plugin_host_release(host, host->loading_owner);
+        /* nothing can use the window's types yet: the plugin never ran a
+         * command, so no entity has them */
+        (void)break_editor_doc_truncate_components(host->doc, host->window_component_count);
     }
     host->loading_owner = 0u;
     return true;

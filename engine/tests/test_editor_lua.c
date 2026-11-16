@@ -371,6 +371,52 @@ TEST(set_record_targets_the_light_component) {
     fixture_close(&f);
 }
 
+/* A component type registered at run time (as a plugin does) is found by
+ * its display name like the built-in ones; unwritten fields keep the
+ * registered default bytes. */
+TEST(set_record_targets_a_registered_component) {
+    static const BreakEditorField fields[2] = {
+        {"level", 0u, BREAK_EDITOR_FIELD_F32},
+        {"active", 4u, BREAK_EDITOR_FIELD_BOOL},
+    };
+    static const f32 defaults[2] = {2.5f, 0.0f};
+    BreakEditorComponentDesc desc;
+    Fixture f;
+    BreakEditorEntityId id;
+    const char *nm = NULL;
+    f32 v = 0.0f;
+    bool on = false;
+    ASSERT_TRUE(fixture_open(&f));
+    desc.component_id = 99u;
+    desc.display_name = "Stats";
+    desc.size = 8u;
+    desc.fields = fields;
+    desc.field_count = 2u;
+    desc.default_bytes = defaults;
+    ASSERT_EQ(break_editor_doc_register_component(f.doc, &desc), BREAK_EDITOR_COMPONENT_REG_OK);
+    /* set targets the entity spawned by the same eval */
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console,
+        "brk.ecs.spawn()\n"
+        "brk.ecs.set('Stats', 'active', true)"));
+    ASSERT_TRUE(break_editor_doc_entity_at(f.doc, 0u, &id, &nm));
+    ASSERT_TRUE(break_editor_doc_has_component(f.doc, id, 99u));
+    ASSERT_TRUE(break_editor_doc_get_field_bool(f.doc, id, 99u, 1u, &on));
+    ASSERT_TRUE(on);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(f.doc, id, 99u, 0u, &v));
+    ASSERT_FLOAT_EQ(v, 2.5f, 0.0f);
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console,
+        "brk.ecs.spawn()\n"
+        "brk.ecs.set('Stats', 'level', 8)"));
+    ASSERT_TRUE(break_editor_doc_entity_at(f.doc, 1u, &id, &nm));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(f.doc, id, 99u, 0u, &v));
+    ASSERT_FLOAT_EQ(v, 8.0f, 0.0f);
+    ASSERT_TRUE(break_editor_doc_get_field_bool(f.doc, id, 99u, 1u, &on));
+    ASSERT_FALSE(on);
+    fixture_close(&f);
+}
+
 TEST(set_record_writes_a_bool_field) {
     Fixture f;
     BreakEditorEntityId id;
@@ -1229,6 +1275,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(spawn_multi_record_fifo);
     RUN_TEST(set_record_number_string_bool_undoable);
     RUN_TEST(set_record_targets_the_light_component);
+    RUN_TEST(set_record_targets_a_registered_component);
     RUN_TEST(set_record_writes_a_bool_field);
     RUN_TEST(set_record_existing_component_single_command);
     RUN_TEST(set_unknown_component_field_never_partial);

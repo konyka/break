@@ -83,8 +83,11 @@ typedef struct {
     u32 size;                     /* byte size registered in the World */
     BreakEditorField fields[9];   /* matches BreakEditorComponentInfo cap */
     u32 field_count;
-    /* bytes a freshly added component starts with (NULL = all zero) */
+    /* bytes a freshly added component starts with (NULL = all zero);
+     * built-in types point at static tables, registered types at
+     * owned_defaults */
     const u8 *default_bytes;
+    u8 owned_defaults[BREAK_EDITOR_COMPONENT_SNAPSHOT_CAPACITY];
 } BreakEditorComponentReg;
 
 /* Concrete component command payload (Task 3): one bounded allocation,
@@ -119,9 +122,9 @@ struct BreakEditorDoc {
     u32 origin; /* stamped on every pushed command; 0 = local shell */
     BreakEditorCmdStack *stack; /* owned */
     struct BreakFlowGraph *flow_graph; /* owned; replaced by flow commands */
-    /* Task 3: bounded editable-component registry (cap 16). Phase 1 holds
-     * exactly one entry (EditorTransform) installed at doc create by
-     * break_editor_doc_init_components. */
+    /* Task 3: bounded editable-component registry (cap 16). Entries 0 and 1
+     * are the built-in Transform and Light (break_editor_doc_init_components);
+     * entries after them come from break_editor_doc_register_component. */
     BreakEditorComponentReg components[BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY];
     u32 component_count;
     /* Application chunks of the last loaded BSCN that the editor does not
@@ -197,9 +200,11 @@ BreakEditorCmd *break_editor_cmd_rename_entity_create(BreakEditorDoc *doc,
                                                       BreakEditorEntityId id,
                                                       const char *new_name);
 
-/* Task 3 (editor_components.c): installs the doc's editable-component
- * registry and registers each type into the doc's World. No allocation,
- * never fails. Called by break_editor_doc_create. */
+/* Task 3 (editor_components.c): installs the built-in entries of the
+ * doc's editable-component registry and registers every entry (built-in
+ * and break_editor_doc_register_component types) into the doc's World. No
+ * allocation, never fails. Called by break_editor_doc_create and
+ * break_editor_doc_reset with a fresh World. */
 void break_editor_doc_init_components(BreakEditorDoc *doc);
 
 /* Registry lookup (editor_components.c): NULL when component_id is not a

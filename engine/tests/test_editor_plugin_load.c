@@ -1,6 +1,8 @@
 #include "test_framework.h"
 
 #include <crypto/break_crypto.h>
+#include <editor/editor_cmd.h>
+#include <editor/editor_components.h>
 #include <editor/editor_doc.h>
 #include <editor/editor_plugin_host.h>
 #include <editor/editor_plugin_loader.h>
@@ -10,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#define FIXTURE_COMPONENT_ID 100u
 #define FIXTURE_ZH_HELLO "\xe5\xa4\xb9\xe5\x85\xb7\xe9\x97\xae\xe5\x80\x99"
 #define FIXTURE_ZH_SECTION_TITLE "\xe5\xa4\xb9\xe5\x85\xb7\xe5\x88\x86\xe5\x8c\xba"
 #define FIXTURE_ZH_SECTION_TEXT "\xe5\xa4\xb9\xe5\x85\xb7\xe5\x8c\xba\xe5\x9d\x97"
@@ -264,6 +267,9 @@ TEST(loader_loads_a_manifest_and_unloads_on_destroy)
     BreakEditorPluginSections *sections = break_editor_plugin_sections_create(4u);
     ASSERT_NOT_NULL(sections);
     break_editor_plugin_host_set_sections(host, sections);
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    break_editor_plugin_host_set_doc(host, doc);
     BreakEditorPluginLoader *loader = break_editor_plugin_loader_create(host);
     ASSERT_NOT_NULL(loader);
     ASSERT_EQ(break_editor_plugin_loader_count(loader), 0u);
@@ -283,6 +289,28 @@ TEST(loader_loads_a_manifest_and_unloads_on_destroy)
     ASSERT_EQ(break_editor_plugin_sections_count(sections), 1u);
     ASSERT_STR_EQ(break_editor_plugin_sections_id(sections, 0u), "fixture.section");
     ASSERT_EQ(break_editor_plugin_sections_owner(sections, 0u), report.owners[1]);
+    /* the good plugin's component type is in the doc; the failing plugin
+     * registered the same type in its window and it was dropped, which is
+     * why the good plugin (loaded second) could register it */
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+    {
+        BreakEditorComponentInfo info;
+        ASSERT_TRUE(break_editor_doc_component_info(doc, 2u, &info));
+        ASSERT_EQ(info.component_id, FIXTURE_COMPONENT_ID);
+        ASSERT_STR_EQ(info.display_name, "FixtureStats");
+        ASSERT_EQ(info.field_count, 2u);
+    }
+    BreakEditorEntityId unit = break_editor_doc_add_entity(doc, "unit");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, unit, FIXTURE_COMPONENT_ID));
+    {
+        f32 level = 0.0f;
+        bool active = false;
+        ASSERT_TRUE(break_editor_doc_get_field_f32(doc, unit, FIXTURE_COMPONENT_ID, 0u, &level));
+        ASSERT_TRUE(level == 2.5f);
+        ASSERT_TRUE(break_editor_doc_get_field_bool(doc, unit, FIXTURE_COMPONENT_ID, 1u,
+                                                    &active));
+        ASSERT_TRUE(active);
+    }
     ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(sections, 0u, BREAK_EDITOR_LANG_ZH_CN),
                   FIXTURE_ZH_SECTION_TITLE);
     ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(sections, 0u, BREAK_EDITOR_LANG_EN_US),
@@ -324,6 +352,19 @@ TEST(loader_loads_a_manifest_and_unloads_on_destroy)
     ASSERT_FALSE(library_mapped(VERIFIED_PLUGIN_MAPPING));
 #endif
     ASSERT_EQ(break_editor_plugin_sections_count(sections), 0u);
+    /* the type and its default bytes were copied: after the library is
+     * unmapped the type still edits, undoes and adds with its defaults */
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, unit, FIXTURE_COMPONENT_ID, 0u, 6.0f));
+    ASSERT_TRUE(break_editor_undo(doc));
+    {
+        BreakEditorEntityId other = break_editor_doc_add_entity(doc, "other");
+        f32 level = 0.0f;
+        ASSERT_TRUE(break_editor_doc_add_component(doc, other, FIXTURE_COMPONENT_ID));
+        ASSERT_TRUE(break_editor_doc_get_field_f32(doc, other, FIXTURE_COMPONENT_ID, 0u, &level));
+        ASSERT_TRUE(level == 2.5f);
+    }
+    break_editor_doc_destroy(doc);
     break_editor_plugin_sections_destroy(sections);
     break_editor_plugin_host_destroy(host);
     break_editor_plugin_cmds_destroy(cmds);

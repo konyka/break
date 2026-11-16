@@ -75,6 +75,13 @@ void break_editor_doc_init_components(BreakEditorDoc *doc) {
                              BREAK_EDITOR_COMPONENT_TRANSFORM,
                              (u32)sizeof(EditorTransform));
 
+    /* entries 0 and 1 are the built-in types; registered types after them
+     * survive a reset and are registered into the fresh world */
+    for (u32 i = 2u; i < doc->component_count; i++) {
+        world_register_component(break_editor_doc_world_raw(doc),
+                                 doc->components[i].component_id, doc->components[i].size);
+    }
+
     BreakEditorComponentReg *reg = &doc->components[0];
     reg->component_id = BREAK_EDITOR_COMPONENT_TRANSFORM;
     memcpy(reg->display_name, "Transform", sizeof("Transform"));
@@ -93,7 +100,107 @@ void break_editor_doc_init_components(BreakEditorDoc *doc) {
     memcpy(reg->fields, k_light_fields, sizeof(k_light_fields));
     reg->field_count = 6u;
     reg->default_bytes = (const u8 *)&k_light_default;
-    doc->component_count = 2u;
+    if (doc->component_count < 2u) {
+        doc->component_count = 2u;
+    }
+}
+
+/* 1..cap-1 bytes, no control bytes; reads at most cap bytes. */
+static bool valid_label(const char *text, usize cap) {
+    if (!text) return false;
+    for (usize i = 0; i < cap; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (c == '\0') return i > 0u;
+        if (c < 0x20u || c == 0x7fu) return false;
+    }
+    return false;
+}
+
+static bool valid_fields(const BreakEditorComponentDesc *desc) {
+    if (!desc->fields || desc->field_count == 0u || desc->field_count > 9u) return false;
+    for (u32 i = 0; i < desc->field_count; i++) {
+        const BreakEditorField *f = &desc->fields[i];
+        if (!valid_label(f->name, sizeof(f->name))) return false;
+        if (f->type != BREAK_EDITOR_FIELD_F32 && f->type != BREAK_EDITOR_FIELD_BOOL) {
+            return false;
+        }
+        if (f->offset % 4u != 0u || f->offset > desc->size - 4u) return false;
+        for (u32 j = 0; j < i; j++) {
+            if (desc->fields[j].offset == f->offset ||
+                strcmp(desc->fields[j].name, f->name) == 0) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+BreakEditorComponentRegStatus break_editor_doc_register_component(
+    BreakEditorDoc *doc, const BreakEditorComponentDesc *desc) {
+    if (!doc || !desc) return BREAK_EDITOR_COMPONENT_REG_INVALID;
+    if (desc->component_id < BREAK_EDITOR_COMPONENT_EXTRA_FIRST ||
+        desc->component_id > BREAK_EDITOR_COMPONENT_EXTRA_LAST) {
+        return BREAK_EDITOR_COMPONENT_REG_BAD_ID;
+    }
+    if (break_editor_doc_find_component(doc, desc->component_id)) {
+        return BREAK_EDITOR_COMPONENT_REG_DUPLICATE;
+    }
+    if (!valid_label(desc->display_name, sizeof(doc->components[0].display_name))) {
+        return BREAK_EDITOR_COMPONENT_REG_BAD_NAME;
+    }
+    for (u32 i = 0; i < doc->component_count; i++) {
+        if (strcmp(doc->components[i].display_name, desc->display_name) == 0) {
+            return BREAK_EDITOR_COMPONENT_REG_DUPLICATE;
+        }
+    }
+    u32 world_size = break_editor_doc_world_raw(doc)->component_sizes[desc->component_id];
+    if (desc->size == 0u || desc->size > BREAK_EDITOR_COMPONENT_SNAPSHOT_CAPACITY ||
+        desc->size % 4u != 0u || (world_size != 0u && world_size != desc->size)) {
+        return BREAK_EDITOR_COMPONENT_REG_BAD_SIZE;
+    }
+    if (!valid_fields(desc)) return BREAK_EDITOR_COMPONENT_REG_BAD_FIELD;
+    if (doc->component_count == BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY) {
+        return BREAK_EDITOR_COMPONENT_REG_FULL;
+    }
+
+    BreakEditorComponentReg *reg = &doc->components[doc->component_count];
+    memset(reg, 0, sizeof(*reg));
+    reg->component_id = desc->component_id;
+    memcpy(reg->display_name, desc->display_name, strlen(desc->display_name) + 1u);
+    reg->size = desc->size;
+    memcpy(reg->fields, desc->fields, (usize)desc->field_count * sizeof(BreakEditorField));
+    reg->field_count = desc->field_count;
+    if (desc->default_bytes) {
+        memcpy(reg->owned_defaults, desc->default_bytes, desc->size);
+        reg->default_bytes = reg->owned_defaults;
+    }
+    world_register_component(break_editor_doc_world_raw(doc), desc->component_id, desc->size);
+    doc->component_count++;
+    return BREAK_EDITOR_COMPONENT_REG_OK;
+}
+
+/* True when any live entity has component `component_id`. */
+static bool component_in_use(BreakEditorDoc *doc, u32 component_id) {
+    World *w = break_editor_doc_world_raw(doc);
+    for (u32 i = 1; i < w->entity_count; i++) {
+        Entity e = w->entities[i];
+        if (world_entity_exists(w, e) && world_get_component(w, e, component_id) != NULL) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool break_editor_doc_truncate_components(BreakEditorDoc *doc, usize count) {
+    if (!doc || count < 2u) return false;
+    if (count > doc->component_count) return true;
+    for (usize i = count; i < doc->component_count; i++) {
+        if (component_in_use(doc, doc->components[i].component_id)) return false;
+    }
+    memset(&doc->components[count], 0,
+           (doc->component_count - count) * sizeof(BreakEditorComponentReg));
+    doc->component_count = (u32)count;
+    return true;
 }
 
 const BreakEditorComponentReg *break_editor_doc_find_component(

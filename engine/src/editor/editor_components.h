@@ -18,9 +18,9 @@
  * under the ECS component cap of 128 (ecs.h:5, World.component_sizes[128]).
  * NOTE: ids >= 64 cannot participate in ecs_query_exclude/optional masks
  * (u64 masks, ecs.h:135-137) — the editor registry never uses those query
- * builders, so the restriction does not apply here. A public registration
- * API for further editable types is deferred until a second type exists;
- * the registry cap leaves room.
+ * builders, so the restriction does not apply here. Further editable types
+ * are added at run time with break_editor_doc_register_component (below),
+ * for example by editor plugins.
  *
  * Registration into the doc's World happens at break_editor_doc_create via
  * world_register_component (ecs.h:124), which is also what makes the
@@ -28,8 +28,9 @@
  * raw bytes per registered type, and break_editor_doc_load re-registers the
  * doc's component set into the staging world before parsing
  * (editor_scene.c:477-480), so the payload round-trips byte-exact. The
- * registry itself is per-doc and rebuilt identically by every doc create,
- * so a fresh doc can inspect a freshly loaded scene immediately.
+ * registry itself is per-doc: every doc create installs the built-in
+ * entries, and reset reinstalls them while keeping registered types, so a
+ * fresh doc can inspect a freshly loaded scene immediately.
  *
  * Query semantics: every API below is registry-gated — a component id that
  * is NOT in the editor registry (even if registered in the World through
@@ -133,6 +134,66 @@ typedef struct BreakEditorComponentInfo {
     BreakEditorField fields[9];
     u32 field_count;
 } BreakEditorComponentInfo;
+
+/* Extra editable component types (2026-11-16), registered at run time, for
+ * example by editor plugins (editor_plugin_host.h add_component). Ids run
+ * from BREAK_EDITOR_COMPONENT_EXTRA_FIRST to EXTRA_LAST: 64 and 65 are the
+ * built-in types, 120 is the world streaming tile (STREAM_TILE_COMPONENT),
+ * and the ECS caps ids below 128. */
+#define BREAK_EDITOR_COMPONENT_EXTRA_FIRST 66u
+#define BREAK_EDITOR_COMPONENT_EXTRA_LAST 119u
+
+typedef struct BreakEditorComponentDesc {
+    u32 component_id;
+    const char *display_name;
+    u32 size;
+    const BreakEditorField *fields;
+    u32 field_count;
+    const void *default_bytes; /* `size` bytes, copied; NULL = all zero */
+} BreakEditorComponentDesc;
+
+typedef enum BreakEditorComponentRegStatus {
+    BREAK_EDITOR_COMPONENT_REG_OK = 0,
+    BREAK_EDITOR_COMPONENT_REG_INVALID,   /* NULL doc or desc */
+    BREAK_EDITOR_COMPONENT_REG_BAD_ID,    /* outside EXTRA_FIRST..EXTRA_LAST */
+    BREAK_EDITOR_COMPONENT_REG_DUPLICATE, /* id or display name already used */
+    BREAK_EDITOR_COMPONENT_REG_BAD_NAME,
+    BREAK_EDITOR_COMPONENT_REG_BAD_SIZE,
+    BREAK_EDITOR_COMPONENT_REG_BAD_FIELD,
+    BREAK_EDITOR_COMPONENT_REG_FULL
+} BreakEditorComponentRegStatus;
+
+/* Adds an editable type that behaves like the built-in ones: inspector
+ * rows, undoable field edits and add/remove, BSCN save/load, Lua and the
+ * remote protocol (both look types up by display name). Rules, checked in
+ * enum order (any rejection changes nothing):
+ *   - id in EXTRA_FIRST..EXTRA_LAST and not registered yet;
+ *   - display_name 1..31 bytes without control bytes, not used by another
+ *     type;
+ *   - size 4..BREAK_EDITOR_COMPONENT_SNAPSHOT_CAPACITY, a multiple of 4,
+ *     and equal to the size the doc's World already has for the id, if any
+ *     (the ECS keeps the first size it was given);
+ *   - 1..9 fields, each named 1..31 bytes without control bytes, of type
+ *     F32 or BOOL, at a 4-aligned offset whose 4 bytes lie inside `size`;
+ *     no two fields share a name or an offset;
+ *   - the registry has room (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY).
+ * The type stays registered across break_editor_doc_reset and scene load.
+ * A BSCN saved with it loads into a doc without it as a forward-compatible
+ * skip of that component's bytes. */
+BreakEditorComponentRegStatus break_editor_doc_register_component(
+    BreakEditorDoc *doc, const BreakEditorComponentDesc *desc);
+
+/* Drops the registered (non built-in) types at registry positions
+ * >= `count`, newest first, so a caller can undo the registrations it made
+ * since it read break_editor_doc_component_count. Refuses (false, nothing
+ * dropped) when `count` is below the two built-in entries or any dropped
+ * type is on a live entity. The types stay in the World's size table until
+ * the next break_editor_doc_reset (the ECS has no unregister), so until then
+ * a registration of the same id must use the same size. Undo history may
+ * still re-add a dropped type's bytes; the registry-gated editor APIs then
+ * ignore them and a save keeps them. NULL doc: false. `count` at or above
+ * the current count is a true no-op. */
+bool break_editor_doc_truncate_components(BreakEditorDoc *doc, usize count);
 
 /* Number of registered editable component types (2 after doc create:
  * Transform, Light). */

@@ -93,3 +93,7 @@ PAL：`engine/src/platform/platform_dynamic.{h,c}`。管理器：`engine/src/sys
 ## 2026-11-16 追加：插件文本多语言
 
 `BreakEditorPluginApi`（`api_version` 仍为 1，只在末尾追加字段）新增 `set_command_label`、`set_section_title` 和 `lang_tag`。前两个按语言标签登记命令标签和区块标题，遵守与 `add_command` 相同的加载窗口规则，并且只能修改本插件登记的条目；`lang_tag` 返回编辑器当前语言。插件在 `register` 中检查这些函数指针非空后再使用。设计与验证见 `docs/superpowers/plans/2026-11-16-editor-plugin-i18n.md`。
+
+## 2026-11-16 追加：插件组件类型
+
+`BreakEditorPluginApi` 末尾追加 `add_component`：插件在加载窗口内向宿主挂接的 doc 注册可编辑组件类型（`break_editor_doc_register_component`，id 66..119）。注册表复制名字、字段表和默认字节，插件卸载后类型仍可用；加载失败时宿主用 `break_editor_doc_truncate_components` 撤回该窗口内注册的类型。检查器、撤销、BSCN 保存/加载、Lua 和远程协议按注册表工作，无需为插件类型增加代码。设计与验证见 `docs/superpowers/plans/2026-11-16-editor-plugin-components.md`。

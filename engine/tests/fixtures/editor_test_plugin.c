@@ -19,6 +19,14 @@ static bool fixture_command(void *user, BreakEditorDoc *doc)
 
 static const BreakEditorPluginApi *fixture_api;
 
+/* an editable component type: a level (f32) and an active flag (bool) */
+#define FIXTURE_COMPONENT_ID 100u
+static const BreakEditorField fixture_fields[2] = {
+    {"level", 0u, BREAK_EDITOR_FIELD_F32},
+    {"active", 4u, BREAK_EDITOR_FIELD_BOOL},
+};
+static const unsigned char fixture_defaults[8] = {0x00, 0x00, 0x20, 0x40, 1, 0, 0, 0};
+
 static void copy_text(const char *text, char *out, usize cap)
 {
     usize i = 0u;
@@ -68,6 +76,17 @@ static bool fixture_register(void *user)
     (void)api->add_section(api->host, "fixture.section", "Fixture Section", fixture_section, NULL);
     (void)api->set_section_title(api->host, "fixture.section", "zh-CN",
                                  "\xe5\xa4\xb9\xe5\x85\xb7\xe5\x88\x86\xe5\x8c\xba");
+    if (api->add_component) {
+        BreakEditorComponentDesc desc;
+        desc.component_id = FIXTURE_COMPONENT_ID;
+        desc.display_name = "FixtureStats";
+        desc.size = 8u;
+        desc.fields = fixture_fields;
+        desc.field_count = 2u;
+        desc.default_bytes = fixture_defaults;
+        /* a host without a doc refuses the type; not a registration failure */
+        (void)api->add_component(api->host, &desc);
+    }
     return EDITOR_TEST_REGISTER_RESULT != 0;
 }
 

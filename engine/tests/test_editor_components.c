@@ -1104,6 +1104,327 @@ TEST(component_bytes_survive_save_load) {
     break_editor_doc_destroy(doc);
 }
 
+/* A plugin-style component: a level (f32) and an active flag (bool). */
+typedef struct ExtraStats {
+    f32 level;
+    u32 active;
+} ExtraStats;
+
+static const BreakEditorField k_extra_fields[2] = {
+    {"level", offsetof(ExtraStats, level), BREAK_EDITOR_FIELD_F32},
+    {"active", offsetof(ExtraStats, active), BREAK_EDITOR_FIELD_BOOL},
+};
+
+static BreakEditorComponentDesc extra_desc(u32 id, const char *name) {
+    static const ExtraStats defaults = {2.5f, 1u};
+    BreakEditorComponentDesc d;
+    d.component_id = id;
+    d.display_name = name;
+    d.size = (u32)sizeof(ExtraStats);
+    d.fields = k_extra_fields;
+    d.field_count = 2u;
+    d.default_bytes = &defaults;
+    return d;
+}
+
+/* Every registration rule rejects without changing the registry. */
+TEST(register_component_rejections_change_nothing) {
+    BreakEditorField fields[10];
+    char long_name[40];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorComponentDesc d = extra_desc(70u, "Stats");
+    ASSERT_EQ(break_editor_doc_register_component(NULL, &d),
+              BREAK_EDITOR_COMPONENT_REG_INVALID);
+    ASSERT_EQ(break_editor_doc_register_component(doc, NULL),
+              BREAK_EDITOR_COMPONENT_REG_INVALID);
+
+    d = extra_desc(BREAK_EDITOR_COMPONENT_EXTRA_FIRST - 1u, "Stats");
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_ID);
+    d = extra_desc(BREAK_EDITOR_COMPONENT_EXTRA_LAST + 1u, "Stats");
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_ID);
+    d = extra_desc(BREAK_EDITOR_COMPONENT_TRANSFORM, "Stats");
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_ID);
+    d = extra_desc(1u, "Stats");
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_ID);
+
+    d = extra_desc(70u, NULL);
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_NAME);
+    d = extra_desc(70u, "");
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_NAME);
+    d = extra_desc(70u, "Bad\tName");
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_NAME);
+    memset(long_name, 'n', 32u);
+    long_name[32] = '\0';
+    d = extra_desc(70u, long_name);
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_NAME);
+    /* a built-in display name is taken */
+    d = extra_desc(70u, "Light");
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d),
+              BREAK_EDITOR_COMPONENT_REG_DUPLICATE);
+
+    d = extra_desc(70u, "Stats");
+    d.size = 0u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_SIZE);
+    d.size = 6u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_SIZE);
+    d.size = BREAK_EDITOR_COMPONENT_SNAPSHOT_CAPACITY + 4u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_SIZE);
+
+    d = extra_desc(70u, "Stats");
+    d.fields = NULL;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    d = extra_desc(70u, "Stats");
+    d.field_count = 0u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    memset(fields, 0, sizeof(fields));
+    for (u32 i = 0u; i < 10u; i++) {
+        (void)snprintf(fields[i].name, sizeof(fields[i].name), "f%u", (unsigned)i);
+        fields[i].offset = 4u * i;
+        fields[i].type = BREAK_EDITOR_FIELD_F32;
+    }
+    d = extra_desc(70u, "Stats");
+    d.size = 40u;
+    d.fields = fields;
+    d.field_count = 10u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    d.field_count = 9u;
+    d.default_bytes = NULL;
+    fields[3].type = 7u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    fields[3].type = BREAK_EDITOR_FIELD_F32;
+    fields[3].offset = 13u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    fields[3].offset = 40u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    fields[3].offset = 36u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+
+    d.component_id = 71u;
+    d.display_name = "Other";
+    fields[4].offset = fields[5].offset;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    fields[4].offset = 16u;
+    memcpy(fields[4].name, fields[5].name, sizeof(fields[4].name));
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    (void)snprintf(fields[4].name, sizeof(fields[4].name), "f4");
+    fields[4].name[0] = '\0';
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    fields[4].name[0] = '\x01';
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    memset(fields[4].name, 'x', sizeof(fields[4].name));
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_BAD_FIELD);
+    (void)snprintf(fields[4].name, sizeof(fields[4].name), "f4");
+    /* the same id or display name again */
+    d.component_id = 70u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d),
+              BREAK_EDITOR_COMPONENT_REG_DUPLICATE);
+    d.component_id = 71u;
+    d.display_name = "Stats";
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d),
+              BREAK_EDITOR_COMPONENT_REG_DUPLICATE);
+    d.display_name = "Other";
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
+    break_editor_doc_destroy(doc);
+}
+
+/* The registry fills up at BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY. */
+TEST(register_component_full) {
+    char name[16];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    u32 id = BREAK_EDITOR_COMPONENT_EXTRA_FIRST;
+    while (break_editor_doc_component_count(doc) < BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY) {
+        (void)snprintf(name, sizeof(name), "Extra%u", (unsigned)id);
+        BreakEditorComponentDesc d = extra_desc(id, name);
+        ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_OK);
+        id++;
+    }
+    BreakEditorComponentDesc last = extra_desc(BREAK_EDITOR_COMPONENT_EXTRA_LAST, "Last");
+    ASSERT_EQ(break_editor_doc_register_component(doc, &last), BREAK_EDITOR_COMPONENT_REG_FULL);
+    ASSERT_EQ(break_editor_doc_component_count(doc), BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY);
+    break_editor_doc_destroy(doc);
+}
+
+/* A registered type works like a built-in one: info, default bytes on add
+ * (copied, so the caller's buffer may go away), undoable edits of both
+ * field types, add/remove undo, and it survives reset and save/load. */
+TEST(registered_component_edits_undo_reset_and_save_load) {
+    char path[512];
+    ExtraStats defaults = {2.5f, 1u};
+    BreakEditorComponentInfo info;
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorComponentDesc d = extra_desc(BREAK_EDITOR_COMPONENT_EXTRA_LAST, "Stats");
+    d.default_bytes = &defaults;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &d), BREAK_EDITOR_COMPONENT_REG_OK);
+    defaults.level = -9.0f; /* the registry kept its own copy */
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+    ASSERT_TRUE(break_editor_doc_component_info(doc, 2u, &info));
+    ASSERT_EQ(info.component_id, BREAK_EDITOR_COMPONENT_EXTRA_LAST);
+    ASSERT_STR_EQ(info.display_name, "Stats");
+    ASSERT_EQ(info.field_count, 2u);
+    ASSERT_STR_EQ(info.fields[0].name, "level");
+    ASSERT_EQ(info.fields[1].type, BREAK_EDITOR_FIELD_BOOL);
+    ASSERT_EQ(info.fields[1].offset, (u32)offsetof(ExtraStats, active));
+
+    BreakEditorEntityId e = break_editor_doc_add_entity(doc, "unit");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST));
+    f32 level = 0.0f;
+    bool active = false;
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST, 0u,
+                                               &level));
+    ASSERT_TRUE(level == 2.5f);
+    ASSERT_TRUE(break_editor_doc_get_field_bool(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST, 1u,
+                                                &active));
+    ASSERT_TRUE(active);
+    ASSERT_TRUE(break_editor_doc_set_field_f32(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST, 0u,
+                                               7.0f));
+    ASSERT_TRUE(break_editor_doc_set_field_bool(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST, 1u,
+                                                false));
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(break_editor_doc_get_field_bool(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST, 1u,
+                                                &active));
+    ASSERT_TRUE(active);
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_TRUE(break_editor_doc_remove_component(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST));
+    ASSERT_FALSE(break_editor_doc_has_component(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST));
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST, 0u,
+                                               &level));
+    ASSERT_TRUE(level == 7.0f);
+
+    /* save, then load into a doc that registered the same type */
+    test_tmp(path, sizeof(path), "editor_components_extra.bscn");
+    ASSERT_TRUE(break_editor_doc_save(doc, path));
+    ASSERT_TRUE(break_editor_doc_load(doc, path));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+    {
+        const char *nm = NULL;
+        ASSERT_TRUE(break_editor_doc_entity_at(doc, 0u, &e, &nm));
+    }
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST, 0u,
+                                               &level));
+    ASSERT_TRUE(level == 7.0f);
+    ASSERT_TRUE(break_editor_doc_get_field_bool(doc, e, BREAK_EDITOR_COMPONENT_EXTRA_LAST, 1u,
+                                                &active));
+    ASSERT_FALSE(active);
+
+    /* a doc without the type loads the scene and skips those bytes */
+    {
+        BreakEditorDoc *plain = break_editor_doc_create();
+        ASSERT_NOT_NULL(plain);
+        ASSERT_TRUE(break_editor_doc_load(plain, path));
+        ASSERT_EQ(break_editor_doc_entity_count(plain), 1u);
+        ASSERT_FALSE(break_editor_doc_has_component(plain, e,
+                                                    BREAK_EDITOR_COMPONENT_EXTRA_LAST));
+        break_editor_doc_destroy(plain);
+    }
+
+    /* reset keeps the registered type and its default bytes */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+    ASSERT_TRUE(break_editor_doc_component_info(doc, 2u, &info));
+    ASSERT_EQ(info.component_id, BREAK_EDITOR_COMPONENT_EXTRA_LAST);
+    BreakEditorEntityId f = break_editor_doc_add_entity(doc, "fresh");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, f, BREAK_EDITOR_COMPONENT_EXTRA_LAST));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(doc, f, BREAK_EDITOR_COMPONENT_EXTRA_LAST, 0u,
+                                               &level));
+    ASSERT_TRUE(level == 2.5f);
+    /* a type without default bytes starts all zero */
+    {
+        BreakEditorComponentDesc z = extra_desc(BREAK_EDITOR_COMPONENT_EXTRA_FIRST, "Zero");
+        z.default_bytes = NULL;
+        ASSERT_EQ(break_editor_doc_register_component(doc, &z), BREAK_EDITOR_COMPONENT_REG_OK);
+        ASSERT_TRUE(break_editor_doc_add_component(doc, f, BREAK_EDITOR_COMPONENT_EXTRA_FIRST));
+        level = 1.0f;
+        ASSERT_TRUE(break_editor_doc_get_field_f32(doc, f, BREAK_EDITOR_COMPONENT_EXTRA_FIRST,
+                                                   0u, &level));
+        ASSERT_TRUE(level == 0.0f);
+    }
+    break_editor_doc_destroy(doc);
+    (void)remove(path);
+    {
+        char side[600];
+        (void)snprintf(side, sizeof(side), "%s.editor.json", path);
+        (void)remove(side);
+    }
+}
+
+/* truncate drops the newest registered types, never the built-ins and
+ * never a type a live entity has; the World keeps the dropped sizes, so a
+ * re-registration with another size is refused until a reset. */
+TEST(truncate_components_and_world_sizes) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    BreakEditorComponentDesc a = extra_desc(70u, "Alpha");
+    BreakEditorComponentDesc b = extra_desc(71u, "Beta");
+    ASSERT_EQ(break_editor_doc_register_component(doc, &a), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_EQ(break_editor_doc_register_component(doc, &b), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_FALSE(break_editor_doc_truncate_components(NULL, 2u));
+    ASSERT_FALSE(break_editor_doc_truncate_components(doc, 1u));
+    ASSERT_FALSE(break_editor_doc_truncate_components(doc, 0u));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
+    ASSERT_TRUE(break_editor_doc_truncate_components(doc, 4u));
+    ASSERT_TRUE(break_editor_doc_truncate_components(doc, 100u));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
+
+    BreakEditorEntityId e = break_editor_doc_add_entity(doc, "e");
+    ASSERT_TRUE(break_editor_doc_add_component(doc, e, 71u));
+    ASSERT_FALSE(break_editor_doc_truncate_components(doc, 2u));
+    ASSERT_FALSE(break_editor_doc_truncate_components(doc, 3u));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
+    /* once no live entity has it, the newest type can go */
+    ASSERT_TRUE(break_editor_doc_remove_component(doc, e, 71u));
+    ASSERT_TRUE(break_editor_doc_add_component(doc, e, 70u));
+    ASSERT_FALSE(break_editor_doc_truncate_components(doc, 2u));
+    ASSERT_TRUE(break_editor_doc_truncate_components(doc, 3u));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+    ASSERT_FALSE(break_editor_doc_has_component(doc, e, 71u));
+    ASSERT_TRUE(break_editor_doc_has_component(doc, e, 70u));
+    {
+        BreakEditorComponentInfo info;
+        ASSERT_TRUE(break_editor_doc_component_info(doc, 2u, &info));
+        ASSERT_EQ(info.component_id, 70u);
+        ASSERT_FALSE(break_editor_doc_component_info(doc, 3u, &info));
+    }
+
+    /* the World still has 71 at 8 bytes: another size is refused */
+    b.size = 12u;
+    b.default_bytes = NULL;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &b), BREAK_EDITOR_COMPONENT_REG_BAD_SIZE);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 3u);
+    b.size = (u32)sizeof(ExtraStats);
+    ASSERT_EQ(break_editor_doc_register_component(doc, &b), BREAK_EDITOR_COMPONENT_REG_OK);
+    /* a size someone else registered in the World directly is binding too */
+    world_register_component(doc_world(doc), 72u, 16u);
+    {
+        BreakEditorComponentDesc c = extra_desc(72u, "Gamma");
+        ASSERT_EQ(break_editor_doc_register_component(doc, &c),
+                  BREAK_EDITOR_COMPONENT_REG_BAD_SIZE);
+        c.size = 16u;
+        c.default_bytes = NULL;
+        ASSERT_EQ(break_editor_doc_register_component(doc, &c), BREAK_EDITOR_COMPONENT_REG_OK);
+    }
+    /* a reset keeps registered types (re-registered in the fresh World) */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 5u);
+    ASSERT_EQ(doc_world(doc)->component_sizes[72u], 16u);
+    /* truncate, then reset: the fresh World only has the built-in types, so
+     * a dropped id takes any valid size again */
+    ASSERT_TRUE(break_editor_doc_truncate_components(doc, 2u));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 2u);
+    b.size = 12u;
+    ASSERT_EQ(break_editor_doc_register_component(doc, &b), BREAK_EDITOR_COMPONENT_REG_BAD_SIZE);
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_EQ(doc_world(doc)->component_sizes[71u], 0u);
+    ASSERT_EQ(break_editor_doc_register_component(doc, &b), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_EQ(doc_world(doc)->component_sizes[71u], 12u);
+    break_editor_doc_destroy(doc);
+}
+
 int main(void) {
     printf("=== test_editor_components ===\n");
     RUN_TEST(registry_enumeration);
@@ -1128,6 +1449,10 @@ int main(void) {
     RUN_TEST(component_bytes_survive_save_load);
     RUN_TEST(light_component_default_edit_undo_and_save_load);
     RUN_TEST(bool_field_default_edit_undo_type_gate_and_save_load);
+    RUN_TEST(register_component_rejections_change_nothing);
+    RUN_TEST(register_component_full);
+    RUN_TEST(registered_component_edits_undo_reset_and_save_load);
+    RUN_TEST(truncate_components_and_world_sizes);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
            g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;

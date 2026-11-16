@@ -254,9 +254,92 @@ TEST(plugin_host_translations_need_the_owner_window)
     break_editor_plugin_cmds_destroy(cmds);
 }
 
+static const BreakEditorField k_host_fields[1] = {
+    {"level", 0u, BREAK_EDITOR_FIELD_F32},
+};
+
+static BreakEditorComponentDesc host_desc(u32 id, const char *name)
+{
+    BreakEditorComponentDesc d;
+    d.component_id = id;
+    d.display_name = name;
+    d.size = 4u;
+    d.fields = k_host_fields;
+    d.field_count = 1u;
+    d.default_bytes = NULL;
+    return d;
+}
+
+/* add_component follows the load window and needs an attached doc; a failed
+ * load drops the types it registered; release keeps them. */
+TEST(plugin_host_components_follow_the_window)
+{
+    BreakEditorPluginCmds *cmds = break_editor_plugin_cmds_create(8u);
+    BreakEditorPluginHost *host = break_editor_plugin_host_create(cmds);
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(host);
+    ASSERT_NOT_NULL(doc);
+    const BreakEditorPluginApi *api = break_editor_plugin_host_api(host);
+    ASSERT_NOT_NULL(api->add_component);
+    BreakEditorComponentDesc a = host_desc(80u, "Alpha");
+    BreakEditorComponentDesc b = host_desc(81u, "Beta");
+    BreakEditorComponentDesc c = host_desc(82u, "Gamma");
+
+    /* no doc attached: refused inside a window */
+    u32 first = break_editor_plugin_host_begin_load(host);
+    ASSERT_TRUE(first != 0u);
+    ASSERT_EQ(api->add_component(api->host, &a), BREAK_EDITOR_COMPONENT_REG_INVALID);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, true));
+
+    break_editor_plugin_host_set_doc(NULL, doc);
+    break_editor_plugin_host_set_doc(host, doc);
+    /* outside a window */
+    ASSERT_EQ(api->add_component(api->host, &a), BREAK_EDITOR_COMPONENT_REG_INVALID);
+    ASSERT_EQ(api->add_component(NULL, &a), BREAK_EDITOR_COMPONENT_REG_INVALID);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 2u);
+
+    u32 second = break_editor_plugin_host_begin_load(host);
+    ASSERT_EQ(api->add_component(api->host, NULL), BREAK_EDITOR_COMPONENT_REG_INVALID);
+    ASSERT_EQ(api->add_component(api->host, &a), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_EQ(api->add_component(api->host, &a), BREAK_EDITOR_COMPONENT_REG_DUPLICATE);
+    /* attaching another doc inside a window is ignored */
+    break_editor_plugin_host_set_doc(host, NULL);
+    ASSERT_EQ(api->add_component(api->host, &b), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, true));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
+
+    /* a failed load drops only its own types */
+    ASSERT_TRUE(break_editor_plugin_host_begin_load(host) != 0u);
+    ASSERT_EQ(api->add_component(api->host, &c), BREAK_EDITOR_COMPONENT_REG_OK);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 5u);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, false));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
+    {
+        BreakEditorComponentInfo info;
+        ASSERT_TRUE(break_editor_doc_component_info(doc, 3u, &info));
+        ASSERT_EQ(info.component_id, 81u);
+    }
+
+    /* release keeps component types (entities may use them) */
+    ASSERT_EQ(break_editor_plugin_host_release(host, second), 0u);
+    ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
+
+    /* detach outside a window: refused again */
+    break_editor_plugin_host_set_doc(host, NULL);
+    ASSERT_TRUE(break_editor_plugin_host_begin_load(host) != 0u);
+    ASSERT_EQ(api->add_component(api->host, &c), BREAK_EDITOR_COMPONENT_REG_INVALID);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, false));
+    ASSERT_EQ(break_editor_doc_component_count(doc), 4u);
+
+    break_editor_plugin_host_destroy(host);
+    break_editor_doc_destroy(doc);
+    break_editor_plugin_cmds_destroy(cmds);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(plugin_host_null_handling);
     RUN_TEST(plugin_host_api_and_window_rules);
     RUN_TEST(plugin_host_sections_follow_owner_keys);
     RUN_TEST(plugin_host_translations_need_the_owner_window);
+    RUN_TEST(plugin_host_components_follow_the_window);
 TEST_MAIN_END()

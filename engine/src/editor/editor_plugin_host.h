@@ -16,6 +16,7 @@
  * inside a begin/end window; the commands it adds belong to that window's
  * owner key. Threading: editor shell thread only. */
 
+#include <editor/editor_components.h>
 #include <editor/editor_plugin_cmds.h>
 #include <editor/editor_plugin_sections.h>
 
@@ -34,6 +35,9 @@ typedef BreakEditorPluginSectionStatus (*BreakEditorPluginSetSectionTitleFn)(
     void *host, const char *id, const char *lang_tag, const char *title);
 
 typedef const char *(*BreakEditorPluginLangTagFn)(void *host);
+
+typedef BreakEditorComponentRegStatus (*BreakEditorPluginAddComponentFn)(
+    void *host, const BreakEditorComponentDesc *desc);
 
 /* Fields are only ever appended. A plugin checks api_version and that
  * struct_size covers the last field it uses. */
@@ -58,6 +62,13 @@ typedef struct BreakEditorPluginApi {
     /* Current editor language tag ("en-US", "zh-CN"); never NULL, callable
      * at any time, for example inside a section callback. */
     BreakEditorPluginLangTagFn lang_tag;
+    /* Registers an editable component type in the attached doc
+     * (break_editor_doc_register_component). Same load-window rule as
+     * add_command; INVALID without an attached doc. The registry copies the
+     * name, fields and default bytes, so the type stays usable for the
+     * editor session after the plugin unloads; a failed load drops the
+     * types it registered. */
+    BreakEditorPluginAddComponentFn add_component;
 } BreakEditorPluginApi;
 
 typedef struct BreakEditorPluginHost BreakEditorPluginHost;
@@ -69,13 +80,19 @@ BreakEditorPluginHost *break_editor_plugin_host_create(BreakEditorPluginCmds *cm
  * commands. NULL host is a no-op. */
 void break_editor_plugin_host_set_sections(BreakEditorPluginHost *host,
                                            BreakEditorPluginSections *sections);
+/* Attaches the doc that add_component registers types in (borrowed, may be
+ * NULL to detach; it must outlive the host). NULL host is a no-op, and so is
+ * a call while a load window is open. */
+void break_editor_plugin_host_set_doc(BreakEditorPluginHost *host, BreakEditorDoc *doc);
 /* Leaves the registered commands in place. NULL no-op. */
 void break_editor_plugin_host_destroy(BreakEditorPluginHost *host);
 const BreakEditorPluginApi *break_editor_plugin_host_api(BreakEditorPluginHost *host);
 /* Fresh non-zero owner key; 0 for NULL or while a window is open. */
 u32 break_editor_plugin_host_begin_load(BreakEditorPluginHost *host);
 /* Closes the window; loaded == false removes the owner's commands and
- * sections. False when no window was open. */
+ * sections and the component types registered in the window. False when no
+ * window was open. */
 bool break_editor_plugin_host_end_load(BreakEditorPluginHost *host, bool loaded);
-/* Removes the owner's commands and sections; returns how many in total. */
+/* Removes the owner's commands and sections; returns how many in total.
+ * Component types stay: entities and undo history may still use them. */
 u32 break_editor_plugin_host_release(BreakEditorPluginHost *host, u32 owner);
