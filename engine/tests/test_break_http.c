@@ -1150,6 +1150,376 @@ TEST(rollout_value_is_digits_in_range_and_nothing_else) {
     ASSERT_EQ(bp, 777u);                          /* untouched on every failure */
 }
 
+/* ---- certificate revocation lists ---- */
+
+/* A CA, a leaf for localhost signed by it, and CRLs the CA (or another CA)
+ * signs. Everything is written to temporary PEM files. */
+typedef struct CrlPki {
+    EVP_PKEY *ca_key;
+    X509 *ca;
+    EVP_PKEY *other_key;
+    X509 *other_ca;
+    char ca_path[300];
+    char leaf_path[300];
+    char leaf_key_path[300];
+    char crl_path[300];
+} CrlPki;
+
+static X509 *crl_make_cert(EVP_PKEY *key, EVP_PKEY *issuer_key, X509 *issuer, long serial,
+                           const char *cn, bool is_ca) {
+    X509 *x = X509_new();
+    X509_NAME *name = X509_NAME_new();
+    X509V3_CTX v3;
+    X509_EXTENSION *ext;
+    char san[64];
+    if (x == NULL || name == NULL) {
+        X509_free(x);
+        X509_NAME_free(name);
+        return NULL;
+    }
+    X509_set_version(x, 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(x), serial);
+    X509_gmtime_adj(X509_getm_notBefore(x), -24L * 3600L);
+    X509_gmtime_adj(X509_getm_notAfter(x), 30L * 24L * 3600L);
+    X509_set_pubkey(x, key);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (const unsigned char *)cn, -1, -1, 0);
+    X509_set_subject_name(x, name);
+    X509_set_issuer_name(x, issuer ? X509_get_subject_name(issuer) : name);
+    X509_NAME_free(name);
+    X509V3_set_ctx_nodb(&v3);
+    X509V3_set_ctx(&v3, issuer ? issuer : x, x, NULL, NULL, 0);
+    if (is_ca) {
+        ext = X509V3_EXT_conf_nid(NULL, &v3, NID_basic_constraints, "critical,CA:TRUE");
+        if (ext) { X509_add_ext(x, ext, -1); X509_EXTENSION_free(ext); }
+        ext = X509V3_EXT_conf_nid(NULL, &v3, NID_key_usage, "critical,keyCertSign,cRLSign");
+        if (ext) { X509_add_ext(x, ext, -1); X509_EXTENSION_free(ext); }
+    } else {
+        snprintf(san, sizeof(san), "DNS:%s", cn);
+        ext = X509V3_EXT_conf_nid(NULL, &v3, NID_subject_alt_name, san);
+        if (ext) { X509_add_ext(x, ext, -1); X509_EXTENSION_free(ext); }
+    }
+    if (X509_sign(x, issuer_key, EVP_sha256()) <= 0) {
+        X509_free(x);
+        return NULL;
+    }
+    return x;
+}
+
+static bool crl_write_pem_x509(const char *path, X509 *x) {
+    FILE *f = fopen(path, "wb");
+    bool ok;
+    if (f == NULL) return false;
+    ok = PEM_write_X509(f, x) == 1;
+    return fclose(f) == 0 && ok;
+}
+
+/* A CRL from `issuer` revoking `revoked_serial` (0: none), valid from
+ * `last_days` to `next_days` relative to now. */
+static X509_CRL *crl_make(EVP_PKEY *issuer_key, X509 *issuer, long revoked_serial, long last_days,
+                          long next_days) {
+    X509_CRL *crl = X509_CRL_new();
+    ASN1_TIME *t = ASN1_TIME_new();
+    if (crl == NULL || t == NULL) {
+        X509_CRL_free(crl);
+        ASN1_TIME_free(t);
+        return NULL;
+    }
+    X509_CRL_set_version(crl, 1);
+    X509_CRL_set_issuer_name(crl, X509_get_subject_name(issuer));
+    X509_gmtime_adj(t, last_days * 24L * 3600L);
+    X509_CRL_set1_lastUpdate(crl, t);
+    X509_gmtime_adj(t, next_days * 24L * 3600L);
+    X509_CRL_set1_nextUpdate(crl, t);
+    if (revoked_serial != 0) {
+        X509_REVOKED *r = X509_REVOKED_new();
+        ASN1_INTEGER *serial = ASN1_INTEGER_new();
+        ASN1_INTEGER_set(serial, revoked_serial);
+        X509_REVOKED_set_serialNumber(r, serial);
+        X509_gmtime_adj(t, -3600L);
+        X509_REVOKED_set_revocationDate(r, t);
+        X509_CRL_add0_revoked(crl, r);
+        ASN1_INTEGER_free(serial);
+    }
+    ASN1_TIME_free(t);
+    X509_CRL_sort(crl);
+    if (X509_CRL_sign(crl, issuer_key, EVP_sha256()) <= 0) {
+        X509_CRL_free(crl);
+        return NULL;
+    }
+    return crl;
+}
+
+static bool crl_write(const char *path, X509_CRL *crl) {
+    FILE *f = fopen(path, "wb");
+    bool ok;
+    if (f == NULL) return false;
+    ok = crl != NULL && PEM_write_X509_CRL(f, crl) == 1;
+    X509_CRL_free(crl);
+    return fclose(f) == 0 && ok;
+}
+
+#define CRL_LEAF_SERIAL 42L
+
+static bool crl_pki_init(CrlPki *p) {
+    EVP_PKEY *leaf_key = NULL;
+    X509 *leaf = NULL;
+    FILE *f;
+    bool ok = false;
+    memset(p, 0, sizeof(*p));
+    tmp_file(p->ca_path, sizeof(p->ca_path), "crl_ca");
+    tmp_file(p->leaf_path, sizeof(p->leaf_path), "crl_leaf");
+    tmp_file(p->leaf_key_path, sizeof(p->leaf_key_path), "crl_leaf_key");
+    tmp_file(p->crl_path, sizeof(p->crl_path), "crl_list");
+    p->ca_key = EVP_EC_gen("P-256");
+    p->other_key = EVP_EC_gen("P-256");
+    leaf_key = EVP_EC_gen("P-256");
+    if (p->ca_key == NULL || p->other_key == NULL || leaf_key == NULL) goto out;
+    p->ca = crl_make_cert(p->ca_key, p->ca_key, NULL, 1, "break test crl ca", true);
+    p->other_ca = crl_make_cert(p->other_key, p->other_key, NULL, 2, "break other ca", true);
+    if (p->ca == NULL || p->other_ca == NULL) goto out;
+    leaf = crl_make_cert(leaf_key, p->ca_key, p->ca, CRL_LEAF_SERIAL, "localhost", false);
+    if (leaf == NULL || !crl_write_pem_x509(p->ca_path, p->ca) ||
+        !crl_write_pem_x509(p->leaf_path, leaf)) {
+        goto out;
+    }
+    f = fopen(p->leaf_key_path, "wb");
+    if (f == NULL) goto out;
+    ok = PEM_write_PrivateKey(f, leaf_key, NULL, NULL, 0, NULL, NULL) == 1;
+    ok = fclose(f) == 0 && ok;
+out:
+    X509_free(leaf);
+    EVP_PKEY_free(leaf_key);
+    return ok;
+}
+
+static void crl_pki_free(CrlPki *p) {
+    remove(p->ca_path);
+    remove(p->leaf_path);
+    remove(p->leaf_key_path);
+    remove(p->crl_path);
+    X509_free(p->ca);
+    X509_free(p->other_ca);
+    EVP_PKEY_free(p->ca_key);
+    EVP_PKEY_free(p->other_key);
+}
+
+/* GET https://localhost:port/x (or http when `tls` is false) from a server
+ * presenting the CRL test leaf; `crl_file` NULL leaves revocation off. */
+static BreakHttpError crl_get(const CrlPki *p, bool tls, const char *crl_file) {
+    Server s;
+    char url[128];
+    u8 buf[16];
+    u64 got = 0;
+    BreakHttpConfig cfg;
+    BreakHttpError e;
+    static const char r[] = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = p->ca_path;
+    cfg.io_timeout_ms = 3000;
+    cfg.crl_file = crl_file;
+    if (!server_start_cert(&s, tls, r, sizeof(r) - 1u, p->leaf_path, p->leaf_key_path)) {
+        return BHTTP_ERR_CONNECT;
+    }
+    server_go(&s);
+    url_of(&s, tls ? "https" : "http", tls ? "localhost" : "127.0.0.1", "/x", url, sizeof(url));
+    e = break_http_get(&cfg, url, buf, sizeof(buf), &got);
+    server_stop(&s);
+    return e;
+}
+
+TEST(a_crl_that_does_not_list_the_leaf_is_accepted_control) {
+    CrlPki p;
+    ASSERT_TRUE(crl_pki_init(&p));
+    ASSERT_TRUE(crl_write(p.crl_path, crl_make(p.ca_key, p.ca, 0, -1, 7)));
+    ASSERT_EQ(crl_get(&p, true, p.crl_path), BHTTP_OK);
+    /* a CRL revoking another serial does not touch the leaf */
+    ASSERT_TRUE(crl_write(p.crl_path, crl_make(p.ca_key, p.ca, CRL_LEAF_SERIAL + 1, -1, 7)));
+    ASSERT_EQ(crl_get(&p, true, p.crl_path), BHTTP_OK);
+    crl_pki_free(&p);
+}
+
+TEST(a_revoked_leaf_is_rejected) {
+    CrlPki p;
+    ASSERT_TRUE(crl_pki_init(&p));
+    ASSERT_TRUE(crl_write(p.crl_path, crl_make(p.ca_key, p.ca, CRL_LEAF_SERIAL, -1, 7)));
+    ASSERT_EQ(crl_get(&p, true, p.crl_path), BHTTP_ERR_TLS);
+    /* without a CRL file the same leaf still connects: the check is opt-in */
+    ASSERT_EQ(crl_get(&p, true, NULL), BHTTP_OK);
+    ASSERT_EQ(crl_get(&p, true, ""), BHTTP_OK);
+    /* plain loopback http ignores the CRL file */
+    ASSERT_EQ(crl_get(&p, false, p.crl_path), BHTTP_OK);
+    crl_pki_free(&p);
+}
+
+TEST(a_crl_gap_expiry_or_foreign_signer_is_rejected) {
+    CrlPki p;
+    ASSERT_TRUE(crl_pki_init(&p));
+    /* only another CA's CRL: the leaf's issuer has none */
+    ASSERT_TRUE(crl_write(p.crl_path, crl_make(p.other_key, p.other_ca, 0, -1, 7)));
+    ASSERT_EQ(crl_get(&p, true, p.crl_path), BHTTP_ERR_TLS);
+    /* the issuer's CRL, but past its nextUpdate */
+    ASSERT_TRUE(crl_write(p.crl_path, crl_make(p.ca_key, p.ca, 0, -10, -1)));
+    ASSERT_EQ(crl_get(&p, true, p.crl_path), BHTTP_ERR_TLS);
+    /* names the issuer but is signed with another key */
+    ASSERT_TRUE(crl_write(p.crl_path, crl_make(p.other_key, p.ca, 0, -1, 7)));
+    ASSERT_EQ(crl_get(&p, true, p.crl_path), BHTTP_ERR_TLS);
+    crl_pki_free(&p);
+}
+
+/* root -> intermediate -> leaf for localhost. The server sends the leaf and
+ * the intermediate; the client trusts only the root. */
+typedef struct CrlChain {
+    EVP_PKEY *root_key;
+    EVP_PKEY *mid_key;
+    X509 *root;
+    X509 *mid;
+    char root_path[300];
+    char chain_path[300];
+    char leaf_key_path[300];
+    char crl_path[300];
+} CrlChain;
+
+#define CRL_MID_SERIAL 5L
+
+static bool crl_chain_init(CrlChain *c) {
+    EVP_PKEY *leaf_key = NULL;
+    X509 *leaf = NULL;
+    FILE *f;
+    bool ok = false;
+    memset(c, 0, sizeof(*c));
+    tmp_file(c->root_path, sizeof(c->root_path), "crl_root");
+    tmp_file(c->chain_path, sizeof(c->chain_path), "crl_chain");
+    tmp_file(c->leaf_key_path, sizeof(c->leaf_key_path), "crl_chain_key");
+    tmp_file(c->crl_path, sizeof(c->crl_path), "crl_chain_list");
+    c->root_key = EVP_EC_gen("P-256");
+    c->mid_key = EVP_EC_gen("P-256");
+    leaf_key = EVP_EC_gen("P-256");
+    if (c->root_key == NULL || c->mid_key == NULL || leaf_key == NULL) goto out;
+    c->root = crl_make_cert(c->root_key, c->root_key, NULL, 1, "break test root", true);
+    if (c->root == NULL) goto out;
+    c->mid = crl_make_cert(c->mid_key, c->root_key, c->root, CRL_MID_SERIAL,
+                           "break test intermediate", true);
+    if (c->mid == NULL) goto out;
+    leaf = crl_make_cert(leaf_key, c->mid_key, c->mid, CRL_LEAF_SERIAL, "localhost", false);
+    if (leaf == NULL || !crl_write_pem_x509(c->root_path, c->root)) goto out;
+    f = fopen(c->chain_path, "wb");
+    if (f == NULL) goto out;
+    ok = PEM_write_X509(f, leaf) == 1 && PEM_write_X509(f, c->mid) == 1;
+    ok = fclose(f) == 0 && ok;
+    if (!ok) goto out;
+    f = fopen(c->leaf_key_path, "wb");
+    if (f == NULL) {
+        ok = false;
+        goto out;
+    }
+    ok = PEM_write_PrivateKey(f, leaf_key, NULL, NULL, 0, NULL, NULL) == 1;
+    ok = fclose(f) == 0 && ok;
+out:
+    X509_free(leaf);
+    EVP_PKEY_free(leaf_key);
+    return ok;
+}
+
+static void crl_chain_free(CrlChain *c) {
+    remove(c->root_path);
+    remove(c->chain_path);
+    remove(c->leaf_key_path);
+    remove(c->crl_path);
+    X509_free(c->root);
+    X509_free(c->mid);
+    EVP_PKEY_free(c->root_key);
+    EVP_PKEY_free(c->mid_key);
+}
+
+/* Writes `a` and then `b` (NULL: only `a`) to one PEM file. */
+static bool crl_write_two(const char *path, X509_CRL *a, X509_CRL *b) {
+    FILE *f = fopen(path, "wb");
+    bool ok;
+    if (f == NULL) {
+        X509_CRL_free(a);
+        X509_CRL_free(b);
+        return false;
+    }
+    ok = a != NULL && PEM_write_X509_CRL(f, a) == 1;
+    if (b != NULL) ok = ok && PEM_write_X509_CRL(f, b) == 1;
+    X509_CRL_free(a);
+    X509_CRL_free(b);
+    return fclose(f) == 0 && ok;
+}
+
+static BreakHttpError crl_chain_get(const CrlChain *c) {
+    Server s;
+    char url[128];
+    u8 buf[16];
+    u64 got = 0;
+    BreakHttpConfig cfg;
+    BreakHttpError e;
+    static const char r[] = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = c->root_path;
+    cfg.io_timeout_ms = 3000;
+    cfg.crl_file = c->crl_path;
+    if (!server_start_cert(&s, true, r, sizeof(r) - 1u, c->chain_path, c->leaf_key_path)) {
+        return BHTTP_ERR_CONNECT;
+    }
+    server_go(&s);
+    url_of(&s, "https", "localhost", "/x", url, sizeof(url));
+    e = break_http_get(&cfg, url, buf, sizeof(buf), &got);
+    server_stop(&s);
+    return e;
+}
+
+/* The intermediate CA is checked as well as the leaf: a CA revoked by the
+ * root is refused even when the leaf is not revoked, and the root's CRL
+ * must be in the file. */
+TEST(every_certificate_in_the_chain_needs_a_crl_from_its_issuer) {
+    CrlChain c;
+    ASSERT_TRUE(crl_chain_init(&c));
+    ASSERT_TRUE(crl_write_two(c.crl_path, crl_make(c.mid_key, c.mid, 0, -1, 7),
+                              crl_make(c.root_key, c.root, 0, -1, 7)));
+    ASSERT_EQ(crl_chain_get(&c), BHTTP_OK);
+    ASSERT_TRUE(crl_write_two(c.crl_path, crl_make(c.mid_key, c.mid, 0, -1, 7),
+                              crl_make(c.root_key, c.root, CRL_MID_SERIAL, -1, 7)));
+    ASSERT_EQ(crl_chain_get(&c), BHTTP_ERR_TLS);
+    ASSERT_TRUE(crl_write_two(c.crl_path, crl_make(c.mid_key, c.mid, 0, -1, 7), NULL));
+    ASSERT_EQ(crl_chain_get(&c), BHTTP_ERR_TLS);
+    /* the leaf revoked by the intermediate */
+    ASSERT_TRUE(crl_write_two(c.crl_path, crl_make(c.mid_key, c.mid, CRL_LEAF_SERIAL, -1, 7),
+                              crl_make(c.root_key, c.root, 0, -1, 7)));
+    ASSERT_EQ(crl_chain_get(&c), BHTTP_ERR_TLS);
+    crl_chain_free(&c);
+}
+
+TEST(an_unreadable_or_empty_crl_file_fails_before_connecting) {
+    CrlPki p;
+    Server s;
+    char url[128];
+    u8 buf[16];
+    u64 got = 0;
+    BreakHttpConfig cfg;
+    FILE *f;
+    ASSERT_TRUE(crl_pki_init(&p));
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = p.ca_path;
+    cfg.io_timeout_ms = 3000;
+    ASSERT_TRUE(server_start_cert(&s, true, "", 0u, p.leaf_path, p.leaf_key_path));
+    server_go(&s);
+    url_of(&s, "https", "localhost", "/x", url, sizeof(url));
+    cfg.crl_file = "/nonexistent/break_http_crl.pem";
+    ASSERT_EQ(break_http_get(&cfg, url, buf, sizeof(buf), &got), BHTTP_ERR_URL);
+    /* a PEM file with a certificate but no CRL */
+    cfg.crl_file = p.ca_path;
+    ASSERT_EQ(break_http_get(&cfg, url, buf, sizeof(buf), &got), BHTTP_ERR_URL);
+    f = fopen(p.crl_path, "wb");
+    ASSERT_NOT_NULL(f);
+    fclose(f);
+    cfg.crl_file = p.crl_path;
+    ASSERT_EQ(break_http_get(&cfg, url, buf, sizeof(buf), &got), BHTTP_ERR_URL);
+    ASSERT_FALSE(atomic_load(&s.saw_connection));
+    server_stop(&s);
+    crl_pki_free(&p);
+}
+
 TEST_MAIN_BEGIN()
     signal(SIGPIPE, SIG_DFL);
     RUN_TEST(get_returns_a_content_length_body);
@@ -1195,4 +1565,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(update_fetch_asks_for_objects_by_hash_and_range);
     RUN_TEST(update_fetch_refuses_bad_object_names_without_connecting);
     RUN_TEST(rollout_value_is_digits_in_range_and_nothing_else);
+    RUN_TEST(a_crl_that_does_not_list_the_leaf_is_accepted_control);
+    RUN_TEST(a_revoked_leaf_is_rejected);
+    RUN_TEST(a_crl_gap_expiry_or_foreign_signer_is_rejected);
+    RUN_TEST(an_unreadable_or_empty_crl_file_fails_before_connecting);
+    RUN_TEST(every_certificate_in_the_chain_needs_a_crl_from_its_issuer);
 TEST_MAIN_END()

@@ -11356,3 +11356,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 插件 API 追加 `add_panel`、`set_panel_title`；宿主新增 `break_editor_plugin_host_set_panels`，`release` 与加载失败时移除面板。
 - shell 底部工具窗口增加第四个标签「Plugins / 插件」（`editor-plugins-panel`），按注册顺序显示可见面板，空时显示提示；页面可见时 tick 最多每 250 ms 重建，`break_editor_shell_refresh_plugin_panels` 可立即重建。设置项 `bottom_tab` 允许 0..3。
 - 新增 `test_editor_plugin_panels`（5 项），`test_editor_plugin_host`、`test_editor_settings` 各 +1，`test_editor_shell` +2 并更新标签页与设置恢复用例，`test_editor_plugin_load` 增加真实插件面板断言。先 RED 后 GREEN，53 项变异全部被捕获。
+
+### 2026-11-16 break_http certificate revocation lists
+
+- `BreakHttpConfig.crl_file`：从本地 PEM 文件加载 CRL，握手时检查整条证书链（`X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL`）；吊销、缺少签发者 CRL、CRL 过期或签名错误均为 `ERR_TLS`，文件不可读或没有 CRL 为 `ERR_URL`（不建立连接）。不设置时行为不变。
+- `test_break_http` 新增 5 项（测试内生成 CA、中间 CA、叶子证书和 CRL），共 48 项。先 RED 后 GREEN，9 项变异全部被捕获。仍缺：OCSP、按分发点下载 CRL。

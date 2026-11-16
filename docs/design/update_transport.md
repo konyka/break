@@ -72,3 +72,7 @@ Mutations that turn it red: the server ignoring Range, the client ignoring the p
 - 比较使用 `CRYPTO_memcmp`。明文 http（仅 loopback）忽略钉扎。
 
 测试在 `engine/tests/test_break_http.c`：列表第二项匹配时通过、不匹配为 TLS 错误、钉扎不能绕过错误 CA、参数校验、握手超时、loopback http 忽略钉扎。
+
+## 补充（2026-11-16）：证书吊销列表（CRL）
+
+`BreakHttpConfig` 新增可选字段 `crl_file`（PEM，可含多个 CRL）。为空时行为不变。设置后，握手时链上每张证书（叶子和各级 CA）都要用其签发者的 CRL 检查：已吊销、签发者在文件中没有 CRL、CRL 已过期或签名不对，都返回 `ERR_TLS`。文件读不了或其中没有 CRL，在建立任何 socket 之前返回 `ERR_URL`。明文 loopback http 忽略此字段。上文第 4 节中「不检查吊销（CRL/OCSP）」一项里的 CRL 部分由此交付；OCSP、OCSP stapling、按分发点下载 CRL 和 delta CRL 仍未实现。测试在 `engine/tests/test_break_http.c`（新增 5 项，含三级证书链），设计与验证见 `docs/superpowers/plans/2026-11-16-break-http-crl.md`。

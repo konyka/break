@@ -8,6 +8,7 @@
 #include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
@@ -397,6 +398,28 @@ static BreakHttpError io_error(const Conn *c, long code) {
     return c->tls ? BHTTP_ERR_TLS : BHTTP_ERR_PROTOCOL;
 }
 
+/* Adds every CRL in the PEM file to the store and turns on CRL checking
+ * for the whole chain. False when the file cannot be read or holds no CRL. */
+static bool tls_load_crls(X509_STORE *store, const char *crl_file) {
+    FILE *f = fopen(crl_file, "rb");
+    X509_CRL *crl;
+    u32 loaded = 0u;
+    if (f == NULL) return false;
+    while ((crl = PEM_read_X509_CRL(f, NULL, NULL, NULL)) != NULL) {
+        /* add fails only when out of memory; the issuer is then left
+         * without a CRL, which the chain check refuses */
+        (void)X509_STORE_add_crl(store, crl);
+        X509_CRL_free(crl);
+        loaded++;
+    }
+    (void)fclose(f);
+    ERR_clear_error(); /* the read loop ends on a "no start line" error */
+    if (loaded == 0u) return false;
+    /* only sets flag bits; it cannot fail */
+    (void)X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);
+    return true;
+}
+
 static SSL_CTX *tls_ctx_new(const char *ca_file) {
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
     if (ctx == NULL) return NULL;
@@ -660,6 +683,11 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
         if (c.ctx == NULL) {
             ERR_clear_error();
             return BHTTP_ERR_TLS;
+        }
+        if (cfg->crl_file != NULL && cfg->crl_file[0] != '\0' &&
+            !tls_load_crls(SSL_CTX_get_cert_store(c.ctx), cfg->crl_file)) {
+            conn_close(&c);
+            return BHTTP_ERR_URL;
         }
     }
     e = tcp_connect(u, !u->https, connect_ms, &c.fd);

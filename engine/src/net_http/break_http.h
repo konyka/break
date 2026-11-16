@@ -63,6 +63,14 @@ typedef struct BreakHttpConfig {
      * NULL pointer, is ERR_URL before any socket. Ignored for loopback http. */
     const u8 *spki_sha256_pins;
     u32 spki_pin_count;
+    /* Optional PEM file with one or more certificate revocation lists. When
+     * set (non-empty), every certificate in the verified chain (the leaf and
+     * each CA) is checked during the handshake against a CRL from its
+     * issuer: a revoked certificate, an issuer with no CRL in the file, an
+     * expired CRL or a CRL with a bad signature is ERR_TLS. A file that
+     * cannot be read or holds no CRL is ERR_URL before any socket. No OCSP,
+     * no CRL download. Ignored for loopback http. */
+    const char *crl_file;
 } BreakHttpConfig;
 
 typedef enum BreakHttpError {
