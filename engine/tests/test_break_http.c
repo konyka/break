@@ -1670,9 +1670,10 @@ static void proxy_url_of(const Proxy *p, char *out, size_t cap) {
 
 /* https GET of <host>:<target port>/x through a scripted proxy. relay=false
  * leaves the target unreachable through the proxy. */
-static BreakHttpError proxied_get(const char *proxy_reply, size_t reply_len, bool relay,
-                                  const char *host, const char *ca, Proxy *p, Server *s,
-                                  u8 *out, u64 cap, u64 *got) {
+static BreakHttpError proxied_get_auth(const char *proxy_reply, size_t reply_len, bool relay,
+                                       const char *host, const char *ca, const char *user,
+                                       const char *password, Proxy *p, Server *s, u8 *out,
+                                       u64 cap, u64 *got) {
     static const char r[] = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
     char url[128], purl[64];
     BreakHttpConfig cfg;
@@ -1690,11 +1691,20 @@ static BreakHttpError proxied_get(const char *proxy_reply, size_t reply_len, boo
     proxy_go(p);
     proxy_url_of(p, purl, sizeof(purl));
     cfg.proxy = purl;
+    cfg.proxy_user = user;
+    cfg.proxy_password = password;
     url_of(s, "https", host, "/x", url, sizeof(url));
     e = break_http_get(&cfg, url, out, cap, got);
     proxy_stop(p);
     server_stop(s);
     return e;
+}
+
+static BreakHttpError proxied_get(const char *proxy_reply, size_t reply_len, bool relay,
+                                  const char *host, const char *ca, Proxy *p, Server *s,
+                                  u8 *out, u64 cap, u64 *got) {
+    return proxied_get_auth(proxy_reply, reply_len, relay, host, ca, NULL, NULL, p, s, out, cap,
+                            got);
 }
 
 TEST(https_through_a_connect_proxy_reaches_the_target) {
@@ -1919,6 +1929,145 @@ TEST(plain_http_ignores_the_proxy_and_keeps_the_loopback_rule) {
     ASSERT_EQ(p.head_len, 0u);
 }
 
+/* the CONNECT head a proxy sees for credentials user/password (or none) */
+static bool connect_head_with(const char *user, const char *password, char *head, size_t cap) {
+    static const char r[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
+    Proxy p;
+    Server s;
+    u8 buf[16];
+    u64 got;
+    if (proxied_get_auth(r, sizeof(r) - 1u, false, "localhost", CERT, user, password, &p, &s, buf,
+                         sizeof(buf), &got) != BHTTP_ERR_STATUS) {
+        return false;
+    }
+    snprintf(head, cap, "%s", p.head);
+    return true;
+}
+
+static bool head_has_auth(const char *head, const char *b64) {
+    char want[600];
+    snprintf(want, sizeof(want), "\r\nProxy-Authorization: Basic %s\r\n", b64);
+    return strstr(head, want) != NULL;
+}
+
+TEST(proxy_credentials_go_only_into_the_connect_request) {
+    Proxy p;
+    Server s;
+    u8 buf[16];
+    u64 got = 0;
+    char want[200];
+    ASSERT_EQ(proxied_get_auth(PROXY_OK, sizeof(PROXY_OK) - 1u, true, "localhost", CERT, "Aladdin",
+                               "open sesame", &p, &s, buf, sizeof(buf), &got),
+              BHTTP_OK);
+    ASSERT_EQ(got, 5u);
+    snprintf(want, sizeof(want),
+             "CONNECT localhost:%u HTTP/1.1\r\nHost: localhost:%u\r\nUser-Agent: break-http/1\r\n"
+             "Proxy-Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==\r\n\r\n",
+             (unsigned)s.port, (unsigned)s.port);
+    ASSERT_STR_EQ(p.head, want);
+    ASSERT_TRUE(strstr(s.request, "Proxy-Authorization") == NULL);
+    ASSERT_TRUE(strstr(s.request, "QWxhZGRp") == NULL);
+}
+
+TEST(proxy_credentials_encode_every_base64_remainder_and_the_maximum) {
+    char head[8192];
+    char user[256], pass[256];
+    ASSERT_TRUE(connect_head_with("a", "b", head, sizeof(head))); /* "a:b" 3 bytes */
+    ASSERT_TRUE(head_has_auth(head, "YTpi"));
+    ASSERT_TRUE(connect_head_with("a", "bc", head, sizeof(head))); /* 4 bytes */
+    ASSERT_TRUE(head_has_auth(head, "YTpiYw=="));
+    ASSERT_TRUE(connect_head_with("ab", "cd", head, sizeof(head))); /* 5 bytes */
+    ASSERT_TRUE(head_has_auth(head, "YWI6Y2Q="));
+    ASSERT_TRUE(connect_head_with("~ }", "\x7e", head, sizeof(head)));
+    ASSERT_TRUE(head_has_auth(head, "fiB9On4="));
+    memset(user, 'u', 255);
+    user[255] = '\0';
+    memset(pass, 'p', 255);
+    pass[255] = '\0';
+    ASSERT_TRUE(connect_head_with(user, pass, head, sizeof(head)));
+    {
+        /* 511 bytes -> 684 base64 characters ending in "==" */
+        const char *h = strstr(head, "Proxy-Authorization: Basic ");
+        const char *end;
+        ASSERT_TRUE(h != NULL);
+        h += 27;
+        end = strstr(h, "\r\n");
+        ASSERT_TRUE(end != NULL);
+        ASSERT_EQ((size_t)(end - h), 684u);
+        ASSERT_TRUE(strncmp(h, "dXV1", 4) == 0);
+        ASSERT_TRUE(strncmp(end - 2, "==", 2) == 0);
+    }
+    ASSERT_TRUE(connect_head_with(NULL, NULL, head, sizeof(head)));
+    ASSERT_TRUE(strstr(head, "Proxy-Authorization") == NULL);
+    ASSERT_TRUE(connect_head_with("", "", head, sizeof(head)));
+    ASSERT_TRUE(strstr(head, "Proxy-Authorization") == NULL);
+}
+TEST(invalid_proxy_credentials_are_refused_before_any_socket) {
+    static char long_user[257];
+    static const struct {
+        const char *proxy, *user, *password;
+    } bad[] = {
+        {"http://127.0.0.1:9", "a", NULL},
+        {"http://127.0.0.1:9", NULL, "b"},
+        {"http://127.0.0.1:9", "a", ""},
+        {"http://127.0.0.1:9", "", "b"},
+        {"http://127.0.0.1:9", "a:b", "c"},
+        {"http://127.0.0.1:9", "a\r\nX: y", "c"},
+        {"http://127.0.0.1:9", "a", "b\n"},
+        {"http://127.0.0.1:9", "a\t", "b"},
+        {"http://127.0.0.1:9", "a", "b\x7f"},
+        {"http://127.0.0.1:9", "\xc3\xa9", "b"},
+        {"http://127.0.0.1:9", long_user, "b"},
+        {"http://127.0.0.1:9", "a", long_user},
+        {NULL, "a", "b"},
+        {"", "a", "b"}};
+    BreakHttpConfig cfg;
+    u8 buf[8];
+    u64 got = 99;
+    memset(long_user, 'u', 256);
+    long_user[256] = '\0';
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = CERT;
+    cfg.connect_timeout_ms = 200;
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        cfg.proxy = bad[i].proxy;
+        cfg.proxy_user = bad[i].user;
+        cfg.proxy_password = bad[i].password;
+        if (break_http_get(&cfg, "https://192.0.2.1:9/x", buf, sizeof(buf), &got) != BHTTP_ERR_URL) {
+            printf("    accepted credentials %zu\n", i);
+        }
+        ASSERT_EQ(break_http_get(&cfg, "https://192.0.2.1:9/x", buf, sizeof(buf), &got), BHTTP_ERR_URL);
+        ASSERT_EQ(got, 0u);
+        ASSERT_EQ(break_http_get(&cfg, "http://127.0.0.1:9/x", buf, sizeof(buf), &got), BHTTP_ERR_URL);
+    }
+}
+
+TEST(plain_http_sends_no_proxy_credentials) {
+    Proxy p;
+    Server s;
+    char url[128], purl[64];
+    u8 buf[16];
+    u64 got = 0;
+    BreakHttpConfig cfg;
+    static const char r[] = OK200(2) "hi";
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.io_timeout_ms = 3000;
+    ASSERT_TRUE(proxy_start(&p, PROXY_OK, sizeof(PROXY_OK) - 1u, 0u));
+    ASSERT_TRUE(server_start(&s, false, r, sizeof(r) - 1u));
+    proxy_go(&p);
+    server_go(&s);
+    proxy_url_of(&p, purl, sizeof(purl));
+    cfg.proxy = purl;
+    cfg.proxy_user = "Aladdin";
+    cfg.proxy_password = "open sesame";
+    url_of(&s, "http", "127.0.0.1", "/x", url, sizeof(url));
+    ASSERT_EQ(break_http_get(&cfg, url, buf, sizeof(buf), &got), BHTTP_OK);
+    server_stop(&s);
+    proxy_stop(&p);
+    ASSERT_EQ(p.head_len, 0u);
+    ASSERT_TRUE(strstr(s.request, "Proxy-Authorization") == NULL);
+}
+
 TEST_MAIN_BEGIN()
     signal(SIGPIPE, SIG_DFL);
     RUN_TEST(get_returns_a_content_length_body);
@@ -1978,4 +2127,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_silent_proxy_times_out_within_the_io_budget);
     RUN_TEST(an_unreachable_proxy_is_a_connect_error_and_need_not_be_loopback);
     RUN_TEST(plain_http_ignores_the_proxy_and_keeps_the_loopback_rule);
+    RUN_TEST(proxy_credentials_go_only_into_the_connect_request);
+    RUN_TEST(proxy_credentials_encode_every_base64_remainder_and_the_maximum);
+    RUN_TEST(invalid_proxy_credentials_are_refused_before_any_socket);
+    RUN_TEST(plain_http_sends_no_proxy_credentials);
 TEST_MAIN_END()

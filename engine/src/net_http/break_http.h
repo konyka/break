@@ -16,7 +16,8 @@
  *     authentication, no keep-alive: one request per connection.
  *   - An optional forward proxy (BreakHttpConfig.proxy) carries https only,
  *     through an HTTP CONNECT tunnel; TLS still verifies the target, so the
- *     proxy cannot impersonate it. Plain http ignores the proxy.
+ *     proxy cannot impersonate it. Plain http ignores the proxy. Basic
+ *     proxy credentials go in the CONNECT request only.
  *   - Every size is bounded by the caller's buffer: the status line plus
  *     headers are at most 8 KiB and 64 header lines; the body must fit the
  *     buffer or the call fails with ERR_TOO_BIG before reading it.
@@ -83,8 +84,16 @@ typedef struct BreakHttpConfig {
      * bytes after its head are ERR_PROTOCOL, and the exchange counts against
      * io_timeout_ms. CA, host name, pins and CRL are then checked against
      * the target. Plain http targets ignore the proxy and keep the
-     * loopback-only rule. No proxy authentication. */
+     * loopback-only rule. */
     const char *proxy;
+    /* Optional Basic credentials for the proxy: both set to 1..255 printable
+     * ASCII bytes (0x20..0x7e, no ':' in the user), or both NULL/empty for
+     * none. Exactly one set, a control or non-ASCII byte, or credentials
+     * without a proxy are ERR_URL before any socket. They are sent as
+     * "Proxy-Authorization: Basic ..." in the CONNECT request only, never to
+     * the target; the proxy hop is plain TCP, so they are visible on it. */
+    const char *proxy_user;
+    const char *proxy_password;
 } BreakHttpConfig;
 
 typedef enum BreakHttpError {

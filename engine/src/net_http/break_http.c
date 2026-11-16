@@ -674,6 +674,63 @@ static BreakHttpError read_head(Conn *c, u8 *head, usize cap, usize *used, usize
     }
 }
 
+/* A non-empty string of at most 255 printable ASCII bytes; `no_colon` also
+ * bans ':' (the Basic user). */
+static bool credential_ok(const char *s, bool no_colon) {
+    usize n = strnlen(s, 256u), i;
+    if (n > 255u) return false;
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x20u || c > 0x7eu || (no_colon && c == ':')) return false;
+    }
+    return true;
+}
+
+/* Both NULL/empty = no credentials, which is the only valid form without a
+ * proxy; otherwise both must be a valid pair. */
+static bool proxy_credentials_ok(const BreakHttpConfig *cfg, bool has_proxy) {
+    bool has_user = cfg->proxy_user != NULL && cfg->proxy_user[0] != '\0';
+    bool has_password = cfg->proxy_password != NULL && cfg->proxy_password[0] != '\0';
+    if (!has_user && !has_password) return true;
+    if (!has_user || !has_password || !has_proxy) return false;
+    return credential_ok(cfg->proxy_user, true) && credential_ok(cfg->proxy_password, false);
+}
+
+/* base64 of "user:password" into out (>= 4 * ceil((ulen + plen + 1) / 3)). */
+static void basic_credentials(const char *user, const char *password, char *out) {
+    static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    u8 in[511];
+    usize n, i = 0;
+    memcpy(in, user, strlen(user));
+    n = strlen(user);
+    in[n++] = ':';
+    memcpy(in + n, password, strlen(password));
+    n += strlen(password);
+    while (i + 3u <= n) {
+        u32 v = ((u32)in[i] << 16) | ((u32)in[i + 1u] << 8) | (u32)in[i + 2u];
+        *out++ = tbl[(v >> 18) & 63u];
+        *out++ = tbl[(v >> 12) & 63u];
+        *out++ = tbl[(v >> 6) & 63u];
+        *out++ = tbl[v & 63u];
+        i += 3u;
+    }
+    if (i < n) {
+        u32 v = (u32)in[i] << 16;
+        *out++ = tbl[(v >> 18) & 63u];
+        if (i + 1u < n) {
+            v |= (u32)in[i + 1u] << 8;
+            *out++ = tbl[(v >> 12) & 63u];
+            *out++ = tbl[(v >> 6) & 63u];
+            *out++ = '=';
+        } else {
+            *out++ = tbl[(v >> 12) & 63u];
+            *out++ = '=';
+            *out++ = '=';
+        }
+    }
+    *out = '\0';
+}
+
 /* "http://host[:port][/]": nothing else is a proxy. */
 static bool parse_proxy(const char *s, Url *p) {
     if (!parse_url(s, p) || p->https) return false;
@@ -684,18 +741,24 @@ static bool parse_proxy(const char *s, Url *p) {
  * the total I/O budget. Nothing past the proxy's head may arrive with it:
  * the next bytes on the socket must be the target's TLS handshake (later
  * stray bytes reach TLS and fail the handshake). */
-static BreakHttpError proxy_connect(Conn *c, const Url *u) {
-    char req[BREAK_HTTP_MAX_URL];
+static BreakHttpError proxy_connect(Conn *c, const Url *u, const BreakHttpConfig *cfg) {
+    char req[BREAK_HTTP_MAX_URL + 1024];
     char authority[300];
+    char auth[800] = "";
     u8 head[BREAK_HTTP_MAX_HEAD];
     usize used, len;
     Head h;
     BreakHttpError e;
     int n, w;
     snprintf(authority, sizeof(authority), u->host_is_v6 ? "[%s]:%s" : "%s:%s", u->host, u->port);
+    if (cfg->proxy_user != NULL && cfg->proxy_user[0] != '\0') {
+        char b64[700];
+        basic_credentials(cfg->proxy_user, cfg->proxy_password, b64);
+        snprintf(auth, sizeof(auth), "Proxy-Authorization: Basic %s\r\n", b64);
+    }
     n = snprintf(req, sizeof(req),
-                 "CONNECT %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: break-http/1\r\n\r\n",
-                 authority, authority);
+                 "CONNECT %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: break-http/1\r\n%s\r\n",
+                 authority, authority, auth);
     if (n <= 0 || (usize)n >= sizeof(req)) return BHTTP_ERR_URL;
     w = conn_write_all(c, (const u8 *)req, (usize)n);
     if (w != 0) return io_error(c, w);
@@ -733,6 +796,10 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
         if (!parse_proxy(cfg->proxy, &proxy)) return BHTTP_ERR_URL;
         use_proxy = u->https;
     }
+    if (cfg != NULL) {
+        bool have_proxy = cfg->proxy != NULL && cfg->proxy[0] != '\0';
+        if (!proxy_credentials_ok(cfg, have_proxy)) return BHTTP_ERR_URL;
+    }
     if (u->https) {
         if (cfg == NULL || cfg->ca_file == NULL || cfg->ca_file[0] == '\0') return BHTTP_ERR_URL;
         if (cfg->spki_pin_count > BREAK_HTTP_MAX_PINS ||
@@ -757,7 +824,7 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
     }
     c.deadline = now_ms() + io_ms;
     if (use_proxy) {
-        e = proxy_connect(&c, u);
+        e = proxy_connect(&c, u, cfg);
         if (e != BHTTP_OK) goto done;
     }
     if (u->https) {

@@ -90,3 +90,9 @@ Mutations that turn it red: the server ignoring Range, the client ignoring the p
 5. CONNECT 交换计入 `io_timeout_ms` 总预算。
 
 明文 http 目标忽略代理，仍只允许回环地址。不支持代理认证（407 返回 `ERR_STATUS`）、https 代理和从环境变量读取代理。测试在 `engine/tests/test_break_http.c`（新增 9 项，脚本化代理线程转发到 TLS 服务器），设计与验证见 `docs/superpowers/plans/2026-11-16-http-connect-proxy.md`。
+
+## 补充（2026-11-16）：代理 Basic 认证
+
+`BreakHttpConfig` 新增可选字段 `proxy_user`、`proxy_password`。两者都为 NULL 或空串时不发送凭据。否则两者都必须是 1..255 字节的可打印 ASCII（0x20..0x7e），用户名不能含 `:`；只设置其中一个、含控制字符或非 ASCII 字节、超长，或设置了凭据却没有配置 `proxy`，都在建立任何 socket 之前返回 `ERR_URL`。
+
+凭据以 `Proxy-Authorization: Basic base64(user ":" password)` 只放在 CONNECT 请求里，不会发给目标服务器，明文 http（不走代理）也不会发送。代理仍返回 407 时为 `ERR_STATUS`，不重试、不解析质询。到代理的这一跳是明文 TCP，凭据在这一跳上可见；仍不支持 https 代理。测试在 `engine/tests/test_break_http.c`（新增 4 项，含 RFC 7617 示例、base64 三种余数与 255 字节上限），见 `docs/superpowers/plans/2026-11-16-http-proxy-basic-auth.md`。

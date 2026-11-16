@@ -11458,3 +11458,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `BreakHttpConfig.proxy`（`http://host:port`）：https 目标先向代理发 `CONNECT host:port`，2xx 后在隧道上做 TLS，证书、主机名、钉扎和 CRL 仍针对目标校验。非 2xx 为 `ERR_STATUS`，格式错误、1xx 或响应头后的多余字节为 `ERR_PROTOCOL`，代理 URL 不合法为 `ERR_URL`（不建 socket），CONNECT 计入 `io_timeout_ms`。明文 http 忽略代理，仍只允许回环。读响应头的循环抽成 `read_head`，普通响应与代理响应共用。
 - `test_break_http` 新增 9 项（共 57）：经代理成功且 CONNECT 头逐字节准确、IPv6 方括号与默认端口、403/407/502/301 不触达目标、畸形/1xx/多余字节/超长/提前关闭、非法代理 URL、经代理时错误 CA 与主机名不符、静默代理超时、代理不可达、明文 http 忽略代理。另在 https 规则测试中补了超长响应头用例。先 RED（编译失败）后 GREEN；18 项变异 16 项被捕获，存活 2 项为等价变异（去掉读头上限后零长度读仍得 `ERR_PROTOCOL`；忽略 CONNECT 写错误后读头得到同一错误码），保留原检查；ASan+UBSan 无报告，TSan 三次运行无报告。
 - 仍缺：代理认证、https 代理、OCSP、HTTP/2。
+
+### 2026-11-16 Basic authentication to the CONNECT proxy
+
+- `BreakHttpConfig.proxy_user` / `proxy_password`：两者都设置时，CONNECT 请求带 `Proxy-Authorization: Basic base64(user:password)`；不发给目标，明文 http 也不发。两者须为 1..255 字节可打印 ASCII，用户名不含 `:`；只设一个、控制字符、非 ASCII、超长或没有 `proxy` 时为 `ERR_URL`（不建 socket）。407 仍为 `ERR_STATUS`，不重试。
+- `test_break_http` 新增 4 项（共 61）：CONNECT 头逐字节准确且目标请求无凭据（RFC 7617 示例）、base64 三种余数与 255 字节上限、14 种非法凭据、明文 http 不发凭据。先 RED（编译失败）后 GREEN，GREEN 时测试还抓出「有凭据无代理」未拒绝。16 项变异首轮 1 项存活（空串检查与调用方重复），删除冗余检查后全部被捕获；ASan+UBSan 无报告，TSan 三次运行无报告。
+- 仍缺：Digest/NTLM 等其他代理认证、https 代理、OCSP、HTTP/2。
