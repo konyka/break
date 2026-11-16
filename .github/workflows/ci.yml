@@ -130,7 +130,8 @@ jobs:
             fuzz_scene_serial fuzz_net_packet fuzz_asset_gltf \
             fuzz_decode_image fuzz_vfs_pak \
             fuzz_mycompose_tree fuzz_mycompose_intent \
-            fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network
+            fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network \
+            fuzz_break_online_voice
           ctest --test-dir build -L fuzz --output-on-failure
 
       - name: Emit evidence receipt
@@ -461,7 +462,7 @@ jobs:
       # The fuzz targets are EXCLUDE_FROM_ALL; without building them the
       # *_smoke tests report Not Run.
       - name: Build fuzz targets
-        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network --parallel
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network fuzz_break_online_voice --parallel
 
       - name: Test (headless suite)
         env:
@@ -539,7 +540,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Build fuzz targets
-        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network --parallel
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network fuzz_break_online_voice --parallel
 
       - name: Test (headless suite)
         env:

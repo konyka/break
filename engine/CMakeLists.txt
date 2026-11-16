@@ -6429,6 +6429,21 @@ endif()
     set_tests_properties(test_break_online_voice PROPERTIES
         TIMEOUT 20 LABELS "network;online;voice")
 
+    # Mutation fuzzer for BRV1/BRV2 voice datagrams with a reference decoder
+    # and a shadow jitter buffer; run by the fuzz smoke lane.
+    add_executable(fuzz_break_online_voice EXCLUDE_FROM_ALL
+        tests/fuzz_break_online_voice.c src/network/network.c)
+    target_include_directories(fuzz_break_online_voice PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(fuzz_break_online_voice PRIVATE break_online Threads::Threads m)
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+       ENGINE_PLATFORM STREQUAL "harmonyos")
+        target_compile_definitions(fuzz_break_online_voice PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(fuzz_break_online_voice PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(fuzz_break_online_voice PRIVATE ws2_32)
+    endif()
+
     # Network voice into the mixer: the real receiver feeds an audio PCM
     # stream rendered by the FAKE (device-free) backend.
     add_executable(test_voice_playback tests/test_voice_playback.c
@@ -7466,6 +7481,7 @@ endif()
         add_test(NAME fuzz_core_app_checkpoint_smoke COMMAND fuzz_core_app_checkpoint 200 31)
         add_test(NAME fuzz_core_app_scenario_smoke COMMAND fuzz_core_app_scenario 500 37)
         add_test(NAME fuzz_core_app_network_smoke COMMAND fuzz_core_app_network 2000 41)
+        add_test(NAME fuzz_break_online_voice_smoke COMMAND fuzz_break_online_voice 2000 43)
         # Checked-in wire samples, one per file; the name prefix is the expected
         # decode outcome. Regenerate with `fuzz_core_app_network --emit-corpus <dir>`.
         file(GLOB CORE_APP_NETWORK_CORPUS CONFIGURE_DEPENDS
@@ -7495,7 +7511,7 @@ endif()
             fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
             fuzz_mycompose_tree_smoke fuzz_mycompose_intent_smoke
             fuzz_core_app_checkpoint_smoke fuzz_core_app_scenario_smoke
-            fuzz_core_app_network_smoke
+            fuzz_core_app_network_smoke fuzz_break_online_voice_smoke
             PROPERTIES LABELS "fuzz")
         if(ENGINE_BUILD_LIBFUZZER)
             if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang" OR MSVC)

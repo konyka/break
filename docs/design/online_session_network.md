@@ -115,3 +115,7 @@ apply 要求相同 schema hash、live generation 和递增的每对象 record ep
 ## 补充（2026-11-16）：BRV2 压缩语音帧
 
 新增 `BRV2` 帧格式与 `break_voice_encode_adpcm`：在 `BRV1` 的 16 字节头之后，每个声道一个 4 字节起始状态（该声道首个样本作为预测值 i16 le、步长索引 u8 0..88、保留字节 0），之后每个后续样本一个 4 位 IMA ADPCM 码，两码一字节、低半字节在前，按声道交错。帧大小为 `16 + 4 × 声道数 + ceil((样本数 − 声道数) / 2)`，约为 `BRV1` 的四分之一。每帧自带起始状态，丢帧不影响后续帧。接收器对配置格式同时接受 `BRV1` 与 `BRV2`；步长索引超过 88、保留字节非零或长度不符的 `BRV2` 计入 `invalid`。16 kHz、−6 dBFS、440 Hz 正弦的往返信噪比超过 30 dB。没有感知编码器（如 Opus）。设计与验证见 `docs/superpowers/plans/2026-11-16-voice-adpcm.md`。
+
+## 补充（2026-11-16）：语音接收器 fuzz
+
+`fuzz_break_online_voice`（`engine/tests/fuzz_break_online_voice.c`）对 `BRV1`/`BRV2` 帧做字节变异（随机写、位翻转、头部边界值、magic 互换、ADPCM 步长索引 88/89/255、保留字节、截断、多一字节、只错样本数的完整帧），再推入同一个接收器。harness 自带独立的 PCM 与 IMA ADPCM 解码器（标准 16 项索引表）和影子抖动缓冲：每个数据报必须恰好使 accepted/invalid/duplicate/stale/overload 之一加一，且与模型一致；播放序号、样本（等于被接受数据报的参考解码）和补偿帧（静音）都按模型检查。接收器每 64 次重建，格式在 8–48 kHz、单/双声道间轮换。冒烟测试 `fuzz_break_online_voice_smoke`（2000 次，seed 43，`fuzz` 标签）进入三条 CI fuzz 构建列表。设计与验证见 `docs/superpowers/plans/2026-11-16-voice-fuzz.md`。

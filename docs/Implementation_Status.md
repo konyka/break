@@ -11392,3 +11392,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `break_voice_encode_adpcm` 与 `BRV2` 帧：4 位 IMA ADPCM，每帧自带每声道起始状态，约为原始 16 位 PCM（`BRV1`）的四分之一；接收器同时接受 `BRV1` 与 `BRV2`，非法状态或长度计入 `invalid`。不引入新依赖。
 - `test_break_online_voice` 新增 6 项（共 14）：布局与已知码序列、编码器边界（期望值来自独立的标准表参考模型）、往返信噪比、静音与满幅、立体声与奇数码、非法帧、`BRV1`/`BRV2` 混流。先 RED 后 GREEN，27 项变异全部被捕获；ASan+UBSan 无报告。
 - 仍缺：感知编码器（Opus 等）、麦克风采集。
+
+### 2026-11-16 voice receiver fuzz (`fuzz_break_online_voice`)
+
+- 新增 `fuzz_break_online_voice`：对 `BRV1`/`BRV2` 语音帧做变异，用独立参考解码器和影子抖动缓冲核对接收器的计数、播放序号、播放样本和补偿帧。注册为 `fuzz_break_online_voice_smoke`（2000 次，seed 43），CI 三处 fuzz 构建列表已加入，`test_wayland_ci_migration_contract` 要求它出现。
+- 验证：契约先 RED 后 GREEN；ASan+UBSan 下 2000 与 50000 次通过；28 项接收器变异全部被捕获；`ctest -L fuzz` 14/14。
