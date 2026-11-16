@@ -5,6 +5,7 @@
 struct BreakEditorPluginHost {
     BreakEditorPluginApi api;
     BreakEditorPluginCmds *cmds;
+    BreakEditorPluginSections *sections;
     u32 next_owner;
     u32 loading_owner;
 };
@@ -21,6 +22,27 @@ static BreakEditorPluginCmdStatus host_add_command(void *host_ptr, const char *i
     return break_editor_plugin_cmds_add(host->cmds, host->loading_owner, id, label, fn, user);
 }
 
+static BreakEditorPluginSectionStatus host_add_section(void *host_ptr, const char *id,
+                                                       const char *title,
+                                                       BreakEditorPluginSectionFn fn, void *user)
+{
+    BreakEditorPluginHost *host = (BreakEditorPluginHost *)host_ptr;
+    if (!host) {
+        return BREAK_EDITOR_PLUGIN_SECTION_INVALID;
+    }
+    /* NULL registry and loading_owner 0 are both rejected by the registry */
+    return break_editor_plugin_sections_add(host->sections, host->loading_owner, id, title, fn,
+                                            user);
+}
+
+void break_editor_plugin_host_set_sections(BreakEditorPluginHost *host,
+                                           BreakEditorPluginSections *sections)
+{
+    if (host) {
+        host->sections = sections;
+    }
+}
+
 BreakEditorPluginHost *break_editor_plugin_host_create(BreakEditorPluginCmds *cmds)
 {
     if (!cmds) {
@@ -34,6 +56,7 @@ BreakEditorPluginHost *break_editor_plugin_host_create(BreakEditorPluginCmds *cm
     host->api.api_version = BREAK_EDITOR_PLUGIN_API_VERSION;
     host->api.host = host;
     host->api.add_command = host_add_command;
+    host->api.add_section = host_add_section;
     host->cmds = cmds;
     return host;
 }
@@ -67,7 +90,7 @@ bool break_editor_plugin_host_end_load(BreakEditorPluginHost *host, bool loaded)
         return false;
     }
     if (!loaded) {
-        (void)break_editor_plugin_cmds_remove_owner(host->cmds, host->loading_owner);
+        (void)break_editor_plugin_host_release(host, host->loading_owner);
     }
     host->loading_owner = 0u;
     return true;
@@ -75,5 +98,9 @@ bool break_editor_plugin_host_end_load(BreakEditorPluginHost *host, bool loaded)
 
 u32 break_editor_plugin_host_release(BreakEditorPluginHost *host, u32 owner)
 {
-    return host ? break_editor_plugin_cmds_remove_owner(host->cmds, owner) : 0u;
+    if (!host) {
+        return 0u;
+    }
+    return break_editor_plugin_cmds_remove_owner(host->cmds, owner) +
+           break_editor_plugin_sections_remove_owner(host->sections, owner);
 }

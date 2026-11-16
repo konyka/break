@@ -252,6 +252,9 @@ TEST(loader_loads_a_manifest_and_unloads_on_destroy)
     ASSERT_EQ(break_editor_plugin_manifest_parse(text, strlen(text), NULL, &manifest, NULL),
               BREAK_EDITOR_PLUGIN_MANIFEST_OK);
 
+    BreakEditorPluginSections *sections = break_editor_plugin_sections_create(4u);
+    ASSERT_NOT_NULL(sections);
+    break_editor_plugin_host_set_sections(host, sections);
     BreakEditorPluginLoader *loader = break_editor_plugin_loader_create(host);
     ASSERT_NOT_NULL(loader);
     ASSERT_EQ(break_editor_plugin_loader_count(loader), 0u);
@@ -266,6 +269,18 @@ TEST(loader_loads_a_manifest_and_unloads_on_destroy)
 #if defined(__linux__)
     ASSERT_TRUE(library_mapped(VERIFIED_PLUGIN_MAPPING));
 #endif
+    /* the real plugin also adds an inspector section under the same owner;
+     * the failing plugin's section was dropped with its load window */
+    ASSERT_EQ(break_editor_plugin_sections_count(sections), 1u);
+    ASSERT_STR_EQ(break_editor_plugin_sections_id(sections, 0u), "fixture.section");
+    ASSERT_EQ(break_editor_plugin_sections_owner(sections, 0u), report.owners[1]);
+    {
+        char text[64];
+        ASSERT_TRUE(break_editor_plugin_sections_describe(sections, 0u, NULL,
+                                                          BREAK_EDITOR_ENTITY_NULL, text,
+                                                          sizeof text));
+        ASSERT_STR_EQ(text, "fixture section");
+    }
 
     /* A second manifest adds to the same loader; a wrong hash loads nothing. */
     good[0] ^= 0xffu;
@@ -286,6 +301,8 @@ TEST(loader_loads_a_manifest_and_unloads_on_destroy)
     /* destroy unloads the library, not only its commands */
     ASSERT_FALSE(library_mapped(VERIFIED_PLUGIN_MAPPING));
 #endif
+    ASSERT_EQ(break_editor_plugin_sections_count(sections), 0u);
+    break_editor_plugin_sections_destroy(sections);
     break_editor_plugin_host_destroy(host);
     break_editor_plugin_cmds_destroy(cmds);
 }

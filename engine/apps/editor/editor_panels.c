@@ -30,6 +30,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #include <editor/editor_components.h>
 #include <editor/editor_scene.h>
 #include <editor/editor_plugin_cmds.h>
+#include <editor/editor_plugin_sections.h>
 
 #include "platform/time.h"
 
@@ -57,6 +58,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
 #define EDITOR_PALETTE_COMMAND_COUNT 21u
 #define EDITOR_PLUGIN_CMD_CAPACITY 64u
+#define EDITOR_PLUGIN_SECTION_CAPACITY 64u
 /* 25 degrees: the editor camera starts above the grid plane */
 #define EDITOR_DEFAULT_CAMERA_PITCH 0.43633231f
 /* "2": look along -X from the +X side (90 degrees) */
@@ -196,6 +198,9 @@ struct BreakEditorShell {
     /* commands contributed by editor plugins (owned; listed after the
      * built-in and recent rows) */
     BreakEditorPluginCmds *plugin_cmds;
+    /* inspector sections contributed by editor plugins (owned; shown after
+     * the component rows) */
+    BreakEditorPluginSections *plugin_sections;
     /* recently opened/saved scenes (persisted with the UI settings) */
     u32 recent_count;
     char recent[BREAK_EDITOR_SETTINGS_RECENT_MAX][BREAK_EDITOR_SETTINGS_RECENT_PATH];
@@ -686,6 +691,35 @@ static void on_component_button_click(void *ctx, const char *event,
     editor_shell_refresh_all(shell);
 }
 
+/* Plugin sections for the selected entity (editor_panels.h): a title label
+ * and a text label per section whose describe callback accepts it. Bounded
+ * by the registry capacity; text is capped at
+ * BREAK_EDITOR_PLUGIN_SECTION_TEXT_CAPACITY bytes. */
+static void shell_add_plugin_sections(BreakEditorShell *shell,
+                                      my_widget_t *insp) {
+    u32 i, n = break_editor_plugin_sections_count(shell->plugin_sections);
+    for (i = 0u; i < n; i++) {
+        char text[BREAK_EDITOR_PLUGIN_SECTION_TEXT_CAPACITY];
+        char wname[BREAK_EDITOR_PLUGIN_SECTION_ID_CAPACITY + 32u];
+        const char *id = break_editor_plugin_sections_id(shell->plugin_sections, i);
+        if (!break_editor_plugin_sections_describe(shell->plugin_sections, i,
+                                                   shell->doc, shell->selected,
+                                                   text, sizeof(text))) {
+            continue;
+        }
+        (void)snprintf(wname, sizeof(wname), "editor-plugin-section-title-%s", id);
+        shell_add_child(insp,
+                        shell_named(my_label_create(
+                                        NULL, break_editor_plugin_sections_title(
+                                                  shell->plugin_sections, i)),
+                                    wname),
+                        "w:100% h:22");
+        (void)snprintf(wname, sizeof(wname), "editor-plugin-section-%s", id);
+        shell_add_child(insp, shell_named(my_label_create(NULL, text), wname),
+                        "w:100% h:22");
+    }
+}
+
 /* Rebuilds the inspector subtree from the current selection. Bounded: at
  * most registry-capacity (16) sections x 9 field rows; all widget names and
  * texts are capped (field name[32], edit max_len 127 codepoints). */
@@ -881,6 +915,7 @@ static void shell_rebuild_inspector(BreakEditorShell *shell) {
             shell_add_child(insp, row, "w:100% h:26");
         }
     }
+    shell_add_plugin_sections(shell, insp);
 }
 
 /* ---------------- outliner list adapter ---------------- */
@@ -2953,9 +2988,12 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     }
     shell->doc = break_editor_doc_create();
     shell->plugin_cmds = break_editor_plugin_cmds_create(EDITOR_PLUGIN_CMD_CAPACITY);
-    if (shell->doc == NULL || shell->plugin_cmds == NULL) {
+    shell->plugin_sections =
+        break_editor_plugin_sections_create(EDITOR_PLUGIN_SECTION_CAPACITY);
+    if (shell->doc == NULL || shell->plugin_cmds == NULL ||
+        shell->plugin_sections == NULL) {
         break_editor_plugin_cmds_destroy(shell->plugin_cmds);
-        break_editor_plugin_cmds_destroy(shell->plugin_cmds);
+        break_editor_plugin_sections_destroy(shell->plugin_sections);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -2971,6 +3009,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         break_editor_viewport3d_destroy(shell->vp3d);
         break_editor_gizmo_destroy(shell->gizmo);
         break_editor_plugin_cmds_destroy(shell->plugin_cmds);
+        break_editor_plugin_sections_destroy(shell->plugin_sections);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3004,6 +3043,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         break_editor_viewport3d_destroy(shell->vp3d);
         break_editor_gizmo_destroy(shell->gizmo);
         break_editor_plugin_cmds_destroy(shell->plugin_cmds);
+        break_editor_plugin_sections_destroy(shell->plugin_sections);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3021,6 +3061,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         break_editor_viewport3d_destroy(shell->vp3d);
         break_editor_gizmo_destroy(shell->gizmo);
         break_editor_plugin_cmds_destroy(shell->plugin_cmds);
+        break_editor_plugin_sections_destroy(shell->plugin_sections);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3044,6 +3085,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         break_editor_viewport3d_destroy(shell->vp3d);
         break_editor_gizmo_destroy(shell->gizmo);
         break_editor_plugin_cmds_destroy(shell->plugin_cmds);
+        break_editor_plugin_sections_destroy(shell->plugin_sections);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3189,6 +3231,7 @@ bool break_editor_shell_destroy(BreakEditorShell *shell) {
     editor_panel_assets_destroy(shell->assets_panel);
     break_editor_gizmo_destroy(shell->gizmo);
     break_editor_plugin_cmds_destroy(shell->plugin_cmds);
+    break_editor_plugin_sections_destroy(shell->plugin_sections);
     break_editor_doc_destroy(shell->doc);
     free(shell);
     return true;
@@ -3278,6 +3321,10 @@ bool break_editor_shell_palette_is_open(const BreakEditorShell *shell) {
 
 BreakEditorPluginCmds *break_editor_shell_plugin_cmds(BreakEditorShell *shell) {
     return shell != NULL ? shell->plugin_cmds : NULL;
+}
+
+BreakEditorPluginSections *break_editor_shell_plugin_sections(BreakEditorShell *shell) {
+    return shell != NULL ? shell->plugin_sections : NULL;
 }
 
 usize break_editor_shell_palette_count(const BreakEditorShell *shell) {

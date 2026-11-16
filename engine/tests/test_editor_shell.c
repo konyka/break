@@ -343,6 +343,105 @@ static bool plugin_cmd_record(void *user, BreakEditorDoc *doc)
     return call->result;
 }
 
+typedef struct SectionCall {
+    u32 calls;
+    const BreakEditorDoc *doc;
+    BreakEditorEntityId entity;
+    const char *text; /* NULL: the section does not apply */
+} SectionCall;
+
+static bool plugin_section_record(void *user, const BreakEditorDoc *doc,
+                                  BreakEditorEntityId entity, char *out, usize cap)
+{
+    SectionCall *call = (SectionCall *)user;
+    call->calls++;
+    call->doc = doc;
+    call->entity = entity;
+    if (call->text == NULL) return false;
+    (void)snprintf(out, cap, "%s", call->text);
+    return true;
+}
+
+/* Plugin sections show in the inspector for the selected entity, after the
+ * component rows; a section that declines the entity shows nothing, and
+ * removing the owner drops the section at the next rebuild. */
+TEST(inspector_shows_plugin_sections)
+{
+    SectionCall stats = {0u, NULL, {0u, 0u}, "hp=10 armor=2"};
+    SectionCall never = {0u, NULL, {0u, 0u}, NULL};
+    SectionCall tags = {0u, NULL, {0u, 0u}, "tags=blue"};
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *root;
+    my_widget_t *w;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_plugin_sections(NULL) == NULL);
+    BreakEditorPluginSections *reg = break_editor_shell_plugin_sections(shell);
+    ASSERT_NOT_NULL(reg);
+    ASSERT_EQ(break_editor_plugin_sections_add(reg, 1u, "unit.stats", "Unit Stats",
+                                               plugin_section_record, &stats),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_EQ(break_editor_plugin_sections_add(reg, 2u, "never.shown", "Never",
+                                               plugin_section_record, &never),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_EQ(break_editor_plugin_sections_add(reg, 2u, "unit.tags", "Unit Tags",
+                                               plugin_section_record, &tags),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    root = break_editor_shell_root(shell);
+
+    /* nothing selected: no section is asked */
+    ASSERT_TRUE(my_widget_find_descendant(root, "editor-plugin-section-unit.stats") == NULL);
+    ASSERT_EQ(stats.calls, 0u);
+
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0));
+    ASSERT_TRUE(stats.calls > 0u);
+    ASSERT_TRUE(stats.doc == break_editor_shell_doc(shell));
+    ASSERT_TRUE(break_editor_entity_id_eq(stats.entity, break_editor_shell_selected(shell)));
+    ASSERT_TRUE(never.calls > 0u);
+    w = my_widget_find_descendant(root, "editor-plugin-section-title-unit.stats");
+    ASSERT_NOT_NULL(w);
+    ASSERT_STR_EQ(((const my_label_t *)w)->text, "Unit Stats");
+    w = my_widget_find_descendant(root, "editor-plugin-section-unit.stats");
+    ASSERT_NOT_NULL(w);
+    ASSERT_STR_EQ(((const my_label_t *)w)->text, "hp=10 armor=2");
+    ASSERT_TRUE(my_widget_find_descendant(root, "editor-plugin-section-title-never.shown") ==
+                NULL);
+    ASSERT_TRUE(my_widget_find_descendant(root, "editor-plugin-section-never.shown") == NULL);
+    /* a later section keeps its own title */
+    w = my_widget_find_descendant(root, "editor-plugin-section-title-unit.tags");
+    ASSERT_NOT_NULL(w);
+    ASSERT_STR_EQ(((const my_label_t *)w)->text, "Unit Tags");
+    w = my_widget_find_descendant(root, "editor-plugin-section-unit.tags");
+    ASSERT_NOT_NULL(w);
+    ASSERT_STR_EQ(((const my_label_t *)w)->text, "tags=blue");
+    /* the section blocks come after the built-in rows, in registry order */
+    {
+        my_widget_t *insp = my_widget_find_descendant(root, "editor-inspector");
+        my_widget_t *title =
+            my_widget_find_descendant(root, "editor-plugin-section-title-unit.stats");
+        my_widget_t *tags_title =
+            my_widget_find_descendant(root, "editor-plugin-section-title-unit.tags");
+        usize n;
+        ASSERT_NOT_NULL(insp);
+        n = my_widget_child_count(insp);
+        ASSERT_TRUE(n >= 4u);
+        ASSERT_TRUE(my_widget_get_child(insp, n - 4u) == title);
+        ASSERT_TRUE(my_widget_get_child(insp, n - 2u) == tags_title);
+    }
+
+    /* text follows the plugin on the next rebuild */
+    stats.text = "hp=4 armor=2";
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0));
+    w = my_widget_find_descendant(root, "editor-plugin-section-unit.stats");
+    ASSERT_NOT_NULL(w);
+    ASSERT_STR_EQ(((const my_label_t *)w)->text, "hp=4 armor=2");
+
+    ASSERT_EQ(break_editor_plugin_sections_remove_owner(reg, 1u), 1u);
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0));
+    ASSERT_TRUE(my_widget_find_descendant(root, "editor-plugin-section-unit.stats") == NULL);
+    break_editor_shell_destroy(shell);
+}
+
 /* Plugin commands registered on the shell registry show up in the palette
  * after the built-in rows, run on Enter with the shell's doc, and a failing
  * command logs a translated console line. */
@@ -11271,6 +11370,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_executes_tool_command_on_activate);
     RUN_TEST(palette_arrow_keys_move_the_highlight_and_enter_runs_it);
     RUN_TEST(palette_lists_and_runs_plugin_commands);
+    RUN_TEST(inspector_shows_plugin_sections);
     RUN_TEST(ctrl_s_saves_to_configured_path);
     RUN_TEST(outliner_row_click_selects);
     RUN_TEST(rename_then_undo_reverts_outliner_row_text);

@@ -17,6 +17,21 @@ static bool fixture_command(void *user, BreakEditorDoc *doc)
     return doc != NULL;
 }
 
+static bool fixture_section(void *user, const BreakEditorDoc *doc, BreakEditorEntityId entity,
+                            char *out, usize cap)
+{
+    (void)user;
+    (void)doc;
+    (void)entity;
+    if (cap > 0u) {
+        const char text[] = "fixture section";
+        usize n = sizeof(text) < cap ? sizeof(text) : cap;
+        for (usize i = 0u; i < n; i++) out[i] = text[i];
+        out[cap - 1u] = '\0';
+    }
+    return true;
+}
+
 static bool fixture_register(void *user)
 {
     const BreakEditorPluginApi *api = (const BreakEditorPluginApi *)user;
@@ -28,6 +43,9 @@ static bool fixture_register(void *user)
         BREAK_EDITOR_PLUGIN_CMD_OK) {
         return false;
     }
+    /* a host without a section registry refuses the section; that is not a
+     * registration failure */
+    (void)api->add_section(api->host, "fixture.section", "Fixture Section", fixture_section, NULL);
     return EDITOR_TEST_REGISTER_RESULT != 0;
 }
 

@@ -70,3 +70,5 @@ default editor.
   and `test_editor_plugin_manifest_cli` in its ON mode build and run in CI.
   The local CI contract tests (`ctest -R "ci_|workflow"`, 7 tests) pass with
   the change. Every other job keeps the default OFF.
+- 2026-11-16: read-only inspector sections for plugins are done; see
+  `2026-11-16-editor-plugin-sections.md`.

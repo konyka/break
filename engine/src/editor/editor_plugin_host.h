@@ -17,30 +17,45 @@
  * owner key. Threading: editor shell thread only. */
 
 #include <editor/editor_plugin_cmds.h>
+#include <editor/editor_plugin_sections.h>
 
 #define BREAK_EDITOR_PLUGIN_API_VERSION 1u
 
 typedef BreakEditorPluginCmdStatus (*BreakEditorPluginAddCommandFn)(
     void *host, const char *id, const char *label, BreakEditorPluginCmdFn fn, void *user);
 
+typedef BreakEditorPluginSectionStatus (*BreakEditorPluginAddSectionFn)(
+    void *host, const char *id, const char *title, BreakEditorPluginSectionFn fn, void *user);
+
+/* Fields are only ever appended. A plugin checks api_version and that
+ * struct_size covers the last field it uses. */
 typedef struct BreakEditorPluginApi {
     u32 struct_size;
     u32 api_version;
     void *host;
     BreakEditorPluginAddCommandFn add_command;
+    /* Adds a read-only inspector section (editor_plugin_sections.h). Same
+     * load-window rule as add_command; INVALID when the host has no section
+     * registry attached. */
+    BreakEditorPluginAddSectionFn add_section;
 } BreakEditorPluginApi;
 
 typedef struct BreakEditorPluginHost BreakEditorPluginHost;
 
 /* Borrows cmds, which must outlive the host. NULL cmds gives NULL. */
 BreakEditorPluginHost *break_editor_plugin_host_create(BreakEditorPluginCmds *cmds);
+/* Attaches the inspector section registry (borrowed, may be NULL to detach;
+ * it must outlive the host). Sections follow the same owner keys as
+ * commands. NULL host is a no-op. */
+void break_editor_plugin_host_set_sections(BreakEditorPluginHost *host,
+                                           BreakEditorPluginSections *sections);
 /* Leaves the registered commands in place. NULL no-op. */
 void break_editor_plugin_host_destroy(BreakEditorPluginHost *host);
 const BreakEditorPluginApi *break_editor_plugin_host_api(BreakEditorPluginHost *host);
 /* Fresh non-zero owner key; 0 for NULL or while a window is open. */
 u32 break_editor_plugin_host_begin_load(BreakEditorPluginHost *host);
-/* Closes the window; loaded == false removes the owner's commands. False
- * when no window was open. */
+/* Closes the window; loaded == false removes the owner's commands and
+ * sections. False when no window was open. */
 bool break_editor_plugin_host_end_load(BreakEditorPluginHost *host, bool loaded);
-/* Removes the owner's commands and returns how many. */
+/* Removes the owner's commands and sections; returns how many in total. */
 u32 break_editor_plugin_host_release(BreakEditorPluginHost *host, u32 owner);

@@ -127,6 +127,7 @@
 #include <editor/editor_doc.h>
 #include <editor/editor_i18n.h>
 #include <editor/editor_plugin_cmds.h>
+#include <editor/editor_plugin_sections.h>
 #include <editor/editor_gizmo.h>
 #include <editor/editor_viewport.h>
 #include <rhi/rhi.h>
@@ -283,6 +284,15 @@ bool break_editor_shell_palette_set_filter(BreakEditorShell *shell,
  * returns false logs "plugin command '<id>' failed". Remove a plugin's
  * commands (break_editor_plugin_cmds_remove_owner) before unloading it. */
 BreakEditorPluginCmds *break_editor_shell_plugin_cmds(BreakEditorShell *shell);
+
+/* Borrowed registry of plugin inspector sections (capacity 64; NULL for a
+ * NULL shell). After the component rows, the inspector shows each section
+ * whose describe callback accepts the selected entity: a title label
+ * "editor-plugin-section-title-<id>" and a text label
+ * "editor-plugin-section-<id>". Sections are read when the inspector is
+ * rebuilt (selection change or any refresh). Remove a plugin's sections
+ * (break_editor_plugin_sections_remove_owner) before unloading it. */
+BreakEditorPluginSections *break_editor_shell_plugin_sections(BreakEditorShell *shell);
 
 /* ---------------- Phase 2 Task 3: viewport panel ---------------- */
 

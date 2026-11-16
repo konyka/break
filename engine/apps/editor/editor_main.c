@@ -328,12 +328,15 @@ int main(int argc, char **argv) {
   }
 
 #ifdef BREAK_EDITOR_PLUGINS
-  /* plugins add their commands to the shell's palette registry; a plugin
-   * that fails (hash, ABI, register_fn) leaves no command behind */
+  /* plugins add commands to the shell's palette registry and read-only
+   * sections to its inspector; a plugin that fails (hash, ABI, register_fn)
+   * leaves neither behind */
   if (plugin_manifest.count > 0u) {
     BreakEditorPluginManifestReport plugin_report;
     plugin_host =
         break_editor_plugin_host_create(break_editor_shell_plugin_cmds(shell));
+    break_editor_plugin_host_set_sections(
+        plugin_host, break_editor_shell_plugin_sections(shell));
     plugin_loader = break_editor_plugin_loader_create(plugin_host);
     if (plugin_loader == NULL ||
         !break_editor_plugin_loader_load_manifest(plugin_loader,

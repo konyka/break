@@ -11328,3 +11328,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - CMake 选项 `BREAK_EDITOR_PLUGINS`（默认 OFF）打开后，editor 在 shell 创建后加载 `--plugin-manifest` 中的插件，命令进入命令面板，失败的条目逐条打印，退出前卸载。默认构建仍不链接 `break_system`；`test_break_system_target_contract` 新增检查：选项默认 OFF，editor 对 loader 的唯一链接位于 `if(BREAK_EDITOR_PLUGINS)` 内。
 - `test_editor_plugin_load` 增至 5 项（Linux 上用 `/proc/self/maps` 确认卸载）。先 RED 后 GREEN，9 项源码变异和 4 项 CMake 变异全部被捕获。Fedora Wayland 实机：真实 fixture 插件 1 个加载成功、1 个注册失败。
 - CI：gcc ASan/UBSan 任务改为 `-DBREAK_EDITOR_PLUGINS=ON` 配置，覆盖插件加载库和该模式下的 editor 测试；其他任务保持默认 OFF。
+
+### 2026-11-16 editor plugin inspector sections
+
+- 新增 `engine/src/editor/editor_plugin_sections.[ch]`：插件检查器区块注册表（容量 64，id/标题校验，按 owner 移除，`describe` 输出最多 256 字节并保证以 NUL 结尾）。
+- `BreakEditorPluginApi` 末尾追加 `add_section`，与命令共用加载窗口的 owner：加载失败或 `release` 时一并移除。shell 持有区块注册表，检查器在组件行之后为选中实体显示每个接受该实体的区块（标题与只读文本）。`BREAK_EDITOR_PLUGINS` 构建的 editor 把注册表接到插件宿主。
+- 新增 `test_editor_plugin_sections`（4 项），`test_editor_plugin_host`、`test_editor_shell`、`test_editor_plugin_load` 各增加区块用例。先 RED 后 GREEN，32 项变异全部被捕获。
