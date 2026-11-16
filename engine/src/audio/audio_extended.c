@@ -135,6 +135,12 @@ typedef struct {
      * the frames, so the count needs no reset. */
     f32 history[AUDIO_PCM_STREAM_SINC_LOOKAHEAD][2];
     u32 remembered;
+    /* rear cue (audio_pcm_stream_set_rear_cue): the one-pole coefficient,
+     * published by the owner thread, and the per-channel state, mixer-owned
+     * like `pos`; open resets both */
+    atomic_uint rear_alpha_bits;
+    bool rear_cue;
+    f32 rear_state[2];
     atomic_uint gain_bits;
     /* distance attenuation (audio_pcm_stream_set_spatial); written and
      * recomputed on the owner thread, the mixer reads spatial_bits only */
@@ -546,7 +552,10 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
     f32 gain = 0.0f;
     f32 pan_left = 1.0f;
     f32 pan_right = 1.0f;
+    f32 rear_alpha = 1.0f;
     if (open) {
+        rear_alpha = gain_from_bits(atomic_load_explicit(&stream->rear_alpha_bits,
+                                                         memory_order_relaxed));
         u64 pan = atomic_load_explicit(&stream->pan_bits, memory_order_relaxed);
         pan_left = gain_from_bits((u32)(pan >> 32));
         pan_right = spatial_gain_of(pan);
@@ -598,6 +607,17 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
                 f32 br = stream->channels == 2u ? b[1] : bl;
                 left += (bl - left) * w;
                 right += (br - right) * w;
+            }
+            /* the rear cue's state follows the signal while it is off, so
+             * it starts from the current frame when it engages */
+            if (rear_alpha < 1.0f) {
+                stream->rear_state[0] += rear_alpha * (left - stream->rear_state[0]);
+                stream->rear_state[1] += rear_alpha * (right - stream->rear_state[1]);
+                left = stream->rear_state[0];
+                right = stream->rear_state[1];
+            } else {
+                stream->rear_state[0] = left;
+                stream->rear_state[1] = right;
             }
             left *= gain * pan_left;
             right *= gain * pan_right;
@@ -736,6 +756,10 @@ AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample
         atomic_store_explicit(&stream->resample, (unsigned)AUDIO_RESAMPLE_LINEAR,
                               memory_order_relaxed);
         memset(stream->history, 0, sizeof(stream->history));
+        stream->rear_cue = false;
+        atomic_store_explicit(&stream->rear_alpha_bits, gain_to_bits(1.0f), memory_order_relaxed);
+        stream->rear_state[0] = 0.0f;
+        stream->rear_state[1] = 0.0f;
         stream->spatial = false;
         stream->panning = false;
         atomic_store_explicit(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f),
@@ -833,6 +857,28 @@ static double listener_pan(const AudioSystem *as, Vec3 position) {
     return pan;
 }
 
+/* One-pole coefficient of the rear cue: 1 (no filter) for a source in
+ * front, to the side, on the listener or with a zero forward vector; down to
+ * the AUDIO_PCM_STREAM_REAR_CUTOFF_HZ coefficient straight behind, by the
+ * cosine of the angle past the side plane. */
+static f32 rear_cue_alpha(const AudioSystem *as, Vec3 position) {
+    const double pi = 3.14159265358979323846;
+    double d[3], f[3];
+    for (u32 i = 0; i < 3; ++i) {
+        d[i] = (double)position.e[i] - as->listener_pos.e[i];
+        f[i] = as->listener_forward.e[i];
+    }
+    double dlen = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    double flen = sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    if (!(dlen > 0.0) || !(flen > 0.0)) return 1.0f;
+    double behind = -(d[0] * f[0] + d[1] * f[1] + d[2] * f[2]) / (dlen * flen);
+    if (behind <= 0.0) return 1.0f;
+    if (behind > 1.0) behind = 1.0;
+    double rear = 1.0 - exp(-2.0 * pi * (double)AUDIO_PCM_STREAM_REAR_CUTOFF_HZ /
+                            (double)AUDIO_PCM_SAMPLE_RATE);
+    return (f32)(1.0 - behind * (1.0 - rear));
+}
+
 static u64 pcm_stream_pan(const AudioSystem *as, Vec3 position) {
     f32 left = 1.0f;
     f32 right = 1.0f;
@@ -840,8 +886,8 @@ static u64 pcm_stream_pan(const AudioSystem *as, Vec3 position) {
     return pcm_stream_pan_pack(left, right);
 }
 
-/* Recomputes and publishes a spatial stream's gain (and pan, when panned)
- * for its position. */
+/* Recomputes and publishes a spatial stream's gain (and pan and rear cue,
+ * when on) for its position. */
 static AudioResult pcm_stream_publish_spatial(AudioExtended *ext, AudioPcmStream *stream) {
     f32 gain = 1.0f;
     AudioResult result = spatial_gain(ext, stream->min_distance, stream->max_distance,
@@ -853,6 +899,10 @@ static AudioResult pcm_stream_publish_spatial(AudioExtended *ext, AudioPcmStream
         atomic_store_explicit(&stream->pan_bits, pcm_stream_pan(ext->owner, stream->position),
                               memory_order_relaxed);
     }
+    atomic_store_explicit(&stream->rear_alpha_bits,
+                          gain_to_bits(stream->rear_cue ?
+                                       rear_cue_alpha(ext->owner, stream->position) : 1.0f),
+                          memory_order_relaxed);
     return AUDIO_OK;
 }
 
@@ -902,6 +952,16 @@ AudioResult audio_pcm_stream_set_panning(AudioSystem *as, AudioPcmStreamHandle h
                               memory_order_relaxed);
         return AUDIO_OK;
     }
+    return pcm_stream_publish_spatial(audio_extended(as), stream);
+}
+
+AudioResult audio_pcm_stream_set_rear_cue(AudioSystem *as, AudioPcmStreamHandle handle,
+                                          bool enabled) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (!stream->spatial) return AUDIO_REJECTED;
+    stream->rear_cue = enabled;
     return pcm_stream_publish_spatial(audio_extended(as), stream);
 }
 
@@ -980,6 +1040,7 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         atomic_init(&stream->spatial_bits, gain_to_bits(1.0f));
         atomic_init(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f));
         atomic_init(&stream->resample, (unsigned)AUDIO_RESAMPLE_LINEAR);
+        atomic_init(&stream->rear_alpha_bits, gain_to_bits(1.0f));
         atomic_init(&stream->head, 0);
         atomic_init(&stream->tail, 0);
         atomic_init(&stream->open, false);

@@ -2729,6 +2729,250 @@ TEST(pcm_stream_sinc_history_survives_a_switch_and_resets_on_reopen)
     audio_system_destroy(as);
 }
 
+/* ---- rear cue ---- */
+
+static double ref_rear_alpha(double behind)
+{
+    const double pi = 3.14159265358979323846;
+    double rear = 1.0 - exp(-2.0 * pi * 5000.0 / 48000.0);
+    return 1.0 - behind * (1.0 - rear);
+}
+
+/* a 48 kHz spatial mono stream inside min distance (gain 1, no pan) */
+static AudioPcmStreamHandle open_cue_stream(AudioSystem *as, u32 channels, Vec3 position,
+                                            bool cue)
+{
+    AudioPcmStreamHandle h = 0;
+    if (audio_pcm_stream_open(as, channels, AUDIO_BUS_MASTER, 1.0f, &h) != AUDIO_OK ||
+        audio_pcm_stream_set_spatial(as, h, 10.0f, 100.0f, 1.0f, 1.0f) != AUDIO_OK ||
+        audio_pcm_stream_set_position(as, h, position) != AUDIO_OK ||
+        (cue && audio_pcm_stream_set_rear_cue(as, h, true) != AUDIO_OK)) {
+        return 0u;
+    }
+    return h;
+}
+
+static bool play_frames(AudioSystem *as, AudioPcmStreamHandle h, const i16 *pcm, u32 frames,
+                        f32 *out)
+{
+    u32 written = 0;
+    if (audio_pcm_stream_write_i16(as, h, pcm, frames, &written) != AUDIO_OK ||
+        written != frames) {
+        return false;
+    }
+    if (audio_system_render(as, out, frames) != AUDIO_OK) return false;
+    for (u32 i = 0; i < 2u * frames; ++i) {
+        if (!isfinite(out[i])) return false;
+    }
+    return true;
+}
+
+TEST(pcm_stream_rear_cue_arguments)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_rear_cue(as, h, true), AUDIO_REJECTED);
+    ASSERT_EQ(audio_pcm_stream_set_rear_cue(as, 0u, true), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_rear_cue(NULL, h, true), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 10.0f, 100.0f, 1.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_rear_cue(as, h, true), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_rear_cue(as, h, false), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_rear_cue(as, h, true), AUDIO_STALE);
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_rear_cue_leaves_front_and_side_untouched)
+{
+    enum { kFrames = 64 };
+    i16 pcm[kFrames];
+    static f32 out[2u * kFrames];
+    random_pcm(pcm, kFrames, 8080u);
+    const Vec3 places[3] = {vec3(0, 0, -2), vec3(2, 0, 0), vec3(-1, 3, -1)};
+    for (u32 p = 0; p < 3u; ++p) {
+        AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+        ASSERT_NOT_NULL(as);
+        AudioPcmStreamHandle h = open_cue_stream(as, 1u, places[p], true);
+        ASSERT_NEQ(h, 0u);
+        ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+        for (u32 i = 0; i < kFrames; ++i) {
+            ASSERT_FLOAT_EQ(out[2u * i], (f32)pcm[i] / 32768.0f, 0.0f);
+            ASSERT_FLOAT_EQ(out[2u * i + 1u], (f32)pcm[i] / 32768.0f, 0.0f);
+        }
+        /* no filter coefficient above 1 for a source in front */
+        AudioPcmStream *stream = &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
+        ASSERT_EQ(atomic_load(&stream->rear_alpha_bits), gain_to_bits(1.0f));
+        audio_system_destroy(as);
+    }
+    /* a source on the listener has no direction: no filter, and no NaN */
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_cue_stream(as, 1u, vec3(0, 0, 0), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+    for (u32 i = 0; i < kFrames; ++i) ASSERT_FLOAT_EQ(out[2u * i], (f32)pcm[i] / 32768.0f, 0.0f);
+    {
+        AudioPcmStream *stream = &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
+        ASSERT_EQ(atomic_load(&stream->rear_alpha_bits), gain_to_bits(1.0f));
+    }
+    audio_system_destroy(as);
+}
+
+/* the step response of y += alpha (x - y), starting from 0 */
+static void check_step(const f32 *out, u32 frames, u32 stride, double alpha, double level,
+                       bool *ok)
+{
+    double y = 0.0;
+    for (u32 i = 0; i < frames; ++i) {
+        y += alpha * (level - y);
+        if (fabs(out[stride * i] - y) > 2e-6) *ok = false;
+    }
+}
+
+TEST(pcm_stream_rear_cue_filters_a_source_behind)
+{
+    enum { kFrames = 24 };
+    i16 step[kFrames];
+    static f32 out[2u * kFrames];
+    for (u32 i = 0; i < kFrames; ++i) step[i] = 16384;
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_cue_stream(as, 1u, vec3(0, 0, 2), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, step, kFrames, out));
+    bool ok = true;
+    check_step(out, kFrames, 2u, ref_rear_alpha(1.0), 0.5, &ok);
+    check_step(out + 1, kFrames, 2u, ref_rear_alpha(1.0), 0.5, &ok);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(out[0] < 0.3f);
+    audio_system_destroy(as);
+
+    /* 45 degrees behind and to the left: alpha blends by -cos(angle); the
+     * forward vector need not be unit length */
+    as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -3), vec3(0, 1, 0));
+    h = open_cue_stream(as, 1u, vec3(-2, 0, 2), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, step, kFrames, out));
+    check_step(out, kFrames, 2u, ref_rear_alpha(1.0 / sqrt(2.0)), 0.5, &ok);
+    ASSERT_TRUE(ok);
+    /* turning the cue off passes the signal exactly again */
+    ASSERT_EQ(audio_pcm_stream_set_rear_cue(as, h, false), AUDIO_OK);
+    ASSERT_TRUE(play_frames(as, h, step, 2u, out));
+    ASSERT_FLOAT_EQ(out[0], 0.5f, 0.0f);
+    audio_system_destroy(as);
+}
+
+/* a +x, -x tone at the 24 kHz Nyquist rate: about a third behind */
+TEST(pcm_stream_rear_cue_dulls_high_frequencies)
+{
+    enum { kFrames = 200 };
+    i16 tone[kFrames];
+    static f32 out[2u * kFrames];
+    for (u32 i = 0; i < kFrames; ++i) tone[i] = (i & 1u) ? -16384 : 16384;
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_cue_stream(as, 1u, vec3(0, -1, 3), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, tone, kFrames, out));
+    double rear = 1.0 - exp(-2.0 * 3.14159265358979323846 * 5000.0 / 48000.0);
+    double behind = 3.0 / sqrt(10.0);
+    double a = 1.0 - behind * (1.0 - rear);
+    double steady = 0.5 * a / (2.0 - a);
+    for (u32 k = kFrames - 50u; k < kFrames; ++k) {
+        ASSERT_FLOAT_EQ(fabsf(out[2u * k]), (f32)steady, 1e-5f);
+    }
+    ASSERT_TRUE(steady < 0.2);
+    audio_system_destroy(as);
+}
+
+/* the listener turns round: the source is now in front and the filter
+ * stops at once, with no tail of the old state */
+TEST(pcm_stream_rear_cue_follows_the_listener)
+{
+    enum { kFrames = 16 };
+    i16 pcm[kFrames];
+    static f32 out[2u * kFrames];
+    random_pcm(pcm, kFrames, 1234u);
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_cue_stream(as, 1u, vec3(0, 0, 2), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+    ASSERT_TRUE(fabsf(out[2u * (kFrames - 1u)] - (f32)pcm[kFrames - 1u] / 32768.0f) > 1e-3f);
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, 1), vec3(0, 1, 0));
+    ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+    for (u32 i = 0; i < kFrames; ++i) {
+        ASSERT_FLOAT_EQ(out[2u * i], (f32)pcm[i] / 32768.0f, 0.0f);
+    }
+    /* the listener steps past it: behind again, filtered from the current
+     * signal on (the state followed it) */
+    audio_system_update(as, vec3(0, 0, 4), vec3(0, 0, 1), vec3(0, 1, 0));
+    i16 step[4] = {16384, 16384, 16384, 16384};
+    ASSERT_TRUE(play_frames(as, h, step, 4u, out));
+    double a = ref_rear_alpha(1.0);
+    double y = (double)pcm[kFrames - 1u] / 32768.0;
+    for (u32 i = 0; i < 4u; ++i) {
+        y += a * (0.5 - y);
+        ASSERT_FLOAT_EQ(out[2u * i], (f32)y, 2e-6f);
+        ASSERT_FLOAT_EQ(out[2u * i + 1u], (f32)y, 2e-6f);
+    }
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_rear_cue_keeps_stereo_state_apart_and_resets_on_reopen)
+{
+    enum { kFrames = 12 };
+    i16 pcm[2u * kFrames];
+    static f32 out[2u * kFrames];
+    for (u32 i = 0; i < kFrames; ++i) {
+        pcm[2u * i] = 16384;
+        pcm[2u * i + 1u] = -8192;
+    }
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_cue_stream(as, 2u, vec3(0, 0, 2), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+    bool ok = true;
+    check_step(out, kFrames, 2u, ref_rear_alpha(1.0), 0.5, &ok);
+    check_step(out + 1, kFrames, 2u, ref_rear_alpha(1.0), -0.25, &ok);
+    ASSERT_TRUE(ok);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    /* the reopened slot has no coefficient left, even before set_spatial */
+    ASSERT_EQ(audio_pcm_stream_open(as, 2u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_TRUE(play_frames(as, h, pcm, 2u, out));
+    ASSERT_FLOAT_EQ(out[0], 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(out[1], -0.25f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    /* and the cue off */
+    h = open_cue_stream(as, 2u, vec3(0, 0, 2), false);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, pcm, 2u, out));
+    ASSERT_FLOAT_EQ(out[0], 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(out[1], -0.25f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    /* and its filter starts from silence, not from the last stream */
+    h = open_cue_stream(as, 2u, vec3(0, 0, 2), true);
+    ASSERT_NEQ(h, 0u);
+    {
+        AudioPcmStream *stream = &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
+        stream->rear_state[0] = 0.9f;
+        stream->rear_state[1] = 0.9f;
+        ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    }
+    h = open_cue_stream(as, 2u, vec3(0, 0, 2), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+    check_step(out, kFrames, 2u, ref_rear_alpha(1.0), 0.5, &ok);
+    check_step(out + 1, kFrames, 2u, ref_rear_alpha(1.0), -0.25, &ok);
+    ASSERT_TRUE(ok);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -2811,4 +3055,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pcm_stream_sinc_keeps_stereo_channels_apart);
     RUN_TEST(pcm_stream_sinc_at_the_engine_rate_is_unchanged);
     RUN_TEST(pcm_stream_sinc_history_survives_a_switch_and_resets_on_reopen);
+    RUN_TEST(pcm_stream_rear_cue_arguments);
+    RUN_TEST(pcm_stream_rear_cue_leaves_front_and_side_untouched);
+    RUN_TEST(pcm_stream_rear_cue_filters_a_source_behind);
+    RUN_TEST(pcm_stream_rear_cue_dulls_high_frequencies);
+    RUN_TEST(pcm_stream_rear_cue_follows_the_listener);
+    RUN_TEST(pcm_stream_rear_cue_keeps_stereo_state_apart_and_resets_on_reopen);
 TEST_MAIN_END()

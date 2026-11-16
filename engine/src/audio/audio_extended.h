@@ -156,6 +156,17 @@ AudioResult audio_pcm_stream_set_position(AudioSystem *as, AudioPcmStreamHandle 
 AudioResult audio_pcm_stream_set_panning(AudioSystem *as, AudioPcmStreamHandle handle,
                                          bool enabled);
 
+/* Low-pass cutoff of the rear cue for a source straight behind. */
+#define AUDIO_PCM_STREAM_REAR_CUTOFF_HZ 5000.0f
+
+/* Front/back cue for a spatial stream (no HRTF): a one-pole low-pass that
+ * grows as the source moves behind the listener (forward vector), from
+ * none at the side plane to AUDIO_PCM_STREAM_REAR_CUTOFF_HZ straight
+ * behind. A source in front or to the side plays exactly as without the
+ * cue. Off at open. REJECTED for a stream without set_spatial. */
+AudioResult audio_pcm_stream_set_rear_cue(AudioSystem *as, AudioPcmStreamHandle handle,
+                                          bool enabled);
+
 typedef enum {
     AUDIO_RESAMPLE_LINEAR = 0,
     AUDIO_RESAMPLE_SINC

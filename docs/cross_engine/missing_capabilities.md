@@ -256,3 +256,4 @@
 - **第 10 节（音频）追加**：空间 PCM 流可按监听者朝向做等功率立体声声像（`audio_pcm_stream_set_panning`），上文「声像/HRTF」中的声像部分由此交付。仍缺：HRTF 与前后区分、事件 voice 的声像、麦克风采集、感知编码器（Opus 等）、高质量（sinc）重采样、音频编辑工具。
 - **第 10 节（音频）追加**：空间事件 voice 可按监听者朝向做等功率立体声声像（`AudioEventDesc.panned`），「事件 voice 的声像」由此交付。仍缺：HRTF 与前后区分、麦克风采集、感知编码器（Opus 等）、高质量（sinc）重采样、音频编辑工具。
 - **第 10 节（音频）追加**：PCM 流可选 16 tap Lanczos 重采样（`audio_pcm_stream_set_resample`），「高质量（sinc）重采样」由此交付。仍缺：HRTF 与前后区分、麦克风采集、感知编码器（Opus 等）、音频编辑工具。
+- **第 10 节（音频）追加**：空间 PCM 流可打开后方提示（`audio_pcm_stream_set_rear_cue`，身后声源加低通），「前后区分」的基础部分由此交付。仍缺：HRTF、耳间时差、高度提示、麦克风采集、感知编码器（Opus 等）、音频编辑工具。

@@ -75,9 +75,15 @@ RESTART 保留 handle 并从头播放；STEAL_OLDEST 提升 generation，使旧 
 
 ## PCM 流的声像
 
-`audio_pcm_stream_set_panning(as, h, enabled)` 为空间流打开立体声声像（open 时关闭；未 `set_spatial` 的流返回 `AUDIO_REJECTED`）。监听者右向量为 `forward × up`（forward -Z、up +Y 时为 +X），`pan` 为声源方向与右向量夹角的余弦，按等功率规律 `θ = (pan + 1)π/4` 得到左 `cos θ`、右 `sin θ`：正中两侧各 -3 dB，正右方只有右声道。声源与监听者重合，或 forward 与 up 平行时取正中。前后、上下不区分（没有 HRTF、耳间时差）。
+`audio_pcm_stream_set_panning(as, h, enabled)` 为空间流打开立体声声像（open 时关闭；未 `set_spatial` 的流返回 `AUDIO_REJECTED`）。监听者右向量为 `forward × up`（forward -Z、up +Y 时为 +X），`pan` 为声源方向与右向量夹角的余弦，按等功率规律 `θ = (pan + 1)π/4` 得到左 `cos θ`、右 `sin θ`：正中两侧各 -3 dB，正右方只有右声道。声源与监听者重合，或 forward 与 up 平行时取正中。声像本身不区分前后、上下（没有 HRTF、耳间时差）；前后可用下面的后方提示。
 
 左右增益在 `set_spatial`、`set_position`、监听者更新时于所有者线程计算，打包成一个 64 位原子值发布，混音回调不会看到只更新了一侧的增益。单声道流先复制到两声道再声像；立体声流的每个声道乘以本侧增益。关闭声像恢复两侧增益为 1。
+
+### 后方提示
+
+`audio_pcm_stream_set_rear_cue(as, h, enabled)` 为空间流打开一个模拟头部遮挡的一极低通 `y += α(x − y)`（open 时关闭；未 `set_spatial` 返回 `AUDIO_REJECTED`）。后方程度 `b = max(0, −cos∠(声源 − 监听者, forward))`，`α = 1 − b(1 − α_rear)`，`α_rear = 1 − exp(−2π·5000/48000) ≈ 0.48`：侧面及前方 α = 1，不滤波，输出与关闭时逐位相同；正后方截止约 5 kHz，24 kHz 处约为原幅度的 1/3。声源与监听者重合或 forward 为零向量时不滤波。
+
+α 与距离增益一起在所有者线程计算（`set_spatial`、`set_position`、监听者更新），作为一个原子 f32 发布，混音回调每次读一次。滤波在插值之后、增益与声像之前进行；α = 1 时状态跟随信号，所以打开提示或声源转到身后时从当前信号开始，没有旧状态带来的咔嗒声。状态归回调所有，与 `pos` 一样由 open 重置。
 
 ### 事件 voice 的声像
 
