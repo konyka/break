@@ -101,6 +101,115 @@ BreakRuntimeError break_voice_encode(const BreakVoiceFrame *frame,
     return BREAK_RUNTIME_OK;
 }
 
+/* Standard IMA ADPCM step and index tables. */
+static const i16 k_ima_step[89] = {
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+    50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230,
+    253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963,
+    1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+    3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442,
+    11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794,
+    32767};
+/* Index change by the code's magnitude bits; the sign bit does not matter
+ * (the standard 16-entry table repeats these eight). */
+static const i8 k_ima_index[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
+#define IMA_MAX_INDEX 88
+
+/* Applies one 4-bit code to (predictor, index); returns the new sample. */
+static i16 ima_step(i32 *predictor, i32 *index, u32 code)
+{
+    i32 step = k_ima_step[*index];
+    i32 diff = step >> 3;
+    if (code & 4u) diff += step;
+    if (code & 2u) diff += step >> 1;
+    if (code & 1u) diff += step >> 2;
+    *predictor += (code & 8u) ? -diff : diff;
+    if (*predictor > INT16_MAX) *predictor = INT16_MAX;
+    if (*predictor < INT16_MIN) *predictor = INT16_MIN;
+    *index += k_ima_index[code & 7u];
+    if (*index < 0) *index = 0;
+    if (*index > IMA_MAX_INDEX) *index = IMA_MAX_INDEX;
+    return (i16)*predictor;
+}
+
+/* The code whose step lands closest below the target, per the standard
+ * encoder. */
+static u32 ima_code(i32 predictor, i32 index, i32 sample)
+{
+    i32 step = k_ima_step[index];
+    i32 diff = sample - predictor;
+    u32 code = 0u;
+    if (diff < 0) {
+        code = 8u;
+        diff = -diff;
+    }
+    if (diff >= step) {
+        code |= 4u;
+        diff -= step;
+    }
+    if (diff >= step >> 1) {
+        code |= 2u;
+        diff -= step >> 1;
+    }
+    if (diff >= step >> 2) code |= 1u;
+    return code;
+}
+
+/* Smallest step not below |difference|, so the first code can follow it. */
+static i32 ima_start_index(i32 difference)
+{
+    i32 magnitude = difference < 0 ? -difference : difference;
+    for (i32 i = 0; i <= IMA_MAX_INDEX; ++i) {
+        if (k_ima_step[i] >= magnitude) return i;
+    }
+    return IMA_MAX_INDEX;
+}
+
+BreakRuntimeError break_voice_encode_adpcm(const BreakVoiceFrame *frame,
+                                           u8 *out, u32 capacity, u32 *out_size)
+{
+    i32 predictor[2];
+    i32 index[2];
+    u32 required;
+    u32 c;
+    if (!frame || !out || !out_size ||
+        !valid_format(frame->sample_rate, frame->channels, frame->sample_count)) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    required = BREAK_VOICE_ADPCM_SIZE((u32)frame->channels, (u32)frame->sample_count);
+    if (capacity < required) return BREAK_RUNTIME_OVERLOAD;
+    memset(out, 0, required);
+    memcpy(out, "BRV2", 4u);
+    put_u32(out + 4u, frame->sequence);
+    put_u32(out + 8u, frame->sample_rate);
+    put_u16(out + 12u, frame->channels);
+    put_u16(out + 14u, frame->sample_count);
+    for (c = 0u; c < frame->channels; ++c) {
+        u8 *state = out + BREAK_VOICE_WIRE_HEADER_SIZE + c * BREAK_VOICE_ADPCM_STATE_SIZE;
+        i32 first = frame->samples[c];
+        i32 second = frame->sample_count > frame->channels
+                         ? frame->samples[frame->channels + c] : first;
+        predictor[c] = first;
+        index[c] = ima_start_index(second - first);
+        put_u16(state, (u16)(i16)first);
+        state[2] = (u8)index[c];
+        state[3] = 0u;
+    }
+    {
+        u8 *codes = out + BREAK_VOICE_WIRE_HEADER_SIZE +
+                    (u32)frame->channels * BREAK_VOICE_ADPCM_STATE_SIZE;
+        u32 n = 0u;
+        for (u32 k = frame->channels; k < frame->sample_count; ++k, ++n) {
+            u32 ch = k % frame->channels;
+            u32 code = ima_code(predictor[ch], index[ch], frame->samples[k]);
+            (void)ima_step(&predictor[ch], &index[ch], code);
+            codes[n / 2u] |= (u8)(code << ((n % 2u) * 4u));
+        }
+    }
+    *out_size = required;
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError break_voice_receiver_create(
     NetSocket *socket, const BreakVoiceStreamConfig *config,
     BreakVoiceReceiver **out)
@@ -178,15 +287,47 @@ BreakRuntimeError break_voice_receiver_receive_socket(BreakVoiceReceiver *receiv
     return BREAK_RUNTIME_OK;
 }
 
+/* BRV2 payload after the header; the format fields are already checked. */
+static bool decode_adpcm(const BreakOnlineDatagram *datagram, BreakVoiceFrame *frame)
+{
+    i32 predictor[2];
+    i32 index[2];
+    const u8 *codes;
+    u32 c;
+    if (datagram->size != BREAK_VOICE_ADPCM_SIZE((u32)frame->channels,
+                                                 (u32)frame->sample_count)) {
+        return false;
+    }
+    for (c = 0u; c < frame->channels; ++c) {
+        const u8 *state =
+            datagram->bytes + BREAK_VOICE_WIRE_HEADER_SIZE + c * BREAK_VOICE_ADPCM_STATE_SIZE;
+        u16 bits = get_u16(state);
+        if (state[2] > IMA_MAX_INDEX || state[3] != 0u) return false;
+        predictor[c] = bits <= INT16_MAX ? (i32)bits : (i32)bits - 65536;
+        index[c] = state[2];
+        frame->samples[c] = (i16)predictor[c];
+    }
+    codes = datagram->bytes + BREAK_VOICE_WIRE_HEADER_SIZE +
+            (u32)frame->channels * BREAK_VOICE_ADPCM_STATE_SIZE;
+    for (u32 k = frame->channels, n = 0u; k < frame->sample_count; ++k, ++n) {
+        u32 ch = k % frame->channels;
+        u32 code = (codes[n / 2u] >> ((n % 2u) * 4u)) & 0x0fu;
+        frame->samples[k] = ima_step(&predictor[ch], &index[ch], code);
+    }
+    return true;
+}
+
 static bool decode_frame(const BreakVoiceReceiver *receiver,
                          const BreakOnlineDatagram *datagram,
                          BreakVoiceFrame *out)
 {
     u32 expected_size;
     u32 i;
+    bool adpcm;
     BreakVoiceFrame frame;
-    if (datagram->size < BREAK_VOICE_WIRE_HEADER_SIZE ||
-        memcmp(datagram->bytes, "BRV1", 4u) != 0) return false;
+    if (datagram->size < BREAK_VOICE_WIRE_HEADER_SIZE) return false;
+    adpcm = memcmp(datagram->bytes, "BRV2", 4u) == 0;
+    if (!adpcm && memcmp(datagram->bytes, "BRV1", 4u) != 0) return false;
     memset(&frame, 0, sizeof(frame));
     frame.sequence = get_u32(datagram->bytes + 4u);
     frame.sample_rate = get_u32(datagram->bytes + 8u);
@@ -195,6 +336,11 @@ static bool decode_frame(const BreakVoiceReceiver *receiver,
     if (frame.sample_rate != receiver->config.sample_rate ||
         frame.channels != receiver->config.channels ||
         frame.sample_count != receiver->config.sample_count) return false;
+    if (adpcm) {
+        if (!decode_adpcm(datagram, &frame)) return false;
+        *out = frame;
+        return true;
+    }
     expected_size = BREAK_VOICE_WIRE_HEADER_SIZE + (u32)frame.sample_count * 2u;
     if (datagram->size != expected_size) return false;
     for (i = 0u; i < frame.sample_count; ++i) {

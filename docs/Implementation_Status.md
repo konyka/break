@@ -11386,3 +11386,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - `audio_pcm_stream_set_spatial(as, h, min, max, rolloff, occluded_gain)` 与 `audio_pcm_stream_set_position(as, h, pos)`：PCM 流（网络语音）可按与空间事件相同的反比距离模型和遮挡射线随距离衰减；监听者移动（`audio_system_update`）时重新计算。空间事件与流共用一个 `spatial_gain` 计算。只调增益，没有声像、HRTF 或多普勒。
 - `test_audio_extended` 新增 4 项（共 56）。先 RED 后 GREEN，17 项变异全部被捕获；TSan 与 ASan+UBSan 无报告。
+
+### 2026-11-16 compressed network voice (BRV2, IMA ADPCM)
+
+- `break_voice_encode_adpcm` 与 `BRV2` 帧：4 位 IMA ADPCM，每帧自带每声道起始状态，约为原始 16 位 PCM（`BRV1`）的四分之一；接收器同时接受 `BRV1` 与 `BRV2`，非法状态或长度计入 `invalid`。不引入新依赖。
+- `test_break_online_voice` 新增 6 项（共 14）：布局与已知码序列、编码器边界（期望值来自独立的标准表参考模型）、往返信噪比、静音与满幅、立体声与奇数码、非法帧、`BRV1`/`BRV2` 混流。先 RED 后 GREEN，27 项变异全部被捕获；ASan+UBSan 无报告。
+- 仍缺：感知编码器（Opus 等）、麦克风采集。

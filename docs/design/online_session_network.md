@@ -111,3 +111,7 @@ apply 要求相同 schema hash、live generation 和递增的每对象 record ep
 ## 补充（2026-11-16）：语音接入混音器
 
 `pop` 本身仍不调用音频设备。新增 `audio_pcm_stream_*`（`audio/audio_extended.h`）：应用在 LogicThread 把 `break_voice_receiver_pop` 得到的 PCM 写入一个流，混音器在音频回调里按顺序播放，空了就输出静音并计入 underrun。（2026-11-16 更新：`audio_pcm_stream_open_rate` 接受 8000..192000 Hz 的流，混音器以线性插值转换到 48 kHz，因此 8/16/24 kHz 语音可直接写入；降采样不做低通滤波。2026-11-16 再补充：`audio_pcm_stream_set_spatial` / `set_position` 让流按与空间事件相同的距离衰减与遮挡模型随监听者和声源位置变化增益，只调增益，没有声像或 HRTF。）没有麦克风采集。`test_voice_playback` 把乱序到达的 `BRV1` 帧经真实接收器写入流，验证混音输出与发送顺序一致。设计与验证见 `docs/superpowers/plans/2026-11-16-audio-pcm-stream.md`。
+
+## 补充（2026-11-16）：BRV2 压缩语音帧
+
+新增 `BRV2` 帧格式与 `break_voice_encode_adpcm`：在 `BRV1` 的 16 字节头之后，每个声道一个 4 字节起始状态（该声道首个样本作为预测值 i16 le、步长索引 u8 0..88、保留字节 0），之后每个后续样本一个 4 位 IMA ADPCM 码，两码一字节、低半字节在前，按声道交错。帧大小为 `16 + 4 × 声道数 + ceil((样本数 − 声道数) / 2)`，约为 `BRV1` 的四分之一。每帧自带起始状态，丢帧不影响后续帧。接收器对配置格式同时接受 `BRV1` 与 `BRV2`；步长索引超过 88、保留字节非零或长度不符的 `BRV2` 计入 `invalid`。16 kHz、−6 dBFS、440 Hz 正弦的往返信噪比超过 30 dB。没有感知编码器（如 Opus）。设计与验证见 `docs/superpowers/plans/2026-11-16-voice-adpcm.md`。

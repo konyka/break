@@ -6416,7 +6416,7 @@ endif()
     add_executable(test_break_online_voice tests/test_break_online_voice.c
         src/network/network.c)
     target_include_directories(test_break_online_voice PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_break_online_voice PRIVATE break_online Threads::Threads)
+    target_link_libraries(test_break_online_voice PRIVATE break_online Threads::Threads m)
     if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
        ENGINE_PLATFORM STREQUAL "harmonyos")
         target_compile_definitions(test_break_online_voice PRIVATE

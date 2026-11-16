@@ -11,6 +11,14 @@ extern "C" {
 #define BREAK_VOICE_WIRE_HEADER_SIZE 16u
 #define BREAK_VOICE_MAX_DATAGRAM_SIZE \
     (BREAK_VOICE_WIRE_HEADER_SIZE + BREAK_VOICE_MAX_SAMPLES * 2u)
+/* BRV2 (IMA ADPCM): the BRV1 header, then per channel a 4-byte start state
+ * (the channel's first sample as predictor i16 le, step index u8 0..88,
+ * reserved u8 0), then one 4-bit code for every later sample, two per
+ * byte, low nibble first, interleaved by channel like the PCM. */
+#define BREAK_VOICE_ADPCM_STATE_SIZE 4u
+#define BREAK_VOICE_ADPCM_SIZE(channels, sample_count) \
+    (BREAK_VOICE_WIRE_HEADER_SIZE + BREAK_VOICE_ADPCM_STATE_SIZE * (channels) + \
+     ((sample_count) - (channels) + 1u) / 2u)
 
 typedef struct BreakVoiceReceiver BreakVoiceReceiver;
 
@@ -50,6 +58,12 @@ typedef struct BreakVoiceReceiverStats {
 
 BreakRuntimeError break_voice_encode(const BreakVoiceFrame *frame,
                                      u8 *out, u32 capacity, u32 *out_size);
+/* The same frame as BRV2: 4-bit IMA ADPCM, about a quarter of the BRV1
+ * size and lossy. Each frame carries its own start state, so frames
+ * decode independently. The receiver accepts BRV1 and BRV2 frames of its
+ * configured format interchangeably. */
+BreakRuntimeError break_voice_encode_adpcm(const BreakVoiceFrame *frame,
+                                           u8 *out, u32 capacity, u32 *out_size);
 BreakRuntimeError break_voice_receiver_create(
     NetSocket *socket, const BreakVoiceStreamConfig *config,
     BreakVoiceReceiver **out);
