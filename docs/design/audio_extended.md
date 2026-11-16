@@ -59,9 +59,16 @@ RESTART 保留 handle 并从头播放；STEAL_OLDEST 提升 generation，使旧 
 
 `audio_play`、`audio_play_3d` 和兼容命名的 `audio_play_streamed` 都使用 `MA_SOUND_FLAG_DECODE` 在打开时完整解码，不再禁用 pitch/Doppler。`AudioStreamManager` 的公共 API 保留，但不再从音频回调读取文件或补 decoder 数据。代价是打开大文件会阻塞调用线程并占用对应解码内存；实时安全的扩展路径要求使用预解码 clip。decoded `audio_play_3d` 的源速度 Doppler 由真实 PCM 回归覆盖。
 
+## PCM 流的采样率转换与抗混叠
+
+`audio_pcm_stream_open_rate` 接受 8000..192000 Hz 的流，混音回调用整数位置（以 1/48000 帧为单位）做线性插值转换到 48 kHz。高于 48 kHz 的流先经过 4 阶 Butterworth 低通（两级 RBJ biquad，Q = 0.5412 / 1.3066，截止 21600 Hz，按流采样率用双线性变换在 open 时算系数），再插值；否则 24 kHz 以上的内容会折回可听频段。96 kHz 输入时 1 kHz 基本无衰减，30 kHz 约 -19.5 dB，流的 Nyquist 频率处为零点；紧贴 24 kHz 以上的衰减较小。
+
+滤波在环形缓冲里原地进行：`[tail, head)` 的帧在 tail 越过之前归混音回调所有，生产者不会改写。回调私有的 `filtered` 记录 tail 之后已滤过的帧数，读插值所需帧之前、以及释放被跨过的帧之前都先按顺序补滤，所以每帧恰好滤一次，抽取跳过的帧也会经过滤波器。滤波状态、系数和 `filtered` 与位置 `pos` 遵守同一规则：open 在槽位关闭时重置，回调只在看到 `open` 后读写。滤波函数不分配、不加锁，纳入 `test_audio_realtime_contract` 的检查范围。≤48 kHz 的流不滤波，上采样产生的镜像也不滤除。
+
 ## 验证与限制
 
 - `test_audio_extended`：clip/容量、并发/重触发、stale handle、真实 DSP 接线、逐样本交叉淡化、loop/停止、遮挡/距离、bus/master、legacy WAV、bit-exact fake 和 null 命令生命周期。
 - `test_audio_dsp`：手算滤波阶跃、延迟 tap/feedback、混响早期 taps、filter+delay 组合和失败原子。
 - normal、ASan+UBSan、TSan 的 `test_audio`/`test_audio_extended`/`test_audio_dsp`/`test_audio_realtime_contract` 均通过。
-- 没有真实听测、真实声卡、Windows、macOS 或跨采样率播放验证。简单 DSP/混响不等于物理声学或听感验收。
+- 降采样低通由 `test_audio_extended` 中的双精度参考模型（96 kHz、88.2 kHz）、Nyquist 音、30 kHz / 1 kHz 正弦、立体声分离和重开复位覆盖；`test_voice_playback` 在 96 kHz 下跑生产者/关闭/混音线程竞争。
+- 没有真实听测、真实声卡、Windows 或 macOS 验证。简单 DSP/混响不等于物理声学或听感验收。

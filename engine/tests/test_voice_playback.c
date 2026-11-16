@@ -150,14 +150,23 @@ TEST(voice_at_16k_plays_through_a_rate_converting_stream)
 
 typedef struct MixerThread {
     AudioSystem *as;
+    bool filtered;
     atomic_bool stop;
     atomic_uint renders;
     bool bad_sample;
 } MixerThread;
 
+/* A 96 kHz stream of the constant 0.25 goes through the anti-aliasing
+ * low-pass: its step response starts near 0.017 and overshoots to about
+ * 0.289 before settling. */
+static bool filtered_sample_ok(f32 v)
+{
+    return v == 0.0f || (v > 0.01f && v < 0.3f);
+}
+
 /* Renders like a device callback, on its own thread. Every sample is either
- * silence or one the producer wrote, so a torn read shows up as a value
- * outside that set. */
+ * silence or one the producer wrote (filtered for a fast stream), so a torn
+ * read shows up as a value outside that set. */
 static PLATFORM_THREAD_RET mixer_thread_main(PLATFORM_THREAD_ARG arg)
 {
     MixerThread *m = (MixerThread *)arg;
@@ -168,17 +177,21 @@ static PLATFORM_THREAD_RET mixer_thread_main(PLATFORM_THREAD_ARG arg)
             return PLATFORM_THREAD_RETURN;
         }
         for (u32 i = 0; i < 128u; ++i) {
-            if (out[i] != 0.0f && out[i] != 0.25f) m->bad_sample = true;
+            if (m->filtered ? !filtered_sample_ok(out[i])
+                            : (out[i] != 0.0f && out[i] != 0.25f)) {
+                m->bad_sample = true;
+            }
         }
         atomic_fetch_add(&m->renders, 1u);
     }
     return PLATFORM_THREAD_RETURN;
 }
 
-/* The producer writes and closes while another thread mixes: no torn
- * samples, and close waits for a read in progress before freeing the ring
- * (run under TSan / ASan to see races and use-after-free). */
-TEST(producer_and_close_race_with_a_mixer_thread)
+/* The producer opens at `rate`, writes and closes while another thread
+ * mixes: no torn samples, and close waits for a read in progress before
+ * freeing the ring (run under TSan / ASan to see races and use-after-free;
+ * at 96 kHz the mixer also filters the ring in place). */
+static void race_producer_with_mixer(u32 rate)
 {
     static i16 pcm[256];
     MixerThread m;
@@ -189,11 +202,13 @@ TEST(producer_and_close_race_with_a_mixer_thread)
     memset(&m, 0, sizeof(m));
     m.as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
     ASSERT_NOT_NULL(m.as);
+    m.filtered = rate > AUDIO_PCM_SAMPLE_RATE;
     atomic_init(&m.stop, false);
     atomic_init(&m.renders, 0u);
     ASSERT_TRUE(platform_thread_create(&thread, mixer_thread_main, &m));
     for (u32 round = 0; round < 200u; ++round) {
-        ASSERT_EQ(audio_pcm_stream_open(m.as, 1u, AUDIO_BUS_MASTER, 1.0f, &stream), AUDIO_OK);
+        ASSERT_EQ(audio_pcm_stream_open_rate(m.as, 1u, rate, AUDIO_BUS_MASTER, 1.0f, &stream),
+                  AUDIO_OK);
         for (u32 k = 0; k < 8u; ++k) {
             ASSERT_EQ(audio_pcm_stream_write_i16(m.as, stream, pcm, 256u, &written), AUDIO_OK);
         }
@@ -212,8 +227,19 @@ TEST(producer_and_close_race_with_a_mixer_thread)
     audio_system_destroy(m.as);
 }
 
+TEST(producer_and_close_race_with_a_mixer_thread)
+{
+    race_producer_with_mixer(AUDIO_PCM_SAMPLE_RATE);
+}
+
+TEST(fast_stream_filter_races_with_a_mixer_thread)
+{
+    race_producer_with_mixer(96000u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(received_voice_frames_play_through_a_pcm_stream_in_order);
     RUN_TEST(voice_at_16k_plays_through_a_rate_converting_stream);
     RUN_TEST(producer_and_close_race_with_a_mixer_thread);
+    RUN_TEST(fast_stream_filter_races_with_a_mixer_thread);
 TEST_MAIN_END()

@@ -112,6 +112,14 @@ typedef struct {
      * Integer arithmetic, so the position is exact for every rate. */
     u32 rate;
     u64 pos;
+    /* Anti-aliasing low-pass for a stream faster than the engine rate: two
+     * biquads (b0 b1 b2 a1 a2) with per-channel transposed direct form II
+     * state. `filtered` counts the frames after `tail` already filtered in
+     * place. Mixer-owned like `pos`; open resets them. */
+    bool filter;
+    double lowpass[2][5];
+    double lowpass_state[2][2][2];
+    u32 filtered;
     atomic_uint gain_bits;
     /* distance attenuation (audio_pcm_stream_set_spatial); written and
      * recomputed on the owner thread, the mixer reads spatial_bits only */
@@ -410,6 +418,30 @@ static const ma_data_source_vtable AUDIO_VOICE_VTABLE = {
     NULL, MA_DATA_SOURCE_SELF_MANAGED_RANGE_AND_LOOP_POINT
 };
 
+/* Runs the low-pass over queued frames, in order, until `count` frames
+ * after `tail` are filtered. Every frame goes through once, including the
+ * ones decimation skips. */
+static void pcm_stream_filter_to(AudioPcmStream *stream, u32 tail, u32 count) {
+    while (stream->filtered < count) {
+        f32 *frame = stream->ring +
+            (usize)((tail + stream->filtered) & (AUDIO_PCM_STREAM_FRAMES - 1u)) *
+                stream->channels;
+        for (u32 c = 0; c < stream->channels; ++c) {
+            double x = frame[c];
+            for (u32 k = 0; k < 2u; ++k) {
+                const double *f = stream->lowpass[k];
+                double *z = stream->lowpass_state[k][c];
+                double y = f[0] * x + z[0];
+                z[0] = f[1] * x - f[3] * y + z[1];
+                z[1] = f[2] * x - f[4] * y;
+                x = y;
+            }
+            frame[c] = (f32)x;
+        }
+        stream->filtered++;
+    }
+}
+
 /* Mixer side of a PCM stream: plays queued frames, then silence. */
 static ma_result pcm_stream_read(ma_data_source *source, void *output,
                                  ma_uint64 frames, ma_uint64 *frames_read) {
@@ -433,10 +465,12 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
     }
     /* An output frame interpolates source frames tail+i and tail+i+1, i the
      * whole part of the position, weighted by the remainder. A remainder of
-     * zero needs only frame tail+i. Frames the position has passed are
+     * zero needs only frame tail+i. A fast stream low-passes those frames
+     * first, and any it releases unread. Frames the position has passed are
      * released. While data is missing the position does not move. The
-     * position belongs to an open stream: a closed slot is being reset by
-     * open on another thread, so it is not read then (nothing plays). */
+     * position and filter belong to an open stream: a closed slot is being
+     * reset by open on another thread, so they are not read then (nothing
+     * plays; with no queued frames the filter is never reached). */
     u64 pos = open ? stream->pos : 0u;
     for (ma_uint64 frame = 0; frame < frames; ++frame) {
         f32 left = 0.0f;
@@ -445,6 +479,7 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
         u32 rem = (u32)(pos % AUDIO_PCM_SAMPLE_RATE);
         u32 queued = head - tail;
         if (index < queued && (rem == 0u || index + 1u < queued)) {
+            if (stream->filter) pcm_stream_filter_to(stream, tail, index + (rem == 0u ? 1u : 2u));
             const f32 *a = stream->ring +
                 (usize)((tail + index) & (AUDIO_PCM_STREAM_FRAMES - 1u)) * stream->channels;
             left = a[0];
@@ -466,6 +501,10 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
              * than are queued: decimation may step past the last one */
             u32 passed = (u32)(pos / AUDIO_PCM_SAMPLE_RATE);
             if (passed > queued) passed = queued;
+            if (stream->filter) {
+                pcm_stream_filter_to(stream, tail, passed);
+                stream->filtered -= passed;
+            }
             tail += passed;
             pos -= (u64)passed * AUDIO_PCM_SAMPLE_RATE;
         } else {
@@ -540,6 +579,29 @@ static AudioResult pcm_stream_lookup(AudioSystem *as, AudioPcmStreamHandle handl
     return AUDIO_OK;
 }
 
+/* 4th-order Butterworth low-pass at 0.45 x the engine rate for a stream
+ * faster than the engine; RBJ biquads, bilinear transform at the stream
+ * rate. Slower streams are not filtered. */
+static void pcm_stream_reset_filter(AudioPcmStream *stream, u32 sample_rate) {
+    static const double kQ[2] = {0.54119610014619698, 1.3065629648763766};
+    const double pi = 3.14159265358979323846;
+    stream->filter = sample_rate > AUDIO_PCM_SAMPLE_RATE;
+    stream->filtered = 0u;
+    memset(stream->lowpass_state, 0, sizeof(stream->lowpass_state));
+    if (!stream->filter) return;
+    double w0 = 2.0 * pi * (0.45 * AUDIO_PCM_SAMPLE_RATE) / (double)sample_rate;
+    double c = cos(w0);
+    for (u32 k = 0; k < 2u; ++k) {
+        double alpha = sin(w0) / (2.0 * kQ[k]);
+        double a0 = 1.0 + alpha;
+        stream->lowpass[k][0] = (1.0 - c) / 2.0 / a0;
+        stream->lowpass[k][1] = (1.0 - c) / a0;
+        stream->lowpass[k][2] = (1.0 - c) / 2.0 / a0;
+        stream->lowpass[k][3] = -2.0 * c / a0;
+        stream->lowpass[k][4] = (1.0 - alpha) / a0;
+    }
+}
+
 AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample_rate, u32 bus,
                                        f32 volume, AudioPcmStreamHandle *out_handle) {
     AudioExtended *ext = audio_extended(as);
@@ -560,6 +622,7 @@ AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample
                               memory_order_relaxed);
         stream->rate = sample_rate;
         stream->pos = 0u;
+        pcm_stream_reset_filter(stream, sample_rate);
         stream->spatial = false;
         stream->position = vec3(0, 0, 0);
         atomic_store_explicit(&stream->spatial_bits, gain_to_bits(1.0f), memory_order_relaxed);

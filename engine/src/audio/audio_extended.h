@@ -116,9 +116,11 @@ AudioResult audio_pcm_stream_open(AudioSystem *as, u32 channels, u32 bus, f32 vo
                                   AudioPcmStreamHandle *out_handle);
 /* Same, for PCM written at sample_rate (AUDIO_PCM_STREAM_MIN_RATE ..
  * AUDIO_PCM_STREAM_MAX_RATE). The mixer converts it to the engine rate by
- * linear interpolation; there is no low-pass filter, so content above
- * 24 kHz in a faster stream aliases. Ring frames and queued counts are in
- * stream-rate frames. */
+ * linear interpolation. A stream faster than the engine rate first goes
+ * through a 4th-order Butterworth low-pass at 21.6 kHz, so content above
+ * 24 kHz is attenuated instead of folding back (about -19 dB at 30 kHz for
+ * 96 kHz input; less right above 24 kHz). Upsampling is not filtered. Ring
+ * frames and queued counts are in stream-rate frames. */
 AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample_rate, u32 bus,
                                        f32 volume, AudioPcmStreamHandle *out_handle);
 /* Copies up to frame_count interleaved frames (i16 / 32768) and reports how
