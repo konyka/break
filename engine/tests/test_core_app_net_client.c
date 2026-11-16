@@ -11,6 +11,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "core_app_network.h"
 
+#include <core/clock_offset.h>
 #include <crypto/break_crypto.h>
 #include <network/break_net_envelope.h>
 #include <physics/physics_sync.h>
@@ -425,6 +426,101 @@ static bool send_snapshot(NetClient *c, const CoreAppSnapshot *snapshot, size_t 
     return client_send(c, CORE_APP_SNAPSHOT_MESSAGE_ID, CORE_APP_SNAPSHOT_PROTOCOL_VERSION, wire,
                        size + trailing);
 }
+static u64 now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000000u + (u64)ts.tv_nsec / 1000u;
+}
+
+/* Waits for a clock probe reply that echoes t0. Returns 1 with the reply,
+ * 0 on timeout, -1 on a close or a malformed probe. */
+static int client_next_clock_reply(NetClient *c, u64 t0, CoreAppClockProbe *out, u64 *t3,
+                                   u32 timeout_ms) {
+    u64 deadline = now_ms() + timeout_ms;
+    while (now_ms() < deadline) {
+        BreakNetEnvelope env;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got != 1) return got;
+        if (env.message_id != CORE_APP_CLOCK_PROBE_MESSAGE_ID) continue;
+        *t3 = now_us();
+        if (env.protocol_version != 1u ||
+            core_app_clock_probe_decode((const u8 *)env.payload, env.payload_size, out) !=
+                CORE_APP_SNAPSHOT_OK ||
+            out->kind != CORE_APP_CLOCK_PROBE_REPLY) {
+            return -1;
+        }
+        /* t0 values 11..13 belong to malformed probes, which must never be
+         * answered. */
+        if (out->t0 >= 11u && out->t0 <= 13u) return -1;
+        if (out->t0 == t0) return 1;
+    }
+    return 0;
+}
+
+static bool send_clock_probe(NetClient *c, const CoreAppClockProbe *probe, size_t size) {
+    u8 wire[CORE_APP_CLOCK_PROBE_BYTES];
+    size_t encoded = 0u;
+    CoreAppClockProbe request = *probe;
+    u64 t1 = request.t1;
+    request.t1 = 0u;
+    if (core_app_clock_probe_encode(&request, wire, sizeof(wire), &encoded) !=
+        CORE_APP_SNAPSHOT_OK) {
+        return false;
+    }
+    for (u32 i = 0u; i < 8u; ++i) wire[16u + i] = (u8)(t1 >> (8u * i));
+    return client_send(c, CORE_APP_CLOCK_PROBE_MESSAGE_ID, 1u, wire, size);
+}
+
+/* Malformed probes first (no reply allowed), then four real exchanges fed
+ * to the offset estimator. Both ends read CLOCK_MONOTONIC on one machine,
+ * so the true offset is 0 and must lie inside the reported error bound. */
+static void client_clock_probe_exchange(NetClient *c) {
+    CoreAppClockProbe probe = {CORE_APP_CLOCK_PROBE_REQUEST, 0u, 0u, 0u};
+    CoreAppClockProbe reply;
+    ClockOffsetEstimator estimator;
+    u64 t3 = 0u;
+    clock_offset_init(&estimator);
+    probe.t0 = 11u;
+    check(send_clock_probe(c, &probe, CORE_APP_CLOCK_PROBE_BYTES - 1u), "a_sent_short_clock_probe");
+    probe.t0 = 12u;
+    probe.t1 = 5u;
+    check(send_clock_probe(c, &probe, CORE_APP_CLOCK_PROBE_BYTES),
+          "a_sent_clock_probe_request_with_t1");
+    probe.t1 = 0u;
+    CoreAppClockProbe forged_reply = {CORE_APP_CLOCK_PROBE_REPLY, 13u, 20u, 30u};
+    u8 forged_wire[CORE_APP_CLOCK_PROBE_BYTES];
+    size_t forged_size = 0u;
+    check(core_app_clock_probe_encode(&forged_reply, forged_wire, sizeof(forged_wire),
+                                      &forged_size) == CORE_APP_SNAPSHOT_OK &&
+              client_send(c, CORE_APP_CLOCK_PROBE_MESSAGE_ID, 1u, forged_wire, forged_size),
+          "a_sent_clock_probe_reply_to_server");
+    bool replies_ok = true;
+    for (u32 i = 0u; i < 4u; ++i) {
+        probe.t0 = now_us();
+        if (!send_clock_probe(c, &probe, CORE_APP_CLOCK_PROBE_BYTES) ||
+            client_next_clock_reply(c, probe.t0, &reply, &t3, 10000u) != 1 ||
+            reply.t2 < reply.t1) {
+            replies_ok = false;
+            break;
+        }
+        ClockOffsetSample sample = {reply.t0, reply.t1, reply.t2, t3};
+        replies_ok = replies_ok && clock_offset_add(&estimator, &sample) == CLOCK_OFFSET_OK;
+    }
+    check(replies_ok, "a_received_clock_probe_replies");
+    ClockOffsetEstimate estimate;
+    bool estimated = clock_offset_estimate(&estimator, &estimate) == CLOCK_OFFSET_OK;
+    check(estimated && estimate.samples == 4u && estimator.rejected == 0u,
+          "a_clock_offset_estimated");
+    if (estimated) {
+        u64 magnitude = estimate.offset_us < 0 ? (u64)(-estimate.offset_us)
+                                               : (u64)estimate.offset_us;
+        check(magnitude <= estimate.error_us, "a_clock_offset_within_error");
+        fprintf(g_report, "clock_offset offset_us=%lld error_us=%llu samples=%u\n",
+                (long long)estimate.offset_us, (unsigned long long)estimate.error_us,
+                estimate.samples);
+    }
+}
+
 static bool snapshot_shape_ok(const CoreAppSnapshot *s) {
     return s->schema_hash == core_app_snapshot_schema_hash() && s->frame_id > 0u &&
            s->level_generation > 0u && s->entity_count == 2u && s->entities[0].flags == 1u &&
@@ -503,6 +599,7 @@ static void scenario_authenticated(void) {
             check(!client_receives_correction_before(&a2, correction_tick, 10000u),
                   "a2_never_receives_correction");
         }
+        client_clock_probe_exchange(&a);
         client_close(&a2);
         /* Wait for a frame built well after the hostile sends: the outbox
          * may already hold the next few frames, and closing with those

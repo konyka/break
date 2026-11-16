@@ -65,6 +65,8 @@ typedef struct CoreAppNetStats {
     u64 physics_unknown;
     u64 physics_decode_failed;
     u64 physics_corrections_sent;
+    u64 clock_probes_answered;
+    u64 clock_probe_decode_failed;
 } CoreAppNetStats;
 
 struct CoreAppNetTransport {
@@ -93,6 +95,8 @@ struct CoreAppNetTransport {
     bool authenticated[CORE_APP_NET_MAX_CONNECTIONS];
     bool closing[CORE_APP_NET_MAX_CONNECTIONS];
     bool correction_pending[CORE_APP_NET_MAX_CONNECTIONS];
+    bool clock_probe_pending[CORE_APP_NET_MAX_CONNECTIONS];
+    CoreAppClockProbe clock_probes[CORE_APP_NET_MAX_CONNECTIONS];
     BreakSessionId session_ids[CORE_APP_NET_MAX_CONNECTIONS];
     u64 opened_us[CORE_APP_NET_MAX_CONNECTIONS];
     CoreAppSnapshot scratch_snapshot;
@@ -247,6 +251,27 @@ static bool net_on_physics_report(BreakConnectionKey connection,
     return true;
 }
 
+/* Stores the latest request per connection with its receive time t1; the
+ * reply is built in net_send_pending so t2 is the actual send time. */
+static bool net_on_clock_probe(BreakConnectionKey connection,
+                               const BreakNetOwnedMessage *message, void *user) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    u64 t1 = time_microseconds();
+    CoreAppClockProbe probe;
+    if (core_app_clock_probe_decode((const u8 *)message->data, message->size, &probe) !=
+            CORE_APP_SNAPSHOT_OK ||
+        probe.kind != CORE_APP_CLOCK_PROBE_REQUEST) {
+        t->stats.clock_probe_decode_failed++;
+        return false;
+    }
+    int slot = net_slot_find(t, connection);
+    if (slot < 0) return false;
+    probe.t1 = t1;
+    t->clock_probes[slot] = probe;
+    t->clock_probe_pending[slot] = true;
+    return true;
+}
+
 static void net_close_slot(CoreAppNetTransport *t, u32 i) {
     t->authenticated[i] = false;
     if (t->closing[i]) return;
@@ -311,6 +336,7 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
                 t->closing[slot] = false;
                 t->session_ids[slot] = 0u;
                 t->correction_pending[slot] = false;
+                t->clock_probe_pending[slot] = false;
                 t->stats.closed++;
             }
         }
@@ -333,12 +359,38 @@ static bool net_slot_sendable(const CoreAppNetTransport *t, u32 i) {
            break_session_manager_session_id(t->manager, key) == t->session_ids[i];
 }
 
+static void net_send_clock_replies(CoreAppNetTransport *t) {
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        if (!t->clock_probe_pending[i]) continue;
+        t->clock_probe_pending[i] = false;
+        if (!net_slot_sendable(t, i)) continue;
+        CoreAppClockProbe request = t->clock_probes[i];
+        CoreAppClockProbe reply;
+        u8 wire[CORE_APP_CLOCK_PROBE_BYTES];
+        usize size = 0u;
+        u64 t1 = request.t1;
+        request.t1 = 0u;
+        if (core_app_clock_probe_answer(&request, t1, time_microseconds(), &reply) !=
+                CORE_APP_SNAPSHOT_OK ||
+            core_app_clock_probe_encode(&reply, wire, sizeof(wire), &size) !=
+                CORE_APP_SNAPSHOT_OK) {
+            continue;
+        }
+        BreakNetSendResult sent = break_net_reactor_send(
+            t->reactor, t->keys[i], CORE_APP_CLOCK_PROBE_MESSAGE_ID, 1u, wire, size);
+        if (sent == BREAK_NET_SEND_OK) t->stats.clock_probes_answered++;
+        else if (sent == BREAK_NET_SEND_OVERLOAD) t->stats.send_overloads++;
+        else t->stats.send_closed++;
+    }
+}
+
 static void net_send_pending(CoreAppNetTransport *t) {
     CoreAppSnapshot *snapshot = &t->scratch_snapshot;
     u8 *wire = t->scratch_wire;
     /* Unprocessed events may include a close for a key that a new
      * connection already reuses; hold snapshots until the queue is empty. */
     if (!break_net_reactor_event_queue_empty(t->reactor)) return;
+    net_send_clock_replies(t);
     while (core_app_snapshot_outbox_pop(&t->outbox, snapshot)) {
         usize size = 0u;
         if (core_app_snapshot_encode(snapshot, wire, CORE_APP_SNAPSHOT_MAX_BYTES, &size) !=
@@ -413,7 +465,9 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
         !break_session_manager_set_message_handler(t->manager, CORE_APP_SNAPSHOT_MESSAGE_ID,
                                                    net_on_snapshot, t) ||
         !break_session_manager_set_message_handler(
-            t->manager, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, net_on_physics_report, t)) {
+            t->manager, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, net_on_physics_report, t) ||
+        !break_session_manager_set_message_handler(t->manager, CORE_APP_CLOCK_PROBE_MESSAGE_ID,
+                                                   net_on_clock_probe, t)) {
         goto fail;
     }
     stage = "bind";
@@ -534,7 +588,8 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              " session_handler_failed=%" PRIu64 " physics_reports_sent=%" PRIu64
              " physics_matched=%" PRIu64 " physics_desynced=%" PRIu64
              " physics_unknown=%" PRIu64 " physics_decode_failed=%" PRIu64
-             " physics_corrections_sent=%" PRIu64 "\n",
+             " physics_corrections_sent=%" PRIu64 " clock_probes_answered=%" PRIu64
+             " clock_probe_decode_failed=%" PRIu64 "\n",
              t->stats.opened, t->stats.closed, t->stats.refused, t->stats.authenticated,
              t->stats.snapshots_sent, t->stats.send_overloads, t->stats.send_closed,
              t->stats.outbox_overloads, t->stats.auth_timeouts, t->stats.decode_failed, t->inbox.accepted_snapshots,
@@ -543,7 +598,8 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              (u64)session.phase_rejected, (u64)session.invalid, (u64)session.handler_failed,
              t->stats.physics_reports_sent, t->stats.physics_matched,
              t->stats.physics_desynced, t->stats.physics_unknown,
-             t->stats.physics_decode_failed, t->stats.physics_corrections_sent);
+             t->stats.physics_decode_failed, t->stats.physics_corrections_sent,
+             t->stats.clock_probes_answered, t->stats.clock_probe_decode_failed);
     net_trace(t, line);
 }
 

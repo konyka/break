@@ -11489,3 +11489,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `core_app_network.{h,c}`：`core_app_clock_probe_encode/decode/answer`，小端 32 字节格式（magic `CLKP`、kind、保留字节、t0/t1/t2），所有失败路径不修改输出。
 - `test_core_app_network` 新增 4 项（golden 字节往返、逐项畸形载荷拒绝、非法编码与应答、探测交换喂给 `ClockOffsetEstimator`），`test_break_session` 断言新注册表条目。先 RED（编译失败）后 GREEN；37 项变异首轮 1 项存活（编码缓冲区原本为 0，掩盖了保留字段写入），测试改为预填 0xa5 后全部被捕获。
 - 仍缺：transport 收发探测与定期估计、估计结果自动用于 `trace_merge`。
+
+### 2026-11-16 clock probe responder
+
+- `core_app_net_transport.c` 应答 `0x4004` 时钟探测：接收时取 t1，下一次发送前取 t2，按连接槽保存最新请求；畸形探测、带 t1/t2 的请求和对端发来的回复都只增加 `clock_probe_decode_failed`。`network_stats` 新增 `clock_probes_answered`、`clock_probe_decode_failed`。
+- loopback 测试（`test_core_app_net_client` + `test_core_app_network.cmake`）：3 个非法探测不得被应答，4 次真实交换喂给 `ClockOffsetEstimator`，估计偏移须落在误差界内。先 RED（服务端不应答）后 GREEN；12 项变异 2 项存活，补充「非法探测被应答即失败」和「应答次数恰好为 4」后剩 1 项：忽略解码结果时 `probe` 未初始化，其 kind 实际不会等于 REQUEST，无法确定性捕获，记为等价变异。
+- 仍缺：服务端主动探测、把偏移写入 trace、自动用于 `trace_merge`。
