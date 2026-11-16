@@ -179,10 +179,11 @@
  *      THIS eval (records carry no entity name; the doc selection is not
  *      visible to the console core). With no spawn this eval: bounded error
  *      line, record skipped. component/field names are matched byte-wise
- *      (case-sensitive) against the doc registry display/field names
- *      (Phase 1: "Transform" / pos.x..scale.z). If the target lacks the
- *      named registered component, an undoable add_component (zeroed bytes)
- *      is applied first; should the subsequent set_field_f32 still fail, the
+ *      (case-sensitive) against the doc registry display/field names (the
+ *      built-in "Transform" and "Light" and any type added with
+ *      break_editor_doc_register_component). If the target lacks the
+ *      named registered component, an undoable add_component (the type's
+ *      default bytes) is applied first; should the subsequent set still fail, the
  *      component add is rolled back via break_editor_undo — a record is
  *      never half-applied. Values: NUMBER (non-finite rejected) written as
  *      f32; BOOL maps to 1.0f/0.0f; STRING goes through the strict
