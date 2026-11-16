@@ -47,6 +47,9 @@ typedef struct {
     f32 occluded_gain;
     u32 bus;
     AudioDspChainDesc dsp;
+    /* Constant-power stereo pan from the listener's orientation, like
+     * audio_pcm_stream_set_panning. Requires `spatial`. */
+    bool panned;
 } AudioEventDesc;
 
 AudioResult audio_event_register(AudioSystem *as, const char *name,

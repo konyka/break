@@ -71,6 +71,12 @@ RESTART 保留 handle 并从头播放；STEAL_OLDEST 提升 generation，使旧 
 
 左右增益在 `set_spatial`、`set_position`、监听者更新时于所有者线程计算，打包成一个 64 位原子值发布，混音回调不会看到只更新了一侧的增益。单声道流先复制到两声道再声像；立体声流的每个声道乘以本侧增益。关闭声像恢复两侧增益为 1。
 
+### 事件 voice 的声像
+
+`AudioEventDesc.panned = true`（必须同时设置 `spatial`，否则 `audio_event_register` 返回 `AUDIO_INVALID`）让空间事件使用与 PCM 流相同的监听者声像模型和等功率规律（两者共用 `listener_pan` 与 `pan_gains`）。未设置的事件输出不变。
+
+START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 推进增益 revision 时保留旧增益，旧 epoch 的 PCM 可能采用这个 revision，因此它也必须保留旧 pan。之后的更新（`audio_voice_set_position`、监听者移动）先写 `pan_snapshot = (revision, pan)`，再 CAS 增益快照；混音回调采用增益 revision R 时，只有 `pan_snapshot` 的 revision 也等于 R 才采用其中的 pan，否则保留上一个 pan，直到采用该 revision。这样重启后的新 pan 不会作用到旧 epoch 的 PCM。左右增益在 voice DSP 链之前施加；单声道 clip 复制到两声道，立体声 clip 每个声道乘以本侧增益。
+
 ## 验证与限制
 
 - `test_audio_extended`：clip/容量、并发/重触发、stale handle、真实 DSP 接线、逐样本交叉淡化、loop/停止、遮挡/距离、bus/master、legacy WAV、bit-exact fake 和 null 命令生命周期。

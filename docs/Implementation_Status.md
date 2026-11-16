@@ -11427,3 +11427,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `audio_pcm_stream_set_panning(as, h, enabled)`：空间 PCM 流（网络语音）可按监听者朝向做等功率立体声声像（右向量 = forward × up），左右增益作为一个 64 位原子对发布；默认关闭，已有流的输出不变。
 - `test_audio_extended` 新增 5 项（共 68）：参数、左右/正前/正后/45°/头顶、监听者转身与走过、退化朝向、非单位且翻滚的朝向、立体声按侧缩放、关闭与重开。先 RED 后 GREEN，20 项变异全部被捕获；ASan+UBSan 与 TSan 三次运行无报告。
 - 仍缺：HRTF、耳间时差、前后区分、事件 voice 的声像、环绕声输出。
+
+### 2026-11-16 stereo panning for spatial events
+
+- `AudioEventDesc.panned`：空间事件 voice 可按监听者朝向做等功率立体声声像，与 PCM 流共用声像模型；pan 与增益快照按 revision 配对发布，重启中的旧 epoch 保留旧 pan。默认关闭，已有事件输出不变。
+- `test_audio_extended` 新增 5 项（共 73）：注册校验、触发时与 `set_position` 后的左右、监听者转身、保持中的 voice 重启、发布到一半的快照、立体声 clip 按侧缩放。先 RED 后 GREEN；19 项变异全部被捕获（首轮 3 项存活：两处冗余代码删除，一处补断言）；ASan+UBSan 与 TSan 三次运行无报告。
+- 仍缺：HRTF、耳间时差、前后区分、环绕声输出。

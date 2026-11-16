@@ -14,7 +14,7 @@ static void test_spatial_interleave(void *opaque) {
     if (!test_interleave_armed) return;
     test_interleave_armed = false;
     AudioVoice *voice = (AudioVoice *)opaque;
-    (void)spatial_publish(voice, voice->epoch, test_interleave_gain);
+    (void)spatial_publish(voice, voice->epoch, test_interleave_gain, 0.0f);
 }
 
 static bool test_read_interleave_armed;
@@ -2284,6 +2284,156 @@ TEST(pcm_stream_panning_off_and_reopen_restore_equal_gains)
     audio_system_destroy(as);
 }
 
+/* one rendered frame; false when a sample is not finite */
+static bool render_lr(AudioSystem *as, f32 *left, f32 *right)
+{
+    f32 out[2];
+    if (audio_system_render(as, out, 1u) != AUDIO_OK) return false;
+    *left = out[0];
+    *right = out[1];
+    return isfinite(out[0]) && isfinite(out[1]);
+}
+
+static AudioClipHandle register_ones(AudioSystem *as, u32 frames)
+{
+    static const f32 ones[16] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    return register_ramp(as, ones, frames);
+}
+
+TEST(event_panning_requires_spatial)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 2u));
+    desc.panned = true;
+    ASSERT_EQ(audio_event_register(as, "pan-flat", &desc), AUDIO_INVALID);
+    desc.spatial = true;
+    ASSERT_EQ(audio_event_register(as, "pan-flat", &desc), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+TEST(panned_event_follows_the_source_and_the_listener)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 16u));
+    desc.spatial = true;
+    desc.panned = true;
+    desc.looping = true;
+    ASSERT_EQ(audio_event_register(as, "pan-loop", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_event_trigger(as, "pan-loop", vec3(2, 0, 0), &voice), AUDIO_OK);
+    /* listener at the origin facing -Z: +X is hard right, distance gain 0.5 */
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.5f, 1e-6f);
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(-2, 0, 0)), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.0f, 1e-6f);
+    /* facing +X the right vector is +Z: the source at -X is centred */
+    audio_system_update(as, vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0));
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f * kCentre, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.5f * kCentre, 1e-6f);
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(0, 0, 4)), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f, 1e-6f);
+    /* only the listener turns, to face -X: right is -Z, so +Z is hard left */
+    audio_system_update(as, vec3(0, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0));
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.0f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+/* A RESTART's new pan never reaches PCM the old epoch still renders */
+TEST(panned_event_restart_keeps_the_old_pan_on_held_pcm)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 2u));
+    desc.spatial = true;
+    desc.panned = true;
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "pan-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    f32 output[2];
+    ASSERT_EQ(audio_event_trigger(as, "pan-restart", vec3(2, 0, 0), &handle), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(output[1], 0.5f, 1e-6f);
+    ASSERT_EQ(audio_event_trigger(as, "pan-restart", vec3(-4, 0, 0), &handle), AUDIO_OK);
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(-8, 0, 0)), AUDIO_OK);
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    AudioVoice *voice = &ext->voices[(handle & 0xFFu) - 1u];
+    render_with_held_commands(voice, output);
+    ASSERT_FLOAT_EQ(output[0], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(output[1], 0.5f, 1e-6f);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.125f, 1e-6f);
+    ASSERT_FLOAT_EQ(output[1], 0.0f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+/* The mixer takes a pan only together with the gain revision it belongs
+ * to; a pan stored for a revision not yet published is not used. */
+TEST(panned_event_keeps_its_pan_until_that_revision_is_published)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 16u));
+    desc.spatial = true;
+    desc.panned = true;
+    desc.looping = true;
+    ASSERT_EQ(audio_event_register(as, "pan-revision", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_event_trigger(as, "pan-revision", vec3(2, 0, 0), &handle), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(r, 0.5f, 1e-6f);
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    AudioVoice *voice = &ext->voices[(handle & 0xFFu) - 1u];
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(-4, 0, 0)), AUDIO_OK);
+    /* a later publish has stored its pan but not yet its gain */
+    atomic_store(&voice->pan_snapshot, spatial_pack(voice->spatial_revision + 1u, -1.0f));
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f, 1e-6f);
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(-4, 0, 0)), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.0f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(panned_event_scales_a_stereo_clip_by_side)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 samples[2] = {0.5f, 0.25f};
+    AudioPcmDesc pcm = mono_pcm(samples, 1u);
+    pcm.channels = 2u;
+    AudioClipHandle clip = 0;
+    ASSERT_EQ(audio_clip_register(as, "pan-stereo-clip", &pcm, &clip), AUDIO_OK);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.panned = true;
+    ASSERT_EQ(audio_event_register(as, "pan-stereo", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_event_trigger(as, "pan-stereo", vec3(1, 0, -1), &voice), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    const double pi = 3.14159265358979323846;
+    double gain = 1.0 / sqrt(2.0);
+    double theta = (1.0 / sqrt(2.0) + 1.0) * pi / 4.0;
+    ASSERT_FLOAT_EQ(l, (f32)(0.5 * gain * cos(theta)), 1e-6f);
+    ASSERT_FLOAT_EQ(r, (f32)(0.25 * gain * sin(theta)), 1e-6f);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -2353,4 +2503,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pcm_stream_panning_follows_the_listener);
     RUN_TEST(pcm_stream_panning_scales_stereo_channels_by_side);
     RUN_TEST(pcm_stream_panning_off_and_reopen_restore_equal_gains);
+    RUN_TEST(event_panning_requires_spatial);
+    RUN_TEST(panned_event_follows_the_source_and_the_listener);
+    RUN_TEST(panned_event_restart_keeps_the_old_pan_on_held_pcm);
+    RUN_TEST(panned_event_keeps_its_pan_until_that_revision_is_published);
+    RUN_TEST(panned_event_scales_a_stereo_clip_by_side);
 TEST_MAIN_END()
