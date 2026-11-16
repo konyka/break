@@ -549,6 +549,88 @@ TEST(plugin_host_panel_buttons_follow_owner_keys)
     break_editor_plugin_cmds_destroy(cmds);
 }
 
+static bool host_input_ok(void *user, BreakEditorDoc *doc, const char *text)
+{
+    (void)user;
+    (void)doc;
+    (void)text;
+    return true;
+}
+
+/* Panel inputs follow the button rules: registry, load window, owner. */
+TEST(plugin_host_panel_inputs_follow_owner_keys)
+{
+    BreakEditorPluginCmds *cmds = break_editor_plugin_cmds_create(8u);
+    BreakEditorPluginPanels *panels = break_editor_plugin_panels_create(8u);
+    BreakEditorPluginHost *host = break_editor_plugin_host_create(cmds);
+    ASSERT_NOT_NULL(host);
+    ASSERT_NOT_NULL(panels);
+    const BreakEditorPluginApi *api = break_editor_plugin_host_api(host);
+    ASSERT_NOT_NULL(api->add_panel_input);
+    ASSERT_NOT_NULL(api->set_panel_input_hint);
+    ASSERT_TRUE(api->struct_size >=
+                (u32)(offsetof(BreakEditorPluginApi, set_panel_input_hint) +
+                      sizeof(api->set_panel_input_hint)));
+
+    /* no registry attached */
+    ASSERT_TRUE(break_editor_plugin_host_begin_load(host) != 0u);
+    ASSERT_EQ(api->add_panel_input(api->host, "a.report", "q", "Find", host_input_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(api->set_panel_input_hint(api->host, "a.report", "q", "xx", "F"),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, true));
+
+    break_editor_plugin_host_set_panels(host, panels);
+    u32 first = break_editor_plugin_host_begin_load(host);
+    ASSERT_EQ(api->add_panel(api->host, "a.report", "Report", host_panel_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(api->add_panel_input(NULL, "a.report", "q", "Find", host_input_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(api->add_panel_input(api->host, "a.missing", "q", "Find", host_input_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(api->add_panel_input(api->host, "a.report", "q", "Find", host_input_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(api->set_panel_input_hint(NULL, "a.report", "q", "zh-CN", "F"),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(api->set_panel_input_hint(api->host, "a.report", "q", NULL, "F"),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG);
+    ASSERT_EQ(api->set_panel_input_hint(api->host, "a.report", "q", "fr", "F"),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG);
+    ASSERT_EQ(api->set_panel_input_hint(api->host, "a.report", "nope", "zh-CN", "F"),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(api->set_panel_input_hint(api->host, "a.report", "q", "zh_CN.UTF-8", ZH_STATS),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, true));
+    ASSERT_EQ(break_editor_plugin_panels_input_count(panels, 0u), 1u);
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_hint(panels, 0u, 0u,
+                                                        BREAK_EDITOR_LANG_ZH_CN),
+                  ZH_STATS);
+
+    /* outside a window; the window is checked before the tag */
+    ASSERT_EQ(api->add_panel_input(api->host, "a.report", "r", "R", host_input_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(api->set_panel_input_hint(api->host, "a.report", "q", "zh-CN", "F"),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(api->set_panel_input_hint(api->host, "a.report", "q", "fr", "F"),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+
+    /* another plugin may not add to or rehint the panel */
+    ASSERT_TRUE(break_editor_plugin_host_begin_load(host) != 0u);
+    ASSERT_EQ(api->add_panel_input(api->host, "a.report", "r", "R", host_input_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(api->set_panel_input_hint(api->host, "a.report", "q", "zh-CN", "F"),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, true));
+    ASSERT_EQ(break_editor_plugin_panels_input_count(panels, 0u), 1u);
+
+    ASSERT_EQ(break_editor_plugin_host_release(host, first), 1u);
+    ASSERT_EQ(break_editor_plugin_panels_count(panels), 0u);
+
+    break_editor_plugin_host_destroy(host);
+    break_editor_plugin_panels_destroy(panels);
+    break_editor_plugin_cmds_destroy(cmds);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(plugin_host_null_handling);
     RUN_TEST(plugin_host_api_and_window_rules);
@@ -557,4 +639,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(plugin_host_components_follow_the_window);
     RUN_TEST(plugin_host_panels_follow_owner_keys);
     RUN_TEST(plugin_host_panel_buttons_follow_owner_keys);
+    RUN_TEST(plugin_host_panel_inputs_follow_owner_keys);
 TEST_MAIN_END()

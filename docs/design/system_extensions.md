@@ -109,3 +109,7 @@ PAL：`engine/src/platform/platform_dynamic.{h,c}`。管理器：`engine/src/sys
 ### 插件面板按钮（2026-11-16）
 
 每个插件面板最多 4 个按钮（`BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX`），按添加顺序显示在面板文本下方的一行里。插件通过 `BreakEditorPluginApi` 末尾新增的 `add_panel_button` 和 `set_panel_button_label` 添加按钮和翻译标签，规则与 `add_panel`、`set_panel_title` 相同：必须在加载窗口内，只能加在自己的面板上，面板移除时按钮一起移除。点击时用 shell 的 doc 调用回调 `bool fn(void *user, BreakEditorDoc *doc)`；返回 false 时控制台记录「plugin button '<面板>.<按钮>' failed」。之后 shell 刷新视图和插件页，回调对 doc 的修改立即可见。没有按钮的面板不加按钮行。设计与验证见 `docs/superpowers/plans/2026-11-16-plugin-panel-buttons.md`。
+
+### 插件面板输入框（2026-11-16）
+
+每个插件面板最多 2 个单行输入框（`BREAK_EDITOR_PLUGIN_PANEL_INPUTS_MAX`），显示在面板文本和按钮行之间。插件通过 `BreakEditorPluginApi` 末尾的 `add_panel_input` 和 `set_panel_input_hint` 添加输入框和翻译提示文字，规则与按钮相同。注册表为每个输入框保存草稿（最多 1023 字节，不允许控制字符），页面重建后草稿保留；编辑框限制 255 个码点，保证能放进草稿。输入时（"changed"）保存草稿；回车（"activate"）时保存并用 shell 的 doc 调用回调 `bool fn(void *user, BreakEditorDoc *doc, const char *text)`，返回 false 时控制台记录「plugin input '<面板>.<输入框>' failed」，然后刷新视图和插件页，并把焦点交回重建后的编辑框。插件页的定时刷新在焦点位于该页内时跳过，避免打断输入；显式刷新不受影响。设计与验证见 `docs/superpowers/plans/2026-11-16-plugin-panel-inputs.md`。

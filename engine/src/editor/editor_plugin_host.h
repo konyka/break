@@ -54,6 +54,14 @@ typedef BreakEditorPluginPanelStatus (*BreakEditorPluginSetPanelButtonLabelFn)(
     void *host, const char *panel_id, const char *button_id, const char *lang_tag,
     const char *label);
 
+typedef BreakEditorPluginPanelStatus (*BreakEditorPluginAddPanelInputFn)(
+    void *host, const char *panel_id, const char *input_id, const char *hint,
+    BreakEditorPluginPanelInputFn fn, void *user);
+
+typedef BreakEditorPluginPanelStatus (*BreakEditorPluginSetPanelInputHintFn)(
+    void *host, const char *panel_id, const char *input_id, const char *lang_tag,
+    const char *hint);
+
 /* Fields are only ever appended. A plugin checks api_version and that
  * struct_size covers the last field it uses. */
 typedef struct BreakEditorPluginApi {
@@ -96,6 +104,12 @@ typedef struct BreakEditorPluginApi {
     BreakEditorPluginAddPanelButtonFn add_panel_button;
     /* Button label in an editor language; same rules as set_panel_title. */
     BreakEditorPluginSetPanelButtonLabelFn set_panel_button_label;
+    /* Adds a single-line input under one of this plugin's panels
+     * (break_editor_plugin_panels_add_input); same rules as
+     * add_panel_button. */
+    BreakEditorPluginAddPanelInputFn add_panel_input;
+    /* Input hint in an editor language; same rules as set_panel_title. */
+    BreakEditorPluginSetPanelInputHintFn set_panel_input_hint;
 } BreakEditorPluginApi;
 
 typedef struct BreakEditorPluginHost BreakEditorPluginHost;

@@ -515,7 +515,263 @@ TEST(panels_buttons_press_labels_and_removal)
     break_editor_plugin_panels_destroy(reg);
 }
 
+typedef struct InputLog {
+    u32 calls;
+    BreakEditorDoc *last_doc;
+    char last_text[BREAK_EDITOR_PLUGIN_PANEL_INPUT_CAPACITY];
+    bool result;
+} InputLog;
+
+static bool record_input(void *user, BreakEditorDoc *doc, const char *text)
+{
+    InputLog *log = (InputLog *)user;
+    log->calls++;
+    log->last_doc = doc;
+    (void)snprintf(log->last_text, sizeof(log->last_text), "%s", text);
+    return log->result;
+}
+
+#define ZH_FILTER "\xe8\xbf\x87\xe6\xbb\xa4"
+
+/* add_input checks in the documented order, keeps add order, allows an id
+ * that a button uses, and rejects without a change. */
+TEST(panels_inputs_validate_and_keep_order)
+{
+    PanelLog log = {0u, NULL, "x", false};
+    InputLog a = {0u, NULL, "", true};
+    ButtonLog btn = {0u, NULL, true};
+    char hint[BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY + 1u];
+    char id[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY + 1u];
+    BreakEditorPluginPanels *reg = break_editor_plugin_panels_create(4u);
+    ASSERT_NOT_NULL(reg);
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 1u, "build.report", "Report", record_panel,
+                                             &log),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 2u, "other", "Other", record_panel, &log),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "q", "Q",
+                                                    record_button, &btn),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+
+    ASSERT_EQ(break_editor_plugin_panels_add_input(NULL, 1u, "build.report", "q", "Find",
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 0u, "build.report", "q", "Find",
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "build.report", "q", "Find", NULL,
+                                                   &a),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 0u, "missing", "Bad", "", NULL, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "missing", "Bad", "", record_input,
+                                                   &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_ID);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "build.report", NULL, "Find",
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_ID);
+    memset(id, 'i', BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY);
+    id[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY] = '\0';
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "build.report", id, "Find",
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_ID);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "missing", "q", "", record_input,
+                                                   &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "build.report", "q", NULL,
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    memset(hint, 'h', BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY);
+    hint[BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY] = '\0';
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "build.report", "q", hint,
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "missing", "q", "Find",
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "other", "q", "Find", record_input,
+                                                   &a),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_panels_input_count(reg, 0u), 0u);
+
+    /* the button id "q" does not clash with an input id */
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "build.report", "q", "Find",
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "build.report", "q", "Again",
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_DUPLICATE);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "build.report", "name", "Name",
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    /* DUPLICATE before FULL */
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "build.report", "q", "Again",
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_DUPLICATE);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "build.report", "third", "T",
+                                                   record_input, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_FULL);
+    ASSERT_EQ(break_editor_plugin_panels_input_count(reg, 0u), 2u);
+    ASSERT_EQ(break_editor_plugin_panels_button_count(reg, 0u), 1u);
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_id(reg, 0u, 0u), "q");
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_id(reg, 0u, 1u), "name");
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_hint(reg, 0u, 0u, BREAK_EDITOR_LANG_EN_US),
+                  "Find");
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_text(reg, 0u, 0u), "");
+    ASSERT_TRUE(break_editor_plugin_panels_input_id(reg, 0u, 2u) == NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_input_hint(reg, 0u, 2u, BREAK_EDITOR_LANG_EN_US) ==
+                NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_input_text(reg, 0u, 2u) == NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_input_id(reg, 2u, 0u) == NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_input_hint(reg, 2u, 0u, BREAK_EDITOR_LANG_EN_US) ==
+                NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_input_text(reg, 2u, 0u) == NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_input_id(NULL, 0u, 0u) == NULL);
+    ASSERT_EQ(break_editor_plugin_panels_input_count(reg, 1u), 0u);
+    ASSERT_EQ(break_editor_plugin_panels_input_count(reg, 2u), 0u);
+    ASSERT_EQ(break_editor_plugin_panels_input_count(NULL, 0u), 0u);
+    ASSERT_EQ(a.calls, 0u);
+    break_editor_plugin_panels_destroy(reg);
+}
+
+/* Drafts are bounded and checked; submit passes the draft and the doc;
+ * hints translate; inputs move with their panel and a reused slot starts
+ * clean. */
+TEST(panels_inputs_text_submit_hints_and_removal)
+{
+    PanelLog log = {0u, NULL, "x", false};
+    InputLog ok = {0u, NULL, "", true};
+    InputLog no = {0u, NULL, "", false};
+    InputLog kept = {0u, NULL, "", true};
+    int fake_doc = 0;
+    BreakEditorDoc *doc = (BreakEditorDoc *)(void *)&fake_doc;
+    static char big[BREAK_EDITOR_PLUGIN_PANEL_INPUT_CAPACITY + 1u];
+    BreakEditorPluginPanels *reg = break_editor_plugin_panels_create(4u);
+    ASSERT_NOT_NULL(reg);
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 1u, "a", "A", record_panel, &log), 0);
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 2u, "b", "B", record_panel, &log), 0);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "a", "ok", "Ok", record_input, &ok),
+              0);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 1u, "a", "no", "No", record_input, &no),
+              0);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 2u, "b", "keep", "Keep", record_input,
+                                                   &kept),
+              0);
+
+    /* draft rules */
+    ASSERT_TRUE(break_editor_plugin_panels_set_input_text(reg, 0u, 0u, "hello " ZH_FILTER));
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_text(reg, 0u, 0u), "hello " ZH_FILTER);
+    ASSERT_FALSE(break_editor_plugin_panels_set_input_text(reg, 0u, 0u, NULL));
+    ASSERT_FALSE(break_editor_plugin_panels_set_input_text(reg, 0u, 0u, "a\nb"));
+    ASSERT_FALSE(break_editor_plugin_panels_set_input_text(reg, 0u, 0u, "a\x7f"));
+    memset(big, 'z', BREAK_EDITOR_PLUGIN_PANEL_INPUT_CAPACITY);
+    big[BREAK_EDITOR_PLUGIN_PANEL_INPUT_CAPACITY] = '\0';
+    ASSERT_FALSE(break_editor_plugin_panels_set_input_text(reg, 0u, 0u, big));
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_text(reg, 0u, 0u), "hello " ZH_FILTER);
+    big[BREAK_EDITOR_PLUGIN_PANEL_INPUT_CAPACITY - 1u] = '\0';
+    ASSERT_TRUE(break_editor_plugin_panels_set_input_text(reg, 0u, 1u, big));
+    ASSERT_EQ(strlen(break_editor_plugin_panels_input_text(reg, 0u, 1u)),
+              (usize)(BREAK_EDITOR_PLUGIN_PANEL_INPUT_CAPACITY - 1u));
+    ASSERT_TRUE(break_editor_plugin_panels_set_input_text(reg, 0u, 1u, ""));
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_text(reg, 0u, 1u), "");
+    ASSERT_FALSE(break_editor_plugin_panels_set_input_text(reg, 0u, 2u, "x"));
+    ASSERT_FALSE(break_editor_plugin_panels_set_input_text(reg, 2u, 0u, "x"));
+    ASSERT_FALSE(break_editor_plugin_panels_set_input_text(NULL, 0u, 0u, "x"));
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_text(reg, 1u, 0u), "");
+
+    /* submit */
+    ASSERT_TRUE(break_editor_plugin_panels_submit(reg, 0u, 0u, doc));
+    ASSERT_EQ(ok.calls, 1u);
+    ASSERT_TRUE(ok.last_doc == doc);
+    ASSERT_STR_EQ(ok.last_text, "hello " ZH_FILTER);
+    ASSERT_TRUE(break_editor_plugin_panels_set_input_text(reg, 0u, 1u, "n"));
+    ASSERT_FALSE(break_editor_plugin_panels_submit(reg, 0u, 1u, NULL));
+    ASSERT_EQ(no.calls, 1u);
+    ASSERT_TRUE(no.last_doc == NULL);
+    ASSERT_STR_EQ(no.last_text, "n");
+    ASSERT_FALSE(break_editor_plugin_panels_submit(reg, 0u, 2u, doc));
+    ASSERT_FALSE(break_editor_plugin_panels_submit(reg, 2u, 0u, doc));
+    ASSERT_FALSE(break_editor_plugin_panels_submit(reg, 3u, 0u, doc));
+    ASSERT_FALSE(break_editor_plugin_panels_submit(NULL, 0u, 0u, doc));
+    ASSERT_EQ(ok.calls + no.calls + kept.calls, 2u);
+
+    /* hints: rules in order, then the owner and the input */
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(NULL, 1u, "a", "ok",
+                                                        BREAK_EDITOR_LANG_ZH_CN, ZH_FILTER),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(reg, 0u, "a", "ok",
+                                                        BREAK_EDITOR_LANG_ZH_CN, ZH_FILTER),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(reg, 1u, "missing", "ok",
+                                                        BREAK_EDITOR_LANG_COUNT, ""),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG);
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(reg, 1u, "a", "ok",
+                                                        (BreakEditorLang)-1, ZH_FILTER),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG);
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(reg, 1u, "missing", "ok",
+                                                        BREAK_EDITOR_LANG_ZH_CN, ""),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(reg, 1u, "a", "ok",
+                                                        BREAK_EDITOR_LANG_ZH_CN, "x\x1f"),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(reg, 1u, "b", "keep",
+                                                        BREAK_EDITOR_LANG_ZH_CN, ZH_FILTER),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(reg, 1u, "a", "missing",
+                                                        BREAK_EDITOR_LANG_ZH_CN, ZH_FILTER),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(reg, 1u, "a", NULL,
+                                                        BREAK_EDITOR_LANG_ZH_CN, ZH_FILTER),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_hint(reg, 0u, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Ok");
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(reg, 1u, "a", "ok",
+                                                        BREAK_EDITOR_LANG_ZH_CN, ZH_FILTER),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(reg, 1u, "a", "no",
+                                                        BREAK_EDITOR_LANG_EN_US, "Nope"),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_hint(reg, 0u, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  ZH_FILTER);
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_hint(reg, 0u, 0u, BREAK_EDITOR_LANG_EN_US),
+                  "Ok");
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_hint(reg, 0u, 0u, BREAK_EDITOR_LANG_COUNT),
+                  "Ok");
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_hint(reg, 0u, 0u, (BreakEditorLang)-1),
+                  "Ok");
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_hint(reg, 0u, 1u, BREAK_EDITOR_LANG_EN_US),
+                  "Nope");
+
+    /* removing owner 1 moves panel b to index 0 with its input and draft */
+    ASSERT_TRUE(break_editor_plugin_panels_set_input_text(reg, 1u, 0u, "kept"));
+    ASSERT_EQ(break_editor_plugin_panels_remove_owner(reg, 1u), 1u);
+    ASSERT_EQ(break_editor_plugin_panels_input_count(reg, 0u), 1u);
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_id(reg, 0u, 0u), "keep");
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_text(reg, 0u, 0u), "kept");
+    ASSERT_TRUE(break_editor_plugin_panels_submit(reg, 0u, 0u, doc));
+    ASSERT_EQ(kept.calls, 1u);
+    ASSERT_STR_EQ(kept.last_text, "kept");
+    /* the slot past the end still holds the moved panel: never read */
+    ASSERT_EQ(break_editor_plugin_panels_input_count(reg, 1u), 0u);
+    ASSERT_TRUE(break_editor_plugin_panels_input_text(reg, 1u, 0u) == NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_input_id(reg, 1u, 0u) == NULL);
+    ASSERT_FALSE(break_editor_plugin_panels_submit(reg, 1u, 0u, doc));
+    ASSERT_EQ(kept.calls, 1u);
+    /* a reused slot starts with no inputs, hints or drafts */
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 3u, "d", "D", record_panel, &log), 0);
+    ASSERT_EQ(break_editor_plugin_panels_input_count(reg, 1u), 0u);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(reg, 3u, "d", "ok", "Ok", record_input, &ok),
+              0);
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_hint(reg, 1u, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Ok");
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_text(reg, 1u, 0u), "");
+    ASSERT_EQ(log.calls, 0u);
+    break_editor_plugin_panels_destroy(reg);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(panels_inputs_validate_and_keep_order);
+    RUN_TEST(panels_inputs_text_submit_hints_and_removal);
     RUN_TEST(panels_buttons_validate_and_keep_order);
     RUN_TEST(panels_buttons_press_labels_and_removal);
     RUN_TEST(panels_create_bounds);

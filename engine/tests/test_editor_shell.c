@@ -753,6 +753,175 @@ TEST(plugins_page_panel_buttons_press_and_log)
     break_editor_shell_destroy(shell);
 }
 
+typedef struct InputCall {
+    u32 calls;
+    BreakEditorDoc *doc;
+    char text[64];
+    bool result;
+    PanelCall *panel; /* its text changes on a submit */
+} InputCall;
+
+static bool plugin_input_record(void *user, BreakEditorDoc *doc, const char *text)
+{
+    InputCall *call = (InputCall *)user;
+    call->calls++;
+    call->doc = doc;
+    (void)snprintf(call->text, sizeof(call->text), "%s", text);
+    if (call->panel != NULL) call->panel->text = "submitted";
+    return call->result;
+}
+
+static u64 input_test_clock_us;
+
+static u64 input_test_clock(void *user)
+{
+    (void)user;
+    return input_test_clock_us;
+}
+
+/* A shown panel's inputs are edits between its text and its buttons, with
+ * the hint in the current language and the stored draft; typing stores the
+ * draft, Enter submits it with the shell doc and keeps the focus on the
+ * rebuilt edit, a false result is logged, and the timed refresh waits while
+ * an input has focus. */
+TEST(plugins_page_panel_inputs_submit_and_keep_drafts)
+{
+    PanelCall report = {0u, NULL, "errors: 0"};
+    InputCall find_in = {0u, NULL, "", true, &report};
+    InputCall bad = {0u, NULL, "", false, NULL};
+    PanelCall stats = {0u, NULL, "entities: 0"};
+    InputCall count_in = {0u, NULL, "", true, &stats};
+    ButtonCall go = {0u, NULL, true, NULL};
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_window_t *win;
+    my_widget_t *page;
+    my_widget_t *edit;
+    ASSERT_NOT_NULL(shell);
+    win = break_editor_shell_window(shell);
+    ASSERT_NOT_NULL(win);
+    input_test_clock_us = UINT64_C(1000000);
+    break_editor_shell_set_plugin_panels_clock_for_test(shell, input_test_clock, NULL);
+    BreakEditorPluginPanels *panels = break_editor_shell_plugin_panels(shell);
+    ASSERT_EQ(break_editor_plugin_panels_add(panels, 1u, "build.report", "Build Report",
+                                             plugin_panel_record, &report),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(panels, 1u, "build.report", "find", "Find",
+                                                   plugin_input_record, &find_in),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(panels, 1u, "build.report", "bad", "Bad",
+                                                   plugin_input_record, &bad),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(panels, 1u, "build.report", "go", "Go",
+                                                    plugin_button_record, &go),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_set_input_hint(panels, 1u, "build.report", "find",
+                                                        BREAK_EDITOR_LANG_ZH_CN, ZH_UNIT_STATS),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_TRUE(break_editor_plugin_panels_set_input_text(panels, 0u, 1u, "draft"));
+    ASSERT_EQ(break_editor_plugin_panels_add(panels, 2u, "scene.stats", "Scene Stats",
+                                             plugin_panel_record, &stats),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_input(panels, 2u, "scene.stats", "n", "N",
+                                                   plugin_input_record, &count_in),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 3u));
+    page = find(shell, "editor-plugins-panel");
+    ASSERT_NOT_NULL(page);
+    /* title, text, two inputs, buttons row; then title, text, one input */
+    ASSERT_EQ(my_widget_child_count(page), 8u);
+    edit = find(shell, "editor-plugin-panel-input-build.report.find");
+    ASSERT_NOT_NULL(edit);
+    ASSERT_TRUE(my_edit_is_instance(edit));
+    ASSERT_TRUE(my_widget_get_child(page, 2u) == edit);
+    ASSERT_TRUE(my_widget_get_child(page, 3u) ==
+                find(shell, "editor-plugin-panel-input-build.report.bad"));
+    ASSERT_TRUE(my_widget_get_child(page, 4u) ==
+                find(shell, "editor-plugin-panel-buttons-build.report"));
+    ASSERT_STR_EQ(((const my_edit_t *)edit)->hint, "Find");
+    ASSERT_EQ(((const my_edit_t *)edit)->max_len, (usize)255u);
+    ASSERT_STR_EQ(my_edit_get_text(edit), "");
+    ASSERT_STR_EQ(my_edit_get_text(find(shell, "editor-plugin-panel-input-build.report.bad")),
+                  "draft");
+
+    /* typing stores the draft; a rebuild shows it again */
+    ASSERT_EQ(my_edit_set_text(edit, "needle"), MY_RET_OK);
+    ASSERT_EQ(my_emitter_emit(edit->emitter, "changed", (void *)my_edit_get_text(edit)),
+              MY_RET_OK);
+    ASSERT_STR_EQ(break_editor_plugin_panels_input_text(panels, 0u, 0u), "needle");
+    ASSERT_EQ(find_in.calls, 0u);
+    break_editor_shell_refresh_plugin_panels(shell);
+    edit = find(shell, "editor-plugin-panel-input-build.report.find");
+    ASSERT_STR_EQ(my_edit_get_text(edit), "needle");
+
+    /* while an input has focus the timed refresh leaves the page alone */
+    my_event_dispatcher_set_focus(&win->dispatcher, edit);
+    {
+        u32 before = report.calls;
+        input_test_clock_us += UINT64_C(1000000);
+        break_editor_shell_tick(shell);
+        ASSERT_EQ(report.calls, before);
+        ASSERT_TRUE(find(shell, "editor-plugin-panel-input-build.report.find") == edit);
+        /* focus elsewhere: the next tick rebuilds */
+        my_event_dispatcher_set_focus(&win->dispatcher, break_editor_shell_root(shell));
+        break_editor_shell_tick(shell);
+        ASSERT_EQ(report.calls, before + 1u);
+    }
+
+    /* Enter submits the text with the shell doc, rebuilds the page and
+     * focuses the new edit */
+    edit = find(shell, "editor-plugin-panel-input-build.report.find");
+    my_event_dispatcher_set_focus(&win->dispatcher, edit);
+    ASSERT_EQ(my_edit_set_text(edit, "pin"), MY_RET_OK);
+    emit_activate(edit);
+    ASSERT_EQ(find_in.calls, 1u);
+    ASSERT_TRUE(find_in.doc == break_editor_shell_doc(shell));
+    ASSERT_STR_EQ(find_in.text, "pin");
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-build.report"), "submitted");
+    edit = find(shell, "editor-plugin-panel-input-build.report.find");
+    ASSERT_NOT_NULL(edit);
+    ASSERT_STR_EQ(my_edit_get_text(edit), "pin");
+    ASSERT_TRUE(win->dispatcher.focused == edit);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell), "failed") == NULL);
+    ASSERT_EQ(bad.calls, 0u);
+    ASSERT_EQ(go.calls, 0u);
+    /* an input on a later panel submits to its own callback */
+    edit = find(shell, "editor-plugin-panel-input-scene.stats.n");
+    ASSERT_EQ(my_edit_set_text(edit, "7"), MY_RET_OK);
+    emit_activate(edit);
+    ASSERT_EQ(count_in.calls, 1u);
+    ASSERT_STR_EQ(count_in.text, "7");
+    ASSERT_EQ(find_in.calls, 1u);
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-scene.stats"), "submitted");
+    /* many rebuilds reuse the input contexts: the edits stay */
+    for (u32 r = 0u; r < 40u; r++) {
+        break_editor_shell_refresh_plugin_panels(shell);
+    }
+    ASSERT_NOT_NULL(find(shell, "editor-plugin-panel-input-scene.stats.n"));
+
+    /* a false result is logged with the panel and input ids */
+    emit_activate(find(shell, "editor-plugin-panel-input-build.report.bad"));
+    ASSERT_EQ(bad.calls, 1u);
+    ASSERT_STR_EQ(bad.text, "draft");
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "plugin input 'build.report.bad' failed\n");
+
+    /* the language switch translates the hint */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    ASSERT_STR_EQ(((const my_edit_t *)find(shell,
+                                           "editor-plugin-panel-input-build.report.find"))
+                      ->hint,
+                  ZH_UNIT_STATS);
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+
+    ASSERT_EQ(break_editor_plugin_panels_remove_owner(panels, 1u), 1u);
+    break_editor_shell_refresh_plugin_panels(shell);
+    ASSERT_TRUE(find(shell, "editor-plugin-panel-input-build.report.find") == NULL);
+    ASSERT_NOT_NULL(find(shell, "editor-plugin-panel-input-scene.stats.n"));
+    ASSERT_EQ(my_widget_child_count(page), 3u);
+    break_editor_shell_destroy(shell);
+}
+
 static u64 g_panel_clock_us;
 
 static u64 panel_test_clock(void *user)
@@ -11809,6 +11978,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(inspector_edits_a_registered_component_type);
     RUN_TEST(plugins_page_lists_plugin_panels);
     RUN_TEST(plugins_page_panel_buttons_press_and_log);
+    RUN_TEST(plugins_page_panel_inputs_submit_and_keep_drafts);
     RUN_TEST(plugins_page_tick_is_throttled_and_only_runs_when_shown);
     RUN_TEST(ctrl_s_saves_to_configured_path);
     RUN_TEST(outliner_row_click_selects);

@@ -1,7 +1,8 @@
 #pragma once
 /* Bounded registry of tool-window panels contributed by editor plugins. The
  * shell shows them on the "Plugins" page of the bottom tool window: one
- * title, one block of read-only text and up to
+ * title, one block of read-only text, up to
+ * BREAK_EDITOR_PLUGIN_PANEL_INPUTS_MAX single-line inputs and up to
  * BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX buttons per panel, refreshed while
  * the page is visible.
  *
@@ -10,8 +11,8 @@
  * (plus an optional title per editor language) and a text callback. The
  * callback writes the panel text into a buffer of
  * BREAK_EDITOR_PLUGIN_PANEL_TEXT_CAPACITY bytes and returns false to hide
- * the panel. The doc is passed const: the text only reads. A button
- * callback gets the doc non-const and edits it through doc commands.
+ * the panel. The doc is passed const: the text only reads. Button and
+ * input callbacks get the doc non-const and edit it through doc commands.
  *
  * Panels keep registration order; remove_owner drops one plugin's panels
  * before that plugin is unloaded, keeping the order of the rest.
@@ -29,6 +30,9 @@
 #define BREAK_EDITOR_PLUGIN_PANEL_TEXT_CAPACITY 1024u
 #define BREAK_EDITOR_PLUGIN_PANEL_NONE 0xffffffffu
 #define BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX 4u
+#define BREAK_EDITOR_PLUGIN_PANEL_INPUTS_MAX 2u
+/* draft bytes of one input, terminator included */
+#define BREAK_EDITOR_PLUGIN_PANEL_INPUT_CAPACITY 1024u
 
 typedef enum BreakEditorPluginPanelStatus {
     BREAK_EDITOR_PLUGIN_PANEL_OK = 0,
@@ -47,6 +51,11 @@ typedef bool (*BreakEditorPluginPanelFn)(void *user, const BreakEditorDoc *doc, 
 /* Button click: runs on the editor shell thread with the shell doc, which
  * it may edit through doc commands. false reports a failure. */
 typedef bool (*BreakEditorPluginPanelButtonFn)(void *user, BreakEditorDoc *doc);
+
+/* Input submit (Enter): runs on the editor shell thread with the shell doc
+ * and the input's draft text. false reports a failure. */
+typedef bool (*BreakEditorPluginPanelInputFn)(void *user, BreakEditorDoc *doc,
+                                              const char *text);
 
 typedef struct BreakEditorPluginPanels BreakEditorPluginPanels;
 
@@ -83,8 +92,20 @@ BreakEditorPluginPanelStatus break_editor_plugin_panels_set_button_label(
     BreakEditorPluginPanels *reg, u32 owner, const char *panel_id, const char *button_id,
     BreakEditorLang lang, const char *label);
 
+/* Adds a single-line input to panel `panel_id`, after its other inputs. The
+ * hint is shown while the input is empty. Same checks as add_button (BAD_TITLE
+ * for the hint, FULL at BREAK_EDITOR_PLUGIN_PANEL_INPUTS_MAX). Input ids are
+ * unique among a panel's inputs; a button may use the same id. */
+BreakEditorPluginPanelStatus break_editor_plugin_panels_add_input(
+    BreakEditorPluginPanels *reg, u32 owner, const char *panel_id, const char *input_id,
+    const char *hint, BreakEditorPluginPanelInputFn fn, void *user);
+/* Hint of an input in `lang`; same checks as set_button_label. */
+BreakEditorPluginPanelStatus break_editor_plugin_panels_set_input_hint(
+    BreakEditorPluginPanels *reg, u32 owner, const char *panel_id, const char *input_id,
+    BreakEditorLang lang, const char *hint);
+
 /* Returns the number of panels removed (0 for NULL; owner 0 never has any).
- * A panel's buttons go with it. */
+ * A panel's buttons and inputs go with it. */
 u32 break_editor_plugin_panels_remove_owner(BreakEditorPluginPanels *reg, u32 owner);
 
 u32 break_editor_plugin_panels_count(const BreakEditorPluginPanels *reg);
@@ -111,6 +132,27 @@ const char *break_editor_plugin_panels_button_label(const BreakEditorPluginPanel
  * without a call for an out-of-range panel or button. */
 bool break_editor_plugin_panels_press(const BreakEditorPluginPanels *reg, u32 index, u32 button,
                                       BreakEditorDoc *doc);
+
+/* Inputs of panel `index` in add order; 0 / NULL for an out-of-range panel
+ * or input. The hint falls back like a button label. The draft text is ""
+ * until set. */
+u32 break_editor_plugin_panels_input_count(const BreakEditorPluginPanels *reg, u32 index);
+const char *break_editor_plugin_panels_input_id(const BreakEditorPluginPanels *reg, u32 index,
+                                                u32 input);
+const char *break_editor_plugin_panels_input_hint(const BreakEditorPluginPanels *reg, u32 index,
+                                                  u32 input, BreakEditorLang lang);
+const char *break_editor_plugin_panels_input_text(const BreakEditorPluginPanels *reg, u32 index,
+                                                  u32 input);
+/* Replaces the draft. False, leaving the draft unchanged, for an
+ * out-of-range panel or input, NULL text, text of
+ * BREAK_EDITOR_PLUGIN_PANEL_INPUT_CAPACITY bytes or more, or a control byte
+ * (below 0x20, or 0x7f). "" clears it. */
+bool break_editor_plugin_panels_set_input_text(BreakEditorPluginPanels *reg, u32 index,
+                                               u32 input, const char *text);
+/* Runs the input's callback with `doc` and the draft and returns its result;
+ * false without a call for an out-of-range panel or input. */
+bool break_editor_plugin_panels_submit(const BreakEditorPluginPanels *reg, u32 index, u32 input,
+                                       BreakEditorDoc *doc);
 
 /* Runs panel `index` into out (cap bytes, at least 1). The text is always
  * NUL-terminated at out[cap - 1] even when the callback overruns its

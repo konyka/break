@@ -176,6 +176,7 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(TAB_PLUGINS, "Plugins"),
         T(PLUGINS_EMPTY, "No plugin panels"),
         T(LOG_PLUGIN_BUTTON_FAILED_FMT, "plugin button '%s.%s' failed"),
+        T(LOG_PLUGIN_INPUT_FAILED_FMT, "plugin input '%s.%s' failed"),
     },
     [BREAK_EDITOR_LANG_ZH_CN] = {
         T(ADD, "添加"),
@@ -342,5 +343,6 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(TAB_PLUGINS, "插件"),
         T(PLUGINS_EMPTY, "没有插件面板"),
         T(LOG_PLUGIN_BUTTON_FAILED_FMT, "插件按钮 '%s.%s' 执行失败"),
+        T(LOG_PLUGIN_INPUT_FAILED_FMT, "插件输入框 '%s.%s' 提交失败"),
     },
 };

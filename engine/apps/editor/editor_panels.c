@@ -63,6 +63,10 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_PLUGIN_PANEL_CAPACITY 16u
 #define EDITOR_PLUGIN_BUTTON_CTX_POOL \
     (EDITOR_PLUGIN_PANEL_CAPACITY * BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX)
+#define EDITOR_PLUGIN_INPUT_CTX_POOL \
+    (EDITOR_PLUGIN_PANEL_CAPACITY * BREAK_EDITOR_PLUGIN_PANEL_INPUTS_MAX)
+/* 4 bytes per codepoint at most: 255 always fit the 1024-byte draft */
+#define EDITOR_PLUGIN_INPUT_MAX_CODEPOINTS 255u
 /* the Plugins page rebuilds at most this often while visible */
 #define EDITOR_PLUGIN_PANEL_REFRESH_US 250000u
 /* 25 degrees: the editor camera starts above the grid plane */
@@ -96,6 +100,12 @@ typedef struct {
     u32 panel;                 /* registry index at the last page rebuild */
     u32 button;
 } EditorPluginButtonCtx;
+
+typedef struct {
+    BreakEditorShell *shell;   /* borrowed */
+    u32 panel;                 /* registry index at the last page rebuild */
+    u32 input;
+} EditorPluginInputCtx;
 
 typedef struct {
     my_list_adapter_t base;
@@ -220,6 +230,8 @@ struct BreakEditorShell {
     /* click contexts of the Plugins page buttons, reset by each rebuild */
     EditorPluginButtonCtx plugin_button_ctxs[EDITOR_PLUGIN_BUTTON_CTX_POOL];
     u32 plugin_button_ctx_count;
+    EditorPluginInputCtx plugin_input_ctxs[EDITOR_PLUGIN_INPUT_CTX_POOL];
+    u32 plugin_input_ctx_count;
     u64 (*plugin_panels_clock)(void *user); /* NULL: time_microseconds */
     void *plugin_panels_clock_user;
     /* recently opened/saved scenes (persisted with the UI settings) */
@@ -3406,6 +3418,106 @@ static void on_plugin_button_click(void *ctx, const char *event, void *data) {
     break_editor_shell_refresh_plugin_panels(shell);
 }
 
+static void on_plugin_input_changed(void *ctx, const char *event, void *data) {
+    EditorPluginInputCtx *ic = (EditorPluginInputCtx *)ctx;
+    (void)event;
+    if (ic == NULL || ic->shell == NULL || data == NULL) {
+        return;
+    }
+    /* a draft the registry rejects keeps the previous one */
+    (void)break_editor_plugin_panels_set_input_text(ic->shell->plugin_panels, ic->panel,
+                                                    ic->input, (const char *)data);
+}
+
+/* Enter: stores the text, submits it with the shell doc, logs a false
+ * result, rebuilds the views and the page, and gives the focus to the
+ * rebuilt edit (removing the old one cleared it). */
+static void on_plugin_input_activate(void *ctx, const char *event, void *data) {
+    EditorPluginInputCtx *ic = (EditorPluginInputCtx *)ctx;
+    BreakEditorShell *shell;
+    char wname[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY * 2u + 32u];
+    const char *panel;
+    const char *input;
+    (void)event;
+    if (ic == NULL || ic->shell == NULL) {
+        return;
+    }
+    shell = ic->shell;
+    panel = break_editor_plugin_panels_id(shell->plugin_panels, ic->panel);
+    input = break_editor_plugin_panels_input_id(shell->plugin_panels, ic->panel, ic->input);
+    if (panel == NULL || input == NULL) {
+        return;
+    }
+    (void)snprintf(wname, sizeof(wname), "editor-plugin-panel-input-%s.%s", panel, input);
+    if (data != NULL) {
+        (void)break_editor_plugin_panels_set_input_text(shell->plugin_panels, ic->panel,
+                                                        ic->input, (const char *)data);
+    }
+    if (!break_editor_plugin_panels_submit(shell->plugin_panels, ic->panel, ic->input,
+                                           shell->doc)) {
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PLUGIN_INPUT_FAILED_FMT),
+                         panel, input);
+    }
+    editor_shell_refresh_all(shell);
+    break_editor_shell_refresh_plugin_panels(shell);
+    if (shell->win != NULL) {
+        my_widget_t *edit = my_widget_find_descendant(shell->root, wname);
+        if (edit != NULL) {
+            my_event_dispatcher_set_focus(&shell->win->dispatcher, edit);
+        }
+    }
+}
+
+/* One edit per input of panel `index`: hint in the current language, the
+ * stored draft as text. */
+static void shell_add_plugin_inputs(BreakEditorShell *shell, my_widget_t *page, u32 index,
+                                    const char *id) {
+    char wname[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY * 2u + 32u];
+    u32 i, count = break_editor_plugin_panels_input_count(shell->plugin_panels, index);
+    for (i = 0u; i < count; i++) {
+        EditorPluginInputCtx *ic;
+        my_widget_t *edit;
+        if (shell->plugin_input_ctx_count >= EDITOR_PLUGIN_INPUT_CTX_POOL) {
+            break;
+        }
+        edit = my_edit_create(NULL);
+        if (edit == NULL) {
+            continue;
+        }
+        ic = &shell->plugin_input_ctxs[shell->plugin_input_ctx_count++];
+        ic->shell = shell;
+        ic->panel = index;
+        ic->input = i;
+        (void)snprintf(wname, sizeof(wname), "editor-plugin-panel-input-%s.%s", id,
+                       break_editor_plugin_panels_input_id(shell->plugin_panels, index, i));
+        (void)my_widget_set_name(edit, wname);
+        (void)my_edit_set_hint(edit, break_editor_plugin_panels_input_hint(
+                                         shell->plugin_panels, index, i,
+                                         break_editor_i18n_lang()));
+        (void)my_edit_set_max_len(edit, EDITOR_PLUGIN_INPUT_MAX_CODEPOINTS);
+        (void)my_edit_set_text(edit,
+                               break_editor_plugin_panels_input_text(shell->plugin_panels,
+                                                                     index, i));
+        (void)my_widget_on(edit, "changed", on_plugin_input_changed, ic);
+        (void)my_widget_on(edit, "activate", on_plugin_input_activate, ic);
+        shell_add_child(page, edit, "w:100% h:26");
+    }
+}
+
+/* True while the focused widget is `page` or inside it. */
+static bool shell_focus_within(const BreakEditorShell *shell, const my_widget_t *page) {
+    const my_widget_t *w;
+    if (shell->win == NULL) {
+        return false;
+    }
+    for (w = shell->win->dispatcher.focused; w != NULL; w = w->parent) {
+        if (w == page) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* One row of panel `index`'s buttons, labels in the current language; none
  * for a panel without buttons. */
 static void shell_add_plugin_buttons(BreakEditorShell *shell, my_widget_t *page, u32 index,
@@ -3465,6 +3577,7 @@ void break_editor_shell_refresh_plugin_panels(BreakEditorShell *shell) {
         (void)my_widget_remove_child(page, my_widget_get_child(page, 0u));
     }
     shell->plugin_button_ctx_count = 0u;
+    shell->plugin_input_ctx_count = 0u;
     n = break_editor_plugin_panels_count(shell->plugin_panels);
     for (i = 0u; i < n; i++) {
         static char text[BREAK_EDITOR_PLUGIN_PANEL_TEXT_CAPACITY];
@@ -3484,6 +3597,7 @@ void break_editor_shell_refresh_plugin_panels(BreakEditorShell *shell) {
         (void)snprintf(wname, sizeof(wname), "editor-plugin-panel-%s", id);
         shell_add_child(page, shell_named(my_label_create(NULL, text), wname),
                         "w:100% h:22");
+        shell_add_plugin_inputs(shell, page, i, id);
         shell_add_plugin_buttons(shell, page, i, id);
         shown++;
     }
@@ -3941,10 +4055,13 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
     editor_panel_profiler_tick(shell->profiler_panel);
     editor_panel_flow_tick(shell->flow_panel);
     /* Plugins page: the panel callbacks run only while it is shown, at most
-     * every EDITOR_PLUGIN_PANEL_REFRESH_US */
+     * every EDITOR_PLUGIN_PANEL_REFRESH_US, and not while one of its inputs
+     * has focus (a rebuild would drop the focus mid-typing) */
     if (shell->active_tab[0] == 3u &&
         shell_plugin_panels_now(shell) - shell->plugin_panels_refresh_us >=
-            EDITOR_PLUGIN_PANEL_REFRESH_US) {
+            EDITOR_PLUGIN_PANEL_REFRESH_US &&
+        !shell_focus_within(shell, my_widget_find_descendant(shell->root,
+                                                             "editor-plugins-panel"))) {
         break_editor_shell_refresh_plugin_panels(shell);
     }
     /* asset browser: throttled re-list of the current directory so files

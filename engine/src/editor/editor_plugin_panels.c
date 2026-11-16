@@ -20,6 +20,16 @@ typedef struct PluginPanel {
         void *user;
     } buttons[BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX];
     u32 button_count;
+    struct {
+        char id[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY];
+        char hint[BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY];
+        /* "" when the language has no translation */
+        char hint_lang[BREAK_EDITOR_LANG_COUNT][BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY];
+        char text[BREAK_EDITOR_PLUGIN_PANEL_INPUT_CAPACITY];
+        BreakEditorPluginPanelInputFn fn;
+        void *user;
+    } inputs[BREAK_EDITOR_PLUGIN_PANEL_INPUTS_MAX];
+    u32 input_count;
 } PluginPanel;
 
 struct BreakEditorPluginPanels {
@@ -333,4 +343,144 @@ bool break_editor_plugin_panels_press(const BreakEditorPluginPanels *reg, u32 in
     }
     const PluginPanel *panel = &reg->panels[index];
     return panel->buttons[button].fn(panel->buttons[button].user, doc);
+}
+
+static u32 find_input(const PluginPanel *panel, const char *input_id)
+{
+    if (input_id) {
+        for (u32 i = 0; i < panel->input_count; i++) {
+            if (strcmp(panel->inputs[i].id, input_id) == 0) {
+                return i;
+            }
+        }
+    }
+    return BREAK_EDITOR_PLUGIN_PANEL_NONE;
+}
+
+static bool valid_input_text(const char *text)
+{
+    if (!text) {
+        return false;
+    }
+    usize n = strlen(text);
+    if (n >= BREAK_EDITOR_PLUGIN_PANEL_INPUT_CAPACITY) {
+        return false;
+    }
+    for (usize i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (c < 0x20u || c == 0x7fu) {
+            return false;
+        }
+    }
+    return true;
+}
+
+BreakEditorPluginPanelStatus break_editor_plugin_panels_add_input(
+    BreakEditorPluginPanels *reg, u32 owner, const char *panel_id, const char *input_id,
+    const char *hint, BreakEditorPluginPanelInputFn fn, void *user)
+{
+    if (!reg || owner == 0u || !fn) {
+        return BREAK_EDITOR_PLUGIN_PANEL_INVALID;
+    }
+    if (!valid_id(input_id)) {
+        return BREAK_EDITOR_PLUGIN_PANEL_BAD_ID;
+    }
+    if (!valid_title(hint)) {
+        return BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE;
+    }
+    PluginPanel *panel = owned_panel(reg, owner, panel_id);
+    if (!panel) {
+        return BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND;
+    }
+    if (find_input(panel, input_id) != BREAK_EDITOR_PLUGIN_PANEL_NONE) {
+        return BREAK_EDITOR_PLUGIN_PANEL_DUPLICATE;
+    }
+    if (panel->input_count == BREAK_EDITOR_PLUGIN_PANEL_INPUTS_MAX) {
+        return BREAK_EDITOR_PLUGIN_PANEL_FULL;
+    }
+    /* panels_add cleared the slot and inputs are never removed alone */
+    u32 at = panel->input_count;
+    memcpy(panel->inputs[at].id, input_id, strlen(input_id) + 1u);
+    memcpy(panel->inputs[at].hint, hint, strlen(hint) + 1u);
+    panel->inputs[at].fn = fn;
+    panel->inputs[at].user = user;
+    panel->input_count++;
+    return BREAK_EDITOR_PLUGIN_PANEL_OK;
+}
+
+BreakEditorPluginPanelStatus break_editor_plugin_panels_set_input_hint(
+    BreakEditorPluginPanels *reg, u32 owner, const char *panel_id, const char *input_id,
+    BreakEditorLang lang, const char *hint)
+{
+    if (!reg || owner == 0u) {
+        return BREAK_EDITOR_PLUGIN_PANEL_INVALID;
+    }
+    if (!lang_valid(lang)) {
+        return BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG;
+    }
+    if (!valid_title(hint)) {
+        return BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE;
+    }
+    PluginPanel *panel = owned_panel(reg, owner, panel_id);
+    u32 at = panel ? find_input(panel, input_id) : BREAK_EDITOR_PLUGIN_PANEL_NONE;
+    if (at == BREAK_EDITOR_PLUGIN_PANEL_NONE) {
+        return BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND;
+    }
+    memcpy(panel->inputs[at].hint_lang[lang], hint, strlen(hint) + 1u);
+    return BREAK_EDITOR_PLUGIN_PANEL_OK;
+}
+
+static bool input_in_range(const BreakEditorPluginPanels *reg, u32 index, u32 input)
+{
+    return reg && index < reg->count && input < reg->panels[index].input_count;
+}
+
+u32 break_editor_plugin_panels_input_count(const BreakEditorPluginPanels *reg, u32 index)
+{
+    return (reg && index < reg->count) ? reg->panels[index].input_count : 0u;
+}
+
+const char *break_editor_plugin_panels_input_id(const BreakEditorPluginPanels *reg, u32 index,
+                                                u32 input)
+{
+    return input_in_range(reg, index, input) ? reg->panels[index].inputs[input].id : NULL;
+}
+
+const char *break_editor_plugin_panels_input_hint(const BreakEditorPluginPanels *reg, u32 index,
+                                                  u32 input, BreakEditorLang lang)
+{
+    if (!input_in_range(reg, index, input)) {
+        return NULL;
+    }
+    const PluginPanel *panel = &reg->panels[index];
+    if (lang_valid(lang) && panel->inputs[input].hint_lang[lang][0] != '\0') {
+        return panel->inputs[input].hint_lang[lang];
+    }
+    return panel->inputs[input].hint;
+}
+
+const char *break_editor_plugin_panels_input_text(const BreakEditorPluginPanels *reg, u32 index,
+                                                  u32 input)
+{
+    return input_in_range(reg, index, input) ? reg->panels[index].inputs[input].text : NULL;
+}
+
+bool break_editor_plugin_panels_set_input_text(BreakEditorPluginPanels *reg, u32 index,
+                                               u32 input, const char *text)
+{
+    if (!input_in_range(reg, index, input) || !valid_input_text(text)) {
+        return false;
+    }
+    memcpy(reg->panels[index].inputs[input].text, text, strlen(text) + 1u);
+    return true;
+}
+
+bool break_editor_plugin_panels_submit(const BreakEditorPluginPanels *reg, u32 index, u32 input,
+                                       BreakEditorDoc *doc)
+{
+    if (!input_in_range(reg, index, input)) {
+        return false;
+    }
+    const PluginPanel *panel = &reg->panels[index];
+    return panel->inputs[input].fn(panel->inputs[input].user, doc, panel->inputs[input].text);
 }

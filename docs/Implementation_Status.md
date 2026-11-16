@@ -11409,3 +11409,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 插件面板可以带最多 4 个按钮：注册表 `break_editor_plugin_panels_add_button` / `_set_button_label` / `_press`，插件 API 追加 `add_panel_button`、`set_panel_button_label`。
 - 插件页在每个显示的面板文本下方加一行按钮，标签随当前语言切换；点击用 shell 的 doc 运行回调，失败时写控制台日志（新 i18n 键 `LOG_PLUGIN_BUTTON_FAILED_FMT`，en/zh 两份），然后刷新视图。
 - 验证：先 RED 后 GREEN，`test_editor_plugin_panels` 7/7、`test_editor_plugin_host` 7/7、`test_editor_shell` 156/156、`test_editor_i18n` 8/8；37 项变异全部被捕获；ASan+UBSan 无报告。
+
+### 2026-11-16 plugin panel inputs
+
+- 插件面板可以带最多 2 个单行输入框：注册表 `break_editor_plugin_panels_add_input` / `_set_input_hint` / `_set_input_text` / `_submit`，插件 API 追加 `add_panel_input`、`set_panel_input_hint`。
+- 插件页在面板文本和按钮行之间显示输入框，提示文字随语言切换，草稿在重建后保留；回车用 shell 的 doc 提交，失败写控制台日志（新 i18n 键 `LOG_PLUGIN_INPUT_FAILED_FMT`），焦点回到重建后的输入框；焦点在插件页内时定时刷新暂停。
+- 验证：先 RED 后 GREEN，`test_editor_plugin_panels` 9/9、`test_editor_plugin_host` 8/8、`test_editor_shell` 157/157、`test_editor_i18n` 8/8；48 项变异全部被捕获；ASan+UBSan 无报告。
