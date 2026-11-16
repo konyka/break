@@ -190,9 +190,121 @@ TEST(sections_describe_bounds_and_terminates)
     break_editor_plugin_sections_destroy(reg);
 }
 
+#define ZH_STATS "\xe5\x8d\x95\xe4\xbd\x8d\xe7\xbb\x9f\xe8\xae\xa1"
+
+/* Same contract as plugin command labels: per-language titles with the
+ * add-time title as fallback, owner-only, rejections change nothing,
+ * reused slots start untranslated, compaction keeps translations. */
+TEST(sections_translated_titles)
+{
+    SectionLog log = {0};
+    char long_title[BREAK_EDITOR_PLUGIN_SECTION_TITLE_CAPACITY + 1u];
+    memset(long_title, 't', sizeof(long_title) - 1u);
+    long_title[sizeof(long_title) - 1u] = '\0';
+    BreakEditorPluginSections *reg = break_editor_plugin_sections_create(4u);
+    ASSERT_NOT_NULL(reg);
+    ASSERT_EQ(break_editor_plugin_sections_add(reg, 1u, "unit.stats", "Unit Stats",
+                                               record_section, &log),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_EQ(break_editor_plugin_sections_add(reg, 2u, "unit.tags", "Unit Tags",
+                                               record_section, &log),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+
+    ASSERT_EQ(break_editor_plugin_sections_set_title(NULL, 1u, "unit.stats",
+                                                     BREAK_EDITOR_LANG_ZH_CN, ZH_STATS),
+              BREAK_EDITOR_PLUGIN_SECTION_INVALID);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 0u, "unit.stats",
+                                                     BREAK_EDITOR_LANG_ZH_CN, ZH_STATS),
+              BREAK_EDITOR_PLUGIN_SECTION_INVALID);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, "unit.stats",
+                                                     BREAK_EDITOR_LANG_COUNT, ZH_STATS),
+              BREAK_EDITOR_PLUGIN_SECTION_BAD_LANG);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, "unit.stats",
+                                                     (BreakEditorLang)-1, ZH_STATS),
+              BREAK_EDITOR_PLUGIN_SECTION_BAD_LANG);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, "unit.stats",
+                                                     BREAK_EDITOR_LANG_ZH_CN, NULL),
+              BREAK_EDITOR_PLUGIN_SECTION_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, "unit.stats",
+                                                     BREAK_EDITOR_LANG_ZH_CN, ""),
+              BREAK_EDITOR_PLUGIN_SECTION_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, "unit.stats",
+                                                     BREAK_EDITOR_LANG_ZH_CN, "A\x1f"),
+              BREAK_EDITOR_PLUGIN_SECTION_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, "unit.stats",
+                                                     BREAK_EDITOR_LANG_ZH_CN, long_title),
+              BREAK_EDITOR_PLUGIN_SECTION_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, "unit.tags",
+                                                     BREAK_EDITOR_LANG_ZH_CN, ZH_STATS),
+              BREAK_EDITOR_PLUGIN_SECTION_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, "missing",
+                                                     BREAK_EDITOR_LANG_ZH_CN, ZH_STATS),
+              BREAK_EDITOR_PLUGIN_SECTION_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, NULL,
+                                                     BREAK_EDITOR_LANG_ZH_CN, ZH_STATS),
+              BREAK_EDITOR_PLUGIN_SECTION_NOT_FOUND);
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Unit Stats");
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 1u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Unit Tags");
+
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, "unit.stats",
+                                                     BREAK_EDITOR_LANG_ZH_CN, "first"),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 1u, "unit.stats",
+                                                     BREAK_EDITOR_LANG_ZH_CN, ZH_STATS),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  ZH_STATS);
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 0u, BREAK_EDITOR_LANG_EN_US),
+                  "Unit Stats");
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 0u, BREAK_EDITOR_LANG_COUNT),
+                  "Unit Stats");
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 0u, (BreakEditorLang)-1),
+                  "Unit Stats");
+    ASSERT_STR_EQ(break_editor_plugin_sections_title(reg, 0u), "Unit Stats");
+    ASSERT_TRUE(break_editor_plugin_sections_title_lang(reg, 2u, BREAK_EDITOR_LANG_ZH_CN) ==
+                NULL);
+    ASSERT_TRUE(break_editor_plugin_sections_title_lang(NULL, 0u, BREAK_EDITOR_LANG_ZH_CN) ==
+                NULL);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 2u, "unit.tags",
+                                                     BREAK_EDITOR_LANG_EN_US, "Tags"),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 1u, BREAK_EDITOR_LANG_EN_US),
+                  "Tags");
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 1u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Unit Tags");
+
+    ASSERT_EQ(break_editor_plugin_sections_add(reg, 3u, "after", "After", record_section,
+                                               &log),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(reg, 3u, "after", BREAK_EDITOR_LANG_ZH_CN,
+                                                     "zh after"),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_EQ(break_editor_plugin_sections_remove_owner(reg, 1u), 1u);
+    ASSERT_STR_EQ(break_editor_plugin_sections_id(reg, 1u), "after");
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 1u, BREAK_EDITOR_LANG_ZH_CN),
+                  "zh after");
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 0u, BREAK_EDITOR_LANG_EN_US),
+                  "Tags");
+
+    ASSERT_EQ(break_editor_plugin_sections_remove_owner(reg, 3u), 1u);
+    ASSERT_EQ(break_editor_plugin_sections_add(reg, 4u, "fresh", "Fresh", record_section,
+                                               &log),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_STR_EQ(break_editor_plugin_sections_id(reg, 1u), "fresh");
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 1u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Fresh");
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(reg, 1u, BREAK_EDITOR_LANG_EN_US),
+                  "Fresh");
+    ASSERT_EQ(log.calls, 0u);
+    break_editor_plugin_sections_destroy(reg);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(sections_create_bounds);
     RUN_TEST(sections_add_validates_and_keeps_order);
     RUN_TEST(sections_remove_owner_keeps_the_rest_in_order);
     RUN_TEST(sections_describe_bounds_and_terminates);
+    RUN_TEST(sections_translated_titles);
 TEST_MAIN_END()

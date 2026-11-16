@@ -442,6 +442,83 @@ TEST(inspector_shows_plugin_sections)
     break_editor_shell_destroy(shell);
 }
 
+#define ZH_UNIT_STATS "\xe5\x8d\x95\xe4\xbd\x8d\xe7\xbb\x9f\xe8\xae\xa1"
+#define ZH_RAISE_TERRAIN "\xe6\x8a\xac\xe9\xab\x98\xe5\x9c\xb0\xe5\xbd\xa2"
+
+/* Translated plugin text follows break_editor_shell_set_language: the
+ * inspector section title and the palette row switch, and the palette
+ * filter matches the label shown in the current language. */
+TEST(plugin_text_follows_the_language)
+{
+    SectionCall stats = {0u, NULL, {0u, 0u}, "hp=10"};
+    PluginCall ok = {0u, NULL, true};
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *root;
+    my_widget_t *w;
+    my_widget_t *row;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    BreakEditorPluginSections *sections = break_editor_shell_plugin_sections(shell);
+    BreakEditorPluginCmds *cmds = break_editor_shell_plugin_cmds(shell);
+    ASSERT_EQ(break_editor_plugin_sections_add(sections, 1u, "unit.stats", "Unit Stats",
+                                               plugin_section_record, &stats),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_EQ(break_editor_plugin_sections_set_title(sections, 1u, "unit.stats",
+                                                     BREAK_EDITOR_LANG_ZH_CN, ZH_UNIT_STATS),
+              BREAK_EDITOR_PLUGIN_SECTION_OK);
+    ASSERT_EQ(break_editor_plugin_cmds_add(cmds, 1u, "terrain.raise", "Raise Terrain",
+                                           plugin_cmd_record, &ok),
+              BREAK_EDITOR_PLUGIN_CMD_OK);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(cmds, 1u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_ZH_CN, ZH_RAISE_TERRAIN),
+              BREAK_EDITOR_PLUGIN_CMD_OK);
+    root = break_editor_shell_root(shell);
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0));
+    w = my_widget_find_descendant(root, "editor-plugin-section-title-unit.stats");
+    ASSERT_NOT_NULL(w);
+    ASSERT_STR_EQ(((const my_label_t *)w)->text, "Unit Stats");
+
+    /* the language switch rebuilds the inspector with the zh-CN title */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    w = my_widget_find_descendant(root, "editor-plugin-section-title-unit.stats");
+    ASSERT_NOT_NULL(w);
+    ASSERT_STR_EQ(((const my_label_t *)w)->text, ZH_UNIT_STATS);
+
+    /* palette: the zh-CN label is the row text and what the filter matches */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "Raise Terrain"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 0u);
+    /* the language switch re-filters with the edit's text, so type there */
+    ASSERT_EQ(my_edit_set_text(find(shell, "editor-palette-edit"), ZH_RAISE_TERRAIN),
+              MY_RET_OK);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, ZH_RAISE_TERRAIN));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    shell_paint(shell);
+    row = palette_selected_row(shell);
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(((const my_button_t *)row)->text, ZH_RAISE_TERRAIN);
+
+    /* switching back while the palette is open re-filters in en-US: the
+     * zh-CN text no longer matches the en-US label */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 0u);
+    ASSERT_EQ(my_edit_set_text(find(shell, "editor-palette-edit"), "raise t"), MY_RET_OK);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "raise t"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    shell_paint(shell);
+    row = palette_selected_row(shell);
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(((const my_button_t *)row)->text, "Raise Terrain");
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_EQ(ok.calls, 1u);
+    w = my_widget_find_descendant(root, "editor-plugin-section-title-unit.stats");
+    ASSERT_NOT_NULL(w);
+    ASSERT_STR_EQ(((const my_label_t *)w)->text, "Unit Stats");
+    break_editor_shell_destroy(shell);
+}
+
 /* Plugin commands registered on the shell registry show up in the palette
  * after the built-in rows, run on Enter with the shell's doc, and a failing
  * command logs a translated console line. */
@@ -11371,6 +11448,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_arrow_keys_move_the_highlight_and_enter_runs_it);
     RUN_TEST(palette_lists_and_runs_plugin_commands);
     RUN_TEST(inspector_shows_plugin_sections);
+    RUN_TEST(plugin_text_follows_the_language);
     RUN_TEST(ctrl_s_saves_to_configured_path);
     RUN_TEST(outliner_row_click_selects);
     RUN_TEST(rename_then_undo_reverts_outliner_row_text);

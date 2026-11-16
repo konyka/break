@@ -11334,3 +11334,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 新增 `engine/src/editor/editor_plugin_sections.[ch]`：插件检查器区块注册表（容量 64，id/标题校验，按 owner 移除，`describe` 输出最多 256 字节并保证以 NUL 结尾）。
 - `BreakEditorPluginApi` 末尾追加 `add_section`，与命令共用加载窗口的 owner：加载失败或 `release` 时一并移除。shell 持有区块注册表，检查器在组件行之后为选中实体显示每个接受该实体的区块（标题与只读文本）。`BREAK_EDITOR_PLUGINS` 构建的 editor 把注册表接到插件宿主。
 - 新增 `test_editor_plugin_sections`（4 项），`test_editor_plugin_host`、`test_editor_shell`、`test_editor_plugin_load` 各增加区块用例。先 RED 后 GREEN，32 项变异全部被捕获。
+
+### 2026-11-16 editor plugin text follows the editor language
+
+- 插件命令和检查器区块注册表为每种编辑器语言保存一份可选文本：`break_editor_plugin_cmds_set_label` / `_label_lang`、`break_editor_plugin_sections_set_title` / `_title_lang`；未翻译的语言回退到登记时的文本，复用的槽位不会继承旧翻译。命令过滤按当前语言显示的标签匹配。
+- `BreakEditorPluginApi` 末尾追加 `set_command_label`、`set_section_title`、`lang_tag`。fixture 插件登记中文标签和标题，区块正文随 `lang_tag` 切换。
+- 命令面板的行与过滤、检查器区块标题跟随 `break_editor_shell_set_language` 切换。
+- 新增/扩展用例：`test_editor_plugin_cmds` +2、`test_editor_plugin_sections` +1、`test_editor_plugin_host` +1、`test_editor_shell` +1（`plugin_text_follows_the_language`），`test_editor_plugin_load` 增加中文断言。先 RED 后 GREEN，34 项变异全部被捕获。
+- 同时修复 `8bf2ce5b` 在 MSVC 上的 C4456 编译失败（`test_editor_plugin_load.c` 块内变量遮蔽）。

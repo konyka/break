@@ -35,6 +35,44 @@ static BreakEditorPluginSectionStatus host_add_section(void *host_ptr, const cha
                                             user);
 }
 
+static BreakEditorPluginCmdStatus host_set_command_label(void *host_ptr, const char *id,
+                                                         const char *lang_tag,
+                                                         const char *label)
+{
+    BreakEditorPluginHost *host = (BreakEditorPluginHost *)host_ptr;
+    BreakEditorLang lang;
+    if (!host || host->loading_owner == 0u) {
+        return BREAK_EDITOR_PLUGIN_CMD_INVALID;
+    }
+    if (!break_editor_i18n_parse_lang(lang_tag, &lang)) {
+        return BREAK_EDITOR_PLUGIN_CMD_BAD_LANG;
+    }
+    return break_editor_plugin_cmds_set_label(host->cmds, host->loading_owner, id, lang, label);
+}
+
+static BreakEditorPluginSectionStatus host_set_section_title(void *host_ptr, const char *id,
+                                                             const char *lang_tag,
+                                                             const char *title)
+{
+    BreakEditorPluginHost *host = (BreakEditorPluginHost *)host_ptr;
+    BreakEditorLang lang;
+    if (!host || host->loading_owner == 0u || !host->sections) {
+        return BREAK_EDITOR_PLUGIN_SECTION_INVALID;
+    }
+    if (!break_editor_i18n_parse_lang(lang_tag, &lang)) {
+        return BREAK_EDITOR_PLUGIN_SECTION_BAD_LANG;
+    }
+    return break_editor_plugin_sections_set_title(host->sections, host->loading_owner, id, lang,
+                                                  title);
+}
+
+/* the language is process-wide, so the host pointer is not needed */
+static const char *host_lang_tag(void *host_ptr)
+{
+    (void)host_ptr;
+    return break_editor_i18n_lang_tag(break_editor_i18n_lang());
+}
+
 void break_editor_plugin_host_set_sections(BreakEditorPluginHost *host,
                                            BreakEditorPluginSections *sections)
 {
@@ -57,6 +95,9 @@ BreakEditorPluginHost *break_editor_plugin_host_create(BreakEditorPluginCmds *cm
     host->api.host = host;
     host->api.add_command = host_add_command;
     host->api.add_section = host_add_section;
+    host->api.set_command_label = host_set_command_label;
+    host->api.set_section_title = host_set_section_title;
+    host->api.lang_tag = host_lang_tag;
     host->cmds = cmds;
     return host;
 }

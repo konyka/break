@@ -27,6 +27,14 @@ typedef BreakEditorPluginCmdStatus (*BreakEditorPluginAddCommandFn)(
 typedef BreakEditorPluginSectionStatus (*BreakEditorPluginAddSectionFn)(
     void *host, const char *id, const char *title, BreakEditorPluginSectionFn fn, void *user);
 
+typedef BreakEditorPluginCmdStatus (*BreakEditorPluginSetCommandLabelFn)(
+    void *host, const char *id, const char *lang_tag, const char *label);
+
+typedef BreakEditorPluginSectionStatus (*BreakEditorPluginSetSectionTitleFn)(
+    void *host, const char *id, const char *lang_tag, const char *title);
+
+typedef const char *(*BreakEditorPluginLangTagFn)(void *host);
+
 /* Fields are only ever appended. A plugin checks api_version and that
  * struct_size covers the last field it uses. */
 typedef struct BreakEditorPluginApi {
@@ -38,6 +46,18 @@ typedef struct BreakEditorPluginApi {
      * load-window rule as add_command; INVALID when the host has no section
      * registry attached. */
     BreakEditorPluginAddSectionFn add_section;
+    /* Label of one of this plugin's commands in an editor language, given as
+     * a tag ("zh-CN", "zh_CN.UTF-8", "en"; see break_editor_i18n_parse_lang).
+     * Same load-window rule as add_command, checked before the tag: INVALID
+     * outside a window, BAD_LANG for a tag the editor does not support,
+     * NOT_FOUND for an id this plugin did not add. */
+    BreakEditorPluginSetCommandLabelFn set_command_label;
+    /* Section title in an editor language; same rules as set_command_label,
+     * and INVALID without a section registry. */
+    BreakEditorPluginSetSectionTitleFn set_section_title;
+    /* Current editor language tag ("en-US", "zh-CN"); never NULL, callable
+     * at any time, for example inside a section callback. */
+    BreakEditorPluginLangTagFn lang_tag;
 } BreakEditorPluginApi;
 
 typedef struct BreakEditorPluginHost BreakEditorPluginHost;

@@ -18,6 +18,7 @@
 #include <core/types.h>
 
 #include <editor/editor_doc.h>
+#include <editor/editor_i18n.h>
 
 #define BREAK_EDITOR_PLUGIN_SECTIONS_MAX 64u
 #define BREAK_EDITOR_PLUGIN_SECTION_ID_CAPACITY 64u
@@ -31,7 +32,9 @@ typedef enum BreakEditorPluginSectionStatus {
     BREAK_EDITOR_PLUGIN_SECTION_BAD_ID,
     BREAK_EDITOR_PLUGIN_SECTION_BAD_TITLE,
     BREAK_EDITOR_PLUGIN_SECTION_DUPLICATE,
-    BREAK_EDITOR_PLUGIN_SECTION_FULL
+    BREAK_EDITOR_PLUGIN_SECTION_FULL,
+    BREAK_EDITOR_PLUGIN_SECTION_NOT_FOUND,
+    BREAK_EDITOR_PLUGIN_SECTION_BAD_LANG
 } BreakEditorPluginSectionStatus;
 
 typedef bool (*BreakEditorPluginSectionFn)(void *user, const BreakEditorDoc *doc,
@@ -57,6 +60,18 @@ u32 break_editor_plugin_sections_count(const BreakEditorPluginSections *reg);
 const char *break_editor_plugin_sections_id(const BreakEditorPluginSections *reg, u32 index);
 const char *break_editor_plugin_sections_title(const BreakEditorPluginSections *reg, u32 index);
 u32 break_editor_plugin_sections_owner(const BreakEditorPluginSections *reg, u32 index);
+/* Adds or replaces the title shown for section `id` in `lang`; the title
+ * given to add stays the text for languages without one. Checks in order:
+ * INVALID (NULL registry, owner 0), BAD_LANG, BAD_TITLE (same rules as
+ * add), NOT_FOUND (no section `id` owned by `owner`). Any rejection changes
+ * nothing. A section added later in a reused slot starts untranslated. */
+BreakEditorPluginSectionStatus break_editor_plugin_sections_set_title(
+    BreakEditorPluginSections *reg, u32 owner, const char *id, BreakEditorLang lang,
+    const char *title);
+/* The title for `lang`, or the add-time title when `lang` has none or is out
+ * of range; NULL for an out-of-range index. */
+const char *break_editor_plugin_sections_title_lang(const BreakEditorPluginSections *reg,
+                                                    u32 index, BreakEditorLang lang);
 /* Exact id match; BREAK_EDITOR_PLUGIN_SECTION_NONE when absent. */
 u32 break_editor_plugin_sections_find(const BreakEditorPluginSections *reg, const char *id);
 

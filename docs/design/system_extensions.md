@@ -89,3 +89,7 @@ PAL：`engine/src/platform/platform_dynamic.{h,c}`。管理器：`engine/src/sys
 ## 2026-11-16 追加：editor 插件加载
 
 `break_system` 仍不直接链接进 `editor`。可选 CMake 选项 `BREAK_EDITOR_PLUGINS`（默认 OFF）会构建 `break_editor_plugin_loader`（`src/editor/editor_plugin_loader.c`，链接 `break_editor` 与 `break_system`），并只在该选项内链接进 editor，用于加载 `--plugin-manifest` 列出的插件。`test_break_system_target_contract` 检查选项默认 OFF，以及该链接只出现一次且位于选项块内。设计与验证见 `docs/superpowers/plans/2026-11-16-editor-plugin-loader.md`。
+
+## 2026-11-16 追加：插件文本多语言
+
+`BreakEditorPluginApi`（`api_version` 仍为 1，只在末尾追加字段）新增 `set_command_label`、`set_section_title` 和 `lang_tag`。前两个按语言标签登记命令标签和区块标题，遵守与 `add_command` 相同的加载窗口规则，并且只能修改本插件登记的条目；`lang_tag` 返回编辑器当前语言。插件在 `register` 中检查这些函数指针非空后再使用。设计与验证见 `docs/superpowers/plans/2026-11-16-editor-plugin-i18n.md`。

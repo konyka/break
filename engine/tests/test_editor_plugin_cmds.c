@@ -177,22 +177,165 @@ TEST(plugin_cmds_filter)
                                            record_call, NULL), 0);
     ASSERT_EQ(break_editor_plugin_cmds_add(reg, 2u, "terrain.lower", "Lower Ground",
                                            record_call, NULL), 0);
-    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "TERRAIN", out, 4u), 2u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "TERRAIN", BREAK_EDITOR_LANG_EN_US, out, 4u), 2u);
     ASSERT_EQ(out[0], 0u);
     ASSERT_EQ(out[1], 2u);
-    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "bake l", out, 4u), 1u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "bake l", BREAK_EDITOR_LANG_EN_US, out, 4u), 1u);
     ASSERT_EQ(out[0], 1u);
-    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "ground", out, 4u), 1u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "ground", BREAK_EDITOR_LANG_EN_US, out, 4u), 1u);
     ASSERT_EQ(out[0], 2u);
-    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "", out, 4u), 3u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "", BREAK_EDITOR_LANG_EN_US, out, 4u), 3u);
     out[1] = 99u;
-    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "", out, 1u), 1u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "", BREAK_EDITOR_LANG_EN_US, out, 1u), 1u);
     ASSERT_EQ(out[0], 0u);
     ASSERT_EQ(out[1], 99u);
-    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "zzz", out, 4u), 0u);
-    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, NULL, out, 4u), 0u);
-    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "a", NULL, 4u), 0u);
-    ASSERT_EQ(break_editor_plugin_cmds_filter(NULL, "a", out, 4u), 0u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "zzz", BREAK_EDITOR_LANG_EN_US, out, 4u), 0u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, NULL, BREAK_EDITOR_LANG_EN_US, out, 4u), 0u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "a", BREAK_EDITOR_LANG_EN_US, NULL, 4u), 0u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(NULL, "a", BREAK_EDITOR_LANG_EN_US, out, 4u), 0u);
+    break_editor_plugin_cmds_destroy(reg);
+}
+
+#define ZH_RAISE "\xe6\x8a\xac\xe9\xab\x98\xe5\x9c\xb0\xe5\xbd\xa2"
+
+/* A translated label shows for its language only; other languages and an
+ * out-of-range language keep the add-time label. Only the owner may
+ * translate, rejections change nothing, and a slot reused after
+ * remove_owner starts untranslated. */
+TEST(plugin_cmds_translated_labels)
+{
+    char long_label[BREAK_EDITOR_PLUGIN_CMD_LABEL_CAPACITY + 1u];
+    memset(long_label, 'L', sizeof(long_label) - 1u);
+    long_label[sizeof(long_label) - 1u] = '\0';
+    BreakEditorPluginCmds *reg = break_editor_plugin_cmds_create(4u);
+    ASSERT_NOT_NULL(reg);
+    ASSERT_EQ(break_editor_plugin_cmds_add(reg, 1u, "terrain.raise", "Raise Terrain",
+                                           record_call, NULL), 0);
+    ASSERT_EQ(break_editor_plugin_cmds_add(reg, 2u, "lights.bake", "Bake Lights",
+                                           record_call, NULL), 0);
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Raise Terrain");
+
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(NULL, 1u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_ZH_CN, ZH_RAISE),
+              BREAK_EDITOR_PLUGIN_CMD_INVALID);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 0u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_ZH_CN, ZH_RAISE),
+              BREAK_EDITOR_PLUGIN_CMD_INVALID);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_COUNT, ZH_RAISE),
+              BREAK_EDITOR_PLUGIN_CMD_BAD_LANG);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "terrain.raise",
+                                                 (BreakEditorLang)-1, ZH_RAISE),
+              BREAK_EDITOR_PLUGIN_CMD_BAD_LANG);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_ZH_CN, NULL),
+              BREAK_EDITOR_PLUGIN_CMD_BAD_LABEL);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_ZH_CN, ""),
+              BREAK_EDITOR_PLUGIN_CMD_BAD_LABEL);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_ZH_CN, "A\tB"),
+              BREAK_EDITOR_PLUGIN_CMD_BAD_LABEL);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_ZH_CN, long_label),
+              BREAK_EDITOR_PLUGIN_CMD_BAD_LABEL);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "lights.bake",
+                                                 BREAK_EDITOR_LANG_ZH_CN, ZH_RAISE),
+              BREAK_EDITOR_PLUGIN_CMD_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "missing",
+                                                 BREAK_EDITOR_LANG_ZH_CN, ZH_RAISE),
+              BREAK_EDITOR_PLUGIN_CMD_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, NULL,
+                                                 BREAK_EDITOR_LANG_ZH_CN, ZH_RAISE),
+              BREAK_EDITOR_PLUGIN_CMD_NOT_FOUND);
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Raise Terrain");
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 1u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Bake Lights");
+
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_ZH_CN, "first"),
+              BREAK_EDITOR_PLUGIN_CMD_OK);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_ZH_CN, ZH_RAISE),
+              BREAK_EDITOR_PLUGIN_CMD_OK);
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  ZH_RAISE);
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 0u, BREAK_EDITOR_LANG_EN_US),
+                  "Raise Terrain");
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 0u, BREAK_EDITOR_LANG_COUNT),
+                  "Raise Terrain");
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 0u, (BreakEditorLang)-1),
+                  "Raise Terrain");
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label(reg, 0u), "Raise Terrain");
+    ASSERT_TRUE(break_editor_plugin_cmds_label_lang(reg, 2u, BREAK_EDITOR_LANG_ZH_CN) == NULL);
+    ASSERT_TRUE(break_editor_plugin_cmds_label_lang(NULL, 0u, BREAK_EDITOR_LANG_ZH_CN) == NULL);
+    /* the en-US slot can carry its own text too */
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 2u, "lights.bake",
+                                                 BREAK_EDITOR_LANG_EN_US, "Bake All Lights"),
+              BREAK_EDITOR_PLUGIN_CMD_OK);
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 1u, BREAK_EDITOR_LANG_EN_US),
+                  "Bake All Lights");
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 1u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Bake Lights");
+
+    /* compaction keeps translations with their command */
+    ASSERT_EQ(break_editor_plugin_cmds_add(reg, 3u, "after", "After", record_call, NULL), 0);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 3u, "after", BREAK_EDITOR_LANG_ZH_CN,
+                                                 "zh after"),
+              BREAK_EDITOR_PLUGIN_CMD_OK);
+    ASSERT_EQ(break_editor_plugin_cmds_remove_owner(reg, 1u), 1u);
+    ASSERT_STR_EQ(break_editor_plugin_cmds_id(reg, 1u), "after");
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 1u, BREAK_EDITOR_LANG_ZH_CN),
+                  "zh after");
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 0u, BREAK_EDITOR_LANG_EN_US),
+                  "Bake All Lights");
+
+    /* a reused slot starts untranslated */
+    ASSERT_EQ(break_editor_plugin_cmds_remove_owner(reg, 3u), 1u);
+    ASSERT_EQ(break_editor_plugin_cmds_add(reg, 4u, "fresh", "Fresh", record_call, NULL), 0);
+    ASSERT_STR_EQ(break_editor_plugin_cmds_id(reg, 1u), "fresh");
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 1u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Fresh");
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(reg, 1u, BREAK_EDITOR_LANG_EN_US),
+                  "Fresh");
+    break_editor_plugin_cmds_destroy(reg);
+}
+
+/* The filter matches the label shown in the requested language (or the id),
+ * not the add-time label once a translation replaces it. */
+TEST(plugin_cmds_filter_uses_the_shown_label)
+{
+    u32 out[4];
+    BreakEditorPluginCmds *reg = break_editor_plugin_cmds_create(4u);
+    ASSERT_NOT_NULL(reg);
+    ASSERT_EQ(break_editor_plugin_cmds_add(reg, 1u, "terrain.raise", "Raise Terrain",
+                                           record_call, NULL), 0);
+    ASSERT_EQ(break_editor_plugin_cmds_add(reg, 1u, "lights.bake", "Bake Lights",
+                                           record_call, NULL), 0);
+    ASSERT_EQ(break_editor_plugin_cmds_set_label(reg, 1u, "terrain.raise",
+                                                 BREAK_EDITOR_LANG_ZH_CN, ZH_RAISE),
+              BREAK_EDITOR_PLUGIN_CMD_OK);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, ZH_RAISE, BREAK_EDITOR_LANG_ZH_CN, out, 4u),
+              1u);
+    ASSERT_EQ(out[0], 0u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, ZH_RAISE, BREAK_EDITOR_LANG_EN_US, out, 4u),
+              0u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "raise t", BREAK_EDITOR_LANG_ZH_CN, out,
+                                              4u),
+              0u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "raise t", BREAK_EDITOR_LANG_EN_US, out,
+                                              4u),
+              1u);
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "terrain.r", BREAK_EDITOR_LANG_ZH_CN, out,
+                                              4u),
+              1u);
+    ASSERT_EQ(out[0], 0u);
+    /* untranslated commands match their add-time label in every language */
+    ASSERT_EQ(break_editor_plugin_cmds_filter(reg, "bake l", BREAK_EDITOR_LANG_ZH_CN, out, 4u),
+              1u);
+    ASSERT_EQ(out[0], 1u);
     break_editor_plugin_cmds_destroy(reg);
 }
 
@@ -202,4 +345,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(plugin_cmds_rejections_change_nothing);
     RUN_TEST(plugin_cmds_remove_owner_keeps_order);
     RUN_TEST(plugin_cmds_filter);
+    RUN_TEST(plugin_cmds_translated_labels);
+    RUN_TEST(plugin_cmds_filter_uses_the_shown_label);
 TEST_MAIN_END()

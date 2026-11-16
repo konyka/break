@@ -7,6 +7,8 @@ typedef struct PluginCmd {
     u32 owner;
     char id[BREAK_EDITOR_PLUGIN_CMD_ID_CAPACITY];
     char label[BREAK_EDITOR_PLUGIN_CMD_LABEL_CAPACITY];
+    /* "" when the language has no translation */
+    char label_lang[BREAK_EDITOR_LANG_COUNT][BREAK_EDITOR_PLUGIN_CMD_LABEL_CAPACITY];
     BreakEditorPluginCmdFn fn;
     void *user;
 } PluginCmd;
@@ -94,6 +96,7 @@ BreakEditorPluginCmdStatus break_editor_plugin_cmds_add(BreakEditorPluginCmds *r
     cmd->owner = owner;
     memcpy(cmd->id, id, strlen(id) + 1u);
     memcpy(cmd->label, label, strlen(label) + 1u);
+    memset(cmd->label_lang, 0, sizeof(cmd->label_lang));
     cmd->fn = fn;
     cmd->user = user;
     reg->count++;
@@ -152,6 +155,47 @@ u32 break_editor_plugin_cmds_find(const BreakEditorPluginCmds *reg, const char *
     return BREAK_EDITOR_PLUGIN_CMD_NONE;
 }
 
+static bool lang_valid(BreakEditorLang lang)
+{
+    /* one unsigned compare also rejects negative values of a signed enum */
+    return (u32)lang < (u32)BREAK_EDITOR_LANG_COUNT;
+}
+
+BreakEditorPluginCmdStatus break_editor_plugin_cmds_set_label(BreakEditorPluginCmds *reg,
+                                                              u32 owner, const char *id,
+                                                              BreakEditorLang lang,
+                                                              const char *label)
+{
+    if (!reg || owner == 0u) {
+        return BREAK_EDITOR_PLUGIN_CMD_INVALID;
+    }
+    if (!lang_valid(lang)) {
+        return BREAK_EDITOR_PLUGIN_CMD_BAD_LANG;
+    }
+    if (!valid_label(label)) {
+        return BREAK_EDITOR_PLUGIN_CMD_BAD_LABEL;
+    }
+    u32 index = break_editor_plugin_cmds_find(reg, id);
+    if (index == BREAK_EDITOR_PLUGIN_CMD_NONE || reg->cmds[index].owner != owner) {
+        return BREAK_EDITOR_PLUGIN_CMD_NOT_FOUND;
+    }
+    memcpy(reg->cmds[index].label_lang[lang], label, strlen(label) + 1u);
+    return BREAK_EDITOR_PLUGIN_CMD_OK;
+}
+
+const char *break_editor_plugin_cmds_label_lang(const BreakEditorPluginCmds *reg, u32 index,
+                                                BreakEditorLang lang)
+{
+    if (!reg || index >= reg->count) {
+        return NULL;
+    }
+    const PluginCmd *cmd = &reg->cmds[index];
+    if (lang_valid(lang) && cmd->label_lang[lang][0] != '\0') {
+        return cmd->label_lang[lang];
+    }
+    return cmd->label;
+}
+
 static char fold(char c)
 {
     return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
@@ -175,14 +219,14 @@ static bool contains_casefold(const char *haystack, const char *needle)
 }
 
 u32 break_editor_plugin_cmds_filter(const BreakEditorPluginCmds *reg, const char *text,
-                                    u32 *out, u32 cap)
+                                    BreakEditorLang lang, u32 *out, u32 cap)
 {
     if (!reg || !text || !out) {
         return 0u;
     }
     u32 written = 0u;
     for (u32 i = 0; i < reg->count && written < cap; i++) {
-        if (contains_casefold(reg->cmds[i].label, text) ||
+        if (contains_casefold(break_editor_plugin_cmds_label_lang(reg, i, lang), text) ||
             contains_casefold(reg->cmds[i].id, text)) {
             out[written++] = i;
         }

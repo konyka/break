@@ -10,6 +10,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#define FIXTURE_ZH_HELLO "\xe5\xa4\xb9\xe5\x85\xb7\xe9\x97\xae\xe5\x80\x99"
+#define FIXTURE_ZH_SECTION_TITLE "\xe5\xa4\xb9\xe5\x85\xb7\xe5\x88\x86\xe5\x8c\xba"
+#define FIXTURE_ZH_SECTION_TEXT "\xe5\xa4\xb9\xe5\x85\xb7\xe5\x8c\xba\xe5\x9d\x97"
+
 static bool hash_file(const char *path, u8 out[32])
 {
     FILE *file = fopen(path, "rb");
@@ -70,6 +74,11 @@ TEST(real_plugin_adds_and_removes_a_command)
     u32 index = break_editor_plugin_cmds_find(cmds, "fixture.hello");
     ASSERT_EQ(index, 0u);
     ASSERT_STR_EQ(break_editor_plugin_cmds_label(cmds, index), "Fixture Hello");
+    /* the plugin registered its zh-CN label through set_command_label */
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(cmds, index, BREAK_EDITOR_LANG_ZH_CN),
+                  FIXTURE_ZH_HELLO);
+    ASSERT_STR_EQ(break_editor_plugin_cmds_label_lang(cmds, index, BREAK_EDITOR_LANG_EN_US),
+                  "Fixture Hello");
     ASSERT_EQ(break_editor_plugin_cmds_owner(cmds, index), owner);
     ASSERT_TRUE(break_editor_plugin_cmds_execute(cmds, index, doc));
     ASSERT_FALSE(break_editor_plugin_cmds_execute(cmds, index, NULL));
@@ -274,12 +283,25 @@ TEST(loader_loads_a_manifest_and_unloads_on_destroy)
     ASSERT_EQ(break_editor_plugin_sections_count(sections), 1u);
     ASSERT_STR_EQ(break_editor_plugin_sections_id(sections, 0u), "fixture.section");
     ASSERT_EQ(break_editor_plugin_sections_owner(sections, 0u), report.owners[1]);
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(sections, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  FIXTURE_ZH_SECTION_TITLE);
+    ASSERT_STR_EQ(break_editor_plugin_sections_title_lang(sections, 0u, BREAK_EDITOR_LANG_EN_US),
+                  "Fixture Section");
     {
-        char text[64];
+        /* the section text follows the editor language via api->lang_tag;
+         * not named `text`, which would hide the manifest buffer (MSVC C4456) */
+        char section_text[64];
+        ASSERT_TRUE(break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US));
         ASSERT_TRUE(break_editor_plugin_sections_describe(sections, 0u, NULL,
-                                                          BREAK_EDITOR_ENTITY_NULL, text,
-                                                          sizeof text));
-        ASSERT_STR_EQ(text, "fixture section");
+                                                          BREAK_EDITOR_ENTITY_NULL,
+                                                          section_text, sizeof section_text));
+        ASSERT_STR_EQ(section_text, "fixture section");
+        ASSERT_TRUE(break_editor_i18n_set_lang(BREAK_EDITOR_LANG_ZH_CN));
+        ASSERT_TRUE(break_editor_plugin_sections_describe(sections, 0u, NULL,
+                                                          BREAK_EDITOR_ENTITY_NULL,
+                                                          section_text, sizeof section_text));
+        ASSERT_STR_EQ(section_text, FIXTURE_ZH_SECTION_TEXT);
+        ASSERT_TRUE(break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US));
     }
 
     /* A second manifest adds to the same loader; a wrong hash loads nothing. */

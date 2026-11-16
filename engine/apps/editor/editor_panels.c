@@ -710,8 +710,9 @@ static void shell_add_plugin_sections(BreakEditorShell *shell,
         (void)snprintf(wname, sizeof(wname), "editor-plugin-section-title-%s", id);
         shell_add_child(insp,
                         shell_named(my_label_create(
-                                        NULL, break_editor_plugin_sections_title(
-                                                  shell->plugin_sections, i)),
+                                        NULL, break_editor_plugin_sections_title_lang(
+                                                  shell->plugin_sections, i,
+                                                  break_editor_i18n_lang())),
                                     wname),
                         "w:100% h:22");
         (void)snprintf(wname, sizeof(wname), "editor-plugin-section-%s", id);
@@ -1300,7 +1301,8 @@ bool break_editor_shell_palette_set_filter(BreakEditorShell *shell,
     }
     {
         u32 plugin[EDITOR_PLUGIN_CMD_CAPACITY];
-        u32 n = break_editor_plugin_cmds_filter(shell->plugin_cmds, text, plugin,
+        u32 n = break_editor_plugin_cmds_filter(shell->plugin_cmds, text,
+                                                break_editor_i18n_lang(), plugin,
                                                 EDITOR_PLUGIN_CMD_CAPACITY);
         for (i = 0u; i < n; i++) {
             shell->palette_matches[shell->palette_match_count++] = PAL_PLUGIN_0 + plugin[i];
@@ -1621,8 +1623,9 @@ static const char *shell_palette_row_text(const BreakEditorShell *shell,
                                           u32 cmd, char *buf, size_t cap) {
     if (cmd >= PAL_PLUGIN_0) {
         const char *label = shell != NULL
-                                ? break_editor_plugin_cmds_label(shell->plugin_cmds,
-                                                                 cmd - PAL_PLUGIN_0)
+                                ? break_editor_plugin_cmds_label_lang(
+                                      shell->plugin_cmds, cmd - PAL_PLUGIN_0,
+                                      break_editor_i18n_lang())
                                 : NULL;
         (void)snprintf(buf, cap, "%s", label != NULL ? label : "?");
         return buf;

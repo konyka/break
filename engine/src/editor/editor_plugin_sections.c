@@ -7,6 +7,8 @@ typedef struct PluginSection {
     u32 owner;
     char id[BREAK_EDITOR_PLUGIN_SECTION_ID_CAPACITY];
     char title[BREAK_EDITOR_PLUGIN_SECTION_TITLE_CAPACITY];
+    /* "" when the language has no translation */
+    char title_lang[BREAK_EDITOR_LANG_COUNT][BREAK_EDITOR_PLUGIN_SECTION_TITLE_CAPACITY];
     BreakEditorPluginSectionFn fn;
     void *user;
 } PluginSection;
@@ -96,6 +98,7 @@ BreakEditorPluginSectionStatus break_editor_plugin_sections_add(BreakEditorPlugi
     section->owner = owner;
     memcpy(section->id, id, strlen(id) + 1u);
     memcpy(section->title, title, strlen(title) + 1u);
+    memset(section->title_lang, 0, sizeof(section->title_lang));
     section->fn = fn;
     section->user = user;
     reg->count++;
@@ -139,6 +142,46 @@ const char *break_editor_plugin_sections_title(const BreakEditorPluginSections *
 u32 break_editor_plugin_sections_owner(const BreakEditorPluginSections *reg, u32 index)
 {
     return (reg && index < reg->count) ? reg->sections[index].owner : 0u;
+}
+
+static bool lang_valid(BreakEditorLang lang)
+{
+    /* one unsigned compare also rejects negative values of a signed enum */
+    return (u32)lang < (u32)BREAK_EDITOR_LANG_COUNT;
+}
+
+BreakEditorPluginSectionStatus break_editor_plugin_sections_set_title(
+    BreakEditorPluginSections *reg, u32 owner, const char *id, BreakEditorLang lang,
+    const char *title)
+{
+    if (!reg || owner == 0u) {
+        return BREAK_EDITOR_PLUGIN_SECTION_INVALID;
+    }
+    if (!lang_valid(lang)) {
+        return BREAK_EDITOR_PLUGIN_SECTION_BAD_LANG;
+    }
+    if (!valid_title(title)) {
+        return BREAK_EDITOR_PLUGIN_SECTION_BAD_TITLE;
+    }
+    u32 index = break_editor_plugin_sections_find(reg, id);
+    if (index == BREAK_EDITOR_PLUGIN_SECTION_NONE || reg->sections[index].owner != owner) {
+        return BREAK_EDITOR_PLUGIN_SECTION_NOT_FOUND;
+    }
+    memcpy(reg->sections[index].title_lang[lang], title, strlen(title) + 1u);
+    return BREAK_EDITOR_PLUGIN_SECTION_OK;
+}
+
+const char *break_editor_plugin_sections_title_lang(const BreakEditorPluginSections *reg,
+                                                    u32 index, BreakEditorLang lang)
+{
+    if (!reg || index >= reg->count) {
+        return NULL;
+    }
+    const PluginSection *section = &reg->sections[index];
+    if (lang_valid(lang) && section->title_lang[lang][0] != '\0') {
+        return section->title_lang[lang];
+    }
+    return section->title;
 }
 
 u32 break_editor_plugin_sections_find(const BreakEditorPluginSections *reg, const char *id)

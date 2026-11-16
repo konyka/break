@@ -14,6 +14,7 @@
 #include <core/types.h>
 
 #include <editor/editor_doc.h>
+#include <editor/editor_i18n.h>
 
 #define BREAK_EDITOR_PLUGIN_CMDS_MAX 256u
 #define BREAK_EDITOR_PLUGIN_CMD_ID_CAPACITY 64u
@@ -26,7 +27,9 @@ typedef enum BreakEditorPluginCmdStatus {
     BREAK_EDITOR_PLUGIN_CMD_BAD_ID,
     BREAK_EDITOR_PLUGIN_CMD_BAD_LABEL,
     BREAK_EDITOR_PLUGIN_CMD_DUPLICATE,
-    BREAK_EDITOR_PLUGIN_CMD_FULL
+    BREAK_EDITOR_PLUGIN_CMD_FULL,
+    BREAK_EDITOR_PLUGIN_CMD_NOT_FOUND,
+    BREAK_EDITOR_PLUGIN_CMD_BAD_LANG
 } BreakEditorPluginCmdStatus;
 
 /* Returns the command's own result; the palette logs a failure. */
@@ -52,10 +55,24 @@ const char *break_editor_plugin_cmds_label(const BreakEditorPluginCmds *reg, u32
 u32 break_editor_plugin_cmds_owner(const BreakEditorPluginCmds *reg, u32 index);
 /* Exact id match; BREAK_EDITOR_PLUGIN_CMD_NONE when absent. */
 u32 break_editor_plugin_cmds_find(const BreakEditorPluginCmds *reg, const char *id);
-/* Writes up to cap indexes whose label or id contains text (ASCII
- * case-insensitive; "" matches all), in order. Returns the number written. */
+/* Adds or replaces the label shown for command `id` in `lang`; the label
+ * given to add stays the text for languages without one. Checks in order:
+ * INVALID (NULL registry, owner 0), BAD_LANG, BAD_LABEL (same rules as
+ * add), NOT_FOUND (no command `id` owned by `owner`). Any rejection changes
+ * nothing. A command added later in a reused slot starts untranslated. */
+BreakEditorPluginCmdStatus break_editor_plugin_cmds_set_label(BreakEditorPluginCmds *reg,
+                                                              u32 owner, const char *id,
+                                                              BreakEditorLang lang,
+                                                              const char *label);
+/* The label for `lang`, or the add-time label when `lang` has none or is out
+ * of range; NULL for an out-of-range index. */
+const char *break_editor_plugin_cmds_label_lang(const BreakEditorPluginCmds *reg, u32 index,
+                                                BreakEditorLang lang);
+/* Writes up to cap indexes whose label in `lang` (label_lang) or id contains
+ * text (ASCII case-insensitive; "" matches all), in order. Returns the
+ * number written. */
 u32 break_editor_plugin_cmds_filter(const BreakEditorPluginCmds *reg, const char *text,
-                                    u32 *out, u32 cap);
+                                    BreakEditorLang lang, u32 *out, u32 cap);
 /* Runs the callback; false without a call for an out-of-range index. */
 bool break_editor_plugin_cmds_execute(const BreakEditorPluginCmds *reg, u32 index,
                                       BreakEditorDoc *doc);

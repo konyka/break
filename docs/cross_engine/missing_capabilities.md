@@ -240,3 +240,4 @@
 - **第 12 节（编辑器）追加**：editor 二进制支持 `--plugin-manifest PATH`，启动前校验 manifest，错误时以 2 退出（fail closed），合法时列出条目。仍缺：editor 真正调用 `break_plugin` 加载（需要不违反 `test_break_system_target_contract` 的可选加载库）、插件面板、检查器扩展点。
 - **第 12 节（编辑器）追加**：`BREAK_EDITOR_PLUGINS=ON` 构建的 editor 会真正加载 `--plugin-manifest` 列出的插件（SHA-256 校验后经 `break_plugin` 加载，命令进入命令面板，退出时卸载）；默认构建仍只校验 manifest。仍缺：插件面板、检查器扩展点、CI 中的 `BREAK_EDITOR_PLUGINS=ON` 构建任务。
 - **第 12 节（编辑器）追加**：插件可通过 `add_section` 向检查器添加只读区块，按选中实体显示，插件卸载或加载失败时移除。仍缺：插件可编辑字段、可停靠的插件面板、插件文本的多语言。
+- **第 12 节（编辑器）追加**：插件可为自己的命令标签和检查器区块标题登记各语言文本，并通过 `lang_tag` 读取当前语言；切换语言时命令面板与检查器随之切换。仍缺：插件可编辑字段、可停靠的插件面板。
