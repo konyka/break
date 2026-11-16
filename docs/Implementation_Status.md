@@ -11464,3 +11464,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `BreakHttpConfig.proxy_user` / `proxy_password`：两者都设置时，CONNECT 请求带 `Proxy-Authorization: Basic base64(user:password)`；不发给目标，明文 http 也不发。两者须为 1..255 字节可打印 ASCII，用户名不含 `:`；只设一个、控制字符、非 ASCII、超长或没有 `proxy` 时为 `ERR_URL`（不建 socket）。407 仍为 `ERR_STATUS`，不重试。
 - `test_break_http` 新增 4 项（共 61）：CONNECT 头逐字节准确且目标请求无凭据（RFC 7617 示例）、base64 三种余数与 255 字节上限、14 种非法凭据、明文 http 不发凭据。先 RED（编译失败）后 GREEN，GREEN 时测试还抓出「有凭据无代理」未拒绝。16 项变异首轮 1 项存活（空串检查与调用方重复），删除冗余检查后全部被捕获；ASan+UBSan 无报告，TSan 三次运行无报告。
 - 仍缺：Digest/NTLM 等其他代理认证、https 代理、OCSP、HTTP/2。
+
+### 2026-11-16 ts_us timestamps in the core_app trace converter
+
+- `break_trace_core_app_to_chrome` 识别可选字段 `ts_us=<微秒>`：作为事件 `ts`、不进 `args`，计入新的 `BreakTraceCoreAppReport.timestamped`；非规范十进制的 `ts_us` 使该行被跳过。无 `ts_us` 的行仍用序号，旧 trace 输出不变。
+- `test_trace_core_app` 新增 2 项（共 5）：时间戳替换与 args 剔除、0 与 18 位上限、与无时间戳行混排、`timestamped` 计数；5 种非规范值跳过。先 RED（编译失败）后 GREEN；9 项变异全部被捕获。
+- 仍缺：core_app 写出 `ts_us`、网络对端之间的时钟对齐。

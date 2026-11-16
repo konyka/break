@@ -125,8 +125,53 @@ TEST(core_app_trace_skips_malformed_lines)
                 NULL);
 }
 
+TEST(core_app_trace_uses_ts_us_as_the_event_time)
+{
+    const char *text =
+        "COREAPPTRACE version=1 event=a ts_us=1500 generation=1\n"
+        "COREAPPTRACE version=1 ts_us=0 event=b\n"
+        "COREAPPTRACE version=1 event=c k=v\n"
+        "COREAPPTRACE version=1 event=d ts_us=999999999999999999\n";
+    BreakTraceCoreAppReport report;
+    ASSERT_EQ(convert(text, &report), BREAK_TRACE_CONVERT_OK);
+    ASSERT_EQ(report.events, 4u);
+    ASSERT_EQ(report.skipped, 0u);
+    ASSERT_EQ(report.timestamped, 3u);
+    const char *want =
+        "{\"traceEvents\":[\n" EVENT_HEAD("a", "1500") "\"generation\":1}},\n"
+        EVENT_HEAD("b", "0") "}},\n"
+        EVENT_HEAD("c", "2") "\"k\":\"v\"}},\n"
+        EVENT_HEAD("d", "999999999999999999") "}}\n"
+        "]," BREAK_TRACE_OTHER_DATA "}\n";
+    ASSERT_STR_EQ(g_out, want);
+    ASSERT_EQ(report.bytes, (u64)strlen(want));
+
+    ASSERT_EQ(convert("COREAPPTRACE version=1 event=a\n", &report), BREAK_TRACE_CONVERT_OK);
+    ASSERT_EQ(report.timestamped, 0u);
+}
+
+TEST(core_app_trace_skips_a_non_canonical_ts_us)
+{
+    expect_skipped("COREAPPTRACE version=1 event=a ts_us=01");
+    expect_skipped("COREAPPTRACE version=1 event=a ts_us=-1");
+    expect_skipped("COREAPPTRACE version=1 event=a ts_us=1a");
+    expect_skipped("COREAPPTRACE version=1 event=a ts_us=");
+    expect_skipped("COREAPPTRACE version=1 event=a ts_us=1000000000000000000");
+    BreakTraceCoreAppReport report;
+    ASSERT_EQ(convert("COREAPPTRACE version=1 event=a ts_us=x\n"
+                      "COREAPPTRACE version=1 event=b ts_us=7\n",
+                      &report),
+              BREAK_TRACE_CONVERT_OK);
+    ASSERT_EQ(report.events, 1u);
+    ASSERT_EQ(report.skipped, 1u);
+    ASSERT_EQ(report.timestamped, 1u);
+    ASSERT_TRUE(strstr(g_out, EVENT_HEAD("b", "7") "}}") != NULL);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(core_app_trace_converts_lines_to_chrome_events);
     RUN_TEST(core_app_trace_size_query_and_small_buffer);
     RUN_TEST(core_app_trace_skips_malformed_lines);
+    RUN_TEST(core_app_trace_uses_ts_us_as_the_event_time);
+    RUN_TEST(core_app_trace_skips_a_non_canonical_ts_us);
 TEST_MAIN_END()

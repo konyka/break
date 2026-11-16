@@ -77,12 +77,14 @@ static bool trace_same(const char *a, usize a_length, const char *b, usize b_len
 }
 
 /* Splits one line (without '\n'/'\r') into fields. Returns false when the
- * line is malformed; *event receives the index of the event= field. */
+ * line is malformed; *event receives the index of the event= field and *ts
+ * the index of ts_us= (BREAK_TRACE_CORE_APP_MAX_FIELDS when absent). */
 static bool trace_parse_line(const char *p, const char *end, TraceField *fields, u32 *count,
-                             u32 *event)
+                             u32 *event, u32 *ts)
 {
     *count = 0u;
     *event = BREAK_TRACE_CORE_APP_MAX_FIELDS;
+    *ts = BREAK_TRACE_CORE_APP_MAX_FIELDS;
     if ((usize)(end - p) < TRACE_PREFIX_LENGTH ||
         memcmp(p, TRACE_PREFIX, TRACE_PREFIX_LENGTH) != 0) {
         return false;
@@ -104,6 +106,10 @@ static bool trace_parse_line(const char *p, const char *end, TraceField *fields,
             }
         }
         if (trace_same(field.key, field.key_length, "event", 5u)) *event = *count;
+        if (trace_same(field.key, field.key_length, "ts_us", 5u)) {
+            if (!trace_is_number(field.value, field.value_length)) return false;
+            *ts = *count;
+        }
         fields[(*count)++] = field;
         p = field_end;
     }
@@ -115,16 +121,20 @@ static bool trace_parse_line(const char *p, const char *end, TraceField *fields,
 }
 
 static void trace_write_event(TraceWriter *w, const TraceField *fields, u32 count, u32 event,
-                              u32 ordinal)
+                              u32 ts, u32 ordinal)
 {
     trace_puts(w, "{\"name\":");
     trace_put_string(w, fields[event].value, fields[event].value_length);
     trace_puts(w, ",\"cat\":\"" BREAK_TRACE_CAT_CORE_APP "\",\"ph\":\"i\",\"s\":\"g\",\"ts\":");
-    trace_put_u32(w, ordinal);
+    if (ts < count) {
+        trace_put(w, fields[ts].value, fields[ts].value_length);
+    } else {
+        trace_put_u32(w, ordinal);
+    }
     trace_puts(w, ",\"pid\":1,\"tid\":1,\"args\":{");
     bool first = true;
     for (u32 i = 1u; i < count; ++i) {
-        if (i == event) continue;
+        if (i == event || i == ts) continue;
         if (!first) trace_put(w, ",", 1u);
         first = false;
         trace_put_string(w, fields[i].key, fields[i].key_length);
@@ -144,6 +154,7 @@ static void trace_convert(const char *text, usize size, TraceWriter *w,
     TraceField fields[BREAK_TRACE_CORE_APP_MAX_FIELDS];
     report->events = 0u;
     report->skipped = 0u;
+    report->timestamped = 0u;
     trace_puts(w, "{\"traceEvents\":[\n");
     const char *p = text;
     const char *end = text + size;
@@ -157,10 +168,12 @@ static void trace_convert(const char *text, usize size, TraceWriter *w,
         if (q < line_end) {
             u32 count = 0u;
             u32 event = 0u;
-            if (trace_parse_line(p, line_end, fields, &count, &event)) {
+            u32 ts = 0u;
+            if (trace_parse_line(p, line_end, fields, &count, &event, &ts)) {
                 if (report->events > 0u) trace_puts(w, ",\n");
-                trace_write_event(w, fields, count, event, report->events);
+                trace_write_event(w, fields, count, event, ts, report->events);
                 report->events++;
+                if (ts < count) report->timestamped++;
             } else {
                 report->skipped++;
             }

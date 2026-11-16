@@ -260,3 +260,4 @@
 - **第 10 节（音频）追加**：空间事件 voice 也可打开后方提示（`AudioEventDesc.rear_cue`），前后区分覆盖 PCM 流与事件两类声源。仍缺：HRTF、耳间时差、高度提示、麦克风采集、感知编码器（Opus 等）、音频编辑工具。
 - **第 15 节（在线更新）追加**：`break_http` 可经 HTTP CONNECT 代理访问 https 目标（`BreakHttpConfig.proxy`），TLS 仍校验目标的证书、主机名、钉扎和 CRL。仍缺：代理认证、https 代理、OCSP、HTTP/2，发布二进制仍没有链接 `break_http`。
 - **第 15 节（在线更新）追加**：`break_http` 支持代理 Basic 认证（`proxy_user`/`proxy_password`，只放在 CONNECT 请求中）。仍缺：Digest/NTLM 等其他代理认证、https 代理、OCSP、HTTP/2，发布二进制仍没有链接 `break_http`。
+- **第 13 节（诊断/跨线程关联）追加**：core_app 文本 trace 转换器支持可选的 `ts_us` 微秒时间戳作为事件时间，无该字段的旧 trace 输出不变。仍缺：core_app 写出 `ts_us`、网络对端之间的时钟对齐。

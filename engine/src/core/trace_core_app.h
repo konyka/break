@@ -4,14 +4,18 @@
  *
  * Input lines look like
  *   COREAPPTRACE version=1 event=<name> key=value key=value ...
- * Each valid line becomes one instant event in category "core_app". The text
- * trace carries no timestamps, so "ts" is the 0-based ordinal of the event.
+ * Each valid line becomes one instant event in category "core_app". An
+ * optional ts_us=<microseconds> field (canonical decimal, at most 18 digits)
+ * becomes the event's "ts" and is not copied to "args"; a line without it
+ * gets its 0-based event ordinal as "ts", so traces written before ts_us
+ * convert unchanged. A producer writes ts_us on every line or on none.
  * Other fields go to "args": digit-only values without a leading zero (up to
  * 18 digits) become JSON numbers, everything else a JSON string.
  *
  * Lines that do not start with "COREAPPTRACE ", have a version other than 1,
- * lack event=, contain a field without '=' or with an empty key, repeat a key
- * or carry more than BREAK_TRACE_CORE_APP_MAX_FIELDS fields are skipped and
+ * lack event=, carry a ts_us that is not canonical decimal, contain a field
+ * without '=' or with an empty key, repeat a key or carry more than
+ * BREAK_TRACE_CORE_APP_MAX_FIELDS fields are skipped and
  * counted. Blank lines are ignored. A trailing '\r' is dropped. */
 #include <core/types.h>
 
@@ -26,6 +30,7 @@ typedef enum BreakTraceConvertStatus {
 typedef struct BreakTraceCoreAppReport {
     u32 events;
     u32 skipped;
+    u32 timestamped; /* events whose "ts" came from ts_us */
     u64 bytes; /* document size without the terminating NUL */
 } BreakTraceCoreAppReport;
 

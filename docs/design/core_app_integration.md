@@ -1444,4 +1444,6 @@ mount 清空、commit 分类和第二次 completion 等待分别做了独立生�
 
 `core/trace_core_app.h` 的 `break_trace_core_app_to_chrome` 读取 `--trace` 写出的文本，生成 Chrome trace-event JSON：每条有效 `COREAPPTRACE version=1` 行变为 `cat=core_app`、`ph=i` 的事件，`name` 取 `event=` 的值，`ts` 为序号，其余字段进 `args`。文本格式本身没有改变。不合格的行（前缀错误、版本不是 1、缺 `event=`、字段没有 `=`、空键、重复键、超过 32 个字段）被跳过并计入 `skipped`。
 
+补充（2026-11-16）：行内可带可选字段 `ts_us=<微秒>`（规范十进制、最多 18 位）。有该字段时它成为事件的 `ts`，不再进入 `args`，并计入 `BreakTraceCoreAppReport.timestamped`；`ts_us` 不是规范十进制时整行跳过。没有 `ts_us` 的行仍以序号为 `ts`，旧 trace 转换结果逐字节不变。约定生产方要么每行都写 `ts_us`，要么都不写。core_app 目前还不写 `ts_us`。见 `docs/superpowers/plans/2026-11-16-core-app-trace-timestamps.md`。
+
 `core_app --trace-json PATH`（需同时给出 `--trace`）在运行结束后调用上述转换并写出 JSON；写入失败时退出码为 2。
