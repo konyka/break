@@ -91,6 +91,12 @@ RESTART 保留 handle 并从头播放；STEAL_OLDEST 提升 generation，使旧 
 
 START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 推进增益 revision 时保留旧增益，旧 epoch 的 PCM 可能采用这个 revision，因此它也必须保留旧 pan。之后的更新（`audio_voice_set_position`、监听者移动）先写 `pan_snapshot = (revision, pan)`，再 CAS 增益快照；混音回调采用增益 revision R 时，只有 `pan_snapshot` 的 revision 也等于 R 才采用其中的 pan，否则保留上一个 pan，直到采用该 revision。这样重启后的新 pan 不会作用到旧 epoch 的 PCM。左右增益在 voice DSP 链之前施加；单声道 clip 复制到两声道，立体声 clip 每个声道乘以本侧增益。
 
+### 事件 voice 的后方提示
+
+`AudioEventDesc.rear_cue = true`（必须同时设置 `spatial`，否则 `audio_event_register` 返回 `AUDIO_INVALID`）让空间事件使用与 PCM 流相同的后方低通，系数由同一个 `rear_cue_alpha` 计算。未设置时系数恒为 1，输出不变。
+
+系数与 pan 走同一协议：START 命令携带初始系数而不写 `rear_snapshot`；之后的 `audio_voice_set_position` 与监听者更新先写 `rear_snapshot = (revision, α)`，再 CAS 增益快照；混音回调采用增益 revision R 时，只有 `rear_snapshot` 的 revision 也是 R 才采用其中的 α。每个 voice 两声道各有滤波状态，消费 START 时清零；滤波在增益、声像与 DSP 链之前，α = 1 时状态跟随信号，所以声源转到身后时从当前信号开始。
+
 ## 验证与限制
 
 - `test_audio_extended`：clip/容量、并发/重触发、stale handle、真实 DSP 接线、逐样本交叉淡化、loop/停止、遮挡/距离、bus/master、legacy WAV、bit-exact fake 和 null 命令生命周期。
@@ -98,4 +104,5 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - normal、ASan+UBSan、TSan 的 `test_audio`/`test_audio_extended`/`test_audio_dsp`/`test_audio_realtime_contract` 均通过。
 - 降采样低通由 `test_audio_extended` 中的双精度参考模型（96 kHz、88.2 kHz）、Nyquist 音、30 kHz / 1 kHz 正弦、立体声分离和重开复位覆盖；`test_voice_playback` 在 96 kHz 下跑生产者/关闭/混音线程竞争。
 - sinc 重采样由双精度 Lanczos 参考模型（16 kHz、88.2 kHz 经低通、24 kHz 立体声）、前瞻等待、高频正弦误差、引擎采样率不变、模式切换的历史和重开复位覆盖。
+- 后方提示由阶跃响应参考模型（PCM 流正后方与 45°、事件正后方）、前方/侧面/重合逐位不变、监听者转身、RESTART 与 revision 门控、立体声状态分离和重开复位覆盖。
 - 没有真实听测、真实声卡、Windows 或 macOS 验证。简单 DSP/混响不等于物理声学或听感验收。

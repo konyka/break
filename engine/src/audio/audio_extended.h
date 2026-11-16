@@ -50,6 +50,11 @@ typedef struct {
     /* Constant-power stereo pan from the listener's orientation, like
      * audio_pcm_stream_set_panning. Requires `spatial`. */
     bool panned;
+    /* Rear low-pass cue from the listener's orientation, like
+     * audio_pcm_stream_set_rear_cue: none in front or to the side, down to
+     * AUDIO_PCM_STREAM_REAR_CUTOFF_HZ straight behind. Each voice keeps its
+     * own filter state, reset when it starts. Requires `spatial`. */
+    bool rear_cue;
 } AudioEventDesc;
 
 AudioResult audio_event_register(AudioSystem *as, const char *name,

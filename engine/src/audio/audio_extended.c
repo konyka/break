@@ -35,6 +35,7 @@ typedef struct {
     f32 initial_gain;
     f32 spatial_gain;
     f32 spatial_pan;
+    f32 spatial_rear;
     u32 spatial_revision;
     f32 ramp_target;
     u32 ramp_frames;
@@ -73,11 +74,16 @@ typedef struct {
     /* (revision, pan) of a panned event, stored before the gain snapshot of
      * that revision; the mixer takes it only with that revision */
     atomic_uint_least64_t pan_snapshot;
+    /* (revision, rear cue coefficient), published the same way */
+    atomic_uint_least64_t rear_snapshot;
     u32 applied_spatial_revision;
     f32 applied_spatial_gain;
     bool panned;
     f32 applied_pan_left;
     f32 applied_pan_right;
+    bool rear_cue;
+    f32 applied_rear_alpha;
+    f32 rear_state[2];
     atomic_uint *bus_gains;
     Vec3 position;
     u32 bus;
@@ -334,6 +340,10 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->fade_stop = command.stop_after_ramp;
             voice->panned = command.desc.panned;
             voice_set_pan(voice, command.spatial_pan);
+            voice->rear_cue = command.desc.rear_cue;
+            voice->applied_rear_alpha = command.spatial_rear;
+            voice->rear_state[0] = 0.0f;
+            voice->rear_state[1] = 0.0f;
             voice_apply_initial_spatial(voice, &command);
             voice_configure_dsp(voice, &command);
             voice->playing = true;
@@ -413,14 +423,35 @@ static ma_result voice_read(ma_data_source *source, void *output,
                             voice_set_pan(voice, spatial_gain_of(pan));
                         }
                     }
+                    if (voice->rear_cue) {
+                        u64 rear = atomic_load_explicit(&voice->rear_snapshot,
+                                                        memory_order_acquire);
+                        if (spatial_revision_of(rear) == revision) {
+                            voice->applied_rear_alpha = spatial_gain_of(rear);
+                        }
+                    }
                 }
                 f32 spatial_gain = voice->applied_spatial_gain;
                 f32 gain = voice->volume * voice->fade_gain * bus_gain *
                            master_gain * spatial_gain;
-                left = voice->samples[sample] * gain * voice->applied_pan_left;
-                right = (voice->channels == 2 ? voice->samples[sample + 1u]
-                                              : voice->samples[sample]) *
-                        gain * voice->applied_pan_right;
+                f32 in_left = voice->samples[sample];
+                f32 in_right = voice->channels == 2 ? voice->samples[sample + 1u]
+                                                    : in_left;
+                /* the rear cue filters before the gain; with the cue off
+                 * the state follows the signal, so turning it on later
+                 * starts from the current level */
+                if (voice->applied_rear_alpha < 1.0f) {
+                    f32 a = voice->applied_rear_alpha;
+                    voice->rear_state[0] += a * (in_left - voice->rear_state[0]);
+                    voice->rear_state[1] += a * (in_right - voice->rear_state[1]);
+                    in_left = voice->rear_state[0];
+                    in_right = voice->rear_state[1];
+                } else {
+                    voice->rear_state[0] = in_left;
+                    voice->rear_state[1] = in_right;
+                }
+                left = in_left * gain * voice->applied_pan_left;
+                right = in_right * gain * voice->applied_pan_right;
                 cursor++;
                 if (cursor == voice->frame_count) {
                     if (voice->looping) cursor = 0;
@@ -1012,6 +1043,7 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         atomic_init(&voice->spatial_epoch, 0);
         atomic_init(&voice->started_epoch, 0);
         atomic_init(&voice->pan_snapshot, spatial_pack(0, 0.0f));
+        atomic_init(&voice->rear_snapshot, spatial_pack(0, 1.0f));
         voice->applied_spatial_gain = 1.0f;
         ma_data_source_config config = ma_data_source_config_init();
         config.vtable = &AUDIO_VOICE_VTABLE;
@@ -1184,7 +1216,7 @@ AudioResult audio_event_register(AudioSystem *as, const char *name,
         !isfinite(desc->rolloff) || desc->rolloff < 0.0f ||
         !isfinite(desc->occluded_gain) || desc->occluded_gain < 0.0f ||
         desc->occluded_gain > 1.0f || desc->bus >= as->bus_count ||
-        (desc->panned && !desc->spatial)) {
+        (desc->panned && !desc->spatial) || (desc->rear_cue && !desc->spatial)) {
         return AUDIO_INVALID;
     }
     if (!clip_resolve(ext, desc->clip)) return AUDIO_STALE;
@@ -1296,9 +1328,15 @@ static f32 event_pan(const AudioExtended *ext, const AudioEventDesc *desc, Vec3 
     return desc->panned ? (f32)listener_pan(ext->owner, position) : 0.0f;
 }
 
-/* The pan is stored under the revision before the gain snapshot that
- * publishes it, so a mixer that sees the gain revision also sees its pan. */
-static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain, f32 pan) {
+static f32 event_rear(const AudioExtended *ext, const AudioEventDesc *desc, Vec3 position) {
+    return desc->rear_cue ? rear_cue_alpha(ext->owner, position) : 1.0f;
+}
+
+/* The pan and rear coefficient are stored under the revision before the
+ * gain snapshot that publishes it, so a mixer that sees the gain revision
+ * also sees them. */
+static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain, f32 pan,
+                                   f32 rear) {
     for (;;) {
         if (epoch == 0 || voice->epoch != epoch ||
             atomic_load_explicit(&voice->spatial_epoch, memory_order_acquire) != epoch) {
@@ -1313,6 +1351,8 @@ static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain, f32 p
         u32 revision = voice->spatial_revision + 1u;
         u64 desired = spatial_pack(revision, gain);
         atomic_store_explicit(&voice->pan_snapshot, spatial_pack(revision, pan),
+                              memory_order_release);
+        atomic_store_explicit(&voice->rear_snapshot, spatial_pack(revision, rear),
                               memory_order_release);
 #ifdef AUDIO_SPATIAL_PUBLISH_TEST_HOOK
         AUDIO_SPATIAL_PUBLISH_TEST_HOOK(voice);
@@ -1371,6 +1411,7 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
     command.ramp_frames = ramp_frames;
     command.desc = *desc;
     command.spatial_pan = event_pan(ext, desc, position);
+    command.spatial_rear = event_rear(ext, desc, position);
     for (u32 i = 0; i < command.desc.dsp.stage_count; ++i) {
         if (command.desc.dsp.stages[i].type == AUDIO_DSP_FILTER) {
             command.dsp_alpha[i] = audio_dsp_filter_alpha(
@@ -1378,9 +1419,10 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
         }
     }
 
-    /* No pan_snapshot store here: begin_start moves the gain revision while
-     * the old epoch may still adopt it (with its old gain), and that PCM must
-     * keep its old pan too. START carries the new pan. */
+    /* No pan_snapshot or rear_snapshot store here: begin_start moves the
+     * gain revision while the old epoch may still adopt it (with its old
+     * gain), and that PCM must keep its old pan and rear coefficient too.
+     * START carries the new ones. */
     AudioResult spatial_result = spatial_begin_start(voice, epoch,
                                                       command.spatial_revision);
     if (spatial_result != AUDIO_OK) return spatial_result;
@@ -1506,7 +1548,8 @@ AudioResult audio_voice_set_position(AudioSystem *as,
     const AudioEventDesc *desc = &ext->events[voice->owner_event].desc;
     AudioResult result = event_spatial_gain(ext, desc, position, &gain);
     if (result != AUDIO_OK) return result;
-    result = spatial_publish(voice, voice->epoch, gain, event_pan(ext, desc, position));
+    result = spatial_publish(voice, voice->epoch, gain, event_pan(ext, desc, position),
+                             event_rear(ext, desc, position));
     if (result != AUDIO_OK) return result;
     voice->position = position;
     return AUDIO_OK;
@@ -1540,7 +1583,8 @@ void audio_extended_listener_update(AudioSystem *as) {
         const AudioEventDesc *desc = &ext->events[voice->owner_event].desc;
         if (event_spatial_gain(ext, desc, voice->position, &gain) == AUDIO_OK) {
             (void)spatial_publish(voice, voice->epoch, gain,
-                                  event_pan(ext, desc, voice->position));
+                                  event_pan(ext, desc, voice->position),
+                                  event_rear(ext, desc, voice->position));
         }
     }
 }

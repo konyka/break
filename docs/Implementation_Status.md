@@ -11445,3 +11445,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `audio_pcm_stream_set_rear_cue(as, h, enabled)`：空间 PCM 流在声源转到监听者身后时加一极低通（正后方约 5 kHz，按越过侧面的角度余弦平滑过渡），让前后可以分辨；前方和侧面输出与关闭时逐位相同。默认关闭。
 - `test_audio_extended` 新增 6 项（共 87）：参数、前方/侧面/重合不变、正后方与 45° 的阶跃响应、24 kHz 衰减、监听者转身与走过、立体声状态分离与重开复位。先 RED 后 GREEN；21 项变异首轮 5 项存活，补断言后全部被捕获；ASan+UBSan 与 TSan 三次运行无报告。
 - 仍缺：HRTF、耳间时差、高度提示、事件 voice 的后方提示。
+
+### 2026-11-16 rear cue for spatial event voices
+
+- `AudioEventDesc.rear_cue`（要求 `spatial`，否则注册返回 `AUDIO_INVALID`）：空间事件 voice 使用与 `audio_pcm_stream_set_rear_cue` 相同的后方一极低通（共用 `rear_cue_alpha`）。前方、侧面、与监听者重合时输出与关闭时逐位相同。
+- 系数随 START 命令下发，之后由 `spatial_publish` 以 `rear_snapshot = (revision, alpha)` 先于增益快照写入；混音只在 revision 与所采用的增益 revision 相同时采用，RESTART 的新系数不会作用到旧 epoch 仍在播放的 PCM。每个 voice 两声道各自的滤波状态在 START 时清零，滤波在增益与声像之前、DSP 链之前。
+- `test_audio_extended` 新增 7 项（共 94）：注册校验、前方/侧面/重合不变、正后方阶跃响应、监听者转身与声源移动、RESTART 保留旧系数、未发布 revision 不采用、立体声状态分离。先 RED（编译失败）后 GREEN；18 项变异首轮 2 项存活（监听者更新不写系数、初始化冗余赋值），补断言并删除冗余赋值后全部被捕获；ASan+UBSan 与 TSan 三次运行无报告。
+- 仍缺：HRTF、耳间时差、高度提示。

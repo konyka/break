@@ -14,7 +14,7 @@ static void test_spatial_interleave(void *opaque) {
     if (!test_interleave_armed) return;
     test_interleave_armed = false;
     AudioVoice *voice = (AudioVoice *)opaque;
-    (void)spatial_publish(voice, voice->epoch, test_interleave_gain, 0.0f);
+    (void)spatial_publish(voice, voice->epoch, test_interleave_gain, 0.0f, 1.0f);
 }
 
 static bool test_read_interleave_armed;
@@ -2973,6 +2973,206 @@ TEST(pcm_stream_rear_cue_keeps_stereo_state_apart_and_resets_on_reopen)
     audio_system_destroy(as);
 }
 
+/* ---- event rear cue ---- */
+
+TEST(event_rear_cue_requires_spatial)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 2u));
+    desc.rear_cue = true;
+    ASSERT_EQ(audio_event_register(as, "rear-flat", &desc), AUDIO_INVALID);
+    desc.spatial = true;
+    ASSERT_EQ(audio_event_register(as, "rear-flat", &desc), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+/* renders the whole clip of one triggered event */
+static bool render_event_clip(const f32 *clip_pcm, u32 frames, Vec3 position, bool cue, f32 *out)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    if (!as) return false;
+    AudioEventDesc desc = make_event_desc(register_ramp(as, clip_pcm, frames));
+    desc.spatial = true;
+    desc.rear_cue = cue;
+    AudioVoiceHandle voice = 0;
+    bool ok = audio_event_register(as, "rear-clip", &desc) == AUDIO_OK &&
+              audio_event_trigger(as, "rear-clip", position, &voice) == AUDIO_OK &&
+              audio_system_render(as, out, frames) == AUDIO_OK;
+    audio_system_destroy(as);
+    for (u32 i = 0; ok && i < 2u * frames; ++i) ok = isfinite(out[i]);
+    return ok;
+}
+
+TEST(rear_cue_event_leaves_front_and_side_untouched)
+{
+    enum { kFrames = 64 };
+    i16 pcm[kFrames];
+    static f32 clip_pcm[kFrames];
+    static f32 with_cue[2u * kFrames];
+    static f32 without[2u * kFrames];
+    random_pcm(pcm, kFrames, 4242u);
+    for (u32 i = 0; i < kFrames; ++i) clip_pcm[i] = (f32)pcm[i] / 32768.0f;
+    /* in front, to the side, and on the listener (no direction, no NaN) */
+    const Vec3 places[3] = {vec3(0, 0, -2), vec3(2, 0, 0), vec3(0, 0, 0)};
+    for (u32 p = 0; p < 3u; ++p) {
+        ASSERT_TRUE(render_event_clip(clip_pcm, kFrames, places[p], true, with_cue));
+        ASSERT_TRUE(render_event_clip(clip_pcm, kFrames, places[p], false, without));
+        ASSERT_EQ(memcmp(with_cue, without, sizeof(with_cue)), 0);
+    }
+}
+
+TEST(rear_cue_event_filters_a_source_behind)
+{
+    enum { kFrames = 16 };
+    static const f32 ones[kFrames] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    static f32 out[2u * kFrames];
+    /* straight behind at distance 2: gain 0.5, filtered from silence */
+    ASSERT_TRUE(render_event_clip(ones, kFrames, vec3(0, 0, 2), true, out));
+    bool ok = true;
+    check_step(out, kFrames, 2u, ref_rear_alpha(1.0), 0.5, &ok);
+    check_step(out + 1, kFrames, 2u, ref_rear_alpha(1.0), 0.5, &ok);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(out[0] < 0.3f);
+    /* without the cue the same source is a plain 0.5 */
+    ASSERT_TRUE(render_event_clip(ones, kFrames, vec3(0, 0, 2), false, out));
+    for (u32 i = 0; i < 2u * kFrames; ++i) ASSERT_FLOAT_EQ(out[i], 0.5f, 0.0f);
+}
+
+TEST(rear_cue_event_follows_the_listener)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 16u));
+    desc.spatial = true;
+    desc.rear_cue = true;
+    desc.looping = true;
+    ASSERT_EQ(audio_event_register(as, "rear-loop", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_event_trigger(as, "rear-loop", vec3(0, 0, 2), &voice), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    double a = ref_rear_alpha(1.0);
+    ASSERT_FLOAT_EQ(l, (f32)(a * 0.5), 2e-6f);
+    ASSERT_FLOAT_EQ(r, (f32)(a * 0.5), 2e-6f);
+    /* the listener turns round: the source is in front, the filter is off */
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, 1), vec3(0, 1, 0));
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(r, 0.5f, 0.0f);
+    /* the source moves behind again: the state followed the signal, so a
+     * constant input is not dipped; the filter sits before the gain, so a
+     * new distance gain applies at once */
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(0, 0, -2)), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f, 2e-6f);
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(0, 0, -4)), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f, 2e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f, 2e-6f);
+    /* turning the listener alone moves the source in front, then behind */
+    AudioVoice *slot = &((AudioExtended *)as->extended)->voices[(voice & 0xFFu) - 1u];
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(slot->applied_rear_alpha, 1.0f, 0.0f);
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, 1), vec3(0, 1, 0));
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(slot->applied_rear_alpha, (f32)a, 1e-6f);
+    audio_system_destroy(as);
+}
+
+/* A RESTART's new coefficient never reaches PCM the old epoch still renders */
+TEST(rear_cue_event_restart_keeps_the_old_alpha_on_held_pcm)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 4u));
+    desc.spatial = true;
+    desc.rear_cue = true;
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "rear-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    f32 output[2];
+    ASSERT_EQ(audio_event_trigger(as, "rear-restart", vec3(0, 0, -2), &handle), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 0.0f);
+    ASSERT_EQ(audio_event_trigger(as, "rear-restart", vec3(0, 0, 2), &handle), AUDIO_OK);
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(0, 0, 2)), AUDIO_OK);
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    AudioVoice *voice = &ext->voices[(handle & 0xFFu) - 1u];
+    render_with_held_commands(voice, output);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(output[1], 0.5f, 0.0f);
+    /* the new epoch starts its filter from silence */
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], (f32)(ref_rear_alpha(1.0) * 0.5), 2e-6f);
+    ASSERT_FLOAT_EQ(output[1], (f32)(ref_rear_alpha(1.0) * 0.5), 2e-6f);
+    audio_system_destroy(as);
+}
+
+/* The mixer takes a coefficient only together with the gain revision it
+ * belongs to; one stored for a revision not yet published is not used. */
+TEST(rear_cue_event_keeps_its_alpha_until_that_revision_is_published)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 16u));
+    desc.spatial = true;
+    desc.rear_cue = true;
+    desc.looping = true;
+    ASSERT_EQ(audio_event_register(as, "rear-revision", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_event_trigger(as, "rear-revision", vec3(0, 0, 2), &handle), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    double a = ref_rear_alpha(1.0);
+    double y = a * 0.5;
+    ASSERT_FLOAT_EQ(l, (f32)y, 2e-6f);
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    AudioVoice *voice = &ext->voices[(handle & 0xFFu) - 1u];
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(0, 0, -2)), AUDIO_OK);
+    /* a later publish has stored its coefficient but not yet its gain */
+    atomic_store(&voice->rear_snapshot, spatial_pack(voice->spatial_revision + 1u, 0.01f));
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    y += a * (0.5 - y);
+    ASSERT_FLOAT_EQ(l, (f32)y, 2e-6f);
+    ASSERT_FLOAT_EQ(r, (f32)y, 2e-6f);
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(0, 0, -2)), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(r, 0.5f, 0.0f);
+    audio_system_destroy(as);
+}
+
+TEST(rear_cue_event_keeps_stereo_state_apart)
+{
+    enum { kFrames = 12 };
+    static f32 samples[2u * kFrames];
+    static f32 out[2u * kFrames];
+    for (u32 i = 0; i < kFrames; ++i) {
+        samples[2u * i] = 0.5f;
+        samples[2u * i + 1u] = -0.25f;
+    }
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmDesc pcm = mono_pcm(samples, kFrames);
+    pcm.channels = 2u;
+    AudioClipHandle clip = 0;
+    ASSERT_EQ(audio_clip_register(as, "rear-stereo-clip", &pcm, &clip), AUDIO_OK);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.rear_cue = true;
+    ASSERT_EQ(audio_event_register(as, "rear-stereo", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "rear-stereo", vec3(0, 0, 2), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    bool ok = true;
+    check_step(out, kFrames, 2u, ref_rear_alpha(1.0), 0.25, &ok);
+    check_step(out + 1, kFrames, 2u, ref_rear_alpha(1.0), -0.125, &ok);
+    ASSERT_TRUE(ok);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -3061,4 +3261,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pcm_stream_rear_cue_dulls_high_frequencies);
     RUN_TEST(pcm_stream_rear_cue_follows_the_listener);
     RUN_TEST(pcm_stream_rear_cue_keeps_stereo_state_apart_and_resets_on_reopen);
+    RUN_TEST(event_rear_cue_requires_spatial);
+    RUN_TEST(rear_cue_event_leaves_front_and_side_untouched);
+    RUN_TEST(rear_cue_event_filters_a_source_behind);
+    RUN_TEST(rear_cue_event_follows_the_listener);
+    RUN_TEST(rear_cue_event_restart_keeps_the_old_alpha_on_held_pcm);
+    RUN_TEST(rear_cue_event_keeps_its_alpha_until_that_revision_is_published);
+    RUN_TEST(rear_cue_event_keeps_stereo_state_apart);
 TEST_MAIN_END()
