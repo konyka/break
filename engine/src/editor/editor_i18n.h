@@ -193,6 +193,7 @@ typedef enum {
     /* plugin panels page (bottom tool window) */
     BREAK_EDITOR_TR_TAB_PLUGINS,
     BREAK_EDITOR_TR_PLUGINS_EMPTY,
+    BREAK_EDITOR_TR_LOG_PLUGIN_BUTTON_FAILED_FMT, /* %s panel id, %s button id */
     BREAK_EDITOR_TR_COUNT
 } BreakEditorTr;
 

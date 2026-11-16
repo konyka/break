@@ -11,6 +11,15 @@ typedef struct PluginPanel {
     char title_lang[BREAK_EDITOR_LANG_COUNT][BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY];
     BreakEditorPluginPanelFn fn;
     void *user;
+    struct {
+        char id[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY];
+        char label[BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY];
+        /* "" when the language has no translation */
+        char label_lang[BREAK_EDITOR_LANG_COUNT][BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY];
+        BreakEditorPluginPanelButtonFn fn;
+        void *user;
+    } buttons[BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX];
+    u32 button_count;
 } PluginPanel;
 
 struct BreakEditorPluginPanels {
@@ -210,4 +219,118 @@ bool break_editor_plugin_panels_render(const BreakEditorPluginPanels *reg, u32 i
         out[0] = '\0';
     }
     return shown;
+}
+
+static u32 find_button(const PluginPanel *panel, const char *button_id)
+{
+    if (button_id) {
+        for (u32 b = 0; b < panel->button_count; b++) {
+            if (strcmp(panel->buttons[b].id, button_id) == 0) {
+                return b;
+            }
+        }
+    }
+    return BREAK_EDITOR_PLUGIN_PANEL_NONE;
+}
+
+static PluginPanel *owned_panel(BreakEditorPluginPanels *reg, u32 owner, const char *panel_id)
+{
+    u32 index = break_editor_plugin_panels_find(reg, panel_id);
+    if (index == BREAK_EDITOR_PLUGIN_PANEL_NONE || reg->panels[index].owner != owner) {
+        return NULL;
+    }
+    return &reg->panels[index];
+}
+
+BreakEditorPluginPanelStatus break_editor_plugin_panels_add_button(
+    BreakEditorPluginPanels *reg, u32 owner, const char *panel_id, const char *button_id,
+    const char *label, BreakEditorPluginPanelButtonFn fn, void *user)
+{
+    if (!reg || owner == 0u || !fn) {
+        return BREAK_EDITOR_PLUGIN_PANEL_INVALID;
+    }
+    if (!valid_id(button_id)) {
+        return BREAK_EDITOR_PLUGIN_PANEL_BAD_ID;
+    }
+    if (!valid_title(label)) {
+        return BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE;
+    }
+    PluginPanel *panel = owned_panel(reg, owner, panel_id);
+    if (!panel) {
+        return BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND;
+    }
+    if (find_button(panel, button_id) != BREAK_EDITOR_PLUGIN_PANEL_NONE) {
+        return BREAK_EDITOR_PLUGIN_PANEL_DUPLICATE;
+    }
+    if (panel->button_count == BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX) {
+        return BREAK_EDITOR_PLUGIN_PANEL_FULL;
+    }
+    u32 b = panel->button_count;
+    /* panels_add cleared the slot and buttons are never removed alone */
+    memcpy(panel->buttons[b].id, button_id, strlen(button_id) + 1u);
+    memcpy(panel->buttons[b].label, label, strlen(label) + 1u);
+    panel->buttons[b].fn = fn;
+    panel->buttons[b].user = user;
+    panel->button_count++;
+    return BREAK_EDITOR_PLUGIN_PANEL_OK;
+}
+
+BreakEditorPluginPanelStatus break_editor_plugin_panels_set_button_label(
+    BreakEditorPluginPanels *reg, u32 owner, const char *panel_id, const char *button_id,
+    BreakEditorLang lang, const char *label)
+{
+    if (!reg || owner == 0u) {
+        return BREAK_EDITOR_PLUGIN_PANEL_INVALID;
+    }
+    if (!lang_valid(lang)) {
+        return BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG;
+    }
+    if (!valid_title(label)) {
+        return BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE;
+    }
+    PluginPanel *panel = owned_panel(reg, owner, panel_id);
+    u32 b = panel ? find_button(panel, button_id) : BREAK_EDITOR_PLUGIN_PANEL_NONE;
+    if (b == BREAK_EDITOR_PLUGIN_PANEL_NONE) {
+        return BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND;
+    }
+    memcpy(panel->buttons[b].label_lang[lang], label, strlen(label) + 1u);
+    return BREAK_EDITOR_PLUGIN_PANEL_OK;
+}
+
+u32 break_editor_plugin_panels_button_count(const BreakEditorPluginPanels *reg, u32 index)
+{
+    return (reg && index < reg->count) ? reg->panels[index].button_count : 0u;
+}
+
+const char *break_editor_plugin_panels_button_id(const BreakEditorPluginPanels *reg, u32 index,
+                                                 u32 button)
+{
+    if (!reg || index >= reg->count || button >= reg->panels[index].button_count) {
+        return NULL;
+    }
+    return reg->panels[index].buttons[button].id;
+}
+
+const char *break_editor_plugin_panels_button_label(const BreakEditorPluginPanels *reg,
+                                                    u32 index, u32 button,
+                                                    BreakEditorLang lang)
+{
+    if (!reg || index >= reg->count || button >= reg->panels[index].button_count) {
+        return NULL;
+    }
+    const PluginPanel *panel = &reg->panels[index];
+    if (lang_valid(lang) && panel->buttons[button].label_lang[lang][0] != '\0') {
+        return panel->buttons[button].label_lang[lang];
+    }
+    return panel->buttons[button].label;
+}
+
+bool break_editor_plugin_panels_press(const BreakEditorPluginPanels *reg, u32 index, u32 button,
+                                      BreakEditorDoc *doc)
+{
+    if (!reg || index >= reg->count || button >= reg->panels[index].button_count) {
+        return false;
+    }
+    const PluginPanel *panel = &reg->panels[index];
+    return panel->buttons[button].fn(panel->buttons[button].user, doc);
 }

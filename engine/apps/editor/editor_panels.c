@@ -61,6 +61,8 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_PLUGIN_CMD_CAPACITY 64u
 #define EDITOR_PLUGIN_SECTION_CAPACITY 64u
 #define EDITOR_PLUGIN_PANEL_CAPACITY 16u
+#define EDITOR_PLUGIN_BUTTON_CTX_POOL \
+    (EDITOR_PLUGIN_PANEL_CAPACITY * BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX)
 /* the Plugins page rebuilds at most this often while visible */
 #define EDITOR_PLUGIN_PANEL_REFRESH_US 250000u
 /* 25 degrees: the editor camera starts above the grid plane */
@@ -88,6 +90,12 @@ typedef struct {
     u32 component_id;
     u32 field_index;           /* UINT32_MAX = component add/remove button */
 } EditorFieldCtx;
+
+typedef struct {
+    BreakEditorShell *shell;   /* borrowed */
+    u32 panel;                 /* registry index at the last page rebuild */
+    u32 button;
+} EditorPluginButtonCtx;
 
 typedef struct {
     my_list_adapter_t base;
@@ -209,6 +217,9 @@ struct BreakEditorShell {
      * Plugins page of the bottom tool window) and the last page rebuild */
     BreakEditorPluginPanels *plugin_panels;
     u64 plugin_panels_refresh_us;
+    /* click contexts of the Plugins page buttons, reset by each rebuild */
+    EditorPluginButtonCtx plugin_button_ctxs[EDITOR_PLUGIN_BUTTON_CTX_POOL];
+    u32 plugin_button_ctx_count;
     u64 (*plugin_panels_clock)(void *user); /* NULL: time_microseconds */
     void *plugin_panels_clock_user;
     /* recently opened/saved scenes (persisted with the UI settings) */
@@ -3370,9 +3381,76 @@ static u64 shell_plugin_panels_now(const BreakEditorShell *shell) {
                : time_microseconds();
 }
 
-/* Rebuilds the Plugins page: per shown panel a title and a text label, or
- * the empty hint. Bounded by the registry capacity (16) and the 1 KiB text
- * cap. The page lives in the tree; it is found by name. */
+/* Runs a Plugins page button with the shell doc, logs a false result, then
+ * rebuilds the views the callback may have changed. The page rebuild
+ * destroys the clicked button; its emitter defers disposal until this
+ * handler returns. */
+static void on_plugin_button_click(void *ctx, const char *event, void *data) {
+    EditorPluginButtonCtx *bc = (EditorPluginButtonCtx *)ctx;
+    BreakEditorShell *shell;
+    (void)event;
+    (void)data;
+    if (bc == NULL || bc->shell == NULL) {
+        return;
+    }
+    shell = bc->shell;
+    if (!break_editor_plugin_panels_press(shell->plugin_panels, bc->panel, bc->button,
+                                          shell->doc)) {
+        const char *panel = break_editor_plugin_panels_id(shell->plugin_panels, bc->panel);
+        const char *button =
+            break_editor_plugin_panels_button_id(shell->plugin_panels, bc->panel, bc->button);
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PLUGIN_BUTTON_FAILED_FMT),
+                         panel != NULL ? panel : "?", button != NULL ? button : "?");
+    }
+    editor_shell_refresh_all(shell);
+    break_editor_shell_refresh_plugin_panels(shell);
+}
+
+/* One row of panel `index`'s buttons, labels in the current language; none
+ * for a panel without buttons. */
+static void shell_add_plugin_buttons(BreakEditorShell *shell, my_widget_t *page, u32 index,
+                                     const char *id) {
+    char wname[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY * 2u + 32u];
+    u32 b, count = break_editor_plugin_panels_button_count(shell->plugin_panels, index);
+    my_widget_t *row;
+    if (count == 0u) {
+        return;
+    }
+    (void)snprintf(wname, sizeof(wname), "editor-plugin-panel-buttons-%s", id);
+    row = shell_named(my_widget_create(NULL, "editor-plugin-panel-buttons"), wname);
+    if (row == NULL) {
+        return;
+    }
+    (void)my_widget_set_layouter(row, my_layouter_linear_create(NULL, true, 4));
+    for (b = 0u; b < count; b++) {
+        EditorPluginButtonCtx *bc;
+        my_widget_t *btn;
+        if (shell->plugin_button_ctx_count >= EDITOR_PLUGIN_BUTTON_CTX_POOL) {
+            break;
+        }
+        btn = my_button_create(NULL, break_editor_plugin_panels_button_label(
+                                         shell->plugin_panels, index, b,
+                                         break_editor_i18n_lang()));
+        if (btn == NULL) {
+            continue;
+        }
+        bc = &shell->plugin_button_ctxs[shell->plugin_button_ctx_count++];
+        bc->shell = shell;
+        bc->panel = index;
+        bc->button = b;
+        (void)snprintf(wname, sizeof(wname), "editor-plugin-panel-button-%s.%s", id,
+                       break_editor_plugin_panels_button_id(shell->plugin_panels, index, b));
+        (void)my_widget_set_name(btn, wname);
+        (void)my_widget_on(btn, "click", on_plugin_button_click, bc);
+        shell_add_child(row, btn, "w:120 h:22");
+    }
+    shell_add_child(page, row, "w:100% h:26");
+}
+
+/* Rebuilds the Plugins page: per shown panel a title, a text label and a
+ * row of its buttons, or the empty hint. Bounded by the registry capacity
+ * (16), the 1 KiB text cap and 4 buttons per panel. The page lives in the
+ * tree; it is found by name. */
 void break_editor_shell_refresh_plugin_panels(BreakEditorShell *shell) {
     my_widget_t *page;
     u32 i, n, shown = 0u;
@@ -3386,6 +3464,7 @@ void break_editor_shell_refresh_plugin_panels(BreakEditorShell *shell) {
     while (my_widget_child_count(page) > 0u) {
         (void)my_widget_remove_child(page, my_widget_get_child(page, 0u));
     }
+    shell->plugin_button_ctx_count = 0u;
     n = break_editor_plugin_panels_count(shell->plugin_panels);
     for (i = 0u; i < n; i++) {
         static char text[BREAK_EDITOR_PLUGIN_PANEL_TEXT_CAPACITY];
@@ -3405,6 +3484,7 @@ void break_editor_shell_refresh_plugin_panels(BreakEditorShell *shell) {
         (void)snprintf(wname, sizeof(wname), "editor-plugin-panel-%s", id);
         shell_add_child(page, shell_named(my_label_create(NULL, text), wname),
                         "w:100% h:22");
+        shell_add_plugin_buttons(shell, page, i, id);
         shown++;
     }
     if (shown == 0u) {

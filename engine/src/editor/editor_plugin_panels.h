@@ -1,16 +1,17 @@
 #pragma once
 /* Bounded registry of tool-window panels contributed by editor plugins. The
  * shell shows them on the "Plugins" page of the bottom tool window: one
- * title and one block of read-only text per panel, refreshed while the page
- * is visible.
+ * title, one block of read-only text and up to
+ * BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX buttons per panel, refreshed while
+ * the page is visible.
  *
  * Each panel has a non-zero owner key (one per plugin), an id of
  * [a-z0-9_.] (1..63 bytes), a title of 1..95 bytes without control bytes
  * (plus an optional title per editor language) and a text callback. The
  * callback writes the panel text into a buffer of
  * BREAK_EDITOR_PLUGIN_PANEL_TEXT_CAPACITY bytes and returns false to hide
- * the panel. The doc is passed const: a panel only reads; edits go through
- * commands.
+ * the panel. The doc is passed const: the text only reads. A button
+ * callback gets the doc non-const and edits it through doc commands.
  *
  * Panels keep registration order; remove_owner drops one plugin's panels
  * before that plugin is unloaded, keeping the order of the rest.
@@ -27,6 +28,7 @@
 #define BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY 96u
 #define BREAK_EDITOR_PLUGIN_PANEL_TEXT_CAPACITY 1024u
 #define BREAK_EDITOR_PLUGIN_PANEL_NONE 0xffffffffu
+#define BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX 4u
 
 typedef enum BreakEditorPluginPanelStatus {
     BREAK_EDITOR_PLUGIN_PANEL_OK = 0,
@@ -41,6 +43,10 @@ typedef enum BreakEditorPluginPanelStatus {
 
 typedef bool (*BreakEditorPluginPanelFn)(void *user, const BreakEditorDoc *doc, char *out,
                                          usize cap);
+
+/* Button click: runs on the editor shell thread with the shell doc, which
+ * it may edit through doc commands. false reports a failure. */
+typedef bool (*BreakEditorPluginPanelButtonFn)(void *user, BreakEditorDoc *doc);
 
 typedef struct BreakEditorPluginPanels BreakEditorPluginPanels;
 
@@ -61,7 +67,24 @@ BreakEditorPluginPanelStatus break_editor_plugin_panels_set_title(BreakEditorPlu
                                                                   u32 owner, const char *id,
                                                                   BreakEditorLang lang,
                                                                   const char *title);
-/* Returns the number of panels removed (0 for NULL; owner 0 never has any). */
+/* Adds a button to panel `panel_id`, after its other buttons. Checks in
+ * order: INVALID (NULL registry, owner 0, NULL fn), BAD_ID (button id, the
+ * panel id rules), BAD_TITLE (label, the title rules), NOT_FOUND (no panel
+ * `panel_id` owned by `owner`), DUPLICATE (button id already on the panel),
+ * FULL (BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX). Any rejection changes
+ * nothing. */
+BreakEditorPluginPanelStatus break_editor_plugin_panels_add_button(
+    BreakEditorPluginPanels *reg, u32 owner, const char *panel_id, const char *button_id,
+    const char *label, BreakEditorPluginPanelButtonFn fn, void *user);
+/* Label of a button in `lang`. Checks in order: INVALID (NULL registry,
+ * owner 0), BAD_LANG, BAD_TITLE, NOT_FOUND (no such panel owned by `owner`,
+ * or no such button on it). Any rejection changes nothing. */
+BreakEditorPluginPanelStatus break_editor_plugin_panels_set_button_label(
+    BreakEditorPluginPanels *reg, u32 owner, const char *panel_id, const char *button_id,
+    BreakEditorLang lang, const char *label);
+
+/* Returns the number of panels removed (0 for NULL; owner 0 never has any).
+ * A panel's buttons go with it. */
 u32 break_editor_plugin_panels_remove_owner(BreakEditorPluginPanels *reg, u32 owner);
 
 u32 break_editor_plugin_panels_count(const BreakEditorPluginPanels *reg);
@@ -74,6 +97,20 @@ const char *break_editor_plugin_panels_title(const BreakEditorPluginPanels *reg,
 u32 break_editor_plugin_panels_owner(const BreakEditorPluginPanels *reg, u32 index);
 /* Exact id match; BREAK_EDITOR_PLUGIN_PANEL_NONE when absent. */
 u32 break_editor_plugin_panels_find(const BreakEditorPluginPanels *reg, const char *id);
+
+/* Buttons of panel `index` in add order; 0 / NULL for an out-of-range
+ * panel or button. The label falls back to the add-time label when `lang`
+ * has none or is out of range. */
+u32 break_editor_plugin_panels_button_count(const BreakEditorPluginPanels *reg, u32 index);
+const char *break_editor_plugin_panels_button_id(const BreakEditorPluginPanels *reg, u32 index,
+                                                 u32 button);
+const char *break_editor_plugin_panels_button_label(const BreakEditorPluginPanels *reg,
+                                                    u32 index, u32 button,
+                                                    BreakEditorLang lang);
+/* Runs the button's callback with `doc` and returns its result; false
+ * without a call for an out-of-range panel or button. */
+bool break_editor_plugin_panels_press(const BreakEditorPluginPanels *reg, u32 index, u32 button,
+                                      BreakEditorDoc *doc);
 
 /* Runs panel `index` into out (cap bytes, at least 1). The text is always
  * NUL-terminated at out[cap - 1] even when the callback overruns its

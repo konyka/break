@@ -622,6 +622,137 @@ TEST(plugins_page_lists_plugin_panels)
     break_editor_shell_destroy(shell);
 }
 
+typedef struct ButtonCall {
+    u32 calls;
+    BreakEditorDoc *doc;
+    bool result;
+    PanelCall *panel; /* its text changes on a press */
+} ButtonCall;
+
+static bool plugin_button_record(void *user, BreakEditorDoc *doc)
+{
+    ButtonCall *call = (ButtonCall *)user;
+    call->calls++;
+    call->doc = doc;
+    if (call->panel != NULL) call->panel->text = "pressed";
+    return call->result;
+}
+
+/* A shown panel with buttons gets one row of them under its text, labels in
+ * the current language; a click runs the callback with the shell doc and
+ * rebuilds the page; a false result is logged. Panels without buttons and
+ * hidden panels get no row. */
+TEST(plugins_page_panel_buttons_press_and_log)
+{
+    PanelCall report = {0u, NULL, "errors: 0"};
+    PanelCall stats = {0u, NULL, "entities: 0"};
+    PanelCall hidden = {0u, NULL, NULL};
+    PanelCall plain = {0u, NULL, "plain"};
+    ButtonCall go = {0u, NULL, true, &report};
+    ButtonCall count = {0u, NULL, true, &stats};
+    ButtonCall bad = {0u, NULL, false, NULL};
+    ButtonCall never = {0u, NULL, true, NULL};
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *page;
+    my_widget_t *row;
+    my_widget_t *btn;
+    ASSERT_NOT_NULL(shell);
+    BreakEditorPluginPanels *panels = break_editor_shell_plugin_panels(shell);
+    ASSERT_EQ(break_editor_plugin_panels_add(panels, 1u, "build.report", "Build Report",
+                                             plugin_panel_record, &report),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add(panels, 1u, "never", "Never",
+                                             plugin_panel_record, &hidden),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add(panels, 2u, "scene.stats", "Scene Stats",
+                                             plugin_panel_record, &stats),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(panels, 1u, "build.report", "go", "Rebuild",
+                                                    plugin_button_record, &go),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(panels, 1u, "build.report", "bad", "Fail",
+                                                    plugin_button_record, &bad),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add(panels, 3u, "plain", "Plain",
+                                             plugin_panel_record, &plain),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(panels, 2u, "scene.stats", "count", "Count",
+                                                    plugin_button_record, &count),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(panels, 1u, "never", "x", "X",
+                                                    plugin_button_record, &never),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(panels, 1u, "build.report", "go",
+                                                          BREAK_EDITOR_LANG_ZH_CN,
+                                                          ZH_UNIT_STATS),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 3u));
+    page = find(shell, "editor-plugins-panel");
+    ASSERT_NOT_NULL(page);
+    /* title, text, buttons row for both panels with buttons; title and
+     * text only for the button-less one */
+    ASSERT_EQ(my_widget_child_count(page), 8u);
+    row = find(shell, "editor-plugin-panel-buttons-build.report");
+    ASSERT_NOT_NULL(row);
+    ASSERT_TRUE(my_widget_get_child(page, 2u) == row);
+    ASSERT_EQ(my_widget_child_count(row), 2u);
+    btn = find(shell, "editor-plugin-panel-button-build.report.go");
+    ASSERT_NOT_NULL(btn);
+    ASSERT_TRUE(my_widget_get_child(row, 0u) == btn);
+    ASSERT_STR_EQ(((const my_button_t *)btn)->text, "Rebuild");
+    ASSERT_STR_EQ(((const my_button_t *)find(shell,
+                                             "editor-plugin-panel-button-build.report.bad"))
+                      ->text,
+                  "Fail");
+    ASSERT_TRUE(find(shell, "editor-plugin-panel-buttons-plain") == NULL);
+    ASSERT_TRUE(find(shell, "editor-plugin-panel-buttons-never") == NULL);
+    ASSERT_TRUE(find(shell, "editor-plugin-panel-button-never.x") == NULL);
+
+    /* a press runs the callback with the shell doc and rebuilds the page */
+    emit_click(btn);
+    ASSERT_EQ(go.calls, 1u);
+    ASSERT_TRUE(go.doc == break_editor_shell_doc(shell));
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-build.report"), "pressed");
+    ASSERT_EQ(bad.calls, 0u);
+    ASSERT_EQ(never.calls, 0u);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell), "failed") == NULL);
+    /* a button on a later panel runs its own callback */
+    emit_click(find(shell, "editor-plugin-panel-button-scene.stats.count"));
+    ASSERT_EQ(count.calls, 1u);
+    ASSERT_EQ(go.calls, 1u);
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-scene.stats"), "pressed");
+
+    /* a false result is logged with the panel and button ids */
+    emit_click(find(shell, "editor-plugin-panel-button-build.report.bad"));
+    ASSERT_EQ(bad.calls, 1u);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "plugin button 'build.report.bad' failed\n");
+    ASSERT_NOT_NULL(find(shell, "editor-plugin-panel-button-build.report.bad"));
+
+    /* many rebuilds reuse the click contexts: the buttons stay */
+    for (u32 r = 0u; r < 40u; r++) {
+        break_editor_shell_refresh_plugin_panels(shell);
+    }
+    ASSERT_NOT_NULL(find(shell, "editor-plugin-panel-button-scene.stats.count"));
+
+    /* the language switch relabels the buttons */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    ASSERT_STR_EQ(((const my_button_t *)find(shell,
+                                             "editor-plugin-panel-button-build.report.go"))
+                      ->text,
+                  ZH_UNIT_STATS);
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+
+    /* removing the owner removes its buttons from the page */
+    ASSERT_EQ(break_editor_plugin_panels_remove_owner(panels, 1u), 2u);
+    break_editor_shell_refresh_plugin_panels(shell);
+    ASSERT_TRUE(find(shell, "editor-plugin-panel-buttons-build.report") == NULL);
+    ASSERT_NOT_NULL(find(shell, "editor-plugin-panel-buttons-scene.stats"));
+    ASSERT_EQ(my_widget_child_count(page), 5u);
+    break_editor_shell_destroy(shell);
+}
+
 static u64 g_panel_clock_us;
 
 static u64 panel_test_clock(void *user)
@@ -11677,6 +11808,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(plugin_text_follows_the_language);
     RUN_TEST(inspector_edits_a_registered_component_type);
     RUN_TEST(plugins_page_lists_plugin_panels);
+    RUN_TEST(plugins_page_panel_buttons_press_and_log);
     RUN_TEST(plugins_page_tick_is_throttled_and_only_runs_when_shown);
     RUN_TEST(ctrl_s_saves_to_configured_path);
     RUN_TEST(outliner_row_click_selects);

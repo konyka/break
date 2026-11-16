@@ -298,15 +298,19 @@ BreakEditorPluginSections *break_editor_shell_plugin_sections(BreakEditorShell *
 /* Borrowed registry of plugin tool-window panels (capacity 16; NULL for a
  * NULL shell). The "Plugins" page of the bottom tool window
  * ("editor-plugins-panel", tab index 3) shows, in registry order, a title
- * label "editor-plugin-panel-title-<id>" and a text label
- * "editor-plugin-panel-<id>" per panel whose callback returns true, or the
- * hint label "editor-plugins-empty" when none does. The page is rebuilt by
+ * label "editor-plugin-panel-title-<id>", a text label
+ * "editor-plugin-panel-<id>" and, when the panel has buttons, a row
+ * "editor-plugin-panel-buttons-<id>" of buttons
+ * "editor-plugin-panel-button-<id>.<button id>" per panel whose callback
+ * returns true, or the hint label "editor-plugins-empty" when none does. A
+ * button click runs its callback with the shell doc, logs a false result
+ * and rebuilds the views and the page. The page is rebuilt by
  * break_editor_shell_refresh_plugin_panels and, while it is visible, by
  * break_editor_shell_tick at most every 250 ms. Remove a plugin's panels
  * (break_editor_plugin_panels_remove_owner) before unloading it. */
 BreakEditorPluginPanels *break_editor_shell_plugin_panels(BreakEditorShell *shell);
-/* Rebuilds the Plugins page now (titles in the current language). NULL
- * no-op. */
+/* Rebuilds the Plugins page now (titles and button labels in the current
+ * language). NULL no-op. */
 void break_editor_shell_refresh_plugin_panels(BreakEditorShell *shell);
 
 /* ---------------- Phase 2 Task 3: viewport panel ---------------- */

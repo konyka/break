@@ -252,7 +252,272 @@ TEST(panels_render_bounds_and_terminates)
     break_editor_plugin_panels_destroy(reg);
 }
 
+typedef struct ButtonLog {
+    u32 calls;
+    BreakEditorDoc *last_doc;
+    bool result;
+} ButtonLog;
+
+static bool record_button(void *user, BreakEditorDoc *doc)
+{
+    ButtonLog *log = (ButtonLog *)user;
+    log->calls++;
+    log->last_doc = doc;
+    return log->result;
+}
+
+#define ZH_RUN "\xe8\xbf\x90\xe8\xa1\x8c"
+
+/* add_button checks in the documented order, keeps add order, and rejects
+ * without a change. */
+TEST(panels_buttons_validate_and_keep_order)
+{
+    PanelLog log = {0u, NULL, "x", false};
+    ButtonLog a = {0u, NULL, true};
+    ButtonLog b = {0u, NULL, false};
+    char label[BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY + 1u];
+    char id[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY + 1u];
+    BreakEditorPluginPanels *reg = break_editor_plugin_panels_create(4u);
+    ASSERT_NOT_NULL(reg);
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 1u, "build.report", "Report", record_panel,
+                                             &log),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 2u, "other", "Other", record_panel, &log),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+
+    ASSERT_EQ(break_editor_plugin_panels_add_button(NULL, 1u, "build.report", "run", "Run",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 0u, "build.report", "run", "Run",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "run", "Run", NULL,
+                                                    &a),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    /* INVALID before BAD_ID, BAD_ID before BAD_TITLE, BAD_TITLE before NOT_FOUND */
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 0u, "missing", "Bad", "", NULL, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "missing", "Bad", "", record_button,
+                                                    &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_ID);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", NULL, "Run",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_ID);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "", "Run",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_ID);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "a-b", "Run",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_ID);
+    memset(id, 'i', BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY);
+    id[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY] = '\0';
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", id, "Run",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_ID);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "missing", "run", "", record_button,
+                                                    &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "run", NULL,
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "run", "R\n",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    memset(label, 'l', BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY);
+    label[BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY] = '\0';
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "run", label,
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "missing", "run", "Run",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, NULL, "run", "Run", record_button,
+                                                    &a),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    /* another plugin's panel */
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "other", "run", "Run",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_panels_button_count(reg, 0u), 0u);
+    ASSERT_EQ(break_editor_plugin_panels_button_count(reg, 1u), 0u);
+
+    /* the longest id and label fit */
+    id[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY - 1u] = '\0';
+    label[BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY - 1u] = '\0';
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "run", "Run",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", id, label,
+                                                    record_button, &b),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "run", "Again",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_DUPLICATE);
+    /* the same button id on another panel is fine */
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 2u, "other", "run", "Run other",
+                                                    record_button, &b),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "c", "C",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "d", "D",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "e", "E",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_FULL);
+    /* DUPLICATE is reported before FULL */
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "build.report", "d", "D",
+                                                    record_button, &a),
+              BREAK_EDITOR_PLUGIN_PANEL_DUPLICATE);
+
+    ASSERT_EQ(break_editor_plugin_panels_button_count(reg, 0u),
+              BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX);
+    ASSERT_EQ(break_editor_plugin_panels_button_count(reg, 1u), 1u);
+    ASSERT_EQ(break_editor_plugin_panels_button_count(reg, 2u), 0u);
+    ASSERT_EQ(break_editor_plugin_panels_button_count(NULL, 0u), 0u);
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_id(reg, 0u, 0u), "run");
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_id(reg, 0u, 1u), id);
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_id(reg, 0u, 3u), "d");
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_label(reg, 0u, 1u, BREAK_EDITOR_LANG_EN_US),
+                  label);
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_label(reg, 1u, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  "Run other");
+    ASSERT_TRUE(break_editor_plugin_panels_button_id(reg, 0u, 4u) == NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_button_id(reg, 2u, 0u) == NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_button_id(NULL, 0u, 0u) == NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_button_label(reg, 0u, 4u, BREAK_EDITOR_LANG_EN_US) ==
+                NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_button_label(reg, 2u, 0u, BREAK_EDITOR_LANG_EN_US) ==
+                NULL);
+    ASSERT_TRUE(break_editor_plugin_panels_button_label(NULL, 0u, 0u, BREAK_EDITOR_LANG_EN_US) ==
+                NULL);
+    ASSERT_EQ(a.calls + b.calls, 0u);
+    break_editor_plugin_panels_destroy(reg);
+}
+
+/* press runs the callback with the doc and returns its result; labels
+ * follow the language; buttons leave with their panel. */
+TEST(panels_buttons_press_labels_and_removal)
+{
+    PanelLog log = {0u, NULL, "x", false};
+    ButtonLog ok = {0u, NULL, true};
+    ButtonLog no = {0u, NULL, false};
+    ButtonLog kept = {0u, NULL, true};
+    int fake_doc = 0;
+    BreakEditorDoc *doc = (BreakEditorDoc *)(void *)&fake_doc;
+    char long_label[BREAK_EDITOR_PLUGIN_PANEL_TITLE_CAPACITY + 1u];
+    memset(long_label, 'l', sizeof(long_label) - 1u);
+    long_label[sizeof(long_label) - 1u] = '\0';
+    BreakEditorPluginPanels *reg = break_editor_plugin_panels_create(4u);
+    ASSERT_NOT_NULL(reg);
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 1u, "a", "A", record_panel, &log), 0);
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 2u, "b", "B", record_panel, &log), 0);
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 1u, "c", "C", record_panel, &log), 0);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "a", "ok", "OK", record_button, &ok),
+              0);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 1u, "a", "no", "No", record_button, &no),
+              0);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 2u, "b", "keep", "Keep", record_button,
+                                                    &kept),
+              0);
+
+    ASSERT_TRUE(break_editor_plugin_panels_press(reg, 0u, 0u, doc));
+    ASSERT_EQ(ok.calls, 1u);
+    ASSERT_TRUE(ok.last_doc == doc);
+    ASSERT_FALSE(break_editor_plugin_panels_press(reg, 0u, 1u, NULL));
+    ASSERT_EQ(no.calls, 1u);
+    ASSERT_TRUE(no.last_doc == NULL);
+    /* bounds: no callback */
+    ASSERT_FALSE(break_editor_plugin_panels_press(reg, 0u, 2u, doc));
+    ASSERT_FALSE(break_editor_plugin_panels_press(reg, 2u, 0u, doc));
+    ASSERT_FALSE(break_editor_plugin_panels_press(reg, 3u, 0u, doc));
+    ASSERT_FALSE(break_editor_plugin_panels_press(NULL, 0u, 0u, doc));
+    ASSERT_EQ(ok.calls + no.calls + kept.calls, 2u);
+
+    /* labels: rules in order, then the owner and the button */
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(NULL, 1u, "a", "ok",
+                                                          BREAK_EDITOR_LANG_ZH_CN, ZH_RUN),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 0u, "a", "ok",
+                                                          BREAK_EDITOR_LANG_ZH_CN, ZH_RUN),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "a", "ok",
+                                                          BREAK_EDITOR_LANG_COUNT, ZH_RUN),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "a", "ok",
+                                                          (BreakEditorLang)-1, ZH_RUN),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "missing", "ok",
+                                                          BREAK_EDITOR_LANG_COUNT, ""),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "missing", "ok",
+                                                          BREAK_EDITOR_LANG_ZH_CN, ""),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "a", "ok",
+                                                          BREAK_EDITOR_LANG_ZH_CN, long_label),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "a", "ok",
+                                                          BREAK_EDITOR_LANG_ZH_CN, "x\x1f"),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "b", "keep",
+                                                          BREAK_EDITOR_LANG_ZH_CN, ZH_RUN),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "a", "missing",
+                                                          BREAK_EDITOR_LANG_ZH_CN, ZH_RUN),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "a", NULL,
+                                                          BREAK_EDITOR_LANG_ZH_CN, ZH_RUN),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "c", "ok",
+                                                          BREAK_EDITOR_LANG_ZH_CN, ZH_RUN),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_label(reg, 0u, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  "OK");
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "a", "ok",
+                                                          BREAK_EDITOR_LANG_ZH_CN, "first"),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "a", "ok",
+                                                          BREAK_EDITOR_LANG_ZH_CN, ZH_RUN),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_set_button_label(reg, 1u, "a", "no",
+                                                          BREAK_EDITOR_LANG_EN_US, "Cancel"),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_label(reg, 0u, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  ZH_RUN);
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_label(reg, 0u, 0u, BREAK_EDITOR_LANG_EN_US),
+                  "OK");
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_label(reg, 0u, 0u, BREAK_EDITOR_LANG_COUNT),
+                  "OK");
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_label(reg, 0u, 0u, (BreakEditorLang)-1),
+                  "OK");
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_label(reg, 0u, 1u, BREAK_EDITOR_LANG_EN_US),
+                  "Cancel");
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_label(reg, 0u, 1u, BREAK_EDITOR_LANG_ZH_CN),
+                  "No");
+
+    /* removing owner 1 moves panel b to index 0 with its button */
+    ASSERT_EQ(break_editor_plugin_panels_remove_owner(reg, 1u), 2u);
+    ASSERT_EQ(break_editor_plugin_panels_button_count(reg, 0u), 1u);
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_id(reg, 0u, 0u), "keep");
+    ASSERT_TRUE(break_editor_plugin_panels_press(reg, 0u, 0u, doc));
+    ASSERT_EQ(kept.calls, 1u);
+    ASSERT_EQ(ok.calls, 1u);
+    ASSERT_EQ(break_editor_plugin_panels_button_count(reg, 1u), 0u);
+    /* a reused slot starts with no buttons and no translated labels */
+    ASSERT_EQ(break_editor_plugin_panels_add(reg, 3u, "d", "D", record_panel, &log), 0);
+    ASSERT_EQ(break_editor_plugin_panels_button_count(reg, 1u), 0u);
+    ASSERT_EQ(break_editor_plugin_panels_add_button(reg, 3u, "d", "ok", "OK", record_button, &ok),
+              0);
+    ASSERT_STR_EQ(break_editor_plugin_panels_button_label(reg, 1u, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  "OK");
+    ASSERT_EQ(log.calls, 0u);
+    break_editor_plugin_panels_destroy(reg);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(panels_buttons_validate_and_keep_order);
+    RUN_TEST(panels_buttons_press_labels_and_removal);
     RUN_TEST(panels_create_bounds);
     RUN_TEST(panels_add_validates_and_keeps_order);
     RUN_TEST(panels_remove_owner_keeps_the_rest_in_order);

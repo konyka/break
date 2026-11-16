@@ -11403,3 +11403,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `break_editor_doc_unregister_component` 从注册表任意位置移除一个非内置、未被存活实体使用的类型，其余类型保持顺序和默认字节。
 - 插件宿主记录每个插件注册的类型；`break_editor_plugin_host_release` 卸载前移除其中未被使用的类型（计入返回值），仍被使用的保留到下一次 release；`set_doc` 换 doc 时清空记录。
 - 验证：先 RED 后 GREEN，`test_editor_components` 27/27、`test_editor_plugin_host` 6/6；17 项变异全部被捕获；ASan+UBSan 无报告。
+
+### 2026-11-16 plugin panel buttons
+
+- 插件面板可以带最多 4 个按钮：注册表 `break_editor_plugin_panels_add_button` / `_set_button_label` / `_press`，插件 API 追加 `add_panel_button`、`set_panel_button_label`。
+- 插件页在每个显示的面板文本下方加一行按钮，标签随当前语言切换；点击用 shell 的 doc 运行回调，失败时写控制台日志（新 i18n 键 `LOG_PLUGIN_BUTTON_FAILED_FMT`，en/zh 两份），然后刷新视图。
+- 验证：先 RED 后 GREEN，`test_editor_plugin_panels` 7/7、`test_editor_plugin_host` 7/7、`test_editor_shell` 156/156、`test_editor_i18n` 8/8；37 项变异全部被捕获；ASan+UBSan 无报告。

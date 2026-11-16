@@ -150,6 +150,39 @@ static BreakEditorPluginPanelStatus host_set_panel_title(void *host_ptr, const c
                                                 title);
 }
 
+static BreakEditorPluginPanelStatus host_add_panel_button(void *host_ptr, const char *panel_id,
+                                                          const char *button_id,
+                                                          const char *label,
+                                                          BreakEditorPluginPanelButtonFn fn,
+                                                          void *user)
+{
+    BreakEditorPluginHost *host = (BreakEditorPluginHost *)host_ptr;
+    if (!host) {
+        return BREAK_EDITOR_PLUGIN_PANEL_INVALID;
+    }
+    /* NULL registry and loading_owner 0 are both rejected by the registry */
+    return break_editor_plugin_panels_add_button(host->panels, host->loading_owner, panel_id,
+                                                 button_id, label, fn, user);
+}
+
+static BreakEditorPluginPanelStatus host_set_panel_button_label(void *host_ptr,
+                                                                const char *panel_id,
+                                                                const char *button_id,
+                                                                const char *lang_tag,
+                                                                const char *label)
+{
+    BreakEditorPluginHost *host = (BreakEditorPluginHost *)host_ptr;
+    BreakEditorLang lang;
+    if (!host || host->loading_owner == 0u || !host->panels) {
+        return BREAK_EDITOR_PLUGIN_PANEL_INVALID;
+    }
+    if (!break_editor_i18n_parse_lang(lang_tag, &lang)) {
+        return BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG;
+    }
+    return break_editor_plugin_panels_set_button_label(host->panels, host->loading_owner,
+                                                       panel_id, button_id, lang, label);
+}
+
 void break_editor_plugin_host_set_panels(BreakEditorPluginHost *host,
                                          BreakEditorPluginPanels *panels)
 {
@@ -196,6 +229,8 @@ BreakEditorPluginHost *break_editor_plugin_host_create(BreakEditorPluginCmds *cm
     host->api.add_component = host_add_component;
     host->api.add_panel = host_add_panel;
     host->api.set_panel_title = host_set_panel_title;
+    host->api.add_panel_button = host_add_panel_button;
+    host->api.set_panel_button_label = host_set_panel_button_label;
     host->cmds = cmds;
     return host;
 }

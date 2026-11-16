@@ -105,3 +105,7 @@ PAL：`engine/src/platform/platform_dynamic.{h,c}`。管理器：`engine/src/sys
 ### 补充（2026-11-16）：插件卸载时移除组件类型
 
 新增 `break_editor_doc_unregister_component(doc, id)`：从注册表任意位置移除一个非内置类型，其余类型保持顺序和默认字节；内置的 Transform、Light、未注册的 id、以及仍在存活实体上的类型都拒绝（返回 false，不做改动）。与 truncate 一样，World 保留该 id 的尺寸直到下次 reset，撤销历史可能把字节加回来，由按注册表工作的 API 忽略。插件宿主为每个经 `add_component` 注册的类型记录所属 owner，`break_editor_plugin_host_release(owner)` 卸载前移除该 owner 未被使用的类型，并计入返回值；仍被实体使用的类型保留，同一 owner 的下一次 release 会再试。`set_doc` 换成另一个 doc 时清空记录，release 不会动旧 doc 的类型。编辑器退出时 `break_editor_plugin_loader_destroy` 已经对每个插件调用 release。设计与验证见 `docs/superpowers/plans/2026-11-16-plugin-component-unload.md`。
+
+### 插件面板按钮（2026-11-16）
+
+每个插件面板最多 4 个按钮（`BREAK_EDITOR_PLUGIN_PANEL_BUTTONS_MAX`），按添加顺序显示在面板文本下方的一行里。插件通过 `BreakEditorPluginApi` 末尾新增的 `add_panel_button` 和 `set_panel_button_label` 添加按钮和翻译标签，规则与 `add_panel`、`set_panel_title` 相同：必须在加载窗口内，只能加在自己的面板上，面板移除时按钮一起移除。点击时用 shell 的 doc 调用回调 `bool fn(void *user, BreakEditorDoc *doc)`；返回 false 时控制台记录「plugin button '<面板>.<按钮>' failed」。之后 shell 刷新视图和插件页，回调对 doc 的修改立即可见。没有按钮的面板不加按钮行。设计与验证见 `docs/superpowers/plans/2026-11-16-plugin-panel-buttons.md`。
