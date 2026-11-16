@@ -45,6 +45,7 @@ typedef struct NetClient {
     SnowNetworkBuffer *plain;
     u32 next_seq;
     u8 server_nonce[16];
+    bool skip_server_probe;
 } NetClient;
 
 static u64 now_ms(void) {
@@ -171,6 +172,46 @@ static bool client_send_raw_id(NetClient *c, u16 id) {
     return client_send_wire(c, wire, sizeof(wire));
 }
 
+static u64 now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000000u + (u64)ts.tv_nsec / 1000u;
+}
+
+static u32 g_server_probes_answered;
+
+static bool client_send_clock_reply(NetClient *c, const CoreAppClockProbe *request, u64 t1) {
+    CoreAppClockProbe reply;
+    u8 wire[CORE_APP_CLOCK_PROBE_BYTES];
+    size_t size = 0u;
+    return core_app_clock_probe_answer(request, t1, now_us(), &reply) == CORE_APP_SNAPSHOT_OK &&
+           core_app_clock_probe_encode(&reply, wire, sizeof(wire), &size) ==
+               CORE_APP_SNAPSHOT_OK &&
+           client_send(c, CORE_APP_CLOCK_PROBE_MESSAGE_ID, 1u, wire, size);
+}
+
+/* Answers a server request with t1 taken at receipt and t2 just before the
+ * send. The first request also gets a reply with a far-future t0 before
+ * the real one and a duplicate after it; the server must count both as
+ * unmatched and never turn them into samples. */
+static bool client_answer_server_probe(NetClient *c, const CoreAppClockProbe *request, u64 t1) {
+    /* One request is left unanswered on purpose: the server must time it
+     * out and keep probing this peer. */
+    if (c->skip_server_probe) {
+        c->skip_server_probe = false;
+        return true;
+    }
+    if (g_server_probes_answered == 0u) {
+        CoreAppClockProbe wrong = *request;
+        wrong.t0 += 1000000000000ull;
+        if (!client_send_clock_reply(c, &wrong, t1)) return false;
+    }
+    if (!client_send_clock_reply(c, request, t1)) return false;
+    if (g_server_probes_answered == 0u && !client_send_clock_reply(c, request, t1)) return false;
+    g_server_probes_answered++;
+    return true;
+}
+
 /* Reads one envelope into a static frame. Returns 1 on a frame, 0 on
  * timeout, -1 when the server closed the connection. */
 static int client_recv(NetClient *c, BreakNetEnvelope *env, u32 timeout_ms) {
@@ -194,8 +235,22 @@ static int client_recv(NetClient *c, BreakNetEnvelope *env, u32 timeout_ms) {
                     n != need || SnowNetworkBufferMoveHeader(c->plain, need) != SNOW_OK) {
                     return -1;
                 }
-                return break_net_envelope_decode(frame, need, env) == BREAK_NET_ENVELOPE_OK ? 1
-                                                                                          : -1;
+                u64 t1 = now_us();
+                if (break_net_envelope_decode(frame, need, env) != BREAK_NET_ENVELOPE_OK) {
+                    return -1;
+                }
+                /* Server clock requests are answered here, whatever the
+                 * caller waits for, so none is dropped by a helper that
+                 * skips other ids. */
+                CoreAppClockProbe request;
+                if (env->message_id == CORE_APP_CLOCK_PROBE_MESSAGE_ID &&
+                    core_app_clock_probe_decode((const u8 *)env->payload, env->payload_size,
+                                                &request) == CORE_APP_SNAPSHOT_OK &&
+                    request.kind == CORE_APP_CLOCK_PROBE_REQUEST) {
+                    if (!client_answer_server_probe(c, &request, t1)) return -1;
+                    continue;
+                }
+                return 1;
             }
         }
         if (client_read_burst(c, NULL, false) < 0) return -1;
@@ -426,12 +481,6 @@ static bool send_snapshot(NetClient *c, const CoreAppSnapshot *snapshot, size_t 
     return client_send(c, CORE_APP_SNAPSHOT_MESSAGE_ID, CORE_APP_SNAPSHOT_PROTOCOL_VERSION, wire,
                        size + trailing);
 }
-static u64 now_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (u64)ts.tv_sec * 1000000u + (u64)ts.tv_nsec / 1000u;
-}
-
 /* Waits for a clock probe reply that echoes t0. Returns 1 with the reply,
  * 0 on timeout, -1 on a close or a malformed probe. */
 static int client_next_clock_reply(NetClient *c, u64 t0, CoreAppClockProbe *out, u64 *t3,
@@ -445,16 +494,27 @@ static int client_next_clock_reply(NetClient *c, u64 t0, CoreAppClockProbe *out,
         *t3 = now_us();
         if (env.protocol_version != 1u ||
             core_app_clock_probe_decode((const u8 *)env.payload, env.payload_size, out) !=
-                CORE_APP_SNAPSHOT_OK ||
-            out->kind != CORE_APP_CLOCK_PROBE_REPLY) {
+                CORE_APP_SNAPSHOT_OK) {
             return -1;
         }
+        if (out->kind != CORE_APP_CLOCK_PROBE_REPLY) return -1;
         /* t0 values 11..13 belong to malformed probes, which must never be
          * answered. */
         if (out->t0 >= 11u && out->t0 <= 13u) return -1;
         if (out->t0 == t0) return 1;
     }
     return 0;
+}
+
+/* Keeps reading (client_recv answers server requests) until `count` have
+ * been answered in total. */
+static bool client_answer_server_probes(NetClient *c, u32 count, u32 timeout_ms) {
+    u64 deadline = now_ms() + timeout_ms;
+    while (g_server_probes_answered < count && now_ms() < deadline) {
+        BreakNetEnvelope env;
+        if (client_recv(c, &env, (u32)(deadline - now_ms()) + 1u) < 0) return false;
+    }
+    return g_server_probes_answered >= count;
 }
 
 static bool send_clock_probe(NetClient *c, const CoreAppClockProbe *probe, size_t size) {
@@ -519,6 +579,10 @@ static void client_clock_probe_exchange(NetClient *c) {
                 (long long)estimate.offset_us, (unsigned long long)estimate.error_us,
                 estimate.samples);
     }
+    c->skip_server_probe = true;
+    check(client_answer_server_probes(c, 6u, 15000u) && !c->skip_server_probe,
+          "a_answered_server_clock_probes");
+    fprintf(g_report, "server_clock_probes_answered=%u\n", g_server_probes_answered);
 }
 
 static bool snapshot_shape_ok(const CoreAppSnapshot *s) {

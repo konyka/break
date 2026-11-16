@@ -1719,7 +1719,8 @@ if(CORE_APP_ENABLE_NETWORK AND BREAK_ENABLE_SNOWFLAKE)
             "CORE_APP_ENABLE_NETWORK with BREAK_ENABLE_SNOWFLAKE requires "
             "BREAK_ENABLE_CRYPTO=ON: the core_app transport only speaks AUTH-v2")
     endif()
-    target_sources(core_app PRIVATE apps/core_app/core_app_net_transport.c)
+    target_sources(core_app PRIVATE apps/core_app/core_app_net_transport.c
+        src/core/clock_offset.c)
     target_link_libraries(core_app PRIVATE break_net)
     target_compile_definitions(core_app PRIVATE CORE_APP_NET_TRANSPORT=1)
     set(_core_app_net_transport ON)
@@ -5405,7 +5406,7 @@ endif()
         # a step held on another thread forces the reactor stop to time out.
         add_executable(test_core_app_net_transport tests/test_core_app_net_transport.c
             apps/core_app/core_app_net_transport.c src/platform/platform_fs.c
-            src/core/trace_core_app.c
+            src/core/trace_core_app.c src/core/clock_offset.c
             src/platform/time.c src/physics/physics_sync.c src/physics/physics.c
             src/physics/bvh.c src/math/math.c src/core/log.c)
         set_property(TARGET test_core_app_net_transport PROPERTY C_STANDARD 11)

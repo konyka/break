@@ -11495,3 +11495,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `core_app_net_transport.c` 应答 `0x4004` 时钟探测：接收时取 t1，下一次发送前取 t2，按连接槽保存最新请求；畸形探测、带 t1/t2 的请求和对端发来的回复都只增加 `clock_probe_decode_failed`。`network_stats` 新增 `clock_probes_answered`、`clock_probe_decode_failed`。
 - loopback 测试（`test_core_app_net_client` + `test_core_app_network.cmake`）：3 个非法探测不得被应答，4 次真实交换喂给 `ClockOffsetEstimator`，估计偏移须落在误差界内。先 RED（服务端不应答）后 GREEN；12 项变异 2 项存活，补充「非法探测被应答即失败」和「应答次数恰好为 4」后剩 1 项：忽略解码结果时 `probe` 未初始化，其 kind 实际不会等于 REQUEST，无法确定性捕获，记为等价变异。
 - 仍缺：服务端主动探测、把偏移写入 trace、自动用于 `trace_merge`。
+
+### 2026-11-16 server-initiated clock probes
+
+- `core_app_net_transport.c` 对每个认证连接每 8 tick 发一个时钟探测请求，32 tick 未答即丢弃；匹配的回复喂给该连接的 `ClockOffsetEstimator`，首次满 4 个样本时写 `event=network_clock_offset` trace 行。`network_stats` 新增 `clock_probes_sent`、`clock_replies_matched`、`clock_replies_unmatched`、`clock_probes_lost`、`clock_samples_rejected`。`core_app` 与 `test_core_app_net_transport` 链接 `src/core/clock_offset.c`。
+- loopback 测试：对端应答服务端请求，故意漏答一次、发错误 t0 与重复回复；要求丢失、不匹配计数正确，trace 恰好一行且偏移在误差界内。先 RED（服务端不发请求）后 GREEN；首版按墙钟调度只发出 2 个请求，改为按 tick 调度。18 项变异 1 项存活（超时分支清 `outstanding`，仅在发送失败时可观察），已在计划中说明。
+- 仍缺：自动把偏移传给 `trace_merge`。

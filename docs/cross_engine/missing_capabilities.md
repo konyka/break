@@ -263,4 +263,4 @@
 - **第 13 节（诊断/跨线程关联）追加**：core_app 文本 trace 转换器支持可选的 `ts_us` 微秒时间戳作为事件时间，无该字段的旧 trace 输出不变。仍缺：core_app 写出 `ts_us`、网络对端之间的时钟对齐。
 - **第 13 节（诊断/跨线程关联）追加**：`core_app --trace-timestamps` 在文本 trace 每行写入单调时钟 `ts_us`，`--trace-json` 与 `trace_merge` 得到真实时间轴（同一台机器上的多个进程可直接对齐）。仍缺：不同机器上网络对端之间的时钟对齐。
 - **第 13 节（诊断/跨线程关联）追加**：`core/clock_offset` 用 NTP 式探测样本估计两台机器的时钟偏移（最小延迟样本、误差上界 `ceil(delay/2)`），并换算成 `trace_merge --offset-us` 的平移量。仍缺：探测包在 core_app 会话协议上的收发、估计结果自动用于 trace 合并。
-- **第 13 节（诊断/跨线程关联）追加**：时钟探测消息 `0x4004` 的 32 字节线格式与编解码（`core_app_clock_probe_*`）已加入默认注册表。服务端 transport 已应答探测（loopback 测试中对端据此估计偏移）。仍缺：服务端主动发起探测并写入 trace、自动用于 trace_merge。
+- **第 13 节（诊断/跨线程关联）追加**：时钟探测消息 `0x4004` 的 32 字节线格式与编解码（`core_app_clock_probe_*`）已加入默认注册表。服务端 transport 已应答探测，并主动探测每个对端、把偏移写入 `event=network_clock_offset` trace 行。仍缺：自动用于 trace_merge。

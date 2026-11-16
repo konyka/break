@@ -6,6 +6,7 @@
 #include <network/break_session.h>
 #include <physics/physics_sync.h>
 #include <platform/platform_fs.h>
+#include <core/clock_offset.h>
 #include <core/trace_core_app.h>
 #include <platform/time.h>
 #include <snow/acceptor.h>
@@ -44,6 +45,14 @@ _Static_assert(PHYSICS_SYNC_REPORT_BYTES == BREAK_NET_PHYSICS_SYNC_REPORT_PAYLOA
  * monotonic clock: the tick rate depends on --net-poll-ms and on whether
  * the output paces frames, so a tick count is no deadline a peer can meet. */
 #define CORE_APP_NET_AUTH_DEADLINE_MS 3000u
+/* Server-initiated clock probes: one outstanding request per peer, sent
+ * every INTERVAL_TICKS ticks and dropped after TIMEOUT_TICKS ticks without
+ * a reply. Both are counted in ticks, not wall time, because a headless
+ * run may advance many ticks per millisecond. The offset is traced once
+ * the estimator holds TRACE_SAMPLES samples. */
+#define CORE_APP_NET_CLOCK_PROBE_INTERVAL_TICKS 8u
+#define CORE_APP_NET_CLOCK_PROBE_TIMEOUT_TICKS 32u
+#define CORE_APP_NET_CLOCK_OFFSET_TRACE_SAMPLES 4u
 #define CORE_APP_NET_PATH_CAPACITY 512u
 
 static const u8 k_core_app_net_key_id[8] = {'c', 'o', 'r', 'e', 'a', 'p', 'p', '1'};
@@ -67,7 +76,22 @@ typedef struct CoreAppNetStats {
     u64 physics_corrections_sent;
     u64 clock_probes_answered;
     u64 clock_probe_decode_failed;
+    u64 clock_probes_sent;
+    u64 clock_replies_matched;
+    u64 clock_replies_unmatched;
+    u64 clock_probes_lost;
+    u64 clock_samples_rejected;
 } CoreAppNetStats;
+
+/* Probes this server sends to one peer. */
+typedef struct CoreAppNetClockState {
+    ClockOffsetEstimator estimator;
+    u64 outstanding_t0;
+    u32 last_probe_tick;
+    bool probed;
+    bool outstanding;
+    bool traced;
+} CoreAppNetClockState;
 
 struct CoreAppNetTransport {
     char host[64];
@@ -97,6 +121,7 @@ struct CoreAppNetTransport {
     bool correction_pending[CORE_APP_NET_MAX_CONNECTIONS];
     bool clock_probe_pending[CORE_APP_NET_MAX_CONNECTIONS];
     CoreAppClockProbe clock_probes[CORE_APP_NET_MAX_CONNECTIONS];
+    CoreAppNetClockState clock[CORE_APP_NET_MAX_CONNECTIONS];
     BreakSessionId session_ids[CORE_APP_NET_MAX_CONNECTIONS];
     u64 opened_us[CORE_APP_NET_MAX_CONNECTIONS];
     CoreAppSnapshot scratch_snapshot;
@@ -189,6 +214,9 @@ static int net_slot_add(CoreAppNetTransport *t, BreakConnectionKey key) {
             t->authenticated[i] = false;
             t->closing[i] = false;
             t->correction_pending[i] = false;
+            t->clock_probe_pending[i] = false;
+            memset(&t->clock[i], 0, sizeof(t->clock[i]));
+            clock_offset_init(&t->clock[i].estimator);
             t->session_ids[i] = 0u;
             t->opened_us[i] = time_microseconds();
             return (int)i;
@@ -251,21 +279,52 @@ static bool net_on_physics_report(BreakConnectionKey connection,
     return true;
 }
 
-/* Stores the latest request per connection with its receive time t1; the
- * reply is built in net_send_pending so t2 is the actual send time. */
+/* A reply that echoes the outstanding t0 becomes one estimator sample;
+ * the offset is traced once, when the window first holds enough samples. */
+static bool net_on_clock_reply(CoreAppNetTransport *t, int slot, const CoreAppClockProbe *reply,
+                               u64 t3) {
+    CoreAppNetClockState *clock = &t->clock[slot];
+    if (!clock->outstanding || reply->t0 != clock->outstanding_t0) {
+        t->stats.clock_replies_unmatched++;
+        return false;
+    }
+    ClockOffsetSample sample = {reply->t0, reply->t1, reply->t2, t3};
+    ClockOffsetEstimate estimate;
+    clock->outstanding = false;
+    t->stats.clock_replies_matched++;
+    if (clock_offset_add(&clock->estimator, &sample) != CLOCK_OFFSET_OK) {
+        t->stats.clock_samples_rejected++;
+    }
+    if (!clock->traced && clock_offset_estimate(&clock->estimator, &estimate) == CLOCK_OFFSET_OK &&
+        estimate.samples >= CORE_APP_NET_CLOCK_OFFSET_TRACE_SAMPLES) {
+        char line[192];
+        clock->traced = true;
+        snprintf(line, sizeof(line),
+                 "COREAPPTRACE version=1 event=network_clock_offset session=%llu"
+                 " offset_us=%lld error_us=%llu samples=%u\n",
+                 (unsigned long long)t->session_ids[slot], (long long)estimate.offset_us,
+                 (unsigned long long)estimate.error_us, estimate.samples);
+        net_trace(t, line);
+    }
+    return true;
+}
+
+/* Requests are stored per connection with their receive time t1 and
+ * answered in net_send_pending so t2 is the actual send time; replies feed
+ * this server's own estimate. t1/t3 are read before decoding. */
 static bool net_on_clock_probe(BreakConnectionKey connection,
                                const BreakNetOwnedMessage *message, void *user) {
     CoreAppNetTransport *t = (CoreAppNetTransport *)user;
     u64 t1 = time_microseconds();
     CoreAppClockProbe probe;
     if (core_app_clock_probe_decode((const u8 *)message->data, message->size, &probe) !=
-            CORE_APP_SNAPSHOT_OK ||
-        probe.kind != CORE_APP_CLOCK_PROBE_REQUEST) {
+        CORE_APP_SNAPSHOT_OK) {
         t->stats.clock_probe_decode_failed++;
         return false;
     }
     int slot = net_slot_find(t, connection);
     if (slot < 0) return false;
+    if (probe.kind == CORE_APP_CLOCK_PROBE_REPLY) return net_on_clock_reply(t, slot, &probe, t1);
     probe.t1 = t1;
     t->clock_probes[slot] = probe;
     t->clock_probe_pending[slot] = true;
@@ -384,6 +443,46 @@ static void net_send_clock_replies(CoreAppNetTransport *t) {
     }
 }
 
+/* One outstanding request per peer. A request unanswered for TIMEOUT_TICKS
+ * is dropped; the next one is sent once INTERVAL_TICKS have passed. A tick
+ * counter that went backwards (a new level) counts as elapsed. */
+static void net_send_clock_requests(CoreAppNetTransport *t) {
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        if (!net_slot_sendable(t, i)) continue;
+        CoreAppNetClockState *clock = &t->clock[i];
+        u32 tick = t->current_tick;
+        bool restarted = tick < clock->last_probe_tick;
+        u32 elapsed = restarted ? UINT32_MAX : tick - clock->last_probe_tick;
+        if (clock->outstanding) {
+            if (elapsed < CORE_APP_NET_CLOCK_PROBE_TIMEOUT_TICKS) continue;
+            clock->outstanding = false;
+            t->stats.clock_probes_lost++;
+        }
+        if (clock->probed && elapsed < CORE_APP_NET_CLOCK_PROBE_INTERVAL_TICKS) continue;
+        u64 now = time_microseconds();
+        CoreAppClockProbe request = {CORE_APP_CLOCK_PROBE_REQUEST, now, 0u, 0u};
+        u8 wire[CORE_APP_CLOCK_PROBE_BYTES];
+        usize size = 0u;
+        if (core_app_clock_probe_encode(&request, wire, sizeof(wire), &size) !=
+            CORE_APP_SNAPSHOT_OK) {
+            continue;
+        }
+        BreakNetSendResult sent = break_net_reactor_send(
+            t->reactor, t->keys[i], CORE_APP_CLOCK_PROBE_MESSAGE_ID, 1u, wire, size);
+        if (sent == BREAK_NET_SEND_OK) {
+            clock->outstanding = true;
+            clock->outstanding_t0 = now;
+            clock->last_probe_tick = tick;
+            clock->probed = true;
+            t->stats.clock_probes_sent++;
+        } else if (sent == BREAK_NET_SEND_OVERLOAD) {
+            t->stats.send_overloads++;
+        } else {
+            t->stats.send_closed++;
+        }
+    }
+}
+
 static void net_send_pending(CoreAppNetTransport *t) {
     CoreAppSnapshot *snapshot = &t->scratch_snapshot;
     u8 *wire = t->scratch_wire;
@@ -391,6 +490,7 @@ static void net_send_pending(CoreAppNetTransport *t) {
      * connection already reuses; hold snapshots until the queue is empty. */
     if (!break_net_reactor_event_queue_empty(t->reactor)) return;
     net_send_clock_replies(t);
+    if (t->producing) net_send_clock_requests(t);
     while (core_app_snapshot_outbox_pop(&t->outbox, snapshot)) {
         usize size = 0u;
         if (core_app_snapshot_encode(snapshot, wire, CORE_APP_SNAPSHOT_MAX_BYTES, &size) !=
@@ -589,7 +689,9 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              " physics_matched=%" PRIu64 " physics_desynced=%" PRIu64
              " physics_unknown=%" PRIu64 " physics_decode_failed=%" PRIu64
              " physics_corrections_sent=%" PRIu64 " clock_probes_answered=%" PRIu64
-             " clock_probe_decode_failed=%" PRIu64 "\n",
+             " clock_probe_decode_failed=%" PRIu64 " clock_probes_sent=%" PRIu64
+             " clock_replies_matched=%" PRIu64 " clock_replies_unmatched=%" PRIu64
+             " clock_probes_lost=%" PRIu64 " clock_samples_rejected=%" PRIu64 "\n",
              t->stats.opened, t->stats.closed, t->stats.refused, t->stats.authenticated,
              t->stats.snapshots_sent, t->stats.send_overloads, t->stats.send_closed,
              t->stats.outbox_overloads, t->stats.auth_timeouts, t->stats.decode_failed, t->inbox.accepted_snapshots,
@@ -599,7 +701,10 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              t->stats.physics_reports_sent, t->stats.physics_matched,
              t->stats.physics_desynced, t->stats.physics_unknown,
              t->stats.physics_decode_failed, t->stats.physics_corrections_sent,
-             t->stats.clock_probes_answered, t->stats.clock_probe_decode_failed);
+             t->stats.clock_probes_answered, t->stats.clock_probe_decode_failed,
+             t->stats.clock_probes_sent, t->stats.clock_replies_matched,
+             t->stats.clock_replies_unmatched, t->stats.clock_probes_lost,
+             t->stats.clock_samples_rejected);
     net_trace(t, line);
 }
 
