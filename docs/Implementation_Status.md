@@ -11421,3 +11421,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 高于 48 kHz 的 PCM 流（`audio_pcm_stream_open_rate`）在线性插值前先经过 4 阶 Butterworth 低通（两级 biquad，截止 21.6 kHz），24 kHz 以上的内容被衰减而不是折回可听频段；96 kHz 下 30 kHz 约 -19.5 dB，1 kHz 在 1 dB 以内。混音回调在环形缓冲里按顺序原地滤波，抽取跳过的帧也经过滤波器；≤48 kHz 的流不变。
 - `test_audio_extended` 新增 7 项并改写 2 项旧的 96 kHz 测试（原断言是未滤波的偶数帧，改为对照双精度参考模型），共 63 项；`test_voice_playback` 新增 96 kHz 的混音线程竞争（共 4 项）；`test_audio_realtime_contract` 覆盖新的滤波函数。先 RED 后 GREEN，24 项变异全部被捕获；TSan 五次运行与 ASan+UBSan 无报告。
 - 仍缺：多相/加窗 sinc 重采样（转换本身仍是线性插值）、上采样的镜像滤除、麦克风采集与编码。
+
+### 2026-11-16 stereo panning for spatial PCM streams
+
+- `audio_pcm_stream_set_panning(as, h, enabled)`：空间 PCM 流（网络语音）可按监听者朝向做等功率立体声声像（右向量 = forward × up），左右增益作为一个 64 位原子对发布；默认关闭，已有流的输出不变。
+- `test_audio_extended` 新增 5 项（共 68）：参数、左右/正前/正后/45°/头顶、监听者转身与走过、退化朝向、非单位且翻滚的朝向、立体声按侧缩放、关闭与重开。先 RED 后 GREEN，20 项变异全部被捕获；ASan+UBSan 与 TSan 三次运行无报告。
+- 仍缺：HRTF、耳间时差、前后区分、事件 voice 的声像、环绕声输出。

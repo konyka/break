@@ -65,6 +65,12 @@ RESTART 保留 handle 并从头播放；STEAL_OLDEST 提升 generation，使旧 
 
 滤波在环形缓冲里原地进行：`[tail, head)` 的帧在 tail 越过之前归混音回调所有，生产者不会改写。回调私有的 `filtered` 记录 tail 之后已滤过的帧数，读插值所需帧之前、以及释放被跨过的帧之前都先按顺序补滤，所以每帧恰好滤一次，抽取跳过的帧也会经过滤波器。滤波状态、系数和 `filtered` 与位置 `pos` 遵守同一规则：open 在槽位关闭时重置，回调只在看到 `open` 后读写。滤波函数不分配、不加锁，纳入 `test_audio_realtime_contract` 的检查范围。≤48 kHz 的流不滤波，上采样产生的镜像也不滤除。
 
+## PCM 流的声像
+
+`audio_pcm_stream_set_panning(as, h, enabled)` 为空间流打开立体声声像（open 时关闭；未 `set_spatial` 的流返回 `AUDIO_REJECTED`）。监听者右向量为 `forward × up`（forward -Z、up +Y 时为 +X），`pan` 为声源方向与右向量夹角的余弦，按等功率规律 `θ = (pan + 1)π/4` 得到左 `cos θ`、右 `sin θ`：正中两侧各 -3 dB，正右方只有右声道。声源与监听者重合，或 forward 与 up 平行时取正中。前后、上下不区分（没有 HRTF、耳间时差）。
+
+左右增益在 `set_spatial`、`set_position`、监听者更新时于所有者线程计算，打包成一个 64 位原子值发布，混音回调不会看到只更新了一侧的增益。单声道流先复制到两声道再声像；立体声流的每个声道乘以本侧增益。关闭声像恢复两侧增益为 1。
+
 ## 验证与限制
 
 - `test_audio_extended`：clip/容量、并发/重触发、stale handle、真实 DSP 接线、逐样本交叉淡化、loop/停止、遮挡/距离、bus/master、legacy WAV、bit-exact fake 和 null 命令生命周期。

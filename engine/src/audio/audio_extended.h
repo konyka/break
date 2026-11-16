@@ -146,6 +146,12 @@ AudioResult audio_pcm_stream_set_spatial(AudioSystem *as, AudioPcmStreamHandle h
  * a non-finite position, which leaves the position and gain unchanged. */
 AudioResult audio_pcm_stream_set_position(AudioSystem *as, AudioPcmStreamHandle handle,
                                           Vec3 position);
+/* Constant-power stereo panning of a spatial stream from the listener's
+ * orientation (right = forward x up): a source on the right plays louder on
+ * the right channel, centre is -3 dB on both. Off at open. REJECTED for a
+ * stream without set_spatial. Front and back sound the same (no HRTF). */
+AudioResult audio_pcm_stream_set_panning(AudioSystem *as, AudioPcmStreamHandle handle,
+                                         bool enabled);
 
 AudioResult audio_clip_register(AudioSystem *as, const char *name,
                                 const AudioPcmDesc *pcm,

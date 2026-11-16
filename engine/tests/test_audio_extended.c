@@ -2088,6 +2088,202 @@ TEST(pcm_stream_spatial_occlusion)
     audio_system_destroy(as);
 }
 
+/* both rendered samples of a stream holding the constant 0.5 */
+static bool render_half_lr(AudioSystem *as, AudioPcmStreamHandle h, f32 *left, f32 *right)
+{
+    const i16 half[1] = {16384};
+    u32 written = 0;
+    f32 out[2];
+    if (audio_pcm_stream_write_i16(as, h, half, 1u, &written) != AUDIO_OK || written != 1u) {
+        return false;
+    }
+    if (audio_system_render(as, out, 1u) != AUDIO_OK) return false;
+    *left = out[0];
+    *right = out[1];
+    /* ASSERT_FLOAT_EQ lets NaN through; a NaN pan must fail here */
+    return isfinite(out[0]) && isfinite(out[1]);
+}
+
+static const f32 kCentre = 0.70710678f;
+
+TEST(pcm_stream_panning_arguments)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, h, true), AUDIO_REJECTED);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, 0u, true), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_panning(NULL, h, true), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, h, true), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, h, true), AUDIO_STALE);
+    audio_system_destroy(as);
+}
+
+/* listener at the origin facing -Z, up +Y: right is +X */
+TEST(pcm_stream_panning_follows_the_source_side)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(2, 0, 0)), AUDIO_OK);
+    /* spatial but not panned: both sides get the distance gain */
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f, 1e-6f);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, h, true), AUDIO_OK);
+    /* hard right, distance gain 0.5 */
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f, 1e-6f);
+    /* hard left */
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(-2, 0, 0)), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.0f, 1e-6f);
+    /* straight ahead and straight behind: centre, -3 dB each */
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, 0, -2)), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f * kCentre, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f * kCentre, 1e-6f);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, 0, 2)), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f * kCentre, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f * kCentre, 1e-6f);
+    /* 45 degrees front-right at distance sqrt(2): pan 1/sqrt(2) */
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(1, 0, -1)), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    {
+        const double pi = 3.14159265358979323846;
+        double gain = 1.0 / (1.0 + (sqrt(2.0) - 1.0));
+        double theta = (1.0 / sqrt(2.0) + 1.0) * pi / 4.0;
+        ASSERT_FLOAT_EQ(l, (f32)(0.5 * gain * cos(theta)), 1e-6f);
+        ASSERT_FLOAT_EQ(r, (f32)(0.5 * gain * sin(theta)), 1e-6f);
+        ASSERT_TRUE(r > l);
+    }
+    /* height does not pan: above the listener is centre */
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, 2, 0)), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f * kCentre, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f * kCentre, 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_panning_follows_the_listener)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, 0, -2)), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, h, true), AUDIO_OK);
+    /* the listener turns to face +X: the source at -Z is now on its left */
+    audio_system_update(as, vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0));
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.0f, 1e-6f);
+    /* the listener walks past it: the source is now on its right */
+    audio_system_update(as, vec3(0, 0, -4), vec3(1, 0, 0), vec3(0, 1, 0));
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f, 1e-6f);
+    /* forward parallel to up has no right vector: centre */
+    audio_system_update(as, vec3(0, 0, -4), vec3(0, 1, 0), vec3(0, 1, 0));
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f * kCentre, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f * kCentre, 1e-6f);
+    /* a source on the listener: centre, full gain */
+    audio_system_update(as, vec3(0, 0, -2), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f * kCentre, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.5f * kCentre, 1e-6f);
+    /* a rolled listener with non-unit vectors: forward -Z (length 3), up +X
+     * (length 2), so right is -Y; the source 45 degrees down-front pans
+     * half way right */
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -3), vec3(2, 0, 0));
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, -1, -1)), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    {
+        const double pi = 3.14159265358979323846;
+        double gain = 1.0 / sqrt(2.0);
+        double theta = (1.0 / sqrt(2.0) + 1.0) * pi / 4.0;
+        ASSERT_FLOAT_EQ(l, (f32)(0.5 * gain * cos(theta)), 1e-6f);
+        ASSERT_FLOAT_EQ(r, (f32)(0.5 * gain * sin(theta)), 1e-6f);
+    }
+    audio_system_destroy(as);
+}
+
+/* a stereo stream: each channel is scaled by its own side's gain */
+TEST(pcm_stream_panning_scales_stereo_channels_by_side)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    ASSERT_EQ(audio_pcm_stream_open(as, 2u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(1, 0, -1)), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, h, true), AUDIO_OK);
+    const i16 pcm[2] = {16384, 8192};
+    u32 written = 0;
+    f32 out[2];
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 1u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    const double pi = 3.14159265358979323846;
+    double gain = 1.0 / sqrt(2.0);
+    double theta = (1.0 / sqrt(2.0) + 1.0) * pi / 4.0;
+    ASSERT_FLOAT_EQ(out[0], (f32)(0.5 * gain * cos(theta)), 1e-6f);
+    ASSERT_FLOAT_EQ(out[1], (f32)(0.25 * gain * sin(theta)), 1e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_panning_off_and_reopen_restore_equal_gains)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(2, 0, 0)), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, h, true), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.0f, 1e-6f);
+    /* new spatial settings keep panning on */
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 2.0f, 1.0f), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.5f / 3.0f, 1e-6f);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, h, false), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f / 3.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.5f / 3.0f, 1e-6f);
+    /* a later position update stays unpanned */
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(2, 0, 0)), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f / 3.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.5f / 3.0f, 1e-6f);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, h, true), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    /* the reopened slot is neither spatial nor panned */
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(r, 0.5f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(2, 0, 0)), AUDIO_OK);
+    ASSERT_TRUE(render_half_lr(as, h, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(r, 0.25f, 1e-6f);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -2152,4 +2348,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pcm_stream_spatial_gain_follows_distance_and_listener);
     RUN_TEST(pcm_stream_spatial_occlusion);
     RUN_TEST(spatial_event_and_stream_share_the_distance_model);
+    RUN_TEST(pcm_stream_panning_arguments);
+    RUN_TEST(pcm_stream_panning_follows_the_source_side);
+    RUN_TEST(pcm_stream_panning_follows_the_listener);
+    RUN_TEST(pcm_stream_panning_scales_stereo_channels_by_side);
+    RUN_TEST(pcm_stream_panning_off_and_reopen_restore_equal_gains);
 TEST_MAIN_END()

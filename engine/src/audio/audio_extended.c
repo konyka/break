@@ -124,6 +124,11 @@ typedef struct {
     /* distance attenuation (audio_pcm_stream_set_spatial); written and
      * recomputed on the owner thread, the mixer reads spatial_bits only */
     atomic_uint spatial_bits;
+    /* stereo panning (audio_pcm_stream_set_panning): left and right gains as
+     * one 64-bit pair (spatial_pack layout, left in the high half) so the
+     * mixer never sees one side updated without the other */
+    atomic_uint_least64_t pan_bits;
+    bool panning;
     bool spatial;
     f32 min_distance;
     f32 max_distance;
@@ -453,7 +458,12 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
     u32 tail = atomic_load_explicit(&stream->tail, memory_order_relaxed);
     u32 head = open ? atomic_load_explicit(&stream->head, memory_order_acquire) : tail;
     f32 gain = 0.0f;
+    f32 pan_left = 1.0f;
+    f32 pan_right = 1.0f;
     if (open) {
+        u64 pan = atomic_load_explicit(&stream->pan_bits, memory_order_relaxed);
+        pan_left = gain_from_bits((u32)(pan >> 32));
+        pan_right = spatial_gain_of(pan);
         f32 bus_gain = stream->bus == AUDIO_BUS_MASTER ? 1.0f :
             gain_from_bits(atomic_load_explicit(&stream->bus_gains[stream->bus],
                                                 memory_order_relaxed));
@@ -494,8 +504,8 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
                 left += (bl - left) * w;
                 right += (br - right) * w;
             }
-            left *= gain;
-            right *= gain;
+            left *= gain * pan_left;
+            right *= gain * pan_right;
             pos += stream->rate;
             /* release whole frames behind the position, but never more
              * than are queued: decimation may step past the last one */
@@ -558,6 +568,10 @@ static const ma_data_source_vtable AUDIO_PCM_STREAM_VTABLE = {
     pcm_stream_read, pcm_stream_seek, pcm_stream_format, pcm_stream_cursor,
     pcm_stream_length, NULL, MA_DATA_SOURCE_SELF_MANAGED_RANGE_AND_LOOP_POINT
 };
+
+static u64 pcm_stream_pan_pack(f32 left, f32 right) {
+    return ((u64)gain_to_bits(left) << 32) | gain_to_bits(right);
+}
 
 /* Handles are (generation << 3) | (slot + 1); 0 is never a handle. */
 static AudioPcmStreamHandle pcm_stream_handle(u32 slot, u32 generation) {
@@ -624,6 +638,9 @@ AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample
         stream->pos = 0u;
         pcm_stream_reset_filter(stream, sample_rate);
         stream->spatial = false;
+        stream->panning = false;
+        atomic_store_explicit(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f),
+                              memory_order_relaxed);
         stream->position = vec3(0, 0, 0);
         atomic_store_explicit(&stream->spatial_bits, gain_to_bits(1.0f), memory_order_relaxed);
         atomic_store_explicit(&stream->head, 0u, memory_order_relaxed);
@@ -692,7 +709,35 @@ static AudioResult spatial_gain(AudioExtended *ext, f32 min_distance, f32 max_di
                                 f32 rolloff, f32 occluded_gain, Vec3 position,
                                 f32 *out_gain);
 
-/* Recomputes and publishes a spatial stream's gain for its position. */
+/* Constant-power pan of `position` against the listener's right vector
+ * (forward x up): theta = (pan + 1) * pi / 4, left cos, right sin. A source
+ * on the listener or a listener without a right vector is centred. */
+static u64 pcm_stream_pan(const AudioSystem *as, Vec3 position) {
+    const double pi = 3.14159265358979323846;
+    double d[3], f[3], u[3];
+    for (u32 i = 0; i < 3; ++i) {
+        d[i] = (double)position.e[i] - as->listener_pos.e[i];
+        f[i] = as->listener_forward.e[i];
+        u[i] = as->listener_up.e[i];
+    }
+    double right[3] = {f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2],
+                       f[0] * u[1] - f[1] * u[0]};
+    double dlen = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    double rlen = sqrt(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+    double flen = sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    double ulen = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    double pan = 0.0;
+    if (dlen > 0.0 && rlen > 1e-9 * flen * ulen) {
+        pan = (d[0] * right[0] + d[1] * right[1] + d[2] * right[2]) / (dlen * rlen);
+        if (pan > 1.0) pan = 1.0;
+        if (pan < -1.0) pan = -1.0;
+    }
+    double theta = (pan + 1.0) * pi / 4.0;
+    return pcm_stream_pan_pack((f32)cos(theta), (f32)sin(theta));
+}
+
+/* Recomputes and publishes a spatial stream's gain (and pan, when panned)
+ * for its position. */
 static AudioResult pcm_stream_publish_spatial(AudioExtended *ext, AudioPcmStream *stream) {
     f32 gain = 1.0f;
     AudioResult result = spatial_gain(ext, stream->min_distance, stream->max_distance,
@@ -700,6 +745,10 @@ static AudioResult pcm_stream_publish_spatial(AudioExtended *ext, AudioPcmStream
                                       stream->position, &gain);
     if (result != AUDIO_OK) return result;
     atomic_store_explicit(&stream->spatial_bits, gain_to_bits(gain), memory_order_relaxed);
+    if (stream->panning) {
+        atomic_store_explicit(&stream->pan_bits, pcm_stream_pan(ext->owner, stream->position),
+                              memory_order_relaxed);
+    }
     return AUDIO_OK;
 }
 
@@ -735,6 +784,21 @@ AudioResult audio_pcm_stream_set_position(AudioSystem *as, AudioPcmStreamHandle 
     result = pcm_stream_publish_spatial(audio_extended(as), stream);
     if (result != AUDIO_OK) stream->position = previous;
     return result;
+}
+
+AudioResult audio_pcm_stream_set_panning(AudioSystem *as, AudioPcmStreamHandle handle,
+                                         bool enabled) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (!stream->spatial) return AUDIO_REJECTED;
+    stream->panning = enabled;
+    if (!enabled) {
+        atomic_store_explicit(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f),
+                              memory_order_relaxed);
+        return AUDIO_OK;
+    }
+    return pcm_stream_publish_spatial(audio_extended(as), stream);
 }
 
 AudioResult audio_pcm_stream_close(AudioSystem *as, AudioPcmStreamHandle handle) {
@@ -799,6 +863,7 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         stream->bus_gains = ext->bus_gains;
         atomic_init(&stream->gain_bits, gain_to_bits(0.0f));
         atomic_init(&stream->spatial_bits, gain_to_bits(1.0f));
+        atomic_init(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f));
         atomic_init(&stream->head, 0);
         atomic_init(&stream->tail, 0);
         atomic_init(&stream->open, false);
