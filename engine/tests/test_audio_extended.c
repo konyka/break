@@ -1672,6 +1672,155 @@ TEST(pcm_stream_rate_underrun_resumes_at_the_same_position)
     audio_system_destroy(as);
 }
 
+/* A spatial event and a spatial stream at the same place with the same
+ * rolloff get the same gain: they share one distance model. */
+TEST(spatial_event_and_stream_share_the_distance_model)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const f32 one = 1.0f;
+    AudioClipHandle clip = register_ramp(as, &one, 1);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.rolloff = 3.0f;
+    desc.max_distance = 50.0f;
+    ASSERT_EQ(audio_event_register(as, "far-call", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "far-call", vec3(5, 0, 0), &voice), AUDIO_OK);
+    {
+        /* the voice applies its start gain in the mixer */
+        f32 output[2];
+        ASSERT_EQ(audio_system_render(as, output, 1u), AUDIO_OK);
+    }
+    /* 1 / (1 + 3 * 4) */
+    ASSERT_FLOAT_EQ(audio_voice_spatial_gain(as, voice), 1.0f / 13.0f, 1e-6f);
+    AudioPcmStreamHandle h = 0;
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 50.0f, 3.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(5, 0, 0)), AUDIO_OK);
+    {
+        AudioPcmStream *stream =
+            &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
+        ASSERT_FLOAT_EQ(gain_from_bits(atomic_load(&stream->spatial_bits)),
+                        audio_voice_spatial_gain(as, voice), 1e-7f);
+    }
+    audio_system_destroy(as);
+}
+
+/* one rendered left sample of a stream holding the constant 0.5 */
+static f32 render_half(AudioSystem *as, AudioPcmStreamHandle h)
+{
+    const i16 half[1] = {16384};
+    u32 written = 0;
+    f32 out[2];
+    if (audio_pcm_stream_write_i16(as, h, half, 1u, &written) != AUDIO_OK || written != 1u) {
+        return -1.0f;
+    }
+    if (audio_system_render(as, out, 1u) != AUDIO_OK) return -1.0f;
+    return out[0];
+}
+
+TEST(pcm_stream_spatial_arguments)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    /* no spatial settings yet */
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(1, 0, 0)), AUDIO_REJECTED);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 0.0f, 10.0f, 1.0f, 0.5f), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 2.0f, 1.0f, 1.0f, 0.5f), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, -1.0f, 0.5f), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 1.5f), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, -0.1f), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, NAN, 10.0f, 1.0f, 0.5f), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, INFINITY, 1.0f, 0.5f), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(1, 0, 0)), AUDIO_REJECTED);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 0.5f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(2, 0, 0)), AUDIO_OK);
+    {
+        /* a rejected position changes neither the position nor the gain */
+        AudioPcmStream *stream =
+            &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
+        u32 bits = atomic_load(&stream->spatial_bits);
+        ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(NAN, 0, 0)), AUDIO_INVALID);
+        ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, INFINITY, 0)), AUDIO_INVALID);
+        ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, 0, -INFINITY)), AUDIO_INVALID);
+        ASSERT_EQ(atomic_load(&stream->spatial_bits), bits);
+        ASSERT_FLOAT_EQ(stream->position.e[0], 2.0f, 0.0f);
+        ASSERT_FLOAT_EQ(stream->position.e[1], 0.0f, 0.0f);
+        ASSERT_FLOAT_EQ(stream->position.e[2], 0.0f, 0.0f);
+    }
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, 0u, 1.0f, 10.0f, 1.0f, 0.5f), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_position(NULL, h, vec3(2, 0, 0)), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 0.5f), AUDIO_STALE);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(2, 0, 0)), AUDIO_STALE);
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_spatial_gain_follows_distance_and_listener)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    /* not spatial: full gain wherever the listener is */
+    audio_system_update(as, vec3(50, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_FLOAT_EQ(render_half(as, h), 0.5f, 1e-6f);
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 0.5f), AUDIO_OK);
+    /* at the origin, inside min distance: gain 1 */
+    ASSERT_FLOAT_EQ(render_half(as, h), 0.5f, 1e-6f);
+    /* d = 4: 1 / (1 + 1 * 3) */
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(4, 0, 0)), AUDIO_OK);
+    ASSERT_FLOAT_EQ(render_half(as, h), 0.5f * 0.25f, 1e-6f);
+    /* rolloff 2 at d = 4: 1 / (1 + 2 * 3) */
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 2.0f, 0.5f), AUDIO_OK);
+    ASSERT_FLOAT_EQ(render_half(as, h), 0.5f / 7.0f, 1e-6f);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 0.5f), AUDIO_OK);
+    /* beyond max distance: clamped at d = 10 */
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, 40, 0)), AUDIO_OK);
+    ASSERT_FLOAT_EQ(render_half(as, h), 0.5f * 0.1f, 1e-6f);
+    /* the listener moves next to the stream: the gain follows */
+    audio_system_update(as, vec3(0, 38, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+    ASSERT_FLOAT_EQ(render_half(as, h), 0.5f * (1.0f / 2.0f), 1e-6f);
+    /* a reopened slot starts without spatial settings */
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_FLOAT_EQ(render_half(as, h), 0.5f, 1e-6f);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(4, 0, 0)), AUDIO_REJECTED);
+    audio_system_destroy(as);
+}
+
+static bool g_stream_occluded;
+
+static bool stream_occlusion_ray(void *user, Vec3 listener, Vec3 source)
+{
+    (void)user;
+    (void)listener;
+    (void)source;
+    return g_stream_occluded;
+}
+
+TEST(pcm_stream_spatial_occlusion)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    audio_set_occlusion_ray_callback(as, stream_occlusion_ray, NULL);
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 1.0f, 10.0f, 1.0f, 0.25f), AUDIO_OK);
+    g_stream_occluded = true;
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(2, 0, 0)), AUDIO_OK);
+    ASSERT_FLOAT_EQ(render_half(as, h), 0.5f * 0.5f * 0.25f, 1e-6f);
+    g_stream_occluded = false;
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(2, 0, 0)), AUDIO_OK);
+    ASSERT_FLOAT_EQ(render_half(as, h), 0.5f * 0.5f, 1e-6f);
+    audio_set_occlusion_ray_callback(as, NULL, NULL);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -1725,4 +1874,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pcm_stream_downsample_skips_a_frame_that_arrives_late);
     RUN_TEST(pcm_stream_rate_underrun_resumes_at_the_same_position);
     RUN_TEST(pcm_stream_reopen_starts_at_the_first_frame);
+    RUN_TEST(pcm_stream_spatial_arguments);
+    RUN_TEST(pcm_stream_spatial_gain_follows_distance_and_listener);
+    RUN_TEST(pcm_stream_spatial_occlusion);
+    RUN_TEST(spatial_event_and_stream_share_the_distance_model);
 TEST_MAIN_END()

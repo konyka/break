@@ -113,6 +113,15 @@ typedef struct {
     u32 rate;
     u64 pos;
     atomic_uint gain_bits;
+    /* distance attenuation (audio_pcm_stream_set_spatial); written and
+     * recomputed on the owner thread, the mixer reads spatial_bits only */
+    atomic_uint spatial_bits;
+    bool spatial;
+    f32 min_distance;
+    f32 max_distance;
+    f32 rolloff;
+    f32 occluded_gain;
+    Vec3 position;
     atomic_uint head;
     atomic_uint tail;
     atomic_bool open;
@@ -419,6 +428,7 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
         f32 master_gain = gain_from_bits(atomic_load_explicit(
             &stream->bus_gains[AUDIO_BUS_MASTER], memory_order_relaxed));
         gain = gain_from_bits(atomic_load_explicit(&stream->gain_bits, memory_order_relaxed)) *
+               gain_from_bits(atomic_load_explicit(&stream->spatial_bits, memory_order_relaxed)) *
                bus_gain * master_gain;
     }
     /* An output frame interpolates source frames tail+i and tail+i+1, i the
@@ -550,6 +560,9 @@ AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample
                               memory_order_relaxed);
         stream->rate = sample_rate;
         stream->pos = 0u;
+        stream->spatial = false;
+        stream->position = vec3(0, 0, 0);
+        atomic_store_explicit(&stream->spatial_bits, gain_to_bits(1.0f), memory_order_relaxed);
         atomic_store_explicit(&stream->head, 0u, memory_order_relaxed);
         atomic_store_explicit(&stream->tail, 0u, memory_order_relaxed);
         atomic_store_explicit(&stream->underruns, 0u, memory_order_relaxed);
@@ -610,6 +623,55 @@ AudioResult audio_pcm_stream_underruns(AudioSystem *as, AudioPcmStreamHandle han
     if (!out_frames) return AUDIO_INVALID;
     *out_frames = atomic_load_explicit(&stream->underruns, memory_order_relaxed);
     return AUDIO_OK;
+}
+
+static AudioResult spatial_gain(AudioExtended *ext, f32 min_distance, f32 max_distance,
+                                f32 rolloff, f32 occluded_gain, Vec3 position,
+                                f32 *out_gain);
+
+/* Recomputes and publishes a spatial stream's gain for its position. */
+static AudioResult pcm_stream_publish_spatial(AudioExtended *ext, AudioPcmStream *stream) {
+    f32 gain = 1.0f;
+    AudioResult result = spatial_gain(ext, stream->min_distance, stream->max_distance,
+                                      stream->rolloff, stream->occluded_gain,
+                                      stream->position, &gain);
+    if (result != AUDIO_OK) return result;
+    atomic_store_explicit(&stream->spatial_bits, gain_to_bits(gain), memory_order_relaxed);
+    return AUDIO_OK;
+}
+
+AudioResult audio_pcm_stream_set_spatial(AudioSystem *as, AudioPcmStreamHandle handle,
+                                         f32 min_distance, f32 max_distance, f32 rolloff,
+                                         f32 occluded_gain) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (!isfinite(min_distance) || min_distance <= 0.0f ||
+        !isfinite(max_distance) || max_distance < min_distance ||
+        !isfinite(rolloff) || rolloff < 0.0f ||
+        !isfinite(occluded_gain) || occluded_gain < 0.0f || occluded_gain > 1.0f) {
+        return AUDIO_INVALID;
+    }
+    stream->min_distance = min_distance;
+    stream->max_distance = max_distance;
+    stream->rolloff = rolloff;
+    stream->occluded_gain = occluded_gain;
+    stream->spatial = true;
+    return pcm_stream_publish_spatial(audio_extended(as), stream);
+}
+
+AudioResult audio_pcm_stream_set_position(AudioSystem *as, AudioPcmStreamHandle handle,
+                                          Vec3 position) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (!stream->spatial) return AUDIO_REJECTED;
+    /* spatial_gain refuses a non-finite position; keep the old one then */
+    Vec3 previous = stream->position;
+    stream->position = position;
+    result = pcm_stream_publish_spatial(audio_extended(as), stream);
+    if (result != AUDIO_OK) stream->position = previous;
+    return result;
 }
 
 AudioResult audio_pcm_stream_close(AudioSystem *as, AudioPcmStreamHandle handle) {
@@ -673,6 +735,7 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         AudioPcmStream *stream = &ext->pcm_streams[i];
         stream->bus_gains = ext->bus_gains;
         atomic_init(&stream->gain_bits, gain_to_bits(0.0f));
+        atomic_init(&stream->spatial_bits, gain_to_bits(1.0f));
         atomic_init(&stream->head, 0);
         atomic_init(&stream->tail, 0);
         atomic_init(&stream->open, false);
@@ -880,13 +943,11 @@ static AudioVoiceHandle voice_handle(u32 slot, u32 serial) {
     return ((serial & 0xFFFFFFu) << 8) | (slot + 1u);
 }
 
-static AudioResult event_spatial_gain(AudioExtended *ext,
-    const AudioEventDesc *desc, Vec3 position, f32 *out_gain) {
-    if (!out_gain) return AUDIO_INVALID;
-    if (!desc->spatial) {
-        *out_gain = 1.0f;
-        return AUDIO_OK;
-    }
+/* Inverse-distance attenuation from the listener with the occlusion ray;
+ * shared by spatial events and spatial PCM streams. */
+static AudioResult spatial_gain(AudioExtended *ext, f32 min_distance, f32 max_distance,
+                                f32 rolloff, f32 occluded_gain, Vec3 position,
+                                f32 *out_gain) {
     Vec3 listener = ext->owner->listener_pos;
     for (u32 i = 0; i < 3; ++i) {
         if (!isfinite(listener.e[i]) || !isfinite(position.e[i])) {
@@ -897,21 +958,32 @@ static AudioResult event_spatial_gain(AudioExtended *ext,
     double dy = (double)position.e[1] - listener.e[1];
     double dz = (double)position.e[2] - listener.e[2];
     double distance = sqrt(dx * dx + dy * dy + dz * dz);
-    double minimum = desc->min_distance;
-    double maximum = desc->max_distance;
+    double minimum = min_distance;
+    double maximum = max_distance;
     double clamped = distance < minimum ? minimum :
                      (distance > maximum ? maximum : distance);
-    double denominator = minimum + desc->rolloff * (clamped - minimum);
+    double denominator = minimum + rolloff * (clamped - minimum);
     double gain = minimum / denominator;
     if (!isfinite(distance) || !isfinite(gain)) return AUDIO_INVALID;
     if (gain < 0.0f) gain = 0.0f;
     if (gain > 1.0f) gain = 1.0f;
     if (ext->ray && ext->ray(ext->ray_user, listener, position)) {
-        gain *= desc->occluded_gain;
+        gain *= occluded_gain;
     }
     if (!isfinite(gain)) return AUDIO_INVALID;
     *out_gain = (f32)gain;
     return isfinite(*out_gain) ? AUDIO_OK : AUDIO_INVALID;
+}
+
+static AudioResult event_spatial_gain(AudioExtended *ext,
+    const AudioEventDesc *desc, Vec3 position, f32 *out_gain) {
+    if (!out_gain) return AUDIO_INVALID;
+    if (!desc->spatial) {
+        *out_gain = 1.0f;
+        return AUDIO_OK;
+    }
+    return spatial_gain(ext, desc->min_distance, desc->max_distance, desc->rolloff,
+                        desc->occluded_gain, position, out_gain);
 }
 
 static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain) {
@@ -1133,6 +1205,12 @@ f32 audio_voice_spatial_gain(AudioSystem *as, AudioVoiceHandle handle) {
 void audio_extended_listener_update(AudioSystem *as) {
     AudioExtended *ext = audio_extended(as);
     if (!ext) return;
+    for (u32 i = 0; i < AUDIO_PCM_STREAM_MAX; ++i) {
+        AudioPcmStream *stream = &ext->pcm_streams[i];
+        if (stream->spatial && atomic_load_explicit(&stream->open, memory_order_acquire)) {
+            (void)pcm_stream_publish_spatial(ext, stream);
+        }
+    }
     reap_voices(ext);
     for (u32 i = 2; i < AUDIO_MAX_VOICES; ++i) {
         AudioVoice *voice = &ext->voices[i];

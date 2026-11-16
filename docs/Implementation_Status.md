@@ -11381,3 +11381,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `audio_pcm_stream_open_rate(as, channels, sample_rate, bus, volume, &h)`：流可按 8000..192000 Hz 写入，混音回调用整数位置（以 1/48000 帧为单位）做线性插值转换到 48 kHz；缺数据时位置不前进，迟到的数据从原位置继续；降采样时被跨过的帧在到达后跳过。`audio_pcm_stream_open` 等同 48 kHz。
 - `test_audio_extended` 新增 7 项（共 52），`test_voice_playback` 新增 16 kHz 语音端到端（共 3）。TSan 发现并修复了一处竞态（关闭的槽位被重新打开时混音回调读取其位置），TSan 五次运行与 ASan+UBSan 无报告。19 项变异全部被捕获。
 - 仍缺：降采样前的低通滤波、流的空间化、麦克风采集与编码。
+
+### 2026-11-16 spatial PCM streams
+
+- `audio_pcm_stream_set_spatial(as, h, min, max, rolloff, occluded_gain)` 与 `audio_pcm_stream_set_position(as, h, pos)`：PCM 流（网络语音）可按与空间事件相同的反比距离模型和遮挡射线随距离衰减；监听者移动（`audio_system_update`）时重新计算。空间事件与流共用一个 `spatial_gain` 计算。只调增益，没有声像、HRTF 或多普勒。
+- `test_audio_extended` 新增 4 项（共 56）。先 RED 后 GREEN，17 项变异全部被捕获；TSan 与 ASan+UBSan 无报告。

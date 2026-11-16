@@ -132,6 +132,18 @@ AudioResult audio_pcm_stream_queued(AudioSystem *as, AudioPcmStreamHandle handle
 AudioResult audio_pcm_stream_underruns(AudioSystem *as, AudioPcmStreamHandle handle,
                                        u64 *out_frames);
 AudioResult audio_pcm_stream_close(AudioSystem *as, AudioPcmStreamHandle handle);
+/* Turns on distance attenuation for a stream, with the same model, checks
+ * and occlusion ray as a spatial event: min_distance > 0, max_distance >=
+ * min_distance, rolloff >= 0, occluded_gain in 0..1 (else INVALID, nothing
+ * changes). The stream keeps its position (the origin until set). The
+ * listener (audio_system_update) and the position both update the gain. */
+AudioResult audio_pcm_stream_set_spatial(AudioSystem *as, AudioPcmStreamHandle handle,
+                                         f32 min_distance, f32 max_distance, f32 rolloff,
+                                         f32 occluded_gain);
+/* REJECTED for a stream without set_spatial (checked first); INVALID for
+ * a non-finite position, which leaves the position and gain unchanged. */
+AudioResult audio_pcm_stream_set_position(AudioSystem *as, AudioPcmStreamHandle handle,
+                                          Vec3 position);
 
 AudioResult audio_clip_register(AudioSystem *as, const char *name,
                                 const AudioPcmDesc *pcm,

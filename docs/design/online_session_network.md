@@ -110,4 +110,4 @@ apply 要求相同 schema hash、live generation 和递增的每对象 record ep
 
 ## 补充（2026-11-16）：语音接入混音器
 
-`pop` 本身仍不调用音频设备。新增 `audio_pcm_stream_*`（`audio/audio_extended.h`）：应用在 LogicThread 把 `break_voice_receiver_pop` 得到的 PCM 写入一个流，混音器在音频回调里按顺序播放，空了就输出静音并计入 underrun。（2026-11-16 更新：`audio_pcm_stream_open_rate` 接受 8000..192000 Hz 的流，混音器以线性插值转换到 48 kHz，因此 8/16/24 kHz 语音可直接写入；降采样不做低通滤波。）没有空间化或麦克风采集。`test_voice_playback` 把乱序到达的 `BRV1` 帧经真实接收器写入流，验证混音输出与发送顺序一致。设计与验证见 `docs/superpowers/plans/2026-11-16-audio-pcm-stream.md`。
+`pop` 本身仍不调用音频设备。新增 `audio_pcm_stream_*`（`audio/audio_extended.h`）：应用在 LogicThread 把 `break_voice_receiver_pop` 得到的 PCM 写入一个流，混音器在音频回调里按顺序播放，空了就输出静音并计入 underrun。（2026-11-16 更新：`audio_pcm_stream_open_rate` 接受 8000..192000 Hz 的流，混音器以线性插值转换到 48 kHz，因此 8/16/24 kHz 语音可直接写入；降采样不做低通滤波。2026-11-16 再补充：`audio_pcm_stream_set_spatial` / `set_position` 让流按与空间事件相同的距离衰减与遮挡模型随监听者和声源位置变化增益，只调增益，没有声像或 HRTF。）没有麦克风采集。`test_voice_playback` 把乱序到达的 `BRV1` 帧经真实接收器写入流，验证混音输出与发送顺序一致。设计与验证见 `docs/superpowers/plans/2026-11-16-audio-pcm-stream.md`。
