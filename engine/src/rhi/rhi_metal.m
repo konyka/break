@@ -541,7 +541,8 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
     mb->queue = queue;
     mb->layer = layer;               /* not owned */
     /* Task 10: the offline-compiled shader library lives beside the
-     * executable (engine_link_rhi_backend copies it per consumer). A missing
+     * executable (CMake copies it once per executable directory, or into
+     * each app bundle; see engine_link_rhi_backend). A missing
      * metallib degrades to per-shader embedded-MSL compilation at shader
      * create (LOG_WARN path), never to silence. */
     @autoreleasepool {

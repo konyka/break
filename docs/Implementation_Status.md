@@ -11361,3 +11361,7 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - `BreakHttpConfig.crl_file`：从本地 PEM 文件加载 CRL，握手时检查整条证书链（`X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL`）；吊销、缺少签发者 CRL、CRL 过期或签名错误均为 `ERR_TLS`，文件不可读或没有 CRL 为 `ERR_URL`（不建立连接）。不设置时行为不变。
 - `test_break_http` 新增 5 项（测试内生成 CA、中间 CA、叶子证书和 CRL），共 48 项。先 RED 后 GREEN，9 项变异全部被捕获。仍缺：OCSP、按分发点下载 CRL。
+
+### 2026-11-16 Metal build: shared engine.metallib copy
+
+- macOS CI 在 `81b31e64` 链接 `dxx_break` 时失败：多个可执行文件在 POST_BUILD 中并行把 `engine.metallib` 复制到同一目录，`copy_if_different` 互相竞争导致 "No such file or directory"。改为一个共享的复制目标 `engine_metallib_beside_executables`，普通可执行文件依赖它；iOS app bundle 仍各自复制到自己的 bundle 内。`test_metal_shader_pipeline` 新增检查，旧写法下失败。说明见 `docs/superpowers/plans/2026-11-16-metallib-copy-race.md`。Metal 构建只能在 macOS CI 上验证。

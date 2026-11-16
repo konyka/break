@@ -1407,6 +1407,32 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         ${METAL_SHADER_OUT_DIR}/engine.metallib
         ${METAL_SHADER_OUT_DIR}/rhi_metal_shader_manifest.c)
     add_dependencies(engine_rhi_metal engine_metal_shaders)
+    # engine.metallib beside the executables, copied once. Every consumer
+    # used to copy it in its own POST_BUILD step into the same directory;
+    # parallel copy_if_different runs to one destination race and fail with
+    # "No such file or directory". Executables in this project share
+    # CMAKE_CURRENT_BINARY_DIR; app bundles (iOS engine_demo) copy their own.
+    # iOS executables are app bundles (CMAKE_MACOSX_BUNDLE defaults ON):
+    # each copies into its own bundle, so there is nothing to share.
+    if(NOT ENGINE_PLATFORM STREQUAL "ios")
+        get_property(engine_metal_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+        if(engine_metal_multi_config)
+            set(ENGINE_METALLIB_EXE_DIR ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>)
+        else()
+            set(ENGINE_METALLIB_EXE_DIR ${CMAKE_CURRENT_BINARY_DIR})
+        endif()
+        add_custom_command(
+            OUTPUT ${ENGINE_METALLIB_EXE_DIR}/engine.metallib
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${METAL_SHADER_OUT_DIR}/engine.metallib
+                ${ENGINE_METALLIB_EXE_DIR}/engine.metallib
+            DEPENDS ${METAL_SHADER_OUT_DIR}/engine.metallib
+            COMMENT "engine.metallib -> executable directory"
+            VERBATIM)
+        add_custom_target(engine_metallib_beside_executables DEPENDS
+            ${ENGINE_METALLIB_EXE_DIR}/engine.metallib)
+        add_dependencies(engine_metallib_beside_executables engine_metal_shaders)
+    endif()
     target_sources(engine_rhi_metal PRIVATE
         ${METAL_SHADER_OUT_DIR}/rhi_metal_shader_manifest.c)
 endif()
@@ -1557,6 +1583,15 @@ if(WIN32 AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         RHI_D3D12_SHADER_DXIL_DIR="${CMAKE_CURRENT_BINARY_DIR}/shaders_d3d12")
 endif()
 
+# An app bundle loads engine.metallib from inside itself; each bundle is its
+# own destination, so a per-target copy cannot race.
+function(engine_copy_metallib_into_bundle target)
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${METAL_SHADER_OUT_DIR}/engine.metallib
+            $<TARGET_FILE_DIR:${target}>/engine.metallib)
+endfunction()
+
 # Link exactly one RHI backend into a consumer executable. Headless
 # contract tests do NOT call this helper; they link engine_rhi_headless.
 function(engine_link_rhi_backend target)
@@ -1564,12 +1599,16 @@ function(engine_link_rhi_backend target)
         target_link_libraries(${target} PRIVATE engine_rhi_metal)
         if(APPLE)
             # Task 10: engine.metallib must sit beside the executable
-            # (rhi_device_create loads it relative to the main bundle).
+            # (rhi_device_create loads it relative to the main bundle). A
+            # bundle gets its own copy inside it; plain executables share the
+            # one engine_metallib_beside_executables writes.
             add_dependencies(${target} engine_metal_shaders)
-            add_custom_command(TARGET ${target} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    ${METAL_SHADER_OUT_DIR}/engine.metallib
-                    $<TARGET_FILE_DIR:${target}>/engine.metallib)
+            get_target_property(target_is_bundle ${target} MACOSX_BUNDLE)
+            if(target_is_bundle OR NOT TARGET engine_metallib_beside_executables)
+                engine_copy_metallib_into_bundle(${target})
+            else()
+                add_dependencies(${target} engine_metallib_beside_executables)
+            endif()
         endif()
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         target_link_libraries(${target} PRIVATE engine_rhi_d3d12)

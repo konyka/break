@@ -100,6 +100,33 @@ expect_file_contains("${eng_cmake}" "-apple-macosx")
 expect_file_contains("${eng_cmake}" "--sdk macosx --show-sdk-path")
 expect_file_contains("${eng_cmake}" "-isysroot")
 
+# 4b. Executables that share an output directory must not each copy
+# engine.metallib there: parallel copy_if_different runs to one destination
+# race (one removes the file another is replacing: "No such file or
+# directory", macOS CI on 81b31e64). One target owns the copy per directory.
+expect_file_contains("${eng_cmake}" "engine_metallib_beside_executables")
+file(READ "${eng_cmake}" eng_text)
+string(FIND "${eng_text}" "function(engine_link_rhi_backend target)" fn_begin)
+string(FIND "${eng_text}" "endfunction()" fn_end_rel_search)
+if(fn_begin EQUAL -1)
+    message(WARNING "engine_link_rhi_backend not found")
+    math(EXPR failures "${failures} + 1")
+else()
+    string(SUBSTRING "${eng_text}" ${fn_begin} -1 fn_tail)
+    string(FIND "${fn_tail}" "endfunction()" fn_len)
+    string(SUBSTRING "${fn_tail}" 0 ${fn_len} fn_body)
+    string(FIND "${fn_body}" "copy_if_different" per_target_copy)
+    if(NOT per_target_copy EQUAL -1)
+        message(WARNING "engine_link_rhi_backend copies engine.metallib per target (races)")
+        math(EXPR failures "${failures} + 1")
+    endif()
+    string(FIND "${fn_body}" "engine_metallib_beside_executables" uses_owner)
+    if(uses_owner EQUAL -1)
+        message(WARNING "engine_link_rhi_backend does not depend on the shared metallib copy")
+        math(EXPR failures "${failures} + 1")
+    endif()
+endif()
+
 # 5. Runtime: manifest lookup in the backend.
 set(metal_m "${REPO_ROOT}/engine/src/rhi/rhi_metal.m")
 expect_file_contains("${metal_m}" "rhi_metal_fnv1a64")
