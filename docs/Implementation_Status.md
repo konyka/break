@@ -11371,3 +11371,7 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `audio_pcm_stream_open / write_i16 / queued / underruns / close`：最多 4 路实时 PCM 流，每路一个 12000 帧（48 kHz 下 250 ms）的单生产者/单消费者环形缓冲；生产端写 16 位 PCM，不阻塞、不分配；混音回调按顺序播放，缓冲为空时输出静音并计数。增益为音量 × 总线 × 主总线。关闭后句柄失效，槽位以新代号复用。
 - 新增 `test_voice_playback`（2 项）：网络语音帧经真实 `break_online_voice` 接收器（乱序、抖动缓冲）写入流，FAKE 后端渲染结果与发送顺序一致；另一项让独立线程持续混音，同时反复打开、写入、关闭流，TSan 与 ASan+UBSan 下均无报告，去掉 `close` 中等待混音读取的代码后 ASan 在 20 次中 16 次报 heap-use-after-free。`test_audio_extended` 新增 3 项，`test_audio_realtime_contract` 覆盖新的混音回调。先 RED 后 GREEN，21 项变异全部被捕获。
 - 仍缺：采样率转换、流的空间化、麦克风采集、真实设备上的听感测试。
+
+### 2026-11-16 audio PCM stream ring wraparound fix
+
+- `57c9073d` 的 PCM 流环形缓冲容量为 12000 帧，以 `计数 % 12000` 取槽位；计数是自由递增的 u32，在约 24.8 小时（48 kHz）后回绕时下标会跳变，回绕前后写入的帧可能落进同一槽位。容量改为 16384 帧（2 的幂，约 341 ms），以掩码取槽位，并用 `_Static_assert` 固定。新增 `pcm_stream_ring_survives_counter_wraparound`（把计数设到 `0xFFFFFFF0` 后跨越回绕写满并逐帧核对），旧实现下失败，修复后通过；TSan、ASan+UBSan 无报告。

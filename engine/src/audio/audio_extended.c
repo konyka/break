@@ -89,6 +89,11 @@ typedef struct {
     bool used;
 } AudioEvent;
 
+/* head and tail are free-running u32 counters; masking them only stays in
+ * order across their wrap when the capacity divides 2^32. */
+_Static_assert((AUDIO_PCM_STREAM_FRAMES & (AUDIO_PCM_STREAM_FRAMES - 1u)) == 0u,
+               "AUDIO_PCM_STREAM_FRAMES must be a power of two");
+
 /* One live PCM stream: an SPSC ring of interleaved f32 frames. The producer
  * (audio_pcm_stream_write_i16) owns `head`, the mixer callback owns `tail`.
  * `open` and `gain_bits` are published with release stores and read with
@@ -416,7 +421,7 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
         f32 right = 0.0f;
         if (tail != head) {
             const f32 *src = stream->ring +
-                (usize)(tail % AUDIO_PCM_STREAM_FRAMES) * stream->channels;
+                (usize)(tail & (AUDIO_PCM_STREAM_FRAMES - 1u)) * stream->channels;
             left = src[0] * gain;
             right = stream->channels == 2u ? src[1] * gain : left;
             tail++;
@@ -530,7 +535,8 @@ AudioResult audio_pcm_stream_write_i16(AudioSystem *as, AudioPcmStreamHandle han
     u32 room = AUDIO_PCM_STREAM_FRAMES - (head - tail);
     u32 count = frame_count < room ? frame_count : room;
     for (u32 i = 0; i < count; ++i) {
-        f32 *dst = stream->ring + (usize)((head + i) % AUDIO_PCM_STREAM_FRAMES) * stream->channels;
+        f32 *dst = stream->ring +
+                   (usize)((head + i) & (AUDIO_PCM_STREAM_FRAMES - 1u)) * stream->channels;
         for (u32 c = 0; c < stream->channels; ++c) {
             dst[c] = (f32)samples[(usize)i * stream->channels + c] / 32768.0f;
         }

@@ -14,8 +14,9 @@ mixer, buses and device.
   - `audio_pcm_stream_open(as, channels (1|2), bus, volume, &handle)`:
     at most `AUDIO_PCM_STREAM_MAX` (4) streams. Each owns a lock-free
     single-producer / single-consumer ring of
-    `AUDIO_PCM_STREAM_FRAMES` (48000 / 4 = 12000 frames, 250 ms at the
-    48 kHz engine rate) interleaved `f32` frames, allocated at open.
+    `AUDIO_PCM_STREAM_FRAMES` interleaved `f32` frames, allocated at open.
+    The capacity was 12000 (250 ms) in the first commit and is 16384
+    (about 341 ms) since the follow-up below.
   - `audio_pcm_stream_write_i16(as, handle, samples, frame_count,
     &written)`: converts `i16` to `f32` (x / 32768) and copies as many
     frames as fit; returns `AUDIO_OK` with `written <= frame_count`.
@@ -81,3 +82,15 @@ mixer, buses and device.
 - Not done: sample-rate conversion (the stream runs at the engine's
   48 kHz, so a voice stream must use that rate), spatial positioning of a
   stream, capture from a microphone.
+
+## Follow-up: ring wraparound
+The ring's `head` and `tail` are free-running `u32` counters indexed with
+`counter % capacity`. With a capacity of 12000, which does not divide
+2^32, the index jumps when a counter wraps (after about 24.8 hours of
+48 kHz audio): frames written just before and just after the wrap could
+land in the same slot. `pcm_stream_ring_survives_counter_wraparound` sets
+both counters to `0xFFFFFFF0`, fills the ring across the wrap and checks
+every rendered sample; it failed against the 12000-frame ring (a sample
+off by 0.34) and passes with a 16384-frame ring indexed by mask. A
+`_Static_assert` keeps the capacity a power of two. Clean under TSan and
+ASan+UBSan.

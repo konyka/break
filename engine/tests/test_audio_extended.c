@@ -1446,6 +1446,32 @@ TEST(pcm_stream_ring_is_bounded_and_underruns_play_silence)
     audio_system_destroy(as);
 }
 
+/* The ring counters are free-running u32s. Across their wrap at 2^32 (about
+ * 24.8 h of 48 kHz audio) a full ring must keep every frame in order:
+ * the capacity has to divide 2^32 or two live frames share a slot. */
+TEST(pcm_stream_ring_survives_counter_wraparound)
+{
+    static i16 pcm[AUDIO_PCM_STREAM_FRAMES];
+    static f32 out[2u * AUDIO_PCM_STREAM_FRAMES];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    u32 written = 0;
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    AudioPcmStream *stream = &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
+    atomic_store(&stream->head, 0xFFFFFFF0u);
+    atomic_store(&stream->tail, 0xFFFFFFF0u);
+    for (u32 i = 0; i < AUDIO_PCM_STREAM_FRAMES; ++i) pcm[i] = (i16)(i + 1u);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, AUDIO_PCM_STREAM_FRAMES, &written),
+              AUDIO_OK);
+    ASSERT_EQ(written, AUDIO_PCM_STREAM_FRAMES);
+    ASSERT_EQ(audio_system_render(as, out, AUDIO_PCM_STREAM_FRAMES), AUDIO_OK);
+    for (u32 i = 0; i < AUDIO_PCM_STREAM_FRAMES; ++i) {
+        ASSERT_FLOAT_EQ(out[2u * i], (f32)(i + 1u) / 32768.0f, 1e-7f);
+    }
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -1491,4 +1517,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pcm_stream_open_bounds_and_handles);
     RUN_TEST(pcm_stream_plays_mono_and_stereo_with_gain);
     RUN_TEST(pcm_stream_ring_is_bounded_and_underruns_play_silence);
+    RUN_TEST(pcm_stream_ring_survives_counter_wraparound);
 TEST_MAIN_END()

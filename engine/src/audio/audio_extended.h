@@ -95,12 +95,14 @@ AudioResult audio_music_state(AudioSystem *as, AudioMusicState *out_state,
  * A stream plays PCM that arrives while it plays (network voice, generated
  * audio). The producer writes 16-bit PCM from one thread; the mixer reads
  * it from a bounded single-producer / single-consumer ring of
- * AUDIO_PCM_STREAM_FRAMES frames at the engine rate (48 kHz) and plays
- * silence when the ring runs dry (an underrun). Gain is volume x bus x
+ * AUDIO_PCM_STREAM_FRAMES frames (about 341 ms) at the engine rate
+ * (48 kHz) and plays silence when the ring runs dry (an underrun). The
+ * capacity is a power of two so the free-running ring counters stay
+ * correct when they wrap. Gain is volume x bus x
  * master, like event voices. A closed stream's handle is stale; the slot
  * is reused with a new generation. */
 #define AUDIO_PCM_STREAM_MAX 4u
-#define AUDIO_PCM_STREAM_FRAMES 12000u
+#define AUDIO_PCM_STREAM_FRAMES 16384u
 
 typedef u32 AudioPcmStreamHandle;
 
