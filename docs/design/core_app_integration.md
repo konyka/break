@@ -1448,4 +1448,6 @@ mount 清空、commit 分类和第二次 completion 等待分别做了独立生�
 
 补充（2026-11-16）：`core_app --trace-timestamps`（需要 `--trace`）让每条 trace 行在 `COREAPPTRACE version=1 ` 之后带 `ts_us=<单调时钟微秒>`，配合 `--trace-json` 得到真实时间轴。core_app 的全部写入点（`app_trace`、渲染、音频、GPU、网络传输）都经 `core/trace_core_app.h` 的 `break_trace_core_app_fprintf` / `vfprintf` / `write`；时钟由 `break_trace_core_app_set_clock` 进程级设置，默认未设置时直接调用 `vfprintf`，输出与 libc 调用和以前完全一致。时钟是本机单调时钟，同一台机器上多个进程的 trace 可直接由 `trace_merge` 对齐；不同机器之间仍需时钟对齐。见 `docs/superpowers/plans/2026-11-16-core-app-trace-ts-writer.md`。
 
+补充（2026-11-16）：`core/clock_offset.h` 提供不同机器之间的时钟偏移估计。一个样本是 NTP 式的四个微秒时间戳（A 发送 t0、B 接收 t1、B 回复 t2、A 接收 t3），`offset = floor(((t1-t0)+(t2-t3))/2)` 为 B 减 A，`delay = (t3-t0)-(t2-t1)`。t2 < t1、往返短于 B 的停留时间（含 t3 < t0）或时间戳超过 2^61 的样本被拒绝并计数。估计器保留最近 8 个样本，取 delay 最小者（相同时取最新），误差上界 `ceil(delay/2)`，无论两个方向如何分配延迟都成立。`clock_offset_merge_shifts` 把偏移换算成 `trace_merge --offset-us` 所需的两个非负平移量。探测包在 core_app 会话协议上的收发尚未实现。见 `docs/superpowers/plans/2026-11-16-clock-offset-estimator.md`。
+
 `core_app --trace-json PATH`（需同时给出 `--trace`）在运行结束后调用上述转换并写出 JSON；写入失败时退出码为 2。

@@ -7618,6 +7618,11 @@ endif()
     target_link_libraries(test_profiler PRIVATE m)
     add_test(NAME test_profiler COMMAND test_profiler)
 
+    add_executable(test_clock_offset tests/test_clock_offset.c src/core/clock_offset.c)
+    target_include_directories(test_clock_offset PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_clock_offset COMMAND test_clock_offset)
+    set_tests_properties(test_clock_offset PROPERTIES LABELS "headless")
+
     add_executable(test_trace_core_app tests/test_trace_core_app.c src/core/trace_core_app.c)
     target_include_directories(test_trace_core_app PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_trace_core_app COMMAND test_trace_core_app)

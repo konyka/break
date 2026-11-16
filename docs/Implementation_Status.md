@@ -11476,3 +11476,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `core_app --trace-timestamps`（需要 `--trace`）：每条 trace 行带 `ts_us=<单调时钟微秒>`，`--trace-json` 输出真实时间轴。core_app 全部 trace 写入点改经 `break_trace_core_app_fprintf` / `vfprintf` / `write`（`core/trace_core_app.h`），时钟由 `break_trace_core_app_set_clock` 设置；未设置时直接调用 `vfprintf`，默认输出逐字节不变。
 - `test_trace_core_app` 新增 2 项（共 7）：有无时钟、非前缀文本原样输出、超过栈缓冲的长行、写出后转换 `timestamped == events`。`test_core_app_target_contract` 覆盖缺 `--trace` 时报错与帮助文本；`test_core_app_lifecycle` 覆盖每行都有 `ts_us`、时间单调不减、JSON 不再以序号 0 开头、事件数与行数一致。先 RED 后 GREEN；10 项变异全部被捕获；ASan 与 TSan 三次运行无报告。
 - 仍缺：不同机器上网络对端之间的时钟对齐。
+
+### 2026-11-16 clock offset estimator for network peers
+
+- `core/clock_offset.{h,c}`：NTP 式四时间戳样本计算 B 相对 A 的时钟偏移与往返延迟；非法样本（t2 < t1、停留时间超过往返、超过 2^61）拒绝并计数；8 样本滑动窗口取最小延迟样本（相同取最新），误差上界 `ceil(delay/2)`；`clock_offset_merge_shifts` 给出 `trace_merge --offset-us` 用的非负平移量。
+- `test_clock_offset` 新增 5 项：正负偏移与向负无穷取整、非法样本、最小延迟与窗口淘汰、任意延迟分配下误差界成立、平移量（含 INT64_MIN）。先 RED 后 GREEN；17 项变异首轮 1 项存活（`t3 < t0` 检查被停留时间检查覆盖），删除冗余检查后全部被捕获；ASan 与 TSan 三次运行无报告。
+- 仍缺：探测包在 core_app 会话协议上的收发、把估计结果写入 trace 或自动传给 `trace_merge`。
