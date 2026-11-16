@@ -1273,6 +1273,179 @@ TEST(revision_max_is_atomic_and_retires_spatial_starts)
     audio_system_destroy(as);
 }
 
+/* ---- live PCM streams ---- */
+
+TEST(pcm_stream_open_bounds_and_handles)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h[AUDIO_PCM_STREAM_MAX + 1u];
+    AudioPcmStreamHandle extra = 0;
+    u32 frames = 7u;
+    u64 under = 7u;
+    i16 one = 1;
+    u32 written = 9u;
+    ASSERT_EQ(audio_pcm_stream_open(NULL, 1u, AUDIO_BUS_MASTER, 1.0f, &h[0]), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_open(as, 0u, AUDIO_BUS_MASTER, 1.0f, &h[0]), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_open(as, 3u, AUDIO_BUS_MASTER, 1.0f, &h[0]), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, NULL), AUDIO_INVALID);
+    for (u32 i = 0; i < AUDIO_PCM_STREAM_MAX; ++i) {
+        ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h[i]), AUDIO_OK);
+        ASSERT_NEQ(h[i], 0u);
+    }
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &extra), AUDIO_OVERLOAD);
+    ASSERT_EQ(audio_pcm_stream_queued(as, h[0], &frames), AUDIO_OK);
+    ASSERT_EQ(frames, 0u);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h[0], &under), AUDIO_OK);
+    ASSERT_EQ(under, 0u);
+    /* close makes the handle stale; the slot opens again with a new handle */
+    ASSERT_EQ(audio_pcm_stream_close(as, h[1]), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_close(as, h[1]), AUDIO_STALE);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h[1], &one, 1u, &written), AUDIO_STALE);
+    ASSERT_EQ(audio_pcm_stream_queued(as, h[1], &frames), AUDIO_STALE);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h[1], &under), AUDIO_STALE);
+    ASSERT_EQ(audio_pcm_stream_open(as, 2u, AUDIO_BUS_MASTER, 1.0f, &extra), AUDIO_OK);
+    ASSERT_NEQ(extra, h[1]);
+    ASSERT_EQ(audio_pcm_stream_close(as, h[1]), AUDIO_STALE);
+    ASSERT_EQ(audio_pcm_stream_close(as, 0u), AUDIO_INVALID);
+    /* slot bits outside 1..AUDIO_PCM_STREAM_MAX */
+    ASSERT_EQ(audio_pcm_stream_close(as, 7u), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_close(as, 8u), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_queued(as, (extra & ~7u) | 5u, &frames), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_close(NULL, extra), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, extra, NULL, 1u, &written), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, extra, &one, 1u, NULL), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_queued(as, extra, NULL), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, extra, NULL), AUDIO_INVALID);
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_plays_mono_and_stereo_with_gain)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle mono = 0;
+    AudioPcmStreamHandle stereo = 0;
+    u32 written = 0;
+    f32 out[8];
+    const i16 mono_pcm[2] = {16384, -8192};
+    const i16 stereo_pcm[4] = {8192, -16384, 0, 32767};
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &mono), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, mono, mono_pcm, 2u, &written), AUDIO_OK);
+    ASSERT_EQ(written, 2u);
+    ASSERT_EQ(audio_system_render(as, out, 2u), AUDIO_OK);
+    /* mono is duplicated to both channels */
+    ASSERT_FLOAT_EQ(out[0], 0.5f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[1], 0.5f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[2], -0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[3], -0.25f, 1e-6f);
+    ASSERT_EQ(audio_pcm_stream_close(as, mono), AUDIO_OK);
+
+    u32 bus = audio_bus_create(as, "voice");
+    ASSERT_NEQ(bus, AUDIO_BUS_INVALID);
+    ASSERT_EQ(audio_pcm_stream_open(as, 2u, bus, 0.5f, &stereo), AUDIO_OK);
+    audio_bus_set_gain(as, bus, 0.5f);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, stereo, stereo_pcm, 2u, &written), AUDIO_OK);
+    ASSERT_EQ(written, 2u);
+    ASSERT_EQ(audio_system_render(as, out, 2u), AUDIO_OK);
+    /* volume 0.5 x bus 0.5 */
+    ASSERT_FLOAT_EQ(out[0], 0.0625f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[1], -0.125f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[2], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[3], 32767.0f / 32768.0f * 0.25f, 1e-6f);
+    /* the master fader applies on top */
+    audio_bus_set_gain(as, AUDIO_BUS_MASTER, 0.5f);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, stereo, stereo_pcm, 1u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 0.03125f, 1e-6f);
+    audio_bus_set_gain(as, AUDIO_BUS_MASTER, 1.0f);
+    /* an invalid bus falls back to master; a negative volume is silence */
+    ASSERT_EQ(audio_pcm_stream_close(as, stereo), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, 99u, -1.0f, &mono), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, mono, mono_pcm, 1u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 0.0f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_close(as, mono), AUDIO_OK);
+    /* a bus id that does not exist yet is master too, even after a bus with
+     * that id is created later */
+    {
+        u32 next_bus = bus + 1u;
+        ASSERT_EQ(audio_pcm_stream_open(as, 1u, next_bus, 1.0f, &mono), AUDIO_OK);
+        ASSERT_EQ(audio_bus_create(as, "later"), next_bus);
+        audio_bus_set_gain(as, next_bus, 0.25f);
+        ASSERT_EQ(audio_pcm_stream_write_i16(as, mono, mono_pcm, 1u, &written), AUDIO_OK);
+        ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+        ASSERT_FLOAT_EQ(out[0], 0.5f, 1e-6f);
+    }
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_ring_is_bounded_and_underruns_play_silence)
+{
+    static i16 pcm[AUDIO_PCM_STREAM_FRAMES + 16u];
+    static f32 out[2u * (AUDIO_PCM_STREAM_FRAMES + 16u)];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    u32 written = 0;
+    u32 queued = 0;
+    u64 under = 0;
+    for (u32 i = 0; i < AUDIO_PCM_STREAM_FRAMES + 16u; ++i) {
+        pcm[i] = (i16)(i % 1000u + 1u);
+    }
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    /* an empty stream that is rendered underruns */
+    ASSERT_EQ(audio_system_render(as, out, 3u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 0.0f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 3u);
+    /* only the ring's capacity fits */
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, AUDIO_PCM_STREAM_FRAMES + 16u, &written),
+              AUDIO_OK);
+    ASSERT_EQ(written, AUDIO_PCM_STREAM_FRAMES);
+    ASSERT_EQ(audio_pcm_stream_queued(as, h, &queued), AUDIO_OK);
+    ASSERT_EQ(queued, AUDIO_PCM_STREAM_FRAMES);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 1u, &written), AUDIO_OK);
+    ASSERT_EQ(written, 0u);
+    /* render 10 frames: the first ten samples, in order */
+    ASSERT_EQ(audio_system_render(as, out, 10u), AUDIO_OK);
+    for (u32 i = 0; i < 10u; ++i) {
+        ASSERT_FLOAT_EQ(out[2u * i], (f32)pcm[i] / 32768.0f, 1e-7f);
+    }
+    ASSERT_EQ(audio_pcm_stream_queued(as, h, &queued), AUDIO_OK);
+    ASSERT_EQ(queued, AUDIO_PCM_STREAM_FRAMES - 10u);
+    /* the freed room takes more frames; they follow the queued ones */
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm + AUDIO_PCM_STREAM_FRAMES, 16u, &written),
+              AUDIO_OK);
+    ASSERT_EQ(written, 10u);
+    ASSERT_EQ(audio_system_render(as, out, AUDIO_PCM_STREAM_FRAMES + 4u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[2u * (AUDIO_PCM_STREAM_FRAMES - 11u)],
+                    (f32)pcm[AUDIO_PCM_STREAM_FRAMES - 1u] / 32768.0f, 1e-7f);
+    ASSERT_FLOAT_EQ(out[2u * (AUDIO_PCM_STREAM_FRAMES - 10u)],
+                    (f32)pcm[AUDIO_PCM_STREAM_FRAMES] / 32768.0f, 1e-7f);
+    ASSERT_FLOAT_EQ(out[2u * (AUDIO_PCM_STREAM_FRAMES - 1u)],
+                    (f32)pcm[AUDIO_PCM_STREAM_FRAMES + 9u] / 32768.0f, 1e-7f);
+    /* past the queued frames: silence, counted as underrun */
+    ASSERT_FLOAT_EQ(out[2u * AUDIO_PCM_STREAM_FRAMES], 0.0f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 3u + 4u);
+    ASSERT_EQ(audio_pcm_stream_queued(as, h, &queued), AUDIO_OK);
+    ASSERT_EQ(queued, 0u);
+    /* a closed stream plays nothing and counts nothing */
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 4u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    out[0] = 1.0f;
+    ASSERT_EQ(audio_system_render(as, out, 2u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 0.0f, 0.0f);
+    /* the reopened slot starts empty, with no underruns and no stale PCM */
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_queued(as, h, &queued), AUDIO_OK);
+    ASSERT_EQ(queued, 0u);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 0u);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -1315,4 +1488,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(restart_between_epoch_and_snapshot_loads_keeps_old_pcm_gain);
     RUN_TEST(listener_start_cas_loss_republishes_same_listener);
     RUN_TEST(revision_max_is_atomic_and_retires_spatial_starts);
+    RUN_TEST(pcm_stream_open_bounds_and_handles);
+    RUN_TEST(pcm_stream_plays_mono_and_stereo_with_gain);
+    RUN_TEST(pcm_stream_ring_is_bounded_and_underruns_play_silence);
 TEST_MAIN_END()

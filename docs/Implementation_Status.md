@@ -11365,3 +11365,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 ### 2026-11-16 Metal build: shared engine.metallib copy
 
 - macOS CI 在 `81b31e64` 链接 `dxx_break` 时失败：多个可执行文件在 POST_BUILD 中并行把 `engine.metallib` 复制到同一目录，`copy_if_different` 互相竞争导致 "No such file or directory"。改为一个共享的复制目标 `engine_metallib_beside_executables`，普通可执行文件依赖它；iOS app bundle 仍各自复制到自己的 bundle 内。`test_metal_shader_pipeline` 新增检查，旧写法下失败。说明见 `docs/superpowers/plans/2026-11-16-metallib-copy-race.md`。Metal 构建只能在 macOS CI 上验证。
+
+### 2026-11-16 audio PCM streams (network voice playback)
+
+- `audio_pcm_stream_open / write_i16 / queued / underruns / close`：最多 4 路实时 PCM 流，每路一个 12000 帧（48 kHz 下 250 ms）的单生产者/单消费者环形缓冲；生产端写 16 位 PCM，不阻塞、不分配；混音回调按顺序播放，缓冲为空时输出静音并计数。增益为音量 × 总线 × 主总线。关闭后句柄失效，槽位以新代号复用。
+- 新增 `test_voice_playback`（2 项）：网络语音帧经真实 `break_online_voice` 接收器（乱序、抖动缓冲）写入流，FAKE 后端渲染结果与发送顺序一致；另一项让独立线程持续混音，同时反复打开、写入、关闭流，TSan 与 ASan+UBSan 下均无报告，去掉 `close` 中等待混音读取的代码后 ASan 在 20 次中 16 次报 heap-use-after-free。`test_audio_extended` 新增 3 项，`test_audio_realtime_contract` 覆盖新的混音回调。先 RED 后 GREEN，21 项变异全部被捕获。
+- 仍缺：采样率转换、流的空间化、麦克风采集、真实设备上的听感测试。

@@ -89,6 +89,29 @@ typedef struct {
     bool used;
 } AudioEvent;
 
+/* One live PCM stream: an SPSC ring of interleaved f32 frames. The producer
+ * (audio_pcm_stream_write_i16) owns `head`, the mixer callback owns `tail`.
+ * `open` and `gain_bits` are published with release stores and read with
+ * acquire loads by the mixer; the ring storage is allocated at open and
+ * freed at close, so the mixer only touches it while `open` is set and the
+ * closing thread waits for that read to finish before freeing. */
+typedef struct {
+    ma_data_source_base base;
+    ma_data_source_node node;
+    bool node_initialized;
+    f32 *ring;
+    u32 channels;
+    u32 bus;
+    atomic_uint gain_bits;
+    atomic_uint head;
+    atomic_uint tail;
+    atomic_bool open;
+    atomic_bool reading;
+    atomic_uint_least64_t underruns;
+    u32 generation;
+    atomic_uint *bus_gains;
+} AudioPcmStream;
+
 typedef struct {
     AudioSystem *owner;
     ma_engine *engine;
@@ -114,6 +137,7 @@ typedef struct {
     AudioOcclusionRayFn ray;
     void *ray_user;
     atomic_uint bus_gains[AUDIO_MAX_BUSES];
+    AudioPcmStream pcm_streams[AUDIO_PCM_STREAM_MAX];
 } AudioExtended;
 
 static AudioExtended *audio_extended(AudioSystem *as) {
@@ -367,6 +391,189 @@ static const ma_data_source_vtable AUDIO_VOICE_VTABLE = {
     NULL, MA_DATA_SOURCE_SELF_MANAGED_RANGE_AND_LOOP_POINT
 };
 
+/* Mixer side of a PCM stream: plays queued frames, then silence. */
+static ma_result pcm_stream_read(ma_data_source *source, void *output,
+                                 ma_uint64 frames, ma_uint64 *frames_read) {
+    AudioPcmStream *stream = (AudioPcmStream *)source;
+    f32 *out = (f32 *)output;
+    u64 missing = 0;
+    atomic_store_explicit(&stream->reading, true, memory_order_seq_cst);
+    bool open = atomic_load_explicit(&stream->open, memory_order_seq_cst);
+    u32 tail = atomic_load_explicit(&stream->tail, memory_order_relaxed);
+    u32 head = open ? atomic_load_explicit(&stream->head, memory_order_acquire) : tail;
+    f32 gain = 0.0f;
+    if (open) {
+        f32 bus_gain = stream->bus == AUDIO_BUS_MASTER ? 1.0f :
+            gain_from_bits(atomic_load_explicit(&stream->bus_gains[stream->bus],
+                                                memory_order_relaxed));
+        f32 master_gain = gain_from_bits(atomic_load_explicit(
+            &stream->bus_gains[AUDIO_BUS_MASTER], memory_order_relaxed));
+        gain = gain_from_bits(atomic_load_explicit(&stream->gain_bits, memory_order_relaxed)) *
+               bus_gain * master_gain;
+    }
+    for (ma_uint64 frame = 0; frame < frames; ++frame) {
+        f32 left = 0.0f;
+        f32 right = 0.0f;
+        if (tail != head) {
+            const f32 *src = stream->ring +
+                (usize)(tail % AUDIO_PCM_STREAM_FRAMES) * stream->channels;
+            left = src[0] * gain;
+            right = stream->channels == 2u ? src[1] * gain : left;
+            tail++;
+        } else {
+            missing++;
+        }
+        if (out) {
+            out[frame * 2u] = left;
+            out[frame * 2u + 1u] = right;
+        }
+    }
+    if (open) {
+        atomic_store_explicit(&stream->tail, tail, memory_order_release);
+        if (missing != 0u) {
+            atomic_fetch_add_explicit(&stream->underruns, missing, memory_order_relaxed);
+        }
+    }
+    atomic_store_explicit(&stream->reading, false, memory_order_release);
+    if (frames_read) *frames_read = frames;
+    return MA_SUCCESS;
+}
+
+static ma_result pcm_stream_seek(ma_data_source *source, ma_uint64 frame) {
+    (void)source; (void)frame;
+    return MA_NOT_IMPLEMENTED;
+}
+
+static ma_result pcm_stream_format(ma_data_source *source, ma_format *format,
+                                   u32 *channels, u32 *sample_rate,
+                                   ma_channel *channel_map, usize channel_cap) {
+    (void)source; (void)channel_map; (void)channel_cap;
+    *format = ma_format_f32;
+    *channels = 2;
+    *sample_rate = AUDIO_PCM_SAMPLE_RATE;
+    return MA_SUCCESS;
+}
+
+static ma_result pcm_stream_cursor(ma_data_source *source, ma_uint64 *cursor) {
+    (void)source;
+    *cursor = 0;
+    return MA_NOT_IMPLEMENTED;
+}
+
+static ma_result pcm_stream_length(ma_data_source *source, ma_uint64 *length) {
+    (void)source;
+    *length = 0;
+    return MA_NOT_IMPLEMENTED;
+}
+
+static const ma_data_source_vtable AUDIO_PCM_STREAM_VTABLE = {
+    pcm_stream_read, pcm_stream_seek, pcm_stream_format, pcm_stream_cursor,
+    pcm_stream_length, NULL, MA_DATA_SOURCE_SELF_MANAGED_RANGE_AND_LOOP_POINT
+};
+
+/* Handles are (generation << 3) | (slot + 1); 0 is never a handle. */
+static AudioPcmStreamHandle pcm_stream_handle(u32 slot, u32 generation) {
+    return (generation << 3) | (slot + 1u);
+}
+
+static AudioResult pcm_stream_lookup(AudioSystem *as, AudioPcmStreamHandle handle,
+                                     AudioPcmStream **out) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext || handle == 0u) return AUDIO_INVALID;
+    u32 slot = (handle & 7u) - 1u;
+    if (slot >= AUDIO_PCM_STREAM_MAX) return AUDIO_INVALID;
+    AudioPcmStream *stream = &ext->pcm_streams[slot];
+    if (!atomic_load_explicit(&stream->open, memory_order_acquire) ||
+        pcm_stream_handle(slot, stream->generation) != handle) {
+        return AUDIO_STALE;
+    }
+    *out = stream;
+    return AUDIO_OK;
+}
+
+AudioResult audio_pcm_stream_open(AudioSystem *as, u32 channels, u32 bus, f32 volume,
+                                  AudioPcmStreamHandle *out_handle) {
+    AudioExtended *ext = audio_extended(as);
+    if (!ext || !out_handle || (channels != 1u && channels != 2u)) return AUDIO_INVALID;
+    for (u32 slot = 0; slot < AUDIO_PCM_STREAM_MAX; ++slot) {
+        AudioPcmStream *stream = &ext->pcm_streams[slot];
+        if (atomic_load_explicit(&stream->open, memory_order_acquire)) continue;
+        f32 *ring = (f32 *)calloc((usize)AUDIO_PCM_STREAM_FRAMES * channels, sizeof(f32));
+        if (!ring) return AUDIO_FAILED;
+        stream->ring = ring;
+        stream->channels = channels;
+        stream->bus = bus < as->bus_count && bus < AUDIO_MAX_BUSES ? bus : AUDIO_BUS_MASTER;
+        atomic_store_explicit(&stream->gain_bits,
+                              gain_to_bits(isfinite(volume) && volume > 0.0f ? volume : 0.0f),
+                              memory_order_relaxed);
+        atomic_store_explicit(&stream->head, 0u, memory_order_relaxed);
+        atomic_store_explicit(&stream->tail, 0u, memory_order_relaxed);
+        atomic_store_explicit(&stream->underruns, 0u, memory_order_relaxed);
+        stream->generation = (stream->generation + 1u) & 0x1fffffffu;
+        if (stream->generation == 0u) stream->generation = 1u;
+        atomic_store_explicit(&stream->open, true, memory_order_seq_cst);
+        *out_handle = pcm_stream_handle(slot, stream->generation);
+        return AUDIO_OK;
+    }
+    return AUDIO_OVERLOAD;
+}
+
+AudioResult audio_pcm_stream_write_i16(AudioSystem *as, AudioPcmStreamHandle handle,
+                                       const i16 *samples, u32 frame_count,
+                                       u32 *out_written) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (!samples || !out_written) return AUDIO_INVALID;
+    u32 head = atomic_load_explicit(&stream->head, memory_order_relaxed);
+    u32 tail = atomic_load_explicit(&stream->tail, memory_order_acquire);
+    u32 room = AUDIO_PCM_STREAM_FRAMES - (head - tail);
+    u32 count = frame_count < room ? frame_count : room;
+    for (u32 i = 0; i < count; ++i) {
+        f32 *dst = stream->ring + (usize)((head + i) % AUDIO_PCM_STREAM_FRAMES) * stream->channels;
+        for (u32 c = 0; c < stream->channels; ++c) {
+            dst[c] = (f32)samples[(usize)i * stream->channels + c] / 32768.0f;
+        }
+    }
+    atomic_store_explicit(&stream->head, head + count, memory_order_release);
+    *out_written = count;
+    return AUDIO_OK;
+}
+
+AudioResult audio_pcm_stream_queued(AudioSystem *as, AudioPcmStreamHandle handle,
+                                    u32 *out_frames) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (!out_frames) return AUDIO_INVALID;
+    *out_frames = atomic_load_explicit(&stream->head, memory_order_relaxed) -
+                  atomic_load_explicit(&stream->tail, memory_order_acquire);
+    return AUDIO_OK;
+}
+
+AudioResult audio_pcm_stream_underruns(AudioSystem *as, AudioPcmStreamHandle handle,
+                                       u64 *out_frames) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (!out_frames) return AUDIO_INVALID;
+    *out_frames = atomic_load_explicit(&stream->underruns, memory_order_relaxed);
+    return AUDIO_OK;
+}
+
+AudioResult audio_pcm_stream_close(AudioSystem *as, AudioPcmStreamHandle handle) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    atomic_store_explicit(&stream->open, false, memory_order_seq_cst);
+    /* a read that saw `open` set may still be using the ring */
+    while (atomic_load_explicit(&stream->reading, memory_order_seq_cst)) {
+    }
+    free(stream->ring);
+    stream->ring = NULL;
+    return AUDIO_OK;
+}
+
 bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
     if (!as || !engine || as->extended) return false;
     AudioExtended *ext = (AudioExtended *)calloc(1, sizeof(*ext));
@@ -411,6 +618,35 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
             return false;
         }
     }
+    for (u32 i = 0; i < AUDIO_PCM_STREAM_MAX; ++i) {
+        AudioPcmStream *stream = &ext->pcm_streams[i];
+        stream->bus_gains = ext->bus_gains;
+        atomic_init(&stream->gain_bits, gain_to_bits(0.0f));
+        atomic_init(&stream->head, 0);
+        atomic_init(&stream->tail, 0);
+        atomic_init(&stream->open, false);
+        atomic_init(&stream->reading, false);
+        atomic_init(&stream->underruns, 0);
+        ma_data_source_config config = ma_data_source_config_init();
+        config.vtable = &AUDIO_PCM_STREAM_VTABLE;
+        if (ma_data_source_init(&config, &stream->base) != MA_SUCCESS) {
+            audio_extended_destroy(as, ext);
+            return false;
+        }
+        ma_data_source_node_config node_config =
+            ma_data_source_node_config_init(&stream->base);
+        if (ma_data_source_node_init(ma_engine_get_node_graph(engine),
+                &node_config, NULL, &stream->node) != MA_SUCCESS) {
+            audio_extended_destroy(as, ext);
+            return false;
+        }
+        stream->node_initialized = true;
+        if (ma_node_attach_output_bus(&stream->node, 0,
+                ma_engine_get_endpoint(engine), 0) != MA_SUCCESS) {
+            audio_extended_destroy(as, ext);
+            return false;
+        }
+    }
     as->extended = ext;
     return true;
 }
@@ -425,6 +661,16 @@ void audio_extended_destroy(AudioSystem *as, void *opaque) {
             voice->node_initialized = false;
         }
         if (voice->base.vtable) ma_data_source_uninit(&voice->base);
+    }
+    for (u32 i = 0; i < AUDIO_PCM_STREAM_MAX; ++i) {
+        AudioPcmStream *stream = &ext->pcm_streams[i];
+        if (stream->node_initialized) {
+            ma_data_source_node_uninit(&stream->node, NULL);
+            stream->node_initialized = false;
+        }
+        if (stream->base.vtable) ma_data_source_uninit(&stream->base);
+        free(stream->ring);
+        stream->ring = NULL;
     }
     if (as && as->extended == ext) as->extended = NULL;
     free(ext);

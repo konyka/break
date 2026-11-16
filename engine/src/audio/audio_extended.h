@@ -91,6 +91,35 @@ AudioResult audio_music_update(AudioSystem *as);
 AudioResult audio_music_state(AudioSystem *as, AudioMusicState *out_state,
                               u32 *out_track_index);
 
+/* ---- Live PCM streams ----
+ * A stream plays PCM that arrives while it plays (network voice, generated
+ * audio). The producer writes 16-bit PCM from one thread; the mixer reads
+ * it from a bounded single-producer / single-consumer ring of
+ * AUDIO_PCM_STREAM_FRAMES frames at the engine rate (48 kHz) and plays
+ * silence when the ring runs dry (an underrun). Gain is volume x bus x
+ * master, like event voices. A closed stream's handle is stale; the slot
+ * is reused with a new generation. */
+#define AUDIO_PCM_STREAM_MAX 4u
+#define AUDIO_PCM_STREAM_FRAMES 12000u
+
+typedef u32 AudioPcmStreamHandle;
+
+/* channels 1 or 2; an invalid bus falls back to master; volume < 0 is 0.
+ * OVERLOAD when all AUDIO_PCM_STREAM_MAX streams are open. */
+AudioResult audio_pcm_stream_open(AudioSystem *as, u32 channels, u32 bus, f32 volume,
+                                  AudioPcmStreamHandle *out_handle);
+/* Copies up to frame_count interleaved frames (i16 / 32768) and reports how
+ * many fit; never blocks. Producer thread only. */
+AudioResult audio_pcm_stream_write_i16(AudioSystem *as, AudioPcmStreamHandle handle,
+                                       const i16 *samples, u32 frame_count,
+                                       u32 *out_written);
+AudioResult audio_pcm_stream_queued(AudioSystem *as, AudioPcmStreamHandle handle,
+                                    u32 *out_frames);
+/* Frames of silence played because the ring was empty while open. */
+AudioResult audio_pcm_stream_underruns(AudioSystem *as, AudioPcmStreamHandle handle,
+                                       u64 *out_frames);
+AudioResult audio_pcm_stream_close(AudioSystem *as, AudioPcmStreamHandle handle);
+
 AudioResult audio_clip_register(AudioSystem *as, const char *name,
                                 const AudioPcmDesc *pcm,
                                 AudioClipHandle *out_handle);

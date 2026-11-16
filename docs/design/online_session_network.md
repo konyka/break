@@ -107,3 +107,7 @@ apply 要求相同 schema hash、live generation 和递增的每对象 record ep
 第三轮 MSVC 补充：voice UDP 测试的 `BreakVoicePlayback playback` 在声明时以 `{0}` 零初始化，消除有界循环路径上的 C4701 静态诊断。该初始化不改变播放语义；`ready==true`、sequence 77 和真实 PCM `-123/456` 断言继续执行，native MSVC 仍待后续 CI。
 
 2026-11-12 fresh CI 验收：合并提交 `a9c25224` 的主 CI run `43186135276` 全部可执行 job 成功，macOS Cocoa job `131073643195` 的 `test_break_online_nat` 实际通过，覆盖此前失败的 close-before-punch 场景；clean-room job `131073947704` 为 352 selected、0 FAIL，三个缺库合同按预期 SKIP，dangling 合同通过。D3D12 run `43186135119` 的 headless、WARP runtime 1/1、push-constant、Agility 和七个 D3D12-labelled 测试均成功。主工作树合并结果的非图形为 358 selected、354 PASS、4 个文档化 SKIP、0 FAIL。上述 fresh native 结果与旧逻辑本机 200 次未复现的限制同时成立；不把本地重复或单次通过解释为生产环境已消除所有 UDP 重排，也不把 WARP 当作独立显卡证明。
+
+## 补充（2026-11-16）：语音接入混音器
+
+`pop` 本身仍不调用音频设备。新增 `audio_pcm_stream_*`（`audio/audio_extended.h`）：应用在 LogicThread 把 `break_voice_receiver_pop` 得到的 PCM 写入一个流，混音器在音频回调里按顺序播放，空了就输出静音并计入 underrun。流以引擎采样率 48 kHz 播放，语音流配置需使用相同采样率；没有采样率转换、空间化或麦克风采集。`test_voice_playback` 把乱序到达的 `BRV1` 帧经真实接收器写入流，验证混音输出与发送顺序一致。设计与验证见 `docs/superpowers/plans/2026-11-16-audio-pcm-stream.md`。

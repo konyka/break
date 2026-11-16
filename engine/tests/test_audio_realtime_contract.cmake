@@ -38,6 +38,8 @@ assert_callback_clean("${AUDIO_EXTENDED}" "static void voice_advance_fade"
                       "static ma_result voice_read")
 assert_callback_clean("${AUDIO_EXTENDED}" "static ma_result voice_read"
                       "static ma_result voice_seek")
+assert_callback_clean("${AUDIO_EXTENDED}" "static ma_result pcm_stream_read"
+                      "static ma_result pcm_stream_seek")
 assert_callback_clean("${AUDIO_DSP}" "static u32 reverb_delay"
                       "void audio_dsp_chain_process")
 assert_callback_clean("${AUDIO_DSP}" "void audio_dsp_chain_process" "__EOF__")
