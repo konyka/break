@@ -1047,6 +1047,18 @@ TEST(tls_range_and_framing_rules_apply_over_https_too) {
     ASSERT_EQ(break_http_get_range(&cfg, url, 3u, 5u, buf), BHTTP_OK);
     ASSERT_TRUE(memcmp(buf, "world", 5) == 0);
     server_stop(&s);
+    {
+        static char big[BREAK_HTTP_MAX_HEAD + 200];
+        u64 got;
+        memcpy(big, "HTTP/1.1 200 OK\r\nX: ", 20);
+        memset(big + 20, 'a', sizeof(big) - 21u);
+        big[sizeof(big) - 1u] = '\0';
+        ASSERT_TRUE(server_start(&s, true, big, sizeof(big) - 1u));
+        server_go(&s);
+        url_of(&s, "https", "localhost", "/x", url, sizeof(url));
+        ASSERT_EQ(break_http_get(&cfg, url, buf, sizeof(buf), &got), BHTTP_ERR_PROTOCOL);
+        server_stop(&s);
+    }
 }
 
 /* ---- adapters ---- */
@@ -1520,6 +1532,393 @@ TEST(an_unreadable_or_empty_crl_file_fails_before_connecting) {
     crl_pki_free(&p);
 }
 
+/* ---- HTTP CONNECT proxy ---- */
+
+/* Scripted forward proxy: records the CONNECT head, sends `reply` and, when
+ * relay_port is set, relays bytes both ways to 127.0.0.1:relay_port. */
+typedef struct {
+    int listen_fd;
+    unsigned short port;
+    const char *reply;
+    size_t reply_len;
+    unsigned short relay_port;
+    bool silent;              /* never answer; keep the socket open linger_ms */
+    int linger_ms;
+    char head[8192];
+    size_t head_len;
+    atomic_bool saw_connection;
+    pthread_t thread;
+} Proxy;
+
+static int connect_loopback(unsigned short port) {
+    struct sockaddr_in a;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port = htons(port);
+    if (connect(fd, (struct sockaddr *)&a, sizeof(a)) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static void proxy_relay(int a, int b) {
+    for (;;) {
+        struct pollfd p[2];
+        char buf[4096];
+        p[0].fd = a;
+        p[0].events = POLLIN;
+        p[0].revents = 0;
+        p[1].fd = b;
+        p[1].events = POLLIN;
+        p[1].revents = 0;
+        if (poll(p, 2, 5000) <= 0) return;
+        for (int i = 0; i < 2; i++) {
+            if (p[i].revents != 0) {
+                ssize_t n = read(p[i].fd, buf, sizeof(buf));
+                if (n <= 0) return;
+                if (write(p[1 - i].fd, buf, (size_t)n) != n) return;
+            }
+        }
+    }
+}
+
+static void *proxy_main(void *arg) {
+    Proxy *p = (Proxy *)arg;
+    int fd;
+    {
+        sigset_t blk;
+        sigemptyset(&blk);
+        sigaddset(&blk, SIGPIPE);
+        pthread_sigmask(SIG_BLOCK, &blk, NULL);
+    }
+    fd = accept(p->listen_fd, NULL, NULL);
+    if (fd < 0) return NULL;
+#if defined(SO_NOSIGPIPE)
+    {
+        int one = 1;
+        (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+    }
+#endif
+    atomic_store(&p->saw_connection, true);
+    while (strstr(p->head, "\r\n\r\n") == NULL && p->head_len + 1u < sizeof(p->head)) {
+        ssize_t n = read(fd, p->head + p->head_len, sizeof(p->head) - 1u - p->head_len);
+        if (n <= 0) break;
+        p->head_len += (size_t)n;
+        p->head[p->head_len] = '\0';
+    }
+    if (p->silent) {
+        struct timespec ts = {p->linger_ms / 1000, (long)(p->linger_ms % 1000) * 1000000L};
+        nanosleep(&ts, NULL);
+    } else {
+        if (p->reply_len > 0u) (void)write(fd, p->reply, p->reply_len);
+        if (p->relay_port != 0u) {
+            int up = connect_loopback(p->relay_port);
+            if (up >= 0) {
+                proxy_relay(fd, up);
+                close(up);
+            }
+        }
+    }
+    close(fd);
+    return NULL;
+}
+static bool proxy_start(Proxy *p, const char *reply, size_t reply_len, unsigned short relay_port) {
+    struct sockaddr_in a;
+    socklen_t al = sizeof(a);
+    int one = 1;
+    memset(p, 0, sizeof(*p));
+    p->reply = reply;
+    p->reply_len = reply_len;
+    p->relay_port = relay_port;
+    p->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (p->listen_fd < 0) return false;
+    setsockopt(p->listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(p->listen_fd, (struct sockaddr *)&a, sizeof(a)) != 0 || listen(p->listen_fd, 1) != 0 ||
+        getsockname(p->listen_fd, (struct sockaddr *)&a, &al) != 0) {
+        close(p->listen_fd);
+        return false;
+    }
+    p->port = ntohs(a.sin_port);
+    return true;
+}
+
+static void proxy_go(Proxy *p) {
+    pthread_create(&p->thread, NULL, proxy_main, p);
+}
+
+static void proxy_stop(Proxy *p) {
+    if (!atomic_load(&p->saw_connection)) {
+        int fd = connect_loopback(p->port);
+        if (fd >= 0) close(fd);
+    }
+    pthread_join(p->thread, NULL);
+    close(p->listen_fd);
+}
+
+static void proxy_url_of(const Proxy *p, char *out, size_t cap) {
+    snprintf(out, cap, "http://127.0.0.1:%u", (unsigned)p->port);
+}
+
+#define PROXY_OK "HTTP/1.1 200 Connection established\r\n\r\n"
+
+/* https GET of <host>:<target port>/x through a scripted proxy. relay=false
+ * leaves the target unreachable through the proxy. */
+static BreakHttpError proxied_get(const char *proxy_reply, size_t reply_len, bool relay,
+                                  const char *host, const char *ca, Proxy *p, Server *s,
+                                  u8 *out, u64 cap, u64 *got) {
+    static const char r[] = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    char url[128], purl[64];
+    BreakHttpConfig cfg;
+    BreakHttpError e;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = ca;
+    cfg.io_timeout_ms = 3000;
+    if (!server_start(s, true, r, sizeof(r) - 1u)) return BHTTP_ERR_CONNECT;
+    if (!proxy_start(p, proxy_reply, reply_len, relay ? s->port : 0u)) {
+        server_go(s);
+        server_stop(s);
+        return BHTTP_ERR_CONNECT;
+    }
+    server_go(s);
+    proxy_go(p);
+    proxy_url_of(p, purl, sizeof(purl));
+    cfg.proxy = purl;
+    url_of(s, "https", host, "/x", url, sizeof(url));
+    e = break_http_get(&cfg, url, out, cap, got);
+    proxy_stop(p);
+    server_stop(s);
+    return e;
+}
+
+TEST(https_through_a_connect_proxy_reaches_the_target) {
+    Proxy p;
+    Server s;
+    u8 buf[16];
+    u64 got = 0;
+    char want[160];
+    ASSERT_EQ(proxied_get(PROXY_OK, sizeof(PROXY_OK) - 1u, true, "localhost", CERT, &p, &s, buf,
+                          sizeof(buf), &got),
+              BHTTP_OK);
+    ASSERT_EQ(got, 5u);
+    ASSERT_TRUE(memcmp(buf, "hello", 5) == 0);
+    snprintf(want, sizeof(want),
+             "CONNECT localhost:%u HTTP/1.1\r\nHost: localhost:%u\r\nUser-Agent: break-http/1\r\n\r\n",
+             (unsigned)s.port, (unsigned)s.port);
+    ASSERT_STR_EQ(p.head, want);
+    snprintf(want, sizeof(want), "GET /x HTTP/1.1\r\nHost: localhost:%u\r\n", (unsigned)s.port);
+    ASSERT_TRUE(strncmp(s.request, want, strlen(want)) == 0);
+}
+/* GET url through a proxy that answers `reply` and relays nothing; the proxy
+ * URL is the proxy's address plus `suffix`. */
+static BreakHttpError proxy_only(const char *reply, size_t reply_len, const char *url,
+                                 const char *suffix, Proxy *p) {
+    char purl[64];
+    u8 buf[16];
+    u64 got;
+    BreakHttpConfig cfg;
+    BreakHttpError e;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = CERT;
+    cfg.io_timeout_ms = 3000;
+    if (!proxy_start(p, reply, reply_len, 0u)) return BHTTP_ERR_CONNECT;
+    proxy_go(p);
+    proxy_url_of(p, purl, sizeof(purl));
+    strncat(purl, suffix, sizeof(purl) - strlen(purl) - 1u);
+    cfg.proxy = purl;
+    e = break_http_get(&cfg, url, buf, sizeof(buf), &got);
+    proxy_stop(p);
+    return e;
+}
+
+TEST(the_connect_line_brackets_ipv6_and_always_names_the_port) {
+    static const char r[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
+    Proxy p;
+    ASSERT_EQ(proxy_only(r, sizeof(r) - 1u, "https://[::1]/x", "", &p), BHTTP_ERR_STATUS);
+    ASSERT_STR_EQ(p.head, "CONNECT [::1]:443 HTTP/1.1\r\nHost: [::1]:443\r\n"
+                          "User-Agent: break-http/1\r\n\r\n");
+    ASSERT_EQ(proxy_only(r, sizeof(r) - 1u, "https://localhost/a/b?c", "/", &p), BHTTP_ERR_STATUS);
+    ASSERT_STR_EQ(p.head, "CONNECT localhost:443 HTTP/1.1\r\nHost: localhost:443\r\n"
+                          "User-Agent: break-http/1\r\n\r\n");
+    ASSERT_EQ(proxy_only(r, sizeof(r) - 1u, "https://[2001:db8::1]:8443/x", "", &p),
+              BHTTP_ERR_STATUS);
+    ASSERT_STR_EQ(p.head, "CONNECT [2001:db8::1]:8443 HTTP/1.1\r\nHost: [2001:db8::1]:8443\r\n"
+                          "User-Agent: break-http/1\r\n\r\n");
+}
+
+TEST(a_refused_tunnel_is_a_status_error_and_the_target_is_never_reached) {
+    static const char *const replies[] = {
+        "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+        "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic\r\n\r\n",
+        "HTTP/1.0 502 Bad Gateway\r\n\r\n",
+        "HTTP/1.1 301 Moved\r\nLocation: http://evil/\r\n\r\n"};
+    for (size_t i = 0; i < sizeof(replies) / sizeof(replies[0]); i++) {
+        Proxy p;
+        Server s;
+        u8 buf[16];
+        u64 got = 99;
+        ASSERT_EQ(proxied_get(replies[i], strlen(replies[i]), false, "localhost", CERT, &p, &s, buf,
+                              sizeof(buf), &got),
+                  BHTTP_ERR_STATUS);
+        ASSERT_EQ(got, 0u);
+        ASSERT_EQ(s.request_len, 0u);
+        ASSERT_TRUE(strncmp(p.head, "CONNECT localhost:", 18) == 0);
+    }
+}
+
+TEST(a_malformed_or_overlong_proxy_answer_is_a_protocol_error) {
+    static char big[BREAK_HTTP_MAX_HEAD + 200];
+    static const char *const replies[] = {
+        "garbage\r\n\r\n",
+        "HTTP/1.1 200 OK\n\n",
+        "HTTP/1.1 101 Switching Protocols\r\n\r\n",
+        "HTTP/1.1 100 Continue\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+        PROXY_OK "\x16\x03\x01", /* bytes after the head must not reach TLS */
+        "HTTP/1.1 200 Connection established\r\n", /* closes before the blank line */
+        ""};                                        /* closes without answering */
+    for (size_t i = 0; i < sizeof(replies) / sizeof(replies[0]); i++) {
+        Proxy p;
+        Server s;
+        u8 buf[16];
+        u64 got = 99;
+        BreakHttpError e = proxied_get(replies[i], strlen(replies[i]), false, "localhost", CERT, &p,
+                                       &s, buf, sizeof(buf), &got);
+        if (e != BHTTP_ERR_PROTOCOL) printf("    reply %zu: got %s\n", i, break_http_error_name(e));
+        ASSERT_EQ(e, BHTTP_ERR_PROTOCOL);
+        ASSERT_EQ(s.request_len, 0u);
+    }
+    {
+        Proxy p;
+        Server s;
+        u8 buf[16];
+        u64 got;
+        memcpy(big, "HTTP/1.1 200 OK\r\nX: ", 20);
+        memset(big + 20, 'a', sizeof(big) - 21u);
+        big[sizeof(big) - 1u] = '\0';
+        ASSERT_EQ(proxied_get(big, sizeof(big) - 1u, false, "localhost", CERT, &p, &s, buf,
+                              sizeof(buf), &got),
+                  BHTTP_ERR_PROTOCOL);
+    }
+}
+TEST(a_bad_proxy_url_is_refused_before_any_socket) {
+    static const char *const bad[] = {
+        "https://127.0.0.1:3128", "http://127.0.0.1:3128/path", "http://127.0.0.1:3128?q",
+        "http://127.0.0.1:0", "http://user@127.0.0.1:3128", "ftp://127.0.0.1:3128",
+        "127.0.0.1:3128", "http://", "http://127.0.0.1:3128/ ", "http://[::1:3128"};
+    BreakHttpConfig cfg;
+    u8 buf[8];
+    u64 got = 99;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = CERT;
+    cfg.connect_timeout_ms = 200;
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        cfg.proxy = bad[i];
+        if (break_http_get(&cfg, "https://192.0.2.1:9/x", buf, sizeof(buf), &got) != BHTTP_ERR_URL) {
+            printf("    accepted proxy: '%s'\n", bad[i]);
+        }
+        ASSERT_EQ(break_http_get(&cfg, "https://192.0.2.1:9/x", buf, sizeof(buf), &got), BHTTP_ERR_URL);
+        ASSERT_EQ(got, 0u);
+        ASSERT_EQ(break_http_get(&cfg, "http://127.0.0.1:9/x", buf, sizeof(buf), &got), BHTTP_ERR_URL);
+    }
+}
+
+TEST(the_target_certificate_is_still_verified_through_the_proxy) {
+    Proxy p;
+    Server s;
+    u8 buf[16];
+    u64 got;
+    ASSERT_EQ(proxied_get(PROXY_OK, sizeof(PROXY_OK) - 1u, true, "localhost", KEY, &p, &s, buf,
+                          sizeof(buf), &got),
+              BHTTP_ERR_TLS);
+    ASSERT_EQ(proxied_get(PROXY_OK, sizeof(PROXY_OK) - 1u, true, "127.0.0.1", CERT, &p, &s, buf,
+                          sizeof(buf), &got),
+              BHTTP_ERR_TLS);
+    ASSERT_TRUE(strncmp(p.head, "CONNECT 127.0.0.1:", 18) == 0);
+}
+
+TEST(a_silent_proxy_times_out_within_the_io_budget) {
+    Proxy p;
+    char purl[64];
+    u8 buf[8];
+    u64 got, t0, dt;
+    BreakHttpConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = CERT;
+    cfg.io_timeout_ms = 400;
+    ASSERT_TRUE(proxy_start(&p, "", 0u, 0u));
+    p.silent = true;
+    p.linger_ms = 1500;
+    proxy_go(&p);
+    proxy_url_of(&p, purl, sizeof(purl));
+    cfg.proxy = purl;
+    t0 = mono_ms();
+    ASSERT_EQ(break_http_get(&cfg, "https://localhost:9/x", buf, sizeof(buf), &got),
+              BHTTP_ERR_TIMEOUT);
+    dt = mono_ms() - t0;
+    proxy_stop(&p);
+    ASSERT_TRUE(dt >= 350u);
+    ASSERT_TRUE(dt < 1200u);
+}
+
+TEST(an_unreachable_proxy_is_a_connect_error_and_need_not_be_loopback) {
+    BreakHttpConfig cfg;
+    char purl[64];
+    u8 buf[8];
+    u64 got, t0, dt;
+    BreakHttpError e;
+    Proxy p;
+    unsigned short dead;
+    ASSERT_TRUE(proxy_start(&p, "", 0u, 0u));
+    dead = p.port;
+    close(p.listen_fd); /* nothing listens there any more */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = CERT;
+    cfg.connect_timeout_ms = 300;
+    cfg.io_timeout_ms = 300;
+    snprintf(purl, sizeof(purl), "http://127.0.0.1:%u", (unsigned)dead);
+    cfg.proxy = purl;
+    ASSERT_EQ(break_http_get(&cfg, "https://localhost:9/x", buf, sizeof(buf), &got),
+              BHTTP_ERR_CONNECT);
+    cfg.proxy = "http://192.0.2.1:3128";
+    t0 = mono_ms();
+    e = break_http_get(&cfg, "https://localhost:9/x", buf, sizeof(buf), &got);
+    dt = mono_ms() - t0;
+    ASSERT_TRUE(e == BHTTP_ERR_TIMEOUT || e == BHTTP_ERR_CONNECT);
+    ASSERT_TRUE(dt < 1500u);
+}
+
+TEST(plain_http_ignores_the_proxy_and_keeps_the_loopback_rule) {
+    Proxy p;
+    Server s;
+    char url[128], purl[64];
+    u8 buf[16];
+    u64 got = 0;
+    BreakHttpConfig cfg;
+    static const char r[] = OK200(2) "hi";
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.io_timeout_ms = 3000;
+    ASSERT_TRUE(proxy_start(&p, PROXY_OK, sizeof(PROXY_OK) - 1u, 0u));
+    ASSERT_TRUE(server_start(&s, false, r, sizeof(r) - 1u));
+    proxy_go(&p);
+    server_go(&s);
+    proxy_url_of(&p, purl, sizeof(purl));
+    cfg.proxy = purl;
+    url_of(&s, "http", "127.0.0.1", "/x", url, sizeof(url));
+    ASSERT_EQ(break_http_get(&cfg, url, buf, sizeof(buf), &got), BHTTP_OK);
+    ASSERT_EQ(got, 2u);
+    ASSERT_EQ(break_http_get(&cfg, "http://192.0.2.1/x", buf, sizeof(buf), &got), BHTTP_ERR_URL);
+    server_stop(&s);
+    proxy_stop(&p);
+    ASSERT_EQ(p.head_len, 0u);
+}
+
 TEST_MAIN_BEGIN()
     signal(SIGPIPE, SIG_DFL);
     RUN_TEST(get_returns_a_content_length_body);
@@ -1570,4 +1969,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_crl_gap_expiry_or_foreign_signer_is_rejected);
     RUN_TEST(an_unreadable_or_empty_crl_file_fails_before_connecting);
     RUN_TEST(every_certificate_in_the_chain_needs_a_crl_from_its_issuer);
+    RUN_TEST(https_through_a_connect_proxy_reaches_the_target);
+    RUN_TEST(the_connect_line_brackets_ipv6_and_always_names_the_port);
+    RUN_TEST(a_refused_tunnel_is_a_status_error_and_the_target_is_never_reached);
+    RUN_TEST(a_malformed_or_overlong_proxy_answer_is_a_protocol_error);
+    RUN_TEST(a_bad_proxy_url_is_refused_before_any_socket);
+    RUN_TEST(the_target_certificate_is_still_verified_through_the_proxy);
+    RUN_TEST(a_silent_proxy_times_out_within_the_io_budget);
+    RUN_TEST(an_unreachable_proxy_is_a_connect_error_and_need_not_be_loopback);
+    RUN_TEST(plain_http_ignores_the_proxy_and_keeps_the_loopback_rule);
 TEST_MAIN_END()

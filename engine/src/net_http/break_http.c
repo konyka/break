@@ -653,6 +653,60 @@ static bool content_type_ok(const char *ct) {
     return slash != 0u && slash + 1u < i;
 }
 
+/* Reads until the blank line: at most `cap` bytes in total. *used is every
+ * byte read, *len the head including its blank line. */
+static BreakHttpError read_head(Conn *c, u8 *head, usize cap, usize *used, usize *len) {
+    *used = 0u;
+    *len = 0u;
+    for (;;) {
+        long r;
+        usize scan_from = *used >= 3u ? *used - 3u : 0u;
+        if (*used >= cap) return BHTTP_ERR_PROTOCOL; /* head too large */
+        r = conn_read(c, head + *used, cap - *used);
+        if (r <= 0) return r == 0 ? BHTTP_ERR_PROTOCOL : io_error(c, r);
+        *used += (usize)r;
+        for (usize i = scan_from; i + 4u <= *used; i++) {
+            if (memcmp(head + i, "\r\n\r\n", 4u) == 0) {
+                *len = i + 4u;
+                return BHTTP_OK;
+            }
+        }
+    }
+}
+
+/* "http://host[:port][/]": nothing else is a proxy. */
+static bool parse_proxy(const char *s, Url *p) {
+    if (!parse_url(s, p) || p->https) return false;
+    return strcmp(p->path, "/") == 0;
+}
+
+/* Asks the proxy (already connected on c->fd) for a tunnel to u. Runs on
+ * the total I/O budget. Nothing past the proxy's head may arrive with it:
+ * the next bytes on the socket must be the target's TLS handshake (later
+ * stray bytes reach TLS and fail the handshake). */
+static BreakHttpError proxy_connect(Conn *c, const Url *u) {
+    char req[BREAK_HTTP_MAX_URL];
+    char authority[300];
+    u8 head[BREAK_HTTP_MAX_HEAD];
+    usize used, len;
+    Head h;
+    BreakHttpError e;
+    int n, w;
+    snprintf(authority, sizeof(authority), u->host_is_v6 ? "[%s]:%s" : "%s:%s", u->host, u->port);
+    n = snprintf(req, sizeof(req),
+                 "CONNECT %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: break-http/1\r\n\r\n",
+                 authority, authority);
+    if (n <= 0 || (usize)n >= sizeof(req)) return BHTTP_ERR_URL;
+    w = conn_write_all(c, (const u8 *)req, (usize)n);
+    if (w != 0) return io_error(c, w);
+    e = read_head(c, head, sizeof(head), &used, &len);
+    if (e != BHTTP_OK) return e;
+    if (!parse_head((const char *)head, len, &h) || h.status < 200) return BHTTP_ERR_PROTOCOL;
+    if (h.status > 299) return BHTTP_ERR_STATUS;
+    if (used != len) return BHTTP_ERR_PROTOCOL;
+    return BHTTP_OK;
+}
+
 static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect ex, u8 *out,
                               u64 out_cap, u64 *out_len, int *status_out) {
     Conn c = {-1, NULL, NULL, 0, false};
@@ -664,6 +718,8 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
     u32 connect_ms = BREAK_HTTP_DEFAULT_CONNECT_MS, io_ms = BREAK_HTTP_DEFAULT_IO_MS;
     int n;
     const Url *u = rq->url;
+    Url proxy;
+    bool use_proxy = false;
     u64 need;
     usize have_body;
     bool bodiless;
@@ -673,6 +729,10 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
         if (cfg->io_timeout_ms != 0u) io_ms = cfg->io_timeout_ms;
     }
     if (connect_ms > BREAK_HTTP_MAX_IO_MS || io_ms > BREAK_HTTP_MAX_IO_MS) return BHTTP_ERR_URL;
+    if (cfg != NULL && cfg->proxy != NULL && cfg->proxy[0] != '\0') {
+        if (!parse_proxy(cfg->proxy, &proxy)) return BHTTP_ERR_URL;
+        use_proxy = u->https;
+    }
     if (u->https) {
         if (cfg == NULL || cfg->ca_file == NULL || cfg->ca_file[0] == '\0') return BHTTP_ERR_URL;
         if (cfg->spki_pin_count > BREAK_HTTP_MAX_PINS ||
@@ -690,12 +750,16 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
             return BHTTP_ERR_URL;
         }
     }
-    e = tcp_connect(u, !u->https, connect_ms, &c.fd);
+    e = tcp_connect(use_proxy ? &proxy : u, !u->https, connect_ms, &c.fd);
     if (e != BHTTP_OK) {
         conn_close(&c);
         return e;
     }
     c.deadline = now_ms() + io_ms;
+    if (use_proxy) {
+        e = proxy_connect(&c, u);
+        if (e != BHTTP_OK) goto done;
+    }
     if (u->https) {
         e = tls_handshake(&c, u);
         if (e == BHTTP_OK) e = tls_check_pins(&c, cfg);
@@ -738,28 +802,8 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
         }
     }
 
-    /* head: at most BREAK_HTTP_MAX_HEAD bytes in total until the blank line */
-    for (;;) {
-        long r;
-        usize scan_from = head_used >= 3u ? head_used - 3u : 0u;
-        if (head_used >= sizeof(head)) {
-            e = BHTTP_ERR_PROTOCOL; /* head too large */
-            goto done;
-        }
-        r = conn_read(&c, head + head_used, sizeof(head) - head_used);
-        if (r <= 0) {
-            e = r == 0 ? BHTTP_ERR_PROTOCOL : io_error(&c, r);
-            goto done;
-        }
-        head_used += (usize)r;
-        for (usize i = scan_from; i + 4u <= head_used; i++) {
-            if (memcmp(head + i, "\r\n\r\n", 4u) == 0) {
-                head_len = i + 4u;
-                break;
-            }
-        }
-        if (head_len != 0u) break;
-    }
+    e = read_head(&c, head, sizeof(head), &head_used, &head_len);
+    if (e != BHTTP_OK) goto done;
     if (!parse_head((const char *)head, head_len, &h)) {
         e = BHTTP_ERR_PROTOCOL;
         goto done;

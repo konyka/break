@@ -76,3 +76,17 @@ Mutations that turn it red: the server ignoring Range, the client ignoring the p
 ## 补充（2026-11-16）：证书吊销列表（CRL）
 
 `BreakHttpConfig` 新增可选字段 `crl_file`（PEM，可含多个 CRL）。为空时行为不变。设置后，握手时链上每张证书（叶子和各级 CA）都要用其签发者的 CRL 检查：已吊销、签发者在文件中没有 CRL、CRL 已过期或签名不对，都返回 `ERR_TLS`。文件读不了或其中没有 CRL，在建立任何 socket 之前返回 `ERR_URL`。明文 loopback http 忽略此字段。上文第 4 节中「不检查吊销（CRL/OCSP）」一项里的 CRL 部分由此交付；OCSP、OCSP stapling、按分发点下载 CRL 和 delta CRL 仍未实现。测试在 `engine/tests/test_break_http.c`（新增 5 项，含三级证书链），设计与验证见 `docs/superpowers/plans/2026-11-16-break-http-crl.md`。
+
+## 补充（2026-11-16）：经 HTTP CONNECT 代理访问 https
+
+`BreakHttpConfig` 新增可选字段 `proxy`，格式为 `http://host:port`（路径为空或 `/`，不允许查询串、用户信息或 https 代理）。为 NULL 或空串时行为不变。格式不合法时，无论目标是什么协议，都在建立任何 socket 之前返回 `ERR_URL`。
+
+只有 https 目标走代理：
+
+1. 在 `connect_timeout_ms` 内 TCP 连接代理。代理地址不要求是回环，目标主机名由代理解析。
+2. 发送 `CONNECT host:port HTTP/1.1`、`Host: host:port`、`User-Agent: break-http/1`。IPv6 主机加方括号，端口总是写出（URL 未给出时为 443）。
+3. 读取代理响应头（最多 8 KiB，与普通响应同一套 `parse_head` 规则）。格式错误或 1xx 返回 `ERR_PROTOCOL`；非 2xx 返回 `ERR_STATUS`；与响应头一起到达的多余字节返回 `ERR_PROTOCOL`，不会交给 TLS。
+4. 照常做 TLS 握手，CA、主机名、钉扎和 CRL 都针对目标校验，代理无法冒充目标。
+5. CONNECT 交换计入 `io_timeout_ms` 总预算。
+
+明文 http 目标忽略代理，仍只允许回环地址。不支持代理认证（407 返回 `ERR_STATUS`）、https 代理和从环境变量读取代理。测试在 `engine/tests/test_break_http.c`（新增 9 项，脚本化代理线程转发到 TLS 服务器），设计与验证见 `docs/superpowers/plans/2026-11-16-http-connect-proxy.md`。

@@ -11452,3 +11452,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 系数随 START 命令下发，之后由 `spatial_publish` 以 `rear_snapshot = (revision, alpha)` 先于增益快照写入；混音只在 revision 与所采用的增益 revision 相同时采用，RESTART 的新系数不会作用到旧 epoch 仍在播放的 PCM。每个 voice 两声道各自的滤波状态在 START 时清零，滤波在增益与声像之前、DSP 链之前。
 - `test_audio_extended` 新增 7 项（共 94）：注册校验、前方/侧面/重合不变、正后方阶跃响应、监听者转身与声源移动、RESTART 保留旧系数、未发布 revision 不采用、立体声状态分离。先 RED（编译失败）后 GREEN；18 项变异首轮 2 项存活（监听者更新不写系数、初始化冗余赋值），补断言并删除冗余赋值后全部被捕获；ASan+UBSan 与 TSan 三次运行无报告。
 - 仍缺：HRTF、耳间时差、高度提示。
+
+### 2026-11-16 HTTPS through an HTTP CONNECT proxy
+
+- `BreakHttpConfig.proxy`（`http://host:port`）：https 目标先向代理发 `CONNECT host:port`，2xx 后在隧道上做 TLS，证书、主机名、钉扎和 CRL 仍针对目标校验。非 2xx 为 `ERR_STATUS`，格式错误、1xx 或响应头后的多余字节为 `ERR_PROTOCOL`，代理 URL 不合法为 `ERR_URL`（不建 socket），CONNECT 计入 `io_timeout_ms`。明文 http 忽略代理，仍只允许回环。读响应头的循环抽成 `read_head`，普通响应与代理响应共用。
+- `test_break_http` 新增 9 项（共 57）：经代理成功且 CONNECT 头逐字节准确、IPv6 方括号与默认端口、403/407/502/301 不触达目标、畸形/1xx/多余字节/超长/提前关闭、非法代理 URL、经代理时错误 CA 与主机名不符、静默代理超时、代理不可达、明文 http 忽略代理。另在 https 规则测试中补了超长响应头用例。先 RED（编译失败）后 GREEN；18 项变异 16 项被捕获，存活 2 项为等价变异（去掉读头上限后零长度读仍得 `ERR_PROTOCOL`；忽略 CONNECT 写错误后读头得到同一错误码），保留原检查；ASan+UBSan 无报告，TSan 三次运行无报告。
+- 仍缺：代理认证、https 代理、OCSP、HTTP/2。

@@ -13,7 +13,10 @@
  *     is loopback (127.0.0.0/8, ::1), for tests and local development. Any
  *     other http URL fails with ERR_URL before a socket is created.
  *   - Redirects are never followed (a 3xx is a status error). No cookies, no
- *     proxy, no authentication, no keep-alive: one request per connection.
+ *     authentication, no keep-alive: one request per connection.
+ *   - An optional forward proxy (BreakHttpConfig.proxy) carries https only,
+ *     through an HTTP CONNECT tunnel; TLS still verifies the target, so the
+ *     proxy cannot impersonate it. Plain http ignores the proxy.
  *   - Every size is bounded by the caller's buffer: the status line plus
  *     headers are at most 8 KiB and 64 header lines; the body must fit the
  *     buffer or the call fails with ERR_TOO_BIG before reading it.
@@ -71,6 +74,17 @@ typedef struct BreakHttpConfig {
      * cannot be read or holds no CRL is ERR_URL before any socket. No OCSP,
      * no CRL download. Ignored for loopback http. */
     const char *crl_file;
+    /* Optional forward proxy, "http://host:port" (path empty or "/", no
+     * query, no userinfo, no https). NULL or empty = connect directly. A
+     * malformed value is ERR_URL before any socket, whatever the target.
+     * https targets are reached through "CONNECT host:port": the proxy
+     * address need not be loopback, the target name is resolved by the
+     * proxy, a non-2xx answer is ERR_STATUS, a malformed or 1xx answer or
+     * bytes after its head are ERR_PROTOCOL, and the exchange counts against
+     * io_timeout_ms. CA, host name, pins and CRL are then checked against
+     * the target. Plain http targets ignore the proxy and keep the
+     * loopback-only rule. No proxy authentication. */
+    const char *proxy;
 } BreakHttpConfig;
 
 typedef enum BreakHttpError {
