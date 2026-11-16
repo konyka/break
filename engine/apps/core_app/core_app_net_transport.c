@@ -6,6 +6,7 @@
 #include <network/break_session.h>
 #include <physics/physics_sync.h>
 #include <platform/platform_fs.h>
+#include <core/trace_core_app.h>
 #include <platform/time.h>
 #include <snow/acceptor.h>
 #include <snow/endpoint.h>
@@ -160,7 +161,7 @@ static bool net_auth_key(void *user, const u8 key_id[8], u8 out_psk[32]) {
 
 static void net_trace(CoreAppNetTransport *t, const char *text) {
     if (t->trace) {
-        fputs(text, t->trace);
+        (void)break_trace_core_app_write(t->trace, text);
         fflush(t->trace);
     }
 }

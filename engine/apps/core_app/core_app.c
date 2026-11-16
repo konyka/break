@@ -7,6 +7,7 @@
 #include "core_app_simulation.h"
 
 #include <ai/break_ai.h>
+#include <core/trace_core_app.h>
 #include <animation/anim_compression.h>
 #include <animation/animation.h>
 #include <animation/facial.h>
@@ -413,7 +414,7 @@ static BreakRuntimeError app_trace(CoreApp *app, const char *format, ...) {
     if (!app || !app->trace || !format) return BREAK_RUNTIME_INVALID;
     va_list args;
     va_start(args, format);
-    int written = vfprintf(app->trace, format, args);
+    int written = break_trace_core_app_vfprintf(app->trace, format, args);
     va_end(args);
     if (written < 0 || fflush(app->trace) != 0) return BREAK_RUNTIME_FAILED;
     return BREAK_RUNTIME_OK;

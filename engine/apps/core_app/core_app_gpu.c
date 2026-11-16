@@ -2,6 +2,7 @@
 
 #include "core_app_mesh.h"
 
+#include <core/trace_core_app.h>
 #include <platform/platform.h>
 #include <renderer/mesh_buffer.h>
 #include <scene/scene_serial.h>
@@ -13,15 +14,15 @@
 
 
 static BreakRuntimeError app_gpu_trace(CoreAppGpu *gpu, const char *format, ...) {
-    if (!gpu || !gpu->trace) return BREAK_RUNTIME_INVALID;
-    if (fprintf(gpu->trace, "COREAPPTRACE version=1 ") < 0) return BREAK_RUNTIME_FAILED;
+    if (!gpu || !gpu->trace || !format) return BREAK_RUNTIME_INVALID;
+    char line_format[256];
+    int length = snprintf(line_format, sizeof(line_format), "COREAPPTRACE version=1 %s\n", format);
+    if (length < 0 || (usize)length >= sizeof(line_format)) return BREAK_RUNTIME_INVALID;
     va_list args;
     va_start(args, format);
-    int written = vfprintf(gpu->trace, format, args);
+    int written = break_trace_core_app_vfprintf(gpu->trace, line_format, args);
     va_end(args);
-    if (written < 0 || fputc('\n', gpu->trace) == EOF || fflush(gpu->trace) != 0) {
-        return BREAK_RUNTIME_FAILED;
-    }
+    if (written < 0 || fflush(gpu->trace) != 0) return BREAK_RUNTIME_FAILED;
     return BREAK_RUNTIME_OK;
 }
 

@@ -5405,6 +5405,7 @@ endif()
         # a step held on another thread forces the reactor stop to time out.
         add_executable(test_core_app_net_transport tests/test_core_app_net_transport.c
             apps/core_app/core_app_net_transport.c src/platform/platform_fs.c
+            src/core/trace_core_app.c
             src/platform/time.c src/physics/physics_sync.c src/physics/physics.c
             src/physics/bvh.c src/math/math.c src/core/log.c)
         set_property(TARGET test_core_app_net_transport PROPERTY C_STANDARD 11)

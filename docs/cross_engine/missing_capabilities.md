@@ -261,3 +261,4 @@
 - **第 15 节（在线更新）追加**：`break_http` 可经 HTTP CONNECT 代理访问 https 目标（`BreakHttpConfig.proxy`），TLS 仍校验目标的证书、主机名、钉扎和 CRL。仍缺：代理认证、https 代理、OCSP、HTTP/2，发布二进制仍没有链接 `break_http`。
 - **第 15 节（在线更新）追加**：`break_http` 支持代理 Basic 认证（`proxy_user`/`proxy_password`，只放在 CONNECT 请求中）。仍缺：Digest/NTLM 等其他代理认证、https 代理、OCSP、HTTP/2，发布二进制仍没有链接 `break_http`。
 - **第 13 节（诊断/跨线程关联）追加**：core_app 文本 trace 转换器支持可选的 `ts_us` 微秒时间戳作为事件时间，无该字段的旧 trace 输出不变。仍缺：core_app 写出 `ts_us`、网络对端之间的时钟对齐。
+- **第 13 节（诊断/跨线程关联）追加**：`core_app --trace-timestamps` 在文本 trace 每行写入单调时钟 `ts_us`，`--trace-json` 与 `trace_merge` 得到真实时间轴（同一台机器上的多个进程可直接对齐）。仍缺：不同机器上网络对端之间的时钟对齐。

@@ -19,6 +19,9 @@
  * counted. Blank lines are ignored. A trailing '\r' is dropped. */
 #include <core/types.h>
 
+#include <stdarg.h>
+#include <stdio.h>
+
 #define BREAK_TRACE_CORE_APP_MAX_FIELDS 32u
 
 typedef enum BreakTraceConvertStatus {
@@ -41,3 +44,27 @@ typedef struct BreakTraceCoreAppReport {
 BreakTraceConvertStatus break_trace_core_app_to_chrome(const char *text, usize size, char *out,
                                                        usize capacity,
                                                        BreakTraceCoreAppReport *report);
+
+/* ---- writer side --------------------------------------------------------
+ * core_app writes every trace line through these functions. When a clock is
+ * set, a line that starts with "COREAPPTRACE version=1 " gets
+ * "ts_us=<clock()> " inserted right after that prefix; any other text
+ * (continuation chunks of a long line included) is written verbatim. Each
+ * call is a single fwrite, so concurrent writers do not interleave inside a
+ * call. Callers still flush. */
+typedef u64 (*BreakTraceClockFn)(void);
+
+/* Process-wide; NULL (the default) turns stamping off. Set it before any
+ * trace thread starts. Without a clock the fprintf variants call vfprintf
+ * directly, so output and libc calls are exactly as before. */
+void break_trace_core_app_set_clock(BreakTraceClockFn now_us);
+
+/* fprintf-like: the bytes written, or -1 on a NULL argument or an I/O or
+ * allocation failure. */
+int break_trace_core_app_fprintf(FILE *out, const char *format, ...)
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((format(printf, 2, 3)))
+#endif
+    ;
+int break_trace_core_app_vfprintf(FILE *out, const char *format, va_list args);
+int break_trace_core_app_write(FILE *out, const char *text);

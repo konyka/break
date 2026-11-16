@@ -168,10 +168,91 @@ TEST(core_app_trace_skips_a_non_canonical_ts_us)
     ASSERT_TRUE(strstr(g_out, EVENT_HEAD("b", "7") "}}") != NULL);
 }
 
+static u64 g_fake_now;
+static u64 fake_clock(void)
+{
+    return g_fake_now;
+}
+
+/* Runs the writer into a temporary file and returns what it wrote. */
+static const char *written(const char *text, bool formatted)
+{
+    static char buf[8192];
+    FILE *f = tmpfile();
+    if (!f) return "<no tmpfile>";
+    int n = formatted ? break_trace_core_app_fprintf(f, "%s", text)
+                      : break_trace_core_app_write(f, text);
+    rewind(f);
+    usize got = fread(buf, 1u, sizeof buf - 1u, f);
+    buf[got] = '\0';
+    fclose(f);
+    if (n < 0 || (usize)n != got) return "<bad return>";
+    return buf;
+}
+
+TEST(core_app_trace_writer_stamps_lines_only_when_a_clock_is_set)
+{
+    break_trace_core_app_set_clock(NULL);
+    ASSERT_STR_EQ(written("COREAPPTRACE version=1 event=a k=1\n", true),
+                  "COREAPPTRACE version=1 event=a k=1\n");
+    g_fake_now = 1234567u;
+    break_trace_core_app_set_clock(fake_clock);
+    ASSERT_STR_EQ(written("COREAPPTRACE version=1 event=a k=1\n", true),
+                  "COREAPPTRACE version=1 ts_us=1234567 event=a k=1\n");
+    ASSERT_STR_EQ(written("COREAPPTRACE version=1 event=b\n", false),
+                  "COREAPPTRACE version=1 ts_us=1234567 event=b\n");
+    g_fake_now = 0u;
+    ASSERT_STR_EQ(written("COREAPPTRACE version=1 event=c\n", true),
+                  "COREAPPTRACE version=1 ts_us=0 event=c\n");
+    /* continuation chunks and other text are written verbatim */
+    ASSERT_STR_EQ(written("1,2,3", true), "1,2,3");
+    ASSERT_STR_EQ(written(" sun_y=1\n", false), " sun_y=1\n");
+    ASSERT_STR_EQ(written("COREAPPTRACE version=2 event=a\n", true),
+                  "COREAPPTRACE version=2 event=a\n");
+    ASSERT_STR_EQ(written("", true), "");
+    break_trace_core_app_set_clock(NULL);
+    ASSERT_STR_EQ(written("COREAPPTRACE version=1 event=d\n", false),
+                  "COREAPPTRACE version=1 event=d\n");
+    ASSERT_EQ(break_trace_core_app_fprintf(NULL, "x"), -1);
+    ASSERT_EQ(break_trace_core_app_write(NULL, "x"), -1);
+}
+
+TEST(core_app_trace_writer_handles_long_lines_and_round_trips)
+{
+    static char line[3000];
+    static char want[3100];
+    usize used = (usize)snprintf(line, sizeof line, "COREAPPTRACE version=1 event=wide objects=");
+    while (used + 3u < sizeof line - 2u) used += (usize)snprintf(line + used, sizeof line - used, "%u,", 7u);
+    snprintf(line + used, sizeof line - used, "\n");
+    g_fake_now = 999999999999999999u;
+    break_trace_core_app_set_clock(fake_clock);
+    snprintf(want, sizeof want, "COREAPPTRACE version=1 ts_us=999999999999999999 %s",
+             line + strlen("COREAPPTRACE version=1 "));
+    ASSERT_STR_EQ(written(line, true), want);
+    ASSERT_STR_EQ(written(line, false), want);
+
+    g_fake_now = 42u;
+    const char *a = written("COREAPPTRACE version=1 event=a generation=1\n", true);
+    static char text[256];
+    snprintf(text, sizeof text, "%s", a);
+    g_fake_now = 43u;
+    usize n = strlen(text);
+    snprintf(text + n, sizeof text - n, "%s", written("COREAPPTRACE version=1 event=b\n", false));
+    break_trace_core_app_set_clock(NULL);
+    BreakTraceCoreAppReport report;
+    ASSERT_EQ(convert(text, &report), BREAK_TRACE_CONVERT_OK);
+    ASSERT_EQ(report.events, 2u);
+    ASSERT_EQ(report.timestamped, 2u);
+    ASSERT_TRUE(strstr(g_out, EVENT_HEAD("a", "42") "\"generation\":1}}") != NULL);
+    ASSERT_TRUE(strstr(g_out, EVENT_HEAD("b", "43") "}}") != NULL);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(core_app_trace_converts_lines_to_chrome_events);
     RUN_TEST(core_app_trace_size_query_and_small_buffer);
     RUN_TEST(core_app_trace_skips_malformed_lines);
     RUN_TEST(core_app_trace_uses_ts_us_as_the_event_time);
     RUN_TEST(core_app_trace_skips_a_non_canonical_ts_us);
+    RUN_TEST(core_app_trace_writer_stamps_lines_only_when_a_clock_is_set);
+    RUN_TEST(core_app_trace_writer_handles_long_lines_and_round_trips);
 TEST_MAIN_END()

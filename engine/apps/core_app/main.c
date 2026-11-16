@@ -1,6 +1,7 @@
 #include "core_app.h"
 
 #include <core/trace_core_app.h>
+#include <platform/time.h>
 
 #if CORE_APP_NET_TRANSPORT
 #include "core_app_net_transport.h"
@@ -21,6 +22,7 @@ static void print_help(void) {
          "  --checkpoint DIR\n"
          "  --trace PATH\n"
          "  --trace-json PATH\n"
+         "  --trace-timestamps\n"
          "  --screenshot PATH\n"
          "  --fixed-step\n"
          "  --frames N\n"
@@ -143,6 +145,7 @@ int main(int argc, char **argv) {
     };
     int exit_code = 2;
     const char *trace_json_path = NULL;
+    bool trace_timestamps = false;
     BreakRuntimeError result;
 #if CORE_APP_NET_TRANSPORT
     CoreAppNetTransportConfig net_config = {0};
@@ -214,6 +217,8 @@ int main(int argc, char **argv) {
             net_config.poll_ms = poll_ms;
             net_option_seen = true;
 #endif
+        } else if (strcmp(argv[i], "--trace-timestamps") == 0) {
+            trace_timestamps = true;
         } else if (strcmp(argv[i], "--fixed-step") == 0) {
             config.fixed_step = true;
         } else if (strcmp(argv[i], "--require-device") == 0) {
@@ -230,6 +235,12 @@ int main(int argc, char **argv) {
     }
     if (trace_json_path && !config.trace_path)
         return cli_error("--trace-json requires --trace");
+    if (trace_timestamps && !config.trace_path)
+        return cli_error("--trace-timestamps requires --trace");
+    if (trace_timestamps) {
+        time_init();
+        break_trace_core_app_set_clock(time_microseconds);
+    }
 
 #if CORE_APP_NET_TRANSPORT
     if (net_option_seen && !config.network)

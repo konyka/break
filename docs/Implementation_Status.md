@@ -11470,3 +11470,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `break_trace_core_app_to_chrome` 识别可选字段 `ts_us=<微秒>`：作为事件 `ts`、不进 `args`，计入新的 `BreakTraceCoreAppReport.timestamped`；非规范十进制的 `ts_us` 使该行被跳过。无 `ts_us` 的行仍用序号，旧 trace 输出不变。
 - `test_trace_core_app` 新增 2 项（共 5）：时间戳替换与 args 剔除、0 与 18 位上限、与无时间戳行混排、`timestamped` 计数；5 种非规范值跳过。先 RED（编译失败）后 GREEN；9 项变异全部被捕获。
 - 仍缺：core_app 写出 `ts_us`、网络对端之间的时钟对齐。
+
+### 2026-11-16 core_app writes ts_us timestamps
+
+- `core_app --trace-timestamps`（需要 `--trace`）：每条 trace 行带 `ts_us=<单调时钟微秒>`，`--trace-json` 输出真实时间轴。core_app 全部 trace 写入点改经 `break_trace_core_app_fprintf` / `vfprintf` / `write`（`core/trace_core_app.h`），时钟由 `break_trace_core_app_set_clock` 设置；未设置时直接调用 `vfprintf`，默认输出逐字节不变。
+- `test_trace_core_app` 新增 2 项（共 7）：有无时钟、非前缀文本原样输出、超过栈缓冲的长行、写出后转换 `timestamped == events`。`test_core_app_target_contract` 覆盖缺 `--trace` 时报错与帮助文本；`test_core_app_lifecycle` 覆盖每行都有 `ts_us`、时间单调不减、JSON 不再以序号 0 开头、事件数与行数一致。先 RED 后 GREEN；10 项变异全部被捕获；ASan 与 TSan 三次运行无报告。
+- 仍缺：不同机器上网络对端之间的时钟对齐。

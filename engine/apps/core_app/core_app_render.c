@@ -1,12 +1,14 @@
 #include "core_app_render.h"
 
+#include <core/trace_core_app.h>
+
 #include <inttypes.h>
 #include <string.h>
 
 static BreakRuntimeError render_trace(CoreAppRender *render, const char *line,
                                       u64 first, u64 second) {
     if (!render || !render->trace || !line) return BREAK_RUNTIME_INVALID;
-    if (fprintf(render->trace, line, first, second) < 0 ||
+    if (break_trace_core_app_fprintf(render->trace, line, first, second) < 0 ||
         fflush(render->trace) != 0) {
         return BREAK_RUNTIME_FAILED;
     }
@@ -179,7 +181,7 @@ BreakRuntimeError core_app_render_record_world(CoreAppRender *render, u64 genera
         }
         if (snapshot->draws[i].stream) stream++;
     }
-    if (fprintf(render->trace,
+    if (break_trace_core_app_fprintf(render->trace,
                 "COREAPPTRACE version=1 event=render kind=world frame=%" PRIu64
                 " generation=%" PRIu64 " draws=%u stream=%u batches=%u instances=%u objects=",
                 snapshot->frame_id, generation, snapshot->draw_count, stream,
@@ -187,12 +189,12 @@ BreakRuntimeError core_app_render_record_world(CoreAppRender *render, u64 genera
         return BREAK_RUNTIME_FAILED;
     }
     for (u32 i = 0u; i < snapshot->draw_count; ++i) {
-        if (fprintf(render->trace, i == 0u ? "%u" : ",%u",
+        if (break_trace_core_app_fprintf(render->trace, i == 0u ? "%u" : ",%u",
                     snapshot->draws[i].object_id) < 0) {
             return BREAK_RUNTIME_FAILED;
         }
     }
-    if (fprintf(render->trace, " sun_y=%.9g\n",
+    if (break_trace_core_app_fprintf(render->trace, " sun_y=%.9g\n",
                 (double)snapshot->lighting.sun_dir.e[1]) < 0 ||
         fflush(render->trace) != 0) {
         return BREAK_RUNTIME_FAILED;
@@ -212,7 +214,7 @@ BreakRuntimeError core_app_render_record_skinned(CoreAppRender *render, u64 fram
     if (entry->state != CORE_APP_RESOURCE_LIVE || entry->generation != generation) {
         return BREAK_RUNTIME_STALE;
     }
-    if (fprintf(render->trace,
+    if (break_trace_core_app_fprintf(render->trace,
                 "COREAPPTRACE version=1 event=render kind=skinned frame=%" PRIu64
                 " generation=%" PRIu64 " object=%u slot=%u resource_generation=%" PRIu64
                 " version=%u\n", frame, generation, object, slot, entry->generation,

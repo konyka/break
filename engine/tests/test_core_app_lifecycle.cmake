@@ -1484,6 +1484,50 @@ if(NOT json_rc EQUAL 2 OR NOT json_err MATCHES "could not write --trace-json")
     record_error("trace_json_unwritable: exit=${json_rc}, want 2; stderr=${json_err}")
 endif()
 
+set(ts_trace_path "${WORK}/load_unload_ts.trace")
+set(ts_json_path "${WORK}/load_unload_ts.trace.json")
+file(REMOVE "${ts_trace_path}" "${ts_json_path}")
+execute_process(
+    COMMAND "${CORE_APP}" --render=record --audio=record
+        --assets "${ASSET_ROOT}" --fixed-step --scenario "${SCENARIO}"
+        --trace "${ts_trace_path}" --trace-json "${ts_json_path}" --trace-timestamps
+    RESULT_VARIABLE ts_rc
+    OUTPUT_VARIABLE ts_out
+    ERROR_VARIABLE ts_err
+    TIMEOUT 30)
+if(NOT ts_rc EQUAL 0 OR NOT EXISTS "${ts_json_path}")
+    record_error("trace_timestamps: exit=${ts_rc}; stdout=${ts_out}; stderr=${ts_err}")
+else()
+    file(STRINGS "${ts_trace_path}" ts_all_lines)
+    file(STRINGS "${ts_trace_path}" ts_stamped_lines
+        REGEX "^COREAPPTRACE version=1 ts_us=(0|[1-9][0-9]*) event=")
+    list(LENGTH ts_all_lines ts_all_count)
+    list(LENGTH ts_stamped_lines ts_stamped_count)
+    if(ts_all_count EQUAL 0 OR NOT ts_stamped_count EQUAL ts_all_count)
+        record_error("trace_timestamps: ${ts_stamped_count} of ${ts_all_count} lines carry ts_us")
+    endif()
+    set(ts_previous 0)
+    foreach(ts_line IN LISTS ts_stamped_lines)
+        string(REGEX REPLACE "^COREAPPTRACE version=1 ts_us=([0-9]+) .*" "\\1" ts_value "${ts_line}")
+        if(ts_value LESS ts_previous)
+            record_error("trace_timestamps: ts_us went backwards at ${ts_line}")
+        endif()
+        set(ts_previous "${ts_value}")
+    endforeach()
+    file(READ "${ts_json_path}" ts_json)
+    if(ts_json MATCHES "\"ts_us\"")
+        record_error("trace_timestamps: ts_us leaked into the JSON args")
+    endif()
+    if(ts_json MATCHES "^{\"traceEvents\":\\[\n{\"name\":\"runtime_running\",\"cat\":\"core_app\",\"ph\":\"i\",\"s\":\"g\",\"ts\":0,")
+        record_error("trace_timestamps: the first event still uses the ordinal 0 as time")
+    endif()
+    string(REGEX MATCHALL "\"cat\":\"core_app\"" ts_events "${ts_json}")
+    list(LENGTH ts_events ts_event_count)
+    if(NOT ts_event_count EQUAL ts_all_count)
+        record_error("trace_timestamps: ${ts_event_count} JSON events for ${ts_all_count} lines")
+    endif()
+endif()
+
 run_app(load_unload "${ASSET_ROOT}" "${SCENARIO}" 0)
 set(normal_trace "${CORE_APP_LIFECYCLE_TRACE}")
 if(normal_trace STREQUAL "")

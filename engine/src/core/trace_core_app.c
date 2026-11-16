@@ -2,6 +2,8 @@
 
 #include <core/trace_schema.h>
 
+#include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define TRACE_PREFIX "COREAPPTRACE "
@@ -200,4 +202,88 @@ BreakTraceConvertStatus break_trace_core_app_to_chrome(const char *text, usize s
     trace_convert(text, size, &writer, report);
     out[report->bytes] = '\0';
     return BREAK_TRACE_CONVERT_OK;
+}
+
+/* ---------------- writer ---------------- */
+
+#define TRACE_STAMP_PREFIX "COREAPPTRACE version=1 "
+#define TRACE_STAMP_PREFIX_LENGTH (sizeof(TRACE_STAMP_PREFIX) - 1u)
+#define TRACE_STACK_LINE 1024u
+
+static _Atomic(BreakTraceClockFn) g_trace_clock;
+
+void break_trace_core_app_set_clock(BreakTraceClockFn now_us)
+{
+    atomic_store_explicit(&g_trace_clock, now_us, memory_order_release);
+}
+
+static int trace_write_n(FILE *out, const char *text, usize length)
+{
+    BreakTraceClockFn clock = atomic_load_explicit(&g_trace_clock, memory_order_acquire);
+    if (length > (usize)INT32_MAX - 64u) return -1;
+    if (!clock || length < TRACE_STAMP_PREFIX_LENGTH ||
+        memcmp(text, TRACE_STAMP_PREFIX, TRACE_STAMP_PREFIX_LENGTH) != 0) {
+        return fwrite(text, 1u, length, out) == length ? (int)length : -1;
+    }
+    char stamp[32];
+    int stamp_length = snprintf(stamp, sizeof stamp, "ts_us=%llu ", (unsigned long long)clock());
+    if (stamp_length <= 0 || (usize)stamp_length >= sizeof stamp) return -1;
+    usize total = length + (usize)stamp_length;
+    char stack[TRACE_STACK_LINE];
+    char *line = total <= sizeof stack ? stack : malloc(total);
+    if (!line) return -1;
+    memcpy(line, text, TRACE_STAMP_PREFIX_LENGTH);
+    memcpy(line + TRACE_STAMP_PREFIX_LENGTH, stamp, (usize)stamp_length);
+    memcpy(line + TRACE_STAMP_PREFIX_LENGTH + (usize)stamp_length,
+           text + TRACE_STAMP_PREFIX_LENGTH, length - TRACE_STAMP_PREFIX_LENGTH);
+    int result = fwrite(line, 1u, total, out) == total ? (int)total : -1;
+    if (line != stack) free(line);
+    return result;
+}
+
+int break_trace_core_app_write(FILE *out, const char *text)
+{
+    if (!out || !text) return -1;
+    return trace_write_n(out, text, strlen(text));
+}
+
+int break_trace_core_app_vfprintf(FILE *out, const char *format, va_list args)
+{
+    if (!out || !format) return -1;
+    /* without a clock this is exactly vfprintf (same bytes, same libc call) */
+    if (!atomic_load_explicit(&g_trace_clock, memory_order_acquire)) {
+        int direct = vfprintf(out, format, args);
+        return direct < 0 ? -1 : direct;
+    }
+    char stack[TRACE_STACK_LINE];
+    va_list again;
+    va_copy(again, args);
+    int length = vsnprintf(stack, sizeof stack, format, args);
+    if (length < 0) {
+        va_end(again);
+        return -1;
+    }
+    if ((usize)length < sizeof stack) {
+        va_end(again);
+        return trace_write_n(out, stack, (usize)length);
+    }
+    char *heap = malloc((usize)length + 1u);
+    if (!heap) {
+        va_end(again);
+        return -1;
+    }
+    int second = vsnprintf(heap, (usize)length + 1u, format, again);
+    va_end(again);
+    int result = second == length ? trace_write_n(out, heap, (usize)length) : -1;
+    free(heap);
+    return result;
+}
+
+int break_trace_core_app_fprintf(FILE *out, const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int result = break_trace_core_app_vfprintf(out, format, args);
+    va_end(args);
+    return result;
 }

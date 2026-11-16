@@ -1,6 +1,7 @@
 #include "core_app_audio.h"
 
 #include <core/platform_thread.h>
+#include <core/trace_core_app.h>
 #include <platform/time.h>
 
 #include <inttypes.h>
@@ -176,7 +177,7 @@ static BreakRuntimeError sound_attach(CoreAppAudio *audio, FILE *trace, AudioSys
     snprintf(audio->device_backend, sizeof(audio->device_backend), "%s",
              audio_system_backend_name(system));
     (void)audio_system_device_name(system, audio->device_name, sizeof(audio->device_name));
-    if (fprintf(trace, "COREAPPTRACE version=1 event=audio mode=device result=ready "
+    if (break_trace_core_app_fprintf(trace, "COREAPPTRACE version=1 event=audio mode=device result=ready "
                        "backend=%s device=%s probe_source=%u\n",
                 audio->device_backend, audio->device_name, probe) < 0 ||
         fflush(trace) != 0) {
@@ -222,7 +223,7 @@ BreakRuntimeError core_app_audio_start_device_backend(CoreAppAudio *audio, FILE 
         }
         if (probe == 0u) {
             audio_system_destroy(system);
-            (void)fprintf(trace, "COREAPPTRACE version=1 event=audio mode=device "
+            (void)break_trace_core_app_fprintf(trace, "COREAPPTRACE version=1 event=audio mode=device "
                                  "result=failed reason=probe\n");
             (void)fflush(trace);
             audio->trace = NULL;
@@ -236,7 +237,7 @@ BreakRuntimeError core_app_audio_start_device_backend(CoreAppAudio *audio, FILE 
      * backend did. Neither may be reported as a device. The backend name is a
      * static string, so it outlives the destroyed system. */
     if (system) audio_system_destroy(system);
-    if (fprintf(trace, "COREAPPTRACE version=1 event=audio mode=device "
+    if (break_trace_core_app_fprintf(trace, "COREAPPTRACE version=1 event=audio mode=device "
                        "result=unavailable backend=%s fallback=%s\n",
                 backend_name, require_device ? "none" : "null") < 0 ||
         fflush(trace) != 0) {
@@ -386,7 +387,7 @@ static BreakRuntimeError sound_emit(CoreAppAudio *audio, const CoreAppAudioComma
                                     bool device) {
     if (device) sound_apply_device(audio, command);
     if (!audio->trace) return BREAK_RUNTIME_OK;
-    if (fprintf(audio->trace,
+    if (break_trace_core_app_fprintf(audio->trace,
                 "COREAPPTRACE version=1 event=audio kind=%s generation=%" PRIu64
                 " sequence=%" PRIu64 " source=%u sound=%s\n",
                 sound_kind_name(command->kind), command->generation, command->sequence,
@@ -512,7 +513,7 @@ static BreakRuntimeError sound_close_device(CoreAppAudio *audio) {
     audio->probe_source = 0u;
     memset(audio->device_sources, 0, sizeof(audio->device_sources));
     if (!audio->trace) return BREAK_RUNTIME_OK;
-    if (fprintf(audio->trace,
+    if (break_trace_core_app_fprintf(audio->trace,
                 "COREAPPTRACE version=1 event=audio mode=device result=stopped backend=%s "
                 "probe_complete=%u probe_seconds=%.3f failures=%" PRIu64
                 " listener_updates=%" PRIu64 " plays=%" PRIu64 " moves=%" PRIu64
