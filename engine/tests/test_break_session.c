@@ -1039,10 +1039,22 @@ TEST(break_session_registry_has_physics_sync_messages)
     ASSERT_EQ(correction->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
     ASSERT_EQ(correction->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
 #ifdef BREAK_ENABLE_CRYPTO
-    ASSERT_EQ(registry->count, 24u);
+    ASSERT_EQ(registry->count, 25u);
 #else
-    ASSERT_EQ(registry->count, 23u);
+    ASSERT_EQ(registry->count, 24u);
 #endif
+    {
+        const BreakNetMessageDefinition *probe = break_net_message_registry_lookup(
+            registry, BREAK_NET_MESSAGE_ID_CLOCK_PROBE);
+        ASSERT_EQ(BREAK_NET_MESSAGE_ID_CLOCK_PROBE, 0x4004u);
+        ASSERT_NOT_NULL(probe);
+        ASSERT_EQ(probe->minimum_version, 1u);
+        ASSERT_EQ(probe->maximum_version, 1u);
+        ASSERT_EQ(probe->payload_limit, (size_t)BREAK_NET_CLOCK_PROBE_PAYLOAD);
+        ASSERT_EQ(BREAK_NET_CLOCK_PROBE_PAYLOAD, 32u);
+        ASSERT_EQ(probe->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+        ASSERT_EQ(probe->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+    }
 
     memset(payload, 0x5a, sizeof(payload));
     env.protocol_version = 1u;

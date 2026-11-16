@@ -11482,3 +11482,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `core/clock_offset.{h,c}`：NTP 式四时间戳样本计算 B 相对 A 的时钟偏移与往返延迟；非法样本（t2 < t1、停留时间超过往返、超过 2^61）拒绝并计数；8 样本滑动窗口取最小延迟样本（相同取最新），误差上界 `ceil(delay/2)`；`clock_offset_merge_shifts` 给出 `trace_merge --offset-us` 用的非负平移量。
 - `test_clock_offset` 新增 5 项：正负偏移与向负无穷取整、非法样本、最小延迟与窗口淘汰、任意延迟分配下误差界成立、平移量（含 INT64_MIN）。先 RED 后 GREEN；17 项变异首轮 1 项存活（`t3 < t0` 检查被停留时间检查覆盖），删除冗余检查后全部被捕获；ASan 与 TSan 三次运行无报告。
 - 仍缺：探测包在 core_app 会话协议上的收发、把估计结果写入 trace 或自动传给 `trace_merge`。
+
+### 2026-11-16 clock probe wire format
+
+- 新增会话消息 `0x4004` 时钟探测（AUTHENTICATED、v1、恰好 32 字节、重复幂等），默认注册表计数变为 25（CRYPTO=ON）/ 24（OFF）；transport 编译期校验消息 id 与载荷大小和注册表一致。
+- `core_app_network.{h,c}`：`core_app_clock_probe_encode/decode/answer`，小端 32 字节格式（magic `CLKP`、kind、保留字节、t0/t1/t2），所有失败路径不修改输出。
+- `test_core_app_network` 新增 4 项（golden 字节往返、逐项畸形载荷拒绝、非法编码与应答、探测交换喂给 `ClockOffsetEstimator`），`test_break_session` 断言新注册表条目。先 RED（编译失败）后 GREEN；37 项变异首轮 1 项存活（编码缓冲区原本为 0，掩盖了保留字段写入），测试改为预填 0xa5 后全部被捕获。
+- 仍缺：transport 收发探测与定期估计、估计结果自动用于 `trace_merge`。

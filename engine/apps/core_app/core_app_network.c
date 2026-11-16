@@ -187,6 +187,64 @@ CoreAppSnapshotAdmission core_app_snapshot_admit(CoreAppSnapshotInbox *inbox,
     return CORE_APP_SNAPSHOT_ADMITTED;
 }
 
+static bool clock_probe_kind_valid(CoreAppClockProbeKind kind) {
+    return kind == CORE_APP_CLOCK_PROBE_REQUEST || kind == CORE_APP_CLOCK_PROBE_REPLY;
+}
+
+CoreAppSnapshotOutcome core_app_clock_probe_encode(const CoreAppClockProbe *probe,
+                                                   u8 *out_buffer, size_t capacity,
+                                                   size_t *out_size) {
+    if (!probe || !out_buffer || !out_size) return CORE_APP_SNAPSHOT_INVALID;
+    if (!clock_probe_kind_valid(probe->kind)) return CORE_APP_SNAPSHOT_INVALID;
+    if (probe->kind == CORE_APP_CLOCK_PROBE_REQUEST && (probe->t1 || probe->t2)) {
+        return CORE_APP_SNAPSHOT_INVALID;
+    }
+    if (capacity < CORE_APP_CLOCK_PROBE_BYTES) return CORE_APP_SNAPSHOT_OVER_LIMIT;
+    put_u32(out_buffer, CORE_APP_CLOCK_PROBE_MAGIC);
+    out_buffer[4] = (u8)probe->kind;
+    out_buffer[5] = 0u;
+    put_u16(out_buffer + 6, 0u);
+    put_u64(out_buffer + 8, probe->t0);
+    put_u64(out_buffer + 16, probe->t1);
+    put_u64(out_buffer + 24, probe->t2);
+    *out_size = CORE_APP_CLOCK_PROBE_BYTES;
+    return CORE_APP_SNAPSHOT_OK;
+}
+
+CoreAppSnapshotOutcome core_app_clock_probe_decode(const u8 *payload, size_t size,
+                                                   CoreAppClockProbe *out) {
+    CoreAppClockProbe probe;
+    if (!payload || !out) return CORE_APP_SNAPSHOT_INVALID;
+    if (size < CORE_APP_CLOCK_PROBE_BYTES) return CORE_APP_SNAPSHOT_TRUNCATED;
+    if (size > CORE_APP_CLOCK_PROBE_BYTES) return CORE_APP_SNAPSHOT_OVER_LIMIT;
+    if (get_u32(payload) != CORE_APP_CLOCK_PROBE_MAGIC) return CORE_APP_SNAPSHOT_BAD_MAGIC;
+    probe.kind = (CoreAppClockProbeKind)payload[4];
+    if (!clock_probe_kind_valid(probe.kind)) return CORE_APP_SNAPSHOT_BAD_VERSION;
+    if (payload[5] || get_u16(payload + 6)) return CORE_APP_SNAPSHOT_INVALID;
+    probe.t0 = get_u64(payload + 8);
+    probe.t1 = get_u64(payload + 16);
+    probe.t2 = get_u64(payload + 24);
+    if (probe.kind == CORE_APP_CLOCK_PROBE_REQUEST && (probe.t1 || probe.t2)) {
+        return CORE_APP_SNAPSHOT_INVALID;
+    }
+    *out = probe;
+    return CORE_APP_SNAPSHOT_OK;
+}
+
+CoreAppSnapshotOutcome core_app_clock_probe_answer(const CoreAppClockProbe *request,
+                                                   u64 t1, u64 t2,
+                                                   CoreAppClockProbe *reply) {
+    if (!request || !reply) return CORE_APP_SNAPSHOT_INVALID;
+    if (request->kind != CORE_APP_CLOCK_PROBE_REQUEST || t2 < t1) {
+        return CORE_APP_SNAPSHOT_INVALID;
+    }
+    reply->kind = CORE_APP_CLOCK_PROBE_REPLY;
+    reply->t0 = request->t0;
+    reply->t1 = t1;
+    reply->t2 = t2;
+    return CORE_APP_SNAPSHOT_OK;
+}
+
 void core_app_snapshot_outbox_init(CoreAppSnapshotOutbox *outbox) {
     if (!outbox) return;
     memset(outbox, 0, sizeof(*outbox));

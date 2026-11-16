@@ -24,6 +24,10 @@ extern "C" {
 #define BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT 0x4002u
 #define BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION 0x4003u
 #define BREAK_NET_PHYSICS_SYNC_REPORT_PAYLOAD 16u
+/* core_app clock probe (engine/apps/core_app/core_app_network.h),
+ * AUTHENTICATED only; every probe is exactly 32 bytes. */
+#define BREAK_NET_MESSAGE_ID_CLOCK_PROBE 0x4004u
+#define BREAK_NET_CLOCK_PROBE_PAYLOAD 32u
 #define BREAK_NET_MESSAGE_ID_MAX 65535u
 #define BREAK_NET_REGISTRY_MAX_MESSAGES 64u
 #define BREAK_NET_MAX_PAYLOAD_SIZE (64u * 1024u)

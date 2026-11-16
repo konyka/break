@@ -5,6 +5,8 @@
 
 #include "../apps/core_app/core_app_network.h"
 
+#include <core/clock_offset.h>
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -241,6 +243,130 @@ TEST(secret_env_rejects_bad_values_and_still_removes_them) {
     ASSERT_FALSE(core_app_net_take_secret_env("CORE_APP_UNIT_PSK", NULL, sizeof(key)));
 }
 
+static const u8 k_probe_request[CORE_APP_CLOCK_PROBE_BYTES] = {
+    0x43, 0x4c, 0x4b, 0x50, 0x01, 0x00, 0x00, 0x00,
+    0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0};
+
+TEST(clock_probe_round_trips_with_golden_bytes) {
+    CoreAppClockProbe probe = {CORE_APP_CLOCK_PROBE_REQUEST, 0x0102030405060708ull, 0u, 0u};
+    u8 wire[CORE_APP_CLOCK_PROBE_BYTES + 4u];
+    size_t size = 0u;
+    memset(wire, 0xa5, sizeof(wire));
+    ASSERT_EQ(core_app_clock_probe_encode(&probe, wire, sizeof(wire), &size), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(size, (size_t)CORE_APP_CLOCK_PROBE_BYTES);
+    ASSERT_TRUE(memcmp(wire, k_probe_request, sizeof(k_probe_request)) == 0);
+
+    CoreAppClockProbe decoded;
+    memset(&decoded, 0xa5, sizeof(decoded));
+    ASSERT_EQ(core_app_clock_probe_decode(wire, size, &decoded), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(decoded.kind, CORE_APP_CLOCK_PROBE_REQUEST);
+    ASSERT_EQ(decoded.t0, 0x0102030405060708ull);
+    ASSERT_EQ(decoded.t1, 0u);
+    ASSERT_EQ(decoded.t2, 0u);
+
+    CoreAppClockProbe reply;
+    ASSERT_EQ(core_app_clock_probe_answer(&decoded, 0x1111ull, 0x2222ull, &reply),
+              CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(reply.kind, CORE_APP_CLOCK_PROBE_REPLY);
+    ASSERT_EQ(reply.t0, 0x0102030405060708ull);
+    ASSERT_EQ(core_app_clock_probe_encode(&reply, wire, sizeof(wire), &size), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(wire[4], 0x02u);
+    ASSERT_EQ(wire[16], 0x11u);
+    ASSERT_EQ(wire[17], 0x11u);
+    ASSERT_EQ(wire[18], 0x00u);
+    ASSERT_EQ(wire[24], 0x22u);
+    ASSERT_EQ(wire[31], 0x00u);
+    ASSERT_EQ(core_app_clock_probe_decode(wire, size, &decoded), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(decoded.kind, CORE_APP_CLOCK_PROBE_REPLY);
+    ASSERT_EQ(decoded.t1, 0x1111ull);
+    ASSERT_EQ(decoded.t2, 0x2222ull);
+}
+
+TEST(clock_probe_decode_rejects_every_malformed_payload) {
+    u8 wire[CORE_APP_CLOCK_PROBE_BYTES + 1u];
+    CoreAppClockProbe out = {CORE_APP_CLOCK_PROBE_REPLY, 7u, 8u, 9u};
+    memcpy(wire, k_probe_request, sizeof(k_probe_request));
+    wire[CORE_APP_CLOCK_PROBE_BYTES] = 0u;
+    ASSERT_EQ(core_app_clock_probe_decode(wire, CORE_APP_CLOCK_PROBE_BYTES - 1u, &out),
+              CORE_APP_SNAPSHOT_TRUNCATED);
+    ASSERT_EQ(core_app_clock_probe_decode(wire, CORE_APP_CLOCK_PROBE_BYTES + 1u, &out),
+              CORE_APP_SNAPSHOT_OVER_LIMIT);
+    ASSERT_EQ(core_app_clock_probe_decode(NULL, CORE_APP_CLOCK_PROBE_BYTES, &out),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_clock_probe_decode(wire, CORE_APP_CLOCK_PROBE_BYTES, NULL),
+              CORE_APP_SNAPSHOT_INVALID);
+    static const struct { usize at; u8 value; CoreAppSnapshotOutcome want; } bad[] = {
+        {0u, 0x00u, CORE_APP_SNAPSHOT_BAD_MAGIC},
+        {3u, 0x51u, CORE_APP_SNAPSHOT_BAD_MAGIC},
+        {4u, 0x00u, CORE_APP_SNAPSHOT_BAD_VERSION},
+        {4u, 0x03u, CORE_APP_SNAPSHOT_BAD_VERSION},
+        {5u, 0x01u, CORE_APP_SNAPSHOT_INVALID},
+        {6u, 0x01u, CORE_APP_SNAPSHOT_INVALID},
+        {7u, 0x80u, CORE_APP_SNAPSHOT_INVALID},
+        {16u, 0x01u, CORE_APP_SNAPSHOT_INVALID}, /* request carrying t1 */
+        {31u, 0x01u, CORE_APP_SNAPSHOT_INVALID}, /* request carrying t2 */
+    };
+    for (usize i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        memcpy(wire, k_probe_request, sizeof(k_probe_request));
+        wire[bad[i].at] = bad[i].value;
+        ASSERT_EQ(core_app_clock_probe_decode(wire, CORE_APP_CLOCK_PROBE_BYTES, &out), bad[i].want);
+        ASSERT_EQ(out.t0, 7u);
+    }
+}
+
+TEST(clock_probe_encode_and_answer_refuse_invalid_values) {
+    u8 wire[CORE_APP_CLOCK_PROBE_BYTES];
+    size_t size = 99u;
+    memset(wire, 0x5a, sizeof(wire));
+    CoreAppClockProbe bad_kind = {(CoreAppClockProbeKind)3, 1u, 0u, 0u};
+    CoreAppClockProbe request_t1 = {CORE_APP_CLOCK_PROBE_REQUEST, 1u, 2u, 0u};
+    CoreAppClockProbe request_t2 = {CORE_APP_CLOCK_PROBE_REQUEST, 1u, 0u, 2u};
+    CoreAppClockProbe ok = {CORE_APP_CLOCK_PROBE_REQUEST, 1u, 0u, 0u};
+    ASSERT_EQ(core_app_clock_probe_encode(&bad_kind, wire, sizeof(wire), &size), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_clock_probe_encode(&request_t1, wire, sizeof(wire), &size), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_clock_probe_encode(&request_t2, wire, sizeof(wire), &size), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_clock_probe_encode(&ok, wire, sizeof(wire) - 1u, &size), CORE_APP_SNAPSHOT_OVER_LIMIT);
+    ASSERT_EQ(core_app_clock_probe_encode(NULL, wire, sizeof(wire), &size), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_clock_probe_encode(&ok, NULL, sizeof(wire), &size), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_clock_probe_encode(&ok, wire, sizeof(wire), NULL), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(size, 99u);
+    ASSERT_EQ(wire[0], 0x5au);
+
+    CoreAppClockProbe reply = {CORE_APP_CLOCK_PROBE_REPLY, 1u, 5u, 6u};
+    CoreAppClockProbe out = {CORE_APP_CLOCK_PROBE_REQUEST, 42u, 0u, 0u};
+    ASSERT_EQ(core_app_clock_probe_answer(&reply, 1u, 2u, &out), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_clock_probe_answer(&ok, 3u, 2u, &out), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_clock_probe_answer(NULL, 1u, 2u, &out), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_clock_probe_answer(&ok, 1u, 2u, NULL), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(out.t0, 42u);
+    ASSERT_EQ(core_app_clock_probe_answer(&ok, 2u, 2u, &out), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(out.t1, 2u);
+    ASSERT_EQ(out.t2, 2u);
+}
+
+TEST(clock_probe_exchange_feeds_the_offset_estimator) {
+    /* B's clock is 250000 us ahead of A's; 300 us each way, 20 us hold */
+    CoreAppClockProbe request = {CORE_APP_CLOCK_PROBE_REQUEST, 1000000u, 0u, 0u};
+    u8 wire[CORE_APP_CLOCK_PROBE_BYTES];
+    size_t size = 0u;
+    CoreAppClockProbe at_b, reply, at_a;
+    ASSERT_EQ(core_app_clock_probe_encode(&request, wire, sizeof(wire), &size), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(core_app_clock_probe_decode(wire, size, &at_b), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(core_app_clock_probe_answer(&at_b, 1250300u, 1250320u, &reply), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(core_app_clock_probe_encode(&reply, wire, sizeof(wire), &size), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(core_app_clock_probe_decode(wire, size, &at_a), CORE_APP_SNAPSHOT_OK);
+    ClockOffsetSample sample = {at_a.t0, at_a.t1, at_a.t2, 1000620u};
+    ClockOffsetEstimator estimator;
+    ClockOffsetEstimate estimate;
+    clock_offset_init(&estimator);
+    ASSERT_EQ(clock_offset_add(&estimator, &sample), CLOCK_OFFSET_OK);
+    ASSERT_EQ(clock_offset_estimate(&estimator, &estimate), CLOCK_OFFSET_OK);
+    ASSERT_EQ(estimate.offset_us, 250000);
+    ASSERT_EQ(estimate.delay_us, 600);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(snapshot_build_rejects_entity_count_over_capacity);
     RUN_TEST(snapshot_roundtrip_preserves_fields);
@@ -254,4 +380,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(snapshot_outbox_is_bounded_and_counts_drops);
     RUN_TEST(secret_env_decodes_and_removes_the_variable);
     RUN_TEST(secret_env_rejects_bad_values_and_still_removes_them);
+    RUN_TEST(clock_probe_round_trips_with_golden_bytes);
+    RUN_TEST(clock_probe_decode_rejects_every_malformed_payload);
+    RUN_TEST(clock_probe_encode_and_answer_refuse_invalid_values);
+    RUN_TEST(clock_probe_exchange_feeds_the_offset_estimator);
 TEST_MAIN_END()

@@ -1450,4 +1450,6 @@ mount 清空、commit 分类和第二次 completion 等待分别做了独立生�
 
 补充（2026-11-16）：`core/clock_offset.h` 提供不同机器之间的时钟偏移估计。一个样本是 NTP 式的四个微秒时间戳（A 发送 t0、B 接收 t1、B 回复 t2、A 接收 t3），`offset = floor(((t1-t0)+(t2-t3))/2)` 为 B 减 A，`delay = (t3-t0)-(t2-t1)`。t2 < t1、往返短于 B 的停留时间（含 t3 < t0）或时间戳超过 2^61 的样本被拒绝并计数。估计器保留最近 8 个样本，取 delay 最小者（相同时取最新），误差上界 `ceil(delay/2)`，无论两个方向如何分配延迟都成立。`clock_offset_merge_shifts` 把偏移换算成 `trace_merge --offset-us` 所需的两个非负平移量。探测包在 core_app 会话协议上的收发尚未实现。见 `docs/superpowers/plans/2026-11-16-clock-offset-estimator.md`。
 
+补充（2026-11-16）：探测包线格式。消息 `0x4004`（`BREAK_NET_MESSAGE_ID_CLOCK_PROBE`）只在 AUTHENTICATED 阶段接受，载荷恰好 32 字节，小端：`[0]` u32 magic `CLKP`（`0x504b4c43`）、`[4]` u8 kind（1 请求 / 2 回复）、`[5..7]` 保留须为 0、`[8]` t0、`[16]` t1、`[24]` t2（微秒）。`core_app_clock_probe_decode` 依次报告 TRUNCATED/OVER_LIMIT（长度不是 32）、BAD_MAGIC、BAD_VERSION（kind 非法）、INVALID（保留字节非 0，或请求带了 t1/t2），失败时不写输出。`core_app_clock_probe_encode` 对非法 kind 或带 t1/t2 的请求返回 INVALID，容量不足返回 OVER_LIMIT，失败不碰缓冲区。`core_app_clock_probe_answer` 只接受请求且要求 t2 >= t1，回复回显 t0。A 端用 `t0, t1, t2` 加本地接收时间 t3 即可喂给 `clock_offset_add_sample`。transport 中的收发与定期探测尚未实现。见 `docs/superpowers/plans/2026-11-16-clock-probe-wire.md`。
+
 `core_app --trace-json PATH`（需同时给出 `--trace`）在运行结束后调用上述转换并写出 JSON；写入失败时退出码为 2。

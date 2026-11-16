@@ -5332,7 +5332,7 @@ endif()
     set_tests_properties(test_core_app_mesh PROPERTIES
         LABELS "headless;core_app" TIMEOUT 60)
 
-    add_executable(test_core_app_network tests/test_core_app_network.c)
+    add_executable(test_core_app_network tests/test_core_app_network.c src/core/clock_offset.c)
     target_include_directories(test_core_app_network PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_core_app_network PRIVATE core_app_network m)
     add_test(NAME test_core_app_network COMMAND test_core_app_network)

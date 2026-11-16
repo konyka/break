@@ -23,6 +23,11 @@
 #if CORE_APP_SNAPSHOT_MESSAGE_ID != BREAK_NET_MESSAGE_ID_CORE_SNAPSHOT
 #error "core_app snapshot id must match the default message registry"
 #endif
+#if CORE_APP_CLOCK_PROBE_MESSAGE_ID != BREAK_NET_MESSAGE_ID_CLOCK_PROBE
+#error "core_app clock probe id must match the default message registry"
+#endif
+_Static_assert(CORE_APP_CLOCK_PROBE_BYTES == BREAK_NET_CLOCK_PROBE_PAYLOAD,
+               "core_app clock probe size must match the registry payload limit");
 _Static_assert(CORE_APP_SNAPSHOT_MAX_BYTES == BREAK_NET_CORE_SNAPSHOT_MAX_PAYLOAD,
                "core_app snapshot size must match the registry payload limit");
 _Static_assert(CORE_APP_PHYSICS_CORRECTION_MAX_BYTES == BREAK_NET_MAX_PAYLOAD_SIZE,

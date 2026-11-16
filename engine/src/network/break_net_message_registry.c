@@ -108,12 +108,15 @@ const BreakNetMessageRegistry *break_net_message_registry_default(void)
              BREAK_NET_MESSAGE_PHASE_AUTHENTICATED, BREAK_NET_DUPLICATE_IDEMPOTENT},
             {BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION, 1u, 1u,
              BREAK_NET_MAX_PAYLOAD_SIZE,
+             BREAK_NET_MESSAGE_PHASE_AUTHENTICATED, BREAK_NET_DUPLICATE_IDEMPOTENT},
+            {BREAK_NET_MESSAGE_ID_CLOCK_PROBE, 1u, 1u,
+             BREAK_NET_CLOCK_PROBE_PAYLOAD,
              BREAK_NET_MESSAGE_PHASE_AUTHENTICATED, BREAK_NET_DUPLICATE_IDEMPOTENT}
         },
 #ifdef BREAK_ENABLE_CRYPTO
-        24u
+        25u
 #else
-        23u
+        24u
 #endif
     };
 #undef BREAK_EDITOR_DEF

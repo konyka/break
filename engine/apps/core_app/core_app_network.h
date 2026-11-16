@@ -89,6 +89,42 @@ CoreAppSnapshotOutcome core_app_snapshot_decode(const u8 *payload, size_t size,
  * layout is rejected before any field is interpreted. */
 u32 core_app_snapshot_schema_hash(void);
 
+/* Clock probe: a request carries the sender's send time t0; the reply echoes
+ * t0 and adds the peer's receive time t1 and send time t2, all in
+ * microseconds. Little-endian layout: [0] u32 magic, [4] u8 kind, [5..7]
+ * reserved zero, [8] t0, [16] t1, [24] t2. A request must leave t1 and t2
+ * zero. */
+#define CORE_APP_CLOCK_PROBE_MAGIC 0x504b4c43u /* "CLKP" */
+#define CORE_APP_CLOCK_PROBE_BYTES 32u
+#define CORE_APP_CLOCK_PROBE_MESSAGE_ID 0x4004u
+
+typedef enum CoreAppClockProbeKind {
+    CORE_APP_CLOCK_PROBE_REQUEST = 1,
+    CORE_APP_CLOCK_PROBE_REPLY = 2
+} CoreAppClockProbeKind;
+
+typedef struct CoreAppClockProbe {
+    CoreAppClockProbeKind kind;
+    u64 t0;
+    u64 t1;
+    u64 t2;
+} CoreAppClockProbe;
+
+/* Writes exactly CORE_APP_CLOCK_PROBE_BYTES. On failure neither the buffer
+ * nor *out_size is touched. */
+CoreAppSnapshotOutcome core_app_clock_probe_encode(const CoreAppClockProbe *probe,
+                                                   u8 *out_buffer, size_t capacity,
+                                                   size_t *out_size);
+/* Validates size, magic, kind, reserved bytes and request fields; *out is
+ * written only on success. */
+CoreAppSnapshotOutcome core_app_clock_probe_decode(const u8 *payload, size_t size,
+                                                   CoreAppClockProbe *out);
+/* Builds the reply to a request with receive time t1 and send time t2
+ * (t2 >= t1). *reply is written only on success. */
+CoreAppSnapshotOutcome core_app_clock_probe_answer(const CoreAppClockProbe *request,
+                                                   u64 t1, u64 t2,
+                                                   CoreAppClockProbe *reply);
+
 /* Inbound authority firewall.
  *
  * A decoded peer snapshot is diagnostic data. Feeding it to this function is
