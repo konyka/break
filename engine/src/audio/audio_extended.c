@@ -127,6 +127,14 @@ typedef struct {
     double lowpass[2][5];
     double lowpass_state[2][2][2];
     u32 filtered;
+    /* AudioResampleMode, set by the owner thread, read once per callback */
+    atomic_uint resample;
+    /* The last released frames (after the low-pass), the sinc kernel's
+     * past. `remembered` counts frames pushed, free-running (the power-of-two
+     * size keeps the ring in order across its wrap). Mixer-owned; open zeroes
+     * the frames, so the count needs no reset. */
+    f32 history[AUDIO_PCM_STREAM_SINC_LOOKAHEAD][2];
+    u32 remembered;
     atomic_uint gain_bits;
     /* distance attenuation (audio_pcm_stream_set_spatial); written and
      * recomputed on the owner thread, the mixer reads spatial_bits only */
@@ -482,6 +490,49 @@ static void pcm_stream_filter_to(AudioPcmStream *stream, u32 tail, u32 count) {
     }
 }
 
+_Static_assert((AUDIO_PCM_STREAM_SINC_LOOKAHEAD & (AUDIO_PCM_STREAM_SINC_LOOKAHEAD - 1u)) == 0u,
+               "AUDIO_PCM_STREAM_SINC_LOOKAHEAD must be a power of two");
+
+/* Frame `offset` after `tail`; a negative offset is a released frame from
+ * the history (offset >= -7). */
+static const f32 *pcm_stream_frame_at(const AudioPcmStream *stream, u32 tail, i32 offset) {
+    if (offset < 0) {
+        return stream->history[(stream->remembered + (u32)offset) &
+                               (AUDIO_PCM_STREAM_SINC_LOOKAHEAD - 1u)];
+    }
+    return stream->ring +
+        (usize)((tail + (u32)offset) & (AUDIO_PCM_STREAM_FRAMES - 1u)) * stream->channels;
+}
+
+static void pcm_stream_remember(AudioPcmStream *stream, u32 frame) {
+    const f32 *src = pcm_stream_frame_at(stream, frame, 0);
+    f32 *dst = stream->history[stream->remembered & (AUDIO_PCM_STREAM_SINC_LOOKAHEAD - 1u)];
+    dst[0] = src[0];
+    dst[1] = stream->channels == 2u ? src[1] : src[0];
+    stream->remembered++;
+}
+
+/* 16-tap Lanczos (a = 8) between frames index and index + 1 at rem /
+ * AUDIO_PCM_SAMPLE_RATE, taps index-7 .. index+8, weights normalised so a
+ * constant passes unchanged. rem is not zero. */
+static void pcm_stream_sinc(const AudioPcmStream *stream, u32 tail, u32 index, u32 rem,
+                            f32 *left, f32 *right) {
+    const double pi = 3.14159265358979323846;
+    double f = (double)rem / (double)AUDIO_PCM_SAMPLE_RATE;
+    double acc[2] = {0.0, 0.0};
+    double weights = 0.0;
+    for (i32 j = -7; j <= 8; ++j) {
+        double x = (double)j - f;
+        double w = sin(pi * x) / (pi * x) * (sin(pi * x / 8.0) / (pi * x / 8.0));
+        const f32 *frame = pcm_stream_frame_at(stream, tail, (i32)index + j);
+        acc[0] += frame[0] * w;
+        acc[1] += frame[stream->channels == 2u ? 1u : 0u] * w;
+        weights += w;
+    }
+    *left = (f32)(acc[0] / weights);
+    *right = (f32)(acc[1] / weights);
+}
+
 /* Mixer side of a PCM stream: plays queued frames, then silence. */
 static ma_result pcm_stream_read(ma_data_source *source, void *output,
                                  ma_uint64 frames, ma_uint64 *frames_read) {
@@ -517,19 +568,28 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
      * reset by open on another thread, so they are not read then (nothing
      * plays; with no queued frames the filter is never reached). */
     u64 pos = open ? stream->pos : 0u;
+    /* sinc needs AUDIO_PCM_STREAM_SINC_LOOKAHEAD frames past the position,
+     * even on a whole frame, so the latency stays the same */
+    bool sinc = open && stream->rate != AUDIO_PCM_SAMPLE_RATE &&
+                atomic_load_explicit(&stream->resample, memory_order_relaxed) ==
+                    (unsigned)AUDIO_RESAMPLE_SINC;
     for (ma_uint64 frame = 0; frame < frames; ++frame) {
         f32 left = 0.0f;
         f32 right = 0.0f;
         u32 index = (u32)(pos / AUDIO_PCM_SAMPLE_RATE);
         u32 rem = (u32)(pos % AUDIO_PCM_SAMPLE_RATE);
         u32 queued = head - tail;
-        if (index < queued && (rem == 0u || index + 1u < queued)) {
-            if (stream->filter) pcm_stream_filter_to(stream, tail, index + (rem == 0u ? 1u : 2u));
+        u32 need = sinc ? index + AUDIO_PCM_STREAM_SINC_LOOKAHEAD + 1u
+                        : index + (rem == 0u ? 1u : 2u);
+        if (need <= queued) {
+            if (stream->filter) pcm_stream_filter_to(stream, tail, need);
             const f32 *a = stream->ring +
                 (usize)((tail + index) & (AUDIO_PCM_STREAM_FRAMES - 1u)) * stream->channels;
             left = a[0];
             right = stream->channels == 2u ? a[1] : left;
-            if (rem != 0u) {
+            if (rem != 0u && sinc) {
+                pcm_stream_sinc(stream, tail, index, rem, &left, &right);
+            } else if (rem != 0u) {
                 const f32 *b = stream->ring +
                     (usize)((tail + index + 1u) & (AUDIO_PCM_STREAM_FRAMES - 1u)) *
                         stream->channels;
@@ -550,6 +610,7 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
                 pcm_stream_filter_to(stream, tail, passed);
                 stream->filtered -= passed;
             }
+            for (u32 r = 0; r < passed; ++r) pcm_stream_remember(stream, tail + r);
             tail += passed;
             pos -= (u64)passed * AUDIO_PCM_SAMPLE_RATE;
         } else {
@@ -672,6 +733,9 @@ AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample
         stream->rate = sample_rate;
         stream->pos = 0u;
         pcm_stream_reset_filter(stream, sample_rate);
+        atomic_store_explicit(&stream->resample, (unsigned)AUDIO_RESAMPLE_LINEAR,
+                              memory_order_relaxed);
+        memset(stream->history, 0, sizeof(stream->history));
         stream->spatial = false;
         stream->panning = false;
         atomic_store_explicit(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f),
@@ -841,6 +905,16 @@ AudioResult audio_pcm_stream_set_panning(AudioSystem *as, AudioPcmStreamHandle h
     return pcm_stream_publish_spatial(audio_extended(as), stream);
 }
 
+AudioResult audio_pcm_stream_set_resample(AudioSystem *as, AudioPcmStreamHandle handle,
+                                          AudioResampleMode mode) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (mode != AUDIO_RESAMPLE_LINEAR && mode != AUDIO_RESAMPLE_SINC) return AUDIO_INVALID;
+    atomic_store_explicit(&stream->resample, (unsigned)mode, memory_order_relaxed);
+    return AUDIO_OK;
+}
+
 AudioResult audio_pcm_stream_close(AudioSystem *as, AudioPcmStreamHandle handle) {
     AudioPcmStream *stream = NULL;
     AudioResult result = pcm_stream_lookup(as, handle, &stream);
@@ -905,6 +979,7 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         atomic_init(&stream->gain_bits, gain_to_bits(0.0f));
         atomic_init(&stream->spatial_bits, gain_to_bits(1.0f));
         atomic_init(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f));
+        atomic_init(&stream->resample, (unsigned)AUDIO_RESAMPLE_LINEAR);
         atomic_init(&stream->head, 0);
         atomic_init(&stream->tail, 0);
         atomic_init(&stream->open, false);

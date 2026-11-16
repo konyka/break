@@ -11433,3 +11433,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `AudioEventDesc.panned`：空间事件 voice 可按监听者朝向做等功率立体声声像，与 PCM 流共用声像模型；pan 与增益快照按 revision 配对发布，重启中的旧 epoch 保留旧 pan。默认关闭，已有事件输出不变。
 - `test_audio_extended` 新增 5 项（共 73）：注册校验、触发时与 `set_position` 后的左右、监听者转身、保持中的 voice 重启、发布到一半的快照、立体声 clip 按侧缩放。先 RED 后 GREEN；19 项变异全部被捕获（首轮 3 项存活：两处冗余代码删除，一处补断言）；ASan+UBSan 与 TSan 三次运行无报告。
 - 仍缺：HRTF、耳间时差、前后区分、环绕声输出。
+
+### 2026-11-16 windowed-sinc resampling for PCM streams
+
+- `audio_pcm_stream_set_resample(as, h, AUDIO_RESAMPLE_SINC)`：PCM 流可改用 16 tap Lanczos（a = 8）重采样，代价是 8 个源帧的前瞻延迟；回调在两种模式下都保留最近 8 个释放帧作为历史，中途切换无缝。默认仍为线性插值，已有流输出不变。16 kHz 下 4 kHz 正弦的 RMS 误差从 0.075 降到 0.00026。
+- `test_audio_extended` 新增 8 项（共 81）：参数、Lanczos 参考模型、前瞻等待、高频正弦误差、88.2 kHz 低通后 sinc、立体声分离、引擎采样率不变、切换历史与重开复位。先 RED 后 GREEN；19 项变异全部被捕获（首轮 2 项存活：一处符号捷径改为直接计算，一处冗余复位删除）；ASan+UBSan 与 TSan 三次运行无报告。
+- 仍缺：多相表、随降采样比例调整核宽、clip voice 的重采样。

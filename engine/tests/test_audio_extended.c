@@ -2434,6 +2434,301 @@ TEST(panned_event_scales_a_stereo_clip_by_side)
     audio_system_destroy(as);
 }
 
+/* ---- sinc resampling ---- */
+
+static double ref_lanczos(double x)
+{
+    if (x == 0.0) return 1.0;
+    const double pi = 3.14159265358979323846;
+    double a = pi * x;
+    double b = pi * x / 8.0;
+    return sin(a) / a * (sin(b) / b);
+}
+
+/* Output k of a sinc stream holding frames[0..count) (interleaved, zero
+ * before frame 0); NAN when the lookahead is not queued. */
+static double ref_sinc_output(const double *frames, u32 count, u32 channels, u32 rate, u32 k,
+                              u32 channel)
+{
+    u64 pos = (u64)k * rate;
+    i64 index = (i64)(pos / AUDIO_PCM_SAMPLE_RATE);
+    u64 rem = pos % AUDIO_PCM_SAMPLE_RATE;
+    if (index + (i64)AUDIO_PCM_STREAM_SINC_LOOKAHEAD >= (i64)count) return NAN;
+    if (rem == 0u) return frames[index * channels + channel];
+    double f = (double)rem / (double)AUDIO_PCM_SAMPLE_RATE;
+    double sum = 0.0;
+    double weights = 0.0;
+    for (i64 j = -7; j <= 8; ++j) {
+        double w = ref_lanczos((double)j - f);
+        i64 at = index + j;
+        double x = at < 0 ? 0.0 : frames[at * channels + channel];
+        sum += x * w;
+        weights += w;
+    }
+    return sum / weights;
+}
+
+static void random_pcm(i16 *pcm, u32 samples, u32 seed)
+{
+    for (u32 i = 0; i < samples; ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        pcm[i] = (i16)((i32)(seed >> 17) - 16384);
+    }
+}
+
+static void pcm_to_double(const i16 *pcm, u32 samples, double *out)
+{
+    for (u32 i = 0; i < samples; ++i) out[i] = (double)pcm[i] / 32768.0;
+}
+
+static AudioPcmStreamHandle open_sinc_stream(AudioSystem *as, u32 channels, u32 rate)
+{
+    AudioPcmStreamHandle h = open_rate_stream(as, channels, rate);
+    if (h == 0u || audio_pcm_stream_set_resample(as, h, AUDIO_RESAMPLE_SINC) != AUDIO_OK) {
+        return 0u;
+    }
+    return h;
+}
+
+TEST(pcm_stream_resample_arguments)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_rate_stream(as, 1u, 16000u);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_EQ(audio_pcm_stream_set_resample(as, h, (AudioResampleMode)2), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_resample(as, 0u, AUDIO_RESAMPLE_SINC), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_resample(NULL, h, AUDIO_RESAMPLE_SINC), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_resample(as, h, AUDIO_RESAMPLE_LINEAR), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_resample(as, h, AUDIO_RESAMPLE_SINC), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_resample(as, h, AUDIO_RESAMPLE_SINC), AUDIO_STALE);
+    /* a reopened slot interpolates linearly: two frames play at once */
+    h = open_rate_stream(as, 1u, 16000u);
+    ASSERT_NEQ(h, 0u);
+    const i16 pcm[2] = {0, 3072};
+    u32 written = 0;
+    u64 under = 9u;
+    f32 out[2u * 2u];
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 2u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 2u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[2], 3072.0f / 32768.0f / 3.0f, 1e-6f);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 0u);
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_sinc_matches_the_lanczos_model)
+{
+    enum { kFrames = 200, kOut = 560 };
+    static i16 pcm[kFrames];
+    static double frames[kFrames];
+    static f32 out[2u * kOut];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_sinc_stream(as, 1u, 16000u);
+    ASSERT_NEQ(h, 0u);
+    random_pcm(pcm, kFrames, 777u);
+    pcm_to_double(pcm, kFrames, frames);
+    u32 written = 0;
+    u64 under = 9u;
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, kFrames, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kOut), AUDIO_OK);
+    for (u32 k = 0; k < kOut; ++k) {
+        double want = ref_sinc_output(frames, kFrames, 1u, 16000u, k, 0u);
+        ASSERT_TRUE(isfinite(want));
+        ASSERT_FLOAT_EQ(out[2u * k], (f32)want, 2e-6f);
+        ASSERT_FLOAT_EQ(out[2u * k + 1u], (f32)want, 2e-6f);
+    }
+    /* sinc output is not the linear one */
+    ASSERT_TRUE(fabs(out[2] - (frames[0] + (frames[1] - frames[0]) / 3.0)) > 1e-4);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 0u);
+    audio_system_destroy(as);
+}
+
+/* An output needs AUDIO_PCM_STREAM_SINC_LOOKAHEAD frames past its position;
+ * until then the stream underruns and the position waits. */
+TEST(pcm_stream_sinc_waits_for_the_lookahead)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_sinc_stream(as, 1u, 16000u);
+    ASSERT_NEQ(h, 0u);
+    i16 pcm[9];
+    double frames[9];
+    random_pcm(pcm, 9u, 4242u);
+    pcm_to_double(pcm, 9u, frames);
+    u32 written = 0;
+    u64 under = 0;
+    f32 out[2u * 3u];
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 8u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 0.0f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 1u);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm + 8u, 1u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 3u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], (f32)frames[0], 0.0f);
+    for (u32 k = 1; k < 3u; ++k) {
+        ASSERT_FLOAT_EQ(out[2u * k], (f32)ref_sinc_output(frames, 9u, 1u, 16000u, k, 0u), 2e-6f);
+    }
+    /* the next output sits past frame 0 and needs frame 9 */
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 0.0f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 2u);
+    audio_system_destroy(as);
+}
+
+/* RMS error of a 4 kHz tone at 16 kHz against the ideal 48 kHz tone */
+static double tone_error(AudioResampleMode mode)
+{
+    enum { kFrames = 600, kOut = 1500 };
+    static i16 pcm[kFrames];
+    static f32 out[2u * kOut];
+    const double pi = 3.14159265358979323846;
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    if (!as) return -1.0;
+    AudioPcmStreamHandle h = open_rate_stream(as, 1u, 16000u);
+    double error = -1.0;
+    u32 written = 0;
+    for (u32 i = 0; i < kFrames; ++i) {
+        pcm[i] = (i16)lrint(16384.0 * sin(2.0 * pi * 4000.0 * (double)i / 16000.0));
+    }
+    if (h != 0u && audio_pcm_stream_set_resample(as, h, mode) == AUDIO_OK &&
+        audio_pcm_stream_write_i16(as, h, pcm, kFrames, &written) == AUDIO_OK &&
+        audio_system_render(as, out, kOut) == AUDIO_OK) {
+        double sum = 0.0;
+        for (u32 k = 300u; k < kOut; ++k) {
+            double ideal = 0.5 * sin(2.0 * pi * 4000.0 * (double)k / 48000.0);
+            sum += (out[2u * k] - ideal) * (out[2u * k] - ideal);
+        }
+        error = sqrt(sum / (double)(kOut - 300u));
+    }
+    audio_system_destroy(as);
+    return error;
+}
+
+TEST(pcm_stream_sinc_reconstructs_a_high_tone)
+{
+    double linear = tone_error(AUDIO_RESAMPLE_LINEAR);
+    double sinc = tone_error(AUDIO_RESAMPLE_SINC);
+    ASSERT_TRUE(linear > 0.05);
+    ASSERT_TRUE(sinc >= 0.0 && sinc < 0.002);
+}
+
+/* a fast stream: the Butterworth low-pass, then the sinc kernel */
+TEST(pcm_stream_sinc_after_the_downsampling_filter)
+{
+    enum { kFrames = 400, kOut = 200 };
+    static i16 pcm[kFrames];
+    static double filtered[kFrames];
+    static f32 out[2u * kOut];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_sinc_stream(as, 1u, 88200u);
+    ASSERT_NEQ(h, 0u);
+    random_pcm(pcm, kFrames, 99u);
+    ref_filter(pcm, kFrames, 1u, 88200u, filtered);
+    u32 written = 0;
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, kFrames, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kOut), AUDIO_OK);
+    for (u32 k = 0; k < kOut; ++k) {
+        double want = ref_sinc_output(filtered, kFrames, 1u, 88200u, k, 0u);
+        ASSERT_TRUE(isfinite(want));
+        ASSERT_FLOAT_EQ(out[2u * k], (f32)want, 2e-6f);
+    }
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_sinc_keeps_stereo_channels_apart)
+{
+    enum { kFrames = 100, kOut = 150 };
+    static i16 pcm[2u * kFrames];
+    static double frames[2u * kFrames];
+    static f32 out[2u * kOut];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_sinc_stream(as, 2u, 24000u);
+    ASSERT_NEQ(h, 0u);
+    random_pcm(pcm, 2u * kFrames, 31337u);
+    pcm_to_double(pcm, 2u * kFrames, frames);
+    u32 written = 0;
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, kFrames, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kOut), AUDIO_OK);
+    for (u32 k = 0; k < kOut; ++k) {
+        for (u32 c = 0; c < 2u; ++c) {
+            double want = ref_sinc_output(frames, kFrames, 2u, 24000u, k, c);
+            ASSERT_TRUE(isfinite(want));
+            ASSERT_FLOAT_EQ(out[2u * k + c], (f32)want, 2e-6f);
+        }
+    }
+    audio_system_destroy(as);
+}
+
+/* at the engine rate there is nothing to interpolate and no lookahead */
+TEST(pcm_stream_sinc_at_the_engine_rate_is_unchanged)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_sinc_stream(as, 1u, AUDIO_PCM_SAMPLE_RATE);
+    ASSERT_NEQ(h, 0u);
+    const i16 pcm[4] = {8192, -8192, 4096, -4096};
+    u32 written = 0;
+    u64 under = 9u;
+    f32 out[2u * 4u];
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 4u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 4u), AUDIO_OK);
+    for (u32 i = 0; i < 4u; ++i) ASSERT_FLOAT_EQ(out[2u * i], (f32)pcm[i] / 32768.0f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 0u);
+    audio_system_destroy(as);
+}
+
+/* Frames played (and released) in linear mode are the sinc kernel's past
+ * when the mode changes; a reopened slot's past is silence again. */
+TEST(pcm_stream_sinc_history_survives_a_switch_and_resets_on_reopen)
+{
+    enum { kFrames = 20 };
+    i16 pcm[kFrames];
+    double frames[kFrames];
+    random_pcm(pcm, kFrames, 2024u);
+    pcm_to_double(pcm, kFrames, frames);
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_rate_stream(as, 1u, 16000u);
+    ASSERT_NEQ(h, 0u);
+    u32 written = 0;
+    u32 queued = 0;
+    static f32 out[2u * 30u];
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, kFrames, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 30u), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_queued(as, h, &queued), AUDIO_OK);
+    ASSERT_EQ(queued, 10u);
+    ASSERT_EQ(audio_pcm_stream_set_resample(as, h, AUDIO_RESAMPLE_SINC), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 3u), AUDIO_OK);
+    for (u32 k = 30u; k < 33u; ++k) {
+        ASSERT_FLOAT_EQ(out[2u * (k - 30u)],
+                        (f32)ref_sinc_output(frames, kFrames, 1u, 16000u, k, 0u), 2e-6f);
+    }
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+
+    i16 next[kFrames];
+    double next_frames[kFrames];
+    random_pcm(next, kFrames, 5u);
+    pcm_to_double(next, kFrames, next_frames);
+    h = open_sinc_stream(as, 1u, 16000u);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, next, kFrames, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 30u), AUDIO_OK);
+    for (u32 k = 0; k < 30u; ++k) {
+        ASSERT_FLOAT_EQ(out[2u * k],
+                        (f32)ref_sinc_output(next_frames, kFrames, 1u, 16000u, k, 0u), 2e-6f);
+    }
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -2508,4 +2803,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(panned_event_restart_keeps_the_old_pan_on_held_pcm);
     RUN_TEST(panned_event_keeps_its_pan_until_that_revision_is_published);
     RUN_TEST(panned_event_scales_a_stereo_clip_by_side);
+    RUN_TEST(pcm_stream_resample_arguments);
+    RUN_TEST(pcm_stream_sinc_matches_the_lanczos_model);
+    RUN_TEST(pcm_stream_sinc_waits_for_the_lookahead);
+    RUN_TEST(pcm_stream_sinc_reconstructs_a_high_tone);
+    RUN_TEST(pcm_stream_sinc_after_the_downsampling_filter);
+    RUN_TEST(pcm_stream_sinc_keeps_stereo_channels_apart);
+    RUN_TEST(pcm_stream_sinc_at_the_engine_rate_is_unchanged);
+    RUN_TEST(pcm_stream_sinc_history_survives_a_switch_and_resets_on_reopen);
 TEST_MAIN_END()

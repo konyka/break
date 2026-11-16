@@ -119,7 +119,7 @@ AudioResult audio_pcm_stream_open(AudioSystem *as, u32 channels, u32 bus, f32 vo
                                   AudioPcmStreamHandle *out_handle);
 /* Same, for PCM written at sample_rate (AUDIO_PCM_STREAM_MIN_RATE ..
  * AUDIO_PCM_STREAM_MAX_RATE). The mixer converts it to the engine rate by
- * linear interpolation. A stream faster than the engine rate first goes
+ * linear interpolation (audio_pcm_stream_set_resample selects sinc). A stream faster than the engine rate first goes
  * through a 4th-order Butterworth low-pass at 21.6 kHz, so content above
  * 24 kHz is attenuated instead of folding back (about -19 dB at 30 kHz for
  * 96 kHz input; less right above 24 kHz). Upsampling is not filtered. Ring
@@ -155,6 +155,27 @@ AudioResult audio_pcm_stream_set_position(AudioSystem *as, AudioPcmStreamHandle 
  * stream without set_spatial. Front and back sound the same (no HRTF). */
 AudioResult audio_pcm_stream_set_panning(AudioSystem *as, AudioPcmStreamHandle handle,
                                          bool enabled);
+
+typedef enum {
+    AUDIO_RESAMPLE_LINEAR = 0,
+    AUDIO_RESAMPLE_SINC
+} AudioResampleMode;
+
+/* Source frames a sinc stream needs queued past its position before it
+ * plays (latency: 0.5 ms at 16 kHz). */
+#define AUDIO_PCM_STREAM_SINC_LOOKAHEAD 8u
+
+/* Rate conversion of a stream opened with audio_pcm_stream_open_rate.
+ * LINEAR (the default at open) interpolates between two frames. SINC uses a
+ * 16-tap Lanczos kernel (a = 8) with normalised weights: flat to near the
+ * source Nyquist rate and few images, at the cost of
+ * AUDIO_PCM_STREAM_SINC_LOOKAHEAD frames of latency; until those are queued
+ * the stream underruns. Past frames come from a history the mixer keeps in
+ * both modes, so a switch mid-stream is seamless. A stream faster than the
+ * engine still gets the Butterworth low-pass first; a stream at the engine
+ * rate is not changed. INVALID for an unknown mode. */
+AudioResult audio_pcm_stream_set_resample(AudioSystem *as, AudioPcmStreamHandle handle,
+                                          AudioResampleMode mode);
 
 AudioResult audio_clip_register(AudioSystem *as, const char *name,
                                 const AudioPcmDesc *pcm,

@@ -63,7 +63,15 @@ RESTART 保留 handle 并从头播放；STEAL_OLDEST 提升 generation，使旧 
 
 `audio_pcm_stream_open_rate` 接受 8000..192000 Hz 的流，混音回调用整数位置（以 1/48000 帧为单位）做线性插值转换到 48 kHz。高于 48 kHz 的流先经过 4 阶 Butterworth 低通（两级 RBJ biquad，Q = 0.5412 / 1.3066，截止 21600 Hz，按流采样率用双线性变换在 open 时算系数），再插值；否则 24 kHz 以上的内容会折回可听频段。96 kHz 输入时 1 kHz 基本无衰减，30 kHz 约 -19.5 dB，流的 Nyquist 频率处为零点；紧贴 24 kHz 以上的衰减较小。
 
-滤波在环形缓冲里原地进行：`[tail, head)` 的帧在 tail 越过之前归混音回调所有，生产者不会改写。回调私有的 `filtered` 记录 tail 之后已滤过的帧数，读插值所需帧之前、以及释放被跨过的帧之前都先按顺序补滤，所以每帧恰好滤一次，抽取跳过的帧也会经过滤波器。滤波状态、系数和 `filtered` 与位置 `pos` 遵守同一规则：open 在槽位关闭时重置，回调只在看到 `open` 后读写。滤波函数不分配、不加锁，纳入 `test_audio_realtime_contract` 的检查范围。≤48 kHz 的流不滤波，上采样产生的镜像也不滤除。
+滤波在环形缓冲里原地进行：`[tail, head)` 的帧在 tail 越过之前归混音回调所有，生产者不会改写。回调私有的 `filtered` 记录 tail 之后已滤过的帧数，读插值所需帧之前、以及释放被跨过的帧之前都先按顺序补滤，所以每帧恰好滤一次，抽取跳过的帧也会经过滤波器。滤波状态、系数和 `filtered` 与位置 `pos` 遵守同一规则：open 在槽位关闭时重置，回调只在看到 `open` 后读写。滤波函数不分配、不加锁，纳入 `test_audio_realtime_contract` 的检查范围。≤48 kHz 的流不滤波；线性插值上采样产生的镜像也不滤除（可改用下面的 sinc 模式）。
+
+### sinc 重采样
+
+`audio_pcm_stream_set_resample(as, h, AUDIO_RESAMPLE_SINC)` 把流的插值换成 16 tap Lanczos 核（a = 8，taps 为 i-7 .. i+8，权重归一化，常数原样通过；f = 0 时直接取帧 i）。open 时恢复为 `AUDIO_RESAMPLE_LINEAR`，已有调用方输出不变；未知模式返回 `AUDIO_INVALID`。模式是一个原子值，混音回调每次读取一次，所有者线程随时可改。
+
+核需要位置之后 `AUDIO_PCM_STREAM_SINC_LOOKAHEAD`（8）帧：在这之前流播放静音并计入 underrun，位置不动；这一条件在整帧位置上同样成立，所以延迟固定为 8 个源帧（16 kHz 时 0.5 ms）。tail 之前的帧已交还生产者，回调在两种模式下都把每个释放的帧（快流为低通之后的值）复制进自己的 8 帧历史环，所以中途切到 sinc 时用的是真实的过去帧；open 把历史清零，流开始之前的帧视为 0。高于 48 kHz 的流先低通，再读取到 i+8 为止的帧。48 kHz 的流没有小数位置，sinc 模式不改变它，也没有前瞻延迟。
+
+16 kHz 输入的 4 kHz 正弦（幅度 0.5）与理想 48 kHz 正弦的 RMS 误差：线性插值 0.075，sinc 0.00026。没有多相表，每个输出帧计算 32 次 `sin`；强降采样仍由 Butterworth 负责抗混叠，核宽不随比例变化。clip voice 不重采样（只接受 48 kHz）。
 
 ## PCM 流的声像
 
@@ -83,4 +91,5 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `test_audio_dsp`：手算滤波阶跃、延迟 tap/feedback、混响早期 taps、filter+delay 组合和失败原子。
 - normal、ASan+UBSan、TSan 的 `test_audio`/`test_audio_extended`/`test_audio_dsp`/`test_audio_realtime_contract` 均通过。
 - 降采样低通由 `test_audio_extended` 中的双精度参考模型（96 kHz、88.2 kHz）、Nyquist 音、30 kHz / 1 kHz 正弦、立体声分离和重开复位覆盖；`test_voice_playback` 在 96 kHz 下跑生产者/关闭/混音线程竞争。
+- sinc 重采样由双精度 Lanczos 参考模型（16 kHz、88.2 kHz 经低通、24 kHz 立体声）、前瞻等待、高频正弦误差、引擎采样率不变、模式切换的历史和重开复位覆盖。
 - 没有真实听测、真实声卡、Windows 或 macOS 验证。简单 DSP/混响不等于物理声学或听感验收。
