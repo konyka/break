@@ -30,6 +30,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #include <editor/editor_components.h>
 #include <editor/editor_scene.h>
 #include <editor/editor_plugin_cmds.h>
+#include <editor/editor_plugin_panels.h>
 #include <editor/editor_plugin_sections.h>
 
 #include "platform/time.h"
@@ -59,6 +60,9 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_PALETTE_COMMAND_COUNT 21u
 #define EDITOR_PLUGIN_CMD_CAPACITY 64u
 #define EDITOR_PLUGIN_SECTION_CAPACITY 64u
+#define EDITOR_PLUGIN_PANEL_CAPACITY 16u
+/* the Plugins page rebuilds at most this often while visible */
+#define EDITOR_PLUGIN_PANEL_REFRESH_US 250000u
 /* 25 degrees: the editor camera starts above the grid plane */
 #define EDITOR_DEFAULT_CAMERA_PITCH 0.43633231f
 /* "2": look along -X from the +X side (90 degrees) */
@@ -189,7 +193,7 @@ struct BreakEditorShell {
     struct EditorTabCtx {
         BreakEditorShell *shell;
         u32 area, index;
-    } tab_ctxs[6];
+    } tab_ctxs[7];
 
     bool palette_open;
     u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT + 2u +
@@ -201,6 +205,12 @@ struct BreakEditorShell {
     /* inspector sections contributed by editor plugins (owned; shown after
      * the component rows) */
     BreakEditorPluginSections *plugin_sections;
+    /* tool-window panels contributed by editor plugins (owned; shown on the
+     * Plugins page of the bottom tool window) and the last page rebuild */
+    BreakEditorPluginPanels *plugin_panels;
+    u64 plugin_panels_refresh_us;
+    u64 (*plugin_panels_clock)(void *user); /* NULL: time_microseconds */
+    void *plugin_panels_clock_user;
     /* recently opened/saved scenes (persisted with the UI settings) */
     u32 recent_count;
     char recent[BREAK_EDITOR_SETTINGS_RECENT_MAX][BREAK_EDITOR_SETTINGS_RECENT_PATH];
@@ -2364,6 +2374,8 @@ static void shell_retranslate(BreakEditorShell *shell) {
     }
     /* tool label, status bar and the inspector (rebuilt from scratch) */
     editor_shell_refresh_all(shell);
+    /* plugin panel titles and the empty hint */
+    break_editor_shell_refresh_plugin_panels(shell);
 }
 
 bool break_editor_shell_set_language(BreakEditorShell *shell,
@@ -2430,14 +2442,15 @@ void editor_shell_refresh_all(BreakEditorShell *shell) {
 /* Pages are looked up by name: each panel module owns its section and the
  * tree holds the reference, so the shell keeps no widget pointers that a
  * failed build could leave dangling. */
-static const char *const k_tab_pages[2][3] = {
-    {"editor-console", "editor-lua-panel", "editor-flow-panel"},
-    {"editor-profiler-panel", "editor-network-panel", "editor-render-panel"}};
-static const BreakEditorTr k_tab_labels[2][3] = {
-    {BREAK_EDITOR_TR_TAB_CONSOLE, BREAK_EDITOR_TR_TAB_LUA, BREAK_EDITOR_TR_TAB_FLOW},
+static const char *const k_tab_pages[2][4] = {
+    {"editor-console", "editor-lua-panel", "editor-flow-panel", "editor-plugins-panel"},
+    {"editor-profiler-panel", "editor-network-panel", "editor-render-panel", NULL}};
+static const BreakEditorTr k_tab_labels[2][4] = {
+    {BREAK_EDITOR_TR_TAB_CONSOLE, BREAK_EDITOR_TR_TAB_LUA, BREAK_EDITOR_TR_TAB_FLOW,
+     BREAK_EDITOR_TR_TAB_PLUGINS},
     {BREAK_EDITOR_TR_TAB_PROFILER, BREAK_EDITOR_TR_TAB_NETWORK,
-     BREAK_EDITOR_TR_TAB_RENDER}};
-static const u32 k_tab_count[2] = {3u, 3u};
+     BREAK_EDITOR_TR_TAB_RENDER, BREAK_EDITOR_TR_COUNT}};
+static const u32 k_tab_count[2] = {4u, 3u};
 static const char *const k_tab_strips[2] = {"editor-bottom-tabs",
                                             "editor-diag-tabs"};
 
@@ -2542,6 +2555,9 @@ bool break_editor_shell_select_tab(BreakEditorShell *shell, u32 area,
     }
     shell->active_tab[area] = index;
     shell_tabs_apply(shell, area);
+    if (area == 0u && index == 3u) {
+        break_editor_shell_refresh_plugin_panels(shell);
+    }
     shell_settings_save(shell);
     return true;
 }
@@ -2853,7 +2869,7 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
             if (diag != NULL &&
                 my_widget_add_child(right_panel, diag) == MY_RET_OK) {
                 my_widget_unref(diag); /* tree holds its own reference */
-                shell_tabs_build(shell, diag, 1u, 3u);
+                shell_tabs_build(shell, diag, 1u, 4u);
                 if (!editor_panel_profiler_build(shell->profiler_panel, diag)) {
                     my_widget_unref(middle);
                     return false;
@@ -2903,8 +2919,19 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
         my_widget_unref(bottom);
         return false;
     }
+    {
+        /* Plugins page: filled by break_editor_shell_refresh_plugin_panels */
+        my_widget_t *plugins = my_widget_create(NULL, "editor-plugins-panel");
+        if (plugins == NULL) {
+            my_widget_unref(bottom);
+            return false;
+        }
+        (void)my_widget_set_layouter(plugins, my_layouter_linear_create(NULL, false, 2));
+        shell_add_child(bottom, plugins, "w:100% h:1f");
+    }
     shell_add_child(root, bottom, "w:100% h:160");
     shell_tabs_finish(shell, 0u);
+    break_editor_shell_refresh_plugin_panels(shell);
 
     /* status bar */
     shell->status_label = my_label_create(NULL, "");
@@ -2993,10 +3020,12 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     shell->plugin_cmds = break_editor_plugin_cmds_create(EDITOR_PLUGIN_CMD_CAPACITY);
     shell->plugin_sections =
         break_editor_plugin_sections_create(EDITOR_PLUGIN_SECTION_CAPACITY);
+    shell->plugin_panels = break_editor_plugin_panels_create(EDITOR_PLUGIN_PANEL_CAPACITY);
     if (shell->doc == NULL || shell->plugin_cmds == NULL ||
-        shell->plugin_sections == NULL) {
+        shell->plugin_sections == NULL || shell->plugin_panels == NULL) {
         break_editor_plugin_cmds_destroy(shell->plugin_cmds);
         break_editor_plugin_sections_destroy(shell->plugin_sections);
+        break_editor_plugin_panels_destroy(shell->plugin_panels);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3013,6 +3042,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         break_editor_gizmo_destroy(shell->gizmo);
         break_editor_plugin_cmds_destroy(shell->plugin_cmds);
         break_editor_plugin_sections_destroy(shell->plugin_sections);
+        break_editor_plugin_panels_destroy(shell->plugin_panels);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3047,6 +3077,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         break_editor_gizmo_destroy(shell->gizmo);
         break_editor_plugin_cmds_destroy(shell->plugin_cmds);
         break_editor_plugin_sections_destroy(shell->plugin_sections);
+        break_editor_plugin_panels_destroy(shell->plugin_panels);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3065,6 +3096,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         break_editor_gizmo_destroy(shell->gizmo);
         break_editor_plugin_cmds_destroy(shell->plugin_cmds);
         break_editor_plugin_sections_destroy(shell->plugin_sections);
+        break_editor_plugin_panels_destroy(shell->plugin_panels);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3089,6 +3121,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         break_editor_gizmo_destroy(shell->gizmo);
         break_editor_plugin_cmds_destroy(shell->plugin_cmds);
         break_editor_plugin_sections_destroy(shell->plugin_sections);
+        break_editor_plugin_panels_destroy(shell->plugin_panels);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -3235,6 +3268,7 @@ bool break_editor_shell_destroy(BreakEditorShell *shell) {
     break_editor_gizmo_destroy(shell->gizmo);
     break_editor_plugin_cmds_destroy(shell->plugin_cmds);
     break_editor_plugin_sections_destroy(shell->plugin_sections);
+    break_editor_plugin_panels_destroy(shell->plugin_panels);
     break_editor_doc_destroy(shell->doc);
     free(shell);
     return true;
@@ -3324,6 +3358,64 @@ bool break_editor_shell_palette_is_open(const BreakEditorShell *shell) {
 
 BreakEditorPluginCmds *break_editor_shell_plugin_cmds(BreakEditorShell *shell) {
     return shell != NULL ? shell->plugin_cmds : NULL;
+}
+
+BreakEditorPluginPanels *break_editor_shell_plugin_panels(BreakEditorShell *shell) {
+    return shell != NULL ? shell->plugin_panels : NULL;
+}
+
+static u64 shell_plugin_panels_now(const BreakEditorShell *shell) {
+    return shell->plugin_panels_clock != NULL
+               ? shell->plugin_panels_clock(shell->plugin_panels_clock_user)
+               : time_microseconds();
+}
+
+/* Rebuilds the Plugins page: per shown panel a title and a text label, or
+ * the empty hint. Bounded by the registry capacity (16) and the 1 KiB text
+ * cap. The page lives in the tree; it is found by name. */
+void break_editor_shell_refresh_plugin_panels(BreakEditorShell *shell) {
+    my_widget_t *page;
+    u32 i, n, shown = 0u;
+    if (shell == NULL || shell->root == NULL) {
+        return;
+    }
+    page = my_widget_find_descendant(shell->root, "editor-plugins-panel");
+    if (page == NULL) {
+        return;
+    }
+    while (my_widget_child_count(page) > 0u) {
+        (void)my_widget_remove_child(page, my_widget_get_child(page, 0u));
+    }
+    n = break_editor_plugin_panels_count(shell->plugin_panels);
+    for (i = 0u; i < n; i++) {
+        static char text[BREAK_EDITOR_PLUGIN_PANEL_TEXT_CAPACITY];
+        char wname[BREAK_EDITOR_PLUGIN_PANEL_ID_CAPACITY + 32u];
+        const char *id = break_editor_plugin_panels_id(shell->plugin_panels, i);
+        if (!break_editor_plugin_panels_render(shell->plugin_panels, i, shell->doc, text,
+                                               sizeof(text))) {
+            continue;
+        }
+        (void)snprintf(wname, sizeof(wname), "editor-plugin-panel-title-%s", id);
+        shell_add_child(page,
+                        shell_named(my_label_create(NULL, break_editor_plugin_panels_title(
+                                                              shell->plugin_panels, i,
+                                                              break_editor_i18n_lang())),
+                                    wname),
+                        "w:100% h:22");
+        (void)snprintf(wname, sizeof(wname), "editor-plugin-panel-%s", id);
+        shell_add_child(page, shell_named(my_label_create(NULL, text), wname),
+                        "w:100% h:22");
+        shown++;
+    }
+    if (shown == 0u) {
+        shell_add_child(page,
+                        shell_named(my_label_create(
+                                        NULL, break_editor_tr(BREAK_EDITOR_TR_PLUGINS_EMPTY)),
+                                    "editor-plugins-empty"),
+                        "w:100% h:22");
+    }
+    shell->plugin_panels_refresh_us = shell_plugin_panels_now(shell);
+    my_widget_invalidate(page, NULL);
 }
 
 BreakEditorPluginSections *break_editor_shell_plugin_sections(BreakEditorShell *shell) {
@@ -3768,6 +3860,13 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
      * never touches profiler state. */
     editor_panel_profiler_tick(shell->profiler_panel);
     editor_panel_flow_tick(shell->flow_panel);
+    /* Plugins page: the panel callbacks run only while it is shown, at most
+     * every EDITOR_PLUGIN_PANEL_REFRESH_US */
+    if (shell->active_tab[0] == 3u &&
+        shell_plugin_panels_now(shell) - shell->plugin_panels_refresh_us >=
+            EDITOR_PLUGIN_PANEL_REFRESH_US) {
+        break_editor_shell_refresh_plugin_panels(shell);
+    }
     /* asset browser: throttled re-list of the current directory so files
      * created/removed by external tools appear without navigating */
     editor_panel_assets_tick(shell->assets_panel);
@@ -3853,6 +3952,15 @@ bool break_editor_shell_set_assets_root(BreakEditorShell *shell,
 }
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
+void break_editor_shell_set_plugin_panels_clock_for_test(BreakEditorShell *shell,
+                                                         u64 (*clock)(void *user),
+                                                         void *user) {
+    if (shell != NULL) {
+        shell->plugin_panels_clock = clock;
+        shell->plugin_panels_clock_user = user;
+    }
+}
+
 void break_editor_shell_set_assets_clock_for_test(BreakEditorShell *shell,
                                                   u64 (*clock)(void *user),
                                                   void *user) {

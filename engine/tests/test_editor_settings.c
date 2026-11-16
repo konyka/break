@@ -197,6 +197,29 @@ TEST(save_then_load_through_the_file_system)
     ASSERT_FALSE(break_editor_settings_load(&b, NULL));
 }
 
+/* bottom_tab has four pages (Console, Lua, Flow, Plugins); diag_tab three */
+TEST(tab_bounds_follow_the_page_counts)
+{
+    BreakEditorSettings s;
+    BreakEditorSettings back;
+    char buf[2048];
+    const char *ok = "bottom_tab=3\ndiag_tab=2\n";
+    const char *bad = "bottom_tab=4\ndiag_tab=3\n";
+    break_editor_settings_defaults(&s);
+    ASSERT_TRUE(break_editor_settings_parse(&s, ok, strlen(ok)));
+    ASSERT_EQ(s.bottom_tab, 3u);
+    ASSERT_EQ(s.diag_tab, 2u);
+    usize n = break_editor_settings_serialize(&s, buf, sizeof(buf));
+    ASSERT_TRUE(n > 0u);
+    break_editor_settings_defaults(&back);
+    ASSERT_TRUE(break_editor_settings_parse(&back, buf, n));
+    ASSERT_EQ(back.bottom_tab, 3u);
+    break_editor_settings_defaults(&s);
+    ASSERT_TRUE(break_editor_settings_parse(&s, bad, strlen(bad)));
+    ASSERT_EQ(s.bottom_tab, 0u);
+    ASSERT_EQ(s.diag_tab, 0u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(parse_reads_known_keys_and_ignores_the_rest);
     RUN_TEST(parse_bad_values_keep_defaults);
@@ -204,4 +227,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(recent_scenes_are_kept_newest_first_and_round_trip);
     RUN_TEST(default_path_follows_xdg_then_home);
     RUN_TEST(save_then_load_through_the_file_system);
+    RUN_TEST(tab_bounds_follow_the_page_counts);
 TEST_MAIN_END()

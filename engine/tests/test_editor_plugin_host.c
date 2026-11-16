@@ -336,10 +336,92 @@ TEST(plugin_host_components_follow_the_window)
     break_editor_plugin_cmds_destroy(cmds);
 }
 
+static bool host_panel_ok(void *user, const BreakEditorDoc *doc, char *out, usize cap)
+{
+    (void)user;
+    (void)doc;
+    (void)snprintf(out, cap, "panel");
+    return true;
+}
+
+/* Panels follow the same rules as sections: a registry must be attached,
+ * the load window and owner apply, a failed load and release remove them. */
+TEST(plugin_host_panels_follow_owner_keys)
+{
+    BreakEditorPluginCmds *cmds = break_editor_plugin_cmds_create(8u);
+    BreakEditorPluginPanels *panels = break_editor_plugin_panels_create(8u);
+    BreakEditorPluginHost *host = break_editor_plugin_host_create(cmds);
+    ASSERT_NOT_NULL(host);
+    ASSERT_NOT_NULL(panels);
+    const BreakEditorPluginApi *api = break_editor_plugin_host_api(host);
+    ASSERT_NOT_NULL(api->add_panel);
+    ASSERT_NOT_NULL(api->set_panel_title);
+    ASSERT_TRUE(api->struct_size >= (u32)(offsetof(BreakEditorPluginApi, set_panel_title) +
+                                          sizeof(api->set_panel_title)));
+
+    /* no registry attached */
+    ASSERT_TRUE(break_editor_plugin_host_begin_load(host) != 0u);
+    ASSERT_EQ(api->add_panel(api->host, "a.report", "Report", host_panel_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(api->set_panel_title(api->host, "a.report", "xx", "T"),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, true));
+
+    break_editor_plugin_host_set_panels(NULL, panels);
+    break_editor_plugin_host_set_panels(host, panels);
+    /* outside a window */
+    ASSERT_EQ(api->add_panel(api->host, "a.report", "Report", host_panel_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(api->add_panel(NULL, "a.report", "Report", host_panel_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(api->set_panel_title(api->host, "a.report", "xx", "T"),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+    ASSERT_EQ(api->set_panel_title(NULL, "a.report", "zh-CN", "T"),
+              BREAK_EDITOR_PLUGIN_PANEL_INVALID);
+
+    u32 first = break_editor_plugin_host_begin_load(host);
+    ASSERT_EQ(api->add_panel(api->host, "a.report", "Report", host_panel_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(api->add_panel(api->host, "a.report", "Again", host_panel_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_DUPLICATE);
+    ASSERT_EQ(api->set_panel_title(api->host, "a.report", NULL, "T"),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG);
+    ASSERT_EQ(api->set_panel_title(api->host, "a.report", "fr", "T"),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG);
+    ASSERT_EQ(api->set_panel_title(api->host, "a.report", "zh_CN.UTF-8", ZH_STATS),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(api->set_panel_title(api->host, "a.report", "zh-CN", ""),
+              BREAK_EDITOR_PLUGIN_PANEL_BAD_TITLE);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, true));
+    ASSERT_EQ(break_editor_plugin_panels_owner(panels, 0u), first);
+    ASSERT_STR_EQ(break_editor_plugin_panels_title(panels, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  ZH_STATS);
+
+    /* another plugin may not retitle it; its failed load drops its panel */
+    ASSERT_TRUE(break_editor_plugin_host_begin_load(host) != 0u);
+    ASSERT_EQ(api->set_panel_title(api->host, "a.report", "zh-CN", "x"),
+              BREAK_EDITOR_PLUGIN_PANEL_NOT_FOUND);
+    ASSERT_EQ(api->add_panel(api->host, "b.report", "B", host_panel_ok, NULL),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_TRUE(break_editor_plugin_host_end_load(host, false));
+    ASSERT_EQ(break_editor_plugin_panels_count(panels), 1u);
+    ASSERT_EQ(break_editor_plugin_panels_find(panels, "b.report"),
+              BREAK_EDITOR_PLUGIN_PANEL_NONE);
+
+    /* release counts the panel with the owner's other entries */
+    ASSERT_EQ(break_editor_plugin_host_release(host, first), 1u);
+    ASSERT_EQ(break_editor_plugin_panels_count(panels), 0u);
+
+    break_editor_plugin_host_destroy(host);
+    break_editor_plugin_panels_destroy(panels);
+    break_editor_plugin_cmds_destroy(cmds);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(plugin_host_null_handling);
     RUN_TEST(plugin_host_api_and_window_rules);
     RUN_TEST(plugin_host_sections_follow_owner_keys);
     RUN_TEST(plugin_host_translations_need_the_owner_window);
     RUN_TEST(plugin_host_components_follow_the_window);
+    RUN_TEST(plugin_host_panels_follow_owner_keys);
 TEST_MAIN_END()

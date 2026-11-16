@@ -6,6 +6,7 @@ struct BreakEditorPluginHost {
     BreakEditorPluginApi api;
     BreakEditorPluginCmds *cmds;
     BreakEditorPluginSections *sections;
+    BreakEditorPluginPanels *panels;
     BreakEditorDoc *doc;
     usize window_component_count; /* doc component count when the window opened */
     u32 next_owner;
@@ -86,6 +87,43 @@ static BreakEditorComponentRegStatus host_add_component(void *host_ptr,
     return break_editor_doc_register_component(host->doc, desc);
 }
 
+static BreakEditorPluginPanelStatus host_add_panel(void *host_ptr, const char *id,
+                                                   const char *title,
+                                                   BreakEditorPluginPanelFn fn, void *user)
+{
+    BreakEditorPluginHost *host = (BreakEditorPluginHost *)host_ptr;
+    if (!host) {
+        return BREAK_EDITOR_PLUGIN_PANEL_INVALID;
+    }
+    /* NULL registry and loading_owner 0 are both rejected by the registry */
+    return break_editor_plugin_panels_add(host->panels, host->loading_owner, id, title, fn,
+                                          user);
+}
+
+static BreakEditorPluginPanelStatus host_set_panel_title(void *host_ptr, const char *id,
+                                                         const char *lang_tag,
+                                                         const char *title)
+{
+    BreakEditorPluginHost *host = (BreakEditorPluginHost *)host_ptr;
+    BreakEditorLang lang;
+    if (!host || host->loading_owner == 0u || !host->panels) {
+        return BREAK_EDITOR_PLUGIN_PANEL_INVALID;
+    }
+    if (!break_editor_i18n_parse_lang(lang_tag, &lang)) {
+        return BREAK_EDITOR_PLUGIN_PANEL_BAD_LANG;
+    }
+    return break_editor_plugin_panels_set_title(host->panels, host->loading_owner, id, lang,
+                                                title);
+}
+
+void break_editor_plugin_host_set_panels(BreakEditorPluginHost *host,
+                                         BreakEditorPluginPanels *panels)
+{
+    if (host) {
+        host->panels = panels;
+    }
+}
+
 void break_editor_plugin_host_set_doc(BreakEditorPluginHost *host, BreakEditorDoc *doc)
 {
     /* the window's rollback count belongs to the doc it was read from */
@@ -120,6 +158,8 @@ BreakEditorPluginHost *break_editor_plugin_host_create(BreakEditorPluginCmds *cm
     host->api.set_section_title = host_set_section_title;
     host->api.lang_tag = host_lang_tag;
     host->api.add_component = host_add_component;
+    host->api.add_panel = host_add_panel;
+    host->api.set_panel_title = host_set_panel_title;
     host->cmds = cmds;
     return host;
 }
@@ -169,5 +209,6 @@ u32 break_editor_plugin_host_release(BreakEditorPluginHost *host, u32 owner)
         return 0u;
     }
     return break_editor_plugin_cmds_remove_owner(host->cmds, owner) +
-           break_editor_plugin_sections_remove_owner(host->sections, owner);
+           break_editor_plugin_sections_remove_owner(host->sections, owner) +
+           break_editor_plugin_panels_remove_owner(host->panels, owner);
 }

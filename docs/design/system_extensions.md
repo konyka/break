@@ -97,3 +97,7 @@ PAL：`engine/src/platform/platform_dynamic.{h,c}`。管理器：`engine/src/sys
 ## 2026-11-16 追加：插件组件类型
 
 `BreakEditorPluginApi` 末尾追加 `add_component`：插件在加载窗口内向宿主挂接的 doc 注册可编辑组件类型（`break_editor_doc_register_component`，id 66..119）。注册表复制名字、字段表和默认字节，插件卸载后类型仍可用；加载失败时宿主用 `break_editor_doc_truncate_components` 撤回该窗口内注册的类型。检查器、撤销、BSCN 保存/加载、Lua 和远程协议按注册表工作，无需为插件类型增加代码。设计与验证见 `docs/superpowers/plans/2026-11-16-editor-plugin-components.md`。
+
+## 2026-11-16 追加：插件面板
+
+`BreakEditorPluginApi` 末尾追加 `add_panel` 与 `set_panel_title`。插件注册的面板显示在底部工具窗口第四个标签页「Plugins / 插件」：每个面板一个标题和一段只读文本（最多 1 KiB），页面可见时最多每 250 ms 重建一次，切换语言时标题随之切换；没有面板时显示提示。规则与检查器区块相同（加载窗口、owner、`release` 与加载失败时移除）。插件只能通过 API 表访问编辑器：`break_plugin` 用 `RTLD_NOW` 加载，直接调用编辑器函数会留下未定义符号导致加载失败。设计与验证见 `docs/superpowers/plans/2026-11-16-editor-plugin-panels.md`。

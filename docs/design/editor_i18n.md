@@ -35,6 +35,8 @@ If nothing is found the editor prints `no UI font found ...`; if no CJK face is 
 
 - 2026-11-16 补充：插件文本。插件通过 `BreakEditorPluginApi` 的 `set_command_label(host, id, lang_tag, label)` 和 `set_section_title(host, id, lang_tag, title)` 为自己的命令和检查器区块登记各语言文本（标签按 `break_editor_i18n_parse_lang` 解析，只能在加载窗口内、只能改自己的条目）；`lang_tag(host)` 随时返回当前语言标签，区块回调可据此输出对应语言的正文。命令面板的行文本与过滤、检查器区块标题都按当前语言取文本，没有该语言时用 `add_*` 时给的文本。切换语言时面板重新过滤、检查器重建，插件文本随之切换。
 
+- 2026-11-16 补充：底部工具窗口新增「Plugins / 插件」标签与空页提示（`BREAK_EDITOR_TR_TAB_PLUGINS`、`BREAK_EDITOR_TR_PLUGINS_EMPTY`）；插件面板标题通过 `set_panel_title` 按语言登记，切换语言时页面重建。
+
 ### Adding a language
 
 1. Add a value before `BREAK_EDITOR_LANG_COUNT` in `editor_i18n.h`, a tag and native name in `editor_i18n.c`, and a row in `editor_i18n_tables.c`.

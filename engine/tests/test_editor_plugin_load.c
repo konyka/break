@@ -13,6 +13,7 @@
 #include <string.h>
 
 #define FIXTURE_COMPONENT_ID 100u
+#define FIXTURE_ZH_PANEL_TITLE "\xe5\xa4\xb9\xe5\x85\xb7\xe9\x9d\xa2\xe6\x9d\xbf"
 #define FIXTURE_ZH_HELLO "\xe5\xa4\xb9\xe5\x85\xb7\xe9\x97\xae\xe5\x80\x99"
 #define FIXTURE_ZH_SECTION_TITLE "\xe5\xa4\xb9\xe5\x85\xb7\xe5\x88\x86\xe5\x8c\xba"
 #define FIXTURE_ZH_SECTION_TEXT "\xe5\xa4\xb9\xe5\x85\xb7\xe5\x8c\xba\xe5\x9d\x97"
@@ -270,6 +271,9 @@ TEST(loader_loads_a_manifest_and_unloads_on_destroy)
     BreakEditorDoc *doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
     break_editor_plugin_host_set_doc(host, doc);
+    BreakEditorPluginPanels *panels = break_editor_plugin_panels_create(4u);
+    ASSERT_NOT_NULL(panels);
+    break_editor_plugin_host_set_panels(host, panels);
     BreakEditorPluginLoader *loader = break_editor_plugin_loader_create(host);
     ASSERT_NOT_NULL(loader);
     ASSERT_EQ(break_editor_plugin_loader_count(loader), 0u);
@@ -299,6 +303,22 @@ TEST(loader_loads_a_manifest_and_unloads_on_destroy)
         ASSERT_EQ(info.component_id, FIXTURE_COMPONENT_ID);
         ASSERT_STR_EQ(info.display_name, "FixtureStats");
         ASSERT_EQ(info.field_count, 2u);
+    }
+    /* the plugin's panel, with its zh-CN title; its text is produced by
+     * plugin code on every render */
+    ASSERT_EQ(break_editor_plugin_panels_count(panels), 1u);
+    ASSERT_STR_EQ(break_editor_plugin_panels_id(panels, 0u), "fixture.panel");
+    ASSERT_EQ(break_editor_plugin_panels_owner(panels, 0u), report.owners[1]);
+    ASSERT_STR_EQ(break_editor_plugin_panels_title(panels, 0u, BREAK_EDITOR_LANG_ZH_CN),
+                  FIXTURE_ZH_PANEL_TITLE);
+    {
+        char panel_text[64];
+        ASSERT_TRUE(break_editor_plugin_panels_render(panels, 0u, doc, panel_text,
+                                                      sizeof panel_text));
+        ASSERT_STR_EQ(panel_text, "renders: 1");
+        ASSERT_TRUE(break_editor_plugin_panels_render(panels, 0u, doc, panel_text,
+                                                      sizeof panel_text));
+        ASSERT_STR_EQ(panel_text, "renders: 2");
     }
     BreakEditorEntityId unit = break_editor_doc_add_entity(doc, "unit");
     ASSERT_TRUE(break_editor_doc_add_component(doc, unit, FIXTURE_COMPONENT_ID));
@@ -352,6 +372,8 @@ TEST(loader_loads_a_manifest_and_unloads_on_destroy)
     ASSERT_FALSE(library_mapped(VERIFIED_PLUGIN_MAPPING));
 #endif
     ASSERT_EQ(break_editor_plugin_sections_count(sections), 0u);
+    ASSERT_EQ(break_editor_plugin_panels_count(panels), 0u);
+    break_editor_plugin_panels_destroy(panels);
     /* the type and its default bytes were copied: after the library is
      * unmapped the type still edits, undoes and adds with its defaults */
     ASSERT_EQ(break_editor_doc_component_count(doc), 3u);

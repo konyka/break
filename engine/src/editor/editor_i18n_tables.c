@@ -173,6 +173,8 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(LOG_PLUGIN_CMD_FAILED_FMT, "plugin command '%s' failed"),
         T(COMPONENT_TRANSFORM, "Transform"),
         T(COMPONENT_LIGHT, "Light"),
+        T(TAB_PLUGINS, "Plugins"),
+        T(PLUGINS_EMPTY, "No plugin panels"),
     },
     [BREAK_EDITOR_LANG_ZH_CN] = {
         T(ADD, "添加"),
@@ -336,5 +338,7 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(LOG_PLUGIN_CMD_FAILED_FMT, "插件命令 '%s' 执行失败"),
         T(COMPONENT_TRANSFORM, "变换"),
         T(COMPONENT_LIGHT, "灯光"),
+        T(TAB_PLUGINS, "插件"),
+        T(PLUGINS_EMPTY, "没有插件面板"),
     },
 };

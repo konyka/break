@@ -520,6 +520,155 @@ TEST(plugin_text_follows_the_language)
     break_editor_shell_destroy(shell);
 }
 
+typedef struct PanelCall {
+    u32 calls;
+    const BreakEditorDoc *doc;
+    const char *text; /* NULL: hidden */
+} PanelCall;
+
+static bool plugin_panel_record(void *user, const BreakEditorDoc *doc, char *out, usize cap)
+{
+    PanelCall *call = (PanelCall *)user;
+    call->calls++;
+    call->doc = doc;
+    if (call->text == NULL) return false;
+    (void)snprintf(out, cap, "%s", call->text);
+    return true;
+}
+
+static const char *panel_label(BreakEditorShell *shell, const char *name)
+{
+    my_widget_t *w = find(shell, name);
+    return w != NULL ? ((const my_label_t *)w)->text : NULL;
+}
+
+/* The bottom tool window's fourth tab is the Plugins page: one title and
+ * one text label per shown panel in registry order, a hint when none is
+ * shown, refreshed on demand and by the tick while visible, titles in the
+ * current language. */
+TEST(plugins_page_lists_plugin_panels)
+{
+    PanelCall report = {0u, NULL, "errors: 0"};
+    PanelCall hidden = {0u, NULL, NULL};
+    PanelCall stats = {0u, NULL, "entities: 0"};
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *page;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_plugin_panels(NULL) == NULL);
+    break_editor_shell_refresh_plugin_panels(NULL);
+    BreakEditorPluginPanels *panels = break_editor_shell_plugin_panels(shell);
+    ASSERT_NOT_NULL(panels);
+    page = find(shell, "editor-plugins-panel");
+    ASSERT_NOT_NULL(page);
+    /* hidden until its tab is chosen; empty: the hint */
+    ASSERT_FALSE(page->visible);
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugins-empty"), "No plugin panels");
+
+    ASSERT_EQ(break_editor_plugin_panels_add(panels, 1u, "build.report", "Build Report",
+                                             plugin_panel_record, &report),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add(panels, 1u, "never", "Never",
+                                             plugin_panel_record, &hidden),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_add(panels, 2u, "scene.stats", "Scene Stats",
+                                             plugin_panel_record, &stats),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    ASSERT_EQ(break_editor_plugin_panels_set_title(panels, 2u, "scene.stats",
+                                                   BREAK_EDITOR_LANG_ZH_CN, ZH_UNIT_STATS),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    /* the page is not visible: the tick leaves it alone */
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(report.calls, 0u);
+
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 3u));
+    ASSERT_TRUE(page->visible);
+    ASSERT_FALSE(find(shell, "editor-console")->visible);
+    /* selecting the page builds it right away */
+    ASSERT_TRUE(report.calls > 0u);
+    ASSERT_TRUE(report.doc == break_editor_shell_doc(shell));
+    ASSERT_TRUE(hidden.calls > 0u);
+    ASSERT_TRUE(find(shell, "editor-plugins-empty") == NULL);
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-title-build.report"), "Build Report");
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-build.report"), "errors: 0");
+    ASSERT_TRUE(find(shell, "editor-plugin-panel-title-never") == NULL);
+    ASSERT_TRUE(find(shell, "editor-plugin-panel-never") == NULL);
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-title-scene.stats"), "Scene Stats");
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-scene.stats"), "entities: 0");
+    /* registry order: report block before the stats block */
+    ASSERT_EQ(my_widget_child_count(page), 4u);
+    ASSERT_TRUE(my_widget_get_child(page, 0u) ==
+                find(shell, "editor-plugin-panel-title-build.report"));
+    ASSERT_TRUE(my_widget_get_child(page, 2u) ==
+                find(shell, "editor-plugin-panel-title-scene.stats"));
+
+    /* an explicit refresh picks up new text at once */
+    stats.text = "entities: 1";
+    break_editor_shell_refresh_plugin_panels(shell);
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-scene.stats"), "entities: 1");
+    /* the language switch rebuilds the page with the zh-CN title */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-title-scene.stats"), ZH_UNIT_STATS);
+    ASSERT_STR_EQ(((const my_button_t *)my_widget_get_child(find(shell, "editor-bottom-tabs"),
+                                                            3u))->text,
+                  "\xe6\x8f\x92\xe4\xbb\xb6"); /* 插件 */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+
+    /* removing every shown panel brings the hint back */
+    ASSERT_EQ(break_editor_plugin_panels_remove_owner(panels, 1u), 2u);
+    ASSERT_EQ(break_editor_plugin_panels_remove_owner(panels, 2u), 1u);
+    break_editor_shell_refresh_plugin_panels(shell);
+    ASSERT_EQ(my_widget_child_count(page), 1u);
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugins-empty"), "No plugin panels");
+    break_editor_shell_destroy(shell);
+}
+
+static u64 g_panel_clock_us;
+
+static u64 panel_test_clock(void *user)
+{
+    (void)user;
+    return g_panel_clock_us;
+}
+
+/* The tick rebuilds the Plugins page only while it is shown and at most
+ * every 250 ms; other pages never run plugin panel callbacks. */
+TEST(plugins_page_tick_is_throttled_and_only_runs_when_shown)
+{
+    PanelCall stats = {0u, NULL, "n=1"};
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    g_panel_clock_us = UINT64_C(5000000);
+    break_editor_shell_set_plugin_panels_clock_for_test(NULL, panel_test_clock, NULL);
+    break_editor_shell_set_plugin_panels_clock_for_test(shell, panel_test_clock, NULL);
+    ASSERT_EQ(break_editor_plugin_panels_add(break_editor_shell_plugin_panels(shell), 1u,
+                                             "scene.stats", "Stats", plugin_panel_record,
+                                             &stats),
+              BREAK_EDITOR_PLUGIN_PANEL_OK);
+    /* the Lua page is shown: ticks far apart never call the panel */
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 1u));
+    g_panel_clock_us += UINT64_C(10000000);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(stats.calls, 0u);
+
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 3u));
+    ASSERT_EQ(stats.calls, 1u);
+    /* within 250 ms: no rebuild */
+    g_panel_clock_us += UINT64_C(249999);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(stats.calls, 1u);
+    /* at 250 ms: the tick rebuilds with the new text */
+    g_panel_clock_us += UINT64_C(1);
+    stats.text = "n=2";
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(stats.calls, 2u);
+    ASSERT_STR_EQ(panel_label(shell, "editor-plugin-panel-scene.stats"), "n=2");
+    /* the interval restarts from that rebuild */
+    g_panel_clock_us += UINT64_C(100000);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(stats.calls, 2u);
+    break_editor_shell_destroy(shell);
+}
+
 /* Plugin commands registered on the shell registry show up in the palette
  * after the built-in rows, run on Enter with the shell's doc, and a failing
  * command logs a translated console line. */
@@ -2643,11 +2792,12 @@ TEST(tool_window_tabs_show_one_page_per_area)
     diag_tabs = find(shell, "editor-diag-tabs");
     ASSERT_NOT_NULL(bottom_tabs);
     ASSERT_NOT_NULL(diag_tabs);
-    ASSERT_EQ(my_widget_child_count(bottom_tabs), 3u);
+    ASSERT_EQ(my_widget_child_count(bottom_tabs), 4u);
     ASSERT_EQ(my_widget_child_count(diag_tabs), 3u);
     ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 0u))->text, "Console");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 1u))->text, "Lua");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 2u))->text, "Flow");
+    ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 3u))->text, "Plugins");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(diag_tabs, 0u))->text, "Profiler");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(diag_tabs, 1u))->text, "Network");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(diag_tabs, 2u))->text, "Render");
@@ -2695,6 +2845,7 @@ TEST(tool_window_tabs_show_one_page_per_area)
     ASSERT_TRUE(break_editor_shell_select_tab(shell, 1u, 1u));
     ASSERT_TRUE(network->visible && !render->visible);
     ASSERT_FALSE(break_editor_shell_select_tab(shell, 1u, 3u));
+    ASSERT_FALSE(break_editor_shell_select_tab(shell, 0u, 4u));
     ASSERT_FALSE(break_editor_shell_select_tab(shell, 2u, 0u));
     ASSERT_FALSE(break_editor_shell_select_tab(NULL, 0u, 0u));
     ASSERT_EQ(break_editor_shell_active_tab(shell, 1u), 1u);
@@ -2744,6 +2895,16 @@ TEST(settings_persist_theme_language_and_tabs_across_shells)
     ASSERT_EQ(break_editor_shell_active_tab(shell, 0u), 1u);
     ASSERT_EQ(break_editor_i18n_lang(), BREAK_EDITOR_LANG_ZH_CN);
     ASSERT_TRUE(find(shell, "editor-render-panel")->visible);
+    /* the Plugins page (bottom tab 3) is stored and restored too */
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 3u));
+    break_editor_shell_destroy(shell);
+    (void)break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US);
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_use_settings(shell, path, false));
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 0u), 3u);
+    ASSERT_TRUE(find(shell, "editor-plugins-panel")->visible);
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 1u));
     break_editor_shell_destroy(shell);
     /* --lang given: stored language ignored, the rest still applied */
     (void)break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US);
@@ -11515,6 +11676,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(inspector_shows_plugin_sections);
     RUN_TEST(plugin_text_follows_the_language);
     RUN_TEST(inspector_edits_a_registered_component_type);
+    RUN_TEST(plugins_page_lists_plugin_panels);
+    RUN_TEST(plugins_page_tick_is_throttled_and_only_runs_when_shown);
     RUN_TEST(ctrl_s_saves_to_configured_path);
     RUN_TEST(outliner_row_click_selects);
     RUN_TEST(rename_then_undo_reverts_outliner_row_text);

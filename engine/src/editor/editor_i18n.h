@@ -190,6 +190,9 @@ typedef enum {
     /* inspector component headings */
     BREAK_EDITOR_TR_COMPONENT_TRANSFORM,
     BREAK_EDITOR_TR_COMPONENT_LIGHT,
+    /* plugin panels page (bottom tool window) */
+    BREAK_EDITOR_TR_TAB_PLUGINS,
+    BREAK_EDITOR_TR_PLUGINS_EMPTY,
     BREAK_EDITOR_TR_COUNT
 } BreakEditorTr;
 

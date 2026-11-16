@@ -128,6 +128,7 @@
 #include <editor/editor_i18n.h>
 #include <editor/editor_plugin_cmds.h>
 #include <editor/editor_plugin_sections.h>
+#include <editor/editor_plugin_panels.h>
 #include <editor/editor_gizmo.h>
 #include <editor/editor_viewport.h>
 #include <rhi/rhi.h>
@@ -233,8 +234,8 @@ const char *break_editor_shell_tool_text(const BreakEditorShell *shell);
  * current look and returns false. Also in the command palette
  * ("Theme: Light" / "Theme: Dark"). */
 bool break_editor_shell_set_theme(BreakEditorShell *shell, bool light);
-/* Tool-window tab areas: 0 = bottom (Console, Lua), 1 = right diagnostics
- * (Profiler, Network, Render). select_tab shows that page and hides the
+/* Tool-window tab areas: 0 = bottom (Console, Lua, Flow, Plugins), 1 = right
+ * diagnostics (Profiler, Network, Render). select_tab shows that page and hides the
  * others (false for an unknown area/index); active_tab returns the shown
  * index (0 for an unknown area). */
 bool break_editor_shell_select_tab(BreakEditorShell *shell, u32 area,
@@ -293,6 +294,20 @@ BreakEditorPluginCmds *break_editor_shell_plugin_cmds(BreakEditorShell *shell);
  * rebuilt (selection change or any refresh). Remove a plugin's sections
  * (break_editor_plugin_sections_remove_owner) before unloading it. */
 BreakEditorPluginSections *break_editor_shell_plugin_sections(BreakEditorShell *shell);
+
+/* Borrowed registry of plugin tool-window panels (capacity 16; NULL for a
+ * NULL shell). The "Plugins" page of the bottom tool window
+ * ("editor-plugins-panel", tab index 3) shows, in registry order, a title
+ * label "editor-plugin-panel-title-<id>" and a text label
+ * "editor-plugin-panel-<id>" per panel whose callback returns true, or the
+ * hint label "editor-plugins-empty" when none does. The page is rebuilt by
+ * break_editor_shell_refresh_plugin_panels and, while it is visible, by
+ * break_editor_shell_tick at most every 250 ms. Remove a plugin's panels
+ * (break_editor_plugin_panels_remove_owner) before unloading it. */
+BreakEditorPluginPanels *break_editor_shell_plugin_panels(BreakEditorShell *shell);
+/* Rebuilds the Plugins page now (titles in the current language). NULL
+ * no-op. */
+void break_editor_shell_refresh_plugin_panels(BreakEditorShell *shell);
 
 /* ---------------- Phase 2 Task 3: viewport panel ---------------- */
 
@@ -377,6 +392,11 @@ void break_editor_shell_render_viewport(BreakEditorShell *shell,
 bool break_editor_shell_set_assets_root(BreakEditorShell *shell,
                                         const char *root_path);
 #ifdef BREAK_EDITOR_SHELL_TESTING
+/* Test seam: injects the monotonic clock behind the Plugins page's 250 ms
+ * refresh throttle (NULL = time_microseconds). */
+void break_editor_shell_set_plugin_panels_clock_for_test(BreakEditorShell *shell,
+                                                         u64 (*clock)(void *user),
+                                                         void *user);
 /* Test seam: injects the monotonic clock behind the browser's 1 s live
  * refresh throttle (NULL = time_microseconds). */
 void break_editor_shell_set_assets_clock_for_test(BreakEditorShell *shell,

@@ -11349,3 +11349,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 插件 API 追加 `add_component`，宿主新增 `break_editor_plugin_host_set_doc`；加载失败时撤回该插件注册的类型。`BREAK_EDITOR_PLUGINS` 构建的 editor 把 shell 的 doc 挂到插件宿主。
 - fixture 插件注册 `FixtureStats`（level f32、active bool），插件卸载后该类型仍能编辑、撤销、按默认值添加。
 - 新增用例：`test_editor_components` +4、`test_editor_plugin_host` +1、`test_editor_shell` +1（`inspector_edits_a_registered_component_type`）、`test_editor_lua` +1（Lua `brk.ecs.set` 按名字写入注册类型），`test_editor_plugin_load` 增加组件断言。先 RED 后 GREEN，36 项变异全部被捕获。三棵构建树全量通过（412/412、412/412、420/420）。
+
+### 2026-11-16 editor plugin panels
+
+- 新增 `engine/src/editor/editor_plugin_panels.[ch]`：插件工具窗口面板注册表（容量 16，id/标题校验，各语言标题，按 owner 移除，文本回调输出最多 1 KiB 并保证以 NUL 结尾）。
+- 插件 API 追加 `add_panel`、`set_panel_title`；宿主新增 `break_editor_plugin_host_set_panels`，`release` 与加载失败时移除面板。
+- shell 底部工具窗口增加第四个标签「Plugins / 插件」（`editor-plugins-panel`），按注册顺序显示可见面板，空时显示提示；页面可见时 tick 最多每 250 ms 重建，`break_editor_shell_refresh_plugin_panels` 可立即重建。设置项 `bottom_tab` 允许 0..3。
+- 新增 `test_editor_plugin_panels`（5 项），`test_editor_plugin_host`、`test_editor_settings` 各 +1，`test_editor_shell` +2 并更新标签页与设置恢复用例，`test_editor_plugin_load` 增加真实插件面板断言。先 RED 后 GREEN，53 项变异全部被捕获。

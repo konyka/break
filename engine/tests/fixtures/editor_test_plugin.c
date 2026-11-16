@@ -53,6 +53,32 @@ static bool fixture_section(void *user, const BreakEditorDoc *doc, BreakEditorEn
     return true;
 }
 
+/* A panel that reports how often it was rendered. Plugins reach the editor
+ * only through the BreakEditorPluginApi table: calling editor functions
+ * directly would leave undefined symbols that the RTLD_NOW load refuses. */
+static unsigned fixture_panel_renders;
+
+static bool fixture_panel(void *user, const BreakEditorDoc *doc, char *out, usize cap)
+{
+    char text[32] = "renders: ";
+    char digits[12];
+    usize n = 0u;
+    usize at = 9u;
+    unsigned value = ++fixture_panel_renders;
+    (void)user;
+    (void)doc;
+    do {
+        digits[n++] = (char)('0' + (int)(value % 10u));
+        value /= 10u;
+    } while (value > 0u && n < sizeof(digits));
+    while (n > 0u) {
+        text[at++] = digits[--n];
+    }
+    text[at] = '\0';
+    copy_text(text, out, cap);
+    return true;
+}
+
 static bool fixture_register(void *user)
 {
     const BreakEditorPluginApi *api = (const BreakEditorPluginApi *)user;
@@ -76,6 +102,12 @@ static bool fixture_register(void *user)
     (void)api->add_section(api->host, "fixture.section", "Fixture Section", fixture_section, NULL);
     (void)api->set_section_title(api->host, "fixture.section", "zh-CN",
                                  "\xe5\xa4\xb9\xe5\x85\xb7\xe5\x88\x86\xe5\x8c\xba");
+    if (api->add_panel) {
+        /* a host without a panel registry refuses the panel and its title */
+        (void)api->add_panel(api->host, "fixture.panel", "Fixture Panel", fixture_panel, NULL);
+        (void)api->set_panel_title(api->host, "fixture.panel", "zh-CN",
+                                   "\xe5\xa4\xb9\xe5\x85\xb7\xe9\x9d\xa2\xe6\x9d\xbf");
+    }
     if (api->add_component) {
         BreakEditorComponentDesc desc;
         desc.component_id = FIXTURE_COMPONENT_ID;
