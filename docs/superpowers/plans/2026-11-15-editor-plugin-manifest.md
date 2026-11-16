@@ -78,3 +78,5 @@ path can load every listed plugin and drop the commands of any that fail.
 - Still missing: actual loading from the `editor` binary (needs an optional
   loader that links `break_system` without breaking
   `test_break_system_target_contract`), plugin panels, inspector extensions.
+- 2026-11-16: actual loading is done behind the opt-in CMake option
+  `BREAK_EDITOR_PLUGINS`; see `2026-11-16-editor-plugin-loader.md`.

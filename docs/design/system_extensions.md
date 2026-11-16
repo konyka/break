@@ -85,3 +85,7 @@ PAL：`engine/src/platform/platform_dynamic.{h,c}`。管理器：`engine/src/sys
 - 相关既有回归：`test_platform_fs_write`、`test_scene_serial`、`test_break_integrity`。
 - 六套真实 CMake `SHARED` fixture 分别覆盖正常 A/B、bad ABI、register failure、no entry 和 constructor 攻击体。替换竞态 fixture 在验证后、加载前替换输入路径，断言攻击 constructor 标记从未出现且加载的是原批准对象；64 MiB+1 sparse 文件验证超限状态。
 - normal、ASan+UBSan、TSan 命令与最终通过数见 `.superpowers/sdd/system-extensions-report.md`。Linux 之外的 PAL 分支尚未在本机执行；Windows 结果不提前声称。
+
+## 2026-11-16 追加：editor 插件加载
+
+`break_system` 仍不直接链接进 `editor`。可选 CMake 选项 `BREAK_EDITOR_PLUGINS`（默认 OFF）会构建 `break_editor_plugin_loader`（`src/editor/editor_plugin_loader.c`，链接 `break_editor` 与 `break_system`），并只在该选项内链接进 editor，用于加载 `--plugin-manifest` 列出的插件。`test_break_system_target_contract` 检查选项默认 OFF，以及该链接只出现一次且位于选项块内。设计与验证见 `docs/superpowers/plans/2026-11-16-editor-plugin-loader.md`。

@@ -12,9 +12,10 @@
  * that does not start with '/', '\' or a drive letter is joined to base_dir.
  * Any bad line fails the whole parse, so a broken manifest loads nothing.
  *
- * This file never calls break_plugin_* (the editor targets do not link
- * break_system): load_all hands each entry to a caller callback, normally a
- * thin wrapper over break_plugin_load. Threading: editor shell thread. */
+ * This file never calls break_plugin_* (break_editor does not link
+ * break_system): load_all hands each entry to a caller callback.
+ * editor_plugin_loader.h (opt-in BREAK_EDITOR_PLUGINS) supplies the
+ * break_plugin_load one. Threading: editor shell thread. */
 
 #include <core/types.h>
 

@@ -11321,3 +11321,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - `editor --plugin-manifest PATH`：启动时在创建窗口前读取并校验插件 manifest（最大 64 KiB，相对路径按 manifest 所在目录拼接）。格式错误、文件不可读或过大时打印行号和原因并以 2 退出；合法时逐条打印条目，标明“未加载”，因为 editor 仍不链接 `break_system`。
 - `editor_plugin_manifest` 新增 `read_file`、`take_cli`、`status_name`。`test_editor_plugin_manifest` 增至 10 项，新增 `test_editor_plugin_manifest_cli` 驱动真实二进制。先 RED 后 GREEN，16 项变异全部被捕获。
+
+### 2026-11-16 editor plugin loader (BREAK_EDITOR_PLUGINS)
+
+- 新增 `engine/src/editor/editor_plugin_loader.[ch]`（库 `break_editor_plugin_loader`）：持有 `BreakPluginManager`，按 manifest 调用 `break_plugin_load` 加载插件并记录每个插件的 owner，`destroy` 先移除命令再卸载动态库。
+- CMake 选项 `BREAK_EDITOR_PLUGINS`（默认 OFF）打开后，editor 在 shell 创建后加载 `--plugin-manifest` 中的插件，命令进入命令面板，失败的条目逐条打印，退出前卸载。默认构建仍不链接 `break_system`；`test_break_system_target_contract` 新增检查：选项默认 OFF，editor 对 loader 的唯一链接位于 `if(BREAK_EDITOR_PLUGINS)` 内。
+- `test_editor_plugin_load` 增至 5 项（Linux 上用 `/proc/self/maps` 确认卸载）。先 RED 后 GREEN，9 项源码变异和 4 项 CMake 变异全部被捕获。Fedora Wayland 实机：真实 fixture 插件 1 个加载成功、1 个注册失败。

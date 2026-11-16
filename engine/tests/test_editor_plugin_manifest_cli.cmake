@@ -1,5 +1,6 @@
 # editor --plugin-manifest: a broken manifest exits 2 before any window
-# opens; a valid one is reported on stderr. -DEDITOR=<path> -DWORK_DIR=<dir>
+# opens; a valid one is reported on stderr.
+# -DEDITOR=<path> -DWORK_DIR=<dir> [-DPLUGINS=ON when built with BREAK_EDITOR_PLUGINS]
 if(NOT DEFINED EDITOR OR NOT DEFINED WORK_DIR)
     message(FATAL_ERROR "EDITOR and WORK_DIR are required")
 endif()
@@ -9,6 +10,11 @@ file(WRITE "${WORK_DIR}/good.txt" "# plugins\nplugin tools-a ${hash} libs/a.so\n
 file(WRITE "${WORK_DIR}/bad.txt" "# plugins\nplugin tools-a nothex libs/a.so\n")
 file(REMOVE "${WORK_DIR}/missing.txt")
 set(errors "")
+if(PLUGINS)
+    set(good_note "loads after the window opens")
+else()
+    set(good_note "not loaded")
+endif()
 
 function(run_editor out_rc out_err)
     execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY
@@ -43,7 +49,7 @@ expect_fail_closed("last option wins" "bad.txt line 2: bad sha256"
 run_editor(rc err --plugin-manifest "${WORK_DIR}/good.txt" --remote)
 foreach(want IN ITEMS
         "good.txt: 1 entries"
-        "editor: plugin tools-a ${WORK_DIR}/libs/a.so (not loaded"
+        "editor: plugin tools-a ${WORK_DIR}/libs/a.so (${good_note}"
         "--remote")
     string(FIND "${err}" "${want}" found)
     if(found EQUAL -1)

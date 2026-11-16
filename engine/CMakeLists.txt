@@ -2184,6 +2184,21 @@ if(BREAK_EDITOR_INPUT_SCRIPT)
         apps/editor/editor_input_driver.c)
     target_compile_definitions(editor PRIVATE BREAK_EDITOR_INPUT_SCRIPT=1)
 endif()
+# Startup plugin loading (editor --plugin-manifest; docs/superpowers/plans/
+# 2026-11-16-editor-plugin-loader.md). OFF by default: the shipped editor does
+# not link break_system and only validates the manifest
+# (test_break_system_target_contract).
+option(BREAK_EDITOR_PLUGINS "editor loads --plugin-manifest plugins through break_system" OFF)
+if(BREAK_EDITOR_PLUGINS)
+    if(NOT TARGET break_system)
+        message(FATAL_ERROR "BREAK_EDITOR_PLUGINS needs break_system (BREAK_ENABLE_CRYPTO=ON)")
+    endif()
+    add_library(break_editor_plugin_loader STATIC src/editor/editor_plugin_loader.c)
+    set_property(TARGET break_editor_plugin_loader PROPERTY C_STANDARD 11)
+    target_link_libraries(break_editor_plugin_loader PUBLIC break_editor break_system)
+    target_link_libraries(editor PRIVATE break_editor_plugin_loader)
+    target_compile_definitions(editor PRIVATE BREAK_EDITOR_PLUGINS=1)
+endif()
 engine_link_rhi_backend(editor)
 
 if(ENGINE_ENABLE_IPO)
@@ -5930,6 +5945,7 @@ endif()
         COMMAND ${CMAKE_COMMAND}
             -DEDITOR=$<TARGET_FILE:editor>
             -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/editor-plugin-manifest-cli
+            -DPLUGINS=${BREAK_EDITOR_PLUGINS}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_editor_plugin_manifest_cli.cmake)
     set_tests_properties(test_editor_plugin_manifest_cli PROPERTIES LABELS "headless;editor")
 
@@ -6692,7 +6708,8 @@ endif()
             EDITOR_TEST_PLUGIN_NAME="editor-test-plugin-fail"
             EDITOR_TEST_PLUGIN_BUILD_ID="editor-test-plugin-fail"
             EDITOR_TEST_REGISTER_RESULT=0)
-        add_executable(test_editor_plugin_load tests/test_editor_plugin_load.c)
+        add_executable(test_editor_plugin_load tests/test_editor_plugin_load.c
+            src/editor/editor_plugin_loader.c)
         target_include_directories(test_editor_plugin_load PRIVATE ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_editor_plugin_load PRIVATE
             EDITOR_TEST_PLUGIN_PATH="$<TARGET_FILE:test_editor_fixture_plugin>"

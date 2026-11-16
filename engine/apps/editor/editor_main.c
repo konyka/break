@@ -46,6 +46,9 @@
 #include <core/profiler.h>
 #include <platform/filewatch.h>
 #include <editor/editor_plugin_manifest.h>
+#ifdef BREAK_EDITOR_PLUGINS
+#include <editor/editor_plugin_loader.h>
+#endif
 #include <editor/editor_scene.h>
 
 #include "myui/my_window.h"
@@ -58,6 +61,7 @@
 #define EDITOR_WIN_H 800u
 
 /* --remote-keyring-file watcher: a malformed edit keeps the current ring. */
+static BreakEditorPluginManifest plugin_manifest;
 static FileWatcher keyring_watch;
 static bool keyring_watched = false;
 
@@ -88,6 +92,10 @@ int main(int argc, char **argv) {
   BreakEditorRemote *remote = NULL;
   BreakEditorHotReload *hot_reload = NULL;
   char remote_err[160];
+#ifdef BREAK_EDITOR_PLUGINS
+  BreakEditorPluginHost *plugin_host = NULL;
+  BreakEditorPluginLoader *plugin_loader = NULL;
+#endif
 #ifdef BREAK_EDITOR_INPUT_SCRIPT
   /* --input-script <file>: scripted input replay (test builds only) */
   const char *script_path = NULL;
@@ -129,8 +137,9 @@ int main(int argc, char **argv) {
 #endif
 
   /* --plugin-manifest <file>: checked before any window exists so a broken
-   * manifest exits 2. This binary does not link break_system, so the listed
-   * plugins are reported but not loaded. */
+   * manifest exits 2. Only a BREAK_EDITOR_PLUGINS build loads the listed
+   * plugins (after the shell exists); the default build does not link
+   * break_system and only reports them. */
   {
     const char *manifest_path = NULL;
     if (!break_editor_plugin_manifest_take_cli(&argc, argv, &manifest_path,
@@ -139,10 +148,9 @@ int main(int argc, char **argv) {
       return 2;
     }
     if (manifest_path != NULL) {
-      static BreakEditorPluginManifest manifest;
       u32 manifest_line = 0u;
       BreakEditorPluginManifestStatus manifest_status =
-          break_editor_plugin_manifest_read_file(manifest_path, &manifest,
+          break_editor_plugin_manifest_read_file(manifest_path, &plugin_manifest,
                                                  &manifest_line);
       if (manifest_status != BREAK_EDITOR_PLUGIN_MANIFEST_OK) {
         fprintf(stderr, "editor: plugin manifest %s line %u: %s\n",
@@ -151,11 +159,18 @@ int main(int argc, char **argv) {
         return 2;
       }
       fprintf(stderr, "editor: plugin manifest %s: %u entries\n",
-              manifest_path, (unsigned)manifest.count);
-      for (u32 i = 0u; i < manifest.count; i++) {
+              manifest_path, (unsigned)plugin_manifest.count);
+      for (u32 i = 0u; i < plugin_manifest.count; i++) {
+#ifdef BREAK_EDITOR_PLUGINS
+        fprintf(stderr, "editor: plugin %s %s (loads after the window opens)\n",
+                plugin_manifest.entries[i].build_id,
+                plugin_manifest.entries[i].path);
+#else
         fprintf(stderr, "editor: plugin %s %s (not loaded: this build has "
                         "no plugin loader)\n",
-                manifest.entries[i].build_id, manifest.entries[i].path);
+                plugin_manifest.entries[i].build_id,
+                plugin_manifest.entries[i].path);
+#endif
       }
     }
   }
@@ -312,6 +327,33 @@ int main(int argc, char **argv) {
             (unsigned)break_editor_remote_port(remote));
   }
 
+#ifdef BREAK_EDITOR_PLUGINS
+  /* plugins add their commands to the shell's palette registry; a plugin
+   * that fails (hash, ABI, register_fn) leaves no command behind */
+  if (plugin_manifest.count > 0u) {
+    BreakEditorPluginManifestReport plugin_report;
+    plugin_host =
+        break_editor_plugin_host_create(break_editor_shell_plugin_cmds(shell));
+    plugin_loader = break_editor_plugin_loader_create(plugin_host);
+    if (plugin_loader == NULL ||
+        !break_editor_plugin_loader_load_manifest(plugin_loader,
+                                                  &plugin_manifest,
+                                                  &plugin_report)) {
+      fprintf(stderr, "editor: plugin loader unavailable (allocation failed)\n");
+    } else {
+      for (u32 i = 0u; i < plugin_manifest.count; i++) {
+        if (plugin_report.owners[i] == 0u) {
+          fprintf(stderr, "editor: plugin %s failed to load (%s)\n",
+                  plugin_manifest.entries[i].build_id,
+                  plugin_manifest.entries[i].path);
+        }
+      }
+      fprintf(stderr, "editor: plugins loaded %u, failed %u\n",
+              (unsigned)plugin_report.loaded, (unsigned)plugin_report.failed);
+    }
+  }
+#endif
+
   /* Phase 3 Task 3: producer side of the profiler panel (the panel itself
    * is a pure view over profiler_last_frame and never touches state). */
   profiler_set_enabled(true);
@@ -393,6 +435,10 @@ int main(int argc, char **argv) {
     filewatch_shutdown(&keyring_watch);
   }
   break_editor_remote_destroy(remote);
+#ifdef BREAK_EDITOR_PLUGINS
+  break_editor_plugin_loader_destroy(plugin_loader);
+  break_editor_plugin_host_destroy(plugin_host);
+#endif
   break_editor_hot_reload_destroy(hot_reload);
   break_editor_shell_set_render_device(shell, NULL);
   if (!break_editor_shell_destroy(shell)) {
