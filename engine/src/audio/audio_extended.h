@@ -106,10 +106,21 @@ AudioResult audio_music_state(AudioSystem *as, AudioMusicState *out_state,
 
 typedef u32 AudioPcmStreamHandle;
 
+#define AUDIO_PCM_STREAM_MIN_RATE 8000u
+#define AUDIO_PCM_STREAM_MAX_RATE 192000u
+
 /* channels 1 or 2; an invalid bus falls back to master; volume < 0 is 0.
- * OVERLOAD when all AUDIO_PCM_STREAM_MAX streams are open. */
+ * OVERLOAD when all AUDIO_PCM_STREAM_MAX streams are open. The stream plays
+ * at the engine rate (AUDIO_PCM_SAMPLE_RATE). */
 AudioResult audio_pcm_stream_open(AudioSystem *as, u32 channels, u32 bus, f32 volume,
                                   AudioPcmStreamHandle *out_handle);
+/* Same, for PCM written at sample_rate (AUDIO_PCM_STREAM_MIN_RATE ..
+ * AUDIO_PCM_STREAM_MAX_RATE). The mixer converts it to the engine rate by
+ * linear interpolation; there is no low-pass filter, so content above
+ * 24 kHz in a faster stream aliases. Ring frames and queued counts are in
+ * stream-rate frames. */
+AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample_rate, u32 bus,
+                                       f32 volume, AudioPcmStreamHandle *out_handle);
 /* Copies up to frame_count interleaved frames (i16 / 32768) and reports how
  * many fit; never blocks. Producer thread only. */
 AudioResult audio_pcm_stream_write_i16(AudioSystem *as, AudioPcmStreamHandle handle,

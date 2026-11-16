@@ -107,6 +107,11 @@ typedef struct {
     f32 *ring;
     u32 channels;
     u32 bus;
+    /* Read position past `tail`, mixer-owned, in units where one source
+     * frame is AUDIO_PCM_SAMPLE_RATE units; each output frame adds `rate`.
+     * Integer arithmetic, so the position is exact for every rate. */
+    u32 rate;
+    u64 pos;
     atomic_uint gain_bits;
     atomic_uint head;
     atomic_uint tail;
@@ -416,15 +421,43 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
         gain = gain_from_bits(atomic_load_explicit(&stream->gain_bits, memory_order_relaxed)) *
                bus_gain * master_gain;
     }
+    /* An output frame interpolates source frames tail+i and tail+i+1, i the
+     * whole part of the position, weighted by the remainder. A remainder of
+     * zero needs only frame tail+i. Frames the position has passed are
+     * released. While data is missing the position does not move. The
+     * position belongs to an open stream: a closed slot is being reset by
+     * open on another thread, so it is not read then (nothing plays). */
+    u64 pos = open ? stream->pos : 0u;
     for (ma_uint64 frame = 0; frame < frames; ++frame) {
         f32 left = 0.0f;
         f32 right = 0.0f;
-        if (tail != head) {
-            const f32 *src = stream->ring +
-                (usize)(tail & (AUDIO_PCM_STREAM_FRAMES - 1u)) * stream->channels;
-            left = src[0] * gain;
-            right = stream->channels == 2u ? src[1] * gain : left;
-            tail++;
+        u32 index = (u32)(pos / AUDIO_PCM_SAMPLE_RATE);
+        u32 rem = (u32)(pos % AUDIO_PCM_SAMPLE_RATE);
+        u32 queued = head - tail;
+        if (index < queued && (rem == 0u || index + 1u < queued)) {
+            const f32 *a = stream->ring +
+                (usize)((tail + index) & (AUDIO_PCM_STREAM_FRAMES - 1u)) * stream->channels;
+            left = a[0];
+            right = stream->channels == 2u ? a[1] : left;
+            if (rem != 0u) {
+                const f32 *b = stream->ring +
+                    (usize)((tail + index + 1u) & (AUDIO_PCM_STREAM_FRAMES - 1u)) *
+                        stream->channels;
+                f32 w = (f32)rem / (f32)AUDIO_PCM_SAMPLE_RATE;
+                f32 bl = b[0];
+                f32 br = stream->channels == 2u ? b[1] : bl;
+                left += (bl - left) * w;
+                right += (br - right) * w;
+            }
+            left *= gain;
+            right *= gain;
+            pos += stream->rate;
+            /* release whole frames behind the position, but never more
+             * than are queued: decimation may step past the last one */
+            u32 passed = (u32)(pos / AUDIO_PCM_SAMPLE_RATE);
+            if (passed > queued) passed = queued;
+            tail += passed;
+            pos -= (u64)passed * AUDIO_PCM_SAMPLE_RATE;
         } else {
             missing++;
         }
@@ -434,6 +467,7 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
         }
     }
     if (open) {
+        stream->pos = pos;
         atomic_store_explicit(&stream->tail, tail, memory_order_release);
         if (missing != 0u) {
             atomic_fetch_add_explicit(&stream->underruns, missing, memory_order_relaxed);
@@ -496,10 +530,13 @@ static AudioResult pcm_stream_lookup(AudioSystem *as, AudioPcmStreamHandle handl
     return AUDIO_OK;
 }
 
-AudioResult audio_pcm_stream_open(AudioSystem *as, u32 channels, u32 bus, f32 volume,
-                                  AudioPcmStreamHandle *out_handle) {
+AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample_rate, u32 bus,
+                                       f32 volume, AudioPcmStreamHandle *out_handle) {
     AudioExtended *ext = audio_extended(as);
-    if (!ext || !out_handle || (channels != 1u && channels != 2u)) return AUDIO_INVALID;
+    if (!ext || !out_handle || (channels != 1u && channels != 2u) ||
+        sample_rate < AUDIO_PCM_STREAM_MIN_RATE || sample_rate > AUDIO_PCM_STREAM_MAX_RATE) {
+        return AUDIO_INVALID;
+    }
     for (u32 slot = 0; slot < AUDIO_PCM_STREAM_MAX; ++slot) {
         AudioPcmStream *stream = &ext->pcm_streams[slot];
         if (atomic_load_explicit(&stream->open, memory_order_acquire)) continue;
@@ -511,6 +548,8 @@ AudioResult audio_pcm_stream_open(AudioSystem *as, u32 channels, u32 bus, f32 vo
         atomic_store_explicit(&stream->gain_bits,
                               gain_to_bits(isfinite(volume) && volume > 0.0f ? volume : 0.0f),
                               memory_order_relaxed);
+        stream->rate = sample_rate;
+        stream->pos = 0u;
         atomic_store_explicit(&stream->head, 0u, memory_order_relaxed);
         atomic_store_explicit(&stream->tail, 0u, memory_order_relaxed);
         atomic_store_explicit(&stream->underruns, 0u, memory_order_relaxed);
@@ -521,6 +560,12 @@ AudioResult audio_pcm_stream_open(AudioSystem *as, u32 channels, u32 bus, f32 vo
         return AUDIO_OK;
     }
     return AUDIO_OVERLOAD;
+}
+
+AudioResult audio_pcm_stream_open(AudioSystem *as, u32 channels, u32 bus, f32 volume,
+                                  AudioPcmStreamHandle *out_handle) {
+    return audio_pcm_stream_open_rate(as, channels, AUDIO_PCM_SAMPLE_RATE, bus, volume,
+                                      out_handle);
 }
 
 AudioResult audio_pcm_stream_write_i16(AudioSystem *as, AudioPcmStreamHandle handle,

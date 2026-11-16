@@ -11375,3 +11375,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 ### 2026-11-16 audio PCM stream ring wraparound fix
 
 - `57c9073d` 的 PCM 流环形缓冲容量为 12000 帧，以 `计数 % 12000` 取槽位；计数是自由递增的 u32，在约 24.8 小时（48 kHz）后回绕时下标会跳变，回绕前后写入的帧可能落进同一槽位。容量改为 16384 帧（2 的幂，约 341 ms），以掩码取槽位，并用 `_Static_assert` 固定。新增 `pcm_stream_ring_survives_counter_wraparound`（把计数设到 `0xFFFFFFF0` 后跨越回绕写满并逐帧核对），旧实现下失败，修复后通过；TSan、ASan+UBSan 无报告。
+
+### 2026-11-16 audio PCM streams at other sample rates
+
+- `audio_pcm_stream_open_rate(as, channels, sample_rate, bus, volume, &h)`：流可按 8000..192000 Hz 写入，混音回调用整数位置（以 1/48000 帧为单位）做线性插值转换到 48 kHz；缺数据时位置不前进，迟到的数据从原位置继续；降采样时被跨过的帧在到达后跳过。`audio_pcm_stream_open` 等同 48 kHz。
+- `test_audio_extended` 新增 7 项（共 52），`test_voice_playback` 新增 16 kHz 语音端到端（共 3）。TSan 发现并修复了一处竞态（关闭的槽位被重新打开时混音回调读取其位置），TSan 五次运行与 ASan+UBSan 无报告。19 项变异全部被捕获。
+- 仍缺：降采样前的低通滤波、流的空间化、麦克风采集与编码。

@@ -19,20 +19,26 @@ void log_write(LogLevel level, const char *file, int line, const char *fmt, ...)
 #define VOICE_RATE 48000u
 #define VOICE_SAMPLES 480u /* 10 ms of mono at 48 kHz */
 
-static BreakRuntimeError push_voice_frame(BreakVoiceReceiver *receiver, u32 sequence, i16 base)
+static BreakRuntimeError push_voice_frame_at(BreakVoiceReceiver *receiver, u32 rate,
+                                            u16 samples, u32 sequence, i16 base)
 {
     BreakVoiceFrame frame;
     u8 wire[BREAK_VOICE_MAX_DATAGRAM_SIZE];
     u32 size = 0;
     memset(&frame, 0, sizeof(frame));
     frame.sequence = sequence;
-    frame.sample_rate = VOICE_RATE;
+    frame.sample_rate = rate;
     frame.channels = 1u;
-    frame.sample_count = VOICE_SAMPLES;
-    for (u32 i = 0; i < VOICE_SAMPLES; ++i) frame.samples[i] = (i16)(base + (i16)i);
+    frame.sample_count = samples;
+    for (u32 i = 0; i < samples; ++i) frame.samples[i] = (i16)(base + (i16)i);
     BreakRuntimeError e = break_voice_encode(&frame, wire, sizeof(wire), &size);
     if (e != BREAK_RUNTIME_OK) return e;
     return break_voice_receiver_push(receiver, wire, size);
+}
+
+static BreakRuntimeError push_voice_frame(BreakVoiceReceiver *receiver, u32 sequence, i16 base)
+{
+    return push_voice_frame_at(receiver, VOICE_RATE, VOICE_SAMPLES, sequence, base);
 }
 
 TEST(received_voice_frames_play_through_a_pcm_stream_in_order)
@@ -88,6 +94,56 @@ TEST(received_voice_frames_play_through_a_pcm_stream_in_order)
         ASSERT_EQ(under, 0u);
     }
     ASSERT_EQ(audio_pcm_stream_close(as, stream), AUDIO_OK);
+    audio_system_destroy(as);
+    break_voice_receiver_destroy(receiver);
+}
+
+/* A 16 kHz voice stream (160 samples = 10 ms) plays through a stream opened
+ * at 16 kHz: every source sample comes out at its 48 kHz position, the
+ * frames in between interpolated. */
+TEST(voice_at_16k_plays_through_a_rate_converting_stream)
+{
+    static f32 out[2u * 480u];
+    BreakVoiceStreamConfig config;
+    BreakVoiceReceiver *receiver = NULL;
+    BreakVoicePlayback playback;
+    AudioPcmStreamHandle stream = 0;
+    bool ready = false;
+    u32 written = 0;
+    memset(&config, 0, sizeof(config));
+    config.sample_rate = 16000u;
+    config.channels = 1u;
+    config.sample_count = 160u;
+    config.jitter_delay_ms = 0u;
+    config.jitter_capacity = 8u;
+    config.queue_capacity = 8u;
+    ASSERT_EQ(break_voice_receiver_create(NULL, &config, &receiver), BREAK_RUNTIME_OK);
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(audio_pcm_stream_open_rate(as, 1u, 16000u, AUDIO_BUS_MASTER, 1.0f, &stream),
+              AUDIO_OK);
+    ASSERT_EQ(push_voice_frame_at(receiver, 16000u, 160u, 1u, 0), BREAK_RUNTIME_OK);
+    ASSERT_EQ(push_voice_frame_at(receiver, 16000u, 160u, 2u, 160), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_voice_receiver_pump(receiver, 2u, 0u), BREAK_RUNTIME_OK);
+    for (u64 now = 0u; now <= 20u; now += 10u) {
+        ASSERT_EQ(break_voice_receiver_pop(receiver, now, &playback, &ready), BREAK_RUNTIME_OK);
+        if (!ready) continue;
+        ASSERT_EQ(audio_pcm_stream_write_i16(as, stream, playback.samples,
+                                             playback.sample_count, &written),
+                  AUDIO_OK);
+        ASSERT_EQ(written, (u32)playback.sample_count);
+    }
+    /* 10 ms of output: 480 frames at 48 kHz from 160 source samples */
+    ASSERT_EQ(audio_system_render(as, out, 480u), AUDIO_OK);
+    for (u32 k = 0; k < 160u; ++k) {
+        ASSERT_FLOAT_EQ(out[2u * (3u * k)], (f32)k / 32768.0f, 1e-7f);
+        ASSERT_FLOAT_EQ(out[2u * (3u * k + 1u)], ((f32)k + 1.0f / 3.0f) / 32768.0f, 1e-7f);
+    }
+    {
+        u64 under = 1u;
+        ASSERT_EQ(audio_pcm_stream_underruns(as, stream, &under), AUDIO_OK);
+        ASSERT_EQ(under, 0u);
+    }
     audio_system_destroy(as);
     break_voice_receiver_destroy(receiver);
 }
@@ -158,5 +214,6 @@ TEST(producer_and_close_race_with_a_mixer_thread)
 
 TEST_MAIN_BEGIN()
     RUN_TEST(received_voice_frames_play_through_a_pcm_stream_in_order);
+    RUN_TEST(voice_at_16k_plays_through_a_rate_converting_stream);
     RUN_TEST(producer_and_close_race_with_a_mixer_thread);
 TEST_MAIN_END()

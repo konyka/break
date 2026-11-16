@@ -1472,6 +1472,206 @@ TEST(pcm_stream_ring_survives_counter_wraparound)
     audio_system_destroy(as);
 }
 
+static AudioPcmStreamHandle open_rate_stream(AudioSystem *as, u32 channels, u32 rate)
+{
+    AudioPcmStreamHandle h = 0;
+    if (audio_pcm_stream_open_rate(as, channels, rate, AUDIO_BUS_MASTER, 1.0f, &h) != AUDIO_OK) {
+        return 0;
+    }
+    return h;
+}
+
+TEST(pcm_stream_rate_bounds)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    ASSERT_EQ(audio_pcm_stream_open_rate(as, 1u, AUDIO_PCM_STREAM_MIN_RATE - 1u,
+                                         AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_open_rate(as, 1u, AUDIO_PCM_STREAM_MAX_RATE + 1u,
+                                         AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_open_rate(as, 3u, 16000u, AUDIO_BUS_MASTER, 1.0f, &h),
+              AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_open_rate(NULL, 1u, 16000u, AUDIO_BUS_MASTER, 1.0f, &h),
+              AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_open_rate(as, 1u, AUDIO_PCM_STREAM_MIN_RATE, AUDIO_BUS_MASTER,
+                                         1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_open_rate(as, 2u, AUDIO_PCM_STREAM_MAX_RATE, AUDIO_BUS_MASTER,
+                                         1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+/* 16 kHz to 48 kHz: three output frames per source frame, linearly
+ * interpolated; queued counts source frames. */
+TEST(pcm_stream_upsamples_16k_by_linear_interpolation)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_rate_stream(as, 1u, 16000u);
+    ASSERT_NEQ(h, 0u);
+    const i16 pcm[3] = {0, 3072, 6144}; /* 0, 0.09375, 0.1875 */
+    u32 written = 0;
+    u32 queued = 0;
+    f32 out[2u * 6u];
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 3u, &written), AUDIO_OK);
+    ASSERT_EQ(written, 3u);
+    ASSERT_EQ(audio_system_render(as, out, 6u), AUDIO_OK);
+    const f32 step = 3072.0f / 32768.0f / 3.0f;
+    for (u32 i = 0; i < 6u; ++i) {
+        ASSERT_FLOAT_EQ(out[2u * i], step * (f32)i, 1e-6f);
+        ASSERT_FLOAT_EQ(out[2u * i + 1u], step * (f32)i, 1e-6f);
+    }
+    /* two source frames were passed; the third is still needed */
+    ASSERT_EQ(audio_pcm_stream_queued(as, h, &queued), AUDIO_OK);
+    ASSERT_EQ(queued, 1u);
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_rate_keeps_stereo_channels_apart)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_rate_stream(as, 2u, 24000u);
+    ASSERT_NEQ(h, 0u);
+    const i16 pcm[6] = {0, 0, 8192, -8192, 16384, -16384};
+    u32 written = 0;
+    f32 out[2u * 4u];
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 3u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 4u), AUDIO_OK);
+    /* 24 kHz: two output frames per source frame */
+    ASSERT_FLOAT_EQ(out[0], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[2], 0.125f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[3], -0.125f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[4], 0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[5], -0.25f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[6], 0.375f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[7], -0.375f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+/* 96 kHz to 48 kHz: every second source frame (the interpolation weight is
+ * zero at each output frame). */
+TEST(pcm_stream_downsamples_96k)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_rate_stream(as, 1u, 96000u);
+    ASSERT_NEQ(h, 0u);
+    i16 pcm[9];
+    for (u32 i = 0; i < 9u; ++i) pcm[i] = (i16)(1000 * (i32)i);
+    u32 written = 0;
+    u32 queued = 0;
+    f32 out[2u * 4u];
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 9u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 4u), AUDIO_OK);
+    for (u32 i = 0; i < 4u; ++i) {
+        ASSERT_FLOAT_EQ(out[2u * i], (f32)(2000u * i) / 32768.0f, 1e-6f);
+    }
+    ASSERT_EQ(audio_pcm_stream_queued(as, h, &queued), AUDIO_OK);
+    ASSERT_EQ(queued, 1u);
+    audio_system_destroy(as);
+}
+
+/* Decimation can step past the last written frame: the skipped frame is
+ * passed over when it arrives, and the queue never counts below zero. */
+TEST(pcm_stream_downsample_skips_a_frame_that_arrives_late)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_rate_stream(as, 1u, 96000u);
+    ASSERT_NEQ(h, 0u);
+    i16 pcm[9];
+    for (u32 i = 0; i < 9u; ++i) pcm[i] = (i16)(1000 * (i32)i);
+    u32 written = 0;
+    u32 queued = 7u;
+    u64 under = 0;
+    f32 out[2u * 4u];
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 7u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 4u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[6], 6000.0f / 32768.0f, 1e-6f);
+    ASSERT_EQ(audio_pcm_stream_queued(as, h, &queued), AUDIO_OK);
+    ASSERT_EQ(queued, 0u);
+    /* the next output needs frame 8; frame 7 is skipped once written */
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 0.0f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 1u);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm + 7u, 1u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 0.0f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 2u);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm + 8u, 1u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 8000.0f / 32768.0f, 1e-6f);
+    ASSERT_EQ(audio_pcm_stream_queued(as, h, &queued), AUDIO_OK);
+    ASSERT_EQ(queued, 0u);
+    audio_system_destroy(as);
+}
+
+/* A stream closed part way between two source frames leaves no position
+ * behind: the next stream in that slot starts on its first frame. */
+TEST(pcm_stream_reopen_starts_at_the_first_frame)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    const i16 pcm[3] = {0, 3072, 6144};
+    /* different values: a leftover position would interpolate between them */
+    const i16 fresh[2] = {9000, 3000};
+    u32 written = 0;
+    f32 out[2u * 2u];
+    AudioPcmStreamHandle h = open_rate_stream(as, 1u, 16000u);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 3u, &written), AUDIO_OK);
+    /* two output frames: the position is now 2/3 of a source frame in */
+    ASSERT_EQ(audio_system_render(as, out, 2u), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    h = open_rate_stream(as, 1u, 16000u);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, fresh, 2u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 9000.0f / 32768.0f, 1e-6f);
+    audio_system_destroy(as);
+}
+
+/* Missing data at a converted rate plays silence and counts as underrun;
+ * the position waits, so a late write continues where playback stopped. */
+TEST(pcm_stream_rate_underrun_resumes_at_the_same_position)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_rate_stream(as, 1u, 16000u);
+    ASSERT_NEQ(h, 0u);
+    const i16 first[2] = {0, 3072};
+    const i16 more[1] = {6144};
+    u32 written = 0;
+    u64 under = 0;
+    f32 out[2u * 8u];
+    const f32 step = 3072.0f / 32768.0f / 3.0f;
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, first, 2u, &written), AUDIO_OK);
+    /* frames 0..2 interpolate 0 -> 3072; frame 3 sits exactly on source 1
+     * and needs nothing else; frames 4 and 5 need source 2, which is
+     * missing */
+    ASSERT_EQ(audio_system_render(as, out, 6u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(out[2], step, 1e-6f);
+    ASSERT_FLOAT_EQ(out[4], 2.0f * step, 1e-6f);
+    ASSERT_FLOAT_EQ(out[6], 3.0f * step, 1e-6f);
+    ASSERT_FLOAT_EQ(out[8], 0.0f, 0.0f);
+    ASSERT_FLOAT_EQ(out[10], 0.0f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_underruns(as, h, &under), AUDIO_OK);
+    ASSERT_EQ(under, 2u);
+    /* the late frame continues the ramp where it stopped */
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, more, 1u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 3u), AUDIO_OK);
+    ASSERT_FLOAT_EQ(out[0], 4.0f * step, 1e-6f);
+    ASSERT_FLOAT_EQ(out[2], 5.0f * step, 1e-6f);
+    ASSERT_FLOAT_EQ(out[4], 6.0f * step, 1e-6f);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -1518,4 +1718,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pcm_stream_plays_mono_and_stereo_with_gain);
     RUN_TEST(pcm_stream_ring_is_bounded_and_underruns_play_silence);
     RUN_TEST(pcm_stream_ring_survives_counter_wraparound);
+    RUN_TEST(pcm_stream_rate_bounds);
+    RUN_TEST(pcm_stream_upsamples_16k_by_linear_interpolation);
+    RUN_TEST(pcm_stream_rate_keeps_stereo_channels_apart);
+    RUN_TEST(pcm_stream_downsamples_96k);
+    RUN_TEST(pcm_stream_downsample_skips_a_frame_that_arrives_late);
+    RUN_TEST(pcm_stream_rate_underrun_resumes_at_the_same_position);
+    RUN_TEST(pcm_stream_reopen_starts_at_the_first_frame);
 TEST_MAIN_END()
