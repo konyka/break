@@ -82,6 +82,7 @@ bool break_editor_doc_reset(BreakEditorDoc *doc) {
     break_flow_graph_destroy(doc->flow_graph);
     doc->flow_graph = fresh_flow;
     break_editor_doc_kept_chunks_free(doc);
+    break_editor_audio_detach(doc);
     memset(doc->slots, 0, sizeof(BreakEditorNameSlot) * ECS_MAX_ENTITIES);
     doc->named_count = 0;
     break_editor_cmd_stack_clear(doc->stack);
@@ -97,6 +98,7 @@ void break_editor_doc_destroy(BreakEditorDoc *doc) {
     free(doc->slots);
     world_destroy(doc->world);
     break_editor_doc_kept_chunks_free(doc);
+    break_editor_audio_detach(doc);
     free(doc);
 }
 

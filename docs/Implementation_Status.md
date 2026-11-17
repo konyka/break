@@ -1,3 +1,10 @@
+## BreakEditorDoc 的可撤销 PCM 附件（2026-11-18）
+
+- **交付**：新增 `editor_audio` 附件与五类编辑命令，复用真实 undo/redo、origin、dirty 和 drop-oldest；reset/load/destroy 正确 detach，生产/测试 editor 库和目标合同均同步。设计与计划见 `docs/superpowers/specs/2026-11-18-editor-audio-document-design.md`、`docs/superpowers/plans/2026-11-18-editor-audio-document.md`。
+- **TDD 与评审**：新入口链接 RED 后实现至 5/5；独立评审发现目标合同、预分配校验和 origin 成功路径缺口，均先验证再修复，复审 Ready。
+- **验证**：普通及 ASan+UBSan 均 5/5，既有 doc/cmd/scene/合同通过，严格告警为零；六个正常变异及 ASan 快照泄漏变异均被捕获。三树全量为 431/431、431/431、439/439，零失败。
+- **边界**：最多 65536 帧、单/双声道、全快照历史；无波形 UI、媒体编解码、时间线或真实听测。
+
 ## 延迟线的可选连续交叉淡化（2026-11-18）
 
 - **交付**：`AudioDelayLine` 新增 0..48000 帧淡化配置，零时长保持旧行为；新旧目标从同一历史读取，按 1/N..1 淡化，活跃期拒绝 retarget/模式/时长修改。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-delay-crossfade-design.md`、`docs/superpowers/plans/2026-11-18-audio-delay-crossfade.md`。

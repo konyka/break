@@ -34,7 +34,8 @@ enum {
     BREAK_EDITOR_CMD_KIND_GIZMO_TRANSFORM = 7,
     BREAK_EDITOR_CMD_KIND_DUPLICATE_ENTITY = 8,
     BREAK_EDITOR_CMD_KIND_GROUP = 9,
-    BREAK_EDITOR_CMD_KIND_FLOW_GRAPH = 10
+    BREAK_EDITOR_CMD_KIND_FLOW_GRAPH = 10,
+    BREAK_EDITOR_CMD_KIND_AUDIO_SNAPSHOT = 11
 };
 
 /* Concrete command: one bounded allocation per mutation. name/other_name
@@ -136,6 +137,7 @@ struct BreakEditorDoc {
     struct BreakEditorKeptChunk *kept_chunks;
     u32 kept_chunk_count;
     u32 kept_version; /* BSCN header version the kept chunks were read from (0 = none) */
+    struct BreakEditorAudioState *audio; /* owned optional PCM attachment */
 };
 
 struct BreakEditorCmdStack {
@@ -157,6 +159,8 @@ struct BreakEditorCmdStack {
 
 /* editor_scene.c: releases doc->kept_chunks (safe when none). */
 void break_editor_doc_kept_chunks_free(BreakEditorDoc *doc);
+/* editor_audio.c: releases the optional PCM attachment, safe when absent. */
+void break_editor_audio_detach(BreakEditorDoc *doc);
 
 /* editor_doc.c internals shared with editor_cmd.c. */
 World *break_editor_doc_world_raw(BreakEditorDoc *doc);

@@ -322,3 +322,5 @@
 - **第 10 节（音频）追加**：2026-11-18 新增 `AudioVoiceProcessor`，统一串联 AEC、残余抑制、频谱降噪、噪声门和 AGC，支持任意分块、reset 与尾部排空，手工参考链逐位一致。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「集成语音处理链」。这是可复用处理库，不是生产采集接线。仍缺：core_app 设备/网络集成、多声道、自动延迟跟踪与真实声学验证。
 
 - **第 10 节（音频）追加**：2026-11-18 `AudioDelayLine` 支持可选连续延迟交叉淡化，新旧目标共用历史，活跃期拒绝重定向并保持状态原子性；默认立即切换不变。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「连续延迟交叉淡化」由此交付。仍缺：多声道、自动淡化策略与真实声学验证。
+
+- **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-18 `BreakEditorDoc` 支持短 PCM 附件及 trim/cut/fade/normalize/mix 的真实快照 undo/redo，含 origin、drop-oldest、OOM 和 reset/load 生命周期。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。上文「音频编辑工具」的文档/撤销部分由此交付。仍缺：波形 UI、媒体文件解析、时间线/自动化与真实听测。

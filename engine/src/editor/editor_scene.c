@@ -660,6 +660,7 @@ static bool doc_load_staged(BreakEditorDoc *doc, const char *path,
     world_destroy(doc->world);
     doc->world = staging;
     break_editor_doc_kept_chunks_free(doc);
+    break_editor_audio_detach(doc);
     doc->kept_chunks = kept;
     doc->kept_chunk_count = kept_n;
     {

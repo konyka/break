@@ -270,7 +270,8 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `normalize` 以 -120..0 dBFS 的目标峰值缩放，数字静音不变；负峰值按绝对值处理，转换有舍入和限幅。
 - `mix` 用 [-8,8] 的有限线性增益把源加到公共前缀，结果限幅，目标尾部不变；源与目标缓冲不得重叠。
 - 所有缓冲区在访问前经 `audio_edit_buffer_span` 检查样本数与字节数；交错索引、指针偏移和字节计数使用 usize，避免大帧数与 32 位平台溢出。
-- 未做：编辑器 UI、时间线、撤销、媒体文件解析、自动化和真实听测。
+- 编辑器文档集成：`editor/editor_audio` 为 `BreakEditorDoc` 提供可选短 PCM 附件，trim/cut/fade/normalize/mix 通过 before/after 快照进入现有 undo/redo、origin 冲突和 drop-oldest 历史。附件在 reset、成功场景 load 和 destroy 时释放；编辑失败与 OOM 均保持 PCM/历史不变。首版最多 65536 帧。
+- 未做：编辑器 UI、时间线、媒体文件解析、自动化和真实听测；文档级撤销已由 `test_editor_audio` 覆盖。
 
 ## 集成语音处理链
 
