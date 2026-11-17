@@ -165,8 +165,20 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 环形缓冲：生产者（设备回调，FAKE 时为注入线程）持有 `head`，读取者持有 `tail`，均为自由增长的 u32，用 release/acquire 发布。缓冲满时丢弃最新的帧并计入 `audio_capture_overruns`。回调不阻塞、不分配、不写日志，并纳入 `test_audio_realtime_contract`。
 - 输入设备选择：`audio_capture_list_devices(backend, out, capacity)` 列出输入设备（名称、序号 id、是否默认），返回设备总数，可能大于 capacity；FAKE 或枚举失败返回 0。`audio_capture_create_named(config, name, out)` 按名称打开设备，NULL 或空名称打开默认设备；没有该名称的设备或 FAKE 带名称时返回 `AUDIO_REJECTED`。设备 id 指向枚举它的 context，所以每个采集对象持有自己的 context，与设备一起释放。`audio_capture_device_name` 返回实际打开的设备名（FAKE 为 "fake"），超长时截断。
 - 帧以配置的采样率与声道数交付：设备原生格式不同时由 miniaudio 的内置转换完成。
-- 未做：回声消除、降噪、自动增益、设备热插拔。
+- 未做：回声消除、降噪、设备热插拔。自动增益见下一节。
 
+## 自动增益（AGC）
+
+`engine/src/audio/audio_agc.{h,c}` 在所有者线程上原地处理采集到的 16 位帧，放在 `audio_capture_read_i16` 之后、`break_voice_encode*` 之前，使不同音量的说话者得到相近的电平。不分配内存，状态由调用者持有。
+
+- `AudioAgcConfig`：采样率 8000..192000、1 或 2 声道、目标电平 -60..0 dBFS、最大增益 0..60 dB、下降时间常数（attack）0.1..1000 ms、上升时间常数（release）1..10000 ms、门限 -120..0 dBFS 且低于目标。超出范围或 NaN 返回 `AUDIO_INVALID`，失败时不写 `*agc`。初始增益 0 dB。
+- 电平：各声道 x² 的平均（x = 样本 / 32768）经 10 ms 一阶平滑，取 `10 log10`。
+- 期望增益 = 目标 − 电平，限制在 ±最大增益。电平低于门限（包括完全静音）时增益保持不变，所以静音和底噪不会被放大。
+- 增益每帧按一阶时间常数逼近期望值：增益下降用 attack，上升用 release；所有声道用同一个增益，保留声道间的比例。
+- 输出 `nearbyint(x × 10^(增益/20))`，限制在 i16 范围内，不会回绕。
+- 逐帧处理，分块方式不影响输出。增益用双精度保存：接近稳态时每帧的步长远小于 f32 的精度。
+
+## 验证与限制
 
 - `test_audio_extended`：clip/容量、并发/重触发、stale handle、真实 DSP 接线、逐样本交叉淡化、loop/停止、遮挡/距离、bus/master、legacy WAV、bit-exact fake 和 null 命令生命周期。
 - `test_audio_dsp`：手算滤波阶跃、延迟 tap/feedback、混响早期 taps、filter+delay 组合和失败原子。
@@ -187,5 +199,6 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `test_audio_extended` 的事件 HRTF 测试（5 项）：注册要求 spatial 与引擎采样率；单声道右方事件等于直接卷积乘距离增益，同时打开的其他提示不起作用；立体声 clip 取平均，`audio_voice_set_position` 与监听者转身更新下标；移动声源与参考渲染器逐位一致；RESTART 重触发从空历史开始。11 项变异全部被捕获。
 - sinc 重采样由双精度 Lanczos 参考模型（16 kHz、88.2 kHz 经低通、24 kHz 立体声）、前瞻等待、高频正弦误差、引擎采样率不变、模式切换的历史和重开复位覆盖。
 - 后方提示由阶跃响应参考模型（PCM 流正后方与 45°、事件正后方）、前方/侧面/重合逐位不变、监听者转身、RESTART 与 revision 门控、立体声状态分离和重开复位覆盖。
+- `test_audio_agc`（8 项）：参数校验与失败时不写状态、安静与响亮正弦都稳定到目标（1 dB 内）、最大增益上限、门限下增益保持与输出不变、放大后突发大音量被限幅且不回绕、立体声共享增益、分块不影响输出、与独立参考模型逐样本一致。23 项变异全部被捕获；ASan+UBSan 通过。
 - `test_audio_capture`（8 项）：设备列表（空设备、容量 0、FAKE、非法参数）、按名称打开与默认名称、未知名称与 FAKE 带名称被拒绝、设备名截断（13 项变异全部被捕获）；配置校验与 `*out` 不变、转换（取整、限幅、NaN/Inf）、顺序与部分读取、立体声跨缓冲末尾回绕、缓冲满时保留最旧的帧并计数、启停幂等与注入门控、空设备实时交付静音帧（两轮启停、运行中销毁）、生产者线程与读取者不丢帧且有序。20 项变异全部被捕获；TSan、ASan+UBSan 通过。
-- 没有真实听测、真实声卡、Windows 或 macOS 验证。 采集没有用真实麦克风验证。简单 DSP/混响不等于物理声学或听感验收。
+- 没有真实听测、真实声卡、Windows 或 macOS 验证。采集和自动增益没有用真实麦克风验证。简单 DSP/混响不等于物理声学或听感验收。

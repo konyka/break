@@ -11645,3 +11645,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 文档更正：采集帧以配置的采样率交付，设备原生格式不同时由 miniaudio 转换，上一条「采集端采样率转换」不是缺口。
 - 仍缺：回声消除、降噪、自动增益、设备热插拔、真实麦克风录音验证。
 - Windows CI 修复：`test_audio_capture` 的线程函数改用 `PLATFORM_THREAD_RETURN`（Windows 下 `PLATFORM_THREAD_RET` 含 `WINAPI`，不能用作类型转换）。
+
+### 2026-11-17 音频：采集语音的自动增益
+- `engine/src/audio/audio_agc.{h,c}`：`audio_agc_init`、`audio_agc_process_i16`、`audio_agc_gain_db`。10 ms 均方电平、噪声门限、增益上限、attack/release、四舍五入并限幅。
+- 构建：`engine` 静态库加入 `audio_agc.c`；新增 `test_audio_agc`（headless、audio 标签）。
+- 测试：`test_audio_agc` 8 项。先 RED（链接失败）后 GREEN。23 项变异首轮 3 项存活（截断取整、只看左声道电平、电平窗口），补了独立参考模型测试后全部被捕获。ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
+- 文档修复：采集一节插入时误删了设计文档的「验证与限制」标题，已恢复。
+- 仍缺：回声消除、降噪、设备热插拔、真实麦克风录音验证、感知编码器（Opus 等）、音频编辑工具。
