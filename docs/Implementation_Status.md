@@ -11701,3 +11701,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 测试：`test_audio_residual_echo_suppressor` 7 项。先 RED（6 个公开接口链接失败）后 GREEN；真实 NLMS 处理 `0.25*x + 0.12*x*|x|`，残余抑制超过 10 dB 且测量拒绝非有限值；近端测试先关闭增益，再验证重新打开、440 Hz 单音 1 dB 内且路径不变；路径速率用单帧和 1000 帧增量独立核对；另有参考门限/连续尾部、attack/release 方向、分块、reset 与静音。配置覆盖负 hangover、所有浮点字段 NaN 和精确上下限。
 - 变异：40/40 全部捕获。整改包括让 hangover 测试区分包络自然衰减、reset 与新初始化状态比较、直接检查动态状态清零、简化重复的路径下降分支，以及新增路径加速和保持参考功率复位变异。ASan+UBSan、严格告警与命名检查通过。
 - 边界：近端活动由调用者提供，模块不是自动 VAD；只做单声道包络抑制。仍缺：频谱相干性残余抑制、亚帧延迟与漂移补偿、多声道、感知编码器（Opus 等）、真实声学与听感验证。
+
+
+### 2026-11-18 音频：亚帧延迟估计与分数延迟线
+- `audio_delay_estimator_estimate_subframe`：与整数接口共用最佳归一化相关峰值搜索，对内部峰值的绝对相关分数做抛物线插值，偏移限制 ±0.5；边界、非凹或无效曲线回退整数，相关输出保留符号。整数 API 行为不变。
+- `audio_delay_line_set_subframe_delay` 与 `audio_delay_line_subframe_delay`：D=d+f 时线性插值 `(1−f)x[n−d] + f x[n−d−1]`；旧 setter/accessor 与整数输出保持兼容，支持原地和任意分块。
+- `test_audio_delay_estimator` 从 8 项增至 11 项。3.25/12.5/31.75 帧 sinc 回声误差在 0.25 帧内；相关性对照最近整数距离的 sinc 参考；覆盖端点、反相、失败原子性、2.25 帧原地分块、非整除舍入、非法值和旧整数路径。先 RED（3 个新接口链接失败）后 GREEN。
+- 16/18 定向变异被捕获。两个存活项是防御检查：在精确算术下，最佳局部绝对峰值保证分母非正、偏移不超过 0.5；当前代码的零分母直接由 `denominator < 0` 回退，若删掉该检查，零分母产生的非有限偏移再由 isfinite 拒绝。相关性断言为双侧 0.1 绝对误差。测试 sinc 生成器的一处尾部越界由 ASan+UBSan 找到并修复；旧指针哨兵改为真实对齐对象。最终 ASan+UBSan、严格告警通过。
+- 仍缺：延迟漂移跟踪、时钟漂移补偿、GCC-PHAT、延迟线 sinc 模式、真实声学验证。线性插值会衰减高频，0.25 帧容差不代表所有噪声与声学路径的精度保证。

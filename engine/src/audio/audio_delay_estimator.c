@@ -66,10 +66,21 @@ void audio_delay_estimator_push_i16(AudioDelayEstimator *est, const i16 *referen
     est->pushed += frames;
 }
 
-bool audio_delay_estimator_estimate(AudioDelayEstimator *est, u32 *delay_frames,
-                                    double *correlation) {
+static bool delay_score(const AudioDelayEstimator *est, const i16 *cap, i64 cc,
+                        u32 lag, double *score) {
+    const i16 *ref = est->reference + est->pos + est->max_delay - lag;
+    i64 cr = 0, rr = 0;
+    for (u32 i = 0; i < est->window; ++i) {
+        cr += (i64)cap[i] * ref[i];
+        rr += (i64)ref[i] * ref[i];
+    }
+    if (rr == 0) return false;
+    *score = (double)cr / sqrt((double)cc * (double)rr);
+    return true;
+}
+
+static bool best_delay(AudioDelayEstimator *est, u32 *delay_frames, double *correlation) {
     if (!est || !delay_frames || !correlation || est->pushed < est->history) return false;
-    /* the capture window is the newest `window` frames */
     const i16 *cap = est->capture + est->pos + est->max_delay;
     i64 cc = 0;
     for (u32 i = 0; i < est->window; ++i) cc += (i64)cap[i] * cap[i];
@@ -78,14 +89,8 @@ bool audio_delay_estimator_estimate(AudioDelayEstimator *est, u32 *delay_frames,
     u32 best_lag = 0u;
     double best = 0.0;
     for (u32 lag = 0; lag <= est->max_delay; ++lag) {
-        const i16 *ref = est->reference + est->pos + est->max_delay - lag;
-        i64 cr = 0, rr = 0;
-        for (u32 i = 0; i < est->window; ++i) {
-            cr += (i64)cap[i] * ref[i];
-            rr += (i64)ref[i] * ref[i];
-        }
-        if (rr == 0) continue;
-        double score = (double)cr / sqrt((double)cc * (double)rr);
+        double score = 0.0;
+        if (!delay_score(est, cap, cc, lag, &score)) continue;
         if (!found || fabs(score) > fabs(best)) {
             found = true;
             best = score;
@@ -98,10 +103,42 @@ bool audio_delay_estimator_estimate(AudioDelayEstimator *est, u32 *delay_frames,
     return true;
 }
 
+bool audio_delay_estimator_estimate(AudioDelayEstimator *est, u32 *delay_frames,
+                                    double *correlation) {
+    return best_delay(est, delay_frames, correlation);
+}
+
+bool audio_delay_estimator_estimate_subframe(AudioDelayEstimator *est,
+                                             double *delay_frames,
+                                             double *correlation) {
+    u32 lag = 0u;
+    double best = 0.0;
+    if (!best_delay(est, &lag, &best)) return false;
+    double result = lag;
+    if (lag > 0u && lag < est->max_delay) {
+        const i16 *cap = est->capture + est->pos + est->max_delay;
+        i64 cc = 0;
+        for (u32 i = 0; i < est->window; ++i) cc += (i64)cap[i] * cap[i];
+        double before = 0.0, after = 0.0;
+        if (delay_score(est, cap, cc, lag - 1u, &before) &&
+            delay_score(est, cap, cc, lag + 1u, &after)) {
+            const double a = fabs(before), b = fabs(best), c = fabs(after);
+            const double denominator = a - 2.0 * b + c;
+            if (denominator < 0.0) {
+                const double offset = 0.5 * (a - c) / denominator;
+                if (isfinite(offset) && fabs(offset) <= 0.5) result += offset;
+            }
+        }
+    }
+    *delay_frames = result;
+    *correlation = best;
+    return true;
+}
+
 struct AudioDelayLine {
     u32 size; /* max_delay + 1 */
     u32 write;
-    u32 delay;
+    double delay;
     i16 *buffer;
 };
 
@@ -132,7 +169,20 @@ AudioResult audio_delay_line_set_delay(AudioDelayLine *line, u32 delay_frames) {
 }
 
 u32 audio_delay_line_delay(const AudioDelayLine *line) {
-    return line ? line->delay : 0u;
+    return line ? (u32)line->delay : 0u;
+}
+
+AudioResult audio_delay_line_set_subframe_delay(AudioDelayLine *line, double delay_frames) {
+    if (!line || !isfinite(delay_frames) || delay_frames < 0.0 ||
+        delay_frames > (double)(line->size - 1u)) {
+        return AUDIO_INVALID;
+    }
+    line->delay = delay_frames;
+    return AUDIO_OK;
+}
+
+double audio_delay_line_subframe_delay(const AudioDelayLine *line) {
+    return line ? line->delay : 0.0;
 }
 
 void audio_delay_line_process_i16(AudioDelayLine *line, const i16 *in, i16 *out, u32 frames) {
@@ -141,9 +191,14 @@ void audio_delay_line_process_i16(AudioDelayLine *line, const i16 *in, i16 *out,
         /* written first, so a delay of 0 passes the frame straight through
          * and `out` may alias `in` */
         line->buffer[line->write] = in[n];
-        u32 read = line->write >= line->delay ? line->write - line->delay
-                                              : line->write + line->size - line->delay;
-        out[n] = line->buffer[read];
+        const u32 whole = (u32)line->delay;
+        const double fraction = line->delay - (double)whole;
+        const u32 read = line->write >= whole ? line->write - whole
+                                              : line->write + line->size - whole;
+        const u32 previous = read == 0u ? line->size - 1u : read - 1u;
+        const double value = (1.0 - fraction) * line->buffer[read] +
+                             fraction * line->buffer[previous];
+        out[n] = (i16)nearbyint(value);
         line->write = line->write + 1u == line->size ? 0u : line->write + 1u;
     }
 }

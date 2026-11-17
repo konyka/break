@@ -36,6 +36,13 @@ void audio_delay_estimator_push_i16(AudioDelayEstimator *est, const i16 *referen
  * (max_delay + 1) * window multiply-adds. */
 bool audio_delay_estimator_estimate(AudioDelayEstimator *est, u32 *delay_frames,
                                     double *correlation);
+/* Same search and readiness rules as the integer estimate. Interpolates the
+ * absolute correlation peak by a parabola, limited to +/- 0.5 frame. Returns
+ * the signed score at the integer peak. Integer lag is used at the boundaries
+ * or when no concave local peak exists. Outputs are untouched on failure. */
+bool audio_delay_estimator_estimate_subframe(AudioDelayEstimator *est,
+                                             double *delay_frames,
+                                             double *correlation);
 
 typedef struct AudioDelayLine AudioDelayLine;
 
@@ -46,6 +53,11 @@ void audio_delay_line_destroy(AudioDelayLine *line); /* NULL is a no-op */
 /* INVALID for NULL or a delay above the maximum. Takes effect on the next
  * frame, reading the history at the new delay (no crossfade). */
 AudioResult audio_delay_line_set_delay(AudioDelayLine *line, u32 delay_frames);
-u32 audio_delay_line_delay(const AudioDelayLine *line); /* 0 for NULL */
-/* out[n] = in[n - delay]; `in` and `out` may be the same buffer. */
+u32 audio_delay_line_delay(const AudioDelayLine *line); /* integer part; 0 for NULL */
+/* Finite delay in [0, max_delay]. For D=d+f, reads (1-f)*x[n-d] + f*x[n-d-1].
+ * No crossfade. The integer setter is equivalent to an integer call here. */
+AudioResult audio_delay_line_set_subframe_delay(AudioDelayLine *line, double delay_frames);
+double audio_delay_line_subframe_delay(const AudioDelayLine *line); /* 0 for NULL */
+/* out[n] is the current integer or linearly interpolated delayed input;
+ * `in` and `out` may be the same buffer. */
 void audio_delay_line_process_i16(AudioDelayLine *line, const i16 *in, i16 *out, u32 frames);
