@@ -14,6 +14,8 @@ struct AudioDriftEstimator {
     u64 *frames;
     double *delays;
     double *correlations;
+    double *slopes;
+    double *medians;
 };
 
 static bool drift_in_range(double value, double low, double high) {
@@ -35,7 +37,9 @@ AudioResult audio_drift_estimator_create(const AudioDriftEstimatorConfig *config
     est->frames = (u64 *)calloc(est->size, sizeof(u64));
     est->delays = (double *)calloc(est->size, sizeof(double));
     est->correlations = (double *)calloc(est->size, sizeof(double));
-    if (!est->frames || !est->delays || !est->correlations) {
+    est->slopes = (double *)calloc(est->size, sizeof(double));
+    est->medians = (double *)calloc(est->size, sizeof(double));
+    if (!est->frames || !est->delays || !est->correlations || !est->slopes || !est->medians) {
         audio_drift_estimator_destroy(est);
         return AUDIO_OVERLOAD;
     }
@@ -48,6 +52,8 @@ void audio_drift_estimator_destroy(AudioDriftEstimator *est) {
     free(est->frames);
     free(est->delays);
     free(est->correlations);
+    free(est->slopes);
+    free(est->medians);
     free(est);
 }
 
@@ -104,6 +110,68 @@ bool audio_drift_estimator_estimate(AudioDriftEstimator *est,
     }
     if (denominator <= 0.0) return false;
     const double drift = numerator / denominator * 1e6;
+    if (!isfinite(drift) || !isfinite(mean_c) || fabs(drift) > est->max_drift_ppm) {
+        return false;
+    }
+    *drift_ppm = drift;
+    *mean_correlation = mean_c;
+    return true;
+}
+
+static double drift_frame_delta(u64 first, u64 second) {
+    return first >= second ? (double)(first - second) : -(double)(second - first);
+}
+
+static void drift_sift_down(double *values, u32 root, u32 count) {
+    for (;;) {
+        u32 child = root * 2u + 1u;
+        if (child >= count) return;
+        if (child + 1u < count && values[child] < values[child + 1u]) ++child;
+        if (values[root] >= values[child]) return;
+        const double temporary = values[root];
+        values[root] = values[child];
+        values[child] = temporary;
+        root = child;
+    }
+}
+
+static void drift_sort(double *values, u32 count) {
+    for (u32 start = count / 2u; start > 0u; --start) {
+        drift_sift_down(values, start - 1u, count);
+    }
+    for (u32 end = count; end > 1u; --end) {
+        const double temporary = values[0];
+        values[0] = values[end - 1u];
+        values[end - 1u] = temporary;
+        drift_sift_down(values, 0u, end - 1u);
+    }
+}
+
+static double drift_median(double *values, u32 count) {
+    drift_sort(values, count);
+    if (count & 1u) return values[count / 2u];
+    return 0.5 * values[count / 2u - 1u] + 0.5 * values[count / 2u];
+}
+
+bool audio_drift_estimator_estimate_robust(AudioDriftEstimator *est,
+                                           double *drift_ppm,
+                                           double *mean_correlation) {
+    if (!est || !drift_ppm || !mean_correlation || est->count < 2u) return false;
+    for (u32 i = 0; i < est->count; ++i) {
+        u32 count = 0u;
+        for (u32 j = 0; j < est->count; ++j) {
+            if (i == j) continue;
+            const double delta = drift_frame_delta(est->frames[j], est->frames[i]);
+            const double slope = (est->delays[j] - est->delays[i]) / delta;
+            if (!isfinite(slope)) return false;
+            est->slopes[count++] = slope;
+        }
+        est->medians[i] = drift_median(est->slopes, count);
+    }
+    const double drift = drift_median(est->medians, est->count) * 1e6;
+    double mean_c = 0.0;
+    for (u32 i = 0; i < est->count; ++i) mean_c += est->correlations[i];
+    mean_c /= est->count;
     if (!isfinite(drift) || !isfinite(mean_c) || fabs(drift) > est->max_drift_ppm) {
         return false;
     }

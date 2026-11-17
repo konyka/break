@@ -314,3 +314,5 @@
 - **第 10 节（音频）追加**：2026-11-18 `audio_gcc_phat_estimate_with_confidence` 在 PHAT 选中的整数 lag 上直接计算带符号归一化互相关，与 tracker 门控同义，旧 raw peak 保留。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「归一化置信度」由此交付。仍缺：GCC-PHAT 与 tracker 的自动接线、多声道及真实声学验证。
 
 - **第 10 节（音频）追加**：2026-11-18 `audio_delay_tracker_create_gcc` 提供显式 GCC-PHAT 后端，复用原配置、归一化门控和跟踪状态机，只分配选定后端；默认时域行为不变。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「GCC-PHAT 与 tracker 接线」由此交付。仍缺：运行中后端切换、自动更新调度、多声道与真实声学验证。
+
+- **第 10 节（音频）追加**：2026-11-18 `audio_drift_estimator_estimate_robust` 以 repeated-median 提供抗孤立离群点的漂移斜率，固定 scratch、无估计期分配，旧最小二乘接口不变。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「时钟漂移估计」。上文「抗离群点回归」由此交付。仍缺：自动闭环控制、多声道与真实设备验证。

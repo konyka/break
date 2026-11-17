@@ -1,3 +1,11 @@
+## 漂移估计的 repeated-median 抗离群点模式（2026-11-18）
+
+- **交付**：新增 `audio_drift_estimator_estimate_robust`，通过 Siegel repeated-median 估计斜率；旧最小二乘、配置和 push/reset/ring 行为不变。两个 window 长度 scratch 仅在 create 分配，堆排序不修改原始样本。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-drift-robust-design.md`、`docs/superpowers/plans/2026-11-18-audio-drift-robust.md`。
+- **TDD 与评审**：新符号链接 RED 后实现至 8/8；覆盖孤立正负离群点、手算四点斜率、混合非有限输入、重置、环绕、大帧号及 1024 样本上限。独立评审 Ready，无遗留发现。
+- **定向验证**：普通及 ASan+UBSan 均 8/8，严格告警为零；符号帧差、堆恢复、两级中位数、组合非有限保护、漂移上限和旧斜率七个变异均被捕获。
+- **全量验证**：`/tmp/full_trees.sh` 的实际计数为 429/429、429/429、437/437，三次构建均成功且零测试失败。
+- **边界**：不删除窗口中的离群样本，平均相关性仍包含全部已接受样本；无自动闭环、多声道或真实设备验证。
+
 ## Delay Tracker 的可选 GCC-PHAT 后端（2026-11-18）
 
 - **交付**：新增 `audio_delay_tracker_create_gcc`，复用原配置和归一化置信度门控；默认时域构造函数不变，只分配选定后端，push/reset/update 正确路由，锁定/保持/解锁/slew 状态机共用。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-tracker-gcc-design.md`、`docs/superpowers/plans/2026-11-18-audio-tracker-gcc.md`。

@@ -1,6 +1,6 @@
 # Robust Clock-Drift Estimation Design
 
-Status: Approved for autonomous implementation under the active goal
+Status: Implemented and locally verified
 
 ## Purpose
 

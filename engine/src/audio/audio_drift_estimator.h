@@ -29,4 +29,10 @@ bool audio_drift_estimator_push(AudioDriftEstimator *est, u64 frame_index,
  * results or drift beyond the configured absolute limit. */
 bool audio_drift_estimator_estimate(AudioDriftEstimator *est,
                                     double *drift_ppm, double *mean_correlation);
+/* Repeated-median slope using the same accepted samples and mean correlation.
+ * False with untouched outputs on invalid inputs, non-finite intermediates or
+ * drift beyond the configured limit. */
+bool audio_drift_estimator_estimate_robust(AudioDriftEstimator *est,
+                                           double *drift_ppm,
+                                           double *mean_correlation);
 u32 audio_drift_estimator_count(const AudioDriftEstimator *est); /* 0 for NULL */

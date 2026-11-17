@@ -41,4 +41,4 @@ Mutation, ASan+UBSan, strict warnings, independent review and three-tree verific
 
 ## Limits
 
-No resampling yet, no automatic delay-tracker wiring, no outlier-robust regression, no wall-clock input or real-device validation. The estimate is only as reliable as the supplied correlation measurements.
+No automatic closed-loop wiring, wall-clock input or real-device validation. Resampling is provided by the separate drift compensator, explicit tracker backends are supported, and repeated-median outlier resistance is specified in `docs/superpowers/specs/2026-11-18-audio-drift-robust-design.md`. Each estimate is only as reliable as the supplied correlation measurements.
