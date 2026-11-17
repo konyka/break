@@ -14,11 +14,22 @@
  *   magic u32 = 0x504e5350 ("PSNP"), tick u32, payload bytes u32,
  *   FNV-1a 32 checksum of the payload u32
  * The authoritative peer sends a correction after a DESYNC; the other peer
- * restores it and restarts its hash history from that tick. */
+ * restores it and restarts its hash history from that tick.
+ *
+ * Delta correction layout, little-endian: a 28-byte header followed by runs.
+ *   magic u32 = 0x444e5350 ("PSND"), tick u32, baseline tick u32,
+ *   baseline bytes u32, FNV-1a 32 of the baseline u32,
+ *   target bytes u32, FNV-1a 32 of the target u32
+ *   run: offset u32, length u32, length bytes
+ * The baseline is a snapshot both peers already hold. It is read as if
+ * zero-extended (or truncated) to the target size, and each run overwrites
+ * target bytes. Runs are non-empty, ascending, non-overlapping and inside
+ * the target. */
 
 #define PHYSICS_SYNC_REPORT_BYTES 16u
 #define PHYSICS_SYNC_HISTORY 64u
 #define PHYSICS_SYNC_CORRECTION_HEADER_BYTES 16u
+#define PHYSICS_SYNC_DELTA_HEADER_BYTES 28u
 
 typedef enum PhysicsSyncVerdict {
     PHYSICS_SYNC_MATCH = 0,
@@ -60,5 +71,30 @@ bool physics_sync_encode_correction(PhysicsWorld *pw, u32 tick, u8 *buffer, usiz
  * are unchanged. */
 bool physics_sync_apply_correction(PhysicsSyncTracker *tracker, PhysicsWorld *pw, const u8 *data,
                                    usize size, u32 *out_tick);
+/* Byte-level delta between two snapshots. baseline may be NULL only when
+ * baseline_size is 0. *out_size receives the required byte count whenever
+ * the inputs are valid; returns false and leaves the buffer untouched when
+ * capacity is too small. Unchanged gaps of up to 8 bytes are folded into
+ * the surrounding run because a new run header costs 8 bytes. */
+bool physics_sync_encode_delta(u32 tick, u32 baseline_tick, const u8 *baseline,
+                               usize baseline_size, const u8 *target, usize target_size,
+                               u8 *buffer, usize capacity, usize *out_size);
+/* Reads the two ticks so the receiver can pick the matching baseline.
+ * Outputs are untouched on failure. */
+bool physics_sync_delta_ticks(const u8 *data, usize size, u32 *out_tick, u32 *out_baseline_tick);
+/* Rebuilds the target snapshot into target. Checks the magic, the baseline
+ * checksum, the capacity, every run and the target checksum. The baseline
+ * bytes field is informational; the checksum already depends on the length. On
+ * failure *out_target_size and *out_tick are unchanged and the contents of
+ * target are unspecified. */
+bool physics_sync_decode_delta(const u8 *baseline, usize baseline_size, const u8 *data,
+                               usize size, u8 *target, usize target_capacity,
+                               usize *out_target_size, u32 *out_tick);
+/* Decodes into scratch, then restores it like physics_sync_apply_correction,
+ * with the same guarantee: on failure the world, the tracker and *out_tick
+ * are unchanged. */
+bool physics_sync_apply_delta(PhysicsSyncTracker *tracker, PhysicsWorld *pw, const u8 *baseline,
+                              usize baseline_size, const u8 *data, usize size, u8 *scratch,
+                              usize scratch_capacity, u32 *out_tick);
 /* *out_first_tick is written only when a desync has been seen. */
 bool physics_sync_desynced(const PhysicsSyncTracker *tracker, u32 *out_first_tick);

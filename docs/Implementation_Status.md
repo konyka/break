@@ -11559,3 +11559,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 先 RED（6 项失败）后 GREEN；19 项变异首轮 1 项存活（responseStatus 检查：未成功状态不带响应体，后续取 basic 时也会失败），补充「未成功状态但附带有效 good 响应体」的用例后被捕获，最终全部捕获。影子变量检查通过（rc=0）。
 - macOS CI（OpenSSL 4.1.0）上尾随字节一项失败：OpenSSL 4 在握手时解码附带的响应并返回重新编码的副本，尾随字节到不了客户端。该断言改为按版本区分，OpenSSL 3 仍要求 `ERR_TLS`；设计文档已说明。
 - 仍缺：主动查询 OCSP responder、NTLM、https 代理、HTTP/2，发布二进制仍没有链接 `break_http`。
+
+### 2026-11-17 物理：增量修正包
+- `engine/src/physics/physics_sync.{h,c}`：`physics_sync_encode_delta`、`physics_sync_delta_ticks`、`physics_sync_decode_delta`、`physics_sync_apply_delta`。28 字节头加 `(offset, len, bytes)` 区段；基线按目标长度零扩展或截断；不超过 8 字节的未变化间隙并入相邻区段。
+- `test_physics_sync` 新增 4 项（共 10）：区段布局与间隙合并边界、相同输入只有头部、容量不足不写缓冲区；目标增长和缩短；14 种畸形包（magic、短头、基线校验、目标校验、容量、空区段、重叠、乱序、越界、u32 回绕、截断区段头和截断数据）；分歧世界通过增量包恢复，包比完整修正包小，失败时世界、tracker 和 tick 不变。
+- 先 RED（编译失败，接口不存在）后 GREEN；26 项变异首轮 5 项存活：间隙合并阈值的两个方向、基线中段字节的校验、64 位偏移相加、apply 后重置 tracker，补充断言后全部被捕获。基线字节数比较与基线校验和重复，已删除。影子变量检查通过（rc=0）。
+- 仍缺：core_app 接入（每个对端的基线、增量或完整包的选择）、并行 solver、跨平台确定性。

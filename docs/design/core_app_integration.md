@@ -1461,3 +1461,16 @@ mount 清空、commit 分类和第二次 completion 等待分别做了独立生�
 补充（2026-11-17）：多个对端的自动对齐。`trace_merge --clock-offset SERVER_TRACE SERVER.json --session N PEER.json [--session M PEER2.json ...]`：`--session` 只作用于下一个输入，第 1 个输入是服务端，不能带 `--session`；一旦使用，其余每个输入都必须带，且必须与 `--clock-offset` 同用；不带 `--session` 时保持原来的两输入用法。每个对端的偏移由 `break_trace_core_app_clock_offset_for_session` 读取：只统计 `session=` 为规范十进制（无符号、无前导零、不超过 u64）且等于 N 的 `network_clock_offset` 行，其他会话的行（即使格式错误）被忽略；时钟行缺少规范 `session` 时返回 MALFORMED，同一会话多行返回 AMBIGUOUS。平移量由 `clock_offset_merge_shifts_many`（`core/clock_offset.h`）计算：offset_i 为对端 i 减服务端，base = max(0, max offset_i)，服务端平移 base，对端 i 平移 base − offset_i，全部非负且放在同一时间轴上；单个对端时与 `clock_offset_merge_shifts` 结果相同。stdout 对每个对端打印 `trace_merge: clock offset session=N offset_us=... error_us=...`，失败信息带 `for session N`。见 `docs/superpowers/plans/2026-11-17-trace-merge-multi-peer.md`。
 
 `core_app --trace-json PATH`（需同时给出 `--trace`）在运行结束后调用上述转换并写出 JSON；写入失败时退出码为 2。
+
+## 补充（2026-11-17）：物理增量修正包
+
+`physics_sync` 新增增量修正包（magic `0x444e5350`，"PSND"）。完整修正包每次都带整个 `physics_snapshot_save` 负载；增量包只带相对一个双方都持有的基线快照发生变化的字节。
+
+- 头部 28 字节：tick、基线 tick、基线字节数、基线 FNV-1a 32、目标字节数、目标 FNV-1a 32。之后是若干区段 `(offset u32, len u32, bytes)`。
+- 基线按目标长度零扩展或截断，所以 body 数量变化时也能编码；目标只增长时，新增部分的零字节不需要发送。
+- 编码端把不超过 8 字节（一个区段头的大小）的未变化间隙并入相邻区段，避免区段头开销超过它节省的字节。
+- `physics_sync_delta_ticks` 只读两个 tick，接收方据此选择基线。
+- `physics_sync_decode_delta` 依次校验 magic、基线校验和、目标容量、每个区段（非空、升序、不重叠、在目标范围内、不越过包尾，偏移和长度按 64 位相加防止回绕），最后校验重建结果的校验和。基线字节数字段只作说明，长度不同的基线校验和必然不同。
+- `physics_sync_apply_delta` 在调用方提供的 scratch 缓冲区里重建快照，校验通过并且 `physics_snapshot_restore` 成功后才重置 tracker；任何失败都不改世界、tracker 和 `*out_tick`，与完整修正包一致。
+
+core_app 还没有接入增量包：权威端需要为每个对端保存最近确认的基线，并决定发送增量还是完整包。这是下一个切片。

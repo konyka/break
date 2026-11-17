@@ -272,3 +272,4 @@
 - **第 10 节（音频）追加**：空间事件 voice 也可打开高度提示（`AudioEventDesc.elevation_cue`），高度提示覆盖 PCM 流与事件两类声源，「事件 voice 的高度提示」由此交付。仍缺：HRTF、麦克风采集、感知编码器（Opus 等）、音频编辑工具。
 - **第 15 节（在线更新）追加**：`break_http` 可回应代理的 Digest 质询（RFC 7616，MD5/SHA-256，qop=auth 或 RFC 2069 形式），在新连接上重发一次 CONNECT，「Digest 代理认证」由此交付。仍缺：NTLM、https 代理、OCSP、HTTP/2，发布二进制仍没有链接 `break_http`。
 - **第 15 节（在线更新）追加**：`break_http` 支持强制 OCSP stapling（`require_ocsp_staple`）：握手时请求证书状态，要求附带的响应由叶子的签发 CA 或其委托 responder 签名、状态为 good 且在有效期内，「OCSP」中的 stapling 部分由此交付。仍缺：主动查询 OCSP responder、NTLM、https 代理、HTTP/2，发布二进制仍没有链接 `break_http`。
+- **第 9 节（物理）追加**：`physics_sync` 提供增量修正包（"PSND"，相对双方已持有的基线快照只发送变化的字节区段，接收端在临时缓冲区重建并校验后原子恢复），「增量同步」的编解码部分由此交付。仍缺：core_app 保存每个对端的基线并选择增量或完整包、core_app 运行时作为客户端应用修正、并行 solver、跨平台确定性。
