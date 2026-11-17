@@ -11731,3 +11731,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `test_audio_drift_estimator` 5 项：配置/初始状态、非均匀时间的 +50 ppm、拒绝/退化/超限、四环 reset、巨大 u64 基准的 -40 ppm。另有手算非共线最小二乘参考和不同斜率的淘汰样本。数值断言全部拒绝 NaN；门限相等边界也有覆盖。先 RED（6 个公开符号）后 GREEN。
 - 环测试发现真实 bug：回绕后 frames[0] 不是最旧帧，无符号差导致错误 ppm；改为 frames[pos] 后通过。25/26 定向变异被捕获，唯一存活是严格递增输入下不可达的零分母防御检查。ASan+UBSan、严格告警与命名检查通过。
 - 仍缺：重采样补偿器、tracker/GCC-PHAT 自动接线、抗离群点回归、真实设备验证。本模块不使用墙钟，也不直接修改音频。
+
+
+### 2026-11-18 音频：时钟漂移重采样补偿器
+- 新增 `audio_drift_resampler`：单声道流式线性插值，比率是每输出帧消耗的输入帧数（0.1..10）；绝对输入/输出位置支持任意分块与动态调比率。无分配，reset 保留当前比率。
+- 输出容量预检在任何状态修改前完成，返回实际输出数；输入/输出不得重叠。提供 ratio 与 output_capacity 访问。
+- `test_audio_drift_resampler` 6 项：配置/NULL/容量、恒等/抽取、半位置上采样/分块、运行中 0.5→2.0 手算切换、已有流状态的容量失败原子性/reset、真实 50 ppm 估计驱动比率（16 输入产生 15 输出）。配置原子性逐字段比较，不依赖结构 padding。先 RED（6 个公开符号）后 GREEN。
+- 21/26 定向变异被捕获。5 个存活项：范围比较已拒绝 NaN/Inf；容量余量与溢出/fraction 限制是防御检查；reset 的 previous 在 fresh 序列中权重为零。非零输入 NULL 和容量溢出已补直接测试。ASan+UBSan、严格告警通过。
+- 仍缺：sinc 质量模式、多声道、自动闭环控制、真实设备验证。比率符号由调用者按管线选择。

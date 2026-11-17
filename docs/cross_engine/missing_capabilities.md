@@ -302,3 +302,5 @@
 - **第 10 节（音频）追加**：2026-11-18 新增 `audio_gcc_phat`：使用现有实数 FFT 实现 GCC-PHAT 延迟估计，支持带符号 raw peak、整数端点与亚帧抛物线细化；只有 create 分配。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「GCC-PHAT/频域加速」的独立频域能力由此交付。仍缺：与 tracker 的自动接线、时钟漂移补偿、多声道、归一化置信度与真实声学验证。
 
 - **第 10 节（音频）追加**：2026-11-18 新增 `audio_drift_estimator`，对置信度门控的延迟样本做有界滑窗线性回归，输出相对时钟漂移 ppm 和平均相关性；严格递增帧号与相对索引避免大基准和环回绕误差。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「时钟漂移估计」。「时钟漂移估计」由此交付，但「重采样补偿」仍未实现。仍缺：补偿器、自动接线、抗离群点回归与真实设备验证。
+
+- **第 10 节（音频）追加**：2026-11-18 新增 `audio_drift_resampler`，用可调输入/输出比率的流式线性插值补偿时钟漂移，支持任意分块、容量失败原子性和实际输出计数；真实估计器的 50 ppm 结果可直接设置比率。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「时钟漂移补偿」。上文「重采样补偿器」由此交付。仍缺：sinc 质量模式、多声道、自动闭环控制与真实设备验证。
