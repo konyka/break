@@ -121,12 +121,37 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 
 倾斜量与 pan、后方系数走同一协议：START 命令携带初始值（`spatial_tilt`）而不写 `tilt_snapshot`；之后的 `audio_voice_set_position` 与监听者更新先写 `tilt_snapshot = (revision, s)`，再 CAS 增益快照；混音回调采用增益 revision R 时，只有 `tilt_snapshot` 的 revision 也是 R 才采用其中的值，所以 RESTART 后的新倾斜量不会作用到旧 epoch 仍在播放的 PCM。没有打开提示的事件发布的值恒为 0，因此混音器不再单独检查开关。每个 voice 两声道各有低通状态，消费 START 时清零，低通始终运行；倾斜位于后方提示之后、耳间时差之前，与流相同。
 
+## HRTF
+
+`engine/src/audio/audio_hrtf.{h,c}` 是独立模块，目前还没有接入 PCM 流和事件 voice（下一步）。方向用方位角（度，0 为正前方，向右为正，[-180, 180]）和仰角（度，向上为正，[-90, 90]）表示，单位向量为 `(cos el·sin az, sin el, cos el·cos az)`。
+
+- `AudioHrtfSet`：1..2048 个方向，每耳 1..128 个 tap，采样率 8000..192000。创建方式有三种：`audio_hrtf_set_create` 复制调用者的数组；`audio_hrtf_set_parse` 读取 `BHRT` 文件；`audio_hrtf_set_create_spherical_head` 生成内置结构模型。参数非法、角度或样本非有限或越界（|样本| > 4）、两个方向的单位向量各分量相差都不超过 1e-6 时返回 `AUDIO_INVALID`；内存不足返回 `AUDIO_OVERLOAD`。只有成功时才写 `*out`。
+- `audio_hrtf_set_nearest`：返回点积最大的方向，相同时取较小下标；角度越界、非有限或 set 为 NULL 返回 `UINT32_MAX`。
+- `BHRT` v1（小端）：u32 magic `BHRT`、u32 版本 1、u32 采样率、u32 taps、u32 count，然后每个方向依次为 f32 方位角、f32 仰角、taps 个 f32 左耳样本、taps 个 f32 右耳样本。文件大小必须恰好等于 `20 + count × (8 + 8 × taps)`，各字段遵守 create 的规则。
+- 球头模型（Brown 与 Duda，1998）：头半径 0.0875 m，声速 343 m/s。共 217 个方向：仰角 -45..75、方位角 -165..180，均以 15 度为步长，另加正上方一个。每只耳朵的处理如下：
+  - θ 为声源与耳轴的夹角，延迟按 Woodworth 公式计算后取整到帧；
+  - 头影为一极一零滤波器，`α(θ) = 1.05 + 0.95·cos(θ·180/150)`，经双线性变换离散化，Nyquist 处增益为 α(θ)；
+  - 五个耳廓回声，延迟依赖方位角与仰角，分数延迟用线性插值；
+  - 最后按全集峰值归一化。
+  右耳由镜像方位角的左耳得到，所以镜像方向的左右耳逐位互换；正前方与正后方两耳逐位相同。
+- `AudioHrtfRenderer`：由调用者持有，`process` 不分配内存、不加锁。历史缓冲每个样本写两次（`cursor` 与 `cursor + taps`），因此卷积总能读到一段连续窗口。第一次 `process` 之前设置的方向立即生效。之后换方向时，在 `AUDIO_HRTF_FADE_FRAMES`（64）帧内对新旧两个滤波器的输出做线性交叉淡化，淡化第 i 帧新输出的权重为 i/64，最后一帧完全是新滤波器的输出。淡化进行中的修改要等这次淡化结束，下一帧开始新的淡化；与当前滤波器相同的方向不会触发淡化。
+
 ## 验证与限制
 
 - `test_audio_extended`：clip/容量、并发/重触发、stale handle、真实 DSP 接线、逐样本交叉淡化、loop/停止、遮挡/距离、bus/master、legacy WAV、bit-exact fake 和 null 命令生命周期。
 - `test_audio_dsp`：手算滤波阶跃、延迟 tap/feedback、混响早期 taps、filter+delay 组合和失败原子。
 - normal、ASan+UBSan、TSan 的 `test_audio`/`test_audio_extended`/`test_audio_dsp`/`test_audio_realtime_contract` 均通过。
 - 降采样低通由 `test_audio_extended` 中的双精度参考模型（96 kHz、88.2 kHz）、Nyquist 音、30 kHz / 1 kHz 正弦、立体声分离和重开复位覆盖；`test_voice_playback` 在 96 kHz 下跑生产者/关闭/混音线程竞争。
+- `test_audio_hrtf`（8 项）覆盖以下内容：
+  - 渲染器与双精度直接卷积对比，包括不等长的分块调用；
+  - 交叉淡化与淡化中的修改；
+  - 首次方向与重复方向；
+  - 最近方向：±180 回绕、正上方、相同时的下标规则；
+  - create 与 parse 的每种拒绝情况、`BHRT` 往返、每个截断长度和字段损坏；
+  - 2048 个方向的上限；
+  - 球头模型：对称性与镜像、Woodworth 双耳时差（误差 1 帧以内）、远耳的高低频能量比、各方向直流和一致、Nyquist 增益等于 α 之比、仰角差异。
+
+  45 项变异中有 44 项被测试捕获。存活的“正后方复制”是等价变异：sin(π) 的舍入误差不足以改变 lrint 和滤波结果。HRTF 尚未接入混音器。
 - sinc 重采样由双精度 Lanczos 参考模型（16 kHz、88.2 kHz 经低通、24 kHz 立体声）、前瞻等待、高频正弦误差、引擎采样率不变、模式切换的历史和重开复位覆盖。
 - 后方提示由阶跃响应参考模型（PCM 流正后方与 45°、事件正后方）、前方/侧面/重合逐位不变、监听者转身、RESTART 与 revision 门控、立体声状态分离和重开复位覆盖。
 - 没有真实听测、真实声卡、Windows 或 macOS 验证。简单 DSP/混响不等于物理声学或听感验收。

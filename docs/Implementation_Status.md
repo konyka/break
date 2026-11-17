@@ -11600,3 +11600,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 先 RED（编译失败，接口不存在）后 GREEN。17 项变异首轮 4 项存活，补测试后 2 项被捕获；“条目表超出文件”只在 ASan 下变红，“条目数为 0”为等价变异。影子变量检查通过（rc=0）。
 - 仍缺：生产部署的收集服务、minidump、Windows 符号化、arm64 帧展开。
 
+
+### 2026-11-17 音频：HRTF 集合与双耳渲染器
+- `engine/src/audio/audio_hrtf.{h,c}`：
+  - `AudioHrtfSet`：create、parse（`BHRT` v1）、create_spherical_head（Brown–Duda，217 个方向）、nearest 和各访问函数；
+  - `AudioHrtfRenderer`：init、set_direction、process。镜像历史缓冲，64 帧线性交叉淡化，淡化中的修改等本次结束后再生效。
+- 测试：新增 `test_audio_hrtf`，共 8 项，标签为 headless 和 audio。
+- 先 RED（实现文件为空，编译失败），后 GREEN。45 项变异中 44 项被捕获，存活的“正后方复制”是等价变异，见设计文档。首轮有 9 项存活，处理方式如下：
+  - 补测试：2048 方向上限、正上方方向、正后方对称、各方向直流和一致、Nyquist 增益等于 α 之比、init 指向正前方；
+  - 删除冗余代码：多余的 isfinite 判断，以及重复方向的空分支。
+- 影子变量检查通过（rc=0）。
+- 仍缺：接入 PCM 流和事件 voice。
