@@ -212,6 +212,73 @@ TEST(the_null_device_delivers_silent_frames_in_real_time)
     audio_capture_destroy(capture);
 }
 
+TEST(input_devices_are_listed_and_opened_by_name)
+{
+    AudioDeviceInfo devices[4];
+    char name[128];
+    memset(devices, 0xAB, sizeof(devices));
+    ASSERT_EQ(audio_capture_list_devices(AUDIO_BACKEND_NULL, devices, 4u), 1u);
+    ASSERT_STR_EQ(devices[0].name, "NULL Capture Device");
+    ASSERT_STR_EQ(devices[0].id, "0");
+    ASSERT_TRUE(devices[0].is_default);
+    /* capacity 0: only the count; untouched entries */
+    memset(devices, 0xAB, sizeof(devices));
+    ASSERT_EQ(audio_capture_list_devices(AUDIO_BACKEND_NULL, NULL, 0u), 1u);
+    ASSERT_EQ(audio_capture_list_devices(AUDIO_BACKEND_NULL, devices, 0u), 1u);
+    ASSERT_EQ((u8)devices[0].name[0], 0xABu);
+    ASSERT_EQ(audio_capture_list_devices(AUDIO_BACKEND_FAKE, devices, 4u), 0u);
+    ASSERT_EQ(audio_capture_list_devices((AudioBackend)(AUDIO_BACKEND_FAKE + 1), devices, 4u),
+              0u);
+    ASSERT_EQ(audio_capture_list_devices(AUDIO_BACKEND_NULL, NULL, 4u), 0u);
+
+    AudioCaptureConfig config = fake_config(1u, 1u << 15);
+    AudioCapture *sentinel = (AudioCapture *)&sentinel;
+    AudioCapture *capture = sentinel;
+    config.backend = AUDIO_BACKEND_NULL;
+    ASSERT_EQ(audio_capture_create_named(&config, "no such microphone", &capture),
+              AUDIO_REJECTED);
+    ASSERT_TRUE(capture == sentinel);
+    ASSERT_EQ(audio_capture_create_named(&config, "NULL Capture Device", &capture), AUDIO_OK);
+    ASSERT_TRUE(audio_capture_device_name(capture, name, sizeof(name)));
+    ASSERT_STR_EQ(name, "NULL Capture Device");
+    /* the named device captures */
+    ASSERT_EQ(audio_capture_start(capture), AUDIO_OK);
+    {
+        u32 got = 0u;
+        for (u32 tries = 0; tries < 200u && got == 0u; ++tries) {
+            i16 out[256];
+            ASSERT_EQ(audio_capture_read_i16(capture, out, 256u, &got), AUDIO_OK);
+            if (got == 0u) sleep_ms(10u);
+        }
+        ASSERT_TRUE(got > 0u);
+    }
+    audio_capture_destroy(capture);
+    /* empty and NULL names open the default */
+    ASSERT_EQ(audio_capture_create_named(&config, "", &capture), AUDIO_OK);
+    ASSERT_TRUE(audio_capture_device_name(capture, name, sizeof(name)));
+    ASSERT_STR_EQ(name, "NULL Capture Device");
+    audio_capture_destroy(capture);
+    ASSERT_EQ(audio_capture_create_named(&config, NULL, &capture), AUDIO_OK);
+    audio_capture_destroy(capture);
+
+    config = fake_config(1u, 8u);
+    capture = sentinel;
+    ASSERT_EQ(audio_capture_create_named(&config, "NULL Capture Device", &capture),
+              AUDIO_REJECTED);
+    ASSERT_TRUE(capture == sentinel);
+    ASSERT_EQ(audio_capture_create_named(&config, NULL, &capture), AUDIO_OK);
+    ASSERT_TRUE(audio_capture_device_name(capture, name, sizeof(name)));
+    ASSERT_STR_EQ(name, "fake");
+    /* a short buffer truncates */
+    ASSERT_TRUE(audio_capture_device_name(capture, name, 3u));
+    ASSERT_STR_EQ(name, "fa");
+    audio_capture_destroy(capture);
+    name[0] = 'x';
+    ASSERT_FALSE(audio_capture_device_name(NULL, name, sizeof(name)));
+    ASSERT_STR_EQ(name, "");
+    ASSERT_EQ(audio_capture_create_named(NULL, NULL, &capture), AUDIO_INVALID);
+}
+
 #define THREAD_FRAMES 20000u
 
 typedef struct {
@@ -266,5 +333,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_full_ring_keeps_the_oldest_frames_and_counts_the_rest);
     RUN_TEST(start_and_stop_are_idempotent_and_gate_injection);
     RUN_TEST(the_null_device_delivers_silent_frames_in_real_time);
+    RUN_TEST(input_devices_are_listed_and_opened_by_name);
     RUN_TEST(a_producer_thread_and_the_reader_lose_nothing);
 TEST_MAIN_END()

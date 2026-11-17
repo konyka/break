@@ -163,7 +163,9 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `audio_capture_start` / `stop` 幂等；`destroy` 先停止正在运行的设备（`ma_device_uninit` 等待回调结束）。停止前采到的帧仍可读取。
 - 转换：非有限值记为 0，其余限制在 [-1, 1] 后按 `lrintf(x × 32767)` 取整。
 - 环形缓冲：生产者（设备回调，FAKE 时为注入线程）持有 `head`，读取者持有 `tail`，均为自由增长的 u32，用 release/acquire 发布。缓冲满时丢弃最新的帧并计入 `audio_capture_overruns`。回调不阻塞、不分配、不写日志，并纳入 `test_audio_realtime_contract`。
-- 未做：采集端的采样率转换（以设备采样率交付）、回声消除、降噪、自动增益、设备热插拔与选择指定输入设备。
+- 输入设备选择：`audio_capture_list_devices(backend, out, capacity)` 列出输入设备（名称、序号 id、是否默认），返回设备总数，可能大于 capacity；FAKE 或枚举失败返回 0。`audio_capture_create_named(config, name, out)` 按名称打开设备，NULL 或空名称打开默认设备；没有该名称的设备或 FAKE 带名称时返回 `AUDIO_REJECTED`。设备 id 指向枚举它的 context，所以每个采集对象持有自己的 context，与设备一起释放。`audio_capture_device_name` 返回实际打开的设备名（FAKE 为 "fake"），超长时截断。
+- 帧以配置的采样率与声道数交付：设备原生格式不同时由 miniaudio 的内置转换完成。
+- 未做：回声消除、降噪、自动增益、设备热插拔。
 
 
 - `test_audio_extended`：clip/容量、并发/重触发、stale handle、真实 DSP 接线、逐样本交叉淡化、loop/停止、遮挡/距离、bus/master、legacy WAV、bit-exact fake 和 null 命令生命周期。
@@ -185,5 +187,5 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `test_audio_extended` 的事件 HRTF 测试（5 项）：注册要求 spatial 与引擎采样率；单声道右方事件等于直接卷积乘距离增益，同时打开的其他提示不起作用；立体声 clip 取平均，`audio_voice_set_position` 与监听者转身更新下标；移动声源与参考渲染器逐位一致；RESTART 重触发从空历史开始。11 项变异全部被捕获。
 - sinc 重采样由双精度 Lanczos 参考模型（16 kHz、88.2 kHz 经低通、24 kHz 立体声）、前瞻等待、高频正弦误差、引擎采样率不变、模式切换的历史和重开复位覆盖。
 - 后方提示由阶跃响应参考模型（PCM 流正后方与 45°、事件正后方）、前方/侧面/重合逐位不变、监听者转身、RESTART 与 revision 门控、立体声状态分离和重开复位覆盖。
-- `test_audio_capture`（7 项）：配置校验与 `*out` 不变、转换（取整、限幅、NaN/Inf）、顺序与部分读取、立体声跨缓冲末尾回绕、缓冲满时保留最旧的帧并计数、启停幂等与注入门控、空设备实时交付静音帧（两轮启停、运行中销毁）、生产者线程与读取者不丢帧且有序。20 项变异全部被捕获；TSan、ASan+UBSan 通过。
+- `test_audio_capture`（8 项）：设备列表（空设备、容量 0、FAKE、非法参数）、按名称打开与默认名称、未知名称与 FAKE 带名称被拒绝、设备名截断（13 项变异全部被捕获）；配置校验与 `*out` 不变、转换（取整、限幅、NaN/Inf）、顺序与部分读取、立体声跨缓冲末尾回绕、缓冲满时保留最旧的帧并计数、启停幂等与注入门控、空设备实时交付静音帧（两轮启停、运行中销毁）、生产者线程与读取者不丢帧且有序。20 项变异全部被捕获；TSan、ASan+UBSan 通过。
 - 没有真实听测、真实声卡、Windows 或 macOS 验证。 采集没有用真实麦克风验证。简单 DSP/混响不等于物理声学或听感验收。

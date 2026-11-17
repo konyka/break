@@ -11636,4 +11636,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `engine/src/audio/audio_capture.{h,c}`：输入设备（DEFAULT / NULL / FAKE）到 16 位 SPSC 环形缓冲；create、destroy、start、stop、running、read_i16、available、overruns，FAKE 下的 inject。
 - 构建：`engine` 静态库加入 `audio_capture.c`；新增 `test_audio_capture`（headless、audio 标签）；`test_audio_realtime_contract` 新增 `-DAUDIO_CAPTURE` 并检查采集回调（临时插入 malloc 时契约失败）。
 - 测试：`test_audio_capture` 7 项。先 RED（链接失败，函数不存在）后 GREEN。20 项变异全部被捕获；TSan、ASan+UBSan 通过，影子变量检查通过。
-- 仍缺：采集端采样率转换、回声消除、降噪、自动增益、指定输入设备与热插拔、真实麦克风验证；感知编码器（Opus 等）、音频编辑工具。
+- 帧以配置的采样率交付（设备原生格式不同时由 miniaudio 转换）。
+- 仍缺：回声消除、降噪、自动增益、指定输入设备与热插拔、真实麦克风验证；感知编码器（Opus 等）、音频编辑工具。
+
+### 2026-11-17 音频：指定输入设备
+- `audio_capture_list_devices`、`audio_capture_create_named`、`audio_capture_device_name`：按名称选择输入设备，查询实际打开的设备名。每个采集对象持有自己的 miniaudio context（设备 id 依赖枚举它的 context）。
+- 测试：`test_audio_capture` 新增 1 项（共 8）。先 RED（链接失败）后 GREEN；13 项变异全部被捕获；TSan、ASan+UBSan、影子变量检查通过。在本机（PipeWire）上列出了 2 个真实输入设备，默认标记正确。
+- 文档更正：采集帧以配置的采样率交付，设备原生格式不同时由 miniaudio 转换，上一条「采集端采样率转换」不是缺口。
+- 仍缺：回声消除、降噪、自动增益、设备热插拔、真实麦克风录音验证。

@@ -41,6 +41,24 @@ u32 audio_capture_available(const AudioCapture *capture);
 /* Frames dropped because the ring was full (the newest ones are dropped). */
 u64 audio_capture_overruns(const AudioCapture *capture);
 
+/* Input devices of a backend: DEFAULT the system's, NULL miniaudio's null
+ * device ("NULL Capture Device"), FAKE none. Writes up to `capacity`
+ * entries (id is the index as decimal text, the order of a later call with
+ * the same backend) and returns how many devices exist, which may exceed
+ * capacity; 0 when the backend cannot be enumerated. `out` may be NULL
+ * when capacity is 0. */
+u32 audio_capture_list_devices(AudioBackend backend, AudioDeviceInfo *out, u32 capacity);
+
+/* Like audio_capture_create, opening the input device with the given name
+ * (as audio_capture_list_devices reports it) instead of the default. NULL or
+ * an empty name opens the default. REJECTED for a FAKE backend with a name
+ * or a name no device has; *out is written only on success. */
+AudioResult audio_capture_create_named(const AudioCaptureConfig *config, const char *device_name,
+                                       AudioCapture **out);
+/* The name of the opened device into out ("fake" for FAKE). False and ""
+ * (when out has room) for a NULL capture or a device without a name. */
+bool audio_capture_device_name(const AudioCapture *capture, char *out, usize capacity);
+
 /* FAKE only: writes `frames` interleaved f32 frames through the same path
  * as the device callback (non-finite samples become 0, the rest are
  * clamped to [-1, 1] and rounded to i16 by x * 32767). REJECTED for another

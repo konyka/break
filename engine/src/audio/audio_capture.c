@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,6 +29,7 @@ struct AudioCapture {
     atomic_bool running;
     bool context_ready;
     bool device_ready;
+    char device_name[128];
     ma_context context;
     ma_device device;
 };
@@ -67,9 +69,58 @@ static void capture_data_callback(ma_device *device, void *output, const void *i
     if (input) capture_write(capture, (const f32 *)input, (u32)frames);
 }
 
+/* Copies a NUL-terminated name into dst, truncated to fit. */
+static void capture_copy_name(char *dst, usize capacity, const char *src) {
+    usize n = strlen(src);
+    if (n >= capacity) n = capacity - 1u;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
+static bool capture_backend_valid(AudioBackend backend) {
+    return backend >= AUDIO_BACKEND_DEFAULT && backend <= AUDIO_BACKEND_FAKE;
+}
+
+/* A context for a device backend: NULL selects miniaudio's null backend. */
+static ma_result capture_context_init(AudioBackend backend, ma_context *context) {
+    if (backend == AUDIO_BACKEND_NULL) {
+        ma_backend null_backend = ma_backend_null;
+        return ma_context_init(&null_backend, 1, NULL, context);
+    }
+    return ma_context_init(NULL, 0, NULL, context);
+}
+
+u32 audio_capture_list_devices(AudioBackend backend, AudioDeviceInfo *out, u32 capacity) {
+    if (!capture_backend_valid(backend) || backend == AUDIO_BACKEND_FAKE ||
+        (!out && capacity > 0u)) {
+        return 0u;
+    }
+    ma_context context;
+    if (capture_context_init(backend, &context) != MA_SUCCESS) return 0u;
+    ma_device_info *infos = NULL;
+    ma_uint32 count = 0;
+    if (ma_context_get_devices(&context, NULL, NULL, &infos, &count) != MA_SUCCESS) {
+        ma_context_uninit(&context);
+        return 0u;
+    }
+    for (u32 i = 0; i < count && i < capacity; ++i) {
+        memset(&out[i], 0, sizeof(out[i]));
+        capture_copy_name(out[i].name, sizeof(out[i].name), infos[i].name);
+        snprintf(out[i].id, sizeof(out[i].id), "%u", i);
+        out[i].is_default = infos[i].isDefault != 0;
+    }
+    ma_context_uninit(&context);
+    return (u32)count;
+}
+
 AudioResult audio_capture_create(const AudioCaptureConfig *config, AudioCapture **out) {
-    if (!config || !out || config->backend < AUDIO_BACKEND_DEFAULT ||
-        config->backend > AUDIO_BACKEND_FAKE ||
+    return audio_capture_create_named(config, NULL, out);
+}
+
+AudioResult audio_capture_create_named(const AudioCaptureConfig *config, const char *device_name,
+                                       AudioCapture **out) {
+    bool named = device_name && device_name[0] != '\0';
+    if (!config || !out || !capture_backend_valid(config->backend) ||
         config->sample_rate < AUDIO_CAPTURE_MIN_RATE ||
         config->sample_rate > AUDIO_CAPTURE_MAX_RATE ||
         (config->channels != 1u && config->channels != 2u) || config->ring_frames == 0u ||
@@ -77,6 +128,7 @@ AudioResult audio_capture_create(const AudioCaptureConfig *config, AudioCapture 
         (config->ring_frames & (config->ring_frames - 1u)) != 0u) {
         return AUDIO_INVALID;
     }
+    if (named && config->backend == AUDIO_BACKEND_FAKE) return AUDIO_REJECTED;
     AudioCapture *capture = (AudioCapture *)calloc(1, sizeof(*capture));
     if (!capture) return AUDIO_OVERLOAD;
     capture->ring = (i16 *)calloc((usize)config->ring_frames * config->channels, sizeof(i16));
@@ -91,28 +143,52 @@ AudioResult audio_capture_create(const AudioCaptureConfig *config, AudioCapture 
     atomic_init(&capture->tail, 0u);
     atomic_init(&capture->overruns, 0u);
     atomic_init(&capture->running, false);
-    if (config->backend != AUDIO_BACKEND_FAKE) {
-        ma_context *context = NULL;
-        if (config->backend == AUDIO_BACKEND_NULL) {
-            ma_backend null_backend = ma_backend_null;
-            if (ma_context_init(&null_backend, 1, NULL, &capture->context) != MA_SUCCESS) {
-                audio_capture_destroy(capture);
-                return AUDIO_FAILED;
+    if (config->backend == AUDIO_BACKEND_FAKE) {
+        capture_copy_name(capture->device_name, sizeof(capture->device_name), "fake");
+    } else {
+        /* the context lives as long as the device: a device id points into
+         * the context's enumeration */
+        if (capture_context_init(config->backend, &capture->context) != MA_SUCCESS) {
+            audio_capture_destroy(capture);
+            return AUDIO_FAILED;
+        }
+        capture->context_ready = true;
+        ma_device_id chosen;
+        bool found = false;
+        if (named) {
+            ma_device_info *infos = NULL;
+            ma_uint32 count = 0;
+            if (ma_context_get_devices(&capture->context, NULL, NULL, &infos, &count) ==
+                MA_SUCCESS) {
+                for (ma_uint32 i = 0; i < count && !found; ++i) {
+                    if (strcmp(infos[i].name, device_name) == 0) {
+                        chosen = infos[i].id;
+                        found = true;
+                    }
+                }
             }
-            capture->context_ready = true;
-            context = &capture->context;
+            if (!found) {
+                audio_capture_destroy(capture);
+                return AUDIO_REJECTED;
+            }
         }
         ma_device_config device_config = ma_device_config_init(ma_device_type_capture);
+        device_config.capture.pDeviceID = found ? &chosen : NULL;
         device_config.capture.format = ma_format_f32;
         device_config.capture.channels = config->channels;
         device_config.sampleRate = config->sample_rate;
         device_config.dataCallback = capture_data_callback;
         device_config.pUserData = capture;
-        if (ma_device_init(context, &device_config, &capture->device) != MA_SUCCESS) {
+        if (ma_device_init(&capture->context, &device_config, &capture->device) != MA_SUCCESS) {
             audio_capture_destroy(capture);
             return AUDIO_FAILED;
         }
         capture->device_ready = true;
+        ma_device_info info;
+        memset(&info, 0, sizeof(info));
+        if (ma_device_get_info(&capture->device, ma_device_type_capture, &info) == MA_SUCCESS) {
+            capture_copy_name(capture->device_name, sizeof(capture->device_name), info.name);
+        }
     }
     *out = capture;
     return AUDIO_OK;
@@ -145,6 +221,14 @@ AudioResult audio_capture_stop(AudioCapture *capture) {
     }
     atomic_store_explicit(&capture->running, false, memory_order_release);
     return AUDIO_OK;
+}
+
+bool audio_capture_device_name(const AudioCapture *capture, char *out, usize capacity) {
+    if (!out || capacity == 0u) return false;
+    out[0] = '\0';
+    if (!capture || capture->device_name[0] == '\0') return false;
+    capture_copy_name(out, capacity, capture->device_name);
+    return true;
 }
 
 bool audio_capture_running(const AudioCapture *capture) {

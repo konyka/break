@@ -48,3 +48,11 @@ Add a capture module that opens an input device and hands the owner thread
 - `test_audio_capture` 7/7; the realtime contract covers the callback
   (fails with an injected malloc). Mutation: 20 of 20 killed. TSan and
   ASan+UBSan clean, shadow check clean.
+
+## Follow-up: choosing the input device
+
+- `audio_capture_list_devices`, `audio_capture_create_named`,
+  `audio_capture_device_name`. Each capture owns its context because a
+  device id points into the context that enumerated it.
+- `test_audio_capture` 8/8; 13 of 13 mutations killed; TSan, ASan+UBSan
+  clean. Lists the two real inputs of this machine.
