@@ -298,3 +298,5 @@
 - **第 10 节（音频）追加**：2026-11-18 `audio_delay_estimator_estimate_subframe` 以最佳绝对相关峰值的抛物线插值提供亚帧延迟，新增分数延迟线用线性插值对齐参考；旧整数接口与输出保持兼容。sinc 测试在 3.25/12.5/31.75 帧处误差小于 0.25 帧。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「亚帧精度」的基础能力由此交付。仍缺：延迟漂移跟踪、时钟漂移补偿、GCC-PHAT、延迟线 sinc 模式及真实声学验证。
 
 - **第 10 节（音频）追加**：2026-11-18 新增 `audio_delay_tracker`，在亚帧估计之上提供最小 |correlation| 门控、连续接受锁定、拒绝保持/解锁和按推送时间限制的双向延迟漂移。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。「按置信度自动跟踪延迟漂移」由此交付。仍缺：时钟漂移估计与重采样补偿、GCC-PHAT、自动更新调度及真实设备验证。
+
+- **第 10 节（音频）追加**：2026-11-18 新增 `audio_gcc_phat`：使用现有实数 FFT 实现 GCC-PHAT 延迟估计，支持带符号 raw peak、整数端点与亚帧抛物线细化；只有 create 分配。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「GCC-PHAT/频域加速」的独立频域能力由此交付。仍缺：与 tracker 的自动接线、时钟漂移补偿、多声道、归一化置信度与真实声学验证。
