@@ -11659,3 +11659,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 测试：`test_audio_noise_gate` 8 项。先 RED（链接失败）后 GREEN。30 项变异首轮存活 7 项：补了「底噪上升到电平而不越过」测试；不可达的分支（底噪下降的单独分支、增益不超过 1 时的 i16 限幅）合并删除。最终 27/30 被捕获，存活 3 项中两项等价，一项只在电平恰好相等时不同。ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
 - 「降噪」以时域噪声门交付。频谱降噪没有做，因为引擎没有 FFT。
 - 仍缺：回声消除、设备热插拔、频谱降噪、真实麦克风录音验证、感知编码器（Opus 等）、音频编辑工具。
+
+### 2026-11-17 音频：采集语音的回声消除
+- `engine/src/audio/audio_echo_canceller.{h,c}`：`audio_echo_canceller_create`、`_destroy`、`_reset`、`_process_i16`、`_weight`。NLMS 自适应滤波器（1..8192 tap）从播放参考学习扬声器到麦克风的路径并减去预测回声；窗口能量用 i16 平方和精确累加；Geigel 双讲检测加保持时间，双讲时冻结权重。
+- 构建：`engine` 静态库加入 `audio_echo_canceller.c`；新增 `test_audio_echo_canceller`（headless、audio 标签）。
+- 测试：`test_audio_echo_canceller` 8 项。先 RED（链接失败）后 GREEN。首次运行时双讲测试在 μ = 0.5 下信噪比只有 18 dB：检测要等近端声音超过阈值才触发，开口前几帧的更新使权重偏移；测试改用 μ = 0.1 并检查触发后权重完全冻结。35 项变异首轮存活 4 项：补了「阈值 0 仍学习」「越界读权重」「两端静音不触发保持」测试，双讲比较改为严格大于，删掉了从未读取的 i16 历史镜像。最终 34 项全部被捕获。ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
+- 「回声消除」由此交付。仍缺：参考与采集的自动对齐（延迟估计）、非线性残余回声抑制、频域快速实现、设备热插拔、频谱降噪、真实麦克风与扬声器验证、感知编码器（Opus 等）、音频编辑工具。
