@@ -6,11 +6,12 @@
  *
  *  Meant for the SERVER (or a developer machine): it reads symbol files from
  *  disk and is never linked into a shipped application binary. Every input is
- *  untrusted: the record comes from a client, and the ELF file is validated
- *  as hostile (all offsets and sizes bounds-checked, no allocation sized by an
- *  unchecked field, a corrupt file gives NULL, never a crash).
+ *  untrusted: the record comes from a client, and the symbol file is
+ *  validated as hostile (all offsets and sizes bounds-checked, no allocation
+ *  sized by an unchecked field, a corrupt file gives NULL, never a crash).
  *
- *  Scope: 64-bit little-endian ELF, x86-64 frames. The unwinder follows the
+ *  Scope: symbol files are 64-bit little-endian ELF or thin 64-bit Mach-O
+ *  (x86_64 / arm64); frames are x86-64. The unwinder follows the
  *  saved-RBP chain (frame-pointer code) through the record's stack window; it
  *  does NOT use DWARF CFI, so code compiled without frame pointers yields a
  *  short, possibly wrong chain, and every frame beyond the first is marked as
@@ -39,6 +40,22 @@ typedef struct BreakElfSymbols BreakElfSymbols;
 BreakElfSymbols *break_elf_symbols_open(const char *path);
 void break_elf_symbols_destroy(BreakElfSymbols *s); /* NULL is a no-op */
 u32 break_elf_symbols_count(const BreakElfSymbols *s);
+
+/* Reads the LC_SYMTAB of a thin 64-bit little-endian Mach-O file (x86_64 or
+ * arm64; MH_EXECUTE, MH_DYLIB, MH_BUNDLE or MH_DSYM) into the same table.
+ * Universal (fat), 32-bit and big-endian files are refused, as is any load
+ * command that is malformed or points outside the file. Kept symbols are
+ * section-defined, not stabs, inside a section that holds instructions;
+ * Mach-O stores no sizes, so a symbol ends at the next higher kept symbol or
+ * at the end of its section. Addresses are relative to the __TEXT segment's
+ * vmaddr (the image header's load address), one leading '_' is dropped from
+ * names, is_exec is false and the build id is the LC_UUID as 32 lowercase
+ * hex digits ("" when absent). */
+BreakElfSymbols *break_macho_symbols_open(const char *path);
+
+/* Opens an ELF or Mach-O symbol file, chosen by its magic; NULL otherwise.
+ * The symbol store uses this. */
+BreakElfSymbols *break_crash_symbols_open(const char *path);
 
 /* Finds the function symbol (STT_FUNC with a non-zero size, or STT_NOTYPE/
  * STT_GNU_IFUNC placed in an executable section) that CONTAINS the virtual
@@ -74,7 +91,7 @@ typedef struct BreakCrashFrame {
  * (load-offset <= pc < load-offset + size) and then the function in that
  * module's symbols. `symbol_root` is a directory laid out as
  * <root>/<build-id>/<module-basename> holding the unstripped binaries; the
- * build id is the RECORD's. Both path parts are validated (the build id
+ * build id is the RECORD's; each file may be ELF or Mach-O. Both path parts are validated (the build id
  * against the record grammar's charset, the module name as a basename) so a
  * hostile record cannot name a path outside the root. A module or symbol
  * that cannot be found leaves `resolved` false but still fills pc, module and

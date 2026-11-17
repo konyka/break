@@ -96,7 +96,7 @@ set(want
     break_elf_symbols_open break_elf_symbols_destroy break_elf_symbols_count break_elf_symbols_lookup
     break_elf_symbols_is_exec break_elf_symbols_build_id break_crash_symbol_store_open
     break_crash_symbol_store_destroy break_crash_symbol_store_lookup break_crash_symbolize_address
-    break_crash_symbolize_record)
+    break_crash_symbolize_record break_macho_symbols_open break_crash_symbols_open)
 list(SORT want)
 if(NOT got STREQUAL want)
     message(FATAL_ERROR "break_crash_symbolize exports differ.\n  actual: ${got}\n  expected: ${want}")

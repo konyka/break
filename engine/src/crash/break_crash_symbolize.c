@@ -76,47 +76,50 @@ static void read_build_id(const u8 *file, u64 size, const Elf64_Shdr *sh, char o
     (void)size;
 }
 
-BreakElfSymbols *break_elf_symbols_open(const char *path) {
-    BreakElfSymbols *s = NULL;
-    u8 *file = NULL;
+/* The whole regular file at `path`, when it holds between `min` bytes and
+ * SYM_MAX_FILE; the caller frees it. */
+static u8 *load_file(const char *path, u64 min, u64 *out_size) {
+    u8 *file;
     FILE *f;
     struct stat st;
     u64 size;
-    Elf64_Ehdr eh;
-    const Elf64_Shdr *sh;
-    int sym_idx = -1, dyn_idx = -1;
     if (path == NULL || path[0] == '\0') return NULL;
     f = fopen(path, "rb");
     if (f == NULL) return NULL;
-    if (fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < (off_t)sizeof(eh) ||
+    if (fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || (u64)st.st_size < min ||
         (u64)st.st_size > SYM_MAX_FILE) {
         fclose(f);
         return NULL;
     }
     size = (u64)st.st_size;
-    file = (u8 *)malloc((size_t)size);
+    file = (u8 *)malloc((size_t)(size ? size : 1u));
     if (file == NULL || fread(file, 1u, (size_t)size, f) != (size_t)size) {
         fclose(f);
         free(file);
         return NULL;
     }
     fclose(f);
+    *out_size = size;
+    return file;
+}
 
+static BreakElfSymbols *elf_from_bytes(const u8 *file, u64 size) {
+    BreakElfSymbols *s = NULL;
+    Elf64_Ehdr eh;
+    const Elf64_Shdr *sh;
+    int sym_idx = -1, dyn_idx = -1;
+    if (size < sizeof(eh)) return NULL;
     memcpy(&eh, file, sizeof(eh));
     if (memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 || eh.e_ident[EI_CLASS] != ELFCLASS64 ||
         eh.e_ident[EI_DATA] != ELFDATA2LSB || eh.e_ident[EI_VERSION] != EV_CURRENT ||
         eh.e_version != EV_CURRENT || eh.e_machine != EM_X86_64 ||
         eh.e_shentsize != sizeof(Elf64_Shdr) || eh.e_shnum == 0u || eh.e_shnum > SYM_MAX_SECTIONS ||
         !in_file(eh.e_shoff, (u64)eh.e_shnum * sizeof(Elf64_Shdr), size)) {
-        free(file);
         return NULL;
     }
     sh = (const Elf64_Shdr *)(const void *)(file + eh.e_shoff);
     s = (BreakElfSymbols *)calloc(1u, sizeof(*s));
-    if (s == NULL) {
-        free(file);
-        return NULL;
-    }
+    if (s == NULL) return NULL;
     s->is_exec = eh.e_type == ET_EXEC;
     for (unsigned i = 0; i < eh.e_shnum; i++) {
         if (sh[i].sh_type == SHT_NOBITS) continue;
@@ -169,13 +172,200 @@ BreakElfSymbols *break_elf_symbols_open(const char *path) {
             s->count = kept;
         }
     }
-    free(file);
     return s;
 
 fail:
-    free(file);
     break_elf_symbols_destroy(s);
     return NULL;
+}
+
+BreakElfSymbols *break_elf_symbols_open(const char *path) {
+    u64 size = 0;
+    u8 *file = load_file(path, sizeof(Elf64_Ehdr), &size);
+    BreakElfSymbols *s;
+    if (file == NULL) return NULL;
+    s = elf_from_bytes(file, size);
+    free(file);
+    return s;
+}
+
+/* ---------------------------------------------------------------------------
+ * Mach-O (thin, 64-bit, little-endian)
+ * ------------------------------------------------------------------------- */
+
+#define MO_MAGIC_64 0xfeedfacfu
+#define MO_CPU_X86_64 0x01000007u
+#define MO_CPU_ARM64 0x0100000cu
+#define MO_HEADER_SIZE 32u
+#define MO_MAX_CMDS 4096u
+#define MO_LC_SYMTAB 0x2u
+#define MO_LC_SEGMENT_64 0x19u
+#define MO_LC_UUID 0x1bu
+#define MO_SEGMENT_SIZE 72u
+#define MO_SECTION_SIZE 80u
+#define MO_NLIST_SIZE 16u
+#define MO_N_STAB 0xe0u
+#define MO_N_TYPE 0x0eu
+#define MO_N_SECT 0x0eu
+#define MO_CODE_FLAGS (0x80000000u | 0x400u) /* S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS */
+#define MO_MAX_SECT 255u                     /* n_sect is one byte */
+
+typedef struct {
+    u64 addr;
+    u64 size;
+    bool code;
+} MoSection;
+
+static u32 mo_rd32(const u8 *p) {
+    return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
+}
+
+static u64 mo_rd64(const u8 *p) {
+    return (u64)mo_rd32(p) | ((u64)mo_rd32(p + 4) << 32);
+}
+
+static bool mo_filetype_ok(u32 t) {
+    return t == 2u || t == 6u || t == 8u || t == 0xau; /* EXECUTE, DYLIB, BUNDLE, DSYM */
+}
+
+static BreakElfSymbols *macho_from_bytes(const u8 *file, u64 size) {
+    static const char hex[] = "0123456789abcdef";
+    BreakElfSymbols *s = NULL;
+    MoSection sects[MO_MAX_SECT + 1u]; /* 1-based, as n_sect counts them */
+    u32 nsect = 0, ncmds, cpu;
+    u64 cmds_end, at = MO_HEADER_SIZE, text_base = 0;
+    u64 symoff = 0, nsyms = 0, stroff = 0, strsize = 0;
+    bool have_text = false, have_symtab = false;
+    if (size < MO_HEADER_SIZE || mo_rd32(file) != MO_MAGIC_64) return NULL;
+    cpu = mo_rd32(file + 4);
+    if ((cpu != MO_CPU_X86_64 && cpu != MO_CPU_ARM64) || !mo_filetype_ok(mo_rd32(file + 12))) return NULL;
+    ncmds = mo_rd32(file + 16);
+    if (ncmds > MO_MAX_CMDS || !in_file(MO_HEADER_SIZE, mo_rd32(file + 20), size)) return NULL;
+    cmds_end = MO_HEADER_SIZE + (u64)mo_rd32(file + 20);
+    s = (BreakElfSymbols *)calloc(1u, sizeof(*s));
+    if (s == NULL) return NULL;
+    memset(sects, 0, sizeof(sects));
+    for (u32 i = 0; i < ncmds; i++) {
+        const u8 *c = file + at;
+        u32 cmd, cmdsize;
+        if (cmds_end - at < 8u) goto fail;
+        cmd = mo_rd32(c);
+        cmdsize = mo_rd32(c + 4);
+        if (cmdsize < 8u || cmdsize % 8u != 0u || cmdsize > cmds_end - at) goto fail;
+        if (cmd == MO_LC_SEGMENT_64) {
+            u32 n;
+            if (cmdsize < MO_SEGMENT_SIZE) goto fail;
+            n = mo_rd32(c + 64);
+            if ((u64)cmdsize != MO_SEGMENT_SIZE + (u64)MO_SECTION_SIZE * n) goto fail;
+            if (!have_text && memcmp(c + 8, "__TEXT\0", 7u) == 0) {
+                text_base = mo_rd64(c + 24);
+                have_text = true;
+            }
+            for (u32 k = 0; k < n; k++) {
+                const u8 *sc = c + MO_SEGMENT_SIZE + (u64)MO_SECTION_SIZE * k;
+                u64 addr = mo_rd64(sc + 32), len = mo_rd64(sc + 40);
+                if (addr > UINT64_MAX - len) goto fail;
+                if (nsect < MO_MAX_SECT) {
+                    nsect++;
+                    sects[nsect].addr = addr;
+                    sects[nsect].size = len;
+                    sects[nsect].code = (mo_rd32(sc + 64) & MO_CODE_FLAGS) != 0u;
+                }
+            }
+        } else if (cmd == MO_LC_SYMTAB) {
+            if (have_symtab || cmdsize != 24u) goto fail;
+            have_symtab = true;
+            symoff = mo_rd32(c + 8);
+            nsyms = mo_rd32(c + 12);
+            stroff = mo_rd32(c + 16);
+            strsize = mo_rd32(c + 20);
+            if (nsyms > SYM_MAX_SYMBOLS || !in_file(symoff, nsyms * MO_NLIST_SIZE, size) ||
+                !in_file(stroff, strsize, size)) {
+                goto fail;
+            }
+        } else if (cmd == MO_LC_UUID) {
+            if (cmdsize != 24u) goto fail;
+            for (u32 k = 0; k < 16u; k++) {
+                s->build_id[2u * k] = hex[c[8u + k] >> 4];
+                s->build_id[2u * k + 1u] = hex[c[8u + k] & 15u];
+            }
+            s->build_id[32] = '\0';
+        }
+        at += cmdsize;
+    }
+    if (!have_text) goto fail;
+    if (have_symtab) {
+        u32 kept = 0;
+        u64 next_addr = 0;
+        bool have_next = false;
+        s->strtab = (char *)malloc((size_t)strsize + 1u);
+        s->syms = (SymEntry *)malloc((size_t)(nsyms ? nsyms : 1u) * sizeof(SymEntry));
+        if (s->strtab == NULL || s->syms == NULL) goto fail;
+        memcpy(s->strtab, file + stroff, (size_t)strsize);
+        s->strtab[strsize] = '\0'; /* every name now ends inside the table */
+        s->strtab_size = strsize + 1u;
+        for (u64 i = 0; i < nsyms; i++) {
+            const u8 *e = file + symoff + MO_NLIST_SIZE * i;
+            u32 strx = mo_rd32(e);
+            u8 type = e[4], sect = e[5];
+            u64 value = mo_rd64(e + 8);
+            const MoSection *sc;
+            if ((type & MO_N_STAB) != 0u || (type & MO_N_TYPE) != MO_N_SECT) continue;
+            if (sect == 0u || sect > nsect) continue;
+            sc = &sects[sect];
+            if (!sc->code || value < sc->addr || value - sc->addr >= sc->size || value < text_base) continue;
+            if (strx == 0u || strx >= strsize || s->strtab[strx] == '\0') continue;
+            if (s->strtab[strx] == '_' && s->strtab[strx + 1u] != '\0') strx++;
+            s->syms[kept].addr = value;
+            s->syms[kept].size = sc->addr + sc->size; /* the section end, until the sizes are known */
+            s->syms[kept].name_off = strx;
+            kept++;
+        }
+        qsort(s->syms, kept, sizeof(SymEntry), sym_cmp);
+        /* no sizes in Mach-O: each symbol runs to the next higher address or its section end */
+        for (u32 i = kept; i-- > 0u;) {
+            u64 end = s->syms[i].size;
+            if (i + 1u < kept && s->syms[i + 1u].addr != s->syms[i].addr) {
+                next_addr = s->syms[i + 1u].addr;
+                have_next = true;
+            }
+            if (have_next && next_addr < end) end = next_addr;
+            s->syms[i].size = end - s->syms[i].addr;
+        }
+        for (u32 i = 0; i < kept; i++) {
+            s->syms[i].addr -= text_base;
+        }
+        s->count = kept;
+    }
+    return s;
+
+fail:
+    break_elf_symbols_destroy(s);
+    return NULL;
+}
+
+BreakElfSymbols *break_macho_symbols_open(const char *path) {
+    u64 size = 0;
+    u8 *file = load_file(path, MO_HEADER_SIZE, &size);
+    BreakElfSymbols *s;
+    if (file == NULL) return NULL;
+    s = macho_from_bytes(file, size);
+    free(file);
+    return s;
+}
+
+BreakElfSymbols *break_crash_symbols_open(const char *path) {
+    u64 size = 0;
+    u8 *file = load_file(path, 4u, &size);
+    BreakElfSymbols *s = NULL;
+    if (file == NULL) return NULL;
+    if (memcmp(file, ELFMAG, SELFMAG) == 0) {
+        s = elf_from_bytes(file, size);
+    } else if (mo_rd32(file) == MO_MAGIC_64) {
+        s = macho_from_bytes(file, size);
+    }
+    free(file);
+    return s;
 }
 
 void break_elf_symbols_destroy(BreakElfSymbols *s) {
@@ -316,7 +506,7 @@ static BreakElfSymbols *store_get(BreakCrashSymbolStore *st, const char *build_i
     {
         /* only successful loads are cached: a build's symbol file never changes once it is
          * there, but it may not have arrived yet when the first crash of that build does */
-        BreakElfSymbols *loaded = break_elf_symbols_open(path);
+        BreakElfSymbols *loaded = break_crash_symbols_open(path);
         StoreEntry *e;
         if (loaded == NULL) return NULL;
         e = &st->cache[st->next];

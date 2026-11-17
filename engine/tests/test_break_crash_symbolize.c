@@ -993,6 +993,574 @@ TEST(symbols_uploaded_after_a_miss_are_found_by_the_same_open_store) {
     break_crash_symbol_store_destroy(st);
 }
 
+/* ---- Mach-O symbol files ---------------------------------------------------
+ * Images are written byte by byte here, so no Apple SDK is needed: a __TEXT
+ * segment (__text and __stubs hold code, __const does not), a __DATA segment,
+ * LC_SYMTAB and optionally LC_UUID. Symbol values are relative to `base`,
+ * the __TEXT vmaddr. */
+
+typedef struct {
+    u8 b[32768];
+    usize n;
+    usize symtab_cmd;
+    usize uuid_cmd;
+    usize data_seg;
+} MachoImg;
+
+typedef struct {
+    u64 base;
+    u32 cpu;
+    u32 filetype;
+    bool uuid;
+    u32 extra_sections;
+} MachoSpec;
+
+typedef struct {
+    const char *name; /* NULL: a string index past the table */
+    u8 type;
+    u8 sect;
+    u64 value;
+} MoSym;
+
+static const u8 k_mo_uuid[16] = {0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78,
+                                 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0};
+
+static const MoSym k_mo_syms[] = {
+    {"_alpha", 0x0f, 1, 0x1000},      {"_beta", 0x0f, 1, 0x1040},
+    {"_alpha_alias", 0x0f, 1, 0x1000}, {"_gamma", 0x0e, 1, 0x1080},
+    {"noprefix", 0x0f, 1, 0x10c0},    {"_stub", 0x0e, 2, 0x1200},
+    {"_konst", 0x0f, 3, 0x2000},      {"_data", 0x0f, 4, 0x3000},
+    {"_undef", 0x01, 0, 0x0},         {"_abs", 0x03, 0, 0x1050},
+    {"_stabfn", 0x24, 1, 0x1010},     {"_wrongsect", 0x0f, 250, 0x1020},
+    {"_bnsym", 0x2e, 1, 0x1010}, /* N_BNSYM: a stab whose low bits read as N_SECT */
+    {"_outside", 0x0f, 1, 0x1100},    {"_below", 0x0f, 1, 0x0ff0},
+    {"", 0x0f, 1, 0x1030},            {NULL, 0x0f, 1, 0x1038},
+};
+
+static void mo_put32(u8 *p, u32 v) { for (int i = 0; i < 4; i++) p[i] = (u8)(v >> (8 * i)); }
+static void mo_put64(u8 *p, u64 v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (8 * i)); }
+static u32 mo_get32(const u8 *p) { return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24); }
+
+static void mo_name16(u8 *p, const char *s) {
+    memset(p, 0, 16);
+    memcpy(p, s, strlen(s));
+}
+
+static usize mo_section(u8 *p, const char *sect, const char *seg, u64 addr, u64 size, u32 flags) {
+    memset(p, 0, 80);
+    mo_name16(p, sect);
+    mo_name16(p + 16, seg);
+    mo_put64(p + 32, addr);
+    mo_put64(p + 40, size);
+    mo_put32(p + 64, flags);
+    return 80u;
+}
+
+static usize mo_segment(u8 *p, const char *name, u64 vmaddr, u64 vmsize, u32 nsects) {
+    memset(p, 0, 72);
+    mo_put32(p, 0x19u);
+    mo_put32(p + 4, 72u + 80u * nsects);
+    mo_name16(p + 8, name);
+    mo_put64(p + 24, vmaddr);
+    mo_put64(p + 32, vmsize);
+    mo_put32(p + 64, nsects);
+    return 72u;
+}
+
+static void macho_build(MachoImg *img, const MachoSpec *sp) {
+    u8 *b = img->b;
+    usize at = 32u;
+    u32 ncmds = 0u;
+    usize nsyms = sizeof(k_mo_syms) / sizeof(k_mo_syms[0]);
+    u32 data_sects = 1u + sp->extra_sections;
+    memset(img, 0, sizeof(*img));
+    at += mo_segment(b + at, "__TEXT", sp->base, 0x3000u, 3u);
+    at += mo_section(b + at, "__text", "__TEXT", sp->base + 0x1000u, 0x100u, 0x80000400u);
+    at += mo_section(b + at, "__stubs", "__TEXT", sp->base + 0x1200u, 0x20u, 0x00000400u);
+    at += mo_section(b + at, "__const", "__TEXT", sp->base + 0x2000u, 0x40u, 0u);
+    ncmds++;
+    img->data_seg = at;
+    at += mo_segment(b + at, "__DATA", sp->base + 0x3000u, 0x1000u, data_sects);
+    for (u32 i = 0; i < data_sects; i++) {
+        at += mo_section(b + at, "__data", "__DATA", sp->base + 0x3000u + 8u * i, 8u, 0u);
+    }
+    ncmds++;
+    img->symtab_cmd = at;
+    at += 24u;
+    ncmds++;
+    if (sp->uuid) {
+        img->uuid_cmd = at;
+        mo_put32(b + at, 0x1bu);
+        mo_put32(b + at + 4, 24u);
+        memcpy(b + at + 8, k_mo_uuid, 16u);
+        at += 24u;
+        ncmds++;
+    }
+    mo_put32(b, 0xfeedfacfu);
+    mo_put32(b + 4, sp->cpu);
+    mo_put32(b + 8, 3u);
+    mo_put32(b + 12, sp->filetype);
+    mo_put32(b + 16, ncmds);
+    mo_put32(b + 20, (u32)(at - 32u));
+    {
+        usize symoff = (at + 15u) & ~(usize)15u;
+        usize stroff = symoff + 16u * nsyms;
+        usize str = 2u;
+        b[stroff] = ' ';
+        b[stroff + 1u] = '\0';
+        for (usize i = 0; i < nsyms; i++) {
+            u8 *e = b + symoff + 16u * i;
+            u32 strx = 0x00ffffffu;
+            if (k_mo_syms[i].name != NULL) {
+                usize len = strlen(k_mo_syms[i].name);
+                strx = len == 0u ? 1u : (u32)str;
+                if (len != 0u) {
+                    memcpy(b + stroff + str, k_mo_syms[i].name, len + 1u);
+                    str += len + 1u;
+                }
+            }
+            mo_put32(e, strx);
+            e[4] = k_mo_syms[i].type;
+            e[5] = k_mo_syms[i].sect;
+            mo_put64(e + 8, k_mo_syms[i].sect == 0u && k_mo_syms[i].type == 0x01u
+                                ? 0u
+                                : sp->base + k_mo_syms[i].value);
+        }
+        mo_put32(b + img->symtab_cmd, 0x2u);
+        mo_put32(b + img->symtab_cmd + 4, 24u);
+        mo_put32(b + img->symtab_cmd + 8, (u32)symoff);
+        mo_put32(b + img->symtab_cmd + 12, (u32)nsyms);
+        mo_put32(b + img->symtab_cmd + 16, (u32)stroff);
+        mo_put32(b + img->symtab_cmd + 20, (u32)str);
+        img->n = stroff + str;
+    }
+}
+
+static void macho_default(MachoImg *img, u64 base, u32 filetype) {
+    MachoSpec sp = {base, 0x01000007u, filetype, true, 0u};
+    macho_build(img, &sp);
+}
+
+static BreakElfSymbols *macho_open_bytes(const u8 *b, usize n) {
+    char path[400];
+    path_in(path, sizeof(path), "image.macho");
+    if (!write_bytes(path, b, n)) return NULL;
+    return break_macho_symbols_open(path);
+}
+
+static bool mo_lookup(const BreakElfSymbols *s, u64 addr, const char *want, u64 want_off) {
+    char name[BREAK_CRASH_SYMBOLIZE_NAME_MAX];
+    u64 off = 0;
+    if (!break_elf_symbols_lookup(s, addr, name, sizeof(name), &off)) return want == NULL;
+    if (want == NULL) {
+        printf("    0x%llx unexpectedly resolved to %s\n", (unsigned long long)addr, name);
+        return false;
+    }
+    if (strcmp(name, want) != 0 || off != want_off) {
+        printf("    0x%llx -> %s+0x%llx, want %s+0x%llx\n", (unsigned long long)addr, name,
+               (unsigned long long)off, want, (unsigned long long)want_off);
+        return false;
+    }
+    return true;
+}
+
+static bool mo_alpha_at(const BreakElfSymbols *s, u64 addr, u64 want_off) {
+    char name[BREAK_CRASH_SYMBOLIZE_NAME_MAX];
+    u64 off = 0;
+    if (!break_elf_symbols_lookup(s, addr, name, sizeof(name), &off)) return false;
+    return (strcmp(name, "alpha") == 0 || strcmp(name, "alpha_alias") == 0) && off == want_off;
+}
+
+static bool mo_expect_layout(const BreakElfSymbols *s, u64 rel) {
+    return mo_alpha_at(s, rel + 0x1000u, 0u) && mo_alpha_at(s, rel + 0x103fu, 0x3fu) &&
+           mo_lookup(s, rel + 0x1040u, "beta", 0u) && mo_lookup(s, rel + 0x1080u, "gamma", 0u) &&
+           mo_lookup(s, rel + 0x10c0u, "noprefix", 0u) && mo_lookup(s, rel + 0x10ffu, "noprefix", 0x3fu) &&
+           mo_lookup(s, rel + 0x1200u, "stub", 0u) && mo_lookup(s, rel + 0x121fu, "stub", 0x1fu) &&
+           mo_lookup(s, rel + 0x1100u, NULL, 0u) && mo_lookup(s, rel + 0x1220u, NULL, 0u) &&
+           mo_lookup(s, rel + 0x2000u, NULL, 0u) && mo_lookup(s, rel + 0x3000u, NULL, 0u) &&
+           mo_lookup(s, rel + 0x0ff0u, NULL, 0u);
+}
+
+TEST(a_mach_o_image_resolves_code_symbols_relative_to_its_text_segment) {
+    static MachoImg img;
+    const u64 bases[] = {0u, 0x100000000ull};
+    const u32 types[] = {6u, 2u, 8u, 0xau};
+    for (usize b = 0; b < 2u; b++) {
+        for (usize t = 0; t < 4u; t++) {
+            BreakElfSymbols *s;
+            macho_default(&img, bases[b], types[t]);
+            s = macho_open_bytes(img.b, img.n);
+            ASSERT_NOT_NULL(s);
+            ASSERT_FALSE(break_elf_symbols_is_exec(s));
+            /* alpha, alpha_alias, beta, gamma, noprefix, stub */
+            ASSERT_EQ(break_elf_symbols_count(s), 6u);
+            ASSERT_TRUE(mo_expect_layout(s, 0u));
+            break_elf_symbols_destroy(s);
+        }
+    }
+}
+
+TEST(the_mach_o_uuid_is_read_as_hex) {
+    static MachoImg img;
+    MachoSpec sp = {0u, 0x01000007u, 6u, false, 0u};
+    BreakElfSymbols *s;
+    macho_default(&img, 0u, 6u);
+    s = macho_open_bytes(img.b, img.n);
+    ASSERT_NOT_NULL(s);
+    ASSERT_STR_EQ(break_elf_symbols_build_id(s), "0f1e2d3c4b5a69788796a5b4c3d2e1f0");
+    break_elf_symbols_destroy(s);
+    macho_build(&img, &sp);
+    s = macho_open_bytes(img.b, img.n);
+    ASSERT_NOT_NULL(s);
+    ASSERT_STR_EQ(break_elf_symbols_build_id(s), "");
+    ASSERT_TRUE(mo_expect_layout(s, 0u));
+    break_elf_symbols_destroy(s);
+}
+
+TEST(section_numbers_count_across_segments_and_data_sections_are_not_code) {
+    static MachoImg img;
+    MachoSpec sp = {0u, 0x01000007u, 6u, true, 247u};
+    BreakElfSymbols *s;
+    macho_build(&img, &sp); /* section 250 now exists, as a __data section */
+    s = macho_open_bytes(img.b, img.n);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(break_elf_symbols_count(s), 6u);
+    ASSERT_TRUE(mo_expect_layout(s, 0u));
+    ASSERT_TRUE(mo_alpha_at(s, 0x1020u, 0x20u));
+    break_elf_symbols_destroy(s);
+}
+
+TEST(mach_o_files_of_the_wrong_kind_are_refused) {
+    static MachoImg img;
+    MachoSpec arm = {0u, 0x0100000cu, 6u, true, 0u};
+    BreakElfSymbols *s;
+    macho_build(&img, &arm);
+    s = macho_open_bytes(img.b, img.n);
+    ASSERT_NOT_NULL(s);
+    ASSERT_TRUE(mo_expect_layout(s, 0u));
+    break_elf_symbols_destroy(s);
+    {
+        const u32 cpus[] = {0x00000007u, 0x0000000cu, 0x01000012u, 0u};
+        for (usize i = 0; i < 4u; i++) {
+            MachoSpec sp = {0u, cpus[i], 6u, true, 0u};
+            macho_build(&img, &sp);
+            ASSERT_TRUE(macho_open_bytes(img.b, img.n) == NULL);
+        }
+    }
+    {
+        const u32 types[] = {0u, 1u, 3u, 4u, 5u, 7u, 9u, 0xbu, 0xcu};
+        for (usize i = 0; i < 9u; i++) {
+            macho_default(&img, 0u, types[i]);
+            ASSERT_TRUE(macho_open_bytes(img.b, img.n) == NULL);
+        }
+    }
+    macho_default(&img, 0u, 6u);
+    mo_put32(img.b, 0xfeedfaceu); /* 32-bit */
+    ASSERT_TRUE(macho_open_bytes(img.b, img.n) == NULL);
+    mo_put32(img.b, 0xcffaedfeu); /* the 64-bit magic read big-endian */
+    ASSERT_TRUE(macho_open_bytes(img.b, img.n) == NULL);
+    mo_put32(img.b, 0xbebafecau); /* fat (0xcafebabe big-endian) */
+    ASSERT_TRUE(macho_open_bytes(img.b, img.n) == NULL);
+}
+
+TEST(a_truncated_mach_o_file_is_refused_at_every_length) {
+    static MachoImg img;
+    macho_default(&img, 0x100000000ull, 2u);
+    for (usize n = 0; n < img.n; n++) {
+        BreakElfSymbols *s = macho_open_bytes(img.b, n);
+        if (s != NULL) {
+            printf("    a %zu-byte prefix of %zu loaded\n", (size_t)n, (size_t)img.n);
+            break_elf_symbols_destroy(s);
+            ASSERT_TRUE(false);
+        }
+    }
+}
+
+/* Re-opens `img` after `edit` changed it, expecting a refusal; restores it. */
+static bool mo_refused_after(MachoImg *img, usize at, u32 v) {
+    u32 old = mo_get32(img->b + at);
+    BreakElfSymbols *s;
+    mo_put32(img->b + at, v);
+    s = macho_open_bytes(img->b, img->n);
+    mo_put32(img->b + at, old);
+    if (s != NULL) {
+        printf("    writing 0x%x at %zu still loaded\n", v, (size_t)at);
+        break_elf_symbols_destroy(s);
+        return false;
+    }
+    return true;
+}
+
+TEST(each_structural_mach_o_corruption_is_refused) {
+    static MachoImg img;
+    usize text_sect = 32u + 72u;          /* the first section header, __text */
+    usize sc;
+    macho_default(&img, 0u, 6u);
+    sc = img.symtab_cmd;
+    ASSERT_TRUE(mo_refused_after(&img, 16u, 4097u));                 /* ncmds over the cap */
+    ASSERT_TRUE(mo_refused_after(&img, 16u, 5u));                    /* more commands than sizeofcmds holds */
+    ASSERT_TRUE(mo_refused_after(&img, 20u, (u32)img.n));            /* sizeofcmds past the file */
+    ASSERT_TRUE(mo_refused_after(&img, 32u + 4u, 4u));               /* cmdsize below 8 */
+    ASSERT_TRUE(mo_refused_after(&img, 32u + 4u, 72u + 80u * 3u + 4u)); /* not a multiple of 8 */
+    ASSERT_TRUE(mo_refused_after(&img, 32u + 4u, 0x10000u));         /* past sizeofcmds */
+    ASSERT_TRUE(mo_refused_after(&img, 32u + 64u, 4u));              /* nsects disagrees with cmdsize */
+    ASSERT_TRUE(mo_refused_after(&img, 32u + 64u, 0x40000000u));
+    {
+        /* __text addr+size wraps */
+        BreakElfSymbols *s;
+        mo_put64(img.b + text_sect + 40u, ~(u64)0);
+        s = macho_open_bytes(img.b, img.n);
+        if (s != NULL) break_elf_symbols_destroy(s);
+        ASSERT_TRUE(s == NULL);
+        mo_put64(img.b + text_sect + 40u, 0x100u);
+    }
+    ASSERT_TRUE(mo_refused_after(&img, sc + 4u, 16u));                /* LC_SYMTAB too short */
+    ASSERT_TRUE(mo_refused_after(&img, sc + 8u, (u32)img.n));         /* symoff past the file */
+    ASSERT_TRUE(mo_refused_after(&img, sc + 12u, 0x10000000u));       /* nsyms past the file */
+    ASSERT_TRUE(mo_refused_after(&img, sc + 16u, (u32)img.n));        /* stroff past the file */
+    ASSERT_TRUE(mo_refused_after(&img, sc + 20u, 0xffffffffu));       /* strsize past the file */
+    ASSERT_TRUE(mo_refused_after(&img, img.uuid_cmd + 4u, 16u));      /* LC_UUID too short for its 16 bytes */
+    {
+        /* a second LC_SYMTAB in place of the UUID */
+        BreakElfSymbols *s;
+        memcpy(img.b + img.uuid_cmd, img.b + sc, 24u);
+        s = macho_open_bytes(img.b, img.n);
+        if (s != NULL) break_elf_symbols_destroy(s);
+        ASSERT_TRUE(s == NULL);
+    }
+}
+
+TEST(random_mach_o_load_command_damage_never_crashes) {
+    static MachoImg img, work;
+    u32 seed = 0x9e3779b9u;
+    usize cmds_end;
+    macho_default(&img, 0x100000000ull, 2u);
+    cmds_end = 32u + (usize)mo_get32(img.b + 20u);
+    for (int round = 0; round < 3000; round++) {
+        BreakElfSymbols *s;
+        memcpy(&work, &img, sizeof(img));
+        for (int k = 0; k < 1 + round % 4; k++) {
+            usize at;
+            seed = seed * 1664525u + 1013904223u;
+            at = (usize)(seed >> 8) % (cmds_end + 160u);
+            seed = seed * 1664525u + 1013904223u;
+            work.b[at] = (u8)(seed >> 24);
+        }
+        s = macho_open_bytes(work.b, work.n);
+        if (s != NULL) {
+            char name[BREAK_CRASH_SYMBOLIZE_NAME_MAX];
+            u64 off = 0;
+            for (u64 a = 0; a < 0x4000u; a += 0x10u) {
+                (void)break_elf_symbols_lookup(s, a, name, sizeof(name), &off);
+            }
+            break_elf_symbols_destroy(s);
+        }
+    }
+}
+
+TEST(the_store_symbolizes_a_mach_o_module_from_a_record) {
+    static MachoImg img;
+    char root[400], dir[600], path[700], cmd[CMD_CAP];
+    char name[BREAK_CRASH_SYMBOLIZE_NAME_MAX];
+    u64 off = 0;
+    BreakCrashSymbolStore *st;
+    BreakCrashRecord *r;
+    BreakCrashFrame fr;
+    path_in(root, sizeof(root), "machoroot");
+    snprintf(dir, sizeof(dir), "%s/testbuild", root);
+    snprintf(cmd, sizeof(cmd), "rm -rf '%s'; mkdir -p '%s'", root, dir);
+    ASSERT_TRUE(run(cmd));
+    macho_default(&img, 0x100000000ull, 2u);
+    snprintf(path, sizeof(path), "%s/mod.bin", dir);
+    ASSERT_TRUE(write_bytes(path, img.b, img.n));
+    st = break_crash_symbol_store_open(root);
+    ASSERT_NOT_NULL(st);
+    ASSERT_TRUE(break_crash_symbol_store_lookup(st, "testbuild", "mod.bin", 0x1044u, name, sizeof(name), &off));
+    ASSERT_STR_EQ(name, "beta");
+    ASSERT_EQ(off, 4u);
+    /* the record says the image header was mapped at 0x400000: the module offset is used as is */
+    r = craft(0x401204u, 0x7ff00000u, 0u, NULL);
+    ASSERT_NOT_NULL(r);
+    break_crash_symbolize_address(st, r, 0x401204u, &fr);
+    ASSERT_TRUE(fr.resolved);
+    ASSERT_STR_EQ(fr.module, "mod.bin");
+    ASSERT_EQ(fr.module_offset, 0x1204u);
+    ASSERT_STR_EQ(fr.symbol, "stub");
+    ASSERT_EQ(fr.symbol_offset, 4u);
+    break_crash_record_destroy(r);
+    break_crash_symbol_store_destroy(st);
+}
+
+TEST(the_load_command_count_is_capped_even_when_the_commands_fit) {
+    const u32 counts[] = {4096u, 4097u};
+    for (usize c = 0; c < 2u; c++) {
+        u32 ncmds = counts[c];
+        usize n = 32u + 72u + 80u + 8u * (usize)(ncmds - 1u);
+        u8 *b = (u8 *)calloc(1u, n);
+        BreakElfSymbols *s;
+        ASSERT_NOT_NULL(b);
+        mo_segment(b + 32u, "__TEXT", 0u, 0x2000u, 1u);
+        mo_section(b + 104u, "__text", "__TEXT", 0x1000u, 0x100u, 0x80000400u);
+        for (u32 i = 0; i + 1u < ncmds; i++) {
+            mo_put32(b + 184u + 8u * i, 0x7fffff00u); /* an unknown command, skipped by size */
+            mo_put32(b + 188u + 8u * i, 8u);
+        }
+        mo_put32(b, 0xfeedfacfu);
+        mo_put32(b + 4, 0x01000007u);
+        mo_put32(b + 12, 6u);
+        mo_put32(b + 16, ncmds);
+        mo_put32(b + 20, (u32)(n - 32u));
+        s = macho_open_bytes(b, n);
+        free(b);
+        if (ncmds == 4096u) {
+            ASSERT_NOT_NULL(s);
+            ASSERT_EQ(break_elf_symbols_count(s), 0u);
+            break_elf_symbols_destroy(s);
+        } else {
+            if (s != NULL) break_elf_symbols_destroy(s);
+            ASSERT_TRUE(s == NULL);
+        }
+    }
+}
+
+TEST(an_unknown_load_command_must_still_be_eight_byte_aligned) {
+    static MachoImg img;
+    BreakElfSymbols *s;
+    macho_default(&img, 0u, 6u);
+    mo_put32(img.b + img.uuid_cmd, 0x32u); /* LC_BUILD_VERSION, which the reader skips */
+    s = macho_open_bytes(img.b, img.n);
+    ASSERT_NOT_NULL(s);
+    ASSERT_STR_EQ(break_elf_symbols_build_id(s), "");
+    break_elf_symbols_destroy(s);
+    ASSERT_TRUE(mo_refused_after(&img, img.uuid_cmd + 4u, 20u));
+}
+
+TEST(a_code_symbol_below_the_text_segment_is_skipped) {
+    static MachoImg img;
+    const u64 base = 0x100000000ull;
+    usize konst_sect = 32u + 72u + 160u;
+    usize symoff;
+    BreakElfSymbols *s;
+    macho_default(&img, base, 2u);
+    symoff = mo_get32(img.b + img.symtab_cmd + 8u);
+    /* __const now claims code below the segment start, and _konst (entry 6) sits there */
+    mo_put64(img.b + konst_sect + 32u, base - 0x100u);
+    mo_put32(img.b + konst_sect + 64u, 0x80000400u);
+    mo_put64(img.b + symoff + 16u * 6u + 8u, base - 0x100u);
+    s = macho_open_bytes(img.b, img.n);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(break_elf_symbols_count(s), 6u);
+    ASSERT_TRUE(mo_expect_layout(s, 0u));
+    ASSERT_TRUE(mo_lookup(s, (u64)0 - 0x100u, NULL, 0u));
+    break_elf_symbols_destroy(s);
+}
+
+TEST(a_command_count_past_the_last_command_is_refused_at_the_file_end) {
+    /* header + one segment and nothing after it: the second command would start at the end of the file */
+    u8 b[32u + 72u + 80u];
+    BreakElfSymbols *s;
+    memset(b, 0, sizeof(b));
+    mo_segment(b + 32u, "__TEXT", 0u, 0x2000u, 1u);
+    mo_section(b + 104u, "__text", "__TEXT", 0x1000u, 0x100u, 0x80000400u);
+    mo_put32(b, 0xfeedfacfu);
+    mo_put32(b + 4, 0x01000007u);
+    mo_put32(b + 12, 6u);
+    mo_put32(b + 16, 1u);
+    mo_put32(b + 20, 152u);
+    s = macho_open_bytes(b, sizeof(b));
+    ASSERT_NOT_NULL(s);
+    break_elf_symbols_destroy(s);
+    mo_put32(b + 16, 2u);
+    s = macho_open_bytes(b, sizeof(b));
+    if (s != NULL) break_elf_symbols_destroy(s);
+    ASSERT_TRUE(s == NULL);
+}
+
+static const char k_macho_src[] =
+    "int f1(int x) { return x * 3 + 1; }\n"
+    "int f2(int x) { return f1(x) ^ 0x55; }\n"
+    "static int f3(int x) { return f2(x) - f1(x); }\n"
+    "int (*keep)(int) = f3;\n"
+    "void start(void) { for (;;) { (void)keep(1); } }\n";
+
+/* llvm-nm's address for `_name`, minus `text_base` */
+static bool llvm_nm_rel(const char *bin, const char *name, u64 text_base, u64 *out) {
+    char cmd[900], line[200];
+    FILE *p;
+    snprintf(cmd, sizeof(cmd), "llvm-nm '%s' 2>/dev/null | awk '$3==\"_%s\" {print $1}'", bin, name);
+    p = popen(cmd, "r");
+    if (p == NULL) return false;
+    if (fgets(line, sizeof(line), p) == NULL) {
+        pclose(p);
+        return false;
+    }
+    pclose(p);
+    *out = strtoull(line, NULL, 16) - text_base;
+    return true;
+}
+
+TEST(real_mach_o_images_from_the_llvm_toolchain_agree_with_llvm_nm) {
+    struct { const char *arch, *triple, *kind; u64 base; } cases[] = {
+        {"x86_64", "x86_64-apple-macos11", "-dylib", 0u},
+        {"arm64", "arm64-apple-macos11", "-dylib", 0u},
+        {"x86_64", "x86_64-apple-macos11", "-execute -e _start", 0x100000000ull},
+    };
+    const char *names[] = {"f1", "f2", "f3", "start"};
+    char src[400], obj[400], bin[400], cmd[CMD_CAP];
+    if (system("command -v clang >/dev/null 2>&1 && command -v ld64.lld >/dev/null 2>&1 && "
+               "command -v llvm-nm >/dev/null 2>&1") != 0) {
+        printf("skipped (clang, ld64.lld or llvm-nm missing) ");
+        return;
+    }
+    path_in(src, sizeof(src), "mo.c");
+    path_in(obj, sizeof(obj), "mo.o");
+    path_in(bin, sizeof(bin), "mo.image");
+    ASSERT_TRUE(write_text(src, k_macho_src));
+    for (usize c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        BreakElfSymbols *s;
+        snprintf(cmd, sizeof(cmd),
+                 "clang -target %s -O1 -fno-inline -c '%s' -o '%s' 2>/dev/null && "
+                 "ld64.lld -arch %s -platform_version macos 11.0 11.0 %s '%s' -o '%s' 2>/dev/null",
+                 cases[c].triple, src, obj, cases[c].arch, cases[c].kind, obj, bin);
+        ASSERT_TRUE(run(cmd));
+        s = break_crash_symbols_open(bin);
+        ASSERT_NOT_NULL(s);
+        ASSERT_EQ(strlen(break_elf_symbols_build_id(s)), 32u);
+        for (usize i = 0; i < 4u; i++) {
+            u64 rel = 0;
+            ASSERT_TRUE(llvm_nm_rel(bin, names[i], cases[c].base, &rel));
+            ASSERT_TRUE(mo_lookup(s, rel, names[i], 0u));
+            ASSERT_TRUE(mo_lookup(s, rel + 1u, names[i], 1u));
+        }
+        break_elf_symbols_destroy(s);
+    }
+}
+
+TEST(the_format_dispatcher_opens_elf_and_mach_o_and_nothing_else) {
+    static MachoImg img;
+    char fx[400], junk[400];
+    BreakElfSymbols *s;
+    path_in(fx, sizeof(fx), "fixture");
+    s = break_crash_symbols_open(fx);
+    ASSERT_NOT_NULL(s);
+    ASSERT_TRUE(break_elf_symbols_count(s) > 0u);
+    break_elf_symbols_destroy(s);
+    macho_default(&img, 0u, 6u);
+    path_in(junk, sizeof(junk), "dispatch.macho");
+    ASSERT_TRUE(write_bytes(junk, img.b, img.n));
+    s = break_crash_symbols_open(junk);
+    ASSERT_NOT_NULL(s);
+    ASSERT_TRUE(mo_expect_layout(s, 0u));
+    break_elf_symbols_destroy(s);
+    /* each reader refuses the other's format */
+    ASSERT_TRUE(break_elf_symbols_open(junk) == NULL);
+    ASSERT_TRUE(break_macho_symbols_open(fx) == NULL);
+    ASSERT_TRUE(write_text(junk, "not a symbol file at all\n"));
+    ASSERT_TRUE(break_crash_symbols_open(junk) == NULL);
+    ASSERT_TRUE(break_crash_symbols_open(NULL) == NULL);
+    ASSERT_TRUE(break_macho_symbols_open("") == NULL);
+}
+
 static void cleanup(void) {
     char cmd[400];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
@@ -1024,5 +1592,19 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_hostile_build_id_or_module_name_cannot_reach_outside_the_symbol_root);
     RUN_TEST(the_store_refuses_names_that_could_leave_its_root_even_when_a_valid_file_is_there);
     RUN_TEST(symbols_uploaded_after_a_miss_are_found_by_the_same_open_store);
+    RUN_TEST(a_mach_o_image_resolves_code_symbols_relative_to_its_text_segment);
+    RUN_TEST(the_mach_o_uuid_is_read_as_hex);
+    RUN_TEST(section_numbers_count_across_segments_and_data_sections_are_not_code);
+    RUN_TEST(mach_o_files_of_the_wrong_kind_are_refused);
+    RUN_TEST(a_truncated_mach_o_file_is_refused_at_every_length);
+    RUN_TEST(each_structural_mach_o_corruption_is_refused);
+    RUN_TEST(random_mach_o_load_command_damage_never_crashes);
+    RUN_TEST(the_store_symbolizes_a_mach_o_module_from_a_record);
+    RUN_TEST(real_mach_o_images_from_the_llvm_toolchain_agree_with_llvm_nm);
+    RUN_TEST(the_format_dispatcher_opens_elf_and_mach_o_and_nothing_else);
+    RUN_TEST(the_load_command_count_is_capped_even_when_the_commands_fit);
+    RUN_TEST(an_unknown_load_command_must_still_be_eight_byte_aligned);
+    RUN_TEST(a_code_symbol_below_the_text_segment_is_skipped);
+    RUN_TEST(a_command_count_past_the_last_command_is_refused_at_the_file_end);
     cleanup();
 TEST_MAIN_END()

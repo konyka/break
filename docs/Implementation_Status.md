@@ -11579,3 +11579,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `engine/tests/test_core_app_network.cmake`：认证行规范会话号、互不重复、条数等于 `authenticated`；时钟偏移行的会话属于已认证会话。先 RED（loopback 与 late_auth 都失败）后 GREEN。
 - `engine/tests/test_core_app_net_client.c`：修正两处与时序有关的偶发失败（时钟探测累计计数、增量修正的基线确认），见设计文档。修改后 loopback 连续 15 次通过。影子变量检查通过（rc=0）。
 - 仍缺：对端 trace 自身记录会话号。
+
+### 2026-11-17 崩溃符号化：Mach-O 符号文件
+- `engine/src/crash/break_crash_symbolize.{h,c}`：`break_macho_symbols_open`、`break_crash_symbols_open`；读整个文件的逻辑抽成 `load_file`，ELF 解析抽成 `elf_from_bytes`；符号库改用按 magic 分派的入口。
+- `test_break_crash_symbolize` 新增 14 项（共 37）：逐字节构造的 Mach-O 镜像（布局、别名、跳过规则、UUID、格式拒绝、所有截断、结构破坏、随机破坏、`ncmds` 上限、对齐、`__TEXT` 下界、符号库与记录、分派器），以及 `clang` + `ld64.lld` 生成的真实 dylib 与可执行文件对 `llvm-nm` 的核对。
+- 先 RED（编译失败，接口不存在）后 GREEN。29 项变异首轮 7 项存活，补测试后 4 项被捕获；“剩余命令字节不足 8”只在 ASan 下变红，其余 2 项为等价变异，见设计文档。影子变量检查通过（rc=0）。
+- 仍缺：生产部署的收集服务、minidump、Windows 符号化、arm64 帧展开、fat 文件。
