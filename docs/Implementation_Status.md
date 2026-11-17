@@ -11557,4 +11557,5 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `engine/src/net_http/break_http.{h,c}`：`BreakHttpConfig.require_ocsp_staple`。开启后 `tls_handshake` 请求 `status_request`，新增 `tls_check_ocsp` 在钉扎之后校验附带的响应：DER 无尾随字节、responseStatus successful、basic 响应、链长至少 2、`OCSP_basic_verify` 通过、每条匹配叶子的条目按其自身哈希重算 CertID、状态 good、有 nextUpdate、时间容差 300 秒、至少一条匹配。
 - `test_break_http` 新增 6 项（共 72）：good 响应（SHA-1、SHA-256 CertID、委托 responder、与 CRL 同开）、revoked/unknown、未开启时不请求状态、loopback http 忽略、缺失/垃圾/尾随字节/tryLater/internalError（含附带有效响应体的情况）、过期/缺 nextUpdate/未来 thisUpdate 与 60 秒偏差、不受信签名者/无 EKU 委托 responder/其他证书、自签名叶子。
 - 先 RED（6 项失败）后 GREEN；19 项变异首轮 1 项存活（responseStatus 检查：未成功状态不带响应体，后续取 basic 时也会失败），补充「未成功状态但附带有效 good 响应体」的用例后被捕获，最终全部捕获。影子变量检查通过（rc=0）。
+- macOS CI（OpenSSL 4.1.0）上尾随字节一项失败：OpenSSL 4 在握手时解码附带的响应并返回重新编码的副本，尾随字节到不了客户端。该断言改为按版本区分，OpenSSL 3 仍要求 `ERR_TLS`；设计文档已说明。
 - 仍缺：主动查询 OCSP responder、NTLM、https 代理、HTTP/2，发布二进制仍没有链接 `break_http`。

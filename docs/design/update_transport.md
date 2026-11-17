@@ -118,4 +118,6 @@ Mutations that turn it red: the server ignoring Range, the client ignoring the p
 - 没有与叶子匹配的条目。每条按其自身的哈希算法重算 CertID，所以 SHA-1 和 SHA-256 CertID 都可以。
 - 任一匹配条目的状态不是 good（revoked、unknown 都拒绝），或缺少 nextUpdate，或 thisUpdate 比本地时间晚 300 秒以上，或 nextUpdate 比本地时间早 300 秒以上。
 
+尾随字节检查只在 OpenSSL 3 上生效：OpenSSL 4 在握手时自行解码附带的响应，`SSL_get_tlsext_status_ocsp_resp` 返回重新编码的副本，尾随字节在库内已被丢弃（垃圾字节则直接导致握手失败，同样是 `ERR_TLS`）。签名覆盖的内容在两个版本上都照常验证。
+
 可与 `crl_file` 同时开启。明文 loopback http 忽略该字段。测试在 `engine/tests/test_break_http.c`（新增 6 项，进程内生成 CA、叶子、委托 responder 和 OCSP 响应），计划见 `docs/superpowers/plans/2026-11-17-break-http-ocsp-stapling.md`。
