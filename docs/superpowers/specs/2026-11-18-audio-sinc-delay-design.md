@@ -40,4 +40,4 @@ Mutation, ASan+UBSan, strict warnings, independent review and three-tree verific
 
 ## Limits
 
-Eight-frame added latency, mono only, no continuous-delay crossfade, no adaptive quality selection or real acoustic verification. The kernel is not a full sample-rate converter; drift compensation remains with the resampler.
+Eight-frame added latency, mono only, no adaptive quality selection or real acoustic verification. Optional dual-reader delay crossfades are specified in `2026-11-18-audio-delay-crossfade-design.md`; active fades reject retargeting. The kernel is not a full sample-rate converter; drift compensation remains with the resampler.

@@ -320,3 +320,5 @@
 - **第 10 节（音频）追加**：2026-11-18 AEC 暴露逐帧近端状态，`audio_residual_echo_suppressor_process_with_aec` 自动把该状态用于残余抑制，且与手工逐帧序列逐位一致。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「残余回声抑制」。上文「自动近端检测」的库集成由此交付。仍缺：频谱相干性、生产采集管线接线、多声道与真实声学验证。
 
 - **第 10 节（音频）追加**：2026-11-18 新增 `AudioVoiceProcessor`，统一串联 AEC、残余抑制、频谱降噪、噪声门和 AGC，支持任意分块、reset 与尾部排空，手工参考链逐位一致。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「集成语音处理链」。这是可复用处理库，不是生产采集接线。仍缺：core_app 设备/网络集成、多声道、自动延迟跟踪与真实声学验证。
+
+- **第 10 节（音频）追加**：2026-11-18 `AudioDelayLine` 支持可选连续延迟交叉淡化，新旧目标共用历史，活跃期拒绝重定向并保持状态原子性；默认立即切换不变。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「连续延迟交叉淡化」由此交付。仍缺：多声道、自动淡化策略与真实声学验证。

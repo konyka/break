@@ -1,3 +1,11 @@
+## 延迟线的可选连续交叉淡化（2026-11-18）
+
+- **交付**：`AudioDelayLine` 新增 0..48000 帧淡化配置，零时长保持旧行为；新旧目标从同一历史读取，按 1/N..1 淡化，活跃期拒绝 retarget/模式/时长修改。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-delay-crossfade-design.md`、`docs/superpowers/plans/2026-11-18-audio-delay-crossfade.md`。
+- **TDD 与评审**：两个新符号链接 RED 后实现至 21/21；独立评审发现周期二夹具无法区分两个 sinc 读取器，改用非周期数据并构造淡化区满幅过冲，补齐模式拒绝原子性与头文件描述后复审 Ready。
+- **定向验证**：普通及 ASan+UBSan 均 21/21，严格告警为零；权重、首步、混合方向、完成计数、活跃拒绝和饱和六个变异均被捕获。
+- **全量验证**：`/tmp/full_trees.sh` 的实际计数为 430/430、430/430、438/438，三次构建均成功且零测试失败。
+- **边界**：单声道；活跃淡化不排队重定向，无自动 AEC reset、多声道或真实声学验证。
+
 ## 集成语音处理链 AudioVoiceProcessor（2026-11-18）
 
 - **交付**：新增 `audio_voice_processor.{h,c}`，统一组合 AEC、残余抑制、频谱降噪、噪声门与 AGC；嵌套配置保持各模块范围，支持任意分块、统一 reset 和频谱延迟查询。正式 `engine` 构建成功，新目标 `test_audio_voice_processor` 已注册。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-voice-processor-design.md`、`docs/superpowers/plans/2026-11-18-audio-voice-processor.md`。

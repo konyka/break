@@ -145,6 +145,10 @@ struct AudioDelayLine {
     u32 size;
     u32 write;
     double delay;
+    double fade_from;
+    u32 crossfade_frames;
+    u32 fade_total;
+    u32 fade_remaining;
     bool sinc;
     i16 *buffer;
 };
@@ -170,10 +174,21 @@ void audio_delay_line_destroy(AudioDelayLine *line) {
     free(line);
 }
 
+static AudioResult delay_line_change(AudioDelayLine *line, double delay) {
+    if (line->fade_remaining > 0u) return AUDIO_REJECTED;
+    if (line->delay == delay) return AUDIO_OK;
+    if (line->crossfade_frames > 0u) {
+        line->fade_from = line->delay;
+        line->fade_total = line->crossfade_frames;
+        line->fade_remaining = line->crossfade_frames;
+    }
+    line->delay = delay;
+    return AUDIO_OK;
+}
+
 AudioResult audio_delay_line_set_delay(AudioDelayLine *line, u32 delay_frames) {
     if (!line || delay_frames > line->max_delay) return AUDIO_INVALID;
-    line->delay = delay_frames;
-    return AUDIO_OK;
+    return delay_line_change(line, delay_frames);
 }
 
 u32 audio_delay_line_delay(const AudioDelayLine *line) {
@@ -185,8 +200,7 @@ AudioResult audio_delay_line_set_subframe_delay(AudioDelayLine *line, double del
         delay_frames > (double)line->max_delay) {
         return AUDIO_INVALID;
     }
-    line->delay = delay_frames;
-    return AUDIO_OK;
+    return delay_line_change(line, delay_frames);
 }
 
 double audio_delay_line_subframe_delay(const AudioDelayLine *line) {
@@ -195,6 +209,7 @@ double audio_delay_line_subframe_delay(const AudioDelayLine *line) {
 
 AudioResult audio_delay_line_set_sinc(AudioDelayLine *line, bool enabled) {
     if (!line) return AUDIO_INVALID;
+    if (line->fade_remaining > 0u) return AUDIO_REJECTED;
     line->sinc = enabled;
     return AUDIO_OK;
 }
@@ -205,6 +220,17 @@ bool audio_delay_line_sinc(const AudioDelayLine *line) {
 
 u32 audio_delay_line_sinc_extra_delay(const AudioDelayLine *line) {
     return line && line->sinc ? AUDIO_DELAY_LINE_SINC_EXTRA_DELAY : 0u;
+}
+
+AudioResult audio_delay_line_set_crossfade_frames(AudioDelayLine *line, u32 frames) {
+    if (!line || frames > 48000u) return AUDIO_INVALID;
+    if (line->fade_remaining > 0u) return AUDIO_REJECTED;
+    line->crossfade_frames = frames;
+    return AUDIO_OK;
+}
+
+u32 audio_delay_line_crossfade_frames(const AudioDelayLine *line) {
+    return line ? line->crossfade_frames : 0u;
 }
 
 static u32 delay_line_read_index(const AudioDelayLine *line, u32 delay) {
@@ -235,6 +261,15 @@ static double delay_line_sinc_sample(const AudioDelayLine *line, u32 whole,
     return value / weight_sum;
 }
 
+static double delay_line_value(const AudioDelayLine *line, double delay) {
+    const u32 whole = (u32)delay;
+    const double fraction = delay - (double)whole;
+    if (line->sinc) return delay_line_sinc_sample(line, whole, fraction);
+    const u32 read = delay_line_read_index(line, whole);
+    const u32 previous = read == 0u ? line->size - 1u : read - 1u;
+    return (1.0 - fraction) * line->buffer[read] + fraction * line->buffer[previous];
+}
+
 static i16 delay_line_sinc_i16(double value) {
     const double rounded = nearbyint(value);
     if (rounded > 32767.0) return 32767;
@@ -248,16 +283,13 @@ void audio_delay_line_process_i16(AudioDelayLine *line, const i16 *in, i16 *out,
         /* written first, so a delay of 0 passes the frame straight through
          * and `out` may alias `in` */
         line->buffer[line->write] = in[n];
-        const u32 whole = (u32)line->delay;
-        const double fraction = line->delay - (double)whole;
-        double value = 0.0;
-        if (line->sinc) {
-            value = delay_line_sinc_sample(line, whole, fraction);
-        } else {
-            const u32 read = delay_line_read_index(line, whole);
-            const u32 previous = read == 0u ? line->size - 1u : read - 1u;
-            value = (1.0 - fraction) * line->buffer[read] +
-                    fraction * line->buffer[previous];
+        double value = delay_line_value(line, line->delay);
+        if (line->fade_remaining > 0u) {
+            const u32 step = line->fade_total - line->fade_remaining + 1u;
+            const double weight = (double)step / line->fade_total;
+            const double old_value = delay_line_value(line, line->fade_from);
+            value = old_value * (1.0 - weight) + value * weight;
+            --line->fade_remaining;
         }
         out[n] = line->sinc ? delay_line_sinc_i16(value) : (i16)nearbyint(value);
         line->write = line->write + 1u == line->size ? 0u : line->write + 1u;

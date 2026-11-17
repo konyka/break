@@ -42,4 +42,4 @@ Delay must be finite and in [0,max_delay]. For D=d+f, output `(1-f)*x[n-d] + f*x
 
 ## Limits
 
-Parabolic interpolation is an estimate, not sub-sample ground truth under every noise/path condition. Linear delay interpolation attenuates high frequencies. Drift tracking, clock-drift compensation, GCC-PHAT and sinc delay-line modes remain separate work.
+Parabolic interpolation is an estimate, not sub-sample ground truth under every noise/path condition. Default linear delay interpolation attenuates high frequencies. Sinc quality and optional delay crossfades are provided by `2026-11-18-audio-sinc-delay-design.md` and `2026-11-18-audio-delay-crossfade-design.md`; tracker/GCC and drift compensation remain separate modules.

@@ -51,11 +51,11 @@ typedef struct AudioDelayLine AudioDelayLine;
 AudioResult audio_delay_line_create(u32 max_delay_frames, AudioDelayLine **out);
 void audio_delay_line_destroy(AudioDelayLine *line); /* NULL is a no-op */
 /* INVALID for NULL or a delay above the maximum. Takes effect on the next
- * frame, reading the history at the new delay (no crossfade). */
+ * frame. Immediate by default; uses the configured crossfade when nonzero. */
 AudioResult audio_delay_line_set_delay(AudioDelayLine *line, u32 delay_frames);
 u32 audio_delay_line_delay(const AudioDelayLine *line); /* integer part; 0 for NULL */
 /* Finite delay in [0, max_delay]. For D=d+f, reads (1-f)*x[n-d] + f*x[n-d-1].
- * No crossfade. The integer setter is equivalent to an integer call here. */
+ * The integer setter is equivalent to an integer call; crossfade is optional. */
 AudioResult audio_delay_line_set_subframe_delay(AudioDelayLine *line, double delay_frames);
 double audio_delay_line_subframe_delay(const AudioDelayLine *line); /* 0 for NULL */
 /* Selects a causal 16-tap Blackman-windowed sinc interpolator. The configured
@@ -64,6 +64,11 @@ double audio_delay_line_subframe_delay(const AudioDelayLine *line); /* 0 for NUL
 AudioResult audio_delay_line_set_sinc(AudioDelayLine *line, bool enabled);
 bool audio_delay_line_sinc(const AudioDelayLine *line); /* false for NULL */
 u32 audio_delay_line_sinc_extra_delay(const AudioDelayLine *line); /* 0 for NULL */
+/* Sets the duration of later delay transitions, 0..48000 frames. INVALID for
+ * NULL/out-of-range; REJECTED while a fade is active. Zero preserves immediate
+ * transitions. Delay/mode setters are also REJECTED during an active fade. */
+AudioResult audio_delay_line_set_crossfade_frames(AudioDelayLine *line, u32 frames);
+u32 audio_delay_line_crossfade_frames(const AudioDelayLine *line); /* 0 for NULL */
 /* out[n] is the current integer, linearly interpolated, or sinc delayed input;
  * `in` and `out` may be the same buffer. */
 void audio_delay_line_process_i16(AudioDelayLine *line, const i16 *in, i16 *out, u32 frames);
