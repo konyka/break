@@ -28,10 +28,34 @@ AudioResult audio_capture_create(const AudioCaptureConfig *config, AudioCapture 
 /* Stops a running device first. NULL is a no-op. */
 void audio_capture_destroy(AudioCapture *capture);
 
-/* Both are idempotent. FAILED when the device refuses. */
+/* Both are idempotent. start is FAILED when the device refuses or is lost. */
 AudioResult audio_capture_start(AudioCapture *capture);
 AudioResult audio_capture_stop(AudioCapture *capture);
+/* False while the device is lost. */
 bool audio_capture_running(const AudioCapture *capture);
+
+typedef enum {
+    AUDIO_CAPTURE_EVENT_DEVICE_LOST = 0,
+    AUDIO_CAPTURE_EVENT_REROUTED,
+} AudioCaptureEvent;
+
+/* The device stopped without a stop request (unplugged, disabled, taken by
+ * the system). Owner thread. Frames captured before stay readable; call
+ * audio_capture_reopen to continue. */
+bool audio_capture_lost(const AudioCapture *capture);
+/* How often the backend moved the stream to another device on its own. */
+u64 audio_capture_reroutes(const AudioCapture *capture);
+/* Opens the named input device (NULL or empty: the default) and closes the
+ * old one; restarts it when capture was running (a stop request after a
+ * loss is kept). The ring and its frames are kept and the lost state is
+ * cleared. REJECTED for a name no device has or a FAKE backend with a name,
+ * FAILED when the device does not open; the old device and state are left
+ * as they were on failure. Owner thread. */
+AudioResult audio_capture_reopen(AudioCapture *capture, const char *device_name);
+/* FAKE and NULL backends only (tests): delivers `event` through the device
+ * notification path. INVALID for NULL or an unknown event, REJECTED for the
+ * DEFAULT backend. */
+AudioResult audio_capture_simulate_event(AudioCapture *capture, AudioCaptureEvent event);
 
 /* Copies up to max_frames of the oldest captured frames (interleaved by
  * channel) and releases them. The owner thread is the only reader. */

@@ -165,7 +165,14 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 环形缓冲：生产者（设备回调，FAKE 时为注入线程）持有 `head`，读取者持有 `tail`，均为自由增长的 u32，用 release/acquire 发布。缓冲满时丢弃最新的帧并计入 `audio_capture_overruns`。回调不阻塞、不分配、不写日志，并纳入 `test_audio_realtime_contract`。
 - 输入设备选择：`audio_capture_list_devices(backend, out, capacity)` 列出输入设备（名称、序号 id、是否默认），返回设备总数，可能大于 capacity；FAKE 或枚举失败返回 0。`audio_capture_create_named(config, name, out)` 按名称打开设备，NULL 或空名称打开默认设备；没有该名称的设备或 FAKE 带名称时返回 `AUDIO_REJECTED`。设备 id 指向枚举它的 context，所以每个采集对象持有自己的 context，与设备一起释放。`audio_capture_device_name` 返回实际打开的设备名（FAKE 为 "fake"），超长时截断。
 - 帧以配置的采样率与声道数交付：设备原生格式不同时由 miniaudio 的内置转换完成。
-- 未做：设备热插拔、频谱降噪。自动增益、噪声门（时域降噪）与回声消除见下面三节。
+- 设备丢失与重新打开（热插拔）：
+  - `audio_capture_lost` 表示设备在没有停止请求时停止了（拔出、被系统禁用或占用）。来源有两个：miniaudio 的 `stopped` 通知（只在采集处于「已请求启动」状态时才算丢失；`stop`、`destroy` 与 reopen 关闭旧设备时不算），以及设备状态读到已停止而采集仍应运行（部分后端在拔出的设备停不下来时不发停止通知）。
+  - 丢失期间 `audio_capture_running` 为 false，`start` 返回 `AUDIO_FAILED`，FAKE 的 `inject` 返回 `AUDIO_REJECTED`；丢失前采到的帧仍可读取。
+  - `audio_capture_reroutes` 统计后端自行把流切到另一设备的次数（`rerouted` 通知），采集继续运行。
+  - `audio_capture_reopen(capture, name)` 在第二个设备槽中打开指定设备（NULL 或空名称为默认设备），成功后先切换活动槽（旧槽的通知从此被忽略），再关闭旧设备（`ma_device_uninit` 等待其最后一次回调，环形缓冲始终只有一个生产者），清除丢失状态，原先在运行则启动新设备。环形缓冲与其中的帧保留。未知名称或 FAKE 带名称返回 `AUDIO_REJECTED`，打不开返回 `AUDIO_FAILED`，失败时旧设备、设备名与状态不变。丢失后调用过 `stop` 的，reopen 后保持停止。
+  - 新设备出现没有通知：调用者轮询 `audio_capture_list_devices`。
+  - `audio_capture_simulate_event`（FAKE 与 NULL 后端，供测试）通过同一处理函数投递丢失或重路由事件；DEFAULT 后端返回 `AUDIO_REJECTED`。
+- 未做：频谱降噪。自动增益、噪声门（时域降噪）与回声消除见下面三节。
 
 ## 自动增益（AGC）
 
@@ -227,5 +234,6 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `test_audio_echo_canceller`（8 项）：参数校验与失败时不写 `*out`、上下限可接受、初始权重为 0；-10 dBFS 白噪声经两 tap 回声路径，1 秒后回声衰减（ERLE）超过 40 dB，权重与路径相差 1e-3 以内，越界读权重为 0，阈值为 0 时照常学习；参考静音时采集逐位原样通过（含满幅样本）；双讲时打开检测输出对近端单音的信噪比 31 dB、权重误差 0.027，关闭检测为 12 dB、0.24，检测触发后权重完全冻结；保持时间内不学习、两端静音不触发保持、短保持时间过后照常学习；回声路径改变后重新收敛；reset 后与新建的对象逐位一致；1、7、480 帧分块输出逐位相同，并与独立参考模型（移位历史）在 1 LSB 内一致、权重差 1e-9 以内。34 项变异全部被捕获；ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
 - `test_audio_noise_gate`（8 项）：参数校验与失败时不写状态、上下限可接受；-50 dBFS 稳态噪声使底噪收敛、门关闭、输出降到约 -80 dBFS；高出底噪 30 dB 的单音开门并以原电平通过；长时间稳态单音抬高底噪后关门；更安静的噪声立即拉低底噪；静音输出为零、底噪保持 -120 且有限；恒定输入时底噪上升到电平而不越过；立体声及 1、7、480 帧分块与独立参考模型逐位一致。30 项变异中 27 项被捕获。存活的 3 项中两项是等价变异（静音记为 -inf 会被下一行限制回 -120；初始线性增益在首次使用前就被每帧重算）；`>=` 改 `>` 只在电平恰好等于底噪加阈值时不同，双精度下测试信号无法构造。ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
 - `test_audio_agc`（8 项）：参数校验与失败时不写状态、安静与响亮正弦都稳定到目标（1 dB 内）、最大增益上限、门限下增益保持与输出不变、放大后突发大音量被限幅且不回绕、立体声共享增益、分块不影响输出、与独立参考模型逐样本一致。23 项变异全部被捕获；ASan+UBSan 通过。
+- `test_audio_capture` 的热插拔测试（3 项）：FAKE 丢失后运行状态、注入、启动被拒，丢失前的帧在 reopen 后按序读出，FAKE 带名称 reopen 被拒且不清除丢失，丢失后 stop 在 reopen 后保持停止，已停止时的停止事件不算丢失；重路由计数、采集继续运行、非法事件与 NULL 参数；空设备两轮启停与 destroy 不算丢失，运行中 reopen 继续交付帧并报告新设备名，未知名称不影响运行中的设备及其名称，停止状态下 reopen 保持停止，丢失后 start 失败、reopen 恢复运行。23 项变异中 22 项被捕获；存活的是「设备状态已停止」的轮询分支，只有真实设备被拔出且后端不发停止通知时才会走到，本环境无法构造。TSan、ASan+UBSan 通过。
 - `test_audio_capture`（8 项）：设备列表（空设备、容量 0、FAKE、非法参数）、按名称打开与默认名称、未知名称与 FAKE 带名称被拒绝、设备名截断（13 项变异全部被捕获）；配置校验与 `*out` 不变、转换（取整、限幅、NaN/Inf）、顺序与部分读取、立体声跨缓冲末尾回绕、缓冲满时保留最旧的帧并计数、启停幂等与注入门控、空设备实时交付静音帧（两轮启停、运行中销毁）、生产者线程与读取者不丢帧且有序。20 项变异全部被捕获；TSan、ASan+UBSan 通过。
 - 没有真实听测、真实声卡、Windows 或 macOS 验证。采集、自动增益、噪声门和回声消除没有用真实麦克风与扬声器验证。简单 DSP/混响不等于物理声学或听感验收。

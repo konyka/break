@@ -11665,3 +11665,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 构建：`engine` 静态库加入 `audio_echo_canceller.c`；新增 `test_audio_echo_canceller`（headless、audio 标签）。
 - 测试：`test_audio_echo_canceller` 8 项。先 RED（链接失败）后 GREEN。首次运行时双讲测试在 μ = 0.5 下信噪比只有 18 dB：检测要等近端声音超过阈值才触发，开口前几帧的更新使权重偏移；测试改用 μ = 0.1 并检查触发后权重完全冻结。35 项变异首轮存活 4 项：补了「阈值 0 仍学习」「越界读权重」「两端静音不触发保持」测试，双讲比较改为严格大于，删掉了从未读取的 i16 历史镜像。最终 34 项全部被捕获。ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
 - 「回声消除」由此交付。仍缺：参考与采集的自动对齐（延迟估计）、非线性残余回声抑制、频域快速实现、设备热插拔、频谱降噪、真实麦克风与扬声器验证、感知编码器（Opus 等）、音频编辑工具。
+
+### 2026-11-17 音频：采集设备丢失与重新打开（热插拔）
+- `engine/src/audio/audio_capture.{h,c}`：`audio_capture_lost`、`audio_capture_reroutes`、`audio_capture_reopen`、`audio_capture_simulate_event`。设备通过 miniaudio 的 `stopped` / `rerouted` 通知报告丢失与重路由，只有在采集已请求启动时停止才算丢失；另外轮询设备状态，覆盖拔出后不发通知的后端。两个设备槽：reopen 先打开新设备再关闭旧设备，环形缓冲与其中的帧保留，失败时旧设备不变。
+- 测试：`test_audio_capture` 新增 3 项（共 11）。先 RED（链接失败）后 GREEN。25 项变异首轮存活 4 项：删掉了 reopen 失败时恢复设备名的多余代码（打开失败不会改名）和 destroy 中不影响结果的状态清除，补了 NULL 后端的丢失与 reopen 测试、失败 reopen 保留设备名的断言。最终 23 项中 22 项被捕获，存活的状态轮询分支需要真实拔出设备才能触发。TSan、ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过；`test_audio_realtime_contract` 通过（回调路径不分配、不做文件 I/O）。
+- 「设备热插拔」由此交付；新设备出现由调用者轮询设备列表。仍缺：真实设备拔插验证、频谱降噪、自动延迟估计、感知编码器（Opus 等）、音频编辑工具。

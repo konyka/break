@@ -326,6 +326,158 @@ TEST(a_producer_thread_and_the_reader_lose_nothing)
     audio_capture_destroy(p.capture);
 }
 
+TEST(a_lost_fake_device_keeps_its_frames_and_reopens)
+{
+    AudioCapture *capture = started_fake(1u, 64u);
+    const f32 before[2] = {0.25f, -0.5f};
+    const f32 after = 0.75f;
+    i16 out[8];
+    u32 n = 0u;
+    char name[16];
+    ASSERT_TRUE(capture != NULL);
+    ASSERT_EQ(audio_capture_inject(capture, before, 2u), AUDIO_OK);
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    ASSERT_EQ(audio_capture_simulate_event(capture, AUDIO_CAPTURE_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_TRUE(audio_capture_lost(capture));
+    ASSERT_TRUE(!audio_capture_running(capture));
+    ASSERT_EQ(audio_capture_inject(capture, &after, 1u), AUDIO_REJECTED);
+    ASSERT_EQ(audio_capture_start(capture), AUDIO_FAILED);
+    /* a FAKE backend has no named devices; a failed reopen changes nothing */
+    ASSERT_EQ(audio_capture_reopen(capture, "mic"), AUDIO_REJECTED);
+    ASSERT_TRUE(audio_capture_lost(capture));
+    /* reopening resumes; the frames from before the loss come first */
+    ASSERT_EQ(audio_capture_reopen(capture, NULL), AUDIO_OK);
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    ASSERT_TRUE(audio_capture_running(capture));
+    ASSERT_EQ(audio_capture_inject(capture, &after, 1u), AUDIO_OK);
+    ASSERT_EQ(audio_capture_read_i16(capture, out, 8u, &n), AUDIO_OK);
+    ASSERT_EQ(n, 3u);
+    ASSERT_EQ(out[0], (i16)lrintf(0.25f * 32767.0f));
+    ASSERT_EQ(out[1], (i16)lrintf(-0.5f * 32767.0f));
+    ASSERT_EQ(out[2], (i16)lrintf(0.75f * 32767.0f));
+    ASSERT_TRUE(audio_capture_device_name(capture, name, sizeof(name)));
+    ASSERT_EQ(strcmp(name, "fake"), 0);
+    /* a stop after a loss is kept across the reopen */
+    ASSERT_EQ(audio_capture_simulate_event(capture, AUDIO_CAPTURE_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(audio_capture_stop(capture), AUDIO_OK);
+    ASSERT_EQ(audio_capture_reopen(capture, ""), AUDIO_OK);
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    ASSERT_TRUE(!audio_capture_running(capture));
+    ASSERT_EQ(audio_capture_inject(capture, &after, 1u), AUDIO_REJECTED);
+    /* a stopped device that stops again is not lost */
+    ASSERT_EQ(audio_capture_simulate_event(capture, AUDIO_CAPTURE_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    ASSERT_EQ(audio_capture_start(capture), AUDIO_OK);
+    ASSERT_TRUE(audio_capture_running(capture));
+    audio_capture_destroy(capture);
+}
+
+TEST(reroutes_are_counted_and_capture_keeps_running)
+{
+    AudioCapture *capture = started_fake(2u, 16u);
+    AudioCaptureConfig config = fake_config(1u, 16u);
+    AudioCapture *null_capture = NULL;
+    ASSERT_TRUE(capture != NULL);
+    ASSERT_EQ(audio_capture_reroutes(capture), 0u);
+    ASSERT_EQ(audio_capture_simulate_event(capture, AUDIO_CAPTURE_EVENT_REROUTED), AUDIO_OK);
+    ASSERT_EQ(audio_capture_simulate_event(capture, AUDIO_CAPTURE_EVENT_REROUTED), AUDIO_OK);
+    ASSERT_EQ(audio_capture_reroutes(capture), 2u);
+    ASSERT_TRUE(audio_capture_running(capture));
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    ASSERT_EQ(audio_capture_simulate_event(capture, (AudioCaptureEvent)7), AUDIO_INVALID);
+    ASSERT_EQ(audio_capture_simulate_event(NULL, AUDIO_CAPTURE_EVENT_REROUTED), AUDIO_INVALID);
+    ASSERT_EQ(audio_capture_reroutes(capture), 2u);
+    ASSERT_TRUE(!audio_capture_lost(NULL));
+    ASSERT_EQ(audio_capture_reroutes(NULL), 0u);
+    ASSERT_EQ(audio_capture_reopen(NULL, NULL), AUDIO_INVALID);
+    audio_capture_destroy(capture);
+    config.backend = AUDIO_BACKEND_NULL;
+    ASSERT_EQ(audio_capture_create(&config, &null_capture), AUDIO_OK);
+    /* a stopped null device that reports a stop is not lost */
+    ASSERT_EQ(audio_capture_simulate_event(null_capture, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              AUDIO_OK);
+    ASSERT_TRUE(!audio_capture_lost(null_capture));
+    audio_capture_destroy(null_capture);
+    config.backend = AUDIO_BACKEND_DEFAULT;
+    if (audio_capture_create(&config, &null_capture) == AUDIO_OK) {
+        ASSERT_EQ(audio_capture_simulate_event(null_capture, AUDIO_CAPTURE_EVENT_REROUTED),
+                  AUDIO_REJECTED);
+        ASSERT_EQ(audio_capture_reroutes(null_capture), 0u);
+        audio_capture_destroy(null_capture);
+    }
+}
+
+/* reads until at least `want` frames arrived or two seconds passed */
+static u32 read_frames(AudioCapture *capture, u32 want) {
+    u32 got = 0u;
+    for (u32 tries = 0; tries < 200u && got < want; ++tries) {
+        i16 out[256];
+        u32 n = 0u;
+        if (audio_capture_read_i16(capture, out, 256u, &n) != AUDIO_OK) return got;
+        got += n;
+        if (n == 0u) sleep_ms(10u);
+    }
+    return got;
+}
+
+TEST(requested_stops_are_not_losses_and_the_null_device_reopens)
+{
+    AudioCaptureConfig config = fake_config(1u, 1u << 15);
+    AudioCapture *capture = NULL;
+    AudioDeviceInfo device;
+    char name[sizeof(device.name)];
+    config.backend = AUDIO_BACKEND_NULL;
+    ASSERT_EQ(audio_capture_list_devices(AUDIO_BACKEND_NULL, &device, 1u), 1u);
+    ASSERT_EQ(audio_capture_create(&config, &capture), AUDIO_OK);
+    for (u32 pass = 0; pass < 2u; ++pass) {
+        ASSERT_EQ(audio_capture_start(capture), AUDIO_OK);
+        ASSERT_TRUE(read_frames(capture, 480u) >= 480u);
+        ASSERT_EQ(audio_capture_stop(capture), AUDIO_OK);
+        ASSERT_TRUE(!audio_capture_lost(capture));
+    }
+    /* reopening while running keeps delivering */
+    ASSERT_EQ(audio_capture_start(capture), AUDIO_OK);
+    ASSERT_EQ(audio_capture_reopen(capture, device.name), AUDIO_OK);
+    ASSERT_TRUE(audio_capture_running(capture));
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    ASSERT_TRUE(read_frames(capture, 480u) >= 480u);
+    ASSERT_TRUE(audio_capture_device_name(capture, name, sizeof(name)));
+    ASSERT_EQ(strcmp(name, device.name), 0);
+    /* an unknown name leaves the running device and its name alone */
+    ASSERT_EQ(audio_capture_reopen(capture, "no such input device"), AUDIO_REJECTED);
+    ASSERT_TRUE(audio_capture_running(capture));
+    ASSERT_TRUE(audio_capture_device_name(capture, name, sizeof(name)));
+    ASSERT_EQ(strcmp(name, device.name), 0);
+    ASSERT_TRUE(read_frames(capture, 480u) >= 480u);
+    /* reopening a stopped capture leaves it stopped */
+    ASSERT_EQ(audio_capture_stop(capture), AUDIO_OK);
+    ASSERT_EQ(audio_capture_reopen(capture, NULL), AUDIO_OK);
+    ASSERT_TRUE(!audio_capture_running(capture));
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    i16 drain[256];
+    u32 n = 0u;
+    while (audio_capture_read_i16(capture, drain, 256u, &n) == AUDIO_OK && n > 0u) {}
+    sleep_ms(50u);
+    ASSERT_EQ(audio_capture_available(capture), 0u);
+    ASSERT_EQ(audio_capture_start(capture), AUDIO_OK);
+    ASSERT_TRUE(read_frames(capture, 480u) >= 480u);
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    ASSERT_EQ(audio_capture_reroutes(capture), 0u);
+    /* a lost device: start fails until a reopen, which restarts it */
+    ASSERT_EQ(audio_capture_simulate_event(capture, AUDIO_CAPTURE_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_TRUE(audio_capture_lost(capture));
+    ASSERT_TRUE(!audio_capture_running(capture));
+    ASSERT_EQ(audio_capture_start(capture), AUDIO_FAILED);
+    ASSERT_EQ(audio_capture_reopen(capture, "no such input device"), AUDIO_REJECTED);
+    ASSERT_TRUE(audio_capture_lost(capture));
+    ASSERT_EQ(audio_capture_reopen(capture, NULL), AUDIO_OK);
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    ASSERT_TRUE(audio_capture_running(capture));
+    while (audio_capture_read_i16(capture, drain, 256u, &n) == AUDIO_OK && n > 0u) {}
+    ASSERT_TRUE(read_frames(capture, 480u) >= 480u);
+    audio_capture_destroy(capture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_refuses_every_invalid_config);
     RUN_TEST(injected_frames_are_converted_and_read_in_order);
@@ -335,4 +487,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(the_null_device_delivers_silent_frames_in_real_time);
     RUN_TEST(input_devices_are_listed_and_opened_by_name);
     RUN_TEST(a_producer_thread_and_the_reader_lose_nothing);
+    RUN_TEST(a_lost_fake_device_keeps_its_frames_and_reopens);
+    RUN_TEST(reroutes_are_counted_and_capture_keeps_running);
+    RUN_TEST(requested_stops_are_not_losses_and_the_null_device_reopens);
 TEST_MAIN_END()
