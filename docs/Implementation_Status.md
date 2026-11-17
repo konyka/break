@@ -11652,3 +11652,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 测试：`test_audio_agc` 8 项。先 RED（链接失败）后 GREEN。23 项变异首轮 3 项存活（截断取整、只看左声道电平、电平窗口），补了独立参考模型测试后全部被捕获。ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
 - 文档修复：采集一节插入时误删了设计文档的「验证与限制」标题，已恢复。
 - 仍缺：回声消除、降噪、设备热插拔、真实麦克风录音验证、感知编码器（Opus 等）、音频编辑工具。
+
+### 2026-11-17 音频：采集语音的噪声门（降噪）
+- `engine/src/audio/audio_noise_gate.{h,c}`：`audio_noise_gate_init`、`audio_noise_gate_process_i16`、`audio_noise_gate_gain_db`、`audio_noise_gate_floor_dbfs`。时域向下扩展器：10 ms 均方电平，自适应底噪（立即下降、按配置速度上升且不超过电平），电平高出底噪达到阈值时开门，否则衰减配置的 dB 数；开门与关门分别使用 attack 与 release 时间常数。
+- 构建：`engine` 静态库加入 `audio_noise_gate.c`；新增 `test_audio_noise_gate`（headless、audio 标签）。
+- 测试：`test_audio_noise_gate` 8 项。先 RED（链接失败）后 GREEN。30 项变异首轮存活 7 项：补了「底噪上升到电平而不越过」测试；不可达的分支（底噪下降的单独分支、增益不超过 1 时的 i16 限幅）合并删除。最终 27/30 被捕获，存活 3 项中两项等价，一项只在电平恰好相等时不同。ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
+- 「降噪」以时域噪声门交付。频谱降噪没有做，因为引擎没有 FFT。
+- 仍缺：回声消除、设备热插拔、频谱降噪、真实麦克风录音验证、感知编码器（Opus 等）、音频编辑工具。

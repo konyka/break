@@ -1051,7 +1051,7 @@ src/renderer/lens_effects.c
     src/physics/character.c
     src/audio/audio.c
     src/audio/audio_extended.c src/audio/audio_dsp.c src/audio/audio_hrtf.c
-    src/audio/audio_capture.c src/audio/audio_agc.c
+    src/audio/audio_capture.c src/audio/audio_agc.c src/audio/audio_noise_gate.c
     src/audio/audio_stream.c
     src/animation/skeleton.c
     src/animation/skeleton_socket.c
@@ -7074,6 +7074,11 @@ endif()
     target_link_libraries(test_audio_agc PRIVATE m)
     add_test(NAME test_audio_agc COMMAND test_audio_agc)
 
+    add_executable(test_audio_noise_gate tests/test_audio_noise_gate.c src/audio/audio_noise_gate.c)
+    target_include_directories(test_audio_noise_gate PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_audio_noise_gate PRIVATE m)
+    add_test(NAME test_audio_noise_gate COMMAND test_audio_noise_gate)
+
     add_test(NAME test_audio_realtime_contract
         COMMAND ${CMAKE_COMMAND}
             -DAUDIO_EXTENDED=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_extended.c
@@ -7083,7 +7088,7 @@ endif()
             -DAUDIO_CAPTURE=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_capture.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_realtime_contract.cmake)
     set_tests_properties(test_audio test_audio_extended test_audio_dsp test_audio_hrtf
-        test_audio_capture test_audio_agc
+        test_audio_capture test_audio_agc test_audio_noise_gate
         test_audio_realtime_contract PROPERTIES LABELS "headless;audio")
 
     # test_vulkan: full backend integration + golden-image regression (VK + GL).
