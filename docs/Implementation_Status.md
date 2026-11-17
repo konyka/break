@@ -11533,3 +11533,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `tools/trace_merge.c`：`--session N` 作用于下一个输入，需配合 `--clock-offset`；第 1 个输入为服务端不带 `--session`，其余输入必须全部带上。每个对端打印 `clock offset session=N ...`，失败信息带会话号。
 - 测试：`test_clock_offset` 新增 3 项、`test_trace_core_app` 新增 2 项、`test_trace_merge_tool` 新增服务端加两个对端合并与 9 种失败用例。先 RED 后 GREEN；24 项变异首轮 1 项存活（会话号缺下界检查），补 `session=/` 后全部被捕获；影子变量检查通过。
 - 仍缺：偏移只来自服务端探测；对端 trace 与会话号的对应需手动指定。
+
+### 2026-11-17 音频：PCM 流的高度提示
+- `engine/src/audio/audio_extended.{h,c}`：新增 `audio_pcm_stream_set_elevation_cue`、`AUDIO_PCM_STREAM_ELEVATION_CUTOFF_HZ`（7 kHz）与 `AUDIO_PCM_STREAM_ELEVATION_BOOST`（0.5）。倾斜量由声源方向与 up 向量夹角的余弦得到（上方乘 0.5），输出 `x + s (x − lp)`，低通始终运行；水平声源、重合声源、零 up 向量时输出逐位不变。
+- `test_audio_extended` 新增 6 项（共 113）：参数、水平/重合/零 up 不变、正下/正上/30° 的阶跃响应、监听者翻转、24 kHz 音调的衰减与提升、立体声独立状态与重新 open 复位。
+- 先 RED（5 项失败，水平声源一项按设计在桩上通过）后 GREEN；21 项变异首轮 3 项存活（余弦为 0 的提前返回与 ±1 钳制在数学上冗余），删去这 3 行，另有 1 个模式匹配不唯一，改写后被捕获，其余全部被捕获；影子变量检查通过。
+- 仍缺：HRTF、事件 voice 的高度提示、麦克风采集、感知编码器、音频编辑工具。
+

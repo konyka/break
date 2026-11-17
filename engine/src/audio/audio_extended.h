@@ -198,6 +198,21 @@ AudioResult audio_pcm_stream_set_rear_cue(AudioSystem *as, AudioPcmStreamHandle 
 AudioResult audio_pcm_stream_set_interaural_delay(AudioSystem *as, AudioPcmStreamHandle handle,
                                                   bool enabled);
 
+/* Low-pass corner of the elevation cue's tilt filter, and the high-shelf
+ * amount for a source straight above (straight below gives the low-pass). */
+#define AUDIO_PCM_STREAM_ELEVATION_CUTOFF_HZ 7000.0f
+#define AUDIO_PCM_STREAM_ELEVATION_BOOST 0.5f
+
+/* Height cue for a spatial stream (no HRTF): a spectral tilt by the cosine e
+ * of the angle between the source direction and the listener's up vector.
+ * Output is x + s (x - lp), lp a one-pole low-pass at
+ * AUDIO_PCM_STREAM_ELEVATION_CUTOFF_HZ, s = e * AUDIO_PCM_STREAM_ELEVATION_BOOST
+ * above and s = e below: more top end above, less below. A source level
+ * with the listener, on it, or a zero up vector plays exactly as without the
+ * cue. Off at open. REJECTED for a stream without set_spatial. */
+AudioResult audio_pcm_stream_set_elevation_cue(AudioSystem *as, AudioPcmStreamHandle handle,
+                                               bool enabled);
+
 typedef enum {
     AUDIO_RESAMPLE_LINEAR = 0,
     AUDIO_RESAMPLE_SINC

@@ -173,6 +173,12 @@ typedef struct {
     atomic_int itd_frames;
     bool interaural_delay;
     ItdLine itd;
+    /* elevation cue (audio_pcm_stream_set_elevation_cue): the tilt amount,
+     * published by the owner thread, and the per-channel low-pass state,
+     * mixer-owned like `pos` and run while the cue is off; open resets both */
+    atomic_uint elevation_bits;
+    bool elevation_cue;
+    f32 elevation_state[2];
     atomic_uint gain_bits;
     /* distance attenuation (audio_pcm_stream_set_spatial); written and
      * recomputed on the owner thread, the mixer reads spatial_bits only */
@@ -676,9 +682,12 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
     f32 pan_left = 1.0f;
     f32 pan_right = 1.0f;
     f32 rear_alpha = 1.0f;
+    f32 tilt = 0.0f;
     i32 itd = 0;
     if (open) {
         itd = atomic_load_explicit(&stream->itd_frames, memory_order_relaxed);
+        tilt = gain_from_bits(atomic_load_explicit(&stream->elevation_bits,
+                                                   memory_order_relaxed));
         rear_alpha = gain_from_bits(atomic_load_explicit(&stream->rear_alpha_bits,
                                                          memory_order_relaxed));
         u64 pan = atomic_load_explicit(&stream->pan_bits, memory_order_relaxed);
@@ -707,6 +716,9 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
     bool sinc = open && stream->rate != AUDIO_PCM_SAMPLE_RATE &&
                 atomic_load_explicit(&stream->resample, memory_order_relaxed) ==
                     (unsigned)AUDIO_RESAMPLE_SINC;
+    const f32 tilt_alpha = (f32)(1.0 - exp(-2.0 * 3.14159265358979323846 *
+                                           (double)AUDIO_PCM_STREAM_ELEVATION_CUTOFF_HZ /
+                                           (double)AUDIO_PCM_SAMPLE_RATE));
     for (ma_uint64 frame = 0; frame < frames; ++frame) {
         f32 left = 0.0f;
         f32 right = 0.0f;
@@ -743,6 +755,14 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
             } else {
                 stream->rear_state[0] = left;
                 stream->rear_state[1] = right;
+            }
+            /* the tilt's low-pass runs while the cue is off or level, so it
+             * starts from the current signal when it engages */
+            stream->elevation_state[0] += tilt_alpha * (left - stream->elevation_state[0]);
+            stream->elevation_state[1] += tilt_alpha * (right - stream->elevation_state[1]);
+            if (tilt != 0.0f) {
+                left += tilt * (left - stream->elevation_state[0]);
+                right += tilt * (right - stream->elevation_state[1]);
             }
             itd_line_process(&stream->itd, itd, &left, &right);
             left *= gain * pan_left;
@@ -886,6 +906,10 @@ AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample
         atomic_store_explicit(&stream->rear_alpha_bits, gain_to_bits(1.0f), memory_order_relaxed);
         stream->rear_state[0] = 0.0f;
         stream->rear_state[1] = 0.0f;
+        stream->elevation_cue = false;
+        atomic_store_explicit(&stream->elevation_bits, gain_to_bits(0.0f), memory_order_relaxed);
+        stream->elevation_state[0] = 0.0f;
+        stream->elevation_state[1] = 0.0f;
         stream->interaural_delay = false;
         atomic_store_explicit(&stream->itd_frames, 0, memory_order_relaxed);
         memset(&stream->itd, 0, sizeof(stream->itd));
@@ -1008,6 +1032,23 @@ static f32 rear_cue_alpha(const AudioSystem *as, Vec3 position) {
     return (f32)(1.0 - behind * (1.0 - rear));
 }
 
+/* Tilt amount of the elevation cue: the cosine of the angle between the
+ * source direction and the up vector, scaled by
+ * AUDIO_PCM_STREAM_ELEVATION_BOOST above; 0 for a level source, a source on
+ * the listener or a zero up vector. */
+static f32 elevation_amount(const AudioSystem *as, Vec3 position) {
+    double d[3], u[3];
+    for (u32 i = 0; i < 3; ++i) {
+        d[i] = (double)position.e[i] - as->listener_pos.e[i];
+        u[i] = as->listener_up.e[i];
+    }
+    double dlen = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    double ulen = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    if (!(dlen > 0.0) || !(ulen > 0.0)) return 0.0f;
+    double e = (d[0] * u[0] + d[1] * u[1] + d[2] * u[2]) / (dlen * ulen);
+    return (f32)(e > 0.0 ? e * (double)AUDIO_PCM_STREAM_ELEVATION_BOOST : e);
+}
+
 /* Signed far-ear delay in frames (positive: the left ear, source on the
  * right) from the Woodworth model on the panning's lateral amount. The pan is
  * within -1..1, so the delay is at most AUDIO_PCM_STREAM_ITD_MAX_FRAMES. */
@@ -1043,6 +1084,10 @@ static AudioResult pcm_stream_publish_spatial(AudioExtended *ext, AudioPcmStream
     atomic_store_explicit(&stream->rear_alpha_bits,
                           gain_to_bits(stream->rear_cue ?
                                        rear_cue_alpha(ext->owner, stream->position) : 1.0f),
+                          memory_order_relaxed);
+    atomic_store_explicit(&stream->elevation_bits,
+                          gain_to_bits(stream->elevation_cue ?
+                                       elevation_amount(ext->owner, stream->position) : 0.0f),
                           memory_order_relaxed);
     atomic_store_explicit(&stream->itd_frames,
                           stream->interaural_delay ?
@@ -1117,6 +1162,16 @@ AudioResult audio_pcm_stream_set_interaural_delay(AudioSystem *as, AudioPcmStrea
     if (result != AUDIO_OK) return result;
     if (!stream->spatial) return AUDIO_REJECTED;
     stream->interaural_delay = enabled;
+    return pcm_stream_publish_spatial(audio_extended(as), stream);
+}
+
+AudioResult audio_pcm_stream_set_elevation_cue(AudioSystem *as, AudioPcmStreamHandle handle,
+                                               bool enabled) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (!stream->spatial) return AUDIO_REJECTED;
+    stream->elevation_cue = enabled;
     return pcm_stream_publish_spatial(audio_extended(as), stream);
 }
 

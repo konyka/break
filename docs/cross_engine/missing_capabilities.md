@@ -268,3 +268,4 @@
 - **第 10 节（音频）追加**：空间事件 voice 也可打开耳间时差（`AudioEventDesc.interaural_delay`），耳间时差覆盖 PCM 流与事件两类声源，上文「事件 voice 的耳间时差」由此交付。仍缺：HRTF、高度提示、延迟变化的平滑、麦克风采集、感知编码器（Opus 等）、音频编辑工具。
 - **第 10 节（音频）追加**：耳间时差的延迟变化不再跳变，流与事件 voice 共用 `ItdLine`，在 32 帧（`AUDIO_PCM_STREAM_ITD_FADE_FRAMES`，约 0.67 ms）内线性交叉淡化，延迟未变的耳朵保持逐位精确；淡化中目标再变时等本次结束，尚未播放的延迟线直接采用目标。「延迟变化的平滑」由此交付。仍缺：HRTF、高度提示、麦克风采集、感知编码器（Opus 等）、音频编辑工具。
 - **第 13 节（诊断/跨线程关联）追加**：`trace_merge --clock-offset SERVER_TRACE SERVER.json --session N PEER.json ...` 按会话从服务端 trace 读取每个对端的偏移（`break_trace_core_app_clock_offset_for_session`），用 `clock_offset_merge_shifts_many` 把服务端与所有对端放在同一时间轴上，「多个对端时只能手动指定 `--offset-us`」由此交付。仍缺：偏移只来自服务端探测；对端 trace 与会话号的对应仍需手动指定。
+- **第 10 节（音频）追加**：空间 PCM 流可打开高度提示（`audio_pcm_stream_set_elevation_cue`，按声源与 up 向量夹角做频谱倾斜：上方高架提升，下方低通），「高度提示」由此交付。仍缺：HRTF、事件 voice 的高度提示、麦克风采集、感知编码器（Opus 等）、音频编辑工具。

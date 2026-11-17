@@ -109,6 +109,12 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 
 帧数与 pan、后方系数走同一协议：START 命令携带初始帧数（`spatial_itd`）而不写 `itd_snapshot`；之后的 `audio_voice_set_position` 与监听者更新先写 `itd_snapshot = (revision, 帧数)`，再 CAS 增益快照；混音回调采用增益 revision R 时，只有 `itd_snapshot` 的 revision 也是 R、且该事件打开了耳间时差才采用其中的帧数，所以 RESTART 后的新延迟不会作用到旧 epoch 仍在播放的 PCM。每个 voice 有自己的 64 帧延迟线，消费 START 时清零；延迟放在后方提示之后、增益与声像之前。PCM 流与 voice 共用 `itd_line_push`。
 
+### 高度提示
+
+`audio_pcm_stream_set_elevation_cue(as, h, enabled)` 为空间流打开高度提示（open 时关闭；未 `set_spatial` 返回 `AUDIO_REJECTED`）。没有 HRTF 时用频谱倾斜区分上下：上方声源保留更多高频，下方声源被躯干遮挡、高频衰减。`e` 为声源方向与监听者 up 向量夹角的余弦（up 不必是单位长度），倾斜量 `s` 在上方为 `e × AUDIO_PCM_STREAM_ELEVATION_BOOST`（0.5），在下方为 `e`；声源与监听者重合或 up 为零向量时为 0。
+
+每声道一个转折频率为 `AUDIO_PCM_STREAM_ELEVATION_CUTOFF_HZ`（7 kHz）的一阶低通 `lp += a (x − lp)` 始终运行，输出 `x + s (x − lp)`：上方为高架提升，正下方即低通本身，水平声源（`s = 0`）逐位不变。低通在提示关闭或水平时照常运行，所以提示打开或声源移到上下方时从当前信号开始，没有旧状态造成的爆音。`s` 与增益、后方系数一起在所有者线程计算并作为一个原子 f32 发布，混音回调每次读一次；倾斜位于后方提示之后、耳间时差之前。open 把状态清零。事件 voice 尚无高度提示。
+
 ## 验证与限制
 
 - `test_audio_extended`：clip/容量、并发/重触发、stale handle、真实 DSP 接线、逐样本交叉淡化、loop/停止、遮挡/距离、bus/master、legacy WAV、bit-exact fake 和 null 命令生命周期。

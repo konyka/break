@@ -3280,6 +3280,231 @@ TEST(pcm_stream_interaural_delay_change_during_a_fade_waits_for_it)
     audio_system_destroy(as);
 }
 
+/* ---- elevation cue ---- */
+
+static double ref_elev_alpha(void)
+{
+    return 1.0 - exp(-2.0 * 3.14159265358979323846 * 7000.0 / 48000.0);
+}
+
+static AudioPcmStreamHandle open_elev_stream(AudioSystem *as, u32 channels, Vec3 position,
+                                             bool cue)
+{
+    AudioPcmStreamHandle h = 0;
+    if (audio_pcm_stream_open(as, channels, AUDIO_BUS_MASTER, 1.0f, &h) != AUDIO_OK ||
+        audio_pcm_stream_set_spatial(as, h, 10.0f, 100.0f, 1.0f, 1.0f) != AUDIO_OK ||
+        audio_pcm_stream_set_position(as, h, position) != AUDIO_OK ||
+        (cue && audio_pcm_stream_set_elevation_cue(as, h, true) != AUDIO_OK)) {
+        return 0u;
+    }
+    return h;
+}
+
+/* lp += a (x - lp), out = x + s (x - lp), from lp = lp0 */
+static void check_tilt(const f32 *out, const double *x, u32 frames, u32 stride, double s,
+                       double lp0, bool *ok)
+{
+    double a = ref_elev_alpha();
+    double lp = lp0;
+    for (u32 i = 0; i < frames; ++i) {
+        lp += a * (x[i] - lp);
+        double y = x[i] + s * (x[i] - lp);
+        if (fabs(out[stride * i] - y) > 2e-6) *ok = false;
+    }
+}
+
+TEST(pcm_stream_elevation_cue_arguments)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = 0;
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_elevation_cue(as, h, true), AUDIO_REJECTED);
+    ASSERT_EQ(audio_pcm_stream_set_elevation_cue(as, 0u, true), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_elevation_cue(NULL, h, true), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 10.0f, 100.0f, 1.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_elevation_cue(as, h, true), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_elevation_cue(as, h, false), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_elevation_cue(as, h, true), AUDIO_STALE);
+    audio_system_destroy(as);
+}
+
+TEST(pcm_stream_elevation_cue_leaves_level_sources_untouched)
+{
+    enum { kFrames = 64 };
+    i16 pcm[kFrames];
+    static f32 out[2u * kFrames];
+    random_pcm(pcm, kFrames, 4242u);
+    const Vec3 places[3] = {vec3(0, 0, -2), vec3(2, 0, 0), vec3(0, 0, 0)};
+    for (u32 p = 0; p < 4u; ++p) {
+        AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+        ASSERT_NOT_NULL(as);
+        Vec3 place = p < 3u ? places[p] : vec3(0, 3, 0);
+        /* a zero up vector gives no height */
+        if (p == 3u) audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 0, 0));
+        AudioPcmStreamHandle h = open_elev_stream(as, 1u, place, true);
+        ASSERT_NEQ(h, 0u);
+        ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+        for (u32 i = 0; i < kFrames; ++i) {
+            ASSERT_FLOAT_EQ(out[2u * i], (f32)pcm[i] / 32768.0f, 0.0f);
+            ASSERT_FLOAT_EQ(out[2u * i + 1u], (f32)pcm[i] / 32768.0f, 0.0f);
+        }
+        AudioPcmStream *stream = &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
+        ASSERT_EQ(atomic_load(&stream->elevation_bits), gain_to_bits(0.0f));
+        audio_system_destroy(as);
+    }
+}
+
+TEST(pcm_stream_elevation_cue_tilts_by_height)
+{
+    enum { kFrames = 24 };
+    i16 step[kFrames];
+    double x[kFrames];
+    static f32 out[2u * kFrames];
+    for (u32 i = 0; i < kFrames; ++i) {
+        step[i] = 16384;
+        x[i] = 0.5;
+    }
+    /* straight below: the low-pass itself */
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_elev_stream(as, 1u, vec3(0, -2, 0), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, step, kFrames, out));
+    bool ok = true;
+    check_tilt(out, x, kFrames, 2u, -1.0, 0.0, &ok);
+    check_tilt(out + 1, x, kFrames, 2u, -1.0, 0.0, &ok);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(out[0] < 0.4f);
+    audio_system_destroy(as);
+
+    /* straight above: a high shelf, x + 0.5 (x - lp) */
+    as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    h = open_elev_stream(as, 1u, vec3(0, 5, 0), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, step, kFrames, out));
+    check_tilt(out, x, kFrames, 2u, 0.5, 0.0, &ok);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(out[0] > 0.55f);
+    audio_system_destroy(as);
+
+    /* 30 degrees up from the side plane, up vector not unit length */
+    as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 4, 0));
+    h = open_elev_stream(as, 1u, vec3((f32)sqrt(3.0), 1, 0), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, step, kFrames, out));
+    check_tilt(out, x, kFrames, 2u, 0.25, 0.0, &ok);
+    ASSERT_TRUE(ok);
+    /* off: exact again */
+    ASSERT_EQ(audio_pcm_stream_set_elevation_cue(as, h, false), AUDIO_OK);
+    ASSERT_TRUE(play_frames(as, h, step, 2u, out));
+    ASSERT_FLOAT_EQ(out[0], 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(out[2], 0.5f, 0.0f);
+    audio_system_destroy(as);
+}
+
+/* the low-pass runs while the cue is level or off, so it engages from the
+ * current signal; the listener turning over swaps above and below */
+TEST(pcm_stream_elevation_cue_follows_the_listener)
+{
+    enum { kFrames = 16 };
+    i16 pcm[kFrames];
+    double x[kFrames];
+    static f32 out[2u * kFrames];
+    random_pcm(pcm, kFrames, 777u);
+    for (u32 i = 0; i < kFrames; ++i) x[i] = (double)pcm[i] / 32768.0;
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_elev_stream(as, 1u, vec3(0, 2, 0), false);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+    for (u32 i = 0; i < kFrames; ++i) ASSERT_FLOAT_EQ(out[2u * i], (f32)x[i], 0.0f);
+    double a = ref_elev_alpha();
+    double lp = 0.0;
+    for (u32 i = 0; i < kFrames; ++i) lp += a * (x[i] - lp);
+    ASSERT_EQ(audio_pcm_stream_set_elevation_cue(as, h, true), AUDIO_OK);
+    ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+    bool ok = true;
+    check_tilt(out, x, kFrames, 2u, 0.5, lp, &ok);
+    ASSERT_TRUE(ok);
+    for (u32 i = 0; i < kFrames; ++i) lp += a * (x[i] - lp);
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, -1, 0));
+    ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+    check_tilt(out, x, kFrames, 2u, -1.0, lp, &ok);
+    ASSERT_TRUE(ok);
+    audio_system_destroy(as);
+}
+
+/* a +x, -x tone at 24 kHz: cut below, boosted above */
+TEST(pcm_stream_elevation_cue_shapes_high_frequencies)
+{
+    enum { kFrames = 200 };
+    i16 tone[kFrames];
+    static f32 out[2u * kFrames];
+    for (u32 i = 0; i < kFrames; ++i) tone[i] = (i & 1u) ? -16384 : 16384;
+    double a = ref_elev_alpha();
+    double lp_amp = 0.5 * a / (2.0 - a);
+    const f32 heights[2] = {-3.0f, 3.0f};
+    const double expect[2] = {lp_amp, 0.5 + 0.5 * (0.5 - lp_amp)};
+    for (u32 k = 0; k < 2u; ++k) {
+        AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+        ASSERT_NOT_NULL(as);
+        AudioPcmStreamHandle h = open_elev_stream(as, 1u, vec3(0, heights[k], 0), true);
+        ASSERT_NEQ(h, 0u);
+        ASSERT_TRUE(play_frames(as, h, tone, kFrames, out));
+        for (u32 i = kFrames - 50u; i < kFrames; ++i) {
+            ASSERT_FLOAT_EQ(fabsf(out[2u * i]), (f32)expect[k], 1e-5f);
+        }
+        audio_system_destroy(as);
+    }
+    ASSERT_TRUE(expect[0] < 0.25);
+    ASSERT_TRUE(expect[1] > 0.6);
+}
+
+TEST(pcm_stream_elevation_cue_keeps_stereo_state_apart_and_resets_on_reopen)
+{
+    enum { kFrames = 12 };
+    i16 pcm[2u * kFrames];
+    double xl[kFrames], xr[kFrames];
+    static f32 out[2u * kFrames];
+    for (u32 i = 0; i < kFrames; ++i) {
+        pcm[2u * i] = 16384;
+        pcm[2u * i + 1u] = -8192;
+        xl[i] = 0.5;
+        xr[i] = -0.25;
+    }
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_elev_stream(as, 2u, vec3(0, -2, 0), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+    bool ok = true;
+    check_tilt(out, xl, kFrames, 2u, -1.0, 0.0, &ok);
+    check_tilt(out + 1, xr, kFrames, 2u, -1.0, 0.0, &ok);
+    ASSERT_TRUE(ok);
+    ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+    /* the reopened slot starts with the cue off and a cleared filter */
+    h = 0;
+    ASSERT_EQ(audio_pcm_stream_open(as, 2u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    AudioPcmStream *stream = &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
+    ASSERT_FALSE(stream->elevation_cue);
+    ASSERT_EQ(atomic_load(&stream->elevation_bits), gain_to_bits(0.0f));
+    ASSERT_FLOAT_EQ(stream->elevation_state[0], 0.0f, 0.0f);
+    ASSERT_FLOAT_EQ(stream->elevation_state[1], 0.0f, 0.0f);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 10.0f, 100.0f, 1.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, -2, 0)), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_elevation_cue(as, h, true), AUDIO_OK);
+    ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
+    check_tilt(out, xl, kFrames, 2u, -1.0, 0.0, &ok);
+    check_tilt(out + 1, xr, kFrames, 2u, -1.0, 0.0, &ok);
+    ASSERT_TRUE(ok);
+    audio_system_destroy(as);
+}
+
 /* ---- event rear cue ---- */
 
 TEST(event_rear_cue_requires_spatial)
@@ -3854,4 +4079,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(interaural_delay_event_restart_keeps_the_old_delay_on_held_pcm);
     RUN_TEST(interaural_delay_event_keeps_its_delay_until_that_revision_is_published);
     RUN_TEST(interaural_delay_event_delays_the_far_ears_own_channel);
+    RUN_TEST(pcm_stream_elevation_cue_arguments);
+    RUN_TEST(pcm_stream_elevation_cue_leaves_level_sources_untouched);
+    RUN_TEST(pcm_stream_elevation_cue_tilts_by_height);
+    RUN_TEST(pcm_stream_elevation_cue_follows_the_listener);
+    RUN_TEST(pcm_stream_elevation_cue_shapes_high_frequencies);
+    RUN_TEST(pcm_stream_elevation_cue_keeps_stereo_state_apart_and_resets_on_reopen);
 TEST_MAIN_END()
