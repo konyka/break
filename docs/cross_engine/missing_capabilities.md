@@ -312,3 +312,5 @@
 - **第 10 节（音频）追加**：2026-11-18 `AudioDriftResampler` 新增固定 16 tap sinc 质量模式、8 输入帧前瞻、动态比率与双向模式切换，切回线性时按历史补齐积压位置并扩大安全容量。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「时钟漂移补偿」。上文漂移补偿的「sinc 质量模式」由此交付。仍缺：比例自适应强降采样抗混叠、多声道、自动闭环控制与真实设备验证。
 
 - **第 10 节（音频）追加**：2026-11-18 `audio_gcc_phat_estimate_with_confidence` 在 PHAT 选中的整数 lag 上直接计算带符号归一化互相关，与 tracker 门控同义，旧 raw peak 保留。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「归一化置信度」由此交付。仍缺：GCC-PHAT 与 tracker 的自动接线、多声道及真实声学验证。
+
+- **第 10 节（音频）追加**：2026-11-18 `audio_delay_tracker_create_gcc` 提供显式 GCC-PHAT 后端，复用原配置、归一化门控和跟踪状态机，只分配选定后端；默认时域行为不变。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「GCC-PHAT 与 tracker 接线」由此交付。仍缺：运行中后端切换、自动更新调度、多声道与真实声学验证。

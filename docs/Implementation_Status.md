@@ -1,3 +1,11 @@
+## Delay Tracker 的可选 GCC-PHAT 后端（2026-11-18）
+
+- **交付**：新增 `audio_delay_tracker_create_gcc`，复用原配置和归一化置信度门控；默认时域构造函数不变，只分配选定后端，push/reset/update 正确路由，锁定/保持/解锁/slew 状态机共用。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-tracker-gcc-design.md`、`docs/superpowers/plans/2026-11-18-audio-tracker-gcc.md`。
+- **TDD 与评审**：新构造函数链接 RED 后实现至 8/8；真实阈值测试证明 tracker 使用归一化置信度而非 raw peak。首轮评审发现 ready-state GCC reset 未被独立覆盖，补充零新帧和不足历史帧拒绝后，仅删除 GCC reset 的变异判红；scoped 复审 Ready。
+- **定向验证**：普通及 ASan+UBSan 均 8/8，严格告警为零；构造后端、置信度路由、reset、push 和 slew 五个变异及单独 GCC reset 删除均被捕获。
+- **全量验证**：`/tmp/full_trees.sh` 的实际计数为 429/429、429/429、437/437，三次构建均成功且零测试失败。
+- **边界**：只能在创建时选择后端；无运行中切换、自动更新调度、多声道或真实声学验证。
+
 ## GCC-PHAT 的归一化置信度（2026-11-18）
 
 - **交付**：新增 `audio_gcc_phat_estimate_with_confidence`，返回既有细化延迟及所选整数 lag 的带符号 `cr/sqrt(cc*rr)`，与 tracker 门控同义；旧 raw-peak API 不变。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-gcc-confidence-design.md`、`docs/superpowers/plans/2026-11-18-audio-gcc-confidence.md`。

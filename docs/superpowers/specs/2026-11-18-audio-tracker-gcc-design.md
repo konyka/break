@@ -1,6 +1,6 @@
 # GCC Backend for Adaptive Delay Tracker Design
 
-Status: Approved for autonomous implementation under the active goal
+Status: Implemented and locally verified
 
 ## Purpose
 

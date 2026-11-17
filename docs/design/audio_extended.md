@@ -233,10 +233,10 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 亚帧估计：`audio_delay_estimator_estimate_subframe` 共用整数搜索，在内部最佳峰值两侧对 |S| 做抛物线插值，偏移限制 ±0.5 帧，输出整数峰值的带符号 S。边界、非凹或非有限/非局部顶点回退整数；未准备好或静音时输出不变。sinc 测试的误差容差为 0.25 帧，不是所有信号的精度保证。
 - 分数延迟线：`audio_delay_line_set_subframe_delay` 接受有限且不超过最大值的 D；默认线性模式下 D=d+f 时输出 `(1−f)x[n−d] + f x[n−d−1]`。旧 `set_delay` 等价于整数调用，旧 `delay` 返回整数部分；`subframe_delay` 返回完整值，NULL 为 0。整数输出不变，支持原地与分块。
 - 高质量延迟：`audio_delay_line_set_sinc` 切换 16 tap Blackman 加窗 sinc 模式，`audio_delay_line_sinc` 查询模式，`audio_delay_line_sinc_extra_delay` 报告额外延迟。该模式为实时因果性增加固定 8 帧，实际延迟为 D+8，配置访问器仍报告 D；f=0 直接精确读取，f>0 使用归一化核。核过冲在取整后饱和到 i16 范围，线性路径不做额外处理。模式切换下一帧生效且不交叉淡化，只有 create 分配。48 kHz 的 8 kHz 测试音在收敛后保留至少 95% 幅度，DC 保持单位增益。
-- 自动跟踪：`engine/src/audio/audio_delay_tracker.{h,c}` 内部持有估计器。`AudioDelayTrackerConfig` 增加采样率、最小 |S|、最大双向漂移帧/秒、锁定所需连续接受数与拒绝保持数。锁定前直接采用测量；锁定后按两次 update 之间推送的帧数计算经过时间并限制变化，零时间不动。拒绝保持延迟；超过保持数才解锁，恢复良好测量会清空拒绝游程。`reset` 同时重置估计器与跟踪状态。
+- 自动跟踪：`engine/src/audio/audio_delay_tracker.{h,c}` 内部持有所选估计器。`AudioDelayTrackerConfig` 增加采样率、最小 |S|、最大双向漂移帧/秒、锁定所需连续接受数与拒绝保持数。默认 `audio_delay_tracker_create` 使用时域估计器，`audio_delay_tracker_create_gcc` 使用 GCC-PHAT 与归一化置信度，配置结构不变且只分配选定后端。锁定前直接采用测量；锁定后按两次 update 之间推送的帧数计算经过时间并限制变化，零时间不动。拒绝保持延迟；超过保持数才解锁，恢复良好测量会清空拒绝游程。`reset` 同时重置所选估计器与跟踪状态。
 - 频域估计：`engine/src/audio/audio_gcc_phat.{h,c}` 提供独立的 GCC-PHAT 对象。FFT 大小为至少两倍 `window + max_delay` 的下一个 2 的幂，最大 65536；计算 `conj(FFT(reference))·FFT(capture)`，逐 bin 归一化相位后逆变换，在 0..max_delay 取最大绝对峰，返回其带符号 raw peak。内部峰可做 ±0.5 抛物线细化；边界和无效曲线回退整数。只有 create 分配，raw peak 不是归一化相关系数。
 - 归一化置信度：`audio_gcc_phat_estimate_with_confidence` 返回相同的细化延迟，并在选中的整数 lag 上直接计算 `cr/sqrt(cc*rr)`，与 tracker 的相关性门控同义。该分数描述整数对齐，反相为负；所选参考窗口零能量时返回 false 且两个输出不变。旧 raw-peak 接口与行为不变。
-- 用法：把参考与采集推入估计器、tracker 或 GCC-PHAT 对象，得到延迟 D 后把参考延迟线设为 D 减去几帧余量（滤波器从因果的前几个 tap 开始），延迟后的参考与采集送入 `audio_echo_canceller_process_i16`。启用 sinc 时还需减去其 8 帧额外延迟。tracker 由调用者主动 update，没有隐藏后台线程；GCC-PHAT 尚未自动接入 tracker。
+- 用法：把参考与采集推入估计器、tracker 或 GCC-PHAT 对象，得到延迟 D 后把参考延迟线设为 D 减去几帧余量（滤波器从因果的前几个 tap 开始），延迟后的参考与采集送入 `audio_echo_canceller_process_i16`。启用 sinc 时还需减去其 8 帧额外延迟。tracker 由调用者主动 update，没有隐藏后台线程；GCC 后端在创建时选择，不能运行中切换。
 - 未做：自动更新调度与多声道；时钟漂移补偿见后续小节。
 
 ## 时钟漂移估计

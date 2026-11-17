@@ -24,6 +24,10 @@ typedef struct AudioDelayTracker AudioDelayTracker;
  * is written only on success. */
 AudioResult audio_delay_tracker_create(const AudioDelayTrackerConfig *config,
                                        AudioDelayTracker **out);
+/* Selects GCC-PHAT instead of the time-domain estimator. Uses the same config,
+ * normalized-confidence gate and tracking policy, plus GCC history/FFT limits. */
+AudioResult audio_delay_tracker_create_gcc(const AudioDelayTrackerConfig *config,
+                                           AudioDelayTracker **out);
 void audio_delay_tracker_destroy(AudioDelayTracker *tracker); /* NULL is a no-op */
 void audio_delay_tracker_reset(AudioDelayTracker *tracker); /* estimator included */
 void audio_delay_tracker_push_i16(AudioDelayTracker *tracker, const i16 *reference,

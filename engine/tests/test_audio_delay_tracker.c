@@ -3,6 +3,7 @@
 #include "test_framework.h"
 
 #include <audio/audio_delay_tracker.h>
+#include <audio/audio_gcc_phat.h>
 
 #include <math.h>
 #include <string.h>
@@ -30,7 +31,7 @@ static double sinc(double x) {
     return fabs(x) < 1e-12 ? 1.0 : sin(kPi * x) / (kPi * x);
 }
 
-static void make_fractional_echo(double delay) {
+static void make_fractional_echo_with_noise(double delay, double noise_amp) {
     for (u32 n = 0; n < N; ++n) g_ref[n] = (i16)lrint(rnd() * 12000.0);
     const int center = (int)floor(delay);
     for (u32 n = 0; n < N; ++n) {
@@ -39,8 +40,13 @@ static void make_fractional_echo(double delay) {
             const int source = (int)n - k;
             if (source >= 0 && source < (int)N) value += g_ref[source] * sinc((double)k - delay);
         }
+        if (noise_amp > 0.0) value += rnd() * noise_amp;
         g_cap[n] = (i16)lrint(0.4 * value);
     }
+}
+
+static void make_fractional_echo(double delay) {
+    make_fractional_echo_with_noise(delay, 0.0);
 }
 
 static void make_inverted_fractional_echo(double delay) {
@@ -294,10 +300,163 @@ TEST(chunking_reset_and_estimator_failure_match_a_fresh_tracker)
     audio_delay_tracker_destroy(chunked);
 }
 
+TEST(gcc_create_validation_and_lifecycle)
+{
+    const AudioDelayTrackerConfig config = test_config();
+    AudioDelayTracker *sentinel = make_tracker(&config);
+    ASSERT_TRUE(sentinel != NULL);
+    AudioDelayTracker *tracker = sentinel;
+    ASSERT_EQ(audio_delay_tracker_create_gcc(NULL, &tracker), AUDIO_INVALID);
+    ASSERT_EQ(audio_delay_tracker_create_gcc(&config, NULL), AUDIO_INVALID);
+    AudioDelayTrackerConfig bad = config;
+    bad.max_delay_frames = 0u;
+    ASSERT_EQ(audio_delay_tracker_create_gcc(&bad, &tracker), AUDIO_INVALID);
+    bad = config;
+    bad.window_frames = 32768u;
+    ASSERT_EQ(audio_delay_tracker_create_gcc(&bad, &tracker), AUDIO_INVALID);
+    ASSERT_TRUE(tracker == sentinel);
+    ASSERT_EQ(audio_delay_tracker_create_gcc(&config, &tracker), AUDIO_OK);
+    ASSERT_TRUE(tracker != NULL && tracker != sentinel);
+    ASSERT_FINITE_NEAR(audio_delay_tracker_delay(tracker), 0.0, 0.0);
+    ASSERT_FINITE_NEAR(audio_delay_tracker_correlation(tracker), 0.0, 0.0);
+    ASSERT_TRUE(!audio_delay_tracker_locked(tracker));
+    ASSERT_EQ(audio_delay_tracker_rejections(tracker), 0u);
+    make_fractional_echo(12.5);
+    audio_delay_tracker_push_i16(tracker, g_ref, g_cap, 100u);
+    ASSERT_TRUE(!audio_delay_tracker_update(tracker));
+    ASSERT_EQ(audio_delay_tracker_rejections(tracker), 1u);
+    ASSERT_FINITE_NEAR(audio_delay_tracker_correlation(tracker), 0.0, 0.0);
+    audio_delay_tracker_reset(tracker);
+    ASSERT_EQ(audio_delay_tracker_rejections(tracker), 0u);
+    ASSERT_TRUE(!audio_delay_tracker_update(tracker));
+    ASSERT_EQ(audio_delay_tracker_rejections(tracker), 1u);
+    audio_delay_tracker_destroy(tracker);
+    audio_delay_tracker_destroy(sentinel);
+}
+
+TEST(gcc_fractional_measurements_lock_and_gate)
+{
+    const AudioDelayTrackerConfig config = test_config();
+    AudioDelayTracker *tracker = NULL;
+    ASSERT_EQ(audio_delay_tracker_create_gcc(&config, &tracker), AUDIO_OK);
+    ASSERT_TRUE(tracker != NULL);
+    make_fractional_echo(12.5);
+    audio_delay_tracker_push_i16(tracker, g_ref, g_cap, N);
+    ASSERT_TRUE(audio_delay_tracker_update(tracker));
+    ASSERT_TRUE(!audio_delay_tracker_locked(tracker));
+    ASSERT_TRUE(fabs(audio_delay_tracker_delay(tracker) - 12.5) < 0.25);
+    ASSERT_TRUE(audio_delay_tracker_correlation(tracker) > 0.5);
+    ASSERT_TRUE(audio_delay_tracker_update(tracker));
+    ASSERT_TRUE(audio_delay_tracker_locked(tracker));
+    const double held_delay = audio_delay_tracker_delay(tracker);
+    make_uncorrelated();
+    audio_delay_tracker_push_i16(tracker, g_ref, g_cap, N);
+    ASSERT_TRUE(!audio_delay_tracker_update(tracker));
+    ASSERT_EQ(audio_delay_tracker_rejections(tracker), 1u);
+    ASSERT_TRUE(audio_delay_tracker_locked(tracker));
+    ASSERT_FINITE_NEAR(audio_delay_tracker_delay(tracker), held_delay, 0.0);
+    make_inverted_fractional_echo(12.5);
+    audio_delay_tracker_push_i16(tracker, g_ref, g_cap, N);
+    ASSERT_TRUE(audio_delay_tracker_update(tracker));
+    ASSERT_TRUE(audio_delay_tracker_correlation(tracker) < -0.5);
+    ASSERT_TRUE(audio_delay_tracker_locked(tracker));
+    ASSERT_TRUE(fabs(audio_delay_tracker_delay(tracker) - 12.5) < 0.25);
+    audio_delay_tracker_destroy(tracker);
+
+    make_fractional_echo_with_noise(12.5, 8000.0);
+    const AudioGccPhatConfig probe_config = {config.max_delay_frames, config.window_frames};
+    AudioGccPhat *probe = NULL;
+    ASSERT_EQ(audio_gcc_phat_create(&probe_config, &probe), AUDIO_OK);
+    audio_gcc_phat_push_i16(probe, g_ref, g_cap, N);
+    double measured_delay = 0.0, raw = 0.0, confidence = 0.0;
+    ASSERT_TRUE(audio_gcc_phat_estimate(probe, &measured_delay, &raw));
+    ASSERT_TRUE(audio_gcc_phat_estimate_with_confidence(probe, &measured_delay, &confidence));
+    ASSERT_TRUE(fabs(confidence) > fabs(raw) + 0.01);
+    audio_gcc_phat_destroy(probe);
+    AudioDelayTrackerConfig gate_config = config;
+    gate_config.min_abs_correlation = (float)((fabs(raw) + fabs(confidence)) * 0.5);
+    gate_config.lock_count = 1u;
+    tracker = NULL;
+    ASSERT_EQ(audio_delay_tracker_create_gcc(&gate_config, &tracker), AUDIO_OK);
+    audio_delay_tracker_push_i16(tracker, g_ref, g_cap, N);
+    ASSERT_TRUE(audio_delay_tracker_update(tracker));
+    ASSERT_TRUE(audio_delay_tracker_correlation(tracker) > fabs(raw));
+    ASSERT_TRUE(audio_delay_tracker_locked(tracker));
+    ASSERT_TRUE(fabs(audio_delay_tracker_delay(tracker) - 12.5) < 0.25);
+    audio_delay_tracker_destroy(tracker);
+}
+
+TEST(gcc_chunking_reset_and_slew)
+{
+    const AudioDelayTrackerConfig config = test_config();
+    AudioDelayTracker *whole = NULL, *chunked = NULL;
+    ASSERT_EQ(audio_delay_tracker_create_gcc(&config, &whole), AUDIO_OK);
+    ASSERT_EQ(audio_delay_tracker_create_gcc(&config, &chunked), AUDIO_OK);
+    make_fractional_echo(12.5);
+    audio_delay_tracker_push_i16(whole, g_ref, g_cap, N);
+    const u32 chunks[] = {1u, 7u, 480u};
+    u32 at = 0u, index = 0u;
+    while (at < N) {
+        const u32 n = N - at < chunks[index % 3u] ? N - at : chunks[index % 3u];
+        audio_delay_tracker_push_i16(chunked, g_ref + at, g_cap + at, n);
+        at += n;
+        ++index;
+    }
+    ASSERT_TRUE(audio_delay_tracker_update(whole));
+    ASSERT_TRUE(audio_delay_tracker_update(chunked));
+    ASSERT_FINITE_NEAR(audio_delay_tracker_delay(whole), audio_delay_tracker_delay(chunked), 0.0);
+    ASSERT_FINITE_NEAR(audio_delay_tracker_correlation(whole),
+                       audio_delay_tracker_correlation(chunked), 1e-12);
+    ASSERT_TRUE(audio_delay_tracker_update(whole));
+    ASSERT_TRUE(audio_delay_tracker_update(chunked));
+    ASSERT_EQ(audio_delay_tracker_locked(whole), audio_delay_tracker_locked(chunked));
+    audio_delay_tracker_reset(whole);
+    ASSERT_EQ(audio_delay_tracker_rejections(whole), 0u);
+    ASSERT_TRUE(!audio_delay_tracker_update(whole));
+    ASSERT_EQ(audio_delay_tracker_rejections(whole), 1u);
+    ASSERT_FINITE_NEAR(audio_delay_tracker_correlation(whole), 0.0, 0.0);
+    audio_delay_tracker_push_i16(whole, g_ref, g_cap,
+                                 config.window_frames + config.max_delay_frames - 1u);
+    ASSERT_TRUE(!audio_delay_tracker_update(whole));
+    ASSERT_FINITE_NEAR(audio_delay_tracker_correlation(whole), 0.0, 0.0);
+    audio_delay_tracker_reset(whole);
+    ASSERT_EQ(audio_delay_tracker_rejections(whole), 0u);
+    audio_delay_tracker_destroy(chunked);
+    chunked = NULL;
+    ASSERT_EQ(audio_delay_tracker_create_gcc(&config, &chunked), AUDIO_OK);
+    make_fractional_echo(12.5);
+    audio_delay_tracker_push_i16(whole, g_ref, g_cap, N);
+    audio_delay_tracker_push_i16(chunked, g_ref, g_cap, N);
+    ASSERT_TRUE(audio_delay_tracker_update(whole));
+    ASSERT_TRUE(audio_delay_tracker_update(chunked));
+    ASSERT_FINITE_NEAR(audio_delay_tracker_delay(whole), audio_delay_tracker_delay(chunked), 0.0);
+    audio_delay_tracker_destroy(whole);
+    audio_delay_tracker_destroy(chunked);
+
+    AudioDelayTrackerConfig slew_config = test_config();
+    slew_config.max_slew_frames_per_s = 2.0f;
+    slew_config.lock_count = 1u;
+    AudioDelayTracker *slew = NULL;
+    ASSERT_EQ(audio_delay_tracker_create_gcc(&slew_config, &slew), AUDIO_OK);
+    make_fractional_echo(12.5);
+    audio_delay_tracker_push_i16(slew, g_ref, g_cap, N);
+    ASSERT_TRUE(audio_delay_tracker_update(slew));
+    ASSERT_TRUE(audio_delay_tracker_locked(slew));
+    const double initial = audio_delay_tracker_delay(slew);
+    make_fractional_echo(30.25);
+    audio_delay_tracker_push_i16(slew, g_ref, g_cap, N);
+    ASSERT_TRUE(audio_delay_tracker_update(slew));
+    ASSERT_FINITE_NEAR(audio_delay_tracker_delay(slew), initial + 2.5, 1e-12);
+    audio_delay_tracker_destroy(slew);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_initial_accessors);
     RUN_TEST(fractional_measurements_lock_after_the_configured_count);
     RUN_TEST(low_confidence_holds_then_unlocks_without_moving_delay);
     RUN_TEST(locked_drift_is_limited_by_pushed_time);
     RUN_TEST(chunking_reset_and_estimator_failure_match_a_fresh_tracker);
+    RUN_TEST(gcc_create_validation_and_lifecycle);
+    RUN_TEST(gcc_fractional_measurements_lock_and_gate);
+    RUN_TEST(gcc_chunking_reset_and_slew);
 TEST_MAIN_END()

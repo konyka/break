@@ -7114,7 +7114,8 @@ endif()
     add_test(NAME test_audio_residual_echo_suppressor COMMAND test_audio_residual_echo_suppressor)
 
     add_executable(test_audio_delay_tracker tests/test_audio_delay_tracker.c
-        src/audio/audio_delay_tracker.c src/audio/audio_delay_estimator.c)
+        src/audio/audio_delay_tracker.c src/audio/audio_delay_estimator.c
+        src/audio/audio_gcc_phat.c src/audio/audio_fft.c)
     target_include_directories(test_audio_delay_tracker PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio_delay_tracker PRIVATE m)
     add_test(NAME test_audio_delay_tracker COMMAND test_audio_delay_tracker)

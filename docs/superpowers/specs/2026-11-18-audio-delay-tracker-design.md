@@ -39,4 +39,4 @@ Only create allocates. Processing is owner-thread and mono. The caller chooses w
 
 ## Limits
 
-No clock-drift estimation/resampling, GCC-PHAT, confidence calibration beyond normalized correlation, or real-device validation. The caller must choose an appropriate update cadence; the API does not claim real-time background operation.
+No confidence calibration beyond normalized correlation or real-device validation. The explicit GCC-PHAT backend extension is specified in `docs/superpowers/specs/2026-11-18-audio-tracker-gcc-design.md`; clock-drift estimation/resampling remains in the separate drift modules. The caller must choose an appropriate update cadence; the API does not claim real-time background operation.
