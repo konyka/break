@@ -67,6 +67,15 @@ typedef struct {
      * Each voice keeps its own filter state, reset when it starts. Requires
      * `spatial`. */
     bool elevation_cue;
+    /* Binaural rendering through an HRTF set, like audio_pcm_stream_set_hrtf:
+     * the mono downmix of the clip goes through the direction nearest the
+     * source in the listener frame; a move crossfades over
+     * AUDIO_HRTF_FADE_FRAMES frames. Each voice keeps its own renderer, with
+     * an empty history when it starts. While set, panning, the rear and
+     * elevation cues and the interaural delay are not applied. Requires
+     * `spatial` and a set at AUDIO_PCM_SAMPLE_RATE; the set must outlive the
+     * AudioSystem. NULL for none. */
+    const AudioHrtfSet *hrtf;
 } AudioEventDesc;
 
 AudioResult audio_event_register(AudioSystem *as, const char *name,

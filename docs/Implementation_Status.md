@@ -11622,3 +11622,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 测试：`test_audio_hrtf` 新增 1 项（共 9），`test_audio_extended` 新增 4 项（共 124）。
 - 先 RED（编译失败，字段与接口不存在）后 GREEN。21 项变异首轮 3 项存活：补了关闭后销毁集合再重开、未归一化 forward/up 的测试；“重新 init 也比较集合指针”是冗余条件，已删除（每次挂接都会递增计数）。最终 20 项变异全部被捕获。影子变量检查通过（rc=0）。
 - 仍缺：事件 voice 的 HRTF。
+
+### 2026-11-17 音频：事件 voice 的 HRTF
+- `engine/src/audio/audio_extended.{h,c}`：
+  - `AudioEventDesc.hrtf`：注册时要求 `spatial` 与 `AUDIO_PCM_SAMPLE_RATE` 的集合；
+  - START 命令携带最近方向下标，`spatial_publish` 新增 `hrtf_snapshot`，与其他空间提示同一 revision 门控；
+  - `voice_read`：START 时 init 每个 voice 自己的渲染器，挂上集合时把 `0.5 (l + r)` 送入渲染器并乘 voice 增益，其他提示的状态照常运行。
+- 测试：`test_audio_extended` 新增 5 项（共 129）。
+- 先 RED（编译失败，字段不存在）后 GREEN。11 项变异全部被捕获。
+- 音频空间化的 HRTF 至此覆盖 PCM 流与事件两类声源。仍缺：麦克风采集、感知编码器（Opus 等）、音频编辑工具。

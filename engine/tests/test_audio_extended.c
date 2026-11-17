@@ -14,7 +14,8 @@ static void test_spatial_interleave(void *opaque) {
     if (!test_interleave_armed) return;
     test_interleave_armed = false;
     AudioVoice *voice = (AudioVoice *)opaque;
-    (void)spatial_publish(voice, voice->epoch, test_interleave_gain, 0.0f, 1.0f, 0, 0.0f);
+    (void)spatial_publish(voice, voice->epoch, test_interleave_gain, 0.0f, 1.0f, 0, 0.0f,
+                          0u);
 }
 
 static bool test_read_interleave_armed;
@@ -4413,6 +4414,195 @@ TEST(pcm_stream_hrtf_crossfades_a_move_and_detaches_cleanly)
     audio_hrtf_set_destroy(set);
 }
 
+/* ---- HRTF on event voices ---- */
+
+/* a spatial event, min distance 10 (gain 1 within it), through `set` */
+static AudioEventDesc hrtf_event_desc(AudioClipHandle clip, const AudioHrtfSet *set)
+{
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.min_distance = 10.0f;
+    desc.hrtf = set;
+    return desc;
+}
+
+static AudioClipHandle register_stereo(AudioSystem *as, const f32 *samples, u32 frames)
+{
+    AudioPcmDesc pcm = mono_pcm(samples, frames);
+    AudioClipHandle clip = 0;
+    pcm.channels = 2u;
+    if (audio_clip_register(as, "event-stereo", &pcm, &clip) != AUDIO_OK) return 0;
+    return clip;
+}
+
+static AudioVoice *event_voice_slot(AudioSystem *as, AudioVoiceHandle voice)
+{
+    return &((AudioExtended *)as->extended)->voices[(voice & 0xFFu) - 1u];
+}
+
+TEST(event_hrtf_requires_spatial_and_the_engine_rate)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    AudioHrtfSet *slow = hrtf_test_set(44100u);
+    AudioHrtfSet *set = hrtf_test_set(AUDIO_PCM_SAMPLE_RATE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_NOT_NULL(slow);
+    ASSERT_NOT_NULL(set);
+    AudioEventDesc desc = hrtf_event_desc(register_ones(as, 2u), set);
+    desc.spatial = false;
+    ASSERT_EQ(audio_event_register(as, "hrtf-flat", &desc), AUDIO_INVALID);
+    desc.spatial = true;
+    desc.hrtf = slow;
+    ASSERT_EQ(audio_event_register(as, "hrtf-flat", &desc), AUDIO_INVALID);
+    desc.hrtf = set;
+    ASSERT_EQ(audio_event_register(as, "hrtf-flat", &desc), AUDIO_OK);
+    audio_system_destroy(as);
+    audio_hrtf_set_destroy(slow);
+    audio_hrtf_set_destroy(set);
+}
+
+/* A mono event to the right: the direct convolution with that direction's
+ * responses times the distance gain; the other cues are set aside. */
+TEST(event_hrtf_convolves_the_source_direction)
+{
+    enum { kFrames = 96 };
+    i16 pcm[kFrames];
+    double x[kFrames];
+    static f32 clip_pcm[kFrames];
+    static f32 out[2u * kFrames];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    AudioHrtfSet *set = hrtf_test_set(AUDIO_PCM_SAMPLE_RATE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_NOT_NULL(set);
+    random_pcm(pcm, kFrames, 8080u);
+    pcm_to_double(pcm, kFrames, x);
+    for (u32 i = 0; i < kFrames; ++i) clip_pcm[i] = (f32)pcm[i] / 32768.0f;
+    AudioEventDesc desc = hrtf_event_desc(register_ramp(as, clip_pcm, kFrames), set);
+    desc.panned = true;
+    desc.rear_cue = true;
+    desc.interaural_delay = true;
+    desc.elevation_cue = true;
+    ASSERT_EQ(audio_event_register(as, "hrtf-mono", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    /* 20 m with min distance 10 and rolloff 1: gain 0.5 */
+    ASSERT_EQ(audio_event_trigger(as, "hrtf-mono", vec3(20, 0, 0), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    ASSERT_EQ(event_voice_slot(as, voice)->applied_hrtf_index, 1u);
+    for (u32 n = 0; n < kFrames; ++n) {
+        ASSERT_TRUE(isfinite(out[2u * n]) && isfinite(out[2u * n + 1u]));
+        ASSERT_FLOAT_EQ(out[2u * n], (f32)(0.5 * hrtf_conv(g_hrtf_left + HRTF_TEST_TAPS, x, n)),
+                        1e-5f);
+        ASSERT_FLOAT_EQ(out[2u * n + 1u],
+                        (f32)(0.5 * hrtf_conv(g_hrtf_right + HRTF_TEST_TAPS, x, n)), 1e-5f);
+    }
+    audio_system_destroy(as);
+    audio_hrtf_set_destroy(set);
+}
+
+TEST(event_hrtf_downmixes_stereo_and_follows_the_listener)
+{
+    enum { kFrames = 64 };
+    i16 pcm[2u * kFrames];
+    double lr[2u * kFrames], x[kFrames];
+    static f32 clip_pcm[2u * kFrames];
+    static f32 out[2u * kFrames];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    AudioHrtfSet *set = hrtf_test_set(AUDIO_PCM_SAMPLE_RATE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_NOT_NULL(set);
+    random_pcm(pcm, 2u * kFrames, 9191u);
+    pcm_to_double(pcm, 2u * kFrames, lr);
+    for (u32 i = 0; i < 2u * kFrames; ++i) clip_pcm[i] = (f32)pcm[i] / 32768.0f;
+    for (u32 n = 0; n < kFrames; ++n) x[n] = 0.5 * (lr[2u * n] + lr[2u * n + 1u]);
+    AudioEventDesc desc = hrtf_event_desc(register_stereo(as, clip_pcm, kFrames), set);
+    desc.looping = true;
+    ASSERT_EQ(audio_event_register(as, "hrtf-stereo", &desc), AUDIO_OK);
+    /* facing +x: +z is to the right */
+    audio_system_update(as, vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0));
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "hrtf-stereo", vec3(0, 0, 2), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    for (u32 n = 0; n < kFrames; ++n) {
+        ASSERT_FLOAT_EQ(out[2u * n], (f32)hrtf_conv(g_hrtf_left + HRTF_TEST_TAPS, x, n), 1e-5f);
+        ASSERT_FLOAT_EQ(out[2u * n + 1u], (f32)hrtf_conv(g_hrtf_right + HRTF_TEST_TAPS, x, n),
+                        1e-5f);
+    }
+    AudioVoice *slot = event_voice_slot(as, voice);
+    {
+        const struct { Vec3 at; u32 index; } places[] = {
+            {{{2, 0, 0}}, 0u}, {{{-2, 0, 0}}, 4u}, {{{0, 0, -2}}, 2u}, {{{0, 5, 0}}, 3u},
+            {{{0, 0, 0}}, 0u}};
+        for (u32 i = 0; i < sizeof(places) / sizeof(places[0]); ++i) {
+            ASSERT_EQ(audio_voice_set_position(as, voice, places[i].at), AUDIO_OK);
+            ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+            ASSERT_EQ(slot->applied_hrtf_index, places[i].index);
+        }
+    }
+    /* the listener update republishes: facing -x, +x is behind */
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(2, 0, 0)), AUDIO_OK);
+    audio_system_update(as, vec3(0, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0));
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    ASSERT_EQ(slot->applied_hrtf_index, 4u);
+    audio_system_destroy(as);
+    audio_hrtf_set_destroy(set);
+}
+
+/* A move crossfades exactly like a renderer given the same index changes. */
+TEST(event_hrtf_crossfades_a_move)
+{
+    enum { kFrames = 160 };
+    i16 pcm[kFrames];
+    static f32 mono[kFrames];
+    static f32 out[2u * kFrames], ref[2u * kFrames];
+    AudioHrtfRenderer r;
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    AudioHrtfSet *set = hrtf_test_set(AUDIO_PCM_SAMPLE_RATE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_NOT_NULL(set);
+    random_pcm(pcm, kFrames, 1618u);
+    for (u32 i = 0; i < kFrames; ++i) mono[i] = (f32)pcm[i] / 32768.0f;
+    AudioEventDesc desc = hrtf_event_desc(register_ramp(as, mono, kFrames), set);
+    ASSERT_EQ(audio_event_register(as, "hrtf-move", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "hrtf-move", vec3(2, 0, 0), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 20u), AUDIO_OK);
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(-2, 0, 0)), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out + 40, kFrames - 20u), AUDIO_OK);
+    ASSERT_EQ(audio_hrtf_renderer_init(&r, set), AUDIO_OK);
+    ASSERT_EQ(audio_hrtf_renderer_set_index(&r, 1u), AUDIO_OK);
+    audio_hrtf_renderer_process(&r, mono, ref, 20u);
+    ASSERT_EQ(audio_hrtf_renderer_set_index(&r, 2u), AUDIO_OK);
+    audio_hrtf_renderer_process(&r, mono + 20, ref + 40, kFrames - 20u);
+    for (u32 i = 0; i < 2u * kFrames; ++i) ASSERT_FLOAT_EQ(out[i], ref[i], 0.0f);
+    audio_system_destroy(as);
+    audio_hrtf_set_destroy(set);
+}
+
+/* A restarted voice starts from an empty history. */
+TEST(event_hrtf_restart_clears_the_history)
+{
+    static const f32 impulse[8] = {0.5f, 0, 0, 0, 0, 0, 0, 0};
+    static f32 out[16];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    AudioHrtfSet *set = hrtf_test_set(AUDIO_PCM_SAMPLE_RATE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_NOT_NULL(set);
+    AudioEventDesc desc = hrtf_event_desc(register_ramp(as, impulse, 8u), set);
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "hrtf-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "hrtf-restart", vec3(-2, 0, 0), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 3u), AUDIO_OK);
+    ASSERT_EQ(audio_event_trigger(as, "hrtf-restart", vec3(2, 0, 0), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 8u), AUDIO_OK);
+    for (u32 k = 0; k < HRTF_TEST_TAPS; ++k) {
+        ASSERT_FLOAT_EQ(out[2u * k], 0.5f * g_hrtf_left[HRTF_TEST_TAPS + k], 0.0f);
+        ASSERT_FLOAT_EQ(out[2u * k + 1u], 0.5f * g_hrtf_right[HRTF_TEST_TAPS + k], 0.0f);
+    }
+    audio_system_destroy(as);
+    audio_hrtf_set_destroy(set);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -4538,4 +4728,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pcm_stream_hrtf_convolves_the_source_direction);
     RUN_TEST(pcm_stream_hrtf_downmixes_stereo_and_maps_the_listener_frame);
     RUN_TEST(pcm_stream_hrtf_crossfades_a_move_and_detaches_cleanly);
+    RUN_TEST(event_hrtf_requires_spatial_and_the_engine_rate);
+    RUN_TEST(event_hrtf_convolves_the_source_direction);
+    RUN_TEST(event_hrtf_downmixes_stereo_and_follows_the_listener);
+    RUN_TEST(event_hrtf_crossfades_a_move);
+    RUN_TEST(event_hrtf_restart_clears_the_history);
 TEST_MAIN_END()

@@ -38,6 +38,7 @@ typedef struct {
     f32 spatial_rear;
     i32 spatial_itd;
     f32 spatial_tilt;
+    u32 spatial_hrtf;
     u32 spatial_revision;
     f32 ramp_target;
     u32 ramp_frames;
@@ -95,6 +96,8 @@ typedef struct {
     atomic_uint_least64_t itd_snapshot;
     /* (revision, elevation tilt amount), published the same way */
     atomic_uint_least64_t tilt_snapshot;
+    /* (revision, HRTF set index), published the same way */
+    atomic_uint_least64_t hrtf_snapshot;
     u32 applied_spatial_revision;
     f32 applied_spatial_gain;
     bool panned;
@@ -108,6 +111,11 @@ typedef struct {
     ItdLine itd;
     f32 applied_tilt;
     f32 tilt_state[2];
+    /* the event's HRTF set (NULL for none), its renderer and the set index
+     * in use; mixer-owned, set up by START */
+    const AudioHrtfSet *hrtf_set;
+    AudioHrtfRenderer hrtf;
+    u32 applied_hrtf_index;
     atomic_uint *bus_gains;
     Vec3 position;
     u32 bus;
@@ -461,6 +469,12 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->applied_tilt = command.spatial_tilt;
             voice->tilt_state[0] = 0.0f;
             voice->tilt_state[1] = 0.0f;
+            voice->hrtf_set = command.desc.hrtf;
+            voice->applied_hrtf_index = command.spatial_hrtf;
+            if (voice->hrtf_set) {
+                (void)audio_hrtf_renderer_init(&voice->hrtf, voice->hrtf_set);
+                (void)audio_hrtf_renderer_set_index(&voice->hrtf, command.spatial_hrtf);
+            }
             voice_apply_initial_spatial(voice, &command);
             voice_configure_dsp(voice, &command);
             voice->playing = true;
@@ -561,6 +575,15 @@ static ma_result voice_read(ma_data_source *source, void *output,
                     if (spatial_revision_of(tilt) == revision) {
                         voice->applied_tilt = spatial_gain_of(tilt);
                     }
+                    if (voice->hrtf_set) {
+                        u64 index = atomic_load_explicit(&voice->hrtf_snapshot,
+                                                         memory_order_acquire);
+                        if (spatial_revision_of(index) == revision) {
+                            voice->applied_hrtf_index = (u32)(index & 0xFFFFFFFFu);
+                            (void)audio_hrtf_renderer_set_index(&voice->hrtf,
+                                                                voice->applied_hrtf_index);
+                        }
+                    }
                 }
                 f32 spatial_gain = voice->applied_spatial_gain;
                 f32 gain = voice->volume * voice->fade_gain * bus_gain *
@@ -568,6 +591,7 @@ static ma_result voice_read(ma_data_source *source, void *output,
                 f32 in_left = voice->samples[sample];
                 f32 in_right = voice->channels == 2 ? voice->samples[sample + 1u]
                                                     : in_left;
+                f32 mono = 0.5f * (in_left + in_right);
                 /* the rear cue filters before the gain; with the cue off
                  * the state follows the signal, so turning it on later
                  * starts from the current level */
@@ -589,8 +613,16 @@ static ma_result voice_read(ma_data_source *source, void *output,
                     in_right += voice->applied_tilt * (in_right - voice->tilt_state[1]);
                 }
                 itd_line_process(&voice->itd, voice->applied_itd, &in_left, &in_right);
-                left = in_left * gain * voice->applied_pan_left;
-                right = in_right * gain * voice->applied_pan_right;
+                if (voice->hrtf_set) {
+                    /* the other cues' states keep running above */
+                    f32 ears[2];
+                    audio_hrtf_renderer_process(&voice->hrtf, &mono, ears, 1u);
+                    left = ears[0] * gain;
+                    right = ears[1] * gain;
+                } else {
+                    left = in_left * gain * voice->applied_pan_left;
+                    right = in_right * gain * voice->applied_pan_right;
+                }
                 cursor++;
                 if (cursor == voice->frame_count) {
                     if (voice->looping) cursor = 0;
@@ -1363,6 +1395,7 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         atomic_init(&voice->rear_snapshot, spatial_pack(0, 1.0f));
         atomic_init(&voice->itd_snapshot, spatial_pack(0, 0.0f));
         atomic_init(&voice->tilt_snapshot, spatial_pack(0, 0.0f));
+        atomic_init(&voice->hrtf_snapshot, (u64)0u);
         voice->applied_spatial_gain = 1.0f;
         ma_data_source_config config = ma_data_source_config_init();
         config.vtable = &AUDIO_VOICE_VTABLE;
@@ -1540,7 +1573,9 @@ AudioResult audio_event_register(AudioSystem *as, const char *name,
         !isfinite(desc->occluded_gain) || desc->occluded_gain < 0.0f ||
         desc->occluded_gain > 1.0f || desc->bus >= as->bus_count ||
         (desc->panned && !desc->spatial) || (desc->rear_cue && !desc->spatial) ||
-        (desc->interaural_delay && !desc->spatial) || (desc->elevation_cue && !desc->spatial)) {
+        (desc->interaural_delay && !desc->spatial) || (desc->elevation_cue && !desc->spatial) ||
+        (desc->hrtf && (!desc->spatial ||
+                        audio_hrtf_set_sample_rate(desc->hrtf) != AUDIO_PCM_SAMPLE_RATE))) {
         return AUDIO_INVALID;
     }
     if (!clip_resolve(ext, desc->clip)) return AUDIO_STALE;
@@ -1664,11 +1699,15 @@ static f32 event_tilt(const AudioExtended *ext, const AudioEventDesc *desc, Vec3
     return desc->elevation_cue ? elevation_amount(ext->owner, position) : 0.0f;
 }
 
-/* The pan, rear coefficient, interaural delay and tilt are stored under the
- * revision before the gain snapshot that publishes it, so a mixer that sees
- * the gain revision also sees them. */
+static u32 event_hrtf(const AudioExtended *ext, const AudioEventDesc *desc, Vec3 position) {
+    return desc->hrtf ? hrtf_direction_index(ext->owner, desc->hrtf, position) : 0u;
+}
+
+/* The pan, rear coefficient, interaural delay, tilt and HRTF index are
+ * stored under the revision before the gain snapshot that publishes it, so a
+ * mixer that sees the gain revision also sees them. */
 static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain, f32 pan,
-                                   f32 rear, i32 itd, f32 tilt) {
+                                   f32 rear, i32 itd, f32 tilt, u32 hrtf) {
     for (;;) {
         if (epoch == 0 || voice->epoch != epoch ||
             atomic_load_explicit(&voice->spatial_epoch, memory_order_acquire) != epoch) {
@@ -1689,6 +1728,8 @@ static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain, f32 p
         atomic_store_explicit(&voice->itd_snapshot, spatial_pack(revision, (f32)itd),
                               memory_order_release);
         atomic_store_explicit(&voice->tilt_snapshot, spatial_pack(revision, tilt),
+                              memory_order_release);
+        atomic_store_explicit(&voice->hrtf_snapshot, ((u64)revision << 32) | hrtf,
                               memory_order_release);
 #ifdef AUDIO_SPATIAL_PUBLISH_TEST_HOOK
         AUDIO_SPATIAL_PUBLISH_TEST_HOOK(voice);
@@ -1750,6 +1791,7 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
     command.spatial_rear = event_rear(ext, desc, position);
     command.spatial_itd = event_itd(ext, desc, position);
     command.spatial_tilt = event_tilt(ext, desc, position);
+    command.spatial_hrtf = event_hrtf(ext, desc, position);
     for (u32 i = 0; i < command.desc.dsp.stage_count; ++i) {
         if (command.desc.dsp.stages[i].type == AUDIO_DSP_FILTER) {
             command.dsp_alpha[i] = audio_dsp_filter_alpha(
@@ -1757,10 +1799,10 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
         }
     }
 
-    /* No pan, rear or itd snapshot store here: begin_start moves the gain
-     * revision while the old epoch may still adopt it (with its old gain),
-     * and that PCM must keep its old pan, rear coefficient and delay too.
-     * START carries the new ones. */
+    /* No pan, rear, itd, tilt or HRTF snapshot store here: begin_start moves
+     * the gain revision while the old epoch may still adopt it (with its old
+     * gain), and that PCM must keep its old pan, rear coefficient, delay,
+     * tilt and direction too. START carries the new ones. */
     AudioResult spatial_result = spatial_begin_start(voice, epoch,
                                                       command.spatial_revision);
     if (spatial_result != AUDIO_OK) return spatial_result;
@@ -1888,7 +1930,7 @@ AudioResult audio_voice_set_position(AudioSystem *as,
     if (result != AUDIO_OK) return result;
     result = spatial_publish(voice, voice->epoch, gain, event_pan(ext, desc, position),
                              event_rear(ext, desc, position), event_itd(ext, desc, position),
-                             event_tilt(ext, desc, position));
+                             event_tilt(ext, desc, position), event_hrtf(ext, desc, position));
     if (result != AUDIO_OK) return result;
     voice->position = position;
     return AUDIO_OK;
@@ -1925,7 +1967,8 @@ void audio_extended_listener_update(AudioSystem *as) {
                                   event_pan(ext, desc, voice->position),
                                   event_rear(ext, desc, voice->position),
                                   event_itd(ext, desc, voice->position),
-                                  event_tilt(ext, desc, voice->position));
+                                  event_tilt(ext, desc, voice->position),
+                                  event_hrtf(ext, desc, voice->position));
         }
     }
 }
