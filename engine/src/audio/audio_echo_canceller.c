@@ -9,12 +9,13 @@ struct AudioEchoCanceller {
     double step_size;
     double double_talk_threshold;
     u32 hangover_frames;
-    u32 hold;        /* frames left before adaptation resumes */
-    u32 cursor;      /* history[cursor + k] is x(n - k) */
-    u64 energy;      /* sum of the squared i16 samples in the window */
-    double *weights; /* taps */
-    double *history; /* 2 * taps, every sample written at i and i + taps */
-    i16 *history_i16; /* taps, for the exact window energy */
+    u32 hold;
+    u32 cursor;
+    u64 energy;
+    bool near_end_active;
+    double *weights;
+    double *history;
+    i16 *history_i16;
 };
 
 /* false for NaN as well as for a value outside [lo, hi] */
@@ -65,6 +66,7 @@ void audio_echo_canceller_reset(AudioEchoCanceller *aec) {
     aec->hold = 0u;
     aec->cursor = 0u;
     aec->energy = 0u;
+    aec->near_end_active = false;
 }
 
 void audio_echo_canceller_process_i16(AudioEchoCanceller *aec, const i16 *reference,
@@ -101,12 +103,15 @@ void audio_echo_canceller_process_i16(AudioEchoCanceller *aec, const i16 *refere
          * on both sides is not double talk */
         if (aec->double_talk_threshold > 0.0 && fabs(d) > aec->double_talk_threshold * peak) {
             aec->hold = aec->hangover_frames;
+            aec->near_end_active = true;
             continue;
         }
         if (aec->hold > 0u) {
             --aec->hold;
+            aec->near_end_active = true;
             continue;
         }
+        aec->near_end_active = false;
         double g = aec->step_size * e /
                    ((double)aec->energy / 1073741824.0 + (double)taps * 1e-6);
         for (u32 k = 0; k < taps; ++k) aec->weights[k] += g * x[k];
@@ -115,4 +120,8 @@ void audio_echo_canceller_process_i16(AudioEchoCanceller *aec, const i16 *refere
 
 double audio_echo_canceller_weight(const AudioEchoCanceller *aec, u32 k) {
     return aec && k < aec->taps ? aec->weights[k] : 0.0;
+}
+
+bool audio_echo_canceller_near_end_active(const AudioEchoCanceller *aec) {
+    return aec ? aec->near_end_active : false;
 }

@@ -1,5 +1,7 @@
 #include "audio_residual_echo_suppressor.h"
 
+#include "audio_echo_canceller.h"
+
 #include <math.h>
 #include <string.h>
 
@@ -92,6 +94,19 @@ void audio_residual_echo_suppressor_process_i16(AudioResidualEchoSuppressor *sup
         suppressor->gain_db += alpha * (target_db - suppressor->gain_db);
         suppressor->gain = pow(10.0, suppressor->gain_db / 20.0);
         capture[n] = (i16)nearbyint((double)capture[n] * suppressor->gain);
+    }
+}
+
+void audio_residual_echo_suppressor_process_with_aec(AudioResidualEchoSuppressor *suppressor,
+                                                     AudioEchoCanceller *aec,
+                                                     const i16 *reference, i16 *capture,
+                                                     u32 frames) {
+    if (!suppressor || !aec || frames == 0u || !reference || !capture) return;
+    for (u32 n = 0; n < frames; ++n) {
+        audio_echo_canceller_process_i16(aec, reference + n, capture + n, 1u);
+        const bool near_end = audio_echo_canceller_near_end_active(aec);
+        audio_residual_echo_suppressor_process_i16(suppressor, reference + n, capture + n,
+                                                  1u, near_end);
     }
 }
 

@@ -32,3 +32,6 @@ void audio_echo_canceller_process_i16(AudioEchoCanceller *aec, const i16 *refere
                                       i16 *capture, u32 frames);
 /* Weight k of the echo path estimate; 0 for NULL or k >= taps. */
 double audio_echo_canceller_weight(const AudioEchoCanceller *aec, u32 k);
+/* Whether the most recently processed frame matched Geigel detection or consumed
+ * hangover. False for NULL, reset or disabled detection; zero frames preserve it. */
+bool audio_echo_canceller_near_end_active(const AudioEchoCanceller *aec);

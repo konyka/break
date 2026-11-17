@@ -400,6 +400,58 @@ TEST(chunked_output_matches_a_reference_model)
     ASSERT_NEQ(memcmp(ref_out, in, sizeof(in)), 0);
 }
 
+TEST(near_end_state_tracks_detection_hangover_and_reset)
+{
+    ASSERT_TRUE(!audio_echo_canceller_near_end_active(NULL));
+    AudioEchoCancellerConfig config = aec_config();
+    config.hangover_ms = 0.0f;
+    AudioEchoCanceller *aec = NULL;
+    ASSERT_EQ(audio_echo_canceller_create(&config, &aec), AUDIO_OK);
+    ASSERT_TRUE(!audio_echo_canceller_near_end_active(aec));
+    i16 reference = 0, capture = 20000;
+    audio_echo_canceller_process_i16(aec, &reference, &capture, 1u);
+    ASSERT_TRUE(audio_echo_canceller_near_end_active(aec));
+    audio_echo_canceller_process_i16(aec, &reference, &capture, 0u);
+    ASSERT_TRUE(audio_echo_canceller_near_end_active(aec));
+    capture = 0;
+    audio_echo_canceller_process_i16(aec, &reference, &capture, 1u);
+    ASSERT_TRUE(!audio_echo_canceller_near_end_active(aec));
+    capture = 20000;
+    audio_echo_canceller_process_i16(aec, &reference, &capture, 1u);
+    ASSERT_TRUE(audio_echo_canceller_near_end_active(aec));
+    audio_echo_canceller_reset(aec);
+    ASSERT_TRUE(!audio_echo_canceller_near_end_active(aec));
+    audio_echo_canceller_destroy(aec);
+
+    config.hangover_ms = 1.0f;
+    ASSERT_EQ(audio_echo_canceller_create(&config, &aec), AUDIO_OK);
+    capture = 20000;
+    audio_echo_canceller_process_i16(aec, &reference, &capture, 1u);
+    ASSERT_TRUE(audio_echo_canceller_near_end_active(aec));
+    capture = 0;
+    audio_echo_canceller_process_i16(aec, &reference, &capture, 1u);
+    ASSERT_TRUE(audio_echo_canceller_near_end_active(aec));
+    i16 quiet_reference[48] = {0}, quiet_capture[48] = {0};
+    audio_echo_canceller_process_i16(aec, quiet_reference, quiet_capture, 47u);
+    ASSERT_TRUE(audio_echo_canceller_near_end_active(aec));
+    audio_echo_canceller_process_i16(aec, quiet_reference + 47u, quiet_capture + 47u, 1u);
+    ASSERT_TRUE(!audio_echo_canceller_near_end_active(aec));
+    capture = 20000;
+    audio_echo_canceller_process_i16(aec, &reference, &capture, 1u);
+    ASSERT_TRUE(audio_echo_canceller_near_end_active(aec));
+    audio_echo_canceller_reset(aec);
+    ASSERT_TRUE(!audio_echo_canceller_near_end_active(aec));
+    audio_echo_canceller_destroy(aec);
+
+    config.double_talk_threshold = 0.0f;
+    config.hangover_ms = 0.0f;
+    ASSERT_EQ(audio_echo_canceller_create(&config, &aec), AUDIO_OK);
+    capture = 20000;
+    audio_echo_canceller_process_i16(aec, &reference, &capture, 1u);
+    ASSERT_TRUE(!audio_echo_canceller_near_end_active(aec));
+    audio_echo_canceller_destroy(aec);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_refuses_every_invalid_config);
     RUN_TEST(white_noise_echo_is_cancelled_and_the_path_is_learned);
@@ -409,4 +461,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_changed_echo_path_is_learned_again);
     RUN_TEST(reset_matches_a_fresh_canceller);
     RUN_TEST(chunked_output_matches_a_reference_model);
+    RUN_TEST(near_end_state_tracks_detection_hangover_and_reset);
 TEST_MAIN_END()

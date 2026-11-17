@@ -45,4 +45,4 @@ The caller sets `near_end_active` from its detector. When true, the path estimat
 
 ## Limits
 
-Mono envelope suppression only; no spectral coherence, automatic near-end inference, stereo reference, or real acoustic verification. Incorrect near-end control can either pass residual echo or suppress wanted sound, so the control requirement is part of the public contract.
+Mono envelope suppression only; no spectral coherence, stereo reference, production device wiring or real acoustic verification. The optional per-frame AEC integration is specified in `docs/superpowers/specs/2026-11-18-audio-aec-residual-integration-design.md`. Custom near-end control remains supported; incorrect external control can either pass residual echo or suppress wanted sound.

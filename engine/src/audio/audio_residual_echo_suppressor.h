@@ -50,5 +50,12 @@ void audio_residual_echo_suppressor_reset(AudioResidualEchoSuppressor *suppresso
 void audio_residual_echo_suppressor_process_i16(AudioResidualEchoSuppressor *suppressor,
                                                 const i16 *reference, i16 *capture,
                                                 u32 frames, bool near_end_active);
+typedef struct AudioEchoCanceller AudioEchoCanceller;
+/* Per frame: AEC, its near-end state, then residual suppression. This function
+ * performs AEC itself; do not also process the same capture with the AEC. */
+void audio_residual_echo_suppressor_process_with_aec(AudioResidualEchoSuppressor *suppressor,
+                                                     AudioEchoCanceller *aec,
+                                                     const i16 *reference, i16 *capture,
+                                                     u32 frames);
 f32 audio_residual_echo_suppressor_gain_db(const AudioResidualEchoSuppressor *suppressor);
 f32 audio_residual_echo_suppressor_path_db(const AudioResidualEchoSuppressor *suppressor);

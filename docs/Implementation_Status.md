@@ -1,3 +1,11 @@
+## AEC 近端状态与残余抑制逐帧集成（2026-11-18）
+
+- **交付**：新增 `audio_echo_canceller_near_end_active` 和 `audio_residual_echo_suppressor_process_with_aec`；后者逐帧执行 AEC、读取状态并抑制残余，旧 PCM/适应/抑制公式不变。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-aec-residual-integration-design.md`、`docs/superpowers/plans/2026-11-18-audio-aec-residual-integration.md`。
+- **TDD 与评审**：两个新符号链接 RED 后达到 AEC 9/9、残余 8/8；独立评审发现非法调用和 hangover 到期证据不足，补充独立诊断帧、完整到期及专门零 hangover 变异后复审 Ready。
+- **定向验证**：普通及 ASan+UBSan 均为上述通过数，严格告警为零；检测状态、零 hangover、reset、管线顺序、近端/AEC 路由及缺失 suppressor 防护变异均被捕获。
+- **全量验证**：`/tmp/full_trees.sh` 的实际计数为 429/429、429/429、437/437，三次构建均成功且零测试失败。
+- **边界**：Geigel 仍是启发式检测；无频谱相干性、生产采集接线、多声道或真实声学验证。
+
 ## 漂移估计的 repeated-median 抗离群点模式（2026-11-18）
 
 - **交付**：新增 `audio_drift_estimator_estimate_robust`，通过 Siegel repeated-median 估计斜率；旧最小二乘、配置和 push/reset/ring 行为不变。两个 window 长度 scratch 仅在 create 分配，堆排序不修改原始样本。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-drift-robust-design.md`、`docs/superpowers/plans/2026-11-18-audio-drift-robust.md`。

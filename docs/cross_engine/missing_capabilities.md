@@ -316,3 +316,5 @@
 - **第 10 节（音频）追加**：2026-11-18 `audio_delay_tracker_create_gcc` 提供显式 GCC-PHAT 后端，复用原配置、归一化门控和跟踪状态机，只分配选定后端；默认时域行为不变。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「GCC-PHAT 与 tracker 接线」由此交付。仍缺：运行中后端切换、自动更新调度、多声道与真实声学验证。
 
 - **第 10 节（音频）追加**：2026-11-18 `audio_drift_estimator_estimate_robust` 以 repeated-median 提供抗孤立离群点的漂移斜率，固定 scratch、无估计期分配，旧最小二乘接口不变。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「时钟漂移估计」。上文「抗离群点回归」由此交付。仍缺：自动闭环控制、多声道与真实设备验证。
+
+- **第 10 节（音频）追加**：2026-11-18 AEC 暴露逐帧近端状态，`audio_residual_echo_suppressor_process_with_aec` 自动把该状态用于残余抑制，且与手工逐帧序列逐位一致。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「残余回声抑制」。上文「自动近端检测」的库集成由此交付。仍缺：频谱相干性、生产采集管线接线、多声道与真实声学验证。

@@ -205,22 +205,22 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `audio_echo_canceller_process_i16(aec, reference, capture, frames)`：单声道。`reference` 是与 `capture` 对齐的播放帧（同一帧或更早到达麦克风的播放样本），调用者负责对齐；滤波器覆盖不超过 `taps` 帧的回声路径。`capture` 被替换为采集减去预测回声。
 - 记 x = 参考 / 32768、d = 采集 / 32768。预测 `y = Σ w(k) x(n−k)`，误差 `e = d − y`，输出 `nearbyint(e × 32768)` 并限制在 i16 范围内。
 - 权重更新 `w(k) += μ e x(n−k) / (Σ x² + taps × 1e-6)`。窗口能量由 i16 平方和精确累加（加入最新样本、减去离开窗口的样本），不会有浮点漂移。历史缓冲每个样本写两次（i 与 i + taps），所以卷积总是读一段连续窗口。
-- Geigel 双讲检测：阈值大于 0 且 `|d| > 阈值 × max|x(n−k)|` 时认为近端在说话，本帧及之后保持时间内的帧都不更新权重，回声照常消除。两端都静音不算双讲。检测需要近端声音超过阈值才触发，所以近端开口的前几帧仍会更新权重；步长越小，这几帧带来的偏移越小。
-- `audio_echo_canceller_reset` 清零权重、历史与保持计数；`audio_echo_canceller_weight(aec, k)` 返回回声路径估计的第 k 个权重（越界或 NULL 为 0）。
+- Geigel 双讲检测：阈值大于 0 且 `|d| > 阈值 × max|x(n−k)|` 时认为近端在说话，本帧及之后保持时间内的帧都不更新权重，回声照常消除。两端都静音不算双讲。检测需要近端声音超过阈值才触发，所以近端开口的前几帧仍会更新权重；步长越小，这几帧带来的偏移越小。`audio_echo_canceller_near_end_active` 报告最近帧的检测或 hangover 状态，零 hangover 的检测帧也为 true，零帧调用保留状态，检测关闭时恒为 false。
+- `audio_echo_canceller_reset` 清零权重、历史、保持计数与近端状态；`audio_echo_canceller_weight(aec, k)` 返回回声路径估计的第 k 个权重（越界或 NULL 为 0）。
 - 逐帧处理，分块方式不影响输出。每帧的计算量与 `taps` 成正比，8192 tap、48 kHz 时每秒约 8 亿次乘加，长回声路径需要权衡。
 - 未做：频域或分块的快速实现、立体声参考。非线性残余的 postprocessor 见下一节；参考与采集的对齐见「延迟估计与参考延迟线」。
 
 ## 残余回声抑制
 
-`engine/src/audio/audio_residual_echo_suppressor.{h,c}` 在 AEC 之后抑制仍未消除的非线性回声。它使用调用者持有的状态，不分配、不加锁，处理单声道 i16。建议由调用者按 `audio_capture_read_i16` → `audio_echo_canceller_process_i16` → `audio_residual_echo_suppressor_process_i16` → 频谱降噪/噪声门 → AGC 串联。当前只有库接口和测试，没有生产采集管线的自动接线；近端检测与逐块标志也由调用者负责。
+`engine/src/audio/audio_residual_echo_suppressor.{h,c}` 在 AEC 之后抑制仍未消除的非线性回声。它使用调用者持有的状态，不分配、不加锁，处理单声道 i16。可使用 `audio_residual_echo_suppressor_process_with_aec` 逐帧执行 AEC、读取近端状态并抑制残余；该函数已经执行 AEC，调用者不能重复处理同一 capture。自定义检测仍可使用独立 `process_i16`。当前只有库接口和测试，没有生产采集管线的自动接线。
 
 - 配置：采样率 8000..192000、衰减 0..80 dB、比值余量 0..40 dB、attack 0.1..1000 ms、release 1..10000 ms、路径上升速度 0.1..60 dB/s、初始路径 -120..0 dB、参考门限 -80..0 dBFS、hangover 0..1000 ms。非法或 NaN 返回 `AUDIO_INVALID`，且不改调用者状态。
 - 参考与 AEC 误差功率分别经 10 ms 一阶平滑。参考功率达到门限时视为活动；停止后按 hangover 保留最后活动参考功率，以覆盖衰减中的回声尾部。
 - 可控残余帧计算 `10 log10(max(error,1e-12)/max(reference,1e-12))`，学习值不超过 0 dB。路径每次下降立即跟随，上升不超过配置速度且不超过观测值。比值不超过 `path + margin` 时以配置的负衰减为目标，否则暂时打开增益并继续适应。
-- `near_end_active=true` 时路径冻结且增益打开。该标志必须由调用者的近端检测提供；模块不自行判断近端，也不应在标志错误时保证结果。
+- `near_end_active=true` 时路径冻结且增益打开。独立接口的标志由调用者提供；集成接口逐帧复用 AEC 的 Geigel/hangover 状态，不把最后帧状态错误应用到整块历史。
 - 增益打开使用 attack，关闭使用 release；增益始终在 [-reduction,0] dB，不放大。`gain_db`、`path_db` 提供诊断，NULL 分别返回 0 和 -120。
 - `reset` 清空包络、保持的参考功率、路径、增益与 hangover。任意分块与整块逐位一致。
-- 未做：自动近端检测、频谱相干性抑制、立体声、真实声学环境验证。
+- 未做：频谱相干性抑制、立体声、生产采集管线接线与真实声学环境验证。
 
 ## 延迟估计与参考延迟线
 

@@ -369,6 +369,82 @@ TEST(chunking_reset_and_silence_are_deterministic)
     for (u32 i = 0; i < count; ++i) ASSERT_EQ(g_capture[i], 0);
 }
 
+TEST(integrated_pipeline_matches_manual_frame_steps)
+{
+    const u32 count = 4000u;
+    for (u32 i = 0; i < count; ++i) {
+        const double x = 0.5 * sin(2.0 * kPi * 1000.0 * i / 16000.0);
+        const double echo = 0.25 * x + 0.12 * x * fabs(x);
+        const double near = i >= 3000u ? 0.2 * sin(2.0 * kPi * 440.0 * i / 16000.0) : 0.0;
+        g_reference[i] = (i16)lrint(x * 32768.0);
+        g_capture[i] = (i16)lrint((echo + near) * 32768.0);
+    }
+    memcpy(g_chunked, g_capture, sizeof(i16) * count);
+    const AudioResidualEchoSuppressorConfig config = test_config();
+    AudioResidualEchoSuppressor integrated, manual;
+    ASSERT_EQ(audio_residual_echo_suppressor_init(&integrated, &config), AUDIO_OK);
+    ASSERT_EQ(audio_residual_echo_suppressor_init(&manual, &config), AUDIO_OK);
+    const AudioEchoCancellerConfig aec_config = {16000u, 64u, 0.2f, 0.5f, 2.0f};
+    AudioEchoCanceller *integrated_aec = NULL, *manual_aec = NULL;
+    ASSERT_EQ(audio_echo_canceller_create(&aec_config, &integrated_aec), AUDIO_OK);
+    ASSERT_EQ(audio_echo_canceller_create(&aec_config, &manual_aec), AUDIO_OK);
+    audio_residual_echo_suppressor_process_with_aec(&integrated, integrated_aec,
+                                                    g_reference, g_capture, count);
+    for (u32 i = 0; i < count; ++i) {
+        audio_echo_canceller_process_i16(manual_aec, g_reference + i, g_chunked + i, 1u);
+        const bool near = audio_echo_canceller_near_end_active(manual_aec);
+        audio_residual_echo_suppressor_process_i16(&manual, g_reference + i, g_chunked + i,
+                                                  1u, near);
+    }
+    ASSERT_EQ(memcmp(g_capture, g_chunked, sizeof(i16) * count), 0);
+    ASSERT_FLOAT_EQ(audio_residual_echo_suppressor_gain_db(&integrated),
+                    audio_residual_echo_suppressor_gain_db(&manual), 0.0f);
+    ASSERT_FLOAT_EQ(audio_residual_echo_suppressor_path_db(&integrated),
+                    audio_residual_echo_suppressor_path_db(&manual), 0.0f);
+    for (u32 k = 0; k < 64u; ++k) {
+        ASSERT_FLOAT_EQ(audio_echo_canceller_weight(integrated_aec, k),
+                        audio_echo_canceller_weight(manual_aec, k), 0.0);
+    }
+    ASSERT_TRUE(audio_residual_echo_suppressor_gain_db(&integrated) > -0.01f);
+    ASSERT_EQ(audio_echo_canceller_near_end_active(integrated_aec),
+              audio_echo_canceller_near_end_active(manual_aec));
+
+    const AudioResidualEchoSuppressor before = integrated;
+    audio_residual_echo_suppressor_process_with_aec(NULL, integrated_aec,
+                                                    g_reference, g_capture, 1u);
+    audio_residual_echo_suppressor_process_with_aec(&integrated, NULL,
+                                                    g_reference, g_capture, 1u);
+    audio_residual_echo_suppressor_process_with_aec(&integrated, integrated_aec,
+                                                    NULL, g_capture, 1u);
+    audio_residual_echo_suppressor_process_with_aec(&integrated, integrated_aec,
+                                                    g_reference, NULL, 1u);
+    audio_residual_echo_suppressor_process_with_aec(&integrated, integrated_aec,
+                                                    g_reference, g_capture, 0u);
+    ASSERT_EQ(memcmp(&integrated, &before, sizeof(integrated)), 0);
+    ASSERT_EQ(memcmp(g_capture, g_chunked, sizeof(i16) * count), 0);
+    ASSERT_EQ(audio_echo_canceller_near_end_active(integrated_aec),
+              audio_echo_canceller_near_end_active(manual_aec));
+    for (u32 k = 0; k < 64u; ++k) {
+        ASSERT_FLOAT_EQ(audio_echo_canceller_weight(integrated_aec, k),
+                        audio_echo_canceller_weight(manual_aec, k), 0.0);
+    }
+    i16 diagnostic_reference = 1234;
+    i16 integrated_sample = 2345, manual_sample = 2345;
+    audio_echo_canceller_process_i16(integrated_aec, &diagnostic_reference,
+                                     &integrated_sample, 1u);
+    audio_echo_canceller_process_i16(manual_aec, &diagnostic_reference,
+                                     &manual_sample, 1u);
+    ASSERT_EQ(integrated_sample, manual_sample);
+    ASSERT_EQ(audio_echo_canceller_near_end_active(integrated_aec),
+              audio_echo_canceller_near_end_active(manual_aec));
+    for (u32 k = 0; k < 64u; ++k) {
+        ASSERT_FLOAT_EQ(audio_echo_canceller_weight(integrated_aec, k),
+                        audio_echo_canceller_weight(manual_aec, k), 0.0);
+    }
+    audio_echo_canceller_destroy(integrated_aec);
+    audio_echo_canceller_destroy(manual_aec);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(init_validates_configuration_and_accessors);
     RUN_TEST(no_reference_passes_and_hangover_covers_the_tail);
@@ -377,4 +453,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gain_closes_with_release_and_opens_with_attack);
     RUN_TEST(path_tracking_is_bounded_and_never_exceeds_zero_db);
     RUN_TEST(chunking_reset_and_silence_are_deterministic);
+    RUN_TEST(integrated_pipeline_matches_manual_frame_steps);
 TEST_MAIN_END()
