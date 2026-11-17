@@ -11594,3 +11594,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 先 RED（编译失败；随后 loopback 与 late_auth 因收不到欢迎失败）后 GREEN。17 项变异中 15 项被捕获，剩余 2 项为纵深防御，见设计文档。loopback 连续 12 次通过。影子变量检查通过（rc=0）。
 - 仍缺：core_app 运行时作为客户端运行并把会话号写进自己的 trace。
 
+### 2026-11-17 崩溃符号化：通用（fat）Mach-O 文件
+- `engine/src/crash/break_crash_symbolize.{h,c}`：`break_macho_symbols_open_cpu`；`macho_fat_from_bytes` 校验每个条目后取指定 CPU 的 slice；`break_macho_symbols_open`、`break_crash_symbols_open` 与符号库对通用文件取 x86_64 slice。
+- `test_break_crash_symbolize` 新增 6 项（共 43）：手工通用文件的两种 magic、CPU 选择与默认、符号库；缺 CPU；13 种结构破坏；条目数上限 32；每个截断长度；`llvm-lipo` 合成的真实通用 dylib 对 `llvm-nm --arch`。契约测试的导出清单加入新函数。
+- 先 RED（编译失败，接口不存在）后 GREEN。17 项变异首轮 4 项存活，补测试后 2 项被捕获；“条目表超出文件”只在 ASan 下变红，“条目数为 0”为等价变异。影子变量检查通过（rc=0）。
+- 仍缺：生产部署的收集服务、minidump、Windows 符号化、arm64 帧展开。
+

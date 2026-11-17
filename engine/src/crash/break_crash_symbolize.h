@@ -10,8 +10,8 @@
  *  validated as hostile (all offsets and sizes bounds-checked, no allocation
  *  sized by an unchecked field, a corrupt file gives NULL, never a crash).
  *
- *  Scope: symbol files are 64-bit little-endian ELF or thin 64-bit Mach-O
- *  (x86_64 / arm64); frames are x86-64. The unwinder follows the
+ *  Scope: symbol files are 64-bit little-endian ELF or 64-bit Mach-O
+ *  (x86_64 / arm64, thin or universal); frames are x86-64. The unwinder follows the
  *  saved-RBP chain (frame-pointer code) through the record's stack window; it
  *  does NOT use DWARF CFI, so code compiled without frame pointers yields a
  *  short, possibly wrong chain, and every frame beyond the first is marked as
@@ -43,8 +43,10 @@ u32 break_elf_symbols_count(const BreakElfSymbols *s);
 
 /* Reads the LC_SYMTAB of a thin 64-bit little-endian Mach-O file (x86_64 or
  * arm64; MH_EXECUTE, MH_DYLIB, MH_BUNDLE or MH_DSYM) into the same table.
- * Universal (fat), 32-bit and big-endian files are refused, as is any load
- * command that is malformed or points outside the file. Kept symbols are
+ * 32-bit and big-endian images are refused, as is any load command that is
+ * malformed or points outside the file. A universal (fat) file gives its
+ * x86_64 slice, the CPU frame recovery walks; a thin file of either CPU
+ * opens as is. Kept symbols are
  * section-defined, not stabs, inside a section that holds instructions;
  * Mach-O stores no sizes, so a symbol ends at the next higher kept symbol or
  * at the end of its section. Addresses are relative to the __TEXT segment's
@@ -53,7 +55,16 @@ u32 break_elf_symbols_count(const BreakElfSymbols *s);
  * hex digits ("" when absent). */
 BreakElfSymbols *break_macho_symbols_open(const char *path);
 
-/* Opens an ELF or Mach-O symbol file, chosen by its magic; NULL otherwise.
+/* As above, but for one CPU (x86_64 0x01000007 or arm64 0x0100000c, other
+ * values give NULL): a thin file of that CPU, or that slice of a universal
+ * file (0xcafebabe / 0xcafebabf, at most 32 entries). Every entry of a
+ * universal file is checked (slice inside the file and past the entry
+ * table, no overlap, no CPU listed twice) and the slice must be an image of
+ * the CPU its entry names. */
+BreakElfSymbols *break_macho_symbols_open_cpu(const char *path, u32 cpu_type);
+
+/* Opens an ELF or Mach-O (thin or universal) symbol file, chosen by its
+ * magic; NULL otherwise.
  * The symbol store uses this. */
 BreakElfSymbols *break_crash_symbols_open(const char *path);
 

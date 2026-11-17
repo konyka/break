@@ -190,7 +190,7 @@ BreakElfSymbols *break_elf_symbols_open(const char *path) {
 }
 
 /* ---------------------------------------------------------------------------
- * Mach-O (thin, 64-bit, little-endian)
+ * Mach-O (64-bit, little-endian; thin, or one slice of a universal file)
  * ------------------------------------------------------------------------- */
 
 #define MO_MAGIC_64 0xfeedfacfu
@@ -209,6 +209,9 @@ BreakElfSymbols *break_elf_symbols_open(const char *path) {
 #define MO_N_SECT 0x0eu
 #define MO_CODE_FLAGS (0x80000000u | 0x400u) /* S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS */
 #define MO_MAX_SECT 255u                     /* n_sect is one byte */
+#define MO_FAT_MAGIC 0xcafebabeu             /* big-endian, 20-byte entries */
+#define MO_FAT_MAGIC_64 0xcafebabfu          /* big-endian, 32-byte entries */
+#define MO_FAT_MAX_ARCHS 32u                 /* also tells a Java class file (version >= 45) apart */
 
 typedef struct {
     u64 addr;
@@ -224,11 +227,28 @@ static u64 mo_rd64(const u8 *p) {
     return (u64)mo_rd32(p) | ((u64)mo_rd32(p + 4) << 32);
 }
 
+static u32 mo_be32(const u8 *p) {
+    return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | (u32)p[3];
+}
+
+static u64 mo_be64(const u8 *p) {
+    return ((u64)mo_be32(p) << 32) | (u64)mo_be32(p + 4);
+}
+
+static bool mo_cpu_ok(u32 cpu) {
+    return cpu == MO_CPU_X86_64 || cpu == MO_CPU_ARM64;
+}
+
+static bool mo_is_fat(const u8 *file, u64 size) {
+    return size >= 4u && (mo_be32(file) == MO_FAT_MAGIC || mo_be32(file) == MO_FAT_MAGIC_64);
+}
+
 static bool mo_filetype_ok(u32 t) {
     return t == 2u || t == 6u || t == 8u || t == 0xau; /* EXECUTE, DYLIB, BUNDLE, DSYM */
 }
 
-static BreakElfSymbols *macho_from_bytes(const u8 *file, u64 size) {
+/* A thin image; `want_cpu` 0 accepts either supported CPU. */
+static BreakElfSymbols *macho_thin_from_bytes(const u8 *file, u64 size, u32 want_cpu) {
     static const char hex[] = "0123456789abcdef";
     BreakElfSymbols *s = NULL;
     MoSection sects[MO_MAX_SECT + 1u]; /* 1-based, as n_sect counts them */
@@ -238,7 +258,9 @@ static BreakElfSymbols *macho_from_bytes(const u8 *file, u64 size) {
     bool have_text = false, have_symtab = false;
     if (size < MO_HEADER_SIZE || mo_rd32(file) != MO_MAGIC_64) return NULL;
     cpu = mo_rd32(file + 4);
-    if ((cpu != MO_CPU_X86_64 && cpu != MO_CPU_ARM64) || !mo_filetype_ok(mo_rd32(file + 12))) return NULL;
+    if (!mo_cpu_ok(cpu) || (want_cpu != 0u && cpu != want_cpu) || !mo_filetype_ok(mo_rd32(file + 12))) {
+        return NULL;
+    }
     ncmds = mo_rd32(file + 16);
     if (ncmds > MO_MAX_CMDS || !in_file(MO_HEADER_SIZE, mo_rd32(file + 20), size)) return NULL;
     cmds_end = MO_HEADER_SIZE + (u64)mo_rd32(file + 20);
@@ -344,14 +366,61 @@ fail:
     return NULL;
 }
 
-BreakElfSymbols *break_macho_symbols_open(const char *path) {
+/* The slice of `want_cpu` in a universal file, after every entry has been
+ * checked: inside the file, past the entry table, not overlapping another
+ * slice, no CPU listed twice. The slice must itself be that CPU's image. */
+static BreakElfSymbols *macho_fat_from_bytes(const u8 *file, u64 size, u32 want_cpu) {
+    bool wide = mo_be32(file) == MO_FAT_MAGIC_64;
+    u64 entry = wide ? 32u : 20u;
+    u32 n;
+    u64 table_end, offs[MO_FAT_MAX_ARCHS], lens[MO_FAT_MAX_ARCHS];
+    u32 cpus[MO_FAT_MAX_ARCHS];
+    int pick = -1;
+    if (size < 8u) return NULL;
+    n = mo_be32(file + 4);
+    if (n == 0u || n > MO_FAT_MAX_ARCHS) return NULL;
+    table_end = 8u + entry * n;
+    if (table_end > size) return NULL;
+    for (u32 i = 0; i < n; i++) {
+        const u8 *e = file + 8u + entry * i;
+        cpus[i] = mo_be32(e);
+        offs[i] = wide ? mo_be64(e + 8) : (u64)mo_be32(e + 8);
+        lens[i] = wide ? mo_be64(e + 16) : (u64)mo_be32(e + 12);
+        if (offs[i] < table_end || !in_file(offs[i], lens[i], size)) return NULL;
+        for (u32 k = 0; k < i; k++) {
+            if (cpus[k] == cpus[i]) return NULL;
+            if (offs[i] < offs[k] + lens[k] && offs[k] < offs[i] + lens[i]) return NULL;
+        }
+        if (cpus[i] == want_cpu) pick = (int)i;
+    }
+    if (pick < 0) return NULL;
+    return macho_thin_from_bytes(file + offs[pick], lens[pick], want_cpu);
+}
+
+/* want_cpu 0: a thin image of either CPU, or the x86_64 slice of a
+ * universal file (frame recovery walks x86-64 frames only). */
+static BreakElfSymbols *macho_from_bytes(const u8 *file, u64 size, u32 want_cpu) {
+    if (mo_is_fat(file, size)) return macho_fat_from_bytes(file, size, want_cpu ? want_cpu : MO_CPU_X86_64);
+    return macho_thin_from_bytes(file, size, want_cpu);
+}
+
+static BreakElfSymbols *macho_open(const char *path, u32 want_cpu) {
     u64 size = 0;
-    u8 *file = load_file(path, MO_HEADER_SIZE, &size);
+    u8 *file = load_file(path, 8u, &size);
     BreakElfSymbols *s;
     if (file == NULL) return NULL;
-    s = macho_from_bytes(file, size);
+    s = macho_from_bytes(file, size, want_cpu);
     free(file);
     return s;
+}
+
+BreakElfSymbols *break_macho_symbols_open(const char *path) {
+    return macho_open(path, 0u);
+}
+
+BreakElfSymbols *break_macho_symbols_open_cpu(const char *path, u32 cpu_type) {
+    if (!mo_cpu_ok(cpu_type)) return NULL;
+    return macho_open(path, cpu_type);
 }
 
 BreakElfSymbols *break_crash_symbols_open(const char *path) {
@@ -361,8 +430,8 @@ BreakElfSymbols *break_crash_symbols_open(const char *path) {
     if (file == NULL) return NULL;
     if (memcmp(file, ELFMAG, SELFMAG) == 0) {
         s = elf_from_bytes(file, size);
-    } else if (mo_rd32(file) == MO_MAGIC_64) {
-        s = macho_from_bytes(file, size);
+    } else if (mo_rd32(file) == MO_MAGIC_64 || mo_is_fat(file, size)) {
+        s = macho_from_bytes(file, size, 0u);
     }
     free(file);
     return s;

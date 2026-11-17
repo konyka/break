@@ -1561,6 +1561,296 @@ TEST(the_format_dispatcher_opens_elf_and_mach_o_and_nothing_else) {
     ASSERT_TRUE(break_macho_symbols_open("") == NULL);
 }
 
+/* ---- universal (fat) Mach-O: big-endian header, one thin image per CPU ---- */
+
+#define MO_X86_64 0x01000007u
+#define MO_ARM64 0x0100000cu
+
+typedef struct {
+    u8 b[3u * 4096u];
+    usize n;
+    usize slice_n;
+} FatImg;
+
+static void fat_be32(u8 *p, u32 v) { for (int i = 0; i < 4; i++) p[i] = (u8)(v >> (8 * (3 - i))); }
+static void fat_be64(u8 *p, u64 v) { fat_be32(p, (u32)(v >> 32)); fat_be32(p + 4, (u32)v); }
+
+/* arm64 slice at 0x1000, x86_64 slice at 0x2000 (arm64 first, so a reader
+ * that takes the first slice is caught). The last UUID byte is the CPU's low
+ * byte: ...07 for x86_64, ...0c for arm64. */
+static void fat_build(FatImg *f, bool wide) {
+    static MachoImg slice;
+    const u32 cpus[2] = {MO_ARM64, MO_X86_64};
+    usize entry = wide ? 32u : 20u;
+    memset(f, 0, sizeof(*f));
+    fat_be32(f->b, wide ? 0xcafebabfu : 0xcafebabeu);
+    fat_be32(f->b + 4, 2u);
+    for (u32 i = 0; i < 2u; i++) {
+        MachoSpec sp = {0u, cpus[i], 6u, true, 0u};
+        u8 *e = f->b + 8u + entry * i;
+        usize off = 0x1000u * (i + 1u);
+        macho_build(&slice, &sp);
+        slice.b[slice.uuid_cmd + 8u + 15u] = (u8)cpus[i];
+        memcpy(f->b + off, slice.b, slice.n);
+        fat_be32(e, cpus[i]);
+        fat_be32(e + 4, cpus[i] == MO_ARM64 ? 0u : 3u);
+        if (wide) {
+            fat_be64(e + 8, off);
+            fat_be64(e + 16, slice.n);
+            fat_be32(e + 24, 12u);
+        } else {
+            fat_be32(e + 8, (u32)off);
+            fat_be32(e + 12, (u32)slice.n);
+            fat_be32(e + 16, 12u);
+        }
+        f->n = off + slice.n;
+        f->slice_n = slice.n;
+    }
+}
+
+/* cpu 0: break_macho_symbols_open, else break_macho_symbols_open_cpu */
+static BreakElfSymbols *fat_open(const u8 *b, usize n, u32 cpu) {
+    char path[400];
+    path_in(path, sizeof(path), "image.fat");
+    if (!write_bytes(path, b, n)) return NULL;
+    return cpu == 0u ? break_macho_symbols_open(path) : break_macho_symbols_open_cpu(path, cpu);
+}
+
+static bool fat_slice_is(const u8 *b, usize n, u32 cpu, const char *want_id) {
+    BreakElfSymbols *s = fat_open(b, n, cpu);
+    bool ok;
+    if (s == NULL) {
+        if (want_id != NULL) printf("    cpu 0x%x: no slice\n", cpu);
+        return want_id == NULL;
+    }
+    ok = want_id != NULL && strcmp(break_elf_symbols_build_id(s), want_id) == 0 && mo_expect_layout(s, 0u);
+    if (!ok) printf("    cpu 0x%x opened as %s, want %s\n", cpu, break_elf_symbols_build_id(s), want_id ? want_id : "NULL");
+    break_elf_symbols_destroy(s);
+    return ok;
+}
+
+static const char k_fat_x86_id[] = "0f1e2d3c4b5a69788796a5b4c3d2e107";
+static const char k_fat_arm_id[] = "0f1e2d3c4b5a69788796a5b4c3d2e10c";
+
+TEST(universal_mach_o_files_yield_the_slice_of_the_requested_cpu) {
+    static FatImg f;
+    for (int wide = 0; wide < 2; wide++) {
+        fat_build(&f, wide != 0);
+        ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_X86_64, k_fat_x86_id));
+        ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, k_fat_arm_id));
+        ASSERT_TRUE(fat_slice_is(f.b, f.n, 0u, k_fat_x86_id)); /* frame recovery is x86-64 */
+    }
+    {
+        char root[400], dir[600], path[700], cmd[CMD_CAP];
+        char name[BREAK_CRASH_SYMBOLIZE_NAME_MAX];
+        u64 off = 0;
+        BreakCrashSymbolStore *st;
+        BreakElfSymbols *s;
+        path_in(root, sizeof(root), "fatroot");
+        snprintf(dir, sizeof(dir), "%s/fatbuild", root);
+        snprintf(cmd, sizeof(cmd), "rm -rf '%s'; mkdir -p '%s'", root, dir);
+        ASSERT_TRUE(run(cmd));
+        snprintf(path, sizeof(path), "%s/universal.dylib", dir);
+        ASSERT_TRUE(write_bytes(path, f.b, f.n));
+        s = break_crash_symbols_open(path);
+        ASSERT_NOT_NULL(s);
+        ASSERT_STR_EQ(break_elf_symbols_build_id(s), k_fat_x86_id);
+        break_elf_symbols_destroy(s);
+        st = break_crash_symbol_store_open(root);
+        ASSERT_NOT_NULL(st);
+        ASSERT_TRUE(break_crash_symbol_store_lookup(st, "fatbuild", "universal.dylib", 0x1084u, name,
+                                                    sizeof(name), &off));
+        ASSERT_STR_EQ(name, "gamma");
+        ASSERT_EQ(off, 4u);
+        break_crash_symbol_store_destroy(st);
+    }
+}
+
+TEST(a_mach_o_file_without_the_requested_cpu_gives_null) {
+    static MachoImg img;
+    static FatImg f;
+    MachoSpec arm = {0u, MO_ARM64, 6u, true, 0u};
+    BreakElfSymbols *s;
+    macho_default(&img, 0u, 6u); /* thin x86_64 */
+    ASSERT_TRUE(fat_slice_is(img.b, img.n, MO_X86_64, "0f1e2d3c4b5a69788796a5b4c3d2e1f0"));
+    ASSERT_TRUE(fat_slice_is(img.b, img.n, MO_ARM64, NULL));
+    macho_build(&img, &arm);
+    ASSERT_TRUE(fat_slice_is(img.b, img.n, MO_ARM64, "0f1e2d3c4b5a69788796a5b4c3d2e1f0"));
+    ASSERT_TRUE(fat_slice_is(img.b, img.n, MO_X86_64, NULL));
+    s = fat_open(img.b, img.n, 0u); /* a thin file of either CPU opens without a request */
+    ASSERT_NOT_NULL(s);
+    break_elf_symbols_destroy(s);
+    /* only CPU types the reader supports may be requested */
+    ASSERT_TRUE(fat_slice_is(img.b, img.n, 0x0000000cu, NULL));
+    ASSERT_TRUE(fat_slice_is(img.b, img.n, 0x01000012u, NULL));
+    /* a universal file holding only arm64 has no default slice */
+    fat_build(&f, false);
+    fat_be32(f.b + 4, 1u);
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, k_fat_arm_id));
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, 0u, NULL));
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_X86_64, NULL));
+}
+
+TEST(structurally_bad_universal_headers_are_refused) {
+    static FatImg f;
+    /* entry 0 is arm64 at 0x1000, entry 1 is x86_64 at 0x2000; narrow entries are 20 bytes */
+    const u32 counts[] = {0u, 33u, 52u /* a Java class file's major version */, 0xffffffffu};
+    for (usize i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
+        fat_build(&f, false);
+        fat_be32(f.b + 4, counts[i]);
+        ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, NULL));
+    }
+    fat_build(&f, false);
+    fat_be32(f.b + 8 + 20 + 12, (u32)f.slice_n + 1u); /* x86_64 slice runs past the file */
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, NULL));
+    fat_build(&f, false);
+    fat_be32(f.b + 8 + 8, 40u); /* arm64 slice starts inside the entry table (which ends at 48) */
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_X86_64, NULL));
+    fat_build(&f, false);
+    fat_be32(f.b + 8 + 20 + 8, 0x1010u); /* x86_64 slice overlaps the arm64 one */
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, NULL));
+    /* two arm64 entries, each naming a valid arm64 image */
+    fat_build(&f, false);
+    memcpy(f.b + 0x2000, f.b + 0x1000, f.slice_n);
+    fat_be32(f.b + 8 + 20, MO_ARM64);
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, NULL));
+    /* entries swapped CPU types: each slice holds the other CPU's image */
+    fat_build(&f, false);
+    fat_be32(f.b + 8, MO_X86_64);
+    fat_be32(f.b + 8 + 20, MO_ARM64);
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_X86_64, NULL));
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, NULL));
+    /* 64-bit entries: an offset with its high word set */
+    fat_build(&f, true);
+    fat_be64(f.b + 8 + 32 + 8, 0x100002000ull);
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, NULL));
+    fat_build(&f, true);
+    fat_be64(f.b + 8 + 32 + 16, (u64)1 << 40); /* size past the file */
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, NULL));
+    /* a slice is parsed as exactly its size: one byte short of the image */
+    fat_build(&f, false);
+    fat_be32(f.b + 8 + 20 + 12, (u32)f.slice_n - 1u);
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_X86_64, NULL));
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, k_fat_arm_id));
+}
+
+TEST(a_truncated_universal_file_is_refused_at_every_length) {
+    static FatImg f;
+    fat_build(&f, false);
+    for (usize n = 0; n < f.n; n += (n < 64u || n + 64u > f.n) ? 1u : 7u) {
+        BreakElfSymbols *s = fat_open(f.b, n, 0u);
+        if (s != NULL) {
+            printf("    a %zu-byte prefix of %zu loaded\n", (size_t)n, (size_t)f.n);
+            break_elf_symbols_destroy(s);
+            ASSERT_TRUE(false);
+        }
+    }
+}
+
+/* `count` narrow entries: the real arm64 and x86_64 slices, then empty
+ * slices of distinct unsupported CPU types placed just past the table. */
+static void fat_with_entries(FatImg *f, u32 count) {
+    fat_build(f, false);
+    fat_be32(f->b + 4, count);
+    for (u32 i = 2u; i < count; i++) {
+        u8 *e = f->b + 8u + 20u * i;
+        fat_be32(e, 0x00000100u + i);
+        fat_be32(e + 8, 8u + 20u * count);
+        fat_be32(e + 12, 0u);
+    }
+}
+
+TEST(a_universal_file_may_list_32_slices_but_not_33) {
+    static FatImg f;
+    char path[400];
+    BreakElfSymbols *s;
+    fat_with_entries(&f, 32u);
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_X86_64, k_fat_x86_id));
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, k_fat_arm_id));
+    fat_with_entries(&f, 33u);
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_X86_64, NULL));
+    ASSERT_TRUE(fat_slice_is(f.b, f.n, MO_ARM64, NULL));
+    /* 0 is not a CPU: the "either CPU" default is only for break_macho_symbols_open */
+    fat_build(&f, false);
+    path_in(path, sizeof(path), "image.fat0");
+    ASSERT_TRUE(write_bytes(path, f.b, f.n));
+    ASSERT_TRUE(break_macho_symbols_open_cpu(path, 0u) == NULL);
+    {
+        static MachoImg img;
+        macho_default(&img, 0u, 6u);
+        ASSERT_TRUE(write_bytes(path, img.b, img.n));
+        s = break_macho_symbols_open(path);
+        ASSERT_NOT_NULL(s);
+        break_elf_symbols_destroy(s);
+        ASSERT_TRUE(break_macho_symbols_open_cpu(path, 0u) == NULL);
+    }
+}
+
+/* llvm-nm's address for `_name` in one architecture of a universal file */
+static bool llvm_nm_arch(const char *bin, const char *arch, const char *name, u64 *out) {
+    char cmd[900], line[200];
+    FILE *p;
+    snprintf(cmd, sizeof(cmd), "llvm-nm --arch=%s '%s' 2>/dev/null | awk '$3==\"_%s\" {print $1}'", arch,
+             bin, name);
+    p = popen(cmd, "r");
+    if (p == NULL) return false;
+    if (fgets(line, sizeof(line), p) == NULL) {
+        pclose(p);
+        return false;
+    }
+    pclose(p);
+    *out = strtoull(line, NULL, 16);
+    return true;
+}
+
+TEST(a_real_universal_dylib_from_llvm_lipo_agrees_with_llvm_nm) {
+    const struct { const char *arch, *triple; u32 cpu; } archs[] = {
+        {"x86_64", "x86_64-apple-macos11", MO_X86_64},
+        {"arm64", "arm64-apple-macos11", MO_ARM64},
+    };
+    const char *names[] = {"f1", "f2", "f3", "start"};
+    char src[400], obj[400], thin[2][400], uni[400], cmd[CMD_CAP];
+    char ids[2][129];
+    if (system("command -v clang >/dev/null 2>&1 && command -v ld64.lld >/dev/null 2>&1 && "
+               "command -v llvm-nm >/dev/null 2>&1 && command -v llvm-lipo >/dev/null 2>&1") != 0) {
+        printf("skipped (clang, ld64.lld, llvm-nm or llvm-lipo missing) ");
+        return;
+    }
+    path_in(src, sizeof(src), "uni.c");
+    path_in(obj, sizeof(obj), "uni.o");
+    path_in(thin[0], sizeof(thin[0]), "uni_x86_64.dylib");
+    path_in(thin[1], sizeof(thin[1]), "uni_arm64.dylib");
+    path_in(uni, sizeof(uni), "uni.dylib");
+    ASSERT_TRUE(write_text(src, k_macho_src));
+    for (usize a = 0; a < 2u; a++) {
+        BreakElfSymbols *s;
+        snprintf(cmd, sizeof(cmd),
+                 "clang -target %s -O1 -fno-inline -c '%s' -o '%s' 2>/dev/null && "
+                 "ld64.lld -arch %s -platform_version macos 11.0 11.0 -dylib '%s' -o '%s' 2>/dev/null",
+                 archs[a].triple, src, obj, archs[a].arch, obj, thin[a]);
+        ASSERT_TRUE(run(cmd));
+        s = break_macho_symbols_open(thin[a]);
+        ASSERT_NOT_NULL(s);
+        snprintf(ids[a], sizeof(ids[a]), "%s", break_elf_symbols_build_id(s));
+        break_elf_symbols_destroy(s);
+    }
+    ASSERT_TRUE(strcmp(ids[0], ids[1]) != 0);
+    snprintf(cmd, sizeof(cmd), "llvm-lipo -create '%s' '%s' -output '%s' 2>/dev/null", thin[0], thin[1], uni);
+    ASSERT_TRUE(run(cmd));
+    for (usize a = 0; a < 2u; a++) {
+        BreakElfSymbols *s = break_macho_symbols_open_cpu(uni, archs[a].cpu);
+        ASSERT_NOT_NULL(s);
+        ASSERT_STR_EQ(break_elf_symbols_build_id(s), ids[a]);
+        for (usize i = 0; i < 4u; i++) {
+            u64 rel = 0;
+            ASSERT_TRUE(llvm_nm_arch(uni, archs[a].arch, names[i], &rel));
+            ASSERT_TRUE(mo_lookup(s, rel, names[i], 0u));
+            ASSERT_TRUE(mo_lookup(s, rel + 1u, names[i], 1u));
+        }
+        break_elf_symbols_destroy(s);
+    }
+}
+
 static void cleanup(void) {
     char cmd[400];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
@@ -1606,5 +1896,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(an_unknown_load_command_must_still_be_eight_byte_aligned);
     RUN_TEST(a_code_symbol_below_the_text_segment_is_skipped);
     RUN_TEST(a_command_count_past_the_last_command_is_refused_at_the_file_end);
+    RUN_TEST(universal_mach_o_files_yield_the_slice_of_the_requested_cpu);
+    RUN_TEST(a_mach_o_file_without_the_requested_cpu_gives_null);
+    RUN_TEST(structurally_bad_universal_headers_are_refused);
+    RUN_TEST(a_truncated_universal_file_is_refused_at_every_length);
+    RUN_TEST(a_universal_file_may_list_32_slices_but_not_33);
+    RUN_TEST(a_real_universal_dylib_from_llvm_lipo_agrees_with_llvm_nm);
     cleanup();
 TEST_MAIN_END()
