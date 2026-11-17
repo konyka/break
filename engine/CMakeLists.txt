@@ -1055,6 +1055,7 @@ src/renderer/lens_effects.c
     src/audio/audio_echo_canceller.c src/audio/audio_delay_estimator.c src/audio/audio_fft.c
     src/audio/audio_noise_suppressor.c src/audio/audio_residual_echo_suppressor.c
     src/audio/audio_delay_tracker.c src/audio/audio_gcc_phat.c
+    src/audio/audio_drift_estimator.c
     src/audio/audio_stream.c
     src/animation/skeleton.c
     src/animation/skeleton_socket.c
@@ -7123,6 +7124,12 @@ endif()
     target_link_libraries(test_audio_gcc_phat PRIVATE m)
     add_test(NAME test_audio_gcc_phat COMMAND test_audio_gcc_phat)
 
+    add_executable(test_audio_drift_estimator tests/test_audio_drift_estimator.c
+        src/audio/audio_drift_estimator.c)
+    target_include_directories(test_audio_drift_estimator PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_audio_drift_estimator PRIVATE m)
+    add_test(NAME test_audio_drift_estimator COMMAND test_audio_drift_estimator)
+
     add_test(NAME test_audio_realtime_contract
         COMMAND ${CMAKE_COMMAND}
             -DAUDIO_EXTENDED=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_extended.c
@@ -7135,7 +7142,7 @@ endif()
         test_audio_capture test_audio_agc test_audio_noise_gate
         test_audio_echo_canceller test_audio_delay_estimator test_audio_fft
         test_audio_noise_suppressor test_audio_residual_echo_suppressor
-        test_audio_delay_tracker test_audio_gcc_phat
+        test_audio_delay_tracker test_audio_gcc_phat test_audio_drift_estimator
         test_audio_realtime_contract PROPERTIES LABELS "headless;audio")
 
     # test_vulkan: full backend integration + golden-image regression (VK + GL).

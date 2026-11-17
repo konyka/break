@@ -235,7 +235,16 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 自动跟踪：`engine/src/audio/audio_delay_tracker.{h,c}` 内部持有估计器。`AudioDelayTrackerConfig` 增加采样率、最小 |S|、最大双向漂移帧/秒、锁定所需连续接受数与拒绝保持数。锁定前直接采用测量；锁定后按两次 update 之间推送的帧数计算经过时间并限制变化，零时间不动。拒绝保持延迟；超过保持数才解锁，恢复良好测量会清空拒绝游程。`reset` 同时重置估计器与跟踪状态。
 - 频域估计：`engine/src/audio/audio_gcc_phat.{h,c}` 提供独立的 GCC-PHAT 对象。FFT 大小为至少两倍 `window + max_delay` 的下一个 2 的幂，最大 65536；计算 `conj(FFT(reference))·FFT(capture)`，逐 bin 归一化相位后逆变换，在 0..max_delay 取最大绝对峰，返回其带符号 raw peak。内部峰可做 ±0.5 抛物线细化；边界和无效曲线回退整数。只有 create 分配，raw peak 不是归一化相关系数。
 - 用法：把参考与采集推入估计器、tracker 或 GCC-PHAT 对象，得到延迟 D 后把参考延迟线设为 D 减去几帧余量（滤波器从因果的前几个 tap 开始），延迟后的参考与采集送入 `audio_echo_canceller_process_i16`。tracker 由调用者主动 update，没有隐藏后台线程；GCC-PHAT 尚未自动接入 tracker。
-- 未做：时钟漂移估计与重采样补偿、自动更新调度、多声道与归一化 PHAT 置信度。
+- 未做：时钟漂移重采样补偿、自动更新调度、多声道与归一化 PHAT 置信度；估计器见下一节。
+
+## 时钟漂移估计
+
+`engine/src/audio/audio_drift_estimator.{h,c}` 把置信度门控的分数延迟测量转换为相对时钟漂移 ppm。它不使用墙钟、不直接处理音频，补偿器是独立组件。
+
+- `AudioDriftEstimatorConfig`：2..1024 个样本的滑窗、最小 |correlation| 0..1、最大 |drift| 1..10000 ppm。非法或 NaN 返回 `AUDIO_INVALID`，内存不足返回 `AUDIO_OVERLOAD`，只有成功才写 `*out`。
+- `push(frame_index, delay_frames, correlation)` 只接受有限值、达到门限的相关性和严格递增帧号；拒绝不改窗口。只有 create 分配，reset 清空所有样本与最后帧状态。
+- `estimate(drift_ppm, mean_correlation)` 以最旧环帧为相对基准，做居中最小二乘回归，`ppm = delay/frame 斜率 × 1e6`，并返回接受样本的平均带符号相关性。少于两个样本、零时间方差、非有限或超限时返回 false，输出不变。
+- 未做：重采样补偿、tracker/GCC-PHAT 自动接线、抗离群点回归、真实设备验证。
 
 ## FFT
 
@@ -286,6 +295,7 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `test_audio_residual_echo_suppressor`（7 项）：全部配置边界、所有浮点字段 NaN、NULL、访问器与配置失败原子性；无参考直通与连续 hangover 尾部；真实 NLMS 加 `0.25*x + 0.12*x*|x|` 非线性回声后残余衰减超过 10 dB，且测量拒绝非有限值；先关闭再经近端标志重新打开增益，近端单音 1 dB 内且路径冻结；attack/release 方向；单帧与 1000 帧路径上升速率、下降与 0 dB 上限；1/7/255/13 分块、reset 与新初始化状态一致、静音与动态状态清零。40/40 定向变异被捕获；ASan+UBSan、严格告警通过。
 - `test_audio_noise_suppressor`（8 项）：配置范围、NaN、NULL、配置失败原子性与延迟访问；16/64/256/1024 点、含 ±满幅输入的 0 dB 精确延迟重建；稳态白噪声衰减约 11.0 dB 及 6 dB 每 bin 限值（聚合 RMS 容差 2 dB）；启动/跟踪瞬态单音和初始底噪上的安静单音幅度在 1 dB 内；持续单音在 60 dB/s 测试最后 0.25 秒衰减超过 10 dB；1/7/255/13 帧分块逐位一致；强噪声训练后 reset 与新对象处理安静单音逐位一致；静音保持为零。37 项变异捕获 32 项，5 个存活项及非等价情形见 `docs/Implementation_Status.md`；ASan+UBSan、严格告警检查通过。
 - `test_audio_fft`（8 项）：尺寸与 NULL 校验、失败时不写 `*out`；延迟脉冲与单音的已知频谱；4..1024 的每个 2 的幂尺寸对直接 DFT 逐 bin 一致且输入不变；2048..65536 的 DC、Nyquist、n/4 自配对区域与代表 bin 对直接 DFT 一致；手工构造频谱经独立逆 DFT 公式核对，包括 4 点手算值与任意内部复数 bin；4、256、4096、65536 点逆变换恢复原信号，Parseval 能量守恒，DC/Nyquist 虚部被忽略；线性与循环移位的相位关系；Hann 窗的对称、边界值、50% 重叠相加为 1 及非法大小。所有数值断言拒绝 NaN。27 项定向变异全部被捕获；ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
+- `test_audio_drift_estimator`（5 项）：配置、NULL、初始/复位与失败原子性；非均匀帧的 +50 ppm 和平均相关性；低置信度、非有限、非递增、退化与超限拒绝；四环最新窗口与重用；大 u64 基准的 -40 ppm。全部数值断言拒绝 NaN，门限相等有覆盖。25/26 定向变异被捕获，唯一存活为严格递增输入下不可达的零分母防御。ASan+UBSan、严格告警通过。
 - `test_audio_gcc_phat`（6 项）：配置、FFT 上限、准备/静音与极端 u32；内部 FFT 尺寸和精确并列纯函数；精确/反相/长延迟、冲激峰值 1、常量输入与重复确定性；含噪分数延迟 0.25 帧容差；分块、reset 后立即/不足历史失败和直接时域 lag 参考。22/27 定向变异被捕获，5 个存活项及原因见 `docs/Implementation_Status.md`；ASan+UBSan、严格告警通过。
 - `test_audio_delay_tracker`（5 项）：配置边界、NULL 与访问器；分数测量锁定；低置信度保持、恢复与解锁；按推送时间的双向漂移和零时间不动；分块、reset 与估计失败。另覆盖反相关、锁前接受游程清零、恢复后拒绝游程清零、零阈值下估计仍失败。34/37 定向变异被捕获，3 项为估计器重复边界；ASan+UBSan、严格告警通过。
 - `test_audio_delay_estimator`（11 项）：原有配置、整数延迟、反相、静音/重置、暴力模型、并列、延迟线与 AEC 对齐保持不变；新增 3.25/12.5/31.75 帧 sinc 回声的 0.25 帧容差和最近整数距离的 sinc 相关性参考、端点、反相亚帧与失败原子性；2.25 帧延迟线原地分块、非整除舍入、非法值、整数兼容与空历史。16/18 定向变异被捕获，两个存活保护由局部峰值不等式和有限性兜底覆盖。ASan+UBSan 还捕获并修复了测试 sinc 生成器的尾部越界；最终 ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
