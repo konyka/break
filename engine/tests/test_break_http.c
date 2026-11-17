@@ -2068,6 +2068,372 @@ TEST(plain_http_sends_no_proxy_credentials) {
     ASSERT_TRUE(strstr(s.request, "Proxy-Authorization") == NULL);
 }
 
+/* ---- Digest authentication for the proxy ---- */
+
+/* A proxy that takes up to three connections, records each CONNECT head and
+ * answers connection i with replies[i] (NULL: close at once). A reply that
+ * starts with "HTTP/1.1 200" relays to relay_port afterwards. */
+typedef struct {
+    int listen_fd;
+    unsigned short port;
+    const char *replies[3];
+    unsigned short relay_port;
+    char heads[3][8192];
+    atomic_int accepted;
+    atomic_bool stop;
+    pthread_t thread;
+} AuthProxy;
+
+static void *auth_proxy_main(void *arg) {
+    AuthProxy *p = (AuthProxy *)arg;
+    sigset_t blk;
+    sigemptyset(&blk);
+    sigaddset(&blk, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &blk, NULL);
+    for (int round = 0; round < 3;) {
+        struct pollfd pf;
+        char *h = p->heads[round];
+        size_t len = 0;
+        int fd;
+        pf.fd = p->listen_fd;
+        pf.events = POLLIN;
+        pf.revents = 0;
+        if (poll(&pf, 1, 20) <= 0) {
+            if (atomic_load(&p->stop)) break;
+            continue;
+        }
+        fd = accept(p->listen_fd, NULL, NULL);
+        if (fd < 0) break;
+#if defined(SO_NOSIGPIPE)
+        {
+            int one = 1;
+            (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+        }
+#endif
+        while (strstr(h, "\r\n\r\n") == NULL && len + 1u < sizeof(p->heads[0])) {
+            ssize_t n = read(fd, h + len, sizeof(p->heads[0]) - 1u - len);
+            if (n <= 0) break;
+            len += (size_t)n;
+            h[len] = '\0';
+        }
+        atomic_store(&p->accepted, round + 1);
+        if (p->replies[round] != NULL) {
+            const char *r = p->replies[round];
+            (void)write(fd, r, strlen(r));
+            if (strncmp(r, "HTTP/1.1 200", 12) == 0 && p->relay_port != 0u) {
+                int up = connect_loopback(p->relay_port);
+                if (up >= 0) {
+                    proxy_relay(fd, up);
+                    close(up);
+                }
+            }
+        }
+        close(fd);
+        round++;
+    }
+    return NULL;
+}
+
+/* GET https://localhost:<target>/x through an AuthProxy answering r0 then
+ * r1, with proxy credentials user/password (NULL: none). */
+static BreakHttpError auth_proxied_get(const char *r0, const char *r1, const char *user,
+                                       const char *password, AuthProxy *p, Server *s, u8 *out,
+                                       u64 *got) {
+    static const char r[] = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    struct sockaddr_in a;
+    socklen_t al = sizeof(a);
+    int one = 1;
+    char url[128], purl[64];
+    BreakHttpConfig cfg;
+    BreakHttpError e;
+    memset(p, 0, sizeof(*p));
+    if (!server_start(s, true, r, sizeof(r) - 1u)) return BHTTP_ERR_CONNECT;
+    server_go(s);
+    p->replies[0] = r0;
+    p->replies[1] = r1;
+    p->relay_port = s->port;
+    p->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    setsockopt(p->listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (p->listen_fd < 0 || bind(p->listen_fd, (struct sockaddr *)&a, sizeof(a)) != 0 ||
+        listen(p->listen_fd, 4) != 0 || getsockname(p->listen_fd, (struct sockaddr *)&a, &al) != 0) {
+        server_stop(s);
+        return BHTTP_ERR_CONNECT;
+    }
+    p->port = ntohs(a.sin_port);
+    pthread_create(&p->thread, NULL, auth_proxy_main, p);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = CERT;
+    cfg.io_timeout_ms = 3000;
+    snprintf(purl, sizeof(purl), "http://127.0.0.1:%u", (unsigned)p->port);
+    cfg.proxy = purl;
+    cfg.proxy_user = user;
+    cfg.proxy_password = password;
+    url_of(s, "https", "localhost", "/x", url, sizeof(url));
+    e = break_http_get(&cfg, url, out, 16u, got);
+    atomic_store(&p->stop, true);
+    pthread_join(p->thread, NULL);
+    close(p->listen_fd);
+    server_stop(s);
+    return e;
+}
+
+static void hex_digest(const EVP_MD *md, const char *in, char *out) {
+    unsigned char d[EVP_MAX_MD_SIZE];
+    unsigned int n = 0u;
+    EVP_Digest(in, strlen(in), d, &n, md, NULL);
+    for (unsigned int i = 0; i < n; i++) sprintf(out + 2u * i, "%02x", d[i]);
+    out[2u * n] = '\0';
+}
+
+/* RFC 7616 response; cnonce NULL is the RFC 2069 form without qop */
+static void ref_response(const EVP_MD *md, const char *user, const char *realm,
+                         const char *password, const char *nonce, const char *uri,
+                         const char *cnonce, char *out) {
+    static char buf[2048];
+    char ha1[129], ha2[129];
+    snprintf(buf, sizeof(buf), "%s:%s:%s", user, realm, password);
+    hex_digest(md, buf, ha1);
+    snprintf(buf, sizeof(buf), "CONNECT:%s", uri);
+    hex_digest(md, buf, ha2);
+    if (cnonce != NULL) {
+        snprintf(buf, sizeof(buf), "%s:%s:00000001:%s:auth:%s", ha1, nonce, cnonce, ha2);
+    } else {
+        snprintf(buf, sizeof(buf), "%s:%s:%s", ha1, nonce, ha2);
+    }
+    hex_digest(md, buf, out);
+}
+
+/* the cnonce of the Digest header in `head` (32 lowercase hex) */
+static bool digest_cnonce(const char *head, char out[33]) {
+    const char *c = strstr(head, ", cnonce=\"");
+    if (c == NULL) return false;
+    c += 10;
+    for (int i = 0; i < 32; i++) {
+        if (!((c[i] >= '0' && c[i] <= '9') || (c[i] >= 'a' && c[i] <= 'f'))) return false;
+        out[i] = c[i];
+    }
+    out[32] = '\0';
+    return c[32] == '"';
+}
+
+/* the exact second CONNECT head for a Digest answer */
+static void digest_head(char *out, size_t cap, unsigned port, const char *user_quoted,
+                        const char *realm, const char *nonce, const char *algorithm,
+                        const char *response, const char *cnonce, const char *opaque) {
+    char uri[64];
+    size_t n;
+    snprintf(uri, sizeof(uri), "localhost:%u", port);
+    n = (size_t)snprintf(out, cap,
+                         "CONNECT %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: break-http/1\r\n"
+                         "Proxy-Authorization: Digest username=\"%s\", realm=\"%s\", "
+                         "nonce=\"%s\", uri=\"%s\"",
+                         uri, uri, user_quoted, realm, nonce, uri);
+    if (algorithm != NULL) n += (size_t)snprintf(out + n, cap - n, ", algorithm=%s", algorithm);
+    n += (size_t)snprintf(out + n, cap - n, ", response=\"%s\"", response);
+    if (cnonce != NULL) {
+        n += (size_t)snprintf(out + n, cap - n, ", qop=auth, nc=00000001, cnonce=\"%s\"", cnonce);
+    }
+    if (opaque != NULL) n += (size_t)snprintf(out + n, cap - n, ", opaque=\"%s\"", opaque);
+    snprintf(out + n, cap - n, "\r\n\r\n");
+}
+
+#define P407(chal) "HTTP/1.1 407 Proxy Authentication Required\r\n" chal "Content-Length: 0\r\n\r\n"
+
+TEST(a_digest_challenge_is_answered_on_a_new_connection) {
+    static const char chal[] = P407(
+        "Proxy-Authenticate: Digest realm=\"testrealm@host.com\", qop=\"auth,auth-int\", "
+        "nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", "
+        "opaque=\"5ccc069c403ebaf9f0171e9517f40e41\"\r\n");
+    static AuthProxy p;
+    static char want[4096];
+    Server s;
+    u8 buf[16];
+    u64 got = 0;
+    char cnonce[33], resp[129], uri[64];
+    ASSERT_EQ(auth_proxied_get(chal, PROXY_OK, "Mufasa", "Circle Of Life", &p, &s, buf, &got),
+              BHTTP_OK);
+    ASSERT_EQ(got, 5u);
+    ASSERT_TRUE(memcmp(buf, "hello", 5) == 0);
+    ASSERT_EQ(atomic_load(&p.accepted), 2);
+    ASSERT_TRUE(strstr(p.heads[0], "\r\nProxy-Authorization: Basic TXVmYXNhOkNpcmNsZSBPZiBMaWZl\r\n") != NULL);
+    ASSERT_TRUE(strstr(p.heads[1], "Basic") == NULL);
+    ASSERT_TRUE(digest_cnonce(p.heads[1], cnonce));
+    snprintf(uri, sizeof(uri), "localhost:%u", (unsigned)s.port);
+    ref_response(EVP_md5(), "Mufasa", "testrealm@host.com", "Circle Of Life",
+                 "dcd98b7102dd2f0e8b11d0f600bfb0c093", uri, cnonce, resp);
+    digest_head(want, sizeof(want), s.port, "Mufasa", "testrealm@host.com",
+                "dcd98b7102dd2f0e8b11d0f600bfb0c093", NULL, resp, cnonce,
+                "5ccc069c403ebaf9f0171e9517f40e41");
+    ASSERT_STR_EQ(p.heads[1], want);
+    ASSERT_TRUE(strstr(s.request, "Proxy-Authorization") == NULL);
+    ASSERT_TRUE(strstr(s.request, "Mufasa") == NULL);
+}
+
+TEST(digest_supports_sha256_the_legacy_form_and_tolerant_syntax) {
+    static AuthProxy p;
+    static char want[4096];
+    Server s;
+    u8 buf[16];
+    u64 got = 0;
+    char cnonce[33], resp[129], uri[64], cnonce2[33];
+    /* SHA-256 with qop as a bare token, an unknown param, mixed-case names */
+    static const char sha[] = P407(
+        "Proxy-Authenticate: Basic realm=\"x\"\r\n"
+        "proxy-authenticate: DIGEST Realm=\"a\\bc\" , NONCE=n0nce,algorithm=sha-256,"
+        "  qop=\" auth-int , auth \", stale=FALSE, domain=\"/a /b\"   \r\n");
+    ASSERT_EQ(auth_proxied_get(sha, PROXY_OK, "u", "pw", &p, &s, buf, &got), BHTTP_OK);
+    ASSERT_EQ(atomic_load(&p.accepted), 2);
+    ASSERT_TRUE(digest_cnonce(p.heads[1], cnonce));
+    snprintf(uri, sizeof(uri), "localhost:%u", (unsigned)s.port);
+    ref_response(EVP_sha256(), "u", "abc", "pw", "n0nce", uri, cnonce, resp);
+    ASSERT_EQ(strlen(resp), 64u);
+    digest_head(want, sizeof(want), s.port, "u", "abc", "n0nce", "SHA-256", resp, cnonce, NULL);
+    ASSERT_STR_EQ(p.heads[1], want);
+    /* RFC 2069: no qop, so no nc/cnonce; algorithm=MD5 is echoed */
+    static const char legacy[] = P407(
+        "Proxy-Authenticate: Digest realm=\"r\", nonce=\"abc\", algorithm=MD5\r\n");
+    ASSERT_EQ(auth_proxied_get(legacy, PROXY_OK, "u", "pw", &p, &s, buf, &got), BHTTP_OK);
+    snprintf(uri, sizeof(uri), "localhost:%u", (unsigned)s.port);
+    ref_response(EVP_md5(), "u", "r", "pw", "abc", uri, NULL, resp);
+    digest_head(want, sizeof(want), s.port, "u", "r", "abc", "MD5", resp, NULL, NULL);
+    ASSERT_STR_EQ(p.heads[1], want);
+    ASSERT_TRUE(strstr(p.heads[1], "cnonce") == NULL);
+    /* each answer draws a fresh cnonce */
+    static const char again[] = P407(
+        "Proxy-Authenticate: Digest realm=\"r\", nonce=\"abc\", qop=auth\r\n");
+    ASSERT_EQ(auth_proxied_get(again, PROXY_OK, "u", "pw", &p, &s, buf, &got), BHTTP_OK);
+    ASSERT_TRUE(digest_cnonce(p.heads[1], cnonce2));
+    ASSERT_EQ(auth_proxied_get(again, PROXY_OK, "u", "pw", &p, &s, buf, &got), BHTTP_OK);
+    ASSERT_TRUE(digest_cnonce(p.heads[1], cnonce));
+    ASSERT_TRUE(strcmp(cnonce, cnonce2) != 0);
+}
+
+TEST(digest_fits_the_largest_user_realm_nonce_and_opaque) {
+    static AuthProxy p;
+    static char want[8192], chal[4096], user[256], quoted[512], pass[256];
+    static char realm[256], nonce[256], opaque[256];
+    Server s;
+    u8 buf[16];
+    u64 got = 0;
+    char cnonce[33], resp[129], uri[64];
+    size_t q = 0;
+    for (int i = 0; i < 255; i++) {
+        user[i] = (i & 1) ? '\\' : '"';
+        quoted[q++] = '\\';
+        quoted[q++] = user[i];
+    }
+    user[255] = '\0';
+    quoted[q] = '\0';
+    memset(pass, 'p', 255);
+    memset(realm, 'r', 255);
+    memset(nonce, 'n', 255);
+    memset(opaque, 'o', 255);
+    snprintf(chal, sizeof(chal),
+             P407("Proxy-Authenticate: Digest realm=\"%s\", nonce=\"%s\", opaque=\"%s\", "
+                  "algorithm=SHA-256, qop=\"auth\"\r\n"),
+             realm, nonce, opaque);
+    ASSERT_EQ(auth_proxied_get(chal, PROXY_OK, user, pass, &p, &s, buf, &got), BHTTP_OK);
+    ASSERT_TRUE(digest_cnonce(p.heads[1], cnonce));
+    snprintf(uri, sizeof(uri), "localhost:%u", (unsigned)s.port);
+    ref_response(EVP_sha256(), user, realm, pass, nonce, uri, cnonce, resp);
+    digest_head(want, sizeof(want), s.port, quoted, realm, nonce, "SHA-256", resp, cnonce, opaque);
+    ASSERT_STR_EQ(p.heads[1], want);
+}
+
+TEST(a_second_407_is_final) {
+    static const char chal[] = P407("Proxy-Authenticate: Digest realm=\"r\", nonce=\"n\"\r\n");
+    static AuthProxy p;
+    Server s;
+    u8 buf[16];
+    u64 got = 99;
+    ASSERT_EQ(auth_proxied_get(chal, chal, "u", "pw", &p, &s, buf, &got), BHTTP_ERR_STATUS);
+    ASSERT_EQ(atomic_load(&p.accepted), 2);
+    ASSERT_EQ(got, 0u);
+    ASSERT_EQ(s.request_len, 0u);
+    /* the second CONNECT going wrong in other ways keeps its error */
+    ASSERT_EQ(auth_proxied_get(chal, "garbage\r\n\r\n", "u", "pw", &p, &s, buf, &got),
+              BHTTP_ERR_PROTOCOL);
+    ASSERT_EQ(auth_proxied_get(chal, NULL, "u", "pw", &p, &s, buf, &got), BHTTP_ERR_PROTOCOL);
+    ASSERT_EQ(atomic_load(&p.accepted), 2);
+}
+
+TEST(an_unusable_digest_challenge_is_not_answered) {
+    static char long_nonce[600];
+    static char long_token[600];
+    static char buf407[1024];
+    static const char *const bad[] = {
+        "Digest realm=\"r\", nonce=\"n\", algorithm=MD5-sess",
+        "Digestrealm=\"r\", nonce=\"n\"",
+        "Digest realm \"r\", nonce=\"n\"",
+        "Digest realm=, nonce=\"n\"",
+        long_token,
+        "Digest realm=\"r\", nonce=\"n\", algorithm=SHA-512-256",
+        "Digest realm=\"r\", nonce=\"n\", qop=\"auth-int\"",
+        "Digest nonce=\"n\"",
+        "Digest realm=\"r\"",
+        "Digest realm=\"r\", nonce=\"\"",
+        "Digest realm=\"r\", nonce=\"a\\\"b\"",
+        "Digest realm=\"r\", nonce=\"a\\\\b\"",
+        "Digest realm=\"r\", nonce=\"a\tb\"",
+        "Digest realm=\"r\", nonce=\"n",
+        "Digest realm=\"r\", realm=\"s\", nonce=\"n\"",
+        "Digest realm=\"r\" nonce=\"n\"",
+        "Digest realm=\"r\", nonce=\"n\", userhash=true",
+        "Digest realm=\"r\", =\"x\", nonce=\"n\"",
+        "Digest realm=\"r\", nonce=\"n\",",
+        "Digest realm, nonce=\"n\"",
+        "Digest realm=\"r\", nonce=n@x",
+        "Digest realm=\"r\", nonce=\"n\xc3\xa9\"",
+        "Basic realm=\"r\"",
+        "DigestX realm=\"r\", nonce=\"n\"",
+        "Digest",
+        long_nonce};
+    int n = snprintf(long_nonce, sizeof(long_nonce), "Digest realm=\"r\", nonce=\"");
+    memset(long_nonce + n, 'n', 256);
+    memcpy(long_nonce + n + 256, "\"", 2);
+    n = snprintf(long_token, sizeof(long_token), "Digest realm=\"r\", nonce=");
+    memset(long_token + n, 'n', 256);
+    long_token[n + 256] = '\0';
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        static AuthProxy p;
+        Server s;
+        u8 buf[16];
+        u64 got = 99;
+        BreakHttpError e;
+        snprintf(buf407, sizeof(buf407), P407("Proxy-Authenticate: %s\r\n"), bad[i]);
+        e = auth_proxied_get(buf407, PROXY_OK, "u", "pw", &p, &s, buf, &got);
+        if (e != BHTTP_ERR_STATUS || atomic_load(&p.accepted) != 1) {
+            printf("    challenge %zu: got %s after %d connections\n", i,
+                   break_http_error_name(e), atomic_load(&p.accepted));
+        }
+        ASSERT_EQ(e, BHTTP_ERR_STATUS);
+        ASSERT_EQ(atomic_load(&p.accepted), 1);
+    }
+    {
+        /* a valid challenge on another status, or without credentials */
+        static const char forbidden[] =
+            "HTTP/1.1 403 Forbidden\r\nProxy-Authenticate: Digest realm=\"r\", nonce=\"n\"\r\n"
+            "Content-Length: 0\r\n\r\n";
+        static const char chal[] = P407("Proxy-Authenticate: Digest realm=\"r\", nonce=\"n\"\r\n");
+        static AuthProxy p;
+        Server s;
+        u8 buf[16];
+        u64 got;
+        ASSERT_EQ(auth_proxied_get(forbidden, PROXY_OK, "u", "pw", &p, &s, buf, &got),
+                  BHTTP_ERR_STATUS);
+        ASSERT_EQ(atomic_load(&p.accepted), 1);
+        ASSERT_EQ(auth_proxied_get(chal, PROXY_OK, NULL, NULL, &p, &s, buf, &got),
+                  BHTTP_ERR_STATUS);
+        ASSERT_EQ(atomic_load(&p.accepted), 1);
+        ASSERT_EQ(auth_proxied_get(chal, PROXY_OK, "", "", &p, &s, buf, &got), BHTTP_ERR_STATUS);
+        ASSERT_EQ(atomic_load(&p.accepted), 1);
+        ASSERT_TRUE(strstr(p.heads[0], "Proxy-Authorization") == NULL);
+    }
+}
+
 TEST_MAIN_BEGIN()
     signal(SIGPIPE, SIG_DFL);
     RUN_TEST(get_returns_a_content_length_body);
@@ -2131,4 +2497,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(proxy_credentials_encode_every_base64_remainder_and_the_maximum);
     RUN_TEST(invalid_proxy_credentials_are_refused_before_any_socket);
     RUN_TEST(plain_http_sends_no_proxy_credentials);
+    RUN_TEST(a_digest_challenge_is_answered_on_a_new_connection);
+    RUN_TEST(digest_supports_sha256_the_legacy_form_and_tolerant_syntax);
+    RUN_TEST(digest_fits_the_largest_user_realm_nonce_and_opaque);
+    RUN_TEST(a_second_407_is_final);
+    RUN_TEST(an_unusable_digest_challenge_is_not_answered);
 TEST_MAIN_END()

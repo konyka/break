@@ -11546,3 +11546,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 先 RED（6 项失败，水平声源一项按设计通过）后 GREEN；19 项变异首轮 2 项存活：混音器中的开关检查是冗余的（未开提示时发布值恒为 0），已删除；低通在水平时也运行，补充了「水平后回到下方从当前状态继续」的断言。另有 1 个模式匹配不唯一，改写后被捕获。其余全部被捕获；影子变量检查通过。
 - 仍缺：HRTF、麦克风采集、感知编码器、音频编辑工具。
 
+### 2026-11-17 在线更新：break_http 代理 Digest 认证
+- `engine/src/net_http/break_http.c`：CONNECT 收到 407 且有凭据时，解析 `Proxy-Authenticate` 中第一个可用的 Digest 质询（RFC 7616：MD5 或 SHA-256，qop 缺省或含 auth，`userhash` 只接受 false，`opaque` 回传），重新连接代理并发送一次 `Proxy-Authorization: Digest`；第二次回答为最终结果。cnonce 取 16 字节 `RAND_bytes`；用户名中的 `"` 与 `\` 转义。头部解析拆出 `proxy_send_connect`，`proxy_connect` 增加代理地址与连接预算参数。
+- `test_break_http` 新增 5 项（共 66）：RFC 7616 示例参数的 MD5 + qop + opaque（与参考计算逐字节一致）、SHA-256、RFC 2069 形式、宽松语法与 cnonce 每次不同、255 字节上限、第二次 407/格式错误/断开、26 种不可用质询以及 403、无凭据、空凭据。
+- 先 RED（4 项失败，不可用质询一项在旧代码上本就不回应）后 GREEN；38 项变异首轮 8 项存活：值末尾空白的裁剪是冗余的（解析头部时已裁剪），已删除；补充无空格 scheme、缺 `=`、空值、超长 token、qop 列表含空白、空凭据等用例后 6 项被捕获。剩余 1 项为转义符在值末尾时的越界保护，越界读到的是 `\r` 也会被拒绝，行为等价，为内存安全保留。影子变量检查通过（rc=0）。
+- 仍缺：NTLM、https 代理、OCSP、HTTP/2，发布二进制仍没有链接 `break_http`。
+

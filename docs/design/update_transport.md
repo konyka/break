@@ -95,4 +95,13 @@ Mutations that turn it red: the server ignoring Range, the client ignoring the p
 
 `BreakHttpConfig` 新增可选字段 `proxy_user`、`proxy_password`。两者都为 NULL 或空串时不发送凭据。否则两者都必须是 1..255 字节的可打印 ASCII（0x20..0x7e），用户名不能含 `:`；只设置其中一个、含控制字符或非 ASCII 字节、超长，或设置了凭据却没有配置 `proxy`，都在建立任何 socket 之前返回 `ERR_URL`。
 
-凭据以 `Proxy-Authorization: Basic base64(user ":" password)` 只放在 CONNECT 请求里，不会发给目标服务器，明文 http（不走代理）也不会发送。代理仍返回 407 时为 `ERR_STATUS`，不重试、不解析质询。到代理的这一跳是明文 TCP，凭据在这一跳上可见；仍不支持 https 代理。测试在 `engine/tests/test_break_http.c`（新增 4 项，含 RFC 7617 示例、base64 三种余数与 255 字节上限），见 `docs/superpowers/plans/2026-11-16-http-proxy-basic-auth.md`。
+凭据以 `Proxy-Authorization: Basic base64(user ":" password)` 只放在 CONNECT 请求里，不会发给目标服务器，明文 http（不走代理）也不会发送。代理仍返回 407 时为 `ERR_STATUS`，不重试、不解析质询（2026-11-17 起 Digest 质询会被回应一次，见下节）。到代理的这一跳是明文 TCP，凭据在这一跳上可见；仍不支持 https 代理。测试在 `engine/tests/test_break_http.c`（新增 4 项，含 RFC 7617 示例、base64 三种余数与 255 字节上限），见 `docs/superpowers/plans/2026-11-16-http-proxy-basic-auth.md`。
+
+## 补充（2026-11-17）：代理 Digest 认证
+
+配置了 `proxy_user`/`proxy_password` 时，第一次 CONNECT 仍带 Basic 凭据。代理以 407 回答、且某个 `Proxy-Authenticate` 头带有可回应的 Digest 质询（RFC 7616）时，客户端关闭该连接，在同一连接预算和同一总 I/O 截止时间内重新连接代理，发送第二次 CONNECT，只带 `Proxy-Authorization: Digest ...`。第二次的回答是最终结果：再次 407 为 `ERR_STATUS`，格式错误为 `ERR_PROTOCOL`，没有第三次尝试。
+
+质询解析：头名与 scheme 不区分大小写；跳过 Basic 等其他 scheme 和不可用的 Digest 质询，取第一个可用的。auth-param 为 `name=token` 或 `name="quoted"`，逗号分隔；quoted 值可用 `\x` 转义，但结果不能含 `"`、`\`、控制字节或非 ASCII 字节，值最长 255 字节。必须有 `realm` 和非空 `nonce`；已知参数重复、空参数名、缺 `=`、引号未闭合、末尾多余逗号或两个参数之间缺逗号，整个质询都不可用。`algorithm` 缺省或 `MD5` 用 MD5，`SHA-256` 用 SHA-256，其他（含 `-sess`）不支持；`qop` 缺省用 RFC 2069 形式，列表含 `auth` 用 `qop=auth`，否则不支持；`userhash` 不是 `false` 时不支持；`opaque` 原样回传，其他参数忽略。
+
+应答：HA1 = H(user:realm:password)，HA2 = H("CONNECT:" authority)；有 qop 时 response = H(HA1:nonce:00000001:cnonce:auth:HA2)，否则 H(HA1:nonce:HA2)，均为小写十六进制。cnonce 是 16 字节 `RAND_bytes` 的十六进制，每次应答重新生成。用户名中的 `"` 与 `\` 转义后放入 `username="..."`，密码不会离开客户端。代理这一跳仍是明文 TCP。测试在 `engine/tests/test_break_http.c`（新增 5 项：RFC 7616 示例参数的 MD5、SHA-256、RFC 2069 形式、宽松语法、最大长度、第二次 407、22 种不可用质询以及 403/无凭据），见 `docs/superpowers/plans/2026-11-17-http-proxy-digest-auth.md`。仍不支持 NTLM、https 代理，也不复用 407 所在的连接。
+

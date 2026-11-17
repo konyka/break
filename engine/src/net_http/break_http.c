@@ -9,6 +9,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
@@ -737,34 +738,272 @@ static bool parse_proxy(const char *s, Url *p) {
     return strcmp(p->path, "/") == 0;
 }
 
-/* Asks the proxy (already connected on c->fd) for a tunnel to u. Runs on
- * the total I/O budget. Nothing past the proxy's head may arrive with it:
- * the next bytes on the socket must be the target's TLS handshake (later
- * stray bytes reach TLS and fail the handshake). */
-static BreakHttpError proxy_connect(Conn *c, const Url *u, const BreakHttpConfig *cfg) {
-    char req[BREAK_HTTP_MAX_URL + 1024];
-    char authority[300];
-    char auth[800] = "";
-    u8 head[BREAK_HTTP_MAX_HEAD];
-    usize used, len;
-    Head h;
+/* ---------------- proxy Digest authentication ---------------- */
+
+typedef struct {
+    char realm[256];
+    char nonce[256];
+    char opaque[256];
+    bool has_opaque;
+    const char *algorithm; /* echoed name, NULL when the challenge named none */
+    bool sha256;
+    bool qop_auth;
+} DigestChallenge;
+
+static bool ows(char c) { return c == ' ' || c == '\t'; }
+
+/* One auth-param value at v[*pos]: a token, or a quoted string unescaped
+ * into out. At most 255 bytes of printable ASCII without '"' or '\\'. */
+static bool digest_value(const char *v, usize n, usize *pos, char out[256]) {
+    usize i = *pos, k = 0;
+    if (i < n && v[i] == '"') {
+        i++;
+        for (;;) {
+            unsigned char c;
+            if (i >= n) return false;
+            c = (unsigned char)v[i];
+            if (c == '"') {
+                i++;
+                break;
+            }
+            if (c == '\\') {
+                if (++i >= n) return false;
+                c = (unsigned char)v[i];
+            }
+            if (c < 0x20u || c > 0x7eu || c == '"' || c == '\\' || k >= 255u) return false;
+            out[k++] = (char)c;
+            i++;
+        }
+    } else {
+        while (i < n && tchar((unsigned char)v[i])) {
+            if (k >= 255u) return false;
+            out[k++] = v[i++];
+        }
+        if (k == 0u) return false;
+    }
+    out[k] = '\0';
+    *pos = i;
+    return true;
+}
+
+/* true when the comma-separated qop list names "auth" */
+static bool qop_has_auth(const char *q) {
+    const char *p = q;
+    for (;;) {
+        const char *b, *e;
+        while (ows(*p)) p++;
+        b = p;
+        while (*p != '\0' && *p != ',') p++;
+        e = p;
+        while (e > b && ows(e[-1])) e--;
+        if ((usize)(e - b) == 4u && strncasecmp(b, "auth", 4) == 0) return true;
+        if (*p == '\0') return false;
+        p++;
+    }
+}
+
+/* A "Digest" challenge this client can answer (RFC 7616: MD5 or SHA-256,
+ * qop absent or including auth, no userhash). */
+static bool digest_parse(const char *v, usize n, DigestChallenge *ch) {
+    static const char *const known[6] = {"realm", "nonce", "opaque", "algorithm", "qop",
+                                         "userhash"};
+    char values[6][256];
+    bool seen[6] = {false, false, false, false, false, false};
+    usize i = 6u;
+    memset(ch, 0, sizeof(*ch));
+    if (n < 7u || strncasecmp(v, "Digest", 6) != 0 || !ows(v[6])) return false;
+    for (;;) {
+        char value[256];
+        usize name = 0, name_len;
+        int which = -1;
+        while (i < n && ows(v[i])) i++;
+        name = i;
+        while (i < n && tchar((unsigned char)v[i])) i++;
+        name_len = i - name;
+        if (name_len == 0u) return false;
+        while (i < n && ows(v[i])) i++;
+        if (i >= n || v[i] != '=') return false;
+        i++;
+        while (i < n && ows(v[i])) i++;
+        if (!digest_value(v, n, &i, value)) return false;
+        for (int k = 0; k < 6; k++) {
+            if (name_is(v + name, name_len, known[k])) which = k;
+        }
+        if (which >= 0) {
+            if (seen[which]) return false;
+            seen[which] = true;
+            memcpy(values[which], value, sizeof(value));
+        }
+        while (i < n && ows(v[i])) i++;
+        if (i >= n) break;
+        if (v[i] != ',') return false;
+        i++;
+    }
+    if (!seen[0] || !seen[1] || values[1][0] == '\0') return false;
+    memcpy(ch->realm, values[0], sizeof(ch->realm));
+    memcpy(ch->nonce, values[1], sizeof(ch->nonce));
+    if (seen[2]) {
+        memcpy(ch->opaque, values[2], sizeof(ch->opaque));
+        ch->has_opaque = true;
+    }
+    if (seen[3]) {
+        if (strcasecmp(values[3], "MD5") == 0) {
+            ch->algorithm = "MD5";
+        } else if (strcasecmp(values[3], "SHA-256") == 0) {
+            ch->algorithm = "SHA-256";
+            ch->sha256 = true;
+        } else {
+            return false;
+        }
+    }
+    if (seen[4]) {
+        if (!qop_has_auth(values[4])) return false;
+        ch->qop_auth = true;
+    }
+    if (seen[5] && strcasecmp(values[5], "false") != 0) return false;
+    return true;
+}
+
+/* The first Proxy-Authenticate header of a parsed head that holds a usable
+ * Digest challenge; other schemes and unusable challenges are skipped. */
+static bool find_digest_challenge(const char *h, usize n, DigestChallenge *ch) {
+    usize pos = 0;
+    while (!(h[pos] == '\r' && h[pos + 1u] == '\n')) pos++;
+    pos += 2u;
+    while (pos < n && h[pos] != '\r') {
+        usize end = pos, colon = pos, vs, ve;
+        while (!(h[end] == '\r' && h[end + 1u] == '\n')) end++;
+        while (colon < end && h[colon] != ':') colon++;
+        if (name_is(h + pos, colon - pos, "proxy-authenticate")) {
+            vs = colon + 1u;
+            while (vs < end && ows(h[vs])) vs++;
+            ve = end;
+            if (digest_parse(h + vs, ve - vs, ch)) return true;
+        }
+        pos = end + 2u;
+    }
+    return false;
+}
+
+static void hex_encode(const u8 *in, usize n, char *out) {
+    static const char digits[] = "0123456789abcdef";
+    for (usize i = 0; i < n; i++) {
+        out[2u * i] = digits[in[i] >> 4];
+        out[2u * i + 1u] = digits[in[i] & 15u];
+    }
+    out[2u * n] = '\0';
+}
+
+static bool digest_hex(bool sha256, const char *in, int len, char out[65]) {
+    unsigned char d[EVP_MAX_MD_SIZE];
+    unsigned int dl = 0u;
+    if (len <= 0 || EVP_Digest(in, (size_t)len, d, &dl, sha256 ? EVP_sha256() : EVP_md5(),
+                               NULL) != 1) {
+        return false;
+    }
+    hex_encode(d, dl, out);
+    return true;
+}
+
+/* The "Proxy-Authorization: Digest ..." line for a CONNECT to authority. */
+static bool digest_authorization(const BreakHttpConfig *cfg, const DigestChallenge *ch,
+                                 const char *authority, char *out, usize cap) {
+    char buf[1024], ha1[65], ha2[65], response[65], cnonce[33], user[512];
+    u8 raw[16];
+    usize k = 0, used;
+    int n;
+    for (const char *p = cfg->proxy_user; *p != '\0'; p++) {
+        if (*p == '"' || *p == '\\') user[k++] = '\\';
+        user[k++] = *p;
+    }
+    user[k] = '\0';
+    n = snprintf(buf, sizeof(buf), "%s:%s:%s", cfg->proxy_user, ch->realm, cfg->proxy_password);
+    if ((usize)n >= sizeof(buf) || !digest_hex(ch->sha256, buf, n, ha1)) return false;
+    n = snprintf(buf, sizeof(buf), "CONNECT:%s", authority);
+    if ((usize)n >= sizeof(buf) || !digest_hex(ch->sha256, buf, n, ha2)) return false;
+    if (ch->qop_auth) {
+        if (RAND_bytes(raw, (int)sizeof(raw)) != 1) return false;
+        hex_encode(raw, sizeof(raw), cnonce);
+        n = snprintf(buf, sizeof(buf), "%s:%s:00000001:%s:auth:%s", ha1, ch->nonce, cnonce, ha2);
+    } else {
+        n = snprintf(buf, sizeof(buf), "%s:%s:%s", ha1, ch->nonce, ha2);
+    }
+    if ((usize)n >= sizeof(buf) || !digest_hex(ch->sha256, buf, n, response)) return false;
+    n = snprintf(out, cap,
+                 "Proxy-Authorization: Digest username=\"%s\", realm=\"%s\", nonce=\"%s\", "
+                 "uri=\"%s\"%s%s, response=\"%s\"",
+                 user, ch->realm, ch->nonce, authority, ch->algorithm ? ", algorithm=" : "",
+                 ch->algorithm ? ch->algorithm : "", response);
+    if (n <= 0 || (usize)n >= cap) return false;
+    used = (usize)n;
+    if (ch->qop_auth) {
+        n = snprintf(out + used, cap - used, ", qop=auth, nc=00000001, cnonce=\"%s\"", cnonce);
+        if (n <= 0 || (usize)n >= cap - used) return false;
+        used += (usize)n;
+    }
+    if (ch->has_opaque) {
+        n = snprintf(out + used, cap - used, ", opaque=\"%s\"", ch->opaque);
+        if (n <= 0 || (usize)n >= cap - used) return false;
+        used += (usize)n;
+    }
+    n = snprintf(out + used, cap - used, "\r\n");
+    return n > 0 && (usize)n < cap - used;
+}
+
+/* Sends one CONNECT with the `auth` header lines and reads the proxy's
+ * head into `head`. */
+static BreakHttpError proxy_send_connect(Conn *c, const char *authority, const char *auth,
+                                         u8 *head, usize cap, usize *used, usize *len, Head *h) {
+    char req[BREAK_HTTP_MAX_URL + 2048];
     BreakHttpError e;
     int n, w;
-    snprintf(authority, sizeof(authority), u->host_is_v6 ? "[%s]:%s" : "%s:%s", u->host, u->port);
-    if (cfg->proxy_user != NULL && cfg->proxy_user[0] != '\0') {
-        char b64[700];
-        basic_credentials(cfg->proxy_user, cfg->proxy_password, b64);
-        snprintf(auth, sizeof(auth), "Proxy-Authorization: Basic %s\r\n", b64);
-    }
     n = snprintf(req, sizeof(req),
                  "CONNECT %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: break-http/1\r\n%s\r\n",
                  authority, authority, auth);
     if (n <= 0 || (usize)n >= sizeof(req)) return BHTTP_ERR_URL;
     w = conn_write_all(c, (const u8 *)req, (usize)n);
     if (w != 0) return io_error(c, w);
-    e = read_head(c, head, sizeof(head), &used, &len);
+    e = read_head(c, head, cap, used, len);
     if (e != BHTTP_OK) return e;
-    if (!parse_head((const char *)head, len, &h) || h.status < 200) return BHTTP_ERR_PROTOCOL;
+    if (!parse_head((const char *)head, *len, h) || h->status < 200) return BHTTP_ERR_PROTOCOL;
+    return BHTTP_OK;
+}
+
+/* Asks the proxy (already connected on c->fd) for a tunnel to u. Runs on
+ * the total I/O budget. With credentials, a 407 carrying a usable Digest
+ * challenge is answered once on a new connection to the proxy; that answer
+ * is final. Nothing past the proxy's head may arrive with the 2xx: the next
+ * bytes on the socket must be the target's TLS handshake (later stray bytes
+ * reach TLS and fail the handshake). */
+static BreakHttpError proxy_connect(Conn *c, const Url *u, const Url *proxy, u32 connect_ms,
+                                    const BreakHttpConfig *cfg) {
+    char authority[300];
+    char auth[2560] = "";
+    u8 head[BREAK_HTTP_MAX_HEAD];
+    usize used, len;
+    Head h;
+    BreakHttpError e;
+    bool has_credentials = cfg->proxy_user != NULL && cfg->proxy_user[0] != '\0';
+    snprintf(authority, sizeof(authority), u->host_is_v6 ? "[%s]:%s" : "%s:%s", u->host, u->port);
+    if (has_credentials) {
+        char b64[700];
+        basic_credentials(cfg->proxy_user, cfg->proxy_password, b64);
+        snprintf(auth, sizeof(auth), "Proxy-Authorization: Basic %s\r\n", b64);
+    }
+    e = proxy_send_connect(c, authority, auth, head, sizeof(head), &used, &len, &h);
+    if (e != BHTTP_OK) return e;
+    if (h.status == 407 && has_credentials) {
+        DigestChallenge ch;
+        if (find_digest_challenge((const char *)head, len, &ch) &&
+            digest_authorization(cfg, &ch, authority, auth, sizeof(auth))) {
+            close(c->fd);
+            c->fd = -1;
+            e = tcp_connect(proxy, false, connect_ms, &c->fd);
+            if (e != BHTTP_OK) return e;
+            e = proxy_send_connect(c, authority, auth, head, sizeof(head), &used, &len, &h);
+            if (e != BHTTP_OK) return e;
+        }
+    }
     if (h.status > 299) return BHTTP_ERR_STATUS;
     if (used != len) return BHTTP_ERR_PROTOCOL;
     return BHTTP_OK;
@@ -824,7 +1063,7 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
     }
     c.deadline = now_ms() + io_ms;
     if (use_proxy) {
-        e = proxy_connect(&c, u, cfg);
+        e = proxy_connect(&c, u, &proxy, connect_ms, cfg);
         if (e != BHTTP_OK) goto done;
     }
     if (u->https) {
