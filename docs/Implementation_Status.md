@@ -11676,3 +11676,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 构建：`engine` 静态库加入 `audio_delay_estimator.c`；新增 `test_audio_delay_estimator`（headless、audio 标签）。
 - 测试：`test_audio_delay_estimator` 8 项，包括 300 帧延迟的回声经 32 tap 回声消除器：未对齐 ERLE 低于 3 dB，对齐后超过 30 dB。先 RED（链接失败）后 GREEN。27 项变异首轮存活 1 项（reset 中多余的清零），删掉后 26 项全部被捕获。ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
 - 「回声参考自动对齐」由此交付。仍缺：亚帧精度、频域加速、延迟漂移跟踪与时钟漂移补偿、非线性残余回声抑制、频谱降噪、真实设备验证、感知编码器（Opus 等）、音频编辑工具。
+
+
+### 2026-11-17 音频：基 2 实数 FFT 与 Hann 窗
+- `engine/src/audio/audio_fft.{h,c}`：不可变 FFT 计划保存位反转与旋转因子表；4..65536 的 2 的幂实数正变换、带完整归一化的逆变换、周期 Hann 窗。只有 create 分配，变换过程不分配、不加锁，计划可在线程间共享但样本缓冲区须各自持有。
+- 构建：`engine` 静态库加入 `audio_fft.c`；新增 `test_audio_fft`（headless、audio 标签）。
+- 测试：`test_audio_fft` 8 项，覆盖配置与 NULL、脉冲与单音已知频谱、4..1024 全 bin 直接 DFT、2048..65536 代表 bin 直接 DFT、手工构造频谱的独立逆变换、65536 点往返、Parseval 能量、线性、循环移位相位和 Hann 50% 重叠相加。先 RED（6 个接口链接失败）后 GREEN。27 项定向变异全部被捕获；ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
+- 独立评审后补强：所有数值断言拒绝 NaN；失败原子性测试改用真实计划作哨兵，避免指针对齐的未定义行为；公开 API 与设计文档明确输入、实部、虚部缓冲区不得重叠；修正逆变换推导注释。
+- 该切片补写计划文档晚于 RED/GREEN，已在 `docs/superpowers/plans/2026-11-17-audio-fft.md` 如实记录；后续切片恢复先计划。
+- 仍缺：频谱降噪、非线性残余回声抑制、亚帧延迟与漂移补偿、感知编码器（Opus 等）、音频编辑工具、真实设备验证。FFT 不支持 f32、SIMD、非 2 的幂与多声道批量接口。
