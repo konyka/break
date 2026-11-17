@@ -290,3 +290,5 @@
 - **第 10 节（音频）追加**：2026-11-17 新增回声参考的延迟估计 `audio_delay_estimator`（归一化互相关，返回整数帧延迟与相关系数）与延迟线 `audio_delay_line`，用于在 `audio_echo_canceller` 之前对齐播放参考。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。「参考与采集自动对齐」由此交付。仍缺：亚帧精度、延迟漂移跟踪与时钟漂移补偿、非线性残余回声抑制、频谱降噪、真实设备验证、感知编码器（Opus 等）、音频编辑工具。
 
 - **第 10 节（音频）追加**：2026-11-17 新增 `audio_fft`：4..65536 的基 2 实数正逆 FFT、周期 Hann 窗，计划只读且只有创建时分配。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「FFT」。上文「因为没有 FFT 而未做频谱降噪」的基础依赖由此交付，但频谱降噪本身仍未实现。仍缺：频谱降噪、非线性残余回声抑制、亚帧延迟与漂移补偿、感知编码器（Opus 等）、音频编辑工具、真实设备验证。
+
+- **第 10 节（音频）追加**：2026-11-17 新增 `audio_noise_suppressor`，基于 `audio_fft` 提供单声道 Hann/STFT 频谱降噪：100 ms 平滑功率目标、受限底噪跟踪、2 倍谱减、可配置最大衰减、固定一帧 FFT 大小延迟与任意分块一致性。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「频谱降噪」。上文「频谱降噪未实现」由此交付。仍缺：多声道与学习型降噪、非线性残余回声抑制、感知编码器（Opus 等）、真实设备与听感验证。
