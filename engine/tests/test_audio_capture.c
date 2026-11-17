@@ -295,7 +295,7 @@ static PLATFORM_THREAD_RET producer_main(PLATFORM_THREAD_ARG arg) {
         (void)audio_capture_inject(p->capture, chunk, 100u);
     }
     atomic_store(&p->done, true);
-    return (PLATFORM_THREAD_RET)0;
+    return PLATFORM_THREAD_RETURN;
 }
 
 TEST(a_producer_thread_and_the_reader_lose_nothing)

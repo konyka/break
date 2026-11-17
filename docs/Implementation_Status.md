@@ -11644,3 +11644,4 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 测试：`test_audio_capture` 新增 1 项（共 8）。先 RED（链接失败）后 GREEN；13 项变异全部被捕获；TSan、ASan+UBSan、影子变量检查通过。在本机（PipeWire）上列出了 2 个真实输入设备，默认标记正确。
 - 文档更正：采集帧以配置的采样率交付，设备原生格式不同时由 miniaudio 转换，上一条「采集端采样率转换」不是缺口。
 - 仍缺：回声消除、降噪、自动增益、设备热插拔、真实麦克风录音验证。
+- Windows CI 修复：`test_audio_capture` 的线程函数改用 `PLATFORM_THREAD_RETURN`（Windows 下 `PLATFORM_THREAD_RET` 含 `WINAPI`，不能用作类型转换）。
