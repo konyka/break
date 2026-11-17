@@ -1,6 +1,6 @@
 # Sinc Clock-Drift Compensation Design
 
-Status: Approved for autonomous implementation under the active goal
+Status: Implemented and locally verified
 
 ## Purpose
 

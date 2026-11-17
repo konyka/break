@@ -308,3 +308,5 @@
 - **第 10 节（音频）追加**：2026-11-18 新增 `audio_edit`，提供单/双声道 i16 原地裁剪、删除、线性淡入淡出、峰值归一化和限幅混合；无分配且覆盖零长度与失败原子性。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。上文「音频编辑工具」的基础库部分由此交付。仍缺：编辑器 UI、时间线/撤销、媒体文件解析、自动化和真实听测。
 
 - **第 10 节（音频）追加**：2026-11-18 `AudioDelayLine` 新增可选 16 tap Blackman 加窗 sinc 模式，以明确的 8 帧额外延迟提供因果高质量分数延迟，支持原地/分块与 i16 过冲饱和，旧线性输出不变。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「延迟线 sinc 模式」由此交付。仍缺：多声道、连续延迟交叉淡化、自动质量选择与真实声学验证。
+
+- **第 10 节（音频）追加**：2026-11-18 `AudioDriftResampler` 新增固定 16 tap sinc 质量模式、8 输入帧前瞻、动态比率与双向模式切换，切回线性时按历史补齐积压位置并扩大安全容量。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「时钟漂移补偿」。上文漂移补偿的「sinc 质量模式」由此交付。仍缺：比例自适应强降采样抗混叠、多声道、自动闭环控制与真实设备验证。

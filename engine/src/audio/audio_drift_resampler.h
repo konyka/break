@@ -10,14 +10,21 @@ typedef struct {
     double next_output;
     u64 next_input;
     i16 previous;
+    bool sinc;
+    i16 history[32];
 } AudioDriftResampler;
 
 /* Ratio is finite and in [0.1,10]. INVALID for NULL/out-of-range values. */
 AudioResult audio_drift_resampler_init(AudioDriftResampler *resampler, double ratio);
-/* Preserve the current ratio; reset position and history. */
+/* Preserve the current ratio and interpolation mode; reset position/history. */
 void audio_drift_resampler_reset(AudioDriftResampler *resampler);
 AudioResult audio_drift_resampler_set_ratio(AudioDriftResampler *resampler, double ratio);
 double audio_drift_resampler_ratio(const AudioDriftResampler *resampler); /* 0 for NULL */
+/* Sinc mode uses a causal 16-tap kernel and eight input frames of lookahead.
+ * Mode changes apply to the next processing call. INVALID for NULL. */
+AudioResult audio_drift_resampler_set_sinc(AudioDriftResampler *resampler, bool enabled);
+bool audio_drift_resampler_sinc(const AudioDriftResampler *resampler); /* false for NULL */
+u32 audio_drift_resampler_sinc_extra_delay(const AudioDriftResampler *resampler);
 /* Safe upper bound for a new input chunk, or 0 for NULL, zero input or overflow. */
 u32 audio_drift_resampler_output_capacity(const AudioDriftResampler *resampler,
                                           u32 input_frames);

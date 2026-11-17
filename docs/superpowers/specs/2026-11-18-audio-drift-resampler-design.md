@@ -39,4 +39,4 @@ Mutation, ASan+UBSan, strict warnings, independent review and three-tree verific
 
 ## Limits
 
-Mono linear interpolation only; no sinc quality mode, multichannel coupling, automatic estimator wiring, closed-loop clock control or real-device validation. The caller chooses the correct ratio sign for its pipeline.
+Default behavior remains mono linear interpolation. The optional fixed-kernel sinc extension is specified in `docs/superpowers/specs/2026-11-18-audio-drift-sinc-design.md`; it does not provide ratio-scaled strong-downsampling anti-aliasing. Multichannel coupling, automatic estimator wiring, closed-loop clock control and real-device validation remain unimplemented. The caller chooses the correct ratio sign for its pipeline.

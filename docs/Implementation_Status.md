@@ -1,3 +1,11 @@
+## 漂移补偿重采样器的 sinc 质量模式（2026-11-18）
+
+- **交付**：`AudioDriftResampler` 新增可选 16 tap Blackman 加窗 sinc、8 输入帧前瞻和 32 项内嵌历史；默认线性输出与动态比率不变，reset 保留比率和模式。支持双向模式切换，切回线性时从真实历史补齐积压位置。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-drift-sinc-design.md`、`docs/superpowers/plans/2026-11-18-audio-drift-sinc.md`。
+- **TDD 与评审**：三个新符号链接 RED 后实现至 12/12；独立核覆盖 0.75→1.25 动态比率和任意分块。独立评审 Ready，无遗留 Critical/Important/Minor。
+- **定向验证**：普通及 ASan+UBSan 均 12/12，严格告警为零；前瞻、窗口符号、归一化、饱和、积压容量、旧线性权重和分数回溯七项变异全部被捕获。
+- **全量验证**：`/tmp/full_trees.sh` 的实际计数为 429/429、429/429、437/437，三次构建均成功且零测试失败。
+- **边界**：单声道、固定核不替代强降采样抗混叠；有限流尾部需补零，无隐式 flush、自动闭环或真实设备验证。
+
 ## 音频参考延迟线的因果 sinc 模式（2026-11-18）
 
 - **交付**：`AudioDelayLine` 新增可选 16 tap Blackman 加窗 sinc 插值与三个模式/延迟访问接口；有效延迟为 D+8，默认线性和旧整数行为不变。历史环扩展 32 项并单独保存配置最大值，支持原地、任意分块和下一帧模式切换。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-sinc-delay-design.md`、`docs/superpowers/plans/2026-11-18-audio-sinc-delay.md`。
