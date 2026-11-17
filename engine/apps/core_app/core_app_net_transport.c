@@ -74,6 +74,7 @@ typedef struct CoreAppNetStats {
     u64 physics_unknown;
     u64 physics_decode_failed;
     u64 physics_corrections_sent;
+    u64 physics_delta_corrections_sent;
     u64 clock_probes_answered;
     u64 clock_probe_decode_failed;
     u64 clock_probes_sent;
@@ -119,6 +120,7 @@ struct CoreAppNetTransport {
     bool authenticated[CORE_APP_NET_MAX_CONNECTIONS];
     bool closing[CORE_APP_NET_MAX_CONNECTIONS];
     bool correction_pending[CORE_APP_NET_MAX_CONNECTIONS];
+    PhysicsSyncBaseline physics_baselines[CORE_APP_NET_MAX_CONNECTIONS];
     bool clock_probe_pending[CORE_APP_NET_MAX_CONNECTIONS];
     CoreAppClockProbe clock_probes[CORE_APP_NET_MAX_CONNECTIONS];
     CoreAppNetClockState clock[CORE_APP_NET_MAX_CONNECTIONS];
@@ -200,6 +202,12 @@ static void net_trace(CoreAppNetTransport *t, const char *text) {
     }
 }
 
+static void net_release_baselines(CoreAppNetTransport *t) {
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        physics_sync_baseline_release(&t->physics_baselines[i]);
+    }
+}
+
 static int net_slot_find(const CoreAppNetTransport *t, BreakConnectionKey key) {
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         if (t->keys[i] == key && key != 0u) return (int)i;
@@ -214,6 +222,7 @@ static int net_slot_add(CoreAppNetTransport *t, BreakConnectionKey key) {
             t->authenticated[i] = false;
             t->closing[i] = false;
             t->correction_pending[i] = false;
+            physics_sync_baseline_release(&t->physics_baselines[i]);
             t->clock_probe_pending[i] = false;
             memset(&t->clock[i], 0, sizeof(t->clock[i]));
             clock_offset_init(&t->clock[i].estimator);
@@ -261,6 +270,8 @@ static bool net_on_physics_report(BreakConnectionKey connection,
     PhysicsSyncVerdict verdict = physics_sync_check(&t->physics, tick, hash);
     if (verdict == PHYSICS_SYNC_MATCH) {
         t->stats.physics_matched++;
+        int slot = net_slot_find(t, connection);
+        if (slot >= 0) physics_sync_baseline_confirm(&t->physics_baselines[slot], tick);
     } else if (verdict == PHYSICS_SYNC_DESYNC) {
         t->stats.physics_desynced++;
         int slot = net_slot_find(t, connection);
@@ -395,6 +406,7 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
                 t->closing[slot] = false;
                 t->session_ids[slot] = 0u;
                 t->correction_pending[slot] = false;
+                physics_sync_baseline_release(&t->physics_baselines[slot]);
                 t->clock_probe_pending[slot] = false;
                 t->stats.closed++;
             }
@@ -691,7 +703,8 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              " physics_corrections_sent=%" PRIu64 " clock_probes_answered=%" PRIu64
              " clock_probe_decode_failed=%" PRIu64 " clock_probes_sent=%" PRIu64
              " clock_replies_matched=%" PRIu64 " clock_replies_unmatched=%" PRIu64
-             " clock_probes_lost=%" PRIu64 " clock_samples_rejected=%" PRIu64 "\n",
+             " clock_probes_lost=%" PRIu64 " clock_samples_rejected=%" PRIu64
+             " physics_delta_corrections_sent=%" PRIu64 "\n",
              t->stats.opened, t->stats.closed, t->stats.refused, t->stats.authenticated,
              t->stats.snapshots_sent, t->stats.send_overloads, t->stats.send_closed,
              t->stats.outbox_overloads, t->stats.auth_timeouts, t->stats.decode_failed, t->inbox.accepted_snapshots,
@@ -704,7 +717,7 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              t->stats.clock_probes_answered, t->stats.clock_probe_decode_failed,
              t->stats.clock_probes_sent, t->stats.clock_replies_matched,
              t->stats.clock_replies_unmatched, t->stats.clock_probes_lost,
-             t->stats.clock_samples_rejected);
+             t->stats.clock_samples_rejected, t->stats.physics_delta_corrections_sent);
     net_trace(t, line);
 }
 
@@ -754,6 +767,7 @@ static BreakRuntimeError net_destroy(void *user) {
     memset(t->authenticated, 0, sizeof(t->authenticated));
     memset(t->closing, 0, sizeof(t->closing));
     memset(t->session_ids, 0, sizeof(t->session_ids));
+    net_release_baselines(t);
     if (!t->auth_installed) net_wipe(t->psk, sizeof(t->psk));
     t->trace = NULL;
     return result;
@@ -799,6 +813,7 @@ bool core_app_net_transport_reclaim_for_test(CoreAppNetTransport *transport) {
     if (transport->reactor && !break_net_reactor_stop(transport->reactor, 1000u)) return false;
     if (transport->reactor) break_net_reactor_destroy(transport->reactor);
     if (transport->acceptor) SnowAcceptorDestroy(transport->acceptor);
+    net_release_baselines(transport);
     free(transport);
     return true;
 }
@@ -816,19 +831,36 @@ static bool net_physics_correction_wanted(void *user) {
 }
 
 /* Sends one correction to every waiting peer. Several desync reports before
- * the next tick collapse into this single correction. */
+ * the next tick collapse into this single correction. A peer that confirmed
+ * the snapshot of its previous correction gets a delta against it when that
+ * is smaller; the sent snapshot becomes its new, unconfirmed baseline. */
 static void net_physics_correction(void *user, u32 tick, const u8 *data, usize size) {
     CoreAppNetTransport *t = (CoreAppNetTransport *)user;
-    (void)tick;
+    const u8 *snapshot = NULL;
+    usize snapshot_size = 0u;
     if (!t || !t->started || !data || size > BREAK_NET_MAX_PAYLOAD_SIZE) return;
     if (!break_net_reactor_event_queue_empty(t->reactor)) return;
+    if (!physics_sync_correction_payload(data, size, &snapshot, &snapshot_size)) return;
+    u8 *packet = (u8 *)malloc(size);
+    if (!packet) return;
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         if (!t->correction_pending[i] || !net_slot_sendable(t, i)) continue;
-        BreakNetSendResult sent = break_net_reactor_send(
-            t->reactor, t->keys[i], BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION, 1u, data, size);
+        usize packet_size = 0u;
+        bool delta = false;
+        if (!physics_sync_baseline_encode(&t->physics_baselines[i], tick, snapshot, snapshot_size,
+                                          packet, size, &packet_size, &delta)) {
+            continue;
+        }
+        BreakNetSendResult sent =
+            break_net_reactor_send(t->reactor, t->keys[i],
+                                   BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION, 1u, packet,
+                                   packet_size);
         if (sent == BREAK_NET_SEND_OK) {
             t->stats.physics_corrections_sent++;
+            if (delta) t->stats.physics_delta_corrections_sent++;
             t->correction_pending[i] = false;
+            (void)physics_sync_baseline_store(&t->physics_baselines[i], tick, snapshot,
+                                              snapshot_size);
         } else if (sent == BREAK_NET_SEND_OVERLOAD) {
             t->stats.send_overloads++;
         } else {
@@ -836,6 +868,7 @@ static void net_physics_correction(void *user, u32 tick, const u8 *data, usize s
             t->correction_pending[i] = false;
         }
     }
+    free(packet);
 }
 
 void core_app_net_transport_hooks(CoreAppNetTransport *transport, CoreAppNetworkHooks *out) {

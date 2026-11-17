@@ -273,3 +273,4 @@
 - **第 15 节（在线更新）追加**：`break_http` 可回应代理的 Digest 质询（RFC 7616，MD5/SHA-256，qop=auth 或 RFC 2069 形式），在新连接上重发一次 CONNECT，「Digest 代理认证」由此交付。仍缺：NTLM、https 代理、OCSP、HTTP/2，发布二进制仍没有链接 `break_http`。
 - **第 15 节（在线更新）追加**：`break_http` 支持强制 OCSP stapling（`require_ocsp_staple`）：握手时请求证书状态，要求附带的响应由叶子的签发 CA 或其委托 responder 签名、状态为 good 且在有效期内，「OCSP」中的 stapling 部分由此交付。仍缺：主动查询 OCSP responder、NTLM、https 代理、HTTP/2，发布二进制仍没有链接 `break_http`。
 - **第 9 节（物理）追加**：`physics_sync` 提供增量修正包（"PSND"，相对双方已持有的基线快照只发送变化的字节区段，接收端在临时缓冲区重建并校验后原子恢复），「增量同步」的编解码部分由此交付。仍缺：core_app 保存每个对端的基线并选择增量或完整包、core_app 运行时作为客户端应用修正、并行 solver、跨平台确定性。
+- **第 9 节（物理）追加**：core_app 为每个对端保存最近修正的基线，对端用匹配报告确认后，下一次修正改发增量包（loopback 本机 10644 字节对 28 字节），接收端 `physics_sync_apply_received` 统一处理完整包和增量包并维护自己的基线，「增量同步」由此在运行时接入。仍缺：core_app 运行时作为客户端应用修正、并行 solver、跨平台确定性。

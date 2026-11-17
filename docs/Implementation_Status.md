@@ -11565,3 +11565,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `test_physics_sync` 新增 4 项（共 10）：区段布局与间隙合并边界、相同输入只有头部、容量不足不写缓冲区；目标增长和缩短；14 种畸形包（magic、短头、基线校验、目标校验、容量、空区段、重叠、乱序、越界、u32 回绕、截断区段头和截断数据）；分歧世界通过增量包恢复，包比完整修正包小，失败时世界、tracker 和 tick 不变。
 - 先 RED（编译失败，接口不存在）后 GREEN；26 项变异首轮 5 项存活：间隙合并阈值的两个方向、基线中段字节的校验、64 位偏移相加、apply 后重置 tracker，补充断言后全部被捕获。基线字节数比较与基线校验和重复，已删除。影子变量检查通过（rc=0）。
 - 仍缺：core_app 接入（每个对端的基线、增量或完整包的选择）、并行 solver、跨平台确定性。
+
+### 2026-11-17 core_app：增量物理修正
+- `engine/src/physics/physics_sync.{h,c}`：`PhysicsSyncBaseline` 与 `physics_sync_baseline_{init,release,store,confirm,encode}`、`physics_sync_correction_payload`、`physics_sync_apply_received`。`physics_sync_apply_correction` 改为复用 `physics_sync_correction_payload`。
+- `engine/apps/core_app/core_app_net_transport.c`：每槽一个基线；MATCH 报告确认基线；修正逐槽选择增量或完整包，成功发送后更新基线；关闭、复用和销毁时释放。`network_stats` 追加 `physics_delta_corrections_sent`。
+- `test_physics_sync` 新增 3 项（共 13）：确认前后的选择、过早确认、容量不足不写缓冲区、存储失败清空基线；完整包解析的拒绝；接收端先完整后增量，基线不符、截断、超大目标、世界容量不足时都不改任何状态。
+- loopback：场景 A 确认第一个修正后再次 desync，必须收到更小的增量包并收敛到权威端哈希；驱动断言 `physics_delta_corrections_sent=1`。本机连续 8 次通过（其中 5 次需要第 2 轮，原因是第一次修正前的重复 desync 晚到）。
+- 先 RED（编译失败，接口不存在）后 GREEN。`physics_sync` 19 项变异首轮 4 项存活，补测试后 3 项被捕获，剩余「目标上限放宽一个 body」与解码、恢复的拒绝等价。transport 4 项变异中 3 项被捕获，剩余「解析失败不提前返回」与编码拒绝 NULL 快照等价。影子变量检查通过（rc=0）。
+- 仍缺：core_app 运行时作为客户端应用修正、并行 solver、跨平台确定性。

@@ -1,4 +1,5 @@
 #include <physics/physics_sync.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define PHYSICS_SYNC_MAGIC 0x4e595350u
@@ -124,8 +125,8 @@ bool physics_sync_encode_correction(PhysicsWorld *pw, u32 tick, u8 *buffer, usiz
     return true;
 }
 
-bool physics_sync_apply_correction(PhysicsSyncTracker *tracker, PhysicsWorld *pw, const u8 *data,
-                                   usize size, u32 *out_tick)
+bool physics_sync_correction_payload(const u8 *data, usize size, const u8 **out_payload,
+                                     usize *out_payload_size)
 {
     if (!data || size < PHYSICS_SYNC_CORRECTION_HEADER_BYTES ||
         get_u32(data) != PHYSICS_SYNC_CORRECTION_MAGIC) {
@@ -136,7 +137,22 @@ bool physics_sync_apply_correction(PhysicsSyncTracker *tracker, PhysicsWorld *pw
     if (get_u32(data + 8) != payload || get_u32(data + 12) != payload_checksum(body, payload)) {
         return false;
     }
-    if (!physics_snapshot_restore(pw, body, payload)) {
+    if (out_payload) {
+        *out_payload = body;
+    }
+    if (out_payload_size) {
+        *out_payload_size = payload;
+    }
+    return true;
+}
+
+bool physics_sync_apply_correction(PhysicsSyncTracker *tracker, PhysicsWorld *pw, const u8 *data,
+                                   usize size, u32 *out_tick)
+{
+    const u8 *body = NULL;
+    usize payload = 0;
+    if (!physics_sync_correction_payload(data, size, &body, &payload) ||
+        !physics_snapshot_restore(pw, body, payload)) {
         return false;
     }
     u32 tick = get_u32(data + 4);
@@ -288,6 +304,122 @@ bool physics_sync_apply_delta(PhysicsSyncTracker *tracker, PhysicsWorld *pw, con
         !physics_snapshot_restore(pw, scratch, target_size)) {
         return false;
     }
+    physics_sync_init(tracker);
+    (void)physics_sync_record(tracker, tick, physics_state_hash(pw));
+    if (out_tick) {
+        *out_tick = tick;
+    }
+    return true;
+}
+
+void physics_sync_baseline_init(PhysicsSyncBaseline *baseline)
+{
+    memset(baseline, 0, sizeof(*baseline));
+}
+
+void physics_sync_baseline_release(PhysicsSyncBaseline *baseline)
+{
+    free(baseline->bytes);
+    physics_sync_baseline_init(baseline);
+}
+
+static void baseline_take(PhysicsSyncBaseline *baseline, u32 tick, u8 *bytes, usize size)
+{
+    free(baseline->bytes);
+    baseline->bytes = bytes;
+    baseline->size = size;
+    baseline->tick = tick;
+    baseline->confirmed = false;
+}
+
+bool physics_sync_baseline_store(PhysicsSyncBaseline *baseline, u32 tick, const u8 *snapshot,
+                                 usize size)
+{
+    u8 *copy = snapshot && size ? (u8 *)malloc(size) : NULL;
+    if (!copy) {
+        physics_sync_baseline_release(baseline);
+        return false;
+    }
+    memcpy(copy, snapshot, size);
+    baseline_take(baseline, tick, copy, size);
+    return true;
+}
+
+void physics_sync_baseline_confirm(PhysicsSyncBaseline *baseline, u32 tick)
+{
+    if (baseline->bytes && tick >= baseline->tick) {
+        baseline->confirmed = true;
+    }
+}
+
+bool physics_sync_baseline_encode(const PhysicsSyncBaseline *baseline, u32 tick,
+                                  const u8 *snapshot, usize size, u8 *buffer, usize capacity,
+                                  usize *out_size, bool *out_delta)
+{
+    if (!snapshot || size > 0xffffffffu - PHYSICS_SYNC_CORRECTION_HEADER_BYTES) {
+        return false;
+    }
+    usize full = PHYSICS_SYNC_CORRECTION_HEADER_BYTES + size;
+    usize delta = full;
+    bool use_delta = baseline->confirmed &&
+                     !physics_sync_encode_delta(tick, baseline->tick, baseline->bytes,
+                                                baseline->size, snapshot, size, NULL, 0, &delta) &&
+                     delta < full;
+    usize need = use_delta ? delta : full;
+    if (out_size) {
+        *out_size = need;
+    }
+    if (out_delta) {
+        *out_delta = use_delta;
+    }
+    if (!buffer || capacity < need) {
+        return false;
+    }
+    if (use_delta) {
+        return physics_sync_encode_delta(tick, baseline->tick, baseline->bytes, baseline->size,
+                                         snapshot, size, buffer, capacity, NULL);
+    }
+    memcpy(buffer + PHYSICS_SYNC_CORRECTION_HEADER_BYTES, snapshot, size);
+    put_u32(buffer, PHYSICS_SYNC_CORRECTION_MAGIC);
+    put_u32(buffer + 4, tick);
+    put_u32(buffer + 8, (u32)size);
+    put_u32(buffer + 12, payload_checksum(snapshot, size));
+    return true;
+}
+
+bool physics_sync_apply_received(PhysicsSyncTracker *tracker, PhysicsWorld *pw,
+                                 PhysicsSyncBaseline *held, const u8 *data, usize size,
+                                 u32 *out_tick)
+{
+    u8 *target = NULL;
+    usize target_size = 0;
+    u32 tick = 0;
+    const u8 *body = NULL;
+    if (physics_sync_correction_payload(data, size, &body, &target_size)) {
+        target = (u8 *)malloc(target_size);
+        if (!target) {
+            return false;
+        }
+        memcpy(target, body, target_size);
+        tick = get_u32(data + 4);
+    } else if (physics_sync_delta_ticks(data, size, NULL, NULL)) {
+        usize limit = physics_snapshot_size(pw) + (usize)(pw->capacity - pw->count) *
+                                                       sizeof(*pw->bodies);
+        usize want = get_u32(data + 20);
+        target = want <= limit && want ? (u8 *)malloc(want) : NULL;
+        if (!target || !physics_sync_decode_delta(held->bytes, held->size, data, size, target,
+                                                  want, &target_size, &tick)) {
+            free(target);
+            return false;
+        }
+    } else {
+        return false;
+    }
+    if (!physics_snapshot_restore(pw, target, target_size)) {
+        free(target);
+        return false;
+    }
+    baseline_take(held, tick, target, target_size);
     physics_sync_init(tracker);
     (void)physics_sync_record(tracker, tick, physics_state_hash(pw));
     if (out_tick) {

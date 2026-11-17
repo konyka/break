@@ -19,8 +19,10 @@ extern "C" {
 #define BREAK_NET_MESSAGE_ID_CORE_SNAPSHOT 0x4001u
 #define BREAK_NET_CORE_SNAPSHOT_MAX_PAYLOAD (32u + 64u * 24u)
 /* physics_sync (engine/src/physics/physics_sync.h), AUTHENTICATED only.
- * A report is exactly PHYSICS_SYNC_REPORT_BYTES; a correction is a 16-byte
- * header plus a full physics snapshot, bounded by the global payload cap. */
+ * A report is exactly PHYSICS_SYNC_REPORT_BYTES; a correction is either a
+ * 16-byte header plus a full physics snapshot ("PSNP") or a delta against a
+ * snapshot the peer already holds ("PSND"), bounded by the global payload
+ * cap. */
 #define BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT 0x4002u
 #define BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION 0x4003u
 #define BREAK_NET_PHYSICS_SYNC_REPORT_PAYLOAD 16u

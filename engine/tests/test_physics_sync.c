@@ -586,6 +586,271 @@ TEST(sync_delta_corrects_a_diverged_world)
     physics_world_destroy(b);
 }
 
+TEST(sync_baseline_selects_delta_only_after_confirmation)
+{
+    PhysicsBodyHandle box;
+    PhysicsWorld *a = sync_scene(&box);
+    for (u32 tick = 1; tick <= 5u; tick++) {
+        physics_step(a, 1.0f / 60.0f);
+    }
+    usize snap = physics_snapshot_size(a);
+    usize full = PHYSICS_SYNC_CORRECTION_HEADER_BYTES + snap;
+    u8 *s0 = malloc(snap);
+    u8 *s1 = malloc(snap);
+    u8 *packet = malloc(full);
+    ASSERT_NOT_NULL(s0);
+    ASSERT_NOT_NULL(s1);
+    ASSERT_NOT_NULL(packet);
+    ASSERT_TRUE(physics_snapshot_save(a, s0, snap, NULL));
+
+    PhysicsSyncBaseline base;
+    physics_sync_baseline_init(&base);
+    ASSERT_TRUE(base.bytes == NULL);
+    usize size = 0;
+    bool delta = true;
+    ASSERT_TRUE(physics_sync_baseline_encode(&base, 5u, s0, snap, packet, full, &size, &delta));
+    ASSERT_FALSE(delta);
+    ASSERT_EQ(size, full);
+    ASSERT_EQ(rd32(packet), 0x504e5350u);
+    ASSERT_EQ(rd32(packet + 4), 5u);
+    const u8 *payload = NULL;
+    usize payload_size = 0;
+    ASSERT_TRUE(physics_sync_correction_payload(packet, size, &payload, &payload_size));
+    ASSERT_TRUE(payload == packet + PHYSICS_SYNC_CORRECTION_HEADER_BYTES);
+    ASSERT_EQ(payload_size, snap);
+    ASSERT_EQ(memcmp(payload, s0, snap), 0);
+    physics_sync_baseline_confirm(&base, 5u);
+    ASSERT_FALSE(base.confirmed);
+
+    ASSERT_TRUE(physics_sync_baseline_store(&base, 5u, s0, snap));
+    ASSERT_NOT_NULL(base.bytes);
+    ASSERT_EQ(base.size, snap);
+    ASSERT_EQ(base.tick, 5u);
+    ASSERT_FALSE(base.confirmed);
+    s0[snap - 1u] ^= 1u;
+    ASSERT_FALSE(memcmp(base.bytes, s0, snap) == 0);
+    s0[snap - 1u] ^= 1u;
+    ASSERT_EQ(memcmp(base.bytes, s0, snap), 0);
+
+    for (u32 tick = 6; tick <= 8u; tick++) {
+        physics_step(a, 1.0f / 60.0f);
+    }
+    ASSERT_TRUE(physics_snapshot_save(a, s1, snap, NULL));
+    delta = true;
+    ASSERT_TRUE(physics_sync_baseline_encode(&base, 8u, s1, snap, packet, full, &size, &delta));
+    ASSERT_FALSE(delta);
+    ASSERT_EQ(size, full);
+    physics_sync_baseline_confirm(&base, 4u);
+    ASSERT_FALSE(base.confirmed);
+    ASSERT_TRUE(physics_sync_baseline_encode(&base, 8u, s1, snap, packet, full, &size, &delta));
+    ASSERT_FALSE(delta);
+
+    physics_sync_baseline_confirm(&base, 5u);
+    ASSERT_TRUE(base.confirmed);
+    ASSERT_TRUE(physics_sync_baseline_encode(&base, 8u, s1, snap, packet, full, &size, &delta));
+    ASSERT_TRUE(delta);
+    ASSERT_TRUE(size < full);
+    ASSERT_EQ(rd32(packet), 0x444e5350u);
+    ASSERT_EQ(rd32(packet + 4), 8u);
+    ASSERT_EQ(rd32(packet + 8), 5u);
+    usize need = size;
+    ASSERT_FALSE(physics_sync_baseline_encode(&base, 8u, s1, snap, packet, need - 1u, &size,
+                                              &delta));
+    ASSERT_EQ(size, need);
+    ASSERT_FALSE(physics_sync_baseline_encode(&base, 8u, s1, snap, NULL, full, &size, &delta));
+    ASSERT_FALSE(physics_sync_baseline_encode(&base, 8u, NULL, snap, packet, full, &size, &delta));
+    ASSERT_TRUE(physics_sync_baseline_encode(&base, 8u, s0, snap, packet, full, &size, NULL));
+    ASSERT_EQ(size, PHYSICS_SYNC_DELTA_HEADER_BYTES);
+
+    ASSERT_TRUE(physics_sync_baseline_store(&base, 8u, s1, snap));
+    ASSERT_FALSE(base.confirmed);
+    ASSERT_EQ(base.tick, 8u);
+    physics_sync_baseline_confirm(&base, 9u);
+    ASSERT_TRUE(base.confirmed);
+    PhysicsSyncBaseline fresh;
+    physics_sync_baseline_init(&fresh);
+    memset(packet, 0xaa, full);
+    ASSERT_FALSE(physics_sync_baseline_encode(&fresh, 9u, s1, snap, packet, full - 1u, &size,
+                                              &delta));
+    ASSERT_FALSE(delta);
+    ASSERT_EQ(size, full);
+    ASSERT_EQ(packet[0], 0xaau);
+    ASSERT_EQ(packet[full - 2u], 0xaau);
+    ASSERT_TRUE(physics_sync_baseline_encode(&fresh, 9u, s1, snap, packet, full, &size, &delta));
+    ASSERT_EQ(memcmp(packet + PHYSICS_SYNC_CORRECTION_HEADER_BYTES, s1, snap), 0);
+    ASSERT_FALSE(physics_sync_baseline_store(&base, 9u, NULL, snap));
+    ASSERT_TRUE(base.bytes == NULL);
+    ASSERT_EQ(base.size, 0u);
+    ASSERT_FALSE(base.confirmed);
+    physics_sync_baseline_confirm(&base, 9u);
+    ASSERT_FALSE(base.confirmed);
+    ASSERT_TRUE(physics_sync_baseline_store(&base, 8u, s1, snap));
+    physics_sync_baseline_release(&base);
+    ASSERT_TRUE(base.bytes == NULL);
+    ASSERT_EQ(base.size, 0u);
+    ASSERT_FALSE(base.confirmed);
+
+    u8 small_base[24];
+    u8 small_target[24];
+    u8 small_packet[64];
+    memset(small_base, 1, sizeof(small_base));
+    memcpy(small_target, small_base, sizeof(small_target));
+    memset(small_target + 8, 9, 4u);
+    ASSERT_TRUE(physics_sync_baseline_store(&base, 1u, small_base, sizeof(small_base)));
+    physics_sync_baseline_confirm(&base, 1u);
+    ASSERT_TRUE(physics_sync_baseline_encode(&base, 2u, small_target, sizeof(small_target),
+                                             small_packet, sizeof(small_packet), &size, &delta));
+    ASSERT_FALSE(delta);
+    ASSERT_EQ(size, PHYSICS_SYNC_CORRECTION_HEADER_BYTES + 24u);
+    memset(small_target + 8, 1, 1u);
+    ASSERT_TRUE(physics_sync_baseline_encode(&base, 2u, small_target, sizeof(small_target),
+                                             small_packet, sizeof(small_packet), &size, &delta));
+    ASSERT_TRUE(delta);
+    ASSERT_EQ(size, PHYSICS_SYNC_DELTA_HEADER_BYTES + 8u + 3u);
+    physics_sync_baseline_release(&base);
+
+    free(s0);
+    free(s1);
+    free(packet);
+    physics_world_destroy(a);
+}
+
+TEST(sync_correction_payload_rejects_malformed_packets)
+{
+    PhysicsBodyHandle box;
+    PhysicsWorld *a = sync_scene(&box);
+    usize need = physics_sync_correction_size(a);
+    u8 *packet = malloc(need);
+    const u8 *payload = (const u8 *)1;
+    usize payload_size = 77u;
+    ASSERT_NOT_NULL(packet);
+    ASSERT_TRUE(physics_sync_encode_correction(a, 3u, packet, need, NULL));
+    ASSERT_FALSE(physics_sync_correction_payload(NULL, need, &payload, &payload_size));
+    ASSERT_FALSE(physics_sync_correction_payload(packet, PHYSICS_SYNC_CORRECTION_HEADER_BYTES - 1u,
+                                                 &payload, &payload_size));
+    ASSERT_FALSE(physics_sync_correction_payload(packet, need - 1u, &payload, &payload_size));
+    packet[0] ^= 1u;
+    ASSERT_FALSE(physics_sync_correction_payload(packet, need, &payload, &payload_size));
+    packet[0] ^= 1u;
+    packet[need - 1u] ^= 1u;
+    ASSERT_FALSE(physics_sync_correction_payload(packet, need, &payload, &payload_size));
+    packet[need - 1u] ^= 1u;
+    ASSERT_TRUE(payload == (const u8 *)1);
+    ASSERT_EQ(payload_size, 77u);
+    ASSERT_TRUE(physics_sync_correction_payload(packet, need, &payload, &payload_size));
+    ASSERT_EQ(payload_size, need - PHYSICS_SYNC_CORRECTION_HEADER_BYTES);
+    free(packet);
+    physics_world_destroy(a);
+}
+
+TEST(sync_receiver_applies_full_then_delta_against_its_baseline)
+{
+    PhysicsBodyHandle box_a, box_b;
+    PhysicsWorld *a = sync_scene(&box_a);
+    PhysicsWorld *b = sync_scene(&box_b);
+    PhysicsSyncTracker tracker;
+    PhysicsSyncBaseline sent;
+    PhysicsSyncBaseline held;
+    u32 applied = 44u;
+    physics_sync_init(&tracker);
+    physics_sync_baseline_init(&sent);
+    physics_sync_baseline_init(&held);
+    usize snap = physics_snapshot_size(a);
+    usize full = PHYSICS_SYNC_CORRECTION_HEADER_BYTES + snap;
+    u8 *s = malloc(snap);
+    u8 *packet = malloc(full);
+    u8 *delta_packet = malloc(full);
+    ASSERT_NOT_NULL(s);
+    ASSERT_NOT_NULL(packet);
+    ASSERT_NOT_NULL(delta_packet);
+
+    physics_body_apply_impulse(b, box_b, vec3(0.0f, 2.0f, 0.0f));
+    for (u32 tick = 1; tick <= 4u; tick++) {
+        step_both(a, b);
+    }
+    ASSERT_TRUE(physics_snapshot_save(a, s, snap, NULL));
+    usize size = 0;
+    bool delta = true;
+    ASSERT_TRUE(physics_sync_baseline_encode(&sent, 4u, s, snap, packet, full, &size, &delta));
+    ASSERT_FALSE(delta);
+    ASSERT_TRUE(physics_sync_baseline_store(&sent, 4u, s, snap));
+
+    ASSERT_TRUE(physics_sync_apply_received(&tracker, b, &held, packet, size, &applied));
+    ASSERT_EQ(applied, 4u);
+    ASSERT_TRUE(physics_state_hash(b) == physics_state_hash(a));
+    ASSERT_NOT_NULL(held.bytes);
+    ASSERT_EQ(held.tick, 4u);
+    ASSERT_EQ(held.size, snap);
+    ASSERT_EQ(memcmp(held.bytes, s, snap), 0);
+    physics_sync_baseline_confirm(&sent, 4u);
+
+    physics_body_apply_impulse(b, box_b, vec3(1.0f, 0.0f, 0.0f));
+    for (u32 tick = 5; tick <= 7u; tick++) {
+        step_both(a, b);
+    }
+    ASSERT_TRUE(physics_snapshot_save(a, s, snap, NULL));
+    ASSERT_TRUE(physics_sync_baseline_encode(&sent, 7u, s, snap, delta_packet, full, &size,
+                                             &delta));
+    ASSERT_TRUE(delta);
+    usize delta_size = size;
+
+    ASSERT_TRUE(physics_sync_record(&tracker, 5u, 1u));
+    ASSERT_EQ(physics_sync_check(&tracker, 5u, 2u), PHYSICS_SYNC_DESYNC);
+    u64 before = physics_state_hash(b);
+    applied = 44u;
+    PhysicsSyncBaseline empty;
+    physics_sync_baseline_init(&empty);
+    ASSERT_FALSE(physics_sync_apply_received(&tracker, b, &empty, delta_packet, delta_size,
+                                             &applied));
+    ASSERT_TRUE(empty.bytes == NULL);
+    held.bytes[0] ^= 1u;
+    ASSERT_FALSE(physics_sync_apply_received(&tracker, b, &held, delta_packet, delta_size,
+                                             &applied));
+    held.bytes[0] ^= 1u;
+    ASSERT_FALSE(physics_sync_apply_received(&tracker, b, &held, delta_packet, delta_size - 1u,
+                                             &applied));
+    ASSERT_FALSE(physics_sync_apply_received(&tracker, b, &held, packet, full - 1u, &applied));
+    ASSERT_FALSE(physics_sync_apply_received(&tracker, b, &held, NULL, delta_size, &applied));
+    ASSERT_FALSE(physics_sync_apply_received(&tracker, b, &held, delta_packet, 3u, &applied));
+    ASSERT_FALSE(physics_sync_apply_received(&tracker, b, &held, delta_packet,
+                                             PHYSICS_SYNC_DELTA_HEADER_BYTES - 1u, &applied));
+    u8 huge[PHYSICS_SYNC_DELTA_HEADER_BYTES];
+    memcpy(huge, delta_packet, sizeof(huge));
+    huge[20] = 0xffu;
+    huge[21] = 0xffu;
+    huge[22] = 0xffu;
+    huge[23] = 0x7fu;
+    ASSERT_FALSE(physics_sync_apply_received(&tracker, b, &held, huge, sizeof(huge), &applied));
+    PhysicsWorld *tiny = physics_world_create(1);
+    PhysicsSyncBaseline tiny_held;
+    physics_sync_baseline_init(&tiny_held);
+    ASSERT_FALSE(physics_sync_apply_received(&tracker, tiny, &tiny_held, packet, full, &applied));
+    ASSERT_TRUE(tiny_held.bytes == NULL);
+    ASSERT_EQ(tiny->count, 0u);
+    physics_world_destroy(tiny);
+    ASSERT_EQ(applied, 44u);
+    ASSERT_EQ(held.tick, 4u);
+    ASSERT_TRUE(physics_state_hash(b) == before);
+    ASSERT_TRUE(physics_sync_desynced(&tracker, NULL));
+
+    ASSERT_TRUE(physics_sync_apply_received(&tracker, b, &held, delta_packet, delta_size,
+                                            &applied));
+    ASSERT_EQ(applied, 7u);
+    ASSERT_FALSE(physics_sync_desynced(&tracker, NULL));
+    ASSERT_TRUE(physics_state_hash(b) == physics_state_hash(a));
+    ASSERT_EQ(held.tick, 7u);
+    ASSERT_EQ(memcmp(held.bytes, s, snap), 0);
+    ASSERT_EQ(physics_sync_check(&tracker, 7u, physics_state_hash(a)), PHYSICS_SYNC_MATCH);
+
+    physics_sync_baseline_release(&sent);
+    physics_sync_baseline_release(&held);
+    free(s);
+    free(packet);
+    free(delta_packet);
+    physics_world_destroy(a);
+    physics_world_destroy(b);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(sync_report_round_trip_and_rejection);
     RUN_TEST(sync_lockstep_worlds_match);
@@ -597,4 +862,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(sync_delta_handles_grown_and_shrunk_targets);
     RUN_TEST(sync_delta_decode_rejects_malformed_packets);
     RUN_TEST(sync_delta_corrects_a_diverged_world);
+    RUN_TEST(sync_baseline_selects_delta_only_after_confirmation);
+    RUN_TEST(sync_correction_payload_rejects_malformed_packets);
+    RUN_TEST(sync_receiver_applies_full_then_delta_against_its_baseline);
 TEST_MAIN_END()

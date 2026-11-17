@@ -387,6 +387,10 @@ static int client_next_physics_report(NetClient *c, u8 out[NET_CLIENT_PHYSICS_RE
  * bytes u32, FNV-1a 32 of the payload u32, then the payload. */
 #define NET_CLIENT_PHYSICS_CORRECTION_MAGIC 0x504e5350u
 #define NET_CLIENT_PHYSICS_CORRECTION_HEADER 16u
+/* Delta layout: magic "PSND" u32, tick u32, baseline tick u32, then the
+ * rest of a 28-byte header and the runs; physics_sync checks the body. */
+#define NET_CLIENT_PHYSICS_DELTA_MAGIC 0x444e5350u
+#define NET_CLIENT_PHYSICS_DELTA_HEADER 28u
 
 /* Latest report seen while waiting for a correction, and the correction
  * bytes, kept so the client can restore them into its own world. */
@@ -412,6 +416,14 @@ static int client_next_physics_correction(NetClient *c, u32 *out_tick, size_t *o
         }
         if (env.message_id != BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION) continue;
         const u8 *p = (const u8 *)env.payload;
+        if (env.protocol_version == 1u && env.payload_size >= NET_CLIENT_PHYSICS_DELTA_HEADER &&
+            le32(p) == NET_CLIENT_PHYSICS_DELTA_MAGIC) {
+            if (env.payload_size > sizeof(g_correction)) return -1;
+            memcpy(g_correction, p, env.payload_size);
+            *out_tick = le32(p + 4u);
+            *out_bytes = env.payload_size;
+            return 1;
+        }
         if (env.protocol_version != 1u || env.payload_size <= NET_CLIENT_PHYSICS_CORRECTION_HEADER ||
             le32(p) != NET_CLIENT_PHYSICS_CORRECTION_MAGIC ||
             (size_t)le32(p + 8u) != env.payload_size - NET_CLIENT_PHYSICS_CORRECTION_HEADER) {
@@ -435,23 +447,82 @@ static int client_next_physics_correction(NetClient *c, u32 *out_tick, size_t *o
  * tick N, so a peer that reads up to a report newer than N has seen every
  * correction it could get. True when a correction arrives first or the
  * connection fails, both wrong for a peer that never desynced. */
-/* Restores the received correction into a world of core_app's capacity
- * and checks it reproduces the hash the authority reported for that tick. */
-static void client_apply_correction(u32 correction_tick, size_t correction_bytes) {
-    PhysicsWorld *world = physics_world_create(32u);
-    PhysicsSyncTracker tracker;
+/* The client's own world and the snapshot it last restored, which is the
+ * baseline a later delta correction is decoded against. */
+static PhysicsWorld *g_client_world;
+static PhysicsSyncTracker g_client_tracker;
+static PhysicsSyncBaseline g_client_held;
+
+/* Restores the received correction (full or delta) into a world of
+ * core_app's capacity and checks it reproduces the hash the authority
+ * reported for that tick. */
+static bool client_apply_correction(const char *label, u32 correction_tick,
+                                    size_t correction_bytes) {
+    if (!g_client_world) {
+        g_client_world = physics_world_create(32u);
+        physics_sync_init(&g_client_tracker);
+        physics_sync_baseline_init(&g_client_held);
+    }
     u32 applied_tick = 0u;
-    physics_sync_init(&tracker);
-    bool applied = world && correction_bytes > 0u &&
-                   physics_sync_apply_correction(&tracker, world, g_correction,
-                                                 correction_bytes, &applied_tick) &&
+    bool applied = g_client_world && correction_bytes > 0u &&
+                   physics_sync_apply_received(&g_client_tracker, g_client_world, &g_client_held,
+                                               g_correction, correction_bytes, &applied_tick) &&
                    applied_tick == correction_tick;
     bool converged = applied && g_report_seen && g_report_tick == correction_tick &&
-                     physics_state_hash(world) == g_report_hash;
-    check(applied, "a_applied_physics_correction");
-    fprintf(g_report, "physics_correction_applied tick=%u converged=%d\n", applied_tick,
+                     physics_state_hash(g_client_world) == g_report_hash;
+    fprintf(g_report, "%s_applied tick=%u converged=%d\n", label, applied_tick,
             converged ? 1 : 0);
-    if (world) physics_world_destroy(world);
+    return applied;
+}
+
+static void client_release_world(void) {
+    if (g_client_world) physics_world_destroy(g_client_world);
+    g_client_world = NULL;
+    physics_sync_baseline_release(&g_client_held);
+}
+
+/* Confirms the snapshot this client last restored by reporting its own
+ * hash at that tick (which matches the authority), then reports a desync.
+ * A repeated desync sent before the first correction can still be pending
+ * on the server and produce one more full correction against an
+ * unconfirmed baseline, so a full reply is applied and the exchange is
+ * retried a bounded number of times. The delta must be smaller than the
+ * first full correction and decode against the held snapshot. */
+static void client_delta_correction_exchange(NetClient *c, size_t full_bytes) {
+    bool is_delta = false;
+    u32 attempts = 0u;
+    while (!is_delta && attempts < 3u && g_client_world && g_client_held.bytes) {
+        ++attempts;
+        u8 report[NET_CLIENT_PHYSICS_REPORT_BYTES];
+        u32 held_tick = g_client_held.tick;
+        if (!physics_sync_encode_report(held_tick, physics_state_hash(g_client_world), report,
+                                        sizeof(report)) ||
+            !client_send(c, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, 1u, report,
+                         sizeof(report))) {
+            break;
+        }
+        report[8] ^= 0xffu;
+        if (!client_send(c, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, 1u, report,
+                         sizeof(report))) {
+            break;
+        }
+        u32 tick = 0u;
+        size_t bytes = 0u;
+        if (client_next_physics_correction(c, &tick, &bytes, 10000u) != 1) break;
+        is_delta = bytes >= NET_CLIENT_PHYSICS_DELTA_HEADER &&
+                   le32(g_correction) == NET_CLIENT_PHYSICS_DELTA_MAGIC;
+        if (is_delta) {
+            fprintf(g_report,
+                    "physics_delta_correction tick=%u bytes=%zu full_bytes=%zu baseline=%u"
+                    " held=%u attempts=%u\n",
+                    tick, bytes, full_bytes, le32(g_correction + 8u), held_tick, attempts);
+            check(client_apply_correction("physics_delta_correction", tick, bytes),
+                  "a_applied_physics_delta_correction");
+        } else if (!client_apply_correction("physics_extra_correction", tick, bytes)) {
+            break;
+        }
+    }
+    check(is_delta, "a_received_delta_physics_correction");
 }
 
 static bool client_receives_correction_before(NetClient *c, u32 after_tick, u32 timeout_ms) {
@@ -659,9 +730,13 @@ static void scenario_authenticated(void) {
                   "a_received_physics_correction");
             fprintf(g_report, "physics_correction tick=%u bytes=%zu\n", correction_tick,
                     correction_bytes);
-            client_apply_correction(correction_tick, correction_bytes);
+            check(client_apply_correction("physics_correction", correction_tick,
+                                          correction_bytes),
+                  "a_applied_physics_correction");
             check(!client_receives_correction_before(&a2, correction_tick, 10000u),
                   "a2_never_receives_correction");
+            client_delta_correction_exchange(&a, correction_bytes);
+            client_release_world();
         }
         client_clock_probe_exchange(&a);
         client_close(&a2);

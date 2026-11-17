@@ -1474,3 +1474,21 @@ mount 清空、commit 分类和第二次 completion 等待分别做了独立生�
 - `physics_sync_apply_delta` 在调用方提供的 scratch 缓冲区里重建快照，校验通过并且 `physics_snapshot_restore` 成功后才重置 tracker；任何失败都不改世界、tracker 和 `*out_tick`，与完整修正包一致。
 
 core_app 还没有接入增量包：权威端需要为每个对端保存最近确认的基线，并决定发送增量还是完整包。这是下一个切片。
+
+## 补充（2026-11-17）：core_app 发送增量物理修正
+
+transport 为每个连接槽保存一个 `PhysicsSyncBaseline`：这个对端最近一次成功发送的修正对应的快照及其 tick。规则如下：
+
+- 对端回报某 tick 的 MATCH，且该 tick 不早于基线 tick 时，基线标为已确认。已应用修正的对端会匹配，丢掉修正的对端会保持分歧，永远不会确认。
+- `net_physics_correction` 先用 `physics_sync_correction_payload` 从 core_app 交来的完整包中取出快照，再逐槽调用 `physics_sync_baseline_encode`：基线已确认且增量严格更小时发增量包，否则发完整包。
+- 发送成功后，把该快照存为新的基线，确认标记清零。所以对端如果丢了基线，在下一次确认之前最多只会收到一个增量包。
+- 连接关闭、槽复用和 transport 销毁时都会释放基线。
+- `network_stats` 末尾追加 `physics_delta_corrections_sent`，它也计入 `physics_corrections_sent`。
+
+接收端使用 `physics_sync_apply_received`：按 magic 分派完整包或增量包。增量包按自己持有的基线解码，分配目标缓冲区之前先用世界容量限制目标长度。成功后，恢复的快照成为新的持有基线；失败时世界、tracker 和基线都不变。
+
+loopback 场景 A 收到第一个完整修正（本机 10644 字节）后，用自己世界的哈希回报持有基线的 tick（与权威端一致，属于 MATCH），再发一次 desync。第二个修正必须是增量包（本机 28 字节）、基线 tick 等于客户端持有的 tick，并且应用后与权威端回报的哈希一致。
+
+场景 A 先发了两次 desync，第一个修正发出前它们会合并；但第二次可能在第一个修正发出之后才被处理，于是再触发一个针对未确认基线的完整修正。所以客户端最多重试 3 轮：收到额外的完整包就应用并重新确认。驱动脚本要求额外完整包也收敛，而且 `physics_delta_corrections_sent` 恰好为 1。
+
+变异测试：transport 的 4 项中 3 项被捕获。存活的 1 项删掉了完整包解析失败时的提前返回；这种情况下快照为 NULL，`physics_sync_baseline_encode` 同样拒绝，两者行为等价。`physics_sync` 的 19 项中 18 项被捕获。存活的 1 项把接收端的目标长度上限放宽一个 body，这个上限只约束分配大小，超长目标随后也会被解码和 `physics_snapshot_restore` 拒绝，同样等价。

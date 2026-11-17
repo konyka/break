@@ -37,6 +37,17 @@ typedef enum PhysicsSyncVerdict {
     PHYSICS_SYNC_UNKNOWN
 } PhysicsSyncVerdict;
 
+/* A snapshot one peer is known to hold. The sender keeps the last snapshot
+ * it put in a correction to a peer; it is confirmed once that peer reports
+ * a matching hash for a tick at or after it. The receiver keeps the last
+ * snapshot it restored. bytes is owned. */
+typedef struct PhysicsSyncBaseline {
+    u8 *bytes;
+    usize size;
+    u32 tick;
+    bool confirmed;
+} PhysicsSyncBaseline;
+
 typedef struct PhysicsSyncTracker {
     u32 ticks[PHYSICS_SYNC_HISTORY];
     u64 hashes[PHYSICS_SYNC_HISTORY];
@@ -96,5 +107,34 @@ bool physics_sync_decode_delta(const u8 *baseline, usize baseline_size, const u8
 bool physics_sync_apply_delta(PhysicsSyncTracker *tracker, PhysicsWorld *pw, const u8 *baseline,
                               usize baseline_size, const u8 *data, usize size, u8 *scratch,
                               usize scratch_capacity, u32 *out_tick);
+/* Validates a full correction (magic, length, checksum) and points
+ * *out_payload at its snapshot. Outputs are untouched on failure. */
+bool physics_sync_correction_payload(const u8 *data, usize size, const u8 **out_payload,
+                                     usize *out_payload_size);
+
+void physics_sync_baseline_init(PhysicsSyncBaseline *baseline);
+void physics_sync_baseline_release(PhysicsSyncBaseline *baseline);
+/* Copies the snapshot and clears the confirmation. Returns false and leaves
+ * the baseline empty when allocation fails. */
+bool physics_sync_baseline_store(PhysicsSyncBaseline *baseline, u32 tick, const u8 *snapshot,
+                                 usize size);
+/* Confirms a held baseline when tick is at or after its tick. */
+void physics_sync_baseline_confirm(PhysicsSyncBaseline *baseline, u32 tick);
+/* Encodes a delta against a confirmed baseline when that is strictly
+ * smaller than a full correction, otherwise a full correction. *out_size
+ * receives the required byte count; *out_delta says which kind was chosen.
+ * Returns false and leaves the buffer untouched when capacity is too small.
+ * The baseline itself is not changed: store the snapshot after the packet
+ * is actually sent. */
+bool physics_sync_baseline_encode(const PhysicsSyncBaseline *baseline, u32 tick,
+                                  const u8 *snapshot, usize size, u8 *buffer, usize capacity,
+                                  usize *out_size, bool *out_delta);
+/* Applies a full or a delta correction, chosen by magic. A delta is decoded
+ * against held; its target is bounded by what the world can hold before
+ * any allocation. On success the restored snapshot becomes held. On any
+ * failure the world, the tracker, held and *out_tick are unchanged. */
+bool physics_sync_apply_received(PhysicsSyncTracker *tracker, PhysicsWorld *pw,
+                                 PhysicsSyncBaseline *held, const u8 *data, usize size,
+                                 u32 *out_tick);
 /* *out_first_tick is written only when a desync has been seen. */
 bool physics_sync_desynced(const PhysicsSyncTracker *tracker, u32 *out_first_tick);
