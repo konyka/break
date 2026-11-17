@@ -11509,3 +11509,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `test_trace_core_app` 新增 3 项（共 10）：正负偏移、CRLF、未找到、多行、各类畸形字段、非法参数与失败时输出不变；`test_trace_merge_tool.cmake` 覆盖负偏移平移对端、正偏移平移服务端及每种失败的退出码和信息。先 RED 后 GREEN；21 项变异首轮 2 项存活（只按长度匹配 key、不去掉 `\r`），测试行补同长度 key 并以 `error_us` 结尾后全部被捕获。
 - 仍缺：多个对端时自动选择偏移。
 
+### 2026-11-17 PCM 流的耳间时差
+
+- `audio/audio_extended.{h,c}`：新增 `audio_pcm_stream_set_interaural_delay`。空间流按 Woodworth 模型（头半径 0.0875 m、声速 343 m/s）计算远端耳朵的延迟帧数（0..31），由所有者线程与增益一起发布；混音器在后方提示之后经 64 帧延迟线输出延迟后的远端声道。延迟线在关闭时也写入，open 时清零。
+- `test_audio_extended` 新增 5 项（共 99）：参数与 STALE、正前/正后/正上方/重合位置无延迟、正右与正左延迟 31 帧且另一耳不变、30° 为 13 帧、打开后播放历史而非静音、监听者转向后延迟消失、立体声各耳取各自声道、重开后延迟关闭且延迟线为零。先 RED（编译失败）后 GREEN；18 项变异首轮 3 项存活：重开未重置开关的变异补测试后被捕获；上限钳位不可达（侧向量在 -1..1 内），已删除；`itd > 0` 改为 `>= 0` 为等价变异（延迟 0 时读回刚写入的帧）。
+- 仍缺：HRTF、高度提示、事件 voice 的耳间时差、延迟变化的平滑。
+

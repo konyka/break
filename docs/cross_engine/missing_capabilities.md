@@ -264,3 +264,4 @@
 - **第 13 节（诊断/跨线程关联）追加**：`core_app --trace-timestamps` 在文本 trace 每行写入单调时钟 `ts_us`，`--trace-json` 与 `trace_merge` 得到真实时间轴（同一台机器上的多个进程可直接对齐）。仍缺：不同机器上网络对端之间的时钟对齐。
 - **第 13 节（诊断/跨线程关联）追加**：`core/clock_offset` 用 NTP 式探测样本估计两台机器的时钟偏移（最小延迟样本、误差上界 `ceil(delay/2)`），并换算成 `trace_merge --offset-us` 的平移量。仍缺：探测包在 core_app 会话协议上的收发、估计结果自动用于 trace 合并。
 - **第 13 节（诊断/跨线程关联）追加**：时钟探测消息 `0x4004` 的 32 字节线格式与编解码（`core_app_clock_probe_*`）已加入默认注册表。服务端 transport 已应答探测，并主动探测每个对端、把偏移写入 `event=network_clock_offset` trace 行。`trace_merge --clock-offset SERVER_TRACE` 已从服务端 trace 读取该行并自动平移两个输入。仍缺：多个对端时只能手动指定 `--offset-us`；偏移只来自服务端探测。
+- **第 10 节（音频）追加**：空间 PCM 流可打开耳间时差（`audio_pcm_stream_set_interaural_delay`，Woodworth 模型，远端耳朵最多延迟 31 帧），「耳间时差」由此交付。仍缺：HRTF、高度提示、事件 voice 的耳间时差、延迟变化的平滑、麦克风采集、感知编码器（Opus 等）、音频编辑工具。

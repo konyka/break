@@ -147,6 +147,14 @@ typedef struct {
     atomic_uint rear_alpha_bits;
     bool rear_cue;
     f32 rear_state[2];
+    /* interaural delay (audio_pcm_stream_set_interaural_delay): the signed
+     * frame count (positive delays the left ear), published by the owner
+     * thread, and the line of past frames after the rear cue, mixer-owned
+     * like `pos` and written while the delay is off; open zeroes both */
+    atomic_int itd_frames;
+    bool interaural_delay;
+    f32 itd_line[AUDIO_PCM_STREAM_ITD_LINE_FRAMES][2];
+    u32 itd_written;
     atomic_uint gain_bits;
     /* distance attenuation (audio_pcm_stream_set_spatial); written and
      * recomputed on the owner thread, the mixer reads spatial_bits only */
@@ -527,6 +535,24 @@ static void pcm_stream_filter_to(AudioPcmStream *stream, u32 tail, u32 count) {
     }
 }
 
+_Static_assert((AUDIO_PCM_STREAM_ITD_LINE_FRAMES & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)) == 0u,
+               "AUDIO_PCM_STREAM_ITD_LINE_FRAMES must be a power of two");
+_Static_assert(AUDIO_PCM_STREAM_ITD_MAX_FRAMES < AUDIO_PCM_STREAM_ITD_LINE_FRAMES,
+               "the delay line must hold the longest delay");
+
+/* Pushes one frame into the delay line and returns the far ear's sample
+ * `delay` frames back (the frame itself for 0). */
+static f32 pcm_stream_itd_push(AudioPcmStream *stream, f32 left, f32 right, i32 delay) {
+    f32 *slot = stream->itd_line[stream->itd_written & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)];
+    slot[0] = left;
+    slot[1] = right;
+    u32 back = (u32)(delay < 0 ? -delay : delay);
+    const f32 *past = stream->itd_line[(stream->itd_written - back) &
+                                       (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)];
+    stream->itd_written++;
+    return delay < 0 ? past[1] : past[0];
+}
+
 _Static_assert((AUDIO_PCM_STREAM_SINC_LOOKAHEAD & (AUDIO_PCM_STREAM_SINC_LOOKAHEAD - 1u)) == 0u,
                "AUDIO_PCM_STREAM_SINC_LOOKAHEAD must be a power of two");
 
@@ -584,7 +610,9 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
     f32 pan_left = 1.0f;
     f32 pan_right = 1.0f;
     f32 rear_alpha = 1.0f;
+    i32 itd = 0;
     if (open) {
+        itd = atomic_load_explicit(&stream->itd_frames, memory_order_relaxed);
         rear_alpha = gain_from_bits(atomic_load_explicit(&stream->rear_alpha_bits,
                                                          memory_order_relaxed));
         u64 pan = atomic_load_explicit(&stream->pan_bits, memory_order_relaxed);
@@ -650,6 +678,9 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
                 stream->rear_state[0] = left;
                 stream->rear_state[1] = right;
             }
+            f32 late = pcm_stream_itd_push(stream, left, right, itd);
+            if (itd > 0) left = late;
+            if (itd < 0) right = late;
             left *= gain * pan_left;
             right *= gain * pan_right;
             pos += stream->rate;
@@ -791,6 +822,10 @@ AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample
         atomic_store_explicit(&stream->rear_alpha_bits, gain_to_bits(1.0f), memory_order_relaxed);
         stream->rear_state[0] = 0.0f;
         stream->rear_state[1] = 0.0f;
+        stream->interaural_delay = false;
+        atomic_store_explicit(&stream->itd_frames, 0, memory_order_relaxed);
+        memset(stream->itd_line, 0, sizeof(stream->itd_line));
+        stream->itd_written = 0u;
         stream->spatial = false;
         stream->panning = false;
         atomic_store_explicit(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f),
@@ -910,6 +945,18 @@ static f32 rear_cue_alpha(const AudioSystem *as, Vec3 position) {
     return (f32)(1.0 - behind * (1.0 - rear));
 }
 
+/* Signed far-ear delay in frames (positive: the left ear, source on the
+ * right) from the Woodworth model on the panning's lateral amount. The pan is
+ * within -1..1, so the delay is at most AUDIO_PCM_STREAM_ITD_MAX_FRAMES. */
+static i32 interaural_delay_frames(const AudioSystem *as, Vec3 position) {
+    double pan = listener_pan(as, position);
+    double lateral = fabs(pan);
+    double seconds = (double)AUDIO_PCM_STREAM_HEAD_RADIUS /
+                     (double)AUDIO_PCM_STREAM_SPEED_OF_SOUND * (asin(lateral) + lateral);
+    i32 frames = (i32)lrint(seconds * (double)AUDIO_PCM_SAMPLE_RATE);
+    return pan < 0.0 ? -frames : frames;
+}
+
 static u64 pcm_stream_pan(const AudioSystem *as, Vec3 position) {
     f32 left = 1.0f;
     f32 right = 1.0f;
@@ -917,8 +964,8 @@ static u64 pcm_stream_pan(const AudioSystem *as, Vec3 position) {
     return pcm_stream_pan_pack(left, right);
 }
 
-/* Recomputes and publishes a spatial stream's gain (and pan and rear cue,
- * when on) for its position. */
+/* Recomputes and publishes a spatial stream's gain (and pan, rear cue and
+ * interaural delay, when on) for its position. */
 static AudioResult pcm_stream_publish_spatial(AudioExtended *ext, AudioPcmStream *stream) {
     f32 gain = 1.0f;
     AudioResult result = spatial_gain(ext, stream->min_distance, stream->max_distance,
@@ -933,6 +980,10 @@ static AudioResult pcm_stream_publish_spatial(AudioExtended *ext, AudioPcmStream
     atomic_store_explicit(&stream->rear_alpha_bits,
                           gain_to_bits(stream->rear_cue ?
                                        rear_cue_alpha(ext->owner, stream->position) : 1.0f),
+                          memory_order_relaxed);
+    atomic_store_explicit(&stream->itd_frames,
+                          stream->interaural_delay ?
+                              interaural_delay_frames(ext->owner, stream->position) : 0,
                           memory_order_relaxed);
     return AUDIO_OK;
 }
@@ -993,6 +1044,16 @@ AudioResult audio_pcm_stream_set_rear_cue(AudioSystem *as, AudioPcmStreamHandle 
     if (result != AUDIO_OK) return result;
     if (!stream->spatial) return AUDIO_REJECTED;
     stream->rear_cue = enabled;
+    return pcm_stream_publish_spatial(audio_extended(as), stream);
+}
+
+AudioResult audio_pcm_stream_set_interaural_delay(AudioSystem *as, AudioPcmStreamHandle handle,
+                                                  bool enabled) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (!stream->spatial) return AUDIO_REJECTED;
+    stream->interaural_delay = enabled;
     return pcm_stream_publish_spatial(audio_extended(as), stream);
 }
 
@@ -1073,6 +1134,7 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         atomic_init(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f));
         atomic_init(&stream->resample, (unsigned)AUDIO_RESAMPLE_LINEAR);
         atomic_init(&stream->rear_alpha_bits, gain_to_bits(1.0f));
+        atomic_init(&stream->itd_frames, 0);
         atomic_init(&stream->head, 0);
         atomic_init(&stream->tail, 0);
         atomic_init(&stream->open, false);

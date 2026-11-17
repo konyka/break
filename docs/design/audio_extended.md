@@ -85,6 +85,12 @@ RESTART 保留 handle 并从头播放；STEAL_OLDEST 提升 generation，使旧 
 
 α 与距离增益一起在所有者线程计算（`set_spatial`、`set_position`、监听者更新），作为一个原子 f32 发布，混音回调每次读一次。滤波在插值之后、增益与声像之前进行；α = 1 时状态跟随信号，所以打开提示或声源转到身后时从当前信号开始，没有旧状态带来的咔嗒声。状态归回调所有，与 `pos` 一样由 open 重置。
 
+### 耳间时差
+
+`audio_pcm_stream_set_interaural_delay(as, h, enabled)` 为空间流打开耳间时差：离声源较远的耳朵晚听到声音（open 时关闭；未 `set_spatial` 返回 `AUDIO_REJECTED`）。侧向量 `p` 取声像使用的 `listener_pan`（与右向量夹角的余弦），按 Woodworth 模型 `秒数 = r / c × (asin|p| + |p|)`，`r = AUDIO_PCM_STREAM_HEAD_RADIUS`（0.0875 m），`c = AUDIO_PCM_STREAM_SPEED_OF_SOUND`（343 m/s），乘 48000 后 `lrint` 取整：正前、正后、正上方和与监听者重合时为 0，正侧方为 `AUDIO_PCM_STREAM_ITD_MAX_FRAMES`（31 帧，约 0.65 ms），30° 时为 13 帧。声源在右侧时延迟左声道，在左侧时延迟右声道。
+
+带符号的帧数（正数表示左耳延迟）与增益、声像一起在所有者线程计算并作为一个原子 int 发布，混音回调每次读一次。混音器在后方提示之后、增益与声像之前把每个播放帧写入 64 帧（`AUDIO_PCM_STREAM_ITD_LINE_FRAMES`）的延迟线，远端耳朵从中读取延迟后的样本。延迟关闭时延迟线也照常写入，所以打开延迟或声源转到侧面时播放的是真实的历史，而不是插入静音。open 把延迟线清零。延迟变化时直接跳变，不做交叉淡化。
+
 ### 事件 voice 的声像
 
 `AudioEventDesc.panned = true`（必须同时设置 `spatial`，否则 `audio_event_register` 返回 `AUDIO_INVALID`）让空间事件使用与 PCM 流相同的监听者声像模型和等功率规律（两者共用 `listener_pan` 与 `pan_gains`）。未设置的事件输出不变。

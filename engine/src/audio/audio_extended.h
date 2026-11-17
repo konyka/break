@@ -172,6 +172,23 @@ AudioResult audio_pcm_stream_set_panning(AudioSystem *as, AudioPcmStreamHandle h
 AudioResult audio_pcm_stream_set_rear_cue(AudioSystem *as, AudioPcmStreamHandle handle,
                                           bool enabled);
 
+/* Head model of the interaural delay (Woodworth). */
+#define AUDIO_PCM_STREAM_HEAD_RADIUS 0.0875f
+#define AUDIO_PCM_STREAM_SPEED_OF_SOUND 343.0f
+/* The delay of a source straight to the side, in 48 kHz frames. */
+#define AUDIO_PCM_STREAM_ITD_MAX_FRAMES 31u
+/* Frames of past output kept per stream for the delay (a power of two). */
+#define AUDIO_PCM_STREAM_ITD_LINE_FRAMES 64u
+
+/* Interaural time difference for a spatial stream (no HRTF): the ear away
+ * from the source hears it later, by r / c * (asin(p) + p) seconds with p the
+ * lateral amount used by panning, rounded to whole frames (0 in front,
+ * behind, above or on the listener; AUDIO_PCM_STREAM_ITD_MAX_FRAMES straight
+ * to the side). A change of delay jumps without a crossfade. Off at open.
+ * REJECTED for a stream without set_spatial. */
+AudioResult audio_pcm_stream_set_interaural_delay(AudioSystem *as, AudioPcmStreamHandle handle,
+                                                  bool enabled);
+
 typedef enum {
     AUDIO_RESAMPLE_LINEAR = 0,
     AUDIO_RESAMPLE_SINC
