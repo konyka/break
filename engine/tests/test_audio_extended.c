@@ -4173,6 +4173,246 @@ TEST(interaural_delay_event_delays_the_far_ears_own_channel)
     }
 }
 
+/* ---- HRTF on streams ---- */
+
+#define HRTF_TEST_TAPS 7u
+
+static const AudioHrtfDirection kHrtfDirs[5] = {
+    {0.0f, 0.0f}, {90.0f, 0.0f}, {-90.0f, 0.0f}, {0.0f, 90.0f}, {180.0f, 0.0f}};
+static f32 g_hrtf_left[5u * HRTF_TEST_TAPS];
+static f32 g_hrtf_right[5u * HRTF_TEST_TAPS];
+
+/* the five directions above with random responses */
+static AudioHrtfSet *hrtf_test_set(u32 rate)
+{
+    u32 seed = 99991u;
+    AudioHrtfSet *set = NULL;
+    for (u32 i = 0; i < 5u * HRTF_TEST_TAPS; ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        g_hrtf_left[i] = (f32)((double)(seed >> 8) / 8388608.0 - 1.0);
+        seed = seed * 1664525u + 1013904223u;
+        g_hrtf_right[i] = (f32)((double)(seed >> 8) / 8388608.0 - 1.0);
+    }
+    if (audio_hrtf_set_create(rate, HRTF_TEST_TAPS, 5u, kHrtfDirs, g_hrtf_left, g_hrtf_right,
+                              &set) != AUDIO_OK) {
+        return NULL;
+    }
+    return set;
+}
+
+/* a spatial stream inside min distance (gain 1) at `position` */
+static AudioPcmStreamHandle open_hrtf_stream(AudioSystem *as, u32 channels, Vec3 position)
+{
+    AudioPcmStreamHandle h = 0;
+    if (audio_pcm_stream_open(as, channels, AUDIO_BUS_MASTER, 1.0f, &h) != AUDIO_OK ||
+        audio_pcm_stream_set_spatial(as, h, 10.0f, 100.0f, 1.0f, 1.0f) != AUDIO_OK ||
+        audio_pcm_stream_set_position(as, h, position) != AUDIO_OK) {
+        return 0u;
+    }
+    return h;
+}
+
+/* y[n] of a HRTF_TEST_TAPS response over x, double, zero history */
+static double hrtf_conv(const f32 *ir, const double *x, u32 n)
+{
+    double y = 0.0;
+    for (u32 k = 0; k < HRTF_TEST_TAPS && k <= n; ++k) y += (double)ir[k] * x[n - k];
+    return y;
+}
+
+static u32 stream_hrtf_index(AudioSystem *as, AudioPcmStreamHandle h)
+{
+    AudioPcmStream *stream = &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
+    return atomic_load(&stream->hrtf_index);
+}
+
+TEST(pcm_stream_hrtf_arguments)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    AudioHrtfSet *slow = hrtf_test_set(44100u);
+    AudioHrtfSet *set = hrtf_test_set(AUDIO_PCM_SAMPLE_RATE);
+    AudioPcmStreamHandle h = 0;
+    ASSERT_NOT_NULL(as);
+    ASSERT_NOT_NULL(slow);
+    ASSERT_NOT_NULL(set);
+    ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, set), AUDIO_REJECTED);
+    ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, NULL), AUDIO_REJECTED);
+    ASSERT_EQ(audio_pcm_stream_set_hrtf(as, 0u, set), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_hrtf(NULL, h, set), AUDIO_INVALID);
+    ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 10.0f, 100.0f, 1.0f, 1.0f), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, slow), AUDIO_INVALID);
+    {
+        AudioPcmStream *stream = &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
+        ASSERT_TRUE(atomic_load(&stream->hrtf_set) == (uintptr_t)0u);
+        ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, set), AUDIO_OK);
+        ASSERT_TRUE(atomic_load(&stream->hrtf_set) == (uintptr_t)(const void *)set);
+        ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, NULL), AUDIO_OK);
+        ASSERT_TRUE(atomic_load(&stream->hrtf_set) == (uintptr_t)0u);
+        ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, set), AUDIO_OK);
+        ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
+        /* a reopened slot starts without a set */
+        ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, set), AUDIO_STALE);
+        /* the closed stream's set may go; the reopened one never looks at it */
+        audio_hrtf_set_destroy(set);
+        set = NULL;
+        ASSERT_EQ(audio_pcm_stream_open(as, 1u, AUDIO_BUS_MASTER, 1.0f, &h), AUDIO_OK);
+        ASSERT_TRUE(atomic_load(&stream->hrtf_set) == (uintptr_t)0u);
+        ASSERT_EQ(audio_pcm_stream_set_spatial(as, h, 10.0f, 100.0f, 1.0f, 1.0f), AUDIO_OK);
+        ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(20, 0, 0)), AUDIO_OK);
+        audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
+        ASSERT_EQ(atomic_load(&stream->hrtf_index), 0u);
+    }
+    audio_system_destroy(as);
+    audio_hrtf_set_destroy(slow);
+}
+
+/* A mono source to the right through the set: the direct convolution with
+ * that direction's responses, times the distance gain; the other cues are
+ * set aside. */
+TEST(pcm_stream_hrtf_convolves_the_source_direction)
+{
+    enum { kFrames = 96 };
+    i16 pcm[kFrames];
+    double x[kFrames];
+    static f32 out[2u * kFrames];
+    u32 written = 0;
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    AudioHrtfSet *set = hrtf_test_set(AUDIO_PCM_SAMPLE_RATE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_NOT_NULL(set);
+    random_pcm(pcm, kFrames, 31337u);
+    pcm_to_double(pcm, kFrames, x);
+    /* 20 m with min distance 10 and rolloff 1: gain 0.5 */
+    AudioPcmStreamHandle h = open_hrtf_stream(as, 1u, vec3(20, 0, 0));
+    ASSERT_NEQ(h, 0u);
+    ASSERT_EQ(audio_pcm_stream_set_panning(as, h, true), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_rear_cue(as, h, true), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_interaural_delay(as, h, true), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_elevation_cue(as, h, true), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, set), AUDIO_OK);
+    ASSERT_EQ(stream_hrtf_index(as, h), 1u);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, kFrames, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    for (u32 n = 0; n < kFrames; ++n) {
+        ASSERT_TRUE(isfinite(out[2u * n]) && isfinite(out[2u * n + 1u]));
+        ASSERT_FLOAT_EQ(out[2u * n], (f32)(0.5 * hrtf_conv(g_hrtf_left + HRTF_TEST_TAPS, x, n)),
+                        1e-5f);
+        ASSERT_FLOAT_EQ(out[2u * n + 1u],
+                        (f32)(0.5 * hrtf_conv(g_hrtf_right + HRTF_TEST_TAPS, x, n)), 1e-5f);
+    }
+    audio_system_destroy(as);
+    audio_hrtf_set_destroy(set);
+}
+
+TEST(pcm_stream_hrtf_downmixes_stereo_and_maps_the_listener_frame)
+{
+    enum { kFrames = 64 };
+    i16 pcm[2u * kFrames];
+    double lr[2u * kFrames], x[kFrames];
+    static f32 out[2u * kFrames];
+    u32 written = 0;
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    AudioHrtfSet *set = hrtf_test_set(AUDIO_PCM_SAMPLE_RATE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_NOT_NULL(set);
+    random_pcm(pcm, 2u * kFrames, 4711u);
+    pcm_to_double(pcm, 2u * kFrames, lr);
+    for (u32 n = 0; n < kFrames; ++n) x[n] = 0.5 * (lr[2u * n] + lr[2u * n + 1u]);
+    /* facing +x: +z is to the right */
+    audio_system_update(as, vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0));
+    AudioPcmStreamHandle h = open_hrtf_stream(as, 2u, vec3(0, 0, 2));
+    ASSERT_NEQ(h, 0u);
+    ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, set), AUDIO_OK);
+    ASSERT_EQ(stream_hrtf_index(as, h), 1u);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, kFrames, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    for (u32 n = 0; n < kFrames; ++n) {
+        ASSERT_FLOAT_EQ(out[2u * n], (f32)hrtf_conv(g_hrtf_left + HRTF_TEST_TAPS, x, n), 1e-5f);
+        ASSERT_FLOAT_EQ(out[2u * n + 1u], (f32)hrtf_conv(g_hrtf_right + HRTF_TEST_TAPS, x, n),
+                        1e-5f);
+    }
+    {
+        const struct { Vec3 at; u32 index; } places[] = {
+            {{{2, 0, 0}}, 0u}, {{{-2, 0, 0}}, 4u}, {{{0, 0, -2}}, 2u}, {{{0, 5, 0}}, 3u},
+            {{{1, 0, 1.2f}}, 1u}, {{{0, 0, 0}}, 0u}};
+        for (u32 i = 0; i < sizeof(places) / sizeof(places[0]); ++i) {
+            ASSERT_EQ(audio_pcm_stream_set_position(as, h, places[i].at), AUDIO_OK);
+            ASSERT_EQ(stream_hrtf_index(as, h), places[i].index);
+        }
+    }
+    /* the listener update republishes; up (1,0,0) facing -z: right is -y */
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, -2, 0)), AUDIO_OK);
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -1), vec3(1, 0, 0));
+    ASSERT_EQ(stream_hrtf_index(as, h), 1u);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(2, 0, 0)), AUDIO_OK);
+    ASSERT_EQ(stream_hrtf_index(as, h), 3u);
+    /* no right vector: straight ahead */
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 0, 0));
+    ASSERT_EQ(stream_hrtf_index(as, h), 0u);
+    /* the frame is normalised: lengths 3 and 2 change nothing (44 and 42
+     * degrees are nearer the front than the side or the top) */
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -3), vec3(0, 2, 0));
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(2, 0, -2.1f)), AUDIO_OK);
+    ASSERT_EQ(stream_hrtf_index(as, h), 0u);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, 1, -1.1f)), AUDIO_OK);
+    ASSERT_EQ(stream_hrtf_index(as, h), 0u);
+    audio_system_destroy(as);
+    audio_hrtf_set_destroy(set);
+}
+
+/* A move crossfades exactly like a renderer given the same index changes;
+ * detaching plays the plain stream, and attaching again starts silent. */
+TEST(pcm_stream_hrtf_crossfades_a_move_and_detaches_cleanly)
+{
+    enum { kFrames = 160 };
+    i16 pcm[kFrames];
+    f32 mono[kFrames];
+    static f32 out[2u * kFrames], ref[2u * kFrames];
+    AudioHrtfRenderer r;
+    u32 written = 0;
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    AudioHrtfSet *set = hrtf_test_set(AUDIO_PCM_SAMPLE_RATE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_NOT_NULL(set);
+    random_pcm(pcm, kFrames, 2718u);
+    for (u32 i = 0; i < kFrames; ++i) mono[i] = (f32)pcm[i] / 32768.0f;
+    AudioPcmStreamHandle h = open_hrtf_stream(as, 1u, vec3(2, 0, 0));
+    ASSERT_NEQ(h, 0u);
+    ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, set), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, kFrames, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 20u), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(-2, 0, 0)), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out + 40, kFrames - 20u), AUDIO_OK);
+    ASSERT_EQ(audio_hrtf_renderer_init(&r, set), AUDIO_OK);
+    ASSERT_EQ(audio_hrtf_renderer_set_index(&r, 1u), AUDIO_OK);
+    audio_hrtf_renderer_process(&r, mono, ref, 20u);
+    ASSERT_EQ(audio_hrtf_renderer_set_index(&r, 2u), AUDIO_OK);
+    audio_hrtf_renderer_process(&r, mono + 20, ref + 40, kFrames - 20u);
+    for (u32 i = 0; i < 2u * kFrames; ++i) ASSERT_FLOAT_EQ(out[i], ref[i], 0.0f);
+    /* detached: the plain stream (no panning) */
+    ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, NULL), AUDIO_OK);
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, h, pcm, 8u, &written), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, 8u), AUDIO_OK);
+    for (u32 i = 0; i < 8u; ++i) {
+        ASSERT_FLOAT_EQ(out[2u * i], mono[i], 0.0f);
+        ASSERT_FLOAT_EQ(out[2u * i + 1u], mono[i], 0.0f);
+    }
+    /* attached again: an impulse alone, no history from before */
+    {
+        const i16 impulse[8] = {16384, 0, 0, 0, 0, 0, 0, 0};
+        ASSERT_EQ(audio_pcm_stream_set_hrtf(as, h, set), AUDIO_OK);
+        ASSERT_EQ(audio_pcm_stream_write_i16(as, h, impulse, 8u, &written), AUDIO_OK);
+        ASSERT_EQ(audio_system_render(as, out, 8u), AUDIO_OK);
+        for (u32 k = 0; k < HRTF_TEST_TAPS; ++k) {
+            ASSERT_FLOAT_EQ(out[2u * k], 0.5f * g_hrtf_left[2u * HRTF_TEST_TAPS + k], 0.0f);
+            ASSERT_FLOAT_EQ(out[2u * k + 1u], 0.5f * g_hrtf_right[2u * HRTF_TEST_TAPS + k], 0.0f);
+        }
+    }
+    audio_system_destroy(as);
+    audio_hrtf_set_destroy(set);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -4294,4 +4534,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(elevation_cue_event_restart_keeps_the_old_amount_on_held_pcm);
     RUN_TEST(elevation_cue_event_keeps_its_amount_until_that_revision_is_published);
     RUN_TEST(elevation_cue_event_keeps_stereo_state_apart);
+    RUN_TEST(pcm_stream_hrtf_arguments);
+    RUN_TEST(pcm_stream_hrtf_convolves_the_source_direction);
+    RUN_TEST(pcm_stream_hrtf_downmixes_stereo_and_maps_the_listener_frame);
+    RUN_TEST(pcm_stream_hrtf_crossfades_a_move_and_detaches_cleanly);
 TEST_MAIN_END()

@@ -309,10 +309,12 @@ AudioResult audio_hrtf_renderer_init(AudioHrtfRenderer *r, const AudioHrtfSet *s
 }
 
 AudioResult audio_hrtf_renderer_set_direction(AudioHrtfRenderer *r, f32 azimuth, f32 elevation) {
-    u32 idx;
     if (!r || !r->set) return AUDIO_INVALID;
-    idx = audio_hrtf_set_nearest(r->set, azimuth, elevation);
-    if (idx == UINT32_MAX) return AUDIO_INVALID;
+    return audio_hrtf_renderer_set_index(r, audio_hrtf_set_nearest(r->set, azimuth, elevation));
+}
+
+AudioResult audio_hrtf_renderer_set_index(AudioHrtfRenderer *r, u32 idx) {
+    if (!r || !r->set || idx >= r->set->count) return AUDIO_INVALID;
     if (!r->started) {
         r->current = r->next = idx;
     } else if (r->next != r->current) {

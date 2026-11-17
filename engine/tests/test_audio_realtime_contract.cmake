@@ -1,4 +1,5 @@
-if(NOT DEFINED AUDIO_EXTENDED OR NOT DEFINED AUDIO_DSP OR NOT DEFINED AUDIO_LEGACY)
+if(NOT DEFINED AUDIO_EXTENDED OR NOT DEFINED AUDIO_DSP OR NOT DEFINED AUDIO_LEGACY OR
+   NOT DEFINED AUDIO_HRTF)
     message(FATAL_ERROR "audio source paths are required")
 endif()
 
@@ -45,6 +46,7 @@ assert_callback_clean("${AUDIO_EXTENDED}" "static ma_result pcm_stream_read"
 assert_callback_clean("${AUDIO_DSP}" "static u32 reverb_delay"
                       "void audio_dsp_chain_process")
 assert_callback_clean("${AUDIO_DSP}" "void audio_dsp_chain_process" "__EOF__")
+assert_callback_clean("${AUDIO_HRTF}" "AudioResult audio_hrtf_renderer_init" "__EOF__")
 
 file(READ "${AUDIO_DSP}" dsp_source)
 string(FIND "${dsp_source}" "usize base = (usize)frame * channels;" wide_index)

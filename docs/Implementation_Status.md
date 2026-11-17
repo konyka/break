@@ -11611,3 +11611,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   - 删除冗余代码：多余的 isfinite 判断，以及重复方向的空分支。
 - 影子变量检查通过（rc=0）。
 - 仍缺：接入 PCM 流和事件 voice。
+
+### 2026-11-17 音频：PCM 流的 HRTF
+- `engine/src/audio/audio_hrtf.{h,c}`：新增 `audio_hrtf_renderer_set_index`，`set_direction` 改为 nearest 加 set_index。
+- `engine/src/audio/audio_extended.{h,c}`：
+  - `audio_pcm_stream_set_hrtf`：采样率检查、挂接计数、seq_cst 发布集合并等待正在进行的回调；
+  - `hrtf_direction_index`：监听者坐标系下的方位角与仰角，取最近下标，随位置和监听者更新发布；
+  - `pcm_stream_read`：挂上集合时把 `0.5 (l + r)` 送入渲染器并乘流增益，其他提示的状态照常运行。
+- 构建：`test_audio`、`test_audio_extended`、`test_voice_playback` 链接 `audio_hrtf.c`；`test_audio_realtime_contract` 新增 `-DAUDIO_HRTF` 并检查渲染器（临时插入 malloc 时契约失败）。
+- 测试：`test_audio_hrtf` 新增 1 项（共 9），`test_audio_extended` 新增 4 项（共 124）。
+- 先 RED（编译失败，字段与接口不存在）后 GREEN。21 项变异首轮 3 项存活：补了关闭后销毁集合再重开、未归一化 forward/up 的测试；“重新 init 也比较集合指针”是冗余条件，已删除（每次挂接都会递增计数）。最终 20 项变异全部被捕获。影子变量检查通过（rc=0）。
+- 仍缺：事件 voice 的 HRTF。

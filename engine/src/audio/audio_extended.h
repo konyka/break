@@ -2,6 +2,7 @@
 
 #include <audio/audio.h>
 #include <audio/audio_dsp.h>
+#include <audio/audio_hrtf.h>
 
 #define AUDIO_MAX_CLIPS 48u
 #define AUDIO_PCM_MAX_SAMPLES 1048576u
@@ -217,6 +218,20 @@ AudioResult audio_pcm_stream_set_interaural_delay(AudioSystem *as, AudioPcmStrea
  * cue. Off at open. REJECTED for a stream without set_spatial. */
 AudioResult audio_pcm_stream_set_elevation_cue(AudioSystem *as, AudioPcmStreamHandle handle,
                                                bool enabled);
+
+/* Binaural rendering of a spatial stream through an HRTF set (sample rate
+ * AUDIO_PCM_SAMPLE_RATE, else INVALID). The owner thread maps the source
+ * direction in the listener frame (right = forward x up) to the nearest set
+ * direction whenever the position or listener changes; the mixer convolves
+ * the mono downmix 0.5 (left + right) with that direction's responses, and a
+ * change of direction crossfades over AUDIO_HRTF_FADE_FRAMES frames. While a
+ * set is attached, panning, the rear and elevation cues and the interaural
+ * delay do not apply. Each attach starts from silent history. NULL detaches;
+ * the call returns once the mixer no longer uses the previous set, so a set
+ * may be destroyed after it is detached or its stream closed, not before.
+ * Off at open. REJECTED for a stream without set_spatial (checked first). */
+AudioResult audio_pcm_stream_set_hrtf(AudioSystem *as, AudioPcmStreamHandle handle,
+                                      const AudioHrtfSet *set);
 
 typedef enum {
     AUDIO_RESAMPLE_LINEAR = 0,

@@ -184,6 +184,18 @@ typedef struct {
     atomic_uint elevation_bits;
     bool elevation_cue;
     f32 elevation_state[2];
+    /* HRTF (audio_pcm_stream_set_hrtf): the attached set (0 when none,
+     * stored seq_cst so the owner can wait out a read that still uses the
+     * previous one), the nearest set index of the source direction, and an
+     * attach count; all written by the owner thread, which keeps its own
+     * copy of the set in hrtf_owner. The renderer and the attach count it
+     * was started for are mixer-owned like `pos`; open resets them. */
+    atomic_uintptr_t hrtf_set;
+    atomic_uint hrtf_index;
+    atomic_uint hrtf_attach;
+    const AudioHrtfSet *hrtf_owner;
+    AudioHrtfRenderer hrtf;
+    u32 hrtf_applied_attach;
     atomic_uint gain_bits;
     /* distance attenuation (audio_pcm_stream_set_spatial); written and
      * recomputed on the owner thread, the mixer reads spatial_bits only */
@@ -713,7 +725,22 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
     f32 rear_alpha = 1.0f;
     f32 tilt = 0.0f;
     i32 itd = 0;
+    const AudioHrtfSet *hrtf = NULL;
     if (open) {
+        /* seq_cst after `reading`: set_hrtf either sees this read or this
+         * read sees its new set */
+        hrtf = (const AudioHrtfSet *)atomic_load_explicit(&stream->hrtf_set,
+                                                          memory_order_seq_cst);
+        if (hrtf) {
+            u32 attach = atomic_load_explicit(&stream->hrtf_attach, memory_order_relaxed);
+            /* every set_hrtf counts an attach, so a new set is a new count */
+            if (attach != stream->hrtf_applied_attach) {
+                (void)audio_hrtf_renderer_init(&stream->hrtf, hrtf);
+                stream->hrtf_applied_attach = attach;
+            }
+            (void)audio_hrtf_renderer_set_index(
+                &stream->hrtf, atomic_load_explicit(&stream->hrtf_index, memory_order_relaxed));
+        }
         itd = atomic_load_explicit(&stream->itd_frames, memory_order_relaxed);
         tilt = gain_from_bits(atomic_load_explicit(&stream->elevation_bits,
                                                    memory_order_relaxed));
@@ -772,6 +799,7 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
                 left += (bl - left) * w;
                 right += (br - right) * w;
             }
+            f32 mono = 0.5f * (left + right);
             /* the rear cue's state follows the signal while it is off, so
              * it starts from the current frame when it engages */
             if (rear_alpha < 1.0f) {
@@ -792,8 +820,17 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
                 right += tilt * (right - stream->elevation_state[1]);
             }
             itd_line_process(&stream->itd, itd, &left, &right);
-            left *= gain * pan_left;
-            right *= gain * pan_right;
+            if (hrtf) {
+                /* the other cues' states keep running above, so a detach
+                 * continues from the current signal */
+                f32 ears[2];
+                audio_hrtf_renderer_process(&stream->hrtf, &mono, ears, 1u);
+                left = ears[0] * gain;
+                right = ears[1] * gain;
+            } else {
+                left *= gain * pan_left;
+                right *= gain * pan_right;
+            }
             pos += stream->rate;
             /* release whole frames behind the position, but never more
              * than are queued: decimation may step past the last one */
@@ -940,6 +977,11 @@ AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample
         stream->interaural_delay = false;
         atomic_store_explicit(&stream->itd_frames, 0, memory_order_relaxed);
         memset(&stream->itd, 0, sizeof(stream->itd));
+        stream->hrtf_owner = NULL;
+        atomic_store_explicit(&stream->hrtf_set, (uintptr_t)0u, memory_order_relaxed);
+        atomic_store_explicit(&stream->hrtf_index, 0u, memory_order_relaxed);
+        memset(&stream->hrtf, 0, sizeof(stream->hrtf));
+        stream->hrtf_applied_attach = 0u;
         stream->spatial = false;
         stream->panning = false;
         atomic_store_explicit(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f),
@@ -1088,6 +1130,46 @@ static i32 interaural_delay_frames(const AudioSystem *as, Vec3 position) {
     return pan < 0.0 ? -frames : frames;
 }
 
+/* The set direction nearest to `position` in the listener frame: x along
+ * right = forward x up, z along forward, y along right x forward. A source
+ * on the listener or a listener without a right vector is straight ahead. */
+static u32 hrtf_direction_index(const AudioSystem *as, const AudioHrtfSet *set, Vec3 position) {
+    const double pi = 3.14159265358979323846;
+    double d[3], f[3], u[3];
+    for (u32 i = 0; i < 3; ++i) {
+        d[i] = (double)position.e[i] - as->listener_pos.e[i];
+        f[i] = as->listener_forward.e[i];
+        u[i] = as->listener_up.e[i];
+    }
+    double right[3] = {f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2],
+                       f[0] * u[1] - f[1] * u[0]};
+    double dlen = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    double rlen = sqrt(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+    double flen = sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    double ulen = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    f32 azimuth = 0.0f;
+    f32 elevation = 0.0f;
+    if (dlen > 0.0 && rlen > 1e-9 * flen * ulen) {
+        double r[3], fw[3];
+        for (u32 i = 0; i < 3; ++i) {
+            r[i] = right[i] / rlen;
+            fw[i] = f[i] / flen;
+        }
+        double up[3] = {r[1] * fw[2] - r[2] * fw[1], r[2] * fw[0] - r[0] * fw[2],
+                        r[0] * fw[1] - r[1] * fw[0]};
+        double x = d[0] * r[0] + d[1] * r[1] + d[2] * r[2];
+        double y = d[0] * up[0] + d[1] * up[1] + d[2] * up[2];
+        double z = d[0] * fw[0] + d[1] * fw[1] + d[2] * fw[2];
+        azimuth = (f32)(atan2(x, z) * 180.0 / pi);
+        elevation = (f32)(atan2(y, sqrt(x * x + z * z)) * 180.0 / pi);
+        if (azimuth > 180.0f) azimuth = 180.0f;
+        if (azimuth < -180.0f) azimuth = -180.0f;
+        if (elevation > 90.0f) elevation = 90.0f;
+        if (elevation < -90.0f) elevation = -90.0f;
+    }
+    return audio_hrtf_set_nearest(set, azimuth, elevation);
+}
+
 static u64 pcm_stream_pan(const AudioSystem *as, Vec3 position) {
     f32 left = 1.0f;
     f32 right = 1.0f;
@@ -1120,6 +1202,12 @@ static AudioResult pcm_stream_publish_spatial(AudioExtended *ext, AudioPcmStream
                           stream->interaural_delay ?
                               interaural_delay_frames(ext->owner, stream->position) : 0,
                           memory_order_relaxed);
+    if (stream->hrtf_owner) {
+        atomic_store_explicit(&stream->hrtf_index,
+                              hrtf_direction_index(ext->owner, stream->hrtf_owner,
+                                                   stream->position),
+                              memory_order_relaxed);
+    }
     return AUDIO_OK;
 }
 
@@ -1202,6 +1290,29 @@ AudioResult audio_pcm_stream_set_elevation_cue(AudioSystem *as, AudioPcmStreamHa
     return pcm_stream_publish_spatial(audio_extended(as), stream);
 }
 
+AudioResult audio_pcm_stream_set_hrtf(AudioSystem *as, AudioPcmStreamHandle handle,
+                                      const AudioHrtfSet *set) {
+    AudioPcmStream *stream = NULL;
+    AudioResult result = pcm_stream_lookup(as, handle, &stream);
+    if (result != AUDIO_OK) return result;
+    if (!stream->spatial) return AUDIO_REJECTED;
+    if (set && audio_hrtf_set_sample_rate(set) != AUDIO_PCM_SAMPLE_RATE) return AUDIO_INVALID;
+    stream->hrtf_owner = set;
+    if (set) {
+        atomic_store_explicit(&stream->hrtf_index,
+                              hrtf_direction_index(as, set, stream->position),
+                              memory_order_relaxed);
+    }
+    /* the index and attach count are stored before the set that publishes
+     * them; a mixer that sees the set sees them too */
+    atomic_fetch_add_explicit(&stream->hrtf_attach, 1u, memory_order_relaxed);
+    atomic_store_explicit(&stream->hrtf_set, (uintptr_t)set, memory_order_seq_cst);
+    /* a read that loaded the previous set may still be using it */
+    while (atomic_load_explicit(&stream->reading, memory_order_seq_cst)) {
+    }
+    return AUDIO_OK;
+}
+
 AudioResult audio_pcm_stream_set_resample(AudioSystem *as, AudioPcmStreamHandle handle,
                                           AudioResampleMode mode) {
     AudioPcmStream *stream = NULL;
@@ -1282,6 +1393,9 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         atomic_init(&stream->resample, (unsigned)AUDIO_RESAMPLE_LINEAR);
         atomic_init(&stream->rear_alpha_bits, gain_to_bits(1.0f));
         atomic_init(&stream->itd_frames, 0);
+        atomic_init(&stream->hrtf_set, (uintptr_t)0u);
+        atomic_init(&stream->hrtf_index, 0u);
+        atomic_init(&stream->hrtf_attach, 0u);
         atomic_init(&stream->head, 0);
         atomic_init(&stream->tail, 0);
         atomic_init(&stream->open, false);

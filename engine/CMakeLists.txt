@@ -6450,7 +6450,7 @@ endif()
     # Network voice into the mixer: the real receiver feeds an audio PCM
     # stream rendered by the FAKE (device-free) backend.
     add_executable(test_voice_playback tests/test_voice_playback.c
-        src/audio/audio.c src/audio/audio_extended.c src/audio/audio_dsp.c
+        src/audio/audio.c src/audio/audio_extended.c src/audio/audio_dsp.c src/audio/audio_hrtf.c
         src/network/network.c)
     target_include_directories(test_voice_playback PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_voice_playback PRIVATE break_online Threads::Threads m
@@ -7027,13 +7027,14 @@ endif()
     add_test(NAME test_mipmap_stream COMMAND test_mipmap_stream)
 
     # test_audio: 3D distance attenuation model (headless, inline-only, no device)
-    add_executable(test_audio tests/test_audio.c src/audio/audio_extended.c src/audio/audio_dsp.c)
+    add_executable(test_audio tests/test_audio.c src/audio/audio_extended.c src/audio/audio_dsp.c
+        src/audio/audio_hrtf.c)
     target_include_directories(test_audio PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio PRIVATE m)
     add_test(NAME test_audio COMMAND test_audio)
 
     add_executable(test_audio_extended tests/test_audio_extended.c
-        src/audio/audio_dsp.c)
+        src/audio/audio_dsp.c src/audio/audio_hrtf.c)
     target_include_directories(test_audio_extended PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio_extended PRIVATE m)
     target_compile_definitions(test_audio_extended PRIVATE
@@ -7060,6 +7061,7 @@ endif()
             -DAUDIO_EXTENDED=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_extended.c
             -DAUDIO_DSP=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_dsp.c
             -DAUDIO_LEGACY=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio.c
+            -DAUDIO_HRTF=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_hrtf.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_realtime_contract.cmake)
     set_tests_properties(test_audio test_audio_extended test_audio_dsp test_audio_hrtf
         test_audio_realtime_contract PROPERTIES LABELS "headless;audio")

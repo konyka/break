@@ -88,5 +88,8 @@ AudioResult audio_hrtf_renderer_init(AudioHrtfRenderer *r, const AudioHrtfSet *s
  * the new output i / AUDIO_HRTF_FADE_FRAMES). A change while a fade runs
  * waits for it to end. INVALID for angles out of range. */
 AudioResult audio_hrtf_renderer_set_direction(AudioHrtfRenderer *r, f32 azimuth, f32 elevation);
+/* The same, by set index (as audio_hrtf_set_nearest gives); INVALID for an
+ * index out of range. */
+AudioResult audio_hrtf_renderer_set_index(AudioHrtfRenderer *r, u32 index);
 /* mono[frames] -> stereo[2 * frames], interleaved left/right. */
 void audio_hrtf_renderer_process(AudioHrtfRenderer *r, const f32 *mono, f32 *stereo, u32 frames);

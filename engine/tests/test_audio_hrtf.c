@@ -152,6 +152,41 @@ TEST(the_first_direction_applies_at_once_and_a_repeat_starts_no_fade) {
     audio_hrtf_set_destroy(set);
 }
 
+TEST(set_index_follows_the_set_direction_rules) {
+    AudioHrtfSet *set = small_set();
+    AudioHrtfRenderer r;
+    static f32 x[120], out[240];
+    const u32 F = AUDIO_HRTF_FADE_FRAMES;
+    ASSERT_NOT_NULL(set);
+    for (u32 i = 0; i < 120u; i++) x[i] = noise();
+    ASSERT_EQ(audio_hrtf_renderer_init(&r, set), AUDIO_OK);
+    ASSERT_EQ(audio_hrtf_renderer_set_index(&r, 3u), AUDIO_INVALID);
+    ASSERT_EQ(audio_hrtf_renderer_set_index(&r, UINT32_MAX), AUDIO_INVALID);
+    ASSERT_EQ(audio_hrtf_renderer_set_index(NULL, 0u), AUDIO_INVALID);
+    ASSERT_EQ(r.current, 0u);
+    ASSERT_EQ(audio_hrtf_renderer_set_index(&r, 1u), AUDIO_OK); /* before any frame: at once */
+    ASSERT_EQ(r.current, 1u);
+    audio_hrtf_renderer_process(&r, x, out, 10u);
+    ASSERT_EQ(audio_hrtf_renderer_set_index(&r, 2u), AUDIO_OK);
+    audio_hrtf_renderer_process(&r, x + 10, out + 20, 110u);
+    for (u32 n = 0; n < 120u; n++) {
+        double wl, wr;
+        if (n < 10u) {
+            wl = conv_at(g_left + TAPS, x, n);
+            wr = conv_at(g_right + TAPS, x, n);
+        } else if (n < 10u + F) {
+            wl = fade_at(1u, 2u, n - 9u, g_left, x, n);
+            wr = fade_at(1u, 2u, n - 9u, g_right, x, n);
+        } else {
+            wl = conv_at(g_left + 2u * TAPS, x, n);
+            wr = conv_at(g_right + 2u * TAPS, x, n);
+        }
+        ASSERT_TRUE(near_f(out[2u * n], wl, 1e-5, "left", n));
+        ASSERT_TRUE(near_f(out[2u * n + 1u], wr, 1e-5, "right", n));
+    }
+    audio_hrtf_set_destroy(set);
+}
+
 TEST(the_nearest_direction_wraps_azimuth_and_breaks_ties_by_index) {
     const AudioHrtfDirection dirs[6] = {{0.0f, 0.0f}, {90.0f, 0.0f}, {-90.0f, 0.0f},
                                         {180.0f, 0.0f}, {0.0f, 90.0f}, {45.0f, 0.0f}};
@@ -515,6 +550,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(the_renderer_matches_a_direct_convolution_across_uneven_calls);
     RUN_TEST(a_direction_change_crossfades_and_a_change_mid_fade_waits);
     RUN_TEST(the_first_direction_applies_at_once_and_a_repeat_starts_no_fade);
+    RUN_TEST(set_index_follows_the_set_direction_rules);
     RUN_TEST(the_nearest_direction_wraps_azimuth_and_breaks_ties_by_index);
     RUN_TEST(create_copies_its_input_and_refuses_every_invalid_argument);
     RUN_TEST(a_bhrt_file_round_trips_and_every_bad_byte_is_refused);
