@@ -1,6 +1,7 @@
 #include "editor_audio.h"
 
 #include <audio/audio_edit.h>
+#include <audio/audio_wav.h>
 #include <editor/editor_internal.h>
 #include <editor/editor_test_hooks.h>
 
@@ -227,4 +228,55 @@ bool break_editor_doc_audio_mix(BreakEditorDoc *doc, const i16 *source,
         return false;
     }
     return audio_snapshot_commit(snapshot, doc, snapshot->before_frames);
+}
+
+#define BREAK_EDITOR_WAV_MAX_BYTES (1L << 20)
+
+bool break_editor_doc_audio_attach_wav(BreakEditorDoc *doc, const char *path) {
+    if (!doc || doc->audio || !path || path[0] == '\0') return false;
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return false;
+    }
+    const long length = ftell(file);
+    if (length <= 0 || length > BREAK_EDITOR_WAV_MAX_BYTES) {
+        fclose(file);
+        return false;
+    }
+    const usize size = (usize)length;
+    u8 *data = break_editor_test_calloc(size);
+    if (!data) {
+        fclose(file);
+        return false;
+    }
+    if (fseek(file, 0, SEEK_SET) != 0) {
+        free(data);
+        fclose(file);
+        return false;
+    }
+    const bool read_ok = fread(data, 1u, size, file) == size;
+    const bool close_ok = fclose(file) == 0;
+    if (!read_ok || !close_ok) {
+        free(data);
+        return false;
+    }
+    const usize pcm_capacity = (usize)BREAK_EDITOR_AUDIO_MAX_FRAMES * 2u * sizeof(i16);
+    i16 *pcm = break_editor_test_calloc(pcm_capacity);
+    if (!pcm) {
+        free(data);
+        return false;
+    }
+    AudioWavInfo info;
+    const AudioResult result = audio_wav_decode_i16(data, size, &info, pcm,
+                                                    BREAK_EDITOR_AUDIO_MAX_FRAMES);
+    bool attached = false;
+    if (result == AUDIO_OK) {
+        attached = break_editor_doc_audio_attach(doc, info.sample_rate, info.channels,
+                                                 pcm, info.frames);
+    }
+    free(pcm);
+    free(data);
+    return attached;
 }

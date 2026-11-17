@@ -1056,7 +1056,7 @@ src/renderer/lens_effects.c
     src/audio/audio_noise_suppressor.c src/audio/audio_residual_echo_suppressor.c
     src/audio/audio_delay_tracker.c src/audio/audio_gcc_phat.c
     src/audio/audio_drift_estimator.c src/audio/audio_drift_resampler.c
-    src/audio/audio_edit.c src/audio/audio_voice_processor.c
+    src/audio/audio_edit.c src/audio/audio_voice_processor.c src/audio/audio_wav.c
     src/audio/audio_stream.c
     src/animation/skeleton.c
     src/animation/skeleton_socket.c
@@ -1763,7 +1763,7 @@ endif()
 # engine target (its platform siblings live there) and the editor
 # executable resolves platform_list_dir from libengine.a; editor tests
 # compile the TU inline instead (test_editor_assets).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_audio.c src/audio/audio_edit.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c src/editor/editor_plugin_host.c src/editor/editor_plugin_manifest.c src/editor/editor_plugin_sections.c src/editor/editor_plugin_panels.c)
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_audio.c src/audio/audio_edit.c src/audio/audio_wav.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c src/editor/editor_plugin_host.c src/editor/editor_plugin_manifest.c src/editor/editor_plugin_sections.c src/editor/editor_plugin_panels.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
@@ -5945,7 +5945,7 @@ endif()
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break. The variant links break_lua_test (not
     # break_lua) so console-core tests share the Lua-side injection hooks.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_audio.c src/audio/audio_edit.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c src/editor/editor_plugin_host.c src/editor/editor_plugin_manifest.c src/editor/editor_plugin_sections.c src/editor/editor_plugin_panels.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_audio.c src/audio/audio_edit.c src/audio/audio_wav.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c src/editor/editor_plugin_host.c src/editor/editor_plugin_manifest.c src/editor/editor_plugin_sections.c src/editor/editor_plugin_panels.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -7158,6 +7158,12 @@ endif()
     target_link_libraries(test_audio_voice_processor PRIVATE m)
     add_test(NAME test_audio_voice_processor COMMAND test_audio_voice_processor)
 
+    add_executable(test_audio_wav tests/test_audio_wav.c src/audio/audio_wav.c)
+    target_include_directories(test_audio_wav PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_audio_wav COMMAND test_audio_wav)
+    add_executable(fuzz_audio_wav EXCLUDE_FROM_ALL tests/fuzz_audio_wav.c src/audio/audio_wav.c)
+    target_include_directories(fuzz_audio_wav PRIVATE ${TEST_INCLUDE_DIRS})
+
     add_test(NAME test_audio_realtime_contract
         COMMAND ${CMAKE_COMMAND}
             -DAUDIO_EXTENDED=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_extended.c
@@ -7172,7 +7178,7 @@ endif()
         test_audio_noise_suppressor test_audio_residual_echo_suppressor
         test_audio_delay_tracker test_audio_gcc_phat test_audio_drift_estimator
         test_audio_drift_resampler test_audio_edit test_audio_voice_processor
-        test_audio_realtime_contract PROPERTIES LABELS "headless;audio")
+        test_audio_wav test_audio_realtime_contract PROPERTIES LABELS "headless;audio")
 
     # test_vulkan: full backend integration + golden-image regression (VK + GL).
     # Runs from the source dir so it can find shaders/ and committed golden images.

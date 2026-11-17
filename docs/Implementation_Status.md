@@ -1,3 +1,10 @@
+## PCM WAV 文档导入（2026-11-18）
+
+- **交付**：新增无分配 `audio_wav` RIFF/PCM16 解析器与 `break_editor_doc_audio_attach_wav` 文件适配器；支持单/双声道、扩展 fmt、未知 chunk/pad，导入失败保持文档/历史不变。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-wav-document-design.md`、`docs/superpowers/plans/2026-11-18-audio-wav-document.md`。
+- **TDD 与评审**：新接口链接 RED 后达到解析 4/4、文档 6/6；独立评审发现 fuzz 容量/覆盖、主机端字节序及 dirty/history 断言不足，均修复并复审 Ready。另修复上一提交暴露的 MSVC 测试采样率类型告警。
+- **验证**：普通及 ASan+UBSan 为上述通过数；结构化 50,000 次 fuzz 无报告，严格告警为零；五个解析变异和适配器回滚变异均被捕获。三树全量为 432/432、432/432、440/440，零失败。
+- **边界**：仅 PCM16 单/双声道、文件 1 MiB、文档 65536 帧；无 VFS、波形 UI、导出或其他编解码器。
+
 ## BreakEditorDoc 的可撤销 PCM 附件（2026-11-18）
 
 - **交付**：新增 `editor_audio` 附件与五类编辑命令，复用真实 undo/redo、origin、dirty 和 drop-oldest；reset/load/destroy 正确 detach，生产/测试 editor 库和目标合同均同步。设计与计划见 `docs/superpowers/specs/2026-11-18-editor-audio-document-design.md`、`docs/superpowers/plans/2026-11-18-editor-audio-document.md`。

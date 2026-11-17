@@ -48,4 +48,4 @@ Run targeted snapshot/routing/revert mutations, ASan+UBSan, strict warnings, ter
 
 ## Limits
 
-Short mono/stereo clips only; full snapshots intentionally trade memory for simple exact history. No waveform UI, media decoding/encoding, VFS/asset-browser wiring, remote protocol, timeline automation or real listening verification is added. A later slice can add memory-budgeted history without changing editing semantics.
+Short mono/stereo clips only; full snapshots intentionally trade memory for simple exact history. PCM16 WAV import is provided by `2026-11-18-audio-wav-document-design.md`. No waveform UI, other media codecs/export, VFS/asset-browser wiring, remote protocol, timeline automation or real listening verification is added. A later slice can add memory-budgeted history without changing editing semantics.

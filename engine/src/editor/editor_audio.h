@@ -11,6 +11,9 @@
  * Copies the samples and marks the document dirty. */
 bool break_editor_doc_audio_attach(BreakEditorDoc *doc, u32 sample_rate, u32 channels,
                                    const i16 *samples, u32 frames);
+/* Reads a bounded PCM16 mono/stereo WAV file and attaches it as initial content.
+ * False leaves document and history unchanged. */
+bool break_editor_doc_audio_attach_wav(BreakEditorDoc *doc, const char *path);
 bool break_editor_doc_audio_attached(const BreakEditorDoc *doc);
 u32 break_editor_doc_audio_frames(const BreakEditorDoc *doc);
 u32 break_editor_doc_audio_sample_rate(const BreakEditorDoc *doc);

@@ -271,7 +271,8 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `mix` 用 [-8,8] 的有限线性增益把源加到公共前缀，结果限幅，目标尾部不变；源与目标缓冲不得重叠。
 - 所有缓冲区在访问前经 `audio_edit_buffer_span` 检查样本数与字节数；交错索引、指针偏移和字节计数使用 usize，避免大帧数与 32 位平台溢出。
 - 编辑器文档集成：`editor/editor_audio` 为 `BreakEditorDoc` 提供可选短 PCM 附件，trim/cut/fade/normalize/mix 通过 before/after 快照进入现有 undo/redo、origin 冲突和 drop-oldest 历史。附件在 reset、成功场景 load 和 destroy 时释放；编辑失败与 OOM 均保持 PCM/历史不变。首版最多 65536 帧。
-- 未做：编辑器 UI、时间线、媒体文件解析、自动化和真实听测；文档级撤销已由 `test_editor_audio` 覆盖。
+- WAV 导入：`audio_wav` 无分配解析 RIFF，校验完整大小、chunk/pad、PCM 格式/采样率/对齐和容量后显式小端解码；`break_editor_doc_audio_attach_wav` 用不超过 1 MiB 的文件临时区与有界 PCM 临时区导入，失败不改文档/历史。`test_audio_wav` 与手工 `fuzz_audio_wav` 覆盖有效种子和结构变异。
+- 未做：编辑器 UI、时间线、其他媒体格式与导出、自动化和真实听测；文档级撤销及 PCM WAV 导入已覆盖。
 
 ## 集成语音处理链
 

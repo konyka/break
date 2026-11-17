@@ -324,3 +324,5 @@
 - **第 10 节（音频）追加**：2026-11-18 `AudioDelayLine` 支持可选连续延迟交叉淡化，新旧目标共用历史，活跃期拒绝重定向并保持状态原子性；默认立即切换不变。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「延迟估计与参考延迟线」。上文「连续延迟交叉淡化」由此交付。仍缺：多声道、自动淡化策略与真实声学验证。
 
 - **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-18 `BreakEditorDoc` 支持短 PCM 附件及 trim/cut/fade/normalize/mix 的真实快照 undo/redo，含 origin、drop-oldest、OOM 和 reset/load 生命周期。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。上文「音频编辑工具」的文档/撤销部分由此交付。仍缺：波形 UI、媒体文件解析、时间线/自动化与真实听测。
+
+- **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-18 `audio_wav` 与 `break_editor_doc_audio_attach_wav` 支持严格校验的 PCM16 单/双声道 WAV 导入，含结构 fuzz、OOM 和历史原子性。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。上文「媒体文件解析」的 PCM WAV 子集由此交付。仍缺：其他格式、导出、VFS、波形 UI、时间线与真实听测。

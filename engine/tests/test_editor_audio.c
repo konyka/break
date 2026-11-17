@@ -96,7 +96,7 @@ TEST(fade_normalize_and_mix_use_real_primitives)
     ASSERT_NOT_NULL(doc);
     ASSERT_TRUE(break_editor_doc_audio_attach(doc, 16000u, 1u, initial, 4u));
     memcpy(expected, initial, sizeof(initial));
-    ASSERT_EQ(audio_edit_fade_i16(expected, 4u, 1u, 16000.0, 1000.0, 1000.0), AUDIO_OK);
+    ASSERT_EQ(audio_edit_fade_i16(expected, 4u, 1u, 16000u, 1000.0, 1000.0), AUDIO_OK);
     ASSERT_TRUE(break_editor_doc_audio_fade(doc, 1000.0, 1000.0));
     assert_samples(doc, expected, 4u);
     ASSERT_TRUE(break_editor_undo(doc));
@@ -213,10 +213,91 @@ TEST(invalid_and_oom_failures_are_atomic)
     break_editor_doc_destroy(doc);
 }
 
+static void write_u16_le(FILE *file, u16 value) {
+    const u8 bytes[] = {(u8)value, (u8)(value >> 8u)};
+    fwrite(bytes, 1u, 2u, file);
+}
+
+static void write_u32_le(FILE *file, u32 value) {
+    const u8 bytes[] = {(u8)value, (u8)(value >> 8u), (u8)(value >> 16u),
+                        (u8)(value >> 24u)};
+    fwrite(bytes, 1u, 4u, file);
+}
+
+TEST(wav_import_attaches_and_failures_are_atomic)
+{
+    char path[512];
+    test_tmp(path, sizeof(path), "editor_audio_import");
+    const i16 imported[] = {1234, -2345};
+    FILE *file = fopen(path, "wb");
+    ASSERT_NOT_NULL(file);
+    const u32 data_bytes = 4u;
+    fwrite("RIFF", 1u, 4u, file);
+    write_u32_le(file, 36u + data_bytes);
+    fwrite("WAVEfmt ", 1u, 8u, file);
+    write_u32_le(file, 16u);
+    write_u16_le(file, 1u);
+    write_u16_le(file, 1u);
+    write_u32_le(file, 16000u);
+    write_u32_le(file, 32000u);
+    write_u16_le(file, 2u);
+    write_u16_le(file, 16u);
+    fwrite("data", 1u, 4u, file);
+    write_u32_le(file, data_bytes);
+    for (u32 i = 0; i < 2u; ++i) write_u16_le(file, (u16)imported[i]);
+    ASSERT_EQ(fclose(file), 0);
+
+    for (u64 budget = 0u; budget < 4u; ++budget) {
+        BreakEditorDoc *doc = break_editor_doc_create();
+        ASSERT_NOT_NULL(doc);
+        break_editor_test_set_alloc_budget(budget);
+        ASSERT_TRUE(!break_editor_doc_audio_attach_wav(doc, path));
+        break_editor_test_set_alloc_budget(BREAK_EDITOR_TEST_ALLOC_DISABLED);
+        ASSERT_TRUE(!break_editor_doc_audio_attached(doc));
+        ASSERT_EQ(break_editor_cmd_stack_revision(break_editor_doc_stack(doc)), 0u);
+        ASSERT_TRUE(!break_editor_doc_is_dirty(doc));
+        break_editor_doc_destroy(doc);
+    }
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    break_editor_test_set_alloc_budget(4u);
+    ASSERT_TRUE(break_editor_doc_audio_attach_wav(doc, path));
+    break_editor_test_set_alloc_budget(BREAK_EDITOR_TEST_ALLOC_DISABLED);
+    ASSERT_EQ(break_editor_doc_audio_sample_rate(doc), 16000u);
+    ASSERT_EQ(break_editor_doc_audio_channels(doc), 1u);
+    assert_samples(doc, imported, 2u);
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 1u));
+    ASSERT_TRUE(break_editor_undo(doc));
+    assert_samples(doc, imported, 2u);
+    const u64 revision = break_editor_cmd_stack_revision(break_editor_doc_stack(doc));
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+    ASSERT_TRUE(!break_editor_doc_audio_attach_wav(doc, path));
+    assert_samples(doc, imported, 2u);
+    ASSERT_EQ(break_editor_cmd_stack_revision(break_editor_doc_stack(doc)), revision);
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+    break_editor_doc_destroy(doc);
+
+    doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(!break_editor_doc_audio_attach_wav(doc, NULL));
+    ASSERT_TRUE(!break_editor_doc_audio_attach_wav(doc, "missing-editor-audio.wav"));
+    file = fopen(path, "wb");
+    ASSERT_NOT_NULL(file);
+    fwrite("not a wave", 1u, 10u, file);
+    ASSERT_EQ(fclose(file), 0);
+    ASSERT_TRUE(!break_editor_doc_audio_attach_wav(doc, path));
+    ASSERT_TRUE(!break_editor_doc_audio_attached(doc));
+    ASSERT_EQ(break_editor_cmd_stack_revision(break_editor_doc_stack(doc)), 0u);
+    ASSERT_TRUE(!break_editor_doc_is_dirty(doc));
+    break_editor_doc_destroy(doc);
+    remove(path);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(attach_validation_and_reset_or_load_detach);
     RUN_TEST(trim_and_cut_are_byte_exact_undoable_commands);
     RUN_TEST(fade_normalize_and_mix_use_real_primitives);
     RUN_TEST(origin_conflicts_and_drop_oldest_include_audio);
     RUN_TEST(invalid_and_oom_failures_are_atomic);
+    RUN_TEST(wav_import_attaches_and_failures_are_atomic);
 TEST_MAIN_END()

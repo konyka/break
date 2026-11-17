@@ -156,9 +156,9 @@ endforeach()
 # The focused tests link the test-only variant (BREAK_EDITOR_TESTING=1
 # hooks) rather than the production target; the production archive stays
 # hook-free. The variant compiles the same production translation units,
-# including editor_audio.c and audio_edit.c, and links the same
+# including editor_audio.c, audio_edit.c and audio_wav.c, and links the same
 # break_ecs_replication plus the Lua-side hook variant break_lua_test.
-if(NOT cmake_text MATCHES "add_library\\(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_audio.c src/audio/audio_edit.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c")
+if(NOT cmake_text MATCHES "add_library\\(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_audio.c src/audio/audio_edit.c src/audio/audio_wav.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c")
     message(FATAL_ERROR "missing test-only break_editor_test variant over all break_editor sources")
 endif()
 if(NOT cmake_text MATCHES "target_compile_definitions\\(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1")
