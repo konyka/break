@@ -103,6 +103,12 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 
 系数与 pan 走同一协议：START 命令携带初始系数而不写 `rear_snapshot`；之后的 `audio_voice_set_position` 与监听者更新先写 `rear_snapshot = (revision, α)`，再 CAS 增益快照；混音回调采用增益 revision R 时，只有 `rear_snapshot` 的 revision 也是 R 才采用其中的 α。每个 voice 两声道各有滤波状态，消费 START 时清零；滤波在增益、声像与 DSP 链之前，α = 1 时状态跟随信号，所以声源转到身后时从当前信号开始。
 
+### 事件 voice 的耳间时差
+
+`AudioEventDesc.interaural_delay = true`（必须同时设置 `spatial`，否则 `audio_event_register` 返回 `AUDIO_INVALID`）让空间事件使用与 PCM 流相同的耳间时差，帧数由同一个 `interaural_delay_frames` 计算。未设置时延迟恒为 0，输出不变。
+
+帧数与 pan、后方系数走同一协议：START 命令携带初始帧数（`spatial_itd`）而不写 `itd_snapshot`；之后的 `audio_voice_set_position` 与监听者更新先写 `itd_snapshot = (revision, 帧数)`，再 CAS 增益快照；混音回调采用增益 revision R 时，只有 `itd_snapshot` 的 revision 也是 R、且该事件打开了耳间时差才采用其中的帧数，所以 RESTART 后的新延迟不会作用到旧 epoch 仍在播放的 PCM。每个 voice 有自己的 64 帧延迟线，消费 START 时清零；延迟放在后方提示之后、增益与声像之前。PCM 流与 voice 共用 `itd_line_push`。
+
 ## 验证与限制
 
 - `test_audio_extended`：clip/容量、并发/重触发、stale handle、真实 DSP 接线、逐样本交叉淡化、loop/停止、遮挡/距离、bus/master、legacy WAV、bit-exact fake 和 null 命令生命周期。

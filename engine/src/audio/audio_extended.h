@@ -55,6 +55,11 @@ typedef struct {
      * AUDIO_PCM_STREAM_REAR_CUTOFF_HZ straight behind. Each voice keeps its
      * own filter state, reset when it starts. Requires `spatial`. */
     bool rear_cue;
+    /* Interaural time difference from the listener's orientation, like
+     * audio_pcm_stream_set_interaural_delay: the far ear hears the voice up
+     * to AUDIO_PCM_STREAM_ITD_MAX_FRAMES later. Each voice keeps its own
+     * delay line, zeroed when it starts. Requires `spatial`. */
+    bool interaural_delay;
 } AudioEventDesc;
 
 AudioResult audio_event_register(AudioSystem *as, const char *name,

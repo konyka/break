@@ -14,7 +14,7 @@ static void test_spatial_interleave(void *opaque) {
     if (!test_interleave_armed) return;
     test_interleave_armed = false;
     AudioVoice *voice = (AudioVoice *)opaque;
-    (void)spatial_publish(voice, voice->epoch, test_interleave_gain, 0.0f, 1.0f);
+    (void)spatial_publish(voice, voice->epoch, test_interleave_gain, 0.0f, 1.0f, 0);
 }
 
 static bool test_read_interleave_armed;
@@ -3363,6 +3363,230 @@ TEST(rear_cue_event_keeps_stereo_state_apart)
     audio_system_destroy(as);
 }
 
+/* ---- event interaural delay ---- */
+
+TEST(event_interaural_delay_requires_spatial)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 2u));
+    desc.interaural_delay = true;
+    ASSERT_EQ(audio_event_register(as, "itd-flat", &desc), AUDIO_INVALID);
+    desc.spatial = true;
+    ASSERT_EQ(audio_event_register(as, "itd-flat", &desc), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+/* a spatial event inside min distance (gain 1, no pan) */
+static AudioEventDesc itd_event_desc(AudioClipHandle clip, bool delay)
+{
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.min_distance = 10.0f;
+    desc.interaural_delay = delay;
+    return desc;
+}
+
+/* renders the whole clip of one triggered event */
+static bool render_itd_event(const f32 *clip_pcm, u32 channels, u32 frames, Vec3 position,
+                             bool delay, f32 *out)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    if (!as) return false;
+    AudioPcmDesc pcm = mono_pcm(clip_pcm, frames);
+    pcm.channels = channels;
+    AudioClipHandle clip = 0;
+    AudioEventDesc desc;
+    AudioVoiceHandle voice = 0;
+    bool ok = audio_clip_register(as, "itd-clip", &pcm, &clip) == AUDIO_OK;
+    desc = itd_event_desc(clip, delay);
+    ok = ok && audio_event_register(as, "itd-event", &desc) == AUDIO_OK &&
+         audio_event_trigger(as, "itd-event", position, &voice) == AUDIO_OK &&
+         audio_system_render(as, out, frames) == AUDIO_OK;
+    audio_system_destroy(as);
+    for (u32 i = 0; ok && i < 2u * frames; ++i) ok = isfinite(out[i]);
+    return ok;
+}
+
+/* out[2k + ear] is clip[k - delay] (0 before the start), the other ear exact */
+static bool check_event_delayed(const f32 *out, const f32 *clip, u32 frames, u32 ear, u32 delay)
+{
+    for (u32 k = 0; k < frames; ++k) {
+        f32 want = k < delay ? 0.0f : clip[k - delay];
+        if (out[2u * k + ear] != want || out[2u * k + (1u - ear)] != clip[k]) return false;
+    }
+    return true;
+}
+
+TEST(interaural_delay_event_delays_the_far_ear)
+{
+    enum { kFrames = 64 };
+    i16 pcm[kFrames];
+    static f32 clip[kFrames];
+    static f32 with_delay[2u * kFrames];
+    static f32 without[2u * kFrames];
+    random_pcm(pcm, kFrames, 1357u);
+    for (u32 i = 0; i < kFrames; ++i) clip[i] = (f32)pcm[i] / 32768.0f;
+    ASSERT_TRUE(render_itd_event(clip, 1u, kFrames, vec3(2, 0, 0), true, with_delay));
+    ASSERT_TRUE(check_event_delayed(with_delay, clip, kFrames, 0u,
+                                    AUDIO_PCM_STREAM_ITD_MAX_FRAMES));
+    ASSERT_TRUE(render_itd_event(clip, 1u, kFrames, vec3(-2, 0, 0), true, with_delay));
+    ASSERT_TRUE(check_event_delayed(with_delay, clip, kFrames, 1u,
+                                    AUDIO_PCM_STREAM_ITD_MAX_FRAMES));
+    /* the cue off: no delay to the side */
+    ASSERT_TRUE(render_itd_event(clip, 1u, kFrames, vec3(2, 0, 0), false, without));
+    ASSERT_TRUE(check_event_delayed(without, clip, kFrames, 0u, 0u));
+    /* in front, behind, above and on the listener: as with the cue off */
+    const Vec3 places[4] = {vec3(0, 0, -2), vec3(0, 0, 2), vec3(0, 2, 0), vec3(0, 0, 0)};
+    for (u32 p = 0; p < 4u; ++p) {
+        ASSERT_TRUE(render_itd_event(clip, 1u, kFrames, places[p], true, with_delay));
+        ASSERT_TRUE(render_itd_event(clip, 1u, kFrames, places[p], false, without));
+        ASSERT_EQ(memcmp(with_delay, without, sizeof(with_delay)), 0);
+    }
+}
+
+TEST(interaural_delay_event_plays_history_and_follows_the_listener)
+{
+    enum { kClip = 64, kFrames = 40 };
+    i16 pcm[kClip];
+    static f32 clip[kClip];
+    static f32 out[2u * kFrames];
+    random_pcm(pcm, kClip, 2468u);
+    for (u32 i = 0; i < kClip; ++i) clip[i] = (f32)pcm[i] / 32768.0f;
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioClipHandle handle = register_ramp(as, clip, kClip);
+    AudioEventDesc desc = itd_event_desc(handle, true);
+    desc.looping = true;
+    ASSERT_EQ(audio_event_register(as, "itd-loop", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "itd-loop", vec3(0, 0, -2), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    for (u32 k = 0; k < kFrames; ++k) {
+        ASSERT_FLOAT_EQ(out[2u * k], clip[k], 0.0f);
+        ASSERT_FLOAT_EQ(out[2u * k + 1u], clip[k], 0.0f);
+    }
+    /* moved to the right: the left ear plays frames already heard */
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(2, 0, 0)), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    for (u32 k = 0; k < kFrames; ++k) {
+        u32 now = (kFrames + k) % kClip;
+        u32 late = (kFrames + k - AUDIO_PCM_STREAM_ITD_MAX_FRAMES) % kClip;
+        ASSERT_FLOAT_EQ(out[2u * k], clip[late], 0.0f);
+        ASSERT_FLOAT_EQ(out[2u * k + 1u], clip[now], 0.0f);
+    }
+    /* the listener turns to face the source: no delay */
+    audio_system_update(as, vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0));
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    for (u32 k = 0; k < kFrames; ++k) {
+        u32 now = (2u * kFrames + k) % kClip;
+        ASSERT_FLOAT_EQ(out[2u * k], clip[now], 0.0f);
+        ASSERT_FLOAT_EQ(out[2u * k + 1u], clip[now], 0.0f);
+    }
+    /* turning back alone brings the delay back, on the right ear now */
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, 1), vec3(0, 1, 0));
+    ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
+    AudioVoice *slot = &((AudioExtended *)as->extended)->voices[(voice & 0xFFu) - 1u];
+    ASSERT_EQ(slot->applied_itd, -(i32)AUDIO_PCM_STREAM_ITD_MAX_FRAMES);
+    audio_system_destroy(as);
+}
+
+/* A RESTART's new count never reaches PCM the old epoch still renders, and
+ * the new epoch's line starts from silence */
+TEST(interaural_delay_event_restart_keeps_the_old_delay_on_held_pcm)
+{
+    enum { kClip = 8 };
+    const f32 clip[kClip] = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f};
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = itd_event_desc(register_ramp(as, clip, kClip), true);
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "itd-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    f32 output[2];
+    ASSERT_EQ(audio_event_trigger(as, "itd-restart", vec3(0, 0, -2), &handle), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.1f, 0.0f);
+    ASSERT_EQ(audio_event_trigger(as, "itd-restart", vec3(2, 0, 0), &handle), AUDIO_OK);
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(2, 0, 0)), AUDIO_OK);
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    AudioVoice *voice = &ext->voices[(handle & 0xFFu) - 1u];
+    render_with_held_commands(voice, output);
+    ASSERT_FLOAT_EQ(output[0], 0.2f, 0.0f);
+    ASSERT_FLOAT_EQ(output[1], 0.2f, 0.0f);
+    for (u32 i = 0; i < AUDIO_PCM_STREAM_ITD_LINE_FRAMES; ++i) {
+        voice->itd_line[i][0] = 0.9f;
+        voice->itd_line[i][1] = 0.9f;
+    }
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.0f, 0.0f);
+    ASSERT_FLOAT_EQ(output[1], 0.1f, 0.0f);
+    audio_system_destroy(as);
+}
+
+/* The mixer takes a count only together with the gain revision it belongs
+ * to; one stored for a revision not yet published is not used. */
+TEST(interaural_delay_event_keeps_its_delay_until_that_revision_is_published)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = itd_event_desc(register_ones(as, 16u), true);
+    desc.looping = true;
+    ASSERT_EQ(audio_event_register(as, "itd-revision", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_event_trigger(as, "itd-revision", vec3(2, 0, 0), &handle), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    AudioVoice *voice = &((AudioExtended *)as->extended)->voices[(handle & 0xFFu) - 1u];
+    ASSERT_EQ(voice->applied_itd, (i32)AUDIO_PCM_STREAM_ITD_MAX_FRAMES);
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(0, 0, -2)), AUDIO_OK);
+    atomic_store(&voice->itd_snapshot, spatial_pack(voice->spatial_revision + 1u, 5.0f));
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_EQ(voice->applied_itd, (i32)AUDIO_PCM_STREAM_ITD_MAX_FRAMES);
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(0, 0, -2)), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_EQ(voice->applied_itd, 0);
+    /* an event with the cue off ignores a stored count */
+    AudioEventDesc flat = itd_event_desc(register_named_pcm(as, "itd-flat-pcm",
+                                                            (const f32[]){1, 1, 1, 1}, 4u),
+                                         false);
+    flat.looping = true;
+    ASSERT_EQ(audio_event_register(as, "itd-off", &flat), AUDIO_OK);
+    AudioVoiceHandle off = 0;
+    ASSERT_EQ(audio_event_trigger(as, "itd-off", vec3(2, 0, 0), &off), AUDIO_OK);
+    AudioVoice *plain = &((AudioExtended *)as->extended)->voices[(off & 0xFFu) - 1u];
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    /* a count stored under the very revision the mixer adopts next */
+    {
+        u32 next = plain->spatial_revision + 1u;
+        atomic_store(&plain->itd_snapshot, spatial_pack(next, 9.0f));
+        atomic_store(&plain->spatial_snapshot, spatial_pack(next, 1.0f));
+        plain->spatial_revision = next;
+    }
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_EQ(plain->applied_spatial_revision, plain->spatial_revision);
+    ASSERT_EQ(plain->applied_itd, 0);
+    ASSERT_FLOAT_EQ(l, r, 0.0f);
+    audio_system_destroy(as);
+}
+
+TEST(interaural_delay_event_delays_the_far_ears_own_channel)
+{
+    enum { kFrames = 48 };
+    i16 pcm[2u * kFrames];
+    static f32 clip[2u * kFrames];
+    static f32 out[2u * kFrames];
+    random_pcm(pcm, 2u * kFrames, 8642u);
+    for (u32 i = 0; i < 2u * kFrames; ++i) clip[i] = (f32)pcm[i] / 32768.0f;
+    ASSERT_TRUE(render_itd_event(clip, 2u, kFrames, vec3(-2, 0, 0), true, out));
+    for (u32 k = 0; k < kFrames; ++k) {
+        f32 late = k < AUDIO_PCM_STREAM_ITD_MAX_FRAMES ? 0.0f :
+            clip[2u * (k - AUDIO_PCM_STREAM_ITD_MAX_FRAMES) + 1u];
+        ASSERT_FLOAT_EQ(out[2u * k], clip[2u * k], 0.0f);
+        ASSERT_FLOAT_EQ(out[2u * k + 1u], late, 0.0f);
+    }
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fake_backend_renders_silence_before_any_voice);
     RUN_TEST(clip_registration_is_bounded_and_atomic);
@@ -3463,4 +3687,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(rear_cue_event_restart_keeps_the_old_alpha_on_held_pcm);
     RUN_TEST(rear_cue_event_keeps_its_alpha_until_that_revision_is_published);
     RUN_TEST(rear_cue_event_keeps_stereo_state_apart);
+    RUN_TEST(event_interaural_delay_requires_spatial);
+    RUN_TEST(interaural_delay_event_delays_the_far_ear);
+    RUN_TEST(interaural_delay_event_plays_history_and_follows_the_listener);
+    RUN_TEST(interaural_delay_event_restart_keeps_the_old_delay_on_held_pcm);
+    RUN_TEST(interaural_delay_event_keeps_its_delay_until_that_revision_is_published);
+    RUN_TEST(interaural_delay_event_delays_the_far_ears_own_channel);
 TEST_MAIN_END()

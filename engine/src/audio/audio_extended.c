@@ -36,6 +36,7 @@ typedef struct {
     f32 spatial_gain;
     f32 spatial_pan;
     f32 spatial_rear;
+    i32 spatial_itd;
     u32 spatial_revision;
     f32 ramp_target;
     u32 ramp_frames;
@@ -76,6 +77,8 @@ typedef struct {
     atomic_uint_least64_t pan_snapshot;
     /* (revision, rear cue coefficient), published the same way */
     atomic_uint_least64_t rear_snapshot;
+    /* (revision, interaural delay in frames as f32), published the same way */
+    atomic_uint_least64_t itd_snapshot;
     u32 applied_spatial_revision;
     f32 applied_spatial_gain;
     bool panned;
@@ -84,6 +87,10 @@ typedef struct {
     bool rear_cue;
     f32 applied_rear_alpha;
     f32 rear_state[2];
+    bool interaural_delay;
+    i32 applied_itd;
+    f32 itd_line[AUDIO_PCM_STREAM_ITD_LINE_FRAMES][2];
+    u32 itd_written;
     atomic_uint *bus_gains;
     Vec3 position;
     u32 bus;
@@ -242,6 +249,24 @@ static f32 spatial_gain_of(u64 snapshot) {
     return gain_from_bits((u32)(snapshot & 0xFFFFFFFFu));
 }
 
+_Static_assert((AUDIO_PCM_STREAM_ITD_LINE_FRAMES & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)) == 0u,
+               "AUDIO_PCM_STREAM_ITD_LINE_FRAMES must be a power of two");
+_Static_assert(AUDIO_PCM_STREAM_ITD_MAX_FRAMES < AUDIO_PCM_STREAM_ITD_LINE_FRAMES,
+               "the delay line must hold the longest delay");
+
+/* Pushes one frame into a delay line (shared by streams and voices) and
+ * returns the far ear's sample `delay` frames back (the frame itself for 0;
+ * negative delays the right ear). */
+static f32 itd_line_push(f32 (*line)[2], u32 *written, f32 left, f32 right, i32 delay) {
+    f32 *slot = line[*written & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)];
+    slot[0] = left;
+    slot[1] = right;
+    u32 back = (u32)(delay < 0 ? -delay : delay);
+    const f32 *past = line[(*written - back) & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)];
+    (*written)++;
+    return delay < 0 ? past[1] : past[0];
+}
+
 static bool voice_command_space(const AudioVoice *voice) {
     u32 head = atomic_load_explicit(&voice->head, memory_order_relaxed);
     u32 tail = atomic_load_explicit(&voice->tail, memory_order_acquire);
@@ -352,6 +377,10 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->applied_rear_alpha = command.spatial_rear;
             voice->rear_state[0] = 0.0f;
             voice->rear_state[1] = 0.0f;
+            voice->interaural_delay = command.desc.interaural_delay;
+            voice->applied_itd = command.spatial_itd;
+            memset(voice->itd_line, 0, sizeof(voice->itd_line));
+            voice->itd_written = 0u;
             voice_apply_initial_spatial(voice, &command);
             voice_configure_dsp(voice, &command);
             voice->playing = true;
@@ -438,6 +467,13 @@ static ma_result voice_read(ma_data_source *source, void *output,
                             voice->applied_rear_alpha = spatial_gain_of(rear);
                         }
                     }
+                    if (voice->interaural_delay) {
+                        u64 itd = atomic_load_explicit(&voice->itd_snapshot,
+                                                       memory_order_acquire);
+                        if (spatial_revision_of(itd) == revision) {
+                            voice->applied_itd = (i32)spatial_gain_of(itd);
+                        }
+                    }
                 }
                 f32 spatial_gain = voice->applied_spatial_gain;
                 f32 gain = voice->volume * voice->fade_gain * bus_gain *
@@ -458,6 +494,10 @@ static ma_result voice_read(ma_data_source *source, void *output,
                     voice->rear_state[0] = in_left;
                     voice->rear_state[1] = in_right;
                 }
+                f32 late = itd_line_push(voice->itd_line, &voice->itd_written, in_left,
+                                         in_right, voice->applied_itd);
+                if (voice->applied_itd > 0) in_left = late;
+                if (voice->applied_itd < 0) in_right = late;
                 left = in_left * gain * voice->applied_pan_left;
                 right = in_right * gain * voice->applied_pan_right;
                 cursor++;
@@ -533,24 +573,6 @@ static void pcm_stream_filter_to(AudioPcmStream *stream, u32 tail, u32 count) {
         }
         stream->filtered++;
     }
-}
-
-_Static_assert((AUDIO_PCM_STREAM_ITD_LINE_FRAMES & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)) == 0u,
-               "AUDIO_PCM_STREAM_ITD_LINE_FRAMES must be a power of two");
-_Static_assert(AUDIO_PCM_STREAM_ITD_MAX_FRAMES < AUDIO_PCM_STREAM_ITD_LINE_FRAMES,
-               "the delay line must hold the longest delay");
-
-/* Pushes one frame into the delay line and returns the far ear's sample
- * `delay` frames back (the frame itself for 0). */
-static f32 pcm_stream_itd_push(AudioPcmStream *stream, f32 left, f32 right, i32 delay) {
-    f32 *slot = stream->itd_line[stream->itd_written & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)];
-    slot[0] = left;
-    slot[1] = right;
-    u32 back = (u32)(delay < 0 ? -delay : delay);
-    const f32 *past = stream->itd_line[(stream->itd_written - back) &
-                                       (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)];
-    stream->itd_written++;
-    return delay < 0 ? past[1] : past[0];
 }
 
 _Static_assert((AUDIO_PCM_STREAM_SINC_LOOKAHEAD & (AUDIO_PCM_STREAM_SINC_LOOKAHEAD - 1u)) == 0u,
@@ -678,7 +700,7 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
                 stream->rear_state[0] = left;
                 stream->rear_state[1] = right;
             }
-            f32 late = pcm_stream_itd_push(stream, left, right, itd);
+            f32 late = itd_line_push(stream->itd_line, &stream->itd_written, left, right, itd);
             if (itd > 0) left = late;
             if (itd < 0) right = late;
             left *= gain * pan_left;
@@ -1105,6 +1127,7 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         atomic_init(&voice->started_epoch, 0);
         atomic_init(&voice->pan_snapshot, spatial_pack(0, 0.0f));
         atomic_init(&voice->rear_snapshot, spatial_pack(0, 1.0f));
+        atomic_init(&voice->itd_snapshot, spatial_pack(0, 0.0f));
         voice->applied_spatial_gain = 1.0f;
         ma_data_source_config config = ma_data_source_config_init();
         config.vtable = &AUDIO_VOICE_VTABLE;
@@ -1278,7 +1301,8 @@ AudioResult audio_event_register(AudioSystem *as, const char *name,
         !isfinite(desc->rolloff) || desc->rolloff < 0.0f ||
         !isfinite(desc->occluded_gain) || desc->occluded_gain < 0.0f ||
         desc->occluded_gain > 1.0f || desc->bus >= as->bus_count ||
-        (desc->panned && !desc->spatial) || (desc->rear_cue && !desc->spatial)) {
+        (desc->panned && !desc->spatial) || (desc->rear_cue && !desc->spatial) ||
+        (desc->interaural_delay && !desc->spatial)) {
         return AUDIO_INVALID;
     }
     if (!clip_resolve(ext, desc->clip)) return AUDIO_STALE;
@@ -1394,11 +1418,15 @@ static f32 event_rear(const AudioExtended *ext, const AudioEventDesc *desc, Vec3
     return desc->rear_cue ? rear_cue_alpha(ext->owner, position) : 1.0f;
 }
 
-/* The pan and rear coefficient are stored under the revision before the
- * gain snapshot that publishes it, so a mixer that sees the gain revision
- * also sees them. */
+static i32 event_itd(const AudioExtended *ext, const AudioEventDesc *desc, Vec3 position) {
+    return desc->interaural_delay ? interaural_delay_frames(ext->owner, position) : 0;
+}
+
+/* The pan, rear coefficient and interaural delay are stored under the
+ * revision before the gain snapshot that publishes it, so a mixer that sees
+ * the gain revision also sees them. */
 static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain, f32 pan,
-                                   f32 rear) {
+                                   f32 rear, i32 itd) {
     for (;;) {
         if (epoch == 0 || voice->epoch != epoch ||
             atomic_load_explicit(&voice->spatial_epoch, memory_order_acquire) != epoch) {
@@ -1415,6 +1443,8 @@ static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain, f32 p
         atomic_store_explicit(&voice->pan_snapshot, spatial_pack(revision, pan),
                               memory_order_release);
         atomic_store_explicit(&voice->rear_snapshot, spatial_pack(revision, rear),
+                              memory_order_release);
+        atomic_store_explicit(&voice->itd_snapshot, spatial_pack(revision, (f32)itd),
                               memory_order_release);
 #ifdef AUDIO_SPATIAL_PUBLISH_TEST_HOOK
         AUDIO_SPATIAL_PUBLISH_TEST_HOOK(voice);
@@ -1474,6 +1504,7 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
     command.desc = *desc;
     command.spatial_pan = event_pan(ext, desc, position);
     command.spatial_rear = event_rear(ext, desc, position);
+    command.spatial_itd = event_itd(ext, desc, position);
     for (u32 i = 0; i < command.desc.dsp.stage_count; ++i) {
         if (command.desc.dsp.stages[i].type == AUDIO_DSP_FILTER) {
             command.dsp_alpha[i] = audio_dsp_filter_alpha(
@@ -1481,9 +1512,9 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
         }
     }
 
-    /* No pan_snapshot or rear_snapshot store here: begin_start moves the
-     * gain revision while the old epoch may still adopt it (with its old
-     * gain), and that PCM must keep its old pan and rear coefficient too.
+    /* No pan, rear or itd snapshot store here: begin_start moves the gain
+     * revision while the old epoch may still adopt it (with its old gain),
+     * and that PCM must keep its old pan, rear coefficient and delay too.
      * START carries the new ones. */
     AudioResult spatial_result = spatial_begin_start(voice, epoch,
                                                       command.spatial_revision);
@@ -1611,7 +1642,7 @@ AudioResult audio_voice_set_position(AudioSystem *as,
     AudioResult result = event_spatial_gain(ext, desc, position, &gain);
     if (result != AUDIO_OK) return result;
     result = spatial_publish(voice, voice->epoch, gain, event_pan(ext, desc, position),
-                             event_rear(ext, desc, position));
+                             event_rear(ext, desc, position), event_itd(ext, desc, position));
     if (result != AUDIO_OK) return result;
     voice->position = position;
     return AUDIO_OK;
@@ -1646,7 +1677,8 @@ void audio_extended_listener_update(AudioSystem *as) {
         if (event_spatial_gain(ext, desc, voice->position, &gain) == AUDIO_OK) {
             (void)spatial_publish(voice, voice->epoch, gain,
                                   event_pan(ext, desc, voice->position),
-                                  event_rear(ext, desc, voice->position));
+                                  event_rear(ext, desc, voice->position),
+                                  event_itd(ext, desc, voice->position));
         }
     }
 }

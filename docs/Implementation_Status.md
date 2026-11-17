@@ -11515,3 +11515,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `test_audio_extended` 新增 5 项（共 99）：参数与 STALE、正前/正后/正上方/重合位置无延迟、正右与正左延迟 31 帧且另一耳不变、30° 为 13 帧、打开后播放历史而非静音、监听者转向后延迟消失、立体声各耳取各自声道、重开后延迟关闭且延迟线为零。先 RED（编译失败）后 GREEN；18 项变异首轮 3 项存活：重开未重置开关的变异补测试后被捕获；上限钳位不可达（侧向量在 -1..1 内），已删除；`itd > 0` 改为 `>= 0` 为等价变异（延迟 0 时读回刚写入的帧）。
 - 仍缺：HRTF、高度提示、事件 voice 的耳间时差、延迟变化的平滑。
 
+### 2026-11-17 事件 voice 的耳间时差
+
+- `audio/audio_extended.{h,c}`：`AudioEventDesc.interaural_delay`（要求 `spatial`）。帧数由 `interaural_delay_frames` 计算，START 命令携带初始值，后续更新经 `itd_snapshot = (revision, 帧数)` 与增益 revision 一起发布，混音只采用与所采用增益同 revision 的帧数。每个 voice 有 64 帧延迟线，START 时清零；PCM 流与 voice 共用 `itd_line_push`，`spatial_publish` 增加帧数参数。
+- `test_audio_extended` 新增 6 项（共 105）：要求 spatial、左右远端耳延迟 31 帧且正前/正后/正上方/重合位置与关闭时逐位相同、移动到侧面后播放历史、监听者转向消除并恢复延迟、RESTART 时旧 epoch 保持旧延迟且新 epoch 延迟线从静音开始、未发布 revision 的帧数不被采用、关闭时忽略存储的帧数、立体声远端耳取自己的声道。先 RED（编译失败）后 GREEN；16 项变异首轮 1 项存活（读取帧数前不检查事件开关），补「同 revision 存储帧数但事件关闭」断言后全部被捕获；流部分 7 项变异在共用辅助函数上重跑，全部被捕获。
+- 仍缺：HRTF、高度提示、延迟变化的平滑。
+
