@@ -11573,3 +11573,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - loopback：场景 A 确认第一个修正后再次 desync，必须收到更小的增量包并收敛到权威端哈希；驱动断言 `physics_delta_corrections_sent=1`。本机连续 8 次通过（其中 5 次需要第 2 轮，原因是第一次修正前的重复 desync 晚到）。
 - 先 RED（编译失败，接口不存在）后 GREEN。`physics_sync` 19 项变异首轮 4 项存活，补测试后 3 项被捕获，剩余「目标上限放宽一个 body」与解码、恢复的拒绝等价。transport 4 项变异中 3 项被捕获，剩余「解析失败不提前返回」与编码拒绝 NULL 快照等价。影子变量检查通过（rc=0）。
 - 仍缺：core_app 运行时作为客户端应用修正、并行 solver、跨平台确定性。
+
+### 2026-11-17 core_app：认证 trace 行带会话号
+- `engine/apps/core_app/core_app_net_transport.c`：`network_session result=authenticated` 行追加 `session=S`。
+- `engine/tests/test_core_app_network.cmake`：认证行规范会话号、互不重复、条数等于 `authenticated`；时钟偏移行的会话属于已认证会话。先 RED（loopback 与 late_auth 都失败）后 GREEN。
+- `engine/tests/test_core_app_net_client.c`：修正两处与时序有关的偶发失败（时钟探测累计计数、增量修正的基线确认），见设计文档。修改后 loopback 连续 15 次通过。影子变量检查通过（rc=0）。
+- 仍缺：对端 trace 自身记录会话号。

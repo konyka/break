@@ -362,7 +362,8 @@ static void net_sync_sessions(CoreAppNetTransport *t, u32 tick) {
             t->stats.authenticated++;
             snprintf(line, sizeof(line),
                      "COREAPPTRACE version=1 event=network_session result=authenticated"
-                     " tick=%u\n", tick);
+                     " session=%llu tick=%u\n",
+                     (unsigned long long)t->session_ids[i], tick);
             net_trace(t, line);
         } else if (state == BREAK_SESSION_CLOSING || state == BREAK_SESSION_CLOSED ||
                    state == BREAK_SESSION_UNKNOWN) {

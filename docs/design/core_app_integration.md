@@ -1492,3 +1492,19 @@ loopback 场景 A 收到第一个完整修正（本机 10644 字节）后，用�
 场景 A 先发了两次 desync，第一个修正发出前它们会合并；但第二次可能在第一个修正发出之后才被处理，于是再触发一个针对未确认基线的完整修正。所以客户端最多重试 3 轮：收到额外的完整包就应用并重新确认。驱动脚本要求额外完整包也收敛，而且 `physics_delta_corrections_sent` 恰好为 1。
 
 变异测试：transport 的 4 项中 3 项被捕获。存活的 1 项删掉了完整包解析失败时的提前返回；这种情况下快照为 NULL，`physics_sync_baseline_encode` 同样拒绝，两者行为等价。`physics_sync` 的 19 项中 18 项被捕获。存活的 1 项把接收端的目标长度上限放宽一个 body，这个上限只约束分配大小，超长目标随后也会被解码和 `physics_snapshot_restore` 拒绝，同样等价。
+
+## 补充（2026-11-17）：认证 trace 行带会话号，loopback 稳定性修正
+
+服务端认证成功时写的行改为 `network_session result=authenticated session=S tick=N`。`S` 与 `network_clock_offset session=S` 使用同一个 `break_session_manager_session_id`。这样只看服务端 trace 就能列出所有认证过的会话，并把时钟偏移对应到其中一个，`trace_merge --session` 的取值有了依据。
+
+驱动脚本（loopback 与 late_auth）新增断言：
+- 每条认证行都带规范的十进制 `session=`；
+- 会话号互不重复；
+- 认证行条数等于 `network_stats` 的 `authenticated`；
+- loopback 中唯一一条 `network_clock_offset` 的会话号属于已认证会话。
+
+改格式前两个用例都失败（RED），改后通过。
+
+为排查稳定性，本次把 loopback 连续跑了 20 多次，发现两处与时序有关的偶发失败，都在测试客户端，已修正：
+- `a_answered_server_clock_probes`：原来要求累计应答 6 次服务端时钟探测，但前面各阶段已经应答了多少次取决于时序。跳过的那一次可能出现在累计已满 6 次之后，于是判定失败。现在改为：等到跳过的请求出现后，再应答 2 次，并且累计不少于 6 次。
+- `a_received_delta_physics_correction`：第一次修正前重复发出的 desync 可能晚到，每次都触发一个新的完整修正，把服务端基线移到客户端正在确认的 tick 之后。三轮重试都可能落空。现在每轮先读到比持有基线新 4 个 tick 的报告，并在此之前应用途中收到的所有修正，确认的就是服务端最新的基线。修改后连续 15 次通过，每次都在第 1 轮拿到增量包。

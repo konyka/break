@@ -483,16 +483,52 @@ static void client_release_world(void) {
 
 /* Confirms the snapshot this client last restored by reporting its own
  * hash at that tick (which matches the authority), then reports a desync.
- * A repeated desync sent before the first correction can still be pending
- * on the server and produce one more full correction against an
- * unconfirmed baseline, so a full reply is applied and the exchange is
- * retried a bounded number of times. The delta must be smaller than the
- * first full correction and decode against the held snapshot. */
+ * The repeated desync sent before the first correction can reach the server
+ * after it and produce one more full correction, which would move the
+ * server's baseline past the tick being confirmed; settling first applies
+ * such corrections. The exchange is still retried a bounded number of times.
+ * The delta must be smaller than the first full correction and decode
+ * against the held snapshot. */
+/* Reads until a physics report several ticks newer than the held snapshot
+ * arrives with no correction before it. The server sends a correction right
+ * after the report for its tick, so by then every correction that earlier
+ * desync reports caused has been read and applied, and the held tick is the
+ * server's latest baseline for this peer. */
+static bool client_settle_corrections(NetClient *c, u32 timeout_ms) {
+    u64 deadline = now_ms() + timeout_ms;
+    while (now_ms() < deadline) {
+        BreakNetEnvelope env;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got < 0) return false;
+        if (got != 1) continue;
+        if (env.message_id == BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT &&
+            env.payload_size == NET_CLIENT_PHYSICS_REPORT_BYTES) {
+            const u8 *r = (const u8 *)env.payload;
+            g_report_seen = true;
+            g_report_tick = le32(r + 4u);
+            g_report_hash = (u64)le32(r + 8u) | ((u64)le32(r + 12u) << 32u);
+            if (g_report_tick >= g_client_held.tick + 4u) return true;
+            continue;
+        }
+        if (env.message_id != BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_CORRECTION ||
+            env.payload_size > sizeof(g_correction)) {
+            continue;
+        }
+        memcpy(g_correction, env.payload, env.payload_size);
+        u32 tick = le32(g_correction + 4u);
+        if (!client_apply_correction("physics_extra_correction", tick, env.payload_size)) {
+            return false;
+        }
+    }
+    return false;
+}
+
 static void client_delta_correction_exchange(NetClient *c, size_t full_bytes) {
     bool is_delta = false;
     u32 attempts = 0u;
     while (!is_delta && attempts < 3u && g_client_world && g_client_held.bytes) {
         ++attempts;
+        if (!client_settle_corrections(c, 10000u)) break;
         u8 report[NET_CLIENT_PHYSICS_REPORT_BYTES];
         u32 held_tick = g_client_held.tick;
         if (!physics_sync_encode_report(held_tick, physics_state_hash(g_client_world), report,
@@ -577,15 +613,26 @@ static int client_next_clock_reply(NetClient *c, u64 t0, CoreAppClockProbe *out,
     return 0;
 }
 
-/* Keeps reading (client_recv answers server requests) until `count` have
- * been answered in total. */
-static bool client_answer_server_probes(NetClient *c, u32 count, u32 timeout_ms) {
+/* Keeps reading (client_recv answers server requests) until the request
+ * marked to be skipped has been dropped, `more` requests after it have been
+ * answered, and at least `total` have been answered overall. Earlier phases
+ * answer probes too, and how many depends on timing, so the skipped request
+ * can come after `total` is already reached. */
+static bool client_answer_server_probes(NetClient *c, u32 more, u32 total, u32 timeout_ms) {
     u64 deadline = now_ms() + timeout_ms;
-    while (g_server_probes_answered < count && now_ms() < deadline) {
+    u32 target = 0u;
+    bool skipped = false;
+    while (now_ms() < deadline) {
+        if (!skipped && !c->skip_server_probe) {
+            skipped = true;
+            target = g_server_probes_answered + more;
+            if (target < total) target = total;
+        }
+        if (skipped && g_server_probes_answered >= target) return true;
         BreakNetEnvelope env;
         if (client_recv(c, &env, (u32)(deadline - now_ms()) + 1u) < 0) return false;
     }
-    return g_server_probes_answered >= count;
+    return false;
 }
 
 static bool send_clock_probe(NetClient *c, const CoreAppClockProbe *probe, size_t size) {
@@ -651,8 +698,7 @@ static void client_clock_probe_exchange(NetClient *c) {
                 estimate.samples);
     }
     c->skip_server_probe = true;
-    check(client_answer_server_probes(c, 6u, 15000u) && !c->skip_server_probe,
-          "a_answered_server_clock_probes");
+    check(client_answer_server_probes(c, 2u, 6u, 15000u), "a_answered_server_clock_probes");
     fprintf(g_report, "server_clock_probes_answered=%u\n", g_server_probes_answered);
 }
 
