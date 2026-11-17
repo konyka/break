@@ -1051,6 +1051,7 @@ src/renderer/lens_effects.c
     src/physics/character.c
     src/audio/audio.c
     src/audio/audio_extended.c src/audio/audio_dsp.c src/audio/audio_hrtf.c
+    src/audio/audio_capture.c
     src/audio/audio_stream.c
     src/animation/skeleton.c
     src/animation/skeleton_socket.c
@@ -7056,14 +7057,28 @@ endif()
     target_link_libraries(test_audio_hrtf PRIVATE m)
     add_test(NAME test_audio_hrtf COMMAND test_audio_hrtf)
 
+    # test_audio_capture: the input ring, miniaudio's null capture device in
+    # real time, and a producer thread against the reader.
+    add_executable(test_audio_capture tests/test_audio_capture.c src/audio/audio_capture.c
+        src/audio/audio.c src/audio/audio_extended.c src/audio/audio_dsp.c src/audio/audio_hrtf.c)
+    target_include_directories(test_audio_capture PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_audio_capture PRIVATE Threads::Threads m ${CMAKE_DL_LIBS})
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_audio_capture PRIVATE _POSIX_C_SOURCE=200112L)
+    endif()
+    add_test(NAME test_audio_capture COMMAND test_audio_capture)
+    set_tests_properties(test_audio_capture PROPERTIES TIMEOUT 30)
+
     add_test(NAME test_audio_realtime_contract
         COMMAND ${CMAKE_COMMAND}
             -DAUDIO_EXTENDED=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_extended.c
             -DAUDIO_DSP=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_dsp.c
             -DAUDIO_LEGACY=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio.c
             -DAUDIO_HRTF=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_hrtf.c
+            -DAUDIO_CAPTURE=${CMAKE_CURRENT_SOURCE_DIR}/src/audio/audio_capture.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_realtime_contract.cmake)
     set_tests_properties(test_audio test_audio_extended test_audio_dsp test_audio_hrtf
+        test_audio_capture
         test_audio_realtime_contract PROPERTIES LABELS "headless;audio")
 
     # test_vulkan: full backend integration + golden-image regression (VK + GL).

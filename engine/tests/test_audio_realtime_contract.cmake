@@ -1,5 +1,5 @@
 if(NOT DEFINED AUDIO_EXTENDED OR NOT DEFINED AUDIO_DSP OR NOT DEFINED AUDIO_LEGACY OR
-   NOT DEFINED AUDIO_HRTF)
+   NOT DEFINED AUDIO_HRTF OR NOT DEFINED AUDIO_CAPTURE)
     message(FATAL_ERROR "audio source paths are required")
 endif()
 
@@ -67,3 +67,5 @@ string(FIND "${legacy}" "MA_SOUND_FLAG_NO_PITCH" no_pitch)
 if(NOT no_pitch EQUAL -1)
     message(FATAL_ERROR "legacy decoded playback must retain pitch and Doppler")
 endif()
+assert_callback_clean("${AUDIO_CAPTURE}" "static i16 capture_sample"
+                      "AudioResult audio_capture_create")

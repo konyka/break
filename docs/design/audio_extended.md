@@ -155,7 +155,16 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 混音回调：START 时每个 voice 重新 init 自己的渲染器（历史清零，RESTART 重触发同样清零），并立即采用 START 的下标；之后换方向在 64 帧内交叉淡化。每帧取 clip 左右声道平均 `0.5 (l + r)` 送入渲染器，结果乘以 voice 增益（音量、淡入淡出、bus、master、距离）。DSP 链仍在 HRTF 之后作用于立体声结果。
 - 挂上集合时声像、后方提示、高度提示和耳间时差都不作用于输出，它们的状态照常运行。
 
-## 验证与限制
+## 麦克风采集
+
+`engine/src/audio/audio_capture.{h,c}` 打开输入设备，把采到的帧放进单生产者单消费者的 16 位环形缓冲，所有者线程读取后可直接交给 `break_voice_encode*`。
+
+- `AudioCaptureConfig`：`backend`（DEFAULT 为系统默认输入，NULL 为 miniaudio 的静音空设备，FAKE 没有设备、由 `audio_capture_inject` 写入）、采样率 8000..192000、1 或 2 声道、环形缓冲帧数（2 的幂，最多 2^20）。参数非法返回 `AUDIO_INVALID`，内存不足 `AUDIO_OVERLOAD`，设备打不开 `AUDIO_FAILED`；只有成功时才写 `*out`。创建后处于停止状态。
+- `audio_capture_start` / `stop` 幂等；`destroy` 先停止正在运行的设备（`ma_device_uninit` 等待回调结束）。停止前采到的帧仍可读取。
+- 转换：非有限值记为 0，其余限制在 [-1, 1] 后按 `lrintf(x × 32767)` 取整。
+- 环形缓冲：生产者（设备回调，FAKE 时为注入线程）持有 `head`，读取者持有 `tail`，均为自由增长的 u32，用 release/acquire 发布。缓冲满时丢弃最新的帧并计入 `audio_capture_overruns`。回调不阻塞、不分配、不写日志，并纳入 `test_audio_realtime_contract`。
+- 未做：采集端的采样率转换（以设备采样率交付）、回声消除、降噪、自动增益、设备热插拔与选择指定输入设备。
+
 
 - `test_audio_extended`：clip/容量、并发/重触发、stale handle、真实 DSP 接线、逐样本交叉淡化、loop/停止、遮挡/距离、bus/master、legacy WAV、bit-exact fake 和 null 命令生命周期。
 - `test_audio_dsp`：手算滤波阶跃、延迟 tap/feedback、混响早期 taps、filter+delay 组合和失败原子。
@@ -176,4 +185,5 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `test_audio_extended` 的事件 HRTF 测试（5 项）：注册要求 spatial 与引擎采样率；单声道右方事件等于直接卷积乘距离增益，同时打开的其他提示不起作用；立体声 clip 取平均，`audio_voice_set_position` 与监听者转身更新下标；移动声源与参考渲染器逐位一致；RESTART 重触发从空历史开始。11 项变异全部被捕获。
 - sinc 重采样由双精度 Lanczos 参考模型（16 kHz、88.2 kHz 经低通、24 kHz 立体声）、前瞻等待、高频正弦误差、引擎采样率不变、模式切换的历史和重开复位覆盖。
 - 后方提示由阶跃响应参考模型（PCM 流正后方与 45°、事件正后方）、前方/侧面/重合逐位不变、监听者转身、RESTART 与 revision 门控、立体声状态分离和重开复位覆盖。
-- 没有真实听测、真实声卡、Windows 或 macOS 验证。简单 DSP/混响不等于物理声学或听感验收。
+- `test_audio_capture`（7 项）：配置校验与 `*out` 不变、转换（取整、限幅、NaN/Inf）、顺序与部分读取、立体声跨缓冲末尾回绕、缓冲满时保留最旧的帧并计数、启停幂等与注入门控、空设备实时交付静音帧（两轮启停、运行中销毁）、生产者线程与读取者不丢帧且有序。20 项变异全部被捕获；TSan、ASan+UBSan 通过。
+- 没有真实听测、真实声卡、Windows 或 macOS 验证。 采集没有用真实麦克风验证。简单 DSP/混响不等于物理声学或听感验收。

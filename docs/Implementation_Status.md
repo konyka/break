@@ -11631,3 +11631,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 测试：`test_audio_extended` 新增 5 项（共 129）。
 - 先 RED（编译失败，字段不存在）后 GREEN。11 项变异全部被捕获。
 - 音频空间化的 HRTF 至此覆盖 PCM 流与事件两类声源。仍缺：麦克风采集、感知编码器（Opus 等）、音频编辑工具。
+
+### 2026-11-17 音频：麦克风采集
+- `engine/src/audio/audio_capture.{h,c}`：输入设备（DEFAULT / NULL / FAKE）到 16 位 SPSC 环形缓冲；create、destroy、start、stop、running、read_i16、available、overruns，FAKE 下的 inject。
+- 构建：`engine` 静态库加入 `audio_capture.c`；新增 `test_audio_capture`（headless、audio 标签）；`test_audio_realtime_contract` 新增 `-DAUDIO_CAPTURE` 并检查采集回调（临时插入 malloc 时契约失败）。
+- 测试：`test_audio_capture` 7 项。先 RED（链接失败，函数不存在）后 GREEN。20 项变异全部被捕获；TSan、ASan+UBSan 通过，影子变量检查通过。
+- 仍缺：采集端采样率转换、回声消除、降噪、自动增益、指定输入设备与热插拔、真实麦克风验证；感知编码器（Opus 等）、音频编辑工具。
