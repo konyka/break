@@ -105,3 +105,17 @@ Mutations that turn it red: the server ignoring Range, the client ignoring the p
 
 应答：HA1 = H(user:realm:password)，HA2 = H("CONNECT:" authority)；有 qop 时 response = H(HA1:nonce:00000001:cnonce:auth:HA2)，否则 H(HA1:nonce:HA2)，均为小写十六进制。cnonce 是 16 字节 `RAND_bytes` 的十六进制，每次应答重新生成。用户名中的 `"` 与 `\` 转义后放入 `username="..."`，密码不会离开客户端。代理这一跳仍是明文 TCP。测试在 `engine/tests/test_break_http.c`（新增 5 项：RFC 7616 示例参数的 MD5、SHA-256、RFC 2069 形式、宽松语法、最大长度、第二次 407、22 种不可用质询以及 403/无凭据），见 `docs/superpowers/plans/2026-11-17-http-proxy-digest-auth.md`。仍不支持 NTLM、https 代理，也不复用 407 所在的连接。
 
+
+## 补充（2026-11-17）：OCSP stapling 校验
+
+`BreakHttpConfig` 新增 `require_ocsp_staple`（默认 false，行为不变）。设为 true 时，客户端在握手中请求证书状态（`status_request` 扩展），并在 CA、主机名和钉扎都通过后检查服务端附带的 OCSP 响应。不会联系任何 OCSP responder。上文 CRL 补充中「OCSP stapling 仍未实现」一项由此交付；主动查询 OCSP responder、按分发点下载 CRL 和 delta CRL 仍未实现。
+
+以下任一情况为 `ERR_TLS`：
+
+- 没有附带响应；DER 无法解析或带尾随字节；`responseStatus` 不是 successful（即使附带了有效的 good 响应体）；不是 basic 响应。
+- 验证后的链短于 2，即自签名叶子没有签发者可以为响应担保。
+- `OCSP_basic_verify`（flags 0）失败：签名者必须是叶子的签发 CA，或由它签发并带 OCSPSigning EKU 的委托 responder，并能链到 `ca_file`。
+- 没有与叶子匹配的条目。每条按其自身的哈希算法重算 CertID，所以 SHA-1 和 SHA-256 CertID 都可以。
+- 任一匹配条目的状态不是 good（revoked、unknown 都拒绝），或缺少 nextUpdate，或 thisUpdate 比本地时间晚 300 秒以上，或 nextUpdate 比本地时间早 300 秒以上。
+
+可与 `crl_file` 同时开启。明文 loopback http 忽略该字段。测试在 `engine/tests/test_break_http.c`（新增 6 项，进程内生成 CA、叶子、委托 responder 和 OCSP 响应），计划见 `docs/superpowers/plans/2026-11-17-break-http-ocsp-stapling.md`。

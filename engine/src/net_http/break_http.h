@@ -75,6 +75,18 @@ typedef struct BreakHttpConfig {
      * cannot be read or holds no CRL is ERR_URL before any socket. No OCSP,
      * no CRL download. Ignored for loopback http. */
     const char *crl_file;
+    /* Require a stapled OCSP response for the leaf. When true the client
+     * asks for certificate status in the handshake and, after CA, host name
+     * and pin checks pass, requires the server's stapled response to be a
+     * successful basic response signed by the leaf's issuer (or a responder
+     * that issuer delegated with the OCSPSigning EKU) and chaining to
+     * ca_file; every entry for the leaf must say good and carry a
+     * nextUpdate, with thisUpdate at most 300 s ahead of the local clock
+     * and nextUpdate at most 300 s behind it, and at least one such entry
+     * must exist. A missing, malformed or failing response, or a leaf with
+     * no issuer in the verified chain, is ERR_TLS. No responder is
+     * contacted. Ignored for loopback http. */
+    bool require_ocsp_staple;
     /* Optional forward proxy, "http://host:port" (path empty or "/", no
      * query, no userinfo, no https). NULL or empty = connect directly. A
      * malformed value is ERR_URL before any socket, whatever the target.

@@ -8,6 +8,7 @@
 #include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/ocsp.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
@@ -444,9 +445,12 @@ static SSL_CTX *tls_ctx_new(const char *ca_file) {
     return ctx;
 }
 
-static BreakHttpError tls_handshake(Conn *c, const Url *u) {
+static BreakHttpError tls_handshake(Conn *c, const Url *u, bool want_status) {
     c->ssl = SSL_new(c->ctx);
     if (c->ssl == NULL || SSL_set_fd(c->ssl, c->fd) != 1) return BHTTP_ERR_TLS;
+    if (want_status && SSL_set_tlsext_status_type(c->ssl, TLSEXT_STATUSTYPE_ocsp) != 1) {
+        return BHTTP_ERR_TLS;
+    }
     if (u->host_is_ip) {
         if (X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(c->ssl), u->host) != 1) {
             return BHTTP_ERR_TLS;
@@ -503,6 +507,66 @@ static BreakHttpError tls_check_pins(const Conn *c, const BreakHttpConfig *cfg) 
     }
     OPENSSL_free(der);
     X509_free(leaf);
+    return e;
+}
+
+/* Every entry of a verified basic response that names the leaf must say good
+ * and be current; at least one must exist. The CertID is recomputed with each
+ * entry's own hash algorithm. */
+static bool ocsp_entries_good(OCSP_BASICRESP *bs, X509 *leaf, X509 *issuer) {
+    bool found = false;
+    for (int i = 0; i < OCSP_resp_count(bs); i++) {
+        OCSP_SINGLERESP *single = OCSP_resp_get0(bs, i);
+        ASN1_OBJECT *md_oid = NULL;
+        ASN1_GENERALIZEDTIME *thisupd = NULL, *nextupd = NULL;
+        const EVP_MD *md;
+        OCSP_CERTID *want;
+        int reason = 0, status, same;
+        if (OCSP_id_get0_info(NULL, &md_oid, NULL, NULL,
+                              (OCSP_CERTID *)OCSP_SINGLERESP_get0_id(single)) != 1) {
+            continue;
+        }
+        md = EVP_get_digestbyobj(md_oid);
+        want = md != NULL ? OCSP_cert_to_id(md, leaf, issuer) : NULL;
+        same = want != NULL && OCSP_id_cmp(want, OCSP_SINGLERESP_get0_id(single)) == 0;
+        OCSP_CERTID_free(want);
+        if (!same) continue;
+        status = OCSP_single_get0_status(single, &reason, NULL, &thisupd, &nextupd);
+        if (status != V_OCSP_CERTSTATUS_GOOD || nextupd == NULL ||
+            OCSP_check_validity(thisupd, nextupd, 300L, -1L) != 1) {
+            return false;
+        }
+        found = true;
+    }
+    return found;
+}
+
+/* Runs after CA, host name and pin checks. The stapled response must be a
+ * successful basic response whose signer the issuer vouches for. */
+static BreakHttpError tls_check_ocsp(const Conn *c, const BreakHttpConfig *cfg) {
+    const unsigned char *der = NULL, *p;
+    OCSP_RESPONSE *resp;
+    OCSP_BASICRESP *bs = NULL;
+    STACK_OF(X509) *chain;
+    BreakHttpError e = BHTTP_ERR_TLS;
+    long len;
+    if (!cfg->require_ocsp_staple) return BHTTP_OK;
+    len = SSL_get_tlsext_status_ocsp_resp(c->ssl, &der);
+    if (der == NULL || len <= 0) return BHTTP_ERR_TLS;
+    p = der;
+    resp = d2i_OCSP_RESPONSE(NULL, &p, len);
+    if (resp == NULL || p != der + len ||
+        OCSP_response_status(resp) != OCSP_RESPONSE_STATUS_SUCCESSFUL) {
+        goto out;
+    }
+    bs = OCSP_response_get1_basic(resp);
+    chain = SSL_get0_verified_chain(c->ssl);
+    if (bs == NULL || chain == NULL || sk_X509_num(chain) < 2) goto out;
+    if (OCSP_basic_verify(bs, chain, SSL_CTX_get_cert_store(c->ctx), 0) != 1) goto out;
+    if (ocsp_entries_good(bs, sk_X509_value(chain, 0), sk_X509_value(chain, 1))) e = BHTTP_OK;
+out:
+    OCSP_BASICRESP_free(bs);
+    OCSP_RESPONSE_free(resp);
     return e;
 }
 
@@ -1067,8 +1131,9 @@ static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect 
         if (e != BHTTP_OK) goto done;
     }
     if (u->https) {
-        e = tls_handshake(&c, u);
+        e = tls_handshake(&c, u, cfg->require_ocsp_staple);
         if (e == BHTTP_OK) e = tls_check_pins(&c, cfg);
+        if (e == BHTTP_OK) e = tls_check_ocsp(&c, cfg);
         if (e != BHTTP_OK) goto done;
     }
 

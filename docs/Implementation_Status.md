@@ -11552,3 +11552,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 先 RED（4 项失败，不可用质询一项在旧代码上本就不回应）后 GREEN；38 项变异首轮 8 项存活：值末尾空白的裁剪是冗余的（解析头部时已裁剪），已删除；补充无空格 scheme、缺 `=`、空值、超长 token、qop 列表含空白、空凭据等用例后 6 项被捕获。剩余 1 项为转义符在值末尾时的越界保护，越界读到的是 `\r` 也会被拒绝，行为等价，为内存安全保留。影子变量检查通过（rc=0）。
 - 仍缺：NTLM、https 代理、OCSP、HTTP/2，发布二进制仍没有链接 `break_http`。
 
+
+### 2026-11-17 在线更新：break_http OCSP stapling
+- `engine/src/net_http/break_http.{h,c}`：`BreakHttpConfig.require_ocsp_staple`。开启后 `tls_handshake` 请求 `status_request`，新增 `tls_check_ocsp` 在钉扎之后校验附带的响应：DER 无尾随字节、responseStatus successful、basic 响应、链长至少 2、`OCSP_basic_verify` 通过、每条匹配叶子的条目按其自身哈希重算 CertID、状态 good、有 nextUpdate、时间容差 300 秒、至少一条匹配。
+- `test_break_http` 新增 6 项（共 72）：good 响应（SHA-1、SHA-256 CertID、委托 responder、与 CRL 同开）、revoked/unknown、未开启时不请求状态、loopback http 忽略、缺失/垃圾/尾随字节/tryLater/internalError（含附带有效响应体的情况）、过期/缺 nextUpdate/未来 thisUpdate 与 60 秒偏差、不受信签名者/无 EKU 委托 responder/其他证书、自签名叶子。
+- 先 RED（6 项失败）后 GREEN；19 项变异首轮 1 项存活（responseStatus 检查：未成功状态不带响应体，后续取 basic 时也会失败），补充「未成功状态但附带有效 good 响应体」的用例后被捕获，最终全部捕获。影子变量检查通过（rc=0）。
+- 仍缺：主动查询 OCSP responder、NTLM、https 代理、HTTP/2，发布二进制仍没有链接 `break_http`。

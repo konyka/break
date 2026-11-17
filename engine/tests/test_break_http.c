@@ -12,6 +12,7 @@
 
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/ocsp.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
@@ -62,9 +63,28 @@ typedef struct {
     int drip_ms;
     char request[8192];       /* what the client sent */
     size_t request_len;
+    const unsigned char *ocsp_der; /* stapled when the client asks; 0 length = none */
+    size_t ocsp_len;
+    atomic_bool saw_status_request;
     atomic_bool saw_connection;   /* written by the server thread, read by server_stop */
     pthread_t thread;
 } Server;
+
+/* Called only when the client asked for certificate status. */
+static int server_status_cb(SSL *ssl, void *arg) {
+    Server *s = (Server *)arg;
+    unsigned char *copy;
+    atomic_store(&s->saw_status_request, true);
+    if (s->ocsp_len == 0u) return SSL_TLSEXT_ERR_NOACK;
+    copy = (unsigned char *)OPENSSL_malloc(s->ocsp_len);
+    if (copy == NULL) return SSL_TLSEXT_ERR_ALERT_FATAL;
+    memcpy(copy, s->ocsp_der, s->ocsp_len);
+    if (SSL_set_tlsext_status_ocsp_resp(ssl, copy, (long)s->ocsp_len) != 1) {
+        OPENSSL_free(copy);
+        return SSL_TLSEXT_ERR_ALERT_FATAL;
+    }
+    return SSL_TLSEXT_ERR_OK;
+}
 
 static void *server_main(void *arg) {
     Server *s = (Server *)arg;
@@ -193,6 +213,8 @@ static bool server_start_cert(Server *s, bool tls, const char *reply, size_t rep
             SSL_CTX_use_PrivateKey_file(s->ctx, s->key_path ? s->key_path : KEY, SSL_FILETYPE_PEM) != 1) {
             return false;
         }
+        SSL_CTX_set_tlsext_status_cb(s->ctx, server_status_cb);
+        SSL_CTX_set_tlsext_status_arg(s->ctx, s);
     }
     return true;
 }
@@ -1532,6 +1554,367 @@ TEST(an_unreadable_or_empty_crl_file_fails_before_connecting) {
     crl_pki_free(&p);
 }
 
+/* ---- OCSP stapling ---- */
+
+/* A CA with a leaf for localhost (serial 42) and a sibling leaf (serial 43),
+ * two delegated responders (with and without the OCSPSigning EKU), another
+ * CA, and a self-signed localhost certificate. */
+typedef struct OcspPki {
+    EVP_PKEY *ca_key, *other_key, *resp_key, *self_key;
+    X509 *ca, *other_ca, *leaf, *sibling, *responder, *responder_no_eku, *self;
+    char ca_path[300], leaf_path[300], leaf_key_path[300];
+    char self_path[300], self_key_path[300], crl_path[300];
+} OcspPki;
+
+static X509 *ocsp_make_responder(EVP_PKEY *key, EVP_PKEY *ca_key, X509 *ca, long serial,
+                                 bool eku) {
+    X509 *x = X509_new();
+    X509_NAME *name = X509_NAME_new();
+    X509V3_CTX v3;
+    X509_EXTENSION *ext;
+    if (x == NULL || name == NULL) {
+        X509_free(x);
+        X509_NAME_free(name);
+        return NULL;
+    }
+    X509_set_version(x, 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(x), serial);
+    X509_gmtime_adj(X509_getm_notBefore(x), -24L * 3600L);
+    X509_gmtime_adj(X509_getm_notAfter(x), 30L * 24L * 3600L);
+    X509_set_pubkey(x, key);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (const unsigned char *)"break ocsp",
+                               -1, -1, 0);
+    X509_set_subject_name(x, name);
+    X509_set_issuer_name(x, X509_get_subject_name(ca));
+    X509_NAME_free(name);
+    X509V3_set_ctx_nodb(&v3);
+    X509V3_set_ctx(&v3, ca, x, NULL, NULL, 0);
+    if (eku) {
+        ext = X509V3_EXT_conf_nid(NULL, &v3, NID_ext_key_usage, "OCSPSigning");
+        if (ext) { X509_add_ext(x, ext, -1); X509_EXTENSION_free(ext); }
+    }
+    if (X509_sign(x, ca_key, EVP_sha256()) <= 0) {
+        X509_free(x);
+        return NULL;
+    }
+    return x;
+}
+
+static bool ocsp_write_key(const char *path, EVP_PKEY *key) {
+    FILE *f = fopen(path, "wb");
+    bool ok;
+    if (f == NULL) return false;
+    ok = PEM_write_PrivateKey(f, key, NULL, NULL, 0, NULL, NULL) == 1;
+    return fclose(f) == 0 && ok;
+}
+
+static bool ocsp_pki_init(OcspPki *p) {
+    EVP_PKEY *leaf_key;
+    bool ok = false;
+    memset(p, 0, sizeof(*p));
+    tmp_file(p->ca_path, sizeof(p->ca_path), "ocsp_ca");
+    tmp_file(p->leaf_path, sizeof(p->leaf_path), "ocsp_leaf");
+    tmp_file(p->leaf_key_path, sizeof(p->leaf_key_path), "ocsp_leaf_key");
+    tmp_file(p->self_path, sizeof(p->self_path), "ocsp_self");
+    tmp_file(p->self_key_path, sizeof(p->self_key_path), "ocsp_self_key");
+    tmp_file(p->crl_path, sizeof(p->crl_path), "ocsp_crl");
+    p->ca_key = EVP_EC_gen("P-256");
+    p->other_key = EVP_EC_gen("P-256");
+    p->resp_key = EVP_EC_gen("P-256");
+    p->self_key = EVP_EC_gen("P-256");
+    leaf_key = EVP_EC_gen("P-256");
+    if (!p->ca_key || !p->other_key || !p->resp_key || !p->self_key || !leaf_key) goto out;
+    p->ca = crl_make_cert(p->ca_key, p->ca_key, NULL, 1, "break test ocsp ca", true);
+    p->other_ca = crl_make_cert(p->other_key, p->other_key, NULL, 2, "break other ca", true);
+    if (p->ca == NULL || p->other_ca == NULL) goto out;
+    p->leaf = crl_make_cert(leaf_key, p->ca_key, p->ca, CRL_LEAF_SERIAL, "localhost", false);
+    p->sibling = crl_make_cert(leaf_key, p->ca_key, p->ca, CRL_LEAF_SERIAL + 1, "localhost", false);
+    p->responder = ocsp_make_responder(p->resp_key, p->ca_key, p->ca, 7, true);
+    p->responder_no_eku = ocsp_make_responder(p->resp_key, p->ca_key, p->ca, 8, false);
+    p->self = crl_make_cert(p->self_key, p->self_key, NULL, 9, "localhost", false);
+    ok = p->leaf && p->sibling && p->responder && p->responder_no_eku && p->self &&
+         crl_write_pem_x509(p->ca_path, p->ca) && crl_write_pem_x509(p->leaf_path, p->leaf) &&
+         crl_write_pem_x509(p->self_path, p->self) && ocsp_write_key(p->leaf_key_path, leaf_key) &&
+         ocsp_write_key(p->self_key_path, p->self_key);
+out:
+    EVP_PKEY_free(leaf_key);
+    return ok;
+}
+
+static void ocsp_pki_free(OcspPki *p) {
+    remove(p->ca_path);
+    remove(p->leaf_path);
+    remove(p->leaf_key_path);
+    remove(p->self_path);
+    remove(p->self_key_path);
+    remove(p->crl_path);
+    X509_free(p->ca);
+    X509_free(p->other_ca);
+    X509_free(p->leaf);
+    X509_free(p->sibling);
+    X509_free(p->responder);
+    X509_free(p->responder_no_eku);
+    X509_free(p->self);
+    EVP_PKEY_free(p->ca_key);
+    EVP_PKEY_free(p->other_key);
+    EVP_PKEY_free(p->resp_key);
+    EVP_PKEY_free(p->self_key);
+}
+
+/* One OCSP response for `subject` issued by `issuer`: the CertID uses
+ * id_md, the times are seconds relative to now (no_next: no nextUpdate),
+ * and the response is signed by signer/signer_key. resp_status other than
+ * successful carries no body. */
+typedef struct OcspSpec {
+    const EVP_MD *id_md;
+    X509 *subject;
+    X509 *issuer;
+    int status;
+    long this_s;
+    long next_s;
+    bool no_next;
+    X509 *signer;
+    EVP_PKEY *signer_key;
+    int resp_status;
+    bool force_body; /* sign and attach the body whatever resp_status says */
+} OcspSpec;
+
+static size_t ocsp_build(const OcspSpec *spec, unsigned char *out, size_t cap) {
+    OCSP_BASICRESP *bs = NULL;
+    OCSP_RESPONSE *resp = NULL;
+    OCSP_CERTID *id = NULL;
+    ASN1_TIME *thisu = NULL, *nextu = NULL, *rev = NULL;
+    unsigned char *w = out;
+    size_t n = 0u;
+    int len;
+    if (spec->resp_status == OCSP_RESPONSE_STATUS_SUCCESSFUL || spec->force_body) {
+        bs = OCSP_BASICRESP_new();
+        id = OCSP_cert_to_id(spec->id_md, spec->subject, spec->issuer);
+        thisu = X509_gmtime_adj(NULL, spec->this_s);
+        nextu = spec->no_next ? NULL : X509_gmtime_adj(NULL, spec->next_s);
+        rev = X509_gmtime_adj(NULL, -3600L);
+        if (bs == NULL || id == NULL || thisu == NULL ||
+            OCSP_basic_add1_status(bs, id, spec->status, OCSP_REVOKED_STATUS_NOSTATUS,
+                                   spec->status == V_OCSP_CERTSTATUS_REVOKED ? rev : NULL,
+                                   thisu, nextu) == NULL ||
+            OCSP_basic_sign(bs, spec->signer, spec->signer_key, EVP_sha256(), NULL, 0) != 1) {
+            goto out;
+        }
+    }
+    resp = OCSP_response_create(spec->resp_status, bs);
+    len = resp != NULL ? i2d_OCSP_RESPONSE(resp, NULL) : -1;
+    if (len > 0 && (size_t)len <= cap && i2d_OCSP_RESPONSE(resp, &w) == len) n = (size_t)len;
+out:
+    OCSP_RESPONSE_free(resp);
+    OCSP_BASICRESP_free(bs);
+    OCSP_CERTID_free(id);
+    ASN1_TIME_free(thisu);
+    ASN1_TIME_free(nextu);
+    ASN1_TIME_free(rev);
+    return n;
+}
+
+/* A good response for the leaf, signed by its CA, valid from an hour ago
+ * for a day. Tests change one field at a time. */
+static OcspSpec ocsp_good(const OcspPki *p) {
+    OcspSpec s;
+    memset(&s, 0, sizeof(s));
+    s.id_md = EVP_sha1();
+    s.subject = p->leaf;
+    s.issuer = p->ca;
+    s.status = V_OCSP_CERTSTATUS_GOOD;
+    s.this_s = -3600L;
+    s.next_s = 24L * 3600L;
+    s.signer = p->ca;
+    s.signer_key = p->ca_key;
+    s.resp_status = OCSP_RESPONSE_STATUS_SUCCESSFUL;
+    return s;
+}
+
+/* GET from a server presenting cert/key and stapling der[0..len). */
+static BreakHttpError ocsp_get_from(const char *cert, const char *key, const char *ca, bool tls,
+                                    bool require, const unsigned char *der, size_t len,
+                                    const char *crl, bool *asked) {
+    Server s;
+    char url[128];
+    u8 buf[16];
+    u64 got = 0;
+    BreakHttpConfig cfg;
+    BreakHttpError e;
+    static const char r[] = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ca_file = ca;
+    cfg.io_timeout_ms = 3000;
+    cfg.require_ocsp_staple = require;
+    cfg.crl_file = crl;
+    if (!server_start_cert(&s, tls, r, sizeof(r) - 1u, cert, key)) return BHTTP_ERR_CONNECT;
+    s.ocsp_der = der;
+    s.ocsp_len = len;
+    server_go(&s);
+    url_of(&s, tls ? "https" : "http", tls ? "localhost" : "127.0.0.1", "/x", url, sizeof(url));
+    e = break_http_get(&cfg, url, buf, sizeof(buf), &got);
+    server_stop(&s);
+    if (asked != NULL) *asked = atomic_load(&s.saw_status_request);
+    if (e == BHTTP_OK && (got != 5u || memcmp(buf, "hello", 5) != 0)) return BHTTP_ERR_PROTOCOL;
+    return e;
+}
+
+static BreakHttpError ocsp_get(const OcspPki *p, const OcspSpec *spec) {
+    static unsigned char der[8192];
+    size_t n = ocsp_build(spec, der, sizeof(der));
+    if (n == 0u) return BHTTP_ERR_CONNECT;
+    return ocsp_get_from(p->leaf_path, p->leaf_key_path, p->ca_path, true, true, der, n, NULL,
+                         NULL);
+}
+
+TEST(a_good_stapled_ocsp_response_is_accepted_control) {
+    OcspPki p;
+    OcspSpec s;
+    bool asked = false;
+    static unsigned char der[8192];
+    size_t n;
+    ASSERT_TRUE(ocsp_pki_init(&p));
+    s = ocsp_good(&p);
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_OK);
+    s.id_md = EVP_sha256();
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_OK);
+    s = ocsp_good(&p);
+    s.signer = p.responder;
+    s.signer_key = p.resp_key;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_OK);
+    /* the client asked for the staple, and CRL checking can be on as well */
+    s = ocsp_good(&p);
+    n = ocsp_build(&s, der, sizeof(der));
+    ASSERT_TRUE(n > 0u);
+    ASSERT_TRUE(crl_write(p.crl_path, crl_make(p.ca_key, p.ca, 0, -1, 7)));
+    ASSERT_EQ(ocsp_get_from(p.leaf_path, p.leaf_key_path, p.ca_path, true, true, der, n,
+                            p.crl_path, &asked),
+              BHTTP_OK);
+    ASSERT_TRUE(asked);
+    ocsp_pki_free(&p);
+}
+
+TEST(a_revoked_or_unknown_leaf_is_rejected_and_the_check_is_opt_in) {
+    OcspPki p;
+    OcspSpec s;
+    bool asked = true;
+    static unsigned char der[8192];
+    size_t n;
+    ASSERT_TRUE(ocsp_pki_init(&p));
+    s = ocsp_good(&p);
+    s.status = V_OCSP_CERTSTATUS_REVOKED;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    s.status = V_OCSP_CERTSTATUS_UNKNOWN;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    s.status = V_OCSP_CERTSTATUS_REVOKED;
+    n = ocsp_build(&s, der, sizeof(der));
+    ASSERT_TRUE(n > 0u);
+    ASSERT_EQ(ocsp_get_from(p.leaf_path, p.leaf_key_path, p.ca_path, true, false, der, n, NULL,
+                            &asked),
+              BHTTP_OK);
+    ASSERT_FALSE(asked);
+    /* plain loopback http ignores the requirement */
+    ASSERT_EQ(ocsp_get_from(p.leaf_path, p.leaf_key_path, p.ca_path, false, true, NULL, 0u, NULL,
+                            NULL),
+              BHTTP_OK);
+    ocsp_pki_free(&p);
+}
+
+TEST(a_missing_malformed_or_unsuccessful_staple_is_rejected) {
+    OcspPki p;
+    OcspSpec s;
+    static unsigned char der[8192];
+    static const unsigned char junk[] = {0x30, 0x03, 0x0a, 0x01, 0x00};
+    size_t n;
+    ASSERT_TRUE(ocsp_pki_init(&p));
+    ASSERT_EQ(ocsp_get_from(p.leaf_path, p.leaf_key_path, p.ca_path, true, true, NULL, 0u, NULL,
+                            NULL),
+              BHTTP_ERR_TLS);
+    ASSERT_EQ(ocsp_get_from(p.leaf_path, p.leaf_key_path, p.ca_path, true, true,
+                            (const unsigned char *)"garbage", 7u, NULL, NULL),
+              BHTTP_ERR_TLS);
+    /* a well-formed "successful" response without a body */
+    ASSERT_EQ(ocsp_get_from(p.leaf_path, p.leaf_key_path, p.ca_path, true, true, junk,
+                            sizeof(junk), NULL, NULL),
+              BHTTP_ERR_TLS);
+    s = ocsp_good(&p);
+    n = ocsp_build(&s, der, sizeof(der) - 1u);
+    ASSERT_TRUE(n > 0u);
+    der[n] = 0x00;
+    ASSERT_EQ(ocsp_get_from(p.leaf_path, p.leaf_key_path, p.ca_path, true, true, der, n + 1u,
+                            NULL, NULL),
+              BHTTP_ERR_TLS);
+    s.resp_status = OCSP_RESPONSE_STATUS_TRYLATER;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    /* a valid good body does not rescue an unsuccessful response status */
+    s.force_body = true;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    s.resp_status = OCSP_RESPONSE_STATUS_INTERNALERROR;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    ocsp_pki_free(&p);
+}
+
+TEST(stapled_response_times_are_checked_with_a_300_second_tolerance) {
+    OcspPki p;
+    OcspSpec s;
+    ASSERT_TRUE(ocsp_pki_init(&p));
+    s = ocsp_good(&p);
+    s.no_next = true;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    s = ocsp_good(&p);
+    s.this_s = -7200L;
+    s.next_s = -3600L;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    s.next_s = -60L;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_OK);
+    s = ocsp_good(&p);
+    s.this_s = 3600L;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    s.this_s = 60L;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_OK);
+    ocsp_pki_free(&p);
+}
+
+TEST(a_staple_from_an_unauthorised_signer_or_for_another_certificate_is_rejected) {
+    OcspPki p;
+    OcspSpec s;
+    ASSERT_TRUE(ocsp_pki_init(&p));
+    s = ocsp_good(&p);
+    s.signer = p.other_ca;
+    s.signer_key = p.other_key;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    s = ocsp_good(&p);
+    s.signer = p.responder_no_eku;
+    s.signer_key = p.resp_key;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    s = ocsp_good(&p);
+    s.subject = p.sibling;
+    ASSERT_EQ(ocsp_get(&p, &s), BHTTP_ERR_TLS);
+    ocsp_pki_free(&p);
+}
+
+TEST(a_self_signed_leaf_has_no_issuer_to_vouch_for_its_staple) {
+    OcspPki p;
+    OcspSpec s;
+    static unsigned char der[8192];
+    size_t n;
+    ASSERT_TRUE(ocsp_pki_init(&p));
+    s = ocsp_good(&p);
+    s.subject = p.self;
+    s.issuer = p.self;
+    s.signer = p.self;
+    s.signer_key = p.self_key;
+    n = ocsp_build(&s, der, sizeof(der));
+    ASSERT_TRUE(n > 0u);
+    ASSERT_EQ(ocsp_get_from(p.self_path, p.self_key_path, p.self_path, true, false, der, n, NULL,
+                            NULL),
+              BHTTP_OK);
+    ASSERT_EQ(ocsp_get_from(p.self_path, p.self_key_path, p.self_path, true, true, der, n, NULL,
+                            NULL),
+              BHTTP_ERR_TLS);
+    ocsp_pki_free(&p);
+}
+
 /* ---- HTTP CONNECT proxy ---- */
 
 /* Scripted forward proxy: records the CONNECT head, sends `reply` and, when
@@ -2484,6 +2867,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_crl_gap_expiry_or_foreign_signer_is_rejected);
     RUN_TEST(an_unreadable_or_empty_crl_file_fails_before_connecting);
     RUN_TEST(every_certificate_in_the_chain_needs_a_crl_from_its_issuer);
+    RUN_TEST(a_good_stapled_ocsp_response_is_accepted_control);
+    RUN_TEST(a_revoked_or_unknown_leaf_is_rejected_and_the_check_is_opt_in);
+    RUN_TEST(a_missing_malformed_or_unsuccessful_staple_is_rejected);
+    RUN_TEST(stapled_response_times_are_checked_with_a_300_second_tolerance);
+    RUN_TEST(a_staple_from_an_unauthorised_signer_or_for_another_certificate_is_rejected);
+    RUN_TEST(a_self_signed_leaf_has_no_issuer_to_vouch_for_its_staple);
     RUN_TEST(https_through_a_connect_proxy_reaches_the_target);
     RUN_TEST(the_connect_line_brackets_ipv6_and_always_names_the_port);
     RUN_TEST(a_refused_tunnel_is_a_status_error_and_the_target_is_never_reached);
