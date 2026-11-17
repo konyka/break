@@ -46,6 +46,11 @@ typedef struct NetClient {
     u32 next_seq;
     u8 server_nonce[16];
     bool skip_server_probe;
+    bool auth_sent;
+    u32 welcomes;
+    u32 bad_welcomes;
+    u32 messages_before_welcome;
+    u64 session_id;
 } NetClient;
 
 static u64 now_ms(void) {
@@ -239,6 +244,23 @@ static int client_recv(NetClient *c, BreakNetEnvelope *env, u32 timeout_ms) {
                 if (break_net_envelope_decode(frame, need, env) != BREAK_NET_ENVELOPE_OK) {
                     return -1;
                 }
+                /* The session welcome is consumed here, whatever the caller
+                 * waits for, and must precede every other application
+                 * message after AUTH. */
+                if (env->message_id == CORE_APP_SESSION_WELCOME_MESSAGE_ID) {
+                    u64 id = 0u;
+                    if (env->protocol_version != 1u ||
+                        core_app_session_welcome_decode((const u8 *)env->payload,
+                                                        env->payload_size, &id) !=
+                            CORE_APP_SNAPSHOT_OK) {
+                        c->bad_welcomes++;
+                    } else {
+                        if (c->welcomes == 0u) c->session_id = id;
+                        c->welcomes++;
+                    }
+                    continue;
+                }
+                if (c->auth_sent && c->welcomes == 0u) c->messages_before_welcome++;
                 /* Server clock requests are answered here, whatever the
                  * caller waits for, so none is dropped by a helper that
                  * skips other ids. */
@@ -319,7 +341,19 @@ static bool client_auth(NetClient *c, const u8 psk[32]) {
     if (!break_crypto_hmac_sha256(psk, 32u, context, sizeof(context), payload + 24u)) {
         return false;
     }
+    c->auth_sent = true;
     return client_send(c, BREAK_NET_MESSAGE_ID_AUTH, 2u, payload, sizeof(payload));
+}
+
+/* Exactly one well-formed welcome, before any other message after AUTH. */
+static void check_welcome(const NetClient *c, const char *peer) {
+    char what[64];
+    snprintf(what, sizeof(what), "%s_session_welcome_first", peer);
+    check(c->welcomes == 1u && c->bad_welcomes == 0u && c->messages_before_welcome == 0u &&
+              c->session_id != 0u,
+          what);
+    fprintf(g_report, "session_welcome peer=%s session=%llu welcomes=%u\n", peer,
+            (unsigned long long)c->session_id, c->welcomes);
 }
 
 /* Waits for the next snapshot; other envelope ids are skipped. */
@@ -339,13 +373,15 @@ static int client_next_snapshot(NetClient *c, CoreAppSnapshot *out, u32 timeout_
     return 0;
 }
 
-/* Waits until the server closes the connection. Fails if a snapshot arrives
- * first, because a rejected peer must never receive one. */
+/* Waits until the server closes the connection. Fails if a snapshot or a
+ * session welcome arrives first, because a rejected peer must never receive
+ * one. */
 static bool client_closed_without_snapshot(NetClient *c, u32 timeout_ms) {
     u64 deadline = now_ms() + timeout_ms;
     while (now_ms() < deadline) {
         BreakNetEnvelope env;
         int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (c->welcomes != 0u || c->bad_welcomes != 0u) return false;
         if (got < 0) return true;
         if (got == 1 && (env.message_id == CORE_APP_SNAPSHOT_MESSAGE_ID ||
                          env.message_id == BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT)) {
@@ -720,6 +756,19 @@ static void scenario_authenticated(void) {
     check(client_auth(&a, g_psk), "a_auth_sent");
     int got = client_next_snapshot(&a, &first, 15000u);
     check(got == 1, "a_received_snapshot");
+    check_welcome(&a, "a");
+    {
+        /* A welcome sent the other way has no handler on the server: it is
+         * counted and the session stays open (A keeps working below). */
+        u8 welcome[CORE_APP_SESSION_WELCOME_BYTES];
+        size_t welcome_size = 0u;
+        check(core_app_session_welcome_encode(a.session_id ? a.session_id : 1u, welcome,
+                                              sizeof(welcome), &welcome_size) ==
+                      CORE_APP_SNAPSHOT_OK &&
+                  client_send(&a, CORE_APP_SESSION_WELCOME_MESSAGE_ID, 1u, welcome,
+                              welcome_size),
+              "a_sent_welcome_to_server");
+    }
     if (got == 1) {
         check(snapshot_shape_ok(&first), "a_snapshot_fields");
         fprintf(g_report,
@@ -749,6 +798,8 @@ static void scenario_authenticated(void) {
         check(client_open(&a2), "a2_tls_challenge");
         check(client_auth(&a2, g_psk), "a2_auth_sent");
         check(client_next_snapshot(&a2, &a2_first, 10000u) == 1, "a2_authenticated");
+        check_welcome(&a2, "a2");
+        check(a2.session_id != a.session_id, "a2_session_differs_from_a");
         /* Echo the authority's own physics report (a match), then the same
          * report with a flipped hash (a desync), then a short payload. */
         u8 report[NET_CLIENT_PHYSICS_REPORT_BYTES];
@@ -857,6 +908,7 @@ static void scenario_alive_at_end(void) {
     check(client_open(&f), "f_tls_challenge");
     check(client_auth(&f, g_psk), "f_auth_sent");
     check(client_next_snapshot(&f, &snapshot, 5000u) == 1, "f_server_alive_at_end");
+    check_welcome(&f, "f");
     client_close(&f);
 }
 
@@ -871,6 +923,7 @@ static void scenario_late_auth(void) {
     nanosleep(&pause, NULL);
     check(client_auth(&g, g_psk), "g_auth_sent_after_pause");
     check(client_next_snapshot(&g, &snapshot, 5000u) == 1, "g_receives_snapshot_after_late_auth");
+    check_welcome(&g, "g");
     client_close(&g);
 }
 

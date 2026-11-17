@@ -27,6 +27,11 @@
 #if CORE_APP_CLOCK_PROBE_MESSAGE_ID != BREAK_NET_MESSAGE_ID_CLOCK_PROBE
 #error "core_app clock probe id must match the default message registry"
 #endif
+#if CORE_APP_SESSION_WELCOME_MESSAGE_ID != BREAK_NET_MESSAGE_ID_SESSION_WELCOME
+#error "core_app session welcome id must match the default message registry"
+#endif
+_Static_assert(CORE_APP_SESSION_WELCOME_BYTES == BREAK_NET_SESSION_WELCOME_PAYLOAD,
+               "core_app session welcome size must match the registry payload limit");
 _Static_assert(CORE_APP_CLOCK_PROBE_BYTES == BREAK_NET_CLOCK_PROBE_PAYLOAD,
                "core_app clock probe size must match the registry payload limit");
 _Static_assert(CORE_APP_SNAPSHOT_MAX_BYTES == BREAK_NET_CORE_SNAPSHOT_MAX_PAYLOAD,
@@ -82,6 +87,7 @@ typedef struct CoreAppNetStats {
     u64 clock_replies_unmatched;
     u64 clock_probes_lost;
     u64 clock_samples_rejected;
+    u64 session_welcomes_sent;
 } CoreAppNetStats;
 
 /* Probes this server sends to one peer. */
@@ -118,6 +124,7 @@ struct CoreAppNetTransport {
     u64 live_generation;
     BreakConnectionKey keys[CORE_APP_NET_MAX_CONNECTIONS];
     bool authenticated[CORE_APP_NET_MAX_CONNECTIONS];
+    bool welcomed[CORE_APP_NET_MAX_CONNECTIONS];
     bool closing[CORE_APP_NET_MAX_CONNECTIONS];
     bool correction_pending[CORE_APP_NET_MAX_CONNECTIONS];
     PhysicsSyncBaseline physics_baselines[CORE_APP_NET_MAX_CONNECTIONS];
@@ -220,6 +227,7 @@ static int net_slot_add(CoreAppNetTransport *t, BreakConnectionKey key) {
         if (t->keys[i] == 0u) {
             t->keys[i] = key;
             t->authenticated[i] = false;
+            t->welcomed[i] = false;
             t->closing[i] = false;
             t->correction_pending[i] = false;
             physics_sync_baseline_release(&t->physics_baselines[i]);
@@ -404,6 +412,7 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
             if (slot >= 0) {
                 t->keys[slot] = 0u;
                 t->authenticated[slot] = false;
+                t->welcomed[slot] = false;
                 t->closing[slot] = false;
                 t->session_ids[slot] = 0u;
                 t->correction_pending[slot] = false;
@@ -424,11 +433,41 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
  * that authenticated. Connection keys are reused with transport slots, so a
  * close still waiting in the event queue could otherwise let a new,
  * unauthenticated connection inherit the old key. */
-static bool net_slot_sendable(const CoreAppNetTransport *t, u32 i) {
+static bool net_slot_live(const CoreAppNetTransport *t, u32 i) {
     BreakConnectionKey key = t->keys[i];
     return key != 0u && t->authenticated[i] && !t->closing[i] &&
            break_session_manager_state(t->manager, key) == BREAK_SESSION_AUTHENTICATED &&
            break_session_manager_session_id(t->manager, key) == t->session_ids[i];
+}
+
+/* Everything else waits for the welcome, so it is the first application
+ * message a peer receives after AUTH. */
+static bool net_slot_sendable(const CoreAppNetTransport *t, u32 i) {
+    return t->welcomed[i] && net_slot_live(t, i);
+}
+
+/* Tells each newly authenticated peer the session number this server's
+ * trace names it by. A send that fails is retried on the next pump. */
+static void net_send_welcomes(CoreAppNetTransport *t) {
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        if (t->welcomed[i] || !net_slot_live(t, i)) continue;
+        u8 wire[CORE_APP_SESSION_WELCOME_BYTES];
+        usize size = 0u;
+        if (core_app_session_welcome_encode(t->session_ids[i], wire, sizeof(wire), &size) !=
+            CORE_APP_SNAPSHOT_OK) {
+            continue;
+        }
+        BreakNetSendResult sent = break_net_reactor_send(
+            t->reactor, t->keys[i], CORE_APP_SESSION_WELCOME_MESSAGE_ID, 1u, wire, size);
+        if (sent == BREAK_NET_SEND_OK) {
+            t->welcomed[i] = true;
+            t->stats.session_welcomes_sent++;
+        } else if (sent == BREAK_NET_SEND_OVERLOAD) {
+            t->stats.send_overloads++;
+        } else {
+            t->stats.send_closed++;
+        }
+    }
 }
 
 static void net_send_clock_replies(CoreAppNetTransport *t) {
@@ -502,6 +541,7 @@ static void net_send_pending(CoreAppNetTransport *t) {
     /* Unprocessed events may include a close for a key that a new
      * connection already reuses; hold snapshots until the queue is empty. */
     if (!break_net_reactor_event_queue_empty(t->reactor)) return;
+    net_send_welcomes(t);
     net_send_clock_replies(t);
     if (t->producing) net_send_clock_requests(t);
     while (core_app_snapshot_outbox_pop(&t->outbox, snapshot)) {
@@ -705,7 +745,7 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              " clock_probe_decode_failed=%" PRIu64 " clock_probes_sent=%" PRIu64
              " clock_replies_matched=%" PRIu64 " clock_replies_unmatched=%" PRIu64
              " clock_probes_lost=%" PRIu64 " clock_samples_rejected=%" PRIu64
-             " physics_delta_corrections_sent=%" PRIu64 "\n",
+             " physics_delta_corrections_sent=%" PRIu64 " session_welcomes_sent=%" PRIu64 "\n",
              t->stats.opened, t->stats.closed, t->stats.refused, t->stats.authenticated,
              t->stats.snapshots_sent, t->stats.send_overloads, t->stats.send_closed,
              t->stats.outbox_overloads, t->stats.auth_timeouts, t->stats.decode_failed, t->inbox.accepted_snapshots,
@@ -718,7 +758,8 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              t->stats.clock_probes_answered, t->stats.clock_probe_decode_failed,
              t->stats.clock_probes_sent, t->stats.clock_replies_matched,
              t->stats.clock_replies_unmatched, t->stats.clock_probes_lost,
-             t->stats.clock_samples_rejected, t->stats.physics_delta_corrections_sent);
+             t->stats.clock_samples_rejected, t->stats.physics_delta_corrections_sent,
+             t->stats.session_welcomes_sent);
     net_trace(t, line);
 }
 
@@ -766,6 +807,7 @@ static BreakRuntimeError net_destroy(void *user) {
     }
     memset(t->keys, 0, sizeof(t->keys));
     memset(t->authenticated, 0, sizeof(t->authenticated));
+    memset(t->welcomed, 0, sizeof(t->welcomed));
     memset(t->closing, 0, sizeof(t->closing));
     memset(t->session_ids, 0, sizeof(t->session_ids));
     net_release_baselines(t);

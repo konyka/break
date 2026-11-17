@@ -11585,3 +11585,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `test_break_crash_symbolize` 新增 14 项（共 37）：逐字节构造的 Mach-O 镜像（布局、别名、跳过规则、UUID、格式拒绝、所有截断、结构破坏、随机破坏、`ncmds` 上限、对齐、`__TEXT` 下界、符号库与记录、分派器），以及 `clang` + `ld64.lld` 生成的真实 dylib 与可执行文件对 `llvm-nm` 的核对。
 - 先 RED（编译失败，接口不存在）后 GREEN。29 项变异首轮 7 项存活，补测试后 4 项被捕获；“剩余命令字节不足 8”只在 ASan 下变红，其余 2 项为等价变异，见设计文档。影子变量检查通过（rc=0）。
 - 仍缺：生产部署的收集服务、minidump、Windows 符号化、arm64 帧展开、fat 文件。
+
+### 2026-11-17 core_app：服务端告知对端会话号
+- `engine/src/network/break_net_message_registry.{h,c}`：默认注册表新增 `0x4005` `BREAK_NET_MESSAGE_ID_SESSION_WELCOME`（v1，16 B，AUTHENTICATED，IDEMPOTENT），count 26 / 25。
+- `engine/apps/core_app/core_app_network.{h,c}`：`core_app_session_welcome_encode` / `_decode`（`SESW` magic、保留 u32、非 0 的 u64 会话号）。
+- `engine/apps/core_app/core_app_net_transport.c`：每槽 `welcomed`；欢迎先于其他应用消息发送，之前该槽不可发送；`network_stats` 追加 `session_welcomes_sent`。
+- 测试：`test_core_app_network` 新增 3 项（共 19）；`test_break_session` 注册表断言；loopback 客户端要求 A、A2、F、G 各收到一条且最先到达、A 与 A2 不同、被拒绝的对端收不到；驱动脚本要求欢迎数等于认证数、会话号属于已认证会话且互不重复。
+- 先 RED（编译失败；随后 loopback 与 late_auth 因收不到欢迎失败）后 GREEN。17 项变异中 15 项被捕获，剩余 2 项为纵深防御，见设计文档。loopback 连续 12 次通过。影子变量检查通过（rc=0）。
+- 仍缺：core_app 运行时作为客户端运行并把会话号写进自己的 trace。
+

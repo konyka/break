@@ -245,6 +245,30 @@ CoreAppSnapshotOutcome core_app_clock_probe_answer(const CoreAppClockProbe *requ
     return CORE_APP_SNAPSHOT_OK;
 }
 
+CoreAppSnapshotOutcome core_app_session_welcome_encode(u64 session_id, u8 *out_buffer,
+                                                       size_t capacity, size_t *out_size) {
+    if (!out_buffer || !out_size || session_id == 0u) return CORE_APP_SNAPSHOT_INVALID;
+    if (capacity < CORE_APP_SESSION_WELCOME_BYTES) return CORE_APP_SNAPSHOT_OVER_LIMIT;
+    put_u32(out_buffer, CORE_APP_SESSION_WELCOME_MAGIC);
+    put_u32(out_buffer + 4, 0u);
+    put_u64(out_buffer + 8, session_id);
+    *out_size = CORE_APP_SESSION_WELCOME_BYTES;
+    return CORE_APP_SNAPSHOT_OK;
+}
+
+CoreAppSnapshotOutcome core_app_session_welcome_decode(const u8 *payload, size_t size,
+                                                       u64 *out_session_id) {
+    if (!payload || !out_session_id) return CORE_APP_SNAPSHOT_INVALID;
+    if (size < CORE_APP_SESSION_WELCOME_BYTES) return CORE_APP_SNAPSHOT_TRUNCATED;
+    if (size > CORE_APP_SESSION_WELCOME_BYTES) return CORE_APP_SNAPSHOT_OVER_LIMIT;
+    if (get_u32(payload) != CORE_APP_SESSION_WELCOME_MAGIC) return CORE_APP_SNAPSHOT_BAD_MAGIC;
+    if (get_u32(payload + 4) != 0u) return CORE_APP_SNAPSHOT_INVALID;
+    u64 id = get_u64(payload + 8);
+    if (id == 0u) return CORE_APP_SNAPSHOT_INVALID;
+    *out_session_id = id;
+    return CORE_APP_SNAPSHOT_OK;
+}
+
 void core_app_snapshot_outbox_init(CoreAppSnapshotOutbox *outbox) {
     if (!outbox) return;
     memset(outbox, 0, sizeof(*outbox));

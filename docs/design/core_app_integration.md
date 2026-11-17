@@ -1508,3 +1508,26 @@ loopback 场景 A 收到第一个完整修正（本机 10644 字节）后，用�
 为排查稳定性，本次把 loopback 连续跑了 20 多次，发现两处与时序有关的偶发失败，都在测试客户端，已修正：
 - `a_answered_server_clock_probes`：原来要求累计应答 6 次服务端时钟探测，但前面各阶段已经应答了多少次取决于时序。跳过的那一次可能出现在累计已满 6 次之后，于是判定失败。现在改为：等到跳过的请求出现后，再应答 2 次，并且累计不少于 6 次。
 - `a_received_delta_physics_correction`：第一次修正前重复发出的 desync 可能晚到，每次都触发一个新的完整修正，把服务端基线移到客户端正在确认的 tick 之后。三轮重试都可能落空。现在每轮先读到比持有基线新 4 个 tick 的报告，并在此之前应用途中收到的所有修正，确认的就是服务端最新的基线。修改后连续 15 次通过，每次都在第 1 轮拿到增量包。
+
+## 补充（2026-11-17）：服务端告知对端会话号
+
+认证成功后，服务端给对端发一条会话欢迎消息 `0x4005`（`BREAK_NET_MESSAGE_ID_SESSION_WELCOME`，v1，只在 AUTHENTICATED 阶段接受，`IDEMPOTENT`）。载荷恰好 16 字节，小端：`[0]` u32 magic `SESW`（`0x57534553`）、`[4]` u32 保留须为 0、`[8]` u64 会话号（非 0）。会话号与服务端 trace 里 `network_session result=authenticated session=S` 和 `network_clock_offset session=S` 的 `S` 相同，对端把它写进自己的 trace，`trace_merge --session S PEER.json` 就不再需要人工对应。
+
+- `core_app_session_welcome_encode`：会话号为 0 或指针为 NULL 返回 INVALID，容量不足返回 OVER_LIMIT，失败不碰缓冲区。
+- `core_app_session_welcome_decode`：长度不足返回 TRUNCATED，超长返回 OVER_LIMIT，magic 错返回 BAD_MAGIC，保留字节非 0 或会话号为 0 返回 INVALID，失败不写输出。
+- transport：每个连接槽有 `welcomed` 标志。`net_send_pending` 先发欢迎，再发时钟应答、时钟请求、snapshot、物理报告；在欢迎发出之前该槽不算可发送（`net_slot_sendable` 要求 `welcomed`），所以欢迎是对端认证后收到的第一条应用消息。发送失败时下一次 pump 重试。槽复用、关闭、销毁时清零。`network_stats` 末尾追加 `session_welcomes_sent`。
+- 服务端不为 `0x4005` 注册处理函数。对端发来的欢迎消息被会话层计为 `handler_failed`，连接不关闭。
+
+loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收到一条合法欢迎，且在任何其他应用消息之前；A 与 A2 的会话号不同；被拒绝的对端（未认证、未知 id、错误 PSK、认证超时）收不到欢迎。A 还向服务端发一条欢迎，之后会话仍可用。驱动脚本要求 `session_welcomes_sent` 等于 `authenticated`，客户端报告里的每个会话号都是服务端 trace 里的已认证会话，且互不重复。见 `docs/superpowers/plans/2026-11-17-session-welcome.md`。
+
+变异测试 16 项，加上一项组合变异：
+- 编解码 8 项全部被捕获。
+- transport 中“不发欢迎”“重复发送”“不计数”“会话号错误”被捕获。
+- 槽复用时和关闭时的两处清零单独去掉都不变红，两者互为冗余；同时去掉时被捕获（复用槽的新对端收不到欢迎）。
+- 去掉 `net_slot_sendable` 对 `welcomed` 的要求不变红：欢迎在同一次 pump 中最先发出，只有欢迎发送失败（过载）时顺序才会被打乱，loopback 不会出现这种情况。
+- 把“槽已认证且会话号一致”放宽为“槽非空”不变红：未认证槽的会话号为 0，编码器拒绝 0，所以仍然不会发出。这两条是纵深防御，没有测试单独钉住。
+
+本机 loopback 与 late_auth 连续 12 次通过。
+
+仍缺：core_app 运行时本身还没有作为客户端运行，所以没有哪个发布二进制会把会话号写进对端 trace；目前只有测试客户端读取它。
+

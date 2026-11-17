@@ -367,6 +367,73 @@ TEST(clock_probe_exchange_feeds_the_offset_estimator) {
     ASSERT_EQ(estimate.delay_us, 600);
 }
 
+static const u8 k_welcome[CORE_APP_SESSION_WELCOME_BYTES] = {
+    0x53, 0x45, 0x53, 0x57, 0x00, 0x00, 0x00, 0x00,
+    0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01};
+
+TEST(session_welcome_round_trips_with_golden_bytes) {
+    u8 wire[CORE_APP_SESSION_WELCOME_BYTES + 4u];
+    size_t size = 0u;
+    u64 id = 0u;
+    memset(wire, 0xa5, sizeof(wire));
+    ASSERT_EQ(core_app_session_welcome_encode(0x0102030405060708ull, wire, sizeof(wire), &size),
+              CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(size, (size_t)CORE_APP_SESSION_WELCOME_BYTES);
+    ASSERT_TRUE(memcmp(wire, k_welcome, sizeof(k_welcome)) == 0);
+    ASSERT_EQ(wire[CORE_APP_SESSION_WELCOME_BYTES], 0xa5u);
+    ASSERT_EQ(core_app_session_welcome_decode(wire, size, &id), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(id, 0x0102030405060708ull);
+    ASSERT_EQ(core_app_session_welcome_encode(1u, wire, CORE_APP_SESSION_WELCOME_BYTES, &size),
+              CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(core_app_session_welcome_decode(wire, size, &id), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(id, 1u);
+}
+
+TEST(session_welcome_decode_rejects_every_malformed_payload) {
+    u8 wire[CORE_APP_SESSION_WELCOME_BYTES + 1u];
+    u64 id = 77u;
+    memcpy(wire, k_welcome, sizeof(k_welcome));
+    wire[CORE_APP_SESSION_WELCOME_BYTES] = 0u;
+    for (size_t n = 0u; n < CORE_APP_SESSION_WELCOME_BYTES; ++n) {
+        ASSERT_EQ(core_app_session_welcome_decode(wire, n, &id), CORE_APP_SNAPSHOT_TRUNCATED);
+    }
+    ASSERT_EQ(core_app_session_welcome_decode(wire, sizeof(wire), &id), CORE_APP_SNAPSHOT_OVER_LIMIT);
+    ASSERT_EQ(core_app_session_welcome_decode(NULL, CORE_APP_SESSION_WELCOME_BYTES, &id),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_session_welcome_decode(wire, CORE_APP_SESSION_WELCOME_BYTES, NULL),
+              CORE_APP_SNAPSHOT_INVALID);
+    static const struct { usize at; u8 value; CoreAppSnapshotOutcome want; } bad[] = {
+        {0u, 0x00u, CORE_APP_SNAPSHOT_BAD_MAGIC},
+        {3u, 0x58u, CORE_APP_SNAPSHOT_BAD_MAGIC},
+        {4u, 0x01u, CORE_APP_SNAPSHOT_INVALID},
+        {7u, 0x80u, CORE_APP_SNAPSHOT_INVALID},
+    };
+    for (usize i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        memcpy(wire, k_welcome, sizeof(k_welcome));
+        wire[bad[i].at] = bad[i].value;
+        ASSERT_EQ(core_app_session_welcome_decode(wire, CORE_APP_SESSION_WELCOME_BYTES, &id),
+                  bad[i].want);
+    }
+    memcpy(wire, k_welcome, sizeof(k_welcome));
+    memset(wire + 8, 0, 8u); /* session id 0 */
+    ASSERT_EQ(core_app_session_welcome_decode(wire, CORE_APP_SESSION_WELCOME_BYTES, &id),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(id, 77u);
+}
+
+TEST(session_welcome_encode_refuses_invalid_values_without_writing) {
+    u8 wire[CORE_APP_SESSION_WELCOME_BYTES];
+    size_t size = 99u;
+    memset(wire, 0x5a, sizeof(wire));
+    ASSERT_EQ(core_app_session_welcome_encode(0u, wire, sizeof(wire), &size), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_session_welcome_encode(1u, wire, sizeof(wire) - 1u, &size),
+              CORE_APP_SNAPSHOT_OVER_LIMIT);
+    ASSERT_EQ(core_app_session_welcome_encode(1u, NULL, sizeof(wire), &size), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_session_welcome_encode(1u, wire, sizeof(wire), NULL), CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(size, 99u);
+    for (usize i = 0; i < sizeof(wire); ++i) ASSERT_EQ(wire[i], 0x5au);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(snapshot_build_rejects_entity_count_over_capacity);
     RUN_TEST(snapshot_roundtrip_preserves_fields);
@@ -384,4 +451,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(clock_probe_decode_rejects_every_malformed_payload);
     RUN_TEST(clock_probe_encode_and_answer_refuse_invalid_values);
     RUN_TEST(clock_probe_exchange_feeds_the_offset_estimator);
+    RUN_TEST(session_welcome_round_trips_with_golden_bytes);
+    RUN_TEST(session_welcome_decode_rejects_every_malformed_payload);
+    RUN_TEST(session_welcome_encode_refuses_invalid_values_without_writing);
 TEST_MAIN_END()

@@ -30,6 +30,10 @@ extern "C" {
  * AUTHENTICATED only; every probe is exactly 32 bytes. */
 #define BREAK_NET_MESSAGE_ID_CLOCK_PROBE 0x4004u
 #define BREAK_NET_CLOCK_PROBE_PAYLOAD 32u
+/* core_app session welcome (engine/apps/core_app/core_app_network.h): the
+ * server tells an authenticated peer its session number; exactly 16 bytes. */
+#define BREAK_NET_MESSAGE_ID_SESSION_WELCOME 0x4005u
+#define BREAK_NET_SESSION_WELCOME_PAYLOAD 16u
 #define BREAK_NET_MESSAGE_ID_MAX 65535u
 #define BREAK_NET_REGISTRY_MAX_MESSAGES 64u
 #define BREAK_NET_MAX_PAYLOAD_SIZE (64u * 1024u)

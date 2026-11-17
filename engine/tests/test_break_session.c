@@ -1039,9 +1039,9 @@ TEST(break_session_registry_has_physics_sync_messages)
     ASSERT_EQ(correction->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
     ASSERT_EQ(correction->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
 #ifdef BREAK_ENABLE_CRYPTO
-    ASSERT_EQ(registry->count, 25u);
+    ASSERT_EQ(registry->count, 26u);
 #else
-    ASSERT_EQ(registry->count, 24u);
+    ASSERT_EQ(registry->count, 25u);
 #endif
     {
         const BreakNetMessageDefinition *probe = break_net_message_registry_lookup(
@@ -1054,6 +1054,18 @@ TEST(break_session_registry_has_physics_sync_messages)
         ASSERT_EQ(BREAK_NET_CLOCK_PROBE_PAYLOAD, 32u);
         ASSERT_EQ(probe->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
         ASSERT_EQ(probe->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+    }
+    {
+        const BreakNetMessageDefinition *welcome = break_net_message_registry_lookup(
+            registry, BREAK_NET_MESSAGE_ID_SESSION_WELCOME);
+        ASSERT_EQ(BREAK_NET_MESSAGE_ID_SESSION_WELCOME, 0x4005u);
+        ASSERT_NOT_NULL(welcome);
+        ASSERT_EQ(welcome->minimum_version, 1u);
+        ASSERT_EQ(welcome->maximum_version, 1u);
+        ASSERT_EQ(welcome->payload_limit, (size_t)BREAK_NET_SESSION_WELCOME_PAYLOAD);
+        ASSERT_EQ(BREAK_NET_SESSION_WELCOME_PAYLOAD, 16u);
+        ASSERT_EQ(welcome->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+        ASSERT_EQ(welcome->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
     }
 
     memset(payload, 0x5a, sizeof(payload));

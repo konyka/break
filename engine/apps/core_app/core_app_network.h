@@ -125,6 +125,23 @@ CoreAppSnapshotOutcome core_app_clock_probe_answer(const CoreAppClockProbe *requ
                                                    u64 t1, u64 t2,
                                                    CoreAppClockProbe *reply);
 
+/* Session welcome: after authentication the server sends each peer the
+ * session number it names that peer by in its own trace. Little-endian
+ * layout: [0] u32 magic, [4] u32 reserved zero, [8] u64 session id
+ * (non-zero). */
+#define CORE_APP_SESSION_WELCOME_MAGIC 0x57534553u /* "SESW" */
+#define CORE_APP_SESSION_WELCOME_BYTES 16u
+#define CORE_APP_SESSION_WELCOME_MESSAGE_ID 0x4005u
+
+/* Writes exactly CORE_APP_SESSION_WELCOME_BYTES. A zero id is INVALID. On
+ * failure neither the buffer nor *out_size is touched. */
+CoreAppSnapshotOutcome core_app_session_welcome_encode(u64 session_id, u8 *out_buffer,
+                                                       size_t capacity, size_t *out_size);
+/* Validates size, magic, reserved bytes and a non-zero id; *out_session_id
+ * is written only on success. */
+CoreAppSnapshotOutcome core_app_session_welcome_decode(const u8 *payload, size_t size,
+                                                       u64 *out_session_id);
+
 /* Inbound authority firewall.
  *
  * A decoded peer snapshot is diagnostic data. Feeding it to this function is
