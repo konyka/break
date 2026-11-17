@@ -1,3 +1,11 @@
+## 音频参考延迟线的因果 sinc 模式（2026-11-18）
+
+- **交付**：`AudioDelayLine` 新增可选 16 tap Blackman 加窗 sinc 插值与三个模式/延迟访问接口；有效延迟为 D+8，默认线性和旧整数行为不变。历史环扩展 32 项并单独保存配置最大值，支持原地、任意分块和下一帧模式切换。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-sinc-delay-design.md`、`docs/superpowers/plans/2026-11-18-audio-sinc-delay.md`。
+- **TDD 与评审**：先在三个新符号处链接 RED，再实现至 18/18；独立评审发现 sinc 过冲转 i16 的未定义行为，新增正负满幅过冲 RED 后增加取整后饱和处理。
+- **定向验证**：普通及 ASan+UBSan 均 18/18；严格 `-Wall -Wextra -Wshadow -Wdouble-promotion -pedantic` 无告警；额外延迟、Blackman 符号、核归一化、最大延迟、线性权重和饱和处理六个变异均被测试捕获。scoped 复审 Ready，无剩余 Critical/Important。
+- **全量验证**：`/tmp/full_trees.sh` 的实际计数为 429/429、429/429、437/437，三次构建均成功且零测试失败。
+- **边界**：单声道，无连续延迟交叉淡化、自动质量选择或真实声学验证；该模式不是完整重采样器，漂移补偿仍由 `audio_drift_resampler` 负责。
+
 ## Core App transport stop 超时单元测试（2026-11-15）
 
 - **交付**：新增 `test_core_app_net_transport`，链接 `break_net_test`，用真实 TLS 监听与另一线程中被延迟的 step 迫使 reactor stop 超时。transport 增加只在 `CORE_APP_NET_TRANSPORT_TESTING` 下编译的 `core_app_net_transport_reactor_for_test` 与 `core_app_net_transport_reclaim_for_test`，生产行为不变。设计见 `docs/design/core_app_integration.md`「stop 超时 `leaked` 路径的单元测试」。

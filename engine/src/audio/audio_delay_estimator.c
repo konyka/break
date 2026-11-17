@@ -135,10 +135,17 @@ bool audio_delay_estimator_estimate_subframe(AudioDelayEstimator *est,
     return true;
 }
 
+#define AUDIO_DELAY_LINE_SINC_EXTRA_DELAY 8u
+#define AUDIO_DELAY_LINE_HISTORY_PADDING 32u
+
+static const double kPi = 3.14159265358979323846;
+
 struct AudioDelayLine {
-    u32 size; /* max_delay + 1 */
+    u32 max_delay;
+    u32 size;
     u32 write;
     double delay;
+    bool sinc;
     i16 *buffer;
 };
 
@@ -146,7 +153,8 @@ AudioResult audio_delay_line_create(u32 max_delay_frames, AudioDelayLine **out) 
     if (!out || max_delay_frames > AUDIO_DELAY_ESTIMATOR_MAX_DELAY) return AUDIO_INVALID;
     AudioDelayLine *line = (AudioDelayLine *)calloc(1u, sizeof(*line));
     if (!line) return AUDIO_OVERLOAD;
-    line->size = max_delay_frames + 1u;
+    line->max_delay = max_delay_frames;
+    line->size = max_delay_frames + AUDIO_DELAY_LINE_HISTORY_PADDING + 1u;
     line->buffer = (i16 *)calloc(line->size, sizeof(i16));
     if (!line->buffer) {
         free(line);
@@ -163,7 +171,7 @@ void audio_delay_line_destroy(AudioDelayLine *line) {
 }
 
 AudioResult audio_delay_line_set_delay(AudioDelayLine *line, u32 delay_frames) {
-    if (!line || delay_frames >= line->size) return AUDIO_INVALID;
+    if (!line || delay_frames > line->max_delay) return AUDIO_INVALID;
     line->delay = delay_frames;
     return AUDIO_OK;
 }
@@ -174,7 +182,7 @@ u32 audio_delay_line_delay(const AudioDelayLine *line) {
 
 AudioResult audio_delay_line_set_subframe_delay(AudioDelayLine *line, double delay_frames) {
     if (!line || !isfinite(delay_frames) || delay_frames < 0.0 ||
-        delay_frames > (double)(line->size - 1u)) {
+        delay_frames > (double)line->max_delay) {
         return AUDIO_INVALID;
     }
     line->delay = delay_frames;
@@ -185,6 +193,55 @@ double audio_delay_line_subframe_delay(const AudioDelayLine *line) {
     return line ? line->delay : 0.0;
 }
 
+AudioResult audio_delay_line_set_sinc(AudioDelayLine *line, bool enabled) {
+    if (!line) return AUDIO_INVALID;
+    line->sinc = enabled;
+    return AUDIO_OK;
+}
+
+bool audio_delay_line_sinc(const AudioDelayLine *line) {
+    return line ? line->sinc : false;
+}
+
+u32 audio_delay_line_sinc_extra_delay(const AudioDelayLine *line) {
+    return line && line->sinc ? AUDIO_DELAY_LINE_SINC_EXTRA_DELAY : 0u;
+}
+
+static u32 delay_line_read_index(const AudioDelayLine *line, u32 delay) {
+    return line->write >= delay ? line->write - delay
+                                : line->write + line->size - delay;
+}
+
+static double normalized_sinc(double value) {
+    return fabs(value) < 1e-12 ? 1.0 : sin(kPi * value) / (kPi * value);
+}
+
+static double delay_line_sinc_sample(const AudioDelayLine *line, u32 whole,
+                                     double fraction) {
+    if (fraction == 0.0) {
+        return line->buffer[delay_line_read_index(
+            line, whole + AUDIO_DELAY_LINE_SINC_EXTRA_DELAY)];
+    }
+    double value = 0.0, weight_sum = 0.0;
+    for (int j = -7; j <= 8; ++j) {
+        const int tap = j + 7;
+        const double window = 0.42 - 0.5 * cos(2.0 * kPi * tap / 15.0) +
+                              0.08 * cos(4.0 * kPi * tap / 15.0);
+        const double weight = normalized_sinc(fraction - j) * window;
+        const u32 source_delay = (u32)((int)whole + 8 + j);
+        value += line->buffer[delay_line_read_index(line, source_delay)] * weight;
+        weight_sum += weight;
+    }
+    return value / weight_sum;
+}
+
+static i16 delay_line_sinc_i16(double value) {
+    const double rounded = nearbyint(value);
+    if (rounded > 32767.0) return 32767;
+    if (rounded < -32768.0) return -32768;
+    return (i16)rounded;
+}
+
 void audio_delay_line_process_i16(AudioDelayLine *line, const i16 *in, i16 *out, u32 frames) {
     if (!line || !in || !out) return;
     for (u32 n = 0; n < frames; ++n) {
@@ -193,12 +250,16 @@ void audio_delay_line_process_i16(AudioDelayLine *line, const i16 *in, i16 *out,
         line->buffer[line->write] = in[n];
         const u32 whole = (u32)line->delay;
         const double fraction = line->delay - (double)whole;
-        const u32 read = line->write >= whole ? line->write - whole
-                                              : line->write + line->size - whole;
-        const u32 previous = read == 0u ? line->size - 1u : read - 1u;
-        const double value = (1.0 - fraction) * line->buffer[read] +
-                             fraction * line->buffer[previous];
-        out[n] = (i16)nearbyint(value);
+        double value = 0.0;
+        if (line->sinc) {
+            value = delay_line_sinc_sample(line, whole, fraction);
+        } else {
+            const u32 read = delay_line_read_index(line, whole);
+            const u32 previous = read == 0u ? line->size - 1u : read - 1u;
+            value = (1.0 - fraction) * line->buffer[read] +
+                    fraction * line->buffer[previous];
+        }
+        out[n] = line->sinc ? delay_line_sinc_i16(value) : (i16)nearbyint(value);
         line->write = line->write + 1u == line->size ? 0u : line->write + 1u;
     }
 }

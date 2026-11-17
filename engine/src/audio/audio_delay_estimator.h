@@ -58,6 +58,12 @@ u32 audio_delay_line_delay(const AudioDelayLine *line); /* integer part; 0 for N
  * No crossfade. The integer setter is equivalent to an integer call here. */
 AudioResult audio_delay_line_set_subframe_delay(AudioDelayLine *line, double delay_frames);
 double audio_delay_line_subframe_delay(const AudioDelayLine *line); /* 0 for NULL */
-/* out[n] is the current integer or linearly interpolated delayed input;
+/* Selects a causal 16-tap Blackman-windowed sinc interpolator. The configured
+ * delay accessors still report D, but processing delays input by D + 8.
+ * INVALID for NULL; mode changes take effect on the next frame. */
+AudioResult audio_delay_line_set_sinc(AudioDelayLine *line, bool enabled);
+bool audio_delay_line_sinc(const AudioDelayLine *line); /* false for NULL */
+u32 audio_delay_line_sinc_extra_delay(const AudioDelayLine *line); /* 0 for NULL */
+/* out[n] is the current integer, linearly interpolated, or sinc delayed input;
  * `in` and `out` may be the same buffer. */
 void audio_delay_line_process_i16(AudioDelayLine *line, const i16 *in, i16 *out, u32 frames);

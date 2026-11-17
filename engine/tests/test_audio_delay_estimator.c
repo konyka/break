@@ -390,13 +390,14 @@ static double power(const i16 *x, u32 n) {
 
 /* runs the canceller over g_ref/g_cap with the reference delayed by `delay`
  * and returns the ERLE of the last 4000 frames in dB */
-static double erle_with_delay(u32 delay) {
+static double erle_with_delay_mode(u32 delay, bool use_sinc) {
     static i16 ref[N], out[N];
     AudioEchoCancellerConfig config = {48000u, 32u, 0.5f, 0.0f, 0.0f};
     AudioEchoCanceller *aec = NULL;
     AudioDelayLine *line = NULL;
     if (audio_echo_canceller_create(&config, &aec) != AUDIO_OK) return -1.0;
     if (audio_delay_line_create(1000u, &line) != AUDIO_OK) return -1.0;
+    if (audio_delay_line_set_sinc(line, use_sinc) != AUDIO_OK) return -1.0;
     audio_delay_line_set_delay(line, delay);
     audio_delay_line_process_i16(line, g_ref, ref, N);
     memcpy(out, g_cap, sizeof(out));
@@ -404,6 +405,212 @@ static double erle_with_delay(u32 delay) {
     audio_delay_line_destroy(line);
     audio_echo_canceller_destroy(aec);
     return 10.0 * log10(power(g_cap + N - 4000u, 4000u) / power(out + N - 4000u, 4000u));
+}
+
+static double erle_with_delay(u32 delay) {
+    return erle_with_delay_mode(delay, false);
+}
+
+TEST(the_delay_line_sinc_mode_validates_arguments)
+{
+    AudioDelayLine *line = NULL;
+    ASSERT_EQ(audio_delay_line_set_sinc(NULL, true), AUDIO_INVALID);
+    ASSERT_TRUE(!audio_delay_line_sinc(NULL));
+    ASSERT_EQ(audio_delay_line_sinc_extra_delay(NULL), 0u);
+    ASSERT_EQ(audio_delay_line_create(8u, &line), AUDIO_OK);
+    ASSERT_TRUE(!audio_delay_line_sinc(line));
+    ASSERT_EQ(audio_delay_line_sinc_extra_delay(line), 0u);
+    ASSERT_EQ(audio_delay_line_set_sinc(line, true), AUDIO_OK);
+    ASSERT_TRUE(audio_delay_line_sinc(line));
+    ASSERT_EQ(audio_delay_line_sinc_extra_delay(line), 8u);
+    ASSERT_EQ(audio_delay_line_set_delay(line, 8u), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_delay(line, 9u), AUDIO_INVALID);
+    ASSERT_EQ(audio_delay_line_set_subframe_delay(line, 8.0), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_subframe_delay(line, 8.01), AUDIO_INVALID);
+    ASSERT_EQ(audio_delay_line_set_sinc(line, false), AUDIO_OK);
+    ASSERT_TRUE(!audio_delay_line_sinc(line));
+    ASSERT_EQ(audio_delay_line_sinc_extra_delay(line), 0u);
+    audio_delay_line_destroy(line);
+}
+
+TEST(sinc_integer_delays_have_eight_extra_frames)
+{
+    AudioDelayLine *line = NULL;
+    i16 in[40], out[40];
+    for (u32 i = 0; i < 40u; ++i) in[i] = (i16)(1000 + 37 * (int)i);
+    ASSERT_EQ(audio_delay_line_create(16u, &line), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_sinc(line, true), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_delay(line, 2u), AUDIO_OK);
+    audio_delay_line_process_i16(line, in, out, 20u);
+    for (u32 i = 0; i < 20u; ++i) ASSERT_EQ(out[i], i < 10u ? 0 : in[i - 10u]);
+    ASSERT_EQ(audio_delay_line_set_sinc(line, false), AUDIO_OK);
+    audio_delay_line_process_i16(line, in + 20u, out + 20u, 20u);
+    for (u32 i = 20u; i < 40u; ++i) ASSERT_EQ(out[i], in[i - 2u]);
+    ASSERT_EQ(audio_delay_line_delay(line), 2u);
+    audio_delay_line_destroy(line);
+}
+
+static double sinc_reference_value(const i16 *in, u32 n, double delay) {
+    const u32 whole = (u32)delay;
+    const double fraction = delay - (double)whole;
+    double value = 0.0, weight_sum = 0.0;
+    for (int j = -7; j <= 8; ++j) {
+        const int tap = j + 7;
+        const double window = 0.42 - 0.5 * cos(2.0 * kPi * tap / 15.0) +
+                              0.08 * cos(4.0 * kPi * tap / 15.0);
+        const double weight = sinc(fraction - j) * window;
+        const int source = (int)n - (int)whole - 8 - j;
+        if (source >= 0) value += in[source] * weight;
+        weight_sum += weight;
+    }
+    return value / weight_sum;
+}
+
+static i16 sinc_reference_sample(const i16 *in, u32 n, double delay) {
+    const double rounded = lrint(sinc_reference_value(in, n, delay));
+    if (rounded > 32767.0) return 32767;
+    if (rounded < -32768.0) return -32768;
+    return (i16)rounded;
+}
+
+TEST(sinc_fractional_delays_match_an_independent_kernel)
+{
+    AudioDelayLine *direct_line = NULL, *chunked_line = NULL;
+    i16 in[48], expected[48], direct[48], chunked[48];
+    for (u32 i = 0; i < 48u; ++i) {
+        in[i] = (i16)(((int)i * 977 % 24000) - 12000);
+        expected[i] = sinc_reference_sample(in, i, 2.25);
+    }
+    ASSERT_EQ(audio_delay_line_create(8u, &direct_line), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_create(8u, &chunked_line), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_sinc(direct_line, true), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_sinc(chunked_line, true), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_subframe_delay(direct_line, 2.25), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_subframe_delay(chunked_line, 2.25), AUDIO_OK);
+    audio_delay_line_process_i16(direct_line, in, direct, 48u);
+    memcpy(chunked, in, sizeof(in));
+    audio_delay_line_process_i16(chunked_line, chunked, chunked, 1u);
+    for (u32 at = 1u; at < 48u; at += 7u) {
+        const u32 frames = 48u - at < 7u ? 48u - at : 7u;
+        audio_delay_line_process_i16(chunked_line, chunked + at, chunked + at, frames);
+    }
+    for (u32 i = 0; i < 48u; ++i) {
+        ASSERT_EQ(direct[i], expected[i]);
+        ASSERT_EQ(chunked[i], expected[i]);
+    }
+    audio_delay_line_destroy(direct_line);
+    audio_delay_line_destroy(chunked_line);
+}
+
+TEST(sinc_full_scale_overshoot_saturates)
+{
+    AudioDelayLine *positive_line = NULL, *negative_line = NULL;
+    i16 positive_in[64] = {0}, negative_in[64] = {0};
+    i16 positive_out[64], negative_out[64];
+    for (int j = -7; j <= 8; ++j) {
+        const int tap = j + 7;
+        const double window = 0.42 - 0.5 * cos(2.0 * kPi * tap / 15.0) +
+                              0.08 * cos(4.0 * kPi * tap / 15.0);
+        const double weight = sinc(0.5 - j) * window;
+        const int source = 31 - 8 - j;
+        positive_in[source] = weight >= 0.0 ? 32767 : -32768;
+        negative_in[source] = weight >= 0.0 ? -32768 : 32767;
+    }
+    ASSERT_TRUE(sinc_reference_value(positive_in, 31u, 0.5) > 32767.0);
+    ASSERT_TRUE(sinc_reference_value(negative_in, 31u, 0.5) < -32768.0);
+    ASSERT_EQ(audio_delay_line_create(1u, &positive_line), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_create(1u, &negative_line), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_sinc(positive_line, true), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_sinc(negative_line, true), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_subframe_delay(positive_line, 0.5), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_subframe_delay(negative_line, 0.5), AUDIO_OK);
+    audio_delay_line_process_i16(positive_line, positive_in, positive_out, 64u);
+    audio_delay_line_process_i16(negative_line, negative_in, negative_out, 64u);
+    for (u32 i = 0; i < 64u; ++i) {
+        ASSERT_EQ(positive_out[i], sinc_reference_sample(positive_in, i, 0.5));
+        ASSERT_EQ(negative_out[i], sinc_reference_sample(negative_in, i, 0.5));
+    }
+    audio_delay_line_destroy(positive_line);
+    audio_delay_line_destroy(negative_line);
+}
+
+static double tone_amplitude(const i16 *samples, u32 frames) {
+    double sine = 0.0, cosine = 0.0;
+    for (u32 i = 0; i < frames; ++i) {
+        const double phase = 2.0 * kPi * i / 6.0;
+        sine += samples[i] * sin(phase);
+        cosine += samples[i] * cos(phase);
+    }
+    return 2.0 * sqrt(sine * sine + cosine * cosine) / frames;
+}
+
+TEST(sinc_interpolation_preserves_high_frequency_tones_and_dc)
+{
+    AudioDelayLine *sinc_line = NULL, *linear_line = NULL, *dc_line = NULL;
+    i16 in[2048], sinc_out[2048], linear_out[2048];
+    for (u32 i = 0; i < 2048u; ++i) {
+        in[i] = (i16)lrint(12000.0 * sin(2.0 * kPi * i / 6.0));
+    }
+    ASSERT_EQ(audio_delay_line_create(1u, &sinc_line), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_create(1u, &linear_line), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_sinc(sinc_line, true), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_subframe_delay(sinc_line, 0.5), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_subframe_delay(linear_line, 0.5), AUDIO_OK);
+    audio_delay_line_process_i16(sinc_line, in, sinc_out, 2048u);
+    audio_delay_line_process_i16(linear_line, in, linear_out, 2048u);
+    const double sinc_amplitude = tone_amplitude(sinc_out + 1024u, 1024u);
+    const double linear_amplitude = tone_amplitude(linear_out + 1024u, 1024u);
+    ASSERT_TRUE(sinc_amplitude >= 11400.0);
+    ASSERT_FLOAT_EQ(linear_amplitude, 10386.9295, 0.001);
+    audio_delay_line_destroy(sinc_line);
+    audio_delay_line_destroy(linear_line);
+
+    i16 dc_in[32], dc_out[32];
+    for (u32 i = 0; i < 32u; ++i) dc_in[i] = 1234;
+    ASSERT_EQ(audio_delay_line_create(0u, &dc_line), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_sinc(dc_line, true), AUDIO_OK);
+    audio_delay_line_process_i16(dc_line, dc_in, dc_out, 32u);
+    for (u32 i = 0; i < 32u; ++i) ASSERT_EQ(dc_out[i], i < 8u ? 0 : 1234);
+    audio_delay_line_destroy(dc_line);
+}
+
+TEST(sinc_maximum_delay_and_recreate_preserve_bounds)
+{
+    AudioDelayLine *line = NULL;
+    i16 in[24], out[24];
+    for (u32 i = 0; i < 24u; ++i) in[i] = (i16)(300 + 19 * (int)i);
+    ASSERT_EQ(audio_delay_line_create(4u, &line), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_sinc(line, true), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_subframe_delay(line, 4.0), AUDIO_OK);
+    audio_delay_line_process_i16(line, in, out, 24u);
+    for (u32 i = 0; i < 24u; ++i) ASSERT_EQ(out[i], i < 12u ? 0 : in[i - 12u]);
+    ASSERT_EQ(audio_delay_line_set_subframe_delay(line, 4.25), AUDIO_INVALID);
+    ASSERT_FLOAT_EQ(audio_delay_line_subframe_delay(line), 4.0, 0.0);
+    ASSERT_EQ(audio_delay_line_set_sinc(line, false), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_set_sinc(line, true), AUDIO_OK);
+    ASSERT_EQ(audio_delay_line_sinc_extra_delay(line), 8u);
+    audio_delay_line_destroy(line);
+
+    ASSERT_EQ(audio_delay_line_create(4u, &line), AUDIO_OK);
+    ASSERT_TRUE(!audio_delay_line_sinc(line));
+    ASSERT_EQ(audio_delay_line_set_delay(line, 4u), AUDIO_OK);
+    audio_delay_line_process_i16(line, in, out, 4u);
+    for (u32 i = 0; i < 4u; ++i) ASSERT_EQ(out[i], 0);
+    audio_delay_line_destroy(line);
+}
+
+TEST(sinc_latency_can_be_compensated_for_the_canceller)
+{
+    make_echo(300u, 0.4, 0.0);
+    AudioDelayEstimator *est = make_estimator(1000u, 4096u);
+    ASSERT_TRUE(est != NULL);
+    audio_delay_estimator_push_i16(est, g_ref, g_cap, N);
+    u32 delay = 0u;
+    double corr = 0.0;
+    ASSERT_TRUE(audio_delay_estimator_estimate(est, &delay, &corr));
+    ASSERT_EQ(delay, 300u);
+    audio_delay_estimator_destroy(est);
+    ASSERT_TRUE(erle_with_delay_mode(delay - 8u, true) > 30.0);
 }
 
 TEST(the_estimated_delay_aligns_the_reference_for_the_canceller)
@@ -434,5 +641,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(subframe_estimates_handle_inversion_and_failure);
     RUN_TEST(the_delay_line_interpolates_fractional_delays);
     RUN_TEST(the_delay_line_shifts_frames_by_the_delay);
+    RUN_TEST(the_delay_line_sinc_mode_validates_arguments);
+    RUN_TEST(sinc_integer_delays_have_eight_extra_frames);
+    RUN_TEST(sinc_fractional_delays_match_an_independent_kernel);
+    RUN_TEST(sinc_full_scale_overshoot_saturates);
+    RUN_TEST(sinc_interpolation_preserves_high_frequency_tones_and_dc);
+    RUN_TEST(sinc_maximum_delay_and_recreate_preserve_bounds);
+    RUN_TEST(sinc_latency_can_be_compensated_for_the_canceller);
     RUN_TEST(the_estimated_delay_aligns_the_reference_for_the_canceller);
 TEST_MAIN_END()
