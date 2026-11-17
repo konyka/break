@@ -112,7 +112,8 @@ void audio_gcc_phat_push_i16(AudioGccPhat *phat, const i16 *reference,
     phat->pushed += frames;
 }
 
-bool audio_gcc_phat_estimate(AudioGccPhat *phat, double *delay_frames, double *peak) {
+static bool gcc_phat_estimate(AudioGccPhat *phat, double *delay_frames, double *peak,
+                              u32 *selected_lag) {
     if (!phat || !delay_frames || !peak || phat->pushed < phat->history) return false;
     const i16 *reference = phat->reference + phat->pos;
     const i16 *capture = phat->capture + phat->pos;
@@ -169,5 +170,31 @@ bool audio_gcc_phat_estimate(AudioGccPhat *phat, double *delay_frames, double *p
     }
     *delay_frames = result;
     *peak = best;
+    if (selected_lag) *selected_lag = best_lag;
+    return true;
+}
+
+bool audio_gcc_phat_estimate(AudioGccPhat *phat, double *delay_frames, double *peak) {
+    return gcc_phat_estimate(phat, delay_frames, peak, NULL);
+}
+
+bool audio_gcc_phat_estimate_with_confidence(AudioGccPhat *phat, double *delay_frames,
+                                             double *confidence) {
+    if (!phat || !delay_frames || !confidence) return false;
+    double delay = 0.0, peak = 0.0;
+    u32 lag = 0u;
+    if (!gcc_phat_estimate(phat, &delay, &peak, &lag)) return false;
+    const i16 *reference = phat->reference + phat->pos + phat->max_delay - lag;
+    const i16 *capture = phat->capture + phat->pos + phat->max_delay;
+    i64 cr = 0, cc = 0, rr = 0;
+    for (u32 i = 0; i < phat->window; ++i) {
+        const i64 c = capture[i], r = reference[i];
+        cr += c * r;
+        cc += c * c;
+        rr += r * r;
+    }
+    if (rr == 0) return false;
+    *delay_frames = delay;
+    *confidence = (double)cr / sqrt((double)cc * (double)rr);
     return true;
 }

@@ -27,3 +27,9 @@ void audio_gcc_phat_push_i16(AudioGccPhat *phat, const i16 *reference,
  * absolute peaks receive guarded parabolic
  * refinement; boundaries and invalid curves return the integer lag. */
 bool audio_gcc_phat_estimate(AudioGccPhat *phat, double *delay_frames, double *peak);
+/* Same delay selection as audio_gcc_phat_estimate, plus the signed normalized
+ * sample correlation at the selected integer lag. False with untouched outputs
+ * on the existing failures or when that reference window has zero energy. */
+bool audio_gcc_phat_estimate_with_confidence(AudioGccPhat *phat,
+                                             double *delay_frames,
+                                             double *confidence);

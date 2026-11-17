@@ -1,3 +1,11 @@
+## GCC-PHAT 的归一化置信度（2026-11-18）
+
+- **交付**：新增 `audio_gcc_phat_estimate_with_confidence`，返回既有细化延迟及所选整数 lag 的带符号 `cr/sqrt(cc*rr)`，与 tracker 门控同义；旧 raw-peak API 不变。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-gcc-confidence-design.md`、`docs/superpowers/plans/2026-11-18-audio-gcc-confidence.md`。
+- **TDD 与评审**：新符号链接 RED 后实现至 8/8；独立 i64 参考覆盖干净、噪声、反相、分数和最大 lag。零能量参考窗口及既有失败路径均保持输出不变。独立评审 Ready，无遗留发现。
+- **定向验证**：普通及 ASan+UBSan 均 8/8，严格告警为零；分子、分母、lag 索引、零能量保护和失败写入五个变异全部被捕获。
+- **全量验证**：`/tmp/full_trees.sh` 的实际计数为 429/429、429/429、437/437，三次构建均成功且零测试失败。
+- **边界**：尚未自动接入 tracker；置信度不改变 PHAT 权重，也不是所有信号的检测质量保证。
+
 ## 漂移补偿重采样器的 sinc 质量模式（2026-11-18）
 
 - **交付**：`AudioDriftResampler` 新增可选 16 tap Blackman 加窗 sinc、8 输入帧前瞻和 32 项内嵌历史；默认线性输出与动态比率不变，reset 保留比率和模式。支持双向模式切换，切回线性时从真实历史补齐积压位置。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-drift-sinc-design.md`、`docs/superpowers/plans/2026-11-18-audio-drift-sinc.md`。

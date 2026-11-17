@@ -283,6 +283,121 @@ TEST(internal_fft_size_and_exact_tie_selection)
     ASSERT_FLOAT_EQ(peak, -1.0, 0.0);
 }
 
+static double direct_signed_score(u32 lag, u32 window) {
+    i64 cr = 0, cc = 0, rr = 0;
+    for (u32 i = N - window; i < N; ++i) {
+        const i64 c = g_cap[i], r = g_ref[i - lag];
+        cr += c * r;
+        cc += c * c;
+        rr += r * r;
+    }
+    return (double)cr / sqrt((double)cc * (double)rr);
+}
+
+TEST(confidence_failure_is_atomic_and_delay_matches_legacy)
+{
+    double delay = 99.0, confidence = 0.5;
+    ASSERT_TRUE(!audio_gcc_phat_estimate_with_confidence(NULL, &delay, &confidence));
+    AudioGccPhat *phat = make_phat(64u, 1024u);
+    ASSERT_TRUE(phat != NULL);
+    ASSERT_TRUE(!audio_gcc_phat_estimate_with_confidence(phat, NULL, &confidence));
+    ASSERT_TRUE(!audio_gcc_phat_estimate_with_confidence(phat, &delay, NULL));
+    make_echo(17u, 0.4, 1000.0);
+    audio_gcc_phat_push_i16(phat, g_ref, g_cap, 1087u);
+    ASSERT_TRUE(!audio_gcc_phat_estimate_with_confidence(phat, &delay, &confidence));
+    ASSERT_FLOAT_EQ(delay, 99.0, 0.0);
+    ASSERT_FLOAT_EQ(confidence, 0.5, 0.0);
+    audio_gcc_phat_push_i16(phat, g_ref + 1087u, g_cap + 1087u, 1u);
+    ASSERT_TRUE(audio_gcc_phat_estimate_with_confidence(phat, &delay, &confidence));
+    double legacy_delay = 0.0, peak = 0.0;
+    ASSERT_TRUE(audio_gcc_phat_estimate(phat, &legacy_delay, &peak));
+    ASSERT_FLOAT_EQ(delay, legacy_delay, 0.0);
+    double repeated_delay = 0.0, repeated_confidence = 0.0;
+    ASSERT_TRUE(audio_gcc_phat_estimate_with_confidence(phat, &repeated_delay,
+                                                        &repeated_confidence));
+    ASSERT_FLOAT_EQ(repeated_delay, delay, 0.0);
+    ASSERT_FLOAT_EQ(repeated_confidence, confidence, 0.0);
+
+    static i16 zero[N];
+    memset(zero, 0, sizeof(zero));
+    audio_gcc_phat_reset(phat);
+    audio_gcc_phat_push_i16(phat, g_ref, zero, 1088u);
+    delay = 88.0; confidence = 0.25;
+    ASSERT_TRUE(!audio_gcc_phat_estimate_with_confidence(phat, &delay, &confidence));
+    ASSERT_FLOAT_EQ(delay, 88.0, 0.0);
+    ASSERT_FLOAT_EQ(confidence, 0.25, 0.0);
+    audio_gcc_phat_reset(phat);
+    audio_gcc_phat_push_i16(phat, zero, g_cap, 1088u);
+    ASSERT_TRUE(!audio_gcc_phat_estimate_with_confidence(phat, &delay, &confidence));
+
+    memset(g_ref, 0, sizeof(g_ref));
+    memset(g_cap, 0, sizeof(g_cap));
+    g_ref[N - 1088u] = 32767;
+    g_cap[N - 1u] = 32767;
+    audio_gcc_phat_reset(phat);
+    audio_gcc_phat_push_i16(phat, g_ref, g_cap, N);
+    ASSERT_TRUE(audio_gcc_phat_estimate(phat, &legacy_delay, &peak));
+    ASSERT_TRUE(legacy_delay >= 0.0 && legacy_delay < 64.0);
+    ASSERT_TRUE(!audio_gcc_phat_estimate_with_confidence(phat, &delay, &confidence));
+    ASSERT_FLOAT_EQ(delay, 88.0, 0.0);
+    ASSERT_FLOAT_EQ(confidence, 0.25, 0.0);
+    audio_gcc_phat_destroy(phat);
+}
+
+static bool check_direct_confidence(AudioGccPhat *phat, u32 lag, u32 window,
+                                    double *out) {
+    double delay = 0.0, confidence = 0.0;
+    if (!audio_gcc_phat_estimate_with_confidence(phat, &delay, &confidence)) return false;
+    if (fabs(confidence - direct_signed_score(lag, window)) > 1e-12) return false;
+    if (confidence < -1.0 || confidence > 1.0) return false;
+    *out = confidence;
+    return true;
+}
+
+TEST(confidence_matches_direct_signed_sample_correlation)
+{
+    AudioGccPhat *phat = make_phat(64u, 1024u);
+    ASSERT_TRUE(phat != NULL);
+    double clean = 0.0, noisy = 0.0, inverted = 0.0;
+    make_echo(17u, 0.4, 0.0);
+    audio_gcc_phat_push_i16(phat, g_ref, g_cap, N);
+    ASSERT_TRUE(check_direct_confidence(phat, 17u, 1024u, &clean));
+    ASSERT_TRUE(clean > 0.99);
+    make_echo(17u, 0.4, 8000.0);
+    audio_gcc_phat_reset(phat);
+    audio_gcc_phat_push_i16(phat, g_ref, g_cap, N);
+    ASSERT_TRUE(check_direct_confidence(phat, 17u, 1024u, &noisy));
+    ASSERT_TRUE(fabs(noisy) < fabs(clean));
+
+    make_echo(17u, -0.4, 0.0);
+    audio_gcc_phat_reset(phat);
+    audio_gcc_phat_push_i16(phat, g_ref, g_cap, N);
+    ASSERT_TRUE(check_direct_confidence(phat, 17u, 1024u, &inverted));
+    ASSERT_TRUE(inverted < -0.99);
+    audio_gcc_phat_destroy(phat);
+
+    phat = make_phat(64u, 2048u);
+    ASSERT_TRUE(phat != NULL);
+    make_fractional_echo(12.5, 1000.0);
+    audio_gcc_phat_push_i16(phat, g_ref, g_cap, N);
+    double delay = 0.0, confidence = 0.0;
+    ASSERT_TRUE(audio_gcc_phat_estimate_with_confidence(phat, &delay, &confidence));
+    const u32 lower = (u32)floor(delay);
+    const u32 upper = (u32)ceil(delay);
+    const double lower_score = direct_signed_score(lower, 2048u);
+    const double upper_score = direct_signed_score(upper, 2048u);
+    ASSERT_TRUE(fabs(confidence - lower_score) <= 1e-12 ||
+                fabs(confidence - upper_score) <= 1e-12);
+    audio_gcc_phat_destroy(phat);
+
+    phat = make_phat(1000u, 1024u);
+    ASSERT_TRUE(phat != NULL);
+    make_echo(1000u, 0.4, 1000.0);
+    audio_gcc_phat_push_i16(phat, g_ref, g_cap, N);
+    ASSERT_TRUE(check_direct_confidence(phat, 1000u, 1024u, &confidence));
+    audio_gcc_phat_destroy(phat);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_readiness_and_silence);
     RUN_TEST(internal_fft_size_and_exact_tie_selection);
@@ -290,4 +405,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(repeated_estimates_are_deterministic);
     RUN_TEST(fractional_echoes_with_noise_have_subframe_peaks);
     RUN_TEST(chunking_reset_and_direct_reference_agree);
+    RUN_TEST(confidence_failure_is_atomic_and_delay_matches_legacy);
+    RUN_TEST(confidence_matches_direct_signed_sample_correlation);
 TEST_MAIN_END()

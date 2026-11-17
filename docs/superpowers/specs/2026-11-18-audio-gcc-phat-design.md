@@ -38,4 +38,4 @@ The opaque object supports create, destroy, reset, aligned `push_i16(reference,c
 
 ## Limits
 
-No automatic drift tracking integration, clock-drift compensation, multi-channel processing, normalized confidence score or real acoustic validation. PHAT emphasizes phase and can be sensitive to low-energy spectral bins; its raw peak must not be presented as normalized correlation.
+No automatic drift tracking integration, multi-channel processing or real acoustic validation. The normalized-confidence extension is specified in `docs/superpowers/specs/2026-11-18-audio-gcc-confidence-design.md`; clock-drift compensation is provided by the separate drift modules. PHAT emphasizes phase and can be sensitive to low-energy spectral bins; its raw peak must not be presented as normalized correlation.
