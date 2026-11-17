@@ -89,7 +89,7 @@ RESTART 保留 handle 并从头播放；STEAL_OLDEST 提升 generation，使旧 
 
 `audio_pcm_stream_set_interaural_delay(as, h, enabled)` 为空间流打开耳间时差：离声源较远的耳朵晚听到声音（open 时关闭；未 `set_spatial` 返回 `AUDIO_REJECTED`）。侧向量 `p` 取声像使用的 `listener_pan`（与右向量夹角的余弦），按 Woodworth 模型 `秒数 = r / c × (asin|p| + |p|)`，`r = AUDIO_PCM_STREAM_HEAD_RADIUS`（0.0875 m），`c = AUDIO_PCM_STREAM_SPEED_OF_SOUND`（343 m/s），乘 48000 后 `lrint` 取整：正前、正后、正上方和与监听者重合时为 0，正侧方为 `AUDIO_PCM_STREAM_ITD_MAX_FRAMES`（31 帧，约 0.65 ms），30° 时为 13 帧。声源在右侧时延迟左声道，在左侧时延迟右声道。
 
-带符号的帧数（正数表示左耳延迟）与增益、声像一起在所有者线程计算并作为一个原子 int 发布，混音回调每次读一次。混音器在后方提示之后、增益与声像之前把每个播放帧写入 64 帧（`AUDIO_PCM_STREAM_ITD_LINE_FRAMES`）的延迟线，远端耳朵从中读取延迟后的样本。延迟关闭时延迟线也照常写入，所以打开延迟或声源转到侧面时播放的是真实的历史，而不是插入静音。open 把延迟线清零。延迟变化时直接跳变，不做交叉淡化。
+带符号的帧数（正数表示左耳延迟）与增益、声像一起在所有者线程计算并作为一个原子 int 发布，混音回调每次读一次。混音器在后方提示之后、增益与声像之前把每个播放帧写入 64 帧（`AUDIO_PCM_STREAM_ITD_LINE_FRAMES`）的延迟线，远端耳朵从中读取延迟后的样本。延迟关闭时延迟线也照常写入，所以打开延迟或声源转到侧面时播放的是真实的历史，而不是插入静音。open 把延迟线清零。延迟变化（声源或监听者移动、开关提示）在新旧延迟之间用 32 帧（`AUDIO_PCM_STREAM_ITD_FADE_FRAMES`，约 0.67 ms）线性交叉淡化，两端耳朵各按自己的延迟读取，延迟未变的那只耳朵不混音、保持逐位精确。淡化进行中目标又变化时等这次淡化结束再开始下一次，输出保持连续。尚未播放过的延迟线（流在播放前摆位、voice 的每次 START）直接采用目标延迟，不淡化。
 
 ### 事件 voice 的声像
 

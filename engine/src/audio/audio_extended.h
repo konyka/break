@@ -58,7 +58,8 @@ typedef struct {
     /* Interaural time difference from the listener's orientation, like
      * audio_pcm_stream_set_interaural_delay: the far ear hears the voice up
      * to AUDIO_PCM_STREAM_ITD_MAX_FRAMES later. Each voice keeps its own
-     * delay line, zeroed when it starts. Requires `spatial`. */
+     * delay line, zeroed when it starts; a change of delay crossfades over
+     * AUDIO_PCM_STREAM_ITD_FADE_FRAMES frames. Requires `spatial`. */
     bool interaural_delay;
 } AudioEventDesc;
 
@@ -184,12 +185,15 @@ AudioResult audio_pcm_stream_set_rear_cue(AudioSystem *as, AudioPcmStreamHandle 
 #define AUDIO_PCM_STREAM_ITD_MAX_FRAMES 31u
 /* Frames of past output kept per stream for the delay (a power of two). */
 #define AUDIO_PCM_STREAM_ITD_LINE_FRAMES 64u
+/* Frames over which a change of delay crossfades from the old to the new. */
+#define AUDIO_PCM_STREAM_ITD_FADE_FRAMES 32u
 
 /* Interaural time difference for a spatial stream (no HRTF): the ear away
  * from the source hears it later, by r / c * (asin(p) + p) seconds with p the
  * lateral amount used by panning, rounded to whole frames (0 in front,
  * behind, above or on the listener; AUDIO_PCM_STREAM_ITD_MAX_FRAMES straight
- * to the side). A change of delay jumps without a crossfade. Off at open.
+ * to the side). A change of delay crossfades over
+ * AUDIO_PCM_STREAM_ITD_FADE_FRAMES frames. Off at open.
  * REJECTED for a stream without set_spatial. */
 AudioResult audio_pcm_stream_set_interaural_delay(AudioSystem *as, AudioPcmStreamHandle handle,
                                                   bool enabled);

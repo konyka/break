@@ -3013,6 +3013,63 @@ static bool check_delayed(const f32 *out, const i16 *pcm, u32 frames, u32 ear, u
     return true;
 }
 
+/* in[2k + c]: frame k of interleaved i16 PCM as both ears (mono) or each */
+static void itd_input(const i16 *pcm, u32 channels, u32 frames, f32 *in)
+{
+    for (u32 k = 0; k < frames; ++k) {
+        in[2u * k] = (f32)pcm[channels * k] / 32768.0f;
+        in[2u * k + 1u] = (f32)pcm[channels * k + channels - 1u] / 32768.0f;
+    }
+}
+
+static u32 ref_itd_back(i32 delay, u32 ear)
+{
+    if (ear == 0u) return delay > 0 ? (u32)delay : 0u;
+    return delay < 0 ? (u32)(-delay) : 0u;
+}
+
+/* Model of the delay from the first frame of a line: frame k wants delay
+ * target[k]. The first frame takes it; a later change fades over
+ * AUDIO_PCM_STREAM_ITD_FADE_FRAMES frames (step s mixes old * (1 - s / F)
+ * and new * s / F); a change during a fade waits for its end. */
+static void ref_itd(const f32 *in, const i32 *target, u32 frames, f32 *out)
+{
+    i32 current = 0, previous = 0;
+    u32 fade = 0u;
+    for (u32 k = 0; k < frames; ++k) {
+        if (k == 0u) {
+            current = target[0];
+        } else if (fade == 0u && target[k] != current) {
+            previous = current;
+            current = target[k];
+            fade = AUDIO_PCM_STREAM_ITD_FADE_FRAMES;
+        }
+        double t = fade == 0u ? 1.0 :
+            (double)(AUDIO_PCM_STREAM_ITD_FADE_FRAMES - fade + 1u) /
+                AUDIO_PCM_STREAM_ITD_FADE_FRAMES;
+        for (u32 ear = 0; ear < 2u; ++ear) {
+            u32 back = ref_itd_back(current, ear);
+            double now = k >= back ? in[2u * (k - back) + ear] : 0.0;
+            double v = now;
+            u32 old_back = ref_itd_back(previous, ear);
+            if (fade > 0u && old_back != back) {
+                double old = k >= old_back ? in[2u * (k - old_back) + ear] : 0.0;
+                v = old * (1.0 - t) + now * t;
+            }
+            out[2u * k + ear] = (f32)v;
+        }
+        if (fade > 0u) fade--;
+    }
+}
+
+static bool near_itd(const f32 *out, const f32 *want, u32 frames)
+{
+    for (u32 i = 0; i < 2u * frames; ++i) {
+        if (!(fabsf(out[i] - want[i]) <= 1e-6f)) return false;
+    }
+    return true;
+}
+
 TEST(pcm_stream_interaural_delay_arguments)
 {
     AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
@@ -3088,10 +3145,19 @@ TEST(pcm_stream_interaural_delay_delays_the_far_ear)
 
 TEST(pcm_stream_interaural_delay_plays_history_and_follows_the_listener)
 {
-    enum { kFrames = 40 };
+    enum { kFrames = 40, kFade = AUDIO_PCM_STREAM_ITD_FADE_FRAMES };
+    const i32 kMax = (i32)AUDIO_PCM_STREAM_ITD_MAX_FRAMES;
     i16 pcm[3u * kFrames];
+    static f32 in[2u * 3u * kFrames];
+    static f32 want[2u * 3u * kFrames];
+    static i32 target[3u * kFrames];
     static f32 out[2u * kFrames];
     random_pcm(pcm, 3u * kFrames, 99u);
+    itd_input(pcm, 1u, 3u * kFrames, in);
+    for (u32 k = 0; k < 3u * kFrames; ++k) {
+        target[k] = k >= kFrames && k < 2u * kFrames ? kMax : 0;
+    }
+    ref_itd(in, target, 3u * kFrames, want);
     AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
     ASSERT_NOT_NULL(as);
     AudioPcmStreamHandle h = open_itd_stream(as, 1u, vec3(2, 0, 0), false);
@@ -3099,22 +3165,32 @@ TEST(pcm_stream_interaural_delay_plays_history_and_follows_the_listener)
     ASSERT_EQ(published_itd(as, h), 0);
     ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
     ASSERT_TRUE(check_delayed(out, pcm, kFrames, 0u, 0u));
-    /* turned on: the late ear plays frames already heard, not silence */
+    /* turned on: the late ear fades over to frames already heard */
     ASSERT_EQ(audio_pcm_stream_set_interaural_delay(as, h, true), AUDIO_OK);
     ASSERT_TRUE(play_frames(as, h, pcm + kFrames, kFrames, out));
+    ASSERT_TRUE(near_itd(out, want + 2u * kFrames, kFrames));
+    /* the first step is mostly the old ear, the middle one half of each */
+    ASSERT_FLOAT_EQ(out[0], (f32)((pcm[kFrames] * (kFade - 1.0) +
+                                   pcm[kFrames - kMax]) / kFade / 32768.0), 1e-6f);
+    ASSERT_FLOAT_EQ(out[2u * (kFade / 2u - 1u)],
+                    (f32)((pcm[kFrames + kFade / 2u - 1u] +
+                           pcm[kFrames + kFade / 2u - 1u - kMax]) / 2.0 / 32768.0), 1e-6f);
     for (u32 k = 0; k < kFrames; ++k) {
-        ASSERT_FLOAT_EQ(out[2u * k],
-                        (f32)pcm[kFrames + k - AUDIO_PCM_STREAM_ITD_MAX_FRAMES] / 32768.0f, 0.0f);
         ASSERT_FLOAT_EQ(out[2u * k + 1u], (f32)pcm[kFrames + k] / 32768.0f, 0.0f);
+        if (k + 1u < kFade) continue;
+        ASSERT_FLOAT_EQ(out[2u * k], (f32)pcm[kFrames + k - kMax] / 32768.0f, 0.0f);
     }
-    /* the listener turns to face the source: no delay */
+    /* the listener turns to face the source: a fade back to no delay */
     audio_system_update(as, vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0));
     ASSERT_EQ(published_itd(as, h), 0);
     ASSERT_TRUE(play_frames(as, h, pcm + 2u * kFrames, kFrames, out));
-    ASSERT_TRUE(check_delayed(out, pcm + 2u * kFrames, kFrames, 0u, 0u));
+    ASSERT_TRUE(near_itd(out, want + 4u * kFrames, kFrames));
+    for (u32 k = kFade - 1u; k < kFrames; ++k) {
+        ASSERT_FLOAT_EQ(out[2u * k], (f32)pcm[2u * kFrames + k] / 32768.0f, 0.0f);
+    }
     /* turned off: no delay wherever the source is */
     audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0));
-    ASSERT_EQ(published_itd(as, h), (i32)AUDIO_PCM_STREAM_ITD_MAX_FRAMES);
+    ASSERT_EQ(published_itd(as, h), kMax);
     ASSERT_EQ(audio_pcm_stream_set_interaural_delay(as, h, false), AUDIO_OK);
     ASSERT_EQ(published_itd(as, h), 0);
     audio_system_destroy(as);
@@ -3140,8 +3216,8 @@ TEST(pcm_stream_interaural_delay_keeps_stereo_ears_apart_and_resets_on_reopen)
     {
         AudioPcmStream *stream = &((AudioExtended *)as->extended)->pcm_streams[(h & 7u) - 1u];
         for (u32 i = 0; i < AUDIO_PCM_STREAM_ITD_LINE_FRAMES; ++i) {
-            stream->itd_line[i][0] = 0.9f;
-            stream->itd_line[i][1] = 0.9f;
+            stream->itd.line[i][0] = 0.9f;
+            stream->itd.line[i][1] = 0.9f;
         }
     }
     ASSERT_EQ(audio_pcm_stream_close(as, h), AUDIO_OK);
@@ -3159,6 +3235,47 @@ TEST(pcm_stream_interaural_delay_keeps_stereo_ears_apart_and_resets_on_reopen)
     ASSERT_TRUE(play_frames(as, h, pcm, kFrames, out));
     for (u32 k = 0; k < AUDIO_PCM_STREAM_ITD_MAX_FRAMES; ++k) {
         ASSERT_FLOAT_EQ(out[2u * k + 1u], 0.0f, 0.0f);
+    }
+    audio_system_destroy(as);
+}
+
+/* A change while a fade runs waits for it: the source jumps from right to
+ * left, then to the front ten frames into that fade. Each ear of a stereo
+ * stream fades its own channel. */
+TEST(pcm_stream_interaural_delay_change_during_a_fade_waits_for_it)
+{
+    enum { kFrames = 80, kFade = AUDIO_PCM_STREAM_ITD_FADE_FRAMES };
+    const i32 kMax = (i32)AUDIO_PCM_STREAM_ITD_MAX_FRAMES;
+    i16 pcm[2u * kFrames];
+    static f32 in[2u * kFrames];
+    static f32 want[2u * kFrames];
+    static i32 target[kFrames];
+    static f32 out[2u * kFrames];
+    random_pcm(pcm, 2u * kFrames, 31337u);
+    itd_input(pcm, 2u, kFrames, in);
+    for (u32 k = 0; k < kFrames; ++k) target[k] = k < 10u ? kMax : k < 20u ? -kMax : 0;
+    ref_itd(in, target, kFrames, want);
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmStreamHandle h = open_itd_stream(as, 2u, vec3(2, 0, 0), true);
+    ASSERT_NEQ(h, 0u);
+    ASSERT_TRUE(play_frames(as, h, pcm, 10u, out));
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(-2, 0, 0)), AUDIO_OK);
+    ASSERT_TRUE(play_frames(as, h, pcm + 20u, 10u, out + 20u));
+    ASSERT_EQ(audio_pcm_stream_set_position(as, h, vec3(0, 0, -2)), AUDIO_OK);
+    ASSERT_EQ(published_itd(as, h), 0);
+    ASSERT_TRUE(play_frames(as, h, pcm + 40u, kFrames - 20u, out + 40u));
+    ASSERT_TRUE(near_itd(out, want, kFrames));
+    /* the last step of the first fade is the left delay alone */
+    {
+        u32 k = 10u + kFade - 1u;
+        ASSERT_FLOAT_EQ(out[2u * k], in[2u * k], 0.0f);
+        ASSERT_FLOAT_EQ(out[2u * k + 1u], in[2u * (k - (u32)kMax) + 1u], 0.0f);
+    }
+    /* then the second fade, and no delay after it */
+    for (u32 k = 10u + 2u * kFade - 1u; k < kFrames; ++k) {
+        ASSERT_FLOAT_EQ(out[2u * k], in[2u * k], 0.0f);
+        ASSERT_FLOAT_EQ(out[2u * k + 1u], in[2u * k + 1u], 0.0f);
     }
     audio_system_destroy(as);
 }
@@ -3447,12 +3564,22 @@ TEST(interaural_delay_event_delays_the_far_ear)
 
 TEST(interaural_delay_event_plays_history_and_follows_the_listener)
 {
-    enum { kClip = 64, kFrames = 40 };
+    enum { kClip = 64, kFrames = 40, kFade = AUDIO_PCM_STREAM_ITD_FADE_FRAMES };
+    const i32 kMax = (i32)AUDIO_PCM_STREAM_ITD_MAX_FRAMES;
     i16 pcm[kClip];
     static f32 clip[kClip];
+    static f32 in[2u * 3u * kFrames];
+    static f32 want[2u * 3u * kFrames];
+    static i32 target[3u * kFrames];
     static f32 out[2u * kFrames];
     random_pcm(pcm, kClip, 2468u);
     for (u32 i = 0; i < kClip; ++i) clip[i] = (f32)pcm[i] / 32768.0f;
+    for (u32 k = 0; k < 3u * kFrames; ++k) {
+        in[2u * k] = clip[k % kClip];
+        in[2u * k + 1u] = clip[k % kClip];
+        target[k] = k >= kFrames && k < 2u * kFrames ? kMax : 0;
+    }
+    ref_itd(in, target, 3u * kFrames, want);
     AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
     ASSERT_NOT_NULL(as);
     AudioClipHandle handle = register_ramp(as, clip, kClip);
@@ -3466,19 +3593,21 @@ TEST(interaural_delay_event_plays_history_and_follows_the_listener)
         ASSERT_FLOAT_EQ(out[2u * k], clip[k], 0.0f);
         ASSERT_FLOAT_EQ(out[2u * k + 1u], clip[k], 0.0f);
     }
-    /* moved to the right: the left ear plays frames already heard */
+    /* moved to the right: the left ear fades over to frames already heard */
     ASSERT_EQ(audio_voice_set_position(as, voice, vec3(2, 0, 0)), AUDIO_OK);
     ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    ASSERT_TRUE(near_itd(out, want + 2u * kFrames, kFrames));
     for (u32 k = 0; k < kFrames; ++k) {
-        u32 now = (kFrames + k) % kClip;
-        u32 late = (kFrames + k - AUDIO_PCM_STREAM_ITD_MAX_FRAMES) % kClip;
-        ASSERT_FLOAT_EQ(out[2u * k], clip[late], 0.0f);
-        ASSERT_FLOAT_EQ(out[2u * k + 1u], clip[now], 0.0f);
+        /* the near ear's delay does not change: it is exact even mid-fade */
+        ASSERT_FLOAT_EQ(out[2u * k + 1u], clip[(kFrames + k) % kClip], 0.0f);
+        if (k + 1u < kFade) continue;
+        ASSERT_FLOAT_EQ(out[2u * k], clip[(kFrames + k - (u32)kMax) % kClip], 0.0f);
     }
-    /* the listener turns to face the source: no delay */
+    /* the listener turns to face the source: a fade back to no delay */
     audio_system_update(as, vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0));
     ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
-    for (u32 k = 0; k < kFrames; ++k) {
+    ASSERT_TRUE(near_itd(out, want + 4u * kFrames, kFrames));
+    for (u32 k = kFade - 1u; k < kFrames; ++k) {
         u32 now = (2u * kFrames + k) % kClip;
         ASSERT_FLOAT_EQ(out[2u * k], clip[now], 0.0f);
         ASSERT_FLOAT_EQ(out[2u * k + 1u], clip[now], 0.0f);
@@ -3487,7 +3616,32 @@ TEST(interaural_delay_event_plays_history_and_follows_the_listener)
     audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, 1), vec3(0, 1, 0));
     ASSERT_EQ(audio_system_render(as, out, 1u), AUDIO_OK);
     AudioVoice *slot = &((AudioExtended *)as->extended)->voices[(voice & 0xFFu) - 1u];
-    ASSERT_EQ(slot->applied_itd, -(i32)AUDIO_PCM_STREAM_ITD_MAX_FRAMES);
+    ASSERT_EQ(slot->applied_itd, -kMax);
+    audio_system_destroy(as);
+}
+
+/* An ear whose delay is the same before and after a change is not mixed:
+ * for 0.7f, 0.7f * (1 - t) + 0.7f * t rounds away from 0.7f at some steps. */
+TEST(interaural_delay_event_fade_leaves_the_near_ear_exact)
+{
+    enum { kFrames = 40 };
+    static const f32 kSeven[16] = {0.7f, 0.7f, 0.7f, 0.7f, 0.7f, 0.7f, 0.7f, 0.7f,
+                                   0.7f, 0.7f, 0.7f, 0.7f, 0.7f, 0.7f, 0.7f, 0.7f};
+    static f32 out[2u * kFrames];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = itd_event_desc(register_named_pcm(as, "itd-seven", kSeven, 16u), true);
+    desc.looping = true;
+    ASSERT_EQ(audio_event_register(as, "itd-seven", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "itd-seven", vec3(0, 0, -2), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(2, 0, 0)), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    for (u32 k = 0; k < kFrames; ++k) {
+        ASSERT_FLOAT_EQ(out[2u * k], 0.7f, 1e-6f);
+        ASSERT_FLOAT_EQ(out[2u * k + 1u], 0.7f, 0.0f);
+    }
     audio_system_destroy(as);
 }
 
@@ -3515,8 +3669,8 @@ TEST(interaural_delay_event_restart_keeps_the_old_delay_on_held_pcm)
     ASSERT_FLOAT_EQ(output[0], 0.2f, 0.0f);
     ASSERT_FLOAT_EQ(output[1], 0.2f, 0.0f);
     for (u32 i = 0; i < AUDIO_PCM_STREAM_ITD_LINE_FRAMES; ++i) {
-        voice->itd_line[i][0] = 0.9f;
-        voice->itd_line[i][1] = 0.9f;
+        voice->itd.line[i][0] = 0.9f;
+        voice->itd.line[i][1] = 0.9f;
     }
     ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
     ASSERT_FLOAT_EQ(output[0], 0.0f, 0.0f);
@@ -3546,6 +3700,11 @@ TEST(interaural_delay_event_keeps_its_delay_until_that_revision_is_published)
     ASSERT_EQ(audio_voice_set_position(as, handle, vec3(0, 0, -2)), AUDIO_OK);
     ASSERT_TRUE(render_lr(as, &l, &r));
     ASSERT_EQ(voice->applied_itd, 0);
+    {
+        /* let the fade to no delay end, so this voice is the same in both ears */
+        f32 drain[2u * AUDIO_PCM_STREAM_ITD_FADE_FRAMES];
+        ASSERT_EQ(audio_system_render(as, drain, AUDIO_PCM_STREAM_ITD_FADE_FRAMES), AUDIO_OK);
+    }
     /* an event with the cue off ignores a stored count */
     AudioEventDesc flat = itd_event_desc(register_named_pcm(as, "itd-flat-pcm",
                                                             (const f32[]){1, 1, 1, 1}, 4u),
@@ -3680,6 +3839,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pcm_stream_interaural_delay_delays_the_far_ear);
     RUN_TEST(pcm_stream_interaural_delay_plays_history_and_follows_the_listener);
     RUN_TEST(pcm_stream_interaural_delay_keeps_stereo_ears_apart_and_resets_on_reopen);
+    RUN_TEST(pcm_stream_interaural_delay_change_during_a_fade_waits_for_it);
     RUN_TEST(event_rear_cue_requires_spatial);
     RUN_TEST(rear_cue_event_leaves_front_and_side_untouched);
     RUN_TEST(rear_cue_event_filters_a_source_behind);
@@ -3690,6 +3850,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(event_interaural_delay_requires_spatial);
     RUN_TEST(interaural_delay_event_delays_the_far_ear);
     RUN_TEST(interaural_delay_event_plays_history_and_follows_the_listener);
+    RUN_TEST(interaural_delay_event_fade_leaves_the_near_ear_exact);
     RUN_TEST(interaural_delay_event_restart_keeps_the_old_delay_on_held_pcm);
     RUN_TEST(interaural_delay_event_keeps_its_delay_until_that_revision_is_published);
     RUN_TEST(interaural_delay_event_delays_the_far_ears_own_channel);

@@ -11521,3 +11521,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `test_audio_extended` 新增 6 项（共 105）：要求 spatial、左右远端耳延迟 31 帧且正前/正后/正上方/重合位置与关闭时逐位相同、移动到侧面后播放历史、监听者转向消除并恢复延迟、RESTART 时旧 epoch 保持旧延迟且新 epoch 延迟线从静音开始、未发布 revision 的帧数不被采用、关闭时忽略存储的帧数、立体声远端耳取自己的声道。先 RED（编译失败）后 GREEN；16 项变异首轮 1 项存活（读取帧数前不检查事件开关），补「同 revision 存储帧数但事件关闭」断言后全部被捕获；流部分 7 项变异在共用辅助函数上重跑，全部被捕获。
 - 仍缺：HRTF、高度提示、延迟变化的平滑。
 
+### 2026-11-17 音频：耳间时差的延迟变化交叉淡化
+- `engine/src/audio/audio_extended.{h,c}`：新增 `AUDIO_PCM_STREAM_ITD_FADE_FRAMES`（32）与 `ItdLine`（延迟线、`current`/`previous` 延迟、剩余淡化帧数、`primed`），流与 voice 共用；`itd_line_push` 改为 `itd_line_process`，逐耳解析并各自淡化，延迟未变的耳朵不混音。淡化中目标再变时等本次结束；尚未播放的延迟线（流播放前摆位、voice 每次 START）直接采用目标。
+- `test_audio_extended` 新增 2 项（共 107）：淡化中改向需等待、淡化不改变近端耳（`0.7f` 下 `x*(1-t)+x*t` 会偏离 `x`）。两项历史行为测试改为逐帧对比参考模型并检查淡化结束后的精确延迟。
+- 先 RED 后 GREEN；新代码 15 项变异中首轮 14 项被捕获，「same ear fades」因等样本混音几乎总是精确而存活，补 `0.7f` 测试后全部被捕获；影子变量检查通过。
+- 仍缺：HRTF、高度提示、麦克风采集、感知编码器、音频编辑工具。

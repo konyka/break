@@ -34,7 +34,8 @@ stream. Spatial event voices should get the same cue, opted in per event.
 - a stereo clip delays the far ear's own channel.
 
 ## Not done
-HRTF, elevation cues, smoothing delay changes.
+HRTF, elevation cues. (Delay changes are smoothed: see
+`2026-11-17-audio-itd-crossfade.md`.)
 
 ## Result
 - RED: the new tests failed to compile (no desc field, no voice state,

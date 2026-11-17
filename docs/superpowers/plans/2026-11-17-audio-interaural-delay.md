@@ -38,7 +38,8 @@ This slice adds an opt-in delay of the far ear for spatial PCM streams.
 - stereo: the delayed ear takes its own channel; reopen clears the line.
 
 ## Not done
-HRTF, elevation cues, smoothing delay changes. The delay on event voices:
+HRTF, elevation cues. (Delay changes are smoothed: see
+`2026-11-17-audio-itd-crossfade.md`.) The delay on event voices:
 see 2026-11-17-audio-event-interaural-delay.md.
 
 ## Result

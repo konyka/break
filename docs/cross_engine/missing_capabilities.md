@@ -266,3 +266,4 @@
 - **第 13 节（诊断/跨线程关联）追加**：时钟探测消息 `0x4004` 的 32 字节线格式与编解码（`core_app_clock_probe_*`）已加入默认注册表。服务端 transport 已应答探测，并主动探测每个对端、把偏移写入 `event=network_clock_offset` trace 行。`trace_merge --clock-offset SERVER_TRACE` 已从服务端 trace 读取该行并自动平移两个输入。仍缺：多个对端时只能手动指定 `--offset-us`；偏移只来自服务端探测。
 - **第 10 节（音频）追加**：空间 PCM 流可打开耳间时差（`audio_pcm_stream_set_interaural_delay`，Woodworth 模型，远端耳朵最多延迟 31 帧），「耳间时差」由此交付。仍缺：HRTF、高度提示、事件 voice 的耳间时差、延迟变化的平滑、麦克风采集、感知编码器（Opus 等）、音频编辑工具。
 - **第 10 节（音频）追加**：空间事件 voice 也可打开耳间时差（`AudioEventDesc.interaural_delay`），耳间时差覆盖 PCM 流与事件两类声源，上文「事件 voice 的耳间时差」由此交付。仍缺：HRTF、高度提示、延迟变化的平滑、麦克风采集、感知编码器（Opus 等）、音频编辑工具。
+- **第 10 节（音频）追加**：耳间时差的延迟变化不再跳变，流与事件 voice 共用 `ItdLine`，在 32 帧（`AUDIO_PCM_STREAM_ITD_FADE_FRAMES`，约 0.67 ms）内线性交叉淡化，延迟未变的耳朵保持逐位精确；淡化中目标再变时等本次结束，尚未播放的延迟线直接采用目标。「延迟变化的平滑」由此交付。仍缺：HRTF、高度提示、麦克风采集、感知编码器（Opus 等）、音频编辑工具。

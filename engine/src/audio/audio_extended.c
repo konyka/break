@@ -44,6 +44,19 @@ typedef struct {
     AudioEventDesc desc;
 } AudioCommand;
 
+/* The interaural delay of one stream or voice, mixer-owned: the past frames
+ * after the rear cue, the delay in use (positive delays the left ear), and
+ * while `fade` > 0 the delay being faded out. `primed` is false until the
+ * first frame, which takes its target delay without a fade. */
+typedef struct {
+    f32 line[AUDIO_PCM_STREAM_ITD_LINE_FRAMES][2];
+    u32 written;
+    i32 current;
+    i32 previous;
+    u32 fade;
+    bool primed;
+} ItdLine;
+
 typedef struct {
     ma_data_source_base base;
     ma_data_source_node node;
@@ -89,8 +102,7 @@ typedef struct {
     f32 rear_state[2];
     bool interaural_delay;
     i32 applied_itd;
-    f32 itd_line[AUDIO_PCM_STREAM_ITD_LINE_FRAMES][2];
-    u32 itd_written;
+    ItdLine itd;
     atomic_uint *bus_gains;
     Vec3 position;
     u32 bus;
@@ -156,12 +168,11 @@ typedef struct {
     f32 rear_state[2];
     /* interaural delay (audio_pcm_stream_set_interaural_delay): the signed
      * frame count (positive delays the left ear), published by the owner
-     * thread, and the line of past frames after the rear cue, mixer-owned
-     * like `pos` and written while the delay is off; open zeroes both */
+     * thread, and the mixer-owned line (ItdLine, like `pos`, written while
+     * the delay is off) that crossfades between counts; open zeroes both */
     atomic_int itd_frames;
     bool interaural_delay;
-    f32 itd_line[AUDIO_PCM_STREAM_ITD_LINE_FRAMES][2];
-    u32 itd_written;
+    ItdLine itd;
     atomic_uint gain_bits;
     /* distance attenuation (audio_pcm_stream_set_spatial); written and
      * recomputed on the owner thread, the mixer reads spatial_bits only */
@@ -254,17 +265,54 @@ _Static_assert((AUDIO_PCM_STREAM_ITD_LINE_FRAMES & (AUDIO_PCM_STREAM_ITD_LINE_FR
 _Static_assert(AUDIO_PCM_STREAM_ITD_MAX_FRAMES < AUDIO_PCM_STREAM_ITD_LINE_FRAMES,
                "the delay line must hold the longest delay");
 
-/* Pushes one frame into a delay line (shared by streams and voices) and
- * returns the far ear's sample `delay` frames back (the frame itself for 0;
- * negative delays the right ear). */
-static f32 itd_line_push(f32 (*line)[2], u32 *written, f32 left, f32 right, i32 delay) {
-    f32 *slot = line[*written & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)];
-    slot[0] = left;
-    slot[1] = right;
-    u32 back = (u32)(delay < 0 ? -delay : delay);
-    const f32 *past = line[(*written - back) & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)];
-    (*written)++;
-    return delay < 0 ? past[1] : past[0];
+/* how many frames back ear `ear` (0 left, 1 right) hears under `delay` */
+static u32 itd_ear_back(i32 delay, u32 ear) {
+    if (ear == 0u) return delay > 0 ? (u32)delay : 0u;
+    return delay < 0 ? (u32)(-delay) : 0u;
+}
+
+/* Pushes one frame into the line (shared by streams and voices) and replaces
+ * *left and *right with what each ear hears under `target`. The first frame
+ * takes `target` directly. A later change starts a crossfade over
+ * AUDIO_PCM_STREAM_ITD_FADE_FRAMES frames: step s of it mixes the old ear
+ * sample by 1 - s / FADE and the new one by s / FADE, so the last step is
+ * the new delay alone. A change during a fade waits for the fade to end. An
+ * ear whose delay is the same under both stays exact. */
+static void itd_line_process(ItdLine *itd, i32 target, f32 *left, f32 *right) {
+    f32 *slot = itd->line[itd->written & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)];
+    slot[0] = *left;
+    slot[1] = *right;
+    if (!itd->primed) {
+        itd->current = target;
+        itd->primed = true;
+    } else if (itd->fade == 0u && target != itd->current) {
+        itd->previous = itd->current;
+        itd->current = target;
+        itd->fade = AUDIO_PCM_STREAM_ITD_FADE_FRAMES;
+    }
+    f32 t = 1.0f;
+    if (itd->fade > 0u) {
+        t = (f32)(AUDIO_PCM_STREAM_ITD_FADE_FRAMES - itd->fade + 1u) /
+            (f32)AUDIO_PCM_STREAM_ITD_FADE_FRAMES;
+    }
+    f32 heard[2];
+    for (u32 ear = 0; ear < 2u; ++ear) {
+        u32 back = itd_ear_back(itd->current, ear);
+        f32 now = itd->line[(itd->written - back) & (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)][ear];
+        heard[ear] = now;
+        if (itd->fade > 0u) {
+            u32 old_back = itd_ear_back(itd->previous, ear);
+            if (old_back != back) {
+                f32 old = itd->line[(itd->written - old_back) &
+                                    (AUDIO_PCM_STREAM_ITD_LINE_FRAMES - 1u)][ear];
+                heard[ear] = old * (1.0f - t) + now * t;
+            }
+        }
+    }
+    if (itd->fade > 0u) itd->fade--;
+    itd->written++;
+    *left = heard[0];
+    *right = heard[1];
 }
 
 static bool voice_command_space(const AudioVoice *voice) {
@@ -379,8 +427,7 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->rear_state[1] = 0.0f;
             voice->interaural_delay = command.desc.interaural_delay;
             voice->applied_itd = command.spatial_itd;
-            memset(voice->itd_line, 0, sizeof(voice->itd_line));
-            voice->itd_written = 0u;
+            memset(&voice->itd, 0, sizeof(voice->itd));
             voice_apply_initial_spatial(voice, &command);
             voice_configure_dsp(voice, &command);
             voice->playing = true;
@@ -494,10 +541,7 @@ static ma_result voice_read(ma_data_source *source, void *output,
                     voice->rear_state[0] = in_left;
                     voice->rear_state[1] = in_right;
                 }
-                f32 late = itd_line_push(voice->itd_line, &voice->itd_written, in_left,
-                                         in_right, voice->applied_itd);
-                if (voice->applied_itd > 0) in_left = late;
-                if (voice->applied_itd < 0) in_right = late;
+                itd_line_process(&voice->itd, voice->applied_itd, &in_left, &in_right);
                 left = in_left * gain * voice->applied_pan_left;
                 right = in_right * gain * voice->applied_pan_right;
                 cursor++;
@@ -700,9 +744,7 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
                 stream->rear_state[0] = left;
                 stream->rear_state[1] = right;
             }
-            f32 late = itd_line_push(stream->itd_line, &stream->itd_written, left, right, itd);
-            if (itd > 0) left = late;
-            if (itd < 0) right = late;
+            itd_line_process(&stream->itd, itd, &left, &right);
             left *= gain * pan_left;
             right *= gain * pan_right;
             pos += stream->rate;
@@ -846,8 +888,7 @@ AudioResult audio_pcm_stream_open_rate(AudioSystem *as, u32 channels, u32 sample
         stream->rear_state[1] = 0.0f;
         stream->interaural_delay = false;
         atomic_store_explicit(&stream->itd_frames, 0, memory_order_relaxed);
-        memset(stream->itd_line, 0, sizeof(stream->itd_line));
-        stream->itd_written = 0u;
+        memset(&stream->itd, 0, sizeof(stream->itd));
         stream->spatial = false;
         stream->panning = false;
         atomic_store_explicit(&stream->pan_bits, pcm_stream_pan_pack(1.0f, 1.0f),
