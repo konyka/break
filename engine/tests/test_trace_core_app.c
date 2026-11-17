@@ -247,6 +247,115 @@ TEST(core_app_trace_writer_handles_long_lines_and_round_trips)
     ASSERT_TRUE(strstr(g_out, EVENT_HEAD("b", "43") "}}") != NULL);
 }
 
+static BreakTraceClockOffsetStatus clock_offset_of(const char *text, i64 *offset, u64 *error)
+{
+    return break_trace_core_app_clock_offset(text, strlen(text), offset, error);
+}
+
+TEST(core_app_trace_clock_offset_reads_the_single_peer_line)
+{
+    i64 offset = 7;
+    u64 error = 7u;
+    ASSERT_EQ(clock_offset_of("COREAPPTRACE version=1 event=level_loaded generation=1\n"
+                              "COREAPPTRACE version=1 ts_us=99 event=network_clock_offset"
+                              " session=1 peer_hint=7 bytes_us=3 offset_us=-1234 samples=4"
+                              " error_us=56\r\n",
+                              &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(offset, -1234);
+    ASSERT_EQ(error, 56u);
+    ASSERT_EQ(clock_offset_of("COREAPPTRACE version=1 event=network_clock_offset offset_us=0"
+                              " error_us=0",
+                              &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(offset, 0);
+    ASSERT_EQ(error, 0u);
+    ASSERT_EQ(clock_offset_of("COREAPPTRACE version=1 event=network_clock_offset"
+                              " offset_us=999999999999999999 error_us=999999999999999999\n",
+                              &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(offset, 999999999999999999ll);
+    ASSERT_EQ(error, 999999999999999999ull);
+    ASSERT_EQ(clock_offset_of("COREAPPTRACE version=1 event=network_clock_offset"
+                              " offset_us=-999999999999999999 error_us=3\n",
+                              &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(offset, -999999999999999999ll);
+}
+
+TEST(core_app_trace_clock_offset_rejects_missing_repeated_and_malformed_lines)
+{
+    static const char *const malformed[] = {
+        "COREAPPTRACE version=1 event=network_clock_offset error_us=1\n",
+        "COREAPPTRACE version=1 event=network_clock_offset offset_us=1\n",
+        "COREAPPTRACE version=1 event=network_clock_offset offset_us= error_us=1\n",
+        "COREAPPTRACE version=1 event=network_clock_offset offset_us=- error_us=1\n",
+        "COREAPPTRACE version=1 event=network_clock_offset offset_us=-0 error_us=1\n",
+        "COREAPPTRACE version=1 event=network_clock_offset offset_us=01 error_us=1\n",
+        "COREAPPTRACE version=1 event=network_clock_offset offset_us=+1 error_us=1\n",
+        "COREAPPTRACE version=1 event=network_clock_offset offset_us=1x error_us=1\n",
+        "COREAPPTRACE version=1 event=network_clock_offset offset_us=1 error_us=-1\n",
+        "COREAPPTRACE version=1 event=network_clock_offset offset_us=1 error_us=07\n",
+        "COREAPPTRACE version=1 event=network_clock_offset"
+        " offset_us=1000000000000000000 error_us=1\n",
+        "COREAPPTRACE version=1 event=network_clock_offset offset_us=1"
+        " error_us=1000000000000000000\n",
+    };
+    for (usize i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+        i64 offset = 7;
+        u64 error = 9u;
+        ASSERT_EQ(clock_offset_of(malformed[i], &offset, &error),
+                  BREAK_TRACE_CLOCK_OFFSET_MALFORMED);
+        ASSERT_EQ(offset, 7);
+        ASSERT_EQ(error, 9u);
+    }
+    i64 offset = 7;
+    u64 error = 9u;
+    ASSERT_EQ(clock_offset_of("", &offset, &error), BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(clock_offset_of("COREAPPTRACE version=1 event=network_stats offset_us=1"
+                              " error_us=1\n"
+                              "COREAPPTRACE version=2 event=network_clock_offset offset_us=1"
+                              " error_us=1\n"
+                              "network_clock_offset offset_us=1 error_us=1\n"
+                              "COREAPPTRACE version=1 event=network_clock_offset_x offset_us=1"
+                              " error_us=1\n",
+                              &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(clock_offset_of("COREAPPTRACE version=1 event=network_clock_offset offset_us=1"
+                              " error_us=1\n"
+                              "COREAPPTRACE version=1 event=network_clock_offset offset_us=2"
+                              " error_us=1\n",
+                              &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_AMBIGUOUS);
+    ASSERT_EQ(clock_offset_of("COREAPPTRACE version=1 event=network_clock_offset offset_us=1"
+                              " error_us=1\n"
+                              "COREAPPTRACE version=1 event=network_clock_offset offset_us=x"
+                              " error_us=1\n",
+                              &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_MALFORMED);
+    ASSERT_EQ(offset, 7);
+    ASSERT_EQ(error, 9u);
+}
+
+TEST(core_app_trace_clock_offset_refuses_invalid_arguments)
+{
+    const char *text = "COREAPPTRACE version=1 event=network_clock_offset offset_us=1 error_us=1";
+    i64 offset = 7;
+    u64 error = 9u;
+    ASSERT_EQ(break_trace_core_app_clock_offset(text, strlen(text), NULL, &error),
+              BREAK_TRACE_CLOCK_OFFSET_INVALID);
+    ASSERT_EQ(break_trace_core_app_clock_offset(text, strlen(text), &offset, NULL),
+              BREAK_TRACE_CLOCK_OFFSET_INVALID);
+    ASSERT_EQ(break_trace_core_app_clock_offset(NULL, 1u, &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_INVALID);
+    ASSERT_EQ(break_trace_core_app_clock_offset(NULL, 0u, &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(break_trace_core_app_clock_offset(text, 30u, &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(offset, 7);
+    ASSERT_EQ(error, 9u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(core_app_trace_converts_lines_to_chrome_events);
     RUN_TEST(core_app_trace_size_query_and_small_buffer);
@@ -255,4 +364,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(core_app_trace_skips_a_non_canonical_ts_us);
     RUN_TEST(core_app_trace_writer_stamps_lines_only_when_a_clock_is_set);
     RUN_TEST(core_app_trace_writer_handles_long_lines_and_round_trips);
+    RUN_TEST(core_app_trace_clock_offset_reads_the_single_peer_line);
+    RUN_TEST(core_app_trace_clock_offset_rejects_missing_repeated_and_malformed_lines);
+    RUN_TEST(core_app_trace_clock_offset_refuses_invalid_arguments);
 TEST_MAIN_END()

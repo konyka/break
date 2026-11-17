@@ -67,6 +67,64 @@ if(NOT reset MATCHES "\"ts\":12,\"dur\":3,\"pid\":1," OR NOT reset MATCHES "\"ts
     record_error("options_reset: --offset-us must apply to the next input only:\n${reset}")
 endif()
 
+# --clock-offset: input 1 is the server, input 2 the peer; offset_us is
+# peer minus server, so a negative offset shifts the peer forward.
+set(clk "COREAPPTRACE version=1 ts_us=9 event=network_clock_offset session=1")
+file(WRITE "${WORK}/behind.trace"
+    "COREAPPTRACE version=1 ts_us=1 event=level_loaded generation=1\n"
+    "${clk} offset_us=-1000 error_us=12 samples=4\n")
+file(WRITE "${WORK}/ahead.trace" "${clk} offset_us=40 error_us=3 samples=4\n")
+file(WRITE "${WORK}/none.trace" "COREAPPTRACE version=1 event=level_loaded generation=1\n")
+file(WRITE "${WORK}/two.trace"
+    "${clk} offset_us=1 error_us=1 samples=4\n${clk} offset_us=2 error_us=1 samples=4\n")
+file(WRITE "${WORK}/malformed.trace" "${clk} offset_us=01 error_us=1 samples=4\n")
+
+execute_process(COMMAND "${TRACE_MERGE}" --out "${WORK}/behind.json"
+    --clock-offset "${WORK}/behind.trace" "${WORK}/a.json" "${WORK}/b.json"
+    RESULT_VARIABLE behind_rc OUTPUT_VARIABLE behind_out ERROR_VARIABLE behind_err TIMEOUT 20)
+if(NOT behind_rc EQUAL 0 OR NOT behind_out MATCHES "clock offset offset_us=-1000 error_us=12")
+    record_error("clock_behind: exit=${behind_rc}; stdout=${behind_out}; stderr=${behind_err}")
+else()
+    file(READ "${WORK}/behind.json" behind)
+    if(NOT behind MATCHES "\"ts\":5,\"dur\":3,\"pid\":1," OR
+       NOT behind MATCHES "\"ts\":1000,\"pid\":2,")
+        record_error("clock_behind: the peer must move forward by 1000 us:\n${behind}")
+    endif()
+endif()
+run_tool(clock_ahead 0 --out "${WORK}/ahead.json"
+    --clock-offset "${WORK}/ahead.trace" "${WORK}/a.json" "${WORK}/b.json")
+set(ahead "")
+if(EXISTS "${WORK}/ahead.json")
+    file(READ "${WORK}/ahead.json" ahead)
+endif()
+if(NOT ahead MATCHES "\"ts\":45,\"dur\":3,\"pid\":1," OR NOT ahead MATCHES "\"ts\":0,\"pid\":2,")
+    record_error("clock_ahead: the server must move forward by 40 us:\n${ahead}")
+endif()
+run_tool(clock_one_input 2 --out "${WORK}/never.json"
+    --clock-offset "${WORK}/ahead.trace" "${WORK}/a.json")
+expect_err(clock_one_input "--clock-offset needs exactly two inputs")
+run_tool(clock_three_inputs 2 --out "${WORK}/never.json"
+    --clock-offset "${WORK}/ahead.trace" "${WORK}/a.json" "${WORK}/b.json" "${WORK}/a.json")
+expect_err(clock_three_inputs "--clock-offset needs exactly two inputs")
+run_tool(clock_with_offset 2 --out "${WORK}/never.json"
+    --clock-offset "${WORK}/ahead.trace" --offset-us 5 "${WORK}/a.json" "${WORK}/b.json")
+expect_err(clock_with_offset "--clock-offset cannot be combined with --offset-us")
+run_tool(clock_twice 2 --out "${WORK}/never.json" --clock-offset "${WORK}/ahead.trace"
+    --clock-offset "${WORK}/ahead.trace" "${WORK}/a.json" "${WORK}/b.json")
+expect_err(clock_twice "--clock-offset given twice")
+run_tool(clock_missing 1 --out "${WORK}/never.json"
+    --clock-offset "${WORK}/nope.trace" "${WORK}/a.json" "${WORK}/b.json")
+expect_err(clock_missing "cannot read .*nope.trace")
+run_tool(clock_none 1 --out "${WORK}/never.json"
+    --clock-offset "${WORK}/none.trace" "${WORK}/a.json" "${WORK}/b.json")
+expect_err(clock_none "no network_clock_offset line in .*none.trace")
+run_tool(clock_two 1 --out "${WORK}/never.json"
+    --clock-offset "${WORK}/two.trace" "${WORK}/a.json" "${WORK}/b.json")
+expect_err(clock_two "several network_clock_offset lines in .*two.trace")
+run_tool(clock_malformed 1 --out "${WORK}/never.json"
+    --clock-offset "${WORK}/malformed.trace" "${WORK}/a.json" "${WORK}/b.json")
+expect_err(clock_malformed "malformed network_clock_offset line in .*malformed.trace")
+
 run_tool(bad_document 1 --out "${WORK}/never.json" "${WORK}/a.json" "${WORK}/bad.json")
 expect_err(bad_document "input 2 .*bad.json.* line 2")
 if(EXISTS "${WORK}/never.json")

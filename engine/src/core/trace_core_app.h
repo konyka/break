@@ -45,6 +45,26 @@ BreakTraceConvertStatus break_trace_core_app_to_chrome(const char *text, usize s
                                                        usize capacity,
                                                        BreakTraceCoreAppReport *report);
 
+typedef enum BreakTraceClockOffsetStatus {
+    BREAK_TRACE_CLOCK_OFFSET_OK = 0,
+    BREAK_TRACE_CLOCK_OFFSET_INVALID,
+    BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND,
+    BREAK_TRACE_CLOCK_OFFSET_AMBIGUOUS,
+    BREAK_TRACE_CLOCK_OFFSET_MALFORMED,
+} BreakTraceClockOffsetStatus;
+
+/* Reads the peer clock offset a core_app server traced as
+ *   COREAPPTRACE version=1 event=network_clock_offset ... offset_us=N error_us=M
+ * (offset = peer clock minus server clock). Only lines the converter
+ * accepts are considered. offset_us is an optionally negative canonical
+ * decimal (no leading zero, no "-0", at most 18 digits), error_us a
+ * canonical decimal. NOT_FOUND when no such line exists, AMBIGUOUS when
+ * there are several (one per peer), MALFORMED when a matching line lacks a
+ * field or carries a non-canonical one. INVALID for NULL outputs or NULL
+ * text with a non-zero size. The outputs are written only on OK. */
+BreakTraceClockOffsetStatus break_trace_core_app_clock_offset(const char *text, usize size,
+                                                              i64 *offset_us, u64 *error_us);
+
 /* ---- writer side --------------------------------------------------------
  * core_app writes every trace line through these functions. When a clock is
  * set, a line that starts with "COREAPPTRACE version=1 " gets

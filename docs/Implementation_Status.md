@@ -11501,3 +11501,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `core_app_net_transport.c` 对每个认证连接每 8 tick 发一个时钟探测请求，32 tick 未答即丢弃；匹配的回复喂给该连接的 `ClockOffsetEstimator`，首次满 4 个样本时写 `event=network_clock_offset` trace 行。`network_stats` 新增 `clock_probes_sent`、`clock_replies_matched`、`clock_replies_unmatched`、`clock_probes_lost`、`clock_samples_rejected`。`core_app` 与 `test_core_app_net_transport` 链接 `src/core/clock_offset.c`。
 - loopback 测试：对端应答服务端请求，故意漏答一次、发错误 t0 与重复回复；要求丢失、不匹配计数正确，trace 恰好一行且偏移在误差界内。先 RED（服务端不发请求）后 GREEN；首版按墙钟调度只发出 2 个请求，改为按 tick 调度。18 项变异 1 项存活（超时分支清 `outstanding`，仅在发送失败时可观察），已在计划中说明。
 - 仍缺：自动把偏移传给 `trace_merge`。
+
+### 2026-11-16 trace_merge --clock-offset
+
+- `core/trace_core_app.{h,c}`：新增 `break_trace_core_app_clock_offset`，从 core_app 文本 trace 中找出唯一一行 `event=network_clock_offset`，解析 `offset_us`（可带负号的规范十进制）与 `error_us`；状态为 OK / INVALID / NOT_FOUND / AMBIGUOUS / MALFORMED，仅 OK 时写输出。
+- `tools/trace_merge.c`：新增 `--clock-offset SERVER_TRACE`，要求恰好两个输入且不与 `--offset-us` 同用，用 `clock_offset_merge_shifts` 把偏移换算成两个输入的平移量并打印偏移与误差界；读取或解析失败退出 1，用法错误退出 2。`trace_merge` 目标链接 `src/core/trace_core_app.c` 与 `src/core/clock_offset.c`。
+- `test_trace_core_app` 新增 3 项（共 10）：正负偏移、CRLF、未找到、多行、各类畸形字段、非法参数与失败时输出不变；`test_trace_merge_tool.cmake` 覆盖负偏移平移对端、正偏移平移服务端及每种失败的退出码和信息。先 RED 后 GREEN；21 项变异首轮 2 项存活（只按长度匹配 key、不去掉 `\r`），测试行补同长度 key 并以 `error_us` 结尾后全部被捕获。
+- 仍缺：多个对端时自动选择偏移。
+

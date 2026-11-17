@@ -204,6 +204,83 @@ BreakTraceConvertStatus break_trace_core_app_to_chrome(const char *text, usize s
     return BREAK_TRACE_CONVERT_OK;
 }
 
+static bool trace_parse_u64(const char *s, usize length, u64 *out)
+{
+    if (!trace_is_number(s, length)) return false;
+    u64 value = 0u;
+    for (usize i = 0u; i < length; ++i) value = value * 10u + (u64)(s[i] - '0');
+    *out = value;
+    return true;
+}
+
+static bool trace_find_field(const TraceField *fields, u32 count, const char *key,
+                             const TraceField **out)
+{
+    for (u32 i = 0u; i < count; ++i) {
+        if (trace_same(fields[i].key, fields[i].key_length, key, strlen(key))) {
+            *out = &fields[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool trace_parse_offset_fields(const TraceField *fields, u32 count, i64 *offset_us,
+                                      u64 *error_us)
+{
+    const TraceField *offset = NULL;
+    const TraceField *error = NULL;
+    u64 magnitude = 0u;
+    if (!trace_find_field(fields, count, "offset_us", &offset) ||
+        !trace_find_field(fields, count, "error_us", &error) ||
+        !trace_parse_u64(error->value, error->value_length, error_us)) {
+        return false;
+    }
+    bool negative = offset->value_length > 0u && offset->value[0] == '-';
+    usize skip = negative ? 1u : 0u;
+    if (!trace_parse_u64(offset->value + skip, offset->value_length - skip, &magnitude) ||
+        (negative && magnitude == 0u)) {
+        return false;
+    }
+    *offset_us = negative ? -(i64)magnitude : (i64)magnitude;
+    return true;
+}
+
+BreakTraceClockOffsetStatus break_trace_core_app_clock_offset(const char *text, usize size,
+                                                              i64 *offset_us, u64 *error_us)
+{
+    if (!offset_us || !error_us || (!text && size != 0u)) return BREAK_TRACE_CLOCK_OFFSET_INVALID;
+    TraceField fields[BREAK_TRACE_CORE_APP_MAX_FIELDS];
+    const char *p = text ? text : "";
+    const char *end = p + size;
+    u32 found = 0u;
+    i64 offset = 0;
+    u64 error = 0u;
+    while (p < end) {
+        const char *line_end = memchr(p, '\n', (usize)(end - p));
+        const char *next = line_end ? line_end + 1 : end;
+        if (!line_end) line_end = end;
+        if (line_end > p && line_end[-1] == '\r') line_end--;
+        u32 count = 0u;
+        u32 event = 0u;
+        u32 ts = 0u;
+        if (trace_parse_line(p, line_end, fields, &count, &event, &ts) &&
+            trace_same(fields[event].value, fields[event].value_length,
+                       "network_clock_offset", 20u)) {
+            if (!trace_parse_offset_fields(fields, count, &offset, &error)) {
+                return BREAK_TRACE_CLOCK_OFFSET_MALFORMED;
+            }
+            found++;
+        }
+        p = next;
+    }
+    if (found == 0u) return BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND;
+    if (found > 1u) return BREAK_TRACE_CLOCK_OFFSET_AMBIGUOUS;
+    *offset_us = offset;
+    *error_us = error;
+    return BREAK_TRACE_CLOCK_OFFSET_OK;
+}
+
 /* ---------------- writer ---------------- */
 
 #define TRACE_STAMP_PREFIX "COREAPPTRACE version=1 "

@@ -2757,7 +2757,8 @@ set_property(TARGET rule_engine_c99_consumer PROPERTY C_STANDARD 99)
 target_include_directories(rule_engine_c99_consumer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Merges break.trace documents from several processes into one timeline.
-add_executable(trace_merge tools/trace_merge.c src/core/trace_merge.c)
+add_executable(trace_merge tools/trace_merge.c src/core/trace_merge.c
+    src/core/trace_core_app.c src/core/clock_offset.c)
 target_include_directories(trace_merge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Verification tool: mounts a .pak via VFS and compares against source files
