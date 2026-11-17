@@ -63,3 +63,12 @@ ClockOffsetStatus clock_offset_estimate(const ClockOffsetEstimator *estimator,
  * trace_merge --offset-us): A + a_shift and B + b_shift are comparable.
  * Exactly one of them is non-zero unless offset is 0. */
 void clock_offset_merge_shifts(i64 offset_us, u64 *a_shift, u64 *b_shift);
+
+/* The same for one server and `count` peers, offsets_us[i] being peer i
+ * minus the server: with base = max(0, max offsets_us[i]) the server shifts
+ * by base and peer i by base - offsets_us[i], so every input lands on the
+ * server's timeline moved by base. All shifts are non-negative and fit in
+ * u64. One peer gives clock_offset_merge_shifts. False, with nothing
+ * written, for NULL pointers or count 0. */
+bool clock_offset_merge_shifts_many(const i64 *offsets_us, u32 count, u64 *server_shift,
+                                    u64 *peer_shifts);

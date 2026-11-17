@@ -246,8 +246,26 @@ static bool trace_parse_offset_fields(const TraceField *fields, u32 count, i64 *
     return true;
 }
 
-BreakTraceClockOffsetStatus break_trace_core_app_clock_offset(const char *text, usize size,
-                                                              i64 *offset_us, u64 *error_us)
+/* a canonical decimal (no sign, no leading zero) of at most 20 digits that
+ * fits in u64 */
+static bool trace_parse_session(const char *s, usize length, u64 *out)
+{
+    if (length == 0u || length > 20u || (length > 1u && s[0] == '0')) return false;
+    u64 value = 0u;
+    for (usize i = 0u; i < length; ++i) {
+        if (s[i] < '0' || s[i] > '9') return false;
+        u64 digit = (u64)(s[i] - '0');
+        if (value > (UINT64_MAX - digit) / 10u) return false;
+        value = value * 10u + digit;
+    }
+    *out = value;
+    return true;
+}
+
+/* every clock line when `session` is NULL, else those of *session */
+static BreakTraceClockOffsetStatus trace_clock_offset(const char *text, usize size,
+                                                      const u64 *session, i64 *offset_us,
+                                                      u64 *error_us)
 {
     if (!offset_us || !error_us || (!text && size != 0u)) return BREAK_TRACE_CLOCK_OFFSET_INVALID;
     TraceField fields[BREAK_TRACE_CORE_APP_MAX_FIELDS];
@@ -267,6 +285,18 @@ BreakTraceClockOffsetStatus break_trace_core_app_clock_offset(const char *text, 
         if (trace_parse_line(p, line_end, fields, &count, &event, &ts) &&
             trace_same(fields[event].value, fields[event].value_length,
                        "network_clock_offset", 20u)) {
+            if (session) {
+                const TraceField *field = NULL;
+                u64 id = 0u;
+                if (!trace_find_field(fields, count, "session", &field) ||
+                    !trace_parse_session(field->value, field->value_length, &id)) {
+                    return BREAK_TRACE_CLOCK_OFFSET_MALFORMED;
+                }
+                if (id != *session) {
+                    p = next;
+                    continue;
+                }
+            }
             if (!trace_parse_offset_fields(fields, count, &offset, &error)) {
                 return BREAK_TRACE_CLOCK_OFFSET_MALFORMED;
             }
@@ -279,6 +309,20 @@ BreakTraceClockOffsetStatus break_trace_core_app_clock_offset(const char *text, 
     *offset_us = offset;
     *error_us = error;
     return BREAK_TRACE_CLOCK_OFFSET_OK;
+}
+
+BreakTraceClockOffsetStatus break_trace_core_app_clock_offset(const char *text, usize size,
+                                                              i64 *offset_us, u64 *error_us)
+{
+    return trace_clock_offset(text, size, NULL, offset_us, error_us);
+}
+
+BreakTraceClockOffsetStatus break_trace_core_app_clock_offset_for_session(const char *text,
+                                                                          usize size, u64 session,
+                                                                          i64 *offset_us,
+                                                                          u64 *error_us)
+{
+    return trace_clock_offset(text, size, &session, offset_us, error_us);
 }
 
 /* ---------------- writer ---------------- */

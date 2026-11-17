@@ -11526,3 +11526,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `test_audio_extended` 新增 2 项（共 107）：淡化中改向需等待、淡化不改变近端耳（`0.7f` 下 `x*(1-t)+x*t` 会偏离 `x`）。两项历史行为测试改为逐帧对比参考模型并检查淡化结束后的精确延迟。
 - 先 RED 后 GREEN；新代码 15 项变异中首轮 14 项被捕获，「same ear fades」因等样本混音几乎总是精确而存活，补 `0.7f` 测试后全部被捕获；影子变量检查通过。
 - 仍缺：HRTF、高度提示、麦克风采集、感知编码器、音频编辑工具。
+
+### 2026-11-17 诊断：trace_merge 多对端时钟对齐
+- `core/clock_offset.{h,c}`：`clock_offset_merge_shifts_many`，服务端平移 max(0, max offset_i)，对端 i 平移 base − offset_i，全部非负；单对端时与 `clock_offset_merge_shifts` 相同。
+- `core/trace_core_app.{h,c}`：`break_trace_core_app_clock_offset_for_session` 只统计指定 `session` 的 `network_clock_offset` 行，其他会话的行被忽略，缺少规范 `session` 时为 MALFORMED。原单行读取改为共用同一实现。
+- `tools/trace_merge.c`：`--session N` 作用于下一个输入，需配合 `--clock-offset`；第 1 个输入为服务端不带 `--session`，其余输入必须全部带上。每个对端打印 `clock offset session=N ...`，失败信息带会话号。
+- 测试：`test_clock_offset` 新增 3 项、`test_trace_core_app` 新增 2 项、`test_trace_merge_tool` 新增服务端加两个对端合并与 9 种失败用例。先 RED 后 GREEN；24 项变异首轮 1 项存活（会话号缺下界检查），补 `session=/` 后全部被捕获；影子变量检查通过。
+- 仍缺：偏移只来自服务端探测；对端 trace 与会话号的对应需手动指定。

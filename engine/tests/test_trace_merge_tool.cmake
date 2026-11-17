@@ -125,6 +125,64 @@ run_tool(clock_malformed 1 --out "${WORK}/never.json"
     --clock-offset "${WORK}/malformed.trace" "${WORK}/a.json" "${WORK}/b.json")
 expect_err(clock_malformed "malformed network_clock_offset line in .*malformed.trace")
 
+# Several peers: --session N names the session of the next input, each
+# peer's line is picked from the server trace. offset 300 for session 2
+# puts the server 300 us ahead; session 1 (offset -500) moves by 800.
+file(WRITE "${WORK}/c.json"
+    "{\"traceEvents\":[\n"
+    "{\"name\":\"frame\",\"cat\":\"core_app\",\"ph\":\"i\",\"s\":\"g\",\"ts\":2,\"pid\":1,\"tid\":1,\"args\":{}}\n"
+    "${tail}")
+set(clk1 "COREAPPTRACE version=1 ts_us=9 event=network_clock_offset")
+file(WRITE "${WORK}/peers.trace"
+    "${clk1} session=1 offset_us=-500 error_us=4 samples=4\n"
+    "${clk1} session=2 offset_us=300 error_us=6 samples=4\n"
+    "${clk1} session=3 offset_us=x error_us=1 samples=4\n")
+execute_process(COMMAND "${TRACE_MERGE}" --out "${WORK}/peers.json"
+    --clock-offset "${WORK}/peers.trace" "${WORK}/a.json"
+    --session 1 "${WORK}/b.json" --session 2 "${WORK}/c.json"
+    RESULT_VARIABLE peers_rc OUTPUT_VARIABLE peers_out ERROR_VARIABLE peers_err TIMEOUT 20)
+if(NOT peers_rc EQUAL 0 OR
+   NOT peers_out MATCHES "session=1 offset_us=-500 error_us=4" OR
+   NOT peers_out MATCHES "session=2 offset_us=300 error_us=6")
+    record_error("clock_peers: exit=${peers_rc}; stdout=${peers_out}; stderr=${peers_err}")
+else()
+    file(READ "${WORK}/peers.json" peers)
+    if(NOT peers MATCHES "\"ts\":305,\"dur\":3,\"pid\":1," OR
+       NOT peers MATCHES "\"ts\":800,\"pid\":2," OR
+       NOT peers MATCHES "\"ts\":2,\"pid\":3,")
+        record_error("clock_peers: every input must land on one timeline:\n${peers}")
+    endif()
+endif()
+# --session also works for a single peer next to other sessions' lines
+run_tool(clock_one_session 0 --out "${WORK}/one_session.json"
+    --clock-offset "${WORK}/peers.trace" "${WORK}/a.json" --session 2 "${WORK}/c.json")
+run_tool(session_no_clock 2 --out "${WORK}/never.json" "${WORK}/a.json"
+    --session 1 "${WORK}/b.json")
+expect_err(session_no_clock "--session needs --clock-offset")
+run_tool(session_on_server 2 --out "${WORK}/never.json" --clock-offset "${WORK}/peers.trace"
+    --session 1 "${WORK}/a.json" --session 2 "${WORK}/b.json")
+expect_err(session_on_server "the first input is the server and takes no --session")
+run_tool(session_partial 2 --out "${WORK}/never.json" --clock-offset "${WORK}/peers.trace"
+    "${WORK}/a.json" --session 1 "${WORK}/b.json" "${WORK}/c.json")
+expect_err(session_partial "every peer input needs --session")
+run_tool(session_bad 2 --out "${WORK}/never.json" --clock-offset "${WORK}/peers.trace"
+    "${WORK}/a.json" --session 01 "${WORK}/b.json")
+expect_err(session_bad "--session requires a nonnegative integer")
+run_tool(session_dangling 2 --out "${WORK}/never.json" --clock-offset "${WORK}/peers.trace"
+    "${WORK}/a.json" "${WORK}/b.json" --session 1)
+expect_err(session_dangling "must precede an input")
+run_tool(session_absent 1 --out "${WORK}/never.json" --clock-offset "${WORK}/peers.trace"
+    "${WORK}/a.json" --session 7 "${WORK}/b.json")
+expect_err(session_absent "no network_clock_offset line for session 7 in .*peers.trace")
+run_tool(session_malformed 1 --out "${WORK}/never.json" --clock-offset "${WORK}/peers.trace"
+    "${WORK}/a.json" --session 3 "${WORK}/b.json")
+expect_err(session_malformed "malformed network_clock_offset line for session 3 in .*peers.trace")
+file(WRITE "${WORK}/peers_twice.trace"
+    "${clk1} session=1 offset_us=1 error_us=1\n${clk1} session=1 offset_us=2 error_us=1\n")
+run_tool(session_twice 1 --out "${WORK}/never.json" --clock-offset "${WORK}/peers_twice.trace"
+    "${WORK}/a.json" --session 1 "${WORK}/b.json")
+expect_err(session_twice "several network_clock_offset lines for session 1 in .*peers_twice.trace")
+
 run_tool(bad_document 1 --out "${WORK}/never.json" "${WORK}/a.json" "${WORK}/bad.json")
 expect_err(bad_document "input 2 .*bad.json.* line 2")
 if(EXISTS "${WORK}/never.json")
@@ -137,7 +195,7 @@ expect_err(no_out "--out is required")
 run_tool(no_inputs 2 --out "${WORK}/never.json")
 expect_err(no_inputs "at least one input")
 run_tool(dangling_label 2 --out "${WORK}/never.json" "${WORK}/a.json" --label x)
-expect_err(dangling_label "--label/--offset-us must precede an input")
+expect_err(dangling_label "--label/--offset-us/--session must precede an input")
 run_tool(bad_offset 2 --out "${WORK}/never.json" --offset-us 1x "${WORK}/a.json")
 expect_err(bad_offset "--offset-us requires a nonnegative integer")
 run_tool(bad_offset_sign 2 --out "${WORK}/never.json" --offset-us -1 "${WORK}/a.json")

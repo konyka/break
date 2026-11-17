@@ -356,6 +356,89 @@ TEST(core_app_trace_clock_offset_refuses_invalid_arguments)
     ASSERT_EQ(error, 9u);
 }
 
+static BreakTraceClockOffsetStatus session_offset_of(const char *text, u64 session, i64 *offset,
+                                                     u64 *error)
+{
+    return break_trace_core_app_clock_offset_for_session(text, strlen(text), session, offset,
+                                                         error);
+}
+
+#define CLK "COREAPPTRACE version=1 event=network_clock_offset "
+
+TEST(core_app_trace_clock_offset_for_session_picks_that_peer)
+{
+    const char *trace = "COREAPPTRACE version=1 event=level_loaded generation=1\n"
+                        "COREAPPTRACE version=1 ts_us=4 event=network_clock_offset session=1"
+                        " offset_us=-500 error_us=4 samples=4\n"
+                        CLK "session=12 offset_us=300 error_us=5 samples=4\r\n"
+                        CLK "session=2 offset_us=0 error_us=6 samples=4";
+    i64 offset = 7;
+    u64 error = 7u;
+    ASSERT_EQ(session_offset_of(trace, 1u, &offset, &error), BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(offset, -500);
+    ASSERT_EQ(error, 4u);
+    ASSERT_EQ(session_offset_of(trace, 12u, &offset, &error), BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(offset, 300);
+    ASSERT_EQ(error, 5u);
+    ASSERT_EQ(session_offset_of(trace, 2u, &offset, &error), BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(offset, 0);
+    ASSERT_EQ(error, 6u);
+    ASSERT_EQ(session_offset_of(CLK "session=18446744073709551615 offset_us=1 error_us=2\n",
+                                UINT64_MAX, &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(offset, 1);
+    /* another session's malformed offset does not matter */
+    ASSERT_EQ(session_offset_of(CLK "session=3 offset_us=x error_us=1\n"
+                                CLK "session=4 offset_us=9 error_us=1\n",
+                                4u, &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(offset, 9);
+}
+
+TEST(core_app_trace_clock_offset_for_session_rejects_missing_repeated_and_malformed)
+{
+    i64 offset = 7;
+    u64 error = 9u;
+    ASSERT_EQ(session_offset_of(CLK "session=1 offset_us=1 error_us=1\n", 2u, &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(session_offset_of("", 1u, &offset, &error), BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(session_offset_of(CLK "session=1 offset_us=1 error_us=1\n"
+                                CLK "session=1 offset_us=2 error_us=1\n",
+                                1u, &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_AMBIGUOUS);
+    ASSERT_EQ(session_offset_of(CLK "session=1 offset_us=01 error_us=1\n", 1u, &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_MALFORMED);
+    static const char *const bad_session[] = {
+        CLK "offset_us=1 error_us=1\n",
+        CLK "session= offset_us=1 error_us=1\n",
+        CLK "session=01 offset_us=1 error_us=1\n",
+        CLK "session=-1 offset_us=1 error_us=1\n",
+        CLK "session=1x offset_us=1 error_us=1\n",
+        /* below '0': with no digit check it would wrap to UINT64_MAX */
+        CLK "session=/ offset_us=1 error_us=1\n",
+        CLK "session=18446744073709551616 offset_us=1 error_us=1\n",
+    };
+    for (usize i = 0u; i < sizeof(bad_session) / sizeof(bad_session[0]); ++i) {
+        ASSERT_EQ(session_offset_of(bad_session[i], 1u, &offset, &error),
+                  BREAK_TRACE_CLOCK_OFFSET_MALFORMED);
+    }
+    ASSERT_EQ(offset, 7);
+    ASSERT_EQ(error, 9u);
+    const char *text = CLK "session=1 offset_us=1 error_us=1";
+    ASSERT_EQ(break_trace_core_app_clock_offset_for_session(text, strlen(text), 1u, NULL, &error),
+              BREAK_TRACE_CLOCK_OFFSET_INVALID);
+    ASSERT_EQ(break_trace_core_app_clock_offset_for_session(text, strlen(text), 1u, &offset, NULL),
+              BREAK_TRACE_CLOCK_OFFSET_INVALID);
+    ASSERT_EQ(break_trace_core_app_clock_offset_for_session(NULL, 1u, 1u, &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_INVALID);
+    ASSERT_EQ(break_trace_core_app_clock_offset_for_session(NULL, 0u, 1u, &offset, &error),
+              BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(offset, 7);
+    ASSERT_EQ(error, 9u);
+}
+
+#undef CLK
+
 TEST_MAIN_BEGIN()
     RUN_TEST(core_app_trace_converts_lines_to_chrome_events);
     RUN_TEST(core_app_trace_size_query_and_small_buffer);
@@ -367,4 +450,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(core_app_trace_clock_offset_reads_the_single_peer_line);
     RUN_TEST(core_app_trace_clock_offset_rejects_missing_repeated_and_malformed_lines);
     RUN_TEST(core_app_trace_clock_offset_refuses_invalid_arguments);
+    RUN_TEST(core_app_trace_clock_offset_for_session_picks_that_peer);
+    RUN_TEST(core_app_trace_clock_offset_for_session_rejects_missing_repeated_and_malformed);
 TEST_MAIN_END()

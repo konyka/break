@@ -168,10 +168,67 @@ TEST(clock_offset_merge_shifts_are_non_negative)
     ASSERT_EQ(b, 0u);
 }
 
+/* offset_i is peer i minus the server: every input lands on the server's
+ * timeline moved by max(0, max offset_i) */
+TEST(clock_offset_merge_shifts_many_aligns_every_peer)
+{
+    const i64 mixed[3] = {-500, 300, 0};
+    u64 server = 9u;
+    u64 peers[3] = {9u, 9u, 9u};
+    ASSERT_TRUE(clock_offset_merge_shifts_many(mixed, 3u, &server, peers));
+    ASSERT_EQ(server, 300u);
+    ASSERT_EQ(peers[0], 800u);
+    ASSERT_EQ(peers[1], 0u);
+    ASSERT_EQ(peers[2], 300u);
+    const i64 behind[2] = {-40, -7};
+    ASSERT_TRUE(clock_offset_merge_shifts_many(behind, 2u, &server, peers));
+    ASSERT_EQ(server, 0u);
+    ASSERT_EQ(peers[0], 40u);
+    ASSERT_EQ(peers[1], 7u);
+    const i64 ahead[2] = {40, 7};
+    ASSERT_TRUE(clock_offset_merge_shifts_many(ahead, 2u, &server, peers));
+    ASSERT_EQ(server, 40u);
+    ASSERT_EQ(peers[0], 0u);
+    ASSERT_EQ(peers[1], 33u);
+    const i64 extremes[2] = {INT64_MIN, INT64_MAX};
+    ASSERT_TRUE(clock_offset_merge_shifts_many(extremes, 2u, &server, peers));
+    ASSERT_EQ(server, (u64)INT64_MAX);
+    ASSERT_EQ(peers[0], UINT64_MAX);
+    ASSERT_EQ(peers[1], 0u);
+}
+
+TEST(clock_offset_merge_shifts_many_matches_the_two_input_helper)
+{
+    const i64 cases[5] = {1500, -1500, 0, INT64_MIN, INT64_MAX};
+    for (u32 i = 0u; i < 5u; ++i) {
+        u64 a = 1u, b = 1u, server = 2u, peer = 2u;
+        clock_offset_merge_shifts(cases[i], &a, &b);
+        ASSERT_TRUE(clock_offset_merge_shifts_many(&cases[i], 1u, &server, &peer));
+        ASSERT_EQ(server, a);
+        ASSERT_EQ(peer, b);
+    }
+}
+
+TEST(clock_offset_merge_shifts_many_refuses_bad_arguments)
+{
+    const i64 one[1] = {5};
+    u64 server = 9u;
+    u64 peer = 9u;
+    ASSERT_TRUE(!clock_offset_merge_shifts_many(NULL, 1u, &server, &peer));
+    ASSERT_TRUE(!clock_offset_merge_shifts_many(one, 0u, &server, &peer));
+    ASSERT_TRUE(!clock_offset_merge_shifts_many(one, 1u, NULL, &peer));
+    ASSERT_TRUE(!clock_offset_merge_shifts_many(one, 1u, &server, NULL));
+    ASSERT_EQ(server, 9u);
+    ASSERT_EQ(peer, 9u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(clock_offset_measures_offset_and_delay);
     RUN_TEST(clock_offset_rejects_impossible_samples);
     RUN_TEST(clock_offset_picks_the_lowest_delay_in_a_sliding_window);
     RUN_TEST(clock_offset_error_bound_covers_any_delay_split);
     RUN_TEST(clock_offset_merge_shifts_are_non_negative);
+    RUN_TEST(clock_offset_merge_shifts_many_aligns_every_peer);
+    RUN_TEST(clock_offset_merge_shifts_many_matches_the_two_input_helper);
+    RUN_TEST(clock_offset_merge_shifts_many_refuses_bad_arguments);
 TEST_MAIN_END()

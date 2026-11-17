@@ -77,3 +77,18 @@ void clock_offset_merge_shifts(i64 offset_us, u64 *a_shift, u64 *b_shift)
         *b_shift = 0u - (u64)offset_us;
     }
 }
+
+bool clock_offset_merge_shifts_many(const i64 *offsets_us, u32 count, u64 *server_shift,
+                                    u64 *peer_shifts)
+{
+    if (!offsets_us || count == 0u || !server_shift || !peer_shifts) return false;
+    i64 base = 0;
+    for (u32 i = 0u; i < count; ++i) {
+        if (offsets_us[i] > base) base = offsets_us[i];
+    }
+    /* base >= offsets_us[i], so the difference is in [0, 2^64 - 1] and the
+     * wrapping u64 subtraction is exact */
+    for (u32 i = 0u; i < count; ++i) peer_shifts[i] = (u64)base - (u64)offsets_us[i];
+    *server_shift = (u64)base;
+    return true;
+}

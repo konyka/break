@@ -65,6 +65,15 @@ typedef enum BreakTraceClockOffsetStatus {
 BreakTraceClockOffsetStatus break_trace_core_app_clock_offset(const char *text, usize size,
                                                               i64 *offset_us, u64 *error_us);
 
+/* The same for one peer of a server with several: only clock lines whose
+ * session= is the canonical decimal `session` count, so other peers' lines
+ * (malformed or not) are ignored. A clock line without a canonical session
+ * field is MALFORMED; two lines for `session` are AMBIGUOUS. */
+BreakTraceClockOffsetStatus break_trace_core_app_clock_offset_for_session(const char *text,
+                                                                          usize size, u64 session,
+                                                                          i64 *offset_us,
+                                                                          u64 *error_us);
+
 /* ---- writer side --------------------------------------------------------
  * core_app writes every trace line through these functions. When a clock is
  * set, a line that starts with "COREAPPTRACE version=1 " gets
