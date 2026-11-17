@@ -37,6 +37,7 @@ typedef struct {
     f32 spatial_pan;
     f32 spatial_rear;
     i32 spatial_itd;
+    f32 spatial_tilt;
     u32 spatial_revision;
     f32 ramp_target;
     u32 ramp_frames;
@@ -92,6 +93,8 @@ typedef struct {
     atomic_uint_least64_t rear_snapshot;
     /* (revision, interaural delay in frames as f32), published the same way */
     atomic_uint_least64_t itd_snapshot;
+    /* (revision, elevation tilt amount), published the same way */
+    atomic_uint_least64_t tilt_snapshot;
     u32 applied_spatial_revision;
     f32 applied_spatial_gain;
     bool panned;
@@ -103,6 +106,8 @@ typedef struct {
     bool interaural_delay;
     i32 applied_itd;
     ItdLine itd;
+    f32 applied_tilt;
+    f32 tilt_state[2];
     atomic_uint *bus_gains;
     Vec3 position;
     u32 bus;
@@ -249,6 +254,13 @@ static f32 gain_from_bits(u32 bits) {
     f32 gain;
     memcpy(&gain, &bits, sizeof(gain));
     return gain;
+}
+
+/* One-pole coefficient of the elevation cue's low-pass. */
+static f32 elevation_tilt_alpha(void) {
+    return (f32)(1.0 - exp(-2.0 * 3.14159265358979323846 *
+                           (double)AUDIO_PCM_STREAM_ELEVATION_CUTOFF_HZ /
+                           (double)AUDIO_PCM_SAMPLE_RATE));
 }
 
 static u64 spatial_pack(u32 revision, f32 gain) {
@@ -434,6 +446,9 @@ static void voice_drain_commands(AudioVoice *voice) {
             voice->interaural_delay = command.desc.interaural_delay;
             voice->applied_itd = command.spatial_itd;
             memset(&voice->itd, 0, sizeof(voice->itd));
+            voice->applied_tilt = command.spatial_tilt;
+            voice->tilt_state[0] = 0.0f;
+            voice->tilt_state[1] = 0.0f;
             voice_apply_initial_spatial(voice, &command);
             voice_configure_dsp(voice, &command);
             voice->playing = true;
@@ -476,6 +491,7 @@ static ma_result voice_read(ma_data_source *source, void *output,
     AudioVoice *voice = (AudioVoice *)source;
     f32 *out = (f32 *)output;
     voice_drain_commands(voice);
+    const f32 tilt_alpha = elevation_tilt_alpha();
     for (ma_uint64 frame = 0; frame < frames; ++frame) {
         f32 left = 0.0f;
         f32 right = 0.0f;
@@ -527,6 +543,12 @@ static ma_result voice_read(ma_data_source *source, void *output,
                             voice->applied_itd = (i32)spatial_gain_of(itd);
                         }
                     }
+                    /* an event without the cue always publishes 0 */
+                    u64 tilt = atomic_load_explicit(&voice->tilt_snapshot,
+                                                    memory_order_acquire);
+                    if (spatial_revision_of(tilt) == revision) {
+                        voice->applied_tilt = spatial_gain_of(tilt);
+                    }
                 }
                 f32 spatial_gain = voice->applied_spatial_gain;
                 f32 gain = voice->volume * voice->fade_gain * bus_gain *
@@ -546,6 +568,13 @@ static ma_result voice_read(ma_data_source *source, void *output,
                 } else {
                     voice->rear_state[0] = in_left;
                     voice->rear_state[1] = in_right;
+                }
+                /* the tilt's low-pass always runs, like a stream's */
+                voice->tilt_state[0] += tilt_alpha * (in_left - voice->tilt_state[0]);
+                voice->tilt_state[1] += tilt_alpha * (in_right - voice->tilt_state[1]);
+                if (voice->applied_tilt != 0.0f) {
+                    in_left += voice->applied_tilt * (in_left - voice->tilt_state[0]);
+                    in_right += voice->applied_tilt * (in_right - voice->tilt_state[1]);
                 }
                 itd_line_process(&voice->itd, voice->applied_itd, &in_left, &in_right);
                 left = in_left * gain * voice->applied_pan_left;
@@ -716,9 +745,7 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
     bool sinc = open && stream->rate != AUDIO_PCM_SAMPLE_RATE &&
                 atomic_load_explicit(&stream->resample, memory_order_relaxed) ==
                     (unsigned)AUDIO_RESAMPLE_SINC;
-    const f32 tilt_alpha = (f32)(1.0 - exp(-2.0 * 3.14159265358979323846 *
-                                           (double)AUDIO_PCM_STREAM_ELEVATION_CUTOFF_HZ /
-                                           (double)AUDIO_PCM_SAMPLE_RATE));
+    const f32 tilt_alpha = elevation_tilt_alpha();
     for (ma_uint64 frame = 0; frame < frames; ++frame) {
         f32 left = 0.0f;
         f32 right = 0.0f;
@@ -1224,6 +1251,7 @@ bool audio_extended_init(AudioSystem *as, ma_engine *engine) {
         atomic_init(&voice->pan_snapshot, spatial_pack(0, 0.0f));
         atomic_init(&voice->rear_snapshot, spatial_pack(0, 1.0f));
         atomic_init(&voice->itd_snapshot, spatial_pack(0, 0.0f));
+        atomic_init(&voice->tilt_snapshot, spatial_pack(0, 0.0f));
         voice->applied_spatial_gain = 1.0f;
         ma_data_source_config config = ma_data_source_config_init();
         config.vtable = &AUDIO_VOICE_VTABLE;
@@ -1398,7 +1426,7 @@ AudioResult audio_event_register(AudioSystem *as, const char *name,
         !isfinite(desc->occluded_gain) || desc->occluded_gain < 0.0f ||
         desc->occluded_gain > 1.0f || desc->bus >= as->bus_count ||
         (desc->panned && !desc->spatial) || (desc->rear_cue && !desc->spatial) ||
-        (desc->interaural_delay && !desc->spatial)) {
+        (desc->interaural_delay && !desc->spatial) || (desc->elevation_cue && !desc->spatial)) {
         return AUDIO_INVALID;
     }
     if (!clip_resolve(ext, desc->clip)) return AUDIO_STALE;
@@ -1518,11 +1546,15 @@ static i32 event_itd(const AudioExtended *ext, const AudioEventDesc *desc, Vec3 
     return desc->interaural_delay ? interaural_delay_frames(ext->owner, position) : 0;
 }
 
-/* The pan, rear coefficient and interaural delay are stored under the
+static f32 event_tilt(const AudioExtended *ext, const AudioEventDesc *desc, Vec3 position) {
+    return desc->elevation_cue ? elevation_amount(ext->owner, position) : 0.0f;
+}
+
+/* The pan, rear coefficient, interaural delay and tilt are stored under the
  * revision before the gain snapshot that publishes it, so a mixer that sees
  * the gain revision also sees them. */
 static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain, f32 pan,
-                                   f32 rear, i32 itd) {
+                                   f32 rear, i32 itd, f32 tilt) {
     for (;;) {
         if (epoch == 0 || voice->epoch != epoch ||
             atomic_load_explicit(&voice->spatial_epoch, memory_order_acquire) != epoch) {
@@ -1541,6 +1573,8 @@ static AudioResult spatial_publish(AudioVoice *voice, u64 epoch, f32 gain, f32 p
         atomic_store_explicit(&voice->rear_snapshot, spatial_pack(revision, rear),
                               memory_order_release);
         atomic_store_explicit(&voice->itd_snapshot, spatial_pack(revision, (f32)itd),
+                              memory_order_release);
+        atomic_store_explicit(&voice->tilt_snapshot, spatial_pack(revision, tilt),
                               memory_order_release);
 #ifdef AUDIO_SPATIAL_PUBLISH_TEST_HOOK
         AUDIO_SPATIAL_PUBLISH_TEST_HOOK(voice);
@@ -1601,6 +1635,7 @@ static AudioResult voice_start_pcm(AudioExtended *ext, u32 slot,
     command.spatial_pan = event_pan(ext, desc, position);
     command.spatial_rear = event_rear(ext, desc, position);
     command.spatial_itd = event_itd(ext, desc, position);
+    command.spatial_tilt = event_tilt(ext, desc, position);
     for (u32 i = 0; i < command.desc.dsp.stage_count; ++i) {
         if (command.desc.dsp.stages[i].type == AUDIO_DSP_FILTER) {
             command.dsp_alpha[i] = audio_dsp_filter_alpha(
@@ -1738,7 +1773,8 @@ AudioResult audio_voice_set_position(AudioSystem *as,
     AudioResult result = event_spatial_gain(ext, desc, position, &gain);
     if (result != AUDIO_OK) return result;
     result = spatial_publish(voice, voice->epoch, gain, event_pan(ext, desc, position),
-                             event_rear(ext, desc, position), event_itd(ext, desc, position));
+                             event_rear(ext, desc, position), event_itd(ext, desc, position),
+                             event_tilt(ext, desc, position));
     if (result != AUDIO_OK) return result;
     voice->position = position;
     return AUDIO_OK;
@@ -1774,7 +1810,8 @@ void audio_extended_listener_update(AudioSystem *as) {
             (void)spatial_publish(voice, voice->epoch, gain,
                                   event_pan(ext, desc, voice->position),
                                   event_rear(ext, desc, voice->position),
-                                  event_itd(ext, desc, voice->position));
+                                  event_itd(ext, desc, voice->position),
+                                  event_tilt(ext, desc, voice->position));
         }
     }
 }

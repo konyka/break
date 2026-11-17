@@ -11540,3 +11540,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 先 RED（5 项失败，水平声源一项按设计在桩上通过）后 GREEN；21 项变异首轮 3 项存活（余弦为 0 的提前返回与 ±1 钳制在数学上冗余），删去这 3 行，另有 1 个模式匹配不唯一，改写后被捕获，其余全部被捕获；影子变量检查通过。
 - 仍缺：HRTF、事件 voice 的高度提示、麦克风采集、感知编码器、音频编辑工具。
 
+### 2026-11-17 音频：事件 voice 的高度提示
+- `engine/src/audio/audio_extended.{h,c}`：`AudioEventDesc.elevation_cue`（需 `spatial`），voice 新增 `tilt_snapshot`、`applied_tilt`、两声道低通状态；START 携带 `spatial_tilt`，`spatial_publish` 增加倾斜量参数，与增益 revision 一起发布。流与 voice 共用 `elevation_amount` 和 `elevation_tilt_alpha`。
+- `test_audio_extended` 新增 7 项（共 120）：注册校验、水平/重合声源逐位不变、正下/正上阶跃响应、监听者翻转与 `set_position`、RESTART 不影响旧 epoch 的 PCM、未发布 revision 的值不被采用、立体声独立状态。
+- 先 RED（6 项失败，水平声源一项按设计通过）后 GREEN；19 项变异首轮 2 项存活：混音器中的开关检查是冗余的（未开提示时发布值恒为 0），已删除；低通在水平时也运行，补充了「水平后回到下方从当前状态继续」的断言。另有 1 个模式匹配不唯一，改写后被捕获。其余全部被捕获；影子变量检查通过。
+- 仍缺：HRTF、麦克风采集、感知编码器、音频编辑工具。
+

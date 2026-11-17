@@ -61,6 +61,11 @@ typedef struct {
      * delay line, zeroed when it starts; a change of delay crossfades over
      * AUDIO_PCM_STREAM_ITD_FADE_FRAMES frames. Requires `spatial`. */
     bool interaural_delay;
+    /* Height tilt from the listener's up vector, like
+     * audio_pcm_stream_set_elevation_cue: more top end above, less below.
+     * Each voice keeps its own filter state, reset when it starts. Requires
+     * `spatial`. */
+    bool elevation_cue;
 } AudioEventDesc;
 
 AudioResult audio_event_register(AudioSystem *as, const char *name,

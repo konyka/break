@@ -14,7 +14,7 @@ static void test_spatial_interleave(void *opaque) {
     if (!test_interleave_armed) return;
     test_interleave_armed = false;
     AudioVoice *voice = (AudioVoice *)opaque;
-    (void)spatial_publish(voice, voice->epoch, test_interleave_gain, 0.0f, 1.0f, 0);
+    (void)spatial_publish(voice, voice->epoch, test_interleave_gain, 0.0f, 1.0f, 0, 0.0f);
 }
 
 static bool test_read_interleave_armed;
@@ -3705,6 +3705,208 @@ TEST(rear_cue_event_keeps_stereo_state_apart)
     audio_system_destroy(as);
 }
 
+/* ---- event elevation cue ---- */
+
+TEST(event_elevation_cue_requires_spatial)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 2u));
+    desc.elevation_cue = true;
+    ASSERT_EQ(audio_event_register(as, "tilt-flat", &desc), AUDIO_INVALID);
+    desc.spatial = true;
+    ASSERT_EQ(audio_event_register(as, "tilt-flat", &desc), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+static bool render_tilt_clip(const f32 *clip_pcm, u32 frames, Vec3 position, bool cue, f32 *out)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    if (!as) return false;
+    AudioEventDesc desc = make_event_desc(register_ramp(as, clip_pcm, frames));
+    desc.spatial = true;
+    desc.elevation_cue = cue;
+    AudioVoiceHandle voice = 0;
+    bool ok = audio_event_register(as, "tilt-clip", &desc) == AUDIO_OK &&
+              audio_event_trigger(as, "tilt-clip", position, &voice) == AUDIO_OK &&
+              audio_system_render(as, out, frames) == AUDIO_OK;
+    audio_system_destroy(as);
+    for (u32 i = 0; ok && i < 2u * frames; ++i) ok = isfinite(out[i]);
+    return ok;
+}
+
+TEST(elevation_cue_event_leaves_level_sources_untouched)
+{
+    enum { kFrames = 64 };
+    i16 pcm[kFrames];
+    static f32 clip_pcm[kFrames];
+    static f32 with_cue[2u * kFrames];
+    static f32 without[2u * kFrames];
+    random_pcm(pcm, kFrames, 5151u);
+    for (u32 i = 0; i < kFrames; ++i) clip_pcm[i] = (f32)pcm[i] / 32768.0f;
+    const Vec3 places[3] = {vec3(0, 0, -2), vec3(2, 0, 0), vec3(0, 0, 0)};
+    for (u32 p = 0; p < 3u; ++p) {
+        ASSERT_TRUE(render_tilt_clip(clip_pcm, kFrames, places[p], true, with_cue));
+        ASSERT_TRUE(render_tilt_clip(clip_pcm, kFrames, places[p], false, without));
+        ASSERT_EQ(memcmp(with_cue, without, sizeof(with_cue)), 0);
+    }
+}
+
+TEST(elevation_cue_event_tilts_by_height)
+{
+    enum { kFrames = 16 };
+    static const f32 ones[kFrames] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    static f32 out[2u * kFrames];
+    double half[kFrames];
+    for (u32 i = 0; i < kFrames; ++i) half[i] = 0.5;
+    /* distance 2: gain 0.5; the tilt is linear, so it is the model on 0.5 */
+    ASSERT_TRUE(render_tilt_clip(ones, kFrames, vec3(0, -2, 0), true, out));
+    bool ok = true;
+    check_tilt(out, half, kFrames, 2u, -1.0, 0.0, &ok);
+    check_tilt(out + 1, half, kFrames, 2u, -1.0, 0.0, &ok);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(render_tilt_clip(ones, kFrames, vec3(0, 2, 0), true, out));
+    check_tilt(out, half, kFrames, 2u, 0.5, 0.0, &ok);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(out[0] > 0.55f);
+    ASSERT_TRUE(render_tilt_clip(ones, kFrames, vec3(0, -2, 0), false, out));
+    for (u32 i = 0; i < 2u * kFrames; ++i) ASSERT_FLOAT_EQ(out[i], 0.5f, 0.0f);
+}
+
+TEST(elevation_cue_event_follows_the_listener)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 16u));
+    desc.spatial = true;
+    desc.elevation_cue = true;
+    desc.looping = true;
+    ASSERT_EQ(audio_event_register(as, "tilt-loop", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_event_trigger(as, "tilt-loop", vec3(0, 2, 0), &voice), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    double a = ref_elev_alpha();
+    double lp = a;
+    ASSERT_FLOAT_EQ(l, (f32)(0.5 * (1.0 + 0.5 * (1.0 - lp))), 2e-6f);
+    ASSERT_FLOAT_EQ(r, (f32)(0.5 * (1.0 + 0.5 * (1.0 - lp))), 2e-6f);
+    /* the listener turns over: the source is now below */
+    audio_system_update(as, vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, -1, 0));
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    lp += a * (1.0 - lp);
+    ASSERT_FLOAT_EQ(l, (f32)(0.5 * lp), 2e-6f);
+    ASSERT_FLOAT_EQ(r, (f32)(0.5 * lp), 2e-6f);
+    AudioVoice *slot = &((AudioExtended *)as->extended)->voices[(voice & 0xFFu) - 1u];
+    ASSERT_FLOAT_EQ(slot->applied_tilt, -1.0f, 0.0f);
+    /* moved level with the listener: exact again */
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(0, 0, -2)), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(r, 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(slot->applied_tilt, 0.0f, 0.0f);
+    /* the low-pass ran through the level frame, so above again (the
+     * listener is still upside down) it continues from there */
+    lp += a * (1.0 - lp);
+    ASSERT_EQ(audio_voice_set_position(as, voice, vec3(0, -2, 0)), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    lp += a * (1.0 - lp);
+    ASSERT_FLOAT_EQ(l, (f32)(0.5 * (1.0 + 0.5 * (1.0 - lp))), 2e-6f);
+    ASSERT_FLOAT_EQ(r, (f32)(0.5 * (1.0 + 0.5 * (1.0 - lp))), 2e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(elevation_cue_event_restart_keeps_the_old_amount_on_held_pcm)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 4u));
+    desc.spatial = true;
+    desc.elevation_cue = true;
+    desc.retrigger = AUDIO_RETRIGGER_RESTART;
+    ASSERT_EQ(audio_event_register(as, "tilt-restart", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    f32 output[2];
+    ASSERT_EQ(audio_event_trigger(as, "tilt-restart", vec3(0, 0, -2), &handle), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 0.0f);
+    ASSERT_EQ(audio_event_trigger(as, "tilt-restart", vec3(0, -2, 0), &handle), AUDIO_OK);
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(0, -2, 0)), AUDIO_OK);
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    AudioVoice *voice = &ext->voices[(handle & 0xFFu) - 1u];
+    render_with_held_commands(voice, output);
+    ASSERT_FLOAT_EQ(output[0], 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(output[1], 0.5f, 0.0f);
+    /* the new epoch starts its low-pass from silence */
+    ASSERT_EQ(audio_system_render(as, output, 1), AUDIO_OK);
+    ASSERT_FLOAT_EQ(output[0], (f32)(0.5 * ref_elev_alpha()), 2e-6f);
+    ASSERT_FLOAT_EQ(output[1], (f32)(0.5 * ref_elev_alpha()), 2e-6f);
+    audio_system_destroy(as);
+}
+
+TEST(elevation_cue_event_keeps_its_amount_until_that_revision_is_published)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioEventDesc desc = make_event_desc(register_ones(as, 16u));
+    desc.spatial = true;
+    desc.elevation_cue = true;
+    desc.looping = true;
+    ASSERT_EQ(audio_event_register(as, "tilt-revision", &desc), AUDIO_OK);
+    AudioVoiceHandle handle = 0;
+    f32 l = -1.0f, r = -1.0f;
+    ASSERT_EQ(audio_event_trigger(as, "tilt-revision", vec3(0, -2, 0), &handle), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    double a = ref_elev_alpha();
+    double lp = a;
+    ASSERT_FLOAT_EQ(l, (f32)(0.5 * lp), 2e-6f);
+    AudioExtended *ext = (AudioExtended *)as->extended;
+    AudioVoice *voice = &ext->voices[(handle & 0xFFu) - 1u];
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(0, -2, 0)), AUDIO_OK);
+    /* a later publish has stored its amount but not yet its gain */
+    atomic_store(&voice->tilt_snapshot, spatial_pack(voice->spatial_revision + 1u, 0.5f));
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    lp += a * (1.0 - lp);
+    ASSERT_FLOAT_EQ(l, (f32)(0.5 * lp), 2e-6f);
+    ASSERT_FLOAT_EQ(r, (f32)(0.5 * lp), 2e-6f);
+    ASSERT_EQ(audio_voice_set_position(as, handle, vec3(0, 0, -2)), AUDIO_OK);
+    ASSERT_TRUE(render_lr(as, &l, &r));
+    ASSERT_FLOAT_EQ(l, 0.5f, 0.0f);
+    ASSERT_FLOAT_EQ(r, 0.5f, 0.0f);
+    audio_system_destroy(as);
+}
+
+TEST(elevation_cue_event_keeps_stereo_state_apart)
+{
+    enum { kFrames = 12 };
+    static f32 samples[2u * kFrames];
+    static f32 out[2u * kFrames];
+    double xl[kFrames], xr[kFrames];
+    for (u32 i = 0; i < kFrames; ++i) {
+        samples[2u * i] = 0.5f;
+        samples[2u * i + 1u] = -0.25f;
+        xl[i] = 0.25;
+        xr[i] = -0.125;
+    }
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    AudioPcmDesc pcm = mono_pcm(samples, kFrames);
+    pcm.channels = 2u;
+    AudioClipHandle clip = 0;
+    ASSERT_EQ(audio_clip_register(as, "tilt-stereo-clip", &pcm, &clip), AUDIO_OK);
+    AudioEventDesc desc = make_event_desc(clip);
+    desc.spatial = true;
+    desc.elevation_cue = true;
+    ASSERT_EQ(audio_event_register(as, "tilt-stereo", &desc), AUDIO_OK);
+    AudioVoiceHandle voice = 0;
+    ASSERT_EQ(audio_event_trigger(as, "tilt-stereo", vec3(0, -2, 0), &voice), AUDIO_OK);
+    ASSERT_EQ(audio_system_render(as, out, kFrames), AUDIO_OK);
+    bool ok = true;
+    check_tilt(out, xl, kFrames, 2u, -1.0, 0.0, &ok);
+    check_tilt(out + 1, xr, kFrames, 2u, -1.0, 0.0, &ok);
+    ASSERT_TRUE(ok);
+    audio_system_destroy(as);
+}
+
 /* ---- event interaural delay ---- */
 
 TEST(event_interaural_delay_requires_spatial)
@@ -4085,4 +4287,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(pcm_stream_elevation_cue_follows_the_listener);
     RUN_TEST(pcm_stream_elevation_cue_shapes_high_frequencies);
     RUN_TEST(pcm_stream_elevation_cue_keeps_stereo_state_apart_and_resets_on_reopen);
+    RUN_TEST(event_elevation_cue_requires_spatial);
+    RUN_TEST(elevation_cue_event_leaves_level_sources_untouched);
+    RUN_TEST(elevation_cue_event_tilts_by_height);
+    RUN_TEST(elevation_cue_event_follows_the_listener);
+    RUN_TEST(elevation_cue_event_restart_keeps_the_old_amount_on_held_pcm);
+    RUN_TEST(elevation_cue_event_keeps_its_amount_until_that_revision_is_published);
+    RUN_TEST(elevation_cue_event_keeps_stereo_state_apart);
 TEST_MAIN_END()
