@@ -2,6 +2,10 @@
 
 日期：2026-11-06
 
+## 语音处理链接线边界（2026-11-18）
+
+`audio_voice_processor` 已提供经过逐位参考验证的五级采集处理库，但 `core_app` 尚未创建或调用它。后续接入仍需单独完成：真实播放参考的延迟对齐、`AudioCapture` owner 生命周期、处理后 PCM 的分帧/编码和网络发送。库级测试不构成真实设备、生产管线或听感证据。设计见 `docs/superpowers/specs/2026-11-18-audio-voice-processor-design.md`。
+
 ## Core App Task 2 数据格式与命名边界（2026-11-11）
 
 本步在 Task 1 命名边界上一次性迁移 P12 数据格式：checkpoint magic 为固定 8 字节 `CORECKPT`（无额外 NUL），manifest 文件名为 `manifest.core`，trace 首字段为 `COREAPPTRACE version=1`，scenario 首行为 `core-app-scenario 1`。reader 只接受这些新标识并拒绝旧标识，不存在双格式或旧格式回退。manifest 的字段宽度、序列化偏移、FNV-1a-64、generation、错误码、三态提交结果与原子提交语义不变；事务加载、mount 隔离、commit fatal、IO quiescence、sticky FAILED 和逆序销毁行为不变。

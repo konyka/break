@@ -1,3 +1,11 @@
+## 集成语音处理链 AudioVoiceProcessor（2026-11-18）
+
+- **交付**：新增 `audio_voice_processor.{h,c}`，统一组合 AEC、残余抑制、频谱降噪、噪声门与 AGC；嵌套配置保持各模块范围，支持任意分块、统一 reset 和频谱延迟查询。正式 `engine` 构建成功，新目标 `test_audio_voice_processor` 已注册。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-voice-processor-design.md`、`docs/superpowers/plans/2026-11-18-audio-voice-processor.md`。
+- **TDD 与评审**：重新配置后取得新符号链接 RED，再实现至 3/3；手工五级链和任意分块逐位一致。首轮评审发现尾部未真正补零且缺独立参考，修复后完整正文+尾部均与手工链一致，复审 Ready。
+- **定向验证**：普通及 ASan+UBSan 均 3/3，严格告警为零；阶段顺序、噪声门/AGC reset、NULL 对象保护、延迟转发和频谱 reset 六个变异均被捕获。
+- **全量验证**：`/tmp/full_trees.sh` 的实际计数为 430/430、430/430、438/438，三次构建均成功且零测试失败。
+- **边界**：仅单声道固定链；core_app 设备、参考跟踪、编码和网络发送仍是独立后续工作，没有真实声学验证。
+
 ## AEC 近端状态与残余抑制逐帧集成（2026-11-18）
 
 - **交付**：新增 `audio_echo_canceller_near_end_active` 和 `audio_residual_echo_suppressor_process_with_aec`；后者逐帧执行 AEC、读取状态并抑制残余，旧 PCM/适应/抑制公式不变。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-aec-residual-integration-design.md`、`docs/superpowers/plans/2026-11-18-audio-aec-residual-integration.md`。

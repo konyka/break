@@ -271,6 +271,15 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 所有缓冲区在访问前经 `audio_edit_buffer_span` 检查样本数与字节数；交错索引、指针偏移和字节计数使用 usize，避免大帧数与 32 位平台溢出。
 - 未做：编辑器 UI、时间线、撤销、媒体文件解析、自动化和真实听测。
 
+## 集成语音处理链
+
+`engine/src/audio/audio_voice_processor.{h,c}` 把现有模块组合为单声道、所有者线程的处理链：逐帧 AEC+近端残余抑制 → Hann/STFT 频谱降噪 → 噪声门 → AGC。它只负责已对齐参考与采集 PCM 的处理，不打开设备、不对齐延迟、不编码或联网。
+
+- `AudioVoiceProcessorConfig` 嵌套五个现有配置；采样率必须一致，噪声门与 AGC 必须为单声道，各模块原有范围不变。创建失败不写 `*out`，部分构造会逆序释放。
+- `process_i16` 原地处理，任意分块与手工五级链逐位一致。非法调用为空操作；只有 create 分配。reset 重置 AEC/残余/频谱状态，并用保存的配置重新初始化噪声门和 AGC。
+- `audio_voice_processor_latency_frames` 返回频谱降噪的固定 frame_size；有限流尾部需为参考与采集都补该数量的零帧。测试用手工五级链独立校验正文和排空尾部。
+- 未做：多声道、可配置 bypass、core_app 设备/网络接线、自动延迟跟踪与真实声学验证。
+
 ## FFT
 
 `engine/src/audio/audio_fft.{h,c}` 提供基 2 实数 FFT 与周期 Hann 窗，作为频谱降噪等频域处理的数值基础。`AudioFft` 计划保存位反转和旋转因子表；只有 `audio_fft_create` 分配内存，正逆变换与窗函数不分配、不加锁。计划创建后只读，可由多个线程共享，但每个调用者必须有自己的样本与频谱缓冲区。
