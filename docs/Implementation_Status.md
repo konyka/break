@@ -11670,3 +11670,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `engine/src/audio/audio_capture.{h,c}`：`audio_capture_lost`、`audio_capture_reroutes`、`audio_capture_reopen`、`audio_capture_simulate_event`。设备通过 miniaudio 的 `stopped` / `rerouted` 通知报告丢失与重路由，只有在采集已请求启动时停止才算丢失；另外轮询设备状态，覆盖拔出后不发通知的后端。两个设备槽：reopen 先打开新设备再关闭旧设备，环形缓冲与其中的帧保留，失败时旧设备不变。
 - 测试：`test_audio_capture` 新增 3 项（共 11）。先 RED（链接失败）后 GREEN。25 项变异首轮存活 4 项：删掉了 reopen 失败时恢复设备名的多余代码（打开失败不会改名）和 destroy 中不影响结果的状态清除，补了 NULL 后端的丢失与 reopen 测试、失败 reopen 保留设备名的断言。最终 23 项中 22 项被捕获，存活的状态轮询分支需要真实拔出设备才能触发。TSan、ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过；`test_audio_realtime_contract` 通过（回调路径不分配、不做文件 I/O）。
 - 「设备热插拔」由此交付；新设备出现由调用者轮询设备列表。仍缺：真实设备拔插验证、频谱降噪、自动延迟估计、感知编码器（Opus 等）、音频编辑工具。
+
+### 2026-11-17 音频：回声参考的延迟估计与延迟线
+- `engine/src/audio/audio_delay_estimator.{h,c}`：`audio_delay_estimator_create/destroy/reset/push_i16/estimate` 用归一化互相关（i64 精确累加）在 0..最大延迟 中找播放参考到采集回声的延迟，返回延迟与相关系数（反相为负）；`audio_delay_line_create/destroy/set_delay/delay/process_i16` 把参考延迟后交给 `audio_echo_canceller`。
+- 构建：`engine` 静态库加入 `audio_delay_estimator.c`；新增 `test_audio_delay_estimator`（headless、audio 标签）。
+- 测试：`test_audio_delay_estimator` 8 项，包括 300 帧延迟的回声经 32 tap 回声消除器：未对齐 ERLE 低于 3 dB，对齐后超过 30 dB。先 RED（链接失败）后 GREEN。27 项变异首轮存活 1 项（reset 中多余的清零），删掉后 26 项全部被捕获。ASan+UBSan、`-Wshadow -Wdouble-promotion` 检查通过。
+- 「回声参考自动对齐」由此交付。仍缺：亚帧精度、频域加速、延迟漂移跟踪与时钟漂移补偿、非线性残余回声抑制、频谱降噪、真实设备验证、感知编码器（Opus 等）、音频编辑工具。
