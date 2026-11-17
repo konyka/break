@@ -292,3 +292,5 @@
 - **第 10 节（音频）追加**：2026-11-17 新增 `audio_fft`：4..65536 的基 2 实数正逆 FFT、周期 Hann 窗，计划只读且只有创建时分配。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「FFT」。上文「因为没有 FFT 而未做频谱降噪」的基础依赖由此交付，但频谱降噪本身仍未实现。仍缺：频谱降噪、非线性残余回声抑制、亚帧延迟与漂移补偿、感知编码器（Opus 等）、音频编辑工具、真实设备验证。
 
 - **第 10 节（音频）追加**：2026-11-17 新增 `audio_noise_suppressor`，基于 `audio_fft` 提供单声道 Hann/STFT 频谱降噪：100 ms 平滑功率目标、受限底噪跟踪、2 倍谱减、可配置最大衰减、固定一帧 FFT 大小延迟与任意分块一致性。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「频谱降噪」。上文「频谱降噪未实现」由此交付。仍缺：多声道与学习型降噪、非线性残余回声抑制、感知编码器（Opus 等）、真实设备与听感验证。
+
+- **第 10 节（音频）追加**：2026-11-17 新增 `audio_residual_echo_suppressor`，在线性 NLMS 之后按参考/误差包络比值抑制非线性残余回声，支持参考 hangover、受限路径跟踪、近端活动冻结及平滑增益。真实 AEC 端到端测试验证残余衰减超过 10 dB，38/38 定向变异被捕获。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「残余回声抑制」。上文「非线性残余回声抑制」的基础 postprocessor 由此交付；近端标志由调用者提供。仍缺：自动近端检测、频谱相干性抑制、多声道、真实声学验证。
