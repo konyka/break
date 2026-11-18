@@ -11,6 +11,9 @@
 /* Bounded wait for the probe tone at shutdown: 400 polls of 5 ms. */
 #define CORE_APP_AUDIO_PROBE_POLLS 400u
 #define CORE_APP_AUDIO_PROBE_POLL_US 5000u
+/* A lost playback device is reopened every 100 ms for about 5 s. */
+#define CORE_APP_AUDIO_REOPEN_INTERVAL_MS 100u
+#define CORE_APP_AUDIO_MAX_REOPEN_FAILURES 50u
 
 /* Device mode owner thread. The mutex guards the queue (head, count, the
  * commands), the play slots and the counters the producer touches; the
@@ -174,6 +177,8 @@ static BreakRuntimeError sound_attach(CoreAppAudio *audio, FILE *trace, AudioSys
                                       u32 probe) {
     audio->system = system;
     audio->probe_source = probe;
+    audio->reopen_interval_ms = CORE_APP_AUDIO_REOPEN_INTERVAL_MS;
+    audio->max_reopen_failures = CORE_APP_AUDIO_MAX_REOPEN_FAILURES;
     snprintf(audio->device_backend, sizeof(audio->device_backend), "%s",
              audio_system_backend_name(system));
     (void)audio_system_device_name(system, audio->device_name, sizeof(audio->device_name));
@@ -383,6 +388,35 @@ static bool sound_admit(CoreAppAudio *audio, const CoreAppAudioCommand *command)
     return true;
 }
 
+/* The thread that makes the device calls. OK while the device plays or a
+ * refused reopen is still below the limit (commands keep reaching the
+ * system, so sources started meanwhile play once it returns); FAILED once
+ * max_reopen_failures consecutive reopens were refused. */
+static BreakRuntimeError sound_recover_device(CoreAppAudio *audio) {
+    if (!audio_system_lost(audio->system)) return BREAK_RUNTIME_OK;
+    if (audio->max_reopen_failures == 0u ||
+        audio->consecutive_reopen_failures >= audio->max_reopen_failures) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    const u64 now = time_microseconds();
+    if (audio->reopen_attempted &&
+        now - audio->last_reopen_us < (u64)audio->reopen_interval_ms * 1000u) {
+        return BREAK_RUNTIME_OK;
+    }
+    audio->reopen_attempted = true;
+    audio->last_reopen_us = now;
+    if (audio_system_reopen(audio->system) != AUDIO_OK) {
+        audio->consecutive_reopen_failures++;
+        audio->device_reopen_failures++;
+        return audio->consecutive_reopen_failures >= audio->max_reopen_failures
+                   ? BREAK_RUNTIME_FAILED
+                   : BREAK_RUNTIME_OK;
+    }
+    audio->consecutive_reopen_failures = 0u;
+    audio->device_recoveries++;
+    return BREAK_RUNTIME_OK;
+}
+
 static BreakRuntimeError sound_emit(CoreAppAudio *audio, const CoreAppAudioCommand *command,
                                     bool device) {
     if (device) sound_apply_device(audio, command);
@@ -429,7 +463,11 @@ BreakRuntimeError core_app_audio_drain_null(CoreAppAudio *audio, u32 budget) {
 BreakRuntimeError core_app_audio_drain_device(CoreAppAudio *audio, u32 budget) {
     if (!audio || !audio->system) return BREAK_RUNTIME_INVALID;
     CoreAppAudioOwner *owner = audio->owner;
-    if (!owner) return sound_drain(audio, budget, true);
+    if (!owner) {
+        BreakRuntimeError recovered = sound_recover_device(audio);
+        if (recovered != BREAK_RUNTIME_OK) return recovered;
+        return sound_drain(audio, budget, true);
+    }
     platform_mutex_lock(&owner->mutex);
     platform_cond_signal(&owner->work);
     BreakRuntimeError result = owner->error;
@@ -518,11 +556,13 @@ static BreakRuntimeError sound_close_device(CoreAppAudio *audio) {
                 "probe_complete=%u probe_seconds=%.3f failures=%" PRIu64
                 " listener_updates=%" PRIu64 " plays=%" PRIu64 " moves=%" PRIu64
                 " stops=%" PRIu64 " evictions=%" PRIu64 " item_plays=%" PRIu64
-                " owner_thread=%u\n",
+                " owner_thread=%u device_recoveries=%" PRIu64
+                " device_reopen_failures=%" PRIu64 "\n",
                 audio->device_backend, complete ? 1u : 0u, (double)played,
                 audio->device_failures, audio->device_listener_updates, audio->device_plays,
                 audio->device_moves, audio->device_stops, audio->device_evictions,
-                audio->device_plays_by_sound[CORE_APP_AUDIO_SOUND_ITEM], sound_on_owner(audio) ? 1u : 0u) < 0 ||
+                audio->device_plays_by_sound[CORE_APP_AUDIO_SOUND_ITEM], sound_on_owner(audio) ? 1u : 0u,
+                audio->device_recoveries, audio->device_reopen_failures) < 0 ||
         fflush(audio->trace) != 0) {
         return BREAK_RUNTIME_FAILED;
     }
@@ -554,7 +594,10 @@ static PLATFORM_THREAD_RET sound_owner_main(PLATFORM_THREAD_ARG arg) {
         owner->busy = true;
         platform_mutex_unlock(&owner->mutex);
         BreakRuntimeError result = BREAK_RUNTIME_OK;
-        if (admitted && healthy) result = sound_emit(audio, &command, true);
+        if (admitted && healthy) result = sound_recover_device(audio);
+        if (admitted && healthy && result == BREAK_RUNTIME_OK) {
+            result = sound_emit(audio, &command, true);
+        }
         platform_mutex_lock(&owner->mutex);
         if (result != BREAK_RUNTIME_OK && owner->error == BREAK_RUNTIME_OK) {
             owner->error = result;

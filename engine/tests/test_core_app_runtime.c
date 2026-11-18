@@ -1029,7 +1029,7 @@ TEST(audio_device_drain_drives_the_audio_system) {
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text, "event=audio mode=device result=ready backend=fake"));
     ASSERT_NOT_NULL(strstr(text, "listener_updates=1 plays=1 moves=1 stops=1 evictions=0 "
-                                 "item_plays=0 owner_thread=0\n"));
+                                 "item_plays=0 owner_thread=0 device_recoveries=0 device_reopen_failures=0\n"));
     fclose(trace);
 }
 
@@ -1134,7 +1134,7 @@ TEST(audio_owner_thread_makes_every_device_call) {
     ASSERT_TRUE(audio.owner == NULL);
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text, "listener_updates=1 plays=1 moves=1 stops=0 evictions=0 "
-                                 "item_plays=0 owner_thread=1\n"));
+                                 "item_plays=0 owner_thread=1 device_recoveries=0 device_reopen_failures=0\n"));
     fclose(trace);
 }
 
@@ -1155,7 +1155,8 @@ TEST(audio_owner_thread_drains_the_queue_before_join) {
     ASSERT_EQ(audio.device_calls_off_owner, 0u);
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text, "kind=play_3d generation=8 sequence=8 source=8 sound=chaser\n"));
-    ASSERT_NOT_NULL(strstr(text, "plays=8 moves=0 stops=0 evictions=0 item_plays=0 owner_thread=1\n"));
+    ASSERT_NOT_NULL(strstr(text, "plays=8 moves=0 stops=0 evictions=0 item_plays=0 owner_thread=1 "
+                                 "device_recoveries=0 device_reopen_failures=0\n"));
     fclose(trace);
 }
 
@@ -1411,7 +1412,7 @@ TEST(audio_device_plays_the_sound_chosen_by_the_event) {
     audio_shutdown(&audio);
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text, "plays=2 moves=0 stops=1 evictions=0 item_plays=1 "
-                                 "owner_thread=0\n"));
+                                 "owner_thread=0 device_recoveries=0 device_reopen_failures=0\n"));
     fclose(trace);
 }
 
@@ -1434,6 +1435,130 @@ TEST(audio_device_drain_requires_a_device) {
     ASSERT_EQ(core_app_audio_drain_device(&audio, 1u), BREAK_RUNTIME_INVALID);
     ASSERT_EQ(core_app_audio_start_system(&audio, NULL, NULL, CORE_APP_SOURCE_ASSET_DIR),
               BREAK_RUNTIME_INVALID);
+}
+
+static void audio_start_recovering(CoreAppAudio *audio, FILE *trace, AudioSystem **out,
+                                   u32 interval_ms, u32 max_failures) {
+    AudioSystem *system = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(system);
+    ASSERT_EQ(core_app_audio_start_system(audio, trace, system, CORE_APP_SOURCE_ASSET_DIR),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio->reopen_interval_ms, 100u);
+    ASSERT_EQ(audio->max_reopen_failures, 50u);
+    audio->reopen_interval_ms = interval_ms;
+    audio->max_reopen_failures = max_failures;
+    *out = system;
+}
+
+TEST(audio_device_drain_reopens_a_lost_playback_device) {
+    CoreAppAudio audio;
+    AudioSystem *system = NULL;
+    FILE *trace = audio_trace_open();
+    char text[8192];
+    ASSERT_NOT_NULL(trace);
+    audio_start_recovering(&audio, trace, &system, 0u, 3u);
+    ASSERT_EQ(audio_system_simulate_event(system, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(core_app_audio_enqueue_at(&audio, CORE_APP_AUDIO_LISTENER, 4u,
+                                        vec3(1.0f, 2.0f, 3.0f)), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_FALSE(audio_system_lost(system));
+    ASSERT_EQ(audio.device_recoveries, 1u);
+    ASSERT_EQ(audio.device_reopen_failures, 0u);
+    ASSERT_EQ(audio.device_listener_updates, 1u);
+    audio_shutdown(&audio);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text, "owner_thread=0 device_recoveries=1 device_reopen_failures=0\n"));
+    fclose(trace);
+}
+
+TEST(audio_device_refused_reopens_fail_the_drain_at_the_limit) {
+    CoreAppAudio audio;
+    AudioSystem *system = NULL;
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    audio_start_recovering(&audio, trace, &system, 0u, 3u);
+    ASSERT_EQ(audio_system_simulate_event(system, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    for (u32 i = 0u; i < 2u; ++i) {
+        ASSERT_EQ(audio_system_simulate_event(system, AUDIO_SYSTEM_EVENT_REOPEN_REFUSED),
+                  AUDIO_OK);
+    }
+    /* commands keep reaching the system while it is lost */
+    ASSERT_EQ(core_app_audio_enqueue_at(&audio, CORE_APP_AUDIO_LISTENER, 4u,
+                                        vec3(1.0f, 0.0f, 0.0f)), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.device_reopen_failures, 1u);
+    ASSERT_EQ(audio.device_listener_updates, 1u);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.device_reopen_failures, 2u);
+    ASSERT_EQ(audio.device_recoveries, 0u);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.device_recoveries, 1u);
+    ASSERT_FALSE(audio_system_lost(system));
+    /* a recovery resets the consecutive count: three more refusals end the
+     * run on the third, not the first */
+    ASSERT_EQ(audio_system_simulate_event(system, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    for (u32 i = 0u; i < 3u; ++i) {
+        ASSERT_EQ(audio_system_simulate_event(system, AUDIO_SYSTEM_EVENT_REOPEN_REFUSED),
+                  AUDIO_OK);
+    }
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(audio.device_reopen_failures, 5u);
+    ASSERT_EQ(audio.device_recoveries, 1u);
+    audio_shutdown(&audio);
+    fclose(trace);
+}
+
+TEST(audio_device_reopen_attempts_wait_for_the_interval) {
+    CoreAppAudio audio;
+    AudioSystem *system = NULL;
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    audio_start_recovering(&audio, trace, &system, 10000u, 3u);
+    ASSERT_EQ(audio_system_simulate_event(system, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(audio_system_simulate_event(system, AUDIO_SYSTEM_EVENT_REOPEN_REFUSED), AUDIO_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, CORE_APP_AUDIO_QUEUE_CAPACITY),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.device_reopen_failures, 1u);
+    ASSERT_EQ(audio.device_recoveries, 0u);
+    ASSERT_TRUE(audio_system_lost(system));
+    audio_shutdown(&audio);
+    fclose(trace);
+}
+
+TEST(audio_owner_thread_reopens_a_lost_playback_device) {
+    CoreAppAudio audio;
+    AudioSystem *system = NULL;
+    FILE *trace = audio_trace_open();
+    char text[8192];
+    ASSERT_NOT_NULL(trace);
+    audio_start_owned(&audio, trace, &system);
+    ASSERT_EQ(audio.reopen_interval_ms, 100u);
+    audio.reopen_interval_ms = 0u;
+    ASSERT_EQ(audio_system_simulate_event(system, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(core_app_audio_enqueue_at(&audio, CORE_APP_AUDIO_LISTENER, 4u,
+                                        vec3(1.0f, 2.0f, 3.0f)), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_drain_device(&audio, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_flush(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.device_recoveries, 1u);
+    ASSERT_FALSE(audio_system_lost(system));
+    ASSERT_EQ(audio.device_calls_off_owner, 0u);
+    audio_shutdown(&audio);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text, "owner_thread=1 device_recoveries=1 device_reopen_failures=0\n"));
+    fclose(trace);
 }
 
 TEST_MAIN_BEGIN()
@@ -1486,4 +1611,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_device_plays_the_sound_chosen_by_the_event);
     RUN_TEST(audio_flush_without_owner_reports_the_backlog);
     RUN_TEST(audio_device_drain_requires_a_device);
+    RUN_TEST(audio_device_drain_reopens_a_lost_playback_device);
+    RUN_TEST(audio_device_refused_reopens_fail_the_drain_at_the_limit);
+    RUN_TEST(audio_device_reopen_attempts_wait_for_the_interval);
+    RUN_TEST(audio_owner_thread_reopens_a_lost_playback_device);
 TEST_MAIN_END()

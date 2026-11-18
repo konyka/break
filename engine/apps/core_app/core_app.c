@@ -2217,11 +2217,12 @@ static BreakRuntimeError app_voice_join_cb(void *user) {
             "COREAPPTRACE version=1 event=voice mode=%s result=stopped produced=%" PRIu64
             " consumed=%" PRIu64 " dropped=%" PRIu64 " sequence_gaps=%" PRIu64 " peak=%u"
             " capture_overruns=%" PRIu64 " reference_overruns=%" PRIu64
-            " capture_recoveries=%" PRIu64 " capture_reopen_failures=%" PRIu64 "\n",
+            " capture_recoveries=%" PRIu64 " capture_reopen_failures=%" PRIu64
+            " playback_recoveries=%" PRIu64 "\n",
             app_voice_mode_name(app->config.voice_mode), stats.produced, lane->consumed,
             stats.dropped, lane->sequence_gaps, lane->peak, stats.capture_overruns,
             stats.reference_overruns, stats.capture_recoveries,
-            stats.capture_reopen_failures);
+            stats.capture_reopen_failures, stats.playback_recoveries);
     }
     core_app_voice_destroy(lane->voice);
     lane->voice = NULL;

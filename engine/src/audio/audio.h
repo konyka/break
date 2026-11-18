@@ -79,6 +79,35 @@ const char  *audio_system_backend_name(const AudioSystem *as);
  * NULL system, a FAKE system or a device that reports no name. */
 bool         audio_system_device_name(const AudioSystem *as, char *out, usize capacity);
 void         audio_system_destroy(AudioSystem *as);
+
+typedef enum {
+    AUDIO_SYSTEM_EVENT_DEVICE_LOST = 0,
+    /* Simulation only: the next audio_system_reopen fails with AUDIO_FAILED
+     * and changes nothing. Each event refuses one reopen. */
+    AUDIO_SYSTEM_EVENT_REOPEN_REFUSED,
+} AudioSystemEvent;
+
+/* The playback device has stayed out of the started state for 250 ms
+ * (unplugged, disabled, taken by the system, or left closed by a failed
+ * reopen), or a loss was simulated. Shorter stops, such as a backend's own
+ * reroute, are not losses. False for NULL. The owner thread. */
+bool         audio_system_lost(const AudioSystem *as);
+/* Successful reopens of a lost device so far. Any thread: a reader of the
+ * reference tap uses a change to drop frames that straddle the gap. */
+u64          audio_system_recoveries(const AudioSystem *as);
+/* Closes the playback device and opens the default one in its place with the
+ * same format, then starts it. Sources, buses, the listener and the reference
+ * tap are kept. OK clears the lost state and counts a recovery; FAILED
+ * keeps it (after a real failure the system has no device until a later
+ * reopen succeeds). A device that is started again, because the backend
+ * restarted it, is left alone and OK is returned without a recovery. A FAKE
+ * system has no device and only clears a simulated loss. INVALID for NULL. The
+ * owner thread; never concurrent with audio_system_backend_name,
+ * audio_system_device_name or audio_system_destroy. */
+AudioResult  audio_system_reopen(AudioSystem *as);
+/* FAKE and NULL backends only (tests). INVALID for NULL or an unknown event,
+ * REJECTED for the DEFAULT backend. */
+AudioResult  audio_system_simulate_event(AudioSystem *as, AudioSystemEvent event);
 void         audio_system_update(AudioSystem *as, Vec3 listener_pos, Vec3 forward, Vec3 up);
 
 u32          audio_play(AudioSystem *as, const char *path, f32 volume, bool looping);

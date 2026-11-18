@@ -314,6 +314,7 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 2026-11-18 补充：编码发送已完成，见 [`core_app_integration.md`](core_app_integration.md)「语音帧经网络发送」。CoreAppThread 弹出帧后经可选 hook `voice_frame` 交给传输层，由传输层编码为 BRV2 并作为消息 `0x4006` 发往每个已认证对端；语音组件和运行时库本身仍不编码、不联网、不链接编解码器。
 - 2026-11-18 补充：服务端接收对端语音已完成，见 [`core_app_integration.md`](core_app_integration.md)「服务端接收对端语音」。传输层按连接用 `BreakVoiceReceiver` 做抖动缓冲，按单调时钟播放并在连接关闭时尾部排空，只更新计数与峰值；对端语音不进入本地播放或语音通道。仍缺：混音与播放、漂移补偿、设备丢失自动恢复和真实声学验证。
 - 2026-11-18 补充：采集设备丢失后自动恢复已完成，见 [`core_app_integration.md`](core_app_integration.md)「语音采集设备自动恢复」。`CoreAppVoiceConfig` 新增 `reopen_interval_ms`、`max_reopen_failures`（为 0 时保持原行为：丢失即 UNAVAILABLE）；`core_app_voice_pump` 在采集丢失时按间隔调用 `audio_capture_reopen(capture, NULL)`，成功后丢弃无对应采集的播放参考积压并重置 voice processor，连续失败达到上限才返回 UNAVAILABLE。`CoreAppVoiceStats` 追加 `capture_recoveries`、`capture_reopen_failures`。`audio_capture_simulate_event` 新增 `AUDIO_CAPTURE_EVENT_REOPEN_REFUSED`（仅 FAKE/NULL，每个事件让一次 reopen 返回 FAILED 且不改变状态）。仍缺：按名称切换到其他设备、播放参考设备恢复、漂移补偿和真实声学验证。
+- 2026-11-18 补充：播放设备丢失后自动恢复已完成，见 [`core_app_integration.md`](core_app_integration.md)「播放设备自动恢复」。`AudioSystem` 新增 `audio_system_lost`、`audio_system_reopen`（在原内存中重开默认输出，保留 node graph、声源与参考环）和仅测试用的 `audio_system_simulate_event`；所有设备后端的 context 改由系统持有。丢失按设备状态判定（非 started 超过 250 ms），`audio_system_recoveries` 计数真正替换设备的重开，语音 pump 据此丢弃无参考的采集并重置 processor。core_app device 模式由 owner 线程按 100 ms × 50 次重开。仍缺：按名称切换设备、漂移补偿和真实声学验证。
 
 ## FFT
 

@@ -64,7 +64,7 @@ if(CMAKE_MATCH_1 STREQUAL "none")
     message(FATAL_ERROR "the voice lane is ready without a named capture device\n${trace_text}")
 endif()
 if(NOT trace_text MATCHES
-   "event=voice mode=device result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=([0-9]+) sequence_gaps=([0-9]+) peak=[0-9]+ capture_overruns=[0-9]+ reference_overruns=[0-9]+ capture_recoveries=[0-9]+ capture_reopen_failures=[0-9]+\n")
+   "event=voice mode=device result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=([0-9]+) sequence_gaps=([0-9]+) peak=[0-9]+ capture_overruns=[0-9]+ reference_overruns=[0-9]+ capture_recoveries=[0-9]+ capture_reopen_failures=[0-9]+ playback_recoveries=[0-9]+\n")
     message(FATAL_ERROR "the voice lane never stopped")
 endif()
 set(produced "${CMAKE_MATCH_1}")

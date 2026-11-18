@@ -1,3 +1,9 @@
+## Core App 播放设备自动恢复（2026-11-18）
+
+- **交付**：`audio_system_lost` / `audio_system_reopen` / `audio_system_simulate_event`；播放设备丢失后，core_app 音频 owner 每 100 ms 重开默认输出，最多 50 次，声源、总线、听者和播放参考环保持不变。device 模式 `result=stopped` 行追加 `device_recoveries`、`device_reopen_failures`。所有设备后端的 miniaudio context 改由 `AudioSystem` 持有，并按 miniaudio 后端顺序逐个回退。丢失按设备状态判定（非 started 超过 250 ms），后端自行重启的设备不重开。语音 pump 通过 `audio_system_recoveries` 跟随播放重开，丢弃无参考的采集并重置 processor；voice `result=stopped` 行追加 `playback_recoveries`。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-playback-recovery-design.md`、`docs/superpowers/plans/2026-11-18-core-app-playback-recovery.md`。
+- **TDD**：`test_audio` 36 项（新增 7 项）、`test_core_app_runtime` 53 项（新增 4 项）、`test_core_app_voice` 13 项（新增 1 项）均先 RED 后 GREEN；五个变异（不重开、不清零、忽略间隔、pump 不跟随播放重开、reopen 不跳过已启动设备）都判红。全量 446/446，ASan+UBSan 与 TSan 树相关 9 项通过。
+- **边界**：只重开默认输出；不按名称切换设备，不做漂移补偿或真实声学验证。
+
 ## Core App 语音采集设备自动恢复（2026-11-18）
 
 - **交付**：`CoreAppVoiceConfig` 新增 `reopen_interval_ms`、`max_reopen_failures`；`core_app_voice_pump` 在采集丢失时按间隔重开默认输入，成功后丢弃播放参考积压并重置 processor，连续失败达到上限才返回 UNAVAILABLE。`CoreAppVoiceStats` 与 voice `result=stopped` 行追加 `capture_recoveries`、`capture_reopen_failures`。core_app device 模式为 100 ms × 50 次。`audio_capture` 新增仅测试用的 `AUDIO_CAPTURE_EVENT_REOPEN_REFUSED`。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-recovery-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-recovery.md`。

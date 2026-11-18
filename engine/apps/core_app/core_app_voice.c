@@ -25,6 +25,8 @@ struct CoreAppVoice {
     u64 last_reopen_us;
     atomic_uint_least64_t capture_recoveries;
     atomic_uint_least64_t capture_reopen_failures;
+    u64 seen_playback_recoveries;
+    atomic_uint_least64_t playback_recoveries;
     PlatformThread worker;
     PlatformThreadId worker_id;
     atomic_int worker_error;
@@ -67,6 +69,7 @@ BreakRuntimeError core_app_voice_create(const CoreAppVoiceConfig *config,
     voice->playback = config->playback;
     voice->reopen_interval_ms = config->reopen_interval_ms;
     voice->max_reopen_failures = config->max_reopen_failures;
+    voice->seen_playback_recoveries = audio_system_recoveries(config->playback);
     const AudioCaptureConfig capture_config = {
         config->capture_backend, 48000u, 1u, 4096u};
     AudioResult result = audio_capture_create(&capture_config, &voice->capture);
@@ -207,6 +210,32 @@ static BreakRuntimeError voice_recover_capture(CoreAppVoice *voice) {
     return BREAK_RUNTIME_OK;
 }
 
+/* After the playback device was reopened the reference ring holds only
+ * frames rendered since, while the capture ring also holds the frames
+ * captured during the gap, which have no reference. The oldest capture
+ * frames beyond the reference backlog are dropped so both start together,
+ * and the processor forgets the echo path it learned before the gap. */
+static void voice_follow_playback_reopen(CoreAppVoice *voice) {
+    const u64 recoveries = audio_system_recoveries(voice->playback);
+    if (recoveries == voice->seen_playback_recoveries) return;
+    voice->seen_playback_recoveries = recoveries;
+    i16 scratch[CORE_APP_VOICE_FRAME_FRAMES];
+    for (;;) {
+        const u32 capture = audio_capture_available(voice->capture);
+        const u32 reference = audio_reference_available(voice->playback);
+        if (capture <= reference) break;
+        u32 drop = capture - reference;
+        if (drop > CORE_APP_VOICE_FRAME_FRAMES) drop = CORE_APP_VOICE_FRAME_FRAMES;
+        u32 frames = 0u;
+        if (audio_capture_read_i16(voice->capture, scratch, drop, &frames) != AUDIO_OK ||
+            frames == 0u) {
+            break;
+        }
+    }
+    audio_voice_processor_reset(voice->processor);
+    atomic_fetch_add_explicit(&voice->playback_recoveries, 1u, memory_order_relaxed);
+}
+
 BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets) {
     if (!voice) return BREAK_RUNTIME_INVALID;
     if (!voice->started) return BREAK_RUNTIME_REJECTED;
@@ -220,6 +249,7 @@ BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets) {
         if (recovered == BREAK_RUNTIME_REJECTED) return BREAK_RUNTIME_OK;
         if (recovered != BREAK_RUNTIME_OK) return recovered;
     }
+    voice_follow_playback_reopen(voice);
     for (u32 packet = 0u; packet < max_packets; ++packet) {
         if (audio_capture_available(voice->capture) < CORE_APP_VOICE_FRAME_FRAMES ||
             audio_reference_available(voice->playback) < CORE_APP_VOICE_FRAME_FRAMES) {
@@ -253,6 +283,7 @@ BreakRuntimeError core_app_voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *o
         audio_reference_overruns(voice->playback),
         atomic_load_explicit(&voice->capture_recoveries, memory_order_relaxed),
         atomic_load_explicit(&voice->capture_reopen_failures, memory_order_relaxed),
+        atomic_load_explicit(&voice->playback_recoveries, memory_order_relaxed),
     };
     *out = stats;
     return BREAK_RUNTIME_OK;

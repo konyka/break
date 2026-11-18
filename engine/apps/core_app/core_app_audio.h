@@ -66,6 +66,22 @@ typedef struct CoreAppAudio {
     u64 device_stops;
     u64 device_evictions;
     u64 device_failures;
+    /* Playback recovery (device mode). While the system is lost the drain
+     * reopens the default output at most once per drain (on the owner: per
+     * applied command), reopen_interval_ms apart (monotonic, 0 = every
+     * time); max_reopen_failures consecutive refusals fail the drain, 0
+     * fails it at the first loss. Start sets 100 ms and 50. Each attempt
+     * blocks the owner for as long as the backend takes to open a device,
+     * so 50 x 100 ms (about 5 s) is a lower bound on the time before the
+     * drain fails; while the owner is blocked a full queue answers
+     * producers with OVERLOAD. */
+    u32 reopen_interval_ms;
+    u32 max_reopen_failures;
+    u64 device_recoveries;
+    u64 device_reopen_failures;
+    u32 consecutive_reopen_failures;
+    bool reopen_attempted;
+    u64 last_reopen_us;
     /* Device calls made on, and off, the audio owner thread. */
     u64 device_calls_on_owner;
     u64 device_calls_off_owner;

@@ -1629,3 +1629,25 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 - 变异：不调用 reopen（3 项失败）、恢复后不清零（1 项）、不丢弃积压（1 项）。
 
 仍缺：按名称切换到其他输入设备、播放参考设备恢复、漂移补偿、真实声学验证、Opus。
+
+## 补充（2026-11-18）：播放设备自动恢复
+
+设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-playback-recovery-design.md`、`docs/superpowers/plans/2026-11-18-core-app-playback-recovery.md`。上一节「仍缺」里的“播放参考设备恢复”由此交付。
+
+- **AudioSystem**：新增 `audio_system_lost`、`audio_system_reopen`、`audio_system_simulate_event`（`AUDIO_SYSTEM_EVENT_DEVICE_LOST`、`AUDIO_SYSTEM_EVENT_REOPEN_REFUSED`，仅 FAKE/NULL）。模拟丢失事件，或真实设备持续处于非 started 状态至少 250 ms（`AUDIO_DEVICE_LOSS_GRACE_US`，用于容忍 PulseAudio 挂起、WASAPI 重路由等后端自行停启），才算丢失；不再依赖 stop 通知。重开在同一块内存里关闭旧设备、以相同声道数和采样率打开默认输出并启动；后端已自行重启的设备不动、不计恢复。声源、总线、听者和播放参考环都在 node graph 里，不受影响。`audio_system_recoveries` 返回真正替换设备的次数。
+- **上下文归属**：`audio_system_create_ex` 现在为所有设备后端自建并持有 context（以前只有 NULL 后端这样做）。默认后端原来由设备持有 context，而 engine 和 resource manager 一直引用该 context 的 log，重开时会被一起释放。创建时按 `ma_get_enabled_backends` 顺序逐个尝试后端（与 miniaudio 自身回退一致），iOS 上 context 使用 playback session category。
+- **core_app**：device 模式 start 时设为 100 ms × 50 次。同步 drain 在处理命令前检查一次；有 owner 线程时，owner 在应用每条命令前检查。丢失期间命令照常送到系统，设备恢复后，期间启动的声源会继续播放。连续拒绝达到上限后 drain（或 owner 错误）为 `BREAK_RUNTIME_FAILED`，与其他设备错误一样让当帧失败。`max_reopen_failures = 0` 时第一次丢失就失败。
+- **trace**：device 模式 `result=stopped` 行在 `owner_thread` 之后追加 `device_recoveries=N device_reopen_failures=M`。`test_core_app_audio_device.cmake` 要求这两个字段。
+- **语音通道**：参考环属于系统，重开不会释放它，但重开期间参考帧中断。voice pump 每次先比较 `audio_system_recoveries`，变化时丢弃超出参考积压的最旧采集帧并 reset processor，避免回声消除把新采集与旧参考配对。`CoreAppVoiceStats.playback_recoveries` 计数，voice `result=stopped` 行在 `capture_reopen_failures` 之后追加 `playback_recoveries=N`（fake 合同要求 0）。
+- **阻塞代价**：每次重开尝试会阻塞 owner 线程，时长等于后端打开设备的耗时；100 ms × 50 次约 5 s 只是下限，期间队列满时生产方收到 OVERLOAD。
+
+验证：
+
+- `test_audio` 共 36 项，新增七项（先 RED：API 未定义）：NULL 后端丢失后重开，参考环重新收到帧；NULL 设备停止超过宽限期后判定丢失并重开；后端自行重启的设备不判丢失、不重开；重开失败关闭的设备不报告名称；FAKE 两次拒绝后第三次成功；参数校验；真实默认输出重开后继续渲染（无后端主机跳过）。
+- `test_core_app_voice` 共 13 项，新增 `a_playback_reopen_drops_capture_that_has_no_reference`。
+- `test_core_app_runtime` 新增四项（先 RED：字段不存在）：同步 drain 恢复；两次拒绝后恢复、恢复后计数清零，再拒绝三次第三次 drain 返回 FAILED；10 s 间隔内不重试；owner 线程恢复且所有设备调用仍在 owner 上。原有四条 stopped 行断言追加两个字段。
+- 变异：不调用 reopen（3 项失败）、恢复后不清零（1 项）、忽略间隔（1 项）；pump 不跟随播放重开（`test_core_app_voice` 失败）；reopen 不跳过已启动设备（`a_device_restarted_by_the_backend_is_not_lost_or_reopened` 失败）。
+- `build-core-app-net` 全量 446/446；ASan+UBSan 与 TSan 树中 9 项音频/语音测试全部通过；真实 PulseAudio 合同输出 `device_recoveries=0 device_reopen_failures=0`。
+
+仍缺：按名称切换输出或输入设备、漂移补偿、真实声学验证、对端语音混音与转发、Opus。
+

@@ -33,6 +33,8 @@ typedef struct {
     u64 reference_overruns;
     u64 capture_recoveries;
     u64 capture_reopen_failures;
+    /* Playback reopens the pump noticed (audio_system_recoveries). */
+    u64 playback_recoveries;
 } CoreAppVoiceStats;
 
 /* Only create/thread-start allocate, and pump when it reopens a lost capture

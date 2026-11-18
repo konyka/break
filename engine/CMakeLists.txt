@@ -7103,13 +7103,21 @@ endif()
     endif()
     add_test(NAME test_mipmap_stream COMMAND test_mipmap_stream)
 
-    # test_audio: 3D distance attenuation model (headless, inline-only, no device)
+    # test_audio: 3D distance attenuation model and playback recovery (inline
+    # audio.c; opens the default output only when the host has one)
     add_executable(test_audio tests/test_audio.c src/audio/audio_extended.c src/audio/audio_dsp.c
         src/audio/audio_hrtf.c)
     target_include_directories(test_audio PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio PRIVATE m Threads::Threads)
     target_compile_definitions(test_audio PRIVATE AUDIO_REFERENCE_TEST_HOOK=reference_test_hook)
     add_test(NAME test_audio COMMAND test_audio)
+    # default_playback_reopen_keeps_rendering opens and reopens the real
+    # default output, which races inside libpulse like the core_app device
+    # tests.
+    if(ENGINE_USE_TSAN AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_property(TEST test_audio APPEND PROPERTY ENVIRONMENT
+            "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/core_app_audio_device_tsan.supp")
+    endif()
 
     add_executable(test_audio_extended tests/test_audio_extended.c
         src/audio/audio_dsp.c src/audio/audio_hrtf.c)

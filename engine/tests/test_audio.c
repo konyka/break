@@ -2,11 +2,11 @@
  *  test_audio.c — 3D distance attenuation model (headless).
  *
  *  Exercises the pure inverse-distance gain function used by the streaming
- *  audio system for spatialization. The actual playback path needs an audio
- *  device + miniaudio and is validated by the demo build, not here.
+ *  audio system for spatialization, plus the null, fake and (when the host
+ *  has one) default playback devices for loss detection and reopen.
  * ========================================================================== */
 
-/* R419: this target does not link audio.c (headless, no device), so the
+/* R419: this target does not link audio.c, so the
  * source-handle generation guard is tested by including the TU directly.
  * Mirror the POSIX feature level the engine target compiles audio.c with.
  * Must precede all system includes. On macOS the engine does not pin
@@ -708,6 +708,160 @@ TEST(reference_restart_rejects_pre_stop_callback)
     audio_system_destroy(as);
 }
 
+static bool reference_frames_arrive(AudioSystem *as)
+{
+    for (u32 attempt = 0u; attempt < 2000u; ++attempt) {
+        if (audio_reference_available(as) > 0u) return true;
+        struct timespec pause = {0, 1000000};
+        nanosleep(&pause, NULL);
+    }
+    return false;
+}
+
+TEST(playback_loss_is_reported_and_reopen_recovers)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    ASSERT_FALSE(audio_system_lost(as));
+    ASSERT_EQ(audio_system_simulate_event(as, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_TRUE(audio_system_lost(as));
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    ASSERT_FALSE(audio_system_lost(as));
+    ASSERT_STR_EQ(audio_system_backend_name(as), "Null");
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ASSERT_TRUE(reference_frames_arrive(as));
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    ASSERT_FALSE(audio_system_lost(as));
+    audio_system_destroy(as);
+}
+
+static ma_device *test_playback_device(AudioSystem *as)
+{
+    return ma_engine_get_device(&((struct AudioImpl *)as->engine)->engine);
+}
+
+/* A device the backend stopped is lost only after the grace period, so a
+ * short stop (a suspend, a reroute) is not reported. */
+static bool lost_within(AudioSystem *as, u32 max_ms)
+{
+    for (u32 waited = 0u; waited < max_ms; ++waited) {
+        if (audio_system_lost(as)) return true;
+        struct timespec pause = {0, 1000000};
+        nanosleep(&pause, NULL);
+    }
+    return false;
+}
+
+TEST(a_stopped_null_device_is_lost_after_the_grace_period_and_reopens)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(ma_device_stop(test_playback_device(as)), MA_SUCCESS);
+    ASSERT_FALSE(audio_system_lost(as));
+    ASSERT_TRUE(lost_within(as, 2000u));
+    ASSERT_EQ(audio_system_recoveries(as), 0u);
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    ASSERT_FALSE(audio_system_lost(as));
+    ASSERT_EQ(audio_system_recoveries(as), 1u);
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ASSERT_TRUE(reference_frames_arrive(as));
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+TEST(a_device_restarted_by_the_backend_is_not_lost_or_reopened)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(ma_device_stop(test_playback_device(as)), MA_SUCCESS);
+    ASSERT_FALSE(audio_system_lost(as));
+    ASSERT_EQ(ma_device_start(test_playback_device(as)), MA_SUCCESS);
+    ASSERT_FALSE(lost_within(as, 400u));
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    ASSERT_EQ(audio_system_recoveries(as), 0u);
+    audio_system_destroy(as);
+}
+
+/* A reopen whose device does not open leaves a closed, zeroed device: no
+ * names and lost, and a later reopen opens a device in the same memory. */
+TEST(a_closed_device_reports_no_names_until_a_reopen_succeeds)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    ma_device *device = test_playback_device(as);
+    ma_device_uninit(device);
+    memset(device, 0, sizeof(*device));
+    ASSERT_TRUE(lost_within(as, 2000u));
+    ASSERT_STR_EQ(audio_system_backend_name(as), "none");
+    char name[64] = "unchanged";
+    ASSERT_FALSE(audio_system_device_name(as, name, sizeof(name)));
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    ASSERT_FALSE(audio_system_lost(as));
+    ASSERT_STR_EQ(audio_system_backend_name(as), "Null");
+    ASSERT_TRUE(audio_system_device_name(as, name, sizeof(name)));
+    audio_system_destroy(as);
+}
+
+/* The default backend: the system owns the context, so a reopen keeps it
+ * and opens the default output again. Hosts without any backend do not
+ * create the system and skip the check. */
+TEST(default_playback_reopen_keeps_rendering)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_DEFAULT);
+    if (!as) {
+        printf("(skipped: no playback backend) ");
+        return;
+    }
+    ASSERT_EQ(audio_system_simulate_event(as, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_REJECTED);
+    ASSERT_FALSE(audio_system_lost(as));
+    ASSERT_EQ(ma_device_stop(test_playback_device(as)), MA_SUCCESS);
+    ASSERT_TRUE(lost_within(as, 2000u));
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    ASSERT_FALSE(audio_system_lost(as));
+    ASSERT_EQ(audio_system_recoveries(as), 1u);
+    ASSERT_TRUE(strcmp(audio_system_backend_name(as), "none") != 0);
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ASSERT_TRUE(reference_frames_arrive(as));
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+TEST(refused_playback_reopen_keeps_the_system_lost_once_per_event)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(audio_system_simulate_event(as, AUDIO_SYSTEM_EVENT_REOPEN_REFUSED), AUDIO_OK);
+    ASSERT_EQ(audio_system_simulate_event(as, AUDIO_SYSTEM_EVENT_REOPEN_REFUSED), AUDIO_OK);
+    /* a refusal alone does not lose the device */
+    ASSERT_FALSE(audio_system_lost(as));
+    ASSERT_EQ(audio_system_simulate_event(as, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_FAILED);
+    ASSERT_TRUE(audio_system_lost(as));
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_FAILED);
+    ASSERT_TRUE(audio_system_lost(as));
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    ASSERT_FALSE(audio_system_lost(as));
+    f32 output[64] = {0};
+    ASSERT_EQ(audio_system_render(as, output, 32u), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+TEST(playback_recovery_calls_validate_their_arguments)
+{
+    ASSERT_FALSE(audio_system_lost(NULL));
+    ASSERT_EQ(audio_system_reopen(NULL), AUDIO_INVALID);
+    ASSERT_EQ(audio_system_simulate_event(NULL, AUDIO_SYSTEM_EVENT_DEVICE_LOST),
+              AUDIO_INVALID);
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(audio_system_simulate_event(as, (AudioSystemEvent)99), AUDIO_INVALID);
+    ASSERT_FALSE(audio_system_lost(as));
+    /* reopening a healthy system is allowed and keeps it healthy */
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    ASSERT_FALSE(audio_system_lost(as));
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(atten_inside_min_is_full);
     RUN_TEST(atten_inverse_known_values);
@@ -738,4 +892,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(reference_ring_is_bounded_and_resettable_when_stopped);
     RUN_TEST(reference_concurrent_render_and_read_wrap_without_overruns);
     RUN_TEST(reference_restart_rejects_pre_stop_callback);
+    RUN_TEST(playback_loss_is_reported_and_reopen_recovers);
+    RUN_TEST(a_stopped_null_device_is_lost_after_the_grace_period_and_reopens);
+    RUN_TEST(a_device_restarted_by_the_backend_is_not_lost_or_reopened);
+    RUN_TEST(a_closed_device_reports_no_names_until_a_reopen_succeeds);
+    RUN_TEST(default_playback_reopen_keeps_rendering);
+    RUN_TEST(refused_playback_reopen_keeps_the_system_lost_once_per_event);
+    RUN_TEST(playback_recovery_calls_validate_their_arguments);
 TEST_MAIN_END()

@@ -109,6 +109,11 @@ struct AudioImpl {
     atomic_uint_least64_t reference_epoch;
     atomic_uint_least64_t reference_overruns;
     atomic_bool reference_enabled;
+    atomic_bool simulated_lost;   /* simulated: lost until a reopen */
+    atomic_uint_least64_t stopped_since_us; /* first seen not started, 0 = started */
+    atomic_uint refused_reopens;  /* simulated: reopens still to refuse */
+    atomic_uint_least64_t device_recoveries;
+    ma_timer clock;               /* monotonic base for the loss grace period */
 };
 
 bool audio_extended_init(AudioSystem *as, ma_engine *engine);
@@ -123,6 +128,8 @@ _Static_assert(_Alignof(long double) >= 8,
                "AudioImpl alignment relies on _Alignof(long double) >= 8");
 _Static_assert((AUDIO_REFERENCE_RING_FRAMES & (AUDIO_REFERENCE_RING_FRAMES - 1u)) == 0u,
                "Reference ring capacity must be a power of two");
+_Static_assert(offsetof(struct AudioImpl, engine) == 0,
+               "Device callbacks cast the engine back to the impl block");
 
 static i16 audio_reference_sample(f32 left, f32 right) {
     f32 mono = 0.5f * (left + right);
@@ -229,6 +236,51 @@ u64 audio_reference_overruns(const AudioSystem *as) {
     return atomic_load_explicit(&impl->reference_overruns, memory_order_relaxed);
 }
 
+/* The device's user data is the engine, which is the first member of the
+ * impl block, so both device callbacks reach the impl through it. */
+static void audio_device_data_callback(ma_device *device, void *output, const void *input,
+                                       ma_uint32 frame_count) {
+    (void)input;
+    ma_engine_read_pcm_frames((ma_engine *)device->pUserData, output, frame_count, NULL);
+}
+
+/* Every device backend miniaudio enables, in its order of preference (Null
+ * last), each with a context the system owns. The engine keeps the
+ * context's log, so a reopen must not free it with the old device. Like
+ * ma_device_init_ex, the next backend is tried when the context or the
+ * device does not open, and iOS playback uses the playback session. */
+static ma_result audio_engine_init_with_context(struct AudioImpl *impl,
+                                                ma_engine_config *engine_config,
+                                                bool use_null) {
+    ma_backend backends[MA_BACKEND_COUNT];
+    size_t backend_count = 0u;
+    if (use_null) {
+        backends[0] = ma_backend_null;
+        backend_count = 1u;
+    } else if (ma_get_enabled_backends(backends, MA_BACKEND_COUNT, &backend_count) !=
+               MA_SUCCESS) {
+        return MA_NO_BACKEND;
+    }
+    ma_context_config context_config = ma_context_config_init();
+#if defined(MA_APPLE_MOBILE)
+    context_config.coreaudio.sessionCategory = ma_ios_session_category_playback;
+#endif
+    ma_result result = MA_NO_BACKEND;
+    for (size_t i = 0u; i < backend_count; ++i) {
+        result = ma_context_init(&backends[i], 1, &context_config, &impl->context);
+        if (result != MA_SUCCESS) continue;
+        engine_config->pContext = &impl->context;
+        result = ma_engine_init(engine_config, &impl->engine);
+        if (result == MA_SUCCESS) {
+            impl->context_initialized = true;
+            return MA_SUCCESS;
+        }
+        ma_context_uninit(&impl->context);
+    }
+    engine_config->pContext = NULL;
+    return result;
+}
+
 AudioSystem *audio_system_create_ex(AudioBackend backend) {
     if (backend < AUDIO_BACKEND_DEFAULT || backend > AUDIO_BACKEND_FAKE) {
         return NULL;
@@ -243,6 +295,7 @@ AudioSystem *audio_system_create_ex(AudioBackend backend) {
     }
     AudioSystem *as  = (AudioSystem *)audio_block;
     struct AudioImpl *impl = (struct AudioImpl *)(audio_block + as_off);
+    ma_timer_init(&impl->clock);
     ma_engine_config engine_config = ma_engine_config_init();
     const ma_engine_config *engine_config_ptr = &engine_config;
     ma_result result;
@@ -256,20 +309,11 @@ AudioSystem *audio_system_create_ex(AudioBackend backend) {
     engine_config.sampleRate = 48000;
     engine_config.onProcess = audio_reference_on_process;
     engine_config.pProcessUserData = impl;
+    engine_config.dataCallback = audio_device_data_callback;
     engine_config.noDevice = backend == AUDIO_BACKEND_FAKE ? MA_TRUE : MA_FALSE;
-    if (use_null) {
-        ma_backend null_backend = ma_backend_null;
-        result = ma_context_init(&null_backend, 1, NULL, &impl->context);
-        if (result != MA_SUCCESS) {
-            LOG_ERROR("Failed to init null audio context (%d)", result);
-            free(as);
-            return NULL;
-        }
-        impl->context_initialized = true;
-        engine_config.pContext = &impl->context;
-    }
-
-    result = ma_engine_init(engine_config_ptr, &impl->engine);
+    result = backend == AUDIO_BACKEND_FAKE
+                 ? ma_engine_init(engine_config_ptr, &impl->engine)
+                 : audio_engine_init_with_context(impl, &engine_config, use_null);
     if (result != MA_SUCCESS) {
         LOG_ERROR("Failed to init audio engine (%d)", result);
         if (impl->context_initialized) ma_context_uninit(&impl->context);
@@ -322,7 +366,7 @@ bool audio_system_device_name(const AudioSystem *as, char *out, usize capacity) 
     if (!as || !as->engine || as->backend == AUDIO_BACKEND_FAKE) return false;
     struct AudioImpl *impl = (struct AudioImpl *)as->engine;
     ma_device *device = ma_engine_get_device(&impl->engine);
-    if (!device) return false;
+    if (!device || ma_device_get_state(device) == ma_device_state_uninitialized) return false;
     ma_device_info info;
     memset(&info, 0, sizeof(info));
     if (ma_device_get_info(device, ma_device_type_playback, &info) != MA_SUCCESS ||
@@ -331,6 +375,136 @@ bool audio_system_device_name(const AudioSystem *as, char *out, usize capacity) 
     }
     snprintf(out, capacity, "%s", info.name);
     return true;
+}
+
+static struct AudioImpl *audio_impl(const AudioSystem *as) {
+    return as ? (struct AudioImpl *)as->engine : NULL;
+}
+
+/* Backends stop and restart a device on their own (a PulseAudio suspend, a
+ * WASAPI reroute on the notification thread), so a device counts as lost
+ * only once it has stayed out of the started state this long. */
+#define AUDIO_DEVICE_LOSS_GRACE_US 250000u
+
+/* Microseconds on miniaudio's monotonic timer, never 0 (0 means started). */
+static u64 audio_now_us(struct AudioImpl *impl) {
+    return (u64)(ma_timer_get_time_in_seconds(&impl->clock) * 1000000.0) + 1u;
+}
+
+static bool audio_device_started(struct AudioImpl *impl) {
+    ma_device *device = ma_engine_get_device(&impl->engine);
+    return device && ma_device_get_state(device) == ma_device_state_started;
+}
+
+bool audio_system_lost(const AudioSystem *as) {
+    struct AudioImpl *impl = audio_impl(as);
+    if (!impl) return false;
+    if (atomic_load_explicit(&impl->simulated_lost, memory_order_acquire)) return true;
+    if (as->backend == AUDIO_BACKEND_FAKE) return false;
+    /* Nothing here stops the playback device on purpose, and miniaudio
+     * posts no stop notification when a backend fails to stop a stream
+     * whose device went away, so the device state decides. */
+    if (audio_device_started(impl)) {
+        atomic_store_explicit(&impl->stopped_since_us, 0u, memory_order_relaxed);
+        return false;
+    }
+    const u64 now = audio_now_us(impl);
+    u64 since = atomic_load_explicit(&impl->stopped_since_us, memory_order_relaxed);
+    if (since == 0u) {
+        atomic_store_explicit(&impl->stopped_since_us, now, memory_order_relaxed);
+        return false;
+    }
+    return now - since >= AUDIO_DEVICE_LOSS_GRACE_US;
+}
+
+u64 audio_system_recoveries(const AudioSystem *as) {
+    struct AudioImpl *impl = audio_impl(as);
+    return impl ? atomic_load_explicit(&impl->device_recoveries, memory_order_acquire) : 0u;
+}
+
+/* Takes one simulated refusal, if any is pending. */
+static bool audio_take_refusal(struct AudioImpl *impl) {
+    u32 pending = atomic_load_explicit(&impl->refused_reopens, memory_order_acquire);
+    while (pending > 0u) {
+        if (atomic_compare_exchange_weak_explicit(&impl->refused_reopens, &pending,
+                                                  pending - 1u, memory_order_acq_rel,
+                                                  memory_order_acquire)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void audio_mark_recovered(struct AudioImpl *impl) {
+    atomic_store_explicit(&impl->simulated_lost, false, memory_order_release);
+    atomic_store_explicit(&impl->stopped_since_us, 0u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&impl->device_recoveries, 1u, memory_order_acq_rel);
+}
+
+/* Replaces the engine's device in place: same memory, same format, the
+ * default output. The node graph, and with it every source, is untouched.
+ * On WASAPI the COM notification thread may still reroute or restart the
+ * old device between the started check and ma_device_uninit; the 250 ms
+ * grace period makes that window rare, it is not closed. */
+static AudioResult audio_reopen_device(struct AudioImpl *impl) {
+    ma_engine *engine = &impl->engine;
+    ma_device *device = ma_engine_get_device(engine);
+    if (!device) return AUDIO_FAILED;
+    ma_device_uninit(device);
+    ma_device_config config = ma_device_config_init(ma_device_type_playback);
+    config.playback.format = ma_format_f32;
+    config.playback.channels = ma_engine_get_channels(engine);
+    config.sampleRate = ma_engine_get_sample_rate(engine);
+    config.dataCallback = audio_device_data_callback;
+    config.pUserData = engine;
+    config.noPreSilencedOutputBuffer = MA_TRUE;
+    config.noClip = MA_TRUE;
+    ma_result result = ma_device_init(&impl->context, &config, device);
+    if (result != MA_SUCCESS) {
+        /* closed and zeroed (uninitialized state): the names report "none"
+         * and the system stays lost until a reopen works */
+        memset(device, 0, sizeof(*device));
+        LOG_WARN("Audio: playback device reopen failed (%d)", result);
+        return AUDIO_FAILED;
+    }
+    if (ma_device_start(device) != MA_SUCCESS) {
+        LOG_WARN("Audio: reopened playback device did not start");
+        return AUDIO_FAILED;
+    }
+    audio_mark_recovered(impl);
+    return AUDIO_OK;
+}
+
+AudioResult audio_system_reopen(AudioSystem *as) {
+    struct AudioImpl *impl = audio_impl(as);
+    if (!impl) return AUDIO_INVALID;
+    if (audio_take_refusal(impl)) return AUDIO_FAILED;
+    const bool simulated = atomic_load_explicit(&impl->simulated_lost, memory_order_acquire);
+    if (as->backend == AUDIO_BACKEND_FAKE) {
+        if (simulated) audio_mark_recovered(impl);
+        return AUDIO_OK;
+    }
+    /* A device the backend restarted by itself is left alone. */
+    if (!simulated && audio_device_started(impl)) {
+        atomic_store_explicit(&impl->stopped_since_us, 0u, memory_order_relaxed);
+        return AUDIO_OK;
+    }
+    return audio_reopen_device(impl);
+}
+
+AudioResult audio_system_simulate_event(AudioSystem *as, AudioSystemEvent event) {
+    struct AudioImpl *impl = audio_impl(as);
+    if (!impl || (event != AUDIO_SYSTEM_EVENT_DEVICE_LOST &&
+                  event != AUDIO_SYSTEM_EVENT_REOPEN_REFUSED)) {
+        return AUDIO_INVALID;
+    }
+    if (as->backend == AUDIO_BACKEND_DEFAULT) return AUDIO_REJECTED;
+    if (event == AUDIO_SYSTEM_EVENT_REOPEN_REFUSED) {
+        atomic_fetch_add_explicit(&impl->refused_reopens, 1u, memory_order_acq_rel);
+    } else {
+        atomic_store_explicit(&impl->simulated_lost, true, memory_order_release);
+    }
+    return AUDIO_OK;
 }
 
 AudioSystem *audio_system_create(void) {
