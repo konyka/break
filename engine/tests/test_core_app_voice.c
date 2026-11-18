@@ -98,7 +98,7 @@ TEST(create_validates_config_and_lifecycle)
 
     voice = create_voice(&config);
     ASSERT_NOT_NULL(voice);
-    BreakVoiceFrame frame;
+    BreakVoiceFrame frame = {0};
     bool ready = true;
     ASSERT_EQ(core_app_voice_pop(voice, &frame, &ready), BREAK_RUNTIME_OK);
     ASSERT_TRUE(!ready);
@@ -119,7 +119,7 @@ TEST(create_validates_config_and_lifecycle)
     ASSERT_EQ(core_app_voice_pump(voice, 0u), BREAK_RUNTIME_OK);
     ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
     ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
-    CoreAppVoiceStats stats;
+    CoreAppVoiceStats stats = {0};
     ASSERT_EQ(core_app_voice_stats(voice, &stats), BREAK_RUNTIME_OK);
     ASSERT_EQ(stats.produced, 0u);
     ASSERT_EQ(stats.dropped, 0u);
@@ -173,7 +173,7 @@ TEST(manual_packet_matches_independent_pipeline)
     ASSERT_EQ(audio_voice_aligner_process_i16(aligner, raw_reference, capture_i16, aligned,
                                                VOICE_TEST_FRAMES), AUDIO_OK);
     audio_voice_processor_process_i16(processor, aligned, capture_i16, VOICE_TEST_FRAMES);
-    BreakVoiceFrame frame;
+    BreakVoiceFrame frame = {0};
     bool ready = false;
     ASSERT_EQ(core_app_voice_pop(voice, &frame, &ready), BREAK_RUNTIME_OK);
     ASSERT_TRUE(ready);
@@ -182,7 +182,7 @@ TEST(manual_packet_matches_independent_pipeline)
     ASSERT_EQ(frame.channels, 1u);
     ASSERT_EQ(frame.sample_count, VOICE_TEST_FRAMES);
     ASSERT_TRUE(memcmp(frame.samples, capture_i16, sizeof(capture_i16)) == 0);
-    CoreAppVoiceStats stats;
+    CoreAppVoiceStats stats = {0};
     ASSERT_EQ(core_app_voice_stats(voice, &stats), BREAK_RUNTIME_OK);
     ASSERT_EQ(stats.produced, 1u);
     ASSERT_EQ(stats.dropped, 0u);
@@ -212,19 +212,19 @@ TEST(queue_is_bounded_and_drains_after_stop)
         drive_fake(voice, playback, stream, capture, stereo, rendered);
         ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
     }
-    CoreAppVoiceStats stats;
+    CoreAppVoiceStats stats = {0};
     ASSERT_EQ(core_app_voice_stats(voice, &stats), BREAK_RUNTIME_OK);
     ASSERT_EQ(stats.produced, CORE_APP_VOICE_QUEUE_CAPACITY);
     ASSERT_EQ(stats.dropped, 1u);
     ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
     for (u32 i = 0u; i < CORE_APP_VOICE_QUEUE_CAPACITY; ++i) {
-        BreakVoiceFrame frame;
+        BreakVoiceFrame frame = {0};
         bool ready = false;
         ASSERT_EQ(core_app_voice_pop(voice, &frame, &ready), BREAK_RUNTIME_OK);
         ASSERT_TRUE(ready);
         ASSERT_EQ(frame.sequence, i);
     }
-    BreakVoiceFrame frame;
+    BreakVoiceFrame frame = {0};
     bool ready = true;
     ASSERT_EQ(core_app_voice_pop(voice, &frame, &ready), BREAK_RUNTIME_OK);
     ASSERT_TRUE(!ready);
@@ -251,7 +251,7 @@ TEST(pump_waits_for_each_input)
     ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
     f32 capture[VOICE_TEST_FRAMES] = {0};
     f32 rendered[VOICE_TEST_FRAMES * 2u];
-    BreakVoiceFrame frame;
+    BreakVoiceFrame frame = {0};
     bool ready = true;
     ASSERT_EQ(core_app_voice_inject(voice, capture, VOICE_TEST_FRAMES), BREAK_RUNTIME_OK);
     ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
@@ -288,7 +288,7 @@ TEST(threaded_voice_produces_and_stops)
     fill_capture(capture, 0u);
     i16 stereo[VOICE_TEST_FRAMES * 2u] = {0};
     f32 rendered[VOICE_TEST_FRAMES * 2u];
-    BreakVoiceFrame frame;
+    BreakVoiceFrame frame = {0};
     bool ready = false;
     BreakRuntimeError inject_result = BREAK_RUNTIME_OK;
     BreakRuntimeError pop_result = BREAK_RUNTIME_OK;
@@ -321,7 +321,7 @@ TEST(threaded_voice_produces_and_stops)
     ASSERT_EQ(frame.sample_count, VOICE_TEST_FRAMES);
     ASSERT_EQ(stopped, BREAK_RUNTIME_OK);
     ASSERT_EQ(external_pump, BREAK_RUNTIME_REJECTED);
-    CoreAppVoiceStats stats;
+    CoreAppVoiceStats stats = {0};
     ASSERT_EQ(core_app_voice_stats(voice, &stats), BREAK_RUNTIME_OK);
     ASSERT_EQ(stats.capture_overruns, 0u);
     ASSERT_EQ(stats.reference_overruns, 0u);
