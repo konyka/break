@@ -1,4 +1,4 @@
-# Drives test_core_app_network_loopback and test_core_app_network_offline.
+# Drives the test_core_app_network_* tests (MODE below).
 #
 # MODE=loopback: starts the real core_app with --network next to
 # test_core_app_net_client. CMake runs the COMMANDs of one execute_process
@@ -17,6 +17,14 @@
 # about a second between TLS and AUTH. The authentication deadline is wall
 # clock, so the peer must still authenticate and receive a snapshot.
 #
+# MODE=voice: like loopback with --voice=fake; one peer decodes 30 BRV2
+# voice messages, and the non-network trace must equal an offline
+# --voice=fake run. The server drops a voice frame it cannot send at once
+# (for example while a clock reply is still unprocessed), so sequence gaps
+# are allowed up to voice_frames_skipped. The peer sends one voice message
+# back and must still receive the next snapshot (the server has no handler
+# for it); that check lives in the client.
+#
 # MODE=offline: the same scenario twice without --network must give
 # byte-identical traces with no network line. In a build without the
 # transport, nm must find no break_net_/break_session_/snow_/Snow symbol.
@@ -30,6 +38,9 @@ file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 set(common_args --render=record --audio=record --assets "${ASSET_DIR}" --fixed-step
     --scenario "${SCENARIO}")
+if(MODE STREQUAL "voice")
+    list(APPEND common_args --voice=fake)
+endif()
 
 function(run_offline name)
     execute_process(
@@ -93,6 +104,13 @@ if(MODE STREQUAL "offline")
         if(leaked)
             message(FATAL_ERROR "offline core_app links network code:\n${leaked}")
         endif()
+        # The codec is compiled into core_app only for the transport; an
+        # offline build must not pull it or the crypto it links.
+        string(REGEX MATCHALL "[^\n]*(break_voice_|break_crypto_)[^\n]*" leaked_codec
+            "${nm_out}")
+        if(leaked_codec)
+            message(FATAL_ERROR "offline core_app links the voice codec or crypto:\n${leaked_codec}")
+        endif()
     endif()
     message(STATUS "core_app offline network contract passed")
     return()
@@ -144,7 +162,7 @@ if(MODE STREQUAL "start_failure")
     return()
 endif()
 
-if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth")
+if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth" AND NOT MODE STREQUAL "voice")
     message(FATAL_ERROR "unknown MODE=${MODE}")
 endif()
 foreach(var NET_CLIENT TLS_CERT TLS_KEY)
@@ -161,6 +179,8 @@ set(client_mode "")
 if(MODE STREQUAL "late_auth")
     set(poll_ms 1)
     set(client_mode late-auth)
+elseif(MODE STREQUAL "voice")
+    set(client_mode voice)
 endif()
 execute_process(
     COMMAND "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/network.trace"
@@ -248,6 +268,39 @@ if(MODE STREQUAL "late_auth")
         message(FATAL_ERROR "the late peer must authenticate before the deadline: ${stats}")
     endif()
     message(STATUS "core_app late authentication contract passed")
+    return()
+endif()
+if(MODE STREQUAL "voice")
+    stat_value("${stats}" authenticated authenticated)
+    if(NOT authenticated EQUAL 1)
+        message(FATAL_ERROR "only peer V connects in MODE=voice: ${stats}")
+    endif()
+    expect_at_least("${stats}" voice_frames_sent 30)
+    stat_value("${stats}" voice_frames_skipped voice_skipped)
+    stat_value("${stats}" voice_frames_invalid voice_invalid)
+    if(NOT voice_invalid EQUAL 0)
+        message(FATAL_ERROR "the transport could not encode a voice frame: ${stats}")
+    endif()
+    if(NOT report MATCHES "voice frames=30 gaps=([0-9]+) malformed=0 played=30 peak=([0-9]+)\n")
+        message(FATAL_ERROR "the peer did not decode 30 BRV2 frames:\n${report}")
+    endif()
+    if(CMAKE_MATCH_1 GREATER voice_skipped)
+        message(FATAL_ERROR "more sequence gaps (${CMAKE_MATCH_1}) than skipped frames: ${stats}")
+    endif()
+    if(CMAKE_MATCH_2 LESS 4000)
+        message(FATAL_ERROR "decoded voice is too quiet for the 0.25 tone: peak=${CMAKE_MATCH_2}")
+    endif()
+    if(NOT trace MATCHES "event=voice mode=fake result=ready frames=480 capture=fake\n" OR
+       NOT trace MATCHES "event=voice mode=fake result=stopped [^\n]*sequence_gaps=0 ")
+        message(FATAL_ERROR "the voice lane did not run cleanly next to the network")
+    endif()
+    run_offline(offline)
+    read_core_lines("${WORK_DIR}/network.trace" networked)
+    read_core_lines("${WORK_DIR}/offline.trace" offline)
+    if(NOT networked STREQUAL offline)
+        message(FATAL_ERROR "sending voice changed the non-network trace")
+    endif()
+    message(STATUS "core_app voice send contract passed (skipped=${voice_skipped})")
     return()
 endif()
 stat_value("${stats}" authenticated authenticated)

@@ -571,6 +571,41 @@ TEST(adpcm_and_pcm_frames_mix_in_one_stream)
     break_voice_receiver_destroy(receiver);
 }
 
+/* The core_app voice peer drives the receiver with a sequence-based
+ * virtual clock (10 ms per frame since the first one, delay 0). A frame the
+ * sender skipped is concealed once and the frame after it still plays. */
+TEST(voice_sequence_clock_conceals_a_skipped_frame_and_plays_the_next)
+{
+    BreakVoiceReceiver *receiver = make_receiver(voice_config(48000u, 1u, 480u, 0u));
+    const u32 sequences[] = {7u, 8u, 10u, 11u};
+    u32 played = 0u;
+    u32 concealed = 0u;
+    u32 i;
+    ASSERT_NOT_NULL(receiver);
+    for (i = 0u; i < 4u; ++i) {
+        const u64 now = (u64)(sequences[i] - sequences[0]) * 10u;
+        ASSERT_EQ(push_frame(receiver, make_frame(sequences[i], 48000u, 1u, 480u, 1)),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_voice_receiver_pump(receiver, 8u, now), BREAK_RUNTIME_OK);
+        for (;;) {
+            BreakVoicePlayback playback;
+            bool ready = false;
+            ASSERT_EQ(break_voice_receiver_pop(receiver, now, &playback, &ready),
+                      BREAK_RUNTIME_OK);
+            if (!ready) break;
+            if (playback.concealed) {
+                ASSERT_EQ(playback.sequence, 9u);
+                concealed++;
+            } else {
+                played++;
+            }
+        }
+    }
+    ASSERT_EQ(played, 4u);
+    ASSERT_EQ(concealed, 1u);
+    break_voice_receiver_destroy(receiver);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(voice_network_subsystem_initializes);
     RUN_TEST(voice_encode_is_exact_little_endian_and_plays_stereo_pcm);
@@ -586,5 +621,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(adpcm_stereo_keeps_channels_apart_and_odd_counts_pad);
     RUN_TEST(adpcm_rejects_bad_state_length_and_format);
     RUN_TEST(adpcm_and_pcm_frames_mix_in_one_stream);
+    RUN_TEST(voice_sequence_clock_conceals_a_skipped_frame_and_plays_the_next);
     net_shutdown();
 TEST_MAIN_END()

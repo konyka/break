@@ -1568,3 +1568,25 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 - TSan：真实 PulseAudio 设备在 libpulse 内部有竞争（栈顶是 libtsan 的 memcpy/recvmsg 拦截器，调用方为 `pa_*`）。`tests/core_app_audio_device_tsan.supp` 只用 `called_from_lib:libpulsecommon-*.so` 与 `called_from_lib:libpulse.so.0`；实测不加 suppress 和改用 `race_top` 都仍报告。
 
 残余风险：CI 没有音频设备，借用设备的关闭顺序只由本机 ASan 设备测试覆盖（voice/audio 顺序调换的变异只在本机判红）；voice 仍 live 时的 rollback 路径未测。仍缺：编码与通过网络 hook 发送、处理尾部排空、漂移补偿、设备丢失自动恢复和真实声学验收。
+
+## 补充（2026-11-18）：语音帧经网络发送
+
+设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-send-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-send.md`。上节「仍缺」里的“编码与通过网络 hook 发送”由此交付（只覆盖服务端发往对端）。
+
+- **消息**：`0x4006` `BREAK_NET_MESSAGE_ID_CORE_VOICE`，v1，只在 AUTHENTICATED 阶段接受，`IDEMPOTENT`，上限 `BREAK_NET_CORE_VOICE_MAX_PAYLOAD`（976 B，一帧 480 样本 BRV1）。载荷是一帧 `break_online_voice.h` 格式；core_app 发 BRV2（IMA ADPCM），单声道 480 样本为 `BREAK_VOICE_ADPCM_SIZE(1, 480)` = 260 B。注册表 count 27 / 26。
+- **hook**：`CoreAppNetworkHooks` 新增可选 `voice_frame(user, frame)`，传一帧 PCM（`BreakVoiceFrame *`，只在调用期间借出，没有返回值）。为 NULL 时行为不变，`start` 校验不要求它。编码在传输层做，所以运行时库不链接编解码器。
+- **调用点**：`app_voice_consume`（CoreAppThread，每个 tick 和 voice drain）弹出每帧后统计序号与峰值，再在网络子系统 live 时把 PCM 帧交给 hook。没有 hook 时不调用，离线 trace 不变。
+- **传输**：`net_voice_frame` 先检查 `started && producing` 且 reactor 事件队列为空，不满足时整帧丢弃并计 `voice_frames_skipped`（不编码）；满足时用 `break_voice_encode_adpcm` 编成 BRV2（单声道 480 样本 260 B）发给每个已欢迎的存活连接。NULL 帧也计为 `voice_frames_invalid`。语音是实时数据，不排队、不重发。编码失败（上游缺陷）计 `voice_frames_invalid` 并丢弃。发送结果计入 `voice_frames_sent`（按对端计）、`send_overloads`、`send_closed`。`network_stats` 末尾追加 `voice_frames_sent=N voice_frames_skipped=M voice_frames_invalid=X`。
+- **顺序**：network 是 index 0，在每个阶段都先于 voice（index 1）。network `stop_producers` 之后 voice drain 弹出的帧只会被计为 skipped；network destroy 之后 `app_network()` 返回 NULL，hook 不再被调用。
+- **服务端只发不收**：对端发来的 `0x4006` 没有处理函数，会话层计为 `handler_failed`，连接不关闭。voice 模式测试覆盖：对端回发一条语音后仍能收到下一个 snapshot（`v_session_survives_voice_sent`）。`session_handler_failed` 本身不作判据，因为其他流量已经会让它大于 1。
+- **链接**：编码器只在传输层使用，因此 `core_app_runtime` 的链接列表保持不变（`_core_app_runtime_expected` 仍是 HEAD 版本），只有 `core_app` 在启用传输时额外链接 `break_online`。这样离线 `core_app` 和 `core_app_asset_bake` 都不会被传递拉到 `break_crypto`/libcrypto。`net_recvfrom` 由 engine 的 `network.c` 在最终链接时提供。离线合同测试除了 `break_net_`/`break_session_`/snow，还检查二进制里没有 `break_voice_`/`break_crypto_` 符号（已确认 `readelf -d core_app | grep libcrypto` 为空）。
+
+验证：
+
+- `test_break_session`：`0x4006` 的字段与 count（先 RED：宏未定义）。
+- `test_core_app_network_voice`（transport 构建、非 WIN32）：真实 core_app `--voice=fake --network` 跑 loopback 场景，对端 V 认证后收 30 条语音消息，逐条检查 v1、`BRV2`、48000 Hz、单声道、480 样本、恰好 260 B、序号连续，再经真实 `BreakVoiceReceiver` 解码。客户端用按序号驱动的虚拟播放时钟（`(sequence - first) × 10 ms`），网络抖动不会触发补帧；服务端跳过的帧会被补一次，其后的帧照常播放。要求报告 `voice frames=30 malformed=0 played=30`、`gaps <= voice_frames_skipped`（传输层按设计会丢弃来不及发送的帧，例如时钟回复还在排队时）、峰值 ≥ 4000（0.25 幅度音调约 8191，实测 8208），`voice_frames_sent >= 30`，voice ready/stopped 行正常，且非 network trace 与离线 `--voice=fake` 运行逐行相同。先 RED（收到 0 帧）后 GREEN。
+- `test_core_app_net_transport` 新增 `voice_frame_counts_invalid_and_skipped_frames`：生产中传 NULL 与 `sample_count=0` 得 invalid=2，`stop_producers` 后两帧得 skipped=2。删掉跳过检查的变异判红。
+- `test_break_online_voice` 新增 `voice_sequence_clock_conceals_a_skipped_frame_and_plays_the_next`：序号 7、8、10、11 在序号时钟下播放 4 帧、补 1 帧（序号 9）。
+- 变异：删掉 hook 调用、改发 BRV1，都让 `test_core_app_network_voice` 失败。
+
+仍缺：服务端接收与混音对端语音、按对端路由或静音、真实对端上的抖动与漂移处理、尾部排空、设备恢复、Opus。

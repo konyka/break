@@ -1729,7 +1729,7 @@ if(CORE_APP_ENABLE_NETWORK AND BREAK_ENABLE_SNOWFLAKE)
     endif()
     target_sources(core_app PRIVATE apps/core_app/core_app_net_transport.c
         src/core/clock_offset.c)
-    target_link_libraries(core_app PRIVATE break_net)
+    target_link_libraries(core_app PRIVATE break_net break_online)
     target_compile_definitions(core_app PRIVATE CORE_APP_NET_TRANSPORT=1)
     set(_core_app_net_transport ON)
 else()
@@ -5374,12 +5374,13 @@ endif()
     if(_core_app_net_transport AND NOT WIN32)
         # Real TLS + AUTH-v2 loopback against the real core_app process.
         add_executable(test_core_app_net_client tests/test_core_app_net_client.c
-            src/core/clock_offset.c src/physics/physics_sync.c src/physics/physics.c src/physics/bvh.c
+            src/network/network.c src/core/clock_offset.c src/physics/physics_sync.c src/physics/physics.c src/physics/bvh.c
             src/math/math.c src/core/log.c)
         set_property(TARGET test_core_app_net_client PROPERTY C_STANDARD 11)
         target_include_directories(test_core_app_net_client PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/apps/core_app ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        target_link_libraries(test_core_app_net_client PRIVATE core_app_network break_net m)
+        target_link_libraries(test_core_app_net_client PRIVATE core_app_network break_net
+            break_online m)
         add_test(NAME test_core_app_network_loopback
             COMMAND ${CMAKE_COMMAND}
                 -DMODE=loopback
@@ -5406,6 +5407,19 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
         set_tests_properties(test_core_app_network_late_auth PROPERTIES
             LABELS "network;snowflake;core_app" TIMEOUT 180)
+        add_test(NAME test_core_app_network_voice
+            COMMAND ${CMAKE_COMMAND}
+                -DMODE=voice
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNET_CLIENT=$<TARGET_FILE:test_core_app_net_client>
+                -DASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+                -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_network_loopback.scenario
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/core_app_network_voice
+                -DTLS_CERT=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem
+                -DTLS_KEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
+        set_tests_properties(test_core_app_network_voice PROPERTIES
+            LABELS "network;snowflake;core_app;voice" TIMEOUT 180)
         add_test(NAME test_core_app_network_start_failure
             COMMAND ${CMAKE_COMMAND}
                 -DMODE=start_failure
@@ -5421,7 +5435,7 @@ endif()
         # Transport unit test: drives the real hooks against break_net_test so
         # a step held on another thread forces the reactor stop to time out.
         add_executable(test_core_app_net_transport tests/test_core_app_net_transport.c
-            apps/core_app/core_app_net_transport.c src/platform/platform_fs.c
+            apps/core_app/core_app_net_transport.c src/network/network.c src/platform/platform_fs.c
             src/core/trace_core_app.c src/core/clock_offset.c
             src/platform/time.c src/physics/physics_sync.c src/physics/physics.c
             src/physics/bvh.c src/math/math.c src/core/log.c)
@@ -5433,7 +5447,7 @@ endif()
             ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200809L
             CORE_APP_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
         target_link_libraries(test_core_app_net_transport PRIVATE
-            core_app_network break_net_test m Threads::Threads)
+            core_app_network break_net_test break_online m Threads::Threads)
         add_test(NAME test_core_app_net_transport COMMAND test_core_app_net_transport)
         set_tests_properties(test_core_app_net_transport PROPERTIES
             LABELS "network;snowflake;core_app" TIMEOUT 30)

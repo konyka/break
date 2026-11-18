@@ -15,6 +15,7 @@
 #include <network/break_session.h>
 #include <network/break_online_lobby.h>
 #include <network/break_online_session.h>
+#include <network/break_online_voice.h>
 #include <physics/physics_sync.h>
 #ifdef BREAK_ENABLE_CRYPTO
 #include <crypto/break_crypto.h>
@@ -1039,10 +1040,22 @@ TEST(break_session_registry_has_physics_sync_messages)
     ASSERT_EQ(correction->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
     ASSERT_EQ(correction->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
 #ifdef BREAK_ENABLE_CRYPTO
-    ASSERT_EQ(registry->count, 26u);
+    ASSERT_EQ(registry->count, 27u);
 #else
-    ASSERT_EQ(registry->count, 25u);
+    ASSERT_EQ(registry->count, 26u);
 #endif
+    {
+        const BreakNetMessageDefinition *voice = break_net_message_registry_lookup(
+            registry, BREAK_NET_MESSAGE_ID_CORE_VOICE);
+        ASSERT_EQ(BREAK_NET_MESSAGE_ID_CORE_VOICE, 0x4006u);
+        ASSERT_NOT_NULL(voice);
+        ASSERT_EQ(voice->minimum_version, 1u);
+        ASSERT_EQ(voice->maximum_version, 1u);
+        ASSERT_EQ(voice->payload_limit, (size_t)BREAK_NET_CORE_VOICE_MAX_PAYLOAD);
+        ASSERT_EQ(BREAK_NET_CORE_VOICE_MAX_PAYLOAD, BREAK_VOICE_MAX_DATAGRAM_SIZE);
+        ASSERT_EQ(voice->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+        ASSERT_EQ(voice->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+    }
     {
         const BreakNetMessageDefinition *probe = break_net_message_registry_lookup(
             registry, BREAK_NET_MESSAGE_ID_CLOCK_PROBE);

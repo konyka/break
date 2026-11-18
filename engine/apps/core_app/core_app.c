@@ -213,7 +213,8 @@ typedef struct CoreAppIoCompletion {
 /* --voice lane. FAKE owns a private FAKE playback system as the reference
  * source and is pumped on the CoreAppThread; DEVICE borrows the audio device
  * lane's playback system and runs the voice worker. The CoreAppThread pops
- * every frame and checks sequence continuity. */
+ * every frame, checks sequence continuity and hands the frame to the
+ * optional network voice_frame hook. */
 typedef struct CoreAppVoiceLane {
     CoreAppVoice *voice;
     AudioSystem *fake_playback;
@@ -2116,6 +2117,8 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
         app_voice_mode_name(mode), CORE_APP_VOICE_FRAME_FRAMES, capture);
 }
 
+static const CoreAppNetworkHooks *app_network(const CoreApp *app);
+
 static BreakRuntimeError app_voice_consume(CoreApp *app) {
     CoreAppVoiceLane *lane = &app->voice;
     for (;;) {
@@ -2132,6 +2135,8 @@ static BreakRuntimeError app_voice_consume(CoreApp *app) {
             const u32 magnitude = (u32)(sample < 0 ? -sample : sample);
             if (magnitude > lane->peak) lane->peak = magnitude;
         }
+        const CoreAppNetworkHooks *hooks = app_network(app);
+        if (hooks && hooks->voice_frame) hooks->voice_frame(hooks->user, &frame);
     }
 }
 

@@ -34,6 +34,11 @@ extern "C" {
  * server tells an authenticated peer its session number; exactly 16 bytes. */
 #define BREAK_NET_MESSAGE_ID_SESSION_WELCOME 0x4005u
 #define BREAK_NET_SESSION_WELCOME_PAYLOAD 16u
+/* core_app voice (engine/apps/core_app/core_app.h voice_frame hook), sent
+ * server to peer, AUTHENTICATED only. One BRV1 or BRV2 frame
+ * (network/break_online_voice.h); the limit is one full BRV1 frame. */
+#define BREAK_NET_MESSAGE_ID_CORE_VOICE 0x4006u
+#define BREAK_NET_CORE_VOICE_MAX_PAYLOAD (16u + 480u * 2u)
 #define BREAK_NET_MESSAGE_ID_MAX 65535u
 #define BREAK_NET_REGISTRY_MAX_MESSAGES 64u
 #define BREAK_NET_MAX_PAYLOAD_SIZE (64u * 1024u)

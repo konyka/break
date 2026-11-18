@@ -311,6 +311,7 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `test_core_app_voice` 5 项覆盖生命周期/格式、独立 aligner+processor 逐样本对照、17 包容量与丢弃后序号、分别缺输入、真实 worker 接收/停止。普通、ASan+UBSan、TSan 均 5/5；九个行为/并发变异均被捕获。
 - 未做：core_app CLI/协调器/网络 hook 接线、编码发送、设备丢失自动恢复、尾部排空、漂移补偿和真实声学验证。
 - 2026-11-18 补充：CLI 与协调器接线已完成，见 [`core_app_integration.md`](core_app_integration.md)「Core App 语音通道」（`--voice off|fake|device`、`voice` 子系统在 join 阶段销毁、Null 采集后端视为无麦克风、运行中 worker 出错以 `stage=voice` 失败）。组件侧同时把采集设备无法打开或启动（`AUDIO_FAILED`）映射为 `BREAK_RUNTIME_UNAVAILABLE`，并新增 `core_app_voice_worker_error`、`core_app_voice_capture_backend`、`core_app_voice_capture_name`、`core_app_voice_simulate_capture_event`；`audio_capture_backend_name` 返回 `none`/`fake` 或 miniaudio 后端名。`test_core_app_voice` 现为 7 项，`test_audio_capture` 为 12 项。仍缺：编码发送、设备丢失自动恢复、尾部排空、漂移补偿和真实声学验证。
+- 2026-11-18 补充：编码发送已完成，见 [`core_app_integration.md`](core_app_integration.md)「语音帧经网络发送」。CoreAppThread 弹出帧后经可选 hook `voice_frame` 交给传输层，由传输层编码为 BRV2 并作为消息 `0x4006` 发往每个已认证对端；语音组件和运行时库本身仍不编码、不联网、不链接编解码器。
 
 ## FFT
 

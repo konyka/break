@@ -3,6 +3,7 @@
 #include <network/break_net_adapter.h>
 #include <network/break_net_events.h>
 #include <network/break_net_message_registry.h>
+#include <network/break_online_voice.h>
 #include <network/break_session.h>
 #include <physics/physics_sync.h>
 #include <platform/platform_fs.h>
@@ -40,6 +41,8 @@ _Static_assert(CORE_APP_PHYSICS_CORRECTION_MAX_BYTES == BREAK_NET_MAX_PAYLOAD_SI
                "core_app correction cap must match the net payload cap");
 _Static_assert(PHYSICS_SYNC_REPORT_BYTES == BREAK_NET_PHYSICS_SYNC_REPORT_PAYLOAD,
                "physics report size must match the registry payload limit");
+_Static_assert(BREAK_NET_CORE_VOICE_MAX_PAYLOAD == BREAK_VOICE_MAX_DATAGRAM_SIZE,
+               "core_app voice limit must be one full BRV1 frame");
 
 #define CORE_APP_NET_MAX_CONNECTIONS 8u
 #define CORE_APP_NET_EVENTS_PER_TICK 64u
@@ -88,6 +91,9 @@ typedef struct CoreAppNetStats {
     u64 clock_probes_lost;
     u64 clock_samples_rejected;
     u64 session_welcomes_sent;
+    u64 voice_frames_sent;
+    u64 voice_frames_skipped;
+    u64 voice_frames_invalid;
 } CoreAppNetStats;
 
 /* Probes this server sends to one peer. */
@@ -745,7 +751,9 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              " clock_probe_decode_failed=%" PRIu64 " clock_probes_sent=%" PRIu64
              " clock_replies_matched=%" PRIu64 " clock_replies_unmatched=%" PRIu64
              " clock_probes_lost=%" PRIu64 " clock_samples_rejected=%" PRIu64
-             " physics_delta_corrections_sent=%" PRIu64 " session_welcomes_sent=%" PRIu64 "\n",
+             " physics_delta_corrections_sent=%" PRIu64 " session_welcomes_sent=%" PRIu64
+             " voice_frames_sent=%" PRIu64 " voice_frames_skipped=%" PRIu64
+             " voice_frames_invalid=%" PRIu64 "\n",
              t->stats.opened, t->stats.closed, t->stats.refused, t->stats.authenticated,
              t->stats.snapshots_sent, t->stats.send_overloads, t->stats.send_closed,
              t->stats.outbox_overloads, t->stats.auth_timeouts, t->stats.decode_failed, t->inbox.accepted_snapshots,
@@ -759,7 +767,8 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              t->stats.clock_probes_sent, t->stats.clock_replies_matched,
              t->stats.clock_replies_unmatched, t->stats.clock_probes_lost,
              t->stats.clock_samples_rejected, t->stats.physics_delta_corrections_sent,
-             t->stats.session_welcomes_sent);
+             t->stats.session_welcomes_sent, t->stats.voice_frames_sent,
+             t->stats.voice_frames_skipped, t->stats.voice_frames_invalid);
     net_trace(t, line);
 }
 
@@ -914,6 +923,37 @@ static void net_physics_correction(void *user, u32 tick, const u8 *data, usize s
     free(packet);
 }
 
+/* Encodes one voice frame as BRV2 and sends it to every welcomed peer, now
+ * or never: a frame that cannot go out (producers stopped, events pending,
+ * overload) is dropped, because a late voice frame is useless. A frame that
+ * does not encode is a defect upstream and is counted as invalid. */
+static void net_voice_frame(void *user, const BreakVoiceFrame *frame) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    if (!t) return;
+    if (!frame) {
+        t->stats.voice_frames_invalid++;
+        return;
+    }
+    if (!t->started || !t->producing || !break_net_reactor_event_queue_empty(t->reactor)) {
+        t->stats.voice_frames_skipped++;
+        return;
+    }
+    u8 wire[BREAK_NET_CORE_VOICE_MAX_PAYLOAD] = {0};
+    u32 size = 0u;
+    if (break_voice_encode_adpcm(frame, wire, (u32)sizeof(wire), &size) != BREAK_RUNTIME_OK) {
+        t->stats.voice_frames_invalid++;
+        return;
+    }
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        if (!net_slot_sendable(t, i)) continue;
+        BreakNetSendResult sent = break_net_reactor_send(
+            t->reactor, t->keys[i], BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, size);
+        if (sent == BREAK_NET_SEND_OK) t->stats.voice_frames_sent++;
+        else if (sent == BREAK_NET_SEND_OVERLOAD) t->stats.send_overloads++;
+        else t->stats.send_closed++;
+    }
+}
+
 void core_app_net_transport_hooks(CoreAppNetTransport *transport, CoreAppNetworkHooks *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
@@ -927,4 +967,5 @@ void core_app_net_transport_hooks(CoreAppNetTransport *transport, CoreAppNetwork
     out->destroy = net_destroy;
     out->physics_correction_wanted = net_physics_correction_wanted;
     out->physics_correction = net_physics_correction;
+    out->voice_frame = net_voice_frame;
 }

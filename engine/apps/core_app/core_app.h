@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/types.h>
+#include <network/break_online_voice.h>
 #include <runtime/runtime_types.h>
 
 #include <stdio.h>
@@ -56,6 +57,11 @@ typedef struct CoreAppNetworkHooks {
      * world and hands the bytes over, borrowed for the call only. */
     bool (*physics_correction_wanted)(void *user);
     void (*physics_correction)(void *user, u32 tick, const u8 *data, usize size);
+    /* Optional. Each PCM voice frame the CoreAppThread pops, borrowed for
+     * the call only. The transport encodes it (BRV2, IMA ADPCM), so the
+     * runtime links no codec; real time: it sends now or drops the frame,
+     * and returns nothing. */
+    void (*voice_frame)(void *user, const BreakVoiceFrame *frame);
 } CoreAppNetworkHooks;
 
 /* Corrections above the net payload cap are never encoded. */

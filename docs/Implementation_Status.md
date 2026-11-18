@@ -1,3 +1,10 @@
+## Core App 语音帧经网络发送（2026-11-18）
+
+- **交付**：注册 `0x4006` `BREAK_NET_MESSAGE_ID_CORE_VOICE`（v1，976 B，AUTHENTICATED，IDEMPOTENT，count 27 / 26）。`CoreAppNetworkHooks` 新增可选 `voice_frame`，传一帧 PCM；core_app 在 CoreAppThread 弹出语音帧后交给传输层，传输层编码为 BRV2（IMA ADPCM，260 B）发给每个已欢迎的已认证对端，不能立即发送的帧直接丢弃。`network_stats` 追加 `voice_frames_sent`、`voice_frames_skipped`、`voice_frames_invalid`。编码只在传输层，`core_app_runtime` 链接不变，离线 `core_app` 与 `core_app_asset_bake` 不再被传递拉到 libcrypto（离线合同新增 `break_voice_`/`break_crypto_` 符号检查）。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-send-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-send.md`。
+- **TDD**：`test_break_session` 注册表断言先 RED（宏未定义）；新 ctest `test_core_app_network_voice` 先 RED（对端收到 0 帧），实现后对端经真实 `BreakVoiceReceiver` 解码 30 帧 BRV2（`gaps <= voice_frames_skipped`，`invalid=0`），峰值约 8208；对端回发一条语音后仍收到下一个 snapshot；非 network trace 与离线 `--voice=fake` 一致。传输层单测覆盖 invalid/skipped 计数，接收端单测覆盖序号时钟下跳帧补一次、后续帧照常播放。删掉 hook 调用、改发 BRV1、删掉跳过检查三个变异都判红。独立评审两轮，第二轮 Ready。
+- **边界**：只发不收；服务端不接收、混音或路由对端语音；无尾部排空、漂移补偿、设备恢复或 Opus。
+- **顺带修复**：三树验证中 `test_audio` 的 `reference_concurrent_render_and_read_wrap_without_overruns` 偶发失败（`received != job.total`，单独运行约 1/400）。原因在测试：读线程在一次空读之后才检查 `done`，渲染线程可能恰好在两者之间发布最后一块并置位，循环提前退出。改为读之前先取 `done`，只有读之前已完成且本次读为空才退出。修复后连续 1500 次 0 失败。产品代码未改。
+
 ## Core App 语音通道（2026-11-18）
 
 - **交付**：`core_app --voice off|fake|device`（默认 off，现有 trace 不变）把 `CoreAppVoice` 接入真实可执行程序和运行时协调器。fake 自带 FAKE 播放参考并在 CoreAppThread 手动泵；device 借用 `--audio=device` 的播放设备、默认采集和 worker。新增协调器子系统 `voice`（index 1，join 阶段销毁），trace 输出 ready（含 `capture=<name>`）、unavailable、failed、stopped 行。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-lane-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-lane.md`。

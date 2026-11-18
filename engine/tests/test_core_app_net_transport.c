@@ -3,6 +3,7 @@
 #include "../apps/core_app/core_app_net_transport.h"
 
 #include <network/break_net_adapter.h>
+#include <network/break_online_voice.h>
 
 #include <pthread.h>
 #include <stdio.h>
@@ -99,6 +100,56 @@ TEST(destroy_reports_stop_timeout_and_keeps_the_reactor) {
     fclose(trace);
 }
 
+/* A NULL frame and a frame the encoder rejects are counted as invalid
+ * while producing; a valid frame with no peer sends nothing; after
+ * stop_producers a frame is skipped before it is encoded. */
+TEST(voice_frame_counts_invalid_and_skipped_frames) {
+    const char *fixtures = CORE_APP_TEST_STR(CORE_APP_TEST_SSL_FIXTURE_DIR);
+    char cert[512], key[512], port_file[256];
+    CoreAppNetTransportConfig config;
+    CoreAppNetworkHooks hooks;
+    BreakVoiceFrame frame;
+    FILE *trace = tmpfile();
+    snprintf(cert, sizeof(cert), "%s/snow_test_cert.pem", fixtures);
+    snprintf(key, sizeof(key), "%s/snow_test_key.pem", fixtures);
+    test_tmp(port_file, sizeof(port_file), "core_app_net_transport_voice.port");
+    (void)remove(port_file);
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(TEST_SETENV(k_psk_env, k_psk_hex), 0);
+    memset(&config, 0, sizeof(config));
+    config.bind = "127.0.0.1:0";
+    config.tls_cert = cert;
+    config.tls_key = key;
+    config.psk_env = k_psk_env;
+    config.port_file = port_file;
+    CoreAppNetTransport *transport = core_app_net_transport_create(&config);
+    ASSERT_NOT_NULL(transport);
+    core_app_net_transport_hooks(transport, &hooks);
+    ASSERT_NOT_NULL(hooks.voice_frame);
+    ASSERT_EQ(hooks.start(hooks.user, trace), BREAK_RUNTIME_OK);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.sample_rate = 48000u;
+    frame.channels = 1u;
+    frame.sample_count = BREAK_VOICE_MAX_SAMPLES;
+    hooks.voice_frame(hooks.user, NULL);
+    BreakVoiceFrame bad = frame;
+    bad.sample_count = 0u;
+    hooks.voice_frame(hooks.user, &bad);
+    hooks.voice_frame(hooks.user, &frame);
+    ASSERT_EQ(hooks.stop_admission(hooks.user), BREAK_RUNTIME_OK);
+    ASSERT_EQ(hooks.stop_producers(hooks.user), BREAK_RUNTIME_OK);
+    hooks.voice_frame(hooks.user, &bad);
+    hooks.voice_frame(hooks.user, &frame);
+    ASSERT_EQ(hooks.drain(hooks.user), BREAK_RUNTIME_OK);
+    ASSERT_EQ(hooks.destroy(hooks.user), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(trace_contains(trace,
+        "voice_frames_sent=0 voice_frames_skipped=2 voice_frames_invalid=2\n"));
+    core_app_net_transport_free(transport);
+    fclose(trace);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(destroy_reports_stop_timeout_and_keeps_the_reactor);
+    RUN_TEST(voice_frame_counts_invalid_and_skipped_frames);
 TEST_MAIN_END()

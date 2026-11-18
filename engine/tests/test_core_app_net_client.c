@@ -1,12 +1,13 @@
-/* Loopback peer for test_core_app_network_loopback.
+/* Loopback peer for test_core_app_network_loopback, _late_auth and _voice.
  *
  * Runs next to a real core_app started with --network. Every check here is
  * about the wire: TLS, AUTH-v2, which connections receive snapshots, and
  * which hostile inputs close a connection. Whether hostile input changed
  * the simulation is checked by the CMake driver, which compares the
- * networked trace with an offline run of the same scenario.
+ * networked trace with an offline run of the same scenario. "late-auth"
+ * runs only the delayed-AUTH peer; "voice" runs only the voice peer.
  *
- * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
+ * Usage: test_core_app_net_client PORT_FILE REPORT_FILE [late-auth|voice]
  * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). */
 #define _POSIX_C_SOURCE 200809L
 #include "core_app_network.h"
@@ -14,6 +15,8 @@
 #include <core/clock_offset.h>
 #include <crypto/break_crypto.h>
 #include <network/break_net_envelope.h>
+#include <network/break_net_message_registry.h>
+#include <network/break_online_voice.h>
 #include <physics/physics_sync.h>
 #include <snow/network_buffer.h>
 #include <snow/openssl.h>
@@ -927,10 +930,115 @@ static void scenario_late_auth(void) {
     client_close(&g);
 }
 
+/* V: authenticates, then decodes the server's voice messages through a
+ * real BreakVoiceReceiver. Every message must be version 1, BRV2 mono
+ * 48 kHz with 480 samples at the exact ADPCM size, in consecutive
+ * sequence. */
+#define NET_CLIENT_VOICE_FRAMES 30u
+static void scenario_voice(void) {
+    NetClient v;
+    CoreAppSnapshot snapshot;
+    BreakVoiceReceiver *receiver = NULL;
+    BreakVoiceStreamConfig config;
+    memset(&config, 0, sizeof(config));
+    config.sample_rate = 48000u;
+    config.channels = 1u;
+    config.sample_count = BREAK_VOICE_MAX_SAMPLES;
+    config.jitter_delay_ms = 0u;
+    config.jitter_capacity = 8u;
+    config.queue_capacity = 8u;
+    check(break_voice_receiver_create(NULL, &config, &receiver) == BREAK_RUNTIME_OK,
+          "v_receiver_created");
+    check(client_open(&v), "v_tls_challenge");
+    check(client_auth(&v, g_psk), "v_auth_sent");
+    check(client_next_snapshot(&v, &snapshot, 10000u) == 1, "v_authenticated");
+    check_welcome(&v, "v");
+    u32 frames = 0u;
+    u32 gaps = 0u;
+    u32 malformed = 0u;
+    u32 played = 0u;
+    u32 next = 0u;
+    u32 first = 0u;
+    u32 peak = 0u;
+    u64 deadline = now_ms() + 15000u;
+    while (receiver && frames < NET_CLIENT_VOICE_FRAMES && now_ms() < deadline) {
+        BreakNetEnvelope env;
+        if (client_recv(&v, &env, (u32)(deadline - now_ms()) + 1u) != 1) break;
+        if (env.message_id != BREAK_NET_MESSAGE_ID_CORE_VOICE) continue;
+        const u8 *bytes = (const u8 *)env.payload;
+        if (env.protocol_version != 1u ||
+            env.payload_size != BREAK_VOICE_ADPCM_SIZE(1u, BREAK_VOICE_MAX_SAMPLES) ||
+            memcmp(bytes, "BRV2", 4u) != 0 || le32(bytes + 8u) != 48000u ||
+            bytes[12] != 1u || bytes[13] != 0u ||
+            (u32)bytes[14] + ((u32)bytes[15] << 8u) != BREAK_VOICE_MAX_SAMPLES) {
+            malformed++;
+            continue;
+        }
+        u32 sequence = le32(bytes + 4u);
+        if (frames == 0u) first = sequence;
+        if (frames > 0u && sequence != next) gaps++;
+        next = sequence + 1u;
+        /* A virtual playout clock driven by the sequence: 10 ms per frame
+         * since the first one. Network jitter cannot make the jitter buffer
+         * conceal, and a frame the server skipped is concealed once while
+         * the frame after it still plays. */
+        const u64 virtual_ms = (u64)(sequence - first) * 10u;
+        frames++;
+        if (break_voice_receiver_push(receiver, bytes, (u32)env.payload_size) !=
+                BREAK_RUNTIME_OK ||
+            break_voice_receiver_pump(receiver, 8u, virtual_ms) != BREAK_RUNTIME_OK) {
+            malformed++;
+            continue;
+        }
+        for (;;) {
+            BreakVoicePlayback playback;
+            bool ready = false;
+            if (break_voice_receiver_pop(receiver, virtual_ms, &playback, &ready) !=
+                    BREAK_RUNTIME_OK ||
+                !ready) {
+                break;
+            }
+            if (playback.concealed) continue;
+            played++;
+            for (u32 i = 0u; i < playback.sample_count; ++i) {
+                i32 sample = playback.samples[i];
+                u32 magnitude = (u32)(sample < 0 ? -sample : sample);
+                if (magnitude > peak) peak = magnitude;
+            }
+        }
+    }
+    check(frames == NET_CLIENT_VOICE_FRAMES, "v_received_voice_frames");
+    check(malformed == 0u, "v_voice_frames_well_formed");
+    check(played == frames, "v_voice_frames_decoded");
+    /* The server only sends voice: one sent the other way has no handler,
+     * is counted by the session layer, and the session stays open. */
+    {
+        BreakVoiceFrame back;
+        u8 wire[BREAK_VOICE_MAX_DATAGRAM_SIZE];
+        u32 wire_size = 0u;
+        memset(&back, 0, sizeof(back));
+        back.sequence = 1u;
+        back.sample_rate = 48000u;
+        back.channels = 1u;
+        back.sample_count = BREAK_VOICE_MAX_SAMPLES;
+        check(break_voice_encode_adpcm(&back, wire, sizeof(wire), &wire_size) ==
+                      BREAK_RUNTIME_OK &&
+                  client_send(&v, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size),
+              "v_sent_voice_to_server");
+        check(client_next_snapshot(&v, &snapshot, 5000u) == 1, "v_session_survives_voice_sent");
+    }
+    fprintf(g_report, "voice frames=%u gaps=%u malformed=%u played=%u peak=%u\n", frames, gaps,
+            malformed, played, peak);
+    client_close(&v);
+    if (receiver) break_voice_receiver_destroy(receiver);
+}
+
 int main(int argc, char **argv) {
     bool late_auth = argc == 4 && strcmp(argv[3], "late-auth") == 0;
-    if (argc != 3 && !late_auth) {
-        fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE [late-auth]\n");
+    bool voice = argc == 4 && strcmp(argv[3], "voice") == 0;
+    if (argc != 3 && !late_auth && !voice) {
+        fprintf(stderr,
+                "usage: test_core_app_net_client PORT_FILE REPORT_FILE [late-auth|voice]\n");
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -940,6 +1048,8 @@ int main(int argc, char **argv) {
     check(wait_port(argv[1]), "port_file_published");
     if (g_failures == 0 && late_auth) {
         scenario_late_auth();
+    } else if (g_failures == 0 && voice) {
+        scenario_voice();
     } else if (g_failures == 0) {
         scenario_authenticated();
         scenario_unauthenticated();
