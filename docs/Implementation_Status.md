@@ -1,3 +1,9 @@
+## Core App 服务端接收对端语音（2026-11-18）
+
+- **交付**：传输层为 `0x4006` 注册 `net_on_voice`，每个连接在第一条语音到达时创建一个 `BreakVoiceReceiver`（40 ms 播放延迟，64 帧抖动缓冲），`net_tick` 按单调时钟弹出到期帧（每槽位每 tick 最多 16 帧）。连接关闭和 `net_destroy` 时先做尾部排空（`now = UINT64_MAX`，最多 128 帧），再汇总统计。`network_stats` 追加 `voice_frames_received`、`voice_frames_played`、`voice_frames_concealed`、`voice_frames_dropped`、`voice_peak`。对端语音只影响计数，不进入模拟或设备。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-receive-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-receive.md`。
+- **TDD**：`test_core_app_network_voice` 先 RED（统计没有新字段）后 GREEN：真实 TLS + AUTH-v2 对端突发 20 帧音调、1 帧重复、1 帧错误采样率，服务端 received=20、played=20、concealed=0、dropped=2，峰值 9334。时钟探测回复作为“语音已处理”的屏障。接收器新增尾部排空特性测试。不注册处理函数、去掉尾部排空、不更新峰值三个变异都判红。
+- **边界**：不混音、不播放、不转发、不按对端静音；无漂移补偿、语音专用限速、设备恢复或 Opus。
+
 ## Core App 语音帧经网络发送（2026-11-18）
 
 - **交付**：注册 `0x4006` `BREAK_NET_MESSAGE_ID_CORE_VOICE`（v1，976 B，AUTHENTICATED，IDEMPOTENT，count 27 / 26）。`CoreAppNetworkHooks` 新增可选 `voice_frame`，传一帧 PCM；core_app 在 CoreAppThread 弹出语音帧后交给传输层，传输层编码为 BRV2（IMA ADPCM，260 B）发给每个已欢迎的已认证对端，不能立即发送的帧直接丢弃。`network_stats` 追加 `voice_frames_sent`、`voice_frames_skipped`、`voice_frames_invalid`。编码只在传输层，`core_app_runtime` 链接不变，离线 `core_app` 与 `core_app_asset_bake` 不再被传递拉到 libcrypto（离线合同新增 `break_voice_`/`break_crypto_` 符号检查）。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-send-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-send.md`。

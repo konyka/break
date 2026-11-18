@@ -1590,3 +1590,23 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 - 变异：删掉 hook 调用、改发 BRV1，都让 `test_core_app_network_voice` 失败。
 
 仍缺：服务端接收与混音对端语音、按对端路由或静音、真实对端上的抖动与漂移处理、尾部排空、设备恢复、Opus。
+
+## 补充（2026-11-18）：服务端接收对端语音
+
+设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-receive-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-receive.md`。上节「仍缺」里的“服务端接收对端语音”和“尾部排空”由此交付（只接收与统计，不混音、不转发）。
+
+- **处理函数**：`net_start` 为 `0x4006` 注册 `net_on_voice`。它在 CoreAppThread（会话层 poll）上运行，会话层已保证只有 AUTHENTICATED 阶段的消息能到达。找不到槽位或槽位正在关闭时返回 false（会话层计 `handler_failed`）。这里不用 `net_slot_live`：`authenticated[slot]` 要等本批事件处理完后的 `net_sync_sessions` 才置位，和 AUTH 同一批到达的语音会被误拒。空载荷计入 `voice_frames_dropped` 并返回 true。其余情况把载荷推入该连接的 `BreakVoiceReceiver` 并立刻 pump 一次，所以接收器的 inbox 最多只存一条。
+- **每连接抖动缓冲**：接收器在该连接第一条语音到达时创建：48 kHz、单声道、480 样本，`jitter_delay_ms = 40`，`jitter_capacity = 64`（接收器上限，TLS 是有序流，突发到达的帧不会溢出），`queue_capacity = 4`。创建失败时这条消息被拒绝，下一条重试。
+- **播放**：`net_tick` 在 `net_pump` 之后按单调时钟弹出到期帧，每个槽位每 tick 最多 16 帧，只要 tick 不超过 160 ms 就能跟上一路 10 ms 帧流；服务端更慢时会落后，接收器随后计 overload。上限的作用是：如果对端发来序号跳得很远的一帧，接收器不会在一次循环里补出中间所有缺失帧。播放出的帧只更新 `voice_peak`（最大绝对样本值），补帧计入 `voice_frames_concealed`。对端语音不会到达关卡、模拟、音频设备或语音通道。
+- **尾部排空**：连接关闭或传输出错时释放槽位，`net_destroy` 也会释放所有槽位，都在输出统计之前完成。释放时先用 `now = UINT64_MAX` 弹出剩余帧（最多 128 帧），对端关闭前发出的帧按序播放或补帧，然后把接收器统计加到总数里，再销毁接收器。排空上限没覆盖到的已接收帧（例如对端在播放开始前送来序号相差很远的两帧）计入 dropped。释放必须在创建接收器的线程（传输层所属线程）上进行，否则接收器拒绝 stats 和 destroy。
+- **统计**：`network_stats` 末尾追加 `voice_frames_received`（接收器 accepted）、`voice_frames_played`、`voice_frames_concealed`、`voice_frames_dropped`（invalid + duplicate + stale + overload）和 `voice_peak`。格式错误、格式不符、重复、过期或溢出的帧只计数，连接保持打开。统计行缓冲从 1024 扩到 1536 字节。
+
+验证：
+
+- `test_break_online_voice` 新增 `voice_pop_at_max_time_flushes_buffered_frames_in_order`：40 ms 延迟下缓冲 3 帧，`now = 0` 时没有帧到期；之后用 `UINT64_MAX` 按序弹出 5、6、7，都不是补帧，然后没有剩余帧。这条测试固定了尾部排空依赖的接收器行为。
+- `test_core_app_network_voice`：对端 V 解码完服务端的 30 帧后，一次性回发 20 帧 0.25 幅度方波 BRV2（序号 0..19），再发序号 19 的重复帧和一帧声明 16 kHz 的帧，然后发一个时钟探测。同一会话的消息按序处理，所以探测回复证明服务端已经处理完全部语音，对端收到回复后立即关闭。由于 40 ms 播放延迟，对端关闭时大部分帧还在缓冲里，只能靠尾部排空播放。driver 要求 `voice_frames_received=20 voice_frames_played=20 voice_frames_concealed=0 voice_frames_dropped=2`、`voice_peak >= 4000`（实测 9334），并且非 network trace 仍与离线运行一致。
+- 先 RED（统计里没有新字段）后 GREEN。第一版测试按 10 ms 间隔发送且没有屏障，只统计到 1 帧丢弃，因为对端关闭时服务端还没读到最后一条消息。之后加了时钟探测屏障，并改为突发发送。
+- `test_core_app_net_transport` 的统计行断言加上五个新字段（全部为 0）。
+- 变异：不注册处理函数、去掉尾部排空、不更新峰值，三者都让 `test_core_app_network_voice` 失败。
+
+仍缺：混音或播放对端语音、对端之间转发、按对端静音、漂移补偿、语音专用限速（目前只有会话层通用限速）、采集设备恢复、Opus。

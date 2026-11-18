@@ -606,6 +606,33 @@ TEST(voice_sequence_clock_conceals_a_skipped_frame_and_plays_the_next)
     break_voice_receiver_destroy(receiver);
 }
 
+TEST(voice_pop_at_max_time_flushes_buffered_frames_in_order)
+{
+    BreakVoiceReceiver *receiver = make_receiver(voice_config(48000u, 1u, 480u, 40u));
+    BreakVoicePlayback playback;
+    bool ready = false;
+    u32 i;
+    ASSERT_NOT_NULL(receiver);
+    for (i = 0u; i < 3u; ++i) {
+        ASSERT_EQ(push_frame(receiver, make_frame(5u + i, 48000u, 1u, 480u, 1)),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(break_voice_receiver_pump(receiver, 8u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_voice_receiver_pop(receiver, 0u, &playback, &ready), BREAK_RUNTIME_OK);
+    ASSERT_FALSE(ready);
+    for (i = 0u; i < 3u; ++i) {
+        ASSERT_EQ(break_voice_receiver_pop(receiver, UINT64_MAX, &playback, &ready),
+                  BREAK_RUNTIME_OK);
+        ASSERT_TRUE(ready);
+        ASSERT_FALSE(playback.concealed);
+        ASSERT_EQ(playback.sequence, 5u + i);
+    }
+    ASSERT_EQ(break_voice_receiver_pop(receiver, UINT64_MAX, &playback, &ready),
+              BREAK_RUNTIME_OK);
+    ASSERT_FALSE(ready);
+    break_voice_receiver_destroy(receiver);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(voice_network_subsystem_initializes);
     RUN_TEST(voice_encode_is_exact_little_endian_and_plays_stereo_pcm);
@@ -622,5 +649,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(adpcm_rejects_bad_state_length_and_format);
     RUN_TEST(adpcm_and_pcm_frames_mix_in_one_stream);
     RUN_TEST(voice_sequence_clock_conceals_a_skipped_frame_and_plays_the_next);
+    RUN_TEST(voice_pop_at_max_time_flushes_buffered_frames_in_order);
     net_shutdown();
 TEST_MAIN_END()

@@ -144,7 +144,9 @@ TEST(voice_frame_counts_invalid_and_skipped_frames) {
     ASSERT_EQ(hooks.drain(hooks.user), BREAK_RUNTIME_OK);
     ASSERT_EQ(hooks.destroy(hooks.user), BREAK_RUNTIME_OK);
     ASSERT_TRUE(trace_contains(trace,
-        "voice_frames_sent=0 voice_frames_skipped=2 voice_frames_invalid=2\n"));
+        "voice_frames_sent=0 voice_frames_skipped=2 voice_frames_invalid=2"
+        " voice_frames_received=0 voice_frames_played=0 voice_frames_concealed=0"
+        " voice_frames_dropped=0 voice_peak=0\n"));
     core_app_net_transport_free(transport);
     fclose(trace);
 }

@@ -21,9 +21,11 @@
 # voice messages, and the non-network trace must equal an offline
 # --voice=fake run. The server drops a voice frame it cannot send at once
 # (for example while a clock reply is still unprocessed), so sequence gaps
-# are allowed up to voice_frames_skipped. The peer sends one voice message
-# back and must still receive the next snapshot (the server has no handler
-# for it); that check lives in the client.
+# are allowed up to voice_frames_skipped. The peer then sends 20 tone frames
+# back, a duplicate and one wrong-rate frame, and must still receive the next
+# snapshot (checked in the client). The server must have received and played
+# all 20 (the tail is flushed when the peer closes), concealed none, dropped
+# the other two, and seen the tone's peak.
 #
 # MODE=offline: the same scenario twice without --network must give
 # byte-identical traces with no network line. In a build without the
@@ -294,13 +296,23 @@ if(MODE STREQUAL "voice")
        NOT trace MATCHES "event=voice mode=fake result=stopped [^\n]*sequence_gaps=0 ")
         message(FATAL_ERROR "the voice lane did not run cleanly next to the network")
     endif()
+    foreach(pair voice_frames_received=20 voice_frames_played=20 voice_frames_concealed=0
+                 voice_frames_dropped=2)
+        if(NOT stats MATCHES " ${pair}( |$)")
+            message(FATAL_ERROR "expected ${pair} for the peer's voice: ${stats}")
+        endif()
+    endforeach()
+    stat_value("${stats}" voice_peak voice_peak)
+    if(voice_peak LESS 4000)
+        message(FATAL_ERROR "received voice is too quiet for the 0.25 tone: ${stats}")
+    endif()
     run_offline(offline)
     read_core_lines("${WORK_DIR}/network.trace" networked)
     read_core_lines("${WORK_DIR}/offline.trace" offline)
     if(NOT networked STREQUAL offline)
-        message(FATAL_ERROR "sending voice changed the non-network trace")
+        message(FATAL_ERROR "voice over the network changed the non-network trace")
     endif()
-    message(STATUS "core_app voice send contract passed (skipped=${voice_skipped})")
+    message(STATUS "core_app voice send and receive contract passed (skipped=${voice_skipped})")
     return()
 endif()
 stat_value("${stats}" authenticated authenticated)

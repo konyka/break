@@ -935,6 +935,7 @@ static void scenario_late_auth(void) {
  * 48 kHz with 480 samples at the exact ADPCM size, in consecutive
  * sequence. */
 #define NET_CLIENT_VOICE_FRAMES 30u
+#define NET_CLIENT_VOICE_BACK_FRAMES 20u
 static void scenario_voice(void) {
     NetClient v;
     CoreAppSnapshot snapshot;
@@ -1010,22 +1011,50 @@ static void scenario_voice(void) {
     check(frames == NET_CLIENT_VOICE_FRAMES, "v_received_voice_frames");
     check(malformed == 0u, "v_voice_frames_well_formed");
     check(played == frames, "v_voice_frames_decoded");
-    /* The server only sends voice: one sent the other way has no handler,
-     * is counted by the session layer, and the session stays open. */
+    /* The other direction: a burst of 20 consecutive BRV2 frames of a 0.25
+     * square tone, then a duplicate of the last one and one frame that
+     * claims 16 kHz. The server buffers them per session with a 40 ms
+     * playout delay, so most of the burst is still buffered when this peer
+     * closes and plays only through the tail flush. The last two count as
+     * dropped and the session stays open. */
     {
         BreakVoiceFrame back;
         u8 wire[BREAK_VOICE_MAX_DATAGRAM_SIZE];
         u32 wire_size = 0u;
+        bool sent = true;
         memset(&back, 0, sizeof(back));
-        back.sequence = 1u;
         back.sample_rate = 48000u;
         back.channels = 1u;
         back.sample_count = BREAK_VOICE_MAX_SAMPLES;
-        check(break_voice_encode_adpcm(&back, wire, sizeof(wire), &wire_size) ==
-                      BREAK_RUNTIME_OK &&
-                  client_send(&v, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size),
-              "v_sent_voice_to_server");
-        check(client_next_snapshot(&v, &snapshot, 5000u) == 1, "v_session_survives_voice_sent");
+        for (u32 i = 0u; i < BREAK_VOICE_MAX_SAMPLES; ++i) {
+            back.samples[i] = (i / 24u) % 2u == 0u ? (i16)8191 : (i16)-8191;
+        }
+        for (u32 sequence = 0u; sequence < NET_CLIENT_VOICE_BACK_FRAMES && sent; ++sequence) {
+            back.sequence = sequence;
+            sent = break_voice_encode_adpcm(&back, wire, sizeof(wire), &wire_size) ==
+                       BREAK_RUNTIME_OK &&
+                   client_send(&v, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
+        }
+        sent = sent && client_send(&v, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
+        wire[8] = 0x80u;
+        wire[9] = 0x3eu;
+        wire[10] = 0u;
+        wire[11] = 0u;
+        sent = sent && client_send(&v, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
+        check(sent, "v_sent_voice_to_server");
+        /* Nothing acknowledges voice, but the server applies one session's
+         * messages in order: a reply to a clock probe sent after the voice
+         * proves every voice message was handled before this peer closes. */
+        CoreAppClockProbe probe = {CORE_APP_CLOCK_PROBE_REQUEST, 0u, 0u, 0u};
+        CoreAppClockProbe reply;
+        u64 t3 = 0u;
+        probe.t0 = now_us();
+        check(send_clock_probe(&v, &probe, CORE_APP_CLOCK_PROBE_BYTES) &&
+                  client_next_clock_reply(&v, probe.t0, &reply, &t3, 10000u) == 1,
+              "v_server_handled_voice_before_close");
+        /* Close at once: most of the burst must still be buffered, so only
+         * the tail flush can play it. The reply already shows the session
+         * survived the voice. */
     }
     fprintf(g_report, "voice frames=%u gaps=%u malformed=%u played=%u peak=%u\n", frames, gaps,
             malformed, played, peak);

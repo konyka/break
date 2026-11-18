@@ -62,6 +62,18 @@ _Static_assert(BREAK_NET_CORE_VOICE_MAX_PAYLOAD == BREAK_VOICE_MAX_DATAGRAM_SIZE
 #define CORE_APP_NET_CLOCK_PROBE_TIMEOUT_TICKS 32u
 #define CORE_APP_NET_CLOCK_OFFSET_TRACE_SAMPLES 4u
 #define CORE_APP_NET_PATH_CAPACITY 512u
+/* Peer voice: one jitter buffer per connection, created on its first voice
+ * message. The buffer holds the receiver maximum, so a burst queued on the
+ * ordered TLS stream does not overflow it. Pops are capped per call: a frame
+ * with a far later sequence would otherwise make the receiver conceal every
+ * missing frame before it in one loop. The per-tick cap keeps up with one
+ * 10 ms frame stream only while ticks take at most 160 ms; a slower server
+ * falls behind and the receiver then counts overloads. */
+#define CORE_APP_NET_VOICE_DELAY_MS 40u
+#define CORE_APP_NET_VOICE_JITTER_FRAMES 64u
+#define CORE_APP_NET_VOICE_QUEUE 4u
+#define CORE_APP_NET_VOICE_POPS_PER_TICK 16u
+#define CORE_APP_NET_VOICE_FLUSH_POPS 128u
 
 static const u8 k_core_app_net_key_id[8] = {'c', 'o', 'r', 'e', 'a', 'p', 'p', '1'};
 
@@ -94,6 +106,11 @@ typedef struct CoreAppNetStats {
     u64 voice_frames_sent;
     u64 voice_frames_skipped;
     u64 voice_frames_invalid;
+    u64 voice_frames_received;
+    u64 voice_frames_played;
+    u64 voice_frames_concealed;
+    u64 voice_frames_dropped;
+    u64 voice_peak;
 } CoreAppNetStats;
 
 /* Probes this server sends to one peer. */
@@ -139,6 +156,7 @@ struct CoreAppNetTransport {
     CoreAppNetClockState clock[CORE_APP_NET_MAX_CONNECTIONS];
     BreakSessionId session_ids[CORE_APP_NET_MAX_CONNECTIONS];
     u64 opened_us[CORE_APP_NET_MAX_CONNECTIONS];
+    BreakVoiceReceiver *voice_receivers[CORE_APP_NET_MAX_CONNECTIONS];
     CoreAppSnapshot scratch_snapshot;
     u8 scratch_wire[CORE_APP_SNAPSHOT_MAX_BYTES];
     CoreAppSnapshotInbox inbox;
@@ -219,6 +237,59 @@ static void net_release_baselines(CoreAppNetTransport *t) {
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         physics_sync_baseline_release(&t->physics_baselines[i]);
     }
+}
+
+/* Plays the slot's buffered peer voice that is due at now_ms. Played frames
+ * only raise the peak counter; nothing reaches the level or a device. */
+static void net_voice_play(CoreAppNetTransport *t, u32 slot, u64 now_ms, u32 max_pops) {
+    BreakVoiceReceiver *receiver = t->voice_receivers[slot];
+    if (!receiver) return;
+    for (u32 n = 0u; n < max_pops; ++n) {
+        BreakVoicePlayback playback;
+        bool ready = false;
+        if (break_voice_receiver_pop(receiver, now_ms, &playback, &ready) != BREAK_RUNTIME_OK ||
+            !ready) {
+            return;
+        }
+        if (playback.concealed) {
+            t->stats.voice_frames_concealed++;
+            continue;
+        }
+        t->stats.voice_frames_played++;
+        for (u32 i = 0u; i < playback.sample_count; ++i) {
+            i32 sample = playback.samples[i];
+            u64 magnitude = (u64)(sample < 0 ? -sample : sample);
+            if (magnitude > t->stats.voice_peak) t->stats.voice_peak = magnitude;
+        }
+    }
+}
+
+/* Tail flush: whatever the peer sent before it closed still plays, in
+ * order, then the receiver's counts join the totals. Frames the capped
+ * flush could not reach count as dropped, so received always equals played
+ * plus what is counted dropped among accepted frames. Must run on the
+ * thread that created the receiver (this transport's owner thread): the
+ * receiver refuses stats and destroy from any other. */
+static void net_voice_release(CoreAppNetTransport *t, u32 slot) {
+    BreakVoiceReceiver *receiver = t->voice_receivers[slot];
+    BreakVoiceReceiverStats stats;
+    if (!receiver) return;
+    net_voice_play(t, slot, UINT64_MAX, CORE_APP_NET_VOICE_FLUSH_POPS);
+    memset(&stats, 0, sizeof(stats));
+    if (break_voice_receiver_stats(receiver, &stats) == BREAK_RUNTIME_OK) {
+        t->stats.voice_frames_received += stats.accepted;
+        t->stats.voice_frames_dropped +=
+            stats.invalid + stats.duplicate + stats.stale + stats.overload;
+        if (stats.accepted > stats.played) {
+            t->stats.voice_frames_dropped += stats.accepted - stats.played;
+        }
+    }
+    break_voice_receiver_destroy(receiver);
+    t->voice_receivers[slot] = NULL;
+}
+
+static void net_voice_release_all(CoreAppNetTransport *t) {
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) net_voice_release(t, i);
 }
 
 static int net_slot_find(const CoreAppNetTransport *t, BreakConnectionKey key) {
@@ -416,6 +487,7 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
             event.type == BREAK_NET_EVENT_TRANSPORT_ERROR) {
             int slot = net_slot_find(t, event.connection_key);
             if (slot >= 0) {
+                net_voice_release(t, (u32)slot);
                 t->keys[slot] = 0u;
                 t->authenticated[slot] = false;
                 t->welcomed[slot] = false;
@@ -450,6 +522,43 @@ static bool net_slot_live(const CoreAppNetTransport *t, u32 i) {
  * message a peer receives after AUTH. */
 static bool net_slot_sendable(const CoreAppNetTransport *t, u32 i) {
     return t->welcomed[i] && net_slot_live(t, i);
+}
+
+/* Peer voice is decoded into the connection's jitter buffer at once, so the
+ * receiver's inbox never holds more than this one message. The session
+ * layer already admits 0x4006 only after AUTH; a slot that is closing (or
+ * that no longer exists) refuses it. Malformed, duplicate and stale frames
+ * are counted by the receiver and keep the session open. */
+static bool net_on_voice(BreakConnectionKey connection, const BreakNetOwnedMessage *message,
+                         void *user) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    int slot = net_slot_find(t, connection);
+    if (slot < 0 || t->closing[slot]) return false;
+    if (message->size == 0u) {
+        t->stats.voice_frames_dropped++;
+        return true;
+    }
+    const u64 now_ms = time_microseconds() / 1000u;
+    if (!t->voice_receivers[slot]) {
+        BreakVoiceStreamConfig config;
+        memset(&config, 0, sizeof(config));
+        config.sample_rate = 48000u;
+        config.channels = 1u;
+        config.sample_count = BREAK_VOICE_MAX_SAMPLES;
+        config.jitter_delay_ms = CORE_APP_NET_VOICE_DELAY_MS;
+        config.jitter_capacity = CORE_APP_NET_VOICE_JITTER_FRAMES;
+        config.queue_capacity = CORE_APP_NET_VOICE_QUEUE;
+        if (break_voice_receiver_create(NULL, &config, &t->voice_receivers[slot]) !=
+            BREAK_RUNTIME_OK) {
+            return false;
+        }
+    }
+    BreakVoiceReceiver *receiver = t->voice_receivers[slot];
+    if (break_voice_receiver_push(receiver, message->data, (u32)message->size) !=
+        BREAK_RUNTIME_OK) {
+        return false;
+    }
+    return break_voice_receiver_pump(receiver, 1u, now_ms) == BREAK_RUNTIME_OK;
 }
 
 /* Tells each newly authenticated peer the session number this server's
@@ -626,7 +735,9 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
         !break_session_manager_set_message_handler(
             t->manager, BREAK_NET_MESSAGE_ID_PHYSICS_SYNC_REPORT, net_on_physics_report, t) ||
         !break_session_manager_set_message_handler(t->manager, CORE_APP_CLOCK_PROBE_MESSAGE_ID,
-                                                   net_on_clock_probe, t)) {
+                                                   net_on_clock_probe, t) ||
+        !break_session_manager_set_message_handler(t->manager, BREAK_NET_MESSAGE_ID_CORE_VOICE,
+                                                   net_on_voice, t)) {
         goto fail;
     }
     stage = "bind";
@@ -695,6 +806,10 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     }
     u32 budget = CORE_APP_NET_EVENTS_PER_TICK;
     net_pump(t, (int)t->poll_ms, &budget, tick);
+    const u64 now_ms = time_microseconds() / 1000u;
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        net_voice_play(t, i, now_ms, CORE_APP_NET_VOICE_POPS_PER_TICK);
+    }
     net_send_pending(t);
 }
 
@@ -734,7 +849,7 @@ static void net_trace_stats(CoreAppNetTransport *t) {
     BreakSessionApplyStats session;
     memset(&session, 0, sizeof(session));
     if (t->manager) break_session_manager_apply_stats(t->manager, &session);
-    char line[1024];
+    char line[1536];
     snprintf(line, sizeof(line),
              "COREAPPTRACE version=1 event=network_stats opened=%" PRIu64 " closed=%" PRIu64
              " refused=%" PRIu64 " authenticated=%" PRIu64 " snapshots_sent=%" PRIu64
@@ -753,7 +868,9 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              " clock_probes_lost=%" PRIu64 " clock_samples_rejected=%" PRIu64
              " physics_delta_corrections_sent=%" PRIu64 " session_welcomes_sent=%" PRIu64
              " voice_frames_sent=%" PRIu64 " voice_frames_skipped=%" PRIu64
-             " voice_frames_invalid=%" PRIu64 "\n",
+             " voice_frames_invalid=%" PRIu64 " voice_frames_received=%" PRIu64
+             " voice_frames_played=%" PRIu64 " voice_frames_concealed=%" PRIu64
+             " voice_frames_dropped=%" PRIu64 " voice_peak=%" PRIu64 "\n",
              t->stats.opened, t->stats.closed, t->stats.refused, t->stats.authenticated,
              t->stats.snapshots_sent, t->stats.send_overloads, t->stats.send_closed,
              t->stats.outbox_overloads, t->stats.auth_timeouts, t->stats.decode_failed, t->inbox.accepted_snapshots,
@@ -768,7 +885,10 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              t->stats.clock_replies_unmatched, t->stats.clock_probes_lost,
              t->stats.clock_samples_rejected, t->stats.physics_delta_corrections_sent,
              t->stats.session_welcomes_sent, t->stats.voice_frames_sent,
-             t->stats.voice_frames_skipped, t->stats.voice_frames_invalid);
+             t->stats.voice_frames_skipped, t->stats.voice_frames_invalid,
+             t->stats.voice_frames_received, t->stats.voice_frames_played,
+             t->stats.voice_frames_concealed, t->stats.voice_frames_dropped,
+             t->stats.voice_peak);
     net_trace(t, line);
 }
 
@@ -783,6 +903,7 @@ static BreakRuntimeError net_destroy(void *user) {
     BreakRuntimeError result = BREAK_RUNTIME_OK;
     if (!t) return BREAK_RUNTIME_INVALID;
     if (t->leaked) return BREAK_RUNTIME_TIMEOUT;
+    net_voice_release_all(t);
     if (t->listening) net_trace_stats(t);
     t->listening = false;
     t->started = false;
