@@ -344,6 +344,13 @@ bool audio_capture_device_name(const AudioCapture *capture, char *out, usize cap
     return true;
 }
 
+const char *audio_capture_backend_name(const AudioCapture *capture) {
+    if (!capture) return "none";
+    if (capture->backend == AUDIO_BACKEND_FAKE) return "fake";
+    if (!capture->context_ready) return "none";
+    return ma_get_backend_name(capture->context.backend);
+}
+
 bool audio_capture_running(const AudioCapture *capture) {
     return capture && atomic_load_explicit(&capture->wanted, memory_order_acquire) &&
            !capture_is_lost(capture);

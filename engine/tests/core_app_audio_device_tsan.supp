@@ -1,0 +1,7 @@
+# ThreadSanitizer suppressions for the real-device core_app audio tests.
+# The reported races are libtsan's own memcpy/recvmsg interceptors called
+# from inside libpulse while miniaudio's worker and the opening thread both
+# drive pa_* calls. called_from_lib only silences interceptor reports whose
+# caller is one of these libraries; races in engine code still report.
+called_from_lib:libpulsecommon-*.so
+called_from_lib:libpulse.so.0

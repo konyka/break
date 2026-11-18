@@ -5484,6 +5484,44 @@ endif()
     set_tests_properties(test_core_app_audio_device PROPERTIES
         LABELS "audio_device;core_app" TIMEOUT 180 RUN_SERIAL TRUE SKIP_RETURN_CODE 77
         SKIP_REGULAR_EXPRESSION "CORE_APP_AUDIO_DEVICE_UNAVAILABLE")
+    add_test(NAME test_core_app_voice_device
+        COMMAND ${CMAKE_COMMAND}
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_voice_device
+            -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_voice_device.cmake)
+    set_tests_properties(test_core_app_voice_device PROPERTIES
+        LABELS "audio_device;core_app" TIMEOUT 180 RUN_SERIAL TRUE SKIP_RETURN_CODE 77
+        SKIP_REGULAR_EXPRESSION "CORE_APP_VOICE_DEVICE_UNAVAILABLE")
+    # Real PulseAudio devices race inside libpulse (miniaudio's worker and the
+    # opening thread both run pa_* calls). The suppressions use
+    # called_from_lib, so only interceptor reports whose caller is libpulse
+    # are silenced; race_top does not match because the top frame is libtsan.
+    if(ENGINE_USE_TSAN AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_property(TEST test_core_app_audio_device test_core_app_voice_device APPEND
+            PROPERTY ENVIRONMENT
+            "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/core_app_audio_device_tsan.supp")
+    endif()
+    add_test(NAME test_core_app_voice_lane
+        COMMAND ${CMAKE_COMMAND}
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_voice_lane
+            -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_voice_lane.cmake)
+    set_tests_properties(test_core_app_voice_lane PROPERTIES
+        LABELS "headless;core_app;audio" TIMEOUT 240)
+    # The "no microphone" branch: a forced Null capture backend must read as
+    # unavailable, exit 77 only when the device is required, and never report
+    # the lane ready.
+    add_test(NAME test_core_app_voice_null
+        COMMAND ${CMAKE_COMMAND}
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_voice_null
+            -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_voice_null.cmake)
+    set_tests_properties(test_core_app_voice_null PROPERTIES
+        LABELS "audio_device;core_app" TIMEOUT 180 RUN_SERIAL TRUE SKIP_RETURN_CODE 77
+        SKIP_REGULAR_EXPRESSION "CORE_APP_VOICE_NULL_UNAVAILABLE")
     # Creation-time fallback: --render=auto with the Vulkan entry forced to
     # fail must land on OpenGL through the runtime chain. Only the
     # multi-backend shape has a chain to fall back through.

@@ -1214,6 +1214,7 @@ P12 Task 1 已建立独立 `core_app` 可执行应用及 `core_app_runtime` 静�
 core_app --help
 core_app [--render record|auto|vulkan|opengl]
          [--audio record|null|device]
+         [--voice off|fake|device] [--voice-null-capture]
          [--assets DIR] [--scenario PATH] [--checkpoint DIR]
          [--trace PATH] [--screenshot PATH]
          [--fixed-step] [--frames N] [--require-device] [--network]
@@ -1539,10 +1540,31 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 
 ## Core App 语音 PCM 泵（2026-11-18）
 
-`core_app_voice.{h,c}` 已进入正式 `core_app_runtime`，但尚未由 `core_app.c` 的 CLI/协调器调用。组件固定 48 kHz 单声道、480 帧/包，使用真实采集、播放参考、`AudioVoiceAligner` 和 `AudioVoiceProcessor`，通过 16 项 SPSC 队列把 `BreakVoiceFrame` 交给消费者。手动与 worker 驱动共用 pump；worker 仅使用 reference 专用接口，不直接调用 mixer、网络或模拟状态。
+`core_app_voice.{h,c}` 已进入正式 `core_app_runtime`。本节描述组件本身；它在 `core_app.c` 中的 CLI 与协调器接线见下文「Core App 语音通道」（2026-11-18 补充，早先本节写的“尚未由 core_app.c 调用”已不再成立）。组件固定 48 kHz 单声道、480 帧/包，使用真实采集、播放参考、`AudioVoiceAligner` 和 `AudioVoiceProcessor`，通过 16 项 SPSC 队列把 `BreakVoiceFrame` 交给消费者。手动与 worker 驱动共用 pump；worker 仅使用 reference 专用接口，不直接调用 mixer、网络或模拟状态。
 
 生命周期顺序是 create → reference/capture start → worker，停止时先 join worker，再停 capture/reference，队列不清空。`worker_ready` 握手发布线程 id，外部 pump 在 worker 活跃时返回 REJECTED。满队丢最新包且 sequence 继续推进；统计包含 produced/dropped 和采集/参考 overrun。
 
 `test_core_app_voice` 以 FAKE 设备完成独立处理链逐样本对照、容量/序号、分别缺输入和真实 worker 启停，普通、ASan+UBSan、TSan 均 5/5。九个变异（含队列 relaxed 发布与跳过 join）均判红。
 
 仍缺：CLI 与协调器生命周期、网络 hook/编码/发送、设备丢失恢复、处理尾部排空、漂移补偿及真实声学验证。不得把该组件称为已完成在线语音。
+
+## Core App 语音通道（2026-11-18）
+
+`core_app --voice off|fake|device` 把上节的 `CoreAppVoice` 接入真实可执行程序。默认 `off`，现有 trace 逐字节不变。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-lane-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-lane.md`。
+
+- **fake**：通道自带一个 FAKE 播放 `AudioSystem` 作参考源，采集也是 FAKE。CoreAppThread 每个固定 tick 注入 800 帧 440 Hz、幅度 0.25 的正弦，渲染 800 帧 FAKE 播放，再手动 `pump(4)`。没有 worker 线程，所以 record trace 保持确定性。
+- **device**：必须同时给 `--audio=device`，否则 CLI 退出 2。通道借用已打开播放设备的 `AudioSystem`，采集用默认设备并启动 worker。播放通道已降级为 null、采集打不开或启动失败（组件把 `AUDIO_FAILED` 映射为 `BREAK_RUNTIME_UNAVAILABLE`），或采集只落到 miniaudio Null 后端时，trace 写 `event=voice mode=device result=unavailable reason=playback|capture fallback=none|off`：带 `--require-device` 时退出 77，否则通道关闭、运行继续。其他启动错误按普通启动失败处理。`--voice-null-capture` 强制 Null 采集后端，用来在有麦克风的主机上测试这条分支；它只能和 `--voice=device` 一起使用，否则 CLI 退出 2。FAKE 模式的启动错误即使是 UNAVAILABLE 也按 FAILED 处理，不会变成 77。
+- **ready 行**：`event=voice mode=<m> result=ready frames=480 capture=<name>`，FAKE 为 `capture=fake`。设备名中的空格、制表符和换行替换成 `_`，因为 trace 按空格分字段；拿不到名字时写 `none`。
+- **每个 tick**：所有模式都在音频 drain 之后弹出全部队列帧，检查序号是否逐一递增（不连续计入 `sequence_gaps`），并记录绝对值峰值。DEVICE 模式还检查 worker 错误：worker 在运行中出错（例如采集丢失）时写 `result=failed reason=worker`，以 `stage=voice`、`BREAK_RUNTIME_FAILED` 结束运行，不映射为 77，因为启动时设备是存在的。
+- **协调器**：子系统 `voice` 位于 index 1（容量改为 5，audio、render、level 依次后移）。`stop_producers` 停止组件并 join worker（UNAVAILABLE 转为 FAILED），`drain` 弹出剩余帧，`join` 写 `stopped` 行并销毁组件与私有 FAKE 播放。销毁必须放在 join 阶段：audio 的 owner 线程在 audio 自己的 join 回调里关闭借出的设备，而 voice 的 index 更小、先执行。把销毁挪到 destroy 阶段会在 ASan 设备测试中报 heap-use-after-free。启动失败的 rollback 也按 voice 先于 audio 的顺序执行。
+- **stopped 行**：`produced consumed dropped sequence_gaps peak capture_overruns reference_overruns`，位于 `runtime_running` 之后、`runtime_stopped` 之前。
+
+测试：
+
+- `test_core_app_voice_lane`（headless）：fake 100 tick，要求 produced≥160、consumed==produced、dropped=0、gaps=0、peak>0、两种 overrun 为 0、ready/stopped 顺序正确；两次运行 trace 逐字节一致；不带 `--voice` 时无 `event=voice`；非法取值、`--voice=device --audio=record`、以及不带 `--voice=device` 的 `--voice-null-capture` 都退出 2，且 stderr 必须是 CLI 诊断而不是 `runtime returned`。这是接线冒烟检查：FAKE 参考静音时处理链近似直通，不衡量回声消除质量。
+- `test_core_app_voice_device`（`audio_device`，跳过码 77）：真实设备，要求 capture 名不为 none、produced≥1、consumed==produced、gaps≤dropped，且 voice stopped 先于 audio stopped。本机 PulseAudio「内置音频 模拟立体声」通过。
+- `test_core_app_voice_null`（`audio_device`，跳过码 77）：强制 Null 采集，带 `--require-device` 退出 77 且 `fallback=none`，不带时退出 0 且 `fallback=off`，两种情况都不出现 ready 或 stopped 行。没有播放设备的主机上 trace 先出现 `event=audio mode=device result=unavailable`，此时测试报告跳过而不是失败。
+- `test_core_app_voice` 第 7 项：采集设备无法启动时 start 与 start_threaded 返回 UNAVAILABLE（先 RED 后 GREEN）。
+- TSan：真实 PulseAudio 设备在 libpulse 内部有竞争（栈顶是 libtsan 的 memcpy/recvmsg 拦截器，调用方为 `pa_*`）。`tests/core_app_audio_device_tsan.supp` 只用 `called_from_lib:libpulsecommon-*.so` 与 `called_from_lib:libpulse.so.0`；实测不加 suppress 和改用 `race_top` 都仍报告。
+
+残余风险：CI 没有音频设备，借用设备的关闭顺序只由本机 ASan 设备测试覆盖（voice/audio 顺序调换的变异只在本机判红）；voice 仍 live 时的 rollback 路径未测。仍缺：编码与通过网络 hook 发送、处理尾部排空、漂移补偿、设备丢失自动恢复和真实声学验收。

@@ -330,10 +330,56 @@ TEST(threaded_voice_produces_and_stops)
     audio_system_destroy(playback);
 }
 
+TEST(worker_error_and_capture_backend_are_visible_while_running)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = test_config(playback);
+    ASSERT_EQ(core_app_voice_worker_error(NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_STR_EQ(core_app_voice_capture_backend(NULL), "none");
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    ASSERT_STR_EQ(core_app_voice_capture_backend(voice), "fake");
+    ASSERT_EQ(core_app_voice_simulate_capture_event(NULL, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(core_app_voice_start_threaded(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_worker_error(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    BreakRuntimeError seen = BREAK_RUNTIME_OK;
+    for (u32 attempt = 0u; attempt < 2000u && seen == BREAK_RUNTIME_OK; ++attempt) {
+        seen = core_app_voice_worker_error(voice);
+        if (seen == BREAK_RUNTIME_OK) time_sleep_us(1000u);
+    }
+    ASSERT_EQ(seen, BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_UNAVAILABLE);
+    core_app_voice_destroy(voice);
+    audio_system_destroy(playback);
+}
+
+TEST(a_capture_device_that_cannot_start_is_unavailable)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = test_config(playback);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(core_app_voice_start_threaded(voice), BREAK_RUNTIME_UNAVAILABLE);
+    core_app_voice_destroy(voice);
+    audio_system_destroy(playback);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_lifecycle);
     RUN_TEST(manual_packet_matches_independent_pipeline);
     RUN_TEST(queue_is_bounded_and_drains_after_stop);
     RUN_TEST(pump_waits_for_each_input);
     RUN_TEST(threaded_voice_produces_and_stops);
+    RUN_TEST(worker_error_and_capture_backend_are_visible_while_running);
+    RUN_TEST(a_capture_device_that_cannot_start_is_unavailable);
 TEST_MAIN_END()

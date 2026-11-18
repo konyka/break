@@ -17,6 +17,8 @@ static void print_help(void) {
     puts("Usage: core_app [OPTIONS]\n"
          "  --render record|auto|vulkan|opengl\n"
          "  --audio record|null|device\n"
+         "  --voice off|fake|device\n"
+         "  --voice-null-capture\n"
          "  --assets DIR\n"
          "  --scenario PATH\n"
          "  --checkpoint DIR\n"
@@ -74,6 +76,14 @@ static bool parse_audio(const char *value, CoreAppAudioMode *out) {
     if (strcmp(value, "record") == 0) *out = CORE_APP_AUDIO_RECORD;
     else if (strcmp(value, "null") == 0) *out = CORE_APP_AUDIO_NULL;
     else if (strcmp(value, "device") == 0) *out = CORE_APP_AUDIO_DEVICE;
+    else return false;
+    return true;
+}
+
+static bool parse_voice(const char *value, CoreAppVoiceMode *out) {
+    if (strcmp(value, "off") == 0) *out = CORE_APP_VOICE_OFF;
+    else if (strcmp(value, "fake") == 0) *out = CORE_APP_VOICE_FAKE;
+    else if (strcmp(value, "device") == 0) *out = CORE_APP_VOICE_DEVICE;
     else return false;
     return true;
 }
@@ -168,6 +178,11 @@ int main(int argc, char **argv) {
         } else if ((matched = take_value(argc, argv, &i, "--audio", &value)) != 0) {
             if (matched < 0 || !parse_audio(value, &config.audio_mode))
                 return cli_error("invalid --audio value");
+        } else if (strcmp(argv[i], "--voice-null-capture") == 0) {
+            config.voice_null_capture = true;
+        } else if ((matched = take_value(argc, argv, &i, "--voice", &value)) != 0) {
+            if (matched < 0 || !parse_voice(value, &config.voice_mode))
+                return cli_error("invalid --voice value");
         } else if ((matched = take_value(argc, argv, &i, "--assets", &value)) != 0) {
             if (matched < 0) return cli_error("--assets requires a nonempty directory");
             config.asset_root = value;
@@ -233,6 +248,10 @@ int main(int argc, char **argv) {
             return cli_error("unknown or malformed argument");
         }
     }
+    if (config.voice_mode == CORE_APP_VOICE_DEVICE && config.audio_mode != CORE_APP_AUDIO_DEVICE)
+        return cli_error("--voice=device requires --audio=device");
+    if (config.voice_null_capture && config.voice_mode != CORE_APP_VOICE_DEVICE)
+        return cli_error("--voice-null-capture requires --voice=device");
     if (trace_json_path && !config.trace_path)
         return cli_error("--trace-json requires --trace");
     if (trace_timestamps && !config.trace_path)

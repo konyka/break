@@ -48,3 +48,15 @@ COREAPPTRACE version=1 event=voice mode=<m> result=stopped produced=P consumed=C
 
 - Auto mode allows no clarifying questions, so `off` is the default to keep existing traces and CI unchanged.
 - The FAKE lane exists for deterministic CI evidence; it proves the PCM pump runs end to end inside the app, not that a microphone works.
+
+## Revisions after independent review
+
+The first review returned Not ready. The design changed as follows; the sections above stay as the original record.
+
+- **Teardown phase.** The component and the private FAKE playback are destroyed in the subsystem's `join` callback, not in `destroy`. The audio owner thread closes the borrowed device in audio's own `join` callback, and `voice` has the lower index, so `voice` join runs first. Moving teardown to `destroy` produced a heap-use-after-free under ASan on the device test.
+- **Sequence rule on a device.** The device test accepts `sequence_gaps <= dropped` instead of `sequence_gaps == 0`: a full queue drops the newest packet and the sequence still advances, so every drop can produce one gap.
+- **Capture name.** The DEVICE `ready` line ends with `capture=<name>`. Spaces, tabs and line breaks in the name become `_`, because trace parsers split fields on spaces. FAKE reports `capture=fake`; a missing name is `none`, and the device test rejects `none`.
+- **Null capture backend.** miniaudio falls back to its Null backend when no real capture backend initializes. That device delivers silence forever, so the lane treats `audio_capture_backend_name() == "Null"` as no microphone: `result=unavailable reason=capture`, exit 77 with `--require-device`, lane off otherwise. `--voice-null-capture` forces this backend so the branch is testable on a host that has a microphone.
+- **Unavailable classification.** The component maps a capture device that cannot be opened or started (`AUDIO_FAILED`) to `BREAK_RUNTIME_UNAVAILABLE`. The lane takes the unavailable path only for UNAVAILABLE or a Null backend; any other start error is a normal startup failure.
+- **Failure while running.** A DEVICE worker that stops with an error (for example a lost capture device) writes `event=voice mode=device result=failed reason=worker` and fails the run with `stage=voice` and `BREAK_RUNTIME_FAILED`. It is not mapped to exit 77: the device was present at start, so this is a defect of the run. `stop_producers` likewise turns UNAVAILABLE into FAILED.
+- **Second review.** `--voice-null-capture` without `--voice=device` is a CLI error (exit 2). A FAKE start error that is UNAVAILABLE becomes FAILED, so FAKE never exits 77. `test_core_app_voice_null` skips (exit 77, `CORE_APP_VOICE_NULL_UNAVAILABLE`) on a host without a playback device instead of failing. The capture name buffer is 128 bytes, matching the source buffer, so a long UTF-8 name is not cut inside a character. The TSan suppression matches `libpulsecommon-*.so`.

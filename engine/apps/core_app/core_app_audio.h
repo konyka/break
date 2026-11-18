@@ -113,7 +113,12 @@ BreakRuntimeError core_app_audio_start_device_backend(CoreAppAudio *audio, FILE 
 BreakRuntimeError core_app_audio_start_system(CoreAppAudio *audio, FILE *trace,
                                               AudioSystem *system, const char *asset_root);
 /* start_system, then a dedicated owner thread makes every later
- * AudioSystem call; the caller only enqueues. Same failure contract. */
+ * AudioSystem call; the caller only enqueues. Same failure contract.
+ * Exception: the playback reference tap (audio_reference_start/stop/read and
+ * the reference counters) is an atomic single-producer single-consumer ring,
+ * so the --voice lane may call it from its own worker thread while the owner
+ * thread mixes. The voice lane must stop the tap before core_app_audio_join
+ * closes the device. */
 BreakRuntimeError core_app_audio_start_system_owned(CoreAppAudio *audio, FILE *trace,
                                                     AudioSystem *system,
                                                     const char *asset_root);

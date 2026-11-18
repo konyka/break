@@ -20,7 +20,7 @@ struct CoreAppVoice {
     u32 next_sequence;
     PlatformThread worker;
     PlatformThreadId worker_id;
-    BreakRuntimeError worker_error;
+    atomic_int worker_error;
     bool worker_started;
     bool started;
     atomic_bool stop_requested;
@@ -42,6 +42,12 @@ static BreakRuntimeError voice_audio_error(AudioResult result) {
     return BREAK_RUNTIME_FAILED;
 }
 
+/* A capture device that cannot be opened or started is an environment fact
+ * (no microphone, device busy, device gone), not a defect in the caller. */
+static BreakRuntimeError voice_capture_error(AudioResult result) {
+    return result == AUDIO_FAILED ? BREAK_RUNTIME_UNAVAILABLE : voice_audio_error(result);
+}
+
 BreakRuntimeError core_app_voice_create(const CoreAppVoiceConfig *config,
                                         CoreAppVoice **out) {
     if (!out || !config || !config->playback ||
@@ -57,7 +63,7 @@ BreakRuntimeError core_app_voice_create(const CoreAppVoiceConfig *config,
     AudioResult result = audio_capture_create(&capture_config, &voice->capture);
     if (result != AUDIO_OK) {
         free(voice);
-        return voice_audio_error(result);
+        return voice_capture_error(result);
     }
     if (config->use_gcc) {
         result = audio_voice_aligner_create_gcc(&config->aligner, &voice->aligner);
@@ -76,7 +82,7 @@ BreakRuntimeError core_app_voice_create(const CoreAppVoiceConfig *config,
         free(voice);
         return voice_audio_error(result);
     }
-    voice->worker_error = BREAK_RUNTIME_OK;
+    atomic_store_explicit(&voice->worker_error, (int)BREAK_RUNTIME_OK, memory_order_relaxed);
     *out = voice;
     return BREAK_RUNTIME_OK;
 }
@@ -86,12 +92,12 @@ BreakRuntimeError core_app_voice_start(CoreAppVoice *voice) {
     if (voice->started) return BREAK_RUNTIME_OK;
     BreakRuntimeError result = voice_audio_error(audio_reference_start(voice->playback));
     if (result != BREAK_RUNTIME_OK) return result;
-    result = voice_audio_error(audio_capture_start(voice->capture));
+    result = voice_capture_error(audio_capture_start(voice->capture));
     if (result != BREAK_RUNTIME_OK) {
         (void)audio_reference_stop(voice->playback);
         return result;
     }
-    voice->worker_error = BREAK_RUNTIME_OK;
+    atomic_store_explicit(&voice->worker_error, (int)BREAK_RUNTIME_OK, memory_order_relaxed);
     voice->started = true;
     return BREAK_RUNTIME_OK;
 }
@@ -188,6 +194,25 @@ BreakRuntimeError core_app_voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *o
     return BREAK_RUNTIME_OK;
 }
 
+BreakRuntimeError core_app_voice_worker_error(CoreAppVoice *voice) {
+    if (!voice) return BREAK_RUNTIME_INVALID;
+    return (BreakRuntimeError)atomic_load_explicit(&voice->worker_error, memory_order_acquire);
+}
+
+const char *core_app_voice_capture_backend(const CoreAppVoice *voice) {
+    return voice ? audio_capture_backend_name(voice->capture) : "none";
+}
+
+bool core_app_voice_capture_name(const CoreAppVoice *voice, char *out, usize capacity) {
+    return audio_capture_device_name(voice ? voice->capture : NULL, out, capacity);
+}
+
+BreakRuntimeError core_app_voice_simulate_capture_event(CoreAppVoice *voice,
+                                                        AudioCaptureEvent event) {
+    if (!voice) return BREAK_RUNTIME_INVALID;
+    return voice_audio_error(audio_capture_simulate_event(voice->capture, event));
+}
+
 static PLATFORM_THREAD_RET voice_worker_main(PLATFORM_THREAD_ARG argument) {
     CoreAppVoice *voice = (CoreAppVoice *)argument;
     voice->worker_id = platform_thread_current_id();
@@ -196,7 +221,7 @@ static PLATFORM_THREAD_RET voice_worker_main(PLATFORM_THREAD_ARG argument) {
         const u64 before = atomic_load_explicit(&voice->produced, memory_order_relaxed);
         const BreakRuntimeError result = core_app_voice_pump(voice, 4u);
         if (result != BREAK_RUNTIME_OK) {
-            voice->worker_error = result;
+            atomic_store_explicit(&voice->worker_error, (int)result, memory_order_release);
             break;
         }
         if (atomic_load_explicit(&voice->produced, memory_order_relaxed) == before) {
@@ -233,7 +258,8 @@ BreakRuntimeError core_app_voice_stop(CoreAppVoice *voice) {
         voice->worker_started = false;
         atomic_store_explicit(&voice->worker_ready, false, memory_order_relaxed);
     }
-    BreakRuntimeError result = voice->worker_error;
+    BreakRuntimeError result =
+        (BreakRuntimeError)atomic_load_explicit(&voice->worker_error, memory_order_acquire);
     if (voice->started) {
         const AudioResult capture_result = audio_capture_stop(voice->capture);
         const AudioResult reference_result = audio_reference_stop(voice->playback);

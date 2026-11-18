@@ -335,3 +335,4 @@
 
 
 - **第 10 节（音频）追加**：2026-11-18 正式 `core_app_runtime` 新增 `CoreAppVoice` PCM 泵，将 48 kHz 单声道采集、播放参考、自动对齐与语音处理接成 480 帧处理路径，并以 16 项 SPSC 队列交付 PCM；手动和专用 worker 共用实现。见 [`docs/design/core_app_integration.md`](../design/core_app_integration.md)「Core App 语音 PCM 泵」。这是生产组件而非完整在线语音。仍缺：core_app CLI/协调器/网络 hook、编码发送、设备恢复、尾部排空、漂移补偿和真实声学验证。
+- **第 10 节（音频）追加**：2026-11-18 `core_app` 新增 `--voice off|fake|device` 语音通道：PCM 泵进入真实可执行程序和协调器生命周期（`voice` 子系统先于 audio 停止并在 join 阶段销毁），Null 采集后端与打不开的采集设备按无麦克风处理（`--require-device` 时退出 77），运行中采集失败以 `stage=voice` 失败。见 [`docs/design/core_app_integration.md`](../design/core_app_integration.md)「Core App 语音通道」。上一条中的「core_app CLI/协调器」由此交付。仍缺：编码与通过网络 hook 发送、设备丢失自动恢复、尾部排空、漂移补偿、真实声学验证；CI 无音频设备，设备通道只在本机验证。

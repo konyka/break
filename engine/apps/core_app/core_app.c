@@ -5,6 +5,7 @@
 #include "core_app_gpu.h"
 #include "core_app_render.h"
 #include "core_app_simulation.h"
+#include "core_app_voice.h"
 
 #include <ai/break_ai.h>
 #include <core/trace_core_app.h>
@@ -13,6 +14,7 @@
 #include <animation/facial.h>
 #include <renderer/lod_skin.h>
 #include <asset/vfs.h>
+#include <audio/audio_extended.h>
 #include <kernel/break_flow.h>
 #include <kernel/break_kernel_internal.h>
 #include <kernel/break_kernel_lua.h>
@@ -208,6 +210,22 @@ typedef struct CoreAppIoCompletion {
     u8 bytes[CORE_APP_RESOURCE_MAX_BYTES];
 } CoreAppIoCompletion;
 
+/* --voice lane. FAKE owns a private FAKE playback system as the reference
+ * source and is pumped on the CoreAppThread; DEVICE borrows the audio device
+ * lane's playback system and runs the voice worker. The CoreAppThread pops
+ * every frame and checks sequence continuity. */
+typedef struct CoreAppVoiceLane {
+    CoreAppVoice *voice;
+    AudioSystem *fake_playback;
+    u64 tone_frame;
+    u64 consumed;
+    u64 sequence_gaps;
+    u32 next_sequence;
+    u32 peak;
+    bool live;
+    bool stopped;
+} CoreAppVoiceLane;
+
 struct CoreApp {
     CoreAppConfig config;
     CoreAppScenario scenario;
@@ -221,6 +239,7 @@ struct CoreApp {
     CoreAppAudio audio;
     CoreAppResourceTable resources;
     CoreAppIoCompletion io[CORE_APP_IO_QUEUE];
+    CoreAppVoiceLane voice;
     /* Only --render=vulkan|opengl|auto with a real device creates this; the
      * record lane never touches it, which keeps a headless host a valid record
      * host. auto uses the compiled chain (Vulkan, then OpenGL on failure). */
@@ -2003,6 +2022,195 @@ static BreakRuntimeError app_audio_drain(CoreApp *app, u32 budget) {
     return core_app_audio_drain_null(&app->audio, budget);
 }
 
+#define CORE_APP_VOICE_TICK_FRAMES 800u
+
+static const char *app_voice_mode_name(CoreAppVoiceMode mode) {
+    return mode == CORE_APP_VOICE_DEVICE ? "device" : "fake";
+}
+
+static CoreAppVoiceConfig app_voice_config(AudioSystem *playback, AudioBackend capture) {
+    CoreAppVoiceConfig config;
+    memset(&config, 0, sizeof(config));
+    config.playback = playback;
+    config.capture_backend = capture;
+    config.aligner.tracker.sample_rate = 48000u;
+    config.aligner.tracker.max_delay_frames = 64u;
+    config.aligner.tracker.window_frames = 256u;
+    config.aligner.tracker.min_abs_correlation = 0.2f;
+    config.aligner.tracker.max_slew_frames_per_s = 100.0f;
+    config.aligner.tracker.lock_count = 1u;
+    config.aligner.tracker.hold_updates = 2u;
+    config.aligner.update_period_frames = CORE_APP_VOICE_FRAME_FRAMES;
+    config.processor = (AudioVoiceProcessorConfig){
+        .echo = {48000u, 64u, 0.2f, 0.0f, 0.0f},
+        .residual = {48000u, 0.0f, 6.0f, 5.0f, 20.0f, 60.0f, -60.0f, -40.0f, 20.0f},
+        .noise = {48000u, 64u, 0.0f, 10.0f, -60.0f},
+        .gate = {48000u, 1u, 6.0f, 0.0f, 5.0f, 20.0f, 10.0f, -80.0f},
+        .agc = {48000u, 1u, -18.0f, 0.0f, 10.0f, 100.0f, -60.0f},
+    };
+    return config;
+}
+
+static BreakRuntimeError app_voice_unavailable(CoreApp *app, const char *reason) {
+    const bool required = app->config.require_device;
+    BreakRuntimeError result = app_trace(app,
+        "COREAPPTRACE version=1 event=voice mode=device result=unavailable reason=%s"
+        " fallback=%s\n", reason, required ? "none" : "off");
+    if (result != BREAK_RUNTIME_OK) return result;
+    return required ? BREAK_RUNTIME_UNAVAILABLE : BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError app_voice_start(CoreApp *app) {
+    CoreAppVoiceLane *lane = &app->voice;
+    const CoreAppVoiceMode mode = app->config.voice_mode;
+    memset(lane, 0, sizeof(*lane));
+    if (mode == CORE_APP_VOICE_OFF) return BREAK_RUNTIME_OK;
+    AudioSystem *playback = NULL;
+    if (mode == CORE_APP_VOICE_FAKE) {
+        lane->fake_playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+        if (!lane->fake_playback) return BREAK_RUNTIME_FAILED;
+        playback = lane->fake_playback;
+    } else {
+        playback = app->audio.system;
+        if (!playback) return app_voice_unavailable(app, "playback");
+    }
+    AudioBackend capture_backend = AUDIO_BACKEND_DEFAULT;
+    if (mode == CORE_APP_VOICE_FAKE) capture_backend = AUDIO_BACKEND_FAKE;
+    if (app->config.voice_null_capture) capture_backend = AUDIO_BACKEND_NULL;
+    const CoreAppVoiceConfig config = app_voice_config(playback, capture_backend);
+    BreakRuntimeError result = core_app_voice_create(&config, &lane->voice);
+    /* miniaudio falls back to its Null backend when no real capture backend
+     * initializes; that device delivers silence forever, so it counts as no
+     * microphone rather than as a working one. */
+    if (result == BREAK_RUNTIME_OK && mode == CORE_APP_VOICE_DEVICE &&
+        strcmp(core_app_voice_capture_backend(lane->voice), "Null") == 0) {
+        result = BREAK_RUNTIME_UNAVAILABLE;
+    }
+    if (result == BREAK_RUNTIME_OK) {
+        result = mode == CORE_APP_VOICE_FAKE ? core_app_voice_start(lane->voice)
+                                             : core_app_voice_start_threaded(lane->voice);
+    }
+    if (result != BREAK_RUNTIME_OK) {
+        core_app_voice_destroy(lane->voice);
+        lane->voice = NULL;
+        if (lane->fake_playback) audio_system_destroy(lane->fake_playback);
+        lane->fake_playback = NULL;
+        if (mode == CORE_APP_VOICE_DEVICE && result == BREAK_RUNTIME_UNAVAILABLE) {
+            return app_voice_unavailable(app, "capture");
+        }
+        /* FAKE has no device to be absent, so UNAVAILABLE must not become
+         * exit 77 here. */
+        return result == BREAK_RUNTIME_UNAVAILABLE ? BREAK_RUNTIME_FAILED : result;
+    }
+    lane->live = true;
+    char capture[128] = "none";
+    if (!core_app_voice_capture_name(lane->voice, capture, sizeof(capture)) ||
+        capture[0] == '\0') {
+        snprintf(capture, sizeof(capture), "none");
+    }
+    for (char *c = capture; *c != '\0'; ++c) {
+        if (*c == ' ' || *c == '\t' || *c == '\n' || *c == '\r') *c = '_';
+    }
+    return app_trace(app,
+        "COREAPPTRACE version=1 event=voice mode=%s result=ready frames=%u capture=%s\n",
+        app_voice_mode_name(mode), CORE_APP_VOICE_FRAME_FRAMES, capture);
+}
+
+static BreakRuntimeError app_voice_consume(CoreApp *app) {
+    CoreAppVoiceLane *lane = &app->voice;
+    for (;;) {
+        BreakVoiceFrame frame = {0};
+        bool ready = false;
+        const BreakRuntimeError result = core_app_voice_pop(lane->voice, &frame, &ready);
+        if (result != BREAK_RUNTIME_OK) return result;
+        if (!ready) return BREAK_RUNTIME_OK;
+        if (frame.sequence != lane->next_sequence) lane->sequence_gaps++;
+        lane->next_sequence = frame.sequence + 1u;
+        lane->consumed++;
+        for (u32 i = 0u; i < frame.sample_count; ++i) {
+            const i32 sample = frame.samples[i];
+            const u32 magnitude = (u32)(sample < 0 ? -sample : sample);
+            if (magnitude > lane->peak) lane->peak = magnitude;
+        }
+    }
+}
+
+/* FAKE: one fixed tick of a 440 Hz capture tone and of the (silent) FAKE
+ * playback mix, then a manual pump. Every mode then consumes the queue. */
+static BreakRuntimeError app_voice_tick(CoreApp *app) {
+    CoreAppVoiceLane *lane = &app->voice;
+    if (!lane->live || lane->stopped) return BREAK_RUNTIME_OK;
+    if (app->config.voice_mode == CORE_APP_VOICE_FAKE) {
+        f32 capture[CORE_APP_VOICE_TICK_FRAMES];
+        f32 rendered[CORE_APP_VOICE_TICK_FRAMES * 2u];
+        for (u32 i = 0u; i < CORE_APP_VOICE_TICK_FRAMES; ++i) {
+            const double t = (double)(lane->tone_frame + i) / 48000.0;
+            capture[i] = (f32)(0.25 * sin(2.0 * 3.14159265358979323846 * 440.0 * t));
+        }
+        lane->tone_frame += CORE_APP_VOICE_TICK_FRAMES;
+        BreakRuntimeError result =
+            core_app_voice_inject(lane->voice, capture, CORE_APP_VOICE_TICK_FRAMES);
+        if (result != BREAK_RUNTIME_OK) return result;
+        if (audio_system_render(lane->fake_playback, rendered, CORE_APP_VOICE_TICK_FRAMES) !=
+            AUDIO_OK) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        result = core_app_voice_pump(lane->voice, 4u);
+        if (result != BREAK_RUNTIME_OK) return result;
+    } else {
+        /* A device that was present at start and then failed (lost capture,
+         * short read) is a defect of this run, not an absent facility, so it
+         * fails the run instead of mapping to exit 77. */
+        const BreakRuntimeError worker = core_app_voice_worker_error(lane->voice);
+        if (worker != BREAK_RUNTIME_OK) {
+            (void)app_trace(app,
+                "COREAPPTRACE version=1 event=voice mode=device result=failed reason=worker\n");
+            return BREAK_RUNTIME_FAILED;
+        }
+    }
+    return app_voice_consume(app);
+}
+
+static BreakRuntimeError app_voice_stop_producers_cb(void *user) {
+    CoreAppVoiceLane *lane = &((CoreApp *)user)->voice;
+    if (!lane->live || lane->stopped) return BREAK_RUNTIME_OK;
+    lane->stopped = true;
+    const BreakRuntimeError result = core_app_voice_stop(lane->voice);
+    return result == BREAK_RUNTIME_UNAVAILABLE ? BREAK_RUNTIME_FAILED : result;
+}
+
+static BreakRuntimeError app_voice_drain_cb(void *user) {
+    CoreApp *app = (CoreApp *)user;
+    if (!app->voice.live) return BREAK_RUNTIME_OK;
+    return app_voice_consume(app);
+}
+
+/* Runs in the join phase: audio closes the device it lends us in its own join
+ * callback, which comes after this one, so the stats read here and the
+ * component teardown never touch a destroyed playback system. */
+static BreakRuntimeError app_voice_join_cb(void *user) {
+    CoreApp *app = (CoreApp *)user;
+    CoreAppVoiceLane *lane = &app->voice;
+    if (!lane->live) return BREAK_RUNTIME_OK;
+    CoreAppVoiceStats stats = {0};
+    BreakRuntimeError result = core_app_voice_stats(lane->voice, &stats);
+    if (result == BREAK_RUNTIME_OK) {
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=voice mode=%s result=stopped produced=%" PRIu64
+            " consumed=%" PRIu64 " dropped=%" PRIu64 " sequence_gaps=%" PRIu64 " peak=%u"
+            " capture_overruns=%" PRIu64 " reference_overruns=%" PRIu64 "\n",
+            app_voice_mode_name(app->config.voice_mode), stats.produced, lane->consumed,
+            stats.dropped, lane->sequence_gaps, lane->peak, stats.capture_overruns,
+            stats.reference_overruns);
+    }
+    core_app_voice_destroy(lane->voice);
+    lane->voice = NULL;
+    if (lane->fake_playback) audio_system_destroy(lane->fake_playback);
+    lane->fake_playback = NULL;
+    lane->live = false;
+    return result;
+}
+
 static BreakRuntimeError core_app_audio_stop_admission_cb(void *user) {
     return core_app_audio_stop_admission(&((CoreApp *)user)->audio);
 }
@@ -2153,11 +2361,11 @@ static BreakRuntimeError app_level_destroy_cb(void *user) {
 }
 
 static BreakRuntimeError app_register_subsystems(CoreApp *app) {
-    BreakRuntimeCoordinatorConfig config = {4u};
+    BreakRuntimeCoordinatorConfig config = {5u};
     BreakRuntimeError result = break_runtime_coordinator_create(&config,
                                                                 &app->coordinator);
     if (result != BREAK_RUNTIME_OK) return result;
-    BreakRuntimeSubsystem subsystems[4];
+    BreakRuntimeSubsystem subsystems[5];
     memset(subsystems, 0, sizeof(subsystems));
     subsystems[0].name = "network";
     subsystems[0].user_data = app;
@@ -2165,27 +2373,34 @@ static BreakRuntimeError app_register_subsystems(CoreApp *app) {
     subsystems[0].stop_producers = app_network_stop_producers_cb;
     subsystems[0].drain = app_network_drain_cb;
     subsystems[0].destroy = app_network_destroy_cb;
-    subsystems[1].name = "audio";
+    /* Each phase runs in index order, so the voice lane stops, drains and
+     * is torn down (join) before audio's join closes the borrowed device. */
+    subsystems[1].name = "voice";
     subsystems[1].user_data = app;
-    subsystems[1].stop_admission = core_app_audio_stop_admission_cb;
-    subsystems[1].stop_producers = core_app_audio_stop_producers_cb;
-    subsystems[1].close_queues = core_app_audio_close_queues_cb;
-    subsystems[1].drain = core_app_audio_drain_cb;
-    subsystems[1].join = core_app_audio_join_cb;
-    subsystems[1].destroy = core_app_audio_destroy_cb;
-    subsystems[2].name = "render";
+    subsystems[1].stop_producers = app_voice_stop_producers_cb;
+    subsystems[1].drain = app_voice_drain_cb;
+    subsystems[1].join = app_voice_join_cb;
+    subsystems[2].name = "audio";
     subsystems[2].user_data = app;
-    subsystems[2].stop_admission = core_app_render_stop_admission_cb;
-    subsystems[2].stop_producers = core_app_render_stop_producers_cb;
-    subsystems[2].join = core_app_render_idle_cb;
-    subsystems[2].destroy = core_app_render_destroy_cb;
-    subsystems[3].name = "level";
+    subsystems[2].stop_admission = core_app_audio_stop_admission_cb;
+    subsystems[2].stop_producers = core_app_audio_stop_producers_cb;
+    subsystems[2].close_queues = core_app_audio_close_queues_cb;
+    subsystems[2].drain = core_app_audio_drain_cb;
+    subsystems[2].join = core_app_audio_join_cb;
+    subsystems[2].destroy = core_app_audio_destroy_cb;
+    subsystems[3].name = "render";
     subsystems[3].user_data = app;
-    subsystems[3].stop_producers = app_level_stop_producers_cb;
-    subsystems[3].drain = app_level_drain_cb;
-    subsystems[3].join = app_level_join_cb;
-    subsystems[3].destroy = app_level_destroy_cb;
-    for (u32 i = 0u; i < 4u; ++i) {
+    subsystems[3].stop_admission = core_app_render_stop_admission_cb;
+    subsystems[3].stop_producers = core_app_render_stop_producers_cb;
+    subsystems[3].join = core_app_render_idle_cb;
+    subsystems[3].destroy = core_app_render_destroy_cb;
+    subsystems[4].name = "level";
+    subsystems[4].user_data = app;
+    subsystems[4].stop_producers = app_level_stop_producers_cb;
+    subsystems[4].drain = app_level_drain_cb;
+    subsystems[4].join = app_level_join_cb;
+    subsystems[4].destroy = app_level_destroy_cb;
+    for (u32 i = 0u; i < 5u; ++i) {
         result = break_runtime_coordinator_register_subsystem(app->coordinator,
                                                               &subsystems[i]);
         if (result != BREAK_RUNTIME_OK) return result;
@@ -2427,6 +2642,11 @@ static void app_rollback(CoreApp *app) {
         (void)hooks->destroy(hooks->user);
         app->network_live = false;
     }
+    if (app->voice.live) {
+        (void)app_voice_stop_producers_cb(app);
+        (void)app_voice_drain_cb(app);
+        (void)app_voice_join_cb(app);
+    }
     if (app->audio_live) {
         (void)core_app_audio_stop_admission(&app->audio);
         (void)core_app_audio_stop_producers(&app->audio);
@@ -2573,6 +2793,9 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     }
     if (result != BREAK_RUNTIME_OK) goto finished;
     app->audio_live = true;
+    stage = "voice_start";
+    result = app_voice_start(app);
+    if (result != BREAK_RUNTIME_OK) goto finished;
     if (config->network) {
         stage = "network_start";
         result = config->network_hooks->start(config->network_hooks->user, app->trace);
@@ -2734,6 +2957,11 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                 stage = "frame";
                 goto finished;
             }
+        }
+        result = app_voice_tick(app);
+        if (result != BREAK_RUNTIME_OK) {
+            stage = "voice";
+            goto finished;
         }
     }
     if (!ended) {

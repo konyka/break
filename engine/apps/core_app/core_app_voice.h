@@ -38,6 +38,17 @@ BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets);
 BreakRuntimeError core_app_voice_pop(CoreAppVoice *voice, BreakVoiceFrame *out,
                                      bool *out_ready);
 BreakRuntimeError core_app_voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *out);
+/* The error that ended the worker, readable from any thread while it runs:
+ * OK while it pumps, e.g. UNAVAILABLE after the capture device was lost. */
+BreakRuntimeError core_app_voice_worker_error(CoreAppVoice *voice);
+/* The capture backend name (audio_capture_backend_name): "Null" means
+ * miniaudio's null device, which captures only silence. */
+const char *core_app_voice_capture_backend(const CoreAppVoice *voice);
+/* Fills out with the capture device name; false and "" when it has none. */
+bool core_app_voice_capture_name(const CoreAppVoice *voice, char *out, usize capacity);
+/* FAKE/NULL capture only (tests): forwards audio_capture_simulate_event. */
+BreakRuntimeError core_app_voice_simulate_capture_event(CoreAppVoice *voice,
+                                                        AudioCaptureEvent event);
 /* Stop joins the worker before stopping devices; queued frames stay readable. */
 BreakRuntimeError core_app_voice_stop(CoreAppVoice *voice);
 void core_app_voice_destroy(CoreAppVoice *voice);

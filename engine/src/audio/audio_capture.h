@@ -82,6 +82,9 @@ AudioResult audio_capture_create_named(const AudioCaptureConfig *config, const c
 /* The name of the opened device into out ("fake" for FAKE). False and ""
  * (when out has room) for a NULL capture or a device without a name. */
 bool audio_capture_device_name(const AudioCapture *capture, char *out, usize capacity);
+/* The backend behind the opened device: miniaudio's name ("PulseAudio",
+ * "ALSA", "Null", ...), "fake" for FAKE, "none" for NULL. A static string. */
+const char *audio_capture_backend_name(const AudioCapture *capture);
 
 /* FAKE only: writes `frames` interleaved f32 frames through the same path
  * as the device callback (non-finite samples become 0, the rest are

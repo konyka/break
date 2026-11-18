@@ -310,6 +310,7 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 两路输入都积累到 480 帧才处理；依次执行 aligner 与 processor，再发布序号、采样率/声道和 PCM。满队丢最新包且序号继续前进；`stats` 原子报告 produced/dropped 和两环 overrun。worker 发布 id/ready 后才允许启动返回，外部 pump 在 worker 活跃时被拒绝。
 - `test_core_app_voice` 5 项覆盖生命周期/格式、独立 aligner+processor 逐样本对照、17 包容量与丢弃后序号、分别缺输入、真实 worker 接收/停止。普通、ASan+UBSan、TSan 均 5/5；九个行为/并发变异均被捕获。
 - 未做：core_app CLI/协调器/网络 hook 接线、编码发送、设备丢失自动恢复、尾部排空、漂移补偿和真实声学验证。
+- 2026-11-18 补充：CLI 与协调器接线已完成，见 [`core_app_integration.md`](core_app_integration.md)「Core App 语音通道」（`--voice off|fake|device`、`voice` 子系统在 join 阶段销毁、Null 采集后端视为无麦克风、运行中 worker 出错以 `stage=voice` 失败）。组件侧同时把采集设备无法打开或启动（`AUDIO_FAILED`）映射为 `BREAK_RUNTIME_UNAVAILABLE`，并新增 `core_app_voice_worker_error`、`core_app_voice_capture_backend`、`core_app_voice_capture_name`、`core_app_voice_simulate_capture_event`；`audio_capture_backend_name` 返回 `none`/`fake` 或 miniaudio 后端名。`test_core_app_voice` 现为 7 项，`test_audio_capture` 为 12 项。仍缺：编码发送、设备丢失自动恢复、尾部排空、漂移补偿和真实声学验证。
 
 ## FFT
 

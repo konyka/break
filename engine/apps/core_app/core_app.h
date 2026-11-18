@@ -23,6 +23,15 @@ typedef enum CoreAppAudioMode {
     CORE_APP_AUDIO_DEVICE
 } CoreAppAudioMode;
 
+/* Off by default: a run without --voice writes no voice event. FAKE pumps
+ * deterministic PCM on the CoreAppThread; DEVICE needs the audio device lane
+ * and runs the voice worker on the default capture device. */
+typedef enum CoreAppVoiceMode {
+    CORE_APP_VOICE_OFF = 0,
+    CORE_APP_VOICE_FAKE,
+    CORE_APP_VOICE_DEVICE
+} CoreAppVoiceMode;
+
 /* Optional network channel, borrowed for the whole run. The runtime library
  * never links a transport: the executable supplies these callbacks only in
  * a build with the authenticated transport, so an offline core_app links no
@@ -60,6 +69,10 @@ struct CoreAppConfig {
     const char *screenshot_path;
     CoreAppRenderMode render_mode;
     CoreAppAudioMode audio_mode;
+    CoreAppVoiceMode voice_mode;
+    /* Forces AUDIO_BACKEND_NULL for the voice capture device, so the
+     * "no microphone" path is reachable on a host that has one. */
+    bool voice_null_capture;
     bool fixed_step;
     bool require_device;
     bool network;

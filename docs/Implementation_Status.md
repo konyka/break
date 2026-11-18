@@ -1,3 +1,10 @@
+## Core App 语音通道（2026-11-18）
+
+- **交付**：`core_app --voice off|fake|device`（默认 off，现有 trace 不变）把 `CoreAppVoice` 接入真实可执行程序和运行时协调器。fake 自带 FAKE 播放参考并在 CoreAppThread 手动泵；device 借用 `--audio=device` 的播放设备、默认采集和 worker。新增协调器子系统 `voice`（index 1，join 阶段销毁），trace 输出 ready（含 `capture=<name>`）、unavailable、failed、stopped 行。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-lane-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-lane.md`。
+- **TDD 与评审**：CLI、通道和设备合同先 RED 后 GREEN。独立评审结论 Not ready，指出运行中 worker 错误会变成 exit 77、Null 采集后端被当作可用麦克风、unavailable 分类过宽、TSan suppress 过宽；均已修复，并为每项补了先 RED 后 GREEN 的测试（`test_core_app_voice` 第 7 项、`test_core_app_voice_null`），suppress 收窄为两条 `called_from_lib`。
+- **定向验证**：`ctest -L core_app` 38/38（3 项既有 nm 跳过）；本机 PulseAudio 设备通道 produced==consumed；ASan+UBSan 5/5；TSan 下 voice_device 与 audio_device 各连续 3 次通过、零警告。八个变异判红；跳过序号检查、跳过 drain、voice/audio 顺序调换、所有设备启动错误都按 unavailable 处理四个变异在 CI 测试中存活，原因与本机 ASan 证据见计划文件 Result。
+- **边界**：CI 无音频设备，借用设备的关闭顺序只在本机覆盖；voice 仍 live 时的 rollback 未测。不编码/发送，不做设备恢复、尾部排空、漂移补偿或真实声学验收。
+
 ## Core App 语音 PCM 泵（2026-11-18）
 
 - **交付**：正式 `core_app_runtime` 新增 `core_app_voice`，固定 48 kHz/单声道/480 帧，采集与参考双输入经 aligner、processor 后进入 16 项 SPSC PCM 队列；支持手动与真实 worker、FAKE 注入、停止后排空和原子诊断。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-pump-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-pump.md`。

@@ -212,6 +212,21 @@ TEST(the_null_device_delivers_silent_frames_in_real_time)
     audio_capture_destroy(capture);
 }
 
+TEST(the_backend_name_tells_a_null_device_from_a_real_one)
+{
+    ASSERT_STR_EQ(audio_capture_backend_name(NULL), "none");
+    AudioCaptureConfig config = fake_config(1u, 1u << 12);
+    AudioCapture *capture = NULL;
+    ASSERT_EQ(audio_capture_create(&config, &capture), AUDIO_OK);
+    ASSERT_STR_EQ(audio_capture_backend_name(capture), "fake");
+    audio_capture_destroy(capture);
+    capture = NULL;
+    config.backend = AUDIO_BACKEND_NULL;
+    ASSERT_EQ(audio_capture_create(&config, &capture), AUDIO_OK);
+    ASSERT_STR_EQ(audio_capture_backend_name(capture), "Null");
+    audio_capture_destroy(capture);
+}
+
 TEST(input_devices_are_listed_and_opened_by_name)
 {
     AudioDeviceInfo devices[4];
@@ -485,6 +500,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_full_ring_keeps_the_oldest_frames_and_counts_the_rest);
     RUN_TEST(start_and_stop_are_idempotent_and_gate_injection);
     RUN_TEST(the_null_device_delivers_silent_frames_in_real_time);
+    RUN_TEST(the_backend_name_tells_a_null_device_from_a_real_one);
     RUN_TEST(input_devices_are_listed_and_opened_by_name);
     RUN_TEST(a_producer_thread_and_the_reader_lose_nothing);
     RUN_TEST(a_lost_fake_device_keeps_its_frames_and_reopens);
