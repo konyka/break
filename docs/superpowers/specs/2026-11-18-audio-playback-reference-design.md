@@ -1,6 +1,6 @@
 # Playback Reference Tap Design
 
-Status: Approved for implementation under the standing autonomous delivery request
+Status: Implemented and locally verified
 
 ## Purpose
 
@@ -50,12 +50,12 @@ The stream is fixed at the engine's 48 kHz rate. This slice performs no delay al
 
 ## Ring and threading
 
-`AudioImpl` gains fixed storage for 16384 mono `i16` frames, free-running atomic `u32` head/tail counters, an atomic enabled flag and an atomic `u64` overrun counter. The power-of-two capacity is compile-time checked.
+`AudioImpl` gains fixed storage for 16384 mono `i16` frames, free-running atomic `u32` head/tail counters, an atomic enabled flag, an atomic in-flight callback count, an atomic `u64` stop-generation counter and an atomic `u64` overrun counter. The power-of-two capacity is compile-time checked.
 
-- The engine callback is the only producer. It loads its own head and acquires the consumer tail, writes at most the available room, then release-publishes the new head.
+- The engine callback is the only producer. It reads the current generation with its first enabled observation, increments the in-flight count, then rechecks both enabled and generation before writing. It exits without writing if stop began or the captured generation is stale. Otherwise it loads its own head and acquires the consumer tail, writes at most the available room, release-publishes the new head, then decrements the in-flight count.
 - A full ring drops the newest frames and counts dropped frames, matching `AudioCapture` policy. The callback handles miniaudio's 64-bit frame count without truncating it before bounds checks.
 - The consumer acquires the head, copies the oldest available frames and release-updates its own tail. No heap access occurs in either hot path.
-- Start/stop/reset and reads use owner-thread control; the enabled flag and ring indices make callback/consumer communication explicit. Reset is restricted to stopped state so counter clearing has no concurrent producer.
+- Start/stop/reset and reads use owner-thread control. An effective stop stores disabled and advances the generation before waiting on this low-frequency control path until the in-flight count reaches zero; it never makes the audio callback wait. The generation check closes the window where a callback observed enabled but had not registered as active before a stop/reset/restart sequence. Reset is restricted to stopped state with no remaining producer.
 - `audio_system_destroy` retains its existing ordering: engine uninitialization stops the device callback before the single allocation containing the reference state is freed. No additional allocation or teardown is needed.
 
 ## TDD and verification

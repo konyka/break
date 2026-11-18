@@ -17,8 +17,25 @@
 #endif
 
 #include "test_framework.h"
+#include <stdatomic.h>
 #include <time.h>
 #include <audio/audio.h>
+#include <audio/audio_extended.h>
+#include <core/platform_thread.h>
+
+static atomic_bool reference_hook_armed;
+static atomic_bool reference_hook_entered;
+static atomic_bool reference_hook_release;
+
+static void reference_test_hook(void *opaque)
+{
+    (void)opaque;
+    if (!atomic_load_explicit(&reference_hook_armed, memory_order_acquire)) return;
+    atomic_store_explicit(&reference_hook_entered, true, memory_order_release);
+    while (!atomic_load_explicit(&reference_hook_release, memory_order_acquire)) {
+        platform_thread_yield();
+    }
+}
 
 #include "../src/audio/audio.c"
 
@@ -412,6 +429,280 @@ TEST(play_3d_source_reports_failure_as_zero)
     audio_system_destroy(as);
 }
 
+static AudioResult reference_render_silence(AudioSystem *as, u32 frames)
+{
+    f32 output[510] = {0};
+    while (frames > 0u) {
+        const u32 block = frames < 255u ? frames : 255u;
+        const AudioResult result = audio_system_render(as, output, block);
+        if (result != AUDIO_OK) return result;
+        frames -= block;
+    }
+    return AUDIO_OK;
+}
+
+TEST(reference_disabled_until_started_and_validates_calls)
+{
+    i16 out[8];
+    u32 frames = 99u;
+    ASSERT_EQ(audio_reference_start(NULL), AUDIO_INVALID);
+    ASSERT_EQ(audio_reference_stop(NULL), AUDIO_INVALID);
+    ASSERT_EQ(audio_reference_reset(NULL), AUDIO_INVALID);
+    ASSERT_EQ(audio_reference_available(NULL), 0u);
+    ASSERT_EQ(audio_reference_overruns(NULL), 0u);
+    ASSERT_EQ(audio_reference_read_i16(NULL, out, 8u, &frames), AUDIO_INVALID);
+    ASSERT_EQ(frames, 99u);
+
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(audio_reference_read_i16(as, NULL, 8u, &frames), AUDIO_INVALID);
+    ASSERT_EQ(frames, 99u);
+    ASSERT_EQ(audio_reference_read_i16(as, out, 8u, NULL), AUDIO_INVALID);
+    ASSERT_EQ(reference_render_silence(as, 4u), AUDIO_OK);
+    ASSERT_EQ(audio_reference_available(as), 0u);
+    ASSERT_EQ(audio_reference_read_i16(as, out, 0u, &frames), AUDIO_OK);
+    ASSERT_EQ(frames, 0u);
+
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ASSERT_EQ(reference_render_silence(as, 4u), AUDIO_OK);
+    ASSERT_EQ(audio_reference_available(as), 4u);
+    ASSERT_EQ(audio_reference_reset(as), AUDIO_REJECTED);
+    ASSERT_EQ(audio_reference_available(as), 4u);
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    ASSERT_EQ(audio_reference_read_i16(as, out, 8u, &frames), AUDIO_OK);
+    ASSERT_EQ(frames, 4u);
+    for (u32 i = 0u; i < frames; ++i) ASSERT_EQ(out[i], 0);
+    ASSERT_EQ(audio_reference_reset(as), AUDIO_OK);
+    ASSERT_EQ(audio_reference_available(as), 0u);
+    ASSERT_EQ(audio_reference_overruns(as), 0u);
+    audio_system_destroy(as);
+}
+
+TEST(reference_tap_matches_final_stereo_mix)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    AudioPcmStreamHandle stream = 0u;
+    ASSERT_EQ(audio_pcm_stream_open(as, 2u, AUDIO_BUS_MASTER, 1.0f, &stream), AUDIO_OK);
+    const i16 input[] = {1000, -1000, -2000, 2000, 3000, 1000, -4000, -2000};
+    u32 written = 0u;
+    ASSERT_EQ(audio_pcm_stream_write_i16(as, stream, input, 4u, &written), AUDIO_OK);
+    ASSERT_EQ(written, 4u);
+    f32 stereo[8];
+    ASSERT_EQ(audio_system_render(as, stereo, 4u), AUDIO_OK);
+
+    i16 reference[4];
+    u32 frames = 0u;
+    ASSERT_EQ(audio_reference_read_i16(as, reference, 4u, &frames), AUDIO_OK);
+    ASSERT_EQ(frames, 4u);
+    for (u32 i = 0u; i < 4u; ++i) {
+        ASSERT_TRUE(isfinite(stereo[2u * i]));
+        ASSERT_TRUE(isfinite(stereo[2u * i + 1u]));
+        ASSERT_FLOAT_EQ(stereo[2u * i], (f32)input[2u * i] / 32768.0f, 1e-6f);
+        ASSERT_FLOAT_EQ(stereo[2u * i + 1u], (f32)input[2u * i + 1u] / 32768.0f,
+                        1e-6f);
+        f32 mono = 0.5f * (stereo[2u * i] + stereo[2u * i + 1u]);
+        if (!isfinite(mono)) mono = 0.0f;
+        if (mono > 1.0f) mono = 1.0f;
+        if (mono < -1.0f) mono = -1.0f;
+        ASSERT_EQ(reference[i], (i16)lrintf(mono * 32767.0f));
+    }
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    ASSERT_EQ(reference_render_silence(as, 4u), AUDIO_OK);
+    ASSERT_EQ(audio_reference_available(as), 0u);
+    ASSERT_EQ(audio_pcm_stream_close(as, stream), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+TEST(reference_ring_is_bounded_and_resettable_when_stopped)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    AudioPcmStreamHandle stream = 0u;
+    ASSERT_EQ(audio_pcm_stream_open(as, 2u, AUDIO_BUS_MASTER, 1.0f, &stream), AUDIO_OK);
+    i16 expected[AUDIO_REFERENCE_RING_FRAMES];
+    u32 produced = 0u;
+    while (produced < AUDIO_REFERENCE_RING_FRAMES + 256u) {
+        const u32 block = AUDIO_REFERENCE_RING_FRAMES + 256u - produced < 255u
+                              ? AUDIO_REFERENCE_RING_FRAMES + 256u - produced
+                              : 255u;
+        i16 input[510];
+        f32 rendered[510];
+        for (u32 i = 0u; i < block; ++i) {
+            const u32 index = produced + i;
+            input[2u * i] = (i16)((i32)(index % 30000u) - 15000);
+            input[2u * i + 1u] = (i16)(1000 - (i32)(index % 2000u));
+        }
+        u32 written = 0u;
+        ASSERT_EQ(audio_pcm_stream_write_i16(as, stream, input, block, &written), AUDIO_OK);
+        ASSERT_EQ(written, block);
+        ASSERT_EQ(audio_system_render(as, rendered, block), AUDIO_OK);
+        for (u32 i = 0u; i < block; ++i) {
+            f32 mono = 0.5f * (rendered[2u * i] + rendered[2u * i + 1u]);
+            if (!isfinite(mono)) mono = 0.0f;
+            if (mono > 1.0f) mono = 1.0f;
+            if (mono < -1.0f) mono = -1.0f;
+            if (produced + i < AUDIO_REFERENCE_RING_FRAMES) {
+                expected[produced + i] = (i16)lrintf(mono * 32767.0f);
+            }
+        }
+        produced += block;
+    }
+    ASSERT_EQ(audio_reference_available(as), AUDIO_REFERENCE_RING_FRAMES);
+    ASSERT_EQ(audio_reference_overruns(as), 256u);
+
+    i16 out[256];
+    u32 total = 0u;
+    while (total < AUDIO_REFERENCE_RING_FRAMES) {
+        u32 frames = 0u;
+        ASSERT_EQ(audio_reference_read_i16(as, out, 255u, &frames), AUDIO_OK);
+        ASSERT_TRUE(frames > 0u);
+        for (u32 i = 0u; i < frames; ++i) ASSERT_EQ(out[i], expected[total + i]);
+        total += frames;
+    }
+    ASSERT_EQ(total, AUDIO_REFERENCE_RING_FRAMES);
+    ASSERT_EQ(audio_reference_available(as), 0u);
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    ASSERT_EQ(audio_reference_reset(as), AUDIO_OK);
+    ASSERT_EQ(audio_reference_overruns(as), 0u);
+
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ASSERT_EQ(reference_render_silence(as, AUDIO_REFERENCE_RING_FRAMES), AUDIO_OK);
+    total = 0u;
+    while (total < AUDIO_REFERENCE_RING_FRAMES) {
+        u32 frames = 0u;
+        ASSERT_EQ(audio_reference_read_i16(as, out, 256u, &frames), AUDIO_OK);
+        ASSERT_TRUE(frames > 0u);
+        total += frames;
+    }
+    ASSERT_EQ(total, AUDIO_REFERENCE_RING_FRAMES);
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    ASSERT_EQ(audio_reference_reset(as), AUDIO_OK);
+    ASSERT_EQ(audio_reference_available(as), 0u);
+    ASSERT_EQ(audio_reference_overruns(as), 0u);
+    ASSERT_EQ(audio_pcm_stream_close(as, stream), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+typedef struct {
+    AudioSystem *system;
+    u32 total;
+    AudioResult result;
+    atomic_bool done;
+} ReferenceRenderJob;
+
+static PLATFORM_THREAD_RET reference_render_main(PLATFORM_THREAD_ARG argument)
+{
+    ReferenceRenderJob *job = (ReferenceRenderJob *)argument;
+    f32 output[512];
+    u32 produced = 0u;
+    job->result = AUDIO_OK;
+    while (produced < job->total) {
+        while (audio_reference_available(job->system) > AUDIO_REFERENCE_RING_FRAMES / 2u) {
+            platform_thread_yield();
+        }
+        const u32 block = job->total - produced < 256u ? job->total - produced : 256u;
+        memset(output, 0, sizeof(output));
+        job->result = audio_system_render(job->system, output, block);
+        if (job->result != AUDIO_OK) break;
+        produced += block;
+    }
+    atomic_store_explicit(&job->done, true, memory_order_release);
+    return PLATFORM_THREAD_RETURN;
+}
+
+TEST(reference_concurrent_render_and_read_wrap_without_overruns)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ReferenceRenderJob job;
+    job.system = as;
+    job.total = AUDIO_REFERENCE_RING_FRAMES * 2u;
+    job.result = AUDIO_OK;
+    atomic_init(&job.done, false);
+    PlatformThread thread;
+    const bool created = platform_thread_create(&thread, reference_render_main, &job);
+    if (!created) audio_system_destroy(as);
+    ASSERT_TRUE(created);
+
+    i16 out[256];
+    u32 received = 0u;
+    AudioResult read_result = AUDIO_OK;
+    while (received < job.total) {
+        u32 frames = 0u;
+        read_result = audio_reference_read_i16(as, out, 256u, &frames);
+        if (read_result != AUDIO_OK) break;
+        received += frames;
+        if (frames == 0u) {
+            if (atomic_load_explicit(&job.done, memory_order_acquire)) break;
+            platform_thread_yield();
+        }
+    }
+    platform_thread_join(thread);
+    ASSERT_EQ(read_result, AUDIO_OK);
+    ASSERT_EQ(job.result, AUDIO_OK);
+    ASSERT_EQ(received, job.total);
+    ASSERT_EQ(audio_reference_available(as), 0u);
+    ASSERT_EQ(audio_reference_overruns(as), 0u);
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    ASSERT_EQ(audio_reference_reset(as), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+TEST(reference_restart_rejects_pre_stop_callback)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    atomic_store_explicit(&reference_hook_armed, true, memory_order_release);
+    atomic_store_explicit(&reference_hook_entered, false, memory_order_relaxed);
+    atomic_store_explicit(&reference_hook_release, false, memory_order_relaxed);
+    ReferenceRenderJob job;
+    job.system = as;
+    job.total = 256u;
+    job.result = AUDIO_OK;
+    atomic_init(&job.done, false);
+    PlatformThread thread;
+    const bool created = platform_thread_create(&thread, reference_render_main, &job);
+    if (!created) {
+        atomic_store_explicit(&reference_hook_armed, false, memory_order_release);
+        audio_system_destroy(as);
+    }
+    ASSERT_TRUE(created);
+    while (!atomic_load_explicit(&reference_hook_entered, memory_order_acquire) &&
+           !atomic_load_explicit(&job.done, memory_order_acquire)) {
+        platform_thread_yield();
+    }
+    const bool entered = atomic_load_explicit(&reference_hook_entered, memory_order_acquire);
+    if (!entered) {
+        platform_thread_join(thread);
+        atomic_store_explicit(&reference_hook_armed, false, memory_order_release);
+        audio_system_destroy(as);
+    }
+    ASSERT_TRUE(entered);
+
+    const AudioResult stop_result = audio_reference_stop(as);
+    const AudioResult reset_result = audio_reference_reset(as);
+    const AudioResult start_result = audio_reference_start(as);
+    atomic_store_explicit(&reference_hook_release, true, memory_order_release);
+    platform_thread_join(thread);
+    atomic_store_explicit(&reference_hook_armed, false, memory_order_release);
+    ASSERT_EQ(stop_result, AUDIO_OK);
+    ASSERT_EQ(reset_result, AUDIO_OK);
+    ASSERT_EQ(start_result, AUDIO_OK);
+    ASSERT_EQ(job.result, AUDIO_OK);
+    ASSERT_EQ(audio_reference_available(as), 0u);
+    ASSERT_EQ(audio_reference_overruns(as), 0u);
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    ASSERT_EQ(audio_reference_reset(as), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(atten_inside_min_is_full);
     RUN_TEST(atten_inverse_known_values);
@@ -437,4 +728,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(device_name_is_absent_without_a_device);
     RUN_TEST(play_3d_source_returns_a_stoppable_handle);
     RUN_TEST(play_3d_source_reports_failure_as_zero);
+    RUN_TEST(reference_disabled_until_started_and_validates_calls);
+    RUN_TEST(reference_tap_matches_final_stereo_mix);
+    RUN_TEST(reference_ring_is_bounded_and_resettable_when_stopped);
+    RUN_TEST(reference_concurrent_render_and_read_wrap_without_overruns);
+    RUN_TEST(reference_restart_rejects_pre_stop_callback);
 TEST_MAIN_END()

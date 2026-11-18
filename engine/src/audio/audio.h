@@ -149,6 +149,17 @@ f32          audio_bus_gain(AudioSystem *as, u32 bus);
  * Re-applies the effective gain immediately. */
 void         audio_source_set_bus(AudioSystem *as, u32 source_id, u32 bus);
 
+/* Optional final-mix reference: fixed 48 kHz mono i16, one producer and one
+ * consumer. Start/stop preserve buffered frames; reset requires stopped. */
+#define AUDIO_REFERENCE_RING_FRAMES 16384u
+AudioResult audio_reference_start(AudioSystem *as);
+AudioResult audio_reference_stop(AudioSystem *as);
+AudioResult audio_reference_reset(AudioSystem *as);
+AudioResult audio_reference_read_i16(AudioSystem *as, i16 *out, u32 max_frames,
+                                     u32 *out_frames);
+u32          audio_reference_available(const AudioSystem *as);
+u64          audio_reference_overruns(const AudioSystem *as);
+
 /* Device enumeration */
 u32          audio_get_device_count(AudioSystem *sys);
 bool         audio_get_device_info(AudioSystem *sys, u32 index, AudioDeviceInfo *out);

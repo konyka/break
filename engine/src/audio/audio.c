@@ -1,6 +1,8 @@
 #include <audio/audio.h>
 #include <core/log.h>
+#include <core/platform_thread.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -100,6 +102,13 @@ struct AudioImpl {
     ma_engine engine;
     ma_context context;
     bool context_initialized;
+    i16 reference_ring[AUDIO_REFERENCE_RING_FRAMES];
+    atomic_uint reference_head;
+    atomic_uint reference_tail;
+    atomic_uint reference_active;
+    atomic_uint_least64_t reference_epoch;
+    atomic_uint_least64_t reference_overruns;
+    atomic_bool reference_enabled;
 };
 
 bool audio_extended_init(AudioSystem *as, ma_engine *engine);
@@ -112,6 +121,113 @@ void audio_extended_set_bus_gain(AudioSystem *as, u32 bus, f32 gain);
  * ma_engine's alignment. */
 _Static_assert(_Alignof(long double) >= 8,
                "AudioImpl alignment relies on _Alignof(long double) >= 8");
+_Static_assert((AUDIO_REFERENCE_RING_FRAMES & (AUDIO_REFERENCE_RING_FRAMES - 1u)) == 0u,
+               "Reference ring capacity must be a power of two");
+
+static i16 audio_reference_sample(f32 left, f32 right) {
+    f32 mono = 0.5f * (left + right);
+    if (!isfinite(mono)) return 0;
+    if (mono > 1.0f) mono = 1.0f;
+    if (mono < -1.0f) mono = -1.0f;
+    return (i16)lrintf(mono * 32767.0f);
+}
+
+static void audio_reference_on_process(void *user, f32 *frames, ma_uint64 frame_count) {
+    struct AudioImpl *impl = (struct AudioImpl *)user;
+    if (!impl || frame_count == 0u) return;
+    const u64 epoch = atomic_load_explicit(&impl->reference_epoch, memory_order_acquire);
+    if (!atomic_load_explicit(&impl->reference_enabled, memory_order_acquire)) return;
+#ifdef AUDIO_REFERENCE_TEST_HOOK
+    AUDIO_REFERENCE_TEST_HOOK(impl);
+#endif
+    atomic_fetch_add_explicit(&impl->reference_active, 1u, memory_order_acq_rel);
+    if (atomic_load_explicit(&impl->reference_enabled, memory_order_acquire) &&
+        epoch == atomic_load_explicit(&impl->reference_epoch, memory_order_acquire)) {
+        const u32 head = atomic_load_explicit(&impl->reference_head, memory_order_relaxed);
+        const u32 tail = atomic_load_explicit(&impl->reference_tail, memory_order_acquire);
+        const ma_uint64 room =
+            (ma_uint64)(AUDIO_REFERENCE_RING_FRAMES - (head - tail));
+        const ma_uint64 count = frame_count < room ? frame_count : room;
+        for (ma_uint64 i = 0u; i < count; ++i) {
+            const u32 slot = (head + (u32)i) & (AUDIO_REFERENCE_RING_FRAMES - 1u);
+            impl->reference_ring[slot] =
+                audio_reference_sample(frames[(usize)i * 2u], frames[(usize)i * 2u + 1u]);
+        }
+        if (count != 0u) {
+            atomic_store_explicit(&impl->reference_head, head + (u32)count,
+                                  memory_order_release);
+        }
+        if (count < frame_count) {
+            atomic_fetch_add_explicit(&impl->reference_overruns, (u64)(frame_count - count),
+                                      memory_order_relaxed);
+        }
+    }
+    atomic_fetch_sub_explicit(&impl->reference_active, 1u, memory_order_release);
+}
+
+static void audio_reference_wait_idle(struct AudioImpl *impl) {
+    while (atomic_load_explicit(&impl->reference_active, memory_order_acquire) != 0u) {
+        platform_thread_yield();
+    }
+}
+
+AudioResult audio_reference_start(AudioSystem *as) {
+    if (!as || !as->engine) return AUDIO_INVALID;
+    struct AudioImpl *impl = (struct AudioImpl *)as->engine;
+    atomic_store_explicit(&impl->reference_enabled, true, memory_order_release);
+    return AUDIO_OK;
+}
+
+AudioResult audio_reference_stop(AudioSystem *as) {
+    if (!as || !as->engine) return AUDIO_INVALID;
+    struct AudioImpl *impl = (struct AudioImpl *)as->engine;
+    if (atomic_exchange_explicit(&impl->reference_enabled, false, memory_order_acq_rel)) {
+        atomic_fetch_add_explicit(&impl->reference_epoch, 1u, memory_order_acq_rel);
+    }
+    audio_reference_wait_idle(impl);
+    return AUDIO_OK;
+}
+
+AudioResult audio_reference_reset(AudioSystem *as) {
+    if (!as || !as->engine) return AUDIO_INVALID;
+    struct AudioImpl *impl = (struct AudioImpl *)as->engine;
+    if (atomic_load_explicit(&impl->reference_enabled, memory_order_acquire)) {
+        return AUDIO_REJECTED;
+    }
+    const u32 head = atomic_load_explicit(&impl->reference_head, memory_order_acquire);
+    atomic_store_explicit(&impl->reference_tail, head, memory_order_release);
+    atomic_store_explicit(&impl->reference_overruns, 0u, memory_order_relaxed);
+    return AUDIO_OK;
+}
+
+AudioResult audio_reference_read_i16(AudioSystem *as, i16 *out, u32 max_frames,
+                                     u32 *out_frames) {
+    if (!as || !as->engine || !out || !out_frames) return AUDIO_INVALID;
+    struct AudioImpl *impl = (struct AudioImpl *)as->engine;
+    const u32 tail = atomic_load_explicit(&impl->reference_tail, memory_order_relaxed);
+    const u32 head = atomic_load_explicit(&impl->reference_head, memory_order_acquire);
+    const u32 available = head - tail;
+    const u32 count = available < max_frames ? available : max_frames;
+    for (u32 i = 0u; i < count; ++i) {
+        out[i] = impl->reference_ring[(tail + i) & (AUDIO_REFERENCE_RING_FRAMES - 1u)];
+    }
+    atomic_store_explicit(&impl->reference_tail, tail + count, memory_order_release);
+    *out_frames = count;
+    return AUDIO_OK;
+}
+
+u32 audio_reference_available(const AudioSystem *as) {
+    if (!as || !as->engine) return 0u;
+    const struct AudioImpl *impl = (const struct AudioImpl *)as->engine;
+    return atomic_load_explicit(&impl->reference_head, memory_order_acquire) -
+           atomic_load_explicit(&impl->reference_tail, memory_order_acquire);
+}
+
+u64 audio_reference_overruns(const AudioSystem *as) {
+    if (!as || !as->engine) return 0u;
+    const struct AudioImpl *impl = (const struct AudioImpl *)as->engine;
+    return atomic_load_explicit(&impl->reference_overruns, memory_order_relaxed);
+}
 
 AudioSystem *audio_system_create_ex(AudioBackend backend) {
     if (backend < AUDIO_BACKEND_DEFAULT || backend > AUDIO_BACKEND_FAKE) {
@@ -138,6 +254,8 @@ AudioSystem *audio_system_create_ex(AudioBackend backend) {
 
     engine_config.channels = 2;
     engine_config.sampleRate = 48000;
+    engine_config.onProcess = audio_reference_on_process;
+    engine_config.pProcessUserData = impl;
     engine_config.noDevice = backend == AUDIO_BACKEND_FAKE ? MA_TRUE : MA_FALSE;
     if (use_null) {
         ma_backend null_backend = ma_backend_null;

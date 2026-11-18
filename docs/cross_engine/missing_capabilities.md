@@ -326,3 +326,6 @@
 - **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-18 `BreakEditorDoc` 支持短 PCM 附件及 trim/cut/fade/normalize/mix 的真实快照 undo/redo，含 origin、drop-oldest、OOM 和 reset/load 生命周期。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。上文「音频编辑工具」的文档/撤销部分由此交付。仍缺：波形 UI、媒体文件解析、时间线/自动化与真实听测。
 
 - **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-18 `audio_wav` 与 `break_editor_doc_audio_attach_wav` 支持严格校验的 PCM16 单/双声道 WAV 导入，含结构 fuzz、OOM 和历史原子性。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。上文「媒体文件解析」的 PCM WAV 子集由此交付。仍缺：其他格式、导出、VFS、波形 UI、时间线与真实听测。
+
+
+- **第 10 节（音频）追加**：2026-11-18 新增 `audio_reference_*` 播放参考捕获，真实设备与 FAKE 渲染共用引擎最终混音回调，以固定 48 kHz 单声道 i16 SPSC 环交付；支持启停、停止后排空、有界溢出计数与安全重置。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「播放参考捕获」。这补齐了语音处理链的真实参考来源，但不等于 core_app 采集/处理/网络接线完成。仍缺：参考与采集的自动延迟/漂移闭环、生产语音管线、多声道与真实声学验证。

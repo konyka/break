@@ -1,3 +1,10 @@
+## 引擎最终混音的播放参考捕获（2026-11-18）
+
+- **交付**：`audio_reference_*` 通过 miniaudio 最终混音回调向固定 16384 帧 SPSC 环发布 48 kHz 单声道 i16；真实设备与 FAKE 共用采集点，支持启停、停止后排空、溢出计数和安全重置。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-playback-reference-design.md`、`docs/superpowers/plans/2026-11-18-audio-playback-reference.md`。
+- **TDD 与评审**：六个新符号链接 RED 后实现至 29/29。独立评审发现 stop/reset/restart 的旧回调代际竞态，新增暂停真实回调的确定性 RED 后以代际戳修复；溢出身份与 NaN 断言盲点同步补齐，复审 Ready。
+- **定向验证**：普通、ASan+UBSan、TSan 均 29/29，严格告警为零；最终实现普通连续 50 次和 TSan 连续 20 次通过。启用、下混、部分溢出和 reset 变异均在普通测试判红，release→relaxed 由 TSan 环槽竞争报告判红。三树全量为 432/432、432/432、440/440，零失败。
+- **边界**：仅提供参考来源；无麦克风采集、延迟/漂移闭环、VoiceProcessor/core_app/网络接线或真实声学验收。
+
 ## PCM WAV 文档导入（2026-11-18）
 
 - **交付**：新增无分配 `audio_wav` RIFF/PCM16 解析器与 `break_editor_doc_audio_attach_wav` 文件适配器；支持单/双声道、扩展 fmt、未知 chunk/pad，导入失败保持文档/历史不变。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-wav-document-design.md`、`docs/superpowers/plans/2026-11-18-audio-wav-document.md`。

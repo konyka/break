@@ -7043,7 +7043,8 @@ endif()
     add_executable(test_audio tests/test_audio.c src/audio/audio_extended.c src/audio/audio_dsp.c
         src/audio/audio_hrtf.c)
     target_include_directories(test_audio PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_audio PRIVATE m)
+    target_link_libraries(test_audio PRIVATE m Threads::Threads)
+    target_compile_definitions(test_audio PRIVATE AUDIO_REFERENCE_TEST_HOOK=reference_test_hook)
     add_test(NAME test_audio COMMAND test_audio)
 
     add_executable(test_audio_extended tests/test_audio_extended.c

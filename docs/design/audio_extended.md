@@ -283,6 +283,16 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `audio_voice_processor_latency_frames` 返回频谱降噪的固定 frame_size；有限流尾部需为参考与采集都补该数量的零帧。测试用手工五级链独立校验正文和排空尾部。
 - 未做：多声道、可配置 bypass、core_app 设备/网络接线、自动延迟跟踪与真实声学验证。
 
+## 播放参考捕获
+
+`audio.h` 的 `audio_reference_*` 接口通过 miniaudio `ma_engine_config.onProcess` 取得最终立体声混音，在真实设备回调与 FAKE 的 `audio_system_render` 中共用同一采集点。每帧按 `0.5 * (left + right)` 下混，非有限值记为零，限幅后以 `lrintf(x * 32767)` 转成 i16；播放输出本身不被修改。
+
+- 固定为 48 kHz 单声道，环容量 `AUDIO_REFERENCE_RING_FRAMES` 为 16384。状态嵌入 `AudioImpl` 的唯一分配，回调不分配、不加锁、不写日志。
+- 默认关闭；`start`/`stop` 幂等且保留未读帧，停止后仍可 `read_i16` 排空。`reset` 只在停止状态接受，清空未读帧和 overrun 计数。
+- 环为单生产者单消费者，自由增长 head/tail 用 release/acquire 发布；满环丢弃最新帧并按帧计数。有效 stop 推进代际并等待在途回调的活动计数归零；回调登记后复核启用和代际，阻止 stop/reset/start 之间的旧帧写入。控制路径可让出 CPU，回调不等待控制路径。
+- `test_audio` 新增 5 项（24→29）：生命周期/参数、真实立体声 PCM 流下混逐样本一致、非静音溢出身份与环索引环绕、并发渲染/读取，以及旧回调跨 restart 的确定性代际回归。普通、ASan+UBSan、TSan 均 29/29；release→relaxed 变异由 TSan 的实际环槽竞争报告捕获。
+- 这是 AEC 的参考来源，不是已经接线的语音管线；不做采集、延迟对齐、漂移补偿、编码、网络发送或真实声学验收。
+
 ## FFT
 
 `engine/src/audio/audio_fft.{h,c}` 提供基 2 实数 FFT 与周期 Hann 窗，作为频谱降噪等频域处理的数值基础。`AudioFft` 计划保存位反转和旋转因子表；只有 `audio_fft_create` 分配内存，正逆变换与窗函数不分配、不加锁。计划创建后只读，可由多个线程共享，但每个调用者必须有自己的样本与频谱缓冲区。
