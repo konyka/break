@@ -64,6 +64,7 @@ file(READ "${ENGINE_SOURCE_DIR}/CMakeLists.txt" cmake_text)
 set(runtime_sources [=[add_library(core_app_runtime STATIC
     apps/core_app/core_app.c
     apps/core_app/core_app_audio.c
+    apps/core_app/core_app_voice.c
     apps/core_app/core_app_render.c
     apps/core_app/core_app_checkpoint.c
     apps/core_app/scenario.c
@@ -71,7 +72,7 @@ set(runtime_sources [=[add_library(core_app_runtime STATIC
     apps/core_app/core_app_simulation.c)]=])
 string(FIND "${cmake_text}" "${runtime_sources}" runtime_sources_index)
 if(runtime_sources_index LESS 0)
-    message(FATAL_ERROR "core_app_runtime must use exactly the seven core_app runtime sources")
+    message(FATAL_ERROR "core_app_runtime must use exactly the eight core_app runtime sources")
 endif()
 foreach(required_cmake IN ITEMS
         "engine_link_rhi_backend(core_app)"

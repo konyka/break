@@ -1,3 +1,10 @@
+## Core App 语音 PCM 泵（2026-11-18）
+
+- **交付**：正式 `core_app_runtime` 新增 `core_app_voice`，固定 48 kHz/单声道/480 帧，采集与参考双输入经 aligner、processor 后进入 16 项 SPSC PCM 队列；支持手动与真实 worker、FAKE 注入、停止后排空和原子诊断。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-pump-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-pump.md`。
+- **TDD 与评审**：九个新符号链接 RED 后实现至 5/5。独立评审发现 worker_id 发布竞争，外部 pump 用例先在 TSan 复现，再以 ready 握手修复；补齐非零参考、双输入门控、丢弃后序号与 overrun 证据，复审 Ready。
+- **定向验证**：普通、ASan+UBSan、TSan 均 5/5，严格告警为零；门控、路由、处理顺序、序号/丢弃、参考置零、队列发布和 worker join 九个变异均判红。首次三树运行暴露 core_app 命名合同仍固定七个运行时源文件，更新为八个源文件后合同恢复通过；最终三树为 434/434、434/434、442/442，零失败。
+- **边界**：尚未接入 core_app CLI/协调器/网络 hook，不编码/发送，不做设备恢复、尾部排空、漂移补偿或真实声学验收。
+
 ## AudioVoiceAligner 自动语音参考对齐（2026-11-18）
 
 - **交付**：新增 `audio_voice_aligner.{h,c}`，拥有 tracker 与 delay line，按固定帧周期调度估计并把接受的分数延迟用于下一帧；时域/GCC 显式构造，原始参考/采集输入，任意分块逐位一致。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-voice-aligner-design.md`、`docs/superpowers/plans/2026-11-18-audio-voice-aligner.md`。

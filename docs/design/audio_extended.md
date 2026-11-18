@@ -302,6 +302,15 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `test_audio_voice_aligner` 6 项覆盖参数/调用契约、12.5 帧已知回声的精确更新边界、整块与 1/7/31/128 任意分块逐位一致、静音采集拒绝、GCC 构造及延迟设置失败后的周期恢复。普通、ASan+UBSan、TSan 均 6/6；原始路由、倒计时、延迟应用/提前应用、后端选择、别名、三个 NULL 检查与失败恢复十个变异均判红（删除倒计时恢复表现为超时）。
 - 未做：reset（底层 delay line 尚无 reset）、sinc/交叉淡化配置、时钟漂移补偿、多声道、设备/VoiceProcessor/core_app/网络接线与真实声学验证。
 
+## Core App 语音 PCM 泵
+
+`engine/apps/core_app/core_app_voice.{h,c}` 在正式 `core_app_runtime` 中组合采集、播放参考、自动对齐与 `AudioVoiceProcessor`。固定 48 kHz 单声道、每包 480 帧；手动 `pump` 与专用 worker 共用同一处理路径，输出通过 16 项 SPSC 队列交付 `BreakVoiceFrame`，不在语音线程编码或联网。
+
+- 创建拥有 4096 帧采集环、aligner 和 processor，播放系统仅借用 reference API。start 先启用参考再启动采集，失败回滚；stop 先 join worker 再停采集/参考，队列可在停止后排空。FAKE 输入由 `inject` 走真实采集路径。
+- 两路输入都积累到 480 帧才处理；依次执行 aligner 与 processor，再发布序号、采样率/声道和 PCM。满队丢最新包且序号继续前进；`stats` 原子报告 produced/dropped 和两环 overrun。worker 发布 id/ready 后才允许启动返回，外部 pump 在 worker 活跃时被拒绝。
+- `test_core_app_voice` 5 项覆盖生命周期/格式、独立 aligner+processor 逐样本对照、17 包容量与丢弃后序号、分别缺输入、真实 worker 接收/停止。普通、ASan+UBSan、TSan 均 5/5；九个行为/并发变异均被捕获。
+- 未做：core_app CLI/协调器/网络 hook 接线、编码发送、设备丢失自动恢复、尾部排空、漂移补偿和真实声学验证。
+
 ## FFT
 
 `engine/src/audio/audio_fft.{h,c}` 提供基 2 实数 FFT 与周期 Hann 窗，作为频谱降噪等频域处理的数值基础。`AudioFft` 计划保存位反转和旋转因子表；只有 `audio_fft_create` 分配内存，正逆变换与窗函数不分配、不加锁。计划创建后只读，可由多个线程共享，但每个调用者必须有自己的样本与频谱缓冲区。

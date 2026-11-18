@@ -1687,6 +1687,7 @@ option(CORE_APP_ENABLE_NETWORK "Enable the optional authenticated Snowflake chan
 add_library(core_app_runtime STATIC
     apps/core_app/core_app.c
     apps/core_app/core_app_audio.c
+    apps/core_app/core_app_voice.c
     apps/core_app/core_app_render.c
     apps/core_app/core_app_checkpoint.c
     apps/core_app/scenario.c
@@ -5333,6 +5334,13 @@ endif()
     set_tests_properties(test_core_app_runtime PROPERTIES
         LABELS "headless;core_app" TIMEOUT 60)
 
+    add_executable(test_core_app_voice tests/test_core_app_voice.c)
+    target_include_directories(test_core_app_voice PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_core_app_voice PRIVATE core_app_runtime m Threads::Threads)
+    add_test(NAME test_core_app_voice COMMAND test_core_app_voice)
+    set_tests_properties(test_core_app_voice PROPERTIES
+        LABELS "headless;core_app;audio" TIMEOUT 60)
+
     add_executable(test_core_app_mesh tests/test_core_app_mesh.c
         apps/core_app/core_app_mesh.c)
     target_include_directories(test_core_app_mesh PRIVATE ${TEST_INCLUDE_DIRS})
@@ -8149,7 +8157,7 @@ foreach(_core_app_required_target IN ITEMS core_app_runtime core_app core_app_as
 endforeach()
 get_target_property(_core_app_runtime_sources core_app_runtime SOURCES)
 set(_core_app_runtime_expected_sources
-    "apps/core_app/core_app.c;apps/core_app/core_app_audio.c;apps/core_app/core_app_render.c;apps/core_app/core_app_checkpoint.c;apps/core_app/scenario.c;apps/core_app/core_app_input.c;apps/core_app/core_app_simulation.c")
+    "apps/core_app/core_app.c;apps/core_app/core_app_audio.c;apps/core_app/core_app_voice.c;apps/core_app/core_app_render.c;apps/core_app/core_app_checkpoint.c;apps/core_app/scenario.c;apps/core_app/core_app_input.c;apps/core_app/core_app_simulation.c")
 if(NOT "${_core_app_runtime_sources}" STREQUAL "${_core_app_runtime_expected_sources}")
     message(FATAL_ERROR "core_app_runtime SOURCES changed: ${_core_app_runtime_sources}")
 endif()

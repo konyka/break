@@ -1535,3 +1535,14 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 
 仍缺：core_app 运行时本身还没有作为客户端运行，所以没有哪个发布二进制会把会话号写进对端 trace；目前只有测试客户端读取它。
 
+
+
+## Core App 语音 PCM 泵（2026-11-18）
+
+`core_app_voice.{h,c}` 已进入正式 `core_app_runtime`，但尚未由 `core_app.c` 的 CLI/协调器调用。组件固定 48 kHz 单声道、480 帧/包，使用真实采集、播放参考、`AudioVoiceAligner` 和 `AudioVoiceProcessor`，通过 16 项 SPSC 队列把 `BreakVoiceFrame` 交给消费者。手动与 worker 驱动共用 pump；worker 仅使用 reference 专用接口，不直接调用 mixer、网络或模拟状态。
+
+生命周期顺序是 create → reference/capture start → worker，停止时先 join worker，再停 capture/reference，队列不清空。`worker_ready` 握手发布线程 id，外部 pump 在 worker 活跃时返回 REJECTED。满队丢最新包且 sequence 继续推进；统计包含 produced/dropped 和采集/参考 overrun。
+
+`test_core_app_voice` 以 FAKE 设备完成独立处理链逐样本对照、容量/序号、分别缺输入和真实 worker 启停，普通、ASan+UBSan、TSan 均 5/5。九个变异（含队列 relaxed 发布与跳过 join）均判红。
+
+仍缺：CLI 与协调器生命周期、网络 hook/编码/发送、设备丢失恢复、处理尾部排空、漂移补偿及真实声学验证。不得把该组件称为已完成在线语音。

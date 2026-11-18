@@ -332,3 +332,6 @@
 
 
 - **第 10 节（音频）追加**：2026-11-18 新增 `AudioVoiceAligner`，把原始播放参考/采集的 tracker 推送、固定周期更新与分数延迟线应用接成确定性控制环；支持时域/GCC-PHAT 显式构造和任意调用分块一致。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「语音参考自动对齐」。上文「自动更新调度」和 tracker→延迟线接线由此交付。仍缺：漂移补偿闭环、reset、sinc/交叉淡化配置、生产采集/VoiceProcessor/core_app/网络接线与真实声学验证。
+
+
+- **第 10 节（音频）追加**：2026-11-18 正式 `core_app_runtime` 新增 `CoreAppVoice` PCM 泵，将 48 kHz 单声道采集、播放参考、自动对齐与语音处理接成 480 帧处理路径，并以 16 项 SPSC 队列交付 PCM；手动和专用 worker 共用实现。见 [`docs/design/core_app_integration.md`](../design/core_app_integration.md)「Core App 语音 PCM 泵」。这是生产组件而非完整在线语音。仍缺：core_app CLI/协调器/网络 hook、编码发送、设备恢复、尾部排空、漂移补偿和真实声学验证。

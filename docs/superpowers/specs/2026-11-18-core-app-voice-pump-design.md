@@ -1,6 +1,6 @@
 # Core App Voice PCM Pump Design
 
-Status: Approved for implementation under the standing autonomous delivery request
+Status: Implemented and locally verified
 
 ## Purpose
 
@@ -41,6 +41,7 @@ BreakRuntimeError core_app_voice_create(const CoreAppVoiceConfig *config,
                                         CoreAppVoice **out);
 BreakRuntimeError core_app_voice_start(CoreAppVoice *voice);
 BreakRuntimeError core_app_voice_start_threaded(CoreAppVoice *voice);
+BreakRuntimeError core_app_voice_inject(CoreAppVoice *voice, const f32 *samples, u32 frames);
 BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets);
 BreakRuntimeError core_app_voice_pop(CoreAppVoice *voice, BreakVoiceFrame *out,
                                      bool *out_ready);
@@ -52,6 +53,7 @@ void core_app_voice_destroy(CoreAppVoice *voice);
 - Creation owns a new 48 kHz mono `AudioCapture` (4096-frame ring), `AudioVoiceAligner` and `AudioVoiceProcessor`. Playback is borrowed. The nested tracker sample rate must be 48000; nested processor validation remains authoritative for its modules.
 - Creation validates all pointers/ranges before starting any device and destroys partially created components on failure. `*out` is written only on success. `destroy(NULL)` is a no-op; destroy first performs an idempotent stop.
 - `start` enables the playback reference and starts capture, in that order; failure reverses the reference start. It is idempotent and does not clear queued frames or reset sequence/state on a later restart.
+- `inject` forwards FAKE input through the real capture path without exposing the private capture object. Other backends reject it; this is the deterministic test/input adapter, not a second production device path.
 - `start_threaded` uses the same start, then launches a worker whose only device/PCM processing call is the shared pump. A thread-creation failure stops capture/reference and leaves the object stopped.
 - `stop` requests worker termination and joins it before stopping capture/reference. Already buffered queue frames remain readable. No spectral tail is flushed in this slice.
 - Only one consumer calls `pop`. `out_ready=false` on an empty queue; invalid arguments return `BREAK_RUNTIME_INVALID`. The queue and all PCM frames remain bounded.

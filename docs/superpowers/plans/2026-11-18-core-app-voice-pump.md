@@ -1,8 +1,8 @@
 # Core App Voice PCM Pump Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-Status: In progress
+Status: Complete
 
 **Goal:** Deliver a reusable 48 kHz mono capture→alignment→voice-processing pump with deterministic manual driving, an optional owner thread and a bounded PCM-frame handoff queue.
 
@@ -46,15 +46,16 @@ typedef struct {
 } CoreAppVoiceStats;
 ```
 
-  Declare `core_app_voice_{create,start,start_threaded,pump,pop,stats,stop,destroy}` with the spec's exact argument and return types. Include `audio_voice_aligner.h`, `audio_voice_processor.h`, `network/break_online_voice.h`, and `runtime/runtime_types.h`; the voice header has no codec link dependency.
+  Declare `core_app_voice_{create,start,start_threaded,inject,pump,pop,stats,stop,destroy}` with the spec's exact argument and return types. Include `audio_voice_aligner.h`, `audio_voice_processor.h`, `network/break_online_voice.h`, and `runtime/runtime_types.h`; the voice header has no codec link dependency.
 
-- [ ] Add the source skeleton to `core_app_runtime`. Add `test_core_app_voice`, linking the formal `core_app_runtime`, `m` and `Threads::Threads`; label `headless;core_app;audio`.
-- [ ] Create a valid test config with FAKE capture, borrowed FAKE playback, 48 kHz tracker/processor modules, tracker max delay 64/window 256/update period 480, and the voice-processor test values converted to 48000 Hz. Use noise frame size 64, echo taps 64, mono gate/AGC.
-- [ ] Add `create_validates_config_and_lifecycle`: NULL/out-of-range/nested rejection, unchanged output pointer, empty pop, pump-before-start rejection, idempotent start/stop, insufficient-half-packet gating, zero stats and NULL destroy.
-- [ ] Add `manual_packet_matches_independent_pipeline`: inject/render exactly 480 frames, then derive expected capture conversion, final-stereo reference downmix, alignment and voice processing with separate objects. Require exact PCM, sequence 0, 48000 Hz/mono/480 samples and one produced packet.
-- [ ] Add `queue_is_bounded_and_drains_after_stop`: produce 17 packets without popping; require 16 ordered sequence values, one drop, then empty after stop. Sequence 16 is the dropped packet; no sequence is reused.
-- [ ] Add `threaded_voice_produces_and_stops`: start the real worker, drive bounded FAKE injection/render and pop waits, receive one packet, stop/join, and require no worker error or overrun.
-- [ ] Register four tests. Reconfigure the build tree before expecting the new target; verify RED as unresolved `core_app_voice_*` symbols after a valid target exists.
+- [x] Add the source skeleton to `core_app_runtime`. Add `test_core_app_voice`, linking the formal `core_app_runtime`, `m` and `Threads::Threads`; label `headless;core_app;audio`.
+- [x] Create a valid test config with FAKE capture, borrowed FAKE playback, 48 kHz tracker/processor modules, tracker max delay 64/window 256/update period 480, and the voice-processor test values converted to 48000 Hz. Use noise frame size 64, echo taps 64, mono gate/AGC.
+- [x] Add `create_validates_config_and_lifecycle`: NULL/out-of-range/nested rejection, unchanged output pointer, empty pop, pump-before-start rejection, idempotent start/stop, insufficient-half-packet gating, zero stats and NULL destroy.
+- [x] Add `manual_packet_matches_independent_pipeline`: inject/render exactly 480 frames, then derive expected capture conversion, final-stereo reference downmix, alignment and voice processing with separate objects. Require exact PCM, sequence 0, 48000 Hz/mono/480 samples and one produced packet.
+- [x] Add `queue_is_bounded_and_drains_after_stop`: produce 17 packets without popping; require 16 ordered sequence values, one drop, then empty after stop. Produce once more and require sequence 17, proving dropped sequence 16 is not reused.
+- [x] Add `pump_waits_for_each_input`: capture-only and reference-only phases each remain empty until both have 480 frames, including after restart.
+- [x] Add `threaded_voice_produces_and_stops`: start the real worker, reject external pump, drive bounded FAKE injection/render and pop waits, receive one packet, stop/join, and require no worker error or capture/reference overrun.
+- [x] Register five tests. Reconfigure the build tree before expecting the new target; verify RED as unresolved `core_app_voice_*` symbols after a valid target exists.
 
 Run:
 
@@ -70,13 +71,13 @@ cmake --build . --target test_core_app_voice -j16
 
 **Interfaces:** Implement Task 1 without changing existing audio modules.
 
-- [ ] Define private state for playback/capture/aligner/processor, queue storage, free-running atomic head/tail, atomic produced/dropped, next sequence, worker/thread IDs, stop flag, latched worker error and lifecycle booleans.
-- [ ] Validate config/out before allocation. Create capture with `{capture_backend, 48000, 1, 4096}`, then selected aligner and processor; unwind in reverse on failure. Use a single mapping from `AudioResult` to runtime errors, with allocation `AUDIO_OVERLOAD` mapped to `BREAK_RUNTIME_OOM`.
-- [ ] Implement start/reference→capture ordering, rollback and idempotence. `start_threaded` requires a stopped, non-worker object and rolls back if thread creation fails.
-- [ ] Implement pump gating on capture loss and both inputs having 480 frames; read exact counts, run aligner then processor, fill sequence/rate/channel/sample count, and publish into the ring. Full queues drop the newest frame while sequence still advances. Zero max_packets is a no-op.
-- [ ] Implement pop with acquire head/release tail and empty `out_ready=false`; implement stats from atomic produced/dropped and the two device counters. Invalid calls write neither frame nor ready/stat outputs.
-- [ ] Implement worker loop with at most four packets per iteration and a 1 ms sleep when idle; latch the first pump error. Stop requests/joins the worker before stopping capture/reference, preserves queued packets and returns the first worker/device error. Destroy stops then unwinds all owned objects.
-- [ ] Add a compile-time power-of-two assertion for the queue capacity. Do not add test hooks to production hot paths.
+- [x] Define private state for playback/capture/aligner/processor, queue storage, free-running atomic head/tail, atomic produced/dropped, next sequence, worker/thread IDs, stop flag, latched worker error and lifecycle booleans.
+- [x] Validate config/out before allocation. Create capture with `{capture_backend, 48000, 1, 4096}`, then selected aligner and processor; unwind in reverse on failure. Use a single mapping from `AudioResult` to runtime errors, with allocation `AUDIO_OVERLOAD` mapped to `BREAK_RUNTIME_OOM`.
+- [x] Implement start/reference→capture ordering, rollback and idempotence. `start_threaded` requires a stopped, non-worker object and rolls back if thread creation fails.
+- [x] Implement pump gating on capture loss and both inputs having 480 frames; read exact counts, run aligner then processor, fill sequence/rate/channel/sample count, and publish into the ring. Full queues drop the newest frame while sequence still advances. Zero max_packets is a no-op.
+- [x] Implement pop with acquire head/release tail and empty `out_ready=false`; implement stats from atomic produced/dropped and the two device counters. Invalid calls write neither frame nor ready/stat outputs.
+- [x] Implement worker loop with at most four packets per iteration and a 1 ms sleep when idle; latch the first pump error. Stop requests/joins the worker before stopping capture/reference, preserves queued packets and returns the first worker/device error. Destroy stops then unwinds all owned objects.
+- [x] Add a compile-time power-of-two assertion for the queue capacity. Do not add test hooks to production hot paths.
 
 Run:
 
@@ -86,7 +87,7 @@ cmake --build build-core-app-master --target test_core_app_voice -j16
 ctest --test-dir build-core-app-master -R '^test_core_app_voice$' --output-on-failure
 ```
 
-Expected GREEN: 4/4 and CTest 1/1 without warnings or hangs.
+Expected GREEN: 5/5 and CTest 1/1 without warnings or hangs.
 
 ### Task 3: Mutation, review and delivery
 
@@ -98,13 +99,13 @@ Expected GREEN: 4/4 and CTest 1/1 without warnings or hangs.
 - Modify: `docs/superpowers/specs/2026-11-18-core-app-voice-pump-design.md`
 - Modify: `docs/superpowers/plans/2026-11-18-core-app-voice-pump.md`
 
-- [ ] Rebuild/run the final test in `/tmp/editor-audio-asan` and `/tmp/build-audio-tsan`; require 4/4 with no report. Run strict C11 warnings and repeated threaded tests to check for flaky shutdown.
-- [ ] Mutate input gating, raw reference/capture routing, aligner→processor order, sequence advancement, drop accounting, queue head publication and worker stop/join. Require focused failure or timeout; restore and rerun clean source after every mutation.
-- [ ] Run added-line terminology checks and `git diff --check`. Obtain independent read-only review; fix Critical/Important through failing tests and scoped re-review.
-- [ ] Maintain the listed documents without deleting old limitations. Commit as `core_app: add voice PCM pump`.
-- [ ] Run `/tmp/full_trees.sh`; expected 434/434, 434/434 and 442/442. Amend final documentation if needed and rerun the final commit's three trees.
-- [ ] Fetch `origin/master`, handle divergence without force-push, push `master`, and inspect main, Windows D3D12 and Proton CI including real MSVC `/W4 /WX`.
+- [x] Rebuild/run the final test in `/tmp/editor-audio-asan` and `/tmp/build-audio-tsan`; require 5/5 with no report. Run strict C11 warnings and repeated threaded tests to check for flaky shutdown.
+- [x] Mutate input gating, raw reference/capture routing, aligner→processor order, sequence advancement, drop accounting, queue head publication and worker stop/join. Require focused failure or timeout; restore and rerun clean source after every mutation.
+- [x] Run added-line terminology checks and `git diff --check`. Obtain independent read-only review; fix Critical/Important through failing tests and scoped re-review.
+- [x] Maintain the listed documents without deleting old limitations. Commit as `core_app: add voice PCM pump`.
+- [x] Run `/tmp/full_trees.sh`; expected 434/434, 434/434 and 442/442. Amend final documentation if needed and rerun the final commit's three trees.
+- [x] Fetch `origin/master`, handle divergence without force-push, push `master`, and inspect main, Windows D3D12 and Proton CI including real MSVC `/W4 /WX`.
 
 ## Result
 
-Design and planning only; no voice-pump implementation has started.
+Implementation and local verification are complete. Five tests pass in normal, ASan+UBSan and TSan trees; worker startup has an explicit ready handshake, and independent re-review is Ready. The first three-tree run exposed the core_app naming contract's fixed seven-source list; after updating it to eight sources, the trees pass 434/434, 434/434 and 442/442.
