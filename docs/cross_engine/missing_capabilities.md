@@ -329,3 +329,6 @@
 
 
 - **第 10 节（音频）追加**：2026-11-18 新增 `audio_reference_*` 播放参考捕获，真实设备与 FAKE 渲染共用引擎最终混音回调，以固定 48 kHz 单声道 i16 SPSC 环交付；支持启停、停止后排空、有界溢出计数与安全重置。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「播放参考捕获」。这补齐了语音处理链的真实参考来源，但不等于 core_app 采集/处理/网络接线完成。仍缺：参考与采集的自动延迟/漂移闭环、生产语音管线、多声道与真实声学验证。
+
+
+- **第 10 节（音频）追加**：2026-11-18 新增 `AudioVoiceAligner`，把原始播放参考/采集的 tracker 推送、固定周期更新与分数延迟线应用接成确定性控制环；支持时域/GCC-PHAT 显式构造和任意调用分块一致。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「语音参考自动对齐」。上文「自动更新调度」和 tracker→延迟线接线由此交付。仍缺：漂移补偿闭环、reset、sinc/交叉淡化配置、生产采集/VoiceProcessor/core_app/网络接线与真实声学验证。

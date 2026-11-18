@@ -293,6 +293,15 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `test_audio` 新增 5 项（24→29）：生命周期/参数、真实立体声 PCM 流下混逐样本一致、非静音溢出身份与环索引环绕、并发渲染/读取，以及旧回调跨 restart 的确定性代际回归。普通、ASan+UBSan、TSan 均 29/29；release→relaxed 变异由 TSan 的实际环槽竞争报告捕获。
 - 这是 AEC 的参考来源，不是已经接线的语音管线；不做采集、延迟对齐、漂移补偿、编码、网络发送或真实声学验收。
 
+## 语音参考自动对齐
+
+`engine/src/audio/audio_voice_aligner.{h,c}` 将延迟 tracker 与延迟线组合为单声道、所有者线程的 `AudioVoiceAligner`：`create` 选择时域估计，`create_gcc` 显式选择 GCC-PHAT，`uses_gcc` 可核验实际后端。它消费原始播放参考和采集 PCM，输出用于后续 AEC 的对齐参考，不修改采集。
+
+- `update_period_frames` 为 1..192000；处理按精确周期边界切块，与调用者分块无关。每块先把原始参考/采集推入 tracker，并让原始参考经过延迟线；边界到达后更新一次，接受的分数延迟从下一帧生效。拒绝或历史不足保持旧延迟。
+- `updates` 统计实际调度次数（含拒绝），`rejections`、`locked` 转发 tracker 状态，`delay` 返回延迟线实际应用值。创建失败不改变 `*out`，只有 create 分配；零帧合法，非零 NULL 信号及 capture/output 别名在改状态前拒绝。reference/output 可原地复用。
+- `test_audio_voice_aligner` 6 项覆盖参数/调用契约、12.5 帧已知回声的精确更新边界、整块与 1/7/31/128 任意分块逐位一致、静音采集拒绝、GCC 构造及延迟设置失败后的周期恢复。普通、ASan+UBSan、TSan 均 6/6；原始路由、倒计时、延迟应用/提前应用、后端选择、别名、三个 NULL 检查与失败恢复十个变异均判红（删除倒计时恢复表现为超时）。
+- 未做：reset（底层 delay line 尚无 reset）、sinc/交叉淡化配置、时钟漂移补偿、多声道、设备/VoiceProcessor/core_app/网络接线与真实声学验证。
+
 ## FFT
 
 `engine/src/audio/audio_fft.{h,c}` 提供基 2 实数 FFT 与周期 Hann 窗，作为频谱降噪等频域处理的数值基础。`AudioFft` 计划保存位反转和旋转因子表；只有 `audio_fft_create` 分配内存，正逆变换与窗函数不分配、不加锁。计划创建后只读，可由多个线程共享，但每个调用者必须有自己的样本与频谱缓冲区。

@@ -1056,7 +1056,8 @@ src/renderer/lens_effects.c
     src/audio/audio_noise_suppressor.c src/audio/audio_residual_echo_suppressor.c
     src/audio/audio_delay_tracker.c src/audio/audio_gcc_phat.c
     src/audio/audio_drift_estimator.c src/audio/audio_drift_resampler.c
-    src/audio/audio_edit.c src/audio/audio_voice_processor.c src/audio/audio_wav.c
+    src/audio/audio_edit.c src/audio/audio_voice_processor.c src/audio/audio_voice_aligner.c
+    src/audio/audio_wav.c
     src/audio/audio_stream.c
     src/animation/skeleton.c
     src/animation/skeleton_socket.c
@@ -7159,6 +7160,15 @@ endif()
     target_link_libraries(test_audio_voice_processor PRIVATE m)
     add_test(NAME test_audio_voice_processor COMMAND test_audio_voice_processor)
 
+    add_executable(test_audio_voice_aligner tests/test_audio_voice_aligner.c
+        src/audio/audio_voice_aligner.c src/audio/audio_delay_tracker.c
+        src/audio/audio_delay_estimator.c src/audio/audio_gcc_phat.c src/audio/audio_fft.c)
+    target_include_directories(test_audio_voice_aligner PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_audio_voice_aligner PRIVATE m)
+    target_compile_definitions(test_audio_voice_aligner PRIVATE
+        AUDIO_VOICE_ALIGNER_DELAY_HOOK=aligner_test_delay_hook)
+    add_test(NAME test_audio_voice_aligner COMMAND test_audio_voice_aligner)
+
     add_executable(test_audio_wav tests/test_audio_wav.c src/audio/audio_wav.c)
     target_include_directories(test_audio_wav PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_audio_wav COMMAND test_audio_wav)
@@ -7179,7 +7189,8 @@ endif()
         test_audio_noise_suppressor test_audio_residual_echo_suppressor
         test_audio_delay_tracker test_audio_gcc_phat test_audio_drift_estimator
         test_audio_drift_resampler test_audio_edit test_audio_voice_processor
-        test_audio_wav test_audio_realtime_contract PROPERTIES LABELS "headless;audio")
+        test_audio_voice_aligner test_audio_wav test_audio_realtime_contract
+        PROPERTIES LABELS "headless;audio")
 
     # test_vulkan: full backend integration + golden-image regression (VK + GL).
     # Runs from the source dir so it can find shaders/ and committed golden images.

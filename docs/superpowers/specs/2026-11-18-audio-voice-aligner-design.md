@@ -1,6 +1,6 @@
 # Voice Alignment Controller Design
 
-Status: Approved for implementation under the standing autonomous delivery request
+Status: Implemented and locally verified
 
 ## Purpose
 
@@ -35,12 +35,13 @@ AudioResult audio_voice_aligner_process_i16(AudioVoiceAligner *aligner,
 double audio_voice_aligner_delay(const AudioVoiceAligner *aligner);
 u64 audio_voice_aligner_updates(const AudioVoiceAligner *aligner);
 bool audio_voice_aligner_locked(const AudioVoiceAligner *aligner);
+bool audio_voice_aligner_uses_gcc(const AudioVoiceAligner *aligner);
 u64 audio_voice_aligner_rejections(const AudioVoiceAligner *aligner);
 ```
 
 - Creation validates the nested tracker configuration and a nonzero period no greater than 192000. GCC creation also inherits the existing GCC history/FFT limits. Failure leaves `*out` unchanged; allocation failure returns `AUDIO_OVERLOAD`.
 - `destroy(NULL)` is a no-op. Destruction releases the line, tracker and controller. There is no reset API in this slice because the existing delay line has no reset operation; use a new instance for an independent stream.
-- NULL accessors return zero/false. `updates` counts scheduled tracker calls, including rejected estimates; `rejections` forwards the tracker's cumulative rejected count.
+- NULL accessors return zero/false. `updates` counts scheduled tracker calls, including rejected estimates; `rejections` forwards the tracker's cumulative rejected count. `uses_gcc` records the constructor-selected backend so integration tests cannot confuse two equally accurate estimators.
 - `delay` is the delay actually applied by the line, not merely a new estimator measurement.
 
 ## Data flow and scheduling
@@ -66,7 +67,7 @@ Add `test_audio_voice_aligner`, linked directly to the aligner, tracker, time-do
 
 1. Declare the API and register tests first; observe unresolved new symbols as RED.
 2. Validate constructors, nested/period failures, unchanged output handles, NULL accessors, zero-frame calls, invalid signal pointers and capture/output aliasing.
-3. Use a deterministic nonperiodic reference and a known 12.5-frame fractional echo. Verify the first update occurs exactly at the configured period, the measured/applied delay is near 12.5, lock/rejection/update accessors agree, and later output matches an independent fractional-delay calculation using the reported delay.
+3. Use a deterministic nonperiodic reference and a known 12.5-frame fractional echo. Verify the first update occurs exactly at the configured period, the boundary frame retains the old delay, and the next frame matches an independent fractional-delay calculation using the reported delay. Inject a delay-setting failure and require the next update to wait a complete new period; verify lock/rejection/update accessors and both constructor backends.
 4. Feed identical streams in whole blocks and irregular 1/7/31/128-frame chunks. Require byte-identical aligned output and identical update/delay/lock state at the same total frame count.
 5. Feed reference activity with a silent capture window; require scheduled update/rejection counts to advance while delay remains zero. Exercise both default and GCC constructors with the known echo.
 6. Run normal and ASan+UBSan tests plus strict C11 warnings. Mutate raw-versus-aligned estimator routing, exact scheduling, delay application, GCC construction and argument validation; require focused failures.

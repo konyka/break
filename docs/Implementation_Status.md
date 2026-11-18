@@ -1,3 +1,10 @@
+## AudioVoiceAligner 自动语音参考对齐（2026-11-18）
+
+- **交付**：新增 `audio_voice_aligner.{h,c}`，拥有 tracker 与 delay line，按固定帧周期调度估计并把接受的分数延迟用于下一帧；时域/GCC 显式构造，原始参考/采集输入，任意分块逐位一致。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-voice-aligner-design.md`、`docs/superpowers/plans/2026-11-18-audio-voice-aligner.md`。
+- **TDD 与评审**：八个入口链接 RED 后实现，随后为 `uses_gcc` 单独 RED→GREEN。独立评审发现延迟设置失败后的零倒计时和边界帧证据缺口；失败注入回归先 RED，再恢复所有返回路径的周期状态，并补齐边界/NULL 断言，复审 Ready。
+- **定向验证**：普通、ASan+UBSan、TSan 均 6/6，严格告警为零；原始路由、倒计时、延迟应用/提前应用、后端选择、别名、三个 NULL 检查与失败恢复共十个变异均判红。三树全量为 433/433、433/433、441/441，零失败。
+- **边界**：仅对齐已有 PCM 缓冲；无 reset、漂移补偿、sinc/交叉淡化配置、设备/VoiceProcessor/core_app/网络接线或真实声学验收。
+
 ## 引擎最终混音的播放参考捕获（2026-11-18）
 
 - **交付**：`audio_reference_*` 通过 miniaudio 最终混音回调向固定 16384 帧 SPSC 环发布 48 kHz 单声道 i16；真实设备与 FAKE 共用采集点，支持启停、停止后排空、溢出计数和安全重置。设计与计划见 `docs/superpowers/specs/2026-11-18-audio-playback-reference-design.md`、`docs/superpowers/plans/2026-11-18-audio-playback-reference.md`。

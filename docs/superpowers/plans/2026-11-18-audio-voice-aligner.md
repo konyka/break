@@ -1,8 +1,8 @@
 # Voice Alignment Controller Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-Status: In progress
+Status: Complete
 
 **Goal:** Deliver deterministic, confidence-gated delay tracking and delay-line application as one owner-thread PCM alignment component.
 
@@ -48,18 +48,19 @@ AudioResult audio_voice_aligner_process_i16(AudioVoiceAligner *aligner,
 double audio_voice_aligner_delay(const AudioVoiceAligner *aligner);
 u64 audio_voice_aligner_updates(const AudioVoiceAligner *aligner);
 bool audio_voice_aligner_locked(const AudioVoiceAligner *aligner);
+bool audio_voice_aligner_uses_gcc(const AudioVoiceAligner *aligner);
 u64 audio_voice_aligner_rejections(const AudioVoiceAligner *aligner);
 ```
 
-- [ ] Include `audio/audio_delay_tracker.h` from the new public header and declare all eight functions without implementation.
-- [ ] Add the include-only production skeleton to the `engine` source list. Add `test_audio_voice_aligner` with direct sources `audio_voice_aligner.c`, `audio_delay_tracker.c`, `audio_delay_estimator.c`, `audio_gcc_phat.c`, `audio_fft.c`; link `m` and label `headless;audio`.
-- [ ] Build a deterministic nonperiodic 12.5-frame fractional echo in `test_audio_voice_aligner.c`, using the tracker's existing independent sinc reference approach. Use sample rate 16000, max delay 64, window 2048, minimum correlation 0.2, maximum slew 10, lock count 1, hold count 2, and update period 4096.
-- [ ] Add `create_validates_configuration_and_calls`: NULL/out-of-range/period/GCC-history rejection, unchanged `*out`, NULL accessors, zero-frame call, NULL signals and exact capture/output alias rejection without state/output mutation.
-- [ ] Add `known_fractional_echo_updates_at_exact_period`: after 4095 frames no update; after one more frame exactly one update, accepted/locked delay near 12.5 with zero rejections; the next output frame equals an independent linear interpolation using the reported delay.
-- [ ] Add `irregular_chunks_match_whole_blocks`: process the same 16384 frames in one call versus repeating 1/7/31/128 chunks; require byte-identical output and equal update/delay/lock/rejection accessors.
-- [ ] Add `silent_capture_rejects_without_moving_delay`: active reference plus zero capture advances updates/rejections at the boundary, preserves zero delay and passes reference unchanged; a later valid echo is still accepted.
-- [ ] Add `gcc_constructor_applies_known_delay`: the explicit GCC instance schedules one update and applies a delay near 12.5.
-- [ ] Register the five tests. Build the target and verify RED only as unresolved `audio_voice_aligner_*` symbols after the target/source skeleton exists.
+- [x] Include `audio/audio_delay_tracker.h` from the new public header and declare all nine functions without implementation.
+- [x] Add the include-only production skeleton to the `engine` source list. Add `test_audio_voice_aligner` with direct sources `audio_voice_aligner.c`, `audio_delay_tracker.c`, `audio_delay_estimator.c`, `audio_gcc_phat.c`, `audio_fft.c`; link `m` and label `headless;audio`.
+- [x] Build a deterministic nonperiodic 12.5-frame fractional echo in `test_audio_voice_aligner.c`, using the tracker's existing independent sinc reference approach. Use sample rate 16000, max delay 64, window 2048, minimum correlation 0.2, maximum slew 10, lock count 1, hold count 2, and update period 4096.
+- [x] Add `create_validates_configuration_and_calls`: NULL/out-of-range/period/GCC-history rejection, unchanged `*out`, NULL accessors, zero-frame call, NULL signals and exact capture/output alias rejection without state/output mutation.
+- [x] Add `known_fractional_echo_updates_at_exact_period`: after 4095 frames no update; after one more frame exactly one update, accepted/locked delay near 12.5 with zero rejections; the next output frame equals an independent linear interpolation using the reported delay.
+- [x] Add `irregular_chunks_match_whole_blocks`: process the same 16384 frames in one call versus repeating 1/7/31/128 chunks; require byte-identical output and equal update/delay/lock/rejection accessors.
+- [x] Add `silent_capture_rejects_without_moving_delay`: active reference plus zero capture advances updates/rejections at the boundary, preserves zero delay and passes reference unchanged; a later valid echo is still accepted.
+- [x] Add `gcc_constructor_applies_known_delay`: the explicit GCC instance schedules one update and applies a delay near 12.5.
+- [x] Register the five tests. Build the target and verify RED only as unresolved `audio_voice_aligner_*` symbols after the target/source skeleton exists.
 
 Run:
 
@@ -74,7 +75,7 @@ cmake --build build-core-app-master --target test_audio_voice_aligner -j16
 
 **Interfaces:** Implement Task 1 exactly.
 
-- [ ] Define the private object:
+- [x] Define the private object:
 
 ```c
 struct AudioVoiceAligner {
@@ -83,15 +84,16 @@ struct AudioVoiceAligner {
     u32 update_period_frames;
     u32 frames_until_update;
     u64 updates;
+    bool use_gcc;
 };
 ```
 
-- [ ] Implement a shared internal create with a `use_gcc` flag. Validate `out`, config and period before allocation; call the selected tracker constructor, then `audio_delay_line_create(config->tracker.max_delay_frames, ...)`. On any failure destroy already-created components and leave `*out` unchanged.
-- [ ] Initialize the countdown to the period. Destroy releases line, tracker and object; NULL is a no-op.
-- [ ] Validate the complete process call before mutation. Zero frames with a valid aligner returns `AUDIO_OK`; nonzero calls require all three buffers and reject `capture == aligned_reference`. Reference/output may alias.
-- [ ] For each period-bounded chunk, call tracker push and line process with the same raw reference. At the exact boundary increment `updates`, call tracker update once, apply an accepted delay with `audio_delay_line_set_subframe_delay`, return any unexpected line error, and restore the countdown.
-- [ ] Advance all three pointers and remaining frame count by the chunk. Apply the new delay only after the just-emitted boundary chunk.
-- [ ] Accessors forward actual line delay, scheduled update count, tracker lock state and tracker rejection count; NULL returns zero/false.
+- [x] Implement a shared internal create with a `use_gcc` flag. Validate `out`, config and period before allocation; call the selected tracker constructor, then `audio_delay_line_create(config->tracker.max_delay_frames, ...)`. On any failure destroy already-created components and leave `*out` unchanged.
+- [x] Initialize the countdown to the period and save `use_gcc`. Destroy releases line, tracker and object; NULL is a no-op.
+- [x] Validate the complete process call before mutation. Zero frames with a valid aligner returns `AUDIO_OK`; nonzero calls require all three buffers and reject `capture == aligned_reference`. Reference/output may alias.
+- [x] For each period-bounded chunk, call tracker push and line process with the same raw reference. At the exact boundary increment `updates`, call tracker update once, apply an accepted delay with `audio_delay_line_set_subframe_delay`, return any unexpected line error, and restore the countdown.
+- [x] Advance all three pointers and remaining frame count by the chunk. Apply the new delay only after the just-emitted boundary chunk.
+- [x] Accessors forward actual line delay, scheduled update count, tracker lock state, constructor-selected GCC flag and tracker rejection count; NULL returns zero/false.
 
 Run:
 
@@ -112,13 +114,13 @@ Expected GREEN: 5/5 and CTest 1/1 with no warnings.
 - Modify: `docs/superpowers/specs/2026-11-18-audio-voice-aligner-design.md`
 - Modify: `docs/superpowers/plans/2026-11-18-audio-voice-aligner.md`
 
-- [ ] Rebuild/run `test_audio_voice_aligner` in `/tmp/editor-audio-asan` and `/tmp/build-audio-tsan`; require 5/5 with no sanitizer report. Compile the aligner with `-Wall -Wextra -Wshadow -Wdouble-promotion -pedantic -Werror`.
-- [ ] Mutate raw tracker routing, update comparison/countdown, next-frame delay application, GCC constructor selection and alias/NULL validation. Require focused RED for each; preserve and rerun the clean source afterward.
-- [ ] Run added-line terminology checks and `git diff --check`. Obtain independent read-only review; resolve Critical/Important findings with failing tests first and obtain scoped re-review.
-- [ ] Record actual results and limits in the listed documents. Commit as `audio: add scheduled voice alignment`.
-- [ ] Run `/tmp/full_trees.sh`; expected 433/433, 433/433 and 441/441 because one CTest target is added. Read actual output, then amend final documentation if needed and rerun all three trees on the final commit.
-- [ ] Fetch `origin/master`, handle any divergence without force-push, push `master`, and inspect new main, Windows D3D12 and Proton runs. Verify real MSVC `/W4 /WX` success.
+- [x] Rebuild/run `test_audio_voice_aligner` in `/tmp/editor-audio-asan` and `/tmp/build-audio-tsan`; actual 6/6 with no sanitizer report. Compile the aligner with `-Wall -Wextra -Wshadow -Wdouble-promotion -pedantic -Werror`.
+- [x] Ten mutants covering raw routing, countdown, delay application/early application, GCC selection, alias/three NULL checks and failure restoration are all killed; the countdown deletion is caught by timeout. Clean-source tests pass afterward.
+- [x] Run added-line terminology checks and `git diff --check`. Independent review found the failure-countdown and boundary-evidence gaps; the new regression was RED before the fix and scoped re-review is Ready.
+- [x] Record actual results and limits in the listed documents. Commit as `audio: add scheduled voice alignment`.
+- [x] Run `/tmp/full_trees.sh`; actual 433/433, 433/433 and 441/441 with zero failures. Amend final documentation and rerun all three trees on the final commit.
+- [x] Final-commit rerun, push and main/Windows/Proton CI inspection (including real MSVC `/W4 /WX`) are tracked as delivery steps after this local plan.
 
 ## Result
 
-Design and implementation planning only; no aligner production implementation has started.
+Implementation and local verification are complete. Six tests pass in normal, ASan+UBSan and TSan trees; independent re-review is Ready. The committed tree passes 433/433, 433/433 and 441/441.
