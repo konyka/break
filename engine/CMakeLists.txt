@@ -5511,11 +5511,6 @@ endif()
     # opening thread both run pa_* calls). The suppressions use
     # called_from_lib, so only interceptor reports whose caller is libpulse
     # are silenced; race_top does not match because the top frame is libtsan.
-    if(ENGINE_USE_TSAN AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        set_property(TEST test_core_app_audio_device test_core_app_voice_device APPEND
-            PROPERTY ENVIRONMENT
-            "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/core_app_audio_device_tsan.supp")
-    endif()
     add_test(NAME test_core_app_voice_lane
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
@@ -5536,6 +5531,14 @@ endif()
     set_tests_properties(test_core_app_voice_null PROPERTIES
         LABELS "audio_device;core_app" TIMEOUT 180 RUN_SERIAL TRUE SKIP_RETURN_CODE 77
         SKIP_REGULAR_EXPRESSION "CORE_APP_VOICE_NULL_UNAVAILABLE")
+    # The Null capture test still opens the real playback device, so it races
+    # inside libpulse like the two device tests.
+    if(ENGINE_USE_TSAN AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_property(TEST test_core_app_audio_device test_core_app_voice_device
+            test_core_app_voice_null APPEND
+            PROPERTY ENVIRONMENT
+            "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/core_app_audio_device_tsan.supp")
+    endif()
     # Creation-time fallback: --render=auto with the Vulkan entry forced to
     # fail must land on OpenGL through the runtime chain. Only the
     # multi-backend shape has a chain to fall back through.

@@ -1566,6 +1566,7 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 - `test_core_app_voice_null`（`audio_device`，跳过码 77）：强制 Null 采集，带 `--require-device` 退出 77 且 `fallback=none`，不带时退出 0 且 `fallback=off`，两种情况都不出现 ready 或 stopped 行。没有播放设备的主机上 trace 先出现 `event=audio mode=device result=unavailable`，此时测试报告跳过而不是失败。
 - `test_core_app_voice` 第 7 项：采集设备无法启动时 start 与 start_threaded 返回 UNAVAILABLE（先 RED 后 GREEN）。
 - TSan：真实 PulseAudio 设备在 libpulse 内部有竞争（栈顶是 libtsan 的 memcpy/recvmsg 拦截器，调用方为 `pa_*`）。`tests/core_app_audio_device_tsan.supp` 只用 `called_from_lib:libpulsecommon-*.so` 与 `called_from_lib:libpulse.so.0`；实测不加 suppress 和改用 `race_top` 都仍报告。
+- TSan 补充（2026-11-18）：`test_core_app_voice_null` 虽然采集是 Null 后端，但播放仍打开真实 PulseAudio 设备，在 TSan 树里以同样的 libpulse 竞争失败（未改动的 HEAD 也一样）。现在它与 `test_core_app_audio_device`、`test_core_app_voice_device` 共用这份 suppress 文件，TSan 下 6 项相关测试全部通过。
 
 残余风险：CI 没有音频设备，借用设备的关闭顺序只由本机 ASan 设备测试覆盖（voice/audio 顺序调换的变异只在本机判红）；voice 仍 live 时的 rollback 路径未测。仍缺：编码与通过网络 hook 发送、处理尾部排空、漂移补偿、设备丢失自动恢复和真实声学验收。
 
