@@ -374,6 +374,239 @@ TEST(a_capture_device_that_cannot_start_is_unavailable)
     audio_system_destroy(playback);
 }
 
+static CoreAppVoiceConfig recovery_config(AudioSystem *playback, u32 interval_ms,
+                                          u32 max_failures)
+{
+    CoreAppVoiceConfig config = test_config(playback);
+    config.reopen_interval_ms = interval_ms;
+    config.max_reopen_failures = max_failures;
+    return config;
+}
+
+static void voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *out)
+{
+    memset(out, 0, sizeof(*out));
+    ASSERT_EQ(core_app_voice_stats(voice, out), BREAK_RUNTIME_OK);
+}
+
+TEST(a_lost_capture_is_reopened_and_the_reference_backlog_dropped)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = recovery_config(playback, 0u, 3u);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    AudioPcmStreamHandle stream = open_reference_stream(playback);
+    ASSERT_NEQ(stream, 0u);
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+    i16 stereo[VOICE_TEST_FRAMES * 2u] = {0};
+    f32 rendered[VOICE_TEST_FRAMES * 2u];
+    f32 capture[VOICE_TEST_FRAMES];
+    fill_capture(capture, 0u);
+    drive_fake(voice, playback, stream, capture, stereo, rendered);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    /* playback keeps rendering while nothing is captured */
+    for (u32 i = 0u; i < 3u; ++i) {
+        ASSERT_EQ(audio_system_render(playback, rendered, VOICE_TEST_FRAMES), AUDIO_OK);
+    }
+    ASSERT_TRUE(audio_reference_available(playback) >= 3u * VOICE_TEST_FRAMES);
+    ASSERT_EQ(core_app_voice_pump(voice, 4u), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(audio_reference_available(playback) < VOICE_TEST_FRAMES);
+    CoreAppVoiceStats stats;
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_recoveries, 1u);
+    ASSERT_EQ(stats.capture_reopen_failures, 0u);
+    fill_capture(capture, 1u);
+    drive_fake(voice, playback, stream, capture, stereo, rendered);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    for (u32 sequence = 0u; sequence < 2u; ++sequence) {
+        BreakVoiceFrame frame = {0};
+        bool ready = false;
+        ASSERT_EQ(core_app_voice_pop(voice, &frame, &ready), BREAK_RUNTIME_OK);
+        ASSERT_TRUE(ready);
+        ASSERT_EQ(frame.sequence, sequence);
+    }
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+    ASSERT_EQ(audio_pcm_stream_close(playback, stream), AUDIO_OK);
+    audio_system_destroy(playback);
+}
+
+TEST(a_reopened_capture_processes_like_a_fresh_pipeline)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = recovery_config(playback, 0u, 3u);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    AudioPcmStreamHandle stream = open_reference_stream(playback);
+    ASSERT_NEQ(stream, 0u);
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+    i16 stereo[VOICE_TEST_FRAMES * 2u] = {0};
+    f32 rendered[VOICE_TEST_FRAMES * 2u];
+    f32 capture[VOICE_TEST_FRAMES];
+    fill_capture(capture, 0u);
+    drive_fake(voice, playback, stream, capture, stereo, rendered);
+    fill_capture(capture, 7u);
+    for (u32 i = 0u; i < VOICE_TEST_FRAMES; ++i) capture[i] *= 4.0f;
+    drive_fake(voice, playback, stream, capture, stereo, rendered);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    /* the second packet is still captured but stale once the device is lost */
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 4u), BREAK_RUNTIME_OK);
+    f32 fresh_f32[VOICE_TEST_FRAMES];
+    i16 fresh_i16[VOICE_TEST_FRAMES];
+    fill_capture(fresh_f32, 1u);
+    for (u32 i = 0u; i < VOICE_TEST_FRAMES; ++i) {
+        fresh_i16[i] = (i16)lrintf(fresh_f32[i] * 32767.0f);
+    }
+    drive_fake(voice, playback, stream, fresh_f32, stereo, rendered);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    AudioVoiceAligner *aligner = NULL;
+    AudioVoiceProcessor *processor = NULL;
+    ASSERT_EQ(audio_voice_aligner_create(&config.aligner, &aligner), AUDIO_OK);
+    ASSERT_EQ(audio_voice_processor_create(&config.processor, &processor), AUDIO_OK);
+    const i16 silent[VOICE_TEST_FRAMES] = {0};
+    i16 aligned[VOICE_TEST_FRAMES];
+    ASSERT_EQ(audio_voice_aligner_process_i16(aligner, silent, fresh_i16, aligned,
+                                               VOICE_TEST_FRAMES), AUDIO_OK);
+    audio_voice_processor_process_i16(processor, aligned, fresh_i16, VOICE_TEST_FRAMES);
+    BreakVoiceFrame frame = {0};
+    bool ready = false;
+    ASSERT_EQ(core_app_voice_pop(voice, &frame, &ready), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(ready);
+    ASSERT_EQ(frame.sequence, 0u);
+    ASSERT_EQ(core_app_voice_pop(voice, &frame, &ready), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(ready);
+    ASSERT_EQ(frame.sequence, 1u);
+    ASSERT_TRUE(memcmp(frame.samples, fresh_i16, sizeof(fresh_i16)) == 0);
+    ASSERT_EQ(core_app_voice_pop(voice, &frame, &ready), BREAK_RUNTIME_OK);
+    ASSERT_FALSE(ready);
+    audio_voice_aligner_destroy(aligner);
+    audio_voice_processor_destroy(processor);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+    ASSERT_EQ(audio_pcm_stream_close(playback, stream), AUDIO_OK);
+    audio_system_destroy(playback);
+}
+
+TEST(refused_reopens_are_retried_until_the_limit_of_consecutive_failures)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = recovery_config(playback, 0u, 3u);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+    CoreAppVoiceStats stats;
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    for (u32 i = 0u; i < 2u; ++i) {
+        ASSERT_EQ(core_app_voice_simulate_capture_event(voice,
+                                                        AUDIO_CAPTURE_EVENT_REOPEN_REFUSED),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_reopen_failures, 1u);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_reopen_failures, 2u);
+    ASSERT_EQ(stats.capture_recoveries, 0u);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_recoveries, 1u);
+    /* a recovery resets the consecutive count: three more refusals end it
+     * on the third, not the first */
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    for (u32 i = 0u; i < 3u; ++i) {
+        ASSERT_EQ(core_app_voice_simulate_capture_event(voice,
+                                                        AUDIO_CAPTURE_EVENT_REOPEN_REFUSED),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_UNAVAILABLE);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_reopen_failures, 5u);
+    ASSERT_EQ(stats.capture_recoveries, 1u);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+    audio_system_destroy(playback);
+}
+
+TEST(reopen_attempts_wait_for_the_interval)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = recovery_config(playback, 10000u, 3u);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_REOPEN_REFUSED),
+              BREAK_RUNTIME_OK);
+    CoreAppVoiceStats stats;
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_reopen_failures, 1u);
+    ASSERT_EQ(stats.capture_recoveries, 0u);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+    audio_system_destroy(playback);
+}
+
+TEST(the_worker_recovers_a_lost_capture_and_keeps_running)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = recovery_config(playback, 0u, 3u);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    ASSERT_EQ(core_app_voice_start_threaded(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    CoreAppVoiceStats stats;
+    memset(&stats, 0, sizeof(stats));
+    for (u32 attempt = 0u; attempt < 2000u && stats.capture_recoveries == 0u; ++attempt) {
+        ASSERT_EQ(core_app_voice_stats(voice, &stats), BREAK_RUNTIME_OK);
+        if (stats.capture_recoveries == 0u) time_sleep_us(1000u);
+    }
+    ASSERT_EQ(stats.capture_recoveries, 1u);
+    ASSERT_EQ(core_app_voice_worker_error(voice), BREAK_RUNTIME_OK);
+    AudioPcmStreamHandle stream = open_reference_stream(playback);
+    ASSERT_NEQ(stream, 0u);
+    f32 capture[VOICE_TEST_FRAMES];
+    fill_capture(capture, 0u);
+    i16 stereo[VOICE_TEST_FRAMES * 2u] = {0};
+    f32 rendered[VOICE_TEST_FRAMES * 2u];
+    const u64 produced_before = stats.produced;
+    for (u32 attempt = 0u; attempt < 1000u && stats.produced == produced_before; ++attempt) {
+        if (core_app_voice_inject(voice, capture, VOICE_TEST_FRAMES) != BREAK_RUNTIME_OK) break;
+        u32 written = 0u;
+        if (audio_pcm_stream_write_i16(playback, stream, stereo, VOICE_TEST_FRAMES,
+                                       &written) != AUDIO_OK ||
+            audio_system_render(playback, rendered, VOICE_TEST_FRAMES) != AUDIO_OK) {
+            break;
+        }
+        ASSERT_EQ(core_app_voice_stats(voice, &stats), BREAK_RUNTIME_OK);
+        if (stats.produced == produced_before) time_sleep_us(1000u);
+    }
+    ASSERT_TRUE(stats.produced > produced_before);
+    ASSERT_EQ(core_app_voice_worker_error(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+    ASSERT_EQ(audio_pcm_stream_close(playback, stream), AUDIO_OK);
+    audio_system_destroy(playback);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_lifecycle);
     RUN_TEST(manual_packet_matches_independent_pipeline);
@@ -382,4 +615,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(threaded_voice_produces_and_stops);
     RUN_TEST(worker_error_and_capture_backend_are_visible_while_running);
     RUN_TEST(a_capture_device_that_cannot_start_is_unavailable);
+    RUN_TEST(a_lost_capture_is_reopened_and_the_reference_backlog_dropped);
+    RUN_TEST(a_reopened_capture_processes_like_a_fresh_pipeline);
+    RUN_TEST(refused_reopens_are_retried_until_the_limit_of_consecutive_failures);
+    RUN_TEST(reopen_attempts_wait_for_the_interval);
+    RUN_TEST(the_worker_recovers_a_lost_capture_and_keeps_running);
 TEST_MAIN_END()

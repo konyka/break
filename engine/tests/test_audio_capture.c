@@ -493,6 +493,56 @@ TEST(requested_stops_are_not_losses_and_the_null_device_reopens)
     audio_capture_destroy(capture);
 }
 
+TEST(a_refused_reopen_keeps_the_device_lost_once_per_event)
+{
+    AudioCapture *capture = started_fake(1u, 64u);
+    AudioCaptureConfig config = fake_config(1u, 1u << 15);
+    AudioCapture *null_capture = NULL;
+    ASSERT_TRUE(capture != NULL);
+    ASSERT_EQ(audio_capture_simulate_event(capture, AUDIO_CAPTURE_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(audio_capture_simulate_event(capture, AUDIO_CAPTURE_EVENT_REOPEN_REFUSED),
+              AUDIO_OK);
+    ASSERT_EQ(audio_capture_simulate_event(capture, AUDIO_CAPTURE_EVENT_REOPEN_REFUSED),
+              AUDIO_OK);
+    ASSERT_EQ(audio_capture_reopen(capture, NULL), AUDIO_FAILED);
+    ASSERT_TRUE(audio_capture_lost(capture));
+    ASSERT_EQ(audio_capture_reopen(capture, NULL), AUDIO_FAILED);
+    ASSERT_TRUE(audio_capture_lost(capture));
+    ASSERT_EQ(audio_capture_reopen(capture, NULL), AUDIO_OK);
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    ASSERT_TRUE(audio_capture_running(capture));
+    /* a refusal is not a reroute and not a loss by itself */
+    ASSERT_EQ(audio_capture_simulate_event(capture, AUDIO_CAPTURE_EVENT_REOPEN_REFUSED),
+              AUDIO_OK);
+    ASSERT_TRUE(!audio_capture_lost(capture));
+    ASSERT_EQ(audio_capture_reroutes(capture), 0u);
+    audio_capture_destroy(capture);
+
+    /* the null device: a refused reopen leaves it lost; the next reopen
+     * opens it again and restarts it */
+    config.backend = AUDIO_BACKEND_NULL;
+    ASSERT_EQ(audio_capture_create(&config, &null_capture), AUDIO_OK);
+    ASSERT_EQ(audio_capture_start(null_capture), AUDIO_OK);
+    ASSERT_EQ(audio_capture_simulate_event(null_capture, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              AUDIO_OK);
+    ASSERT_EQ(audio_capture_simulate_event(null_capture, AUDIO_CAPTURE_EVENT_REOPEN_REFUSED),
+              AUDIO_OK);
+    ASSERT_EQ(audio_capture_reopen(null_capture, NULL), AUDIO_FAILED);
+    ASSERT_TRUE(audio_capture_lost(null_capture));
+    ASSERT_EQ(audio_capture_reopen(null_capture, NULL), AUDIO_OK);
+    ASSERT_TRUE(audio_capture_running(null_capture));
+    ASSERT_TRUE(read_frames(null_capture, 480u) >= 480u);
+    audio_capture_destroy(null_capture);
+
+    config.backend = AUDIO_BACKEND_DEFAULT;
+    if (audio_capture_create(&config, &null_capture) == AUDIO_OK) {
+        ASSERT_EQ(audio_capture_simulate_event(null_capture,
+                                               AUDIO_CAPTURE_EVENT_REOPEN_REFUSED),
+                  AUDIO_REJECTED);
+        audio_capture_destroy(null_capture);
+    }
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_refuses_every_invalid_config);
     RUN_TEST(injected_frames_are_converted_and_read_in_order);
@@ -506,4 +556,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_lost_fake_device_keeps_its_frames_and_reopens);
     RUN_TEST(reroutes_are_counted_and_capture_keeps_running);
     RUN_TEST(requested_stops_are_not_losses_and_the_null_device_reopens);
+    RUN_TEST(a_refused_reopen_keeps_the_device_lost_once_per_event);
 TEST_MAIN_END()

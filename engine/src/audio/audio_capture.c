@@ -35,6 +35,7 @@ struct AudioCapture {
     atomic_uint_least64_t reroutes;
     atomic_bool wanted; /* start requested and not stopped since */
     atomic_bool lost;   /* stopped while wanted, without a stop request */
+    atomic_uint refused_reopens; /* simulated: reopens still to refuse */
     atomic_uint active;
     bool context_ready;
     bool device_ready;
@@ -236,6 +237,7 @@ AudioResult audio_capture_create_named(const AudioCaptureConfig *config, const c
     atomic_init(&capture->reroutes, 0u);
     atomic_init(&capture->wanted, false);
     atomic_init(&capture->lost, false);
+    atomic_init(&capture->refused_reopens, 0u);
     atomic_init(&capture->active, 0u);
     if (config->backend == AUDIO_BACKEND_FAKE) {
         capture_copy_name(capture->device_name, sizeof(capture->device_name), "fake");
@@ -299,11 +301,25 @@ u64 audio_capture_reroutes(const AudioCapture *capture) {
     return capture ? atomic_load_explicit(&capture->reroutes, memory_order_relaxed) : 0u;
 }
 
+/* Takes one simulated refusal, if any is pending. */
+static bool capture_take_refusal(AudioCapture *capture) {
+    u32 pending = atomic_load_explicit(&capture->refused_reopens, memory_order_acquire);
+    while (pending > 0u) {
+        if (atomic_compare_exchange_weak_explicit(&capture->refused_reopens, &pending,
+                                                  pending - 1u, memory_order_acq_rel,
+                                                  memory_order_acquire)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 AudioResult audio_capture_reopen(AudioCapture *capture, const char *device_name) {
     if (!capture) return AUDIO_INVALID;
     bool named = device_name && device_name[0] != '\0';
+    if (capture->backend == AUDIO_BACKEND_FAKE && named) return AUDIO_REJECTED;
+    if (capture_take_refusal(capture)) return AUDIO_FAILED;
     if (capture->backend == AUDIO_BACKEND_FAKE) {
-        if (named) return AUDIO_REJECTED;
         atomic_store_explicit(&capture->lost, false, memory_order_release);
         return AUDIO_OK;
     }
@@ -328,10 +344,15 @@ AudioResult audio_capture_reopen(AudioCapture *capture, const char *device_name)
 
 AudioResult audio_capture_simulate_event(AudioCapture *capture, AudioCaptureEvent event) {
     if (!capture || (event != AUDIO_CAPTURE_EVENT_DEVICE_LOST &&
-                     event != AUDIO_CAPTURE_EVENT_REROUTED)) {
+                     event != AUDIO_CAPTURE_EVENT_REROUTED &&
+                     event != AUDIO_CAPTURE_EVENT_REOPEN_REFUSED)) {
         return AUDIO_INVALID;
     }
     if (capture->backend == AUDIO_BACKEND_DEFAULT) return AUDIO_REJECTED;
+    if (event == AUDIO_CAPTURE_EVENT_REOPEN_REFUSED) {
+        atomic_fetch_add_explicit(&capture->refused_reopens, 1u, memory_order_acq_rel);
+        return AUDIO_OK;
+    }
     capture_on_event(capture, event);
     return AUDIO_OK;
 }

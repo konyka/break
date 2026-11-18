@@ -2024,6 +2024,10 @@ static BreakRuntimeError app_audio_drain(CoreApp *app, u32 budget) {
 }
 
 #define CORE_APP_VOICE_TICK_FRAMES 800u
+/* A lost microphone is reopened every 100 ms for about 5 s before the
+ * device lane fails the run. Fake mode never loses its capture. */
+#define CORE_APP_VOICE_REOPEN_INTERVAL_MS 100u
+#define CORE_APP_VOICE_MAX_REOPEN_FAILURES 50u
 
 static const char *app_voice_mode_name(CoreAppVoiceMode mode) {
     return mode == CORE_APP_VOICE_DEVICE ? "device" : "fake";
@@ -2078,7 +2082,11 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
     AudioBackend capture_backend = AUDIO_BACKEND_DEFAULT;
     if (mode == CORE_APP_VOICE_FAKE) capture_backend = AUDIO_BACKEND_FAKE;
     if (app->config.voice_null_capture) capture_backend = AUDIO_BACKEND_NULL;
-    const CoreAppVoiceConfig config = app_voice_config(playback, capture_backend);
+    CoreAppVoiceConfig config = app_voice_config(playback, capture_backend);
+    if (mode == CORE_APP_VOICE_DEVICE) {
+        config.reopen_interval_ms = CORE_APP_VOICE_REOPEN_INTERVAL_MS;
+        config.max_reopen_failures = CORE_APP_VOICE_MAX_REOPEN_FAILURES;
+    }
     BreakRuntimeError result = core_app_voice_create(&config, &lane->voice);
     /* miniaudio falls back to its Null backend when no real capture backend
      * initializes; that device delivers silence forever, so it counts as no
@@ -2086,6 +2094,14 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
     if (result == BREAK_RUNTIME_OK && mode == CORE_APP_VOICE_DEVICE &&
         strcmp(core_app_voice_capture_backend(lane->voice), "Null") == 0) {
         result = BREAK_RUNTIME_UNAVAILABLE;
+    }
+    /* The worker may rewrite the device name while it reopens a lost
+     * capture, so the name is read before the worker starts. */
+    char capture[128] = "none";
+    if (result == BREAK_RUNTIME_OK &&
+        (!core_app_voice_capture_name(lane->voice, capture, sizeof(capture)) ||
+         capture[0] == '\0')) {
+        snprintf(capture, sizeof(capture), "none");
     }
     if (result == BREAK_RUNTIME_OK) {
         result = mode == CORE_APP_VOICE_FAKE ? core_app_voice_start(lane->voice)
@@ -2104,11 +2120,6 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
         return result == BREAK_RUNTIME_UNAVAILABLE ? BREAK_RUNTIME_FAILED : result;
     }
     lane->live = true;
-    char capture[128] = "none";
-    if (!core_app_voice_capture_name(lane->voice, capture, sizeof(capture)) ||
-        capture[0] == '\0') {
-        snprintf(capture, sizeof(capture), "none");
-    }
     for (char *c = capture; *c != '\0'; ++c) {
         if (*c == ' ' || *c == '\t' || *c == '\n' || *c == '\r') *c = '_';
     }
@@ -2163,9 +2174,11 @@ static BreakRuntimeError app_voice_tick(CoreApp *app) {
         result = core_app_voice_pump(lane->voice, 4u);
         if (result != BREAK_RUNTIME_OK) return result;
     } else {
-        /* A device that was present at start and then failed (lost capture,
-         * short read) is a defect of this run, not an absent facility, so it
-         * fails the run instead of mapping to exit 77. */
+        /* A device that was present at start and then failed (a lost capture
+         * that stayed unopenable for CORE_APP_VOICE_MAX_REOPEN_FAILURES
+         * attempts, a short read) is a defect of this run, not an absent
+         * facility, so it fails the run instead of mapping to exit 77. A
+         * capture the worker reopened in time keeps the run going. */
         const BreakRuntimeError worker = core_app_voice_worker_error(lane->voice);
         if (worker != BREAK_RUNTIME_OK) {
             (void)app_trace(app,
@@ -2203,10 +2216,12 @@ static BreakRuntimeError app_voice_join_cb(void *user) {
         result = app_trace(app,
             "COREAPPTRACE version=1 event=voice mode=%s result=stopped produced=%" PRIu64
             " consumed=%" PRIu64 " dropped=%" PRIu64 " sequence_gaps=%" PRIu64 " peak=%u"
-            " capture_overruns=%" PRIu64 " reference_overruns=%" PRIu64 "\n",
+            " capture_overruns=%" PRIu64 " reference_overruns=%" PRIu64
+            " capture_recoveries=%" PRIu64 " capture_reopen_failures=%" PRIu64 "\n",
             app_voice_mode_name(app->config.voice_mode), stats.produced, lane->consumed,
             stats.dropped, lane->sequence_gaps, lane->peak, stats.capture_overruns,
-            stats.reference_overruns);
+            stats.reference_overruns, stats.capture_recoveries,
+            stats.capture_reopen_failures);
     }
     core_app_voice_destroy(lane->voice);
     lane->voice = NULL;

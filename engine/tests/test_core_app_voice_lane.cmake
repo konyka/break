@@ -55,7 +55,7 @@ if(NOT fake_a MATCHES "event=voice mode=fake result=ready frames=480 capture=fak
     message(FATAL_ERROR "the voice lane never became ready\n${fake_a}")
 endif()
 if(NOT fake_a MATCHES
-   "event=voice mode=fake result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=([0-9]+) sequence_gaps=([0-9]+) peak=([0-9]+) capture_overruns=([0-9]+) reference_overruns=([0-9]+)\n")
+   "event=voice mode=fake result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=([0-9]+) sequence_gaps=([0-9]+) peak=([0-9]+) capture_overruns=([0-9]+) reference_overruns=([0-9]+) capture_recoveries=0 capture_reopen_failures=0\n")
     message(FATAL_ERROR "the voice lane never stopped\n${fake_a}")
 endif()
 set(produced "${CMAKE_MATCH_1}")

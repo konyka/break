@@ -1,3 +1,9 @@
+## Core App 语音采集设备自动恢复（2026-11-18）
+
+- **交付**：`CoreAppVoiceConfig` 新增 `reopen_interval_ms`、`max_reopen_failures`；`core_app_voice_pump` 在采集丢失时按间隔重开默认输入，成功后丢弃播放参考积压并重置 processor，连续失败达到上限才返回 UNAVAILABLE。`CoreAppVoiceStats` 与 voice `result=stopped` 行追加 `capture_recoveries`、`capture_reopen_failures`。core_app device 模式为 100 ms × 50 次。`audio_capture` 新增仅测试用的 `AUDIO_CAPTURE_EVENT_REOPEN_REFUSED`。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-recovery-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-recovery.md`。
+- **TDD**：`test_audio_capture` 13 项、`test_core_app_voice` 12 项均先 RED（缺枚举、缺字段）后 GREEN；两条 trace 合同先 RED 后 GREEN。五个变异（不重开、不清零、不丢积压、不重置 processor、不丢弃旧采集帧）都判红。
+- **边界**：只恢复采集默认设备；不切换命名设备、不恢复播放参考设备；无漂移补偿或真实声学验证。
+
 ## Core App 服务端接收对端语音（2026-11-18）
 
 - **交付**：传输层为 `0x4006` 注册 `net_on_voice`，每个连接在第一条语音到达时创建一个 `BreakVoiceReceiver`（40 ms 播放延迟，64 帧抖动缓冲），`net_tick` 按单调时钟弹出到期帧（每槽位每 tick 最多 16 帧）。连接关闭和 `net_destroy` 时先做尾部排空（`now = UINT64_MAX`，最多 128 帧），再汇总统计。`network_stats` 追加 `voice_frames_received`、`voice_frames_played`、`voice_frames_concealed`、`voice_frames_dropped`、`voice_peak`。对端语音只影响计数，不进入模拟或设备。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-receive-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-receive.md`。

@@ -18,6 +18,13 @@ struct CoreAppVoice {
     atomic_uint_least64_t produced;
     atomic_uint_least64_t dropped;
     u32 next_sequence;
+    u32 reopen_interval_ms;
+    u32 max_reopen_failures;
+    u32 consecutive_reopen_failures;
+    bool reopen_attempted;
+    u64 last_reopen_us;
+    atomic_uint_least64_t capture_recoveries;
+    atomic_uint_least64_t capture_reopen_failures;
     PlatformThread worker;
     PlatformThreadId worker_id;
     atomic_int worker_error;
@@ -58,6 +65,8 @@ BreakRuntimeError core_app_voice_create(const CoreAppVoiceConfig *config,
     CoreAppVoice *voice = (CoreAppVoice *)calloc(1u, sizeof(*voice));
     if (!voice) return BREAK_RUNTIME_OOM;
     voice->playback = config->playback;
+    voice->reopen_interval_ms = config->reopen_interval_ms;
+    voice->max_reopen_failures = config->max_reopen_failures;
     const AudioCaptureConfig capture_config = {
         config->capture_backend, 48000u, 1u, 4096u};
     AudioResult result = audio_capture_create(&capture_config, &voice->capture);
@@ -149,6 +158,55 @@ static BreakRuntimeError voice_pump_packet(CoreAppVoice *voice) {
     return BREAK_RUNTIME_OK;
 }
 
+/* The reference rendered while nothing was captured has no matching
+ * capture, and frames captured before the loss end before the gap; keeping
+ * either would misalign echo cancellation after a reopen. The aligner keeps
+ * its delay estimate and settles again on the new frames. */
+static void voice_discard_stale(CoreAppVoice *voice) {
+    i16 scratch[CORE_APP_VOICE_FRAME_FRAMES];
+    u32 frames = 0u;
+    while (audio_capture_available(voice->capture) > 0u &&
+           audio_capture_read_i16(voice->capture, scratch, CORE_APP_VOICE_FRAME_FRAMES,
+                                  &frames) == AUDIO_OK &&
+           frames > 0u) {
+    }
+    while (audio_reference_available(voice->playback) > 0u &&
+           audio_reference_read_i16(voice->playback, scratch, CORE_APP_VOICE_FRAME_FRAMES,
+                                    &frames) == AUDIO_OK &&
+           frames > 0u) {
+    }
+}
+
+/* Pumping thread only. OK when the capture runs again; UNAVAILABLE when
+ * recovery is off or the consecutive refusals reached the limit; REJECTED
+ * while the interval since the last attempt runs, or when an attempt was
+ * refused below the limit. */
+static BreakRuntimeError voice_recover_capture(CoreAppVoice *voice) {
+    if (voice->max_reopen_failures == 0u ||
+        voice->consecutive_reopen_failures >= voice->max_reopen_failures) {
+        return BREAK_RUNTIME_UNAVAILABLE;
+    }
+    const u64 now = time_microseconds();
+    if (voice->reopen_attempted &&
+        now - voice->last_reopen_us < (u64)voice->reopen_interval_ms * 1000u) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+    voice->reopen_attempted = true;
+    voice->last_reopen_us = now;
+    if (audio_capture_reopen(voice->capture, NULL) != AUDIO_OK) {
+        voice->consecutive_reopen_failures++;
+        atomic_fetch_add_explicit(&voice->capture_reopen_failures, 1u, memory_order_relaxed);
+        return voice->consecutive_reopen_failures >= voice->max_reopen_failures
+                   ? BREAK_RUNTIME_UNAVAILABLE
+                   : BREAK_RUNTIME_REJECTED;
+    }
+    voice->consecutive_reopen_failures = 0u;
+    voice_discard_stale(voice);
+    audio_voice_processor_reset(voice->processor);
+    atomic_fetch_add_explicit(&voice->capture_recoveries, 1u, memory_order_relaxed);
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets) {
     if (!voice) return BREAK_RUNTIME_INVALID;
     if (!voice->started) return BREAK_RUNTIME_REJECTED;
@@ -157,7 +215,11 @@ BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets) {
         return BREAK_RUNTIME_REJECTED;
     }
     if (max_packets == 0u) return BREAK_RUNTIME_OK;
-    if (audio_capture_lost(voice->capture)) return BREAK_RUNTIME_UNAVAILABLE;
+    if (audio_capture_lost(voice->capture)) {
+        const BreakRuntimeError recovered = voice_recover_capture(voice);
+        if (recovered == BREAK_RUNTIME_REJECTED) return BREAK_RUNTIME_OK;
+        if (recovered != BREAK_RUNTIME_OK) return recovered;
+    }
     for (u32 packet = 0u; packet < max_packets; ++packet) {
         if (audio_capture_available(voice->capture) < CORE_APP_VOICE_FRAME_FRAMES ||
             audio_reference_available(voice->playback) < CORE_APP_VOICE_FRAME_FRAMES) {
@@ -189,6 +251,8 @@ BreakRuntimeError core_app_voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *o
         atomic_load_explicit(&voice->dropped, memory_order_relaxed),
         audio_capture_overruns(voice->capture),
         audio_reference_overruns(voice->playback),
+        atomic_load_explicit(&voice->capture_recoveries, memory_order_relaxed),
+        atomic_load_explicit(&voice->capture_reopen_failures, memory_order_relaxed),
     };
     *out = stats;
     return BREAK_RUNTIME_OK;

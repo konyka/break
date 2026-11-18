@@ -37,6 +37,10 @@ bool audio_capture_running(const AudioCapture *capture);
 typedef enum {
     AUDIO_CAPTURE_EVENT_DEVICE_LOST = 0,
     AUDIO_CAPTURE_EVENT_REROUTED,
+    /* Simulation only: the next audio_capture_reopen fails with AUDIO_FAILED
+     * and changes nothing, as if no input device could be opened. Each event
+     * refuses one reopen. */
+    AUDIO_CAPTURE_EVENT_REOPEN_REFUSED,
 } AudioCaptureEvent;
 
 /* The device stopped without a stop request (unplugged, disabled, taken by
@@ -50,11 +54,12 @@ u64 audio_capture_reroutes(const AudioCapture *capture);
  * loss is kept). The ring and its frames are kept and the lost state is
  * cleared. REJECTED for a name no device has or a FAKE backend with a name,
  * FAILED when the device does not open; the old device and state are left
- * as they were on failure. Owner thread. */
+ * as they were on failure. The pumping thread; never concurrent with
+ * start, stop, destroy or audio_capture_device_name. */
 AudioResult audio_capture_reopen(AudioCapture *capture, const char *device_name);
 /* FAKE and NULL backends only (tests): delivers `event` through the device
- * notification path. INVALID for NULL or an unknown event, REJECTED for the
- * DEFAULT backend. */
+ * notification path (REOPEN_REFUSED only arms one refused reopen). INVALID
+ * for NULL or an unknown event, REJECTED for the DEFAULT backend. */
 AudioResult audio_capture_simulate_event(AudioCapture *capture, AudioCaptureEvent event);
 
 /* Copies up to max_frames of the oldest captured frames (interleaved by

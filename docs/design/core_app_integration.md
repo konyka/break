@@ -1610,3 +1610,21 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 - 变异：不注册处理函数、去掉尾部排空、不更新峰值，三者都让 `test_core_app_network_voice` 失败。
 
 仍缺：混音或播放对端语音、对端之间转发、按对端静音、漂移补偿、语音专用限速（目前只有会话层通用限速）、采集设备恢复、Opus。
+
+## 补充（2026-11-18）：语音采集设备自动恢复
+
+设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-voice-recovery-design.md`、`docs/superpowers/plans/2026-11-18-core-app-voice-recovery.md`。前几节「仍缺」里的“设备恢复”由此交付（只覆盖采集设备）。
+
+- **组件**：`CoreAppVoiceConfig.reopen_interval_ms` / `max_reopen_failures`。`max_reopen_failures = 0` 时行为不变。否则 `core_app_voice_pump` 发现采集丢失时，每次调用最多尝试一次 `audio_capture_reopen(capture, NULL)`（重开默认输入），两次尝试至少间隔 `reopen_interval_ms`（单调时钟）。成功：`capture_recoveries++`，连续失败计数清零，丢弃丢失期间渲染的播放参考（没有对应的采集，留着会让回声消除错位），重置 voice processor，同一次调用继续处理。失败：`capture_reopen_failures++`，未到上限时 pump 返回 OK 且不出包；连续失败达到上限后返回 UNAVAILABLE，worker 以该错误退出（与原行为一致）。
+- **线程**：`audio_capture_reopen` 是 owner 线程调用。threaded 模式只有 worker 调 pump，所以由 worker 重开；manual 模式由泵线程重开。设备回调仍只写环形缓冲和 lost 标志。
+- **core_app**：device 模式配置 100 ms 间隔、50 次（约 5 s）。fake 模式不启用（其采集不会丢失）。voice `result=stopped` 行末尾追加 `capture_recoveries=N capture_reopen_failures=M`；`test_core_app_voice_lane.cmake` 要求 fake 模式两者为 0，`test_core_app_voice_device.cmake` 接受任意值。设备 lane 只有在恢复用尽后才以 `reason=worker` 失败。
+- **测试钩子**：`AUDIO_CAPTURE_EVENT_REOPEN_REFUSED`（FAKE/NULL 后端）让下一次 reopen 返回 FAILED 且保持丢失状态，每个事件只拒绝一次；DEFAULT 后端返回 REJECTED。
+
+验证：
+
+- `test_audio_capture` 新增 `a_refused_reopen_keeps_the_device_lost_once_per_event`（先 RED：枚举未定义）：FAKE 两次拒绝后第三次成功；拒绝事件本身不算丢失也不算 reroute；NULL 设备拒绝一次后重开并恢复实时采集。
+- `test_core_app_voice` 新增五项（先 RED：配置与统计字段不存在）：丢失期间渲染 3 包参考后恢复，积压降到一包以下且序号连续；两次拒绝后第三次恢复、恢复后计数清零（再拒绝三次才 UNAVAILABLE，累计 failures=5）；10 s 间隔内不重试；worker 在运行中恢复且 worker error 保持 OK。原有 `worker_error_and_capture_backend_are_visible_while_running`（未启用恢复）仍得到 UNAVAILABLE。
+- 新增 `a_reopened_capture_processes_like_a_fresh_pipeline`：重开后第一包与新建 aligner + processor 处理同一输入逐样本一致；去掉 processor 重置或去掉旧采集帧丢弃都会失败。
+- 变异：不调用 reopen（3 项失败）、恢复后不清零（1 项）、不丢弃积压（1 项）。
+
+仍缺：按名称切换到其他输入设备、播放参考设备恢复、漂移补偿、真实声学验证、Opus。
