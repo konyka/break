@@ -109,3 +109,5 @@ Expected GREEN: 5/5 and CTest 1/1 without warnings or hangs.
 ## Result
 
 Implementation and local verification are complete. Five tests pass in normal, ASan+UBSan and TSan trees; worker startup has an explicit ready handshake, and independent re-review is Ready. The first three-tree run exposed the core_app naming contract's fixed seven-source list; after updating it to eight sources, the trees pass 434/434, 434/434 and 442/442.
+
+The first push (`6dc2bef9`) failed the main CI Windows + MSVC (headless) job: MSVC C4701 flagged `frame` at `test_core_app_voice.c:320` as potentially uninitialized, and `/WX` made it an error. Test-local `BreakVoiceFrame` and `CoreAppVoiceStats` values are now `{0}`-initialized; assertions and production code are unchanged.
