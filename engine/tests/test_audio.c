@@ -633,13 +633,18 @@ TEST(reference_concurrent_render_and_read_wrap_without_overruns)
     i16 out[256];
     u32 received = 0u;
     AudioResult read_result = AUDIO_OK;
+    /* done is read before the empty read that may end the loop: the render
+     * thread may publish its last block and set done between an empty read
+     * and the check, so an empty read only ends the loop when done was
+     * already set before it. */
     while (received < job.total) {
         u32 frames = 0u;
+        const bool finished = atomic_load_explicit(&job.done, memory_order_acquire);
         read_result = audio_reference_read_i16(as, out, 256u, &frames);
         if (read_result != AUDIO_OK) break;
         received += frames;
         if (frames == 0u) {
-            if (atomic_load_explicit(&job.done, memory_order_acquire)) break;
+            if (finished) break;
             platform_thread_yield();
         }
     }
