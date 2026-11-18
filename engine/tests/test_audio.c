@@ -712,8 +712,7 @@ static bool reference_frames_arrive(AudioSystem *as)
 {
     for (u32 attempt = 0u; attempt < 2000u; ++attempt) {
         if (audio_reference_available(as) > 0u) return true;
-        struct timespec pause = {0, 1000000};
-        nanosleep(&pause, NULL);
+        ma_sleep(1u);
     }
     return false;
 }
@@ -746,8 +745,7 @@ static bool lost_within(AudioSystem *as, u32 max_ms)
 {
     for (u32 waited = 0u; waited < max_ms; ++waited) {
         if (audio_system_lost(as)) return true;
-        struct timespec pause = {0, 1000000};
-        nanosleep(&pause, NULL);
+        ma_sleep(1u);
     }
     return false;
 }
