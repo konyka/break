@@ -59,6 +59,8 @@
  * dropped so a short lane or a high gain is not a solid block. */
 #define EDITOR_AUDIO_GRID_MIN_PX 4.0f
 #define EDITOR_AUDIO_GRID_MAX 8u /* 4 levels x 2 halves */
+/* a label needs this much room above its line to stay inside the lane */
+#define EDITOR_AUDIO_GRID_TEXT_PX 11.0f
 static const double k_audio_grid_db[] = {-6.0, -12.0, -18.0, -24.0};
 #define EDITOR_BOTTOM_TAB_AUDIO 4u /* index in editor_panels.c k_tab_pages[0] */
 #define EDITOR_AUDIO_LIGHT_MID_LINE 0xD3D5DBFFu
@@ -105,6 +107,7 @@ struct EditorPanelAudio {
     u32 grid_count;                      /* lines the last paint drew (lane 0) */
     double grid_db[EDITOR_AUDIO_GRID_MAX];
     i32 grid_y[EDITOR_AUDIO_GRID_MAX];
+    char grid_label[EDITOR_AUDIO_GRID_MAX][8]; /* "" when unlabelled */
     i16 min[EDITOR_AUDIO_LANES_MAX][BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
     i16 max[EDITOR_AUDIO_LANES_MAX][BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
 };
@@ -359,12 +362,34 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
             }
             (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, lane_mid - offset, w, 1.0f});
             (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, lane_mid + offset, w, 1.0f});
+            /* the level above the upper line, when it fits inside the lane;
+             * the lower line is the same level mirrored, so one is enough */
+            char label[8];
+            const float top = lane_mid - offset;
+            const bool labelled = top - (float)lane * lane_h >= EDITOR_AUDIO_GRID_TEXT_PX;
+            (void)snprintf(label, sizeof(label), "%d", (int)k_audio_grid_db[g]);
+            if (labelled) {
+                my_vgcanvas_set_fill_color(
+                    vg, my_color_from_rgba32(break_editor_theme_is_light()
+                                                 ? EDITOR_AUDIO_LIGHT_CURSOR
+                                                 : BREAK_EDITOR_THEME_TEXT_SECONDARY));
+                (void)my_vgcanvas_draw_text(vg, label, 2.0f, top - 1.0f);
+                my_vgcanvas_set_fill_color(
+                    vg, my_color_from_rgba32(break_editor_theme_is_light()
+                                                 ? EDITOR_AUDIO_LIGHT_MID_LINE
+                                                 : BREAK_EDITOR_THEME_BORDER));
+            }
             if (lane == 0u && grid->grid_count + 2u <= EDITOR_AUDIO_GRID_MAX) {
                 /* the model the test reads: lane 0's two halves */
                 grid->grid_db[grid->grid_count] = k_audio_grid_db[g];
-                grid->grid_y[grid->grid_count++] = (i32)(lane_mid - offset);
+                grid->grid_y[grid->grid_count] = (i32)top;
+                (void)snprintf(grid->grid_label[grid->grid_count],
+                               sizeof(grid->grid_label[0]), "%s", labelled ? label : "");
+                grid->grid_count++;
                 grid->grid_db[grid->grid_count] = k_audio_grid_db[g];
-                grid->grid_y[grid->grid_count++] = (i32)(lane_mid + offset);
+                grid->grid_y[grid->grid_count] = (i32)(lane_mid + offset);
+                grid->grid_label[grid->grid_count][0] = '\0'; /* mirrored: no label */
+                grid->grid_count++;
             }
         }
         my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(BREAK_EDITOR_THEME_ACCENT));
@@ -608,6 +633,10 @@ static void audio_ruler_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
 
 u32 editor_panel_audio_grid_count(const EditorPanelAudio *panel) {
     return panel != NULL ? panel->grid_count : 0u;
+}
+
+const char *editor_panel_audio_grid_label(const EditorPanelAudio *panel, u32 i) {
+    return panel != NULL && i < panel->grid_count ? panel->grid_label[i] : NULL;
 }
 
 bool editor_panel_audio_grid(const EditorPanelAudio *panel, u32 i, double *out_db,

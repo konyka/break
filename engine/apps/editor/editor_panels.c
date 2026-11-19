@@ -4274,6 +4274,10 @@ bool break_editor_shell_audio_grid(const BreakEditorShell *shell, u32 i, double 
     return shell != NULL && editor_panel_audio_grid(shell->audio_panel, i, out_db, out_y);
 }
 
+const char *break_editor_shell_audio_grid_label(const BreakEditorShell *shell, u32 i) {
+    return shell != NULL ? editor_panel_audio_grid_label(shell->audio_panel, i) : NULL;
+}
+
 double break_editor_shell_audio_peak_db(const BreakEditorShell *shell) {
     return shell != NULL ? editor_panel_audio_peak_db(shell->audio_panel)
                          : BREAK_EDITOR_AUDIO_DB_FLOOR;

@@ -510,6 +510,10 @@ u32 break_editor_shell_audio_solo(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_grid_count(const BreakEditorShell *shell);
 bool break_editor_shell_audio_grid(const BreakEditorShell *shell, u32 i, double *out_db,
                                    i32 *out_y);
+/* The label drawn for grid entry i: the level without a unit for the upper
+ * line of each pair, "" for the mirrored lower one or one too close to the
+ * lane's edge, NULL for an out-of-range index. */
+const char *break_editor_shell_audio_grid_label(const BreakEditorShell *shell, u32 i);
 double break_editor_shell_audio_peak_db(const BreakEditorShell *shell);
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);

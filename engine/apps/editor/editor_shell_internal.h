@@ -151,6 +151,9 @@ u32 editor_panel_audio_solo(const EditorPanelAudio *panel);
 u32 editor_panel_audio_grid_count(const EditorPanelAudio *panel);
 bool editor_panel_audio_grid(const EditorPanelAudio *panel, u32 i, double *out_db,
                              i32 *out_y);
+/* The label drawn for grid entry i ("" when unlabelled, NULL when i is out
+ * of range). */
+const char *editor_panel_audio_grid_label(const EditorPanelAudio *panel, u32 i);
 double editor_panel_audio_peak_db(const EditorPanelAudio *panel);
 double editor_panel_audio_rms_db(const EditorPanelAudio *panel);
 u32 editor_panel_audio_set_mute(EditorPanelAudio *panel, u32 channel);

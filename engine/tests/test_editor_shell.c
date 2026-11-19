@@ -3886,6 +3886,35 @@ TEST(audio_page_draws_a_db_grid_on_each_lane)
         ASSERT_EQ(above, below); /* mirrored */
     }
     ASSERT_FALSE(break_editor_shell_audio_grid(shell, n, NULL, NULL));
+    /* each upper line names its level; the mirrored lower one does not
+     * (design 2026-11-20-editor-audio-grid-labels) */
+    {
+        const double half = (double)wave->rect.h / 2.0;
+        u32 labelled = 0u;
+        for (i = 0u; i < n; i++) {
+            double db = 0.0;
+            i32 y = 0;
+            char expect[8];
+            const char *label;
+            ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
+            label = break_editor_shell_audio_grid_label(shell, i);
+            ASSERT_NOT_NULL(label);
+            (void)snprintf(expect, sizeof(expect), "%d", (int)db);
+            if ((double)y < half && (double)y >= 11.0) {
+                ASSERT_STR_EQ(label, expect);
+                labelled++;
+            } else {
+                ASSERT_STR_EQ(label, "");
+            }
+        }
+        ASSERT_TRUE(labelled > 0u);
+        ASSERT_TRUE(break_editor_shell_audio_grid_label(shell, n) == NULL);
+        /* a line too close to the lane's top keeps its line but loses its
+         * label. A full-height lane never gets there with powers-of-two
+         * gains (the levels land at 13.5 px or less from the centre, and
+         * anything past 27 px is dropped outright), so the stereo case
+         * below is what exercises it. */
+    }
     /* the gain moves the grid: at 4x, -18 dB sits where -6 dB was at 1x.
      * On a 54 px lane only -6 and -12 clear the 4 px gap at 1x, which is
      * why the pair checked here is -6/-18 rather than -12/-24. */
@@ -3913,6 +3942,8 @@ TEST(audio_page_draws_a_db_grid_on_each_lane)
             ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
             if (db < -17.0 && db > -19.0 && y < wave->rect.h / 2) {
                 ASSERT_TRUE(y >= y6_at_1x - 1 && y <= y6_at_1x + 1);
+                /* the labels follow the levels that still fit */
+                ASSERT_STR_EQ(break_editor_shell_audio_grid_label(shell, i), "-18");
                 found = true;
             }
             /* -6 dB no longer fits: 4x puts it past the lane's edge */
@@ -3940,11 +3971,24 @@ TEST(audio_page_draws_a_db_grid_on_each_lane)
         ASSERT_EQ(break_editor_shell_audio_lane_count(shell), 2u);
         /* half the lane height, so fewer levels clear the 4 px gap */
         ASSERT_TRUE(break_editor_shell_audio_grid_count(shell) <= mono_n);
-        for (i = 0u; i < break_editor_shell_audio_grid_count(shell); i++) {
-            double db = 0.0;
-            i32 y = 0;
-            ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
-            ASSERT_TRUE(y >= 0 && y < wave->rect.h / 2);
+        {
+            bool saw_unlabelled_upper = false;
+            for (i = 0u; i < break_editor_shell_audio_grid_count(shell); i++) {
+                double db = 0.0;
+                i32 y = 0;
+                const char *label;
+                ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
+                ASSERT_TRUE(y >= 0 && y < wave->rect.h / 2);
+                label = break_editor_shell_audio_grid_label(shell, i);
+                ASSERT_NOT_NULL(label);
+                /* a 27 px lane leaves no room above the line, so the upper
+                 * entries lose their labels while keeping their lines */
+                if (y < wave->rect.h / 4) {
+                    ASSERT_STR_EQ(label, "");
+                    saw_unlabelled_upper = true;
+                }
+            }
+            ASSERT_TRUE(saw_unlabelled_upper);
         }
     }
     break_editor_shell_destroy(shell);
