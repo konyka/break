@@ -205,6 +205,7 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(AUDIO_MUTE_LEFT, "Mute L"),
         T(AUDIO_MUTE_RIGHT, "Mute R"),
         T(AUDIO_MUTE_FMT, "Mute %u"),
+        T(AUDIO_LUFS_NORM, "-23 LUFS"),
     },
     [BREAK_EDITOR_LANG_ZH_CN] = {
         T(ADD, "添加"),
@@ -400,5 +401,6 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(AUDIO_MUTE_LEFT, "静音左"),
         T(AUDIO_MUTE_RIGHT, "静音右"),
         T(AUDIO_MUTE_FMT, "静音 %u"),
+        T(AUDIO_LUFS_NORM, "归一 -23"),
     },
 };

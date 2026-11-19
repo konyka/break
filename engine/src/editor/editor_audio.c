@@ -652,6 +652,46 @@ bool break_editor_doc_audio_normalize_range(BreakEditorDoc *doc, u32 begin, u32 
     return audio_snapshot_commit(snapshot, doc, snapshot->before_frames);
 }
 
+bool break_editor_doc_audio_normalize_loudness(BreakEditorDoc *doc, double target_lufs) {
+    double current = 0.0, peak = 0.0, rms = 0.0;
+    if (!doc || !doc->audio || !isfinite(target_lufs) ||
+        target_lufs < BREAK_EDITOR_AUDIO_LUFS_FLOOR || target_lufs > 0.0) {
+        return false;
+    }
+    const u32 frames = doc->audio->frames;
+    if (!break_editor_doc_audio_loudness_range(doc, 0u, frames, &current) ||
+        current <= BREAK_EDITOR_AUDIO_LUFS_FLOOR) {
+        return false; /* too short to measure, or digitally silent */
+    }
+    if (!break_editor_doc_audio_peak_range(doc, 0u, frames, &peak, &rms) || peak <= 0.0) {
+        return false;
+    }
+    {
+        double gain = pow(10.0, (target_lufs - current) / 20.0);
+        /* never clip: cap the gain at what lands the peak on full scale */
+        const double headroom = 32767.0 / peak;
+        if (gain > headroom) {
+            gain = headroom;
+        }
+        if (gain <= 0.0 || !isfinite(gain)) {
+            return false;
+        }
+        BreakEditorAudioSnapshotCmd *snapshot = audio_snapshot_create(doc, "normalize_lufs");
+        if (!snapshot) return false;
+        {
+            const usize count = (usize)snapshot->before_frames * doc->audio->channels;
+            for (usize i = 0u; i < count; ++i) {
+                const double scaled = (double)snapshot->after[i] * gain;
+                const double rounded = scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5;
+                snapshot->after[i] = rounded > 32767.0
+                                         ? (i16)32767
+                                         : (rounded < -32768.0 ? (i16)-32768 : (i16)rounded);
+            }
+        }
+        return audio_snapshot_commit(snapshot, doc, snapshot->before_frames);
+    }
+}
+
 bool break_editor_doc_audio_mix(BreakEditorDoc *doc, const i16 *source,
                                 u32 source_frames, double gain) {
     if (!doc || !doc->audio || !isfinite(gain) || gain < -8.0 || gain > 8.0 ||

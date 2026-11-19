@@ -1,3 +1,11 @@
+## 编辑器音频归一化到响度目标（2026-11-20）
+
+- **交付**：核心新增 `break_editor_doc_audio_normalize_loudness(doc, target_lufs)`：测出整段的整体响度，施加把它移到目标（[-70, 0] LUFS）的恒定增益，与其他编辑一样记一条可撤销快照。增益按峰值余量封顶，因此结果永不削波——够不到目标时峰值落在满刻度、调用仍然成功，达到的响度低于目标（调用方可以再测一次）。没有附件、目标越界、片长不足一个 400 毫秒块、数字静音时返回 false 且不改动。音频页视图行新增 `editor-audio-lufs-norm` 按钮（标签 "-23 LUFS"，EBU R128 目标），失败时记已有的编辑失败日志；shell 新增 `break_editor_shell_audio_normalize_lufs`。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-lufs-normalize-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-lufs-normalize.md`。
+- **TDD**：核心与 shell 各一个新用例，先链接失败再通过，`test_editor_audio` 19/19、`test_editor_shell` 229/229。5 个变异判红：增益指数除以 10 而非 20、去掉峰值余量封顶、同时去掉两个静音守卫、按钮目标从 -23 改成 -14、失败路径不记日志。
+- **两点测试说明**：数满刻度样本数检测不出削波——正弦缩放到满刻度时每个周期本就有一个样本等于 32767，第一版断言（满刻度样本少于 40 个）在正确输出上就失败（实测 5000 个）；真正的判别量是峰值与 RMS 之比，增益被压低时保持正弦的 √2，被饱和压平时会塌向 1，用例改为断言该比值。两个静音守卫彼此冗余——响度地板检查与 `peak <= 0` 检查都会拒绝数字静音，单独删掉任一个套件仍绿、同时删掉才判红；用例钉住“静音被拒绝”而不是“由哪个守卫拒绝”，代码保留两者，因为各自都是其所护值的自然前置条件。
+- **既有测试的拦截**：按钮标签最初在中英文表里都是 "-23 LUFS"，`test_editor_i18n` 的 `chinese_table_is_actually_translated` 判红（中文条目与英文完全相同视为未翻译）。中文标签改为 "归一 -23"；这条检查是对的——只有数字的标签仍然需要动词用读者的语言写。
+- **边界**：目标不可在设置里配置、用的是增益压低而不是真峰值限幅（因此结果仍可能超过 -1 dBTP）、没有分声道增益、没有对白门控目标。
+
 ## 编辑器音频短期响度与响度范围（LRA）（2026-11-20）
 
 - **交付**：核心新增 `break_editor_doc_audio_short_term_range`（范围末尾 3 秒的响度）与 `break_editor_doc_audio_loudness_range_lra`（EBU R128 的响度范围：3 秒窗按 1 秒步进，-70 LUFS 绝对门后再按存活窗均值下移 20 LU 的相对门，取第 95 与第 10 百分位之差）。整体响度里的分块循环提取为 `audio_window_loudness(doc, begin, end, window, step, …)`，三种测量共用 K 加权与逐声道滤波，只在窗长、步长和归约方式上不同。shell 新增 `break_editor_shell_audio_short_term_lufs`、`break_editor_shell_audio_lra`，电平标签在有读数时追加 "lra x.x LU"。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-lra-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-lra.md`。

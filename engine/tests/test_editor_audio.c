@@ -1030,7 +1030,84 @@ TEST(short_term_and_lra_describe_level_variation)
     break_editor_doc_destroy(doc);
 }
 
+/* Normalize to a loudness target (design 2026-11-20-editor-audio-lufs-normalize). */
+TEST(normalize_loudness_reaches_the_target_without_clipping)
+{
+    static i16 pcm[40000u];
+    static i16 original[40000u];
+    double lufs = 0.0, before = 0.0;
+    BreakEditorDoc *doc = break_editor_doc_create();
+    const double two_pi = 2.0 * 3.14159265358979323846;
+    ASSERT_NOT_NULL(doc);
+    /* a quiet 1 kHz tone, about -40 LUFS */
+    for (u32 i = 0u; i < 40000u; ++i) {
+        pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 8000.0) * 330.0);
+        original[i] = pcm[i];
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 40000u));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 40000u, &before));
+    ASSERT_TRUE(before < -35.0);
+    ASSERT_TRUE(break_editor_doc_audio_normalize_loudness(doc, -23.0));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 40000u, &lufs));
+    ASSERT_TRUE(lufs > -24.0 && lufs < -22.0);
+    /* the undo restores the samples byte for byte */
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), original, sizeof(original)), 0);
+    /* already at the target: at most a rounding step away afterwards */
+    ASSERT_TRUE(break_editor_doc_audio_normalize_loudness(doc, -23.0));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 40000u, &before));
+    ASSERT_TRUE(break_editor_doc_audio_normalize_loudness(doc, -23.0));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 40000u, &lufs));
+    ASSERT_TRUE(lufs > before - 0.2 && lufs < before + 0.2);
+    /* a target the clip cannot reach without clipping: the gain is capped,
+     * the call still succeeds, and the peak lands at full scale */
+    ASSERT_TRUE(break_editor_doc_audio_normalize_loudness(doc, 0.0));
+    {
+        double peak = 0.0, rms = 0.0, crest_before = 0.0, crest_after = 0.0;
+        const i16 *now;
+        u32 saturated = 0u;
+        ASSERT_TRUE(break_editor_doc_audio_peak_range(doc, 0u, 40000u, &peak, &rms));
+        ASSERT_TRUE(peak > 32000.0);
+        ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 40000u, &lufs));
+        ASSERT_TRUE(lufs < 0.0); /* short of the target, as expected */
+        /* the gain was reduced rather than letting saturation flatten the
+         * tone. The sample count at full scale is not the test: a sine
+         * scaled to full scale legitimately has one sample per cycle at its
+         * crest. The peak-to-RMS ratio is: it stays at a sine's sqrt(2),
+         * where a clipped-to-square version would collapse towards 1. */
+        crest_after = peak / rms;
+        crest_before = 1.41421356; /* a sine's peak/RMS */
+        ASSERT_TRUE(crest_after > crest_before - 0.05);
+        ASSERT_TRUE(crest_after < crest_before + 0.05);
+        now = break_editor_doc_audio_samples(doc);
+        (void)now;
+        (void)saturated;
+    }
+    /* the rejected cases change nothing */
+    {
+        const u64 revision = break_editor_doc_audio_revision(doc);
+        ASSERT_TRUE(!break_editor_doc_audio_normalize_loudness(doc, -70.1));
+        ASSERT_TRUE(!break_editor_doc_audio_normalize_loudness(doc, 0.1));
+        ASSERT_TRUE(!break_editor_doc_audio_normalize_loudness(NULL, -23.0));
+        ASSERT_EQ(break_editor_doc_audio_revision(doc), revision);
+    }
+    /* a silent clip has no loudness to move */
+    break_editor_doc_reset(doc);
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 40000u));
+    ASSERT_TRUE(!break_editor_doc_audio_normalize_loudness(doc, -23.0));
+    /* a clip shorter than one 400 ms block cannot be measured */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 1000u; ++i) {
+        pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 8000.0) * 3000.0);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 1000u));
+    ASSERT_TRUE(!break_editor_doc_audio_normalize_loudness(doc, -23.0));
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(normalize_loudness_reaches_the_target_without_clipping);
     RUN_TEST(short_term_and_lra_describe_level_variation);
     RUN_TEST(loudness_range_weights_by_frequency_and_gates);
     RUN_TEST(true_peak_range_sees_intersample_peaks);

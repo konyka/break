@@ -536,6 +536,10 @@ double break_editor_shell_audio_lufs(const BreakEditorShell *shell);
  * cannot hold the 3-second window(s) each needs. */
 double break_editor_shell_audio_short_term_lufs(const BreakEditorShell *shell);
 double break_editor_shell_audio_lra(const BreakEditorShell *shell);
+/* Normalizes the document's audio to `target` LUFS (design
+ * 2026-11-20-editor-audio-lufs-normalize), as one undoable edit; false logs
+ * the edit-failed line and changes nothing. */
+bool break_editor_shell_audio_normalize_lufs(BreakEditorShell *shell, double target);
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);
 u32 break_editor_shell_audio_mute(const BreakEditorShell *shell);

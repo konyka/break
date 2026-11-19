@@ -3936,6 +3936,52 @@ TEST(audio_page_scales_each_lane_independently)
     break_editor_shell_destroy(shell);
 }
 
+/* Normalize to a loudness target (design
+ * 2026-11-20-editor-audio-lufs-normalize). */
+TEST(audio_page_normalizes_to_the_loudness_target)
+{
+    static i16 pcm[40000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *button;
+    u32 i;
+    double before, after;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    /* 5 s of a quiet square wave, far below the target */
+    for (i = 0u; i < 40000u; i++) pcm[i] = (i16)(i % 2u == 0u ? 300 : -300);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 40000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    button = find(shell, "editor-audio-lufs-norm");
+    ASSERT_NOT_NULL(button);
+    ASSERT_STR_EQ(((const my_button_t *)button)->text, "-23 LUFS");
+    before = break_editor_shell_audio_lufs(shell);
+    ASSERT_TRUE(before < -35.0);
+    /* the button moves the clip to the target, as one undoable edit */
+    emit_click(button);
+    break_editor_shell_tick(shell);
+    after = break_editor_shell_audio_lufs(shell);
+    ASSERT_TRUE(after > -24.0 && after < -22.0);
+    ASSERT_TRUE(break_editor_undo(doc));
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_lufs(shell) < -35.0);
+    /* a silent clip logs the edit-failed line and changes nothing */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 40000u));
+    break_editor_shell_tick(shell);
+    {
+        const u64 revision = break_editor_doc_audio_revision(doc);
+        ASSERT_FALSE(break_editor_shell_audio_normalize_lufs(shell, -23.0));
+        ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                      "audio edit failed\n");
+        ASSERT_EQ(break_editor_doc_audio_revision(doc), revision);
+    }
+    break_editor_shell_destroy(shell);
+}
+
 /* dB grid (design 2026-11-20-editor-audio-db-grid). */
 TEST(audio_page_draws_a_db_grid_on_each_lane)
 {
@@ -14607,6 +14653,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_mutes_one_channel_in_the_preview);
     RUN_TEST(audio_page_reports_peak_and_rms_in_db);
     RUN_TEST(audio_page_draws_a_db_grid_on_each_lane);
+    RUN_TEST(audio_page_normalizes_to_the_loudness_target);
     RUN_TEST(audio_page_scales_each_lane_independently);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);

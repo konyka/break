@@ -89,6 +89,13 @@ bool break_editor_doc_audio_cut(BreakEditorDoc *doc, u32 begin, u32 end);
 bool break_editor_doc_audio_fade(BreakEditorDoc *doc, double fade_in_ms,
                                  double fade_out_ms);
 bool break_editor_doc_audio_normalize(BreakEditorDoc *doc, double target_dbfs);
+/* Applies the constant gain that moves the clip's integrated loudness to
+ * `target_lufs` ([-70, 0]), as one undoable snapshot. The gain is reduced
+ * when the target would push the sample peak past full scale, so the result
+ * never clips and the achieved loudness may stay below the target. False
+ * and no change without an attachment, for a target out of range, a clip
+ * too short to measure, or a digitally silent clip. */
+bool break_editor_doc_audio_normalize_loudness(BreakEditorDoc *doc, double target_lufs);
 /* fade / normalize applied to frames [begin, end) only (the normalize peak
  * is measured there); frames outside are unchanged. One undoable snapshot
  * command each; false and no change for an empty or out-of-clip range or the
