@@ -14,8 +14,13 @@
  * keeps the document's dirty flag as it was (a clean scene stays clean); the
  * page itself refreshes on the next tick.
  *
- * Bounds: 2 x 4096 i16 columns + a 96-byte info line, no allocation after
- * create. Threading: shell thread only. */
+ * Preview: the Play/Stop button plays a copy of the attachment through the
+ * shell's sink (editor_audio_preview.h); the tick pumps it, stops it when the
+ * attachment revision changes and appends " | <position> / <length> s" to the
+ * info line while it plays.
+ *
+ * Bounds: 2 x 4096 i16 columns + a 128-byte info line; the preview allocates
+ * its copy buffer once at create. Threading: shell thread only. */
 
 #include "editor_shell_internal.h"
 
@@ -25,11 +30,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "editor_audio_preview.h"
 #include "editor_theme.h"
 #include "myui/my_layout.h"
+#include "myui/widgets/my_button.h"
 #include "myui/widgets/my_label.h"
 
-#define EDITOR_AUDIO_INFO_BYTES 96u
+#define EDITOR_AUDIO_INFO_BYTES 128u
 #define EDITOR_BOTTOM_TAB_AUDIO 4u /* index in editor_panels.c k_tab_pages[0] */
 #define EDITOR_AUDIO_LIGHT_MID_LINE 0xD3D5DBFFu
 
@@ -37,6 +44,10 @@ struct EditorPanelAudio {
     BreakEditorShell *shell;  /* borrowed */
     my_widget_t *info;        /* weak (owned by the window tree) */
     my_widget_t *waveform;    /* weak */
+    my_widget_t *play;        /* weak */
+    BreakEditorAudioPreview *preview; /* owned */
+    bool shown_playing;       /* state the button label shows */
+    u32 shown_position;       /* preview position the info line shows */
     bool fresh;               /* false = next tick refreshes */
     u64 seen_revision;
     i32 seen_width;
@@ -48,18 +59,34 @@ struct EditorPanelAudio {
 
 static void audio_panel_format_info(EditorPanelAudio *panel) {
     const BreakEditorDoc *doc = break_editor_shell_doc(panel->shell);
+    const bool playing = break_editor_audio_preview_playing(panel->preview);
     if (!break_editor_doc_audio_attached(doc)) {
         (void)snprintf(panel->info_text, sizeof(panel->info_text), "%s",
                        break_editor_tr(BREAK_EDITOR_TR_AUDIO_EMPTY));
     } else {
         const u32 rate = break_editor_doc_audio_sample_rate(doc);
-        (void)snprintf(panel->info_text, sizeof(panel->info_text),
-                       break_editor_tr(BREAK_EDITOR_TR_AUDIO_INFO_FMT), (unsigned)rate,
-                       (unsigned)break_editor_doc_audio_channels(doc),
-                       (double)break_editor_doc_audio_frames(doc) / (double)rate);
+        int n = snprintf(panel->info_text, sizeof(panel->info_text),
+                         break_editor_tr(BREAK_EDITOR_TR_AUDIO_INFO_FMT), (unsigned)rate,
+                         (unsigned)break_editor_doc_audio_channels(doc),
+                         (double)break_editor_doc_audio_frames(doc) / (double)rate);
+        if (playing && n > 0 && (usize)n < sizeof(panel->info_text)) {
+            const double prate = (double)break_editor_audio_preview_sample_rate(panel->preview);
+            (void)snprintf(panel->info_text + n, sizeof(panel->info_text) - (usize)n,
+                           break_editor_tr(BREAK_EDITOR_TR_AUDIO_POSITION_FMT),
+                           (double)break_editor_audio_preview_position_frames(panel->preview) /
+                               prate,
+                           (double)break_editor_audio_preview_length_frames(panel->preview) /
+                               prate);
+        }
     }
+    panel->shown_playing = playing;
+    panel->shown_position = break_editor_audio_preview_position_frames(panel->preview);
     if (panel->info != NULL) {
         (void)my_label_set_text(panel->info, panel->info_text);
+    }
+    if (panel->play != NULL) {
+        (void)my_button_set_text(panel->play, break_editor_tr(playing ? BREAK_EDITOR_TR_AUDIO_STOP
+                                                                      : BREAK_EDITOR_TR_AUDIO_PLAY));
     }
 }
 
@@ -128,15 +155,59 @@ EditorPanelAudio *editor_panel_audio_create(BreakEditorShell *shell) {
         return NULL;
     }
     panel = (EditorPanelAudio *)calloc(1u, sizeof(EditorPanelAudio));
-    if (panel != NULL) {
-        panel->shell = shell;
+    if (panel == NULL) {
+        return NULL;
+    }
+    panel->shell = shell;
+    panel->preview = break_editor_audio_preview_create();
+    if (panel->preview == NULL) {
+        free(panel);
+        return NULL;
     }
     return panel;
 }
 
 void editor_panel_audio_destroy(EditorPanelAudio *panel) {
     /* the widgets belong to the window tree */
+    if (panel != NULL) {
+        break_editor_audio_preview_destroy(panel->preview);
+    }
     free(panel);
+}
+
+struct BreakEditorAudioPreview *editor_panel_audio_preview(EditorPanelAudio *panel) {
+    return panel != NULL ? panel->preview : NULL;
+}
+
+bool editor_panel_audio_toggle(EditorPanelAudio *panel) {
+    if (panel == NULL) {
+        return false;
+    }
+    if (break_editor_audio_preview_playing(panel->preview)) {
+        break_editor_audio_preview_stop(panel->preview);
+    } else if (!break_editor_audio_preview_has_sink(panel->preview)) {
+        editor_shell_log(panel->shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_NO_OUTPUT));
+    } else if (!break_editor_audio_preview_play(panel->preview,
+                                                break_editor_shell_doc(panel->shell))) {
+        editor_shell_log(panel->shell, "%s",
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_PLAY_FAILED));
+    } else {
+        /* the copy is taken now: bring the page up to date so that only an
+         * attachment change from here on stops it */
+        if (!panel->fresh || panel->seen_revision != break_editor_doc_audio_revision(
+                                                         break_editor_shell_doc(panel->shell))) {
+            audio_panel_refresh(panel);
+        }
+        break_editor_audio_preview_pump(panel->preview);
+    }
+    audio_panel_format_info(panel);
+    return break_editor_audio_preview_playing(panel->preview);
+}
+
+static void on_audio_play_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_toggle((EditorPanelAudio *)ctx);
 }
 
 static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char *params) {
@@ -150,7 +221,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 }
 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
-    my_widget_t *section, *info, *waveform;
+    my_widget_t *section, *bar, *info, *play, *waveform;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -159,6 +230,27 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
         return false;
     }
     (void)my_widget_set_layouter(section, my_layouter_linear_create(NULL, false, 2));
+    bar = my_widget_create(NULL, "editor-audio-bar");
+    if (bar == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_layouter(bar, my_layouter_linear_create(NULL, true, 4));
+    if (!audio_panel_add(section, bar, "w:100% h:24")) {
+        my_widget_unref(section);
+        return false;
+    }
+    play = my_button_create(NULL, break_editor_tr(BREAK_EDITOR_TR_AUDIO_PLAY));
+    if (play == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(play, "editor-audio-play");
+    (void)my_widget_on(play, "click", on_audio_play_click, panel);
+    if (!audio_panel_add(bar, play, "w:80 h:100%")) {
+        my_widget_unref(section);
+        return false;
+    }
     info = my_label_create(NULL, "");
     if (info == NULL) {
         my_widget_unref(section);
@@ -166,7 +258,7 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     }
     (void)my_widget_set_name(info, "editor-audio-info");
     (void)my_label_set_align(info, MY_TEXT_ALIGN_LEFT);
-    if (!audio_panel_add(section, info, "w:100% h:22")) {
+    if (!audio_panel_add(bar, info, "w:1f h:100%")) {
         my_widget_unref(section);
         return false;
     }
@@ -189,6 +281,7 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
         return false;
     }
     panel->info = info;
+    panel->play = play;
     panel->waveform = waveform;
     panel->fresh = false;
     audio_panel_format_info(panel);
@@ -201,9 +294,18 @@ void editor_panel_audio_tick(EditorPanelAudio *panel) {
         return;
     }
     doc = break_editor_shell_doc(panel->shell);
+    if (panel->seen_revision != break_editor_doc_audio_revision(doc)) {
+        /* the preview plays a copy taken at Play: an edit makes it stale */
+        break_editor_audio_preview_stop(panel->preview);
+    }
+    break_editor_audio_preview_pump(panel->preview);
     if (!panel->fresh || panel->seen_revision != break_editor_doc_audio_revision(doc) ||
         (panel->waveform != NULL && panel->seen_width != panel->waveform->rect.w)) {
         audio_panel_refresh(panel);
+    } else if (panel->shown_playing != break_editor_audio_preview_playing(panel->preview) ||
+               panel->shown_position !=
+                   break_editor_audio_preview_position_frames(panel->preview)) {
+        audio_panel_format_info(panel);
     }
 }
 

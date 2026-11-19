@@ -202,6 +202,11 @@ typedef enum {
     BREAK_EDITOR_TR_LOG_AUDIO_OPENED_FMT,    /* %s file name */
     BREAK_EDITOR_TR_LOG_AUDIO_FAILED_FMT,    /* %s file name */
     BREAK_EDITOR_TR_LOG_AUDIO_ALREADY_FMT,   /* %s file name */
+    BREAK_EDITOR_TR_AUDIO_PLAY,
+    BREAK_EDITOR_TR_AUDIO_STOP,
+    BREAK_EDITOR_TR_AUDIO_POSITION_FMT,      /* %.3f position, %.3f length (seconds) */
+    BREAK_EDITOR_TR_LOG_AUDIO_NO_OUTPUT,
+    BREAK_EDITOR_TR_LOG_AUDIO_PLAY_FAILED,
     BREAK_EDITOR_TR_COUNT
 } BreakEditorTr;
 

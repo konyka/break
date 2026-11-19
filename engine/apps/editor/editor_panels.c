@@ -5,6 +5,7 @@
 
 #include "editor_panels.h"
 #include "editor_shell_internal.h"
+#include "editor_audio_preview.h"
 #include "editor_viewport3d.h"
 #include "editor_remote.h"
 #include "editor_hot_reload.h"
@@ -4217,6 +4218,23 @@ bool break_editor_shell_audio_column(const BreakEditorShell *shell, u32 i,
                                      i16 *out_min, i16 *out_max) {
     return shell != NULL &&
            editor_panel_audio_column(shell->audio_panel, i, out_min, out_max);
+}
+
+void break_editor_shell_set_audio_sink(BreakEditorShell *shell,
+                                       const struct BreakEditorAudioSink *sink, void *user) {
+    if (shell != NULL) {
+        break_editor_audio_preview_set_sink(editor_panel_audio_preview(shell->audio_panel),
+                                            sink, user);
+    }
+}
+
+bool break_editor_shell_audio_play(BreakEditorShell *shell) {
+    return shell != NULL && editor_panel_audio_toggle(shell->audio_panel);
+}
+
+bool break_editor_shell_audio_playing(const BreakEditorShell *shell) {
+    return shell != NULL && break_editor_audio_preview_playing(editor_panel_audio_preview(
+                                shell->audio_panel));
 }
 
 usize break_editor_shell_profiler_row_count(const BreakEditorShell *shell) {

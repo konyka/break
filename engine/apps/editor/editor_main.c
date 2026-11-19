@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "editor_audio_sink.h"
 #include "editor_fonts.h"
 #include "editor_hot_reload.h"
 #include "editor_panels.h"
@@ -82,6 +83,8 @@ int main(int argc, char **argv) {
   RHIDevice *device;
   BreakUI *ui;
   BreakEditorShell *shell;
+  AudioSystem *audio = NULL;
+  BreakEditorAudioStreamSink audio_sink;
   BreakEditorFontChain fonts;
   BreakEditorLang lang = BREAK_EDITOR_LANG_EN_US;
   bool lang_explicit = false; /* --lang wins over the stored preference */
@@ -249,6 +252,16 @@ int main(int argc, char **argv) {
   /* render debugger panel: borrowed device, detached before teardown. Shader
    * reload is viewport-owned; shell teardown stops it before device teardown. */
   break_editor_shell_set_render_device(shell, device);
+  /* Audio page preview output: the default playback device. Without one the
+   * editor runs and Play reports "no audio output". The system outlives the
+   * shell, whose teardown closes the preview stream. */
+  audio = audio_system_create();
+  if (audio == NULL) {
+    fprintf(stderr, "editor: no audio output (playback device did not open)\n");
+  } else {
+    break_editor_audio_stream_sink_init(&audio_sink, audio);
+    break_editor_shell_set_audio_sink(shell, break_editor_audio_stream_sink(), &audio_sink);
+  }
   /* UI preferences (theme, language, active tabs): applied now, saved on
    * every change. No usable path (no HOME) just means no persistence. */
   {
@@ -302,6 +315,7 @@ int main(int argc, char **argv) {
                         "bounded process resources instead of freeing them\n");
         return 1;
       }
+      audio_system_destroy(audio);
       break_ui_destroy(ui);
       rhi_device_destroy(device);
       platform_destroy(platform);
@@ -453,6 +467,7 @@ int main(int argc, char **argv) {
                     "bounded process resources instead of freeing them\n");
     return 1;
   }
+  audio_system_destroy(audio);
   break_ui_destroy(ui);
   rhi_device_destroy(device);
   platform_destroy(platform);

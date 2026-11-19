@@ -43,6 +43,8 @@ root（vertical）
 
 > **2026-11-19 更新（音频页）**：底部标签条现为 Console / Lua / Flow / Plugins / Audio 五页。`editor-audio-panel`（`editor_panel_audio.c`）含 `editor-audio-info` 标签和自绘的 `editor-audio-waveform`，显示文档音频附件的格式与最小/最大波形；资源浏览器点击 `.wav` 打开附件并切到该页。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-waveform-design.md`。
 
+> **2026-11-19 更新（音频预览）**：音频页顶部一行为 `editor-audio-play` 按钮（播放/停止）加信息标签。播放经 `editor_audio_preview.c` 写入 shell 的输出端（编辑器应用里是 `editor_audio_sink.c` 的 PCM 流），设计见 `docs/superpowers/specs/2026-11-19-editor-audio-preview-design.md`。
+
 
 坐标注意：myui `widget->rect` 在**父坐标系**（my_widget.h）。inspector
 嵌套进 `editor-right-panel` 后，`inspector->rect.x` 不再与 viewport 同一

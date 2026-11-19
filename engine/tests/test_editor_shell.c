@@ -20,6 +20,7 @@
 #include <utime.h>
 #endif
 
+#include "editor_audio_preview.h"
 #include "editor_hot_reload.h"
 #include "editor_image_preview.h"
 #include "editor_scene_textures.h"
@@ -3070,6 +3071,166 @@ TEST(audio_page_uses_one_column_per_pixel_and_follows_the_width)
     break_editor_shell_destroy(shell);
     remove(wav);
     TEST_RMDIR(dir);
+}
+
+/* Fake preview sink: accepts at most `chunk` frames per write into a
+ * recording buffer and plays (drains) only when told to. */
+typedef struct {
+    bool refuse_open;
+    bool is_open;
+    u32 opens, closes;
+    u32 rate, channels;
+    u32 chunk;
+    u32 written;  /* frames recorded since the last open */
+    u32 played;   /* frames drained so far */
+    i16 data[2u * 4096u];
+} FakeAudioSink;
+
+static bool fake_sink_open(void *user, u32 rate, u32 channels) {
+    FakeAudioSink *f = (FakeAudioSink *)user;
+    if (f->refuse_open) return false;
+    f->opens++;
+    f->is_open = true;
+    f->rate = rate;
+    f->channels = channels;
+    f->written = 0u;
+    f->played = 0u;
+    return true;
+}
+
+static bool fake_sink_write(void *user, const i16 *samples, u32 frames, u32 *out) {
+    FakeAudioSink *f = (FakeAudioSink *)user;
+    u32 n = frames < f->chunk ? frames : f->chunk;
+    if (!f->is_open) return false;
+    if ((f->written + n) * f->channels > sizeof(f->data) / sizeof(f->data[0])) {
+        n = (u32)(sizeof(f->data) / sizeof(f->data[0])) / f->channels - f->written;
+    }
+    memcpy(f->data + (usize)f->written * f->channels, samples,
+           (usize)n * f->channels * sizeof(i16));
+    f->written += n;
+    *out = n;
+    return true;
+}
+
+static bool fake_sink_queued(void *user, u32 *out) {
+    FakeAudioSink *f = (FakeAudioSink *)user;
+    if (!f->is_open) return false;
+    *out = f->written - f->played;
+    return true;
+}
+
+static void fake_sink_close(void *user) {
+    FakeAudioSink *f = (FakeAudioSink *)user;
+    f->closes++;
+    f->is_open = false;
+}
+
+static const BreakEditorAudioSink k_fake_sink = {fake_sink_open, fake_sink_write,
+                                                 fake_sink_queued, fake_sink_close};
+
+/* Preview playback (design 2026-11-19-editor-audio-preview). */
+TEST(audio_page_plays_the_attachment_through_the_sink)
+{
+    static i16 pcm[2u * 1000u];
+    static FakeAudioSink fake;
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *play;
+    u32 i;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    memset(&fake, 0, sizeof(fake));
+    fake.chunk = 300u;
+    for (i = 0u; i < 2000u; i++) {
+        pcm[i] = (i16)(i * 7u - 5000);
+    }
+    play = find(shell, "editor-audio-play");
+    ASSERT_NOT_NULL(play);
+    ASSERT_STR_EQ(((const my_button_t *)play)->text, "Play");
+    /* no attachment and no sink: nothing starts */
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "no audio output\n");
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, pcm, 1000u));
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+
+    break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+    /* a sink that refuses to open */
+    fake.refuse_open = true;
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "audio could not be played\n");
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    fake.refuse_open = false;
+
+    /* the button starts it; the first chunk goes out at once */
+    emit_click(play);
+    ASSERT_TRUE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(fake.opens, 1u);
+    ASSERT_EQ(fake.rate, 8000u);
+    ASSERT_EQ(fake.channels, 2u);
+    ASSERT_EQ(fake.written, 300u);
+    ASSERT_STR_EQ(((const my_button_t *)play)->text, "Stop");
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell),
+                  "8000 Hz, 2 ch, 0.125 s | 0.000 / 0.125 s");
+    /* pumps continue where the sink stopped accepting */
+    break_editor_shell_tick(shell);
+    break_editor_shell_tick(shell);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(fake.written, 1000u);
+    ASSERT_EQ(memcmp(fake.data, pcm, sizeof(i16) * 2000u), 0);
+    /* the position is what has been heard */
+    fake.played = 400u;
+    break_editor_shell_tick(shell);
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell),
+                  "8000 Hz, 2 ch, 0.125 s | 0.050 / 0.125 s");
+    ASSERT_TRUE(break_editor_shell_audio_playing(shell));
+    /* written and drained: it stops by itself and closes once */
+    fake.played = 1000u;
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(fake.closes, 1u);
+    ASSERT_STR_EQ(((const my_button_t *)play)->text, "Play");
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell), "8000 Hz, 2 ch, 0.125 s");
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(fake.closes, 1u);
+
+    /* the button stops it */
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.opens, 2u);
+    emit_click(play);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(fake.closes, 2u);
+
+    /* an edit while playing stops it (the copy would be stale) */
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 500u));
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(fake.closes, 3u);
+    /* playing again uses the edited buffer */
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    for (i = 0u; i < 4u; i++) break_editor_shell_tick(shell);
+    ASSERT_EQ(fake.written, 500u);
+
+    /* the label follows the language */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    ASSERT_STR_EQ(((const my_button_t *)play)->text,
+                  "\xE5\x81\x9C\xE6\xAD\xA2"); /* 停止 */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    /* removing the sink stops it */
+    break_editor_shell_set_audio_sink(shell, NULL, NULL);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(fake.closes, 4u);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    /* destroy while playing closes the sink */
+    break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    break_editor_shell_destroy(shell);
+    ASSERT_EQ(fake.closes, 5u);
+    ASSERT_FALSE(fake.is_open);
 }
 
 /* The editor applies its JetBrains New UI dark sheet at shell create
@@ -12249,6 +12410,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(audio_page_opens_wav_assets_and_follows_edits);
     RUN_TEST(audio_page_uses_one_column_per_pixel_and_follows_the_width);
+    RUN_TEST(audio_page_plays_the_attachment_through_the_sink);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);

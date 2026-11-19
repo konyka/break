@@ -434,6 +434,16 @@ const char *break_editor_shell_audio_info_text(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_column_count(const BreakEditorShell *shell);
 bool break_editor_shell_audio_column(const BreakEditorShell *shell, u32 i,
                                      i16 *out_min, i16 *out_max);
+/* Preview playback (design 2026-11-19-editor-audio-preview): `sink`
+ * (borrowed, NULL = none) receives the PCM; setting it stops a running
+ * preview. audio_play is the page's Play/Stop button: it starts the preview
+ * (false and a console line without a sink, an attachment or when the sink
+ * fails) or stops it; it returns whether it plays afterwards. */
+struct BreakEditorAudioSink;
+void break_editor_shell_set_audio_sink(BreakEditorShell *shell,
+                                       const struct BreakEditorAudioSink *sink, void *user);
+bool break_editor_shell_audio_play(BreakEditorShell *shell);
+bool break_editor_shell_audio_playing(const BreakEditorShell *shell);
 
 /* Profiler panel snapshot rows (top-N by duration, N <= 16, refreshed from
  * profiler_last_frame at <= 4 Hz from break_editor_shell_tick; the panel is

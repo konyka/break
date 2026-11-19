@@ -113,6 +113,11 @@ const char *editor_panel_audio_info_text(const EditorPanelAudio *panel);
 u32 editor_panel_audio_column_count(const EditorPanelAudio *panel);
 bool editor_panel_audio_column(const EditorPanelAudio *panel, u32 i,
                                i16 *out_min, i16 *out_max);
+/* Preview playback owned by the page (editor_audio_preview.h). */
+struct BreakEditorAudioPreview *editor_panel_audio_preview(EditorPanelAudio *panel);
+/* Play/Stop button: starts the preview (logs when there is no sink or it
+ * fails) or stops it. Returns whether it is playing afterwards. */
+bool editor_panel_audio_toggle(EditorPanelAudio *panel);
 /* Asset browser: opens a .wav file into the document's attachment (only when
  * none is attached), logs the outcome, selects the Audio tab on success. */
 bool editor_shell_open_audio(BreakEditorShell *shell, const char *path,

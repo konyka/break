@@ -183,6 +183,11 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(LOG_AUDIO_OPENED_FMT, "audio opened: %s"),
         T(LOG_AUDIO_FAILED_FMT, "audio could not be opened: %s"),
         T(LOG_AUDIO_ALREADY_FMT, "audio already open, not opening %s"),
+        T(AUDIO_PLAY, "Play"),
+        T(AUDIO_STOP, "Stop"),
+        T(AUDIO_POSITION_FMT, " | %.3f / %.3f s"),
+        T(LOG_AUDIO_NO_OUTPUT, "no audio output"),
+        T(LOG_AUDIO_PLAY_FAILED, "audio could not be played"),
     },
     [BREAK_EDITOR_LANG_ZH_CN] = {
         T(ADD, "添加"),
@@ -356,5 +361,10 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(LOG_AUDIO_OPENED_FMT, "已打开音频：%s"),
         T(LOG_AUDIO_FAILED_FMT, "无法打开音频：%s"),
         T(LOG_AUDIO_ALREADY_FMT, "已有打开的音频，未打开 %s"),
+        T(AUDIO_PLAY, "播放"),
+        T(AUDIO_STOP, "停止"),
+        T(AUDIO_POSITION_FMT, " | %.3f / %.3f 秒"),
+        T(LOG_AUDIO_NO_OUTPUT, "没有音频输出设备"),
+        T(LOG_AUDIO_PLAY_FAILED, "无法播放音频"),
     },
 };

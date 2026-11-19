@@ -2197,10 +2197,10 @@ engine_link_rhi_backend(dxx_break)
 # editor-only exception).
 # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel: pure
 # view over editor_remote.h's read-only accessors, no new link).
-add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
+add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c apps/editor/editor_audio_sink.c
     apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-    apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c apps/editor/editor_panel_audio.c
+    apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c apps/editor/editor_panel_audio.c apps/editor/editor_audio_preview.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
     apps/editor/editor_fonts.c
@@ -6333,7 +6333,7 @@ endif()
     add_executable(test_editor_shell tests/test_editor_shell.c
         apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-        apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c apps/editor/editor_panel_audio.c
+        apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c apps/editor/editor_panel_audio.c apps/editor/editor_audio_preview.c
         apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
         src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
@@ -7234,6 +7234,19 @@ endif()
 
     # test_audio_capture: the input ring, miniaudio's null capture device in
     # real time, and a producer thread against the reader.
+    # Editor audio preview output: the PCM stream sink on the FAKE backend.
+    add_executable(test_editor_audio_sink tests/test_editor_audio_sink.c
+        apps/editor/editor_audio_sink.c
+        src/audio/audio.c src/audio/audio_extended.c src/audio/audio_dsp.c src/audio/audio_hrtf.c)
+    target_include_directories(test_editor_audio_sink PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
+    target_link_libraries(test_editor_audio_sink PRIVATE Threads::Threads m ${CMAKE_DL_LIBS})
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_editor_audio_sink PRIVATE _POSIX_C_SOURCE=200112L)
+    endif()
+    add_test(NAME test_editor_audio_sink COMMAND test_editor_audio_sink)
+    set_tests_properties(test_editor_audio_sink PROPERTIES LABELS "headless;editor;audio"
+        TIMEOUT 30)
     add_executable(test_audio_capture tests/test_audio_capture.c src/audio/audio_capture.c
         src/audio/audio.c src/audio/audio_extended.c src/audio/audio_dsp.c src/audio/audio_hrtf.c)
     target_include_directories(test_audio_capture PRIVATE ${TEST_INCLUDE_DIRS})
@@ -7748,7 +7761,7 @@ endif()
         add_executable(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c
             apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
             apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-            apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c apps/editor/editor_panel_audio.c
+            apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c apps/editor/editor_panel_audio.c apps/editor/editor_audio_preview.c
             apps/editor/editor_remote.c apps/editor/editor_panel_network.c
             apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
             src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
