@@ -2959,14 +2959,22 @@ TEST(audio_page_opens_wav_assets_and_follows_edits)
     columns = break_editor_shell_audio_column_count(shell);
     ASSERT_TRUE(columns > 0u && columns <= 400u);
     {
+        /* the page draws one lane per channel, so a column reports that
+         * channel's min/max, not the two merged */
         i16 emin[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
         i16 emax[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
-        ASSERT_TRUE(break_editor_doc_audio_waveform(doc, columns, emin, emax));
+        ASSERT_EQ(break_editor_shell_audio_lane_count(shell), 2u);
+        ASSERT_TRUE(break_editor_doc_audio_waveform_channel(doc, 0u, 0u, 400u, columns,
+                                                            emin, emax));
         for (i = 0u; i < columns; i++) {
+            i16 rlo = 0, rhi = 0;
             ASSERT_TRUE(break_editor_shell_audio_column(shell, i, &lo, &hi));
             ASSERT_EQ(lo, emin[i]);
             ASSERT_EQ(hi, emax[i]);
-            ASSERT_EQ(lo, (i16)-hi);
+            /* the right channel is the left one negated */
+            ASSERT_TRUE(break_editor_shell_audio_lane_column(shell, 1u, i, &rlo, &rhi));
+            ASSERT_EQ(rhi, (i16)-lo);
+            ASSERT_EQ(rlo, (i16)-hi);
         }
     }
     ASSERT_FALSE(break_editor_shell_audio_column(shell, columns, &lo, &hi));
@@ -3829,6 +3837,107 @@ static u32 waveform_painted_rows(BreakEditorShell *shell, my_widget_t *w) {
         }
     }
     return rows;
+}
+
+/* Per-channel lanes (design 2026-11-19-editor-audio-channels). */
+TEST(audio_page_draws_one_lane_per_channel)
+{
+    static i16 stereo[4000u];
+    static i16 mono[1000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    u32 i, n;
+    i16 lo = 0, hi = 0;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_EQ(break_editor_shell_audio_lane_count(shell), 0u); /* no attachment */
+    /* 2000 stereo frames: left silent, right loud */
+    /* the right channel alternates every frame, so a column spans a real
+     * min/max range rather than a flat line: +-12000 in the first half,
+     * +-6000 in the second */
+    for (i = 0u; i < 2000u; i++) {
+        const i16 amp = (i16)(i < 1000u ? 12000 : 6000);
+        stereo[i * 2u] = 0;
+        stereo[i * 2u + 1u] = (i16)(i % 2u == 0u ? amp : -amp);
+    }
+    for (i = 0u; i < 1000u; i++) mono[i] = (i16)(i % 100u);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, stereo, 2000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    /* two lanes, the first silent and the second loud */
+    ASSERT_EQ(break_editor_shell_audio_lane_count(shell), 2u);
+    n = break_editor_shell_audio_column_count(shell);
+    ASSERT_TRUE(n > 1u);
+    for (i = 0u; i < n; i++) {
+        ASSERT_TRUE(break_editor_shell_audio_lane_column(shell, 0u, i, &lo, &hi));
+        ASSERT_EQ(lo, 0);
+        ASSERT_EQ(hi, 0);
+        ASSERT_TRUE(break_editor_shell_audio_lane_column(shell, 1u, i, &lo, &hi));
+        ASSERT_TRUE(hi >= 6000 && lo <= -6000);
+    }
+    /* audio_column still reads lane 0 */
+    ASSERT_TRUE(break_editor_shell_audio_column(shell, 0u, &lo, &hi));
+    ASSERT_EQ(hi, 0);
+    /* the loud right channel is painted in the lower half only: at 1x a
+     * +-12000 trace fills most of its own lane and none of the silent lane
+     * above it */
+    {
+        my_widget_t *wave = find(shell, "editor-audio-waveform");
+        my_window_t *win = break_editor_shell_window(shell);
+        my_lcd_t *lcd = my_pal_window_get_lcd(win->pal_window);
+        const uint8_t *pixels = my_lcd_mem_get_buffer(lcd);
+        uint32_t stride = my_lcd_mem_get_stride(lcd);
+        const uint32_t accent = BREAK_EDITOR_THEME_ACCENT;
+        int32_t gx = 0, gy = 0, y;
+        u32 upper = 0u, lower = 0u;
+        ASSERT_NOT_NULL(wave);
+        shell_paint(shell);
+        my_widget_local_to_global(wave, &gx, &gy);
+        for (y = 0; y < wave->rect.h; ++y) {
+            const uint8_t *p = pixels + (uint32_t)(gy + y) * stride +
+                               (uint32_t)(gx + wave->rect.w / 2) * 4u;
+            if (p[2] == (uint8_t)(accent >> 24) && p[1] == (uint8_t)(accent >> 16) &&
+                p[0] == (uint8_t)(accent >> 8)) {
+                if (y < wave->rect.h / 2) {
+                    upper++;
+                } else {
+                    lower++;
+                }
+            }
+        }
+        ASSERT_TRUE(upper <= 1u);  /* only the silent lane's flat trace */
+        ASSERT_TRUE(lower >= 4u);  /* the loud lane spans real height */
+    }
+    /* out-of-range lanes and columns report nothing */
+    ASSERT_FALSE(break_editor_shell_audio_lane_column(shell, 2u, 0u, &lo, &hi));
+    ASSERT_FALSE(break_editor_shell_audio_lane_column(shell, 0u, n, &lo, &hi));
+    /* the lanes follow the view: zoomed into the clip's end, lane 1 only
+     * shows the quieter second half. The view is then shorter than the
+     * widget is wide, so a column may hold a single frame and read either
+     * +6000 or -6000 rather than both. */
+    ASSERT_FALSE(break_editor_shell_audio_scroll(shell, true)); /* full view */
+    for (i = 0u; i < 2u; i++) (void)break_editor_shell_audio_zoom(shell, true);
+    for (i = 0u; i < 8u; i++) (void)break_editor_shell_audio_scroll(shell, true);
+    break_editor_shell_tick(shell);
+    n = break_editor_shell_audio_column_count(shell);
+    ASSERT_TRUE(n > 0u);
+    for (i = 0u; i < n; i++) {
+        ASSERT_TRUE(break_editor_shell_audio_lane_column(shell, 1u, i, &lo, &hi));
+        ASSERT_TRUE(hi == 6000 || hi == -6000);
+        ASSERT_TRUE(lo == 6000 || lo == -6000);
+        ASSERT_TRUE(break_editor_shell_audio_lane_column(shell, 0u, i, &lo, &hi));
+        ASSERT_EQ(lo, 0); /* the left channel stays silent */
+        ASSERT_EQ(hi, 0);
+    }
+    /* back to mono: one lane again */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, mono, 1000u));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_lane_count(shell), 1u);
+    ASSERT_FALSE(break_editor_shell_audio_lane_column(shell, 1u, 0u, &lo, &hi));
+    shell_paint(shell);
+    break_editor_shell_destroy(shell);
 }
 
 /* Amplitude zoom (design 2026-11-19-editor-audio-gain). */
@@ -13840,6 +13949,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_zooms_and_scrolls_from_the_keyboard);
     RUN_TEST(audio_page_scroll_bar_mirrors_and_moves_the_view);
     RUN_TEST(audio_page_amplitude_zoom_scales_the_drawn_columns);
+    RUN_TEST(audio_page_draws_one_lane_per_channel);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);

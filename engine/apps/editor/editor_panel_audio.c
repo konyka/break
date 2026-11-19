@@ -52,6 +52,7 @@
 #include "myui/widgets/my_scroll_bar.h"
 
 #define EDITOR_AUDIO_INFO_BYTES 128u
+#define EDITOR_AUDIO_LANES_MAX 2u /* the document accepts mono and stereo */
 #define EDITOR_BOTTOM_TAB_AUDIO 4u /* index in editor_panels.c k_tab_pages[0] */
 #define EDITOR_AUDIO_LIGHT_MID_LINE 0xD3D5DBFFu
 #define EDITOR_AUDIO_LIGHT_CURSOR 0x1F1F1FFFu
@@ -90,8 +91,9 @@ struct EditorPanelAudio {
     u32 columns;
     u32 seen_view_begin, seen_view_end;
     char info_text[EDITOR_AUDIO_INFO_BYTES];
-    i16 min[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
-    i16 max[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
+    u32 lanes; /* one per channel, 0 without an attachment */
+    i16 min[EDITOR_AUDIO_LANES_MAX][BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
+    i16 max[EDITOR_AUDIO_LANES_MAX][BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
 };
 
 static void audio_panel_format_info(EditorPanelAudio *panel) {
@@ -226,11 +228,23 @@ static void audio_panel_refresh(EditorPanelAudio *panel) {
     if (columns > BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS) {
         columns = BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS;
     }
-    if (columns == 0u || !break_editor_doc_audio_waveform_range(doc, view_begin, view_end, columns,
-                                                                panel->min, panel->max)) {
-        columns = 0u;
+    /* one lane per channel, each filled from that channel's samples */
+    u32 lanes = break_editor_doc_audio_channels(doc);
+    if (lanes > EDITOR_AUDIO_LANES_MAX) lanes = EDITOR_AUDIO_LANES_MAX;
+    if (columns == 0u || lanes == 0u) {
+        columns = lanes = 0u;
+    } else {
+        for (u32 lane = 0u; lane < lanes; ++lane) {
+            if (!break_editor_doc_audio_waveform_channel(doc, lane, view_begin, view_end,
+                                                         columns, panel->min[lane],
+                                                         panel->max[lane])) {
+                columns = lanes = 0u;
+                break;
+            }
+        }
     }
     panel->columns = columns;
+    panel->lanes = lanes;
     panel->seen_revision = break_editor_doc_audio_revision(doc);
     panel->seen_width = width;
     panel->seen_view_begin = view_begin;
@@ -256,7 +270,7 @@ static void audio_panel_catch_up(EditorPanelAudio *panel) {
 
 static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     const EditorPanelAudio *panel;
-    float w, h, mid, scale;
+    float w, h, mid, scale, lane_h;
     u32 c;
     if (widget == NULL || vg == NULL) {
         return;
@@ -269,9 +283,11 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     if (panel == NULL || panel->columns == 0u || w <= 0.0f || h <= 0.0f) {
         return;
     }
-    mid = h * 0.5f;
+    /* one lane per channel, stacked: a stereo clip gets half the height each */
+    lane_h = h / (float)(panel->lanes != 0u ? panel->lanes : 1u);
+    mid = lane_h * 0.5f;
     /* the amplitude zoom is display only: a quiet clip fills more height */
-    scale = (h * 0.5f) * (float)(panel->gain != 0u ? panel->gain : 1u) / 32768.0f;
+    scale = (lane_h * 0.5f) * (float)(panel->gain != 0u ? panel->gain : 1u) / 32768.0f;
     if (panel->sel_begin < panel->sel_end) {
         const u32 view_begin = audio_view_begin(panel);
         const u32 view_end = audio_view_end(panel);
@@ -289,21 +305,25 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
                                                           h});
         }
     }
-    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_is_light()
-                                                             ? EDITOR_AUDIO_LIGHT_MID_LINE
-                                                             : BREAK_EDITOR_THEME_BORDER));
-    (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, mid, w, 1.0f});
-    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(BREAK_EDITOR_THEME_ACCENT));
-    for (c = 0u; c < panel->columns; c++) {
-        const float x0 = (float)c * w / (float)panel->columns;
-        const float x1 = (float)(c + 1u) * w / (float)panel->columns;
-        /* a zoomed column may reach past the widget; my_widget_paint clips
-         * every widget to its own rect, so it cannot reach the ruler */
-        const float top = mid - (float)panel->max[c] * scale;
-        const float bottom = mid - (float)panel->min[c] * scale;
-        const float bar_w = x1 - x0 > 1.0f ? x1 - x0 : 1.0f;
-        const float bar_h = bottom - top > 1.0f ? bottom - top : 1.0f;
-        (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x0, top, bar_w, bar_h});
+    for (u32 lane = 0u; lane < panel->lanes; ++lane) {
+        const float lane_mid = (float)lane * lane_h + mid;
+        my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_is_light()
+                                                                 ? EDITOR_AUDIO_LIGHT_MID_LINE
+                                                                 : BREAK_EDITOR_THEME_BORDER));
+        (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, lane_mid, w, 1.0f});
+        my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(BREAK_EDITOR_THEME_ACCENT));
+        for (c = 0u; c < panel->columns; c++) {
+            const float x0 = (float)c * w / (float)panel->columns;
+            const float x1 = (float)(c + 1u) * w / (float)panel->columns;
+            /* a zoomed column may reach past the widget; my_widget_paint
+             * clips every widget to its own rect, so it cannot reach the
+             * ruler (lanes may still overlap each other at high gain) */
+            const float top = lane_mid - (float)panel->max[lane][c] * scale;
+            const float bottom = lane_mid - (float)panel->min[lane][c] * scale;
+            const float bar_w = x1 - x0 > 1.0f ? x1 - x0 : 1.0f;
+            const float bar_h = bottom - top > 1.0f ? bottom - top : 1.0f;
+            (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x0, top, bar_w, bar_h});
+        }
     }
     {
         const u32 view_begin = audio_view_begin(panel);
@@ -1370,13 +1390,28 @@ u32 editor_panel_audio_column_count(const EditorPanelAudio *panel) {
     return panel != NULL ? panel->columns : 0u;
 }
 
+u32 editor_panel_audio_lane_count(const EditorPanelAudio *panel) {
+    return panel != NULL ? panel->lanes : 0u;
+}
+
+bool editor_panel_audio_lane_column(const EditorPanelAudio *panel, u32 lane, u32 i,
+                                    i16 *out_min, i16 *out_max) {
+    if (panel == NULL || lane >= panel->lanes || i >= panel->columns || out_min == NULL ||
+        out_max == NULL) {
+        return false;
+    }
+    *out_min = panel->min[lane][i];
+    *out_max = panel->max[lane][i];
+    return true;
+}
+
 bool editor_panel_audio_column(const EditorPanelAudio *panel, u32 i,
                                i16 *out_min, i16 *out_max) {
     if (panel == NULL || i >= panel->columns || out_min == NULL || out_max == NULL) {
         return false;
     }
-    *out_min = panel->min[i];
-    *out_max = panel->max[i];
+    *out_min = panel->min[0][i];
+    *out_max = panel->max[0][i];
     return true;
 }
 

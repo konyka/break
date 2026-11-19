@@ -643,7 +643,58 @@ TEST(waveform_range_matches_a_manual_min_max)
     break_editor_doc_destroy(doc);
 }
 
+/* Per-channel waveform (design 2026-11-19-editor-audio-channels). */
+TEST(waveform_channel_reports_one_channel_at_a_time)
+{
+    static i16 stereo[200u];
+    i16 min[16], max[16];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    /* left silent, right a loud ramp */
+    for (u32 i = 0u; i < 100u; ++i) {
+        stereo[i * 2u] = 0;
+        stereo[i * 2u + 1u] = (i16)(i * 300u);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, stereo, 100u));
+    /* channel 0 is silent throughout */
+    ASSERT_TRUE(break_editor_doc_audio_waveform_channel(doc, 0u, 0u, 100u, 4u, min, max));
+    for (u32 c = 0u; c < 4u; ++c) {
+        ASSERT_EQ(min[c], 0);
+        ASSERT_EQ(max[c], 0);
+    }
+    /* channel 1 rises with the ramp */
+    ASSERT_TRUE(break_editor_doc_audio_waveform_channel(doc, 1u, 0u, 100u, 4u, min, max));
+    for (u32 c = 0u; c < 4u; ++c) {
+        ASSERT_EQ(min[c], (i16)(c * 25u * 300u));
+        ASSERT_EQ(max[c], (i16)((c * 25u + 24u) * 300u));
+    }
+    /* a sub-range of one channel */
+    ASSERT_TRUE(break_editor_doc_audio_waveform_channel(doc, 1u, 50u, 60u, 2u, min, max));
+    ASSERT_EQ(min[0], (i16)(50u * 300u));
+    ASSERT_EQ(max[1], (i16)(59u * 300u));
+    /* the merged function still reports the union of both channels */
+    ASSERT_TRUE(break_editor_doc_audio_waveform_range(doc, 0u, 100u, 4u, min, max));
+    for (u32 c = 0u; c < 4u; ++c) {
+        ASSERT_EQ(min[c], 0); /* the silent left channel */
+        ASSERT_EQ(max[c], (i16)((c * 25u + 24u) * 300u));
+    }
+    /* an out-of-range channel writes nothing */
+    min[0] = 42;
+    ASSERT_TRUE(!break_editor_doc_audio_waveform_channel(doc, 2u, 0u, 100u, 4u, min, max));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform_channel(doc, 0u, 0u, 101u, 4u, min, max));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform_channel(doc, 0u, 0u, 100u, 0u, min, max));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform_channel(NULL, 0u, 0u, 100u, 4u, min, max));
+    ASSERT_EQ(min[0], 42);
+    /* a mono clip has channel 0 only */
+    break_editor_doc_reset(doc);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, stereo, 100u));
+    ASSERT_TRUE(break_editor_doc_audio_waveform_channel(doc, 0u, 0u, 100u, 4u, min, max));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform_channel(doc, 1u, 0u, 100u, 4u, min, max));
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(waveform_channel_reports_one_channel_at_a_time);
     RUN_TEST(waveform_range_matches_a_manual_min_max);
     RUN_TEST(fade_and_normalize_ranges_change_only_the_range);
     RUN_TEST(waveform_reports_min_max_per_column);

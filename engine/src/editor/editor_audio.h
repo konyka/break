@@ -43,6 +43,12 @@ bool break_editor_doc_audio_waveform(const BreakEditorDoc *doc, u32 columns,
  * false and nothing written for an empty or out-of-clip range. */
 bool break_editor_doc_audio_waveform_range(const BreakEditorDoc *doc, u32 begin, u32 end,
                                            u32 columns, i16 *out_min, i16 *out_max);
+/* The same over one channel's samples only, so a stereo clip can be drawn
+ * as two traces. False and nothing written for a channel at or above the
+ * clip's channel count, plus the cases above. */
+bool break_editor_doc_audio_waveform_channel(const BreakEditorDoc *doc, u32 channel,
+                                             u32 begin, u32 end, u32 columns,
+                                             i16 *out_min, i16 *out_max);
 
 /* One snapshot command per successful edit; false leaves PCM/history unchanged. */
 bool break_editor_doc_audio_trim(BreakEditorDoc *doc, u32 begin, u32 end);

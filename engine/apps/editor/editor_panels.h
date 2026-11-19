@@ -484,6 +484,13 @@ bool break_editor_shell_audio_follow(const BreakEditorShell *shell);
  * in effect; an attachment change resets it to 1. */
 u32 break_editor_shell_audio_set_gain(BreakEditorShell *shell, u32 gain);
 u32 break_editor_shell_audio_gain(const BreakEditorShell *shell);
+/* Per-channel lanes of the Audio page (design
+ * 2026-11-19-editor-audio-channels): one lane per channel, stacked, each
+ * with its own columns. lane_count is 0 without an attachment;
+ * audio_column reads lane 0. */
+u32 break_editor_shell_audio_lane_count(const BreakEditorShell *shell);
+bool break_editor_shell_audio_lane_column(const BreakEditorShell *shell, u32 lane, u32 i,
+                                          i16 *out_min, i16 *out_max);
 /* Loop toggle of the Audio page (the "Loop" checkbox): at the end of the
  * played range playback starts it again. Returns the state afterwards. */
 bool break_editor_shell_audio_set_loop(BreakEditorShell *shell, bool loop);

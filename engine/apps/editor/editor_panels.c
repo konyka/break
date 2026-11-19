@@ -4265,6 +4265,16 @@ bool break_editor_shell_audio_view(const BreakEditorShell *shell, u32 *out_begin
     return shell != NULL && editor_panel_audio_view(shell->audio_panel, out_begin, out_end);
 }
 
+u32 break_editor_shell_audio_lane_count(const BreakEditorShell *shell) {
+    return shell != NULL ? editor_panel_audio_lane_count(shell->audio_panel) : 0u;
+}
+
+bool break_editor_shell_audio_lane_column(const BreakEditorShell *shell, u32 lane, u32 i,
+                                          i16 *out_min, i16 *out_max) {
+    return shell != NULL &&
+           editor_panel_audio_lane_column(shell->audio_panel, lane, i, out_min, out_max);
+}
+
 u32 break_editor_shell_audio_set_gain(BreakEditorShell *shell, u32 gain) {
     return shell != NULL ? editor_panel_audio_set_gain(shell->audio_panel, gain) : 0u;
 }

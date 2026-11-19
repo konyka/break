@@ -87,23 +87,30 @@ bool break_editor_doc_audio_waveform(const BreakEditorDoc *doc, u32 columns,
         doc, 0u, doc && doc->audio ? doc->audio->frames : 0u, columns, out_min, out_max);
 }
 
-bool break_editor_doc_audio_waveform_range(const BreakEditorDoc *doc, u32 begin, u32 end,
-                                           u32 columns, i16 *out_min, i16 *out_max) {
+/* channel == UINT32_MAX merges every channel; otherwise only that one. */
+static bool audio_waveform_impl(const BreakEditorDoc *doc, u32 channel, u32 begin, u32 end,
+                                u32 columns, i16 *out_min, i16 *out_max) {
     if (!doc || !doc->audio || !out_min || !out_max || columns == 0u ||
         columns > BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS || begin >= end ||
         end > doc->audio->frames) {
         return false;
     }
     const BreakEditorAudioState *audio = doc->audio;
+    const bool merged = channel == UINT32_MAX;
+    if (!merged && channel >= audio->channels) {
+        return false;
+    }
+    const u32 step = merged ? 1u : audio->channels;
+    const u32 offset = merged ? 0u : channel;
     const u64 frames = (u64)end - begin;
     for (u32 c = 0u; c < columns; ++c) {
         const u64 first = begin + (u64)c * frames / columns;
         u64 last = begin + (u64)(c + 1u) * frames / columns;
         if (last <= first) last = first + 1u;
-        const i16 *sample = audio->samples + first * audio->channels;
+        const i16 *sample = audio->samples + first * audio->channels + offset;
         const i16 *stop = audio->samples + last * audio->channels;
         i16 lo = *sample, hi = *sample;
-        for (; sample < stop; ++sample) {
+        for (; sample < stop; sample += step) {
             if (*sample < lo) lo = *sample;
             if (*sample > hi) hi = *sample;
         }
@@ -111,6 +118,18 @@ bool break_editor_doc_audio_waveform_range(const BreakEditorDoc *doc, u32 begin,
         out_max[c] = hi;
     }
     return true;
+}
+
+bool break_editor_doc_audio_waveform_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                           u32 columns, i16 *out_min, i16 *out_max) {
+    return audio_waveform_impl(doc, UINT32_MAX, begin, end, columns, out_min, out_max);
+}
+
+bool break_editor_doc_audio_waveform_channel(const BreakEditorDoc *doc, u32 channel,
+                                             u32 begin, u32 end, u32 columns,
+                                             i16 *out_min, i16 *out_max) {
+    return channel != UINT32_MAX &&
+           audio_waveform_impl(doc, channel, begin, end, columns, out_min, out_max);
 }
 
 void break_editor_audio_detach(BreakEditorDoc *doc) {

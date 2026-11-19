@@ -1,3 +1,10 @@
+## 编辑器音频分声道波形（2026-11-19）
+
+- **交付**：核心新增 `break_editor_doc_audio_waveform_channel(doc, channel, begin, end, columns, out_min, out_max)`，只统计单个声道；内部统一为 `audio_waveform_impl`，`channel == UINT32_MAX` 表示合并所有声道，原 `break_editor_doc_audio_waveform_range` 以该哨兵转发，行为不变；声道号超出片内声道数时返回 false 且不写出参。音频页按声道分泳道绘制（文档只接受单/双声道，故上限 2），立体声时上下各占一半高度、各有自己的中线，单声道仍是整幅一条。shell 新增 `break_editor_shell_audio_lane_count`、`break_editor_shell_audio_lane_column`，原 `break_editor_shell_audio_column` 读泳道 0。选区色带、播放光标和刻度条仍跨整幅高度。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-channels-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-channels.md`。
+- **TDD**：核心用例先链接失败、面板用例先因缺泳道接口失败，再通过，`test_editor_audio` 14/14、`test_editor_shell` 222/222。6 个变异全部判红：单声道步长退回 1、丢掉声道偏移、去掉声道范围守卫、泳道高度不除以泳道数、所有泳道画在同一中线、泳道数固定为 1。
+- **测试处理的三点**：既有用例 `audio_page_opens_wav_assets_and_follows_edits` 原来拿 `audio_column` 和整段合并波形比，现在该列是声道 0，故改为与 `..._waveform_channel(doc, 0, ...)` 比较并断言右声道是其取反（该夹具数据正是如此）；列内恒定的方波 `min == max` 只画 1 像素、无法反映泳道高度，故泳道用例让右声道逐帧交替；视图短于控件宽度后一列只含一帧，交替信号只会读到 `+amp` 或 `-amp` 之一，缩放后的断言因此两者皆可。
+- **边界**：不支持两个以上声道（文档层面就拒绝），没有分声道静音/独奏、没有各泳道独立幅度缩放、没有泳道分隔线样式。
+
 ## 编辑器音频波形幅度缩放（2026-11-19）
 
 - **交付**：音频页新增只作用于显示的幅度倍数（2 的幂，范围 1~32，默认 1），画波形时乘到采样值上，不改文档也不进撤销历史。视图行新增 `editor-audio-gain-down`（"v"）与 `editor-audio-gain-up`（"^"）两个按钮按 2 倍步进；shell 新增 `break_editor_shell_audio_set_gain`（吸附到不超过请求值的最大 2 的幂并钳到 [1,32]，返回生效值）、`break_editor_shell_audio_gain`。倍数大于 1 时信息行追加 " | <n>x"；附件变化时与视图一同重置为 1。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-gain-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-gain.md`。

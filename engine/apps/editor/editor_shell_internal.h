@@ -139,6 +139,11 @@ bool editor_panel_audio_follow(const EditorPanelAudio *panel);
 /* Display-only amplitude multiplier, a power of two in [1, 32]. */
 u32 editor_panel_audio_set_gain(EditorPanelAudio *panel, u32 gain);
 u32 editor_panel_audio_gain(const EditorPanelAudio *panel);
+/* One lane per channel, stacked; lane 0 is what editor_panel_audio_column
+ * reads. 0 lanes without an attachment. */
+u32 editor_panel_audio_lane_count(const EditorPanelAudio *panel);
+bool editor_panel_audio_lane_column(const EditorPanelAudio *panel, u32 lane, u32 i,
+                                    i16 *out_min, i16 *out_max);
 
 /* The page's Loop checkbox: forwards to the preview and updates the box. */
 void editor_panel_audio_set_loop(EditorPanelAudio *panel, bool loop);
