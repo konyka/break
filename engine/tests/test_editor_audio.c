@@ -371,6 +371,40 @@ TEST(wav_export_round_trips_and_failures_leave_nothing)
     remove(path);
 }
 
+TEST(wav_export_handles_mono_a_stale_temporary_and_long_paths)
+{
+    char path[512], tmp[600];
+    test_tmp(path, sizeof(path), "editor_audio_export_mono.wav");
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    remove(path);
+    /* a temporary left by an earlier crash is replaced, not appended to */
+    FILE *stale = fopen(tmp, "wb");
+    ASSERT_NOT_NULL(stale);
+    fwrite("stale stale stale stale stale stale stale stale", 1u, 47u, stale);
+    ASSERT_EQ(fclose(stale), 0);
+
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, kSamples, 8u));
+    ASSERT_TRUE(break_editor_doc_audio_save_wav(doc, path));
+    ASSERT_TRUE(!file_exists(tmp));
+    BreakEditorDoc *copy = break_editor_doc_create();
+    ASSERT_NOT_NULL(copy);
+    ASSERT_TRUE(break_editor_doc_audio_attach_wav(copy, path));
+    ASSERT_EQ(break_editor_doc_audio_sample_rate(copy), 8000u);
+    ASSERT_EQ(break_editor_doc_audio_channels(copy), 1u);
+    assert_samples(copy, kSamples, 8u);
+    break_editor_doc_destroy(copy);
+
+    /* "<path>.tmp" must fit BREAK_EDITOR_SCENE_PATH_CAPACITY: nothing is created */
+    char long_path[BREAK_EDITOR_SCENE_PATH_CAPACITY];
+    memset(long_path, 'a', sizeof(long_path) - 1u);
+    long_path[sizeof(long_path) - 1u] = '\0';
+    ASSERT_TRUE(!break_editor_doc_audio_save_wav(doc, long_path));
+    break_editor_doc_destroy(doc);
+    remove(path);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(attach_validation_and_reset_or_load_detach);
     RUN_TEST(trim_and_cut_are_byte_exact_undoable_commands);
@@ -379,4 +413,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(invalid_and_oom_failures_are_atomic);
     RUN_TEST(wav_import_attaches_and_failures_are_atomic);
     RUN_TEST(wav_export_round_trips_and_failures_leave_nothing);
+    RUN_TEST(wav_export_handles_mono_a_stale_temporary_and_long_paths);
 TEST_MAIN_END()

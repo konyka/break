@@ -270,12 +270,18 @@ TEST(encode_failures_write_nothing)
 
     usize size = 5u;
     ASSERT_EQ(audio_wav_encoded_size(3u, 1u, &size), AUDIO_INVALID);
+    ASSERT_EQ(audio_wav_encoded_size(0u, 1u, &size), AUDIO_INVALID);
     ASSERT_EQ(audio_wav_encoded_size(1u, 1u, NULL), AUDIO_INVALID);
     /* 2 channels * 2 bytes * 0x40000000 frames does not fit the RIFF size */
     ASSERT_EQ(audio_wav_encoded_size(2u, 0x40000000u, &size), AUDIO_INVALID);
     ASSERT_EQ(size, 5u);
     ASSERT_EQ(audio_wav_encoded_size(2u, 0x3ffffff0u, &size), AUDIO_OK);
     ASSERT_EQ(size, (usize)AUDIO_WAV_HEADER_SIZE + (usize)0x3ffffff0u * 4u);
+    if (sizeof(usize) >= 8u) {
+        /* the largest stereo file: RIFF size 36 + 4 * 0x3ffffff6 = UINT32_MAX - 3 */
+        ASSERT_EQ(audio_wav_encoded_size(2u, 0x3ffffff6u, &size), AUDIO_OK);
+        ASSERT_EQ(audio_wav_encoded_size(2u, 0x3ffffff7u, &size), AUDIO_INVALID);
+    }
 }
 
 TEST_MAIN_BEGIN()
