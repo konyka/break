@@ -4007,6 +4007,160 @@ TEST(audio_page_selects_by_dragging_the_waveform)
         ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 1000u));
         break_editor_shell_tick(shell);
     }
+    /* the release applies its own x, not just the last move's */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        int32_t gx = 0, gy = 0;
+        my_event_t ev;
+        u32 b2 = 0u, e2 = 0u;
+        pointer_drag(shell, wave, (int32_t)(w / 4u), (int32_t)(w / 2u), false);
+        my_widget_local_to_global(wave, &gx, &gy);
+        ev = my_event_init(MY_EVENT_POINTER_UP);
+        ev.u.pointer.x = gx + (int32_t)((w * 3u) / 4u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        ev.u.pointer.button = 1u;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_EQ(b2, (u32)((u64)(w / 4u) * 1000u / w));
+        ASSERT_EQ(e2, (u32)((u64)((w * 3u) / 4u) * 1000u / w) + 1u);
+    }
+    /* a non-primary release still ends the drag: the dispatcher drops the
+     * grab on any UP, so a later move must not select */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        int32_t gx = 0, gy = 0;
+        my_event_t ev;
+        u32 b2 = 0u, e2 = 0u;
+        pointer_drag(shell, wave, 0, (int32_t)(w / 8u), false);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
+        my_widget_local_to_global(wave, &gx, &gy);
+        ev = my_event_init(MY_EVENT_POINTER_UP);
+        ev.u.pointer.x = gx + (int32_t)(w / 8u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        ev.u.pointer.button = 3u; /* a right-button release */
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        /* a release carries no grab to check, so the non-primary one has to
+         * end the drag by itself: a later primary release must not apply
+         * its own x on top of the range */
+        ev = my_event_init(MY_EVENT_POINTER_UP);
+        ev.u.pointer.x = gx + (int32_t)(w / 2u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        ev.u.pointer.button = 1u;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_EQ(b2, b);
+        ASSERT_EQ(e2, e);
+        /* and neither does a move, the grab having gone away */
+        ev = my_event_init(MY_EVENT_POINTER_MOVE);
+        ev.u.pointer.x = gx + (int32_t)((w * 3u) / 4u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_EQ(b2, b);
+        ASSERT_EQ(e2, e);
+    }
+    /* a press on another widget takes the grab: the waveform never sees an
+     * UP, so a later hover move must not select either */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        my_widget_t *play = find(shell, "editor-audio-play");
+        int32_t gx = 0, gy = 0, px = 0, py = 0;
+        my_event_t ev;
+        u32 b2 = 0u, e2 = 0u;
+        ASSERT_NOT_NULL(play);
+        pointer_drag(shell, wave, 0, (int32_t)(w / 8u), false);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
+        my_widget_local_to_global(play, &px, &py);
+        ev = my_event_init(MY_EVENT_POINTER_DOWN);
+        ev.u.pointer.x = px + play->rect.w / 2;
+        ev.u.pointer.y = py + play->rect.h / 2;
+        ev.u.pointer.button = 1u;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ev = my_event_init(MY_EVENT_POINTER_UP); /* Play's own release */
+        ev.u.pointer.x = px + play->rect.w / 2;
+        ev.u.pointer.y = py + play->rect.h / 2;
+        ev.u.pointer.button = 1u;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        break_editor_shell_tick(shell);
+        /* now a hover move over the waveform, with nothing pressed */
+        my_widget_local_to_global(wave, &gx, &gy);
+        ev = my_event_init(MY_EVENT_POINTER_MOVE);
+        ev.u.pointer.x = gx + (int32_t)(w / 2u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_EQ(b2, b);
+        ASSERT_EQ(e2, e);
+    }
+    /* an attachment change mid-drag ends it on the next move, not only on
+     * the next press: the old anchor must not meet the new clip */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        int32_t gx = 0, gy = 0;
+        my_event_t ev;
+        u32 b2 = 0u, e2 = 0u;
+        pointer_drag(shell, wave, 0, (int32_t)(w / 8u), false);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 500u)); /* no tick */
+        my_widget_local_to_global(wave, &gx, &gy);
+        ev = my_event_init(MY_EVENT_POINTER_MOVE);
+        ev.u.pointer.x = gx + (int32_t)(w / 2u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_TRUE(break_editor_undo(doc));
+        break_editor_shell_tick(shell);
+    }
+    /* dragging back onto the anchor clears the selection again */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        int32_t gx = 0, gy = 0;
+        my_event_t ev;
+        u32 b2 = 0u, e2 = 0u;
+        pointer_drag(shell, wave, (int32_t)(w / 4u), (int32_t)(w / 2u), false);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        my_widget_local_to_global(wave, &gx, &gy);
+        ev = my_event_init(MY_EVENT_POINTER_MOVE);
+        ev.u.pointer.x = gx + (int32_t)(w / 4u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ev = my_event_init(MY_EVENT_POINTER_UP);
+        ev.u.pointer.x = gx + (int32_t)(w / 4u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        ev.u.pointer.button = 1u;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+    }
+    /* a Shift press during a live drag ends the drag: its range survives */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        int32_t gx = 0, gy = 0;
+        my_event_t ev;
+        u32 b2 = 0u, e2 = 0u, b3 = 0u, e3 = 0u;
+        pointer_drag(shell, wave, (int32_t)(w / 8u), (int32_t)(w / 4u), false);
+        my_widget_local_to_global(wave, &gx, &gy);
+        ev = my_event_init(MY_EVENT_POINTER_DOWN);
+        ev.u.pointer.x = gx + (int32_t)((w * 3u) / 4u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        ev.u.pointer.button = 1u;
+        ev.u.pointer.modifiers = MY_KEYMOD_SHIFT;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ev = my_event_init(MY_EVENT_POINTER_MOVE);
+        ev.u.pointer.x = gx + (int32_t)(w / 2u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b3, &e3));
+        ASSERT_EQ(b3, b2); /* the move did not re-anchor at the old drag */
+        ASSERT_EQ(e3, e2);
+        ev = my_event_init(MY_EVENT_POINTER_UP);
+        ev.u.pointer.x = gx + (int32_t)(w / 2u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        ev.u.pointer.button = 1u;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        pointer_drag(shell, wave, 1, 1, true); /* back to no selection */
+        ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b2, &e2));
+    }
     /* a move without a press does not select */
     {
         my_window_t *win = break_editor_shell_window(shell);

@@ -45,6 +45,20 @@ Dragging the edges of an existing selection, auto-scroll, zoom.
 
 ## Result
 
-- RED: the new `test_editor_shell` case failed with no selection after a drag, then 213/213.
+- RED: the new `test_editor_shell` case failed with no selection after a drag, then 215/215 (the figure first recorded here, 213/213, was the count before this slice's two cases).
 - Mutations, each failing the test: the end frame not included (caught after the test moved from a ±10-frame tolerance to exact pixel-derived frames), moves ignored, a move outside a drag consumed, a still move selecting, the drag flag not set at the press.
 - Self-check (the review subagent for this slice was still running): a mid-drag tab switch kept the dispatcher's grab, so moves still changed the selection on a hidden page. Fixed by ending the drag when the widget or any ancestor is invisible; a regression case covers it and removing the check fails it.
+- Independent review (2026-11-19, after the slice shipped) found five real
+  drag-lifetime holes, all now fixed with cases in the same test:
+  a non-primary release left the drag live although the dispatcher drops the
+  grab on any release; a press on another widget moved the grab away, so a
+  later hover move still selected; the catch-up ran only on a press, so an
+  attachment change mid-drag met the old anchor; dragging back onto the
+  anchor kept the earlier selection instead of returning to a plain click;
+  and a Shift press during a live drag was overwritten by the next move.
+  The review also showed the release's own x was unpinned (a mutation making
+  only moves select stayed green) and that the suite reports 215, not 213.
+  Six mutations now cover these: the release narrowed back to the primary
+  button, the grab check removed, the catch-up back under `if (press)`, the
+  return to the anchor not clearing, the Shift branch not ending the drag,
+  and only moves applying the range.

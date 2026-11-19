@@ -21,8 +21,10 @@
  * playing it restarts there, otherwise Play starts there next; a line marks
  * the playing position (or a non-zero cursor). An attachment change resets
  * the cursor. With a selection, Play plays only the selection. Shift+press
- * selects from the cursor to the pressed frame (both
- * included), and a drag selects the frames it passes over; Trim/Cut run the document's undoable edits on the selection,
+ * selects from the cursor to the pressed frame (both included), and a drag
+ * selects the frames it passes over; it ends on any release, on a press
+ * elsewhere taking the dispatcher's grab, and on an attachment change.
+ * Trim/Cut run the document's undoable edits on the selection,
  * and an attachment change clears it. Fade (10 ms) and Normalize (-1 dBFS)
  * act on the selection, or on the whole clip without one. A ruler strip
  * above the waveform draws time ticks from editor_panel_audio_ticks. The
@@ -43,6 +45,7 @@
 #include "editor_audio_preview.h"
 #include "editor_theme.h"
 #include "myui/my_layout.h"
+#include "myui/my_window.h"
 #include "myui/widgets/my_button.h"
 #include "myui/widgets/my_checkbox.h"
 #include "myui/widgets/my_label.h"
@@ -275,6 +278,14 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     }
 }
 
+/* Does the dispatcher still deliver moves and releases to this widget?
+ * It hands the grab to whatever is pressed next and drops it on any
+ * release, neither of which the widget is told about. */
+static bool audio_has_grab(const EditorPanelAudio *panel, const my_widget_t *widget) {
+    const my_window_t *window = break_editor_shell_window(panel->shell);
+    return window != NULL && window->dispatcher.grabbed == widget;
+}
+
 /* A primary-button press seeks to the frame under the pointer and clears the
  * selection; dragging from there selects the frames passed over (both ends
  * included), and Shift+press selects from the cursor to that frame. */
@@ -285,14 +296,24 @@ static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *e
     const bool press = event != NULL && event->type == MY_EVENT_POINTER_DOWN &&
                        event->u.pointer.button == 1u;
     const bool move = event != NULL && event->type == MY_EVENT_POINTER_MOVE;
-    const bool release = event != NULL && event->type == MY_EVENT_POINTER_UP &&
-                         event->u.pointer.button == 1u;
+    /* any release ends the drag: the dispatcher drops the grab on all of
+     * them, so a non-primary one would otherwise leave the drag live */
+    const bool release = event != NULL && event->type == MY_EVENT_POINTER_UP;
     if (widget == NULL || (!press && !move && !release) || widget->rect.w <= 0) {
         return MY_RET_FAIL;
     }
     panel = (EditorPanelAudio *)my_widget_get_user_data(widget);
     if (panel == NULL || (!press && !panel->dragging)) {
         return MY_RET_FAIL; /* a move or release outside a drag is not ours */
+    }
+    if (release && event->u.pointer.button != 1u) {
+        panel->dragging = false; /* the grab is gone; keep the selection */
+        return MY_RET_FAIL;
+    }
+    if (move && !audio_has_grab(panel, widget)) {
+        /* a press elsewhere took the grab: this is a plain hover */
+        panel->dragging = false;
+        return MY_RET_FAIL;
     }
     for (const my_widget_t *w = widget; w != NULL; w = w->parent) {
         if (!w->visible) {
@@ -302,8 +323,11 @@ static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *e
             return MY_RET_FAIL;
         }
     }
-    if (press) {
-        audio_panel_catch_up(panel); /* the Shift anchor reads the cursor */
+    /* an edit no tick has seen yet (an undo in the same frame) clears the
+     * selection and the drag before the anchor meets the new clip */
+    audio_panel_catch_up(panel);
+    if (!press && !panel->dragging) {
+        return MY_RET_FAIL;
     }
     frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
     if (frames == 0u) {
@@ -325,6 +349,7 @@ static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *e
             const u32 cursor = break_editor_audio_preview_cursor_frames(panel->preview);
             const u32 lo = cursor < frame ? cursor : frame;
             const u32 hi = cursor < frame ? frame : cursor;
+            panel->dragging = false; /* no drag follows a Shift press */
             (void)editor_panel_audio_select(panel, lo, hi + 1u);
         } else {
             panel->dragging = true;
@@ -335,11 +360,13 @@ static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *e
         return MY_RET_OK;
     }
     /* a move or release while dragging: the range between anchor and pointer,
-     * both frames included; staying on the anchor keeps the plain click */
+     * both frames included; back on the anchor it is a plain click again */
     if (frame != panel->drag_anchor) {
         const u32 lo = panel->drag_anchor < frame ? panel->drag_anchor : frame;
         const u32 hi = panel->drag_anchor < frame ? frame : panel->drag_anchor;
         (void)editor_panel_audio_select(panel, lo, hi + 1u);
+    } else {
+        (void)editor_panel_audio_select(panel, 0u, 0u);
     }
     if (release) {
         panel->dragging = false;

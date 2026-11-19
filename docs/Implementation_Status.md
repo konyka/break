@@ -1,3 +1,10 @@
+## 编辑器音频拖动选区的评审修正（2026-11-19）
+
+- **背景**：拖动选区切片上线后的独立评审发现 5 个拖动生命周期问题，均已修复并补了用例（同一个 `audio_page_selects_by_dragging_the_waveform`）。
+- **修复**：① 非主键释放也结束拖动——myui 分发器在任何释放上都会放弃抓取，原来只认主键，导致拖动标志残留；② 按下其他控件（如“播放”）会把抓取移走，之后在波形上的悬停移动不再改动选区（新增 `audio_has_grab`，比较 `window->dispatcher.grabbed`）；③ 附件变化的追平（`audio_panel_catch_up`）从“只在按下时”改为每个事件都做，否则拖动中撤销会用旧锚点配新片长；④ 拖回锚点时清除选区，回到普通点击语义；⑤ Shift+按下结束当前拖动，否则其选区会被下一次移动用旧锚点覆盖。
+- **TDD**：6 个新场景先判红再通过，`test_editor_shell` 216/216。6 个变异全部判红：释放收窄回主键、去掉抓取检查、追平退回 `if (press)`、拖回锚点不清除、Shift 分支不结束拖动、只有移动才应用范围（评审指出释放自己的 x 原先没有被钉住）。
+- **文档更正**：评审指出此前记的“213/213”不是套件实际报告的数字，已在实现状态和设计文档中改为 215/215 并注明原因。
+
 ## 编辑器音频波形缩放与滚动（2026-11-19）
 
 - **交付**：核心新增 `break_editor_doc_audio_waveform_range(doc, begin, end, columns, out_min, out_max)`，按 `[begin, end)` 计算每列最小/最大值；`break_editor_doc_audio_waveform` 转发为整段调用，非法范围返回 false 且不写出参。面板保存可见范围 `[view_begin, view_end)`（默认整段，附件变化时重置）。`editor-audio-view-bar` 行上的四个符号按钮：`editor-audio-zoom-out`、`editor-audio-zoom-in`（以视图中心折半或加倍，下限 16 帧，上限整段）、`editor-audio-scroll-left`、`editor-audio-scroll-right`（移动视图长度的四分之一，两端钳住）。波形列、刻度步长与首刻度、选区色带（裁剪到视图）、播放光标（只在视图内画）和指针映射（`view_begin + x * view_len / width`）全部按视图计算，刻度标签仍是绝对时间。shell 新增 `break_editor_shell_audio_zoom`、`_scroll`、`_view`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-zoom-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-zoom.md`。
@@ -20,7 +27,7 @@
 ## 编辑器音频拖动选区（2026-11-19）
 
 - **交付**：波形控件处理指针移动和释放：主键按下仍是跳转并清除选区，同时记下拖动锚点；按住移动时选区为锚点与当前帧之间（两端都包含），向左向右拖动结果相同；停在锚点上仍是普通点击（不产生选区）；未处于拖动中的移动或释放不消费事件。附件变化时结束拖动。myui 的分发器在按下时抓取控件并把后续移动与释放送给它，无需额外捕获。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-drag-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-drag.md`。
-- **TDD**：新用例经真实事件分发（按下、两次移动、释放）先失败再通过，`test_editor_shell` 213/213。5 个变异全部判红；其中“末帧不包含”最初存活，把断言从 ±10 帧容差改为按像素精确计算后判红。
+- **TDD**：新用例经真实事件分发（按下、两次移动、释放）先失败再通过，`test_editor_shell` 215/215（文中此前记的 213/213 是加入本切片两个用例之前的数量）。5 个变异全部判红；其中“末帧不包含”最初存活，把断言从 ±10 帧容差改为按像素精确计算后判红。
 - **自查**：拖动中切换标签页时 myui 仍保留抓取，移动事件会继续改动隐藏页面的选区；改为控件或其任一祖先不可见时结束拖动，并补回归用例（去掉检查即判红）。
 - **其他已核对**：拖动中再次按下会重新锚定而不是延长原选区；拖动中 reset 文档会结束拖动；拖动中销毁 shell 在 ASan 下无问题。
 - **边界**：不能拖动已有选区的边缘，没有自动滚动和缩放。
