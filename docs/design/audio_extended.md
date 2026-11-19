@@ -433,4 +433,5 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 2026-11-19 补充：分声道静音。预览新增静音声道（`break_editor_audio_preview_set_mute`），下一次播放把该声道清零、其余保留；独奏生效时不应用静音。音频页 `editor-audio-mute` 按钮循环切换。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-mute-design.md`。“分声道静音/独奏”至此齐备。
 - 2026-11-19 补充：电平读数。核心新增 `break_editor_doc_audio_peak_range`（范围内峰值与 RMS），音频页 `editor-audio-levels` 标签显示当前视图的 peak/rms dBFS（静音按 -120 dB 地板）。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-db-design.md`。上文“dB/对数刻度”中的 dB 读数由此交付。
 - 2026-11-20 补充：波形 dB 网格。每条泳道中线上下对称画 -6/-12/-18/-24 dBFS 网格线（不足 4 像素间距或超出泳道的跳过），随幅度缩放移动；`break_editor_shell_audio_grid*` 暴露上一次绘制的网格供验证。设计见 `docs/superpowers/specs/2026-11-20-editor-audio-db-grid-design.md`。“波形上的 dB 网格”由此交付。
-- 2026-11-20 补充：网格线标注。每条网格线左端上方标出级别（泳道留不出文字高度时跳过标注但仍画线，镜像的下半边不标注）。设计见 `docs/superpowers/specs/2026-11-20-editor-audio-grid-labels-design.md`。“线上标注”由此交付。仍缺：各泳道独立幅度缩放、真峰值与 LUFS、真实听测。
+- 2026-11-20 补充：网格线标注。每条网格线左端上方标出级别（泳道留不出文字高度时跳过标注但仍画线，镜像的下半边不标注）。设计见 `docs/superpowers/specs/2026-11-20-editor-audio-grid-labels-design.md`。“线上标注”由此交付。
+- 2026-11-20 补充：各泳道独立幅度缩放。显示倍数按泳道保存，`break_editor_shell_audio_set_lane_gain`/`_lane_gain`/`_fit_lane_gain` 操作单条泳道，`fit_gain` 每条泳道各按自身峰值适配；网格模型随之记录泳道号。设计见 `docs/superpowers/specs/2026-11-20-editor-audio-lane-gain-design.md`。“各泳道独立幅度缩放”由此交付。仍缺：真峰值与 LUFS、真实听测。

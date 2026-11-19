@@ -58,7 +58,7 @@
  * than EDITOR_AUDIO_GRID_MIN_PX to the centre, or outside the lane, is
  * dropped so a short lane or a high gain is not a solid block. */
 #define EDITOR_AUDIO_GRID_MIN_PX 4.0f
-#define EDITOR_AUDIO_GRID_MAX 8u /* 4 levels x 2 halves */
+#define EDITOR_AUDIO_GRID_MAX 16u /* 4 levels x 2 halves x 2 lanes */
 /* a label needs this much room above its line to stay inside the lane */
 #define EDITOR_AUDIO_GRID_TEXT_PX 11.0f
 static const double k_audio_grid_db[] = {-6.0, -12.0, -18.0, -24.0};
@@ -88,7 +88,7 @@ struct EditorPanelAudio {
     my_widget_t *solo;        /* weak */
     my_widget_t *mute;        /* weak */
     my_widget_t *levels;      /* weak: the peak/RMS readout */
-    u32 gain;                 /* display-only amplitude multiplier */
+    u32 gain[EDITOR_AUDIO_LANES_MAX]; /* display-only, one per lane */
     bool following;           /* the view chases the playing position */
     u32 view_begin, view_end; /* visible [begin, end) frames; empty = whole clip */
     u32 sel_begin, sel_end;   /* [begin, end) frames; empty when equal */
@@ -104,9 +104,10 @@ struct EditorPanelAudio {
     u32 seen_view_begin, seen_view_end;
     char info_text[EDITOR_AUDIO_INFO_BYTES];
     u32 lanes; /* one per channel, 0 without an attachment */
-    u32 grid_count;                      /* lines the last paint drew (lane 0) */
+    u32 grid_count;                      /* lines the last paint drew */
     double grid_db[EDITOR_AUDIO_GRID_MAX];
     i32 grid_y[EDITOR_AUDIO_GRID_MAX];
+    u32 grid_lane[EDITOR_AUDIO_GRID_MAX];      /* which lane each line belongs to */
     char grid_label[EDITOR_AUDIO_GRID_MAX][8]; /* "" when unlabelled */
     i16 min[EDITOR_AUDIO_LANES_MAX][BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
     i16 max[EDITOR_AUDIO_LANES_MAX][BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
@@ -144,12 +145,24 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
                            (double)break_editor_audio_preview_length_frames(panel->preview) /
                                prate);
         }
-        if (panel->gain > 1u) {
+        {
+            /* one factor when the lanes agree, "<a>x/<b>x" when they do not,
+             * so a per-lane setting is visible */
+            const u32 lanes = panel->lanes != 0u ? panel->lanes : 1u;
+            const bool uniform = lanes < 2u || panel->gain[0] == panel->gain[1];
+            const bool shown = uniform ? panel->gain[0] > 1u
+                                       : (panel->gain[0] > 1u || panel->gain[1] > 1u);
             const usize len = strlen(panel->info_text);
-            if (len < sizeof(panel->info_text)) {
-                (void)snprintf(panel->info_text + len,
-                               sizeof(panel->info_text) - len, " | %ux",
-                               (unsigned)panel->gain);
+            if (shown && len < sizeof(panel->info_text)) {
+                if (uniform) {
+                    (void)snprintf(panel->info_text + len,
+                                   sizeof(panel->info_text) - len, " | %ux",
+                                   (unsigned)panel->gain[0]);
+                } else {
+                    (void)snprintf(panel->info_text + len,
+                                   sizeof(panel->info_text) - len, " | %ux/%ux",
+                                   (unsigned)panel->gain[0], (unsigned)panel->gain[1]);
+                }
             }
         }
     }
@@ -250,7 +263,7 @@ static void audio_panel_refresh(EditorPanelAudio *panel) {
         break_editor_audio_preview_reset_cursor(panel->preview);
         panel->sel_begin = panel->sel_end = 0u;
         panel->view_begin = panel->view_end = 0u;
-        panel->gain = 1u;
+        for (u32 lane = 0u; lane < EDITOR_AUDIO_LANES_MAX; ++lane) panel->gain[lane] = 1u;
         break_editor_audio_preview_set_solo(panel->preview, BREAK_EDITOR_AUDIO_SOLO_NONE);
         break_editor_audio_preview_set_mute(panel->preview, BREAK_EDITOR_AUDIO_MUTE_NONE);
         panel->dragging = false;
@@ -327,8 +340,9 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     grid = (EditorPanelAudio *)panel;
     grid->grid_count = 0u;
     mid = lane_h * 0.5f;
-    /* the amplitude zoom is display only: a quiet clip fills more height */
-    scale = (lane_h * 0.5f) * (float)(panel->gain != 0u ? panel->gain : 1u) / 32768.0f;
+    /* the amplitude zoom is display only and per lane: `scale` is set
+     * inside the lane loop below */
+    scale = 0.0f;
     if (panel->sel_begin < panel->sel_end) {
         const u32 view_begin = audio_view_begin(panel);
         const u32 view_end = audio_view_end(panel);
@@ -348,6 +362,10 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     }
     for (u32 lane = 0u; lane < panel->lanes; ++lane) {
         const float lane_mid = (float)lane * lane_h + mid;
+        const u32 lane_gain = lane < EDITOR_AUDIO_LANES_MAX && panel->gain[lane] != 0u
+                                  ? panel->gain[lane]
+                                  : 1u;
+        scale = (lane_h * 0.5f) * (float)lane_gain / 32768.0f;
         my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_is_light()
                                                                  ? EDITOR_AUDIO_LIGHT_MID_LINE
                                                                  : BREAK_EDITOR_THEME_BORDER));
@@ -379,15 +397,17 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
                                                  ? EDITOR_AUDIO_LIGHT_MID_LINE
                                                  : BREAK_EDITOR_THEME_BORDER));
             }
-            if (lane == 0u && grid->grid_count + 2u <= EDITOR_AUDIO_GRID_MAX) {
-                /* the model the test reads: lane 0's two halves */
+            if (grid->grid_count + 2u <= EDITOR_AUDIO_GRID_MAX) {
+                /* the model the test reads: every lane's two halves */
                 grid->grid_db[grid->grid_count] = k_audio_grid_db[g];
                 grid->grid_y[grid->grid_count] = (i32)top;
+                grid->grid_lane[grid->grid_count] = lane;
                 (void)snprintf(grid->grid_label[grid->grid_count],
                                sizeof(grid->grid_label[0]), "%s", labelled ? label : "");
                 grid->grid_count++;
                 grid->grid_db[grid->grid_count] = k_audio_grid_db[g];
                 grid->grid_y[grid->grid_count] = (i32)(lane_mid + offset);
+                grid->grid_lane[grid->grid_count] = lane;
                 grid->grid_label[grid->grid_count][0] = '\0'; /* mirrored: no label */
                 grid->grid_count++;
             }
@@ -649,6 +669,10 @@ bool editor_panel_audio_grid(const EditorPanelAudio *panel, u32 i, double *out_d
     return true;
 }
 
+u32 editor_panel_audio_grid_lane(const EditorPanelAudio *panel, u32 i) {
+    return panel != NULL && i < panel->grid_count ? panel->grid_lane[i] : UINT32_MAX;
+}
+
 static const my_widget_vtable_t k_audio_ruler_vtable = {audio_ruler_on_paint, NULL, NULL, NULL};
 
 static const my_widget_vtable_t k_audio_waveform_vtable = {audio_waveform_on_paint,
@@ -664,7 +688,7 @@ EditorPanelAudio *editor_panel_audio_create(BreakEditorShell *shell) {
         return NULL;
     }
     panel->shell = shell;
-    panel->gain = 1u;
+    for (u32 lane = 0u; lane < EDITOR_AUDIO_LANES_MAX; ++lane) panel->gain[lane] = 1u;
     panel->preview = break_editor_audio_preview_create();
     if (panel->preview == NULL) {
         free(panel);
@@ -889,27 +913,43 @@ bool editor_panel_audio_zoom(EditorPanelAudio *panel, bool in) {
 
 #define EDITOR_AUDIO_GAIN_MAX 32u
 
-u32 editor_panel_audio_set_gain(EditorPanelAudio *panel, u32 gain) {
+u32 editor_panel_audio_set_lane_gain(EditorPanelAudio *panel, u32 lane, u32 gain) {
     u32 snapped = 1u;
-    if (panel == NULL) {
+    if (panel == NULL || lane >= EDITOR_AUDIO_LANES_MAX) {
         return 0u;
     }
     /* the largest power of two at or below the request, within [1, 32] */
     while (snapped * 2u <= gain && snapped < EDITOR_AUDIO_GAIN_MAX) {
         snapped *= 2u;
     }
-    if (snapped != panel->gain) {
-        panel->gain = snapped;
+    if (snapped != panel->gain[lane]) {
+        panel->gain[lane] = snapped;
         audio_panel_format_info(panel); /* the suffix and the repaint */
         if (panel->waveform != NULL) {
             my_widget_invalidate(panel->waveform, NULL);
         }
     }
-    return panel->gain;
+    return panel->gain[lane];
+}
+
+u32 editor_panel_audio_lane_gain(const EditorPanelAudio *panel, u32 lane) {
+    return panel != NULL && lane < EDITOR_AUDIO_LANES_MAX ? panel->gain[lane] : 0u;
+}
+
+u32 editor_panel_audio_set_gain(EditorPanelAudio *panel, u32 gain) {
+    u32 first = 0u;
+    if (panel == NULL) {
+        return 0u;
+    }
+    for (u32 lane = 0u; lane < EDITOR_AUDIO_LANES_MAX; ++lane) {
+        const u32 applied = editor_panel_audio_set_lane_gain(panel, lane, gain);
+        if (lane == 0u) first = applied;
+    }
+    return first;
 }
 
 u32 editor_panel_audio_gain(const EditorPanelAudio *panel) {
-    return panel != NULL ? panel->gain : 0u;
+    return editor_panel_audio_lane_gain(panel, 0u);
 }
 
 /* "<Verb>" with no channel picked, "<Verb> L"/"<Verb> R" for a stereo
@@ -1054,34 +1094,51 @@ static void on_audio_solo_click(void *ctx, const char *event, void *data) {
     }
 }
 
-u32 editor_panel_audio_fit_gain(EditorPanelAudio *panel) {
+u32 editor_panel_audio_fit_lane_gain(EditorPanelAudio *panel, u32 lane) {
     u32 peak = 0u, fitted = 1u;
-    if (panel == NULL) {
+    if (panel == NULL || lane >= EDITOR_AUDIO_LANES_MAX) {
         return 0u;
     }
     audio_panel_catch_up(panel); /* the columns must match the view */
-    if (panel->lanes == 0u || panel->columns == 0u) {
+    if (lane >= panel->lanes || panel->columns == 0u) {
         return 0u;
     }
-    /* the loudest sample of the visible columns, across every lane */
-    for (u32 lane = 0u; lane < panel->lanes; ++lane) {
-        for (u32 c = 0u; c < panel->columns; ++c) {
-            const i32 lo = panel->min[lane][c] < 0 ? -(i32)panel->min[lane][c]
-                                                   : (i32)panel->min[lane][c];
-            const i32 hi = panel->max[lane][c] < 0 ? -(i32)panel->max[lane][c]
-                                                   : (i32)panel->max[lane][c];
-            const u32 mag = (u32)(lo > hi ? lo : hi);
-            if (mag > peak) peak = mag;
-        }
+    /* the loudest sample of this lane's visible columns */
+    for (u32 c = 0u; c < panel->columns; ++c) {
+        const i32 lo = panel->min[lane][c] < 0 ? -(i32)panel->min[lane][c]
+                                               : (i32)panel->min[lane][c];
+        const i32 hi = panel->max[lane][c] < 0 ? -(i32)panel->max[lane][c]
+                                               : (i32)panel->max[lane][c];
+        const u32 mag = (u32)(lo > hi ? lo : hi);
+        if (mag > peak) peak = mag;
     }
     if (peak == 0u) {
-        return panel->gain; /* a silent view: nothing to fit */
+        return panel->gain[lane]; /* a silent lane: nothing to fit */
     }
     while (fitted * 2u <= EDITOR_AUDIO_GAIN_MAX && (fitted * 2u) * peak <= 32768u) {
         fitted *= 2u;
     }
-    return editor_panel_audio_set_gain(panel, fitted);
+    return editor_panel_audio_set_lane_gain(panel, lane, fitted);
 }
+
+/* Each lane to its own peak, which is what makes two channels of very
+ * different level comparable in one look. Returns lane 0's factor. */
+u32 editor_panel_audio_fit_gain(EditorPanelAudio *panel) {
+    u32 first = 0u;
+    if (panel == NULL) {
+        return 0u;
+    }
+    audio_panel_catch_up(panel);
+    if (panel->lanes == 0u || panel->columns == 0u) {
+        return 0u;
+    }
+    for (u32 lane = 0u; lane < panel->lanes; ++lane) {
+        const u32 applied = editor_panel_audio_fit_lane_gain(panel, lane);
+        if (lane == 0u) first = applied;
+    }
+    return first;
+}
+
 
 static void on_audio_gain_fit_click(void *ctx, const char *event, void *data) {
     (void)event;
@@ -1094,7 +1151,7 @@ static void on_audio_gain_up_click(void *ctx, const char *event, void *data) {
     (void)event;
     (void)data;
     if (panel != NULL) {
-        (void)editor_panel_audio_set_gain(panel, panel->gain * 2u);
+        (void)editor_panel_audio_set_gain(panel, editor_panel_audio_gain(panel) * 2u);
     }
 }
 
@@ -1103,7 +1160,7 @@ static void on_audio_gain_down_click(void *ctx, const char *event, void *data) {
     (void)event;
     (void)data;
     if (panel != NULL) {
-        (void)editor_panel_audio_set_gain(panel, panel->gain / 2u);
+        (void)editor_panel_audio_set_gain(panel, editor_panel_audio_gain(panel) / 2u);
     }
 }
 

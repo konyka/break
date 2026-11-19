@@ -4278,6 +4278,10 @@ const char *break_editor_shell_audio_grid_label(const BreakEditorShell *shell, u
     return shell != NULL ? editor_panel_audio_grid_label(shell->audio_panel, i) : NULL;
 }
 
+u32 break_editor_shell_audio_grid_lane(const BreakEditorShell *shell, u32 i) {
+    return shell != NULL ? editor_panel_audio_grid_lane(shell->audio_panel, i) : UINT32_MAX;
+}
+
 double break_editor_shell_audio_peak_db(const BreakEditorShell *shell) {
     return shell != NULL ? editor_panel_audio_peak_db(shell->audio_panel)
                          : BREAK_EDITOR_AUDIO_DB_FLOOR;
@@ -4320,6 +4324,19 @@ bool break_editor_shell_audio_lane_column(const BreakEditorShell *shell, u32 lan
                                           i16 *out_min, i16 *out_max) {
     return shell != NULL &&
            editor_panel_audio_lane_column(shell->audio_panel, lane, i, out_min, out_max);
+}
+
+u32 break_editor_shell_audio_set_lane_gain(BreakEditorShell *shell, u32 lane, u32 gain) {
+    return shell != NULL ? editor_panel_audio_set_lane_gain(shell->audio_panel, lane, gain)
+                         : 0u;
+}
+
+u32 break_editor_shell_audio_lane_gain(const BreakEditorShell *shell, u32 lane) {
+    return shell != NULL ? editor_panel_audio_lane_gain(shell->audio_panel, lane) : 0u;
+}
+
+u32 break_editor_shell_audio_fit_lane_gain(BreakEditorShell *shell, u32 lane) {
+    return shell != NULL ? editor_panel_audio_fit_lane_gain(shell->audio_panel, lane) : 0u;
 }
 
 u32 break_editor_shell_audio_set_gain(BreakEditorShell *shell, u32 gain) {

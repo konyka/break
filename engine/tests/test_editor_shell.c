@@ -3839,6 +3839,103 @@ static u32 waveform_painted_rows(BreakEditorShell *shell, my_widget_t *w) {
     return rows;
 }
 
+/* Per-lane amplitude zoom (design 2026-11-20-editor-audio-lane-gain). */
+TEST(audio_page_scales_each_lane_independently)
+{
+    static i16 stereo[4000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    u32 i;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    /* left near full scale, right 32x quieter */
+    for (i = 0u; i < 2000u; i++) {
+        stereo[i * 2u] = (i16)(i % 2u == 0u ? 16000 : -16000);
+        stereo[i * 2u + 1u] = (i16)(i % 2u == 0u ? 500 : -500);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, stereo, 2000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_lane_count(shell), 2u);
+    /* both lanes start at 1x, and lane 0's factor is the page's */
+    ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 0u), 1u);
+    ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 1u), 1u);
+    ASSERT_EQ(break_editor_shell_audio_gain(shell), 1u);
+    /* one lane at a time, leaving the other alone */
+    ASSERT_EQ(break_editor_shell_audio_set_lane_gain(shell, 1u, 8u), 8u);
+    ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 1u), 8u);
+    ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 0u), 1u);
+    /* an out-of-range lane changes nothing */
+    ASSERT_EQ(break_editor_shell_audio_set_lane_gain(shell, 2u, 16u), 0u);
+    ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 1u), 8u);
+    ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 2u), 0u);
+    /* the info line names both factors when they differ */
+    ASSERT_TRUE(strstr(break_editor_shell_audio_info_text(shell), "1x/8x") != NULL);
+    /* the page-wide setter sets both, and then the suffix is a single one */
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 4u), 4u);
+    ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 0u), 4u);
+    ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 1u), 4u);
+    ASSERT_TRUE(strstr(break_editor_shell_audio_info_text(shell), "| 4x") != NULL);
+    ASSERT_TRUE(strstr(break_editor_shell_audio_info_text(shell), "4x/") == NULL);
+    /* fitting one lane uses that lane's peak only */
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 1u), 1u);
+    {
+        u32 expect_left = 1u, expect_right = 1u;
+        while (expect_left * 2u <= 32u && (expect_left * 2u) * 16000u <= 32768u) {
+            expect_left *= 2u;
+        }
+        while (expect_right * 2u <= 32u && (expect_right * 2u) * 500u <= 32768u) {
+            expect_right *= 2u;
+        }
+        ASSERT_TRUE(expect_right > expect_left);
+        ASSERT_EQ(break_editor_shell_audio_fit_lane_gain(shell, 1u), expect_right);
+        ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 0u), 1u); /* untouched */
+        /* fitting the page fits each lane to its own peak */
+        ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 1u), 1u);
+        (void)break_editor_shell_audio_fit_gain(shell);
+        ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 0u), expect_left);
+        ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 1u), expect_right);
+        ASSERT_EQ(break_editor_shell_audio_fit_lane_gain(shell, 5u), 0u);
+    }
+    /* lane 1's grid follows lane 1's factor: with lane 0 at 1x and lane 1
+     * at 8x, the two lanes draw different level sets */
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 1u), 1u);
+    ASSERT_EQ(break_editor_shell_audio_set_lane_gain(shell, 1u, 8u), 8u);
+    shell_paint(shell);
+    {
+        const u32 m = break_editor_shell_audio_grid_count(shell);
+        double lane0_min = 0.0, lane1_min = 0.0;
+        u32 lane0 = 0u, lane1 = 0u;
+        ASSERT_TRUE(m > 0u);
+        for (i = 0u; i < m; i++) {
+            double db = 0.0;
+            i32 y = 0;
+            const u32 lane = break_editor_shell_audio_grid_lane(shell, i);
+            ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
+            ASSERT_TRUE(lane < 2u);
+            if (lane == 0u) {
+                if (db < lane0_min) lane0_min = db;
+                lane0++;
+            } else {
+                if (db < lane1_min) lane1_min = db;
+                lane1++;
+            }
+        }
+        ASSERT_TRUE(lane0 > 0u && lane1 > 0u);
+        /* 8x pushes the loud levels off lane 1, leaving only quieter ones */
+        ASSERT_TRUE(lane1_min < lane0_min);
+    }
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 1u), 1u);
+    /* an attachment change puts both back to 1 */
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 1000u));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 0u), 1u);
+    ASSERT_EQ(break_editor_shell_audio_lane_gain(shell, 1u), 1u);
+    shell_paint(shell);
+    break_editor_shell_destroy(shell);
+}
+
 /* dB grid (design 2026-11-20-editor-audio-db-grid). */
 TEST(audio_page_draws_a_db_grid_on_each_lane)
 {
@@ -3871,6 +3968,7 @@ TEST(audio_page_draws_a_db_grid_on_each_lane)
             i32 y = -1;
             double expect;
             ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
+            ASSERT_EQ(break_editor_shell_audio_grid_lane(shell, i), 0u); /* mono */
             ASSERT_TRUE(db <= -6.0 && db >= -24.0);
             expect = pow(10.0, db / 20.0) * half;
             ASSERT_TRUE((double)y >= half - expect - 1.5 &&
@@ -3969,8 +4067,9 @@ TEST(audio_page_draws_a_db_grid_on_each_lane)
         break_editor_shell_tick(shell);
         shell_paint(shell);
         ASSERT_EQ(break_editor_shell_audio_lane_count(shell), 2u);
-        /* half the lane height, so fewer levels clear the 4 px gap */
-        ASSERT_TRUE(break_editor_shell_audio_grid_count(shell) <= mono_n);
+        /* half the lane height, so fewer levels clear the 4 px gap per
+         * lane; the count now covers both lanes */
+        ASSERT_TRUE(break_editor_shell_audio_grid_count(shell) <= mono_n * 2u);
         {
             bool saw_unlabelled_upper = false;
             for (i = 0u; i < break_editor_shell_audio_grid_count(shell); i++) {
@@ -3978,7 +4077,13 @@ TEST(audio_page_draws_a_db_grid_on_each_lane)
                 i32 y = 0;
                 const char *label;
                 ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
-                ASSERT_TRUE(y >= 0 && y < wave->rect.h / 2);
+                ASSERT_TRUE(y >= 0 && y < wave->rect.h);
+                /* both lanes report now, each inside its own half */
+                if (break_editor_shell_audio_grid_lane(shell, i) != 0u) {
+                    ASSERT_TRUE(y >= wave->rect.h / 2);
+                    continue;
+                }
+                ASSERT_TRUE(y < wave->rect.h / 2);
                 label = break_editor_shell_audio_grid_label(shell, i);
                 ASSERT_NOT_NULL(label);
                 /* a 27 px lane leaves no room above the line, so the upper
@@ -14452,6 +14557,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_mutes_one_channel_in_the_preview);
     RUN_TEST(audio_page_reports_peak_and_rms_in_db);
     RUN_TEST(audio_page_draws_a_db_grid_on_each_lane);
+    RUN_TEST(audio_page_scales_each_lane_independently);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);

@@ -482,6 +482,12 @@ bool break_editor_shell_audio_follow(const BreakEditorShell *shell);
  * a display-only multiplier on the drawn columns, a power of two in
  * [1, 32]. set_gain snaps to the nearest allowed value and returns the one
  * in effect; an attachment change resets it to 1. */
+/* Per-lane amplitude zoom (design 2026-11-20-editor-audio-lane-gain): the
+ * page-wide calls address every lane, these one lane. An out-of-range lane
+ * returns 0 and changes nothing. */
+u32 break_editor_shell_audio_set_lane_gain(BreakEditorShell *shell, u32 lane, u32 gain);
+u32 break_editor_shell_audio_lane_gain(const BreakEditorShell *shell, u32 lane);
+u32 break_editor_shell_audio_fit_lane_gain(BreakEditorShell *shell, u32 lane);
 u32 break_editor_shell_audio_set_gain(BreakEditorShell *shell, u32 gain);
 u32 break_editor_shell_audio_gain(const BreakEditorShell *shell);
 /* Per-channel lanes of the Audio page (design
@@ -514,6 +520,8 @@ bool break_editor_shell_audio_grid(const BreakEditorShell *shell, u32 i, double 
  * line of each pair, "" for the mirrored lower one or one too close to the
  * lane's edge, NULL for an out-of-range index. */
 const char *break_editor_shell_audio_grid_label(const BreakEditorShell *shell, u32 i);
+/* The lane grid entry i belongs to (UINT32_MAX when out of range). */
+u32 break_editor_shell_audio_grid_lane(const BreakEditorShell *shell, u32 i);
 double break_editor_shell_audio_peak_db(const BreakEditorShell *shell);
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);

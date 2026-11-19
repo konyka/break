@@ -137,6 +137,10 @@ bool editor_panel_audio_view(const EditorPanelAudio *panel, u32 *out_begin, u32 
 void editor_panel_audio_set_follow(EditorPanelAudio *panel, bool follow);
 bool editor_panel_audio_follow(const EditorPanelAudio *panel);
 /* Display-only amplitude multiplier, a power of two in [1, 32]. */
+/* One lane's factor; the page-wide calls below address every lane. */
+u32 editor_panel_audio_set_lane_gain(EditorPanelAudio *panel, u32 lane, u32 gain);
+u32 editor_panel_audio_lane_gain(const EditorPanelAudio *panel, u32 lane);
+u32 editor_panel_audio_fit_lane_gain(EditorPanelAudio *panel, u32 lane);
 u32 editor_panel_audio_set_gain(EditorPanelAudio *panel, u32 gain);
 u32 editor_panel_audio_gain(const EditorPanelAudio *panel);
 /* One lane per channel, stacked; lane 0 is what editor_panel_audio_column
@@ -154,6 +158,8 @@ bool editor_panel_audio_grid(const EditorPanelAudio *panel, u32 i, double *out_d
 /* The label drawn for grid entry i ("" when unlabelled, NULL when i is out
  * of range). */
 const char *editor_panel_audio_grid_label(const EditorPanelAudio *panel, u32 i);
+/* The lane grid entry i belongs to (UINT32_MAX when i is out of range). */
+u32 editor_panel_audio_grid_lane(const EditorPanelAudio *panel, u32 i);
 double editor_panel_audio_peak_db(const EditorPanelAudio *panel);
 double editor_panel_audio_rms_db(const EditorPanelAudio *panel);
 u32 editor_panel_audio_set_mute(EditorPanelAudio *panel, u32 channel);

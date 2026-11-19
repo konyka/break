@@ -1,3 +1,10 @@
+## 编辑器音频各泳道独立幅度缩放（2026-11-20）
+
+- **交付**：显示幅度倍数改为按泳道保存（上限 2 条，与文档的单/双声道一致）。页面级接口语义不变——`set_gain` 设置所有泳道，`gain` 返回泳道 0 的；新增 `break_editor_shell_audio_set_lane_gain`、`break_editor_shell_audio_lane_gain`、`break_editor_shell_audio_fit_lane_gain` 操作单条泳道（越界泳道返回 0 且不改动），`fit_gain` 改为每条泳道各按自身可见峰值适配，这正是让电平差很大的两个声道一眼可比的关键。绘制与 dB 网格都用所在泳道的倍数；信息行在两条泳道一致时显示 "<n>x"，不一致时显示 "<a>x/<b>x"；附件变化时全部归 1。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-lane-gain-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-lane-gain.md`。
+- **网格模型扩展**：原来只记录泳道 0 的网格线，导致“每条泳道用自己的倍数”没有可观测后果（绘制比例的变异存活）。现在记录所有泳道并新增 `break_editor_shell_audio_grid_lane` 报告归属泳道，网格用例逐条断言泳道号，幅度用例验证泳道 1 在 8 倍下画出的级别集合与泳道 0 在 1 倍下不同；`EDITOR_AUDIO_GRID_MAX` 由 8 增至 16。
+- **TDD**：新用例先链接失败再通过，`test_editor_shell` 228/228。5 个变异全部判红：绘制比例对所有泳道都取泳道 0 的倍数、越界泳道被钳成 0 而不是拒绝、信息行恒按“一致”处理、页面级适配每次都对泳道 0 适配、页面级设置每次都写泳道 0。
+- **边界**：不支持两条以上泳道、分泳道独奏/静音已在预览层实现（不重复）、泳道倍数不跨附件记忆。
+
 ## 编辑器音频网格线标注（2026-11-20）
 
 - **交付**：每条网格线在左端上方标出自己的级别（"-6"、"-12" 等，不带单位——电平读数标签已经说明单位），用刻度条的次要文字色，画在线之后、波形之前。泳道顶端留不出文字高度（11 像素）时跳过标注但仍画线；每对线只标上半边，下半边是同一级别的镜像。shell 新增 `break_editor_shell_audio_grid_label`（上一次绘制为某条网格线用的标注，未标注为空串，越界为 NULL）。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-grid-labels-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-grid-labels.md`。
