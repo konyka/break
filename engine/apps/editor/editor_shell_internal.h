@@ -136,6 +136,9 @@ bool editor_panel_audio_view(const EditorPanelAudio *panel, u32 *out_begin, u32 
  * position inside itself by jumping a view length at a time. */
 void editor_panel_audio_set_follow(EditorPanelAudio *panel, bool follow);
 bool editor_panel_audio_follow(const EditorPanelAudio *panel);
+/* Display-only amplitude multiplier, a power of two in [1, 32]. */
+u32 editor_panel_audio_set_gain(EditorPanelAudio *panel, u32 gain);
+u32 editor_panel_audio_gain(const EditorPanelAudio *panel);
 
 /* The page's Loop checkbox: forwards to the preview and updates the box. */
 void editor_panel_audio_set_loop(EditorPanelAudio *panel, bool loop);

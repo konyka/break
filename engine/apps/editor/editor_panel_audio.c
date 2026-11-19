@@ -73,6 +73,9 @@ struct EditorPanelAudio {
     my_widget_t *scroll_right; /* weak */
     my_widget_t *follow;      /* weak */
     my_widget_t *scrollbar;   /* weak */
+    my_widget_t *gain_up;     /* weak */
+    my_widget_t *gain_down;   /* weak */
+    u32 gain;                 /* display-only amplitude multiplier */
     bool following;           /* the view chases the playing position */
     u32 view_begin, view_end; /* visible [begin, end) frames; empty = whole clip */
     u32 sel_begin, sel_end;   /* [begin, end) frames; empty when equal */
@@ -118,6 +121,14 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
                                prate,
                            (double)break_editor_audio_preview_length_frames(panel->preview) /
                                prate);
+        }
+        if (panel->gain > 1u) {
+            const usize len = strlen(panel->info_text);
+            if (len < sizeof(panel->info_text)) {
+                (void)snprintf(panel->info_text + len,
+                               sizeof(panel->info_text) - len, " | %ux",
+                               (unsigned)panel->gain);
+            }
         }
     }
     {
@@ -203,6 +214,7 @@ static void audio_panel_refresh(EditorPanelAudio *panel) {
         break_editor_audio_preview_reset_cursor(panel->preview);
         panel->sel_begin = panel->sel_end = 0u;
         panel->view_begin = panel->view_end = 0u;
+        panel->gain = 1u;
         panel->dragging = false;
     }
     const i32 width = panel->waveform != NULL ? panel->waveform->rect.w : 0;
@@ -258,7 +270,8 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
         return;
     }
     mid = h * 0.5f;
-    scale = (h * 0.5f) / 32768.0f;
+    /* the amplitude zoom is display only: a quiet clip fills more height */
+    scale = (h * 0.5f) * (float)(panel->gain != 0u ? panel->gain : 1u) / 32768.0f;
     if (panel->sel_begin < panel->sel_end) {
         const u32 view_begin = audio_view_begin(panel);
         const u32 view_end = audio_view_end(panel);
@@ -284,6 +297,8 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     for (c = 0u; c < panel->columns; c++) {
         const float x0 = (float)c * w / (float)panel->columns;
         const float x1 = (float)(c + 1u) * w / (float)panel->columns;
+        /* a zoomed column may reach past the widget; my_widget_paint clips
+         * every widget to its own rect, so it cannot reach the ruler */
         const float top = mid - (float)panel->max[c] * scale;
         const float bottom = mid - (float)panel->min[c] * scale;
         const float bar_w = x1 - x0 > 1.0f ? x1 - x0 : 1.0f;
@@ -530,6 +545,7 @@ EditorPanelAudio *editor_panel_audio_create(BreakEditorShell *shell) {
         return NULL;
     }
     panel->shell = shell;
+    panel->gain = 1u;
     panel->preview = break_editor_audio_preview_create();
     if (panel->preview == NULL) {
         free(panel);
@@ -750,6 +766,49 @@ bool editor_panel_audio_zoom(EditorPanelAudio *panel, bool in) {
     /* the centre of the view: the buttons have no pointer to anchor at */
     return editor_panel_audio_zoom_at(panel, in,
                                       audio_view_begin(panel) + audio_view_len(panel) / 2u);
+}
+
+#define EDITOR_AUDIO_GAIN_MAX 32u
+
+u32 editor_panel_audio_set_gain(EditorPanelAudio *panel, u32 gain) {
+    u32 snapped = 1u;
+    if (panel == NULL) {
+        return 0u;
+    }
+    /* the largest power of two at or below the request, within [1, 32] */
+    while (snapped * 2u <= gain && snapped < EDITOR_AUDIO_GAIN_MAX) {
+        snapped *= 2u;
+    }
+    if (snapped != panel->gain) {
+        panel->gain = snapped;
+        audio_panel_format_info(panel); /* the suffix and the repaint */
+        if (panel->waveform != NULL) {
+            my_widget_invalidate(panel->waveform, NULL);
+        }
+    }
+    return panel->gain;
+}
+
+u32 editor_panel_audio_gain(const EditorPanelAudio *panel) {
+    return panel != NULL ? panel->gain : 0u;
+}
+
+static void on_audio_gain_up_click(void *ctx, const char *event, void *data) {
+    EditorPanelAudio *panel = (EditorPanelAudio *)ctx;
+    (void)event;
+    (void)data;
+    if (panel != NULL) {
+        (void)editor_panel_audio_set_gain(panel, panel->gain * 2u);
+    }
+}
+
+static void on_audio_gain_down_click(void *ctx, const char *event, void *data) {
+    EditorPanelAudio *panel = (EditorPanelAudio *)ctx;
+    (void)event;
+    (void)data;
+    if (panel != NULL) {
+        (void)editor_panel_audio_set_gain(panel, panel->gain / 2u);
+    }
 }
 
 void editor_panel_audio_set_follow(EditorPanelAudio *panel, bool follow) {
@@ -1040,7 +1099,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *loop, *ruler,
         *waveform, *view_bar, *zoom_in, *zoom_out, *scroll_left, *scroll_right,
-        *follow_box, *scrollbar;
+        *follow_box, *scrollbar, *gain_up, *gain_down;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -1175,6 +1234,24 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
         my_widget_unref(section);
         return false;
     }
+    /* amplitude zoom: display only, so symbols rather than words */
+    gain_down = my_button_create(NULL, "v");
+    gain_up = my_button_create(NULL, "^");
+    if (gain_down == NULL || gain_up == NULL) {
+        if (gain_down != NULL) my_widget_unref(gain_down);
+        if (gain_up != NULL) my_widget_unref(gain_up);
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(gain_down, "editor-audio-gain-down");
+    (void)my_widget_set_name(gain_up, "editor-audio-gain-up");
+    (void)my_widget_on(gain_down, "click", on_audio_gain_down_click, panel);
+    (void)my_widget_on(gain_up, "click", on_audio_gain_up_click, panel);
+    if (!audio_panel_add(view_bar, gain_down, "w:26 h:100%") ||
+        !audio_panel_add(view_bar, gain_up, "w:26 h:100%")) {
+        my_widget_unref(section);
+        return false;
+    }
     follow_box = my_checkbox_create(NULL, break_editor_tr(BREAK_EDITOR_TR_AUDIO_FOLLOW));
     if (follow_box == NULL) {
         my_widget_unref(section);
@@ -1245,6 +1322,8 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     panel->scroll_right = scroll_right;
     panel->follow = follow_box;
     panel->scrollbar = scrollbar;
+    panel->gain_up = gain_up;
+    panel->gain_down = gain_down;
     panel->waveform = waveform;
     panel->ruler = ruler;
     panel->fresh = false;

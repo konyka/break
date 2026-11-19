@@ -478,6 +478,12 @@ bool break_editor_shell_audio_view(const BreakEditorShell *shell, u32 *out_begin
  * inside it. Returns the state afterwards. */
 bool break_editor_shell_audio_set_follow(BreakEditorShell *shell, bool follow);
 bool break_editor_shell_audio_follow(const BreakEditorShell *shell);
+/* Amplitude zoom of the Audio page (design 2026-11-19-editor-audio-gain):
+ * a display-only multiplier on the drawn columns, a power of two in
+ * [1, 32]. set_gain snaps to the nearest allowed value and returns the one
+ * in effect; an attachment change resets it to 1. */
+u32 break_editor_shell_audio_set_gain(BreakEditorShell *shell, u32 gain);
+u32 break_editor_shell_audio_gain(const BreakEditorShell *shell);
 /* Loop toggle of the Audio page (the "Loop" checkbox): at the end of the
  * played range playback starts it again. Returns the state afterwards. */
 bool break_editor_shell_audio_set_loop(BreakEditorShell *shell, bool loop);

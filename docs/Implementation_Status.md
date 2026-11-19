@@ -1,3 +1,10 @@
+## 编辑器音频波形幅度缩放（2026-11-19）
+
+- **交付**：音频页新增只作用于显示的幅度倍数（2 的幂，范围 1~32，默认 1），画波形时乘到采样值上，不改文档也不进撤销历史。视图行新增 `editor-audio-gain-down`（"v"）与 `editor-audio-gain-up`（"^"）两个按钮按 2 倍步进；shell 新增 `break_editor_shell_audio_set_gain`（吸附到不超过请求值的最大 2 的幂并钳到 [1,32]，返回生效值）、`break_editor_shell_audio_gain`。倍数大于 1 时信息行追加 " | <n>x"；附件变化时与视图一同重置为 1。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-gain-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-gain.md`。
+- **TDD**：新用例先在无访问器与按钮时失败再通过，`test_editor_shell` 221/221；painted 行数通过 LCD 缓冲区按像素统计。5 个变异全部判红：绘制比例不乘倍数、去掉 32 倍上限、附件变化不重置、信息行后缀被抑制、减号按钮改成放大。
+- **设计调整**：原计划手动把每列裁剪到控件内，实测“删掉裁剪”这个变异存活——`my_widget_paint` 已对每个控件调用 `my_vgcanvas_clip_rect`（`src/myui/myui/my_widget.c:603`），手写裁剪是死代码，故去掉并在注释里指明依赖该裁剪；用例仍断言 32 倍下刻度条内没有强调色像素、波形区填满。另外 ±1000 的方波在 1 倍下不足 1 像素（按最小 1 像素绘制），所以 8 倍的高度用 `倍数 * 幅度 * 高 / 32768` 预测（±2 像素容差），不做比值断言。
+- **边界**：没有 dB/对数刻度、没有分声道显示、没有按峰值自动增益，倍数不作为文档属性保存。
+
 ## 编辑器音频视图滚动条（2026-11-19）
 
 - **交付**：波形下方新增 12 像素的水平滚动条 `editor-audio-scrollbar`。滚动条映射视图：`page_size` 为视图长度占整段的比例，`value` 为视图起点占可滚动范围（`frames - 视图长度`）的比例，覆盖整段时为满宽滑块且值为 0；面板刷新（任何视图或附件变化都会经过它）时同步。拖动滚动条反过来把值映射回视图起点（四舍五入）并保持视图长度，覆盖整段时忽略。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-scrollbar-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-scrollbar.md`。

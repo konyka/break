@@ -3809,6 +3809,97 @@ static bool key_to_window(BreakEditorShell *shell, u32 key, u8 mods) {
     return my_event_dispatch(&win->dispatcher, &ev);
 }
 
+/* Counts rows of `w` carrying the accent colour at its horizontal middle. */
+static u32 waveform_painted_rows(BreakEditorShell *shell, my_widget_t *w) {
+    my_window_t *win = break_editor_shell_window(shell);
+    my_lcd_t *lcd = my_pal_window_get_lcd(win->pal_window);
+    const uint8_t *pixels = my_lcd_mem_get_buffer(lcd);
+    uint32_t stride = my_lcd_mem_get_stride(lcd);
+    const uint32_t accent = BREAK_EDITOR_THEME_ACCENT;
+    int32_t gx = 0, gy = 0, y;
+    u32 rows = 0u;
+    my_widget_local_to_global(w, &gx, &gy);
+    for (y = 0; y < w->rect.h; ++y) {
+        const uint8_t *p = pixels + (uint32_t)(gy + y) * stride +
+                           (uint32_t)(gx + w->rect.w / 2) * 4u;
+        /* the LCD is BGRA; compare the three colour bytes */
+        if (p[2] == (uint8_t)(accent >> 24) && p[1] == (uint8_t)(accent >> 16) &&
+            p[0] == (uint8_t)(accent >> 8)) {
+            rows++;
+        }
+    }
+    return rows;
+}
+
+/* Amplitude zoom (design 2026-11-19-editor-audio-gain). */
+TEST(audio_page_amplitude_zoom_scales_the_drawn_columns)
+{
+    static i16 pcm[2000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *wave, *up, *down, *ruler;
+    u32 i, rows_1x, rows_8x;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    /* a quiet clip: a 1000-amplitude square wave, 3% of full scale */
+    for (i = 0u; i < 2000u; i++) pcm[i] = (i16)(i % 2u == 0u ? 1000 : -1000);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 2000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    wave = find(shell, "editor-audio-waveform");
+    ruler = find(shell, "editor-audio-ruler");
+    up = find(shell, "editor-audio-gain-up");
+    down = find(shell, "editor-audio-gain-down");
+    ASSERT_TRUE(wave && ruler && up && down);
+    /* the default is 1x, and the setter snaps and clamps */
+    ASSERT_EQ(break_editor_shell_audio_gain(shell), 1u);
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 3u), 2u);
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 100u), 32u);
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 0u), 1u);
+    /* the buttons step by a factor of two and stop at the ends */
+    emit_click(up);
+    ASSERT_EQ(break_editor_shell_audio_gain(shell), 2u);
+    emit_click(down);
+    ASSERT_EQ(break_editor_shell_audio_gain(shell), 1u);
+    emit_click(down);
+    ASSERT_EQ(break_editor_shell_audio_gain(shell), 1u);
+    for (i = 0u; i < 8u; i++) emit_click(up);
+    ASSERT_EQ(break_editor_shell_audio_gain(shell), 32u);
+    /* the painted height follows gain * amplitude: a +-1000 square wave
+     * reaches gain * 1000 / 32768 of the half-height each way, so
+     * gain * 1000 * h / 32768 rows in total. At 1x that is under a pixel,
+     * so only the 8x figure is worth predicting. */
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 1u), 1u);
+    shell_paint(shell);
+    rows_1x = waveform_painted_rows(shell, wave);
+    ASSERT_TRUE(rows_1x > 0u);
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 8u), 8u);
+    shell_paint(shell);
+    rows_8x = waveform_painted_rows(shell, wave);
+    {
+        const u32 predicted = (u32)(8u * 1000u * (u32)wave->rect.h / 32768u);
+        ASSERT_TRUE(rows_8x + 2u >= predicted && rows_8x <= predicted + 2u);
+        ASSERT_TRUE(rows_8x > rows_1x);
+    }
+    /* the info line shows the gain above 1x and nothing at 1x */
+    ASSERT_TRUE(strstr(break_editor_shell_audio_info_text(shell), "8x") != NULL);
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 1u), 1u);
+    ASSERT_TRUE(strstr(break_editor_shell_audio_info_text(shell), "x |") == NULL);
+    /* a loud clip at 32x stays inside the widget */
+    ASSERT_TRUE(break_editor_doc_audio_normalize(doc, -1.0));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 32u), 32u);
+    shell_paint(shell);
+    ASSERT_EQ(waveform_painted_rows(shell, ruler), 0u);
+    ASSERT_EQ(waveform_painted_rows(shell, wave), (u32)wave->rect.h);
+    /* an attachment change resets the gain */
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 500u));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_gain(shell), 1u);
+    break_editor_shell_destroy(shell);
+}
+
 /* The view's scroll bar (design 2026-11-19-editor-audio-scrollbar). */
 TEST(audio_page_scroll_bar_mirrors_and_moves_the_view)
 {
@@ -13748,6 +13839,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_follows_the_playing_position);
     RUN_TEST(audio_page_zooms_and_scrolls_from_the_keyboard);
     RUN_TEST(audio_page_scroll_bar_mirrors_and_moves_the_view);
+    RUN_TEST(audio_page_amplitude_zoom_scales_the_drawn_columns);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
