@@ -553,6 +553,7 @@ Task 2 节记录的 `SOURCES` 合同在本任务扩展为七个文件：原四�
 <tick> flow <event-key> <value>
 <tick> save | load | unload | screenshot | quit
 <tick> save-to <relative-path> | load-from <relative-path>
+<tick> audio-device [<device name, rest of line>]   # 2026-11-19 补充，见文末「运行中切换播放设备」
 <tick> level [asset-root]
 ```
 
@@ -1705,3 +1706,18 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 ## 补充（2026-11-19）：网络合同的验证范围
 
 `test_core_app_network_*`（loopback、late_auth、voice、voice_relay、voice_relay_off、voice_mute、voice_flood、start_failure）只在 `_core_app_net_transport AND NOT WIN32` 时注册（`engine/CMakeLists.txt`），而 `CORE_APP_ENABLE_NETWORK` 默认关闭，`.github/workflows` 中没有任何 lane 打开它或 `BREAK_ENABLE_SNOWFLAKE`。所以远程 CI 的绿灯不覆盖这些网络合同，它们只在本机开启网络的构建树（`build-core-app-net`，以及 ASan+UBSan 的 `build-voice-relay-asan`）中运行。增加 CI lane 需要能拉取固定提交的 Snowflake 源码，而 `konyka/snowflake` 是私有仓库：没有凭据时匿名克隆和 API 都被拒绝。需要仓库所有者添加只读 deploy key 或 token 作为 Actions secret，之后才能加一个 Linux lane（`-DBREAK_ENABLE_SNOWFLAKE=ON -DCORE_APP_ENABLE_NETWORK=ON -DBREAK_ENABLE_CRYPTO=ON -DSNOWFLAKE_SOURCE_DIR=...`，运行 `ctest -L network`）。
+
+## 补充（2026-11-19）：运行中切换播放设备
+
+- **scenario 文法**：`<tick> audio-device <name>` 与 `<tick> audio-device`。名称取命令后一个空格之后的整行，因此可以含空格（如 "NULL Playback Device"）；长度 1..`CORE_APP_SCENARIO_DEVICE_NAME_MAX`（127）字节，不能以空格开头或结尾，不能含 0x00–0x1F 或 0x7F，否则整个 scenario 无效。没有名称表示切回默认设备。新事件类型 `CORE_APP_SCENARIO_AUDIO_DEVICE`，名称存入 `event.path`。`app_scenario_supported` 接受它。
+- **音频层**：`core_app_audio_request_device(audio, name)` 排入 `CORE_APP_AUDIO_SWITCH_DEVICE` 命令（`CoreAppAudioCommand.device_name`，容量 128）。只有 device 模式且系统已打开时接受；record / null 模式和 ≥128 字节的名称返回 REJECTED，队列满返回 OVERLOAD，停止接收后返回 CLOSED，这些情况都不入队。命令不带 generation，不经过 slot 检查。owner 线程（或没有 owner 时调用 drain 的线程）调用 `audio_system_switch_device`：OK 计 `device_switches` 并更新记录的设备名，写 `event=audio_device result=switched device=<name>|default`；REJECTED 计 `device_switch_rejected`，写 `result=rejected reason=device_name`；其余结果计 `device_switch_failures`，写 `result=failed`。只有 trace 写入失败才让 drain 失败；切换失败后若没有设备在播放，由已有的播放设备自动恢复处理。切换调用计入 `device_calls_on_owner` / `device_calls_off_owner`。
+- **core_app**：scenario 事件调用该请求；请求被拒时写 `event=audio_device result=rejected tick=N reason=mode|overload|closed` 并继续运行。
+- **trace**：device 模式 `result=stopped` 行在 `device_reopen_failures` 之后追加 `device_switches=N device_switch_rejected=M device_switch_failures=K`。
+- **合同**：`test_core_app_named_device.cmake` 在任何主机上检查 record 模式下 `audio-device no such speaker` 被拒（`reason=mode`）且 exit 0；有播放设备时运行切到默认设备名称、切到未知名称、切回默认的 scenario，要求三行按顺序出现、stopped 行为 `device_switches=2 device_switch_rejected=1 device_switch_failures=0`、exit 0。
+
+- **评审后的修改**：switched 行里名称中的空白（空格、制表符、换行）替换成 `_`，让 trace 仍按空格切分；合同比较前对 ready 行的名称做同样替换。切换成功后把 `consecutive_reopen_failures` 清零，避免旧的重开失败计数影响新设备。请求参数无效（NULL audio 等）时 core_app 写 `reason=invalid`。`fuzz_core_app_scenario` 的替换表加入 6 条 audio-device 变体（带空格名称、无名称、首尾空格、控制字符、超长名称）。
+- **已知限制**：ready 行的 `device=<name>` 仍原样输出，名称含空格时按空格切分会截断。这是按名称选择设备时就有的格式，named_device 合同依赖原样名称，本切片不改。
+
+验证：`test_core_app_runtime` 59 项、`test_core_app_named_device`（本机 PulseAudio 运行中切换成功）；全量 451/451；ASan+UBSan 与 TSan 树相关 10 项通过。变异（未知名称当作切换、record 模式接受、切换不在 owner 线程）都判红。
+
+仍缺：运行中切换采集设备、UI 或控制台入口、对端语音混音、漂移补偿、Opus、真实声学验证。

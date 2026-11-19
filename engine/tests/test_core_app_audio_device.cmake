@@ -100,7 +100,7 @@ set(device_moves "${CMAKE_MATCH_6}")
 set(device_stops "${CMAKE_MATCH_7}")
 set(device_item_plays "${CMAKE_MATCH_9}")
 # Every device call after start-up must come from the audio owner thread.
-if(NOT trace_text MATCHES "event=audio mode=device result=stopped [^\n]* owner_thread=1 device_recoveries=[0-9]+ device_reopen_failures=[0-9]+\n")
+if(NOT trace_text MATCHES "event=audio mode=device result=stopped [^\n]* owner_thread=1 device_recoveries=[0-9]+ device_reopen_failures=[0-9]+ device_switches=0 device_switch_rejected=0 device_switch_failures=0\n")
     message(FATAL_ERROR "the device was not driven by the audio owner thread\n${trace_text}")
 endif()
 # The listener follows the user once per fixed tick, so a 100-tick run must

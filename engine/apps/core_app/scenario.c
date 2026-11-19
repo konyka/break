@@ -115,6 +115,22 @@ static bool asset_root(char *out, const char *token) {
     return true;
 }
 
+/* The device name is the rest of the line after one space, so it may hold
+ * spaces; it must not start or end with one or hold a control byte. */
+static bool device_name(char *out, const char *text) {
+    usize length = strlen(text);
+    if (length == 0u || length > CORE_APP_SCENARIO_DEVICE_NAME_MAX || text[0] == ' ' ||
+        text[length - 1u] == ' ') {
+        return false;
+    }
+    for (usize i = 0u; i < length; ++i) {
+        unsigned char c = (unsigned char)text[i];
+        if (c < 0x20u || c == 0x7fu) return false;
+    }
+    memcpy(out, text, length + 1u);
+    return true;
+}
+
 static bool append_event(CoreAppScenario *parsed, const CoreAppScenarioEvent *event) {
     if (parsed->event_count == parsed->event_capacity) {
         u32 capacity = parsed->event_capacity == 0u ? 16u : parsed->event_capacity * 2u;
@@ -259,6 +275,11 @@ CoreAppScenarioStatus core_app_scenario_parse(const char *text, usize size,
         } else if (strcmp(command, "level") == 0 && (count == 1 || count == 2)) {
             if (count == 2 && !asset_root(event.path, fields[0])) goto invalid;
             event.kind = CORE_APP_SCENARIO_LEVEL;
+        } else if (strcmp(command, "audio-device") == 0) {
+            const char *rest = strstr(tick_end, "audio-device") + strlen("audio-device");
+            if (*rest == ' ' && !device_name(event.path, rest + 1)) goto invalid;
+            if (*rest != '\0' && *rest != ' ') goto invalid;
+            event.kind = CORE_APP_SCENARIO_AUDIO_DEVICE;
         } else if (strcmp(command, "quit") == 0 && count == 1) {
             event.kind = CORE_APP_SCENARIO_QUIT;
             parsed.has_quit = true;

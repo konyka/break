@@ -48,6 +48,7 @@ static const char *sound_kind_name(CoreAppAudioCommandKind kind) {
         case CORE_APP_AUDIO_PLAY_3D: return "play_3d";
         case CORE_APP_AUDIO_POSITION: return "position";
         case CORE_APP_AUDIO_STOP: return "stop";
+        case CORE_APP_AUDIO_SWITCH_DEVICE: return "audio_device";
     }
     return "unknown";
 }
@@ -327,6 +328,41 @@ BreakRuntimeError core_app_audio_enqueue_sound(CoreAppAudio *audio,
     return result;
 }
 
+static BreakRuntimeError sound_request_device_locked(CoreAppAudio *audio, const char *name,
+                                                     usize length) {
+    if (!audio->admission_open || !audio->producing || audio->queue_closed) {
+        return BREAK_RUNTIME_CLOSED;
+    }
+    if (audio->count >= CORE_APP_AUDIO_QUEUE_CAPACITY) {
+        audio->overloads++;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    u32 tail = (audio->head + audio->count) % CORE_APP_AUDIO_QUEUE_CAPACITY;
+    CoreAppAudioCommand *command = &audio->commands[tail];
+    memset(command, 0, sizeof(*command));
+    command->kind = CORE_APP_AUDIO_SWITCH_DEVICE;
+    command->sequence = audio->next_sequence++;
+    if (length > 0u) memcpy(command->device_name, name, length);
+    audio->count++;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError core_app_audio_request_device(CoreAppAudio *audio, const char *device_name) {
+    if (!audio) return BREAK_RUNTIME_INVALID;
+    const usize length = device_name ? strlen(device_name) : 0u;
+    if (audio->mode != CORE_APP_AUDIO_BACKEND_DEVICE || !audio->system ||
+        length >= CORE_APP_AUDIO_DEVICE_NAME_CAPACITY) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+    CoreAppAudioOwner *owner = audio->owner;
+    if (!owner) return sound_request_device_locked(audio, device_name, length);
+    platform_mutex_lock(&owner->mutex);
+    BreakRuntimeError result = sound_request_device_locked(audio, device_name, length);
+    if (result == BREAK_RUNTIME_OK) platform_cond_signal(&owner->work);
+    platform_mutex_unlock(&owner->mutex);
+    return result;
+}
+
 BreakRuntimeError core_app_audio_enqueue_at(CoreAppAudio *audio, CoreAppAudioCommandKind kind,
                                             u64 generation, Vec3 position) {
     CoreAppAudioSound sound = kind == CORE_APP_AUDIO_LISTENER ? CORE_APP_AUDIO_SOUND_NONE
@@ -441,8 +477,60 @@ static BreakRuntimeError sound_recover_device(CoreAppAudio *audio) {
     return BREAK_RUNTIME_OK;
 }
 
+/* A refused or failed switch leaves the old device playing; when the old
+ * device could not be opened or started again either, the system is lost
+ * and sound_recover_device reopens it. Only the trace line can fail the
+ * drain. Trace fields are separated by spaces, so whitespace in the traced
+ * name becomes '_'. */
+static BreakRuntimeError sound_switch_device(CoreAppAudio *audio,
+                                             const CoreAppAudioCommand *command) {
+    if (sound_on_owner(audio)) {
+        audio->device_calls_on_owner++;
+    } else {
+        audio->device_calls_off_owner++;
+    }
+    const char *name = command->device_name[0] != '\0' ? command->device_name : NULL;
+    const AudioResult switched = audio_system_switch_device(audio->system, name);
+    int written = 0;
+    if (switched == AUDIO_OK) {
+        audio->device_switches++;
+        audio->consecutive_reopen_failures = 0u;
+        char traced[CORE_APP_AUDIO_DEVICE_NAME_CAPACITY];
+        snprintf(traced, sizeof(traced), "%s", name ? name : "default");
+        for (char *p = traced; *p != '\0'; ++p) {
+            if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') *p = '_';
+        }
+        if (!audio_system_device_name(audio->system, audio->device_name,
+                                      sizeof(audio->device_name))) {
+            audio->device_name[0] = '\0';
+        }
+        if (audio->trace) {
+            written = break_trace_core_app_fprintf(audio->trace,
+                "COREAPPTRACE version=1 event=audio_device result=switched device=%s\n",
+                traced);
+        }
+    } else if (switched == AUDIO_REJECTED) {
+        audio->device_switch_rejected++;
+        if (audio->trace) {
+            written = break_trace_core_app_fprintf(audio->trace,
+                "COREAPPTRACE version=1 event=audio_device result=rejected reason=device_name\n");
+        }
+    } else {
+        audio->device_switch_failures++;
+        if (audio->trace) {
+            written = break_trace_core_app_fprintf(audio->trace,
+                "COREAPPTRACE version=1 event=audio_device result=failed\n");
+        }
+    }
+    if (audio->trace && (written < 0 || fflush(audio->trace) != 0)) return BREAK_RUNTIME_FAILED;
+    return BREAK_RUNTIME_OK;
+}
+
 static BreakRuntimeError sound_emit(CoreAppAudio *audio, const CoreAppAudioCommand *command,
                                     bool device) {
+    if (command->kind == CORE_APP_AUDIO_SWITCH_DEVICE) {
+        return device ? sound_switch_device(audio, command) : BREAK_RUNTIME_OK;
+    }
     if (device) sound_apply_device(audio, command);
     if (!audio->trace) return BREAK_RUNTIME_OK;
     if (break_trace_core_app_fprintf(audio->trace,
@@ -581,12 +669,15 @@ static BreakRuntimeError sound_close_device(CoreAppAudio *audio) {
                 " listener_updates=%" PRIu64 " plays=%" PRIu64 " moves=%" PRIu64
                 " stops=%" PRIu64 " evictions=%" PRIu64 " item_plays=%" PRIu64
                 " owner_thread=%u device_recoveries=%" PRIu64
-                " device_reopen_failures=%" PRIu64 "\n",
+                " device_reopen_failures=%" PRIu64 " device_switches=%" PRIu64
+                " device_switch_rejected=%" PRIu64 " device_switch_failures=%" PRIu64 "\n",
                 audio->device_backend, complete ? 1u : 0u, (double)played,
                 audio->device_failures, audio->device_listener_updates, audio->device_plays,
                 audio->device_moves, audio->device_stops, audio->device_evictions,
                 audio->device_plays_by_sound[CORE_APP_AUDIO_SOUND_ITEM], sound_on_owner(audio) ? 1u : 0u,
-                audio->device_recoveries, audio->device_reopen_failures) < 0 ||
+                audio->device_recoveries, audio->device_reopen_failures,
+                audio->device_switches, audio->device_switch_rejected,
+                audio->device_switch_failures) < 0 ||
         fflush(audio->trace) != 0) {
         return BREAK_RUNTIME_FAILED;
     }

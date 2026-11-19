@@ -1,3 +1,11 @@
+## Core App 运行中切换播放设备（2026-11-19）
+
+- **交付**：scenario 新命令 `TICK audio-device NAME`（NAME 为命令后一个空格之后的整行，可含空格，1..127 字节，不能以空格开头或结尾，不能含控制字符）与 `TICK audio-device`（切回默认设备）。`core_app_audio_request_device` 把切换作为 `CORE_APP_AUDIO_SWITCH_DEVICE` 命令排入音频队列，由音频 owner 线程按队列顺序调用 `audio_system_switch_device`；声源、总线、听者和参考环保留。结果写 `event=audio_device result=switched device=NAME|default`、`result=rejected reason=device_name` 或 `result=failed`，都不让运行失败。record / null 模式请求被拒并写 `event=audio_device result=rejected tick=N reason=mode`。device `result=stopped` 行追加 `device_switches`、`device_switch_rejected`、`device_switch_failures`。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-runtime-device-switch-design.md`、`docs/superpowers/plans/2026-11-19-core-app-runtime-device-switch.md`。
+- **TDD**：`test_core_app_runtime` 新增 4 项（解析带空格名称与无名称、拒绝 128 字节名称和控制字符及首尾空格、owner 线程上按名称切换 / 拒绝未知名称 / 切回默认且全部调用在 owner 上、record 模式拒绝），`test_core_app_named_device` 新增 record 模式拒绝与真实设备运行中切换（本机 PulseAudio "内置音频 模拟立体声" 切换后切回默认，`device_switches=2 device_switch_rejected=1`），均先 RED 后 GREEN。三个变异（未知名称当作切换、record 模式接受请求、切换不在 owner 线程上）都判红。全量 451/451；ASan+UBSan 与 TSan 树相关 10 项通过。
+- **评审**：独立评审结论 Ready。按评审意见修改：switched 行名称中的空白替换为 `_`；切换成功后清零连续重开失败计数；请求参数无效时写 `reason=invalid`；scenario fuzz 加入 audio-device 变体。ready 行名称含空格时仍原样输出，记为已知限制。
+- **边界**：只切换播放设备，采集设备不能运行中切换；没有 UI 或控制台发出该命令。
+- **CI 修复**：hosted Windows 镜像升级 Visual Studio 后，MSVC STL 要求 Clang 22，而 runner 上的 LLVM 是 20，Windows + Clang ASan lane 的 C++20 TU 因 STL1000 编译失败。`engine/CMakeLists.txt` 对 Windows Clang 的 C++ TU 定义 `_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH`。
+
 ## Core App 语音限速（2026-11-19）
 
 - **交付**：服务端为每个连接的语音（`0x4006`）设一个 `BreakMsgRate` 令牌桶：每秒 120 帧（一路 10 ms 语音是 100 帧/秒，留 20% 余量），突发 64 帧（等于抖动缓冲大小）；字节桶按同样帧数的整帧 BRV1 计算，所以起作用的是帧桶。限速在接收器 push 之前检查，超限帧计 `voice_frames_rate_limited`，不解码、不计接收、不转发，连接保持。限速器在该连接第一条语音时创建，接收器释放时复位。会话层的通用限速仍关闭，因为它会同时限制快照、物理和时钟消息。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-voice-rate-limit-design.md`、`docs/superpowers/plans/2026-11-19-core-app-voice-rate-limit.md`。

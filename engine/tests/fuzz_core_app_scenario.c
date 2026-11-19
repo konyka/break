@@ -55,7 +55,9 @@ static const char *k_substitutions[] = {
     "4 touch 0 bogus 1.0 1.0\n", "4 touch 0 move nan 1.0\n", "4 touch 0 move 1e999 1.0\n",
     "4 touch 0 move 1.5 -2.25\n",
     "5 pad 0 99 0.5\n", "5 pad 4294967296 0 0.5\n",
-    "6 flow 0\n", "6 flow 7 1.0e9\n", "7 screenshot\n", "8 quit\n", "9 quit\n"
+    "6 flow 0\n", "6 flow 7 1.0e9\n", "7 screenshot\n", "8 quit\n", "9 quit\n",
+    "3 audio-device x\n", "3 audio-device\n", "3 audio-device  x\n", "3 audio-device\tx\n",
+    "3 audio-device x \n", "3 audio-device NULL Playback Device\n"
 };
 
 static void copy_scenario(char *out, size_t capacity, const char *text) {

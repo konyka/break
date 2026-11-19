@@ -381,3 +381,4 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 2026-11-19 补充：core_app 网络服务端可转发对端语音（`--voice-relay`，消息 `0x4007`）。只转发 `BreakVoiceReceiver` 接受的帧（以 `accepted` 计数前后差判断），重复、过期、格式不符的帧不转发；帧字节原样转发，不在服务端解码后重编码。客户端按来源会话号各用一个接收器。没有服务端混音。
 - 2026-11-19 补充：转发的语音可由接收方按来源屏蔽（`0x4008`，服务端跳过该接收方并计 `voice_frames_muted`）。屏蔽只作用于服务端转发，不影响来源对服务端的发送和服务端自己的接收计数。
 - 2026-11-19 补充：core_app 服务端在语音进入抖动缓冲前按连接限速（`BreakMsgRate`，120 帧/秒、突发 64 帧），超限帧计 `voice_frames_rate_limited`，不进入接收器，也不会被转发。
+- 2026-11-19 补充：core_app 在运行中通过音频命令队列调用 `audio_system_switch_device`（scenario `audio-device [NAME]`），调用发生在音频 owner 线程上，满足“只能在 owner 线程调用”的约束。

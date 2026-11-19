@@ -23,3 +23,11 @@ A running core_app can switch its playback device by command, without restarting
 3. Mutations: the switch made off the owner; an unknown name treated as a switch; record mode accepting the request.
 
 Out of scope: switching the capture device at runtime, a UI or console that issues the command.
+
+## Result
+
+- RED then GREEN: scenario parsing (2 tests), owner-thread switch and record-mode rejection (2 tests), the record-mode and real-device contract in `test_core_app_named_device`. On this host PulseAudio "内置音频 模拟立体声" switched by name at runtime and back to the default.
+- Spec change: the name must also not start or end with a space (the line is split on single spaces, so a leading or trailing one would be invisible in the trace).
+- Mutations: unknown name treated as a switch; record mode accepting the request; the switch made on the caller instead of the owner. Each fails at least one test.
+- Full suite 451/451; ASan+UBSan and TSan trees 10/10.
+- Independent review: Ready. Changes made after it: whitespace in the switched device name is traced as `_` so the line still splits on spaces; a successful switch resets `consecutive_reopen_failures`; an invalid request traces `reason=invalid`; the scenario fuzzer gained six audio-device substitutions. The ready line still prints the raw name (pre-existing format the named-device contract parses); recorded as a known limit.

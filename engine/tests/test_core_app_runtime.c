@@ -42,6 +42,62 @@ TEST(scenario_rejects_tick_regression_without_partial_events) {
     scenario_free(scenario);
 }
 
+TEST(scenario_parses_audio_device_switches) {
+    CoreAppScenario *scenario = scenario_new();
+    const char *text =
+        "core-app-scenario 1\n"
+        "seed 12648430\n"
+        "fixed-dt-ns 16666667\n"
+        "2 audio-device NULL Playback Device\n"
+        "3 audio-device\n"
+        "4 quit\n";
+    ASSERT_NOT_NULL(scenario);
+    ASSERT_EQ(parse(text, scenario), CORE_APP_SCENARIO_OK);
+    ASSERT_EQ(scenario->event_count, 3u);
+    ASSERT_EQ(scenario->events[0].kind, CORE_APP_SCENARIO_AUDIO_DEVICE);
+    ASSERT_EQ(scenario->events[0].tick, 2u);
+    ASSERT_STR_EQ(scenario->events[0].path, "NULL Playback Device");
+    ASSERT_EQ(scenario->events[1].kind, CORE_APP_SCENARIO_AUDIO_DEVICE);
+    ASSERT_STR_EQ(scenario->events[1].path, "");
+    scenario_free(scenario);
+}
+
+TEST(scenario_rejects_malformed_audio_device_names) {
+    char text[1024];
+    char name[129];
+    CoreAppScenario *scenario = scenario_new();
+    ASSERT_NOT_NULL(scenario);
+    memset(name, 'n', 128u);
+    name[128] = '\0';
+    snprintf(text, sizeof(text),
+             "core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n2 audio-device %s\n3 quit\n",
+             name);
+    ASSERT_EQ(parse(text, scenario), CORE_APP_SCENARIO_INVALID);
+    ASSERT_EQ(scenario->event_count, 0u);
+    name[127] = '\0';
+    snprintf(text, sizeof(text),
+             "core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n2 audio-device %s\n3 quit\n",
+             name);
+    ASSERT_EQ(parse(text, scenario), CORE_APP_SCENARIO_OK);
+    ASSERT_EQ(strlen(scenario->events[0].path), 127u);
+    scenario_free(scenario);
+    scenario = scenario_new();
+    ASSERT_NOT_NULL(scenario);
+    ASSERT_EQ(parse("core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n"
+                    "2 audio-device bad\tname\n3 quit\n",
+                    scenario),
+              CORE_APP_SCENARIO_INVALID);
+    ASSERT_EQ(parse("core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n"
+                    "2 audio-device  leading\n3 quit\n",
+                    scenario),
+              CORE_APP_SCENARIO_INVALID);
+    ASSERT_EQ(parse("core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n"
+                    "2 audio-device trailing \n3 quit\n",
+                    scenario),
+              CORE_APP_SCENARIO_INVALID);
+    scenario_free(scenario);
+}
+
 TEST(scenario_rejects_too_many_events_without_partial_events) {
     CoreAppScenario *scenario = scenario_new();
     char *text = (char *)malloc(900000u);
@@ -1071,7 +1127,8 @@ TEST(audio_device_drain_drives_the_audio_system) {
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text, "event=audio mode=device result=ready backend=fake"));
     ASSERT_NOT_NULL(strstr(text, "listener_updates=1 plays=1 moves=1 stops=1 evictions=0 "
-                                 "item_plays=0 owner_thread=0 device_recoveries=0 device_reopen_failures=0\n"));
+                                 "item_plays=0 owner_thread=0 device_recoveries=0 device_reopen_failures=0 device_switches=0"
+                                 " device_switch_rejected=0 device_switch_failures=0\n"));
     fclose(trace);
 }
 
@@ -1176,7 +1233,63 @@ TEST(audio_owner_thread_makes_every_device_call) {
     ASSERT_TRUE(audio.owner == NULL);
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text, "listener_updates=1 plays=1 moves=1 stops=0 evictions=0 "
-                                 "item_plays=0 owner_thread=1 device_recoveries=0 device_reopen_failures=0\n"));
+                                 "item_plays=0 owner_thread=1 device_recoveries=0 device_reopen_failures=0 device_switches=0"
+                                 " device_switch_rejected=0 device_switch_failures=0\n"));
+    fclose(trace);
+}
+
+/* A running system switches its playback device on the owner thread: by
+ * name, refused for a name no device has (the old device keeps playing),
+ * and back to the default. */
+TEST(audio_owner_thread_switches_the_playback_device) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    char text[8192];
+    ASSERT_NOT_NULL(trace);
+    AudioSystem *system = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(system);
+    ASSERT_EQ(core_app_audio_start_system_owned(&audio, trace, system,
+                                                CORE_APP_SOURCE_ASSET_DIR),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_request_device(&audio, "NULL Playback Device"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_request_device(&audio, "no such speaker"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_request_device(&audio, NULL), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_flush(&audio), BREAK_RUNTIME_OK);
+    ASSERT_EQ(audio.device_switches, 2u);
+    ASSERT_EQ(audio.device_switch_rejected, 1u);
+    ASSERT_EQ(audio.device_switch_failures, 0u);
+    ASSERT_EQ(audio.device_calls_on_owner, 3u);
+    ASSERT_EQ(audio.device_calls_off_owner, 0u);
+    audio_shutdown(&audio);
+    audio_trace_read(trace, text, sizeof(text));
+    const char *named = strstr(text,
+        "COREAPPTRACE version=1 event=audio_device result=switched device=NULL_Playback_Device\n");
+    const char *refused = strstr(text,
+        "COREAPPTRACE version=1 event=audio_device result=rejected reason=device_name\n");
+    const char *back = strstr(text,
+        "COREAPPTRACE version=1 event=audio_device result=switched device=default\n");
+    ASSERT_NOT_NULL(named);
+    ASSERT_NOT_NULL(refused);
+    ASSERT_NOT_NULL(back);
+    ASSERT_TRUE(named < refused && refused < back);
+    ASSERT_NOT_NULL(strstr(text, " device_switches=2 device_switch_rejected=1"
+                                 " device_switch_failures=0\n"));
+    fclose(trace);
+}
+
+/* Record and null modes have no device to switch: the request is refused
+ * and nothing is queued. */
+TEST(audio_device_request_is_rejected_without_a_device) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start(&audio, trace), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_audio_request_device(&audio, "NULL Playback Device"),
+              BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(core_app_audio_request_device(&audio, NULL), BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(audio.count, 0u);
+    ASSERT_EQ(core_app_audio_request_device(NULL, NULL), BREAK_RUNTIME_INVALID);
+    audio_shutdown(&audio);
     fclose(trace);
 }
 
@@ -1198,7 +1311,8 @@ TEST(audio_owner_thread_drains_the_queue_before_join) {
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text, "kind=play_3d generation=8 sequence=8 source=8 sound=chaser\n"));
     ASSERT_NOT_NULL(strstr(text, "plays=8 moves=0 stops=0 evictions=0 item_plays=0 owner_thread=1 "
-                                 "device_recoveries=0 device_reopen_failures=0\n"));
+                                 "device_recoveries=0 device_reopen_failures=0 device_switches=0"
+                                 " device_switch_rejected=0 device_switch_failures=0\n"));
     fclose(trace);
 }
 
@@ -1454,7 +1568,8 @@ TEST(audio_device_plays_the_sound_chosen_by_the_event) {
     audio_shutdown(&audio);
     audio_trace_read(trace, text, sizeof(text));
     ASSERT_NOT_NULL(strstr(text, "plays=2 moves=0 stops=1 evictions=0 item_plays=1 "
-                                 "owner_thread=0 device_recoveries=0 device_reopen_failures=0\n"));
+                                 "owner_thread=0 device_recoveries=0 device_reopen_failures=0 device_switches=0"
+                                 " device_switch_rejected=0 device_switch_failures=0\n"));
     fclose(trace);
 }
 
@@ -1510,7 +1625,8 @@ TEST(audio_device_drain_reopens_a_lost_playback_device) {
     ASSERT_EQ(audio.device_listener_updates, 1u);
     audio_shutdown(&audio);
     audio_trace_read(trace, text, sizeof(text));
-    ASSERT_NOT_NULL(strstr(text, "owner_thread=0 device_recoveries=1 device_reopen_failures=0\n"));
+    ASSERT_NOT_NULL(strstr(text, "owner_thread=0 device_recoveries=1 device_reopen_failures=0 device_switches=0"
+                                 " device_switch_rejected=0 device_switch_failures=0\n"));
     fclose(trace);
 }
 
@@ -1599,12 +1715,15 @@ TEST(audio_owner_thread_reopens_a_lost_playback_device) {
     ASSERT_EQ(audio.device_calls_off_owner, 0u);
     audio_shutdown(&audio);
     audio_trace_read(trace, text, sizeof(text));
-    ASSERT_NOT_NULL(strstr(text, "owner_thread=1 device_recoveries=1 device_reopen_failures=0\n"));
+    ASSERT_NOT_NULL(strstr(text, "owner_thread=1 device_recoveries=1 device_reopen_failures=0 device_switches=0"
+                                 " device_switch_rejected=0 device_switch_failures=0\n"));
     fclose(trace);
 }
 
 TEST_MAIN_BEGIN()
     RUN_TEST(scenario_rejects_tick_regression_without_partial_events);
+    RUN_TEST(scenario_parses_audio_device_switches);
+    RUN_TEST(scenario_rejects_malformed_audio_device_names);
     RUN_TEST(scenario_rejects_too_many_events_without_partial_events);
     RUN_TEST(scenario_accepts_exactly_max_events);
     RUN_TEST(scenario_rejects_oversized_file_without_partial_events);
@@ -1646,6 +1765,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_device_slot_reuse_stops_the_displaced_source);
     RUN_TEST(audio_device_stale_stop_never_reaches_a_reclaimed_slot);
     RUN_TEST(audio_owner_thread_makes_every_device_call);
+    RUN_TEST(audio_owner_thread_switches_the_playback_device);
+    RUN_TEST(audio_device_request_is_rejected_without_a_device);
     RUN_TEST(audio_owner_thread_drains_the_queue_before_join);
     RUN_TEST(audio_owner_thread_keeps_the_stale_stop_check);
     RUN_TEST(audio_owner_thread_rejects_a_frame_drain_wait);

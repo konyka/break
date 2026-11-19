@@ -2451,6 +2451,7 @@ static bool app_scenario_supported(const CoreAppScenario *scenario, bool has_che
         case CORE_APP_SCENARIO_LEVEL:
         case CORE_APP_SCENARIO_UNLOAD:
         case CORE_APP_SCENARIO_SCREENSHOT:
+        case CORE_APP_SCENARIO_AUDIO_DEVICE:
         case CORE_APP_SCENARIO_QUIT:
             break;
         default:
@@ -2916,6 +2917,19 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
                     result = app_trace(app,
                         "COREAPPTRACE version=1 event=screenshot_rejected tick=%u"
                         " stage=device\n", tick);
+                    if (result != BREAK_RUNTIME_OK) goto finished;
+                }
+            } else if (event->kind == CORE_APP_SCENARIO_AUDIO_DEVICE) {
+                BreakRuntimeError requested =
+                    core_app_audio_request_device(&app->audio, event->path);
+                if (requested != BREAK_RUNTIME_OK) {
+                    const char *reason = requested == BREAK_RUNTIME_OVERLOAD ? "overload"
+                                       : requested == BREAK_RUNTIME_REJECTED ? "mode"
+                                       : requested == BREAK_RUNTIME_CLOSED   ? "closed"
+                                                                             : "invalid";
+                    result = app_trace(app,
+                        "COREAPPTRACE version=1 event=audio_device result=rejected tick=%u"
+                        " reason=%s\n", tick, reason);
                     if (result != BREAK_RUNTIME_OK) goto finished;
                 }
             } else if (event->kind == CORE_APP_SCENARIO_QUIT) {

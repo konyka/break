@@ -20,8 +20,13 @@ typedef enum CoreAppScenarioKind {
     CORE_APP_SCENARIO_UNLOAD,
     CORE_APP_SCENARIO_SCREENSHOT,
     CORE_APP_SCENARIO_QUIT,
-    CORE_APP_SCENARIO_LEVEL
+    CORE_APP_SCENARIO_LEVEL,
+    /* Switch the playback device: path holds the name, "" for the default. */
+    CORE_APP_SCENARIO_AUDIO_DEVICE
 } CoreAppScenarioKind;
+
+/* The audio layer refuses names of 128 bytes or more. */
+#define CORE_APP_SCENARIO_DEVICE_NAME_MAX 127u
 
 typedef enum CoreAppScenarioTouchPhase {
     CORE_APP_SCENARIO_TOUCH_DOWN = 1,

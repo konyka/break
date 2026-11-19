@@ -14,8 +14,13 @@ typedef enum CoreAppAudioCommandKind {
     CORE_APP_AUDIO_LISTENER = 1,
     CORE_APP_AUDIO_PLAY_3D = 2,
     CORE_APP_AUDIO_POSITION = 3,
-    CORE_APP_AUDIO_STOP = 4
+    CORE_APP_AUDIO_STOP = 4,
+    /* Device mode only: switch the playback device to device_name ("" is
+     * the default). Carries no generation. */
+    CORE_APP_AUDIO_SWITCH_DEVICE = 5
 } CoreAppAudioCommandKind;
+
+#define CORE_APP_AUDIO_DEVICE_NAME_CAPACITY 128u
 
 /* The sound a command names. The listener has none; every source plays one
  * of the level's sounds, and a level may play each sound on its own slot. */
@@ -40,6 +45,7 @@ typedef struct CoreAppAudioCommand {
     CoreAppAudioCommandKind kind;
     CoreAppAudioSound sound;
     u32 source;
+    char device_name[CORE_APP_AUDIO_DEVICE_NAME_CAPACITY];
 } CoreAppAudioCommand;
 
 typedef struct CoreAppAudioSlot {
@@ -79,6 +85,11 @@ typedef struct CoreAppAudio {
     u32 max_reopen_failures;
     u64 device_recoveries;
     u64 device_reopen_failures;
+    /* Runtime playback switches: done, refused for an unknown name, and
+     * failed (the old device is opened again, or recovery takes over). */
+    u64 device_switches;
+    u64 device_switch_rejected;
+    u64 device_switch_failures;
     u32 consecutive_reopen_failures;
     bool reopen_attempted;
     u64 last_reopen_us;
@@ -164,6 +175,14 @@ BreakRuntimeError core_app_audio_enqueue_at(CoreAppAudio *audio, CoreAppAudioCom
 BreakRuntimeError core_app_audio_enqueue_sound(CoreAppAudio *audio,
                                                CoreAppAudioCommandKind kind, u64 generation,
                                                CoreAppAudioSound sound, Vec3 position);
+/* Queues a switch of the playback device to device_name (NULL or "" for
+ * the default), made later on the thread that drains the device, in queue
+ * order with the other commands. REJECTED in record and null modes (no
+ * device) and for a name of CORE_APP_AUDIO_DEVICE_NAME_CAPACITY bytes or
+ * more, OVERLOAD when the queue is full, CLOSED after stop_admission;
+ * nothing is queued then. The result of the switch itself is traced as
+ * event=audio_device and counted, and never fails the drain. */
+BreakRuntimeError core_app_audio_request_device(CoreAppAudio *audio, const char *device_name);
 BreakRuntimeError core_app_audio_drain_record(CoreAppAudio *audio, u32 budget);
 BreakRuntimeError core_app_audio_drain_null(CoreAppAudio *audio, u32 budget);
 /* Device mode: each command becomes the matching AudioSystem call. INVALID
