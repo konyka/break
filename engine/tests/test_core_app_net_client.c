@@ -11,11 +11,17 @@
  *
  * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
  *        [late-auth|voice|voice-relay|voice-mute|voice-flood]
- * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). */
+ *        [--trace PATH]
+ * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). With --trace the
+ * peer writes its own core_app-format trace: one
+ * event=network_session_welcome line per accepted welcome, so trace_merge
+ * can read the session from the peer's own document instead of being told
+ * it (design 2026-11-20-peer-client-trace). */
 #define _POSIX_C_SOURCE 200809L
 #include "core_app_network.h"
 
 #include <core/clock_offset.h>
+#include <core/trace_core_app.h>
 #include <crypto/break_crypto.h>
 #include <network/break_net_envelope.h>
 #include <network/break_net_message_registry.h>
@@ -43,6 +49,10 @@ static u8 g_psk[32];
 static u16 g_port;
 static FILE *g_report;
 static int g_failures;
+/* --trace: the peer's own core_app-format trace, written with the same
+ * writer core_app uses so the ts_us stamping is identical. */
+static FILE *g_trace;
+static u32 g_trace_lines;
 
 typedef struct NetClient {
     int fd;
@@ -263,6 +273,18 @@ static int client_recv(NetClient *c, BreakNetEnvelope *env, u32 timeout_ms) {
                     } else {
                         if (c->welcomes == 0u) c->session_id = id;
                         c->welcomes++;
+                        if (g_trace) {
+                            /* names the session trace_merge needs; a
+                             * rejected welcome has none to name */
+                            if (break_trace_core_app_fprintf(
+                                    g_trace,
+                                    "COREAPPTRACE version=1"
+                                    " event=network_session_welcome session=%llu\n",
+                                    (unsigned long long)id) > 0) {
+                                g_trace_lines++;
+                            }
+                            fflush(g_trace);
+                        }
                     }
                     continue;
                 }
@@ -1363,14 +1385,37 @@ int main(int argc, char **argv) {
     bool voice_relay = argc == 4 && strcmp(argv[3], "voice-relay") == 0;
     bool voice_mute = argc == 4 && strcmp(argv[3], "voice-mute") == 0;
     bool voice_flood = argc == 4 && strcmp(argv[3], "voice-flood") == 0;
-    if (argc != 3 && !late_auth && !voice && !voice_relay && !voice_mute && !voice_flood) {
+    const char *trace_path = NULL;
+    /* --trace PATH may follow the arguments above */
+    for (int i = 3; i + 1 < argc; ++i) {
+        if (strcmp(argv[i], "--trace") == 0) {
+            trace_path = argv[i + 1];
+            break;
+        }
+    }
+    if (trace_path != NULL) {
+        /* the scenario name, when given, is still argv[3] */
+        late_auth = argc > 4 && strcmp(argv[3], "late-auth") == 0;
+        voice = argc > 4 && strcmp(argv[3], "voice") == 0;
+        voice_relay = argc > 4 && strcmp(argv[3], "voice-relay") == 0;
+        voice_mute = argc > 4 && strcmp(argv[3], "voice-mute") == 0;
+        voice_flood = argc > 4 && strcmp(argv[3], "voice-flood") == 0;
+    } else if (argc != 3 && !late_auth && !voice && !voice_relay && !voice_mute &&
+               !voice_flood) {
         fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE"
-                        " [late-auth|voice|voice-relay|voice-mute|voice-flood]\n");
+                        " [late-auth|voice|voice-relay|voice-mute|voice-flood]"
+                        " [--trace PATH]\n");
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
     g_report = fopen(argv[2], "wb");
     if (!g_report) return 2;
+    if (trace_path != NULL) {
+        g_trace = fopen(trace_path, "wb");
+        if (!g_trace) return 2;
+        /* the same stamping a core_app peer's trace would carry */
+        break_trace_core_app_set_clock(now_us);
+    }
     check(read_psk(), "psk_from_environment");
     check(wait_port(argv[1]), "port_file_published");
     if (g_failures == 0 && late_auth) {
@@ -1391,7 +1436,9 @@ int main(int argc, char **argv) {
         scenario_auth_deadline();
         scenario_alive_at_end();
     }
+    fprintf(g_report, "client trace_lines=%u\n", g_trace_lines);
     fprintf(g_report, "client failures=%d\n", g_failures);
     fclose(g_report);
+    if (g_trace) fclose(g_trace);
     return g_failures == 0 ? 0 : 1;
 }

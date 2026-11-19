@@ -5386,7 +5386,8 @@ endif()
     if(_core_app_net_transport AND NOT WIN32)
         # Real TLS + AUTH-v2 loopback against the real core_app process.
         add_executable(test_core_app_net_client tests/test_core_app_net_client.c
-            src/network/network.c src/core/clock_offset.c src/physics/physics_sync.c src/physics/physics.c src/physics/bvh.c
+            src/network/network.c src/core/clock_offset.c src/core/trace_core_app.c
+            src/physics/physics_sync.c src/physics/physics.c src/physics/bvh.c
             src/math/math.c src/core/log.c)
         set_property(TARGET test_core_app_net_client PROPERTY C_STANDARD 11)
         target_include_directories(test_core_app_net_client PRIVATE

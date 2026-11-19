@@ -221,7 +221,7 @@ execute_process(
         --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port"
         --net-poll-ms ${poll_ms} ${relay_args}
     COMMAND "${NET_CLIENT}" "${WORK_DIR}/server.port" "${WORK_DIR}/client.report"
-        ${client_mode}
+        ${client_mode} --trace "${WORK_DIR}/peer.trace"
     RESULTS_VARIABLE results
     OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
 unset(ENV{CORE_APP_TEST_PSK})
@@ -241,6 +241,42 @@ if(EXISTS "${WORK_DIR}/server.port")
 endif()
 
 file(READ "${WORK_DIR}/network.trace" trace)
+# the peer wrote its own trace naming every session the server assigned it
+# (design 2026-11-20-peer-client-trace)
+if(NOT EXISTS "${WORK_DIR}/peer.trace")
+    message(FATAL_ERROR "the peer wrote no trace")
+endif()
+file(READ "${WORK_DIR}/peer.trace" peer_trace)
+string(REGEX MATCHALL "event=network_session_welcome session=[0-9]+" peer_welcomes
+    "${peer_trace}")
+if(peer_welcomes STREQUAL "")
+    message(FATAL_ERROR "the peer trace names no session:\n${peer_trace}")
+endif()
+if(NOT peer_trace MATCHES "^COREAPPTRACE version=1 ts_us=[0-9]+ event=network_session_welcome")
+    message(FATAL_ERROR "the peer trace is not stamped like core_app's:\n${peer_trace}")
+endif()
+# every session the peer names was authenticated by the server, and the
+# counts agree: this one process opens several connections, so it names
+# several sessions (trace_merge's self-naming path wants one per document,
+# which is why it is not used here)
+foreach(peer_welcome IN LISTS peer_welcomes)
+    string(REGEX REPLACE ".*session=" "" welcome_session "${peer_welcome}")
+    if(NOT trace MATCHES "event=network_session result=authenticated session=${welcome_session} ")
+        message(FATAL_ERROR
+            "the peer names session ${welcome_session}, which the server never authenticated")
+    endif()
+endforeach()
+list(LENGTH peer_welcomes peer_welcome_count)
+string(REGEX MATCHALL "event=network_session result=authenticated" server_auths "${trace}")
+list(LENGTH server_auths server_auth_count)
+if(NOT peer_welcome_count EQUAL server_auth_count)
+    message(FATAL_ERROR
+        "the peer named ${peer_welcome_count} sessions, the server authenticated ${server_auth_count}")
+endif()
+if(NOT report MATCHES "client trace_lines=[1-9]")
+    message(FATAL_ERROR "the peer reported no trace lines:\n${report}")
+endif()
+
 if(trace MATCHES "CORE_APP_TEST_PSK|0f1e2d3c4b5a6978")
     message(FATAL_ERROR "the trace contains the secret or its variable name")
 endif()

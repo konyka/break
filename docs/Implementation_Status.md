@@ -1,3 +1,10 @@
+## loopback 对端写出自己的 trace（2026-11-20）
+
+- **交付**：`test_core_app_net_client` 新增 `--trace PATH`（可跟在可选的场景名之后）：用 core_app 同一个写入器 `break_trace_core_app_fprintf` 输出，并调用 `break_trace_core_app_set_clock(now_us)`，因此行首的 `ts_us=` 与 core_app 对端完全一致；每接受一条会话欢迎就写一行 `event=network_session_welcome session=N`（被拒的欢迎没有会话可写，不输出）。报告追加 `client trace_lines=N`。不给 `--trace` 时行为逐字节不变。设计与计划见 `docs/superpowers/specs/2026-11-20-peer-client-trace-design.md`、`docs/superpowers/plans/2026-11-20-peer-client-trace.md`。
+- **驱动断言**：loopback 驱动传入 `--trace` 后检查——文件存在、首行带 `ts_us=`、至少命名一个会话、命名的每个会话都在服务端 `event=network_session result=authenticated` 中出现、命名条数与服务端认证条数相等。
+- **spec 中的合并步骤已放弃（有实际原因）**：这个客户端进程依次开多条连接（已认证、未认证、未知 id、错 PSK、超期、存活），因此会被欢迎进多个会话，其 trace 命名了服务端认证的全部三个。`trace_merge` 的自报路径有意把"一个文档命名两个不同会话"判为 AMBIGUOUS——一个文档就是一条对端时间轴——所以把这份 trace 喂给它是错的用法，不是要绕开的 bug。驱动改为直接核对对应关系（命名 ⊆ 已认证会话，且条数相等），这个断言本身更强。能参与合并的对端应当是单会话进程，本仓库没有；`missing_capabilities.md` 已据此记录尚缺的部分，而不是声称链路已闭合。
+- **TDD**：2 个变异判红：写出的会话号加一、不设置 trace 时钟。`test_core_app_network_loopback` 通过（22 秒，真实 TLS + AUTH-v2 回环）。
+
 ## trace_merge 读取对端自己的会话号（2026-11-20）
 
 - **交付**：核心新增两个读取器——`break_trace_core_app_session` 从 trace 文本读取对端记下的 `event=network_session_welcome session=N`，`break_trace_core_app_session_from_chrome` 从转换后的 Chrome trace-event 文档读取同一事件（`{"name":"network_session_welcome",...,"args":{"session":N,...}}`）。同一会话重复出现（对端重连后再记一次）视为一个答案，两个不同会话为 AMBIGUOUS，缺少或非规范十进制的 session 为 MALFORMED，无该行为 NOT_FOUND。`trace_merge --clock-offset` 在输入多于两个时，对没有 `--session` 的对端先读其自身文档里的会话号，显式 `--session` 仍然优先；原来的"需要正好两个输入或每个对端都给 --session"用法错误收窄为只在单输入时报出，因此三个自报会话的输入现在可以直接合并。设计与计划见 `docs/superpowers/specs/2026-11-20-trace-peer-session-design.md`、`docs/superpowers/plans/2026-11-20-trace-peer-session.md`。
