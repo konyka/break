@@ -1,3 +1,10 @@
+## myui 滚动条支持水平方向（2026-11-19）
+
+- **交付**：`my_scroll_bar` 新增 `my_scroll_bar_set_horizontal`/`my_scroll_bar_is_horizontal`，默认仍为垂直，既有使用者行为不变。滑块长度与位置改走“长轴”（水平时取 `rect.w`，否则 `rect.h`），指针命中、拖动偏移和轨道翻页在水平时读局部 x，绘制沿长轴、圆角半径取短轴以保持胶囊形状；按键不变（左/上后退，右/下前进，PageUp/PageDown 翻页，Home/End 到端点）。设计与计划见 `docs/superpowers/specs/2026-11-19-myui-horizontal-scroll-bar-design.md`、`docs/superpowers/plans/2026-11-19-myui-horizontal-scroll-bar.md`。
+- **TDD**：新用例先因两个访问器不存在而编译失败，再通过，`test_myui_window_manager` 240/240；既有滚动条用例一字未改仍全绿，即垂直默认未受影响的证据。4 个变异全部判红：长轴固定为高度、按下不换轴、拖动不换轴、去掉最小滑块长度。
+- **边界**：尚未接入编辑器音频页（单独一个切片），没有内容足够时自动隐藏，也不支持一个容器挂两条。
+- **另记**：`build-voice-relay-asan` 的 `test_myui_window_manager` 报告 19527 字节/405 次分配泄漏；把本次改动 stash 掉后数字完全相同，用 `fast_unwind_on_malloc=0` 展开后栈落在 `libvulkan.so.1` 的 `loader_icd_scan`，即系统 Vulkan 加载器扫描驱动时的泄漏，不是仓库代码（CI 的 ASan 任务因此不受影响）。记录在此以免日后误判为回归。
+
 ## 编辑器音频键盘缩放与滚动（2026-11-19）
 
 - **交付**：波形控件改为可获得焦点（`focusable = true`），主键按下即取得键盘焦点；持有焦点时处理 `MY_EVENT_KEY_DOWN`：`+`/`=` 放大、`-` 缩小（以视图中心）、左右方向键按四分之一平移、`Home` 回到整段。命中的键会被消费，因此不会同时触发 shell 的全局快捷键（`Home` 不再重置 3D 相机）；没有附件时一个键都不消费，仍交给 shell。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-keys-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-keys.md`。

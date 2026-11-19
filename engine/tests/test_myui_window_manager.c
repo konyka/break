@@ -5367,6 +5367,68 @@ TEST(button_cooldown_blocks_reentry_and_exposes_progress)
   my_pal_destroy(pal);
 }
 
+/* Horizontal orientation (design 2026-11-19-myui-horizontal-scroll-bar). */
+TEST(scroll_bar_horizontal_uses_the_long_axis)
+{
+  my_widget_t* h = my_scroll_bar_create(NULL);
+  my_widget_t* v = my_scroll_bar_create(NULL);
+  my_event_t down = my_event_init(MY_EVENT_POINTER_DOWN);
+  my_event_t move = my_event_init(MY_EVENT_POINTER_MOVE);
+  my_event_t up = my_event_init(MY_EVENT_POINTER_UP);
+
+  ASSERT_NOT_NULL(h);
+  ASSERT_NOT_NULL(v);
+  ASSERT_FALSE(my_scroll_bar_is_horizontal(h)); /* vertical by default */
+  ASSERT_EQ(my_scroll_bar_set_horizontal(h, true), MY_RET_OK);
+  ASSERT_TRUE(my_scroll_bar_is_horizontal(h));
+  ASSERT_EQ(my_scroll_bar_set_horizontal(NULL, true), MY_RET_INVALID_PARAMS);
+  ASSERT_FALSE(my_scroll_bar_is_horizontal(NULL));
+  ASSERT_EQ(my_widget_set_rect(h, &(my_rect_t){0, 0, 200, 12}), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(v, &(my_rect_t){0, 0, 200, 12}), MY_RET_OK);
+  ASSERT_EQ(my_scroll_bar_set_page_size(h, 0.25f), MY_RET_OK);
+  ASSERT_EQ(my_scroll_bar_set_page_size(v, 0.25f), MY_RET_OK);
+
+  /* a track press on the right pages forward, one on the left pages back */
+  down.u.pointer.x = 190;
+  down.u.pointer.y = 6;
+  ASSERT_EQ(h->vtable->on_event(h, &down), MY_RET_OK);
+  ASSERT_FLOAT_EQ(my_scroll_bar_get_value(h), 0.25f, 0.0001f);
+  down.u.pointer.x = 2;
+  ASSERT_EQ(h->vtable->on_event(h, &down), MY_RET_OK);
+  ASSERT_FLOAT_EQ(my_scroll_bar_get_value(h), 0.0f, 0.0001f);
+  /* the same press on a vertical bar of the same size does nothing: its
+   * movable range comes from the 12 px height, below the minimum thumb */
+  ASSERT_EQ(v->vtable->on_event(v, &down), MY_RET_OK);
+  ASSERT_FLOAT_EQ(my_scroll_bar_get_value(v), 0.0f, 0.0001f);
+
+  /* dragging the thumb of a horizontal bar: the thumb is 50 px, so the
+   * movable range is 150 px and the value follows the pointer's x */
+  down.u.pointer.x = 10;
+  ASSERT_EQ(h->vtable->on_event(h, &down), MY_RET_OK);
+  move.u.pointer.x = 75;
+  move.u.pointer.y = 6;
+  ASSERT_EQ(h->vtable->on_event(h, &move), MY_RET_OK);
+  ASSERT_FLOAT_EQ(my_scroll_bar_get_value(h), (75.0f - 10.0f) / 150.0f, 0.01f);
+  move.u.pointer.x = 400; /* past the end: clamped */
+  ASSERT_EQ(h->vtable->on_event(h, &move), MY_RET_OK);
+  ASSERT_FLOAT_EQ(my_scroll_bar_get_value(h), 1.0f, 0.0001f);
+  up.u.pointer.x = 400;
+  up.u.pointer.y = 6;
+  ASSERT_EQ(h->vtable->on_event(h, &up), MY_RET_OK);
+
+  /* a tiny page size keeps a grabbable thumb and still reaches both ends */
+  ASSERT_EQ(my_scroll_bar_set_page_size(h, 0.01f), MY_RET_OK);
+  ASSERT_EQ(my_scroll_bar_set_value(h, 0.0f), MY_RET_OK);
+  down.u.pointer.x = 2;
+  ASSERT_EQ(h->vtable->on_event(h, &down), MY_RET_OK);
+  move.u.pointer.x = 400;
+  ASSERT_EQ(h->vtable->on_event(h, &move), MY_RET_OK);
+  ASSERT_FLOAT_EQ(my_scroll_bar_get_value(h), 1.0f, 0.0001f);
+
+  my_widget_unref(h);
+  my_widget_unref(v);
+}
+
 TEST(scroll_containers_unlink_scroll_bar_before_destroy)
 {
   my_widget_t* bar = my_scroll_bar_create(NULL);
@@ -8802,6 +8864,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(slider_changed_listener_can_remove_self);
     RUN_TEST(scroll_bar_changed_listener_can_remove_self);
     RUN_TEST(button_cooldown_blocks_reentry_and_exposes_progress);
+    RUN_TEST(scroll_bar_horizontal_uses_the_long_axis);
     RUN_TEST(scroll_containers_unlink_scroll_bar_before_destroy);
     RUN_TEST(scroll_containers_reject_non_scroll_bar_without_rebinding);
     RUN_TEST(scroll_containers_keep_linked_scroll_bar_alive);

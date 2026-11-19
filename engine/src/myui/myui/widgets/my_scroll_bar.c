@@ -8,16 +8,21 @@ static float sb_clamp(float v, float lo, float hi) {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+/** @brief Length of the axis the thumb runs along. */
+static float sb_track(my_scroll_bar_t* b) {
+  const my_widget_t* w = (const my_widget_t*)b;
+  return (float)(b->horizontal ? w->rect.w : w->rect.h);
+}
+
 static float sb_thumb_len(my_scroll_bar_t* b) {
-  float track = (float)((my_widget_t*)b)->rect.h;
-  float len = track * sb_clamp(b->page_size, 0.0f, 1.0f);
+  float len = sb_track(b) * sb_clamp(b->page_size, 0.0f, 1.0f);
   return len < MY_SCROLL_BAR_MIN_THUMB ? (float)MY_SCROLL_BAR_MIN_THUMB : len;
 }
 
+/** @brief Thumb offset along that axis (x when horizontal, else y). */
 static float sb_thumb_y(my_scroll_bar_t* b) {
-  float track = (float)((my_widget_t*)b)->rect.h;
   float len = sb_thumb_len(b);
-  float movable = track - len;
+  float movable = sb_track(b) - len;
   return movable > 0.0f ? sb_clamp(b->value, 0.0f, 1.0f) * movable : 0.0f;
 }
 
@@ -35,9 +40,8 @@ static void sb_set_internal(my_scroll_bar_t* b, float v, bool notify) {
 }
 
 static void sb_from_y(my_scroll_bar_t* b, int32_t local_y, bool is_thumb) {
-  float track = (float)((my_widget_t*)b)->rect.h;
   float len = sb_thumb_len(b);
-  float movable = track - len;
+  float movable = sb_track(b) - len;
   float y;
   if (movable <= 0.0f) {
     return;
@@ -54,6 +58,9 @@ static my_ret_t sb_on_event(my_widget_t* widget, const my_event_t* event) {
       lx = event->u.pointer.x;
       ly = event->u.pointer.y;
       my_widget_global_to_local(widget, &lx, &ly);
+      if (b->horizontal) {
+        ly = lx; /* the thumb runs along x */
+      }
       {
         float ty = sb_thumb_y(b);
         float tl = sb_thumb_len(b);
@@ -74,7 +81,7 @@ static my_ret_t sb_on_event(my_widget_t* widget, const my_event_t* event) {
         lx = event->u.pointer.x;
         ly = event->u.pointer.y;
         my_widget_global_to_local(widget, &lx, &ly);
-        sb_from_y(b, ly, true);
+        sb_from_y(b, b->horizontal ? lx : ly, true);
         return MY_RET_OK;
       }
       return MY_RET_FAIL;
@@ -129,12 +136,20 @@ static void sb_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(track_c));
   my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
                                                  (float)widget->rect.h},
-                                (float)widget->rect.w / 2.0f);
+                                (float)(b->horizontal ? widget->rect.h
+                                                      : widget->rect.w) /
+                                    2.0f);
   my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(thumb_c));
-  my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){1, ty + 1,
-                                                 (float)widget->rect.w - 2,
-                                                 tl - 2},
-                                (float)widget->rect.w / 2.0f - 1.0f);
+  if (b->horizontal) {
+    my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){ty + 1, 1, tl - 2,
+                                                   (float)widget->rect.h - 2},
+                                  (float)widget->rect.h / 2.0f - 1.0f);
+  } else {
+    my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){1, ty + 1,
+                                                   (float)widget->rect.w - 2,
+                                                   tl - 2},
+                                  (float)widget->rect.w / 2.0f - 1.0f);
+  }
 }
 
 static const my_widget_vtable_t s_sb_vtable = {sb_on_paint, sb_on_event, NULL, NULL};
@@ -184,4 +199,18 @@ my_ret_t my_scroll_bar_set_page_size(my_widget_t* bar, float page_size) {
 
 float my_scroll_bar_get_page_size(my_widget_t* bar) {
   return my_scroll_bar_is_instance(bar) ? ((my_scroll_bar_t*)bar)->page_size : 0.0f;
+}
+
+my_ret_t my_scroll_bar_set_horizontal(my_widget_t* bar, bool horizontal) {
+  if (!my_scroll_bar_is_instance(bar)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  ((my_scroll_bar_t*)bar)->horizontal = horizontal;
+  my_widget_invalidate(bar, NULL);
+  return MY_RET_OK;
+}
+
+bool my_scroll_bar_is_horizontal(const my_widget_t* bar) {
+  return my_scroll_bar_is_instance(bar) &&
+         ((const my_scroll_bar_t*)bar)->horizontal;
 }

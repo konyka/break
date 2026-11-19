@@ -7,6 +7,10 @@
  * (grab semantics), click the track to page. Emits "changed" (read the
  * value back via my_scroll_bar_get_value). Scroll containers link with
  * my_list_view_set_scroll_bar() / my_text_area_set_scroll_bar().
+ *
+ * Vertical by default; my_scroll_bar_set_horizontal() moves the thumb and
+ * the pointer maths to the x axis. The keys read the same either way:
+ * Left/Up step back, Right/Down step forward.
  */
 #ifndef MY_SCROLL_BAR_H
 #define MY_SCROLL_BAR_H
@@ -21,6 +25,7 @@ typedef struct my_scroll_bar_t {
   float value;      /**< [0,1] scroll fraction */
   float page_size;  /**< [0,1] visible fraction */
   bool dragging;
+  bool horizontal;  /**< the thumb runs along x instead of y */
   int32_t drag_off; /**< grab offset inside the thumb (px) */
 } my_scroll_bar_t;
 
@@ -30,5 +35,7 @@ my_ret_t my_scroll_bar_set_value(my_widget_t* bar, float value);
 float my_scroll_bar_get_value(my_widget_t* bar);
 my_ret_t my_scroll_bar_set_page_size(my_widget_t* bar, float page_size);
 float my_scroll_bar_get_page_size(my_widget_t* bar);
+my_ret_t my_scroll_bar_set_horizontal(my_widget_t* bar, bool horizontal);
+bool my_scroll_bar_is_horizontal(const my_widget_t* bar);
 
 #endif /* MY_SCROLL_BAR_H */
