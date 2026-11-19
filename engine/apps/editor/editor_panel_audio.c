@@ -20,7 +20,8 @@
  * info line while it plays. A primary press on the waveform seeks: while
  * playing it restarts there, otherwise Play starts there next; a line marks
  * the playing position (or a non-zero cursor). An attachment change resets
- * the cursor. Shift+press selects from the cursor to the pressed frame (both
+ * the cursor. With a selection, Play plays only the selection. Shift+press
+ * selects from the cursor to the pressed frame (both
  * included); Trim/Cut run the document's undoable edits on the selection,
  * and an attachment change clears it.
  *
@@ -32,6 +33,7 @@
 #include <editor/editor_audio.h>
 #include <editor/editor_i18n.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -308,9 +310,13 @@ bool editor_panel_audio_toggle(EditorPanelAudio *panel) {
                                                          break_editor_shell_doc(panel->shell))) {
             audio_panel_refresh(panel);
         }
-        if (!break_editor_audio_preview_play_from(
+        /* a selection plays on its own; otherwise from the cursor to the end */
+        const bool selected = panel->sel_begin < panel->sel_end;
+        if (!break_editor_audio_preview_play_range(
                 panel->preview, break_editor_shell_doc(panel->shell),
-                break_editor_audio_preview_cursor_frames(panel->preview))) {
+                selected ? panel->sel_begin
+                         : break_editor_audio_preview_cursor_frames(panel->preview),
+                selected ? panel->sel_end : UINT32_MAX)) {
             editor_shell_log(panel->shell, "%s",
                              break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_PLAY_FAILED));
         } else {

@@ -2,6 +2,7 @@
 
 #include <editor/editor_audio.h>
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -66,11 +67,19 @@ bool break_editor_audio_preview_play(BreakEditorAudioPreview *preview,
 
 bool break_editor_audio_preview_play_from(BreakEditorAudioPreview *preview,
                                           const BreakEditorDoc *doc, u32 start_frame) {
+    return break_editor_audio_preview_play_range(preview, doc, start_frame, UINT32_MAX);
+}
+
+bool break_editor_audio_preview_play_range(BreakEditorAudioPreview *preview,
+                                           const BreakEditorDoc *doc, u32 start_frame,
+                                           u32 end_frame) {
     if (preview == NULL) {
         return false;
     }
     break_editor_audio_preview_stop(preview);
-    const u32 frames = break_editor_doc_audio_frames(doc);
+    const u32 clip_frames = break_editor_doc_audio_frames(doc);
+    /* only [0, end) is copied: the silent tail follows the range's end */
+    const u32 frames = end_frame < clip_frames ? end_frame : clip_frames;
     const u32 channels = break_editor_doc_audio_channels(doc);
     const i16 *samples = break_editor_doc_audio_samples(doc);
     if (preview->sink == NULL || samples == NULL || frames == 0u ||
@@ -79,6 +88,9 @@ bool break_editor_audio_preview_play_from(BreakEditorAudioPreview *preview,
     }
     u32 tail = preview->sink->tail_frames != NULL ? preview->sink->tail_frames(preview->user) : 0u;
     if (tail > EDITOR_PREVIEW_MAX_TAIL) tail = EDITOR_PREVIEW_MAX_TAIL;
+    if (end_frame != UINT32_MAX && start_frame >= frames) {
+        return false;
+    }
     const u32 start = start_frame < frames ? start_frame : frames - 1u;
     memcpy(preview->pcm, samples, (usize)frames * channels * sizeof(i16));
     memset(preview->pcm + (usize)frames * channels, 0, (usize)tail * channels * sizeof(i16));

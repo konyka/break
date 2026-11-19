@@ -3555,6 +3555,31 @@ TEST(audio_page_selects_and_trims_or_cuts)
         ASSERT_TRUE(break_editor_undo(doc));
         break_editor_shell_set_audio_sink(shell, NULL, NULL);
     }
+    /* with a selection, Play plays only the selection and stops at its end */
+    {
+        static FakeAudioSink fake;
+        memset(&fake, 0, sizeof(fake));
+        fake.chunk = 4096u;
+        break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+        ASSERT_TRUE(break_editor_shell_audio_select(shell, 100u, 300u));
+        ASSERT_TRUE(break_editor_shell_audio_play(shell));
+        ASSERT_EQ(fake.written, 200u);
+        ASSERT_EQ(fake.data[0], 100);
+        ASSERT_EQ(fake.data[199], 299);
+        fake.played = 50u;
+        break_editor_shell_tick(shell);
+        ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell),
+                      "8000 Hz, 1 ch, 0.125 s | 0.019 / 0.037 s");
+        fake.played = 200u;
+        break_editor_shell_tick(shell);
+        ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+        /* the selection stays; playing again plays it again */
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
+        ASSERT_TRUE(break_editor_shell_audio_play(shell));
+        ASSERT_EQ(fake.data[0], 100);
+        ASSERT_FALSE(break_editor_shell_audio_play(shell)); /* stop */
+        break_editor_shell_set_audio_sink(shell, NULL, NULL);
+    }
     /* clamped; an empty or out-of-clip range selects nothing */
     ASSERT_TRUE(break_editor_shell_audio_select(shell, 900u, 5000u));
     ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));

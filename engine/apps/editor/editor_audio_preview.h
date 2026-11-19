@@ -42,6 +42,12 @@ bool break_editor_audio_preview_play(BreakEditorAudioPreview *preview,
  * play_from(..., 0). */
 bool break_editor_audio_preview_play_from(BreakEditorAudioPreview *preview,
                                           const BreakEditorDoc *doc, u32 start_frame);
+/* Plays [start_frame, end_frame) only (end clamped to the clip; false when
+ * start is not below it). Position and length are clip frames, so length
+ * reports the range end. play_from is play_range(start, UINT32_MAX). */
+bool break_editor_audio_preview_play_range(BreakEditorAudioPreview *preview,
+                                           const BreakEditorDoc *doc, u32 start_frame,
+                                           u32 end_frame);
 /* Playing: restarts from `frame` (queued audio is dropped). Stopped: only
  * sets the cursor. Returns whether it plays afterwards. */
 bool break_editor_audio_preview_seek(BreakEditorAudioPreview *preview,
