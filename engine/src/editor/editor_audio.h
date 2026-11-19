@@ -56,6 +56,13 @@ bool break_editor_doc_audio_waveform_channel(const BreakEditorDoc *doc, u32 chan
 bool break_editor_doc_audio_peak_range(const BreakEditorDoc *doc, u32 begin, u32 end,
                                        double *out_peak, double *out_rms);
 
+/* Largest absolute value of the signal reconstructed at 4x the sample rate
+ * over frames [begin, end), per channel (dBTP measurement). May exceed
+ * 32768: a reconstruction can overshoot full scale. Same invalid ranges as
+ * above. Read-only. */
+bool break_editor_doc_audio_true_peak_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                            double *out_peak);
+
 /* One snapshot command per successful edit; false leaves PCM/history unchanged. */
 bool break_editor_doc_audio_trim(BreakEditorDoc *doc, u32 begin, u32 end);
 bool break_editor_doc_audio_cut(BreakEditorDoc *doc, u32 begin, u32 end);

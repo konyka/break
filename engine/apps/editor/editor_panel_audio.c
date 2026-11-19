@@ -116,6 +116,8 @@ struct EditorPanelAudio {
 static void audio_panel_label_solo(EditorPanelAudio *panel);
 static bool audio_panel_levels(const EditorPanelAudio *panel, double *out_peak,
                                double *out_rms);
+static bool audio_panel_levels_ex(const EditorPanelAudio *panel, double *out_peak,
+                                  double *out_rms, double *out_tp);
 
 static void audio_panel_format_info(EditorPanelAudio *panel) {
     const BreakEditorDoc *doc = break_editor_shell_doc(panel->shell);
@@ -205,11 +207,11 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
     if (panel->levels != NULL) {
         /* the level readout lives on its own label, so the info line stays
          * exactly what the format string says */
-        double peak_db, rms_db;
-        char text[64];
-        if (audio_panel_levels(panel, &peak_db, &rms_db)) {
-            (void)snprintf(text, sizeof(text), "peak %.1f dB  rms %.1f dB", peak_db,
-                           rms_db);
+        double peak_db, rms_db, tp_db;
+        char text[96];
+        if (audio_panel_levels_ex(panel, &peak_db, &rms_db, &tp_db)) {
+            (void)snprintf(text, sizeof(text), "peak %.1f dB  rms %.1f dB  tp %.1f dB",
+                           peak_db, rms_db, tp_db);
         } else {
             text[0] = '\0';
         }
@@ -999,22 +1001,42 @@ static double audio_db_of(double value) {
     return db > BREAK_EDITOR_AUDIO_DB_FLOOR ? db : BREAK_EDITOR_AUDIO_DB_FLOOR;
 }
 
-/* Peak and RMS of the visible range; false leaves both at the floor. */
-static bool audio_panel_levels(const EditorPanelAudio *panel, double *out_peak,
-                               double *out_rms) {
+/* Peak, RMS and true peak of the visible range; false leaves all three at
+ * the floor. out_tp may be NULL when the caller does not need it (the true
+ * peak costs an interpolation pass over the view). */
+static bool audio_panel_levels_ex(const EditorPanelAudio *panel, double *out_peak,
+                                  double *out_rms, double *out_tp) {
     *out_peak = *out_rms = BREAK_EDITOR_AUDIO_DB_FLOOR;
+    if (out_tp != NULL) *out_tp = BREAK_EDITOR_AUDIO_DB_FLOOR;
     if (panel == NULL) {
         return false;
     }
     double peak = 0.0, rms = 0.0;
-    if (!break_editor_doc_audio_peak_range(break_editor_shell_doc(panel->shell),
-                                           audio_view_begin(panel), audio_view_end(panel),
-                                           &peak, &rms)) {
+    const BreakEditorDoc *doc = break_editor_shell_doc(panel->shell);
+    const u32 begin = audio_view_begin(panel), end = audio_view_end(panel);
+    if (!break_editor_doc_audio_peak_range(doc, begin, end, &peak, &rms)) {
         return false;
     }
     *out_peak = audio_db_of(peak);
     *out_rms = audio_db_of(rms);
+    if (out_tp != NULL) {
+        double tp = 0.0;
+        if (break_editor_doc_audio_true_peak_range(doc, begin, end, &tp)) {
+            *out_tp = audio_db_of(tp);
+        }
+    }
     return true;
+}
+
+static bool audio_panel_levels(const EditorPanelAudio *panel, double *out_peak,
+                               double *out_rms) {
+    return audio_panel_levels_ex(panel, out_peak, out_rms, NULL);
+}
+
+double editor_panel_audio_true_peak_db(const EditorPanelAudio *panel) {
+    double peak, rms, tp;
+    (void)audio_panel_levels_ex(panel, &peak, &rms, &tp);
+    return tp;
 }
 
 double editor_panel_audio_peak_db(const EditorPanelAudio *panel) {

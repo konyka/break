@@ -157,6 +157,83 @@ bool break_editor_doc_audio_peak_range(const BreakEditorDoc *doc, u32 begin, u32
     return true;
 }
 
+/* True peak: the signal reconstructed at 4x the sample rate. A windowed
+ * sinc polyphase FIR, 4 phases of 2*TP_HALF+1 taps; phase 0 is the identity
+ * (sinc(0)=1, sinc(k)=0 for integer k), so the result is never below the
+ * sample peak. Not the ITU-R BS.1770 filter, which this does not claim. */
+#define TP_PHASES 4u
+#define TP_HALF 16
+#define TP_TAPS (2 * TP_HALF + 1)
+
+static double g_tp_kernel[TP_PHASES][TP_TAPS];
+static bool g_tp_kernel_ready = false;
+
+static void audio_tp_build_kernel(void) {
+    if (g_tp_kernel_ready) {
+        return;
+    }
+    for (u32 phase = 0u; phase < TP_PHASES; ++phase) {
+        const double frac = (double)phase / (double)TP_PHASES;
+        double sum = 0.0;
+        for (int t = 0; t < TP_TAPS; ++t) {
+            const double x = (double)(t - TP_HALF) - frac;
+            double sinc, window;
+            if (x > -1e-12 && x < 1e-12) {
+                sinc = 1.0;
+            } else {
+                sinc = sin(3.14159265358979323846 * x) / (3.14159265358979323846 * x);
+            }
+            /* Blackman over the tap span, so the kernel decays to zero */
+            {
+                const double n = ((double)t + 0.5) / (double)TP_TAPS;
+                window = 0.42 - 0.5 * cos(2.0 * 3.14159265358979323846 * n) +
+                         0.08 * cos(4.0 * 3.14159265358979323846 * n);
+            }
+            g_tp_kernel[phase][t] = sinc * window;
+            sum += g_tp_kernel[phase][t];
+        }
+        /* unity DC gain, so a constant signal keeps its level */
+        if (sum > 1e-9 || sum < -1e-9) {
+            for (int t = 0; t < TP_TAPS; ++t) {
+                g_tp_kernel[phase][t] /= sum;
+            }
+        }
+    }
+    g_tp_kernel_ready = true;
+}
+
+bool break_editor_doc_audio_true_peak_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                            double *out_peak) {
+    if (!doc || !doc->audio || !out_peak || begin >= end || end > doc->audio->frames) {
+        return false;
+    }
+    audio_tp_build_kernel();
+    const BreakEditorAudioState *audio = doc->audio;
+    const i64 frames = (i64)audio->frames;
+    double peak = 0.0;
+    for (u32 channel = 0u; channel < audio->channels; ++channel) {
+        for (i64 f = (i64)begin; f < (i64)end; ++f) {
+            for (u32 phase = 0u; phase < TP_PHASES; ++phase) {
+                double acc = 0.0;
+                for (int t = 0; t < TP_TAPS; ++t) {
+                    /* outside the clip the signal is zero, so an edge range
+                     * never reads past the buffer */
+                    const i64 index = f + (i64)(t - TP_HALF);
+                    if (index < 0 || index >= frames) {
+                        continue;
+                    }
+                    acc += (double)audio->samples[(usize)index * audio->channels + channel] *
+                           g_tp_kernel[phase][t];
+                }
+                if (acc < 0.0) acc = -acc;
+                if (acc > peak) peak = acc;
+            }
+        }
+    }
+    *out_peak = peak;
+    return true;
+}
+
 void break_editor_audio_detach(BreakEditorDoc *doc) {
     if (!doc || !doc->audio) return;
     free(doc->audio->samples);

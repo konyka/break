@@ -1,3 +1,10 @@
+## 编辑器音频真峰值（dBTP）（2026-11-20）
+
+- **交付**：核心新增 `break_editor_doc_audio_true_peak_range(doc, begin, end, out_peak)`，按 4 倍采样率重建信号后取各声道绝对值最大者（可超过 32768——重建本就会过冲）。插值用多相窗函数 sinc FIR：4 个相位、33 抽头（两侧各 16），Blackman 窗、首次使用时建表，相位 0 为恒等（sinc 在整数点为 0/1），因此结果不会低于采样峰值；范围外的抽头按 0 处理，片边范围不会越界读取。shell 新增 `break_editor_shell_audio_true_peak_db`（同样 -120 dB 地板，超过满刻度时为正值且不钳制），电平标签追加 " tp x.x dB"。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-true-peak-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-true-peak.md`。
+- **TDD**：核心与 shell 各一处新断言，先链接失败再通过，`test_editor_audio` 16/16、`test_editor_shell` 228/228。6 个变异全部判红：只算相位 0（退化为采样峰值）、去掉 `index >= frames` 上界检查、去掉核的直流归一化、峰值扫描只保留第一个值、声道循环只算声道 0、去掉绝对值。
+- **三个实测数字**：采样点落在正弦 ±45° 时真峰值是采样峰值的 1.431 倍（`sin(45°)=0.707`，恢复波峰正好是 √2，设计里猜的 1.3 上界是错的，改为围绕实测值的区间）；紧跟响亮段之后的子范围并不安静——核向前取 16 个样本，响亮部分会渗入，用例因此从第 216 帧而不是 200 帧起测并写明原因；全负恒定片（幅度 18000）读到 20459，因为片边相对片外的零是一个阶跃，sinc 重建在那里会过冲，断言放宽并注明真实录音没有这种阶跃。
+- **边界**：不是 ITU-R BS.1770 规定的 4 倍滤波器系数（只是窗函数 sinc，文档明说不冒充）、没有 LUFS、没有真峰值限幅器、不支持 4 倍以上过采样。
+
 ## 编辑器音频各泳道独立幅度缩放（2026-11-20）
 
 - **交付**：显示幅度倍数改为按泳道保存（上限 2 条，与文档的单/双声道一致）。页面级接口语义不变——`set_gain` 设置所有泳道，`gain` 返回泳道 0 的；新增 `break_editor_shell_audio_set_lane_gain`、`break_editor_shell_audio_lane_gain`、`break_editor_shell_audio_fit_lane_gain` 操作单条泳道（越界泳道返回 0 且不改动），`fit_gain` 改为每条泳道各按自身可见峰值适配，这正是让电平差很大的两个声道一眼可比的关键。绘制与 dB 网格都用所在泳道的倍数；信息行在两条泳道一致时显示 "<n>x"，不一致时显示 "<a>x/<b>x"；附件变化时全部归 1。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-lane-gain-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-lane-gain.md`。

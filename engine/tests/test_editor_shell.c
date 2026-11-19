@@ -4128,7 +4128,9 @@ TEST(audio_page_reports_peak_and_rms_in_db)
     {
         const my_widget_t *label = find(shell, "editor-audio-levels");
         ASSERT_NOT_NULL(label);
-        ASSERT_STR_EQ(((const my_label_t *)label)->text, "peak -6.0 dB  rms -6.0 dB");
+        /* the true-peak figure follows the two others on the same label */
+        ASSERT_TRUE(strncmp(((const my_label_t *)label)->text,
+                            "peak -6.0 dB  rms -6.0 dB  tp ", 30u) == 0);
         ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell), "8000 Hz, 1 ch, 0.500 s");
         ASSERT_TRUE(break_editor_doc_reset(doc));
         for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i == 3999u ? 16384 : 328);
@@ -4168,6 +4170,21 @@ TEST(audio_page_reports_peak_and_rms_in_db)
     break_editor_shell_tick(shell);
     peak = break_editor_shell_audio_peak_db(shell);
     ASSERT_TRUE(peak > -1.2 && peak < -0.8);
+    /* the true peak is never below the sample peak, and the label names it
+     * (design 2026-11-20-editor-audio-true-peak) */
+    {
+        const my_widget_t *label = find(shell, "editor-audio-levels");
+        const double tp = break_editor_shell_audio_true_peak_db(shell);
+        ASSERT_NOT_NULL(label);
+        ASSERT_TRUE(tp >= peak - 0.1);
+        ASSERT_TRUE(strstr(((const my_label_t *)label)->text, "tp ") != NULL);
+        /* a quiet clip's figures move together */
+        ASSERT_TRUE(break_editor_doc_reset(doc));
+        memset(pcm, 0, sizeof(pcm));
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+        break_editor_shell_tick(shell);
+        ASSERT_TRUE(break_editor_shell_audio_true_peak_db(shell) <= -119.0);
+    }
     break_editor_shell_destroy(shell);
 }
 

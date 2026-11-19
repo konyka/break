@@ -523,6 +523,10 @@ const char *break_editor_shell_audio_grid_label(const BreakEditorShell *shell, u
 /* The lane grid entry i belongs to (UINT32_MAX when out of range). */
 u32 break_editor_shell_audio_grid_lane(const BreakEditorShell *shell, u32 i);
 double break_editor_shell_audio_peak_db(const BreakEditorShell *shell);
+/* True peak of the view in dBTP (design 2026-11-20-editor-audio-true-peak):
+ * the signal reconstructed at 4x, so an intersample peak above full scale
+ * reads as a positive number and is deliberately not clamped. */
+double break_editor_shell_audio_true_peak_db(const BreakEditorShell *shell);
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);
 u32 break_editor_shell_audio_mute(const BreakEditorShell *shell);

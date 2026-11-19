@@ -4287,6 +4287,11 @@ double break_editor_shell_audio_peak_db(const BreakEditorShell *shell) {
                          : BREAK_EDITOR_AUDIO_DB_FLOOR;
 }
 
+double break_editor_shell_audio_true_peak_db(const BreakEditorShell *shell) {
+    return shell != NULL ? editor_panel_audio_true_peak_db(shell->audio_panel)
+                         : BREAK_EDITOR_AUDIO_DB_FLOOR;
+}
+
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell) {
     return shell != NULL ? editor_panel_audio_rms_db(shell->audio_panel)
                          : BREAK_EDITOR_AUDIO_DB_FLOOR;

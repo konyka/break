@@ -749,7 +749,108 @@ TEST(peak_range_reports_peak_and_rms)
     break_editor_doc_destroy(doc);
 }
 
+/* True peak (design 2026-11-20-editor-audio-true-peak). */
+TEST(true_peak_range_sees_intersample_peaks)
+{
+    static i16 pcm[400u];
+    double peak = -1.0, rms = -1.0, tp = -1.0;
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    /* a sine whose crests fall between samples: 4 samples per cycle with a
+     * quarter-sample offset, so no sample lands on the crest */
+    for (u32 i = 0u; i < 400u; ++i) {
+        const double phase = 2.0 * 3.14159265358979 * ((double)i / 4.0 + 0.125);
+        pcm[i] = (i16)(sin(phase) * 20000.0);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 400u));
+    ASSERT_TRUE(break_editor_doc_audio_peak_range(doc, 0u, 400u, &peak, &rms));
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 400u, &tp));
+    /* the reconstruction reaches above every stored sample */
+    ASSERT_TRUE(tp > peak);
+    /* the samples sit at +-45 degrees of the sine, so they read 20000 *
+     * sin(45) = 14142 while the crest between them is the full 20000: the
+     * reconstruction must recover about sqrt(2) of the sample peak */
+    ASSERT_TRUE(tp > peak * 1.38 && tp < peak * 1.48);
+    ASSERT_TRUE(tp > 19500.0 && tp < 20600.0);
+    /* a square wave's true peak is at least its sample peak (phase 0 is
+     * the identity, so it can never report less) */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 400u; ++i) pcm[i] = (i16)(i % 2u == 0u ? 32767 : -32767);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 400u));
+    ASSERT_TRUE(break_editor_doc_audio_peak_range(doc, 0u, 400u, &peak, &rms));
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 400u, &tp));
+    ASSERT_TRUE(tp >= peak - 1.0);
+    /* a silent clip is 0 */
+    break_editor_doc_reset(doc);
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 400u));
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 400u, &tp));
+    ASSERT_EQ((int)tp, 0);
+    /* a sub-range sees only its own samples, and a range at either end of
+     * the clip does not read past it */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 400u; ++i) pcm[i] = (i16)(i < 200u ? 20000 : 100);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 400u));
+    /* the quiet half: the kernel reaches 16 samples back, so the loud half
+     * bleeds into the first few output samples of this range */
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 216u, 400u, &tp));
+    ASSERT_TRUE(tp > 90.0 && tp < 2000.0);
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 1u, &tp));
+    ASSERT_TRUE(tp > 0.0);
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 399u, 400u, &tp));
+    ASSERT_TRUE(tp > 0.0);
+    /* stereo: both channels are measured, and the peak is a magnitude.
+     * Channel 0 is quiet; channel 1 is loud and starts negative, so a
+     * measurement that skipped later channels or dropped the absolute
+     * value would read far too low. */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 200u; ++i) {
+        pcm[i * 2u] = 100;
+        pcm[i * 2u + 1u] = (i16)(i % 2u == 0u ? -25000 : 25000);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, pcm, 200u));
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 200u, &tp));
+    ASSERT_TRUE(tp > 24000.0);
+    /* a one-channel clip of the same quiet level reads far lower, which is
+     * what makes the loud second channel's contribution observable */
+    {
+        static i16 quiet[200u];
+        double quiet_tp = 0.0;
+        for (u32 i = 0u; i < 200u; ++i) quiet[i] = 100;
+        break_editor_doc_reset(doc);
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, quiet, 200u));
+        ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 200u, &quiet_tp));
+        ASSERT_TRUE(quiet_tp < 200.0);
+        break_editor_doc_reset(doc);
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, pcm, 200u));
+    }
+    /* an all-negative clip still reports its magnitude: the measurement is
+     * |signal|, not the signal's maximum */
+    {
+        static i16 negative[200u];
+        for (u32 i = 0u; i < 200u; ++i) negative[i] = -18000;
+        break_editor_doc_reset(doc);
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, negative, 200u));
+        ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 200u, &tp));
+        /* above the 18000 magnitude, not below it: the clip's edges are a
+         * step against the zero outside, and the sinc reconstruction rings
+         * past the level there (a real recording has no such step) */
+        ASSERT_TRUE(tp > 17000.0 && tp < 23000.0);
+        break_editor_doc_reset(doc);
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, pcm, 200u));
+    }
+    /* invalid ranges write nothing */
+    tp = -1.0;
+    ASSERT_TRUE(!break_editor_doc_audio_true_peak_range(doc, 10u, 10u, &tp));
+    ASSERT_TRUE(!break_editor_doc_audio_true_peak_range(doc, 0u, 201u, &tp));
+    ASSERT_TRUE(!break_editor_doc_audio_true_peak_range(NULL, 0u, 10u, &tp));
+    ASSERT_TRUE(!break_editor_doc_audio_true_peak_range(doc, 0u, 10u, NULL));
+    ASSERT_EQ((int)tp, -1);
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(true_peak_range_sees_intersample_peaks);
     RUN_TEST(peak_range_reports_peak_and_rms);
     RUN_TEST(waveform_channel_reports_one_channel_at_a_time);
     RUN_TEST(waveform_range_matches_a_manual_min_max);
