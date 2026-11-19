@@ -395,6 +395,140 @@ TEST(core_app_trace_clock_offset_for_session_picks_that_peer)
     ASSERT_EQ(offset, 9);
 }
 
+/* A peer trace names its own session (design 2026-11-20-trace-peer-session). */
+#define WELCOME "COREAPPTRACE version=1 event=network_session_welcome "
+
+TEST(core_app_trace_session_reads_what_the_peer_recorded)
+{
+    u64 session = 7u;
+    ASSERT_EQ(break_trace_core_app_session(WELCOME "session=12", strlen(WELCOME "session=12"),
+                                           &session),
+              BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(session, 12u);
+    /* other lines around it do not matter */
+    {
+        const char *trace = "COREAPPTRACE version=1 event=level_loaded generation=1\n"
+                            WELCOME "session=4 tick=7\r\n"
+                            "COREAPPTRACE version=1 event=network_clock_offset session=4"
+                            " offset_us=5 error_us=1\n";
+        ASSERT_EQ(break_trace_core_app_session(trace, strlen(trace), &session),
+                  BREAK_TRACE_CLOCK_OFFSET_OK);
+        ASSERT_EQ(session, 4u);
+    }
+    /* a reconnect re-traces the same session: still one answer */
+    {
+        const char *trace = WELCOME "session=9\n" WELCOME "session=9\n";
+        ASSERT_EQ(break_trace_core_app_session(trace, strlen(trace), &session),
+                  BREAK_TRACE_CLOCK_OFFSET_OK);
+        ASSERT_EQ(session, 9u);
+    }
+    ASSERT_EQ(break_trace_core_app_session(WELCOME "session=18446744073709551615",
+                                           strlen(WELCOME "session=18446744073709551615"),
+                                           &session),
+              BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(session, UINT64_MAX);
+}
+
+TEST(core_app_trace_session_rejects_missing_conflicting_and_malformed)
+{
+    u64 session = 7u;
+    /* no welcome line at all */
+    ASSERT_EQ(break_trace_core_app_session("COREAPPTRACE version=1 event=level_loaded x=1",
+                                           44u, &session),
+              BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(break_trace_core_app_session(NULL, 0u, &session),
+              BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    /* two different sessions in one trace */
+    {
+        const char *trace = WELCOME "session=1\n" WELCOME "session=2\n";
+        ASSERT_EQ(break_trace_core_app_session(trace, strlen(trace), &session),
+                  BREAK_TRACE_CLOCK_OFFSET_AMBIGUOUS);
+    }
+    /* a welcome line with no session, or a non-canonical one */
+    ASSERT_EQ(break_trace_core_app_session(WELCOME "tick=3", strlen(WELCOME "tick=3"),
+                                           &session),
+              BREAK_TRACE_CLOCK_OFFSET_MALFORMED);
+    ASSERT_EQ(break_trace_core_app_session(WELCOME "session=01", strlen(WELCOME "session=01"),
+                                           &session),
+              BREAK_TRACE_CLOCK_OFFSET_MALFORMED);
+    ASSERT_EQ(break_trace_core_app_session(WELCOME "session=-1", strlen(WELCOME "session=-1"),
+                                           &session),
+              BREAK_TRACE_CLOCK_OFFSET_MALFORMED);
+    ASSERT_EQ(break_trace_core_app_session(WELCOME "session=x", strlen(WELCOME "session=x"),
+                                           &session),
+              BREAK_TRACE_CLOCK_OFFSET_MALFORMED);
+    /* a line the converter rejects is not a welcome line */
+    ASSERT_EQ(break_trace_core_app_session("COREAPPTRACE version=2 event=network_session_welcome"
+                                           " session=5",
+                                           52u, &session),
+              BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(break_trace_core_app_session(WELCOME "session=1", 10u, &session),
+              BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(break_trace_core_app_session(WELCOME "session=1", strlen(WELCOME "session=1"),
+                                           NULL),
+              BREAK_TRACE_CLOCK_OFFSET_INVALID);
+    ASSERT_EQ(break_trace_core_app_session(NULL, 4u, &session),
+              BREAK_TRACE_CLOCK_OFFSET_INVALID);
+    ASSERT_EQ(session, 7u); /* nothing written on any failure */
+}
+
+/* The same from the converted document trace_merge actually reads. */
+TEST(core_app_trace_session_from_chrome_reads_the_converted_event)
+{
+    char json[4096];
+    BreakTraceCoreAppReport report;
+    u64 session = 7u;
+    const char *trace = "COREAPPTRACE version=1 event=level_loaded generation=1\n"
+                        WELCOME "session=12 tick=3\n";
+    ASSERT_EQ(break_trace_core_app_to_chrome(trace, strlen(trace), json, sizeof json, &report),
+              BREAK_TRACE_CONVERT_OK);
+    ASSERT_EQ(break_trace_core_app_session_from_chrome(json, strlen(json), &session),
+              BREAK_TRACE_CLOCK_OFFSET_OK);
+    ASSERT_EQ(session, 12u);
+    /* a document without the event */
+    {
+        const char *plain = "COREAPPTRACE version=1 event=level_loaded generation=1\n";
+        ASSERT_EQ(break_trace_core_app_to_chrome(plain, strlen(plain), json, sizeof json,
+                                                 &report),
+                  BREAK_TRACE_CONVERT_OK);
+        ASSERT_EQ(break_trace_core_app_session_from_chrome(json, strlen(json), &session),
+                  BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    }
+    /* two different sessions */
+    {
+        const char *two = WELCOME "session=1\n" WELCOME "session=2\n";
+        ASSERT_EQ(break_trace_core_app_to_chrome(two, strlen(two), json, sizeof json, &report),
+                  BREAK_TRACE_CONVERT_OK);
+        ASSERT_EQ(break_trace_core_app_session_from_chrome(json, strlen(json), &session),
+                  BREAK_TRACE_CLOCK_OFFSET_AMBIGUOUS);
+    }
+    /* the same session twice is one answer */
+    {
+        const char *same = WELCOME "session=5\n" WELCOME "session=5\n";
+        ASSERT_EQ(break_trace_core_app_to_chrome(same, strlen(same), json, sizeof json, &report),
+                  BREAK_TRACE_CONVERT_OK);
+        ASSERT_EQ(break_trace_core_app_session_from_chrome(json, strlen(json), &session),
+                  BREAK_TRACE_CLOCK_OFFSET_OK);
+        ASSERT_EQ(session, 5u);
+    }
+    /* the event without a session in its args */
+    {
+        const char *bare = WELCOME "tick=3\n";
+        ASSERT_EQ(break_trace_core_app_to_chrome(bare, strlen(bare), json, sizeof json, &report),
+                  BREAK_TRACE_CONVERT_OK);
+        ASSERT_EQ(break_trace_core_app_session_from_chrome(json, strlen(json), &session),
+                  BREAK_TRACE_CLOCK_OFFSET_MALFORMED);
+    }
+    session = 7u;
+    ASSERT_EQ(break_trace_core_app_session_from_chrome(NULL, 4u, &session),
+              BREAK_TRACE_CLOCK_OFFSET_INVALID);
+    ASSERT_EQ(break_trace_core_app_session_from_chrome("{}", 2u, NULL),
+              BREAK_TRACE_CLOCK_OFFSET_INVALID);
+    ASSERT_EQ(break_trace_core_app_session_from_chrome(NULL, 0u, &session),
+              BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND);
+    ASSERT_EQ(session, 7u);
+}
+
 TEST(core_app_trace_clock_offset_for_session_rejects_missing_repeated_and_malformed)
 {
     i64 offset = 7;
@@ -450,6 +584,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(core_app_trace_clock_offset_reads_the_single_peer_line);
     RUN_TEST(core_app_trace_clock_offset_rejects_missing_repeated_and_malformed_lines);
     RUN_TEST(core_app_trace_clock_offset_refuses_invalid_arguments);
+    RUN_TEST(core_app_trace_session_reads_what_the_peer_recorded);
+    RUN_TEST(core_app_trace_session_rejects_missing_conflicting_and_malformed);
+    RUN_TEST(core_app_trace_session_from_chrome_reads_the_converted_event);
     RUN_TEST(core_app_trace_clock_offset_for_session_picks_that_peer);
     RUN_TEST(core_app_trace_clock_offset_for_session_rejects_missing_repeated_and_malformed);
 TEST_MAIN_END()

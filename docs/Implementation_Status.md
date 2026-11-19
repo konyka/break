@@ -1,3 +1,11 @@
+## trace_merge 读取对端自己的会话号（2026-11-20）
+
+- **交付**：核心新增两个读取器——`break_trace_core_app_session` 从 trace 文本读取对端记下的 `event=network_session_welcome session=N`，`break_trace_core_app_session_from_chrome` 从转换后的 Chrome trace-event 文档读取同一事件（`{"name":"network_session_welcome",...,"args":{"session":N,...}}`）。同一会话重复出现（对端重连后再记一次）视为一个答案，两个不同会话为 AMBIGUOUS，缺少或非规范十进制的 session 为 MALFORMED，无该行为 NOT_FOUND。`trace_merge --clock-offset` 在输入多于两个时，对没有 `--session` 的对端先读其自身文档里的会话号，显式 `--session` 仍然优先；原来的"需要正好两个输入或每个对端都给 --session"用法错误收窄为只在单输入时报出，因此三个自报会话的输入现在可以直接合并。设计与计划见 `docs/superpowers/specs/2026-11-20-trace-peer-session-design.md`、`docs/superpowers/plans/2026-11-20-trace-peer-session.md`。
+- **设计修正**：spec 原以为工具可以直接用文本读取器——实际 `trace_merge` 的输入已经是转换后的 JSON，所以本切片提供两个读取器，工具用 JSON 那个；核心用例用真实转换器产生的文档来钉住 JSON 形状。
+- **本切片未做**：让 loopback 测试客户端把该行写进自己的 trace（需要它新增 `--trace` 参数和一个 trace 文件），工具侧行为无需它即可测试；该部分留作单独切片，`missing_capabilities.md` 已注明。
+- **TDD**：`test_trace_core_app` 15/15，`test_trace_merge_tool` 脚本通过。6 个变异判红：同一会话重复时误报 AMBIGUOUS、事件名比较长度写错、session 字段不解析、NOT_FOUND 之前就写出参、工具的自报查找被关掉、工具记成会话 0。
+- **既有预期变更**：`--clock-offset` 带三个输入原本是用法错误，现在允许（对端可自报），用法错误收窄到单输入；自报不了的对端在时钟查找处失败并指明服务端 trace。cmake 用例两种情况都覆盖。
+
 ## 编辑器音频过采样域动态限幅（2026-11-20）
 
 - **交付**：核心新增 `break_editor_doc_audio_limit_dynamic_true_peak(doc, ceiling_dbtp, lookahead_ms, release_ms)`：包络与采样域版本相同，但每帧的所需增益来自 4 倍重建信号而非存储采样，因此采样间峰值也被约束。重建复用真峰值测量的多相核（两者对"真峰值"的定义一致），先算出逐帧最大重建幅度再跑一遍包络。由于增益逐帧变化，降低某帧的增益也会降低邻帧的重建值，所以结果的真峰值落在上限之处或之下——函数保证"不超过"，用例重测确认。参数与拒绝条件同采样域版本，上限为 dBTP。音频页视图行新增 `editor-audio-dyn-tp-limit` 按钮（-1 dBTP / 5 ms / 50 ms，中文"动态限真峰"）；shell 新增 `break_editor_shell_audio_limit_dynamic_true_peak`。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-tp-dynamic-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-tp-dynamic.md`。

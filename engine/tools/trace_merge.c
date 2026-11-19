@@ -5,6 +5,8 @@
  *   trace_merge --out MERGED.json --clock-offset SERVER.trace SERVER.json PEER.json
  *   trace_merge --out MERGED.json --clock-offset SERVER.trace SERVER.json
  *               --session N PEER.json [--session M PEER2.json ...]
+ *   trace_merge --out MERGED.json --clock-offset SERVER.trace SERVER.json
+ *               PEER.json PEER2.json          (peers name their own session)
  *
  * Input k (1-based) gets pid k. --label and --offset-us apply to the next
  * input only. --clock-offset reads the single event=network_clock_offset
@@ -48,7 +50,8 @@ static void print_help(void)
          "                   --session N PEER.json [--session M PEER.json ...]\n"
          "  Input k gets pid k; --label and --offset-us apply to the next input.\n"
          "  --clock-offset aligns the inputs with the server's traced clock offsets;\n"
-         "  --session N names the peer session of the next input.");
+         "  --session N names the peer session of the next input; without it a peer\n"
+         "  trace that carries event=network_session_welcome names its own.");
 }
 
 static bool parse_offset(const char *value, u64 *out)
@@ -156,7 +159,9 @@ static int clock_offset_failure(BreakTraceClockOffsetStatus status, const ToolIn
 }
 
 /* Applies the offsets traced by a core_app server: input 0 is the server,
- * the others its peers (each with --session, or a single one without). */
+ * the others its peers. A peer's session comes from --session, from the
+ * peer's own network_session_welcome line, or (for a single peer) from the
+ * server's only clock line. */
 static int apply_clock_offset(const char *path, ToolInput *inputs, u32 count)
 {
     char *text = NULL;
@@ -170,7 +175,27 @@ static int apply_clock_offset(const char *path, ToolInput *inputs, u32 count)
     static u64 shifts[TRACE_MERGE_MAX_INPUTS];
     static u64 errors[TRACE_MERGE_MAX_INPUTS];
     for (u32 i = 1u; i < count; ++i) {
-        const ToolInput *peer = &inputs[i];
+        ToolInput *peer = &inputs[i];
+        /* a peer trace that names its own session needs no --session: read
+         * it from the peer's own text before falling back */
+        if (!peer->has_session && count > 2u) {
+            char *peer_text = NULL;
+            usize peer_size = 0u;
+            if (read_file(peer->path, &peer_text, &peer_size)) {
+                u64 session = 0u;
+                /* the inputs are converted documents, so the welcome line
+                 * is a JSON event rather than a trace line */
+                if (break_trace_core_app_session_from_chrome(peer_text, peer_size,
+                                                             &session) ==
+                    BREAK_TRACE_CLOCK_OFFSET_OK) {
+                    peer->has_session = true;
+                    peer->session = session;
+                    printf("trace_merge: %s names session=%llu\n", peer->path,
+                           (unsigned long long)session);
+                }
+            }
+            free(peer_text);
+        }
         BreakTraceClockOffsetStatus status =
             peer->has_session
                 ? break_trace_core_app_clock_offset_for_session(text, size, peer->session,
@@ -276,7 +301,10 @@ int main(int argc, char **argv)
     if (sessions > 0u && sessions != count - 1u) {
         return usage_error("every peer input needs --session");
     }
-    if (clock_path && sessions == 0u && count != 2u) {
+    /* one input has no peer to align; with more than two every peer needs a
+     * session, from --session or from its own trace, and
+     * apply_clock_offset fails naming the input when neither is there */
+    if (clock_path && count < 2u) {
         return usage_error("--clock-offset needs exactly two inputs or --session per peer");
     }
 

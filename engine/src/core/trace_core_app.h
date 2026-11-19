@@ -74,6 +74,25 @@ BreakTraceClockOffsetStatus break_trace_core_app_clock_offset_for_session(const 
                                                                           i64 *offset_us,
                                                                           u64 *error_us);
 
+/* Reads the session a peer recorded as
+ *   COREAPPTRACE version=1 event=network_session_welcome session=N
+ * so trace_merge does not have to be told it. Same canonical-decimal rules
+ * as above. NOT_FOUND without such a line, AMBIGUOUS when two lines name
+ * different sessions (repeats of the same one are fine: a peer may
+ * reconnect), MALFORMED when a matching line lacks a canonical session.
+ * The output is written only on OK. */
+BreakTraceClockOffsetStatus break_trace_core_app_session(const char *text, usize size,
+                                                         u64 *out_session);
+/* The same from a converted document: trace_merge's inputs are Chrome
+ * trace-event JSON, where that line has become
+ *   {"name":"network_session_welcome",...,"args":{"session":N,...}}
+ * This scans for that event name and reads the session from its args. Same
+ * statuses, and it accepts the documents break_trace_core_app_to_chrome
+ * writes (one event per line, args last). */
+BreakTraceClockOffsetStatus break_trace_core_app_session_from_chrome(const char *json,
+                                                                     usize size,
+                                                                     u64 *out_session);
+
 /* ---- writer side --------------------------------------------------------
  * core_app writes every trace line through these functions. When a clock is
  * set, a line that starts with "COREAPPTRACE version=1 " gets

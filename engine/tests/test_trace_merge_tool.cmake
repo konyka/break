@@ -103,9 +103,10 @@ endif()
 run_tool(clock_one_input 2 --out "${WORK}/never.json"
     --clock-offset "${WORK}/ahead.trace" "${WORK}/a.json")
 expect_err(clock_one_input "--clock-offset needs exactly two inputs")
-run_tool(clock_three_inputs 2 --out "${WORK}/never.json"
+# three inputs against a single-peer server trace: every peer finds that one
+# clock line, so this merges (it used to be a usage error)
+run_tool(clock_three_inputs 0 --out "${WORK}/three.json"
     --clock-offset "${WORK}/ahead.trace" "${WORK}/a.json" "${WORK}/b.json" "${WORK}/a.json")
-expect_err(clock_three_inputs "--clock-offset needs exactly two inputs")
 run_tool(clock_with_offset 2 --out "${WORK}/never.json"
     --clock-offset "${WORK}/ahead.trace" --offset-us 5 "${WORK}/a.json" "${WORK}/b.json")
 expect_err(clock_with_offset "--clock-offset cannot be combined with --offset-us")
@@ -153,6 +154,42 @@ else()
         record_error("clock_peers: every input must land on one timeline:\n${peers}")
     endif()
 endif()
+# a peer document that names its own session needs no --session (design
+# 2026-11-20-trace-peer-session): the converter turns a peer's
+# event=network_session_welcome line into the JSON event written below, and
+# the tool reads the session from it
+file(WRITE "${WORK}/b.named.json"
+    "{\"traceEvents\":[\n"
+    "{\"name\":\"network_session_welcome\",\"cat\":\"core_app\",\"ph\":\"i\",\"s\":\"g\",\"ts\":0,\"pid\":1,\"tid\":1,\"args\":{\"session\":1,\"tick\":3}}\n"
+    "${tail}")
+file(WRITE "${WORK}/c.named.json"
+    "{\"traceEvents\":[\n"
+    "{\"name\":\"network_session_welcome\",\"cat\":\"core_app\",\"ph\":\"i\",\"s\":\"g\",\"ts\":2,\"pid\":1,\"tid\":1,\"args\":{\"session\":2,\"tick\":4}}\n"
+    "${tail}")
+execute_process(COMMAND "${TRACE_MERGE}" --out "${WORK}/named.json"
+    --clock-offset "${WORK}/peers.trace" "${WORK}/a.json"
+    "${WORK}/b.named.json" "${WORK}/c.named.json"
+    RESULT_VARIABLE named_rc OUTPUT_VARIABLE named_out ERROR_VARIABLE named_err TIMEOUT 20)
+if(NOT named_rc EQUAL 0 OR
+   NOT named_out MATCHES "names session=1" OR
+   NOT named_out MATCHES "names session=2" OR
+   NOT named_out MATCHES "session=1 offset_us=-500" OR
+   NOT named_out MATCHES "session=2 offset_us=300")
+    record_error("clock_named: exit=${named_rc}; stdout=${named_out}; stderr=${named_err}")
+else()
+    file(READ "${WORK}/named.json" named)
+    # the same timeline the explicit --session form produces
+    if(NOT named MATCHES "\"ts\":305,\"dur\":3,\"pid\":1," OR
+       NOT named MATCHES "\"ts\":800,\"pid\":2," OR
+       NOT named MATCHES "\"ts\":2,\"pid\":3,")
+        record_error("clock_named: inputs must land on one timeline:\n${named}")
+    endif()
+endif()
+# a peer that names no session, against a server trace whose clock lines all
+# carry session=, still fails: the session-less lookup rejects them
+run_tool(clock_unnamed_peer 1 --out "${WORK}/never.json"
+    --clock-offset "${WORK}/peers.trace" "${WORK}/a.json" "${WORK}/b.json" "${WORK}/c.json")
+expect_err(clock_unnamed_peer "network_clock_offset line in .*peers.trace")
 # --session also works for a single peer next to other sessions' lines
 run_tool(clock_one_session 0 --out "${WORK}/one_session.json"
     --clock-offset "${WORK}/peers.trace" "${WORK}/a.json" --session 2 "${WORK}/c.json")

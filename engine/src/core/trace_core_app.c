@@ -325,6 +325,95 @@ BreakTraceClockOffsetStatus break_trace_core_app_clock_offset_for_session(const 
     return trace_clock_offset(text, size, &session, offset_us, error_us);
 }
 
+BreakTraceClockOffsetStatus break_trace_core_app_session(const char *text, usize size,
+                                                         u64 *out_session)
+{
+    if (!out_session || (!text && size != 0u)) return BREAK_TRACE_CLOCK_OFFSET_INVALID;
+    TraceField fields[BREAK_TRACE_CORE_APP_MAX_FIELDS];
+    const char *p = text ? text : "";
+    const char *end = p + size;
+    u32 found = 0u;
+    u64 session = 0u;
+    while (p < end) {
+        const char *line_end = memchr(p, '\n', (usize)(end - p));
+        const char *next = line_end ? line_end + 1 : end;
+        if (!line_end) line_end = end;
+        if (line_end > p && line_end[-1] == '\r') line_end--;
+        u32 count = 0u;
+        u32 event = 0u;
+        u32 ts = 0u;
+        if (trace_parse_line(p, line_end, fields, &count, &event, &ts) &&
+            trace_same(fields[event].value, fields[event].value_length,
+                       "network_session_welcome", 23u)) {
+            const TraceField *field = NULL;
+            u64 id = 0u;
+            if (!trace_find_field(fields, count, "session", &field) ||
+                !trace_parse_session(field->value, field->value_length, &id)) {
+                return BREAK_TRACE_CLOCK_OFFSET_MALFORMED;
+            }
+            /* a reconnect re-traces the same session: only a different one
+             * is ambiguous */
+            if (found != 0u && id != session) {
+                return BREAK_TRACE_CLOCK_OFFSET_AMBIGUOUS;
+            }
+            session = id;
+            found++;
+        }
+        p = next;
+    }
+    if (found == 0u) return BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND;
+    *out_session = session;
+    return BREAK_TRACE_CLOCK_OFFSET_OK;
+}
+
+/* The converter writes one event per line as
+ *   {"name":"<event>",...,"args":{"k":v,...}}
+ * so finding the welcome event's session is a scan for the name followed by
+ * the session key inside that line's args. */
+BreakTraceClockOffsetStatus break_trace_core_app_session_from_chrome(const char *json,
+                                                                     usize size,
+                                                                     u64 *out_session)
+{
+    static const char k_name[] = "{\"name\":\"network_session_welcome\"";
+    static const char k_session[] = "\"session\":";
+    if (!out_session || (!json && size != 0u)) return BREAK_TRACE_CLOCK_OFFSET_INVALID;
+    const char *p = json ? json : "";
+    const char *end = p + size;
+    u32 found = 0u;
+    u64 session = 0u;
+    while (p < end) {
+        const char *line_end = memchr(p, '\n', (usize)(end - p));
+        const char *next = line_end ? line_end + 1 : end;
+        if (!line_end) line_end = end;
+        const usize length = (usize)(line_end - p);
+        if (length >= sizeof(k_name) - 1u &&
+            memcmp(p, k_name, sizeof(k_name) - 1u) == 0) {
+            /* the session value inside this line's args */
+            const char *at = NULL;
+            for (const char *q = p; q + sizeof(k_session) - 1u <= line_end; ++q) {
+                if (memcmp(q, k_session, sizeof(k_session) - 1u) == 0) {
+                    at = q + sizeof(k_session) - 1u;
+                    break;
+                }
+            }
+            if (!at) return BREAK_TRACE_CLOCK_OFFSET_MALFORMED;
+            const char *digits = at;
+            while (digits < line_end && *digits >= '0' && *digits <= '9') digits++;
+            u64 id = 0u;
+            if (!trace_parse_session(at, (usize)(digits - at), &id)) {
+                return BREAK_TRACE_CLOCK_OFFSET_MALFORMED;
+            }
+            if (found != 0u && id != session) return BREAK_TRACE_CLOCK_OFFSET_AMBIGUOUS;
+            session = id;
+            found++;
+        }
+        p = next;
+    }
+    if (found == 0u) return BREAK_TRACE_CLOCK_OFFSET_NOT_FOUND;
+    *out_session = session;
+    return BREAK_TRACE_CLOCK_OFFSET_OK;
+}
+
 /* ---------------- writer ---------------- */
 
 #define TRACE_STAMP_PREFIX "COREAPPTRACE version=1 "
