@@ -119,6 +119,10 @@ struct BreakEditorAudioPreview *editor_panel_audio_preview(EditorPanelAudio *pan
  * fails) or stops it. Returns whether it is playing afterwards. */
 bool editor_panel_audio_toggle(EditorPanelAudio *panel);
 bool editor_panel_audio_seek(EditorPanelAudio *panel, u32 frame);
+bool editor_panel_audio_select(EditorPanelAudio *panel, u32 begin, u32 end);
+bool editor_panel_audio_selection(const EditorPanelAudio *panel, u32 *out_begin, u32 *out_end);
+/* cut = false: trim to the selection; true: remove it. */
+bool editor_panel_audio_edit_selection(EditorPanelAudio *panel, bool cut);
 /* Asset browser: opens a .wav file into the document's attachment (only when
  * none is attached), logs the outcome, selects the Audio tab on success. */
 bool editor_shell_open_audio(BreakEditorShell *shell, const char *path,

@@ -3427,6 +3427,117 @@ TEST(audio_page_seeks_from_the_waveform)
     break_editor_shell_destroy(shell);
 }
 
+static void pointer_press_at(BreakEditorShell *shell, my_widget_t *w, int32_t lx, u8 mods) {
+    my_window_t *win = break_editor_shell_window(shell);
+    int32_t gx = 0, gy = 0;
+    my_event_t ev;
+    my_widget_local_to_global(w, &gx, &gy);
+    ev = my_event_init(MY_EVENT_POINTER_DOWN);
+    ev.u.pointer.x = gx + lx;
+    ev.u.pointer.y = gy + w->rect.h / 2;
+    ev.u.pointer.button = 1u;
+    ev.u.pointer.modifiers = mods;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+    ev = my_event_init(MY_EVENT_POINTER_UP);
+    ev.u.pointer.x = gx + lx;
+    ev.u.pointer.y = gy + w->rect.h / 2;
+    ev.u.pointer.button = 1u;
+    ev.u.pointer.modifiers = mods;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+}
+
+/* Selection (design 2026-11-19-editor-audio-selection). */
+TEST(audio_page_selects_and_trims_or_cuts)
+{
+    static i16 pcm[1000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *wave, *trim, *cut;
+    u32 b = 0u, e = 0u, i, cursor;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    for (i = 0u; i < 1000u; i++) pcm[i] = (i16)i;
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 1000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    wave = find(shell, "editor-audio-waveform");
+    trim = find(shell, "editor-audio-trim");
+    cut = find(shell, "editor-audio-cut");
+    ASSERT_TRUE(wave && trim && cut);
+    ASSERT_STR_EQ(((const my_button_t *)trim)->text, "Trim");
+    ASSERT_STR_EQ(((const my_button_t *)cut)->text, "Cut");
+    ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b, &e));
+    /* no selection: the buttons log and change nothing */
+    emit_click(trim);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "select a range first (Shift+click)\n");
+    ASSERT_EQ(break_editor_doc_audio_frames(doc), 1000u);
+    ASSERT_FALSE(break_editor_shell_audio_cut(shell));
+
+    /* click at 1/4, Shift+click at 3/4: the range between, both included */
+    pointer_press_at(shell, wave, wave->rect.w / 4, 0u);
+    cursor = break_editor_shell_audio_cursor_frames(shell);
+    pointer_press_at(shell, wave, (wave->rect.w * 3) / 4, MY_KEYMOD_SHIFT);
+    ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
+    ASSERT_EQ(b, cursor);
+    ASSERT_TRUE(e > 700u && e <= 760u);
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), cursor);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(strstr(break_editor_shell_audio_info_text(shell), " | sel ") != NULL);
+    shell_paint(shell);
+    /* a plain click clears it */
+    pointer_press_at(shell, wave, 3, 0u);
+    ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b, &e));
+    break_editor_shell_tick(shell);
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell), "8000 Hz, 1 ch, 0.125 s");
+    /* Shift+click before the cursor selects backwards; the pressed frame and
+     * the cursor frame are both included */
+    ASSERT_FALSE(break_editor_shell_audio_seek(shell, 600u));
+    pointer_press_at(shell, wave, 0, MY_KEYMOD_SHIFT);
+    ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 601u);
+
+    /* Trim keeps exactly the selection; Undo restores */
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 100u, 300u));
+    emit_click(trim);
+    ASSERT_EQ(break_editor_doc_audio_frames(doc), 200u);
+    ASSERT_EQ(break_editor_doc_audio_samples(doc)[0], 100);
+    ASSERT_EQ(break_editor_doc_audio_samples(doc)[199], 299);
+    ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b, &e));
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 0u);
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(break_editor_doc_audio_frames(doc), 1000u);
+    /* Cut removes it */
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 100u, 300u));
+    emit_click(cut);
+    ASSERT_EQ(break_editor_doc_audio_frames(doc), 800u);
+    ASSERT_EQ(break_editor_doc_audio_samples(doc)[99], 99);
+    ASSERT_EQ(break_editor_doc_audio_samples(doc)[100], 300);
+    ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b, &e));
+    ASSERT_TRUE(break_editor_undo(doc));
+
+    /* clamped; an empty or out-of-clip range selects nothing */
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 900u, 5000u));
+    ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
+    ASSERT_EQ(e, 1000u);
+    ASSERT_FALSE(break_editor_shell_audio_select(shell, 1000u, 2000u));
+    ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b, &e));
+    ASSERT_FALSE(break_editor_shell_audio_select(shell, 50u, 50u));
+    /* an edit from elsewhere clears it */
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 10u, 20u));
+    ASSERT_TRUE(break_editor_doc_audio_normalize(doc, -3.0));
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b, &e));
+    /* labels follow the language */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    ASSERT_STR_EQ(((const my_button_t *)trim)->text, "\xE8\xA3\x81\xE5\x89\xAA"); /* 裁剪 */
+    ASSERT_STR_EQ(((const my_button_t *)cut)->text, "\xE5\x89\xAA\xE5\x88\x87");  /* 剪切 */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    break_editor_shell_destroy(shell);
+}
+
 /* The editor applies its JetBrains New UI dark sheet at shell create
  * (editor_theme.c): widgets resolve the palette through the real cascade. */
 TEST(shell_applies_the_new_ui_dark_theme)
@@ -12606,6 +12717,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_uses_one_column_per_pixel_and_follows_the_width);
     RUN_TEST(audio_page_plays_the_attachment_through_the_sink);
     RUN_TEST(audio_page_seeks_from_the_waveform);
+    RUN_TEST(audio_page_selects_and_trims_or_cuts);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);

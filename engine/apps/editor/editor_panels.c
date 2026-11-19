@@ -4236,6 +4236,23 @@ bool break_editor_shell_audio_seek(BreakEditorShell *shell, u32 frame) {
     return shell != NULL && editor_panel_audio_seek(shell->audio_panel, frame);
 }
 
+bool break_editor_shell_audio_select(BreakEditorShell *shell, u32 begin, u32 end) {
+    return shell != NULL && editor_panel_audio_select(shell->audio_panel, begin, end);
+}
+
+bool break_editor_shell_audio_selection(const BreakEditorShell *shell, u32 *out_begin,
+                                        u32 *out_end) {
+    return shell != NULL && editor_panel_audio_selection(shell->audio_panel, out_begin, out_end);
+}
+
+bool break_editor_shell_audio_trim(BreakEditorShell *shell) {
+    return shell != NULL && editor_panel_audio_edit_selection(shell->audio_panel, false);
+}
+
+bool break_editor_shell_audio_cut(BreakEditorShell *shell) {
+    return shell != NULL && editor_panel_audio_edit_selection(shell->audio_panel, true);
+}
+
 u32 break_editor_shell_audio_cursor_frames(const BreakEditorShell *shell) {
     return shell != NULL ? break_editor_audio_preview_cursor_frames(
                                editor_panel_audio_preview(shell->audio_panel))

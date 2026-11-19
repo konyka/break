@@ -1,3 +1,9 @@
+## 编辑器音频选区裁剪与剪切（2026-11-19）
+
+- **交付**：音频页波形上 Shift+点击从播放起点选到点击处（两端都包含）；普通点击跳转并清除选区。新增“裁剪/剪切”按钮，对选区调用文档已有的可撤销 `trim`/`cut`，成功后清除选区和起点；没有选区时记日志。附件变化时清除选区。选区以半透明色带画在波形后面，停止时信息行显示“ | sel a - b s”。shell 新增 `break_editor_shell_audio_select`、`_selection`、`_trim`、`_cut`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-selection-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-selection.md`。
+- **TDD**：新用例先在桩实现上失败再通过，`test_editor_shell` 211/211。5 个变异全部判红。
+- **边界**：不能拖动选择或用键盘选择；淡入淡出、归一化还不能只作用于选区；不能只播放选区或循环。
+
 ## 编辑器音频跳转与播放光标（2026-11-19）
 
 - **交付**：音频页波形上主键按下即跳转（x × 帧数 / 宽度）。播放中从新位置重开输出端，停止时只设置下次播放的起点；播放到结尾或附件变化时起点归 0，停止不改起点。波形上画 1 像素竖线标出播放位置（停止时标出非 0 的起点）。预览新增 `play_from`、`seek`、`cursor_frames`、`reset_cursor`，shell 新增 `break_editor_shell_audio_seek`、`break_editor_shell_audio_cursor_frames`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-seek-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-seek.md`。

@@ -449,6 +449,16 @@ bool break_editor_shell_audio_playing(const BreakEditorShell *shell);
  * next Play starts. cursor_frames is that start point. */
 bool break_editor_shell_audio_seek(BreakEditorShell *shell, u32 frame);
 u32 break_editor_shell_audio_cursor_frames(const BreakEditorShell *shell);
+/* Waveform selection (design 2026-11-19-editor-audio-selection): Shift+press
+ * selects from the cursor to the pressed frame; select sets [begin, end)
+ * directly (clamped; false and empty when nothing is attached or the range
+ * is empty). selection is false when empty. trim/cut run the document's
+ * undoable trim/cut on it and clear it; without one they log and fail. */
+bool break_editor_shell_audio_select(BreakEditorShell *shell, u32 begin, u32 end);
+bool break_editor_shell_audio_selection(const BreakEditorShell *shell, u32 *out_begin,
+                                        u32 *out_end);
+bool break_editor_shell_audio_trim(BreakEditorShell *shell);
+bool break_editor_shell_audio_cut(BreakEditorShell *shell);
 
 /* Profiler panel snapshot rows (top-N by duration, N <= 16, refreshed from
  * profiler_last_frame at <= 4 Hz from break_editor_shell_tick; the panel is

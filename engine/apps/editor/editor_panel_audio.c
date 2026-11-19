@@ -20,7 +20,9 @@
  * info line while it plays. A primary press on the waveform seeks: while
  * playing it restarts there, otherwise Play starts there next; a line marks
  * the playing position (or a non-zero cursor). An attachment change resets
- * the cursor.
+ * the cursor. Shift+press selects from the cursor to the pressed frame (both
+ * included); Trim/Cut run the document's undoable edits on the selection,
+ * and an attachment change clears it.
  *
  * Bounds: 2 x 4096 i16 columns + a 128-byte info line; the preview allocates
  * its copy buffer once at create. Threading: shell thread only. */
@@ -49,6 +51,9 @@ struct EditorPanelAudio {
     my_widget_t *info;        /* weak (owned by the window tree) */
     my_widget_t *waveform;    /* weak */
     my_widget_t *play;        /* weak */
+    my_widget_t *trim;        /* weak */
+    my_widget_t *cut;         /* weak */
+    u32 sel_begin, sel_end;   /* [begin, end) frames; empty when equal */
     BreakEditorAudioPreview *preview; /* owned */
     bool shown_playing;       /* state the button label shows */
     u32 shown_position;       /* preview position the info line shows */
@@ -73,6 +78,13 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
                          break_editor_tr(BREAK_EDITOR_TR_AUDIO_INFO_FMT), (unsigned)rate,
                          (unsigned)break_editor_doc_audio_channels(doc),
                          (double)break_editor_doc_audio_frames(doc) / (double)rate);
+        if (!playing && panel->sel_begin < panel->sel_end && n > 0 &&
+            (usize)n < sizeof(panel->info_text)) {
+            (void)snprintf(panel->info_text + n, sizeof(panel->info_text) - (usize)n,
+                           break_editor_tr(BREAK_EDITOR_TR_AUDIO_SELECTION_FMT),
+                           (double)panel->sel_begin / (double)rate,
+                           (double)panel->sel_end / (double)rate);
+        }
         if (playing && n > 0 && (usize)n < sizeof(panel->info_text)) {
             const double prate = (double)break_editor_audio_preview_sample_rate(panel->preview);
             (void)snprintf(panel->info_text + n, sizeof(panel->info_text) - (usize)n,
@@ -100,13 +112,20 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
         (void)my_button_set_text(panel->play, break_editor_tr(playing ? BREAK_EDITOR_TR_AUDIO_STOP
                                                                       : BREAK_EDITOR_TR_AUDIO_PLAY));
     }
+    if (panel->trim != NULL) {
+        (void)my_button_set_text(panel->trim, break_editor_tr(BREAK_EDITOR_TR_AUDIO_TRIM));
+    }
+    if (panel->cut != NULL) {
+        (void)my_button_set_text(panel->cut, break_editor_tr(BREAK_EDITOR_TR_AUDIO_CUT));
+    }
 }
 
 static void audio_panel_refresh(EditorPanelAudio *panel) {
     const BreakEditorDoc *doc = break_editor_shell_doc(panel->shell);
     if (panel->seen_revision != break_editor_doc_audio_revision(doc)) {
-        /* the cursor may point past the new end */
+        /* the cursor and the selection may point past the new end */
         break_editor_audio_preview_reset_cursor(panel->preview);
+        panel->sel_begin = panel->sel_end = 0u;
     }
     const i32 width = panel->waveform != NULL ? panel->waveform->rect.w : 0;
     u32 columns = width > 0 ? (u32)width : 1u;
@@ -146,6 +165,18 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     }
     mid = h * 0.5f;
     scale = (h * 0.5f) / 32768.0f;
+    if (panel->sel_begin < panel->sel_end) {
+        const u32 frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+        if (frames != 0u) {
+            const float x0 = (float)((double)panel->sel_begin * (double)w / (double)frames);
+            const float x1 = (float)((double)panel->sel_end * (double)w / (double)frames);
+            my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_is_light()
+                                                                     ? BREAK_EDITOR_THEME_LIGHT_SELECTION
+                                                                     : BREAK_EDITOR_THEME_SELECTION));
+            (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x0, 0.0f, x1 - x0 > 1.0f ? x1 - x0 : 1.0f,
+                                                          h});
+        }
+    }
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_is_light()
                                                              ? EDITOR_AUDIO_LIGHT_MID_LINE
                                                              : BREAK_EDITOR_THEME_BORDER));
@@ -196,7 +227,19 @@ static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *e
     my_widget_global_to_local(widget, &gx, &gy);
     if (gx < 0) gx = 0;
     if (gx >= widget->rect.w) gx = widget->rect.w - 1;
-    (void)editor_panel_audio_seek(panel, (u32)((u64)(u32)gx * frames / (u32)widget->rect.w));
+    {
+        const u32 frame = (u32)((u64)(u32)gx * frames / (u32)widget->rect.w);
+        if ((event->u.pointer.modifiers & MY_KEYMOD_SHIFT) != 0u) {
+            /* from the cursor to the pressed frame, both included */
+            const u32 cursor = break_editor_audio_preview_cursor_frames(panel->preview);
+            const u32 lo = cursor < frame ? cursor : frame;
+            const u32 hi = cursor < frame ? frame : cursor;
+            (void)editor_panel_audio_select(panel, lo, hi + 1u);
+        } else {
+            (void)editor_panel_audio_select(panel, 0u, 0u);
+            (void)editor_panel_audio_seek(panel, frame);
+        }
+    }
     return MY_RET_OK;
 }
 
@@ -288,6 +331,72 @@ bool editor_panel_audio_seek(EditorPanelAudio *panel, u32 frame) {
     return playing;
 }
 
+bool editor_panel_audio_select(EditorPanelAudio *panel, u32 begin, u32 end) {
+    u32 frames;
+    if (panel == NULL) {
+        return false;
+    }
+    frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+    if (end > frames) end = frames;
+    if (begin >= end) {
+        begin = end = 0u;
+    }
+    panel->sel_begin = begin;
+    panel->sel_end = end;
+    audio_panel_format_info(panel);
+    if (panel->waveform != NULL) {
+        my_widget_invalidate(panel->waveform, NULL);
+    }
+    return begin < end;
+}
+
+bool editor_panel_audio_selection(const EditorPanelAudio *panel, u32 *out_begin, u32 *out_end) {
+    if (panel == NULL || panel->sel_begin >= panel->sel_end) {
+        return false;
+    }
+    if (out_begin != NULL) *out_begin = panel->sel_begin;
+    if (out_end != NULL) *out_end = panel->sel_end;
+    return true;
+}
+
+bool editor_panel_audio_edit_selection(EditorPanelAudio *panel, bool cut) {
+    BreakEditorDoc *doc;
+    bool ok;
+    if (panel == NULL) {
+        return false;
+    }
+    if (panel->sel_begin >= panel->sel_end) {
+        editor_shell_log(panel->shell, "%s",
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_NO_SELECTION));
+        return false;
+    }
+    doc = break_editor_shell_doc(panel->shell);
+    ok = cut ? break_editor_doc_audio_cut(doc, panel->sel_begin, panel->sel_end)
+             : break_editor_doc_audio_trim(doc, panel->sel_begin, panel->sel_end);
+    if (!ok) {
+        editor_shell_log(panel->shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_EDIT_FAILED));
+        return false;
+    }
+    /* the revision changed: stops a preview, clears the selection, resets
+     * the cursor and recomputes the waveform */
+    break_editor_audio_preview_stop(panel->preview);
+    audio_panel_refresh(panel);
+    editor_shell_refresh_all(panel->shell);
+    return true;
+}
+
+static void on_audio_trim_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_edit_selection((EditorPanelAudio *)ctx, false);
+}
+
+static void on_audio_cut_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_edit_selection((EditorPanelAudio *)ctx, true);
+}
+
 static void on_audio_play_click(void *ctx, const char *event, void *data) {
     (void)event;
     (void)data;
@@ -305,7 +414,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 }
 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
-    my_widget_t *section, *bar, *info, *play, *waveform;
+    my_widget_t *section, *bar, *info, *play, *trim, *cut, *waveform;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -332,6 +441,28 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     (void)my_widget_set_name(play, "editor-audio-play");
     (void)my_widget_on(play, "click", on_audio_play_click, panel);
     if (!audio_panel_add(bar, play, "w:80 h:100%")) {
+        my_widget_unref(section);
+        return false;
+    }
+    trim = my_button_create(NULL, break_editor_tr(BREAK_EDITOR_TR_AUDIO_TRIM));
+    if (trim == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(trim, "editor-audio-trim");
+    (void)my_widget_on(trim, "click", on_audio_trim_click, panel);
+    if (!audio_panel_add(bar, trim, "w:80 h:100%")) {
+        my_widget_unref(section);
+        return false;
+    }
+    cut = my_button_create(NULL, break_editor_tr(BREAK_EDITOR_TR_AUDIO_CUT));
+    if (cut == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(cut, "editor-audio-cut");
+    (void)my_widget_on(cut, "click", on_audio_cut_click, panel);
+    if (!audio_panel_add(bar, cut, "w:80 h:100%")) {
         my_widget_unref(section);
         return false;
     }
@@ -366,6 +497,8 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     }
     panel->info = info;
     panel->play = play;
+    panel->trim = trim;
+    panel->cut = cut;
     panel->waveform = waveform;
     panel->fresh = false;
     audio_panel_format_info(panel);

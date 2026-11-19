@@ -47,6 +47,8 @@ root（vertical）
 
 > **2026-11-19 更新（音频跳转）**：`editor-audio-waveform` 处理主键按下：按 x 位置跳转（播放中重播，停止时设为下次起点），并画出播放光标。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-seek-design.md`。
 
+> **2026-11-19 更新（音频选区）**：音频页顶部一行依次为播放、`editor-audio-trim`、`editor-audio-cut` 按钮和信息标签。Shift+点击波形选区，按钮对选区执行可撤销的裁剪/剪切。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-selection-design.md`。
+
 
 坐标注意：myui `widget->rect` 在**父坐标系**（my_widget.h）。inspector
 嵌套进 `editor-right-panel` 后，`inspector->rect.x` 不再与 viewport 同一
