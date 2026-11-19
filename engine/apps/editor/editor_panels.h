@@ -464,6 +464,10 @@ bool break_editor_shell_audio_cut(BreakEditorShell *shell);
  * the whole clip without one; undoable. False without an attachment. */
 bool break_editor_shell_audio_fade(BreakEditorShell *shell);
 bool break_editor_shell_audio_normalize(BreakEditorShell *shell);
+/* Timeline ruler ticks of the Audio page (0 without an attachment). */
+u32 break_editor_shell_audio_tick_count(const BreakEditorShell *shell);
+bool break_editor_shell_audio_tick(const BreakEditorShell *shell, u32 index, u32 *out_frame,
+                                   i32 *out_x, const char **out_label);
 
 /* Profiler panel snapshot rows (top-N by duration, N <= 16, refreshed from
  * profiler_last_frame at <= 4 Hz from break_editor_shell_tick; the panel is

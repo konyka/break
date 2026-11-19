@@ -4253,6 +4253,31 @@ bool break_editor_shell_audio_cut(BreakEditorShell *shell) {
     return shell != NULL && editor_panel_audio_edit_selection(shell->audio_panel, true);
 }
 
+u32 break_editor_shell_audio_tick_count(const BreakEditorShell *shell) {
+    EditorAudioTicks ticks;
+    if (shell == NULL || !editor_panel_audio_ticks(shell->audio_panel, &ticks)) {
+        return 0u;
+    }
+    return ticks.count;
+}
+
+bool break_editor_shell_audio_tick(const BreakEditorShell *shell, u32 index, u32 *out_frame,
+                                   i32 *out_x, const char **out_label) {
+    static char label[16];
+    EditorAudioTicks ticks;
+    if (shell == NULL || !editor_panel_audio_ticks(shell->audio_panel, &ticks) ||
+        index >= ticks.count) {
+        return false;
+    }
+    if (out_frame != NULL) *out_frame = ticks.frame[index];
+    if (out_x != NULL) *out_x = ticks.x[index];
+    if (out_label != NULL) {
+        (void)snprintf(label, sizeof(label), "%.15s", ticks.label[index]);
+        *out_label = label;
+    }
+    return true;
+}
+
 bool break_editor_shell_audio_fade(BreakEditorShell *shell) {
     return shell != NULL && editor_panel_audio_effect(shell->audio_panel, false);
 }

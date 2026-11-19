@@ -125,6 +125,18 @@ bool editor_panel_audio_selection(const EditorPanelAudio *panel, u32 *out_begin,
 bool editor_panel_audio_edit_selection(EditorPanelAudio *panel, bool cut);
 /* normalize = false: fade; true: normalize. Selection or whole clip. */
 bool editor_panel_audio_effect(EditorPanelAudio *panel, bool normalize);
+
+/* Timeline ruler model (design 2026-11-19-editor-audio-timeline): the ticks
+ * for the current clip and the ruler's width, at least 60 px apart. */
+#define EDITOR_AUDIO_TICKS_MAX 32u
+typedef struct {
+    u32 count;
+    u32 frame[EDITOR_AUDIO_TICKS_MAX];
+    i32 x[EDITOR_AUDIO_TICKS_MAX];
+    char label[EDITOR_AUDIO_TICKS_MAX][16];
+} EditorAudioTicks;
+/* False (count 0) without an attachment, frames or width. */
+bool editor_panel_audio_ticks(const EditorPanelAudio *panel, EditorAudioTicks *out);
 /* Asset browser: opens a .wav file into the document's attachment (only when
  * none is attached), logs the outcome, selects the Audio tab on success. */
 bool editor_shell_open_audio(BreakEditorShell *shell, const char *path,

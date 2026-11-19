@@ -1,3 +1,9 @@
+## 编辑器音频时间刻度（2026-11-19）
+
+- **交付**：音频页波形上方新增 16 像素刻度条 `editor-audio-ruler`。刻度模型 `editor_panel_audio_ticks` 从固定阶梯（1/2/5/10/20/50/100/200/500 毫秒，1/2/5/10/20/30/60/120/300 秒）中选第一个使间距不小于 60 像素的步长，最多 32 个刻度，首个在第 0 帧，最后一个仍在片内；标签小于 10 秒用“0.250 s”，否则用“1:30”。shell 新增 `break_editor_shell_audio_tick_count`、`break_editor_shell_audio_tick`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-timeline-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-timeline.md`。
+- **TDD**：新用例先在桩实现（无刻度条）上失败再通过，`test_editor_shell` 214/214。4 个变异全部判红：忽略 60 像素间距、刻度落在片外、x 位置偏移一像素、秒/分钟阈值错误。
+- **边界**：刻度条始终覆盖整段，没有缩放和滚动；选区不吸附到刻度；没有节拍或采样单位。
+
 ## 编辑器音频拖动选区（2026-11-19）
 
 - **交付**：波形控件处理指针移动和释放：主键按下仍是跳转并清除选区，同时记下拖动锚点；按住移动时选区为锚点与当前帧之间（两端都包含），向左向右拖动结果相同；停在锚点上仍是普通点击（不产生选区）；未处于拖动中的移动或释放不消费事件。附件变化时结束拖动。myui 的分发器在按下时抓取控件并把后续移动与释放送给它，无需额外捕获。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-drag-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-drag.md`。

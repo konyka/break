@@ -24,7 +24,8 @@
  * selects from the cursor to the pressed frame (both
  * included), and a drag selects the frames it passes over; Trim/Cut run the document's undoable edits on the selection,
  * and an attachment change clears it. Fade (10 ms) and Normalize (-1 dBFS)
- * act on the selection, or on the whole clip without one.
+ * act on the selection, or on the whole clip without one. A ruler strip
+ * above the waveform draws time ticks from editor_panel_audio_ticks.
  *
  * Bounds: 2 x 4096 i16 columns + a 128-byte info line; the preview allocates
  * its copy buffer once at create. Threading: shell thread only. */
@@ -53,6 +54,7 @@ struct EditorPanelAudio {
     BreakEditorShell *shell;  /* borrowed */
     my_widget_t *info;        /* weak (owned by the window tree) */
     my_widget_t *waveform;    /* weak */
+    my_widget_t *ruler;       /* weak */
     my_widget_t *play;        /* weak */
     my_widget_t *trim;        /* weak */
     my_widget_t *cut;         /* weak */
@@ -301,6 +303,32 @@ static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *e
     return MY_RET_OK;
 }
 
+static void audio_ruler_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
+    const EditorPanelAudio *panel;
+    EditorAudioTicks ticks;
+    float h;
+    u32 i;
+    if (widget == NULL || vg == NULL) {
+        return;
+    }
+    h = (float)widget->rect.h;
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_content_bg()));
+    (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, 0.0f, (float)widget->rect.w, h});
+    panel = (const EditorPanelAudio *)my_widget_get_user_data(widget);
+    if (!editor_panel_audio_ticks(panel, &ticks)) {
+        return;
+    }
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_is_light()
+                                                             ? EDITOR_AUDIO_LIGHT_CURSOR
+                                                             : BREAK_EDITOR_THEME_TEXT_SECONDARY));
+    for (i = 0u; i < ticks.count; ++i) {
+        (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){(float)ticks.x[i], h * 0.5f, 1.0f, h * 0.5f});
+        (void)my_vgcanvas_draw_text(vg, ticks.label[i], (float)ticks.x[i] + 3.0f, h * 0.5f);
+    }
+}
+
+static const my_widget_vtable_t k_audio_ruler_vtable = {audio_ruler_on_paint, NULL, NULL, NULL};
+
 static const my_widget_vtable_t k_audio_waveform_vtable = {audio_waveform_on_paint,
                                                            audio_waveform_on_event, NULL, NULL};
 
@@ -450,6 +478,57 @@ bool editor_panel_audio_edit_selection(EditorPanelAudio *panel, bool cut) {
 #define EDITOR_AUDIO_FADE_MS 10.0
 #define EDITOR_AUDIO_NORMALIZE_DBFS -1.0
 
+/* Tick steps in milliseconds, smallest first: the ruler takes the first one
+ * that keeps the ticks EDITOR_AUDIO_TICK_MIN_PX apart. */
+static const u32 k_audio_tick_steps_ms[] = {1u,     2u,     5u,     10u,    20u,     50u,
+                                            100u,   200u,   500u,   1000u,  2000u,   5000u,
+                                            10000u, 20000u, 30000u, 60000u, 120000u, 300000u};
+#define EDITOR_AUDIO_TICK_MIN_PX 60
+
+bool editor_panel_audio_ticks(const EditorPanelAudio *panel, EditorAudioTicks *out) {
+    if (out == NULL) {
+        return false;
+    }
+    out->count = 0u;
+    if (panel == NULL || panel->ruler == NULL || panel->ruler->rect.w < 1) {
+        return false;
+    }
+    const u32 rate = break_editor_doc_audio_sample_rate(break_editor_shell_doc(panel->shell));
+    const u32 frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+    const u32 width = (u32)panel->ruler->rect.w;
+    if (frames == 0u || rate == 0u) {
+        return false;
+    }
+    u32 step = 0u;
+    for (usize i = 0u; i < sizeof(k_audio_tick_steps_ms) / sizeof(k_audio_tick_steps_ms[0]); ++i) {
+        const u64 step_frames = (u64)k_audio_tick_steps_ms[i] * rate / 1000u;
+        if (step_frames == 0u) {
+            continue;
+        }
+        if (step_frames * width / frames >= (u64)EDITOR_AUDIO_TICK_MIN_PX) {
+            step = (u32)step_frames;
+            break;
+        }
+    }
+    if (step == 0u) {
+        step = frames; /* even the largest step is too narrow: frame 0 only */
+    }
+    for (u32 frame = 0u; frame < frames && out->count < EDITOR_AUDIO_TICKS_MAX; frame += step) {
+        const u32 i = out->count++;
+        const double seconds = (double)frame / (double)rate;
+        out->frame[i] = frame;
+        out->x[i] = (i32)((u64)frame * width / frames);
+        if (seconds < 10.0) {
+            (void)snprintf(out->label[i], sizeof(out->label[i]), "%.3f s", seconds);
+        } else {
+            const u32 total = (u32)(seconds + 0.0005);
+            (void)snprintf(out->label[i], sizeof(out->label[i]), "%u:%02u", total / 60u,
+                           total % 60u);
+        }
+    }
+    return out->count != 0u;
+}
+
 bool editor_panel_audio_effect(EditorPanelAudio *panel, bool normalize) {
     BreakEditorDoc *doc;
     u32 begin, end;
@@ -517,7 +596,8 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 }
 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
-    my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *waveform;
+    my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *ruler,
+        *waveform;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -602,6 +682,20 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
         my_widget_unref(section);
         return false;
     }
+    ruler = my_widget_create(NULL, "editor-audio-ruler");
+    if (ruler == NULL || my_widget_subclass_init(ruler, &k_audio_ruler_vtable) != MY_RET_OK) {
+        if (ruler != NULL) {
+            my_widget_unref(ruler);
+        }
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(ruler, "editor-audio-ruler");
+    (void)my_widget_set_user_data(ruler, panel);
+    if (!audio_panel_add(section, ruler, "w:100% h:16")) {
+        my_widget_unref(section);
+        return false;
+    }
     waveform = my_widget_create(NULL, "editor-audio-waveform");
     if (waveform == NULL ||
         my_widget_subclass_init(waveform, &k_audio_waveform_vtable) != MY_RET_OK) {
@@ -627,6 +721,7 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     panel->fade = fade;
     panel->normalize = normalize;
     panel->waveform = waveform;
+    panel->ruler = ruler;
     panel->fresh = false;
     audio_panel_format_info(panel);
     return true;

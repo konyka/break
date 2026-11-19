@@ -21,6 +21,7 @@
 #endif
 
 #include "editor_audio_preview.h"
+#include "editor_shell_internal.h"
 #include "editor_hot_reload.h"
 #include "editor_image_preview.h"
 #include "editor_scene_textures.h"
@@ -3612,6 +3613,87 @@ TEST(audio_page_selects_and_trims_or_cuts)
     ASSERT_STR_EQ(((const my_button_t *)trim)->text, "\xE8\xA3\x81\xE5\x89\xAA"); /* 裁剪 */
     ASSERT_STR_EQ(((const my_button_t *)cut)->text, "\xE5\x89\xAA\xE5\x88\x87");  /* 剪切 */
     ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    break_editor_shell_destroy(shell);
+}
+
+/* Timeline ruler (design 2026-11-19-editor-audio-timeline). */
+TEST(audio_page_shows_a_timeline_ruler)
+{
+    static i16 pcm[4000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *ruler, *wave;
+    const char *label = NULL;
+    u32 frame = 0u, i, n, frames;
+    i32 x = 0, prev_x = 0;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_EQ(break_editor_shell_audio_tick_count(shell), 0u);
+    ASSERT_FALSE(break_editor_shell_audio_tick(shell, 0u, &frame, &x, &label));
+    /* 0.5 s at 8 kHz */
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    ruler = find(shell, "editor-audio-ruler");
+    wave = find(shell, "editor-audio-waveform");
+    ASSERT_TRUE(ruler && wave);
+    ASSERT_EQ(ruler->rect.w, wave->rect.w);
+    frames = 4000u;
+    n = break_editor_shell_audio_tick_count(shell);
+    ASSERT_TRUE(n >= 3u && n <= EDITOR_AUDIO_TICKS_MAX);
+    ASSERT_TRUE(break_editor_shell_audio_tick(shell, 0u, &frame, &x, &label));
+    ASSERT_EQ(frame, 0u);
+    ASSERT_EQ(x, 0);
+    ASSERT_STR_EQ(label, "0.000 s");
+    for (i = 0u; i < n; i++) {
+        ASSERT_TRUE(break_editor_shell_audio_tick(shell, i, &frame, &x, &label));
+        /* inside the clip, at frame * width / frames, >= 60 px apart */
+        ASSERT_TRUE(frame < frames);
+        ASSERT_EQ(x, (i32)((u64)frame * (u32)ruler->rect.w / frames));
+        if (i > 0u) ASSERT_TRUE(x - prev_x >= 60);
+        prev_x = x;
+        {
+            char expect[16];
+            snprintf(expect, sizeof(expect), "%.3f s", (double)frame / 8000.0);
+            ASSERT_STR_EQ(label, expect);
+        }
+    }
+    /* the step is a ladder value whose spacing is the first >= 60 px */
+    ASSERT_TRUE(break_editor_shell_audio_tick(shell, 1u, &frame, &x, &label));
+    {
+        const u32 step = frame;
+        const u32 w = (u32)ruler->rect.w;
+        static const u32 ladder[] = {400u, 800u, 4000u}; /* 50, 100, 500 ms */
+        bool on_ladder = false;
+        for (u32 k = 0u; k < 3u; k++) on_ladder = on_ladder || ladder[k] == step;
+        ASSERT_TRUE(on_ladder);
+        ASSERT_TRUE((u64)step * w / frames >= 60u);
+        /* the next smaller ladder step would be too narrow */
+        ASSERT_TRUE((u64)(step / 2u) * w / frames < 60u);
+        ASSERT_EQ(n, (frames + step - 1u) / step);
+    }
+    /* a long clip labels minutes and seconds */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    ASSERT_TRUE(break_editor_doc_audio_mix(doc, pcm, 4000u, 0.0));
+    /* 90 s needs a longer clip: 65536 frames at 800 Hz is not allowed, so
+     * use the maximum clip at 8 kHz (8.192 s) and check the 1 s ladder */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    {
+        static i16 longpcm[65536];
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, longpcm, 65536u));
+        break_editor_shell_tick(shell);
+        n = break_editor_shell_audio_tick_count(shell);
+        ASSERT_TRUE(n >= 3u);
+        ASSERT_TRUE(break_editor_shell_audio_tick(shell, 1u, &frame, &x, &label));
+        ASSERT_EQ(frame, 8000u); /* 1 s step */
+        ASSERT_STR_EQ(label, "1.000 s");
+    }
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_tick_count(shell), 0u);
+    shell_paint(shell);
     break_editor_shell_destroy(shell);
 }
 
@@ -12998,6 +13080,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_selects_and_trims_or_cuts);
     RUN_TEST(audio_page_fades_and_normalizes_the_selection_or_clip);
     RUN_TEST(audio_page_selects_by_dragging_the_waveform);
+    RUN_TEST(audio_page_shows_a_timeline_ruler);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);
