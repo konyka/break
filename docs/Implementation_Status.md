@@ -2,6 +2,7 @@
 
 - **交付**：core_app 语音泵把播放参考经 `AudioDriftCompensator` 重采样后再交给对齐器（4096 帧 FIFO）。对齐器锁定后每 10 个包取一次延迟测量，每 32 个被接受的测量更新一次比率，更新后跳过一次测量。采集恢复、切换设备与播放重开时比率归 1。新增统计 `drift_corrections`、`drift_correction_ppb` 与 trace 字段 `drift_corrections=`、`drift_ppb=`，新增 `audio_voice_aligner_correlation` 访问器。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-voice-drift-design.md`、`docs/superpowers/plans/2026-11-19-core-app-voice-drift.md`。
 - **TDD**：先写两个新的 voice 用例并确认失败（RED），再实现到 18/18（GREEN）。对齐器访问器的测试先 RED 后 GREEN。四个变异都判红：绕过 FIFO、恢复时不重置、不调用 update、不检查观测周期。
+- **评审**：首轮独立评审 Not ready。Critical 问题是比率大于 1 时，泵可能因参考环只差 1 帧而返回 FAILED。修复为按比率换算所需原始帧并以整包等待，补充了慢 200 ppm 的回归用例，以及切换设备和播放重开时重置的用例，共 20 项。漂移用例另外验证补偿后残余回声至少低 6 dB。
 - **边界**：只支持单声道与线性插值；没有真实声学验证。
 
 ## 闭环时钟漂移补偿器（2026-11-19）

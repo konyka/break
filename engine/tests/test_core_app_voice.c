@@ -7,6 +7,7 @@
 #include <platform/time.h>
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -849,14 +850,21 @@ static CoreAppVoiceConfig drift_config(AudioSystem *playback, bool enabled)
 
 #define DRIFT_TEST_PACKETS 4000u
 
+/* Energy of the processed capture over the last quarter of a drifting run:
+ * the capture is pure echo, so this is what echo cancellation left. */
+static double g_residual_energy;
+
 /* The playback device runs (1 - drift) times as fast as the capture device:
- * for every capture packet it renders that many fewer reference frames, and
- * the capture holds the rendered reference on its own clock, 10 frames
- * late. Returns the stats after DRIFT_TEST_PACKETS packets. */
+ * for every capture packet it renders that many times fewer (more, when the
+ * drift is negative) reference frames, and the capture holds the rendered
+ * reference on its own clock, `start_delay` frames late. Returns the stats
+ * after DRIFT_TEST_PACKETS packets. */
 static bool run_drifting_devices(CoreAppVoice *voice, AudioSystem *playback, double drift,
-                                 CoreAppVoiceStats *out)
+                                 double start_delay, CoreAppVoiceStats *out)
 {
-    const u32 history_frames = DRIFT_TEST_PACKETS * VOICE_TEST_FRAMES + 16u;
+    g_residual_energy = 0.0;
+    const u32 history_frames =
+        (u32)((double)(DRIFT_TEST_PACKETS * VOICE_TEST_FRAMES) * (1.0 + fabs(drift)) + 16.0);
     f32 *history = (f32 *)calloc(history_frames, sizeof(f32));
     AudioPcmStreamHandle stream = open_reference_stream(playback);
     bool ok = history != NULL && stream != 0u &&
@@ -884,7 +892,7 @@ static bool run_drifting_devices(CoreAppVoice *voice, AudioSystem *playback, dou
         f32 capture[VOICE_TEST_FRAMES];
         for (u32 i = 0u; i < VOICE_TEST_FRAMES; ++i) {
             const double n = (double)(packet * VOICE_TEST_FRAMES + i);
-            const double position = (1.0 - drift) * n - 10.0;
+            const double position = (1.0 - drift) * n - start_delay;
             if (position < 0.0) {
                 capture[i] = 0.0f;
                 continue;
@@ -898,7 +906,13 @@ static bool run_drifting_devices(CoreAppVoice *voice, AudioSystem *playback, dou
              core_app_voice_pump(voice, 2u) == BREAK_RUNTIME_OK;
         BreakVoiceFrame frame;
         bool ready = true;
-        while (ok && ready) ok = core_app_voice_pop(voice, &frame, &ready) == BREAK_RUNTIME_OK;
+        while (ok && ready) {
+            ok = core_app_voice_pop(voice, &frame, &ready) == BREAK_RUNTIME_OK;
+            if (!ok || !ready || packet < DRIFT_TEST_PACKETS * 3u / 4u) continue;
+            for (u32 i = 0u; i < frame.sample_count; ++i) {
+                g_residual_energy += (double)frame.samples[i] * frame.samples[i];
+            }
+        }
     }
     ok = ok && core_app_voice_stats(voice, out) == BREAK_RUNTIME_OK;
     if (stream != 0u) (void)audio_pcm_stream_close(playback, stream);
@@ -915,7 +929,8 @@ TEST(drift_between_the_devices_is_compensated)
     ASSERT_NOT_NULL(voice);
     CoreAppVoiceStats stats;
     memset(&stats, 0, sizeof(stats));
-    ASSERT_TRUE(run_drifting_devices(voice, playback, 100e-6, &stats));
+    ASSERT_TRUE(run_drifting_devices(voice, playback, 100e-6, 10.0, &stats));
+    const double compensated_residual = g_residual_energy;
     ASSERT_TRUE(stats.drift_corrections > 0u);
     ASSERT_TRUE(llabs((long long)stats.drift_correction_ppb - 100000ll) < 10000ll);
     ASSERT_TRUE(stats.produced > DRIFT_TEST_PACKETS - 20u);
@@ -930,6 +945,16 @@ TEST(drift_between_the_devices_is_compensated)
     ASSERT_EQ(stats.drift_corrections, corrections);
     ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
     core_app_voice_destroy(voice);
+
+    /* the same devices without compensation leave at least 6 dB more echo */
+    const CoreAppVoiceConfig off = drift_config(playback, false);
+    voice = create_voice(&off);
+    ASSERT_NOT_NULL(voice);
+    ASSERT_TRUE(run_drifting_devices(voice, playback, 100e-6, 10.0, &stats));
+    ASSERT_TRUE(compensated_residual > 0.0);
+    ASSERT_TRUE(g_residual_energy > 4.0 * compensated_residual);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
     audio_system_destroy(playback);
 }
 
@@ -942,7 +967,7 @@ TEST(drift_compensation_off_leaves_the_reference_alone)
     ASSERT_NOT_NULL(voice);
     CoreAppVoiceStats stats;
     memset(&stats, 0, sizeof(stats));
-    ASSERT_TRUE(run_drifting_devices(voice, playback, 100e-6, &stats));
+    ASSERT_TRUE(run_drifting_devices(voice, playback, 100e-6, 10.0, &stats));
     ASSERT_EQ(stats.drift_corrections, 0u);
     ASSERT_EQ(stats.drift_correction_ppb, 0);
     ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
@@ -957,6 +982,61 @@ TEST(drift_compensation_off_leaves_the_reference_alone)
     config.drift_observe_packets = 0u;
     ASSERT_EQ(core_app_voice_create(&config, &voice), BREAK_RUNTIME_INVALID);
     ASSERT_TRUE(voice == NULL);
+    audio_system_destroy(playback);
+}
+
+/* A playback clock slower than the capture clock needs a ratio above 1,
+ * where one raw read can fall a frame short of a packet. */
+TEST(a_slower_playback_clock_is_compensated_without_failing)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = drift_config(playback, true);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    CoreAppVoiceStats stats;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_TRUE(run_drifting_devices(voice, playback, -200e-6, 60.0, &stats));
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(stats.drift_corrections > 0u);
+    ASSERT_TRUE(llabs((long long)stats.drift_correction_ppb + 200000ll) < 20000ll);
+    ASSERT_TRUE(stats.produced > DRIFT_TEST_PACKETS - 20u);
+    core_app_voice_destroy(voice);
+    audio_system_destroy(playback);
+}
+
+/* A capture switch and a playback reopen are new clocks too. */
+TEST(a_capture_switch_and_a_playback_reopen_reset_the_drift_ratio)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = drift_config(playback, true);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    CoreAppVoiceStats stats;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_TRUE(run_drifting_devices(voice, playback, 100e-6, 10.0, &stats));
+    ASSERT_TRUE(stats.drift_correction_ppb != 0);
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, NULL), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_switches, 1u);
+    ASSERT_EQ(stats.drift_correction_ppb, 0);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+
+    voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    ASSERT_TRUE(run_drifting_devices(voice, playback, 100e-6, 10.0, &stats));
+    ASSERT_TRUE(stats.drift_correction_ppb != 0);
+    ASSERT_EQ(audio_system_simulate_event(playback, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(audio_system_reopen(playback), AUDIO_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.playback_recoveries, 1u);
+    ASSERT_EQ(stats.drift_correction_ppb, 0);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
     audio_system_destroy(playback);
 }
 
@@ -979,4 +1059,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_fake_capture_refuses_a_named_switch_and_keeps_producing);
     RUN_TEST(drift_between_the_devices_is_compensated);
     RUN_TEST(drift_compensation_off_leaves_the_reference_alone);
+    RUN_TEST(a_slower_playback_clock_is_compensated_without_failing);
+    RUN_TEST(a_capture_switch_and_a_playback_reopen_reset_the_drift_ratio);
 TEST_MAIN_END()

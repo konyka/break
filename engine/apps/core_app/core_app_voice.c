@@ -3,8 +3,8 @@
 #include <core/platform_thread.h>
 #include <platform/time.h>
 
-#include <stdatomic.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -175,13 +175,22 @@ static void voice_drift_reset(CoreAppVoice *voice) {
     atomic_store_explicit(&voice->drift_correction_ppb, 0, memory_order_relaxed);
 }
 
+/* Without compensation a packet needs one raw packet. With it, the missing
+ * resampled frames need about missing * ratio raw frames; two more cover
+ * the interpolation position, and refills read the ring in packets. */
 static bool voice_reference_ready(const CoreAppVoice *voice) {
-    if (voice->drift && voice->drift_fifo_frames >= CORE_APP_VOICE_FRAME_FRAMES) return true;
-    return audio_reference_available(voice->playback) >= CORE_APP_VOICE_FRAME_FRAMES;
+    const u32 available = audio_reference_available(voice->playback);
+    if (!voice->drift) return available >= CORE_APP_VOICE_FRAME_FRAMES;
+    if (voice->drift_fifo_frames >= CORE_APP_VOICE_FRAME_FRAMES) return true;
+    const double missing = (double)(CORE_APP_VOICE_FRAME_FRAMES - voice->drift_fifo_frames);
+    const double raw = ceil(missing * audio_drift_compensator_ratio(voice->drift)) + 2.0;
+    const u32 packets = ((u32)raw + CORE_APP_VOICE_FRAME_FRAMES - 1u) / CORE_APP_VOICE_FRAME_FRAMES;
+    return available >= packets * CORE_APP_VOICE_FRAME_FRAMES;
 }
 
 /* One packet of reference: the raw read, or with drift compensation the
- * oldest resampled frames, refilled from one raw read when short. */
+ * oldest resampled frames, refilled one raw packet at a time while short
+ * (voice_reference_ready checked that the ring holds enough). */
 static AudioResult voice_read_reference(CoreAppVoice *voice, i16 *out) {
     u32 frames = 0u;
     if (!voice->drift) {
@@ -236,7 +245,8 @@ static void voice_drift_observe(CoreAppVoice *voice) {
     voice->drift_skip_next = true;
     atomic_fetch_add_explicit(&voice->drift_corrections, 1u, memory_order_relaxed);
     atomic_store_explicit(&voice->drift_correction_ppb,
-                          (i64)llround(audio_drift_compensator_correction_ppm(voice->drift) * 1000.0),
+                          (i64)llround(audio_drift_compensator_correction_ppm(voice->drift) *
+                                       1000.0),
                           memory_order_relaxed);
 }
 
