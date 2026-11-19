@@ -199,6 +199,14 @@ if(WIN32)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()
 
+# The MSVC STL refuses Clang releases older than the one it was tested with
+# (STL1000). Hosted Windows runners ship a newer Visual Studio than LLVM, so
+# the C++ TUs opt into the STL's documented escape hatch.
+if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_definitions(
+        $<$<COMPILE_LANGUAGE:CXX>:_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH>)
+endif()
+
 # Sanitizers
 option(ENGINE_USE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_USE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
